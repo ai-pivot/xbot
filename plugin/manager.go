@@ -1,11 +1,14 @@
 package plugin
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -435,6 +438,18 @@ func (pm *PluginManager) DisablePlugins(ids []string) {
 	}
 }
 
+// DisabledIDs returns the current set of disabled plugin IDs (deterministic order).
+func (pm *PluginManager) DisabledIDs() []string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	ids := make([]string, 0, len(pm.disabled))
+	for id := range pm.disabled {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // ---------------------------------------------------------------------------
 // Discovery & Loading
 // ---------------------------------------------------------------------------
@@ -455,10 +470,6 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 			log.WithField("plugin", m.ID).Warn("Duplicate plugin ID, skipping")
 			continue
 		}
-		if pm.disabled[m.ID] {
-			log.WithField("plugin", m.ID).Debug("Plugin disabled by config, skipping")
-			continue
-		}
 
 		// Find plugin directory
 		pluginDir := pm.findPluginDir(dirs, m.ID)
@@ -475,6 +486,20 @@ func (pm *PluginManager) Discover(ctx context.Context) (int, error) {
 				continue
 			}
 			entry.Plugin = plugin
+		}
+
+		// Disabled plugins MUST stay in the entries map (so the plugin panel can
+		// list them and re-enable them), but must NOT be activated. StateInactive
+		// makes ActivateAll skip them; enableEntry flips them back to
+		// StateDiscovered and activates. The old `continue` here removed the
+		// plugin from entries entirely → it vanished from the panel AND
+		// SetPluginEnabled(.., true) failed with ErrPluginNotFound (deadlock).
+		if pm.disabled[m.ID] {
+			entry.State = StateInactive
+			pm.entries[m.ID] = entry
+			loaded++
+			log.WithField("plugin", m.ID).Info("Plugin discovered (disabled)")
+			continue
 		}
 
 		pm.entries[m.ID] = entry
@@ -749,6 +774,97 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 }
 
 // ---------------------------------------------------------------------------
+// Enable / Disable (single plugin)
+// ---------------------------------------------------------------------------
+
+// SetPluginEnabled enables or disables a single plugin at runtime. Disabling
+// deactivates the plugin but KEEPS its entry and on-disk directory, so it stays
+// visible in ListPlugins (state=inactive) and can be re-enabled later. Enabling
+// re-activates an inactive/discovered/error plugin.
+//
+// The disabled flag is ALSO reflected in pm.disabled so that a subsequent
+// ReloadAll/Discover (triggered by e.g. installing another plugin) skips the
+// plugin rather than silently reactivating it.
+func (pm *PluginManager) SetPluginEnabled(ctx context.Context, pluginID string, enabled bool) error {
+	entry, ok := pm.GetPlugin(pluginID)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
+	}
+
+	// Reflect the enabled/disabled state in pm.disabled so Discover/ReloadAll
+	// honours it (otherwise a disabled plugin gets reactivated on next reload).
+	pm.mu.Lock()
+	if enabled {
+		delete(pm.disabled, pluginID)
+	} else {
+		pm.disabled[pluginID] = true
+	}
+	pm.mu.Unlock()
+
+	if enabled {
+		return pm.enableEntry(ctx, entry)
+	}
+	return pm.disableEntry(entry)
+}
+
+// disableEntry deactivates an active plugin, leaving it in StateInactive (entry
+// and directory kept). Idempotent for already-inactive plugins.
+func (pm *PluginManager) disableEntry(entry *PluginEntry) error {
+	entry.stateMu.Lock()
+	isActive := entry.State == StateActive
+	if isActive {
+		entry.State = StateDeactivating
+	}
+	entry.stateMu.Unlock()
+
+	if !isActive {
+		return nil
+	}
+
+	if entry.Plugin != nil {
+		if err := entry.Plugin.Deactivate(entry.Context); err != nil {
+			pm.notifyEvent(PluginEventError, entry.Manifest.ID, err, map[string]any{"phase": "deactivate"})
+			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
+			pm.audit(entry.Manifest.ID, AuditDeactivate, nil, err)
+			// Deactivate failed — the subprocess may still be running, so marking
+			// StateInactive would leak it on the next enable (a new process is
+			// spawned while the old one lingers). Mark StateError and return early
+			// to avoid the second, error-free audit below.
+			entry.stateMu.Lock()
+			entry.State = StateError
+			entry.lastError = err
+			entry.lastErrorAt = time.Now()
+			entry.stateMu.Unlock()
+			return err
+		}
+	}
+	entry.stateMu.Lock()
+	entry.State = StateInactive
+	entry.stateMu.Unlock()
+	pm.notifyEvent(PluginEventDeactivated, entry.Manifest.ID, nil, nil)
+	log.WithField("plugin", entry.Manifest.ID).Info("Plugin disabled")
+	pm.audit(entry.Manifest.ID, AuditDeactivate, nil, nil)
+	return nil
+}
+
+// enableEntry resets a non-active plugin to StateDiscovered and re-activates it.
+func (pm *PluginManager) enableEntry(ctx context.Context, entry *PluginEntry) error {
+	entry.stateMu.Lock()
+	if entry.State == StateActive {
+		entry.stateMu.Unlock()
+		return nil
+	}
+	entry.State = StateDiscovered
+	entry.stateMu.Unlock()
+
+	if err := pm.activate(ctx, entry); err != nil {
+		return err
+	}
+	log.WithField("plugin", entry.Manifest.ID).Info("Plugin enabled")
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Query
 // ---------------------------------------------------------------------------
 
@@ -760,7 +876,41 @@ func (pm *PluginManager) GetPlugin(id string) (*PluginEntry, bool) {
 	return e, ok
 }
 
-// ListPlugins returns all loaded plugin entries.
+// CallPluginRPC sends an RPC to an active stdio plugin process by plugin ID.
+// Unlike ChannelPluginCall (which routes via the channel provider name), this
+// routes directly to the plugin's own process — used by web_plugin_rpc so
+// frontend views can call into any stdio plugin without a channel declaration.
+// Returns the raw JSON result string as opaque bytes.
+func (pm *PluginManager) CallPluginRPC(ctx context.Context, pluginID, method string, params json.RawMessage) (json.RawMessage, error) {
+	entry, ok := pm.GetPlugin(pluginID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrPluginNotFound, pluginID)
+	}
+	if entry.State != StateActive {
+		return nil, fmt.Errorf("plugin %s not active (state=%s)", pluginID, entry.State)
+	}
+	sp, ok := entry.Plugin.(*stdioPlugin)
+	if !ok || sp.process == nil {
+		return nil, fmt.Errorf("plugin %s is not a stdio plugin (or process not started)", pluginID)
+	}
+	req := &PluginRequest{
+		Method: "web_plugin_rpc",
+		Params: map[string]any{
+			"method": method,
+			"params": params,
+		},
+	}
+	resp, err := sp.process.Call(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != "" {
+		return nil, fmt.Errorf("plugin %s: %s", pluginID, resp.Error)
+	}
+	return json.RawMessage(resp.Result), nil
+}
+
+// ListPlugins returns all loaded plugin entries in deterministic order (by ID).
 func (pm *PluginManager) ListPlugins() []*PluginEntry {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -768,6 +918,9 @@ func (pm *PluginManager) ListPlugins() []*PluginEntry {
 	for _, e := range pm.entries {
 		result = append(result, e)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Manifest.ID < result[j].Manifest.ID
+	})
 	return result
 }
 
@@ -1091,6 +1244,19 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 
 	// Step 7: Auto-activate if has onStart event
 	if hasActivationEvent(installedManifest, "onStart") {
+		// 依赖未安装则不允许激活：缺失依赖会让插件停在 discovered 状态，
+		// 不进入 activate，并返回明确错误。
+		if missing := pm.findMissingDeps(installedManifest); len(missing) > 0 {
+			err := &ErrMissingDependency{PluginID: pluginID, Missing: missing[0]}
+			entry.stateMu.Lock()
+			entry.State = StateError
+			entry.lastError = err
+			entry.lastErrorAt = time.Now()
+			entry.stateMu.Unlock()
+			pm.notifyEvent(PluginEventError, pluginID, err, map[string]any{"phase": "install", "step": "dependencies", "missing": missing})
+			pm.audit(pluginID, AuditInstall, map[string]any{"missing_deps": missing}, err)
+			return entry, fmt.Errorf("install: %w", err)
+		}
 		if err4 := pm.activate(ctx, entry); err4 != nil {
 			return entry, fmt.Errorf("install: activation failed: %w", err4)
 		}
@@ -1100,6 +1266,115 @@ func (pm *PluginManager) InstallPlugin(ctx context.Context, sourceDir string) (*
 	log.WithField("plugin", pluginID).WithField("dir", targetDir).Info("Plugin installed")
 	pm.audit(pluginID, AuditInstall, map[string]any{"dir": targetDir}, nil)
 	return entry, nil
+}
+
+// InstallPluginFromZip extracts a single-plugin zip (containing plugin.json) and
+// installs it. The zip may either have plugin.json at its root, or wrap the
+// plugin in a single top-level directory (both are auto-detected). After
+// extraction the temp dir is removed; InstallPlugin copies the plugin into
+// ~/.xbot/plugins/<id>/ and applies the same dependency validation + activation.
+func (pm *PluginManager) InstallPluginFromZip(ctx context.Context, zipPath string) (*PluginEntry, error) {
+	tmpDir, err := os.MkdirTemp("", "xbot-plugin-*")
+	if err != nil {
+		return nil, fmt.Errorf("plugin zip: create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractZip(zipPath, tmpDir); err != nil {
+		return nil, fmt.Errorf("plugin zip: %w", err)
+	}
+
+	pluginDir, err := locatePluginDir(tmpDir)
+	if err != nil {
+		return nil, fmt.Errorf("plugin zip: %w", err)
+	}
+
+	return pm.InstallPlugin(ctx, pluginDir)
+}
+
+// extractZip safely extracts a zip archive into destDir, guarding against zip
+// slip (paths escaping destDir) and zip bombs (unbounded file count / size).
+func extractZip(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+	defer r.Close()
+
+	// zip bomb guard: limit file count and per-file decompressed size. The
+	// upload path already caps the compressed archive at 32 MiB, but a
+	// high-ratio zip bomb inflates to TBs on extraction.
+	const (
+		maxExtractFileCount = 2000
+		maxExtractFileSize  = 100 << 20 // 100 MiB per file
+	)
+	if len(r.File) > maxExtractFileCount {
+		return fmt.Errorf("zip contains too many files: %d (max %d)", len(r.File), maxExtractFileCount)
+	}
+
+	destRoot := filepath.Clean(destDir) + string(os.PathSeparator)
+	for _, f := range r.File {
+		destPath := filepath.Join(destDir, f.Name)
+		if !strings.HasPrefix(filepath.Clean(destPath), destRoot) {
+			return fmt.Errorf("zip slip detected: %s", f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(destPath, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.Create(destPath)
+		if err != nil {
+			rc.Close()
+			return err
+		}
+		if _, err := io.Copy(out, io.LimitReader(rc, maxExtractFileSize)); err != nil {
+			out.Close()
+			rc.Close()
+			return err
+		}
+		// Detect truncation: if the reader still holds data beyond the limit,
+		// the file exceeded maxExtractFileSize.
+		if remaining, _ := io.Copy(io.Discard, rc); remaining > 0 {
+			out.Close()
+			rc.Close()
+			return fmt.Errorf("file %s exceeds max decompressed size %d", f.Name, maxExtractFileSize)
+		}
+		out.Close()
+		rc.Close()
+	}
+	return nil
+}
+
+// locatePluginDir finds the directory containing plugin.json inside a freshly
+// extracted zip. It accepts plugin.json at the extraction root, or wrapped in a
+// single first-level subdirectory.
+func locatePluginDir(root string) (string, error) {
+	if _, err := os.Stat(filepath.Join(root, "plugin.json")); err == nil {
+		return root, nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return "", fmt.Errorf("read extraction dir: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(root, e.Name())
+		if _, err := os.Stat(filepath.Join(candidate, "plugin.json")); err == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("no plugin.json found in zip (root or first-level directory)")
 }
 
 // UninstallPlugin deactivates (if active), removes the plugin entry from the manager,
@@ -1382,6 +1657,20 @@ func hasActivationEvent(m *PluginManifest, event string) bool {
 		}
 	}
 	return false
+}
+
+// findMissingDeps returns the IDs of manifest dependencies that are not yet
+// installed (absent from pm.entries). Caller must hold pm.mu (write lock).
+// Installed means the dependency exists in entries — regardless of its current
+// active/error state — because activation order is resolved separately.
+func (pm *PluginManager) findMissingDeps(m *PluginManifest) []string {
+	var missing []string
+	for _, dep := range m.Dependencies {
+		if _, ok := pm.entries[dep.ID]; !ok {
+			missing = append(missing, dep.ID)
+		}
+	}
+	return missing
 }
 
 // resolveActivationOrder computes the topological activation order from current entries.

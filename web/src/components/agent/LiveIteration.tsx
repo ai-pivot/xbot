@@ -23,6 +23,7 @@ import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
+import { IterationSlot } from '@/plugin-runtime/iteration-render'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 
@@ -64,7 +65,15 @@ export const LiveIteration = memo(function LiveIteration({
     ? ''
     : rawTextContent
   const hasStreamContent = Boolean(textContent)
-  const hasSubAgents = progress.subAgents.length > 0
+  // Top-level subAgents: only nodes belonging to the CURRENT iteration (or
+  // untagged legacy data). Nodes stamped with an older iteration are rendered
+  // by TurnBody under their original iteration — the live area must not show
+  // them ("后台 subagent 污染最新迭代" 的前端兜底).
+  const currentIter = progress.iteration
+  const liveSubAgents = progress.subAgents.filter(
+    (n) => n.iteration === undefined || n.iteration === currentIter,
+  )
+  const hasSubAgents = liveSubAgents.length > 0
 
   // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
   // `streaming` is the authoritative flag: set true by stream_content events,
@@ -72,12 +81,15 @@ export const LiveIteration = memo(function LiveIteration({
   // fallback that caused streaming-content class to persist after the turn
   // ended (streaming=false but phase still 'thinking' from the last event).
   const isLive = progress.streaming
-  // reasoning 只在 thinking 阶段流式增长；一旦进入 tool_exec/content 阶段，
-  // reasoning 已完成，不应再 typewriter（reload/刚加载时已完成的内容直接全量
-  // 显示，而不是从 0 重新播放）。
-  const reasoningStreaming = isLive && progress.phase === 'thinking'
+  // reasoning 与 content 用同一个稳定的 isLive 标志（与 content typewriter 完全
+  // 一致）。此前用 `isLive && phase === 'thinking'`，phase 在 thinking/tool_exec/
+  // content 之间振荡，导致 reasoningStreaming 反复 true/false：每次 false 都让
+  // typewriter 从 0 重置、MarkdownRenderer streaming 标志横跳 → 全量 re-parse
+  // （推理展开时『一卡一卡』的根因）。改用 isLive 后，reasoning 停止增长时
+  // typewriter 以 gap/3 自然追平并静止，无需 phase 判断。
+  const reasoningStreaming = isLive
   const tw = useTypewriter(isLive ? textContent : '')
-  const rw = useTypewriter(reasoningStreaming ? reasoningContent : '')
+  const rw = useTypewriter(isLive ? reasoningContent : '')
   // MarkdownRenderer receives the complete source text. It parses only when
   // this source changes; the typewriter changes visibleChars and clips the
   // already-rendered text nodes instead of reparsing Markdown on every tick.
@@ -166,6 +178,17 @@ export const LiveIteration = memo(function LiveIteration({
 
   return (
     <div className="flex flex-col gap-1">
+      {/* 迭代指标（插件注入点）：把 live tokens/s 传给插件。 */}
+      <IterationSlot
+        data={{
+          live: {
+            tokensPerSec: progress.streamStats?.tokensPerSec,
+            ttftMs: progress.streamStats?.ttftMs,
+            completionTokens: progress.tokenUsage?.completionTokens,
+          },
+        }}
+      />
+
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <FoldedLine
@@ -182,7 +205,8 @@ export const LiveIteration = memo(function LiveIteration({
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock
               content={displayReasoning}
-              visibleChars={reasoningStreaming ? rw.visibleChars : undefined}
+              streaming={isLive}
+              visibleChars={isLive ? rw.visibleChars : undefined}
             />
           </div>
         </FoldedLine>
@@ -211,7 +235,7 @@ export const LiveIteration = memo(function LiveIteration({
         <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
       )}
 
-      {hasSubAgents && <SubAgentProgressTree nodes={progress.subAgents} />}
+      {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}
 
       {/* Streaming C */}
       {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}

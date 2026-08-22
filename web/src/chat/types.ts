@@ -75,6 +75,8 @@ export interface LiveSnapshot {
   readonly todos: readonly TodoItem[]
   /** Token 用量（iteration 事件携带，ContextRing/会话上下文刷新用）。 */
   readonly tokenUsage: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } | null
+  /** 实时流式时序（iteration 事件携带 stream_stats，TTFT/tokens-per-sec）。 */
+  readonly streamStats: { readonly ttftMs: number; readonly tpotMs: number; readonly tokensPerSec: number; readonly totalMs: number; readonly chunks: number } | null
 }
 
 export const EMPTY_LIVE: LiveSnapshot = {
@@ -89,6 +91,7 @@ export const EMPTY_LIVE: LiveSnapshot = {
   subAgents: [],
   todos: [],
   tokenUsage: null,
+  streamStats: null,
 }
 
 // ─── TurnPhase：三态判别联合（核心不变量 I1） ─────────────────
@@ -236,6 +239,8 @@ export type DomainEvent =
       readonly subAgents: readonly WebSubAgentProgress[] | undefined
       /** Token 用量（ContextRing/会话上下文刷新用）。 */
       readonly tokenUsage: NonNullable<LiveSnapshot['tokenUsage']> | undefined
+      /** 实时流式时序（iteration 事件携带 stream_stats：TTFT/tokens-per-sec）。 */
+      readonly streamStats: NonNullable<LiveSnapshot['streamStats']> | undefined
     }
   | {
       readonly type: 'stream'
@@ -252,6 +257,9 @@ export type DomainEvent =
       readonly reasoning: string | undefined
       readonly streamingTools: readonly WebToolProgress[] | undefined
       readonly genui: string | undefined
+      /** 实时流式时序（stream_stats：tokens/sec / TTFT）。每个 stream SSE
+       *  帧都携带，live 据此实时更新 tkps。 */
+      readonly streamStats: NonNullable<LiveSnapshot['streamStats']> | undefined
     }
   | {
       readonly type: 'phase_done'

@@ -328,6 +328,47 @@ func TestGetIterationHistoryByTurns(t *testing.T) {
 	_ = db
 }
 
+// TestIterationHistoryTPOTRoundTrip 验证 tpot_ms（v58）列的写入与读回，
+// 以及 GetAllIterationHistory 批量查询包含 per-iteration TPOT/TTFT 指标。
+func TestIterationHistoryTPOTRoundTrip(t *testing.T) {
+	db, svc, tenantID := newHistoryTestService(t)
+	_ = db
+	if err := svc.AppendIterationHistory(tenantID, 0, 100, IterationRecord{
+		MessageID: 0, TurnID: 100, Iteration: 1, Content: "iter1",
+		TTFTMs: 120, TPOTMs: 45, TokensPerSec: 22, TotalMs: 3000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AppendIterationHistory(tenantID, 0, 100, IterationRecord{
+		MessageID: 0, TurnID: 100, Iteration: 2, Content: "iter2",
+		TTFTMs: 90, TPOTMs: 60, TokensPerSec: 16, TotalMs: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recs, err := svc.GetIterationHistoryByTurn(tenantID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("records=%d want 2", len(recs))
+	}
+	if recs[0].TPOTMs != 45 || recs[1].TPOTMs != 60 {
+		t.Errorf("TPOTMs = [%d,%d], want [45,60]", recs[0].TPOTMs, recs[1].TPOTMs)
+	}
+	if recs[0].TTFTMs != 120 || recs[1].TTFTMs != 90 {
+		t.Errorf("TTFTMs = [%d,%d], want [120,90]", recs[0].TTFTMs, recs[1].TTFTMs)
+	}
+
+	all, err := svc.GetAllIterationHistory(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].TPOTMs != 45 || all[1].TPOTMs != 60 {
+		t.Fatalf("GetAllIterationHistory TPOT = %+v", all)
+	}
+}
+
 func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
 	db, svc, tenantID := newHistoryTestService(t)
 	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous")); err != nil {

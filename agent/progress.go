@@ -627,6 +627,9 @@ type SubAgentNode struct {
 	Status     string         `json:"status"` // "running" | "done" | "error" | "pending"
 	Desc       string         `json:"desc,omitempty"`
 	Children   []SubAgentNode `json:"children,omitempty"`
+	// Iteration 是 spawn 该 SubAgent 的主 Agent 迭代号。后台 SubAgent 跨迭代
+	// 存活，其进度必须归属到 spawn 迭代渲染，绝不能漂移到最新迭代。
+	Iteration int `json:"iteration,omitempty"`
 }
 
 // convertChildTree 将内部 childAgentStatus 转换为可序列化的 SubAgentNode。

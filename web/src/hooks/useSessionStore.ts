@@ -39,6 +39,8 @@ const UNREAD_KEY = 'xbot:session-unread'
 const ACTIVE_CHANNEL_KEY = 'xbot:active-channel'
 const DEFAULT_CHANNEL = 'web'
 const TRANSIENT_SUBAGENT_TTL_MS = 10 * 60 * 1000
+/** Sidebar session-tree page size (backend pagination). */
+const SESSION_TREE_PAGE_SIZE = 60
 
 /** WSMessage shape we care about here (avoids importing the full envelope). */
 interface AskUserEnvelope {
@@ -76,6 +78,10 @@ export interface SessionStore {
   /** Optimistically set a session's status (e.g. running after send). */
   setStatus: (selector: SessionSelector, status: SessionStatus) => void
   refresh: () => Promise<void>
+  /** Whether more paginated web sessions exist beyond the loaded window. */
+  hasMore: boolean
+  /** Fetch the next page of web sessions and append them (backend pagination). */
+  loadMore: () => Promise<void>
   toggleStar: (id: string) => void
   createSession: (label?: string, workPath?: string, model?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
@@ -178,6 +184,8 @@ function persistActiveChannel(channel: string | null): void {
 interface ListSessionTreeResponse {
   sessions?: RawTreeNode[]
   orphan_subagents?: RawChat[]
+  has_more?: boolean
+  next_offset?: number
 }
 interface RawChat {
   chat_id: string
@@ -780,6 +788,10 @@ export function useSessionStoreImpl(): SessionStore {
   const [activeChannel, setActiveChannelState] = useState<string | null>(loadActiveChannel)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Backend pagination: whether more web user_chats exist beyond the loaded
+  // window, and the offset to request for the next page.
+  const [hasMore, setHasMore] = useState(false)
+  const nextOffsetRef = useRef(0)
   // AskUser prompts keyed by "channel:chatID" — survives session switch.
   const [askUserPrompts, setAskUserPrompts] = useState<Map<string, AskUserPrompt>>(new Map())
 
@@ -799,6 +811,7 @@ export function useSessionStoreImpl(): SessionStore {
   const activeSessionRef = useRef(activeSession)
   activeSessionRef.current = activeSession
   const refreshSeqRef = useRef(0)
+  const loadMoreSeqRef = useRef(0)
   const switchSeqRef = useRef(0)
   const subAgentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transientSubAgentsRef = useRef(new Map<string, TransientSubAgent>())
@@ -810,8 +823,21 @@ export function useSessionStoreImpl(): SessionStore {
     if (initialLoad) setLoading(true)
     setError(null)
     try {
-      const data = await postAPI<ListSessionTreeResponse>('/api/session-tree')
+      // Refresh PRESERVES the already-loaded window: fetch from offset 0 up to
+      // the currently-loaded offset in one request (limit = loaded count, min
+      // one page). SSE events (subagent_stopped / created) and CRUD callbacks
+      // invoke refresh frequently; if refresh reset to page 1, a single SSE
+      // event would snap a user who had scrolled 5 pages back to the top and
+      // drop the loaded pages. With limit = loaded count, the loaded pages
+      // survive and new sessions appear at their sorted position.
+      const limit = Math.max(SESSION_TREE_PAGE_SIZE, nextOffsetRef.current)
+      const data = await postAPI<ListSessionTreeResponse>('/api/session-tree', {
+        offset: 0,
+        limit,
+      })
       if (seq !== refreshSeqRef.current) return
+      setHasMore(data.has_more ?? false)
+      if (typeof data.next_offset === 'number') nextOffsetRef.current = data.next_offset
       const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
       const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
       if (initialLoad) addRunningSessionKeys(mainSessions, executingSessionsRef.current)
@@ -829,6 +855,49 @@ export function useSessionStoreImpl(): SessionStore {
       setError(e instanceof Error ? e.message : 'network error')
     } finally {
       if (seq === refreshSeqRef.current && initialLoad) setLoading(false)
+    }
+  }, [])
+
+  const loadMore = useCallback(async () => {
+    // loadMore uses its own sequence counter so it is NOT cancelled by a
+    // concurrent refresh (SSE events trigger refresh frequently). Previously
+    // they shared refreshSeqRef, so an SSE event mid-loadMore would cancel
+    // the load (seq mismatch → early return → loaded page discarded).
+    const seq = ++loadMoreSeqRef.current
+    setError(null)
+    try {
+      const offset = nextOffsetRef.current
+      const data = await postAPI<ListSessionTreeResponse>('/api/session-tree', {
+        offset,
+        limit: SESSION_TREE_PAGE_SIZE,
+      })
+      if (seq !== loadMoreSeqRef.current) return
+      setHasMore(data.has_more ?? false)
+      if (typeof data.next_offset === 'number') nextOffsetRef.current = data.next_offset
+      const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
+      const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
+      const withUnread = applyPersistedUnreadStatuses(mainSessions, new Set(unreadIdsRef.current), activeSessionRef.current)
+      // Append the new page to the existing list (dedup by session key), then
+      // carry over live status from the existing list.
+      // CRITICAL: loadMore must NOT call reconcileActiveSession or setActiveSession —
+      // the active session is on page 1 and is NOT in the incoming page. Calling
+      // reconcileActiveSession on the incoming page would pick the first session of
+      // the new page as the new active, switching the user's session.
+      //
+      // mergeStatus(prev, next) returns next.map(apply) — it only keeps sessions
+      // in `next`. So `next` MUST be the full merged list (old + new), not just
+      // the incoming page. Passing `withUnread` (new page only) as `next` would
+      // discard all existing sessions.
+      const appended = appendUniqueSessions(sessionsRef.current, withUnread)
+      const merged = mergeStatus(sessionsRef.current, appended, executingSessionsRef.current)
+      sessionsRef.current = merged
+      const cachedAgents = flattenTreeAgents(merged)
+      saveSessionTreeCache(merged, cachedAgents)
+      setSessions((prev) => (sameSessionList(prev, merged) ? prev : merged))
+      setSubAgents((prev) => (sameSessionList(prev, cachedAgents) ? prev : cachedAgents))
+    } catch (e) {
+      if (seq !== loadMoreSeqRef.current) return
+      setError(e instanceof Error ? e.message : 'network error')
     }
   }, [])
 
@@ -1317,6 +1386,8 @@ export function useSessionStoreImpl(): SessionStore {
     markRead,
     setStatus,
     refresh,
+    hasMore,
+    loadMore,
     toggleStar,
     createSession,
     switchSession,
@@ -1325,7 +1396,7 @@ export function useSessionStoreImpl(): SessionStore {
     reorderSessions,
     clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, toggleStar, createSession, switchSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, switchSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {
@@ -1346,6 +1417,37 @@ function sameSessionList(a: SessionInfo[], b: SessionInfo[]): boolean {
     if (!sameSessionNode(a[i], b[i])) return false
   }
   return true
+}
+
+/**
+ * Append incoming sessions onto the existing list, deduplicating by sessionKey
+ * (recursively into children). Existing nodes keep their object identity; only
+ * genuinely-new incoming nodes are appended. Used by loadMore so the default
+ * chat (returned on every page) and already-loaded sub-agents don't duplicate.
+ */
+function appendUniqueSessions(existing: SessionInfo[], incoming: SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>()
+  const mark = (node: SessionInfo) => {
+    seen.add(sessionKey(node))
+    for (const c of node.children || []) mark(c)
+  }
+  for (const n of existing) mark(n)
+
+  const result = [...existing]
+  const appendIfNew = (node: SessionInfo): SessionInfo | null => {
+    const key = sessionKey(node)
+    if (seen.has(key)) return null
+    seen.add(key)
+    const children = (node.children || [])
+      .map(appendIfNew)
+      .filter((c): c is SessionInfo => c !== null)
+    return { ...node, children: children.length > 0 ? children : undefined }
+  }
+  for (const n of incoming) {
+    const r = appendIfNew(n)
+    if (r) result.push(r)
+  }
+  return result
 }
 
 function sameSessionNode(a: SessionInfo, b: SessionInfo): boolean {

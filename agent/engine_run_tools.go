@@ -84,11 +84,43 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 			if pi < len(s.progressLines) {
 				execCtx = WithSubAgentProgress(execCtx, func(detail SubAgentProgressDetail) {
 					s.progressMu.Lock()
+					// Run has ENDED: drop the callback entirely. After Run returns,
+					// structuredProgress.Iteration is frozen at its final value —
+					// for subagents spawned by the LAST iteration the
+					// stale-iteration check below is false forever, and this
+					// callback would keep broadcasting into the main session's
+					// progress stream ("进度泄漏到最新 iter" 的盲区).
+					if s.runDone.Load() {
+						s.progressMu.Unlock()
+						return
+					}
+					// Stamp the spawning iteration so every consumer (progress
+					// events, iteration snapshots) can attribute this subagent's
+					// progress to the iteration that spawned it — background
+					// subagents outlive their spawning iteration and must NOT
+					// drift onto newer iterations.
+					newNode := extractSubAgentNodesFromDetail(detail)
+					stampSubAgentIteration(newNode, entry.iteration)
+					// Background subagents keep firing this callback long after
+					// the spawning iteration finished (their runCtx derives from
+					// the agent lifecycle, not the tool call). By then
+					// structuredProgress belongs to a NEWER iteration: merging
+					// here would (a) attach the subagent tree to the newest
+					// iteration's events ("进度污染最新迭代") and (b) emit a
+					// spurious event whose empty ActiveTools overwrites the
+					// frontend's tool state (老迭代/工具显示被打乱). When the
+					// run has moved past the spawning iteration, drop the
+					// callback entirely — the subagent's state stays attributed
+					// to its original iteration via the snapshot recorded at
+					// that iteration's boundary (snapshotCompletedIteration).
+					if s.structuredProgress != nil && s.structuredProgress.Iteration != entry.iteration {
+						s.progressMu.Unlock()
+						return
+					}
 					s.progressLines[pi] = formatSubAgentProgress(detail)
 					// Merge structured SubAgent node — don't replace.
 					// Multiple SubAgents may be running concurrently; each
 					// callback only has one node but we must preserve others.
-					newNode := extractSubAgentNodesFromDetail(detail)
 					s.subAgentNodes = mergeSubAgentNodeList(s.subAgentNodes, newNode)
 					s.progressMu.Unlock()
 					s.notifyProgress("")
@@ -388,6 +420,32 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			Reasoning: s.structuredProgress.ReasoningContent,
 			Tools:     make([]IterationToolSnapshot, len(s.structuredProgress.CompletedTools)),
 		}
+		// Per-iteration token count: delta of cumulative completion tokens since
+		// the previous snapshot. The tracker accumulates across the whole Run;
+		// the first snapshot's delta equals the tracker value (previous = 0).
+		if s.tokenTracker != nil {
+			cur := s.tokenTracker.CompletionTokens()
+			if cur >= s.lastSnapshotCompletionTokens {
+				snap.Tokens = cur - s.lastSnapshotCompletionTokens
+			}
+			s.lastSnapshotCompletionTokens = cur
+		}
+		// Per-iteration stream timing: the most recent LLM call's StreamStats.
+		// snapshotCompletedIteration runs right after callLLM → StreamStats
+		// belongs to the iteration being snapshotted.
+		if s.structuredProgress.StreamStats != nil {
+			snap.TTFTMs = s.structuredProgress.StreamStats.TTFTMs
+			snap.TokensPerSec = s.structuredProgress.StreamStats.TokensPerSec
+			snap.TotalMs = s.structuredProgress.StreamStats.TotalMs
+			snap.TPOTMs = s.structuredProgress.StreamStats.TPOTMs
+		}
+		// Freeze this iteration's SubAgent tree into the snapshot. Background
+		// subagents stop reporting into the LIVE progress once the run moves
+		// past this iteration (callback drop in execOneTool) — this frozen tree
+		// is what makes their progress render "in the original iteration".
+		if len(s.subAgentNodes) > 0 {
+			snap.SubAgents = convertCLISubAgentTree(s.subAgentNodes)
+		}
 		for j, t := range s.structuredProgress.CompletedTools {
 			snap.Tools[j] = IterationToolSnapshot{
 				Name:      t.Name,
@@ -455,12 +513,17 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
 	if err := appendFn(0, turnID, sqlite.IterationRecord{
-		MessageID: 0,
-		TurnID:    turnID,
-		Iteration: snap.Iteration,
-		Content:   snap.Content,
-		Reasoning: snap.Reasoning,
-		Tools:     toolsJSON,
+		MessageID:    0,
+		TurnID:       turnID,
+		Iteration:    snap.Iteration,
+		Content:      snap.Content,
+		Reasoning:    snap.Reasoning,
+		Tools:        toolsJSON,
+		Tokens:       snap.Tokens,
+		TTFTMs:       snap.TTFTMs,
+		TokensPerSec: snap.TokensPerSec,
+		TotalMs:      snap.TotalMs,
+		TPOTMs:       snap.TPOTMs,
 	}); err != nil {
 		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}

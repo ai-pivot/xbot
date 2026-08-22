@@ -7,7 +7,7 @@ package plugin
 
 import (
 	"context"
-
+	"encoding/json"
 	"time"
 
 	"xbot/llm"
@@ -73,7 +73,7 @@ type PluginManifest struct {
 
 	// Entry is the plugin entry point.
 	// For script runtime: command to execute (e.g. "bash my-script.sh")
-	// For grpc runtime: command to start the plugin process
+	// For stdio runtime: command to start the plugin process
 	// This is the default/fallback — platform-specific entries take precedence.
 	Entry string `json:"entry"`
 
@@ -108,10 +108,35 @@ type PluginManifest struct {
 	// will be added in a future iteration.
 	Dependencies []PluginDependency `json:"dependencies,omitempty"`
 
+	// Web declares the frontend ESM plugin module (v2 web plugin runtime).
+	// Non-nil means this plugin also contributes to the web UI via the
+	// frontend plugin runtime (types enforced at compile time by @xbot/plugin-api).
+	// The backend does NOT validate web contribution semantics (single gate:
+	// the frontend runtime is the authoritative validator) — it only checks
+	// that the entry path exists and is served statically.
+	Web *WebPluginDecl `json:"web,omitempty"`
+
 	// Timeout is the maximum duration for plugin activation and tool operations.
 	// Zero means DefaultPluginTimeout (30s). Not serialized directly via JSON;
 	// parsed from manifest's "timeout" string field (e.g., "30s", "1m").
 	Timeout time.Duration `json:"-"`
+}
+
+// WebPluginDecl declares the frontend ESM module and its contribution points.
+//
+// The `contributes` field is an opaque JSON blob passed verbatim to the frontend
+// runtime — the frontend is the single authoritative gate for contribution
+// semantics (shapes, permissions↔capability correspondence, ID uniqueness).
+// The backend only performs transport-level checks.
+type WebPluginDecl struct {
+	// Entry is the frontend module path relative to the plugin's web/ dir
+	// (e.g. "index.js"). Served at /plugins/<id>/web/<entry>.
+	Entry string `json:"entry"`
+
+	// Contributes is the type-checked contribution declaration (compiled by
+	// the plugin author against @xbot/plugin-api). Serialized to JSON and
+	// forwarded verbatim to the frontend runtime.
+	Contributes json.RawMessage `json:"contributes,omitempty"`
 }
 
 // PluginDependency declares a dependency on another plugin.
@@ -327,13 +352,15 @@ const (
 	// RuntimeNative runs the plugin in-process as Go code.
 	RuntimeNative RuntimeType = "native"
 
-	// RuntimeGRPC runs the plugin as an external process communicating via JSON/stdio.
-	// Deprecated: use RuntimeStdio instead. "grpc" is preserved for backward compatibility.
-	RuntimeGRPC RuntimeType = "grpc"
-
 	// RuntimeStdio runs the plugin as an external process communicating via JSON over stdin/stdout.
-	// This is the recommended name; RuntimeGRPC is an alias for backward compatibility.
+	// This is the canonical name. RuntimeGRPC is a historical alias preserved for
+	// backward compatibility with plugin.json files that predate the rename.
 	RuntimeStdio RuntimeType = "stdio"
+
+	// RuntimeGRPC is a historical alias for RuntimeStdio. It is preserved ONLY for
+	// backward compatibility with existing plugin.json manifests; new plugins must
+	// use RuntimeStdio ("stdio").
+	RuntimeGRPC RuntimeType = "grpc"
 
 	// RuntimeWASM runs the plugin in a WASM sandbox (Phase 2).
 	RuntimeWASM RuntimeType = "wasm"

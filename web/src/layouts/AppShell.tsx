@@ -17,6 +17,11 @@ import { ActivityBar } from '@/layouts/ActivityBar'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
+import { useLeftPluginPanels } from '@/components/sidebar/LeftActivityBar'
+import { SidebarSectionStack, type SidebarSection } from '@/components/sidebar/SidebarSectionStack'
+import { PluginView } from '@/plugin-runtime/PluginView'
+import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
@@ -41,6 +46,14 @@ export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
   const sessionStore = useSessionStore()
+  // 左侧栏的用户插件 view（每个渲染为 VSCode 式独立 section，可拖拽/折叠/记忆）
+  const pluginPanels = useLeftPluginPanels()
+  // 左侧栏 sections 的权威顺序（registry 排序：用户拖拽重排 → 后端同步）。
+  const leftItems = useLayoutItems('desktop.activity_bar')
+  const pluginPanelMap = useMemo(
+    () => new Map(pluginPanels.map((p) => [p.id, p])),
+    [pluginPanels],
+  )
   const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
@@ -139,13 +152,32 @@ export function AppShell() {
         onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
       />
 
-      {/* Left sidebar — session list (collapsible) */}
+      {/* Left sidebar — VSCode 式 section 堆叠（会话列表 + 插件 view，可拖拽/折叠/记忆） */}
       {!sidebarCollapsed && (
         <div
-          className="relative h-full shrink-0"
+          className="relative flex h-full shrink-0 flex-col overflow-hidden"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
-          <SessionSidebar tabManager={tabManager} />
+          <SidebarSectionStack
+            slotId="desktop.activity_bar"
+            sections={leftItems.map<SidebarSection>((item) =>
+              item.id === BUILTIN_LAYOUT_ITEMS.desktopSessions
+                ? {
+                    id: item.id,
+                    title: item.title,
+                    content: <SessionSidebar tabManager={tabManager} />,
+                  }
+                : {
+                    id: item.id,
+                    title: item.title,
+                    defaultHeight: 240,
+                    content: (() => {
+                      const p = pluginPanelMap.get(item.id)
+                      return p ? <PluginView pluginId={p.pluginId} view={p.view} /> : null
+                    })(),
+                  },
+            )}
+          />
           <div
             role="separator"
             aria-orientation="vertical"
@@ -174,7 +206,19 @@ export function AppShell() {
       />
 
       {/* Right ActivityBar — always visible, toggles right panels. */}
-      <RightActivityBar activePanel={activePanel} onTogglePanel={togglePanel} />
+      <RightActivityBar
+        activePanel={activePanel}
+        onTogglePanel={togglePanel}
+        onOpenMainView={(v) =>
+          tabManager.openTab({
+            type: 'plugin',
+            title: v.title,
+            icon: v.view.icon,
+            closable: true,
+            data: { viewId: v.id, pluginId: v.pluginId },
+          })
+        }
+      />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
       <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>

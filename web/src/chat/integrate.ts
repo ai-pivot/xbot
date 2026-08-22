@@ -137,6 +137,7 @@ function snapshotToLive(live: ProgressSnapshot): LiveSnapshot {
     subAgents: live.subAgents ?? [],
     todos: live.todos ?? [],
     tokenUsage: live.tokenUsage ?? null,
+    streamStats: live.streamStats ?? null,
   }
 }
 
@@ -152,6 +153,7 @@ const EMPTY_SNAPSHOT: LiveSnapshot = {
   subAgents: [],
   todos: [],
   tokenUsage: null,
+  streamStats: null,
 }
 
 // ─── rows → ChatMessage[]（渲染数据源） ────────────────────────
@@ -260,6 +262,7 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
     todos,
     subAgents: [...d.subAgents],
     tokenUsage: d.tokenUsage,
+    streamStats: d.streamStats,
     turnID: t.id,
   }
 }

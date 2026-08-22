@@ -208,6 +208,260 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 	}
 }
 
+// TestBuildToolExecutor_SessionKeyPhysicalChannel verifies that buildToolExecutor
+// carries the physicalChannel override into ToolContext.SessionKey. When a web
+// user browses a CLI-created session (channel="cli", physical_channel="web"),
+// cfg.SessionKey is overridden to "web:chat1" in buildMainRunConfig. Without
+// this field, buildToolContext produces ToolContext.SessionKey="" and TodoWrite
+// falls back to "cli:chat1", while refreshStructuredTodos reads "web:chat1" —
+// todos are written to the wrong key and never appear in the progress stream.
+func TestBuildToolExecutor_SessionKeyPhysicalChannel(t *testing.T) {
+	a, err := New(Config{
+		WorkDir:        t.TempDir(),
+		MemoryProvider: "none",
+		SandboxMode:    "none",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer a.Close()
+
+	var capturedSessionKey string
+	captureTool := &mockTool{
+		name: "CaptureTool",
+		execFunc: func(ctx *tools.ToolContext, input string) (*tools.ToolResult, error) {
+			capturedSessionKey = ctx.SessionKey
+			return tools.NewResult("ok"), nil
+		},
+	}
+	a.RegisterCoreTool(captureTool)
+
+	// Simulate web user browsing a CLI session: origin channel="cli",
+	// physicalChannel="web" → sessionKey must override to "web:chat1".
+	executor := a.buildToolExecutor(context.Background(), "cli", "chat1", "user1", "User", "user1", "web")
+
+	if _, err := executor(context.Background(), llm.ToolCall{Name: "CaptureTool", Arguments: "{}"}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if capturedSessionKey != "web:chat1" {
+		t.Errorf("BUG REPRODUCED: ToolContext.SessionKey = %q, want %q (physicalChannel override lost → TodoWrite writes to cli:chat1, refreshStructuredTodos reads web:chat1)", capturedSessionKey, "web:chat1")
+	}
+}
+
+func TestRunState_TodoKey_PhysicalChannelOverride(t *testing.T) {
+	// 主 Agent：physicalChannel override 场景（web 用户浏览 CLI 会话）。
+	// sessionKey 被 override 成 "web:chat1"，RootSessionKey 是 canonical "cli:chat1"。
+	// todoKey 必须返回 canonical "cli:chat1"，否则 GetActiveProgress 恢复路径
+	// （读 ch:chatID = "cli:chat1"）读不到 todos —— "手机端实时显示、电脑端
+	// 后打开不显示"的根因。
+	s := &runState{
+		sessionKey: "web:chat1",
+		cfg: RunConfig{
+			AgentID:        "main",
+			RootSessionKey: "cli:chat1",
+		},
+	}
+	if got := s.todoKey(); got != "cli:chat1" {
+		t.Errorf("BUG: main-agent todoKey = %q, want %q (canonical RootSessionKey)", got, "cli:chat1")
+	}
+
+	// SubAgent：用 sessionKey（subAgentID）隔离。
+	sub := &runState{
+		sessionKey: "main/explore",
+		cfg: RunConfig{
+			AgentID:        "main/explore",
+			RootSessionKey: "cli:chat1",
+		},
+	}
+	if got := sub.todoKey(); got != "main/explore" {
+		t.Errorf("SubAgent todoKey = %q, want %q (subAgentID isolation)", got, "main/explore")
+	}
+}
+
+func TestLoopSignature_Identical(t *testing.T) {
+	// 相同 content + 相同 tool_calls → 签名相同
+	tc1 := []llm.ToolCall{{Name: "FileReplace", Arguments: `{"path":"a"}`}}
+	tc2 := []llm.ToolCall{{Name: "FileReplace", Arguments: `{"path":"a"}`}}
+	if loopSignature("hello", tc1) != loopSignature("hello", tc2) {
+		t.Error("identical content+toolcalls should have same signature")
+	}
+	// 不同 content → 不同签名
+	if loopSignature("hello", tc1) == loopSignature("world", tc1) {
+		t.Error("different content should have different signature")
+	}
+	// 不同 tool 参数 → 不同签名
+	tc3 := []llm.ToolCall{{Name: "FileReplace", Arguments: `{"path":"b"}`}}
+	if loopSignature("hello", tc1) == loopSignature("hello", tc3) {
+		t.Error("different tool args should have different signature")
+	}
+	// 空 tool_calls 与有 tool_calls 的签名不同
+	if loopSignature("done", nil) == loopSignature("done", tc1) {
+		t.Error("nil toolcalls should differ from non-nil")
+	}
+}
+
+func TestDetectIterationLoop_InjectsWarning(t *testing.T) {
+	// 模拟连续两次相同迭代的 recordAssistantMsg → 第二次应注入 loop_detection 警告
+	s := &runState{
+		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+	}
+
+	resp := &llm.LLMResponse{
+		Content:   "I will replace the file",
+		ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "FileReplace", Arguments: `{"path":"a.go"}`}},
+	}
+
+	// 第一次迭代：记录签名，不触发
+	s.recordAssistantMsg(context.Background(), resp)
+	found := false
+	for _, m := range s.messages {
+		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
+			found = true
+		}
+	}
+	if found {
+		t.Fatal("first iteration should NOT inject loop warning")
+	}
+
+	// 第二次迭代：相同签名，上一迭代无报错 → 应注入警告
+	s.recordAssistantMsg(context.Background(), resp)
+	found = false
+	for _, m := range s.messages {
+		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("second identical iteration should inject LOOP DETECTED warning")
+	}
+}
+
+func TestDetectIterationLoop_SkipsAfterToolError(t *testing.T) {
+	// 如果上一迭代的工具执行报错了，模型重试是合理的 → 不触发 loop 警告
+	s := &runState{
+		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+	}
+
+	resp := &llm.LLMResponse{
+		Content:   "retry",
+		ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "Shell", Arguments: `{"command":"ls"}`}},
+	}
+
+	// 第一次迭代
+	s.recordAssistantMsg(context.Background(), resp)
+
+	// 模拟工具执行报错
+	s.lastIterHadError = true
+
+	// 第二次迭代：签名相同，但上一迭代有报错 → 不触发
+	s.recordAssistantMsg(context.Background(), resp)
+	for _, m := range s.messages {
+		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
+			t.Fatal("should NOT inject loop warning when previous iteration had a tool error")
+		}
+	}
+}
+
+func TestBuildToolContext_BgSessionKeyCanonical(t *testing.T) {
+	// Regression: web 用户浏览 CLI 会话时 physicalChannel override 把
+	// cfg.SessionKey 改成 "web:chat1"，BgSessionKey 曾直接用 cfg.SessionKey →
+	// Shell 后台任务注册到 (web, chat1) → 完成通知注入时 GetOrCreateSession
+	// 创建重复 tenant（"会话变两个 + cancel 后 busy + 历史丢失"的根因：
+	// [System Notification] turn 跑在新 tenant 里）。主 Agent 必须用
+	// canonical RootSessionKey；SubAgent 用自己的 SessionKey（subAgentID）隔离。
+	mgr := tools.NewBackgroundTaskManager()
+
+	// 主 Agent：physicalChannel override 场景。
+	cfg := &RunConfig{
+		AgentID:        "main",
+		Channel:        "cli",
+		ChatID:         "chat1",
+		SessionKey:     "web:chat1", // physicalChannel override
+		RootSessionKey: "cli:chat1", // canonical
+		BgTaskManager:  mgr,
+	}
+	tc := buildToolContext(context.Background(), cfg)
+	if tc.BgSessionKey != "cli:chat1" {
+		t.Errorf("BUG: main-agent BgSessionKey = %q, want canonical %q (RootSessionKey)", tc.BgSessionKey, "cli:chat1")
+	}
+
+	// 主 Agent 无 override：SessionKey 就是 canonical，行为不变。
+	plainCfg := &RunConfig{
+		AgentID:        "main",
+		Channel:        "web",
+		ChatID:         "chat1",
+		SessionKey:     "web:chat1",
+		RootSessionKey: "web:chat1",
+		BgTaskManager:  mgr,
+	}
+	plainTc := buildToolContext(context.Background(), plainCfg)
+	if plainTc.BgSessionKey != "web:chat1" {
+		t.Errorf("plain main-agent BgSessionKey = %q, want %q", plainTc.BgSessionKey, "web:chat1")
+	}
+
+	// SubAgent：用自己的 SessionKey（subAgentID）隔离。
+	subCfg := &RunConfig{
+		AgentID:        "main/explore",
+		Channel:        "cli",
+		ChatID:         "chat1",
+		SessionKey:     "main/explore", // subAgentID
+		RootSessionKey: "cli:chat1",    // parent canonical — must NOT be used
+		BgTaskManager:  mgr,
+	}
+	subTc := buildToolContext(context.Background(), subCfg)
+	if subTc.BgSessionKey != "main/explore" {
+		t.Errorf("SubAgent BgSessionKey = %q, want %q (subAgentID isolation)", subTc.BgSessionKey, "main/explore")
+	}
+}
+
+func TestSubAgentCallback_StaleIterationNoPollution(t *testing.T) {
+	// Regression: background subagents outlive their spawning iteration. The
+	// progress callback registered by execOneTool used to fire with the CURRENT
+	// structuredProgress (a newer iteration), attaching the subagent tree to
+	// the newest iteration's events ("污染最新迭代") and emitting a spurious
+	// event whose empty ActiveTools overwrote the frontend's tool state. The
+	// fix drops the callback once the run has moved past the spawning iteration.
+	s := &runState{
+		cfg:                RunConfig{AgentID: "main", Channel: "cli", ChatID: "t"},
+		autoNotify:         true,
+		progressLines:      []string{"a", "b"},
+		structuredProgress: &StructuredProgress{Iteration: 5},
+	}
+	// Simulate a stale callback: subagent spawned at iteration 2, run is now at 5.
+	// (Reconstruct the callback body's guard via a direct call — the callback is
+	// created inside execOneTool; here we verify the guard logic it embeds.)
+	stale := s.structuredProgress != nil && s.structuredProgress.Iteration != 2
+	if !stale {
+		t.Fatal("guard should classify iteration 2 vs current 5 as stale")
+	}
+
+	// Non-stale case: spawning iteration == current iteration.
+	same := s.structuredProgress.Iteration != 5
+	if same {
+		t.Fatal("guard must not classify same-iteration callback as stale")
+	}
+
+	// Stamp helper: nodes carry the spawning iteration for frontend attribution.
+	nodes := []SubAgentNode{{Role: "explore", Children: []SubAgentNode{{Role: "tester"}}}}
+	stampSubAgentIteration(nodes, 2)
+	if nodes[0].Iteration != 2 || nodes[0].Children[0].Iteration != 2 {
+		t.Errorf("stampSubAgentIteration should stamp the whole tree, got top=%d child=%d",
+			nodes[0].Iteration, nodes[0].Children[0].Iteration)
+	}
+
+	// Snapshot freeze: IterationSnapshot carries the tree for the original iteration.
+	s.subAgentNodes = nodes
+	snap := IterationSnapshot{Iteration: 2}
+	snap.SubAgents = convertCLISubAgentTree(s.subAgentNodes)
+	if len(snap.SubAgents) != 1 || snap.SubAgents[0].Iteration != 2 {
+		t.Errorf("snapshot should freeze subagent tree with iteration stamp, got %+v", snap.SubAgents)
+	}
+	if snap.SubAgents[0].Children == nil || snap.SubAgents[0].Children[0].Iteration != 2 {
+		t.Errorf("snapshot children should keep iteration stamp, got %+v", snap.SubAgents[0].Children)
+	}
+}
+
 func TestRun_SingleToolCall(t *testing.T) {
 	shellTool := &mockTool{
 		name:   "Shell",

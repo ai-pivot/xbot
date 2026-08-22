@@ -8,7 +8,7 @@
  *   - Each SessionItem owns its own context menu; rename & delete open
  *     dialogs managed here so a single dialog instance serves every row.
  */
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
@@ -61,6 +61,10 @@ interface SessionListProps {
   onToggleSelect?: (key: string, shiftKey: boolean) => void
   /** Drag-and-drop reorder. Called with the new chatID order. */
   onReorder?: (channel: string, orderedIDs: string[]) => Promise<boolean>
+  /** Backend pagination: whether more web sessions exist beyond the loaded set. */
+  hasMore?: boolean
+  /** Backend pagination: fetch the next page of web sessions. */
+  onLoadMore?: () => void
 }
 
 type DialogState = { id: string; channel: string; label: string } | null
@@ -83,6 +87,8 @@ export function SessionList({
   selectedIds,
   onToggleSelect,
   onReorder,
+  hasMore = false,
+  onLoadMore,
 }: SessionListProps) {
   const { t } = useI18n()
   const [rename, setRename] = useState<DialogState>(null)
@@ -90,6 +96,7 @@ export function SessionList({
   const [renameDraft, setRenameDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const draggedKeyRef = useRef<string | null>(null)
+  const sentinelRef = useRef<HTMLDivElement | null>(null)
 
   const mainSessions = useMemo(() => sessions.filter((s) => !isSubAgentSession(s) && (!s.synthetic || (s.children || []).some(c => c.running || c.status === 'running' || c.status === 'pending' || c.status === 'waiting_input'))), [sessions])
   const mainSortedSessions = useMemo(
@@ -116,6 +123,28 @@ export function SessionList({
   const searching = !!query
   const emptyList = mainSessions.length === 0
   const showEmpty = searching ? searchResults.length === 0 : emptyList
+
+  // ── Backend pagination: the store already holds the loaded page(s) ─────────
+  // hasMore comes from the store (backend session-tree). When the sentinel at
+  // the bottom becomes visible, request the next page via onLoadMore. Search is
+  // a frontend filter over the already-loaded set, so it does NOT paginate.
+
+  // Sentinel at the bottom of the list: when it becomes visible (user scrolled
+  // near the end), fetch the next backend page.
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel || !hasMore || !onLoadMore) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          onLoadMore()
+        }
+      },
+      { root: sentinel.closest('[data-slot="scroll-area-viewport"]') as Element | null },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasMore, onLoadMore, searching, searchResults, mainGroups])
 
   const childrenForSearch = (parent: SessionInfo): SessionInfo[] => {
     const children = childrenForParent(parent).filter(isVisibleSubAgent)
@@ -178,7 +207,7 @@ export function SessionList({
         {showEmpty ? (
           <SessionEmptyState emptyList={emptyList} />
         ) : searching ? (
-          <div className="flex min-w-64 flex-col gap-0.5 p-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5 p-1">
             {searchResults.map((s) => (
               <div key={sessionKey(s)} className="flex flex-col gap-0.5">
                 <SessionItem
@@ -211,9 +240,10 @@ export function SessionList({
                 ))}
               </div>
             ))}
+            {hasMore && <div ref={sentinelRef} className="h-px" aria-hidden />}
           </div>
         ) : (
-          <div className="flex min-w-64 flex-col gap-1 p-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1 p-1">
             {mainGroups.map((g) => (
               <SessionGroup
                 key={g.key}
@@ -234,6 +264,7 @@ export function SessionList({
                 {...dndProps}
               />
             ))}
+            {hasMore && <div ref={sentinelRef} className="h-px" aria-hidden />}
           </div>
         )}
       </ScrollArea>

@@ -15,8 +15,7 @@ import {
 } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 import { ToolCallBlock } from './ToolCallBlock'
-import { GenUIBlock } from './GenUIBlock'
-import { isGenUITool, genUICode } from './genui'
+import { useOptionalPluginRuntime } from '@/plugin-runtime'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -62,6 +61,7 @@ function truncate(text: string, maxLines: number): string {
 }
 
 export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
+  const runtime = useOptionalPluginRuntime()
   const name = tool.name || ''
   const summary = tool.summary || ''
   const detail = tool.detail || ''
@@ -80,13 +80,14 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
       return <GrepRender tool={tool} summary={summary} detail={detail} />
     case 'Glob':
       return <GlobRender tool={tool} summary={summary} />
-    default:
-      // GenUI: metadata-driven (ui.mode === 'genui'); legacy display_html name
-      // fallback for pre-metadata history rows.
-      if (isGenUITool(tool)) {
-        return <DisplayHTMLRender tool={tool} />
-      }
+    default: {
+      // messageRenderer 调度器：内置 GenUI renderer（matches uiMode='genui'）
+      // 或插件声明的渲染器决定此工具的渲染，替代宿主硬编码的 display_html 特判。
+      // 无匹配（或渲染器返回 null）→ 默认 ToolCallBlock。
+      const rendered = runtime?.renderTool(tool, { chatID: '' }) ?? null
+      if (rendered != null) return rendered
       return <ToolCallBlock tool={tool} />
+    }
   }
 })
 
@@ -248,14 +249,4 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
       {files.length === 0 && <div className="text-text-muted">No files matched</div>}
     </div>
   )
-}
-
-// ── display_html ──────────────────────────────────────────────────────
-
-function DisplayHTMLRender({ tool }: { tool: WebToolProgress }) {
-  const code = genUICode(tool)
-  if (!code) {
-    return <ToolCallBlock tool={tool} />
-  }
-  return <GenUIBlock code={code} />
 }

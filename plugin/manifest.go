@@ -97,12 +97,13 @@ func validateManifest(m *PluginManifest, dir string) error {
 		return fmt.Errorf("plugin version %q is not valid semver: %w", m.Version, err)
 	}
 
-	// Runtime must be valid
+	// Runtime must be valid. RuntimeGRPC is a historical alias for RuntimeStdio
+	// (backward compat with old plugin.json); new plugins use "stdio".
 	switch m.Runtime {
-	case RuntimeNative, RuntimeGRPC, RuntimeWASM, RuntimeScript, "":
+	case RuntimeNative, RuntimeStdio, RuntimeGRPC, RuntimeWASM, RuntimeScript, "":
 		// valid
 	default:
-		return fmt.Errorf("invalid runtime %q (must be native, grpc, wasm, or script)", m.Runtime)
+		return fmt.Errorf("invalid runtime %q (must be native, stdio, wasm, or script)", m.Runtime)
 	}
 
 	// Default runtime to native
@@ -110,9 +111,9 @@ func validateManifest(m *PluginManifest, dir string) error {
 		m.Runtime = RuntimeNative
 	}
 
-	// Entry or Executable must be non-empty for grpc runtime
-	if m.Runtime == RuntimeGRPC && m.Entry == "" && m.Executable == "" {
-		return fmt.Errorf("entry or executable is required for grpc runtime plugins")
+	// Entry or Executable must be non-empty for stdio runtime
+	if (m.Runtime == RuntimeStdio || m.Runtime == RuntimeGRPC) && m.Entry == "" && m.Executable == "" {
+		return fmt.Errorf("entry or executable is required for stdio runtime plugins")
 	}
 
 	// Validate activation events

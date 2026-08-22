@@ -1,6 +1,8 @@
 package plugin
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -534,6 +536,33 @@ func TestPluginManager_Register(t *testing.T) {
 	}
 }
 
+func TestPluginManager_ListPluginsSorted(t *testing.T) {
+	t.Parallel()
+	pm := newTestPM(t)
+
+	// 注册顺序故意打乱，验证 ListPlugins 返回的是按 ID 排序的确定性结果。
+	ids := []string{"com.zeta", "com.alpha", "com.mike"}
+	for _, id := range ids {
+		m := testManifest()
+		m.ID = id
+		if err := pm.Register(&mockPlugin{manifest: m}); err != nil {
+			t.Fatalf("Register %s failed: %v", id, err)
+		}
+	}
+
+	entries := pm.ListPlugins()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 plugins, got %d", len(entries))
+	}
+	got := []string{entries[0].Manifest.ID, entries[1].Manifest.ID, entries[2].Manifest.ID}
+	want := []string{"com.alpha", "com.mike", "com.zeta"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ListPlugins not sorted deterministically: got %v, want %v", got, want)
+		}
+	}
+}
+
 func TestPluginManager_Activate(t *testing.T) {
 	t.Parallel()
 	pm := newTestPM(t)
@@ -1052,13 +1081,34 @@ func TestPluginManager_DisabledPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover failed: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("expected 0 discovered plugins (disabled), got %d", count)
+	// 修复：disabled 插件仍然注册进 entries（StateInactive）——面板可见、
+	// 可重新启用（SetPluginEnabled 会翻回 StateDiscovered 再激活）。旧的
+	// `continue` 跳过会让插件从面板消失且 GetPlugin 找不到 → 无法重新启用（死锁）。
+	if count != 1 {
+		t.Errorf("expected 1 discovered plugin (disabled but registered), got %d", count)
 	}
 
-	_, found := pm.GetPlugin("com.test.disabled")
-	if found {
-		t.Error("disabled plugin should not be found")
+	entry, found := pm.GetPlugin("com.test.disabled")
+	if !found {
+		t.Fatal("disabled plugin should still be registered (panel needs to list + re-enable it)")
+	}
+	if entry.State != StateInactive {
+		t.Errorf("expected disabled plugin State=%s, got %s", StateInactive, entry.State)
+	}
+
+	// 重新启用后应尝试激活。native 插件未注册 runtimeFactory 时激活会失败
+	// （"no runtime instance"）——这是合理行为（无 runtime 无法激活），
+	// 但插件必须仍然注册（可再次启用/禁用，不会从面板消失）。
+	if err := pm.SetPluginEnabled(ctx, "com.test.disabled", true); err != nil {
+		// 允许 "no runtime instance"（测试未提供 runtimeFactory）
+		t.Logf("re-enable expected to fail without runtimeFactory: %v", err)
+	}
+	entry, _ = pm.GetPlugin("com.test.disabled")
+	if entry == nil {
+		t.Fatal("plugin must remain registered after failed re-enable")
+	}
+	if entry.State == StateInactive {
+		t.Error("plugin should have left StateInactive after re-enable attempt")
 	}
 }
 
@@ -2945,6 +2995,229 @@ func TestPluginManager_InstallPlugin(t *testing.T) {
 	// Verify plugin is in entries
 	if _, ok := pm.GetPlugin("com.test.install"); !ok {
 		t.Error("plugin not found in manager after install")
+	}
+}
+
+func TestPluginManager_InstallPlugin_MissingDependency(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	sourceDir := filepath.Join(baseDir, "source", "com.test.depcheck")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.depcheck"
+	m.Dependencies = []PluginDependency{{ID: "com.missing.dep", Version: "1.0.0"}}
+	writeTestManifest(t, sourceDir, &m)
+
+	ctx := context.Background()
+	entry, err := pm.InstallPlugin(ctx, sourceDir)
+	if err == nil {
+		t.Fatal("expected error when installing plugin with missing dependency")
+	}
+
+	// 依赖未安装 → 插件必须停在 error 状态，绝不能进入 active。
+	if entry == nil {
+		t.Fatal("expected non-nil entry even on dependency failure")
+	}
+	if entry.State == StateActive {
+		t.Error("plugin must NOT be active when a dependency is missing")
+	}
+	if entry.State != StateError {
+		t.Errorf("expected StateError for missing dependency, got %v", entry.State)
+	}
+
+	// 插件目录已落到磁盘（安装本身成功），但未激活。
+	expectedDir := filepath.Join(baseDir, "plugins", "com.test.depcheck")
+	if _, statErr := os.Stat(expectedDir); statErr != nil {
+		t.Errorf("plugin dir not installed: %v", statErr)
+	}
+}
+
+func TestPluginManager_SetPluginEnabled(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	sourceDir := filepath.Join(baseDir, "source", "com.test.enable")
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	m := testManifest()
+	m.ID = "com.test.enable"
+	writeTestManifest(t, sourceDir, &m)
+
+	ctx := context.Background()
+	_, err := pm.InstallPlugin(ctx, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallPlugin failed: %v", err)
+	}
+
+	// 初始应为 active（onStart 事件）。
+	entry, _ := pm.GetPlugin("com.test.enable")
+	if entry.State != StateActive {
+		t.Fatalf("expected active after install, got %v", entry.State)
+	}
+
+	// 禁用：state=inactive，但 entry 保留（插件仍显示）。
+	if err := pm.SetPluginEnabled(ctx, "com.test.enable", false); err != nil {
+		t.Fatalf("disable failed: %v", err)
+	}
+	entry, ok := pm.GetPlugin("com.test.enable")
+	if !ok {
+		t.Fatal("plugin must still be listed after disable")
+	}
+	if entry.State != StateInactive {
+		t.Errorf("expected StateInactive after disable, got %v", entry.State)
+	}
+
+	// 重新启用：恢复 active。
+	if err := pm.SetPluginEnabled(ctx, "com.test.enable", true); err != nil {
+		t.Fatalf("enable failed: %v", err)
+	}
+	entry, _ = pm.GetPlugin("com.test.enable")
+	if entry.State != StateActive {
+		t.Errorf("expected StateActive after enable, got %v", entry.State)
+	}
+}
+
+func TestPluginManager_SetPluginEnabled_NotFound(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	err := pm.SetPluginEnabled(context.Background(), "nonexistent", true)
+	if err == nil {
+		t.Fatal("expected error for nonexistent plugin")
+	}
+}
+
+func writeZip(t *testing.T, zipPath string, files map[string]string) {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPluginManager_InstallPluginFromZip(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	m := testManifest()
+	m.ID = "com.test.zip"
+	manifestJSON, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("plugin.json at zip root", func(t *testing.T) {
+		zipPath := filepath.Join(baseDir, "root.zip")
+		writeZip(t, zipPath, map[string]string{
+			"plugin.json": string(manifestJSON),
+			"data.txt":    "hello",
+		})
+
+		entry, err := pm.InstallPluginFromZip(context.Background(), zipPath)
+		if err != nil {
+			t.Fatalf("InstallPluginFromZip (root) failed: %v", err)
+		}
+		if entry.Manifest.ID != "com.test.zip" {
+			t.Errorf("expected ID com.test.zip, got %q", entry.Manifest.ID)
+		}
+	})
+
+	t.Run("plugin.json wrapped in a directory", func(t *testing.T) {
+		zipPath := filepath.Join(baseDir, "wrapped.zip")
+		wrapped := testManifest()
+		wrapped.ID = "com.test.zip.wrapped"
+		wrappedJSON, err := json.MarshalIndent(wrapped, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeZip(t, zipPath, map[string]string{
+			"my-plugin/plugin.json": string(wrappedJSON),
+			"my-plugin/data.txt":    "wrapped",
+		})
+
+		entry, err := pm.InstallPluginFromZip(context.Background(), zipPath)
+		if err != nil {
+			t.Fatalf("InstallPluginFromZip (wrapped) failed: %v", err)
+		}
+		if entry.Manifest.ID != "com.test.zip.wrapped" {
+			t.Errorf("expected ID com.test.zip.wrapped, got %q", entry.Manifest.ID)
+		}
+	})
+}
+
+func TestPluginManager_InstallPluginFromZip_NoManifest(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+	pm := NewPluginManager(baseDir)
+	t.Cleanup(func() { pm.Close() })
+	pm.SetRuntimeFactory(&mockRuntimeFactory{})
+
+	zipPath := filepath.Join(baseDir, "nomanifest.zip")
+	writeZip(t, zipPath, map[string]string{"readme.txt": "no plugin.json here"})
+
+	_, err := pm.InstallPluginFromZip(context.Background(), zipPath)
+	if err == nil {
+		t.Fatal("expected error when zip has no plugin.json")
+	}
+}
+
+func TestExtractZip_FileCountLimit(t *testing.T) {
+	t.Parallel()
+	baseDir := t.TempDir()
+
+	// A zip with more files than maxExtractFileCount must be rejected BEFORE
+	// extracting anything (zip bomb guard: unbounded file count).
+	zipPath := filepath.Join(baseDir, "too-many-files.zip")
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	for i := 0; i < 2001; i++ {
+		w, err := zw.Create(fmt.Sprintf("f%d.txt", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := extractZip(zipPath, filepath.Join(baseDir, "out"))
+	if err == nil || !strings.Contains(err.Error(), "too many files") {
+		t.Fatalf("expected 'too many files' error, got %v", err)
 	}
 }
 

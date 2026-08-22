@@ -65,6 +65,7 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
         todos: undefined,
         subAgents: undefined,
         tokenUsage: undefined,
+        streamStats: undefined,
       })
     } else if (kind < 0.55) {
       // stream
@@ -77,7 +78,7 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
         content: rng() < 0.8 ? `流式-${i}` : undefined,
         reasoning: undefined,
         streamingTools: undefined,
-        genui: undefined,
+        genui: undefined, streamStats: undefined,
       })
     } else if (kind < 0.7) {
       // phase_done（含 finalIteration）

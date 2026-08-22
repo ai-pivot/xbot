@@ -447,6 +447,13 @@ func doReplace(content string, params FileReplaceParams, filePath string) (strin
 			if actualCount > 1 && !params.ReplaceAll {
 				return newContent, fmt.Sprintf("Replaced 1 of %d occurrences (auto-corrected whitespace) in %s. Use replace_all=true to replace all.", actualCount, filePath), nil
 			}
+			// Same infinite-loop guard as the exact-match path: the fuzzy
+			// replacement is a no-op when the (actual) old text survives.
+			if strings.Contains(newContent, actualOld) {
+				return newContent, fmt.Sprintf(
+					"Successfully replaced %d occurrence(s) (auto-corrected whitespace) in %s. WARNING: old_string still exists in the result (new_string contains old_string) — repeating this call will loop forever. Adjust new_string to not embed the old text, or stop retrying this edit.",
+					replacedCount, filePath), nil
+			}
 			return newContent, fmt.Sprintf("Successfully replaced %d occurrence(s) (auto-corrected whitespace) in %s", replacedCount, filePath), nil
 		}
 
@@ -486,6 +493,17 @@ func doReplace(content string, params FileReplaceParams, filePath string) (strin
 
 	if count > 1 && !params.ReplaceAll {
 		return newContent, fmt.Sprintf("Replaced 1 of %d occurrences. Use replace_all=true to replace all.", count), nil
+	}
+
+	// Infinite-loop guard: if old_string still exists in the NEW content, the
+	// replacement is effectively a no-op — new_string contains old_string, so
+	// every identical re-call would "succeed" again forever (observed: an LLM
+	// looping 14+ times on the same edit). Warn explicitly so the caller stops
+	// repeating and fixes new_string instead.
+	if strings.Contains(newContent, params.OldString) {
+		return newContent, fmt.Sprintf(
+			"Successfully replaced %d occurrence(s) in %s. WARNING: old_string still exists in the result (new_string contains old_string) — repeating this call will loop forever. Adjust new_string to not embed the old text, or stop retrying this edit.",
+			replacedCount, filePath), nil
 	}
 
 	return newContent, fmt.Sprintf("Successfully replaced %d occurrence(s) in %s", replacedCount, filePath), nil

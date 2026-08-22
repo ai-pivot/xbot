@@ -39,6 +39,7 @@ const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1): Do
   todos: undefined,
   subAgents: undefined,
   tokenUsage: undefined,
+  streamStats: undefined,
 })
 
 const started = (turn: ReturnType<typeof turnID>, requestID: string | null = null): DomainEvent => ({
@@ -112,7 +113,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     const s1 = reduce(s0, {
       type: 'stream', turnID: T1, seq: null,
       iteration: iterNum(2),
-      content: undefined, reasoning: '新思考', streamingTools: undefined, genui: undefined,
+      content: undefined, reasoning: '新思考', streamingTools: undefined, genui: undefined, streamStats: undefined,
     })
     const t1 = s1.turns.get(T1)!
     if (t1.phase.kind !== 'live') throw new Error('must stay live')
@@ -123,7 +124,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     const s2 = reduce(s1, {
       type: 'stream', turnID: T1, seq: null,
       iteration: iterNum(2),
-      content: '新内容', reasoning: undefined, streamingTools: undefined, genui: undefined,
+      content: '新内容', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined,
     })
     const t2 = s2.turns.get(T1)!
     if (t2.phase.kind !== 'live') throw new Error('must stay live')
@@ -134,7 +135,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // turn 1 流式产出 → cancel ack（text_final cancelled）→ turn 2 正常接收事件。
     const s = run([
       started(T1),
-      { type: 'stream', turnID: T1, seq: null, iteration: null, content: '部分内容', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      { type: 'stream', turnID: T1, seq: null, iteration: null, content: '部分内容', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined },
       iteration1(T1, '', 1),
       textFinal(T1, null, true), // cancel ack：content null（截断）→ fold
       started(T2),
@@ -176,7 +177,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // turn 1 流式产出（text 未到）→ 用户发新消息 turn_started(2) fold。
     const s = run([
       started(T1),
-      { type: 'stream', turnID: T1, seq: null, iteration: null, content: '流式输出的完整回复', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      { type: 'stream', turnID: T1, seq: null, iteration: null, content: '流式输出的完整回复', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined },
       started(T2), // text 未到 —— fold commit（数据保全）
     ])
     assertInvariants(s)
@@ -345,7 +346,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // 有产出的 live：PhaseDone + text 都丢 → idle → frozen 定格。
     const sA = run([
       started(T1),
-      { type: 'stream', turnID: T1, seq: null, iteration: null, content: '已产出内容', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      { type: 'stream', turnID: T1, seq: null, iteration: null, content: '已产出内容', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined },
       { type: 'session', busy: false },
     ])
     assertInvariants(sA)
@@ -413,6 +414,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       todos: undefined,
       subAgents: undefined,
       tokenUsage: undefined,
+      streamStats: undefined,
     })
     const s = run([
       started(T1),
@@ -470,7 +472,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // turn 1 经 text_final commit（只存在于状态机 —— messages 未同步）。
     const s0 = run([
       started(T1),
-      { type: 'stream', turnID: T1, seq: null, iteration: null, content: 'turn1 回复', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      { type: 'stream', turnID: T1, seq: null, iteration: null, content: 'turn1 回复', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined },
       textFinal(T1, 'turn1 回复'),
     ])
     expect(s0.turns.get(T1)?.phase.kind).toBe('committed')
@@ -494,7 +496,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // turn_started 建 live → echo 触发的 history_replaced 到达（时序颠倒）。
     const s0 = run([
       started(T1),
-      { type: 'stream', turnID: T1, seq: 5 as never, iteration: null, content: '流式前半', reasoning: undefined, streamingTools: undefined, genui: undefined },
+      { type: 'stream', turnID: T1, seq: 5 as never, iteration: null, content: '流式前半', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined },
     ])
     const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null, todos: [] })
     // 修复后：live turn 存活 + activeTurn 保持 → 后续 stream 继续接收。
@@ -508,7 +510,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       content: '流式后半（打字机继续）',
       reasoning: undefined,
       streamingTools: undefined,
-      genui: undefined,
+      genui: undefined, streamStats: undefined,
     })
     const t = s2.turns.get(T1)
     if (t?.phase.kind === 'live') expect(t.phase.data.content).toBe('流式后半（打字机继续）')
@@ -607,7 +609,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       type: 'iteration', turnID: turn, iter: iterNum(iter), seq: (10 + iter) as never,
       content: undefined, reasoning: undefined, activeTools: [], completedTools: [],
       iterationsDelta: [{ iteration: iter, content, reasoning: '', tools: [], toolCount: 0 }],
-      todos: undefined, subAgents: undefined, tokenUsage: undefined,
+      todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
     })
     const s0 = run([
       started(T1),
@@ -656,7 +658,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // 快照的【旧 todos】（快照可能滞后于实时 progress 事件）。
     // 旧逻辑 ev.todos.length>0 ? ev.todos : s.todos 用旧值覆盖 → todo 列表消失。
     const s0 = run([
-      { type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never, content: undefined, reasoning: undefined, activeTools: [], completedTools: [], iterationsDelta: [], todos: [{ id: 1, text: '新任务', done: false }, { id: 2, text: '任务2', done: false }], subAgents: undefined, tokenUsage: undefined },
+      { type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never, content: undefined, reasoning: undefined, activeTools: [], completedTools: [], iterationsDelta: [], todos: [{ id: 1, text: '新任务', done: false }, { id: 2, text: '任务2', done: false }], subAgents: undefined, tokenUsage: undefined, streamStats: undefined },
     ])
     expect(s0.todos).toHaveLength(2)
     // history_replaced 携带快照旧 todos（只有 1 条，旧值）。
@@ -688,6 +690,7 @@ describe('TDSM reduce — 历史 P0 回归', () => {
           subAgents: [],
           todos: [],
           tokenUsage: null,
+          streamStats: null,
         },
       },
       lastSeq: null, todos: [],
@@ -706,9 +709,69 @@ describe('TDSM reduce — 历史 P0 回归', () => {
       reasoning: undefined,
       streamingTools: undefined,
       genui: undefined,
+      streamStats: undefined,
     })
     const t2 = s2.turns.get(turnID(7))
     if (t2?.phase.kind === 'live') expect(t2.phase.data.content).toBe('恢复后的流式内容')
     else throw new Error('hydrated live turn must accept stream events')
+  })
+
+  it('stream_stats 字段级合并：迭代内 0 值不覆盖，无数据保留前一帧，迭代前进才重置', () => {
+    const T1 = turnID(1)
+    let s = reduce(initialChatState('chat-1'), { type: 'turn_started', turnID: T1, trigger: 'user', content: '', requestID: null })
+    // 帧1：有效 tkps=50，ttft=500
+    s = reduce(s, {
+      type: 'stream', turnID: T1, seq: null, iteration: iterNum(1),
+      content: 'abc', reasoning: undefined, streamingTools: undefined, genui: undefined,
+      streamStats: { ttftMs: 500, tpotMs: 0, tokensPerSec: 50, totalMs: 1000, chunks: 1 },
+    })
+    const t1 = s.turns.get(T1)
+    if (t1?.phase.kind !== 'live') throw new Error('stream must keep live')
+    expect(t1.phase.data.streamStats?.tokensPerSec).toBe(50)
+    expect(t1.phase.data.streamStats?.ttftMs).toBe(500)
+
+    // 帧2：后端滑动窗口无数据 → 全 0（"无数据"而非"速度为0"）→ 保留前一帧有效值
+    s = reduce(s, {
+      type: 'stream', turnID: T1, seq: null, iteration: iterNum(1),
+      content: 'abc', reasoning: undefined, streamingTools: undefined, genui: undefined,
+      streamStats: { ttftMs: 0, tpotMs: 0, tokensPerSec: 0, totalMs: 1500, chunks: 2 },
+    })
+    const t2 = s.turns.get(T1)
+    if (t2?.phase.kind !== 'live') throw new Error('stream must keep live')
+    expect(t2.phase.data.streamStats?.tokensPerSec).toBe(50)
+    expect(t2.phase.data.streamStats?.ttftMs).toBe(500)
+
+    // 帧3：完全无 stream_stats 字段 → 也保留
+    s = reduce(s, {
+      type: 'stream', turnID: T1, seq: null, iteration: iterNum(1),
+      content: 'abcd', reasoning: undefined, streamingTools: undefined, genui: undefined, streamStats: undefined,
+    })
+    const t3 = s.turns.get(T1)
+    if (t3?.phase.kind !== 'live') throw new Error('stream must keep live')
+    expect(t3.phase.data.streamStats?.tokensPerSec).toBe(50)
+
+    // 帧4：新数据出现 → 只更新该字段
+    s = reduce(s, {
+      type: 'stream', turnID: T1, seq: null, iteration: iterNum(1),
+      content: 'abcde', reasoning: undefined, streamingTools: undefined, genui: undefined,
+      streamStats: { ttftMs: 500, tpotMs: 0, tokensPerSec: 120, totalMs: 2500, chunks: 3 },
+    })
+    const t4 = s.turns.get(T1)
+    if (t4?.phase.kind !== 'live') throw new Error('stream must keep live')
+    expect(t4.phase.data.streamStats?.tokensPerSec).toBe(120)
+    expect(t4.phase.data.streamStats?.ttftMs).toBe(500)
+
+    // 帧5：迭代前进 → tokensPerSec 重置为 0（新迭代从零开始），但 ttftMs 保留
+    // （TTFT 是 per-Run 的，迭代间不变 —— 后端闭包 firstChunkAt - requestStartAt 固定）。
+    s = reduce(s, {
+      type: 'stream', turnID: T1, seq: null, iteration: iterNum(2),
+      content: 'x', reasoning: undefined, streamingTools: undefined, genui: undefined,
+      streamStats: { ttftMs: 0, tpotMs: 0, tokensPerSec: 0, totalMs: 0, chunks: 0 },
+    })
+    const t5 = s.turns.get(T1)
+    if (t5?.phase.kind !== 'live') throw new Error('stream must keep live')
+    expect(t5.phase.data.streamStats?.tokensPerSec).toBe(0)
+    // ttftMs 保留前一迭代的值（per-Run 不变）。
+    expect(t5.phase.data.streamStats?.ttftMs).toBe(500)
   })
 })

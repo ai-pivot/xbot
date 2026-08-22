@@ -579,6 +579,77 @@ func (wc *WebChannel) handleMarketInstallFile(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// handlePluginInstallFile handles POST /api/plugin/install-file.
+// Accepts multipart/form-data with a "file" field containing a single-plugin
+// zip (plugin.json at root or wrapped in one directory). The zip is saved to a
+// temp file, passed to plugin_install_file RPC (which extracts + installs), then
+// cleaned up. This mirrors handleMarketInstallFile but for single plugins —
+// no OSS round-trip, no cloud dependency.
+func (wc *WebChannel) handlePluginInstallFile(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	// Plugin install executes arbitrary code (stdio/script runtime) — admin only.
+	// rpcCall below uses RPCIdentity{SenderID:"web_admin"} which bypasses RPC-layer
+	// auth, so the admin check MUST happen here in the handler.
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		writeJSON(w, http.StatusUnauthorized, marketResponse{OK: false, Error: "unauthorized"})
+		return
+	}
+	if !wc.isAdmin(r.Context(), senderID) {
+		writeJSON(w, http.StatusForbidden, marketResponse{OK: false, Error: "admin required"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	tmpFile, err := os.CreateTemp("", "xbot-plugin-*.zip")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	_ = header // filename is informational; extraction derives plugin.json path
+
+	var resp struct {
+		ID  string `json:"id"`
+		Dir string `json:"dir"`
+	}
+	if err := wc.rpcCall("plugin_install_file", map[string]any{
+		"zip_path": tmpPath,
+	}, &resp); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":  true,
+		"id":  resp.ID,
+		"dir": resp.Dir,
+	})
+}
+
 // ---------------------------------------------------------------------------
 
 type llmConfigResponse struct {
@@ -990,7 +1061,7 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 		// list. Keep ?channel=... for compatibility with older clients.
 		if _, ok := r.URL.Query()["channel"]; !ok {
 			if wc.callbacks.SessionTree != nil {
-				result, err := wc.callbacks.SessionTree(senderID, sel, wc.isAdmin(r.Context(), senderID))
+				result, err := wc.callbacks.SessionTree(senderID, sel, wc.isAdmin(r.Context(), senderID), 0, -1)
 				if err != nil {
 					jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 					return
@@ -1162,7 +1233,22 @@ func (wc *WebChannel) handleSessionTree(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": []any{}})
 		return
 	}
-	result, err := wc.callbacks.SessionTree(senderID, wc.GetCurrentSession(senderID), wc.isAdmin(r.Context(), senderID))
+
+	// Parse pagination params (default: no pagination). Limit < 0 means "all".
+	offset := 0
+	limit := -1
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			offset = n
+		}
+	}
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+
+	result, err := wc.callbacks.SessionTree(senderID, wc.GetCurrentSession(senderID), wc.isAdmin(r.Context(), senderID), offset, limit)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1171,6 +1257,8 @@ func (wc *WebChannel) handleSessionTree(w http.ResponseWriter, r *http.Request) 
 		"ok":               true,
 		"sessions":         result.Sessions,
 		"orphan_subagents": result.OrphanSubAgents,
+		"has_more":         result.HasMore,
+		"next_offset":      result.NextOffset,
 	})
 }
 

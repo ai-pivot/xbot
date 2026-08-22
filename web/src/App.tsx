@@ -14,10 +14,15 @@ import { WSProvider } from '@/providers/WSProvider'
 import { CwdProvider } from '@/providers/CwdProvider'
 import { SessionStoreProvider } from '@/hooks/useSessionStore'
 import { PluginWidgetProvider } from '@/plugins/PluginWidgetProvider'
+import { PluginRuntimeRoot } from '@/plugin-runtime/usePluginRuntimeHost'
 import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
+import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
+
+// Register built-in layout items once at app startup (session/view buttons etc).
+registerBuiltinLayoutItems()
 
 export default function App() {
   return (
@@ -34,7 +39,9 @@ export default function App() {
                   <SessionStoreProvider>
                     <CwdProvider>
                       <PluginWidgetProvider>
-                        <AppShell />
+                        <PluginRuntimeRoot>
+                          <AppShell />
+                        </PluginRuntimeRoot>
                       </PluginWidgetProvider>
                     </CwdProvider>
                   </SessionStoreProvider>

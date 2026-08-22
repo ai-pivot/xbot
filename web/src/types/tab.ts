@@ -37,6 +37,10 @@ export interface PanelParams {
   taskChannel?: string
   /** Session chatID for background task RPCs. */
   taskChatID?: string
+  /** Plugin view id（container='main' 的插件主视图 tab）。 */
+  viewId?: string
+  /** Plugin id（配合 viewId 定位插件视图）。 */
+  pluginId?: string
   /** True when this dockview panel is the active panel. */
   active?: boolean
 }

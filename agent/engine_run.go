@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xbot/agent/hooks"
@@ -77,6 +78,10 @@ type runState struct {
 	localInputTokens  int
 	localOutputTokens int
 	localCachedTokens int
+	// lastSnapshotCompletionTokens is the cumulative completion-token count at
+	// the most recent iteration snapshot. The delta between the current tracker
+	// value and this gives the per-iteration token count.
+	lastSnapshotCompletionTokens int64
 
 	// Progress
 	progressLines      []string
@@ -86,6 +91,23 @@ type runState struct {
 	iterationSnapshots []IterationSnapshot
 	progressFinalizer  func()
 	compressWarning    string
+
+	// Iteration-loop detection: records the content+tool_calls "signature" of
+	// the previous iteration. When two consecutive iterations produce the
+	// exact same content + tool_calls (and the previous one had no tool error),
+	// the agent is stuck in a loop — we inject a synthetic tool result to warn
+	// it, breaking the cycle. See detectIterationLoop.
+	lastIterSignature string // "" = no previous iteration (first iter)
+	lastIterHadError  bool   // whether the previous iteration's tool execution had an error
+
+	// runDone is set when Run() returns. Background-subagent progress callbacks
+	// outlive the Run (their runCtx derives from the agent lifecycle) — after
+	// the Run ends, structuredProgress.Iteration is frozen at its final value,
+	// so the stale-iteration check (Iteration != entry.iteration) is FALSE
+	// forever for subagents spawned by the LAST iteration, and the callback
+	// would keep broadcasting into the main session's progress stream
+	// ("泄漏到最新 iter"). The runDone check closes that hole.
+	runDone atomic.Bool
 }
 
 // newRunState creates and initializes a runState from the given RunConfig.
@@ -233,8 +255,8 @@ func (s *runState) initDynamicInjector() {
 
 // cleanupTodos clears completed TODOs. Called via defer from Run().
 func (s *runState) cleanupTodos() {
-	if s.cfg.TodoManager != nil && s.sessionKey != "" {
-		items := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
+	if s.cfg.TodoManager != nil && s.todoKey() != "" {
+		items := s.cfg.TodoManager.GetTodoItems(s.todoKey())
 		if len(items) > 0 {
 			allDone := true
 			for _, item := range items {
@@ -244,7 +266,7 @@ func (s *runState) cleanupTodos() {
 				}
 			}
 			if allDone {
-				s.cfg.TodoManager.ClearTodos(s.sessionKey)
+				s.cfg.TodoManager.ClearTodos(s.todoKey())
 			}
 		}
 		// Always refresh structuredProgress.Todos after cleanup so any event
@@ -256,15 +278,35 @@ func (s *runState) cleanupTodos() {
 	}
 }
 
+// todoKey returns the TodoManager key for this run's session.
+//
+// 主 Agent：RootSessionKey（canonical = origin channel:chatID）。todos 是会话级
+// 状态，必须用 canonical key 让所有读写路径一致 —— 写路径（TodoWrite、
+// refreshStructuredTodos、cleanupTodos）与恢复路径（GetActiveProgress 读
+// ch:chatID）对齐。不能用 sessionKey：web 用户浏览 CLI 会话时 physicalChannel
+// override 会把它改成 "web:chatID"，而恢复路径读 "cli:chatID" → turn 结束后
+// 后打开的客户端读不到 todos（"手机端实时显示、电脑端后打开不显示"的根因）。
+//
+// SubAgent（AgentID 含 "/"）：用 sessionKey（subAgentID）隔离，与主 Agent 分开。
+func (s *runState) todoKey() string {
+	if strings.Contains(s.cfg.AgentID, "/") {
+		return s.sessionKey
+	}
+	if s.cfg.RootSessionKey != "" {
+		return s.cfg.RootSessionKey
+	}
+	return s.sessionKey
+}
+
 // refreshStructuredTodos unconditionally copies the TodoManager's current
 // items into structuredProgress.Todos — including an EMPTY slice when the
 // list was cleared. This makes "no todos" an explicit, pushable state:
 // the frontend treats `todos: []` as "cleared" (not "no data → keep old").
 func (s *runState) refreshStructuredTodos() {
-	if s.structuredProgress == nil || s.cfg.TodoManager == nil || s.sessionKey == "" {
+	if s.structuredProgress == nil || s.cfg.TodoManager == nil || s.todoKey() == "" {
 		return
 	}
-	items := s.cfg.TodoManager.GetTodoItems(s.sessionKey)
+	items := s.cfg.TodoManager.GetTodoItems(s.todoKey())
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
@@ -452,6 +494,16 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.Content = ""
 		s.structuredProgress.ReasoningContent = ""
 		s.structuredProgress.SubAgents = nil
+	}
+	// Reset live stream timing baseline at each iteration boundary: TTFT must
+	// reflect THIS LLM CALL's first-token latency, not the whole Run's.
+	// buildStreamCallbacks is created once per Run (its requestStartAt/firstChunkAt
+	// are Run-wide); without a per-iteration reset, live frames keep reporting
+	// the Run-wide TTFT while committed iterations report their own
+	// response.StreamStats.TTFTMs — the same iteration showed different ttft
+	// values between its live phase and its committed row ("迭代内 ttft 变化").
+	if s.cfg.ResetStreamTiming != nil {
+		s.cfg.ResetStreamTiming()
 	}
 	// Clear subAgentNodes at iteration boundary. SubAgents are one-shot tools
 	// that complete synchronously within execOneTool — by the time the next
@@ -1020,6 +1072,74 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		TurnID:           s.cfg.TurnID,
 	}
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
+
+	// Iteration-loop detection: if this iteration's content + tool_calls are
+	// byte-for-byte identical to the previous iteration AND the previous
+	// iteration had no tool errors, the agent is stuck repeating itself. Inject
+	// a synthetic tool result warning so the LLM sees explicit feedback and
+	// breaks the cycle instead of looping until maxIter.
+	s.detectIterationLoop(ctx, response)
+}
+
+// detectIterationLoop compares the current iteration's content + tool_calls
+// against the previous iteration. If they are byte-for-byte identical and the
+// previous iteration had no tool execution error, injects a synthetic tool
+// result into s.messages to warn the agent.
+func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMResponse) {
+	// Build a signature: content + each tool call (name + arguments).
+	sig := loopSignature(response.Content, response.ToolCalls)
+
+	// Only trigger when: previous iteration exists, signature matches exactly,
+	// and the previous iteration did NOT end with a tool error (an error is a
+	// legitimate reason for the model to retry the same call).
+	if s.lastIterSignature != "" && sig == s.lastIterSignature && !s.lastIterHadError {
+		iterNum := 0
+		if s.structuredProgress != nil {
+			iterNum = s.structuredProgress.Iteration
+		}
+		log.Ctx(ctx).WithFields(log.Fields{
+			"chat_id":    s.cfg.ChatID,
+			"turn_id":    s.cfg.TurnID,
+			"iteration":  iterNum,
+			"tool_count": len(response.ToolCalls),
+		}).Warn("ITERATION_LOOP_DETECTED: consecutive iterations produced identical content + tool_calls, injecting loop-breaker warning")
+
+		// Inject a synthetic USER message so the LLM sees explicit feedback.
+		// NOTE: must NOT use a tool message with a fake tool_call_id —
+		// SanitizeMessages strips orphaned tool messages (tool_call_id not
+		// matching any assistant tool_call), so the warning would never reach
+		// the LLM. A user message is never stripped.
+		warning := "⚠️ LOOP DETECTED: You are repeating the exact same action as the previous iteration " +
+			"(identical content and tool calls). This will loop forever. " +
+			"If the previous tool call succeeded, the task is already done — stop calling the same tool. " +
+			"If it failed, try a DIFFERENT approach. Do not repeat the same call."
+		s.messages = s.syncMessages(append(s.messages, llm.ChatMessage{
+			Role:    "user",
+			Content: warning,
+			TurnID:  s.cfg.TurnID,
+		}))
+	}
+
+	// Update state for the next iteration. Reset error flag; it will be set
+	// by executeToolCalls / handleLLMError if this iteration's tools error.
+	s.lastIterSignature = sig
+	s.lastIterHadError = false
+}
+
+// loopSignature produces a deterministic signature of an iteration's output:
+// the assistant content + each tool call's name and arguments. Two iterations
+// with the same signature are "doing the exact same thing".
+func loopSignature(content string, toolCalls []llm.ToolCall) string {
+	var b strings.Builder
+	b.WriteString(content)
+	b.WriteByte(0x1F) // unit separator
+	for _, tc := range toolCalls {
+		b.WriteString(tc.Name)
+		b.WriteByte(0x1E) // record separator
+		b.WriteString(tc.Arguments)
+		b.WriteByte(0x1E)
+	}
+	return b.String()
 }
 
 // stripRenameHints removes the auto-naming rename hint from all user messages.
@@ -1525,6 +1645,13 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 		r := execResults[idx]
 		content := r.llmContent
 
+		// Track whether any tool errored — iteration-loop detection skips the
+		// warning when the previous iteration had a tool error (the model may
+		// legitimately retry the same call after a transient failure).
+		if r.err != nil {
+			s.lastIterHadError = true
+		}
+
 		// Layer 1 Offload
 		skipOffload := tc.Name == "offload_recall"
 		if tc.Name == "Read" && readArgsHasOffsetOrLimit(tc.Arguments) {
@@ -1631,8 +1758,8 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		}
 
 		var todoSummary string
-		if s.cfg.TodoManager != nil && s.sessionKey != "" {
-			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.sessionKey)
+		if s.cfg.TodoManager != nil && s.todoKey() != "" {
+			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.todoKey())
 		}
 
 		// Get current CWD for system reminder

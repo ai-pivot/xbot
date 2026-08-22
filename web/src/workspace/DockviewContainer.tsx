@@ -57,6 +57,8 @@ import { WSContext } from '@/providers/WSProvider'
 import { CwdContext } from '@/providers/CwdProvider'
 import { AuthContext } from '@/providers/AuthProvider'
 import { SessionStoreContext } from '@/hooks/useSessionStore'
+import { useOptionalPluginRuntime, PluginRuntimeContext } from '@/plugin-runtime'
+import { PluginView } from '@/plugin-runtime/PluginView'
 import { RightSidebarControlContext, useRightSidebarControl } from '@/components/sidebar/RightSidebarControl'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
@@ -92,6 +94,11 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
   const authValue = useAuth()
   const sessionStoreValue = useSessionStore()
   const rightSidebarValue = useRightSidebarControl()
+  // PluginRuntime for the isolated dockview roots — without this the
+  // iteration UI injection point (IterationSlot → usePluginRuntime) returns
+  // null inside panels, so plugin views (e.g. iteration-stats) only rendered
+  // on mobile (which stays inside the PluginRuntimeProvider tree).
+  const pluginRuntimeValue = useOptionalPluginRuntime()
 
   // Single aggregated value — new reference when any sub-value changes.
   const ctxValue = useMemo<DockviewContextValue>(
@@ -103,9 +110,10 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
       auth: authValue,
       sessionStore: sessionStoreValue,
       rightSidebar: rightSidebarValue ?? { openPanel: () => undefined },
+      pluginRuntime: pluginRuntimeValue,
       openTab: tabManager.openTab,
     }),
-    [themeValue, i18nValue, wsValue, cwdValue, authValue, sessionStoreValue, rightSidebarValue, tabManager.openTab],
+    [themeValue, i18nValue, wsValue, cwdValue, authValue, sessionStoreValue, rightSidebarValue, pluginRuntimeValue, tabManager.openTab],
   )
 
   // Keep ctxRef in sync so isolated panel roots read the latest values.
@@ -194,7 +202,9 @@ export function withDockviewProviders(node: ReactElement, ctx: DockviewContextVa
             createElement(AuthContext.Provider, { value: ctx.auth },
               createElement(SessionStoreContext.Provider, { value: ctx.sessionStore },
                 createElement(RightSidebarControlContext.Provider, { value: ctx.rightSidebar },
-                  createElement(TooltipProvider, { delayDuration: 200, children: node }),
+                  createElement(PluginRuntimeContext.Provider, { value: ctx.pluginRuntime },
+                    createElement(TooltipProvider, { delayDuration: 200, children: node }),
+                  ),
                 ),
               ),
             ),
@@ -237,7 +247,12 @@ export class ReactContentRenderer implements IContentRenderer {
   private render(): void {
     if (!this.root || !this.params) return
     const Component = CONTENT_COMPONENTS[this.name as keyof typeof CONTENT_COMPONENTS]
-    if (!Component) return
+    if (!Component) {
+      // 插件 view（container='main'）：component name 就是 view.id，查不到内置
+      // panel 时回退到插件 view —— 插件即可在主编辑区全宽渲染（editor tab）。
+      this.renderPluginView()
+      return
+    }
     this.root.render(
       withDockviewProviders(
         <Suspense fallback={<div className="flex h-full items-center justify-center text-sm text-text-muted">Loading…</div>}>
@@ -247,6 +262,20 @@ export class ReactContentRenderer implements IContentRenderer {
             containerApi={this.params.containerApi}
           />
         </Suspense>,
+        this.ctxRef.current,
+      ),
+    )
+  }
+
+  /** 渲染 container='main' 的插件 view（component name === view.id）。 */
+  private renderPluginView(): void {
+    const runtime = this.ctxRef.current.pluginRuntime
+    if (!runtime || !this.root) return
+    const entry = runtime.listAllViews().find(({ view }) => view.id === this.name)
+    if (!entry) return
+    this.root.render(
+      withDockviewProviders(
+        <PluginView pluginId={entry.pluginId} view={entry.view} />,
         this.ctxRef.current,
       ),
     )

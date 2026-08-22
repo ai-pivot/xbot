@@ -443,6 +443,13 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
   return data
 }
 
+/** Install a single-plugin zip via multipart upload (no OSS round-trip). */
+export async function installPluginFile(file: File): Promise<{ id: string; dir: string }> {
+  const form = new FormData()
+  form.append('file', file)
+  return postAPI<{ id: string; dir: string }>('/api/plugin/install-file', form)
+}
+
 interface SessionStatusResponse<CronTask, BackgroundTask> {
   tasks?: CronTask[]
   background_tasks?: BackgroundTask[]

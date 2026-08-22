@@ -384,6 +384,8 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if reg := ag.WebUIRegistry(); reg != nil {
 					webCh.SetWebUIRegistry(reg)
 				}
+				// Serve plugin web ESM modules at /plugins/<id>/web/*.
+				webCh.SetPluginDirs(plugin.DefaultPluginDirs(config.XbotHome()))
 			}
 		} else {
 			log.Warn("Web channel enabled but no database available, skipping")
@@ -1322,6 +1324,11 @@ func saveServerConfig(cfg *config.Config) error {
 	if cfg.Agent.EnableAutoCompress != nil {
 		merged.Agent.EnableAutoCompress = cfg.Agent.EnableAutoCompress
 	}
+
+	// Plugin enable/disable is server-owned runtime state (plugin_set_enabled RPC).
+	// Persist the disabled list so it survives restart; the set of disabled IDs is
+	// authoritative from PluginManager, not from any user-edited config field.
+	merged.Plugins.DisabledPlugins = cfg.Plugins.DisabledPlugins
 
 	// LLM credentials (Provider, BaseURL, APIKey, Model, MaxOutputTokens, ThinkingMode)
 	// are NOT written back to config.json. The DB system subscription (reconciled

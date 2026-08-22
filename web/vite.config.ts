@@ -6,11 +6,17 @@ import { VitePWA } from 'vite-plugin-pwa'
 import path from 'node:path'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [
+export default defineConfig(({ mode }) => {
+  // dev 构建（--mode development）禁用 PWA：SW 会缓存 debug 产物导致
+  // 拿旧代码，且未压缩的 ts.worker 超 workbox 大小限制。debug 场景下
+  // 前端应走网络，SW 反而干扰。
+  const isDev = mode === 'development'
+  const plugins = [
     react(),
     tailwindcss(),
-    VitePWA({
+  ]
+  if (!isDev) {
+    plugins.push(VitePWA({
       registerType: 'autoUpdate',
       injectRegister: false,
       // SW 文件名带版本：sw.js 曾被 server 无 Cache-Control地下发，浏览器
@@ -98,13 +104,16 @@ export default defineConfig({
       devOptions: {
         enabled: false,
       },
-    }),
-  ],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
+    }))
+  }
+
+  return {
+    plugins,
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
+      },
     },
-  },
   test: {
     environment: 'jsdom',
     globals: true,
@@ -156,4 +165,5 @@ export default defineConfig({
       },
     },
   },
+  }
 })

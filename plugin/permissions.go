@@ -43,6 +43,10 @@ const (
 	PermUIOverlay = "ui.overlay"
 	// PermNotificationsSend grants permission to send notifications and play sounds.
 	PermNotificationsSend = "notifications.send"
+	// PermRPC grants permission for the frontend view to call the plugin's
+	// backend process via ctx.rpc.call('pluginId.method') (web_plugin_rpc).
+	// Matches the frontend Permission 'rpc' (web/src/plugin-api/manifest.ts).
+	PermRPC = "rpc"
 )
 
 // allPermissions is the set of all recognized permission strings.
@@ -64,6 +68,7 @@ var allPermissions = map[string]bool{
 	PermUIThemes:          true,
 	PermUIOverlay:         true,
 	PermNotificationsSend: true,
+	PermRPC:               true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.

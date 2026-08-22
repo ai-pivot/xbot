@@ -149,10 +149,17 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 		p.widgetReg = impl.getWidgetRegistry()
 	}
 
+	// Contributes may be nil for plugins that only declare web modules
+	// (no backend hooks/widgets/commands). Guard against nil to avoid panic.
+	contributes := p.manifest.Contributes
+	if contributes == nil {
+		contributes = &PluginContributes{}
+	}
+
 	// Register UI widgets declared in the manifest — each widget gets its own
 	// widgetAdapter so Render/RenderForWorkDir knows which widgetID to pass
 	// to runScript via XBOT_WIDGET_ID.
-	for _, ui := range p.manifest.Contributes.UI {
+	for _, ui := range contributes.UI {
 		adapter := &widgetAdapter{plugin: p, widgetID: ui.ID}
 		if err := ctx.ContributeUI(ui.ID, ui.Slot, adapter, ui.Priority); err != nil {
 			return fmt.Errorf("contribute widget %q: %w", ui.ID, err)
@@ -165,7 +172,7 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 
 	// Start periodic refresh loop — use the shortest interval across all widgets
 	interval := 30 * time.Second // default
-	for _, ui := range p.manifest.Contributes.UI {
+	for _, ui := range contributes.UI {
 		if ui.RefreshInterval != "" {
 			if d, err := time.ParseDuration(ui.RefreshInterval); err == nil && d > 0 {
 				if d < interval {
@@ -181,7 +188,7 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 
 	// Subscribe to hook triggers declared in ui contributions
 	// Format: "PostToolUse:Shell*" → hook fires → script runs instantly
-	for _, ui := range p.manifest.Contributes.UI {
+	for _, ui := range contributes.UI {
 		for _, trigger := range ui.Triggers {
 			if err := p.subscribeTrigger(ctx, trigger); err != nil {
 				// Config detail — route to plugin log only, not main log.
@@ -193,7 +200,7 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 	// Register commands declared in the manifest.
 	// Each command invokes the script with XBOT_COMMAND_NAME and XBOT_COMMAND_ARGS
 	// environment variables. The script's stdout becomes the command response.
-	for _, cmd := range p.manifest.Contributes.Commands {
+	for _, cmd := range contributes.Commands {
 		cmdName := cmd.Name
 		cmdDesc := cmd.Description
 		pluginPtr := p // capture for closure
@@ -208,7 +215,7 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 	// Subscribe to lifecycle hooks declared in the manifest.
 	// Format: {"event": "PostToolUse", "matcher": ""} → hook fires → script runs
 	// The script receives hook data via XBOT_TOOL_NAME, XBOT_TOOL_INPUT, etc.
-	for _, h := range p.manifest.Contributes.Hooks {
+	for _, h := range contributes.Hooks {
 		hookEvent := HookEvent(h.Event)
 		matcher := h.Matcher
 		pluginPtr := p // capture for closure

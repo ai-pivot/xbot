@@ -32,6 +32,11 @@ const (
 	coreSummaryFileName = "MEMORY.md"
 	// coreSummaryMaxChars limits the core summary size.
 	coreSummaryMaxChars = 2000
+	// recallMaxRunes is the hard cap on TOTAL injected memory content per
+	// Recall call (core summary + short-term + long-term). Without it, a
+	// growing MEMORY.md + many memories can inject several thousand runes of
+	// mostly-unrelated context every turn, diluting attention.
+	recallMaxRunes = 3000
 	// defaultRecallTopK is the default number of memories to retrieve.
 	defaultRecallTopK = 5
 	// defaultShortTermCapacity is the max number of short-term memories kept.
@@ -403,8 +408,13 @@ func (m *XbotMemory) backfillSearchText() {
 
 // Recall retrieves relevant memories for the current conversation.
 // Uses BM25 keyword search (SQLite FTS5) — zero LLM calls.
+// Total injected content is capped at recallMaxRunes; short-term memories
+// (other sessions' summaries) are injected ONLY when a query is present —
+// with an empty query they are unrelated to the current session and only
+// dilute attention.
 func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	var sb strings.Builder
+	var err error
 	sb.WriteString("# Memory\n\n")
 
 	// 1. Core summary (MEMORY.md, ≤2000 chars)
@@ -415,21 +425,28 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 		sb.WriteString("\n\n")
 	}
 
-	// 2. Short-term memories (BM25 + heat)
-	shortTermMems, err := m.searchShortTerm(query, 3)
-	if err != nil {
-		log.WithError(err).Debug("xbot-memory: short-term search failed")
-	}
-	if len(shortTermMems) > 0 {
-		sb.WriteString("## Recent Sessions\n")
-		for _, mem := range shortTermMems {
-			fmt.Fprintf(&sb, "- %s\n", mem.Summary)
+	// 2. Short-term memories (BM25 + heat) — ONLY when query is non-empty.
+	//    recentShortTerm() returns the most recent session summaries, which
+	//    are OTHER sessions' context unrelated to the current one — omit them
+	//    when there's no query to anchor relevance.
+	var shortTermMems []ShortTermMemory
+	if query != "" {
+		shortTermMems, err = m.searchShortTerm(query, 3)
+		if err != nil {
+			log.WithError(err).Debug("xbot-memory: short-term search failed")
 		}
-		sb.WriteString("\n")
+		if len(shortTermMems) > 0 {
+			sb.WriteString("## Recent Sessions\n")
+			for _, mem := range shortTermMems {
+				fmt.Fprintf(&sb, "- %s\n", mem.Summary)
+			}
+			sb.WriteString("\n")
+		}
 	}
 
 	// 3. Long-term memories (BM25)
-	longTermMems, err := m.searchLongTerm(query, defaultRecallTopK)
+	var longTermMems []LongTermMemory
+	longTermMems, err = m.searchLongTerm(query, defaultRecallTopK)
 	if err != nil {
 		log.WithError(err).Debug("xbot-memory: long-term search failed")
 	}
@@ -444,9 +461,17 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	// 4. Tool hint
 	sb.WriteString("Use `memory_search` to find more memories, `memory_add` to save new ones.\n")
 
+	// Enforce a hard cap on total injected runes (attention budget). The core
+	// summary and most relevant memories stay; the tail is cut with a marker.
+	injected := sb.String()
+	if n := len([]rune(injected)); n > recallMaxRunes {
+		runes := []rune(injected)
+		injected = string(runes[:recallMaxRunes]) + "\n...(memory truncated to budget)"
+	}
+
 	// Injectable content length (excluding the static header + tool hint) so
 	// operators can confirm memory injection actually fired per turn.
-	injectedRunes := len([]rune(sb.String()))
+	injectedRunes := len([]rune(injected))
 	if injectedRunes > 0 {
 		log.WithFields(log.Fields{
 			"query":          truncateForLog(query, 120),
@@ -457,7 +482,7 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 		}).Info("xbot-memory: Recall injected memories into prompt")
 	}
 
-	return sb.String(), nil
+	return injected, nil
 }
 
 // truncateForLog truncates a string for log output, adding an ellipsis.

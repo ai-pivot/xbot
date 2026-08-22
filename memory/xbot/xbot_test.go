@@ -144,3 +144,86 @@ func TestTruncateRunes(t *testing.T) {
 		t.Error("max 0 should return empty")
 	}
 }
+
+// newTestMemory builds an XbotMemory on an in-memory SQLite DB.
+func newTestMemory(t *testing.T) (*XbotMemory, *sql.DB) {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(42, 7, t.TempDir(), db)
+	t.Cleanup(func() { db.Close() })
+	return m, db
+}
+
+func seedTestMemory(t *testing.T, m *XbotMemory) {
+	t.Helper()
+	// Long-term memory with an identifiable content string.
+	if _, err := m.AddMemory(t.Context(), LongTermMemory{
+		Type:     "fact",
+		Content:  "用户使用 GLM 模型部署在 B300 集群",
+		Keywords: "GLM 模型 部署",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Short-term (session summary) — must NOT be injected when query is empty.
+	if err := m.addShortTermMemory("另一个无关会话的总结：frpc 端口转发配置", "frpc 转发", "sess-other"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRecallEmptyQuerySkipsShortTerm: query 为空时不得注入其他 session 的
+// short-term 摘要（recentShortTerm 是无锚点的"别的会话上下文"）。
+func TestRecallEmptyQuerySkipsShortTerm(t *testing.T) {
+	m, _ := newTestMemory(t)
+	seedTestMemory(t, m)
+
+	out, err := m.Recall(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "## Recent Sessions") {
+		t.Errorf("empty query must NOT inject other-session short-term summaries\n%q", out)
+	}
+	if !strings.Contains(out, "## Long-term Memories") {
+		t.Errorf("empty query should still inject relevant long-term memories\n%q", out)
+	}
+}
+
+// TestRecallWithQueryInjectsShortTerm: 有 query 时 short-term 可注入（BM25 相关）。
+func TestRecallWithQueryInjectsShortTerm(t *testing.T) {
+	m, _ := newTestMemory(t)
+	seedTestMemory(t, m)
+
+	out, err := m.Recall(t.Context(), "frpc 转发")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "## Recent Sessions") {
+		t.Errorf("query-anchored short-term should be injected\n%q", out)
+	}
+}
+
+// TestRecallCapsTotalRunes: 总量超 recallMaxRunes 时必须截断（注意力预算）。
+func TestRecallCapsTotalRunes(t *testing.T) {
+	m, _ := newTestMemory(t)
+	// 大量长记忆塞满注入内容（远超 recallMaxRunes=3000）。
+	long := strings.Repeat("这是一个非常长的记忆内容用于测试注意力预算截断，反复出现以撑爆注入预算。", 100)
+	if _, err := m.AddMemory(t.Context(), LongTermMemory{
+		Type:    "fact",
+		Content: long,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := m.Recall(t.Context(), "注意力预算")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len([]rune(out)); n > recallMaxRunes+100 {
+		t.Errorf("injected runes = %d, want <= %d (hard cap)", n, recallMaxRunes)
+	}
+	if !strings.Contains(out, "memory truncated to budget") {
+		t.Errorf("over-budget recall should carry the truncation marker\nfirst 200: %q", out[:min(200, len(out))])
+	}
+}

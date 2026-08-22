@@ -114,6 +114,21 @@ type WebUIActionResult struct {
 // DeactivateParams is the params object for the "deactivate" method (empty).
 type DeactivateParams struct{}
 
+// WebPluginRPCParams is the params object for the "web_plugin_rpc" method.
+// Carries an arbitrary method name + JSON payload routed from a frontend plugin
+// view via ctx.rpc.call('<pluginId>.<method>', params).
+type WebPluginRPCParams struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// WebPluginRPCResult is the result of handling a web_plugin_rpc call.
+// Result is an opaque JSON string returned to the frontend view.
+type WebPluginRPCResult struct {
+	Result string `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Typed result structs (returned from handler methods)
 // ---------------------------------------------------------------------------
@@ -205,6 +220,11 @@ type Handler struct {
 
 	// Deactivate is called before the process is killed.
 	Deactivate func()
+
+	// WebPluginRPC is called when a frontend plugin view invokes
+	// ctx.rpc.call('<pluginId>.<method>', params). Params carry the method
+	// name and arbitrary JSON payload; the result is returned to the view.
+	WebPluginRPC func(params *WebPluginRPCParams) (*WebPluginRPCResult, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +258,13 @@ func run(h *Handler, stdin io.Reader, stdout io.Writer) {
 		}
 
 		dispatch(h, enc, req.Method, req.Params)
+
+		// Graceful unload: after handling "deactivate" the process must exit on
+		// its own. xbot waits a short grace period, then kills only if we are
+		// still alive (see StdioPluginProcess.stopLocked).
+		if req.Method == "deactivate" {
+			return
+		}
 	}
 }
 
@@ -324,6 +351,22 @@ func dispatch(h *Handler, enc *json.Encoder, method string, params json.RawMessa
 			json.Unmarshal(params, &p)
 		}
 		resp, err := h.WebUIAction(&p)
+		if err != nil {
+			writeErr(enc, err.Error())
+			return
+		}
+		writeMsg(enc, resp)
+
+	case "web_plugin_rpc":
+		if h.WebPluginRPC == nil {
+			writeErr(enc, "web_plugin_rpc not implemented")
+			return
+		}
+		var p WebPluginRPCParams
+		if params != nil {
+			json.Unmarshal(params, &p)
+		}
+		resp, err := h.WebPluginRPC(&p)
 		if err != nil {
 			writeErr(enc, err.Error())
 			return

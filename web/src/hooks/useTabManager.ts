@@ -59,7 +59,9 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
                   taskChannel: params.taskChannel,
                   taskChatID: params.taskChatID,
                 }
-            : undefined,
+              : params.type === 'plugin'
+                ? { viewId: params.viewId, pluginId: params.pluginId }
+                : undefined,
   }
 }
 
@@ -78,6 +80,12 @@ export interface TabManager {
   resetWorkGroup: () => void
   /** Register the DockviewApi (called by DockviewContainer on ready). */
   bindApi: (api: DockviewApi | null) => void
+  /** Serialize the full dockview layout (grid groups, panel positions, multi-instance). */
+  getLayoutJSON: () => unknown
+  /** Restore a dockview layout (grid + panels, including plugin views). */
+  applyLayoutJSON: (layout: unknown) => void
+  /** Serialize work-tab dockview layout, filtering the常驻 agent panel (agent 由 sessionStore 驱动，不随布局持久化)。 */
+  getWorkLayoutJSON: () => unknown
 }
 
 export function useTabManager(): TabManager {
@@ -178,6 +186,8 @@ export function useTabManager(): TabManager {
       command: input.type === 'background' ? input.data?.command : undefined,
       taskChannel: input.type === 'background' ? input.data?.taskChannel : undefined,
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
+      viewId: input.type === 'plugin' ? input.data?.viewId : undefined,
+      pluginId: input.type === 'plugin' ? input.data?.pluginId : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'
@@ -243,6 +253,17 @@ export function useTabManager(): TabManager {
     rightGroupPanelIdRef.current = null
   }, [])
 
+  const getLayoutJSON = useCallback(() => apiRef.current?.toJSON() ?? null, [])
+  const applyLayoutJSON = useCallback((layout: unknown) => {
+    apiRef.current?.fromJSON(layout as never)
+    resync()
+  }, [resync])
+  const getWorkLayoutJSON = useCallback(() => {
+    const layout = apiRef.current?.toJSON()
+    if (!layout) return null
+    return filterAgentPanels(layout)
+  }, [])
+
   // When unmounting, drop the dockview disposers we attached on bindApi.
   useEffect(() => {
     return () => {
@@ -263,8 +284,11 @@ export function useTabManager(): TabManager {
       splitRight,
       resetWorkGroup,
       bindApi,
+      getLayoutJSON,
+      applyLayoutJSON,
+      getWorkLayoutJSON,
     }),
-    [tabs, activeTabId, openTab, closeTab, setActiveTab, splitRight, resetWorkGroup, bindApi],
+    [tabs, activeTabId, openTab, closeTab, setActiveTab, splitRight, resetWorkGroup, bindApi, getLayoutJSON, applyLayoutJSON, getWorkLayoutJSON],
   )
 }
 
@@ -281,6 +305,7 @@ export function tabLogicalKey(input: Pick<Tab, 'type' | 'data'>): string {
   // gets its own tab (multi-terminal). A missing terminalId → no dedup.
   if (input.type === 'terminal' && input.data?.terminalId) return `terminal:${input.data.terminalId}`
   if (input.type === 'background' && input.data?.taskID) return `background:${input.data.taskID}`
+  if (input.type === 'plugin' && input.data?.viewId) return `plugin:${input.data.viewId}`
   return ''
 }
 
@@ -294,5 +319,69 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
   if (p.type === 'agent') return p.sessionId ? `agent:${p.sessionId}` : ''
   if (p.type === 'terminal') return p.terminalId ? `terminal:${p.terminalId}` : ''
   if (p.type === 'background') return p.taskID ? `background:${p.taskID}` : ''
+  if (p.type === 'plugin') return p.viewId ? `plugin:${p.viewId}` : ''
   return ''
+}
+
+/**
+ * 从 dockview 完整布局（api.toJSON()）中按 predicate 过滤 panel（递归处理
+ * grid 树：leaf group 的 views 移除、空 group 折叠、branch 空子移除、单子提升）。
+ * predicate 判断一个 panel 的 params（GroupviewPanelState.params）是否应过滤。
+ *
+ * 结构（dockview SerializedDockview）：
+ *   { grid: { root: SerializedGridObject<GroupPanelViewState> }, panels: Record<string, GroupviewPanelState> }
+ *   SerializedGridObject = { type:'leaf'|'branch', data: GroupPanelViewState | SerializedGridObject[] }
+ *   GroupPanelViewState = { views: string[]（panel id 列表）, activeView?, id }
+ *   GroupviewPanelState = { params: { ...PanelParams }, contentComponent, ... }
+ */
+export function filterPanels(layout: unknown, shouldPrune: (params: { type?: string; closable?: boolean }) => boolean): unknown {
+  if (!layout || typeof layout !== 'object') return layout
+  const l = layout as {
+    grid?: { root?: unknown }
+    panels?: Record<string, unknown>
+    [k: string]: unknown
+  }
+  const prunedIds = new Set<string>()
+  for (const [id, p] of Object.entries(l.panels ?? {})) {
+    const params = (p as { params?: { type?: string; closable?: boolean } })?.params
+    if (params && shouldPrune(params)) prunedIds.add(id)
+  }
+  if (prunedIds.size === 0) return layout
+
+  const panels: Record<string, unknown> = {}
+  for (const [id, p] of Object.entries(l.panels ?? {})) {
+    if (!prunedIds.has(id)) panels[id] = p
+  }
+
+  const prune = (node: unknown): unknown | null => {
+    if (!node || typeof node !== 'object') return null
+    const n = node as { type?: string; data?: unknown }
+    if (n.type === 'leaf') {
+      const g = (n.data ?? {}) as { views?: string[]; activeView?: string }
+      const views = (g.views ?? []).filter((id) => !prunedIds.has(id))
+      if (views.length === 0) return null
+      const activeView = g.activeView && views.includes(g.activeView) ? g.activeView : views[0]
+      return { ...n, data: { ...g, views, activeView } }
+    }
+    // branch
+    const children = (Array.isArray(n.data) ? n.data : []).map(prune).filter((x): x is unknown => x !== null)
+    if (children.length === 0) return null
+    if (children.length === 1) return children[0] // collapse single-child branch
+    return { ...n, data: children }
+  }
+
+  const root = prune(l.grid?.root)
+  return { ...l, panels, grid: { ...l.grid, root } }
+}
+
+/**
+ * 过滤常驻 agent panel（closable=false 的主 agent tab，由 sessionStore 驱动）。
+ */
+export function filterAgentPanels(layout: unknown): unknown {
+  return filterPanels(layout, (params) => params.closable === false)
+}
+
+/** 过滤 terminal panel（后端 PTY API 禁用时跳过 terminal tab）。 */
+export function filterTerminalPanels(layout: unknown): unknown {
+  return filterPanels(layout, (params) => params.type === 'terminal')
 }

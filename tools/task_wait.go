@@ -1,34 +1,56 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 	"time"
 
 	"xbot/llm"
 )
 
-// TaskWaitTool blocks until a background task completes or the timeout expires.
+// TaskWaitTool blocks until one or more background tasks complete (or the
+// timeout expires). Supports waiting on multiple task IDs simultaneously with
+// "all" (default — wait for every task) or "any" (return as soon as the first
+// task finishes) modes.
+//
 // This replaces the old "sleep N + task_status" polling pattern — the agent
 // calls task_wait once instead of wasting iterations on sleep.
+//
+// If all tasks are already completed, returns immediately.
 type TaskWaitTool struct{}
 
 func (t *TaskWaitTool) Name() string   { return "task_wait" }
 func (t *TaskWaitTool) Required() bool { return false }
 func (t *TaskWaitTool) Description() string {
-	return `Block until a background task finishes (Shell background command OR background sub-agent), or the timeout expires. Returns the final status and output preview.
+	return `Block until background task(s) finish, or the timeout expires. Returns the final status and output preview for each task.
 
-Use this instead of running "sleep N" in a foreground Shell to wait for a background task. The current iteration blocks until the task is done — no wasted iterations on sleep polling.
+Supports waiting on MULTIPLE tasks at once:
+  - task_id: ["bg-abc123", "sub-def456"]  (array of IDs)
+  - mode: "all" (default — wait for every task) or "any" (return when the FIRST task finishes)
+
+For a single task, pass a string: task_id: "bg-abc123"
+
+NOTE: task_id values do NOT include the "bg:" prefix shown in some UI labels.
+Use the raw ID (e.g. "bg-abc123", "sub-1eefac7a").
+
+Use this instead of running "sleep N" in a foreground Shell to wait for a
+background task. The current iteration blocks until the task(s) are done — no
+wasted iterations on sleep polling.
 
 If the task is already completed, returns immediately.
 
 Parameters (JSON):
-  - task_id: string, the background task ID to wait for (Shell background task or background sub-agent task ID)
+  - task_id: string OR array of strings — the background task ID(s) to wait for
+  - mode: string (optional) — "all" (default, wait for all) or "any" (return on first completion)
   - timeout: number (optional), max seconds to wait (default: 60, max: 300)`
 }
 
 func (t *TaskWaitTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "task_id", Type: "string", Description: "The background task ID to wait for (Shell background task or background sub-agent task ID)", Required: true},
+		{Name: "task_id", Type: "string", Description: "The background task ID to wait for, OR an array of IDs. Shell background task IDs start with 'bg-', sub-agent IDs start with 'sub-'. Do NOT include any 'bg:' prefix.", Required: true},
+		{Name: "mode", Type: "string", Description: "Wait mode: 'all' (default — wait for every task to finish) or 'any' (return as soon as the first task finishes). Only relevant when task_id is an array.", Required: false},
 		{Name: "timeout", Type: "number", Description: "Max seconds to wait (default: 60, max: 300)", Required: false},
 	}
 }
@@ -39,11 +61,30 @@ func (t *TaskWaitTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 	}
 
 	params, err := parseToolArgs[struct {
-		TaskID  string `json:"task_id"`
-		Timeout int    `json:"timeout"`
+		TaskID  json.RawMessage `json:"task_id"`
+		Mode    string          `json:"mode"`
+		Timeout int             `json:"timeout"`
 	}](input)
 	if err != nil {
 		return nil, err
+	}
+
+	// Parse task_id: accept string (single) or array (multiple).
+	taskIDs, err := parseTaskIDs(params.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	if len(taskIDs) == 0 {
+		return nil, fmt.Errorf("task_id is required (string or array of strings)")
+	}
+
+	// Determine mode (default: all).
+	mode := strings.ToLower(params.Mode)
+	if mode == "" {
+		mode = "all"
+	}
+	if mode != "all" && mode != "any" {
+		return nil, fmt.Errorf("mode must be 'all' or 'any', got %q", mode)
 	}
 
 	// Determine timeout (default 60s, max 300s).
@@ -55,40 +96,239 @@ func (t *TaskWaitTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		timeoutSec = 300
 	}
 
+	// Single task — fast path (no fan-out overhead).
+	if len(taskIDs) == 1 {
+		return waitSingleTask(toolCtx, taskIDs[0], timeoutSec)
+	}
+
+	// Multiple tasks — fan out.
+	return waitMultipleTasks(toolCtx, taskIDs, mode, timeoutSec)
+}
+
+// parseTaskIDs accepts a JSON string or a JSON array of strings.
+func parseTaskIDs(raw json.RawMessage) ([]string, error) {
+	// Try string first.
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return []string{single}, nil
+	}
+	// Try array.
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		return arr, nil
+	}
+	return nil, fmt.Errorf("task_id must be a string or array of strings")
+}
+
+// waitSingleTask waits for one task (Shell bg or sub-agent), returning its
+// formatted status.
+func waitSingleTask(toolCtx *ToolContext, taskID string, timeoutSec int) (*ToolResult, error) {
 	// Fast path 1: Shell background task.
-	task, err := toolCtx.BgTaskManager.Status(params.TaskID)
+	task, err := toolCtx.BgTaskManager.Status(taskID)
 	if err == nil {
 		if task.Status != BgTaskRunning {
 			return NewResult(formatTask(task)), nil
 		}
-		return waitBgTaskDone(toolCtx, params.TaskID, timeoutSec, func() (string, error) {
-			t, err := toolCtx.BgTaskManager.Status(params.TaskID)
+		return waitBgTaskDone(toolCtx, taskID, timeoutSec, func() (string, error) {
+			t, err := toolCtx.BgTaskManager.Status(taskID)
 			if err != nil {
 				return "", err
 			}
 			return formatTask(t), nil
 		}, func() (<-chan struct{}, error) {
-			return toolCtx.BgTaskManager.WaitDone(params.TaskID)
+			return toolCtx.BgTaskManager.WaitDone(taskID)
 		})
 	}
 
 	// Fast path 2: background sub-agent task.
-	subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID)
+	subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(taskID)
 	if serr != nil {
 		return nil, err // "task not found" (shell lookup error is the canonical one)
 	}
 	if subTask.Status != BgTaskRunning {
 		return NewResult(formatSubAgentTask(subTask)), nil
 	}
-	return waitBgTaskDone(toolCtx, params.TaskID, timeoutSec, func() (string, error) {
-		t, err := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID)
+	return waitBgTaskDone(toolCtx, taskID, timeoutSec, func() (string, error) {
+		t, err := toolCtx.BgTaskManager.SubAgentStatus(taskID)
 		if err != nil {
 			return "", err
 		}
 		return formatSubAgentTask(t), nil
 	}, func() (<-chan struct{}, error) {
-		return toolCtx.BgTaskManager.SubAgentWaitDone(params.TaskID)
+		return toolCtx.BgTaskManager.SubAgentWaitDone(taskID)
 	})
+}
+
+// taskWaitResult holds the formatted output for one task.
+type taskWaitResult struct {
+	id   string
+	text string
+	done bool
+}
+
+// waitMultipleTasks waits for multiple tasks concurrently. In "all" mode it
+// blocks until every task finishes (or timeout). In "any" mode it returns as
+// soon as the first task finishes.
+func waitMultipleTasks(toolCtx *ToolContext, taskIDs []string, mode string, timeoutSec int) (*ToolResult, error) {
+	ctx := toolCtx.Ctx
+	timer := time.NewTimer(time.Duration(timeoutSec) * time.Second)
+	defer timer.Stop()
+
+	// Collect done channels for all tasks.
+	type taskChan struct {
+		id     string
+		doneCh <-chan struct{}
+		isSub  bool
+	}
+	var chans []taskChan
+	var alreadyDone []taskWaitResult
+
+	for _, id := range taskIDs {
+		// Try Shell bg task first.
+		task, err := toolCtx.BgTaskManager.Status(id)
+		if err == nil {
+			if task.Status != BgTaskRunning {
+				alreadyDone = append(alreadyDone, taskWaitResult{id: id, text: formatTask(task), done: true})
+				continue
+			}
+			ch, err := toolCtx.BgTaskManager.WaitDone(id)
+			if err != nil {
+				alreadyDone = append(alreadyDone, taskWaitResult{id: id, text: fmt.Sprintf("Error: %v", err), done: true})
+			} else {
+				chans = append(chans, taskChan{id: id, doneCh: ch, isSub: false})
+			}
+			continue
+		}
+		// Try sub-agent task.
+		subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(id)
+		if serr != nil {
+			alreadyDone = append(alreadyDone, taskWaitResult{id: id, text: "Error: task not found", done: true})
+			continue
+		}
+		if subTask.Status != BgTaskRunning {
+			alreadyDone = append(alreadyDone, taskWaitResult{id: id, text: formatSubAgentTask(subTask), done: true})
+			continue
+		}
+		ch, err := toolCtx.BgTaskManager.SubAgentWaitDone(id)
+		if err != nil {
+			alreadyDone = append(alreadyDone, taskWaitResult{id: id, text: fmt.Sprintf("Error: %v", err), done: true})
+		} else {
+			chans = append(chans, taskChan{id: id, doneCh: ch, isSub: true})
+		}
+	}
+
+	// "any" mode: if any task is already done, return immediately.
+	if mode == "any" && len(alreadyDone) > 0 {
+		return NewResult(formatMultiResults(alreadyDone, mode, timeoutSec, false)), nil
+	}
+
+	// "all" mode: if all tasks are already done, return immediately.
+	if mode == "all" && len(chans) == 0 {
+		return NewResult(formatMultiResults(alreadyDone, mode, timeoutSec, false)), nil
+	}
+
+	// Wait for tasks to complete.
+	results := make([]taskWaitResult, 0, len(taskIDs))
+	results = append(results, alreadyDone...)
+	timedOut := false
+
+	for len(chans) > 0 {
+		// Build select cases dynamically.
+		cases := make([]reflect.SelectCase, 0, len(chans)+2)
+		caseIdx := make([]taskChan, 0, len(chans))
+
+		for _, tc := range chans {
+			cases = append(cases, reflect.SelectCase{
+				Dir:  reflect.SelectRecv,
+				Chan: reflect.ValueOf(tc.doneCh),
+			})
+			caseIdx = append(caseIdx, tc)
+		}
+		// Add timer and ctx.
+		cases = append(cases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(timer.C),
+		})
+		cases = append(cases, reflect.SelectCase{
+			Dir:  reflect.SelectRecv,
+			Chan: reflect.ValueOf(ctx.Done()),
+		})
+
+		chosen, _, _ := reflect.Select(cases)
+		if chosen == len(cases)-2 {
+			// Timer fired.
+			timedOut = true
+			break
+		}
+		if chosen == len(cases)-1 {
+			// Context cancelled.
+			break
+		}
+
+		// A task completed.
+		tc := caseIdx[chosen]
+		var text string
+		if tc.isSub {
+			t, _ := toolCtx.BgTaskManager.SubAgentStatus(tc.id)
+			text = formatSubAgentTask(t)
+		} else {
+			t, _ := toolCtx.BgTaskManager.Status(tc.id)
+			text = formatTask(t)
+		}
+		results = append(results, taskWaitResult{id: tc.id, text: text, done: true})
+
+		// Remove from pending.
+		chans = append(chans[:chosen], chans[chosen+1:]...)
+
+		if mode == "any" {
+			// "any" mode: first completion is enough.
+			break
+		}
+	}
+
+	// For tasks still running (timeout or "any" mode), fetch current status.
+	for _, tc := range chans {
+		var text string
+		if tc.isSub {
+			t, _ := toolCtx.BgTaskManager.SubAgentStatus(tc.id)
+			text = formatSubAgentTask(t)
+		} else {
+			t, _ := toolCtx.BgTaskManager.Status(tc.id)
+			text = formatTask(t)
+		}
+		results = append(results, taskWaitResult{id: tc.id, text: text, done: false})
+	}
+
+	return NewResult(formatMultiResults(results, mode, timeoutSec, timedOut)), nil
+}
+
+// formatMultiResults formats the results of waiting on multiple tasks.
+func formatMultiResults(results []taskWaitResult, mode string, timeoutSec int, timedOut bool) string {
+	var b strings.Builder
+	doneCount := 0
+	for _, r := range results {
+		if r.done {
+			doneCount++
+		}
+	}
+
+	if timedOut {
+		fmt.Fprintf(&b, "Timed out after %ds — %d/%d tasks completed (mode: %s).\n\n", timeoutSec, doneCount, len(results), mode)
+	} else if mode == "any" {
+		fmt.Fprintf(&b, "First task completed (mode: any). %d/%d tasks done.\n\n", doneCount, len(results))
+	} else {
+		fmt.Fprintf(&b, "All tasks completed (%d/%d, mode: all).\n\n", doneCount, len(results))
+	}
+
+	for _, r := range results {
+		status := "✅ done"
+		if !r.done {
+			status = "⏳ still running"
+		}
+		fmt.Fprintf(&b, "── %s [%s] ──\n%s\n\n", r.id, status, r.text)
+	}
+
+	return b.String()
 }
 
 // waitBgTaskDone blocks on a task's done channel until it closes, the timeout

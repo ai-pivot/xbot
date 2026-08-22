@@ -223,7 +223,7 @@ func TestSessionTreeAdminFlagHonorsSingleUserMode(t *testing.T) {
 			wc, _ := newTestWebChannel(t, db)
 			wc.singleUser = tc.singleUser
 			wc.SetCallbacks(WebCallbacks{
-				SessionTree: func(_ string, _ SessionSelector, admin bool) (SessionTreeResult, error) {
+				SessionTree: func(_ string, _ SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error) {
 					if admin != tc.wantAdmin {
 						t.Fatalf("admin = %v, want %v", admin, tc.wantAdmin)
 					}

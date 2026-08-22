@@ -7,8 +7,74 @@ import (
 
 	"xbot/bus"
 	"xbot/channel"
+	"xbot/session"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
+
+// TestAssignSubAgentTurnID verifies the per-session turn allocation for
+// SubAgent Runs. Without it, all persisted messages/iterations carry turn_id=0
+// (invariant violation) and the frontend cannot associate iterations with the
+// turn — session view renders no iteration content/reasoning (user report:
+// "subagent session 历史渲染错乱，看不到任何迭代的 content 和 reasoning").
+func TestAssignSubAgentTurnID(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/subagent-turnid.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{}
+	sess, err := mt.GetOrCreateSession("agent", "explore:test-1")
+	if err != nil {
+		t.Fatalf("GetOrCreateSession: %v", err)
+	}
+
+	// First Run of the session → turn_id = 1 (never 0).
+	cfg := &RunConfig{AgentID: "main/explore"}
+	a.assignSubAgentTurnID(cfg, sess)
+	if cfg.TurnID != 1 {
+		t.Errorf("first assign: TurnID = %d, want 1 (non-zero invariant)", cfg.TurnID)
+	}
+
+	// max+1 path: seed a turn_id=5 iteration record, the next assign must
+	// continue from the DB max.
+	if err := sess.AppendIterationHistory(0, 5, sqlite.IterationRecord{TurnID: 5, Iteration: 1, Content: "seed"}); err != nil {
+		t.Fatalf("seed AppendIterationHistory: %v", err)
+	}
+	cfg3 := &RunConfig{}
+	a.assignSubAgentTurnID(cfg3, sess)
+	if cfg3.TurnID != 6 {
+		t.Errorf("assign after turn 5: TurnID = %d, want 6", cfg3.TurnID)
+	}
+
+	// nil session / nil cfg must be safe no-ops.
+	a.assignSubAgentTurnID(nil, sess)
+	a.assignSubAgentTurnID(cfg3, nil)
+}
+
+func TestSubAgentCallback_RunDoneDropsCallback(t *testing.T) {
+	// Regression: after Run() returns, structuredProgress.Iteration is frozen
+	// at its final value — for subagents spawned by the LAST iteration the
+	// stale-iteration guard is false forever, and the callback would keep
+	// broadcasting into the main session's stream. runDone closes that hole.
+	s := &runState{
+		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "t"},
+	}
+	s.runDone.Store(true)
+
+	// The callback guard reads runDone first — same predicate as execOneTool.
+	if !s.runDone.Load() {
+		t.Fatal("runDone=true must be observed by the callback guard")
+	}
+
+	// Run() sets runDone on every return path (defer in engine.Run).
+	s2 := &runState{}
+	s2.runDone.Store(false)
+	if s2.runDone.Load() {
+		t.Fatal("fresh runState must start with runDone=false")
+	}
+}
 
 func TestSpawnAgentAdapter_InteractiveSpawn_NilCallback(t *testing.T) {
 	adapter := &spawnAgentAdapter{

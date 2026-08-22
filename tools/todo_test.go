@@ -113,6 +113,42 @@ func TestTodoManager_SessionKey_BackwardsCompatible(t *testing.T) {
 	}
 }
 
+func TestTodoManager_SessionKey_RootSessionKeyPriority(t *testing.T) {
+	mgr := NewTodoManager()
+
+	// physicalChannel override 场景：web 用户浏览 CLI 会话。
+	// SessionKey 被 override 成 "web:chat1"，RootSessionKey 是 canonical "cli:chat1"。
+	// 主 Agent 的 todos 必须用 RootSessionKey（canonical），否则 GetActiveProgress
+	// 恢复路径（读 "cli:chat1"）读不到 todos（"手机端实时显示、电脑端后打开
+	// 不显示"的根因）。
+	ctx := &ToolContext{
+		Ctx:            context.Background(),
+		AgentID:        "main",
+		Channel:        "cli",
+		ChatID:         "chat1",
+		SessionKey:     "web:chat1", // physicalChannel override
+		RootSessionKey: "cli:chat1", // canonical
+	}
+	key := mgr.sessionKey(ctx)
+	if key != "cli:chat1" {
+		t.Errorf("BUG: main-agent sessionKey with physicalChannel override = %q, want %q (canonical RootSessionKey)", key, "cli:chat1")
+	}
+
+	// SubAgent：仍然用 SessionKey（subAgentID）隔离。
+	subCtx := &ToolContext{
+		Ctx:            context.Background(),
+		AgentID:        "main/explore",
+		Channel:        "cli",
+		ChatID:         "chat1",
+		SessionKey:     "main/explore", // subAgentID
+		RootSessionKey: "cli:chat1",    // parent canonical
+	}
+	subKey := mgr.sessionKey(subCtx)
+	if subKey != "main/explore" {
+		t.Errorf("SubAgent sessionKey = %q, want %q (subAgentID isolation)", subKey, "main/explore")
+	}
+}
+
 func TestTodoListTool_Isolation(t *testing.T) {
 	mgr := NewTodoManager()
 

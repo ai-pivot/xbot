@@ -199,7 +199,7 @@ export function SessionItem({
 
       {/* Title */}
       <span
-        className={cn('flex-1 truncate text-xs', unread && !isSubAgent ? 'font-semibold' : 'font-medium')}
+        className={cn('min-w-0 flex-1 truncate text-xs', unread && !isSubAgent ? 'font-semibold' : 'font-medium')}
         style={{
           color: isSubAgent || session.synthetic
             ? 'var(--text-secondary)'

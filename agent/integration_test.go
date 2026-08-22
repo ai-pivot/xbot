@@ -199,18 +199,26 @@ func (mc *mockCompressor) SetMemoryTools(tools []llm.ToolDefinition, exec func(c
 
 func TestIntegration_Masking_TriggeredAtThreshold(t *testing.T) {
 	env := newIntegrationTestEnv(t)
-	// We need: (a) ratio > 0.60 to enter masking branch, (b) ratio < 0.75 to
-	// avoid compaction, and (c) enough tool groups to exceed keepGroups.
-	// 15 tool results × ~601 tokens each ≈ 9300 + overhead ≈ 9500 total.
-	// With maxTokens=14000: ratio≈0.68, keepGroups=12 (ratio<=0.70), mask 3 groups.
-	// 60%=8400 < 9500 (masking ✓), 75%=10500 > 9500 (no compaction ✓).
-	env.cmConfig.MaxContextTokens = 14000
+	// 120 groups × ~601 tokens each ≈ 72000 total.
+	// maxTokens=90000 → ratio≈0.80 → keepGroups=80, mask 40 groups. ✓
+	// 60%=54000 < 72000 (masking ✓), 90%=81000 > 72000 (no compaction ✓).
+	// BUT: maybeCompress runs BEFORE maybeMaskObservations. needCompress uses
+	// shouldCompact(totalTokens, promptBudget, 0.9). promptBudget = 90000-32768
+	// = 57232. threshold = 57232*0.9 = 51509. totalTokens=72000 > 51509 →
+	// needCompress=true → runCompression (noop mockCompressor) → returns early,
+	// masking never runs. Fix: use maxTokens large enough that ratio < 0.90
+	// of promptBudget. 120 groups × ~601 ≈ 72000. Need promptBudget*0.9 > 72000
+	// → promptBudget > 80000 → maxTokens > 80000+32768 = 112768. Use 130000:
+	// promptBudget=97232, threshold=87509 > 72000 → no compaction ✓.
+	// ratio=72000/130000=0.55 → keepGroups=100 (ratio<=0.70), 120 > 100 →
+	// mask 20 groups. ✓
+	env.cmConfig.MaxContextTokens = 115000
 
 	messages := []llm.ChatMessage{
 		llm.NewSystemMessage("You are a test agent."),
 		llm.NewUserMessage("Read these files for me."),
 	}
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 120; i++ {
 		largeText := generateLargeText(800)
 		messages = append(messages, buildToolCallResult("Shell", fmt.Sprintf(`{"command":"cat file%d.go"}`, i), largeText)...)
 	}
@@ -230,7 +238,7 @@ func TestIntegration_Masking_TriggeredAtThreshold(t *testing.T) {
 	cfg.MaskStore = env.maskStore
 	// Simulate API token data from a previous Run (production code always has
 	// LastPromptTokens set via DB restoration — tests must do the same).
-	cfg.LastPromptTokens = 9500
+	cfg.LastPromptTokens = 72000
 	out := Run(context.Background(), cfg)
 
 	if out.Error != nil {
@@ -877,17 +885,18 @@ func TestIntegration_Compress_NotTriggeredBelowThreshold(t *testing.T) {
 func TestIntegration_MaxContext_CustomThreshold(t *testing.T) {
 	// Test A: MaxContextTokens set so tokens are between masking (60%) and
 	// compaction (75%) thresholds, with enough tool groups to exceed keepGroups.
-	// 15 groups × ~376 tokens each ≈ 5800 total. maxTokens=8500:
-	// 60%=5100 < 5800 (masking ✓), 75%=6375 > 5800 (no compaction ✓),
-	// ratio≈0.68 → keepGroups=12, mask 3 groups.
+	// 120 groups × ~50 tokens each ≈ 6000 total. maxTokens=9000:
+	// promptBudget=9000-1=8999 (maxOutput=1 from env), compaction threshold
+	// =8999*0.9=8099 > 6000 → no compaction ✓.
+	// 60%=5400 < 6000 → masking ✓. ratio=0.67 → keepGroups=100, 120>100 → mask 20 ✓.
 	t.Run("low_threshold_triggers_masking", func(t *testing.T) {
 		env := newIntegrationTestEnv(t)
-		env.cmConfig.MaxContextTokens = 8500
+		env.cmConfig.MaxContextTokens = 9000
 
 		messages := []llm.ChatMessage{
 			llm.NewSystemMessage("You are a test agent."),
 		}
-		for i := 0; i < 15; i++ {
+		for i := 0; i < 120; i++ {
 			messages = append(messages, buildToolCallResult("Shell", fmt.Sprintf(`{"command":"echo %d"}`, i), generateLargeText(500))...)
 		}
 		messages = append(messages, llm.NewUserMessage("summarize"))
@@ -900,10 +909,8 @@ func TestIntegration_MaxContext_CustomThreshold(t *testing.T) {
 
 		cfg := env.buildRunConfig(messages)
 		cfg.ContextManager = &mockCompressor{}
-		// Masking is disabled by default; explicitly enable for this test
 		cfg.MaskStore = env.maskStore
-		// Simulate API token data from a previous Run
-		cfg.LastPromptTokens = 5800
+		cfg.LastPromptTokens = 6000
 
 		Run(context.Background(), cfg)
 

@@ -51,6 +51,9 @@ type SubAgentInfo struct {
 	Status     string         `json:"status"`
 	Desc       string         `json:"desc,omitempty"`
 	Children   []SubAgentInfo `json:"children,omitempty"`
+	// Iteration 是 spawn 该 SubAgent 的主 Agent 迭代号。后台 SubAgent 跨迭代
+	// 存活，前端按此字段把进度归属到原迭代渲染，而非最新迭代。
+	Iteration int `json:"iteration,omitempty"`
 }
 
 // TokenUsage represents a token usage snapshot.
@@ -173,6 +176,11 @@ type HistoryIteration struct {
 	Reasoning   string         `json:"reasoning,omitempty"`
 	Tools       []ToolProgress `json:"tools,omitempty"`
 	ElapsedWall int64          `json:"elapsed_wall"`
+	// Per-iteration LLM metrics (from iteration_history table — v57+).
+	Tokens       int64 `json:"tokens,omitempty"`         // completion tokens this iteration
+	TTFTMs       int64 `json:"ttft_ms,omitempty"`        // time to first token
+	TokensPerSec int64 `json:"tokens_per_sec,omitempty"` // generation speed
+	TotalMs      int64 `json:"total_ms,omitempty"`       // stream duration
 }
 
 // HistoryToolCall preserves the raw assistant tool-call relation in the

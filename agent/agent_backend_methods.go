@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"xbot/protocol"
+	"xbot/storage/sqlite"
 )
 
 // maxIncrementalIterations caps how many iteration-history entries
@@ -186,4 +187,77 @@ func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
 		result[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
 	}
 	return result
+}
+
+// GetExportIterations returns per-iteration records for session export,
+// combining the persisted iteration_history table (completed iterations with
+// TTFT/TPOT/tokens/timing) with the in-flight iteration's partial stream
+// content (graceful shutdown / benchmark timeout).
+func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIteration {
+	// 1. Completed iterations from iteration_history (DB authoritative).
+	var records []sqlite.IterationRecord
+	if a.multiSession != nil && a.multiSession.DB() != nil {
+		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
+			if tenantID := sess.TenantID(); tenantID > 0 {
+				records, _ = sqlite.NewSessionService(a.multiSession.DB()).GetAllIterationHistory(tenantID)
+			}
+		}
+	}
+
+	iterations := make([]protocol.ExportedIteration, 0, len(records)+1)
+	for _, r := range records {
+		iterations = append(iterations, protocol.ExportedIteration{
+			TurnID:       r.TurnID,
+			Iteration:    r.Iteration,
+			Content:      r.Content,
+			Reasoning:    r.Reasoning,
+			Tools:        r.Tools,
+			Tokens:       r.Tokens,
+			TTFTMs:       r.TTFTMs,
+			TPOTMs:       r.TPOTMs,
+			TokensPerSec: r.TokensPerSec,
+			TotalMs:      r.TotalMs,
+		})
+	}
+
+	// 2. In-flight iteration (partial stream content) from lastProgressSnapshot.
+	key := ch + ":" + chatID
+	v, ok := a.lastProgressSnapshot.Load(key)
+	if !ok {
+		return iterations
+	}
+	snapshot := v.(*protocol.ProgressEvent)
+	result := *snapshot
+	a.mergeStreamState(key, &result)
+
+	// The in-flight iteration number is the snapshot's current Iteration
+	// (set by beginIteration); derive from history when it's 0.
+	inFlightIter := result.Iteration
+	if inFlightIter == 0 && len(result.IterationHistory) > 0 {
+		inFlightIter = result.IterationHistory[len(result.IterationHistory)-1].Iteration + 1
+	}
+
+	// Only add when there's real partial content worth preserving.
+	if inFlightIter > 0 && (result.StreamContent != "" || result.ReasoningStreamContent != "" || len(result.ActiveTools) > 0) {
+		var ttft, tpot, tps, totalMs int64
+		if result.StreamStats != nil {
+			ttft = result.StreamStats.TTFTMs
+			tpot = result.StreamStats.TPOTMs
+			tps = result.StreamStats.TokensPerSec
+			totalMs = result.StreamStats.TotalMs
+		}
+		iterations = append(iterations, protocol.ExportedIteration{
+			TurnID:       result.TurnID,
+			Iteration:    inFlightIter,
+			Content:      result.StreamContent,
+			Reasoning:    result.ReasoningStreamContent,
+			TTFTMs:       ttft,
+			TPOTMs:       tpot,
+			TokensPerSec: tps,
+			TotalMs:      totalMs,
+			InFlight:     true,
+		})
+	}
+
+	return iterations
 }

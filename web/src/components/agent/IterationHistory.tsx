@@ -16,6 +16,7 @@ import { FoldedLine } from './FoldedLine'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { useI18n } from '@/providers/i18n'
+import { IterationSlot } from '@/plugin-runtime/iteration-render'
 import type { CollapseLevel } from '@/types/agent'
 import type { WebIteration } from '@/types/shared'
 
@@ -34,6 +35,19 @@ export const IterationGroup = memo(function IterationGroup({
 
   return (
     <div className="flex flex-col gap-1">
+      {/* 迭代指标（插件注入点）：把该迭代的 token/TTFT/tool 耗时传给插件。 */}
+      <IterationSlot
+        data={{
+          stats: {
+            iteration: iteration.iteration,
+            tokens: iteration.tokens,
+            ttftMs: iteration.ttftMs,
+            tokensPerSec: iteration.tokensPerSec,
+            toolMs: iteration.toolMs,
+          },
+        }}
+      />
+
       {/* T: reasoning (always folded by default) — show character count, not T0/T1 */}
       {iteration.reasoning && (
         <FoldedLine

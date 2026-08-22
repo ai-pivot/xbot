@@ -95,10 +95,24 @@ vi.mock('@/hooks/useAuth', () => ({
   useAuth: () => ({ user: null, loading: false, login: vi.fn(), register: vi.fn(), logout: vi.fn(), refresh: vi.fn() }),
 }))
 
+// 插件运行时面板：测试环境无 PluginRuntimeProvider，mock 为空列表
+// （等同"无插件"），避免 usePluginRuntime 抛错。
+vi.mock('@/plugin-runtime/usePluginViewPanels', () => ({
+  usePluginViewPanels: () => [],
+}))
+
+// 布局系统：测试环境直接渲染 MobileAppShell（不经 App.tsx），需手动注册
+// 内置布局项，否则底部导航/顶栏为空（会话/工具按钮不渲染）。
+// 固定产品默认 locale（zh-CN）：底部/顶栏按钮经 labelKey 走 i18n，测试断言用中文。
+import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { changeLocale } from '@/i18n'
+
 describe('MobileAppShell', () => {
   beforeEach(() => {
     mocks.sessionStore.createSession.mockReset()
     mocks.sessionStore.createSession.mockResolvedValue('new-chat')
+    registerBuiltinLayoutItems()
+    changeLocale('zh-CN')
   })
 
   it('renders mobile chrome and toggles detail/back state', () => {
@@ -109,8 +123,8 @@ describe('MobileAppShell', () => {
 
     // Switch to the detail/panel view via the bottom nav "工具" button
     fireEvent.click(screen.getByText('工具'))
-    // Panel buttons use i18n labels (English in test env navigator.language)
-    fireEvent.click(screen.getByLabelText('Info'))
+    // Panel buttons use i18n labels (locale fixed to zh-CN in beforeEach)
+    fireEvent.click(screen.getByLabelText('信息'))
     expect(screen.getByText('info-panel')).toBeInTheDocument()
     // Agent 面板必须保持挂载（display:none 隐藏）——卸载会销毁
     // MessageStore/ProgressStore，切回时依赖网络恢复，迭代可能少
@@ -124,14 +138,14 @@ describe('MobileAppShell', () => {
   it('opens the session drawer from the top bar', () => {
     renderWithProviders(<MobileAppShell />)
 
-    fireEvent.click(screen.getByLabelText('Sessions'))
+    fireEvent.click(screen.getByLabelText('会话'))
     expect(screen.getByText('session-sidebar')).toBeInTheDocument()
   })
 
   it('creates a session from the top bar action', () => {
     renderWithProviders(<MobileAppShell />)
 
-    fireEvent.click(screen.getByLabelText('New Session'))
+    fireEvent.click(screen.getByLabelText('新建会话'))
     expect(mocks.sessionStore.createSession).toHaveBeenCalled()
   })
 })

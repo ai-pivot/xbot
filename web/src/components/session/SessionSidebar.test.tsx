@@ -77,6 +77,8 @@ vi.mock('@/hooks/useSessionStore', () => ({
     clearAskUserPrompt: vi.fn(),
     reorderSessions: vi.fn(),
     setStatus: vi.fn(),
+    hasMore: false,
+    loadMore: vi.fn(),
   }),
 }))
 
@@ -101,6 +103,9 @@ const tabManager = {
   splitRight: vi.fn(),
   resetWorkGroup: vi.fn(),
   bindApi: vi.fn(),
+  getLayoutJSON: vi.fn(() => null),
+  applyLayoutJSON: vi.fn(),
+  getWorkLayoutJSON: vi.fn(() => null),
 } satisfies TabManager
 
 describe('SessionSidebar', () => {

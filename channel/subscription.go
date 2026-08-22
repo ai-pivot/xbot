@@ -303,10 +303,14 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 							}
 						}
 						iters = append(iters, HistoryIteration{
-							Iteration: rec.Iteration,
-							Content:   rec.Content,
-							Reasoning: rec.Reasoning,
-							Tools:     tools,
+							Iteration:    rec.Iteration,
+							Content:      rec.Content,
+							Reasoning:    rec.Reasoning,
+							Tools:        tools,
+							Tokens:       rec.Tokens,
+							TTFTMs:       rec.TTFTMs,
+							TokensPerSec: rec.TokensPerSec,
+							TotalMs:      rec.TotalMs,
 						})
 					}
 				}

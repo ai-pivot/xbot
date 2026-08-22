@@ -287,6 +287,15 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"kill_bg_task":                       {},
 	"plugin_widgets":                     {},
 	"genui_action":                       {},
+	// web_plugin_list 是前端插件运行时启动必调方法——只读插件清单
+	// （含贡献点声明 + 模块 URL），对普通登录用户开放（无 admin 需求）。
+	"web_plugin_list": {},
+	// web_plugin_rpc：前端插件 view 调后端只读数据（如 git status/diff）——
+	// 方法与参数经插件进程校验，对普通登录用户开放。
+	"web_plugin_rpc": {},
+	// plugin_status 只读返回插件状态（名称/版本/state），供内置插件管理面板
+	// 展示；写操作（plugin_reload/plugin_uninstall）仍保持 admin-only。
+	"plugin_status": {},
 }
 
 func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, method string, params json.RawMessage) (int, error) {
@@ -309,6 +318,16 @@ func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, me
 		}
 		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, "cli", request.ChatID) {
 			return http.StatusForbidden, fmt.Errorf("access denied")
+		}
+	}
+	if method == "plugin_status" {
+		var request struct {
+			Rescan bool `json:"rescan"`
+		}
+		if err := json.Unmarshal(params, &request); err == nil && request.Rescan {
+			// rescan 触发 Discover + ActivateAll（扫描磁盘、激活插件、启动 stdio
+			// 进程）——这是写操作，而 nonAdmin 白名单里的 plugin_status 仅允许只读。
+			return http.StatusForbidden, fmt.Errorf("plugin rescan requires admin access")
 		}
 	}
 	if method == "get_session_subscription" {
@@ -637,7 +656,25 @@ func (wc *WebChannel) handleChatDeletePOST(w http.ResponseWriter, r *http.Reques
 }
 
 func (wc *WebChannel) handleSessionTreePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleSessionTree(w, legacyRequest(r, http.MethodGet, nil, nil))
+	// Read optional pagination params from the POST body and forward them as
+	// query params to the legacy GET handler. Absent limit → full list (limit=-1),
+	// preserving backward compatibility for callers that don't paginate.
+	var req struct {
+		Offset int `json:"offset,omitempty"`
+		Limit  int `json:"limit,omitempty"`
+	}
+	body, _ := io.ReadAll(r.Body)
+	if len(bytes.TrimSpace(body)) > 0 {
+		_ = json.Unmarshal(body, &req)
+	}
+	query := url.Values{}
+	if req.Offset > 0 {
+		query.Set("offset", strconv.Itoa(req.Offset))
+	}
+	if req.Limit != 0 {
+		query.Set("limit", strconv.Itoa(req.Limit))
+	}
+	wc.handleSessionTree(w, legacyRequest(r, http.MethodGet, query, nil))
 }
 
 func (wc *WebChannel) handleRunnersListPOST(w http.ResponseWriter, r *http.Request) {

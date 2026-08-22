@@ -32,7 +32,7 @@ func TestStreamContentFullPush_Default(t *testing.T) {
 		},
 	}
 	var seq atomic.Uint64
-	contentFunc, reasoningFunc, _, _ := a.buildStreamCallbacks("chat-1", "mock", &seq, 1, "mock:chat-1", 0)
+	contentFunc, reasoningFunc, _, _, _ := a.buildStreamCallbacks("chat-1", "mock", &seq, 1, "mock:chat-1", 0)
 
 	// 两次调用，第二次是第一次的前缀扩展 —— 全量模式下必须都发全量
 	contentFunc("Hello")
@@ -56,6 +56,15 @@ func TestStreamContentFullPush_Default(t *testing.T) {
 	}
 	if events[3].ReasoningStreamContent != "think1 deeper" || events[3].ReasoningStreamDelta != "" {
 		t.Errorf("event3: ReasoningStreamContent=%q delta=%q, want full push", events[3].ReasoningStreamContent, events[3].ReasoningStreamDelta)
+	}
+	// 每个 stream 帧都必须带实时 StreamStats（tkps/ttft）—— 前端 tkps 指示器
+	// 依赖每个 SSE 帧更新，不能只在流结束（iteration 事件）才附一次。
+	// （单元测试中 4 次调用在同一毫秒内完成，elapsed=0 → TotalMs/tps 可能为 0；
+	//  实时性由 liveStats 每次用 time.Now() 重算保证，此处只验证帧带 stats。）
+	for i, ev := range events {
+		if ev.StreamStats == nil {
+			t.Fatalf("event%d missing live StreamStats (tkps indicator would freeze)", i)
+		}
 	}
 }
 

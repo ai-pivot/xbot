@@ -172,7 +172,7 @@ type WebCallbacks struct {
 	// SubAgentList returns Web-only SubAgent rows for the sidebar tree.
 	SubAgentList func(senderID string, admin bool) ([]UserChatWithPreview, error)
 	// SessionTree returns Web-only main sessions with SubAgent children already attached.
-	SessionTree func(senderID string, current SessionSelector, admin bool) (SessionTreeResult, error)
+	SessionTree func(senderID string, current SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error)
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	// model is an optional explicit model name for the new session; when empty
 	// the backend falls back to the default binding (Balance tier first).
@@ -278,6 +278,13 @@ type SessionTreeNode struct {
 type SessionTreeResult struct {
 	Sessions        []SessionTreeNode     `json:"sessions"`
 	OrphanSubAgents []UserChatWithPreview `json:"orphan_subagents,omitempty"`
+	// HasMore reports whether more paginated web user_chats exist beyond the
+	// requested offset/limit.
+	HasMore bool `json:"has_more,omitempty"`
+	// NextOffset is the offset to pass for the next page. It equals
+	// offset + (web user_chats loaded this page). The default chat is not
+	// paginated and never advances the offset.
+	NextOffset int `json:"next_offset,omitempty"`
 }
 
 // HistorySnapshot is the Web-only /api/history response payload.
@@ -362,6 +369,11 @@ type WebChannel struct {
 
 	// Static files (external directory)
 	staticDir string
+
+	// Plugin web module directories (plugins/<id>/web served at /plugins/<id>/web/*).
+	// Populated from PluginManager's discovery dirs; nil means plugin static
+	// serving is disabled.
+	pluginDirs []string
 
 	// Working directory (workspace) — used to copy uploaded files into sandbox-accessible path
 	workDir string
@@ -615,6 +627,12 @@ func (wc *WebChannel) SetStaticDir(dir string) {
 	}
 }
 
+// SetPluginDirs sets the plugin discovery directories for serving plugin web
+// modules at /plugins/<id>/web/*. Empty list disables plugin static serving.
+func (wc *WebChannel) SetPluginDirs(dirs []string) {
+	wc.pluginDirs = append([]string(nil), dirs...)
+}
+
 // SetWorkDir sets the working directory for sandbox file access.
 func (wc *WebChannel) SetWorkDir(dir string) {
 	if dir != "" {
@@ -780,12 +798,17 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
 	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
 
+	// Plugin install (single-plugin zip, multipart upload → local temp → install)
+	mux.HandleFunc("/api/plugin/install-file", wc.authenticatedPOST(wc.handlePluginInstallFile))
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		jsonErrorResponse(w, http.StatusNotFound, "endpoint not found")
 	})
 	if wc.staticDir != "" {
 		mux.HandleFunc("/", wc.handleStatic)
 	}
+	// Plugin web modules (ESM) — served before "/" fallback, so they never hit SPA.
+	mux.HandleFunc("/plugins/", wc.handlePluginStatic)
 	return mux
 }
 
@@ -1854,6 +1877,91 @@ func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler 
 // ---------------------------------------------------------------------------
 // Static file handler
 // ---------------------------------------------------------------------------
+
+// handlePluginStatic serves plugin web modules at /plugins/<id>/web/*.
+//
+// The plugin ID is constrained to the plugin-id charset (^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$)
+// and the remaining path is cleaned + confined to the plugin's web/ directory,
+// preventing path traversal. Files are served with immutable caching (plugin
+// modules are content-hashed by convention; hot reload uses versioned URLs).
+func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request) {
+	if len(wc.pluginDirs) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	// Path: /plugins/<id>/web/<rest>
+	rest := strings.TrimPrefix(r.URL.Path, "/plugins/")
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 3 || parts[1] != "web" {
+		http.NotFound(w, r)
+		return
+	}
+	pluginID, subPath := parts[0], parts[2]
+	if !isValidPluginIDForServe(pluginID) {
+		http.NotFound(w, r)
+		return
+	}
+	if subPath == "" {
+		subPath = "index.js"
+	}
+
+	for _, dir := range wc.pluginDirs {
+		webDir := filepath.Join(dir, pluginID, "web")
+		absWebDir, err := filepath.Abs(webDir)
+		if err != nil {
+			continue
+		}
+		// Resolve the web dir's real path (symlinks) so the prefix check below
+		// compares against the canonical directory, not a symlinked alias.
+		realWebDir, err := filepath.EvalSymlinks(absWebDir)
+		if err != nil {
+			continue // web dir doesn't exist (plugin has no web artifact)
+		}
+		cleanSub := filepath.Clean("/" + subPath)
+		absPath := filepath.Join(absWebDir, filepath.FromSlash(cleanSub))
+		absResolved, err := filepath.Abs(absPath)
+		if err != nil {
+			continue
+		}
+		// Resolve the final file's real path too — a symlink inside web/ (e.g.
+		// evil.js -> /etc/passwd) would otherwise pass the prefix check on its
+		// symlink alias while os.Stat/http.ServeFile follow it out of web/.
+		realResolved, err := filepath.EvalSymlinks(absResolved)
+		if err != nil {
+			continue // file doesn't exist
+		}
+		if !strings.HasPrefix(realResolved, realWebDir+string(os.PathSeparator)) {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := os.Stat(realResolved); err == nil {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			http.ServeFile(w, r, realResolved)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+// isValidPluginIDForServe validates a plugin ID path segment against the
+// plugin-id charset (mirrors plugin.isValidPluginID) to block traversal.
+func isValidPluginIDForServe(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '_' || c == '-':
+		default:
+			return false
+		}
+	}
+	// First char must be alphanumeric.
+	first := id[0]
+	return (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')
+}
 
 func (wc *WebChannel) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if wc.staticDir == "" {

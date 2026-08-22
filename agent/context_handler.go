@@ -514,6 +514,9 @@ func (a *Agent) handleExportSession(ctx context.Context, msg bus.InboundMessage)
 		}
 	}
 
+	// Per-iteration records (TTFT/TPOT/tokens/timing + in-flight stream content).
+	session.Iterations = a.GetExportIterations(msg.Channel, msg.ChatID)
+
 	var exported []byte
 	switch format {
 	case "openai":

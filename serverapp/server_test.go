@@ -1084,13 +1084,15 @@ CREATE TABLE tenants (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL,
   chat_id TEXT NOT NULL,
-  last_active_at TEXT NOT NULL
+  last_active_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE user_chats (
   channel TEXT NOT NULL,
   sender_id TEXT NOT NULL,
   chat_id TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT ''
+  label TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE session_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1133,6 +1135,61 @@ func TestParseTenantTimeHandlesGoTimeString(t *testing.T) {
 	}
 	if got.Format("2006-01-02T15:04:05") != "2026-07-08T17:19:29" {
 		t.Fatalf("unexpected parsed time: %s", got.Format(time.RFC3339Nano))
+	}
+}
+
+func TestSortSessionTreeMainsMatchesFrontendKey(t *testing.T) {
+	rows := []web.UserChatWithPreview{
+		{Channel: "web", ChatID: "a", SortOrder: 0, CreatedAt: "2026-07-02T00:00:00Z", LastActive: "2026-07-01T00:00:00Z"},
+		{Channel: "cli", ChatID: "b", SortOrder: 2, CreatedAt: "2026-07-03T00:00:00Z", LastActive: "2026-07-04T00:00:00Z"},
+		{Channel: "web", ChatID: "c", SortOrder: 1, CreatedAt: "2026-07-04T00:00:00Z", LastActive: "2026-07-03T00:00:00Z"},
+		{Channel: "cli", ChatID: "d", SortOrder: 0, CreatedAt: "2026-07-01T00:00:00Z", LastActive: "2026-07-04T00:00:00Z"},
+	}
+	sortSessionTreeMains(rows)
+	// Primary: last_active desc (most recent first). Within the same
+	// last_active bucket, pinned (sort_order > 0) wins, then ascending.
+	// b & d share last_active 07-04; b is pinned (sort_order 2) → first.
+	// Then d, then c (07-03), then a (07-01).
+	want := []string{"b", "d", "c", "a"}
+	got := make([]string, len(rows))
+	for i, r := range rows {
+		got[i] = r.ChatID
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sort order mismatch: want %v, got %v", want, got)
+		}
+	}
+}
+
+func TestListTenantsByChannelPopulatesSortKey(t *testing.T) {
+	db := newTenantPreviewDB(t)
+	// web row with a user_chats sort_order + created_at (tenant fallback).
+	if _, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at, created_at) VALUES ('web','web-x','2026-07-08T00:00:01Z','2026-07-05T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO user_chats(channel, sender_id, chat_id, label, sort_order) VALUES ('web','user','web-x','renamed',7)`); err != nil {
+		t.Fatal(err)
+	}
+	// cli row with no user_chats → falls back to tenant created_at, sort_order 0.
+	if _, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at, created_at) VALUES ('cli','/a:b','2026-07-08T00:00:02Z','2026-07-06T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := listTenantsByChannel(db, "web", "")
+	if err != nil {
+		t.Fatalf("listTenantsByChannel web: %v", err)
+	}
+	if len(rows) != 1 || rows[0].SortOrder != 7 || rows[0].CreatedAt != "2026-07-05T00:00:00Z" {
+		t.Fatalf("web row missing sort key: %#v", rows)
+	}
+
+	cliRows, err := listTenantsByChannel(db, "cli", "")
+	if err != nil {
+		t.Fatalf("listTenantsByChannel cli: %v", err)
+	}
+	if len(cliRows) != 1 || cliRows[0].SortOrder != 0 || cliRows[0].CreatedAt != "2026-07-06T00:00:00Z" {
+		t.Fatalf("cli row missing sort key: %#v", cliRows)
 	}
 }
 

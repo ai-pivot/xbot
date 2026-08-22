@@ -369,6 +369,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           multiSelectMode={multiSelectMode}
           selectedIds={selectedIds}
           onToggleSelect={handleToggleSelect}
+          hasMore={store.hasMore}
+          onLoadMore={store.loadMore}
         />
         )}
       </div>

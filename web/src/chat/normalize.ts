@@ -26,6 +26,7 @@ import {
   nonEmptyStr,
   turnID,
   type DomainEvent,
+  type LiveSnapshot,
   type UserRow,
 } from './types'
 
@@ -130,6 +131,26 @@ function streamEventFrom(
       ? normalizeWebTools(p.streaming_tools)
       : undefined,
     genui: optStr(p.genui_content),
+    streamStats: parseStreamStats(p),
+  }
+}
+
+/** 从 progress 载荷解析 stream_stats（tokens/sec / TTFT）。 */
+function parseStreamStats(
+  p: Record<string, unknown>,
+): NonNullable<LiveSnapshot['streamStats']> | undefined {
+  const rawSS = asRecord(p.stream_stats)
+  if (!rawSS) return undefined
+  const tokensPerSec = typeof rawSS.tokens_per_sec === 'number' ? rawSS.tokens_per_sec : 0
+  const ttftMs = typeof rawSS.ttft_ms === 'number' ? rawSS.ttft_ms : 0
+  // 完全无数据（后端未带 stream_stats 或全零）→ undefined，不覆盖 live。
+  if (tokensPerSec <= 0 && ttftMs <= 0) return undefined
+  return {
+    ttftMs,
+    tpotMs: typeof rawSS.tpot_ms === 'number' ? rawSS.tpot_ms : 0,
+    tokensPerSec,
+    totalMs: typeof rawSS.total_ms === 'number' ? rawSS.total_ms : 0,
+    chunks: typeof rawSS.chunks === 'number' ? rawSS.chunks : 0,
   }
 }
 
@@ -200,6 +221,19 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
           totalTokens: typeof rawTU.total_tokens === 'number' ? rawTU.total_tokens : 0,
         }
       : undefined
+  // stream_stats（实时流式时序：TTFT/tokens-per-sec）—— iteration 事件携带，
+  // reduce 写入 live，liveProgressFromState 输出到 ProgressSnapshot.streamStats。
+  const rawSS = asRecord(p.stream_stats)
+  const streamStats =
+    rawSS && (typeof rawSS.tokens_per_sec === 'number' || typeof rawSS.ttft_ms === 'number')
+      ? {
+          ttftMs: typeof rawSS.ttft_ms === 'number' ? rawSS.ttft_ms : 0,
+          tpotMs: typeof rawSS.tpot_ms === 'number' ? rawSS.tpot_ms : 0,
+          tokensPerSec: typeof rawSS.tokens_per_sec === 'number' ? rawSS.tokens_per_sec : 0,
+          totalMs: typeof rawSS.total_ms === 'number' ? rawSS.total_ms : 0,
+          chunks: typeof rawSS.chunks === 'number' ? rawSS.chunks : 0,
+        }
+      : undefined
   const iter: DomainEvent = {
     type: 'iteration',
     turnID: turn !== null ? turnID(turn) : null,
@@ -216,6 +250,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
       ? normalizeWebSubAgents(p.sub_agents as unknown[])
       : undefined,
     tokenUsage,
+    streamStats,
   }
   // 快照合并场景（get_active_progress mergeStreamState）：结构化 + 流式载荷
   // 并存 → [stream, iteration]（stream 先应用；iteration 的 content 存在时
@@ -244,6 +279,7 @@ function normalizeStream(env: Record<string, unknown>): readonly DomainEvent[] |
         ? normalizeWebTools(p.streaming_tools)
         : undefined,
       genui: optStr(p.genui_content),
+      streamStats: parseStreamStats(p),
     },
   ]
 }

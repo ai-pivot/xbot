@@ -34,6 +34,13 @@ const (
 
 	// Channel Plugin → xbot: web UI component declarations
 	MsgTypeWebUI = "web_ui"
+
+	// Web plugin v2 (frontend ESM plugin runtime) — server → client
+	MsgTypeWebPluginInit       = "web_plugin_init"       // 激活/热加载：贡献点 + 模块 URL + 权限
+	MsgTypeWebPluginDeactivate = "web_plugin_deactivate" // 卸载：前端执行 disposables
+	MsgTypeWebPluginEvent      = "web_plugin_event"      // 后端事件 → 前端插件
+	MsgTypeWebPluginPush       = "web_plugin_push"       // 后端插件主动推数据
+	MsgTypeWebPluginRPC        = "web_plugin_rpc"        // 前端插件 → 后端 RPC 响应
 )
 
 // Client → Server message types

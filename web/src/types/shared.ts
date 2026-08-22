@@ -7,7 +7,7 @@
 
 export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en'
-export type TabType = 'agent' | 'file' | 'terminal' | 'background'
+export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
 export type SessionCategory = 'time' | 'status' | 'path'
 
@@ -54,6 +54,10 @@ export interface TabData {
   taskChannel?: string
   /** Session chatID for background task RPCs. */
   taskChatID?: string
+  /** Plugin view id（container='main' 的插件主视图 tab，= view.id）。 */
+  viewId?: string
+  /** Plugin id（配合 viewId 定位要渲染的插件视图）。 */
+  pluginId?: string
 }
 
 export interface SessionInfo {
@@ -292,6 +296,9 @@ export interface WebSubAgentProgress {
   status: string
   desc?: string
   children?: WebSubAgentProgress[]
+  /** Spawn iteration of the main agent — background subagents outlive it and
+   * render under their ORIGINAL iteration, never the newest one. */
+  iteration?: number
 }
 
 /** Tool call progress — normalized from WS progress events or history. */
@@ -326,6 +333,17 @@ export interface WebIteration {
   toolCount: number
   /** Wall-clock duration (ms), optional — not always available from snapshots. */
   elapsedMs?: number
+  /** 该迭代生成的 completion tokens（per-iteration，非累计）。 */
+  tokens?: number
+  /** 该迭代 LLM 首 token 延迟（ms）。 */
+  ttftMs?: number
+  /** 该迭代平均生成速度（tokens/sec）。 */
+  tokensPerSec?: number
+  /** 该迭代工具总耗时（ms） —— 由 tools 的 elapsedMs 求和。 */
+  toolMs?: number
+  /** 该迭代 spawn 的 SubAgent 树（迭代边界冻结）。后台 SubAgent 的进度
+   * 归属到原迭代渲染，不漂移到最新迭代。 */
+  subAgents?: WebSubAgentProgress[]
 }
 
 /**
@@ -362,6 +380,8 @@ export interface ProgressSnapshot {
   subAgents: WebSubAgentProgress[]
   /** Token usage from the last LLM API response (mirrors protocol.TokenUsage). */
   tokenUsage: TokenUsageInfo | null
+  /** Live stream timing (TTFT/tokens-per-sec) from the latest LLM stream. */
+  streamStats?: StreamStatsInfo | null
   /** TurnID of the active turn (0 = untracked). Used by liveMessage to match
    *  committed history messages from the same turn, preventing duplicate
    *  rendering when IncrementalPersist commits mid-turn messages that reload
@@ -374,6 +394,15 @@ export interface TokenUsageInfo {
   promptTokens: number
   completionTokens: number
   totalTokens: number
+}
+
+/** Live stream timing (mirrors protocol.StreamStats). */
+export interface StreamStatsInfo {
+  ttftMs: number
+  tpotMs: number
+  tokensPerSec: number
+  totalMs: number
+  chunks: number
 }
 
 /** Empty snapshot — the idle state. */
@@ -395,6 +424,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   todos: [],
   subAgents: [],
   tokenUsage: null,
+  streamStats: null,
   turnID: 0,
 }
 
