@@ -76,6 +76,66 @@ describe('MarkdownRenderer', () => {
     expect(container.querySelector('code')).toHaveTextContent('\\[not math\\]')
   })
 
+  it('streaming: an unclosed trailing $$ block is clipped, not leaked as literal markers', () => {
+    // Regression (mermaid-style guard for math): during streaming the content
+    // snapshot can end mid-formula. remark-math only recognizes PAIRED $$ —
+    // the unclosed delimiter renders as a literal "$$" and the partial TeX
+    // body (\begin{aligned}, \\, &, \item) leaks through the markdown parser
+    // as hard breaks / empty lists / stray markers that pile up at the bottom.
+    const partial = '推导如下：\n\n$$\n\\begin{aligned}\nx &= 1 \\\\\ny &= 2 \\\\'
+    const { container } = render(<MarkdownRenderer content={partial} streaming visibleChars={9999} />)
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('$$')
+    expect(text).not.toContain('\\begin{aligned}')
+    // 完整的前置文本仍在
+    expect(text).toContain('推导如下：')
+  })
+
+  it('streaming: a CLOSED $$ block before the unclosed tail still renders as KaTeX', () => {
+    const partial = '完整公式 $E=mc^2$ 渲染。\n\n$$\n\\begin{aligned}\nx &= 1 \\\\'
+    const { container } = render(<MarkdownRenderer content={partial} streaming visibleChars={9999} />)
+    // 已闭合的行内公式正常渲染
+    expect(container.querySelectorAll('.katex').length).toBeGreaterThan(0)
+    // 尾部未闭合块被截掉
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('$$')
+    expect(text).not.toContain('\\begin{aligned}')
+  })
+
+  it('streaming: unclosed \\[ display delimiter (normalized to $$) is clipped too', () => {
+    const partial = '推导：\n\n\\[\nE = mc^2\n\\begin{aligned}'
+    const { container } = render(<MarkdownRenderer content={partial} streaming visibleChars={9999} />)
+    const text = container.textContent ?? ''
+    expect(text).not.toContain('$$')
+    expect(text).not.toContain('E = mc^2')
+    expect(text).toContain('推导：')
+  })
+
+  it('streaming: an unclosed trailing inline $ is clipped to end of line', () => {
+    const partial = '前文完整。行内公式 $x^2 + '
+    const { container } = render(<MarkdownRenderer content={partial} streaming visibleChars={9999} />)
+    const text = container.textContent ?? ''
+    expect(text).toContain('前文完整')
+    expect(text).not.toContain('$')
+    expect(text).not.toContain('x^2')
+  })
+
+  it('streaming: $$ inside fenced code does not trigger clipping', () => {
+    const partial = '```bash\necho $$\n```\n\n尾部普通文本'
+    const { container } = render(<MarkdownRenderer content={partial} streaming visibleChars={9999} />)
+    const text = container.textContent ?? ''
+    expect(text).toContain('echo $')
+    expect(text).toContain('尾部普通文本')
+  })
+
+  it('non-streaming: unclosed math is NOT clipped (finished content is authoritative)', () => {
+    // 完成态（流结束/历史消息）内容即权威 —— 不截断。remark-math 的 math-flow
+    // 会把未闭合 $$ 到结尾吞进 KaTeX（现状行为），与 streaming 截断形成对照。
+    const partial = '完成但未闭合：\n\n$$\nx = 1'
+    const { container } = render(<MarkdownRenderer content={partial} />)
+    expect(container.querySelector('.katex')).not.toBeNull()
+  })
+
   it('renders links with safe target/rel', () => {
     const { container } = render(
       <MarkdownRenderer content={'[xbot](https://example.com)'} />,

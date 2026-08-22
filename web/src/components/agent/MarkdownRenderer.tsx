@@ -260,8 +260,91 @@ function normalizeMathDelimiters(markdown: string): string {
   }).join('\n')
 }
 
-function clipTextNodes(root: HTMLElement, visibleChars: number): void {
-  let remaining = Math.max(0, visibleChars)
+/**
+ * During streaming, drop the trailing UNCLOSED math region so only COMPLETE
+ * formulas reach the markdown parser (the same guard Mermaid gets via
+ * StreamingContext, applied at the source level because math has no component
+ * boundary).
+ *
+ * Why: remark-math only pairs $$/$ delimiters. An unclosed trailing `$$` is
+ * consumed by the math-flow rule to the end of the text and the partial TeX
+ * body (`\begin{aligned}`, `\\`, `&`, `\item`) is handed to KaTeX, which with
+ * `throwOnError: false` emits raw markers / empty structures. As the stream
+ * advances, every re-parse re-emits this garbage at the bottom — literal `$$`
+ * markers and empty-looking blocks piling up (user report). Clipping at the
+ * LAST unpaired delimiter means complete formulas above it still render, the
+ * partial tail renders nothing until it closes, and the finished (non-stream)
+ * content is untouched.
+ *
+ * Skips fenced code and inline code spans (same fence tracking as
+ * normalizeMathDelimiters). Must run AFTER normalizeMathDelimiters so `\[`
+ * delimiters are already normalized to `$$` and counted uniformly.
+ */
+function clipTrailingUnclosedMath(markdown: string): string {
+  const lines = markdown.split('\n')
+  let fence = ''
+  // Absolute index (in `markdown`) of the opening delimiter of the currently
+  // open block-math region, or -1 when all $$ are paired.
+  let openBlockAt = -1
+  let offset = 0
+  for (const line of lines) {
+    const lineStart = offset
+    offset += line.length + 1
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/)
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0]
+      if (!fence) fence = marker
+      else if (fence === marker) fence = ''
+      continue
+    }
+    if (fence) continue
+    // Even-index parts of this split are outside inline code spans.
+    const parts = line.split(/(`+[^`]*`+)/g)
+    let col = 0
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p]
+      const partStart = lineStart + col
+      col += part.length
+      if (p % 2 === 1) continue // inside an inline code span
+      let idx = part.indexOf('$$')
+      while (idx !== -1) {
+        openBlockAt = openBlockAt === -1 ? partStart + idx : -1
+        idx = part.indexOf('$$', idx + 2)
+      }
+    }
+  }
+  if (openBlockAt !== -1) return markdown.slice(0, openBlockAt)
+
+  // No unclosed block math — check the LAST line for an unclosed INLINE `$`.
+  // remark-math inline math pairs `$...$` on the SAME line, so a trailing
+  // unpaired `$` only affects its own line: clip from it to the end of line.
+  const lastLine = lines[lines.length - 1] ?? ''
+  const parts = lastLine.split(/(`+[^`]*`+)/g)
+  let lastSingleDollar = -1
+  let col = 0
+  for (let p = 0; p < parts.length; p++) {
+    const part = parts[p]
+    const partStart = col
+    col += part.length
+    if (p % 2 === 1) continue
+    let idx = part.indexOf('$')
+    while (idx !== -1) {
+      if (part.startsWith('$$', idx)) {
+        idx = part.indexOf('$', idx + 2) // skip the paired $$ as a unit
+        continue
+      }
+      lastSingleDollar = partStart + idx
+      idx = part.indexOf('$', idx + 1)
+    }
+  }
+  if (lastSingleDollar !== -1) {
+    const cut = markdown.length - (lastLine.length - lastSingleDollar)
+    return markdown.slice(0, cut).replace(/\n$/, '')
+  }
+  return markdown
+}
+
+function clipTextNodes(root: HTMLElement, visibleChars: number): void {  let remaining = Math.max(0, visibleChars)
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   const nodes: Text[] = []
   let node: Node | null
@@ -281,10 +364,16 @@ function clipTextNodes(root: HTMLElement, visibleChars: number): void {
 }
 
 const ParsedMarkdown = memo(function ParsedMarkdown({ content, streaming }: { content: string; streaming: boolean }) {
+  // Streaming guard (Mermaid's principle, at the source level): clip the
+  // trailing UNCLOSED math region so partial TeX never reaches remark-math /
+  // KaTeX mid-stream — only complete formulas render; the finished content is
+  // never clipped.
+  const normalized = normalizeMathDelimiters(content)
+  const src = streaming ? clipTrailingUnclosedMath(normalized) : normalized
   return (
     <StreamingContext.Provider value={streaming}>
       <Markdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={COMPONENTS}>
-        {normalizeMathDelimiters(content)}
+        {src}
       </Markdown>
     </StreamingContext.Provider>
   )
