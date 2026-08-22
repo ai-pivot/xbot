@@ -279,6 +279,90 @@ func TestRunState_TodoKey_PhysicalChannelOverride(t *testing.T) {
 	}
 }
 
+func TestLoopSignature_Identical(t *testing.T) {
+	// 相同 content + 相同 tool_calls → 签名相同
+	tc1 := []llm.ToolCall{{Name: "FileReplace", Arguments: `{"path":"a"}`}}
+	tc2 := []llm.ToolCall{{Name: "FileReplace", Arguments: `{"path":"a"}`}}
+	if loopSignature("hello", tc1) != loopSignature("hello", tc2) {
+		t.Error("identical content+toolcalls should have same signature")
+	}
+	// 不同 content → 不同签名
+	if loopSignature("hello", tc1) == loopSignature("world", tc1) {
+		t.Error("different content should have different signature")
+	}
+	// 不同 tool 参数 → 不同签名
+	tc3 := []llm.ToolCall{{Name: "FileReplace", Arguments: `{"path":"b"}`}}
+	if loopSignature("hello", tc1) == loopSignature("hello", tc3) {
+		t.Error("different tool args should have different signature")
+	}
+	// 空 tool_calls 与有 tool_calls 的签名不同
+	if loopSignature("done", nil) == loopSignature("done", tc1) {
+		t.Error("nil toolcalls should differ from non-nil")
+	}
+}
+
+func TestDetectIterationLoop_InjectsWarning(t *testing.T) {
+	// 模拟连续两次相同迭代的 recordAssistantMsg → 第二次应注入 loop_detection 警告
+	s := &runState{
+		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+	}
+
+	resp := &llm.LLMResponse{
+		Content:   "I will replace the file",
+		ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "FileReplace", Arguments: `{"path":"a.go"}`}},
+	}
+
+	// 第一次迭代：记录签名，不触发
+	s.recordAssistantMsg(context.Background(), resp)
+	found := false
+	for _, m := range s.messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			found = true
+		}
+	}
+	if found {
+		t.Fatal("first iteration should NOT inject loop warning")
+	}
+
+	// 第二次迭代：相同签名，上一迭代无报错 → 应注入警告
+	s.recordAssistantMsg(context.Background(), resp)
+	found = false
+	for _, m := range s.messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("second identical iteration should inject LOOP DETECTED warning")
+	}
+}
+
+func TestDetectIterationLoop_SkipsAfterToolError(t *testing.T) {
+	// 如果上一迭代的工具执行报错了，模型重试是合理的 → 不触发 loop 警告
+	s := &runState{
+		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+	}
+
+	resp := &llm.LLMResponse{
+		Content:   "retry",
+		ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "Shell", Arguments: `{"command":"ls"}`}},
+	}
+
+	// 第一次迭代
+	s.recordAssistantMsg(context.Background(), resp)
+
+	// 模拟工具执行报错
+	s.lastIterHadError = true
+
+	// 第二次迭代：签名相同，但上一迭代有报错 → 不触发
+	s.recordAssistantMsg(context.Background(), resp)
+	for _, m := range s.messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			t.Fatal("should NOT inject loop warning when previous iteration had a tool error")
+		}
+	}
+}
+
 func TestBuildToolContext_BgSessionKeyCanonical(t *testing.T) {
 	// Regression: web 用户浏览 CLI 会话时 physicalChannel override 把
 	// cfg.SessionKey 改成 "web:chat1"，BgSessionKey 曾直接用 cfg.SessionKey →

@@ -90,6 +90,14 @@ type runState struct {
 	iterationSnapshots []IterationSnapshot
 	progressFinalizer  func()
 	compressWarning    string
+
+	// Iteration-loop detection: records the content+tool_calls "signature" of
+	// the previous iteration. When two consecutive iterations produce the
+	// exact same content + tool_calls (and the previous one had no tool error),
+	// the agent is stuck in a loop — we inject a synthetic tool result to warn
+	// it, breaking the cycle. See detectIterationLoop.
+	lastIterSignature string // "" = no previous iteration (first iter)
+	lastIterHadError  bool   // whether the previous iteration's tool execution had an error
 }
 
 // newRunState creates and initializes a runState from the given RunConfig.
@@ -1054,6 +1062,71 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		TurnID:           s.cfg.TurnID,
 	}
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
+
+	// Iteration-loop detection: if this iteration's content + tool_calls are
+	// byte-for-byte identical to the previous iteration AND the previous
+	// iteration had no tool errors, the agent is stuck repeating itself. Inject
+	// a synthetic tool result warning so the LLM sees explicit feedback and
+	// breaks the cycle instead of looping until maxIter.
+	s.detectIterationLoop(ctx, response)
+}
+
+// detectIterationLoop compares the current iteration's content + tool_calls
+// against the previous iteration. If they are byte-for-byte identical and the
+// previous iteration had no tool execution error, injects a synthetic tool
+// result into s.messages to warn the agent.
+func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMResponse) {
+	// Build a signature: content + each tool call (name + arguments).
+	sig := loopSignature(response.Content, response.ToolCalls)
+
+	// Only trigger when: previous iteration exists, signature matches exactly,
+	// and the previous iteration did NOT end with a tool error (an error is a
+	// legitimate reason for the model to retry the same call).
+	if s.lastIterSignature != "" && sig == s.lastIterSignature && !s.lastIterHadError {
+		iterNum := 0
+		if s.structuredProgress != nil {
+			iterNum = s.structuredProgress.Iteration
+		}
+		log.Ctx(ctx).WithFields(log.Fields{
+			"chat_id":    s.cfg.ChatID,
+			"turn_id":    s.cfg.TurnID,
+			"iteration":  iterNum,
+			"tool_count": len(response.ToolCalls),
+		}).Warn("ITERATION_LOOP_DETECTED: consecutive iterations produced identical content + tool_calls, injecting loop-breaker warning")
+
+		// Inject a synthetic tool result so the LLM sees explicit feedback.
+		// Use a fake tool_call_id that won't match any real tool_call — SanitizeMessages
+		// will strip orphaned tool messages, but the assistant message's tool_calls
+		// are still in context, so the model sees its own repeated call + this warning.
+		warning := "⚠️ LOOP DETECTED: You are repeating the exact same action as the previous iteration " +
+			"(identical content and tool calls). This will loop forever. " +
+			"If the previous tool call succeeded, the task is already done — stop calling the same tool. " +
+			"If it failed, try a DIFFERENT approach. Do not repeat the same call."
+		s.messages = s.syncMessages(append(s.messages, llm.NewToolMessage(
+			"loop_detection", "loop_breaker", "", warning,
+		)))
+	}
+
+	// Update state for the next iteration. Reset error flag; it will be set
+	// by executeToolCalls / handleLLMError if this iteration's tools error.
+	s.lastIterSignature = sig
+	s.lastIterHadError = false
+}
+
+// loopSignature produces a deterministic signature of an iteration's output:
+// the assistant content + each tool call's name and arguments. Two iterations
+// with the same signature are "doing the exact same thing".
+func loopSignature(content string, toolCalls []llm.ToolCall) string {
+	var b strings.Builder
+	b.WriteString(content)
+	b.WriteByte(0x1F) // unit separator
+	for _, tc := range toolCalls {
+		b.WriteString(tc.Name)
+		b.WriteByte(0x1E) // record separator
+		b.WriteString(tc.Arguments)
+		b.WriteByte(0x1E)
+	}
+	return b.String()
 }
 
 // stripRenameHints removes the auto-naming rename hint from all user messages.
@@ -1558,6 +1631,13 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 	for idx, tc := range response.ToolCalls {
 		r := execResults[idx]
 		content := r.llmContent
+
+		// Track whether any tool errored — iteration-loop detection skips the
+		// warning when the previous iteration had a tool error (the model may
+		// legitimately retry the same call after a transient failure).
+		if r.err != nil {
+			s.lastIterHadError = true
+		}
 
 		// Layer 1 Offload
 		skipOffload := tc.Name == "offload_recall"
