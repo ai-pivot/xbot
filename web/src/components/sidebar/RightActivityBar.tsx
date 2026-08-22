@@ -9,6 +9,7 @@
  * - 同 slot 重排：拖图标到另一图标上/下方，插入线指示
  * - 跨 slot 拖入：左栏 section 拖到右栏图标上 → moveItemTo 跨 slot 移动
  * - drop 判定放宽：整个图标按钮区域可放置
+ * - 实时预览：拖拽时源图标半透明 + 插入线
  */
 import { Files, Search, Info, ListChecks, SquareTerminal } from 'lucide-react'
 import {
@@ -27,12 +28,10 @@ import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { layoutRegistry, useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 import { computeReorder } from '@/lib/reorder'
+import { DRAG_TYPE, DRAG_SLOT_TYPE, startDrag, getDrag, clearDrag, isOurDrag } from '@/lib/dragState'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
-/** 拖拽协议：dataTransfer 里存 itemId + 来源 slot。 */
-const DRAG_TYPE = 'application/x-xbot-layout-item'
-const DRAG_SLOT_TYPE = 'application/x-xbot-layout-slot'
 const RIGHT_SLOT = 'desktop.sidebar' as const
 
 interface RightActivityBarProps {
@@ -84,38 +83,17 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
   }
 
   // ── VSCode 式拖拽（HTML5 DnD）──
-  const [reorderSrc, setReorderSrc] = useState<string | null>(null)
+  // 用模块级 dragState 跨组件共享源信息（dataTransfer.getData 在 dragOver
+  // 阶段受限，跨组件时各自的 state 不可见）。
   const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean } | null>(null)
+  const [dragSrcId, setDragSrcId] = useState<string | null>(null)
   const canReorder = tabs.length > 1
-
-  // 判断拖拽来源：同 slot 重排（reorderSrc）还是跨 slot 拖入（dataTransfer）。
-  const getDragSource = useCallback(
-    (e: ReactDragEvent): string | null => {
-      if (reorderSrc) return reorderSrc
-      try {
-        const id = e.dataTransfer.getData(DRAG_TYPE)
-        if (id && id !== '') return id
-      } catch {
-        /* dragOver 阶段 getData 可能抛错 */
-      }
-      return null
-    },
-    [reorderSrc],
-  )
-
-  const isCrossSlot = useCallback((e: ReactDragEvent): boolean => {
-    try {
-      const srcSlot = e.dataTransfer.getData(DRAG_SLOT_TYPE)
-      return srcSlot !== '' && srcSlot !== RIGHT_SLOT
-    } catch {
-      return false
-    }
-  }, [])
 
   const onIconDragStart = useCallback(
     (layoutId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
       if (!canReorder) return
-      setReorderSrc(layoutId)
+      startDrag({ itemId: layoutId, sourceSlot: RIGHT_SLOT })
+      setDragSrcId(layoutId)
       e.dataTransfer.setData(DRAG_TYPE, layoutId)
       e.dataTransfer.setData(DRAG_SLOT_TYPE, RIGHT_SLOT)
       e.dataTransfer.effectAllowed = 'move'
@@ -125,54 +103,74 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
 
   const onIconDragOver = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      const src = getDragSource(e)
-      if (!src || src === targetId) return
+      // 用 types 判断（dragOver 阶段 getData 受限），用模块级 state 读源。
+      if (!isOurDrag(e)) return
+      const drag = getDrag()
+      if (!drag || drag.itemId === targetId) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      if (!isCrossSlot(e)) {
-        const next = computeReorder(tabs.map((x) => x.layoutId), src, targetId, before)
-        setDropHint(next ? { targetId, before } : null)
+      if (drag.sourceSlot === RIGHT_SLOT) {
+        // 同 slot：computeReorder 判 no-op。
+        const next = computeReorder(tabs.map((x) => x.layoutId), drag.itemId, targetId, before)
+        if (next) setDropHint({ targetId, before })
+        else setDropHint(null)
       } else {
+        // 跨 slot：总是有效。
         setDropHint({ targetId, before })
       }
     },
-    [getDragSource, isCrossSlot, tabs],
+    [tabs],
   )
 
   const onIconDrop = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
       e.preventDefault()
-      const src = getDragSource(e)
-      setReorderSrc(null)
+      const drag = getDrag()
       setDropHint(null)
-      if (!src || src === targetId) return
+      setDragSrcId(null)
+      clearDrag()
+      if (!drag || drag.itemId === targetId) return
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      if (isCrossSlot(e)) {
-        layoutRegistry.moveItemTo(src, RIGHT_SLOT, { beforeId: before ? targetId : undefined })
+      if (drag.sourceSlot !== RIGHT_SLOT) {
+        // 跨 slot：moveItemTo。
+        layoutRegistry.moveItemTo(drag.itemId, RIGHT_SLOT, { beforeId: before ? targetId : undefined })
       } else {
-        const next = computeReorder(tabs.map((x) => x.layoutId), src, targetId, before)
+        // 同 slot：setSlotOrder 重排。
+        const next = computeReorder(tabs.map((x) => x.layoutId), drag.itemId, targetId, before)
         if (next) layoutRegistry.setSlotOrder(RIGHT_SLOT, next)
       }
     },
-    [getDragSource, isCrossSlot, tabs],
+    [tabs],
   )
 
   const onIconDragEnd = useCallback(() => {
-    setReorderSrc(null)
     setDropHint(null)
+    setDragSrcId(null)
+    clearDrag()
   }, [])
+
+  // dragLeave 闪烁修复：检查 relatedTarget 是否仍在当前按钮内。
+  const onIconDragLeave = useCallback(
+    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
+      const related = e.relatedTarget as Node | null
+      if (related && e.currentTarget.contains(related)) return
+      setDropHint((h) => (h?.targetId === targetId ? null : h))
+    },
+    [],
+  )
 
   return (
     <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l bg-bg-secondary py-2">
       {tabs.map(({ layoutId, panel, icon: Icon, label }) => {
         const active = activePanel === panel
         const showLine = dropHint?.targetId === layoutId
+        const isDragSrc = dragSrcId === layoutId
         return (
           <div key={layoutId} className="flex w-full flex-col items-center">
-            {showLine && dropHint.before && (
+            {showLine && dropHint!.before && (
               <div data-testid="insertion-line" className="mb-0.5 h-0.5 w-6 shrink-0 rounded-full bg-app-accent" />
             )}
             <Tooltip>
@@ -187,9 +185,12 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
                   onDragOver={onIconDragOver(layoutId)}
                   onDrop={onIconDrop(layoutId)}
                   onDragEnd={onIconDragEnd}
-                  onDragLeave={() => setDropHint((h) => (h?.targetId === layoutId ? null : h))}
-                  className="group relative flex size-9 shrink-0 select-none items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
-                  style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                  onDragLeave={onIconDragLeave(layoutId)}
+                  className="group relative flex size-9 shrink-0 select-none items-center justify-center rounded-md transition-opacity hover:bg-bg-tertiary"
+                  style={{
+                    color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+                    opacity: isDragSrc ? 0.4 : undefined,
+                  }}
                 >
                   <span
                     className="absolute right-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-l"
@@ -200,7 +201,7 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
               </TooltipTrigger>
               <TooltipContent side="left">{label}</TooltipContent>
             </Tooltip>
-            {showLine && !dropHint.before && (
+            {showLine && !dropHint!.before && (
               <div data-testid="insertion-line" className="mt-0.5 h-0.5 w-6 shrink-0 rounded-full bg-app-accent" />
             )}
           </div>

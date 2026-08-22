@@ -10,6 +10,7 @@
  * - 跨 slot 拖入：右栏图标拖到左栏 section 上 → moveItemTo 跨 slot 移动
  * - drop 判定放宽：整个 section 区域可放置（不只 header），指针在 section
  *   上半区=before、下半区=after
+ * - 实时预览：拖拽时显示半透明 ghost 占位（松手前预览 layout 结果）
  *
  * 高度模型（自动 layout 与手动拖拽共存）：
  * - 用户拖过分隔条的 section：固定 px（localStorage 记忆）
@@ -32,14 +33,11 @@ import {
 import { layoutRegistry } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutSlotId } from '@/plugin-runtime/layoutTypes'
 import { computeReorder } from '@/lib/reorder'
+import { DRAG_TYPE, DRAG_SLOT_TYPE, startDrag, getDrag, clearDrag, isOurDrag } from '@/lib/dragState'
 
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
 const MIN_SECTION_H = 80
-
-/** 拖拽协议：dataTransfer 里存 itemId，types 里标记来源 slot。 */
-const DRAG_TYPE = 'application/x-xbot-layout-item'
-const DRAG_SLOT_TYPE = 'application/x-xbot-layout-slot'
 
 export interface SidebarSection {
   id: string
@@ -78,8 +76,10 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
   )
   const containerRef = useRef<HTMLDivElement>(null)
   const [draggingId, setDraggingId] = useState('')
-  const [reorderSrc, setReorderSrc] = useState<string | null>(null)
-  const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean } | null>(null)
+  // dropHint: 当前悬停目标 + before/after + 是否跨 slot（用于 ghost 预览）。
+  const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean; crossSlot: boolean } | null>(null)
+  // 拖拽中的源 itemId（用于 ghost 半透明渲染）。
+  const [dragSrcId, setDragSrcId] = useState<string | null>(null)
 
   useEffect(() => {
     try {
@@ -105,95 +105,85 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
   }, [])
 
   // ── VSCode 式拖拽（HTML5 DnD）──
-  // 同 slot 重排 + 跨 slot 拖入（右栏图标拖到左栏）。
-  // drop 判定放宽：整个 section 区域可放置（不只 header）。
+  // 用模块级 dragState 跨组件共享源信息（dataTransfer.getData 在 dragOver
+  // 阶段受限，跨组件时各自的 state 不可见）。
   const canReorder = Boolean(slotId) && sections.length > 1
 
   const onSectionDragStart = useCallback(
     (id: string) => (e: ReactDragEvent<HTMLElement>) => {
       if (!canReorder) return
-      setReorderSrc(id)
+      const srcSlot = slotId ?? ''
+      startDrag({ itemId: id, sourceSlot: srcSlot })
+      setDragSrcId(id)
       e.dataTransfer.setData(DRAG_TYPE, id)
-      if (slotId) e.dataTransfer.setData(DRAG_SLOT_TYPE, slotId)
+      e.dataTransfer.setData(DRAG_SLOT_TYPE, srcSlot)
       e.dataTransfer.effectAllowed = 'move'
     },
     [canReorder, slotId],
   )
 
-  // 判断拖拽来源：同 slot 重排（reorderSrc 有值）还是跨 slot 拖入（dataTransfer）。
-  const getDragSource = useCallback(
-    (e: ReactDragEvent): string | null => {
-      // 同 slot：reorderSrc（dragOver 里读不到 dataTransfer，用 state）。
-      if (reorderSrc) return reorderSrc
-      // 跨 slot：从 dataTransfer 读（drop 时可读）。
-      try {
-        const id = e.dataTransfer.getData(DRAG_TYPE)
-        if (id && id !== '') return id
-      } catch {
-        /* dragOver 阶段 getData 可能抛错（部分浏览器）—— drop 时一定能读 */
-      }
-      return null
-    },
-    [reorderSrc],
-  )
-
-  const isCrossSlot = useCallback(
-    (e: ReactDragEvent): boolean => {
-      try {
-        const srcSlot = e.dataTransfer.getData(DRAG_SLOT_TYPE)
-        return srcSlot !== '' && srcSlot !== slotId
-      } catch {
-        return false
-      }
-    },
-    [slotId],
-  )
-
   const onSectionDragOver = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
       if (!slotId) return
-      const src = getDragSource(e)
-      if (!src || src === targetId) return
+      // 用 types 判断（dragOver 阶段 getData 受限），用模块级 state 读源。
+      if (!isOurDrag(e)) return
+      const drag = getDrag()
+      if (!drag || drag.itemId === targetId) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      // 同 slot：computeReorder 判 no-op；跨 slot：总是有效（moveItemTo）。
-      if (!isCrossSlot(e)) {
-        const next = computeReorder(sections.map((s) => s.id), src, targetId, before)
-        setDropHint(next ? { targetId, before } : null)
+      const crossSlot = drag.sourceSlot !== slotId
+      if (!crossSlot) {
+        // 同 slot：computeReorder 判 no-op（拖回原位不显示插入线）。
+        const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, before)
+        if (next) setDropHint({ targetId, before, crossSlot: false })
+        else setDropHint(null)
       } else {
-        setDropHint({ targetId, before })
+        setDropHint({ targetId, before, crossSlot: true })
       }
     },
-    [slotId, getDragSource, isCrossSlot, sections],
+    [slotId, sections],
   )
 
   const onSectionDrop = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
       e.preventDefault()
-      const src = getDragSource(e)
-      setReorderSrc(null)
+      const drag = getDrag()
       setDropHint(null)
-      if (!slotId || !src || src === targetId) return
+      setDragSrcId(null)
+      clearDrag()
+      if (!slotId || !drag || drag.itemId === targetId) return
       const rect = e.currentTarget.getBoundingClientRect()
       const before = e.clientY < rect.top + rect.height / 2
-      if (isCrossSlot(e)) {
+      if (drag.sourceSlot !== slotId) {
         // 跨 slot：moveItemTo 把项从原 slot 移到本 slot 的指定位置。
-        layoutRegistry.moveItemTo(src, slotId, { beforeId: before ? targetId : undefined })
+        layoutRegistry.moveItemTo(drag.itemId, slotId, { beforeId: before ? targetId : undefined })
       } else {
         // 同 slot：setSlotOrder 重排。
-        const next = computeReorder(sections.map((s) => s.id), src, targetId, before)
+        const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, before)
         if (next) layoutRegistry.setSlotOrder(slotId, next)
       }
     },
-    [slotId, getDragSource, isCrossSlot, sections],
+    [slotId, sections],
   )
 
   const onSectionDragEnd = useCallback(() => {
-    setReorderSrc(null)
     setDropHint(null)
+    setDragSrcId(null)
+    clearDrag()
   }, [])
+
+  // dragLeave 闪烁修复：检查 relatedTarget 是否仍在当前 section 内，
+  // 只有真正离开才清 dropHint（子元素间移动不触发清除）。
+  const onSectionDragLeave = useCallback(
+    (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
+      const related = e.relatedTarget as Node | null
+      if (related && e.currentTarget.contains(related)) return
+      setDropHint((h) => (h?.targetId === targetId ? null : h))
+    },
+    [],
+  )
 
   const startResize = useCallback(
     (sectionId: string) => (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -244,18 +234,19 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
             ? { height: fixedH, flex: '0 0 auto' }
             : { flex: '1 1 0%' }
         const showLine = dropHint?.targetId === sec.id
+        const isDragSrc = dragSrcId === sec.id
         return (
           <div key={sec.id} className="contents">
-            {showLine && dropHint.before && (
+            {showLine && dropHint!.before && (
               <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
             )}
             <section
               data-section-id={sec.id}
-              className="flex min-h-0 flex-col overflow-hidden"
-              style={style}
+              className="flex min-h-0 flex-col overflow-hidden transition-opacity"
+              style={{ ...style, opacity: isDragSrc ? 0.4 : undefined }}
               onDragOver={onSectionDragOver(sec.id)}
               onDrop={onSectionDrop(sec.id)}
-              onDragLeave={() => setDropHint((h) => (h?.targetId === sec.id ? null : h))}
+              onDragLeave={onSectionDragLeave(sec.id)}
             >
               <button
                 type="button"
@@ -277,7 +268,7 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                 <div className="min-h-0 flex-1 overflow-hidden">{sec.content}</div>
               )}
             </section>
-            {showLine && !dropHint.before && (
+            {showLine && !dropHint!.before && (
               <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
             )}
             {i < sections.length - 1 && (
