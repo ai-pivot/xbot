@@ -17,8 +17,9 @@ import { continuousIterations } from './progressStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { useI18n } from '@/providers/i18n'
+import { SubAgentProgressTree } from './SubAgentProgressTree'
 import type { CollapseLevel } from '@/types/agent'
-import type { ProgressSnapshot, WebIteration, WebToolProgress } from '@/types/shared'
+import type { ProgressSnapshot, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 
 interface TurnBodyProps {
   iterations: WebIteration[]
@@ -35,6 +36,7 @@ type ContentBlock =
   | { kind: 'reasoning'; text: string; iteration: number }
   | { kind: 'text'; content: string; iteration: number }
   | { kind: 'tools'; tools: WebToolProgress[]; iterations: number[] }
+  | { kind: 'subagents'; nodes: WebSubAgentProgress[]; iteration: number }
 
 /** Flatten iterations into content blocks, merging consecutive tool blocks. */
 function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
@@ -56,6 +58,11 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
       } else {
         blocks.push({ kind: 'tools', tools: [...iter.tools], iterations: [iterNum] })
       }
+    }
+    // SubAgent tree frozen at this iteration's boundary — background subagent
+    // progress renders under its ORIGINAL iteration, never the newest one.
+    if (iter.subAgents && iter.subAgents.length > 0) {
+      blocks.push({ kind: 'subagents', nodes: iter.subAgents, iteration: iterNum })
     }
   }
   return blocks
@@ -88,6 +95,9 @@ export const TurnBody = memo(function TurnBody({
               level={level}
               mergeTools={mergeTools}
             />
+            {iter.subAgents && iter.subAgents.length > 0 && (
+              <SubAgentProgressTree nodes={iter.subAgents} />
+            )}
           </div>
         ))}
         {liveProgress && (
@@ -124,6 +134,15 @@ export const TurnBody = memo(function TurnBody({
                 content={block.content}
                 className="text-sm text-text-primary"
               />
+            </div>
+          )
+        }
+        // SubAgent tree frozen at the iteration boundary — renders under the
+        // ORIGINAL iteration that spawned it (background subagent attribution).
+        if (block.kind === 'subagents') {
+          return (
+            <div key={`sa-${i}`} data-iter-id={block.iteration} data-turn-id={turnID}>
+              <SubAgentProgressTree nodes={block.nodes} />
             </div>
           )
         }

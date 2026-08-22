@@ -84,11 +84,33 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 			if pi < len(s.progressLines) {
 				execCtx = WithSubAgentProgress(execCtx, func(detail SubAgentProgressDetail) {
 					s.progressMu.Lock()
+					// Stamp the spawning iteration so every consumer (progress
+					// events, iteration snapshots) can attribute this subagent's
+					// progress to the iteration that spawned it — background
+					// subagents outlive their spawning iteration and must NOT
+					// drift onto newer iterations.
+					newNode := extractSubAgentNodesFromDetail(detail)
+					stampSubAgentIteration(newNode, entry.iteration)
+					// Background subagents keep firing this callback long after
+					// the spawning iteration finished (their runCtx derives from
+					// the agent lifecycle, not the tool call). By then
+					// structuredProgress belongs to a NEWER iteration: merging
+					// here would (a) attach the subagent tree to the newest
+					// iteration's events ("进度污染最新迭代") and (b) emit a
+					// spurious event whose empty ActiveTools overwrites the
+					// frontend's tool state (老迭代/工具显示被打乱). When the
+					// run has moved past the spawning iteration, drop the
+					// callback entirely — the subagent's state stays attributed
+					// to its original iteration via the snapshot recorded at
+					// that iteration's boundary (snapshotCompletedIteration).
+					if s.structuredProgress != nil && s.structuredProgress.Iteration != entry.iteration {
+						s.progressMu.Unlock()
+						return
+					}
 					s.progressLines[pi] = formatSubAgentProgress(detail)
 					// Merge structured SubAgent node — don't replace.
 					// Multiple SubAgents may be running concurrently; each
 					// callback only has one node but we must preserve others.
-					newNode := extractSubAgentNodesFromDetail(detail)
 					s.subAgentNodes = mergeSubAgentNodeList(s.subAgentNodes, newNode)
 					s.progressMu.Unlock()
 					s.notifyProgress("")
@@ -406,6 +428,13 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			snap.TokensPerSec = s.structuredProgress.StreamStats.TokensPerSec
 			snap.TotalMs = s.structuredProgress.StreamStats.TotalMs
 			snap.TPOTMs = s.structuredProgress.StreamStats.TPOTMs
+		}
+		// Freeze this iteration's SubAgent tree into the snapshot. Background
+		// subagents stop reporting into the LIVE progress once the run moves
+		// past this iteration (callback drop in execOneTool) — this frozen tree
+		// is what makes their progress render "in the original iteration".
+		if len(s.subAgentNodes) > 0 {
+			snap.SubAgents = convertCLISubAgentTree(s.subAgentNodes)
 		}
 		for j, t := range s.structuredProgress.CompletedTools {
 			snap.Tools[j] = IterationToolSnapshot{

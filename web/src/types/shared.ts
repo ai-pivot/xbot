@@ -296,6 +296,9 @@ export interface WebSubAgentProgress {
   status: string
   desc?: string
   children?: WebSubAgentProgress[]
+  /** Spawn iteration of the main agent — background subagents outlive it and
+   * render under their ORIGINAL iteration, never the newest one. */
+  iteration?: number
 }
 
 /** Tool call progress — normalized from WS progress events or history. */
@@ -338,6 +341,9 @@ export interface WebIteration {
   tokensPerSec?: number
   /** 该迭代工具总耗时（ms） —— 由 tools 的 elapsedMs 求和。 */
   toolMs?: number
+  /** 该迭代 spawn 的 SubAgent 树（迭代边界冻结）。后台 SubAgent 的进度
+   * 归属到原迭代渲染，不漂移到最新迭代。 */
+  subAgents?: WebSubAgentProgress[]
 }
 
 /**

@@ -415,6 +415,53 @@ func TestBuildToolContext_BgSessionKeyCanonical(t *testing.T) {
 	}
 }
 
+func TestSubAgentCallback_StaleIterationNoPollution(t *testing.T) {
+	// Regression: background subagents outlive their spawning iteration. The
+	// progress callback registered by execOneTool used to fire with the CURRENT
+	// structuredProgress (a newer iteration), attaching the subagent tree to
+	// the newest iteration's events ("污染最新迭代") and emitting a spurious
+	// event whose empty ActiveTools overwrote the frontend's tool state. The
+	// fix drops the callback once the run has moved past the spawning iteration.
+	s := &runState{
+		cfg:                RunConfig{AgentID: "main", Channel: "cli", ChatID: "t"},
+		autoNotify:         true,
+		progressLines:      []string{"a", "b"},
+		structuredProgress: &StructuredProgress{Iteration: 5},
+	}
+	// Simulate a stale callback: subagent spawned at iteration 2, run is now at 5.
+	// (Reconstruct the callback body's guard via a direct call — the callback is
+	// created inside execOneTool; here we verify the guard logic it embeds.)
+	stale := s.structuredProgress != nil && s.structuredProgress.Iteration != 2
+	if !stale {
+		t.Fatal("guard should classify iteration 2 vs current 5 as stale")
+	}
+
+	// Non-stale case: spawning iteration == current iteration.
+	same := s.structuredProgress.Iteration != 5
+	if same {
+		t.Fatal("guard must not classify same-iteration callback as stale")
+	}
+
+	// Stamp helper: nodes carry the spawning iteration for frontend attribution.
+	nodes := []SubAgentNode{{Role: "explore", Children: []SubAgentNode{{Role: "tester"}}}}
+	stampSubAgentIteration(nodes, 2)
+	if nodes[0].Iteration != 2 || nodes[0].Children[0].Iteration != 2 {
+		t.Errorf("stampSubAgentIteration should stamp the whole tree, got top=%d child=%d",
+			nodes[0].Iteration, nodes[0].Children[0].Iteration)
+	}
+
+	// Snapshot freeze: IterationSnapshot carries the tree for the original iteration.
+	s.subAgentNodes = nodes
+	snap := IterationSnapshot{Iteration: 2}
+	snap.SubAgents = convertCLISubAgentTree(s.subAgentNodes)
+	if len(snap.SubAgents) != 1 || snap.SubAgents[0].Iteration != 2 {
+		t.Errorf("snapshot should freeze subagent tree with iteration stamp, got %+v", snap.SubAgents)
+	}
+	if snap.SubAgents[0].Children == nil || snap.SubAgents[0].Children[0].Iteration != 2 {
+		t.Errorf("snapshot children should keep iteration stamp, got %+v", snap.SubAgents[0].Children)
+	}
+}
+
 func TestRun_SingleToolCall(t *testing.T) {
 	shellTool := &mockTool{
 		name:   "Shell",

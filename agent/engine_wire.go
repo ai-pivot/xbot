@@ -1802,6 +1802,16 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	return runOneshot(subCtx)
 }
 
+// stampSubAgentIteration stamps the spawning iteration onto every node in the
+// tree (children inherit the top-level stamp — they were all spawned as part
+// of the same tool call's progress reporting).
+func stampSubAgentIteration(nodes []SubAgentNode, iteration int) {
+	for i := range nodes {
+		nodes[i].Iteration = iteration
+		stampSubAgentIteration(nodes[i].Children, iteration)
+	}
+}
+
 // resolveSubAgents extracts the SubAgent tree from a ProgressEvent.
 // It prefers the structured SubAgents field (reliable), falling back to
 // text-based ExtractSubAgentTree only if structured data is unavailable.
@@ -1829,6 +1839,7 @@ func convertCLISubAgentTree(nodes []SubAgentNode) []protocol.SubAgentInfo {
 			SessionKey: n.SessionKey,
 			Status:     n.Status,
 			Desc:       n.Desc,
+			Iteration:  n.Iteration,
 			Children:   convertCLISubAgentTree(n.Children),
 		}
 	}

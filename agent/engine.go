@@ -453,6 +453,11 @@ type IterationSnapshot struct {
 	// Time per output token (ms) for this iteration's LLM stream (true TPOT —
 	// model generation rate, excluding first-token latency).
 	TPOTMs int64 `json:"tpot_ms,omitempty"`
+	// SubAgents spawned in this iteration, frozen at the iteration boundary.
+	// Background subagents outlive the iteration — their LIVE progress stops at
+	// the boundary (the callback drops once the run moves on), and this frozen
+	// tree is what renders "in the original iteration" on reload/live history.
+	SubAgents []protocol.SubAgentInfo `json:"sub_agents,omitempty"`
 }
 
 // IterationToolSnapshot captures a single tool's execution result within an iteration.

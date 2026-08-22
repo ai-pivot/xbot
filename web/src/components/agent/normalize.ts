@@ -48,6 +48,8 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
     ttftMs,
     tokensPerSec,
     toolMs,
+    // 该迭代 spawn 的 SubAgent 树（后台 SubAgent 的进度归属原迭代）。
+    subAgents: normalizeWebSubAgents(Array.isArray(r.sub_agents) ? r.sub_agents : undefined),
   }
 }
 

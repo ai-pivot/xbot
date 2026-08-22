@@ -51,6 +51,9 @@ type SubAgentInfo struct {
 	Status     string         `json:"status"`
 	Desc       string         `json:"desc,omitempty"`
 	Children   []SubAgentInfo `json:"children,omitempty"`
+	// Iteration 是 spawn 该 SubAgent 的主 Agent 迭代号。后台 SubAgent 跨迭代
+	// 存活，前端按此字段把进度归属到原迭代渲染，而非最新迭代。
+	Iteration int `json:"iteration,omitempty"`
 }
 
 // TokenUsage represents a token usage snapshot.

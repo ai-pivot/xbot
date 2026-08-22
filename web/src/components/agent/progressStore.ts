@@ -282,6 +282,7 @@ export function normalizeWebSubAgent(raw: unknown): WebSubAgentProgress | null {
     status: typeof r.status === 'string' ? r.status : '',
     desc: typeof r.desc === 'string' ? r.desc : undefined,
     children,
+    iteration: typeof r.iteration === 'number' && r.iteration > 0 ? r.iteration : undefined,
   }
 }
 

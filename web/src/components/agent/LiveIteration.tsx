@@ -65,7 +65,15 @@ export const LiveIteration = memo(function LiveIteration({
     ? ''
     : rawTextContent
   const hasStreamContent = Boolean(textContent)
-  const hasSubAgents = progress.subAgents.length > 0
+  // Top-level subAgents: only nodes belonging to the CURRENT iteration (or
+  // untagged legacy data). Nodes stamped with an older iteration are rendered
+  // by TurnBody under their original iteration — the live area must not show
+  // them ("后台 subagent 污染最新迭代" 的前端兜底).
+  const currentIter = progress.iteration
+  const liveSubAgents = progress.subAgents.filter(
+    (n) => n.iteration === undefined || n.iteration === currentIter,
+  )
+  const hasSubAgents = liveSubAgents.length > 0
 
   // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
   // `streaming` is the authoritative flag: set true by stream_content events,
@@ -227,7 +235,7 @@ export const LiveIteration = memo(function LiveIteration({
         <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
       )}
 
-      {hasSubAgents && <SubAgentProgressTree nodes={progress.subAgents} />}
+      {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}
 
       {/* Streaming C */}
       {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}
