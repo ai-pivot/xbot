@@ -517,13 +517,13 @@ func calculateKeepGroups(totalTokens, maxTokens int) int {
 	ratio := float64(totalTokens) / float64(maxTokens)
 	switch {
 	case ratio <= 0.70:
-		return 12
+		return 100
 	case ratio <= 0.80:
-		return 8
+		return 80
 	case ratio <= 0.90:
-		return 5
+		return 50
 	default:
-		return 3
+		return 30
 	}
 }
 
