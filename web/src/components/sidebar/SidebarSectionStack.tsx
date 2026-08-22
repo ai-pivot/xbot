@@ -311,14 +311,23 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                 }}
                 onDragOver={isGhost ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } : onSectionDragOver(sec.id)}
                 onDrop={isGhost ? (e) => {
-                  // ghost 没有 targetId，委托给 dropHint 记录的目标 section。
+                  // ghost 的 onDrop：直接用 dropHint.before（dragOver 时已算好），
+                  // 不从 e.currentTarget 重新算 before（e.currentTarget 是 ghost
+                  // 元素，不是目标 section，rect 不对 → before 算错 → computeReorder
+                  // 返回 null → 松手回去）。
                   e.preventDefault()
-                  if (dropHint) {
-                    onSectionDrop(dropHint.targetId)(e)
+                  const drag = getDrag()
+                  setDropHint(null)
+                  setDragSrcId(null)
+                  clearDrag()
+                  if (!slotId || !drag || !dropHint) return
+                  const targetId = dropHint.targetId
+                  if (drag.itemId === targetId) return
+                  if (drag.sourceSlot !== slotId) {
+                    layoutRegistry.moveItemTo(drag.itemId, slotId, { beforeId: dropHint.before ? targetId : undefined })
                   } else {
-                    setDropHint(null)
-                    setDragSrcId(null)
-                    clearDrag()
+                    const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, dropHint.before)
+                    if (next) layoutRegistry.setSlotOrder(slotId, next)
                   }
                 } : onSectionDrop(sec.id)}
                 onDragLeave={isGhost ? undefined : onSectionDragLeave(sec.id)}
