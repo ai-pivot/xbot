@@ -20,6 +20,8 @@ import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { useLeftPluginPanels } from '@/components/sidebar/LeftActivityBar'
 import { SidebarSectionStack, type SidebarSection } from '@/components/sidebar/SidebarSectionStack'
 import { PluginView } from '@/plugin-runtime/PluginView'
+import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
@@ -46,6 +48,12 @@ export function AppShell() {
   const sessionStore = useSessionStore()
   // 左侧栏的用户插件 view（每个渲染为 VSCode 式独立 section，可拖拽/折叠/记忆）
   const pluginPanels = useLeftPluginPanels()
+  // 左侧栏 sections 的权威顺序（registry 排序：用户拖拽重排 → 后端同步）。
+  const leftItems = useLayoutItems('desktop.activity_bar')
+  const pluginPanelMap = useMemo(
+    () => new Map(pluginPanels.map((p) => [p.id, p])),
+    [pluginPanels],
+  )
   const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
@@ -151,19 +159,24 @@ export function AppShell() {
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
           <SidebarSectionStack
-            sections={[
-              {
-                id: 'sessions',
-                title: '会话',
-                content: <SessionSidebar tabManager={tabManager} />,
-              },
-              ...pluginPanels.map<SidebarSection>((p) => ({
-                id: p.id,
-                title: p.title,
-                defaultHeight: 240,
-                content: <PluginView pluginId={p.pluginId} view={p.view} />,
-              })),
-            ]}
+            slotId="desktop.activity_bar"
+            sections={leftItems.map<SidebarSection>((item) =>
+              item.id === BUILTIN_LAYOUT_ITEMS.desktopSessions
+                ? {
+                    id: item.id,
+                    title: item.title,
+                    content: <SessionSidebar tabManager={tabManager} />,
+                  }
+                : {
+                    id: item.id,
+                    title: item.title,
+                    defaultHeight: 240,
+                    content: (() => {
+                      const p = pluginPanelMap.get(item.id)
+                      return p ? <PluginView pluginId={p.pluginId} view={p.view} /> : null
+                    })(),
+                  },
+            )}
           />
           <div
             role="separator"

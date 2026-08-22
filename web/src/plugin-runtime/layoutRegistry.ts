@@ -14,8 +14,10 @@ import {
   LAYOUT_COLLAPSED_KEY,
   LAYOUT_GROUPS,
   LAYOUT_OVERRIDES_KEY,
+  LAYOUT_ORDER_KEY,
   type LayoutCollapseState,
   type LayoutItem,
+  type LayoutOrder,
   type LayoutOverrides,
   type LayoutSlotId,
 } from './layoutTypes'
@@ -35,11 +37,13 @@ export const VIEW_CONTAINER_TO_SLOT: Record<string, LayoutSlotId> = {
 class LayoutRegistryImpl {
   private items = new Map<string, LayoutItem>()
   private overrides: LayoutOverrides = {}
+  private order: LayoutOrder = {}
   private collapsed: LayoutCollapseState = {}
   private listeners = new Set<() => void>()
 
   constructor() {
     this.loadOverrides()
+    this.loadOrder()
     this.loadCollapsed()
     // 后端已有覆盖时（换浏览器/设备，syncAndMigrateSettings 拉取 server →
     // localStorage），重新加载并通知订阅者。仅在浏览器环境（单例模块在
@@ -51,6 +55,7 @@ class LayoutRegistryImpl {
 
   private onSettingsSynced = (): void => {
     this.loadOverrides()
+    this.loadOrder()
     this.notify()
   }
 
@@ -71,38 +76,115 @@ class LayoutRegistryImpl {
     if (this.items.delete(id)) this.notify()
   }
 
-  /** 查询某 slot 的实际项（默认 + 覆盖后，按 weight 升序）。 */
+  /** 查询某 slot 的实际项（默认 + 覆盖后）。排序：order 数组索引优先，未记录的项按 weight 升序追加在后（新装插件稳定落尾，不打乱用户已排的顺序）。 */
   itemsFor(slot: LayoutSlotId): LayoutItem[] {
     const out: LayoutItem[] = []
     for (const item of this.items.values()) {
       const effectiveSlot = this.overrides[item.id] ?? item.slot
       if (effectiveSlot === slot) out.push(item)
     }
-    out.sort((a, b) => (a.weight ?? 0) - (b.weight ?? 0))
+    const orderedIds = this.order[slot] ?? []
+    const idx = new Map<string, number>()
+    for (let i = 0; i < orderedIds.length; i++) {
+      if (!idx.has(orderedIds[i])) idx.set(orderedIds[i], i) // 去重：首个位置生效
+    }
+    out.sort((a, b) => {
+      const ia = idx.get(a.id)
+      const ib = idx.get(b.id)
+      if (ia !== undefined && ib !== undefined) return ia - ib
+      if (ia !== undefined) return -1
+      if (ib !== undefined) return 1
+      return (a.weight ?? 0) - (b.weight ?? 0)
+    })
     return out
   }
 
-  /** 移动一个项到目标 slot（持久化）。 */
+  /** 移动一个项到目标 slot（追加到该 slot 末尾，持久化）。 */
   moveItem(id: string, targetSlot: LayoutSlotId): void {
+    this.moveItemTo(id, targetSlot)
+  }
+
+  /**
+   * 移动一个项到目标 slot 的指定位置（VSCode 式拖拽重排的核心 API）。
+   * - opts.beforeId：插入到该 id 之前；省略/null 落到该 slot 的真实末尾。
+   * - 跨 slot 移动时自动从原 slot 的 order 数组移除（一个 id 只在一个 slot）。
+   * - order 数组按移动时的完整顺序快照写入（含未显式排序的项）——
+   *   被移项落在用户看到的真实位置，而不是“已排序项优先”的抽象位置。
+   */
+  moveItemTo(id: string, targetSlot: LayoutSlotId, opts?: { beforeId?: string | null }): void {
     const item = this.items.get(id)
     if (!item) return
     this.overrides[id] = targetSlot
+    for (const key of Object.keys(this.order) as LayoutSlotId[]) {
+      if (key !== targetSlot) {
+        const prev = this.order[key]
+        if (prev?.includes(id)) {
+          this.order[key] = prev.filter((x) => x !== id)
+        }
+      }
+    }
+    // 当前顺序快照（已排序项按 order，其余按 weight 跟随），移除自身后插入。
+    const arr = this.itemsFor(targetSlot).map((it) => it.id).filter((x) => x !== id)
+    if (opts?.beforeId) {
+      const i = arr.indexOf(opts.beforeId)
+      if (i === -1) arr.push(id)
+      else arr.splice(i, 0, id)
+    } else {
+      arr.push(id)
+    }
+    this.order[targetSlot] = arr
     this.saveOverrides()
+    this.saveOrder()
     this.notify()
   }
 
-  /** 把项的覆盖恢复为默认 slot。 */
+  /** 整槽重设排序（同 slot 拖拽重排）。自动去重；保留未知 id（位置记忆，项回来时恢复原位）。 */
+  setSlotOrder(slot: LayoutSlotId, orderedIds: string[]): void {
+    const seen = new Set<string>()
+    const arr: string[] = []
+    for (const id of orderedIds) {
+      if (!seen.has(id)) {
+        seen.add(id)
+        arr.push(id)
+      }
+    }
+    this.order[slot] = arr
+    this.saveOrder()
+    this.notify()
+  }
+
+  /** 某槽的用户排序（未排序的部分不在返回值里，设置面板用）。 */
+  getSlotOrder(slot: LayoutSlotId): string[] {
+    return [...(this.order[slot] ?? [])]
+  }
+
+  /** 把项的覆盖恢复为默认 slot（同时从所有 order 数组移除该 id）。 */
   resetItem(id: string): void {
-    if (!(id in this.overrides)) return
-    delete this.overrides[id]
-    this.saveOverrides()
-    this.notify()
+    let changed = false
+    if (id in this.overrides) {
+      delete this.overrides[id]
+      this.saveOverrides()
+      changed = true
+    }
+    for (const key of Object.keys(this.order) as LayoutSlotId[]) {
+      const prev = this.order[key]
+      if (prev?.includes(id)) {
+        this.order[key] = prev.filter((x) => x !== id)
+        changed = true
+      }
+    }
+    if (changed) {
+      this.saveOrder()
+      this.notify()
+    }
   }
 
-  /** 全部恢复默认。 */
+  /** 全部恢复默认（覆盖 + 排序一起清空；折叠状态是纯前端细节，不动）。 */
   resetAll(): void {
     this.overrides = {}
+    this.order = {}
     this.saveOverrides()
+    this.saveOrder()
     this.notify()
   }
 
@@ -154,6 +236,38 @@ class LayoutRegistryImpl {
     } catch {
       this.overrides = {}
     }
+  }
+
+  private loadOrder(): void {
+    try {
+      const raw = localStorage.getItem(LAYOUT_ORDER_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as LayoutOrder
+      // 形状校验：只接受 slot → string[]（脏数据整体丢弃，回退 weight 排序）。
+      if (parsed && typeof parsed === 'object') {
+        const clean: LayoutOrder = {}
+        for (const key of Object.keys(parsed)) {
+          const v = parsed[key as LayoutSlotId]
+          if (Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+            clean[key as LayoutSlotId] = v
+          }
+        }
+        this.order = clean
+      }
+    } catch {
+      this.order = {}
+    }
+  }
+
+  private saveOrder(): void {
+    try {
+      localStorage.setItem(LAYOUT_ORDER_KEY, JSON.stringify(this.order))
+    } catch {
+      /* storage full / disabled — non-fatal */
+    }
+    // 后端同步（web:ui:layout-order）。后端只存「slot 归属 + 顺序」这类基础
+    // 布局；宽度/高度/折叠等细节纯前端（localStorage），不占用后端存储。
+    syncSettingToServer(LAYOUT_ORDER_KEY, JSON.stringify(this.order))
   }
 
   private saveOverrides(): void {
@@ -231,6 +345,12 @@ export function useLayoutConfig() {
   const moveItem = useCallback((id: string, slot: LayoutSlotId) => {
     layoutRegistry.moveItem(id, slot)
   }, [])
+  const moveItemTo = useCallback(
+    (id: string, slot: LayoutSlotId, opts?: { beforeId?: string | null }) => {
+      layoutRegistry.moveItemTo(id, slot, opts)
+    },
+    [],
+  )
   const resetItem = useCallback((id: string) => layoutRegistry.resetItem(id), [])
   const resetAll = useCallback(() => layoutRegistry.resetAll(), [])
 
@@ -238,6 +358,7 @@ export function useLayoutConfig() {
     allItems: layoutRegistry.allItems(),
     overrides: layoutRegistry.getOverrides(),
     moveItem,
+    moveItemTo,
     resetItem,
     resetAll,
   }

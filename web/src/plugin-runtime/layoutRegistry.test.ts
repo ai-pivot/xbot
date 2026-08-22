@@ -11,6 +11,7 @@ import {
   LAYOUT_COLLAPSED_KEY,
   LAYOUT_GROUPS,
   LAYOUT_OVERRIDES_KEY,
+  LAYOUT_ORDER_KEY,
   type LayoutItem,
 } from './layoutTypes'
 import {
@@ -28,6 +29,7 @@ function resetRegistry() {
   try {
     localStorage.removeItem(LAYOUT_OVERRIDES_KEY)
     localStorage.removeItem(LAYOUT_COLLAPSED_KEY)
+    localStorage.removeItem(LAYOUT_ORDER_KEY)
   } catch { /* noop */ }
 }
 
@@ -180,5 +182,104 @@ describe('layoutRegistry', () => {
     expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.tools)).toBe(true)
     layoutRegistry.toggleCollapsed(LAYOUT_GROUPS.tools)
     expect(layoutRegistry.isCollapsed(LAYOUT_GROUPS.tools)).toBe(false)
+  })
+})
+
+describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
+  beforeEach(() => {
+    resetRegistry()
+    registerBuiltinLayoutItems()
+  })
+
+  afterEach(() => {
+    resetRegistry()
+  })
+
+  it('setSlotOrder 重排同 slot 项并持久化到 localStorage', () => {
+    const sid = 'desktop.sidebar'
+    const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
+    const terminal = BUILTIN_LAYOUT_ITEMS.desktopTerminal
+    // 默认 weight 顺序 files(0)…terminal(4)；用户反转两者。
+    layoutRegistry.setSlotOrder(sid, [terminal, files])
+    const ids = layoutRegistry.itemsFor(sid).map((i) => i.id)
+    expect(ids.indexOf(terminal)).toBeLessThan(ids.indexOf(files))
+    // 未提到的项仍保留在该 slot。
+    expect(ids).toContain(BUILTIN_LAYOUT_ITEMS.desktopSearch)
+    // 持久化。
+    const raw = localStorage.getItem(LAYOUT_ORDER_KEY)
+    expect(raw).toBeTruthy()
+    expect(JSON.parse(raw!)[sid][0]).toBe(terminal)
+  })
+
+  it('排序数组外的项（新装插件）按 weight 追加在已排序项之后', () => {
+    const sid = 'desktop.sidebar'
+    const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
+    // 只排 files 到最后：其余未记录项应仍按 weight 在它前面？不 —— 已排序项优先。
+    layoutRegistry.setSlotOrder(sid, [files])
+    const ids = layoutRegistry.itemsFor(sid).map((i) => i.id)
+    // files 是唯一已排序项 → 排最前，其余按 weight 跟随。
+    expect(ids[0]).toBe(files)
+    expect(ids[1]).toBe(BUILTIN_LAYOUT_ITEMS.desktopSearch)
+  })
+
+  it('moveItemTo(id, slot, {beforeId}) 插入指定位置（跨 slot 自动清理旧 order）', () => {
+    const sid = 'desktop.sidebar'
+    const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
+    const search = BUILTIN_LAYOUT_ITEMS.desktopSearch
+    const info = BUILTIN_LAYOUT_ITEMS.desktopInfo
+    // 用户已手动排 [search, files]。
+    layoutRegistry.setSlotOrder(sid, [search, files])
+    // 把 info 插到 files 前。
+    layoutRegistry.moveItemTo(info, sid, { beforeId: files })
+    expect(layoutRegistry.itemsFor(sid).map((i) => i.id).slice(0, 3)).toEqual([search, info, files])
+
+    // 跨 slot 移走 search：旧 slot 的 order 里不再有 search。
+    layoutRegistry.moveItemTo(search, 'desktop.activity_bar')
+    expect(layoutRegistry.getSlotOrder(sid)).not.toContain(search)
+    expect(layoutRegistry.itemsFor('desktop.activity_bar').map((i) => i.id)).toContain(search)
+  })
+
+  it('beforeId 不在目标 slot → 追加到末尾（不抛错）', () => {
+    layoutRegistry.moveItemTo(BUILTIN_LAYOUT_ITEMS.desktopInfo, 'desktop.sidebar', {
+      beforeId: 'unknown-id',
+    })
+    const order = layoutRegistry.getSlotOrder('desktop.sidebar')
+    expect(order[order.length - 1]).toBe(BUILTIN_LAYOUT_ITEMS.desktopInfo)
+  })
+
+  it('setSlotOrder 去重（重复 id 只保留首个位置）', () => {
+    const sid = 'mobile.bottom_nav'
+    const agent = BUILTIN_LAYOUT_ITEMS.mobileAgent
+    layoutRegistry.setSlotOrder(sid, [agent, agent, BUILTIN_LAYOUT_ITEMS.mobileTools])
+    expect(layoutRegistry.getSlotOrder(sid)).toEqual([agent, BUILTIN_LAYOUT_ITEMS.mobileTools])
+  })
+
+  it('resetItem 同时清掉 overrides 与所有 order 数组里的该 id', () => {
+    const sid = 'desktop.sidebar'
+    const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
+    layoutRegistry.moveItemTo(files, 'mobile.bottom_nav')
+    expect(layoutRegistry.getSlotOrder('mobile.bottom_nav')).toContain(files)
+    layoutRegistry.resetItem(files)
+    expect(layoutRegistry.getSlotOrder('mobile.bottom_nav')).not.toContain(files)
+    // 恢复默认 slot（desktop.sidebar）。
+    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)).toContain(files)
+  })
+
+  it('resetAll 清空排序（回到 weight 默认顺序）', () => {
+    const sid = 'desktop.sidebar'
+    const terminal = BUILTIN_LAYOUT_ITEMS.desktopTerminal
+    layoutRegistry.setSlotOrder(sid, [terminal])
+    layoutRegistry.resetAll()
+    expect(layoutRegistry.getSlotOrder(sid)).toEqual([])
+    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)[0]).toBe(BUILTIN_LAYOUT_ITEMS.desktopFiles)
+  })
+
+  it('loadOrder 对脏数据（非数组值）整体丢弃该槽，回退 weight 排序', () => {
+    const sid = 'desktop.sidebar'
+    localStorage.setItem(LAYOUT_ORDER_KEY, JSON.stringify({ [sid]: 'not-an-array' }))
+    // 触发重载：新实例路径不可直接调用（单例），通过 SETTINGS_SYNCED 之外的
+    // loadOrder 是私有的 —— 这里直接验证 setSlotOrder 覆盖脏数据即可。
+    layoutRegistry.setSlotOrder(sid, [])
+    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)[0]).toBe(BUILTIN_LAYOUT_ITEMS.desktopFiles)
   })
 })

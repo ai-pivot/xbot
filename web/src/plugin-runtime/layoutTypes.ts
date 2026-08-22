@@ -48,6 +48,14 @@ export interface LayoutItem {
 /** 用户布局覆盖：itemId → 目标 slot（未列出的项留在默认 slot）。 */
 export type LayoutOverrides = Record<string, LayoutSlotId>
 
+/**
+ * 用户排序覆盖：slot → 有序的 itemId 列表。
+ * 同 slot 内的项按此数组排序；不在数组里的项（新装插件等）追加在已排序项
+ * 之后，按 weight 稳定兜底。与 overrides 一样持久化到 localStorage 并同步
+ * 后端（web:ui:layout-order）——后端只存「归属 + 顺序」这类基础布局。
+ */
+export type LayoutOrder = Partial<Record<LayoutSlotId, string[]>>
+
 /** 分组折叠状态：groupId → 是否收起（纯前端持久化，不随布局覆盖走后端）。 */
 export type LayoutCollapseState = Record<string, boolean>
 
@@ -77,6 +85,9 @@ export const BUILTIN_LAYOUT_ITEMS = {
 
 /** localStorage 覆盖配置 key。 */
 export const LAYOUT_OVERRIDES_KEY = 'xbot:layout:overrides'
+
+/** localStorage 排序配置 key（slot → 有序 itemId 列表，同步后端 web:ui:layout-order）。 */
+export const LAYOUT_ORDER_KEY = 'xbot:layout:order'
 
 /** 内置分组 id 常量（分组可折叠收起，状态纯前端持久化）。 */
 export const LAYOUT_GROUPS = {

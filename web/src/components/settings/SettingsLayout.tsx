@@ -37,7 +37,7 @@ const BUILTIN_NAMES: Record<string, string> = {
 
 export function SettingsLayout() {
   const { t } = useI18n()
-  const { allItems, overrides, moveItem, resetItem, resetAll } = useLayoutConfig()
+  const { allItems, overrides, moveItem, moveItemTo, resetItem, resetAll } = useLayoutConfig()
   const [changed, setChanged] = useState(0) // force re-render after moves
   const [dragOverId, setDragOverId] = useState<string | null>(null)
 
@@ -96,7 +96,8 @@ export function SettingsLayout() {
                     e.preventDefault()
                     const src = e.dataTransfer.getData('text/plain') || dragOverId
                     if (src && src !== item.id) {
-                      moveItem(src, slot)
+                      // 拖到某项上 = 插入到该项之前（与真实 UI 的插入线语义一致）。
+                      moveItemTo(src, slot, { beforeId: item.id })
                       setChanged((v) => v + 1)
                     }
                     setDragOverId(null)

@@ -140,4 +140,68 @@ describe('SidebarSectionStack', () => {
       expect(el.className).toContain('overflow-hidden')
     }
   })
+
+  it('VSCode 式重排：拖 header 到另一 section 下方 → setSlotOrder 持久化 + 插入线出现', async () => {
+    const { layoutRegistry } = await import('@/plugin-runtime/layoutRegistry')
+    const spy = vi.spyOn(layoutRegistry, 'setSlotOrder')
+    render(
+      <SidebarSectionStack
+        slotId="desktop.activity_bar"
+        sections={[
+          { id: 'sessions', title: '会话', content: <div>session-list</div> },
+          { id: 'git', title: 'Git', defaultHeight: 240, content: <div>git-panel</div> },
+          { id: 'note', title: 'Notes', defaultHeight: 240, content: <div>note-panel</div> },
+        ]}
+      />,
+    )
+    const gitHeader = screen.getByTitle('收起Git')
+    const noteHeader = screen.getByTitle('收起Notes')
+    // jsdom 的 DragEvent 不自动创建 dataTransfer —— 测试注入 mock。
+    const dt = () => ({ setData: vi.fn(), getData: vi.fn(), effectAllowed: 'move', dropEffect: 'move', types: ['text/plain'] })
+
+    // 开始拖 git；悬停在 notes 下方（jsdom rect 全 0，clientY>0 → after）。
+    fireEvent.dragStart(gitHeader, { dataTransfer: dt() })
+    fireEvent.dragOver(noteHeader, { dataTransfer: dt(), clientY: 10 })
+    // 插入线渲染（dropHint: notes, after）。
+    expect(screen.getAllByTestId('insertion-line').length).toBe(1)
+
+    fireEvent.drop(noteHeader, { dataTransfer: dt(), clientY: 10 })
+    expect(spy).toHaveBeenCalledWith('desktop.activity_bar', ['sessions', 'note', 'git'])
+    spy.mockRestore()
+  })
+
+  it('VSCode 式重排：拖回原位（no-op）不调用 setSlotOrder', async () => {
+    const { layoutRegistry } = await import('@/plugin-runtime/layoutRegistry')
+    const spy = vi.spyOn(layoutRegistry, 'setSlotOrder')
+    render(
+      <SidebarSectionStack
+        slotId="desktop.activity_bar"
+        sections={[
+          { id: 'sessions', title: '会话', content: <div>session-list</div> },
+          { id: 'git', title: 'Git', defaultHeight: 240, content: <div>git-panel</div> },
+        ]}
+      />,
+    )
+    const dt = () => ({ setData: vi.fn(), getData: vi.fn(), effectAllowed: 'move', dropEffect: 'move', types: ['text/plain'] })
+    // 拖 sessions 悬停在 sessions 上（自己 → 无插入线），drop 无副作用。
+    const sessionsHeader = screen.getByTitle('收起会话')
+    fireEvent.dragStart(sessionsHeader, { dataTransfer: dt() })
+    fireEvent.dragOver(sessionsHeader, { dataTransfer: dt(), clientY: 10 })
+    expect(screen.queryByTestId('insertion-line')).toBeNull()
+    fireEvent.drop(sessionsHeader, { dataTransfer: dt(), clientY: 10 })
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('无 slotId 时 header 不可拖拽（draggable=false）', () => {
+    render(
+      <SidebarSectionStack
+        sections={[
+          { id: 'sessions', title: '会话', content: <div>session-list</div> },
+          { id: 'git', title: 'Git', defaultHeight: 240, content: <div>git-panel</div> },
+        ]}
+      />,
+    )
+    expect(screen.getByTitle('收起会话').getAttribute('draggable')).toBe('false')
+  })
 })

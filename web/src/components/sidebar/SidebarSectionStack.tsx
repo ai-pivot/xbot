@@ -5,6 +5,11 @@
  * header；相邻 section 之间有拖拽分隔条（拖动调整上方 section 高度，像素级）；
  * 高度与折叠状态纯前端持久化（localStorage），清缓存后回到默认自动 layout。
  *
+ * VSCode 式拖拽重排（slotId 提供时启用）：拖 section header 到另一个
+ * section 上方/下方，显示插入线（before/after 按指针相对 header 中线判定），
+ * 松手重排并经 layoutRegistry.setSlotOrder 持久化（localStorage + 后端
+ * web:ui:layout-order）。宽度/高度/折叠等细节不进后端。
+ *
  * 高度模型（自动 layout 与手动拖拽共存）：
  * - 用户拖过分隔条的 section：固定 px（localStorage 记忆）
  * - 未拖过但有 defaultHeight 的 section：固定 defaultHeight
@@ -22,9 +27,14 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
+
+import { layoutRegistry } from '@/plugin-runtime/layoutRegistry'
+import { BUILTIN_LAYOUT_ITEMS, type LayoutSlotId } from '@/plugin-runtime/layoutTypes'
+import { computeReorder } from '@/lib/reorder'
 
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
@@ -40,6 +50,8 @@ export interface SidebarSection {
 
 interface SidebarSectionStackProps {
   sections: SidebarSection[]
+  /** 提供时启用 header 拖拽重排（sections 的 id 必须是布局项 id）。 */
+  slotId?: LayoutSlotId
 }
 
 function readJSON<T>(key: string, fallback: T): T {
@@ -51,15 +63,24 @@ function readJSON<T>(key: string, fallback: T): T {
   }
 }
 
-export function SidebarSectionStack({ sections }: SidebarSectionStackProps): ReactNode {
-  const [heights, setHeights] = useState<Record<string, number>>(() =>
-    readJSON<Record<string, number>>(HEIGHTS_KEY, {}),
-  )
+export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackProps): ReactNode {
+  const [heights, setHeights] = useState<Record<string, number>>(() => {
+    const h = readJSON<Record<string, number>>(HEIGHTS_KEY, {})
+    // 一次性迁移：sessions section id 从 'sessions' 改为布局项 id。
+    if (h.sessions !== undefined && h[BUILTIN_LAYOUT_ITEMS.desktopSessions] === undefined) {
+      h[BUILTIN_LAYOUT_ITEMS.desktopSessions] = h.sessions
+      delete h.sessions
+    }
+    return h
+  })
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
     readJSON<Record<string, boolean>>(COLLAPSED_KEY, {}),
   )
   const containerRef = useRef<HTMLDivElement>(null)
   const [draggingId, setDraggingId] = useState('')
+  // 重排拖拽状态（HTML5 DnD；dragOver 里读不到 dataTransfer，用 state 记源 id）。
+  const [reorderSrc, setReorderSrc] = useState<string | null>(null)
+  const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean } | null>(null)
 
   useEffect(() => {
     try {
@@ -84,6 +105,52 @@ export function SidebarSectionStack({ sections }: SidebarSectionStackProps): Rea
       const next = { ...prev, [id]: !cur }
       return next
     })
+  }, [])
+
+  // ── VSCode 式重排（HTML5 DnD，仅 header 是拖拽源和放置目标）──
+  const canReorder = Boolean(slotId) && sections.length > 1
+
+  const onHeaderDragStart = useCallback(
+    (id: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
+      if (!canReorder) return
+      setReorderSrc(id)
+      e.dataTransfer.setData('text/plain', id)
+      e.dataTransfer.effectAllowed = 'move'
+    },
+    [canReorder],
+  )
+
+  const onHeaderDragOver = useCallback(
+    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
+      if (!canReorder || !reorderSrc || reorderSrc === targetId) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+      const rect = e.currentTarget.getBoundingClientRect()
+      const before = e.clientY < rect.top + rect.height / 2
+      const next = computeReorder(sections.map((s) => s.id), reorderSrc, targetId, before)
+      setDropHint(next ? { targetId, before } : null)
+    },
+    [canReorder, reorderSrc, sections],
+  )
+
+  const onHeaderDrop = useCallback(
+    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
+      e.preventDefault()
+      const src = reorderSrc
+      setReorderSrc(null)
+      setDropHint(null)
+      if (!slotId || !src || src === targetId) return
+      const rect = e.currentTarget.getBoundingClientRect()
+      const before = e.clientY < rect.top + rect.height / 2
+      const next = computeReorder(sections.map((s) => s.id), src, targetId, before)
+      if (next) layoutRegistry.setSlotOrder(slotId, next)
+    },
+    [reorderSrc, slotId, sections],
+  )
+
+  const onHeaderDragEnd = useCallback(() => {
+    setReorderSrc(null)
+    setDropHint(null)
   }, [])
 
   const startResize = useCallback(
@@ -135,8 +202,12 @@ export function SidebarSectionStack({ sections }: SidebarSectionStackProps): Rea
           : fixedH != null
             ? { height: fixedH, flex: '0 0 auto' }
             : { flex: '1 1 0%' }
+        const showLine = dropHint?.targetId === sec.id
         return (
           <div key={sec.id} className="contents">
+            {showLine && dropHint.before && (
+              <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
+            )}
             <section
               data-section-id={sec.id}
               className="flex min-h-0 flex-col overflow-hidden"
@@ -145,8 +216,16 @@ export function SidebarSectionStack({ sections }: SidebarSectionStackProps): Rea
               <button
                 type="button"
                 onClick={() => toggle(sec.id)}
+                draggable={canReorder}
+                onDragStart={onHeaderDragStart(sec.id)}
+                onDragOver={onHeaderDragOver(sec.id)}
+                onDrop={onHeaderDrop(sec.id)}
+                onDragEnd={onHeaderDragEnd}
+                onDragLeave={() => setDropHint((h) => (h?.targetId === sec.id ? null : h))}
                 title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
-                className="flex shrink-0 items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text-secondary"
+                className={`flex shrink-0 select-none items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text-secondary ${
+                  canReorder ? 'cursor-grab active:cursor-grabbing' : ''
+                }`}
               >
                 <ChevronRight
                   className={`size-3.5 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
@@ -157,6 +236,9 @@ export function SidebarSectionStack({ sections }: SidebarSectionStackProps): Rea
                 <div className="min-h-0 flex-1 overflow-hidden">{sec.content}</div>
               )}
             </section>
+            {showLine && !dropHint.before && (
+              <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
+            )}
             {i < sections.length - 1 && (
               <div
                 role="separator"
