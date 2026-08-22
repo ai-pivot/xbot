@@ -106,3 +106,4 @@ web/*.jpeg
 /xbot-cli-static-riscv64
 .superpowers/
 core.*
+*.db
