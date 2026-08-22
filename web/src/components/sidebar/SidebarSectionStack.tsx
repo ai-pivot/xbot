@@ -89,6 +89,25 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
     }
   }, [heights])
 
+  // 清理过期高度：sections 变化时（拖走/拖入），移除不在当前列表里的 section
+  // 的高度记录。否则残留的固定高度会导致所有 section 都是固定高度，没有
+  // flex-1 填充剩余空间 → 黑色空区域。
+  useEffect(() => {
+    const currentIds = new Set(sections.map((s) => s.id))
+    setHeights((prev) => {
+      let changed = false
+      const next: Record<string, number> = {}
+      for (const [k, v] of Object.entries(prev)) {
+        if (currentIds.has(k)) {
+          next[k] = v
+        } else {
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [sections])
+
   useEffect(() => {
     try {
       localStorage.setItem(COLLAPSED_KEY, JSON.stringify(collapsed))
@@ -136,9 +155,11 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
       const crossSlot = drag.sourceSlot !== slotId
       if (!crossSlot) {
         // 同 slot：computeReorder 判 no-op（拖回原位不显示插入线）。
+        // 但即使 no-op 也设置 dropHint（显示插入线），让用户知道当前位置
+        // 可放置——只是 drop 时 computeReorder 返回 null 不实际重排。
         const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, before)
-        if (next) setDropHint({ targetId, before, crossSlot: false })
-        else setDropHint(null)
+        setDropHint({ targetId, before, crossSlot: false })
+        void next
       } else {
         setDropHint({ targetId, before, crossSlot: true })
       }
