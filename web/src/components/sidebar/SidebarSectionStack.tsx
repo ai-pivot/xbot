@@ -225,69 +225,115 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
 
   return (
     <div ref={containerRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {sections.map((sec, i) => {
-        const isCollapsed = collapsed[sec.id] ?? false
-        const fixedH = heights[sec.id] ?? sec.defaultHeight
-        // 当只剩一个 section 时，忽略保存的固定高度，用 flex-1 占满空间
-        // （拖走其他 section 后自动 layout，不留黑色空区域）。
-        const isOnlySection = sections.length === 1
-        const style: CSSProperties = isCollapsed
-          ? { flex: '0 0 auto' }
-          : fixedH != null && !isOnlySection
-            ? { height: fixedH, flex: '0 0 auto' }
-            : { flex: '1 1 0%' }
-        const showLine = dropHint?.targetId === sec.id
-        const isDragSrc = dragSrcId === sec.id
-        return (
-          <div key={sec.id} className="contents">
-            {showLine && dropHint!.before && (
-              <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
-            )}
-            <section
-              data-section-id={sec.id}
-              className="flex min-h-0 flex-col overflow-hidden transition-opacity"
-              style={{ ...style, opacity: isDragSrc ? 0.4 : undefined }}
-              onDragOver={onSectionDragOver(sec.id)}
-              onDrop={onSectionDrop(sec.id)}
-              onDragLeave={onSectionDragLeave(sec.id)}
-            >
-              <button
-                type="button"
-                onClick={() => toggle(sec.id)}
-                draggable={canReorder}
-                onDragStart={onSectionDragStart(sec.id)}
-                onDragEnd={onSectionDragEnd}
-                title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
-                className={`flex shrink-0 select-none items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text-secondary ${
-                  canReorder ? 'cursor-grab active:cursor-grabbing' : ''
-                }`}
-              >
-                <ChevronRight
-                  className={`size-3.5 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
-                />
-                <span className="truncate">{sec.title}</span>
-              </button>
-              {!isCollapsed && (
-                <div className="min-h-0 flex-1 overflow-hidden">{sec.content}</div>
+      {(() => {
+        // 拖拽实时预览：计算松手后的 section 列表（含跨 slot 拖入的 ghost 占位）。
+        // 同 slot 重排：按 dropHint 位置重排现有 sections。
+        // 跨 slot 拖入：在 dropHint 位置插入一个 ghost section（半透明占位）。
+        const drag = getDrag()
+        const isCrossSlot = drag != null && drag.sourceSlot !== slotId
+        const previewSections = (() => {
+          if (!dropHint || !drag) return sections
+          if (isCrossSlot) {
+            // 跨 slot：在目标位置插入 ghost 占位。
+            const ghost: SidebarSection = {
+              id: '__drag_ghost__',
+              title: '（拖入预览）',
+              content: null,
+              defaultHeight: 240,
+            }
+            const idx = sections.findIndex((s) => s.id === dropHint.targetId)
+            if (idx === -1) return [...sections, ghost]
+            return dropHint.before
+              ? [...sections.slice(0, idx), ghost, ...sections.slice(idx)]
+              : [...sections.slice(0, idx + 1), ghost, ...sections.slice(idx + 1)]
+          }
+          // 同 slot：重排现有 sections（源半透明，目标位置插入线）。
+          const next = computeReorder(
+            sections.map((s) => s.id),
+            drag.itemId,
+            dropHint.targetId,
+            dropHint.before,
+          )
+          if (!next) return sections
+          const map = new Map(sections.map((s) => [s.id, s]))
+          return next.map((id) => map.get(id)!).filter(Boolean)
+        })()
+
+        return previewSections.map((sec, i) => {
+          const isGhost = sec.id === '__drag_ghost__'
+          const isCollapsed = isGhost ? false : (collapsed[sec.id] ?? false)
+          const fixedH = isGhost ? sec.defaultHeight : (heights[sec.id] ?? sec.defaultHeight)
+          const isOnlySection = previewSections.length === 1
+          const style: CSSProperties = isCollapsed
+            ? { flex: '0 0 auto' }
+            : fixedH != null && !isOnlySection
+              ? { height: fixedH, flex: '0 0 auto' }
+              : { flex: '1 1 0%' }
+          const showLine = !isGhost && dropHint?.targetId === sec.id
+          const isDragSrc = !isGhost && dragSrcId === sec.id
+          return (
+            <div key={sec.id} className="contents">
+              {showLine && dropHint!.before && (
+                <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
               )}
-            </section>
-            {showLine && !dropHint!.before && (
-              <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
-            )}
-            {i < sections.length - 1 && (
-              <div
-                role="separator"
-                aria-orientation="horizontal"
-                aria-label={`Resize ${sections[i].title}`}
-                onPointerDown={startResize(sec.id)}
-                className={`h-1 shrink-0 cursor-row-resize transition-colors hover:bg-app-accent/40 ${
-                  draggingId === sec.id ? 'bg-app-accent/40' : 'bg-transparent'
-                }`}
-              />
-            )}
-          </div>
-        )
-      })}
+              <section
+                data-section-id={sec.id}
+                className="flex min-h-0 flex-col overflow-hidden transition-opacity"
+                style={{
+                  ...style,
+                  opacity: isGhost ? 0.3 : isDragSrc ? 0.4 : undefined,
+                  border: isGhost ? '2px dashed var(--accent)' : undefined,
+                }}
+                onDragOver={isGhost ? undefined : onSectionDragOver(sec.id)}
+                onDrop={isGhost ? undefined : onSectionDrop(sec.id)}
+                onDragLeave={isGhost ? undefined : onSectionDragLeave(sec.id)}
+              >
+                {isGhost ? (
+                  <div className="flex items-center justify-center py-4 text-xs text-text-muted">
+                    {drag?.itemId ?? '拖入预览'}
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => toggle(sec.id)}
+                      draggable={canReorder}
+                      onDragStart={onSectionDragStart(sec.id)}
+                      onDragEnd={onSectionDragEnd}
+                      title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
+                      className={`flex shrink-0 select-none items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text-secondary ${
+                        canReorder ? 'cursor-grab active:cursor-grabbing' : ''
+                      }`}
+                    >
+                      <ChevronRight
+                        className={`size-3.5 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                      />
+                      <span className="truncate">{sec.title}</span>
+                    </button>
+                    {!isCollapsed && (
+                      <div className="min-h-0 flex-1 overflow-hidden">{sec.content}</div>
+                    )}
+                  </>
+                )}
+              </section>
+              {showLine && !dropHint!.before && (
+                <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
+              )}
+              {i < previewSections.length - 1 && !isGhost && (
+                <div
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label={`Resize ${sec.title}`}
+                  onPointerDown={startResize(sec.id)}
+                  className={`h-1 shrink-0 cursor-row-resize transition-colors hover:bg-app-accent/40 ${
+                    draggingId === sec.id ? 'bg-app-accent/40' : 'bg-transparent'
+                  }`}
+                />
+              )}
+            </div>
+          )
+        })
+      })()}
     </div>
   )
 }
