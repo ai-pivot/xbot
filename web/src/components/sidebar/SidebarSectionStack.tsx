@@ -176,13 +176,19 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
 
   // dragLeave 闪烁修复：检查 relatedTarget 是否仍在当前 section 内，
   // 只有真正离开才清 dropHint（子元素间移动不触发清除）。
+  // 额外：ghost 占位（__drag_ghost__）不触发 dragLeave 清除——ghost 是
+  // 预览占位，鼠标在它上面时 dragOver 事件来自下方的真实 section（ghost
+  // 没有 onDragOver），但 dragLeave 会从相邻 section 冒泡过来，导致
+  // dropHint 被清除又重新设置 → 闪烁。
   const onSectionDragLeave = useCallback(
     (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
       const related = e.relatedTarget as Node | null
       if (related && e.currentTarget.contains(related)) return
+      // ghost 占位期间不清除 dropHint（避免 ghost 自身触发 dragLeave 闪烁）。
+      if (getDrag() && getDrag()?.sourceSlot !== slotId) return
       setDropHint((h) => (h?.targetId === targetId ? null : h))
     },
-    [],
+    [slotId],
   )
 
   const startResize = useCallback(
@@ -284,8 +290,18 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                   opacity: isGhost ? 0.3 : isDragSrc ? 0.4 : undefined,
                   border: isGhost ? '2px dashed var(--accent)' : undefined,
                 }}
-                onDragOver={isGhost ? undefined : onSectionDragOver(sec.id)}
-                onDrop={isGhost ? undefined : onSectionDrop(sec.id)}
+                onDragOver={isGhost ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } : onSectionDragOver(sec.id)}
+                onDrop={isGhost ? (e) => {
+                  // ghost 没有 targetId，委托给 dropHint 记录的目标 section。
+                  e.preventDefault()
+                  if (dropHint) {
+                    onSectionDrop(dropHint.targetId)(e)
+                  } else {
+                    setDropHint(null)
+                    setDragSrcId(null)
+                    clearDrag()
+                  }
+                } : onSectionDrop(sec.id)}
                 onDragLeave={isGhost ? undefined : onSectionDragLeave(sec.id)}
               >
                 {isGhost ? (
