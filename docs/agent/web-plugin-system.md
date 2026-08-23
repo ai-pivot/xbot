@@ -514,7 +514,7 @@ interface BackendRPC {
 - **查看 SKILL.md = 面板内渲染（不开 file tab）**：`handleView` 对全部 skill（embedded 与磁盘路径一视同仁）调 `skill_get_content` RPC → `setViewing({ name, content })` → 面板内 `MarkdownPreview` 展示 + 返回按钮（`skills.back`）。**原因**：master 的 file tab（`panelToTab`，useTabManager.ts）只透传 `filePath`、丢弃 `content`，`FilePanel` 经 `useFileContent` 走 REST 重读磁盘——embedded skill 路径磁盘不存在，开 file tab 必然失败；且 `TabData` 无 `readOnly` 字段（TS2353）。曾为"跨组件开 tab"引入的 `TabManagerProvider`（`App.tsx` 包 `<AppShell />`）随方案一并**回退删除**（唯一消费者即 skill-manager 开 file tab，删除后无消费者）——`useTabManager()` 恢复为直接 `return useTabManagerImpl()`（AppShell/MobileAppShell 各自持有本地实例，绑定各自 Dockview API，互不影响）。
 - i18n：`sidebar.skills` + `skills.*` 键（en/zh-CN）。
 
-注册路径与 plugin-manager 完全相同：`usePluginRuntimeHost.ts` 静态 import `SkillManagerPanel` → `builtinViews.set('xbot.skill-manager.panel', ...)`（⚠️ 内置视图必须静态 import，禁止动态 import——React #311 黑屏根因）+ Bootstrap `activateBuiltin(skillManager.manifest, ...)`。
+注册路径与 plugin-manager 完全相同：`usePluginRuntimeHost.ts` 静态 import `SkillManagerPanel` → `builtinViews.set('xbot.skill-manager.panel', ...)`（⚠️ 内置视图必须静态 import，禁止动态 import——React #311 黑屏根因）+ Bootstrap `activateBuiltin(skillManager.manifest, ...)`。**⚠️ 内置视图有【两处】注册点，必须同步**：① `usePluginRuntimeHost.ts` 的 `builtinViews` map（供 `loadBuiltinView` 解析）；② `PluginView.tsx` 的 `BuiltinView` switch（渲染分发，`case view.id` → 组件）。**只改 ① 漏改 ② 的症状：tab 存在（view 注册成功）但点击空白 + 无请求 + 无报错**——switch 命中 `default: return null`，面板组件从未 mount（真实事故：skill-manager 加 ① 时漏 ②，右侧栏「技能」tab 空白）。守护：`PluginView.test.tsx` 断言每个 builtin view 渲染出内容。
 
 ---
 
