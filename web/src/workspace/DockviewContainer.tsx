@@ -40,6 +40,8 @@ const FilePanel = lazy(() =>
   import('@/workspace/panels/FilePanel').then(m => ({ default: m.FilePanel })))
 const TerminalPanel = lazy(() =>
   import('@/workspace/panels/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
+const DiffPanel = lazy(() =>
+  import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
 import { TabHeader } from '@/workspace/TabHeader'
 import {
   DockviewContext,
@@ -77,6 +79,7 @@ const CONTENT_COMPONENTS = {
   file: FilePanel,
   terminal: TerminalPanel,
   background: BackgroundPanel,
+  diff: DiffPanel,
 } as const
 
 export function DockviewContainer({ tabManager, onReady }: DockviewContainerProps) {
@@ -273,9 +276,15 @@ export class ReactContentRenderer implements IContentRenderer {
     if (!runtime || !this.root) return
     const entry = runtime.listAllViews().find(({ view }) => view.id === this.name)
     if (!entry) return
+    // 透传 panel params（含 viewParams）——动态视图（openViewTab）的参数
+    // 经 props 传给插件 view 组件。
     this.root.render(
       withDockviewProviders(
-        <PluginView pluginId={entry.pluginId} view={entry.view} />,
+        <PluginView
+          pluginId={entry.pluginId}
+          view={entry.view}
+          panelParams={(this.params?.params ?? undefined) as PanelParams | undefined}
+        />,
         this.ctxRef.current,
       ),
     )

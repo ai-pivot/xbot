@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { filterAgentPanels } from './useTabManager'
+import { filterAgentPanels, tabLogicalKey, tabLogicalKeyFromParams } from './useTabManager'
 
 function agentPanel(id: string) {
   return { id, params: { type: 'agent', closable: false }, contentComponent: 'agent' }
@@ -109,5 +109,38 @@ describe('filterAgentPanels', () => {
     const out = filterAgentPanels(layout) as { grid: { root: { type: string; data: unknown[] } } }
     expect(out.grid.root.type).toBe('branch')
     expect(out.grid.root.data).toHaveLength(2)
+  })
+})
+
+describe('tabLogicalKey: plugin view tabs', () => {
+  it('dynamic instances (openViewTab with key) dedup by viewKey — same view id opens MULTIPLE tabs', () => {
+    // 两个不同文件各开一个 diff tab（同一 viewId，不同 key）
+    expect(
+      tabLogicalKey({
+        type: 'plugin',
+        data: { viewId: 'xbot.git-fancy.diff', viewKey: 'git-diff:worktree:src/a.go' },
+      }),
+    ).toBe('plugin-view:git-diff:worktree:src/a.go')
+    expect(
+      tabLogicalKey({
+        type: 'plugin',
+        data: { viewId: 'xbot.git-fancy.diff', viewKey: 'git-diff:worktree:src/b.go' },
+      }),
+    ).toBe('plugin-view:git-diff:worktree:src/b.go')
+  })
+
+  it('static views (no viewKey) dedup by viewId', () => {
+    expect(
+      tabLogicalKey({ type: 'plugin', data: { viewId: 'xbot.git-fancy.panel' } }),
+    ).toBe('plugin:xbot.git-fancy.panel')
+  })
+
+  it('params mirror: tabLogicalKeyFromParams reads viewKey first', () => {
+    expect(
+      tabLogicalKeyFromParams({ type: 'plugin', viewId: 'v', viewKey: 'k', tabId: 't', title: '', closable: true }),
+    ).toBe('plugin-view:k')
+    expect(
+      tabLogicalKeyFromParams({ type: 'plugin', viewId: 'v', tabId: 't', title: '', closable: true }),
+    ).toBe('plugin:v')
   })
 })

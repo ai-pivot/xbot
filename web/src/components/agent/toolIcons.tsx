@@ -7,7 +7,7 @@
  * Icon style: 14–16px, color `var(--text-muted)`, shrink-0.
  */
 import {
-  Terminal, FileText, Search, FolderSearch, FilePlus, FilePen,
+  SquareTerminal, FileText, Search, FolderSearch, FilePlus, FilePen,
   Globe, Download, Sparkles, Wrench, GitBranch, FolderOpen,
   Clock, MessageSquare, Users, Settings, ListTodo, Edit, Zap,
   Layers, HelpCircle, type LucideIcon,
@@ -15,7 +15,7 @@ import {
 
 const TOOL_ICON_MAP: Record<string, LucideIcon> = {
   // File operations
-  Shell:        Terminal,
+  Shell:        SquareTerminal,
   Read:         FileText,
   Grep:         Search,
   Glob:         FolderSearch,

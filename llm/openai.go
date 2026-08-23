@@ -997,6 +997,24 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 }
 
 // GenerateStream 流式生成 LLM 响应
+// messagesCharSize sums the character payload of a message list (content +
+// tool call arguments). Logged as prompt_chars on every stream request so
+// "the same request is being replayed" incidents (turn-13 loop: prompt tokens
+// frozen at 300880 across 19 iterations) are directly visible in logs —
+// identical prompt_chars across iterations = the new iteration's messages
+// never made it into the request.
+func messagesCharSize(messages []ChatMessage) int {
+	n := 0
+	for _, m := range messages {
+		n += len(m.Content)
+		for _, tc := range m.ToolCalls {
+			n += len(tc.Name) + len(tc.Arguments)
+		}
+		n += len(m.ToolName) + len(m.ToolCallID) + len(m.ToolArguments)
+	}
+	return n
+}
+
 func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
 	// Route to Responses API if configured
 	if o.apiType == APITypeResponses {
@@ -1013,6 +1031,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 		"model":         model,
 		"stream":        true,
 		"msg_count":     len(messages),
+		"prompt_chars":  messagesCharSize(messages),
 		"tools_count":   len(tools),
 		"thinking_mode": thinkingMode,
 		"max_tokens":    o.maxTokens,

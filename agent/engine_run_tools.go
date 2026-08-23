@@ -455,6 +455,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 				Summary:   t.Summary,
 				Args:      t.Args,
 				Detail:    t.Detail,
+				ToolHints: t.ToolHints,
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)

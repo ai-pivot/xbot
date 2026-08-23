@@ -504,6 +504,35 @@ interface BackendRPC {
 
 **与现有 `PluginManager` 的关系**：后端 `plugin/list` 等 RPC 直接读现有 `PluginManager`（`plugin/manager.go`）的状态 + 热加载触发 `WatchConfig` 式重载；前端只负责渲染与发起调用。管理面板本身不持有任何后端特权——它只是插件系统能力的一个高保真演示。
 
+### 5.3 插件 editor-view API（VSCode webviewPanel 语义）
+
+插件可以**控制主编辑区 tab**（VSCode `window.createWebviewPanel` 模型）——侧边栏/面板视图做入口列表，点击后在主编辑区打开全宽、参数化的动态 tab（如 git diff / commit 详情）。
+
+**API（UIAPI 扩展，`ctx.ui.openViewTab` / `ctx.ui.openFileTab`）**：
+
+```ts
+ctx.ui.openViewTab({
+  viewId: 'xbot.git-fancy.diff',        // 必须是已声明的 view 贡献点 id
+  title: 'src/a.go',                    // tab 标题
+  icon: 'file-diff',                    // 可选 Lucide 图标名
+  key: 'git-diff:worktree:src/a.go',    // 去重逻辑键（缺省按 viewId）
+  params: { path: 'src/a.go' },         // 作为 props 传给 view 组件
+})
+ctx.ui.openFileTab('/repo/src/main.go') // 复用宿主文件系统 tab
+```
+
+**机制链路**：
+
+- **`dynamic: true` view 声明**（ViewContribution）：参数化动态视图不进 activity bar / 侧栏 tab / layoutRegistry（`usePluginViewPanels` 与 `syncViews` 都过滤），只能经 `openViewTab` 打开。plugin.json 示例：`{"kind":"view","id":"xbot.git-fancy.diff","container":"main","entry":"diff.js","dynamic":true}`。
+- **tab 去重**：`PanelParams.viewKey` 优先于 viewId（`tabLogicalKey` → `plugin-view:${key}`）——同一 view 可开**多个** tab 实例（每个文件/commit 一个），同 key 聚焦已有 tab。
+- **参数透传**：`PanelParams.viewParams` → `ReactContentRenderer.renderPluginView` → `PluginView` → 插件 view 组件 props（`<state.comp {...viewParams} />`）。**插件 view 组件从 props 拿参数**（如 `{ path, commit }`）。
+- **component=viewId**：plugin tab 的 dockview component 名必须用 viewId（`openTab` 里 `component: input.data.viewId ?? 'plugin'`）——`renderPluginView` 按 `view.id === component` 查找，传泛型 `'plugin'` 永远查不到（渲染空白的历史 bug）。
+- **模块级桥**（`plugin-runtime/editorTabs.ts`）：PluginUI 在 React 树外，tabManager 在 AppShell 内——`registerEditorTabOpener(fn)` 桥接（AppShell useEffect 注册，卸载清 null）。
+
+**多入口构建（esbuild splitting）**：一个插件的多个 view 各自 entry（index.js/diff.js/commit.js），经 `esbuild --bundle --splitting --format=esm` 产出共享 chunk——`activate(ctx)` 在主入口注入的 rpc/ui 单例（shared 模块）在三个入口间共享（ESM 模块缓存按 URL，chunk 相对路径无 query → 同一实例）。**单入口 bundle 会让每个 view 拿到独立副本，activate 注入对其他 view 不可见**。
+
+**参考实现**：`xbot.git-fancy`（`plugins/xbot-git-fancy/main.go` + `web/src/plugins/git-fancy/`）——侧边栏面板（变更文件 + commit 分页"加载更多"）→ 点击开全宽 diff tab / commit 详情 tab（文件列表 → 再点击开该 commit 内的单文件 diff）。
+
 ---
 
 ## 6. 与现有系统的关系

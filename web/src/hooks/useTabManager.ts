@@ -60,8 +60,21 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
                   taskChatID: params.taskChatID,
                 }
               : params.type === 'plugin'
-                ? { viewId: params.viewId, pluginId: params.pluginId }
-                : undefined,
+            ? {
+                viewId: params.viewId,
+                pluginId: params.pluginId,
+                viewKey: params.viewKey,
+                viewParams: params.viewParams,
+              }
+            : params.type === 'diff'
+              ? {
+                  diffKey: params.diffKey,
+                  original: params.original,
+                  modified: params.modified,
+                  diffPath: params.diffPath,
+                  diffScope: params.diffScope,
+                }
+              : undefined,
   }
 }
 
@@ -188,6 +201,13 @@ export function useTabManager(): TabManager {
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
       viewId: input.type === 'plugin' ? input.data?.viewId : undefined,
       pluginId: input.type === 'plugin' ? input.data?.pluginId : undefined,
+      viewKey: input.type === 'plugin' ? input.data?.viewKey : undefined,
+      viewParams: input.type === 'plugin' ? input.data?.viewParams : undefined,
+      diffKey: input.type === 'diff' ? input.data?.diffKey : undefined,
+      original: input.type === 'diff' ? input.data?.original : undefined,
+      modified: input.type === 'diff' ? input.data?.modified : undefined,
+      diffPath: input.type === 'diff' ? input.data?.diffPath : undefined,
+      diffScope: input.type === 'diff' ? input.data?.diffScope : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'
@@ -196,10 +216,15 @@ export function useTabManager(): TabManager {
     // scroll element to 0 height and rendering 0 messages. Other panels (file,
     // terminal, background) stay on the default 'onlyWhenVisible' so heavy
     // components like Monaco editors are detached when not visible.
+    //
+    // Plugin tabs use component=viewId (NOT 'plugin'): DockviewContainer's
+    // ReactContentRenderer looks up CONTENT_COMPONENTS[component] first and
+    // falls back to the plugin view by `view.id === component` — a generic
+    // 'plugin' component name would never match any view id (rendered blank).
     api.addPanel({
       id: panelId,
       title: input.title,
-      component: input.type,
+      component: input.type === 'plugin' ? (input.data?.viewId ?? 'plugin') : input.type,
       params,
       renderer: input.type === 'agent' ? 'always' : 'onlyWhenVisible',
     })
@@ -305,7 +330,13 @@ export function tabLogicalKey(input: Pick<Tab, 'type' | 'data'>): string {
   // gets its own tab (multi-terminal). A missing terminalId → no dedup.
   if (input.type === 'terminal' && input.data?.terminalId) return `terminal:${input.data.terminalId}`
   if (input.type === 'background' && input.data?.taskID) return `background:${input.data.taskID}`
+  // Plugin tabs: dynamic instances (openViewTab with key) dedup by key —
+  // same view id can open MULTIPLE tabs (one per file/commit); static views
+  // (activity bar) dedup by view id.
+  if (input.type === 'plugin' && input.data?.viewKey) return `plugin-view:${input.data.viewKey}`
   if (input.type === 'plugin' && input.data?.viewId) return `plugin:${input.data.viewId}`
+  // 原生 diff tab：按 diffKey 去重（同一文件/commit 的 diff 只开一个 tab）。
+  if (input.type === 'diff' && input.data?.diffKey) return `diff:${input.data.diffKey}`
   return ''
 }
 
@@ -319,7 +350,9 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
   if (p.type === 'agent') return p.sessionId ? `agent:${p.sessionId}` : ''
   if (p.type === 'terminal') return p.terminalId ? `terminal:${p.terminalId}` : ''
   if (p.type === 'background') return p.taskID ? `background:${p.taskID}` : ''
+  if (p.type === 'plugin' && p.viewKey) return `plugin-view:${p.viewKey}`
   if (p.type === 'plugin') return p.viewId ? `plugin:${p.viewId}` : ''
+  if (p.type === 'diff') return p.diffKey ? `diff:${p.diffKey}` : ''
   return ''
 }
 

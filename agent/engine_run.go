@@ -101,6 +101,14 @@ type runState struct {
 	lastIterSignature string // "" = no previous iteration (first iter)
 	lastIterHadError  bool   // whether the previous iteration's tool execution had an error
 	loopDetected      bool   // set by detectIterationLoop; consumed (and reset) by executeToolCalls
+	// loopBreakCount counts CONSECUTIVE loop-breaker interceptions in this
+	// Run. When it reaches maxLoopBreaks the Run is force-terminated: the model
+	// is stuck repeating itself and further iterations just burn tokens (the
+	// turn-13 incident looped 19 times until the user interrupted manually).
+	loopBreakCount int
+	// loopFatal is set when loopBreakCount reaches maxLoopBreaks; the main
+	// loop checks it after executeToolCalls and terminates the Run.
+	loopFatal bool
 
 	// runDone is set when Run() returns. Background-subagent progress callbacks
 	// outlive the Run (their runCtx derives from the agent lifecycle) — after
@@ -1592,6 +1600,10 @@ func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMRespon
 		// with a fake "loop detected" tool result instead of executing them.
 		s.fakeLoopToolResults(ctx, response, batch)
 	} else {
+		// Real execution resets the consecutive-interception counter: the
+		// model broke out of its repeated pattern (even a slightly-different
+		// call counts — the tool's own result feedback takes over from here).
+		s.loopBreakCount = 0
 		s.dispatchToolCalls(ctx, iteration, response.ToolCalls, batch)
 	}
 	s.snapshotCompletedIteration(iteration)
@@ -1607,6 +1619,11 @@ const loopBreakerWarning = "Error: ⚠️ LOOP DETECTED — this duplicate tool 
 	"This will loop forever. If the previous tool call succeeded, the task is already done — stop calling the same tool. " +
 	"If it failed, try a DIFFERENT approach. Do not repeat the same call."
 
+// maxLoopBreaks is the consecutive-interception limit before the Run is
+// force-terminated (turn-13 incident: 19 consecutive interceptions burned
+// ~10 minutes until the user manually interrupted).
+const maxLoopBreaks = 5
+
 // fakeLoopToolResults replaces the duplicate tool calls of a loop-detected
 // iteration with a synthetic error tool result. The result pairs with the
 // assistant message's REAL tool_call_id, so SanitizeMessages keeps it and the
@@ -1617,11 +1634,35 @@ const loopBreakerWarning = "Error: ⚠️ LOOP DETECTED — this duplicate tool 
 // groups — the fake user row replaces the user's real message there.
 func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMResponse, batch *toolExecBatch) {
 	s.loopDetected = false
+	s.loopBreakCount++
 	const shortSummary = "Loop detected — duplicate call skipped"
+	// Escalating warning: carries the interception count and an explicit
+	// reference to the previous REAL execution. For the old⊂new FileReplace
+	// pattern (turn-13 incident) the previous call already returned
+	// "Successfully replaced + infinite-loop WARNING" — the model must treat
+	// the task as DONE, not re-issue the identical call (each re-call that
+	// slips past the byte-exact signature check re-executes and corrupts the
+	// file with another duplicate insertion).
+	warning := loopBreakerWarning
+	if s.loopBreakCount > 1 {
+		warning = fmt.Sprintf(
+			"Error: ⚠️ LOOP DETECTED (interception #%d of %d before forced stop) — this duplicate tool call was SKIPPED (not executed). "+
+				"You have now tried the EXACT same call %d times in a row. Look at the tool result of your FIRST attempt in this conversation: "+
+				"if it succeeded, THE TASK IS ALREADY DONE — repeating the call will never produce a different outcome (for FileReplace, a succeeded edit means the file is already changed; a second identical call either fails with text-not-found or, worse, appends duplicate content forever). "+
+				"If the first attempt failed, you MUST change your approach — adjust old_string to match the CURRENT file content, or use a different tool. "+
+				"After %d total interceptions this run will be TERMINATED automatically.",
+			s.loopBreakCount, maxLoopBreaks, s.loopBreakCount, maxLoopBreaks)
+	}
+	if s.loopBreakCount >= maxLoopBreaks {
+		s.loopFatal = true
+		warning = fmt.Sprintf(
+			"Error: ⛔ LOOP TERMINATED — the exact same tool call was repeated %d times. This run is being force-stopped to prevent infinite token burn and file corruption (duplicate insertions).",
+			s.loopBreakCount)
+	}
 	for idx, tc := range response.ToolCalls {
 		batch.results[idx] = toolExecResult{
-			content:    loopBreakerWarning,
-			llmContent: loopBreakerWarning,
+			content:    warning,
+			llmContent: warning,
 			result: &tools.ToolResult{
 				IsError: true,
 				Summary: shortSummary,

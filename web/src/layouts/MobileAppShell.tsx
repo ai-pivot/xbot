@@ -13,12 +13,16 @@
  * 切回会话时重建空 store → 依赖 fetchHistory + hydration 恢复，API 竞态下
  * 迭代可能少。保持挂载则流式状态持续更新，切回立即显示完整历史。
  */
-import { lazy, Suspense, useMemo, useState } from 'react'
-import { ArrowLeft, Bot, Files, Info, ListChecks, Loader2, Menu, Plus, Search, Settings, SquareTerminal } from 'lucide-react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
+import { ArrowLeft, Bot, Files, Info, ListChecks, Loader2, Menu, Plus, Search, Settings, SquareTerminal, Wrench } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
 const TerminalPanel = lazy(() =>
   import('@/workspace/panels/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
+const FilePanel = lazy(() =>
+  import('@/workspace/panels/FilePanel').then(m => ({ default: m.FilePanel })))
+const DiffPanel = lazy(() =>
+  import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
@@ -26,6 +30,7 @@ import type { SessionInfo as SessionInfoType } from '@/types/shared'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
+import { InfoBar } from '@/plugins/InfoBar'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
@@ -47,11 +52,12 @@ import { useTabManager } from '@/hooks/useTabManager'
 import { useTheme } from '@/hooks/useTheme'
 import { useWSConnection } from '@/providers/WSProvider'
 import { useTerminal } from '@/hooks/useTerminal'
+import { closeMobileWorkView, pushMobileWorkView, useMobileWorkView, type MobileWorkView } from '@/workspace/mobileWorkView'
 import { cn } from '@/lib/utils'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import type { PanelProps } from '@/workspace/panels/types'
 
-type MobileView = 'agent' | 'detail' | 'terminal'
+type MobileView = 'agent' | 'detail' | 'terminal' | 'work'
 
 const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string }[] = [
   { panel: 'files', icon: Files, labelKey: 'sidebar.files' },
@@ -120,6 +126,41 @@ export function MobileAppShell() {
     setView('terminal')
   })
 
+  // 全屏工作视图（文件预览 / 插件动态视图）：手机端没有 Dockview，
+  // openTab 的目标在这里以全屏页呈现。push 发生时自动切到 'work' 视图。
+  const workView = useMobileWorkView()
+  useEffect(() => {
+    if (workView) setView('work')
+  }, [workView])
+
+  // 手机端无 Dockview——FileExplorer/FileSearch 等的 openTab(file/plugin)
+  // 路由到全屏工作视图（其余类型维持原行为，如 SubAgent 专用机制）。
+  const mobileTabManager = useMemo(() => ({
+    ...tabManager,
+    openTab: (input: Parameters<typeof tabManager.openTab>[0]): string => {
+      if (input.type === 'file' && input.data?.filePath) {
+        pushMobileWorkView({ kind: 'file', title: input.title, filePath: input.data.filePath })
+        return ''
+      }
+      if (input.type === 'plugin' && input.data?.viewId) {
+        const d = input.data as {
+          viewId: string
+          viewKey?: string
+          viewParams?: Record<string, unknown>
+        }
+        pushMobileWorkView({
+          kind: 'plugin',
+          title: input.title,
+          viewId: d.viewId,
+          viewKey: d.viewKey,
+          viewParams: d.viewParams,
+        })
+        return ''
+      }
+      return tabManager.openTab(input)
+    },
+  }), [tabManager])
+
   // 布局定制：顶栏操作区由 slot 注册表驱动；bottom_nav 按需渲染（默认空）。
   const bottomNavItems = useLayoutItems('mobile.bottom_nav')
   const topBarItems = useLayoutItems('mobile.top_bar')
@@ -151,12 +192,15 @@ export function MobileAppShell() {
         ?? sessionStore.activeSession.chatID
       : 'Agent'
 
-  // 顶栏标题随视图切换：agent → 会话名 / detail → 工具 / terminal → 终端名。
+  // 顶栏标题随视图切换：agent → 会话名 / detail → 工具 / terminal → 终端名 /
+  // work → 工作视图标题（文件名 / 插件视图名）。
   const headerTitle = view === 'terminal'
     ? (terminalManager.terminals.find((tm) => tm.id === activeTerminalId)?.title ?? 'Terminal')
-    : view === 'detail'
-      ? t('agent.tools')
-      : agentTitle
+    : view === 'work'
+      ? (workView?.title ?? '')
+      : view === 'detail'
+        ? t('agent.tools')
+        : agentTitle
 
   // Mobile AgentPanel props: when viewing a SubAgent, pass the sub-agent params
   // so AgentPanel switches into SubAgent mode (get_session_messages + agent
@@ -205,7 +249,11 @@ export function MobileAppShell() {
   // 顶栏左侧按钮：非 agent 视图 → 返回上一级；SubAgent 视图 → 返回主会话；
   // agent 视图 → ☰ 打开会话抽屉。
   const handleHeaderNav = () => {
-    if (view === 'terminal') {
+    if (view === 'work') {
+      // 工作视图 → 关闭并回到工具页（大多数工作视图从工具页/插件面板打开）。
+      closeMobileWorkView()
+      setView('detail')
+    } else if (view === 'terminal') {
       setView('detail')
     } else if (view === 'detail') {
       setView('agent')
@@ -220,7 +268,14 @@ export function MobileAppShell() {
   return (
     <DockviewContext.Provider value={ctxValue}>
       <RightSidebarControlContext.Provider value={rightSidebar}>
-        <div className="flex h-dvh w-full flex-col overflow-hidden bg-bg-primary text-text-primary">
+        {/* fixed inset-0 (NOT h-dvh / h-full): iOS PWA standalone stops BOTH
+         *  100dvh AND the height:100% chain at the safe area (~34px above the
+         *  screen edge) — a dead strip remained below the input box (user-
+         *  reported 3×). Fixed positioning anchors to all four edges of the
+         *  LAYOUT viewport, which DOES span the full screen under
+         *  viewport-fit=cover. This is the community-verified iOS PWA
+         *  full-bleed fix. */}
+        <div className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary">
           <header className="flex shrink-0 items-center gap-0.5 border-b border-border bg-bg-secondary pr-1" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
             <Button type="button" variant="ghost" size="icon" aria-label={headerNavLabel} onClick={handleHeaderNav}>
               {view === 'agent' && !subAgentView ? <Menu className="size-5" /> : <ArrowLeft className="size-5" />}
@@ -242,7 +297,49 @@ export function MobileAppShell() {
             <div className="h-full" style={{ display: view === 'agent' ? undefined : 'none' }}>
               <AgentPanel {...agentPanelProps} />
             </div>
-            {view !== 'agent' && (
+            {view === 'work' && workView ? (
+              <div className="h-full">
+                {workView.kind === 'file' ? (
+                  <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
+                    <FilePanel
+                      params={{
+                        tabId: `mobile-file-${workView.filePath}`,
+                        type: 'file',
+                        title: workView.title,
+                        icon: 'file',
+                        closable: true,
+                        active: true,
+                        filePath: workView.filePath,
+                      }}
+                      api={{} as PanelProps['api']}
+                      containerApi={{} as PanelProps['containerApi']}
+                    />
+                  </Suspense>
+                ) : workView.kind === 'diff' ? (
+                  <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
+                    <DiffPanel
+                      params={{
+                        tabId: `mobile-diff-${workView.diffKey ?? workView.title}`,
+                        type: 'diff',
+                        title: workView.title,
+                        icon: 'file-diff',
+                        closable: true,
+                        active: true,
+                        diffKey: workView.diffKey,
+                        original: workView.original,
+                        modified: workView.modified,
+                        diffPath: workView.diffPath,
+                        diffScope: workView.diffScope,
+                      }}
+                      api={{} as PanelProps['api']}
+                      containerApi={{} as PanelProps['containerApi']}
+                    />
+                  </Suspense>
+                ) : (
+                  <MobilePluginWorkView view={workView} />
+                )}
+              </div>
+            ) : view !== 'agent' && (
               view === 'terminal' && activeTerminalId ? (
                 <div className="h-full">
                   <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
@@ -253,12 +350,18 @@ export function MobileAppShell() {
               <MobileDetail
                 activePanel={activePanel}
                 onPanelChange={setActivePanel}
-                tabManager={tabManager}
+                tabManager={mobileTabManager}
                 terminalManager={terminalManager}
               />
               )
             )}
           </main>
+
+          {/* Status bar (InfoBar) — same position as desktop AppShell (bottom
+           *  of main). Its height absorbs the iOS safe area, so the rounded
+           *  screen corners clip THIS bar's background instead of the input
+           *  box above, and the plugin status spans finally show on mobile. */}
+          <InfoBar />
 
           {/* 按需底部导航：仅当用户把布局项移入 mobile.bottom_nav 时渲染。 */}
           {bottomNavItems.length > 0 && (
@@ -342,7 +445,10 @@ function renderBottomNavItem(item: LayoutItem, actions: {
 /** 按布局项 id 解析 lucide 图标组件（内置项 + 插件 view 图标）。 */
 function iconForItem(item: LayoutItem) {
   const icons: Record<string, typeof Bot> = {
-    [BUILTIN_LAYOUT_ITEMS.mobileTools]: SquareTerminal,
+    // mobileTools opens the AGGREGATE tools page (files/search/info/tasks/
+    // terminal tabs) — NOT just a terminal. Wrench matches its "工具" label;
+    // SquareTerminal here was misleading (it is the terminal PANEL's icon).
+    [BUILTIN_LAYOUT_ITEMS.mobileTools]: Wrench,
     [BUILTIN_LAYOUT_ITEMS.mobileNewChat]: Plus,
     [BUILTIN_LAYOUT_ITEMS.mobileSettings]: Settings,
     [BUILTIN_LAYOUT_ITEMS.desktopSessions]: Menu,
@@ -408,6 +514,46 @@ function renderTopBarItem(item: LayoutItem, actions: {
     >
       {Icon ? <Icon className="size-5" /> : null}
     </Button>
+  )
+}
+
+/**
+ * 手机端插件动态工作视图：按 viewId 从 PluginRuntime 查 view 贡献点，
+ * 经 PluginView 渲染（viewParams 作为 props 传给插件组件——与桌面端
+ * DockviewContainer.renderPluginView 同一渲染链）。
+ */
+function MobilePluginWorkView({ view: w }: { view: Extract<MobileWorkView, { kind: 'plugin' }> }) {
+  const runtime = useOptionalPluginRuntime()
+  const [entry, setEntry] = useState<{ pluginId: string; view: import('@/plugin-api').ViewContribution } | null>(null)
+
+  useEffect(() => {
+    if (!runtime) {
+      setEntry(null)
+      return
+    }
+    const resolve = () => {
+      setEntry(runtime.listAllViews().find(({ view }) => view.id === w.viewId) ?? null)
+    }
+    resolve()
+    const unsubscribe = runtime.subscribeViews(resolve)
+    return unsubscribe
+  }, [runtime, w.viewId])
+
+  if (!entry) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm text-text-muted">
+        <div>{`视图不可用：${w.viewId}`}</div>
+        <div className="text-xs">插件未激活或已被卸载</div>
+      </div>
+    )
+  }
+
+  return (
+    <PluginView
+      pluginId={entry.pluginId}
+      view={entry.view}
+      panelParams={{ viewParams: w.viewParams, title: w.title, viewId: w.viewId, viewKey: w.viewKey }}
+    />
   )
 }
 

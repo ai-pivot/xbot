@@ -16,7 +16,7 @@ import { IterationGroup } from '@/components/agent/IterationHistory'
 import { ReasoningBlock } from '@/components/agent/ReasoningBlock'
 import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
-import { Terminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
+import { SquareTerminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 /** Helper: build a WebToolProgress with defaults. */
@@ -103,7 +103,8 @@ describe('ToolCallBlock', () => {
     renderWithProviders(<ToolCallBlock tool={tool} />)
     // Content is immediately visible (folding handled by parent FoldedLine)
     expect(screen.getByText('file contents')).toBeInTheDocument()
-    expect(screen.getByText('{"path":"a.go"}')).toBeInTheDocument()
+    // Args are pretty-printed JSON (multi-line) — assert on the key content
+    expect(screen.getByText(/"a\.go"/)).toBeInTheDocument()
   })
 
   it('renders summary when no args or detail', () => {
@@ -423,8 +424,8 @@ describe('IterationGroup', () => {
 })
 
 describe('getToolIcon', () => {
-  it('returns Terminal for Shell', () => {
-    expect(getToolIcon('Shell')).toBe(Terminal)
+  it('returns SquareTerminal for Shell', () => {
+    expect(getToolIcon('Shell')).toBe(SquareTerminal)
   })
 
   it('returns FileText for Read', () => {

@@ -7,7 +7,7 @@
 
 export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en'
-export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin'
+export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'diff'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
 export type SessionCategory = 'time' | 'status' | 'path'
 
@@ -58,6 +58,20 @@ export interface TabData {
   viewId?: string
   /** Plugin id（配合 viewId 定位要渲染的插件视图）。 */
   pluginId?: string
+  /** 插件 view tab 去重逻辑键（ctx.ui.openViewTab 传入；缺省按 viewId 去重）。 */
+  viewKey?: string
+  /** 传给插件 view 组件的参数（作为 props，如 { path, commit }）。 */
+  viewParams?: Record<string, unknown>
+  /** 原生 diff tab 去重逻辑键（ctx.ui.openDiffTab 传入）。 */
+  diffKey?: string
+  /** diff 旧内容（左/上侧）。 */
+  original?: string
+  /** diff 新内容（右/下侧）。 */
+  modified?: string
+  /** diff 文件路径（语言推断 + 图标）。 */
+  diffPath?: string
+  /** diff 范围标注（如 "commit abc1234" / "工作区"）。 */
+  diffScope?: string
 }
 
 export interface SessionInfo {

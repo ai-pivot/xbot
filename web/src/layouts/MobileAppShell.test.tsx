@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react'
+import { act, fireEvent, renderHook, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -49,6 +49,11 @@ vi.mock('@/components/sidebar/TasksPanel', () => ({
 
 vi.mock('@/components/settings/SettingsDialog', () => ({
   SettingsDialog: () => null,
+}))
+
+// FilePanel（Monaco 编辑器，手机端工作视图 lazy 加载）——mock 掉重依赖。
+vi.mock('@/workspace/panels/FilePanel', () => ({
+  FilePanel: () => <div>file-panel-view</div>,
 }))
 
 vi.mock('@/hooks/useSessionStore', () => ({
@@ -168,5 +173,28 @@ describe('MobileAppShell', () => {
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
     // 按需导航项带 pill active 态
     expect(screen.getByLabelText('工具')).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('pushMobileWorkView 打开全屏工作视图（文件预览），返回按钮关闭', async () => {
+    // 手机端无 Dockview：文件点击/插件 editor-view tab 路由到全屏工作视图。
+    const { pushMobileWorkView, useMobileWorkView } = await import('@/workspace/mobileWorkView')
+    renderWithProviders(<MobileAppShell />)
+
+    await act(async () => {
+      pushMobileWorkView({ kind: 'file', title: 'main.go', filePath: '/repo/main.go' })
+    })
+
+    // 全屏渲染文件预览 + 顶栏标题切换为工作视图标题
+    expect(await screen.findByText('file-panel-view')).toBeInTheDocument()
+    expect(screen.getByText('main.go')).toBeInTheDocument()
+    // Agent 面板保持挂载（display:none，不卸载）
+    expect(screen.getByText('agent-panel')).toBeInTheDocument()
+
+    // 返回按钮 → 关闭工作视图回工具页
+    fireEvent.click(screen.getByLabelText('返回'))
+    expect(screen.queryByText('file-panel-view')).not.toBeInTheDocument()
+    // 单例状态清空（下一次 push 是全新视图）
+    const { result } = renderHook(() => useMobileWorkView())
+    expect(result.current).toBeNull()
   })
 })

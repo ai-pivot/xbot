@@ -469,6 +469,10 @@ type IterationToolSnapshot struct {
 	Summary   string `json:"summary,omitempty"`
 	Args      string `json:"args,omitempty"`
 	Detail    string `json:"detail,omitempty"` // full tool detail (e.g. display_html code)
+	// ToolHints carries the markdown hint (built-in ```diff block from Edit
+	// metadata, or plugin hints) so the web frontend can render a fancy diff
+	// for committed iterations too, not just live progress.
+	ToolHints string `json:"tool_hints,omitempty"`
 }
 
 // readArgsHasOffsetOrLimit checks whether a Read tool call's JSON arguments contain
@@ -758,6 +762,22 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		}
 
 		if out := s.postToolProcessing(ctx, response, i); out != nil {
+			return out
+		}
+
+		// Force-stop after maxLoopBreaks consecutive loop-breaker
+		// interceptions (turn-13 incident: 19 consecutive interceptions
+		// burned ~10 minutes of tokens until the user interrupted manually).
+		// The interception history (with escalating warnings) is already
+		// persisted to session history by the iterations above.
+		if s.loopFatal {
+			out := s.buildOutput(&channel.OutboundMsg{
+				Channel:   s.cfg.Channel,
+				ChatID:    s.cfg.ChatID,
+				Content:   fmt.Sprintf("⛔ 检测到无限循环：同一工具调用已连续重复 %d 次，已强制终止（防止 token 浪费与文件重复插入损坏）。请查看上一次真实执行的工具结果——任务很可能已经完成。", s.loopBreakCount),
+				ToolsUsed: s.toolsUsed,
+			})
+			out.Error = fmt.Errorf("iteration loop: identical tool call repeated %d consecutive times", s.loopBreakCount)
 			return out
 		}
 	}

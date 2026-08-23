@@ -32,8 +32,9 @@ Supports waiting on MULTIPLE tasks at once:
 
 For a single task, pass a string: task_id: "bg-abc123"
 
-NOTE: task_id values do NOT include the "bg:" prefix shown in some UI labels.
-Use the raw ID (e.g. "bg-abc123", "sub-1eefac7a").
+NOTE: pass the task_id EXACTLY as shown in the tool result, without any
+prefix — e.g. "3f8f492a" for Shell background tasks (raw hex),
+"sub-1eefac7a" for sub-agents. Never add a "bg:" or "bg-" prefix.
 
 Use this instead of running "sleep N" in a foreground Shell to wait for a
 background task. The current iteration blocks until the task(s) are done — no
@@ -49,7 +50,7 @@ Parameters (JSON):
 
 func (t *TaskWaitTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "task_id", Type: "string", Description: "The background task ID to wait for, OR an array of IDs. Shell background task IDs start with 'bg-', sub-agent IDs start with 'sub-'. Do NOT include any 'bg:' prefix.", Required: true},
+		{Name: "task_id", Type: "string", Description: "The background task ID to wait for, OR an array of IDs. Pass it EXACTLY as shown in the tool result — Shell background task IDs are raw hex like \"3f8f492a\" (no prefix), sub-agent IDs start with 'sub-'. Do NOT add any 'bg:' or 'bg-' prefix.", Required: true},
 		{Name: "mode", Type: "string", Description: "Wait mode: 'all' (default — wait for every task to finish) or 'any' (return as soon as the first task finishes). Only relevant when task_id is an array.", Required: false},
 		{Name: "timeout", Type: "number", Description: "Max seconds to wait (default: 60, max: 300)", Required: false},
 	}

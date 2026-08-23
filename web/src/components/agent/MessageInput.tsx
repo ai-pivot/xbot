@@ -216,7 +216,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const canSend = value.trim().length > 0 || pending.length > 0
 
   return (
-    <div className="border-t border-border bg-bg-primary px-3 py-2.5" style={{ paddingBottom: 'calc(0.625rem + var(--safe-area-bottom))' }}>
+    <div className="border-t border-border bg-bg-primary px-3 py-2.5">
+      {/* No bottom safe-area padding here: the InfoBar below (MobileAppShell)
+       *  owns the safe-area strip. Keeping this at plain py-2.5 keeps the
+       *  input box clear of the iPhone's rounded bottom corners. */}
       {todoState ? <TodoPullOut todoState={todoState} /> : null}
 
       {/* Input container — single rounded box with chips, textarea, and inline buttons */}
