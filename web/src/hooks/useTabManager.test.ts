@@ -31,7 +31,7 @@ describe('filterAgentPanels', () => {
     expect(Object.keys(out.panels)).toEqual(['work'])
   })
 
-  it('drops an empty group that contained only agent panels', () => {
+  it('drops an empty group but keeps the root a branch (dockview fromJSON invariant)', () => {
     const layout = {
       grid: {
         root: {
@@ -44,10 +44,53 @@ describe('filterAgentPanels', () => {
       },
       panels: { agent1: agentPanel('agent1'), work: workPanel('work') },
     }
-    const out = filterAgentPanels(layout) as { grid: { root: unknown } }
-    // single surviving leaf is collapsed up from the branch
-    expect((out.grid.root as { type: string }).type).toBe('leaf')
-    expect((out.grid.root as { data: { views: string[] } }).data.views).toEqual(['work'])
+    const out = filterAgentPanels(layout) as { grid: { root: { type: string; data: unknown[] } } }
+    // dockview's fromJSON asserts "root must be of type branch" — the root may
+    // NEVER be promoted to its single child (a leaf root crashes every restore).
+    expect(out.grid.root.type).toBe('branch')
+    expect(out.grid.root.data).toHaveLength(1)
+    expect((out.grid.root.data[0] as { data: { views: string[] } }).data.views).toEqual(['work'])
+  })
+
+  it('keeps a nested single-child branch as a branch (no child promotion anywhere)', () => {
+    const layout = {
+      grid: {
+        root: {
+          type: 'branch',
+          data: [
+            {
+              type: 'branch',
+              data: [{ type: 'leaf', data: { views: ['agent1'], activeView: 'agent1', id: 'g1' } }],
+            },
+            { type: 'leaf', data: { views: ['work'], activeView: 'work', id: 'g2' } },
+          ],
+        },
+      },
+      panels: { agent1: agentPanel('agent1'), work: workPanel('work') },
+    }
+    const out = filterAgentPanels(layout) as {
+      grid: { root: { type: string; data: { type: string; data: unknown[] }[] } }
+    }
+    // The emptied nested branch is removed; the surviving single leaf stays a
+    // child of the root branch — structure is only ever pruned, never promoted.
+    expect(out.grid.root.type).toBe('branch')
+    expect(out.grid.root.data).toHaveLength(1)
+    expect(out.grid.root.data[0].type).toBe('leaf')
+  })
+
+  it('returns null when every panel is filtered out', () => {
+    const layout = {
+      grid: {
+        root: {
+          type: 'branch',
+          data: [{ type: 'leaf', data: { views: ['agent1'], activeView: 'agent1', id: 'g1' } }],
+        },
+      },
+      panels: { agent1: agentPanel('agent1') },
+    }
+    // A layout whose grid tree is fully pruned has no restorable structure —
+    // emitting `{ grid: { root: null } }` would crash fromJSON just like a leaf root.
+    expect(filterAgentPanels(layout)).toBeNull()
   })
 
   it('keeps nested branch when multiple non-agent groups survive', () => {

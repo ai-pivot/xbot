@@ -325,8 +325,13 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
 
 /**
  * 从 dockview 完整布局（api.toJSON()）中按 predicate 过滤 panel（递归处理
- * grid 树：leaf group 的 views 移除、空 group 折叠、branch 空子移除、单子提升）。
+ * grid 树：leaf group 的 views 移除、空 group 折叠、branch 空子移除）。
  * predicate 判断一个 panel 的 params（GroupviewPanelState.params）是否应过滤。
+ *
+ * 不变量：grid.root 必须保持 branch 类型（dockview fromJSON 断言 "root must
+ * be of type branch"）。绝不把单子 branch 提升为其子节点——历史实现把单子
+ * root 提升成 leaf，持久化后每次恢复必崩（稳定崩溃 bug）。整树被过滤光时
+ * 返回 null（消费方据此跳过持久化/恢复，不能产出 `{ grid: { root: null } }`）。
  *
  * 结构（dockview SerializedDockview）：
  *   { grid: { root: SerializedGridObject<GroupPanelViewState> }, panels: Record<string, GroupviewPanelState> }
@@ -363,14 +368,16 @@ export function filterPanels(layout: unknown, shouldPrune: (params: { type?: str
       const activeView = g.activeView && views.includes(g.activeView) ? g.activeView : views[0]
       return { ...n, data: { ...g, views, activeView } }
     }
-    // branch
+    // branch: drop pruned/empty children; NEVER promote a single child — the
+    // root must stay a branch (dockview fromJSON invariant), and promoting
+    // nested branches buys nothing (a single-child branch restores fine).
     const children = (Array.isArray(n.data) ? n.data : []).map(prune).filter((x): x is unknown => x !== null)
     if (children.length === 0) return null
-    if (children.length === 1) return children[0] // collapse single-child branch
     return { ...n, data: children }
   }
 
   const root = prune(l.grid?.root)
+  if (!root) return null
   return { ...l, panels, grid: { ...l.grid, root } }
 }
 
