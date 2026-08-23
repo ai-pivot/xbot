@@ -351,9 +351,10 @@ func TestDetectIterationLoop_ReplacesDuplicateCallsWithFakeToolResult(t *testing
 			if m.ToolCallID != "tc1" {
 				t.Fatalf("loop-breaker tool result must pair with the assistant's real tool_call_id, got %q", m.ToolCallID)
 			}
-			if m.TurnID != s.cfg.TurnID {
-				t.Fatalf("loop-breaker tool result must carry the run's turn_id")
-			}
+			// NOTE: 不断言 TurnID —— in-memory tool msg 的 TurnID 由 PersistenceBridge
+			// 在持久化时补齐（NewToolMessage 不设置），无 persistence 的单测里恒为 0，
+			// 断言只会恒真（vacuous，xbotgh CR 指出）。fake tool 走与真实工具完全相同
+			// 的 processToolResults → NewToolMessage 持久化路径，turn_id 行为无差异。
 		}
 	}
 	if !found {
@@ -386,6 +387,46 @@ func TestDetectIterationLoop_ReplacesDuplicateCallsWithFakeToolResult(t *testing
 	s.processToolResults(context.Background(), resp, results)
 	if execCount != 1 {
 		t.Fatalf("third duplicate iteration must still be intercepted, got %d executions", execCount)
+	}
+}
+
+func TestDetectIterationLoop_FlagDoesNotLeakAcrossNonToolIterations(t *testing.T) {
+	// CR 修复回归：maybeContinueTurn（PreTurnEnd hook Continue）路径调用
+	// recordAssistantMsg → detectIterationLoop 在"连续两次相同纯文本响应"时
+	// 置 loopDetected=true，但该路径只走 injectSyntheticToolPair、不经过
+	// executeToolCalls —— flag 若跨迭代残留，下一迭代的【真实】工具调用会被
+	// fakeLoopToolResults 误拦截（模型收到假的 LOOP DETECTED 错误）。
+	var execCount int
+	s := &runState{
+		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		toolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+			execCount++
+			return &tools.ToolResult{Summary: "ok"}, nil
+		},
+	}
+
+	textResp := &llm.LLMResponse{Content: "same final text"}
+
+	// iter1/iter2：相同纯文本响应（模拟 hook 两次续接路径，无 executeToolCalls）
+	s.recordAssistantMsg(context.Background(), textResp)
+	s.recordAssistantMsg(context.Background(), textResp) // 签名匹配 → loopDetected=true（无人消费）
+
+	// iter3：模型发出真实工具调用 → 必须正常执行，不得被残留 flag 误拦截
+	toolResp := &llm.LLMResponse{
+		Content:   "now use a tool",
+		ToolCalls: []llm.ToolCall{{ID: "tc9", Name: "Shell", Arguments: `{"command":"ls"}`}},
+	}
+	s.recordAssistantMsg(context.Background(), toolResp)
+	results := s.executeToolCalls(context.Background(), toolResp, 3)
+	s.processToolResults(context.Background(), toolResp, results)
+
+	if execCount != 1 {
+		t.Fatalf("real tool call after a non-tool loop iteration must NOT be intercepted (loopDetected flag leak), got %d executions", execCount)
+	}
+	for _, m := range s.messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			t.Fatal("loopDetected flag leak: a REAL tool call was replaced by a fake loop-breaker result")
+		}
 	}
 }
 

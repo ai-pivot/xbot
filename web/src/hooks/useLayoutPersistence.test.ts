@@ -50,6 +50,16 @@ describe('loadLayout', () => {
     expect(loadLayout('chat-1')).toBeNull()
   })
 
+  it('discards a layout whose branch root has non-array data (fromJSON also asserts Array.isArray)', () => {
+    // dockview fromJSON throws unless root.type==='branch' AND root.data is an
+    // array — isRestorableLayout must mirror BOTH conditions (xbotgh CR).
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ layout: { grid: { root: { type: 'branch', data: { views: ['p1'] } } }, panels: {} } }),
+    )
+    expect(loadLayout('chat-1')).toBeNull()
+  })
+
   it('returns null for malformed JSON', () => {
     localStorage.setItem(KEY, '{not json')
     expect(loadLayout('chat-1')).toBeNull()

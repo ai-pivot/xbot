@@ -1089,6 +1089,13 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 // executeToolCalls replaces the duplicate tool calls with a fake "loop
 // detected" tool result instead of executing them.
 func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMResponse) {
+	// The flag describes THIS call's outcome only. It is reset up-front so it
+	// never leaks across iterations: detectIterationLoop is also reached via
+	// maybeContinueTurn (PreTurnEnd hook Continue) → recordAssistantMsg, a path
+	// that never runs executeToolCalls — a stale true there would make the NEXT
+	// iteration's REAL tool calls be intercepted by fakeLoopToolResults.
+	s.loopDetected = false
+
 	// Build a signature: content + each tool call (name + arguments).
 	sig := loopSignature(response.Content, response.ToolCalls)
 
