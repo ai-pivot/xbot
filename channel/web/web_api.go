@@ -1,12 +1,15 @@
 package web
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -881,6 +884,130 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+type skillsExportRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+// handleSkillsExport handles POST /api/skills/export — downloads a skill directory as a zip.
+func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request) {
+	var req skillsExportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if req.Path == "" {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "path is required"})
+		return
+	}
+
+	// Validate the path through the core RPC before exporting to prevent arbitrary directory access.
+	var validResult struct {
+		Valid bool `json:"valid"`
+	}
+	if err := wc.rpcCall("skill_validate_path", map[string]any{"path": req.Path}, &validResult); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	if !validResult.Valid {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid skill path"})
+		return
+	}
+
+	name := req.Name
+	if name == "" {
+		name = "skill"
+	}
+	name = sanitizeExportName(name)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	if strings.HasPrefix(req.Path, "embedded:") {
+		embDir := strings.TrimPrefix(req.Path, "embedded:")
+		files, err := tools.ListEmbeddedSkillFiles(embDir)
+		if err != nil {
+			zw.Close()
+			writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+			return
+		}
+		for _, f := range files {
+			content, err := tools.ReadEmbeddedSkillFile(embDir, f)
+			if err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+			wf, err := zw.Create(filepath.Join(name, f))
+			if err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+			if _, err := wf.Write(content); err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+		}
+	} else {
+		err := filepath.Walk(req.Path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(req.Path, path)
+			if err != nil {
+				return err
+			}
+			src, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			wf, err := zw.Create(filepath.Join(name, rel))
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(wf, src)
+			return err
+		})
+		if err != nil {
+			zw.Close()
+			writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name+".zip"))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = w.Write(buf.Bytes())
+}
+
+// sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
+func sanitizeExportName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "skill"
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------

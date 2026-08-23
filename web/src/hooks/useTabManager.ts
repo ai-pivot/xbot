@@ -17,7 +17,17 @@
  * parallel list and keeping it in sync would duplicate that source of truth
  * and race on drag/drop. Deriving avoids the duplication (KISS).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createContext,
+  createElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import type { DockviewApi, IDockviewPanel } from 'dockview'
 import type { Tab } from '@/types/shared'
 import type { PanelParams } from '@/types/tab'
@@ -88,7 +98,7 @@ export interface TabManager {
   getWorkLayoutJSON: () => unknown
 }
 
-export function useTabManager(): TabManager {
+function useTabManagerImpl(): TabManager {
   const apiRef = useRef<DockviewApi | null>(null)
   // logical tabId → dockview panel id
   const panelIdByTab = useRef<Map<string, string>>(new Map())
@@ -384,4 +394,27 @@ export function filterAgentPanels(layout: unknown): unknown {
 /** 过滤 terminal panel（后端 PTY API 禁用时跳过 terminal tab）。 */
 export function filterTerminalPanels(layout: unknown): unknown {
   return filterPanels(layout, (params) => params.type === 'terminal')
+}
+
+/**
+ * TabManager 共享实例——AppShell/MobileAppShell 创建的实例经此 Context 提供给
+ * 任意后代组件（含插件 View，如 skill-manager 打开文件 tab）。避免重复
+ * useTabManager() 产生多个互不绑定的实例（每个都有独立的 apiRef/pending 队列）。
+ */
+const TabManagerContext = createContext<TabManager | null>(null)
+
+export function TabManagerProvider({ children }: { children: ReactNode }) {
+  const tabManager = useTabManagerImpl()
+  // tabManager 引用内部全为 ref/state，跨渲染稳定——useMemo 防 Context value 变化
+  // 触发 DockviewContainer 等消费者的全量重渲染。
+  const value = useMemo(() => tabManager, [tabManager])
+  // 该文件为 .ts（非 .tsx），用 createElement 而非 JSX。
+  return createElement(TabManagerContext.Provider, { value }, children)
+}
+
+export function useTabManager(): TabManager {
+  const shared = useContext(TabManagerContext)
+  // hooks 必须无条件调用——local 实例仅当无共享 Provider 时兜底（测试等场景）。
+  const local = useTabManagerImpl()
+  return shared ?? local
 }

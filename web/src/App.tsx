@@ -15,6 +15,7 @@ import { CwdProvider } from '@/providers/CwdProvider'
 import { SessionStoreProvider } from '@/hooks/useSessionStore'
 import { PluginWidgetProvider } from '@/plugins/PluginWidgetProvider'
 import { PluginRuntimeRoot } from '@/plugin-runtime/usePluginRuntimeHost'
+import { TabManagerProvider } from '@/hooks/useTabManager'
 import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
@@ -40,7 +41,9 @@ export default function App() {
                     <CwdProvider>
                       <PluginWidgetProvider>
                         <PluginRuntimeRoot>
-                          <AppShell />
+                          <TabManagerProvider>
+                            <AppShell />
+                          </TabManagerProvider>
                         </PluginRuntimeRoot>
                       </PluginWidgetProvider>
                     </CwdProvider>
