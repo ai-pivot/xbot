@@ -240,6 +240,7 @@ const zhCN = {
     empty: '暂无已安装技能',
     disabled: '已禁用',
     view: '查看',
+    back: '返回',
     export: '导出',
     uninstall: '卸载',
     confirmUninstall: '卸载技能 "{name}"？',

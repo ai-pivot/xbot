@@ -10,10 +10,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/providers/i18n'
 import { postAPI, postRawAPI } from '@/lib/api'
-import { useTabManager } from '@/hooks/useTabManager'
 import { usePluginRuntime } from '@/plugin-runtime'
 import { Button } from '@/components/ui/button'
-import { Loader2, Download, Trash2, Eye, FileUp } from 'lucide-react'
+import { MarkdownPreview } from '@/components/file/MarkdownPreview'
+import { Loader2, Download, Trash2, Eye, FileUp, ArrowLeft } from 'lucide-react'
 
 /** 与后端 agent/skills.go SkillDetail 对齐。 */
 interface SkillDetail {
@@ -30,12 +30,12 @@ interface SkillDetail {
 
 export function SkillManagerPanel() {
   const runtime = usePluginRuntime()
-  const tabManager = useTabManager()
   const { t } = useI18n()
   const [skills, setSkills] = useState<SkillDetail[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [installing, setInstalling] = useState(false)
+  const [viewing, setViewing] = useState<{ name: string; content: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -73,36 +73,16 @@ export function SkillManagerPanel() {
   const handleView = useCallback(
     async (skill: SkillDetail) => {
       try {
-        if (skill.path.startsWith('embedded:')) {
-          const res = (await runtime.rpc.call(
-            'skill_get_content' as never,
-            { path: skill.path } as never,
-          )) as unknown as { content?: string }
-          tabManager.openTab({
-            type: 'file',
-            title: `${skill.name} (SKILL.md)`,
-            icon: 'BookOpen',
-            closable: true,
-            data: {
-              filePath: `${skill.path}/SKILL.md`,
-              content: res?.content ?? '',
-              readOnly: true,
-            },
-          })
-        } else {
-          tabManager.openTab({
-            type: 'file',
-            title: `${skill.name} (SKILL.md)`,
-            icon: 'BookOpen',
-            closable: true,
-            data: { filePath: `${skill.path}/SKILL.md` },
-          })
-        }
+        const res = (await runtime.rpc.call(
+          'skill_get_content' as never,
+          { path: skill.path } as never,
+        )) as unknown as { content?: string }
+        setViewing({ name: skill.name, content: res?.content ?? '' })
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [runtime, tabManager],
+    [runtime],
   )
 
   const handleExport = useCallback(async (skill: SkillDetail) => {
@@ -179,7 +159,22 @@ export function SkillManagerPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {loading ? (
+        {viewing ? (
+          <div className="flex h-full flex-col">
+            <div className="mb-2 flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                title={t('skills.back')}
+                onClick={() => setViewing(null)}
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+              </Button>
+              <span className="truncate text-sm font-medium">{viewing.name} (SKILL.md)</span>
+            </div>
+            <MarkdownPreview source={viewing.content} />
+          </div>
+        ) : loading ? (
           <div className="flex h-full items-center justify-center text-muted-foreground">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             {t('skills.loading')}

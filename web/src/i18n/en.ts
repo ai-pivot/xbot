@@ -243,6 +243,7 @@ const en: Translations = {
     empty: 'No skills installed',
     disabled: 'disabled',
     view: 'View',
+    back: 'Back',
     export: 'Export',
     uninstall: 'Uninstall',
     confirmUninstall: 'Uninstall skill "{name}"?',
