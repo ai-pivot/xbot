@@ -50,16 +50,30 @@ function saveLayout(chatID: string, tabManager: TabManager, activeKey: string | 
   }
 }
 
-function loadLayout(chatID: string): LayoutState | null {
+export function loadLayout(chatID: string): LayoutState | null {
   try {
     const raw = localStorage.getItem(layoutKey(chatID))
     if (!raw) return null
     const parsed = JSON.parse(raw) as LayoutState
-    if (!parsed.layout || typeof parsed.layout !== 'object') return null
+    if (!isRestorableLayout(parsed.layout)) return null
     return parsed
   } catch {
     return null
   }
+}
+
+/**
+ * A persisted layout is restorable only if its grid root is a branch —
+ * dockview's fromJSON asserts "root must be of type branch" and throws
+ * otherwise. Layouts persisted by the old filterPanels (which promoted a
+ * single-child root to its leaf child) crash on EVERY restore; they are
+ * corrupted data and must be discarded so the session falls back to the
+ * default layout instead of crashing forever.
+ */
+function isRestorableLayout(layout: unknown): boolean {
+  if (!layout || typeof layout !== 'object') return false
+  const grid = (layout as { grid?: { root?: { type?: unknown } } }).grid
+  return grid?.root?.type === 'branch'
 }
 
 /**
