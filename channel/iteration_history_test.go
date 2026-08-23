@@ -372,3 +372,79 @@ func TestConvert_WithIterations_AskUserUnstampedRowsMisalign(t *testing.T) {
 		t.Logf("BUG reproduced: forged turn-6 assistant before answer user (unstamped rows mis-derived)")
 	}
 }
+
+// TestConvert_WithIterations_ResumeTurnEmptyShellAssistant guards the 2026-08-23
+// 15:02 incident (tenant 150660 turn 67→68): a restart interrupted turn 67 with
+// 12 intermediate pairs (NO final assistant), and the recovery turn 68 produced
+// ONLY a single empty-shell assistant (content="" — v55+ persists the reply text
+// in iteration_history, the session_messages row is an empty placeholder with
+// just the turn_id). The empty shell has NO tool_calls, so it never hits the
+// turn-boundary flush in the tool_calls branch; walking into the !isIntermediate
+// structured branch, `pendingIters = nil` evaporated turn 67's 12 iterations —
+// the frontend rendered the recovery turn with 1 iteration and the pre-restart
+// iterations vanished. Reproduces ONLY when the restart lands mid-turn AND the
+// recovery turn emits no intermediate tool iterations — hence "probabilistic".
+func TestConvert_WithIterations_ResumeTurnEmptyShellAssistant(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		// Pre-restart turn 67: user + 2 intermediate pairs, NO final message.
+		{Role: "user", Content: "继续调查", TurnID: 67},
+		{ID: 400, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "d1", Name: "Shell", Arguments: "{}"}}, TurnID: 67},
+		{Role: "tool", ToolCallID: "d1", ToolName: "Shell", Content: "ok", TurnID: 67},
+		{ID: 402, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "d2", Name: "Read", Arguments: "{}"}}, TurnID: 67},
+		{Role: "tool", ToolCallID: "d2", ToolName: "Read", Content: "file", TurnID: 67},
+		// Recovery turn 68: ONLY an empty-shell assistant (v55+ placeholder —
+		// content lives in iteration_history), no intermediate messages.
+		{ID: 404, Role: "assistant", Content: "", TurnID: 68},
+	}
+
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		67: {
+			{TurnID: 67, Iteration: 1, Tools: `[{"name":"Shell","status":"done"}]`},
+			{TurnID: 67, Iteration: 2, Tools: `[{"name":"Read","status":"done"}]`},
+		},
+		68: {
+			{TurnID: 68, Iteration: 1, Content: "调查阶段总结（恢复产物）", Tools: "[]"},
+		},
+	}
+
+	history := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+
+	// Expected: user(67) + asst(67, 2 iters) + asst(68, 1 iter).
+	if len(history) != 3 {
+		t.Fatalf("expected 3 HistoryMessages (user67, asst67, asst68), got %d: %+v", len(history), summaryOf(history))
+	}
+	if history[1].Role != "assistant" || history[1].TurnID != 67 {
+		t.Fatalf("history[1]: expected assistant turn 67, got role=%s turn=%d", history[1].Role, history[1].TurnID)
+	}
+	if len(history[1].Iterations) != 2 {
+		t.Fatalf("🔴 turn 67 pre-restart iterations LOST (got %d, want 2) — empty-shell resume assistant evaporated pendingIters", len(history[1].Iterations))
+	}
+	if history[2].Role != "assistant" || history[2].TurnID != 68 {
+		t.Fatalf("history[2]: expected assistant turn 68, got role=%s turn=%d", history[2].Role, history[2].TurnID)
+	}
+	if len(history[2].Iterations) != 1 {
+		t.Fatalf("turn 68 recovery iterations: got %d, want 1", len(history[2].Iterations))
+	}
+}
+
+func summaryOf(hs []HistoryMessage) []string {
+	out := make([]string, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, h.Role+":"+itoa(h.TurnID)+"("+itoa(uint64(len(h.Iterations)))+"iters)")
+	}
+	return out
+}
+
+func itoa(v uint64) string {
+	if v == 0 {
+		return "0"
+	}
+	var b [20]byte
+	i := len(b)
+	for v > 0 {
+		i--
+		b[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(b[i:])
+}

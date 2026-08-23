@@ -3,6 +3,7 @@ import { fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
+import { I18nProvider } from '@/providers/i18n'
 import { UserMessage } from './UserMessage'
 
 // Use the i18n key directly — the test environment may be zh-CN or en,
@@ -77,6 +78,40 @@ describe('UserMessage — inline edit mode (Spec C §2)', () => {
     const editBtn = buttons.find((b) => b.querySelector('svg.lucide-pencil'))!
     fireEvent.click(editBtn)
     expect(onStartEdit).toHaveBeenCalledTimes(1)
+  })
+
+  it('clamps the edit box minHeight to the textarea cap (a tall message must not leave a huge empty box)', () => {
+    // Regression: handleStartEdit captured the FULL rendered display height
+    // (1500px for long pasted content) as the edit container's minHeight,
+    // while the edit textarea itself caps at 300px — the box was extremely
+    // tall with the editable text squeezed into the top strip.
+    const heightDesc = Object.getOwnPropertyDescriptor(window.HTMLElement.prototype, 'offsetHeight')
+    Object.defineProperty(window.HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() { return 1500 },
+    })
+    try {
+      const { rerender } = renderWithProviders(
+        <UserMessage content="long content" onRewind={vi.fn()} onStartEdit={vi.fn()} />,
+      )
+      const editBtn = screen.getAllByRole('button').find((b) => b.querySelector('svg.lucide-pencil'))!
+      fireEvent.click(editBtn)
+
+      // Parent flips isEditing (controlled) — same component instance keeps
+      // the captured editMinHeight state. rerender needs the Provider again.
+      rerender(
+        <I18nProvider>
+          <UserMessage content="long content" onRewind={vi.fn()} onStartEdit={vi.fn()} onEndEdit={vi.fn()} isEditing />
+        </I18nProvider>,
+      )
+      const box = screen.getByRole('textbox').closest('.rounded-lg') as HTMLElement
+      expect(box).not.toBeNull()
+      // 300 (textarea cap) + py-2×2 + border×2 = 318 — NOT 1500
+      expect(box.style.minHeight).toBe('318px')
+    } finally {
+      if (heightDesc) Object.defineProperty(window.HTMLElement.prototype, 'offsetHeight', heightDesc)
+      else delete (window.HTMLElement.prototype as { offsetHeight?: number }).offsetHeight
+    }
   })
 
   it('shows textarea and confirm/cancel buttons when in edit mode', () => {

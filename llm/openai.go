@@ -1,7 +1,10 @@
 package llm
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1342,6 +1345,21 @@ func (t *streamCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 	// attribute this request to a session/turn for debugging.
 	if o, ok := ObservabilityFromContext(req.Context()); ok {
 		o.ApplyHeaders(func(name, value string) { req.Header.Set(name, value) })
+	}
+	// 请求体指纹（chat/completions 流式请求）：sha256 前 12 位 + 字节数。
+	// 用于诊断“跨迭代 prompt_tokens 恒定 + 模型输出逐字节重复”类事故——
+	// 指纹递增 = 引擎发出的 body 在变（问题在上游计数/缓存）；指纹恒定 =
+	// body 被复用（引擎/SDK 层 bug，当场定位）。body 读出后必须回填。
+	if req.Body != nil && strings.Contains(req.URL.Path, "/chat/completions") {
+		bodyBytes, rerr := io.ReadAll(req.Body)
+		if rerr == nil {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			sum := sha256.Sum256(bodyBytes)
+			log.Ctx(req.Context()).WithFields(log.Fields{
+				"body_bytes": len(bodyBytes),
+				"body_sha12": hex.EncodeToString(sum[:6]),
+			}).Info("[LLM] HTTP request fingerprint")
+		}
 	}
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {

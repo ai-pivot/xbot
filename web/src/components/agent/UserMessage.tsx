@@ -76,11 +76,17 @@ export const UserMessage = memo(function UserMessage({
     }
   }, [content])
 
-  // Capture display height before entering edit mode to prevent height jitter
+  // Capture display height before entering edit mode to prevent height jitter.
+  // CLAMPED to the textarea's own cap (300px + container padding): a tall
+  // rendered message (long pasted content) used to set minHeight to its FULL
+  // display height, while the auto-resizing textarea inside caps at 300px —
+  // the edit box became extremely tall with the editable text squeezed into
+  // the top strip (user-reported bug).
+  const EDIT_BOX_MAX = 318 // 300 (textarea cap) + py-2×2 (16) + border×2 (2)
   const handleStartEdit = () => {
     const el = displayRef.current
     if (el) {
-      setEditMinHeight(el.offsetHeight)
+      setEditMinHeight(Math.min(el.offsetHeight, EDIT_BOX_MAX))
     }
     onStartEdit?.()
   }
