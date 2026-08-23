@@ -222,7 +222,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       {/* Input container — single rounded box with chips, textarea, and inline buttons */}
       <div
         className={cn(
-          'rounded-lg border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
+          'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
           focused
             ? 'border-accent ring-1 ring-accent/30'
             : 'border-border',
@@ -300,7 +300,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               aria-label={t('agent.attach')}
               disabled={uploading}
               onClick={() => fileRef.current?.click()}
-              className={cn('size-7 rounded-md', uploading && 'opacity-40')}
+              className={cn('size-9 rounded-md', uploading && 'opacity-40')}
             >
               {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
             </Button>
@@ -316,7 +316,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 aria-label={t('common.cancel')}
                 onClick={onCancel}
                 disabled={cancelling}
-                className="size-7 rounded-md"
+                className="size-9 rounded-md"
               >
                 {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
               </Button>
@@ -328,7 +328,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 disabled={!canSend}
                 onClick={submit}
                 className={cn(
-                  'size-7 rounded-md bg-accent text-accent-foreground',
+                  'size-9 rounded-md bg-accent text-accent-foreground',
                   !canSend && 'opacity-40',
                 )}
               >

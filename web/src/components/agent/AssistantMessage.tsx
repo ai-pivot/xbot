@@ -210,7 +210,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
           <ToolRender key={`genui-${i}`} tool={tool} />
         ))}
         {message.displayOnly && (
-          <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
+          <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted md:text-[11px]">
             {t('agent.displayOnly')}
           </span>
         )}

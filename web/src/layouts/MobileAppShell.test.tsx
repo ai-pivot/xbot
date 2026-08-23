@@ -104,13 +104,15 @@ vi.mock('@/plugin-runtime/usePluginViewPanels', () => ({
 // 布局系统：测试环境直接渲染 MobileAppShell（不经 App.tsx），需手动注册
 // 内置布局项，否则底部导航/顶栏为空（会话/工具按钮不渲染）。
 // 固定产品默认 locale（zh-CN）：底部/顶栏按钮经 labelKey 走 i18n，测试断言用中文。
-import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { registerBuiltinLayoutItems, layoutRegistry } from '@/plugin-runtime/layoutRegistry'
 import { changeLocale } from '@/i18n'
 
 describe('MobileAppShell', () => {
   beforeEach(() => {
     mocks.sessionStore.createSession.mockReset()
     mocks.sessionStore.createSession.mockResolvedValue('new-chat')
+    // 清掉上个用例的布局 overrides（按需导航用例会 moveItem 到 bottom_nav）。
+    layoutRegistry.resetAll()
     registerBuiltinLayoutItems()
     changeLocale('zh-CN')
   })
@@ -121,17 +123,20 @@ describe('MobileAppShell', () => {
     expect(screen.getByText('Mobile Chat')).toBeInTheDocument()
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
 
-    // Switch to the detail/panel view via the bottom nav "工具" button
-    fireEvent.click(screen.getByText('工具'))
-    // Panel buttons use i18n labels (locale fixed to zh-CN in beforeEach)
-    fireEvent.click(screen.getByLabelText('信息'))
+    // 默认无底部导航（聊天为主角）——切工具页走顶栏「工具」按钮
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument()
+
+    // Switch to the detail/panel view via the top bar "工具" button
+    fireEvent.click(screen.getByLabelText('工具'))
+    // Segmented tabs carry icon + text labels (locale fixed to zh-CN)
+    fireEvent.click(screen.getByRole('tab', { name: '信息' }))
     expect(screen.getByText('info-panel')).toBeInTheDocument()
     // Agent 面板必须保持挂载（display:none 隐藏）——卸载会销毁
     // MessageStore/ProgressStore，切回时依赖网络恢复，迭代可能少
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
 
-    // Return to the agent view via the bottom nav "会话" button
-    fireEvent.click(screen.getByText('会话'))
+    // Return to the agent view via the header back button
+    fireEvent.click(screen.getByLabelText('返回'))
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
   })
 
@@ -147,5 +152,21 @@ describe('MobileAppShell', () => {
 
     fireEvent.click(screen.getByLabelText('新建会话'))
     expect(mocks.sessionStore.createSession).toHaveBeenCalled()
+  })
+
+  it('renders the bottom nav on demand when items are moved into mobile.bottom_nav', async () => {
+    // 布局系统兼容：用户把布局项移入 bottom_nav → 底部导航按需出现。
+    const { layoutRegistry } = await import('@/plugin-runtime/layoutRegistry')
+    layoutRegistry.moveItem('mobile.view.tools', 'mobile.bottom_nav')
+    renderWithProviders(<MobileAppShell />)
+
+    const nav = screen.getByRole('navigation')
+    expect(nav).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('工具'))
+    expect(screen.getByText('info-panel')).toBeInTheDocument()
+    // Agent 面板保持挂载（display:none 切换视图，不卸载）
+    expect(screen.getByText('agent-panel')).toBeInTheDocument()
+    // 按需导航项带 pill active 态
+    expect(screen.getByLabelText('工具')).toHaveAttribute('aria-current', 'page')
   })
 })

@@ -23,7 +23,6 @@ const SLOT_LABELS: Record<LayoutSlotId, string> = {
 
 /** 内置项 id → 显示名（插件项用 view 自带 title）。 */
 const BUILTIN_NAMES: Record<string, string> = {
-  [BUILTIN_LAYOUT_ITEMS.mobileAgent]: '会话按钮',
   [BUILTIN_LAYOUT_ITEMS.mobileTools]: '工具按钮',
   [BUILTIN_LAYOUT_ITEMS.mobileNewChat]: '新建会话',
   [BUILTIN_LAYOUT_ITEMS.mobileSettings]: '设置',
