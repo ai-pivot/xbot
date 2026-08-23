@@ -9,7 +9,7 @@
  * KaTeX styles are imported here (once) so the rendered math is styled; links
  * open in a new tab. The container is scrollable by the panel, not internally.
  */
-import { memo, useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -17,6 +17,8 @@ import rehypeKatex from 'rehype-katex'
 
 import { highlightCode as highlightCodeAsync, highlightAuto as highlightAutoAsync, normalizeLanguage } from '@/components/agent/highlight'
 import { MermaidDiagram } from '@/components/agent/MermaidDiagram'
+import { FrontmatterCard } from '@/components/file/FrontmatterCard'
+import { parseFrontmatter } from '@/lib/markdown'
 import { joinPath } from '@/hooks/useFileSystem'
 
 import 'katex/dist/katex.min.css'
@@ -86,8 +88,14 @@ export const MarkdownPreview = memo(function MarkdownPreview({
   baseDir,
   className,
 }: MarkdownPreviewProps) {
+  // Strip a leading YAML frontmatter block (SKILL.md etc.) and render it as a
+  // metadata card — CommonMark would otherwise parse the closing `---` as a
+  // setext heading underline and swallow the YAML lines into an <h2>.
+  const { values, body } = useMemo(() => parseFrontmatter(source), [source])
+
   return (
     <div className={`md-body h-full overflow-auto px-4 py-3 ${className ?? ''}`}>
+      {values && Object.keys(values).length > 0 && <FrontmatterCard values={values} />}
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
@@ -125,7 +133,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
           ),
         }}
       >
-        {source}
+        {body}
       </ReactMarkdown>
     </div>
   )

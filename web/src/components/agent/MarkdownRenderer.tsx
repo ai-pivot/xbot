@@ -34,16 +34,13 @@ import rehypeKatex from "rehype-katex";
 import type { PluggableList } from "unified";
 import { Check, Copy } from "lucide-react";
 
-import {
-  highlightSync,
-  normalizeLanguage,
-  ensureHljsLoaded,
-  useHljsReady,
-} from "./highlight";
-import { MermaidDiagram, MermaidSourceBlock } from "./MermaidDiagram";
-import { useCodeWordWrap } from "@/hooks/useCodeWordWrap";
-import { useIsTouch } from "@/hooks/useIsMobile";
-import { cn } from "@/lib/utils";
+import { highlightSync, normalizeLanguage, ensureHljsLoaded, useHljsReady } from './highlight'
+import { MermaidDiagram, MermaidSourceBlock } from './MermaidDiagram'
+import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
+import { useIsTouch } from '@/hooks/useIsMobile'
+import { cn } from '@/lib/utils'
+import { stripFrontmatter } from '@/lib/markdown'
+
 
 interface MarkdownRendererProps {
   content: string;
@@ -420,8 +417,10 @@ const ParsedMarkdown = memo(function ParsedMarkdown({
   // Streaming guard (Mermaid's principle, at the source level): clip the
   // trailing UNCLOSED math region so partial TeX never reaches remark-math /
   // KaTeX mid-stream — only complete formulas render; the finished content is
-  // never clipped.
-  const normalized = normalizeMathDelimiters(content);
+  // never clipped. Frontmatter is stripped BEFORE math normalization (the
+  // closing `---` would parse as a setext heading underline, and `$` in YAML
+  // values must not become math delimiters).
+  const normalized = normalizeMathDelimiters(stripFrontmatter(content));
   const src = streaming ? clipTrailingUnclosedMath(normalized) : normalized;
   return (
     <StreamingContext.Provider value={streaming}>
