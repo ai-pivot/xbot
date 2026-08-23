@@ -504,6 +504,18 @@ interface BackendRPC {
 
 **与现有 `PluginManager` 的关系**：后端 `plugin/list` 等 RPC 直接读现有 `PluginManager`（`plugin/manager.go`）的状态 + 热加载触发 `WatchConfig` 式重载；前端只负责渲染与发起调用。管理面板本身不持有任何后端特权——它只是插件系统能力的一个高保真演示。
 
+### 5.3 技能管理面板（xbot.skill-manager，第二个内置插件）
+
+技能管理（查看/启用/禁用/导出/卸载/安装）同样做成内置前端插件 `xbot.skill-manager`（`web/src/plugins/xbot-skill-manager/`），与 plugin-manager 同范式，但 API 形态不同——**无点号核心 RPC 直传**：
+
+- **4 个 skill RPC**（`skill_list` / `skill_set_enabled` / `skill_get_content` / `skill_validate_path`，后端 `serverapp/rpc_table.go`）经 `runtime.rpc.call('skill_list')` **无点号方法直接发 `/api/rpc`，完全绕过 `web_plugin_rpc`**。`/api/rpc` 的 `handleRPC`（web_rest.go）经 `rpcIdentityFromRequest` 从 cookie 注入 `RPCIdentity{SenderID, CanonicalUserID, CanonicalRole}` → skill RPC 用 `rpcAuthID(ctx)` 取身份（比信任前端 `sender_id` 参数更安全）。**条件**：这些方法必须在 `nonAdminRESTRPCMethods` 白名单（web_rest.go）——`authorizeRESTRPC` 对 admin 全放行，非 admin 只放行白名单方法。
+- **install/uninstall 不走核心 RPC 直传**：`app_uninstall` RPC 用显式 `p.SenderID`（非 ctx 身份），前端无法安全直传 → 复用 master 通用市场 REST `/api/app/install-file` + `/api/app/uninstall`（后端从会话身份注入 sender_id）。
+- **export 保留薄 REST** `/api/skills/export`（zip 二进制走 RPC 需 base64，REST 下载语义更自然；handler 先 `skill_validate_path` 防任意目录访问，文件名 `sanitizeExportName` 消毒）。embedded 分支用 `tools.ListEmbeddedSkillFiles`/`ReadEmbeddedSkillFile`；磁盘分支 `filepath.Walk`。
+- **TabManagerProvider**（`web/src/hooks/useTabManager.ts`）：`useTabManager()` 原为每次调用创建独立实例（各自独立 apiRef/pending 队列，绑定 Dockview API 的只有 AppShell 实例）。`App.tsx` 的 `PluginRuntimeRoot` 内层包 `TabManagerProvider` 提供共享实例，插件 View（如 skill-manager 打开文件 tab）经 context 拿到同一实例。`useTabManager` 保留签名不变（context 优先，无 Provider 时兜底自建）。**⚠️ useTabManager.ts 是 `.ts` 文件，Provider 内不能写 JSX**（oxc 按 .ts 解析失败）——用 `createElement`。
+- i18n：`sidebar.skills` + `skills.*` 键（en/zh-CN）。
+
+注册路径与 plugin-manager 完全相同：`usePluginRuntimeHost.ts` 静态 import `SkillManagerPanel` → `builtinViews.set('xbot.skill-manager.panel', ...)`（⚠️ 内置视图必须静态 import，禁止动态 import——React #311 黑屏根因）+ Bootstrap `activateBuiltin(skillManager.manifest, ...)`。
+
 ---
 
 ## 6. 与现有系统的关系
