@@ -12,6 +12,7 @@ import { useI18n } from '@/providers/i18n'
 import { postAPI, postRawAPI } from '@/lib/api'
 import { usePluginRuntime } from '@/plugin-runtime'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { MarkdownPreview } from '@/components/file/MarkdownPreview'
 import { Loader2, Download, Trash2, Eye, FileUp, ArrowLeft } from 'lucide-react'
 
@@ -228,27 +229,15 @@ export function SkillManagerPanel() {
                     )}
                   </div>
                 </div>
-                {skill.source !== 'embedded' && (
-                  <div className="mt-1 flex items-center justify-between">
-                    <span className="text-[10px] text-muted-foreground">{skill.path}</span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={skill.enabled}
-                      aria-label={`${skill.name} ${skill.enabled ? 'enabled' : 'disabled'}`}
-                      onClick={() => void handleToggle(skill.name, !skill.enabled)}
-                      className={`relative h-4 w-7 rounded-full transition-colors ${
-                        skill.enabled ? 'bg-primary' : 'bg-muted'
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 h-3 w-3 rounded-full bg-background transition-transform ${
-                          skill.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
-                        }`}
-                      />
-                    </button>
-                  </div>
-                )}
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-[10px] text-muted-foreground">{skill.path}</span>
+                  <Switch
+                    size="sm"
+                    checked={skill.enabled}
+                    onCheckedChange={(v) => void handleToggle(skill.name, v)}
+                    aria-label={`${skill.name} ${skill.enabled ? 'enabled' : 'disabled'}`}
+                  />
+                </div>
               </li>
             ))}
           </ul>

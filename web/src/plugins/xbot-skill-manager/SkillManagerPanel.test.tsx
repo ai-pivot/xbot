@@ -1,0 +1,93 @@
+/**
+ * SkillManagerPanel —— 启禁用开关回归测试。
+ *
+ * 回归背景（用户报告）：
+ * 1. 内嵌（embedded）skill 不渲染启禁用开关 —— 旧代码 `skill.source !== 'embedded'`
+ *    条件把 embedded 排除在开关之外，但后端 SetSkillEnabled 是 disabled_skills
+ *    黑名单机制，对 embedded 同样生效，前端排除是缺陷。
+ * 2. 开关用裸 <button> 实现，缺 shrink-0，容器 justify-between 里 path 较长时
+ *    开关被 flex 压缩变形（button 内 span 是 absolute 不占布局空间 → min-width 解析为 0）。
+ * 修复：统一改用项目 radix Switch 组件（内置 shrink-0 + 标准样式），所有 skill 均渲染开关。
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+
+import { SkillManagerPanel } from './SkillManagerPanel'
+
+vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+
+const { rpcCall, runtime } = vi.hoisted(() => {
+  const rpcCall = vi.fn()
+  return { rpcCall, runtime: { rpc: { call: rpcCall } } }
+})
+
+// runtime 必须是稳定引用——usePluginRuntime 的 load useCallback 依赖 [runtime]，
+// 每次渲染返回新对象会导致 useEffect 无限重跑（一直 loading）。
+vi.mock('@/plugin-runtime', () => ({
+  usePluginRuntime: () => runtime,
+}))
+
+vi.mock('@/lib/api', () => ({
+  postAPI: vi.fn().mockResolvedValue({ ok: true }),
+  postRawAPI: vi.fn().mockResolvedValue({ blob: () => Promise.resolve(new Blob()) }),
+}))
+
+/** 与后端 agent/skills.go ListSkillsDetailed 返回对齐。 */
+const skills = [
+  {
+    name: 'debug',
+    description: '调试技能',
+    path: 'embedded:debug',
+    source: 'embedded',
+    enabled: true,
+    can_uninstall: false,
+  },
+  {
+    name: 'issue-solver',
+    description: 'Issue 解决流程',
+    path: '/home/cjw/.xbot/skills/issue-solver',
+    source: 'global',
+    enabled: false,
+    can_uninstall: false,
+  },
+]
+
+describe('SkillManagerPanel 启禁用开关', () => {
+  beforeEach(() => {
+    rpcCall.mockReset()
+    rpcCall.mockResolvedValue(skills)
+  })
+
+  it('embedded skill 也渲染启禁用开关（不再排除 embedded）', async () => {
+    render(<SkillManagerPanel />)
+    const switches = await screen.findAllByRole('switch')
+    expect(switches.length).toBe(skills.length) // 所有 skill（含 embedded）都有开关
+  })
+
+  it('开关 aria-checked 反映 enabled 状态', async () => {
+    render(<SkillManagerPanel />)
+    const switches = await screen.findAllByRole('switch')
+    // debug (embedded, enabled=true) → checked
+    expect(switches[0].getAttribute('aria-checked')).toBe('true')
+    // issue-solver (global, disabled) → unchecked
+    expect(switches[1].getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('点击开关调用 skill_set_enabled 并反转状态', async () => {
+    render(<SkillManagerPanel />)
+    const switches = await screen.findAllByRole('switch')
+    fireEvent.click(switches[0]) // debug enabled=true → 禁用
+    await waitFor(() => {
+      expect(rpcCall).toHaveBeenCalledWith('skill_set_enabled', { name: 'debug', enabled: false })
+    })
+    fireEvent.click(switches[1]) // issue-solver enabled=false → 启用
+    await waitFor(() => {
+      expect(rpcCall).toHaveBeenCalledWith('skill_set_enabled', { name: 'issue-solver', enabled: true })
+    })
+  })
+
+  it('已禁用 skill 显示「已禁用」标签', async () => {
+    render(<SkillManagerPanel />)
+    expect(await screen.findByText('skills.disabled')).toBeTruthy()
+  })
+})
