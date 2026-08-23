@@ -301,10 +301,21 @@ func TestLoopSignature_Identical(t *testing.T) {
 	}
 }
 
-func TestDetectIterationLoop_InjectsWarning(t *testing.T) {
-	// 模拟连续两次相同迭代的 recordAssistantMsg → 第二次应注入 loop_detection 警告
+func TestDetectIterationLoop_ReplacesDuplicateCallsWithFakeToolResult(t *testing.T) {
+	// 连续两次相同迭代的完整流程（recordAssistantMsg → executeToolCalls →
+	// processToolResults）→ 第二次不得执行真实工具，重复调用被替换成
+	// fake tool result 警告（挂在真实 tool_call_id 下，SanitizeMessages 保留）。
+	//
+	// 回归守护：loop breaker 绝不插入 user message —— 假 user 行会带当前
+	// turn_id 持久化进 DB，web 前端按 (turnID, role) 分组渲染时它会顶替
+	// 用户的真实消息（用户报告的严重 bug）。
+	var execCount int
 	s := &runState{
 		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		toolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+			execCount++
+			return &tools.ToolResult{Summary: "ok"}, nil
+		},
 	}
 
 	resp := &llm.LLMResponse{
@@ -312,35 +323,82 @@ func TestDetectIterationLoop_InjectsWarning(t *testing.T) {
 		ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "FileReplace", Arguments: `{"path":"a.go"}`}},
 	}
 
-	// 第一次迭代：记录签名，不触发
+	// 第一次迭代：正常执行
 	s.recordAssistantMsg(context.Background(), resp)
-	found := false
+	results := s.executeToolCalls(context.Background(), resp, 1)
+	s.processToolResults(context.Background(), resp, results)
+	if execCount != 1 {
+		t.Fatalf("first iteration should execute the tool once, got %d", execCount)
+	}
 	for _, m := range s.messages {
-		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
-			found = true
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			t.Fatal("first iteration should NOT inject loop warning")
 		}
 	}
-	if found {
-		t.Fatal("first iteration should NOT inject loop warning")
+
+	// 第二次迭代：相同签名，上一迭代无报错 → 重复调用被替换成 fake tool result
+	s.recordAssistantMsg(context.Background(), resp)
+	results = s.executeToolCalls(context.Background(), resp, 2)
+	s.processToolResults(context.Background(), resp, results)
+
+	if execCount != 1 {
+		t.Fatalf("duplicate iteration must NOT execute the real tool again, got %d executions", execCount)
+	}
+	found := false
+	for _, m := range s.messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			found = true
+			if m.ToolCallID != "tc1" {
+				t.Fatalf("loop-breaker tool result must pair with the assistant's real tool_call_id, got %q", m.ToolCallID)
+			}
+			if m.TurnID != s.cfg.TurnID {
+				t.Fatalf("loop-breaker tool result must carry the run's turn_id")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("second identical iteration should inject a LOOP DETECTED tool result")
 	}
 
-	// 第二次迭代：相同签名，上一迭代无报错 → 应注入警告
-	s.recordAssistantMsg(context.Background(), resp)
-	found = false
+	// 绝不插入 user message（假 user 行会在 web 前端顶替真实 user msg）
 	for _, m := range s.messages {
 		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
+			t.Fatal("loop breaker must NEVER insert a user message — it replaces the user's real message in the web frontend")
+		}
+	}
+
+	// SanitizeMessages 不得剥离 fake tool result（tool_call_id 与 assistant 配对）
+	sanitized := llm.SanitizeMessages(s.messages)
+	found = false
+	for _, m := range sanitized {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("second identical iteration should inject LOOP DETECTED warning")
+		t.Fatal("SanitizeMessages must keep the paired loop-breaker tool result (real tool_call_id)")
+	}
+
+	// 第三次迭代：模型无视警告继续重复 → 持续拦截（fake 不算 tool error，
+	// lastIterHadError 保持 false，signature 依旧匹配）
+	s.recordAssistantMsg(context.Background(), resp)
+	results = s.executeToolCalls(context.Background(), resp, 3)
+	s.processToolResults(context.Background(), resp, results)
+	if execCount != 1 {
+		t.Fatalf("third duplicate iteration must still be intercepted, got %d executions", execCount)
 	}
 }
 
 func TestDetectIterationLoop_SkipsAfterToolError(t *testing.T) {
-	// 如果上一迭代的工具执行报错了，模型重试是合理的 → 不触发 loop 警告
+	// 如果上一迭代的工具执行报错了，模型重试是合理的 → 不触发 loop 拦截，
+	// 工具正常执行（不注入 fake tool result，也不插入 user msg）
+	var execCount int
 	s := &runState{
 		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		toolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+			execCount++
+			return &tools.ToolResult{Summary: "done", IsError: false}, nil
+		},
 	}
 
 	resp := &llm.LLMResponse{
@@ -350,14 +408,22 @@ func TestDetectIterationLoop_SkipsAfterToolError(t *testing.T) {
 
 	// 第一次迭代
 	s.recordAssistantMsg(context.Background(), resp)
+	results := s.executeToolCalls(context.Background(), resp, 1)
+	s.processToolResults(context.Background(), resp, results)
 
 	// 模拟工具执行报错
 	s.lastIterHadError = true
 
-	// 第二次迭代：签名相同，但上一迭代有报错 → 不触发
+	// 第二次迭代：签名相同，但上一迭代有报错 → 正常执行，不拦截
 	s.recordAssistantMsg(context.Background(), resp)
+	results = s.executeToolCalls(context.Background(), resp, 2)
+	s.processToolResults(context.Background(), resp, results)
+
+	if execCount != 2 {
+		t.Fatalf("retry after a tool error should execute the tool again, got %d executions", execCount)
+	}
 	for _, m := range s.messages {
-		if m.Role == "user" && strings.Contains(m.Content, "LOOP DETECTED") {
+		if strings.Contains(m.Content, "LOOP DETECTED") {
 			t.Fatal("should NOT inject loop warning when previous iteration had a tool error")
 		}
 	}
@@ -1678,13 +1744,13 @@ func TestRun_WithHookManager_TimingHookCollects(t *testing.T) {
 			{
 				FinishReason: llm.FinishReasonToolCalls,
 				ToolCalls: []llm.ToolCall{
-					{ID: "tc1", Name: "Shell", Arguments: `{}`},
+					{ID: "tc1", Name: "Shell", Arguments: `{"command":"ls"}`},
 				},
 			},
 			{
 				FinishReason: llm.FinishReasonToolCalls,
 				ToolCalls: []llm.ToolCall{
-					{ID: "tc2", Name: "Shell", Arguments: `{}`},
+					{ID: "tc2", Name: "Shell", Arguments: `{"command":"pwd"}`},
 				},
 			},
 			{Content: "Done."},
