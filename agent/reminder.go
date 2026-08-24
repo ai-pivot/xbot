@@ -65,14 +65,6 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		}
 	}
 
-	// 2. 统计 tool message 总数作为进度指标
-	toolCount := 0
-	for _, msg := range messages {
-		if msg.Role == "tool" {
-			toolCount++
-		}
-	}
-
 	// 2b. 统计用户消息之后的 tool 调用数（用于区分新旧消息）
 	toolsSinceUser := 0
 	if lastUserIdx >= 0 {
@@ -99,8 +91,9 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 			// 用户刚说的——这是当前轮的第一个工具调用
 			parts = append(parts, fmt.Sprintf("用户最新需求: %s", taskGoal))
 		} else {
-			// 用户之前说的——明确标注这不是新消息
-			parts = append(parts, fmt.Sprintf("用户原始需求（正在处理中，已执行 %d 次工具调用）: %s", toolsSinceUser, taskGoal))
+			// 用户之前说的——明确标注这不是新消息；不暴露"已执行 N 次工具调用"，
+			// 累加计数会让 agent 焦虑（"迭代太多了要赶快"），对决策无帮助。
+			parts = append(parts, fmt.Sprintf("用户原始需求（正在处理中，请继续完成）: %s", taskGoal))
 		}
 	}
 
@@ -110,7 +103,6 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		parts = append(parts, fmt.Sprintf("📂 默认工作目录: %s（你的 Shell 命令默认在此目录执行，Cd 后生效）", cwd))
 	}
 
-	parts = append(parts, fmt.Sprintf("已完成 %d 次工具调用", toolCount))
 	parts = append(parts, fmt.Sprintf("本轮使用: %s", strings.Join(roundToolNames, ", ")))
 
 	if todoSummary != "" {

@@ -55,14 +55,17 @@ type RPCContext struct {
 // 启用 → web_plugin_init（前端 runtime.activate 注册视图）。
 func (h *RPCContext) broadcastPluginEnablement(pluginID string, enabled bool) {
 	if h.Disp == nil {
+		log.Warnf("broadcastPluginEnablement: Disp is nil, cannot broadcast %s", pluginID)
 		return
 	}
 	ch, ok := h.Disp.GetChannel("web")
 	if !ok {
+		log.Warnf("broadcastPluginEnablement: web channel not found, cannot broadcast %s", pluginID)
 		return
 	}
 	wc, ok := ch.(interface{ Hub() *web.Hub })
 	if !ok || wc.Hub() == nil {
+		log.Warnf("broadcastPluginEnablement: web channel has no Hub, cannot broadcast %s", pluginID)
 		return
 	}
 	msgType := protocol.MsgTypeWebPluginDeactivate
@@ -71,6 +74,7 @@ func (h *RPCContext) broadcastPluginEnablement(pluginID string, enabled bool) {
 		msgType = protocol.MsgTypeWebPluginInit
 		pm := h.Ag.PluginManager()
 		if pm == nil {
+			log.Warnf("broadcastPluginEnablement: PluginManager nil, cannot broadcast %s", pluginID)
 			return
 		}
 		for _, e := range pm.ListPlugins() {
@@ -104,6 +108,7 @@ func (h *RPCContext) broadcastPluginEnablement(pluginID string, enabled bool) {
 			break
 		}
 	}
+	log.Infof("broadcastPluginEnablement: broadcasting %s msgType=%s to web hub", pluginID, msgType)
 	wc.Hub().BroadcastToWeb(protocol.WSMessage{Type: msgType, Content: content})
 }
 
@@ -1981,6 +1986,30 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		if err := pm.Reload(context.Background(), p.ID); err != nil {
 			return nil, err
 		}
+		// 热重载通知：reload 后必须广播 web_plugin_init，否则前端完全不知道
+		// 插件变了 —— view 不重新注册、模块不重新 import，点多少次 reload 前端
+		// 都跑旧代码（用户可感知的"热重载失效"）。仅对带 Web 声明的插件广播
+		// ——纯后端插件广播空 decl 会让前端 activate 空 manifest 报校验错误。
+		for _, e := range pm.ListPlugins() {
+			if e.Manifest.ID == p.ID {
+				hasWeb := e.Manifest.Web != nil && e.Manifest.Web.Entry != ""
+				log.WithFields(map[string]any{
+					"plugin":  p.ID,
+					"has_web": hasWeb,
+					"entry": func() string {
+						if e.Manifest.Web != nil {
+							return e.Manifest.Web.Entry
+						}
+						return ""
+					}(),
+					"state": string(e.State),
+				}).Info("plugin_reload: broadcast check")
+				if hasWeb {
+					h.broadcastPluginEnablement(p.ID, true)
+				}
+				break
+			}
+		}
 		return map[string]string{"status": "ok"}, nil
 	})
 
@@ -2000,6 +2029,13 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		case err := <-resultCh:
 			if err != nil {
 				return nil, err
+			}
+			// 热重载通知：与 plugin_reload 相同，reload 完成后对所有带 Web 声明
+			// 的插件广播 web_plugin_init（前端 bump token 重新 import 新模块）。
+			for _, e := range pm.ListPlugins() {
+				if e.Manifest.Web != nil && e.Manifest.Web.Entry != "" {
+					h.broadcastPluginEnablement(e.Manifest.ID, true)
+				}
 			}
 			return map[string]string{"status": "ok"}, nil
 		case <-time.After(30 * time.Second):

@@ -21,11 +21,11 @@ func TestBuildSystemReminder_Basic(t *testing.T) {
 		t.Error("expected system-reminder tag")
 	}
 	// When there's a tool message after user message, it should show "正在处理中"
-	if !strings.Contains(result, "用户原始需求（正在处理中，已执行 1 次工具调用）: Hello") {
+	if !strings.Contains(result, "用户原始需求（正在处理中，请继续完成）: Hello") {
 		t.Errorf("expected user goal with processing hint, got:\n%s", result)
 	}
-	if !strings.Contains(result, "已完成 1 次工具调用") {
-		t.Errorf("expected tool count, got:\n%s", result)
+	if strings.Contains(result, "已完成 1 次工具调用") {
+		t.Errorf("should NOT contain cumulative tool count, got:\n%s", result)
 	}
 	if !strings.Contains(result, "Shell") {
 		t.Errorf("expected tool name in reminder, got:\n%s", result)
@@ -64,8 +64,8 @@ func TestBuildSystemReminder_OldMessage(t *testing.T) {
 
 	result := BuildSystemReminder(messages, []llm.ToolCall{{Name: "Grep"}}, "", "main", "", "", "", nil)
 
-	if !strings.Contains(result, "用户原始需求（正在处理中，已执行 3 次工具调用）: Refactor the codebase") {
-		t.Errorf("expected '原始需求' with processing count for old message, got:\n%s", result)
+	if !strings.Contains(result, "用户原始需求（正在处理中，请继续完成）: Refactor the codebase") {
+		t.Errorf("expected '原始需求' with processing hint for old message, got:\n%s", result)
 	}
 	if strings.Contains(result, "用户最新需求") {
 		t.Errorf("should NOT show '最新需求' for old message, got:\n%s", result)

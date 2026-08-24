@@ -34,6 +34,20 @@ export interface WebPluginDecl {
 }
 
 /** 视图组件动态 import（第三方插件模块经 versioned URL 加载）。 */
+
+// ── 插件模块热重载 cache-bust ────────────────────────────────────────────────
+// 每次 activate（启动 + web_plugin_init 热加载/reload）bump 一个 per-plugin
+// token，view 组件 import URL 带上它。关键机制：浏览器 ES module map 以完整
+// URL 为缓存键 —— reload 后 URL 变化 → module map miss → 发网络请求 → 拿到
+// 磁盘上的最新 index.js。没有它，热重载后 URL 不变 → module map 命中旧模块
+// （连请求都不发）→ 无论磁盘怎么更新、按钮点多少次，前端永远跑旧代码。
+// 同一会话内不重载则 token 不变 → URL 稳定 → module map 命中，不重复请求。
+const pluginLoadTokens = new Map<string, string>()
+
+function bumpPluginLoadToken(pluginId: string): void {
+  pluginLoadTokens.set(pluginId, Date.now().toString(36))
+}
+
 async function loadPluginViewComponent(
   pluginId: string,
   view: ViewContribution,
@@ -48,8 +62,12 @@ async function loadPluginViewComponent(
   }
   const base = `/plugins/${pluginId}/web`
   const url = view.entry.startsWith('/') ? view.entry : `${base}/${view.entry}`
+  // cache-bust token：activate/reload 时 bump（见 pluginLoadTokens 注释）。
+  // 无 token（异常路径）时退化为无参数 URL，行为同旧版。
+  const token = pluginLoadTokens.get(pluginId)
+  const bust = token ? `&_t=${token}` : ''
   try {
-    const mod = await import(/* @vite-ignore */ `${url}?view=${encodeURIComponent(view.id)}`)
+    const mod = await import(/* @vite-ignore */ `${url}?view=${encodeURIComponent(view.id)}${bust}`)
     const comp = (mod.default ?? mod[view.id] ?? null) as unknown
     // 只接受函数组件，或带合法 $$typeof 的 memo/forwardRef 对象（React 18+ 支持）。
     // 绝不放行裸对象 —— React 渲染 `<Comp />` 时会对裸对象抛
@@ -186,6 +204,7 @@ export function PluginRuntimeBootstrap() {
             console.debug(`[plugin-runtime] 跳过已禁用的插件 ${decl.id}（enabled=false）`)
             continue
           }
+          bumpPluginLoadToken(decl.id)
           const manifest = toManifest(decl)
           await runtime.activate(manifest, decl.module_url)
         }
@@ -204,6 +223,10 @@ export function PluginRuntimeBootstrap() {
       if (msg.type === 'web_plugin_init') {
         try {
           const decl = JSON.parse(msg.content ?? '{}') as WebPluginDecl & { module_url?: string }
+          // 热加载/reload：bump token 使 view 组件 import URL 变化，穿破浏览器
+          // ES module map + HTTP 缓存 —— 否则 URL 不变时 module map 直接命中旧
+          // 模块（不发请求），磁盘更新多少次前端都跑旧代码（热重载失效根因）。
+          bumpPluginLoadToken(decl.id)
           const manifest = toManifest(decl)
           void runtime.activate(manifest, decl.module_url)
         } catch (error) {

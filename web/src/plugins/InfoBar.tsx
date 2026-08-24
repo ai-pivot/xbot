@@ -10,20 +10,28 @@
  */
 import { WidgetZone } from '@/plugins/WidgetZone'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
+import { useWSConnection } from '@/hooks/useWSConnection'
 
 export function InfoBar() {
-  // WidgetZone renders non-git spans (git spans excluded — the fancy
-  // GitStatusPanel in the plugin view container renders them instead).
-  //
-  // Height absorbs the bottom safe area (iOS PWA home-indicator / rounded
-  // corners): the bar's bg-[--bg-elevated] paints through it, and the content
-  // stays inside the top 1.5rem. Desktop / browser mode: inset is 0 — the bar
-  // stays a plain h-6 strip, unchanged.
+  // VSCode 式默认状态：左下角连接状态指示（有内容时也常驻，空时至少有点东西，
+  // 避免空条太素）。绿点=已连接，红点=连接中。
+  const ws = useWSConnection()
+  const connected = ws.connected
   return (
     <div
       className="flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs"
       style={{ height: 'calc(1.5rem + var(--safe-area-bottom))', paddingBottom: 'var(--safe-area-bottom)' }}
     >
+      <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+        <span
+          className={
+            connected
+              ? 'size-1.5 rounded-full bg-emerald-500'
+              : 'size-1.5 animate-pulse rounded-full bg-amber-500'
+          }
+        />
+        <span className="text-text-muted">{connected ? '已连接' : '连接中…'}</span>
+      </span>
       <PluginPanelContainer container="info_bar" />
       <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
     </div>

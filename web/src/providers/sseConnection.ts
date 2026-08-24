@@ -46,6 +46,14 @@ export const SSE_EVENT_TYPES = [
   'sync_progress',
   'resync_required',
   'heartbeat',
+  // 插件热重载/卸载 - 后端经 SSE 广播 web_plugin_init / web_plugin_deactivate /
+  // web_plugin_event / web_plugin_push / web_plugin_rpc。⚠️ 必须进白名单，否则
+  // EventSource 不注册 addEventListener → 收不到 → 插件热重载/事件桥完全失效。
+  'web_plugin_init',
+  'web_plugin_deactivate',
+  'web_plugin_event',
+  'web_plugin_push',
+  'web_plugin_rpc',
 ] as const
 
 type Handler<T> = (payload: T) => void
