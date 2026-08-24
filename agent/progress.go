@@ -110,6 +110,12 @@ type ToolProgress struct {
 	Detail    string // full untruncated tool result (for per-tool body rendering)
 	Args      string // raw JSON tool arguments (for per-tool rendering in CLI)
 	ToolHints string // markdown hint from plugin or built-in diff (rendered in progress panel)
+	// UIMode/UILibs mirror protocol.ToolProgress so the committed iteration
+	// snapshot persists them (ui_mode/ui_libs) — without them the committed
+	// history loses uiMode and the frontend falls back to summary text instead
+	// of rendering the GenUI card ("历史的还是展示在 summary 里" 根因).
+	UIMode string
+	UILibs []string
 	// UISurface carries the tool's "top-level panel" declaration (from
 	// UIDecl.Surface) so it persists into the iteration snapshot → DB history →
 	// frontend (fancy header + collapse + fullscreen). Mirrors protocol.UISurface.

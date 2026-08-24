@@ -469,6 +469,11 @@ type IterationToolSnapshot struct {
 	Summary   string `json:"summary,omitempty"`
 	Args      string `json:"args,omitempty"`
 	Detail    string `json:"detail,omitempty"` // full tool detail (e.g. display_html code)
+	// UIMode / UILibs persist the tool's UI capability so committed history
+	// renders the GenUI card (was only ever on live ProgressEvent, never on the
+	// committed iteration snapshot — history fell back to summary text).
+	UIMode string   `json:"ui_mode,omitempty"`
+	UILibs []string `json:"ui_libs,omitempty"`
 	// UISurface carries the tool's top-level-panel declaration (UIDecl.Surface)
 	// into the iteration snapshot → DB history → frontend (fancy panel header).
 	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
