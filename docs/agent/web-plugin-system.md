@@ -508,7 +508,7 @@ interface BackendRPC {
 
 插件可以**控制主编辑区 tab**（VSCode `window.createWebviewPanel` 模型）——侧边栏/面板视图做入口列表，点击后在主编辑区打开全宽、参数化的动态 tab（如 git diff / commit 详情）。
 
-**API（UIAPI 扩展，`ctx.ui.openViewTab` / `ctx.ui.openFileTab`）**：
+**API（UIAPI 扩展，`ctx.ui.openViewTab` / `ctx.ui.openFileTab` / `ctx.ui.openDiffTab`）**：
 
 ```ts
 ctx.ui.openViewTab({
@@ -518,8 +518,33 @@ ctx.ui.openViewTab({
   key: 'git-diff:worktree:src/a.go',    // 去重逻辑键（缺省按 viewId）
   params: { path: 'src/a.go' },         // 作为 props 传给 view 组件
 })
-ctx.ui.openFileTab('/repo/src/main.go') // 复用宿主文件系统 tab
+
+// 打开文件编辑器并拿到控制句柄（VSCode showTextDocument 语义）
+const doc = ctx.ui.openFileTab('/repo/src/main.go', {
+  line: 42,                                    // 打开后跳到 42 行（居中）
+  highlight: { startLine: 40, endLine: 44 },   // 高亮行范围
+  language: 'go',                              // 覆盖语法高亮
+  viewMode: 'editor',                          // 覆盖初始视图（markdown 可 preview）
+})
+doc.revealLine(100)                            // 跳行
+doc.highlightLines(40, 44)                     // 行高亮（accent 淡染 + 左边条）
+doc.getSelection && doc.getContent()           // 读内容（编辑不落盘）
+doc.setLanguage('typescript')                  // 动态换语言
+doc.onClose(() => console.log('closed'))       // tab 关闭通知
+// handle 方法在 tab 关闭后自动 no-op（返回 false）——插件无需关心生命周期
+
+// diff 编辑器句柄
+const d = ctx.ui.openDiffTab({ title: 'a.go', original, modified, path: 'src/a.go' })
+d.nextDiff(); d.prevDiff()                    // 差异导航
+d.setRenderSideBySide(false)                  // 并排 → 行内
 ```
+
+**编辑器控制链路**（`plugin-runtime/editorRegistry.ts`）：
+
+- **editorId 确定性派生**（`ed-file:<path|key>` / `ed-diff:<diffKey>`）：同一文件/diff 的 id 恒定——重复 open、刷新后布局恢复的 tab（params 携带 id）与 handle 天然对上，无需会话级映射。
+- **panel attach**：FilePanel/DiffPanel 挂载时 `attachEditor(editorId, controller)`（controller 是 Monaco 实例的受控子集：reveal/decorations/setModel language 等）；卸载时 detach + 广播 onClose。**FilePanel 顶层只类型导入 monaco**（`import type * as monacoNs`），运行时命名空间从 `MonacoEditor.onEditorMount(editor, monaco)` 回调取得——避免把完整 monaco bundle 拉进测试环境。
+- **handle 工厂**（createEditorHandle/createDiffHandle）：方法执行时实时查注册表；实例不在则返回 false（no-op）。新实例覆盖旧实例时旧 detach 不误删（controller 引用比对）。
+- **PanelParams 透传**：`editorId/initialLine/initialHighlight/fileLanguage/fileViewMode`（file）+ `editorId`（diff）经 useTabManager 的 openTab/panelToTab 全链路透传；手机端 MobileAppShell 拦截 openTab 时同步透传到 mobileWorkView。
 
 **机制链路**：
 

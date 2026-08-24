@@ -281,25 +281,49 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
       const prev = t.phase.data
       const advanced = ev.iter > prev.iter
+      // ── 迭代 commit（history append 且 iteration 未前进）──
+      // 事件 A（snapshotCompletedIteration）：iterationsDelta append 了刚完成
+      // 的迭代，但 ev.iter 还停在 N（前进事件后到）。live 的流式文本已随迭代
+      // 进入 iterations（权威版本）——必须同步清空，否则同一 content/reasoning
+      // 在 committed fold 和 live fold 各渲染一份，直到前进事件到达（用户报告：
+      // "每次新的 iter 完成都要闪烁一下"）。防护：gap 修复 delta 可能携带旧迭代
+      // 而 live 已在流式更新的迭代 —— 仅当 live 属于刚 commit 的迭代
+      // （ev.iter <= appendedMax）才清。
+      const merged = mergeIterations(prev.iterations, ev.iterationsDelta)
+      const appendedNew = merged.length > prev.iterations.length
+      const appendedMax = ev.iterationsDelta.length > 0
+        ? Math.max(...ev.iterationsDelta.map((it) => it.iteration))
+        : 0
+      const committedNow = !advanced && appendedNew && ev.iter <= appendedMax
       const data: LiveSnapshot = {
         ...prev,
         iter: ev.iter,
-        // 迭代边界：清空流式字段（新迭代从零开始）；非前进则替换。
-        content: advanced ? (ev.content ?? '') : (ev.content ?? prev.content),
-        reasoning: advanced ? (ev.reasoning ?? '') : (ev.reasoning ?? prev.reasoning),
+        // 迭代边界：清空流式字段（新迭代从零开始）；commit 同样清空（已进
+        // iterations 权威版本）；非前进非 commit 则替换。
+        content: advanced
+          ? (ev.content ?? '')
+          : committedNow
+            ? ''
+            : (ev.content ?? prev.content),
+        reasoning: advanced
+          ? (ev.reasoning ?? '')
+          : committedNow
+            ? ''
+            : (ev.reasoning ?? prev.reasoning),
         // I4：append-only 合并（dedup by iteration#，同号权威覆盖）
-        iterations: mergeIterations(prev.iterations, ev.iterationsDelta),
+        iterations: merged,
         activeTools: ev.activeTools,
         // 工具去重（旧前端 mergeProgressState 语义）：工具从 generating 转
         // running 时，stream 事件残留的同名 streamingTools 条目必须清除 ——
         // 否则同一工具渲染两个（一个 executing 带参数 + 一个 generating 无
         // 参数，用户报告 100% 复现）。规则：streamingTools ∩ activeTools = ∅。
-        // 迭代前进时全部清空（流式字段随迭代边界重置 —— 旧语义）。
-        streamingTools: advanced
+        // 迭代前进或 commit 时全部清空（流式字段随迭代边界重置 —— 旧语义）。
+        streamingTools: advanced || committedNow
           ? []
           : prev.streamingTools.filter(
               (t) => !ev.activeTools.some((a) => a.name === t.name),
             ),
+        genui: advanced || committedNow ? '' : prev.genui,
         todos: ev.todos ?? prev.todos,
         subAgents: ev.subAgents ?? prev.subAgents,
         tokenUsage: ev.tokenUsage ?? prev.tokenUsage,

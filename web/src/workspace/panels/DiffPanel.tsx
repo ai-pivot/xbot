@@ -7,11 +7,12 @@
  *
  * 与 FilePanel 同层（workspace panel），不依赖任何插件 view。
  */
-import { Suspense, lazy, useMemo, useRef } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useRef } from 'react'
 import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 
 import { languageOf } from '@/components/file/fileTypes'
 import { useTheme } from '@/hooks/useTheme'
+import { attachEditor } from '@/plugin-runtime/editorRegistry'
 import type { MonacoDiffEditorHandle } from '@/components/file/MonacoEditor'
 import type { PanelProps } from '@/workspace/panels/types'
 
@@ -22,23 +23,47 @@ const MonacoDiffEditor = lazy(() =>
 function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEditorHandle | null> }) {
   const btn =
     'flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary'
+  // stopPropagation + preventDefault：阻止点击冒泡/默认行为触达编辑器区域
+  //（移动端任何到达 monaco 的事件都可能 focus → 弹软键盘）。
+  const nav = (e: React.MouseEvent, dir: 1 | -1) => {
+    e.stopPropagation()
+    e.preventDefault()
+    editorRef.current?.goDiff(dir)
+  }
   return (
     <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-bg-secondary/90 p-0.5">
-      <button onClick={() => editorRef.current?.goDiff(-1)} title="上一个差异 (Shift+F7)" className={btn}>
+      <button type="button" onClick={(e) => nav(e, -1)} title="上一个差异 (Shift+F7)" className={btn}>
         <ChevronUp className="size-3.5" />
       </button>
       <div className="h-4 w-px bg-border" />
-      <button onClick={() => editorRef.current?.goDiff(1)} title="下一个差异 (F7)" className={btn}>
+      <button type="button" onClick={(e) => nav(e, 1)} title="下一个差异 (F7)" className={btn}>
         <ChevronDown className="size-3.5" />
       </button>
     </div>
   )
 }
 
-export function DiffPanel({ params }: PanelProps) {
+export function DiffPanel({ params, api }: PanelProps) {
   const { theme } = useTheme()
   const editorRef = useRef<MonacoDiffEditorHandle | null>(null)
-  const language = useMemo(() => languageOf(params.diffPath || params.title || ''), [params.diffPath, params.title])
+  const language = useMemo(
+    () => languageOf(params.diffPath || params.title || ''),
+    [params.diffPath, params.title],
+  )
+
+  // 插件控制：params.editorId 存在时挂载 DiffController（nextDiff/prevDiff/
+  // setRenderSideBySide/setTitle/close——plugin-runtime/editorRegistry.ts）。
+  const editorId = params.editorId
+  useEffect(() => {
+    if (!editorId) return
+    return attachEditor(editorId, {
+      nextDiff: () => editorRef.current?.goDiff(1),
+      prevDiff: () => editorRef.current?.goDiff(-1),
+      setRenderSideBySide: v => editorRef.current?.setRenderSideBySide(v),
+      setTitle: t => api?.setTitle?.(t),
+      close: () => api?.close?.(),
+    })
+  }, [editorId, api])
 
   // 空内容守卫：original/modified 均为空说明 params 没有到达（持久化布局
   // 恢复丢失 / 链路断裂）——渲染空 DiffEditor 只会得到空白窗口 + dispose

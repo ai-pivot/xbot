@@ -62,6 +62,16 @@ export interface TabData {
   viewKey?: string
   /** 传给插件 view 组件的参数（作为 props，如 { path, commit }）。 */
   viewParams?: Record<string, unknown>
+  /** 插件编辑器控制 id（editorRegistry 派生；panel attach 用）。 */
+  editorId?: string
+  /** 打开后跳转行（openFileTab opts.line）。 */
+  initialLine?: number
+  /** 打开后高亮行范围（openFileTab opts.highlight）。 */
+  initialHighlight?: { startLine: number; endLine?: number }
+  /** 覆盖语法高亮语言（openFileTab opts.language）。 */
+  fileLanguage?: string
+  /** 覆盖初始视图（openFileTab opts.viewMode）。 */
+  fileViewMode?: 'editor' | 'preview'
   /** 原生 diff tab 去重逻辑键（ctx.ui.openDiffTab 传入）。 */
   diffKey?: string
   /** diff 旧内容（左/上侧）。 */

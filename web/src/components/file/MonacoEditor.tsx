@@ -33,12 +33,6 @@ const THEME_ID: Record<Theme, string> = {
   light: 'xbot-light',
 }
 
-/** Read a CSS custom property from <html> (the design-token layer). */
-function cssVar(name: string): string {
-  if (typeof window === 'undefined') return ''
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-}
-
 /**
  * Normalize a CSS hex color to a 6-digit form (`#rrggbb`).
  *
@@ -58,19 +52,17 @@ function normalizeHex(color: string): string {
   return color
 }
 
-/** Read + normalize a design token so it is safe as a Monaco token color. */
-function tokenColor(name: string): string {
-  return normalizeHex(cssVar(name))
-}
-
 /** Build a Monaco theme data object from the live design tokens. */
 function defineXbotTheme(monaco: typeof import('monaco-editor'), theme: Theme): void {
   const isDark = theme === 'dark'
-  const bg = tokenColor('--bg-primary') || (isDark ? '#1e1e1e' : '#ffffff')
-  const fg = tokenColor('--text-primary') || (isDark ? '#cccccc' : '#1e1e1e')
-  const gutter = tokenColor('--editor-gutter') || (isDark ? '#1e1e1e' : '#f0f0f0')
-  const accent = tokenColor('--accent') || '#3388bb'
-  const border = tokenColor('--border') || (isDark ? '#3c3c3c' : '#e0e0e0')
+  // 编辑器表面色全部写死——不读 CSS token（用户主题的 accent/gutter 可能是
+  // 红粉色，把行号区域和光标染红，视觉噪音）。Monaco 编辑器有自己独立的
+  // 调色体系，与全局 UI 主题解耦。
+  const bg = isDark ? '#1e1e1e' : '#ffffff'
+  const fg = isDark ? '#cccccc' : '#1e1e1e'
+  const gutter = isDark ? '#1e1e1e' : '#f0f0f0'
+  const cursor = isDark ? '#aeafad' : '#000000'
+  const border = isDark ? '#3c3c3c' : '#e0e0e0'
   const selection = normalizeHex(isDark ? '#264f78' : '#add6ff')
 
   // `inherit: true` keeps the base theme's token rules so every language gets
@@ -97,7 +89,7 @@ function defineXbotTheme(monaco: typeof import('monaco-editor'), theme: Theme): 
       'editorGutter.background': gutter,
       'editor.selectionBackground': selection,
       'editor.lineHighlightBackground': isDark ? '#2a2d2e' : '#f0f0f0',
-      'editorCursor.foreground': accent,
+      'editorCursor.foreground': cursor,
       'editorIndentGuide.background': isDark ? '#404040' : '#d0d0d0',
       'editorIndentGuide.activeBackground': border,
       'editorWidget.background': isDark ? '#252526' : '#f3f3f3',
@@ -131,6 +123,16 @@ export interface MonacoEditorProps {
   height?: string
   /** className for the host wrapper. */
   className?: string
+  /**
+   * 编辑器实例挂载回调（宿主面板用它注册插件可控制的 EditorController：
+   * 跳行/高亮/选区等，见 plugin-runtime/editorRegistry.ts）。monaco 命名空间
+   * 一并透传——controller 需要 Range 等运行时构造器（panel 顶层只类型导入
+   * monaco-editor，避免把完整 bundle 拉进测试环境）。
+   */
+  onEditorMount?: (
+    editor: import('monaco-editor').editor.IStandaloneCodeEditor,
+    monaco: typeof import('monaco-editor'),
+  ) => void
 }
 
 export function MonacoEditor({
@@ -140,6 +142,7 @@ export function MonacoEditor({
   readOnly = false,
   height = '100%',
   className,
+  onEditorMount,
 }: MonacoEditorProps) {
   const { theme } = useTheme()
   // Hold the Monaco namespace so the theme effect can re-define/setTheme.
@@ -155,6 +158,7 @@ export function MonacoEditor({
     monaco.editor.setTheme(THEME_ID[theme])
     // Focus the editor so keyboard navigation works immediately on tab open.
     editor.focus()
+    onEditorMount?.(editor, monaco)
   }
 
   // Re-apply theme when the global theme changes (live token re-read).
@@ -236,6 +240,8 @@ export interface MonacoDiffEditorProps {
 export interface MonacoDiffEditorHandle {
   /** 跳到下一个修改行（环绕）。 */
   goDiff: (dir: 1 | -1) => void
+  /** 切换并排（side-by-side）/行内（inline）渲染。 */
+  setRenderSideBySide: (sideBySide: boolean) => void
 }
 
 export const MonacoDiffEditor = forwardRef<MonacoDiffEditorHandle, MonacoDiffEditorProps>(
@@ -255,7 +261,12 @@ export const MonacoDiffEditor = forwardRef<MonacoDiffEditorHandle, MonacoDiffEdi
   const monacoRef = useRef<typeof import('monaco-editor') | null>(null)
   const editorRef = useRef<import('monaco-editor').editor.IStandaloneDiffEditor | null>(null)
 
-  useImperativeHandle(ref, () => ({ goDiff }), [])
+  useImperativeHandle(ref, () => ({
+    goDiff,
+    setRenderSideBySide: (sideBySide: boolean) => {
+      editorRef.current?.updateOptions({ renderSideBySide: sideBySide })
+    },
+  }), [])
 
   const handleBeforeMount: BeforeMount = (monaco) => {
     monacoRef.current = monaco
@@ -285,7 +296,9 @@ export const MonacoDiffEditor = forwardRef<MonacoDiffEditorHandle, MonacoDiffEdi
     return [...lines].sort((a, b) => a - b)
   }
 
-  /** 跳到上/下一个修改行（环绕；reveal 到视口中央并聚焦）。 */
+  /** 跳到上/下一个修改行（环绕；reveal 到视口中央）。不 focus 编辑器——
+   * 移动端 focus 会弹出软键盘（按钮点击不应抢焦点；F7 键位在用户主动
+   * 点进编辑器后仍可用）。 */
   const goDiff = (dir: 1 | -1) => {
     const ed = editorRef.current
     if (!ed) return
@@ -301,7 +314,6 @@ export const MonacoDiffEditor = forwardRef<MonacoDiffEditorHandle, MonacoDiffEdi
     }
     modified.revealLineInCenter(target)
     modified.setPosition({ lineNumber: target, column: 1 })
-    modified.focus()
   }
 
   /** diff 行装饰可能晚于 onDidUpdateDiff 应用——重试直到拿到装饰为止。 */

@@ -852,6 +852,20 @@ func (c *Client) GetTodos(ch, chatID string) []protocol.TodoItem {
 	return r
 }
 
+// LLMDumpReqs reads (enabled=nil) or toggles (enabled=&v) the per-request LLM
+// body dump to ~/.xbot/llm_dumps/ (web DebugToolbar button).
+func (c *Client) LLMDumpReqs(enabled *bool) (bool, error) {
+	var r struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.call(MethodLLMDumpReqs, struct {
+		Enabled *bool `json:"enabled"`
+	}{Enabled: enabled}, &r); err != nil {
+		return false, err
+	}
+	return r.Enabled, nil
+}
+
 // ---------------------------------------------------------------------------
 // Channel config (via RPC)
 // ---------------------------------------------------------------------------

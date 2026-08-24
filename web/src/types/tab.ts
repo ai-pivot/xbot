@@ -49,6 +49,16 @@ export interface PanelParams {
   viewKey?: string
   /** 传给插件 view 组件的参数（作为 props，如 { path, commit }）。 */
   viewParams?: Record<string, unknown>
+  /** 插件编辑器控制 id（editorRegistry 确定性派生；handle 方法路由到 panel）。 */
+  editorId?: string
+  /** openFileTab opts.line——打开后跳转行（FilePanel 初始定位）。 */
+  initialLine?: number
+  /** openFileTab opts.highlight——打开后高亮行范围。 */
+  initialHighlight?: { startLine: number; endLine?: number }
+  /** openFileTab opts.language——覆盖语法高亮语言。 */
+  fileLanguage?: string
+  /** openFileTab opts.viewMode——覆盖初始视图（markdown preview/editor）。 */
+  fileViewMode?: 'editor' | 'preview'
   /** 原生 diff tab 的去重逻辑键（ctx.ui.openDiffTab 传入）。 */
   diffKey?: string
   /** diff 旧内容（左/上侧）。 */

@@ -40,7 +40,14 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
     closable: params.closable,
     data:
       params.type === 'file'
-          ? { filePath: params.filePath }
+          ? {
+              filePath: params.filePath,
+              editorId: params.editorId,
+              initialLine: params.initialLine,
+              initialHighlight: params.initialHighlight,
+              fileLanguage: params.fileLanguage,
+              fileViewMode: params.fileViewMode,
+            }
         : params.type === 'agent'
           ? {
               filePath: params.sessionId,
@@ -68,6 +75,7 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
               }
             : params.type === 'diff'
               ? {
+                  editorId: params.editorId,
                   diffKey: params.diffKey,
                   original: params.original,
                   modified: params.modified,
@@ -208,6 +216,11 @@ export function useTabManager(): TabManager {
       modified: input.type === 'diff' ? input.data?.modified : undefined,
       diffPath: input.type === 'diff' ? input.data?.diffPath : undefined,
       diffScope: input.type === 'diff' ? input.data?.diffScope : undefined,
+      editorId: (input.type === 'file' || input.type === 'diff') ? input.data?.editorId : undefined,
+      initialLine: input.type === 'file' ? input.data?.initialLine : undefined,
+      initialHighlight: input.type === 'file' ? input.data?.initialHighlight : undefined,
+      fileLanguage: input.type === 'file' ? input.data?.fileLanguage : undefined,
+      fileViewMode: input.type === 'file' ? input.data?.fileViewMode : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'

@@ -39,25 +39,37 @@ describe('editorTabs 注册器', () => {
     })
   })
 
-  it('openFileTab 复用宿主文件系统 tab（type=file）', () => {
+  it('openFileTab 复用宿主文件系统 tab（type=file），data 带 editorId 与初始定位字段，返回 EditorHandle', () => {
     const opener = vi.fn(() => 'tab-2')
     registerEditorTabOpener(opener)
 
-    openEditorFileTab('/repo/src/main.go')
+    const h = openEditorFileTab('/repo/src/main.go', { line: 42, highlight: { startLine: 40, endLine: 44 } })
 
     expect(opener).toHaveBeenCalledWith({
       type: 'file',
       title: 'main.go',
       icon: 'file',
       closable: true,
-      data: { filePath: '/repo/src/main.go' },
+      data: {
+        filePath: '/repo/src/main.go',
+        editorId: 'ed-file:/repo/src/main.go',
+        initialLine: 42,
+        initialHighlight: { startLine: 40, endLine: 44 },
+        fileLanguage: undefined,
+        fileViewMode: undefined,
+      },
     })
+    // handle 与 editorId 派生一致（同 path 恒定）
+    expect(h.editorId).toBe('ed-file:/repo/src/main.go')
+    expect(h.isVisible()).toBe(false) // 测试环境无 panel attach
   })
 
-  it('opener 未注册时安全降级：返回空串不抛异常', () => {
+  it('opener 未注册时安全降级：viewTab 返回空串、fileTab 返回 no-op handle，不抛异常', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(openEditorViewTab({ viewId: 'v', title: 't' })).toBe('')
-    expect(openEditorFileTab('/x')).toBe('')
+    const h = openEditorFileTab('/x')
+    expect(h.editorId).toBe('ed-file:/x')
+    expect(h.isVisible()).toBe(false)
     expect(warn).toHaveBeenCalledTimes(2)
     warn.mockRestore()
   })

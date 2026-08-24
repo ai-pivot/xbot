@@ -9,8 +9,13 @@
  *
  * Content is loaded via the `read_file` WS RPC (through useFileContent).
  * Edits live in component state and are not persisted.
+ *
+ * 插件控制：params.editorId 存在时挂载 EditorController 到 editorRegistry
+ * （plugin-runtime/editorRegistry.ts）——ctx.ui.openFileTab 返回的 EditorHandle
+ * 的跳行/高亮/选区/语言/内容/视图方法都路由到这里。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type * as monacoNs from 'monaco-editor'
 import { Loader2 } from 'lucide-react'
 
 import { MonacoEditor } from '@/components/file/MonacoEditor'
@@ -28,6 +33,7 @@ import {
 import { useFileContent } from '@/hooks/useFileContent'
 import { joinPath, parentPath } from '@/hooks/useFileSystem'
 import { useI18n } from '@/providers/i18n'
+import { attachEditor } from '@/plugin-runtime/editorRegistry'
 import { useDockviewContext } from '@/workspace/types'
 import type { PanelProps } from '@/workspace/panels/types'
 
@@ -38,16 +44,29 @@ function baseName(filePath?: string): string {
   return parts[parts.length - 1] ?? filePath
 }
 
-export function FilePanel({ params }: PanelProps) {
+export function FilePanel({ params, api }: PanelProps) {
   const { ws, cwd } = useDockviewContext()
   const filePath = params.filePath ?? ''
   const fileName = useMemo(() => baseName(filePath), [filePath])
   const isImage = isImageFile(fileName)
   const canToggle = canTogglePreview(fileName)
-  const language = useMemo(() => languageOf(fileName), [fileName])
+
+  // 插件可覆盖语言（params.fileLanguage / handle.setLanguage）。
+  const [languageOverride, setLanguageOverride] = useState(params.fileLanguage)
+  const language = languageOverride ?? languageOf(fileName)
 
   const { content, loading, error, setContent, imageUrl } = useFileContent({ filePath, ws, cwd: cwd.cwd })
-  const [mode, setMode] = useState<FileViewMode>(() => defaultViewMode(fileName))
+  const [mode, setMode] = useState<FileViewMode>(
+    () => params.fileViewMode ?? defaultViewMode(fileName),
+  )
+
+  // Monaco 实例 + 插件高亮 collection（EditorController 的执行基础）。
+  // monaco 命名空间从 onEditorMount 回调取得（顶层仅类型导入，避免把完整
+  // monaco bundle 拉进测试环境）。
+  const editorRef = useRef<monacoNs.editor.IStandaloneCodeEditor | null>(null)
+  const monacoRef = useRef<typeof monacoNs | null>(null)
+  const decorationsRef = useRef<monacoNs.editor.IEditorDecorationsCollection | null>(null)
+  const initialAppliedRef = useRef<string | null>(null)
 
   // Directory of the markdown file — used to resolve relative image paths.
   const baseDir = useMemo(() => {
@@ -59,8 +78,90 @@ export function FilePanel({ params }: PanelProps) {
   // Re-seed the view mode if the file ever changes (dockview reuses a panel
   // instance when its params update). Image files ignore `mode` entirely.
   useEffect(() => {
-    setMode(defaultViewMode(fileName))
-  }, [fileName])
+    setMode(params.fileViewMode ?? defaultViewMode(fileName))
+    setLanguageOverride(params.fileLanguage)
+  }, [fileName, params.fileViewMode, params.fileLanguage])
+
+  const editorId = params.editorId
+  const contentRef = useRef(content)
+  contentRef.current = content
+
+  // 注册插件控制器（挂载→registry attach；卸载→detach + onClose 广播）。
+  useEffect(() => {
+    if (!editorId || isImage) return
+    const controller = {
+      revealLine: (line: number, center?: boolean) => {
+        const ed = editorRef.current
+        if (!ed) return
+        if (center) ed.revealLineInCenter(line)
+        else ed.revealLine(line)
+      },
+      revealRange: (s: number, e: number) => editorRef.current?.revealLinesInCenter(s, e),
+      setSelection: (sl: number, sc: number, el: number, ec: number) => {
+        const ed = editorRef.current
+        const monaco = monacoRef.current
+        if (!ed || !monaco) return
+        const range = new monaco.Range(sl, sc, el, ec)
+        ed.setSelection(range)
+        ed.revealRangeInCenter(range)
+      },
+      setCursorPosition: (line: number, column: number) => {
+        const ed = editorRef.current
+        if (!ed) return
+        ed.setPosition({ lineNumber: line, column })
+      },
+      highlightLines: (s: number, e: number, className?: string) => {
+        const ed = editorRef.current
+        if (!ed) return
+        const monaco = monacoRef.current
+        if (!monaco) return
+        const col = decorationsRef.current ?? ed.createDecorationsCollection([])
+        decorationsRef.current = col
+        col.set([
+          {
+            range: new monaco.Range(s, 1, e, 1),
+            options: { isWholeLine: true, className: className ?? 'plugin-line-highlight' },
+          },
+        ])
+      },
+      clearHighlights: () => decorationsRef.current?.set([]),
+      getContent: () => contentRef.current,
+      setContent: (text: string) => setContent(text),
+      setLanguage: (lang: string) => setLanguageOverride(lang),
+      setTitle: (title: string) => api?.setTitle?.(title),
+      setViewMode: (m: 'editor' | 'preview') => {
+        if (canTogglePreview(fileName)) setMode(m)
+      },
+      close: () => api?.close?.(),
+    }
+    return attachEditor(editorId, controller)
+  }, [editorId, isImage, fileName, setContent, api])
+
+  // 初始定位（opts.line / opts.highlight）：内容加载 + editor 挂载后执行一次。
+  useEffect(() => {
+    if (!editorId || loading || !editorRef.current) return
+    const mark = `${editorId}:${filePath}`
+    if (initialAppliedRef.current === mark) return
+    initialAppliedRef.current = mark
+    const ed = editorRef.current
+    const monaco = monacoRef.current
+    if (!monaco) return
+    if (params.initialLine && params.initialLine > 0) {
+      ed.revealLineInCenter(params.initialLine)
+      ed.setPosition({ lineNumber: params.initialLine, column: 1 })
+    }
+    if (params.initialHighlight) {
+      const { startLine, endLine } = params.initialHighlight
+      const col = ed.createDecorationsCollection([
+        {
+          range: new monaco.Range(startLine, 1, endLine ?? startLine, 1),
+          options: { isWholeLine: true, className: 'plugin-line-highlight' },
+        },
+      ])
+      decorationsRef.current = col
+      if (!params.initialLine) ed.revealLineInCenter(startLine)
+    }
+  }, [editorId, loading, filePath, params.initialLine, params.initialHighlight])
 
   // Image files are preview-only and have no text content.
   if (isImage) {
@@ -107,7 +208,15 @@ export function FilePanel({ params }: PanelProps) {
             <MarkdownPreview source={content} baseDir={baseDir} />
           )
         ) : (
-          <MonacoEditor value={content} language={language} onChange={setContent} />
+          <MonacoEditor
+            value={content}
+            language={language}
+            onChange={setContent}
+            onEditorMount={(ed, monaco) => {
+              editorRef.current = ed
+              monacoRef.current = monaco
+            }}
+          />
         )}
       </div>
     </div>

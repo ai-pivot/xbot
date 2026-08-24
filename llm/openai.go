@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -1326,6 +1329,108 @@ func addNearEmptyResponseDebugFields(fields log.Fields, messages []ChatMessage, 
 }
 
 // ---------------------------------------------------------------------------
+// LLM request body dump (loop-incident diagnosis)
+// ---------------------------------------------------------------------------
+
+var (
+	// loopDumpMu guards loopDumpRing — the last two /chat/completions request
+	// bodies (across ALL clients: the loop fires on the shared LLM path, and
+	// the looping requests come from the same client anyway).
+	loopDumpMu sync.Mutex
+	// loopDumpRing holds the last two recorded entries. loopDumpIdx is the
+	// next write slot; reading (idx+i)%2 for i=0..1 yields oldest → newest.
+	loopDumpRing [2]loopDumpEntry
+	loopDumpIdx  int
+	// dumpLLMReqsOn: when enabled (web DebugToolbar "Dump LLM Reqs" button),
+	// EVERY /chat/completions request body is written to ~/.xbot/llm_dumps/.
+	dumpLLMReqsOn atomic.Bool
+)
+
+type loopDumpEntry struct {
+	sha  string // first 12 hex chars of sha256(body)
+	ts   time.Time
+	body []byte
+}
+
+// llmDumpDir returns ~/.xbot/llm_dumps, creating it on demand.
+func llmDumpDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".xbot", "llm_dumps")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// writeLLMDumpFile persists one request body. 0600 — the body carries the
+// full conversation context (and may echo credentials back in metadata).
+// Returns "" on failure (logged, never fatal — dumping is diagnosis only).
+func writeLLMDumpFile(tag, sha string, body []byte) string {
+	dir, err := llmDumpDir()
+	if err != nil {
+		log.WithError(err).Warn("[LLM] dump dir unavailable — request body dump skipped")
+		return ""
+	}
+	name := fmt.Sprintf("%s_%s_%s.json", time.Now().Format("20060102_150405.000"), tag, sha)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		log.WithError(err).WithField("path", path).Warn("[LLM] request body dump write failed")
+		return ""
+	}
+	return path
+}
+
+// recordBodyForLoopDump keeps the LAST TWO /chat/completions request bodies in
+// a global ring. When the loop breaker fires, the agent calls DumpLoopBodies
+// to persist them — diffing the two bodies shows exactly what the model
+// received and whether the loop warning made it back into the prompt.
+// When the DebugToolbar toggle is on, every body is ALSO written to
+// ~/.xbot/llm_dumps/ immediately.
+func recordBodyForLoopDump(body []byte, sha string) {
+	if dumpLLMReqsOn.Load() {
+		writeLLMDumpFile("req", sha, body)
+	}
+	loopDumpMu.Lock()
+	loopDumpRing[loopDumpIdx%2] = loopDumpEntry{sha: sha, ts: time.Now(), body: append([]byte(nil), body...)}
+	loopDumpIdx++
+	loopDumpMu.Unlock()
+}
+
+// DumpLoopBodies persists the two most recent /chat/completions request bodies
+// to ~/.xbot/llm_dumps/ and returns the written paths (oldest first; ""
+// entries on write failure). Called by the agent when the loop breaker fires:
+// the OLDEST is the request that started the loop, the NEWEST is the one that
+// tripped the breaker — diffing them shows whether the fake "LOOP DETECTED"
+// tool results actually reached the model.
+func DumpLoopBodies(reason string) []string {
+	loopDumpMu.Lock()
+	var entries []loopDumpEntry
+	for i := 0; i < 2; i++ {
+		e := loopDumpRing[(loopDumpIdx+i)%2] // oldest → newest
+		if e.body == nil {
+			continue
+		}
+		entries = append(entries, e)
+	}
+	loopDumpMu.Unlock()
+	paths := make([]string, 0, len(entries))
+	for i, e := range entries {
+		paths = append(paths, writeLLMDumpFile(fmt.Sprintf("loop%d_%s", i+1, reason), e.sha, e.body))
+	}
+	return paths
+}
+
+// SetDumpLLMReqs toggles dumping EVERY /chat/completions request body to
+// ~/.xbot/llm_dumps/ (web DebugToolbar "Dump LLM Reqs" button).
+func SetDumpLLMReqs(enabled bool) { dumpLLMReqsOn.Store(enabled) }
+
+// DumpLLMReqsEnabled reports the per-request dump toggle state.
+func DumpLLMReqsEnabled() bool { return dumpLLMReqsOn.Load() }
+
+// ---------------------------------------------------------------------------
 // Stream body: SSE filter + tail capture for error diagnosis
 // ---------------------------------------------------------------------------
 
@@ -1347,18 +1452,20 @@ func (t *streamCaptureTransport) RoundTrip(req *http.Request) (*http.Response, e
 		o.ApplyHeaders(func(name, value string) { req.Header.Set(name, value) })
 	}
 	// 请求体指纹（chat/completions 流式请求）：sha256 前 12 位 + 字节数。
-	// 用于诊断“跨迭代 prompt_tokens 恒定 + 模型输出逐字节重复”类事故——
-	// 指纹递增 = 引擎发出的 body 在变（问题在上游计数/缓存）；指纹恒定 =
-	// body 被复用（引擎/SDK 层 bug，当场定位）。body 读出后必须回填。
+	// 同时保存最近两个请求体到全局变量（loop 事故诊断——loop 检测触发时由
+	// agent 侧调用 llm.DumpLoopBodies 写文件，直接对比两个迭代请求体差异：
+	// 模型到底收到了什么、loop 警告是否在请求里）。
 	if req.Body != nil && strings.Contains(req.URL.Path, "/chat/completions") {
 		bodyBytes, rerr := io.ReadAll(req.Body)
 		if rerr == nil {
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			sum := sha256.Sum256(bodyBytes)
+			sha := hex.EncodeToString(sum[:6])
 			log.Ctx(req.Context()).WithFields(log.Fields{
 				"body_bytes": len(bodyBytes),
-				"body_sha12": hex.EncodeToString(sum[:6]),
+				"body_sha12": sha,
 			}).Info("[LLM] HTTP request fingerprint")
+			recordBodyForLoopDump(bodyBytes, sha)
 		}
 	}
 	resp, err := t.base.RoundTrip(req)

@@ -12,9 +12,14 @@
  *   - viewId 必须是插件已声明的 view 贡献点（container 任意，渲染在主编辑区）
  *   - key 是 tab 去重逻辑键：同 key 聚焦已有 tab；不同 key 各开一个 tab
  *   - params 作为 props 传给 view 组件
+ *
+ * openFileTab/openDiffTab 额外返回控制句柄（EditorHandle/DiffHandle）——
+ * editorId 由 editorRegistry 确定性派生，panel 挂载时 attach 控制器，
+ * handle 方法实时路由（tab 未挂载时 no-op 返回 false）。
  */
 
-import type { OpenViewTabOptions } from '@/plugin-api'
+import type { DiffHandle, EditorHandle, OpenDiffTabOptions, OpenFileTabOptions, OpenViewTabOptions } from '@/plugin-api'
+import { createDiffHandle, createEditorHandle, editorIdForDiff, editorIdForFile } from './editorRegistry'
 
 export type EditorTabOpener = (
   input: {
@@ -56,51 +61,57 @@ export function openEditorViewTab(options: OpenViewTabOptions): string {
   })
 }
 
-/** 复用宿主文件系统的 tab：打开文件预览 tab。 */
-export function openEditorFileTab(path: string): string {
+/**
+ * 复用宿主文件系统的 tab：打开文件编辑器 tab 并返回控制句柄。
+ * editorId 确定性派生自 path（或显式 key）——重复打开/刷新恢复后 handle 恒有效。
+ */
+export function openEditorFileTab(path: string, opts?: OpenFileTabOptions): EditorHandle {
+  const editorId = editorIdForFile(opts?.key ?? path)
   if (!opener) {
     console.warn('[plugin-runtime] openFileTab: editor tab opener 尚未注册（AppShell 未挂载）', path)
-    return ''
+    return createEditorHandle(editorId) // no-op handle（isVisible=false）
   }
-  return opener({
+  opener({
     type: 'file',
-    title: path.split('/').pop() ?? path,
+    title: opts?.title ?? path.split('/').pop() ?? path,
     icon: 'file',
     closable: true,
-    data: { filePath: path },
+    data: {
+      filePath: path,
+      editorId,
+      initialLine: opts?.line,
+      initialHighlight: opts?.highlight,
+      fileLanguage: opts?.language,
+      fileViewMode: opts?.viewMode,
+    },
   })
+  return createEditorHandle(editorId)
 }
 
 /**
- * 打开宿主原生 diff 编辑器 tab（VSCode DiffEditor 语义）：插件只传两侧
- * 内容，宿主负责语言推断 + Monaco 渲染。key 去重（同 key 聚焦已有 tab）。
+ * 打开宿主原生 diff 编辑器 tab（VSCode DiffEditor 语义）并返回控制句柄：
+ * 插件只传两侧内容，宿主负责语言推断 + Monaco 渲染 + diff 导航。
  */
-export function openEditorDiffTab(options: {
-  title: string
-  original: string
-  modified: string
-  /** 文件路径（语言推断用，可选）。 */
-  path?: string
-  /** 去重逻辑键（如 `git-diff:abc1234:src/a.go`）。 */
-  key?: string
-  /** 范围标注（如 "commit abc1234" / "工作区"）。 */
-  scope?: string
-}): string {
+export function openEditorDiffTab(options: OpenDiffTabOptions): DiffHandle {
+  const diffKey = options.key ?? `diff:${options.title}`
+  const editorId = editorIdForDiff(diffKey)
   if (!opener) {
     console.warn('[plugin-runtime] openDiffTab: editor tab opener 尚未注册（AppShell 未挂载）', options)
-    return ''
+    return createDiffHandle(editorId)
   }
-  return opener({
+  opener({
     type: 'diff',
     title: options.title,
     icon: 'file-diff',
     closable: true,
     data: {
-      diffKey: options.key ?? `diff:${options.title}`,
+      diffKey,
       original: options.original,
       modified: options.modified,
       diffPath: options.path,
       diffScope: options.scope,
+      editorId,
     },
   })
+  return createDiffHandle(editorId)
 }

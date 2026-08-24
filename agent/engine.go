@@ -771,6 +771,16 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 		// The interception history (with escalating warnings) is already
 		// persisted to session history by the iterations above.
 		if s.loopFatal {
+			// Persist the last two LLM request bodies for post-mortem diffing
+			// (did the fake "LOOP DETECTED" tool results actually reach the
+			// model? — the definitive answer for loop-incident diagnosis).
+			if paths := llm.DumpLoopBodies("loopfatal"); len(paths) > 0 {
+				log.WithFields(log.Fields{
+					"paths":       paths,
+					"loop_breaks": s.loopBreakCount,
+					"session":     s.cfg.SessionKey,
+				}).Warn("[LLM] loop incident: request bodies dumped to ~/.xbot/llm_dumps/")
+			}
 			out := s.buildOutput(&channel.OutboundMsg{
 				Channel:   s.cfg.Channel,
 				ChatID:    s.cfg.ChatID,

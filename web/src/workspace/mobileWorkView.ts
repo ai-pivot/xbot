@@ -13,7 +13,16 @@ import { useEffect, useState } from 'react'
 
 /** 一个手机端全屏工作视图（file = 宿主文件预览；plugin = 插件动态视图；diff = 原生 diff 编辑器）。 */
 export type MobileWorkView =
-  | { kind: 'file'; title: string; filePath: string }
+  | {
+      kind: 'file'
+      title: string
+      filePath: string
+      editorId?: string
+      initialLine?: number
+      initialHighlight?: { startLine: number; endLine?: number }
+      fileLanguage?: string
+      fileViewMode?: 'editor' | 'preview'
+    }
   | {
       kind: 'plugin'
       title: string
@@ -30,6 +39,7 @@ export type MobileWorkView =
       modified: string
       diffPath?: string
       diffScope?: string
+      editorId?: string
     }
 
 let current: MobileWorkView | null = null

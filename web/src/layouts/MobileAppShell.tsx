@@ -139,7 +139,23 @@ export function MobileAppShell() {
     ...tabManager,
     openTab: (input: Parameters<typeof tabManager.openTab>[0]): string => {
       if (input.type === 'file' && input.data?.filePath) {
-        pushMobileWorkView({ kind: 'file', title: input.title, filePath: input.data.filePath })
+        const d = input.data as {
+          editorId?: string
+          initialLine?: number
+          initialHighlight?: { startLine: number; endLine?: number }
+          fileLanguage?: string
+          fileViewMode?: 'editor' | 'preview'
+        }
+        pushMobileWorkView({
+          kind: 'file',
+          title: input.title,
+          filePath: input.data.filePath as string,
+          editorId: d.editorId,
+          initialLine: d.initialLine,
+          initialHighlight: d.initialHighlight,
+          fileLanguage: d.fileLanguage,
+          fileViewMode: d.fileViewMode,
+        })
         return ''
       }
       if (input.type === 'plugin' && input.data?.viewId) {
@@ -154,6 +170,27 @@ export function MobileAppShell() {
           viewId: d.viewId,
           viewKey: d.viewKey,
           viewParams: d.viewParams,
+        })
+        return ''
+      }
+      if (input.type === 'diff') {
+        const d = input.data as {
+          diffKey?: string
+          original?: string
+          modified?: string
+          diffPath?: string
+          diffScope?: string
+          editorId?: string
+        }
+        pushMobileWorkView({
+          kind: 'diff',
+          title: input.title,
+          diffKey: d.diffKey,
+          original: d.original ?? '',
+          modified: d.modified ?? '',
+          diffPath: d.diffPath,
+          diffScope: d.diffScope,
+          editorId: d.editorId,
         })
         return ''
       }
@@ -310,6 +347,11 @@ export function MobileAppShell() {
                         closable: true,
                         active: true,
                         filePath: workView.filePath,
+                        editorId: workView.editorId,
+                        initialLine: workView.initialLine,
+                        initialHighlight: workView.initialHighlight,
+                        fileLanguage: workView.fileLanguage,
+                        fileViewMode: workView.fileViewMode,
                       }}
                       api={{} as PanelProps['api']}
                       containerApi={{} as PanelProps['containerApi']}
@@ -330,6 +372,7 @@ export function MobileAppShell() {
                         modified: workView.modified,
                         diffPath: workView.diffPath,
                         diffScope: workView.diffScope,
+                        editorId: workView.editorId,
                       }}
                       api={{} as PanelProps['api']}
                       containerApi={{} as PanelProps['containerApi']}

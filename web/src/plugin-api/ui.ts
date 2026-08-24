@@ -36,6 +36,58 @@ export interface OpenDiffTabOptions {
   scope?: string
 }
 
+/** 打开宿主文件编辑器 tab 的选项（VSCode showTextDocument 语义的子集）。 */
+export interface OpenFileTabOptions {
+  /** tab 标题（缺省取文件名）。 */
+  title?: string
+  /** 去重逻辑键（同 key 聚焦已有 tab；缺省按 path）。 */
+  key?: string
+  /** 打开后跳转到该行（1-based，居中显示）。 */
+  line?: number
+  /** 打开后高亮的行范围（start ≤ end）。 */
+  highlight?: { startLine: number; endLine?: number }
+  /** 覆盖语法高亮语言（缺省按文件扩展名推断）。 */
+  language?: string
+  /** 覆盖初始视图（仅 markdown 可 preview）。缺省按扩展名。 */
+  viewMode?: 'editor' | 'preview'
+}
+
+/** 文件编辑器控制句柄——打开后持续控制（实例关闭后方法变 no-op 返回 false）。 */
+export interface EditorHandle {
+  readonly editorId: string
+  // 导航
+  revealLine(line: number, opts?: { center?: boolean }): boolean
+  revealRange(startLine: number, endLine: number): boolean
+  setSelection(startLine: number, startCol?: number, endLine?: number, endCol?: number): boolean
+  setCursorPosition(line: number, column?: number): boolean
+  // 行高亮（可叠加；className 透传 monaco decoration）
+  highlightLines(startLine: number, endLine?: number, opts?: { className?: string }): boolean
+  clearHighlights(): boolean
+  // 内容与视图（内容编辑不落盘——与用户手动编辑一致）
+  getContent(): string | null
+  setContent(text: string): boolean
+  setLanguage(language: string): boolean
+  setTitle(title: string): boolean
+  setViewMode(mode: 'editor' | 'preview'): boolean
+  // 生命周期
+  isVisible(): boolean
+  close(): boolean
+  onClose(cb: () => void): void
+}
+
+/** diff 编辑器控制句柄。 */
+export interface DiffHandle {
+  readonly editorId: string
+  nextDiff(): boolean
+  prevDiff(): boolean
+  /** 切换并排（side-by-side）/行内（inline）渲染。 */
+  setRenderSideBySide(sideBySide: boolean): boolean
+  setTitle(title: string): boolean
+  isVisible(): boolean
+  close(): boolean
+  onClose(cb: () => void): void
+}
+
 export interface UIAPI {
   /** 顶部 toast 通知。 */
   showToast(text: ReactNode, kind?: 'info' | 'success' | 'error'): void
@@ -48,13 +100,16 @@ export interface UIAPI {
    * diff/commit 详情 tab。params 会作为 props 传给 view 组件。
    */
   openViewTab(options: OpenViewTabOptions): void
-  /** 复用宿主文件系统的 tab：在主编辑区打开一个文件预览 tab。 */
-  openFileTab(path: string): void
   /**
-   * 打开宿主原生 diff 编辑器 tab（VSCode DiffEditor 语义）：插件只传两侧
-   * 内容，宿主负责语言推断 + Monaco 渲染——插件零渲染代码。
+   * 打开宿主文件编辑器 tab 并返回控制句柄（VSCode showTextDocument 语义）：
+   * 跳行/高亮/选区/语言/内容/视图切换持续可控；tab 关闭后方法变 no-op。
    */
-  openDiffTab(options: OpenDiffTabOptions): void
+  openFileTab(path: string, opts?: OpenFileTabOptions): EditorHandle
+  /**
+   * 打开宿主原生 diff 编辑器 tab 并返回控制句柄（Monaco DiffEditor：
+   * 语法高亮 + 行级着色 + 并排/内联导航）。插件只传两侧内容，零渲染代码。
+   */
+  openDiffTab(options: OpenDiffTabOptions): DiffHandle
   /** 在当前会话内执行快捷键语义（保留给未来）。 */
   runKeybinding(keybinding: string): Promise<void>
 }

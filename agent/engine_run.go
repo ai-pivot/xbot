@@ -1635,6 +1635,12 @@ const maxLoopBreaks = 5
 func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMResponse, batch *toolExecBatch) {
 	s.loopDetected = false
 	s.loopBreakCount++
+	// 每次 LOOP 拦截都 dump 最近两个请求体（oldest=触发循环的请求,
+	// newest=被拦截的请求——diff 看模型到底收到了什么、loop 警告是否在
+	// prompt 里）。文件名含 sha 不互相覆盖。
+	if paths := llm.DumpLoopBodies(fmt.Sprintf("iter%d_n%d", s.iterationNow(), s.loopBreakCount)); len(paths) > 0 {
+		log.Ctx(ctx).WithField("dumped", paths).Warn("[LoopDump] loop 拦截触发请求体 dump")
+	}
 	const shortSummary = "Loop detected — duplicate call skipped"
 	// Escalating warning: carries the interception count and an explicit
 	// reference to the previous REAL execution. For the old⊂new FileReplace
