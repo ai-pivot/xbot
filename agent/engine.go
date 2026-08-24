@@ -949,8 +949,11 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 // spawnAgentAdapter 将 SpawnAgent 函数适配为 SubAgentManager 接口。
 // 核心职责：将 (task, prompt, tools) 函数签名转换为统一的 InboundMessage。
 //
-// 这使得 SubAgentTool 零改动：它仍然调用 SubAgentManager.RunSubAgent()，
-// 而 adapter 内部完成 string ↔ InboundMessage/OutboundMessage 转换。
+// 这使得 SubAgentTool 与 adapter 解耦：SubAgent 工具默认走 interactive
+// 路径（SpawnInteractive），而 adapter 内部完成 string ↔ InboundMessage/
+// OutboundMessage 转换。RunSubAgent（one-shot）仍保留作为 SubAgentManager
+// 接口实现，但 SubAgent 工具已不再调用它 —— one-shot 用随机 instance 且
+// 跑完即销毁，子代理历史在 Web/CLI 上不可见（用户报告的问题根因）。
 type spawnAgentAdapter struct {
 	spawnFn  func(ctx context.Context, msg bus.InboundMessage) (*channel.OutboundMsg, error)
 	parentID string

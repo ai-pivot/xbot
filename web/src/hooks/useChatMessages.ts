@@ -302,7 +302,7 @@ export function useChatMessages({
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
-  const [processing, setProcessing] = useState(false)
+  const [processing] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const oldestIdRef = useRef<number | null>(null)
@@ -402,28 +402,13 @@ export function useChatMessages({
     lastReloadKeyRef.current = reloadKey
     if (!sameTarget) setInitialProgress(null)
     try {
-      // Live SubAgent mode: TUI renders from the in-memory agent session dump.
-      if (agentChatID) {
-        const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump_by_full_key', {
-          full_key: agentChatID,
-        })
-        if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
-        const dumpMessages = Array.isArray(dump?.messages) ? dump.messages : []
-        const dumpIterations = Array.isArray(dump?.iterations) ? dump.iterations : []
-        if (dumpMessages.length > 0 || dumpIterations.length > 0) {
-          const parsed = parseSubAgentMessages(dumpMessages, dump?.iterations)
-          // SubAgent dump 是完整权威列表 → 替换语义（clear + mergeHistory）
-          store.clear()
-          store.mergeHistory(parsed)
-          syncMessages()
-          setInitialProgress(null)
-          setHistoryReady(true)
-      setProcessing(false)
-          return parsed
-        }
-      }
-      // Live SubAgent mode: same runtime tuple as TUI.
-      if (subAgentRole && parentChatID && !agentChatID) {
+      // SubAgent 会话通过 fullKey（agentChatID）打开时，它是一个真实的
+      // "agent" tenant session —— 与主 agent 走完全相同的 fetchHistory 路径
+      // （DB get_history + get_active_progress），保证任何时候打开任何代理
+      // 都能看到完整历史。绝不能走 get_agent_session_dump（内存
+      // interactiveSubAgents registry）：已完成/oneshot 的子代理不在该
+      // registry 中，直到新的 SSE 事件到达前历史完全不可见（用户报告）。
+      if (!agentChatID && subAgentRole && parentChatID) {
         const dump = await w.rpc<AgentSessionDump>('get_agent_session_dump', {
           channel,
           chat_id: parentChatID,
