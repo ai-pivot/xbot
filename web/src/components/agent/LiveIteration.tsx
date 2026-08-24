@@ -13,6 +13,8 @@ import { memo } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
+import { GenUIPanel } from './GenUIPanel'
+import { SandboxedUI } from '@/plugins/SandboxedUI'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
@@ -74,6 +76,9 @@ export const LiveIteration = memo(function LiveIteration({
     (n) => n.iteration === undefined || n.iteration === currentIter,
   )
   const hasSubAgents = liveSubAgents.length > 0
+  // Streaming GenUI（display_html 参数流式累积）——在工具调用的 iteration 位置
+  // 实时渲染面板，而非 stream 结束后才出现。
+  const hasGenUI = Boolean(progress.genuiContent)
 
   // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
   // `streaming` is the authoritative flag: set true by stream_content events,
@@ -155,7 +160,7 @@ export const LiveIteration = memo(function LiveIteration({
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
 
-  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents) {
+  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
     // Iteration boundary / waiting for the next iteration's first delta: the
     // previous iteration just finished (lastIter >= 1) but the next iteration's
     // content hasn't arrived yet (slow SSE). liveMessage is non-null here, so
@@ -229,6 +234,17 @@ export const LiveIteration = memo(function LiveIteration({
       )}
 
       {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}
+
+      {/* Streaming GenUI — 在工具调用位置实时渲染面板（streaming 状态） */}
+      {hasGenUI && (
+        <GenUIPanel
+          collapsible={true}
+          fullscreen={true}
+          defaultOpen={true}
+        >
+          <SandboxedUI code={progress.genuiContent} streaming={isLive} />
+        </GenUIPanel>
+      )}
 
       {/* Streaming C */}
       {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}

@@ -24,10 +24,6 @@ import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
-import type { UISurface } from '@/types/shared'
-
-import { SandboxedUI, genUICode } from '@/plugins/SandboxedUI'
-import { GenUIPanel } from './GenUIPanel'
 
 interface AssistantMessageProps {
   message: ChatMessage
@@ -69,31 +65,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // tool filtering (by iteration number) so it won't duplicate completed
   // iterations. Pass the real progress when live, null when done.
   const liveProgress: LiveProgress | null = hasLiveProgress ? progress : null
-
-  // ── GenUI single-instance (P2 Step2) ─────────────────────────
-  // The genui (display_html) is rendered by ONE stable <SandboxedUI key={turnID}>
-  // so it NEVER remounts across streaming→committed (useState/DOM preserved).
-  // During streaming read progress.genuiContent; after commit read the uiMode
-  // tool's code from the committed iterations. Genui tools are EXCLUDED from the
-  // iteration/tool blocks (flattenIterations) so there's exactly one instance.
-  const genui = (() => {
-    if (hasLiveProgress && progress?.genuiContent) return { code: progress.genuiContent, streaming: true, title: undefined as string | undefined, surface: undefined as UISurface | undefined }
-    for (const iter of iterations) {
-      for (const tool of iter.tools) {
-        if (tool.uiMode) {
-          const code = genUICode(tool)
-          if (code) return { code, streaming: false, title: tool.surface?.title || tool.summary, surface: tool.surface }
-        }
-      }
-    }
-    // Fallback: keep the streamed GenUI content even after hasLiveProgress flips
-    // (turn end / genuiContent cleared at iteration boundary). Without it, genui
-    // briefly becomes null between "streaming branch stops" and "committed tool
-    // appears in iterations" → GenUIPanel unmounts → remount → collapse + DOM
-    // rebuild at the very bottom ("生成完立即折叠 + turn 结束后出现在最下方").
-    if (progress?.genuiContent) return { code: progress.genuiContent, streaming: false, title: undefined as string | undefined, surface: undefined as UISurface | undefined }
-    return null
-  })()
 
   const isStreaming = message.isPartial || hasLiveProgress
   // frozen（cancel）：live 行 isPartial=true 永远使 isStreaming=true → content
@@ -255,22 +226,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             </div>
           )}
         </>
-      )}
-
-      {/* Stable GenUI slot — SAME position both branches, keyed by turnID => never
-          remounts; useState/DOM preserved across streaming→committed (P2 Step2).
-          Rendered as a top-level PANEL (surface=panel): fancy header (summary title
-          + collapse + fullscreen), default-open, manually collapsible & fullscreenable. */}
-      {genui && (
-        <GenUIPanel
-          key={`genui-${message.turnID}`}
-          title={genui.title}
-          collapsible={genui.surface?.collapsible ?? true}
-          fullscreen={genui.surface?.fullscreen ?? true}
-          defaultOpen={genui.surface?.defaultOpen ?? true}
-        >
-          <SandboxedUI code={genui.code} streaming={genui.streaming} />
-        </GenUIPanel>
       )}
 
       {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
