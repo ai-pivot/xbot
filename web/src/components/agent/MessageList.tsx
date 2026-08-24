@@ -59,9 +59,9 @@ interface MessageListProps {
 }
 
 const ESTIMATE = 120
-// genui 行（顶层面板）的实际高度通常 ~560px（header + 内容区 max-h-520），远高于
-// 普通行。estimate 用该基数可大幅缩小与 measureElement 实测的差距 → 滚动跳变小。
-const GENUI_ESTIMATE = 560
+// genui 行（顶层面板）的实际高度不固定（内容自适应），用 max-h 限制最大高度
+// 而非死高度。estimate 用一个中等基数，measureElement 会校正到实际高度。
+const GENUI_ESTIMATE = 400
 const EDGE_EPSILON = 2
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {

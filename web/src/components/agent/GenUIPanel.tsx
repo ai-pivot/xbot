@@ -83,7 +83,7 @@ export const GenUIPanel = memo(function GenUIPanel({
       </div>
 
       <AnimatedCollapse open={open} lazy={false} unmountOnClose={false}>
-        <div className="h-[520px] overflow-auto">{children}</div>
+        <div className="max-h-[70vh] overflow-auto">{children}</div>
       </AnimatedCollapse>
 
       {full && (
@@ -108,6 +108,7 @@ function FullscreenOverlay({ children, onClose }: { children: ReactNode; onClose
       role="dialog"
       aria-modal="true"
       className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 p-3 sm:p-6"
+      style={{ paddingTop: 'max(env(safe-area-inset-top), 0.75rem)', paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}
       onClick={onBackdrop}
     >
       <div className="flex max-h-full max-w-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-slate-900">
@@ -116,7 +117,7 @@ function FullscreenOverlay({ children, onClose }: { children: ReactNode; onClose
             type="button"
             aria-label="关闭全屏"
             onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
+            className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
           >
             <X className="size-4" />
           </button>

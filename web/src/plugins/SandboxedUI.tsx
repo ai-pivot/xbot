@@ -31,6 +31,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createRoot, type Root } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { transform } from 'sucrase'
+import { normalizeGeneratedTsx } from 'partial-tsx'
 
 // 暴露到 window 供独立 ESM 插件模块使用（无法 import 内部模块路径）。
 // 独立插件（如 xbot-genui）通过 window.__xbot_ui__.SandboxedUI 复用这个通用
@@ -85,64 +86,25 @@ function codeHash(code: string): string {
 // 一个稳定的 wrapper 组件，内部直接调用 currentRef.current(props)（函数组件），
 // 而非 createElement(Current)。这样 React 把 hooks 绑在 wrapper fiber 上，
 // 组件函数变化时不 remount → state/DOM 保留 → 流式平滑。
-//
-// Hook 签名 diff（参考 macaron runtime.ts:408-413）：每次渲染前提取 hook 调用
-// 列表（如 "useState\nuseEffect"），签名不变 → state 完全保留；签名变化
-// （streaming 时 hook 数量变）→ bump boundary key 只 remount boundary 那一层，
-// 让 React 重新分配 hook cells，避免 #310。
 interface UISlot {
   current: React.ComponentType | null
   lastGood: React.ComponentType | null
 }
 
-/** 提取源码中的 hook 调用签名（简化版 macaron hookSignature）。 */
-function getHookSignature(code: string): string {
-  // 匹配 use[A-Z] 开头的标识符（跳过字符串/注释/模板字面量内的）。
-  // 简化版：只匹配顶层 use[A-Z]\w*( 调用，不处理嵌套 JSX/模板。
-  const hooks: string[] = []
-  let inString: string | null = null
-  let inLineComment = false
-  let inBlockComment = false
-  for (let i = 0; i < code.length; i++) {
-    const ch = code[i]
-    if (inLineComment) { if (ch === '\n') inLineComment = false; continue }
-    if (inBlockComment) { if (ch === '*' && code[i + 1] === '/') { inBlockComment = false; i++ }; continue }
-    if (inString) { if (ch === '\\') { i++; continue }; if (ch === inString) inString = null; continue }
-    if (ch === '/' && code[i + 1] === '/') { inLineComment = true; i++; continue }
-    if (ch === '/' && code[i + 1] === '*') { inBlockComment = true; i++; continue }
-    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue }
-    // 匹配 use[A-Z]\w*(
-    if (ch === 'u' && code.slice(i, i + 3) === 'use' && /[A-Z]/.test(code[i + 3] ?? '')) {
-      let j = i + 3
-      while (j < code.length && /[\w$]/.test(code[j])) j++
-      // 确认后面是 ( （函数调用，不是赋值/属性访问）
-      let k = j
-      while (k < code.length && /\s/.test(code[k])) k++
-      if (code[k] === '(') {
-        hooks.push(code.slice(i, j))
-        i = k // 跳过 hook 名和空格
-        continue
-      }
-    }
-  }
-  return hooks.join('\n')
-}
-
 /** Module-level STABLE host: same fiber across regenerations → state preserved.
- *  参考 macaron 的 GeneratedComponentSlot：直接调用 Current(props) 而非
- *  createElement(Current)，hooks 绑在 wrapper fiber 上，组件函数变化不 remount。 */
+ *  macaron GeneratedComponentSlot 方案：direct-call Current(props)，hooks 绑在
+ *  UIHost 的稳定 fiber 上，Current 变化时不 remount → state/DOM 保留 → 流式平滑。
+ *  返回值由 React 处理（包括 {} 等非法值 → ErrorBoundary 捕获 → streaming 返回 null）。 */
 function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
   if (failed && !slot.lastGood) {
     return <div className="p-3 text-xs text-red-600 dark:text-red-400">⚠️ UI render error: {failed}</div>
   }
   const Current = slot.current || slot.lastGood
   if (!Current) return null
-  // macaron 方案：直接调用函数组件（非 createElement），hooks 绑在 UIHost 的
-  // fiber 上。组件函数变化时 React 不 remount（只重新调用函数），state 保留。
-  // Hook 数量变化由 boundary key remount 处理（见 CodeUI 的 hookSignature diff）。
+  // direct-call（macaron 方案）：hooks 绑在 UIHost fiber 上，Current 变化不 remount。
+  // 返回值由 React 处理；非法值（如 {}）→ React 报错 → ErrorBoundary 捕获。
   if (typeof Current === 'function') {
-    const result = (Current as (props: Record<string, unknown>) => React.ReactNode)({ 'data-sandboxed-ui-root': true })
-    return result as React.ReactNode
+    return (Current as (props: Record<string, unknown>) => React.ReactNode)({ 'data-sandboxed-ui-root': true }) as React.ReactNode
   }
   return React.createElement(Current, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
 }
@@ -152,24 +114,29 @@ function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
  *  显示 lastGood（连续预览）或静默占位，绝不显示「Render error」；
  *  仅 final（committed）渲染失败才显示错误占位。 */
 class UIErrorBoundary extends React.Component<
-  { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; slot?: UISlot },
+  { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; resetKey?: number },
   { hasError: boolean }
 > {
-  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; slot?: UISlot }) {
+  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; resetKey?: number }) {
     super(props)
     this.state = { hasError: false }
+  }
+  // resetKey 变化时重置 hasError → 下次编译成功时 ErrorBoundary 重新尝试渲染
+  // （streaming 时 Current 渲染失败 → hasError=true → 返回 null → 0 高度；
+  // 下次编译成功 → resetKey 变化 → hasError 重置 → 重新渲染 → 有内容）。
+  override componentDidUpdate(prev: { resetKey?: number }) {
+    if (prev.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false })
+    }
   }
   static getDerivedStateFromError(): { hasError: boolean } {
     return { hasError: true }
   }
   override render() {
     if (!this.state.hasError) return this.props.children
-    if (this.props.streaming) {
-      // 流式：回退到 lastGood（连续预览不闪白），无 lastGood 则静默占位。
-      const lastGood = this.props.slot?.lastGood
-      if (lastGood) return React.createElement(lastGood, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
-      return null
-    }
+    // streaming 时返回 null（不返回 lastGood —— lastGood 也可能出错导致无限循环）。
+    // resetKey 会在下次编译成功时重置 hasError → 重新尝试渲染。
+    if (this.props.streaming) return null
     return this.props.fallback
   }
 }
@@ -239,10 +206,6 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
   const timerRef = useRef<number | null>(null)
   const compileSeqRef = useRef(0)
   const lastRenderRef = useRef(0)
-  // Hook 签名 diff（macaron runtime.ts:408-413）：签名不变 → state 保留；
-  // 签名变化（streaming 时 hook 数量变）→ bump boundaryEpoch 只 remount boundary 那一层。
-  const lastHookSigRef = useRef<string | null>(null)
-  const [boundaryEpoch, setBoundaryEpoch] = useState(0)
 
   // Compile TSX → JS → evaluate with React injected as parameter.
   const compileAndLoad = useCallback(async (tsx: string | undefined, seq: number, isStreaming: boolean) => {
@@ -263,7 +226,7 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         clean = clean.replace(/^```(?:tsx|jsx|ts|js)?\s*\n?/i, '').replace(/\n?```\s*$/i, '')
       }
       if (isStreaming) {
-        try { clean = completePartialTsx(clean) } catch { /* best-effort */ }
+        clean = normalizeGeneratedTsx(clean, { mode: 'streaming' })
       }
       const { code: js } = transform(clean, {
         transforms: ['typescript', 'jsx'],
@@ -275,13 +238,18 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         .replace(/^\s*export\s+default\s+/gm, '')
         .replace(/^\s*export\s+/gm, '')
       // 0-injection: only React + hooks (the JS environment). NO component library.
+      // ⚠️ normalizeGeneratedTsx 在 streaming 模式下会追加 `export default App;`，
+      // 但 new Function() 不支持 export 语句（"unexpected keyword export"）。
+      // 在 wrapped 之前把所有 export 语句去掉（上面已做），但 normalizeGeneratedTsx
+      // 追加的 export 在 noImports 之后才出现 —— 所以在 wrapped 模板里再清一次。
+      const cleanNoImports = noImports.replace(/^\s*export\s+default\s+/gm, '').replace(/^\s*export\s+/gm, '')
       const wrapped = `
         const React = arguments[0];
         const { createElement, useState, useEffect, useMemo, useRef, useCallback,
                 useContext, useReducer, useLayoutEffect, Fragment, forwardRef,
                 useId, useSyncExternalStore, useTransition, useDeferredValue,
                 useImperativeHandle, useDebugValue, memo, Children } = React;
-        ${noImports}
+        ${cleanNoImports}
         return typeof App !== 'undefined' ? App : null;
       `
       const fn = new Function(wrapped)
@@ -300,8 +268,17 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       }
     } catch (e) {
       if (seq !== compileSeqRef.current) return
+      // streaming 时编译失败不更新 slot.current（保持上次成功的组件），
+      // 但也不 setFailed —— UIHost 会继续渲染 slot.current || slot.lastGood
+      // （上次成功的组件），不会闪白。只有 final 失败且无 lastGood 才报错。
       if (!isStreaming && !slotRef.current.lastGood) {
         setFailed(e instanceof Error ? e.message : 'compile failed')
+      }
+      // ⚠️ streaming 编译失败时，确保 slot.current 仍指向 lastGood（上次成功的组件），
+      // 而不是 null（否则 UIHost 渲染 null → 内容消失再出现）。
+      if (isStreaming && slotRef.current.lastGood && !slotRef.current.current) {
+        slotRef.current.current = slotRef.current.lastGood
+        setTick((t) => t + 1)
       }
     }
   }, [])
@@ -334,28 +311,20 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
     // 后才变高(≈560) → "0→实际"二次变化；虚拟化滚动频繁卷出/卷回 genui 行(remount)会
     // 反复触发 → 高度不断跳变（用户：只有 genui session 的 view 高度一直跳变）。
     flushSync(() => {
-      // Hook 签名 diff（macaron runtime.ts:408-413）：streaming 时 hook 数量可能变化，
-      // 签名变化 → bump boundaryEpoch → boundary key 变化 → 只 remount boundary 那一层
-      // （让 React 重新分配 hook cells），不 remount 整个子树。签名不变 → state 完全保留。
-      const currentSig = codeRef.current ? getHookSignature(codeRef.current) : ''
-      if (lastHookSigRef.current !== null && lastHookSigRef.current !== currentSig) {
-        setBoundaryEpoch((e) => e + 1)
-      }
-      lastHookSigRef.current = currentSig
       rootRef.current!.render(
         React.createElement(
           UIErrorBoundary,
           {
-            key: `boundary:${boundaryEpoch}`,
+            key: `boundary:${tick}`,
             fallback: '⚠️ Render error — check the generated UI syntax',
             streaming,
-            slot: slotRef.current,
+            resetKey: tick,
           },
           React.createElement(UIHost, { slot: slotRef.current, failed })
         )
       )
     })
-  }, [tick, failed, streaming, boundaryEpoch])
+  }, [tick, failed, streaming])
 
   useEffect(() => {
     return () => {
@@ -396,120 +365,14 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
   return (
     <div
       ref={hostRef}
-      className={`sandboxed-ui w-full rounded-lg border border-slate-200 ${className ?? ''}`}
-      style={{ minHeight: streaming ? 120 : undefined }}
+      className={`sandboxed-ui w-full ${className ?? ''}`}
       data-widget-id={widgetId}
     />
   )
 }
 
-// ─── Partial TSX completion (streaming only) ───────────────────
-// macaron 式流式安全补全。核心语义：
-//   - JSX 打开标签（有 '>'）是"完整结构" → 补 </tag> 闭合；
-//   - 未完成的表达式 `{expr` / `fn(` / `[...` / 模板 `` ` `` —— 内核不确定会闭合，
-//     补齐 `}`/`)` 往往生成非法代码（如 `{data.map(x =>}`）。因此回滚（截断）到该
-//     分隔符的起点之前 —— 让代码停在"上一个语义完整点"，必然可编译可预览；
-//   - 截断后剩余的函数体 `{` / return `(` / 完整 JSX 元素 → 补齐。
-// 编译失败仍由 compileAndLoad 回退 lastGood（+ ErrorBoundary streaming 不 surface），
-// 故流式任何瞬间都不会出现「Render error」（macaron streaming 模式）。
-function completePartialTsx(source: string): string {
-  let out = source
-  // startIdx = 分隔符在 source 中的起点，用于表达式回滚截断。
-  const stack: Array<{ kind: 'tag' | 'brace' | 'paren' | 'bracket' | 'tpl'; name: string; hadGt: boolean; startIdx: number }> = []
-  let i = 0
-  while (i < out.length) {
-    const ch = out[i]
-    const next = out[i + 1]
-    if (out.startsWith('//', i)) { const nl = out.indexOf('\n', i); if (nl === -1) break; i = nl + 1; continue }
-    if (out.startsWith('/*', i)) { const end = out.indexOf('*/', i + 2); if (end === -1) break; i = end + 2; continue }
-    if (ch === '"' || ch === "'") {
-      const q = ch
-      let j = i + 1
-      let closed = false
-      while (j < out.length) { if (out[j] === '\\') { j += 2; continue } if (out[j] === q) { closed = true; j++; break } j++ }
-      if (!closed) { out = out.slice(0, i) + q; break }
-      i = j
-      continue
-    }
-    if (ch === '`') {
-      let j = i + 1
-      let closed = false
-      while (j < out.length) { if (out[j] === '\\') { j += 2; continue } if (out[j] === '$' && out[j + 1] === '{') { break } if (out[j] === '`') { closed = true; j++; break } j++ }
-      if (!closed) { stack.push({ kind: 'tpl', name: '`', hadGt: false, startIdx: i }); break }
-      i = j
-      continue
-    }
-    if (ch === '{') { stack.push({ kind: 'brace', name: '{', hadGt: false, startIdx: i }); i++; continue }
-    if (ch === '(') { stack.push({ kind: 'paren', name: '(', hadGt: false, startIdx: i }); i++; continue }
-    if (ch === '[') { stack.push({ kind: 'bracket', name: '[', hadGt: false, startIdx: i }); i++; continue }
-    if (ch === '}') { popTop(stack, 'brace'); i++; continue }
-    if (ch === ')') { popTop(stack, 'paren'); i++; continue }
-    if (ch === ']') { popTop(stack, 'bracket'); i++; continue }
-    if (ch === '<' && /[a-zA-Z]/.test(next)) {
-      let j = i + 1
-      while (j < out.length && /[a-zA-Z0-9.-]/.test(out[j])) j++
-      const name = out.slice(i + 1, j)
-      const gt = out.indexOf('>', j)
-      if (gt === -1) { out = out.slice(0, i); break } // mid-tag → 回滚到 '<' 前
-      const isSelfClose = out[gt - 1] === '/'
-      stack.push({ kind: 'tag', name, hadGt: !isSelfClose, startIdx: i })
-      if (isSelfClose) stack.pop()
-      i = gt + 1
-      continue
-    }
-    if (ch === '<' && next === '/') {
-      const gt = out.indexOf('>', i)
-      if (gt !== -1) { popTag(stack, out.slice(i + 2, gt).trim()); i = gt + 1; continue }
-    }
-    i++
-  }
-
-  // 找最内层未闭合的"表达式类"分隔符（brace/paren/bracket/tpl）。若存在，回滚
-  // （截断）到其起点 —— 该表达式可能未完成，补齐会非法。这使代码停在语义完整点。
-  let cutIdx = -1
-  for (let k = stack.length - 1; k >= 0; k--) {
-    const s = stack[k]
-    if (s.kind === 'brace' || s.kind === 'paren' || s.kind === 'bracket' || s.kind === 'tpl') {
-      cutIdx = s.startIdx
-      break
-    }
-  }
-  if (cutIdx >= 0) {
-    out = out.slice(0, cutIdx)
-    // 截断后，栈中该分隔符及其后的项不再存在；其前的 JSX 完整标签仍保留。
-    // 重建栈：只保留 startIdx < cutIdx 的项。
-    const kept = stack.filter((s) => s.startIdx < cutIdx)
-    const closers = buildClosers(kept)
-    return out + closers
-  }
-
-  // 没有表达式未闭合 —— 只需补齐完整 JSX 标签。
-  return out + buildClosers(stack)
-}
-
-function buildClosers(stack: Array<{ kind: 'tag' | 'brace' | 'paren' | 'bracket' | 'tpl'; name: string; hadGt: boolean; startIdx: number }>): string {
-  const closers: string[] = []
-  for (let k = stack.length - 1; k >= 0; k--) {
-    const s = stack[k]
-    if (s.kind === 'brace') closers.push('}')
-    else if (s.kind === 'paren') closers.push(')')
-    else if (s.kind === 'bracket') closers.push(']')
-    else if (s.kind === 'tpl') closers.push('}')
-    else if (s.kind === 'tag') {
-      if (!s.hadGt) closers.push('>')
-      closers.push(`</${s.name}>`)
-    }
-  }
-  return closers.join('')
-}
-
-function popTop(stack: Array<{ kind: string }>, kind: string) {
-  for (let k = stack.length - 1; k >= 0; k--) {
-    if (stack[k].kind === kind) { stack.splice(k, 1); return }
-  }
-}
-function popTag(stack: Array<{ kind: string; name: string }>, name: string) {
-  for (let k = stack.length - 1; k >= 0; k--) {
-    if (stack[k].kind === 'tag' && stack[k].name === name) { stack.splice(k, 1); return }
-  }
-}
+// ─── Partial TSX completion: now using partial-tsx (macaron's library) ──
+// Replaced the hand-rolled completePartialTsx with the battle-tested
+// normalizeGeneratedTsx from partial-tsx (macaron-genui-demo).
+// It handles all edge cases: JSX tags, expressions, template literals,
+// regex, comments, ASI, ternary, function declarations, etc.
