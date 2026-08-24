@@ -131,6 +131,49 @@ func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 	return append([]llm.ChatMessage(nil), msgs[start:]...), nil
 }
 
+// GetHistoryBeforeForDisplay returns up to `limit` messages (including
+// pre-compression) before beforeID, plus the total display message count.
+// Unlike GetHistoryBefore which uses Replay() (replacing old messages with
+// the compress summary), this uses ReplayForDisplay() which preserves all
+// messages from the append-only session_messages table.
+//
+// The total count is the length of the full display replay — it includes
+// pre-compression messages and the [Compacted context] marker. This is
+// consistent with the returned messages, so has_more = (total > len(msgs))
+// works correctly for pagination.
+func (s *SessionService) GetHistoryBeforeForDisplay(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, int, error) {
+	replay, err := s.ReplayForDisplay(tenantID)
+	if err != nil {
+		return nil, 0, err
+	}
+	total := len(replay.Messages)
+	if limit <= 0 {
+		return nil, total, nil
+	}
+	msgs := replay.Messages
+	// If beforeID specified, slice to only messages with id < beforeID.
+	if beforeID > 0 {
+		cut := len(msgs)
+		for i, m := range msgs {
+			if m.ID >= beforeID {
+				cut = i
+				break
+			}
+		}
+		msgs = msgs[:cut]
+		if len(msgs) == 0 {
+			return nil, total, nil
+		}
+	}
+	// Walk backwards counting messages; start is the first message of the
+	// window (oldest). Messages are already in chronological order.
+	start := 0
+	if len(msgs) > limit {
+		start = len(msgs) - limit
+	}
+	return append([]llm.ChatMessage(nil), msgs[start:]...), total, nil
+}
+
 // GetAllMessages retrieves all non-display-only messages for a tenant.
 // Used by memory consolidation and context building.
 //

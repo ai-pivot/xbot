@@ -319,23 +319,21 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		// Paginated history: GetHistoryBefore returns up to `limit` raw
-		// messages before beforeID. On initial load (beforeID=0) returns the
-		// most recent `limit` messages.
-		msgs, err := sess.GetHistoryBefore(beforeID, limit)
+		// Paginated history: GetHistoryBeforeForDisplay returns up to `limit`
+		// messages (including pre-compression) before beforeID, plus the
+		// total display message count. Unlike GetHistoryBefore (which uses
+		// Replay() and hides pre-compression messages), this shows the full
+		// append-only history from session_messages.
+		msgs, total, err := sess.GetHistoryBeforeForDisplay(beforeID, limit)
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		// Determine has_more: compare total active message count vs returned.
-		total, _ := sess.Len()
+		// Determine has_more: total is the full display count (pre-compression
+		// + marker + post-compression), consistent with the returned msgs.
 		hasMore := false
 		oldestID := int64(0)
 		if len(msgs) > 0 {
 			oldestID = msgs[0].ID
-			// If the returned messages start after the first message in
-			// the session, there are older messages to load.
-			// Compare total count vs returned: if total > len(msgs), there
-			// are older messages (or we returned a subset).
 			if total > len(msgs) {
 				hasMore = true
 			}
