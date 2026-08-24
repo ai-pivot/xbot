@@ -46,7 +46,14 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
     closable: params.closable,
     data:
       params.type === 'file'
-          ? { filePath: params.filePath }
+          ? {
+              filePath: params.filePath,
+              editorId: params.editorId,
+              initialLine: params.initialLine,
+              initialHighlight: params.initialHighlight,
+              fileLanguage: params.fileLanguage,
+              fileViewMode: params.fileViewMode,
+            }
         : params.type === 'agent'
           ? {
               filePath: params.sessionId,
@@ -66,8 +73,22 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
                   taskChatID: params.taskChatID,
                 }
               : params.type === 'plugin'
-                ? { viewId: params.viewId, pluginId: params.pluginId }
-                : undefined,
+            ? {
+                viewId: params.viewId,
+                pluginId: params.pluginId,
+                viewKey: params.viewKey,
+                viewParams: params.viewParams,
+              }
+            : params.type === 'diff'
+              ? {
+                  editorId: params.editorId,
+                  diffKey: params.diffKey,
+                  original: params.original,
+                  modified: params.modified,
+                  diffPath: params.diffPath,
+                  diffScope: params.diffScope,
+                }
+              : undefined,
   }
 }
 
@@ -194,6 +215,18 @@ function useTabManagerImpl(): TabManager {
       taskChatID: input.type === 'background' ? input.data?.taskChatID : undefined,
       viewId: input.type === 'plugin' ? input.data?.viewId : undefined,
       pluginId: input.type === 'plugin' ? input.data?.pluginId : undefined,
+      viewKey: input.type === 'plugin' ? input.data?.viewKey : undefined,
+      viewParams: input.type === 'plugin' ? input.data?.viewParams : undefined,
+      diffKey: input.type === 'diff' ? input.data?.diffKey : undefined,
+      original: input.type === 'diff' ? input.data?.original : undefined,
+      modified: input.type === 'diff' ? input.data?.modified : undefined,
+      diffPath: input.type === 'diff' ? input.data?.diffPath : undefined,
+      diffScope: input.type === 'diff' ? input.data?.diffScope : undefined,
+      editorId: (input.type === 'file' || input.type === 'diff') ? input.data?.editorId : undefined,
+      initialLine: input.type === 'file' ? input.data?.initialLine : undefined,
+      initialHighlight: input.type === 'file' ? input.data?.initialHighlight : undefined,
+      fileLanguage: input.type === 'file' ? input.data?.fileLanguage : undefined,
+      fileViewMode: input.type === 'file' ? input.data?.fileViewMode : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'
@@ -202,10 +235,15 @@ function useTabManagerImpl(): TabManager {
     // scroll element to 0 height and rendering 0 messages. Other panels (file,
     // terminal, background) stay on the default 'onlyWhenVisible' so heavy
     // components like Monaco editors are detached when not visible.
+    //
+    // Plugin tabs use component=viewId (NOT 'plugin'): DockviewContainer's
+    // ReactContentRenderer looks up CONTENT_COMPONENTS[component] first and
+    // falls back to the plugin view by `view.id === component` — a generic
+    // 'plugin' component name would never match any view id (rendered blank).
     api.addPanel({
       id: panelId,
       title: input.title,
-      component: input.type,
+      component: input.type === 'plugin' ? (input.data?.viewId ?? 'plugin') : input.type,
       params,
       renderer: input.type === 'agent' ? 'always' : 'onlyWhenVisible',
     })
@@ -311,7 +349,13 @@ export function tabLogicalKey(input: Pick<Tab, 'type' | 'data'>): string {
   // gets its own tab (multi-terminal). A missing terminalId → no dedup.
   if (input.type === 'terminal' && input.data?.terminalId) return `terminal:${input.data.terminalId}`
   if (input.type === 'background' && input.data?.taskID) return `background:${input.data.taskID}`
+  // Plugin tabs: dynamic instances (openViewTab with key) dedup by key —
+  // same view id can open MULTIPLE tabs (one per file/commit); static views
+  // (activity bar) dedup by view id.
+  if (input.type === 'plugin' && input.data?.viewKey) return `plugin-view:${input.data.viewKey}`
   if (input.type === 'plugin' && input.data?.viewId) return `plugin:${input.data.viewId}`
+  // 原生 diff tab：按 diffKey 去重（同一文件/commit 的 diff 只开一个 tab）。
+  if (input.type === 'diff' && input.data?.diffKey) return `diff:${input.data.diffKey}`
   return ''
 }
 
@@ -325,14 +369,21 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
   if (p.type === 'agent') return p.sessionId ? `agent:${p.sessionId}` : ''
   if (p.type === 'terminal') return p.terminalId ? `terminal:${p.terminalId}` : ''
   if (p.type === 'background') return p.taskID ? `background:${p.taskID}` : ''
+  if (p.type === 'plugin' && p.viewKey) return `plugin-view:${p.viewKey}`
   if (p.type === 'plugin') return p.viewId ? `plugin:${p.viewId}` : ''
+  if (p.type === 'diff') return p.diffKey ? `diff:${p.diffKey}` : ''
   return ''
 }
 
 /**
  * 从 dockview 完整布局（api.toJSON()）中按 predicate 过滤 panel（递归处理
- * grid 树：leaf group 的 views 移除、空 group 折叠、branch 空子移除、单子提升）。
+ * grid 树：leaf group 的 views 移除、空 group 折叠、branch 空子移除）。
  * predicate 判断一个 panel 的 params（GroupviewPanelState.params）是否应过滤。
+ *
+ * 不变量：grid.root 必须保持 branch 类型（dockview fromJSON 断言 "root must
+ * be of type branch"）。绝不把单子 branch 提升为其子节点——历史实现把单子
+ * root 提升成 leaf，持久化后每次恢复必崩（稳定崩溃 bug）。整树被过滤光时
+ * 返回 null（消费方据此跳过持久化/恢复，不能产出 `{ grid: { root: null } }`）。
  *
  * 结构（dockview SerializedDockview）：
  *   { grid: { root: SerializedGridObject<GroupPanelViewState> }, panels: Record<string, GroupviewPanelState> }
@@ -369,14 +420,16 @@ export function filterPanels(layout: unknown, shouldPrune: (params: { type?: str
       const activeView = g.activeView && views.includes(g.activeView) ? g.activeView : views[0]
       return { ...n, data: { ...g, views, activeView } }
     }
-    // branch
+    // branch: drop pruned/empty children; NEVER promote a single child — the
+    // root must stay a branch (dockview fromJSON invariant), and promoting
+    // nested branches buys nothing (a single-child branch restores fine).
     const children = (Array.isArray(n.data) ? n.data : []).map(prune).filter((x): x is unknown => x !== null)
     if (children.length === 0) return null
-    if (children.length === 1) return children[0] // collapse single-child branch
     return { ...n, data: children }
   }
 
   const root = prune(l.grid?.root)
+  if (!root) return null
   return { ...l, panels, grid: { ...l.grid, root } }
 }
 

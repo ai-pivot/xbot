@@ -397,6 +397,21 @@
     overscroll-behavior: none;
   }
 
+  /* iOS PWA standalone (Add to Home Screen) chin-gap fix.
+   * Trigger (all present here): black-translucent status bar +
+   * viewport-fit=cover + html/body height:100% — the 100% body measures
+   * against its containing block and falls ~34px short of the TRUE viewport,
+   * leaving a dead strip below the input box. height:100vh spans the full
+   * screen in standalone mode (verified: openchamber/openchamber#2287,
+   * stackoverflow 79902310). Browser mode keeps 100% — 100vh there would
+   * over-cover behind Safari's toolbars. */
+  @media (display-mode: standalone) {
+    html,
+    body {
+      height: 100vh;
+    }
+  }
+
   body {
     background-color: var(--background);
     color: var(--foreground);

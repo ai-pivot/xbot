@@ -598,6 +598,52 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(deriveRows(s3)).toHaveLength(2) // user + live(思考中)，无第二份
   })
 
+  it('REPRO: gap 修复 delta 携带旧迭代 —— 不得清空 live 正在流式更新的迭代（CR #1 committedNow）', () => {
+    // 场景：前端缺失中间迭代（iterations=[1,2,5]，缺 3,4），live 已流式到迭代 5。
+    // 进来一个 gap 修复事件：iterationsDelta 补了早前丢失的迭代 3，ev.iter=3。
+    // 旧代码 committedNow = !advanced && appendedNew && ev.iter <= appendedMax
+    //   → appendedNew=true（[1,2,3,5] > [1,2,5]），3 <= 3 → true → 误判为 "刚
+    //   commit 迭代" → 清空 content/reasoning → **live 迭代 5 的流式内容被误清**。
+    // CR 建议：条件为 appendedMax === prev.iter —— delta 补的是旧迭代 3，而 live
+    // 当前迭代是 5（3 !== 5），不 committed，保留 live 流式内容。
+    const s0 = run([
+      started(T1),
+      iteration1(T1, '迭代1内容', 1),
+      iteration1(T1, '迭代2内容', 2),
+    ])
+    // 直接落到迭代 5，但只带 delta 5（模拟 3,4 在前端丢失）。
+    const sCur = reduce(s0, {
+      type: 'iteration', turnID: T1, iter: iterNum(5), seq: 15 as never,
+      content: '迭代5内容', reasoning: undefined, activeTools: [], completedTools: [],
+      iterationsDelta: [{ iteration: 5, content: '迭代5内容', reasoning: '', tools: [], toolCount: 0 }] as never,
+      todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+    })
+    const tLive = sCur.turns.get(T1)!
+    if (tLive.phase.kind !== 'live') throw new Error('must stay live')
+    expect(tLive.phase.data.iter).toBe(5)
+    expect(tLive.phase.data.content).toBe('迭代5内容')
+    // 确认 iterations 缺 3,4（前端缺失中间迭代的前提）。
+    const liveIters = tLive.phase.data.iterations.map((it) => it.iteration)
+    expect(liveIters).not.toContain(3)
+    expect(liveIters).not.toContain(4)
+
+    // gap 修复事件：delta 补迭代 3，ev.iter=3（落后于 live 的流式迭代 5）。
+    const sGap = reduce(sCur, {
+      type: 'iteration', turnID: T1, iter: iterNum(3), seq: 30 as never,
+      content: undefined, reasoning: undefined, activeTools: [], completedTools: [],
+      iterationsDelta: [{ iteration: 3, content: '迭代3内容(补)', reasoning: '', tools: [], toolCount: 0 }] as never,
+      todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+    })
+    const tGap = sGap.turns.get(T1)!
+    if (tGap.phase.kind !== 'live') throw new Error('must stay live')
+    // 修复后：committedNow=false（appendedMax=3 !== prev.iter=5）→ live 保留流式内容。
+    expect(tGap.phase.data.content).toBe('迭代5内容')
+    // 补进来的迭代 3 合并进 iterations（append-only，不丢失）。
+    const iters = tGap.phase.data.iterations.map((it) => it.iteration)
+    expect(iters).toContain(3)
+    expect(iters).toContain(5)
+  })
+
   it('REPRO: 发新消息后上一 turn 最后迭代消失 —— 过时 DB 中间快照不得覆盖状态机 committed', () => {
     // 场景：turn 1 已完成（状态机 committed：iterations=[1,2] 全量，text='最终回复'）。
     // chat.messages 里的 turn 1 DB 行是【过时中间快照】（reload/replay_gap 在 turn

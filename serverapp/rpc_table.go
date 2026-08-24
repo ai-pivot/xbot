@@ -1723,6 +1723,18 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		return h.Ag.GetTodos(channelName, chatID), nil
 	})
+
+	// llm_dump_reqs: toggle dumping EVERY /chat/completions request body to
+	// ~/.xbot/llm_dumps/ (web DebugToolbar "Dump LLM Reqs" button). Pass
+	// {"enabled": bool} to set; omit to just read the current state.
+	t["llm_dump_reqs"] = rpc1(func(ctx context.Context, p struct {
+		Enabled *bool `json:"enabled"`
+	}) (any, error) {
+		if p.Enabled != nil {
+			llm_pkg.SetDumpLLMReqs(*p.Enabled)
+		}
+		return map[string]any{"enabled": llm_pkg.DumpLLMReqsEnabled()}, nil
+	})
 }
 
 // ── Background tasks / tenants ──

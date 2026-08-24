@@ -6,12 +6,13 @@
 // (ui_code → genui message) and stores it in iteration history (Detail).
 //
 // Protocol (JSON lines over stdio, see plugin/examples/web-ui-demo):
-//   xbot → plugin: {"method":"activate","params":{...}}
-//   xbot → plugin: {"type":"channel_config","metadata":{...}}
-//   xbot → plugin: {"id":"srv-N","method":"execute_tool","params":{...}}
-//   xbot → plugin: {"id":"srv-N","method":"web_ui_action","params":{...}}
-//   plugin → xbot: {"type":"channel_tools","tools":[...]}   (on channel_config)
-//   plugin → xbot: {"id":"srv-N","result":{...}}            (RPC responses)
+//
+//	xbot → plugin: {"method":"activate","params":{...}}
+//	xbot → plugin: {"type":"channel_config","metadata":{...}}
+//	xbot → plugin: {"id":"srv-N","method":"execute_tool","params":{...}}
+//	xbot → plugin: {"id":"srv-N","method":"web_ui_action","params":{...}}
+//	plugin → xbot: {"type":"channel_tools","tools":[...]}   (on channel_config)
+//	plugin → xbot: {"id":"srv-N","result":{...}}            (RPC responses)
 //
 // The plugin is intentionally ZERO-dependency (stdlib only): the channel_tools
 // protocol is plain JSON, so the binary builds standalone with `go build`
@@ -241,7 +242,7 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 	}
 
 	writeResult(enc, req.ID, map[string]any{
-		"content": fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
+		"content":  fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
 		"is_error": false,
 		"ui_code":  code,
 	})

@@ -67,6 +67,7 @@ const (
 	MethodGetActiveProgress            = "get_active_progress"
 	MethodGetPendingAskUser            = "get_pending_ask_user"
 	MethodGetTodos                     = "get_todos"
+	MethodLLMDumpReqs                  = "llm_dump_reqs"
 	MethodCountInteractiveSessions     = "count_interactive_sessions"
 	MethodListInteractiveSessions      = "list_interactive_sessions"
 	MethodInspectInteractiveSession    = "inspect_interactive_session"

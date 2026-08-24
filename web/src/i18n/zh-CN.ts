@@ -14,6 +14,7 @@ const zhCN = {
     loading: '加载中...',
     error: '错误',
     retry: '重试',
+    back: '返回',
   },
   sidebar: {
     sessions: '会话',

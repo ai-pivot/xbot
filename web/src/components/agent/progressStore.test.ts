@@ -232,6 +232,256 @@ describe('ProgressStore stream-only patch + carry-forward', () => {
     store.dispose()
   })
 
+  it('history-append event (iteration NOT advanced) clears the live stream fields — no double render', () => {
+    // The backend's "iteration completed" event keeps iteration at N; the
+    // advance event arrives LATER. Between the two, the committed fold and
+    // the live fold rendered the SAME reasoning/text (per-iteration flicker).
+    // The append itself must clear the live stream fields.
+    const store = new ProgressStore()
+    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
+    store.appendReasoningContent('iter1 reasoning')
+    store.appendStreamContent('iter1 text')
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      reasoning: 'iter1 reasoning',
+      completedTools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+    })
+    flushRaf()
+
+    // Event A: history appends, iteration STAYS at 1.
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      completedTools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+      iterationHistory: [{
+        iteration: 1,
+        content: 'iter1 text',
+        reasoning: 'iter1 reasoning',
+        tools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+        toolCount: 1,
+      }],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(1)
+    // Live stream fields belong to the just-committed iteration → cleared.
+    expect(snap.streamContent).toBe('')
+    expect(snap.reasoningStreamContent).toBe('')
+    expect(snap.lastReasoning).toBe('')
+    expect(snap.content).toBe('')
+    expect(snap.completedTools).toHaveLength(0)
+    expect(snap.activeTools).toHaveLength(0)
+    store.dispose()
+  })
+
+  it('gap-repair delta (older iterations) does NOT clear the newer live stream fields', () => {
+    // A reconnect gap repair can deliver iterations 2-3 while the live area
+    // is already streaming iteration 4 — clearing there would wipe the
+    // current iteration's content.
+    const store = new ProgressStore()
+    store.setStructuredTools({ phase: 'thinking', iteration: 4 })
+    store.appendStreamContent('iter4 streaming text')
+    flushRaf()
+
+    store.setStructuredTools({
+      phase: 'thinking',
+      iteration: 4,
+      iterationHistory: [
+        { iteration: 2, content: '', reasoning: '', tools: [tool({ name: 'Grep', status: 'done' })], toolCount: 1 },
+        { iteration: 3, content: '', reasoning: '', tools: [tool({ name: 'Glob', status: 'done' })], toolCount: 1 },
+      ],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(2)
+    // Live area (iteration 4) is NEWER than the appended max (3) → preserved.
+    expect(snap.streamContent).toBe('iter4 streaming text')
+    store.dispose()
+  })
+
+  it('replayed history delta (no new iterations) is a no-op for stream fields', () => {
+    const store = new ProgressStore()
+    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
+    store.appendStreamContent('live text')
+    // Install the delta once.
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      iterationHistory: [{ iteration: 1, content: '', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    flushRaf()
+    expect(store.getSnapshot().streamContent).toBe('')
+
+    // Replaying the SAME delta (idempotent append, no new entries) must not
+    // touch anything — and must not resurrect cleared fields.
+    store.appendStreamContent('new text')
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      iterationHistory: [{ iteration: 1, content: '', reasoning: '', tools: [], toolCount: 0 }],
+    })
+    flushRaf()
+    expect(store.getSnapshot().streamContent).toBe('new text')
+    store.dispose()
+  })
+
+  it('history append WITHOUT iteration advance clears the live stream fields (commit-event flicker fix)', () => {
+    // Backend sequence at iteration completion (TWO events, not one atomic):
+    //   Event A: iteration STAYS at N while iteration_history appends iter N —
+    //            the advance event that used to be the ONLY stream-field clear
+    //            arrives later. Without clearing here, the same reasoning/text
+    //            rendered BOTH in the committed fold and the live fold between
+    //            the two events → the per-iteration-completion flicker.
+    const store = new ProgressStore()
+    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
+    store.appendReasoningContent('iter1 reasoning streams')
+    store.appendStreamContent('iter1 text streams')
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      reasoning: 'iter1 reasoning streams',
+      completedTools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+    })
+    flushRaf()
+    expect(store.getSnapshot().reasoningStreamContent).toBe('iter1 reasoning streams')
+
+    // Event A: iteration NOT advanced (still 1), history appends iter 1.
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      completedTools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+      iterationHistory: [{
+        iteration: 1,
+        content: 'iter1 text streams',
+        reasoning: 'iter1 reasoning streams',
+        tools: [tool({ name: 'Read', status: 'done', summary: 'ok' })],
+        toolCount: 1,
+      }],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(1)
+    // The committed fold now owns the content — the live stream fields must
+    // NOT still render a duplicate of it.
+    expect(snap.reasoningStreamContent).toBe('')
+    expect(snap.streamContent).toBe('')
+    expect(snap.content).toBe('')
+    expect(snap.lastReasoning).toBe('')
+    expect(snap.activeTools).toHaveLength(0)
+    expect(snap.completedTools).toHaveLength(0)
+    store.dispose()
+  })
+
+  it('gap-repair delta with older iterations does NOT clear the current iteration stream fields', () => {
+    // A reconnect gap-repair event can carry older completed iterations while
+    // the live area is already streaming a NEWER iteration — clearing there
+    // would wipe the current iteration's content.
+    const store = new ProgressStore()
+    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
+    flushRaf()
+    store.setStructuredTools({ phase: 'tool_exec', iteration: 1 })
+    flushRaf()
+    store.setStructuredTools({ phase: 'thinking', iteration: 4 })
+    store.appendReasoningContent('iter4 reasoning (in flight)')
+    flushRaf()
+
+    // Gap repair: history delta for iterations 1-3 while live is at 4.
+    store.setStructuredTools({
+      phase: 'thinking',
+      iteration: 4,
+      iterationHistory: [
+        { iteration: 1, content: '', reasoning: '', tools: [], toolCount: 0 },
+        { iteration: 3, content: '', reasoning: '', tools: [], toolCount: 0 },
+      ],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory.map((i) => i.iteration)).toEqual([1, 3])
+    // Live belongs to iteration 4 > appendedMax(3) — keep the stream fields.
+    expect(snap.reasoningStreamContent).toBe('iter4 reasoning (in flight)')
+    store.dispose()
+  })
+
+  it('iteration-completion event (iteration NOT advanced) clears live stream fields — no double render', () => {
+    // REAL backend sequence: snapshotCompletedIteration emits an event where
+    // iteration STAYS at N while iteration_history appends iter N. The
+    // iteration-advance event (which used to be the ONLY place clearing the
+    // stream fields) arrives LATER. Between the two events, the same
+    // reasoning/text rendered BOTH in the committed fold and the live fold —
+    // the per-iteration-completion flicker.
+    const store = new ProgressStore()
+    // Iteration 1 streams reasoning + text, runs a tool.
+    store.setStructuredTools({ phase: 'thinking', iteration: 1 })
+    store.appendReasoningContent('analyzing the entry point')
+    store.appendStreamContent('iter1 text output')
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      activeTools: [tool({ name: 'Read', status: 'running' })],
+    })
+    flushRaf()
+
+    // ── Event A: iteration completes — iteration STAYS at 1 ──
+    store.setStructuredTools({
+      phase: 'tool_exec',
+      iteration: 1,
+      completedTools: [tool({ name: 'Read', status: 'done' })],
+      iterationHistory: [{
+        iteration: 1,
+        content: 'iter1 text output',
+        reasoning: 'analyzing the entry point',
+        tools: [tool({ name: 'Read', status: 'done' })],
+        toolCount: 1,
+      }],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(1)
+    expect(snap.iterationHistory[0].iteration).toBe(1)
+    // Live stream fields MUST clear with the append — the committed fold now
+    // owns this content; the live fold must not render it again.
+    expect(snap.streamContent).toBe('')
+    expect(snap.reasoningStreamContent).toBe('')
+    expect(snap.lastReasoning).toBe('')
+    expect(snap.content).toBe('')
+    expect(snap.activeTools).toHaveLength(0)
+    expect(snap.completedTools).toHaveLength(0)
+    expect(snap.streamingTools).toHaveLength(0)
+    store.dispose()
+  })
+
+  it('gap-repair delta (older iterations appended while live streams a NEWER one) keeps live fields', () => {
+    // SSE gap repair: an event carries iteration=4 (current) with a history
+    // delta of [iter2, iter3] — the live area belongs to iteration 4 and must
+    // keep its stream fields (clearing them would wipe the CURRENT iteration).
+    const store = new ProgressStore()
+    store.setStructuredTools({ phase: 'thinking', iteration: 4 })
+    store.appendStreamContent('iter4 streaming text')
+    flushRaf()
+
+    store.setStructuredTools({
+      phase: 'thinking',
+      iteration: 4,
+      iterationHistory: [
+        { iteration: 2, content: '', reasoning: 'r2', tools: [], toolCount: 0 },
+        { iteration: 3, content: '', reasoning: 'r3', tools: [], toolCount: 0 },
+      ],
+    })
+    flushRaf()
+
+    const snap = store.getSnapshot()
+    expect(snap.iterationHistory).toHaveLength(2)
+    // Live fields belong to iteration 4 (> appendedMax 3) — preserved.
+    expect(snap.streamContent).toBe('iter4 streaming text')
+    store.dispose()
+  })
+
   it('does not synthesize a semantic log entry when only iteration advances', () => {
     const store = new ProgressStore()
     store.setStructuredTools({ phase: 'thinking', iteration: 1 })

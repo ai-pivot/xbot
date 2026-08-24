@@ -1883,8 +1883,9 @@ func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler 
 //
 // The plugin ID is constrained to the plugin-id charset (^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$)
 // and the remaining path is cleaned + confined to the plugin's web/ directory,
-// preventing path traversal. Files are served with immutable caching (plugin
-// modules are content-hashed by convention; hot reload uses versioned URLs).
+// preventing path traversal. Caching: content-hashed chunks (chunk-*) are
+// immutable; fixed-name entry files (index.js etc.) use no-cache revalidation
+// so plugin hot updates are picked up on page refresh.
 func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request) {
 	if len(wc.pluginDirs) == 0 {
 		http.NotFound(w, r)
@@ -1936,7 +1937,18 @@ func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if _, err := os.Stat(realResolved); err == nil {
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			// 缓存策略按文件名是否含内容 hash 区分：
+			//   - chunk-*.js（esbuild --splitting 的内容 hash 命名）→ immutable 1y
+			//   - 固定名入口文件（index.js/diff.js/commit.js 等）→ no-cache 协商缓存。
+			// 入口文件名不含 hash，若标 immutable 则插件部署新版后浏览器永不重新
+			// 拉取（URL 不变 + immutable = 永不更新陷阱——versionedUrl 的 ?v= 依赖
+			// server 重启/插件重载才变化，不足以支撑热更新）。
+			base := filepath.Base(realResolved)
+			if strings.HasPrefix(base, "chunk-") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			http.ServeFile(w, r, realResolved)
 			return
 		}

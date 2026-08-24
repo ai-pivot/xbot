@@ -553,18 +553,23 @@ export function MessageList({
     // scrollTop to the new scrollHeight. Using RAF (scheduleFollow) here causes
     // an active loop: the RAF cancels/reschedules faster than it can execute.
     //
-    // CRITICAL: observe CONTENT, not scrollElement. ResizeObserver reports the
-    // element's contentRect (clientWidth/clientHeight) — NOT its scrollHeight.
-    // scrollElement is an overflow-y-auto container whose clientHeight stays
-    // fixed at the viewport height, so content growth (live row height changes,
-    // iteration history append, code highlighting) changes ONLY scrollHeight —
-    // the ResizeObserver on scrollElement NEVER fires, the scrollTop stays at
-    // the old position, and the last row (the live turn) is pushed below the
-    // viewport → the virtualizer does not render it → the whole turn vanishes
-    // from the DOM until the next SSE event happens to trigger the
-    // liveProgress-driven follow effect. contentRef wraps the virtualizer's
-    // sizing div (height = totalSize), so its contentRect DOES track content
-    // height and fires on every growth.
+    // CRITICAL: observe BOTH the content and the scroll element — they cover
+    // DIFFERENT resize cases:
+    //
+    //  - CONTENT growth (live row height changes, iteration history append,
+    //    code highlighting) changes ONLY scrollHeight. ResizeObserver reports
+    //    contentRect (clientHeight), and the scroll element's clientHeight
+    //    stays fixed at the viewport height — so a scroll-element observer
+    //    NEVER fires for content growth. contentRef wraps the virtualizer's
+    //    sizing div (height = totalSize), so ITS contentRect tracks content
+    //    height and fires on every growth.
+    //
+    //  - VIEWPORT shrink (the composer auto-grows up to 200px and squeezes
+    //    this flex-1 list) changes clientHeight with content unchanged — the
+    //    content observer NEVER fires, the sticky scrollTop stays at its old
+    //    value, and the last row ends up hidden behind the taller composer
+    //    (user-reported bug). The scroll element's own contentRect DOES
+    //    change here, so observing it re-anchors to the bottom while sticky.
     const observer = new ResizeObserver(() => {
       if (!stickToBottomRef.current) return
       const el = scrollRef.current
@@ -575,6 +580,7 @@ export function MessageList({
       }
     })
     observer.observe(content)
+    observer.observe(scrollElement)
     return () => {
       observer.disconnect()
       cancelPendingFollow()
@@ -690,7 +696,7 @@ export function MessageList({
         onKeyDown={onKeyDown}
         tabIndex={0}
         style={{ overflowAnchor: 'none' }}
-        className="h-full overflow-y-auto overflow-x-hidden px-3 py-4 contain-content"
+        className="h-full overflow-y-auto overflow-x-hidden px-4 py-3 contain-content md:px-3 md:py-4"
       >
         {loading && rows.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-3">

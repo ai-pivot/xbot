@@ -95,10 +95,20 @@ type runState struct {
 	// Iteration-loop detection: records the content+tool_calls "signature" of
 	// the previous iteration. When two consecutive iterations produce the
 	// exact same content + tool_calls (and the previous one had no tool error),
-	// the agent is stuck in a loop — we inject a synthetic tool result to warn
-	// it, breaking the cycle. See detectIterationLoop.
+	// the agent is stuck in a loop — executeToolCalls replaces the duplicate
+	// calls with a fake "loop detected" tool result instead of running them.
+	// See detectIterationLoop / fakeLoopToolResults.
 	lastIterSignature string // "" = no previous iteration (first iter)
 	lastIterHadError  bool   // whether the previous iteration's tool execution had an error
+	loopDetected      bool   // set by detectIterationLoop; consumed (and reset) by executeToolCalls
+	// loopBreakCount counts CONSECUTIVE loop-breaker interceptions in this
+	// Run. When it reaches maxLoopBreaks the Run is force-terminated: the model
+	// is stuck repeating itself and further iterations just burn tokens (the
+	// turn-13 incident looped 19 times until the user interrupted manually).
+	loopBreakCount int
+	// loopFatal is set when loopBreakCount reaches maxLoopBreaks; the main
+	// loop checks it after executeToolCalls and terminates the Run.
+	loopFatal bool
 
 	// runDone is set when Run() returns. Background-subagent progress callbacks
 	// outlive the Run (their runCtx derives from the agent lifecycle) — after
@@ -1083,9 +1093,17 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 
 // detectIterationLoop compares the current iteration's content + tool_calls
 // against the previous iteration. If they are byte-for-byte identical and the
-// previous iteration had no tool execution error, injects a synthetic tool
-// result into s.messages to warn the agent.
+// previous iteration had no tool execution error, flags the iteration so
+// executeToolCalls replaces the duplicate tool calls with a fake "loop
+// detected" tool result instead of executing them.
 func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMResponse) {
+	// The flag describes THIS call's outcome only. It is reset up-front so it
+	// never leaks across iterations: detectIterationLoop is also reached via
+	// maybeContinueTurn (PreTurnEnd hook Continue) → recordAssistantMsg, a path
+	// that never runs executeToolCalls — a stale true there would make the NEXT
+	// iteration's REAL tool calls be intercepted by fakeLoopToolResults.
+	s.loopDetected = false
+
 	// Build a signature: content + each tool call (name + arguments).
 	sig := loopSignature(response.Content, response.ToolCalls)
 
@@ -1093,6 +1111,7 @@ func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMRes
 	// and the previous iteration did NOT end with a tool error (an error is a
 	// legitimate reason for the model to retry the same call).
 	if s.lastIterSignature != "" && sig == s.lastIterSignature && !s.lastIterHadError {
+		s.loopDetected = true
 		iterNum := 0
 		if s.structuredProgress != nil {
 			iterNum = s.structuredProgress.Iteration
@@ -1102,22 +1121,8 @@ func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMRes
 			"turn_id":    s.cfg.TurnID,
 			"iteration":  iterNum,
 			"tool_count": len(response.ToolCalls),
-		}).Warn("ITERATION_LOOP_DETECTED: consecutive iterations produced identical content + tool_calls, injecting loop-breaker warning")
+		}).Warn("ITERATION_LOOP_DETECTED: consecutive iterations produced identical content + tool_calls, replacing duplicate calls with loop-breaker tool result")
 
-		// Inject a synthetic USER message so the LLM sees explicit feedback.
-		// NOTE: must NOT use a tool message with a fake tool_call_id —
-		// SanitizeMessages strips orphaned tool messages (tool_call_id not
-		// matching any assistant tool_call), so the warning would never reach
-		// the LLM. A user message is never stripped.
-		warning := "⚠️ LOOP DETECTED: You are repeating the exact same action as the previous iteration " +
-			"(identical content and tool calls). This will loop forever. " +
-			"If the previous tool call succeeded, the task is already done — stop calling the same tool. " +
-			"If it failed, try a DIFFERENT approach. Do not repeat the same call."
-		s.messages = s.syncMessages(append(s.messages, llm.ChatMessage{
-			Role:    "user",
-			Content: warning,
-			TurnID:  s.cfg.TurnID,
-		}))
 	}
 
 	// Update state for the next iteration. Reset error flag; it will be set
@@ -1590,9 +1595,116 @@ func (s *runState) aggressiveTruncate(ctx context.Context) bool {
 // executeToolCalls runs all tool calls from the LLM response.
 func (s *runState) executeToolCalls(ctx context.Context, response *llm.LLMResponse, iteration int) []toolExecResult {
 	batch := s.initToolProgress(response, iteration)
-	s.dispatchToolCalls(ctx, iteration, response.ToolCalls, batch)
+	if s.loopDetected {
+		// Duplicate iteration (see detectIterationLoop): replace the calls
+		// with a fake "loop detected" tool result instead of executing them.
+		s.fakeLoopToolResults(ctx, response, batch)
+	} else {
+		// Real execution resets the consecutive-interception counter: the
+		// model broke out of its repeated pattern (even a slightly-different
+		// call counts — the tool's own result feedback takes over from here).
+		s.loopBreakCount = 0
+		s.dispatchToolCalls(ctx, iteration, response.ToolCalls, batch)
+	}
 	s.snapshotCompletedIteration(iteration)
 	return batch.results
+}
+
+// loopBreakerWarning is the tool-result content that replaces a duplicate
+// tool call. The "Error:" prefix makes the web frontend render the tool row
+// as failed (ConvertMessagesToHistory infers status from it when Detail is
+// absent) — the call was rejected, not executed.
+const loopBreakerWarning = "Error: ⚠️ LOOP DETECTED — this duplicate tool call was SKIPPED (not executed). " +
+	"You are repeating the exact same action as the previous iteration (identical content and tool calls). " +
+	"This will loop forever. If the previous tool call succeeded, the task is already done — stop calling the same tool. " +
+	"If it failed, try a DIFFERENT approach. Do not repeat the same call."
+
+// maxLoopBreaks is the consecutive-interception limit before the Run is
+// force-terminated (turn-13 incident: 19 consecutive interceptions burned
+// ~10 minutes until the user manually interrupted).
+const maxLoopBreaks = 5
+
+// fakeLoopToolResults replaces the duplicate tool calls of a loop-detected
+// iteration with a synthetic error tool result. The result pairs with the
+// assistant message's REAL tool_call_id, so SanitizeMessages keeps it and the
+// LLM sees the warning on its next call.
+//
+// It must NEVER insert a user message: a synthetic user row is persisted with
+// the turn's turn_id and the web frontend renders turns as (turnID, role)
+// groups — the fake user row replaces the user's real message there.
+func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMResponse, batch *toolExecBatch) {
+	s.loopDetected = false
+	s.loopBreakCount++
+	// 每次 LOOP 拦截都 dump 最近两个请求体（oldest=触发循环的请求,
+	// newest=被拦截的请求——diff 看模型到底收到了什么、loop 警告是否在
+	// prompt 里）。文件名含 sha 不互相覆盖。
+	if paths := llm.DumpLoopBodies(fmt.Sprintf("iter%d_n%d", s.iterationNow(), s.loopBreakCount)); len(paths) > 0 {
+		log.Ctx(ctx).WithField("dumped", paths).Warn("[LoopDump] loop 拦截触发请求体 dump")
+	}
+	const shortSummary = "Loop detected — duplicate call skipped"
+	// Escalating warning: carries the interception count and an explicit
+	// reference to the previous REAL execution. For the old⊂new FileReplace
+	// pattern (turn-13 incident) the previous call already returned
+	// "Successfully replaced + infinite-loop WARNING" — the model must treat
+	// the task as DONE, not re-issue the identical call (each re-call that
+	// slips past the byte-exact signature check re-executes and corrupts the
+	// file with another duplicate insertion).
+	warning := loopBreakerWarning
+	if s.loopBreakCount > 1 {
+		warning = fmt.Sprintf(
+			"Error: ⚠️ LOOP DETECTED (interception #%d of %d before forced stop) — this duplicate tool call was SKIPPED (not executed). "+
+				"You have now tried the EXACT same call %d times in a row. Look at the tool result of your FIRST attempt in this conversation: "+
+				"if it succeeded, THE TASK IS ALREADY DONE — repeating the call will never produce a different outcome (for FileReplace, a succeeded edit means the file is already changed; a second identical call either fails with text-not-found or, worse, appends duplicate content forever). "+
+				"If the first attempt failed, you MUST change your approach — adjust old_string to match the CURRENT file content, or use a different tool. "+
+				"After %d total interceptions this run will be TERMINATED automatically.",
+			s.loopBreakCount, maxLoopBreaks, s.loopBreakCount, maxLoopBreaks)
+	}
+	if s.loopBreakCount >= maxLoopBreaks {
+		s.loopFatal = true
+		warning = fmt.Sprintf(
+			"Error: ⛔ LOOP TERMINATED — the exact same tool call was repeated %d times. This run is being force-stopped to prevent infinite token burn and file corruption (duplicate insertions).",
+			s.loopBreakCount)
+	}
+	for idx, tc := range response.ToolCalls {
+		batch.results[idx] = toolExecResult{
+			content:    warning,
+			llmContent: warning,
+			result: &tools.ToolResult{
+				IsError: true,
+				Summary: shortSummary,
+			},
+		}
+		if s.structuredProgress != nil && idx < len(s.structuredProgress.ActiveTools) {
+			s.structuredProgress.ActiveTools[idx].Status = ToolError
+			s.structuredProgress.ActiveTools[idx].Summary = shortSummary
+		}
+		if s.autoNotify {
+			pi := batch.progressStartIdx + idx
+			if pi < len(s.progressLines) {
+				s.progressLines[pi] = fmt.Sprintf("> ❌ %s (loop detected, skipped)", formatToolProgress(tc.Name, tc.Arguments))
+			}
+		}
+		log.Ctx(ctx).WithFields(log.Fields{
+			"tool":       tc.Name,
+			"id":         tc.ID,
+			"iteration":  s.iterationNow(),
+			"turn_id":    s.cfg.TurnID,
+			"executed":   false,
+			"loop_break": true,
+		}).Info("Tool call skipped by loop breaker")
+	}
+	if s.autoNotify {
+		s.notifyProgress("")
+	}
+}
+
+// iterationNow returns the current structured-progress iteration number (0 if
+// structured progress is not initialized).
+func (s *runState) iterationNow() int {
+	if s.structuredProgress != nil {
+		return s.structuredProgress.Iteration
+	}
+	return 0
 }
 
 // processToolResults handles offload, OAuth, waiting user, and stale invalidation

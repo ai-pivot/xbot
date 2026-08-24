@@ -17,6 +17,19 @@ vi.mock('@/providers/CwdProvider', () => ({
 }))
 
 describe('MessageInput', () => {
+  it('delegates the bottom safe area to the InfoBar below (no own inset padding)', () => {
+    // The InfoBar (MobileAppShell, below MessageInput) absorbs the iOS
+    // safe-area inset — MessageInput must NOT add its own bottom inset
+    // padding (that previously either left a dead strip or pushed the box
+    // into the rounded screen corners).
+    renderWithProviders(
+      <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />,
+    )
+    const wrapper = screen.getByRole('textbox').closest('.border-t')
+    expect(wrapper).not.toBeNull()
+    expect((wrapper as HTMLElement).style.paddingBottom).toBe('')
+  })
+
   it('maps /rewind to the Web rewind action instead of sending it as a message', () => {
     const onSend = vi.fn()
     const onRewindLatest = vi.fn()

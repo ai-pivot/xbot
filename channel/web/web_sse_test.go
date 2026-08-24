@@ -578,6 +578,53 @@ func TestSSEStatelessReplacementStaysNewestWhenEventStreamIsFull(t *testing.T) {
 	}
 }
 
+// TODO(probe-flicker): production fix not yet implemented — the server still
+// sends resync_required on idle reconnect at the watermark. Skip until the
+// watermark-resume logic lands (distinguish "at watermark + no destructive
+// barrier" from "at watermark + barrier present").
+func TestSSEIdleReconnectAtWatermarkSkipsForcedResync(t *testing.T) {
+	t.Skip("TDD test for unimplemented watermark-resume behavior — see TestSSEResumeAtHighWaterForcesAuthoritativeResync for the conflicting requirement")
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+	sel := SessionSelector{Channel: "web", ChatID: "web-1"}
+	// One business event; the client has received everything up to the watermark.
+	wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "idle event"})
+	watermark := wc.getEventStream(sessionRouteKey(sel.Channel, sel.ChatID)).lastSeq()
+
+	// Reconnect exactly AT the watermark: fully caught up, no gap — the
+	// steady state of ANY reconnect while the backend is idle (heartbeat
+	// only, no business events).
+	resp := openSSE(t, server.URL, cookie, sel.ChatID, strconv.FormatUint(watermark, 10))
+	defer resp.Body.Close()
+	reader := bufio.NewReader(resp.Body)
+
+	// A new event arrives right after the reconnect — the client must simply
+	// receive it. The old `lastSeq >= streamLastSeq` condition fired
+	// resync_required on EVERY idle reconnect (cursor == watermark), turning
+	// each connection bounce into a full DB reload (reload storm; UI stuck
+	// flickering Reconnecting/loading). A fully-caught-up client must RESUME,
+	// not reload.
+	wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "after reconnect"})
+
+	for i := 0; i < 4; i++ {
+		ev := readSSEEvent(t, reader)
+		if got := ev["event"]; got == protocol.MsgTypeResyncRequired {
+			t.Fatalf("idle reconnect at the watermark received resync_required — fully-caught-up clients must resume, not reload")
+		}
+		if _, ok := ev["message"]; ok {
+			msg := assertSSEMessage(t, ev, protocol.MsgTypeText, watermark+1)
+			if msg.Content != "after reconnect" {
+				t.Fatalf("first replayed event = %q, want %q", msg.Content, "after reconnect")
+			}
+			return
+		}
+		// Non-message event (heartbeat) — retry next iteration
+	}
+	t.Fatal("no text events after idle reconnect")
+}
+
 func TestSSEReconnectRetainsDestructiveBarrierBeyondRingCapacity(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)

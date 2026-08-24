@@ -235,15 +235,15 @@ func (t *ShellTool) executeBackground(
 	)
 
 	result := fmt.Sprintf(
-		"Background task started [id: %s]\nCommand: %s\n\n"+
+		"Background task started [task_id: %q]\nCommand: %s\n\n"+
 			"The task is running in the background. You can continue working.\n"+
 			"When it completes, the output will be automatically injected into the conversation.\n"+
-			"- Use task_wait to block until completion, or task_status to check progress\n"+
-			"- Use task_kill to terminate the task",
-		task.ID, task.Command,
+			"- Use task_wait (task_id=%q) to block until completion, or task_status (task_id=%q) to check progress\n"+
+			"- Use task_kill (task_id=%q) to terminate the task",
+		task.ID, task.Command, task.ID, task.ID, task.ID,
 	)
 
-	return NewResultWithTips(result, fmt.Sprintf("Background task running: bg:%s", task.ID)), nil
+	return NewResultWithTips(result, fmt.Sprintf("Background task running, use task_wait (task_id=%q) to wait for it", task.ID)), nil
 }
 
 // executeForeground runs a command synchronously. If it times out, auto-promotes
@@ -328,14 +328,14 @@ func (t *ShellTool) executeForeground(
 			}
 
 			timeoutMsg := fmt.Sprintf(
-				"[TIMEOUT after %s] Command timed out. Auto-promoted to background task [id: %s]\n"+
+				"[TIMEOUT after %s] Command timed out. Auto-promoted to background task [task_id: %q]\n"+
 					"Partial output before timeout:\n%s\n\n"+
 					"The command continues running in the background. Its output will be injected when done.\n"+
-					"- Use task_wait to block until completion, or task_status to check progress\n"+
-					"- Use task_kill to terminate",
-				timeout, task.ID, output,
+					"- Use task_wait (task_id=%q) to block until completion, or task_status (task_id=%q) to check progress\n"+
+					"- Use task_kill (task_id=%q) to terminate",
+				timeout, task.ID, output, task.ID, task.ID, task.ID,
 			)
-			return NewResultWithTips(timeoutMsg, fmt.Sprintf("Auto-promoted to background: bg:%s", task.ID)), nil
+			return NewResultWithTips(timeoutMsg, fmt.Sprintf("Auto-promoted to background task, use task_wait (task_id=%q) to wait for it", task.ID)), nil
 		}
 
 		// No BgTaskManager — fall back to old behavior

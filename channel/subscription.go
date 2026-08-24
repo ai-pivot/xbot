@@ -359,6 +359,18 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			isIntermediate := len(m.ToolCalls) > 0
 			if !isIntermediate && m.TurnID > 0 {
 				if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
+					// Cross-turn guard (2026-08-23 turn 67→68 incident): the
+					// pendingIters accumulated so far belong to a PREVIOUS
+					// turn when the restart interrupted it mid-execution (no
+					// final assistant of its own) and this empty-shell resume
+					// assistant is the recovery turn's ONLY row (v55+ persists
+					// reply text in iteration_history; the session_messages
+					// row is an empty placeholder). Flushing at the boundary
+					// renders the previous turn's iterations; the
+					// `pendingIters = nil` below must NEVER evaporate them.
+					if pendingTurnID > 0 && m.TurnID != pendingTurnID && len(pendingIters) > 0 {
+						flushPending()
+					}
 					// Structured data available for this turn — use as
 					// authoritative source. Build HistoryIteration list from
 					// ALL records for this turn (intermediate + final).

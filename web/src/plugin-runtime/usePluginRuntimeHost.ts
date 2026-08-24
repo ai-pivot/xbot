@@ -246,12 +246,14 @@ export function PluginRuntimeBootstrap() {
 
   // 同步插件 view 贡献点 → 布局注册表：每个 view 自动成为可移动布局项
   // （默认 slot 由 container 映射，用户可在布局设置中移到其他 slot）。
+  // dynamic 视图（参数化动态视图）跳过——它们无静态入口，不进布局注册表。
   useEffect(() => {
     const synced = new Set<string>()
     const syncViews = () => {
       const views = runtime.listAllViews()
       const currentIds = new Set<string>()
       for (const { view } of views) {
+        if (view.dynamic) continue
         currentIds.add(view.id)
         const slot = VIEW_CONTAINER_TO_SLOT[view.container] ?? 'desktop.sidebar'
         layoutRegistry.register({

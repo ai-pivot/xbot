@@ -76,6 +76,11 @@ export class ContributionRegistry {
     return this.plugins.get(pluginId)?.exports
   }
 
+  /** 已激活插件的 manifest（多入口插件的视图 entry 判定用）。 */
+  manifestOf(pluginId: string): PluginManifest | undefined {
+    return this.plugins.get(pluginId)?.manifest
+  }
+
   /** 插件是否已激活。 */
   isActive(pluginId: string): boolean {
     return this.plugins.has(pluginId)

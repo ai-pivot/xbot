@@ -448,11 +448,9 @@ func doReplace(content string, params FileReplaceParams, filePath string) (strin
 				return newContent, fmt.Sprintf("Replaced 1 of %d occurrences (auto-corrected whitespace) in %s. Use replace_all=true to replace all.", actualCount, filePath), nil
 			}
 			// Same infinite-loop guard as the exact-match path: the fuzzy
-			// replacement is a no-op when the (actual) old text survives.
+			// replacement keeps appending when the (actual) old text survives.
 			if strings.Contains(newContent, actualOld) {
-				return newContent, fmt.Sprintf(
-					"Successfully replaced %d occurrence(s) (auto-corrected whitespace) in %s. WARNING: old_string still exists in the result (new_string contains old_string) — repeating this call will loop forever. Adjust new_string to not embed the old text, or stop retrying this edit.",
-					replacedCount, filePath), nil
+				return newContent, infiniteLoopGuardMsg(replacedCount, filePath, actualOld, newContent), nil
 			}
 			return newContent, fmt.Sprintf("Successfully replaced %d occurrence(s) (auto-corrected whitespace) in %s", replacedCount, filePath), nil
 		}
@@ -496,17 +494,31 @@ func doReplace(content string, params FileReplaceParams, filePath string) (strin
 	}
 
 	// Infinite-loop guard: if old_string still exists in the NEW content, the
-	// replacement is effectively a no-op — new_string contains old_string, so
-	// every identical re-call would "succeed" again forever (observed: an LLM
-	// looping 14+ times on the same edit). Warn explicitly so the caller stops
-	// repeating and fixes new_string instead.
+	// replacement is effectively an appending no-op — new_string contains
+	// old_string, so every identical re-call would "succeed" again forever
+	// (observed: turn-13 incident — model looped 19+ times, file corrupted
+	// with duplicate insertions, e.g. 'plugin' → 'plugin' | 'diff' | 'diff').
 	if strings.Contains(newContent, params.OldString) {
-		return newContent, fmt.Sprintf(
-			"Successfully replaced %d occurrence(s) in %s. WARNING: old_string still exists in the result (new_string contains old_string) — repeating this call will loop forever. Adjust new_string to not embed the old text, or stop retrying this edit.",
-			replacedCount, filePath), nil
+		return newContent, infiniteLoopGuardMsg(replacedCount, filePath, params.OldString, newContent), nil
 	}
 
 	return newContent, fmt.Sprintf("Successfully replaced %d occurrence(s) in %s", replacedCount, filePath), nil
+}
+
+// infiniteLoopGuardMsg builds the CRITICAL feedback for the old⊂new pattern:
+// the replacement "succeeded" but old_string survives in the file, so an
+// identical re-call would match and "succeed" again forever. Reports the
+// remaining occurrence count so the model can see the task is already done.
+func infiniteLoopGuardMsg(replacedCount int, filePath, old, newContent string) string {
+	remaining := strings.Count(newContent, old)
+	return fmt.Sprintf(
+		"Successfully replaced %d occurrence(s) in %s.\n\n"+
+			"⛔ CRITICAL — INFINITE-LOOP PATTERN: your new_string contains old_string. "+
+			"After this replacement, old_string STILL EXISTS in the file: %d occurrence(s) remaining. "+
+			"Re-calling FileReplace with these same parameters will ALWAYS \"succeed\" and append another copy every time — this corrupts the file with duplicate insertions.\n\n"+
+			"The replacement HAS been applied — the task is DONE. Do NOT repeat this call. "+
+			"To verify, Read the file. For further edits, craft an old_string that matches the CURRENT file content (the file has changed).",
+		replacedCount, filePath, remaining)
 }
 
 // doRegexReplace 执行正则替换（由 doReplace 在 regex=true 时调用）

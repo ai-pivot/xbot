@@ -26,6 +26,9 @@ export interface PluginViewPanel {
 /**
  * 返回某容器下所有插件 view 面板（含内置 plugin-manager、git-info 等）。
  * 订阅 registry 的 view 集合变化，插件加载/热加载/卸载时自动刷新。
+ *
+ * dynamic 视图（参数化动态视图，如 git diff / commit 详情）被过滤——它们
+ * 没有静态入口，只能通过 ctx.ui.openViewTab({viewId, params}) 打开。
  */
 export function usePluginViewPanels(container: ViewContainer): PluginViewPanel[] {
   const runtime = usePluginRuntime()
@@ -37,7 +40,7 @@ export function usePluginViewPanels(container: ViewContainer): PluginViewPanel[]
       setPanels(
         runtime
           .listAllViews()
-          .filter(({ view }) => view.container === container)
+          .filter(({ view }) => view.container === container && !view.dynamic)
           .map(({ pluginId, view }) => ({
             id: view.id,
             pluginId,
