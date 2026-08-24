@@ -25,7 +25,6 @@ export function InfoBar() {
       style={{ height: 'calc(1.5rem + var(--safe-area-bottom))', paddingBottom: 'var(--safe-area-bottom)' }}
     >
       <PluginPanelContainer container="info_bar" />
-      <PluginPanelContainer container="status_bar_right" />
       <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
     </div>
   )

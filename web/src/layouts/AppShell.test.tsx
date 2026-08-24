@@ -102,11 +102,16 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // w-full dockview would share a row and overflow the screen.
     expect(main!.className).toContain('flex-col')
 
-    // Order: children[0] = dockview host, children[1] = InfoBar (status-bar
-    // style at the BOTTOM, VSCode-like).
-    expect(main!.children.length).toBeGreaterThanOrEqual(2)
-    const dockview = main!.children[0]
-    const infoBar = main!.children[1]
+    // Order: children[0] = top status bar header (status_bar_right container),
+    // children[1] = dockview host, children[2] = InfoBar (status-bar style at
+    // the BOTTOM, VSCode-like).
+    expect(main!.children.length).toBeGreaterThanOrEqual(3)
+    const topHeader = main!.children[0]
+    const dockview = main!.children[1]
+    const infoBar = main!.children[2]
+    // Top status bar: hosts the status_bar_right plugin container (iter-stats).
+    expect(topHeader.className).toContain('items-center')
+    expect(topHeader.className).toContain('bg-bg-secondary')
     // Dockview host fills the REMAINING space (flex-1 min-h-0), not
     // h-full w-full — h-full would overflow since the InfoBar consumed height.
     expect(dockview.className).toContain('flex-1')
@@ -136,7 +141,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main!.className).toContain('flex-col')
     // The info bar is ALWAYS rendered as a fixed-height strip, even with no
     // plugin content — so it never suddenly pops in/out.
-    const infoBar = main!.children[1]
+    const infoBar = main!.children[2]
     expect((infoBar as HTMLElement).style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })
 })

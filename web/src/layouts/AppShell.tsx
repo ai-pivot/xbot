@@ -24,6 +24,7 @@ import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
+import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -249,6 +250,12 @@ export function AppShell() {
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative flex h-full min-w-0 flex-1 flex-col">
+          {/* 顶部状态栏（与手机 MobileAppShell header 对应）——挂 status_bar_right 容器，
+              任意插件声明到该容器自动出现（iter-stats 徽章）。移动端/桌面端共用同一
+              PluginPanelContainer 渲染逻辑。 */}
+          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 text-xs">
+            <PluginPanelContainer container="status_bar_right" />
+          </header>
           <DockviewContainer tabManager={tabManager} />
           {/* Plugin widget info bar (info_bar zone) — status-bar style at the
               BOTTOM (VSCode-like), always rendered. */}
