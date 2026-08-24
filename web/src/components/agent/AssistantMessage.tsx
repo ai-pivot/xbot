@@ -86,6 +86,12 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
         }
       }
     }
+    // Fallback: keep the streamed GenUI content even after hasLiveProgress flips
+    // (turn end / genuiContent cleared at iteration boundary). Without it, genui
+    // briefly becomes null between "streaming branch stops" and "committed tool
+    // appears in iterations" → GenUIPanel unmounts → remount → collapse + DOM
+    // rebuild at the very bottom ("生成完立即折叠 + turn 结束后出现在最下方").
+    if (progress?.genuiContent) return { code: progress.genuiContent, streaming: false, title: undefined as string | undefined, surface: undefined as UISurface | undefined }
     return null
   })()
 
