@@ -122,7 +122,10 @@ test.describe('Mermaid diagram rendering', () => {
     await page.locator('button[aria-label="Fullscreen diagram"]').click()
 
     // The fullscreen overlay should appear (portal to document.body, fixed inset-0).
-    const overlay = page.locator('.fixed.inset-0')
+    // Use role="dialog" (not the broad .fixed.inset-0 class — the app shell main
+    // container is also `fixed inset-0` on mobile/PWA, so the class matches 2
+    // elements and Playwright raises a strict-mode violation).
+    const overlay = page.locator('[role="dialog"]')
     await expect(overlay).toBeVisible({ timeout: 5_000 })
     // The overlay should contain a copy of the SVG.
     await expect(overlay.locator('svg:not(.lucide)')).toBeVisible({ timeout: 5_000 })

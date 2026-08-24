@@ -294,7 +294,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const appendedMax = ev.iterationsDelta.length > 0
         ? Math.max(...ev.iterationsDelta.map((it) => it.iteration))
         : 0
-      const committedNow = !advanced && appendedNew && ev.iter <= appendedMax
+      // committedNow = "刚 commit 的迭代" 恰是 live 当前迭代（delta 补的恰好是
+      // prev.iter 这一个）。用 appendedMax === prev.iter 判断 —— 若 delta 补的是
+      // 更早的迭代（gap 修复，appendedMax < prev.iter），live 仍在流式更新当前
+      // 迭代，绝不能清空其 content/reasoning（用户报告：缺迭代补上时当前流被
+      // 重置）。旧实现 `ev.iter <= appendedMax` 在 gap 场景（ev.iter 落后）误判为
+      // commit，清空 live 流式内容。
+      const committedNow = !advanced && appendedNew && appendedMax === prev.iter
       const data: LiveSnapshot = {
         ...prev,
         iter: ev.iter,

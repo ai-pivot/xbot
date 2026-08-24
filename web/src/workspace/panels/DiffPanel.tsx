@@ -11,7 +11,6 @@ import { Suspense, lazy, useEffect, useMemo, useRef } from 'react'
 import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 
 import { languageOf } from '@/components/file/fileTypes'
-import { useTheme } from '@/hooks/useTheme'
 import { attachEditor } from '@/plugin-runtime/editorRegistry'
 import type { MonacoDiffEditorHandle } from '@/components/file/MonacoEditor'
 import type { PanelProps } from '@/workspace/panels/types'
@@ -44,7 +43,6 @@ function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEd
 }
 
 export function DiffPanel({ params, api }: PanelProps) {
-  const { theme } = useTheme()
   const editorRef = useRef<MonacoDiffEditorHandle | null>(null)
   const language = useMemo(
     () => languageOf(params.diffPath || params.title || ''),
@@ -108,7 +106,7 @@ export function DiffPanel({ params, api }: PanelProps) {
             modified={params.modified ?? ''}
             language={language}
             height="100%"
-            key={`${params.diffKey}-${theme}`}
+            key={params.diffKey}
           />
         </Suspense>
       </div>
