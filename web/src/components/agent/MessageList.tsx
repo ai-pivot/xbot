@@ -202,7 +202,20 @@ export function MessageList({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATE,
     overscan: dynamicOverscan,
-    getItemKey: (index) => rows[index]?.id ?? `row-${index}`,
+    getItemKey: (index) => {
+      const r = rows[index]
+      if (!r) return `row-${index}`
+      // 稳定 turn 键：assistant 行 live→committed 使用同一个 turnID+role（live 行
+      // id="turn-N-live"、committed 行 id=assistant.id）—— 若用 row.id，提交瞬间
+      // item.key 改变 → TanStack 整行 <div key> 卸载重建（"agent turn 结束后整个
+      // turn DOM 重建"根因）。keying 用 turnID+role 让行在 live→committed 间保持
+      // 挂载，内容由 React reconcile（不 remount）。legacy（turnID=0）与 pending
+      // 用户行（MAX_SAFE_INTEGER，绑定真实 turn 前）回退 row.id。
+      if (r.turnID > 0 && r.turnID < Number.MAX_SAFE_INTEGER) {
+        return `turn-${r.turnID}-${r.role}`
+      }
+      return r.id ?? `row-${index}`
+    },
   })
 
   // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
