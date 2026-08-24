@@ -44,6 +44,36 @@ if (typeof window !== 'undefined') {
 const compileCache = new Map<string, React.ComponentType>()
 const CACHE_MAX = 8
 
+// ─── GenUI code extraction (host-side, shared with AssistantMessage) ──────
+// Priority: args.code (the raw LLM argument — never offloaded/prefix-polluted)
+// → detail (pure TSX persisted by the backend, or a legacy Summary prefix).
+// Mirrors the xbot-genui plugin's own extractor so the committed tool can be
+// rendered by the stable genui slot (single-instance, never-rebuild).
+export function genUICode(tool: { args?: string; detail?: string } | null | undefined): string {
+  if (!tool) return ''
+  const args = parseToolArgs(tool.args)
+  if (typeof args?.code === 'string' && args.code.trim()) return stripGenUIPrefix(args.code)
+  if (tool.detail) return stripGenUIPrefix(tool.detail)
+  return ''
+}
+
+function parseToolArgs(args?: string): Record<string, unknown> | null {
+  if (!args) return null
+  try { return JSON.parse(args) as Record<string, unknown> } catch { return null }
+}
+
+function stripGenUIPrefix(code: string): string {
+  if (!code) return ''
+  const lines = code.split('\n')
+  if (lines.length > 1) {
+    const first = lines[0].trim()
+    if (!/^(import|export|const|function|class|return|\/\/|\/\*|#|\{|\()/.test(first) && /export default|function App|<[A-Z]/.test(code)) {
+      return lines.slice(1).join('\n').trimStart()
+    }
+  }
+  return code
+}
+
 function codeHash(code: string): string {
   if (code.length <= 80) return code
   return `${code.length}:${code.slice(0, 32)}…${code.slice(-32)}`

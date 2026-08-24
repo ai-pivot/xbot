@@ -50,13 +50,19 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
       blocks.push({ kind: 'text', content: iter.content, iteration: iterNum })
     }
     if (iter.tools.length > 0) {
-      // Merge with previous block if it's also tools
-      const last = blocks[blocks.length - 1]
-      if (last && last.kind === 'tools') {
-        last.tools.push(...iter.tools)
-        last.iterations.push(iterNum)
-      } else {
-        blocks.push({ kind: 'tools', tools: [...iter.tools], iterations: [iterNum] })
+      // Exclude GenUI tools (uiMode set) — they're rendered by AssistantMessage's
+      // stable <SandboxedUI key={turnID}> slot (P2 Step2, single-instance, never
+      // rebuild). Including them here would double-render the genui.
+      const tools = iter.tools.filter((t) => !t.uiMode)
+      if (tools.length > 0) {
+        // Merge with previous block if it's also tools
+        const last = blocks[blocks.length - 1]
+        if (last && last.kind === 'tools') {
+          last.tools.push(...tools)
+          last.iterations.push(iterNum)
+        } else {
+          blocks.push({ kind: 'tools', tools: [...tools], iterations: [iterNum] })
+        }
       }
     }
     // SubAgent tree frozen at this iteration's boundary — background subagent

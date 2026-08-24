@@ -13,7 +13,7 @@ import { memo } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
-import { SandboxedUI } from '@/plugins/SandboxedUI'
+
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ShimmerThinking } from './ShimmerThinking'
@@ -155,9 +155,7 @@ export const LiveIteration = memo(function LiveIteration({
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
 
-  const hasGenUI = Boolean(progress.genuiContent)
-
-  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
+  if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents) {
     // Iteration boundary / waiting for the next iteration's first delta: the
     // previous iteration just finished (lastIter >= 1) but the next iteration's
     // content hasn't arrived yet (slow SSE). liveMessage is non-null here, so
@@ -228,11 +226,6 @@ export const LiveIteration = memo(function LiveIteration({
             visibleChars={isLive ? tw.visibleChars : undefined}
           />
         </div>
-      )}
-
-      {/* Streaming GenUI — after content, before tools (GenUI is a tool product) */}
-      {hasGenUI && (
-        <SandboxedUI code={progress.genuiContent} streaming={progress.streaming} />
       )}
 
       {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}
