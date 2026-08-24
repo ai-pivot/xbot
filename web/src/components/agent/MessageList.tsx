@@ -641,6 +641,25 @@ export function MessageList({
   // ── Loading→false: scroll to bottom after history is fully loaded ──────────
   // (Removed polling — was not effective. Investigating root cause.)
 
+  // ⚠️ 临时诊断（genui 高度跳变）：监听 contentRef(virtualizer totalSize 容器) 高度变化，
+  // 记录 totalSize/scrollHeight 波动 —— 直接反映"view 高度跳变"。请滚动后提供 console 输出。
+  useEffect(() => {
+    const content = contentRef.current
+    const el = scrollRef.current
+    if (!content || !el || typeof ResizeObserver === 'undefined') return
+    const prevTotal = { v: -1 }
+    const ro = new ResizeObserver(() => {
+      const t = virtualizer.getTotalSize()
+      const sh = el.scrollHeight
+      if (prevTotal.v !== -1 && Math.abs(t - prevTotal.v) > 2) {
+        console.warn('[GENUI_DIAG] totalSize', prevTotal.v, '->', t, '| scrollHeight', sh, '| visible', virtualizer.getVirtualItems().map((i) => i.index).join(','))
+      }
+      prevTotal.v = t
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [virtualizer])
+
   // ── Navigation helpers ────────────────────────────────────────────────────
   const scrollToTop = useCallback(() => {
     pauseFollowing()

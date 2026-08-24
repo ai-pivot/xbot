@@ -342,7 +342,7 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
   return (
     <div
       ref={hostRef}
-      className={`sandboxed-ui w-full overflow-auto rounded-lg border border-slate-200 ${className ?? ''}`}
+      className={`sandboxed-ui w-full rounded-lg border border-slate-200 ${className ?? ''}`}
       style={{ minHeight: streaming ? 120 : undefined }}
       data-widget-id={widgetId}
     />

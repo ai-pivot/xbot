@@ -83,7 +83,7 @@ export const GenUIPanel = memo(function GenUIPanel({
       </div>
 
       <AnimatedCollapse open={open} lazy={false} unmountOnClose={false}>
-        <div className="max-h-[520px] overflow-auto">{children}</div>
+        <div className="h-[520px] overflow-auto">{children}</div>
       </AnimatedCollapse>
 
       {full && (
