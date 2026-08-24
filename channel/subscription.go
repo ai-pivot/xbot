@@ -54,6 +54,13 @@ type iterToolSnap struct {
 	Summary   string `json:"summary,omitempty"`
 	Args      string `json:"args,omitempty"`
 	Detail    string `json:"detail,omitempty"`
+	// UIMode/UILibs/UISurface carry the tool's UI capability + top-level panel
+	// declaration from the persisted iteration snapshot. Without these the
+	// frontend loses ui_mode on history (refresh) and renders display_html as a
+	// plain folded tool card instead of the GenUI panel ("刷新后 panel 消失").
+	UIMode    string              `json:"ui_mode,omitempty"`
+	UILibs    []string            `json:"ui_libs,omitempty"`
+	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
 }
 
 // isDegenerateCancelDetail reports whether a Detail JSON represents a
@@ -298,6 +305,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 										Name: t.Name, Label: label, Status: t.Status,
 										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
 										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+										UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 									}
 								}
 							}
@@ -490,6 +498,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 									Label:     label,
 									Status:    t.Status,
 									Iteration: last.Iteration,
+									UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 								})
 							}
 						}
@@ -1053,6 +1062,7 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 						Name: tool.Name, Label: label, Status: tool.Status,
 						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration,
 						Summary: tool.Summary, Args: tool.Args, Detail: tool.Detail,
+						UIMode: tool.UIMode, UILibs: tool.UILibs, UISurface: tool.UISurface,
 					}
 				}
 				iterations[i] = HistoryIteration{
