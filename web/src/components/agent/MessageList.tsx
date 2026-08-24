@@ -625,8 +625,6 @@ export function MessageList({
     if (newMessagesAdded) {
       // User sent a message (optimistic, not yet persisted) — always resume
       // following and scroll to bottom, even if the user had scrolled up.
-      // Only for optimistic user messages (persisted=false), NOT for DB
-      // messages loaded via reload (those don't represent user action).
       const lastRow = rows[rows.length - 1]
       if (lastRow?.role === 'user' && lastRow?.persisted === false) {
         resumeFollowing()

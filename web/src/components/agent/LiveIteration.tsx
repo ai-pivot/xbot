@@ -155,7 +155,10 @@ export const LiveIteration = memo(function LiveIteration({
     ...currentStreaming,
     ...currentActive,
     ...filteredCompleted,
-  ])
+    // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
+    // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
+    // GenUIPanel）→ 高度双倍 + DOM 反复出现/消失 + 虚拟列表高度跳变（busy 时最严重）。
+  ]).filter((t) => !t.uiMode)
   const hasTools = allTools.length > 0
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress

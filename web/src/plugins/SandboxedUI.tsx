@@ -27,7 +27,7 @@
  * mechanism). Failures keep last-good, so the preview never blanks.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { transform } from 'sucrase'
@@ -278,14 +278,14 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
   }, [code, streaming, compileAndLoad])
 
   // Create root + render the STABLE host (sub-root).
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!hostRef.current) return
     if (!rootRef.current) rootRef.current = createRoot(hostRef.current)
-    // ⚠️ flushSync 同步渲染子 root：行高度在一次 React 循环内确定，避免 createRoot
-    // 异步渲染导致的"子 root 内容未渲染(高度≈0)→渲染后变高"二次变化。TanStack
-    // Virtual 的 measureElement(ResizeObserver) 会反复捕获这个高度变化 → 每次虚拟化
-    // 进出视口(genui 行 remount)都重新 createRoot → 0→实际 → 滚动跳变。同步渲染后
-    // 行高立即稳定，measure 一次校正，无跳变。
+    // ⚠️ useLayoutEffect（paint 前）+ flushSync 同步渲染子 root：行高度在**布局阶段**
+    // 就确定，TanStack Virtual 的 measureElement(ResizeObserver) 一次得到稳定高度。
+    // 若用 useEffect（paint 后），行 mount 时 hostRef 还是空 div(高度≈0)，子 root 渲染
+    // 后才变高(≈560) → "0→实际"二次变化；虚拟化滚动频繁卷出/卷回 genui 行(remount)会
+    // 反复触发 → 高度不断跳变（用户：只有 genui session 的 view 高度一直跳变）。
     flushSync(() => {
       rootRef.current!.render(
         React.createElement(
