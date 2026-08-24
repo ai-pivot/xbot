@@ -17,12 +17,13 @@ import (
 type PluginEventType string
 
 const (
-	PluginEventActivated   PluginEventType = "activated"
-	PluginEventDeactivated PluginEventType = "deactivated"
-	PluginEventInstalled   PluginEventType = "installed"
-	PluginEventUninstalled PluginEventType = "uninstalled"
-	PluginEventReloaded    PluginEventType = "reloaded"
-	PluginEventError       PluginEventType = "error"
+	PluginEventActivated     PluginEventType = "activated"
+	PluginEventDeactivated   PluginEventType = "deactivated"
+	PluginEventInstalled     PluginEventType = "installed"
+	PluginEventUninstalled   PluginEventType = "uninstalled"
+	PluginEventReloaded      PluginEventType = "reloaded"
+	PluginEventError         PluginEventType = "error"
+	PluginEventConfigChanged PluginEventType = "config_changed"
 )
 
 // PluginEvent represents a single plugin lifecycle event.

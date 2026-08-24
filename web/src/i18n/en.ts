@@ -370,6 +370,7 @@ const en: Translations = {
       users: 'User Management',
       developer: 'Developer',
       layout: 'Layout',
+      plugins: 'Plugins',
       about: 'About',
     },
   },

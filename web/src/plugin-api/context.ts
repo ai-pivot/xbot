@@ -10,6 +10,7 @@ import type { RPCAPI } from './rpc'
 import type { StateAPI } from './state'
 import type { UIAPI } from './ui'
 import type { PluginsAPI } from './plugins'
+import type { ConfigAPI } from './config'
 
 interface PermissionAPI {
   events: EventsAPI
@@ -18,6 +19,7 @@ interface PermissionAPI {
   state: StateAPI
   ui: UIAPI
   plugins: PluginsAPI
+  config: ConfigAPI
 }
 
 export type PluginContext<P extends readonly Permission[]> = {

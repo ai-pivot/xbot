@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -634,10 +635,28 @@ func (p *scriptPlugin) resolvedEntry() string {
 	return p.manifest.Entry
 }
 
+// pluginConfigJSON returns the plugin's merged configuration serialized to
+// JSON. It is injected as the XBOT_PLUGIN_CONFIG env var so scripts can read
+// their user configuration without an extra RPC. Returns "{}" when the config
+// is unavailable or fails to marshal.
+func (p *scriptPlugin) pluginConfigJSON() string {
+	if p.pctx == nil {
+		return "{}"
+	}
+	cfg, err := p.pctx.Config()
+	if err != nil {
+		return "{}"
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
 func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
 	// Resolve platform-specific entry command
 	entry := p.resolvedEntry()
-
 	// Split entry into command and args (safe shell-free splitting)
 	parts := strings.Fields(entry)
 	if len(parts) == 0 {
@@ -678,6 +697,7 @@ func (p *scriptPlugin) runScript(workDir, widgetID string) (string, error) {
 	p.lastHookMu.RUnlock()
 	env := os.Environ()
 	env = append(env, "XBOT_WORK_DIR="+workDir)
+	env = append(env, "XBOT_PLUGIN_CONFIG="+p.pluginConfigJSON())
 	if widgetID != "" {
 		env = append(env, "XBOT_WIDGET_ID="+widgetID)
 	}
@@ -775,6 +795,7 @@ func (p *scriptPlugin) runCommand(cmdName, args string) (string, error) {
 	env := os.Environ()
 	env = append(env, "XBOT_COMMAND_NAME="+cmdName)
 	env = append(env, "XBOT_COMMAND_ARGS="+args)
+	env = append(env, "XBOT_PLUGIN_CONFIG="+p.pluginConfigJSON())
 	if workDir != "" {
 		env = append(env, "XBOT_WORK_DIR="+workDir)
 	}

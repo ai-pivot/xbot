@@ -137,6 +137,20 @@ type PluginContext interface {
 	// --- Notifications & Sound ---
 	Notify(level NotificationLevel, title, message string)
 	PlaySound(sound SoundID)
+
+	// --- Plugin Configuration ---
+
+	// Config returns the merged plugin configuration (manifest defaults overlaid
+	// with user-supplied values from ~/.xbot/plugins/<id>/config.json).
+	Config() (map[string]any, error)
+	// SetConfig sets a single configuration key, persists it, and notifies any
+	// OnConfigChanged subscribers.
+	SetConfig(key string, value any) error
+	// OnConfigChanged registers a callback invoked when the plugin's configuration
+	// changes (via the Web UI or another setter). The callback receives the merged
+	// config. Returns an error if the config store is unavailable. The subscription
+	// is released automatically when the plugin is deactivated.
+	OnConfigChanged(callback func(config map[string]any)) error
 }
 
 // Logger provides structured logging for plugins.
@@ -244,6 +258,11 @@ type pluginContextImpl struct {
 	pm *PluginManager
 
 	configStore *PluginConfigStore
+
+	// configSubsMu guards configSubs — the unsubscribers for OnConfigChanged
+	// subscriptions, released when the plugin is deactivated.
+	configSubsMu sync.Mutex
+	configSubs   []func()
 
 	errorCallback PluginErrorCallback
 
@@ -549,6 +568,31 @@ func (pc *pluginContextImpl) SetConfig(key string, value any) error {
 		return fmt.Errorf("plugin config: config store not available")
 	}
 	return pc.configStore.Update(pc.pluginID, key, value)
+}
+
+// OnConfigChanged registers a callback invoked when the plugin's configuration
+// changes. The subscription is released automatically when the plugin is
+// deactivated (cleanupConfigSubscriptions).
+func (pc *pluginContextImpl) OnConfigChanged(callback func(config map[string]any)) error {
+	if pc.configStore == nil {
+		return fmt.Errorf("plugin config: config store not available")
+	}
+	unsub := pc.configStore.Subscribe(pc.pluginID, callback)
+	pc.configSubsMu.Lock()
+	pc.configSubs = append(pc.configSubs, unsub)
+	pc.configSubsMu.Unlock()
+	return nil
+}
+
+// cleanupConfigSubscriptions releases all OnConfigChanged subscriptions.
+// Called by the PluginManager when the plugin is deactivated.
+func (pc *pluginContextImpl) cleanupConfigSubscriptions() {
+	pc.configSubsMu.Lock()
+	defer pc.configSubsMu.Unlock()
+	for _, unsub := range pc.configSubs {
+		unsub()
+	}
+	pc.configSubs = nil
 }
 
 func (pc *pluginContextImpl) Subscribe(topic string, handler PluginEventHandler) error {

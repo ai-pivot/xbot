@@ -357,6 +357,11 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 	}
 
 	// buildPayload constructs a unified progress event from structured data.
+	// MUST carry TurnID (s.TurnID) — the frontend ChatStore's activeTurn is
+	// derived from progress event turn_id (normalizeEvent.optTurnID). Without
+	// it, every SubAgent progress event has turn_id=0, the store cannot locate
+	// its turn, and ALL live stream/iteration events are dropped (user report:
+	// "subagent session 打开之后没有实时 stream 更新，必须重新打开才能刷新进度").
 	buildPayload := func(s *StructuredProgress) *protocol.ProgressEvent {
 		payload := &protocol.ProgressEvent{
 			ChatID:           agentProgressKey,
@@ -367,6 +372,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 			Reasoning:        s.ReasoningContent,
 			HistoryCompacted: s.HistoryCompacted,
 			CWD:              s.CWD,
+			TurnID:           s.TurnID,
 		}
 		for _, t := range s.ActiveTools {
 			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
@@ -428,12 +434,14 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		if isFull {
 			broadcast(&protocol.ProgressEvent{
 				ChatID:        agentProgressKey,
+				TurnID:        cfg.TurnID,
 				Iteration:     iter,
 				StreamContent: content,
 			})
 		} else {
 			broadcast(&protocol.ProgressEvent{
 				ChatID:      agentProgressKey,
+				TurnID:      cfg.TurnID,
 				Iteration:   iter,
 				StreamDelta: delta,
 			})
@@ -454,12 +462,14 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		if isFull {
 			broadcast(&protocol.ProgressEvent{
 				ChatID:                 agentProgressKey,
+				TurnID:                 cfg.TurnID,
 				Iteration:              iter,
 				ReasoningStreamContent: content,
 			})
 		} else {
 			broadcast(&protocol.ProgressEvent{
 				ChatID:               agentProgressKey,
+				TurnID:               cfg.TurnID,
 				Iteration:            iter,
 				ReasoningStreamDelta: delta,
 			})
@@ -475,6 +485,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		seq := subAgentProgressSeq.Add(1)
 		broadcast(&protocol.ProgressEvent{
 			ChatID: agentProgressKey,
+			TurnID: cfg.TurnID,
 			Seq:    seq,
 			// MUST stamp Iteration — otherwise iteration:0 breaks the frontend's
 			// regression guard (same bug class as engine_wire StreamTokens).

@@ -112,6 +112,28 @@ func (h *RPCContext) broadcastPluginEnablement(pluginID string, enabled bool) {
 	wc.Hub().BroadcastToWeb(protocol.WSMessage{Type: msgType, Content: content})
 }
 
+// broadcastPluginConfigChanged 向所有 web 客户端广播插件配置变更，
+// 前端插件通过 web_plugin_config_changed 消息触发 onConfigChange（热重载）。
+func (h *RPCContext) broadcastPluginConfigChanged(pluginID string, value map[string]any) {
+	if h.Disp == nil {
+		return
+	}
+	ch, ok := h.Disp.GetChannel("web")
+	if !ok {
+		return
+	}
+	wc, ok := ch.(interface{ Hub() *web.Hub })
+	if !ok || wc.Hub() == nil {
+		return
+	}
+	content, err := json.Marshal(map[string]any{"plugin_id": pluginID, "value": value})
+	if err != nil {
+		log.WithError(err).Warn("broadcastPluginConfigChanged: marshal failed")
+		return
+	}
+	wc.Hub().BroadcastToWeb(protocol.WSMessage{Type: protocol.MsgTypeWebPluginConfigChanged, Content: string(content)})
+}
+
 func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 	return func(ctx context.Context, params json.RawMessage) (json.RawMessage, error) {
 		if !isAdmin(ctx) {
@@ -2238,6 +2260,156 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 			return nil, callErr
 		}
 		return json.RawMessage(result), nil
+	})
+
+	// plugin_config: 返回插件配置的声明 schema + 当前值（默认值合并用户配置）。
+	// 覆盖所有带配置声明的插件（Go/script/stdio 的 contributes.configuration，
+	// 以及前端插件 web.contributes 里的 'setting' 贡献点）。
+	t["plugin_config"] = rpc1(func(ctx context.Context, p struct {
+		ID string `json:"id"`
+	}) (any, error) {
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		cs := pm.ConfigStore()
+		type propJSON struct {
+			Type        string                `json:"type"`
+			Label       string                `json:"label,omitempty"`
+			Description string                `json:"description,omitempty"`
+			Default     any                   `json:"default,omitempty"`
+			Options     []plugin.ConfigOption `json:"options,omitempty"`
+			Section     string                `json:"section,omitempty"`
+			Secret      bool                  `json:"secret,omitempty"`
+			Placeholder string                `json:"placeholder,omitempty"`
+			Required    bool                  `json:"required,omitempty"`
+			Minimum     *float64              `json:"minimum,omitempty"`
+			Maximum     *float64              `json:"maximum,omitempty"`
+		}
+		type configJSON struct {
+			ID         string              `json:"id"`
+			Name       string              `json:"name"`
+			Title      string              `json:"title"`
+			Runtime    string              `json:"runtime"`
+			Enabled    bool                `json:"enabled"`
+			Properties map[string]propJSON `json:"properties"`
+			Values     map[string]any      `json:"values"`
+		}
+		var out []configJSON
+		for _, e := range pm.ListPlugins() {
+			if p.ID != "" && e.Manifest.ID != p.ID {
+				continue
+			}
+			schema := plugin.ConfigSchema(e.Manifest)
+			if schema == nil {
+				continue
+			}
+			user, err := cs.Load(e.Manifest.ID)
+			if err != nil {
+				log.WithError(err).Warn("plugin_config: load config failed")
+				user = map[string]any{}
+			}
+			values := make(map[string]any, len(schema.Properties))
+			for k, prop := range schema.Properties {
+				if prop.Default != nil {
+					values[k] = prop.Default
+				}
+			}
+			for k, v := range user {
+				values[k] = v
+			}
+			props := make(map[string]propJSON, len(schema.Properties))
+			for k, prop := range schema.Properties {
+				props[k] = propJSON{
+					Type:        prop.Type,
+					Label:       prop.Label,
+					Description: prop.Description,
+					Default:     prop.Default,
+					Options:     prop.Options,
+					Section:     prop.Section,
+					Secret:      prop.Secret,
+					Placeholder: prop.Placeholder,
+					Required:    prop.Required,
+					Minimum:     prop.Minimum,
+					Maximum:     prop.Maximum,
+				}
+			}
+			out = append(out, configJSON{
+				ID:         e.Manifest.ID,
+				Name:       e.Manifest.Name,
+				Title:      schema.Title,
+				Runtime:    string(e.Manifest.Runtime),
+				Enabled:    e.State == plugin.StateActive,
+				Properties: props,
+				Values:     values,
+			})
+		}
+		if p.ID != "" && len(out) == 0 {
+			return nil, fmt.Errorf("%w: %s", plugin.ErrPluginNotFound, p.ID)
+		}
+		return map[string]any{"plugins": out}, nil
+	})
+
+	// plugin_config_set: 更新单个插件配置键，持久化并广播到所有 web 客户端
+	// （前端插件触发 onConfigChange）。Go/stdio 插件通过 context OnConfigChanged
+	// 订阅自动收到；script 插件每次运行从 XBOT_PLUGIN_CONFIG 读取最新值。
+	t["plugin_config_set"] = rpc1(func(ctx context.Context, p struct {
+		ID    string          `json:"id"`
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}) (any, error) {
+		pm := h.Ag.PluginManager()
+		if pm == nil {
+			return nil, fmt.Errorf("plugin system not available")
+		}
+		if p.ID == "" || p.Key == "" {
+			return nil, fmt.Errorf("id and key are required")
+		}
+		entry, ok := pm.GetPlugin(p.ID)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", plugin.ErrPluginNotFound, p.ID)
+		}
+		var val any
+		if err := json.Unmarshal(p.Value, &val); err != nil {
+			return nil, fmt.Errorf("invalid value for %s: %w", p.Key, err)
+		}
+		// Validate key against the declared schema when present.
+		if schema := plugin.ConfigSchema(entry.Manifest); schema != nil {
+			prop, exists := schema.Properties[p.Key]
+			if !exists {
+				return nil, fmt.Errorf("unknown config key %q for plugin %q", p.Key, p.ID)
+			}
+			switch prop.Type {
+			case "boolean":
+				if _, ok := val.(bool); !ok {
+					return nil, fmt.Errorf("config %s: expected boolean", p.Key)
+				}
+			case "number":
+				if _, ok := val.(float64); !ok {
+					return nil, fmt.Errorf("config %s: expected number", p.Key)
+				}
+			}
+		}
+		if err := pm.ConfigStore().Update(p.ID, p.Key, val); err != nil {
+			return nil, err
+		}
+		// Recompute merged values for the broadcast.
+		schema := plugin.ConfigSchema(entry.Manifest)
+		user, _ := pm.ConfigStore().Load(p.ID)
+		var values map[string]any
+		if schema != nil {
+			values = make(map[string]any, len(schema.Properties))
+			for k, prop := range schema.Properties {
+				if prop.Default != nil {
+					values[k] = prop.Default
+				}
+			}
+		}
+		for k, v := range user {
+			values[k] = v
+		}
+		h.broadcastPluginConfigChanged(p.ID, values)
+		return map[string]any{"status": "ok", "key": p.Key}, nil
 	})
 }
 

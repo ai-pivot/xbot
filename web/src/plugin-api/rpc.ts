@@ -13,6 +13,14 @@ export interface BackendRPC {
   }
   'agent.cancel': { params: { chatID: string }; result: Record<string, never> }
   'plugin.list': { params: Record<string, never>; result: PluginInfo[] }
+  'plugin.get_config': {
+    params: { id: string }
+    result: { configuration: PluginConfigSchema; values: Record<string, unknown> }
+  }
+  'plugin.set_config': {
+    params: { id: string; key: string; value: unknown }
+    result: { status: string; key: string }
+  }
   // ---- xbot.git-fancy：fancy Git 插件数据源 ----
   'git.status': {
     params: { channel: string; chatID: string }
@@ -61,6 +69,7 @@ export interface PluginInfo {
 
 // 复用 events.ts 的 SessionSummary 类型（避免循环依赖）。
 import type { SessionSummary } from './events'
+import type { PluginConfigSchema } from './config'
 
 export interface RPCAPI {
   /** 调用后端方法；方法名/参数/返回类型由 `BackendRPC` 驱动。 */

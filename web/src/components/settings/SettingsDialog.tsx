@@ -35,9 +35,10 @@ import { SettingsAdminUsers } from './SettingsAdminUsers'
 import { SettingsAbout } from './SettingsAbout'
 import { SettingsDeveloper } from './SettingsDeveloper'
 import { SettingsLayout } from './SettingsLayout'
+import { SettingsPlugins } from './SettingsPlugins'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'linking' | 'users' | 'developer' | 'layout' | 'about'
+type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'linking' | 'users' | 'developer' | 'layout' | 'plugins' | 'about'
 
 interface SettingsDialogProps {
   open: boolean
@@ -110,6 +111,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     { key: 'users', labelKey: 'nav.users' },
     { key: 'developer', labelKey: 'nav.developer' },
     { key: 'layout', labelKey: 'nav.layout' },
+    { key: 'plugins', labelKey: 'nav.plugins' },
     { key: 'about', labelKey: 'nav.about' },
   ]
 
@@ -158,6 +160,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             {active === 'users' ? <SettingsAdminUsers /> : null}
             {active === 'developer' ? <SettingsDeveloper /> : null}
             {active === 'layout' ? <SettingsLayout /> : null}
+            {active === 'plugins' ? <SettingsPlugins /> : null}
             {active === 'about' ? <SettingsAbout /> : null}
           </div>
         </div>

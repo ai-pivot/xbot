@@ -123,7 +123,7 @@ export const manifest = {
 
 ```ts
 // @xbot/plugin-api/src/context.ts
-export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui'
+export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config'
 
 interface PermissionAPI {
   events: EventsAPI
@@ -131,6 +131,8 @@ interface PermissionAPI {
   rpc: RPCAPI
   state: StateAPI
   ui: UIAPI
+  plugins: PluginsAPI
+  config: ConfigAPI
 }
 
 export type PluginContext<P extends readonly Permission[]> = {
@@ -140,6 +142,23 @@ export type PluginContext<P extends readonly Permission[]> = {
   readonly meta: PluginMeta
 }
 ```
+
+`config` 权限（§3.8 插件配置端到端）授予插件读写自身配置的能力：
+
+```ts
+export interface ConfigAPI {
+  /** 读取合并后的配置值（manifest 默认值 + 用户覆盖）。 */
+  get(): Promise<Record<string, unknown>>
+  /** 持久化单个键；后端广播变更，触发所有 onConfigChange。 */
+  set(key: string, value: unknown): Promise<void>
+  /** 订阅配置变更（含其它客户端发起）。返回 disposable。 */
+  onConfigChange(handler: (config: Record<string, unknown>) => void): Disposable
+}
+```
+
+**配置声明**：插件在 `plugin.json` 的 `contributes.configuration` 声明 VSCode 风格 schema；前端插件也可在 `web.contributes` 数组里声明 `SettingContribution`（kind: 'setting'），后端 `plugin.ConfigSchema()` 统一提取（`contributes.configuration` 优先）。
+
+**宿主设置面板**：设置对话框新增「插件」分类，`plugin_config` RPC（schema + 当前值）+ `plugin_config_set` 持久化，自动渲染表单并支持搜索过滤配置项（按 label/key/description）。**热重载**：改配置后经 `web_plugin_config_changed` WS 广播，`usePluginRuntimeHost` 调 `runtime.notifyPluginConfigChanged(pluginId, value)` 分发到对应插件的 `onConfigChange`。
 
 插件侧的使用效果：
 

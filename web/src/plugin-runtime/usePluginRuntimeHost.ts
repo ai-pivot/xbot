@@ -250,6 +250,18 @@ export function PluginRuntimeBootstrap() {
         } catch {
           /* ignore */
         }
+      } else if (msg.type === 'web_plugin_config_changed') {
+        try {
+          const evt = JSON.parse(msg.content ?? '{}') as {
+            plugin_id?: string
+            value?: Record<string, unknown>
+          }
+          if (evt.plugin_id) {
+            runtime.notifyPluginConfigChanged(evt.plugin_id, evt.value ?? {})
+          }
+        } catch {
+          /* ignore */
+        }
       }
     })
     return off

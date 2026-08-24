@@ -33,18 +33,15 @@ export default function IterStatsBadge() {
   const live = React.useSyncExternalStore(subscribeGlobalLiveStats, getGlobalLiveStats)
   const tps = live.tokensPerSec
   if (!tps || tps <= 0) return null
+  // 只显示 tok/s + ttft，不再渲染绿点（用户要求去掉绿点 ping）。
   const children = [
-      React.createElement('span', { key: 'dot', className: 'relative flex h-2 w-2' },
-      React.createElement('span', { className: 'absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70' }),
-      React.createElement('span', { className: 'relative inline-flex h-2 w-2 rounded-full bg-emerald-500' }),
-    ),
     React.createElement('span', { key: 'tps', className: 'font-mono text-[10px] sm:text-xs font-semibold text-emerald-600 dark:text-emerald-400' },
       `${tps.toFixed(0)} tok/s`),
   ]
-  // 手机上只显示 tok/s（去 ttft）——header 空间有限，避免占满；桌面保留 ttft。
-  const isTouch = typeof window !== 'undefined' && window.matchMedia?.('(hover: none) and (pointer: coarse)').matches
-  if (!isTouch && live.ttftMs !== undefined && live.ttftMs > 0) {
-    children.push(React.createElement('span', { key: 'ttft', className: 'hidden sm:inline text-muted-foreground/70 tabular-nums' },
+  // ttft 手机/桌面都渲染（用户要求手机端也显示）。字号 10px（手机）保持紧凑，
+  // 桌面 12px。不再按 isTouch 隐藏。
+  if (live.ttftMs !== undefined && live.ttftMs > 0) {
+    children.push(React.createElement('span', { key: 'ttft', className: 'text-[9px] sm:text-xs text-muted-foreground/70 tabular-nums' },
       `· ttft ${fmtMs(live.ttftMs)}`))
   }
   return React.createElement('span', { className: 'inline-flex items-center gap-1 sm:gap-1.5 whitespace-nowrap' }, ...children)

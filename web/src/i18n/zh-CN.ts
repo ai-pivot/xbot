@@ -367,6 +367,7 @@ const zhCN = {
       users: '用户管理',
       developer: '开发者',
       layout: '布局',
+      plugins: '插件',
       about: '关于',
     },
   },

@@ -9,7 +9,7 @@ import type { EventMap } from './events'
 import type { MessageRendererContribution } from './renderer'
 
 /** 能力权限：决定 `PluginContext<P>` 上哪些能力接口可用（§3.2 能力即类型）。 */
-export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins'
+export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config'
 
 /** 视图容器（映射到前端布局位）。 */
 export type ViewContainer = 'right_sidebar' | 'panel' | 'bottom' | 'info_bar' | 'status_bar_right' | 'iteration' | 'main'
@@ -72,10 +72,19 @@ export interface ContextMenuContribution {
 export interface SettingContribution {
   kind: 'setting'
   key: string
-  type: 'boolean' | 'string' | 'number' | 'select'
+  type: 'boolean' | 'string' | 'number' | 'select' | 'multiselect'
   label: string
+  description?: string
   default?: unknown
   options?: Array<{ label: string; value: string }>
+  /** 分组名：同一 section 的属性在设置面板归为一组。缺省归入插件标题组。 */
+  section?: string
+  /** 敏感值：UI 中以掩码输入框展示。 */
+  secret?: boolean
+  /** 文本输入框占位符提示。 */
+  placeholder?: string
+  /** 必填项提示。 */
+  required?: boolean
 }
 
 /** 事件处理器贡献点：订阅 `EventMap` 中的事件。 */

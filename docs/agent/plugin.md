@@ -43,6 +43,18 @@
 - Event Bus: Subscribe/Publish (需要 bus.plugin + bus.read/bus.write 权限)
 - Error Callback: OnPluginError 注册插件级错误回调 (非 tool 错误)
 - Logger: per-plugin 日志文件 only（不写主日志，保持主日志简洁），支持 Debugf/Infof/Warnf/Errorf 格式化
+- **配置（v2 配置机制）：`Config()` 读取合并后的配置（manifest 默认值 + `~/.xbot/plugins/<id>/config.json` 用户覆盖）；`SetConfig(key, value)` 持久化单个键；`OnConfigChanged(cb)` 订阅配置变更（Web UI / 其它客户端修改时触发，热重载）。deactivate 时自动释放订阅。**
+
+### Plugin Configuration（v2 端到端）
+插件可在 `plugin.json` 的 `contributes.configuration` 声明 VSCode 风格配置 schema（`ConfigurationContribution` → `map[string]ConfigProperty`）。`ConfigProperty` 支持 `type`(boolean/string/number/select/multiselect)、`label`、`description`、`default`、`options`(select/multiselect)、`section`(分组)、`secret`(掩码)、`placeholder`、`required`、`minimum`/`maximum`。
+
+配置全链路：
+- **存储**：`PluginConfigStore`（`~/.xbot/plugins/<id>/config.json`，全局共享）。`Update`/`Save` 原子写后触发 `notifyChange`（**必须在写锁释放后调用**——`notifyChange` 内部取 RLock，Go `sync.RWMutex` 写锁再入 RLock 会死锁）。
+- **Go 原生**：`ctx.Config()`/`ctx.SetConfig()`/`ctx.OnConfigChanged()`。
+- **script**：每次运行注入 `XBOT_PLUGIN_CONFIG`（插件合并配置 JSON）。
+- **stdio**：`activate` 请求携带 `config`；配置变更推送 `config_changed` 消息。
+- **Web 前端**：`plugin_config` RPC 返回所有插件 schema + 当前值；`plugin_config_set` 改配置后经 `web_plugin_config_changed` WS 广播，前端插件 `ctx.config.onConfigChange` 热重载。
+- **变更通知**：`PluginEventType` 增加 `config_changed`；`PluginConfigStore` 的订阅者机制驱动。
 
 ### Plugin States
 - StateDiscovered → StateActive → StateDeactivating → StateInactive
@@ -163,6 +175,7 @@ When a trigger fires, the script receives environment variables:
 - `XBOT_TOKEN_USAGE` — token usage as `prompt/completion` (e.g. "12345/678")
 - `XBOT_PROMPT_TOKENS` — cumulative prompt tokens (input + context)
 - `XBOT_COMP_TOKENS` — cumulative completion tokens (output)
+- `XBOT_PLUGIN_CONFIG` — 插件合并配置 JSON（manifest 默认值 + `~/.xbot/plugins/<id>/config.json` 用户覆盖）。每次运行注入最新值，实现配置热重载（无需重启脚本）。
 
 ### Widget Rendering
 Script output format: `"style|text"` where style is one of:

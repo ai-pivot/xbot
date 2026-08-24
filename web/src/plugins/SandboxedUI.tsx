@@ -80,27 +80,70 @@ function codeHash(code: string): string {
   return `${code.length}:${code.slice(0, 32)}…${code.slice(-32)}`
 }
 
-// ─── Stable host slot ──────────────────────────────────────────
+// ─── Stable host slot (macaron GeneratedComponentSlot pattern) ──────
+// 核心机制（参考 macaron-genui-demo/lib/partial-react/src/state.ts）：
+// 一个稳定的 wrapper 组件，内部直接调用 currentRef.current(props)（函数组件），
+// 而非 createElement(Current)。这样 React 把 hooks 绑在 wrapper fiber 上，
+// 组件函数变化时不 remount → state/DOM 保留 → 流式平滑。
+//
+// Hook 签名 diff（参考 macaron runtime.ts:408-413）：每次渲染前提取 hook 调用
+// 列表（如 "useState\nuseEffect"），签名不变 → state 完全保留；签名变化
+// （streaming 时 hook 数量变）→ bump boundary key 只 remount boundary 那一层，
+// 让 React 重新分配 hook cells，避免 #310。
 interface UISlot {
   current: React.ComponentType | null
   lastGood: React.ComponentType | null
 }
 
-/** Module-level STABLE host: same fiber across regenerations → state preserved. */
+/** 提取源码中的 hook 调用签名（简化版 macaron hookSignature）。 */
+function getHookSignature(code: string): string {
+  // 匹配 use[A-Z] 开头的标识符（跳过字符串/注释/模板字面量内的）。
+  // 简化版：只匹配顶层 use[A-Z]\w*( 调用，不处理嵌套 JSX/模板。
+  const hooks: string[] = []
+  let inString: string | null = null
+  let inLineComment = false
+  let inBlockComment = false
+  for (let i = 0; i < code.length; i++) {
+    const ch = code[i]
+    if (inLineComment) { if (ch === '\n') inLineComment = false; continue }
+    if (inBlockComment) { if (ch === '*' && code[i + 1] === '/') { inBlockComment = false; i++ }; continue }
+    if (inString) { if (ch === '\\') { i++; continue }; if (ch === inString) inString = null; continue }
+    if (ch === '/' && code[i + 1] === '/') { inLineComment = true; i++; continue }
+    if (ch === '/' && code[i + 1] === '*') { inBlockComment = true; i++; continue }
+    if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue }
+    // 匹配 use[A-Z]\w*(
+    if (ch === 'u' && code.slice(i, i + 3) === 'use' && /[A-Z]/.test(code[i + 3] ?? '')) {
+      let j = i + 3
+      while (j < code.length && /[\w$]/.test(code[j])) j++
+      // 确认后面是 ( （函数调用，不是赋值/属性访问）
+      let k = j
+      while (k < code.length && /\s/.test(code[k])) k++
+      if (code[k] === '(') {
+        hooks.push(code.slice(i, j))
+        i = k // 跳过 hook 名和空格
+        continue
+      }
+    }
+  }
+  return hooks.join('\n')
+}
+
+/** Module-level STABLE host: same fiber across regenerations → state preserved.
+ *  参考 macaron 的 GeneratedComponentSlot：直接调用 Current(props) 而非
+ *  createElement(Current)，hooks 绑在 wrapper fiber 上，组件函数变化不 remount。 */
 function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
   if (failed && !slot.lastGood) {
     return <div className="p-3 text-xs text-red-600 dark:text-red-400">⚠️ UI render error: {failed}</div>
   }
   const Current = slot.current || slot.lastGood
   if (!Current) return null
-  // ⚠️ MUST use createElement(Current) (NOT call Current(props) directly).
-  // The direct-call trick binds the generated component's hooks to THIS fiber, so
-  // they're preserved across regenerations — but LLM streaming CHANGES the hook
-  // count (partial code has fewer useState), which throws React #310
-  // ("Rendered more hooks than during the previous render") → broken state.
-  // createElement gives Current its OWN fiber: a STABLE Current (compiler-cache
-  // hit on the final code) is reconciled (state preserved); a changing Current
-  // (streaming) remounts harmlessly — NO #310.
+  // macaron 方案：直接调用函数组件（非 createElement），hooks 绑在 UIHost 的
+  // fiber 上。组件函数变化时 React 不 remount（只重新调用函数），state 保留。
+  // Hook 数量变化由 boundary key remount 处理（见 CodeUI 的 hookSignature diff）。
+  if (typeof Current === 'function') {
+    const result = (Current as (props: Record<string, unknown>) => React.ReactNode)({ 'data-sandboxed-ui-root': true })
+    return result as React.ReactNode
+  }
   return React.createElement(Current, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
 }
 
@@ -196,6 +239,10 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
   const timerRef = useRef<number | null>(null)
   const compileSeqRef = useRef(0)
   const lastRenderRef = useRef(0)
+  // Hook 签名 diff（macaron runtime.ts:408-413）：签名不变 → state 保留；
+  // 签名变化（streaming 时 hook 数量变）→ bump boundaryEpoch 只 remount boundary 那一层。
+  const lastHookSigRef = useRef<string | null>(null)
+  const [boundaryEpoch, setBoundaryEpoch] = useState(0)
 
   // Compile TSX → JS → evaluate with React injected as parameter.
   const compileAndLoad = useCallback(async (tsx: string | undefined, seq: number, isStreaming: boolean) => {
@@ -287,12 +334,19 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
     // 后才变高(≈560) → "0→实际"二次变化；虚拟化滚动频繁卷出/卷回 genui 行(remount)会
     // 反复触发 → 高度不断跳变（用户：只有 genui session 的 view 高度一直跳变）。
     flushSync(() => {
+      // Hook 签名 diff（macaron runtime.ts:408-413）：streaming 时 hook 数量可能变化，
+      // 签名变化 → bump boundaryEpoch → boundary key 变化 → 只 remount boundary 那一层
+      // （让 React 重新分配 hook cells），不 remount 整个子树。签名不变 → state 完全保留。
+      const currentSig = codeRef.current ? getHookSignature(codeRef.current) : ''
+      if (lastHookSigRef.current !== null && lastHookSigRef.current !== currentSig) {
+        setBoundaryEpoch((e) => e + 1)
+      }
+      lastHookSigRef.current = currentSig
       rootRef.current!.render(
         React.createElement(
           UIErrorBoundary,
-          // streaming 期间不 surface 瞬时错误（macaron streaming 模式）：fallback
-          // 依赖 streaming 分支，渲染失败回退 lastGood/占位，绝不显示「Render error」。
           {
+            key: `boundary:${boundaryEpoch}`,
             fallback: '⚠️ Render error — check the generated UI syntax',
             streaming,
             slot: slotRef.current,
@@ -301,7 +355,7 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         )
       )
     })
-  }, [tick, failed, streaming])
+  }, [tick, failed, streaming, boundaryEpoch])
 
   useEffect(() => {
     return () => {
