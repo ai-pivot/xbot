@@ -110,6 +110,10 @@ type ToolProgress struct {
 	Detail    string // full untruncated tool result (for per-tool body rendering)
 	Args      string // raw JSON tool arguments (for per-tool rendering in CLI)
 	ToolHints string // markdown hint from plugin or built-in diff (rendered in progress panel)
+	// UISurface carries the tool's "top-level panel" declaration (from
+	// UIDecl.Surface) so it persists into the iteration snapshot → DB history →
+	// frontend (fancy header + collapse + fullscreen). Mirrors protocol.UISurface.
+	UISurface *protocol.UISurface
 }
 
 // ToolStatus 工具执行状态。

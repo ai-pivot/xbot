@@ -15,6 +15,26 @@ type UIDecl struct {
 	// Libs 提示前端注入的全局库（按需懒加载，不声明则不加载）。
 	// 取值：echarts / three / motion（framer-motion 子集）。
 	Libs []string `json:"libs,omitempty"`
+	// Surface 声明 UI 结果作为「顶层面板」展示的形态（summary/标题特殊处理）。
+	// nil = inline 默认（不特殊处理）。非 nil 时前端把它渲染成顶层面板：
+	// 标题栏（summary 标题 + 折叠 + 全屏）+ 内容区，默认展开、可手动折叠/全屏。
+	Surface *UISurface `json:"surface,omitempty"`
+}
+
+// UISurface 是通用的「顶层面板」展示声明，与 Mode 解耦（任何 UI 模式的工具
+// 都可声明）。它让插件把自己产生的 UI 结果标记为需要特殊展示的「顶层元素」，
+// 而非被自动折叠进普通工具列表。
+type UISurface struct {
+	// Kind 面板类型（当前支持 "panel"）。
+	Kind string `json:"kind,omitempty"`
+	// Title 面板标题（可选；缺省前端回退到工具的 Summary）。
+	Title string `json:"title,omitempty"`
+	// Collapsible 支持手动折叠（true 时标题栏出现折叠按钮）。
+	Collapsible bool `json:"collapsible,omitempty"`
+	// Fullscreen 支持全屏放大（true 时标题栏出现全屏按钮）。
+	Fullscreen bool `json:"fullscreen,omitempty"`
+	// DefaultOpen 默认展开（不自动折叠）。true = 初始展开。
+	DefaultOpen bool `json:"default_open,omitempty"`
 }
 
 // UIDeclProvider 可选接口：工具实现它即声明 UI 能力。

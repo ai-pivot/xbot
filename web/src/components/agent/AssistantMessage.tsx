@@ -24,8 +24,10 @@ import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
+import type { UISurface } from '@/types/shared'
 
 import { SandboxedUI, genUICode } from '@/plugins/SandboxedUI'
+import { GenUIPanel } from './GenUIPanel'
 
 interface AssistantMessageProps {
   message: ChatMessage
@@ -75,12 +77,12 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // tool's code from the committed iterations. Genui tools are EXCLUDED from the
   // iteration/tool blocks (flattenIterations) so there's exactly one instance.
   const genui = (() => {
-    if (hasLiveProgress && progress?.genuiContent) return { code: progress.genuiContent, streaming: true }
+    if (hasLiveProgress && progress?.genuiContent) return { code: progress.genuiContent, streaming: true, title: undefined as string | undefined, surface: undefined as UISurface | undefined }
     for (const iter of iterations) {
       for (const tool of iter.tools) {
         if (tool.uiMode) {
           const code = genUICode(tool)
-          if (code) return { code, streaming: false }
+          if (code) return { code, streaming: false, title: tool.surface?.title || tool.summary, surface: tool.surface }
         }
       }
     }
@@ -250,9 +252,19 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
       )}
 
       {/* Stable GenUI slot — SAME position both branches, keyed by turnID => never
-          remounts; useState/DOM preserved across streaming→committed (P2 Step2). */}
+          remounts; useState/DOM preserved across streaming→committed (P2 Step2).
+          Rendered as a top-level PANEL (surface=panel): fancy header (summary title
+          + collapse + fullscreen), default-open, manually collapsible & fullscreenable. */}
       {genui && (
-        <SandboxedUI key={`genui-${message.turnID}`} code={genui.code} streaming={genui.streaming} />
+        <GenUIPanel
+          key={`genui-${message.turnID}`}
+          title={genui.title}
+          collapsible={genui.surface?.collapsible ?? true}
+          fullscreen={genui.surface?.fullscreen ?? true}
+          defaultOpen={genui.surface?.defaultOpen ?? true}
+        >
+          <SandboxedUI code={genui.code} streaming={genui.streaming} />
+        </GenUIPanel>
       )}
 
       {showActions && <AssistantActions onCopy={handleCopy} t={t} />}

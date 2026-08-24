@@ -47,9 +47,20 @@ type toolParam struct {
 
 // uiDecl mirrors tools.UIDecl.
 type uiDecl struct {
-	Mode  string   `json:"mode,omitempty"`
-	Param string   `json:"param,omitempty"`
-	Libs  []string `json:"libs,omitempty"`
+	Mode    string       `json:"mode,omitempty"`
+	Param   string       `json:"param,omitempty"`
+	Libs    []string     `json:"libs,omitempty"`
+	Surface *surfaceDecl `json:"surface,omitempty"`
+}
+
+// surfaceDecl mirrors tools.UISurface — declares the UI result as a top-level
+// panel (fancy header + collapsible + fullscreen), default-open.
+type surfaceDecl struct {
+	Kind        string `json:"kind,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Collapsible bool   `json:"collapsible,omitempty"`
+	Fullscreen  bool   `json:"fullscreen,omitempty"`
+	DefaultOpen bool   `json:"default_open,omitempty"`
 }
 
 // rpcRequest is an inbound RPC from xbot ({"id","method","params"}).
@@ -161,6 +172,15 @@ func declareTools(enc *json.Encoder) {
 					Mode:  "genui",
 					Param: "code",
 					Libs:  []string{"echarts", "three", "motion"},
+					// Surface: render the UI as a top-level panel (fancy header +
+					// collapse + fullscreen, default-open) instead of being folded
+					// into the normal tool list.
+					Surface: &surfaceDecl{
+						Kind:        "panel",
+						Collapsible: true,
+						Fullscreen:  true,
+						DefaultOpen: true,
+					},
 				},
 			},
 		},

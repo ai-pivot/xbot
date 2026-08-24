@@ -2269,6 +2269,15 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 				if ui != nil {
 					tp.UIMode = ui.Mode
 					tp.UILibs = ui.Libs
+					if ui.Surface != nil {
+						tp.UISurface = &protocol.UISurface{
+							Kind:        ui.Surface.Kind,
+							Title:       ui.Surface.Title,
+							Collapsible: ui.Surface.Collapsible,
+							Fullscreen:  ui.Surface.Fullscreen,
+							DefaultOpen: ui.Surface.DefaultOpen,
+						}
+					}
 				}
 				toolProgs = append(toolProgs, tp)
 			}

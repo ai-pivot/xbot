@@ -469,6 +469,9 @@ type IterationToolSnapshot struct {
 	Summary   string `json:"summary,omitempty"`
 	Args      string `json:"args,omitempty"`
 	Detail    string `json:"detail,omitempty"` // full tool detail (e.g. display_html code)
+	// UISurface carries the tool's top-level-panel declaration (UIDecl.Surface)
+	// into the iteration snapshot → DB history → frontend (fancy panel header).
+	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
 	// ToolHints carries the markdown hint (built-in ```diff block from Edit
 	// metadata, or plugin hints) so the web frontend can render a fancy diff
 	// for committed iterations too, not just live progress.

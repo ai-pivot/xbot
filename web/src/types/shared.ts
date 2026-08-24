@@ -345,6 +345,19 @@ export interface WebToolProgress {
   uiMode?: string
   /** Global libraries the UI needs (echarts/three/motion). */
   uiLibs?: string[]
+  /** Top-level panel declaration (from UIDecl.Surface) — the UI result renders
+   * as a fancy top-level panel (header + collapse + fullscreen) instead of
+   * being folded into the normal tool list. */
+  surface?: UISurface
+}
+
+/** Top-level panel declaration (mirrors protocol.UISurface / tools.UISurface). */
+export interface UISurface {
+  kind?: string
+  title?: string
+  collapsible?: boolean
+  fullscreen?: boolean
+  defaultOpen?: boolean
 }
 
 /** Iteration snapshot — one completed iteration's reasoning + tools + text output. */

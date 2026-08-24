@@ -11,6 +11,7 @@ import (
 	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/protocol"
 	"xbot/storage/sqlite"
 
 	"xbot/tools"
@@ -173,6 +174,18 @@ func (s *runState) updateToolResultProgress(ctx context.Context, entry toolCallE
 	}
 	s.structuredProgress.ActiveTools[entry.index].Status = status
 	s.structuredProgress.ActiveTools[entry.index].Elapsed = elapsed
+
+	// Carry the tool's top-level-panel declaration (UIDecl.Surface) so it persists
+	// into the iteration snapshot → DB history → frontend (fancy panel header).
+	if s.cfg.Tools != nil {
+		if tool, ok := s.cfg.Tools.GetForSession(entry.tc.Name, s.cfg.TenantID, s.cfg.SessionKey); ok {
+			if p, ok := tool.(tools.UIDeclProvider); ok {
+				if ui := p.UIDecl(); ui != nil && ui.Surface != nil {
+					s.structuredProgress.ActiveTools[entry.index].UISurface = toProtoSurface(ui.Surface)
+				}
+			}
+		}
+	}
 
 	summary := ""
 	if result != nil && result.Summary != "" {
@@ -455,6 +468,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 				Summary:   t.Summary,
 				Args:      t.Args,
 				Detail:    t.Detail,
+				UISurface: t.UISurface,
 				ToolHints: t.ToolHints,
 			}
 		}
@@ -615,5 +629,21 @@ func (s *runState) setWaitingUser(summary string, metadata map[string]string) {
 		for k, v := range metadata {
 			s.waitingMetadata[k] = v
 		}
+	}
+}
+
+// toProtoSurface converts tools.UISurface → protocol.UISurface (mirror types).
+// tools imports protocol, so protocol can't import tools back; the conversion
+// lives here in the agent package (imports both).
+func toProtoSurface(s *tools.UISurface) *protocol.UISurface {
+	if s == nil {
+		return nil
+	}
+	return &protocol.UISurface{
+		Kind:        s.Kind,
+		Title:       s.Title,
+		Collapsible: s.Collapsible,
+		Fullscreen:  s.Fullscreen,
+		DefaultOpen: s.DefaultOpen,
 	}
 }
