@@ -373,6 +373,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+				UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 			})
 		}
 		for _, t := range s.CompletedTools {
@@ -380,6 +381,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+				UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 			})
 		}
 		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
