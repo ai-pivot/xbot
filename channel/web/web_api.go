@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -940,7 +941,13 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
 				return
 			}
-			wf, err := zw.Create(filepath.Join(name, f))
+			entry, err := safeZipEntryPath(name, f)
+			if err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+			wf, err := zw.Create(entry)
 			if err != nil {
 				zw.Close()
 				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
@@ -969,7 +976,11 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 				return err
 			}
 			defer src.Close()
-			wf, err := zw.Create(filepath.Join(name, rel))
+			entry, err := safeZipEntryPath(name, rel)
+			if err != nil {
+				return err
+			}
+			wf, err := zw.Create(entry)
 			if err != nil {
 				return err
 			}
@@ -995,6 +1006,9 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 }
 
 // sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
+// A result of "." or ".." (or anything that would traverse out of the zip root) is
+// replaced with "skill" — such a name would otherwise produce a path-traversal zip
+// entry (zip-slip) via filepath.Join(name, rel).
 func sanitizeExportName(name string) string {
 	var b strings.Builder
 	for _, r := range name {
@@ -1007,7 +1021,36 @@ func sanitizeExportName(name string) string {
 	if b.Len() == 0 {
 		return "skill"
 	}
-	return b.String()
+	res := b.String()
+	if res == "." || res == ".." {
+		return "skill"
+	}
+	return res
+}
+
+// safeZipEntryPath builds a zip entry path that stays inside the named directory.
+// It returns an error when the combination would escape the zip root (zip-slip
+// defense-in-depth on top of sanitizeExportName). Entry paths always use "/"
+// separators (zip spec), regardless of the host OS.
+func safeZipEntryPath(dir, rel string) (string, error) {
+	if dir == "" || dir == "." || dir == ".." || strings.ContainsAny(dir, `/\`) {
+		return "", fmt.Errorf("unsafe zip entry directory %q", dir)
+	}
+	// Normalize to "/" separators regardless of host OS (zip spec); filepath.ToSlash
+	// only converts the native separator, so a literal backslash on Linux would leak.
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	// Reject any ".." segment outright — path.Join would silently clean
+	// "skill/../SKILL.md" into "SKILL.md", masking a traversal attempt.
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("unsafe zip entry path %q", rel)
+		}
+	}
+	entry := path.Join(dir, rel)
+	if entry == "." || entry == ".." || strings.HasPrefix(entry, "../") {
+		return "", fmt.Errorf("unsafe zip entry path %q", entry)
+	}
+	return entry, nil
 }
 
 // ---------------------------------------------------------------------------
