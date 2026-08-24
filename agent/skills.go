@@ -455,11 +455,19 @@ func (s *SkillStore) DisabledSkillNames() []string {
 	return names
 }
 
-// IsKnownSkillPath returns true if path is a known skill directory.
-// For embedded skills (path = "embedded:<dir>"), always true (embed FS validates).
-// For disk skills, checks if the path is under a known skill root directory
-// (global dirs, user skills dir, or project .xbot/skills/.agents/skills dirs).
-func (s *SkillStore) IsKnownSkillPath(path string) bool {
+// IsKnownSkillPathFor returns true if path is a known skill directory for the
+// given sender.
+//   - Embedded skills (path = "embedded:<dir>"): always true (embed FS validates).
+//   - Disk skills: true when the path is under a known skill root directory —
+//     global dirs, the sender-scoped user skills dir, or project
+//     .xbot/skills/.agents/skills dirs.
+//
+// senderID resolves the per-user skills directory
+// ({workDir}/.xbot/users/{senderID}/workspace/skills or the sandbox workspace).
+// When senderID is empty the user-directory check is SKIPPED — claiming a user
+// skill as known without knowing its owner would let a caller read/export
+// another user's files.
+func (s *SkillStore) IsKnownSkillPathFor(senderID, path string) bool {
 	if path == "" {
 		return false
 	}
@@ -476,9 +484,11 @@ func (s *SkillStore) IsKnownSkillPath(path string) bool {
 			return true
 		}
 	}
-	// User skills directory
-	if userDir := s.userSkillsDir(""); s.isUnderDir(abs, userDir) {
-		return true
+	// User skills directory (sender-scoped)
+	if senderID != "" {
+		if userDir := s.userSkillsDir(senderID); s.isUnderDir(abs, userDir) {
+			return true
+		}
 	}
 	// Project skills directories (.xbot/skills/ or .agents/skills/)
 	parts := strings.Split(abs, string(filepath.Separator))
@@ -490,15 +500,16 @@ func (s *SkillStore) IsKnownSkillPath(path string) bool {
 	return false
 }
 
-// GetSkillContent reads and returns the SKILL.md content for a skill.
+// GetSkillContentFor reads and returns the SKILL.md content for a skill owned
+// by senderID.
 // path is the skill's Path from SkillInfo/SkillDetail:
 //   - "embedded:<dir>" → read from the embedded FS
 //   - "/abs/path/to/skill-dir" → read SKILL.md from disk
-func (s *SkillStore) GetSkillContent(path string) (string, error) {
+func (s *SkillStore) GetSkillContentFor(senderID, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("skill path is empty")
 	}
-	if !s.IsKnownSkillPath(path) {
+	if !s.IsKnownSkillPathFor(senderID, path) {
 		return "", fmt.Errorf("skill path %q is not a known skill", path)
 	}
 

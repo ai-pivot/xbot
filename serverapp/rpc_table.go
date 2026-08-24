@@ -2887,7 +2887,9 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 		if ss == nil {
 			return nil, fmt.Errorf("skill store not initialized")
 		}
-		content, err := ss.GetSkillContent(p.Path)
+		// User skills are sender-scoped — validate against the authenticated
+		// sender (empty senderID would never match {workDir}/.xbot/users/{sender}/…).
+		content, err := ss.GetSkillContentFor(rpcAuthID(ctx), p.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -2901,7 +2903,7 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 		if ss == nil {
 			return nil, fmt.Errorf("skill store not initialized")
 		}
-		return map[string]bool{"valid": ss.IsKnownSkillPath(p.Path)}, nil
+		return map[string]bool{"valid": ss.IsKnownSkillPathFor(rpcAuthID(ctx), p.Path)}, nil
 	})
 
 }

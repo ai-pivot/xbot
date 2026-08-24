@@ -177,3 +177,44 @@ func TestSkillStore_DisabledSkillsEmptyAndWhitespace(t *testing.T) {
 		t.Fatalf("blacklisted skill-a must be excluded, got: %s", catalog)
 	}
 }
+
+func TestSkillStore_IsKnownSkillPathFor_SenderScoped(t *testing.T) {
+	workDir := t.TempDir()
+	globalDir := filepath.Join(workDir, ".claude", "skills")
+	userDir := tools.UserSkillsRoot(workDir, "user-1")
+
+	globalSkillMD := writeSkill(t, globalDir, "global-tool", "global-tool", "global skill")
+	userSkillMD := writeSkill(t, userDir, "private-tool", "private-tool", "private skill")
+
+	store := NewSkillStore(workDir, []string{globalDir}, nil)
+
+	// Global skills: recognized for any sender.
+	if !store.IsKnownSkillPathFor("user-1", filepath.Dir(globalSkillMD)) {
+		t.Fatalf("global skill must be recognized for any sender")
+	}
+
+	// User skills: recognized ONLY for the owning sender.
+	// Regression (code review): the old IsKnownSkillPath used userSkillsDir("")
+	// (empty senderID) → never matched {workDir}/.xbot/users/{sender}/workspace/skills,
+	// so skill_get_content / skill_validate_path failed for user-installed skills.
+	if !store.IsKnownSkillPathFor("user-1", filepath.Dir(userSkillMD)) {
+		t.Fatalf("user skill must be recognized for its owner")
+	}
+	if store.IsKnownSkillPathFor("user-2", filepath.Dir(userSkillMD)) {
+		t.Fatalf("user skill must NOT be recognized for another sender")
+	}
+	if store.IsKnownSkillPathFor("", filepath.Dir(userSkillMD)) {
+		t.Fatalf("empty senderID must NOT claim user skills")
+	}
+
+	// GetSkillContentFor: owner succeeds, others / arbitrary paths fail.
+	if _, err := store.GetSkillContentFor("user-1", filepath.Dir(userSkillMD)); err != nil {
+		t.Fatalf("GetSkillContentFor(owner) must succeed: %v", err)
+	}
+	if _, err := store.GetSkillContentFor("", filepath.Dir(userSkillMD)); err == nil {
+		t.Fatalf("GetSkillContentFor(empty senderID) must fail for user skills")
+	}
+	if _, err := store.GetSkillContentFor("user-1", filepath.Join(workDir, "outside", "SKILL.md")); err == nil {
+		t.Fatalf("GetSkillContentFor must reject arbitrary paths")
+	}
+}
