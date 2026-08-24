@@ -55,11 +55,21 @@ describe('parseFrontmatter', () => {
     expect(fm.body).toBe('body')
   })
 
-  it('handles an empty frontmatter block', () => {
+  it('handles an empty frontmatter block (no key/value → NOT frontmatter, conservative)', () => {
     const fm = parseFrontmatter('---\n---\n\nbody')
-    expect(fm.hasFrontmatter).toBe(true)
+    expect(fm.hasFrontmatter).toBe(false)
     expect(fm.values).toEqual({})
-    expect(fm.body).toBe('body')
+    expect(fm.body).toBe('---\n---\n\nbody')
+  })
+
+  it('does NOT strip a leading --- block that has no key/value lines (horizontal-rule + text)', () => {
+    // Regression (code review): `---\nplain text\n---` matched FRONTMATTER_RE
+    // and the whole "block" was stripped from chat rendering — a legal markdown
+    // document that merely starts with a horizontal rule lost its body.
+    const src = '---\nSome plain text without any key value pair\n---\n\n# 正文'
+    const fm = parseFrontmatter(src)
+    expect(fm.hasFrontmatter).toBe(false)
+    expect(fm.body).toBe(src)
   })
 
   it('reports hasFrontmatter=false for plain markdown', () => {

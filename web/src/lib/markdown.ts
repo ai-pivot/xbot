@@ -62,6 +62,13 @@ export function parseFrontmatter(source: string): FrontmatterInfo {
     if (!key) continue
     values[key] = unquote(stripComment(line.slice(colon + 1)))
   }
+  // Conservative: only a block that actually declares at least one key/value
+  // pair is treated as frontmatter. A leading `---` that merely wraps plain
+  // text (e.g. a horizontal rule + body) or an empty block is left untouched —
+  // stripping it would silently delete user-visible content from chat rendering.
+  if (Object.keys(values).length === 0) {
+    return { hasFrontmatter: false, values: {}, body: source }
+  }
   return {
     hasFrontmatter: true,
     values,
