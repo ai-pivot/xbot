@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -124,8 +125,46 @@ func TestConfigSchema_FromWebContribs(t *testing.T) {
 	}
 }
 
-// TestConfigSchema_PrefersContributesConfiguration verifies that the Go
-// manifest's contributes.configuration takes precedence over web contributions.
+// TestConfigSchema_FromGitFancyManifest loads the real xbot-git-fancy
+// plugin.json (which declares contributes.configuration) and verifies
+// ConfigSchema extracts its properties — confirming the settings panel has a
+// data source, i.e. an empty panel is because no plugin declared config, not a
+// parsing bug.
+func TestConfigSchema_FromGitFancyManifest(t *testing.T) {
+	// Go test cwd is the plugin package dir (/xbot/plugin); repo root is ".." (i.e. /xbot).
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("resolve repo root: %v", err)
+	}
+	m, err := LoadManifest(filepath.Join(root, "plugins", "xbot-git-fancy"))
+	if err != nil {
+		t.Fatalf("LoadManifest(git-fancy) failed: %v", err)
+	}
+	schema := ConfigSchema(m)
+	if schema == nil {
+		t.Fatal("expected schema from git-fancy manifest")
+	}
+	prop, ok := schema.Properties["defaultLogLimit"]
+	if !ok {
+		t.Fatal("expected defaultLogLimit property")
+	}
+	if prop.Type != "number" {
+		t.Fatalf("expected type number, got %s", prop.Type)
+	}
+	if prop.Default != float64(10) {
+		t.Fatalf("expected default 10, got %v", prop.Default)
+	}
+	if prop.Minimum == nil || *prop.Minimum != 1 {
+		t.Fatalf("expected minimum 1, got %v", prop.Minimum)
+	}
+	if _, ok := schema.Properties["showDiffStats"]; !ok {
+		t.Fatal("expected showDiffStats property")
+	}
+	if prop2 := schema.Properties["showDiffStats"]; prop2.Type != "boolean" {
+		t.Fatalf("expected boolean, got %s", prop2.Type)
+	}
+}
+
 func TestConfigSchema_PrefersContributesConfiguration(t *testing.T) {
 	m := &PluginManifest{
 		ID: "xbot.test",
