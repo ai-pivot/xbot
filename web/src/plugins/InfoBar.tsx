@@ -10,30 +10,19 @@
  */
 import { WidgetZone } from '@/plugins/WidgetZone'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
-import { useWSConnection } from '@/hooks/useWSConnection'
+import { SWUpdateButton } from '@/components/SWUpdateButton'
 
 export function InfoBar() {
-  // VSCode 式默认状态：左下角连接状态指示（有内容时也常驻，空时至少有点东西，
-  // 避免空条太素）。绿点=已连接，红点=连接中。
-  const ws = useWSConnection()
-  const connected = ws.connected
+  // 底部状态栏只放 SW 更新按钮（用户要求：上方显示连接状态，下方改更新按钮，
+  // 避免两端重复"已连接"）。常驻固定高度条，更新按钮三态（检查/下载/重启）。
   return (
     <div
       className="flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs"
       style={{ height: 'calc(1.5rem + var(--safe-area-bottom))', paddingBottom: 'var(--safe-area-bottom)' }}
     >
-      <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-        <span
-          className={
-            connected
-              ? 'size-1.5 rounded-full bg-emerald-500'
-              : 'size-1.5 animate-pulse rounded-full bg-amber-500'
-          }
-        />
-        <span className="text-text-muted">{connected ? '已连接' : '连接中…'}</span>
-      </span>
       <PluginPanelContainer container="info_bar" />
       <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
+      <SWUpdateButton />
     </div>
   )
 }

@@ -75,41 +75,36 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		}
 	}
 
-	// 3. Collect round tool names for display
-	var roundToolNames []string
-	for _, tc := range roundToolCalls {
-		roundToolNames = append(roundToolNames, tc.Name)
-	}
-
-	// 4. 构建提醒
-	var parts []string
+	// 4. 构建提醒 —— 严格 XML 结构化，不自然语言。
+	// 注入格式全程用标签 + 值，状态用属性表达（kind/status），
+	// 避免自然语言句子占上下文。
+	var sb strings.Builder
+	sb.WriteString("<system-reminder>")
 
 	if taskGoal != "" {
-		if isSubAgent {
-			parts = append(parts, fmt.Sprintf("执行任务: %s", taskGoal))
-		} else if toolsSinceUser == 0 {
-			// 用户刚说的——这是当前轮的第一个工具调用
-			parts = append(parts, fmt.Sprintf("用户最新需求: %s", taskGoal))
-		} else {
-			// 用户之前说的——明确标注这不是新消息；不暴露"已执行 N 次工具调用"，
-			// 累加计数会让 agent 焦虑（"迭代太多了要赶快"），对决策无帮助。
-			parts = append(parts, fmt.Sprintf("用户原始需求（正在处理中，请继续完成）: %s", taskGoal))
+		kind := "user_processing" // 历史需求正在处理中
+		if toolsSinceUser == 0 {
+			kind = "user_latest" // 用户最新需求
 		}
+		if isSubAgent {
+			kind = "subagent"
+		}
+		sb.WriteString("<task>")
+		fmt.Fprintf(&sb, "<kind>%s</kind>", kind)
+		fmt.Fprintf(&sb, "<content>%s</content>", taskGoal)
+		sb.WriteString("</task>")
 	}
 
 	if cwd != "" {
-		// Always resolve to absolute path — never show ~ or . in cwd.
 		cwd = resolveAbsolutePath(cwd)
-		parts = append(parts, fmt.Sprintf("📂 默认工作目录: %s（你的 Shell 命令默认在此目录执行，Cd 后生效）", cwd))
+		fmt.Fprintf(&sb, "<working-dir>%s</working-dir>", cwd)
 	}
-
-	parts = append(parts, fmt.Sprintf("本轮使用: %s", strings.Join(roundToolNames, ", ")))
 
 	if todoSummary != "" {
-		parts = append(parts, fmt.Sprintf("TODO: %s", todoSummary))
+		fmt.Fprintf(&sb, "<todo>%s</todo>", todoSummary)
 	}
 
-	// Peer awareness: show who else is working in the same repo.
+	// Peer awareness: show who else is working in the same repo.（仅活跃 worktree + busy）
 	// Only show peers with actual worktrees (physical isolation) — lightweight
 	// peer-awareness registrations without worktrees do not indicate collaboration.
 	// This prevents injecting misleading "3 peers collaborating" when the user
@@ -136,52 +131,40 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 			}
 		}
 		if len(activePeers) > 0 {
-			parts = append(parts, "")
-			parts = append(parts, fmt.Sprintf("👥 协作中: %d 个同伴在此仓库工作", len(activePeers)))
+			sb.WriteString("<peers>")
 			for _, p := range activePeers {
-				parts = append(parts, fmt.Sprintf("   - %s (角色: %s, 分支: %s)", shortenPeerName(p.SessionKey), p.Role, p.Branch))
+				fmt.Fprintf(&sb, "<peer role=%q branch=%q>%s</peer>", p.Role, p.Branch, shortenPeerName(p.SessionKey))
 			}
-			parts = append(parts, "协作规则: 尊重同伴的修改，改动冲突时优先通过 SendMessage 协商。")
+			sb.WriteString("</peers>")
 		}
 	}
 
-	// Active SubAgents: show idle/busy state so the parent agent knows
-	// which SubAgents are currently running vs available.
+	// Active SubAgents（当前执行中 vs 空闲）
 	if !isSubAgent && len(activeSubAgents) > 0 {
-		parts = append(parts, "")
-		parts = append(parts, "🤖 活跃 SubAgent:")
+		sb.WriteString("<subagents>")
 		for _, sa := range activeSubAgents {
-			status := "⏳ 空闲"
+			status := "idle"
 			if sa.Running {
-				status = "🔄 执行中"
+				status = "running"
 			}
 			label := sa.Role
 			if sa.Instance != "" {
 				label += "/" + sa.Instance
 			}
-			parts = append(parts, fmt.Sprintf("   - %s %s", label, status))
+			fmt.Fprintf(&sb, "<subagent status=%q>%s</subagent>", status, label)
 		}
-		parts = append(parts, "提示: 执行中的 SubAgent 仍在工作，请等待其完成。可用 SubAgent(action=\"inspect\") 查看进度。")
+		sb.WriteString("</subagents>")
 	}
 
-	parts = append(parts, "行为提醒:")
-	parts = append(parts, "- 优先编辑已有文件，避免创建新文件")
-	parts = append(parts, "- 修改后运行测试验证")
-	parts = append(parts, "- 错误时先分析根因再修改")
+	// 行为准则：精简固定 3 条（去"优先编辑已有文件"；git commit 并入常驻准则）。
+	sb.WriteString("<guidelines>")
+	sb.WriteString("<guideline>修改后运行测试验证</guideline>")
+	sb.WriteString("<guideline>错误时先分析根因再修改</guideline>")
+	sb.WriteString("<guideline>主动维护知识文档和代码质量</guideline>")
+	sb.WriteString("</guidelines>")
 
-	// Detect git commit in Shell tool calls — remind agent to activate post-dev skill
-	gitCommitDetected := false
-	for _, tc := range roundToolCalls {
-		if tc.Name == "Shell" && strings.Contains(tc.Arguments, "git commit") {
-			gitCommitDetected = true
-			break
-		}
-	}
-	if gitCommitDetected {
-		parts = append(parts, "- 检测到 git commit，立即激活 post-dev skill 更新项目文档")
-	}
-
-	return "<system-reminder>\n" + strings.Join(parts, "\n") + "\n</system-reminder>"
+	sb.WriteString("</system-reminder>")
+	return sb.String()
 }
 
 // stripSystemReminder removes the <system-reminder>...</system-reminder> block
@@ -208,6 +191,13 @@ func extractUserGoal(content string) string {
 		// 跳过系统引导文本块
 		if strings.Contains(trimmed, "[系统引导]") || strings.Contains(trimmed, "search_tools") || strings.Contains(trimmed, "WebSearch") || strings.Contains(trimmed, "Fetch") || strings.Contains(trimmed, "Skill") || strings.Contains(trimmed, "现在时间") {
 			inGuide = true
+			continue
+		}
+		// 跳过 <context> 元数据块（用户消息前注入的 context/time/sender 标签）
+		// —— 否则被当作用户需求塞进 taskGoal，变成 "<context>\n<time>...</time>\n<sender>..." 乱码。
+		if strings.HasPrefix(trimmed, "<context>") || strings.HasPrefix(trimmed, "</context>") ||
+			strings.HasPrefix(trimmed, "<time>") || strings.HasPrefix(trimmed, "</time>") ||
+			strings.HasPrefix(trimmed, "<sender>") || strings.HasPrefix(trimmed, "</sender>") {
 			continue
 		}
 		// Skip auto-naming rename hint (injected by UserMessageMiddleware)

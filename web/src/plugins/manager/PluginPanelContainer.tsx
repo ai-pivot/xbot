@@ -16,8 +16,13 @@ export function PluginPanelContainer({ container, className }: { container: View
 
   if (panels.length === 0) return null
 
+  // 插件通用对齐配置：读取该容器下 view 声明的 align（非引擎硬编码）。
+  // 容器是 flex，align='end' 时用 ml-auto 把内容推到右侧（如 iter-stats 徽章
+  // 在顶栏右对齐）。'start' 或无声明则默认靠左。
+  const alignEnd = panels.some((p) => p.view.align === 'end')
+
   return (
-    <div className={`flex flex-col gap-2 overflow-y-auto ${className ?? ''}`}>
+    <div className={`flex flex-col gap-2 overflow-y-auto ${alignEnd ? 'ml-auto ' : ''}${className ?? ''}`}>
       {panels.map((panel) => (
         <PluginView key={panel.id} pluginId={panel.pluginId} view={panel.view} />
       ))}

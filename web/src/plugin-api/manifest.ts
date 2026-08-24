@@ -27,6 +27,13 @@ export interface ViewContribution {
   /** L1 声明式视图：type + props（无需 entry）。 */
   component?: ComponentDecl
   /**
+   * 容器内对齐（插件通用配置，引擎读取渲染）——引擎不针对具体插件硬编码。
+   * - 'start'（默认）：靠左/靠上
+   * - 'end'：靠右/靠下（如 iter-stats 徽章在顶栏右对齐）
+   * status_bar_right 容器常配合 align:'end' 把内容推到右侧。
+   */
+  align?: 'start' | 'end'
+  /**
    * 参数化动态视图（VSCode webviewPanel 语义）：不出现在 activity bar /
    * 侧栏 tab / 布局注册表，只能通过 ctx.ui.openViewTab({viewId, params})
    * 打开（如 git diff / commit 详情）。tab 内容由 openViewTab 的 params
