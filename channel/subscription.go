@@ -406,6 +406,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 										Summary:   t.Summary,
 										Args:      t.Args,
 										Detail:    t.Detail,
+										UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 									}
 								}
 							}
@@ -475,6 +476,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Summary:   t.Summary,
 								Args:      t.Args,
 								Detail:    t.Detail,
+								UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 							}
 						}
 						iters = append(iters, HistoryIteration{
@@ -768,6 +770,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 								Summary:   t.Summary,
 								Args:      t.Args,
 								Detail:    t.Detail,
+								UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 							}
 						}
 						iters = append(iters, HistoryIteration{
@@ -808,6 +811,7 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 										Label:     label,
 										Status:    t.Status,
 										Iteration: last.Iteration,
+										UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 									})
 								}
 							}
