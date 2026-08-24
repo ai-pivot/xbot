@@ -52,6 +52,19 @@ async function setupMock(page: Page) {
 
 async function getIframeState(page: Page) {
   return page.evaluate(() => {
+    // GenUI no longer uses iframes — it renders inline (SandboxedUI inline mode).
+    // Find the rendered GenUI content by data-testid or the sandboxed-ui container.
+    const containers = Array.from(document.querySelectorAll('[data-testid="genui-root"], .sandboxed-ui'))
+    if (containers.length > 0) {
+      const el = containers[0] as HTMLElement
+      return [{
+        headHTML: '',
+        bodyHTML: el.innerHTML.slice(0, 300),
+        bodyText: (el.textContent || '').slice(0, 200),
+        docAccess: true,
+      }]
+    }
+    // Fallback: legacy iframe mode (kept for backward compat).
     const iframes = Array.from(document.querySelectorAll('iframe[title="GenUI Preview"]'))
     return iframes.map((f) => {
       let headHTML = ''
@@ -135,12 +148,9 @@ test.describe('GenUI render', () => {
     console.log('iframe state:', JSON.stringify(frames, null, 2))
     console.log('console errors:', JSON.stringify(errors))
 
-    // There must be a GenUI iframe rendered.
+    // There must be a GenUI rendered (inline mode — no iframe).
     expect(frames.length).toBeGreaterThan(0)
     const f = frames[0]
-    // doc.write must have run (head contains our injected style).
-    expect(f.docAccess).toBe(true)
-    expect(f.headHTML).toContain('margin:0')
     // The compiled component must render visible DOM.
     expect(f.bodyText).toContain('RENDER_OK_MARKER')
 
@@ -177,15 +187,15 @@ test.describe('GenUI render', () => {
     await page.locator('button[type="submit"]').click()
     await page.waitForTimeout(2000)
 
-    // XBOT_UI-heavy code — mirrors what the plugin's tool description makes
-    // the LLM generate (XBOT_UI.Icon was missing from the aggregate object).
+    // XBOT_UI is no longer injected (0-injection: only React + hooks).
+    // The LLM now writes standard React/TSX + Tailwind. This test verifies
+    // that plain React renders correctly (no XBOT_UI dependency).
     const code = `export default function App() {
   return (
     <div className="p-4">
-      <XBOT_UI.Button variant="primary">CLICK_ME_MARKER</XBOT_UI.Button>
-      <XBOT_UI.Icon name="check" size={16} />
-      <XBOT_UI.Badge text="NEW" color="green" />
-      <XBOT_UI.Stat label="users" value="42" />
+      <button className="rounded bg-indigo-500 px-3 py-1 text-white">CLICK_ME_MARKER</button>
+      <span className="ml-2 rounded bg-green-500 px-2 py-0.5 text-xs text-white">NEW</span>
+      <div className="mt-2 text-sm text-gray-500">users: 42</div>
     </div>
   )
 }`

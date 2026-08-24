@@ -420,60 +420,38 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
 	cfg.StreamContentFunc = func(content string) {
-		delta := content
-		isFull := true
+		// ⚠️ 始终推送全量累积文本（StreamContent），绝不用 delta push（StreamDelta）。
+		// delta push 在本端链路被前端 normalize 误判为 iteration 事件：
+		// Web channel `SendProgress`→`normalizeSSEEvent`→`isStreamOnlyProgress`
+		// 的 `hasStreamDelta` 只认 StreamContent/ReasoningStreamContent/
+		// StreamingTools/StreamTokens，不认 StreamDelta；前端 `normalizeProgress`
+		// 的 `hasStreamPayload` 同理。所以 StreamDelta 事件保持 progress_structured
+		// 且被当作 iteration，迭代边界时 advanced=true 清空 content/reasoning ——
+		// 用户报告"思考了 1300 字符突然变成思考了 3 字符"（流式内容倒流/回退）。
+		// 与主 agent buildStreamCallbacks 的 a.deltaPush=false 默认（全量）一致。
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
-			prev := s.StreamContent
-			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
-				delta = content[len(prev):]
-				isFull = false
-			}
 			s.StreamContent = content
 		})
 		iter := a.getActiveIteration(agentProgressKey)
-		if isFull {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:        agentProgressKey,
-				TurnID:        cfg.TurnID,
-				Iteration:     iter,
-				StreamContent: content,
-			})
-		} else {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:      agentProgressKey,
-				TurnID:      cfg.TurnID,
-				Iteration:   iter,
-				StreamDelta: delta,
-			})
-		}
+		broadcast(&protocol.ProgressEvent{
+			ChatID:        agentProgressKey,
+			TurnID:        cfg.TurnID,
+			Iteration:     iter,
+			StreamContent: content,
+		})
 	}
 	cfg.StreamReasoningFunc = func(content string) {
-		delta := content
-		isFull := true
+		// 同样始终推送全量 ReasoningStreamContent（原因同 StreamContentFunc）。
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
-			prev := s.ReasoningStreamContent
-			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
-				delta = content[len(prev):]
-				isFull = false
-			}
 			s.ReasoningStreamContent = content
 		})
 		iter := a.getActiveIteration(agentProgressKey)
-		if isFull {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:                 agentProgressKey,
-				TurnID:                 cfg.TurnID,
-				Iteration:              iter,
-				ReasoningStreamContent: content,
-			})
-		} else {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:               agentProgressKey,
-				TurnID:               cfg.TurnID,
-				Iteration:            iter,
-				ReasoningStreamDelta: delta,
-			})
-		}
+		broadcast(&protocol.ProgressEvent{
+			ChatID:                 agentProgressKey,
+			TurnID:                 cfg.TurnID,
+			Iteration:              iter,
+			ReasoningStreamContent: content,
+		})
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {

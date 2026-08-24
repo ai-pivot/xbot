@@ -49,4 +49,28 @@ func TestWireSubAgentProgress_BroadcastsToWebChannel(t *testing.T) {
 			t.Fatalf("event %d TurnID = %d, want 7", i, ev.TurnID)
 		}
 	}
+
+	// ── stream 回调必须始终推送全量（StreamContent/ReasoningStreamContent），
+	// 绝不用 delta push（StreamDelta）—— 否则前端 normalize 把 StreamDelta 误判为
+	// iteration 事件，迭代边界时清空 content/reasoning → 流式内容倒流
+	// （用户报告："思考了 1300 字符突然变成思考了 3 字符"）。 ──
+	webChannel.events = nil
+	cfg.StreamContentFunc("hello")
+	cfg.StreamContentFunc("hello world") // 前缀扩展 —— 若走 delta 会发 StreamDelta
+	cfg.StreamReasoningFunc("thinking")
+	cfg.StreamReasoningFunc("thinking hard") // 前缀扩展 —— 走 delta 会发 ReasoningStreamDelta
+	if len(webChannel.events) != 4 {
+		t.Fatalf("stream callbacks produced %d events, want 4", len(webChannel.events))
+	}
+	for i, ev := range webChannel.events {
+		if ev.StreamDelta != "" || ev.ReasoningStreamDelta != "" {
+			t.Fatalf("event %d used delta push (StreamDelta=%q ReasoningStreamDelta=%q) — must always push full", i, ev.StreamDelta, ev.ReasoningStreamDelta)
+		}
+	}
+	if webChannel.events[0].StreamContent != "hello" || webChannel.events[1].StreamContent != "hello world" {
+		t.Fatalf("content full-push = %q / %q, want 'hello' / 'hello world'", webChannel.events[0].StreamContent, webChannel.events[1].StreamContent)
+	}
+	if webChannel.events[2].ReasoningStreamContent != "thinking" || webChannel.events[3].ReasoningStreamContent != "thinking hard" {
+		t.Fatalf("reasoning full-push = %q / %q, want 'thinking' / 'thinking hard'", webChannel.events[2].ReasoningStreamContent, webChannel.events[3].ReasoningStreamContent)
+	}
 }
