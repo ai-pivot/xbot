@@ -10,7 +10,7 @@
  *   - No bottom border on tabs; the tab bar has a 1px bottom border
  */
 import type { ComponentType, SVGProps } from 'react'
-import { X, Bot, FileText, SquareTerminal, ListVideo, Box } from 'lucide-react'
+import { X, Bot, FileText, SquareTerminal, ListVideo, Box, FileDiff } from 'lucide-react'
 import type { DockviewPanelApi } from 'dockview'
 import type { PanelParams } from '@/types/tab'
 import { cn } from '@/lib/utils'
@@ -31,6 +31,7 @@ const TYPE_ICONS: Record<PanelParams['type'], IconComponent> = {
   terminal: SquareTerminal,
   background: ListVideo,
   plugin: Box,
+  diff: FileDiff,
 }
 
 export interface TabHeaderProps {

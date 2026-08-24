@@ -306,10 +306,11 @@ export const layoutRegistry = new LayoutRegistryImpl()
 /** 内置布局项默认注册（应用启动时调用一次）。 */
 export function registerBuiltinLayoutItems(): void {
   layoutRegistry.registerAll([
-    { id: BUILTIN_LAYOUT_ITEMS.mobileAgent, slot: 'mobile.bottom_nav', title: '会话', labelKey: 'sidebar.sessions', icon: 'bot', weight: 0 },
-    { id: BUILTIN_LAYOUT_ITEMS.mobileTools, slot: 'mobile.bottom_nav', title: '工具', labelKey: 'agent.tools', icon: 'square-terminal', weight: 1 },
+    // mobileAgent（会话导航项）不再默认注册：聊天是手机端主视图，导航由
+    // 顶栏（☰ 抽屉 + 返回按钮）承担。id 常量保留供旧 overrides 无害引用。
+    { id: BUILTIN_LAYOUT_ITEMS.mobileTools, slot: 'mobile.top_bar', title: '工具', labelKey: 'agent.tools', icon: 'wrench', weight: 1 },
     { id: BUILTIN_LAYOUT_ITEMS.mobileNewChat, slot: 'mobile.top_bar', title: '新会话', labelKey: 'session.newSession', icon: 'plus', weight: 0 },
-    { id: BUILTIN_LAYOUT_ITEMS.mobileSettings, slot: 'mobile.top_bar', title: '设置', labelKey: 'settings.title', icon: 'settings', weight: 1 },
+    { id: BUILTIN_LAYOUT_ITEMS.mobileSettings, slot: 'mobile.top_bar', title: '设置', labelKey: 'settings.title', icon: 'settings', weight: 2 },
     { id: BUILTIN_LAYOUT_ITEMS.desktopSessions, slot: 'desktop.activity_bar', title: '会话', labelKey: 'sidebar.sessions', icon: 'panel-left', weight: 0, group: LAYOUT_GROUPS.channels },
     { id: BUILTIN_LAYOUT_ITEMS.desktopFiles, slot: 'desktop.sidebar', title: '文件', labelKey: 'sidebar.files', icon: 'files', weight: 0, group: LAYOUT_GROUPS.tools },
     { id: BUILTIN_LAYOUT_ITEMS.desktopSearch, slot: 'desktop.sidebar', title: '搜索', labelKey: 'sidebar.search', icon: 'search', weight: 1, group: LAYOUT_GROUPS.tools },

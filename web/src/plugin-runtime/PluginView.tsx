@@ -21,6 +21,8 @@ import { usePluginRuntime } from '@/plugin-runtime'
 interface LoadedViewProps {
   view: ViewContribution
   pluginId: string
+  /** dockview panel params（含 viewParams）——动态视图的参数经 props 传给插件组件。 */
+  panelParams?: { viewParams?: Record<string, unknown>; title?: string; viewId?: string; viewKey?: string }
 }
 
 /** 插件视图崩溃边界：任何 render 异常只显示错误占位，不 unmount 整棵树。
@@ -89,16 +91,20 @@ function BuiltinView({ view }: { view: ViewContribution }) {
 }
 
 /** 渲染单个插件 view。内置视图同步渲染；第三方插件走异步加载。 */
-export function PluginView({ pluginId, view }: LoadedViewProps) {
+export function PluginView({ pluginId, view, panelParams }: LoadedViewProps) {
   // 内置视图（builtin: 前缀）——同步渲染，无异步加载态。
   if (view.entry?.startsWith('builtin:')) {
     return <BuiltinView view={view} />
   }
   // 第三方插件（URL 加载）：独立组件，hooks 数量恒定，不受内置视图影响。
-  return <AsyncPluginView pluginId={pluginId} view={view} />
+  return <AsyncPluginView pluginId={pluginId} view={view} viewParams={panelParams?.viewParams} />
 }
 
-function AsyncPluginView({ pluginId, view }: LoadedViewProps) {
+function AsyncPluginView({
+  pluginId,
+  view,
+  viewParams,
+}: LoadedViewProps & { viewParams?: Record<string, unknown> }) {
   const runtime = usePluginRuntime()
   const [state, setState] = useState<{ comp: ComponentType | null; error: string | null }>({ comp: null, error: null })
 
@@ -133,9 +139,11 @@ function AsyncPluginView({ pluginId, view }: LoadedViewProps) {
     return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">加载 {view.title}…</div>
   }
 
+  // 动态视图（ctx.ui.openViewTab 打开）把 params 作为 props 传给组件——
+  // 插件 view 组件从 props 拿参数（如 { path, commit }）。
   return (
     <PluginViewErrorBoundary>
-      <state.comp />
+      <state.comp {...(viewParams ?? {})} />
     </PluginViewErrorBoundary>
   )
 }

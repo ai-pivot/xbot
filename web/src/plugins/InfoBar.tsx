@@ -14,8 +14,16 @@ import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 export function InfoBar() {
   // WidgetZone renders non-git spans (git spans excluded — the fancy
   // GitStatusPanel in the plugin view container renders them instead).
+  //
+  // Height absorbs the bottom safe area (iOS PWA home-indicator / rounded
+  // corners): the bar's bg-[--bg-elevated] paints through it, and the content
+  // stays inside the top 1.5rem. Desktop / browser mode: inset is 0 — the bar
+  // stays a plain h-6 strip, unchanged.
   return (
-    <div className="flex h-6 min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs">
+    <div
+      className="flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs"
+      style={{ height: 'calc(1.5rem + var(--safe-area-bottom))', paddingBottom: 'var(--safe-area-bottom)' }}
+    >
       <PluginPanelContainer container="info_bar" />
       <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
     </div>

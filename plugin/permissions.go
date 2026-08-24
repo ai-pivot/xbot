@@ -47,6 +47,22 @@ const (
 	// backend process via ctx.rpc.call('pluginId.method') (web_plugin_rpc).
 	// Matches the frontend Permission 'rpc' (web/src/plugin-api/manifest.ts).
 	PermRPC = "rpc"
+	// PermEvents grants access to the typed event bus (ctx.events).
+	// Matches the frontend Permission 'events' (web/src/plugin-api/manifest.ts).
+	PermEvents = "events"
+	// PermCommands grants access to command registration/execution (ctx.commands).
+	// Matches the frontend Permission 'commands' (web/src/plugin-api/manifest.ts).
+	PermCommands = "commands"
+	// PermState grants access to the key-value state store (ctx.state).
+	// Matches the frontend Permission 'state' (web/src/plugin-api/manifest.ts).
+	PermState = "state"
+	// PermUI grants UI capabilities: toast, panel open/close, and editor view
+	// tabs (ctx.ui.openViewTab/openFileTab). Matches the frontend Permission
+	// 'ui' (web/src/plugin-api/manifest.ts).
+	PermUI = "ui"
+	// PermPlugins grants access to the inter-plugin registry (ctx.plugins).
+	// Matches the frontend Permission 'plugins' (web/src/plugin-api/manifest.ts).
+	PermPlugins = "plugins"
 )
 
 // allPermissions is the set of all recognized permission strings.
@@ -69,6 +85,11 @@ var allPermissions = map[string]bool{
 	PermUIOverlay:         true,
 	PermNotificationsSend: true,
 	PermRPC:               true,
+	PermEvents:            true,
+	PermCommands:          true,
+	PermState:             true,
+	PermUI:                true,
+	PermPlugins:           true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.

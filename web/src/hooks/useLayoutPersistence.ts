@@ -39,6 +39,11 @@ function saveLayout(chatID: string, tabManager: TabManager, activeKey: string | 
     // 内容由 AgentPanel 读 activeSession 动态恢复）。
     const layout = filterTerminalPanels(tabManager.getLayoutJSON())
     if (!layout) return
+    // Diff tab 的 original/modified 是完整文件内容（可达数百 KB）——写入
+    // localStorage 会撞 5MB 上限导致整个布局保存失败，且刷新后的内容快照
+    // 已失效。剥离内容只保留 tab 骨架，恢复后 DiffPanel 显示"请重新打开"
+    // 提示（空内容守卫）。
+    stripDiffContents(layout)
     const state: LayoutState = {
       layout,
       activeKey,
@@ -47,6 +52,19 @@ function saveLayout(chatID: string, tabManager: TabManager, activeKey: string | 
     localStorage.setItem(layoutKey(chatID), JSON.stringify(state))
   } catch {
     /* localStorage may be full or disabled — non-fatal */
+  }
+}
+
+/** 就地剥离布局 JSON 中 diff tab 的 original/modified 大内容（tab 骨架保留）。 */
+function stripDiffContents(layout: {
+  panels?: Record<string, { params?: Record<string, unknown> }>
+} | null): void {
+  if (!layout?.panels) return
+  for (const panel of Object.values(layout.panels)) {
+    if (panel.params?.type === 'diff') {
+      delete panel.params.original
+      delete panel.params.modified
+    }
   }
 }
 

@@ -28,6 +28,8 @@ import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
+import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
+import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
@@ -72,6 +74,60 @@ export function AppShell() {
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
+
+  // 桥接插件 editor-view API：PluginUI.openViewTab/openFileTab（React 树外）
+  // 经模块级注册器走到 tabManager.openTab（VSCode webviewPanel 语义）。
+  // 手机端没有 Dockview workspace——openTab 会进 pending 队列静默丢失，
+  // 改路由到全屏工作视图（MobileAppShell 的 'work' 视图渲染）。
+  useEffect(() => {
+    registerEditorTabOpener((input) => {
+      const { type, title, icon, closable, data } = input
+      if (isMobile) {
+        if (type === 'file' && data?.filePath) {
+          pushMobileWorkView({ kind: 'file', title, filePath: data.filePath as string })
+        } else if (type === 'plugin' && data?.viewId) {
+          const d = data as {
+            viewId: string
+            viewKey?: string
+            viewParams?: Record<string, unknown>
+          }
+          pushMobileWorkView({
+            kind: 'plugin',
+            title,
+            viewId: d.viewId,
+            viewKey: d.viewKey,
+            viewParams: d.viewParams,
+          })
+        } else if (type === 'diff') {
+          const d = data as {
+            diffKey?: string
+            original?: string
+            modified?: string
+            diffPath?: string
+            diffScope?: string
+          }
+          pushMobileWorkView({
+            kind: 'diff',
+            title,
+            diffKey: d.diffKey,
+            original: d.original ?? '',
+            modified: d.modified ?? '',
+            diffPath: d.diffPath,
+            diffScope: d.diffScope,
+          })
+        }
+        return ''
+      }
+      return tabManager.openTab({
+        type,
+        title,
+        icon,
+        closable: closable ?? true,
+        data: data as never,
+      })
+    })
+    return () => registerEditorTabOpener(null)
+  }, [tabManager, isMobile])
 
   const togglePanel = useCallback((panel: SidebarPanel) => {
     setActivePanel((cur) => (cur === panel ? null : panel))
@@ -143,7 +199,9 @@ export function AppShell() {
   if (isMobile) return <MobileAppShell />
 
   return (
-    <div className="relative flex h-dvh w-full overflow-hidden bg-bg-primary text-text-primary">
+    // fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
+    // MobileAppShell (100dvh/height:100% stop at the safe area there).
+    <div className="fixed inset-0 flex overflow-hidden bg-bg-primary text-text-primary">
       {/* Left ActivityBar */}
       <ActivityBar
         onOpenSettings={() => setSettingsOpen(true)}

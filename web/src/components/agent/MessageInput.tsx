@@ -216,13 +216,16 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const canSend = value.trim().length > 0 || pending.length > 0
 
   return (
-    <div className="border-t border-border bg-bg-primary px-3 py-2.5" style={{ paddingBottom: 'calc(0.625rem + var(--safe-area-bottom))' }}>
+    <div className="border-t border-border bg-bg-primary px-3 py-2.5">
+      {/* No bottom safe-area padding here: the InfoBar below (MobileAppShell)
+       *  owns the safe-area strip. Keeping this at plain py-2.5 keeps the
+       *  input box clear of the iPhone's rounded bottom corners. */}
       {todoState ? <TodoPullOut todoState={todoState} /> : null}
 
       {/* Input container — single rounded box with chips, textarea, and inline buttons */}
       <div
         className={cn(
-          'rounded-lg border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
+          'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
           focused
             ? 'border-accent ring-1 ring-accent/30'
             : 'border-border',
@@ -300,7 +303,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               aria-label={t('agent.attach')}
               disabled={uploading}
               onClick={() => fileRef.current?.click()}
-              className={cn('size-7 rounded-md', uploading && 'opacity-40')}
+              className={cn('size-9 rounded-md', uploading && 'opacity-40')}
             >
               {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
             </Button>
@@ -316,7 +319,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 aria-label={t('common.cancel')}
                 onClick={onCancel}
                 disabled={cancelling}
-                className="size-7 rounded-md"
+                className="size-9 rounded-md"
               >
                 {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
               </Button>
@@ -328,7 +331,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 disabled={!canSend}
                 onClick={submit}
                 className={cn(
-                  'size-7 rounded-md bg-accent text-accent-foreground',
+                  'size-9 rounded-md bg-accent text-accent-foreground',
                   !canSend && 'opacity-40',
                 )}
               >

@@ -90,7 +90,7 @@ export function ModelSelector({
           className="flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-md px-2 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className="min-w-0 truncate font-mono">{currentModel || '—'}</span>
-          <span className="shrink-0 font-mono text-[10px] text-text-muted">{thinkingModeLabel(thinkingMode)}</span>
+          <span className="shrink-0 font-mono text-xs text-text-muted md:text-[10px]">{thinkingModeLabel(thinkingMode)}</span>
           <ChevronDown className="size-3 shrink-0 text-text-muted" />
         </button>
       </PopoverTrigger>
@@ -109,7 +109,7 @@ export function ModelSelector({
         <div className="overflow-y-auto overflow-x-hidden min-h-0">
           {groups.map((group) => (
             <div key={group.subID}>
-              <div className="bg-bg-secondary px-2 py-1 text-[10px] font-medium text-muted-foreground">
+              <div className="bg-bg-secondary px-2 py-1 text-xs font-medium text-muted-foreground md:text-[10px]">
                 {group.subName}
               </div>
               {group.entries.map((entry) => {

@@ -19,6 +19,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
 import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
 
 interface UserMessageProps {
@@ -55,6 +56,7 @@ export const UserMessage = memo(function UserMessage({
 }: UserMessageProps) {
   const { t } = useI18n()
   const { mode: sendKeyMode } = useSendKeyMode()
+  const isTouch = useIsTouch()
   const [editValue, setEditValue] = useState(content)
   const editRef = useRef<HTMLTextAreaElement>(null)
   const displayRef = useRef<HTMLDivElement>(null)
@@ -74,11 +76,17 @@ export const UserMessage = memo(function UserMessage({
     }
   }, [content])
 
-  // Capture display height before entering edit mode to prevent height jitter
+  // Capture display height before entering edit mode to prevent height jitter.
+  // CLAMPED to the textarea's own cap (300px + container padding): a tall
+  // rendered message (long pasted content) used to set minHeight to its FULL
+  // display height, while the auto-resizing textarea inside caps at 300px —
+  // the edit box became extremely tall with the editable text squeezed into
+  // the top strip (user-reported bug).
+  const EDIT_BOX_MAX = 318 // 300 (textarea cap) + py-2×2 (16) + border×2 (2)
   const handleStartEdit = () => {
     const el = displayRef.current
     if (el) {
-      setEditMinHeight(el.offsetHeight)
+      setEditMinHeight(Math.min(el.offsetHeight, EDIT_BOX_MAX))
     }
     onStartEdit?.()
   }
@@ -233,10 +241,11 @@ export const UserMessage = memo(function UserMessage({
             title={t('agent.editAndRewind')}
             disabled={editDisabled}
             className={cn(
-              'h-6 w-6',
+              // 触屏：常显 + 44px 命中区（hover 不存在，半透明小按钮难命中）。
+              isTouch ? 'h-9 w-9 opacity-100' : 'h-6 w-6',
               editDisabled
                 ? 'opacity-20 cursor-not-allowed'
-                : 'opacity-60 hover:opacity-100',
+                : isTouch ? undefined : 'opacity-60 hover:opacity-100',
             )}
             onClick={handleStartEdit}
           >

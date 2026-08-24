@@ -819,14 +819,20 @@ function writeLiveToMessageStore(
     turnID = 1
   }
   const cur = store.dumpFullState().current
-  const prevLive = ms.getLive(turnID)
-  const newContent = cur.streamContent || cur.content || ''
-  const newReasoning = cur.reasoningStreamContent || ''
+  // cur is AUTHORITATIVE — ProgressStore.mutate is synchronous, so by the
+  // time writeLiveToMessageStore runs, setStructuredTools has already applied
+  // its changes (including the iteration-commit clearing of the stream
+  // fields). The old `|| prevLive?.content || ''` fallbacks RESURRECTED the
+  // previous iteration's stream text into the live area after the store
+  // cleared it — the same reasoning/text then rendered BOTH in the committed
+  // fold and the live fold until the iteration-advance event arrived (the
+  // per-iteration-completion flicker). updateLive's own iterations-union
+  // still protects against losing completed iterations.
   ms.updateLive(turnID, {
     eventSeq: cur.eventSeq,
     phase: cur.phase,
-    content: newContent || prevLive?.content || '',
-    reasoningStreamContent: newReasoning || prevLive?.reasoningStreamContent || '',
+    content: cur.streamContent || cur.content || '',
+    reasoningStreamContent: cur.reasoningStreamContent || '',
     iterations: cur.iterationHistory,
     activeTools: cur.activeTools,
     completedTools: cur.completedTools,

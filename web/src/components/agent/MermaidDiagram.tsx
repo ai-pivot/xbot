@@ -325,6 +325,9 @@ function FullscreenOverlay({ svg, onClose }: { svg: string; onClose: () => void 
     <div
       ref={overlayRef}
       onClick={onBackdropClick}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Fullscreen diagram"
       className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-8"
       style={{ backgroundColor: 'rgba(0, 0, 0, 0.8)' }}
     >

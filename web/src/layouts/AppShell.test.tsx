@@ -113,8 +113,13 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(dockview.className).toContain('min-h-0')
     expect(dockview.className).toContain('w-full')
     expect(dockview.className).not.toContain('h-full')
-    // InfoBar is a slim fixed-height status bar BELOW the workspace.
-    expect(infoBar.className).toContain('h-6')
+    // InfoBar is a slim fixed-height status bar BELOW the workspace. Its
+    // height (inline style) is 1.5rem + the bottom safe-area inset — a plain
+    // h-6 on desktop (inset 0), and it paints through the iOS home-indicator
+    // strip in standalone PWA mode.
+    const infoBarEl = infoBar as HTMLElement
+    expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
+    expect(infoBarEl.style.paddingBottom).toBe('var(--safe-area-bottom)')
     // It uses a TOP border (sits below the workspace), not a bottom one.
     expect(infoBar.className).toContain('border-t')
   })
@@ -132,6 +137,6 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // The info bar is ALWAYS rendered as a fixed-height strip, even with no
     // plugin content — so it never suddenly pops in/out.
     const infoBar = main!.children[1]
-    expect(infoBar.className).toContain('h-6')
+    expect((infoBar as HTMLElement).style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })
 })

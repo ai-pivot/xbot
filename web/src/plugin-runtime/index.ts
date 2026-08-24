@@ -291,10 +291,24 @@ export class PluginRuntime {
       // 调用 mod.activate(ctx)（注入 ctx.rpc 等）。若这里再用不同 URL
       // （?view=）重新 import，浏览器 ESM 缓存会产生第二个模块实例——模块级
       // 变量（如 entry.tsx 里的 rpc）不共享，view 会显示"插件未初始化"。
-      // 只有插件未激活时才 fallback 到 host 的独立 import。
+      //
+      // 但模块复用只对该插件的**主模块入口**视图有效：mod.default 是主入口
+      // （manifest.entry，如 index.js）的视图组件。多入口插件的其他视图
+      // （view.entry !== manifest.entry，如 git-fancy 的 diff.js/commit.js）
+      // 必须按 view.entry 走 host 独立 import——否则任何视图都错误拿到主
+      // 模块的 default（"diff tab 渲染成插件 panel"的根因）。命名导出
+      // mod[view.id] 无 entry 约束（主模块按 view id 导出必是该视图组件，
+      // 多视图放主模块时单例最优）。
       const mod = this.modules.get(pluginId)
-      if (mod) {
-        const comp = (mod.default ?? mod[view.id] ?? null) as unknown
+      const mainEntry = this.registry.manifestOf(pluginId)?.entry
+      const modMap = mod as unknown as Record<string, unknown> | undefined
+      const namedComp = modMap?.[view.id]
+      const namedIsComp =
+        typeof namedComp === 'function' ||
+        (namedComp != null && typeof namedComp === 'object' && (namedComp as { $$typeof?: unknown }).$$typeof != null)
+      const defaultServesView = view.entry == null || view.entry === mainEntry
+      if (mod && (namedIsComp || defaultServesView)) {
+        const comp = (namedIsComp ? namedComp : modMap?.default) as unknown
         if (typeof comp === 'function') {
           p = Promise.resolve(comp as React.ComponentType)
         } else if (comp && typeof comp === 'object' && (comp as { $$typeof?: unknown }).$$typeof) {

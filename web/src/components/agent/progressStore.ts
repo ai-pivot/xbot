@@ -854,6 +854,28 @@ export class ProgressStore {
         // iterationHistory entry — prevents tool doubling.
         if (draft.iterationHistory.length > before) {
           draft.completedTools = []
+          // The iteration's STREAM fields must clear together with the
+          // history append. The backend's "iteration completed" event keeps
+          // iteration at N (the advance event that used to be the ONLY place
+          // clearing these arrives LATER) — so between the two events the
+          // same reasoning/text rendered BOTH in the committed fold and the
+          // live fold: the per-iteration-completion flicker (user report:
+          // "每次新的 iter 完成都要闪烁一下").
+          // Guard: only clear when the live area BELONGS to the committed
+          // iteration (draft.iteration <= appended max). A gap-repair delta
+          // can carry older iterations while the live area is already
+          // streaming a NEWER iteration — clearing there would wipe the
+          // current iteration's content.
+          const appendedMax = opts.iterationHistory.reduce((m, it) => Math.max(m, it.iteration), 0)
+          if (draft.iteration <= appendedMax) {
+            draft.streamContent = ''
+            draft.reasoningStreamContent = ''
+            draft.genuiContent = ''
+            draft.content = ''
+            draft.lastReasoning = ''
+            draft.streamingTools = []
+            draft.activeTools = []
+          }
         }
       }
 

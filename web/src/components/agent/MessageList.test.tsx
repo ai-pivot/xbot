@@ -296,6 +296,38 @@ describe('MessageList virtualization', () => {
     expect(scroller.scrollTop).toBe(scroller.scrollHeight)
   })
 
+  it('re-anchors to the bottom when the VIEWPORT shrinks (composer auto-grow squeezes the list)', async () => {
+    // Regression: the follow ResizeObserver observed only the CONTENT element
+    // — its height is unchanged when the composer auto-grows (up to 200px)
+    // and squeezes this list, so the observer never fired, scrollTop stayed
+    // at its old value, and the last row ended up hidden behind the taller
+    // composer. A clientHeight resize on the SCROLL ELEMENT must re-anchor
+    // while sticky.
+    const { container } = renderMessageList(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(20)}
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
+    await flushAnimationFrames()
+    expect(scroller.scrollTop).toBe(scroller.scrollHeight)
+
+    // Simulate the composer growing: viewport clientHeight shrinks, content
+    // unchanged → ResizeObserver fires for the scroll element only.
+    const track = trackScrollTop(scroller, scroller.scrollHeight - 100) // stale: 100px above bottom
+    act(() => RO.trigger(scroller))
+    await flushAnimationFrames()
+
+    const writes = track.writes.filter((w) => w > 0)
+    expect(writes.length).toBeGreaterThan(0)
+    expect(writes[writes.length - 1]).toBe(scroller.scrollHeight)
+  })
+
   it('does not yank the viewport when content grows after the user wheels up', async () => {
     const { container, rerender } = renderMessageList(
       <MessageList

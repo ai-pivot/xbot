@@ -6,12 +6,18 @@
  * FoldedLine — it does NOT manage its own collapse state. The folding arrow
  * and toggle are handled by the parent FoldedLine / FoldedToolGroup.
  *
+ * This is the DEFAULT renderer (tools without a dedicated view in ToolRender):
+ * args are pretty-printed as syntax-highlighted JSON; detail/output renders in
+ * a bordered code panel.
+ *
  * Accepts both the new WebToolProgress type and the legacy IterationTool /
  * ToolProgress shapes (structurally compatible).
  */
-import { memo } from 'react'
+import { memo, useEffect, useMemo } from 'react'
 
 import { useI18n } from '@/providers/i18n'
+import { ensureHljsLoaded, highlightSync, useHljsReady } from './highlight'
+import { AnsiText } from './AnsiText'
 import type { IterationTool, ToolProgress } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -37,6 +43,36 @@ function detailOf(t: ToolLike): string | undefined {
   return undefined
 }
 
+/** Pretty-print the args JSON (falls back to the raw string when unparsable). */
+function prettyArgs(args: string): string {
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2)
+  } catch {
+    return args
+  }
+}
+
+/** Highlighted args JSON — CodeBlock pattern (sync highlight + lazy load). */
+function ArgsView({ args }: { args: string }) {
+  const hljsReady = useHljsReady()
+  const pretty = useMemo(() => prettyArgs(args), [args])
+  const html = useMemo(() => highlightSync(pretty, 'json'), [pretty, hljsReady])
+  useEffect(() => {
+    ensureHljsLoaded()
+  }, [])
+  return (
+    <pre
+      className="overflow-x-auto whitespace-pre rounded-md px-2.5 py-1.5 font-mono text-[12px] leading-5"
+      style={{
+        backgroundColor: 'var(--bg-primary)',
+        border: '1px solid var(--border)',
+        color: 'var(--text-primary)',
+      }}
+      {...(html != null ? { dangerouslySetInnerHTML: { __html: html } } : { children: pretty })}
+    />
+  )
+}
+
 export const ToolCallBlock = memo(function ToolCallBlock({
   tool,
 }: ToolCallBlockProps) {
@@ -50,21 +86,25 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       {args && (
         <div>
           <div className="mb-1 text-text-muted">{t('agent.args')}</div>
-          <pre className="overflow-x-auto rounded bg-bg-tertiary/60 p-2 font-mono text-[12px] text-text-primary">
-            {args}
-          </pre>
+          <ArgsView args={args} />
         </div>
       )}
       {detail && (
         <div>
           <div className="mb-1 text-text-muted">{t('agent.output')}</div>
-          <pre className="max-h-60 overflow-auto whitespace-pre-wrap rounded bg-bg-tertiary/60 p-2 font-mono text-[12px] text-text-secondary">
-            {detail}
+          <pre
+            className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md px-2.5 py-1.5 font-mono text-[12px] leading-5 text-text-secondary"
+            style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+          >
+            <AnsiText text={detail} />
           </pre>
         </div>
       )}
       {!args && !detail && summary && (
-        <pre className="whitespace-pre-wrap rounded bg-bg-tertiary/60 p-2 text-text-secondary">
+        <pre
+          className="whitespace-pre-wrap rounded-md px-2.5 py-1.5 text-text-secondary"
+          style={{ backgroundColor: 'var(--bg-secondary)' }}
+        >
           {summary}
         </pre>
       )}

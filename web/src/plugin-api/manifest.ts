@@ -26,6 +26,13 @@ export interface ViewContribution {
   entry?: string
   /** L1 声明式视图：type + props（无需 entry）。 */
   component?: ComponentDecl
+  /**
+   * 参数化动态视图（VSCode webviewPanel 语义）：不出现在 activity bar /
+   * 侧栏 tab / 布局注册表，只能通过 ctx.ui.openViewTab({viewId, params})
+   * 打开（如 git diff / commit 详情）。tab 内容由 openViewTab 的 params
+   * 参数化，同一 view 可开多个 tab 实例（按 key 去重）。
+   */
+  dynamic?: boolean
 }
 
 export interface CommandContribution {

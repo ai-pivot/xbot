@@ -44,15 +44,16 @@ describe('layoutRegistry', () => {
   })
 
   it('内置项注册到正确默认 slot', () => {
+    // 聊天为主角的手机端重设计：默认无底部导航项。
     const bottomNav = layoutRegistry.itemsFor('mobile.bottom_nav').map((i) => i.id)
-    expect(bottomNav).toContain(BUILTIN_LAYOUT_ITEMS.mobileAgent)
-    expect(bottomNav).toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
-    // 会话在工具之前（weight 0 < 1）。
-    expect(bottomNav.indexOf(BUILTIN_LAYOUT_ITEMS.mobileAgent))
-      .toBeLessThan(bottomNav.indexOf(BUILTIN_LAYOUT_ITEMS.mobileTools))
+    expect(bottomNav).toEqual([])
+    // mobileAgent 不再默认注册（agent 视图是主视图，导航在顶栏）。
+    expect(layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id))
+      .not.toContain(BUILTIN_LAYOUT_ITEMS.mobileAgent)
 
     const topBar = layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id)
     expect(topBar).toContain(BUILTIN_LAYOUT_ITEMS.mobileNewChat)
+    expect(topBar).toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
     expect(topBar).toContain(BUILTIN_LAYOUT_ITEMS.mobileSettings)
 
     const sidebar = layoutRegistry.itemsFor('desktop.sidebar').map((i) => i.id)
@@ -61,42 +62,46 @@ describe('layoutRegistry', () => {
   })
 
   it('moveItem 把项移到目标 slot 并持久化', () => {
-    // 把「会话」从底部导航移到顶栏。
-    layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileAgent, 'mobile.top_bar')
-
-    const bottomNav = layoutRegistry.itemsFor('mobile.bottom_nav').map((i) => i.id)
-    expect(bottomNav).not.toContain(BUILTIN_LAYOUT_ITEMS.mobileAgent)
+    // 把「工具」从顶栏移到底部导航（按需渲染场景）。
+    layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileTools, 'mobile.bottom_nav')
 
     const topBar = layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id)
-    expect(topBar).toContain(BUILTIN_LAYOUT_ITEMS.mobileAgent)
+    expect(topBar).not.toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
+
+    const bottomNav = layoutRegistry.itemsFor('mobile.bottom_nav').map((i) => i.id)
+    expect(bottomNav).toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
 
     // 持久化：从 localStorage 重建后仍生效。
     const raw = localStorage.getItem(LAYOUT_OVERRIDES_KEY)
     expect(raw).toBeTruthy()
     const parsed = JSON.parse(raw!)
-    expect(parsed[BUILTIN_LAYOUT_ITEMS.mobileAgent]).toBe('mobile.top_bar')
+    expect(parsed[BUILTIN_LAYOUT_ITEMS.mobileTools]).toBe('mobile.bottom_nav')
   })
 
   it('重置单个项恢复默认 slot', () => {
-    layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileTools, 'mobile.top_bar')
-    expect(layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id))
+    layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileTools, 'mobile.bottom_nav')
+    expect(layoutRegistry.itemsFor('mobile.bottom_nav').map((i) => i.id))
       .toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
 
     layoutRegistry.resetItem(BUILTIN_LAYOUT_ITEMS.mobileTools)
-    expect(layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id))
-      .not.toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
     expect(layoutRegistry.itemsFor('mobile.bottom_nav').map((i) => i.id))
+      .not.toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
+    expect(layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id))
       .toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
   })
 
   it('resetAll 恢复全部默认', () => {
-    layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileAgent, 'mobile.top_bar')
     layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileSettings, 'mobile.bottom_nav')
+    layoutRegistry.moveItem(BUILTIN_LAYOUT_ITEMS.mobileNewChat, 'desktop.info_bar')
     layoutRegistry.resetAll()
 
     const bottomNav = layoutRegistry.itemsFor('mobile.bottom_nav').map((i) => i.id)
-    expect(bottomNav).toContain(BUILTIN_LAYOUT_ITEMS.mobileAgent)
-    expect(bottomNav).not.toContain(BUILTIN_LAYOUT_ITEMS.mobileSettings)
+    expect(bottomNav).toEqual([])
+    // 被移走的项恢复默认 slot。
+    expect(layoutRegistry.itemsFor('desktop.info_bar').map((i) => i.id))
+      .not.toContain(BUILTIN_LAYOUT_ITEMS.mobileNewChat)
+    expect(layoutRegistry.itemsFor('mobile.top_bar').map((i) => i.id))
+      .toContain(BUILTIN_LAYOUT_ITEMS.mobileNewChat)
     expect(localStorage.getItem(LAYOUT_OVERRIDES_KEY)).toBe('{}')
   })
 
@@ -249,9 +254,9 @@ describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
 
   it('setSlotOrder 去重（重复 id 只保留首个位置）', () => {
     const sid = 'mobile.bottom_nav'
-    const agent = BUILTIN_LAYOUT_ITEMS.mobileAgent
-    layoutRegistry.setSlotOrder(sid, [agent, agent, BUILTIN_LAYOUT_ITEMS.mobileTools])
-    expect(layoutRegistry.getSlotOrder(sid)).toEqual([agent, BUILTIN_LAYOUT_ITEMS.mobileTools])
+    const tools = BUILTIN_LAYOUT_ITEMS.mobileTools
+    layoutRegistry.setSlotOrder(sid, [tools, tools, BUILTIN_LAYOUT_ITEMS.mobileNewChat])
+    expect(layoutRegistry.getSlotOrder(sid)).toEqual([tools, BUILTIN_LAYOUT_ITEMS.mobileNewChat])
   })
 
   it('resetItem 同时清掉 overrides 与所有 order 数组里的该 id', () => {
