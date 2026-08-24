@@ -29,6 +29,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { flushSync } from 'react-dom'
 import { transform } from 'sucrase'
 
 // 暴露到 window 供独立 ESM 插件模块使用（无法 import 内部模块路径）。
@@ -103,9 +104,15 @@ function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
   return React.createElement(Current, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
 }
 
-/** Catches render-time errors so they can't crash the host app. */
-class UIErrorBoundary extends React.Component<{ children?: React.ReactNode; fallback: React.ReactNode }, { hasError: boolean }> {
-  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode }) {
+/** Catches render-time errors so they can't crash the host app.
+ *  Streaming 期间不 surface 瞬时错误（macaron streaming 模式）：渲染失败时
+ *  显示 lastGood（连续预览）或静默占位，绝不显示「Render error」；
+ *  仅 final（committed）渲染失败才显示错误占位。 */
+class UIErrorBoundary extends React.Component<
+  { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; slot?: UISlot },
+  { hasError: boolean }
+> {
+  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; slot?: UISlot }) {
     super(props)
     this.state = { hasError: false }
   }
@@ -113,7 +120,14 @@ class UIErrorBoundary extends React.Component<{ children?: React.ReactNode; fall
     return { hasError: true }
   }
   override render() {
-    return this.state.hasError ? this.props.fallback : this.props.children
+    if (!this.state.hasError) return this.props.children
+    if (this.props.streaming) {
+      // 流式：回退到 lastGood（连续预览不闪白），无 lastGood 则静默占位。
+      const lastGood = this.props.slot?.lastGood
+      if (lastGood) return React.createElement(lastGood, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
+      return null
+    }
+    return this.props.fallback
   }
 }
 
@@ -267,14 +281,27 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
   useEffect(() => {
     if (!hostRef.current) return
     if (!rootRef.current) rootRef.current = createRoot(hostRef.current)
-    rootRef.current.render(
-      React.createElement(
-        UIErrorBoundary,
-        { fallback: '⚠️ Render error — check the generated UI syntax' },
-        React.createElement(UIHost, { slot: slotRef.current, failed })
+    // ⚠️ flushSync 同步渲染子 root：行高度在一次 React 循环内确定，避免 createRoot
+    // 异步渲染导致的"子 root 内容未渲染(高度≈0)→渲染后变高"二次变化。TanStack
+    // Virtual 的 measureElement(ResizeObserver) 会反复捕获这个高度变化 → 每次虚拟化
+    // 进出视口(genui 行 remount)都重新 createRoot → 0→实际 → 滚动跳变。同步渲染后
+    // 行高立即稳定，measure 一次校正，无跳变。
+    flushSync(() => {
+      rootRef.current!.render(
+        React.createElement(
+          UIErrorBoundary,
+          // streaming 期间不 surface 瞬时错误（macaron streaming 模式）：fallback
+          // 依赖 streaming 分支，渲染失败回退 lastGood/占位，绝不显示「Render error」。
+          {
+            fallback: '⚠️ Render error — check the generated UI syntax',
+            streaming,
+            slot: slotRef.current,
+          },
+          React.createElement(UIHost, { slot: slotRef.current, failed })
+        )
       )
-    )
-  }, [tick, failed])
+    })
+  }, [tick, failed, streaming])
 
   useEffect(() => {
     return () => {
@@ -323,9 +350,18 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
 }
 
 // ─── Partial TSX completion (streaming only) ───────────────────
+// macaron 式流式安全补全。核心语义：
+//   - JSX 打开标签（有 '>'）是"完整结构" → 补 </tag> 闭合；
+//   - 未完成的表达式 `{expr` / `fn(` / `[...` / 模板 `` ` `` —— 内核不确定会闭合，
+//     补齐 `}`/`)` 往往生成非法代码（如 `{data.map(x =>}`）。因此回滚（截断）到该
+//     分隔符的起点之前 —— 让代码停在"上一个语义完整点"，必然可编译可预览；
+//   - 截断后剩余的函数体 `{` / return `(` / 完整 JSX 元素 → 补齐。
+// 编译失败仍由 compileAndLoad 回退 lastGood（+ ErrorBoundary streaming 不 surface），
+// 故流式任何瞬间都不会出现「Render error」（macaron streaming 模式）。
 function completePartialTsx(source: string): string {
   let out = source
-  const stack: Array<{ kind: 'tag' | 'brace' | 'paren' | 'bracket' | 'tpl'; name: string; hadGt: boolean }> = []
+  // startIdx = 分隔符在 source 中的起点，用于表达式回滚截断。
+  const stack: Array<{ kind: 'tag' | 'brace' | 'paren' | 'bracket' | 'tpl'; name: string; hadGt: boolean; startIdx: number }> = []
   let i = 0
   while (i < out.length) {
     const ch = out[i]
@@ -345,13 +381,13 @@ function completePartialTsx(source: string): string {
       let j = i + 1
       let closed = false
       while (j < out.length) { if (out[j] === '\\') { j += 2; continue } if (out[j] === '$' && out[j + 1] === '{') { break } if (out[j] === '`') { closed = true; j++; break } j++ }
-      if (!closed) { stack.push({ kind: 'tpl', name: '`', hadGt: false }); break }
+      if (!closed) { stack.push({ kind: 'tpl', name: '`', hadGt: false, startIdx: i }); break }
       i = j
       continue
     }
-    if (ch === '{') { stack.push({ kind: 'brace', name: '{', hadGt: false }); i++; continue }
-    if (ch === '(') { stack.push({ kind: 'paren', name: '(', hadGt: false }); i++; continue }
-    if (ch === '[') { stack.push({ kind: 'bracket', name: '[', hadGt: false }); i++; continue }
+    if (ch === '{') { stack.push({ kind: 'brace', name: '{', hadGt: false, startIdx: i }); i++; continue }
+    if (ch === '(') { stack.push({ kind: 'paren', name: '(', hadGt: false, startIdx: i }); i++; continue }
+    if (ch === '[') { stack.push({ kind: 'bracket', name: '[', hadGt: false, startIdx: i }); i++; continue }
     if (ch === '}') { popTop(stack, 'brace'); i++; continue }
     if (ch === ')') { popTop(stack, 'paren'); i++; continue }
     if (ch === ']') { popTop(stack, 'bracket'); i++; continue }
@@ -360,9 +396,9 @@ function completePartialTsx(source: string): string {
       while (j < out.length && /[a-zA-Z0-9.-]/.test(out[j])) j++
       const name = out.slice(i + 1, j)
       const gt = out.indexOf('>', j)
-      if (gt === -1) { out = out.slice(0, i); break }
+      if (gt === -1) { out = out.slice(0, i); break } // mid-tag → 回滚到 '<' 前
       const isSelfClose = out[gt - 1] === '/'
-      stack.push({ kind: 'tag', name, hadGt: !isSelfClose })
+      stack.push({ kind: 'tag', name, hadGt: !isSelfClose, startIdx: i })
       if (isSelfClose) stack.pop()
       i = gt + 1
       continue
@@ -373,6 +409,31 @@ function completePartialTsx(source: string): string {
     }
     i++
   }
+
+  // 找最内层未闭合的"表达式类"分隔符（brace/paren/bracket/tpl）。若存在，回滚
+  // （截断）到其起点 —— 该表达式可能未完成，补齐会非法。这使代码停在语义完整点。
+  let cutIdx = -1
+  for (let k = stack.length - 1; k >= 0; k--) {
+    const s = stack[k]
+    if (s.kind === 'brace' || s.kind === 'paren' || s.kind === 'bracket' || s.kind === 'tpl') {
+      cutIdx = s.startIdx
+      break
+    }
+  }
+  if (cutIdx >= 0) {
+    out = out.slice(0, cutIdx)
+    // 截断后，栈中该分隔符及其后的项不再存在；其前的 JSX 完整标签仍保留。
+    // 重建栈：只保留 startIdx < cutIdx 的项。
+    const kept = stack.filter((s) => s.startIdx < cutIdx)
+    const closers = buildClosers(kept)
+    return out + closers
+  }
+
+  // 没有表达式未闭合 —— 只需补齐完整 JSX 标签。
+  return out + buildClosers(stack)
+}
+
+function buildClosers(stack: Array<{ kind: 'tag' | 'brace' | 'paren' | 'bracket' | 'tpl'; name: string; hadGt: boolean; startIdx: number }>): string {
   const closers: string[] = []
   for (let k = stack.length - 1; k >= 0; k--) {
     const s = stack[k]
@@ -385,8 +446,7 @@ function completePartialTsx(source: string): string {
       closers.push(`</${s.name}>`)
     }
   }
-  if (closers.length > 0) out += closers.join('')
-  return out
+  return closers.join('')
 }
 
 function popTop(stack: Array<{ kind: string }>, kind: string) {

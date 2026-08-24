@@ -59,6 +59,9 @@ interface MessageListProps {
 }
 
 const ESTIMATE = 120
+// genui 行（顶层面板）的实际高度通常 ~560px（header + 内容区 max-h-520），远高于
+// 普通行。estimate 用该基数可大幅缩小与 measureElement 实测的差距 → 滚动跳变小。
+const GENUI_ESTIMATE = 560
 const EDGE_EPSILON = 2
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -200,7 +203,15 @@ export function MessageList({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ESTIMATE,
+    estimateSize: (index) => {
+      const row = rows[index]
+      if (!row) return ESTIMATE
+      // genui 行（面板）远高于普通行（ESTIMATE=120）：返回较大的基数，缩小
+      // estimate 与实际高度的差距 → 滚动经过未测量行时 measureElement 校正幅度小
+      // → 跳变减小。配合 SandboxedUI 用 flushSync 同步渲染（行高一次确定），根治滚动跳变。
+      if (rowHasGenUI(row)) return GENUI_ESTIMATE
+      return ESTIMATE
+    },
     overscan: dynamicOverscan,
     getItemKey: (index) => {
       const r = rows[index]
@@ -898,6 +909,18 @@ function NavButton({
       {children}
     </button>
   )
+}
+
+// 判断一行是否含 GenUI 面板（committed：迭代里有 uiMode 工具；live：流式 genuiContent）。
+// estimateSize 据此返回更大的基数，缩小 estimate 与实际高度差距 → 滚动跳变小。
+export function rowHasGenUI(row: ChatMessage): boolean {
+  for (const iter of row.iterations ?? []) {
+    for (const tool of iter.tools ?? []) {
+      if (tool.uiMode) return true
+    }
+  }
+  if ((row as ChatMessage & { genuiContent?: string }).genuiContent) return true
+  return false
 }
 
 export function canRewindMessage(
