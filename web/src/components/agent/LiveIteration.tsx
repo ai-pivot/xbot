@@ -9,7 +9,7 @@
  *
  * Render order: T → O → C (Spec A §2).
  */
-import { memo } from 'react'
+import { memo, useEffect } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
@@ -25,9 +25,10 @@ import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
-import { IterationSlot } from '@/plugin-runtime/iteration-render'
+import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
+import type { LiveStreamStats } from '@/plugin-api'
 
 interface LiveIterationProps {
   progress: ProgressSnapshot
@@ -95,6 +96,18 @@ export const LiveIteration = memo(function LiveIteration({
   const reasoningStreaming = isLive
   const tw = useTypewriter(isLive ? textContent : '')
   const rw = useTypewriter(isLive ? reasoningContent : '')
+
+  // 更新全局实时生成指标 store（ModelStatusBar / status 插件读，解耦 IterationSlot
+  // Context 只能在 LiveIteration 内有效的问题）。LiveIteration 卸载（streaming 结束 /
+  // committed）时清空 → ModelStatusBar 回到 idle 态。⚠️ 必须在所有条件 return 之前。
+  useEffect(() => {
+    setGlobalLiveStats({
+      tokensPerSec: progress.streamStats?.tokensPerSec,
+      ttftMs: progress.streamStats?.ttftMs,
+      completionTokens: progress.tokenUsage?.completionTokens,
+    } as LiveStreamStats)
+    return () => setGlobalLiveStats({} as LiveStreamStats)
+  }, [progress.streamStats, progress.tokenUsage])
   // MarkdownRenderer receives the complete source text. It parses only when
   // this source changes; the typewriter changes visibleChars and clips the
   // already-rendered text nodes instead of reparsing Markdown on every tick.

@@ -28,6 +28,7 @@ import {
   selectModel,
 } from '@/components/agent/api'
 import type { Subscription, ModelEntry } from '@/types/shared'
+import { useGlobalLiveStats } from '@/plugin-runtime/iteration-render'
 
 interface ModelStatusBarProps {
   channel: string
@@ -46,6 +47,12 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
+function fmtMs(ms?: number): string {
+  if (!ms || ms <= 0) return ''
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
 export function ModelStatusBar({
   channel,
   chatID,
@@ -58,6 +65,8 @@ export function ModelStatusBar({
 }: ModelStatusBarProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
+  // 全局实时生成指标（LiveIteration 流式更新，解耦 IterationSlot Context）。
+  const liveStats = useGlobalLiveStats()
   const [currentSubID, setCurrentSubID] = useState(preloadedSubID ?? '')
   const [currentModel, setCurrentModel] = useState(preloadedModel ?? '')
   const [subscriptions, setSubscriptions] = useState<Subscription[]>(preloadedSubs ?? [])
@@ -241,6 +250,24 @@ export function ModelStatusBar({
       {/* Thinking indicator */}
       {thinkingLabel && (
         <span className="text-muted-foreground/70">{thinkingLabel}</span>
+      )}
+
+      {/* 迭代实时指标（iter stat）—— streaming 时显示精致实时指示，idle 隐藏 */}
+      {liveStats.tokensPerSec !== undefined && liveStats.tokensPerSec > 0 && (
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-70" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+          </span>
+          <span className="font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+            {liveStats.tokensPerSec.toFixed(0)} tok/s
+          </span>
+          {liveStats.ttftMs !== undefined && liveStats.ttftMs > 0 && (
+            <span className="text-muted-foreground/70 tabular-nums">
+              · ttft {fmtMs(liveStats.ttftMs)}
+            </span>
+          )}
+        </span>
       )}
 
       {/* Token usage */}

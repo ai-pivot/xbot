@@ -20,8 +20,33 @@ import { PluginView } from './PluginView'
 // 通过 window.React 获取 React（避免独立 bundle 重复打包 React）。
 if (typeof window !== 'undefined') {
   const w = window as unknown as { __xbot_iteration__?: unknown; React?: unknown }
-  w.__xbot_iteration__ = { useIterationStats }
+  w.__xbot_iteration__ = { useIterationStats, useGlobalLiveStats, subscribeGlobalLiveStats, getGlobalLiveStats }
   w.React = React
+}
+
+// ── 全局实时生成指标 store（ModelStatusBar / status 插件用）──────────────────────
+// 解耦自 IterationSlot 的 React Context：后者只在 LiveIteration（迭代处）有效，
+// status bar（AppShell 层）拿不到。LiveIteration 每次流式指标变化 setGlobalLiveStats，
+// 独立 ESM 插件 / ModelStatusBar 经 useGlobalLiveStats / subscribeGlobalLiveStats 读取。
+let _globalLiveStats: LiveStreamStats = {}
+const _globalLiveListeners = new Set<(s: LiveStreamStats) => void>()
+
+export function setGlobalLiveStats(s: LiveStreamStats): void {
+  _globalLiveStats = s
+  _globalLiveListeners.forEach((f) => f(s))
+}
+export function getGlobalLiveStats(): LiveStreamStats {
+  return _globalLiveStats
+}
+export function subscribeGlobalLiveStats(cb: (s: LiveStreamStats) => void): () => void {
+  _globalLiveListeners.add(cb)
+  return () => { _globalLiveListeners.delete(cb) }
+}
+/** React hook：订阅全局实时生成指标（ModelStatusBar 宿主组件 / 独立插件可用）。 */
+export function useGlobalLiveStats(): LiveStreamStats {
+  const [s, setS] = useState(_globalLiveStats)
+  useEffect(() => subscribeGlobalLiveStats(setS), [])
+  return s
 }
 
 /** 传给迭代插件的联合数据：完成迭代（stats）或进行中的 live 流（live）。 */
