@@ -19,7 +19,7 @@ import { SweepText } from './SweepText'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
-import { isGenUITool } from './genui'
+
 import type { CollapseLevel } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -174,7 +174,7 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
   const name = tool.name || 'tool'
 
   // GenUI tool: no card chrome, just render the GenUI directly.
-  if (isGenUITool(tool)) {
+  if (tool.uiMode) {
     return <ToolRender tool={tool} />
   }
 
@@ -210,8 +210,8 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   // GenUI tools have special status: always visible, never folded.
   // Metadata-driven split (ui.mode === 'genui'); ToolRender dispatches via
   // the messageRenderer runtime (内置 genui renderer).
-  const genuiTools = tools.filter((t) => isGenUITool(t))
-  const otherTools = tools.filter((t) => !isGenUITool(t))
+  const genuiTools = tools.filter((t) => t.uiMode)
+  const otherTools = tools.filter((t) => !t.uiMode)
 
   const genuiElements = genuiTools.map((tool, i) => (
     <ToolCard key={`genui-${tool.label}-${i}`} tool={tool} />

@@ -67,51 +67,25 @@ type typeMessage struct {
 
 // ─── display_html tool description (fancy GenUI) ───────────────────────────
 
-const displayHTMLDesc = `Render an interactive React UI for the user. The UI renders live in the chat as a streaming preview.
+const displayHTMLDesc = `Render an interactive UI for the user. The UI renders live in the chat as a streaming preview.
 
-You write a single TSX module with ` + "`export default function App()`" + ` as the default export. React hooks are available. Tailwind classes for styling (use ` + "`dark:`" + ` variants for dark mode — the background adapts automatically).
-
-GLOBAL COMPONENT LIBRARY (window.XBOT_UI — use directly, no import needed):
-- <XBOT_UI.Button variant="primary|ghost|outline|danger|success" onClick={...}>...</XBOT_UI.Button>
-- <XBOT_UI.Card title="..." subtitle="..." actions={...}>...</XBOT_UI.Card>
-- <XBOT_UI.Stat label="..." value={...} delta={0.12} trend="up|down|flat" icon={...}/>
-- <XBOT_UI.Sparkline data={[1,5,3,8]} color="#22c55e"/>
-- <XBOT_UI.Progress value={0.7} label="Training" color="bg-emerald-500"/>
-- <XBOT_UI.Badge text="NEW" color="green|red|blue|amber|indigo|gray" dot/>
-- <XBOT_UI.Table data={[{...}]} columns={[{key,label,render?}]} maxHeight={300}/>
-- <XBOT_UI.Tabs tabs={[{key,label,content}]} defaultKey="..."/>
-- <XBOT_UI.Modal open={...} onClose={...} title="..." width={480}>...</XBOT_UI.Modal>
-- <XBOT_UI.Form fields={[{name,label,type,options?}]} onSubmit={(values)=>{...}} submitLabel="Save"/>
-- <XBOT_UI.Toast show={...} text="Saved" kind="success|error|info"/>
-
-CHARTS (declarative ECharts — pass an ECharts option object):
-<XBOT_UI.Chart option={{ tooltip:{}, xAxis:{type:'category',data:[...]}, yAxis:{type:'value'}, series:[{type:'line'|'bar'|'pie', data:[...], smooth:true, areaStyle:{}}] }} height={280} />
-
-3D (three.js scene — imperative inside useEffect):
-const ref = XBOT_UI.useThreeScene((scene, THREE) => { scene.add(new THREE.Mesh(...)) })
-
-ANIMATION (framer-motion):
-<XBOT_UI.motion.div initial={{opacity:0,y:20}} animate={{opacity:1,y:0}} transition={{duration:0.5}}>...</XBOT_UI.motion.div>
-
-ICONS (lucide subset): <XBOT_UI.Icon name="check" size={16}/>
+You write a single TSX module with ` + "`export default function App()`" + ` as the default export. React hooks (useState, useEffect, useMemo, useRef, useCallback, useContext, useReducer, useLayoutEffect, useId, useSyncExternalStore) are available. Standard HTML elements and Tailwind CSS classes work (use ` + "`dark:`" + ` variants for dark mode — the background adapts automatically). You may also use inline style={{...}} and <style>...</style> blocks.
 
 INTERACTION — two ways:
-1. Agent callback: data-action="save" data-* attributes → click is routed to the agent (agent sees 🖱️ [UI Action] save State: {...}).
+1. Agent callback: add data-action="..." (plus any data-* attributes you want passed back) to an element; a click routes the action to the agent (the agent sees 🖱️ [UI Action] <action> State: {<your data-*>}).
 2. Local state: React useState/useEffect for pure client-side interactivity.
 
 RULES:
-- Write a single TSX module with ` + "`export default function App()`" + `.
-- Use Tailwind CSS classes for all styling. Background is white in light mode, slate-950 in dark. Text must be dark in light (text-gray-900) and light in dark (text-slate-100). Avoid hardcoded colors.
-- No imports needed — React and XBOT_UI are available globally.
-- Keep it self-contained; reach visible markup early so the preview streams in progressively.
+- Write one self-contained TSX module; no imports — React is available globally.
+- Prefer standard HTML elements + Tailwind for styling; text must be legible in both light and dark mode.
+- Avoid global side effects on document/window; keep the component self-contained.
+- Reach visible markup early so the preview streams in progressively.
 - Example:
   export default function App() {
     const [n, setN] = useState(0)
     return (
       <div className="p-4">
-        <XBOT_UI.Stat label="Clicks" value={n} />
-        <XBOT_UI.Button variant="primary" onClick={() => setN(n+1)}>+1</XBOT_UI.Button>
-        <XBOT_UI.Button variant="ghost" data-action="reset">Reset</XBOT_UI.Button>
+        <button className="rounded bg-indigo-500 px-3 py-1 text-white" onClick={() => setN(n+1)}>count: {n}</button>
       </div>
     )
   }`
@@ -180,7 +154,7 @@ func declareTools(enc *json.Encoder) {
 				Name:        "display_html",
 				Description: displayHTMLDesc,
 				Parameters: []toolParam{
-					{Name: "code", Type: "string", Description: "TSX module with default export App component. Uses React hooks and the XBOT_UI component library.", Required: true},
+					{Name: "code", Type: "string", Description: "Self-contained TSX module with default export App component. React hooks are available (no imports, no component library).", Required: true},
 				},
 				Channels: []string{"web"},
 				UI: &uiDecl{

@@ -23,7 +23,7 @@ import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
 import { ToolRender } from './ToolRender'
-import { isGenUITool } from './genui'
+
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 import type { WebToolProgress } from '@/types/shared'
@@ -179,7 +179,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
     const genuiTools: WebToolProgress[] = []
     for (const iter of iterations) {
       for (const tool of iter.tools) {
-        if (isGenUITool(tool)) {
+        if (tool.uiMode) {
           genuiTools.push(tool)
         }
       }

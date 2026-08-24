@@ -13,7 +13,7 @@ import { memo } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
-import { GenUIBlock } from './GenUIBlock'
+import { SandboxedUI } from '@/plugins/SandboxedUI'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ShimmerThinking } from './ShimmerThinking'
@@ -232,7 +232,7 @@ export const LiveIteration = memo(function LiveIteration({
 
       {/* Streaming GenUI — after content, before tools (GenUI is a tool product) */}
       {hasGenUI && (
-        <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
+        <SandboxedUI code={progress.genuiContent} streaming={progress.streaming} />
       )}
 
       {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}
