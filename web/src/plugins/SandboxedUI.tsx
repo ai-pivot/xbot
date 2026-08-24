@@ -85,10 +85,6 @@ interface UISlot {
   lastGood: React.ComponentType | null
 }
 
-function isClassComponent(c: unknown): boolean {
-  return typeof c === 'function' && Boolean((c as { prototype?: { isReactComponent?: unknown } }).prototype?.isReactComponent)
-}
-
 /** Module-level STABLE host: same fiber across regenerations → state preserved. */
 function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
   if (failed && !slot.lastGood) {
@@ -96,9 +92,14 @@ function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
   }
   const Current = slot.current || slot.lastGood
   if (!Current) return null
-  if (typeof Current === 'function' && !isClassComponent(Current)) {
-    return (Current as (props: Record<string, unknown>) => React.ReactNode)({ 'data-sandboxed-ui-root': true })
-  }
+  // ⚠️ MUST use createElement(Current) (NOT call Current(props) directly).
+  // The direct-call trick binds the generated component's hooks to THIS fiber, so
+  // they're preserved across regenerations — but LLM streaming CHANGES the hook
+  // count (partial code has fewer useState), which throws React #310
+  // ("Rendered more hooks than during the previous render") → broken state.
+  // createElement gives Current its OWN fiber: a STABLE Current (compiler-cache
+  // hit on the final code) is reconciled (state preserved); a changing Current
+  // (streaming) remounts harmlessly — NO #310.
   return React.createElement(Current, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
 }
 
@@ -293,7 +294,8 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       while (node && node !== el) {
         const action = node.getAttribute?.('data-action')
         if (action) {
-          e.stopPropagation()
+          // ⚠️ 不 stopPropagation：capture 阶段截断会杀掉 React 的 onClick。
+          // 一个元素可同时有 data-action(回传 agent) + onClick(本地 state)，两者都应生效。
           const data: Record<string, string> = {}
           for (const attr of Array.from(node.attributes ?? [])) {
             if (attr.name.startsWith('data-') && attr.name !== 'data-action') data[attr.name.slice(5)] = attr.value
