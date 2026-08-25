@@ -1,4 +1,4 @@
-.PHONY: fmt lint test build run dev clean ci clean-memory web-build web-lint web-dev install-cli
+.PHONY: fmt lint test build run dev clean ci clean-memory web-build web-lint web-dev install-cli plugins-build plugins-install plugins-clean
 
 BINARY_NAME := xbot
 
@@ -52,4 +52,24 @@ web-dev:
 install-cli:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o /tmp/xbot-cli ./cmd/xbot-cli
 	sudo mv /tmp/xbot-cli /usr/local/bin/
+
+# ── Built-in plugins (repo plugins/) ─────────────────────────────────────────
+# Two ways to use them:
+#   1. Install into ~/.xbot/plugins/ (production-style):
+#        make plugins-install
+#   2. Run directly from the repo checkout (development):
+#        make plugins-build
+#        XBOT_PLUGIN_DIRS="$(CURDIR)/plugins" ./xbot
+plugins-build:
+	$(MAKE) -C plugins/xbot-genui build
+	$(MAKE) -C plugins/xbot-git-fancy build
+
+plugins-install: plugins-build
+	$(MAKE) -C plugins/xbot-genui install
+	$(MAKE) -C plugins/xbot-git-fancy install
+	@echo "Builtin plugins installed to $$HOME/.xbot/plugins/. Reload to activate: tui_control(action=reload_plugins)"
+
+plugins-clean:
+	$(MAKE) -C plugins/xbot-genui clean
+	$(MAKE) -C plugins/xbot-git-fancy clean
 

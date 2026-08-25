@@ -425,12 +425,32 @@ func (m PluginManifest) ParseVersion() (major, minor, patch int, err error) {
 	return parseSemver(m.Version)
 }
 
-// DefaultPluginDirs returns the standard plugin search paths.
+// DefaultPluginDirs returns the standard plugin search paths:
+// the user plugin directories plus any directories listed in the
+// XBOT_PLUGIN_DIRS environment variable.
+//
+// XBOT_PLUGIN_DIRS is a path-separated list (":" on Unix, ";" on Windows)
+// of extra directories to scan. It exists so bundled plugins that ship in
+// the repository (plugins/xbot-genui, plugins/xbot-git-fancy) can be used
+// directly from source — without copying them into ~/.xbot/plugins first:
+//
+//	XBOT_PLUGIN_DIRS=/path/to/xbot/plugins xbot
+//
+// User-installed copies always take precedence: they are scanned first, and
+// discovery dedups by plugin ID (first match wins).
 func DefaultPluginDirs(xbotHome string) []string {
-	return []string{
+	dirs := []string{
 		filepath.Join(xbotHome, "plugins"),            // user-installed plugins
 		filepath.Join(xbotHome, "plugins", "builtin"), // built-in plugin packages
 	}
+	if extra := os.Getenv("XBOT_PLUGIN_DIRS"); extra != "" {
+		for _, d := range filepath.SplitList(extra) {
+			if d = strings.TrimSpace(d); d != "" {
+				dirs = append(dirs, d)
+			}
+		}
+	}
+	return dirs
 }
 
 // VerifyChecksum reads plugin.sha256 from dir and verifies it matches

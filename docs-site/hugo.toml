@@ -71,6 +71,10 @@ enableGitInfo = true
     pageRef = "/features"
     weight = 30
   [[languages.en.menu.main]]
+    name = "Plugins"
+    pageRef = "/plugins"
+    weight = 35
+  [[languages.en.menu.main]]
     name = "Guides"
     pageRef = "/guides"
     weight = 40
@@ -133,6 +137,10 @@ enableGitInfo = true
     name = "功能"
     pageRef = "/features"
     weight = 30
+  [[languages.zh-cn.menu.main]]
+    name = "插件"
+    pageRef = "/plugins"
+    weight = 35
   [[languages.zh-cn.menu.main]]
     name = "指南"
     pageRef = "/guides"

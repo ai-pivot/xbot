@@ -132,6 +132,31 @@ xbot 使用**订阅系统**——可创建多个（如工作用 Claude、个人�
 
 详见[渠道文档](https://ai-pivot.github.io/xbot/zh-cn/channels/)。
 
+## 插件系统
+
+xbot 拥有完善的插件系统，支持四种插件类型：
+
+| 类型 | 运行时 | 适用场景 |
+|------|--------|----------|
+| **Script** | Bash 脚本 | 快速 widget、git 状态、diff 预览 |
+| **Go 原生** | 进程内 | 高性能工具、hooks、上下文增强 |
+| **Stdio** | 外部进程（Python/Node/任意语言） | 语言特定集成 |
+| **Web** | ESM 模块（浏览器） | UI 面板、消息渲染器、布局扩展 |
+
+内置插件：`xbot-genui`（GenUI 渲染）、`xbot-git-fancy`（git diff/commit 查看器）。
+
+```bash
+# 构建并安装内置插件
+make plugins-install
+
+# 或从仓库直接运行（开发模式）
+make plugins-build
+XBOT_PLUGIN_DIRS="$(pwd)/plugins" ./xbot
+```
+
+完整插件文档：**[插件系统](https://ai-pivot.github.io/xbot/zh-cn/plugins/)**
+——涵盖 manifest、hooks、widgets、工具、stdio JSON 协议、Web 插件类型契约 API、Cookbook 开发指南和完整 API 参考。
+
 ## 从源码构建
 
 ```bash
