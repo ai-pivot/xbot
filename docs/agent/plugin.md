@@ -56,6 +56,10 @@
 - **Web 前端**：`plugin_config` RPC 返回所有插件 schema + 当前值；`plugin_config_set` 改配置后经 `web_plugin_config_changed` WS 广播，前端插件 `ctx.config.onConfigChange` 热重载。
 - **变更通知**：`PluginEventType` 增加 `config_changed`；`PluginConfigStore` 的订阅者机制驱动。
 
+⚠️ 两个坑（都踩过、浪费了多轮排查）：
+- **`plugin/permissions.go` 的 `allPermissions` 白名单必须与前端 `Permission` 类型逐字同步。** 新增前端权限 `'config'` 时后端漏注册 `PermConfig` → `validateManifest` 拒收声明 `permissions:["config"]` 的插件（reload 报 `unknown permission "config"`）。白名单编译进 Go 二进制，修复后**必须重启 server** 才生效。守护测试 `plugin/permissions_test.go:TestAllFrontendPermissionsRegistered`（前端 7 个权限 events/commands/rpc/plugins/ui/config 都要在后端白名单）。
+- **核心 RPC 方法名绝不能含点号。** `web/src/plugin-runtime/rpc.ts` `FetchRpcTransport` 用「method 是否含 `.`」判断路由：含点 → 包装进 `web_plugin_rpc`，后端 `resolvePluginRPCMethod` 按最长前缀匹配插件 ID 路由到插件进程。核心 RPC 必须无点——插件配置是 `plugin_config` / `plugin_config_set`，不是 `plugin.get_config`（后者被误当插件 ID=`plugin`，`ctx.config.get()` 静默失败、被 `.catch` 吞掉，配置永远用默认值）。
+
 ### Plugin States
 - StateDiscovered → StateActive → StateDeactivating → StateInactive
 - StateError (加载/运行时错误)

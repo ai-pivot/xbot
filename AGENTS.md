@@ -448,6 +448,8 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **`LLMCallbacks` max_context/max_output signatures take explicit `(subID, model)`.** `LLMGetMaxContext(senderID, subID, model)` / `LLMSetMaxContext(senderID, subID, model, maxContext)` — same for MaxOutputTokens. When subID/model are non-empty (feishu model tab), the callback writes per-(subID, model) PerModelConfig directly via `Agent.*ForSubModel` methods. When empty (web legacy), falls back to session resolution. Channel UIs MUST pass the (subID, model) from the model selector — never resolve subscription from model name alone (project policy). `settings_set_model` handler rejects option values without the `subID|model` separator.
 
 ### Plugin System
+- **核心 RPC 方法名绝不能含点号（`.`）——否则被 `web_plugin_rpc` 误路由到插件进程。** 前端 `FetchRpcTransport`（`web/src/plugin-runtime/rpc.ts`）用「method 是否含 `.`」判断路由：含点 → 包装进 `web_plugin_rpc`，后端 `resolvePluginRPCMethod` 按最长前缀匹配插件 ID 路由到插件。因此**核心 RPC（前后端固定 handler，不走插件进程）必须用无点名字**——插件配置的核心 RPC 是 `plugin_config` / `plugin_config_set`，不是 `plugin.get_config`（后者被误当插件 ID=`plugin`，`ctx.config.get()` 静默失败、被 `.catch` 吞掉，配置永远用默认值——本次 iteration-stats「关 TTFT 无效」的真凶）。
+- **`plugin/permissions.go` 的 `allPermissions` 白名单必须与前端 `Permission` 类型逐字同步。** 新增前端权限（如 `'config'`）时后端 `allPermissions` 漏注册 → `validateManifest` 拒收该插件（`unknown permission "config"`，reload 失败）。白名单编译进 Go 二进制，修复后**必须重启 server** 才生效。前端 7 个权限 `events/commands/rpc/plugins/ui/config` + 后端各 `PermXxx` 常量都要一一对应；守护测试 `plugin/permissions_test.go:TestAllFrontendPermissionsRegistered`。
 - **Plugin system is opt-in** — only activates when `plugins.enabled: true` in config.json. No plugin loading happens without explicit user consent.
 - **`pm.workDir` is `atomic.Value` (not `string`).** `activate()` may be called while `pm.mu` write lock is held — reading workDir must be lock-free. Never change it back to `string` or `activate`/`InstallPlugin` will deadlock.
 - **`runAndUpdate()` does NOT write global slot cache.** It calls `NotifyUpdated()` instead of `UpdateWidget()`. Writing global cache causes cross-session overwrites (session B's git branch overwrites session A's).
@@ -591,7 +593,12 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 ## Project Context
 
-`ProjectContextMiddleware` auto-loads this file into system prompt. After code changes, update relevant Knowledge Files to keep documentation in sync.
+`ProjectContextMiddleware` auto-loads this file into system prompt. After code changes, update the relevant Knowledge Files to keep documentation in sync.
+
+**⚠️ 每次代码改动必须同时维护 docs-site 文档站点。** 项目有三层文档，改动后要同步对齐：
+1. **AGENTS.md**（本文件）— 关键 gotcha 内联在这里，保持全局可见。
+2. **`docs/agent/`** — 内部知识文件（agent 用 Read 按需查阅）。
+3. **`docs-site/content/{en,zh-cn}/`** — 面向用户的 Hugo 文档站点（GeekDoc 主题，中英双语）。改动了 **公共 API、插件系统、配置、工具、setup 流程** 时必须找到对应页面（`plugins/`、`tools/`、`getting-started/` 等）同步更新**两个语言版本**，不能只更新内部知识文件。漏掉 docs-site 会让用户读到过时文档，和代码不同步。
 
 ### No Hacks, No Fallbacks, No Defensive Programming
 

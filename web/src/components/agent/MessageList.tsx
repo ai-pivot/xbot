@@ -215,12 +215,6 @@ export function MessageList({
       if (rowHasGenUI(row)) {
         const key = stableRowKey(row)
         const cached = key && genuiHeights.has(key) ? genuiHeights.get(key)! : null
-        // [GENUI_JUMP_DIAG] 记录 estimate 返回值（区分 estimate 是否在反复变）
-        if (cached == null) {
-          console.log(`[GENUI_JUMP_DIAG] estimate MISS key=${key} → use GENUI_ESTIMATE=${GENUI_ESTIMATE}`)
-        } else {
-          console.log(`[GENUI_JUMP_DIAG] estimate HIT key=${key} → cached=${cached}`)
-        }
         return cached ?? GENUI_ESTIMATE
       }
       return ESTIMATE
@@ -261,31 +255,6 @@ export function MessageList({
     }
   }, [virtualizer])
 
-  // [GENUI_JUMP_DIAG] totalSize / scrollTop 突变监听 —— 定位跳变到底来自哪
-  // （totalSize 突变=行高/行数变化；scrollTop 突变=滚动被校正/跟随）。
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    let prevTotal = virtualizer.getTotalSize()
-    let prevScroll = el.scrollTop
-    let lastLog = 0
-    const id = setInterval(() => {
-      const total = virtualizer.getTotalSize()
-      const scroll = el.scrollTop
-      const now = Date.now()
-      const dTotal = Math.abs(total - prevTotal)
-      const dScroll = Math.abs(scroll - prevScroll)
-      // 只在突变明显且距上次日志 > 300ms 时打印，避免刷屏
-      if ((dTotal > 50 || dScroll > 50) && now - lastLog > 300) {
-        lastLog = now
-        console.log(`[GENUI_JUMP_DIAG] total ${prevTotal}→${total} (Δ${Math.round(dTotal)}) | scrollTop ${prevScroll}→${scroll} (Δ${Math.round(dScroll)}) | genuiHeights=[${Array.from(genuiHeights.entries()).map(([k, v]) => `${k}:${Math.round(v)}`).join(', ')}]`)
-      }
-      prevTotal = total
-      prevScroll = scroll
-    }, 50)
-    return () => clearInterval(id)
-  }, [virtualizer])
-
   // ── GenUI 行高度固化（measure 一次后永久固定，禁止预测/重测）──────────────
   // TanStack 默认 measureElement 在 genui 行滚出视口（虚拟化卸载）再滚回时会重新
   // 测量独立 createRoot 的实际高度（内容不稳定）→ estimate(400)↔measure 反复震荡
@@ -311,13 +280,11 @@ export function MessageList({
           // 首测：读实际高度写 map（固化），然后交给 TanStack 首次测量。
           const rect = node.getBoundingClientRect()
           if (rect.height > 0) genuiHeights.set(key, rect.height)
-          console.log(`[GENUI_JUMP_DIAG] measure FIRST set key=${key} → height=${rect.height}`)
         }
       }
       // 非 genui 行 / genui 首测：交给 TanStack 默认 measureElement（ResizeObserver 观测）。
       virtualizer.measureElement(node)
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [rows, virtualizer.measureElement],
   )
 

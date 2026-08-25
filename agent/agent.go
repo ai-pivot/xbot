@@ -50,8 +50,8 @@ func assertNoSystemPersist(m llm.ChatMessage) error {
 }
 
 // copyMessages creates a shallow copy of the messages slice so that
-// in-place modifications (e.g. stripSystemReminder) don't mutate the
-// original cfg.Messages backing array or session storage.
+// in-place modifications don't mutate the original cfg.Messages backing
+// array or session storage.
 func copyMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 	cpy := make([]llm.ChatMessage, len(msgs))
 	copy(cpy, msgs)

@@ -6,7 +6,7 @@ import { PluginConfigService } from './config'
 function makeRpc() {
   const rpc = {
     call: vi.fn(async (_method: string, _params: unknown) => {
-      return { values: { mode: 'auto' }, configuration: { properties: {} } }
+      return { plugins: [{ values: { mode: 'auto' } }] }
     }),
     notify: vi.fn(),
   } as unknown as RPCAPI
@@ -14,21 +14,21 @@ function makeRpc() {
 }
 
 describe('PluginConfigService', () => {
-  it('forPlugin.get calls plugin.get_config with the plugin id', async () => {
+  it('forPlugin.get calls the core plugin_config RPC (no dot) with the plugin id', async () => {
     const { rpc } = makeRpc()
     const svc = new PluginConfigService(rpc)
     const api = svc.forPlugin('xbot.git')
     const values = await api.get()
-    expect(rpc.call).toHaveBeenCalledWith('plugin.get_config', { id: 'xbot.git' })
+    expect(rpc.call).toHaveBeenCalledWith('plugin_config', { id: 'xbot.git' })
     expect(values).toEqual({ mode: 'auto' })
   })
 
-  it('forPlugin.set calls plugin.set_config with id/key/value', async () => {
+  it('forPlugin.set calls the core plugin_config_set RPC with id/key/value', async () => {
     const { rpc } = makeRpc()
     const svc = new PluginConfigService(rpc)
     const api = svc.forPlugin('xbot.git')
     await api.set('mode', 'manual')
-    expect(rpc.call).toHaveBeenCalledWith('plugin.set_config', {
+    expect(rpc.call).toHaveBeenCalledWith('plugin_config_set', {
       id: 'xbot.git',
       key: 'mode',
       value: 'manual',

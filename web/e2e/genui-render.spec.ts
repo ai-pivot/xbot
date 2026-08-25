@@ -224,4 +224,83 @@ test.describe('GenUI render', () => {
 
     await page.close()
   })
+
+  test('streaming render failure falls back to last-good WITHOUT #321 hook crash', async ({ browser }) => {
+    const page = await browser.newPage()
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(String(err)))
+
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class MockEventSource {
+        readyState = 1
+        onopen: ((ev: Event) => void) | null = null
+        onerror: ((ev: Event) => void) | null = null
+        constructor(public url: string) { setTimeout(() => this.onopen?.(new Event('open')), 0) }
+        addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          if (!listeners[type]) listeners[type] = new Set(); listeners[type].add(handler)
+        }
+        removeEventListener(type: string, handler: (ev: MessageEvent) => void) { listeners[type]?.delete(handler) }
+        close() { for (const key of Object.keys(listeners)) listeners[key].clear() }
+      }
+      ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+    })
+
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(2000)
+
+    // ── Phase 1: a GOOD component that uses hooks (useState) → becomes lastGood ──
+    const goodCode = `export default function App() {
+  const [n, setN] = useState(0)
+  return <div data-testid="hook-root"><h1>HOOK_GOOD_MARKER</h1><p>count: {n}</p></div>
+}`
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'thinking', iteration: 0, seq: 1, turn_id: 1, chat_id: 'web:chat-1',
+        stream_content: '',
+        genui_content: goodCode,
+      },
+    })
+    await page.waitForTimeout(1500)
+
+    // ── Phase 2: a component that uses a hook AND throws at render time.
+    //   On successful compile it OVERWRITES lastGood (current == lastGood == this
+    //   component). Render throws → UIErrorBoundary goes hasError → streaming
+    //   fallback renders lastGood. Before the fix it direct-called lastGood(props)
+    //   INSIDE a class component's render() (no dispatcher) → the useState inside
+    //   throws #321 "Invalid hook call" → escapes the (self-render) boundary → the
+    //   ENTIRE app crashes (user report: "stream 期间整个界面出错"). After the fix
+    //   it mounts lastGood via createElement (dispatcher set) → no #321. ──
+    const throwingCode = `export default function App() {
+  const [n, setN] = useState(0)
+  return <div>{doesNotExist.map(function (x) { return x; }).join('')}</div>
+}`
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'thinking', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1',
+        stream_content: '',
+        genui_content: throwingCode,
+      },
+    })
+    await page.waitForTimeout(1500)
+
+    const crashErrors = errors.filter(
+      (e) => e.includes('#321') || e.includes('Invalid hook') || e.includes('hook') ,
+    )
+    console.log('pageerrors:', JSON.stringify(errors))
+    console.log('crashErrors:', JSON.stringify(crashErrors))
+    // The #321 crash would take down the ENTIRE app. Assert it did NOT happen.
+    expect(crashErrors, `hook crash: ${crashErrors.join(' | ')}`).toHaveLength(0)
+
+    await page.close()
+  })
 })

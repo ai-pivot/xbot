@@ -143,11 +143,9 @@ func newRunState(cfg RunConfig) *runState {
 	}
 
 	messages := copyMessages(cfg.Messages)
-	for i := range messages {
-		if messages[i].Role != "system" && strings.Contains(messages[i].Content, "<system-reminder>") {
-			messages[i].Content = stripSystemReminder(messages[i].Content)
-		}
-	}
+	// Strip any previously-injected transient system_reminder fake tool pair
+	// (structural tool-name match) so a resumed Run starts with a clean slate.
+	messages = removeSystemReminderTool(messages)
 
 	// autoNotify gates progress dispatch (notifyProgress, progressLines updates).
 	// Either ProgressNotifier (legacy text-based) or ProgressEventHandler (structured)
@@ -1857,17 +1855,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		s.structuredProgress.CWD = s.cfg.Session.GetCurrentDir()
 	}
 
-	// --- System Reminder injection ---
+	// --- System Reminder injection (transient fake tool) ---
 	if len(response.ToolCalls) > 0 {
-		// Strip ALL previous reminders from earlier messages to ensure only
-		// the latest one survives. Must not break on first non-reminder —
-		// intervening assistant/user messages can split reminder-bearing
-		// tool messages, leaving older reminders alive past the break point.
-		for idx := len(s.messages) - 2; idx >= 0; idx-- {
-			if strings.Contains(s.messages[idx].Content, "<system-reminder>") {
-				s.messages[idx].Content = stripSystemReminder(s.messages[idx].Content)
-			}
-		}
+		// Remove the previous iteration's system_reminder fake tool pair
+		// (structural tool-name match — content is never inspected).
+		s.messages = removeSystemReminderTool(s.messages)
 
 		var todoSummary string
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
@@ -1897,9 +1889,10 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		}
 
 		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
-		if reminder != "" && len(s.messages) > 0 {
-			lastIdx := len(s.messages) - 1
-			s.messages[lastIdx].Content += "\n\n" + reminder
+		if reminder != "" {
+			assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, reminder)
+			assistantMsg.TurnID = s.cfg.TurnID
+			s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
 		}
 	}
 
@@ -2027,7 +2020,6 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 			s.recordAssistantMsg(ctx, response)
 			_ = s.injectSyntheticToolPair(ctx, iteration,
 				"pre_turn_end", fmt.Sprintf("pre_turn_end_%d", iteration),
-				"A system notification arrived before the turn ended.",
 				event.Reason, "pre_turn_end", 0,
 			)
 			return true
@@ -2037,6 +2029,30 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 	return false
 }
 
+// newSyntheticToolPair constructs a synthetic assistant(tool_calls) + tool-result
+// message pair. The assistant message deliberately carries NO content — the tool
+// name + tool result already express the full meaning, so a narrated assistant
+// message ("A background task has completed. Let me check the result.") is pure
+// token waste.
+//
+// This is the SINGLE construction point for all fake/synthetic tool pairs
+// (background task, subagent, cron, delivered message, pre_turn_end,
+// user_cancelled, system_reminder). Do NOT hand-roll assistant+tool pairs
+// elsewhere — the offload / persistence / progress / cleanup behavior would
+// silently diverge.
+func newSyntheticToolPair(toolName, toolID, toolContent string) (llm.ChatMessage, llm.ChatMessage) {
+	assistantMsg := llm.ChatMessage{
+		Role: "assistant",
+		ToolCalls: []llm.ToolCall{{
+			ID:        toolID,
+			Name:      toolName,
+			Arguments: "{}", // must be valid JSON; empty string "" causes 400 on strict backends (e.g. SGLang)
+		}},
+	}
+	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", toolContent)
+	return assistantMsg, toolMsg
+}
+
 // injectSyntheticToolPair is the shared template for injecting a synthetic
 // assistant tool-call + tool-result pair into the Run loop. All injectXxx
 // helpers delegate to this function so that offload, persistence, and
@@ -2044,21 +2060,11 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 func (s *runState) injectSyntheticToolPair(
 	ctx context.Context,
 	iteration int,
-	toolName, toolID, assistantContent, toolContent, progressLabel string,
+	toolName, toolID, toolContent, progressLabel string,
 	progressElapsed time.Duration,
 ) error {
 	if s.persistenceErr != nil {
 		return s.persistenceErr
-	}
-	assistantMsg := llm.ChatMessage{
-		Role:    "assistant",
-		Content: assistantContent,
-		ToolCalls: []llm.ToolCall{{
-			ID:        toolID,
-			Name:      toolName,
-			Arguments: "{}", // must be valid JSON; empty string "" causes 400 on strict backends (e.g. SGLang)
-		}},
-		TurnID: s.cfg.TurnID,
 	}
 
 	content := toolContent
@@ -2070,7 +2076,8 @@ func (s *runState) injectSyntheticToolPair(
 		}
 	}
 
-	toolMsg := llm.NewToolMessage(toolName, toolID, "", content)
+	assistantMsg, toolMsg := newSyntheticToolPair(toolName, toolID, content)
+	assistantMsg.TurnID = s.cfg.TurnID
 
 	if s.cfg.Session != nil {
 		historyIDs, err := s.cfg.Session.AppendMessages([]llm.ChatMessage{assistantMsg, toolMsg})
@@ -2110,7 +2117,6 @@ func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, 
 	}
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		"background_task_result", "bg_"+bgTask.ID,
-		"A background task has completed. Let me check the result.",
 		content, fmt.Sprintf("bg:%s", bgTask.ID), elapsed,
 	)
 	if err == nil {
@@ -2135,7 +2141,6 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 	content := tools.FormatSubAgentBgNotify(n)
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
-		fmt.Sprintf("Background subagent %s has a %s update.", n.Role, n.Type),
 		content, fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance), 0,
 	)
 	if err == nil {
@@ -2155,7 +2160,6 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 	toolID := "cron_" + c.SessionKey()
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		"cron_fired", toolID,
-		"A scheduled cron job has fired. Let me process it.",
 		content, "cron", 0,
 	)
 	if err == nil {
@@ -2176,7 +2180,6 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
-		"A message from the parent agent was delivered while I was working.",
 		content, "delivered_message", 0,
 	)
 

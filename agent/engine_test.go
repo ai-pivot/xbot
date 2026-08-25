@@ -928,14 +928,19 @@ func TestRun_ToolError(t *testing.T) {
 		t.Errorf("content = %q", out.Content)
 	}
 
-	// Verify the error was passed to LLM in tool message
-	if len(mock.calls) < 2 {
-		t.Fatal("expected at least 2 LLM calls")
-	}
+	// Verify the error was passed to LLM in a tool message.
+	// The transient system_reminder pair sits at the tail, so scan for the
+	// real Shell error tool message rather than assuming the last message.
 	lastCall := mock.calls[1]
-	lastMsg := lastCall.Messages[len(lastCall.Messages)-1]
-	if !strings.Contains(lastMsg.Content, "permission denied") {
-		t.Errorf("tool error not in LLM messages: %q", lastMsg.Content)
+	found := false
+	for _, m := range lastCall.Messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "permission denied") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("tool error not in LLM messages")
 	}
 }
 

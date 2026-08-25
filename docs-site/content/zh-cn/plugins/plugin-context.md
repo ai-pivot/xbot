@@ -225,6 +225,68 @@ func (p *MyPlugin) Activate(ctx plugin.PluginContext) error {
 }
 ```
 
+### Configuration
+
+Read and update the plugin's own user configuration, and subscribe to live changes:
+
+```go
+// PluginContext exposes three configuration methods:
+Config() (map[string]any, error)               // merged config: manifest defaults + user overrides
+SetConfig(key string, value any) error         // persist a single key (~/.xbot/plugins/<id>/config.json)
+OnConfigChanged(cb func(map[string]any)) error // subscribe to changes (hot reload)
+```
+
+**Permission required**: `config`
+
+Declare configurable settings in `plugin.json` under `contributes.configuration`:
+
+```json
+{
+  "contributes": {
+    "configuration": {
+      "title": "My Plugin Settings",
+      "properties": {
+        "mode": {
+          "type": "select",
+          "label": "运行模式",
+          "description": "Choose how the plugin behaves",
+          "default": "auto",
+          "options": [
+            { "label": "Auto", "value": "auto" },
+            { "label": "Manual", "value": "manual" }
+          ]
+        },
+        "level": { "type": "number", "label": "Level", "default": 5, "minimum": 1, "maximum": 100 }
+      }
+    }
+  }
+}
+```
+
+Supported property types: `boolean`, `string`, `number`, `select`, `multiselect`. Each property may also declare `label`, `description`, `default`, `options` (for select/multiselect), `section` (grouping), `secret` (masked input), `placeholder`, `required`, `minimum`/`maximum`.
+
+The Web UI renders these into a settings form (Settings, Plugins category) automatically from the schema. Users can edit them there, and changes are **hot-reloaded**: `OnConfigChanged` fires with the new merged config within the running plugin (no reload needed).
+
+```go
+func (p *MyPlugin) Activate(ctx plugin.PluginContext) error {
+    cfg, err := ctx.Config()
+    if err != nil {
+        return err
+    }
+    mode, _ := cfg["mode"].(string)
+
+    // Apply live changes without restarting:
+    if err := ctx.OnConfigChanged(func(merged map[string]any) {
+        // e.g. update an internal field, re-run a widget, etc.
+    }); err != nil {
+        return err
+    }
+    return nil
+}
+```
+
+Configuration is stored at `~/.xbot/plugins/<id>/config.json` (global, shared by all users).
+
 ## Permission Enforcement
 
 Every `PluginContext` method call is checked against the plugin's declared permissions. If a plugin tries to use a capability it didn't declare, the call returns an error:

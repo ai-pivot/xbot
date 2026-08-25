@@ -2393,12 +2393,14 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 		if err := pm.ConfigStore().Update(p.ID, p.Key, val); err != nil {
 			return nil, err
 		}
-		// Recompute merged values for the broadcast.
+		// Recompute merged values for the broadcast. values is unconditionally
+		// initialized — a plugin with no config schema (schema == nil) still has
+		// user values, and writing to a nil map panics (nil map panic on
+		// plugin_config_set for schema-less plugins).
 		schema := plugin.ConfigSchema(entry.Manifest)
 		user, _ := pm.ConfigStore().Load(p.ID)
-		var values map[string]any
+		values := map[string]any{}
 		if schema != nil {
-			values = make(map[string]any, len(schema.Properties))
 			for k, prop := range schema.Properties {
 				if prop.Default != nil {
 					values[k] = prop.Default

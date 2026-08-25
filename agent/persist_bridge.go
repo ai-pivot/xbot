@@ -12,7 +12,7 @@ import (
 )
 
 // dynamicContextRe matches <dynamic-context>...</dynamic-context> blocks for stripping
-// before persistence (same pattern as systemReminderRe in reminder.go).
+// before persistence.
 var dynamicContextRe = regexp.MustCompile(`\n?\n?<dynamic-context>[\s\S]*?</dynamic-context>`)
 
 // PersistenceBridge manages incremental session persistence for a Run() execution.
@@ -95,14 +95,16 @@ func (b *PersistenceBridge) pendingMessages(messages []llm.ChatMessage) ([]llm.C
 		if msg.Role == "system" {
 			continue
 		}
+		// Transient system_reminder fake tool pair is never persisted — skip it
+		// structurally (by tool name), not by content string matching.
+		if isSystemReminderMessage(msg) {
+			continue
+		}
 		persistMsg := msg
 		// Stamp the run's turn ID onto messages that lack their own — without
 		// this, AskUser's WaitingUser turn leaves turn_id=0 intermediate rows.
 		if b.turnID > 0 && persistMsg.TurnID == 0 {
 			persistMsg.TurnID = b.turnID
-		}
-		if strings.Contains(persistMsg.Content, "<system-reminder>") {
-			persistMsg.Content = stripSystemReminder(persistMsg.Content)
 		}
 		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
 			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
@@ -135,11 +137,12 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 		if err := assertNoSystemPersist(msg); err != nil {
 			continue
 		}
+		// Transient system_reminder fake tool is never persisted — skip structurally.
+		if isSystemReminderMessage(msg) {
+			continue
+		}
 		// Strip transient injection artifacts before persisting
 		persistMsg := msg
-		if strings.Contains(persistMsg.Content, "<system-reminder>") {
-			persistMsg.Content = stripSystemReminder(persistMsg.Content)
-		}
 		if strings.Contains(persistMsg.Content, "<dynamic-context>") {
 			persistMsg.Content = dynamicContextRe.ReplaceAllString(persistMsg.Content, "")
 		}

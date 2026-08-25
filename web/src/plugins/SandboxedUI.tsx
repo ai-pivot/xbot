@@ -138,9 +138,12 @@ class UIErrorBoundary extends React.Component<
     if (this.props.streaming) {
       const lastGood = this.props.slot?.lastGood
       if (lastGood) {
-        return typeof lastGood === 'function'
-          ? (lastGood as (props: Record<string, unknown>) => React.ReactNode)({ 'data-sandboxed-ui-root': true } as Record<string, unknown>)
-          : React.createElement(lastGood, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
+        // ⚠️ 绝不能 direct-call lastGood（function 组件）—— 这是 class 组件的 render()，
+        // React 不会设置 hook dispatcher，直接调用一个使用 useState 等 hooks 的组件会抛
+        // "Invalid hook call" (#321)，且该错误发生在 error boundary 自身的 render 里，
+        // 无法被自身捕获 → 冒泡到根 → 整个应用崩溃（用户报告："stream 期间整个界面出错"）。
+        // 用 createElement 让 React 以组件身份渲染，dispatcher 才会被正确设置。
+        return React.createElement(lastGood, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
       }
       return null
     }
@@ -245,6 +248,22 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         .replace(/^\s*export\s+default\s+/gm, '')
         .replace(/^\s*export\s+/gm, '')
       // 0-injection: only React + hooks (the JS environment). NO component library.
+      //
+      // ── 安全模型（inline 编译的已知取舍）────────────────────────────
+      // 这里用 new Function() 编译 LLM 生成的 TSX 并跑在宿主页面主线程：
+      // `arguments[0]` 只是入口参数（React），函数体仍运行在全局作用域，可
+      // 访问 window / document / localStorage / fetch 等全部宿主能力。这是
+      // 「LLM 生成 UI」的已知攻击面，而非沙箱。
+      //
+      // 为什么不做 iframe 隔离：之前 code mode 用 iframe(sandbox) 有过
+      // contentDocument 竞态导致内容空白（box 常量 120px）——iframe 隔离在
+      // 本场景与「流式稳定渲染 + 复用宿主 Tailwind」互斥。inline 是刻意取舍，
+      // 安全边界由上游控制（只有受信任的 internal tool / 插件能触发 genui，
+      // 用户手动安装的插件本来就有宿主权限）。若未来引入「不受信任的任意
+      // LLM 输出」入口，必须重新评估 iframe + postMessage 隔离，而不是继续
+      // inline 执行。
+      //
+      // ── 编译：去掉 import 与 export ──────────────────────────────
       // ⚠️ normalizeGeneratedTsx 在 streaming 模式下会追加 `export default App;`，
       // 但 new Function() 不支持 export 语句（"unexpected keyword export"）。
       // 在 wrapped 之前把所有 export 语句去掉（上面已做），但 normalizeGeneratedTsx

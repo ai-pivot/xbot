@@ -27,9 +27,12 @@ export class PluginConfigService {
     const handlers = set
     return {
       get: () =>
-        this.rpc.call('plugin.get_config', { id: pluginId }).then((res) => res.values),
+        this.rpc.call('plugin_config', { id: pluginId }).then((res) => {
+          const p = (res.plugins ?? [])[0]
+          return p?.values ?? {}
+        }),
       set: (key, value) =>
-        this.rpc.call('plugin.set_config', { id: pluginId, key, value }).then(() => undefined),
+        this.rpc.call('plugin_config_set', { id: pluginId, key, value }).then(() => undefined),
       onConfigChange: (handler) => {
         handlers.add(handler)
         return () => {
