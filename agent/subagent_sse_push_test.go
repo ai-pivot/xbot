@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	channelpkg "xbot/channel"
+	"xbot/protocol"
 )
 
 // TestWireSubAgentProgress_BroadcastsToWebChannel verifies that SubAgent
@@ -72,5 +73,31 @@ func TestWireSubAgentProgress_BroadcastsToWebChannel(t *testing.T) {
 	}
 	if webChannel.events[2].ReasoningStreamContent != "thinking" || webChannel.events[3].ReasoningStreamContent != "thinking hard" {
 		t.Fatalf("reasoning full-push = %q / %q, want 'thinking' / 'thinking hard'", webChannel.events[2].ReasoningStreamContent, webChannel.events[3].ReasoningStreamContent)
+	}
+
+	// ── PhaseDone（turn 结束）处理必须与主 agent buildProgressEventHandler 一致：
+	// ① snapshot phase=done（让前端 historyToReplaced 排除 active，不重复渲染 live）
+	// ② recordFinalIteration 补记最后迭代到 iteration_history（否则 active_progress/
+	//    committed 缺最后一个 iter —— 用户报告"有时候不渲染最后一个iter"）。 ──
+	webChannel.events = nil
+	cfg.ProgressEventHandler(&ProgressEvent{Structured: &StructuredProgress{
+		Seq: 3, Phase: PhaseDone, Iteration: 2, TurnID: 7,
+	}})
+	if v, ok := a.lastProgressSnapshot.Load("agent:" + fullKey); ok {
+		if pe := v.(*protocol.ProgressEvent); pe.Phase != "done" {
+			t.Fatalf("PhaseDone snapshot phase = %q, want done", pe.Phase)
+		}
+	} else {
+		t.Fatal("PhaseDone did not store lastProgressSnapshot")
+	}
+	// 最后迭代应补记进 iteration_history（wireSubAgentProgress handler 必须做，
+	// 与 main buildProgressEventHandler 的 recordFinalIteration 一致）。
+	if hist, ok := a.iterationHistories.Load("agent:" + fullKey); ok {
+		h := *hist.(*[]protocol.ProgressEvent)
+		if len(h) == 0 || h[len(h)-1].Iteration != 2 {
+			t.Fatalf("PhaseDone did not record final iteration: %#v", h)
+		}
+	} else {
+		t.Fatal("PhaseDone iterationHistories empty — final iteration not recorded (subagent loses last iter)")
 	}
 }

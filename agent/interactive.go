@@ -410,6 +410,24 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		}
 		s := event.Structured
 		payload := buildPayload(s)
+		// PhaseDone（turn 结束）：最后迭代没有"推进到下一迭代"的事件，
+		// attachIterationDelta 不会记录它 → active_progress/committed 缺最后迭代
+		// （用户报告"有时候不渲染最后一个 iter"）。必须与主 agent
+		// buildProgressEventHandler（engine_wire.go:1956-1967）一致：PhaseDone 时
+		// recordFinalIteration 补记最后迭代并 attach 到 payload —— 否则子代理
+		// 丢最后一个 iter，主 agent 不丢。
+		if payload.Phase == string(PhaseDone) {
+			a.recordFinalIteration(agentProgressKey)
+			if hist, ok := a.iterationHistories.Load(agentProgressKey); ok {
+				h := *hist.(*[]protocol.ProgressEvent)
+				if len(h) > 0 {
+					last := h[len(h)-1]
+					if last.Iteration == payload.Iteration {
+						payload.IterationHistory = []protocol.ProgressEvent{last}
+					}
+				}
+			}
+		}
 		a.attachIterationDelta(agentProgressKey, s.Iteration, payload)
 		broadcast(payload)
 		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(payload))
