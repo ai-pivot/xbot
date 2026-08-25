@@ -42,7 +42,7 @@ func TestDefaultPluginDirs_EnvVar(t *testing.T) {
 		filepath.Join("home", "user", ".xbot", "plugins"),
 		filepath.Join("home", "user", ".xbot", "plugins", "builtin"),
 		filepath.Join("repo", "plugins"),
-		filepath.FromSlash("/tmp/extra"),
+		"/tmp/extra", // env var value is used as-is (already absolute)
 	}
 	if len(dirs) != len(want) {
 		t.Fatalf("DefaultPluginDirs() = %v, want %v", dirs, want)
