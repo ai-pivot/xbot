@@ -908,7 +908,7 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 	var validResult struct {
 		Valid bool `json:"valid"`
 	}
-	if err := wc.rpcCall("skill_validate_path", map[string]any{"path": req.Path}, &validResult); err != nil {
+	if err := wc.rpcCallAs(r, "skill_validate_path", map[string]any{"path": req.Path}, &validResult); err != nil {
 		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
 		return
 	}

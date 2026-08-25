@@ -328,8 +328,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return web.HistorySnapshot{}, err
 		}
-		// Determine has_more: total is the full display count (pre-compression
-		// + marker + post-compression), consistent with the returned msgs.
+		// Determine has_more: total is the count of messages before beforeID
+		// (after ReplayForDisplay filtering). hasMore converges to false at
+		// the earliest page when all remaining messages fit in one page.
 		hasMore := false
 		oldestID := int64(0)
 		if len(msgs) > 0 {

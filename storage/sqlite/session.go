@@ -132,23 +132,22 @@ func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 }
 
 // GetHistoryBeforeForDisplay returns up to `limit` messages (including
-// pre-compression) before beforeID, plus the total display message count.
+// pre-compression) before beforeID, plus the total count of messages
+// before beforeID (for has_more pagination).
 // Unlike GetHistoryBefore which uses Replay() (replacing old messages with
 // the compress summary), this uses ReplayForDisplay() which preserves all
 // messages from the append-only session_messages table.
 //
-// The total count is the length of the full display replay — it includes
-// pre-compression messages and the [Compacted context] marker. This is
-// consistent with the returned messages, so has_more = (total > len(msgs))
-// works correctly for pagination.
+// total is the count of messages with id < beforeID — not the full session
+// count — so has_more = (total > len(returned)) converges to false at the
+// earliest page instead of staying true forever.
 func (s *SessionService) GetHistoryBeforeForDisplay(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, int, error) {
 	replay, err := s.ReplayForDisplay(tenantID)
 	if err != nil {
 		return nil, 0, err
 	}
-	total := len(replay.Messages)
 	if limit <= 0 {
-		return nil, total, nil
+		return nil, 0, nil
 	}
 	msgs := replay.Messages
 	// If beforeID specified, slice to only messages with id < beforeID.
@@ -161,9 +160,13 @@ func (s *SessionService) GetHistoryBeforeForDisplay(tenantID int64, beforeID int
 			}
 		}
 		msgs = msgs[:cut]
-		if len(msgs) == 0 {
-			return nil, total, nil
-		}
+	}
+	// total = messages before beforeID (after filtering). hasMore in
+	// callbacks.go is total > len(returned), which converges to false
+	// when all remaining messages fit in one page.
+	total := len(msgs)
+	if len(msgs) == 0 {
+		return nil, 0, nil
 	}
 	// Walk backwards counting messages; start is the first message of the
 	// window (oldest). Messages are already in chronological order.

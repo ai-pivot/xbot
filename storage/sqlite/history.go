@@ -947,6 +947,13 @@ func replayForDisplay(queryer historyQueryer, tenantID int64) (*ReplayResult, er
 			if err := decodeHistoryData(record, &snapshot); err != nil {
 				return nil, err
 			}
+			// Guard against mismatched arrays — same validation as replayWith.
+			// A corrupted/partially-written record could have HistoryIDs and
+			// Messages of different lengths, causing an index out of range panic.
+			if snapshot.Messages == nil || snapshot.HistoryIDs == nil ||
+				len(snapshot.HistoryIDs) != len(snapshot.Messages) {
+				continue
+			}
 			for i, msg := range snapshot.Messages {
 				// Only insert new messages (history_id == 0) that are the
 				// [Compacted context] summary. Skip the instruction message
