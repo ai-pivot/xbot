@@ -110,7 +110,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: web
-        run: npm ci
+        run: npm ci --fetch-retries=5 --fetch-retry-maxtimeout=120000
 
       - name: Lint
         working-directory: web
@@ -145,7 +145,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: web
-        run: npm ci
+        run: npm ci --fetch-retries=5 --fetch-retry-maxtimeout=120000
 
       - name: Install Playwright browsers
         working-directory: web

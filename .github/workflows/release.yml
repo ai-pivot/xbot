@@ -75,7 +75,7 @@ jobs:
 
       - name: Build
         working-directory: web
-        run: npm ci && npm run build
+        run: npm ci --fetch-retries=5 --fetch-retry-maxtimeout=120000 && npm run build
 
       - name: Package
         run: mkdir -p dist && tar czf dist/xbot-web-dist.tar.gz -C web/dist .
