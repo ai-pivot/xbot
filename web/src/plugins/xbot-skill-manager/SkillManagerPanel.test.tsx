@@ -135,12 +135,12 @@ describe('SkillManagerPanel SKILL.md 预览', () => {
     runtime.ui.openFileTab.mockReset()
   })
 
-  it('非 embedded skill 点击预览调用 openFileTab（复用编辑器 markdown preview）', async () => {
+  it('非 embedded skill 点击预览调用 openFileTab（路径含 /SKILL.md）', async () => {
     render(<SkillManagerPanel />)
     const viewBtns = await screen.findAllByTitle('skills.view')
     fireEvent.click(viewBtns[1]) // issue-solver (非 embedded)
     await waitFor(() => {
-      expect(runtime.ui.openFileTab).toHaveBeenCalledWith('/home/cjw/.xbot/skills/issue-solver')
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith('/home/cjw/.xbot/skills/issue-solver/SKILL.md')
     })
     // 不调用 skill_get_content
     expect(rpcCall).not.toHaveBeenCalledWith(
@@ -149,14 +149,17 @@ describe('SkillManagerPanel SKILL.md 预览', () => {
     )
   })
 
-  it('embedded skill 点击预览走 skill_get_content（fallback）', async () => {
+  it('embedded skill 点击预览也调用 openFileTab（路径 embedded:xxx/SKILL.md）', async () => {
     render(<SkillManagerPanel />)
     const viewBtns = await screen.findAllByTitle('skills.view')
     fireEvent.click(viewBtns[0]) // debug (embedded:debug)
     await waitFor(() => {
-      expect(rpcCall).toHaveBeenCalledWith('skill_get_content', { path: 'embedded:debug' })
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith('embedded:debug/SKILL.md')
     })
-    // 不调用 openFileTab
-    expect(runtime.ui.openFileTab).not.toHaveBeenCalled()
+    // 不调用 skill_get_content
+    expect(rpcCall).not.toHaveBeenCalledWith(
+      'skill_get_content',
+      expect.anything(),
+    )
   })
 })
