@@ -18,7 +18,7 @@ vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }
 
 const { rpcCall, runtime, cwdValue } = vi.hoisted(() => {
   const rpcCall = vi.fn()
-  const cwdValue = { current: '/home/cjw/xbot' }
+  const cwdValue = { current: '/home/cjw/xbot' as string | null }
   return { rpcCall, runtime: { rpc: { call: rpcCall } }, cwdValue }
 })
 
