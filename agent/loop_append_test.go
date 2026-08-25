@@ -50,20 +50,15 @@ func TestLoopIterationAppendIntegrity(t *testing.T) {
 	s.processToolResults(ctx, respA, resA)
 	s.postToolProcessing(ctx, respA, 1)
 
-	base := len(removeSystemReminderTool(s.messages))
-	// A 对完整性（先剥离 transient reminder，只校验真实 tool 对）
-	cleanA := removeSystemReminderTool(s.messages)
-	if cleanA[base-2].Role != "assistant" || len(cleanA[base-2].ToolCalls) != 1 {
-		t.Fatalf("iter A assistant 不完整: role=%v toolCalls=%d", cleanA[base-2].Role, len(cleanA[base-2].ToolCalls))
+	// reminder 是瞬态的，不再进入 s.messages（见 runState.systemReminder）。
+	// 这里只校验真实工具对（assistant + tool result）。
+	base := len(s.messages)
+	if s.messages[base-2].Role != "assistant" || len(s.messages[base-2].ToolCalls) != 1 {
+		t.Fatalf("iter A assistant 不完整: role=%v toolCalls=%d", s.messages[base-2].Role, len(s.messages[base-2].ToolCalls))
 	}
-	if cleanA[base-1].Role != "tool" || !strings.Contains(cleanA[base-1].Content, "Successfully replaced") {
-		t.Fatalf("iter A toolMsg 不完整: %q", cleanA[base-1].Content[:min(60, len(cleanA[base-1].Content))])
+	if s.messages[base-1].Role != "tool" || !strings.Contains(s.messages[base-1].Content, "Successfully replaced") {
+		t.Fatalf("iter A toolMsg 不完整: %q", s.messages[base-1].Content[:min(60, len(s.messages[base-1].Content))])
 	}
-	// reminder 现在以独立 fake tool pair 存在，不再混入真实 tool content
-	if len(s.messages) != base+2 {
-		t.Fatalf("iter A 未追加 transient reminder pair：len=%d（期望干净消息 %d + 2）", len(s.messages), base)
-	}
-	t.Logf("iter A: 真实消息=%d，含 reminder pair=%d", base, len(s.messages)-base)
 
 	// ---- 迭代 B：完全相同的调用 → LOOP 拦截 + postToolProcessing ----
 	respB := &llm.LLMResponse{Content: "", ToolCalls: frCall("call_b")}
@@ -73,16 +68,14 @@ func TestLoopIterationAppendIntegrity(t *testing.T) {
 	}
 	resB := s.executeToolCalls(ctx, respB, 2) // → fakeLoopToolResults
 	s.processToolResults(ctx, respB, resB)
-	s.postToolProcessing(ctx, respB, 2) // reminder strip/inject
+	s.postToolProcessing(ctx, respB, 2)
 
 	// ---- 核心断言：LOOP 对（B）必须完整进入 s.messages ----
-	// reminder 现在是独立 fake tool pair（末尾 2 条），剥离后再定位真实 LOOP 对。
-	clean := removeSystemReminderTool(s.messages)
-	if len(clean) != base+2 {
-		t.Fatalf("LOOP 对未 append：干净消息 len=%d（期望 %d）", len(clean), base+2)
+	if len(s.messages) != base+2 {
+		t.Fatalf("LOOP 对未 append：len=%d（期望 %d）", len(s.messages), base+2)
 	}
-	loopAssistant := clean[len(clean)-2]
-	loopTool := clean[len(clean)-1]
+	loopAssistant := s.messages[len(s.messages)-2]
+	loopTool := s.messages[len(s.messages)-1]
 
 	if loopAssistant.Role != "assistant" {
 		t.Fatalf("LOOP assistant role=%v", loopAssistant.Role)

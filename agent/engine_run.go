@@ -54,6 +54,17 @@ type runState struct {
 	initialMsgCount int
 	persistence     *PersistenceBridge
 
+	// systemReminder 是给下一轮 LLM 看的瞬态系统提醒（cwd/todo/subagent 状态）。
+	// 它不进入 s.messages —— 不持久化、不显示、不参与 watermark 计数。每轮
+	// postToolProcessing 重新生成覆盖，callLLM 时临时注入到发送给 LLM 的消息副本。
+	//
+	// 背景：reminder 曾作为 fake tool pair 注入 s.messages 尾部，persistence 层
+	// 跳过它。但 commitPending 用 len(messages) 推进 watermark，把被跳过的
+	// reminder 也算了进去 → 下一轮 removeSystemReminderTool 删除 reminder 后
+	// 真实消息索引前移，落到虚高 watermark 之下被当作「已持久化」跳过 →
+	// AskUser 场景报 "persist AskUser question: no pending messages"。
+	systemReminder string
+
 	// Token tracking
 	tokenTracker *TokenTracker
 
@@ -143,9 +154,6 @@ func newRunState(cfg RunConfig) *runState {
 	}
 
 	messages := copyMessages(cfg.Messages)
-	// Strip any previously-injected transient system_reminder fake tool pair
-	// (structural tool-name match) so a resumed Run starts with a clean slate.
-	messages = removeSystemReminderTool(messages)
 
 	// autoNotify gates progress dispatch (notifyProgress, progressLines updates).
 	// Either ProgressNotifier (legacy text-based) or ProgressEventHandler (structured)
@@ -624,6 +632,22 @@ func (s *runState) setTokenUsageAfterCompress(tokenCount int64) {
 	}
 }
 
+// llmMessages returns the messages to send to the LLM: s.messages plus the
+// transient system_reminder fake tool pair (if any). The reminder is appended
+// to a fresh copy — it never mutates s.messages, so persistence watermark and
+// the ContextEditor view stay clean.
+func (s *runState) llmMessages() []llm.ChatMessage {
+	if s.systemReminder == "" {
+		return s.messages
+	}
+	assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, s.systemReminder)
+	assistantMsg.TurnID = s.cfg.TurnID
+	out := make([]llm.ChatMessage, 0, len(s.messages)+2)
+	out = append(out, s.messages...)
+	out = append(out, assistantMsg, toolMsg)
+	return out
+}
+
 // callLLM invokes the LLM with the current messages, handling per-tenant
 // concurrency semaphore and input-too-long errors with forced compression.
 func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) (*llm.LLMResponse, error) {
@@ -635,7 +659,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		releaseLLMSem = s.cfg.LLMSemAcquire(ctx)
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 
 	s.localLLMCalls++
 	if response != nil {
@@ -759,7 +783,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.structuredProgress.HistoryCompacted = false
 	}
 
-	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.messages, toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
+	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 	s.localLLMCalls++
 	if response != nil {
 		if response.Usage.PromptTokens > 0 {
@@ -1855,12 +1879,13 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 		s.structuredProgress.CWD = s.cfg.Session.GetCurrentDir()
 	}
 
-	// --- System Reminder injection (transient fake tool) ---
+	// --- System Reminder generation (transient, NOT persisted) ---
+	// reminder 不进入 s.messages：它是给下一轮 LLM 看的瞬态提示，每轮覆盖。
+	// 若混入 s.messages，持久化层跳过它会导致 lastPersistedCount 虚高（
+	// commitPending 用 len(messages) 推进 watermark，把被跳过的 reminder 也
+	// 算进「已持久化」），下一轮删除 reminder 后真实消息索引前移、落到虚高
+	// watermark 之下被当作已持久化跳过 —— AskUser 报 "no pending messages"。
 	if len(response.ToolCalls) > 0 {
-		// Remove the previous iteration's system_reminder fake tool pair
-		// (structural tool-name match — content is never inspected).
-		s.messages = removeSystemReminderTool(s.messages)
-
 		var todoSummary string
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
 			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.todoKey())
@@ -1888,12 +1913,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
 		}
 
-		reminder := BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
-		if reminder != "" {
-			assistantMsg, toolMsg := newSyntheticToolPair(systemReminderToolName, systemReminderToolName, reminder)
-			assistantMsg.TurnID = s.cfg.TurnID
-			s.messages = s.syncMessages(append(s.messages, assistantMsg, toolMsg))
-		}
+		s.systemReminder = BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
 	}
 
 	// --- Incremental session persistence ---

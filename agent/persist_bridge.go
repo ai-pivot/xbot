@@ -95,11 +95,6 @@ func (b *PersistenceBridge) pendingMessages(messages []llm.ChatMessage) ([]llm.C
 		if msg.Role == "system" {
 			continue
 		}
-		// Transient system_reminder fake tool pair is never persisted — skip it
-		// structurally (by tool name), not by content string matching.
-		if isSystemReminderMessage(msg) {
-			continue
-		}
 		persistMsg := msg
 		// Stamp the run's turn ID onto messages that lack their own — without
 		// this, AskUser's WaitingUser turn leaves turn_id=0 intermediate rows.
@@ -135,10 +130,6 @@ func (b *PersistenceBridge) RewriteAfterCompress(sessionView []llm.ChatMessage, 
 	clean := make([]llm.ChatMessage, 0, len(sessionView))
 	for _, msg := range sessionView {
 		if err := assertNoSystemPersist(msg); err != nil {
-			continue
-		}
-		// Transient system_reminder fake tool is never persisted — skip structurally.
-		if isSystemReminderMessage(msg) {
 			continue
 		}
 		// Strip transient injection artifacts before persisting

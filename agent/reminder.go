@@ -33,38 +33,11 @@ func resolveAbsolutePath(path string) string {
 	return path
 }
 
-// systemReminderToolName is the structural name of the fake tool that carries the
-// per-iteration system reminder. The reminder is NOT persisted and NOT rendered —
-// it is identified (and removed) by this tool name, never by content matching.
+// systemReminderToolName is the name of the transient fake tool pair that carries
+// the per-iteration system reminder. The reminder is NEVER persisted and NEVER
+// rendered — it is generated each iteration into runState.systemReminder and
+// appended to a fresh message copy in llmMessages() just before the LLM call.
 const systemReminderToolName = "system_reminder"
-
-// removeSystemReminderTool removes any previously-injected system_reminder
-// fake tool pair (assistant tool_call + matching tool result) from the message
-// list. Structural match on tool name — content is never inspected, so a user
-// message or real tool result that merely *contains* the string
-// "<system-reminder>" cannot be stripped or corrupted.
-func removeSystemReminderTool(messages []llm.ChatMessage) []llm.ChatMessage {
-	out := make([]llm.ChatMessage, 0, len(messages))
-	for _, m := range messages {
-		if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].Name == systemReminderToolName {
-			continue
-		}
-		if m.Role == "tool" && m.ToolName == systemReminderToolName {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
-// isSystemReminderMessage reports whether a message belongs to the transient
-// system_reminder fake tool pair (used to skip it during persistence).
-func isSystemReminderMessage(m llm.ChatMessage) bool {
-	if m.Role == "assistant" && len(m.ToolCalls) == 1 && m.ToolCalls[0].Name == systemReminderToolName {
-		return true
-	}
-	return m.Role == "tool" && m.ToolName == systemReminderToolName
-}
 
 // BuildSystemReminder builds a system reminder appended to the last tool message.
 // agentID "main" = main Agent, otherwise SubAgent.
