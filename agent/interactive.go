@@ -1906,16 +1906,11 @@ func (a *Agent) SendToInteractiveSession(
 			})
 		}
 
-		// Emit subagent_stopped so sidebar updates immediately (busy→idle).
-		a.emitSessionState(protocol.SessionEvent{
-			Channel:    originChannel,
-			ChatID:     originChatID,
-			Action:     "subagent_stopped",
-			Role:       roleName,
-			Instance:   instance,
-			SessionKey: key,
-			ParentID:   originChatID,
-		})
+		// Emit subagent_stopped 移到 write-back 完成之后（见下方），避免前端
+		// reload 命中"DB 已有 user 行但 assistant 尚未 AppendMessage"的竞态窗口
+		// → 该 turn 只有 user 行（frozen 空壳）→ assistant 与迭代全部缺失
+		// （用户报告"有时候不渲染最后一个 iter"）。子代理面板收不到 text/
+		// session(idle) 事件（带父 chatID），无后续 reload，缺到手动刷新。
 
 		// Cascade: cancel and remove all child sessions spawned by this Run.
 		// This ensures no SubAgent outlives its creator even on natural completion.
@@ -2018,6 +2013,18 @@ func (a *Agent) SendToInteractiveSession(
 			}
 		}
 
+		// Emit subagent_stopped AFTER the final assistant row is persisted
+		// (AppendMessage above) — frontend reload on this event sees the full
+		// turn (user + assistant + iterations), not a user-only frozen shell.
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_stopped",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
+		})
 	}()
 
 	return &channelpkg.OutboundMsg{

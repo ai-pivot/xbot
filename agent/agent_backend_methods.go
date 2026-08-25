@@ -122,6 +122,16 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 			ia := entry.(*interactiveAgent)
 			ia.mu.Lock()
 			isRunning := ia.running
+			// 最新 Run 的 turnID：send（action=send）会 assignSubAgentTurnID 更新
+			// ia.cfg.TurnID。校正 phase 时必须同步 turnID —— 否则校正后的
+			// snapshot 仍是【上一个 Run 的 turnID（T1 旧）】，而 DB 最新 turn 是
+			// T2 → 前端 history_replaced 的 active(T1) 与 DB turns(T2) 不一致 →
+			// active.turnID 不在 turns 中 → 创建【重复 live turn T1】→ "迭代完成后
+			// 打开渲染两遍历史"（用户报告）。
+			runTurnID := uint64(0)
+			if ia.cfg != nil {
+				runTurnID = ia.cfg.TurnID
+			}
 			ia.mu.Unlock()
 			if isRunning && result.Phase == "done" {
 				corrected := false
@@ -130,6 +140,9 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 					for i := len(hist) - 1; i >= 0; i-- {
 						if hist[i].Phase != "done" {
 							result.Phase = hist[i].Phase
+							if runTurnID > 0 {
+								result.TurnID = runTurnID
+							}
 							corrected = true
 							break
 						}
@@ -137,6 +150,9 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 				}
 				if !corrected {
 					result.Phase = "running"
+					if runTurnID > 0 {
+						result.TurnID = runTurnID
+					}
 				}
 			}
 		}
