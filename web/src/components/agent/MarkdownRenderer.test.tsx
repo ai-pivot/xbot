@@ -303,4 +303,22 @@ describe('MarkdownRenderer', () => {
     expect(code).not.toBeNull()
     expect(code).toHaveTextContent('world')
   })
+
+  it('strips YAML frontmatter instead of rendering it as a heading (regression)', () => {
+    const src = `---
+name: sglang-bench
+description: "SGLang 推理服务 benchmark 方法论"
+---
+
+# 正文
+
+A paragraph.`
+    const { container } = render(<MarkdownRenderer content={src} />)
+    // Body renders normally…
+    expect(container.querySelector('h1')).toHaveTextContent('正文')
+    expect(container.textContent).toContain('A paragraph.')
+    // …but the frontmatter is NOT swallowed into an <h2> (old setext bug).
+    const h2s = Array.from(container.querySelectorAll('h2'))
+    expect(h2s.some((h) => h.textContent?.includes('sglang-bench'))).toBe(false)
+  })
 })

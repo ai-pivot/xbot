@@ -678,6 +678,31 @@ func (wc *WebChannel) rpcCall(method string, params any, result any) error {
 	return nil
 }
 
+// rpcCallAs invokes a server-side RPC method using the real sender identity
+// extracted from the HTTP request, instead of the hardcoded "web_admin".
+// Use this for RPC calls that depend on per-user data (e.g. skill path
+// validation, which checks user-specific skill directories).
+func (wc *WebChannel) rpcCallAs(r *http.Request, method string, params any, result any) error {
+	if wc.callbacks.RPCHandler == nil {
+		return fmt.Errorf("RPC handler not configured")
+	}
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal params: %w", err)
+	}
+	identity := wc.rpcIdentityFromRequest(r)
+	resp, err := wc.callbacks.RPCHandler(method, paramsJSON, identity)
+	if err != nil {
+		return err
+	}
+	if result != nil && len(resp) > 0 {
+		if err := json.Unmarshal(resp, result); err != nil {
+			return fmt.Errorf("unmarshal result: %w", err)
+		}
+	}
+	return nil
+}
+
 func (wc *WebChannel) Name() string { return "web" }
 
 // ---------------------------------------------------------------------------
@@ -797,6 +822,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/app/pack", wc.authenticatedPOST(wc.handleMarketPack))
 	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
 	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
+	mux.HandleFunc("/api/skills/export", wc.authenticatedPOST(wc.handleSkillsExport))
 
 	// Plugin install (single-plugin zip, multipart upload → local temp → install)
 	mux.HandleFunc("/api/plugin/install-file", wc.authenticatedPOST(wc.handlePluginInstallFile))

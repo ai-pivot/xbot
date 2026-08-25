@@ -504,7 +504,21 @@ interface BackendRPC {
 
 **与现有 `PluginManager` 的关系**：后端 `plugin/list` 等 RPC 直接读现有 `PluginManager`（`plugin/manager.go`）的状态 + 热加载触发 `WatchConfig` 式重载；前端只负责渲染与发起调用。管理面板本身不持有任何后端特权——它只是插件系统能力的一个高保真演示。
 
-### 5.3 插件 editor-view API（VSCode webviewPanel 语义）
+### 5.3 技能管理面板（xbot.skill-manager，第二个内置插件）
+
+技能管理（查看/启用/禁用/导出/卸载/安装）同样做成内置前端插件 `xbot.skill-manager`（`web/src/plugins/xbot-skill-manager/`），与 plugin-manager 同范式，但 API 形态不同——**无点号核心 RPC 直传**：
+
+- **4 个 skill RPC**（`skill_list` / `skill_set_enabled` / `skill_get_content` / `skill_validate_path`，后端 `serverapp/rpc_table.go`）经 `runtime.rpc.call('skill_list')` **无点号方法直接发 `/api/rpc`，完全绕过 `web_plugin_rpc`**。`/api/rpc` 的 `handleRPC`（web_rest.go）经 `rpcIdentityFromRequest` 从 cookie 注入 `RPCIdentity{SenderID, CanonicalUserID, CanonicalRole}` → skill RPC 用 `rpcAuthID(ctx)` 取身份（比信任前端 `sender_id` 参数更安全）。**条件**：这些方法必须在 `nonAdminRESTRPCMethods` 白名单（web_rest.go）——`authorizeRESTRPC` 对 admin 全放行，非 admin 只放行白名单方法。
+- **install/uninstall 不走核心 RPC 直传**：`app_uninstall` RPC 用显式 `p.SenderID`（非 ctx 身份），前端无法安全直传 → 复用 master 通用市场 REST `/api/app/install-file` + `/api/app/uninstall`（后端从会话身份注入 sender_id）。
+- **export 保留薄 REST** `/api/skills/export`（zip 二进制走 RPC 需 base64，REST 下载语义更自然；handler 先 `skill_validate_path` 防任意目录访问，文件名 `sanitizeExportName` 消毒）。embedded 分支用 `tools.ListEmbeddedSkillFiles`/`ReadEmbeddedSkillFile`；磁盘分支 `filepath.Walk`。
+- **查看 SKILL.md = 面板内渲染（不开 file tab）**：`handleView` 对全部 skill（embedded 与磁盘路径一视同仁）调 `skill_get_content` RPC → `setViewing({ name, content })` → 面板内 `MarkdownPreview` 展示 + 返回按钮（`skills.back`）。**原因**：master 的 file tab（`panelToTab`，useTabManager.ts）只透传 `filePath`、丢弃 `content`，`FilePanel` 经 `useFileContent` 走 REST 重读磁盘——embedded skill 路径磁盘不存在，开 file tab 必然失败；且 `TabData` 无 `readOnly` 字段（TS2353）。曾为"跨组件开 tab"引入的 `TabManagerProvider`（`App.tsx` 包 `<AppShell />`）随方案一并**回退删除**（唯一消费者即 skill-manager 开 file tab，删除后无消费者）——`useTabManager()` 恢复为直接 `return useTabManagerImpl()`（AppShell/MobileAppShell 各自持有本地实例，绑定各自 Dockview API，互不影响）。
+- i18n：`sidebar.skills` + `skills.*` 键（en/zh-CN）。
+- **启禁用开关：所有 skill（含 embedded）都必须渲染开关，且必须用项目 radix `Switch` 组件**。① embedded 曾因 `skill.source !== 'embedded'` 条件被排除——但后端 `SetSkillEnabled` 是 `disabled_skills` **黑名单机制，与 source 无关**，embedded 一样可禁用（`isDisabled` 按 name 查黑名单），前端排除是缺陷（用户报告"内嵌 skill 无开关"）。② 曾用裸 `<button role="switch">` 自拼轨道+圆点——容器 `justify-between` 里 path `<span>` 是文本、button 内 `<span>` 是 `absolute` 不占布局空间，button 缺 `shrink-0` 时 min-width 解析为 0，path 较长时开关被 flex 压缩变形（用户报告"开关渲染有问题"）。修复：统一 `Switch`（radix 封装内置 `shrink-0` + 标准样式），`checked={skill.enabled}` + `onCheckedChange`；path 行 `min-w-0 truncate`。守护：`SkillManagerPanel.test.tsx`（embedded 渲染开关 / aria-checked 反映状态 / 点击调 `skill_set_enabled`）。
+- **⚠️ 测试 mock `usePluginRuntime` 必须返回【稳定引用】**（`vi.hoisted` 定义一次），不能每次渲染返回新对象字面量——`load` 的 `useCallback` 依赖 `[runtime]`，新引用 → load 每次新函数 → `useEffect` 无限重跑（一直 loading，`findByRole` 超时）。
+
+注册路径与 plugin-manager 完全相同：`usePluginRuntimeHost.ts` 静态 import `SkillManagerPanel` → `builtinViews.set('xbot.skill-manager.panel', ...)`（⚠️ 内置视图必须静态 import，禁止动态 import——React #311 黑屏根因）+ Bootstrap `activateBuiltin(skillManager.manifest, ...)`。**⚠️ 内置视图有【两处】注册点，必须同步**：① `usePluginRuntimeHost.ts` 的 `builtinViews` map（供 `loadBuiltinView` 解析）；② `PluginView.tsx` 的 `BuiltinView` switch（渲染分发，`case view.id` → 组件）。**只改 ① 漏改 ② 的症状：tab 存在（view 注册成功）但点击空白 + 无请求 + 无报错**——switch 命中 `default: return null`，面板组件从未 mount（真实事故：skill-manager 加 ① 时漏 ②，右侧栏「技能」tab 空白）。守护：`PluginView.test.tsx` 断言每个 builtin view 渲染出内容。
+
+### 5.4 插件 editor-view API（VSCode webviewPanel 语义）
 
 插件可以**控制主编辑区 tab**（VSCode `window.createWebviewPanel` 模型）——侧边栏/面板视图做入口列表，点击后在主编辑区打开全宽、参数化的动态 tab（如 git diff / commit 详情）。
 

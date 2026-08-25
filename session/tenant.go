@@ -125,6 +125,14 @@ func (s *TenantSession) GetHistoryBefore(beforeID int64, maxMessages int) ([]llm
 	return s.sessionSvc.GetHistoryBefore(s.tenantID, beforeID, maxMessages)
 }
 
+// GetHistoryBeforeForDisplay returns up to maxMessages messages (including
+// pre-compression) before beforeID, plus the total display message count.
+// Used by the web frontend's history display — shows ALL messages from the
+// append-only session_messages table, not just the Replay() summary.
+func (s *TenantSession) GetHistoryBeforeForDisplay(beforeID int64, maxMessages int) ([]llm.ChatMessage, int, error) {
+	return s.sessionSvc.GetHistoryBeforeForDisplay(s.tenantID, beforeID, maxMessages)
+}
+
 // GetMessages retrieves all messages for this tenant
 func (s *TenantSession) GetMessages() ([]llm.ChatMessage, error) {
 	return s.sessionSvc.GetAllMessages(s.tenantID)

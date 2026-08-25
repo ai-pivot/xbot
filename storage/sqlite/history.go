@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"xbot/llm"
@@ -899,6 +900,74 @@ func (s *SessionService) Replay(tenantID int64) (*ReplayResult, error) {
 	lock.Lock()
 	defer lock.Unlock()
 	return s.replayLocked(tenantID)
+}
+
+// ReplayForDisplay returns the full message history including pre-compression
+// messages, unlike Replay() which replaces them with the compress snapshot.
+//
+// session_messages is append-only — compression appends a control record
+// without deleting original messages. Replay() is designed for LLM context
+// (show summary, not all old messages). ReplayForDisplay is for the web
+// frontend's history display: it shows ALL messages, with a [Compacted context]
+// marker inserted at each compression point.
+//
+// Mask and context_edit records are NOT applied — display shows original
+// content (the LLM sees masked/edited content via Replay()).
+func (s *SessionService) ReplayForDisplay(tenantID int64) (*ReplayResult, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	return replayForDisplay(conn, tenantID)
+}
+
+// replayForDisplay iterates all history records and returns every message
+// record, inserting a [Compacted context] marker at each compress point.
+// Control records (compress, mask, context_edit, AskUser) are skipped —
+// the display shows the raw, unmodified conversation.
+func replayForDisplay(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
+	records, err := getHistoryFromWith(queryer, tenantID, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	result := &ReplayResult{}
+	for _, record := range records {
+		switch record.Type {
+		case HistoryRecordMessage:
+			if !record.Message.DisplayOnly {
+				result.Messages = append(result.Messages, record.Message)
+			}
+		case HistoryRecordCompress, HistoryRecordPrune:
+			// Insert the [Compacted context] summary as a marker.
+			// Don't replace existing messages — keep the full history.
+			var snapshot ContextSnapshot
+			if err := decodeHistoryData(record, &snapshot); err != nil {
+				return nil, err
+			}
+			// Guard against mismatched arrays — same validation as replayWith.
+			// A corrupted/partially-written record could have HistoryIDs and
+			// Messages of different lengths, causing an index out of range panic.
+			if snapshot.Messages == nil || snapshot.HistoryIDs == nil ||
+				len(snapshot.HistoryIDs) != len(snapshot.Messages) {
+				continue
+			}
+			for i, msg := range snapshot.Messages {
+				// Only insert new messages (history_id == 0) that are the
+				// [Compacted context] summary. Skip the instruction message
+				// ("This conversation was compacted...") and reference
+				// messages (history_id != 0, already in the list).
+				if snapshot.HistoryIDs[i] == 0 &&
+					strings.HasPrefix(msg.Content, "[Compacted context]") {
+					msg.ID = record.HistoryID
+					result.Messages = append(result.Messages, msg)
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {

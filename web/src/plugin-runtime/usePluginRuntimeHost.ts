@@ -74,10 +74,12 @@ async function loadPluginViewComponent(
 // 不再走 builtin: 路径。
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
+import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPanel'
 
 const builtinViews = new Map<string, React.ComponentType>()
 builtinViews.set('xbot.plugin-manager.panel', PluginManagerPanel)
 builtinViews.set('git-info.status', GitStatusPanel)
+builtinViews.set('xbot.skill-manager.panel', SkillManagerPanel)
 
 async function loadBuiltinView(id: string): Promise<React.ComponentType | null> {
   const comp = builtinViews.get(id)
@@ -174,6 +176,16 @@ export function PluginRuntimeBootstrap() {
         await runtime.activateBuiltin(builtin.manifest, builtin as unknown as import('./loader').PluginModule)
       } catch (error) {
         console.error('[plugin-runtime] 激活内置插件失败', error)
+      }
+      // 1b. 内置技能管理插件（同 plugin-manager 范式）。
+      try {
+        const skillManager = await import('@/plugins/xbot-skill-manager/skillManager')
+        await runtime.activateBuiltin(
+          skillManager.manifest,
+          skillManager as unknown as import('./loader').PluginModule,
+        )
+      } catch (error) {
+        console.error('[plugin-runtime] 激活内置技能管理插件失败', error)
       }
       // 2. 拉取第三方插件清单并激活（rescan=true：重新扫描磁盘发现新安装的插件）。
       //    仅激活 enabled 的插件 —— 禁用的插件（后端 State=StateInactive → enabled=false）

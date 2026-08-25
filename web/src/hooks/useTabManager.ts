@@ -17,7 +17,13 @@
  * parallel list and keeping it in sync would duplicate that source of truth
  * and race on drag/drop. Deriving avoids the duplication (KISS).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { DockviewApi, IDockviewPanel } from 'dockview'
 import type { Tab } from '@/types/shared'
 import type { PanelParams } from '@/types/tab'
@@ -109,7 +115,7 @@ export interface TabManager {
   getWorkLayoutJSON: () => unknown
 }
 
-export function useTabManager(): TabManager {
+function useTabManagerImpl(): TabManager {
   const apiRef = useRef<DockviewApi | null>(null)
   // logical tabId → dockview panel id
   const panelIdByTab = useRef<Map<string, string>>(new Map())
@@ -437,4 +443,11 @@ export function filterAgentPanels(layout: unknown): unknown {
 /** 过滤 terminal panel（后端 PTY API 禁用时跳过 terminal tab）。 */
 export function filterTerminalPanels(layout: unknown): unknown {
   return filterPanels(layout, (params) => params.type === 'terminal')
+}
+
+/**
+ * TabManager 实例——AppShell/MobileAppShell 各自持有本地实例（绑定各自 Dockview API）。
+ */
+export function useTabManager(): TabManager {
+  return useTabManagerImpl()
 }

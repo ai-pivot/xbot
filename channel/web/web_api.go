@@ -1,12 +1,16 @@
 package web
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -881,6 +885,172 @@ func (wc *WebChannel) handleMarketUninstall(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusOK, marketResponse{OK: true})
+}
+
+type skillsExportRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+// handleSkillsExport handles POST /api/skills/export — downloads a skill directory as a zip.
+func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request) {
+	var req skillsExportRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid request body"})
+		return
+	}
+	if req.Path == "" {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "path is required"})
+		return
+	}
+
+	// Validate the path through the core RPC before exporting to prevent arbitrary directory access.
+	var validResult struct {
+		Valid bool `json:"valid"`
+	}
+	if err := wc.rpcCallAs(r, "skill_validate_path", map[string]any{"path": req.Path}, &validResult); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+	if !validResult.Valid {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "invalid skill path"})
+		return
+	}
+
+	name := req.Name
+	if name == "" {
+		name = "skill"
+	}
+	name = sanitizeExportName(name)
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	if strings.HasPrefix(req.Path, "embedded:") {
+		embDir := strings.TrimPrefix(req.Path, "embedded:")
+		files, err := tools.ListEmbeddedSkillFiles(embDir)
+		if err != nil {
+			zw.Close()
+			writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+			return
+		}
+		for _, f := range files {
+			content, err := tools.ReadEmbeddedSkillFile(embDir, f)
+			if err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+			entry, err := safeZipEntryPath(name, f)
+			if err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+			wf, err := zw.Create(entry)
+			if err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+			if _, err := wf.Write(content); err != nil {
+				zw.Close()
+				writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+				return
+			}
+		}
+	} else {
+		err := filepath.Walk(req.Path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(req.Path, path)
+			if err != nil {
+				return err
+			}
+			src, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			entry, err := safeZipEntryPath(name, rel)
+			if err != nil {
+				return err
+			}
+			wf, err := zw.Create(entry)
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(wf, src)
+			return err
+		})
+		if err != nil {
+			zw.Close()
+			writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name+".zip"))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = w.Write(buf.Bytes())
+}
+
+// sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
+// A result of "." or ".." (or anything that would traverse out of the zip root) is
+// replaced with "skill" — such a name would otherwise produce a path-traversal zip
+// entry (zip-slip) via filepath.Join(name, rel).
+func sanitizeExportName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "skill"
+	}
+	res := b.String()
+	if res == "." || res == ".." {
+		return "skill"
+	}
+	return res
+}
+
+// safeZipEntryPath builds a zip entry path that stays inside the named directory.
+// It returns an error when the combination would escape the zip root (zip-slip
+// defense-in-depth on top of sanitizeExportName). Entry paths always use "/"
+// separators (zip spec), regardless of the host OS.
+func safeZipEntryPath(dir, rel string) (string, error) {
+	if dir == "" || dir == "." || dir == ".." || strings.ContainsAny(dir, `/\`) {
+		return "", fmt.Errorf("unsafe zip entry directory %q", dir)
+	}
+	// Normalize to "/" separators regardless of host OS (zip spec); filepath.ToSlash
+	// only converts the native separator, so a literal backslash on Linux would leak.
+	rel = strings.ReplaceAll(rel, "\\", "/")
+	// Reject any ".." segment outright — path.Join would silently clean
+	// "skill/../SKILL.md" into "SKILL.md", masking a traversal attempt.
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("unsafe zip entry path %q", rel)
+		}
+	}
+	entry := path.Join(dir, rel)
+	if entry == "." || entry == ".." || strings.HasPrefix(entry, "../") {
+		return "", fmt.Errorf("unsafe zip entry path %q", entry)
+	}
+	return entry, nil
 }
 
 // ---------------------------------------------------------------------------

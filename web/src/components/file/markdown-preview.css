@@ -166,3 +166,45 @@
   overflow-x: auto;
   overflow-y: hidden;
 }
+
+/* YAML frontmatter card — shown above the body for SKILL.md etc. */
+.md-frontmatter-card {
+  border: 1px solid var(--md-border);
+  border-radius: 8px;
+  background: var(--md-blockquote-bg, rgba(127, 127, 127, 0.06));
+  padding: 10px 14px;
+  margin: 0 0 1.2em;
+}
+.md-frontmatter-name {
+  font-size: 1.15em;
+  font-weight: 600;
+  color: var(--md-heading);
+  line-height: 1.3;
+}
+.md-frontmatter-desc {
+  margin-top: 4px;
+  font-size: 0.95em;
+  color: var(--md-text);
+  line-height: 1.6;
+}
+.md-frontmatter-fields {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.9em;
+}
+.md-frontmatter-field {
+  display: flex;
+  gap: 8px;
+}
+.md-frontmatter-field dt {
+  flex: 0 0 auto;
+  min-width: 96px;
+  color: var(--md-blockquote-text, var(--md-muted, #888));
+}
+.md-frontmatter-field dd {
+  margin: 0;
+  color: var(--md-text);
+  overflow-wrap: anywhere;
+}

@@ -15,6 +15,7 @@ import type { ComponentType } from 'react'
 
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
+import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
 
@@ -83,6 +84,12 @@ function BuiltinView({ view }: { view: ViewContribution }) {
       return (
         <PluginViewErrorBoundary>
           <GitStatusPanel />
+        </PluginViewErrorBoundary>
+      )
+    case 'xbot.skill-manager.panel':
+      return (
+        <PluginViewErrorBoundary>
+          <SkillManagerPanel />
         </PluginViewErrorBoundary>
       )
     default:

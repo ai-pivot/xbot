@@ -1288,3 +1288,49 @@ func TestCanAccessSessionUsesLinkedCanonicalIdentityAndTenantOwner(t *testing.T)
 		t.Fatal("linked Feishu canonical owner could not access its Web tenant")
 	}
 }
+
+func TestSanitizeExportName_RejectsDotDot(t *testing.T) {
+	// Regression (code review): name=".." survived sanitization → filepath.Join("..", "SKILL.md")
+	// produced a path-traversal zip entry (zip-slip) in /api/skills/export.
+	for name, want := range map[string]string{
+		"my-skill": "my-skill",
+		"Skill.1":  "Skill.1",
+		"..":       "skill",
+		".":        "skill",
+		"":         "skill",
+		"../evil":  ".._evil",
+	} {
+		if got := sanitizeExportName(name); got != want {
+			t.Fatalf("sanitizeExportName(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestSafeZipEntryPath_RejectsTraversal(t *testing.T) {
+	// Defense-in-depth: even if a directory name ever slipped through, the entry
+	// path must stay inside the zip root.
+	if _, err := safeZipEntryPath("..", "SKILL.md"); err == nil {
+		t.Fatal("safeZipEntryPath(..) must fail")
+	}
+	if _, err := safeZipEntryPath("skill", "../SKILL.md"); err == nil {
+		t.Fatal("safeZipEntryPath(../rel) must fail")
+	}
+	if _, err := safeZipEntryPath("skill", "a/../../SKILL.md"); err == nil {
+		t.Fatal("safeZipEntryPath(a/../../) must fail")
+	}
+	entry, err := safeZipEntryPath("my-skill", "SKILL.md")
+	if err != nil {
+		t.Fatalf("safeZipEntryPath(normal) must succeed: %v", err)
+	}
+	if entry != "my-skill/SKILL.md" {
+		t.Fatalf("safeZipEntryPath(normal) = %q, want %q", entry, "my-skill/SKILL.md")
+	}
+	// Windows-style separators are normalized to "/" for the zip spec.
+	entry, err = safeZipEntryPath("my-skill", `sub\SKILL.md`)
+	if err != nil {
+		t.Fatalf("safeZipEntryPath(backslash) must succeed: %v", err)
+	}
+	if entry != "my-skill/sub/SKILL.md" {
+		t.Fatalf("safeZipEntryPath(backslash) = %q, want %q", entry, "my-skill/sub/SKILL.md")
+	}
+}
