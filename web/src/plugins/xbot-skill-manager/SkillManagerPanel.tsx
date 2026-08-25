@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/providers/i18n'
+import { useCwd } from '@/hooks/useCwd'
 import { postAPI, postRawAPI } from '@/lib/api'
 import { usePluginRuntime } from '@/plugin-runtime'
 import { Button } from '@/components/ui/button'
@@ -32,6 +33,7 @@ interface SkillDetail {
 export function SkillManagerPanel() {
   const runtime = usePluginRuntime()
   const { t } = useI18n()
+  const { cwd } = useCwd()
   const [skills, setSkills] = useState<SkillDetail[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -45,7 +47,7 @@ export function SkillManagerPanel() {
     try {
       const res = (await runtime.rpc.call(
         'skill_list' as never,
-        { project_dir: '' } as never,
+        { project_dir: cwd || '' } as never,
       )) as unknown as SkillDetail[]
       setSkills(Array.isArray(res) ? res : [])
     } catch (e) {
@@ -53,7 +55,7 @@ export function SkillManagerPanel() {
     } finally {
       setLoading(false)
     }
-  }, [runtime])
+  }, [runtime, cwd])
 
   useEffect(() => {
     void load()
