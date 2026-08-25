@@ -18,8 +18,9 @@ vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }
 
 const { rpcCall, runtime, cwdValue } = vi.hoisted(() => {
   const rpcCall = vi.fn()
+  const openFileTab = vi.fn()
   const cwdValue = { current: '/home/cjw/xbot' as string | null }
-  return { rpcCall, runtime: { rpc: { call: rpcCall } }, cwdValue }
+  return { rpcCall, runtime: { rpc: { call: rpcCall }, ui: { openFileTab } }, cwdValue }
 })
 
 // runtime 必须是稳定引用——usePluginRuntime 的 load useCallback 依赖 [runtime]，
@@ -124,5 +125,38 @@ describe('SkillManagerPanel 项目 skill 显示', () => {
         { project_dir: '' },
       )
     })
+  })
+})
+
+describe('SkillManagerPanel SKILL.md 预览', () => {
+  beforeEach(() => {
+    rpcCall.mockReset()
+    rpcCall.mockResolvedValue(skills)
+    runtime.ui.openFileTab.mockReset()
+  })
+
+  it('非 embedded skill 点击预览调用 openFileTab（复用编辑器 markdown preview）', async () => {
+    render(<SkillManagerPanel />)
+    const viewBtns = await screen.findAllByTitle('skills.view')
+    fireEvent.click(viewBtns[1]) // issue-solver (非 embedded)
+    await waitFor(() => {
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith('/home/cjw/.xbot/skills/issue-solver')
+    })
+    // 不调用 skill_get_content
+    expect(rpcCall).not.toHaveBeenCalledWith(
+      'skill_get_content',
+      expect.anything(),
+    )
+  })
+
+  it('embedded skill 点击预览走 skill_get_content（fallback）', async () => {
+    render(<SkillManagerPanel />)
+    const viewBtns = await screen.findAllByTitle('skills.view')
+    fireEvent.click(viewBtns[0]) // debug (embedded:debug)
+    await waitFor(() => {
+      expect(rpcCall).toHaveBeenCalledWith('skill_get_content', { path: 'embedded:debug' })
+    })
+    // 不调用 openFileTab
+    expect(runtime.ui.openFileTab).not.toHaveBeenCalled()
   })
 })

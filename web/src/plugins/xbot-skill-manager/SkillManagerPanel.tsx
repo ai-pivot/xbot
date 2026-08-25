@@ -75,6 +75,15 @@ export function SkillManagerPanel() {
 
   const handleView = useCallback(
     async (skill: SkillDetail) => {
+      // Non-embedded skills have real file paths — open in editor tab to reuse
+      // the existing markdown preview/editor infrastructure (mermaid, code
+      // highlighting, toggle between preview and source, etc.).
+      if (!skill.path.startsWith('embedded:')) {
+        runtime.ui.openFileTab(skill.path)
+        return
+      }
+      // Embedded skills (path = "embedded:xxx") don't exist on disk — fall
+      // back to inline preview via skill_get_content RPC.
       try {
         const res = (await runtime.rpc.call(
           'skill_get_content' as never,
