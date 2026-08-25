@@ -50,13 +50,17 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
       blocks.push({ kind: 'text', content: iter.content, iteration: iterNum })
     }
     if (iter.tools.length > 0) {
-      // Merge with previous block if it's also tools
-      const last = blocks[blocks.length - 1]
-      if (last && last.kind === 'tools') {
-        last.tools.push(...iter.tools)
-        last.iterations.push(iterNum)
-      } else {
-        blocks.push({ kind: 'tools', tools: [...iter.tools], iterations: [iterNum] })
+      // genui 工具（uiMode）保留在 tools 块 —— 位置在其被调用的 iteration 内
+      // （由 ToolRender 渲染成 GenUIPanel 顶层面板），不再抽到消息底部。
+      const tools = iter.tools
+      if (tools.length > 0) {
+        const last = blocks[blocks.length - 1]
+        if (last && last.kind === 'tools') {
+          last.tools.push(...tools)
+          last.iterations.push(iterNum)
+        } else {
+          blocks.push({ kind: 'tools', tools: [...tools], iterations: [iterNum] })
+        }
       }
     }
     // SubAgent tree frozen at this iteration's boundary — background subagent

@@ -20,15 +20,18 @@ func TestBuildSystemReminder_Basic(t *testing.T) {
 	if !strings.Contains(result, "<system-reminder>") {
 		t.Error("expected system-reminder tag")
 	}
-	// When there's a tool message after user message, it should show "正在处理中"
-	if !strings.Contains(result, "用户原始需求（正在处理中，已执行 1 次工具调用）: Hello") {
-		t.Errorf("expected user goal with processing hint, got:\n%s", result)
+	// task: 有 tool message 在 user 之后 → kind=user_processing（历史需求处理中）
+	if !strings.Contains(result, "<task>") || !strings.Contains(result, "<kind>user_processing</kind>") {
+		t.Errorf("expected user_processing task, got:\n%s", result)
 	}
-	if !strings.Contains(result, "已完成 1 次工具调用") {
-		t.Errorf("expected tool count, got:\n%s", result)
+	if !strings.Contains(result, "<content>Hello</content>") {
+		t.Errorf("expected task content Hello, got:\n%s", result)
 	}
-	if !strings.Contains(result, "Shell") {
-		t.Errorf("expected tool name in reminder, got:\n%s", result)
+	if strings.Contains(result, "已完成 ") || strings.Contains(result, "已执行 ") {
+		t.Errorf("should NOT contain tool count, got:\n%s", result)
+	}
+	if !strings.Contains(result, "<guidelines>") {
+		t.Errorf("expected guidelines, got:\n%s", result)
 	}
 }
 
@@ -41,11 +44,11 @@ func TestBuildSystemReminder_NewMessage(t *testing.T) {
 
 	result := BuildSystemReminder(messages, []llm.ToolCall{{Name: "Shell"}}, "", "main", "", "", "", nil)
 
-	if !strings.Contains(result, "用户最新需求: Fix the login bug") {
-		t.Errorf("expected '最新需求' for fresh message, got:\n%s", result)
+	if !strings.Contains(result, "<kind>user_latest</kind>") || !strings.Contains(result, "<content>Fix the login bug</content>") {
+		t.Errorf("expected user_latest task for fresh message, got:\n%s", result)
 	}
-	if strings.Contains(result, "正在处理中") {
-		t.Errorf("should NOT show processing hint for fresh message, got:\n%s", result)
+	if strings.Contains(result, "<kind>user_processing</kind>") {
+		t.Errorf("should NOT show user_processing for fresh message, got:\n%s", result)
 	}
 }
 
@@ -64,11 +67,11 @@ func TestBuildSystemReminder_OldMessage(t *testing.T) {
 
 	result := BuildSystemReminder(messages, []llm.ToolCall{{Name: "Grep"}}, "", "main", "", "", "", nil)
 
-	if !strings.Contains(result, "用户原始需求（正在处理中，已执行 3 次工具调用）: Refactor the codebase") {
-		t.Errorf("expected '原始需求' with processing count for old message, got:\n%s", result)
+	if !strings.Contains(result, "<kind>user_processing</kind>") || !strings.Contains(result, "<content>Refactor the codebase</content>") {
+		t.Errorf("expected user_processing task for old message, got:\n%s", result)
 	}
-	if strings.Contains(result, "用户最新需求") {
-		t.Errorf("should NOT show '最新需求' for old message, got:\n%s", result)
+	if strings.Contains(result, "<kind>user_latest</kind>") {
+		t.Errorf("should NOT show user_latest for old message, got:\n%s", result)
 	}
 }
 
@@ -80,8 +83,8 @@ func TestBuildSystemReminder_SubAgent(t *testing.T) {
 
 	result := BuildSystemReminder(messages, []llm.ToolCall{{Name: "Read"}}, "", "main/worker", "", "", "", nil)
 
-	if !strings.Contains(result, "执行任务: Do task X") {
-		t.Errorf("SubAgent should show task prefix, got:\n%s", result)
+	if !strings.Contains(result, "<kind>subagent</kind>") || !strings.Contains(result, "<content>Do task X</content>") {
+		t.Errorf("SubAgent should show subagent task, got:\n%s", result)
 	}
 }
 
@@ -93,8 +96,8 @@ func TestBuildSystemReminder_WithTodo(t *testing.T) {
 
 	result := BuildSystemReminder(messages, []llm.ToolCall{{Name: "Read"}}, "2/5 完成", "main", "", "", "", nil)
 
-	if !strings.Contains(result, "TODO: 2/5 完成") {
-		t.Errorf("expected TODO summary, got:\n%s", result)
+	if !strings.Contains(result, "<todo>2/5 完成</todo>") {
+		t.Errorf("expected XML todo, got:\n%s", result)
 	}
 }
 
@@ -131,11 +134,11 @@ func TestBuildSystemReminder_GitCommitTriggersPostDev(t *testing.T) {
 		Arguments: `{"command":"git commit -m \"fix: bug\" -a"}`,
 	}}, "", "main", "", "", "", nil)
 
-	if !strings.Contains(result, "post-dev") {
-		t.Errorf("expected post-dev reminder on git commit, got:\n%s", result)
+	if !strings.Contains(result, "<guideline>主动维护知识文档和代码质量</guideline>") {
+		t.Errorf("expected '主动维护知识文档和代码质量' guideline, got:\n%s", result)
 	}
-	if !strings.Contains(result, "git commit") {
-		t.Errorf("expected git commit mention, got:\n%s", result)
+	if strings.Contains(result, "post-dev") {
+		t.Errorf("should not contain old post-dev keyword, got:\n%s", result)
 	}
 }
 

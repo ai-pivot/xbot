@@ -52,6 +52,19 @@ async function setupMock(page: Page) {
 
 async function getIframeState(page: Page) {
   return page.evaluate(() => {
+    // GenUI no longer uses iframes — it renders inline (SandboxedUI inline mode).
+    // Find the rendered GenUI content by data-testid or the sandboxed-ui container.
+    const containers = Array.from(document.querySelectorAll('[data-testid="genui-root"], .sandboxed-ui'))
+    if (containers.length > 0) {
+      const el = containers[0] as HTMLElement
+      return [{
+        headHTML: '',
+        bodyHTML: el.innerHTML.slice(0, 300),
+        bodyText: (el.textContent || '').slice(0, 200),
+        docAccess: true,
+      }]
+    }
+    // Fallback: legacy iframe mode (kept for backward compat).
     const iframes = Array.from(document.querySelectorAll('iframe[title="GenUI Preview"]'))
     return iframes.map((f) => {
       let headHTML = ''
@@ -135,12 +148,9 @@ test.describe('GenUI render', () => {
     console.log('iframe state:', JSON.stringify(frames, null, 2))
     console.log('console errors:', JSON.stringify(errors))
 
-    // There must be a GenUI iframe rendered.
+    // There must be a GenUI rendered (inline mode — no iframe).
     expect(frames.length).toBeGreaterThan(0)
     const f = frames[0]
-    // doc.write must have run (head contains our injected style).
-    expect(f.docAccess).toBe(true)
-    expect(f.headHTML).toContain('margin:0')
     // The compiled component must render visible DOM.
     expect(f.bodyText).toContain('RENDER_OK_MARKER')
 
@@ -177,15 +187,15 @@ test.describe('GenUI render', () => {
     await page.locator('button[type="submit"]').click()
     await page.waitForTimeout(2000)
 
-    // XBOT_UI-heavy code — mirrors what the plugin's tool description makes
-    // the LLM generate (XBOT_UI.Icon was missing from the aggregate object).
+    // XBOT_UI is no longer injected (0-injection: only React + hooks).
+    // The LLM now writes standard React/TSX + Tailwind. This test verifies
+    // that plain React renders correctly (no XBOT_UI dependency).
     const code = `export default function App() {
   return (
     <div className="p-4">
-      <XBOT_UI.Button variant="primary">CLICK_ME_MARKER</XBOT_UI.Button>
-      <XBOT_UI.Icon name="check" size={16} />
-      <XBOT_UI.Badge text="NEW" color="green" />
-      <XBOT_UI.Stat label="users" value="42" />
+      <button className="rounded bg-indigo-500 px-3 py-1 text-white">CLICK_ME_MARKER</button>
+      <span className="ml-2 rounded bg-green-500 px-2 py-0.5 text-xs text-white">NEW</span>
+      <div className="mt-2 text-sm text-gray-500">users: 42</div>
     </div>
   )
 }`
@@ -211,6 +221,85 @@ test.describe('GenUI render', () => {
     // No "Element type is invalid" (undefined component) errors.
     const invalid = errors.filter((e) => e.includes('Element type is invalid'))
     expect(invalid, `undefined component errors: ${invalid.join(' | ')}`).toHaveLength(0)
+
+    await page.close()
+  })
+
+  test('streaming render failure falls back to last-good WITHOUT #321 hook crash', async ({ browser }) => {
+    const page = await browser.newPage()
+    const errors: string[] = []
+    page.on('pageerror', (err) => errors.push(String(err)))
+
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class MockEventSource {
+        readyState = 1
+        onopen: ((ev: Event) => void) | null = null
+        onerror: ((ev: Event) => void) | null = null
+        constructor(public url: string) { setTimeout(() => this.onopen?.(new Event('open')), 0) }
+        addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          if (!listeners[type]) listeners[type] = new Set(); listeners[type].add(handler)
+        }
+        removeEventListener(type: string, handler: (ev: MessageEvent) => void) { listeners[type]?.delete(handler) }
+        close() { for (const key of Object.keys(listeners)) listeners[key].clear() }
+      }
+      ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+    })
+
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(2000)
+
+    // ── Phase 1: a GOOD component that uses hooks (useState) → becomes lastGood ──
+    const goodCode = `export default function App() {
+  const [n, setN] = useState(0)
+  return <div data-testid="hook-root"><h1>HOOK_GOOD_MARKER</h1><p>count: {n}</p></div>
+}`
+    await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'thinking', iteration: 0, seq: 1, turn_id: 1, chat_id: 'web:chat-1',
+        stream_content: '',
+        genui_content: goodCode,
+      },
+    })
+    await page.waitForTimeout(1500)
+
+    // ── Phase 2: a component that uses a hook AND throws at render time.
+    //   On successful compile it OVERWRITES lastGood (current == lastGood == this
+    //   component). Render throws → UIErrorBoundary goes hasError → streaming
+    //   fallback renders lastGood. Before the fix it direct-called lastGood(props)
+    //   INSIDE a class component's render() (no dispatcher) → the useState inside
+    //   throws #321 "Invalid hook call" → escapes the (self-render) boundary → the
+    //   ENTIRE app crashes (user report: "stream 期间整个界面出错"). After the fix
+    //   it mounts lastGood via createElement (dispatcher set) → no #321. ──
+    const throwingCode = `export default function App() {
+  const [n, setN] = useState(0)
+  return <div>{doesNotExist.map(function (x) { return x; }).join('')}</div>
+}`
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'thinking', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1',
+        stream_content: '',
+        genui_content: throwingCode,
+      },
+    })
+    await page.waitForTimeout(1500)
+
+    const crashErrors = errors.filter(
+      (e) => e.includes('#321') || e.includes('Invalid hook') || e.includes('hook') ,
+    )
+    console.log('pageerrors:', JSON.stringify(errors))
+    console.log('crashErrors:', JSON.stringify(crashErrors))
+    // The #321 crash would take down the ENTIRE app. Assert it did NOT happen.
+    expect(crashErrors, `hook crash: ${crashErrors.join(' | ')}`).toHaveLength(0)
 
     await page.close()
   })

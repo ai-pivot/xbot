@@ -37,10 +37,27 @@ type ToolProgress struct {
 	UIMode string `json:"ui_mode,omitempty"`
 	// UILibs lists the global libraries the UI needs (echarts/three/motion).
 	UILibs []string `json:"ui_libs,omitempty"`
+	// UISurface declares a UI result's "top-level panel" presentation (fancy
+	// header + collapsible + fullscreen). Mirrors tools.UISurface — duplicated
+	// here because tools imports protocol (protocol must NOT import tools back,
+	// or it would cycle). engine_wire copies tools.UIDecl.Surface into this.
+	UISurface *UISurface `json:"ui_surface,omitempty"`
 	// GenChars is the accumulated argument character count for generating tools
 	// (Status="generating"). Populated from streaming tool call deltas — shows
 	// real-time progress of argument generation (e.g. "42 chars").
 	GenChars int `json:"gen_chars,omitempty"`
+}
+
+// UISurface is the wire form of tools.UISurface (mirror to break the
+// tools↔protocol import cycle). It declares that a UI result should render as a
+// top-level panel: a title bar (summary title + collapse + fullscreen buttons)
+// wrapping the content, default-open, manually collapsible and fullscreenable.
+type UISurface struct {
+	Kind        string `json:"kind,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Collapsible bool   `json:"collapsible,omitempty"`
+	Fullscreen  bool   `json:"fullscreen,omitempty"`
+	DefaultOpen bool   `json:"default_open,omitempty"`
 }
 
 // SubAgentInfo represents a sub-agent's structured progress status.

@@ -8,7 +8,6 @@ import { UserSettingsProvider } from '@/providers/UserSettingsProvider'
 import { ThemeProvider } from '@/providers/theme'
 import { I18nProvider } from '@/providers/i18n'
 import { registerSW } from '@/components/PWAUpdatePrompt'
-import { toast } from 'sonner'
 
 // Disable browser scroll restoration — the app manages scroll position
 // (virtualizer + scheduleFollow). Browser restoration fights our scroll,
@@ -32,25 +31,9 @@ if (import.meta.env.PROD) {
 // toast fires only once per SW version. On reload the module re-evaluates
 // and swNotifiedKey resets to '' — but the SW is already the new version,
 // so no spurious re-toast.
-let swNotifiedKey = ''
-window.addEventListener('sw-updated', () => {
-  // Read the current SW's script URL — it changes with each build.
-  // Use it as a per-version dedup key so we don't re-toast for the same SW.
-  navigator.serviceWorker?.getRegistration?.('/').then((reg) => {
-    const swUrl = reg?.active?.scriptURL || ''
-    if (swUrl === swNotifiedKey) return // already notified for this SW version
-    swNotifiedKey = swUrl
-    toast.success('发现新版本', {
-      duration: 15000,
-      action: {
-        label: '刷新',
-        onClick: () => {
-          window.location.reload()
-        },
-      },
-    })
-  }).catch(() => {})
-})
+// SW 更新提示已由底部状态栏的 SWUpdateButton 接管（三态：检查/下载/重启），
+// 不再用 toast 打扰用户。SW 注册逻辑仍在 registerSW() 中，controllerchange
+// 仅作记录，不再派发提示。
 
 // ─────────────────────────────────────────────────────────────
 // 全局崩溃覆盖层：手机上看不到 console 时，把未捕获错误直接渲染到屏幕。

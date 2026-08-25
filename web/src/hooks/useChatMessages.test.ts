@@ -596,19 +596,14 @@ describe('useChatMessages', () => {
     expect(ws.setLastSeq).toHaveBeenCalledTimes(1)
   })
 
-  it('attaches SubAgent dump iterations to the assistant message', async () => {
+  it('attaches SubAgent history iterations to the assistant message (via fetchHistory)', async () => {
     const ws = makeWS([
       {
         messages: [
           { role: 'user', content: 'check this' },
-          { role: 'assistant', content: 'done' },
-        ],
-        iterations: [
-          {
-            iteration: 1,
-            content: 'thinking',
-            completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }],
-          },
+          { role: 'assistant', content: 'done', iterations: [
+            { iteration: 1, content: 'thinking', completed_tools: [{ name: 'Read', status: 'done', summary: 'ok' }] },
+          ] },
         ],
       },
     ])
@@ -627,7 +622,7 @@ describe('useChatMessages', () => {
     expect(result.current.messages[1].iterations[0].tools[0].name).toBe('Read')
   })
 
-  it('loads nested SubAgent dumps by full key without truncating the parent chain', async () => {
+  it('loads nested SubAgent history by full key via the same fetchHistory path as main sessions', async () => {
     const ws = makeWS([
       {
         messages: [
@@ -647,20 +642,17 @@ describe('useChatMessages', () => {
     )
 
     await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['nested done']))
-    expect(ws.rpc).toHaveBeenCalledWith('get_agent_session_dump_by_full_key', {
-      full_key: fullKey,
-    })
+    // SubAgent 走 fetchHistory（/api/history），不再走内存 get_agent_session_dump RPC。
+    expect(ws.rpc).not.toHaveBeenCalled()
   })
 
-  it('shows SubAgent dump iterations even when there is no assistant text yet', async () => {
+  it('shows SubAgent history iterations even when there is no assistant text yet (via fetchHistory)', async () => {
     const ws = makeWS([
       {
-        messages: [],
-        iterations: [
-          {
-            iteration: 1,
-            completed_tools: [{ name: 'Shell', status: 'running', summary: 'running' }],
-          },
+        messages: [
+          { role: 'assistant', content: '', iterations: [
+            { iteration: 1, completed_tools: [{ name: 'Shell', status: 'running', summary: 'running' }] },
+          ] },
         ],
       },
     ])

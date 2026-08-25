@@ -363,29 +363,30 @@ func (c *sdkMockContext) ContributeUI(widgetID, zone string, widget UIWidget, pr
 func (c *sdkMockContext) RegisterWebActionHandler(widgetID string, handler WebActionHandler) error {
 	return nil
 }
-func (c *sdkMockContext) UpdateWidget(widgetID string) error                        { return nil }
-func (c *sdkMockContext) SetWidgetRegistry(wr *WidgetRegistry)                      {}
-func (c *sdkMockContext) EnrichContext(name string, enricher ContextEnricher) error { return nil }
-func (c *sdkMockContext) Storage() StorageAccessor                                  { return nil }
-func (c *sdkMockContext) StorageInt(key string) (int64, bool)                       { return 0, false }
-func (c *sdkMockContext) StorageBool(key string) (bool, bool)                       { return false, false }
-func (c *sdkMockContext) StorageJSON(key string, value any) error                   { return nil }
-func (c *sdkMockContext) StorageGetJSON(key string, target any) error               { return nil }
-func (c *sdkMockContext) PluginID() string                                          { return "" }
-func (c *sdkMockContext) WorkingDir() string                                        { return "" }
-func (c *sdkMockContext) Channel() string                                           { return "" }
-func (c *sdkMockContext) ChatID() string                                            { return "" }
-func (c *sdkMockContext) TenantID() int64                                           { return 0 }
-func (c *sdkMockContext) Logger() Logger                                            { return &sdkMockLogger{} }
-func (c *sdkMockContext) Config() (map[string]any, error)                           { return make(map[string]any), nil }
-func (c *sdkMockContext) SetConfig(key string, value any) error                     { return nil }
-func (c *sdkMockContext) Subscribe(topic string, handler PluginEventHandler) error  { return nil }
-func (c *sdkMockContext) Publish(topic string, data any) error                      { return nil }
-func (c *sdkMockContext) ToolCallCount() int64                                      { return 0 }
-func (c *sdkMockContext) HookCallCount() int64                                      { return 0 }
-func (c *sdkMockContext) SetValue(key string, value any)                            {}
-func (c *sdkMockContext) GetValue(key string) (any, bool)                           { return nil, false }
-func (c *sdkMockContext) RegisterChannelProvider(provider any) error                { return nil }
+func (c *sdkMockContext) UpdateWidget(widgetID string) error                         { return nil }
+func (c *sdkMockContext) SetWidgetRegistry(wr *WidgetRegistry)                       {}
+func (c *sdkMockContext) EnrichContext(name string, enricher ContextEnricher) error  { return nil }
+func (c *sdkMockContext) Storage() StorageAccessor                                   { return nil }
+func (c *sdkMockContext) StorageInt(key string) (int64, bool)                        { return 0, false }
+func (c *sdkMockContext) StorageBool(key string) (bool, bool)                        { return false, false }
+func (c *sdkMockContext) StorageJSON(key string, value any) error                    { return nil }
+func (c *sdkMockContext) StorageGetJSON(key string, target any) error                { return nil }
+func (c *sdkMockContext) PluginID() string                                           { return "" }
+func (c *sdkMockContext) WorkingDir() string                                         { return "" }
+func (c *sdkMockContext) Channel() string                                            { return "" }
+func (c *sdkMockContext) ChatID() string                                             { return "" }
+func (c *sdkMockContext) TenantID() int64                                            { return 0 }
+func (c *sdkMockContext) Logger() Logger                                             { return &sdkMockLogger{} }
+func (c *sdkMockContext) Config() (map[string]any, error)                            { return make(map[string]any), nil }
+func (c *sdkMockContext) SetConfig(key string, value any) error                      { return nil }
+func (c *sdkMockContext) OnConfigChanged(callback func(config map[string]any)) error { return nil }
+func (c *sdkMockContext) Subscribe(topic string, handler PluginEventHandler) error   { return nil }
+func (c *sdkMockContext) Publish(topic string, data any) error                       { return nil }
+func (c *sdkMockContext) ToolCallCount() int64                                       { return 0 }
+func (c *sdkMockContext) HookCallCount() int64                                       { return 0 }
+func (c *sdkMockContext) SetValue(key string, value any)                             {}
+func (c *sdkMockContext) GetValue(key string) (any, bool)                            { return nil, false }
+func (c *sdkMockContext) RegisterChannelProvider(provider any) error                 { return nil }
 func (c *sdkMockContext) RegisterCommand(name string, description string, handler PluginCommandHandler) error {
 	return nil
 }

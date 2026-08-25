@@ -31,6 +31,48 @@ func newTestPM(t *testing.T) *PluginManager {
 	return pm
 }
 
+// TestDefaultPluginDirs_EnvVar appends XBOT_PLUGIN_DIRS entries after the
+// user plugin directories. This is how bundled repo plugins
+// (plugins/xbot-genui, plugins/xbot-git-fancy) are discoverable from source.
+func TestDefaultPluginDirs_EnvVar(t *testing.T) {
+	t.Setenv("XBOT_PLUGIN_DIRS", filepath.Join("repo", "plugins")+string(os.PathListSeparator)+" /tmp/extra ")
+	dirs := DefaultPluginDirs(filepath.Join("home", "user", ".xbot"))
+
+	want := []string{
+		filepath.Join("home", "user", ".xbot", "plugins"),
+		filepath.Join("home", "user", ".xbot", "plugins", "builtin"),
+		filepath.Join("repo", "plugins"),
+		"/tmp/extra", // env var value is used as-is (already absolute)
+	}
+	if len(dirs) != len(want) {
+		t.Fatalf("DefaultPluginDirs() = %v, want %v", dirs, want)
+	}
+	for i := range want {
+		if dirs[i] != want[i] {
+			t.Errorf("DefaultPluginDirs()[%d] = %q, want %q", i, dirs[i], want[i])
+		}
+	}
+}
+
+// TestDefaultPluginDirs_NoEnvVar keeps the two standard directories when
+// XBOT_PLUGIN_DIRS is unset or empty.
+func TestDefaultPluginDirs_NoEnvVar(t *testing.T) {
+	t.Setenv("XBOT_PLUGIN_DIRS", "")
+	dirs := DefaultPluginDirs(filepath.Join("home", "user", ".xbot"))
+	want := []string{
+		filepath.Join("home", "user", ".xbot", "plugins"),
+		filepath.Join("home", "user", ".xbot", "plugins", "builtin"),
+	}
+	if len(dirs) != len(want) {
+		t.Fatalf("DefaultPluginDirs() = %v, want %v", dirs, want)
+	}
+	for i := range want {
+		if dirs[i] != want[i] {
+			t.Errorf("DefaultPluginDirs()[%d] = %q, want %q", i, dirs[i], want[i])
+		}
+	}
+}
+
 func testManifest() PluginManifest {
 	return PluginManifest{
 		ID:               "com.test.example",

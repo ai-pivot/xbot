@@ -82,6 +82,10 @@ AgentStop, AgentError, PreCompact, PostCompact, CronFired, WebhookReceived
 - `docker`: Docker container per OS user (always Linux)
 - `remote`: remote runner process via runner protocol (always Linux)
 
+## SubAgent Tool (`tools/subagent.go`)
+
+Delegate work to a sub-agent. Defaults to **interactive** (not one-shot): `SubAgent(task, role, instance)` creates/reuses an interactive session persisted to DB (`channel="agent"`, stable key `channel:chatID/role:instance`). `background` defaults to `true` (async; task_wait-able). `action` ∈ {send, unload, inspect, interrupt} for control. **One-shot (`RunSubAgent`) is no longer the default** — one-shot used a random instance and destroyed the session on completion, so the sub-agent history vanished from Web/CLI until a new SSE arrived. Web 子代理会话（带 fullKey/agentChatID）与主 agent 走完全相同的 `fetchHistory`（DB `get_history` + `get_active_progress`）路径。
+
 ## Agent Communication (CreateChat + SendMessage)
 
 Two tools for inter-agent messaging via the Dispatcher's AgentChannel mechanism.

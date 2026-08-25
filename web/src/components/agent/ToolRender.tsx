@@ -27,6 +27,7 @@ import { DiffView, extractDiffSource } from './DiffView'
 import { CodeView } from './CodeView'
 import { AnsiText } from './AnsiText'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
+import { GenUIPanel } from './GenUIPanel'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -135,7 +136,23 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
       // 或插件声明的渲染器决定此工具的渲染，替代宿主硬编码的 display_html 特判。
       // 无匹配（或渲染器返回 null）→ 默认 ToolCallBlock。
       const rendered = runtime?.renderTool(tool, { chatID: '' }) ?? null
-      if (rendered != null) return rendered
+      if (rendered != null) {
+        // surface=panel：顶层面板（fancy 标题栏 + 折叠 + 全屏），在工具被调用的
+        // iteration 位置渲染，默认展开、不自动折叠。
+        if (tool.surface?.kind === 'panel') {
+          return (
+            <GenUIPanel
+              title={tool.surface.title || tool.summary}
+              collapsible={tool.surface.collapsible ?? true}
+              fullscreen={tool.surface.fullscreen ?? true}
+              defaultOpen={tool.surface.defaultOpen ?? true}
+            >
+              {rendered}
+            </GenUIPanel>
+          )
+        }
+        return rendered
+      }
       return <ToolCallBlock tool={tool} />
     }
   }

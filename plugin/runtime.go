@@ -121,12 +121,17 @@ func (g *stdioPlugin) Activate(ctx PluginContext) error {
 	// Start the bidirectional readLoop before making any calls.
 	go proc.readLoop()
 
-	// Send activate command to the external process
+	// Send activate command to the external process, carrying the plugin's
+	// configuration so the process can read it during setup.
+	activateParams := map[string]any{
+		"pluginId": g.manifest.ID,
+	}
+	if cfg, err := ctx.Config(); err == nil && len(cfg) > 0 {
+		activateParams["config"] = cfg
+	}
 	req := &PluginRequest{
 		Method: "activate",
-		Params: map[string]any{
-			"pluginId": g.manifest.ID,
-		},
+		Params: activateParams,
 	}
 	resp, err := proc.Call(context.Background(), req)
 	if err != nil {
@@ -136,6 +141,24 @@ func (g *stdioPlugin) Activate(ctx PluginContext) error {
 	if resp.Error != "" {
 		proc.Stop()
 		return fmt.Errorf("plugin activate error: %s", resp.Error)
+	}
+
+	// Subscribe to configuration changes: push config_changed to the process so
+	// it can apply the new values at runtime (hot reload). The subscription is
+	// released automatically when the plugin is deactivated.
+	if err := ctx.OnConfigChanged(func(config map[string]any) {
+		if g.process == nil {
+			return
+		}
+		if _, err := g.process.Call(context.Background(), &PluginRequest{
+			Method: "config_changed",
+			Params: map[string]any{"config": config},
+		}); err != nil {
+			log.WithField("plugin", g.manifest.ID).Warn("config_changed push failed: ", err)
+		}
+	}); err != nil {
+		proc.Stop()
+		return fmt.Errorf("subscribe config changes: %w", err)
 	}
 
 	// Register tools from the response

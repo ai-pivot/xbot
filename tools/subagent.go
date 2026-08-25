@@ -130,7 +130,6 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 	if params.Background != nil {
 		background = *params.Background
 	}
-	_ = background
 
 	requiresTask := params.Action == "" || params.Action == "send"
 	if requiresTask && params.Task == "" {
@@ -204,8 +203,12 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		return nil, fmt.Errorf("sub-agent capability not available")
 	}
 
-	// Interactive mode handling
-	if params.Interactive || params.Action != "" {
+	// Interactive mode handling.
+	// one-shot（RunSubAgent）已废弃：所有 SubAgent 默认创建/复用 interactive
+	// session，持久化到 DB（channel="agent"），保证 Web/CLI 任何时候打开任何
+	// 代理都能看到完整历史（one-shot 用随机 instance 且跑完即销毁，历史不可见，
+	// 直到新的 SSE 事件到达才恢复 —— 用户报告的问题根因）。
+	{
 		im, ok := ctx.Manager.(InteractiveSubAgentManager)
 		if !ok {
 			return nil, fmt.Errorf("interactive mode not supported by current agent")
@@ -286,24 +289,4 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			return NewResult(result), nil
 		}
 	}
-
-	if ctx.Metadata == nil {
-		ctx.Metadata = make(map[string]string)
-	}
-	if background {
-		ctx.Metadata["background"] = "true"
-	} else {
-		ctx.Metadata["background"] = "false"
-	}
-
-	// One-shot mode. Background (default): the Run executes in a goroutine
-	// registered with the task manager — spawn returns immediately with a task
-	// ID the parent can task_wait on; the completion result is injected as a
-	// notification. Explicit background=false blocks until the final reply.
-	result, err := ctx.Manager.RunSubAgent(ctx, params.Task, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Role, params.Instance, effectiveModel)
-	if err != nil {
-		return nil, fmt.Errorf("sub-agent failed: %w", err)
-	}
-
-	return NewResult(result), nil
 }

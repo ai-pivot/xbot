@@ -32,6 +32,7 @@ import {
   type TodoItem,
   type WebSubAgentProgress,
   type TokenUsageInfo,
+  type UISurface,
 } from '@/types/shared'
 import type { ProgressEvent, StreamStatsInfo } from '@/types/shared'
 
@@ -193,6 +194,19 @@ export function normalizeWebTool(raw: unknown): WebToolProgress | null {
     iteration: typeof r.iteration === 'number' ? r.iteration : undefined,
     uiMode: typeof r.ui_mode === 'string' ? r.ui_mode : undefined,
     uiLibs: uiLibs && uiLibs.length > 0 ? uiLibs : undefined,
+    surface: normalizeUISurface(r.ui_surface),
+  }
+}
+
+function normalizeUISurface(raw: unknown): UISurface | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const s = raw as Record<string, unknown>
+  return {
+    kind: typeof s.kind === 'string' ? s.kind : undefined,
+    title: typeof s.title === 'string' ? s.title : undefined,
+    collapsible: typeof s.collapsible === 'boolean' ? s.collapsible : undefined,
+    fullscreen: typeof s.fullscreen === 'boolean' ? s.fullscreen : undefined,
+    defaultOpen: typeof s.default_open === 'boolean' ? s.default_open : undefined,
   }
 }
 

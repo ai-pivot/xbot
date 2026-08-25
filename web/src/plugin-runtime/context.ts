@@ -12,6 +12,7 @@ import type { RPCAPI } from '@/plugin-api'
 import type { StateAPI } from '@/plugin-api'
 import type { UIAPI } from '@/plugin-api'
 import type { PluginsAPI } from '@/plugin-api'
+import type { ConfigAPI } from '@/plugin-api'
 import type { ContributionAPI, Disposable, PluginMeta } from '@/plugin-api'
 import type { Contribution } from '@/plugin-api'
 
@@ -23,6 +24,7 @@ export interface ContextServices {
   state: StateAPI
   ui: UIAPI
   plugins: PluginsAPI
+  config: ConfigAPI
   registerContribution: (c: Contribution) => Disposable
 }
 
@@ -53,5 +55,6 @@ export function buildContext(
   if (has('state')) ctx.state = svc.state
   if (has('ui')) ctx.ui = svc.ui
   if (has('plugins')) ctx.plugins = svc.plugins
+  if (has('config')) ctx.config = svc.config
   return ctx as PluginContext<readonly Permission[]>
 }

@@ -24,6 +24,7 @@ import { PluginRpcBridge, type RpcTransport } from './rpc'
 import { PluginState } from './state'
 import { PluginUI, type UIServices } from './ui'
 import { PluginInterop } from './plugins'
+import { PluginConfigService } from './config'
 import { buildContext } from './context'
 import { loadPluginModule, versionedUrl, type PluginModule } from './loader'
 import { toSafeMessage } from './sanitize'
@@ -61,6 +62,7 @@ export class PluginRuntime {
   state: PluginState
   ui: PluginUI
   plugins: PluginInterop
+  config: PluginConfigService
   private host: PluginRuntimeHost
   private viewCache = new Map<string, Promise<React.ComponentType | null>>()
   /** 已激活插件的 module 引用（热加载时更新）。 */
@@ -87,6 +89,7 @@ export class PluginRuntime {
     })
     this.ui = new PluginUI(host.ui)
     this.plugins = new PluginInterop(this.registry)
+    this.config = new PluginConfigService(this.rpc)
     // 让 require 支持按需激活（从后端拉清单）。
     ;(this.registry as unknown as { ensureActive: (id: string) => Promise<void> }).ensureActive =
       async (id: string) => {
@@ -167,6 +170,7 @@ export class PluginRuntime {
       state: this.state,
       ui: this.ui,
       plugins: this.plugins,
+      config: this.config.forPlugin(effective.id),
       registerContribution: (c: Contribution) => {
         // 动态贡献点：经 registry 挂载，返回 disposable。
         this.registry.registerPlugin(
@@ -331,6 +335,11 @@ export class PluginRuntime {
   /** 当前插件状态列表（管理面板）。 */
   listPluginStates() {
     return this.registry.listStates()
+  }
+
+  /** 后端推送插件配置变更（web_plugin_config_changed）时分发到对应插件。 */
+  notifyPluginConfigChanged(pluginId: string, config: Record<string, unknown>): void {
+    this.config.notifyChanged(pluginId, config)
   }
 }
 

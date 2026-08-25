@@ -244,7 +244,7 @@ func TestSyntheticToolPairAppendIsAtomic(t *testing.T) {
 	state := &runState{
 		cfg: RunConfig{Session: sess}, persistence: NewPersistenceBridge(sess, 0),
 	}
-	state.injectSyntheticToolPair(context.Background(), 1, "synthetic", "call-1", "assistant", "tool", "synthetic", 0)
+	state.injectSyntheticToolPair(context.Background(), 1, "synthetic", "call-1", "tool", "synthetic", 0)
 	if state.persistenceErr == nil {
 		t.Fatal("expected synthetic pair persistence failure")
 	}

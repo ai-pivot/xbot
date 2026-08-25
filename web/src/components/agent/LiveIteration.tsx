@@ -9,11 +9,13 @@
  *
  * Render order: T → O → C (Spec A §2).
  */
-import { memo } from 'react'
+import { memo, useEffect } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
-import { GenUIBlock } from './GenUIBlock'
+import { GenUIPanel } from './GenUIPanel'
+import { SandboxedUI } from '@/plugins/SandboxedUI'
+
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ShimmerThinking } from './ShimmerThinking'
@@ -23,9 +25,10 @@ import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
-import { IterationSlot } from '@/plugin-runtime/iteration-render'
+import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
+import type { LiveStreamStats } from '@/plugin-api'
 
 interface LiveIterationProps {
   progress: ProgressSnapshot
@@ -74,6 +77,9 @@ export const LiveIteration = memo(function LiveIteration({
     (n) => n.iteration === undefined || n.iteration === currentIter,
   )
   const hasSubAgents = liveSubAgents.length > 0
+  // Streaming GenUI（display_html 参数流式累积）——在工具调用的 iteration 位置
+  // 实时渲染面板，而非 stream 结束后才出现。
+  const hasGenUI = Boolean(progress.genuiContent)
 
   // Typewriter: gradually reveal text using TUI's exponential catch-up algorithm.
   // `streaming` is the authoritative flag: set true by stream_content events,
@@ -90,6 +96,18 @@ export const LiveIteration = memo(function LiveIteration({
   const reasoningStreaming = isLive
   const tw = useTypewriter(isLive ? textContent : '')
   const rw = useTypewriter(isLive ? reasoningContent : '')
+
+  // 更新全局实时生成指标 store（ModelStatusBar / status 插件读，解耦 IterationSlot
+  // Context 只能在 LiveIteration 内有效的问题）。LiveIteration 卸载（streaming 结束 /
+  // committed）时清空 → ModelStatusBar 回到 idle 态。⚠️ 必须在所有条件 return 之前。
+  useEffect(() => {
+    setGlobalLiveStats({
+      tokensPerSec: progress.streamStats?.tokensPerSec,
+      ttftMs: progress.streamStats?.ttftMs,
+      completionTokens: progress.tokenUsage?.completionTokens,
+    } as LiveStreamStats)
+    return () => setGlobalLiveStats({} as LiveStreamStats)
+  }, [progress.streamStats, progress.tokenUsage])
   // MarkdownRenderer receives the complete source text. It parses only when
   // this source changes; the typewriter changes visibleChars and clips the
   // already-rendered text nodes instead of reparsing Markdown on every tick.
@@ -150,12 +168,13 @@ export const LiveIteration = memo(function LiveIteration({
     ...currentStreaming,
     ...currentActive,
     ...filteredCompleted,
-  ])
+    // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
+    // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
+    // GenUIPanel）→ 高度双倍 + DOM 反复出现/消失 + 虚拟列表高度跳变（busy 时最严重）。
+  ]).filter((t) => !t.uiMode)
   const hasTools = allTools.length > 0
   const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
-
-  const hasGenUI = Boolean(progress.genuiContent)
 
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
     // Iteration boundary / waiting for the next iteration's first delta: the
@@ -230,12 +249,18 @@ export const LiveIteration = memo(function LiveIteration({
         </div>
       )}
 
-      {/* Streaming GenUI — after content, before tools (GenUI is a tool product) */}
-      {hasGenUI && (
-        <GenUIBlock code={progress.genuiContent} streaming={progress.streaming} />
-      )}
-
       {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}
+
+      {/* Streaming GenUI — 在工具调用位置实时渲染面板（streaming 状态） */}
+      {hasGenUI && (
+        <GenUIPanel
+          collapsible={true}
+          fullscreen={true}
+          defaultOpen={true}
+        >
+          <SandboxedUI code={progress.genuiContent} streaming={isLive} />
+        </GenUIPanel>
+      )}
 
       {/* Streaming C */}
       {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}

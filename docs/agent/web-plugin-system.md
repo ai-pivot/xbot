@@ -123,7 +123,7 @@ export const manifest = {
 
 ```ts
 // @xbot/plugin-api/src/context.ts
-export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui'
+export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config'
 
 interface PermissionAPI {
   events: EventsAPI
@@ -131,6 +131,8 @@ interface PermissionAPI {
   rpc: RPCAPI
   state: StateAPI
   ui: UIAPI
+  plugins: PluginsAPI
+  config: ConfigAPI
 }
 
 export type PluginContext<P extends readonly Permission[]> = {
@@ -140,6 +142,23 @@ export type PluginContext<P extends readonly Permission[]> = {
   readonly meta: PluginMeta
 }
 ```
+
+`config` 权限（§3.8 插件配置端到端）授予插件读写自身配置的能力：
+
+```ts
+export interface ConfigAPI {
+  /** 读取合并后的配置值（manifest 默认值 + 用户覆盖）。 */
+  get(): Promise<Record<string, unknown>>
+  /** 持久化单个键；后端广播变更，触发所有 onConfigChange。 */
+  set(key: string, value: unknown): Promise<void>
+  /** 订阅配置变更（含其它客户端发起）。返回 disposable。 */
+  onConfigChange(handler: (config: Record<string, unknown>) => void): Disposable
+}
+```
+
+**配置声明**：插件在 `plugin.json` 的 `contributes.configuration` 声明 VSCode 风格 schema；前端插件也可在 `web.contributes` 数组里声明 `SettingContribution`（kind: 'setting'），后端 `plugin.ConfigSchema()` 统一提取（`contributes.configuration` 优先）。
+
+**宿主设置面板**：设置对话框新增「插件」分类，`plugin_config` RPC（schema + 当前值）+ `plugin_config_set` 持久化，自动渲染表单并支持搜索过滤配置项（按 label/key/description）。**热重载**：改配置后经 `web_plugin_config_changed` WS 广播，`usePluginRuntimeHost` 调 `runtime.notifyPluginConfigChanged(pluginId, value)` 分发到对应插件的 `onConfigChange`。
 
 插件侧的使用效果：
 
@@ -588,6 +607,36 @@ d.setRenderSideBySide(false)                  // 并排 → 行内
 - 前端插件**只能**通过 `web_plugin_rpc` 调后端（RPC 层隔离，复用 `rpcUserID` 身份解析）；不直接挂 agent 内部 API。
 - 事件桥只转发**已经过 sanitize 的事件载荷**（`SafeMessage` 等），插件接触不到内部状态。
 - 后端插件仍是现有进程模型——**无 VM、无新运行时**。
+
+---
+
+## 6.1 通用顶栏/状态栏插件容器（status_bar_right）
+
+**架构纪律：主项目只提供通用扩展点（容器 + 数据桥），插件的专属 UI 与逻辑全部在插件里。**
+任何把单个插件的 UI 组件写进主项目的做法都是违反插件解耦（历史教训：iter-stats 徽章曾被写进
+主项目 `IterStatsBadge.tsx` + `MobileAppShell` 硬编码 → 回归修正是全部移至插件）。
+
+**容器机制**：
+- `ViewContainer` 已有 `status_bar_right` / `info_bar` / `bottom` 三种**顶栏/状态栏插件容器**
+- 宿主在状态栏挂 `<PluginPanelContainer container="status_bar_right" />`（通用渲染点，任何插件声明到该容器自动出现）：
+  - 移动端：`MobileAppShell` 顶栏 header（顶部 status bar）
+  - 桌面端：`AppShell` 的 `InfoBar`（底部 VSCode 状态栏风格，`desktop.info_bar` 布局位）
+- `VIEW_CONTAINER_TO_SLOT` 把 `status_bar_right` → `desktop.info_bar` 布局位（插件 view 自动注册为可移动布局项）
+
+**数据桥（通用，非插件专属）**：
+- 宿主 `iteration-render.tsx` 暴露 `window.__xbot_iteration__`（`setGlobalLiveStats`/`useGlobalLiveStats`/`subscribeGlobalLiveStats`/`getGlobalLiveStats`）
+- `LiveIteration` 每次流式指标变化 `setGlobalLiveStats`（tok/s、ttft、completionTokens）——发布的是**通用实时流指标**，任何状态栏插件可订阅，不限于 iter-stats
+- 插件 ESM 经 `window.__xbot_iteration__.useGlobalLiveStats` 订阅（不能 import 宿主内部模块）
+
+**iter-stats 插件化落地（模式）**：
+1. 后端 `plugin.json`：`web: { entry: "index.js", contributes: [{kind:'view', id, container:'status_bar_right', title, entry:'index.js'}] }` —— view 声明必须放**后端 `web.contributes`**（静态声明），后端 `web_plugin_list` 只返回 `Web.Entry != ""` 的插件
+2. 前端 `entry.tsx`：`export default` 徽章组件（`loadPluginViewComponent` 按 `view.entry` 加载 `mod.default`）
+3. esbuild 打包：`npx esbuild src/plugins/iteration-stats/entry.tsx --bundle --format=esm --jsx=transform --external:react --outfile=~/.xbot/plugins/xbot.iteration-stats/web/index.js`（React external，运行时从 `window.React` 取）
+4. 改 `plugin.json` 后需 `config reload_plugins`（后端 Discover+ActivateAll）让 `web_plugin_list` 返回新声明
+
+**关键陷阱**：
+- 前端 ESM 只能经 `window` 桥拿宿主数据；绝不放 `useIterationStats`（迭代处 Context 只在 LiveIteration 内有效）到顶栏。顶栏用 `useGlobalLiveStats`（全局桥）。
+- `pluginStats.ts`（builtin manifest 残留，`builtin:` entry）与独立插件路径冲突——iter-stats 改独立插件后必须删，否则 `builtinViews` map 找不到组件。
 
 ---
 

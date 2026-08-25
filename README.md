@@ -158,7 +158,33 @@ The agent can call these tools in conversation:
 - **SubAgents** — Role-based child agents (`explore`, `code-reviewer`, …); custom roles in `~/.xbot/agents/`
 - **Group Chat** — Multi-agent moderated discussion (Meeting Mode)
 - **MCP** — Global and session-level MCP servers (stdio + HTTP)
-- **Plugins** — Tools, hooks, widgets, channel plugins
+- **Plugins** — Tools, hooks, widgets, channel plugins, web UI extensions
+
+### Plugin System
+
+xbot has a comprehensive plugin system with four plugin types:
+
+| Type | Runtime | Use case |
+|------|---------|----------|
+| **Script** | Bash script | Quick widgets, git status, diff previews |
+| **Go native** | In-process | High-performance tools, hooks, context enrichers |
+| **Stdio** | External process (Python/Node/any) | Language-specific integrations |
+| **Web** | ESM module (browser) | UI panels, message renderers, layout extensions |
+
+Built-in plugins: `xbot-genui` (GenUI rendering), `xbot-git-fancy` (git diff/commit viewer).
+
+```bash
+# Build and install built-in plugins
+make plugins-install
+
+# Or run from repo checkout (development)
+make plugins-build
+XBOT_PLUGIN_DIRS="$(pwd)/plugins" ./xbot
+```
+
+Full plugin documentation: **[Plugin System](https://ai-pivot.github.io/xbot/plugins/)** —
+covers manifests, hooks, widgets, tools, the stdio JSON-line protocol, the web plugin
+type-as-contract API, cookbook guides, and complete API reference.
 
 ## Build from source
 
@@ -200,6 +226,7 @@ Full docs: **[ai-pivot.github.io/xbot](https://ai-pivot.github.io/xbot/)**
 | [Configuration](https://ai-pivot.github.io/xbot/configuration/) | Every `config.json` field |
 | [Channels](https://ai-pivot.github.io/xbot/channels/) | Feishu / QQ / Web / CLI |
 | [Features](https://ai-pivot.github.io/xbot/features/) | Tools, skills, MCP, plugins |
+| [Plugins](https://ai-pivot.github.io/xbot/plugins/) | Plugin system: manifests, hooks, widgets, web extensions, cookbook |
 | [Architecture](https://ai-pivot.github.io/xbot/architecture/) | System design |
 
 ## License

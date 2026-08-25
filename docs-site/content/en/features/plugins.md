@@ -16,6 +16,8 @@ shows a diff after every file edit" — the agent creates `plugin.json` and the
 script, then reloads automatically.
 {{< /hint >}}
 
+> **New!** The plugin system now has comprehensive documentation. See the [Plugin System](/plugins/) section for complete guides, API references, and cookbook tutorials.
+
 ## Reloading Plugins
 
 The agent reloads plugins automatically after creating or modifying them. You

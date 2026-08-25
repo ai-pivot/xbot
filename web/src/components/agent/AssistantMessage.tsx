@@ -22,11 +22,8 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
 import { ShimmerThinking } from './ShimmerThinking'
 import { isToolInProgress } from './statusVisual'
-import { ToolRender } from './ToolRender'
-import { isGenUITool } from './genui'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
-import type { WebToolProgress } from '@/types/shared'
 
 interface AssistantMessageProps {
   message: ChatMessage
@@ -158,109 +155,79 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // correct condition.
   const showActions = !isStreaming && !!message.content && !message.displayOnly
 
-  // 'all' level + committed: fold all intermediate content (iterations' thinking/O),
-  // show only the last TEXT output. Last TEXT = message.content, or fall back to
-  // the last iteration's thinking when content is empty.
-  // GenUI (display_html) is extracted and rendered OUTSIDE the fold — it has
-  // special status and should never be hidden.
-  if (effectiveLevel === 'all' && !isStreaming) {
-    const totalTools = iterations.reduce((sum, iter) => sum + iter.toolCount, 0)
-    const showSummary = iterations.length > 0
-    const lastIteration = iterations[iterations.length - 1]
-    // finalContent 在有迭代时为空（内容由 TurnBody 迭代内渲染）—— 'all' 折叠
-    // 模式显示"最后文本"必须 fallback 到最后迭代的 content（最终输出），再退
-    // thinking，否则折叠后只显示推理摘要、丢失最终回复。content 是文本输出
-    // （thinking 已彻底删除）。
-    const lastText = finalContent || lastIteration?.content || lastIteration?.reasoning || ''
+  // ── Unified render (P2 Step2): ONE stable skeleton so the turn content never
+  //    remounts across streaming→committed. GenUI is rendered by a SINGLE
+  //    <SandboxedUI key={turnID}> in a fixed position; genui tools are excluded
+  //    from the iteration/tool blocks (flattenIterations) so exactly one instance.
+  const isAllCommitted = effectiveLevel === 'all' && !isStreaming
+  const totalTools = iterations.reduce((sum, iter) => sum + iter.toolCount, 0)
+  const showSummary = iterations.length > 0
+  const lastIteration = iterations[iterations.length - 1]
+  // finalContent 在有迭代时为空（内容由 TurnBody 迭代内渲染）—— 'all' 折叠
+  // 模式显示"最后文本"必须 fallback 到最后迭代的 content（最终输出），再退
+  // thinking，否则折叠后只显示推理摘要、丢失最终回复。
+  const lastText = finalContent || lastIteration?.content || lastIteration?.reasoning || ''
 
-    // Extract GenUI tools from all iterations — render outside the fold.
-    // Metadata-driven (ui.mode === 'genui'); ToolRender dispatches via the
-    // messageRenderer runtime (内置 genui renderer) instead of a name special-case.
-    const genuiTools: WebToolProgress[] = []
-    for (const iter of iterations) {
-      for (const tool of iter.tools) {
-        if (isGenUITool(tool)) {
-          genuiTools.push(tool)
-        }
-      }
-    }
-
-    return (
-      <div className="group/msg px-1">
-        {showSummary && (
-          <FoldedLine
-            title={t('agent.processed', { iterations: iterations.length, tools: totalTools })}
-            defaultOpen={false}
-          >
-            <TurnBody iterations={iterations} level="minimal" mergeTools={mergeTools} />
-          </FoldedLine>
-        )}
-        {lastText ? (
-          <MarkdownRenderer content={lastText} />
-        ) : emptyResponseWarning ? (
-          <LLMEmptyResponseWarning text={emptyResponseWarning} />
-        ) : (
-          !showSummary && (
-            <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
-          )
-        )}
-        {/* GenUI: always visible, never folded. ToolRender dispatches via the
-            messageRenderer runtime (内置 genui renderer). */}
-        {genuiTools.map((tool, i) => (
-          <ToolRender key={`genui-${i}`} tool={tool} />
-        ))}
-        {message.displayOnly && (
-          <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted md:text-[11px]">
-            {t('agent.displayOnly')}
-          </span>
-        )}
-        {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
-      </div>
-    )
-  }
-
-  // 'minimal'/'none' level or streaming: render full TurnBody.
   return (
     <div className="group/msg px-1">
-      <TurnBody
-        iterations={iterations}
-        liveProgress={liveProgress}
-        level={effectiveLevel}
-        mergeTools={mergeTools}
-        turnID={message.turnID}
-      />
-      {/* Final O: for committed messages, render message.content after iterations.
-          For streaming, the streamContent is already in LiveIteration.
-          noDebounce disables the 150ms delay so committed content renders
-          immediately (no flicker at turn completion).
-          frozen live（cancel）：content 必须显示（已渲染内容永不消失）——
-          LiveIteration 在 frozen 时可能不渲染 progress 的 content。 */}
-      {(!isStreaming || isFrozenLive) && finalContent && (
-        <MarkdownRenderer content={finalContent} noDebounce />
+      {isAllCommitted ? (
+        <>
+          {showSummary && (
+            <FoldedLine
+              title={t('agent.processed', { iterations: iterations.length, tools: totalTools })}
+              defaultOpen={false}
+            >
+              <TurnBody iterations={iterations} level="minimal" mergeTools={mergeTools} />
+            </FoldedLine>
+          )}
+          {lastText ? (
+            <MarkdownRenderer content={lastText} />
+          ) : emptyResponseWarning ? (
+            <LLMEmptyResponseWarning text={emptyResponseWarning} />
+          ) : (
+            !showSummary && (
+              <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
+            )
+          )}
+          {message.displayOnly && (
+            <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted md:text-[11px]">
+              {t('agent.displayOnly')}
+            </span>
+          )}
+        </>
+      ) : (
+        <>
+          <TurnBody
+            iterations={iterations}
+            liveProgress={liveProgress}
+            level={effectiveLevel}
+            mergeTools={mergeTools}
+            turnID={message.turnID}
+          />
+          {(!isStreaming || isFrozenLive) && finalContent && (
+            <MarkdownRenderer content={finalContent} noDebounce />
+          )}
+          {!isStreaming && emptyResponseWarning && (
+            <LLMEmptyResponseWarning text={emptyResponseWarning} />
+          )}
+          {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && !showProgress(progress) && (
+            <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
+          )}
+          {message.displayOnly && (
+            <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
+              {t('agent.displayOnly')}
+            </span>
+          )}
+          {showThinkingIndicator && <ShimmerThinking />}
+          {isStreaming && liveProgress?.phase === 'compressing' && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+              <Loader2 className="size-3.5 animate-spin" />
+              <span>{t('agent.compressing')}</span>
+            </div>
+          )}
+        </>
       )}
-      {!isStreaming && emptyResponseWarning && (
-        <LLMEmptyResponseWarning text={emptyResponseWarning} />
-      )}
-      {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && !showProgress(progress) && (
-        <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
-      )}
-      {message.displayOnly && (
-        <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
-          {t('agent.displayOnly')}
-        </span>
-      )}
-      {/* Shimmer "thinking" indicator during streaming */}
-      {showThinkingIndicator && <ShimmerThinking />}
-      {/* Compressing indicator at the TAIL (after all turn content), not at the
-          top — a compression spinner on the first line of the agent message made
-          it look like the turn had just started; it belongs at the end where the
-          context is actually being rewritten. */}
-      {isStreaming && liveProgress?.phase === 'compressing' && (
-        <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
-          <Loader2 className="size-3.5 animate-spin" />
-          <span>{t('agent.compressing')}</span>
-        </div>
-      )}
+
       {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
     </div>
   )

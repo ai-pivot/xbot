@@ -31,6 +31,7 @@ import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
 import { InfoBar } from '@/plugins/InfoBar'
+import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
@@ -318,6 +319,7 @@ export function MobileAppShell() {
               {view === 'agent' && !subAgentView ? <Menu className="size-5" /> : <ArrowLeft className="size-5" />}
             </Button>
             <div className="min-w-0 flex-1 truncate px-1 text-base font-semibold">{headerTitle}</div>
+            <PluginPanelContainer container="status_bar_right" />
             {topBarItems.map((item) => renderTopBarItem(item, {
               view,
               activePanel,

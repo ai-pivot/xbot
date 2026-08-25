@@ -10,15 +10,11 @@
  */
 import { WidgetZone } from '@/plugins/WidgetZone'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
+import { SWUpdateButton } from '@/components/SWUpdateButton'
 
 export function InfoBar() {
-  // WidgetZone renders non-git spans (git spans excluded — the fancy
-  // GitStatusPanel in the plugin view container renders them instead).
-  //
-  // Height absorbs the bottom safe area (iOS PWA home-indicator / rounded
-  // corners): the bar's bg-[--bg-elevated] paints through it, and the content
-  // stays inside the top 1.5rem. Desktop / browser mode: inset is 0 — the bar
-  // stays a plain h-6 strip, unchanged.
+  // 底部状态栏只放 SW 更新按钮（用户要求：上方显示连接状态，下方改更新按钮，
+  // 避免两端重复"已连接"）。常驻固定高度条，更新按钮三态（检查/下载/重启）。
   return (
     <div
       className="flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs"
@@ -26,6 +22,7 @@ export function InfoBar() {
     >
       <PluginPanelContainer container="info_bar" />
       <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
+      <SWUpdateButton />
     </div>
   )
 }

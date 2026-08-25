@@ -764,6 +764,12 @@ func (pm *PluginManager) DeactivateAll(ctx context.Context) {
 			log.WithField("plugin", entry.Manifest.ID).Warn("Deactivation error: ", err)
 			pm.audit(entry.Manifest.ID, AuditDeactivate, nil, err)
 		}
+		// Release any OnConfigChanged subscriptions registered by the deactivating
+		// plugin context — otherwise the callback outlives the plugin and fires on
+		// config changes after teardown.
+		if entry.Context != nil {
+			entry.Context.cleanupConfigSubscriptions()
+		}
 		entry.stateMu.Lock()
 		entry.State = StateInactive
 		entry.stateMu.Unlock()
@@ -836,6 +842,10 @@ func (pm *PluginManager) disableEntry(entry *PluginEntry) error {
 			entry.lastErrorAt = time.Now()
 			entry.stateMu.Unlock()
 			return err
+		}
+		// Release OnConfigChanged subscriptions before marking inactive.
+		if entry.Context != nil {
+			entry.Context.cleanupConfigSubscriptions()
 		}
 	}
 	entry.stateMu.Lock()
@@ -1042,6 +1052,11 @@ func (pm *PluginManager) Reload(ctx context.Context, pluginID string) error {
 		entry.stateMu.Lock()
 		entry.State = StateInactive
 		entry.stateMu.Unlock()
+	}
+
+	// Release OnConfigChanged subscriptions before dropping the old context.
+	if entry.Context != nil {
+		entry.Context.cleanupConfigSubscriptions()
 	}
 
 	// Delete old entry

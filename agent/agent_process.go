@@ -149,7 +149,6 @@ func (a *Agent) acknowledgePendingBgNotifications(sessionKey string, count int) 
 func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (llm.ChatMessage, llm.ChatMessage, IterationToolSnapshot, bool) {
 	toolName := ""
 	toolID := ""
-	assistantContent := ""
 	toolContent := ""
 	label := ""
 	var elapsedMS int64
@@ -158,7 +157,6 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 	case *tools.BackgroundTask:
 		toolName = "background_task_result"
 		toolID = "bg_" + n.ID
-		assistantContent = "A background task completed while this run was being cancelled. I will record the result."
 		toolContent = tools.FormatBgTaskCompletion(n, "")
 		label = fmt.Sprintf("bg:%s", n.ID)
 		if n.FinishedAt != nil {
@@ -170,33 +168,24 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 		}
 		toolName = "bg_subagent_" + string(n.Type)
 		toolID = fmt.Sprintf("bgsub_%s_%s_%d", n.Role, n.Instance, seq)
-		assistantContent = fmt.Sprintf("Background subagent %s completed while this run was being cancelled. I will record the result.", n.Role)
 		toolContent = tools.FormatSubAgentBgNotify(n)
 		label = fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance)
 	case *tools.CronFired:
 		toolName = "cron_fired"
 		toolID = fmt.Sprintf("cron_cancel_%d", seq)
-		assistantContent = "A scheduled cron job fired while this run was being cancelled. I will record it."
 		toolContent = fmt.Sprintf("A scheduled cron job fired.\n\nMessage: %s", n.Message)
 		label = "cron"
 	case *tools.AsyncMessageNotification:
 		toolName = "async_message"
 		toolID = fmt.Sprintf("async_cancel_%d", seq)
-		assistantContent = "An asynchronous message arrived while this run was being cancelled. I will record it."
 		toolContent = n.Content
 		label = "async_message"
 	default:
 		return llm.ChatMessage{}, llm.ChatMessage{}, IterationToolSnapshot{}, false
 	}
 
-	assistantMsg := llm.NewAssistantMessage(assistantContent)
+	assistantMsg, toolMsg := newSyntheticToolPair(toolName, toolID, toolContent)
 	assistantMsg.DisplayOnly = true
-	assistantMsg.ToolCalls = []llm.ToolCall{{
-		ID:        toolID,
-		Name:      toolName,
-		Arguments: "{}",
-	}}
-	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", toolContent)
 	toolMsg.DisplayOnly = true
 	snapshot := IterationToolSnapshot{
 		Name:      toolName,
@@ -213,14 +202,8 @@ func userCancelledSyntheticTool() (llm.ChatMessage, llm.ChatMessage, IterationTo
 	const toolID = "user_cancelled"
 	const content = "User cancelled this run with Ctrl+C. Treat the previous turn as interrupted. Do not continue unfinished actions unless the user asks to resume."
 
-	assistantMsg := llm.NewAssistantMessage("The user cancelled this run. I will record the interruption.")
+	assistantMsg, toolMsg := newSyntheticToolPair(toolName, toolID, content)
 	assistantMsg.DisplayOnly = true
-	assistantMsg.ToolCalls = []llm.ToolCall{{
-		ID:        toolID,
-		Name:      toolName,
-		Arguments: "{}",
-	}}
-	toolMsg := llm.NewToolMessage(toolName, toolID, "{}", content)
 	toolMsg.DisplayOnly = true
 	snapshot := IterationToolSnapshot{
 		Name:    toolName,

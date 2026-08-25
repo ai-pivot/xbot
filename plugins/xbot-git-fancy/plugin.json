@@ -8,7 +8,27 @@
   "entry": "./bin/git-fancy-plugin",
   "activationEvents": ["onStart"],
   "permissions": ["rpc", "ui"],
-  "contributes": {},
+  "contributes": {
+    "configuration": {
+      "title": "Git Fancy",
+      "properties": {
+        "defaultLogLimit": {
+          "type": "number",
+          "label": "默认 Commit 条数",
+          "description": "Git 日志面板默认加载的 commit 数量（log limit 默认值）",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 100
+        },
+        "showDiffStats": {
+          "type": "boolean",
+          "label": "显示 Diff 变更统计",
+          "description": "commit 详情中显示 numstat 变更统计（++/-- 行数）",
+          "default": true
+        }
+      }
+    }
+  },
   "web": {
     "entry": "index.js",
     "contributes": [

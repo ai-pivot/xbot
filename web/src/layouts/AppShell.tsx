@@ -24,6 +24,7 @@ import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
+import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -31,6 +32,7 @@ import { useTabManager } from '@/hooks/useTabManager'
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
+import { useWSConnection } from '@/hooks/useWSConnection'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
@@ -47,6 +49,7 @@ const LEFT_WIDTH_KEY = 'xbot:leftSidebarWidth'
 export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
+  const ws = useWSConnection()
   const sessionStore = useSessionStore()
   // 左侧栏的用户插件 view（每个渲染为 VSCode 式独立 section，可拖拽/折叠/记忆）
   const pluginPanels = useLeftPluginPanels()
@@ -249,6 +252,23 @@ export function AppShell() {
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative flex h-full min-w-0 flex-1 flex-col">
+          {/* 顶部状态栏（与手机 MobileAppShell header 对应）——挂 status_bar_right 容器，
+              任意插件声明到该容器自动出现（iter-stats 徽章）。⚠️ 必须常驻渲染：底部
+              InfoBar 同样固定高度 ALWAYS rendered —— 空缺时若塌陷成一条线，插件徽章
+              凭空出现/消失会让布局跳动。这里固定 h-6 条，内容为空时也稳定显示。 */}
+          <header className="flex h-6 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 text-xs">
+            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+              <span
+                className={
+                  ws.connected
+                    ? 'size-1.5 rounded-full bg-emerald-500'
+                    : 'size-1.5 animate-pulse rounded-full bg-amber-500'
+                }
+              />
+              <span className="text-text-muted">{ws.connected ? '已连接' : '连接中…'}</span>
+            </span>
+            <PluginPanelContainer container="status_bar_right" />
+          </header>
           <DockviewContainer tabManager={tabManager} />
           {/* Plugin widget info bar (info_bar zone) — status-bar style at the
               BOTTOM (VSCode-like), always rendered. */}

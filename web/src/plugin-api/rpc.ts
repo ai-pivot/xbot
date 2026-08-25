@@ -13,6 +13,24 @@ export interface BackendRPC {
   }
   'agent.cancel': { params: { chatID: string }; result: Record<string, never> }
   'plugin.list': { params: Record<string, never>; result: PluginInfo[] }
+  // 核心 RPC（无点号）——插件配置的 schema + 值。注意：绝不能用 'plugin.get_config'
+  // 这类含点号的名字，否则 FetchRpcTransport 会把它误路由到 web_plugin_rpc（插件
+  // 进程方法），导致 ctx.config.get() 静默失败。
+  'plugin_config': {
+    params: { id?: string }
+    result: {
+      plugins: Array<{
+        id: string
+        name: string
+        properties: Record<string, unknown>
+        values: Record<string, unknown>
+      }>
+    }
+  }
+  'plugin_config_set': {
+    params: { id: string; key: string; value: unknown }
+    result: { status: string; key: string }
+  }
   // ---- xbot.git-fancy：fancy Git 插件数据源 ----
   'git.status': {
     params: { channel: string; chatID: string }

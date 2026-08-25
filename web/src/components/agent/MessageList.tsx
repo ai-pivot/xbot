@@ -59,6 +59,12 @@ interface MessageListProps {
 }
 
 const ESTIMATE = 120
+// genui 行（顶层面板）：⚠️ 禁止 estimate —— TanStack 反复 measure（独立 createRoot
+// 内容在行滚出/滚回重挂载时高度不稳定）→ estimate(400)↔measure(实际) 反复震荡 → 跳变。
+// 用 module-level map 缓存高度：measure 一次后永久固定，之后 estimateSize 直接返回
+// 缓存值，绝不重新 estimate。key = getItemKey 返回的稳定键（`turn-{turnID}-{role}`）。
+const GENUI_ESTIMATE = 400
+const genuiHeights = new Map<string, number>()
 const EDGE_EPSILON = 2
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -200,9 +206,34 @@ export function MessageList({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ESTIMATE,
+    estimateSize: (index) => {
+      const row = rows[index]
+      if (!row) return ESTIMATE
+      // genui 行：⚠️ 禁用 estimate。从 genuiHeights map 取缓存高度（measure 一次后永久
+      // 固定）。无缓存时用占位 GENUI_ESTIMATE，measure 回调会写入 map 并固化——
+      // 之后绝不再 estimate/measure，行高恒定 → 滚动无跳变。
+      if (rowHasGenUI(row)) {
+        const key = stableRowKey(row)
+        const cached = key && genuiHeights.has(key) ? genuiHeights.get(key)! : null
+        return cached ?? GENUI_ESTIMATE
+      }
+      return ESTIMATE
+    },
     overscan: dynamicOverscan,
-    getItemKey: (index) => rows[index]?.id ?? `row-${index}`,
+    getItemKey: (index) => {
+      const r = rows[index]
+      if (!r) return `row-${index}`
+      // 稳定 turn 键：assistant 行 live→committed 使用同一个 turnID+role（live 行
+      // id="turn-N-live"、committed 行 id=assistant.id）—— 若用 row.id，提交瞬间
+      // item.key 改变 → TanStack 整行 <div key> 卸载重建（"agent turn 结束后整个
+      // turn DOM 重建"根因）。keying 用 turnID+role 让行在 live→committed 间保持
+      // 挂载，内容由 React reconcile（不 remount）。legacy（turnID=0）与 pending
+      // 用户行（MAX_SAFE_INTEGER，绑定真实 turn 前）回退 row.id。
+      if (r.turnID > 0 && r.turnID < Number.MAX_SAFE_INTEGER) {
+        return `turn-${r.turnID}-${r.role}`
+      }
+      return r.id ?? `row-${index}`
+    },
   })
 
   // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
@@ -223,6 +254,39 @@ export function MessageList({
       return item.end < (instance.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  // ── GenUI 行高度固化（measure 一次后永久固定，禁止预测/重测）──────────────
+  // TanStack 默认 measureElement 在 genui 行滚出视口（虚拟化卸载）再滚回时会重新
+  // 测量独立 createRoot 的实际高度（内容不稳定）→ estimate(400)↔measure 反复震荡
+  // → 滚动跳变。此回调：genui 行首次测量后写入 genuiHeights map；estimateSize 对
+  // genui 行优先返回缓存值（已缓存则不再重测）→ 高度恒定，滚动无跳变。
+  const measureRef = useCallback(
+    (node: HTMLElement | null) => {
+      if (!node) return
+      const index = Number(node.dataset?.index ?? -1)
+      const row = rows[index]
+      if (row && rowHasGenUI(row)) {
+        const key = stableRowKey(row)
+        if (key && genuiHeights.has(key)) {
+          // ⚠️ 已缓存 → 高度已由 map 固化（estimateSize 返回该值），**跳过
+          // virtualizer.measureElement** —— 否则 TanStack 在 genui 行滚出→滚回
+          // （虚拟化卸载→重挂载）时反复 measure 该行，触发 resizeItem →
+          // shouldAdjustScrollPosition 校正 scrollTop → totalSize/scrollTop 同步突变
+          // → 滚动跳变（diag 实证：RE-DETECT 每次滚动经过都触发 + total Δ578）。
+          // 跳过 measure 后 TanStack 恒用 estimateSize 的 map 值（恒定），零跳变。
+          return
+        }
+        if (key) {
+          // 首测：读实际高度写 map（固化），然后交给 TanStack 首次测量。
+          const rect = node.getBoundingClientRect()
+          if (rect.height > 0) genuiHeights.set(key, rect.height)
+        }
+      }
+      // 非 genui 行 / genui 首测：交给 TanStack 默认 measureElement（ResizeObserver 观测）。
+      virtualizer.measureElement(node)
+    },
+    [rows, virtualizer.measureElement],
+  )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
   // User report: "agent turn 消失" — the live tail row vanishes from the DOM
@@ -601,8 +665,6 @@ export function MessageList({
     if (newMessagesAdded) {
       // User sent a message (optimistic, not yet persisted) — always resume
       // following and scroll to bottom, even if the user had scrolled up.
-      // Only for optimistic user messages (persisted=false), NOT for DB
-      // messages loaded via reload (those don't represent user action).
       const lastRow = rows[rows.length - 1]
       if (lastRow?.role === 'user' && lastRow?.persisted === false) {
         resumeFollowing()
@@ -741,7 +803,7 @@ export function MessageList({
                   <div
                     key={item.key}
                     data-index={item.index}
-                    ref={virtualizer.measureElement}
+                    ref={measureRef}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -885,6 +947,27 @@ function NavButton({
       {children}
     </button>
   )
+}
+
+// 稳定行 key（与 getItemKey 一致）：turnID>0 用 `turn-${turnID}-${role}`，否则 row.id。
+// 用于 genui 高度缓存 map 的 key —— 行在 live→committed 间保持同一 key → 高度只 measure 一次。
+export function stableRowKey(row: ChatMessage): string {
+  if (row.turnID > 0 && row.turnID < Number.MAX_SAFE_INTEGER) {
+    return `turn-${row.turnID}-${row.role}`
+  }
+  return row.id ?? ''
+}
+
+// 判断一行是否含 GenUI 面板（committed：迭代里有 uiMode 工具；live：流式 genuiContent）。
+// estimateSize 据此返回更大的基数，缩小 estimate 与实际高度差距 → 滚动跳变小。
+export function rowHasGenUI(row: ChatMessage): boolean {
+  for (const iter of row.iterations ?? []) {
+    for (const tool of iter.tools ?? []) {
+      if (tool.uiMode) return true
+    }
+  }
+  if ((row as ChatMessage & { genuiContent?: string }).genuiContent) return true
+  return false
 }
 
 export function canRewindMessage(

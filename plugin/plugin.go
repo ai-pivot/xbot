@@ -257,13 +257,42 @@ type ConfigurationContribution struct {
 }
 
 // ConfigProperty describes a single configuration property.
+// The Type field is the JSON schema type: "string", "number", "boolean",
+// "select", or "multiselect". Options applies to select/multiselect.
 type ConfigProperty struct {
-	// Type is the JSON schema type: "string", "number", "boolean".
+	// Type is the JSON schema type: "string", "number", "boolean",
+	// "select", or "multiselect".
 	Type string `json:"type"`
+	// Label is the human-readable display name. Falls back to the property
+	// key when empty.
+	Label string `json:"label,omitempty"`
+	// Description explains the property's purpose.
+	Description string `json:"description,omitempty"`
 	// Default is the default value when no user configuration exists.
 	Default any `json:"default,omitempty"`
-	// Description explains the property's purpose.
-	Description string `json:"description"`
+	// Options defines selectable choices for type "select" / "multiselect".
+	Options []ConfigOption `json:"options,omitempty"`
+	// Section groups this property under a named section in the settings UI.
+	// Properties without a section are grouped under the contribution Title.
+	Section string `json:"section,omitempty"`
+	// Secret indicates the value is sensitive and should be masked in the UI.
+	Secret bool `json:"secret,omitempty"`
+	// Placeholder is hint text for text inputs.
+	Placeholder string `json:"placeholder,omitempty"`
+	// Required indicates the value must be set.
+	Required bool `json:"required,omitempty"`
+	// Minimum bounds numeric inputs (inclusive). Applies to type "number".
+	Minimum *float64 `json:"minimum,omitempty"`
+	// Maximum bounds numeric inputs (inclusive). Applies to type "number".
+	Maximum *float64 `json:"maximum,omitempty"`
+}
+
+// ConfigOption is a selectable choice for select/multiselect properties.
+type ConfigOption struct {
+	// Label is the human-readable choice name.
+	Label string `json:"label"`
+	// Value is the stored value for this choice.
+	Value string `json:"value"`
 }
 
 // ---------------------------------------------------------------------------

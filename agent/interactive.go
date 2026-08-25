@@ -357,6 +357,11 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 	}
 
 	// buildPayload constructs a unified progress event from structured data.
+	// MUST carry TurnID (s.TurnID) — the frontend ChatStore's activeTurn is
+	// derived from progress event turn_id (normalizeEvent.optTurnID). Without
+	// it, every SubAgent progress event has turn_id=0, the store cannot locate
+	// its turn, and ALL live stream/iteration events are dropped (user report:
+	// "subagent session 打开之后没有实时 stream 更新，必须重新打开才能刷新进度").
 	buildPayload := func(s *StructuredProgress) *protocol.ProgressEvent {
 		payload := &protocol.ProgressEvent{
 			ChatID:           agentProgressKey,
@@ -367,12 +372,14 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 			Reasoning:        s.ReasoningContent,
 			HistoryCompacted: s.HistoryCompacted,
 			CWD:              s.CWD,
+			TurnID:           s.TurnID,
 		}
 		for _, t := range s.ActiveTools {
 			payload.ActiveTools = append(payload.ActiveTools, protocol.ToolProgress{
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+				UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 			})
 		}
 		for _, t := range s.CompletedTools {
@@ -380,6 +387,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 				Name: t.Name, Label: t.Label, Status: string(t.Status),
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
+				UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
 			})
 		}
 		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
@@ -402,6 +410,24 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		}
 		s := event.Structured
 		payload := buildPayload(s)
+		// PhaseDone（turn 结束）：最后迭代没有"推进到下一迭代"的事件，
+		// attachIterationDelta 不会记录它 → active_progress/committed 缺最后迭代
+		// （用户报告"有时候不渲染最后一个 iter"）。必须与主 agent
+		// buildProgressEventHandler（engine_wire.go:1956-1967）一致：PhaseDone 时
+		// recordFinalIteration 补记最后迭代并 attach 到 payload —— 否则子代理
+		// 丢最后一个 iter，主 agent 不丢。
+		if payload.Phase == string(PhaseDone) {
+			a.recordFinalIteration(agentProgressKey)
+			if hist, ok := a.iterationHistories.Load(agentProgressKey); ok {
+				h := *hist.(*[]protocol.ProgressEvent)
+				if len(h) > 0 {
+					last := h[len(h)-1]
+					if last.Iteration == payload.Iteration {
+						payload.IterationHistory = []protocol.ProgressEvent{last}
+					}
+				}
+			}
+		}
 		a.attachIterationDelta(agentProgressKey, s.Iteration, payload)
 		broadcast(payload)
 		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(payload))
@@ -412,56 +438,38 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 	var subAgentProgressSeq atomic.Uint64
 	cfg.ProgressSeq = &subAgentProgressSeq
 	cfg.StreamContentFunc = func(content string) {
-		delta := content
-		isFull := true
+		// ⚠️ 始终推送全量累积文本（StreamContent），绝不用 delta push（StreamDelta）。
+		// delta push 在本端链路被前端 normalize 误判为 iteration 事件：
+		// Web channel `SendProgress`→`normalizeSSEEvent`→`isStreamOnlyProgress`
+		// 的 `hasStreamDelta` 只认 StreamContent/ReasoningStreamContent/
+		// StreamingTools/StreamTokens，不认 StreamDelta；前端 `normalizeProgress`
+		// 的 `hasStreamPayload` 同理。所以 StreamDelta 事件保持 progress_structured
+		// 且被当作 iteration，迭代边界时 advanced=true 清空 content/reasoning ——
+		// 用户报告"思考了 1300 字符突然变成思考了 3 字符"（流式内容倒流/回退）。
+		// 与主 agent buildStreamCallbacks 的 a.deltaPush=false 默认（全量）一致。
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
-			prev := s.StreamContent
-			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
-				delta = content[len(prev):]
-				isFull = false
-			}
 			s.StreamContent = content
 		})
 		iter := a.getActiveIteration(agentProgressKey)
-		if isFull {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:        agentProgressKey,
-				Iteration:     iter,
-				StreamContent: content,
-			})
-		} else {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:      agentProgressKey,
-				Iteration:   iter,
-				StreamDelta: delta,
-			})
-		}
+		broadcast(&protocol.ProgressEvent{
+			ChatID:        agentProgressKey,
+			TurnID:        cfg.TurnID,
+			Iteration:     iter,
+			StreamContent: content,
+		})
 	}
 	cfg.StreamReasoningFunc = func(content string) {
-		delta := content
-		isFull := true
+		// 同样始终推送全量 ReasoningStreamContent（原因同 StreamContentFunc）。
 		a.updateStreamState(agentProgressKey, func(s *protocol.ProgressEvent) {
-			prev := s.ReasoningStreamContent
-			if len(content) > len(prev) && strings.HasPrefix(content, prev) {
-				delta = content[len(prev):]
-				isFull = false
-			}
 			s.ReasoningStreamContent = content
 		})
 		iter := a.getActiveIteration(agentProgressKey)
-		if isFull {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:                 agentProgressKey,
-				Iteration:              iter,
-				ReasoningStreamContent: content,
-			})
-		} else {
-			broadcast(&protocol.ProgressEvent{
-				ChatID:               agentProgressKey,
-				Iteration:            iter,
-				ReasoningStreamDelta: delta,
-			})
-		}
+		broadcast(&protocol.ProgressEvent{
+			ChatID:                 agentProgressKey,
+			TurnID:                 cfg.TurnID,
+			Iteration:              iter,
+			ReasoningStreamContent: content,
+		})
 	}
 	cfg.StreamUsageFunc = func(usage *llm.TokenUsage) {
 		if usage == nil || usage.CompletionTokens == 0 {
@@ -473,6 +481,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		seq := subAgentProgressSeq.Add(1)
 		broadcast(&protocol.ProgressEvent{
 			ChatID: agentProgressKey,
+			TurnID: cfg.TurnID,
 			Seq:    seq,
 			// MUST stamp Iteration — otherwise iteration:0 breaks the frontend's
 			// regression guard (same bug class as engine_wire StreamTokens).
@@ -1897,16 +1906,11 @@ func (a *Agent) SendToInteractiveSession(
 			})
 		}
 
-		// Emit subagent_stopped so sidebar updates immediately (busy→idle).
-		a.emitSessionState(protocol.SessionEvent{
-			Channel:    originChannel,
-			ChatID:     originChatID,
-			Action:     "subagent_stopped",
-			Role:       roleName,
-			Instance:   instance,
-			SessionKey: key,
-			ParentID:   originChatID,
-		})
+		// Emit subagent_stopped 移到 write-back 完成之后（见下方），避免前端
+		// reload 命中"DB 已有 user 行但 assistant 尚未 AppendMessage"的竞态窗口
+		// → 该 turn 只有 user 行（frozen 空壳）→ assistant 与迭代全部缺失
+		// （用户报告"有时候不渲染最后一个 iter"）。子代理面板收不到 text/
+		// session(idle) 事件（带父 chatID），无后续 reload，缺到手动刷新。
 
 		// Cascade: cancel and remove all child sessions spawned by this Run.
 		// This ensures no SubAgent outlives its creator even on natural completion.
@@ -2009,6 +2013,18 @@ func (a *Agent) SendToInteractiveSession(
 			}
 		}
 
+		// Emit subagent_stopped AFTER the final assistant row is persisted
+		// (AppendMessage above) — frontend reload on this event sees the full
+		// turn (user + assistant + iterations), not a user-only frozen shell.
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_stopped",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
+		})
 	}()
 
 	return &channelpkg.OutboundMsg{
