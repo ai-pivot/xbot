@@ -59,9 +59,12 @@ interface MessageListProps {
 }
 
 const ESTIMATE = 120
-// genui 行（顶层面板）的实际高度不固定（内容自适应），用 max-h 限制最大高度
-// 而非死高度。estimate 用一个中等基数，measureElement 会校正到实际高度。
+// genui 行（顶层面板）：⚠️ 禁止 estimate —— TanStack 反复 measure（独立 createRoot
+// 内容在行滚出/滚回重挂载时高度不稳定）→ estimate(400)↔measure(实际) 反复震荡 → 跳变。
+// 用 module-level map 缓存高度：measure 一次后永久固定，之后 estimateSize 直接返回
+// 缓存值，绝不重新 estimate。key = getItemKey 返回的稳定键（`turn-{turnID}-{role}`）。
 const GENUI_ESTIMATE = 400
+const genuiHeights = new Map<string, number>()
 const EDGE_EPSILON = 2
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -206,10 +209,20 @@ export function MessageList({
     estimateSize: (index) => {
       const row = rows[index]
       if (!row) return ESTIMATE
-      // genui 行（面板）远高于普通行（ESTIMATE=120）：返回较大的基数，缩小
-      // estimate 与实际高度的差距 → 滚动经过未测量行时 measureElement 校正幅度小
-      // → 跳变减小。配合 SandboxedUI 用 flushSync 同步渲染（行高一次确定），根治滚动跳变。
-      if (rowHasGenUI(row)) return GENUI_ESTIMATE
+      // genui 行：⚠️ 禁用 estimate。从 genuiHeights map 取缓存高度（measure 一次后永久
+      // 固定）。无缓存时用占位 GENUI_ESTIMATE，measure 回调会写入 map 并固化——
+      // 之后绝不再 estimate/measure，行高恒定 → 滚动无跳变。
+      if (rowHasGenUI(row)) {
+        const key = stableRowKey(row)
+        const cached = key && genuiHeights.has(key) ? genuiHeights.get(key)! : null
+        // [GENUI_JUMP_DIAG] 记录 estimate 返回值（区分 estimate 是否在反复变）
+        if (cached == null) {
+          console.log(`[GENUI_JUMP_DIAG] estimate MISS key=${key} → use GENUI_ESTIMATE=${GENUI_ESTIMATE}`)
+        } else {
+          console.log(`[GENUI_JUMP_DIAG] estimate HIT key=${key} → cached=${cached}`)
+        }
+        return cached ?? GENUI_ESTIMATE
+      }
       return ESTIMATE
     },
     overscan: dynamicOverscan,
@@ -247,6 +260,66 @@ export function MessageList({
       return item.end < (instance.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  // [GENUI_JUMP_DIAG] totalSize / scrollTop 突变监听 —— 定位跳变到底来自哪
+  // （totalSize 突变=行高/行数变化；scrollTop 突变=滚动被校正/跟随）。
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    let prevTotal = virtualizer.getTotalSize()
+    let prevScroll = el.scrollTop
+    let lastLog = 0
+    const id = setInterval(() => {
+      const total = virtualizer.getTotalSize()
+      const scroll = el.scrollTop
+      const now = Date.now()
+      const dTotal = Math.abs(total - prevTotal)
+      const dScroll = Math.abs(scroll - prevScroll)
+      // 只在突变明显且距上次日志 > 300ms 时打印，避免刷屏
+      if ((dTotal > 50 || dScroll > 50) && now - lastLog > 300) {
+        lastLog = now
+        console.log(`[GENUI_JUMP_DIAG] total ${prevTotal}→${total} (Δ${Math.round(dTotal)}) | scrollTop ${prevScroll}→${scroll} (Δ${Math.round(dScroll)}) | genuiHeights=[${Array.from(genuiHeights.entries()).map(([k, v]) => `${k}:${Math.round(v)}`).join(', ')}]`)
+      }
+      prevTotal = total
+      prevScroll = scroll
+    }, 50)
+    return () => clearInterval(id)
+  }, [virtualizer])
+
+  // ── GenUI 行高度固化（measure 一次后永久固定，禁止预测/重测）──────────────
+  // TanStack 默认 measureElement 在 genui 行滚出视口（虚拟化卸载）再滚回时会重新
+  // 测量独立 createRoot 的实际高度（内容不稳定）→ estimate(400)↔measure 反复震荡
+  // → 滚动跳变。此回调：genui 行首次测量后写入 genuiHeights map；estimateSize 对
+  // genui 行优先返回缓存值（已缓存则不再重测）→ 高度恒定，滚动无跳变。
+  const measureRef = useCallback(
+    (node: HTMLElement | null) => {
+      if (!node) return
+      const index = Number(node.dataset?.index ?? -1)
+      const row = rows[index]
+      if (row && rowHasGenUI(row)) {
+        const key = stableRowKey(row)
+        if (key && genuiHeights.has(key)) {
+          // ⚠️ 已缓存 → 高度已由 map 固化（estimateSize 返回该值），**跳过
+          // virtualizer.measureElement** —— 否则 TanStack 在 genui 行滚出→滚回
+          // （虚拟化卸载→重挂载）时反复 measure 该行，触发 resizeItem →
+          // shouldAdjustScrollPosition 校正 scrollTop → totalSize/scrollTop 同步突变
+          // → 滚动跳变（diag 实证：RE-DETECT 每次滚动经过都触发 + total Δ578）。
+          // 跳过 measure 后 TanStack 恒用 estimateSize 的 map 值（恒定），零跳变。
+          return
+        }
+        if (key) {
+          // 首测：读实际高度写 map（固化），然后交给 TanStack 首次测量。
+          const rect = node.getBoundingClientRect()
+          if (rect.height > 0) genuiHeights.set(key, rect.height)
+          console.log(`[GENUI_JUMP_DIAG] measure FIRST set key=${key} → height=${rect.height}`)
+        }
+      }
+      // 非 genui 行 / genui 首测：交给 TanStack 默认 measureElement（ResizeObserver 观测）。
+      virtualizer.measureElement(node)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, virtualizer.measureElement],
+  )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
   // User report: "agent turn 消失" — the live tail row vanishes from the DOM
@@ -763,7 +836,7 @@ export function MessageList({
                   <div
                     key={item.key}
                     data-index={item.index}
-                    ref={virtualizer.measureElement}
+                    ref={measureRef}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -907,6 +980,15 @@ function NavButton({
       {children}
     </button>
   )
+}
+
+// 稳定行 key（与 getItemKey 一致）：turnID>0 用 `turn-${turnID}-${role}`，否则 row.id。
+// 用于 genui 高度缓存 map 的 key —— 行在 live→committed 间保持同一 key → 高度只 measure 一次。
+export function stableRowKey(row: ChatMessage): string {
+  if (row.turnID > 0 && row.turnID < Number.MAX_SAFE_INTEGER) {
+    return `turn-${row.turnID}-${row.role}`
+  }
+  return row.id ?? ''
 }
 
 // 判断一行是否含 GenUI 面板（committed：迭代里有 uiMode 工具；live：流式 genuiContent）。

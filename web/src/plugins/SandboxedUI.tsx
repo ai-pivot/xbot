@@ -111,19 +111,17 @@ function UIHost({ slot, failed }: { slot: UISlot; failed: string | null }) {
 
 /** Catches render-time errors so they can't crash the host app.
  *  Streaming 期间不 surface 瞬时错误（macaron streaming 模式）：渲染失败时
- *  显示 lastGood（连续预览）或静默占位，绝不显示「Render error」；
- *  仅 final（committed）渲染失败才显示错误占位。 */
+ *  回退 lastGood（上次成功的组件，连续预览不闪白）。仅 final（committed）渲染
+ *  失败才显示错误占位。resetKey prop 用于在下次编译成功时重置 hasError。 */
 class UIErrorBoundary extends React.Component<
-  { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; resetKey?: number },
+  { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; resetKey?: number; slot?: UISlot },
   { hasError: boolean }
 > {
-  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; resetKey?: number }) {
+  constructor(props: { children?: React.ReactNode; fallback: React.ReactNode; streaming?: boolean; resetKey?: number; slot?: UISlot }) {
     super(props)
     this.state = { hasError: false }
   }
-  // resetKey 变化时重置 hasError → 下次编译成功时 ErrorBoundary 重新尝试渲染
-  // （streaming 时 Current 渲染失败 → hasError=true → 返回 null → 0 高度；
-  // 下次编译成功 → resetKey 变化 → hasError 重置 → 重新渲染 → 有内容）。
+  // resetKey 变化（tick = 每次编译成功）时重置 hasError → 重新尝试渲染。
   override componentDidUpdate(prev: { resetKey?: number }) {
     if (prev.resetKey !== this.props.resetKey && this.state.hasError) {
       this.setState({ hasError: false })
@@ -134,9 +132,18 @@ class UIErrorBoundary extends React.Component<
   }
   override render() {
     if (!this.state.hasError) return this.props.children
-    // streaming 时返回 null（不返回 lastGood —— lastGood 也可能出错导致无限循环）。
-    // resetKey 会在下次编译成功时重置 hasError → 重新尝试渲染。
-    if (this.props.streaming) return null
+    // streaming 时回退 lastGood（上次成功组件）—— 连续预览不闪白。
+    // lastGood 也可能出错（无限循环险）→ 此时返回 null（0高度），
+    // 但 resetKey 会在下次编译成功时重置 hasError → 重新尝试。
+    if (this.props.streaming) {
+      const lastGood = this.props.slot?.lastGood
+      if (lastGood) {
+        return typeof lastGood === 'function'
+          ? (lastGood as (props: Record<string, unknown>) => React.ReactNode)({ 'data-sandboxed-ui-root': true } as Record<string, unknown>)
+          : React.createElement(lastGood, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
+      }
+      return null
+    }
     return this.props.fallback
   }
 }
@@ -315,10 +322,16 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         React.createElement(
           UIErrorBoundary,
           {
-            key: `boundary:${tick}`,
+            // ⚠️ 不用 key={boundary:${tick}} —— tick 每次编译成功都变（streaming 每
+            // ~100ms），key 变 → React 整棵 ErrorBoundary remount → SandboxedUI 内容
+            // 卸载 → host div 高度塌到 0 → ResumeObserver 重测 → totalSize 振荡
+            // （"有内容→空白→有内容" + 滚动高度跳变，根因就在这）。
+            // resetKey prop 已能在 componentDidUpdate 里重置 hasError（无 remount）：
+            // ErrorBoundary 保持挂载，内容就地更新，高度平滑增长。
             fallback: '⚠️ Render error — check the generated UI syntax',
             streaming,
             resetKey: tick,
+            slot: slotRef.current,
           },
           React.createElement(UIHost, { slot: slotRef.current, failed })
         )

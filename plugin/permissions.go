@@ -63,6 +63,10 @@ const (
 	// PermPlugins grants access to the inter-plugin registry (ctx.plugins).
 	// Matches the frontend Permission 'plugins' (web/src/plugin-api/manifest.ts).
 	PermPlugins = "plugins"
+	// PermConfig grants access to read/write the plugin's own configuration
+	// (ctx.config.get/set and ctx.config.onConfigChange). Matches the frontend
+	// Permission 'config' (web/src/plugin-api/manifest.ts).
+	PermConfig = "config"
 )
 
 // allPermissions is the set of all recognized permission strings.
@@ -90,6 +94,7 @@ var allPermissions = map[string]bool{
 	PermState:             true,
 	PermUI:                true,
 	PermPlugins:           true,
+	PermConfig:            true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.
