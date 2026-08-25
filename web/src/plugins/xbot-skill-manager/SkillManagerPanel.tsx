@@ -79,7 +79,7 @@ export function SkillManagerPanel() {
       // Embedded skill paths ("embedded:debug/SKILL.md") are served by the
       // backend /api/fs/read endpoint (no disk file needed).
       const skillMD = skill.path + '/SKILL.md'
-      runtime.ui.openFileTab(skillMD)
+      runtime.ui.openFileTab(skillMD, { title: `${skill.name} (SKILL.md)` })
     },
     [runtime],
   )

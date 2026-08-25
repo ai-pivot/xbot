@@ -140,7 +140,10 @@ describe('SkillManagerPanel SKILL.md 预览', () => {
     const viewBtns = await screen.findAllByTitle('skills.view')
     fireEvent.click(viewBtns[1]) // issue-solver (非 embedded)
     await waitFor(() => {
-      expect(runtime.ui.openFileTab).toHaveBeenCalledWith('/home/cjw/.xbot/skills/issue-solver/SKILL.md')
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith(
+        '/home/cjw/.xbot/skills/issue-solver/SKILL.md',
+        { title: 'issue-solver (SKILL.md)' },
+      )
     })
     // 不调用 skill_get_content
     expect(rpcCall).not.toHaveBeenCalledWith(
@@ -154,7 +157,10 @@ describe('SkillManagerPanel SKILL.md 预览', () => {
     const viewBtns = await screen.findAllByTitle('skills.view')
     fireEvent.click(viewBtns[0]) // debug (embedded:debug)
     await waitFor(() => {
-      expect(runtime.ui.openFileTab).toHaveBeenCalledWith('embedded:debug/SKILL.md')
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith(
+        'embedded:debug/SKILL.md',
+        { title: 'debug (SKILL.md)' },
+      )
     })
     // 不调用 skill_get_content
     expect(rpcCall).not.toHaveBeenCalledWith(

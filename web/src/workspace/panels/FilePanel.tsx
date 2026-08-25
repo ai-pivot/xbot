@@ -71,6 +71,11 @@ export function FilePanel({ params, api }: PanelProps) {
   // Directory of the markdown file — used to resolve relative image paths.
   const baseDir = useMemo(() => {
     if (!filePath) return undefined
+    // Embedded skill paths ("embedded:xxx/file") are virtual — pass through as-is.
+    if (filePath.startsWith('embedded:')) {
+      const idx = filePath.lastIndexOf('/')
+      return idx > 0 ? filePath.slice(0, idx) : filePath
+    }
     const absPath = filePath.startsWith('/') ? filePath : (cwd.cwd ? joinPath(cwd.cwd, filePath) : filePath)
     return parentPath(absPath)
   }, [filePath, cwd.cwd])
