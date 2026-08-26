@@ -875,10 +875,24 @@
   caret-color: var(--accent, #6366f1);
 }
 
-/* Placeholder */
-.ProseMirror.xbot-editor > .ProseMirror-placeholder {
+/* Placeholder — tiptap Placeholder extension puts text in data-placeholder attr */
+.ProseMirror.xbot-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
   color: var(--text-muted, #6b7280);
   pointer-events: none;
+  float: left;
+  height: 0;
+}
+.ProseMirror.xbot-editor .ProseMirror-placeholder {
+  color: var(--text-muted, #6b7280);
+  pointer-events: none;
+}
+.ProseMirror.xbot-editor .ProseMirror-placeholder::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted, #6b7280);
+  pointer-events: none;
+  float: left;
+  height: 0;
 }
 
 /* Inline formatting */
