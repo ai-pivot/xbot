@@ -13,7 +13,7 @@
  * a plain string — zero interface change for downstream consumers.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { useEditor, EditorContent } from '@tiptap/react'
+import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
@@ -122,6 +122,8 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 
   // Draft save debounce timer
   const saveDraftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Keep editor ref for unmount flush (editor may be destroyed by useEditor cleanup)
+  const editorRef = useRef<Editor | null>(null)
 
   // --- tiptap editor ---
   const editor = useEditor({
@@ -179,6 +181,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     onFocus: () => setFocused(true),
     onBlur: () => setFocused(false),
   })
+
+  // Keep editor ref for unmount flush
+  editorRef.current = editor
 
   // Expose editor for test access
   useEffect(() => {
@@ -271,10 +276,18 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     }
   }, [placeholderText, editor])
 
-  // --- Cleanup draft timer on unmount ---
+  // --- Cleanup draft timer on unmount + flush draft synchronously ---
   useEffect(() => {
     return () => {
       if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
+      // Flush: save draft synchronously on unmount (session switch) so the
+      // draft survives even when the 300ms debounce hasn't fired yet.
+      const ed = editorRef.current
+      if (!ed || !draftStorageKey) return
+      try {
+        const md = (ed.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
+        if (md) localStorage.setItem(draftStorageKey, md)
+      } catch { /* ignore */ }
     }
   }, [])
 
