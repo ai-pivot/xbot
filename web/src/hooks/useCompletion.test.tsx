@@ -111,7 +111,7 @@ describe('useCompletion', () => {
 
   it('offers /new and completes it with Tab', async () => {
     let editorRef: ReturnType<typeof useEditor> | null = null
-    let completionRef: CompletionState & { handleKeyDown: (e: import('@/hooks/useCompletion').CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: import('@/hooks/useCompletion').CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -138,7 +138,7 @@ describe('useCompletion', () => {
   })
 
   it('offers local /new before remote command RPC is available', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -155,7 +155,7 @@ describe('useCompletion', () => {
   })
 
   it('adds Web local commands when the RPC list is incomplete', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -172,7 +172,7 @@ describe('useCompletion', () => {
   })
 
   it('adds the Web local /tasks command', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -189,7 +189,7 @@ describe('useCompletion', () => {
   })
 
   it('uses aliases from the TUI command list', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -206,7 +206,7 @@ describe('useCompletion', () => {
   })
 
   it('offers TUI commands that are not handled locally by Web', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -223,7 +223,7 @@ describe('useCompletion', () => {
   })
 
   it('does not use Enter for slash command completion', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness
@@ -246,7 +246,7 @@ describe('useCompletion', () => {
   })
 
   it('does not trigger file completion for @ inside a word', async () => {
-    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as unknown as CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }
 
     render(
       <TestHarness

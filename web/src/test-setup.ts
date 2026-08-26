@@ -19,18 +19,22 @@ if (!window.matchMedia) {
 // and Range objects (only on Element). ProseMirror (tiptap) calls these for
 // scrollIntoView during editor transactions (coordsAtPos → singleRect).
 // Polyfill with zero-value rects so editor operations don't throw in tests.
-const fakeRect: DOMRect = { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => {} } as any
-const fakeRectList: DOMRectList = [fakeRect] as any
+const fakeRect: DOMRect = { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+const fakeRectList: DOMRectList = [fakeRect] as unknown as DOMRectList
+
+// Use Object.getOwnPropertyDescriptor to avoid TS errors (Text.prototype
+// doesn't declare getClientRects in the DOM type definitions).
 for (const Ctor of [Text, Range]) {
-  if (Ctor && !Ctor.prototype.getClientRects) {
-    Object.defineProperty(Ctor.prototype, 'getClientRects', {
+  const proto = Ctor.prototype
+  if (!Object.getOwnPropertyDescriptor(proto, 'getClientRects')) {
+    Object.defineProperty(proto, 'getClientRects', {
       value: function () { return fakeRectList },
       configurable: true,
       writable: true,
     })
   }
-  if (Ctor && !Ctor.prototype.getBoundingClientRect) {
-    Object.defineProperty(Ctor.prototype, 'getBoundingClientRect', {
+  if (!Object.getOwnPropertyDescriptor(proto, 'getBoundingClientRect')) {
+    Object.defineProperty(proto, 'getBoundingClientRect', {
       value: function () { return fakeRect },
       configurable: true,
       writable: true,

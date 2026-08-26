@@ -308,7 +308,7 @@ export function useCompletion({
 
       // Compute word/at ranges using the SAME logic as detection
       const at = triggerType === 'file' ? detectAtPrefix(editor) : null
-      let word = triggerType === 'file'
+      const word = triggerType === 'file'
         ? (at ? { from: at.from, text: `@${at.prefix}` } : null)
         : currentWord(editor)
       if (!word) return
