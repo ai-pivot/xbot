@@ -34,7 +34,8 @@ import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager, type TabManager } from '@/hooks/useTabManager'
-import { useTerminal, type TerminalManager } from '@/hooks/useTerminal'
+import { useTerminal } from '@/hooks/useTerminal'
+
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
@@ -61,8 +62,6 @@ export function AppShell() {
   const pluginPanels = useLeftPluginPanels()
   // 左侧栏 sections 的权威顺序（registry 排序：用户拖拽重排 → 后端同步）。
   const leftItems = useLayoutItems('desktop.activity_bar')
-  // 终端管理器（内置面板移到左侧栏时需要，useTerminal 内部用全局 store，多调用安全）
-  const terminalManager = useTerminal(tabManager)
   const pluginPanelMap = useMemo(
     () => new Map(pluginPanels.map((p) => [p.id, p])),
     [pluginPanels],
@@ -239,7 +238,7 @@ export function AppShell() {
                 }
               }
               // 内置面板（files/search/info/tasks/terminal）— 用户从右栏移到左栏时渲染
-              const builtinContent = renderBuiltinPanel(item.id, tabManager, terminalManager)
+              const builtinContent = renderBuiltinPanel(item.id, tabManager)
               if (builtinContent !== null) {
                 return {
                   id: item.id,
@@ -350,7 +349,6 @@ function clampLeftWidth(width: number): number {
 function renderBuiltinPanel(
   itemId: string,
   tabManager: TabManager,
-  terminalManager: TerminalManager,
 ): ReactNode {
   switch (itemId) {
     case BUILTIN_LAYOUT_ITEMS.desktopFiles:
@@ -362,8 +360,18 @@ function renderBuiltinPanel(
     case BUILTIN_LAYOUT_ITEMS.desktopTasks:
       return <TasksPanel tabManager={tabManager} />
     case BUILTIN_LAYOUT_ITEMS.desktopTerminal:
-      return <TerminalList terminalManager={terminalManager} />
+      return <LeftTerminalPanel tabManager={tabManager} />
     default:
       return null
   }
+}
+
+/**
+ * 终端面板包装组件——仅当 terminal 面板出现在左侧栏时才挂载 useTerminal，
+ * 避免在 AppShell 顶层无条件调用导致的重复后端请求（右侧栏 RightSidebar
+ * 也有自己的 useTerminal，两者独立、各自只在面板可见时触发）。
+ */
+function LeftTerminalPanel({ tabManager }: { tabManager: TabManager }) {
+  const terminalManager = useTerminal(tabManager)
+  return <TerminalList terminalManager={terminalManager} />
 }
