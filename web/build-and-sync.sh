@@ -8,12 +8,16 @@ DIST_DIR="$WEB_DIR/dist"
 TARGETS=()
 
 # Binary-relative: <exe_dir>/web/dist/ (Docker image layout / install layout)
-if [ -d "$(dirname "$(command -v xbot 2>/dev/null || echo /root/.local/bin/xbot)")/web/dist" ]; then
-  TARGETS+=("$(dirname "$(command -v xbot 2>/dev/null || echo /root/.local/bin/xbot)")/web/dist")
+# Check both xbot and xbot-cli (the binary name varies by install method)
+XBOT_BIN="$(command -v xbot 2>/dev/null || command -v xbot-cli 2>/dev/null || echo /root/.local/bin/xbot)"
+if [ -d "$(dirname "$XBOT_BIN")/web/dist" ]; then
+  TARGETS+=("$(dirname "$XBOT_BIN")/web/dist")
 fi
-# Common fallback
+# Common fallback paths
 [ -d /root/.local/bin/web/dist ] && TARGETS+=("/root/.local/bin/web/dist")
 [ -d /root/.xbot/web/dist ] && TARGETS+=("/root/.xbot/web/dist")
+[ -d "$HOME/.xbot/web/dist" ] && TARGETS+=("$HOME/.xbot/web/dist")
+[ -d "$HOME/go/bin/web/dist" ] && TARGETS+=("$HOME/go/bin/web/dist")
 
 echo "▶ Building frontend..."
 cd "$WEB_DIR"
