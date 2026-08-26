@@ -255,13 +255,15 @@ export function MessageList({
     }
   }, [virtualizer])
 
-  // ── GenUI 行高度稳定化（防止滚动跳变 + 展开折叠正确测量）────────────────
+  // ── GenUI 行高度固化（缓存后永不重测，彻底消除滚动跳变）──────────────────
   // 问题：GenUI 行使用 createRoot（独立 React root），TanStack Virtual 滚动时
-  // unmount/remount 行 → measureElement 重新测量 → createRoot 高度微小波动
-  // → resizeItem → shouldAdjustScrollPosition 调整 scrollTop → 滚动跳变。
-  // 修复：缓存首次测量高度，后续测量如果高度变化 < 5px（createRoot remount
-  // 振荡），跳过 measureElement。只有高度显著变化（展开/折叠 > 5px）才
-  // 重新测量，确保展开/折叠后下一行位置正确（不叠加）。
+  // unmount/remount 行 → measureElement 重新测量 → createRoot 还没渲染完时高度
+  // 只有 header（~50px）→ 与缓存值（~500px）差值 > 5px → measureElement 被调用
+  // → resizeItem → shouldAdjustScrollPosition → 滚动跳变。
+  //
+  // 修复：GenUI 行首次测量后写入 genuiHeights 缓存，之后永不调 measureElement。
+  // 高度完全由 estimateSize 的缓存值决定。createRoot remount 不触发任何重测。
+  // 展开折叠时高度变化通过 resizeItem 手动更新（GenUIPanel onOpenChange 回调）。
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) return
@@ -270,19 +272,17 @@ export function MessageList({
       if (row && rowHasGenUI(row)) {
         const key = stableRowKey(row)
         if (key) {
-          const rect = node.getBoundingClientRect()
-          if (rect.height > 0) {
-            const cached = genuiHeights.get(key)
-            if (cached !== undefined && Math.abs(rect.height - cached) < 5) {
-              // 高度稳定（5px 以内）— createRoot remount 振荡，跳过 measureElement
-              // 防止 resizeItem → shouldAdjustScrollPosition → 滚动跳变。
-              return
-            }
-            // 高度显著变化（展开/折叠 > 5px）— 更新缓存 + 测量。
-            genuiHeights.set(key, rect.height)
+          // 已缓存 → 永不重测。createRoot remount 时高度暂时变小（header only），
+          // 但 estimateSize 返回缓存值，虚拟列表用缓存值定位下一行，不跳变。
+          if (genuiHeights.has(key)) {
+            return
           }
+          // 首测：读实际高度写 map（固化）。
+          const rect = node.getBoundingClientRect()
+          if (rect.height > 0) genuiHeights.set(key, rect.height)
         }
       }
+      // 非 GenUI 行 / GenUI 首测：交给 TanStack 默认 measureElement。
       virtualizer.measureElement(node)
     },
     [rows, virtualizer.measureElement],
