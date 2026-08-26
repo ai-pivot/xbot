@@ -122,6 +122,8 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 
   // Draft save debounce timer
   const saveDraftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // Latest content ref — updated on every onUpdate, used for unmount flush
+  const latestContentRef = useRef('')
   // Keep editor ref for unmount flush (editor may be destroyed by useEditor cleanup)
   const editorRef = useRef<Editor | null>(null)
 
@@ -164,6 +166,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     },
     onUpdate: ({ editor }) => {
       setHasContent(!editor.isEmpty)
+      // Save latest content to ref for unmount flush (sync, no debounce delay)
+      try {
+        latestContentRef.current = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
+      } catch { /* ignore */ }
       // Debounced draft save — 300ms delay gives Markdown extension time to
       // parse content before getMarkdown() is called. Immediate save would
       // call getMarkdown() before parsing completes → returns empty string →
@@ -173,8 +179,12 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         if (!draftStorageKey) return
         try {
           const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
-          if (md) localStorage.setItem(draftStorageKey, md)
-          else localStorage.removeItem(draftStorageKey)
+          if (md) {
+            localStorage.setItem(draftStorageKey, md)
+            latestContentRef.current = md
+          } else {
+            localStorage.removeItem(draftStorageKey)
+          }
         } catch { /* ignore */ }
       }, 300)
     },
@@ -280,13 +290,24 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   useEffect(() => {
     return () => {
       if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
-      // Flush: save draft synchronously on unmount (session switch) so the
-      // draft survives even when the 300ms debounce hasn't fired yet.
+      if (!draftStorageKey) return
+      // Priority 1: latestContentRef (updated on every onUpdate, always current)
+      if (latestContentRef.current) {
+        try { localStorage.setItem(draftStorageKey, latestContentRef.current) } catch { /* ignore */ }
+        return
+      }
+      // Priority 2: editorRef (editor might still be alive — React runs cleanups
+      // in reverse registration order, so useEditor's destroy runs AFTER ours)
       const ed = editorRef.current
-      if (!ed || !draftStorageKey) return
+      if (!ed || ed.isEmpty) return
       try {
+        // Try markdown first, fall back to HTML
         const md = (ed.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
-        if (md) localStorage.setItem(draftStorageKey, md)
+        if (md) {
+          localStorage.setItem(draftStorageKey, md)
+        } else {
+          localStorage.setItem(draftStorageKey, ed.getHTML())
+        }
       } catch { /* ignore */ }
     }
   }, [])
