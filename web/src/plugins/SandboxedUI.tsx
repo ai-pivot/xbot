@@ -46,6 +46,42 @@ if (typeof window !== 'undefined') {
 const compileCache = new Map<string, React.ComponentType>()
 const CACHE_MAX = 8
 
+// ─── DOM persistence pool (prevents createRoot remount during virtual scroll) ──
+// Problem: TanStack Virtual unmounts/remounts rows during scroll. Each GenUI
+// row's CodeUI calls createRoot on mount + root.unmount() on unmount → the
+// entire GenUI React subtree (charts, code highlight, etc.) is rebuilt from
+// scratch every time the row scrolls in/out of view. This costs 70-100ms per
+// remount (trace profile confirmed), causing severe jank with multiple GenUI rows.
+//
+// Solution: when CodeUI unmounts, instead of root.unmount(), move the host div
+// to a hidden pool container. The createRoot (and its entire React subtree) stays
+// alive. On remount (scroll back into view), move the host div back — zero
+// recompilation, zero re-render. The pool is keyed by codeHash and uses LRU eviction.
+interface PoolEntry { root: Root; host: HTMLDivElement; inUse: boolean; lastUsed: number }
+const rootPool = new Map<string, PoolEntry>()
+const POOL_MAX = 20
+let poolContainer: HTMLDivElement | null = null
+function getPoolContainer(): HTMLDivElement {
+  if (poolContainer) return poolContainer
+  poolContainer = document.createElement('div')
+  poolContainer.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;overflow:hidden;pointer-events:none;visibility:hidden'
+  document.body.appendChild(poolContainer)
+  return poolContainer
+}
+function evictOldestPoolEntry() {
+  if (rootPool.size <= POOL_MAX) return
+  let oldest: { key: string; entry: PoolEntry } | null = null
+  for (const [key, entry] of rootPool) {
+    if (entry.inUse) continue // never evict in-use entries
+    if (!oldest || entry.lastUsed < oldest.entry.lastUsed) oldest = { key, entry }
+  }
+  if (oldest) {
+    oldest.entry.root.unmount()
+    oldest.entry.host.remove()
+    rootPool.delete(oldest.key)
+  }
+}
+
 // ─── GenUI code extraction (host-side, shared with AssistantMessage) ──────
 // Priority: args.code (the raw LLM argument — never offloaded/prefix-polluted)
 // → detail (pure TSX persisted by the backend, or a legacy Summary prefix).
@@ -208,8 +244,13 @@ function SourcedUI({ src, widgetId, className }: SandboxedUIProps) {
 
 /** code mode: compile TSX + mount a separate React root INLINE (no iframe). */
 function CodeUI({ code, widgetId, onAction, className, streaming = false, onError }: SandboxedUIProps) {
-  const hostRef = useRef<HTMLDivElement>(null)
+  // containerRef: the React-rendered <div> that sits in the document.
+  // hostRef: the div that createRoot renders into — may be pooled (moved to
+  // hidden pool on unmount, moved back on remount) to avoid root teardown.
+  const containerRef = useRef<HTMLDivElement>(null)
+  const hostRef = useRef<HTMLDivElement | null>(null)
   const rootRef = useRef<Root | null>(null)
+  const poolKeyRef = useRef<string>('')
   const slotRef = useRef<UISlot>({ current: null, lastGood: null })
   const [tick, setTick] = useState(0)
   const [failed, setFailed] = useState<string | null>(null)
@@ -340,26 +381,65 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
     }, delay)
   }, [code, streaming, compileAndLoad])
 
-  // Create root + render the STABLE host (sub-root).
+  // ── DOM persistence pool: avoid createRoot remount during virtual scroll ──
+  // On mount: acquire a pooled { root, host } by codeHash. If a pooled entry
+  // exists and is idle (inUse=false), move its host div back into this
+  // container — the createRoot subtree (charts, hooks, state) survives intact,
+  // zero recompilation/re-render. On unmount: move host to hidden pool
+  // container (NOT root.unmount). The subtree stays alive, just detached.
   useLayoutEffect(() => {
-    if (!hostRef.current) return
-    if (!rootRef.current) rootRef.current = createRoot(hostRef.current)
-    // ⚠️ useLayoutEffect（paint 前）+ flushSync 同步渲染子 root：行高度在**布局阶段**
-    // 就确定，TanStack Virtual 的 measureElement(ResizeObserver) 一次得到稳定高度。
-    // 若用 useEffect（paint 后），行 mount 时 hostRef 还是空 div(高度≈0)，子 root 渲染
-    // 后才变高(≈560) → "0→实际"二次变化；虚拟化滚动频繁卷出/卷回 genui 行(remount)会
-    // 反复触发 → 高度不断跳变（用户：只有 genui session 的 view 高度一直跳变）。
+    const container = containerRef.current
+    if (!container) return
+    // Acquire from pool or create new
+    const key = codeHash(codeRef.current || '')
+    poolKeyRef.current = key
+    let entry = rootPool.get(key)
+    if (entry && !entry.inUse) {
+      // Reuse pooled host + root — zero recompilation, zero re-render
+      entry.inUse = true
+      entry.lastUsed = Date.now()
+      rootRef.current = entry.root
+      hostRef.current = entry.host
+      container.appendChild(entry.host)
+    } else {
+      // Create new host + root
+      const host = document.createElement('div')
+      host.className = `sandboxed-ui w-full ${className ?? ''}`
+      host.dataset.widgetId = widgetId ?? ''
+      container.appendChild(host)
+      hostRef.current = host
+      rootRef.current = createRoot(host)
+      entry = { root: rootRef.current, host, inUse: true, lastUsed: Date.now() }
+      rootPool.set(key, entry)
+      evictOldestPoolEntry()
+    }
+    // ⚠️ flushSync (paint before layout) — ensures height is stable before
+    // TanStack Virtual's measureElement (ResizeObserver) fires.
     flushSync(() => {
       rootRef.current!.render(
         React.createElement(
           UIErrorBoundary,
           {
-            // ⚠️ 不用 key={boundary:${tick}} —— tick 每次编译成功都变（streaming 每
-            // ~100ms），key 变 → React 整棵 ErrorBoundary remount → SandboxedUI 内容
-            // 卸载 → host div 高度塌到 0 → ResumeObserver 重测 → totalSize 振荡
-            // （"有内容→空白→有内容" + 滚动高度跳变，根因就在这）。
-            // resetKey prop 已能在 componentDidUpdate 里重置 hasError（无 remount）：
-            // ErrorBoundary 保持挂载，内容就地更新，高度平滑增长。
+            fallback: '⚠️ Render error — check the generated UI syntax',
+            streaming,
+            resetKey: tick,
+            slot: slotRef.current,
+          },
+          React.createElement(UIHost, { slot: slotRef.current, failed })
+        )
+      )
+    })
+  }, []) // mount once — pool handles root persistence
+
+  // Re-render when tick/failed/streaming change (root already exists from pool)
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    flushSync(() => {
+      root.render(
+        React.createElement(
+          UIErrorBoundary,
+          {
             fallback: '⚠️ Render error — check the generated UI syntax',
             streaming,
             resetKey: tick,
@@ -371,16 +451,32 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
     })
   }, [tick, failed, streaming])
 
+  // On unmount: move host to pool (NOT root.unmount) — the entire GenUI
+  // React subtree (hooks, state, DOM, charts) survives. When this CodeUI
+  // remounts (virtual scroll brings the row back), the pooled host is moved
+  // back into the new container — instant, zero recompilation.
   useEffect(() => {
     return () => {
-      rootRef.current?.unmount()
+      const key = poolKeyRef.current
+      const entry = rootPool.get(key)
+      if (entry && entry.host === hostRef.current) {
+        entry.inUse = false
+        entry.lastUsed = Date.now()
+        // Move host to hidden pool container — root stays alive, just detached
+        getPoolContainer().appendChild(entry.host)
+      } else {
+        // host was replaced (code changed mid-life) — unmount normally
+        rootRef.current?.unmount()
+        rootPool.delete(key)
+      }
       rootRef.current = null
+      hostRef.current = null
     }
   }, [])
 
   // Native click delegation for data-action. The sub-root's events do NOT bubble
   // to this element's React synthetic handler (separate root), so a native
-  // capture listener on the container is required.
+  // capture listener on the host div is required.
   useEffect(() => {
     const el = hostRef.current
     if (!el) return
@@ -389,8 +485,6 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
       while (node && node !== el) {
         const action = node.getAttribute?.('data-action')
         if (action) {
-          // ⚠️ 不 stopPropagation：capture 阶段截断会杀掉 React 的 onClick。
-          // 一个元素可同时有 data-action(回传 agent) + onClick(本地 state)，两者都应生效。
           const data: Record<string, string> = {}
           for (const attr of Array.from(node.attributes ?? [])) {
             if (attr.name.startsWith('data-') && attr.name !== 'data-action') data[attr.name.slice(5)] = attr.value
@@ -409,9 +503,8 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
 
   return (
     <div
-      ref={hostRef}
-      className={`sandboxed-ui w-full ${className ?? ''}`}
-      data-widget-id={widgetId}
+      ref={containerRef}
+      className={`w-full ${className ?? ''}`}
     />
   )
 }

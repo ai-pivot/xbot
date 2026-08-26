@@ -495,15 +495,27 @@ export function MessageList({
   // fires scheduleFollow → scrollTop=scrollHeight → onScroll fires while
   // scrollTop is momentarily at the old position (before the browser applies
   // the write) → a naive "not at bottom → pause" would kill following mid-stream.
+  // ── RAF-batched onScroll: zero setState in the scroll event itself ──────────
+  // Trace profile (Trace-20260826T224702): 197 scroll events → 10+ React
+  // reconciles (fn=ee, 27-69ms each) + Commit (71ms). Each setState in onScroll
+  // triggers React to reconcile the ENTIRE MessageList subtree (GenUI panels,
+  // TurnBody, ToolRender, etc.) synchronously — 30-70ms per scroll event.
+  //
+  // Fix: onScroll does ONLY ref updates (no React render). A RAF callback batches
+  // all pending setState calls once per frame (max 60 renders/sec instead of 197).
+  // The RAF callback also skips React entirely when nothing changed.
+  const scrollRafRef = useRef<number | null>(null)
+  const pendingOverscanRef = useRef<number | null>(null)
+  const pendingRangeRef = useRef<{ start: number; end: number } | null>(null)
+  const pendingAtTopRef = useRef<boolean | null>(null)
+  const pendingAtBottomRef = useRef<boolean | null>(null)
+  const dynamicOverscanRef = useRef(dynamicOverscan)
+  dynamicOverscanRef.current = dynamicOverscan
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
     const now = performance.now()
-    // ── JITTER DEBUG: detect height mutations between scroll events ──────────
-    // scrollHeight changing between scroll events (without row count change)
-    // means an item was re-measured → resizeItem → potential scroll correction.
-    // This is the #1 cause of visual jitter: the viewport "jumps" because the
-    // virtualizer adjusts scrollTop to compensate for the height delta.
+    // ── JITTER DEBUG (ref-only, no setState) ────────────────────────────────
     const dbg = jitterDebugRef.current
     const curScrollHeight = el.scrollHeight
     const curScrollTop = el.scrollTop
@@ -514,41 +526,28 @@ export function MessageList({
       const scrollTopDelta = curScrollTop - dbg.lastScrollTop
       const totalSizeDelta = curTotalSize - dbg.lastTotalSize
       const dt = now - dbg.lastEventTime
-      // Height changed without row count change → re-measurement jitter
       if (Math.abs(heightDelta) > 2 && curRowCount === dbg.lastRowCount) {
         console.warn('[JITTER] scrollHeight changed without row count change', {
-          scrollHeight: Math.round(curScrollHeight),
-          prevScrollHeight: Math.round(dbg.lastScrollHeight),
-          heightDelta: Math.round(heightDelta),
-          scrollTop: Math.round(curScrollTop),
-          scrollTopDelta: Math.round(scrollTopDelta),
-          totalSize: Math.round(curTotalSize),
-          totalSizeDelta: Math.round(totalSizeDelta),
-          rowCount: curRowCount,
-          dt: Math.round(dt),
+          scrollHeight: Math.round(curScrollHeight), prevScrollHeight: Math.round(dbg.lastScrollHeight),
+          heightDelta: Math.round(heightDelta), scrollTop: Math.round(curScrollTop),
+          scrollTopDelta: Math.round(scrollTopDelta), totalSize: Math.round(curTotalSize),
+          totalSizeDelta: Math.round(totalSizeDelta), rowCount: curRowCount, dt: Math.round(dt),
           isProgrammatic: programmaticScrollRef.current,
           msg: `scrollHeight ${Math.round(dbg.lastScrollHeight)}→${Math.round(curScrollHeight)} (Δ${Math.round(heightDelta)}px) without rows change — item re-measurement jitter`,
         })
       }
-      // scrollTop jumped backward significantly without user input → virtualizer correction
       if (!programmaticScrollRef.current && Math.abs(scrollTopDelta) > 50 && dt < 16) {
         console.warn('[JITTER] scrollTop jump detected', {
-          scrollTop: Math.round(curScrollTop),
-          prevScrollTop: Math.round(dbg.lastScrollTop),
-          scrollTopDelta: Math.round(scrollTopDelta),
-          dt: Math.round(dt),
-          scrollHeight: Math.round(curScrollHeight),
-          heightDelta: Math.round(heightDelta),
+          scrollTop: Math.round(curScrollTop), prevScrollTop: Math.round(dbg.lastScrollTop),
+          scrollTopDelta: Math.round(scrollTopDelta), dt: Math.round(dt),
+          scrollHeight: Math.round(curScrollHeight), heightDelta: Math.round(heightDelta),
           msg: `scrollTop jumped ${Math.round(scrollTopDelta)}px in ${Math.round(dt)}ms — possible virtualizer correction`,
         })
       }
-      // totalSize changed without row count change → item size estimate→measure delta
       if (Math.abs(totalSizeDelta) > 2 && curRowCount === dbg.lastRowCount) {
         console.warn('[JITTER] totalSize changed without row count change', {
-          totalSize: Math.round(curTotalSize),
-          prevTotalSize: Math.round(dbg.lastTotalSize),
-          totalSizeDelta: Math.round(totalSizeDelta),
-          rowCount: curRowCount,
+          totalSize: Math.round(curTotalSize), prevTotalSize: Math.round(dbg.lastTotalSize),
+          totalSizeDelta: Math.round(totalSizeDelta), rowCount: curRowCount,
           msg: `virtualizer totalSize ${Math.round(dbg.lastTotalSize)}→${Math.round(curTotalSize)} (Δ${Math.round(totalSizeDelta)}px) — estimate→measure delta`,
         })
       }
@@ -558,42 +557,52 @@ export function MessageList({
     dbg.lastTotalSize = curTotalSize
     dbg.lastRowCount = curRowCount
     dbg.lastEventTime = now
-    // Track scroll velocity for dynamic overscan
+
+    // ── Ref-only updates (zero React render) ────────────────────────────────
     const dt = now - lastScrollTimeRef.current
     if (dt > 0) {
       const delta = Math.abs(el.scrollTop - lastScrollTopRef.current)
-      const velocity = delta / dt // px per ms
-      // Fast scroll (>2px/ms): increase overscan to prevent blank flashes.
-      // Slow/stop (<0.5px/ms): reduce overscan to save render work.
+      const velocity = delta / dt
       const target = velocity > 2 ? 14 : velocity > 0.5 ? 8 : 5
-      if (target !== dynamicOverscan) setDynamicOverscan(target)
+      pendingOverscanRef.current = target
     }
     lastScrollTopRef.current = el.scrollTop
     lastScrollTimeRef.current = now
     const atEnd = isAtBottom(el)
     const atStart = el.scrollTop <= EDGE_EPSILON
-    setAtTop((prev) => (prev === atStart ? prev : atStart))
-    setAtBottom((prev) => (prev === atEnd ? prev : atEnd))
-    if (programmaticScrollRef.current) {
-      return
+    pendingAtTopRef.current = atStart
+    pendingAtBottomRef.current = atEnd
+    if (!programmaticScrollRef.current) {
+      const items = virtualizer.getVirtualItems()
+      if (items.length > 0) {
+        pendingRangeRef.current = { start: items[0].index, end: items[items.length - 1].index }
+      }
     }
-    // Do NOT set stickToBottomRef=false here. The virtualizer performs scroll
-    // corrections during lazy measurement — it adjusts scrollTop to maintain
-    // visual stability, which fires onScroll. If we set stick=false here, the
-    // ResizeObserver callback (which re-scrolls to bottom) would be skipped,
-    // leaving the viewport stuck mid-page. stick=false is set ONLY by user
-    // input handlers (wheel/pointer/touch/keydown) — genuine user scroll.
-    const items = virtualizer.getVirtualItems()
-    if (items.length > 0) {
-      const newStart = items[0].index
-      const newEnd = items[items.length - 1].index
-      setVisibleRange((prev) =>
-        prev && prev.start === newStart && prev.end === newEnd
-          ? prev
-          : { start: newStart, end: newEnd },
-      )
-    }
-  }, [virtualizer, cancelPendingFollow, dynamicOverscan])
+
+    // ── Schedule ONE RAF for all setStates (max 1 React render per frame) ───
+    if (scrollRafRef.current !== null) return
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null
+      // Apply pending overscan
+      const targetOverscan = pendingOverscanRef.current
+      if (targetOverscan !== null && targetOverscan !== dynamicOverscanRef.current) {
+        dynamicOverscanRef.current = targetOverscan
+        setDynamicOverscan(targetOverscan)
+      }
+      // Apply pending nav state
+      const atTop = pendingAtTopRef.current
+      if (atTop !== null) setAtTop((prev) => (prev === atTop ? prev : atTop))
+      const atBottom = pendingAtBottomRef.current
+      if (atBottom !== null) setAtBottom((prev) => (prev === atBottom ? prev : atBottom))
+      // Apply pending visible range (only for nav button states)
+      const range = pendingRangeRef.current
+      if (range) {
+        setVisibleRange((prev) =>
+          prev && prev.start === range.start && prev.end === range.end ? prev : range,
+        )
+      }
+    })
+  }, [virtualizer, cancelPendingFollow])
 
   // Scroll-to-top sentinel ref — used by IntersectionObserver to detect
   // when the user scrolls to the top and trigger loadMore.

@@ -30,7 +30,7 @@ export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps)
           aria-expanded={expanded}
           aria-label={expanded ? t('agent.collapseTodos') : t('agent.expandTodos')}
           onClick={() => setExpanded((open) => !open)}
-          className="flex min-w-0 flex-1 items-center gap-2 transition-colors hover:bg-bg-tertiary -mx-2.5 px-2.5 h-full"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:bg-bg-tertiary -mx-2.5 px-2.5 h-full"
         >
           <ChevronRight
             className={cn('size-3.5 shrink-0 text-text-muted transition-transform', expanded && 'rotate-90')}

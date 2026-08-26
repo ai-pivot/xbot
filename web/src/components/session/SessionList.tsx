@@ -133,6 +133,7 @@ export function SessionList({
     if (!isScrolling) setIsScrolling(true)
     if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current)
     scrollDebounceRef.current = setTimeout(() => setIsScrolling(false), 150)
+
     const el = viewport
     const now = performance.now()
     const dbg = scrollJitterRef.current
@@ -175,7 +176,7 @@ export function SessionList({
     dbg.lastScrollTop = curScrollTop
     dbg.lastChildCount = curChildCount
     dbg.lastEventTime = now
-  }, [])
+  }, [isScrolling])
 
   // Attach native scroll listener to the ScrollArea viewport (radix ScrollArea
   // doesn't forward onScroll/ref — query the viewport element after mount).
@@ -292,7 +293,7 @@ export function SessionList({
   }
 
   return (
-    <div ref={scrollAreaRef} className="flex h-full flex-col">
+    <div ref={scrollAreaRef} className={`flex h-full flex-col${isScrolling ? ' is-scrolling' : ''}`}>
       <ScrollArea className="min-h-0 flex-1">
         {showEmpty ? (
           <SessionEmptyState emptyList={emptyList} />

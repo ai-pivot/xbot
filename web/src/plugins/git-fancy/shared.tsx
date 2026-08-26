@@ -78,7 +78,7 @@ export interface CommitDetail {
   error?: string
 }
 
-// ---------- RPC / UI 桥（activate 注入） ----------
+// ---------- RPC / UI / Events 桥（activate 注入） ----------
 
 /** 后端 RPC 调用器——由主入口 activate(ctx) 注入。 */
 type RpcCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
@@ -104,13 +104,20 @@ export interface PluginUIApi {
   }): void
 }
 
+/** 事件 API 子集（仅需 on/once/dispose）。 */
+export interface PluginEventsApi {
+  on(name: string, handler: (payload: unknown) => void): () => void
+}
+
 let rpc: RpcCall | null = null
 let ui: PluginUIApi | null = null
+let events: PluginEventsApi | null = null
 
-/** 主入口 activate(ctx) 调用——注入 rpc/ui 到共享单例。 */
-export function setSharedApi(rpcCall?: RpcCall, uiApi?: PluginUIApi): void {
+/** 主入口 activate(ctx) 调用——注入 rpc/ui/events 到共享单例。 */
+export function setSharedApi(rpcCall?: RpcCall, uiApi?: PluginUIApi, eventsApi?: PluginEventsApi): void {
   if (rpcCall) rpc = rpcCall
   if (uiApi) ui = uiApi
+  if (eventsApi) events = eventsApi
 }
 
 export function getRpc(): RpcCall | null {
@@ -119,6 +126,19 @@ export function getRpc(): RpcCall | null {
 
 export function getUi(): PluginUIApi | null {
   return ui
+}
+
+// ---------- 会话变化订阅（通用事件机制） ----------
+
+/**
+ * 订阅会话切换事件（对标 VSCode onDidChangeActiveEditor）。
+ * 宿主在 activeSession 变化时发射 session.switched 事件，
+ * 插件通过 ctx.events.on('session.switched', handler) 订阅。
+ * 返回退订函数。
+ */
+export function onSessionChange(handler: () => void): () => void {
+  if (!events) return () => {}
+  return events.on('session.switched', handler)
 }
 
 // ---------- 会话解析 ----------
