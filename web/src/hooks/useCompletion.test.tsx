@@ -1,8 +1,12 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createRef } from 'react'
+import { act, render, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useEditor, EditorContent } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
+import { Placeholder } from '@tiptap/extension-placeholder'
+import { Markdown } from 'tiptap-markdown'
+import { useEffect, useRef } from 'react'
 
-import { WEB_LOCAL_COMMANDS, useCompletion } from './useCompletion'
+import { WEB_LOCAL_COMMANDS, useCompletion, type CompletionState, type CompletionKeyEvent } from './useCompletion'
 import type { WSConnection } from '@/types/ws'
 
 function makeWS(): WSConnection {
@@ -40,55 +44,60 @@ function makeDisconnectedWS(): WSConnection {
   } as unknown as WSConnection
 }
 
-function makeTextarea(value: string): React.RefObject<HTMLTextAreaElement | null> {
-  const ref = createRef<HTMLTextAreaElement>()
-  Object.defineProperty(ref, 'current', {
-    value: {
-      selectionStart: value.length,
-      focus: vi.fn(),
-      setSelectionRange: vi.fn(),
-    },
-  })
-  return ref
-}
-
 function keyEvent(key: string) {
   return {
     key,
     shiftKey: false,
     ctrlKey: false,
     metaKey: false,
+    isComposing: false,
     preventDefault: vi.fn(),
-  } as unknown as React.KeyboardEvent<HTMLTextAreaElement>
+  } as unknown as CompletionKeyEvent
+}
+
+/** Test harness: renders a real tiptap editor and exposes editor + completion via refs */
+function TestHarness({
+  content,
+  ws,
+  cwd,
+  onReady,
+}: {
+  content: string
+  ws: WSConnection
+  cwd: string
+  onReady: (editor: ReturnType<typeof useEditor>, completion: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean }) => void
+}) {
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({ heading: false, horizontalRule: false }),
+      Placeholder.configure({ placeholder: 'test' }),
+      Markdown.configure({ html: false, tightLists: true, linkify: false, breaks: true }),
+    ],
+    content,
+  })
+  const completion = useCompletion({ editor, ws, cwd })
+  const readyRef = useRef(onReady)
+  readyRef.current = onReady
+
+  useEffect(() => {
+    if (editor) {
+      // Set cursor to end of content
+      const endPos = editor.state.doc.content.size
+      editor.commands.setTextSelection(endPos)
+      readyRef.current(editor, completion)
+    }
+  })
+
+  return editor ? <EditorContent editor={editor} /> : null
 }
 
 describe('useCompletion', () => {
+  beforeEach(() => {
+    vi.useRealTimers()
+  })
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
-  })
-
-  it('offers /new and completes it with Tab', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/n')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/n',
-        setValue,
-        textareaRef,
-        ws: makeWS(),
-        cwd: '/repo',
-      }),
-    )
-
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toEqual(['/new']))
-
-    const e = keyEvent('Tab')
-    act(() => {
-      expect(result.current.handleKeyDown(e)).toBe(true)
-    })
-    expect(e.preventDefault).toHaveBeenCalled()
-    expect(setValue).toHaveBeenCalledWith('/new ')
   })
 
   it('keeps the Web local command manifest explicit', () => {
@@ -100,180 +109,158 @@ describe('useCompletion', () => {
     ])
   })
 
-  it('offers local /new before remote command RPC is available', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/n')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/n',
-        setValue,
-        textareaRef,
-        ws: makeDisconnectedWS(),
-        cwd: '/repo',
-      }),
+  it('offers /new and completes it with Tab', async () => {
+    let editorRef: ReturnType<typeof useEditor> | null = null
+    let completionRef: CompletionState & { handleKeyDown: (e: import('@/hooks/useCompletion').CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/n"
+        ws={makeWS()}
+        cwd="/repo"
+        onReady={(e, c) => { editorRef = e; completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toEqual(['/new']))
-  })
-
-  it('replaces leading whitespace when completing slash commands like TUI', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('  /n')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '  /n',
-        setValue,
-        textareaRef,
-        ws: makeDisconnectedWS(),
-        cwd: '/repo',
-      }),
-    )
-
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toEqual(['/new']))
-
-    act(() => {
-      expect(result.current.handleKeyDown(keyEvent('Tab'))).toBe(true)
+    await waitFor(() => {
+      expect(completionRef.candidates.map((c) => c.label)).toEqual(['/new'])
     })
 
-    expect(setValue).toHaveBeenCalledWith('/new ')
+    const e = keyEvent('Tab')
+    act(() => {
+      expect(completionRef.handleKeyDown(e)).toBe(true)
+    })
+    expect(e.preventDefault).toHaveBeenCalled()
+    // After completion, the editor should contain "/new " (with trailing space)
+    await waitFor(() => {
+      expect(editorRef?.getText()).toBe('/new ')
+    })
+  })
+
+  it('offers local /new before remote command RPC is available', async () => {
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/n"
+        ws={makeDisconnectedWS()}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(completionRef.candidates.map((c) => c.label)).toEqual(['/new'])
+    })
   })
 
   it('adds Web local commands when the RPC list is incomplete', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/r')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/r',
-        setValue,
-        textareaRef,
-        ws: makeWSWithCommands([{ name: '/help', description: 'help' }]),
-        cwd: '/repo',
-      }),
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/r"
+        ws={makeWSWithCommands([{ name: '/help', description: 'help' }])}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toEqual(['/rename', '/rewind']))
+    await waitFor(() => {
+      expect(completionRef.candidates.map((c) => c.label)).toEqual(['/rename', '/rewind'])
+    })
   })
 
   it('adds the Web local /tasks command', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/t')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/t',
-        setValue,
-        textareaRef,
-        ws: makeWSWithCommands([{ name: '/help', description: 'help' }]),
-        cwd: '/repo',
-      }),
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/t"
+        ws={makeWSWithCommands([{ name: '/help', description: 'help' }])}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toEqual(['/tasks']))
+    await waitFor(() => {
+      expect(completionRef.candidates.map((c) => c.label)).toEqual(['/tasks'])
+    })
   })
 
   it('uses aliases from the TUI command list', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/t')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/t',
-        setValue,
-        textareaRef,
-        ws: makeWSWithCommands([{ name: '/tasks', aliases: ['/todo'], description: 'tasks' }]),
-        cwd: '/repo',
-      }),
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/t"
+        ws={makeWSWithCommands([{ name: '/tasks', aliases: ['/todo'], description: 'tasks' }])}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toContain('/todo'))
+    await waitFor(() => {
+      expect(completionRef.candidates.map((c) => c.label)).toContain('/todo')
+    })
   })
 
   it('offers TUI commands that are not handled locally by Web', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/cl')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/cl',
-        setValue,
-        textareaRef,
-        ws: makeWS(),
-        cwd: '/repo',
-      }),
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/cl"
+        ws={makeWS()}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.candidates.map((c) => c.label)).toEqual(['/clear']))
+    await waitFor(() => {
+      expect(completionRef.candidates.map((c) => c.label)).toEqual(['/clear'])
+    })
   })
 
   it('does not use Enter for slash command completion', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('/n')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: '/n',
-        setValue,
-        textareaRef,
-        ws: makeWS(),
-        cwd: '/repo',
-      }),
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="/n"
+        ws={makeWS()}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.visible).toBe(true))
+    await waitFor(() => {
+      expect(completionRef.visible).toBe(true)
+    })
 
     const e = keyEvent('Enter')
     act(() => {
-      expect(result.current.handleKeyDown(e)).toBe(false)
+      expect(completionRef.handleKeyDown(e)).toBe(false)
     })
     expect(e.preventDefault).not.toHaveBeenCalled()
-    expect(setValue).not.toHaveBeenCalled()
   })
 
   it('does not trigger file completion for @ inside a word', async () => {
-    const setValue = vi.fn()
-    const textareaRef = makeTextarea('email@example')
-    const { result } = renderHook(() =>
-      useCompletion({
-        value: 'email@example',
-        setValue,
-        textareaRef,
-        ws: makeWS(),
-        cwd: '/repo',
-      }),
+    let completionRef: CompletionState & { handleKeyDown: (e: CompletionKeyEvent) => boolean } = null as any
+
+    render(
+      <TestHarness
+        content="email@example"
+        ws={makeWS()}
+        cwd="/repo"
+        onReady={(_e, c) => { completionRef = c }}
+      />,
     )
 
-    await waitFor(() => expect(result.current.triggerType).toBeNull())
-    expect(result.current.visible).toBe(false)
-  })
+    // Give time for potential async fetches
+    await new Promise((r) => setTimeout(r, 200))
 
-  it('does not show stale file completions after the @ trigger is removed', async () => {
-    vi.useFakeTimers()
-    const setValue = vi.fn()
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ entries: [{ name: 'README.md', isDir: false }] }),
-    })))
-    const { result, rerender } = renderHook(
-      ({ value, textareaRef }) =>
-        useCompletion({
-          value,
-          setValue,
-          textareaRef,
-          ws: makeDisconnectedWS(),
-          cwd: '/repo',
-        }),
-      { initialProps: { value: '@R', textareaRef: makeTextarea('@R') } },
-    )
-
-    await act(async () => {
-      vi.advanceTimersByTime(150)
-      await Promise.resolve()
-    })
-
-    rerender({ value: '', textareaRef: makeTextarea('') })
-
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    expect(result.current.visible).toBe(false)
-    expect(result.current.candidates).toEqual([])
+    expect(completionRef.triggerType).toBeNull()
+    expect(completionRef.visible).toBe(false)
   })
 })

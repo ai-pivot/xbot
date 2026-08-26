@@ -35,6 +35,17 @@ export interface CompletionState {
   completeCandidate: (index: number) => void
 }
 
+/** Structural type for keyboard events — works with both DOM KeyboardEvent and React.KeyboardEvent */
+export type CompletionKeyEvent = {
+  key: string
+  shiftKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey: boolean
+  isComposing?: boolean
+  preventDefault: () => void
+}
+
 interface UseCompletionOptions {
   editor: Editor | null
   ws: WSConnection
@@ -138,7 +149,7 @@ export function useCompletion({
   ws,
   cwd,
 }: UseCompletionOptions): CompletionState & {
-  handleKeyDown: (e: KeyboardEvent) => boolean
+  handleKeyDown: (e: CompletionKeyEvent) => boolean
 } {
   const [commandList, setCommandList] = useState<CommandInfo[]>(WEB_LOCAL_COMMANDS)
   const [candidates, setCandidates] = useState<CompletionCandidate[]>([])
@@ -330,7 +341,7 @@ export function useCompletion({
   )
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent): boolean => {
+    (e: CompletionKeyEvent): boolean => {
       if (!visible) return false
 
       if (e.key === 'ArrowDown') {

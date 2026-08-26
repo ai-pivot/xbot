@@ -6,7 +6,7 @@
  * - Inline-editable goal text (click to edit, Enter to save, Esc to cancel)
  * - Status badge: 🔄 进行中 / ✅ 已完成
  * - Clear button (×) to remove the goal
- * - When completed: shows summary, green accent, auto-fades after 5s
+ * - When completed: green accent only (no summary expansion)
  * - Compact, fancy design that stacks above the TODO toolbar
  */
 import { useEffect, useRef, useState } from 'react'
@@ -24,20 +24,8 @@ interface GoalBannerProps {
 export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(goal.objective)
-  const [showSummary, setShowSummary] = useState(true)
   const inputRef = useRef<HTMLInputElement>(null)
   const completed = goal.status === 'completed'
-
-  // Auto-hide summary after 5s when completed
-  useEffect(() => {
-    if (!completed) {
-      setShowSummary(true)
-      return
-    }
-    setShowSummary(true)
-    const timer = setTimeout(() => setShowSummary(false), 5000)
-    return () => clearTimeout(timer)
-  }, [completed, goal.objective])
 
   // Focus input when entering edit mode
   useEffect(() => {
@@ -161,13 +149,6 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
           </button>
         )}
       </div>
-
-      {/* Summary (when completed and visible) */}
-      {completed && goal.summary && showSummary && (
-        <div className="border-t border-green-500/15 px-2.5 py-1 text-[11px] text-green-600/80 dark:text-green-400/80">
-          {goal.summary}
-        </div>
-      )}
     </div>
   )
 }

@@ -80,7 +80,7 @@ export function useSendKeyMode(): {
  * under the specified send-key mode. Callers should `preventDefault()` when
  * this returns true.
  */
-export function isSendKey(e: React.KeyboardEvent, mode: SendKeyMode): boolean {
+export function isSendKey(e: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean }, mode: SendKeyMode): boolean {
   if (mode === 'enter') {
     // Enter sends (without Shift/Ctrl), Shift+Enter / Ctrl+Enter inserts newline.
     return Boolean(e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey)

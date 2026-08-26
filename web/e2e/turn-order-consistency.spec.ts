@@ -71,8 +71,9 @@ test.describe('Turn order consistency', () => {
     await page.waitForTimeout(2000)
 
     // Send first message
-    await page.locator('textarea').fill('first message')
-    await page.locator('textarea').press('Control+Enter')
+    await page.locator('.tiptap, [contenteditable]').click()
+    await page.keyboard.type('first message')
+    await page.keyboard.press('Control+Enter')
     // NO optimistic rendering: the backend echoes every accepted user message
     // as user_echo WITH its authoritative turn_id. Emit it to render user-1.
     await emitSSE(page, 'user_echo', { content: 'first message', turn_id: 1, ts: Date.now() / 1000, id: 'r1' })
@@ -91,8 +92,9 @@ test.describe('Turn order consistency', () => {
     await page.waitForTimeout(200)
 
     // Send second message WHILE agent is still processing turn 1
-    await page.locator('textarea').fill('second message')
-    await page.locator('textarea').press('Control+Enter')
+    await page.locator('.tiptap, [contenteditable]').click()
+    await page.keyboard.type('second message')
+    await page.keyboard.press('Control+Enter')
     // Backend echoes user-2 (turn_id=2). Rendering is deterministic — the
     // echo arrives after the live assistant for turn 1 is already visible.
     await emitSSE(page, 'user_echo', { content: 'second message', turn_id: 2, ts: Date.now() / 1000, id: 'r2' })
@@ -161,8 +163,9 @@ test.describe('Turn order consistency', () => {
     await page.waitForTimeout(2000)
 
     // Send a message
-    await page.locator('textarea').fill('test cancel')
-    await page.locator('textarea').press('Control+Enter')
+    await page.locator('.tiptap, [contenteditable]').click()
+    await page.keyboard.type('test cancel')
+    await page.keyboard.press('Control+Enter')
     await page.waitForTimeout(500)
 
     // Start streaming
@@ -234,8 +237,9 @@ test.describe('Turn order consistency', () => {
     await page.waitForTimeout(2000)
 
     // Send a message and complete the turn
-    await page.locator('textarea').fill('test stale progress')
-    await page.locator('textarea').press('Control+Enter')
+    await page.locator('.tiptap, [contenteditable]').click()
+    await page.keyboard.type('test stale progress')
+    await page.keyboard.press('Control+Enter')
     await page.waitForTimeout(500)
 
     await emitSSE(page, 'progress_structured', {
