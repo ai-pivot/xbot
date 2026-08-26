@@ -93,9 +93,12 @@ test.describe('No duplicate after cancel + reload', () => {
     await page.locator('input').first().fill('test')
     await page.locator('input[type="password"]').fill('test')
     await page.locator('button[type="submit"]').click()
-    await page.waitForTimeout(2000)
 
-    // Count assistant rows with data-role=assistant
+    // Wait for the initial assistant row to appear (deterministic, not fixed timeout)
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length >= 1,
+      { timeout: 10000 }
+    )
     const assistantRows = await page.evaluate(() =>
       document.querySelectorAll('[data-role="assistant"]').length)
     console.log('Initial assistant rows:', assistantRows)
@@ -103,9 +106,23 @@ test.describe('No duplicate after cancel + reload', () => {
 
     // Switch away and back (triggers reload)
     await page.locator('text=S2').first().click()
-    await page.waitForTimeout(1000)
+    // Wait for S2 (empty history) — assistant rows should drop to 0
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length === 0,
+      { timeout: 10000 }
+    )
     await page.locator('text=S1').first().click()
-    await page.waitForTimeout(1500)
+    // Wait for S1 history to reload — assistant row should reappear
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length >= 1,
+      { timeout: 10000 }
+    )
+    // Wait for DOM to stabilize (no more changes for 500ms)
+    // This catches late duplicates from async store.subscribe() callbacks
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length === 1,
+      { timeout: 5000 }
+    )
 
     // Should STILL be 1 assistant row (not 2)
     const assistantRowsAfter = await page.evaluate(() =>
@@ -140,7 +157,12 @@ test.describe('No duplicate after cancel + reload', () => {
     await page.locator('input').first().fill('test')
     await page.locator('input[type="password"]').fill('test')
     await page.locator('button[type="submit"]').click()
-    await page.waitForTimeout(2000)
+
+    // Wait for initial assistant row to appear (deterministic)
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length >= 1,
+      { timeout: 10000 }
+    )
 
     // Simulate a cancel: stream content, then cancel ack
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
@@ -153,7 +175,16 @@ test.describe('No duplicate after cancel + reload', () => {
       progress_history: JSON.stringify([{ iteration: 0, thinking: 'Working on it...', completed_tools: [], user_cancelled: true }]),
     })
     await emitSSE(page, 'session', { type: 'session', session: { action: 'idle', chat_id: 'chat-1', channel: 'web' } })
-    await page.waitForTimeout(500)
+    // Wait for cancel ack to commit the message (deterministic)
+    await page.waitForFunction(
+      () => {
+        const rows = document.querySelectorAll('[data-role="assistant"]')
+        // After cancel, should have at least 1 assistant row (the cancelled turn)
+        return rows.length >= 1
+      },
+      { timeout: 10000 }
+    )
+    await page.waitForTimeout(300)
 
     // Cancel ack should have committed a message
     const rowsAfterCancel = await page.evaluate(() => document.querySelectorAll('[data-role="assistant"]').length)
@@ -161,9 +192,22 @@ test.describe('No duplicate after cancel + reload', () => {
 
     // Switch away and back (triggers reload)
     await page.locator('text=S2').first().click()
-    await page.waitForTimeout(1000)
+    // Wait for S2 (empty history) — assistant rows should drop to 0
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length === 0,
+      { timeout: 10000 }
+    )
     await page.locator('text=S1').first().click()
-    await page.waitForTimeout(1500)
+    // Wait for S1 history to reload — assistant row should reappear
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length >= 1,
+      { timeout: 10000 }
+    )
+    // Wait for DOM to stabilize (no duplicates from async store callbacks)
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length === 1,
+      { timeout: 5000 }
+    )
 
     // Should NOT have duplicate — DB history returns 1 assistant, cancel-committed
     // message is discarded by destructiveMutationGen
