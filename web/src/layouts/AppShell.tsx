@@ -10,7 +10,7 @@
  * file browser / search / info / tasks panels, each switchable via its
  * own RightActivityBar (Spec 6).
  */
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { ActivityBar } from '@/layouts/ActivityBar'
@@ -19,6 +19,11 @@ import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSideb
 import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
 import { useLeftPluginPanels } from '@/components/sidebar/LeftActivityBar'
 import { SidebarSectionStack, type SidebarSection } from '@/components/sidebar/SidebarSectionStack'
+import { FileExplorer } from '@/components/sidebar/FileExplorer'
+import { FileSearch } from '@/components/sidebar/FileSearch'
+import { SessionInfo } from '@/components/sidebar/SessionInfo'
+import { TasksPanel } from '@/components/sidebar/TasksPanel'
+import { TerminalList } from '@/components/sidebar/TerminalList'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
@@ -28,7 +33,8 @@ import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
-import { useTabManager } from '@/hooks/useTabManager'
+import { useTabManager, type TabManager } from '@/hooks/useTabManager'
+import { useTerminal, type TerminalManager } from '@/hooks/useTerminal'
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
@@ -55,6 +61,8 @@ export function AppShell() {
   const pluginPanels = useLeftPluginPanels()
   // 左侧栏 sections 的权威顺序（registry 排序：用户拖拽重排 → 后端同步）。
   const leftItems = useLayoutItems('desktop.activity_bar')
+  // 终端管理器（内置面板移到左侧栏时需要，useTerminal 内部用全局 store，多调用安全）
+  const terminalManager = useTerminal(tabManager)
   const pluginPanelMap = useMemo(
     () => new Map(pluginPanels.map((p) => [p.id, p])),
     [pluginPanels],
@@ -221,23 +229,34 @@ export function AppShell() {
         >
           <SidebarSectionStack
             slotId="desktop.activity_bar"
-            sections={leftItems.map<SidebarSection>((item) =>
-              item.id === BUILTIN_LAYOUT_ITEMS.desktopSessions
-                ? {
-                    id: item.id,
-                    title: item.title,
-                    content: <SessionSidebar tabManager={tabManager} />,
-                  }
-                : {
-                    id: item.id,
-                    title: item.title,
-                    defaultHeight: 240,
-                    content: (() => {
-                      const p = pluginPanelMap.get(item.id)
-                      return p ? <PluginView pluginId={p.pluginId} view={p.view} /> : null
-                    })(),
-                  },
-            )}
+            sections={leftItems.map<SidebarSection>((item) => {
+              // 会话列表 — 左侧栏固定 section
+              if (item.id === BUILTIN_LAYOUT_ITEMS.desktopSessions) {
+                return {
+                  id: item.id,
+                  title: item.title,
+                  content: <SessionSidebar tabManager={tabManager} />,
+                }
+              }
+              // 内置面板（files/search/info/tasks/terminal）— 用户从右栏移到左栏时渲染
+              const builtinContent = renderBuiltinPanel(item.id, tabManager, terminalManager)
+              if (builtinContent !== null) {
+                return {
+                  id: item.id,
+                  title: item.title,
+                  defaultHeight: 240,
+                  content: builtinContent,
+                }
+              }
+              // 插件 view — useLeftPluginPanels 匹配的插件贡献点
+              const p = pluginPanelMap.get(item.id)
+              return {
+                id: item.id,
+                title: item.title,
+                defaultHeight: 240,
+                content: p ? <PluginView pluginId={p.pluginId} view={p.view} /> : null,
+              }
+            })}
           />
           <div
             role="separator"
@@ -320,4 +339,31 @@ function adaptiveLeftWidth(): number {
 function clampLeftWidth(width: number): number {
   const viewportMax = typeof window === 'undefined' ? MAX_LEFT_WIDTH : Math.max(MIN_LEFT_WIDTH, Math.min(MAX_LEFT_WIDTH, window.innerWidth * 0.36))
   return Math.round(Math.max(MIN_LEFT_WIDTH, Math.min(viewportMax, width)))
+}
+
+/**
+ * 渲染内置面板（files/search/info/tasks/terminal）—— 当用户把这些面板
+ * 从右栏（desktop.sidebar）移到左栏（desktop.activity_bar）时，左侧栏
+ * 需要渲染同样的组件。返回 null 表示不是内置面板，由调用方 fallback
+ * 到插件 view 查找。
+ */
+function renderBuiltinPanel(
+  itemId: string,
+  tabManager: TabManager,
+  terminalManager: TerminalManager,
+): ReactNode {
+  switch (itemId) {
+    case BUILTIN_LAYOUT_ITEMS.desktopFiles:
+      return <FileExplorer tabManager={tabManager} />
+    case BUILTIN_LAYOUT_ITEMS.desktopSearch:
+      return <FileSearch tabManager={tabManager} />
+    case BUILTIN_LAYOUT_ITEMS.desktopInfo:
+      return <SessionInfo tabManager={tabManager} />
+    case BUILTIN_LAYOUT_ITEMS.desktopTasks:
+      return <TasksPanel tabManager={tabManager} />
+    case BUILTIN_LAYOUT_ITEMS.desktopTerminal:
+      return <TerminalList terminalManager={terminalManager} />
+    default:
+      return null
+  }
 }
