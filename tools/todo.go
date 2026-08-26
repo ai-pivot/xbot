@@ -77,29 +77,31 @@ func (m *TodoManager) SaveToFile(sessionKey string) error {
 	return os.WriteFile(todoFilePath(sessionKey), data, 0o600)
 }
 
+// loadFromFileLocked loads the TODO list from disk. Caller MUST hold m.mu (write lock).
+func (m *TodoManager) loadFromFileLocked(sessionKey string) {
+	data, err := os.ReadFile(todoFilePath(sessionKey))
+	if err != nil {
+		return // file doesn't exist or error — leave map empty
+	}
+	var items []TodoItem
+	if json.Unmarshal(data, &items) != nil {
+		return
+	}
+	if items == nil {
+		items = []TodoItem{}
+	}
+	m.todos[sessionKey] = items
+}
+
 // LoadFromFile loads the TODO list for a session from a JSON file.
 // If the file doesn't exist, the session starts with an empty TODO list.
 // Empty arrays (cleared todos) ARE loaded — HasTodos must return true for
 // cleared sessions (distinguishes "cleared" from "never ran").
 func (m *TodoManager) LoadFromFile(sessionKey string) error {
-	data, err := os.ReadFile(todoFilePath(sessionKey))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No saved todos, start fresh
-		}
-		return err
-	}
-	var items []TodoItem
-	if err := json.Unmarshal(data, &items); err != nil {
-		return err
-	}
-	if items == nil {
-		items = []TodoItem{}
-	}
 	m.mu.Lock()
-	m.todos[sessionKey] = items
+	defer m.mu.Unlock()
+	m.loadFromFileLocked(sessionKey)
 	m.loaded[sessionKey] = true
-	m.mu.Unlock()
 	return nil
 }
 
@@ -143,6 +145,9 @@ func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 // (HasTodos=false) — the former must produce a done+[] progress event so the
 // frontend clears stale todos, the latter returns nil (no active progress).
 // Lazy-loads from file if not already in memory (survives server restart).
+// Uses write-lock for the entire load to prevent concurrent caller race
+// (goroutine A marks loaded=true, releases lock, goroutine B sees loaded=true
+// and returns nil before LoadFromFile writes to map).
 func (m *TodoManager) HasTodos(sessionKey string) bool {
 	m.mu.RLock()
 	_, ok := m.todos[sessionKey]
@@ -150,17 +155,15 @@ func (m *TodoManager) HasTodos(sessionKey string) bool {
 	if ok {
 		return true
 	}
-	// Lazy load from file (once per session)
+	// Lazy load from file — hold lock for entire load (CR fix: race window)
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.loaded[sessionKey] {
-		m.mu.Unlock()
-		return false // already tried loading, no file
+		_, ok := m.todos[sessionKey]
+		return ok
 	}
 	m.loaded[sessionKey] = true
-	m.mu.Unlock()
-	_ = m.LoadFromFile(sessionKey)
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.loadFromFileLocked(sessionKey)
 	_, ok = m.todos[sessionKey]
 	return ok
 }
@@ -190,6 +193,9 @@ func (m *TodoManager) GetTodoSummary(sessionKey string) string {
 
 // GetTodos 获取指定 session 的 TODO 列表。
 // Lazy-loads from file if not in memory (survives server restart).
+// Uses write-lock for the entire load to prevent concurrent caller race
+// (same fix as HasTodos — goroutine A marks loaded=true, releases lock,
+// goroutine B sees loaded=true and returns nil before LoadFromFile writes to map).
 func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 	m.mu.RLock()
 	items, ok := m.todos[sessionKey]
@@ -199,17 +205,20 @@ func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 		copy(result, items)
 		return result
 	}
-	// Lazy load from file (once per session)
+	// Lazy load from file — hold lock for entire load (CR fix: race window)
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.loaded[sessionKey] {
-		m.mu.Unlock()
-		return nil // already tried loading, no file
+		items, ok := m.todos[sessionKey]
+		if !ok {
+			return nil
+		}
+		result := make([]TodoItem, len(items))
+		copy(result, items)
+		return result
 	}
 	m.loaded[sessionKey] = true
-	m.mu.Unlock()
-	_ = m.LoadFromFile(sessionKey)
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.loadFromFileLocked(sessionKey)
 	items = m.todos[sessionKey]
 	result := make([]TodoItem, len(items))
 	copy(result, items)

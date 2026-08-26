@@ -122,34 +122,91 @@ func (gm *GoalManager) Set(sessionKey, objective string) {
 	_ = gm.SaveToFile(sessionKey)
 }
 
-// Get returns the goal for the given session, or nil.
+// Get returns a COPY of the goal for the given session, or nil.
+// Returns a copy (not the internal pointer) to prevent concurrent
+// read/write races — Complete/GoalInfo may modify the Goal struct
+// while callers read it.
 // Lazy-loads from file if not already in memory.
 func (gm *GoalManager) Get(sessionKey string) *Goal {
 	gm.mu.RLock()
 	g, ok := gm.goals[sessionKey]
 	gm.mu.RUnlock()
 	if ok {
-		return g
+		// Return a copy to prevent data races (Complete modifies in-place).
+		copied := *g
+		return &copied
 	}
-	// Lazy load from file (once per session)
+	// Lazy load from file — hold lock for the entire load to prevent
+	// concurrent callers from racing on LoadFromFile (goroutine A marks
+	// loaded=true, releases lock, goroutine B sees loaded=true and returns nil
+	// before LoadFromFile writes to map).
 	gm.mu.Lock()
+	defer gm.mu.Unlock()
 	if gm.loaded[sessionKey] {
-		gm.mu.Unlock()
-		return nil // already tried loading, no goal file
+		// Already loaded — return whatever is in the map (nil if no goal file).
+		g, ok := gm.goals[sessionKey]
+		if !ok {
+			return nil
+		}
+		copied := *g
+		return &copied
 	}
 	gm.loaded[sessionKey] = true
-	gm.mu.Unlock()
-	_ = gm.LoadFromFile(sessionKey)
-	gm.mu.RLock()
-	defer gm.mu.RUnlock()
-	return gm.goals[sessionKey]
+	// LoadFromFile acquires gm.mu.Lock — but we already hold it (RLock → Lock
+	// would deadlock). Instead, do the file read inline (LoadFromFile's logic).
+	gm.loadFromFileLocked(sessionKey)
+	g, ok = gm.goals[sessionKey]
+	if !ok {
+		return nil
+	}
+	copied := *g
+	return &copied
+}
+
+// loadFromFileLocked loads the goal from disk. Caller MUST hold gm.mu (write lock).
+func (gm *GoalManager) loadFromFileLocked(sessionKey string) {
+	data, err := os.ReadFile(goalFilePath(sessionKey))
+	if err != nil {
+		return // file doesn't exist or error — leave map empty
+	}
+	var g Goal
+	if json.Unmarshal(data, &g) != nil || g.Objective == "" {
+		return
+	}
+	gm.goals[sessionKey] = &g
 }
 
 // GoalInfo returns a protocol.GoalInfo snapshot for the given session, or nil.
-// Lazy-loads from file if not already in memory (same as Get).
+// Reads fields under RLock to prevent data races with Complete.
 func (gm *GoalManager) GoalInfo(sessionKey string) *protocol.GoalInfo {
-	g := gm.Get(sessionKey) // Get handles lazy loading
-	if g == nil {
+	gm.mu.RLock()
+	g, ok := gm.goals[sessionKey]
+	gm.mu.RUnlock()
+	if ok {
+		return &protocol.GoalInfo{
+			Objective: g.Objective,
+			Status:    string(g.Status),
+			Summary:   g.Summary,
+		}
+	}
+	// Lazy load — same pattern as Get but returns GoalInfo instead of Goal.
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	if gm.loaded[sessionKey] {
+		g, ok := gm.goals[sessionKey]
+		if !ok {
+			return nil
+		}
+		return &protocol.GoalInfo{
+			Objective: g.Objective,
+			Status:    string(g.Status),
+			Summary:   g.Summary,
+		}
+	}
+	gm.loaded[sessionKey] = true
+	gm.loadFromFileLocked(sessionKey)
+	g, ok = gm.goals[sessionKey]
+	if !ok {
 		return nil
 	}
 	return &protocol.GoalInfo{
