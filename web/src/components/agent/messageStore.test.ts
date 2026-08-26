@@ -125,6 +125,31 @@ describe('MessageStore — cancel 冻结', () => {
     expect(rows.some((r) => r.id === 'turn-360-live')).toBe(false)
   })
 
+  it('AskUser cancel: completedTools 折进 iterations（提问迭代不消失）', () => {
+    // 根因：AskUser 是 WaitingUser 场景，工具迭代只存在于 live 的
+    // completedTools（attachIterationDelta 不触发，WaitingUser 不发 PhaseDone），
+    // iterationHistory 为空。cancel 后 freeze，toRows 的 frozen 分支只渲染
+    // iterations（空的）—— AskUser 工具迭代彻底消失。修复：freeze 把
+    // in-flight tools 折进 iterations，与 commitLiveProgressAndReset 的 frozen
+    // 分支逻辑一致。
+    const s = new MessageStore()
+    s.setUser(360, user('u360', 'do something', 360))
+    // AskUser 工具在 completedTools，iterations 为空（WaitingUser 场景）
+    s.updateLive(360, liveState(360, {
+      content: '',
+      iterations: [],
+      completedTools: [{ name: 'AskUser', label: '', status: 'done', elapsedMs: 0, summary: 'Asked 1 question(s)', detail: '', args: '', toolHints: '', iteration: 1 }],
+    }))
+    s.freeze(360)
+    const rows = s.toRows()
+    const frozen = rows[1]
+    expect(frozen.isPartial).toBe(true)
+    // AskUser 工具必须出现在 iterations 里（折进后）
+    expect(frozen.iterations.length).toBeGreaterThan(0)
+    const lastIter = frozen.iterations[frozen.iterations.length - 1]
+    expect(lastIter.tools.some((t) => t.name === 'AskUser')).toBe(true)
+  })
+
   it('cancel 后 frozen 合并行必须 isPartial=true（V5：进行中 activeTools 才被 liveProgress 渲染）', () => {
     // 用户报告：cancel 后最新 iter（正在执行 tool）消失。
     // 根因：toRows() 的 frozen 分支 `{...slot.assistant}` 继承 isPartial=false，

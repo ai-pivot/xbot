@@ -43,7 +43,7 @@ import type {
 } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
-import type { WSMessage, WebToolProgress } from '@/types/shared'
+import type { WSMessage, WebToolProgress, GoalInfo } from '@/types/shared'
 import { sessionCacheKey } from '@/lib/webCache'
 
 interface UseProgressStreamOptions {
@@ -396,6 +396,21 @@ export function useProgressStream({
         // setStructuredTools applies todos via its dedicated todos path
         // (see the phase==='done' contract in progressStore.ts setStructuredTools).
         store.setStructuredTools({ todos: initialProgress.todos as TodoItem[] })
+      }
+      // Also hydrate goal from the active_progress snapshot.
+      if (initialProgress.goal !== undefined) {
+        const g = initialProgress.goal as Record<string, unknown> | null
+        if (g) {
+          store.setStructuredTools({
+            goal: {
+              objective: typeof g.objective === 'string' ? g.objective : '',
+              status: typeof g.status === 'string' ? g.status : 'active',
+              summary: typeof g.summary === 'string' ? g.summary : undefined,
+            },
+          })
+        } else {
+          store.setStructuredTools({ goal: null })
+        }
       }
       return
     }
@@ -1304,6 +1319,18 @@ function handleProgressMessage(
           done: Boolean(t.done),
         }))
       }
+      // Goal (from /goal command, injected into progress events by the backend)
+      let goal: GoalInfo | null | undefined
+      if (p.goal !== undefined && p.goal !== null) {
+        const g = p.goal as unknown as Record<string, unknown>
+        goal = {
+          objective: typeof g.objective === 'string' ? g.objective : '',
+          status: typeof g.status === 'string' ? g.status : 'active',
+          summary: typeof g.summary === 'string' ? g.summary : undefined,
+        }
+      } else if (p.goal === null) {
+        goal = null
+      }
       const subAgents = Array.isArray(p.sub_agents)
         ? normalizeWebSubAgents(p.sub_agents as unknown[])
         : undefined
@@ -1457,6 +1484,7 @@ function handleProgressMessage(
         reasoning,
         iterationHistory: iterHistory,
         todos,
+        goal,
         subAgents,
         tokenUsage,
         streamStats,
@@ -1754,6 +1782,18 @@ function handleProgressMessage(
           completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           store.reset()
         }
+      }
+      return
+    }
+
+    case 'ask_user': {
+      // WaitingUser: the turn is paused for user input, NOT streaming.
+      // Without this, progress.streaming stays true (no PhaseDone arrives
+      // for WaitingUser) and AssistantMessage renders "思考中…" above the
+      // AskUser panel — an empty spinner with no content.
+      store.stopStreaming()
+      if (messageStore) {
+        messageStore.clearEmptyLives()
       }
       return
     }

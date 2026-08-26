@@ -231,6 +231,9 @@ type RunConfig struct {
 	// TodoManager TODO 管理器（可选）
 	TodoManager TodoManagerProvider
 
+	// GoalManager 目标管理器（可选，用于注入 progress events）
+	GoalManager *GoalManager
+
 	// DrainBgNotifications is called between iterations to check for completed bg tasks
 	// and bg subagent notifications. Returns notifications that should be injected
 	// as tool results into the current Run loop.

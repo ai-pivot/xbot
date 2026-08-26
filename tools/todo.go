@@ -21,10 +21,12 @@ type TodoItem struct {
 	Done bool   `json:"done"`
 }
 
-// TodoManager 内存级 TODO 管理（非持久化）
+// TodoManager 内存级 TODO 管理，带文件持久化（~/.xbot/todos/<hash>.json）。
+// SetTodos 自动保存到文件；GetTodos/HasTodos 在内存未命中时自动从文件加载。
 type TodoManager struct {
 	mu         sync.RWMutex
 	todos      map[string][]TodoItem // sessionKey -> todos
+	loaded     map[string]bool       // tracks sessions loaded from file (avoids repeated file reads)
 	maxEntries int                   // 最大条目数，超过时淘汰最早的
 }
 
@@ -32,6 +34,7 @@ type TodoManager struct {
 func NewTodoManager() *TodoManager {
 	return &TodoManager{
 		todos:      make(map[string][]TodoItem),
+		loaded:     make(map[string]bool),
 		maxEntries: 10000, // 默认最多保留 10000 个 session 的 TODO
 	}
 }
@@ -76,6 +79,8 @@ func (m *TodoManager) SaveToFile(sessionKey string) error {
 
 // LoadFromFile loads the TODO list for a session from a JSON file.
 // If the file doesn't exist, the session starts with an empty TODO list.
+// Empty arrays (cleared todos) ARE loaded — HasTodos must return true for
+// cleared sessions (distinguishes "cleared" from "never ran").
 func (m *TodoManager) LoadFromFile(sessionKey string) error {
 	data, err := os.ReadFile(todoFilePath(sessionKey))
 	if err != nil {
@@ -88,19 +93,21 @@ func (m *TodoManager) LoadFromFile(sessionKey string) error {
 	if err := json.Unmarshal(data, &items); err != nil {
 		return err
 	}
-	if len(items) == 0 {
-		return nil
+	if items == nil {
+		items = []TodoItem{}
 	}
 	m.mu.Lock()
 	m.todos[sessionKey] = items
+	m.loaded[sessionKey] = true
 	m.mu.Unlock()
 	return nil
 }
 
-// SetTodos 写入/更新指定 session 的 TODO 列表
+// SetTodos 写入/更新指定 session 的 TODO 列表。
+// SetTodos 自动持久化到文件（~/.xbot/todos/<hash>.json），确保重启不丢失。
 func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.loaded[sessionKey] = true // mark as loaded so GetTodos/HasTodos don't re-read file
 	if len(items) == 0 {
 		// Keep an (empty) record so HasTodos can distinguish "cleared" from
 		// "never set". The frontend needs to learn that the server cleared its
@@ -109,21 +116,25 @@ func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 		if _, ok := m.todos[sessionKey]; ok {
 			m.todos[sessionKey] = []TodoItem{}
 		}
-		return
-	}
-	// 防止 map 无限增长：超过上限时清理最旧的一半条目
-	if m.maxEntries > 0 && len(m.todos) >= m.maxEntries {
-		count := 0
-		target := len(m.todos) / 2
-		for k := range m.todos {
-			delete(m.todos, k)
-			count++
-			if count >= target {
-				break
+		m.mu.Unlock()
+	} else {
+		// 防止 map 无限增长：超过上限时清理最旧的一半条目
+		if m.maxEntries > 0 && len(m.todos) >= m.maxEntries {
+			count := 0
+			target := len(m.todos) / 2
+			for k := range m.todos {
+				delete(m.todos, k)
+				count++
+				if count >= target {
+					break
+				}
 			}
 		}
+		m.todos[sessionKey] = items
+		m.mu.Unlock()
 	}
-	m.todos[sessionKey] = items
+	// Persist to file (after releasing lock to avoid deadlock with SaveToFile's RLock)
+	_ = m.SaveToFile(sessionKey)
 }
 
 // HasTodos reports whether the given session has ever had a todo list written
@@ -131,10 +142,26 @@ func (m *TodoManager) SetTodos(sessionKey string, items []TodoItem) {
 // cleared" (HasTodos=true, GetTodos=[]) from "session never ran"
 // (HasTodos=false) — the former must produce a done+[] progress event so the
 // frontend clears stale todos, the latter returns nil (no active progress).
+// Lazy-loads from file if not already in memory (survives server restart).
 func (m *TodoManager) HasTodos(sessionKey string) bool {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	_, ok := m.todos[sessionKey]
+	m.mu.RUnlock()
+	if ok {
+		return true
+	}
+	// Lazy load from file (once per session)
+	m.mu.Lock()
+	if m.loaded[sessionKey] {
+		m.mu.Unlock()
+		return false // already tried loading, no file
+	}
+	m.loaded[sessionKey] = true
+	m.mu.Unlock()
+	_ = m.LoadFromFile(sessionKey)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok = m.todos[sessionKey]
 	return ok
 }
 
@@ -161,12 +188,31 @@ func (m *TodoManager) GetTodoSummary(sessionKey string) string {
 	return fmt.Sprintf("(%d/%d)\n%s", done, len(items), strings.Join(parts, "\n"))
 }
 
-// GetTodos 获取指定 session 的 TODO 列表
+// GetTodos 获取指定 session 的 TODO 列表。
+// Lazy-loads from file if not in memory (survives server restart).
 func (m *TodoManager) GetTodos(sessionKey string) []TodoItem {
 	m.mu.RLock()
+	items, ok := m.todos[sessionKey]
+	m.mu.RUnlock()
+	if ok {
+		result := make([]TodoItem, len(items))
+		copy(result, items)
+		return result
+	}
+	// Lazy load from file (once per session)
+	m.mu.Lock()
+	if m.loaded[sessionKey] {
+		m.mu.Unlock()
+		return nil // already tried loading, no file
+	}
+	m.loaded[sessionKey] = true
+	m.mu.Unlock()
+	_ = m.LoadFromFile(sessionKey)
+	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]TodoItem, len(m.todos[sessionKey]))
-	copy(result, m.todos[sessionKey])
+	items = m.todos[sessionKey]
+	result := make([]TodoItem, len(items))
+	copy(result, items)
 	return result
 }
 

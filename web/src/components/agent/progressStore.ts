@@ -33,6 +33,7 @@ import {
   type WebSubAgentProgress,
   type TokenUsageInfo,
   type UISurface,
+  type GoalInfo,
 } from '@/types/shared'
 import type { ProgressEvent, StreamStatsInfo } from '@/types/shared'
 
@@ -449,10 +450,11 @@ export class ProgressStore {
   reset(): void {
     if (this.disposed) return
     const todos = this.current.todos
-    this.current = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
+    const goal = this.current.goal
+    this.current = { ...EMPTY_PROGRESS_SNAPSHOT, todos, goal }
     // Synchronously update snapshot + cancel pending RAF — avoids a one-frame
     // window where liveMessage is still non-null after reset.
-    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos }
+    this.snapshot = { ...EMPTY_PROGRESS_SNAPSHOT, todos, goal }
     this.dirty = false
     this.lastIter = 0
     // lastTurnID is NOT reset here — it tracks across turns for monotonicity.
@@ -486,9 +488,12 @@ export class ProgressStore {
     if (this.disposed) return
     this.current = { ...EMPTY_PROGRESS_SNAPSHOT }
     // Apply replacement directly to current (no rAF — synchronous)
-    const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, ...rest } = next
+    const { completedTools: _ct, iterationHistory: _ih, eventSeq: _es, lastIter: _li, todos: _td, goal: _gl, ...rest } = next
     if (next.todos !== undefined) {
       this.current.todos = next.todos
+    }
+    if (next.goal !== undefined) {
+      this.current.goal = next.goal
     }
     if (next.iterationHistory) {
       appendIterations(this.current, next.iterationHistory)
@@ -680,6 +685,7 @@ export class ProgressStore {
     iterationHistory?: WebIteration[]
     streamingTools?: WebToolProgress[]
     todos?: TodoItem[]
+    goal?: GoalInfo | null
     subAgents?: WebSubAgentProgress[]
     tokenUsage?: TokenUsageInfo | null
     streamStats?: StreamStatsInfo | null
@@ -709,6 +715,9 @@ export class ProgressStore {
     if (opts.eventSeq !== undefined && opts.eventSeq <= this.current.eventSeq) {
       if (opts.todos !== undefined) {
         this.current.todos = opts.todos
+      }
+      if (opts.goal !== undefined) {
+        this.current.goal = opts.goal
       }
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
         this.mutate((draft) => {
@@ -741,6 +750,7 @@ export class ProgressStore {
       opts.iteration < this.current.lastIter
     if (regressed) {
       if (opts.todos !== undefined) this.current.todos = opts.todos
+      if (opts.goal !== undefined) this.current.goal = opts.goal
       if (opts.iterationHistory && opts.iterationHistory.length > 0) {
         this.mutate((draft) => {
           appendIterations(draft, opts.iterationHistory!)
@@ -899,6 +909,10 @@ export class ProgressStore {
       if (opts.todos !== undefined) {
         draft.todos = opts.todos
       }
+      // ── goal: update when present (null = cleared, undefined = carry-forward).
+      if (opts.goal !== undefined) {
+        draft.goal = opts.goal
+      }
       // subAgents: merge when non-empty, REPLACE when empty array (new iteration
       // cleared them). mergeSubAgentTrees would keep stale subAgents from a
       // previous iteration forever — the new iteration's SubAgent calls will
@@ -1039,6 +1053,7 @@ export class ProgressStore {
       lastIter: this.current.lastIter,
       lastReasoning: this.current.lastReasoning,
       todos: this.current.todos,
+      goal: this.current.goal ?? null,
       subAgents: this.current.subAgents,
       tokenUsage: this.current.tokenUsage,
       streamStats: this.current.streamStats,

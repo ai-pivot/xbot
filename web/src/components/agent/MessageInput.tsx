@@ -13,7 +13,7 @@
  * `cancel`). Pending uploads show as chips inside the container.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Loader2, Paperclip, Send, Square, X } from 'lucide-react'
+import { Loader2, Paperclip, Send, Square, Target, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -25,9 +25,11 @@ import type { Attachments } from '@/hooks/useChatMessages'
 import { cn } from '@/lib/utils'
 import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
+import { GoalBanner } from './GoalBanner'
 import { CompletionPopup } from './CompletionPopup'
 import { useCompletion } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
+import type { GoalInfo } from '@/types/shared'
 
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
@@ -51,6 +53,12 @@ interface MessageInputProps {
   }>
   /** TODO state from the progress snapshot; null hides the inset TODO toolbar. */
   todoState?: TodoState | null
+  /** Active goal from the progress snapshot; null hides the goal banner. */
+  goal?: GoalInfo | null
+  /** Edit the goal objective (direct RPC, does not trigger a Run). */
+  onSetGoal?: (objective: string) => void
+  /** Clear the active goal. */
+  onClearGoal?: () => void
   /** Controls rendered immediately before the send/cancel button. */
   trailingControls?: ReactNode
   draft?: string
@@ -66,11 +74,14 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
   const { mode: sendKeyMode } = useSendKeyMode()
+  const [goalMode, setGoalMode] = useState(false)
+  const [addingGoal, setAddingGoal] = useState(false)
+  const [goalDraft, setGoalDraft] = useState('')
   const draftStorageKey = sessionKey ? `xbot:draft:${sessionKey}` : null
   const [value, setValue] = useState(() => {
     if (draft !== undefined) return draft
@@ -173,11 +184,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           fileMimes: pending.map((p) => p.mime),
         }
       : undefined
-    onSend(text, attachments)
+    // When goalMode is on, send as /goal command (sets goal + starts working).
+    const content = goalMode ? `/goal ${text}` : text
+    onSend(content, attachments)
+    setGoalMode(false)
     setValue('')
     setPending([])
     scheduleTextareaResize(resize)
-  }, [busy, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize])
+  }, [busy, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize, goalMode])
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Let completion handle navigation keys first
@@ -220,15 +234,53 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       {/* No bottom safe-area padding here: the InfoBar below (MobileAppShell)
        *  owns the safe-area strip. Keeping this at plain py-2.5 keeps the
        *  input box clear of the iPhone's rounded bottom corners. */}
-      {todoState ? <TodoPullOut todoState={todoState} /> : null}
+      {goal ? <GoalBanner goal={goal} onEdit={onSetGoal ?? (() => {})} onClear={onClearGoal ?? (() => {})} /> : null}
+      {addingGoal && (
+        <div className="mx-2 mb-1.5 flex items-center gap-2 rounded-md border border-accent/30 bg-accent/5 px-2.5 py-1.5">
+          <Target className="size-3.5 shrink-0 text-accent" />
+          <input
+            autoFocus
+            value={goalDraft}
+            onChange={(e) => setGoalDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing && goalDraft.trim()) {
+                e.preventDefault()
+                onSetGoal?.(goalDraft.trim())
+                setGoalDraft('')
+                setAddingGoal(false)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setGoalDraft('')
+                setAddingGoal(false)
+              }
+            }}
+            onBlur={() => {
+              if (goalDraft.trim()) {
+                onSetGoal?.(goalDraft.trim())
+              }
+              setGoalDraft('')
+              setAddingGoal(false)
+            }}
+            className="min-w-0 flex-1 bg-transparent px-1 text-xs text-text-primary outline-none ring-1 ring-accent/40 rounded"
+            placeholder="输入目标..."
+          />
+          <span className="shrink-0 text-[10px] text-text-muted">Enter 保存 · Esc 取消</span>
+        </div>
+      )}
+      {todoState ? <TodoPullOut todoState={todoState} hasGoal={!!goal || addingGoal} onSetGoal={onSetGoal ? () => {
+        setAddingGoal(true)
+      } : undefined} /> : null}
+      {/* No todo + no goal: no extra UI — the 🎯 toggle in the input bar handles goal-setting */}
 
       {/* Input container — single rounded box with chips, textarea, and inline buttons */}
       <div
         className={cn(
           'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
-          focused
-            ? 'border-accent ring-1 ring-accent/30'
-            : 'border-border',
+          goalMode
+            ? 'border-accent/50 ring-1 ring-accent/20'
+            : focused
+              ? 'border-accent ring-1 ring-accent/30'
+              : 'border-border',
         )}
       >
         {/* Attachment chips (inside container, above textarea) */}
@@ -274,7 +326,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             rows={2}
-            placeholder={t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')}
+            placeholder={goalMode
+              ? '🎯 输入目标描述，发送后将设为 Goal 并开始执行...'
+              : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')}
             className={cn(
               'max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-0 py-1',
               'text-sm text-text-primary placeholder:text-text-muted',
@@ -283,7 +337,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           />
         </div>
 
-        {/* Bottom row: attach button (left) + send/cancel button (right) */}
+        {/* Bottom row: attach button (left) + goal toggle + send/cancel button (right) */}
         <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
             <input
@@ -307,6 +361,23 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             >
               {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
             </Button>
+            {/* Goal toggle button — when active, message is sent as /goal */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="设为目标模式"
+              onClick={() => setGoalMode((v) => !v)}
+              className={cn(
+                'size-9 rounded-md transition-all',
+                goalMode
+                  ? 'bg-accent/15 text-accent ring-1 ring-accent/40 shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]'
+                  : 'text-text-muted hover:text-text-primary',
+              )}
+              title={goalMode ? '目标模式已开启（发送后将设为 Goal）' : '开启目标模式'}
+            >
+              <Target className={cn('size-4', goalMode && 'animate-pulse [animation-duration:2s]')} />
+            </Button>
           </div>
 
           <div className="flex min-w-0 items-center gap-1">
@@ -327,15 +398,18 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               <Button
                 type="button"
                 size="icon-sm"
-                aria-label={t('agent.send')}
+                aria-label={goalMode ? '设为目标' : t('agent.send')}
                 disabled={!canSend}
                 onClick={submit}
                 className={cn(
-                  'size-9 rounded-md bg-accent text-accent-foreground',
+                  'size-9 rounded-md transition-all',
+                  goalMode
+                    ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'
+                    : 'bg-accent text-accent-foreground',
                   !canSend && 'opacity-40',
                 )}
               >
-                <Send className="size-4" />
+                {goalMode ? <Target className="size-4" /> : <Send className="size-4" />}
               </Button>
             )}
           </div>

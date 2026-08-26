@@ -85,6 +85,10 @@ export interface SessionStore {
   toggleStar: (id: string) => void
   createSession: (label?: string, workPath?: string, model?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
+  /** Lightweight session activation (no cache clearing, no async wait).
+   * Used when switching active tabs — each tab keeps its own state, so we
+   * only need to update the sidebar highlight + backend tracking. */
+  activateSession: (id: string, channel: string) => void
   renameSession: (id: string, channel: string, label: string) => Promise<boolean>
   deleteSession: (id: string, channel: string) => Promise<boolean>
   /** Batch-update sort_order for sessions (drag-and-drop reordering). */
@@ -1157,6 +1161,37 @@ export function useSessionStoreImpl(): SessionStore {
     [markRead, refresh],
   )
 
+  /**
+   * Lightweight session activation for the tab-based desktop flow.
+   *
+   * Unlike `switchSession`, this does NOT clear session caches — each agent
+   * tab keeps its own SSE/webCache state, so switching tabs should not wipe
+   * another tab's progress cursor. Used when a dockview tab becomes active
+   * (onDidActivePanelChange) to update the sidebar highlight + backend tracking.
+   */
+  const activateSession = useCallback(
+    (id: string, ch: string): void => {
+      const useChannel = ch || DEFAULT_CHANNEL
+      const selector = { channel: useChannel, chatID: id }
+      activeSessionRef.current = selector
+      setActiveSession(selector)
+      markRead(sessionKey(selector))
+      const nextSessions = markCurrentSession(sessionsRef.current, selector)
+      sessionsRef.current = nextSessions
+      saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
+      setSessions(nextSessions)
+      // Fire-and-forget backend switch (updates last_active_at).
+      void postAPI(`/api/chats/${encodeURIComponent(id)}/switch`, { channel: useChannel }).catch(() => {})
+      // Refresh session list to get fresh running status — without this, the
+      // sessions array may carry stale `running` from localStorage, causing idle
+      // sessions to show as busy after page refresh (activateSession is called
+      // by onDidActivePanelChange during layout restoration, before the initial
+      // refresh() has completed).
+      void refresh()
+    },
+    [markRead, refresh],
+  )
+
   const renameSession = useCallback(async (id: string, channel: string, label: string): Promise<boolean> => {
     try {
       await postAPI(`/api/chats/${encodeURIComponent(id)}/rename`, { channel, label })
@@ -1322,10 +1357,14 @@ export function useSessionStoreImpl(): SessionStore {
             if (!q || typeof q !== 'object') continue
             const o = q as Record<string, unknown>
             const question = typeof o.question === 'string' ? o.question : ''
-            if (!question) continue
             const options = Array.isArray(o.options)
               ? o.options.filter((x): x is string => typeof x === 'string')
               : undefined
+            // Only drop a question that has NEITHER text NOR options. A question
+            // with no prompt text but real options (the LLM sometimes emits
+            // `{allow_other:true, options:[...]}` without `question`) must still
+            // survive so the panel renders the options — the title is skipped.
+            if (!question && !(options && options.length > 0)) continue
             // Backend serializes AskUserQuestion as snake_case (multi_select /
             // allow_other, see protocol/events.go). Map to the frontend
             // camelCase fields so AskUserPanel renders multi-select checkboxes
@@ -1391,12 +1430,13 @@ export function useSessionStoreImpl(): SessionStore {
     toggleStar,
     createSession,
     switchSession,
+    activateSession,
     renameSession,
     deleteSession,
     reorderSessions,
     clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, switchSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

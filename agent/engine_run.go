@@ -332,6 +332,10 @@ func (s *runState) refreshStructuredTodos() {
 		}
 	}
 	s.structuredProgress.Todos = todos
+	// Also inject goal state so the frontend can display/modify the active goal.
+	if s.cfg.GoalManager != nil {
+		s.structuredProgress.Goal = s.cfg.GoalManager.GoalInfo(s.sessionKey)
+	}
 }
 
 // cleanupBgTasks removes completed background tasks for the session.

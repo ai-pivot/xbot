@@ -57,6 +57,7 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
         : params.type === 'agent'
           ? {
               filePath: params.sessionId,
+              channel: params.channel,
               subAgentRole: params.subAgentRole,
               subAgentInstance: params.subAgentInstance,
               parentChatID: params.parentChatID,
@@ -201,6 +202,7 @@ function useTabManagerImpl(): TabManager {
       title: input.title,
       icon: input.icon,
       sessionId: input.type === 'agent' ? input.data?.filePath : undefined,
+      channel: input.type === 'agent' ? input.data?.channel : undefined,
       filePath: input.type === 'file' ? input.data?.filePath : undefined,
       terminalId: input.type === 'terminal' ? input.data?.terminalId : undefined,
       closable: input.closable,
@@ -344,7 +346,7 @@ export function tabLogicalKey(input: Pick<Tab, 'type' | 'data'>): string {
       ? `agent-history:${input.data.agentChatID}`
       : `agent-subagent:${input.data.parentChannel ?? 'web'}:${input.data.parentChatID ?? ''}:${input.data.subAgentRole}:${input.data.subAgentInstance ?? ''}`
   }
-  if (input.type === 'agent' && input.data?.filePath) return `agent:${input.data.filePath}`
+  if (input.type === 'agent' && input.data?.filePath) return `agent:${input.data.channel ?? 'web'}:${input.data.filePath}`
   // Terminal tabs key on their unique frontend terminal id so each terminal
   // gets its own tab (multi-terminal). A missing terminalId → no dedup.
   if (input.type === 'terminal' && input.data?.terminalId) return `terminal:${input.data.terminalId}`
@@ -366,7 +368,7 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
       ? `agent-history:${p.agentChatID}`
       : `agent-subagent:${p.parentChannel ?? 'web'}:${p.parentChatID ?? ''}:${p.subAgentRole}:${p.subAgentInstance ?? ''}`
   }
-  if (p.type === 'agent') return p.sessionId ? `agent:${p.sessionId}` : ''
+  if (p.type === 'agent') return p.sessionId ? `agent:${p.channel ?? 'web'}:${p.sessionId}` : ''
   if (p.type === 'terminal') return p.terminalId ? `terminal:${p.terminalId}` : ''
   if (p.type === 'background') return p.taskID ? `background:${p.taskID}` : ''
   if (p.type === 'plugin' && p.viewKey) return `plugin-view:${p.viewKey}`
@@ -434,10 +436,10 @@ export function filterPanels(layout: unknown, shouldPrune: (params: { type?: str
 }
 
 /**
- * 过滤常驻 agent panel（closable=false 的主 agent tab，由 sessionStore 驱动）。
+ * 过滤所有 agent panel（v2: agent tab 不再 closable=false，按 type 过滤）。
  */
 export function filterAgentPanels(layout: unknown): unknown {
-  return filterPanels(layout, (params) => params.closable === false)
+  return filterPanels(layout, (params) => params.type === 'agent')
 }
 
 /** 过滤 terminal panel（后端 PTY API 禁用时跳过 terminal tab）。 */

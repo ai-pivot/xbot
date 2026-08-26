@@ -31,6 +31,8 @@ export interface Tab {
 
 export interface TabData {
   filePath?: string
+  /** Session channel for agent tabs (web/cli/feishu/...). */
+  channel?: string
   content?: string
   language?: string
   previewMode?: boolean
@@ -260,6 +262,8 @@ export interface ProgressEvent {
   tool_hints?: string
   /** TODO list from TodoWrite tool (mirrors Go protocol.ProgressEvent.Todos). */
   todos?: TodoItem[]
+  /** Active goal (mirrors Go protocol.ProgressEvent.Goal). */
+  goal?: GoalInfo | null
   /** Server signals the client to reload from DB — the incremental iteration
    *  gap is too large to transfer (GetActiveProgress gap-too-large guard).
    *  Consumer (restoreActiveProgress) treats it like replay_gap → reload. */
@@ -304,6 +308,13 @@ export interface SessionEvent {
 
 /** Tool call progress status. */
 export type ToolStatus = 'pending' | 'generating' | 'running' | 'done' | 'error'
+
+/** Goal info (mirrors Go protocol.GoalInfo). */
+export interface GoalInfo {
+  objective: string
+  status: string // "active" | "completed"
+  summary?: string
+}
 
 /** TODO item — mirrors Go protocol.TodoItem (json: id, text, done). */
 export interface TodoItem {
@@ -413,6 +424,8 @@ export interface ProgressSnapshot {
   lastReasoning: string
   /** TODO list (from TodoWrite tool, carried forward when not present in events). */
   todos: TodoItem[]
+  /** Active goal (from /goal command, carried forward when not present). */
+  goal: GoalInfo | null
   /** Structured SubAgent progress tree, carried forward while active. */
   subAgents: WebSubAgentProgress[]
   /** Token usage from the last LLM API response (mirrors protocol.TokenUsage). */
@@ -459,6 +472,7 @@ export const EMPTY_PROGRESS_SNAPSHOT: ProgressSnapshot = {
   lastIter: 0,
   lastReasoning: '',
   todos: [],
+  goal: null,
   subAgents: [],
   tokenUsage: null,
   streamStats: null,

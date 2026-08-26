@@ -37,8 +37,8 @@ import { normalizeGeneratedTsx } from 'partial-tsx'
 // 独立插件（如 xbot-genui）通过 window.__xbot_ui__.SandboxedUI 复用这个通用
 // 渲染原语，通过 window.React 获取 React（避免独立 bundle 重复打包 React）。
 if (typeof window !== 'undefined') {
-  const w = window as unknown as { __xbot_ui__?: unknown; React?: unknown }
-  w.__xbot_ui__ = { SandboxedUI }
+  const w = window as unknown as { __xbot_ui__?: Record<string, unknown>; React?: unknown }
+  w.__xbot_ui__ = { SandboxedUI, onGenuiError: null as ((error: string, code: string) => void) | null }
   w.React = React
 }
 
@@ -247,6 +247,8 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         .replace(/^\s*import\s+.*$/gm, '')
         .replace(/^\s*export\s+default\s+/gm, '')
         .replace(/^\s*export\s+/gm, '')
+        .replace(/\bexport\s+default\s+/g, '')
+        .replace(/\bexport\s+(?!default\b)/g, '')
       // 0-injection: only React + hooks (the JS environment). NO component library.
       //
       // ── 安全模型（inline 编译的已知取舍）────────────────────────────
@@ -268,7 +270,7 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       // 但 new Function() 不支持 export 语句（"unexpected keyword export"）。
       // 在 wrapped 之前把所有 export 语句去掉（上面已做），但 normalizeGeneratedTsx
       // 追加的 export 在 noImports 之后才出现 —— 所以在 wrapped 模板里再清一次。
-      const cleanNoImports = noImports.replace(/^\s*export\s+default\s+/gm, '').replace(/^\s*export\s+/gm, '')
+      const cleanNoImports = noImports.replace(/\bexport\s+default\s+/g, '').replace(/\bexport\s+(?!default\b)/g, '')
       const wrapped = `
         const React = arguments[0];
         const { createElement, useState, useEffect, useMemo, useRef, useCallback,
@@ -305,6 +307,16 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       if (isStreaming && slotRef.current.lastGood && !slotRef.current.current) {
         slotRef.current.current = slotRef.current.lastGood
         setTick((t) => t + 1)
+      }
+      // 回传编译错误给 agent：通过 window.__xbot_ui__.onGenuiError 全局回调，
+      // 宿主 app 设置该回调以将错误注入 agent（让 agent 知道 UI 渲染失败并修复代码）。
+      if (!isStreaming) {
+        const errMsg = e instanceof Error ? e.message : String(e)
+        const codeSnippet = tsx ? tsx.substring(0, 200) : ''
+        try {
+          const w = window as unknown as { __xbot_ui__?: { onGenuiError?: ((error: string, code: string) => void) | null } }
+          w.__xbot_ui__?.onGenuiError?.(errMsg, codeSnippet)
+        } catch { /* ignore — error reporting is best-effort */ }
       }
     }
   }, [])

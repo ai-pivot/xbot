@@ -25,7 +25,7 @@ import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory, fetchHistory } from '@/components/agent/api'
+import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
@@ -38,7 +38,7 @@ import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
-import type { ChatMessage } from '@/types/shared'
+import type { ChatMessage, GoalInfo } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
 // import { useOptionalPluginRuntime } from '@/plugin-runtime'
 
@@ -53,7 +53,7 @@ interface RewindHistoryResponse {
   }
 }
 
-export function AgentPanel({ params }: PanelProps) {
+export function AgentPanel({ params, api }: PanelProps) {
   const ctx = useDockviewContext()
   const ws = ctx.ws
   const store = ctx.sessionStore
@@ -65,31 +65,48 @@ export function AgentPanel({ params }: PanelProps) {
   const [draft, setDraft] = useState<string | undefined>(undefined)
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
-  const wasSubscribedRef = useRef<boolean | null>(null)
+
+  // Track dockview panel visibility — only visible panels subscribe to SSE
+  // (split view: both panels are visible → both subscribe; tab switch: only
+  // the active tab is visible → only it subscribes). This prevents N concurrent
+  // SSE connections for N open tabs (traffic explosion).
+  const [isVisible, setIsVisible] = useState(true)
+  useEffect(() => {
+    if (!api?.onDidVisibilityChange) return
+    const disp = api.onDidVisibilityChange((e: { isVisible: boolean }) => setIsVisible(e.isVisible))
+    setIsVisible(api.isVisible ?? true)
+    return () => disp.dispose()
+  }, [api])
 
   // Detect SubAgent mode: when the panel carries SubAgent params, we load
   // messages via get_session_messages RPC instead of get_history.
   const isSubAgent = !!((params.subAgentRole && params.parentChatID) || params.agentChatID)
 
+  // Session identity: each agent tab carries its own session in params
+  // (session-per-tab architecture, VSCode-like). Mobile (no dockview) or the
+  // seed tab (no sessionId) falls back to store.activeSession.
   const activeSession = store.activeSession
   const chatID = params.agentChatID
     ? (params.agentChatID ?? null)
     : isSubAgent
       ? (params.parentChatID ?? null)
-      : (activeSession?.chatID ?? null)
+      : (params.sessionId ?? activeSession?.chatID ?? null)
   const liveSubAgentChatID = !params.agentChatID && isSubAgent && params.subAgentRole && params.parentChatID
     ? `${params.parentChannel ?? 'web'}:${params.parentChatID}/${params.subAgentRole}${params.subAgentInstance ? `:${params.subAgentInstance}` : ''}`
     : null
   const progressChatID = params.agentChatID ?? liveSubAgentChatID ?? chatID
   const subscribeChatID = params.agentChatID ?? liveSubAgentChatID ?? chatID
-  const messageChannel = params.agentChatID ? 'agent' : isSubAgent ? (params.parentChannel ?? 'web') : (activeSession?.channel ?? 'web')
+  const messageChannel = params.agentChatID ? 'agent' : isSubAgent ? (params.parentChannel ?? 'web') : (params.channel ?? activeSession?.channel ?? 'web')
   const progressChannel = params.agentChatID || liveSubAgentChatID ? 'agent' : messageChannel
-  const shouldSubscribe = true // Panels always subscribe — SSE stays alive until panel closes
+  // SSE subscription follows panel visibility — invisible tabs (behind another
+  // tab in the same group) disconnect SSE to save bandwidth. Visible panels
+  // (active tab + split-view siblings) keep their SSE alive.
+  const shouldSubscribe = isVisible
   const historyEnabled = params.agentChatID
     ? !!params.agentChatID
     : isSubAgent
       ? !!chatID
-      : !!activeSession?.chatID
+      : !!chatID
 
   useActiveSSESubscription({
     ws,
@@ -135,11 +152,15 @@ export function AgentPanel({ params }: PanelProps) {
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
-  useEffect(() => {
-    const wasSubscribed = wasSubscribedRef.current
-    wasSubscribedRef.current = shouldSubscribe
-    if (wasSubscribed === false && shouldSubscribe) void reloadChat()
-  }, [reloadChat, shouldSubscribe])
+  // NOTE: The old wasSubscribed effect (reloadChat when shouldSubscribe
+  // changes false→true) is REMOVED. When a tab becomes visible again (SSE
+  // reconnects), the SSE reconnection mechanism already handles everything:
+  //   1. last_event_id replay (server replays missed events)
+  //   2. restoreActiveProgress (fetches get_active_progress for live state)
+  //   3. resync_required → replay_gap → reloadChat() (only when gap is large)
+  // Calling reloadChat() unconditionally on visibility change was clearing
+  // live iterations via history_replaced, causing "live iter disappears when
+  // switching to a cached tab".
 
   // 暴露当前会话给独立插件视图（window.__xbot_session__）。
   // 独立 ESM 插件（如 xbot.git-fancy）无法 import 宿主内部模块，通过此全局
@@ -148,6 +169,43 @@ export function AgentPanel({ params }: PanelProps) {
     const w = window as unknown as { __xbot_session__?: { channel: string; chatID: string } }
     w.__xbot_session__ = { channel: messageChannel, chatID: progressChatID ?? '' }
   }, [messageChannel, progressChatID])
+
+  // GenUI 编译错误回传：SandboxedUI 编译失败时调用 window.__xbot_ui__.onGenuiError，
+  // 将错误注入当前会话让 agent 知道（agent 可修复代码后重试）。
+  useEffect(() => {
+    const w = window as unknown as {
+      __xbot_ui__?: { onGenuiError?: ((error: string, code: string) => void) | null }
+    }
+    if (!w.__xbot_ui__) return
+    w.__xbot_ui__.onGenuiError = (error: string, _code: string) => {
+      // 注入一条系统通知消息让 agent 知道 UI 渲染失败
+      const msg = `⚠️ display_html 渲染失败: ${error}\n\n请检查 TSX 代码语法（不要使用 export/import/module 语法，直接写 function App() { ... }）。`
+      sendMessageRef.current?.(msg)
+    }
+    return () => {
+      if (w.__xbot_ui__) w.__xbot_ui__.onGenuiError = null
+    }
+  }, [])
+
+  // Fetch goal on session load/switch — handles the case where progress events
+  // don't carry the goal (emitGoalProgress Phase:"" may be skipped by frontend).
+  // Also handles page refresh: GetActiveProgress may not return goal if the
+  // snapshot doesn't have it, so we fetch it directly via get_goal RPC.
+  useEffect(() => {
+    if (!chatID || !messageChannel) return
+    let cancelled = false
+    getGoal({ channel: messageChannel, chatID })
+      .then((g) => {
+        if (cancelled) return
+        if (g && g.objective) {
+          setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
+        } else {
+          setGoalOverride(null)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [chatID, messageChannel])
 
   useEffect(() => {
     if (!isSubAgent) return
@@ -210,6 +268,21 @@ export function AgentPanel({ params }: PanelProps) {
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
   const todoState = useTodos(progressSnapshot.todos)
+  // goalOverride: optimistic local goal state. Set immediately after set_goal RPC
+  // succeeds (before any progress event arrives). Cleared when progressSnapshot.goal
+  // catches up (from SSE progress event or GetActiveProgress on refresh).
+  // This avoids waiting for emitGoalProgress (which may not reach the frontend
+  // reliably with Phase: "").
+  const [goalOverride, setGoalOverride] = useState<GoalInfo | null | undefined>(undefined)
+  const goal = progressSnapshot.goal ?? goalOverride
+  // Clear override when progress snapshot catches up with a REAL goal value
+  // (not null — null means "no goal in progress event", which should NOT clear
+  // the override set by set_goal RPC / /goal command / getGoal RPC).
+  useEffect(() => {
+    if (progressSnapshot.goal) {
+      setGoalOverride(undefined)
+    }
+  }, [progressSnapshot.goal])
   // Busy state: sessionStore.running is the primary source (same source the
   // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
   // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
@@ -218,7 +291,13 @@ export function AgentPanel({ params }: PanelProps) {
   // Fall back to the hydrated progressSnapshot.streaming (set true by
   // historyProgressToLive and by any stream/structured event while phase !=
   // done) so the "思考中…" placeholder still renders on refresh.
-  const currentSession = store.sessions.find((s) => sameSession(s, activeSession))
+  // Per-panel session lookup: derive from this panel's own chatID/channel
+  // (from params), NOT from the global activeSession. Using activeSession would
+  // make split-view panels share the same busy/running state — tab A's
+  // session(busy) event would set tab B's input to busy too.
+  const currentSession = chatID
+    ? store.sessions.find((s) => sameSession(s, { channel: messageChannel, chatID }))
+    : undefined
   // busy 来源（三路 OR，覆盖所有窗口）：
   // 1. currentSession.running（SSE session(busy) 事件设置 —— 主路径）
   // 2. progressSnapshot.streaming && phase 非 done/frozen（live turn 在跑）
@@ -266,13 +345,45 @@ export function AgentPanel({ params }: PanelProps) {
 
   const sendMessage = useCallback((content: string, attachments?: Attachments) => {
     setFollowResetToken((v) => v + 1)
+    // Detect /goal command and optimistically set goalOverride (frontend-only,
+    // no backend needed — progress event may not carry goal reliably).
+    if (content.startsWith('/goal ') && !content.startsWith('/goal status') && !content.startsWith('/goal clear')) {
+      const objective = content.slice(6).trim()
+      if (objective) {
+        setGoalOverride({ objective, status: 'active' })
+      }
+    }
     // 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行），
     // 再走 REST。requestID 贯穿（状态机 pendingUser === REST id → echo/
     // turn_started 按 requestID 去重/绑定）。
     const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     sendUserRef.current(content, rid)
     sendMessageRef.current(content, attachments, rid)
-  }, [])
+  }, [setGoalOverride])
+
+  // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
+  const handleSetGoal = useCallback(async (objective: string) => {
+    if (!chatID || !messageChannel) return
+    try {
+      await setGoal({ channel: messageChannel, chatID }, objective)
+      // Optimistic update: set goal locally so UI updates immediately without
+      // waiting for a progress event (emitGoalProgress may not reach frontend reliably).
+      setGoalOverride({ objective, status: 'active' })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to set goal')
+    }
+  }, [chatID, messageChannel, setGoalOverride])
+
+  const handleClearGoal = useCallback(async () => {
+    if (!chatID || !messageChannel) return
+    try {
+      await clearGoal({ channel: messageChannel, chatID })
+      // Optimistic update: clear goal locally.
+      setGoalOverride(null)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to clear goal')
+    }
+  }, [chatID, messageChannel, setGoalOverride])
 
   // Rewind via inline edit: rewind to the message's DB id, then send
   // the edited content as a new message.
@@ -348,7 +459,7 @@ export function AgentPanel({ params }: PanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {!ws.connected && !isSubAgent && (
+      {!ws.connected && !isSubAgent && chatID && (
         <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
           <Loader2 className="size-3 animate-spin" />
           <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
@@ -422,6 +533,9 @@ export function AgentPanel({ params }: PanelProps) {
           onOpenTasks={() => rightSidebar.openPanel('tasks')}
           onUpload={chat.upload}
           todoState={todoState.total > 0 ? todoState : null}
+          goal={goal}
+          onSetGoal={handleSetGoal}
+          onClearGoal={handleClearGoal}
           trailingControls={
             chatID ? (
               <>

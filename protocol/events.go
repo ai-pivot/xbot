@@ -18,6 +18,14 @@ type TodoItem struct {
 	Done bool   `json:"done"`
 }
 
+// GoalInfo carries the active goal state for a session.
+// Included in ProgressEvent so the frontend can display/modify the goal.
+type GoalInfo struct {
+	Objective string `json:"objective"`         // the goal text
+	Status    string `json:"status"`            // "active" | "completed"
+	Summary   string `json:"summary,omitempty"` // set by set_goal_complete tool
+}
+
 // ToolProgress represents a single tool's execution progress.
 type ToolProgress struct {
 	Name      string    `json:"name,omitempty"`
@@ -110,6 +118,7 @@ type ProgressEvent struct {
 	CompletedTools []ToolProgress    `json:"completed_tools,omitempty"`
 	SubAgents      []SubAgentInfo    `json:"sub_agents,omitempty"`
 	Todos          []TodoItem        `json:"todos"`
+	Goal           *GoalInfo         `json:"goal,omitempty"`
 	TokenUsage     *TokenUsage       `json:"token_usage,omitempty"`
 	Questions      []AskUserQuestion `json:"questions,omitempty"`
 	RequestID      string            `json:"request_id,omitempty"`

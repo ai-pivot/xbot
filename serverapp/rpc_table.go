@@ -1751,6 +1751,45 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return h.Ag.GetTodos(channelName, chatID), nil
 	})
 
+	t["get_goal"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		return h.Ag.GetGoal(channelName, chatID), nil
+	})
+
+	t["set_goal"] = rpc1(func(ctx context.Context, p struct {
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		Objective string `json:"objective"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Objective) == "" {
+			return nil, fmt.Errorf("objective must not be empty")
+		}
+		h.Ag.SetGoal(channelName, chatID, p.Objective)
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["clear_goal"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		h.Ag.ClearGoal(channelName, chatID)
+		return map[string]any{"ok": true}, nil
+	})
+
 	// llm_dump_reqs: toggle dumping EVERY /chat/completions request body to
 	// ~/.xbot/llm_dumps/ (web DebugToolbar "Dump LLM Reqs" button). Pass
 	// {"enabled": bool} to set; omit to just read the current state.

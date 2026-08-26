@@ -9,6 +9,7 @@ import type { SessionInfo } from '@/types/shared'
 import type { TabManager } from '@/hooks/useTabManager'
 
 const switchSession = vi.fn()
+const activateSession = vi.fn()
 const openTab = vi.fn()
 
 function session(overrides: Partial<SessionInfo> & { chatID: string; channel: string; label: string }): SessionInfo {
@@ -72,6 +73,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
     toggleStar: vi.fn(),
     createSession: vi.fn(),
     switchSession,
+    activateSession,
     renameSession: vi.fn(),
     deleteSession: vi.fn(),
     clearAskUserPrompt: vi.fn(),
@@ -109,12 +111,21 @@ const tabManager = {
 } satisfies TabManager
 
 describe('SessionSidebar', () => {
-  it('switches main sessions and only opens Agent tabs for SubAgents', () => {
+  it('opens agent tab + activates session for main sessions, opens Agent tabs for SubAgents', () => {
     renderWithProviders(<SessionSidebar tabManager={tabManager} />)
 
     fireEvent.click(screen.getByText('Agent-main'))
-    expect(switchSession).toHaveBeenCalledWith('/repo:Agent-main', 'cli')
-    expect(openTab).not.toHaveBeenCalled()
+    // Desktop: main session click opens/focuses an agent tab + activates session
+    // (does NOT call switchSession — that's mobile-only via onSubAgentSelect path).
+    expect(activateSession).toHaveBeenCalledWith('/repo:Agent-main', 'cli')
+    expect(openTab).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'agent',
+      data: expect.objectContaining({
+        filePath: '/repo:Agent-main',
+        channel: 'cli',
+      }),
+    }))
+    expect(switchSession).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByText('review/1'))
     expect(openTab).toHaveBeenCalledWith(expect.objectContaining({

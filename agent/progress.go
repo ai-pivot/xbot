@@ -57,6 +57,9 @@ type StructuredProgress struct {
 	// response (TTFT, TPOT, total duration, chunk count). Set by callLLM after
 	// each LLM call, read by buildProgressPayload to expose to the frontend.
 	StreamStats *protocol.StreamStats
+
+	// Goal carries the active goal state (injected by refreshStructuredTodos).
+	Goal *protocol.GoalInfo
 }
 
 func (p *StructuredProgress) Clone() *StructuredProgress {

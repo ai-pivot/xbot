@@ -141,6 +141,7 @@ export const EMPTY_LIVE_PROGRESS: LiveProgress = {
   lastIter: 0,
   lastReasoning: '',
   todos: [],
+  goal: null,
   subAgents: [],
   tokenUsage: null,
   turnID: 0,

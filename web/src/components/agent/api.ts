@@ -89,6 +89,30 @@ export async function setCwd(session: SessionSelector, dir: string): Promise<{ d
   return { dir }
 }
 
+/** Set a goal for the session (direct RPC, does not trigger a Run). */
+export async function setGoal(session: SessionSelector, objective: string): Promise<void> {
+  await postAPI('/api/rpc', {
+    method: 'set_goal',
+    params: { channel: session.channel, chat_id: session.chatID, objective },
+  })
+}
+
+/** Get the current goal for the session. */
+export async function getGoal(session: SessionSelector): Promise<{ objective: string; status: string; summary?: string } | null> {
+  return postAPI('/api/rpc', {
+    method: 'get_goal',
+    params: { channel: session.channel, chat_id: session.chatID },
+  })
+}
+
+/** Clear the goal for the session. */
+export async function clearGoal(session: SessionSelector): Promise<void> {
+  await postAPI('/api/rpc', {
+    method: 'clear_goal',
+    params: { channel: session.channel, chat_id: session.chatID },
+  })
+}
+
 export async function fetchCronTasks<T>(session: SessionSelector): Promise<T[]> {
   const data = await postAPI<{ tasks?: T[] }>('/api/cron/list', sessionBody(session))
   return data.tasks ?? []

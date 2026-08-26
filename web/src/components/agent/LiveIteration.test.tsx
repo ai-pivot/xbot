@@ -32,6 +32,7 @@ function makeSnapshot(overrides: Partial<ProgressSnapshot> = {}): ProgressSnapsh
     lastIter: 0,
     lastReasoning: '',
     todos: [],
+      goal: null,
     subAgents: [],
     tokenUsage: null,
     turnID: 0,

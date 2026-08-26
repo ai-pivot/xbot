@@ -409,13 +409,12 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
-  it('reloads from DB when active-progress recovery returns done — does NOT clear the live row', async () => {
-    // User report: "这后面原本有十几个迭代，突然消失，过一会出现". The done/null
-    // branch MUST reload (replay_gap → DB is authoritative) but MUST NOT
-    // dispatch phase='done' / session(idle) — they clear the live store, and
-    // with a slow reload the already-rendered turn vanishes until the reload
-    // lands. Keep the live row; the reload's committed message merges via
-    // buildMessageRows same-turn merge.
+  it('does NOT dispatch replay_gap when active-progress recovery returns done — preserves live row', async () => {
+    // v2: restoreActiveProgress's done/null branch dispatches NOTHING (no
+    // replay_gap, no session(idle)). replay_gap triggered reload() →
+    // history_replaced on every tab switch, corrupting the state machine
+    // ("live iter disappears when switching tabs after refresh"). Recovery
+    // is handled by SSE last_event_id replay + activateSession's refresh().
     vi.useFakeTimers()
     postAPIMock.mockImplementation(async (endpoint: string) => {
       if (endpoint === '/api/rpc') return { phase: 'done', iteration: 2 }
@@ -433,29 +432,19 @@ describe('SSEConnectionImpl', () => {
 
     await vi.advanceTimersByTimeAsync(1_000)
 
-    expect(received).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'replay_gap' }),
-      ]),
-    )
-    // The live row must NOT be cleared: no phase='done', no session(idle).
+    // No replay_gap (would trigger reload → history_replaced → state corruption)
+    expect(received.some((m) => m.type === 'replay_gap')).toBe(false)
+    // No phase='done' / session(idle) — they clear the live store
     expect(received.some((m) => m.type === 'progress_structured' && (m as { progress?: { phase?: string } }).progress?.phase === 'done')).toBe(false)
     expect(received.some((m) => m.type === 'session' && (m as { session?: { action?: string } }).session?.action === 'idle')).toBe(false)
-    // Snapshot cache is NOT cleared either (no terminal progress event) — the
-    // live row keeps rendering until the reload's committed message lands.
+    // Snapshot cache is NOT cleared
     expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(true)
     connection.dispose()
   })
 
-  it('reloads from DB when active-progress recovery returns null — turn ended during the gap, no cached snapshot', async () => {
-    // User report: "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到".
-    // get_active_progress returned null (turn ended on the server / no active
-    // progress) and progressSnapshotCache was EMPTY (turn started right before
-    // the disconnect). The old turnEndedDuringGap = cachedProgress && ... never
-    // fired (cachedProgress undefined), so no reload happened — the live row
-    // was cleared (phase=done) with no committed replacement → the turn
-    // vanished until a manual refresh. Fix: the done/null branch ALWAYS
-    // dispatches replay_gap (useChatMessages reloads from the authoritative DB).
+  it('does NOT dispatch replay_gap when active-progress recovery returns null — preserves live row', async () => {
+    // v2: done/null branch dispatches nothing (no replay_gap). Recovery is
+    // handled by SSE replay + activateSession's refresh().
     vi.useFakeTimers()
     postAPIMock.mockImplementation(async (endpoint: string) => {
       if (endpoint === '/api/rpc') return null
@@ -472,20 +461,18 @@ describe('SSEConnectionImpl', () => {
 
     await vi.advanceTimersByTimeAsync(1_000)
 
-    expect(received).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'replay_gap' }),
-      ]),
-    )
-    // No phase='done' / session(idle) — the live row is preserved.
+    // No replay_gap (would trigger reload → state corruption)
+    expect(received.some((m) => m.type === 'replay_gap')).toBe(false)
+    // No phase='done' — the live row is preserved
     expect(received.some((m) => m.type === 'progress_structured' && (m as { progress?: { phase?: string } }).progress?.phase === 'done')).toBe(false)
     connection.dispose()
   })
 
-  it('reloads from DB when recovery returns done even if a newer SSE event bumped progressVersion', async () => {
-    // The done/null reload must run BEFORE the progressVersion check: an event
-    // arriving during the reconnect window bumps progressVersion and the old
-    // code returned early (skipping the reload) — the turn vanished.
+  it('does NOT dispatch replay_gap when recovery returns done even if a newer SSE event bumped progressVersion', async () => {
+    // v2: done/null branch dispatches nothing — no replay_gap regardless of
+    // progressVersion. The old test verified replay_gap fired BEFORE the
+    // progressVersion check; now the done/null branch returns early before
+    // reaching the progressVersion check.
     vi.useFakeTimers()
     let resolveProgress: (progress: { phase: string; iteration: number } | null) => void = () => undefined
     postAPIMock.mockImplementation((endpoint: string) => {
@@ -506,13 +493,14 @@ describe('SSEConnectionImpl', () => {
     source.open()
 
     // A newer event arrives while get_active_progress is in flight (bumps
-    // progressVersion) — the reload decision must still fire.
+    // progressVersion) — the done/null branch returns early regardless.
     source.emit('session', { type: 'session', seq: 5, session: { action: 'busy', chat_id: 'chat-a' } })
     resolveProgress({ phase: 'done', iteration: 3 })
     await vi.advanceTimersByTimeAsync(1_000)
     await Promise.resolve()
 
-    expect(received.some((m) => m.type === 'replay_gap')).toBe(true)
+    // No replay_gap — done/null branch dispatches nothing in v2
+    expect(received.some((m) => m.type === 'replay_gap')).toBe(false)
     connection.dispose()
   })
 

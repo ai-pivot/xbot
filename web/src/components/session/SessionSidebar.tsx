@@ -95,7 +95,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   )
 
   // Unified select handler: SubAgent clicks open a new Agent tab; main session
-  // clicks switch the active chatroom as before.
+  // clicks open/focus an agent tab for that session (desktop) or switch session
+  // (mobile, no dockview tab container).
   const handleSelect = useCallback(
     (id: string, channel: string) => {
       const selector = { channel: channel || 'web', chatID: id }
@@ -122,11 +123,29 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           })
         }
       } else {
-        void store.switchSession(id, channel)
+        // Main session: desktop opens/focuses an agent tab (session-per-tab);
+        // mobile (onSubAgentSelect provided) switches the single AgentPanel.
+        if (onSubAgentSelect) {
+          void store.switchSession(id, channel)
+        } else {
+          const session = matched ?? store.sessions.find((s) => s.chatID === id && s.channel === (channel || 'web'))
+          tabManager.openTab({
+            type: 'agent',
+            title: session?.label ?? id,
+            icon: 'bot',
+            closable: true,
+            data: {
+              filePath: id,
+              channel: channel || 'web',
+            },
+          })
+          // Update sidebar highlight + backend tracking (lightweight, no cache clearing).
+          store.activateSession(id, channel)
+        }
       }
       onSessionSelected?.()
     },
-    [store.sessions, store.subAgents, store.switchSession, tabManager, onSessionSelected, onSubAgentSelect],
+    [store.sessions, store.subAgents, store.switchSession, store.activateSession, tabManager, onSessionSelected, onSubAgentSelect],
   )
 
   // Export handler: download a session in the specified format
