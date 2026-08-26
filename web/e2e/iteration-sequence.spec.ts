@@ -228,29 +228,14 @@ test.describe('Iteration sequence integrity', () => {
 
     // Switch away and back
     await page.locator('text=Session 2').first().click()
-    // Wait for empty session (no assistant rows)
+    // Wait for empty session (no assistant rows) — short timeout, polls fast
     await page.waitForFunction(
       () => document.querySelectorAll('[data-role="assistant"]').length === 0,
-      { timeout: 10000 }
+      { timeout: 5000 }
     )
     await page.locator('text=Session 1').first().click()
     // Wait for assistant row to reappear and stabilize at 1
-    await page.waitForFunction(
-      () => document.querySelectorAll('[data-role="assistant"]').length === 1,
-      { timeout: 10000 }
-    )
-    // Wait for iteration rows to stabilize (no duplicate iterations)
-    await page.waitForFunction(
-      () => {
-        const rows = document.querySelectorAll('[data-index]')
-        let count = 0
-        for (const row of rows) {
-          if (row.querySelector('.sweep-text, .markdown-body, [class*="tool-icon"]')) count++
-        }
-        return count <= 1
-      },
-      { timeout: 5000 }
-    ).catch(() => {})
+    await expect.poll(async () => countAssistantRows(page), { timeout: 10_000, intervals: [100] }).toBe(1)
 
     // Still showing thinking, still 1 row
     const thinking2 = await hasThinking(page)
