@@ -210,6 +210,19 @@ test.describe('Iteration sequence integrity', () => {
       r.fulfill({ json: { ok: true, data: { messages: [], chat_id: chatID, last_seq: 10, active_progress: ap } } })
     })
     await setupMock(page)
+    // Override the generic **/api/rpc mock to return activeProgress for
+    // get_active_progress calls (otherwise RPC returns null → progress
+    // cleared → no live row → countAssistantRows=0 → timeout).
+    await page.route('**/api/rpc', (r) => {
+      const body = r.request().postDataJSON()
+      if (body?.method === 'get_active_progress') {
+        const chatID = body?.params?.chat_id || 'chat-1'
+        const ap = chatID === 'chat-1' ? activeProgress : null
+        r.fulfill({ json: { ok: true, data: ap } })
+      } else {
+        r.fulfill({ json: { ok: true, data: null } })
+      }
+    })
     await page.goto(`${BASE}/login`)
     await page.locator('input').first().fill('test')
     await page.locator('input[type="password"]').fill('test')
