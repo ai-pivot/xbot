@@ -185,6 +185,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               latestContentRef.current = text
               localStorage.setItem(draftStorageKey, text)
             }
+          } else {
+            // Editor is empty (e.g. after sending a message) — clear the draft
+            latestContentRef.current = ''
+            localStorage.removeItem(draftStorageKey)
           }
         } catch { /* ignore */ }
       }

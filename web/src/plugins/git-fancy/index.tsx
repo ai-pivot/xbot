@@ -21,6 +21,7 @@ import {
   getRpc,
   gitRpc,
   openDiffTab,
+  onSessionChange,
   statusBadge,
   type GitStatus,
   type GitCommit,
@@ -30,15 +31,17 @@ import {
 
 const { useState, useEffect, useCallback, useRef } = React
 
-/** 激活时注入 ctx（PluginRuntime 调用 mod.activate(ctx)）——rpc/ui 存入共享单例。 */
+/** 激活时注入 ctx（PluginRuntime 调用 mod.activate(ctx)）——rpc/ui/events 存入共享单例。 */
 export function activate(ctx: unknown): void {
   const c = ctx as {
     rpc?: { call: (m: string, p: Record<string, unknown>) => Promise<unknown> }
     ui?: { openViewTab: (o: never) => void; openFileTab: (path: string) => void }
+    events?: { on: (name: string, handler: (payload: unknown) => void) => () => void }
   }
   setSharedApi(
     c?.rpc ? (m, p) => c.rpc!.call(m, p) : undefined,
     c?.ui ? (c.ui as unknown as import('./shared').PluginUIApi) : undefined,
+    c?.events ? (c.events as unknown as import('./shared').PluginEventsApi) : undefined,
   )
 }
 
@@ -104,6 +107,21 @@ export function GitFancyPanel() {
       document.removeEventListener('visibilitychange', onVis)
     }
   }, [refresh, refreshStatusOnly])
+
+  // 会话切换时自动刷新（对标 VSCode Source Control 切 tab 即刷新）。
+  // 通过通用 session.switched 事件（宿主 PluginRuntimeBootstrap 发射），
+  // 任何插件都可订阅——非 git-fancy 专属机制。
+  useEffect(() => {
+    const unsubscribe = onSessionChange(() => {
+      // 重置分页 + 展开状态，重新加载新会话的 git 数据。
+      setCommits([])
+      setTotal(0)
+      setExpandedHash(null)
+      setLoading(true)
+      void refresh()
+    })
+    return unsubscribe
+  }, [refresh])
 
   const loadMore = useCallback(async () => {
     if (loadingMore || commits.length >= total) return

@@ -8,7 +8,7 @@
  *   - Each SessionItem owns its own context menu; rename & delete open
  *     dialogs managed here so a single dialog instance serves every row.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
@@ -97,6 +97,97 @@ export function SessionList({
   const [busy, setBusy] = useState(false)
   const draggedKeyRef = useRef<string | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+
+  // ── Scroll performance: disable CSS transitions during active scrolling ────
+  // Trace profile showed 861 UpdateLayoutTree + 633 Layerize calls during a 9s
+  // sidebar scroll — each hover triggering transition-colors fires a full style
+  // recalc + layerize cycle. Setting isScrolling=true adds the `is-scrolling`
+  // class which disables ALL transitions/animations inside the container via CSS
+  // (.is-scrolling * { transition: none !important }). A 150ms debounce restores
+  // transitions after scrolling stops so hover effects still work at rest.
+  const [isScrolling, setIsScrolling] = useState(false)
+  const scrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Scroll jitter debug: track scrollHeight mutations and render cost ──────
+  // SessionList is NOT virtualized — all session items are in the DOM at once.
+  // When scrollHeight changes between scroll events (without item count change),
+  // it means a session item's height mutated during scroll (e.g. lazy content
+  // loading, preview text settling, or CSS transitions), causing the scrollbar
+  // to jump. Also tracks render cost: if scroll handler itself takes >4ms it
+  // indicates the list has too many DOM nodes for smooth 60fps scrolling.
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null)
+  const scrollJitterRef = useRef({
+    lastScrollHeight: 0,
+    lastScrollTop: 0,
+    lastChildCount: 0,
+    lastEventTime: 0,
+  })
+  const onScrollAreaScroll = useCallback(() => {
+    const root = scrollAreaRef.current
+    if (!root) return
+    const viewport = root.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    if (!viewport) return
+    // Toggle isScrolling: set true immediately on scroll, debounce false after 150ms idle.
+    // This adds/removes the `is-scrolling` CSS class that disables all transitions,
+    // eliminating the 861 UpdateLayoutTree + 633 Layerize cascade per trace profile.
+    if (!isScrolling) setIsScrolling(true)
+    if (scrollDebounceRef.current) clearTimeout(scrollDebounceRef.current)
+    scrollDebounceRef.current = setTimeout(() => setIsScrolling(false), 150)
+
+    const el = viewport
+    const now = performance.now()
+    const dbg = scrollJitterRef.current
+    const curScrollHeight = el.scrollHeight
+    const curScrollTop = el.scrollTop
+    const curChildCount = el.children.length
+    if (dbg.lastScrollHeight > 0) {
+      const heightDelta = curScrollHeight - dbg.lastScrollHeight
+      const scrollTopDelta = curScrollTop - dbg.lastScrollTop
+      const dt = now - dbg.lastEventTime
+      const childDelta = curChildCount - dbg.lastChildCount
+      // Height changed without child count change → item height mutation
+      if (Math.abs(heightDelta) > 2 && childDelta === 0) {
+        console.warn('[JITTER] SessionList scrollHeight changed without child count change', {
+          scrollHeight: Math.round(curScrollHeight),
+          prevScrollHeight: Math.round(dbg.lastScrollHeight),
+          heightDelta: Math.round(heightDelta),
+          scrollTop: Math.round(curScrollTop),
+          scrollTopDelta: Math.round(scrollTopDelta),
+          childCount: curChildCount,
+          dt: Math.round(dt),
+          msg: `scrollHeight ${Math.round(dbg.lastScrollHeight)}→${Math.round(curScrollHeight)} (Δ${Math.round(heightDelta)}px) without child count change — item height mutation jitter`,
+        })
+      }
+      // scrollTop jumped significantly in a short time without user input
+      // (radix ScrollArea doesn't have a programmatic flag, so we check magnitude)
+      if (Math.abs(scrollTopDelta) > 80 && dt < 16) {
+        console.warn('[JITTER] SessionList scrollTop jump detected', {
+          scrollTop: Math.round(curScrollTop),
+          prevScrollTop: Math.round(dbg.lastScrollTop),
+          scrollTopDelta: Math.round(scrollTopDelta),
+          dt: Math.round(dt),
+          scrollHeight: Math.round(curScrollHeight),
+          heightDelta: Math.round(heightDelta),
+          msg: `scrollTop jumped ${Math.round(scrollTopDelta)}px in ${Math.round(dt)}ms — possible scroll correction or height mutation`,
+        })
+      }
+    }
+    dbg.lastScrollHeight = curScrollHeight
+    dbg.lastScrollTop = curScrollTop
+    dbg.lastChildCount = curChildCount
+    dbg.lastEventTime = now
+  }, [isScrolling])
+
+  // Attach native scroll listener to the ScrollArea viewport (radix ScrollArea
+  // doesn't forward onScroll/ref — query the viewport element after mount).
+  useEffect(() => {
+    const root = scrollAreaRef.current
+    if (!root) return
+    const viewport = root.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
+    if (!viewport) return
+    viewport.addEventListener('scroll', onScrollAreaScroll, { passive: true })
+    return () => viewport.removeEventListener('scroll', onScrollAreaScroll)
+  }, [onScrollAreaScroll])
 
   const mainSessions = useMemo(() => sessions.filter((s) => !isSubAgentSession(s) && (!s.synthetic || (s.children || []).some(c => c.running || c.status === 'running' || c.status === 'pending' || c.status === 'waiting_input'))), [sessions])
   const mainSortedSessions = useMemo(
@@ -202,7 +293,7 @@ export function SessionList({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div ref={scrollAreaRef} className={`flex h-full flex-col${isScrolling ? ' is-scrolling' : ''}`}>
       <ScrollArea className="min-h-0 flex-1">
         {showEmpty ? (
           <SessionEmptyState emptyList={emptyList} />

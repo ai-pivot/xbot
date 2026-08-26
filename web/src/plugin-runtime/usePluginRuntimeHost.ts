@@ -124,8 +124,14 @@ export function usePluginRuntimeHost(): PluginRuntimeHost {
   const ws = useWSConnection()
   const session = useSessionStore()
 
+  // useRef 让 getSession 始终读最新 activeSession，而不产生新闭包 → host 对象
+  // 稳定（useMemo deps 不变）→ PluginRuntime 持有同一 host 引用，ctx.state.getSession()
+  // 永远返回当前会话（而非创建时的初始会话）。
+  const activeSessionRef = useRef(session.activeSession)
+  activeSessionRef.current = session.activeSession
+
   const getSession = useCallback((): SessionSummary | null => {
-    const active = session.activeSession
+    const active = activeSessionRef.current
     if (!active) return null
     return {
       chatID: active.chatID,
@@ -135,7 +141,7 @@ export function usePluginRuntimeHost(): PluginRuntimeHost {
       maxContext: 0,
       tokenUsage: { prompt: 0, completion: 0 },
     }
-  }, [session.activeSession])
+  }, [])
 
   const getMessagesRaw = useCallback((): readonly unknown[] => [], [])
 
@@ -167,6 +173,8 @@ export function usePluginRuntimeHost(): PluginRuntimeHost {
       mountRenderer: (_r: MessageRendererContribution) => () => {},
       mountCommand: () => () => {},
     }),
+    // 所有依赖稳定（useCallback 空依赖或稳定引用），host 只创建一次。
+    // getSession 用 ref 读最新值，无需在 deps 里跟 activeSession 变化。
     [getSession, getMessagesRaw, getBackendPlugins],
   )
 }
@@ -174,56 +182,84 @@ export function usePluginRuntimeHost(): PluginRuntimeHost {
 /**
  * 启动时拉取插件清单并激活；监听 WS 消息驱动热加载/卸载。
  * 必须放在 PluginRuntimeProvider 内部（用 usePluginRuntime 拿实例）。
+ *
+ * 并行激活策略（对标 VSCode 扩展并行加载）：
+ *  - 内置插件（pluginManager、skillManager）并行 import + activate
+ *  - 第三方插件清单 RPC 与内置插件激活并行发起
+ *  - 第三方插件之间并行 activate（不串行 await）
+ * 主 view（AppShell）与插件激活天然并行（兄弟节点，React 同时 render）。
  */
 export function PluginRuntimeBootstrap() {
   const runtime = usePluginRuntime()
   const ws = useWSConnection()
   const bootstrapped = useRef(false)
 
-  // 启动拉取清单并激活（先内置插件，后第三方插件）。
+  // 启动拉取清单并激活（内置 + 第三方并行）。
   useEffect(() => {
     if (bootstrapped.current) return
     bootstrapped.current = true
     let cancelled = false
-    ;(async () => {
-      // 1. 激活内置插件（随前端分发，静态 import，不走 URL）。
-      //    xbot.iteration-stats 已改为独立插件（后端 plugin.json + ESM 模块），
-      //    由 web_plugin_list 返回后走标准 activate 路径（动态 import）。
-      try {
-        const builtin = await import('@/plugins/manager/pluginManager')
-        await runtime.activateBuiltin(builtin.manifest, builtin as unknown as import('./loader').PluginModule)
-      } catch (error) {
-        console.error('[plugin-runtime] 激活内置插件失败', error)
-      }
-      // 1b. 内置技能管理插件（同 plugin-manager 范式）。
-      try {
-        const skillManager = await import('@/plugins/xbot-skill-manager/skillManager')
-        await runtime.activateBuiltin(
-          skillManager.manifest,
-          skillManager as unknown as import('./loader').PluginModule,
-        )
-      } catch (error) {
-        console.error('[plugin-runtime] 激活内置技能管理插件失败', error)
-      }
-      // 2. 拉取第三方插件清单并激活（rescan=true：重新扫描磁盘发现新安装的插件）。
-      //    仅激活 enabled 的插件 —— 禁用的插件（后端 State=StateInactive → enabled=false）
-      //    必须跳过，否则纯前端插件在禁用后依然注册 view 并生效（严重 bug）。
-      try {
-        const res = await ws.rpc<{ plugins?: WebPluginDecl[] }>('web_plugin_list', { rescan: true })
-        if (cancelled) return
-        for (const decl of res?.plugins ?? []) {
-          if (!decl.enabled) {
-            console.debug(`[plugin-runtime] 跳过已禁用的插件 ${decl.id}（enabled=false）`)
-            continue
-          }
+
+    // 内置插件激活（并行）：两个内置插件同时 import + activate。
+    const activateBuiltins = Promise.allSettled([
+      (async () => {
+        try {
+          const builtin = await import('@/plugins/manager/pluginManager')
+          await runtime.activateBuiltin(builtin.manifest, builtin as unknown as import('./loader').PluginModule)
+        } catch (error) {
+          console.error('[plugin-runtime] 激活内置插件失败', error)
+        }
+      })(),
+      (async () => {
+        try {
+          const skillManager = await import('@/plugins/xbot-skill-manager/skillManager')
+          await runtime.activateBuiltin(
+            skillManager.manifest,
+            skillManager as unknown as import('./loader').PluginModule,
+          )
+        } catch (error) {
+          console.error('[plugin-runtime] 激活内置技能管理插件失败', error)
+        }
+      })(),
+    ])
+
+    // 第三方插件清单 RPC（与内置插件激活并行发起）。
+    const fetchThirdParty = ws
+      .rpc<{ plugins?: WebPluginDecl[] }>('web_plugin_list', { rescan: true })
+      .then((res) => res?.plugins ?? [])
+      .catch((error) => {
+        console.error('[plugin-runtime] 拉取插件清单失败', error)
+        return [] as WebPluginDecl[]
+      })
+
+    // 内置插件激活完成 + 第三方清单就绪后，并行激活所有第三方插件。
+    Promise.allSettled([activateBuiltins, fetchThirdParty]).then(([, fetchResult]) => {
+      if (cancelled) return
+      const plugins =
+        fetchResult.status === 'fulfilled'
+          ? (fetchResult.value as WebPluginDecl[])
+          : []
+
+      // 并行激活所有 enabled 的第三方插件（不串行 await）。
+      // 仅激活 enabled 的插件 —— 禁用的插件（后端 State=StateInactive → enabled=false）
+      // 必须跳过，否则纯前端插件在禁用后依然注册 view 并生效（严重 bug）。
+      const activations = plugins
+        .filter((decl) => decl.enabled)
+        .map((decl) => {
           bumpPluginLoadToken(decl.id)
           const manifest = toManifest(decl)
-          await runtime.activate(manifest, decl.module_url)
+          return runtime.activate(manifest, decl.module_url).catch((error) => {
+            console.error(`[plugin-runtime] 激活第三方插件 ${decl.id} 失败:`, error)
+          })
+        })
+      for (const decl of plugins) {
+        if (!decl.enabled) {
+          console.debug(`[plugin-runtime] 跳过已禁用的插件 ${decl.id}（enabled=false）`)
         }
-      } catch (error) {
-        console.error('[plugin-runtime] 拉取插件清单失败', error)
       }
-    })()
+      return Promise.allSettled(activations)
+    })
+
     return () => {
       cancelled = true
     }
@@ -278,6 +314,36 @@ export function PluginRuntimeBootstrap() {
     })
     return off
   }, [runtime, ws])
+
+  // 会话切换通知（通用机制，对标 VSCode onDidChangeActiveEditor）：
+  // 1. 更新 window.__xbot_session__（插件 RPC 注入 cwd 的数据源，比 AgentPanel
+  //    useEffect 更快——activeSession 变化即更新，不等 AgentPanel mount）
+  // 2. 发射 session.switched 事件——任何插件可通过 ctx.events.on('session.switched')
+  //    订阅，刷新会话相关数据（git 状态、文件树等），无需轮询或全局变量 hack
+  const session = useSessionStore()
+  const prevSessionKey = useRef<string | null>(null)
+  useEffect(() => {
+    const active = session.activeSession
+    if (!active) return
+    const key = `${active.channel}:${active.chatID}`
+    if (prevSessionKey.current === key) return
+    prevSessionKey.current = key
+
+    // 更新全局 session（插件 RPC 通过 resolveChat() 读取此值注入 cwd）
+    const w = window as unknown as { __xbot_session__?: { channel: string; chatID: string } }
+    w.__xbot_session__ = { channel: active.channel ?? 'web', chatID: active.chatID }
+
+    // 发射通用 session.switched 事件——插件通过 ctx.events.on('session.switched', ...) 订阅
+    const summary: SessionSummary = {
+      chatID: active.chatID,
+      title: active.chatID,
+      model: '',
+      busy: false,
+      maxContext: 0,
+      tokenUsage: { prompt: 0, completion: 0 },
+    }
+    runtime.events.emit('session.switched', { session: summary })
+  }, [session.activeSession, runtime])
 
   // 同步插件 view 贡献点 → 布局注册表：每个 view 自动成为可移动布局项
   // （默认 slot 由 container 映射，用户可在布局设置中移到其他 slot）。
