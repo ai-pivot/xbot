@@ -971,3 +971,16 @@
   border-left-color: rgba(99,102,241,0.3);
   color: #4b5563;
 }
+
+/* ── Scroll performance: disable CSS transitions during active scrolling ──
+ * Trace profile showed 861 UpdateLayoutTree + 633 Layerize calls during a
+ * 9-second sidebar scroll — each hover triggering transition-colors fires
+ * a full style recalc + layerize cycle. Disabling transitions during scroll
+ * eliminates this cascade entirely. The 150ms debounce restores transitions
+ * after scrolling stops so hover effects still work normally at rest. */
+.is-scrolling *,
+.is-scrolling *::before,
+.is-scrolling *::after {
+  transition: none !important;
+  animation: none !important;
+}

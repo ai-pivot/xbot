@@ -203,6 +203,20 @@ export function MessageList({
 
   // TanStack Virtual
   // eslint-disable-next-line react-hooks/incompatible-library
+  // ── Scroll jitter debug: track scrollHeight / scrollTop / totalSize mutations ──
+  // Detects height jumps during scrolling that cause visual jitter. When
+  // scrollHeight changes between consecutive onScroll events WITHOUT a row count
+  // change (i.e. no content added — just re-measurement), it means an item's
+  // real height differs from its estimate, causing the virtualizer to resizeItem
+  // → shouldAdjustScrollPosition → scrollTop correction → visual jump.
+  const jitterDebugRef = useRef({
+    lastScrollHeight: 0,
+    lastScrollTop: 0,
+    lastTotalSize: 0,
+    lastRowCount: 0,
+    lastEventTime: 0,
+  })
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -250,8 +264,18 @@ export function MessageList({
     const v = virtualizer as unknown as {
       shouldAdjustScrollPositionOnItemSizeChange?: (item: { start: number; end: number }, delta: number, instance: { scrollOffset: number | null }) => boolean
     }
-    v.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
-      return item.end < (instance.scrollOffset ?? 0)
+    v.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {
+      const shouldAdjust = item.end < (instance.scrollOffset ?? 0)
+      if (shouldAdjust && Math.abs(delta) > 1) {
+        console.warn('[JITTER] virtualizer scroll correction', {
+          itemStart: Math.round(item.start),
+          itemEnd: Math.round(item.end),
+          delta: Math.round(delta),
+          scrollOffset: Math.round(instance.scrollOffset ?? 0),
+          msg: `item [${Math.round(item.start)}-${Math.round(item.end)}] resized by ${Math.round(delta)}px → scrollTop corrected`,
+        })
+      }
+      return shouldAdjust
     }
   }, [virtualizer])
 
@@ -264,6 +288,10 @@ export function MessageList({
   // 修复：GenUI 行首次测量后写入 genuiHeights 缓存，之后永不调 measureElement。
   // 高度完全由 estimateSize 的缓存值决定。createRoot remount 不触发任何重测。
   // 展开折叠时高度变化通过 resizeItem 手动更新（GenUIPanel onOpenChange 回调）。
+  // Track previous measured sizes per index to detect re-measurement jitter.
+  // When measureElement reports a size different from the virtualizer's current
+  // estimate, resizeItem fires → shouldAdjustScrollPosition → scrollTop correction.
+  const measuredSizesRef = useRef<Map<number, number>>(new Map())
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) return
@@ -272,20 +300,51 @@ export function MessageList({
       if (row && rowHasGenUI(row)) {
         const key = stableRowKey(row)
         if (key) {
-          // 已缓存 → 永不重测。createRoot remount 时高度暂时变小（header only），
-          // 但 estimateSize 返回缓存值，虚拟列表用缓存值定位下一行，不跳变。
           if (genuiHeights.has(key)) {
             return
           }
-          // 首测：读实际高度写 map（固化）。
           const rect = node.getBoundingClientRect()
           if (rect.height > 0) genuiHeights.set(key, rect.height)
         }
       }
-      // 非 GenUI 行 / GenUI 首测：交给 TanStack 默认 measureElement。
+      // Pre-measurement: record estimated size to compare with actual.
+      const v = virtualizer as unknown as {
+        measurements: Array<{ size: number }> | undefined
+        getVirtualItems: () => Array<{ index: number; size: number }>
+      }
+      const virtualItems = v.getVirtualItems?.() ?? []
+      const vi = virtualItems.find((i) => i.index === index)
+      const estimatedSize = vi?.size ?? ESTIMATE
+      // TanStack measureElement: call it, then compare the node's actual height
+      // with the estimate. A large delta means the virtualizer will resizeItem,
+      // potentially triggering scroll correction.
       virtualizer.measureElement(node)
+      // After measurement, read the actual node height and compare with estimate.
+      const actualHeight = node.getBoundingClientRect().height
+      if (actualHeight > 0 && Math.abs(actualHeight - estimatedSize) > 5) {
+        console.warn('[JITTER] measureRef size mismatch', {
+          index,
+          rowId: row?.id?.slice(0, 24),
+          estimated: Math.round(estimatedSize),
+          actual: Math.round(actualHeight),
+          delta: Math.round(actualHeight - estimatedSize),
+          msg: `row ${index} estimated ${Math.round(estimatedSize)}px → measured ${Math.round(actualHeight)}px (Δ${Math.round(actualHeight - estimatedSize)}px)`,
+        })
+      }
+      // Track size changes across re-measurements for the same index.
+      const prevSize = measuredSizesRef.current.get(index)
+      if (prevSize !== undefined && Math.abs(actualHeight - prevSize) > 2) {
+        console.warn('[JITTER] measureRef re-measure size changed', {
+          index,
+          prevSize: Math.round(prevSize),
+          newSize: Math.round(actualHeight),
+          delta: Math.round(actualHeight - prevSize),
+          msg: `row ${index} re-measured: ${Math.round(prevSize)}px → ${Math.round(actualHeight)}px (Δ${Math.round(actualHeight - prevSize)}px)`,
+        })
+      }
+      if (actualHeight > 0) measuredSizesRef.current.set(index, actualHeight)
     },
-    [rows, virtualizer.measureElement],
+    [rows, virtualizer],
   )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
@@ -439,8 +498,67 @@ export function MessageList({
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
-    // Track scroll velocity for dynamic overscan
     const now = performance.now()
+    // ── JITTER DEBUG: detect height mutations between scroll events ──────────
+    // scrollHeight changing between scroll events (without row count change)
+    // means an item was re-measured → resizeItem → potential scroll correction.
+    // This is the #1 cause of visual jitter: the viewport "jumps" because the
+    // virtualizer adjusts scrollTop to compensate for the height delta.
+    const dbg = jitterDebugRef.current
+    const curScrollHeight = el.scrollHeight
+    const curScrollTop = el.scrollTop
+    const curTotalSize = virtualizer.getTotalSize()
+    const curRowCount = rows.length
+    if (dbg.lastScrollHeight > 0) {
+      const heightDelta = curScrollHeight - dbg.lastScrollHeight
+      const scrollTopDelta = curScrollTop - dbg.lastScrollTop
+      const totalSizeDelta = curTotalSize - dbg.lastTotalSize
+      const dt = now - dbg.lastEventTime
+      // Height changed without row count change → re-measurement jitter
+      if (Math.abs(heightDelta) > 2 && curRowCount === dbg.lastRowCount) {
+        console.warn('[JITTER] scrollHeight changed without row count change', {
+          scrollHeight: Math.round(curScrollHeight),
+          prevScrollHeight: Math.round(dbg.lastScrollHeight),
+          heightDelta: Math.round(heightDelta),
+          scrollTop: Math.round(curScrollTop),
+          scrollTopDelta: Math.round(scrollTopDelta),
+          totalSize: Math.round(curTotalSize),
+          totalSizeDelta: Math.round(totalSizeDelta),
+          rowCount: curRowCount,
+          dt: Math.round(dt),
+          isProgrammatic: programmaticScrollRef.current,
+          msg: `scrollHeight ${Math.round(dbg.lastScrollHeight)}→${Math.round(curScrollHeight)} (Δ${Math.round(heightDelta)}px) without rows change — item re-measurement jitter`,
+        })
+      }
+      // scrollTop jumped backward significantly without user input → virtualizer correction
+      if (!programmaticScrollRef.current && Math.abs(scrollTopDelta) > 50 && dt < 16) {
+        console.warn('[JITTER] scrollTop jump detected', {
+          scrollTop: Math.round(curScrollTop),
+          prevScrollTop: Math.round(dbg.lastScrollTop),
+          scrollTopDelta: Math.round(scrollTopDelta),
+          dt: Math.round(dt),
+          scrollHeight: Math.round(curScrollHeight),
+          heightDelta: Math.round(heightDelta),
+          msg: `scrollTop jumped ${Math.round(scrollTopDelta)}px in ${Math.round(dt)}ms — possible virtualizer correction`,
+        })
+      }
+      // totalSize changed without row count change → item size estimate→measure delta
+      if (Math.abs(totalSizeDelta) > 2 && curRowCount === dbg.lastRowCount) {
+        console.warn('[JITTER] totalSize changed without row count change', {
+          totalSize: Math.round(curTotalSize),
+          prevTotalSize: Math.round(dbg.lastTotalSize),
+          totalSizeDelta: Math.round(totalSizeDelta),
+          rowCount: curRowCount,
+          msg: `virtualizer totalSize ${Math.round(dbg.lastTotalSize)}→${Math.round(curTotalSize)} (Δ${Math.round(totalSizeDelta)}px) — estimate→measure delta`,
+        })
+      }
+    }
+    dbg.lastScrollHeight = curScrollHeight
+    dbg.lastScrollTop = curScrollTop
+    dbg.lastTotalSize = curTotalSize
+    dbg.lastRowCount = curRowCount
+    dbg.lastEventTime = now
+    // Track scroll velocity for dynamic overscan
     const dt = now - lastScrollTimeRef.current
     if (dt > 0) {
       const delta = Math.abs(el.scrollTop - lastScrollTopRef.current)
