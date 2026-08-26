@@ -235,7 +235,11 @@ test.describe('Iteration sequence integrity', () => {
     )
     await page.locator('text=Session 1').first().click()
     // Wait for assistant row to reappear and stabilize at 1
-    await expect.poll(async () => page.evaluate(() => document.querySelectorAll('[data-role="assistant"]').length), { timeout: 30_000, intervals: [200] }).toBe(1)
+    // Use countAssistantRows (checks [data-index] rows with .sweep-text etc.)
+    // NOT [data-role="assistant"] — that only matches committed messages,
+    // not live progress rows (active_progress renders as a live row without
+    // data-role attribute).
+    await expect.poll(async () => countAssistantRows(page), { timeout: 30_000, intervals: [200] }).toBe(1)
 
     // Still showing thinking, still 1 row
     const thinking2 = await hasThinking(page)
