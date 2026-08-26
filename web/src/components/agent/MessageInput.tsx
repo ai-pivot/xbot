@@ -166,27 +166,28 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     },
     onUpdate: ({ editor }) => {
       setHasContent(!editor.isEmpty)
-      // Save latest content to ref for unmount flush (sync, no debounce delay)
-      try {
-        latestContentRef.current = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
-      } catch { /* ignore */ }
-      // Debounced draft save — 300ms delay gives Markdown extension time to
-      // parse content before getMarkdown() is called. Immediate save would
-      // call getMarkdown() before parsing completes → returns empty string →
-      // localStorage.removeItem deletes the draft.
-      if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
-      saveDraftTimerRef.current = setTimeout(() => {
-        if (!draftStorageKey) return
+      // IMMEDIATE save on every keystroke — no debounce.
+      // Previous debounce approach failed on mobile: if user switches sessions
+      // within 300ms, clearTimeout cancels the timer and the draft is lost.
+      // Use editor.getText() (always available, no extension dependency)
+      // as fallback when getMarkdown() returns empty (before Markdown ext parses).
+      if (draftStorageKey) {
         try {
           const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
           if (md) {
-            localStorage.setItem(draftStorageKey, md)
             latestContentRef.current = md
-          } else {
-            localStorage.removeItem(draftStorageKey)
+            localStorage.setItem(draftStorageKey, md)
+          } else if (!editor.isEmpty) {
+            // getMarkdown() returned empty but editor has content —
+            // use getText() as fallback (plain text, better than losing draft)
+            const text = editor.getText()
+            if (text) {
+              latestContentRef.current = text
+              localStorage.setItem(draftStorageKey, text)
+            }
           }
         } catch { /* ignore */ }
-      }, 300)
+      }
     },
     onFocus: () => setFocused(true),
     onBlur: () => setFocused(false),
