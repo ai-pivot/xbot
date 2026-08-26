@@ -228,9 +228,17 @@ test.describe('Iteration sequence integrity', () => {
 
     // Switch away and back
     await page.locator('text=Session 2').first().click()
-    await page.waitForTimeout(1000)
+    // Wait for empty session (no assistant rows)
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length === 0,
+      { timeout: 10000 }
+    )
     await page.locator('text=Session 1').first().click()
-    await page.waitForTimeout(1500)
+    // Wait for assistant row to reappear and stabilize at 1
+    await page.waitForFunction(
+      () => document.querySelectorAll('[data-role="assistant"]').length === 1,
+      { timeout: 10000 }
+    )
 
     // Still showing thinking, still 1 row
     const thinking2 = await hasThinking(page)
