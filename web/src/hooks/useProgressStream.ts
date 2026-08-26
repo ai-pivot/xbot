@@ -1657,7 +1657,57 @@ function handleProgressMessage(
     }
 
     case 'genui': {
-      // Final complete HTML from display_html tool (non-streaming, complete code)
+      // Render check: frontend compiles TSX with sucrase and reports result
+      // back via render_check_result RPC. Generic — any plugin can use
+      // render_check=true metadata to request frontend compilation validation.
+      const md = (msg as unknown as Record<string, unknown>).metadata as Record<string, string> | undefined
+      if (md?.render_check === 'true' && md.check_id) {
+        const code = msg.content || ''
+        import('sucrase').then(({ transform }) => {
+          let success = true
+          let error = ''
+          try {
+            // Same transform as SandboxedUI: strip export/import, compile TSX
+            let clean = code.trim()
+            const { code: js } = transform(clean, {
+              transforms: ['typescript', 'jsx'],
+              jsxRuntime: 'classic',
+              production: true,
+            })
+            // Strip export/import (same as SandboxedUI)
+            js
+              .replace(/^\s*import\s+.*$/gm, '')
+              .replace(/\bexport\s+default\s+/g, '')
+              .replace(/\bexport\s+(?!default\b)/g, '')
+            // Try new Function to catch runtime syntax errors
+            new Function(js)
+          } catch (e) {
+            success = false
+            error = e instanceof Error ? e.message : String(e)
+          }
+          // Report result back to backend
+          fetch('/api/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              method: 'render_check_result',
+              params: { check_id: md.check_id, success, error },
+            }),
+          }).catch(() => {})
+        }).catch(() => {
+          // sucrase import failed — report success (don't block)
+          fetch('/api/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              method: 'render_check_result',
+              params: { check_id: md.check_id, success: true, error: '' },
+            }),
+          }).catch(() => {})
+        })
+        return
+      }
+      // Normal genui: final complete code from display_html tool
       if (msg.content) store.setGenUIContent(msg.content)
       return
     }

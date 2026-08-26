@@ -315,16 +315,10 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
         slotRef.current.current = slotRef.current.lastGood
         setTick((t) => t + 1)
       }
-      // 回传编译错误给 agent：通过 window.__xbot_ui__.onGenuiError 全局回调，
-      // 宿主 app 设置该回调以将错误注入 agent（让 agent 知道 UI 渲染失败并修复代码）。
-      if (!isStreaming) {
-        const errMsg = e instanceof Error ? e.message : String(e)
-        const codeSnippet = tsx ? tsx.substring(0, 200) : ''
-        try {
-          const w = window as unknown as { __xbot_ui__?: { onGenuiError?: ((error: string, code: string) => void) | null } }
-          w.__xbot_ui__?.onGenuiError?.(errMsg, codeSnippet)
-        } catch { /* ignore — error reporting is best-effort */ }
-      }
+      // NOTE: Do NOT inject compilation errors back into the agent conversation.
+      // The error is already shown in the UI ("⚠️ UI render error: ...").
+      // Injecting messages causes infinite loops: panel renders from history →
+      // fails → injects message → agent responds → re-renders → fails again.
     }
   }, [])
 

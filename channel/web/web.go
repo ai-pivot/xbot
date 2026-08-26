@@ -901,6 +901,15 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 		// Only forward frontend-relevant metadata keys — avoid leaking internal
 		// keys like feishu_user_id, request_id, cancelled, etc.
 	}
+	// Forward render_check metadata to frontend (for tool render check:
+	// the frontend compiles the code with sucrase and sends the result back
+	// via render_check_result RPC). Generic — any plugin can use render_check.
+	if msg.Metadata != nil && msg.Metadata["render_check"] == "true" {
+		wsMsg.Metadata = map[string]string{
+			"render_check": "true",
+			"check_id":     msg.Metadata["check_id"],
+		}
+	}
 
 	targetClientID := msg.ChatID
 	channelName := msg.Channel

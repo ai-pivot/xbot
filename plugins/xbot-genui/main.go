@@ -238,9 +238,10 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 	}
 
 	writeResult(enc, req.ID, map[string]any{
-		"content":  fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
-		"is_error": false,
-		"ui_code":  code,
+		"content":      fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
+		"is_error":     false,
+		"ui_code":      code,
+		"render_check": true,
 	})
 }
 

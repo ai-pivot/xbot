@@ -170,23 +170,6 @@ export function AgentPanel({ params, api }: PanelProps) {
     w.__xbot_session__ = { channel: messageChannel, chatID: progressChatID ?? '' }
   }, [messageChannel, progressChatID])
 
-  // GenUI 编译错误回传：SandboxedUI 编译失败时调用 window.__xbot_ui__.onGenuiError，
-  // 将错误注入当前会话让 agent 知道（agent 可修复代码后重试）。
-  useEffect(() => {
-    const w = window as unknown as {
-      __xbot_ui__?: { onGenuiError?: ((error: string, code: string) => void) | null }
-    }
-    if (!w.__xbot_ui__) return
-    w.__xbot_ui__.onGenuiError = (error: string, _code: string) => {
-      // 注入一条系统通知消息让 agent 知道 UI 渲染失败
-      const msg = `⚠️ display_html 渲染失败: ${error}\n\n请检查 TSX 代码语法（不要使用 export/import/module 语法，直接写 function App() { ... }）。`
-      sendMessageRef.current?.(msg)
-    }
-    return () => {
-      if (w.__xbot_ui__) w.__xbot_ui__.onGenuiError = null
-    }
-  }, [])
-
   // Fetch goal on session load/switch — handles the case where progress events
   // don't carry the goal (emitGoalProgress Phase:"" may be skipped by frontend).
   // Also handles page refresh: GetActiveProgress may not return goal if the
