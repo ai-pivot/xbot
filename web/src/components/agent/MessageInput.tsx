@@ -96,6 +96,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const [hasContent, setHasContent] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // Track latest editor content for draft flush on unmount (editor may be
+  // destroyed by tiptap cleanup before our cleanup runs — use ref as fallback).
+  const latestContentRef = useRef('')
+
   // Refs for stable callbacks inside editor's handleKeyDown (avoids stale closures)
   const completionHandlerRef = useRef<(e: CompletionKeyEvent) => boolean>(() => false)
   const submitRef = useRef<() => void>(() => {})
@@ -162,16 +166,17 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     },
     onUpdate: ({ editor }) => {
       setHasContent(!editor.isEmpty)
-      // Debounced draft save
-      if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
-      saveDraftTimerRef.current = setTimeout(() => {
-        if (!draftStorageKey) return
+      // Track latest content for draft flush on unmount
+      const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
+      latestContentRef.current = md
+      // Save immediately (no debounce) — ensures draft is always in localStorage
+      // even if the component unmounts within the debounce window.
+      if (draftStorageKey) {
         try {
-          const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
           if (md) localStorage.setItem(draftStorageKey, md)
           else localStorage.removeItem(draftStorageKey)
         } catch { /* ignore */ }
-      }, 300)
+      }
     },
     onFocus: () => setFocused(true),
     onBlur: () => setFocused(false),
@@ -243,6 +248,21 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     onDraftConsumed?.()
   }, [draft, onDraftConsumed, editor])
 
+  // --- Restore draft from localStorage after editor is ready ---
+  // useEditor's content option may not work on remount (key change).
+  // This useEffect ensures the draft is restored from localStorage.
+  useEffect(() => {
+    if (!editor || !draftStorageKey) return
+    // Only restore if editor is empty (don't override existing content)
+    if (!editor.isEmpty) return
+    try {
+      const saved = localStorage.getItem(draftStorageKey)
+      if (saved) {
+        editor.commands.setContent(saved)
+      }
+    } catch { /* ignore */ }
+  }, [editor, draftStorageKey])
+
   // --- chatInputBridge: let file explorer inject text ---
   useEffect(() => {
     if (!editor) return
@@ -269,9 +289,23 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   }, [placeholderText, editor])
 
   // --- Cleanup draft timer on unmount ---
+  // Flush pending draft to localStorage before clearing the timer.
+  // Without flush, switching sessions (key change → unmount) within the
+  // 300ms debounce window loses the unsaved content.
   useEffect(() => {
     return () => {
-      if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
+      if (saveDraftTimerRef.current) {
+        clearTimeout(saveDraftTimerRef.current)
+        // Flush: editor may be destroyed by tiptap cleanup already, so use
+        // latestContentRef (updated on every onUpdate) as fallback.
+        if (draftStorageKey) {
+          try {
+            const md = latestContentRef.current
+            if (md) localStorage.setItem(draftStorageKey, md)
+            else localStorage.removeItem(draftStorageKey)
+          } catch { /* ignore */ }
+        }
+      }
     }
   }, [])
 
