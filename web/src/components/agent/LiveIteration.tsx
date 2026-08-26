@@ -13,8 +13,7 @@ import { memo, useEffect } from 'react'
 
 import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
-import { GenUIPanel } from './GenUIPanel'
-import { SandboxedUI } from '@/plugins/SandboxedUI'
+import { GenUICollapsiblePanel } from './GenUIPanel'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
@@ -253,13 +252,7 @@ export const LiveIteration = memo(function LiveIteration({
 
       {/* Streaming GenUI — 在工具调用位置实时渲染面板（streaming 状态） */}
       {hasGenUI && (
-        <GenUIPanel
-          collapsible={true}
-          fullscreen={true}
-          defaultOpen={true}
-        >
-          <SandboxedUI code={progress.genuiContent} streaming={isLive} />
-        </GenUIPanel>
+        <GenUICollapsiblePanel code={progress.genuiContent} streaming={isLive} />
       )}
 
       {/* Streaming C */}

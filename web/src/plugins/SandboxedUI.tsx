@@ -164,6 +164,8 @@ export interface SandboxedUIProps {
   className?: string
   /** Streaming = the code may still be growing; compile is throttled + partial-completed. */
   streaming?: boolean
+  /** Fired when compilation fails (non-streaming, no lastGood). Use to collapse panels etc. */
+  onError?: () => void
 }
 
 export function SandboxedUI(props: SandboxedUIProps) {
@@ -205,12 +207,14 @@ function SourcedUI({ src, widgetId, className }: SandboxedUIProps) {
 }
 
 /** code mode: compile TSX + mount a separate React root INLINE (no iframe). */
-function CodeUI({ code, widgetId, onAction, className, streaming = false }: SandboxedUIProps) {
+function CodeUI({ code, widgetId, onAction, className, streaming = false, onError }: SandboxedUIProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<Root | null>(null)
   const slotRef = useRef<UISlot>({ current: null, lastGood: null })
   const [tick, setTick] = useState(0)
   const [failed, setFailed] = useState<string | null>(null)
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
 
   const codeRef = useRef(code)
   const timerRef = useRef<number | null>(null)
@@ -301,6 +305,9 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       // （上次成功的组件），不会闪白。只有 final 失败且无 lastGood 才报错。
       if (!isStreaming && !slotRef.current.lastGood) {
         setFailed(e instanceof Error ? e.message : 'compile failed')
+        // Notify parent (GenUIPanel) to collapse — prevents virtual view
+        // height calculation errors when the error panel is expanded.
+        onErrorRef.current?.()
       }
       // ⚠️ streaming 编译失败时，确保 slot.current 仍指向 lastGood（上次成功的组件），
       // 而不是 null（否则 UIHost 渲染 null → 内容消失再出现）。

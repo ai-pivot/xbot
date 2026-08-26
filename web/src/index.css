@@ -862,3 +862,98 @@
 .xterm .xterm-viewport {
   touch-action: pan-y;
 }
+
+/* ─── tiptap WYSIWYG editor (MessageInput) ─── */
+.ProseMirror.xbot-editor {
+  min-height: 52px;
+  max-height: 200px;
+  overflow-y: auto;
+  outline: none;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary, #e5e7eb);
+  caret-color: var(--accent, #6366f1);
+}
+
+/* Placeholder */
+.ProseMirror.xbot-editor > .ProseMirror-placeholder {
+  color: var(--text-muted, #6b7280);
+  pointer-events: none;
+}
+
+/* Inline formatting */
+.ProseMirror.xbot-editor strong { font-weight: 600; }
+.ProseMirror.xbot-editor em { font-style: italic; }
+.ProseMirror.xbot-editor s { text-decoration: line-through; opacity: 0.7; }
+.ProseMirror.xbot-editor code {
+  background: var(--bg-tertiary, #2d2d44);
+  border: 1px solid var(--border, rgba(99,102,241,0.2));
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+}
+
+/* Block: code */
+.ProseMirror.xbot-editor pre {
+  background: var(--bg-primary, #15151e);
+  border: 1px solid var(--border, #1f2937);
+  border-radius: 8px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 4px 0;
+}
+.ProseMirror.xbot-editor pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+/* Block: list */
+.ProseMirror.xbot-editor ul,
+.ProseMirror.xbot-editor ol {
+  padding-left: 20px;
+  margin: 4px 0;
+}
+.ProseMirror.xbot-editor ul { list-style: disc; }
+.ProseMirror.xbot-editor ol { list-style: decimal; }
+.ProseMirror.xbot-editor li > ul,
+.ProseMirror.xbot-editor li > ol { margin: 0; }
+.ProseMirror.xbot-editor li { margin: 2px 0; }
+
+/* Block: blockquote */
+.ProseMirror.xbot-editor blockquote {
+  border-left: 2px solid var(--accent, rgba(99,102,241,0.4));
+  padding-left: 12px;
+  margin: 4px 0;
+  color: var(--text-secondary, #9ca3af);
+  font-style: italic;
+}
+
+/* Paragraph spacing */
+.ProseMirror.xbot-editor p { margin: 0; }
+.ProseMirror.xbot-editor p + p { margin-top: 4px; }
+
+/* Empty paragraph (keep min-height for empty editor) */
+.ProseMirror.xbot-editor p:empty::before {
+  content: '';
+}
+
+/* Light mode overrides */
+.light .ProseMirror.xbot-editor {
+  color: #1f2937;
+  caret-color: #6366f1;
+}
+.light .ProseMirror.xbot-editor code {
+  background: #f3f4f6;
+  border-color: rgba(99,102,241,0.15);
+}
+.light .ProseMirror.xbot-editor pre {
+  background: #1e1e2e;
+  border-color: #e5e7eb;
+}
+.light .ProseMirror.xbot-editor blockquote {
+  border-left-color: rgba(99,102,241,0.3);
+  color: #4b5563;
+}
