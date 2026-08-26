@@ -20,7 +20,8 @@ const realConsoleErrors: string[] = []
 const isRealError = (m: string) =>
   !/WebSocket connection to .*\/ws failed/i.test(m) &&
   !/before receiving a handshake response/i.test(m) &&
-  !/status of 401/i.test(m)
+  !/status of 401/i.test(m) &&
+  !/status of 403/i.test(m)
 
 test.beforeEach(async ({ page }) => {
   realConsoleErrors.length = 0

@@ -239,6 +239,18 @@ test.describe('Iteration sequence integrity', () => {
       () => document.querySelectorAll('[data-role="assistant"]').length === 1,
       { timeout: 10000 }
     )
+    // Wait for iteration rows to stabilize (no duplicate iterations)
+    await page.waitForFunction(
+      () => {
+        const rows = document.querySelectorAll('[data-index]')
+        let count = 0
+        for (const row of rows) {
+          if (row.querySelector('.sweep-text, .markdown-body, [class*="tool-icon"]')) count++
+        }
+        return count <= 1
+      },
+      { timeout: 5000 }
+    ).catch(() => {})
 
     // Still showing thinking, still 1 row
     const thinking2 = await hasThinking(page)
