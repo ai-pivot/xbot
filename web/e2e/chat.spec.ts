@@ -37,10 +37,10 @@ test.describe('Chat interaction', () => {
     // unroutable and the user message never renders.
     await expect(page.locator('text=Loading...')).toHaveCount(0, { timeout: 15_000 }).catch(() => {})
 
-    const editor = page.locator('.tiptap')
+    const editor = page.locator('.tiptap, [contenteditable]')
     if (await editor.isVisible({ timeout: 3000 }).catch(() => false)) {
       await editor.click()
-      await editor.fill('hello test')
+      await page.keyboard.type('hello test')
     } else {
       const textarea = page.locator('textarea')
       await textarea.click()

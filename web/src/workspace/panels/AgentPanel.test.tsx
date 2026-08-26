@@ -79,6 +79,9 @@ vi.mock('@/hooks/useLLMSettings', () => ({
 vi.mock('@/components/agent/api', () => ({
   rewindHistory: (...args: unknown[]) => mocks.rewindHistory(...args),
   fetchHistory: (...args: unknown[]) => mocks.fetchHistory(...args),
+  setGoal: vi.fn().mockResolvedValue(undefined),
+  clearGoal: vi.fn().mockResolvedValue(undefined),
+  getGoal: vi.fn().mockResolvedValue(null),
 }))
 vi.mock('@/components/agent/AskUserPanel', () => ({ AskUserPanel: () => null }))
 vi.mock('@/components/agent/ContextRing', () => ({ ContextRing: () => null }))

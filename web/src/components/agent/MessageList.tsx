@@ -255,11 +255,15 @@ export function MessageList({
     }
   }, [virtualizer])
 
-  // ── GenUI 行高度固化（measure 一次后永久固定，禁止预测/重测）──────────────
-  // TanStack 默认 measureElement 在 genui 行滚出视口（虚拟化卸载）再滚回时会重新
-  // 测量独立 createRoot 的实际高度（内容不稳定）→ estimate(400)↔measure 反复震荡
-  // → 滚动跳变。此回调：genui 行首次测量后写入 genuiHeights map；estimateSize 对
-  // genui 行优先返回缓存值（已缓存则不再重测）→ 高度恒定，滚动无跳变。
+  // ── GenUI 行高度固化（缓存后永不重测，彻底消除滚动跳变）──────────────────
+  // 问题：GenUI 行使用 createRoot（独立 React root），TanStack Virtual 滚动时
+  // unmount/remount 行 → measureElement 重新测量 → createRoot 还没渲染完时高度
+  // 只有 header（~50px）→ 与缓存值（~500px）差值 > 5px → measureElement 被调用
+  // → resizeItem → shouldAdjustScrollPosition → 滚动跳变。
+  //
+  // 修复：GenUI 行首次测量后写入 genuiHeights 缓存，之后永不调 measureElement。
+  // 高度完全由 estimateSize 的缓存值决定。createRoot remount 不触发任何重测。
+  // 展开折叠时高度变化通过 resizeItem 手动更新（GenUIPanel onOpenChange 回调）。
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) return
@@ -267,22 +271,18 @@ export function MessageList({
       const row = rows[index]
       if (row && rowHasGenUI(row)) {
         const key = stableRowKey(row)
-        if (key && genuiHeights.has(key)) {
-          // ⚠️ 已缓存 → 高度已由 map 固化（estimateSize 返回该值），**跳过
-          // virtualizer.measureElement** —— 否则 TanStack 在 genui 行滚出→滚回
-          // （虚拟化卸载→重挂载）时反复 measure 该行，触发 resizeItem →
-          // shouldAdjustScrollPosition 校正 scrollTop → totalSize/scrollTop 同步突变
-          // → 滚动跳变（diag 实证：RE-DETECT 每次滚动经过都触发 + total Δ578）。
-          // 跳过 measure 后 TanStack 恒用 estimateSize 的 map 值（恒定），零跳变。
-          return
-        }
         if (key) {
-          // 首测：读实际高度写 map（固化），然后交给 TanStack 首次测量。
+          // 已缓存 → 永不重测。createRoot remount 时高度暂时变小（header only），
+          // 但 estimateSize 返回缓存值，虚拟列表用缓存值定位下一行，不跳变。
+          if (genuiHeights.has(key)) {
+            return
+          }
+          // 首测：读实际高度写 map（固化）。
           const rect = node.getBoundingClientRect()
           if (rect.height > 0) genuiHeights.set(key, rect.height)
         }
       }
-      // 非 genui 行 / genui 首测：交给 TanStack 默认 measureElement（ResizeObserver 观测）。
+      // 非 GenUI 行 / GenUI 首测：交给 TanStack 默认 measureElement。
       virtualizer.measureElement(node)
     },
     [rows, virtualizer.measureElement],

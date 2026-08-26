@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Target } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
@@ -8,10 +8,13 @@ import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 
 interface TodoPullOutProps {
   todoState: TodoState
+  /** When provided, shows a 🎯 button on the right to set a goal (no goal active). */
+  hasGoal?: boolean
+  onSetGoal?: () => void
 }
 
 /** TODO-only inset toolbar restored above the composer. */
-export function TodoPullOut({ todoState }: TodoPullOutProps) {
+export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps) {
   const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   const { todos, doneCount, total, currentTask } = todoState
@@ -21,29 +24,42 @@ export function TodoPullOut({ todoState }: TodoPullOutProps) {
 
   return (
     <div className="mx-2 mb-1.5 overflow-hidden rounded-md border border-border bg-bg-secondary text-sm">
-      <button
-        type="button"
-        aria-expanded={expanded}
-        aria-label={expanded ? t('agent.collapseTodos') : t('agent.expandTodos')}
-        onClick={() => setExpanded((open) => !open)}
-        className="flex h-8 w-full items-center gap-2 px-2.5 text-left transition-colors hover:bg-bg-tertiary"
-      >
-        <ChevronRight
-          className={cn('size-3.5 shrink-0 text-text-muted transition-transform', expanded && 'rotate-90')}
-        />
-        <div className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-bg-tertiary">
-          <div
-            className="h-full rounded-full bg-accent transition-[width] duration-300"
-            style={{ width: `${percent}%` }}
+      <div className="flex h-8 w-full items-center gap-2 px-2.5 text-left">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? t('agent.collapseTodos') : t('agent.expandTodos')}
+          onClick={() => setExpanded((open) => !open)}
+          className="flex min-w-0 flex-1 items-center gap-2 transition-colors hover:bg-bg-tertiary -mx-2.5 px-2.5 h-full"
+        >
+          <ChevronRight
+            className={cn('size-3.5 shrink-0 text-text-muted transition-transform', expanded && 'rotate-90')}
           />
-        </div>
-        <span className="shrink-0 text-xs tabular-nums text-text-secondary">
-          {doneCount}/{total}
-        </span>
-        <span className={cn('min-w-0 flex-1 truncate text-xs', currentTask ? 'text-text-primary' : 'text-text-muted')}>
-          {currentTask?.text ?? t('agent.todoAllDone')}
-        </span>
-      </button>
+          <div className="h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-bg-tertiary">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-300"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <span className="shrink-0 text-xs tabular-nums text-text-secondary">
+            {doneCount}/{total}
+          </span>
+          <span className={cn('min-w-0 flex-1 truncate text-xs', currentTask ? 'text-text-primary' : 'text-text-muted')}>
+            {currentTask?.text ?? t('agent.todoAllDone')}
+          </span>
+        </button>
+        {/* 🎯 Goal button — only show when no goal active and callback provided */}
+        {!hasGoal && onSetGoal && (
+          <button
+            type="button"
+            onClick={onSetGoal}
+            className="shrink-0 rounded p-1 text-text-muted transition-colors hover:bg-accent/10 hover:text-accent"
+            title="设为目标"
+          >
+            <Target className="size-3.5" />
+          </button>
+        )}
+      </div>
       <AnimatedCollapse open={expanded}>
         <div className="max-h-[200px] overflow-y-auto border-t border-border px-3 py-1.5">
           {todos.map((todo) => (

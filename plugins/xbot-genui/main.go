@@ -80,19 +80,21 @@ type typeMessage struct {
 
 const displayHTMLDesc = `Render an interactive UI for the user. The UI renders live in the chat as a streaming preview.
 
-You write a single TSX module with ` + "`export default function App()`" + ` as the default export. React hooks (useState, useEffect, useMemo, useRef, useCallback, useContext, useReducer, useLayoutEffect, useId, useSyncExternalStore) are available. Standard HTML elements and Tailwind CSS classes work (use ` + "`dark:`" + ` variants for dark mode — the background adapts automatically). You may also use inline style={{...}} and <style>...</style> blocks.
+You write a single TSX module. React hooks (useState, useEffect, useMemo, useRef, useCallback, useContext, useReducer, useLayoutEffect, useId, useSyncExternalStore) are available. Standard HTML elements and Tailwind CSS classes work (use ` + "`dark:`" + ` variants for dark mode — the background adapts automatically). You may also use inline style={{...}} and <style>...</style> blocks.
+
+CRITICAL RULES:
+- Write one self-contained TSX module; no imports — React is available globally.
+- Prefer standard HTML elements + Tailwind for styling; text must be legible in both light and dark mode.
+- Avoid global side effects on document/window; keep the component self-contained.
+- Reach visible markup early so the preview streams in progressively.
+- Do NOT use export/import/module syntax. Write "function App() { ... }" directly. The runtime wraps your code automatically.
 
 INTERACTION — two ways:
 1. Agent callback: add data-action="..." (plus any data-* attributes you want passed back) to an element; a click routes the action to the agent (the agent sees 🖱️ [UI Action] <action> State: {<your data-*>}).
 2. Local state: React useState/useEffect for pure client-side interactivity.
 
-RULES:
-- Write one self-contained TSX module; no imports — React is available globally.
-- Prefer standard HTML elements + Tailwind for styling; text must be legible in both light and dark mode.
-- Avoid global side effects on document/window; keep the component self-contained.
-- Reach visible markup early so the preview streams in progressively.
-- Example:
-  export default function App() {
+Example:
+  function App() {
     const [n, setN] = useState(0)
     return (
       <div className="p-4">
@@ -236,9 +238,10 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 	}
 
 	writeResult(enc, req.ID, map[string]any{
-		"content":  fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
-		"is_error": false,
-		"ui_code":  code,
+		"content":      fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
+		"is_error":     false,
+		"ui_code":      code,
+		"render_check": true,
 	})
 }
 

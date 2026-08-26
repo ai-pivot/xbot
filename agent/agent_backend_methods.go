@@ -3,7 +3,9 @@ package agent
 import (
 	"fmt"
 	"os"
+	"sync/atomic"
 
+	"xbot/channel"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 )
@@ -98,9 +100,25 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 		//     nil for an empty list meant the client could never tell "cleared"
 		//     from "no data", so stale items survived refreshes.
 		if a.todoManager != nil && a.todoManager.HasTodos(key) {
-			return &protocol.ProgressEvent{
+			snap := &protocol.ProgressEvent{
 				Phase: "done",
 				Todos: a.GetTodos(ch, chatID),
+			}
+			// Also include goal so the frontend can display it on idle sessions.
+			if a.goalManager != nil {
+				snap.Goal = a.goalManager.GoalInfo(key)
+			}
+			return snap
+		}
+		// Even without todos, if there's a goal, return it so the
+		// frontend can display the active goal on idle sessions.
+		if a.goalManager != nil {
+			if goal := a.goalManager.GoalInfo(key); goal != nil {
+				return &protocol.ProgressEvent{
+					Phase: "done",
+					Todos: []protocol.TodoItem{},
+					Goal:  goal,
+				}
 			}
 		}
 		return nil
@@ -112,6 +130,12 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 	// This is the pull-model replacement for stream event push — the client reads
 	// live streaming content via tick pull instead of receiving push events.
 	a.mergeStreamState(key, &result)
+
+	// Always inject the latest goal state (goal may have been set/cleared/completed
+	// via RPC since the snapshot was last refreshed by refreshStructuredTodos).
+	if a.goalManager != nil {
+		result.Goal = a.goalManager.GoalInfo(key)
+	}
 
 	// Agent sessions: correct Phase from authoritative running state.
 	// interactiveSubAgents stores entries keyed by interactiveKey (no "agent:" prefix),
@@ -203,6 +227,54 @@ func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
 		result[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
 	}
 	return result
+}
+
+// GetGoal returns the goal state for the given channel:chatID session.
+func (a *Agent) GetGoal(ch, chatID string) *protocol.GoalInfo {
+	if a.goalManager == nil {
+		return nil
+	}
+	return a.goalManager.GoalInfo(ch + ":" + chatID)
+}
+
+// SetGoal sets a goal for the given channel:chatID session.
+func (a *Agent) SetGoal(ch, chatID, objective string) {
+	if a.goalManager == nil {
+		return
+	}
+	a.goalManager.Set(ch+":"+chatID, objective)
+	// Push a progress event so the frontend displays the GoalBanner immediately.
+	a.emitGoalProgress(ch, chatID)
+}
+
+// ClearGoal clears the goal for the given channel:chatID session.
+func (a *Agent) ClearGoal(ch, chatID string) {
+	if a.goalManager == nil {
+		return
+	}
+	a.goalManager.Clear(ch + ":" + chatID)
+	// Push a progress event with nil goal so the frontend removes the GoalBanner.
+	progressKey := ch + ":" + chatID
+	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
+	seq := seqPtr.(*atomic.Uint64).Add(1)
+	payload := &protocol.ProgressEvent{
+		ChatID:    progressKey,
+		Phase:     "",
+		Seq:       seq,
+		TurnID:    a.getActiveTurnID(progressKey),
+		Iteration: 0,
+		Todos:     a.GetTodos(ch, chatID),
+		Goal:      nil, // explicitly nil → frontend clears the banner
+	}
+	if a.channelRange != nil {
+		a.channelRange(func(_ string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.ProgressSender); ok {
+				sender.SendProgress(chatID, cloneProgressEvent(payload))
+			}
+			return true
+		})
+	}
+	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 }
 
 // GetExportIterations returns per-iteration records for session export,

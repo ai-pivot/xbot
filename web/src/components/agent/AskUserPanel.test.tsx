@@ -111,6 +111,8 @@ describe('AskUserPanel', () => {
     expect(submit).toBeDisabled()
     fireEvent.click(screen.getByRole('radio', { name: 'a' }))
     expect(submit).toBeDisabled() // Q2 still unanswered
+    // Step-wizard: advance to Q2 before clicking its option.
+    fireEvent.click(screen.getByRole('button', { name: 'Question 2' }))
     fireEvent.click(screen.getByRole('radio', { name: 'x' }))
     expect(submit).toBeEnabled()
   })

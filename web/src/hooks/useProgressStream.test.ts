@@ -20,9 +20,11 @@ function snap(over: Partial<ProgressSnapshot>): ProgressSnapshot {
     lastIter: 0,
     lastReasoning: '',
     todos: [],
+    goal: null,
     subAgents: [],
     tokenUsage: null,
     turnID: 0,
+    streamStats: null,
     ...over,
   }
 }

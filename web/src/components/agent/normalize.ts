@@ -11,7 +11,7 @@ import {
   normalizeWebTools,
 } from '@/components/agent/progressStore'
 import type { HistProgress } from '@/components/agent/api'
-import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem } from '@/types/shared'
+import type { WebIteration, WebToolProgress, ProgressSnapshot, TodoItem, GoalInfo } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { IterationSnapshot, IterationTool, ToolProgress } from '@/types/agent'
 
@@ -138,7 +138,8 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
   if (!p || !p.phase || p.phase === 'done') {
     // Even for done/idle sessions, restore todos so they survive session switch.
     const todos = (p?.todos ?? []) as TodoItem[]
-    return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
+    const goal = (p?.goal ?? null) as GoalInfo | null
+    return { ...EMPTY_PROGRESS_SNAPSHOT, todos, goal }
   }
   const active = normalizeWebTools(p.active_tools)
   let completed = normalizeWebTools(p.completed_tools)
@@ -183,6 +184,7 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     lastIter: 0, // 0 = uninitialized; iterations are 1-based
     lastReasoning: p.reasoning ?? '',
     todos: (p.todos ?? []) as TodoItem[],
+    goal: (p.goal ?? null) as GoalInfo | null,
     subAgents: normalizeWebSubAgents(p.sub_agents),
     tokenUsage: null,
     turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0,

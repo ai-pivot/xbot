@@ -429,9 +429,10 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 		return fmt.Errorf("recall memory: %w", err)
 	}
 	if memCtx != "" {
-		// 追加到 user message 末尾作为 <system-reminder> 块。
-		// 不注入 SystemParts → system prompt 保持稳定 → prefix cache 命中。
-		mc.UserMessage += "\n\n<system-reminder>\n" + memCtx + "\n</system-reminder>"
+		// CDATA wrapping prevents user-injected </system-reminder> from breaking
+		// the XML structure. Escape any ]]> sequences inside memCtx first.
+		safe := strings.ReplaceAll(memCtx, "]]>", "]]]]><![CDATA[>")
+		mc.UserMessage += "\n\n<system-reminder><![CDATA[" + safe + "]]></system-reminder>"
 		GlobalMetrics.MemoryRecalls.Add(1)
 	}
 	return nil

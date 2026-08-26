@@ -43,7 +43,7 @@ import type {
 } from '@/types/shared'
 import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
-import type { WSMessage, WebToolProgress } from '@/types/shared'
+import type { WSMessage, WebToolProgress, GoalInfo } from '@/types/shared'
 import { sessionCacheKey } from '@/lib/webCache'
 
 interface UseProgressStreamOptions {
@@ -396,6 +396,21 @@ export function useProgressStream({
         // setStructuredTools applies todos via its dedicated todos path
         // (see the phase==='done' contract in progressStore.ts setStructuredTools).
         store.setStructuredTools({ todos: initialProgress.todos as TodoItem[] })
+      }
+      // Also hydrate goal from the active_progress snapshot.
+      if (initialProgress.goal !== undefined) {
+        const g = initialProgress.goal as Record<string, unknown> | null
+        if (g) {
+          store.setStructuredTools({
+            goal: {
+              objective: typeof g.objective === 'string' ? g.objective : '',
+              status: typeof g.status === 'string' ? g.status : 'active',
+              summary: typeof g.summary === 'string' ? g.summary : undefined,
+            },
+          })
+        } else {
+          store.setStructuredTools({ goal: null })
+        }
       }
       return
     }
@@ -1304,6 +1319,18 @@ function handleProgressMessage(
           done: Boolean(t.done),
         }))
       }
+      // Goal (from /goal command, injected into progress events by the backend)
+      let goal: GoalInfo | null | undefined
+      if (p.goal !== undefined && p.goal !== null) {
+        const g = p.goal as unknown as Record<string, unknown>
+        goal = {
+          objective: typeof g.objective === 'string' ? g.objective : '',
+          status: typeof g.status === 'string' ? g.status : 'active',
+          summary: typeof g.summary === 'string' ? g.summary : undefined,
+        }
+      } else if (p.goal === null) {
+        goal = null
+      }
       const subAgents = Array.isArray(p.sub_agents)
         ? normalizeWebSubAgents(p.sub_agents as unknown[])
         : undefined
@@ -1457,6 +1484,7 @@ function handleProgressMessage(
         reasoning,
         iterationHistory: iterHistory,
         todos,
+        goal,
         subAgents,
         tokenUsage,
         streamStats,
@@ -1629,7 +1657,57 @@ function handleProgressMessage(
     }
 
     case 'genui': {
-      // Final complete HTML from display_html tool (non-streaming, complete code)
+      // Render check: frontend compiles TSX with sucrase and reports result
+      // back via render_check_result RPC. Generic — any plugin can use
+      // render_check=true metadata to request frontend compilation validation.
+      const md = (msg as unknown as Record<string, unknown>).metadata as Record<string, string> | undefined
+      if (md?.render_check === 'true' && md.check_id) {
+        const code = msg.content || ''
+        import('sucrase').then(({ transform }) => {
+          let success = true
+          let error = ''
+          try {
+            // Same transform as SandboxedUI: strip export/import, compile TSX
+            const clean = code.trim()
+            let js = transform(clean, {
+              transforms: ['typescript', 'jsx'],
+              jsxRuntime: 'classic',
+              production: true,
+            }).code
+            // Strip export/import (same as SandboxedUI) — must reassign, not chain
+            js = js
+              .replace(/^\s*import\s+.*$/gm, '')
+              .replace(/\bexport\s+default\s+/g, '')
+              .replace(/\bexport\s+(?!default\b)/g, '')
+            // Try new Function to catch runtime syntax errors
+            new Function(js)
+          } catch (e) {
+            success = false
+            error = e instanceof Error ? e.message : String(e)
+          }
+          // Report result back to backend
+          fetch('/api/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              method: 'render_check_result',
+              params: { check_id: md.check_id, success, error },
+            }),
+          }).catch(() => {})
+        }).catch(() => {
+          // sucrase import failed — report success (don't block)
+          fetch('/api/rpc', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              method: 'render_check_result',
+              params: { check_id: md.check_id, success: true, error: '' },
+            }),
+          }).catch(() => {})
+        })
+        return
+      }
+      // Normal genui: final complete code from display_html tool
       if (msg.content) store.setGenUIContent(msg.content)
       return
     }
@@ -1754,6 +1832,18 @@ function handleProgressMessage(
           completeRef.current?.(text, iters, msg.seq, msg.turn_id)
           store.reset()
         }
+      }
+      return
+    }
+
+    case 'ask_user': {
+      // WaitingUser: the turn is paused for user input, NOT streaming.
+      // Without this, progress.streaming stays true (no PhaseDone arrives
+      // for WaitingUser) and AssistantMessage renders "思考中…" above the
+      // AskUser panel — an empty spinner with no content.
+      store.stopStreaming()
+      if (messageStore) {
+        messageStore.clearEmptyLives()
       }
       return
     }

@@ -89,6 +89,7 @@ describe('AssistantMessage copy button (showActions)', () => {
       }],
       subAgents: [],
       todos: [],
+      goal: null,
     }
     const { container } = renderMsg(<AssistantMessage message={m} progress={liveProgress} collapseLevel="none" />)
     // "继续优化。" 只出现一次（LiveIteration 在迭代内渲染），迭代块外不重复
@@ -152,6 +153,7 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
     ],
     subAgents: [],
     todos: [],
+      goal: null,
     ...over,
   })
 
@@ -254,6 +256,7 @@ describe('AssistantMessage compressing indicator position', () => {
     ],
     subAgents: [],
     todos: [],
+      goal: null,
     ...over,
   })
 

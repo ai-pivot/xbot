@@ -356,6 +356,15 @@ export class SSEConnectionImpl implements WSConnection {
   }
 
   private dispatch(msg: WSMessage): void {
+    // Stamp chat_id if missing — the SSEConnectionImpl knows its own chatID.
+    // Without this, events that arrive without chat_id in the JSON payload
+    // (many stream_content/progress events are stateless) pass through
+    // normalizeEvent's chat filter (if (msgChat && ...) — falsy = no filter)
+    // and are processed by ALL AgentPanels → cross-session pollution (busy
+    // tab's live progress renders in idle tabs).
+    if (!msg.chat_id && this._chatID) {
+      msg.chat_id = this._chatID
+    }
     if (this._chatID) {
       const cacheKey = sessionCacheKey(this._channel, this._chatID)
       if (isTerminalProgressEvent(msg)) {
@@ -472,19 +481,22 @@ export class SSEConnectionImpl implements WSConnection {
       // the in-progress turn "vanishes" until a manual refresh (user report:
       // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
       if (!progress || progress.phase === 'done') {
-        // Turn ended on the server (or get_active_progress returned null —
-        // e.g. an active turn momentarily not registered). The committed
-        // reply may have been lost during the SSE gap; the DB is authoritative
-        // — reload from it.
-        // CRITICAL: do NOT dispatch phase='done' / session(idle) here. They
-        // clear the live store (liveMessage returns null on phase='done'), and
-        // with a slow reload the already-rendered turn would VANISH until the
-        // reload lands (user report: "这后面原本有十几个迭代，突然消失，过一
-        // 会出现"). Keep the live row; the reload brings the committed message
-        // and buildMessageRows' same-turn merge carries the live iterations
-        // over. The sidebar busy state is cleared by the backend's own
-        // session(idle) event once the turn really ends.
-        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
+        // Turn ended on server (or no active progress). Do NOT dispatch
+        // replay_gap — it triggers useChatMessages.reload() → history_replaced
+        // on every tab switch (restoreActiveProgress runs when SSE reconnects
+        // after visibility change). This was the root cause of "live iter
+        // disappears when switching tabs after refresh" — reload() clears
+        // chat.messages mid-fetch, corrupting the state machine.
+        //
+        // Do NOT dispatch session(idle) either — it clears the live store
+        // (liveMessage returns null), causing rendered iterations to vanish.
+        //
+        // Instead: dispatch nothing. Recovery is handled by:
+        //   1. SSE last_event_id replay (server replays missed text/session events)
+        //   2. activateSession's refresh() (updates sidebar busy state)
+        //   3. useChatMessages initial history fetch (committed messages already loaded)
+        //   4. resync_required (if ring buffer evicted events → replay_gap with
+        //      force_reload, which IS needed for real data loss)
         return
       }
       // Gap-too-large guard: the incremental iteration gap between our
@@ -704,12 +716,29 @@ export class MultiSSEManager implements WSConnection {
   private progressHandlers = new Set<Handler<ProgressEvent>>()
   private connHandlers = new Set<Handler<boolean>>()
 
+  // Aggregate connection state: true if ANY connection (primary or extra)
+  // is connected. When a split-view panel is closed, its SSE disconnects —
+  // but other panels' SSE may still be alive. The aggregate prevents the
+  // "reconnecting" banner from showing on surviving panels.
+  private aggregateConnected = false
+
   constructor() {
     this.primary = new SSEConnectionImpl()
+    // Track primary's connection state changes → recompute aggregate.
+    this.primary.onConnectionChange(() => this.recomputeConnected())
   }
 
   get connected(): boolean {
-    return this.primary.connected
+    return this.aggregateConnected
+  }
+
+  /** Recompute the aggregate connection state from all active connections. */
+  private recomputeConnected(): void {
+    const next = this.primary.connected || Array.from(this.extra.values()).some((c) => c.connected)
+    if (next !== this.aggregateConnected) {
+      this.aggregateConnected = next
+      this.connHandlers.forEach((h) => h(next))
+    }
   }
 
   get chatID(): string | null {
@@ -762,7 +791,10 @@ export class MultiSSEManager implements WSConnection {
     for (const h of this.messageHandlers) conn.onMessage(h)
     for (const h of this.sessionHandlers) conn.onSession(h)
     for (const h of this.progressHandlers) conn.onProgress(h)
-    for (const h of this.connHandlers) conn.onConnectionChange(h)
+    // Track this connection's state for aggregate recompute (NOT direct
+    // connHandlers — the aggregate prevents a single connection's disconnect
+    // from showing "reconnecting" on all panels).
+    conn.onConnectionChange(() => this.recomputeConnected())
     conn.subscribe(chatID, channel)
     this.extra.set(key, conn)
     return key
@@ -775,12 +807,14 @@ export class MultiSSEManager implements WSConnection {
       // reused by the next addSubscription call. Without this, the primary
       // SSE connection stays open after the panel closes, leaking resources.
       this.primary.disconnect()
+      this.recomputeConnected()
       return
     }
     const conn = this.extra.get(id)
     if (conn) {
       conn.dispose()
       this.extra.delete(id)
+      this.recomputeConnected()
     }
   }
 
@@ -837,13 +871,14 @@ export class MultiSSEManager implements WSConnection {
 
   onConnectionChange = (handler: Handler<boolean>): (() => void) => {
     this.connHandlers.add(handler)
-    // Only route the primary connection's state to consumers.
-    // Extra connections (per-panel SSE) should not trigger global UI
-    // disconnect/reconnect overlays — only the primary matters.
-    const unsubPrimary = this.primary.onConnectionChange(handler)
+    // Fire immediately with the current aggregate state so the new subscriber
+    // doesn't have to wait for the next state change to sync.
+    handler(this.aggregateConnected)
+    // No per-connection subscription needed — the constructor and
+    // addSubscription already subscribe to recomputeConnected, which fires
+    // all connHandlers when the aggregate state changes.
     return () => {
       this.connHandlers.delete(handler)
-      unsubPrimary()
     }
   }
 

@@ -3325,6 +3325,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		// fall through to Run() with the objective as the user message.
 		if out != nil && out.Metadata != nil && out.Metadata["goal_start"] != "" {
 			msg.Content = out.Metadata["goal_start"]
+			// Push a progress event carrying the goal so the frontend can
+			// display the GoalBanner immediately (before the first Run
+			// iteration's refreshStructuredTodos).
+			a.emitGoalProgress(msg.Channel, msg.ChatID)
 			// fall through to Run
 		} else {
 			return out, nil
@@ -4038,6 +4042,42 @@ func (a *Agent) emitBuiltinProgress(chName, chatID string, phase ProgressPhase) 
 	// Store snapshot for mid-session reconnect
 	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 	a.clearStreamState(progressKey)
+}
+
+// emitGoalProgress pushes a lightweight progress event carrying the current goal
+// state. Called after /goal command or set_goal RPC so the frontend can display
+// the GoalBanner immediately — before the first Run iteration's
+// refreshStructuredTodos injects goal into normal progress events.
+func (a *Agent) emitGoalProgress(chName, chatID string) {
+	if a.goalManager == nil {
+		return
+	}
+	progressKey := qualifyChatID(chName, chatID)
+	goal := a.goalManager.GoalInfo(progressKey)
+	if goal == nil {
+		return
+	}
+	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
+	seq := seqPtr.(*atomic.Uint64).Add(1)
+	payload := &protocol.ProgressEvent{
+		ChatID:    progressKey,
+		Phase:     "",
+		Seq:       seq,
+		TurnID:    a.getActiveTurnID(progressKey),
+		Iteration: 0,
+		Todos:     a.GetTodos(chName, chatID),
+		Goal:      goal,
+	}
+	if a.channelRange != nil {
+		a.channelRange(func(_ string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.ProgressSender); ok {
+				sender.SendProgress(chatID, cloneProgressEvent(payload))
+			}
+			return true
+		})
+	}
+	// Update snapshot so GetActiveProgress also returns the goal.
+	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 }
 
 // emitBuiltinProgressDone sends a PhaseDone progress event and cleans up the snapshot.

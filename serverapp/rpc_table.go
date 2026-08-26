@@ -1751,6 +1751,62 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return h.Ag.GetTodos(channelName, chatID), nil
 	})
 
+	t["get_goal"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		return h.Ag.GetGoal(channelName, chatID), nil
+	})
+
+	t["set_goal"] = rpc1(func(ctx context.Context, p struct {
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		Objective string `json:"objective"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(p.Objective) == "" {
+			return nil, fmt.Errorf("objective must not be empty")
+		}
+		h.Ag.SetGoal(channelName, chatID, p.Objective)
+		return map[string]any{"ok": true}, nil
+	})
+
+	t["clear_goal"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		h.Ag.ClearGoal(channelName, chatID)
+		return map[string]any{"ok": true}, nil
+	})
+
+	// render_check_result: called by the web frontend after compiling TSX code
+	// (sucrase). The ChannelToolBridge.Execute sends ui_code to the frontend
+	// via SendFunc with render_check=true metadata, then blocks on WaitRenderCheck.
+	// The frontend compiles the code and calls this RPC to report success/failure.
+	// Generic — any plugin can use render_check=true in its tool result.
+	t["render_check_result"] = rpc1(func(ctx context.Context, p struct {
+		CheckID string `json:"check_id"`
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}) (any, error) {
+		plugin.ResolveRenderCheck(p.CheckID, plugin.RenderCheckResult{
+			Success: p.Success,
+			Error:   p.Error,
+		})
+		return map[string]any{"ok": true}, nil
+	})
+
 	// llm_dump_reqs: toggle dumping EVERY /chat/completions request body to
 	// ~/.xbot/llm_dumps/ (web DebugToolbar "Dump LLM Reqs" button). Pass
 	// {"enabled": bool} to set; omit to just read the current state.

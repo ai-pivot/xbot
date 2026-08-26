@@ -17,11 +17,15 @@ LLM 生成 TSX
   → 完整：Execute 里 ctx.SendFunc(channel, chatID, code, {genui:true})
           → WS "genui" 消息
   → 前端：useProgressStream 'genui' case → store.setGenUIContent
-          LiveIteration 渲染 streaming GenUIBlock
-          AssistantMessage/FoldedToolGroup/ToolRender 从 iterations 提取
-          display_html 工具 → GenUIBlock（永不折叠）
-  → 交互：data-action 点击 → ws.rpc('genui_action') → InjectAsyncMessage
-          → agent loop（busy=合成 tool result，idle=新 turn）
+          LiveIteration 渲染 streaming <SandboxedUI streaming>（GenUIBlock 已删除）
+          TurnBody/FoldedToolGroup/ToolRender 从 iterations 提取
+          display_html 工具 → ToolRender → renderTool 派发 → 插件 renderer → SandboxedUI
+  → 交互：⚠️ data-action 点击链路已断——前端 genui_action 调用点已随 GenUIBlock
+          删除（web/src 中 0 处引用）；后端 genui_action handler 仍在
+          （serverapp/rpc_table.go registerGenUIHandlers → InjectAsyncMessage，
+          busy=合成 tool result，idle=新 turn）。SandboxedUI 支持 onAction prop，
+          但 genui renderer（plugins/genui/index.tsx）与 LiveIteration 均未传入。
+          插件 web UI 组件走 web_ui_action（plugins/api.ts sendWebUIAction）仍然可用。
 ```
 
 ### 1.2 关键文件
@@ -32,12 +36,12 @@ LLM 生成 TSX
 | 流式 | `agent/engine_wire.go:2088-2144` | `streamToolCallFunc` 提取部分 code → `GenUIContent` |
 | 协议 | `protocol/events.go:101-103` | `GenUIContent` progress 字段 |
 | 协议 | `protocol/ws.go:25` | `MsgTypeGenUI = "genui"` |
-| RPC | `serverapp/rpc_table.go:405-425` | `genui_action` → agent loop |
-| RPC | `serverapp/rpc_table.go:431-473` | `web_ui_action` → channel plugin → native → agent loop |
-| 前端 | `web/src/components/agent/GenUIBlock.tsx` | iframe 沙箱编译 TSX + 独立 React root + 缓存 + ResizeObserver |
-| 前端 | `web/src/components/agent/LiveIteration.tsx` | streaming GenUI 渲染 |
-| 前端 | `web/src/components/agent/AssistantMessage.tsx` / `FoldedToolGroup.tsx` / `ToolRender.tsx` | 从工具列表提取 display_html → GenUIBlock |
-| 前端 | `web/src/plugins/SandboxedUI.tsx` | 插件自由代码的泛化沙箱（GenUIBlock 的泛化版） |
+| RPC | `serverapp/rpc_table.go:489-509` | `genui_action`（registerGenUIHandlers）→ agent loop；⚠️ 前端无调用点 |
+| RPC | `serverapp/rpc_table.go:515-557` | `web_ui_action` → channel plugin → native → agent loop |
+| 前端 | `web/src/plugins/SandboxedUI.tsx` | 泛化沙箱：sucrase 编译 TSX + 独立 React root（inline，非 iframe）+ 编译缓存 + UIErrorBoundary + data-action 委托（GenUIBlock 已删除，由它取代） |
+| 前端 | `web/src/components/agent/LiveIteration.tsx:261` | streaming GenUI 渲染（`<SandboxedUI code={genuiContent} streaming>`，无 onAction） |
+| 前端 | `web/src/components/agent/TurnBody.tsx` / `FoldedToolGroup.tsx` / `ToolRender.tsx:138` | 从工具列表提取 uiMode 工具 → `renderTool(tool, {chatID:''})` 派发（无 onAction，chatID 为空占位） |
+| 前端 | `web/src/plugins/genui/index.tsx` | genui messageRenderer（matches uiMode='genui' + tool='display_html'）→ `SandboxedUI({code, streaming:false})`（无 onAction/onError） |
 | 安全 | `web/e2e/genui-escape.spec.ts` | 沙箱逃逸 E2E |
 | 样式 | `web/src/genui-safelist.html` | Tailwind v4 safelist（75242 字符，全色彩/间距/布局） |
 

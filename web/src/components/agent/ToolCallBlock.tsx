@@ -102,7 +102,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       )}
       {!args && !detail && summary && (
         <pre
-          className="whitespace-pre-wrap rounded-md px-2.5 py-1.5 text-text-secondary"
+          className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md px-2.5 py-1.5 text-text-secondary"
           style={{ backgroundColor: 'var(--bg-secondary)' }}
         >
           {summary}

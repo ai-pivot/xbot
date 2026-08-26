@@ -1,19 +1,23 @@
 /**
  * MessageInput — the Agent panel composer (Spec C §1.1).
  *
- * Redesigned with a VSCode-style compact layout:
- *   - Inset TODO-only toolbar above the input when tasks exist
- *   - Single rounded container holding: attachment chips, textarea, inline buttons
- *   - Textarea defaults to two rows height, auto-grows to max 200px
- *   - Attach button (left) + Send/Cancel button (right) inside the container
+ * Redesigned with a tiptap WYSIWYG editor:
+ *   - Markdown shortcuts (typing **bold**, `code`, - lists, > quotes)
+ *   - Code blocks with syntax highlighting
+ *   - Tab completion (/ commands, @ file paths) via useCompletion
+ *   - Configurable send key (Enter or Ctrl+Enter)
+ *   - File-attach button + goal mode + cancel button
+ *   - Draft persistence (localStorage, markdown serialized)
  *
- * Multi-line textarea (send key configurable via Settings), a file-attach button (uploads
- * via POST /api/files/upload and stashes the returned key to attach to the next
- * message), and a cancel button shown while the agent is busy (sends a WS
- * `cancel`). Pending uploads show as chips inside the container.
+ * The editor outputs markdown (via tiptap-markdown), so onSend still receives
+ * a plain string — zero interface change for downstream consumers.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Loader2, Paperclip, Send, Square, X } from 'lucide-react'
+import { useEditor, EditorContent } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
+import { Placeholder } from '@tiptap/extension-placeholder'
+import { Markdown } from 'tiptap-markdown'
+import { Loader2, Paperclip, Send, Square, Target, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -25,9 +29,11 @@ import type { Attachments } from '@/hooks/useChatMessages'
 import { cn } from '@/lib/utils'
 import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
+import { GoalBanner } from './GoalBanner'
 import { CompletionPopup } from './CompletionPopup'
-import { useCompletion } from '@/hooks/useCompletion'
+import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
+import type { GoalInfo } from '@/types/shared'
 
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
@@ -51,6 +57,12 @@ interface MessageInputProps {
   }>
   /** TODO state from the progress snapshot; null hides the inset TODO toolbar. */
   todoState?: TodoState | null
+  /** Active goal from the progress snapshot; null hides the goal banner. */
+  goal?: GoalInfo | null
+  /** Edit the goal objective (direct RPC, does not trigger a Run). */
+  onSetGoal?: (objective: string) => void
+  /** Clear the active goal. */
+  onClearGoal?: () => void
   /** Controls rendered immediately before the send/cancel button. */
   trailingControls?: ReactNode
   draft?: string
@@ -66,99 +78,139 @@ interface PendingAttachment {
   mime: string
 }
 
-export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+/** Module-level editor instance ref for test access. */
+let __testEditor: import('@tiptap/react').Editor | null = null
+
+export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
   const { mode: sendKeyMode } = useSendKeyMode()
+  const [goalMode, setGoalMode] = useState(false)
+  const [addingGoal, setAddingGoal] = useState(false)
+  const [goalDraft, setGoalDraft] = useState('')
   const draftStorageKey = sessionKey ? `xbot:draft:${sessionKey}` : null
-  const [value, setValue] = useState(() => {
+  const [pending, setPending] = useState<PendingAttachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const [hasContent, setHasContent] = useState(false)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  // Refs for stable callbacks inside editor's handleKeyDown (avoids stale closures)
+  const completionHandlerRef = useRef<(e: CompletionKeyEvent) => boolean>(() => false)
+  const submitRef = useRef<() => void>(() => {})
+  const sendKeyModeRef = useRef(sendKeyMode)
+  sendKeyModeRef.current = sendKeyMode
+
+  // Dynamic placeholder text (updates with goalMode/sendKeyMode)
+  const placeholderText = goalMode
+    ? '🎯 输入目标描述，发送后将设为 Goal 并开始执行...'
+    : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')
+  const placeholderRef = useRef(placeholderText)
+  placeholderRef.current = placeholderText
+
+  // Initial content (from draft prop or localStorage — computed once)
+  const [initialContent] = useState(() => {
     if (draft !== undefined) return draft
     if (draftStorageKey) {
       try {
-        const saved = localStorage.getItem(draftStorageKey)
-        if (saved) return saved
+        return localStorage.getItem(draftStorageKey) ?? ''
       } catch { /* ignore */ }
     }
     return ''
   })
-  const [pending, setPending] = useState<PendingAttachment[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [focused, setFocused] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const completion = useCompletion({ value, setValue, textareaRef, ws, cwd })
+  // Draft save debounce timer
+  const saveDraftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
-  // Persist draft to localStorage so input survives refresh / session switch.
-  useEffect(() => {
-    if (!draftStorageKey) return
-    try {
-      if (value) localStorage.setItem(draftStorageKey, value)
-      else localStorage.removeItem(draftStorageKey)
-    } catch { /* ignore */ }
-  }, [value, draftStorageKey])
-
-  // Auto-grow the textarea up to a max height.
-  const resize = useCallback(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
-  }, [])
-
-  // Bridge: let the file explorer inject a file path into this input.
-  // Appends the text on a new line (if non-empty) and focuses the textarea.
-  useEffect(() => {
-    const insertHandler = (text: string) => {
-      setValue((prev) => {
-        if (!prev) return text
-        return prev.endsWith('\n') ? prev + text : prev + '\n' + text
-      })
-      scheduleTextareaResize(() => {
-        resize()
-        const el = textareaRef.current
-        if (el) {
-          el.focus()
-          // Move caret to end so the user can keep typing.
-          const len = el.value.length
-          el.setSelectionRange(len, len)
+  // --- tiptap editor ---
+  const editor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: false,
+        horizontalRule: false,
+      }),
+      Placeholder.configure({
+        placeholder: () => placeholderRef.current,
+      }),
+      Markdown.configure({
+        html: false,
+        tightLists: true,
+        linkify: false,
+        breaks: true,
+      }),
+    ],
+    content: initialContent,
+    editorProps: {
+      attributes: {
+        class: 'xbot-editor',
+        'aria-label': 'Message input',
+      },
+      handleKeyDown: (_view, event) => {
+        // Don't trigger during IME composition
+        if (event.isComposing) return false
+        // 1. Completion first (ArrowUp/Down, Tab, Escape, Enter for file completion)
+        if (completionHandlerRef.current(event)) return true
+        // 2. Send key (Enter or Ctrl+Enter depending on settings)
+        if (isSendKey(event, sendKeyModeRef.current)) {
+          event.preventDefault()
+          submitRef.current()
+          return true
         }
-      })
-    }
-    setChatInsertHandler(insertHandler)
-    return () => setChatInsertHandler(null)
-  }, [resize])
+        return false
+      },
+    },
+    onUpdate: ({ editor }) => {
+      setHasContent(!editor.isEmpty)
+      // Debounced draft save
+      if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
+      saveDraftTimerRef.current = setTimeout(() => {
+        if (!draftStorageKey) return
+        try {
+          const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
+          if (md) localStorage.setItem(draftStorageKey, md)
+          else localStorage.removeItem(draftStorageKey)
+        } catch { /* ignore */ }
+      }, 300)
+    },
+    onFocus: () => setFocused(true),
+    onBlur: () => setFocused(false),
+  })
 
+  // Expose editor for test access
   useEffect(() => {
-    if (draft === undefined) return
-    setValue(draft)
-    onDraftConsumed?.()
-    return scheduleTextareaResize(() => {
-      resize()
-      textareaRef.current?.focus()
-    })
-  }, [draft, onDraftConsumed, resize])
+    __testEditor = editor
+    return () => { __testEditor = null }
+  }, [editor])
 
+  // --- Completion (wired to tiptap editor) ---
+  const completion = useCompletion({ editor, ws, cwd })
+  completionHandlerRef.current = completion.handleKeyDown
+
+  // --- Get markdown text from editor ---
+  const getText = useCallback(() => {
+    if (!editor) return ''
+    return (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.()?.trim() ?? editor.getText().trim()
+  }, [editor])
+
+  // --- Submit ---
   const submit = useCallback(() => {
-    const text = value.trim()
+    if (!editor) return
+    const text = getText()
     if (!text && pending.length === 0) return
     if (text === '/rewind' && pending.length === 0 && onRewindLatest) {
       if (!busy) onRewindLatest()
-      setValue('')
-      scheduleTextareaResize(resize)
+      editor.commands.clearContent()
       return
     }
     if (text === '/cancel' && pending.length === 0) {
       if (busy) onCancel()
-      setValue('')
-      scheduleTextareaResize(resize)
+      editor.commands.clearContent()
       return
     }
     if (text === '/tasks' && pending.length === 0 && onOpenTasks) {
       onOpenTasks()
-      setValue('')
-      scheduleTextareaResize(resize)
+      editor.commands.clearContent()
       return
     }
     if (busy && text === '/new' && pending.length === 0) {
@@ -173,21 +225,57 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           fileMimes: pending.map((p) => p.mime),
         }
       : undefined
-    onSend(text, attachments)
-    setValue('')
+    // When goalMode is on, send as /goal command (sets goal + starts working).
+    const content = goalMode ? `/goal ${text}` : text
+    onSend(content, attachments)
+    setGoalMode(false)
+    editor.commands.clearContent()
     setPending([])
-    scheduleTextareaResize(resize)
-  }, [busy, value, pending, onCancel, onRewindLatest, onOpenTasks, onSend, resize])
+  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, t])
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Let completion handle navigation keys first
-    if (completion.handleKeyDown(e)) return
-    if (isSendKey(e, sendKeyMode)) {
-      e.preventDefault()
-      submit()
+  // Update submit ref (so handleKeyDown always calls the latest submit)
+  submitRef.current = submit
+
+  // --- Draft prop changes (external session switch) ---
+  useEffect(() => {
+    if (draft === undefined || !editor) return
+    editor.commands.setContent(draft)
+    onDraftConsumed?.()
+  }, [draft, onDraftConsumed, editor])
+
+  // --- chatInputBridge: let file explorer inject text ---
+  useEffect(() => {
+    if (!editor) return
+    const insertHandler = (text: string) => {
+      const currentText = editor.getText()
+      const sep = (!currentText || currentText.endsWith('\n')) ? '' : '\n'
+      editor.chain().focus('end').insertContent(sep + text).run()
     }
-  }
+    setChatInsertHandler(insertHandler)
+    return () => setChatInsertHandler(null)
+  }, [editor])
 
+  // --- Update placeholder when goalMode changes ---
+  useEffect(() => {
+    if (!editor) return
+    const ext = editor.extensionManager.extensions.find(e => e.name === 'placeholder')
+    if (ext) {
+      ext.options.placeholder = placeholderText
+    }
+    // Force placeholder re-evaluation if editor is empty
+    if (editor.isEmpty) {
+      editor.view.dispatch(editor.view.state.tr)
+    }
+  }, [placeholderText, editor])
+
+  // --- Cleanup draft timer on unmount ---
+  useEffect(() => {
+    return () => {
+      if (saveDraftTimerRef.current) clearTimeout(saveDraftTimerRef.current)
+    }
+  }, [])
+
+  // --- File upload ---
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
@@ -213,25 +301,59 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     [onUpload, t],
   )
 
-  const canSend = value.trim().length > 0 || pending.length > 0
+  const canSend = hasContent || pending.length > 0
 
   return (
     <div className="border-t border-border bg-bg-primary px-3 py-2.5">
-      {/* No bottom safe-area padding here: the InfoBar below (MobileAppShell)
-       *  owns the safe-area strip. Keeping this at plain py-2.5 keeps the
-       *  input box clear of the iPhone's rounded bottom corners. */}
-      {todoState ? <TodoPullOut todoState={todoState} /> : null}
+      {goal ? <GoalBanner goal={goal} onEdit={onSetGoal ?? (() => {})} onClear={onClearGoal ?? (() => {})} /> : null}
+      {addingGoal && (
+        <div className="mx-2 mb-1.5 flex items-center gap-2 rounded-md border border-accent/30 bg-accent/5 px-2.5 py-1.5">
+          <Target className="size-3.5 shrink-0 text-accent" />
+          <input
+            autoFocus
+            value={goalDraft}
+            onChange={(e) => setGoalDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing && goalDraft.trim()) {
+                e.preventDefault()
+                onSetGoal?.(goalDraft.trim())
+                setGoalDraft('')
+                setAddingGoal(false)
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setGoalDraft('')
+                setAddingGoal(false)
+              }
+            }}
+            onBlur={() => {
+              if (goalDraft.trim()) {
+                onSetGoal?.(goalDraft.trim())
+              }
+              setGoalDraft('')
+              setAddingGoal(false)
+            }}
+            className="min-w-0 flex-1 bg-transparent px-1 text-xs text-text-primary outline-none ring-1 ring-accent/40 rounded"
+            placeholder="输入目标..."
+          />
+          <span className="shrink-0 text-[10px] text-text-muted">Enter 保存 · Esc 取消</span>
+        </div>
+      )}
+      {todoState ? <TodoPullOut todoState={todoState} hasGoal={!!goal || addingGoal} onSetGoal={onSetGoal ? () => {
+        setAddingGoal(true)
+      } : undefined} /> : null}
 
-      {/* Input container — single rounded box with chips, textarea, and inline buttons */}
+      {/* Input container — single rounded box with chips, editor, and inline buttons */}
       <div
         className={cn(
           'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
-          focused
-            ? 'border-accent ring-1 ring-accent/30'
-            : 'border-border',
+          goalMode
+            ? 'border-accent/50 ring-1 ring-accent/20'
+            : focused
+              ? 'border-accent ring-1 ring-accent/30'
+              : 'border-border',
         )}
       >
-        {/* Attachment chips (inside container, above textarea) */}
+        {/* Attachment chips (inside container, above editor) */}
         {pending.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
             {pending.map((p, i) => (
@@ -254,7 +376,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           </div>
         )}
 
-        {/* Textarea */}
+        {/* tiptap WYSIWYG editor */}
         <div className="relative">
           <CompletionPopup
             candidates={completion.candidates}
@@ -263,27 +385,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             triggerType={completion.triggerType}
             onSelect={completion.completeCandidate}
           />
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={(e) => {
-              setValue(e.target.value)
-              resize()
-            }}
-            onKeyDown={onKeyDown}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            rows={2}
-            placeholder={t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')}
-            className={cn(
-              'max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-0 py-1',
-              'text-sm text-text-primary placeholder:text-text-muted',
-              'focus:outline-none',
-            )}
-          />
+          <EditorContent editor={editor} />
         </div>
 
-        {/* Bottom row: attach button (left) + send/cancel button (right) */}
+        {/* Bottom row: attach button (left) + goal toggle + send/cancel button (right) */}
         <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
           <div className="flex items-center gap-1">
             <input
@@ -307,6 +412,23 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             >
               {uploading ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
             </Button>
+            {/* Goal toggle button — when active, message is sent as /goal */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="设为目标模式"
+              onClick={() => setGoalMode((v) => !v)}
+              className={cn(
+                'size-9 rounded-md transition-all',
+                goalMode
+                  ? 'bg-accent/15 text-accent ring-1 ring-accent/40 shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]'
+                  : 'text-text-muted hover:text-text-primary',
+              )}
+              title={goalMode ? '目标模式已开启（发送后将设为 Goal）' : '开启目标模式'}
+            >
+              <Target className={cn('size-4', goalMode && 'animate-pulse [animation-duration:2s]')} />
+            </Button>
           </div>
 
           <div className="flex min-w-0 items-center gap-1">
@@ -327,15 +449,18 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               <Button
                 type="button"
                 size="icon-sm"
-                aria-label={t('agent.send')}
+                aria-label={goalMode ? '设为目标' : t('agent.send')}
                 disabled={!canSend}
                 onClick={submit}
                 className={cn(
-                  'size-9 rounded-md bg-accent text-accent-foreground',
+                  'size-9 rounded-md transition-all',
+                  goalMode
+                    ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'
+                    : 'bg-accent text-accent-foreground',
                   !canSend && 'opacity-40',
                 )}
               >
-                <Send className="size-4" />
+                {goalMode ? <Target className="size-4" /> : <Send className="size-4" />}
               </Button>
             )}
           </div>
@@ -345,31 +470,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   )
 }
 
-function scheduleTextareaResize(fn: () => void): () => void {
-  let cancelled = false
-  const timers: number[] = []
-  const run = () => {
-    if (!cancelled) fn()
-  }
-  run()
-  let raf = requestAnimationFrame(() => {
-    run()
-    raf = requestAnimationFrame(() => {
-      run()
-      raf = requestAnimationFrame(run)
-      timers.push(raf)
-    })
-    timers.push(raf)
-  })
-  timers.push(raf)
-  for (const delay of [80, 180]) {
-    timers.push(window.setTimeout(run, delay))
-  }
-  return () => {
-    cancelled = true
-    for (const id of timers) {
-      cancelAnimationFrame(id)
-      clearTimeout(id)
-    }
-  }
+/** Test-only: get the current tiptap editor instance for integration tests. */
+export function __getTestEditor() {
+  return __testEditor
 }

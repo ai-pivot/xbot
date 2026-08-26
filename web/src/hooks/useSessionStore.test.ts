@@ -692,6 +692,57 @@ describe('normalizeSessionTree', () => {
     ])
   })
 
+  it('keeps options when a question has no question text (only allow_other + options)', async () => {
+    // Real incident: the LLM emitted a question with NO `question` field but
+    // `allow_other` + a list of options. The old parse layer did
+    // `if (!question) continue`, dropping the whole question — the options
+    // vanished from the panel. A question with options must survive even when
+    // the prompt text is empty (the panel renders options and skips the title).
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: '/repo',
+              channel: 'cli',
+              label: 'repo',
+              last_active: '2026-07-08T00:00:00Z',
+              is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'cli',
+        chat_id: '/repo',
+        progress: {
+          request_id: 'request-no-question',
+          questions: [
+            { allow_other: true, options: ['Fix A+B', 'Fix A only', 'No change yet'] },
+          ],
+        },
+      })
+    })
+
+    const prompt = result.current.askUserPrompts.get('cli:/repo')
+    expect(prompt?.questions).toEqual([
+      { question: '', options: ['Fix A+B', 'Fix A only', 'No change yet'], multiSelect: false, allowOther: true },
+    ])
+  })
+
   it('sends the selected channel when renaming and deleting matching chat IDs', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input)

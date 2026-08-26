@@ -160,19 +160,51 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
     const mgr = tabManagerRef.current
     mgr.bindApi(api)
 
+    // Track active panel changes: when an agent tab becomes active, update
+    // store.activeSession so the sidebar highlight + terminal/context-ring
+    // follow the active tab. This replaces the old model where the single
+    // agent tab followed activeSession — now each tab carries its own session.
+    const offActiveChange = api.onDidActivePanelChange((e) => {
+      if (!e.panel) return
+      const params = e.panel.params as PanelParams | undefined
+      if (!params || params.type !== 'agent') return
+      // Only update for main agent tabs (not SubAgent tabs — those have their
+      // own parentChatID and don't represent a main session).
+      if (params.subAgentRole || params.agentChatID) return
+      if (params.sessionId) {
+        ctxRef.current.sessionStore.activateSession(params.sessionId, params.channel ?? 'web')
+      }
+    })
+
     if (!seededRef.current) {
       seededRef.current = true
-      // Seed the always-present Agent tab (not closable).
-      mgr.openTab({
-        type: 'agent',
-        title: 'Agent',
-        icon: 'bot',
-        closable: false,
-      })
+      // Seed with the last active session (from localStorage) if available;
+      // otherwise a blank "Agent" tab (AgentPanel shows empty state).
+      const activeSession = ctxRef.current.sessionStore.activeSession
+      if (activeSession?.chatID) {
+        mgr.openTab({
+          type: 'agent',
+          title: activeSession.chatID,
+          icon: 'bot',
+          closable: true,
+          data: {
+            filePath: activeSession.chatID,
+            channel: activeSession.channel ?? 'web',
+          },
+        })
+      } else {
+        mgr.openTab({
+          type: 'agent',
+          title: 'Agent',
+          icon: 'bot',
+          closable: true,
+        })
+      }
       onReady?.()
     }
 
     return () => {
+      offActiveChange.dispose()
       tabManagerRef.current.bindApi(null)
       apiRef.current = null
       try { dockview.dispose() } catch { /* ignore */ }

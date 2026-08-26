@@ -469,6 +469,9 @@ func (a *Agent) buildMainRunConfig(
 		cfg.TodoManager = &todoManagerAdapter{mgr: a.todoManager}
 	}
 
+	// GoalManager — 目标注入 progress events
+	cfg.GoalManager = a.goalManager
+
 	// InteractiveCallbacks — interactive SubAgent 支持
 	cfg.InteractiveCallbacks = &InteractiveCallbacks{
 		SpawnFn: func(ctx context.Context, roleName string, msg bus.InboundMessage) (*channelpkg.OutboundMsg, error) {
@@ -1909,6 +1912,7 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 	for i, td := range s.Todos {
 		payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
 	}
+	payload.Goal = s.Goal
 	if s.TokenUsage != nil {
 		payload.TokenUsage = &protocol.TokenUsage{
 			PromptTokens: s.TokenUsage.PromptTokens, CompletionTokens: s.TokenUsage.CompletionTokens,

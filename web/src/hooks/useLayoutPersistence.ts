@@ -1,24 +1,20 @@
 /**
- * useLayoutPersistence — saves and restores the workspace tab layout per
- * chatID in localStorage (Child 5 §3).
+ * useLayoutPersistence — saves and restores the workspace tab layout.
  *
- * When the active session changes:
- *   1. Serialize the current tab list (excluding the always-present Agent tab)
- *      to localStorage keyed by `xbot-layout:<chatID>`.
- *   2. Close all closable tabs.
- *   3. Restore the saved tab list for the new session (re-open file/terminal tabs).
+ * **v2 (session-per-tab architecture)**: The per-session save/restore on
+ * activeSession change is DISABLED. In the new architecture, switching tabs
+ * changes activeSession (via activateSession in onDidActivePanelChange) —
+ * triggering per-session layout save/restore would clear ALL agent tabs
+ * (applyLayoutJSON replaces the entire dockview layout). Agent tabs are now
+ * persistent (each carries its own session); work tabs (file/terminal) are
+ * global (not per-session). Layout persistence is a future enhancement
+ * (global save/restore on page load/unload).
  *
- * The Agent tab is never closed or saved — it's always present and follows
- * the active session. Terminal tabs are saved but may need reconnection
- * after restore (the terminal store handles this via restoreFromBackend).
- *
- * Layout state per chatID:
- *   { tabs: [{type, title, icon, closable, ...data}], activeTabId: string }
+ * The loadLayout/saveLayout/restoreLayout utilities are kept for future use.
  */
 import { useEffect, useRef } from 'react'
 import { filterTerminalPanels, tabLogicalKey, type TabManager } from '@/hooks/useTabManager'
 import type { useSessionStore } from '@/hooks/useSessionStore'
-import { sessionKey } from '@/lib/session-grouping'
 
 /** Serializable tab info — a subset of Tab that survives JSON round-trip. */
 interface LayoutState {
@@ -32,7 +28,7 @@ function layoutKey(chatID: string): string {
   return `xbot-layout:${chatID}`
 }
 
-function saveLayout(chatID: string, tabManager: TabManager, activeKey: string | null): void {
+export function saveLayout(chatID: string, tabManager: TabManager, activeKey: string | null): void {
   try {
     // 完整 dockview 布局序列化（保留 group 分割/多实例 grid），filter terminal
     //（后端 PTY 禁用时跳过 terminal tab）。agent 常驻 tab 完整保留（无 sessionId，
@@ -99,7 +95,7 @@ function isRestorableLayout(layout: unknown): boolean {
  * plugin views + file tabs). The常驻 agent tab survives the fromJSON round-trip
  * because it carries no sessionId (AgentPanel reads activeSession dynamically).
  */
-function restoreLayout(tabManager: TabManager, layout: LayoutState): void {
+export function restoreLayout(tabManager: TabManager, layout: LayoutState): void {
   tabManager.applyLayoutJSON(layout.layout)
   // 恢复激活的 closable tab（fromJSON 恢复 active group，但精确激活 tab 需 setActive）。
   const activeKey = layout.activeKey ?? null
@@ -109,44 +105,48 @@ function restoreLayout(tabManager: TabManager, layout: LayoutState): void {
   }
 }
 
+const GLOBAL_LAYOUT_KEY = 'xbot-layout:global'
+
+/**
+ * v2 layout persistence: global save/restore (not per-session).
+ *
+ * On page load: restore the saved dockview layout (all tabs — agent tabs
+ * carry their own sessionId, so they're recreated with the correct session).
+ * On page unload: save the full layout to localStorage.
+ */
 export function useLayoutPersistence(
   tabManager: TabManager,
-  sessionStore: ReturnType<typeof useSessionStore>,
+  _sessionStore: ReturnType<typeof useSessionStore>,
 ): void {
-  const prevChatIDRef = useRef<string | null>(null)
   const tabManagerRef = useRef(tabManager)
   tabManagerRef.current = tabManager
 
+  // Restore global layout on mount (page load).
   useEffect(() => {
-    const currentChatID = sessionStore.activeSession ? sessionKey(sessionStore.activeSession) : null
-    const prevChatID = prevChatIDRef.current
-
-    if (currentChatID === prevChatID) return
-
-    // Save layout for the previous session.
-    if (prevChatID) {
-      const mgr = tabManagerRef.current
-      const activeTab = mgr.tabs.find((tab) => tab.id === mgr.activeTabId)
-      const activeKey = activeTab?.closable ? tabLogicalKey(activeTab) : null
-      saveLayout(prevChatID, mgr, activeKey)
+    try {
+      const raw = localStorage.getItem(GLOBAL_LAYOUT_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      if (!parsed?.layout || !isRestorableLayout(parsed.layout)) return
+      tabManagerRef.current.applyLayoutJSON(parsed.layout)
+    } catch {
+      /* non-fatal — fall back to seed tab */
     }
+  }, [])
 
-    // Restore layout for the new session.
-    if (currentChatID) {
-      const layout = loadLayout(currentChatID)
-      if (layout && layout.layout) {
-        restoreLayout(tabManagerRef.current, layout)
-      } else {
-        // No saved layout — close all closable tabs (fresh session).
-        const mgr = tabManagerRef.current
-        const closable = mgr.tabs.filter((t) => t.closable)
-        for (const t of closable) {
-          mgr.closeTab(t.id)
-        }
-        mgr.resetWorkGroup()
+  // Save global layout on page unload.
+  useEffect(() => {
+    const handler = () => {
+      try {
+        const layout = filterTerminalPanels(tabManagerRef.current.getLayoutJSON())
+        if (!layout) return
+        stripDiffContents(layout as { panels?: Record<string, { params?: Record<string, unknown> }> })
+        localStorage.setItem(GLOBAL_LAYOUT_KEY, JSON.stringify({ layout }))
+      } catch {
+        /* non-fatal */
       }
     }
-
-    prevChatIDRef.current = currentChatID
-  }, [sessionStore.activeSession, tabManager])
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [])
 }

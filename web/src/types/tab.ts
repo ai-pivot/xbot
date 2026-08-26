@@ -14,6 +14,8 @@ export interface PanelParams {
   /** Lucide icon name resolved by the TabHeader. */
   icon?: string
   sessionId?: string
+  /** Session channel for agent tabs (web/cli/feishu/...). */
+  channel?: string
   filePath?: string
   /** Frontend terminal id (TerminalSession.id) for terminal tabs. */
   terminalId?: string

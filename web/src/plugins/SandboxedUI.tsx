@@ -37,8 +37,8 @@ import { normalizeGeneratedTsx } from 'partial-tsx'
 // 独立插件（如 xbot-genui）通过 window.__xbot_ui__.SandboxedUI 复用这个通用
 // 渲染原语，通过 window.React 获取 React（避免独立 bundle 重复打包 React）。
 if (typeof window !== 'undefined') {
-  const w = window as unknown as { __xbot_ui__?: unknown; React?: unknown }
-  w.__xbot_ui__ = { SandboxedUI }
+  const w = window as unknown as { __xbot_ui__?: Record<string, unknown>; React?: unknown }
+  w.__xbot_ui__ = { SandboxedUI, onGenuiError: null as ((error: string, code: string) => void) | null }
   w.React = React
 }
 
@@ -164,6 +164,8 @@ export interface SandboxedUIProps {
   className?: string
   /** Streaming = the code may still be growing; compile is throttled + partial-completed. */
   streaming?: boolean
+  /** Fired when compilation fails (non-streaming, no lastGood). Use to collapse panels etc. */
+  onError?: () => void
 }
 
 export function SandboxedUI(props: SandboxedUIProps) {
@@ -205,12 +207,14 @@ function SourcedUI({ src, widgetId, className }: SandboxedUIProps) {
 }
 
 /** code mode: compile TSX + mount a separate React root INLINE (no iframe). */
-function CodeUI({ code, widgetId, onAction, className, streaming = false }: SandboxedUIProps) {
+function CodeUI({ code, widgetId, onAction, className, streaming = false, onError }: SandboxedUIProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<Root | null>(null)
   const slotRef = useRef<UISlot>({ current: null, lastGood: null })
   const [tick, setTick] = useState(0)
   const [failed, setFailed] = useState<string | null>(null)
+  const onErrorRef = useRef(onError)
+  onErrorRef.current = onError
 
   const codeRef = useRef(code)
   const timerRef = useRef<number | null>(null)
@@ -247,6 +251,8 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         .replace(/^\s*import\s+.*$/gm, '')
         .replace(/^\s*export\s+default\s+/gm, '')
         .replace(/^\s*export\s+/gm, '')
+        .replace(/\bexport\s+default\s+/g, '')
+        .replace(/\bexport\s+(?!default\b)/g, '')
       // 0-injection: only React + hooks (the JS environment). NO component library.
       //
       // ── 安全模型（inline 编译的已知取舍）────────────────────────────
@@ -268,7 +274,7 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       // 但 new Function() 不支持 export 语句（"unexpected keyword export"）。
       // 在 wrapped 之前把所有 export 语句去掉（上面已做），但 normalizeGeneratedTsx
       // 追加的 export 在 noImports 之后才出现 —— 所以在 wrapped 模板里再清一次。
-      const cleanNoImports = noImports.replace(/^\s*export\s+default\s+/gm, '').replace(/^\s*export\s+/gm, '')
+      const cleanNoImports = noImports.replace(/\bexport\s+default\s+/g, '').replace(/\bexport\s+(?!default\b)/g, '')
       const wrapped = `
         const React = arguments[0];
         const { createElement, useState, useEffect, useMemo, useRef, useCallback,
@@ -299,6 +305,9 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
       // （上次成功的组件），不会闪白。只有 final 失败且无 lastGood 才报错。
       if (!isStreaming && !slotRef.current.lastGood) {
         setFailed(e instanceof Error ? e.message : 'compile failed')
+        // Notify parent (GenUIPanel) to collapse — prevents virtual view
+        // height calculation errors when the error panel is expanded.
+        onErrorRef.current?.()
       }
       // ⚠️ streaming 编译失败时，确保 slot.current 仍指向 lastGood（上次成功的组件），
       // 而不是 null（否则 UIHost 渲染 null → 内容消失再出现）。
@@ -306,6 +315,10 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false }: Sand
         slotRef.current.current = slotRef.current.lastGood
         setTick((t) => t + 1)
       }
+      // NOTE: Do NOT inject compilation errors back into the agent conversation.
+      // The error is already shown in the UI ("⚠️ UI render error: ...").
+      // Injecting messages causes infinite loops: panel renders from history →
+      // fails → injects message → agent responds → re-renders → fails again.
     }
   }, [])
 

@@ -256,11 +256,49 @@ export class MessageStore {
     this.invalidate()
   }
 
-  /** Cancel：冻结 live（保留已渲染内容）。 */
+  /** Cancel：冻结 live（保留已渲染内容）。
+   *
+   *  In-flight tools (activeTools/completedTools/streamingTools) that are NOT
+   *  yet in iterationHistory are folded into a synthetic final iteration —
+   *  otherwise toRows' frozen branch only renders iterations (which may be
+   *  empty for the last iteration: attachIterationDelta doesn't fire for the
+   *  last iteration, and WaitingUser doesn't send PhaseDone so
+   *  recordFinalIteration doesn't fire either). The AskUser tool call is
+   *  the canonical case: it's the ONLY iteration, lives in completedTools,
+   *  and vanishes after cancel without this fold. */
   freeze(turnID: number): void {
     const slot = this.slots.get(turnID)
     if (slot?.live && !slot.live.frozen) {
-      slot.live = { ...slot.live, frozen: true }
+      const live = slot.live
+      // Fold in-flight tools into iterations so toRows renders them.
+      const inFlightTools = [
+        ...live.activeTools,
+        ...live.completedTools,
+        ...live.streamingTools,
+      ].filter((t) => t && t.name)
+      if (inFlightTools.length > 0) {
+        const maxIter = live.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+        const lastIter = live.iterations[live.iterations.length - 1]
+        // If the last iteration has no tools, fold into it; otherwise append.
+        if (lastIter && (!lastIter.tools || lastIter.tools.length === 0)) {
+          live.iterations = [
+            ...live.iterations.slice(0, -1),
+            { ...lastIter, tools: inFlightTools, toolCount: inFlightTools.length },
+          ]
+        } else {
+          live.iterations = [
+            ...live.iterations,
+            {
+              iteration: maxIter + 1,
+              content: live.content || '',
+              reasoning: live.reasoningStreamContent || '',
+              tools: inFlightTools,
+              toolCount: inFlightTools.length,
+            },
+          ]
+        }
+      }
+      slot.live = { ...live, frozen: true }
       this.invalidate()
     }
   }

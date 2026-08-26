@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom'
 import { ChevronDown, Maximize2, X } from 'lucide-react'
 
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
+import { SandboxedUI } from '@/plugins/SandboxedUI'
 import { cn } from '@/lib/utils'
 
 export interface GenUIPanelProps {
@@ -24,6 +25,10 @@ export interface GenUIPanelProps {
   fullscreen?: boolean
   /** Start open (not auto-folded). Default true. */
   defaultOpen?: boolean
+  /** Force collapsed (e.g. GenUI render error — prevents virtual view height miscalculation). */
+  forceCollapsed?: boolean
+  /** Shown in header when forceCollapsed (e.g. "⚠️ 渲染失败"). */
+  errorHint?: string
   children: ReactNode
 }
 
@@ -32,10 +37,13 @@ export const GenUIPanel = memo(function GenUIPanel({
   collapsible = true,
   fullscreen = true,
   defaultOpen = true,
+  forceCollapsed = false,
+  errorHint,
   children,
 }: GenUIPanelProps) {
   const [open, setOpen] = useState(defaultOpen)
   const [full, setFull] = useState(false)
+  const effectiveOpen = forceCollapsed ? false : open
 
   // Esc closes fullscreen + block body scroll while open.
   useEffect(() => {
@@ -57,20 +65,20 @@ export const GenUIPanel = memo(function GenUIPanel({
     <div className="genui-panel overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
       <div className="flex items-center gap-1.5 border-b border-slate-100 bg-slate-50/70 px-3 py-1.5 dark:border-slate-800 dark:bg-slate-800/50">
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-600 dark:text-slate-300">
-          {title || '生成的界面'}
+          {errorHint || title || '生成的界面'}
         </span>
-        {collapsible && (
+        {collapsible && !forceCollapsed && (
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            aria-expanded={open}
-            aria-label={open ? '折叠' : '展开'}
+            aria-expanded={effectiveOpen}
+            aria-label={effectiveOpen ? '折叠' : '展开'}
             className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
           >
-            <ChevronDown className={cn('size-3.5 transition-transform duration-200', !open && '-rotate-90')} />
+            <ChevronDown className={cn('size-3.5 transition-transform duration-200', !effectiveOpen && '-rotate-90')} />
           </button>
         )}
-        {fullscreen && (
+        {fullscreen && !forceCollapsed && (
           <button
             type="button"
             onClick={() => setFull(true)}
@@ -82,7 +90,7 @@ export const GenUIPanel = memo(function GenUIPanel({
         )}
       </div>
 
-      <AnimatedCollapse open={open} lazy={false} unmountOnClose={false}>
+      <AnimatedCollapse open={effectiveOpen} lazy={false} unmountOnClose={false}>
         <div className="max-h-[70vh] overflow-auto">{children}</div>
       </AnimatedCollapse>
 
@@ -126,5 +134,28 @@ function FullscreenOverlay({ children, onClose }: { children: ReactNode; onClose
       </div>
     </div>,
     document.body,
+  )
+}
+
+/**
+ * GenUICollapsiblePanel — wraps GenUIPanel + SandboxedUI with error state.
+ * When SandboxedUI fails to compile, the panel is force-collapsed to prevent
+ * virtual view height miscalculation (the error panel would expand but the
+ * virtual list assumes collapsed height). Error state resets when code changes.
+ */
+export function GenUICollapsiblePanel({ code, streaming, title }: { code: string; streaming?: boolean; title?: string }) {
+  const [error, setError] = useState(false)
+  useEffect(() => { setError(false) }, [code])
+  return (
+    <GenUIPanel
+      title={title}
+      collapsible
+      fullscreen
+      defaultOpen
+      forceCollapsed={error}
+      errorHint={error ? '⚠️ 渲染失败' : undefined}
+    >
+      <SandboxedUI code={code} streaming={streaming} onError={() => setError(true)} />
+    </GenUIPanel>
   )
 }

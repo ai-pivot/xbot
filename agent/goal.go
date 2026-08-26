@@ -2,11 +2,17 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"xbot/agent/hooks"
+	"xbot/protocol"
 )
 
 // GoalStatus represents the lifecycle state of a goal.
@@ -19,59 +25,214 @@ const (
 
 // Goal represents a persistent objective for a session.
 type Goal struct {
-	Objective string
-	Status    GoalStatus
-	CreatedAt time.Time
-	Summary   string // set by set_goal_complete tool
+	Objective string     `json:"objective"`
+	Status    GoalStatus `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	Summary   string     `json:"summary,omitempty"`
 }
 
 // GoalManager manages per-session goals and provides the PreTurnEnd hook
 // handler that keeps the agent running while a goal is active.
+//
+// Persistence: goals are saved to ~/.xbot/goals/<hash>.json on every mutation
+// (Set/Complete/Clear) and lazy-loaded from file on first access (Get/GoalInfo)
+// if not already in memory. This ensures goals survive server restarts.
 type GoalManager struct {
-	mu    sync.RWMutex
-	goals map[string]*Goal // key: sessionKey ("channel:chatID")
+	mu     sync.RWMutex
+	goals  map[string]*Goal // key: sessionKey ("channel:chatID")
+	loaded map[string]bool  // tracks which sessions have been loaded from file (avoids repeated file reads)
 }
 
 // NewGoalManager creates a new GoalManager.
 func NewGoalManager() *GoalManager {
 	return &GoalManager{
-		goals: make(map[string]*Goal),
+		goals:  make(map[string]*Goal),
+		loaded: make(map[string]bool),
 	}
+}
+
+// goalDir returns the base directory for goal persistence files.
+func goalDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".xbot", "goals")
+}
+
+// goalFilePath returns the file path for a given sessionKey.
+func goalFilePath(sessionKey string) string {
+	h := sha256.Sum256([]byte(sessionKey))
+	return filepath.Join(goalDir(), fmt.Sprintf("%s.json", hex.EncodeToString(h[:16])))
+}
+
+// SaveToFile persists the goal for a session to a JSON file.
+func (gm *GoalManager) SaveToFile(sessionKey string) error {
+	gm.mu.RLock()
+	g, ok := gm.goals[sessionKey]
+	gm.mu.RUnlock()
+	if !ok || g == nil {
+		// No goal — remove file if it exists
+		_ = os.Remove(goalFilePath(sessionKey))
+		return nil
+	}
+	// Deep copy to avoid holding lock during I/O
+	saved := *g
+	data, err := json.Marshal(saved)
+	if err != nil {
+		return err
+	}
+	dir := goalDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(goalFilePath(sessionKey), data, 0o600)
+}
+
+// LoadFromFile loads the goal for a session from a JSON file.
+// If the file doesn't exist, the session starts with no goal.
+func (gm *GoalManager) LoadFromFile(sessionKey string) error {
+	data, err := os.ReadFile(goalFilePath(sessionKey))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No saved goal, start fresh
+		}
+		return err
+	}
+	var g Goal
+	if err := json.Unmarshal(data, &g); err != nil {
+		return err
+	}
+	if g.Objective == "" {
+		return nil
+	}
+	gm.mu.Lock()
+	gm.goals[sessionKey] = &g
+	gm.loaded[sessionKey] = true
+	gm.mu.Unlock()
+	return nil
 }
 
 // Set creates or replaces the goal for the given session.
 func (gm *GoalManager) Set(sessionKey, objective string) {
 	gm.mu.Lock()
-	defer gm.mu.Unlock()
 	gm.goals[sessionKey] = &Goal{
 		Objective: objective,
 		Status:    GoalActive,
 		CreatedAt: time.Now(),
 	}
+	gm.mu.Unlock()
+	_ = gm.SaveToFile(sessionKey)
 }
 
-// Get returns the goal for the given session, or nil.
+// Get returns a COPY of the goal for the given session, or nil.
+// Returns a copy (not the internal pointer) to prevent concurrent
+// read/write races — Complete/GoalInfo may modify the Goal struct
+// while callers read it.
+// Lazy-loads from file if not already in memory.
 func (gm *GoalManager) Get(sessionKey string) *Goal {
 	gm.mu.RLock()
-	defer gm.mu.RUnlock()
-	return gm.goals[sessionKey]
+	g, ok := gm.goals[sessionKey]
+	gm.mu.RUnlock()
+	if ok {
+		// Return a copy to prevent data races (Complete modifies in-place).
+		copied := *g
+		return &copied
+	}
+	// Lazy load from file — hold lock for the entire load to prevent
+	// concurrent callers from racing on LoadFromFile (goroutine A marks
+	// loaded=true, releases lock, goroutine B sees loaded=true and returns nil
+	// before LoadFromFile writes to map).
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	if gm.loaded[sessionKey] {
+		// Already loaded — return whatever is in the map (nil if no goal file).
+		g, ok := gm.goals[sessionKey]
+		if !ok {
+			return nil
+		}
+		copied := *g
+		return &copied
+	}
+	gm.loaded[sessionKey] = true
+	// LoadFromFile acquires gm.mu.Lock — but we already hold it (RLock → Lock
+	// would deadlock). Instead, do the file read inline (LoadFromFile's logic).
+	gm.loadFromFileLocked(sessionKey)
+	g, ok = gm.goals[sessionKey]
+	if !ok {
+		return nil
+	}
+	copied := *g
+	return &copied
+}
+
+// loadFromFileLocked loads the goal from disk. Caller MUST hold gm.mu (write lock).
+func (gm *GoalManager) loadFromFileLocked(sessionKey string) {
+	data, err := os.ReadFile(goalFilePath(sessionKey))
+	if err != nil {
+		return // file doesn't exist or error — leave map empty
+	}
+	var g Goal
+	if json.Unmarshal(data, &g) != nil || g.Objective == "" {
+		return
+	}
+	gm.goals[sessionKey] = &g
+}
+
+// GoalInfo returns a protocol.GoalInfo snapshot for the given session, or nil.
+// Reads fields under RLock to prevent data races with Complete.
+func (gm *GoalManager) GoalInfo(sessionKey string) *protocol.GoalInfo {
+	gm.mu.RLock()
+	g, ok := gm.goals[sessionKey]
+	gm.mu.RUnlock()
+	if ok {
+		return &protocol.GoalInfo{
+			Objective: g.Objective,
+			Status:    string(g.Status),
+			Summary:   g.Summary,
+		}
+	}
+	// Lazy load — same pattern as Get but returns GoalInfo instead of Goal.
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	if gm.loaded[sessionKey] {
+		g, ok := gm.goals[sessionKey]
+		if !ok {
+			return nil
+		}
+		return &protocol.GoalInfo{
+			Objective: g.Objective,
+			Status:    string(g.Status),
+			Summary:   g.Summary,
+		}
+	}
+	gm.loaded[sessionKey] = true
+	gm.loadFromFileLocked(sessionKey)
+	g, ok = gm.goals[sessionKey]
+	if !ok {
+		return nil
+	}
+	return &protocol.GoalInfo{
+		Objective: g.Objective,
+		Status:    string(g.Status),
+		Summary:   g.Summary,
+	}
 }
 
 // Clear removes the goal for the given session.
 func (gm *GoalManager) Clear(sessionKey string) {
 	gm.mu.Lock()
-	defer gm.mu.Unlock()
 	delete(gm.goals, sessionKey)
+	gm.mu.Unlock()
+	_ = gm.SaveToFile(sessionKey) // deletes file
 }
 
 // Complete marks the goal as completed with a summary.
 func (gm *GoalManager) Complete(sessionKey, summary string) {
 	gm.mu.Lock()
-	defer gm.mu.Unlock()
 	if g, ok := gm.goals[sessionKey]; ok && g.Status == GoalActive {
 		g.Status = GoalCompleted
 		g.Summary = summary
 	}
+	gm.mu.Unlock()
+	_ = gm.SaveToFile(sessionKey)
 }
 
 // PreTurnEndHook returns a CallbackHook that injects a goal-continuation
