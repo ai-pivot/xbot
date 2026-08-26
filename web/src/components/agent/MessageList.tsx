@@ -258,8 +258,9 @@ export function MessageList({
   // ── GenUI 行高度固化（measure 一次后永久固定，禁止预测/重测）──────────────
   // TanStack 默认 measureElement 在 genui 行滚出视口（虚拟化卸载）再滚回时会重新
   // 测量独立 createRoot 的实际高度（内容不稳定）→ estimate(400)↔measure 反复震荡
-  // → 滚动跳变。此回调：genui 行首次测量后写入 genuiHeights map；estimateSize 对
-  // genui 行优先返回缓存值（已缓存则不再重测）→ 高度恒定，滚动无跳变。
+  // → 滚动跳变。genuiHeights map 缓存首次测量高度，estimateSize 优先返回缓存值
+  // 减小估算误差。但 measureElement 必须始终调用 —— 否则 GenUI 面板展开/折叠后
+  // 高度变化不被感知，下一行位置用旧高度计算 → 消息叠加覆盖。
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) return
@@ -267,22 +268,16 @@ export function MessageList({
       const row = rows[index]
       if (row && rowHasGenUI(row)) {
         const key = stableRowKey(row)
-        if (key && genuiHeights.has(key)) {
-          // ⚠️ 已缓存 → 高度已由 map 固化（estimateSize 返回该值），**跳过
-          // virtualizer.measureElement** —— 否则 TanStack 在 genui 行滚出→滚回
-          // （虚拟化卸载→重挂载）时反复 measure 该行，触发 resizeItem →
-          // shouldAdjustScrollPosition 校正 scrollTop → totalSize/scrollTop 同步突变
-          // → 滚动跳变（diag 实证：RE-DETECT 每次滚动经过都触发 + total Δ578）。
-          // 跳过 measure 后 TanStack 恒用 estimateSize 的 map 值（恒定），零跳变。
-          return
-        }
         if (key) {
-          // 首测：读实际高度写 map（固化），然后交给 TanStack 首次测量。
+          // 首测：读实际高度写 map（用于 estimateSize 初始估算）
           const rect = node.getBoundingClientRect()
           if (rect.height > 0) genuiHeights.set(key, rect.height)
         }
       }
-      // 非 genui 行 / genui 首测：交给 TanStack 默认 measureElement（ResizeObserver 观测）。
+      // 始终调用 measureElement —— 即使 genui 行已缓存高度。
+      // GenUI 面板展开/折叠会改变行高，必须让 TanStack 重新测量。
+      // shouldAdjustScrollPositionOnItemSizeChange 配置确保只有完全在视口上方的
+      // 行高度变化才会校正 scrollTop（视口内的行高度变化不触发跳转）。
       virtualizer.measureElement(node)
     },
     [rows, virtualizer.measureElement],
