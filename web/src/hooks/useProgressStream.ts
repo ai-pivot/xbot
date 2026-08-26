@@ -1669,13 +1669,13 @@ function handleProgressMessage(
           try {
             // Same transform as SandboxedUI: strip export/import, compile TSX
             const clean = code.trim()
-            const { code: js } = transform(clean, {
+            let js = transform(clean, {
               transforms: ['typescript', 'jsx'],
               jsxRuntime: 'classic',
               production: true,
-            })
-            // Strip export/import (same as SandboxedUI)
-            js
+            }).code
+            // Strip export/import (same as SandboxedUI) — must reassign, not chain
+            js = js
               .replace(/^\s*import\s+.*$/gm, '')
               .replace(/\bexport\s+default\s+/g, '')
               .replace(/\bexport\s+(?!default\b)/g, '')
