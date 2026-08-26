@@ -38,11 +38,11 @@ func NewChannelToolBridge(decl ChannelToolDecl, executor ChannelToolExecutor) *C
 	return &ChannelToolBridge{decl: decl, executor: executor}
 }
 
-func (b *ChannelToolBridge) Name() string                  { return b.decl.Name }
-func (b *ChannelToolBridge) Description() string           { return b.decl.Description }
-func (b *ChannelToolBridge) Parameters() []llm.ToolParam   { return b.decl.Parameters }
-func (b *ChannelToolBridge) UIDecl() *tools.UIDecl         { return b.decl.UI }
-func (b *ChannelToolBridge) Channels() []string            { return b.decl.Channels }
+func (b *ChannelToolBridge) Name() string                { return b.decl.Name }
+func (b *ChannelToolBridge) Description() string         { return b.decl.Description }
+func (b *ChannelToolBridge) Parameters() []llm.ToolParam { return b.decl.Parameters }
+func (b *ChannelToolBridge) UIDecl() *tools.UIDecl       { return b.decl.UI }
+func (b *ChannelToolBridge) Channels() []string          { return b.decl.Channels }
 
 // Execute proxies the tool call to the channel process via RPC.
 // If the result contains render_check=true, sends the code to the frontend
@@ -138,4 +138,3 @@ func WaitRenderCheck(checkID string, timeout time.Duration) (bool, string) {
 		return true, "" // timeout = assume success
 	}
 }
-

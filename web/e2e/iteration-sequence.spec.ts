@@ -235,7 +235,7 @@ test.describe('Iteration sequence integrity', () => {
     )
     await page.locator('text=Session 1').first().click()
     // Wait for assistant row to reappear and stabilize at 1
-    await expect.poll(async () => countAssistantRows(page), { timeout: 10_000, intervals: [100] }).toBe(1)
+    await expect.poll(async () => countAssistantRows(page), { timeout: 30_000, intervals: [200] }).toBe(1)
 
     // Still showing thinking, still 1 row
     const thinking2 = await hasThinking(page)

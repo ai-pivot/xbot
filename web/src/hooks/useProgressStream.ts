@@ -1668,7 +1668,7 @@ function handleProgressMessage(
           let error = ''
           try {
             // Same transform as SandboxedUI: strip export/import, compile TSX
-            let clean = code.trim()
+            const clean = code.trim()
             const { code: js } = transform(clean, {
               transforms: ['typescript', 'jsx'],
               jsxRuntime: 'classic',
