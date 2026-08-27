@@ -173,7 +173,13 @@ class UIErrorBoundary extends React.Component<
     // 但 resetKey 会在下次编译成功时重置 hasError → 重新尝试。
     if (this.props.streaming) {
       const lastGood = this.props.slot?.lastGood
-      if (lastGood) {
+      const current = this.props.slot?.current
+      // lastGood !== current 时才回退（编译失败场景：current 被清空，lastGood 保留旧版本）。
+      // lastGood === current 时（渲染错误场景：两者指向同一组件）绝不能重渲染 lastGood —— 
+      // 同一个组件会抛同样的错，error boundary 自身在 error render 中抛错 → React re-throw
+      // → 冒泡到 window.onerror（用户报告 "fmtV is not a function" 即此路径）。
+      // 返回 null（0 高度），等下一个 streaming chunk → resetKey 变化 → hasError 重置 → 重试。
+      if (lastGood && lastGood !== current) {
         // ⚠️ 绝不能 direct-call lastGood（function 组件）—— 这是 class 组件的 render()，
         // React 不会设置 hook dispatcher，直接调用一个使用 useState 等 hooks 的组件会抛
         // "Invalid hook call" (#321)，且该错误发生在 error boundary 自身的 render 里，
