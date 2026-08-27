@@ -16,15 +16,22 @@ import { SkillManagerPanel } from './SkillManagerPanel'
 
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
-const { rpcCall, runtime } = vi.hoisted(() => {
+const { rpcCall, runtime, cwdValue } = vi.hoisted(() => {
   const rpcCall = vi.fn()
-  return { rpcCall, runtime: { rpc: { call: rpcCall } } }
+  const openFileTab = vi.fn()
+  const cwdValue = { current: '/home/cjw/xbot' as string | null }
+  return { rpcCall, runtime: { rpc: { call: rpcCall }, ui: { openFileTab } }, cwdValue }
 })
 
 // runtime 必须是稳定引用——usePluginRuntime 的 load useCallback 依赖 [runtime]，
 // 每次渲染返回新对象会导致 useEffect 无限重跑（一直 loading）。
 vi.mock('@/plugin-runtime', () => ({
   usePluginRuntime: () => runtime,
+}))
+
+// useCwd mock — 默认返回项目根目录
+vi.mock('@/hooks/useCwd', () => ({
+  useCwd: () => ({ cwd: cwdValue.current, loading: false }),
 }))
 
 vi.mock('@/lib/api', () => ({
@@ -89,5 +96,76 @@ describe('SkillManagerPanel 启禁用开关', () => {
   it('已禁用 skill 显示「已禁用」标签', async () => {
     render(<SkillManagerPanel />)
     expect(await screen.findByText('skills.disabled')).toBeTruthy()
+  })
+})
+
+describe('SkillManagerPanel 项目 skill 显示', () => {
+  beforeEach(() => {
+    rpcCall.mockReset()
+    rpcCall.mockResolvedValue(skills)
+  })
+
+  it('skill_list 传当前 CWD 作为 project_dir（非空）', async () => {
+    cwdValue.current = '/home/cjw/xbot'
+    render(<SkillManagerPanel />)
+    await waitFor(() => {
+      expect(rpcCall).toHaveBeenCalledWith(
+        'skill_list',
+        { project_dir: '/home/cjw/xbot' },
+      )
+    })
+  })
+
+  it('CWD 为 null 时传空字符串（不崩溃）', async () => {
+    cwdValue.current = null
+    render(<SkillManagerPanel />)
+    await waitFor(() => {
+      expect(rpcCall).toHaveBeenCalledWith(
+        'skill_list',
+        { project_dir: '' },
+      )
+    })
+  })
+})
+
+describe('SkillManagerPanel SKILL.md 预览', () => {
+  beforeEach(() => {
+    rpcCall.mockReset()
+    rpcCall.mockResolvedValue(skills)
+    runtime.ui.openFileTab.mockReset()
+  })
+
+  it('非 embedded skill 点击预览调用 openFileTab（路径含 /SKILL.md）', async () => {
+    render(<SkillManagerPanel />)
+    const viewBtns = await screen.findAllByTitle('skills.view')
+    fireEvent.click(viewBtns[1]) // issue-solver (非 embedded)
+    await waitFor(() => {
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith(
+        '/home/cjw/.xbot/skills/issue-solver/SKILL.md',
+        { title: 'issue-solver (SKILL.md)' },
+      )
+    })
+    // 不调用 skill_get_content
+    expect(rpcCall).not.toHaveBeenCalledWith(
+      'skill_get_content',
+      expect.anything(),
+    )
+  })
+
+  it('embedded skill 点击预览也调用 openFileTab（路径 embedded:xxx/SKILL.md）', async () => {
+    render(<SkillManagerPanel />)
+    const viewBtns = await screen.findAllByTitle('skills.view')
+    fireEvent.click(viewBtns[0]) // debug (embedded:debug)
+    await waitFor(() => {
+      expect(runtime.ui.openFileTab).toHaveBeenCalledWith(
+        'embedded:debug/SKILL.md',
+        { title: 'debug (SKILL.md)' },
+      )
+    })
+    // 不调用 skill_get_content
+    expect(rpcCall).not.toHaveBeenCalledWith(
+      'skill_get_content',
+      expect.anything(),
+    )
   })
 })

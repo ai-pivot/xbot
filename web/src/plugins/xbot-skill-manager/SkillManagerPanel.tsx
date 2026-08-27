@@ -9,12 +9,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/providers/i18n'
+import { useCwd } from '@/hooks/useCwd'
 import { postAPI, postRawAPI } from '@/lib/api'
 import { usePluginRuntime } from '@/plugin-runtime'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { MarkdownPreview } from '@/components/file/MarkdownPreview'
-import { Loader2, Download, Trash2, Eye, FileUp, ArrowLeft } from 'lucide-react'
+import { Loader2, Download, Trash2, Eye, FileUp } from 'lucide-react'
 
 /** 与后端 agent/skills.go SkillDetail 对齐。 */
 interface SkillDetail {
@@ -32,28 +32,32 @@ interface SkillDetail {
 export function SkillManagerPanel() {
   const runtime = usePluginRuntime()
   const { t } = useI18n()
+  const { cwd } = useCwd()
   const [skills, setSkills] = useState<SkillDetail[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [installing, setInstalling] = useState(false)
-  const [viewing, setViewing] = useState<{ name: string; content: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const requestRef = useRef(0)
 
   const load = useCallback(async () => {
+    const id = ++requestRef.current
     setLoading(true)
     setError('')
     try {
       const res = (await runtime.rpc.call(
         'skill_list' as never,
-        { project_dir: '' } as never,
+        { project_dir: cwd || '' } as never,
       )) as unknown as SkillDetail[]
+      if (id !== requestRef.current) return
       setSkills(Array.isArray(res) ? res : [])
     } catch (e) {
+      if (id !== requestRef.current) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoading(false)
+      if (id === requestRef.current) setLoading(false)
     }
-  }, [runtime])
+  }, [runtime, cwd])
 
   useEffect(() => {
     void load()
@@ -73,15 +77,13 @@ export function SkillManagerPanel() {
 
   const handleView = useCallback(
     async (skill: SkillDetail) => {
-      try {
-        const res = (await runtime.rpc.call(
-          'skill_get_content' as never,
-          { path: skill.path } as never,
-        )) as unknown as { content?: string }
-        setViewing({ name: skill.name, content: res?.content ?? '' })
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
-      }
+      // All skills — including embedded — open SKILL.md in the editor tab to reuse
+      // the existing markdown preview/editor infrastructure (mermaid, code
+      // highlighting, toggle between preview and source, etc.).
+      // Embedded skill paths ("embedded:debug/SKILL.md") are served by the
+      // backend /api/fs/read endpoint (no disk file needed).
+      const skillMD = skill.path + '/SKILL.md'
+      runtime.ui.openFileTab(skillMD, { title: `${skill.name} (SKILL.md)` })
     },
     [runtime],
   )
@@ -160,22 +162,7 @@ export function SkillManagerPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-2">
-        {viewing ? (
-          <div className="flex h-full flex-col">
-            <div className="mb-2 flex items-center gap-1">
-              <Button
-                size="sm"
-                variant="ghost"
-                title={t('skills.back')}
-                onClick={() => setViewing(null)}
-              >
-                <ArrowLeft className="h-3.5 w-3.5" />
-              </Button>
-              <span className="truncate text-sm font-medium">{viewing.name} (SKILL.md)</span>
-            </div>
-            <MarkdownPreview source={viewing.content} />
-          </div>
-        ) : loading ? (
+        {loading ? (
           <div className="flex h-full items-center justify-center text-muted-foreground">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             {t('skills.loading')}
