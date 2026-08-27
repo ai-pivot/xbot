@@ -221,6 +221,9 @@ func TestAwsURIEncode(t *testing.T) {
 		{"a+b", true, "a%2Bb"},
 		{"a~b", true, "a~b"},
 		{"a-b_c.d", true, "a-b_c.d"},
+		// Non-ASCII (UTF-8) must be encoded per-byte, not per-rune
+		{"中文", true, "%E4%B8%AD%E6%96%87"},
+		{"文件.txt", false, "%E6%96%87%E4%BB%B6.txt"},
 	}
 	for _, tt := range tests {
 		got := awsURIEncode(tt.input, tt.encodeSlash)

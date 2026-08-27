@@ -17,6 +17,10 @@ import (
 	log "xbot/logger"
 )
 
+// httpClient is a dedicated HTTP client with a 30s timeout to avoid
+// blocking the upload handler indefinitely when the S3 endpoint is unreachable.
+var s3HTTPClient = &http.Client{Timeout: 30 * time.Second}
+
 // S3Config holds S3-compatible storage configuration.
 type S3Config struct {
 	AccessKey    string
@@ -75,7 +79,7 @@ func (p *S3Provider) Upload(key string, data []byte) error {
 		return err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s3HTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("s3 upload request failed: %w", err)
 	}
@@ -183,7 +187,9 @@ func (p *S3Provider) signRequest(req *http.Request, body []byte) {
 	dateStamp := now.Format("20060102")
 
 	// Set required headers
-	req.Header.Set("Host", req.URL.Host)
+	// Note: do NOT set Host header via req.Header.Set — Go's net/http
+	// ignores it and uses req.URL.Host (or req.Host). Setting it is dead code
+	// that could mislead future readers.
 	req.Header.Set("X-Amz-Date", date)
 	if body != nil {
 		req.Header.Set("X-Amz-Content-Sha256", sha256Hex(body))
@@ -258,7 +264,7 @@ func (p *S3Provider) objectURL(key string) *url.URL {
 		u.Host = "s3." + p.region + ".amazonaws.com"
 	}
 
-	if p.usePathStyle || p.endpoint != "" {
+	if p.usePathStyle {
 		// Path-style: endpoint/bucket/key
 		u.Path = "/" + p.bucket + "/" + key
 	} else {
@@ -345,19 +351,21 @@ func splitSchemeHost(rawURL string) (string, string) {
 
 // awsURIEncode encodes a string per AWS SigV4 rules.
 // encodeSlash=true encodes "/" as %2F (for query parameter values).
+// Processes the string as UTF-8 bytes to correctly encode non-ASCII characters
+// (e.g. Chinese filenames produce %E4%B8%AD, not the erroneous %4E2D).
 func awsURIEncode(s string, encodeSlash bool) string {
 	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'A' && r <= 'Z') ||
-			(r >= 'a' && r <= 'z') ||
-			(r >= '0' && r <= '9') ||
-			r == '-' || r == '_' || r == '.' || r == '~' {
-			b.WriteRune(r)
-		} else if r == '/' && !encodeSlash {
-			b.WriteRune('/')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~' {
+			b.WriteByte(c)
+		} else if c == '/' && !encodeSlash {
+			b.WriteByte('/')
 		} else {
-			h := fmt.Sprintf("%%%02X", r)
-			b.WriteString(h)
+			fmt.Fprintf(&b, "%%%02X", c)
 		}
 	}
 	return b.String()
