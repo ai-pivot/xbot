@@ -352,13 +352,13 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				}
 			} else if cfg.OSS.Provider == "s3" {
 				s3Provider, err := web.NewS3Provider(web.S3Config{
-					AccessKey:     cfg.OSS.S3AccessKey,
-					SecretKey:     cfg.OSS.S3SecretKey,
-					Bucket:        cfg.OSS.S3Bucket,
-					Region:        cfg.OSS.S3Region,
-					Endpoint:      cfg.OSS.S3Endpoint,
-					UsePathStyle:  cfg.OSS.S3UsePathStyle,
-					Domain:        cfg.OSS.S3Domain,
+					AccessKey:    cfg.OSS.S3AccessKey,
+					SecretKey:    cfg.OSS.S3SecretKey,
+					Bucket:       cfg.OSS.S3Bucket,
+					Region:       cfg.OSS.S3Region,
+					Endpoint:     cfg.OSS.S3Endpoint,
+					UsePathStyle: cfg.OSS.S3UsePathStyle,
+					Domain:       cfg.OSS.S3Domain,
 				})
 				if err != nil {
 					log.WithError(err).Error("Failed to create S3 OSS provider")

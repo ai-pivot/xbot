@@ -19,13 +19,13 @@ import (
 
 // S3Config holds S3-compatible storage configuration.
 type S3Config struct {
-	AccessKey     string
-	SecretKey     string
-	Bucket        string
-	Region        string
-	Endpoint      string // e.g. "http://localhost:9000" (empty = AWS S3)
-	UsePathStyle  bool   // true for MinIO/SeaweedFS, false for AWS virtual-hosted
-	Domain        string // custom CDN domain; empty = use presigned URLs
+	AccessKey    string
+	SecretKey    string
+	Bucket       string
+	Region       string
+	Endpoint     string // e.g. "http://localhost:9000" (empty = AWS S3)
+	UsePathStyle bool   // true for MinIO/SeaweedFS, false for AWS virtual-hosted
+	Domain       string // custom CDN domain; empty = use presigned URLs
 }
 
 // S3Provider stores files on S3-compatible storage (MinIO, SeaweedFS, AWS S3, etc.)
@@ -87,9 +87,9 @@ func (p *S3Provider) Upload(key string, data []byte) error {
 	}
 
 	log.WithFields(log.Fields{
-		"key":      key,
-		"size":      len(data),
-		"status":    resp.StatusCode,
+		"key":    key,
+		"size":   len(data),
+		"status": resp.StatusCode,
 	}).Debug("File uploaded to S3")
 	return nil
 }
@@ -193,9 +193,9 @@ func (p *S3Provider) signRequest(req *http.Request, body []byte) {
 
 	// Build canonical headers (sorted)
 	headers := map[string]string{
-		"host":           req.URL.Host,
+		"host":                 req.URL.Host,
 		"x-amz-content-sha256": req.Header.Get("X-Amz-Content-Sha256"),
-		"x-amz-date":     date,
+		"x-amz-date":           date,
 	}
 	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
 
