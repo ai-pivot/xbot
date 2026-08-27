@@ -159,7 +159,7 @@ func (p *QiniuProvider) Domain() string { return p.domain }
 // ---------------------------------------------------------------------------
 
 // NewOSSProvider creates the appropriate OSS provider based on config.
-// provider must be "local" or "qiniu".
+// provider must be "local", "qiniu", or "s3".
 func NewOSSProvider(provider, uploadDir string, cfg ...QiniuConfig) (OSSProvider, error) {
 	switch provider {
 	case "local":
@@ -170,6 +170,9 @@ func NewOSSProvider(provider, uploadDir string, cfg ...QiniuConfig) (OSSProvider
 		}
 		c := cfg[0]
 		return NewQiniuProvider(c.AccessKey, c.SecretKey, c.Bucket, c.Domain, c.Region)
+	case "s3":
+		// S3 provider is constructed directly in server.go via NewS3Provider(S3Config{...})
+		return nil, fmt.Errorf("s3 provider must be constructed via NewS3Provider")
 	default:
 		return nil, fmt.Errorf("unknown OSS provider: %s", provider)
 	}
