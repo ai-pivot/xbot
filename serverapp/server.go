@@ -332,7 +332,8 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			// Web file uploads go through cloud OSS only — no local storage
 			webCh.SetWorkDir(workDir)
 			// Set OSS provider for file storage
-			if cfg.OSS.Provider == "qiniu" {
+			switch cfg.OSS.Provider {
+			case "qiniu":
 				ossProvider, err := web.NewOSSProvider(
 					cfg.OSS.Provider,
 					"",
@@ -350,7 +351,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 					webCh.SetOSSProvider(ossProvider)
 					log.Info("OSS provider configured: qiniu")
 				}
-			} else if cfg.OSS.Provider == "s3" {
+			case "s3":
 				s3Provider, err := web.NewS3Provider(web.S3Config{
 					AccessKey:    cfg.OSS.S3AccessKey,
 					SecretKey:    cfg.OSS.S3SecretKey,
