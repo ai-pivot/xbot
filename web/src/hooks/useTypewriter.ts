@@ -51,7 +51,9 @@ let sharedTimer: ReturnType<typeof setInterval> | null = null
 function ensureTimer() {
   if (sharedTimer) return
   sharedTimer = setInterval(() => {
-    for (const fn of subscribers) fn()
+    for (const fn of subscribers) {
+      try { fn() } catch (err) { console.error('typewriter tick failed', err) }
+    }
   }, TICK_MS)
 }
 

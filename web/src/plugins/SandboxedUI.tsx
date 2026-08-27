@@ -168,25 +168,14 @@ class UIErrorBoundary extends React.Component<
   }
   override render() {
     if (!this.state.hasError) return this.props.children
-    // streaming 时回退 lastGood（上次成功组件）—— 连续预览不闪白。
-    // lastGood 也可能出错（无限循环险）→ 此时返回 null（0高度），
-    // 但 resetKey 会在下次编译成功时重置 hasError → 重新尝试。
+    // streaming 时返回 null（0 高度），等下一个 chunk → resetKey 变化 → hasError 重置 → 重试。
+    //
+    // 不回退 lastGood：compileAndLoad 在成功路径（L278-279 / L343-344）把 slot.current 和
+    // slot.lastGood 设为同一个组件引用；streaming 编译失败路径（L361-362）也不清空 current，
+    // 而是 current = lastGood。因此 lastGood === current 恒成立 —— 回退 lastGood 等于重渲染
+    // 同一个抛错组件 → error boundary 自身抛错 → React re-throw → window.onerror。
+    // lastGood 也只是「上次编译出」的组件（非「上次渲染成功」），可能正是抛错的那个。
     if (this.props.streaming) {
-      const lastGood = this.props.slot?.lastGood
-      const current = this.props.slot?.current
-      // lastGood !== current 时才回退（编译失败场景：current 被清空，lastGood 保留旧版本）。
-      // lastGood === current 时（渲染错误场景：两者指向同一组件）绝不能重渲染 lastGood —— 
-      // 同一个组件会抛同样的错，error boundary 自身在 error render 中抛错 → React re-throw
-      // → 冒泡到 window.onerror（用户报告 "fmtV is not a function" 即此路径）。
-      // 返回 null（0 高度），等下一个 streaming chunk → resetKey 变化 → hasError 重置 → 重试。
-      if (lastGood && lastGood !== current) {
-        // ⚠️ 绝不能 direct-call lastGood（function 组件）—— 这是 class 组件的 render()，
-        // React 不会设置 hook dispatcher，直接调用一个使用 useState 等 hooks 的组件会抛
-        // "Invalid hook call" (#321)，且该错误发生在 error boundary 自身的 render 里，
-        // 无法被自身捕获 → 冒泡到根 → 整个应用崩溃（用户报告："stream 期间整个界面出错"）。
-        // 用 createElement 让 React 以组件身份渲染，dispatcher 才会被正确设置。
-        return React.createElement(lastGood, { 'data-sandboxed-ui-root': true } as Record<string, unknown>)
-      }
       return null
     }
     return this.props.fallback
