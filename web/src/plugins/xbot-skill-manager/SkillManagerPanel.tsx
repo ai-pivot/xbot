@@ -38,8 +38,10 @@ export function SkillManagerPanel() {
   const [error, setError] = useState('')
   const [installing, setInstalling] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const requestRef = useRef(0)
 
   const load = useCallback(async () => {
+    const id = ++requestRef.current
     setLoading(true)
     setError('')
     try {
@@ -47,11 +49,13 @@ export function SkillManagerPanel() {
         'skill_list' as never,
         { project_dir: cwd || '' } as never,
       )) as unknown as SkillDetail[]
+      if (id !== requestRef.current) return
       setSkills(Array.isArray(res) ? res : [])
     } catch (e) {
+      if (id !== requestRef.current) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      setLoading(false)
+      if (id === requestRef.current) setLoading(false)
     }
   }, [runtime, cwd])
 

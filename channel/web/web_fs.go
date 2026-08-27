@@ -281,7 +281,7 @@ func (wc *WebChannel) handleFsRead(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, fsReadResponse{
 			Content:  string(data),
-			Language: "markdown",
+			Language: languageFromPath(parts[1]),
 			Size:     int64(len(data)),
 			IsBinary: false,
 		})
