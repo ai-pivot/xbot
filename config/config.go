@@ -136,6 +136,13 @@ type OSSConfig struct {
 	QiniuBucket    string `json:"qiniu_bucket"`
 	QiniuDomain    string `json:"qiniu_domain"`
 	QiniuRegion    string `json:"qiniu_region"`
+	S3AccessKey    string `json:"s3_access_key"`
+	S3SecretKey    string `json:"s3_secret_key"`
+	S3Bucket       string `json:"s3_bucket"`
+	S3Region       string `json:"s3_region"`
+	S3Endpoint     string `json:"s3_endpoint"`
+	S3UsePathStyle bool   `json:"s3_use_path_style"`
+	S3Domain       string `json:"s3_domain"`
 }
 
 // EventWebhookConfig 事件 Webhook 配置
