@@ -99,11 +99,15 @@ func (p *S3Provider) Upload(key string, data []byte) error {
 }
 
 // GetDownloadURL returns a URL for downloading the file.
-// If a custom domain is set, returns a direct public URL.
+// If a custom domain is set, returns a direct public URL (domain + object path).
 // Otherwise, generates a presigned URL valid for 1 hour.
 func (p *S3Provider) GetDownloadURL(key string) (string, error) {
 	if p.domain != "" {
-		return fmt.Sprintf("%s/%s", p.domain, key), nil
+		// Use objectURL to get the correct path — for path-style (MinIO) this
+		// includes the bucket in the path; for virtual-hosted it's just /key.
+		// Replacing the scheme+host with the custom domain gives the public URL.
+		u := p.objectURL(key)
+		return fmt.Sprintf("%s%s", p.domain, u.Path), nil
 	}
 
 	// Generate presigned URL (valid for 1 hour)
