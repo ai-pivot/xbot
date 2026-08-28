@@ -44,9 +44,9 @@ func TestInstallSkillFromFile_TopLevelDir(t *testing.T) {
 
 	zipPath := filepath.Join(t.TempDir(), "aws-ops.zip")
 	createSkillZip(t, zipPath, map[string]string{
-		"aws-ops/SKILL.md":                          "---\nname: aws-ops\ndescription: AWS ops skill\n---\n# AWS Ops\n",
-		"aws-ops/references/faq.md":                 "# FAQ\n",
-		"aws-ops/scripts/aws_ops_check.sh":           "#!/bin/bash\necho check\n",
+		"aws-ops/SKILL.md":                 "---\nname: aws-ops\ndescription: AWS ops skill\n---\n# AWS Ops\n",
+		"aws-ops/references/faq.md":        "# FAQ\n",
+		"aws-ops/scripts/aws_ops_check.sh": "#!/bin/bash\necho check\n",
 	})
 
 	name, err := rm.InstallSkillFromFile(zipPath, "test-user", false)
