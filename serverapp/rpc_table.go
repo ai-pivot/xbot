@@ -986,6 +986,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			Active          bool                               `json:"active"`
 			MaxOutputTokens int                                `json:"max_output_tokens"`
 			ThinkingMode    string                             `json:"thinking_mode"`
+			APIType         string                             `json:"api_type"` // "chat_completions" (default) | "responses" — OpenAI only
 			PerModelConfigs map[string]protocol.PerModelConfig `json:"per_model_configs"`
 		} `json:"sub"`
 	}) error {
@@ -1002,6 +1003,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			Model:           p.Sub.Model,
 			MaxOutputTokens: p.Sub.MaxOutputTokens,
 			ThinkingMode:    p.Sub.ThinkingMode,
+			APIType:         p.Sub.APIType,
 			IsDefault:       p.Sub.Active,
 		}
 		if len(p.Sub.PerModelConfigs) > 0 {

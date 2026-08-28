@@ -517,6 +517,7 @@ export async function addSubscription(
     api_key: string
     model: string
     active?: boolean
+    api_type?: string
   },
 ): Promise<void> {
   await ws.rpc('add_subscription', {
@@ -530,7 +531,7 @@ export async function addSubscription(
       active: sub.active ?? false,
       max_output_tokens: 0,
       thinking_mode: '',
-      api_type: '',
+      api_type: sub.api_type ?? '',
     },
   })
 }
