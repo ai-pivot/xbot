@@ -36,10 +36,10 @@ export function SettingsGeneral() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection title={t('settings.language')} description={t('settings.languageDesc')}>
         <Select value={locale} onValueChange={(v) => setLocale(v as Locale)}>
-          <SelectTrigger className="w-full max-w-[320px]">
+          <SelectTrigger className="w-full max-w-[320px] rounded-lg border-white/[.08] bg-white/[.03] focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -52,7 +52,7 @@ export function SettingsGeneral() {
         </Select>
       </SettingsSection>
       <SettingsSection title={t('settings.cache')}>
-        <Button type="button" variant="destructive" size="sm" className="w-fit" onClick={clearCache}>
+        <Button type="button" variant="destructive" size="sm" className="w-fit bg-[var(--status-error,#ef4444)] text-white hover:bg-[var(--status-error,#ef4444)]/85" onClick={clearCache}>
           <Trash2 data-icon="inline-start" />
           {t('settings.clearCache')}
         </Button>

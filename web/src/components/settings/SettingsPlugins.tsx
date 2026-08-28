@@ -93,35 +93,33 @@ export function SettingsPlugins() {
   }, [plugins, q])
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="px-5 pt-4">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索插件配置项…"
-            className="pl-9"
-            autoFocus
-          />
-        </div>
+    <div className="flex flex-col gap-2.5 p-4">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-text-muted" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索插件配置项…"
+          className="rounded-lg border-white/[.08] bg-white/[.03] pl-9 focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+          autoFocus
+        />
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-2 px-5 py-8 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2 py-8 text-sm text-text-muted">
           <Loader2 className="size-4 animate-spin" />
           加载插件配置…
         </div>
       ) : null}
 
       {error ? (
-        <div className="px-5 py-6 text-sm text-destructive">
+        <div className="py-6 text-sm text-[var(--status-error,#ef4444)]">
           加载插件配置失败：{error}
         </div>
       ) : null}
 
       {!loading && !error && filtered.length === 0 ? (
-        <div className="px-5 py-8 text-sm text-muted-foreground">
+        <div className="py-8 text-sm text-text-muted">
           {q ? '没有匹配的插件配置项。' : '没有插件声明配置。'}
         </div>
       ) : null}
@@ -195,9 +193,9 @@ function PluginConfigSection({
       }
     >
       {groups.map(([section, props]) => (
-        <div key={section} className="flex flex-col gap-3">
+        <div key={section} className="flex flex-col gap-2.5">
           {section ? (
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
               {section}
             </h4>
           ) : null}
@@ -251,7 +249,7 @@ function ConfigField({
             disabled={saving}
             onValueChange={(v) => void onChange(propKey, v)}
           >
-            <SelectTrigger className="w-full">
+            <SelectTrigger className="w-full rounded-lg border-white/[.08] bg-white/[.03] focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
               <SelectValue placeholder="选择…" />
             </SelectTrigger>
             <SelectContent>
@@ -297,11 +295,11 @@ function ConfigField({
 
   return (
     <div className="flex flex-col gap-1" data-plugin-config-key={propKey}>
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-2.5">
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-sm text-foreground">{label}</span>
+          <span className="text-sm text-text-primary">{label}</span>
           {prop.description ? (
-            <span className="text-xs text-muted-foreground">{prop.description}</span>
+            <span className="text-xs text-text-muted">{prop.description}</span>
           ) : null}
         </div>
         {prop.type === 'boolean' ? renderControl() : null}
@@ -334,10 +332,10 @@ function renderMultiselect(
               : [...selected, o.value]
             void onChange(propKey, next)
           }}
-          className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+          className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
             selected.includes(o.value)
-              ? 'border-accent bg-accent/15 text-foreground'
-              : 'border-border text-muted-foreground hover:text-foreground'
+              ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
+              : 'border-white/[.08] bg-white/[.03] text-text-muted hover:bg-white/[.05] hover:text-text-primary'
           }`}
         >
           {o.label}

@@ -23,7 +23,7 @@ export function SettingsDeveloper() {
   const sessionStore = useSessionStore()
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection
         title="开发者工具"
         description="启用后显示 SSE 录制按钮（AgentPanel 顶部 REC）。点击开始录制所有事件，复现 bug 后点击 STOP 下载 .ev 文件，用于重放测试固定回归。"
@@ -47,7 +47,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2"
+            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -108,7 +108,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2"
+            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -137,7 +137,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2"
+            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -166,7 +166,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2"
+            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -195,7 +195,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2"
+            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession

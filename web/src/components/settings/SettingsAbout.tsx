@@ -3,6 +3,7 @@
  */
 import { useState } from 'react'
 import { Download, Check, AlertCircle, RefreshCw } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
 
@@ -12,7 +13,7 @@ function DiagRow({ label, ok }: { label: string; ok: boolean }) {
     <div className="flex items-center gap-2 text-xs">
       <span
         className="size-1.5 shrink-0 rounded-full"
-        style={{ backgroundColor: ok ? 'var(--status-running)' : 'var(--status-error)' }}
+        style={{ backgroundColor: ok ? 'var(--status-success, #22c55e)' : 'var(--status-error)' }}
       />
       <span className="text-text-secondary">{label}</span>
     </div>
@@ -48,7 +49,7 @@ export function SettingsAbout() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-5">
+    <div className="flex flex-col gap-2.5 p-4">
       {/* App info */}
       <section className="flex flex-col gap-1">
         <h3 className="text-sm font-semibold text-text-primary">xbot</h3>
@@ -56,12 +57,12 @@ export function SettingsAbout() {
       </section>
 
       {/* PWA status */}
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-semibold text-text-primary">应用安装</h3>
+      <section className="flex flex-col gap-2.5">
+        <h3 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">应用安装</h3>
 
         {/* Installed */}
         {isInstalled && (
-          <div className="flex items-center gap-2 rounded-md bg-bg-tertiary px-3 py-2 text-xs" style={{ color: 'var(--status-running)' }}>
+          <div className="flex items-center gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] px-3 py-2 text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
             <Check className="size-4" />
             <span>已安装到桌面，以独立应用模式运行</span>
           </div>
@@ -69,7 +70,7 @@ export function SettingsAbout() {
 
         {/* Install button (Chrome/Edge) */}
         {!isInstalled && canInstall && (
-          <Button type="button" variant="default" onClick={() => install()} className="w-fit gap-2">
+          <Button type="button" variant="default" onClick={() => install()} className="w-fit gap-2 bg-[#6c8cff]/14 text-[#6c8cff] hover:bg-[#6c8cff]/25">
             <Download className="size-4" />
             安装应用
           </Button>
@@ -77,9 +78,9 @@ export function SettingsAbout() {
 
         {/* Safari / iOS — manual install instructions */}
         {!isInstalled && !canInstall && diagnostics?.isSafari && (
-          <div className="flex flex-col gap-2 rounded-md bg-bg-tertiary px-3 py-3 text-xs">
-            <div className="flex items-start gap-2">
-              <Download className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-running)' }} />
+          <div className="flex flex-col gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] px-3 py-2 text-xs">
+            <div className="flex items-start gap-2.5">
+              <Download className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-success, #22c55e)' }} />
               <div className="flex flex-col gap-1 text-text-secondary">
                 <span className="font-medium text-text-primary">添加到主屏幕</span>
                 <span>Safari 不支持自动安装，请按以下步骤操作：</span>
@@ -93,8 +94,8 @@ export function SettingsAbout() {
 
         {/* Not installable (non-Safari) — show diagnostics */}
         {!isInstalled && !canInstall && !(diagnostics?.isSafari) && (
-          <div className="flex flex-col gap-3 rounded-md bg-bg-tertiary px-3 py-3 text-xs">
-            <div className="flex items-start gap-2">
+          <div className="flex flex-col gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] px-3 py-2 text-xs">
+            <div className="flex items-start gap-2.5">
               <AlertCircle className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-error)' }} />
               <span className="text-text-secondary">
                 暂未满足安装条件。Chrome 需要 Service Worker 激活后才会弹出安装提示，
@@ -103,7 +104,7 @@ export function SettingsAbout() {
             </div>
             {/* Diagnostics */}
             {diagnostics && (
-              <div className="flex flex-col gap-1.5 border-t border-border pt-2">
+              <div className="flex flex-col gap-1.5 border-t border-white/[.06] pt-2">
                 <p className="font-medium text-text-secondary">诊断信息:</p>
                 <DiagRow label={`浏览器: ${diagnostics.browserName}`} ok={true} />
                 <DiagRow label="HTTPS" ok={diagnostics.isHttps} />
@@ -125,24 +126,29 @@ export function SettingsAbout() {
         )}
 
         {/* Update / check for updates */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           <Button
             type="button"
             variant={updateAvailable ? 'default' : 'outline'}
             onClick={() => void handleUpdate()}
             disabled={checking || reloading}
-            className="w-fit gap-2"
+            className={cn(
+              'w-fit gap-2',
+              updateAvailable
+                ? 'bg-[#6c8cff]/14 text-[#6c8cff] hover:bg-[#6c8cff]/25'
+                : 'border-white/[.08] bg-white/[.05] hover:bg-white/[.1]',
+            )}
           >
             <RefreshCw className={`size-4 ${checking || reloading ? 'animate-spin' : ''}`} />
             {reloading ? '正在刷新…' : updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : upToDate ? '已是最新版本' : '检查更新'}
           </Button>
           {updateAvailable && (
-            <span className="text-xs" style={{ color: 'var(--status-running)' }}>
+            <span className="text-xs" style={{ color: 'var(--status-warning, #f59e0b)' }}>
               ● 有新版本可用
             </span>
           )}
           {upToDate && !updateAvailable && (
-            <span className="text-xs" style={{ color: 'var(--status-running)' }}>
+            <span className="text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
               ● 已是最新版本
             </span>
           )}

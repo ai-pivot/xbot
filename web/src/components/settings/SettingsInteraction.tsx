@@ -10,21 +10,14 @@
  * collapse level, controls whether consecutive tool calls are merged into
  * a compact row.
  */
-import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
+import { useMergeTools } from '@/hooks/useCollapseLevel'
 import { useSendKeyMode } from '@/hooks/useSendKeyMode'
 import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useI18n } from '@/providers/i18n'
-import type { CollapseLevel } from '@/types/shared'
 import type { SendKeyMode } from '@/types/agent'
 import { cn } from '@/lib/utils'
 
 import { SettingsSection } from './SettingsSection'
-
-const LEVELS: { value: CollapseLevel; labelKey: string; descKey: string }[] = [
-  { value: 'all', labelKey: 'collapseAll', descKey: 'collapseAllDesc' },
-  { value: 'minimal', labelKey: 'collapseMinimal', descKey: 'collapseMinimalDesc' },
-  { value: 'none', labelKey: 'collapseNone', descKey: 'collapseNoneDesc' },
-]
 
 const SEND_KEY_OPTIONS: { value: SendKeyMode; labelKey: string; descKey: string }[] = [
   { value: 'ctrl-enter', labelKey: 'sendKeyCtrlEnter', descKey: 'sendKeyCtrlEnterDesc' },
@@ -33,54 +26,14 @@ const SEND_KEY_OPTIONS: { value: SendKeyMode; labelKey: string; descKey: string 
 
 export function SettingsInteraction() {
   const { t } = useI18n()
-  const { level: collapseLevel, setLevel: setCollapseLevel } = useCollapseLevel()
   const { mergeTools, setMergeTools } = useMergeTools()
   const { mode: sendKeyMode, setMode: setSendKeyMode } = useSendKeyMode()
   const { wordWrap, setWordWrap } = useCodeWordWrap()
 
   return (
-    <div className="flex flex-col">
-      <SettingsSection
-        title={t('settings.collapseLevel')}
-        description={t('settings.collapseLevelDesc')}
-      >
-        <div className="flex flex-col gap-1.5">
-          {LEVELS.map(({ value, labelKey, descKey }) => {
-            const active = collapseLevel === value
-            return (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setCollapseLevel(value)}
-                className={cn(
-                  'flex items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
-                  active
-                    ? 'border-accent bg-accent/10'
-                    : 'border-border bg-transparent hover:bg-muted',
-                )}
-              >
-                <span
-                  className={cn(
-                    'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border',
-                    active ? 'border-accent' : 'border-border',
-                  )}
-                >
-                  {active ? <span className="size-2 rounded-full bg-accent" /> : null}
-                </span>
-                <span className="flex flex-col gap-0.5">
-                  <span className="text-sm font-medium text-foreground">
-                    {t(`settings.${labelKey}`)}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {t(`settings.${descKey}`)}
-                  </span>
-                </span>
-              </button>
-            )
-          })}
-        </div>
-      </SettingsSection>
+    <div className="flex flex-col gap-2.5 p-4">
+      {/* 折叠级别（Collapse Level）选项已按布局 v2 设计整体删除——
+          历史渲染固定为默认折叠形态（useCollapseLevel 返回默认值，消费方零改动）。 */}
 
       {/* Merge Tools Toggle */}
       <SettingsSection
@@ -92,16 +45,16 @@ export function SettingsInteraction() {
           aria-pressed={mergeTools}
           onClick={() => setMergeTools(!mergeTools)}
           className={cn(
-            'flex items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
+            'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             mergeTools
-              ? 'border-accent bg-accent/10'
-              : 'border-border bg-transparent hover:bg-muted',
+              ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
+              : 'border-white/[.08] bg-white/[.03] hover:bg-white/[.05]',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              mergeTools ? 'bg-accent' : 'bg-border',
+              mergeTools ? 'bg-[#6c8cff]' : 'bg-white/[.1]',
             )}
           >
             <span
@@ -112,7 +65,7 @@ export function SettingsInteraction() {
             />
           </span>
           <span className="flex flex-col gap-0.5">
-            <span className="text-sm font-medium text-foreground">
+            <span className="text-sm font-medium text-text-primary">
               {mergeTools ? t('settings.mergeToolsOn') : t('settings.mergeToolsOff')}
             </span>
           </span>
@@ -129,16 +82,16 @@ export function SettingsInteraction() {
           aria-pressed={wordWrap}
           onClick={() => setWordWrap(!wordWrap)}
           className={cn(
-            'flex items-center gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
+            'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             wordWrap
-              ? 'border-accent bg-accent/10'
-              : 'border-border bg-transparent hover:bg-muted',
+              ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
+              : 'border-white/[.08] bg-white/[.03] hover:bg-white/[.05]',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              wordWrap ? 'bg-accent' : 'bg-border',
+              wordWrap ? 'bg-[#6c8cff]' : 'bg-white/[.1]',
             )}
           >
             <span
@@ -149,7 +102,7 @@ export function SettingsInteraction() {
             />
           </span>
           <span className="flex flex-col gap-0.5">
-            <span className="text-sm font-medium text-foreground">
+            <span className="text-sm font-medium text-text-primary">
               {wordWrap ? t('settings.codeWordWrapOn') : t('settings.codeWordWrapOff')}
             </span>
           </span>
@@ -161,7 +114,7 @@ export function SettingsInteraction() {
         title={t('settings.sendKeyMode')}
         description={t('settings.sendKeyModeDesc')}
       >
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2.5">
           {SEND_KEY_OPTIONS.map(({ value, labelKey, descKey }) => {
             const active = sendKeyMode === value
             return (
@@ -171,25 +124,25 @@ export function SettingsInteraction() {
                 aria-pressed={active}
                 onClick={() => setSendKeyMode(value)}
                 className={cn(
-                  'flex items-start gap-3 rounded-md border px-3 py-2.5 text-left transition-colors',
+                  'flex items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
                   active
-                    ? 'border-accent bg-accent/10'
-                    : 'border-border bg-transparent hover:bg-muted',
+                    ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
+                    : 'border-white/[.08] bg-white/[.03] hover:bg-white/[.05]',
                 )}
               >
                 <span
                   className={cn(
                     'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border',
-                    active ? 'border-accent' : 'border-border',
+                    active ? 'border-[#6c8cff]' : 'border-white/[.1]',
                   )}
                 >
-                  {active ? <span className="size-2 rounded-full bg-accent" /> : null}
+                  {active ? <span className="size-2 rounded-full bg-[#6c8cff]" /> : null}
                 </span>
                 <span className="flex flex-col gap-0.5">
-                  <span className="text-sm font-medium text-foreground">
+                  <span className="text-sm font-medium text-text-primary">
                     {t(`settings.${labelKey}`)}
                   </span>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-xs text-text-muted">
                     {t(`settings.${descKey}`)}
                   </span>
                 </span>

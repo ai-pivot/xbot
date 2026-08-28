@@ -59,10 +59,9 @@ export function SettingsAppearance() {
   }
 
   return (
-    <div className="flex flex-col">
-      {/* Markdown theme — also drives app dark/light */}
+    <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection title={t('settings.mdTheme')}>
-        <p className="mb-2 text-xs text-muted-foreground">{t('settings.mdThemeDesc')}</p>
+        <p className="mb-2 text-xs text-text-muted">{t('settings.mdThemeDesc')}</p>
         <div className="flex flex-wrap gap-2">
           {MARKDOWN_THEMES.map((md) => {
             const active = mdTheme === md.id
@@ -73,10 +72,10 @@ export function SettingsAppearance() {
                 aria-pressed={active}
                 onClick={() => setMdTheme(md.id)}
                 className={cn(
-                  'rounded-md border px-3 py-1.5 text-xs transition-colors',
+                  'rounded-lg border px-3 py-1.5 text-xs transition-colors',
                   active
-                    ? 'border-accent bg-accent/10 text-foreground'
-                    : 'border-border bg-transparent text-muted-foreground hover:bg-muted',
+                    ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
+                    : 'border-white/[.08] bg-white/[.03] text-text-muted hover:bg-white/[.05] hover:text-text-primary',
                 )}
               >
                 {t(md.labelKey)}
@@ -122,13 +121,13 @@ export function SettingsAppearance() {
 
         {/* Custom hex input */}
         <div className="flex flex-col gap-2 pt-1">
-          <Label htmlFor="accent-hex" className="text-xs text-muted-foreground">
+          <Label htmlFor="accent-hex" className="text-xs text-text-muted">
             {t('settings.accentCustom')}
           </Label>
           <div className="flex items-center gap-2">
             {/* live preview chip — reflects committed accent (var) */}
             <span
-              className="size-8 shrink-0 rounded-md border border-border"
+              className="size-8 shrink-0 rounded-md border border-white/[.08]"
               style={{ backgroundColor: 'var(--accent)' }}
               aria-hidden
             />
@@ -143,7 +142,7 @@ export function SettingsAppearance() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
               }}
-              className="max-w-[180px] font-mono"
+              className="max-w-[180px] rounded-lg border-white/[.08] bg-white/[.03] font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
               placeholder={DEFAULT_ACCENT_COLOR}
             />
           </div>
