@@ -1,0 +1,78 @@
+name: CR Bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  pull-requests: read
+  contents: read
+
+jobs:
+  cr:
+    name: Code Review
+    runs-on: ubuntu-latest
+    # Only trigger on PR comments starting with /cr
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/cr')
+    steps:
+      - name: Get PR info
+        id: pr
+        run: |
+          PR_NUMBER="${{ github.event.issue.number }}"
+          REPO="${{ github.repository }}"
+          COMMENT_USER="${{ github.event.comment.user.login }}"
+          COMMENT_BODY="${{ github.event.comment.body }}"
+
+          # Fetch PR details via GitHub API
+          PR_INFO=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '{
+            number: .number,
+            title: .title,
+            head_ref: .head.ref,
+            base_ref: .base.ref
+          }')
+
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "pr_info=$PR_INFO" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger xbot code review
+        run: |
+          # Build webhook payload
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ steps.pr.outputs.repo }}" \
+            --argjson pr_num ${{ steps.pr.outputs.pr_number }} \
+            --arg comment_user "${{ github.event.comment.user.login }}" \
+            --arg comment_body "${{ github.event.comment.body }}" \
+            '{
+              repository: {full_name: $repo},
+              pull_request: {number: $pr_num},
+              comment: {
+                user: {login: $comment_user},
+                body: $comment_body
+              }
+            }')
+
+          # Compute HMAC-SHA256 signature
+          SIG=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "${{ secrets.XBOT_WEBHOOK_SECRET }}" | cut -d' ' -f2)
+
+          # POST to xbot webhook
+          RESPONSE=$(curl -sS -w "\n%{http_code}" -X POST \
+            "${{ secrets.XBOT_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Hub-Signature-256: sha256=$SIG" \
+            -d "$PAYLOAD")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP status: $HTTP_CODE"
+          echo "Response: $BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Webhook request failed (HTTP $HTTP_CODE): $BODY"
+            exit 1
+          fi
+
+          echo "✅ Code review triggered successfully"
