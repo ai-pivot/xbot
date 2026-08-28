@@ -61,6 +61,7 @@ const skills = [
 
 describe('SkillManagerPanel 启禁用开关', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     rpcCall.mockReset()
     rpcCall.mockResolvedValue(skills)
   })
@@ -91,6 +92,31 @@ describe('SkillManagerPanel 启禁用开关', () => {
     await waitFor(() => {
       expect(rpcCall).toHaveBeenCalledWith('skill_set_enabled', { name: 'issue-solver', enabled: true })
     })
+  })
+
+  it('防抖：快速连续切换只发最后一次 RPC', async () => {
+    render(<SkillManagerPanel />)
+    const switches = await screen.findAllByRole('switch')
+    // 等数据加载完成
+    await waitFor(() => expect(screen.getAllByRole('switch')).toHaveLength(2))
+
+    vi.useFakeTimers()
+    // 快速切换 debug: enable → disable → enable → disable
+    fireEvent.click(switches[0]) // → disabled
+    fireEvent.click(switches[0]) // → enabled
+    fireEvent.click(switches[0]) // → disabled
+    fireEvent.click(switches[0]) // → enabled
+    // 防抖窗口内不应有 RPC 调用
+    expect(rpcCall).not.toHaveBeenCalledWith('skill_set_enabled', expect.anything())
+    // 等防抖结束
+    vi.advanceTimersByTime(300)
+    await vi.waitFor(() => {
+      // 只调用了一次，且是最终状态 enabled=true
+      const toggleCalls = rpcCall.mock.calls.filter((c) => c[0] === 'skill_set_enabled')
+      expect(toggleCalls).toHaveLength(1)
+      expect(toggleCalls[0]).toEqual(['skill_set_enabled', { name: 'debug', enabled: true }])
+    })
+    vi.useRealTimers()
   })
 
   it('已禁用 skill 显示「已禁用」标签', async () => {
