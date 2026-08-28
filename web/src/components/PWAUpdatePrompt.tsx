@@ -42,10 +42,29 @@ export function registerSW() {
     }).catch(() => {})
   })
 
+  // ⚠️ Auto-reload on controller takeover: without this, the page keeps
+  // running the bundle it was loaded with while the new SW's precache sits
+  // idle until the NEXT manual reload — with frequent deploys the user is
+  // always exactly one build behind ("部署了但前端没更新，刷新 N 次都是旧代码").
+  // skipWaiting activates the new SW immediately; reloading on
+  // controllerchange is the standard finish-the-update step. Loop safety:
+  // this fires only when the controller ACTUALLY changes (a stable SW never
+  // re-fires it — no unregister here, see above), plus a sessionStorage
+  // circuit-breaker (max 2 auto-reloads / 30s) so a deploy landing mid-session
+  // can't bounce the page forever; beyond that the manual SWUpdateButton wins.
   let reloaded = false
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloaded) return
     reloaded = true
     window.dispatchEvent(new CustomEvent('sw-updated'))
+    try {
+      const KEY = 'sw-auto-reload'
+      const now = Date.now()
+      const hist: number[] = (JSON.parse(sessionStorage.getItem(KEY) || '[]') as number[]).filter((t) => now - t < 30_000)
+      if (hist.length >= 2) return // circuit breaker → manual SWUpdateButton
+      hist.push(now)
+      sessionStorage.setItem(KEY, JSON.stringify(hist))
+    } catch { /* storage unavailable — proceed with reload */ }
+    window.location.reload()
   })
 }

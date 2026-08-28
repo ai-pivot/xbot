@@ -21,11 +21,19 @@ export function SessionSearch({ value, onChange }: SessionSearchProps) {
       style={{ borderBottom: '1px solid var(--border)' }}
     >
       <Search className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+      {/* readOnly-until-focus: Chrome IGNORES autoComplete="off" for form-history
+          fill (it offered the saved login username "adm" in this box). A readOnly
+          input can NEVER be autofilled — flip it synchronously in onFocus (direct
+          DOM write, lands before the first keystroke; React won't reset it because
+          the JSX prop never changes). autoComplete stays as belt-and-suspenders. */}
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={t('session.searchPlaceholder')}
+        autoComplete="off"
+        readOnly
+        onFocus={(e) => { if (e.currentTarget.readOnly) e.currentTarget.readOnly = false }}
         className="h-6 flex-1 bg-transparent text-xs outline-none placeholder:text-text-muted"
         style={{ color: 'var(--text-primary)' }}
         aria-label={t('common.search')}

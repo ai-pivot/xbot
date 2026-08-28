@@ -42,6 +42,7 @@ type stdioChannelPluginProvider struct {
 
 	mu   sync.Mutex
 	conn *agent.ChannelPluginTransport
+	proc *channelProcess // child process backing conn; killed on channel replace
 }
 
 var _ channel.ChannelProvider = (*stdioChannelPluginProvider)(nil)
@@ -68,6 +69,18 @@ func (p *stdioChannelPluginProvider) Name() string {
 
 func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus *bus.MessageBus) (channel.Channel, error) {
 	p.msgBus = msgBus
+
+	// Replace any previous channel process: a reload must REPLACE the child
+	// process, not leak it. Without this, the stale process keeps running and
+	// tool routing still bound to the old transport executes against the OLD
+	// binary (2026-08-28: plugin reload spawned a second genui process while
+	// the first kept serving execute_tool with stale code → false syntax
+	// rejections on every large GenUI call).
+	p.mu.Lock()
+	oldProc, oldConn := p.proc, p.conn
+	p.proc, p.conn = nil, nil
+	p.mu.Unlock()
+	p.replaceChannelProcess(oldProc, oldConn)
 
 	// Spawn a dedicated process for the channel.
 	proc, err := spawnChannelProcess(p.decl, p.xbotHome)
@@ -117,6 +130,7 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 
 	p.mu.Lock()
 	p.conn = transport
+	p.proc = proc
 	p.mu.Unlock()
 
 	// Send initial config to the plugin as an event.
@@ -131,6 +145,21 @@ func (p *stdioChannelPluginProvider) CreateChannel(cfg map[string]string, msgBus
 	}
 
 	return transport, nil
+}
+
+// replaceChannelProcess tears down the previous channel plugin child process
+// and its transport. Close the transport first (unblocks its read pump and any
+// pending RPC callers), then kill the child. Kill errors are logged, not
+// fatal — the freshly spawned process replaces them either way.
+func (p *stdioChannelPluginProvider) replaceChannelProcess(proc *channelProcess, conn *agent.ChannelPluginTransport) {
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if proc != nil && proc.cmd.Process != nil {
+		if err := proc.cmd.Process.Kill(); err != nil {
+			log.WithField("channel", p.decl.Name).WithError(err).Warn("Failed to kill previous channel plugin process")
+		}
+	}
 }
 
 func (p *stdioChannelPluginProvider) ConfigSchema() []channel.SettingDefinition {
