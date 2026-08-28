@@ -2364,9 +2364,11 @@ func TestEnsureSessionModelBinding_BalanceTier(t *testing.T) {
 	}
 }
 
-// TestEnsureSessionModelBinding_FallbackToDefault verifies that when Balance
-// tier is not configured, ensureSessionModelBinding falls back to GetDefault.
-func TestEnsureSessionModelBinding_FallbackToDefault(t *testing.T) {
+// TestEnsureSessionModelBinding_NoFallbackWithoutBalance verifies that when
+// Balance tier is not configured, ensureSessionModelBinding does NOT fall back
+// to GetDefault/last-used (user request: new sessions default to Balance
+// exclusively; without it no binding is created).
+func TestEnsureSessionModelBinding_NoFallbackWithoutBalance(t *testing.T) {
 	mgr := &mockSubscriptionManager{
 		subs: []channel.Subscription{
 			{ID: "sub1", Name: "glm", Model: "glm-4", Enabled: true},
@@ -2391,14 +2393,11 @@ func TestEnsureSessionModelBinding_FallbackToDefault(t *testing.T) {
 
 	model.ensureSessionModelBinding()
 
-	if model.cachedModelName != "glm-4" {
-		t.Errorf("cachedModelName = %q, want glm-4 (from GetDefault fallback)", model.cachedModelName)
+	if model.cachedModelName != "" {
+		t.Errorf("cachedModelName = %q, want empty (no last-used fallback)", model.cachedModelName)
 	}
-	if model.activeSubID != "sub1" {
-		t.Errorf("activeSubID = %q, want sub1", model.activeSubID)
-	}
-	if len(subscriber.selectModelCalls) != 1 {
-		t.Fatalf("expected 1 SelectModel call, got %d", len(subscriber.selectModelCalls))
+	if len(subscriber.selectModelCalls) != 0 {
+		t.Fatalf("expected 0 SelectModel calls (no fallback), got %d", len(subscriber.selectModelCalls))
 	}
 }
 

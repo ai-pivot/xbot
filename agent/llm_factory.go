@@ -840,11 +840,11 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 // etc.) get an explicit model binding on first use, not just those created via
 // the CLI session panel.
 //
-// Priority:
-//  1. Balance tier config (user_settings "tier_balance") — the preferred default
-//  2. Last-used model (user_default_model table) — fallback when Balance is unset
+// Priority: Balance tier config only (user_settings "tier_balance") — the sole
+// default source for new sessions. If unset, no binding is created (the caller
+// falls through to GetLLM / system default). No last-used fallback (user
+// request: new sessions default to the Balance tier exclusively).
 //
-// If neither exists, no binding is created (the caller falls through to GetLLM).
 // Already-bound sessions are skipped (idempotent — safe to call every turn).
 //
 // On success, the session is bound via SelectModel (writes to both tenants table
@@ -870,21 +870,8 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 		}
 	}
 
-	// Priority 2: Last-used model (user_default_model).
-	// SelectModel writes to both tenants table (per-session) and user_default_model
-	// (per-user). When user_default_model exists but tenants doesn't, we bind it
-	// to make the session self-contained.
-	if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil &&
-		udm.SubscriptionID != "" && udm.Model != "" {
-		if err := f.SelectModel(senderID, chatID, channel, udm.SubscriptionID, udm.Model); err == nil {
-			log.WithFields(log.Fields{
-				"chatID": chatID, "subID": udm.SubscriptionID, "model": udm.Model,
-				"source": "last_used_model",
-			}).Info("ensureSessionModel: auto-bound session to last-used model")
-			return true
-		}
-	}
-
+	// Balance tier 未配置 → 不绑定（无 last-used fallback：新会话默认一律
+	// balance，没有就不绑，由调用方落到 GetLLM 系统默认）。
 	return false
 }
 

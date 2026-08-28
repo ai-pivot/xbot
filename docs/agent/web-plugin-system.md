@@ -673,3 +673,23 @@ d.setRenderSideBySide(false)                  // 并排 → 行内
 8. **插件互操作**：示例插件 B 经 `activationDependencies: ['xbot.git']` 等待 A 激活，`ctx.plugins.get('xbot.git')` 拿到类型化 `GitAPI` 并调用成功；删除 A 后 B 降级（`get` 返回 undefined，UI 不崩）；循环依赖声明的插件组在激活期被拒绝并报错。
 9. **热加载/卸载**：插件 A 激活后，重新下发 `web_plugin_init`（同 ID、新版本 URL）→ 旧实例 disposables 全部执行、贡献点移除、新模块生效；`web_plugin_deactivate` → 幂等卸载、UI 无残留。依赖 A 的 B 在 A 重载期间收到 `onDeactivated`/`onActivated` 且不崩。
 10. **插件管理面板（自举）**：内置 `xbot.plugin-manager` 面板列出全部插件（状态/依赖/权限），可启用/禁用/卸载/重载插件并即时反映（热加载生效）；面板自身只用公开 API（无宿主内部访问），替换它不破坏系统。
+
+## 布局 v4「一切皆面板」（PanelDock / panelRegistry）
+
+### 架构
+
+- **panelRegistry**（`plugin-runtime/panelRegistry.ts`）：内置面板与插件面板的唯一注册表。`registerPanel/unregisterPanel/listPanels/subscribePanels`，通知模式仿 registry 的 view 订阅（listener 异常不中断广播）。def 契约在 `plugin-api/panels.ts`（`PanelDefinition`：id/title/icon/defaultSlot('left')/defaultMode('docked'|'floating')/defaultSize?/render(ctx)/badges?/source?('core'|pluginId)）。
+- **PanelChrome**（`components/panel/PanelChrome.tsx`）：统一外壳。标题栏 h-8 = icon(12px muted) + title(11.5px semibold) + sub(mono 9.5px) + badge(colored 22% 底 pill) + 停靠⇄浮动 + 折叠 + (仅 docked) grip。docked 皮肤 `bg-white/[.02] + inset ring white/5%`；floating 皮肤毛玻璃 `rgba(17,20,29,.9) + blur(14px) + 大阴影`。图标经 `pluginIcon()` 映射。
+- **PanelLayout**（`components/panel/PanelLayout.tsx`）：三件套导出——`PanelDockProvider`（状态+持久化+拖拽逻辑）/`PanelDock`（左栏堆叠）/`FloatingLayer`（absolute inset-0 pointer-events-none，渲染在 AppShell 根容器内，非 body portal）。布局状态 per panel `{mode,x,y,w,h,collapsed}` + dockOrder；持久化 localStorage `xbot:panel-layout` + user_settings `web:ui:panel-layout`（SETTING_MAP 已映射，syncSettingToServer debounce + SETTINGS_SYNCED_EVENT 重读，照抄 layout-overrides 模式）；**load 时丢弃未知 id**（面板注销后的残留）。
+- **交互**（pointer events + setPointerCapture，模式照 SidebarSectionStack.startResize）：floating 标题栏拖动（clamp 容器内；松手在 dock 区 → 停靠 append）；右下角 resize（min 220×120）；双击标题回停靠；docked grip 拖拽重排（fixed ghost 跟随 + elementFromPoint 找 `[data-dock-item]` 画插入线；拖出 dock 区松手 → floating 原地变）。docked 高度：折叠=仅标题栏；展开=max-h 320 内部滚动；`core.sessions` 特例 flex-1 占满。
+- **内置面板**（`components/panel/builtinPanels.tsx`，source='core'）：core.sessions（SessionList+SessionSearch 主体）/core.files/core.search/core.info/core.tasks/core.terminal（仅 body 渲染时挂 useTerminal）。除 sessions 外初始 collapsed=true。AppShell.tsx **模块级** `registerBuiltinPanels()` 幂等注册。badges 数据源都在 hook 作用域内（useTasks/useTerminal），同步函数接不上 → 返回 null。
+- **插件接入**：`ctx.panels = {register(def), update(id,patch), unregister(id)}`（'ui' 权限，`buildContext` 照 ctx.ui 模式注入，实现带 ownership 校验——插件只能动 source 为自己的面板）。view 贡献点在 `usePluginRuntimeHost` 的 syncViews 自动 registerPanel（id 沿用 view.id，docked，render 复用 PluginView）。**`usePluginViewPanels` 保留为兼容 shim**（列表改从 panelRegistry 读，view 从 runtime.listAllViews() 匹配）——MobileAppShell/PluginPanelContainer 零改动。
+- **openPanel 入口**：`RightSidebarControlContext` 保留（AgentPanel onOpenTasks/ctx.ui.openPanel 调用点），实现改为 `window.dispatchEvent(new CustomEvent('xbot:panel-request', {detail:{id}}))`，PanelDockProvider 监听 → collapsed=false 展开。
+
+### Gotchas
+
+- **usePluginRuntimeHost.ts 是 .ts 文件——render 回调里禁 JSX**，用 `createElement(PluginView, {pluginId, view})`（JSX 会报 TS1005 解析错误）。
+- **render 回调不能直接调 hooks**——需要 hooks 的面板主体在模块级组件实现（如 CoreSessionsPanel/CoreTerminalPanel），render 只返回元素；组件身份稳定，状态不随重渲染丢失。
+- **desktop.sidebar slot 的测试语义已废弃**：v2 起内置面板默认 slot 是 `desktop.activity_bar`（layoutRegistry.registerBuiltinLayoutItems），且该 slot 还含 weight 0 的 desktopSessions——ordering 断言用 `toContain + indexOf` 而非精确下标。
+- **SessionSidebar.tsx 容器未删**：桌面已无引用（AppShell 走 PanelDock），但 MobileAppShell（手机抽屉）仍消费其渠道筛选/新会话/多选功能——文件头已标注 deprecated，手机端迁移前勿删。
+- 拖拽 ghost 必须 `pointer-events-none`，否则 elementFromPoint 命中 ghost 自身，插入线判定失效。

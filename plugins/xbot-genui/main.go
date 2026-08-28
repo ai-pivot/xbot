@@ -226,19 +226,16 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 		writeResult(enc, req.ID, map[string]any{"content": "code must define an App component (e.g. `export default function App()` or `function App()`)", "is_error": true})
 		return
 	}
-	// Empty render guard.
-	if isEmptyRender(code) {
-		writeResult(enc, req.ID, map[string]any{"content": "the App component renders nothing (returns null or an empty fragment). It must return visible JSX content.", "is_error": true})
-		return
-	}
 
-	// NOTE: NO syntax validation here — on purpose. The frontend compiles the
-	// code with the SAME sucrase pipeline it renders with, so any syntax error
-	// surfaces exactly where it can be judged correctly. A hand-written
-	// bracket counter cannot parse regex literals / template nesting and
-	// produced false "unclosed brackets" rejections on perfectly valid code
-	// (2026-08-28 incident: every large GenUI draft rejected with depth=2
-	// while sucrase compiled the identical source cleanly).
+	// NOTE: NO syntax validation and NO empty-render detection here — on
+	// purpose. Both are static heuristics that CANNOT judge the actual render
+	// result: the bracket counter false-rejected valid code with regex
+	// literals (depth=2, 2026-08-28), and the `return null` scan false-rejected
+	// apps whose SUB-components have null fallback branches while the App
+	// itself renders fine (same-day incident: a full layout mockup rejected as
+	// "renders nothing" while rendering perfectly). The frontend sucrase
+	// pipeline is the only correct judge; a truly empty App just shows a blank
+	// panel that the user re-prompts for — no server-side gate needed.
 
 	writeResult(enc, req.ID, map[string]any{
 		"content":      fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
@@ -260,22 +257,6 @@ func stripMarkdownFences(code string) string {
 	}
 	s = strings.TrimSuffix(strings.TrimSpace(s), "```")
 	return strings.TrimSpace(s)
-}
-
-func isEmptyRender(code string) bool {
-	lines := strings.Split(code, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "return ") {
-			ret := strings.TrimSpace(strings.TrimPrefix(trimmed, "return "))
-			ret = strings.TrimRight(ret, ");")
-			ret = strings.TrimSpace(ret)
-			if ret == "null" || ret == "undefined" || ret == "false" || ret == "<></>" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // ─── stdout helpers ─────────────────────────────────────────────────────────
