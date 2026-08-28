@@ -154,7 +154,7 @@ export function SkillManagerPanel() {
       try {
         const form = new FormData()
         form.append('file', file)
-        await postAPI('/api/app/install-file', form)
+        await postAPI('/api/skills/install-file', form)
         await load()
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))

@@ -823,6 +823,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/app/install-file", wc.authenticatedPOST(wc.handleMarketInstallFile))
 	mux.HandleFunc("/api/app/uninstall", wc.authenticatedPOST(wc.handleMarketUninstall))
 	mux.HandleFunc("/api/skills/export", wc.authenticatedPOST(wc.handleSkillsExport))
+	mux.HandleFunc("/api/skills/install-file", wc.authenticatedPOST(wc.handleSkillsInstallFile))
 
 	// Plugin install (single-plugin zip, multipart upload → local temp → install)
 	mux.HandleFunc("/api/plugin/install-file", wc.authenticatedPOST(wc.handlePluginInstallFile))

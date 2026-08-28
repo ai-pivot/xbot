@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { SkillManagerPanel } from './SkillManagerPanel'
+import { postAPI } from '@/lib/api'
 
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
@@ -193,5 +194,30 @@ describe('SkillManagerPanel SKILL.md 预览', () => {
       'skill_get_content',
       expect.anything(),
     )
+  })
+})
+
+describe('SkillManagerPanel 安装 skill', () => {
+  beforeEach(() => {
+    rpcCall.mockReset()
+    rpcCall.mockResolvedValue(skills)
+    vi.mocked(postAPI).mockReset()
+    vi.mocked(postAPI).mockResolvedValue({ ok: true, name: 'test-skill' })
+  })
+
+  it('安装按钮调用 /api/skills/install-file（非 /api/app/install-file）', async () => {
+    render(<SkillManagerPanel />)
+    await screen.findByText('skills.install')
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+
+    // 模拟文件选择
+    const file = new File(['fake-zip'], 'test-skill.zip', { type: 'application/zip' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(postAPI).toHaveBeenCalledWith('/api/skills/install-file', expect.any(FormData))
+    })
+    // 确保不调用旧的 app 接口
+    expect(postAPI).not.toHaveBeenCalledWith('/api/app/install-file', expect.anything())
   })
 })
