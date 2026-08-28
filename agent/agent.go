@@ -2242,10 +2242,14 @@ func (a *Agent) SetDirectSend(fn func(channel.OutboundMsg) (string, error)) {
 	a.directSend = fn
 }
 
-// SetEventRouter sets the event trigger router.
-// The router's InjectFunc is wired to injectEventMessage when Agent.Run starts.
+// SetEventRouter sets the event trigger router and immediately wires the inject function.
+// This must not depend on Agent.Run() startup timing — SetEventRouter may be called
+// after Run() has already started (InitServer starts Run() in a goroutine, then
+// server.go calls SetEventRouter afterwards). If we only set injectFunc inside Run(),
+// the nil check on a.eventRouter fails and injectFunc is never wired.
 func (a *Agent) SetEventRouter(r *event.Router) {
 	a.eventRouter = r
+	r.SetInjectFunc(a.injectEventMessage)
 }
 
 // SetChannelPromptProviders 设置 channel 特化 prompt 提供者。
@@ -2512,9 +2516,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
-	if a.eventRouter != nil {
-		a.eventRouter.SetInjectFunc(a.injectEventMessage)
-	}
+	// SetInjectFunc is now called in SetEventRouter (before Run starts),
+	// so a.eventRouter is guaranteed to have the inject function wired.
 
 	// Set up Agent-level context for background interactive subagents.
 	// Bg subagents derive from this ctx (not per-request ctx) so they survive across requests.
