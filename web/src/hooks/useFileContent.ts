@@ -42,14 +42,17 @@ export function useFileContent({ filePath, cwd }: UseFileContentOptions): UseFil
   useEffect(() => {
     let cancelled = false
 
-    if (!filePath || !cwd) {
+    // Embedded skill paths (e.g. "embedded:debug/SKILL.md") are virtual —
+    // served by the backend, no CWD joining needed.
+    const isEmbedded = filePath.startsWith('embedded:')
+    if (!filePath || (!cwd && !isEmbedded)) {
       setLoading(false)
       setError(null)
       return
     }
 
-    // Resolve absolute path: join CWD with relative filePath
-    const absPath = filePath.startsWith('/') ? filePath : joinPath(cwd, filePath)
+    // Resolve absolute path: absolute or embedded paths pass through; relative joined with CWD
+    const absPath = filePath.startsWith('/') || isEmbedded ? filePath : joinPath(cwd!, filePath)
 
     // Image files: load as blob URL instead of text
     if (isImageFile(filePath)) {

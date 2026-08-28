@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"xbot/tools"
 )
 
 // ---------------------------------------------------------------------------
@@ -260,6 +262,29 @@ func (wc *WebChannel) handleFsRead(w http.ResponseWriter, r *http.Request) {
 	rawPath := r.URL.Query().Get("path")
 	if rawPath == "" {
 		jsonErrorResponse(w, http.StatusBadRequest, "path is required")
+		return
+	}
+
+	// Embedded skill path: "embedded:<skill-name>/<file>" (e.g. "embedded:debug/SKILL.md").
+	// These are compiled into the binary, not on disk — handle before resolveSafePath.
+	if strings.HasPrefix(rawPath, "embedded:") {
+		embPath := strings.TrimPrefix(rawPath, "embedded:")
+		parts := strings.SplitN(embPath, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			jsonErrorResponse(w, http.StatusBadRequest, "invalid embedded path")
+			return
+		}
+		data, err := tools.ReadEmbeddedSkillFile(parts[0], parts[1])
+		if err != nil {
+			jsonErrorResponse(w, http.StatusNotFound, "embedded file not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, fsReadResponse{
+			Content:  string(data),
+			Language: languageFromPath(parts[1]),
+			Size:     int64(len(data)),
+			IsBinary: false,
+		})
 		return
 	}
 
