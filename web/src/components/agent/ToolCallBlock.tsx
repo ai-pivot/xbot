@@ -26,6 +26,8 @@ type ToolLike = WebToolProgress | IterationTool | ToolProgress
 
 interface ToolCallBlockProps {
   tool: ToolLike
+  /** 隐藏 args 块（统一参数渲染：宿主浮窗已自行渲染 ArgsView 时使用）。 */
+  hideArgs?: boolean
 }
 
 function summaryOf(t: ToolLike): string | undefined {
@@ -53,7 +55,7 @@ function prettyArgs(args: string): string {
 }
 
 /** Highlighted args JSON — CodeBlock pattern (sync highlight + lazy load). */
-function ArgsView({ args }: { args: string }) {
+export function ArgsView({ args }: { args: string }) {
   const hljsReady = useHljsReady()
   const pretty = useMemo(() => prettyArgs(args), [args])
   const html = useMemo(() => highlightSync(pretty, 'json'), [pretty, hljsReady])
@@ -75,6 +77,7 @@ function ArgsView({ args }: { args: string }) {
 
 export const ToolCallBlock = memo(function ToolCallBlock({
   tool,
+  hideArgs = false,
 }: ToolCallBlockProps) {
   const { t } = useI18n()
   const args = argsOf(tool)
@@ -83,7 +86,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 
   return (
     <div className="flex flex-col gap-2 py-1 text-xs">
-      {args && (
+      {args && !hideArgs && (
         <div>
           <div className="mb-1 text-text-muted">{t('agent.args')}</div>
           <ArgsView args={args} />

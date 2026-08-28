@@ -6,7 +6,7 @@
  * renderers ToolCallBlock and ReasoningBlock.
  */
 import { describe, expect, it } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
@@ -18,6 +18,21 @@ import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
 import { SquareTerminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
+
+// radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
+// 精简 stub：只要构造函数与三方法存在即可（测试不依赖真实测量）。
+class ROStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+;(window as unknown as { ResizeObserver: unknown }).ResizeObserver = ROStub
+;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ROStub
+
+/** FoldedToolGroup 折叠行的 Popover 浮层容器（radix Portal → document.body）。 */
+function popoverContent(): HTMLElement | null {
+  return document.querySelector('[data-slot="popover-content"]')
+}
 
 /** Helper: build a WebToolProgress with defaults. */
 function makeTool(overrides: Partial<WebToolProgress> = {}): WebToolProgress {
@@ -138,24 +153,45 @@ describe('ReasoningBlock', () => {
 })
 
 describe('FoldedToolGroup', () => {
-  it('merges multiple tools at minimal level into one foldable line', () => {
+  it('opens a per-tool popover with summary and args when a pill is clicked', () => {
     const tools = [
-      makeTool({ name: 'Read', label: 'Read' }),
-      makeTool({ name: 'Grep', label: 'Grep' }),
+      makeTool({ name: 'Read', label: 'Read', summary: 'read a config file', args: '{"path":"/tmp/a.go"}' }),
+      makeTool({ name: 'Grep', label: 'Grep', summary: 'grep the tree' }),
     ]
     const { container } = renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
-    // Merged row shows icons in the button (title row); AnimatedCollapse also renders
-    // icons in the hidden expanded content, so check the button specifically.
-    const button = container.querySelector('button[aria-expanded="false"]')
-    expect(button).not.toBeNull()
-    const icons = button!.querySelectorAll('.tool-icon-single')
-    expect(icons.length).toBe(2)
+    // 折叠行：无 ▸ 箭头；每个 pill 是独立 trigger，原地无浮窗
+    expect(container.textContent).not.toContain('▸')
+    const pills = screen.getAllByTestId('tool-pill')
+    expect(pills).toHaveLength(2)
+    expect(popoverContent()).toBeNull()
 
-    // Expand the merged line
-    fireEvent.click(screen.getByRole('button'))
-    // Individual tool cards should now be visible — tool names appear in expanded cards
-    expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Grep').length).toBeGreaterThan(0)
+    // 点哪个 pill 弹哪个工具的浮窗：summary + 参数 + 渲染，不含第二个工具内容
+    fireEvent.click(pills[0]!)
+    const content = popoverContent()
+    expect(content).not.toBeNull()
+    // summary 在浮窗中至少出现一次（ToolPopoverDetail 的 summary 块；ToolCallBlock
+    // 在 args 存在时不重复渲染 summary）。参数块断言用 hljs 内容（「参数」标签走
+    // i18n，jsdom 无词典——以渲染实质为准）。
+    expect(within(content as HTMLElement).getAllByText('read a config file').length).toBeGreaterThan(0)
+    expect(within(content as HTMLElement).getByText(/"path"/)).toBeInTheDocument()
+    expect(within(content as HTMLElement).queryByText('grep the tree')).toBeNull()
+  })
+
+  it('aggregates pills when more than 8 tools: first 7 pills + "+N" badge opens the overflow list', () => {
+    const tools = Array.from({ length: 9 }, (_, i) =>
+      makeTool({ name: `T${i}`, label: `T${i}` }),
+    )
+    renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
+    // 折叠行：仅前 7 个 pill（T0..T6）+ "+2" 徽标；第 8 个工具（T7）不内联渲染
+    expect(screen.getByTestId('tool-pill-more')).toHaveTextContent('+2')
+    expect(screen.queryByText('T7')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('tool-pill')).toHaveLength(7)
+
+    // "+N" 浮层 = 溢出的 2 条列表
+    fireEvent.click(screen.getByTestId('tool-pill-more'))
+    const content = popoverContent()
+    expect(content).not.toBeNull()
+    expect(within(content as HTMLElement).getAllByTestId('tool-row')).toHaveLength(2)
   })
 
   it('renders each tool independently at none level', () => {
@@ -174,11 +210,11 @@ describe('FoldedToolGroup', () => {
   it.each(['pending', 'running', 'generating'] as const)(
     'uses an accent sweep in a folded %s tool title',
     (status) => {
-      const { container } = renderWithProviders(
+      renderWithProviders(
         <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
       )
-      const title = container.querySelector('button[aria-expanded="false"]')
-      const sweep = title?.querySelector<HTMLElement>('.sweep-text')
+      const pill = screen.getByTestId('tool-pill')
+      const sweep = pill.querySelector<HTMLElement>('.sweep-text')
       expect(sweep).not.toBeNull()
       expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
     },
@@ -187,11 +223,11 @@ describe('FoldedToolGroup', () => {
   it.each(['done', 'error'] as const)(
     'keeps a folded %s tool title static',
     (status) => {
-      const { container } = renderWithProviders(
+      renderWithProviders(
         <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
       )
-      const title = container.querySelector('button[aria-expanded="false"]')
-      expect(title?.querySelector('.sweep-text')).toBeNull()
+      const pill = screen.getByTestId('tool-pill')
+      expect(pill.querySelector('.sweep-text')).toBeNull()
     },
   )
 
@@ -220,7 +256,7 @@ describe('FoldedToolGroup', () => {
     )
 
     expect(container.querySelector('.sweep-text')).toBeNull()
-    fireEvent.click(screen.getByRole('button'))
+    fireEvent.click(screen.getByTestId('tool-pill'))
     expect(container.querySelector('.sweep-text')).toBeNull()
   })
 
@@ -235,18 +271,18 @@ describe('FoldedToolGroup', () => {
       />,
     )
 
-    const title = container.querySelector('button[aria-expanded="false"]')
-    // Each tool group gets its own SweepText (icon + name per group).
-    // This ensures icons are positioned before their corresponding names.
-    expect(title?.querySelectorAll('.sweep-text')).toHaveLength(2)
+    // Each pill gets its own SweepText (icon + name per pill).
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(2)
   })
 
-  it('does not animate both the title and card for one expanded running tool', () => {
+  it('does not add a second sweep when the running tool popover opens', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={[makeTool({ status: 'running' })]} level="minimal" />,
     )
 
-    fireEvent.click(screen.getByRole('button'))
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+    fireEvent.click(screen.getByTestId('tool-pill'))
+    // 折叠行 pill 保持 1 个流光；浮窗（Portal，container 外）header 用静态文本，无流光
     expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
   })
 
@@ -260,14 +296,15 @@ describe('FoldedToolGroup', () => {
     },
   )
 
-  it('renders single tool as independent FoldedLine regardless of level', () => {
+  it('renders single tool as an independent pill with its own popover regardless of level', () => {
     const tools = [makeTool({ name: 'Read', label: 'Read' })]
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={tools} level="minimal" />,
     )
-    // Single tool: one FoldedLine, not a merged line
-    const buttons = container.querySelectorAll('button[aria-expanded]')
-    expect(buttons.length).toBe(1)
+    // Single tool: one pill trigger with its own per-tool popover (no row trigger)
+    const pills = screen.getAllByTestId('tool-pill')
+    expect(pills.length).toBe(1)
+    expect(container.querySelector('button[aria-expanded]')).toBeNull()
   })
 
   it('renders nothing for empty tools', () => {
@@ -283,21 +320,32 @@ describe('FoldedToolGroup', () => {
   // branch rendered all icons in one span, then all text in a SweepText.
   // These tests ensure each icon is immediately followed by its tool name.
 
-  /** Helper: check that within a span, the icon element comes before the text element. */
-  function expectIconBeforeText(span: HTMLElement) {
-    const icon = span.querySelector('.tool-icon-single')
-    const text = span.querySelector('.sweep-text, .font-mono')
+  /**
+   * Helper: check that within a pill, the status icon element comes before
+   * the mono name text element. Pill DOM: [icon (pulse span | lucide svg), text].
+   */
+  function expectIconBeforeText(pill: HTMLElement) {
+    const icon = pill.firstElementChild
+    const text = pill.querySelector('.font-mono')
     expect(icon).not.toBeNull()
     expect(text).not.toBeNull()
-    // Compare DOM position: icon should come before text
-    // compareDocumentPosition returns bitmask; Node.DOCUMENT_POSITION_FOLLOWING = 4
-    // If icon precedes text: text.compareDocumentPosition(icon) & 4 === 4 (icon is following text → wrong)
-    // If icon precedes text: icon.compareDocumentPosition(text) & 4 === 4 (text follows icon → correct)
+    // Compare DOM position: icon should come before text.
+    // icon.compareDocumentPosition(text) & DOCUMENT_POSITION_FOLLOWING(4) → text follows icon (correct)
     const mask = icon!.compareDocumentPosition(text!)
     expect(mask & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy() // text follows icon
   }
 
-  it('places each icon directly before its tool name in merged running tools', () => {
+  /** Helper: fold row pill triggers → the per-tool pill elements (rounded-full). */
+  function foldedPills(root: HTMLElement): HTMLElement[] {
+    const triggers = root.querySelectorAll('[data-testid="tool-pill"]')
+    return Array.from(triggers).map((trigger) => {
+      const pill = trigger.querySelector('span.rounded-full')
+      expect(pill).not.toBeNull()
+      return pill as HTMLElement
+    })
+  }
+
+  it('places each status icon directly before its tool name in merged running pills', () => {
     const tools = [
       makeTool({ name: 'Fetch', label: 'Fetch', status: 'running' }),
       makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
@@ -305,19 +353,16 @@ describe('FoldedToolGroup', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={tools} level="minimal" />,
     )
-    const button = container.querySelector('button[aria-expanded="false"]')
-    expect(button).not.toBeNull()
 
-    // Each tool group should be a span containing [icon, text] in that order.
-    // We do NOT want all icons grouped in one span before all text.
-    const toolSpans = button!.querySelectorAll('span.flex.items-center.gap-0\\.5')
-    expect(toolSpans.length).toBe(2) // one span per tool group
+    // Each tool is its own pill containing [icon, text] in that order.
+    const pills = foldedPills(container)
+    expect(pills.length).toBe(2)
 
-    expectIconBeforeText(toolSpans[0] as HTMLElement) // Fetch
-    expectIconBeforeText(toolSpans[1] as HTMLElement) // WebSearch
+    expectIconBeforeText(pills[0]) // Fetch
+    expectIconBeforeText(pills[1]) // WebSearch
   })
 
-  it('places each icon directly before its tool name in merged done tools', () => {
+  it('places each status icon directly before its tool name in merged done pills', () => {
     const tools = [
       makeTool({ name: 'Read', label: 'Read', status: 'done' }),
       makeTool({ name: 'Grep', label: 'Grep', status: 'done' }),
@@ -325,14 +370,12 @@ describe('FoldedToolGroup', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={tools} level="minimal" />,
     )
-    const button = container.querySelector('button[aria-expanded="false"]')
-    expect(button).not.toBeNull()
 
-    const toolSpans = button!.querySelectorAll('span.flex.items-center.gap-0\\.5')
-    expect(toolSpans.length).toBe(2)
+    const pills = foldedPills(container)
+    expect(pills.length).toBe(2)
 
-    for (const span of toolSpans) {
-      expectIconBeforeText(span as HTMLElement)
+    for (const pill of pills) {
+      expectIconBeforeText(pill)
     }
   })
 
@@ -347,15 +390,12 @@ describe('FoldedToolGroup', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={tools} level="minimal" />,
     )
-    const button = container.querySelector('button[aria-expanded="false"]')
-    expect(button).not.toBeNull()
 
-    // Verify: no span contains 2+ icons without text between them.
-    // Each tool group span should have exactly 1 icon.
-    const toolSpans = button!.querySelectorAll('span.flex.items-center.gap-0\\.5')
-    for (const span of toolSpans) {
-      const icons = span.querySelectorAll(':scope > .tool-icon-single')
-      expect(icons.length).toBe(1) // exactly 1 icon per tool group span
+    // Each pill must pair its own icon with its own name (never 2 icons in one pill).
+    const pills = foldedPills(container)
+    expect(pills.length).toBe(2)
+    for (const pill of pills) {
+      expectIconBeforeText(pill)
     }
   })
 })
@@ -399,7 +439,7 @@ describe('IterationGroup', () => {
     expect(screen.getByText('Final answer here')).toBeInTheDocument()
   })
 
-  it('renders tools with FoldedToolGroup', () => {
+  it('renders tools with FoldedToolGroup (pill row + popover)', () => {
     const iter = makeIteration({
       iteration: 1,
       tools: [
@@ -409,10 +449,17 @@ describe('IterationGroup', () => {
       toolCount: 2,
     })
     const { container } = renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
-    // Merged line shows icons in the button (fold-container also renders hidden icons)
-    const button = container.querySelector('button[aria-expanded="false"]')
-    const icons = button!.querySelectorAll('.tool-icon-single')
-    expect(icons.length).toBe(2)
+    // Folded row: 2 pills（各自独立浮窗），无 ▸ 箭头，原地无浮窗内容
+    expect(container.textContent).not.toContain('▸')
+    const pills = screen.getAllByTestId('tool-pill')
+    expect(pills).toHaveLength(2)
+    expect(popoverContent()).toBeNull()
+
+    // 点第一个 pill → 该工具的浮窗（summary/参数/渲染），非全量列表
+    fireEvent.click(pills[0]!)
+    const content = popoverContent()
+    expect(content).not.toBeNull()
+    expect(within(content as HTMLElement).queryAllByTestId('tool-row')).toHaveLength(0)
   })
 
   it('renders a hint when iteration is empty', () => {

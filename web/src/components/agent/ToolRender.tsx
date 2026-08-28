@@ -31,6 +31,8 @@ import { GenUIPanel } from './GenUIPanel'
 
 interface ToolRenderProps {
   tool: WebToolProgress
+  /** 隐藏 fallback ToolCallBlock 的 args 块（统一参数渲染：浮窗已自行渲染 ArgsView）。 */
+  hideArgs?: boolean
 }
 
 /** Try to parse the tool's args as JSON. Returns null on failure. */
@@ -110,7 +112,7 @@ function elapsedBadge(ms: number): string | null {
   return ms < 10_000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
-export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
+export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: ToolRenderProps) {
   const runtime = useOptionalPluginRuntime()
   const name = tool.name || ''
   const summary = tool.summary || ''
@@ -153,7 +155,7 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
         }
         return rendered
       }
-      return <ToolCallBlock tool={tool} />
+      return <ToolCallBlock tool={tool} hideArgs={hideArgs} />
     }
   }
 })

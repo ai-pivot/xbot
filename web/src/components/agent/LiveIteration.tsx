@@ -11,7 +11,7 @@
  */
 import { memo, useEffect } from 'react'
 
-import { FoldedLine } from './FoldedLine'
+import { ThinkingLine } from './ThinkingLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
@@ -21,7 +21,6 @@ import { ShimmerThinking } from './ShimmerThinking'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
-import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
@@ -40,8 +39,6 @@ export const LiveIteration = memo(function LiveIteration({
   level,
   mergeTools = true,
 }: LiveIterationProps) {
-  const { t } = useI18n()
-
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
   const hasReasoning = Boolean(reasoningContent)
@@ -209,16 +206,14 @@ export const LiveIteration = memo(function LiveIteration({
 
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
-        <FoldedLine
-          title={reasoningInProgress ? (
-            <SweepText
-              text={t('agent.thinkingChars', { count: reasoningCount })}
-              color="var(--text-muted)"
-              className="text-xs"
-            />
-          ) : t('agent.thinkingChars', { count: reasoningCount })}
-          defaultOpen={false}
-          keepMounted
+        <ThinkingLine
+          label={reasoningInProgress
+            ? <SweepText
+                text={'思考中… ' + reasoningCount + ' 字'}
+                color="var(--text-muted)"
+                className="text-[10px]"
+              />
+            : '思考 ' + reasoningCount + ' 字'}
         >
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock
@@ -227,7 +222,7 @@ export const LiveIteration = memo(function LiveIteration({
               visibleChars={isLive ? rw.visibleChars : undefined}
             />
           </div>
-        </FoldedLine>
+        </ThinkingLine>
       )}
 
       {/* Streaming O — typewriter reveal + fade-in effect */}

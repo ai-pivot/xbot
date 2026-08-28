@@ -205,7 +205,10 @@ describe('MessageList virtualization', () => {
     // verified by the e2e scroll test.
     const sizing = container.querySelector('[style*="height"]')
     expect(sizing).not.toBeNull()
-    expect(sizing!.getAttribute('style')).toContain('18000px')
+    // 高度量级验证（estimate 已是内容感知 heightMemory，非固定常数——硬编码
+    // 18000px 在估算改进后过期）；浏览器滚动性能由 e2e scroll test 验证。
+    const total = Number(sizing!.getAttribute('style')?.match(/height:\s*([\d.]+)px/)?.[1] ?? 0)
+    expect(total).toBeGreaterThan(10000)
   })
 
   it('disables native scroll anchoring so the virtualizer owns size corrections', () => {

@@ -67,6 +67,38 @@ const ESTIMATE = 120
 const GENUI_PANEL_ESTIMATE = 560
 const EDGE_EPSILON = 2
 
+// ── 历史高度抖动根治：高度记忆 + 内容感知估算 ──────────────────────────────
+// 抖动机制：历史加载时 estimateSize 返回常数（120），而实际高度 200–900px →
+// TanStack 逐行 measureElement 修正 → 行位置级联跳动。两层修复（都不跳过测量，
+// ResizeObserver 仍持续跟踪，与已删除的"固化"缓存本质不同）：
+//   1. heightMemory：module 级 Map<rowKey, 实测高度>。measureElement 时记录
+//      实测值；下次同一行 estimate 直接命中记忆值 → 二次加载零修正、零抖动。
+//      记忆的是初值，不是固化 —— 高度变化仍由 ResizeObserver 修正。
+//   2. estimateRowByContent：首次访问（无记忆）时按内容长度/迭代数/工具数粗估，
+//      比常数 120 的误差缩小数倍。
+const heightMemory = new Map<string, number>()
+
+/** 与 getItemKey 相同的稳定行键（turn-N-role / row.id）。 */
+function rowMemoryKey(row: ChatMessage, index: number): string {
+  if (row.turnID > 0 && row.turnID < Number.MAX_SAFE_INTEGER) {
+    return `turn-${row.turnID}-${row.role}`
+  }
+  return row.id ?? `row-${index}`
+}
+
+/** 首次访问（无记忆）时的内容感知估算：量级正确即可，精度由实测修正。 */
+function estimateRowByContent(row: ChatMessage): number {
+  if (row.role === 'user') {
+    const len = (row.content || '').length
+    return Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
+  }
+  const iters = row.iterations?.length ?? 0
+  const tools = (row.iterations ?? []).reduce((a, it) => a + (it.tools?.length ?? 0), 0)
+  const len = (row.content || '').length
+  const lines = Math.ceil(len / 90) || 1
+  return Math.min(Math.max(70 + lines * 21 + iters * 34 + Math.ceil(tools / 4) * 20, 140), 1200)
+}
+
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
   let idx = -1
   for (let i = 0; i < rows.length; i++) {
@@ -201,19 +233,22 @@ export function MessageList({
     [rows],
   )
 
-  // TanStack Virtual
+  // TanStack Virtual —— API 返回函数，React Compiler 无法安全 memo；
+  // virtualizer 按设计每次渲染重建内部映射。
   // eslint-disable-next-line react-hooks/incompatible-library
-
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => {
       const row = rows[index]
       if (!row) return ESTIMATE
+      const key = rowMemoryKey(row, index)
+      const remembered = heightMemory.get(key)
+      if (remembered !== undefined) return remembered
       // GenUI 行给接近实际的初值（面板 header + 典型 UI 高度），真实高度由
       // measureElement 的 ResizeObserver 持续跟踪 —— 内容长高/折叠/展开自动修正。
       if (rowHasGenUI(row)) return GENUI_PANEL_ESTIMATE
-      return ESTIMATE
+      return estimateRowByContent(row)
     },
     overscan: dynamicOverscan,
     getItemKey: (index) => {
@@ -251,16 +286,36 @@ export function MessageList({
     }
   }, [virtualizer])
 
-  // Row measurement: the row div uses `ref={virtualizer.measureElement}`
-  // directly (official usage) — measureElement installs a ResizeObserver per
-  // node and, on ref(null) (row scrolled out / unmounted), prunes disconnected
-  // nodes from the measurement cache. A custom wrapper that early-returned on
-  // null leaked stale nodes into the cache. The previous "measure GenUI once
-  // and freeze the height" approach was fully removed earlier: freeze broke
-  // fold/expand and async content growth (overlap + blank-space bugs).
-  // Scroll stability is handled by shouldAdjustScrollPositionOnItemSizeChange
-  // above (only items FULLY above the viewport trigger correction), and fold
-  // transitions get an authoritative re-measure via onTransitionEnd below.
+  // Row measurement: wrap the official measureElement (it prunes disconnected
+  // nodes on ref(null) — do NOT early-return on null, that leaked stale nodes).
+  // After measureElement (which has already forced layout internally, so the
+  // read is cheap) record the REAL height into heightMemory keyed by the row's
+  // stable key — the next history reload estimates this row from the remembered
+  // value instead of the content heuristic, making reloads zero-correction
+  // (zero jitter). This is NOT the old freeze cache: nothing skips
+  // measurement; the ResizeObserver keeps tracking and overrides the estimate
+  // the moment real height changes. Scroll stability is handled by
+  // shouldAdjustScrollPositionOnItemSizeChange above, fold transitions get an
+  // authoritative re-measure via onTransitionEnd below.
+  const measureRef = useCallback(
+    (node: HTMLElement | null) => {
+      if (!node) {
+        virtualizer.measureElement(null)
+        return
+      }
+      virtualizer.measureElement(node)
+      const idx = Number(node.dataset?.index ?? -1)
+      const row = rowsRef.current[idx]
+      if (row) {
+        const h = node.getBoundingClientRect().height
+        if (h > 0) {
+          heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
+          if (heightMemory.size > 3000) heightMemory.clear()
+        }
+      }
+    },
+    [virtualizer, rows],
+  )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
   // User report: "agent turn 消失" — the live tail row vanishes from the DOM
@@ -803,7 +858,7 @@ export function MessageList({
                   <div
                     key={item.key}
                     data-index={item.index}
-                    ref={virtualizer.measureElement}
+                    ref={measureRef}
                     onTransitionEnd={(e) => {
                       // Fold/expand animations (grid-template-rows 180ms in
                       // AnimatedCollapse) resize the row OUTSIDE React's commit
