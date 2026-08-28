@@ -1005,6 +1005,55 @@ func (wc *WebChannel) handleSkillsExport(w http.ResponseWriter, r *http.Request)
 	_, _ = w.Write(buf.Bytes())
 }
 
+// handleSkillsInstallFile handles POST /api/skills/install-file — installs a
+// skill from a plain zip (no xbot.json manifest). The zip must contain a
+// top-level directory with SKILL.md.
+func (wc *WebChannel) handleSkillsInstallFile(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.RPCHandler == nil {
+		writeJSON(w, http.StatusServiceUnavailable, marketResponse{OK: false, Error: "RPC handler not configured"})
+		return
+	}
+
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "failed to parse multipart form"})
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, marketResponse{OK: false, Error: "no file uploaded"})
+		return
+	}
+	defer file.Close()
+
+	tmpFile, err := os.CreateTemp("", "xbot-skill-install-*.zip")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to create temp file"})
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: "failed to save uploaded file"})
+		return
+	}
+	tmpFile.Close()
+
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := wc.rpcCallAs(r, "skill_install_file", map[string]any{
+		"zip_path": tmpPath,
+		"force":    r.URL.Query().Get("force") == "true",
+	}, &result); err != nil {
+		writeJSON(w, http.StatusInternalServerError, marketResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": result.Name})
+}
+
 // sanitizeExportName keeps only alphanumerics, '-', '_', '.' — everything else becomes '_'.
 // A result of "." or ".." (or anything that would traverse out of the zip root) is
 // replaced with "skill" — such a name would otherwise produce a path-traversal zip
