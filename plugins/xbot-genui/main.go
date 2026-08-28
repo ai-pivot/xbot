@@ -226,16 +226,19 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 		writeResult(enc, req.ID, map[string]any{"content": "code must define an App component (e.g. `export default function App()` or `function App()`)", "is_error": true})
 		return
 	}
-	// Basic syntax validation (brace/paren balance).
-	if err := validateSyntax(code); err != nil {
-		writeResult(enc, req.ID, map[string]any{"content": fmt.Sprintf("syntax error: %v. Please fix and retry.", err), "is_error": true})
-		return
-	}
 	// Empty render guard.
 	if isEmptyRender(code) {
 		writeResult(enc, req.ID, map[string]any{"content": "the App component renders nothing (returns null or an empty fragment). It must return visible JSX content.", "is_error": true})
 		return
 	}
+
+	// NOTE: NO syntax validation here — on purpose. The frontend compiles the
+	// code with the SAME sucrase pipeline it renders with, so any syntax error
+	// surfaces exactly where it can be judged correctly. A hand-written
+	// bracket counter cannot parse regex literals / template nesting and
+	// produced false "unclosed brackets" rejections on perfectly valid code
+	// (2026-08-28 incident: every large GenUI draft rejected with depth=2
+	// while sucrase compiled the identical source cleanly).
 
 	writeResult(enc, req.ID, map[string]any{
 		"content":      fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
@@ -257,88 +260,6 @@ func stripMarkdownFences(code string) string {
 	}
 	s = strings.TrimSuffix(strings.TrimSpace(s), "```")
 	return strings.TrimSpace(s)
-}
-
-func validateSyntax(code string) error {
-	depth := 0
-	inString := byte(0)
-	inTemplate := false
-	inLineComment := false
-	inBlockComment := false
-
-	for i := 0; i < len(code); i++ {
-		ch := code[i]
-
-		if inLineComment {
-			if ch == '\n' {
-				inLineComment = false
-			}
-			continue
-		}
-		if inBlockComment {
-			if ch == '*' && i+1 < len(code) && code[i+1] == '/' {
-				inBlockComment = false
-				i++
-			}
-			continue
-		}
-		if inString != 0 {
-			if ch == '\\' {
-				i++
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
-		if inTemplate {
-			if ch == '\\' {
-				i++
-				continue
-			}
-			if ch == '`' {
-				inTemplate = false
-			}
-			continue
-		}
-
-		if ch == '/' && i+1 < len(code) {
-			if code[i+1] == '/' {
-				inLineComment = true
-				i++
-				continue
-			}
-			if code[i+1] == '*' {
-				inBlockComment = true
-				i++
-				continue
-			}
-		}
-		if ch == '"' || ch == '\'' {
-			inString = ch
-			continue
-		}
-		if ch == '`' {
-			inTemplate = true
-			continue
-		}
-
-		switch ch {
-		case '(', '[', '{':
-			depth++
-		case ')', ']', '}':
-			depth--
-			if depth < 0 {
-				return fmt.Errorf("unexpected closing bracket '%c' at position %d", ch, i)
-			}
-		}
-	}
-
-	if depth != 0 {
-		return fmt.Errorf("unclosed brackets (depth=%d) — check for missing ) ] }", depth)
-	}
-	return nil
 }
 
 func isEmptyRender(code string) bool {
