@@ -354,14 +354,14 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                       onDragStart={onSectionDragStart(sec.id)}
                       onDragEnd={onSectionDragEnd}
                       title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
-                      className={`flex shrink-0 select-none items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text-secondary ${
+                      className={`flex w-full shrink-0 select-none items-center gap-1 px-1.5 pb-1 pt-2 text-left text-[9px] font-semibold uppercase tracking-wider text-text-muted transition-colors hover:text-text-secondary ${
                         canReorder ? 'cursor-grab active:cursor-grabbing' : ''
                       }`}
                     >
                       <ChevronRight
-                        className={`size-3.5 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                        className={`size-3 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
                       />
-                      <span className="truncate">{sec.title}</span>
+                      <span className="truncate normal-case">{sec.title}</span>
                     </button>
                     {!isCollapsed && (
                       <div className="min-h-0 flex-1 overflow-hidden">{sec.content}</div>
