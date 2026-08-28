@@ -27,6 +27,9 @@ export interface DockviewContextValue {
   auth: AuthContextValue
   sessionStore: SessionStore
   rightSidebar: RightSidebarControl
+  /** 布局 v2：TabManager 引用（侧栏「面板」区打开的 panel tab 需要它操作
+   *  文件/终端等；AgentPanel/插件 openPanel 已由 AppShell 转成 openTab）。 */
+  tabManager?: TabManager
   /** PluginRuntime（插件注册表/迭代 UI 注入点）。Dockview 面板在隔离
    *  React root，必须经此桥接，否则 IterationSlot/usePluginRuntime
    *  在电脑端返回 null —— 插件迭代指标只在手机端渲染。 */

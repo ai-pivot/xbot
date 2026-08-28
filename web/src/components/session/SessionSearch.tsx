@@ -17,8 +17,8 @@ export function SessionSearch({ value, onChange }: SessionSearchProps) {
   const { t } = useI18n()
   return (
     <div
-      className="flex items-center gap-1.5 px-2 py-1.5"
-      style={{ borderBottom: '1px solid var(--border)' }}
+      className="mx-2 my-1.5 flex items-center gap-2 rounded-xl border px-3 py-2"
+      style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
     >
       <Search className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
       {/* readOnly-until-focus: Chrome IGNORES autoComplete="off" for form-history

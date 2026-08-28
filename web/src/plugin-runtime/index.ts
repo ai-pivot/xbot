@@ -25,6 +25,8 @@ import { PluginState } from './state'
 import { PluginUI, type UIServices } from './ui'
 import { PluginInterop } from './plugins'
 import { PluginConfigService } from './config'
+import { panelRegistry } from './panelRegistry'
+import type { PanelsAPI } from '@/plugin-api'
 import { buildContext } from './context'
 import { loadPluginModule, versionedUrl, type PluginModule } from './loader'
 import { toSafeMessage } from './sanitize'
@@ -52,6 +54,32 @@ export interface PluginRuntimeHost {
   mountCommand: (id: string, handler: (args: unknown) => void) => Disposable | void
   /** 状态变化通知（管理面板）。 */
   onPluginStateChange?: (state: import('./registry').PluginRuntimeState) => void
+}
+
+/**
+ * 构建某插件的 ctx.panels 能力（'ui' 权限）。全部操作经 panelRegistry，
+ * update/unregister 带 ownership 校验——插件只能动 source 为自己的面板。
+ */
+function makePanelsAPI(pluginId: string): PanelsAPI {
+  return {
+    register: (def) => {
+      panelRegistry.registerPanel({ ...def, source: pluginId })
+      return () => {
+        const cur = panelRegistry.getPanel(def.id)
+        if (cur && cur.source === pluginId) panelRegistry.unregisterPanel(def.id)
+      }
+    },
+    update: (id, patch) => {
+      const cur = panelRegistry.getPanel(id)
+      if (!cur || cur.source !== pluginId) return
+      panelRegistry.registerPanel({ ...cur, ...patch })
+    },
+    unregister: (id) => {
+      const cur = panelRegistry.getPanel(id)
+      if (!cur || cur.source !== pluginId) return
+      panelRegistry.unregisterPanel(id)
+    },
+  }
 }
 
 export class PluginRuntime {
@@ -169,6 +197,7 @@ export class PluginRuntime {
       rpc: this.rpc,
       state: this.state,
       ui: this.ui,
+      panels: makePanelsAPI(effective.id),
       plugins: this.plugins,
       config: this.config.forPlugin(effective.id),
       registerContribution: (c: Contribution) => {

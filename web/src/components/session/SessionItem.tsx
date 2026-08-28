@@ -130,13 +130,21 @@ export function SessionItem({
         }
       }}
       className={cn(
-        'group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
-        active && !multiSelectMode ? 'bg-bg-tertiary' : !session.synthetic && 'hover:bg-bg-tertiary/60 hover:shadow-md',
+        'group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors',
+        active && !multiSelectMode ? '' : !session.synthetic && 'hover:bg-bg-tertiary/60',
         session.synthetic && 'cursor-default opacity-80',
         selected && 'bg-accent/15 ring-1 ring-accent/40',
       )}
       style={{
         ...(isSubAgent ? { marginLeft: `${depth}rem` } : {}),
+        // 布局 v2（设计稿 1:1）：active 会话 = accent 14% 底 + accent 左条；
+        // 非会话项常态带透明左条，避免选中时布局跳动。
+        ...(active && !multiSelectMode
+          ? {
+              background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+              borderLeft: '2px solid var(--accent)',
+            }
+          : { borderLeft: '2px solid transparent' }),
         ...(unread && !isSubAgent && !active ? {
           backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
           boxShadow: 'inset 2px 0 var(--accent)',

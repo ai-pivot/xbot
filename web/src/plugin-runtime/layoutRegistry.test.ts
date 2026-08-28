@@ -56,7 +56,8 @@ describe('layoutRegistry', () => {
     expect(topBar).toContain(BUILTIN_LAYOUT_ITEMS.mobileTools)
     expect(topBar).toContain(BUILTIN_LAYOUT_ITEMS.mobileSettings)
 
-    const sidebar = layoutRegistry.itemsFor('desktop.sidebar').map((i) => i.id)
+    // 布局 v2/v4：内置面板默认注册到左栏 desktop.activity_bar。
+    const sidebar = layoutRegistry.itemsFor('desktop.activity_bar').map((i) => i.id)
     expect(sidebar).toContain(BUILTIN_LAYOUT_ITEMS.desktopFiles)
     expect(sidebar).toContain(BUILTIN_LAYOUT_ITEMS.desktopTerminal)
   })
@@ -118,14 +119,16 @@ describe('layoutRegistry', () => {
   })
 
   it('插件 view 注册后出现在默认 slot（container 映射）', () => {
+    // 布局 v2：right_sidebar container 映射到 desktop.activity_bar（协议不变）。
+    const mappedSlot = VIEW_CONTAINER_TO_SLOT['right_sidebar']
     layoutRegistry.register({
       id: 'xbot.git-fancy.panel',
-      slot: VIEW_CONTAINER_TO_SLOT['right_sidebar'],
+      slot: mappedSlot,
       title: 'Git',
       icon: 'git-branch',
       weight: 100,
     })
-    const sidebar = layoutRegistry.itemsFor('desktop.sidebar').map((i) => i.id)
+    const sidebar = layoutRegistry.itemsFor(mappedSlot).map((i) => i.id)
     expect(sidebar).toContain('xbot.git-fancy.panel')
     // weight 100 → 排在内置项之后。
     expect(sidebar.indexOf('xbot.git-fancy.panel'))
@@ -201,7 +204,7 @@ describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
   })
 
   it('setSlotOrder 重排同 slot 项并持久化到 localStorage', () => {
-    const sid = 'desktop.sidebar'
+    const sid = 'desktop.activity_bar'
     const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
     const terminal = BUILTIN_LAYOUT_ITEMS.desktopTerminal
     // 默认 weight 顺序 files(0)…terminal(4)；用户反转两者。
@@ -217,18 +220,20 @@ describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
   })
 
   it('排序数组外的项（新装插件）按 weight 追加在已排序项之后', () => {
-    const sid = 'desktop.sidebar'
+    const sid = 'desktop.activity_bar'
     const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
     // 只排 files 到最后：其余未记录项应仍按 weight 在它前面？不 —— 已排序项优先。
     layoutRegistry.setSlotOrder(sid, [files])
     const ids = layoutRegistry.itemsFor(sid).map((i) => i.id)
-    // files 是唯一已排序项 → 排最前，其余按 weight 跟随。
+    // files 是唯一已排序项 → 排最前，其余（含 weight 0 的会话项）按 weight 跟随。
     expect(ids[0]).toBe(files)
-    expect(ids[1]).toBe(BUILTIN_LAYOUT_ITEMS.desktopSearch)
+    expect(ids).toContain(BUILTIN_LAYOUT_ITEMS.desktopSearch)
+    expect(ids.indexOf(BUILTIN_LAYOUT_ITEMS.desktopSearch))
+      .toBeGreaterThan(ids.indexOf(files))
   })
 
   it('moveItemTo(id, slot, {beforeId}) 插入指定位置（跨 slot 自动清理旧 order）', () => {
-    const sid = 'desktop.sidebar'
+    const sid = 'desktop.activity_bar'
     const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
     const search = BUILTIN_LAYOUT_ITEMS.desktopSearch
     const info = BUILTIN_LAYOUT_ITEMS.desktopInfo
@@ -239,9 +244,9 @@ describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
     expect(layoutRegistry.itemsFor(sid).map((i) => i.id).slice(0, 3)).toEqual([search, info, files])
 
     // 跨 slot 移走 search：旧 slot 的 order 里不再有 search。
-    layoutRegistry.moveItemTo(search, 'desktop.activity_bar')
+    layoutRegistry.moveItemTo(search, 'desktop.info_bar')
     expect(layoutRegistry.getSlotOrder(sid)).not.toContain(search)
-    expect(layoutRegistry.itemsFor('desktop.activity_bar').map((i) => i.id)).toContain(search)
+    expect(layoutRegistry.itemsFor('desktop.info_bar').map((i) => i.id)).toContain(search)
   })
 
   it('beforeId 不在目标 slot → 追加到末尾（不抛错）', () => {
@@ -260,7 +265,7 @@ describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
   })
 
   it('resetItem 同时清掉 overrides 与所有 order 数组里的该 id', () => {
-    const sid = 'desktop.sidebar'
+    const sid = 'desktop.activity_bar'
     const files = BUILTIN_LAYOUT_ITEMS.desktopFiles
     layoutRegistry.moveItemTo(files, 'mobile.bottom_nav')
     expect(layoutRegistry.getSlotOrder('mobile.bottom_nav')).toContain(files)
@@ -271,20 +276,22 @@ describe('layoutRegistry ordering（VSCode 式拖拽重排）', () => {
   })
 
   it('resetAll 清空排序（回到 weight 默认顺序）', () => {
-    const sid = 'desktop.sidebar'
+    const sid = 'desktop.activity_bar'
     const terminal = BUILTIN_LAYOUT_ITEMS.desktopTerminal
     layoutRegistry.setSlotOrder(sid, [terminal])
     layoutRegistry.resetAll()
     expect(layoutRegistry.getSlotOrder(sid)).toEqual([])
-    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)[0]).toBe(BUILTIN_LAYOUT_ITEMS.desktopFiles)
+    // weight 0 的会话项回到最前（默认顺序）。
+    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)[0]).toBe(BUILTIN_LAYOUT_ITEMS.desktopSessions)
   })
 
   it('loadOrder 对脏数据（非数组值）整体丢弃该槽，回退 weight 排序', () => {
-    const sid = 'desktop.sidebar'
+    const sid = 'desktop.activity_bar'
     localStorage.setItem(LAYOUT_ORDER_KEY, JSON.stringify({ [sid]: 'not-an-array' }))
     // 触发重载：新实例路径不可直接调用（单例），通过 SETTINGS_SYNCED 之外的
     // loadOrder 是私有的 —— 这里直接验证 setSlotOrder 覆盖脏数据即可。
     layoutRegistry.setSlotOrder(sid, [])
-    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)[0]).toBe(BUILTIN_LAYOUT_ITEMS.desktopFiles)
+    // weight 0 的会话项回到最前（脏数据被丢弃，回退 weight 排序）。
+    expect(layoutRegistry.itemsFor(sid).map((i) => i.id)[0]).toBe(BUILTIN_LAYOUT_ITEMS.desktopSessions)
   })
 })

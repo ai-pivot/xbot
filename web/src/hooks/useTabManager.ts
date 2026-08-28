@@ -89,6 +89,8 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
                   diffPath: params.diffPath,
                   diffScope: params.diffScope,
                 }
+              : params.type === 'panel'
+            ? { panelId: params.panelId }
               : undefined,
   }
 }
@@ -229,6 +231,7 @@ function useTabManagerImpl(): TabManager {
       initialHighlight: input.type === 'file' ? input.data?.initialHighlight : undefined,
       fileLanguage: input.type === 'file' ? input.data?.fileLanguage : undefined,
       fileViewMode: input.type === 'file' ? input.data?.fileViewMode : undefined,
+      panelId: input.type === 'panel' ? input.data?.panelId : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'

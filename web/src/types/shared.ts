@@ -7,7 +7,7 @@
 
 export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en'
-export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'diff'
+export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'panel'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
 export type SessionCategory = 'time' | 'status' | 'path'
 
@@ -30,6 +30,8 @@ export interface Tab {
 }
 
 export interface TabData {
+  /** 布局 v2：侧栏「面板」区打开的 dockview 面板 id（files/search/info/tasks/terminal）。 */
+  panelId?: string
   filePath?: string
   /** Session channel for agent tabs (web/cli/feishu/...). */
   channel?: string

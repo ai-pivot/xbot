@@ -62,6 +62,13 @@ import { SessionStoreContext } from '@/hooks/useSessionStore'
 import { useOptionalPluginRuntime, PluginRuntimeContext } from '@/plugin-runtime'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { RightSidebarControlContext, useRightSidebarControl } from '@/components/sidebar/RightSidebarControl'
+import { useDockviewContext } from '@/workspace/types'
+import { useTerminal } from '@/hooks/useTerminal'
+import { TerminalList } from '@/components/sidebar/TerminalList'
+import { FileExplorer } from '@/components/sidebar/FileExplorer'
+import { FileSearch } from '@/components/sidebar/FileSearch'
+import { SessionInfo } from '@/components/sidebar/SessionInfo'
+import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -80,7 +87,42 @@ const CONTENT_COMPONENTS = {
   terminal: TerminalPanel,
   background: BackgroundPanel,
   diff: DiffPanel,
+  panel: PanelTabHost,
 } as const
+
+/**
+ * PanelTabHost — 布局 v2：侧栏「面板」区点击后以 dockview 全高 tab 打开的
+ * 内置面板宿主（原右侧栏 RightSidebar 的五个面板）。按 params.panelId 分发。
+ * terminal 用 useTerminal 包装（与原 LeftTerminalPanel 相同的语义）。
+ */
+function PanelTabHost({ params }: { params: PanelParams }) {
+  const ctx = useDockviewContext()
+  const tabManager = ctx.tabManager
+  const panelId = params.panelId ?? ''
+  if (!tabManager) {
+    return <div className="p-4 text-xs text-text-muted">面板加载中…</div>
+  }
+  switch (panelId) {
+    case 'files':
+      return <FileExplorer tabManager={tabManager} />
+    case 'search':
+      return <FileSearch tabManager={tabManager} />
+    case 'info':
+      return <SessionInfo tabManager={tabManager} />
+    case 'tasks':
+      return <TasksPanel tabManager={tabManager} />
+    case 'terminal':
+      return <LeftTerminalPanel tabManager={tabManager} />
+    default:
+      return <div className="p-4 text-xs text-text-muted">未知面板：{panelId}</div>
+  }
+}
+
+/** terminal 面板的 useTerminal 包装（仅当 terminal tab 打开时挂载）。 */
+function LeftTerminalPanel({ tabManager }: { tabManager: TabManager }) {
+  const terminalManager = useTerminal(tabManager)
+  return <TerminalList terminalManager={terminalManager} />
+}
 
 export function DockviewContainer({ tabManager, onReady }: DockviewContainerProps) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -113,6 +155,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
       auth: authValue,
       sessionStore: sessionStoreValue,
       rightSidebar: rightSidebarValue ?? { openPanel: () => undefined },
+      tabManager,
       pluginRuntime: pluginRuntimeValue,
       openTab: tabManager.openTab,
     }),

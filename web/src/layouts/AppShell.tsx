@@ -1,40 +1,30 @@
 /**
- * AppShell — unified three-column layout (Spec 2 + Spec 4 + Spec 6 + Spec 7).
+ * AppShell — 布局 v4「一切皆面板」。
  *
- *   ActivityBar (48px) · SessionSidebar (260px, collapsible) ·
- *   Dockview workspace (flex-1) · RightSidebar (0–280px, animated, collapsible) ·
- *   RightActivityBar (48px)
+ *   PanelDock (200–460px, collapsible) · Dockview workspace (flex-1) · FloatingLayer
  *
- * The left ActivityBar owns session-list toggle + settings. Settings opens
- * a SettingsDialog Sheet (Spec 7) — NOT a sidebar view. The right sidebar hosts
- * file browser / search / info / tasks panels, each switchable via its
- * own RightActivityBar (Spec 6).
+ * 左栏 = PanelDock（docked 面板堆叠：会话/文件/搜索/信息/任务/终端/插件面板，
+ * 统一经 panelRegistry 注册 + PanelChrome 外壳）；floating 面板渲染在根容器的
+ * FloatingLayer（absolute inset-0，非 body portal）。原 SessionSidebar 容器与
+ * 「会话|面板」segmented 已删——面板开 tab 的 dockview 入口一并移除（panel
+ * 布局 v5：原 header 中列「模型 pill + think pill」删除（将来由居中插件实现），
+ * 改嵌引擎路 TopRail（min-w-0 flex-1，插件徽章只在 rail 内排布，绝不推挤内置
+ * 元素）；底部状态栏行 = InfoBar（min-w-0 flex-1）+ 竖分隔线 + BottomRailBadges。
+ * header（☰ + 连接点 + 会话名 / TopRail / 上下文环 + ⚙）承担折叠与设置入口。
  */
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2, PanelLeft, Settings } from 'lucide-react'
 
-import { ActivityBar } from '@/layouts/ActivityBar'
-import { SessionSidebar } from '@/components/session/SessionSidebar'
-import { RightSidebar, type SidebarPanel } from '@/components/sidebar/RightSidebar'
-import { RightActivityBar } from '@/components/sidebar/RightActivityBar'
-import { useLeftPluginPanels } from '@/components/sidebar/LeftActivityBar'
-import { SidebarSectionStack, type SidebarSection } from '@/components/sidebar/SidebarSectionStack'
-import { FileExplorer } from '@/components/sidebar/FileExplorer'
-import { FileSearch } from '@/components/sidebar/FileSearch'
-import { SessionInfo } from '@/components/sidebar/SessionInfo'
-import { TasksPanel } from '@/components/sidebar/TasksPanel'
-import { TerminalList } from '@/components/sidebar/TerminalList'
-import { PluginView } from '@/plugin-runtime/PluginView'
-import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
-import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
+import { PanelDockProvider, PanelDock, FloatingLayer } from '@/components/panel/PanelLayout'
+import { TopRail, BottomRailBadges } from '@/components/panel/rails'
+import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
+import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
-import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
-import { useTabManager, type TabManager } from '@/hooks/useTabManager'
-import { useTerminal } from '@/hooks/useTerminal'
+import { useTabManager } from '@/hooks/useTabManager'
 
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
@@ -42,6 +32,11 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
+import type { ContextUsage } from '@/types/shared'
+
+// 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
+// registerBuiltinLayoutItems 在 App.tsx 模块级注册的模式一致）。
+registerBuiltinPanels()
 
 // SettingsDialog is only needed when the user opens settings — lazy-load it
 // so its code (form components, etc.) is not on the initial render path.
@@ -58,15 +53,6 @@ export function AppShell() {
   const tabManager = useTabManager()
   const ws = useWSConnection()
   const sessionStore = useSessionStore()
-  // 左侧栏的用户插件 view（每个渲染为 VSCode 式独立 section，可拖拽/折叠/记忆）
-  const pluginPanels = useLeftPluginPanels()
-  // 左侧栏 sections 的权威顺序（registry 排序：用户拖拽重排 → 后端同步）。
-  const leftItems = useLayoutItems('desktop.activity_bar')
-  const pluginPanelMap = useMemo(
-    () => new Map(pluginPanels.map((p) => [p.id, p])),
-    [pluginPanels],
-  )
-  const [activePanel, setActivePanel] = useState<SidebarPanel | null>(null)
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
     if (stored) {
@@ -76,8 +62,9 @@ export function AppShell() {
     return adaptiveLeftWidth()
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsVersion, setSettingsVersion] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // header 上下文环：当前会话的上下文用量（get_context_usage）。
+  const [ctxUsage, setCtxUsage] = useState<ContextUsage | null>(null)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
   const leftWidthRef = useRef(leftWidth)
@@ -139,17 +126,42 @@ export function AppShell() {
     return () => registerEditorTabOpener(null)
   }, [tabManager, isMobile])
 
-  const togglePanel = useCallback((panel: SidebarPanel) => {
-    setActivePanel((cur) => (cur === panel ? null : panel))
-  }, [])
-
+  // 布局 v4：openPanel 展开对应 core.* 面板（停靠/浮动归 PanelLayout 持有，
+  // 经轻量事件请求展开——面板已展开时 no-op）。
   const openPanel = useCallback((panel: SidebarPanel) => {
-    setActivePanel(panel)
-  }, [])
+    window.dispatchEvent(new CustomEvent('xbot:panel-request', { detail: { id: `core.${panel}` } }))
+  }, [tabManager])
   // Memoize so the context value is stable — prevents DockviewContainer's
   // ctxValue from changing on every AppShell render (e.g. sidebar toggle),
   // which would force panel.update() on ALL dockview panels.
   const rightSidebarControl = useMemo(() => ({ openPanel }), [openPanel])
+
+  // ── header 状态条数据 ──
+  const act = sessionStore.activeSession
+  const actChannel = act?.channel ?? ''
+  const actChatID = act?.chatID ?? ''
+  // 会话名：activeSession 只带 channel/chatID，label 从会话列表匹配。
+  const sessionLabel = useMemo(() => {
+    if (!act) return ''
+    const hit = sessionStore.sessions.find((s) => s.chatID === act.chatID && s.channel === act.channel)
+    return hit?.label || act.chatID
+  }, [sessionStore.sessions, act])
+
+  // 当前会话上下文用量——activeSession 变化时重新拉取。
+  useEffect(() => {
+    if (!actChannel || !actChatID) {
+      setCtxUsage(null)
+      return
+    }
+    let cancelled = false
+    ws.rpc<ContextUsage>('get_context_usage', { channel: actChannel, chat_id: actChatID })
+      .then((u) => { if (!cancelled) setCtxUsage(u) })
+      .catch(() => { if (!cancelled) setCtxUsage(null) })
+    return () => { cancelled = true }
+  }, [actChannel, actChatID, ws])
+
+  // 布局 v4：插件面板已由 panelRegistry 统一渲染（view 贡献点自动注册，
+  // 经 PanelDock/FloatingLayer 展示）——无需单独的 openTab 入口。
 
   const onLeftResizeStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault()
@@ -161,7 +173,8 @@ export function AppShell() {
     const onMove = (e: PointerEvent) => {
       if (!leftDragging.current) return
       leftUserSized.current = true
-      const next = clampLeftWidth(e.clientX - 48)
+      // 布局 v2：无 ActivityBar（原 48px 补偿删除），指针 x 即侧栏右缘。
+      const next = clampLeftWidth(e.clientX)
       leftWidthRef.current = Math.round(next)
       setLeftWidth(leftWidthRef.current)
     }
@@ -209,54 +222,17 @@ export function AppShell() {
   if (isMobile) return <MobileAppShell />
 
   return (
-    // fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
-    // MobileAppShell (100dvh/height:100% stop at the safe area there).
-    <div className="fixed inset-0 flex overflow-hidden bg-bg-primary text-text-primary">
-      {/* Left ActivityBar */}
-      <ActivityBar
-        onOpenSettings={() => setSettingsOpen(true)}
-        settingsVersion={settingsVersion}
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed((v) => !v)}
-      />
-
-      {/* Left sidebar — VSCode 式 section 堆叠（会话列表 + 插件 view，可拖拽/折叠/记忆） */}
+    <PanelDockProvider tabManager={tabManager}>
+      {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
+          MobileAppShell (100dvh/height:100% stop at the safe area there). */}
+      <div className="fixed inset-0 flex overflow-hidden bg-bg-primary text-text-primary">
+      {/* Left sidebar — 布局 v4 面板坞（docked 面板堆叠，折叠由 header ☰ 控制） */}
       {!sidebarCollapsed && (
         <div
           className="relative flex h-full shrink-0 flex-col overflow-hidden"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
         >
-          <SidebarSectionStack
-            slotId="desktop.activity_bar"
-            sections={leftItems.map<SidebarSection>((item) => {
-              // 会话列表 — 左侧栏固定 section
-              if (item.id === BUILTIN_LAYOUT_ITEMS.desktopSessions) {
-                return {
-                  id: item.id,
-                  title: item.title,
-                  content: <SessionSidebar tabManager={tabManager} />,
-                }
-              }
-              // 内置面板（files/search/info/tasks/terminal）— 用户从右栏移到左栏时渲染
-              const builtinContent = renderBuiltinPanel(item.id, tabManager)
-              if (builtinContent !== null) {
-                return {
-                  id: item.id,
-                  title: item.title,
-                  defaultHeight: 240,
-                  content: builtinContent,
-                }
-              }
-              // 插件 view — useLeftPluginPanels 匹配的插件贡献点
-              const p = pluginPanelMap.get(item.id)
-              return {
-                id: item.id,
-                title: item.title,
-                defaultHeight: 240,
-                content: p ? <PluginView pluginId={p.pluginId} view={p.view} /> : null,
-              }
-            })}
-          />
+          <PanelDock />
           <div
             role="separator"
             aria-orientation="vertical"
@@ -270,11 +246,21 @@ export function AppShell() {
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative flex h-full min-w-0 flex-1 flex-col">
-          {/* 顶部状态栏（与手机 MobileAppShell header 对应）——挂 status_bar_right 容器，
-              任意插件声明到该容器自动出现（iter-stats 徽章）。⚠️ 必须常驻渲染：底部
-              InfoBar 同样固定高度 ALWAYS rendered —— 空缺时若塌陷成一条线，插件徽章
-              凭空出现/消失会让布局跳动。这里固定 h-6 条，内容为空时也稳定显示。 */}
-          <header className="flex h-6 min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 text-xs">
+          {/* 布局 v5 header：左 ☰ + 连接点 + 会话名（shrink-0 刚性）/
+              TopRail（min-w-0 flex-1，插件徽章溢出由 rail 内部收纳，绝不推挤
+              内置元素）/ 右 上下文环 + ⚙（shrink-0 刚性）。header 常驻渲染。 */}
+          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 py-2 text-xs">
+            {/* 左：侧栏折叠 + 连接状态 + 会话名 */}
+            <button
+              type="button"
+              aria-label="切换侧栏"
+              title="切换侧栏"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <PanelLeft className="size-3.5" />
+            </button>
             <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
               <span
                 className={
@@ -285,48 +271,76 @@ export function AppShell() {
               />
               <span className="text-text-muted">{ws.connected ? '已连接' : '连接中…'}</span>
             </span>
-            <PluginPanelContainer container="status_bar_right" />
+            <span
+              className="shrink-0 max-w-[200px] truncate font-medium"
+              title={sessionLabel}
+              style={{ color: 'var(--text-primary)' }}
+            >
+              {sessionLabel}
+            </span>
+            <TopRail className="min-w-0 flex-1" />
+            {/* 右：上下文环（usage_percent）+ 设置齿轮 */}
+            <span
+              className="flex shrink-0 items-center"
+              title={ctxUsage?.max_context_tokens
+                ? `上下文 ${ctxUsage.prompt_tokens.toLocaleString()} / ${ctxUsage.max_context_tokens.toLocaleString()} tokens`
+                : '上下文用量'}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="上下文用量">
+                <circle cx="8" cy="8" r="6" fill="none" stroke="var(--border)" strokeWidth="2" />
+                {ctxUsage?.usage_percent != null && (
+                  <circle
+                    cx="8"
+                    cy="8"
+                    r="6"
+                    fill="none"
+                    stroke="var(--accent)"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeDasharray={`${(Math.max(0, Math.min(100, ctxUsage.usage_percent)) / 100) * 2 * Math.PI * 6} ${2 * Math.PI * 6}`}
+                    transform="rotate(-90 8 8)"
+                  />
+                )}
+              </svg>
+            </span>
+            <button
+              type="button"
+              aria-label="打开设置"
+              title="设置"
+              onClick={() => setSettingsOpen(true)}
+              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <Settings className="size-3.5" />
+            </button>
           </header>
           <DockviewContainer tabManager={tabManager} />
-          {/* Plugin widget info bar (info_bar zone) — status-bar style at the
-              BOTTOM (VSCode-like), always rendered. */}
-          <InfoBar />
+          {/* Bottom rail 行：左 InfoBar（min-w-0 flex-1；InfoBar 常驻渲染/固定
+              高度的既有约定保留）+ 竖分隔线 + 右 BottomRailBadges（引擎路，
+              最后接线）。整行 shrink-0 固定高度，不随内容跳动。 */}
+          <div className="flex min-w-0 shrink-0 items-stretch border-t border-border">
+            <div className="min-w-0 flex-1">
+              <InfoBar />
+            </div>
+            <div aria-hidden className="w-px shrink-0 bg-border" />
+            <BottomRailBadges />
+          </div>
         </main>
       </RightSidebarControlContext.Provider>
 
-      {/* Right sidebar overlays the workspace (like Settings dialog),
-          doesn't squeeze it. Outside main so it's not constrained by it. */}
-      <RightSidebar
-        activePanel={activePanel}
-        tabManager={tabManager}
-      />
-
-      {/* Right ActivityBar — always visible, toggles right panels. */}
-      <RightActivityBar
-        activePanel={activePanel}
-        onTogglePanel={togglePanel}
-        onOpenMainView={(v) =>
-          tabManager.openTab({
-            type: 'plugin',
-            title: v.title,
-            icon: v.view.icon,
-            closable: true,
-            data: { viewId: v.id, pluginId: v.pluginId },
-          })
-        }
-      />
+      {/* Floating panel layer — 窗口内浮层（根容器内 absolute inset-0，非 body portal），
+          floating 面板 pointer-events-auto，其余透明不拦截。 */}
+      <FloatingLayer />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
       <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
         <SettingsDialog
           open={settingsOpen}
-          onOpenChange={(open) => {
-            setSettingsOpen(open)
-            if (!open) setSettingsVersion((v) => v + 1)
-          }}
+          onOpenChange={setSettingsOpen}
         />
       </Suspense>
-    </div>
+      </div>
+    </PanelDockProvider>
   )
 }
 
@@ -338,40 +352,4 @@ function adaptiveLeftWidth(): number {
 function clampLeftWidth(width: number): number {
   const viewportMax = typeof window === 'undefined' ? MAX_LEFT_WIDTH : Math.max(MIN_LEFT_WIDTH, Math.min(MAX_LEFT_WIDTH, window.innerWidth * 0.36))
   return Math.round(Math.max(MIN_LEFT_WIDTH, Math.min(viewportMax, width)))
-}
-
-/**
- * 渲染内置面板（files/search/info/tasks/terminal）—— 当用户把这些面板
- * 从右栏（desktop.sidebar）移到左栏（desktop.activity_bar）时，左侧栏
- * 需要渲染同样的组件。返回 null 表示不是内置面板，由调用方 fallback
- * 到插件 view 查找。
- */
-function renderBuiltinPanel(
-  itemId: string,
-  tabManager: TabManager,
-): ReactNode {
-  switch (itemId) {
-    case BUILTIN_LAYOUT_ITEMS.desktopFiles:
-      return <FileExplorer tabManager={tabManager} />
-    case BUILTIN_LAYOUT_ITEMS.desktopSearch:
-      return <FileSearch tabManager={tabManager} />
-    case BUILTIN_LAYOUT_ITEMS.desktopInfo:
-      return <SessionInfo tabManager={tabManager} />
-    case BUILTIN_LAYOUT_ITEMS.desktopTasks:
-      return <TasksPanel tabManager={tabManager} />
-    case BUILTIN_LAYOUT_ITEMS.desktopTerminal:
-      return <LeftTerminalPanel tabManager={tabManager} />
-    default:
-      return null
-  }
-}
-
-/**
- * 终端面板包装组件——仅当 terminal 面板出现在左侧栏时才挂载 useTerminal，
- * 避免在 AppShell 顶层无条件调用导致的重复后端请求（右侧栏 RightSidebar
- * 也有自己的 useTerminal，两者独立、各自只在面板可见时触发）。
- */
-function LeftTerminalPanel({ tabManager }: { tabManager: TabManager }) {
-  const terminalManager = useTerminal(tabManager)
-  return <TerminalList terminalManager={terminalManager} />
 }

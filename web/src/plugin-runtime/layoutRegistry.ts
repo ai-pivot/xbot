@@ -25,7 +25,9 @@ import { SETTINGS_SYNCED_EVENT, syncSettingToServer } from '@/lib/userSettings'
 
 /** view container → 默认布局 slot 映射（插件 view 自动注册用）。 */
 export const VIEW_CONTAINER_TO_SLOT: Record<string, LayoutSlotId> = {
-  right_sidebar: 'desktop.sidebar',
+  // 布局 v2：右栏已删——插件声明的 right_sidebar container（协议不变）映射到
+  // 左栏 activity_bar slot（SidebarSectionStack 的独立 section）。
+  right_sidebar: 'desktop.activity_bar',
   bottom: 'desktop.info_bar',
   info_bar: 'desktop.info_bar',
   panel: 'desktop.sidebar',
@@ -312,11 +314,11 @@ export function registerBuiltinLayoutItems(): void {
     { id: BUILTIN_LAYOUT_ITEMS.mobileNewChat, slot: 'mobile.top_bar', title: '新会话', labelKey: 'session.newSession', icon: 'plus', weight: 0 },
     { id: BUILTIN_LAYOUT_ITEMS.mobileSettings, slot: 'mobile.top_bar', title: '设置', labelKey: 'settings.title', icon: 'settings', weight: 2 },
     { id: BUILTIN_LAYOUT_ITEMS.desktopSessions, slot: 'desktop.activity_bar', title: '会话', labelKey: 'sidebar.sessions', icon: 'panel-left', weight: 0, group: LAYOUT_GROUPS.channels },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopFiles, slot: 'desktop.sidebar', title: '文件', labelKey: 'sidebar.files', icon: 'files', weight: 0, group: LAYOUT_GROUPS.tools },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopSearch, slot: 'desktop.sidebar', title: '搜索', labelKey: 'sidebar.search', icon: 'search', weight: 1, group: LAYOUT_GROUPS.tools },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopInfo, slot: 'desktop.sidebar', title: '信息', labelKey: 'sidebar.info', icon: 'info', weight: 2, group: LAYOUT_GROUPS.tools },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopTasks, slot: 'desktop.sidebar', title: '任务', labelKey: 'sidebar.tasks', icon: 'list-checks', weight: 3, group: LAYOUT_GROUPS.tools },
-    { id: BUILTIN_LAYOUT_ITEMS.desktopTerminal, slot: 'desktop.sidebar', title: '终端', labelKey: 'sidebar.terminal', icon: 'square-terminal', weight: 4, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopFiles, slot: 'desktop.activity_bar', title: '文件', labelKey: 'sidebar.files', icon: 'files', weight: 0, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopSearch, slot: 'desktop.activity_bar', title: '搜索', labelKey: 'sidebar.search', icon: 'search', weight: 1, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopInfo, slot: 'desktop.activity_bar', title: '信息', labelKey: 'sidebar.info', icon: 'info', weight: 2, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopTasks, slot: 'desktop.activity_bar', title: '任务', labelKey: 'sidebar.tasks', icon: 'list-checks', weight: 3, group: LAYOUT_GROUPS.tools },
+    { id: BUILTIN_LAYOUT_ITEMS.desktopTerminal, slot: 'desktop.activity_bar', title: '终端', labelKey: 'sidebar.terminal', icon: 'square-terminal', weight: 4, group: LAYOUT_GROUPS.tools },
   ])
 }
 

@@ -19,6 +19,8 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from '@/plugin-runtime'
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
 import { layoutRegistry, VIEW_CONTAINER_TO_SLOT } from '@/plugin-runtime/layoutRegistry'
+import { panelRegistry, buildPanelDefs } from '@/plugin-runtime/panelRegistry'
+import { PluginView } from '@/plugin-runtime/PluginView'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
 export interface WebPluginDecl {
@@ -345,38 +347,62 @@ export function PluginRuntimeBootstrap() {
     runtime.events.emit('session.switched', { session: summary })
   }, [session.activeSession, runtime])
 
-  // 同步插件 view 贡献点 → 布局注册表：每个 view 自动成为可移动布局项
-  // （默认 slot 由 container 映射，用户可在布局设置中移到其他 slot）。
+  // 同步插件 view 贡献点 → 布局注册表 / 面板注册表：
+  // - 面板类容器（right_sidebar 等，含未知兜底）→ zone 'side' 主面板：进
+  //   panelRegistry（docked 语义）+ layoutRegistry（可移动布局项）。
+  // - bar 类容器（status_bar_right 等）→ 徽章形态：同 pluginId 另有主 view
+  //   时合并为主面板的 badgeRender（同 panelId），否则注册为独立徽章面板
+  //   （zone 'top'/segment 'right'）——徽章面板不进 layoutRegistry（非侧栏
+  //   堆叠项），旧直渲染点经 usePluginViewPanels 查询返回空（见该 shim）。
+  // 通用 container 语义规则（buildPanelDefs 数据表驱动），框架零插件特化。
   // dynamic 视图（参数化动态视图）跳过——它们无静态入口，不进布局注册表。
   useEffect(() => {
-    const synced = new Set<string>()
+    const syncedPanels = new Set<string>()
+    const syncedLayout = new Set<string>()
     const syncViews = () => {
-      const views = runtime.listAllViews()
-      const currentIds = new Set<string>()
-      for (const { view } of views) {
-        if (view.dynamic) continue
-        currentIds.add(view.id)
-        const slot = VIEW_CONTAINER_TO_SLOT[view.container] ?? 'desktop.sidebar'
-        layoutRegistry.register({
-          id: view.id,
-          slot,
-          title: view.title,
-          icon: view.icon,
-          weight: 100, // 插件项排在内置项之后
-        })
+      const views = runtime.listAllViews().filter(({ view }) => !view.dynamic)
+      const built = buildPanelDefs(views, (pluginId, view) =>
+        createElement(PluginView, { pluginId, view }),
+      )
+      const currentPanelIds = new Set<string>()
+      const currentLayoutIds = new Set<string>()
+      for (const { def, view } of built) {
+        currentPanelIds.add(def.id)
+        panelRegistry.registerPanel(def)
+        // 徽章面板（zone 'top'/'bottom'）不进布局栈——非侧栏堆叠项。
+        if (def.location?.zone === 'side') {
+          currentLayoutIds.add(def.id)
+          layoutRegistry.register({
+            id: def.id,
+            slot: VIEW_CONTAINER_TO_SLOT[view.container] ?? 'desktop.sidebar',
+            title: view.title,
+            icon: view.icon,
+            weight: 100, // 插件项排在内置项之后
+          })
+        }
       }
-      // 注销已消失的 view 项（插件卸载/热加载移除贡献点时）。
-      for (const id of synced) {
-        if (!currentIds.has(id)) layoutRegistry.unregister(id)
+      // 注销已消失的项（插件卸载/热加载移除贡献点时）。
+      for (const id of syncedPanels) {
+        if (!currentPanelIds.has(id)) panelRegistry.unregisterPanel(id)
       }
-      synced.clear()
-      for (const id of currentIds) synced.add(id)
+      for (const id of syncedLayout) {
+        if (!currentLayoutIds.has(id)) layoutRegistry.unregister(id)
+      }
+      syncedPanels.clear()
+      for (const id of currentPanelIds) syncedPanels.add(id)
+      syncedLayout.clear()
+      for (const id of currentLayoutIds) syncedLayout.add(id)
     }
     syncViews()
     const unsub = runtime.subscribeViews(syncViews)
     return () => {
       unsub()
-      for (const id of synced) layoutRegistry.unregister(id)
+      for (const id of syncedPanels) {
+        panelRegistry.unregisterPanel(id)
+      }
+      for (const id of syncedLayout) {
+        layoutRegistry.unregister(id)
+      }
     }
   }, [runtime])
 

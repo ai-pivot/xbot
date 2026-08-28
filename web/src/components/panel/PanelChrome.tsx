@@ -9,7 +9,7 @@
  *
  * 图标统一经 pluginIcons.ts 的 pluginIcon 映射（与插件 view tab 一致）。
  */
-import { useMemo, type CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { ChevronDown, ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
@@ -96,9 +96,6 @@ export function PanelChrome({
   emptyHint,
   children,
 }: PanelChromeProps) {
-  // eslint-disable-next-line react-hooks/static-components -- pluginIcon 返回
-  // lucide 图标映射表中的稳定组件引用（无状态、无内部 state），与模块级组件
-  // 等价；规则无法区分映射查找与渲染期新建组件，误报。
   const Icon = pluginIcon(icon)
   const floating = mode === 'floating'
   const stop = (e: ReactPointerEvent) => e.stopPropagation()
@@ -141,6 +138,8 @@ export function PanelChrome({
         onPointerDown={floating ? onTitlePointerDown : undefined}
         onDoubleClick={floating ? onTitleDoubleClick : undefined}
       >
+        {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
+            返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
         <Icon className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
         <span className="min-w-0 truncate text-[11.5px] font-semibold" style={{ color: 'var(--text-primary)' }}>
           {title}

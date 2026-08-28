@@ -1072,8 +1072,6 @@ function DragGhost(): ReactNode {
   const { drag, dragPointer, activeZone, defs } = usePanelDock()
   const def = drag?.kind === 'panel' && drag.started ? defs.find((p) => p.id === drag.id) : null
   if (!def || !dragPointer) return null
-  // eslint-disable-next-line react-hooks/static-components -- pluginIcon 返回
-  // lucide 图标映射表中的稳定组件引用（无状态），与模块级组件等价；规则误报。
   const Icon = pluginIcon(def.icon)
   const isFullPreview = activeZone === 'floating'
   return (
@@ -1094,6 +1092,8 @@ function DragGhost(): ReactNode {
         ...(isFullPreview ? { width: 240, height: 160, alignItems: 'flex-start' } : {}),
       }}
     >
+      {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
+          返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
       <Icon className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
       {def.title}
     </div>

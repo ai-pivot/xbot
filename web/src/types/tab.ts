@@ -19,6 +19,8 @@ export interface PanelParams {
   filePath?: string
   /** Frontend terminal id (TerminalSession.id) for terminal tabs. */
   terminalId?: string
+  /** 布局 v2：侧栏「面板」区打开的 dockview 面板 id。 */
+  panelId?: string
   /** False suppresses the close button and blocks closeTab (agent tabs). */
   closable: boolean
   /** SubAgent role (only for agent tabs viewing a SubAgent conversation). */
