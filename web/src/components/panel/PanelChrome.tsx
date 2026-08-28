@@ -113,6 +113,7 @@ export function PanelChrome({
         background: 'rgba(255,255,255,0.02)',
         boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.05)',
         opacity: isDragSource ? 0.4 : undefined,
+        pointerEvents: isDragSource ? 'none' : undefined,
         ...style,
       }
 

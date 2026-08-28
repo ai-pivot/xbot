@@ -29,7 +29,7 @@
  *  3. visibleCount 稳定时 setState 同值 bail-out，无渲染循环。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Maximize2, Pin, Plus } from 'lucide-react'
+import { Inbox, Maximize2, Pin, Plus, X } from 'lucide-react'
 
 import { usePanelDock, zoneHighlightStyle } from './PanelLayout'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
@@ -331,66 +331,114 @@ export function BottomRailBadges({ className }: { className?: string }): ReactNo
 }
 
 /**
- * v5.1 SideChips——底部 chips 启动器（PanelDock 内部消费，不导出给 AppShell，
- * 不改 layouts/**）。固定底部一行 36px 图标 chip（overflow-x-auto 横向滚动
- * 容纳任意多插件）；徽标 = def.badges() 计数直接可见（右上角 pill）。交互：
- * chip 单击 = 面板转 floating（复用 floatPanel，主区中上默认阶梯落位——临时
- * 使用不占侧栏）；chip hover 显示 📌 → 钉选（zone 'side'，append 堆叠尾，
- * 默认 h 220）。根元素 data-panel-zone="chip"——拖拽落点判定宿主（拖入即收纳）。
+ * v5.2 SideChips——底部 chips 启动器（PanelDock 内部消费）。
+ *
+ * 固定底部一行 36px 图标 chip（overflow-x-auto 横向滚动容纳任意多插件）。
+ * 交互（v5.2 设计稿确认）：
+ *  - chip 单击 = 原地展开/收起精简内容（不再弹浮窗！）——chip dock 上方弹出
+ *    max-h-[240px] 内容区，再点收起。点其他 chip = 切换内容。
+ *  - chip hover 显示 📌 → pin 到 side 钉选区（zone 'side'，append 堆叠尾，默认 h 220）。
+ *  - 拖入 chip dock = 收纳（zone 'chip'）。
+ *
+ * 根元素 data-panel-zone="chip"——拖拽落点判定宿主。
  */
 export function SideChips(): ReactNode {
   const dock = usePanelDock()
   const ids = dock.zoneIds('chip')
   const zoneActive = dock.activeZone === 'chip'
+  const [expandedChip, setExpandedChip] = useState<string | null>(null)
   return (
-    <div
-      data-panel-zone="chip"
-      data-testid="panel-chip-dock"
-      data-zone-active={zoneActive || undefined}
-      className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
-      style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
-    >
-      {ids.map((id) => {
-        const def = dock.defs.find((d) => d.id === id)
-        if (!def) return null
-        const badge: PanelBadge | null = def.badges?.() ?? null
-        const Icon = pluginIcon(def.icon)
-        return (
-          <div key={id} className="group relative shrink-0">
-            <button
-              type="button"
-              data-panel-chip={id}
-              title={`${def.title}（单击升为浮窗）`}
-              onClick={() => dock.floatPanel(id)}
-              className="flex size-9 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
-            >
-              <Icon className="size-4" style={{ color: 'var(--text-secondary)' }} />
-              {badge ? (
-                <span
-                  className="absolute right-0 top-0 max-w-[32px] truncate rounded-full px-1 text-[8px] font-semibold leading-3"
-                  style={{ background: `color-mix(in srgb, ${badge.color} 22%, transparent)`, color: badge.color }}
-                >
-                  {badge.text}
-                </span>
-              ) : null}
-            </button>
-            <button
-              type="button"
-              aria-label={`钉选 ${def.title}`}
-              title={`钉选 ${def.title}`}
-              onClick={() => dock.pinPanel(id)}
-              className="absolute -right-0.5 -top-1 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
-              style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-            >
-              <Pin className="size-2.5" />
-            </button>
+    <div data-panel-zone="chip" data-testid="panel-chip-dock">
+      <div
+        className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
+        style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
+      >
+        {ids.map((id) => {
+          const def = dock.defs.find((d) => d.id === id)
+          if (!def) return null
+          const badge: PanelBadge | null = def.badges?.() ?? null
+          const Icon = pluginIcon(def.icon)
+          const isActive = expandedChip === id
+          return (
+            <div key={id} className="group relative shrink-0">
+              <button
+                type="button"
+                data-panel-chip={id}
+                title={`${def.title}（单击展开/收起）`}
+                onClick={() => setExpandedChip(isActive ? null : id)}
+                className="flex size-9 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
+                style={isActive ? { background: 'color-mix(in srgb, var(--accent) 15%, transparent)' } : undefined}
+              >
+                <Icon className="size-4" style={{ color: isActive ? 'var(--accent)' : 'var(--text-secondary)' }} />
+                {badge ? (
+                  <span
+                    className="absolute right-0 top-0 max-w-[32px] truncate rounded-full px-1 text-[8px] font-semibold leading-3"
+                    style={{ background: `color-mix(in srgb, ${badge.color} 22%, transparent)`, color: badge.color }}
+                  >
+                    {badge.text}
+                  </span>
+                ) : null}
+                {isActive && (
+                  <span className="absolute -bottom-0.5 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full" style={{ background: 'var(--accent)' }} />
+                )}
+              </button>
+              <button
+                type="button"
+                aria-label={`钉选 ${def.title}`}
+                title={`钉选 ${def.title} 到侧栏`}
+                onClick={() => dock.pinPanel(id)}
+                className="absolute -right-0.5 -top-1 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
+                style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+              >
+                <Pin className="size-2.5" />
+              </button>
+            </div>
+          )
+        })}
+        {ids.length === 0 ? (
+          <span className="px-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            无收纳面板
+          </span>
+        ) : null}
+      </div>
+      {/* 原地展开内容区（chip 单击 = 精简内容，不弹浮窗；max-h 滚动；点别处/再点收起） */}
+      {expandedChip ? (
+        <div className="mt-1 max-h-[240px] overflow-y-auto rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+          <div className="mb-1 flex items-center justify-between">
+            <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+              {dock.defs.find((d) => d.id === expandedChip)?.title ?? expandedChip}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => { dock.pinPanel(expandedChip); setExpandedChip(null) }}
+                className="rounded px-1.5 py-0.5 text-[9px] font-medium"
+                style={{ background: 'color-mix(in srgb, var(--accent) 18%, transparent)', color: 'var(--accent)' }}
+              >
+                📌 钉选到侧栏
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpandedChip(null)}
+                className="rounded p-0.5"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                <X className="size-3" />
+              </button>
+            </div>
           </div>
-        )
-      })}
-      {ids.length === 0 ? (
-        <span className="px-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-          无收纳面板
-        </span>
+          <div className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+            {(() => {
+              const def = dock.defs.find((d) => d.id === expandedChip)
+              if (!def) return null
+              return def.render({ tabManager: dock.tabManager }) ?? (
+                <div className="flex items-center justify-center py-4 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  <Inbox className="mr-1 size-3.5" /> 暂无内容
+                </div>
+              )
+            })()}
+          </div>
+        </div>
       ) : null}
     </div>
   )

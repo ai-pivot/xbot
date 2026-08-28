@@ -192,12 +192,25 @@ export function migrateV1Layout(raw: string | null, knownIds: ReadonlySet<string
       const h = typeof r.h === 'number' && Number.isFinite(r.h) ? r.h : 280
       state[id] = { loc: { zone: 'floating', order: 0, x, y, w, h }, collapsed }
     } else {
-      let order = orderById.get(id)
-      if (order === undefined) {
-        order = nextOrder++
-        orderById.set(id, order)
+      // v1 docked：sessions → side（钉选）；非 sessions → chip（v5.2 直接归入
+      // chips，不再经 migrateV2Layout 二次迁移——避免刷新时把用户 pin 的
+      // side 面板错误迁移回 chip）。
+      if (id === 'core.sessions') {
+        let order = orderById.get(id)
+        if (order === undefined) {
+          order = nextOrder++
+          orderById.set(id, order)
+        }
+        state[id] = { loc: { zone: 'side', order }, collapsed }
+      } else {
+        // v1 docked 非 sessions → chip（v5.2 直接归入 chips，保留 dockOrder 序）
+        let order = orderById.get(id)
+        if (order === undefined) {
+          order = nextOrder++
+          orderById.set(id, order)
+        }
+        state[id] = { loc: { zone: 'chip', order }, collapsed }
       }
-      state[id] = { loc: { zone: 'side', order }, collapsed }
     }
   }
   return state
@@ -235,18 +248,17 @@ export function defaultPanelLayout(defsInDefOrder: readonly PanelDefinition[]): 
  * 非 sessions 面板全部 → 'chip'（用户可再钉选）；side 的 h 规范化到拖拽 clamp
  * 边界；chip 清掉无意义的高度/分段/浮层字段。重复执行结果一致。
  */
+/**
+ * v2→v5.1 迁移：v1 旧格式（mode: docked/floating）的面板 → v5.1 zone 格式。
+ * 已是 v2 格式（loc.zone 存在）的 side 面板不迁移——用户 pin 的面板刷新后保持
+ * pin + collapsed（修 v5.1 回归：之前把所有 side 非 sessions 迁回 chip）。
+ */
 export function migrateV2Layout(prev: PanelLayoutState): PanelLayoutState {
   let changed = false
   const next: PanelLayoutState = {}
   for (const [id, entry] of Object.entries(prev)) {
-    const zone = entry.loc.zone
-    if (zone === 'side' && !PINNED_DEFAULTS[id]) {
-      const { h: _h, ...rest } = entry.loc
-      next[id] = { ...entry, loc: { ...rest, zone: 'chip' } }
-      changed = true
-      continue
-    }
-    if (zone === 'side' && entry.loc.h != null) {
+    // v2 格式（已有 loc.zone）：只做 side 面板的 h clamp，不改变 zone/collapsed。
+    if (entry.loc.zone === 'side' && entry.loc.h != null) {
       const h = Math.min(Math.max(DOCK_H_MIN, entry.loc.h), DOCK_H_MAX)
       if (h !== entry.loc.h) {
         next[id] = { ...entry, loc: { ...entry.loc, h } }
@@ -686,12 +698,20 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
         originH: h,
         layer,
       })
+      // 拖拽期间全局样式：禁止文本选中 + 抓取手势（防止指针抖动时选中文字/光标闪烁）。
+      const prevCursor = document.body.style.cursor
+      const prevUserSelect = document.body.style.userSelect
+      document.body.style.cursor = 'grabbing'
+      document.body.style.userSelect = 'none'
 
       const detach = () => {
         handle.removeEventListener('pointermove', onMove)
         handle.removeEventListener('pointerup', onUp)
         handle.removeEventListener('pointercancel', onCancel)
         window.removeEventListener('keydown', onKey, true)
+        // 恢复全局样式。
+        document.body.style.cursor = prevCursor
+        document.body.style.userSelect = prevUserSelect
       }
       const onMove = (ev: PointerEvent) => {
         const d = dragRef.current
@@ -703,7 +723,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
         if (!started) return
         const zone = zoneAtPoint(ev.clientX, ev.clientY)
         setActiveZone(zone)
-        // 插入线只在悬停 side 宿主时预览（重排 + 跨 zone 落 side 共用）。
         setDropHint(zone === 'side' ? sideHintAtPoint(ev.clientX, ev.clientY) : null)
       }
       const onUp = (ev: PointerEvent) => {
@@ -861,14 +880,15 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
 
   // openPanel 入口（RightSidebarControlContext / AgentPanel onOpenTasks）：
   // 面板展开（collapsed=false）。side 面板展开；floating 面板展开；chip 面板
-  // 升浮窗（v5.1「临时使用不占侧栏」——打开即见，不强制钉选）。
+  // pin 到 side（展开可见，不弹浮窗）。
   useEffect(() => {
     const handler = (e: Event) => {
       const id = (e as CustomEvent<{ id?: string }>).detail?.id
       if (!id || !panelRegistry.getPanel(id)) return
       const cur = stateRef.current[id] ?? entryOf(id)
       if (cur.loc.zone === 'chip') {
-        floatPanel(id)
+        // chip 面板：pin 到 side 展开（不弹浮窗——v5.2 设计稿确认）。
+        pinPanel(id)
         return
       }
       update((prev) => {
@@ -879,7 +899,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     }
     window.addEventListener('xbot:panel-request', handler)
     return () => window.removeEventListener('xbot:panel-request', handler)
-  }, [update, entryOf, floatPanel])
+  }, [update, entryOf, pinPanel])
 
   const value = useMemo<PanelDockContextValue>(
     () => ({
@@ -1082,13 +1102,14 @@ function DragGhost(): ReactNode {
       style={{
         position: 'fixed',
         zIndex: 50,
-        left: dragPointer.x + 8,
-        top: dragPointer.y + 8,
+        // transform 替代 left/top——GPU 合成层，不触发布局回流，拖拽更顺滑。
+        transform: `translate3d(${dragPointer.x + 8}px, ${dragPointer.y + 8}px, 0)`,
         background: 'rgba(17,20,29,0.95)',
         border: '1px solid rgba(255,255,255,0.12)',
         boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
         color: 'var(--text-primary)',
         pointerEvents: 'none',
+        willChange: 'transform',
         ...(isFullPreview ? { width: 240, height: 160, alignItems: 'flex-start' } : {}),
       }}
     >

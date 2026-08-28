@@ -144,10 +144,12 @@ describe('migrateV1Layout（v1→v2 迁移）', () => {
     expect(parsePanelLayoutV2(JSON.stringify(first), known)).toEqual(first)
   })
 
-  it('docked 保持 dockOrder 序（v2 形状 side）；floating 保留 xywh；未知 id 丢弃', () => {
+  it('docked 保持 dockOrder 序（v2 形状：sessions→side、非 sessions→chip）；floating 保留 xywh；未知 id 丢弃', () => {
     const migrated = migrateV1Layout(V1, known)!
-    expect(migrated['p.b'].loc).toEqual({ zone: 'side', order: 0 })
-    expect(migrated['p.a'].loc).toEqual({ zone: 'side', order: 1 })
+    // p.b（非 sessions）→ chip（v5.2 直接归入 chips，保留 dockOrder 序）
+    expect(migrated['p.b'].loc).toEqual({ zone: 'chip', order: 0 })
+    // p.a（非 sessions）→ chip（dockOrder 序 1）
+    expect(migrated['p.a'].loc).toEqual({ zone: 'chip', order: 1 })
     expect(migrated['p.f'].loc).toEqual({ zone: 'floating', order: 0, x: 120, y: 80, w: 360, h: 240 })
     expect(migrated['p.gone']).toBeUndefined()
   })
@@ -176,13 +178,10 @@ describe('migrateV1Layout（v1→v2 迁移）', () => {
       dockOrder: ['p.b', 'p.a'],
     }))
     renderShell()
-    // v5.1：docked 迁移产物再过 migrateV2Layout——side 非 sessions 全收 chips
-    // （chips 渲染序 = order 序）。
+    // v5.2：v1 迁移直接把非 sessions docked → chip（不经 migrateV2Layout 二次迁移）。
     expect(chipOrder()).toEqual(['p.b', 'p.a'])
     expect(sideRenderOrder()).toEqual([])
-    // 迁移不写盘（v2 key 仍空——写盘推迟到首次交互）。
     expect(localStorage.getItem(V2_KEY)).toBeNull()
-    // 首次交互（📌 钉选）→ v2 全量落盘。
     fireEvent.click(screen.getByLabelText('钉选 A'))
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
     expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 220 })
@@ -192,7 +191,7 @@ describe('migrateV1Layout（v1→v2 迁移）', () => {
 
 // ── v2→v5.1 迁移（side → chip）──────────────────────────────────────────────
 
-describe('migrateV2Layout（v2→v5.1 迁移：side 非 sessions → chip）', () => {
+describe('migrateV2Layout（v2→v5.2：side 面板保持不迁移，仅 h clamp）', () => {
   const state: Record<string, { loc: Record<string, unknown>; collapsed: boolean }> = {
     'p.a': { loc: { zone: 'side', order: 0 }, collapsed: true },
     'p.b': { loc: { zone: 'side', order: 1, h: 200 }, collapsed: false },
@@ -200,10 +199,10 @@ describe('migrateV2Layout（v2→v5.1 迁移：side 非 sessions → chip）', (
     'p.f': { loc: { zone: 'floating', order: 0, x: 10, y: 10, w: 320, h: 240 }, collapsed: false },
   }
 
-  it('side 的非 sessions 面板 → chip（丢弃无意义高度）；sessions 保持 side', () => {
+  it('side 面板保持 side（v5.2 不迁移——用户 pin 的面板刷新后保持 pin）', () => {
     const next = migrateV2Layout(state as never)
-    expect(next['p.a'].loc).toEqual({ zone: 'chip', order: 0 })
-    expect(next['p.b'].loc).toEqual({ zone: 'chip', order: 1 })
+    expect(next['p.a'].loc).toEqual({ zone: 'side', order: 0 })
+    expect(next['p.b'].loc).toEqual({ zone: 'side', order: 1, h: 200 })
     expect(next['core.sessions'].loc).toEqual({ zone: 'side', order: 2, h: 420 })
     expect(next['p.f'].loc.zone).toBe('floating')
   })
@@ -224,14 +223,16 @@ describe('migrateV2Layout（v2→v5.1 迁移：side 非 sessions → chip）', (
     expect(under['core.sessions'].loc.h).toBe(140)
   })
 
-  it('端到端：localStorage v2（zone side 非 sessions）→ 渲染即收入 chips', () => {
+  it('端到端：localStorage v2（zone side 非 sessions）→ 保持 side（v5.2 不迁移用户 pin 的面板）', () => {
     registerPanel(makeDef('p.a', 'A'))
+    registerPanel(makeDef('p.b', 'B'))
     localStorage.setItem(V2_KEY, JSON.stringify({
       'p.a': { loc: { zone: 'side', order: 3 }, collapsed: false },
     }))
     renderShell()
-    expect(chipOrder()).toEqual(['p.a'])
-    expect(sideRenderOrder()).toEqual([])
+    // v5.2：v2 格式的 side 面板不迁移（用户 pin 的保持 pin+collapsed）。
+    expect(sideRenderOrder()).toEqual(['p.a'])
+    expect(chipOrder()).toEqual(['p.b'])
   })
 })
 
@@ -267,12 +268,14 @@ describe('v5.1 Focus + Drawer', () => {
     renderShell()
     expect(chipOrder()).toEqual(['p.a', 'p.b'])
     expect(sideRenderOrder()).toEqual([])
-    // 零挤压：堆叠区 overflow-y-auto（超高整栏滚动），chips 条 shrink-0 固定底部。
+    // 零挤压：堆叠区 overflow-y-auto（超高整栏滚动），chips 条固定底部。
     const stack = document.querySelector('[data-testid="panel-dock-stack"]')!
     expect(stack.className).toContain('overflow-y-auto')
     expect(stack.className).toContain('flex-1')
-    const chips = document.querySelector('[data-testid="panel-chip-dock"]')!
-    expect(chips.className).toContain('shrink-0')
+    // SideChips 外层 div（data-panel-zone="chip"）内含 shrink-0 的 chips 条。
+    const chipDock = document.querySelector('[data-testid="panel-chip-dock"]')!
+    const chipBar = chipDock.firstElementChild!
+    expect(chipBar.className).toContain('shrink-0')
   })
 
   it('chips 📌 钉选：→ side append 堆叠尾 + 默认 h 220 + 展开落盘', () => {
@@ -309,16 +312,16 @@ describe('v5.1 Focus + Drawer', () => {
     expect(saved['p.a'].loc.zone).toBe('chip')
   })
 
-  it('chip 单击 → floating（复用 floatPanel 主区中上落位），FloatingLayer 渲染', () => {
+  it('chip 单击 → pin 到 side（v5.2：chip 点击 = 原地 pin 展开到侧栏，不再弹浮窗）', () => {
     localStorage.setItem(V2_KEY, JSON.stringify({
       'p.a': { loc: { zone: 'chip', order: 0 }, collapsed: true },
     }))
     renderShell()
-    const layer = document.querySelector<HTMLElement>('[data-panel-zone="floating"]')!
-    vi.spyOn(layer, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 1000, height: 800 } as DOMRect)
-    fireEvent.click(document.querySelector('[data-panel-chip="p.a"]')!)
+    // chip click 不再弹浮窗——v5.2 改为原地展开内容区。
+    // 钉选通过 📌 按钮（chip hover 出现的 pin 按钮）。
+    fireEvent.click(screen.getByLabelText('钉选 A'))
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('floating')
+    expect(saved['p.a'].loc.zone).toBe('side')
     expect(saved['p.a'].collapsed).toBe(false)
     expect(document.querySelector('[data-panel-id="p.a"]')).toBeInTheDocument()
   })
@@ -397,11 +400,12 @@ describe('v5.1 Focus + Drawer', () => {
     expect(sideRenderOrder()).toEqual(['p.b'])
   })
 
-  it('openPanel request：chip 面板 → 升浮窗（打开即见，不强制钉选）', () => {
+  it('openPanel request：chip 面板 → pin 到 side（v5.2：不再升浮窗，chip 点击 = 原地 pin 展开到侧栏）', () => {
     renderShell()
     fireEvent(window, new CustomEvent('xbot:panel-request', { detail: { id: 'p.a' } }))
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('floating')
+    expect(saved['p.a'].loc.zone).toBe('side')
+    expect(saved['p.a'].collapsed).toBe(false)
   })
 })
 
