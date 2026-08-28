@@ -15,7 +15,16 @@
  * Synchronisation: a 50ms setInterval drives ALL catch-up — no
  * useLayoutEffect advance. The previous useLayoutEffect that advanced gap/3
  * on every SSE chunk caused "sawtooth" jumps (big jump on chunk, then slow
- * catch-up). The 50ms interval alone produces smooth, continuous motion.
+ * catch-up). The 50ms interval alone produces smooth, continuous typewriter
+ * motion.
+ *
+ * Performance: ALL useTypewriter instances share a SINGLE setInterval timer
+ * (sharedTimer). This ensures React batches their setState calls into one
+ * render per tick — critical when LiveIteration uses two instances (text +
+ * reasoning). Without sharing, two independent 50ms timers fire at different
+ * event-loop ticks, causing two separate renders per 50ms cycle (trace
+ * analysis: 343 React renders in 13s, 5 >100ms each with 82-94ms
+ * UpdateLayoutTree).
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
@@ -33,8 +42,35 @@ function isCJK(r: number): boolean {
 
 const TICK_MS = 50
 
+// ── Shared timer: all useTypewriter instances tick on the SAME setInterval ──
+// This guarantees their setState calls land in the same event-loop tick,
+// so React batches them into a single render (instead of N separate renders).
+const subscribers = new Set<() => void>()
+let sharedTimer: ReturnType<typeof setInterval> | null = null
+
+function ensureTimer() {
+  if (sharedTimer) return
+  sharedTimer = setInterval(() => {
+    for (const fn of subscribers) {
+      try { fn() } catch (err) { console.error('typewriter tick failed', err) }
+    }
+  }, TICK_MS)
+}
+
+function subscribe(fn: () => void): () => void {
+  subscribers.add(fn)
+  ensureTimer()
+  return () => {
+    subscribers.delete(fn)
+    if (subscribers.size === 0 && sharedTimer) {
+      clearInterval(sharedTimer)
+      sharedTimer = null
+    }
+  }
+}
+
 export interface TypewriterState {
-  /** Number of visible Unicode code points. The renderer clips its existing DOM to this count. */
+  /** Number of visible Unicode code points. The rendered Markdown DOM is clipped to this count. */
   visibleChars: number
   /** True when the typewriter hasn't caught up to the full text. */
   isTyping: boolean
@@ -100,11 +136,8 @@ export function useTypewriter(fullText: string): TypewriterState {
     }
   }, [fullText])
 
-  // Single interval for ALL catch-up — created once.
-  // No useLayoutEffect advance: that caused "sawtooth" jumps where each
-  // SSE chunk ate gap/3 instantly, then the interval slowly caught up.
-  // The 50ms interval delay is imperceptible (< human perception threshold
-  // of ~100ms) and produces smooth, continuous typewriter motion.
+  // Subscribe to the shared timer — all instances tick on the same interval,
+  // so React batches their setState calls into one render per tick.
   useEffect(() => {
     const tick = () => {
       const text = fullTextRef.current
@@ -130,8 +163,7 @@ export function useTypewriter(fullText: string): TypewriterState {
         })
       }
     }
-    const interval = setInterval(tick, TICK_MS)
-    return () => clearInterval(interval)
+    return subscribe(tick)
   }, [])
 
   return state
