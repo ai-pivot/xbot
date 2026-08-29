@@ -152,7 +152,7 @@ export default defineConfig(({ mode }) => {
       // lazy-chunk deps into the entry preload chain; filtering here is
       // purely a preload-hint removal (dynamic import() still fetches them
       // on demand — zero functional change).
-      resolveDependencies(filename: string, deps: string[]) {
+      resolveDependencies(_filename: string, deps: string[]) {
         return deps.filter(
           (dep) =>
             !/^vendor-monaco/.test(dep) &&
