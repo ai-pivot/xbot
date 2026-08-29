@@ -13,7 +13,7 @@
  * the last row when present.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucide-react'
 
@@ -92,11 +92,75 @@ function estimateRowByContent(row: ChatMessage): number {
     const len = (row.content || '').length
     return Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
   }
-  const iters = row.iterations?.length ?? 0
-  const tools = (row.iterations ?? []).reduce((a, it) => a + (it.tools?.length ?? 0), 0)
-  const len = (row.content || '').length
+  const iters = row.iterations ?? []
+  const tools = iters.reduce((a, it) => a + (it.tools?.length ?? 0), 0)
+  // 高度估算必须计入 iteration 的 content/reasoning（展开思考后巨块的主体，
+  // iteration_count × thinking 字段不在 row.content 里）。旧实现只算
+  // row.content + cap 1200 —— reasoning 巨块实际 2000-5000px，低估 3-5×
+  // → TanStack range 按低估高度计算 → overscan 前瞻量不足 → 大行首 mount
+  // 落在滚动临界帧（Trace-20260829T181624 的 100ms mount commit 直接掉帧）。
+  // 宁可高估：overscan（items 数固定）覆盖的像素提前量随 estimate 增大，
+  // 大行在滚到视口前就完成 mount；实测后 heightMemory 覆盖估算。
+  const iterLen = iters.reduce((a, it) => a + (it.content?.length ?? 0) + (it.reasoning?.length ?? 0), 0)
+  const len = (row.content || '').length + iterLen
   const lines = Math.ceil(len / 90) || 1
-  return Math.min(Math.max(70 + lines * 21 + iters * 34 + Math.ceil(tools / 4) * 20, 140), 1200)
+  return Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
+}
+
+// ── scroll → rAF 合帧（2026-08-29 滚动掉帧根治，Trace-20260829T181624）──────
+// TanStack 默认 observeElementOffset 在每个 scroll 事件里同步 cb（onChange →
+// virtualizer 内部 setState）。两个放大器让它在高刷屏 + 大 reasoning 行下
+// 变成掉帧主源：
+//   1) scroll/wheel 事件频率 = 合成器滚动事件率（120-135Hz），每次都触发
+//      React render —— 新行 mount 的大 commit（remark parse + KaTeX DOM +
+//      measureElement 强制全树 style recalc）83-110ms 直接阻塞滚动关键帧。
+//   2) wheel 的 React discrete 事件窗口内，同帧的 scroll listener setState
+//      被提升为 sync flush（fp@vendor-react dispatch 68ms 实测）——
+//      "滚轮一下 = wheel sync render + scroll sync render" 双路叠加。
+// 修复：包装默认 observer —— 滚动中的 offset 通知（isScrolling=true）经
+// rAF 合帧（一帧最多一次 notify，rAF 里读最新 scrollTop，vsync 对齐）；
+// isScrolling=false（scrollend / isScrollingResetDelay debounce 的停止通知）
+// 保持同步直达（取消 pending rAF）——isScrolling 的状态语义不变，仅通知
+// 频率锁帧率。渲染结果零变化（合帧不改语义，只改时机）。
+const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (instance, cb) => {
+  const win = instance.targetWindow
+  if (!win || typeof win.requestAnimationFrame !== 'function') {
+    return defaultObserveElementOffset(instance, cb)
+  }
+  let raf = 0
+  const wrappedCb: (offset: number, isScrolling: boolean) => void = (offset, isScrolling) => {
+    if (!isScrolling) {
+      // 滚动停止通知：取消 pending 合帧，同步直达（isScrolling=false 语义
+      // 是"滚动已停"，延迟它会让 TanStack 的 isScrolling 状态晚一帧）。
+      if (raf) {
+        win.cancelAnimationFrame(raf)
+        raf = 0
+      }
+      cb(offset, false)
+      return
+    }
+    // 滚动中：一帧一次。pending 期间到达的 scroll 事件被合帧丢弃（rAF 执行
+    // 时读最新 scrollTop，offset 参数的旧值不用）。
+    if (raf) return
+    raf = win.requestAnimationFrame(() => {
+      raf = 0
+      const el = instance.scrollElement
+      if (!el) {
+        cb(offset, true)
+        return
+      }
+      const { horizontal, isRtl } = instance.options
+      cb(horizontal ? el.scrollLeft * (isRtl ? -1 : 1) : el.scrollTop, true)
+    })
+  }
+  const cleanup = defaultObserveElementOffset(instance, wrappedCb)
+  return () => {
+    if (raf) {
+      win.cancelAnimationFrame(raf)
+      raf = 0
+    }
+    cleanup?.()
+  }
 }
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -251,6 +315,9 @@ export const MessageList = memo(function MessageList({
       return estimateRowByContent(row)
     },
     overscan: dynamicOverscan,
+    // scroll → rAF 合帧（模块级 rafCoalescedObserveElementOffset，见上方注释）：
+    // 滚动中每帧最多一次 offset 通知（isScrolling=false 停止通知保持同步直达）。
+    observeElementOffset: rafCoalescedObserveElementOffset,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return `row-${index}`

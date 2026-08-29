@@ -267,7 +267,11 @@ const COMPONENTS = {
 };
 
 const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath];
-const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false }]];
+// KaTeX 只输出 HTML 树（默认 htmlAndMathml 双份 DOM）：数学密集的 reasoning
+// 巨块渲染节点数减半 —— 挂载 commit 与 style recalc 同步降半（Trace-
+// 20260829T181624：新行 mount 100ms 级 commit + UpdateLayoutTree 22-29ms，
+// KaTeX 数千节点是主要成分）。MathML 副本仅服务读屏 a11y，视觉零变化。
+const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false, katexOptions: { output: 'html' as const } }]];
 
 /**
  * remark-math follows Markdown math syntax ($ / $$), while models commonly
