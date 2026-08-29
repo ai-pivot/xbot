@@ -12,7 +12,7 @@
  *   - The main Agent tab follows SessionStore.activeSession directly.
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -368,6 +368,13 @@ export function AgentPanel({ params, api }: PanelProps) {
     }
   }, [chatID, messageChannel, setGoalOverride])
 
+  // chatRef：rewindTo/footer 的稳定闭包读取（useChatMessages 每帧返回新对象，
+  // 若 rewindTo deps 含 chat 则每帧重建 → 传给 MessageList 的 onRewind 引用
+  // 每帧变化 → 击穿 MessageList/MessageItem 的 memo。ref 化后 deps 全部低频
+  // （chatID/isSubAgent/messageChannel/ws/t），回调行为不变（调用时读最新 chat）。
+  const chatRef = useRef(chat)
+  chatRef.current = chat
+
   // Rewind via inline edit: rewind to the message's DB id, then send
   // the edited content as a new message.
   const rewindTo = useCallback(async (editedContent: string, originalMessage: ChatMessage) => {
@@ -399,7 +406,7 @@ export function AgentPanel({ params, api }: PanelProps) {
       setEditingMessageId(null)
       // Rewind is destructive: clear the visible/cache rows before reload so
       // an empty truncated history is not mistaken for a background refresh.
-      chat.clearMessages()
+      chatRef.current.clearMessages()
       // Rewind MUST also reset the state machine — otherwise the pre-rewind
       // turn's live residue is committed on the next turn_started,
       // re-rendering the rewind-deleted assistant below the new turn.
@@ -409,7 +416,7 @@ export function AgentPanel({ params, api }: PanelProps) {
       // messageMutationGenRef, the subsequent reload captures the incremented
       // value, requestHasMessageMutation() returns false, and the optimistic
       // message is silently wiped by the fresh history.
-      await chat.reload()
+      await chatRef.current.reload()
       // Send the edited content as a new message (sendMessage increments
       // followResetToken so the viewport scrolls to bottom for the response)
       sendMessage(editedContent)
@@ -418,7 +425,7 @@ export function AgentPanel({ params, api }: PanelProps) {
       // Keep edit mode active when the rewind request fails.
       toast.error(e instanceof Error ? e.message : t('agent.rewindFailed'))
     }
-  }, [chatID, isSubAgent, messageChannel, chat, ws, t, sendMessage])
+  }, [chatID, isSubAgent, messageChannel, ws, t, sendMessage])
 
   const rewindLatest = useCallback(() => {
     if (busy) return
@@ -439,6 +446,29 @@ export function AgentPanel({ params, api }: PanelProps) {
   const handleEndEdit = useCallback(() => {
     setEditingMessageId(null)
   }, [])
+
+  // footer（AskUserPanel）：useMemo 保持引用稳定 —— AgentPanel 每帧 re-render
+  // （AgentPanel 是状态机订阅点，busy/draft/context 等任何变化都触发整树
+  // re-render）时，footer JSX 若每帧新对象会击穿 MessageList 的 React.memo
+  // （props 浅比较失败）。deps 全部为稳定引用：prompt（store 稳定对象，
+  // 变化时新引用）、respond/cancel（useAskUser 的 useCallback）、isSubAgent
+  // （boolean）。chat.reload 走 chatRef（闭包读最新，不进 deps）。
+  const askUserFooter = useMemo(() => {
+    if (!askUser.prompt || isSubAgent) return null
+    return (
+      <AskUserPanel
+        prompt={askUser.prompt}
+        onRespond={(answers) => {
+          askUser.respond(answers)
+          // Deterministic: the backend persists the answer as a user
+          // message; reload history so it renders with its authoritative
+          // turn_id (NO optimistic rendering).
+          void chatRef.current.reload()
+        }}
+        onCancel={askUser.cancel}
+      />
+    )
+  }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -489,21 +519,7 @@ export function AgentPanel({ params, api }: PanelProps) {
         editingMessageId={editingMessageId}
         onStartEdit={handleStartEdit}
         onEndEdit={handleEndEdit}
-        footer={
-          askUser.prompt && !isSubAgent ? (
-            <AskUserPanel
-              prompt={askUser.prompt}
-              onRespond={(answers) => {
-                askUser.respond(answers)
-                // Deterministic: the backend persists the answer as a user
-                // message; reload history so it renders with its authoritative
-                // turn_id (NO optimistic rendering).
-                void chat.reload()
-              }}
-              onCancel={askUser.cancel}
-            />
-          ) : null
-        }
+        footer={askUserFooter}
       />
       {!isSubAgent && (
         <MessageInput

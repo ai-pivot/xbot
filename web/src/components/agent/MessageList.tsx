@@ -12,7 +12,7 @@
  * comes from useChatMessages; a single live streaming message is appended as
  * the last row when present.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucide-react'
@@ -113,7 +113,7 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
 }
 
 
-export function MessageList({
+export const MessageList = memo(function MessageList({
   chatKey,
   followResetToken = 0,
   messages,
@@ -297,6 +297,16 @@ export function MessageList({
   // the moment real height changes. Scroll stability is handled by
   // shouldAdjustScrollPositionOnItemSizeChange above, fold transitions get an
   // authoritative re-measure via onTransitionEnd below.
+  //
+  // PERF: deps MUST be [virtualizer] only — `rows` changes identity every
+  // streaming frame, which would recreate this callback per frame → React
+  // detaches/reattaches the ref on EVERY visible row (ref identity change)
+  // → forced synchronous layout (getBoundingClientRect) for every visible row
+  // on every frame (~300-600 forced layouts/sec while streaming on phones).
+  // Row data is read through rowsRef (kept in sync at line ~rowsRef.current
+  // = rows), so the callback body always sees the CURRENT row. virtualizer
+  // is a stable instance (useVirtualizer keeps one instance; only its options
+  // are updated per render).
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) {
@@ -314,7 +324,8 @@ export function MessageList({
         }
       }
     },
-    [virtualizer, rows],
+    // PERF note above explains deps choice; rowsRef is a stable closure ref covering row identity
+    [virtualizer],
   )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
@@ -985,7 +996,7 @@ export function MessageList({
       </div>
     </div>
   )
-}
+})
 
 // ── Navigation button ────────────────────────────────────────────────────────
 function NavButton({
