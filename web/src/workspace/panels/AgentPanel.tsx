@@ -232,6 +232,40 @@ export function AgentPanel({ params, api }: PanelProps) {
   const resetAgentChatRef = useRef(agentChat.reset)
   resetAgentChatRef.current = agentChat.reset
   const progressSnapshot = agentChat.liveProgress
+
+  // ── 渲染暂停（面板不可见时挂起 React 通知）──
+  // MobileAppShell 用 display:none 切换视图（AgentPanel 保持挂载——store
+  // 不可销毁，见 MobileAppShell 文件头不变量）。IntersectionObserver 检测
+  // display:none（元素无渲染盒 → 0 交叉）→ store.pause() 挂起 rAF 通知。
+  // dispatch 照常（状态机数据流完整，SSE 事件不丢）；resume 时一次 flush
+  // （useSyncExternalStore 读最新 state，与"持续渲染"的最终态一致——正是
+  // rAF 合并的结构保证）。桌面 DockviewContainer 的 tab 切走同样受益
+  // （不可见面不渲染）。手机上切到工具页/终端页后 JS 渲染全停（此前
+  // display:none 只省 paint，React reconciliation 照常满负荷跑）。
+  const agentPanelRootRef = useRef<HTMLDivElement>(null)
+  const pauseRenderRef = useRef(agentChat.pauseRender)
+  const resumeRenderRef = useRef(agentChat.resumeRender)
+  pauseRenderRef.current = agentChat.pauseRender
+  resumeRenderRef.current = agentChat.resumeRender
+  useEffect(() => {
+    const el = agentPanelRootRef.current
+    if (!el) return
+    // SSR / jsdom（测试环境）安全：无 IntersectionObserver 时跳过（渲染照常）。
+    if (typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver((entries) => {
+      const visible = entries[entries.length - 1]?.isIntersecting ?? true
+      if (visible) resumeRenderRef.current()
+      else pauseRenderRef.current()
+    })
+    io.observe(el)
+    return () => {
+      io.disconnect()
+      // 卸载/会话切换时恢复（防 paused 泄漏——store 重建时新 store 从未
+      // pause（初始 paused=false），resume 是 no-op；同 store 复用时确保
+      // 残留的 paused 状态被清除，否则该 store 永久无通知）。
+      resumeRenderRef.current()
+    }
+  }, [])
   // liveMessage comes from useProgressStream's live store — its visibility is
   // governed by the store's own hydration/reset lifecycle (initialProgress →
   // historyProgressToLive → store.replace, SSE-driven updates, reset on
@@ -471,7 +505,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
       {!ws.connected && !isSubAgent && chatID && (
         <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
           <Loader2 className="size-3 animate-spin" />

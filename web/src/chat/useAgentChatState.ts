@@ -51,6 +51,11 @@ export interface AgentChatState {
   readonly ackUser: (requestID: string, turnHint?: number, queued?: boolean) => void
   /** REST 发送失败：移除乐观行（对齐旧 removeById 语义）。 */
   readonly failUser: (requestID: string) => void
+  /** 暂停 React 通知（面板不可见 —— display:none / 桌面 tab 切走）。
+   *  dispatch 照常（状态机数据流完整），仅挂起 rAF 通知。 */
+  readonly pauseRender: () => void
+  /** 恢复通知：pending 期间有更新时一次 flush（一帧全量）。 */
+  readonly resumeRender: () => void
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
@@ -109,6 +114,13 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   const tokenPrompt = liveProgress.tokenUsage && liveProgress.tokenUsage.promptTokens > 0
     ? liveProgress.tokenUsage.promptTokens
     : null
+
+  // 渲染暂停（面板不可见时挂起 React 通知 —— MobileAppShell display:none 切换视图 /
+  // 桌面 tab 切走）。dispatch 照常（状态机数据流完整，SSE 事件不丢），仅 rAF 通知
+  // 暂停；resume 时一次 flush（useSyncExternalStore 读最新 state，与持续渲染的
+  // 最终态一致）。IntersectionObserver 检测 display:none（无渲染盒 → 0 交叉）。
+  const pauseRender = useMemo(() => () => store.pause(), [store])
+  const resumeRender = useMemo(() => () => store.resume(), [store])
 
   const reset = useMemo(
     () => () => {
@@ -172,6 +184,8 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     sendUser,
     ackUser,
     failUser,
+    pauseRender,
+    resumeRender,
   }
 }
 
