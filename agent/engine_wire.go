@@ -465,8 +465,10 @@ func (a *Agent) buildMainRunConfig(
 	// OffloadStore — Layer 1 offload
 	cfg.OffloadStore = a.offloadStore
 
-	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）
-	cfg.MaskStore = a.maskStore
+	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）。
+	// per-tenant 实例（maskStoreFor）：Run 内 mask 目录不可变，消除共享单例
+	// SetTenantID 切换的跨租户竞态。
+	cfg.MaskStore = a.maskStoreFor(cfg.TenantID)
 	streamDisabled := false
 	if userCtx.GetSetting("enable_masking") == "false" {
 		cfg.MaskStore = nil
@@ -860,8 +862,10 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 2. OffloadStore：共享父 Agent 实例（按 sessionKey 隔离，完全安全）
 	cfg.OffloadStore = a.offloadStore
 
-	// 3. MaskStore：共享父 Agent 实例（通过随机 ID 查找，容量共享但 SubAgent 生命周期短影响可忽略）
-	cfg.MaskStore = a.maskStore
+	// 3. MaskStore：per-tenant 实例（SubAgent 的独立 tenantID，与 DB tenant 对齐）。
+	// deriveSubAgentTenantID 与 buildSubAgentMemory 用同一纯函数（幂等）——SubAgent
+	// 的 mask 隔离在自己的 tenant 目录，父/子及并发 SubAgent 互不可见。
+	cfg.MaskStore = a.maskStoreFor(deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName))
 
 	// 4. ContextEditor：创建独立实例（每个 Agent 需要自己的 messages 引用和编辑历史）
 	cfg.ContextEditor = NewContextEditor(NewContextEditStore(100))

@@ -884,4 +884,87 @@ describe('useChatMessages', () => {
 
     expect(result.current.messages.map((m) => m.content)).toEqual(['strict message'])
   })
+
+  it('loadMore 无 id 无 seq 的历史行不因合成 id 跨批冲突被判重（分页截断）', async () => {
+    // Loop2 F4：E2E mock / 旧 fixture 的消息可能无 id 无 seq ——
+    // parseHistoryMessages 的 id fallback `hist-${i}`（i 是批内 index）每批
+    // 从 0 重来 → loadMore 第二批的 `hist-0`/`hist-1` 与第一批冲突 →
+    // noExactDups=0 → hasMore=false 分页截断（更老的消息永远加载不出来，
+    // 尽管第二批是新数据）。修复：loadMore 传批判别符（beforeId cursor），
+    // id fallback 变 `hist-{beforeId}-{i}`（跨批唯一）。
+    const ws = makeWS([
+      // 初始批：3 行（无 id 无 seq）
+      {
+        messages: [
+          { role: 'user', content: 'turn5 q', turn_id: 5, timestamp: '2026-08-03T00:00:05Z' },
+          { role: 'assistant', content: 'turn4 reply', turn_id: 4, timestamp: '2026-08-03T00:00:04Z' },
+          { role: 'user', content: 'turn4 q', turn_id: 4, timestamp: '2026-08-03T00:00:03Z' },
+        ],
+        last_seq: 200, oldest_id: 300, has_more: true,
+      },
+      // loadMore 批：2 行（无 id 无 seq —— id fallback hist-0/hist-1）
+      {
+        messages: [
+          { role: 'user', content: 'turn2 q', turn_id: 2, timestamp: '2026-08-03T00:00:02Z' },
+          { role: 'assistant', content: 'turn1 reply', turn_id: 1, timestamp: '2026-08-03T00:00:01Z' },
+        ],
+        last_seq: 100, oldest_id: 100, has_more: false,
+      },
+    ])
+
+    const { result } = renderHook(() => useChatMessages({ chatID: 'loadmore-synthid', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toHaveLength(3))
+
+    let loaded = false
+    await act(async () => { loaded = await result.current.loadMore() })
+    // 修复前：第二批合成 id hist-0/hist-1 与第一批冲突 → 全被判 dup →
+    // noExactDups=0 → hasMore=false，loaded=false（更老消息截断）。
+    expect(loaded).toBe(true)
+    // 第二批的老消息可见（分页未截断）
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents).toContain('turn2 q')
+    expect(contents).toContain('turn1 reply')
+    expect(result.current.hasMore).toBe(false) // 第三批 has_more=false（真实结束）
+  })
+
+  it('loadMore 无 id 无 seq 多批：合成 id 批间唯一（hist-{beforeId}-{i}）', async () => {
+    // 三批连续 loadMore（cursor 移动）—— 每批判别符不同，合成 id 不冲突。
+    const ws = makeWS([
+      {
+        messages: [
+          { role: 'user', content: 'newest', turn_id: 9, timestamp: '2026-08-03T00:00:09Z' },
+        ],
+        last_seq: 900, oldest_id: 90, has_more: true,
+      },
+      {
+        messages: [
+          { role: 'user', content: 'older1', turn_id: 8, timestamp: '2026-08-03T00:00:08Z' },
+          { role: 'user', content: 'older2', turn_id: 7, timestamp: '2026-08-03T00:00:07Z' },
+        ],
+        last_seq: 800, oldest_id: 70, has_more: true,
+      },
+      {
+        messages: [
+          { role: 'user', content: 'oldest', turn_id: 6, timestamp: '2026-08-03T00:00:06Z' },
+        ],
+        last_seq: 700, oldest_id: 60, has_more: false,
+      },
+    ])
+
+    const { result } = renderHook(() => useChatMessages({ chatID: 'loadmore-multi-batch', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['newest']))
+
+    let l1 = false
+    await act(async () => { l1 = await result.current.loadMore() })
+    expect(l1).toBe(true)
+    let l2 = false
+    await act(async () => { l2 = await result.current.loadMore() })
+    expect(l2).toBe(true)
+
+    // 三批全部加载（合成 id 批间唯一，无跨批误判重）；渲染按 turnID 升序：
+    // 6(oldest) → 7(older2) → 8(older1) → 9(newest)。
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents).toEqual(['oldest', 'older2', 'older1', 'newest'])
+    expect(result.current.hasMore).toBe(false)
+  })
 })

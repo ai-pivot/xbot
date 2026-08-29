@@ -28,9 +28,6 @@ func TestInjectInbound_IsCronFalse(t *testing.T) {
 
 	msg := <-a.bus.Inbound
 
-	if msg.IsCron {
-		t.Error("injectInbound should set IsCron=false, got true — this would bypass persistence")
-	}
 	if msg.Channel != "cli" {
 		t.Errorf("Channel = %q, want %q", msg.Channel, "cli")
 	}

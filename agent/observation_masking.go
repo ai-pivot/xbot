@@ -15,6 +15,7 @@ import (
 
 	"xbot/llm"
 	log "xbot/logger"
+	"xbot/tools"
 )
 
 // MaskedObservation 存储一条被遮蔽的 tool result 的完整信息。
@@ -797,4 +798,37 @@ func foldPureToolGroup(result []llm.ChatMessage, grp struct{ start, end int }, s
 	}
 
 	return maskedCount, entries
+}
+
+// newObservationMaskStoreForTenant creates a per-tenant mask store bound to
+// {baseDir}/{tenantID}/ once and forever. The returned instance never changes
+// tenant (SetTenantID is never called after construction), eliminating the
+// cross-tenant race the shared-singleton SetTenantID switching had: a
+// concurrent SetTenantID(B) between tenant A's ensureLoaded and Lock wrote A's
+// masks into B's directory and made Recall fall back to B's storeDir.
+func newObservationMaskStoreForTenant(baseDir string, tenantID int64) *ObservationMaskStore {
+	s := NewObservationMaskStore(200)
+	if baseDir != "" {
+		s.SetBaseDir(baseDir)
+	}
+	s.SetTenantID(tenantID)
+	return s
+}
+
+// tenantMaskRouter implements tools.MaskedRecallStore by routing each call to
+// the per-tenant ObservationMaskStore owned by the Agent. The recall_masked
+// tool executes under a tenant's session; ToolContext.TenantID selects the
+// store, so concurrent tenants can never observe each other's masked entries.
+type tenantMaskRouter struct {
+	a *Agent
+}
+
+var _ tools.MaskedRecallStore = (*tenantMaskRouter)(nil)
+
+func (r *tenantMaskRouter) RecallMasked(tenantID int64, id string) (toolName string, content string, err error) {
+	return r.a.maskStoreFor(tenantID).RecallMasked(id)
+}
+
+func (r *tenantMaskRouter) ListMasked(tenantID int64) []map[string]any {
+	return r.a.maskStoreFor(tenantID).ListMasked()
 }

@@ -1,13 +1,10 @@
 package plugin
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -35,14 +32,6 @@ type AuditEntry struct {
 	Action    string         `json:"action"`
 	Details   map[string]any `json:"details,omitempty"`
 	Error     string         `json:"error,omitempty"`
-}
-
-// AuditFilter specifies query criteria for audit entries.
-// Zero-value fields mean "no filter on that field".
-type AuditFilter struct {
-	PluginID string
-	From     time.Time
-	To       time.Time
 }
 
 // AuditLogger writes append-only JSONL audit logs with daily rotation.
@@ -100,90 +89,6 @@ func (al *AuditLogger) Log(entry AuditEntry) {
 	} else if al.file != nil {
 		al.file.Write(data)
 	}
-}
-
-// Query reads the audit log from disk and returns entries matching the filter.
-// In rotation mode, it scans all audit-YYYY-MM-DD.jsonl files.
-// In legacy mode, it reads the single audit.jsonl file.
-// Results are sorted by Timestamp ascending.
-func (al *AuditLogger) Query(filter AuditFilter) []AuditEntry {
-	al.mu.Lock()
-	if al.usingRotate {
-		al.rw.Write(nil) // trigger rotation if needed (no-op write)
-	}
-	if al.file != nil {
-		al.file.Sync()
-	}
-	al.mu.Unlock()
-
-	var results []AuditEntry
-
-	if al.usingRotate {
-		results = al.queryRotated(filter)
-	} else {
-		results = al.querySingleFile(al.path, filter)
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Timestamp.Before(results[j].Timestamp)
-	})
-	return results
-}
-
-// queryRotated scans all audit-YYYY-MM-DD.jsonl files in the audit directory.
-func (al *AuditLogger) queryRotated(filter AuditFilter) []AuditEntry {
-	var results []AuditEntry
-	entries, err := os.ReadDir(al.path)
-	if err != nil {
-		return nil
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, "audit-") || !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		// Skip if date is outside filter range
-		filePath := filepath.Join(al.path, name)
-		results = append(results, al.querySingleFile(filePath, filter)...)
-	}
-	return results
-}
-
-// querySingleFile reads entries from a single audit log file.
-func (al *AuditLogger) querySingleFile(path string, filter AuditFilter) []AuditEntry {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	var results []AuditEntry
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var entry AuditEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue
-		}
-		if filter.PluginID != "" && entry.PluginID != filter.PluginID {
-			continue
-		}
-		if !filter.From.IsZero() && entry.Timestamp.Before(filter.From) {
-			continue
-		}
-		if !filter.To.IsZero() && entry.Timestamp.After(filter.To) {
-			continue
-		}
-		results = append(results, entry)
-	}
-	return results
 }
 
 // Clear truncates the audit log file. Safe for concurrent use with Log.

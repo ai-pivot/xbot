@@ -371,6 +371,37 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v60: partial index for session_messages control records
+	// (record_type != 'message': ask_question/ask_answer/mask/context_edit...).
+	// The partial WHERE clause keeps the message hot-path INSERT zero-cost
+	// (plain messages never enter the index) while control-record lookups
+	// (ask_answer anti-join by tenant_id+record_type+target_history_id) hit
+	// the index instead of a full tenant scan.
+	if from < 60 {
+		if err := migrateV59ToV60(conn); err != nil {
+			return fmt.Errorf("migrate to v60: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV59ToV60 creates the partial index for session_messages control
+// records. Only non-'message' rows (ask_question/ask_answer answers, mask
+// markers, context snapshots) enter the index, so plain-message INSERTs pay
+// zero index-maintenance cost. Control-record lookups by
+// (tenant_id, record_type, target_history_id) — the ask_answer anti-join in
+// AppendAskAnswerWithUserMessage and Replay — use this index.
+// Idempotent: CREATE INDEX IF NOT EXISTS (safe to re-run on a schema.go-built
+// DB that already has the index from the v60 DDL).
+func migrateV59ToV60(conn *sql.DB) error {
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, record_type, target_history_id) WHERE record_type != 'message'`); err != nil {
+		return fmt.Errorf("migrate v59->v60 create partial index: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 60"); err != nil {
+		return fmt.Errorf("migrate v59->v60 update version: %w", err)
+	}
+	log.Info("Database migrated to v60 (partial index for control records)")
 	return nil
 }
 

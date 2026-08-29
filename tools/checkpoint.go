@@ -237,35 +237,6 @@ func (s *CheckpointStore) Cleanup() error {
 	return os.RemoveAll(s.baseDir)
 }
 
-// HasChanges returns true if there are any recorded file changes for the given turn or later.
-func (s *CheckpointStore) HasChanges(turnIdx int) bool {
-	snapshots, err := s.ReadAll()
-	if err != nil {
-		return false
-	}
-	for _, snap := range snapshots {
-		if snap.TurnIdx >= turnIdx {
-			return true
-		}
-	}
-	return false
-}
-
-// CountChanges returns the number of distinct files affected from turnIdx onwards.
-func (s *CheckpointStore) CountChanges(turnIdx int) int {
-	snapshots, err := s.ReadAll()
-	if err != nil {
-		return 0
-	}
-	seen := make(map[string]bool)
-	for _, snap := range snapshots {
-		if snap.TurnIdx >= turnIdx {
-			seen[snap.FilePath] = true
-		}
-	}
-	return len(seen)
-}
-
 // splitJSONLLines splits byte data into JSONL lines.
 func splitJSONLLines(data []byte) [][]byte {
 	var lines [][]byte

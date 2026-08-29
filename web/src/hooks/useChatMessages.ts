@@ -125,8 +125,14 @@ export interface Attachments {
  *    iterations (master ChatPage.tsx:654).
  * 6. Merge consecutive tool_calls-only fallback messages into one message
  *    with sequential iteration numbers (master ChatPage.tsx:656-663).
+ *
+ * @param batchTag 批判别符（loadMore 的 beforeId cursor）。id-less + seq-less
+ * 行的合成 id（`hist-*`）必须批间唯一：每批的 index i 从 0 重来，loadMore 的
+ * exact-dup 过滤（existingIds）会把第二批的同名 `hist-${i}` 全判为重复 →
+ * hasMore=false 分页截断（更老的消息永远加载不出来，尽管第二批是新数据）。
+ * reload（replace 语义，单批）不传 —— 默认 `hist-${i}` 向后兼容。
  */
-function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
+function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[] {
   // Normalize each row from the WS RPC format (protocol.HistoryMessage).
   // Iterations are already pre-parsed by the backend (no detail JSON to parse).
   const normalized: ChatMessage[] = []
@@ -162,7 +168,14 @@ function parseHistoryMessages(rows: HistMsg[]): ChatMessage[] {
       continue
     }
 
-    const baseId = m.id != null ? `db-${m.id}` : (m.seq != null ? `seq-${m.seq}` : `hist-${i}`)
+    // Loop2 F4：合成 id 批间唯一 —— loadMore 传 batchTag（beforeId cursor），
+    // 无 id 无 seq 行（E2E mock/旧 fixture）的 `hist-${batchTag}-${i}` 跨批
+    // 唯一（`hist-${i}` 每批从 0 重来 → 跨批冲突 → loadMore 误判重 → 截断）。
+    const baseId = m.id != null
+      ? `db-${m.id}`
+      : (m.seq != null
+          ? `seq-${m.seq}`
+          : batchTag != null ? `hist-${batchTag}-${i}` : `hist-${i}`)
     const seen = idCounts.get(baseId) ?? 0
     idCounts.set(baseId, seen + 1)
     const id = seen === 0 ? baseId : `${baseId}-${seen}`
@@ -497,13 +510,18 @@ export function useChatMessages({
     if (!w) return false
     setLoadingMore(true)
     try {
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId: oldestIdRef.current })
+      // Loop2 F4：本批的 beforeId cursor（fetch 前捕获）作批判别符 —— id-less
+      // 行的合成 id（`hist-{beforeId}-{i}`）批间唯一，否则每批 i 从 0 重来 →
+      // 第二批的 `hist-0` 与第一批冲突，下方 existingIds 把新数据全判为
+      // 重复 → hasMore=false 分页截断（更老的消息永远加载不出来）。
+      const beforeId = oldestIdRef.current
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId })
       const rows = data.messages ?? []
       if (rows.length === 0) {
         setHasMore(false)
         return false
       }
-      const parsed = parseHistoryMessages(rows)
+      const parsed = parseHistoryMessages(rows, beforeId)
       // Merge new messages with existing ones using dedupMessages, which
       // handles turnID:role-based MERGE (not DROP): when the batch boundary
       // splits a turn, batch 1 (newer) has the final assistant with Detail

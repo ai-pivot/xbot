@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -611,7 +612,7 @@ func validateAndAppendAskAnswerWith(store historyQueryExecer, tenantID int64, an
 	if replay.PendingAskUser == nil {
 		return 0, fmt.Errorf("AskUser question is no longer pending")
 	}
-	records, err := getHistoryFromWith(store, tenantID, 0, true)
+	records, err := getHistoryFromWith(store, tenantID, 0, 0, true)
 	if err != nil {
 		return 0, err
 	}
@@ -685,10 +686,12 @@ func (s *SessionService) getHistoryFromLocked(tenantID, fromHistoryID int64, dec
 	if err != nil {
 		return nil, err
 	}
-	return getHistoryFromWith(conn, tenantID, fromHistoryID, decorate)
+	return getHistoryFromWith(conn, tenantID, fromHistoryID, 0, decorate)
 }
 
-func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID int64, decorate bool) ([]HistoryRecord, error) {
+// getHistoryFromWith loads history records for tenantID ordered by id ASC.
+// fromHistoryID/toHistoryID bound the id range (0 = unbounded on that side).
+func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHistoryID int64, decorate bool) ([]HistoryRecord, error) {
 	query := `
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
@@ -698,6 +701,10 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID int64, d
 	if fromHistoryID > 0 {
 		query += ` AND id >= ?`
 		args = append(args, fromHistoryID)
+	}
+	if toHistoryID > 0 {
+		query += ` AND id < ?`
+		args = append(args, toHistoryID)
 	}
 	query += ` ORDER BY id ASC`
 	rows, err := queryer.Query(query, args...)
@@ -929,10 +936,18 @@ func (s *SessionService) ReplayForDisplay(tenantID int64) (*ReplayResult, error)
 // Control records (compress, mask, context_edit, AskUser) are skipped —
 // the display shows the raw, unmodified conversation.
 func replayForDisplay(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
-	records, err := getHistoryFromWith(queryer, tenantID, 0, false)
+	records, err := getHistoryFromWith(queryer, tenantID, 0, 0, false)
 	if err != nil {
 		return nil, err
 	}
+	return replayDisplayRecords(records)
+}
+
+// replayDisplayRecords folds history records into the display message list.
+// Pure function shared by replayForDisplay (full history) and
+// replayForDisplayWindow (bounded window) — both must produce identical
+// output for the same record sequence.
+func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 	result := &ReplayResult{}
 	for _, record := range records {
 		switch record.Type {
@@ -970,6 +985,144 @@ func replayForDisplay(queryer historyQueryer, tenantID int64) (*ReplayResult, er
 	return result, nil
 }
 
+// replayForDisplayWindow returns the display messages for the LAST `limit`
+// render rows before beforeID (0 = unbounded), plus the total render row
+// count before beforeID — a windowed, behavior-identical equivalent of
+// ReplayForDisplay + in-memory tail slicing (GetHistoryBeforeForDisplay).
+//
+// The old path loaded the FULL append-only history on every loadMore page
+// (O(entire table) per call + shared historyLock). This walks three bounded
+// queries instead: (1) the id of the limit-th message from the tail
+// (descending, index-backed), (2) records in [minID, beforeID) — the window
+// includes compress records so [Compacted context] markers land at their
+// stream position, (3) two counts for the total (message rows + markers from
+// compress/prune records).
+//
+// Equivalence with the full scan: the display fold is order-deterministic and
+// prefix-independent, so the tail `limit` rows of the window fold equal the
+// tail `limit` rows of the full fold; markers carry their compress record's
+// id so the id < beforeID bound matches the old in-memory m.ID >= beforeID
+// cut; total counts non-display-only message rows plus markers — exactly the
+// rows the full fold emits before beforeID.
+// Display-window queries. beforeID is normalized to math.MaxInt64 by the
+// caller (replayForDisplayWindow) so a single `id < ?` predicate covers the
+// unbounded case without dynamic WHERE construction.
+const displayTailBoundQuery = `SELECT id FROM session_messages
+	WHERE tenant_id = ? AND record_type = 'message' AND display_only = 0 AND id < ?
+	ORDER BY id DESC LIMIT ?`
+
+const displayMessageCountQuery = `SELECT COUNT(*) FROM session_messages
+	WHERE tenant_id = ? AND record_type = 'message' AND display_only = 0 AND id < ?`
+
+const displayMarkerRecordsQuery = `SELECT COALESCE(record_data, '') FROM session_messages
+	WHERE tenant_id = ? AND record_type IN ('compress', 'prune') AND id < ?`
+
+func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit int64) (*ReplayResult, int, error) {
+	// Normalize beforeID: 0 (unbounded) becomes MaxInt64 so every id matches.
+	if beforeID <= 0 {
+		beforeID = math.MaxInt64
+	}
+	// 1. Find the window's lower bound: the id of the limit-th message row
+	// counting from the tail (before beforeID). Fewer rows than limit means
+	// the window covers the whole history.
+	minID := int64(0)
+	if limit > 0 {
+		rows, err := queryer.Query(displayTailBoundQuery, tenantID, beforeID, limit)
+		if err != nil {
+			return nil, 0, fmt.Errorf("query display tail bound: %w", err)
+		}
+		count := 0
+		for rows.Next() {
+			count++
+			if err := rows.Scan(&minID); err != nil {
+				rows.Close()
+				return nil, 0, fmt.Errorf("scan display tail bound: %w", err)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, 0, fmt.Errorf("iterate display tail bound: %w", err)
+		}
+		rows.Close()
+		if count < int(limit) {
+			minID = 0 // fewer messages than limit — cover everything
+		}
+	}
+
+	// 2. Fold the bounded record window (all record types — compress records
+	// inside the window produce markers at their stream position).
+	records, err := getHistoryFromWith(queryer, tenantID, minID, beforeID, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	result, err := replayDisplayRecords(records)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 3. Total render rows before beforeID: message rows + markers.
+	total, err := countDisplayRowsBefore(queryer, tenantID, beforeID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// 4. Tail-slice to exactly `limit` rows (the fold may emit more than
+	// limit because markers are not counted against the SQL bound).
+	msgs := result.Messages
+	if limit > 0 && int64(len(msgs)) > limit {
+		msgs = msgs[int64(len(msgs))-limit:]
+	}
+	result.Messages = msgs
+	return result, total, nil
+}
+
+// displayTailBoundQuery / displayMessageCountQuery / displayMarkerRecordsQuery
+// are declared above replayForDisplayWindow.
+
+// countDisplayRowsBefore counts the render rows the display fold emits for
+// records with id < beforeID: non-display-only message rows plus the
+// [Compacted context] markers carried by compress/prune records.
+func countDisplayRowsBefore(queryer historyQueryer, tenantID, beforeID int64) (int, error) {
+	total := 0
+	err := queryer.QueryRow(displayMessageCountQuery, tenantID, beforeID).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("count display messages: %w", err)
+	}
+	// Markers: each compress/prune record contributes its new-message
+	// summary rows (history_id == 0 + [Compacted context] prefix).
+	rows, err := queryer.Query(displayMarkerRecordsQuery, tenantID, beforeID)
+	if err != nil {
+		return 0, fmt.Errorf("query display markers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var data string
+		if err := rows.Scan(&data); err != nil {
+			return 0, fmt.Errorf("scan display marker: %w", err)
+		}
+		var record HistoryRecord
+		record.Data = json.RawMessage(data)
+		var snapshot ContextSnapshot
+		if err := decodeHistoryData(record, &snapshot); err != nil {
+			continue // corrupted marker record — replayDisplayRecords skips it too
+		}
+		if snapshot.Messages == nil || snapshot.HistoryIDs == nil ||
+			len(snapshot.HistoryIDs) != len(snapshot.Messages) {
+			continue // mismatched arrays — replayDisplayRecords skips it too
+		}
+		for i, msg := range snapshot.Messages {
+			if snapshot.HistoryIDs[i] == 0 &&
+				strings.HasPrefix(msg.Content, "[Compacted context]") {
+				total++
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate display markers: %w", err)
+	}
+	return total, nil
+}
+
 func (s *SessionService) replayLocked(tenantID int64) (*ReplayResult, error) {
 	conn, err := s.conn()
 	if err != nil {
@@ -987,7 +1140,7 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	if hasCheckpoint {
 		fromHistoryID = checkpoint.HistoryID
 	}
-	records, err := getHistoryFromWith(queryer, tenantID, fromHistoryID, false)
+	records, err := getHistoryFromWith(queryer, tenantID, fromHistoryID, 0, false)
 	if err != nil {
 		return nil, err
 	}

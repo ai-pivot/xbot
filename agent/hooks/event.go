@@ -50,16 +50,12 @@ const (
 	EventPostToolUse        = "PostToolUse"
 	EventPostToolUseFailure = "PostToolUseFailure"
 	EventPostToolBatch      = "PostToolBatch"
-	EventPermissionRequest  = "PermissionRequest"
-	EventPermissionDenied   = "PermissionDenied"
 	EventSubAgentStart      = "SubAgentStart"
 	EventSubAgentStop       = "SubAgentStop"
 	EventAgentStop          = "AgentStop"
 	EventAgentError         = "AgentError"
 	EventPreCompact         = "PreCompact"
 	EventPostCompact        = "PostCompact"
-	EventCronFired          = "CronFired"
-	EventWebhookReceived    = "WebhookReceived"
 	EventPreTurnEnd         = "PreTurnEnd"
 )
 
@@ -254,54 +250,6 @@ func (e *PostToolBatchEvent) Payload() map[string]any {
 }
 
 // ---------------------------------------------------------------------------
-// 8. PermissionRequestEvent
-// ---------------------------------------------------------------------------
-
-// PermissionRequestEvent is emitted when a permission decision is needed.
-type PermissionRequestEvent struct {
-	BasePayload
-	ToolName_  string         `json:"tool_name"`
-	ToolInput_ map[string]any `json:"tool_input"`
-	ToolUseID  string         `json:"tool_use_id"`
-}
-
-func (e *PermissionRequestEvent) EventName() string         { return EventPermissionRequest }
-func (e *PermissionRequestEvent) ToolName() string          { return e.ToolName_ }
-func (e *PermissionRequestEvent) ToolInput() map[string]any { return e.ToolInput_ }
-func (e *PermissionRequestEvent) Payload() map[string]any {
-	m := baseToMap(e.BasePayload)
-	m["hook_event_name"] = e.EventName()
-	m["tool_name"] = e.ToolName_
-	m["tool_input"] = e.ToolInput_
-	m["tool_use_id"] = e.ToolUseID
-	return m
-}
-
-// ---------------------------------------------------------------------------
-// 9. PermissionDeniedEvent
-// ---------------------------------------------------------------------------
-
-// PermissionDeniedEvent is emitted when a permission request is denied.
-type PermissionDeniedEvent struct {
-	BasePayload
-	ToolName_  string         `json:"tool_name"`
-	ToolInput_ map[string]any `json:"tool_input"`
-	Reason     string         `json:"reason"`
-}
-
-func (e *PermissionDeniedEvent) EventName() string         { return EventPermissionDenied }
-func (e *PermissionDeniedEvent) ToolName() string          { return e.ToolName_ }
-func (e *PermissionDeniedEvent) ToolInput() map[string]any { return e.ToolInput_ }
-func (e *PermissionDeniedEvent) Payload() map[string]any {
-	m := baseToMap(e.BasePayload)
-	m["hook_event_name"] = e.EventName()
-	m["tool_name"] = e.ToolName_
-	m["tool_input"] = e.ToolInput_
-	m["reason"] = e.Reason
-	return m
-}
-
-// ---------------------------------------------------------------------------
 // 10. SubAgentStartEvent
 // ---------------------------------------------------------------------------
 
@@ -432,50 +380,6 @@ func (e *PostCompactEvent) Payload() map[string]any {
 	m["hook_event_name"] = e.EventName()
 	m["trigger"] = e.Trigger
 	m["estimated_tokens_after"] = e.EstimatedTokensAfter
-	return m
-}
-
-// ---------------------------------------------------------------------------
-// 16. CronFiredEvent
-// ---------------------------------------------------------------------------
-
-// CronFiredEvent is emitted when a scheduled cron job fires.
-type CronFiredEvent struct {
-	BasePayload
-	JobID   string `json:"job_id"`
-	Message string `json:"message"`
-}
-
-func (e *CronFiredEvent) EventName() string         { return EventCronFired }
-func (e *CronFiredEvent) ToolName() string          { return "" }
-func (e *CronFiredEvent) ToolInput() map[string]any { return nil }
-func (e *CronFiredEvent) Payload() map[string]any {
-	m := baseToMap(e.BasePayload)
-	m["hook_event_name"] = e.EventName()
-	m["job_id"] = e.JobID
-	m["message"] = e.Message
-	return m
-}
-
-// ---------------------------------------------------------------------------
-// 17. WebhookReceivedEvent
-// ---------------------------------------------------------------------------
-
-// WebhookReceivedEvent is emitted when an incoming webhook is received.
-type WebhookReceivedEvent struct {
-	BasePayload
-	TriggerID string         `json:"trigger_id"`
-	Payload_  map[string]any `json:"payload"`
-}
-
-func (e *WebhookReceivedEvent) EventName() string         { return EventWebhookReceived }
-func (e *WebhookReceivedEvent) ToolName() string          { return "" }
-func (e *WebhookReceivedEvent) ToolInput() map[string]any { return nil }
-func (e *WebhookReceivedEvent) Payload() map[string]any {
-	m := baseToMap(e.BasePayload)
-	m["hook_event_name"] = e.EventName()
-	m["trigger_id"] = e.TriggerID
-	m["payload"] = e.Payload_
 	return m
 }
 

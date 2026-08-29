@@ -955,3 +955,198 @@ describe('TDSM reduce — 重启 resume 切换会话竞态（live 胜 union）',
     expect(it4?.content).toBe('resumed iter 4 (new)')
   })
 })
+
+// ─── Loop2 F1/F2：in-flight 工具折叠（"已渲染内容永不消失"） ────
+//
+// F1（derive frozen）：frozen 行的 errTools 只折 activeTools —— streamingTools
+// （参数流式生成中，generating）在 cancel/text 丢失定格时消失。
+// F2（reduce foldPhase）：turn_started 收尸路径 commitViaFold 不折 in-flight
+// 工具（text_final 的 foldInFlightTools 有折 —— 收尸路径没有）。
+describe('Loop2 — in-flight 工具折叠（frozen / 收尸 / text_final 三路径同语义）', () => {
+  const runningTool = (name: string) => ({
+    name, label: '', status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '',
+  })
+  const generatingTool = (name: string) => ({
+    name, label: '', status: 'generating', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '',
+  })
+
+  it('F1: frozen 行渲染折入 streamingTools（generating 工具 cancel/idle 定格不消失）', () => {
+    // stream 事件带 streamingTools（参数生成中）+ content（hasOutput 成立）→
+    // session(idle) 定格 frozen（text/PhaseDone 丢失的兜底路径）→ deriveRows。
+    // 修复前：errTools 只折 activeTools（空）→ generating 工具从 frozen 行消失
+    // （违反"已渲染内容永不消失"）。
+    const s = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: '流式输出到一半', reasoning: undefined,
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      { type: 'session', busy: false },
+    ])
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'frozen') throw new Error(`must be frozen, got ${t1.phase.kind}`)
+    // frozen 的 LiveSnapshot 保留 streamingTools（session idle freeze 全保留）。
+    expect(t1.phase.data.streamingTools.map((t) => t.name)).toContain('Read')
+
+    const rows = deriveRows(s)
+    const frozenRow = rows.find((r) => r.kind === 'frozen' && r.turnID === 1)
+    if (!frozenRow || frozenRow.kind !== 'frozen') throw new Error('frozen row must render')
+    // 修复后：streamingTools 折进最后迭代（标 error —— generating → error）。
+    const folded = frozenRow.iterations.flatMap((it) => it.tools)
+    const readTool = folded.find((t) => t.name === 'Read')
+    expect(readTool).toBeDefined()
+    expect(readTool?.status).toBe('error')
+  })
+
+  it('F1（对照）: frozen 行仍折入 activeTools（running 工具，既有行为不回归）', () => {
+    // activeTools（running）经 session(idle) frozen 后折入 —— 修复不得破坏。
+    const s = run([
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: '流式中', reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [], iterationsDelta: [],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      { type: 'session', busy: false },
+    ])
+    const rows = deriveRows(s)
+    const frozenRow = rows.find((r) => r.kind === 'frozen' && r.turnID === 1)
+    if (!frozenRow || frozenRow.kind !== 'frozen') throw new Error('frozen row must render')
+    const folded = frozenRow.iterations.flatMap((it) => it.tools)
+    expect(folded.map((t) => t.name)).toContain('Shell')
+    expect(folded.find((t) => t.name === 'Shell')?.status).toBe('error')
+  })
+
+  it('F2: turn_started 收尸（foldPhase）折 in-flight 工具 —— activeTools+streamingTools 标 error 进最后迭代', () => {
+    // turn 1 流式中：iteration 事件带 activeTools（Shell running）+ 已完成迭代 1
+    // 快照（iterationsDelta）+ stream 事件带 streamingTools（Read generating）。
+    // 用户发新消息 → turn_started(2) 收尸 turn 1 → foldPhase commit。
+    // 修复前：commitViaFold 只带已完成迭代（iterationsDelta 的 iter1 无工具）
+    // —— Shell/Read 从 committed payload 消失（text_final 有 foldInFlightTools，
+    // 收尸路径没有 —— 语义分叉）。
+    const s = run([
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: undefined, reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '迭代1完成', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: undefined, reasoning: '思考中',
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      started(T2), // 收尸 turn 1（text 未到 —— fold commit）
+    ])
+    assertInvariants(s)
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'committed') throw new Error(`turn 1 must be committed (fold), got ${t1.phase.kind}`)
+    // 收尸 committed：in-flight 工具折进最后迭代（iter1）—— 与 text_final 的
+    // foldInFlightTools 同语义（"已渲染内容永不消失"）。
+    const it1 = t1.phase.payload.iterations.find((it) => it.iteration === 1)
+    const toolNames = it1?.tools.map((t) => t.name) ?? []
+    expect(toolNames).toContain('Shell')
+    expect(toolNames).toContain('Read')
+    expect(it1?.tools.find((t) => t.name === 'Shell')?.status).toBe('error')
+    expect(it1?.tools.find((t) => t.name === 'Read')?.status).toBe('error')
+    // 已有迭代内容不被折叠破坏。
+    expect(it1?.content).toBe('迭代1完成')
+  })
+
+  it('F2b: 收尸时无已完成迭代 + content 流式中 → in-flight 工具折入新迭代（content 写进迭代内 —— v55 渲染）', () => {
+    // iterations 为空 + content 非空 + streamingTools 非空 → 修复前
+    // commitViaText(text, [])（工具丢失）；修复后折入新迭代（iteration=live.iter，
+    // content 写进迭代 —— v55 hasIterations 时不渲染顶层 content）。
+    const s = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: '流式输出中', reasoning: undefined,
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      started(T2), // 收尸
+    ])
+    assertInvariants(s)
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'committed') throw new Error(`turn 1 must be committed, got ${t1.phase.kind}`)
+    // 折入新迭代：工具 + 流式 content 都在迭代内。
+    expect(t1.phase.payload.iterations).toHaveLength(1)
+    const it1 = t1.phase.payload.iterations[0]
+    expect(it1.tools.map((t) => t.name)).toContain('Read')
+    expect(it1.tools.find((t) => t.name === 'Read')?.status).toBe('error')
+    // v55：顶层 content 不渲染（hasIterations）—— 流式文本必须存在于迭代内。
+    expect(it1.content).toBe('流式输出中')
+  })
+
+  it('F2c: 收尸路径与 text_final 的 in-flight 折叠语义一致（同输入同输出）', () => {
+    // 同样的 live 状态（activeTools=Shell running + streamingTools=Read generating
+    // + 迭代1快照），经收尸（turn_started fold）与经 text_final 两条路径 commit，
+    // 最后迭代的工具集合必须一致（foldInFlightToIterations 共用 —— 语义永不分叉）。
+    const base = (): DomainEvent[] => [
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: undefined, reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '迭代1', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: undefined, reasoning: '思考中',
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+    ]
+    // 路径 A：turn_started 收尸 fold。
+    const sA = run([...base(), started(T2)])
+    // 路径 B：text_final commit（cancel —— content null 走 fold）。
+    const sB = run([...base(), textFinal(T1, null, true)])
+    const pA = sA.turns.get(T1)!.phase
+    const pB = sB.turns.get(T1)!.phase
+    if (pA.kind !== 'committed' || pB.kind !== 'committed') throw new Error('both must be committed')
+    const toolsA = (pA.payload.iterations.find((it) => it.iteration === 1)?.tools ?? []).map((t) => `${t.name}:${t.status}`).sort()
+    const toolsB = (pB.payload.iterations.find((it) => it.iteration === 1)?.tools ?? []).map((t) => `${t.name}:${t.status}`).sort()
+    expect(toolsA).toEqual(toolsB)
+    expect(toolsA).toContain('Read:error')
+    expect(toolsA).toContain('Shell:error')
+  })
+
+  it('F2 对照: text_final 的既有折叠行为不回归（activeTools+streamingTools 都折）', () => {
+    // text_final(cancel) 的既有 foldInFlightTools 语义（reduce.ts:464）——
+    // 提取共享 helper 后不得改变。
+    const s = run([
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(2), seq: 10 as never,
+        content: undefined, reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: 'iter1', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: undefined, reasoning: 'r',
+        streamingTools: [generatingTool('Grep') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      textFinal(T1, null, true), // cancel：content null → fold 路径
+    ])
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'committed') throw new Error('must be committed')
+    // live.iter=2（iteration 事件）→ in-flight 折进迭代 2（追加新迭代）。
+    const it2 = t1.phase.payload.iterations.find((it) => it.iteration === 2)
+    expect(it2?.tools.map((t) => t.name).sort()).toEqual(['Grep', 'Shell'])
+  })
+})

@@ -109,22 +109,6 @@ type WSMessage struct {
 	Session         *SessionEvent      `json:"session,omitempty"`
 }
 
-// GetStreamContent returns the StreamContent from the embedded Progress.
-func (m *WSMessage) GetStreamContent() string {
-	if m.Progress == nil {
-		return ""
-	}
-	return m.Progress.StreamContent
-}
-
-// GetReasoningStreamContent returns the ReasoningStreamContent from the embedded Progress.
-func (m *WSMessage) GetReasoningStreamContent() string {
-	if m.Progress == nil {
-		return ""
-	}
-	return m.Progress.ReasoningStreamContent
-}
-
 // WSClientMessage is the unified client→server WebSocket message envelope.
 // Replaces the former wsClientMessage (channel/web.go) and wsOutgoingMessage (agent/transport_remote.go).
 type WSClientMessage struct {

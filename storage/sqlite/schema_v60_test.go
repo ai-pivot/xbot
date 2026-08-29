@@ -1,0 +1,174 @@
+package sqlite
+
+import (
+	"database/sql"
+	"testing"
+)
+
+// TestV60ControlRecordPartialIndex verifies the v60 partial index on
+// session_messages (tenant_id, record_type, target_history_id) WHERE
+// record_type != 'message'. The migration and the fresh-schema DDL must stay
+// in sync (AGENTS.md migration rules): both paths create the index, message
+// hot-path rows never enter it, control records (ask_answer) do.
+func TestV60ControlRecordPartialIndex(t *testing.T) {
+	// Path 1: fresh schema (createSchema) already carries the index DDL.
+	db := openTestDB(t)
+	defer db.Close()
+
+	assertControlRecordIndex := func(t *testing.T, q interface {
+		QueryRow(query string, args ...any) *sql.Row
+	}, stage string) {
+		t.Helper()
+		var name string
+		err := q.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sm_tenant_record'",
+		).Scan(&name)
+		if err != nil {
+			t.Fatalf("%s: idx_sm_tenant_record missing: %v", stage, err)
+		}
+		// Verify the index's partial WHERE clause: message rows must not
+		// satisfy the index predicate. Forcing the index on a message-only
+		// lookup must yield no rows (the partial predicate excludes them).
+		// (EXPLAIN QUERY PLAN choices are the optimizer's — the behavioral
+		// contract is the partial predicate, not which index it picks.)
+		var sql string
+		err = q.QueryRow(
+			"SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_sm_tenant_record'",
+		).Scan(&sql)
+		if err != nil {
+			t.Fatalf("%s: read index DDL failed: %v", stage, err)
+		}
+		if !containsSubstring(sql, "record_type != 'message'") {
+			t.Errorf("%s: idx_sm_tenant_record is not a partial index on control records: %s", stage, sql)
+		}
+	}
+
+	assertControlRecordIndex(t, db.Conn(), "fresh schema")
+
+	// Row-level check: message rows stay out of the partial index, control
+	// rows enter it. Insert one tenant + one of each record type, then compare
+	// the index-forced count against the predicate count.
+	conn := db.Conn()
+	if _, err := conn.Exec(
+		"INSERT INTO tenants (channel, chat_id) VALUES ('web', 'v60-test')",
+	); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	var tenantID int64
+	if err := conn.QueryRow("SELECT id FROM tenants WHERE channel='web' AND chat_id='v60-test'").Scan(&tenantID); err != nil {
+		t.Fatalf("seed tenant id: %v", err)
+	}
+	if _, err := conn.Exec(
+		"INSERT INTO session_messages (tenant_id, role, content, record_type, target_history_id) VALUES (?, 'user', 'm', 'message', NULL), (?, 'user', 'q', 'ask_question', 1), (?, 'user', 'a', 'ask_answer', 1)",
+		tenantID, tenantID, tenantID,
+	); err != nil {
+		t.Fatalf("seed rows: %v", err)
+	}
+	var inIndex, totalControl int
+	if err := conn.QueryRow(
+		"SELECT COUNT(*) FROM session_messages INDEXED BY idx_sm_tenant_record WHERE record_type != 'message'",
+	).Scan(&inIndex); err != nil {
+		t.Fatalf("count index rows: %v", err)
+	}
+	if err := conn.QueryRow(
+		"SELECT COUNT(*) FROM session_messages WHERE record_type != 'message'",
+	).Scan(&totalControl); err != nil {
+		t.Fatalf("count control rows: %v", err)
+	}
+	if inIndex != totalControl {
+		t.Errorf("partial index rows (%d) != control rows (%d): message rows must never enter the index", inIndex, totalControl)
+	}
+	// The ask_answer anti-join lookup shape is servable by the partial index
+	// when the query carries the index predicate literally (SQLite's partial-
+	// index implication is syntactic: `record_type = 'ask_answer'` does NOT
+	// imply `record_type != 'message'`, so only queries carrying the literal
+	// predicate can use it).
+	var answerID int64
+	if err := conn.QueryRow(
+		"SELECT id FROM session_messages INDEXED BY idx_sm_tenant_record WHERE tenant_id = ? AND record_type != 'message' AND record_type = 'ask_answer' AND target_history_id = 1",
+		tenantID,
+	).Scan(&answerID); err != nil {
+		t.Fatalf("control-record lookup via partial index: %v", err)
+	}
+	if answerID == 0 {
+		t.Errorf("ask_answer row not found via partial index lookup")
+	}
+
+	db.Close()
+
+	// Path 2: v59 → v60 migration on a legacy DB (fixture pinned at v59).
+	dbPath := t.TempDir() + "/test_v60_migration.db"
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`
+		CREATE TABLE tenants (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel TEXT NOT NULL,
+			chat_id TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(channel, chat_id)
+		);
+		CREATE TABLE session_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			tenant_id INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			tool_call_id TEXT,
+			tool_name TEXT,
+			tool_arguments TEXT,
+			tool_calls TEXT,
+			detail TEXT,
+			reasoning_content TEXT DEFAULT '',
+			display_only INTEGER DEFAULT 0,
+			context_tokens INTEGER DEFAULT 0,
+			turn_id INTEGER DEFAULT 0,
+			record_type TEXT NOT NULL DEFAULT 'message',
+			target_history_id INTEGER,
+			record_data TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+		);
+		CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
+		CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, id);
+		CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+		INSERT INTO schema_version (version) VALUES (59);
+	`); err != nil {
+		t.Fatalf("create v59 fixture: %v", err)
+	}
+	raw.Close()
+
+	db2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open v59 fixture for migration: %v", err)
+	}
+	defer db2.Close()
+	var version int
+	if err := db2.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if version != 60 {
+		t.Fatalf("v59 fixture must migrate to v60, got version %d", version)
+	}
+	assertControlRecordIndex(t, db2.Conn(), "v59 migration")
+
+	// Idempotency: re-running the migration body (CREATE INDEX IF NOT EXISTS)
+	// must not error — simulate by calling the migration function directly.
+	if err := migrateV59ToV60(db2.Conn()); err != nil {
+		t.Fatalf("re-run migrateV59ToV60 must be idempotent: %v", err)
+	}
+}
+
+func containsSubstring(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

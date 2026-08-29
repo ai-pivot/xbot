@@ -14,12 +14,10 @@ import (
 
 // Message represents a message to be injected into the agent loop.
 type Message struct {
-	Channel      string
-	ChatID       string
-	SenderID     string
-	Content      string
-	EventSource  string // event origin: "webhook", "cron", etc.
-	EventTrigger string // trigger ID that produced this message
+	Channel  string
+	ChatID   string
+	SenderID string
+	Content  string
 }
 
 // InjectFunc injects a message into the agent loop.
@@ -75,12 +73,10 @@ func (r *Router) dispatchOne(t *Trigger, evt Event) DispatchResult {
 
 	message := RenderMessage(t.MessageTpl, evt)
 	r.injectFn(Message{
-		Channel:      t.Channel,
-		ChatID:       t.ChatID,
-		SenderID:     t.SenderID,
-		Content:      message,
-		EventSource:  evt.Type,
-		EventTrigger: t.ID,
+		Channel:  t.Channel,
+		ChatID:   t.ChatID,
+		SenderID: t.SenderID,
+		Content:  message,
 	})
 
 	now := time.Now()

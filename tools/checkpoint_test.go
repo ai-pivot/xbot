@@ -163,30 +163,6 @@ func TestCheckpointStore_RewindAll(t *testing.T) {
 	}
 }
 
-func TestCheckpointStore_CountChanges(t *testing.T) {
-	dir := t.TempDir()
-	store, err := NewCheckpointStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	store.Write(FileSnapshot{TurnIdx: 1, FilePath: "/a.go"})
-	store.Write(FileSnapshot{TurnIdx: 2, FilePath: "/b.go"})
-	store.Write(FileSnapshot{TurnIdx: 2, FilePath: "/c.go"})
-	store.Write(FileSnapshot{TurnIdx: 3, FilePath: "/d.go"})
-
-	if n := store.CountChanges(2); n != 3 {
-		t.Errorf("CountChanges(2) = %d, want 3 (b, c, d)", n)
-	}
-	if n := store.CountChanges(3); n != 1 {
-		t.Errorf("CountChanges(3) = %d, want 1 (d)", n)
-	}
-	if n := store.CountChanges(4); n != 0 {
-		t.Errorf("CountChanges(4) = %d, want 0", n)
-	}
-}
-
 func TestCheckpointStore_Cleanup(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewCheckpointStore(dir)

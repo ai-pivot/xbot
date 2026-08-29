@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"xbot/crypto"
@@ -133,6 +134,73 @@ func decryptAPIKey(sub *LLMSubscription, encryptedAPIKey string) {
 	}
 }
 
+// loadPerModelConfigsBatch populates PerModelConfigs for a batch of
+// subscriptions with ONE subscription_models query (subscription_id IN (...))
+// instead of one GetModels query per subscription (N+1: List/ListByUserID/
+// ListAll over N subs issued N indexed queries). Row order within a
+// subscription is preserved (ORDER BY subscription_id, created_at ASC — same
+// per-sub ordering as GetModels). On query error the batch is skipped (each
+// sub's PerModelConfigs stays nil), matching loadPerModelConfigs' error
+// behavior (log + return). Mirrors the batched-IN pattern of
+// GetIterationHistoryByTurns.
+func (s *LLMSubscriptionService) loadPerModelConfigsBatch(subs []*LLMSubscription) {
+	ids := make([]string, 0, len(subs))
+	for _, sub := range subs {
+		if sub != nil && sub.ID != "" {
+			ids = append(ids, sub.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	conn := s.db.Conn()
+	rows, err := conn.Query(`
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+		FROM subscription_models
+		WHERE subscription_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY subscription_id, created_at ASC
+	`, args...)
+	if err != nil {
+		log.WithError(err).Warn("failed to load subscription_models batch")
+		return
+	}
+	defer rows.Close()
+	modelsBySub := make(map[string][]*SubscriptionModel, len(subs))
+	for rows.Next() {
+		m := &SubscriptionModel{}
+		if err := scanSubscriptionModel(rows, m); err != nil {
+			log.WithError(err).Warn("failed to scan subscription_models batch row")
+			continue
+		}
+		modelsBySub[m.SubscriptionID] = append(modelsBySub[m.SubscriptionID], m)
+	}
+	if err := rows.Err(); err != nil {
+		log.WithError(err).Warn("failed to iterate subscription_models batch")
+		return
+	}
+	for _, sub := range subs {
+		if sub == nil {
+			continue
+		}
+		models := modelsBySub[sub.ID]
+		sub.PerModelConfigs = make(map[string]PerModelConfig, len(models))
+		for _, m := range models {
+			sub.PerModelConfigs[m.Model] = PerModelConfig{
+				MaxOutputTokens: m.MaxOutputTokens,
+				MaxContext:      m.MaxContext,
+				APIType:         m.APIType,
+				Enabled:         m.Enabled,
+			}
+		}
+	}
+}
+
 // ListAll returns all subscriptions across all users, ordered by creation time.
 func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	conn := s.db.Conn()
@@ -162,9 +230,8 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	rows.Close()
 	// Populate PerModelConfigs AFTER closing the rows cursor — the SQLite pool is
 	// single-connection, so a nested query inside the rows loop would deadlock.
-	for _, sub := range subs {
-		s.loadPerModelConfigs(sub)
-	}
+	// Batched: one subscription_models IN(...) query for the whole list.
+	s.loadPerModelConfigsBatch(subs)
 	s.markDefaultsAll(subs)
 	return subs, nil
 }
@@ -197,9 +264,7 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 		return nil, err
 	}
 	rows.Close()
-	for _, sub := range subs {
-		s.loadPerModelConfigs(sub)
-	}
+	s.loadPerModelConfigsBatch(subs)
 	s.markDefaultsFor(subs, senderID)
 	return subs, nil
 }
@@ -234,9 +299,7 @@ func (s *LLMSubscriptionService) ListByUserID(userID int64) ([]*LLMSubscription,
 		return nil, err
 	}
 	rows.Close()
-	for _, sub := range subs {
-		s.loadPerModelConfigs(sub)
-	}
+	s.loadPerModelConfigsBatch(subs)
 	return subs, nil
 }
 

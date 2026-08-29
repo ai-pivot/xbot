@@ -79,26 +79,3 @@ func TestParseMentionsBoundaryCases(t *testing.T) {
 		}
 	}
 }
-
-func TestParseAgentAddress(t *testing.T) {
-	tests := []struct {
-		addr     string
-		wantRole string
-		wantInst string
-	}{
-		{"agent:reviewer/r1", "reviewer", "r1"},
-		{"agent:code-reviewer/fix-bug", "code-reviewer", "fix-bug"},
-		{"agent:a/b/c", "a", "b/c"},
-		{"agent:noslash", "", ""},
-		{"agent:/onlyinstance", "", "onlyinstance"},
-		{"feishu:ou_xxx", "", ""},
-	}
-
-	for _, tt := range tests {
-		role, instance := parseAgentAddress(tt.addr)
-		if role != tt.wantRole || instance != tt.wantInst {
-			t.Errorf("parseAgentAddress(%q): expected (%q, %q), got (%q, %q)",
-				tt.addr, tt.wantRole, tt.wantInst, role, instance)
-		}
-	}
-}

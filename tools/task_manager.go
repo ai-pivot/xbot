@@ -746,7 +746,6 @@ func (c *CronFired) SenderID() string { return c.Sid }
 const (
 	AsyncSourcePeer     = "peer_message"
 	AsyncSourceEvent    = "event_trigger"
-	AsyncSourceSystem   = "system"
 	AsyncSourceUIAction = "ui_action"
 )
 

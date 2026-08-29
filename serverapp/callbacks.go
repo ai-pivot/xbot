@@ -415,7 +415,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// Admin sees all sessions (same as TUI).
 		if ag.IdentityResolver() != nil {
 			uid, role, err := ag.IdentityResolver().Resolve("web", senderID)
-			if err == nil && uid > 0 && role != "admin" {
+			if err != nil {
+				// Fail CLOSED: an identity resolution failure (DB error, closed
+				// connection, ...) must NOT fall through to ListAll() — that is
+				// the admin view and would leak every session's background
+				// tasks to an unauthenticated caller.
+				return nil, fmt.Errorf("resolve identity for background tasks: %w", err)
+			}
+			if uid > 0 && role != "admin" {
 				return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 			}
 		}
@@ -1224,9 +1231,18 @@ func displayLabelForCLILocalSession(sess cliDirSessionFile, dir string) string {
 	return sess.ChatID
 }
 
+// sortUserChats orders chat rows by last-active descending.
+//
+// LastActive timestamps are RFC3339 strings that may carry MIXED timezone
+// offsets (CLI-local sessions write "+08:00" offsets, server-side rows write
+// "Z" UTC). Lexicographic string comparison is wrong across offsets:
+// "2026-08-29T12:00:00+08:00" sorts after "2026-08-29T10:00:00Z" even though
+// 04:00Z is 6 hours EARLIER than 10:00Z. Compare parsed time.Time values
+// (parseTenantTime tolerates RFC3339/RFC3339Nano/legacy layouts; unparseable
+// values become the zero time and sort last).
 func sortUserChats(rows []web.UserChatWithPreview) {
 	sort.SliceStable(rows, func(i, j int) bool {
-		return rows[i].LastActive > rows[j].LastActive
+		return parseTenantTime(rows[i].LastActive).After(parseTenantTime(rows[j].LastActive))
 	})
 }
 
@@ -1242,11 +1258,17 @@ func sortUserChats(rows []web.UserChatWithPreview) {
 //
 // Starred is deliberately ignored — it is a frontend-only localStorage state
 // the backend cannot page over.
+//
+// LastActive/CreatedAt are RFC3339 strings with MIXED timezone offsets
+// (CLI-local "+08:00" vs server "Z") — lexicographic comparison mis-orders
+// across offsets (see sortUserChats). Compare parsed time.Time values; equal
+// instants expressed with different offsets tiebreak on SortOrder/CreatedAt.
 func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		// Primary: last_active desc (matches the frontend time buckets).
-		if rows[i].LastActive != rows[j].LastActive {
-			return rows[i].LastActive > rows[j].LastActive
+		ti, tj := parseTenantTime(rows[i].LastActive), parseTenantTime(rows[j].LastActive)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
 		}
 		// Secondary: pinned first (sort_order > 0), then ascending.
 		oi, oj := rows[i].SortOrder, rows[j].SortOrder
@@ -1263,7 +1285,7 @@ func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 		if oi != oj {
 			return oi < oj
 		}
-		return rows[i].CreatedAt < rows[j].CreatedAt
+		return parseTenantTime(rows[i].CreatedAt).Before(parseTenantTime(rows[j].CreatedAt))
 	})
 }
 

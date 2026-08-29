@@ -741,11 +741,30 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	t["get_default_model"] = rpc0(func(ctx context.Context) string {
 		bizID := rpcBizID(ctx)
+		uid := rpcUserID(ctx)
 		// Model-first: resolve the user's last-used (sub, model) pair via
 		// the model-first chain (sessionMemo → tenants → user_default_model),
 		// NOT the subscription's default Model field.
-		_, model, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", "")
-		if err != nil || model == "" {
+		// User-level RPC — v45 rule: resolve by canonical user_id so
+		// identities linked to the same user see the same last-used model
+		// (consistent with list_subscriptions). bizID fallback only when
+		// uid==0. GetUserDefaultModelByUserID hits the same table
+		// ResolveActiveSubModel reads, keyed by user_id.
+		model := ""
+		if uid > 0 {
+			if svc, serr := h.requireSubscriptionSvc(); serr == nil {
+				if udm, uerr := svc.GetUserDefaultModelByUserID(uid); uerr == nil && udm != nil && udm.Model != "" {
+					model = udm.Model
+				}
+			}
+		}
+		if model == "" {
+			_, m, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", "")
+			if err == nil {
+				model = m
+			}
+		}
+		if model == "" {
 			// Fallback to GetLLM resolution
 			_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
 			model = m
@@ -1191,25 +1210,29 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		bizID := rpcBizID(ctx)
 		imported := 0
 		skipped := 0
+		// Hoist the duplicate-name snapshot out of the loop: a per-iteration
+		// ListByUserID is N+1 (M imports → M queries, each batch-loading every
+		// subscription's per-model configs). One snapshot + an in-memory name
+		// set. Imported names are added to the set so a second same-name entry
+		// within the SAME batch is still skipped (preserves the old
+		// per-iteration re-query semantics).
+		existingNames := map[string]bool{}
+		if !p.Overwrite {
+			if existing, err := svc.ListByUserID(uid); err == nil {
+				for _, e := range existing {
+					existingNames[e.Name] = true
+				}
+			}
+		}
 		for _, imp := range p.Subs {
 			// Skip masked keys (****) — user must fill in real key
 			if strings.Contains(imp.APIKey, "****") {
 				imp.APIKey = ""
 			}
 			// Check for duplicate name if not overwrite
-			if !p.Overwrite {
-				existing, _ := svc.ListByUserID(uid)
-				dup := false
-				for _, e := range existing {
-					if e.Name == imp.Name {
-						dup = true
-						break
-					}
-				}
-				if dup {
-					skipped++
-					continue
-				}
+			if !p.Overwrite && existingNames[imp.Name] {
+				skipped++
+				continue
 			}
 			newID := uuid.New().String()
 			dbSub := &sqlite.LLMSubscription{
@@ -1235,6 +1258,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			if uid > 0 {
 				svc.SetSubscriptionUserID(newID, uid)
 			}
+			existingNames[imp.Name] = true
 			imported++
 		}
 		return map[string]any{"imported": imported, "skipped": skipped}, nil
@@ -2578,12 +2602,22 @@ func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscript
 }
 
 func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subscription, error) {
+	uid := rpcUserID(ctx)
 	bizID := rpcBizID(ctx)
 	svc, err := h.requireSubscriptionSvc()
 	if err != nil {
 		return nil, nil
 	}
-	sub, err := svc.GetDefault(bizID)
+	// User-level RPC — v45 rule: resolve by canonical user_id so identities
+	// linked to the same user (web-N, cli_user, ou_xxx) see the same default
+	// (consistent with list_subscriptions' ListByUserID). bizID (sender_id)
+	// fallback only when the canonical user is unknown (uid==0).
+	var sub *sqlite.LLMSubscription
+	if uid > 0 {
+		sub, err = svc.GetDefaultByUserID(uid)
+	} else {
+		sub, err = svc.GetDefault(bizID)
+	}
 	if err != nil {
 		return nil, err
 	}

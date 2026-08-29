@@ -471,3 +471,49 @@ describe('MessageStore — patchUserById / removeById / loadMore 合并', () => 
     expect(rows[rows.length - 1].id).toBe('opt-1')
   })
 })
+
+// ── Loop2 F3/F5：frozen guard 前置 + watermark 乐观行保留 ──
+describe('MessageStore — Loop2（frozen 污染 / watermark 乐观行）', () => {
+  // F3（Loop2）：updateLive 的 frozen guard 在 mutation 之后 —— cancel 定格后
+  // 迟到的 progress 事件（SSE 乱序/重放）先污染 slot.live 再 return，"已渲染
+  // 内容永不消失"被破坏（content/iterations 被迟到数据覆盖）。
+  it('F3: updateLive frozen 后迟到事件不污染 live（guard 在 mutation 之前）', () => {
+    const s = new MessageStore()
+    s.updateLive(360, liveState(360, { content: 'streamed partial', iterations: [iter(1)] }))
+    s.freeze(360)
+    // cancel 后迟到 progress 事件（乱序/重放）—— 不得污染 frozen live
+    s.updateLive(360, liveState(360, { content: 'LATE EVENT', iterations: [iter(2)] }))
+    const live = s.getLive(360)
+    expect(live?.frozen).toBe(true)
+    expect(live?.content).toBe('streamed partial')
+    expect(live?.iterations.map((i) => i.iteration)).toEqual([1])
+    // 渲染也不被污染（frozen 合并行 content 用 live）
+    const rows = s.toRows()
+    const frozenRow = rows.find((r) => r.role === 'assistant' && r.turnID === 360)
+    expect(frozenRow?.content).toBe('streamed partial')
+  })
+
+  // F5（Loop2 info）：mergeHistory(replace) 的 watermark 过滤丢无 eventSeq 的
+  // 乐观行 —— reload 竞态窗口（replay_gap/resync 触发）恰在发送中（乐观行
+  // 已 setUser、echo 未到）时把行删掉 → 发送中的消息闪没。无 seq（null）与
+  // notification 哨兵（-1）行应保留（AGENTS.md "Notification user messages
+  // (eventSeq=-1) survive racing reloads" 同模式）；只有明确低于 watermark 的
+  // echo 行才删。
+  it('F5: mergeHistory(replace) watermark 保留无 eventSeq 乐观行与 notification（-1），只删过期 echo', () => {
+    const s = new MessageStore()
+    // 乐观行（sendMessage 创建：persisted=false，无 eventSeq —— echo 未到）
+    s.setUser(0, user('opt-1', '发送中', 0, { persisted: false, requestID: 'r1' }))
+    // 旧 echo（eventSeq 5 <= watermark 10）：快照之前的数据 → 删
+    s.setUser(0, user('echo-old', '旧echo', 0, { persisted: true, eventSeq: 5 }))
+    // 新 echo（eventSeq 99 > watermark 10）：快照之后的新数据 → 保留
+    s.setUser(0, user('echo-new', '新echo', 0, { persisted: true, eventSeq: 99 }))
+    // notification（eventSeq=-1 哨兵）：DB 行尚未持久化在飞 → 保留
+    s.setUser(0, user('notif-1', '🔔 后台任务完成', 0, { persisted: true, eventSeq: -1 }))
+    s.mergeHistory([], { replace: true, watermark: 10 })
+    const rows = s.toRows()
+    expect(rows.some((r) => r.id === 'opt-1')).toBe(true) // 乐观行存活
+    expect(rows.some((r) => r.id === 'echo-new')).toBe(true) // watermark 之上保留
+    expect(rows.some((r) => r.id === 'notif-1')).toBe(true) // notification 保留
+    expect(rows.some((r) => r.id === 'echo-old')).toBe(false) // 过期 echo 删除
+  })
+})

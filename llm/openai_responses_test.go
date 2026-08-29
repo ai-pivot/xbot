@@ -10,6 +10,17 @@ import (
 // toResponsesParams
 // ---------------------------------------------------------------------------
 
+// mockToolDefinition implements ToolDefinition for tests.
+type mockToolDefinition struct {
+	name        string
+	description string
+	parameters  []ToolParam
+}
+
+func (m mockToolDefinition) Name() string            { return m.name }
+func (m mockToolDefinition) Description() string     { return m.description }
+func (m mockToolDefinition) Parameters() []ToolParam { return m.parameters }
+
 func TestToResponsesParams_SystemMessageBecomesInstructions(t *testing.T) {
 	msgs := []ChatMessage{NewSystemMessage("You are a helpful assistant.")}
 

@@ -174,10 +174,9 @@ func (a *Agent) handleNewSession(ctx context.Context, msg bus.InboundMessage, te
 	if a.offloadStore != nil {
 		a.offloadStore.CleanSession(tenantKey)
 	}
-	// 清理 mask 数据
-	if a.maskStore != nil {
-		a.maskStore.Clear()
-	}
+	// 清理 mask 数据（per-tenant 实例——与会话归属的 tenant 目录对齐，
+	// 不再动共享单例的当前租户状态）
+	a.maskStoreFor(tenantSession.TenantID()).Clear()
 
 	// Clear token state so the context usage bar resets on /new.
 	// Without this, the next Run() would restore stale token counts from DB

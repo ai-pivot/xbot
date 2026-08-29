@@ -1427,7 +1427,7 @@ func (wc *WebChannel) writePump(c *Client) {
 				return
 			}
 			// Internal pong — reply to client ping via single-writer goroutine.
-			if msg.Type == "__pong__" {
+			if msg.Type == protocol.MsgTypePong {
 				c.wsConn.WriteControl(websocket.PongMessage, []byte(msg.Content), time.Now().Add(5*time.Second))
 				continue
 			}
@@ -1473,7 +1473,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 	c.wsConn.SetPingHandler(func(appData string) error {
 		c.wsConn.SetReadDeadline(time.Now().Add(120 * time.Second))
 		select {
-		case c.sendCh <- protocol.WSMessage{Type: "__pong__", Content: appData}:
+		case c.sendCh <- protocol.WSMessage{Type: protocol.MsgTypePong, Content: appData}:
 		default:
 		}
 		return nil

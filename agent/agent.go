@@ -523,9 +523,6 @@ type Agent struct {
 	// hookManager is the shared tool execution hook manager for this Agent and all SubAgents.
 	hookManager *hooks.Manager
 
-	// timingData collects per-tool execution timing statistics.
-	timingData *hooks.TimingData
-
 	// approvalState manages approval handling for privileged operations.
 	approvalState *hooks.ApprovalState
 
@@ -537,8 +534,15 @@ type Agent struct {
 	// OffloadStore manages large tool result offload to disk
 	offloadStore *OffloadStore
 
-	// maskStore manages observation masking storage
-	maskStore *ObservationMaskStore
+	// maskStores caches per-tenant observation masking stores keyed by tenantID
+	// (map[int64]*ObservationMaskStore, lazily created by maskStoreFor). The old
+	// shared-singleton + SetTenantID-per-message design raced across tenants:
+	// tenant A's Mask could persist into tenant B's directory (cross-tenant data
+	// leak) and Recall's disk fallback read B's storeDir. Per-tenant instances
+	// bind {baseDir}/{tenantID} once and never switch.
+	maskStores sync.Map
+	// maskBaseDir is the disk base directory for per-tenant mask stores.
+	maskBaseDir string
 
 	// lifecycleStopCh and lifecycleWG own the Agent's long-lived goroutines.
 	lifecycleStopCh chan struct{}
@@ -1724,14 +1728,15 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 初始化 ObservationMaskStore（Phase 3: Observation Masking）
 	// 默认关闭：通过 settings 的 enable_masking 开启。
-	// 始终创建（工具注册需要），但 engine 层通过 RunConfig.MaskStore 控制。
+	// Per-tenant 惰性实例（maskStoreFor）：多租户 server 下共享单例 +
+	// SetTenantID 切换是跨租户数据竞态（A 的 Mask 落进 B 的目录），改为
+	// map[tenantID]*ObservationMaskStore 隔离。engine 层通过 RunConfig.MaskStore 控制。
 	// 磁盘落在全局 ~/.xbot/mask/{tenantID}/，避免污染当前工作目录。
 	maskDir := cfg.MaskDir
 	if maskDir == "" {
 		maskDir = filepath.Join(a.xbotHome, "mask")
 	}
-	a.maskStore = NewObservationMaskStore(200)
-	a.maskStore.SetBaseDir(maskDir)
+	a.maskBaseDir = maskDir
 
 	// Start periodic cleanup for offload and mask data.
 	// Runs immediately at startup, then every 6 hours.
@@ -1747,10 +1752,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		registry.RegisterCore(recallTool)
 	}
 
-	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）
-	if a.maskStore != nil {
-		registry.RegisterCore(&tools.RecallMaskedTool{Store: a.maskStore})
-	}
+	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）。
+	// tenantMaskRouter 按执行时 ToolContext.TenantID 路由到 per-tenant 实例，
+	// 多租户 server 下并发会话互不可见。
+	registry.RegisterCore(&tools.RecallMaskedTool{Store: &tenantMaskRouter{a: a}})
 
 	// 初始化 ContextEditor（Context Editing 工具 — 精确编辑上下文）
 	editStore := NewContextEditStore(100)
@@ -1875,10 +1880,9 @@ func New(cfg Config) (*Agent, error) {
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
-		// timingData and approvalState are created before hookManager so they
-		// can be shared: the same instances are registered as builtins and
-		// exposed via accessor methods.
-		timingData:    hooks.NewTimingData(),
+		// approvalState is created before hookManager so it can be shared:
+		// the same instance is registered as a builtin and exposed via
+		// accessor methods.
 		approvalState: hooks.NewApprovalState(nil), // handler set later by channel when available
 		hookManager: func() *hooks.Manager {
 			mgr, err := hooks.NewManager(cfg.XbotHome, cfg.WorkDir)
@@ -1898,9 +1902,8 @@ func New(cfg Config) (*Agent, error) {
 	initServices(agent, cfg, multiSession, registry)
 
 	// 5b. Register builtin hooks on the shared hookManager.
-	// Uses the same timingData/approvalState instances stored on the Agent.
+	// Uses the same approvalState instance stored on the Agent.
 	agent.hookManager.RegisterBuiltin(hooks.LoggingCallback())
-	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
 	// 5b-2. Create checkpoint state and register checkpoint hook for rewind file rollback.
@@ -3306,10 +3309,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// Set tenant-scoped stores for this request.
+	// MaskStore 不再在此切换租户：per-tenant 实例由 maskStoreFor(tenantID) 惰性
+	// 创建（engine 装配 RunConfig.MaskStore 时解析），运行中租户目录不可变，
+	// 消除共享单例 SetTenantID 的跨租户竞态（A 的 Mask 落进 B 的目录）。
 	tenantID := tenantSession.TenantID()
-	if a.maskStore != nil {
-		a.maskStore.SetTenantID(tenantID)
-	}
 	if a.pluginMgr != nil {
 		a.pluginMgr.RefreshTenantID(tenantID)
 		// Wire plugin tools for this tenant if not already done
@@ -4270,8 +4273,7 @@ func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content str
 }
 
 // injectEventMessage 向入站队列注入事件触发的消息。
-// Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop，
-// 并设置 EventSource/EventTrigger 元数据。
+// Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop。
 // 同时通过 injectCLIUserMessage 通知 TUI 显示。
 func (a *Agent) injectEventMessage(msg event.Message) {
 	// Route through unified async message pipeline
@@ -4497,8 +4499,46 @@ func (a *Agent) doCleanup() {
 	if a.offloadStore != nil {
 		a.offloadStore.CleanStale()
 	}
-	if a.maskStore != nil {
-		a.maskStore.CleanStale(7)
+	a.cleanAllMaskStores(7)
+}
+
+// maskStoreFor returns the per-tenant ObservationMaskStore, creating it on
+// first use (LoadOrStore makes concurrent first access idempotent). The
+// instance binds {maskBaseDir}/{tenantID} once and never switches tenants —
+// this is what makes concurrent tenants safe (the old shared-singleton
+// SetTenantID switching leaked tenant A's masks into tenant B's directory).
+func (a *Agent) maskStoreFor(tenantID int64) *ObservationMaskStore {
+	if v, ok := a.maskStores.Load(tenantID); ok {
+		return v.(*ObservationMaskStore)
+	}
+	v, _ := a.maskStores.LoadOrStore(tenantID, newObservationMaskStoreForTenant(a.maskBaseDir, tenantID))
+	return v.(*ObservationMaskStore)
+}
+
+// cleanAllMaskStores runs stale cleanup for every tenant mask store: already
+// created in-memory instances plus every tenant directory on disk (lazily
+// instantiated so their files are cleaned too).
+func (a *Agent) cleanAllMaskStores(maxAgeDays int) {
+	a.maskStores.Range(func(_, v any) bool {
+		v.(*ObservationMaskStore).CleanStale(maxAgeDays)
+		return true
+	})
+	if a.maskBaseDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(a.maskBaseDir)
+	if err != nil {
+		return // not created yet — nothing on disk
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		tid, err := strconv.ParseInt(e.Name(), 10, 64)
+		if err != nil {
+			continue // non-tenant directory
+		}
+		a.maskStoreFor(tid).CleanStale(maxAgeDays)
 	}
 }
 

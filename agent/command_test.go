@@ -165,20 +165,26 @@ func TestCommandConcurrency(t *testing.T) {
 		"/goal":         true,
 		"/goal clear":   true,
 		"/prompt":       true, // needs UserContext (only available in processMessage path)
+		// Loop 2 fix: these dereference UserContextFromContext (ResolveLLM /
+		// SettingsSvc / RefreshModels / PermUsers) which is ONLY injected by
+		// processMessage (WithUserContext). chatWorker dispatches Concurrent
+		// commands on a bare ctx → guaranteed nil deref → clipanic swallows it
+		// → user gets no reply at all (same failure mode /prompt documented in
+		// prompt_handler.go "needs UserContext" comment).
+		"/llm":      true,
+		"/llms":     true,
+		"/models":   true,
+		"/context":  true,
+		"/settings": true,
 	}
 
 	// Commands that are stateless/read-only should be concurrent
 	concurrent := map[string]bool{
 		"/version":     true,
 		"/help":        true,
-		"/llm":         true,
-		"/llms":        true,
-		"/models":      true,
-		"/context":     true,
 		"!":            true,
 		"/browse":      true,
 		"/my":          true,
-		"/settings":    true,
 		"/menu":        false,
 		"/goal status": true,
 	}

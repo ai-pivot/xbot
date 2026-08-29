@@ -51,6 +51,12 @@ CREATE TABLE session_messages (
 );
 CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
 CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, id);
+-- v60: partial index for control records (ask_question/ask_answer/mask/context_edit...).
+-- WHERE record_type != 'message' keeps the hot-path INSERT (plain messages) zero-cost
+-- (message rows never enter the index), while control-record lookups (ask_answer
+-- anti-join by tenant_id+record_type+target_history_id) hit the index instead of a
+-- full tenant scan.
+CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, record_type, target_history_id) WHERE record_type != 'message';
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -117,7 +123,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (59);
+INSERT INTO schema_version (version) VALUES (60);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
 CREATE TABLE user_llm_subscriptions (

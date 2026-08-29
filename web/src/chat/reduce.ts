@@ -461,11 +461,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // cancel：正在执行的工具（activeTools/streamingTools，从未完成 ——
       // progress_history 不含它们）折进最后迭代（标 error）—— "已渲染内容
       // 永不消失"（cancel 后正在执行的 tool 保留在最新迭代）。不折则丢失。
-      const inFlight = [...live.activeTools, ...live.streamingTools].filter((t) =>
-        t.status === 'running' || t.status === 'generating' || t.status === 'pending')
-      const iterations = inFlight.length > 0
-        ? foldInFlightTools(iterations0, inFlight, live.iter)
-        : iterations0
+      // foldInFlightToIterations 与 foldPhase（turn_started 收尸路径）共用 ——
+      // 两条 commit 路径的 in-flight 折叠语义永不分叉。append 传 ('','')：
+      // finalText 覆盖逻辑（下方 inFlightIter map/追加）统一处理新迭代的
+      // content 写入。
+      const iterations = foldInFlightToIterations(live.activeTools, live.streamingTools, iterations0, live.iter, '', '')
       // 最终回复文本：text 顶层 content（v55 唯一权威值）> cancel 定格 content。
       const finalText = ev.content !== null ? ev.content : nonEmptyStr(live.content)
       // v55 渲染层 hasIterations=true 时不渲染顶层 content —— 最终回复必须存在于
@@ -478,7 +478,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       //    （cancel 定格 content）属于 progressHistory 的最后一个迭代。
       //    - 该迭代已在 iterations 里 → 覆盖它（正常完成 / progressHistory 补齐）。
       //    - 未在且比最后一个大（AskUser cancel：AskUser 工具调用中取消，无
-      //      in-flight 工具 → 不触发 foldInFlightTools 追加）→ 【追加】新迭代。
+      //      in-flight 工具 → 不触发 foldInFlightToIterations 追加）→ 【追加】新迭代。
       //      旧代码无条件覆盖最后一个已存在迭代，把已完成迭代的 content 替换成
       //      当前迭代文本 —— 用户报告"askuser 取消后迭代渲染混乱顺序错乱"
       //      （iter2 内容变成 iter3 文本）。
@@ -806,15 +806,26 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
   }
 }
 
-/** text_final(cancel) 时把正在执行的工具（标 error）折进最后迭代 ——
- *  progress_history 不含从未完成的工具，不折会丢（"已渲染内容永不消失"）。 */
-function foldInFlightTools(
-  its: readonly WebIteration[],
-  tools: readonly WebToolProgress[],
+/** in-flight 工具折叠（"已渲染内容永不消失"）—— foldPhase（turn_started 收尸）
+ * 与 text_final（权威 finalizer）共用：running/generating/pending 工具从未完成
+ * （iteration_history 不含），不折则从渲染消失。
+ * 标 error 折进 lastIter 迭代：已有该迭代 → 合并 tools；无 → 追加新迭代
+ * （appendContent/appendReasoning 写入新迭代 —— v55 渲染 hasIterations 时不渲染
+ * 顶层 content，流式文本必须存在于迭代内；text_final 传 ('','')，finalText
+ * 覆盖逻辑统一处理 content）。 */
+function foldInFlightToIterations(
+  activeTools: readonly WebToolProgress[],
+  streamingTools: readonly WebToolProgress[],
+  iterations: readonly WebIteration[],
   lastIter: IterNum,
+  appendContent: string,
+  appendReasoning: string,
 ): readonly WebIteration[] {
-  const errTools = tools.map((t) => ({ ...t, status: 'error' as const }))
-  const arr = [...its]
+  const inFlight = [...activeTools, ...streamingTools].filter((t) =>
+    t.status === 'running' || t.status === 'generating' || t.status === 'pending')
+  if (inFlight.length === 0) return iterations
+  const errTools = inFlight.map((t) => ({ ...t, status: 'error' as const }))
+  const arr = [...iterations]
   const idx = arr.findIndex((it) => it.iteration === lastIter)
   if (idx >= 0) {
     arr[idx] = {
@@ -823,7 +834,7 @@ function foldInFlightTools(
       toolCount: (arr[idx].toolCount ?? 0) + errTools.length,
     }
   } else {
-    arr.push({ iteration: lastIter, content: '', reasoning: '', tools: errTools, toolCount: errTools.length })
+    arr.push({ iteration: lastIter, content: appendContent, reasoning: appendReasoning, tools: errTools, toolCount: errTools.length })
   }
   return arr
 }
@@ -857,7 +868,14 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
 }
 
 function foldPhase(data: LiveSnapshot): Turn['phase'] {
-  const its = nonEmptyArr(data.iterations)
+  // F2（Loop2）：in-flight 工具折叠 —— 与 text_final 同语义
+  // （foldInFlightToIterations 共用）。收尸时 text 可能永不到达（用户发新
+  // 消息触发 turn_started 收尸旧 turn），正在执行的工具（activeTools/
+  // streamingTools，从未完成，不在 iteration_history）若不折进 committed 的
+  // 迭代就从渲染消失。追加新迭代时 content/reasoning 写进迭代（v55 渲染
+  // hasIterations 时不渲染顶层 content —— 流式文本必须存在于迭代内）。
+  const iterations = foldInFlightToIterations(data.activeTools, data.streamingTools, data.iterations, data.iter, data.content, data.reasoning)
+  const its = nonEmptyArr(iterations)
   if (its !== null) return { kind: 'committed', payload: commitViaFold(its, data.content) }
   const text = nonEmptyStr(data.content)
   if (text !== null) return { kind: 'committed', payload: commitViaText(text, []) }

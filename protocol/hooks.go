@@ -76,8 +76,6 @@ type HistoryRewindResult struct {
 
 type CheckpointStore interface {
 	Rewind(turnIdx int) (RewindResult, error)
-	HasChanges(turnIdx int) bool
-	CountChanges(turnIdx int) int
 	Write(snap FileSnapshot) error
 }
 

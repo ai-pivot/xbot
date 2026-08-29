@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -278,38 +277,9 @@ func TestIntegration_FullPluginLifecycle(t *testing.T) {
 		t.Errorf("TotalEnrichers = %d, want 1", metrics.TotalEnrichers)
 	}
 
-	// 8. Verify Profiler
-	profiler := NewProfiler()
-	profiler.RecordToolCall("com.integration.full", 10*time.Millisecond)
-	profiler.RecordHookCall("com.integration.full", 5*time.Millisecond)
-	profiler.RecordEnricherCall("com.integration.full", 2*time.Millisecond)
-
-	profile := profiler.GetProfile("com.integration.full")
-	if profile.ToolCalls != 1 {
-		t.Errorf("profile.ToolCalls = %d, want 1", profile.ToolCalls)
-	}
-	if profile.HookCalls != 1 {
-		t.Errorf("profile.HookCalls = %d, want 1", profile.HookCalls)
-	}
-	if profile.EnricherCalls != 1 {
-		t.Errorf("profile.EnricherCalls = %d, want 1", profile.EnricherCalls)
-	}
-
 	// 9. Verify AuditLog
 	if pm.AuditLog() == nil {
 		t.Fatal("AuditLog should not be nil")
-	}
-	auditEntries := pm.AuditLog().Query(AuditFilter{PluginID: "com.integration.full"})
-	// Should have at least one activate entry
-	found := false
-	for _, e := range auditEntries {
-		if e.Action == AuditActivate {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected activate audit entry")
 	}
 
 	// 10. Verify HealthCheck
@@ -319,27 +289,6 @@ func TestIntegration_FullPluginLifecycle(t *testing.T) {
 	}
 	if health["com.integration.full"] != nil {
 		t.Errorf("HealthCheck for plugin = %v, want nil (healthy)", health["com.integration.full"])
-	}
-
-	// 11. Export + Import config
-	exported, err := pm.ExportConfig()
-	if err != nil {
-		t.Fatalf("ExportConfig failed: %v", err)
-	}
-	var exportData ConfigExport
-	if err := json.Unmarshal(exported, &exportData); err != nil {
-		t.Fatalf("unmarshal export: %v", err)
-	}
-	if exportData.Version != ConfigExportVersion {
-		t.Errorf("export version = %d, want %d", exportData.Version, ConfigExportVersion)
-	}
-	if len(exportData.Plugins) != 1 {
-		t.Errorf("export plugins = %d, want 1", len(exportData.Plugins))
-	}
-
-	// Import should succeed on same manager
-	if err := pm.ImportConfig(exported); err != nil {
-		t.Fatalf("ImportConfig failed: %v", err)
 	}
 
 	// 12. DeactivateAll

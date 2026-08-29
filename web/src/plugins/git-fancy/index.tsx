@@ -58,18 +58,23 @@ function useSplitRatio(storageKey: string, initialTopPct = 40): { topPct: number
     document.body.style.userSelect = 'none'
     try { el.setPointerCapture(e.pointerId) } catch { /* jsdom */ }
 
+    // 局部变量跟踪拖拽最新值 —— onUp 持久化读取（Loop2 F6：副作用移出
+    // setTopPct updater。setState updater 必须纯函数：React StrictMode 会
+    // 双调用 updater 检测副作用，updater 内 localStorage.setItem 会被执行
+    // 两次；并发渲染重放下副作用也会重复/错序。pointerup 事件处理器恰好
+    // 执行一次，是持久化的正确位置。无拖动（pointerdown 后立即 up）时
+    // 落回 startPct —— 与原行为一致（原 updater 读 cur，cur===startPct）。
+    let lastPct = startPct
     const onMove = (ev: PointerEvent) => {
       const deltaPct = ((ev.clientY - startY) / rect.height) * 100
       const next = Math.min(90, Math.max(10, startPct + deltaPct))
+      lastPct = next
       setTopPct(next)
     }
     const onUp = () => {
       document.body.style.cursor = prevCursor
       document.body.style.userSelect = prevUserSelect
-      setTopPct((cur) => {
-        if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, String(cur))
-        return cur
-      })
+      if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, String(lastPct))
       el.removeEventListener('pointermove', onMove)
       el.removeEventListener('pointerup', onUp)
       el.removeEventListener('pointercancel', onUp)

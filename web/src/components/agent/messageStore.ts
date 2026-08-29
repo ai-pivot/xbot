@@ -193,6 +193,11 @@ export class MessageStore {
 
   /** 更新 live（progress_structured / stream_content 事件）。 */
   updateLive(turnID: number, patch: Partial<LiveState>): void {
+    // frozen guard 必须在 mutation 之前（Loop2 F3）：cancel 定格（freeze）后
+    // 迟到的 progress 事件（SSE 乱序/重放）不得污染 frozen live —— 已渲染内容
+    // 永不消失。旧实现先赋值再 return，只跳过 invalidate，迟到事件照样覆盖
+    // content/iterations。
+    if (this.slots.get(turnID)?.live?.frozen) return
     let slot = this.slots.get(turnID)
     if (!slot) {
       slot = { turnID }
@@ -212,8 +217,6 @@ export class MessageStore {
       // turnID 是 slot key，跨 turn 不会污染。
       iterations: mergeIterations(prev.iterations, patch.iterations ?? []),
     }
-    // frozen live 不再被新事件修改（cancel 后迟到事件）
-    if (slot.live.frozen) return
     this.invalidate()
   }
 
@@ -369,12 +372,17 @@ export class MessageStore {
           this.turnIDs = this.turnIDs.filter((t) => t !== tid)
         }
       }
-      // DB 快照权威：legacy 由快照重建；pending 乐观 user 只保留 watermark 之上
-      // 的（快照之后的 echo/新数据，DB 尚未包含）
+      // DB 快照权威：legacy 由快照重建；pending 乐观 user 保留"无 seq"与
+      // notification（eventSeq=-1 哨兵）行，只删 watermark 之下的 echo ——
+      // 乐观行（sendMessage 创建，echo 未到）在 reload 竞态窗口（replay_gap/
+      // resync 触发）被删会让发送中的消息闪没（Loop2 F5；AGENTS.md
+      // "Notification user messages (eventSeq=-1) survive racing reloads"
+      // 同模式）；watermark 之上的 echo 是快照之后的新数据，保留（等价原
+      // reconcile 的 watermark 规则）。
       this.legacy = []
       if (opts.watermark != null) {
         this.pendingUsers = this.pendingUsers.filter(
-          (u) => u.eventSeq != null && u.eventSeq > opts.watermark!,
+          (u) => u.eventSeq == null || u.eventSeq === -1 || u.eventSeq > opts.watermark!,
         )
       } else {
         this.pendingUsers = []

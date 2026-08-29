@@ -142,39 +142,24 @@ func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 // count — so has_more = (total > len(returned)) converges to false at the
 // earliest page instead of staying true forever.
 func (s *SessionService) GetHistoryBeforeForDisplay(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, int, error) {
-	replay, err := s.ReplayForDisplay(tenantID)
-	if err != nil {
-		return nil, 0, err
-	}
 	if limit <= 0 {
 		return nil, 0, nil
 	}
-	msgs := replay.Messages
-	// If beforeID specified, slice to only messages with id < beforeID.
-	if beforeID > 0 {
-		cut := len(msgs)
-		for i, m := range msgs {
-			if m.ID >= beforeID {
-				cut = i
-				break
-			}
-		}
-		msgs = msgs[:cut]
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return nil, 0, err
 	}
-	// total = messages before beforeID (after filtering). hasMore in
-	// callbacks.go is total > len(returned), which converges to false
-	// when all remaining messages fit in one page.
-	total := len(msgs)
-	if len(msgs) == 0 {
+	replay, total, err := replayForDisplayWindow(conn, tenantID, beforeID, int64(limit))
+	if err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
 		return nil, 0, nil
 	}
-	// Walk backwards counting messages; start is the first message of the
-	// window (oldest). Messages are already in chronological order.
-	start := 0
-	if len(msgs) > limit {
-		start = len(msgs) - limit
-	}
-	return append([]llm.ChatMessage(nil), msgs[start:]...), total, nil
+	return replay.Messages, total, nil
 }
 
 // GetAllMessages retrieves all non-display-only messages for a tenant.

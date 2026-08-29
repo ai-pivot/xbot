@@ -378,18 +378,6 @@ func parseMentions(message string) []string {
 	return result
 }
 
-// parseAgentAddress splits "agent:<role>/<instance>" into (role, instance).
-// Returns ("", "") if the format doesn't match.
-func parseAgentAddress(addr string) (role, instance string) {
-	// addr is already confirmed to start with "agent:"
-	rest := addr[6:]
-	idx := strings.Index(rest, "/")
-	if idx < 0 {
-		return "", ""
-	}
-	return rest[:idx], rest[idx+1:]
-}
-
 // loadRoleFromCtx loads a SubAgentRole using the ToolContext's sandbox and directory info.
 func loadRoleFromCtx(ctx *ToolContext, roleName string) (*SubAgentRole, bool) {
 	EnsureSynced(ctx)
