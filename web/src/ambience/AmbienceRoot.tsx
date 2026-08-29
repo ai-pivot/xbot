@@ -22,9 +22,8 @@
  * 壁纸柔焦用壁纸层 inline filter: blur（v1 简化：柔焦壁纸而非毛玻璃
  * 透壁，视觉等效且零散消费点改动）。
  */
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { ThemeContext } from '@/providers/theme'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import type { AmbienceProfile } from '@/plugin-api'
 import {
@@ -86,8 +85,6 @@ const ALL_OVERRIDES = [
 export function AmbienceBackground() {
   const snap = useAmbience()
   const profile = useActiveProfile()
-  const themeCtx = useContext(ThemeContext)
-  const theme = themeCtx?.theme
   const session = useSessionStore()
   const chatID = session.activeSession?.chatID ?? null
 
@@ -135,19 +132,17 @@ export function AmbienceBackground() {
     }
     root.classList.add('ambience-glass')
     for (const t of ALL_OVERRIDES) root.style.removeProperty(t)
-    // 读取覆盖前的原值（inline 无值 → computed 走 CSS 段，含当前主题）。
-    const originals: Record<string, string> = {}
-    for (const t of GLASS_TOKENS) {
-      const v = root.style.getPropertyValue(t) || getComputedStyle(root).getPropertyValue(t).trim()
-      if (v) originals[t] = v
-    }
+    // 引用式覆盖：color-mix 引用 var(--bg-*-src)（CSS 段 :root/.dark 定义的主题
+    // 原色）——主题切换时 src 经 CSS 级联自动重算，glass 无需 JS 重新读色。
+    // （原实现读 getComputedStyle 的时机早于 ThemeProvider 的 .dark class
+    // 更新——子组件 effect 先于父组件——读到旧主题色 → 切主题后色调反转。）
     // 内容层级对比：primary 最低透明度（壁纸透出最多），次级面板逐级加深保可读。
-    root.style.setProperty('--bg-primary', alphaColor(originals['--bg-primary'] ?? 'transparent', opacity))
-    root.style.setProperty('--bg-secondary', alphaColor(originals['--bg-secondary'] ?? 'transparent', Math.min(1, opacity + 0.12)))
-    root.style.setProperty('--bg-tertiary', alphaColor(originals['--bg-tertiary'] ?? 'transparent', Math.min(1, opacity + 0.2)))
+    root.style.setProperty('--bg-primary', alphaColor('var(--bg-primary-src)', opacity))
+    root.style.setProperty('--bg-secondary', alphaColor('var(--bg-secondary-src)', Math.min(1, opacity + 0.12)))
+    root.style.setProperty('--bg-tertiary', alphaColor('var(--bg-tertiary-src)', Math.min(1, opacity + 0.2)))
     // Dockview --dv-* 变量同步覆盖（绕过库内部硬编码背景）。
-    root.style.setProperty('--dv-group-view-background-color', alphaColor(originals['--bg-primary'] ?? 'transparent', opacity))
-    root.style.setProperty('--dv-tabs-and-actions-container-background-color', alphaColor(originals['--bg-secondary'] ?? 'transparent', Math.min(1, opacity + 0.12)))
+    root.style.setProperty('--dv-group-view-background-color', alphaColor('var(--bg-primary-src)', opacity))
+    root.style.setProperty('--dv-tabs-and-actions-container-background-color', alphaColor('var(--bg-secondary-src)', Math.min(1, opacity + 0.12)))
     return () => {
       for (const t of ALL_OVERRIDES) root.style.removeProperty(t)
       root.style.removeProperty('--dv-group-view-background-color')
@@ -155,8 +150,9 @@ export function AmbienceBackground() {
       root.classList.remove('ambience-glass')
     }
     // deps 全原始值：enabled/wallpaper/opacity/blur（profile 字段）、wpCss
-    // （壁纸 css 字符串）、theme（.dark 切换重算）。绝不放对象引用。
-  }, [profile.enabled, profile.wallpaper, opacity, blur, wpCss, theme])
+    // （壁纸 css 字符串）。theme 不需要——主题切换由 CSS 级联自动重算
+    // （src 变量变 → color-mix(var()) 引用链实时解析）。绝不放对象引用。
+  }, [profile.enabled, profile.wallpaper, opacity, blur, wpCss])
 
   if (!profile.enabled || !wp) return null
 

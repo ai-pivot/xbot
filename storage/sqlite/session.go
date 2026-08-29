@@ -231,14 +231,6 @@ func (s *SessionService) Clear(tenantID int64) error {
 	return nil
 }
 
-// PurgeOldMessages is retained for compatibility. Compression is append-only and
-// must never physically delete its source messages.
-func (s *SessionService) PurgeOldMessages(tenantID int64, keepCount int) (int64, error) {
-	// Append-only history: compression writes a snapshot record instead of
-	// physically deleting source messages. Retained as a no-op for API compat.
-	return 0, nil
-}
-
 // UpdateMessageContent updates the content of the Nth message (0-indexed) for a tenant.
 // Used by observation masking to persist masked content back to session.
 func (s *SessionService) UpdateMessageContent(tenantID int64, messageIndex int, content string) error {

@@ -160,14 +160,14 @@ function assistantRow(t: Turn): Row | null {
     }
     case 'committed': {
       // I2：payload 必可渲染（via text → content 非空；via fold → iterations 非空）。
-      const content =
-        t.phase.payload.via === 'text' ? t.phase.payload.content : t.phase.payload.content
+      // via 仅区分构造路径的 I2 保证，消费侧无差异 —— content 两分支同源
+      //（恒等三元已删，F#7）。
       return {
         kind: 'committed',
         id: `turn-${t.id}-c`,
         turnID: t.id,
         isPartial: false,
-        content,
+        content: t.phase.payload.content,
         iterations: t.phase.payload.iterations,
       }
     }

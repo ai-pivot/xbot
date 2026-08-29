@@ -600,6 +600,56 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(deriveRows(s3)).toHaveLength(2) // user + live(思考中)，无第二份
   })
 
+  it('REPRO: notification echo 在 turn_started(notification) 绑定后到达不产生第二行（F#1 双行）', () => {
+    // 真实时序：后端 drainAndProcessNotifications 注入通知 turn →
+    // turn_started(trigger=notification, content=通知全文) 经 SSE progress 通道
+    // 先到 → reduce 用 turn_start.content 构造 notif user 行（isNotification=true）。
+    // 后端 web.go InjectUserMessage 的 inject_user echo 后到 —— WSMessage 只有
+    // Type/TS/ChatID/Content 四个字段（无 id/turn_id/is_notification）→ normalize
+    // 后 requestID=null + turnHint=undefined → ③ 不命中（hint 缺失）→ ④ 无条件
+    // append pendingUsers → 同一通知渲染两行（turn.user 的 notif-${turnID} 行 +
+    // 沉底 echo 行）。
+    const s0 = run([
+      {
+        type: 'turn_started', turnID: T1, requestID: null, trigger: 'notification',
+        content: '[System Notification] bg task completed',
+      },
+      iteration1(T1, '思考中'),
+    ])
+    // turn_started(notification) 已构造 notif user 行。
+    expect(s0.turns.get(T1)?.user?.isNotification).toBe(true)
+    expect(s0.pendingUsers).toHaveLength(0)
+
+    // inject_user echo：后端真实形状（无 requestID、无 turnHint）。
+    const evs = normalizeEvent({
+      type: 'inject_user',
+      content: '[System Notification] bg task completed',
+      ts: 1723600000,
+      chat_id: 'chat-1',
+    }, 'chat-1')!
+    expect(evs).toHaveLength(1)
+    const s1 = evs.reduce(reduce, s0)
+    // 修复后：内容幂等丢弃 —— 同一通知恰好一行（notif 行），echo 不入 pending。
+    const userRows = deriveRows(s1).filter((r) => r.kind === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(s1.pendingUsers).toHaveLength(0)
+    // 保留的行是 turn.user 的 notif 行（不是沉底 echo 行）。
+    expect(userRows[0].id).toBe('notif-1')
+  })
+
+  it('F#9: 同毫秒两条 echo 的 id 不碰撞（React key + TanStack 高度测量串行）', () => {
+    // 后端连续注入两条消息（同一毫秒内）→ normalizeUserEcho 的
+    // `echo-${turn}-${Date.now()}` id 相同 → React key 重复 + TanStack
+    // Virtual 高度测量串行。echoSeq 单调后缀保证唯一。
+    const a = normalizeEvent({ type: 'inject_user', content: '第一条', chat_id: 'chat-1' }, 'chat-1')
+    const b = normalizeEvent({ type: 'inject_user', content: '第二条', chat_id: 'chat-1' }, 'chat-1')
+    expect(a).toHaveLength(1)
+    expect(b).toHaveLength(1)
+    const idA = (a![0] as Extract<DomainEvent, { type: 'user_echo' }>).row.id
+    const idB = (b![0] as Extract<DomainEvent, { type: 'user_echo' }>).row.id
+    expect(idA).not.toBe(idB)
+  })
+
   it('REPRO: gap 修复 delta 携带旧迭代 —— 不得清空 live 正在流式更新的迭代（CR #1 committedNow）', () => {
     // 场景：前端缺失中间迭代（iterations=[1,2,5]，缺 3,4），live 已流式到迭代 5。
     // 进来一个 gap 修复事件：iterationsDelta 补了早前丢失的迭代 3，ev.iter=3。

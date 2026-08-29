@@ -717,6 +717,11 @@ export class MultiSSEManager implements WSConnection {
   private primary: SSEConnectionImpl
   private extra = new Map<string, SSEConnectionImpl>()
   private disposed = false
+  // primary 引用计数（split view）：两个 AgentPanel 同 chatID 各得 'primary'
+  // 订阅，关一个 removeSubscription('primary') 直接 disconnect 会断掉存活
+  // 面板的 SSE。计数归零才真正 disconnect。legacy subscribe()/disconnect()
+  // 不走计数（直通 primary 的单订阅语义，与旧实现一致）。
+  private primaryRefs = 0
 
   // Track registered handlers so new connections can be subscribed to them.
   private messageHandlers = new Set<Handler<WSMessage>>()
@@ -779,11 +784,13 @@ export class MultiSSEManager implements WSConnection {
     // If the primary connection is idle (no chatID), use it as the primary sub.
     if (!this.primary.chatID && !this.primary.channel) {
       this.primary.subscribe(chatID, channel)
+      this.primaryRefs = 1
       return 'primary'
     }
 
     // If the primary already targets this pair, return it.
     if (this.primary.chatID === chatID && this.primary.channel === channel) {
+      this.primaryRefs += 1
       return 'primary'
     }
 
@@ -811,6 +818,12 @@ export class MultiSSEManager implements WSConnection {
   /** Remove a persistent SSE subscription by its ID. */
   removeSubscription(id: string): void {
     if (id === 'primary') {
+      // 引用计数归零才 disconnect（split view 多面板共享 primary，关一个
+      // 不能断掉存活面板的连接）。idle→subscribe 首次 + 复用各 +1，
+      // 计数到 0 说明没有存活面板再用 primary —— 断开回 idle 供下次复用。
+      this.primaryRefs -= 1
+      if (this.primaryRefs > 0) return
+      if (this.primaryRefs < 0) this.primaryRefs = 0
       // Disconnect the primary connection back to idle state so it can be
       // reused by the next addSubscription call. Without this, the primary
       // SSE connection stays open after the panel closes, leaking resources.

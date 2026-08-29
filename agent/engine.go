@@ -629,14 +629,6 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	// Record conversation metrics on exit
 	defer s.recordMetrics()
 
-	// Setup structured progress tracking
-	s.initProgress()
-
-	// Ensure PhaseDone event is sent on exit
-	if s.progressFinalizer != nil {
-		defer s.progressFinalizer()
-	}
-
 	// Setup dynamic context injector for CWD change detection
 	s.initDynamicInjector()
 

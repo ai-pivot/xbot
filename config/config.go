@@ -294,8 +294,6 @@ type AgentConfig struct {
 	CompressionThreshold float64        `json:"compression_threshold"`
 	DynamicMaxTokens     *bool          `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
 
-	PurgeOldMessages bool `json:"purge_old_messages"`
-
 	// DeltaPush 启用流式 delta push（增量文本，带宽优化）。默认 false = 每次
 	// 推送完整累积文本（简单可靠，gap 追赶无需特殊处理）。delta push 曾引入
 	// 多个问题（stateless gap 不恢复、三层 isStreamOnly 分类不一致、迭代边界
@@ -825,7 +823,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	setIntEnv("AGENT_MAX_CONTEXT_TOKENS", &cfg.Agent.MaxContextTokens)
 	setFloatEnv("AGENT_COMPRESSION_THRESHOLD", &cfg.Agent.CompressionThreshold)
-	setBoolEnv("AGENT_PURGE_OLD_MESSAGES", &cfg.Agent.PurgeOldMessages)
 	setIntEnv("MAX_SUBAGENT_DEPTH", &cfg.Agent.MaxSubAgentDepth)
 
 	// Sandbox

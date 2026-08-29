@@ -317,12 +317,14 @@ export function AgentPanel({ params, api }: PanelProps) {
     : undefined
   // busy 来源（三路 OR，覆盖所有窗口）：
   // 1. currentSession.running（SSE session(busy) 事件设置 —— 主路径）
-  // 2. progressSnapshot.streaming && phase 非 done/frozen（live turn 在跑）
+  // 2. progressSnapshot.streaming（live turn 在跑 —— TDSM 状态机经
+  //    liveProgressFromState 输出快照，phase 值域仅 'thinking'|'tool_exec'，
+  //    committed/frozen turn 不进 liveProgress，无需再比较 phase）
   // 3. agentChat.busyFallback（状态机 activeTurn !== null —— 覆盖 REST ack
   //    到 turn_started 之间的窗口：sending 已清但 live turn 可能已由 lazy
   //    采纳/stream 事件建立，session(busy) 尚未到达）
   const busy = ((currentSession?.running ?? false) ||
-    (progressSnapshot.streaming && progressSnapshot.phase !== 'done' && progressSnapshot.phase !== 'frozen') ||
+    progressSnapshot.streaming ||
     agentChat.busyFallback) &&
     !askUser.prompt
 

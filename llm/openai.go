@@ -193,27 +193,6 @@ func (o *OpenAILLM) ListModels() []string {
 	return result
 }
 
-// EnsureModelsLoaded performs a synchronous model list fetch if not yet loaded.
-// Callers that need the full model list (e.g. the LLM panel picker) should
-// call this before ListModels to avoid getting a stale single-model fallback.
-func (o *OpenAILLM) EnsureModelsLoaded() {
-	o.mu.RLock()
-	loaded := o.modelsLoaded
-	o.mu.RUnlock()
-	if loaded {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := o.LoadModelsFromAPI(ctx); err != nil {
-		log.WithError(err).Debug("[LLM] EnsureModelsLoaded: failed to load models")
-	}
-	// Mark loaded so triggerModelLoad won't fire again.
-	o.mu.Lock()
-	o.modelsLoaded = true
-	o.mu.Unlock()
-}
-
 // triggerModelLoad fires a one-time async model list fetch.
 // Subsequent calls are no-ops once modelsLoaded is set.
 func (o *OpenAILLM) triggerModelLoad() {
@@ -1129,9 +1108,15 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 				"provider": "openai",
 				"reason":   ctx.Err().Error(),
 			}).Warn("[LLM] Stream cancelled")
-			eventChan <- StreamEvent{
+			// ctx is already cancelled: the consumer has stopped reading
+			// (CollectStreamWithCallback returns without draining). Deliver the
+			// cancellation event only if the channel has room; never block.
+			select {
+			case eventChan <- StreamEvent{
 				Type:  EventError,
 				Error: ctx.Err().Error(),
+			}:
+			default:
 			}
 			return
 		default:
@@ -1152,17 +1137,25 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		for _, choice := range chunk.Choices {
 			// 处理 reasoning_content（DeepSeek/OpenAI reasoning 模型）
 			if reasoningDelta := extractReasoningContentFromDelta(choice.Delta); reasoningDelta != "" {
-				eventChan <- StreamEvent{
+				select {
+				case eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: reasoningDelta,
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 
 			// 处理文本内容
 			if choice.Delta.Content != "" {
-				eventChan <- StreamEvent{
+				select {
+				case eventChan <- StreamEvent{
 					Type:    EventContent,
 					Content: choice.Delta.Content,
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 
@@ -1180,7 +1173,8 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 					}).Debug("[LLM] Tool call started")
 				}
 				hasToolCalls = true
-				eventChan <- StreamEvent{
+				select {
+				case eventChan <- StreamEvent{
 					Type: EventToolCall,
 					ToolCall: &ToolCallDelta{
 						Index:     int(tc.Index),
@@ -1188,6 +1182,9 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
 					},
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 
@@ -1256,9 +1253,13 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
 		}).Warn("[LLM] Stream error: " + err.Error())
-		eventChan <- StreamEvent{
+		select {
+		case eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: err.Error(),
+		}:
+		case <-ctx.Done():
+			return
 		}
 		return
 	}
@@ -1277,18 +1278,26 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
 		}).Warn("[LLM] Stream ended without finish_reason — likely truncated by proxy/network")
-		eventChan <- StreamEvent{
+		select {
+		case eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: "stream ended without finish_reason (possible truncation)",
+		}:
+		case <-ctx.Done():
+			return
 		}
 		return
 	}
 
 	// BUG 2 fix: 先发 Usage，再发 Done。确保消费方在处理 Done 之前拿到 usage。
 	if lastUsage != nil {
-		eventChan <- StreamEvent{
+		select {
+		case eventChan <- StreamEvent{
 			Type:  EventUsage,
 			Usage: lastUsage,
+		}:
+		case <-ctx.Done():
+			return
 		}
 	}
 
@@ -1297,9 +1306,13 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	if lastFinishReason == "" && hasToolCalls {
 		lastFinishReason = FinishReasonToolCalls
 	}
-	eventChan <- StreamEvent{
+	select {
+	case eventChan <- StreamEvent{
 		Type:         EventDone,
 		FinishReason: lastFinishReason,
+	}:
+	case <-ctx.Done():
+		return
 	}
 
 	fields := log.Fields{

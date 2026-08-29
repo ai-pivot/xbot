@@ -412,12 +412,16 @@ func (s *runState) notifyProgress(extra string) {
 	// (todo_write([]) cleared the list). Previously `len(todos) > 0` skipped
 	// the refresh, so the frontend never learned the todos were emptied and
 	// kept stale items forever.
+	// All structuredProgress writes must hold progressMu: notifyProgress runs
+	// on concurrent tool goroutines (dispatchReadWriteSplit) whose
+	// execOneTool/updateToolResult* writes race against the locked clone below.
+	// The todo refresh + seq bump + lines copy share ONE critical section.
+	s.progressMu.Lock()
 	s.refreshStructuredTodos()
 	// Increment seq and assign to structuredProgress (unified entry point).
 	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
 		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
 	}
-	s.progressMu.Lock()
 	lines := make([]string, len(s.progressLines))
 	copy(lines, s.progressLines)
 	s.progressMu.Unlock()
@@ -529,6 +533,12 @@ func (s *runState) beginIteration(i int) {
 			}).Warn("ITER_ID_GAP: iteration number jumped — intermediate iteration(s) may have been lost")
 		}
 	}
+	// beginIteration runs on the main run goroutine, but background SubAgent
+	// callbacks (progressMu-held, engine_run_tools.go) read
+	// structuredProgress.Iteration and write progressLines/subAgentNodes across
+	// iteration boundaries — this reset section must hold progressMu to be
+	// race-free against them (same lock, opposite side).
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.Iteration = i
 		s.structuredProgress.Phase = PhaseThinking
@@ -558,7 +568,11 @@ func (s *runState) beginIteration(i int) {
 	s.iterInputTokens = 0
 	s.iterOutputTokens = 0
 	s.iterCachedTokens = 0
+	// refreshStructuredTodos writes structuredProgress.Todos/Goal — same
+	// race window as above (called under progressMu; the function itself
+	// never takes progressMu, so no re-entrancy).
 	s.refreshStructuredTodos()
+	s.progressMu.Unlock()
 	// Notify the agent of the iteration boundary so stream callbacks can stamp
 	// iteration on stream_content events (frontend iteration-boundary clearing).
 	if s.cfg.OnIterationChange != nil {

@@ -172,6 +172,15 @@ func (es *eventStream) clear() {
 // replayAfter returns the retained suffix and the highest missing sequence.
 // Missing stateless snapshots removed by replacement are not treated as
 // overflow; only capacity eviction advances the resync boundary.
+//
+// Ring contents are seq-ascending (head=oldest → tail=newest): seq is
+// assigned and pushed under the Hub's seqMu (seqFn → nextSeq + push are
+// serialized), and stateless merge's removeAt preserves order. We scan
+// backwards from the tail to find the newest entry the client already has
+// (seq <= fromSeq) and replay only the suffix after it — steady state
+// (client lagging a single event) scans O(1) and allocates only what it
+// returns, instead of preallocating the full ring (512 × 296B ≈ 152KB)
+// on every SSE-echoed event.
 func (es *eventStream) replayAfter(fromSeq uint64) ([]protocol.WSMessage, uint64) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -181,15 +190,29 @@ func (es *eventStream) replayAfter(fromSeq uint64) ([]protocol.WSMessage, uint64
 		}
 		return nil, 0
 	}
-	result := make([]protocol.WSMessage, 0, es.count+1)
+	// prefix = number of leading ring entries with seq <= fromSeq
+	// (all ring entries are older-or-equal to the suffix by the ascending
+	// invariant above; a full scan miss leaves prefix=0 = replay all).
+	prefix := 0
+	for i := es.count - 1; i >= 0; i-- {
+		if es.buf[(es.head+i)%eventStreamSize].Seq <= fromSeq {
+			prefix = i + 1
+			break
+		}
+	}
+	suffixLen := es.count - prefix
+	if suffixLen == 0 && (es.barrier == nil || es.barrier.Seq <= fromSeq) {
+		if fromSeq < es.evictedThrough {
+			return nil, es.evictedThrough
+		}
+		return nil, 0
+	}
+	result := make([]protocol.WSMessage, 0, suffixLen+1) // +1 for barrier
 	if es.barrier != nil && es.barrier.Seq > fromSeq {
 		result = append(result, *es.barrier)
 	}
-	for i := 0; i < es.count; i++ {
-		idx := (es.head + i) % eventStreamSize
-		if es.buf[idx].Seq > fromSeq {
-			result = append(result, es.buf[idx])
-		}
+	for i := prefix; i < es.count; i++ {
+		result = append(result, es.buf[(es.head+i)%eventStreamSize])
 	}
 	if fromSeq < es.evictedThrough {
 		return result, es.evictedThrough

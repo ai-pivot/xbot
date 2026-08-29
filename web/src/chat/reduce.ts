@@ -183,10 +183,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // 看不到 system notification 本身（用户报告）。通知无 REST 请求
       //（requestID=null），迟到 inject_user 走 useChatMessages →
       // history_replaced 过滤（dbID undefined），不会双行。
-      if (user === null && ev.trigger === 'notification' && ev.content !== null && ev.content !== '') {
+      // F#10：nonEmptyStr smart constructor 收窄为 NonEmptyS（原 `as never`
+      // 绕过 branded 类型 —— no-as 规则）。
+      const notifContent = ev.trigger === 'notification' ? nonEmptyStr(ev.content) : null
+      if (user === null && notifContent !== null) {
         user = {
           id: `notif-${ev.turnID}`,
-          content: ev.content as never,
+          content: notifContent,
           timestamp: new Date().toISOString(),
           isNotification: true,
           queued: false,
@@ -738,6 +741,25 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         const t = s.turns.get(tid)
         if (t && t.user === null) {
           return withTurn(s, tid, (tt) => ({ ...tt, user: ev.row }))
+        }
+      }
+      // ③.5 notification echo 内容幂等（同一通知双行根治）：turn_started(notification)
+      //    已用 turn_start.content 构造 notif user 行后，后端 InjectUserMessage 的
+      //    inject_user echo 后到 —— web.go 的 WSMessage 只有 Type/TS/ChatID/Content
+      //    （无 request_id/turn_id/is_notification）→ ①②③ 全不命中 → ④ 无条件
+      //    append → 同一通知渲染两行（turn.user 的 notif-${turnID} 行 + 沉底 echo 行）。
+      //    幂等锚点在 turns/pending 侧的 isNotification 行（echo 侧无归属标记可匹配）：
+      //    已存在 isNotification 且 content 相同的 user 行 → 同一逻辑消息，丢弃 echo。
+      //    echo 自带 requestID/turnHint 的正常路径（①②③）不受影响。
+      if (
+        ev.row.isNotification ||
+        [...s.turns.values()].some((t) => t.user?.isNotification === true && t.user.content === ev.row.content)
+      ) {
+        if (
+          [...s.turns.values()].some((t) => t.user?.isNotification === true && t.user.content === ev.row.content) ||
+          s.pendingUsers.some((u) => u.isNotification && u.content === ev.row.content)
+        ) {
+          return s
         }
       }
       // ④ 全新 user（无未绑定 pending）→ 入 pending（turnHint 后续绑定）。

@@ -2416,11 +2416,6 @@ func (l *backendModelLister) ListModels() []string {
 	return l.client.ListModels()
 }
 
-func (l *backendModelLister) EnsureModelsLoaded() {
-	// Remote mode: model list is fetched from the server on demand.
-	// No-op — the server handles caching and freshness.
-}
-
 func (l *backendModelLister) ListAllModels() []string {
 	return l.client.ListAllModels()
 }

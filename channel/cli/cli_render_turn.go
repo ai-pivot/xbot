@@ -602,12 +602,6 @@ func oneLineToolLabel(label string) string {
 	return strings.Join(strings.Fields(label), " ")
 }
 
-// renderProgressBlock is a no-op: all progress rendering is now handled
-// inline by renderTurnBody / renderLiveIteration in the streaming message.
-func (m *cliModel) renderProgressBlock() string {
-	return ""
-}
-
 // renderSubAgentTree renders nested sub-agents with indentation.
 // Only renders running/pending agents — completed or errored ones are already
 // captured in the tool summary and shouldn't linger in the progress panel.

@@ -77,8 +77,6 @@ export interface UseChatMessagesResult {
   error: string | null
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
-  /** Whether the backend reports this session as actively processing. */
-  processing: boolean
   /** The chat_id reported by the most recent history load (server's active chat). */
   resolvedChatID: string | null
   /** Reload history for the current chatID. Resolves to the fresh rows (with
@@ -93,16 +91,8 @@ export interface UseChatMessagesResult {
   cancelling: boolean
   /** Upload a file; returns the server upload metadata for sending with a message. */
   upload: (file: File) => Promise<UploadResponse>
-  /** Append a finalized assistant message (called by useProgressStream). */
-  appendAssistant: (content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, insertBeforeLastUser?: boolean) => void
-  /** Inject a user message from a bg notification/cron (called by useProgressStream). */
-  injectUserMessage: (content: string, turnID: number, isNotification: boolean) => void
-  /** Remove the trailing assistant message by id (for cancellation cleanup). */
-  removeMessage: (id: string) => void
   /** Clear committed messages immediately, used for TUI-style /new reset. */
   clearMessages: () => void
-  /** Mark a destructive mutation — next reload discards live rows. */
-  markDestructiveMutation: () => void
   /** Load older messages (scroll-up pagination). Returns false when no more. */
   loadMore: () => Promise<boolean>
   /** True if there are older messages available to load. */
@@ -302,7 +292,6 @@ export function useChatMessages({
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
-  const [processing] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const oldestIdRef = useRef<number | null>(null)
@@ -607,36 +596,38 @@ export function useChatMessages({
       const requestID = msg.id
       const id = `echo-${msg.ts ?? Date.now()}-${echoSeq++}`
       const ts = msg.ts ? new Date(msg.ts * 1000).toISOString() : new Date().toISOString()
-      setMessages((prev) => {
-        if (activeMessageCacheKeyRef.current !== listenerCacheKey) return prev
-        messageMutationGenRef.current += 1
-        const newMsg: ChatMessage = {
-          id,
-          role: 'user',
-          content,
-          iterations: [],
-          timestamp: ts,
-          isPartial: false,
-          turnID: msg.turn_id ?? 0,
-          persisted: true,
-          eventSeq: msg.seq,
-          requestID,
+      // F#5：副作用移出 setMessages updater —— updater 必须是纯函数（React
+      // StrictMode 双执行会让 messageMutationGenRef 双递增 → reload 的 mutated
+      // 检测误触发 → SSE 重连 last_event_id 水位回退）。store 是外部状态机
+      // （单一数据源），setMessages 只是镜像同步（syncMessages 内部完成）——
+      // 这段逻辑在 listener 回调体内执行恰好一次，不需要 updater。上方 line 578
+      // 的 cache key 检查已覆盖本路径（同步回调，无竞态窗口）。
+      messageMutationGenRef.current += 1
+      const newMsg: ChatMessage = {
+        id,
+        role: 'user',
+        content,
+        iterations: [],
+        timestamp: ts,
+        isPartial: false,
+        turnID: msg.turn_id ?? 0,
+        persisted: true,
+        eventSeq: msg.seq,
+        requestID,
+      }
+      // 有 optimistic（同 requestID, persisted=false）→ 原地替换（保留 id，
+      // TanStack Virtual key 稳定）；已 persisted → SSE replay 跳过。
+      if (requestID) {
+        const existing = store.findUserByRequestID(requestID)
+        if (existing) {
+          if (existing.persisted) return
+          store.patchUserById(existing.id, { ...newMsg, id: existing.id })
+          syncMessages()
+          return
         }
-        // 有 optimistic（同 requestID, persisted=false）→ 原地替换（保留 id，
-        // TanStack Virtual key 稳定）；已 persisted → SSE replay 跳过。
-        if (requestID) {
-          const existing = store.findUserByRequestID(requestID)
-          if (existing) {
-            if (existing.persisted) return prev
-            store.patchUserById(existing.id, { ...newMsg, id: existing.id })
-            syncMessages()
-            return prev // syncMessages 已 setMessages；返回 prev 避免二次更新
-          }
-        }
-        store.setUser(msg.turn_id ?? 0, newMsg)
-        syncMessages()
-        return prev
-      })
+      }
+      store.setUser(msg.turn_id ?? 0, newMsg)
+      syncMessages()
     })
     return off
   }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
@@ -755,54 +746,6 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
-  const appendAssistant = useCallback((content: string, iterations: WebIteration[], eventSeq?: number, turnID?: number, _insertBeforeLastUser?: boolean) => {
-    // 空 content + 空 iterations：仍可能通过 commitAssistant 的 live.content
-    // fallback 保留流式内容 —— 快速回复场景：text 事件 content='' 且
-    // progress_history 空，但 live（stream_content）已有回复文本。旧代码在此
-    // return 跳过 commit → live 残留 + ProgressStore reset → agent msg 消失
-    // （用户报告："回答极快且只有一个 agent iter，turn 结束后看不到 agent msg"）。
-    // 只有 content/iterations/live 全空才跳过（防止空 assistant 幽灵行）。
-    const hasLive = store.getLive(turnID ?? 0) !== undefined
-    if (!content && !iterations.length && !hasLive) return
-    messageMutationGenRef.current += 1
-    // store.commitAssistant 把 live → assistant 状态迁移（同一逻辑消息），
-    // 按 turnID 路由到对应 slot —— 顺序由 turnIDs 排序保证，insertBeforeLastUser
-    // 不再需要（结构上不可能插错位置）。
-    store.commitAssistant(turnID ?? 0, content, iterations, eventSeq)
-    syncMessages()
-  }, [store, syncMessages])
-
-  // injectUserMessage: display a bg-notification/cron user message.
-  // Called by useProgressStream when a turn_started event with trigger
-  // "notification" or "resume" arrives. The message is tagged with the
-  // backend TurnID so the assistant response can be associated correctly.
-  const injectUserMessage = useCallback((content: string, turnID: number, isNotification: boolean) => {
-    // Dedup by turnID:role 由 store 的 slot 唯一性保证（每 turn 恰好 1 user）。
-    // SSE reconnect 重放的重复 turn_started 不会产生重复行。
-    messageMutationGenRef.current += 1
-    const newMsg: ChatMessage = {
-      id: `notif-${turnID}-${echoSeq++}`,
-      role: 'user',
-      content,
-      iterations: [],
-      timestamp: new Date().toISOString(),
-      isPartial: false,
-      turnID,
-      isNotification,
-      persisted: false,
-      eventSeq: -1, // marker: dedup against history by turnID:role
-    }
-    store.setUser(turnID, newMsg)
-    syncMessages()
-  }, [store, syncMessages])
-
-  const removeMessage = useCallback((id: string) => {
-    messageMutationGenRef.current += 1
-    destructiveMutationGenRef.current += 1
-    store.removeById(id)
-    syncMessages()
-  }, [store, syncMessages])
-
   const clearMessages = useCallback(() => {
     messageMutationGenRef.current += 1
     destructiveMutationGenRef.current += 1
@@ -811,11 +754,6 @@ export function useChatMessages({
     setMessages([])
     setInitialProgress(null)
   }, [store])
-
-  const markDestructiveMutation = useCallback(() => {
-    messageMutationGenRef.current += 1
-    destructiveMutationGenRef.current += 1
-  }, [])
 
   // ── SSE replay gap → reload message list ──
   // When SSE disconnects and reconnects, the existing seq-gap detection in
@@ -835,18 +773,13 @@ export function useChatMessages({
     historyReady,
     error,
     initialProgress,
-    processing,
     resolvedChatID,
     reload,
     sendMessage,
     cancel,
     cancelling,
     upload,
-    appendAssistant,
-    injectUserMessage,
-    removeMessage,
     clearMessages,
-    markDestructiveMutation,
     loadMore,
     hasMore,
     loadingMore,

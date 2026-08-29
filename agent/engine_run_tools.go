@@ -26,6 +26,11 @@ type toolExecBatch struct {
 // initToolProgress sets up progress placeholders and structured progress for all
 // tool calls in the LLM response.
 func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *toolExecBatch {
+	// progressLines and structuredProgress share progressMu: background
+	// SubAgent callbacks (locked writes) outlive their spawning iteration and
+	// race against this reset on the main run goroutine, and this batch's own
+	// concurrent tool goroutines notifyProgress-clone the same state.
+	s.progressMu.Lock()
 	progressStartIdx := len(s.progressLines)
 	for _, tc := range response.ToolCalls {
 		s.toolsUsed = append(s.toolsUsed, tc.Name)
@@ -55,6 +60,7 @@ func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *t
 			}
 		}
 	}
+	s.progressMu.Unlock()
 	if s.autoNotify {
 		s.notifyProgress("")
 	}
@@ -133,9 +139,14 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 	}
 
 	start := time.Now()
+	// ActiveTools slot write must hold progressMu: this runs on concurrent
+	// tool goroutines (dispatchReadWriteSplit) while sibling goroutines'
+	// notifyProgress clones structuredProgress under the same lock.
+	s.progressMu.Lock()
 	if s.structuredProgress != nil && entry.index < len(s.structuredProgress.ActiveTools) {
 		s.structuredProgress.ActiveTools[entry.index].Status = ToolRunning
 	}
+	s.progressMu.Unlock()
 	// Notify CLI immediately so the running animation is visible
 	// before the tool blocks on execution.
 	if s.autoNotify {
@@ -164,7 +175,15 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 }
 
 // updateToolResultProgress updates the structured progress entry for a completed tool.
+// The whole body holds progressMu: it runs on concurrent tool goroutines
+// (dispatchReadWriteSplit) writing the same structuredProgress.ActiveTools
+// slice that sibling goroutines' notifyProgress clones under the same lock,
+// and its entry-bounds read races with the clone too. The interspersed
+// registry/plugin lookups are map reads (microseconds) — kept inside for
+// atomicity of the slot update.
 func (s *runState) updateToolResultProgress(ctx context.Context, entry toolCallEntry, batch *toolExecBatch, result *tools.ToolResult, execErr error, elapsed time.Duration) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	if s.structuredProgress == nil || entry.index >= len(s.structuredProgress.ActiveTools) {
 		return
 	}
@@ -257,6 +276,9 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 		batch.results[entry.index].content = fmt.Sprintf("Error: %v\n\nPlease fix the issue and try again with corrected parameters.", execErr)
 		batch.results[entry.index].llmContent = batch.results[entry.index].content
 		if s.autoNotify {
+			// progressLines slot write: runs on concurrent tool goroutines —
+			// same progressMu contract as updateToolResultProgress.
+			s.progressMu.Lock()
 			if tc.Name == "SubAgent" {
 				line := s.progressLines[pi]
 				line = strings.ReplaceAll(line, "⏳", "❌")
@@ -265,6 +287,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			} else {
 				s.progressLines[pi] = fmt.Sprintf("> ❌ %s (%s)", toolLabel, elapsed.Round(time.Millisecond))
 			}
+			s.progressMu.Unlock()
 		}
 	} else {
 		batch.results[entry.index].content = result.Summary
@@ -282,6 +305,9 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			"elapsed": elapsed.Round(time.Millisecond),
 		}).Debugf("Tool done: %s", resultPreview)
 		if s.autoNotify {
+			// progressLines slot write: runs on concurrent tool goroutines —
+			// same progressMu contract as updateToolResultProgress.
+			s.progressMu.Lock()
 			if tc.Name == "SubAgent" {
 				line := s.progressLines[pi]
 				// Replace both possible prefixes: ⏳ (initial placeholder) and 🔄 (progress-updated)
@@ -295,6 +321,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 				}
 				s.progressLines[pi] = fmt.Sprintf("> %s %s (%s)", icon, toolLabel, elapsed.Round(time.Millisecond))
 			}
+			s.progressMu.Unlock()
 		}
 	}
 }

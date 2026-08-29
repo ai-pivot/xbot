@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"xbot/internal/mockopenai"
 )
@@ -105,5 +106,83 @@ func TestOpenAILLM_StreamUsage_CompletionTakesMax(t *testing.T) {
 	// The cumulative mid-stream value (50) must survive the trailing zero.
 	if resp.Usage.CompletionTokens != 50 {
 		t.Fatalf("CompletionTokens = %d, want 50 (mid-stream cumulative value must NOT be overwritten by the trailing zero — tool-iteration tokens recorded as 0)", resp.Usage.CompletionTokens)
+	}
+}
+
+// TestProcessStream_CtxCancelUnblocksFullChannel reproduces the goroutine leak
+// fixed by the select+ctx.Done guard on every eventChan send in processStream:
+// the consumer (CollectStreamWithCallback) returns on ctx cancellation /
+// idle timeout WITHOUT draining eventChan; once the channel buffer is full
+// (slow/stalled consumer backpressure), a bare `eventChan <-` blocks forever —
+// `defer close(eventChan)` and `defer stream.Close()` never run, leaking the
+// goroutine and the HTTP body. With the guard, processStream must return
+// promptly once ctx is cancelled, and its defers must run (eventChan closed).
+//
+// Repro shape: buffer-1 channel + no reader + 8 content chunks. processStream
+// fills the buffer with event #1, then blocks on send #2. Cancelling ctx must
+// unblock it (old code: permanent block → 10s timeout below fails).
+func TestProcessStream_CtxCancelUnblocksFullChannel(t *testing.T) {
+	chunks := make([]mockopenai.Chunk, 0, 8)
+	for i := 0; i < 8; i++ {
+		chunks = append(chunks, mockopenai.Chunk{Content: "x"})
+	}
+	srv := mockopenai.NewServer(t, chunks)
+
+	client := NewOpenAILLM(OpenAIConfig{
+		BaseURL:      srv.URL(),
+		APIKey:       "test-key",
+		DefaultModel: "mock-model",
+		APIType:      APITypeChatCompletions,
+	})
+
+	// Open a REAL streaming response with a live ctx (the HTTP request must
+	// succeed; only the consumer-side ctx below is cancelled).
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	stream, err := client.newStreamingWithRetry(streamCtx, "mock-model", []ChatMessage{
+		{Role: "user", Content: "hi"},
+	}, nil, "", nil)
+	if err != nil {
+		t.Fatalf("newStreamingWithRetry: %v", err)
+	}
+
+	// Consumer-side ctx, mirroring CollectStreamWithCallbackFrom's cancellation
+	// path: it returns on ctx.Done() without draining the channel.
+	procCtx, procCancel := context.WithCancel(context.Background())
+
+	// Buffer-1 channel with NO reader: event #1 fills the buffer, send #2 is
+	// where a bare `chan <-` would block forever.
+	eventChan := make(chan StreamEvent, 1)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		client.processStream(procCtx, stream, eventChan, time.Now(), nil, "mock-model", nil, "")
+	}()
+
+	// Let processStream consume chunks from the (already fully-flushed) mock
+	// SSE body, fill the buffer, and block on send #2.
+	time.Sleep(500 * time.Millisecond)
+	procCancel()
+
+	select {
+	case <-done:
+		// processStream returned — no goroutine leak.
+	case <-time.After(10 * time.Second):
+		t.Fatal("processStream leaked: still blocked on a full eventChan 10s after ctx cancellation (bare chan send never unblocks)")
+	}
+
+	// defer close(eventChan) must have run: drain buffered events until the
+	// channel reports closed.
+	drainDeadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-eventChan:
+			if !ok {
+				return // closed — both defers ran, goroutine fully unwound
+			}
+		case <-drainDeadline:
+			t.Fatal("eventChan never closed — defer close(eventChan) did not run (goroutine leaked)")
+		}
 	}
 }

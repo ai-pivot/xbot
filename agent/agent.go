@@ -395,11 +395,10 @@ func (ss *bgSessionState) setActiveTurn(id uint64) {
 
 // Agent 核心 Agent 引擎
 type Agent struct {
-	bus              *bus.MessageBus
-	multiSession     *session.MultiTenantSession // Multi-tenant session manager
-	tools            *tools.Registry
-	maxIterations    int
-	purgeOldMessages bool
+	bus           *bus.MessageBus
+	multiSession  *session.MultiTenantSession // Multi-tenant session manager
+	tools         *tools.Registry
+	maxIterations int
 
 	skills             *SkillStore
 	agents             *AgentStore
@@ -624,9 +623,6 @@ type pendingAskUserEntry struct {
 	pending *protocol.ProgressEvent
 }
 
-// SetRegistryManager sets the RegistryManager (for external injection or override).
-func (a *Agent) SetRegistryManager(rm *RegistryManager) { a.registryManager = rm }
-
 // SetSettingsService sets the SettingsService (for external injection or override).
 func (a *Agent) SetSettingsService(svc *SettingsService) {
 	if a.userSys == nil {
@@ -843,12 +839,6 @@ func (a *Agent) SetCommandRegistry(r *CommandRegistry) { a.commands = r }
 
 // SetMessageSender sets the Dispatcher reference for unified messaging.
 func (a *Agent) SetMessageSender(ms bus.MessageSender) { a.messageSender = ms }
-
-// SetAgentChannelRegistry sets the callbacks for registering/unregistering AgentChannels.
-func (a *Agent) SetAgentChannelRegistry(register func(name string, runFn bus.RunFn) error, unregister func(name string)) {
-	a.registerAgentChannel = register
-	a.unregisterAgentChannel = unregister
-}
 
 // RegistryManager returns the Agent's RegistryManager (for external injection of callbacks).
 func (a *Agent) RegistryManager() *RegistryManager { return a.registryManager }
@@ -1455,12 +1445,6 @@ func (a *Agent) ClearProxyLLM(senderID string) {
 func (a *Agent) GetDefaultModel() string {
 	return a.userSys.llmFactory.GetDefaultModel()
 }
-func (a *Agent) GetSettingsService() *SettingsService {
-	if a.userSys == nil {
-		return nil
-	}
-	return a.userSys.settingsSvc
-}
 
 func buildToolMessageContent(result *tools.ToolResult) string {
 	if result == nil {
@@ -1543,16 +1527,8 @@ type Config struct {
 	CompressionThreshold float64 // 触发压缩的 token 比例阈值（默认 0.7）
 	EnableAutoCompress   bool    // 是否启用自动上下文压缩（默认 true，旧字段）
 
-	// DynamicMaxTokens dynamically adjusts max_output_tokens based on remaining
-	// context space. When enabled, max_output_tokens is reduced when the context
-	// is large to prevent context_window_exceeded errors.
-	DynamicMaxTokens bool
-
 	// SubAgent 深度控制
 	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
-
-	// 压缩后清理旧消息
-	PurgeOldMessages bool // 压缩后自动删除旧消息（默认 false）
 
 	// OffloadDir: offload 文件存储目录（默认 ~/.xbot/offload_store）
 	OffloadDir string
@@ -1872,13 +1848,12 @@ func New(cfg Config) (*Agent, error) {
 
 	rm := runner.NewManager()
 	agent := &Agent{
-		bus:              cfg.Bus,
-		multiSession:     multiSession,
-		tools:            registry,
-		maxIterations:    cfg.MaxIterations,
-		maxConcurrency:   cfg.MaxConcurrency,
-		purgeOldMessages: cfg.PurgeOldMessages,
-		deltaPush:        cfg.DeltaPush,
+		bus:            cfg.Bus,
+		multiSession:   multiSession,
+		tools:          registry,
+		maxIterations:  cfg.MaxIterations,
+		maxConcurrency: cfg.MaxConcurrency,
+		deltaPush:      cfg.DeltaPush,
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -2237,11 +2212,6 @@ func (a *Agent) SetLLMConcurrencyForUserID(userID int64, personal int) error {
 	return a.userSys.settingsSvc.SetByUserID("cli", userID, "max_concurrency", fmt.Sprintf("%d", personal))
 }
 
-// SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）
-func (a *Agent) SetDirectSend(fn func(channel.OutboundMsg) (string, error)) {
-	a.directSend = fn
-}
-
 // SetEventRouter sets the event trigger router.
 // The router's InjectFunc is wired to injectEventMessage when Agent.Run starts.
 func (a *Agent) SetEventRouter(r *event.Router) {
@@ -2279,9 +2249,6 @@ func (a *Agent) AddChannelPromptProvider(provider ChannelPromptProvider) {
 func (a *Agent) HookManager() *hooks.Manager {
 	return a.hookManager
 }
-
-// TimingData returns the shared timing statistics collector.
-func (a *Agent) TimingData() *hooks.TimingData { return a.timingData }
 
 // ApprovalState returns the shared approval state for privileged operations.
 func (a *Agent) ApprovalState() *hooks.ApprovalState { return a.approvalState }
@@ -4495,31 +4462,6 @@ func (a *Agent) addReaction(msg bus.InboundMessage) {
 		return
 	}
 	a.addReactionToMessage(msg.Channel, msg.ChatID, messageID, "DONE")
-}
-
-// ProcessDirect 直接处理一条消息（用于 CLI 模式）
-func (a *Agent) ProcessDirect(ctx context.Context, content string) (string, error) {
-	msg := bus.InboundMessage{
-		Channel:   "cli",
-		SenderID:  "cli_user",
-		ChatID:    "direct",
-		Content:   content,
-		Time:      time.Now(),
-		RequestID: log.NewRequestID(),
-	}
-	gate := a.sessionOperationGate(msg.Channel, msg.ChatID)
-	if !gate.lock(ctx) {
-		return "", ctx.Err()
-	}
-	defer gate.unlock()
-	resp, err := a.processMessage(ctx, msg)
-	if err != nil {
-		return "", err
-	}
-	if resp == nil {
-		return "", nil
-	}
-	return resp.Content, nil
 }
 
 // CleanupSessionFiles removes offload data for a session identified by (channel, chatID).

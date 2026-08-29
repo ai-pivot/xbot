@@ -145,9 +145,17 @@
   --accent-hover: #2a7aa8;
   --accent-foreground: #ffffff;
 
-  --bg-primary: #ffffff;
-  --bg-secondary: #f3f3f3;
-  --bg-tertiary: #e4e4e4;
+  /* bg-*-src：主题原始色（glass 效果的引用源）。glass 激活时 JS inline 覆盖
+   * --bg-* 为 color-mix(var(--bg-*-src) N%, transparent) —— 主题切换时 .dark
+   * 的 src 值经 CSS 级联自动重算，glass 不需要 JS 重新读色（原实现读
+   * getComputedStyle 时机早于 ThemeProvider 的 class 更新（子组件 effect 先
+   * 于父组件），读到旧主题色 → 切主题后色调反转）。 */
+  --bg-primary-src: #ffffff;
+  --bg-secondary-src: #f3f3f3;
+  --bg-tertiary-src: #e4e4e4;
+  --bg-primary: var(--bg-primary-src);
+  --bg-secondary: var(--bg-secondary-src);
+  --bg-tertiary: var(--bg-tertiary-src);
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
@@ -243,9 +251,11 @@
   --accent-hover: #4499cc;
   --accent-foreground: #ffffff;
 
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --bg-tertiary: #2d2d2d;
+  /* dark 主题只覆盖 src 原色（glass 的 color-mix 引用 var(--bg-*-src) 经 CSS
+   * 级联自动重算——主题切换零 JS 参与，无竞态）。 */
+  --bg-primary-src: #1e1e1e;
+  --bg-secondary-src: #252526;
+  --bg-tertiary-src: #2d2d2d;
   --border: #3c3c3c;
   --text-primary: #cccccc;
   --text-secondary: #858585;

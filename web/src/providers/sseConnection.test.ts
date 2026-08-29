@@ -8,7 +8,7 @@ import {
   progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
-import { SSEConnectionImpl, SSE_EVENT_TYPES } from './sseConnection'
+import { SSEConnectionImpl, SSE_EVENT_TYPES, MultiSSEManager } from './sseConnection'
 import type { WSMessage } from '@/types/shared'
 
 vi.mock('@/lib/api', () => ({
@@ -1210,5 +1210,48 @@ describe('half-open connection watchdog', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('MultiSSEManager primary 引用计数（split view）', () => {
+  it('两个订阅同 chatID：移除一个不断连接，全部移除才断开（F#3）', () => {
+    // split view 两个 AgentPanel 同 chatID 各得 'primary'，关一个 → 旧实现
+    // removeSubscription('primary') 直接 disconnect → 存活面板的 SSE 被断。
+    const mgr = new MultiSSEManager()
+    const sub1 = mgr.addSubscription('chat-a', 'web')
+    const sub2 = mgr.addSubscription('chat-a', 'web')
+    expect(sub1).toBe('primary')
+    expect(sub2).toBe('primary')
+    // 复用同一 primary 连接（不建第二条 SSE）。
+    expect(MockEventSource.instances).toHaveLength(1)
+    MockEventSource.instances[0].open()
+    expect(mgr.connected).toBe(true)
+
+    // 移除第一个订阅：仍有一个存活 → primary 不断。
+    mgr.removeSubscription(sub1)
+    expect(MockEventSource.instances[0].closed).toBe(false)
+    expect(mgr.connected).toBe(true)
+
+    // 移除最后一个订阅 → 断开（无泄漏）。
+    mgr.removeSubscription(sub2)
+    expect(MockEventSource.instances[0].closed).toBe(true)
+    mgr.dispose()
+  })
+
+  it('非 primary 订阅行为不变（同 chatID 不同 channel 建独立连接）', () => {
+    const mgr = new MultiSSEManager()
+    const p = mgr.addSubscription('chat-b', 'web')
+    const extra = mgr.addSubscription('chat-b', 'cli')
+    expect(p).toBe('primary')
+    expect(extra).toBe('cli:chat-b')
+    expect(MockEventSource.instances).toHaveLength(2)
+
+    // extra 断开不影响 primary；primary 断开不影响 extra（原有行为保持）。
+    mgr.removeSubscription(extra)
+    expect(MockEventSource.instances[0].closed).toBe(false)
+    expect(MockEventSource.instances[1].closed).toBe(true)
+    mgr.removeSubscription(p)
+    expect(MockEventSource.instances[0].closed).toBe(true)
+    mgr.dispose()
   })
 })
