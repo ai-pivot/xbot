@@ -7,7 +7,7 @@
  * When a live progress snapshot is present (streaming), appends a
  * LiveIteration at the end for the in-flight iteration.
  */
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 
 import { ThinkingLine } from './ThinkingLine'
 import { IterationGroup } from './IterationHistory'
@@ -85,7 +85,14 @@ export const TurnBody = memo(function TurnBody({
   // restoreActiveProgress backfills it — rendering iteration 3 while 2 is
   // missing would show a non-contiguous sequence (1, 3). Rendering the
   // contiguous prefix keeps the visible history linear.
-  const contiguous = continuousIterations(iterations)
+  //
+  // PERF: both derivations memoized on `iterations` — TurnBody re-renders every
+  // streaming frame (its liveProgress prop changes identity per frame, memo
+  // can't block it), but committed iterations only change when history grows.
+  // useMemo lets those frames skip the O(N) contiguous-prefix scan and the
+  // O(N×blocks) flatten. Pure computation, same inputs → same output.
+  const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
+  const blocks = useMemo(() => flattenIterations(contiguous), [contiguous])
 
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
@@ -111,9 +118,6 @@ export const TurnBody = memo(function TurnBody({
       </div>
     )
   }
-
-  // mergeTools on: flatten iterations into content blocks, merging consecutive tools.
-  const blocks = flattenIterations(contiguous)
 
   return (
     <div className="flex flex-col gap-1" data-iter-range={contiguous.length > 0 ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}` : undefined} data-iter-total={contiguous.length}>
