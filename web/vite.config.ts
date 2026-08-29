@@ -138,11 +138,29 @@ export default defineConfig(({ mode }) => {
     },
   },
   build: {
-    // Raise chunk size warning limit. Monaco is a large single chunk (its
+    // Chunk size warning limit: Monaco is a large single chunk (its
     // language workers are code-split, but the core + bundled language
     // contributions land together in vendor-monaco). It loads lazily behind
-    // the FilePanel, so this is acceptable.
+    // the FilePanel, so the raised limit is acceptable for that chunk.
     chunkSizeWarningLimit: 5000,
+    modulePreload: {
+      // Keep lazy-panel vendor chunks (monaco ~4.2MB, xterm ~340KB) OUT of
+      // the entry HTML's <link rel="modulepreload"> chain. These chunks load
+      // on demand (FilePanel / TerminalPanel / BackgroundPanel are lazy) —
+      // preloading them on the entry page wastes ~5MB of first-load
+      // bandwidth for panels the user may never open. The bundler hoists
+      // lazy-chunk deps into the entry preload chain; filtering here is
+      // purely a preload-hint removal (dynamic import() still fetches them
+      // on demand — zero functional change).
+      resolveDependencies(filename: string, deps: string[]) {
+        return deps.filter(
+          (dep) =>
+            !/^vendor-monaco/.test(dep) &&
+            !/^vendor-xterm/.test(dep) &&
+            !/^vendor-tiptap/.test(dep),
+        )
+      },
+    },
     rollupOptions: {
       output: {
         manualChunks(id) {

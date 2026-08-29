@@ -363,7 +363,7 @@ function FileCreateRender({ tool, summary }: { tool: WebToolProgress; summary: s
           </div>
         </div>
       ) : (
-        summary && <div className="text-text-muted">{summary}</div>
+        summary && <div className="text-text-muted"><AnsiText text={summary} /></div>
       )}
       {!path && !content && !summary && <div className="text-text-muted">—</div>}
     </div>
@@ -406,7 +406,7 @@ function FileReplaceRender({ tool, summary }: { tool: WebToolProgress; summary: 
           </pre>
         </div>
       ) : (
-        summary && <div className="text-text-muted">{summary}</div>
+        summary && <div className="text-text-muted"><AnsiText text={summary} /></div>
       )}
       {!path && !oldStr && !summary && <div className="text-text-muted">—</div>}
     </div>

@@ -17,6 +17,7 @@
  */
 import { memo, useMemo, useState, type ReactNode } from 'react'
 
+import { AnsiText } from './AnsiText'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ArgsView } from './ToolCallBlock'
 import { SweepText } from './SweepText'
@@ -181,8 +182,10 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
           <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
         )}
       </div>
-      {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本） */}
-      {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary">{tool.summary}</p> : null}
+      {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本）。
+          ANSI 渲染：Shell 等工具的 summary 取自命令输出首行，携带 SGR 颜色码
+          （vitest/ls 等）——用 AnsiText 渲染成彩色，而非 raw 转义序列泄漏。 */}
+      {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary"><AnsiText text={tool.summary} /></p> : null}
       {tool.args ? (
         <div>
           <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">参数</div>

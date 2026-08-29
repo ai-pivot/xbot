@@ -32,16 +32,19 @@ import {
 import { createRoot, type Root } from 'react-dom/client'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
-import { BackgroundPanel } from '@/workspace/panels/BackgroundPanel'
 // Lazy-load heavy panels: FilePanel pulls in Monaco editor (~3-5MB),
-// TerminalPanel pulls in xterm + addons (~200KB). Neither is needed
-// for the initial Agent tab render.
+// TerminalPanel pulls in xterm + addons (~200KB), BackgroundPanel pulls in
+// xterm too (task output rendering). None is needed for the initial Agent
+// tab render. BackgroundPanel previously imported statically — defeating the
+// xterm lazy split (TerminalPanel's lazy design was bypassed by it).
 const FilePanel = lazy(() =>
   import('@/workspace/panels/FilePanel').then(m => ({ default: m.FilePanel })))
 const TerminalPanel = lazy(() =>
   import('@/workspace/panels/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
 const DiffPanel = lazy(() =>
   import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
+const BackgroundPanel = lazy(() =>
+  import('@/workspace/panels/BackgroundPanel').then(m => ({ default: m.BackgroundPanel })))
 import { TabHeader } from '@/workspace/TabHeader'
 import {
   DockviewContext,
