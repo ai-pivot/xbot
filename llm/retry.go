@@ -377,6 +377,15 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 			ch  <-chan StreamEvent
 			err error
 		}
+		// Request-send timestamp — recorded BEFORE initiating the stream
+		// request. TTFT must be measured from here: GenerateStream blocks until
+		// the SSE connection is established (and the first chunks may already
+		// be buffered in eventCh when collection starts), so collecting from
+		// "now" at CollectStreamWithCallback time would silently drop the
+		// entire request-setup window from TTFT (the "ttft suddenly tiny after
+		// tool generation finished" bug: live frames reported the full window,
+		// the committed/DB value reported ~0-5ms local latency).
+		t0 := time.Now()
 		resultCh := make(chan genResult, 1)
 		go func() {
 			ch, err2 := streaming.GenerateStream(ctx, model, messages, tools, thinkingMode)
@@ -395,8 +404,8 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 		}
 
 		if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
-			return CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
+			return CollectStreamWithCallbackFrom(ctx, eventCh, t0, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 		}
-		return CollectStream(ctx, eventCh)
+		return CollectStreamWithCallbackFrom(ctx, eventCh, t0, nil, nil, nil, nil)
 	})
 }

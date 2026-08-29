@@ -257,6 +257,20 @@ const zhCN = {
     accentInvalid: '请输入有效的十六进制颜色值',
     mdTheme: 'Markdown 主题',
     mdThemeDesc: '选择 Agent 对话区 Markdown 渲染的配色主题',
+    ambienceWallpaper: '壁纸与氛围',
+    ambienceWallpaperDesc: '会话背景壁纸 + 玻璃拟态内容层（插件贡献预设 + 本机上传）',
+    ambienceNone: '无壁纸',
+    ambienceUpload: '上传壁纸',
+    ambienceUploadDesc: '浏览器端压缩（≤1600px）· 本机 IndexedDB 存储',
+    ambienceUploadFail: '上传失败：不支持的格式或图片过大',
+    ambienceGlass: '玻璃拟态',
+    ambienceOpacity: '内容透明度',
+    ambienceBlur: '壁纸柔焦',
+    ambienceWallpaperOpacity: '壁纸不透明度',
+    ambienceSessionProfile: '会话级氛围',
+    ambienceSessionProfileDesc: '仅当前会话生效（每个会话独立壁纸，切会话自动换肤）；关闭则跟随全局',
+    ambienceEmptyPresets: '没有可用壁纸预设——预设来自 xbot.ambience 插件（若已在插件面板禁用，请重新启用；或上传本机壁纸）',
+    ambienceRemove: '删除',
     mdThemeVscodeDark: 'VSCode Dark+',
     mdThemeGithubDark: 'GitHub Dark',
     mdThemeGithubLight: 'GitHub Light',
@@ -424,3 +438,6 @@ const zhCN = {
 
 export default zhCN
 export type Translations = typeof zhCN
+
+// Ambience 壁纸设置（SettingsAppearance 的 AmbienceSettings 区）
+// 注意：这些 key 加在 settings 段内（mdThemeDesc 之后）

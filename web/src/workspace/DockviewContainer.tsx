@@ -257,7 +257,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
     }
   }, [])
 
-  return <div ref={hostRef} className="min-h-0 w-full flex-1" />
+  return <div ref={hostRef} className="min-h-0 w-full flex-1 bg-bg-primary" />
 }
 
 /* ── React ↔ dockview renderers ── */

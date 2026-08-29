@@ -64,3 +64,46 @@ func TestOpenAILLM_ChatCompletions_StreamIntegration(t *testing.T) {
 		t.Fatalf("last request body missing model: %s", reqs[len(reqs)-1])
 	}
 }
+
+// TestOpenAILLM_StreamUsage_CompletionTakesMax reproduces the zero-completion
+// bug: some gateways (sglang/MoL on tool-call streams) emit a mid-stream usage
+// chunk with the cumulative completion_tokens, then a FINAL usage chunk whose
+// completion_tokens is 0. processStream's lastUsage assignment overwrote the
+// accumulated value with the trailing zero → the agent recorded
+// iteration tokens = 0 for tool iterations ("tool 的 sse 没计算" —
+// input/cached tokens were fine because PromptTokens stayed non-zero, but
+// CompletionTokens zeroed out). The fix takes the MAX completion across usage
+// chunks (accumulation is monotonic; a trailing 0 is gateway noise).
+func TestOpenAILLM_StreamUsage_CompletionTakesMax(t *testing.T) {
+	chunks := []mockopenai.Chunk{
+		{Content: "hello"},
+		// Mid-stream cumulative usage (normal so far).
+		{Usage: &mockopenai.Usage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}},
+		{Content: " world"},
+		// Final chunk carries a usage with completion=0 (gateway bug).
+		{FinishReason: "stop", Usage: &mockopenai.Usage{PromptTokens: 100, CompletionTokens: 0, TotalTokens: 100}},
+	}
+	srv := mockopenai.NewServer(t, chunks)
+
+	client := NewOpenAILLM(OpenAIConfig{
+		BaseURL:      srv.URL(),
+		APIKey:       "test-key",
+		DefaultModel: "mock-model",
+		APIType:      APITypeChatCompletions,
+	})
+
+	resp, err := client.Generate(context.Background(), "mock-model", []ChatMessage{
+		{Role: "user", Content: "hi"},
+	}, nil, "")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	if resp.Usage.PromptTokens != 100 {
+		t.Fatalf("PromptTokens = %d, want 100", resp.Usage.PromptTokens)
+	}
+	// The cumulative mid-stream value (50) must survive the trailing zero.
+	if resp.Usage.CompletionTokens != 50 {
+		t.Fatalf("CompletionTokens = %d, want 50 (mid-stream cumulative value must NOT be overwritten by the trailing zero — tool-iteration tokens recorded as 0)", resp.Usage.CompletionTokens)
+	}
+}

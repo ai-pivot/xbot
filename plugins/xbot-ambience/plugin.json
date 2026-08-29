@@ -1,0 +1,55 @@
+{
+  "id": "xbot.ambience",
+  "name": "Ambience",
+  "version": "0.3.0",
+  "description": "壁纸 + 玻璃拟态（Ambience Layer 四层装饰模型）",
+  "author": "xbot",
+  "runtime": "script",
+  "entry": "true",
+  "activationEvents": [],
+  "permissions": ["config"],
+  "contributes": {
+    "configuration": {
+      "title": "Ambience",
+      "properties": {
+        "wallpaper": {
+          "type": "image",
+          "label": "壁纸",
+          "description": "选择壁纸预设或上传图片（无壁纸 = 关闭氛围层）",
+          "default": "",
+          "options": [
+            { "label": "无壁纸", "value": "" },
+            { "label": "星夜极光", "value": "preset:aurora" },
+            { "label": "暮色余烬", "value": "preset:ember" },
+            { "label": "樱花和纸", "value": "preset:sakura" },
+            { "label": "专注素色", "value": "preset:focus" }
+          ]
+        },
+        "wallpaperOpacity": {
+          "type": "number",
+          "label": "壁纸不透明度",
+          "description": "壁纸显示浓度：调低壁纸变淡露出底色（花哨图片降低避免遮挡文字）",
+          "minimum": 0.1,
+          "maximum": 1.0,
+          "default": 1.0
+        },
+        "glassOpacity": {
+          "type": "number",
+          "label": "面板透明度",
+          "description": "UI 面板玻璃感：调低面板更透、壁纸更透出",
+          "minimum": 0.5,
+          "maximum": 1.0,
+          "default": 0.82
+        },
+        "glassBlur": {
+          "type": "number",
+          "label": "壁纸柔焦",
+          "description": "壁纸背景模糊（0=清晰）",
+          "minimum": 0,
+          "maximum": 24,
+          "default": 0
+        }
+      }
+    }
+  }
+}

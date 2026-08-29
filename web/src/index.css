@@ -984,3 +984,43 @@
   transition: none !important;
   animation: none !important;
 }
+
+/* ─── Ambience glass effect — Dockview / Sheet overlay 统一玻璃化 ──────────
+ * 玻璃效果靠覆盖 --bg-* CSS 变量实现（AmbienceRoot.tsx 的 glass effect），
+ * 但 Dockview 内部 DOM 有硬编码背景（.dockview-theme-vs 库自带 #1e1e1e），
+ * Sheet overlay 有 bg-black/50 Tailwind 硬编码——两者都不走 --bg-* 变量链。
+ * 这里用 .ambience-glass CSS 类（glass effect 激活时由 AmbienceBackground
+ * 加到 <html> 上）+ !important 强制它们跟随变量 / 降低不透明度。
+ */
+.ambience-glass .dv-groupview,
+.ambience-glass .dv-view {
+  background-color: var(--dv-group-view-background-color) !important;
+}
+.ambience-glass .dockview-theme-vs .dv-tabs-and-actions-container {
+  background-color: var(--dv-tabs-and-actions-container-background-color) !important;
+}
+.ambience-glass [data-slot="sheet-overlay"] {
+  background-color: rgba(0, 0, 0, 0.25) !important;
+}
+
+/* ─── Ambience glass: Dockview 主 view 玻璃效果统一修复 ──────────────────────
+ * Dockview v7 的 themeVisualStudio 用内联样式 + CSS 变量设置面板背景，
+ * 覆盖 --dv-* 变量不够（内部 JS 直接 style.backgroundColor）。
+ * 修复：glass 激活时强制所有 Dockview 容器透明——玻璃效果由 AppShell 根
+ * 容器的 bg-bg-primary（覆盖为半透明）提供。tab 栏保留 --bg-secondary。
+ */
+.ambience-glass .dockview-theme-vs,
+.ambience-glass .dockview-theme-vs > div,
+.ambience-glass .dv-root-wrapper,
+.ambience-glass .dv-root,
+.ambience-glass .dv-groupview,
+.ambience-glass .dv-view,
+.ambience-glass .dv-render,
+.ambience-glass .dv-split-view-container,
+.ambience-glass .dv-resize-container {
+  background-color: transparent !important;
+}
+/* tab 栏保留 --bg-secondary（半透明玻璃——变量覆盖链生效） */
+.ambience-glass .dv-tabs-and-actions-container {
+  background-color: var(--bg-secondary) !important;
+}

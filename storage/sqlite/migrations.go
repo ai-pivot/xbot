@@ -361,6 +361,16 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v59: add per-iteration LLM usage (input/prompt-cache-hit tokens + model)
+	// to iteration_history. Enables per-session / per-model / per-day usage
+	// aggregation (cache hit rate, input vs output split) straight from the
+	// iteration table — no separate session-level ledger needed.
+	if from < 59 {
+		if err := migrateV58ToV59(conn); err != nil {
+			return fmt.Errorf("migrate to v59: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -380,6 +390,34 @@ func migrateV57ToV58(conn *sql.DB) error {
 		return fmt.Errorf("migrate v57->v58 update version: %w", err)
 	}
 	log.Info("Database migrated to v58 (added tpot_ms to iteration_history)")
+	return nil
+}
+
+// migrateV58ToV59 adds per-iteration LLM usage columns to iteration_history:
+// input_tokens (prompt tokens), cached_tokens (prompt-cache hit tokens), and
+// model (LLM model name used for that iteration). This makes iteration_history
+// the single source for usage/perf aggregation — per-session, per-model,
+// per-day — without a separate session-level ledger.
+// Idempotent: columns may already exist when a test fixture set
+// schema_version to 58 but the table was created by the current createSchema
+// DDL (which already includes them).
+func migrateV58ToV59(conn *sql.DB) error {
+	for _, c := range []struct{ name, ddl string }{
+		{"input_tokens", "ALTER TABLE iteration_history ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"},
+		{"cached_tokens", "ALTER TABLE iteration_history ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0"},
+		{"model", "ALTER TABLE iteration_history ADD COLUMN model TEXT NOT NULL DEFAULT ''"},
+	} {
+		exists, err := columnExists(conn, "iteration_history", c.name)
+		if err == nil && !exists {
+			if _, err := conn.Exec(c.ddl); err != nil {
+				return fmt.Errorf("migrate v58->v59 add %s: %w", c.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 59"); err != nil {
+		return fmt.Errorf("migrate v58->v59 update version: %w", err)
+	}
+	log.Info("Database migrated to v59 (added input_tokens/cached_tokens/model to iteration_history)")
 	return nil
 }
 

@@ -87,15 +87,30 @@ func CollectStream(ctx context.Context, eventCh <-chan StreamEvent) (*LLMRespons
 // the stream — this enables early tool detection (showing "generating tool X"
 // before arguments finish streaming, similar to Cursor). EventError handling
 // is identical to CollectStream (returns partial content).
+//
+// TTFT baseline: CollectStreamWithCallback measures from the moment collection
+// starts. Callers that start collecting AFTER the request was sent (GenerateStream
+// blocks until the SSE connection is established and the first chunks may
+// already be buffered in eventCh) MUST use CollectStreamWithCallbackFrom with
+// the request-send timestamp — otherwise TTFT silently drops the entire
+// request-setup window (DNS+TLS+request+response headers) and reports only
+// the local collection latency (~0ms when the first chunk is pre-buffered).
 func CollectStreamWithCallback(ctx context.Context, eventCh <-chan StreamEvent, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta), onUsage func(usage *TokenUsage)) (*LLMResponse, error) {
+	return CollectStreamWithCallbackFrom(ctx, eventCh, time.Now(), onContent, onReasoning, onToolCall, onUsage)
+}
+
+// CollectStreamWithCallbackFrom is CollectStreamWithCallback with an explicit
+// requestStart timestamp (the moment the HTTP request was SENT, recorded by
+// the caller BEFORE initiating the request). TTFT/TotalMs are measured from
+// requestStart so the request-setup window is included — the only correct
+// definition of time-to-first-token.
+func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEvent, requestStart time.Time, onContent func(content string), onReasoning func(content string), onToolCall func(toolCalls []ToolCallDelta), onUsage func(usage *TokenUsage)) (*LLMResponse, error) {
 	var resp LLMResponse
 	var content strings.Builder
 	var reasoningContent strings.Builder
 	toolCalls := make(map[int]*ToolCallDelta) // index → accumulated delta
 	var gotDone bool                          // tracks whether EventDone was explicitly received
 
-	// Stream timing statistics
-	requestStart := time.Now()
 	var firstChunkAt time.Time
 	var lastChunkAt time.Time
 	var chunkCount int64 // all chunk types: content + reasoning + tool_call

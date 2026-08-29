@@ -54,6 +54,13 @@ func (s *TenantSession) GetIterationHistoryByTurns(turnIDs []uint64) (map[uint64
 	return s.sessionSvc.GetIterationHistoryByTurns(s.tenantID, turnIDs)
 }
 
+// GetUsageStats aggregates this session's usage & performance from
+// iteration_history (v59: per-iteration input/cached tokens + model).
+// recentLimit caps the recent-iteration detail rows (0 = default 20, negative = skip).
+func (s *TenantSession) GetUsageStats(recentLimit int) (*sqlite.TenantUsageStats, error) {
+	return s.sessionSvc.GetTenantUsageStats(s.tenantID, recentLimit)
+}
+
 // AppendMessage appends a message and returns its stable history ID.
 func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
 	return s.sessionSvc.AppendMessage(s.tenantID, msg)
@@ -214,6 +221,25 @@ func (s *TenantSession) GetLastContextTokens() (int64, error) {
 // Used to restore the per-session turn ID counter after a server restart.
 func (s *TenantSession) GetMaxTurnID() (uint64, error) {
 	return s.sessionSvc.GetMaxTurnID(s.tenantID)
+}
+
+// GetLastUserTurnID returns the turn_id of the last non-display-only user
+// message. A restart-resumed Run (InjectInboundResume) reuses this turn id so
+// the interrupted work and the resumed work belong to ONE turn — the frontend
+// renders a single assistant block instead of one per restart.
+// Returns 0 when there is no resolvable user turn (no user message / legacy
+// rows without turn_id) — the caller falls back to a fresh turn id.
+func (s *TenantSession) GetLastUserTurnID() (uint64, error) {
+	return s.sessionSvc.GetLastUserTurnID(s.tenantID)
+}
+
+// GetMaxIterationForTurn returns the highest iteration number recorded for a
+// turn in iteration_history. A restart-resumed Run uses it to CONTINUE the
+// interrupted turn's iteration numbering (IterationStart offset) — iteration
+// numbers are turn-scoped, so restarting at 1 would collide with the
+// interrupted Run's records. Returns 0 when the turn has no records.
+func (s *TenantSession) GetMaxIterationForTurn(turnID uint64) (int, error) {
+	return s.sessionSvc.GetMaxIterationForTurn(s.tenantID, turnID)
 }
 
 // MemoryService returns the underlying SQLite memory service for this tenant.

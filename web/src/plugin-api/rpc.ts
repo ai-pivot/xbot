@@ -57,6 +57,60 @@ export interface BackendRPC {
     params: { channel: string; chatID: string }
     result: { current: string; branches: string[] }
   }
+  // ---- 会话用量统计（iteration_history v59 聚合：input/cached tokens + model）----
+  'get_session_usage_stats': {
+    params: { channel?: string; chat_id: string; limit?: number }
+    result: TenantUsageStats
+  }
+}
+
+// ---- 会话用量/性能聚合（对应 Go sqlite.TenantUsageStats JSON）----
+
+export interface UsageModelRow {
+  model: string
+  iterations: number
+  turns: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  avg_ttft_ms: number
+  avg_tpot_ms: number
+}
+
+export interface UsageIterationRow {
+  turn_id: number
+  iteration: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  ttft_ms: number
+  tpot_ms: number
+  tokens_per_sec: number
+  total_ms: number
+  model: string
+  created_at: string
+}
+
+export interface TenantUsageStats {
+  iteration_count: number
+  turn_count: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  llm_total_ms: number
+  avg_ttft_ms: number
+  avg_tpot_ms: number
+  avg_tokens_per_sec: number
+  first_iteration_at: string
+  last_iteration_at: string
+  /** 当前上下文水位（tenant_state.last_prompt/completion_tokens）。 */
+  last_prompt_tokens: number
+  last_completion_tokens: number
+  current_model: string
+  session_created_at: string
+  session_last_active: string
+  by_model: UsageModelRow[] | null
+  recent_iterations: UsageIterationRow[] | null
 }
 
 export interface SessionDetail {

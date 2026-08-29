@@ -28,6 +28,7 @@ import { PluginConfigService } from './config'
 import { panelRegistry } from './panelRegistry'
 import type { PanelsAPI } from '@/plugin-api'
 import { buildContext } from './context'
+import { PluginFileService } from './files'
 import { loadPluginModule, versionedUrl, type PluginModule } from './loader'
 import { toSafeMessage } from './sanitize'
 import type { SessionSummary } from '@/plugin-api'
@@ -200,6 +201,7 @@ export class PluginRuntime {
       panels: makePanelsAPI(effective.id),
       plugins: this.plugins,
       config: this.config.forPlugin(effective.id),
+      files: new PluginFileService(effective.id),
       registerContribution: (c: Contribution) => {
         // 动态贡献点：经 registry 挂载，返回 disposable。
         this.registry.registerPlugin(

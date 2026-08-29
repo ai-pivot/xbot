@@ -84,6 +84,40 @@ func TestWriteSSEEventFormat(t *testing.T) {
 	}
 }
 
+// 控制面广播消息（BroadcastToWeb 的 plugin 配置变更 / 插件启停）无 eventStream
+// 序号（Seq=0）。旧实现直接报错 "SSE event has no sequence" → catchUpSSE 返回
+// err → sseWriteLoopCore 退出，SSE 连接被关闭 —— 控制广播不仅永远到不了客户端，
+// 还随机断开活跃连接（web_plugin_config_changed 热重载失效的根因）。
+// 修复语义：Seq=0 的消息按"无序号控制事件"写出 —— 无 id: 行（不参与
+// Last-Event-ID 续传），不推进 lastSentSeq。SSE 规范允许无 id 事件。
+func TestWriteSSEEvent_ControlMessageWithoutSeq(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	client := &Client{w: recorder, flusher: recorder, sseEncWriter: recorder}
+	msg := protocol.WSMessage{
+		Type:    "web_plugin_config_changed",
+		Content: `{"plugin_id":"xbot.ambience","value":{"glassOpacity":0.5}}`,
+	}
+
+	if err := writeSSEEvent(client, msg); err != nil {
+		t.Fatalf("control broadcast without Seq must not error, got: %v", err)
+	}
+	wantData, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 无 id: 行 —— 控制事件不占用 eventStream 序号空间。
+	want := "event:web_plugin_config_changed\ndata:" + string(wantData) + "\n\n"
+	if got := recorder.Body.String(); got != want {
+		t.Fatalf("unexpected SSE control event:\n got: %q\nwant: %q", got, want)
+	}
+	if !recorder.Flushed {
+		t.Fatal("SSE control event was not flushed")
+	}
+	if client.lastSentSeq != 0 {
+		t.Fatalf("control event must not advance lastSentSeq, got %d", client.lastSentSeq)
+	}
+}
+
 func TestWriteSSEHeartbeat(t *testing.T) {
 	if sseHeartbeatInterval != 15*time.Second {
 		t.Fatalf("heartbeat interval = %s, want 15s", sseHeartbeatInterval)

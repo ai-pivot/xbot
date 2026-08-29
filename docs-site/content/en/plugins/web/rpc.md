@@ -51,8 +51,34 @@ export interface BackendRPC {
     params: { channel: string; chatID: string }
     result: { current: string; branches: string[] }
   }
+  // ---- Session usage stats (iteration_history v59 aggregate) ----
+  'get_session_usage_stats': {
+    params: { channel?: string; chat_id: string; limit?: number }
+    result: TenantUsageStats
+  }
 }
 ```
+
+`TenantUsageStats` (`web/src/plugin-api/rpc.ts`, mirrors Go `sqlite.TenantUsageStats`) — aggregated token / cache-hit / TTFT / TPOT stats for the current session, with per-model breakdown and recent iteration rows:
+
+```ts
+export interface TenantUsageStats {
+  iteration_count: number
+  turn_count: number
+  input_tokens: number   // prompt tokens (persisted per-iteration since v59)
+  output_tokens: number
+  cached_tokens: number  // prompt-cache hit tokens
+  llm_total_ms: number
+  avg_ttft_ms: number    // NULLIF-filtered averages (zero rows excluded)
+  avg_tpot_ms: number
+  avg_tokens_per_sec: number
+  last_prompt_tokens: number  // current context watermark (tenant_state)
+  current_model: string
+  by_model: UsageModelRow[] | null
+  recent_iterations: UsageIterationRow[] | null
+}
+```
+
 
 ## RPCAPI
 

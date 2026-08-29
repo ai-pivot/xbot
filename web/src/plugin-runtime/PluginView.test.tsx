@@ -20,9 +20,62 @@ import type { ViewContribution } from '@/plugin-api'
 
 const { runtimeMock } = vi.hoisted(() => {
   const loadViewComponent = vi.fn()
-  const rpcCall = vi.fn().mockResolvedValue([])
-  // SkillManagerPanel/PluginManagerPanel 用 rpc.call；AsyncPluginView 用 loadViewComponent。
-  return { runtimeMock: { loadViewComponent, rpc: { call: rpcCall } } }
+  // SkillManagerPanel/PluginManagerPanel 用 rpc.call（skill_list 等）；
+  // SessionStatsPanel 用 get_session_usage_stats（iteration_history v59 聚合）。
+  // 按方法分发，保持 skill_list → [] 兼容旧断言。
+  const rpcCall = vi.fn((method: string) => {
+    if (method === 'get_session_usage_stats') {
+      return Promise.resolve({
+        iteration_count: 3,
+        turn_count: 2,
+        input_tokens: 12300,
+        output_tokens: 4500,
+        cached_tokens: 8000,
+        llm_total_ms: 12345,
+        avg_ttft_ms: 850,
+        avg_tpot_ms: 40,
+        avg_tokens_per_sec: 25,
+        first_iteration_at: '2026-08-29 10:00:00',
+        last_iteration_at: '2026-08-29 11:00:00',
+        last_prompt_tokens: 5000,
+        last_completion_tokens: 300,
+        current_model: 'glm-5.2',
+        session_created_at: '2026-08-29 09:00:00',
+        session_last_active: '2026-08-29 11:00:00',
+        by_model: [
+          {
+            model: 'glm-5.2',
+            iterations: 3,
+            turns: 2,
+            input_tokens: 12300,
+            output_tokens: 4500,
+            cached_tokens: 8000,
+            avg_ttft_ms: 850,
+            avg_tpot_ms: 40,
+          },
+        ],
+        recent_iterations: [
+          {
+            turn_id: 2,
+            iteration: 1,
+            input_tokens: 6150,
+            output_tokens: 2250,
+            cached_tokens: 4000,
+            ttft_ms: 900,
+            tpot_ms: 42,
+            tokens_per_sec: 24,
+            total_ms: 6000,
+            model: 'glm-5.2',
+            created_at: '2026-08-29 11:00:00',
+          },
+        ],
+      })
+    }
+    return Promise.resolve([])
+  })
+  // SessionStatsPanel 的聚合数据 mock（对齐 TenantUsageStats JSON）。
+  const statsMock = { loaded: true }
+  return { runtimeMock: { loadViewComponent, rpc: { call: rpcCall } }, statsMock }
 })
 // mock usePluginRuntime：loadViewComponent 返回捕获 props 的组件。
 vi.mock('@/plugin-runtime', () => ({
@@ -30,6 +83,10 @@ vi.mock('@/plugin-runtime', () => ({
 }))
 // SkillManagerPanel 用 useI18n().t('sidebar.skills') 渲染标题，mock 掉让 t 原样返回 key。
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+// SessionStatsPanel 用 useSessionStore().activeSession 解析当前会话。
+vi.mock('@/hooks/useSessionStore', () => ({
+  useSessionStore: () => ({ activeSession: { channel: 'web', chatID: 'web-1' } }),
+}))
 
 import { PluginView } from './PluginView'
 
@@ -54,6 +111,15 @@ describe('PluginView 分发', () => {
     it('xbot.plugin-manager.panel 仍正常渲染（回归守护）', async () => {
       render(<PluginView pluginId="xbot.plugin-manager" view={makeView('xbot.plugin-manager.panel', 'builtin:xbot.plugin-manager.panel')} />)
       expect(await screen.findByText('暂无插件')).toBeTruthy()
+    })
+
+    it('xbot.session-stats.panel 渲染出 SessionStatsPanel（聚合数据可见）', async () => {
+      render(<PluginView pluginId="xbot.session-stats" view={makeView('xbot.session-stats.panel', 'builtin:xbot.session-stats.panel')} />)
+      // 头部标题 + RPC 聚合数据（12,300 → 12.3k；命中率 8000/12300 → 65.0%）。
+      expect(screen.getByText('统计')).toBeTruthy()
+      expect(await screen.findByText('12.3k')).toBeTruthy()
+      expect(screen.getByText('65.0%')).toBeTruthy()
+      expect(screen.getByText('glm-5.2')).toBeTruthy()
     })
 
     it('未知 builtin 视图渲染 null 且不崩溃', () => {

@@ -9,11 +9,13 @@ import { deriveRows } from './derive'
 import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
+  commitViaFold,
   initialChatState,
   iterNum,
   turnID,
   type ChatState,
   type DomainEvent,
+  type Turn,
 } from './types'
 import type { WebIteration } from '@/types/shared'
 
@@ -819,5 +821,87 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(t5.phase.data.streamStats?.tokensPerSec).toBe(0)
     // ttftMs 保留前一迭代的值（per-Run 不变）。
     expect(t5.phase.data.streamStats?.ttftMs).toBe(500)
+  })
+})
+
+// ─── 重启 resume 后切换会话竞态：SSE 增量先到（lazy live 只含 resume 后迭代）+
+// fetchHistory 后到（committed 全量 1..k）→ "live 胜"必须 union，否则 iter 1..k
+// 竞态性消失（用户报告："重启后 turn n 的 iter 1..k 全消失"、"切换那个会话
+// 有时候能看到迭代有时候看不到"）。时序 A（fetchHistory 先到）走 committed
+// 遮蔽解除路径正常；时序 B（SSE 先到）走 step 1 "live 胜"——旧代码直接保留
+// live（只含增量）丢弃 incoming committed 的全量迭代 → 概率性丢 1..k。
+describe('TDSM reduce — 重启 resume 切换会话竞态（live 胜 union）', () => {
+  const T7 = turnID(7)
+  const mkIter = (n: number, c: string): WebIteration => ({ iteration: n, content: c, reasoning: '', tools: [], toolCount: 0 })
+
+  const committedTurn = (): Turn => ({
+    id: T7,
+    user: {
+      id: 'db-u7', content: 'user msg' as never, timestamp: 't', isNotification: false,
+      queued: false, sending: false, requestID: null, turnHint: 7, dbID: 7,
+    },
+    phase: { kind: 'committed', payload: commitViaFold([mkIter(1, 'iter 1'), mkIter(2, 'iter 2'), mkIter(3, 'iter 3')] as never, 'final') },
+    requestID: null,
+  })
+
+  it('REPRO: SSE 增量先到（lazy live 只含 resume 后的迭代 4）→ history_replaced 的 committed（1..3）后到 → live 胜时必须 union（不丢 1..3）', () => {
+    // 时序 B：重启 resume 后切换/重连会话——SSE 增量事件先于 fetchHistory 到达
+    //（lazy 采纳建立 live，只含 resume Run 的迭代 4）。
+    const s0 = run([
+      // 无 turn_started（重启后 resume 的 turn_started 已过 SSE buffer /
+      // lazy 采纳场景），iteration 事件 lazy 建立 live。SSE push 协议：事件
+      // 携带新完成的迭代 delta（resume Run 的迭代 4）。
+      {
+        type: 'iteration', turnID: T7, iter: iterNum(4), seq: 10 as never,
+        content: 'resumed iter 4', reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [mkIter(4, 'resumed iter 4')], todos: undefined, subAgents: undefined,
+        tokenUsage: undefined, streamStats: undefined,
+      } as never,
+    ])
+    const t0 = s0.turns.get(T7)
+    if (t0?.phase.kind !== 'live') throw new Error('lazy 采纳应建立 live')
+    expect(t0.phase.data.iterations.map((i) => i.iteration)).toEqual([4])
+    expect(s0.activeTurn).toBe(T7)
+
+    // fetchHistory 后到：history_replaced 携带 DB 全量（committed 1..3 +
+    // user 行——重启前 Run 持久化的迭代）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced', legacy: [], turns: [committedTurn()], active: null, lastSeq: null, todos: [],
+    })
+
+    // live 胜（SSE 比 DB 新）——但 incoming committed 的 1..3 必须 union 进
+    // live（旧代码直接保留 live 丢弃 1..3 → "iter 1..k 全消失"）。
+    const t1 = s1.turns.get(T7)
+    if (t1?.phase.kind !== 'live') throw new Error('live turn died across history_replaced')
+    expect(s1.activeTurn).toBe(T7)
+    expect(t1.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2, 3, 4])
+    // user 行嫁接（lazy live 无 user，DB 行补）。
+    expect(t1.user?.content).toBe('user msg')
+    // 渲染：单 turn（不分裂）。
+    const rows = deriveRows(s1)
+    expect(rows.filter((r) => r.kind === 'live')).toHaveLength(1)
+  })
+
+  it('同号迭代 live 权威（SSE 比 DB 新）——union 时 live 的 4 覆盖 committed 同号 4', () => {
+    // committed 携带过时的迭代 4（DB 快照滞后于 SSE），live 的 4（SSE 较新）
+    // 在 union 中覆盖同号（mergeIterations 权威方向）。
+    const s0 = run([{
+      type: 'iteration', turnID: T7, iter: iterNum(4), seq: 10 as never,
+      content: 'resumed iter 4 (new)', reasoning: undefined, activeTools: [], completedTools: [],
+      iterationsDelta: [mkIter(4, 'resumed iter 4 (new)')], todos: undefined, subAgents: undefined,
+      tokenUsage: undefined, streamStats: undefined,
+    } as never])
+    const staleTurn: Turn = {
+      id: T7,
+      user: null,
+      phase: { kind: 'committed', payload: commitViaFold([mkIter(1, 'a'), mkIter(2, 'b'), mkIter(4, 'stale iter 4')] as never, '') },
+      requestID: null,
+    }
+    const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [staleTurn], active: null, lastSeq: null, todos: [] })
+    const t1 = s1.turns.get(T7)
+    if (t1?.phase.kind !== 'live') throw new Error('live turn died')
+    expect(t1.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2, 4])
+    const it4 = t1.phase.data.iterations.find((i) => i.iteration === 4)
+    expect(it4?.content).toBe('resumed iter 4 (new)')
   })
 })

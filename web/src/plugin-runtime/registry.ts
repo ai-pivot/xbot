@@ -99,7 +99,7 @@ export class ContributionRegistry {
         return { pluginId: manifest.id, message: `contributes 含非法条目: ${JSON.stringify(c)}` }
       }
       const kind = (c as Contribution).kind
-      if (!['view', 'command', 'messageRenderer', 'toolbar', 'contextMenu', 'setting', 'eventHandler', 'theme'].includes(kind)) {
+      if (!['view', 'command', 'messageRenderer', 'toolbar', 'contextMenu', 'setting', 'eventHandler', 'theme', 'ambience'].includes(kind)) {
         return { pluginId: manifest.id, message: `未知贡献点 kind: ${String(kind)}` }
       }
       // ID 唯一性

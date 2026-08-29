@@ -575,7 +575,29 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       for (const h of ev.turns) {
         const cur = s.turns.get(h.id)
         if (cur && cur.phase.kind === 'live') {
-          turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
+          // live 胜（SSE 比 DB 快照新）—— 但 live 只含【增量】迭代（重启
+          // resume 后 SSE 先到的 lazy 采纳只带 resume Run 的迭代 k+1..；DB
+          // committed 携带全量 1..k）。不 union 会竞态性丢失 1..k（SSE 先到
+          // + fetchHistory 后到 → "重启后 turn 的 iter 1..k 全消失"、"切换
+          // 会话有时能看到迭代有时看不到"）。union：同号 live 权威（SSE 比
+          // DB 新）——与 step 3.5 的 active 快照 union 同原则（I4 append-only）。
+          const incomingIts = h.phase.kind === 'committed'
+            ? h.phase.payload.iterations
+            : h.phase.kind === 'frozen'
+              ? h.phase.data.iterations
+              : []
+          if (incomingIts.length === 0) {
+            turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
+          } else {
+            turns.set(h.id, {
+              ...cur,
+              user: cur.user ?? h.user,
+              phase: {
+                kind: 'live',
+                data: { ...cur.phase.data, iterations: mergeIterations(incomingIts, cur.phase.data.iterations) },
+              },
+            })
+          }
         } else if (
           cur &&
           cur.phase.kind !== 'live' &&

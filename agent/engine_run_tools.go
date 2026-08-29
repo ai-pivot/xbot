@@ -440,16 +440,23 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			Reasoning: s.structuredProgress.ReasoningContent,
 			Tools:     make([]IterationToolSnapshot, len(s.structuredProgress.CompletedTools)),
 		}
-		// Per-iteration token count: delta of cumulative completion tokens since
-		// the previous snapshot. The tracker accumulates across the whole Run;
-		// the first snapshot's delta equals the tracker value (previous = 0).
-		if s.tokenTracker != nil {
-			cur := s.tokenTracker.CompletionTokens()
-			if cur >= s.lastSnapshotCompletionTokens {
-				snap.Tokens = cur - s.lastSnapshotCompletionTokens
-			}
-			s.lastSnapshotCompletionTokens = cur
-		}
+		// Per-iteration output tokens: each call's OWN completion value from
+		// response.Usage (accumulated in callLLM via iterOutputTokens — the API
+		// reports per-call values, NOT cumulative counters). This replaces the
+		// old tracker-delta logic (cur - lastSnapshotCompletionTokens) which
+		// assumed RecordLLMCall accumulates completion across the Run — it
+		// OVERWRITES instead, so a small-output iteration (e.g. a tiny tool
+		// call, 25 tokens) following a large one (500 tokens) had
+		// cur < lastSnapshot → the delta guard clamped tokens to 0 (~50-66% of
+		// iteration_history rows had tokens=0 since v58). Same semantics as
+		// iterInputTokens below.
+		snap.Tokens = s.iterOutputTokens
+		// Per-iteration LLM usage (v59): prompt + cache-hit tokens of this
+		// iteration's LLM call(s), accumulated in callLLM and reset at
+		// beginIteration. Persisted to iteration_history for usage aggregation.
+		snap.InputTokens = s.iterInputTokens
+		snap.CachedTokens = s.iterCachedTokens
+		snap.Model = s.cfg.Model
 		// Per-iteration stream timing: the most recent LLM call's StreamStats.
 		// snapshotCompletedIteration runs right after callLLM → StreamStats
 		// belongs to the iteration being snapshotted.
@@ -548,6 +555,9 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 		TokensPerSec: snap.TokensPerSec,
 		TotalMs:      snap.TotalMs,
 		TPOTMs:       snap.TPOTMs,
+		InputTokens:  snap.InputTokens,
+		CachedTokens: snap.CachedTokens,
+		Model:        snap.Model,
 	}); err != nil {
 		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}

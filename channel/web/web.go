@@ -770,6 +770,9 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
+	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
+	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))
+	mux.HandleFunc("/api/plugin-files/", wc.authMiddleware(wc.handlePluginFiles))
 	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistory))
 	mux.HandleFunc("/api/history/rewind", wc.authenticatedPOST(wc.handleHistoryRewind))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))

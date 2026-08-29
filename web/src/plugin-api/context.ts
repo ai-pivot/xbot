@@ -12,6 +12,7 @@ import type { UIAPI } from './ui'
 import type { PanelsAPI } from './panels'
 import type { PluginsAPI } from './plugins'
 import type { ConfigAPI } from './config'
+import type { FilesAPI } from './files'
 
 interface PermissionAPI {
   events: EventsAPI
@@ -22,6 +23,7 @@ interface PermissionAPI {
   panels: PanelsAPI
   plugins: PluginsAPI
   config: ConfigAPI
+  files: FilesAPI
 }
 
 export type PluginContext<P extends readonly Permission[]> = {

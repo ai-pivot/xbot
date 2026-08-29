@@ -591,6 +591,18 @@ d.setRenderSideBySide(false)                  // 并排 → 行内
 
 **参考实现**：`xbot.git-fancy`（`plugins/xbot-git-fancy/main.go` + `web/src/plugins/git-fancy/`）——侧边栏面板（变更文件 + commit 分页"加载更多"）→ 点击开全宽 diff tab / commit 详情 tab（文件列表 → 再点击开该 commit 内的单文件 diff）。
 
+### 5.5 会话用量统计面板（xbot.session-stats，核心 RPC 数据源型内置插件）
+
+当前会话的 token / cache 命中 / TTFT / TPOT 用量面板（`web/src/plugins/session-stats/`），与 skill-manager 同范式（builtin 插件 + 无点号核心 RPC 直传），但数据源是**后端聚合查询**而非插件自有进程。
+
+**数据链路（schema v59）**：`iteration_history` 加 `input_tokens`/`cached_tokens`/`model` 三列（per-iteration LLM 用量，`snapshotCompletedIteration` 从 `runState.iterInputTokens/iterCachedTokens` 填充，`beginIteration` 重置）→ `sqlite.SessionService.GetTenantUsageStats(tenantID, limit)` 聚合（SUM/AVG `NULLIF(x,0)` 过滤未记录的 0 值 + by_model GROUP BY + recent 迭代明细 + `tenant_state` 水位）→ RPC `get_session_usage_stats`（`resolveOwnedSession` + 只读 `GetTenantIDByChannelChatID`，不创建空 tenant；web 白名单已加）→ 前端 `plugin-api/rpc.ts` BackendRPC 声明（`TenantUsageStats` 等类型）→ `SessionStatsPanel`（`runtime.rpc.call` + `useSessionStore().activeSession` 解析当前会话）。
+
+**设计决策**：不加 session 级累计表——iteration_history 单表承载，tenant/turn/迭代/model/时间任意维度聚合（user 维度累计已有 `user_token_usage`/`daily_token_usage`）。
+
+**turn.ended 自动刷新**：`activate` 订阅 `ctx.events.on('turn.ended')`（需 `events` 权限）→ 模块级 `refreshListeners` 广播（iteration-stats `__configListeners` 同模式，事件 handler 在 React 树外）→ 面板 `subscribeStatsRefresh` 订阅 → 重拉聚合（turn 结束时 usage 已落库）。`progress.iteration` 不刷——迭代中途 usage 行尚未落库。
+
+守护测试：`PluginView.test.tsx` 的 session-stats 用例（rpc mock 按方法分发 `get_session_usage_stats` → stats 数据，断言 "12.3k"/"65.0%"/模型名可见）。
+
 ---
 
 ## 6. 与现有系统的关系

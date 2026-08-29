@@ -11,6 +11,7 @@ import (
 	"xbot/config"
 	llm "xbot/llm"
 	"xbot/protocol"
+	"xbot/storage/sqlite"
 
 	"github.com/google/uuid"
 	log "xbot/logger"
@@ -589,6 +590,16 @@ func (c *Client) GetUserTokenUsage(senderID string) (map[string]any, error) {
 func (c *Client) GetDailyTokenUsage(senderID string, days int) ([]map[string]any, error) {
 	var r []map[string]any
 	return r, c.call(MethodGetDailyTokenUsage, getDailyTokenUsageReq{SenderID: senderID, Days: days}, &r)
+}
+
+// GetSessionUsageStats fetches a session's aggregated usage & performance
+// (per-iteration input/cached tokens live in iteration_history since v59).
+func (c *Client) GetSessionUsageStats(channel, chatID string, limit int) (*sqlite.TenantUsageStats, error) {
+	var r sqlite.TenantUsageStats
+	if err := c.call(MethodGetSessionUsageStats, getSessionUsageStatsReq{Channel: channel, ChatID: chatID, Limit: limit}, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 func (c *Client) GetTokenState(ch, chatID string) (int64, int64, error) {

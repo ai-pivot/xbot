@@ -278,6 +278,7 @@ var nonAdminRESTRPCMethods = map[string]struct{}{
 	"upsert_model":                       {},
 	"get_user_token_usage":               {},
 	"get_daily_token_usage":              {},
+	"get_session_usage_stats":            {},
 	"get_agent_session_dump":             {},
 	"get_agent_session_dump_by_full_key": {},
 	"continue_interactive_session":       {},

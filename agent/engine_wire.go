@@ -248,11 +248,37 @@ func (a *Agent) buildMainRunConfig(
 	// TurnID is assigned by chatProcessLoop (per-session monotonic counter) and
 	// carried via msg.Metadata. Propagate to RunConfig so every progress event
 	// and the final reply carry it for frontend association.
+	// Resume turns REUSE the interrupted turn's id (resolveResumeTurnID) — the
+	// dequeued turn_id maps the resumed work onto the same turn as the
+	// interrupted work, so the frontend renders ONE assistant block.
 	if raw := msg.Metadata["turn_id"]; raw != "" {
 		if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
 			cfg.TurnID = tid
 		} else {
 			log.WithFields(log.Fields{"raw": raw}).Warn("buildMainRunConfig: failed to parse turn_id from metadata")
+		}
+	}
+
+	// Resume turn iteration continuation: the resumed Run reuses the interrupted
+	// turn's id, and the turn's iteration_history already holds the interrupted
+	// Run's records (iterations 1..K). Restarting at 1 would collide ((turn_id,
+	// iteration) duplicates in iteration_history) and the frontend's
+	// committed-turn shadow-lift (iteration events upgrade a committed turn only
+	// when ev.iter > maxIter) would drop every resumed iteration as a "replay".
+	// Continue at K+1 via IterationStart so the turn's iterations stay contiguous.
+	if msg.Metadata["resume_turn"] == "true" && cfg.TurnID > 0 {
+		if maxIter, err := tenantSession.GetMaxIterationForTurn(cfg.TurnID); err != nil {
+			log.WithFields(log.Fields{
+				"chat_id": chatID,
+				"turn_id": cfg.TurnID,
+			}).WithError(err).Warn("buildMainRunConfig: GetMaxIterationForTurn failed, resume starts iterations at 1")
+		} else if maxIter > 0 {
+			cfg.IterationStart = maxIter
+			log.WithFields(log.Fields{
+				"chat_id":         chatID,
+				"turn_id":         cfg.TurnID,
+				"iteration_start": maxIter,
+			}).Info("Resume turn continues interrupted turn's iteration numbering")
 		}
 	}
 
@@ -2075,6 +2101,21 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		streamTokens = 0
 		samples = samples[:0]
 	}
+	// noteFirstChunk anchors the live TTFT at the FIRST stream callback of
+	// this LLM call — including name-less tool_call deltas. streamToolCallFunc
+	// suppresses the PUSH while no tool name has arrived (name-gate), but the
+	// early index/ID fragments ARE the real first chunks of the stream: without
+	// touching firstChunkAt there, tool-only iterations (no content/reasoning
+	// stream) anchored TTFT at the NAME-arrival frame instead → live TTFT
+	// overstated by the name-fragment delay (user report: "只有 tool 的迭代的
+	// ttft 也有 bug").
+	noteFirstChunk := func() {
+		mu.Lock()
+		if firstChunkAt.IsZero() {
+			firstChunkAt = time.Now()
+		}
+		mu.Unlock()
+	}
 	liveStats := func(payload *protocol.ProgressEvent) *protocol.StreamStats {
 		now := time.Now()
 		mu.Lock()
@@ -2093,12 +2134,19 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		// ReasoningStreamContent); reading the frame would make the estimate
 		// drop when the model switches reasoning→content (dtTokens < 0 → tkps
 		// frozen at the previous value, the "123 tok/s never changes" bug).
+		// Tool args count too (GenChars = accumulated argument chars): a
+		// tool-only iteration's ENTIRE output is the tool call JSON — without
+		// it the estimate stays 0 during tool streaming ("tool 的 sse 没计算"
+		// → tok/s displayed 0 for tool-only iterations).
 		if tokens <= 0 {
 			n := 0
 			if v, ok := a.streamState.Load(progressKey); ok {
 				if ap, ok := v.(*atomic.Pointer[protocol.ProgressEvent]); ok {
 					if ss := ap.Load(); ss != nil {
 						n = len(ss.StreamContent) + len(ss.ReasoningStreamContent)
+						for i := range ss.StreamingTools {
+							n += ss.StreamingTools[i].GenChars
+						}
 					}
 				}
 			}
@@ -2247,6 +2295,12 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
+		// Anchor the live TTFT at the first tool_call delta — even before the
+		// tool NAME arrives (index/ID fragments). The name-gate below suppresses
+		// the PUSH for name-less deltas, but they are the stream's real first
+		// chunks: without this touch, tool-only iterations anchored TTFT at the
+		// name-arrival frame and overstated it by the fragment delay.
+		noteFirstChunk()
 		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
 		for _, tc := range toolCalls {

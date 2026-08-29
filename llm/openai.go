@@ -1202,13 +1202,36 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		// 收集 usage（通常在最后一个 chunk），不单独打日志，合并到 Stream completed
 		hasUsage := chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0
 		if hasUsage {
-			lastUsage = &TokenUsage{
+			u := TokenUsage{
 				PromptTokens:     chunk.Usage.PromptTokens,
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
 			}
 			if ptd := chunk.Usage.PromptTokensDetails; ptd.CachedTokens > 0 {
-				lastUsage.CacheHitTokens = ptd.CachedTokens
+				u.CacheHitTokens = ptd.CachedTokens
+			}
+			if lastUsage == nil {
+				lastUsage = &u
+			} else {
+				// Streamed usage is CUMULATIVE (monotonic across chunks).
+				// Some gateways (sglang/MoL on tool-call streams) emit a
+				// trailing usage chunk with completion_tokens=0 — merging
+				// per-field MAX keeps the accumulated value instead of
+				// letting the trailing zero overwrite it (tool-iteration
+				// output tokens were recorded as 0 while input/cached stayed
+				// correct, because PromptTokens never zeroed).
+				if u.PromptTokens > lastUsage.PromptTokens {
+					lastUsage.PromptTokens = u.PromptTokens
+				}
+				if u.CompletionTokens > lastUsage.CompletionTokens {
+					lastUsage.CompletionTokens = u.CompletionTokens
+				}
+				if u.TotalTokens > lastUsage.TotalTokens {
+					lastUsage.TotalTokens = u.TotalTokens
+				}
+				if u.CacheHitTokens > lastUsage.CacheHitTokens {
+					lastUsage.CacheHitTokens = u.CacheHitTokens
+				}
 			}
 		}
 	}

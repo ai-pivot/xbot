@@ -557,7 +557,26 @@ func (wc *WebChannel) writeCurrentSSEEvent(client *Client, msg protocol.WSMessag
 
 func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
 	if msg.Seq == 0 {
-		return fmt.Errorf("SSE event %q has no sequence", msg.Type)
+		// 控制面广播消息（BroadcastToWeb 的 web_plugin_config_changed /
+		// web_plugin_init / web_plugin_deactivate）无 eventStream 序号 ——
+		// 按"无序号控制事件"写出：无 id: 行（不参与 Last-Event-ID 续传），
+		// 不推进 lastSentSeq。SSE 规范允许无 id 事件。
+		// 旧实现直接报错 "has no sequence" → catchUpSSE 返回 err →
+		// sseWriteLoopCore 退出并关闭连接 —— 控制广播永远到不了客户端，
+		// 且活跃 SSE 连接被随机断开（插件配置热重载失效的根因）。
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("marshal SSE event: %w", err)
+		}
+		armSSEWriteDeadline(client)
+		defer clearSSEWriteDeadline(client)
+		if _, err := fmt.Fprintf(client.sseWriter(), "event:%s\ndata:%s\n\n", msg.Type, data); err != nil {
+			return fmt.Errorf("write SSE event: %w", err)
+		}
+		if err := flushSSE(client); err != nil {
+			return err
+		}
+		return nil
 	}
 	if msg.Seq <= client.lastSentSeq {
 		return nil

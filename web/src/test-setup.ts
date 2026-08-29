@@ -1,5 +1,16 @@
 /** Vitest global setup — runs before all tests. */
 
+// jsdom does not implement ResizeObserver. Radix primitives using
+// @radix-ui/react-use-size (Slider etc.) construct one at mount — without
+// this the whole component tree unmounts ("ResizeObserver is not defined").
+if (!window.ResizeObserver) {
+  window.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+}
+
 // jsdom does not implement matchMedia. Mock it so hooks using it
 // (useIsMobile, useIsTouch) work in tests.
 if (!window.matchMedia) {

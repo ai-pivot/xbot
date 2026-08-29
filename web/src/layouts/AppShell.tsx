@@ -21,6 +21,7 @@ import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
+import { AmbienceBackground } from '@/ambience/AmbienceRoot'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
@@ -226,6 +227,8 @@ export function AppShell() {
       {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
           MobileAppShell (100dvh/height:100% stop at the safe area there). */}
       <div className="fixed inset-0 flex overflow-hidden bg-bg-primary text-text-primary">
+      {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}
+      <AmbienceBackground />
       {/* Left sidebar — 布局 v4 面板坞（docked 面板堆叠，折叠由 header ☰ 控制） */}
       {!sidebarCollapsed && (
         <div

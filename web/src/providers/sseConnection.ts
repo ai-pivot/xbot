@@ -51,6 +51,7 @@ export const SSE_EVENT_TYPES = [
   // EventSource 不注册 addEventListener → 收不到 → 插件热重载/事件桥完全失效。
   'web_plugin_init',
   'web_plugin_deactivate',
+  'web_plugin_config_changed',
   'web_plugin_event',
   'web_plugin_push',
   'web_plugin_rpc',
@@ -274,7 +275,14 @@ export class SSEConnectionImpl implements WSConnection {
     // (refreshing lastActivityAt above) but carries no payload. Do NOT dispatch
     // it to business handlers (they'd re-render / reload for every 15s tick).
     if (msg.type === 'heartbeat') return
-    const seq = msg.seq ?? parseSequence(event.lastEventId)
+    // 控制面广播消息（web_plugin_config_changed / web_plugin_init 等）无
+    // eventStream 序号 —— 后端 SSE 无 id: 行写出，JSON 无 seq 字段（omitempty）。
+    // event.lastEventId 是上一个业务事件的残留（SSE 规范：lastEventId 只被
+    // 有 id 的事件推进），绝不能继承为控制消息的 seq —— 否则进入业务 dedup
+    // （seq === previousSeq → return）被静默丢弃，或污染 lastSeq 水位。
+    // seq 归 0 → 下方 `seq > 0` gate 跳过 dedup/水位推进，直接 dispatch。
+    // 业务消息的 seq 总是 > 0（ring buffer 分配），msg.seq === undefined ⇔ 控制消息。
+    const seq = typeof msg.seq === 'number' ? msg.seq : 0
     const chatID = this._chatID
     const channel = this._channel
     const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
@@ -899,11 +907,6 @@ export class MultiSSEManager implements WSConnection {
 
 function sessionBody(msg: WSClientMessage): { channel?: string; chat_id?: string } {
   return { channel: msg.channel, chat_id: msg.chat_id }
-}
-
-function parseSequence(raw: string): number {
-  const value = Number.parseInt(raw, 10)
-  return Number.isFinite(value) ? value : 0
 }
 
 function delay(ms: number): Promise<void> {

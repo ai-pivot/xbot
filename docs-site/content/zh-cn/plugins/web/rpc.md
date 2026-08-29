@@ -51,8 +51,34 @@ export interface BackendRPC {
     params: { channel: string; chatID: string }
     result: { current: string; branches: string[] }
   }
+  // ---- 会话用量统计（iteration_history v59 聚合）----
+  'get_session_usage_stats': {
+    params: { channel?: string; chat_id: string; limit?: number }
+    result: TenantUsageStats
+  }
 }
 ```
+
+`TenantUsageStats`（`web/src/plugin-api/rpc.ts`，与 Go `sqlite.TenantUsageStats` 对齐）——当前会话的 token / cache 命中 / TTFT / TPOT 聚合 + per-model 分组 + 最近迭代明细：
+
+```ts
+export interface TenantUsageStats {
+  iteration_count: number   // 迭代数
+  turn_count: number        // turn 数
+  input_tokens: number      // 输入 tokens（v59 起 per-iteration 入库）
+  output_tokens: number     // 输出 tokens
+  cached_tokens: number     // prompt cache 命中 tokens
+  llm_total_ms: number      // LLM 流式总时长
+  avg_ttft_ms: number       // 平均首 token 延迟（NULLIF 过滤 0 值）
+  avg_tpot_ms: number       // 平均每 token 延迟
+  avg_tokens_per_sec: number
+  last_prompt_tokens: number    // 当前上下文水位（tenant_state）
+  current_model: string
+  by_model: UsageModelRow[] | null          // 按模型分组
+  recent_iterations: UsageIterationRow[] | null  // 最近 N 条迭代明细
+}
+```
+
 
 ## RPCAPI
 

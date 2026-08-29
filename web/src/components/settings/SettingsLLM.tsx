@@ -211,14 +211,22 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       {/* ── header ── */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b px-1 pb-3" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+      {/* px-4 与正文 p-4 对齐（左缘一致）；pt-4 给标题顶部留白（原 px-1 无 pt
+          —— 标题贴顶且比正文缩进少 12px，视觉错位）。统计行 truncate：窄宽度
+          下一行省略而非折行（折行会把按钮组挤成多行 —— 排版错乱根源）。按钮组
+          shrink-0：桌面一行放下（sheet 720px），窄屏由 header 的 flex-wrap 整组
+          掉到标题下方，组内 flex-wrap 兜底避免横向溢出。按钮组 min-w-0（不用
+          shrink-0）：shrink-0 让按钮组保持 ~281px 内容宽不收缩，手机端内容区
+          （375px 视口 - padding 后 ~343px）单标题行放不下时整组溢出屏幕；
+          min-w-0 允许收缩到容器内，组内 flex-wrap 换行。 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b px-4 pb-3 pt-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
         <div className="min-w-0 flex-1">
-          <h2 className="text-base font-bold" style={{ color: 'var(--text-primary)' }}>LLM 控制台</h2>
-          <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          <h2 className="truncate text-base font-bold" style={{ color: 'var(--text-primary)' }}>LLM 控制台</h2>
+          <p className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
             {subs.length} 个订阅 · {totalModels} 个模型 · {liveModels} 个可用
           </p>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           <button onClick={function() { void refreshModels().then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型列表已刷新' : '刷新失败')) }}
             disabled={refreshing}
             className="flex h-8 items-center gap-1 rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
@@ -362,8 +370,11 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
       {/* ── detail drawer（面板内覆盖，主从布局） ── */}
       <div onClick={function() { setDetailId(null) }} className="absolute inset-0 z-30 transition-opacity duration-200"
         style={{ background: 'rgba(0,0,0,0.5)', opacity: detailId ? 1 : 0, pointerEvents: detailId ? 'auto' : 'none' }} />
+      {/* translateX(100%) 而非 105%：transform 后的位置计入 CSS scrollable overflow region，
+          105% 会给父容器留下 5% 的横向 scrollWidth 溢出（内容区 overflow-x 可滚 18px，
+          手机端拖动可见空白——宽度异常来源之一）。100% 恰好贴齐父右缘，0px 溢出。 */}
       <aside className="absolute inset-y-0 right-0 z-40 flex w-full flex-col transition-transform duration-300"
-        style={{ background: 'var(--bg-primary)', borderLeft: '1px solid rgba(255,255,255,0.06)', transform: detailId ? 'translateX(0)' : 'translateX(105%)' }}>
+        style={{ background: 'var(--bg-primary)', borderLeft: '1px solid rgba(255,255,255,0.06)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
         {detailSub ? (
           <div className="flex h-full flex-col">
             <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>

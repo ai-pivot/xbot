@@ -213,6 +213,43 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('dispatches seq-less control broadcasts despite a stale lastEventId', () => {
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    // web_plugin_config_changed 必须在 EventSource 监听白名单里 —— 不在
+    // SSE_EVENT_TYPES 里 addEventListener 根本不注册，广播永远收不到。
+    expect(SSE_EVENT_TYPES).toContain('web_plugin_config_changed')
+
+    // 业务事件 seq=42 推进 lastSeq 水位。
+    source.emit('text', { type: 'text', seq: 42, content: 'business' })
+    expect(received.filter((m) => m.type === 'text')).toHaveLength(1)
+
+    // 控制广播：JSON 无 seq 字段（后端 Seq=0 + omitempty），event.lastEventId
+    // 残留 '42'（SSE 规范：无 id 事件不推进 lastEventId）。绝不能把残留 id
+    // 继承为 seq —— 否则 seq === previousSeq(42) 走业务 dedup 被静默丢弃。
+    source.emit(
+      'web_plugin_config_changed',
+      {
+        type: 'web_plugin_config_changed',
+        content: JSON.stringify({ plugin_id: 'xbot.ambience', value: { glassOpacity: 0.5 } }),
+      },
+      '42',
+    )
+    const control = received.filter((m) => m.type === 'web_plugin_config_changed')
+    expect(control).toHaveLength(1)
+
+    // 水位未被控制消息污染 —— 后续业务事件照常去重。
+    source.emit('text', { type: 'text', seq: 43, content: 'next' })
+    expect(received.filter((m) => m.type === 'text')).toHaveLength(2)
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(43)
+    connection.dispose()
+  })
+
   it('clears the cached progress snapshot on terminal text', () => {
     const connection = new SSEConnectionImpl()
     connection.subscribe('chat-a')

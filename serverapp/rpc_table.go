@@ -1286,6 +1286,29 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		return h.Ag.MultiSession().GetDailyTokenUsage(rpcBizID(ctx), p.Days)
 	})
+	t["get_session_usage_stats"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+		Limit   int    `json:"limit"`
+	}) (any, error) {
+		if err := h.requireMultiSession(); err != nil {
+			return nil, err
+		}
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		stats, err := h.Ag.MultiSession().GetSessionUsageStats(channelName, chatID, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		if stats == nil {
+			// Unknown session: return an empty aggregate instead of null so
+			// plugin/CLI consumers can render a zero-state panel.
+			return &sqlite.TenantUsageStats{RecentIterations: []sqlite.UsageIterationRow{}, ByModel: []sqlite.UsageModelRow{}}, nil
+		}
+		return stats, nil
+	})
 
 	// ── Sub-agents / sessions ──
 	t["count_interactive_sessions"] = rpc1(func(ctx context.Context, p struct {

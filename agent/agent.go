@@ -2843,10 +2843,16 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 // 处理的 turn），若在此提前 setActiveTurn 会被排队消息污染（排队消息会
 // 把 activeTurnID 改写成自己的 turn，导致 answer 复用错误的 turn id）。
 // answer 的复用由 chatProcessLoop 在真正出队处理时完成。
+//
+// resume_turn（InjectInboundResume —— 重启恢复 / /continue）同样不预分配：
+// 恢复的 Run 必须复用被中断 turn 的 id（最后一条 user 消息的 turn），预分配
+// nextTurnID 会把同一逻辑 turn 拆成两个 turn —— 前端渲染成两个 assistant
+// 块（用户报告"重启后这个 turn 产生两个大 dom"）。复用由 chatProcessLoop
+// 出队时经 resolveResumeTurnID 从 DB 解析。
 func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.InboundMessage, ss *bgSessionState, msgCh chan<- bus.InboundMessage) {
 	queued := len(msgCh) > 0 || ss.busy.Load()
 	var turnID uint64
-	if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
+	if msg.Metadata == nil || (msg.Metadata["ask_user_answered"] != "true" && msg.Metadata["resume_turn"] != "true") {
 		turnID = ss.nextTurnID()
 		if msg.Metadata == nil {
 			msg.Metadata = map[string]string{}
@@ -2858,6 +2864,36 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 	case msgCh <- msg:
 	case <-ctx.Done():
 	}
+}
+
+// resolveResumeTurnID returns the turn id a restart-resumed Run
+// (InjectInboundResume) must CONTINUE: the turn of the last non-display-only
+// user message — the owner of the interrupted turn. Reusing it keeps the
+// interrupted work and the resumed work in ONE turn (session_messages rows,
+// iteration_history records and the frontend's per-turn rendering all merge
+// into a single assistant block — identical to an uninterrupted turn).
+// Every restart previously allocated a FRESH turn id (admitToMsgCh →
+// nextTurnID), splitting the logical turn into user(N)/resume(N+1)/resume(N+2)
+// — the frontend rendered each as a separate block ("two big DOMs").
+// Returns 0 when no resolvable user turn exists (no user message / legacy rows
+// without turn_id) — the caller falls back to allocating a fresh turn id.
+func (a *Agent) resolveResumeTurnID(channel, chatID string) uint64 {
+	if a.multiSession == nil {
+		return 0
+	}
+	sess, err := a.multiSession.GetOrCreateSession(channel, chatID)
+	if err != nil {
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).WithError(err).
+			Warn("resolveResumeTurnID: GetOrCreateSession failed, allocating fresh turn id")
+		return 0
+	}
+	tid, err := sess.GetLastUserTurnID()
+	if err != nil {
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).WithError(err).
+			Warn("resolveResumeTurnID: GetLastUserTurnID failed, allocating fresh turn id")
+		return 0
+	}
+	return tid
 }
 
 func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
@@ -2944,9 +2980,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 同 turn，前端按 turn 合并迭代时把回答前后的内容（如 pwd 与
 			// task_wait）混进同一个 assistant 块。新 turn 保证回答后的消息
 			// 与回答前严格分离。
+			//
+			// resume_turn（InjectInboundResume —— 重启恢复 / /continue）出队时
+			// 复用被中断 turn 的 id（最后一条非 display-only user 消息的 turn，
+			// resolveResumeTurnID 从 DB 解析）：中断前后的消息/迭代归属同一个
+			// turn，前端按 turn 合并渲染为单个 assistant 块（与不重启一致）。
+			// 无法解析（无 user 消息 / legacy 无 turn_id）时退回分配新 turn id。
+			resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
 			turnID, _ := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64)
 			if turnID == 0 {
-				turnID = ss.nextTurnID()
+				if resumeTurn {
+					turnID = a.resolveResumeTurnID(msg.Channel, msg.ChatID)
+				}
+				if turnID == 0 {
+					turnID = ss.nextTurnID()
+				}
 				if msg.Metadata == nil {
 					msg.Metadata = map[string]string{}
 				}
@@ -2958,24 +3006,33 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// AskUser answer is its OWN turn with a fresh turn_id (nextTurnID,
 			// allocated above) — never a reuse of the previous active turn.
 			// Only turnID < prev is a real violation.
-			if prev := ss.lastTurnID.Load(); prev > 0 {
-				if turnID < prev {
-					log.WithFields(log.Fields{
-						"session_key":  chatKey,
-						"prev_turn_id": prev,
-						"new_turn_id":  turnID,
-						"delta":        int64(turnID) - int64(prev),
-					}).Error("TURN_ID_INVARIANT_VIOLATION: TurnID must be strictly increasing — got non-increasing value")
-				} else if turnID > prev && turnID != prev+1 {
-					log.WithFields(log.Fields{
-						"session_key":  chatKey,
-						"prev_turn_id": prev,
-						"new_turn_id":  turnID,
-						"gap":          turnID - prev - 1,
-					}).Warn("TURN_ID_GAP: TurnID jumped — intermediate turn(s) may have been lost")
+			// resume_turn 豁免：它复用 DB 中被中断 turn 的 id（非计数器分配），
+			// 可能小于 lastTurnID（如中断期间插入过通知 turn）——复用是合法的
+			// 续turn，不是生命周期 bug；且它不消耗计数器，跳过检查与基线更新
+			// 避免伪告警（gap 由后续正常分配自然对齐）。
+			if !resumeTurn {
+				if prev := ss.lastTurnID.Load(); prev > 0 {
+					if turnID < prev {
+						log.WithFields(log.Fields{
+							"session_key":  chatKey,
+							"prev_turn_id": prev,
+							"new_turn_id":  turnID,
+							"delta":        int64(turnID) - int64(prev),
+						}).Error("TURN_ID_INVARIANT_VIOLATION: TurnID must be strictly increasing — got non-increasing value")
+					} else if turnID > prev && turnID != prev+1 {
+						log.WithFields(log.Fields{
+							"session_key":  chatKey,
+							"prev_turn_id": prev,
+							"new_turn_id":  turnID,
+							"gap":          turnID - prev - 1,
+						}).Warn("TURN_ID_GAP: TurnID jumped — intermediate turn(s) may have been lost")
+					}
 				}
+				// resume 不更新 lastTurnID 基线：复用 id 来自 DB（非计数器分配），
+				// 可能小于当前基线（如中断期间插入过通知 turn）——存储它会让下一个
+				// 正常分配触发伪 TURN_ID_GAP 告警。
+				ss.lastTurnID.Store(turnID)
 			}
-			ss.lastTurnID.Store(turnID)
 			a.emitTurnStarted(msg, turnID)
 
 			sem := a.getSemaphoreForMessage(msg)

@@ -333,7 +333,12 @@ export function BottomRailBadges({ className }: { className?: string }): ReactNo
 /**
  * v5.2 SideChips——底部 chips 启动器（PanelDock 内部消费）。
  *
- * 固定底部一行 36px 图标 chip（overflow-x-auto 横向滚动容纳任意多插件）。
+ * 固定底部一行图标 chip（overflow-x-auto 横向滚动容纳任意多插件）。
+ * ⚠️ 容器高度必须大于 chip 高度 + 上下 border（h-10 = 40px border-box → 38px
+ * 内容区 ≥ size-9 36px chip）：h-9（34px 内容区 < 36px chip）会产生 2px 竖向
+ * 溢出，而 overflow-x-auto 使 overflow-y:visible 计算为 auto → 竖向滚动条
+ * （用户报告"禁止竖着滚动"）。同理 pin（-top-1）与激活指示条（-bottom-0.5）
+ * 的负偏移也会在 hover/激活时触发滚动条 —— 悬浮元素必须收进容器内容区。
  * 交互（v5.2 设计稿确认）：
  *  - chip 单击 = 原地展开/收起精简内容（不再弹浮窗！）——chip dock 上方弹出
  *    max-h-[240px] 内容区，再点收起。点其他 chip = 切换内容。
@@ -350,7 +355,7 @@ export function SideChips(): ReactNode {
   return (
     <div data-panel-zone="chip" data-testid="panel-chip-dock">
       <div
-        className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
+        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
         style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
       >
         {ids.map((id) => {
@@ -379,7 +384,7 @@ export function SideChips(): ReactNode {
                   </span>
                 ) : null}
                 {isActive && (
-                  <span className="absolute -bottom-0.5 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full" style={{ background: 'var(--accent)' }} />
+                  <span className="absolute bottom-0 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full" style={{ background: 'var(--accent)' }} />
                 )}
               </button>
               <button
@@ -387,7 +392,7 @@ export function SideChips(): ReactNode {
                 aria-label={`钉选 ${def.title}`}
                 title={`钉选 ${def.title} 到侧栏`}
                 onClick={() => dock.pinPanel(id)}
-                className="absolute -right-0.5 -top-1 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
+                className="absolute right-0.5 top-0.5 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
                 style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
               >
                 <Pin className="size-2.5" />

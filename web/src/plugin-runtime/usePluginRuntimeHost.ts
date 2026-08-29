@@ -95,11 +95,13 @@ async function loadPluginViewComponent(
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPanel'
+import { SessionStatsPanel } from '@/plugins/session-stats/SessionStatsPanel'
 
 const builtinViews = new Map<string, React.ComponentType>()
 builtinViews.set('xbot.plugin-manager.panel', PluginManagerPanel)
 builtinViews.set('git-info.status', GitStatusPanel)
 builtinViews.set('xbot.skill-manager.panel', SkillManagerPanel)
+builtinViews.set('xbot.session-stats.panel', SessionStatsPanel)
 
 async function loadBuiltinView(id: string): Promise<React.ComponentType | null> {
   const comp = builtinViews.get(id)
@@ -202,7 +204,8 @@ export function PluginRuntimeBootstrap() {
     bootstrapped.current = true
     let cancelled = false
 
-    // 内置插件激活（并行）：两个内置插件同时 import + activate。
+    // 内置插件激活（并行）：插件管理 + 技能管理 + 氛围壁纸，同时 import + activate。
+    // ambience 插件激活后读取 manifest 的 AmbienceContribution 注册壁纸预设。
     const activateBuiltins = Promise.allSettled([
       (async () => {
         try {
@@ -221,6 +224,41 @@ export function PluginRuntimeBootstrap() {
           )
         } catch (error) {
           console.error('[plugin-runtime] 激活内置技能管理插件失败', error)
+        }
+      })(),
+      (async () => {
+        try {
+          const ambience = await import('@/plugins/xbot-ambience')
+          await runtime.activateBuiltin(
+            ambience.manifest,
+            ambience as unknown as import('./loader').PluginModule,
+          )
+          // 激活后从 manifest 读取壁纸预设注册到 ambienceStore。
+          const contrib = ambience.manifest.contributes.find(
+            (c) => c.kind === 'ambience',
+          )
+          if (contrib && 'wallpapers' in contrib) {
+            const { ambienceStore } = await import('@/ambience/store')
+            ambienceStore.syncPluginWallpapers([
+              {
+                pluginId: 'xbot.ambience',
+                presets: contrib.wallpapers ?? [],
+              },
+            ])
+          }
+        } catch (error) {
+          console.error('[plugin-runtime] 激活内置氛围插件失败', error)
+        }
+      })(),
+      (async () => {
+        try {
+          const sessionStats = await import('@/plugins/session-stats/sessionStats')
+          await runtime.activateBuiltin(
+            sessionStats.manifest,
+            sessionStats as unknown as import('./loader').PluginModule,
+          )
+        } catch (error) {
+          console.error('[plugin-runtime] 激活内置会话统计插件失败', error)
         }
       })(),
     ])

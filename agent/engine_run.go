@@ -40,8 +40,15 @@ type toolExecResult struct {
 // without passing dozens of parameters.
 type runState struct {
 	// Configuration (read-only after init)
-	cfg                      RunConfig
-	maxIter                  int
+	cfg     RunConfig
+	maxIter int
+	// iterStart offsets the Run's iteration numbering (resume turns): the
+	// first iteration is iterStart+1 instead of 1. A restart-resumed Run
+	// (InjectInboundResume) reuses the interrupted turn's id and must CONTINUE
+	// the turn's iteration numbering — iteration_history is keyed by
+	// (turn_id, iteration) and the frontend advances/merges iterations by
+	// number within the turn. See RunConfig.IterationStart.
+	iterStart                int
 	sessionKey               string
 	offloadSessionKey        string
 	toolExecutor             func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error)
@@ -89,10 +96,25 @@ type runState struct {
 	localInputTokens  int
 	localOutputTokens int
 	localCachedTokens int
-	// lastSnapshotCompletionTokens is the cumulative completion-token count at
-	// the most recent iteration snapshot. The delta between the current tracker
-	// value and this gives the per-iteration token count.
-	lastSnapshotCompletionTokens int64
+	// iterInputTokens/iterOutputTokens/iterCachedTokens accumulate the CURRENT
+	// iteration's LLM usage (prompt / completion / cache-hit tokens — each
+	// call's OWN value from response.Usage, the API reports per-call values
+	// NOT cumulative counters). Reset at beginIteration, read at
+	// snapshotCompletedIteration → persisted to iteration_history (v59) for
+	// per-session/per-model usage aggregation.
+	//
+	// iterOutputTokens replaces the old tracker-delta logic
+	// (cur - lastSnapshotCompletionTokens): that logic assumed the tracker
+	// accumulates completion across the Run, but RecordLLMCall OVERWRITES with
+	// each call's own value (per-call semantics) — when a small-output
+	// iteration (e.g. a tiny tool call, 25 tokens) followed a large one
+	// (500 tokens), cur < lastSnapshot → the delta guard clamped tokens to 0
+	// (~50-66% of iteration_history rows had tokens=0 since v58). Fixed by
+	// recording each call's CompletionTokens directly (same semantics as
+	// iterInputTokens).
+	iterInputTokens  int64
+	iterOutputTokens int64
+	iterCachedTokens int64
 
 	// Progress
 	progressLines      []string
@@ -166,6 +188,7 @@ func newRunState(cfg RunConfig) *runState {
 	state := &runState{
 		cfg:                      cfg,
 		maxIter:                  maxIter,
+		iterStart:                cfg.IterationStart,
 		sessionKey:               sessionKey,
 		offloadSessionKey:        offloadSessionKey,
 		toolExecutor:             toolExecutor,
@@ -515,16 +538,14 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.ReasoningContent = ""
 		s.structuredProgress.SubAgents = nil
 	}
-	// Reset live stream timing baseline at each iteration boundary: TTFT must
-	// reflect THIS LLM CALL's first-token latency, not the whole Run's.
-	// buildStreamCallbacks is created once per Run (its requestStartAt/firstChunkAt
-	// are Run-wide); without a per-iteration reset, live frames keep reporting
-	// the Run-wide TTFT while committed iterations report their own
-	// response.StreamStats.TTFTMs — the same iteration showed different ttft
-	// values between its live phase and its committed row ("迭代内 ttft 变化").
-	if s.cfg.ResetStreamTiming != nil {
-		s.cfg.ResetStreamTiming()
-	}
+	// NOTE: ResetStreamTiming now runs in callLLM right before generateResponse
+	// (both the primary call and the post-compression retry), anchoring the
+	// live TTFT baseline at the request-send moment — the same contract as the
+	// llm-layer t0 (CollectStreamWithCallbackFrom). Anchoring here at
+	// beginIteration instead included the engine-side gap (message building)
+	// into live TTFT while committed rows measured from the request itself —
+	// the two disagreed and the displayed TTFT jumped the moment the LLM call
+	// returned ("tool 生成完毕后 ttft 变成很小的数值").
 	// Clear subAgentNodes at iteration boundary. SubAgents are one-shot tools
 	// that complete synchronously within execOneTool — by the time the next
 	// iteration begins, they are done. Carrying them forward causes completed
@@ -532,6 +553,11 @@ func (s *runState) beginIteration(i int) {
 	// (the "explore card that never disappears" bug). resolveSubAgents returns
 	// nil when SubAgents is empty — there is no text-based fallback.
 	s.subAgentNodes = nil
+	// Reset per-iteration usage accumulators (v59): each iteration's
+	// input/cached tokens belong to its own iteration_history row.
+	s.iterInputTokens = 0
+	s.iterOutputTokens = 0
+	s.iterCachedTokens = 0
 	s.refreshStructuredTodos()
 	// Notify the agent of the iteration boundary so stream callbacks can stamp
 	// iteration on stream_content events (frontend iteration-boundary clearing).
@@ -663,6 +689,19 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		releaseLLMSem = s.cfg.LLMSemAcquire(ctx)
 	}
 
+	// Anchor the live TTFT baseline at the request-send moment (same contract
+	// as the llm-layer t0 in GenerateStreamAndCollect). Previously resetTiming
+	// ran at beginIteration — the live baseline then included the engine-side
+	// gap (message building etc.) between beginIteration and the actual
+	// request, while the committed/DB TTFT (response.StreamStats) measured from
+	// the request itself. The two disagreed, so the moment callLLM returned and
+	// structuredProgress.StreamStats took over the progress events, the
+	// displayed TTFT jumped ("tool 生成完毕后 ttft 变成很小的数值" — live showed
+	// the wide window, the committed row the narrow one).
+	if s.cfg.ResetStreamTiming != nil {
+		s.cfg.ResetStreamTiming()
+	}
+
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 
 	s.localLLMCalls++
@@ -676,6 +715,13 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		if response.Usage.PromptTokens > 0 {
 			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+			// Per-iteration usage (v59): persisted to iteration_history for
+			// per-session/per-model usage aggregation (cache hit rate, input/
+			// cached split). Same guard as the tracker — zero usage means the
+			// stream was cancelled mid-flight (no valid data point).
+			s.iterInputTokens += int64(response.Usage.PromptTokens)
+			s.iterOutputTokens += int64(response.Usage.CompletionTokens)
+			s.iterCachedTokens += int64(response.Usage.CacheHitTokens)
 		}
 		// Record stream timing stats (TTFT, TPOT, total duration, chunk count)
 		s.tokenTracker.RecordStreamStats(response.StreamStats)
@@ -787,12 +833,27 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.structuredProgress.HistoryCompacted = false
 	}
 
+	// Post-compression retry sends a NEW request — reset the live TTFT
+	// baseline here too (same contract as the primary call above), so live
+	// frames report the retry's own first-token latency instead of spanning
+	// the compression window.
+	if s.cfg.ResetStreamTiming != nil {
+		s.cfg.ResetStreamTiming()
+	}
+
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 	s.localLLMCalls++
 	if response != nil {
 		if response.Usage.PromptTokens > 0 {
 			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+			// Per-iteration usage (v59): persisted to iteration_history for
+			// per-session/per-model usage aggregation (cache hit rate, input/
+			// cached split). Same guard as the tracker — zero usage means the
+			// stream was cancelled mid-flight (no valid data point).
+			s.iterInputTokens += int64(response.Usage.PromptTokens)
+			s.iterOutputTokens += int64(response.Usage.CompletionTokens)
+			s.iterCachedTokens += int64(response.Usage.CacheHitTokens)
 		}
 		s.tokenTracker.RecordStreamStats(response.StreamStats)
 		s.localInputTokens += int(response.Usage.PromptTokens)
