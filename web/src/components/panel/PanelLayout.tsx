@@ -141,9 +141,14 @@ export function isValidPanelEntry(v: unknown): v is PanelLayoutEntry {
 
 /**
  * 解析 v2 JSON 字符串。整体结构坏（非 JSON/非对象）→ null（调用方回退默认布局）；
- * 单个 entry 坏 → 丢弃该 entry；未知 id → 丢弃。
+ * 单个 entry 坏 → 丢弃该 entry。
+ *
+ * ⚠️ 不按 knownIds 过滤——插件面板异步注册，useState 初始化时 knownIds 可能
+ * 只有 core.* 面板。如果过滤，插件面板的 collapsed/zone/h 状态在刷新后全部丢失。
+ * 未知 id 的 entry 保留在 state 里（渲染时 byZone 只渲染 defs 里的面板，无害）；
+ * 插件注册后 entryOf 从 state 读到存储的状态 → 恢复。
  */
-export function parsePanelLayoutV2(raw: string | null, knownIds: ReadonlySet<string>): PanelLayoutState | null {
+export function parsePanelLayoutV2(raw: string | null, _knownIds?: ReadonlySet<string>): PanelLayoutState | null {
   if (raw == null) return null
   let parsed: unknown
   try {
@@ -154,7 +159,7 @@ export function parsePanelLayoutV2(raw: string | null, knownIds: ReadonlySet<str
   if (!isRecord(parsed)) return null
   const state: PanelLayoutState = {}
   for (const [id, entry] of Object.entries(parsed)) {
-    if (knownIds.has(id) && isValidPanelEntry(entry)) state[id] = entry
+    if (isValidPanelEntry(entry)) state[id] = entry
   }
   return state
 }
@@ -421,18 +426,11 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
   const stateRef = useRef(state)
   stateRef.current = state
 
-  // defs 变化（插件注册/注销）→ 清理残留布局（未知 id 丢弃）。新面板不写入，
-  // entryOf 合成默认（contribution 位置 / chip 兜底）落位（规格「保留」项）。
-  useEffect(() => {
-    setState((prev) => {
-      const next: PanelLayoutState = {}
-      for (const [id, entry] of Object.entries(prev)) {
-        if (knownIds.has(id)) next[id] = entry
-      }
-      if (Object.keys(next).length === Object.keys(prev).length) return prev
-      return next
-    })
-  }, [knownIds])
+  // defs 变化（插件注册/注销）→ 不清理未知 id 的 entry（插件异步注册，
+  // knownIds 初始可能不含插件 id——清理会丢失它们的 collapsed/h 等持久化状态）。
+  // 未知 id 的 entry 留在 state 里无害：byZone 只渲染 defs 里的面板，entry
+  // 在插件注册后自动恢复。persist 写入时也保留（不丢数据）。
+  // 仅清理已知已卸载的面板——由 panelRegistry.unregisterPanel 触发（如需）。
 
   // Server sync（SETTINGS_SYNCED_EVENT）→ localStorage 已被更新，重读（权威覆盖）。
   useEffect(() => {

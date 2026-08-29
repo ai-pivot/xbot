@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, Target } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Circle, Loader2, Target } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
@@ -65,10 +65,24 @@ export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps)
           {todos.map((todo) => (
             <div
               key={todo.id}
-              className={cn('flex items-start gap-2 py-1 text-xs', todo.done ? 'text-text-muted' : 'text-text-primary')}
+              className={cn('flex items-start gap-2 py-1 text-xs', todo.status === 'done' ? 'text-text-muted' : 'text-text-primary')}
             >
-              <span className="mt-0.5 shrink-0">{todo.done ? '✓' : '○'}</span>
-              <span className={cn('min-w-0 flex-1', todo.done && 'line-through')}>{todo.text}</span>
+              <span className="mt-0.5 shrink-0">
+                {todo.status === 'done' ? (
+                  <CheckCircle2 className="h-3 w-3" style={{ color: 'var(--status-success)' }} />
+                ) : todo.status === 'doing' ? (
+                  <Loader2 className="h-3 w-3 animate-spin" style={{ color: 'var(--accent)' }} />
+                ) : (
+                  <Circle className="h-3 w-3 text-text-muted" />
+                )}
+              </span>
+              <span className={cn(
+                'min-w-0 flex-1 leading-4',
+                todo.status === 'done' && 'line-through',
+                todo.status === 'doing' && 'font-medium',
+              )}>
+                {todo.text}
+              </span>
             </div>
           ))}
         </div>

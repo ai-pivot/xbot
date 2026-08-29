@@ -22,6 +22,7 @@ import {
   gitRpc,
   openDiffTab,
   onSessionChange,
+  resolveChat,
   statusBadge,
   type GitStatus,
   type GitCommit,
@@ -30,6 +31,56 @@ import {
 } from './shared'
 
 const { useState, useEffect, useCallback, useRef } = React
+
+/** 拖拽分隔条：两个垂直区块之间的比例拖拽（git-fancy 变更区 / commit 区）。
+ *  - 拖拽期间 body cursor=ns-resize + userSelect=none（防文字选中/光标闪烁）
+ *  - 比例用百分比存 localStorage（跨会话记忆）
+ *  - 上区最小 80px（变更列表至少 3 行可见）；下区最小 80px（commit 列表至少 3 行） */
+function useSplitRatio(storageKey: string, initialTopPct = 40): { topPct: number; onDragStart: (e: React.PointerEvent) => void } {
+  const [topPct, setTopPct] = useState(() => {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(storageKey) : null
+    const n = saved ? parseFloat(saved) : NaN
+    return Number.isFinite(n) && n >= 10 && n <= 90 ? n : initialTopPct
+  })
+
+  const onDragStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const el = e.currentTarget as HTMLElement
+    const container = el.parentElement
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const startY = e.clientY
+    const startPct = topPct
+    const prevCursor = document.body.style.cursor
+    const prevUserSelect = document.body.style.userSelect
+    document.body.style.cursor = 'ns-resize'
+    document.body.style.userSelect = 'none'
+    try { el.setPointerCapture(e.pointerId) } catch { /* jsdom */ }
+
+    const onMove = (ev: PointerEvent) => {
+      const deltaPct = ((ev.clientY - startY) / rect.height) * 100
+      const next = Math.min(90, Math.max(10, startPct + deltaPct))
+      setTopPct(next)
+    }
+    const onUp = () => {
+      document.body.style.cursor = prevCursor
+      document.body.style.userSelect = prevUserSelect
+      setTopPct((cur) => {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(storageKey, String(cur))
+        return cur
+      })
+      el.removeEventListener('pointermove', onMove)
+      el.removeEventListener('pointerup', onUp)
+      el.removeEventListener('pointercancel', onUp)
+    }
+    el.addEventListener('pointermove', onMove)
+    el.addEventListener('pointerup', onUp)
+    el.addEventListener('pointercancel', onUp)
+  }, [topPct])
+
+  return { topPct, onDragStart }
+}
 
 /** 激活时注入 ctx（PluginRuntime 调用 mod.activate(ctx)）——rpc/ui/events 存入共享单例。 */
 export function activate(ctx: unknown): void {
@@ -59,7 +110,21 @@ export function GitFancyPanel() {
   const visibleRef = useRef(true)
   // 展开的 commit（inline accordion）。必须在条件提前 return 之前——
   // hook 在 return 之后会在 loading→loaded 切换时改变 hooks 数量（React #310）。
-  const [expandedHash, setExpandedHash] = useState<string | null>(null)
+  // 持久化到 localStorage：刷新后恢复展开态。
+  const [expandedHash, setExpandedHash] = useState<string | null>(() => {
+    if (typeof localStorage === 'undefined') return null
+    return localStorage.getItem('git-fancy:expanded-hash')
+  })
+  const toggleExpand = useCallback((hash: string) => {
+    setExpandedHash((prev) => {
+      const next = prev === hash ? null : hash
+      if (typeof localStorage !== 'undefined') {
+        if (next) localStorage.setItem('git-fancy:expanded-hash', next)
+        else localStorage.removeItem('git-fancy:expanded-hash')
+      }
+      return next
+    })
+  }, [])
 
   const refresh = useCallback(async () => {
     if (!getRpc()) return
@@ -91,10 +156,27 @@ export function GitFancyPanel() {
   }, [])
 
   // 初始加载 + 3s 自动轮询（仅前台可见时）。
+  // 轮询同时检测 session key 变化（belt-and-suspenders：session.switched 事件
+  // 在 split layout tab focus 切换时可能不触发——直接轮询 resolveChat() 的
+  // key，变了就全量 refresh 含 commits）。
+  const lastSessionKeyRef = useRef('')
   useEffect(() => {
+    const checkSessionKey = () => {
+      const chat = resolveChat()
+      const key = `${chat.channel}:${chat.chatID}`
+      if (lastSessionKeyRef.current && lastSessionKeyRef.current !== key) {
+        // Session 变了——全量刷新（status + commits）
+        setCommits([])
+        setTotal(0)
+        void refresh()
+      }
+      lastSessionKeyRef.current = key
+    }
+    checkSessionKey()
     void refresh()
     const timer = setInterval(() => {
       if (visibleRef.current && document.visibilityState !== 'hidden') {
+        checkSessionKey()
         void refreshStatusOnly()
       }
     }, 3000)
@@ -113,10 +195,12 @@ export function GitFancyPanel() {
   // 任何插件都可订阅——非 git-fancy 专属机制。
   useEffect(() => {
     const unsubscribe = onSessionChange(() => {
-      // 重置分页 + 展开状态，重新加载新会话的 git 数据。
+      // 重置分页 + 重新加载新会话的 git 数据。
+      // 不清 expandedHash——刷新时 session.switched 会触发（prevSessionKey 初始
+      // null），清了会把 useState 刚从 localStorage 恢复的值冲掉。新会话 commit
+      // 列表加载后 hash 不匹配自然不展开（无害）。
       setCommits([])
       setTotal(0)
-      setExpandedHash(null)
       setLoading(true)
       void refresh()
     })
@@ -138,6 +222,9 @@ export function GitFancyPanel() {
       setLoadingMore(false)
     }
   }, [commits.length, total, loadingMore])
+
+  // ⚠️ useSplitRatio 必须在条件 return 之前调用（React hooks 顺序不可变）。
+  const { topPct, onDragStart } = useSplitRatio('git-fancy:split-ratio', 40)
 
   if (loading && !status) {
     return <div className="p-2 text-xs text-text-muted">加载 git 状态…</div>
@@ -216,7 +303,7 @@ export function GitFancyPanel() {
     return (
       <div key={c.hash}>
         <div
-          onClick={() => setExpandedHash(expanded ? null : c.hash)}
+          onClick={() => toggleExpand(c.hash)}
           className="flex cursor-pointer items-center gap-1.5 px-2 py-0.5 hover:bg-bg-hover active:bg-bg-hover"
           title="展开 commit 详情"
         >
@@ -233,17 +320,28 @@ export function GitFancyPanel() {
   const hasMore = commits.length < total
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto text-xs">
+    <div className="flex h-full flex-col overflow-hidden text-xs">
       {header}
-      <div className="sticky top-0 z-10 border-b border-border bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
+      <div className="shrink-0 border-b border-border bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
         {`变更 ${status?.changes.length ?? 0} · +${totalAdded} -${totalDeleted}`}
       </div>
-      {/* 每个区域独立 max-height + 滚动：单个区域过长不会把其他区域挤出视口 */}
-      <div className="max-h-56 overflow-y-auto py-0.5">{changeRows}</div>
-      <div className="sticky top-0 z-10 border-t border-border bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
+      {/* 上区（变更文件）—— flex-basis 按拖拽比例 */}
+      <div className="min-h-0 overflow-y-auto py-0.5" style={{ flexBasis: `${topPct}%`, flexGrow: 0, flexShrink: 1 }}>
+        {changeRows}
+      </div>
+      {/* 拖拽分隔条 */}
+      <div
+        onPointerDown={onDragStart}
+        className="group flex h-1.5 shrink-0 cursor-ns-resize touch-none items-center justify-center"
+        title="拖拽调整上下区域比例"
+      >
+        <div className="h-[2px] w-8 rounded-full bg-border transition-all group-hover:w-12 group-hover:bg-accent/50 group-active:bg-accent" />
+      </div>
+      <div className="shrink-0 border-t border-border bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
         {`提交 ${commits.length}/${total}`}
       </div>
-      <div className="max-h-96 overflow-y-auto py-0.5">{commitRows}</div>
+      {/* 下区（commit 历史）—— flex-1 占剩余空间 */}
+      <div className="min-h-0 flex-1 overflow-y-auto py-0.5">{commitRows}</div>
       {hasMore && (
         <button
           onClick={() => void loadMore()}

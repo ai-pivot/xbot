@@ -27,13 +27,13 @@ func TestTodoManager_SessionIsolation(t *testing.T) {
 
 	// 主 Agent 写入 2 个 TODO
 	mainTool := &TodoWriteTool{Manager: mgr}
-	_, err := mainTool.Execute(mainCtx, `{"todos":[{"id":1,"text":"main-task-1","done":false},{"id":2,"text":"main-task-2","done":false}]}`)
+	_, err := mainTool.Execute(mainCtx, `{"todos":[{"id":1,"text":"main-task-1","status":"pending"},{"id":2,"text":"main-task-2","status":"pending"}]}`)
 	if err != nil {
 		t.Fatalf("main TodoWrite failed: %v", err)
 	}
 
 	// SubAgent 写入 3 个 TODO
-	_, err = mainTool.Execute(subCtx, `{"todos":[{"id":1,"text":"sub-task-1","done":false},{"id":2,"text":"sub-task-2","done":false},{"id":3,"text":"sub-task-3","done":false}]}`)
+	_, err = mainTool.Execute(subCtx, `{"todos":[{"id":1,"text":"sub-task-1","status":"pending"},{"id":2,"text":"sub-task-2","status":"pending"},{"id":3,"text":"sub-task-3","status":"pending"}]}`)
 	if err != nil {
 		t.Fatalf("sub TodoWrite failed: %v", err)
 	}
@@ -167,10 +167,10 @@ func TestTodoListTool_Isolation(t *testing.T) {
 
 	// 主 Agent 写入
 	writeTool := &TodoWriteTool{Manager: mgr}
-	_, _ = writeTool.Execute(mainCtx, `{"todos":[{"id":1,"text":"main-task","done":false}]}`)
+	_, _ = writeTool.Execute(mainCtx, `{"todos":[{"id":1,"text":"main-task","status":"pending"}]}`)
 
 	// SubAgent 写入
-	_, _ = writeTool.Execute(subCtx, `{"todos":[{"id":1,"text":"sub-task","done":true}]}`)
+	_, _ = writeTool.Execute(subCtx, `{"todos":[{"id":1,"text":"sub-task","status":"done"}]}`)
 
 	// TodoListTool 验证隔离
 	listTool := &TodoListTool{Manager: mgr}
@@ -193,5 +193,104 @@ func TestTodoListTool_Isolation(t *testing.T) {
 	// SubAgent 应该看到 1/1 完成
 	if !strings.Contains(subResult.Summary, "1/1") {
 		t.Errorf("sub TodoList summary = %q, should show 1/1", subResult.Summary)
+	}
+}
+
+// 严格校验：LLM 发旧格式 done: true（无 status 字段）必须报错，不做任何兼容转换。
+// 用户明确要求：schema 就是 status 必填，违反 schema → 报错让 LLM 自行纠正。
+func TestTodoWrite_LegacyDoneRejected(t *testing.T) {
+	mgr := NewTodoManager()
+	ctx := &ToolContext{
+		Ctx:     context.Background(),
+		AgentID: "main",
+		Channel: "cli",
+		ChatID:  "chat-strict",
+	}
+	tool := &TodoWriteTool{Manager: mgr}
+
+	// 旧格式：done: true，无 status → 必须报错（json 静默丢弃 done，status 为空）
+	res, err := tool.Execute(ctx, `{"todos":[{"id":1,"text":"task-a","done":true},{"id":2,"text":"task-b","done":false}]}`)
+	if err != nil {
+		t.Fatalf("Execute returned err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("legacy done format must be REJECTED with IsError=true, got summary: %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "status") {
+		t.Errorf("error message must mention the 'status' field, got: %q", res.Summary)
+	}
+
+	// 确认没有半写状态：报错时不得写入任何 TODO
+	todos := mgr.GetTodos(mgr.sessionKey(ctx))
+	if len(todos) != 0 {
+		t.Errorf("rejected call must NOT write todos, got %d items", len(todos))
+	}
+
+	// 旧格式 done: false → 同样报错（无 status 就是无 status）
+	res2, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"x","done":false}]}`)
+	if !res2.IsError {
+		t.Errorf("done:false without status must also be rejected, got: %q", res2.Summary)
+	}
+}
+
+// 严格校验：非法 status 值报错。
+func TestTodoWrite_InvalidStatusRejected(t *testing.T) {
+	mgr := NewTodoManager()
+	ctx := &ToolContext{
+		Ctx:     context.Background(),
+		AgentID: "main",
+		Channel: "cli",
+		ChatID:  "chat-strict",
+	}
+	tool := &TodoWriteTool{Manager: mgr}
+
+	res, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"task","status":"finished"}]}`)
+	if !res.IsError {
+		t.Errorf("invalid status 'finished' must be rejected, got: %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, `"finished"`) {
+		t.Errorf("error message should echo the invalid value, got: %q", res.Summary)
+	}
+
+	// 空字符串 status 同样报错
+	res2, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"task","status":""}]}`)
+	if !res2.IsError {
+		t.Errorf("empty status must be rejected, got: %q", res2.Summary)
+	}
+}
+
+// 合法三态正常工作。
+func TestTodoWrite_ValidStatusAccepted(t *testing.T) {
+	mgr := NewTodoManager()
+	ctx := &ToolContext{
+		Ctx:     context.Background(),
+		AgentID: "main",
+		Channel: "cli",
+		ChatID:  "chat-valid",
+	}
+	tool := &TodoWriteTool{Manager: mgr}
+
+	res, err := tool.Execute(ctx, `{"todos":[{"id":1,"text":"a","status":"done"},{"id":2,"text":"b","status":"doing"},{"id":3,"text":"c","status":"pending"}]}`)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("valid statuses must be accepted, got error: %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "1/3") {
+		t.Errorf("summary should show 1/3 done, got: %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "1 项进行中") {
+		t.Errorf("summary should show 1 doing, got: %q", res.Summary)
+	}
+
+	todos := mgr.GetTodos(mgr.sessionKey(ctx))
+	if len(todos) != 3 {
+		t.Fatalf("expected 3 todos, got %d", len(todos))
+	}
+	for _, it := range todos {
+		if !isValidStatus(it.Status) {
+			t.Errorf("todo %d has invalid status %q", it.ID, it.Status)
+		}
 	}
 }

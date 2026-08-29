@@ -53,10 +53,11 @@ describe('usePluginViewPanels (布局 v5 shim 语义)', () => {
     vi.restoreAllMocks()
   })
 
-  it('status_bar_right 查询返回空——徽章面板已并入徽章形态，不再作为容器面板暴露', () => {
+  it('status_bar_right 查询返回徽章 view（shim 直接从 runtime 获取，不经 panelRegistry——手机端 PluginPanelContainer 需要渲染徽章）', () => {
     syncFixture([{ pluginId: 'xbot.iteration-stats', view: makeView('xbot.iteration-stats.badge', 'status_bar_right') }])
     const { result } = renderHook(() => usePluginViewPanels('status_bar_right'))
-    expect(result.current).toEqual([])
+    expect(result.current).toHaveLength(1)
+    expect(result.current[0]).toMatchObject({ id: 'xbot.iteration-stats.badge', container: 'status_bar_right' })
   })
 
   it('right_sidebar 查询照常返回主面板，返回形状不变', () => {
@@ -73,23 +74,23 @@ describe('usePluginViewPanels (布局 v5 shim 语义)', () => {
     expect(result.current[0].view).toBe(view)
   })
 
-  it('合并场景：主面板（side，自身带 badgeRender）仍在容器查询返回——badgeRender 不影响主面板暴露', () => {
+  it('合并场景：主面板 + 徽章 view 各自在对应容器查询返回（shim 直接从 runtime 获取，不经 panelRegistry 合并逻辑）', () => {
     syncFixture([
       { pluginId: 'x', view: makeView('x.panel', 'right_sidebar') },
       { pluginId: 'x', view: makeView('x.badge', 'status_bar_right') },
     ])
     const { result } = renderHook(() => usePluginViewPanels('right_sidebar'))
     expect(result.current.map((p) => p.id)).toEqual(['x.panel'])
-    // 徽章 view 不在任何容器查询中出现。
+    // shim 直接从 runtime.listAllViews() 获取——徽章 view 也在对应容器返回
+    // （手机端 PluginPanelContainer 需要渲染徽章）。
     const barResult = renderHook(() => usePluginViewPanels('status_bar_right'))
-    expect(barResult.result.current).toEqual([])
-    // 主面板 def 带合并后的徽章渲染（registry 侧可读）。
-    expect(panelRegistry.getPanel('x.panel')?.badgeRender).toBeTypeOf('function')
+    expect(barResult.result.current.map((p) => p.id)).toEqual(['x.badge'])
   })
 
-  it('info_bar 查询同样返回空（bar 类容器贡献均为徽章形态）', () => {
+  it('info_bar 查询返回对应 view（shim 直接从 runtime 获取）', () => {
     syncFixture([{ pluginId: 'b', view: makeView('b.item', 'info_bar') }])
     const { result } = renderHook(() => usePluginViewPanels('info_bar'))
-    expect(result.current).toEqual([])
+    expect(result.current).toHaveLength(1)
+    expect(result.current[0]).toMatchObject({ id: 'b.item', container: 'info_bar' })
   })
 })

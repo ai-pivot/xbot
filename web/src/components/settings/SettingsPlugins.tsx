@@ -100,7 +100,7 @@ export function SettingsPlugins() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="搜索插件配置项…"
-          className="rounded-lg border-white/[.08] bg-white/[.03] pl-9 focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+          className="rounded-lg border-border bg-bg-secondary pl-9 focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
           autoFocus
         />
       </div>
@@ -249,7 +249,7 @@ function ConfigField({
             disabled={saving}
             onValueChange={(v) => void onChange(propKey, v)}
           >
-            <SelectTrigger className="w-full rounded-lg border-white/[.08] bg-white/[.03] focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
+            <SelectTrigger className="w-full rounded-lg border-border bg-bg-secondary focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
               <SelectValue placeholder="选择…" />
             </SelectTrigger>
             <SelectContent>
@@ -335,7 +335,7 @@ function renderMultiselect(
           className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
             selected.includes(o.value)
               ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
-              : 'border-white/[.08] bg-white/[.03] text-text-muted hover:bg-white/[.05] hover:text-text-primary'
+              : 'border-border bg-bg-secondary text-text-muted hover:bg-bg-tertiary hover:text-text-primary'
           }`}
         >
           {o.label}

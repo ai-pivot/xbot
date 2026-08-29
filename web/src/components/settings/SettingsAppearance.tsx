@@ -75,7 +75,7 @@ export function SettingsAppearance() {
                   'rounded-lg border px-3 py-1.5 text-xs transition-colors',
                   active
                     ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
-                    : 'border-white/[.08] bg-white/[.03] text-text-muted hover:bg-white/[.05] hover:text-text-primary',
+                    : 'border-border bg-bg-secondary text-text-muted hover:bg-bg-tertiary hover:text-text-primary',
                 )}
               >
                 {t(md.labelKey)}
@@ -127,7 +127,7 @@ export function SettingsAppearance() {
           <div className="flex items-center gap-2">
             {/* live preview chip — reflects committed accent (var) */}
             <span
-              className="size-8 shrink-0 rounded-md border border-white/[.08]"
+              className="size-8 shrink-0 rounded-md border border-border"
               style={{ backgroundColor: 'var(--accent)' }}
               aria-hidden
             />
@@ -142,7 +142,7 @@ export function SettingsAppearance() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
               }}
-              className="max-w-[180px] rounded-lg border-white/[.08] bg-white/[.03] font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+              className="max-w-[180px] rounded-lg border-border bg-bg-secondary font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
               placeholder={DEFAULT_ACCENT_COLOR}
             />
           </div>

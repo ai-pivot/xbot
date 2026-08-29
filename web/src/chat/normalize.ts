@@ -49,7 +49,10 @@ function optTodos(v: unknown): TodoItem[] | undefined {
     return {
       id: typeof r?.id === 'number' ? r.id : 0,
       text: typeof r?.text === 'string' ? r.text : '',
-      done: Boolean(r?.done),
+      // 新格式 status 必填；老数据兼容 done: true → "done"
+      status: typeof r?.status === 'string' && r.status
+        ? r.status
+        : r?.done === true ? 'done' : 'pending',
     }
   })
 }

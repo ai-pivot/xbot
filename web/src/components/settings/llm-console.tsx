@@ -34,7 +34,7 @@ export const CTX_PRESETS = [0, 32000, 64000, 128000, 200000, 1000000, 2000000]
 export const OUT_PRESETS = [0, 8192, 16384, 32768, 65536]
 
 export function fmtTokens(n: number): string {
-  if (!n || n <= 0) return '默认 (1M)'
+  if (!n || n <= 0) return '跟随默认'
   if (n >= 1000000) return n % 1000000 === 0 ? n / 1000000 + 'M' : (n / 1000000).toFixed(1) + 'M'
   if (n >= 1000) return n % 1000 === 0 ? n / 1000 + 'K' : Math.round(n / 1000) + 'K'
   return String(n)
@@ -115,7 +115,7 @@ export function ProvBadge(props: { provider: string; size?: number }) {
   const meta = providerMeta(props.provider)
   const s = props.size || 30
   return (
-    <div className="flex shrink-0 items-center justify-center rounded-lg font-bold text-white"
+    <div className="flex shrink-0 items-center justify-center rounded-lg font-bold text-text-primary"
       style={{ width: s, height: s, fontSize: s * 0.44, background: 'linear-gradient(135deg,' + meta.color + ',' + meta.color + 'bb)' }}>
       {meta.label[0]}
     </div>
@@ -146,7 +146,7 @@ export function LlmField(props: { label: string; hint?: string; children: ReactN
 
 /** 规范输入框类（布局 v2）：rounded-lg + white/[.08] 边 + white/[.03] 底 + accent focus。 */
 export const llmInputCls =
-  'rounded-lg border border-white/[.08] bg-white/[.03] text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-[#6c8cff]/40 focus:ring-2 focus:ring-[#6c8cff]/25'
+  'rounded-lg border border-border bg-bg-secondary text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-[#6c8cff]/40 focus:ring-2 focus:ring-[#6c8cff]/25'
 
 // ── ModalShell：backdrop + 居中卡片 ───────────────────────────────────────
 // SettingsDialog 的 sheet 覆盖视口，fixed 锚定到 sheet ≈ 视口，弹层不会跑出设置面板。
@@ -178,7 +178,7 @@ export function ModalHeader(props: { title: string; sub?: string; onClose: () =>
         <div className="truncate text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{props.title}</div>
         {props.sub ? <div className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{props.sub}</div> : null}
       </div>
-      <button onClick={props.onClose} aria-label="关闭" className="rounded-lg p-1.5 hover:bg-white/[.05]">
+      <button onClick={props.onClose} aria-label="关闭" className="rounded-lg p-1.5 hover:bg-bg-tertiary">
         <LlmIcon n="x" s={15} />
       </button>
     </div>
@@ -205,13 +205,13 @@ export function EditModelModal(props: {
     <ModalShell open onClose={props.onClose} maxWidth="28rem">
       <ModalHeader title={props.model} sub={props.subName + ' · 上下文 / 输出上限（0 = 跟随默认）'} onClose={props.onClose} />
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        <LlmField label="Max Context（tokens）" hint="点选预设或直接输入任意值；0 表示跟随系统默认（1M）">
+        <LlmField label="Max Context（tokens）" hint="点选预设或直接输入任意值；0 表示跟随系统默认">
           <div className="flex flex-wrap gap-1.5">
             {CTX_PRESETS.map(function(cv) {
-              return <PresetChip key={cv} active={cfg.ctx === cv} onClick={function() { set({ ctx: cv }) }}>{cv === 0 ? '默认 (1M)' : fmtTokens(cv)}</PresetChip>
+              return <PresetChip key={cv} active={cfg.ctx === cv} onClick={function() { set({ ctx: cv }) }}>{cv === 0 ? '跟随默认' : fmtTokens(cv)}</PresetChip>
             })}
           </div>
-          <input type="number" min={0} value={cfg.ctx || ''} placeholder="默认 (1M)"
+          <input type="number" min={0} value={cfg.ctx || ''} placeholder="跟随默认"
             onChange={function(e) { set({ ctx: Math.max(0, Number(e.target.value) || 0) }) }}
             className={llmInputCls + ' mt-2 w-full px-3 py-2.5 text-sm'} />
         </LlmField>
@@ -297,9 +297,9 @@ export function DeleteConfirmModal(props: { subName: string; modelCount: number;
         </div>
       </div>
       <div className="flex gap-2.5 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-        <button onClick={props.onClose} className="flex-1 rounded-xl border py-2.5 text-[13px] font-medium transition-colors hover:bg-white/[.05]" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>取消</button>
+        <button onClick={props.onClose} className="flex-1 rounded-xl border py-2.5 text-[13px] font-medium transition-colors hover:bg-bg-tertiary" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>取消</button>
         <button onClick={props.onConfirm} disabled={props.saving}
-          className="flex-1 rounded-xl py-2.5 text-[13px] font-medium text-white transition-opacity disabled:opacity-40" style={{ background: 'var(--status-error, #ef4444)' }}>
+          className="flex-1 rounded-xl py-2.5 text-[13px] font-medium text-text-primary transition-opacity disabled:opacity-40" style={{ background: 'var(--status-error, #ef4444)' }}>
           {props.saving ? '删除中…' : '删除'}
         </button>
       </div>
@@ -338,14 +338,14 @@ export function TierPickerModal(props: {
           const cur = props.value === e.sub_id + '|' + e.model
           return (
             <button key={e.sub_id + '\x00' + e.model} onClick={function() { props.onPick(e.sub_id, e.model) }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-white/[.04]">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white"
+              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-text-primary"
                 style={{ background: 'var(--text-muted)' }}>{(e.sub_name || '?')[0]}</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate font-mono text-[13px]" style={{ color: 'var(--text-primary)' }}>{e.model}</div>
                 <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{e.sub_name}</div>
               </div>
-              {cur ? <span className="flex size-5 items-center justify-center rounded-full text-white" style={{ background: 'var(--accent)' }}><LlmIcon n="check" s={12} c="#fff" w={3} /></span> : null}
+              {cur ? <span className="flex size-5 items-center justify-center rounded-full text-text-primary" style={{ background: 'var(--accent)' }}><LlmIcon n="check" s={12} c="#fff" w={3} /></span> : null}
             </button>
           )
         })}
@@ -379,7 +379,7 @@ export function SubFormModal(props: {
     const pv = LLM_PROVIDERS.find(function(p) { return p.k === k })
     setForm(Object.assign({}, form, { provider: k, base_url: pv ? pv.url : form.base_url }))
   }
-  const valid = form.name.trim() !== '' && form.base_url.trim() !== '' && form.model.trim() !== '' &&
+  const valid = form.name.trim() !== '' && form.base_url.trim() !== '' &&
     (editing !== null || form.api_key.trim() !== '')
   return (
     <ModalShell open onClose={props.onClose} maxWidth="30rem">
@@ -471,14 +471,14 @@ export function ActionSheet(props: { title: string; onClose: () => void; items: 
           const c = it.danger ? 'var(--status-error, #ef4444)' : 'var(--text-primary)'
           return (
             <button key={i} onClick={function() { it.onClick() }}
-              className="flex w-full items-center gap-2.5 px-4 py-3.5 text-[14px] transition-colors active:bg-white/[.05]"
+              className="flex w-full items-center gap-2.5 px-4 py-3.5 text-[14px] transition-colors active:bg-bg-tertiary"
               style={{ color: c, borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
               <LlmIcon n={it.icon} s={16} c={c} />{it.label}
             </button>
           )
         })}
         <div className="p-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-          <button onClick={props.onClose} className="w-full rounded-xl py-2.5 text-[13px] font-semibold transition-colors hover:bg-white/[.1]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>取消</button>
+          <button onClick={props.onClose} className="w-full rounded-xl py-2.5 text-[13px] font-semibold transition-colors hover:bg-bg-hover" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>取消</button>
         </div>
       </div>
     </div>

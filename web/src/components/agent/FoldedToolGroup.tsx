@@ -45,7 +45,7 @@ const ROW_ROW_CLASS = 'flex w-full flex-wrap items-center gap-2 px-0.5 py-1 text
 /** 浮层样式（设计稿 1:1）：固定深色玻璃底 + 大阴影；宽 430px、内部滚动。
  *  覆盖 ui/popover 默认的 w-72/rounded-md/bg-popover/p-4/shadow-md。 */
 const POPOVER_CLASS =
-  'w-[430px] max-w-[calc(100vw-2rem)] max-h-[min(60vh,480px)] overflow-y-auto rounded-xl border-white/10 bg-[rgba(18,21,30,0.92)] p-2 text-zinc-100 shadow-2xl backdrop-blur-md'
+  'w-[430px] max-w-[calc(100vw-2rem)] max-h-[min(60vh,480px)] overflow-y-auto rounded-xl border-border bg-bg-secondary p-2 text-text-primary shadow-2xl backdrop-blur-md'
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
@@ -178,15 +178,15 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
             : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
         <span className="font-mono text-[11px] font-medium" style={{ color }}>{displayName(tool)}</span>
         {tool.elapsedMs > 0 && (
-          <span className="ml-auto shrink-0 text-[10px] tabular-nums text-zinc-500">{formatElapsed(tool.elapsedMs)}</span>
+          <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
         )}
       </div>
       {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本） */}
-      {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-zinc-300">{tool.summary}</p> : null}
+      {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary">{tool.summary}</p> : null}
       {tool.args ? (
         <div>
-          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-zinc-500">参数</div>
-          <div className="max-h-[150px] overflow-y-auto rounded-md border border-white/[.06]">
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">参数</div>
+          <div className="max-h-[150px] overflow-y-auto rounded-md border border-border">
             <ArgsView args={tool.args} />
           </div>
         </div>
@@ -225,7 +225,7 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <span data-testid="tool-pill-more" className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-white/[.06] px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
+        <span data-testid="tool-pill-more" className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
           +{hidden.length}
         </span>
       </PopoverTrigger>
@@ -262,7 +262,7 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
               data-testid="tool-row"
               aria-expanded={active}
               onClick={() => setSel(active ? null : i)}
-              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-white/[.06]"
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
             >
               {running
                 ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: c, animation: 'pulse-blue 1.2s infinite' }} />
@@ -270,9 +270,9 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
                   ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color: c }} />
                   : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color: c }} />}
               <span className="shrink-0 font-mono text-[11px] font-medium" style={{ color: c }}>{displayName(tool)}</span>
-              <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-400">{tool.label}</span>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-text-muted">{tool.label}</span>
               {tool.elapsedMs > 0 && (
-                <span className="shrink-0 text-[10px] tabular-nums text-zinc-500">{formatElapsed(tool.elapsedMs)}</span>
+                <span className="shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
               )}
             </button>
             {active && (

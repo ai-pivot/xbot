@@ -22,6 +22,7 @@ import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
 import { SessionSearch } from '@/components/session/SessionSearch'
+import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import {
   groupSessions,
   isSubAgentSession,
@@ -38,6 +39,7 @@ function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const store = useSessionStore()
   const tabManager = ctx.tabManager
   const [search, setSearch] = useState('')
+  const [newOpen, setNewOpen] = useState(false)
 
   const filteredSessions = useMemo(() => {
     if (!store.activeChannel) return store.sessions
@@ -107,6 +109,18 @@ function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <SessionSearch value={search} onChange={setSearch} />
+      {/* 新建会话按钮（全宽 accent，v5.2 加回——桌面端面板版漏掉了） */}
+      <div className="shrink-0 px-2.5 pt-1.5 pb-1">
+        <button
+          type="button"
+          onClick={() => setNewOpen(true)}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-opacity hover:opacity-90"
+          style={{ background: 'var(--accent)' }}
+        >
+          <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+          新建会话
+        </button>
+      </div>
       <div className="min-h-0 flex-1">
         {store.loading ? (
           <div className="flex h-full items-center justify-center px-4 text-xs text-text-muted">加载中…</div>
@@ -136,6 +150,7 @@ function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           />
         )}
       </div>
+      <NewSessionDialog open={newOpen} onOpenChange={setNewOpen} onCreate={store.createSession} />
     </div>
   )
 }

@@ -89,7 +89,7 @@ export function SettingsAdminUsers() {
           {users.map((user) => (
             <div
               key={user.id}
-              className="flex items-center gap-2.5 rounded-lg border border-white/[.08] bg-white/[.02] px-3 py-2 transition-colors hover:bg-white/[.04]"
+              className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary"
             >
               <span className="flex-1 truncate text-sm text-text-primary">
                 {user.display_name || `(user ${user.id})`}
@@ -100,7 +100,7 @@ export function SettingsAdminUsers() {
                   admin
                 </span>
               ) : (
-                <span className="flex items-center gap-1 rounded bg-white/[.05] px-1.5 py-0.5 text-xs font-medium text-text-muted">
+                <span className="flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-medium text-text-muted">
                   <Shield className="size-3" />
                   user
                 </span>
@@ -110,7 +110,7 @@ export function SettingsAdminUsers() {
                 disabled={updatingId === user.id}
                 variant="outline"
                 size="sm"
-                className="h-7 border-white/[.08] bg-white/[.05] px-2 text-xs hover:bg-white/[.1]"
+                className="h-7 border-border bg-bg-tertiary px-2 text-xs hover:bg-bg-hover"
               >
                 {updatingId === user.id ? (
                   <Loader2 className="size-3 animate-spin" />

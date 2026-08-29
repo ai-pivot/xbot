@@ -13,9 +13,9 @@ type ToolCallSnapshot struct {
 
 // TodoItem represents a TODO item for CLI display.
 type TodoItem struct {
-	ID   int    `json:"id"`
-	Text string `json:"text"`
-	Done bool   `json:"done"`
+	ID     int    `json:"id"`
+	Text   string `json:"text"`
+	Status string `json:"status"` // "pending" | "doing" | "done"
 }
 
 // GoalInfo carries the active goal state for a session.

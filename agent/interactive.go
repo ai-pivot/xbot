@@ -392,7 +392,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		}
 		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 		for i, td := range s.Todos {
-			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Status: td.Status}
 		}
 		if s.TokenUsage != nil {
 			payload.TokenUsage = &protocol.TokenUsage{

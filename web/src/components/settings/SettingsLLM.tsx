@@ -221,12 +221,12 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
         <div className="flex items-center gap-1.5">
           <button onClick={function() { void refreshModels().then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型列表已刷新' : '刷新失败')) }}
             disabled={refreshing}
-            className="flex h-8 items-center gap-1 rounded-lg border border-white/[.08] bg-white/[.05] px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-white/[.1] disabled:opacity-50">
+            className="flex h-8 items-center gap-1 rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
             <LlmIcon n="refresh" s={12} c={refreshing ? 'var(--accent)' : undefined} />{refreshing ? '刷新中…' : '刷新模型'}
           </button>
           <button onClick={function() { exportSubscriptions(conn) }}
-            className="flex h-8 items-center rounded-lg border border-white/[.08] bg-white/[.05] px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-white/[.1]">导出</button>
-          <label className="flex h-8 cursor-pointer items-center rounded-lg border border-white/[.08] bg-white/[.05] px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-white/[.1]">
+            className="flex h-8 items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">导出</button>
+          <label className="flex h-8 cursor-pointer items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">
             {importing ? '导入中…' : '导入'}
             <input type="file" accept="application/json" className="hidden"
               onChange={function(e) { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = '' }} />
@@ -262,10 +262,10 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>最大并发会话</div>
             <div className="flex items-center gap-2">
               <button onClick={function() { commitConc(Math.max(1, concVal - 1)) }}
-                className="flex size-7 items-center justify-center rounded-lg border border-white/[.08] bg-white/[.05] text-base transition-colors hover:bg-white/[.1]" style={{ color: 'var(--text-primary)' }}>−</button>
+                className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>−</button>
               <span className="w-8 text-center font-mono text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{concVal}</span>
               <button onClick={function() { commitConc(concVal + 1) }}
-                className="flex size-7 items-center justify-center rounded-lg border border-white/[.08] bg-white/[.05] text-base transition-colors hover:bg-white/[.1]" style={{ color: 'var(--text-primary)' }}>＋</button>
+                className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>＋</button>
             </div>
           </div>
         </div>
@@ -280,7 +280,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             const cur = tierCur(k)
             return (
               <button key={k} onClick={function() { setTierPick(k) }}
-                className="flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all hover:bg-white/[.04]"
+                className="flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all hover:bg-bg-tertiary"
                 style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ background: m.color + '22', color: m.color }}>
                   <LlmIcon n={m.icon} s={15} c={m.color} />
@@ -317,7 +317,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             const chips = avail.slice(0, 3)
             return (
               <div key={s.id} onClick={function() { setDetailId(s.id) }} role="button" tabIndex={0}
-                className="cursor-pointer overflow-hidden rounded-xl border transition-all hover:bg-white/[.04]"
+                className="cursor-pointer overflow-hidden rounded-xl border transition-all hover:bg-bg-tertiary"
                 style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}
                 onMouseEnter={function(e) { e.currentTarget.style.borderColor = meta.color + '66' }}
                 onMouseLeave={function(e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)' }}>
@@ -367,7 +367,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
         {detailSub ? (
           <div className="flex h-full flex-col">
             <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
-              <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-white/[.05]" style={{ color: 'var(--text-muted)' }}>
+              <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
                 <LlmIcon n="left" s={16} />
               </button>
               <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>订阅详情</span>
@@ -420,16 +420,16 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                 {detailModels.map(function(e) {
                   const pmc = modelPmc(detailSub, e.model)
                   return (
-                    <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-white/[.04]">
+                    <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-bg-tertiary">
                       <StatusPill status={e.status} />
                       <span className="min-w-0 flex-1 truncate font-mono text-[12px]" style={{ color: e.status === 'disabled' ? 'var(--text-muted)' : 'var(--text-primary)' }}>{e.model}</span>
                       {pmc?.max_context ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{fmtTokens(pmc.max_context)}</span> : null}
                       {pmc?.max_output_tokens ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>out {fmtTokens(pmc.max_output_tokens)}</span> : null}
                       {e.status === 'disabled'
-                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-white/[.05]" style={{ color: 'var(--accent)' }}>启用</button>
-                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-white/[.05]" style={{ color: 'var(--text-muted)' }}>停用</button>}
+                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--accent)' }}>启用</button>
+                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>停用</button>}
                       <button onClick={function() { setMenuModel({ sid: detailSub.id, model: e.model, status: e.status }) }}
-                        aria-label="模型操作" className="flex size-6 items-center justify-center rounded-lg hover:bg-white/[.05]" style={{ color: 'var(--text-muted)' }}>
+                        aria-label="模型操作" className="flex size-6 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
                         <LlmIcon n="more" s={13} w={2.5} />
                       </button>
                     </div>
@@ -444,12 +444,12 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
               {!detailSub.is_system ? (
                 <div className="mt-5 flex gap-2.5">
                   <button onClick={function() { makeDefault(detailSub) }} disabled={detailSub.active}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/[.08] bg-white/[.05] py-2.5 text-[12px] font-medium transition-colors hover:bg-white/[.1] disabled:opacity-40"
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border bg-bg-tertiary py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-hover disabled:opacity-40"
                     style={{ color: detailSub.active ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                     <LlmIcon n="star" s={12} />{detailSub.active ? '当前默认' : '设为默认'}
                   </button>
                   <button onClick={function() { setConfirmDel(detailSub) }}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/[.08] py-2.5 text-[12px] font-medium transition-colors hover:bg-white/[.05]"
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-tertiary"
                     style={{ color: 'var(--status-error, #ef4444)' }}>
                     <LlmIcon n="trash" s={12} /> 删除订阅
                   </button>

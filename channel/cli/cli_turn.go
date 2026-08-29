@@ -236,7 +236,7 @@ func (m *cliModel) endAgentTurn(turnID uint64) {
 		if items := m.todoManager.GetTodos(key); len(items) > 0 {
 			allDone := true
 			for _, t := range items {
-				if !t.Done {
+				if t.Status != "done" {
 					allDone = false
 					break
 				}

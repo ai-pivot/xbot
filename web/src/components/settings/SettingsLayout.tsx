@@ -141,7 +141,7 @@ export function SettingsLayout() {
                     }
                     setDragOverId(null)
                   }}
-                  className={`flex items-center justify-between gap-2.5 rounded-lg border border-white/[.08] bg-white/[.02] px-3 py-2 transition-colors hover:bg-white/[.04] ${
+                  className={`flex items-center justify-between gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary ${
                     dragOverId === item.id ? 'ring-2 ring-accent' : ''
                   }`}
                 >
@@ -153,14 +153,14 @@ export function SettingsLayout() {
                     <select
                       value={eff}
                       onChange={(e) => { moveItem(item.id, e.target.value as LayoutSlotId); setChanged((v) => v + 1) }}
-                      className="rounded-lg border border-white/[.08] bg-white/[.03] px-2 py-1 text-xs text-text-primary focus:border-[#6c8cff]/40 focus:outline-none"
+                      className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-[#6c8cff]/40 focus:outline-none"
                     >
                       {slots.map((s) => (
                         <option key={s} value={s}>{SLOT_LABELS[s]}</option>
                       ))}
                     </select>
                     {overrides[item.id] !== undefined && (
-                      <Button type="button" variant="ghost" size="sm" className="hover:bg-white/[.1]" onClick={() => { resetItem(item.id); setChanged((v) => v + 1) }}>
+                      <Button type="button" variant="ghost" size="sm" className="hover:bg-bg-hover" onClick={() => { resetItem(item.id); setChanged((v) => v + 1) }}>
                         重置
                       </Button>
                     )}

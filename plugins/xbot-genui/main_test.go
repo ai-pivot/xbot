@@ -131,24 +131,23 @@ func TestHandleExecuteTool_InvalidCode(t *testing.T) {
 	}
 }
 
-// TestHandleExecuteTool_SyntaxLeftToFrontend verifies the plugin does NOT
-// reject syntactically-questionable code (e.g. unbalanced brackets, regex
-// literals, sub-component `return null` fallbacks) — pass-through with
-// ui_code is the contract; the frontend sucrase compile is the authoritative
-// gate, and a genuinely-empty render just shows a blank panel for the user
-// to re-prompt on. A static `return null` scan false-rejected a full layout
-// mockup whose SUB-components had null fallbacks while the App rendered fine
-// (2026-08-28).
+// TestHandleExecuteTool_SyntaxLeftToFrontend verifies the plugin passes
+// syntactically-questionable-but-valid code through (regex literals, sub-component
+// null fallbacks). Genuinely broken syntax (unclosed strings, mismatched brackets)
+// IS rejected server-side by the string-context-aware bracket balancer (v2:
+// user report — frontend render error "Unexpected token" was not fed back to
+// the agent; the tool result said "UI rendered" and the agent thought it
+// succeeded while the user saw a broken panel).
 func TestHandleExecuteTool_SyntaxLeftToFrontend(t *testing.T) {
 	cases := []struct {
 		name string
 		code string
 	}{
-		{"unbalanced passes through", "export default function App(){return <div>"},
 		{"regex literal with slashes", "export default function App(){const u='https://a.b';return <div>{u.replace(/^https?:\\/\\//, '')}</div>}"},
 		// Multi-line (realistic LLM output): `return null` in a SUB-component
 		// fallback branch — the App itself renders fine, must pass through.
 		{"null fallback in sub-component", "export default function App(){\n  const Inner = function(){return null}\n  return <div><Inner/></div>\n}"},
+		{"properly balanced", "export default function App(){return <div>{[1,2,3].map(i => <span key={i}>{i}</span>)}</div>}"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

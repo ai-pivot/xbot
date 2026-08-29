@@ -75,9 +75,9 @@ type SimToolRecord struct {
 
 // SimTodoItem describes a TODO item for progress bar simulation.
 type SimTodoItem struct {
-	ID   int    `json:"id"`
-	Text string `json:"text"`
-	Done bool   `json:"done"`
+	ID     int    `json:"id"`
+	Text   string `json:"text"`
+	Status string `json:"status"`
 }
 
 // SimStep is a single event in the simulation.

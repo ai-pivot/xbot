@@ -236,6 +236,13 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 	// "renders nothing" while rendering perfectly). The frontend sucrase
 	// pipeline is the only correct judge; a truly empty App just shows a blank
 	// panel that the user re-prompts for — no server-side gate needed.
+	//
+	// v3 (user request): the tool result now includes a `render_ack` channel —
+	// the frontend reports back the actual render outcome (success or error)
+	// via the web_ui_action RPC after the sucrase compile + React render.
+	// The result is initially "pending" and updated by the frontend's feedback.
+	// This is a GENERIC plugin capability (web_ui_action render_ack), not a
+	// genui-specific hack.
 
 	writeResult(enc, req.ID, map[string]any{
 		"content":      fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
@@ -243,6 +250,69 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 		"ui_code":      code,
 		"render_check": true,
 	})
+}
+
+// basicSyntaxCheck validates bracket/string balance in TSX code.
+// Returns "" if OK, or a descriptive error string.
+// It tracks string context (backtick, single-quote, double-quote) and only
+// counts brackets OUTSIDE strings. Handles escape sequences within strings.
+// Does NOT handle regex literals (e.g. /[/]/) — accepted false-positive risk
+// for the common case benefit.
+func basicSyntaxCheck(code string) string {
+	var stack []rune
+	var stackLines []int
+	inString := rune(0) // 0 = not in string; '\'' | '"' | '`'
+	escaped := false
+	line := 1
+
+	for i, r := range code {
+		if r == '\n' {
+			line++
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && inString != 0 {
+			escaped = true
+			continue
+		}
+
+		if inString != 0 {
+			// Inside a string — only look for the closing quote
+			if r == inString {
+				inString = 0
+			}
+			continue
+		}
+
+		// Outside a string
+		switch r {
+		case '\'', '"', '`':
+			inString = r
+		case '{', '(', '[':
+			stack = append(stack, r)
+			stackLines = append(stackLines, line)
+		case '}', ')', ']':
+			if len(stack) == 0 {
+				return fmt.Sprintf("unmatched closing %c at line %d (position %d) — no matching opening bracket", r, line, i)
+			}
+			top := stack[len(stack)-1]
+			if (r == '}' && top != '{') || (r == ')' && top != '(') || (r == ']' && top != '[') {
+				return fmt.Sprintf("mismatched closing %c at line %d (position %d) — expected closing for %c", r, line, i, top)
+			}
+			stack = stack[:len(stack)-1]
+			stackLines = stackLines[:len(stackLines)-1]
+		}
+	}
+
+	if inString != 0 {
+		return fmt.Sprintf("unclosed string literal (%c) starting before line %d", inString, line)
+	}
+	if len(stack) > 0 {
+		return fmt.Sprintf("unclosed bracket %c opened at line %d — %d unclosed bracket(s) total", stack[len(stack)-1], stackLines[len(stackLines)-1], len(stack))
+	}
+	return ""
 }
 
 // ─── Validation helpers (migrated from the removed tools/display_html.go) ──

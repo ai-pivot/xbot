@@ -41,7 +41,7 @@ import type {
   TokenUsageInfo,
   StreamStatsInfo,
 } from '@/types/shared'
-import { EMPTY_PROGRESS_SNAPSHOT } from '@/types/shared'
+import { EMPTY_PROGRESS_SNAPSHOT, todoStatusOf } from '@/types/shared'
 import type { HistProgress } from '@/components/agent/api'
 import type { WSMessage, WebToolProgress, GoalInfo } from '@/types/shared'
 import { sessionCacheKey } from '@/lib/webCache'
@@ -1134,7 +1134,7 @@ function handleProgressMessage(
             store.setStructuredTools({ eventSeq: seq, todos: p.todos.map((t) => ({
               id: typeof t.id === 'number' ? t.id : 0,
               text: typeof t.text === 'string' ? t.text : '',
-              done: Boolean(t.done),
+              status: todoStatusOf(t),
             })) })
           }
           return
@@ -1190,7 +1190,7 @@ function handleProgressMessage(
           doneTodos = p.todos.map((t) => ({
             id: typeof t.id === 'number' ? t.id : 0,
             text: typeof t.text === 'string' ? t.text : '',
-            done: Boolean(t.done),
+            status: todoStatusOf(t),
           }))
         }
         if (doneTodos !== undefined) {
@@ -1272,7 +1272,7 @@ function handleProgressMessage(
               todos: p.todos.map((t) => ({
                 id: typeof t.id === 'number' ? t.id : 0,
                 text: typeof t.text === 'string' ? t.text : '',
-                done: Boolean(t.done),
+                status: todoStatusOf(t),
               })),
             })
           }
@@ -1316,7 +1316,7 @@ function handleProgressMessage(
         todos = p.todos.map((t) => ({
           id: typeof t.id === 'number' ? t.id : 0,
           text: typeof t.text === 'string' ? t.text : '',
-          done: Boolean(t.done),
+          status: todoStatusOf(t),
         }))
       }
       // Goal (from /goal command, injected into progress events by the backend)
@@ -1657,13 +1657,17 @@ function handleProgressMessage(
     }
 
     case 'genui': {
-      // Render check: frontend compiles TSX with sucrase and reports result
-      // back via render_check_result RPC. Generic — any plugin can use
-      // render_check=true metadata to request frontend compilation validation.
+      // Render check: frontend compiles TSX with sucrase + React renderToString,
+      // reports result back via render_check_result RPC. Generic — any plugin
+      // can use render_check=true metadata to request frontend compilation validation.
       const md = (msg as unknown as Record<string, unknown>).metadata as Record<string, string> | undefined
       if (md?.render_check === 'true' && md.check_id) {
         const code = msg.content || ''
-        import('sucrase').then(({ transform }) => {
+        Promise.all([
+          import('sucrase'),
+          import('react'),
+          import('react-dom/server'),
+        ]).then(([{ transform }, React, { renderToString }]) => {
           let success = true
           let error = ''
           try {
@@ -1679,8 +1683,15 @@ function handleProgressMessage(
               .replace(/^\s*import\s+.*$/gm, '')
               .replace(/\bexport\s+default\s+/g, '')
               .replace(/\bexport\s+(?!default\b)/g, '')
-            // Try new Function to catch runtime syntax errors
-            new Function(js)
+            // Phase 1: syntax check (catches JS syntax errors)
+            const fn = new Function(js)
+            // Phase 2: React render check (catches JSX children errors like
+            // "Unexpected token when processing JSX children" — sucrase compiles
+            // fine but React's reconciler rejects the element tree)
+            const App = fn()
+            if (typeof App === 'function') {
+              renderToString(React.createElement(App))
+            }
           } catch (e) {
             success = false
             error = e instanceof Error ? e.message : String(e)
@@ -1695,7 +1706,7 @@ function handleProgressMessage(
             }),
           }).catch(() => {})
         }).catch(() => {
-          // sucrase import failed — report success (don't block)
+          // sucrase/react import failed — report success (don't block)
           fetch('/api/rpc', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

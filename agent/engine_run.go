@@ -276,7 +276,7 @@ func (s *runState) cleanupTodos() {
 		if len(items) > 0 {
 			allDone := true
 			for _, item := range items {
-				if !item.Done {
+				if item.Status != "done" {
 					allDone = false
 					break
 				}
@@ -326,9 +326,9 @@ func (s *runState) refreshStructuredTodos() {
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
-			ID:   td.ID,
-			Text: td.Text,
-			Done: td.Done,
+			ID:     td.ID,
+			Text:   td.Text,
+			Status: td.Status,
 		}
 	}
 	s.structuredProgress.Todos = todos
@@ -1890,9 +1890,15 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// 算进「已持久化」），下一轮删除 reminder 后真实消息索引前移、落到虚高
 	// watermark 之下被当作已持久化跳过 —— AskUser 报 "no pending messages"。
 	if len(response.ToolCalls) > 0 {
-		var todoSummary string
+		var todoItems []TodoProgressItem
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
-			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.todoKey())
+			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
+		}
+
+		// 当前 goal（如有 active goal 则注入）
+		var goalInfo *protocol.GoalInfo
+		if s.cfg.GoalManager != nil {
+			goalInfo = s.cfg.GoalManager.GoalInfo(s.sessionKey)
 		}
 
 		// Get current CWD for system reminder
@@ -1917,7 +1923,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
 		}
 
-		s.systemReminder = BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
+		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
 	}
 
 	// --- Incremental session persistence ---

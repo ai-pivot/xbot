@@ -15,7 +15,7 @@ import {
   historyProgressToLive,
   normalizeWebIteration,
 } from '@/components/agent/normalize'
-import { EMPTY_PROGRESS_SNAPSHOT, type ChatMessage, type ProgressSnapshot } from '@/types/shared'
+import { EMPTY_PROGRESS_SNAPSHOT, type ChatMessage, type ProgressSnapshot, type TodoItem } from '@/types/shared'
 import { commitViaFold, commitViaText, iterNum, nonEmptyArr, nonEmptyStr, turnID as mkTurnID, type ChatState, type DomainEvent, type LegacyRow, type LiveSnapshot, type Turn } from './types'
 import type { Row } from './derive'
 
@@ -113,11 +113,14 @@ export function historyToReplaced(
   // 但 todos 存活渲染（E2E："todos survive after turn completes / session
   // switch"；active 分支排除 done 会让 todos 随之丢失 —— 14 个 E2E 失败的
   // 共同根因之一）。
-  const snapshotTodos = Array.isArray(hp?.todos)
-    ? (hp.todos as { id?: unknown; text?: unknown; done?: unknown }[]).map((t) => ({
+  const snapshotTodos: TodoItem[] = Array.isArray(hp?.todos)
+    ? (hp.todos as { id?: unknown; text?: unknown; done?: unknown; status?: unknown }[]).map((t) => ({
         id: typeof t.id === 'number' ? t.id : 0,
         text: typeof t.text === 'string' ? t.text : '',
-        done: Boolean(t.done),
+        // 新格式优先；老数据兼容 done: true → "done"
+        status: typeof t.status === 'string' && t.status
+          ? t.status
+          : t.done === true ? 'done' : 'pending',
       }))
     : []
 

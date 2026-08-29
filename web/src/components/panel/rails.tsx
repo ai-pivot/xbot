@@ -310,7 +310,7 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
       data-panel-zone={zone}
       data-testid={`panel-rail-${zone}`}
       data-zone-active={zoneActive || undefined}
-      className={cn('flex min-h-8 min-w-0 shrink-0 items-center gap-1 overflow-hidden px-2 py-1', className)}
+      className={cn('flex h-8 min-w-0 shrink-0 items-center gap-1 overflow-hidden px-2', className)}
       style={zoneHighlightStyle(zoneActive)}
     >
       {renderGroup('left', groups.center.length === 0 && groups.right.length === 0)}

@@ -11,7 +11,7 @@
  */
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Circle, Loader2 } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import type { TodoState } from '@/hooks/useTodos'
@@ -153,13 +153,23 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
                   key={todo.id}
                   className={cn(
                     'flex items-start gap-2 py-1',
-                    todo.done ? 'text-text-muted' : 'text-text-primary',
+                    todo.status === 'done' ? 'text-text-muted' : 'text-text-primary',
                   )}
                 >
                   <span className="mt-0.5 shrink-0">
-                    {todo.done ? '✓' : '○'}
+                    {todo.status === 'done' ? (
+                      <CheckCircle2 className="h-3 w-3" style={{ color: 'var(--status-success)' }} />
+                    ) : todo.status === 'doing' ? (
+                      <Loader2 className="h-3 w-3 animate-spin" style={{ color: 'var(--accent)' }} />
+                    ) : (
+                      <Circle className="h-3 w-3 text-text-muted" />
+                    )}
                   </span>
-                  <span className={cn('min-w-0 flex-1', todo.done && 'line-through')}>
+                  <span className={cn(
+                    'min-w-0 flex-1 leading-4',
+                    todo.status === 'done' && 'line-through',
+                    todo.status === 'doing' && 'font-medium',
+                  )}>
                     {todo.text}
                   </span>
                 </div>

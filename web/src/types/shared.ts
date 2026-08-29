@@ -318,11 +318,22 @@ export interface GoalInfo {
   summary?: string
 }
 
-/** TODO item — mirrors Go protocol.TodoItem (json: id, text, done). */
+/** TODO item — mirrors Go protocol.TodoItem (json: id, text, status). v2: status-only (done field removed). */
 export interface TodoItem {
   id: number
   text: string
-  done: boolean
+  /** "pending" | "doing" | "done"（必填——LLM 必须显式标记状态） */
+  status: string
+}
+
+/**
+ * Backward compat: 老后端发 {done: boolean}（无 status 字段）；新后端发 {status: string}。
+ * 在数据边界（normalize/integrate/useProgressStream）统一转换——前端内部只用 status。
+ */
+export function todoStatusOf(t: { status?: string; done?: boolean }): string {
+  if (typeof t.status === 'string' && t.status) return t.status
+  if (t.done === true) return 'done'
+  return 'pending'
 }
 
 /** SubAgent progress node — mirrors Go protocol.SubAgentInfo. */

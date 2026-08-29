@@ -62,7 +62,7 @@ export function SettingsAbout() {
 
         {/* Installed */}
         {isInstalled && (
-          <div className="flex items-center gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] px-3 py-2 text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
+          <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3 py-2 text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
             <Check className="size-4" />
             <span>已安装到桌面，以独立应用模式运行</span>
           </div>
@@ -78,7 +78,7 @@ export function SettingsAbout() {
 
         {/* Safari / iOS — manual install instructions */}
         {!isInstalled && !canInstall && diagnostics?.isSafari && (
-          <div className="flex flex-col gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] px-3 py-2 text-xs">
+          <div className="flex flex-col gap-2.5 rounded-xl border border-border bg-bg-secondary px-3 py-2 text-xs">
             <div className="flex items-start gap-2.5">
               <Download className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-success, #22c55e)' }} />
               <div className="flex flex-col gap-1 text-text-secondary">
@@ -94,7 +94,7 @@ export function SettingsAbout() {
 
         {/* Not installable (non-Safari) — show diagnostics */}
         {!isInstalled && !canInstall && !(diagnostics?.isSafari) && (
-          <div className="flex flex-col gap-2.5 rounded-xl border border-white/[.06] bg-white/[.02] px-3 py-2 text-xs">
+          <div className="flex flex-col gap-2.5 rounded-xl border border-border bg-bg-secondary px-3 py-2 text-xs">
             <div className="flex items-start gap-2.5">
               <AlertCircle className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-error)' }} />
               <span className="text-text-secondary">
@@ -104,7 +104,7 @@ export function SettingsAbout() {
             </div>
             {/* Diagnostics */}
             {diagnostics && (
-              <div className="flex flex-col gap-1.5 border-t border-white/[.06] pt-2">
+              <div className="flex flex-col gap-1.5 border-t border-border pt-2">
                 <p className="font-medium text-text-secondary">诊断信息:</p>
                 <DiagRow label={`浏览器: ${diagnostics.browserName}`} ok={true} />
                 <DiagRow label="HTTPS" ok={diagnostics.isHttps} />
@@ -136,7 +136,7 @@ export function SettingsAbout() {
               'w-fit gap-2',
               updateAvailable
                 ? 'bg-[#6c8cff]/14 text-[#6c8cff] hover:bg-[#6c8cff]/25'
-                : 'border-white/[.08] bg-white/[.05] hover:bg-white/[.1]',
+                : 'border-border bg-bg-tertiary hover:bg-bg-hover',
             )}
           >
             <RefreshCw className={`size-4 ${checking || reloading ? 'animate-spin' : ''}`} />

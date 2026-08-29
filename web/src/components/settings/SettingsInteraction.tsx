@@ -48,13 +48,13 @@ export function SettingsInteraction() {
             'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             mergeTools
               ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
-              : 'border-white/[.08] bg-white/[.03] hover:bg-white/[.05]',
+              : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              mergeTools ? 'bg-[#6c8cff]' : 'bg-white/[.1]',
+              mergeTools ? 'bg-[#6c8cff]' : 'bg-bg-hover',
             )}
           >
             <span
@@ -85,13 +85,13 @@ export function SettingsInteraction() {
             'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             wordWrap
               ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
-              : 'border-white/[.08] bg-white/[.03] hover:bg-white/[.05]',
+              : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              wordWrap ? 'bg-[#6c8cff]' : 'bg-white/[.1]',
+              wordWrap ? 'bg-[#6c8cff]' : 'bg-bg-hover',
             )}
           >
             <span
@@ -127,13 +127,13 @@ export function SettingsInteraction() {
                   'flex items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
                   active
                     ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
-                    : 'border-white/[.08] bg-white/[.03] hover:bg-white/[.05]',
+                    : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
                 )}
               >
                 <span
                   className={cn(
                     'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border',
-                    active ? 'border-[#6c8cff]' : 'border-white/[.1]',
+                    active ? 'border-[#6c8cff]' : 'border-border',
                   )}
                 >
                   {active ? <span className="size-2 rounded-full bg-[#6c8cff]" /> : null}

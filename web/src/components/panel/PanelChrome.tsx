@@ -4,7 +4,7 @@
  * 内置面板与插件面板的唯一形态：标题栏（icon + title + sub + badge +
  * 停靠⇄浮动 + 取消钉选 + 折叠 + docked grip）+ 主体 + docked 底边调高 handle。
  * docked 与 floating 两套皮肤：
- *  - docked：rounded-xl + bg-white/[.02] + inset ring white/5%
+ *  - docked：rounded-xl + bg-bg-secondary + inset ring white/5%
  *  - floating：毛玻璃 rgba(17,20,29,.9) + backdrop-blur(14px) + 大阴影 + ring
  *
  * 图标统一经 pluginIcons.ts 的 pluginIcon 映射（与插件 view tab 一致）。
@@ -206,24 +206,26 @@ export function PanelChrome({
           </span>
         ) : null}
       </header>
-      {!collapsed && (
-        <div
-          className={floating ? 'min-h-0 flex-1 overflow-y-auto' : 'min-h-0 overflow-y-auto'}
-          style={
-            !floating
-              ? (bodyHeight != null
-                ? { height: bodyHeight }
-                : bodyMaxHeight != null
-                  ? { maxHeight: bodyMaxHeight }
-                  : undefined)
-              : undefined
-          }
-        >
-          {/* 空态协议：面板 render(ctx) 返回 null → 统一空态占位（无边框，
-              消灭"空边框"渲染——协议约定，插件按自身数据自行返回 null）。 */}
-          {children ?? <PanelEmpty hint={emptyHint} />}
-        </div>
-      )}
+      {/* 折叠时用 display:none 而非条件渲染——保留 children 的 React state
+          （useState/useEffect/订阅不卸载），展开时恢复（git-fancy 的 commit
+          accordion 展开、技能面板的子项展开等不再丢失）。 */}
+      <div
+        className={floating ? 'min-h-0 flex-1 overflow-y-auto' : 'min-h-0 overflow-y-auto'}
+        style={{
+          display: collapsed ? 'none' : undefined,
+          ...(!floating
+            ? (bodyHeight != null
+              ? { height: bodyHeight }
+              : bodyMaxHeight != null
+                ? { maxHeight: bodyMaxHeight }
+                : {})
+            : {}),
+        }}
+      >
+        {/* 空态协议：面板 render(ctx) 返回 null → 统一空态占位（无边框，
+            消灭"空边框"渲染——协议约定，插件按自身数据自行返回 null）。 */}
+        {children ?? <PanelEmpty hint={emptyHint} />}
+      </div>
       {/* v5.1 docked 展开态底边调高 handle：7px 高，hover 显 accent 条（设计稿样式）。
           拖拽协议 v5：pointerdown 起始 + pointer capture + touch-none，move 零持久化。 */}
       {!floating && !collapsed && onResizeHeightPointerDown ? (

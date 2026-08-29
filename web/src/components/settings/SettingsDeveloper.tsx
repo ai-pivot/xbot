@@ -47,7 +47,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -108,7 +108,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -137,7 +137,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -166,7 +166,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession
@@ -195,7 +195,7 @@ export function SettingsDeveloper() {
             type="button"
             variant="outline"
             size="sm"
-            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
             disabled={devExporting || !sessionStore.activeSession}
             onClick={async () => {
               const s = sessionStore.activeSession

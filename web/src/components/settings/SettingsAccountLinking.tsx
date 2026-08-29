@@ -159,7 +159,7 @@ export function SettingsAccountLinking() {
           </Button>
           {generatedCode && genStatus === 'success' && (
             <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2.5 rounded-lg border border-white/[.08] bg-white/[.03] px-3 py-2">
+              <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2">
                 <code className="flex-1 font-mono text-base font-semibold tracking-wider text-text-primary">
                   {generatedCode}
                 </code>
@@ -167,7 +167,7 @@ export function SettingsAccountLinking() {
                   onClick={handleCopy}
                   variant="ghost"
                   size="sm"
-                  className="h-7 w-7 p-0 hover:bg-white/[.1]"
+                  className="h-7 w-7 p-0 hover:bg-bg-hover"
                 >
                   {copied ? (
                     <Check className="size-4 text-[#22c55e]" />
@@ -181,7 +181,7 @@ export function SettingsAccountLinking() {
               </p>
               <div className="flex flex-col gap-2.5">
                 {/* CLI command */}
-                <div className="flex items-center gap-2.5 rounded-lg border border-white/[.08] bg-white/[.03] px-2.5 py-2">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-2.5 py-2">
                   <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-[10px] font-medium text-[#6c8cff]">CLI</span>
                   <code className="flex-1 font-mono text-xs text-text-primary">
                     /link-account {generatedCode}
@@ -190,13 +190,13 @@ export function SettingsAccountLinking() {
                     onClick={() => navigator.clipboard.writeText(`/link-account ${generatedCode}`)}
                     variant="ghost"
                     size="sm"
-                    className="h-6 w-6 p-0 hover:bg-white/[.1]"
+                    className="h-6 w-6 p-0 hover:bg-bg-hover"
                   >
                     <Copy className="size-3" />
                   </Button>
                 </div>
                 {/* Feishu command */}
-                <div className="flex items-center gap-2.5 rounded-lg border border-white/[.08] bg-white/[.03] px-2.5 py-2">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-2.5 py-2">
                   <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-[10px] font-medium text-[#6c8cff]">飞书</span>
                   <code className="flex-1 font-mono text-xs text-text-primary">
                     /link {generatedCode}
@@ -205,13 +205,13 @@ export function SettingsAccountLinking() {
                     onClick={() => navigator.clipboard.writeText(`/link ${generatedCode}`)}
                     variant="ghost"
                     size="sm"
-                    className="h-6 w-6 p-0 hover:bg-white/[.1]"
+                    className="h-6 w-6 p-0 hover:bg-bg-hover"
                   >
                     <Copy className="size-3" />
                   </Button>
                 </div>
                 {/* Web consume hint */}
-                <div className="flex items-center gap-2.5 rounded-lg border border-white/[.08] bg-white/[.03] px-2.5 py-2">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-2.5 py-2">
                   <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-[10px] font-medium text-[#6c8cff]">Web</span>
                   <code className="flex-1 font-mono text-xs text-text-muted">
                     在上方「关联其他渠道」输入此码
@@ -237,7 +237,7 @@ export function SettingsAccountLinking() {
               value={inputCode}
               onChange={(e) => setInputCode(e.target.value)}
               placeholder="输入关联码..."
-              className="rounded-lg border-white/[.08] bg-white/[.03] font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+              className="rounded-lg border-border bg-bg-secondary font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && inputCode.trim()) {
                   handleLink()
@@ -286,7 +286,7 @@ export function SettingsAccountLinking() {
             identities.map((id) => (
               <div
                 key={id.id}
-                className="flex items-center gap-2.5 rounded-lg border border-white/[.08] bg-white/[.02] px-3 py-2 transition-colors hover:bg-white/[.04]"
+                className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary"
               >
                 <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-xs font-medium text-[#6c8cff]">
                   {channelLabel(id.channel)}
@@ -301,7 +301,7 @@ export function SettingsAccountLinking() {
                   onClick={() => handleUnlink(id.id)}
                   variant="ghost"
                   size="sm"
-                  className="h-7 w-7 p-0 text-text-muted hover:bg-white/[.1] hover:text-[var(--status-error,#ef4444)]"
+                  className="h-7 w-7 p-0 text-text-muted hover:bg-bg-hover hover:text-[var(--status-error,#ef4444)]"
                 >
                   <Trash2 className="size-3.5" />
                 </Button>

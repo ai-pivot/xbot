@@ -85,7 +85,7 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
             size="sm"
             onClick={handleLogout}
             disabled={loggingOut}
-            className="w-fit gap-2 border-white/[.08] bg-white/[.05] hover:bg-white/[.1]"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
           >
             {loggingOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut className="size-4" />}
             {t('auth.logout')}
@@ -119,16 +119,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="flex h-full w-[480px] max-w-full flex-col gap-0 rounded-l-2xl border-l border-white/[.06] p-0 shadow-2xl sm:max-w-[480px]"
+        className="flex h-full w-[480px] max-w-full flex-col gap-0 rounded-l-2xl border-l border-border p-0 shadow-2xl sm:max-w-[480px]"
       >
-        <SheetHeader className="border-b border-white/[.06] px-5 py-4">
+        <SheetHeader className="border-b border-border px-5 py-4">
           <SheetTitle>{t('settings.title')}</SheetTitle>
           <SheetDescription className="sr-only">{t('settings.title')}</SheetDescription>
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1">
           {/* Left nav */}
-          <nav className="flex w-36 shrink-0 flex-col gap-0.5 border-r border-white/[.06] bg-white/[.02] p-2">
+          <nav className="flex w-36 shrink-0 flex-col gap-0.5 border-r border-border bg-bg-secondary p-2">
             {nav.map(({ key, labelKey }) => (
               <button
                 key={key}
@@ -139,7 +139,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   'rounded-lg px-3 py-2 text-left text-sm transition-colors',
                   active === key
                     ? 'bg-[#6c8cff]/14 font-medium text-[#6c8cff]'
-                    : 'text-text-muted hover:bg-white/[.05] hover:text-text-primary',
+                    : 'text-text-muted hover:bg-bg-tertiary hover:text-text-primary',
                 )}
               >
                 {t(`settings.${labelKey}`)}

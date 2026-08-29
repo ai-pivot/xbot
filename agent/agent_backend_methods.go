@@ -224,7 +224,7 @@ func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
 	}
 	result := make([]protocol.TodoItem, len(items))
 	for i, t := range items {
-		result[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Done: t.Done}
+		result[i] = protocol.TodoItem{ID: t.ID, Text: t.Text, Status: t.Status}
 	}
 	return result
 }
