@@ -1519,6 +1519,13 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		task:       task,
 	}
 	a.interactiveSubAgents.Store(oneshotKey, oneshotIA)
+	// A3: wire the pending-message drain — a SendMessage arriving while this
+	// one-shot Run is in flight queues into oneshotIA.pendingMessages
+	// (SendToInteractiveSession's running=true branch). Without the drain
+	// callback the Run loop never drains between iterations and the sender
+	// blocks on replyCh until its timeout. Mirrors the three interactive Run
+	// call sites (SpawnInteractiveSession ×2 + SendToInteractiveSession).
+	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(originChannel + ":" + originChatID)
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
 	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", oneshotKey, cfg.UserID)
@@ -2016,13 +2023,40 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	// payload.ChatID (qualified progressKey) is the session identity for
 	// the TUI's handleProgressMsg filter. These are two different semantics —
 	// never mix them.
+	//
+	// When the originating channel is NOT a ProgressSender (feishu/qq/napcat
+	// implement PreReplyNotifier instead), sender stays nil and the stream
+	// events would be silently dropped — a web user viewing that channel's
+	// session saw no typewriter stream, no generating tools, no live tkps
+	// (only the 15s heartbeat snapshot + iteration-boundary structured
+	// events). Fall back to the channelRange fan-out over ALL registered
+	// ProgressSenders — the same contract as buildProgressEventHandler /
+	// emitTurnStarted. WebChannel.SendProgress derives its route from
+	// payload.ChatID (the qualified progressKey, e.g. "feishu:chatID"), so the
+	// event reaches exactly that session's subscribers. The single-sender
+	// fast path above keeps cli/web-originated turns duplicate-free (the
+	// originating sender's own SendProgress already broadcasts to every Hub
+	// subscriber of that channel).
 	broadcastProgress := func(payload *protocol.ProgressEvent) {
 		if payload.ChatID == "" {
 			payload.ChatID = progressKey
 		}
 		if sender != nil {
 			sender.SendProgress(chatID, payload)
+			return
 		}
+		if a.channelRange == nil {
+			return
+		}
+		a.channelRange(func(_ string, ch channelpkg.Channel) bool {
+			if ps, ok := ch.(channelpkg.ProgressSender); ok {
+				// Per-sender clone: a channel mutating its payload (or its
+				// slices) must never corrupt what other channels receive —
+				// same contract as sendSubAgentPhaseDone / emitTurnStarted.
+				ps.SendProgress(chatID, cloneProgressEvent(payload))
+			}
+			return true
+		})
 	}
 
 	// Live stream timing: attach a REAL-TIME StreamStats (tkps/ttft/totalMs)

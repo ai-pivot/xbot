@@ -2482,11 +2482,16 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
 		sessionKey := channel + ":" + chatID
-		a.bgTaskMgr.Load().SendCronFired(&tools.CronFired{
-			Key:     sessionKey,
-			Sid:     senderID,
-			Message: message,
-		})
+		// nil-guard: bare &Agent{} construction (no New() Store) must not
+		// panic on a cron trigger — same contract as the interactive.go read
+		// sites. Normal chain stores the manager before cron starts.
+		if mgr := a.bgTaskMgr.Load(); mgr != nil {
+			mgr.SendCronFired(&tools.CronFired{
+				Key:     sessionKey,
+				Sid:     senderID,
+				Message: message,
+			})
+		}
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
@@ -4325,10 +4330,23 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 // notifications would silently accumulate in bgRunPending until the first user message.
 func (a *Agent) bgNotifyLoop() {
 	for {
+		// Resolve the manager per iteration: SetBgTaskManager may replace it at
+		// runtime (tests). A bare &Agent{} (no New() Store) yields nil here —
+		// poll lightly instead of panicking on nil.NotifyCh (same nil contract
+		// as the interactive.go read sites).
+		mgr := a.bgTaskMgr.Load()
+		if mgr == nil {
+			select {
+			case <-a.lifecycleStopCh:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+			continue
+		}
 		select {
 		case <-a.lifecycleStopCh:
 			return
-		case notif, ok := <-a.bgTaskMgr.Load().NotifyCh:
+		case notif, ok := <-mgr.NotifyCh:
 			if !ok {
 				return
 			}
@@ -4405,12 +4423,16 @@ func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source st
 	// This guarantees:
 	// - Busy: injected as tool result on Run loop's goroutine (no data race)
 	// - Idle: injected as user message with correct TUI notification
-	a.bgTaskMgr.Load().SendAsyncMessage(&tools.AsyncMessageNotification{
-		Key:     sessionKey,
-		Sid:     senderID,
-		Content: content,
-		Source:  source,
-	})
+	// nil-guard: bare &Agent{} construction (no New() Store) — same
+	// contract as the interactive.go read sites.
+	if mgr := a.bgTaskMgr.Load(); mgr != nil {
+		mgr.SendAsyncMessage(&tools.AsyncMessageNotification{
+			Key:     sessionKey,
+			Sid:     senderID,
+			Content: content,
+			Source:  source,
+		})
+	}
 
 	return fmt.Sprintf("✅ queued for %s", sessionKey)
 }

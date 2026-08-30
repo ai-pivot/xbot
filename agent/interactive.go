@@ -431,6 +431,13 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		a.attachIterationDelta(agentProgressKey, s.Iteration, payload)
 		broadcast(payload)
 		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(payload))
+		// Same contract as the main agent's buildProgressEventHandler
+		// (engine_wire.go: a.clearStreamState(progressKey) after the Store):
+		// the structured snapshot supersedes the live stream — clear
+		// streamState so GetActiveProgress's mergeStreamState does not leak
+		// the pre-boundary stream content into the new iteration/turn's
+		// snapshot.
+		a.clearStreamState(agentProgressKey)
 	}
 
 	// Wire stream callbacks
@@ -1749,6 +1756,23 @@ func (a *Agent) SendToInteractiveSession(
 	agentProgressKey := "agent:" + key
 	a.lastProgressSnapshot.Delete(agentProgressKey)
 	a.iterationHistories.Delete(agentProgressKey)
+	// A2: streamState is part of the same per-turn reset — the main agent's
+	// turn boundary (emitTurnStarted) clears it too. Without this, the
+	// previous turn's final StreamContent/ReasoningStreamContent survives and
+	// mergeStreamState (which only fills EMPTY snapshot fields) leaks it into
+	// the NEW turn's GetActiveProgress snapshot: switching sessions / SSE
+	// reconnect mid-run renders turn N's streamed text as turn N+1's live
+	// content (duplicate rendering).
+	a.streamState.Delete(agentProgressKey)
+	// A1: write the NEW turn id back to ia.cfg — the stream callbacks
+	// (wireSubAgentProgress closures read cfg.TurnID via lazy evaluation over
+	// this ia.cfg pointer) and GetActiveProgress's running-correction branch
+	// (runTurnID = ia.cfg.TurnID) both consume it. Leaving the id on the
+	// local cfg copy only makes every stream event of this send turn carry the
+	// SPAWN turn's id while structured events (runState initialized from the
+	// copy) carry the new one — the frontend writes live stream content into
+	// the committed OLD turn's slot.
+	ia.cfg.TurnID = cfg.TurnID
 
 	// Derive context from agent lifecycle so the async Run survives
 	// past the caller's tool execution deadline. Without this, a parent
@@ -1853,13 +1877,33 @@ func (a *Agent) SendToInteractiveSession(
 				appended, appendErr := appendInteractiveInterruption(cfg.Session, out.Content)
 				if appendErr != nil {
 					ia.lastError = fmt.Sprintf("append interruption history: %v", appendErr)
-					if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
-						ia.messages = persisted
+					// cfg.Session may be nil (appendInteractiveInterruption already
+					// guards it and returns the error above) — the persisted
+					// reload fallback must guard too, or a nil dereference
+					// panics the whole send goroutine (SendAsync recover).
+					if cfg.Session != nil {
+						if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
+							ia.messages = persisted
+						}
 					}
 				} else {
 					ia.messages = append(ia.messages, appended...)
 				}
+				// A4: pending messages belong to the CANCELLED turn — take them
+				// out (replied with an error below) instead of leaving them for
+				// the next Run's wirePendingMessageDrain to inject as stale
+				// instructions. Mirrors syncInteractiveSessionAfterRewind's
+				// pending cleanup (take under the lock, reply outside).
+				pending := ia.pendingMessages
+				ia.pendingMessages = nil
 				ia.mu.Unlock()
+
+				for _, message := range pending {
+					select {
+					case message.replyCh <- fmt.Errorf("interactive session interrupted"):
+					default:
+					}
+				}
 
 				a.sendSubAgentPhaseDone(key)
 
