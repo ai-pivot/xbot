@@ -387,6 +387,14 @@ export class SSEConnectionImpl implements WSConnection {
     if ((msg.type === 'progress_structured' || msg.type === 'stream_content' || msg.type === 'sync_progress') && msg.progress) {
       this.progressHandlers.forEach((handler) => handler(msg.progress!))
     }
+    // Background task output push (SSE): real-time output deltas for the
+    // BackgroundPanel xterm. Dispatched as a window CustomEvent — the panel
+    // filters by task_id (same pattern as agent-idle for useSessionStore).
+    if (msg.type === 'bg_task_output' && msg.task_id && msg.content) {
+      window.dispatchEvent(new CustomEvent('bg-task-output', {
+        detail: { taskID: msg.task_id, delta: msg.content, chatID: msg.chat_id },
+      }))
+    }
     this.messageHandlers.forEach((handler) => handler(msg))
   }
 

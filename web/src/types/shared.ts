@@ -190,6 +190,8 @@ export interface WSMessage {
   content?: string
   original_content?: string
   ts?: number
+  /** bg_task_output: which task this delta belongs to */
+  task_id?: string
   progress?: ProgressEvent | null
   progress_history?: string
   channel?: string

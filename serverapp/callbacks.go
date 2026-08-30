@@ -419,32 +419,22 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.BgTaskManager() == nil {
 			return []webBgTaskJSON{}, nil
 		}
-		// Non-admin users only see their own session's tasks.
-		// Admin sees all sessions (same as TUI).
+		// Session-scoped: always filter by the requested session (user request:
+		// "bg task 要会话维度展示，active session 哪个就展示哪个 session 的别混一起").
+		// Admin sees the CURRENT session's tasks too — not a cross-session dump.
 		if ag.IdentityResolver() != nil {
-			uid, role, err := ag.IdentityResolver().Resolve("web", senderID)
+			uid, _, err := ag.IdentityResolver().Resolve("web", senderID)
 			if err != nil {
-				// Fail CLOSED: an identity resolution failure (DB error, closed
-				// connection, ...) must NOT fall through to ListAll() — that is
-				// the admin view and would leak every session's background
-				// tasks to an unauthenticated caller.
 				return nil, fmt.Errorf("resolve identity for background tasks: %w", err)
 			}
-			if uid > 0 && role != "admin" {
-				// Defense in depth: the web layer (canAccessSession) already
-				// gates REST access, but the callback must not trust the
-				// caller-supplied session selector — bg task output contains
-				// full shell output. Deny sessions explicitly owned by another
-				// canonical user; unclaimed tenants (owner_user_id=0, e.g. a
-				// freshly created web chat before its first message) pass —
-				// their ownership is enforced upstream.
+			_ = uid // admin and non-admin both get session-scoped tasks
+			if uid > 0 {
 				if owned, ok := webSessionOwnedByUser(ag, sel.Channel, sel.ChatID, uid); ok && !owned {
 					return nil, fmt.Errorf("access denied: session not owned by caller")
 				}
-				return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 			}
 		}
-		return marshalWebBgTasks(ag.BgTaskManager().ListAll()), nil
+		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {

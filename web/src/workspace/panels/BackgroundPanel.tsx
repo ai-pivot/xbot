@@ -11,7 +11,7 @@ import { useDockviewContext } from '@/workspace/types'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { BgTask } from '@/hooks/useTasks'
 
-const REFRESH_MS = 2_000
+const REFRESH_MS = 10_000 // status sync only — output arrives via SSE bg_task_output push
 
 export function BackgroundPanel({ params }: PanelProps) {
   const { ws, theme: themeCtx } = useDockviewContext()
@@ -110,7 +110,7 @@ export function BackgroundPanel({ params }: PanelProps) {
     return () => disp.dispose()
   }, [])
 
-  // Poll task status.
+  // Poll task status (output arrives via SSE bg_task_output — this is status sync only).
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -137,6 +137,28 @@ export function BackgroundPanel({ params }: PanelProps) {
       window.clearInterval(timer)
     }
   }, [channel, chatID, taskID, ws])
+
+  // SSE bg_task_output push: real-time output deltas (replaces output polling).
+  // sseConnection dispatches 'bg-task-output' CustomEvent for each SSE push;
+  // we filter by taskID and write the delta directly to xterm. The polling
+  // effect above only syncs task status (running → done) — output arrives
+  // here as incremental pushes. First poll provides the initial snapshot;
+  // the lastLenRef tracks what we've written so SSE deltas and poll
+  // snapshots don't double-write.
+  useEffect(() => {
+    if (!taskID) return
+    const onPush = (e: Event) => {
+      const { taskID: pushTaskID, delta } = (e as CustomEvent<{ taskID: string; delta: string; chatID?: string }>).detail
+      if (pushTaskID !== taskID) return
+      const term = termRef.current
+      if (!term || !delta) return
+      term.write(delta)
+      lastLenRef.current += delta.length
+      if (followRef.current) term.scrollToBottom()
+    }
+    window.addEventListener('bg-task-output', onPush)
+    return () => window.removeEventListener('bg-task-output', onPush)
+  }, [taskID])
 
   const kill = async () => {
     if (!taskID) return

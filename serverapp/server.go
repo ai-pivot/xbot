@@ -338,6 +338,16 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
+			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
+			// WS events. BackgroundPanel subscribes to these for live xterm updates
+			// (replaces 2s polling). sessionKey format is "channel:chatID".
+			if bgMgr := ag.BgTaskManager(); bgMgr != nil {
+				bgMgr.SetOnOutput(func(sessionKey, taskID, delta string) {
+					if ch, chatID, ok := strings.Cut(sessionKey, ":"); ok && ch == "web" {
+						webCh.SendBgTaskOutput(chatID, taskID, delta)
+					}
+				})
+			}
 			// Wire admin role check into SandboxRouter — admin web users bypass
 			// the DeniedSandbox restriction. Uses WebChannel's IsAdminIdentity
 			// (role-based, checks DB for web-1 or "admin" auth identity).

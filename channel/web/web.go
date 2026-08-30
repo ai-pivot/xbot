@@ -1020,6 +1020,22 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 	}
 }
 
+// SendBgTaskOutput pushes a real-time background task output delta to the
+// session's WS subscribers. Fired by BgTaskManager's onOutput callback for
+// every outputBuf delta — the frontend BackgroundPanel subscribes to these
+// events and writes the delta directly to xterm (replaces 2s polling).
+// chatID is the unqualified chat ID (sessionKey "web:xxx" → "xxx").
+func (wc *WebChannel) SendBgTaskOutput(chatID, taskID, delta string) {
+	wsMsg := protocol.WSMessage{
+		Type:    protocol.MsgTypeBgTaskOutput,
+		TS:      time.Now().Unix(),
+		ChatID:  chatID,
+		Content: delta,
+		TaskID:  taskID,
+	}
+	_ = wc.hub.sendToSession("web", chatID, wsMsg) // best-effort push
+}
+
 // InjectUserMessage implements channel.UserMessageInjector.
 // Called by agent.injectCLIUserMessage when bg task / cron notifications are
 // drained and injected as user messages. Without this, web clients never

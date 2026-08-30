@@ -112,6 +112,29 @@ type BackgroundTaskManager struct {
 
 	// OnComplete callbacks per session: sessionKey → []callback
 	callbacks map[string][]func(task *BackgroundTask)
+
+	// onOutput fires on every outputBuf delta for real-time push to subscribers
+	// (e.g. WebChannel WS bg_task_output events). Set by serverapp to bridge
+	// task output to the web channel. Signature: (sessionKey, taskID, delta).
+	onOutputMu sync.RWMutex
+	onOutput   func(sessionKey, taskID, delta string)
+}
+
+// SetOnOutput sets the real-time output push callback. Called from serverapp
+// to bridge BgTaskManager output to WebChannel WS push (bg_task_output).
+func (m *BackgroundTaskManager) SetOnOutput(fn func(sessionKey, taskID, delta string)) {
+	m.onOutputMu.Lock()
+	m.onOutput = fn
+	m.onOutputMu.Unlock()
+}
+
+func (m *BackgroundTaskManager) fireOutput(sessionKey, taskID, delta string) {
+	m.onOutputMu.RLock()
+	fn := m.onOutput
+	m.onOutputMu.RUnlock()
+	if fn != nil && delta != "" {
+		fn(sessionKey, taskID, delta)
+	}
 }
 
 // NewBackgroundTaskManager creates a new task manager.
@@ -184,12 +207,14 @@ func (m *BackgroundTaskManager) Start(
 
 		outputBuf := func(s string) {
 			task.mu.Lock()
-			defer task.mu.Unlock()
 			task.Output += s
 			// Keep only the tail (most recent output) when exceeding max size
 			if len(task.Output) > maxBgOutputSize {
 				task.Output = task.Output[len(task.Output)-maxBgOutputSize:]
 			}
+			task.mu.Unlock()
+			// Fire real-time output push (e.g. WebChannel bg_task_output WS events).
+			m.fireOutput(sessionKey, id, s)
 		}
 
 		exitCode, execErr := execFn(ctx, outputBuf)
