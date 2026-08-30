@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"fmt"
+	"html"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,8 +37,15 @@ func TestBuildSystemReminder_Basic(t *testing.T) {
 	if !strings.Contains(result, "<user-msg><![CDATA[Fix the login bug]]></user-msg>") {
 		t.Errorf("expected <user-msg> with CDATA, got:\n%s", result)
 	}
-	if !strings.Contains(result, "<cwd>/home/smith/project</cwd>") {
-		t.Error("expected <cwd> element")
+	// resolveAbsolutePath runs the cwd through filepath.Abs — on Windows the
+	// Unix-style "/home/smith/project" becomes "C:\\home\\smith\\project".
+	// Compute the expectation the same way so the assertion is portable.
+	wantCwd, err := filepath.Abs("/home/smith/project")
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	if !strings.Contains(result, fmt.Sprintf("<cwd>%s</cwd>", html.EscapeString(wantCwd))) {
+		t.Errorf("expected <cwd> element with %q, got:\n%s", wantCwd, result)
 	}
 	if strings.Contains(result, "<task>") || strings.Contains(result, "<kind>") {
 		t.Error("should NOT have old <task>/<kind> elements")

@@ -692,9 +692,24 @@ func SaveToFile(path string, cfg *Config) error {
 		os.Remove(tmp)
 		return fmt.Errorf("chmod temp config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	// Windows: concurrent renames onto the same target can transiently fail
+	// with "Access is denied" (another writer's handle briefly holds the
+	// destination while its own rename completes). The unique temp name (per
+	// call) already prevents the fixed-name clobber race; this retry covers
+	// the remaining target-lock window. POSIX rename is atomic and never
+	// fails this way — the retry is a fast no-op there.
+	var renameErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+		}
+		if renameErr = os.Rename(tmp, path); renameErr == nil {
+			break
+		}
+	}
+	if renameErr != nil {
 		os.Remove(tmp) // best-effort cleanup
-		return fmt.Errorf("rename config: %w", err)
+		return fmt.Errorf("rename config: %w", renameErr)
 	}
 	return nil
 }

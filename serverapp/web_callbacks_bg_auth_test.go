@@ -31,6 +31,10 @@ func TestBackgroundTasksCallbackDeniesForeignSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new agent: %v", err)
 	}
+	// Close the agent's resources (DB handles) before t.TempDir's cleanup —
+	// on Windows an open SQLite handle keeps xbot.db locked and RemoveAll
+	// fails with "being used by another process".
+	defer ag.Close()
 
 	db := ag.MultiSession().DB()
 	if db == nil {
