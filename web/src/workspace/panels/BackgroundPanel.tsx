@@ -19,7 +19,7 @@ export function BackgroundPanel({ params }: PanelProps) {
   const [task, setTask] = useState<BgTask | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
+  const [container, setContainer] = useState<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const lastLenRef = useRef(0)
   const followRef = useRef(true)
@@ -31,15 +31,23 @@ export function BackgroundPanel({ params }: PanelProps) {
   const running = task?.status === 'running' || task?.status === 'started'
   const title = useMemo(() => params.command || task?.command || taskID || 'Background task', [params.command, task?.command, taskID])
 
-  // Create xterm instance once.
+  // Create xterm instance once when the container actually mounts.
+  // BUG (user report: "一片黑啥都没有"): the old code used a plain useRef +
+  // deps [theme] — at mount time `loading=true, task=null` so the container
+  // div is NOT rendered (conditional rendering shows the Loading spinner),
+  // containerRef.current is null, the effect early-returns, and xterm is
+  // never created. When the first fetch completes and the container renders,
+  // the [theme] effect does NOT re-run (theme unchanged) → the black div
+  // stays empty forever. Fix: use a callback ref (setContainer state) so the
+  // effect fires when the container element actually mounts/unmounts.
   useEffect(() => {
-    if (!containerRef.current) return
+    if (!container) return
     const term = new Terminal({
       fontSize: 13,
       fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       cursorBlink: false,
       scrollback: 10000,
-      convertEol: false,
+      convertEol: true,
       theme: theme === 'dark' ? {
         background: '#1e1e2e',
         foreground: '#cdd6f4',
@@ -50,14 +58,14 @@ export function BackgroundPanel({ params }: PanelProps) {
     })
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
-    term.open(containerRef.current)
+    term.open(container)
     fitAddon.fit()
     termRef.current = term
 
     const resizeObserver = new ResizeObserver(() => {
       try { fitAddon.fit() } catch { /* ignore */ }
     })
-    resizeObserver.observe(containerRef.current)
+    resizeObserver.observe(container)
 
     return () => {
       resizeObserver.disconnect()
@@ -65,7 +73,7 @@ export function BackgroundPanel({ params }: PanelProps) {
       termRef.current = null
       lastLenRef.current = 0
     }
-  }, [theme])
+  }, [container, theme])
 
   // Write output delta to xterm (handles \r, ANSI, cursor sequences correctly).
   // Tail truncation: the backend caps task output at 50KB (maxBgOutputSize keeps
@@ -162,7 +170,7 @@ export function BackgroundPanel({ params }: PanelProps) {
           Loading...
         </div>
       ) : (
-        <div ref={containerRef} className="min-h-0 flex-1 overflow-hidden bg-black/95" />
+        <div ref={setContainer} className="min-h-0 flex-1 overflow-hidden bg-black/95" />
       )}
     </div>
   )
