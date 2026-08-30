@@ -161,7 +161,7 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 			{
 				FinishReason: llm.FinishReasonToolCalls,
 				ToolCalls: []llm.ToolCall{
-					{ID: "tc1", Name: "TodoWrite", Arguments: `{"todos":[{"id":1,"text":"task A","done":false}]}`},
+					{ID: "tc1", Name: "TodoWrite", Arguments: `{"todos":[{"id":1,"text":"task A","status":"pending"}]}`},
 				},
 			},
 			{Content: "done"},
