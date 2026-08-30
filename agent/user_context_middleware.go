@@ -14,6 +14,29 @@ import (
 // sessions, and workspaces.
 const singleUserSenderID = "cli_user"
 
+// isAdminSender reports whether the given channel+sender holds admin rights.
+// Trusted channels are always admin (cli = local operator, web = password
+// login); every other channel (feishu/qq/...) requires the senderID to be
+// listed in config agent.admins. This replaces the removed users.role /
+// IdentityResolver authority after the multi-user removal.
+func (a *Agent) isAdminSender(channel, senderID string) bool {
+	switch channel {
+	case "cli":
+		return true
+	case "web":
+		return true
+	}
+	if senderID == "admin" {
+		return true
+	}
+	for _, s := range a.admins {
+		if s == senderID {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveUserContext resolves ALL user-related components for a request.
 // Called ONCE at processMessage entry — the result is carried via context
 // (WithUserContext) and read everywhere via UserContextFromContext.

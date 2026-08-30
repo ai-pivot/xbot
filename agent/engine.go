@@ -63,6 +63,11 @@ type RunConfig struct {
 	TenantID     int64  // 当前租户 ID（用于 per-tenant 工具可见性）
 	UserID       int64  // Canonical user ID (from IdentityResolver, 0 in standalone mode)
 	Role         string // User role ("admin" | "user", from IdentityResolver)
+	// OriginUserIsAdmin is precomputed in buildMainRunConfig via
+	// Agent.isAdminSender(channel, OriginUserID). It is the ONLY admin
+	// decision consumed by the tool layer (config tool global keys,
+	// ManageTools, subscription/runner actions) after the multi-user removal.
+	OriginUserIsAdmin bool
 
 	// === 可观测性 ===
 	// Observability carries tracing identifiers attached to every LLM HTTP
@@ -1460,14 +1465,11 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		}
 		return items
 	}
-	// Admin check: determines if user can modify global-scoped settings.
-	// CLI users ("cli" channel with "cli_user" sender) are always admin —
-	// they connect via local TUI or remote TUI with admin token.
-	if cfg.Channel == "cli" && cfg.OriginUserID == "cli_user" {
-		tc.OriginUserIsAdmin = true
-	} else if cfg.PermUsers != nil {
-		tc.OriginUserIsAdmin = cfg.OriginUserID == cfg.PermUsers.PrivilegedUser
-	}
+	// Admin check: determines if user can modify global-scoped settings and
+	// management tools (subscription/runner/MCP actions). Precomputed in
+	// buildMainRunConfig via Agent.isAdminSender — trusted channels (cli/web
+	// login) are always admin; feishu/qq senders only when allowlisted.
+	tc.OriginUserIsAdmin = cfg.OriginUserIsAdmin
 	tc.IsGlobalKey = channel.IsGlobalScopedSettingKey
 
 	// Inject subscription listing

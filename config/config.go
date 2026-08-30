@@ -303,6 +303,15 @@ type AgentConfig struct {
 
 	MaxSubAgentDepth int `json:"max_sub_agent_depth"`
 
+	// Admins is the admin allowlist of senderIDs (e.g. Feishu open_id "ou_xxx").
+	// The multi-user system was removed: all senders share one operator
+	// identity. Channel-internal trust decides the rest:
+	//   - "cli" channel senders are always admin (local operator);
+	//   - "web" channel senders are always admin (password login = trusted);
+	//   - every other channel (feishu/qq/...) is admin ONLY if the senderID
+	//     is listed here. Group members default to non-admin (chat-only).
+	Admins []string `json:"admins,omitempty"`
+
 	// Experimental features
 	Experimental ExperimentalConfig `json:"experimental,omitempty"`
 
@@ -310,6 +319,31 @@ type AgentConfig struct {
 	LLMRetryDelay    Duration `json:"llm_retry_delay"`
 	LLMRetryMaxDelay Duration `json:"llm_retry_max_delay"`
 	LLMRetryTimeout  Duration `json:"llm_retry_timeout"`
+}
+
+// IsAdminSender reports whether the given channel+senderID holds admin rights.
+// This is the SINGLE authority for admin decisions after the multi-user
+// system removal (users.role / IdentityResolver are gone):
+//   - cli channel: always admin (local operator, physical access)
+//   - web channel: always admin (password login = trusted operator)
+//   - the legacy WS-auth "admin" sender: admin
+//   - everything else: admin only when senderID is in cfg.Admins
+func (a AgentConfig) IsAdminSender(channel, senderID string) bool {
+	switch channel {
+	case "cli":
+		return true
+	case "web":
+		return true
+	}
+	if senderID == "admin" {
+		return true
+	}
+	for _, s := range a.Admins {
+		if s == senderID {
+			return true
+		}
+	}
+	return false
 }
 
 // ServerConfig 服务器配置

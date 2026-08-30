@@ -135,6 +135,10 @@ func (a *Agent) buildBaseRunConfig(
 		SenderID:     senderID,      // 直接调用者 = 原始用户（用于消息路由 + settings/usage 存储 key）
 		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
 		SenderName:   senderName,
+		// Precomputed admin decision (agent.admins allowlist; cli/web trusted).
+		// Consumed by the tool layer (config tool global keys, ManageTools,
+		// subscription/runner actions) via ToolContext.OriginUserIsAdmin.
+		OriginUserIsAdmin: a.isAdminSender(channel, sandboxUserID),
 
 		// 工作区 & 沙箱
 		WorkingDir:       a.workDir,
@@ -761,6 +765,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		ChatID:          parentCtx.ChatID,
 		SenderID:        parentAgentID, // SubAgent: 直接调用者 = 父 Agent
 		OriginUserID:    originUserID,  // SubAgent: 继承原始用户 ID
+		// SubAgent inherits the parent's precomputed admin decision — spawned
+		// tools run with the same admin rights as the parent run.
+		OriginUserIsAdmin: parentCtx.OriginUserIsAdmin,
 
 		// 从父 Agent 继承工作区 & 沙箱配置
 		WorkingDir:       parentCtx.WorkingDir,
@@ -1000,14 +1007,16 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		workingDir = a.workDir
 	}
 	cfg := &RunConfig{
-		AgentID:        "main",
-		Channel:        channel,
-		ChatID:         chatID,
-		SenderID:       senderID,      // 主 Agent: 直接调用者（用于消息路由）
-		OriginUserID:   sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
-		SenderName:     senderName,
-		SendFunc:       a.sendMessage,
-		RootSessionKey: qualifyChatID(channel, chatID), // canonical session key for offload_recall
+		AgentID:      "main",
+		Channel:      channel,
+		ChatID:       chatID,
+		SenderID:     senderID,      // 主 Agent: 直接调用者（用于消息路由）
+		OriginUserID: sandboxUserID, // 沙箱/工作区用户（飞书身份登录 web 时为飞书 ou_xxx）
+		// Precomputed admin decision (agent.admins allowlist; cli/web trusted).
+		OriginUserIsAdmin: a.isAdminSender(channel, sandboxUserID),
+		SenderName:        senderName,
+		SendFunc:          a.sendMessage,
+		RootSessionKey:    qualifyChatID(channel, chatID), // canonical session key for offload_recall
 		// SessionKey must carry the physicalChannel override (computed above)
 		// so ToolContext.SessionKey matches the runState's s.sessionKey that
 		// refreshStructuredTodos reads. Without this, TodoWrite writes to

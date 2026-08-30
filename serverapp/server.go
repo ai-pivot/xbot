@@ -752,30 +752,15 @@ func Run(args []string) error {
 	if webCh != nil {
 		webCh.SetRPCHandler(func(method string, params json.RawMessage, identity web.RPCIdentity) (json.RawMessage, error) {
 			senderID := identity.SenderID
-			userID := identity.CanonicalUserID
-			role := identity.CanonicalRole
-			if senderID == "admin" || senderID == "cli_user" {
-				// CLI users are always admin. Resolve the real user_id via
-				// IdentityResolver so subscription/settings queries (which use
-				// rpcUserID) hit the correct DB rows.
-				if ag.IdentityResolver() != nil {
-					if uid, _, err := ag.IdentityResolver().Resolve("cli", senderID); err == nil && uid > 0 {
-						userID = uid
-					}
-				}
-				role = "admin"
-			} else if role == "" {
-				role = "user"
-			}
-			// bizID is the sender-level identity (for per-session operations).
-			// userID is the canonical user identity (for subscription/settings queries).
-			// RPC handlers choose which to use: subscription/settings use rpcUserID(ctx),
-			// per-session operations use rpcBizID(ctx).
+			// Multi-user removal: web login requires a password — every
+			// authenticated sender is a trusted operator (always admin).
+			// bizID stays the sender-level identity (per-session ops);
+			// userID collapses to the single operator (1).
 			bizID := senderID
 			if senderID == "admin" {
 				bizID = cliSenderID
 			}
-			ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
+			ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, 1, "admin")
 			return rpcTable.Dispatch(ctx, method, params)
 		})
 	}

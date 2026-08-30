@@ -2596,15 +2596,10 @@ func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderI
 	if senderID == adminSenderID || senderID == cliSenderID {
 		bizID = cliSenderID
 	}
-	// Resolve canonical user identity via IdentityResolver when available.
-	// This ensures role and userID are correctly set for all access checks.
-	userID := int64(0)
-	role := "user"
-	if senderID == "admin" || senderID == "cli_user" {
-		role = "admin"
-		userID = 1
-	}
-	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
+	// Multi-user removal: the CLI WS channel is always a trusted local
+	// operator — role is unconditionally "admin" and userID collapses to
+	// the single operator (1). The IdentityResolver lookup is gone.
+	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, 1, "admin")
 	return table.Dispatch(ctx, method, params)
 }
 

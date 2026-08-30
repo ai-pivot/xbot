@@ -590,6 +590,10 @@ type Agent struct {
 	// singleUser enables single-user mode: all senders share one identity.
 	singleUser bool
 
+	// admins is the admin allowlist (config agent.admins, senderIDs).
+	// After the multi-user removal it is the ONLY source of admin rights for
+	// non-trusted channels (feishu/qq/...): cli/web channels are always admin.
+	admins []string
 	// memoryProvider stores the resolved memory provider type ("flat", "letta", "xbot", "none").
 	// Used by SubAgent memory construction to match the parent's provider.
 	memoryProvider string
@@ -1557,6 +1561,11 @@ type Config struct {
 	// SingleUser enables single-user mode: all senders are treated as one
 	// shared identity. Set from config.Agent.Experimental.SingleUser.
 	SingleUser bool
+
+	// Admins is the admin allowlist (config agent.admins, senderIDs).
+	// After the multi-user removal it is the only source of admin rights for
+	// non-trusted channels (feishu/qq/...): cli/web channels are always admin.
+	Admins []string
 }
 
 // initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
@@ -1902,6 +1911,7 @@ func New(cfg Config) (*Agent, error) {
 		}(),
 		cliSenderID:     cfg.CLISenderID,
 		singleUser:      cfg.SingleUser,
+		admins:          cfg.Admins,
 		lifecycleStopCh: make(chan struct{}),
 	}
 
