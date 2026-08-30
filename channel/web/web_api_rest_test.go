@@ -21,12 +21,6 @@ import (
 	"xbot/tools"
 )
 
-type fixedIdentityResolver struct {
-	IdentityResolverAPI
-	userID int64
-	role   string
-}
-
 type fixedOSSProvider struct{}
 
 func (fixedOSSProvider) Upload(string, []byte) error { return nil }
@@ -35,10 +29,6 @@ func (fixedOSSProvider) GetDownloadURL(string) (string, error) {
 }
 func (fixedOSSProvider) Name() string   { return "fixed" }
 func (fixedOSSProvider) Domain() string { return "https://files.example" }
-
-func (r fixedIdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
-	return r.userID, r.role, nil
-}
 
 func authedAPIRequest(method, target string, body []byte) *http.Request {
 	return authedAPIRequestFor(method, target, body, "web-1", 1)
@@ -131,12 +121,7 @@ func TestProductionRoutesUseWebPOSTContract(t *testing.T) {
 		"/api/chats/chat-a/rename",
 		"/api/chats/chat-a/delete",
 		"/api/session-tree",
-		"/api/account/link-code",
-		"/api/account/link",
-		"/api/account/identities/list",
-		"/api/account/identities/1/delete",
-		"/api/admin/users/list",
-		"/api/admin/users/1/set-role",
+		"/api/channels/list",
 	} {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
@@ -195,39 +180,6 @@ func TestProductionSessionTreeAcceptsAuthenticatedPOST(t *testing.T) {
 	envelope := decodeAPIData(t, response.Body, &data)
 	if !envelope.OK || data.Sessions == nil {
 		t.Fatalf("unexpected session tree response: ok=%v sessions=%#v", envelope.OK, data.Sessions)
-	}
-}
-
-func TestSessionTreeAdminFlagHonorsSingleUserMode(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		singleUser bool
-		wantAdmin  bool
-	}{
-		{name: "single user", singleUser: true, wantAdmin: true},
-		{name: "multi user", singleUser: false, wantAdmin: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db := newTestDB(t)
-			wc, _ := newTestWebChannel(t, db)
-			wc.singleUser = tc.singleUser
-			wc.SetCallbacks(WebCallbacks{
-				SessionTree: func(_ string, _ SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error) {
-					if admin != tc.wantAdmin {
-						t.Fatalf("admin = %v, want %v", admin, tc.wantAdmin)
-					}
-					return SessionTreeResult{}, nil
-				},
-			})
-
-			recorder := httptest.NewRecorder()
-			request := authedAPIRequestFor(http.MethodGet, "/api/session-tree", nil, "web-2", 2)
-			wc.handleSessionTree(recorder, request)
-
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-			}
-		})
 	}
 }
 
@@ -375,34 +327,6 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	wc.handleAskUserRespond(recorder, authedAPIRequest(http.MethodPost, "/api/ask_user/respond", []byte(`{"chat_id":"web-1","question_id":"q1","answer":"yes"}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("AskUser status = %d: %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
-	db := newTestDB(t)
-	msgBus := bus.NewMessageBus()
-	msgBus.EnableDeliveryAcknowledgement()
-	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
-	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
-		t.Fatal(err)
-	}
-	// IdentityResolver resolves the web sender to canonical userID=42, role=admin.
-	wc.SetCallbacks(WebCallbacks{
-		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
-	})
-
-	go func() {
-		message := <-msgBus.Inbound
-		if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
-			t.Errorf("canonical identity not injected into metadata: %#v", message.Metadata)
-		}
-		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
-	}()
-	recorder := httptest.NewRecorder()
-	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -696,21 +620,6 @@ func TestRESTRPCAllowsModelManagementMethodsForNonAdmin(t *testing.T) {
 	}
 }
 
-func TestRESTRPCRejectsMalformedPluginWidgetParamsAsBadRequest(t *testing.T) {
-	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
-	dispatched := false
-	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-		dispatched = true
-		return json.RawMessage(`{}`), nil
-	})
-	recorder := httptest.NewRecorder()
-	wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"plugin_widgets","params":{"chat_id":123}}`), "web-2", 2))
-	envelope := decodeAPIData(t, recorder.Body, nil)
-	if recorder.Code != http.StatusBadRequest || dispatched || envelope.Error == nil || envelope.Error.Code != "bad_request" {
-		t.Fatalf("status=%d dispatched=%v envelope=%#v", recorder.Code, dispatched, envelope)
-	}
-}
-
 func TestRESTRPCClassifiesDispatchErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -742,10 +651,9 @@ func TestRESTRPCPreservesAdminDispatch(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	dispatched := false
 	wc.SetCallbacks(WebCallbacks{
-		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
 		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
 			dispatched = true
-			if identity.SenderID != "web-2" || identity.CanonicalUserID != 42 || identity.CanonicalRole != "admin" {
+			if identity.SenderID != "web-2" {
 				t.Fatalf("unexpected RPC identity: %#v", identity)
 			}
 			return json.RawMessage(`{}`), nil
@@ -877,7 +785,6 @@ func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	request := authedAPIRequestFor(http.MethodPost, "/api/session/status", []byte(`{"channel":"web","chat_id":"owned-chat"}`), "web-2", 2)
-	request = request.WithContext(contextWithCanonicalIdentity(request.Context(), 2, "user"))
 	wc.handleSessionStatus(recorder, request)
 	_, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || data["cwd"] != "/workspace/idle" {

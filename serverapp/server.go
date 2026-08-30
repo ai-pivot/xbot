@@ -288,7 +288,6 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				AdminToken: cfg.Admin.Token,
 				InviteOnly: cfg.Web.InviteOnly,
 				PublicURL:  cfg.Sandbox.PublicURL,
-				SingleUser: cfg.Agent.Experimental.SingleUser,
 			}, msgBus)
 			// Auto-detect frontend static files if not explicitly configured.
 			staticDir := resolveStaticDir(cfg)

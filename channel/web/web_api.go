@@ -1364,8 +1364,7 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 			jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		identity := wc.inboundIdentityFromRequest(r)
-		chatID, err := wc.callbacks.ChatCreate(senderID, body.Label, identity.CanonicalUserID, body.SubscriptionID, body.Model)
+		chatID, err := wc.callbacks.ChatCreate(senderID, body.Label, body.SubscriptionID, body.Model)
 		if err != nil {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1646,10 +1645,8 @@ func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, sende
 }
 
 type sessionAccessIdentity struct {
-	senderID        string
-	webUserID       int
-	canonicalUserID int64
-	canonicalRole   string
+	senderID  string
+	webUserID int
 }
 
 func (wc *WebChannel) canAccessClientSession(client *Client, channelName, chatID string, allowCreate bool) bool {
@@ -1704,37 +1701,10 @@ func (wc *WebChannel) GetCurrentSession(senderID string) SessionSelector {
 }
 
 // isAdmin returns true if the user is an admin.
-// Uses IdentityResolver when available (canonical role), falls back to
-// senderID == "admin" and web user ID == 1 for backward compat.
-// In single-user mode, all users are admin (no identity isolation).
+// Multi-user removal: every web login IS the operator (password
+// authentication is the trust boundary) — always admin.
 func (wc *WebChannel) isAdmin(ctx context.Context, senderID string) bool {
-	if wc.singleUser {
-		return true
-	}
-	if senderID == "admin" {
-		return true
-	}
-	if userID, role, ok := canonicalIdentityFromContext(ctx); ok {
-		return role == "admin" || userID > 0 && wc.callbacks.IdentityResolver != nil && wc.callbacks.IdentityResolver.IsAdmin(userID)
-	}
-	// Use IdentityResolver if available (canonical user role)
-	if wc.callbacks.IdentityResolver != nil {
-		resolveChannel := "web"
-		resolveID := senderID
-		if si, ok := webSessionFromContext(ctx); ok && si.feishuUserID != "" {
-			resolveChannel = "feishu"
-			resolveID = si.feishuUserID
-		}
-		userID, _, err := wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
-		if err == nil && userID > 0 {
-			return wc.callbacks.IdentityResolver.IsAdmin(userID)
-		}
-	}
-	// Backward compat: first web user is admin
-	if userID := userIDFromContext(ctx); userID == 1 {
-		return true
-	}
-	return false
+	return true
 }
 
 // maskSensitive masks a sensitive string for display, showing only first 4 chars.

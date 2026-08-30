@@ -403,8 +403,6 @@ const en: Translations = {
       language: 'Language',
       llm: 'LLM Config',
       account: 'Account',
-      linking: 'Account Linking',
-      users: 'User Management',
       developer: 'Developer',
       layout: 'Layout',
       plugins: 'Plugins',

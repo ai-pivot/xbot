@@ -557,7 +557,7 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
+		ChatCreate: func(senderID, label string, subscriptionID, model string) (string, error) {
 			return "created-chat", nil
 		},
 	})
@@ -585,7 +585,7 @@ func TestChatsCreateForwardsModelParam(t *testing.T) {
 	wc, _ := newTestWebChannel(t, db)
 	var gotLabel, gotModel, gotSubID string
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
+		ChatCreate: func(senderID, label string, subscriptionID, model string) (string, error) {
 			gotLabel = label
 			gotModel = model
 			gotSubID = subscriptionID
@@ -876,7 +876,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	db := newTestDB(t)
 	wc := NewWebChannel(WebChannelConfig{Host: "127.0.0.1", Port: 0, DB: db, AdminToken: "test-token"}, msgBus)
-	wc.SetCallbacks(WebCallbacks{IdentityResolver: fixedIdentityResolver{userID: 1, role: "admin"}})
+	wc.SetCallbacks(WebCallbacks{})
 	wc.SetOSSProvider(fixedOSSProvider{})
 	t.Cleanup(wc.Stop) // stop hub + background goroutines to avoid connection leaks on Windows
 	server := startTestServer(t, wc)

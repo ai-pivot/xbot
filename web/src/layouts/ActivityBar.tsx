@@ -8,7 +8,7 @@
  *   (flex spacer)
  *   Settings (bottom)
  *
- * Channel identity icons are fetched from POST /api/account/identities/list.
+ * Channel icons are fetched from POST /api/channels/list.
  * Active channel is persisted to localStorage["xbot:active-channel"].
  * Clicking a channel icon also ensures the session sidebar is open.
  */
@@ -35,14 +35,7 @@ type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | s
 
 export type SidebarView = 'sessions'
 
-interface IdentityEntry {
-  id: number
-  channel: string
-  channel_user_id: string
-}
-
-interface IdentitiesResponse {
-  identities?: IdentityEntry[]
+interface ChannelsResponse {
   channels?: string[]
 }
 
@@ -71,13 +64,11 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
 export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollapsed = false, onToggleSidebar }: ActivityBarProps) {
   const { t } = useI18n()
   const { activeChannel, setActiveChannel } = useSessionStore()
-  const [identities, setIdentities] = useState<IdentityEntry[]>([])
   const [discoveredChannels, setDiscoveredChannels] = useState<string[]>([])
 
-  const fetchIdentities = useCallback(async () => {
+  const fetchChannels = useCallback(async () => {
     try {
-      const data = await postAPI<IdentitiesResponse>('/api/account/identities/list')
-      setIdentities(data.identities || [])
+      const data = await postAPI<ChannelsResponse>('/api/channels/list')
       setDiscoveredChannels(data.channels || [])
     } catch {
       // Degraded: show only aggregate + web
@@ -85,34 +76,27 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
   }, [])
 
   useEffect(() => {
-    fetchIdentities()
-  }, [fetchIdentities])
+    fetchChannels()
+  }, [fetchChannels])
 
-  // Re-fetch identities when settings dialog closes (user may have linked new identity)
+  // Re-fetch channels when settings dialog closes (plugin channels may have
+  // been activated since)
   useEffect(() => {
-    if (settingsVersion > 0) fetchIdentities()
-  }, [settingsVersion, fetchIdentities])
+    if (settingsVersion > 0) fetchChannels()
+  }, [settingsVersion, fetchChannels])
 
-  // Build the set of channels to show: linked identities + channels
-  // discovered from the DB (includes plugin channels like github/gitlab
-  // that have sessions but no linked identity).
+  // Build the set of channels to show: channels discovered from the DB
+  // (includes plugin channels like github/gitlab that have sessions).
   const channelIdentities = useMemo(() => {
-    const byChannel = new Map<string, IdentityEntry | null>()
-    // First add discovered channels (from DB — includes plugin channels)
+    const byChannel = new Map<string, null>()
     for (const ch of discoveredChannels) {
       if (ch === 'web' || ch === 'agent') continue
-      byChannel.set(ch, null) // null means "no linked identity, but sessions exist"
+      byChannel.set(ch, null)
     }
-    // Then overlay linked identities (these take precedence — they have badges)
-    for (const id of identities) {
-      if (id.channel === 'web' || id.channel === 'agent') continue
-      byChannel.set(id.channel, id)
-    }
-    return Array.from(byChannel.entries()).map(([channel, identity]) => ({
+    return Array.from(byChannel.entries()).map(([channel]) => ({
       channel,
-      identity,
     }))
-  }, [identities, discoveredChannels])
+  }, [discoveredChannels])
 
   // Determine if we should merge aggregate and web icon (only web identity, no linked)
   const mergeAggregate = channelIdentities.length === 0
@@ -153,10 +137,9 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
           />
         )}
 
-        {/* Per-channel identity icons (includes plugin channels from DB) */}
-        {channelIdentities.map(({ channel, identity }) => {
+        {/* Per-channel icons (includes plugin channels from DB) */}
+        {channelIdentities.map(({ channel }) => {
           const Icon = CHANNEL_ICONS[channel] || Globe
-          const badge = identity?.channel_user_id?.charAt(0) || ''
           const label = t(`channel.${channel}`) || channel
           const isActive = activeChannel === channel
           return (
@@ -164,7 +147,6 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
               key={channel}
               channel={channel}
               icon={Icon}
-              badge={badge}
               label={label}
               active={isActive}
               onClick={() => setActiveChannel(channel)}

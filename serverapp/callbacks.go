@@ -716,7 +716,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		result.NextOffset = nextOffset
 		return result, nil
 	}
-	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
+	callbacks.ChatCreate = func(senderID, label string, subscriptionID, model string) (string, error) {
 		if webDB == nil {
 			return "", fmt.Errorf("database not available")
 		}
@@ -2052,29 +2052,6 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		RunnerDelete:        rc.RunnerDelete,
 		RunnerGetActive:     rc.RunnerGetActive,
 		RunnerSetActive:     rc.RunnerSetActive,
-
-		// Feishu-Web linking
-		FeishuWebLink: func(feishuUserID, username, password string) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return "", fmt.Errorf("web linking not enabled")
-			}
-			return web.FeishuLinkUser(db, feishuUserID, username, password)
-		},
-		FeishuWebGetLinked: func(feishuUserID string) (string, bool) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return "", false
-			}
-			return web.FeishuGetLinkedUser(db, feishuUserID)
-		},
-		FeishuWebUnlink: func(feishuUserID string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return fmt.Errorf("web linking not enabled")
-			}
-			return web.FeishuUnlinkUser(db, feishuUserID)
-		},
 
 		// Memory
 		MemoryClear: func(senderID, chatID, targetType string) error {

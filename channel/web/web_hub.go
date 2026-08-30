@@ -584,8 +584,6 @@ type Client struct {
 	lastSentSeq      uint64
 	id               string // unique client ID (UUID), generated at connection time
 	isCLI            bool   // true if client_type=cli (runner token auth)
-	canonicalUserID  int64  // canonical user ID (from IdentityResolver)
-	canonicalRole    string // user role ("admin" | "user")
 	webUserID        int    // browser user ID for legacy admin fallback
 	routeReplay      bool   // eventStream cursor is the replay source
 	sseWriteCanceled atomic.Bool

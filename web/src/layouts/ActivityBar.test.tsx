@@ -13,10 +13,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
   }),
 }))
 
-const mockIdentities = [
-  { id: 1, channel: 'cli', channel_user_id: '张三' },
-  { id: 2, channel: 'feishu', channel_user_id: '李四' },
-]
+const mockChannels = ['cli', 'feishu']
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(() =>
@@ -24,7 +21,7 @@ beforeEach(() => {
       ok: true,
       json: () => Promise.resolve({
         ok: true,
-        data: { identities: mockIdentities },
+        data: { channels: mockChannels },
         error: null,
       }),
     } as Response),
@@ -69,24 +66,25 @@ describe('ActivityBar', () => {
     expect(await screen.findByLabelText('CLI')).toBeInTheDocument()
     expect(screen.getByLabelText('Feishu')).toBeInTheDocument()
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      '/api/account/identities/list',
+      '/api/channels/list',
       expect.objectContaining({ method: 'POST' }),
     )
   })
 
-  it('renders badge with first character of channel_user_id', async () => {
+  it('renders no identity badge after fetch (multi-user removal)', async () => {
     renderWithProviders(
       <ActivityBar
         onOpenSettings={vi.fn()}
       />,
     )
 
-    // Wait for identities to load
+    // Wait for channels to load
     await screen.findByLabelText('CLI')
 
-    // Badge should show first character of channel_user_id
+    // No identity badge — the canonical identity system was removed; the
+    // channel icons are plain (no channel_user_id badge).
     const cliButton = screen.getByLabelText('CLI')
     const badge = cliButton.querySelector('.text-\\[8px\\]')
-    expect(badge).toHaveTextContent('张')
+    expect(badge).toBeNull()
   })
 })
