@@ -5,6 +5,24 @@
 xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话级别覆盖。
 每个会话最终使用哪组 LLM 凭据/模型/参数，由 `LLMFactory` 运行时决定。
 
+## v63 多用户删除（单 operator，权威语义）
+
+> 本节覆盖下方所有"用户级别"描述：v63（`feat/remove-multi-user`）删除了 canonical user 层
+> （users/user_identities/link_codes 表、IdentityResolver、owner_user_id 列），全系统坍缩为
+> **单 operator**。文档中残留的"用户级别/senderID/用户"字样一律读作"operator"：
+>
+> - `ResolveUserContext` 把所有 sender 坍缩为固定 operator 身份（`cli_user`）——订阅、设置、
+>   工作区、记忆全局共享。`GetLLM(senderID)` 等接口的 senderID 参数在 agent loop 内恒为
+>   `cli_user`（operator 常量，agent/user_context_middleware.go `operatorSenderID`）。
+> - admin 判定走 `Agent.isAdminSender(channel, senderID)`：cli/web 渠道恒 admin（本机/密码登录），
+>   feishu/qq 渠道需 senderID 列在 `config agent.admins`。管理命令（/set-llm /models /settings
+>   等）与管理工具 action（config tool 的 model/subscription/runner、ManageTools 的
+>   add_mcp/remove_mcp）对非 admin 拒绝（`CommandInfo.AdminOnly` + `OriginUserIsAdmin`）。
+> - DB v63 迁移：sender 归一 `cli_user`（user_llm_subscriptions.sender_id 是 `List()` 的查询
+>   维度）、token usage SUM 合并、xbot memory `user_id=1`、DROP 全部 canonical 列与
+>   users/user_identities/link_codes 表（`storage/sqlite/migration_v63_test.go` 有完整回归）。
+> - `experimental.single_user` 配置已删除——坍缩是无条件行为。
+
 ## Model-First Redesign (v39, authoritative)
 
 > 本节描述 **当前权威路径**。下方 "LLM Resolution" 里的 `GetLLMForChat` 等遗留入口仍存在，但 agent loop 已切换到 `ResolveLLM`，新代码应优先使用本节 API。
