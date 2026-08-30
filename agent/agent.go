@@ -28,7 +28,6 @@ import (
 	log "xbot/logger"
 	"xbot/memory"
 	"xbot/memory/letta"
-	xbotmemory "xbot/memory/xbot"
 	"xbot/plugin"
 	"xbot/protocol"
 	"xbot/runner"
@@ -417,7 +416,7 @@ type Agent struct {
 	// toolProviders are the ordered tool sources for the agent.
 	// Priority: agent-core(1) → runner(2) → channel(3) → plugin(4).
 	toolProviders   []tools.ToolProvider
-	directWorkspace string        // 非空时 workspaceRoot() 直接返回此值（CLI 模式使用，取代 singleUser 的 workspace 短路）
+	directWorkspace string        // 非空时 workspaceRoot() 直接返回此值（CLI 模式使用）
 	maxConcurrency  int           // 最大并发会话处理数
 	globalSem       chan struct{} // 全局并发信号量（SetMaxConcurrency 动态重建）
 	globalSemMu     sync.Mutex    // 保护 globalSem 替换
@@ -587,9 +586,6 @@ type Agent struct {
 	// cliSenderID is the sender_id used for CLI channel DB operations.
 	cliSenderID string
 
-	// singleUser enables single-user mode: all senders share one identity.
-	singleUser bool
-
 	// admins is the admin allowlist (config agent.admins, senderIDs).
 	// After the multi-user removal it is the ONLY source of admin rights for
 	// non-trusted channels (feishu/qq/...): cli/web channels are always admin.
@@ -597,10 +593,6 @@ type Agent struct {
 	// memoryProvider stores the resolved memory provider type ("flat", "letta", "xbot", "none").
 	// Used by SubAgent memory construction to match the parent's provider.
 	memoryProvider string
-
-	// identityResolver resolves channel-specific senderID to canonical user_id.
-	// IdentityResolver is accessed via a.userSys.identityResolver (no direct field).
-	// nil in standalone CLI mode (no multi-user DB).
 
 	// bgTaskMgr manages background shell tasks (shared across all sessions).
 	// atomic.Pointer: read by background goroutines (bgNotifyLoop) and the
@@ -874,22 +866,6 @@ func (a *Agent) Skills() *SkillStore { return a.skills }
 // fallback for web sessions that have no persisted CWD.
 func (a *Agent) WorkDir() string { return a.workDir }
 
-// SetIdentityResolver injects the canonical user identity resolver.
-func (a *Agent) SetIdentityResolver(r *IdentityResolver) {
-	if a.userSys == nil {
-		a.userSys = &userSystem{}
-	}
-	a.userSys.identityResolver = r
-}
-
-// IdentityResolver returns the agent's identity resolver (may be nil in standalone mode).
-func (a *Agent) IdentityResolver() *IdentityResolver {
-	if a.userSys == nil {
-		return nil
-	}
-	return a.userSys.identityResolver
-}
-
 // RewindCheckpoint restores files for an existing checkpointed session. It
 // only uses stores that were already created by the normal CLI run path.
 func (a *Agent) RewindCheckpoint(channel, chatID string, turnIdx int) (*protocol.RewindResult, error) {
@@ -1004,13 +980,9 @@ func (a *Agent) SetUserModel(senderID, subID, model string) error {
 	if subID == "" {
 		return fmt.Errorf("subID is required (model-subscription pair); bare model %q is not allowed — resolve the owning subscription first", model)
 	}
-	// Persist the default model under the canonical user_id so linked
-	// identities (web/cli/feishu) all see the same selection.
-	if uid, ok := a.resolveUserID(senderID); ok {
-		if err := a.userSys.llmFactory.SetUserDefaultModelByUserID(uid, subID, model); err != nil {
-			return fmt.Errorf("save default model: %w", err)
-		}
-	} else if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
+	// Persist the default model under the single operator identity
+	// (multi-user removed — one global default, shared by every channel).
+	if err := a.userSys.llmFactory.SetUserDefaultModel(senderID, subID, model); err != nil {
 		return fmt.Errorf("save default model: %w", err)
 	}
 	a.userSys.llmFactory.Invalidate(senderID)
@@ -1558,10 +1530,6 @@ type Config struct {
 	// CLISenderID is the sender_id used for CLI channel DB operations (default: "cli_user").
 	CLISenderID string
 
-	// SingleUser enables single-user mode: all senders are treated as one
-	// shared identity. Set from config.Agent.Experimental.SingleUser.
-	SingleUser bool
-
 	// Admins is the admin allowlist (config agent.admins, senderIDs).
 	// After the multi-user removal it is the only source of admin rights for
 	// non-trusted channels (feishu/qq/...): cli/web channels are always admin.
@@ -1800,12 +1768,6 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	llmSemMgr := llm.NewLLMSemaphoreManager()
 	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
-	// Canonical-user settings resolution: getGlobalSetting (tier/thinking_mode)
-	// reads the user_id dimension first — *ByUserID writes (RPC panel settings)
-	// store sender_id='user-N', invisible to sender-dimension reads. Without
-	// this, web-channel senders never see tier configs written by the panel
-	// (SubAgent "model not found for vanguard, falling back to main model").
-	a.userSys.llmFactory.SetUserResolver(a.resolveUserID)
 
 	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
 	a.initPipelines(memoryProvider)
@@ -1910,7 +1872,6 @@ func New(cfg Config) (*Agent, error) {
 			return mgr
 		}(),
 		cliSenderID:     cfg.CLISenderID,
-		singleUser:      cfg.SingleUser,
 		admins:          cfg.Admins,
 		lifecycleStopCh: make(chan struct{}),
 	}
@@ -3326,41 +3287,13 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		a.sessionReplyTo.Delete(key)
 	}
 
-	// Create the tenant with the identity already resolved by
-	// ResolveUserContext. The canonical user_id is authoritative — it was
-	// resolved at the channel boundary using the physical channel, and
-	// ResolveUserContext already preferred metadata injection over
-	// re-resolving via (msg.Channel, senderID).
-	tenantOwner := int64(0)
-	if msg.Channel == "web" || msg.Channel == "cli" || msg.Channel == "agent" {
-		if userCtx != nil {
-			tenantOwner = userCtx.UserID
-		}
-	}
-
-	// Background notifications are internal system messages injected into an
-	// existing session. They must NOT trigger owner verification — the senderID
-	// (from cron job / bg task) may differ from the session's canonical owner
-	// (e.g. CLI path vs user ID), causing ErrTenantOwnerConflict.
-	var tenantSession *session.TenantSession
-	var err error
-	if msg.Metadata != nil && msg.Metadata[bgNotificationMetadataKey] == "true" {
-		tenantSession, err = a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
-	} else {
-		tenantSession, err = a.multiSession.GetOrCreateSessionWithOwner(msg.Channel, msg.ChatID, tenantOwner)
-	}
+	// Multi-user removal: there is exactly one operator. Sessions are created
+	// without an owner claim (the tenants.owner_user_id column and the
+	// cross-user ErrTenantOwnerConflict check are gone); memory is scoped to
+	// the single operator identity inside GetOrCreateSession.
+	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
 	if err != nil {
 		return nil, fmt.Errorf("get/create tenant session: %w", err)
-	}
-
-	// Ensure the memory provider is scoped to the canonical owner so memories
-	// are shared across ALL sessions of this user (not per-tenant).
-	// The provider may have been created earlier by buildToolContextExtras via
-	// GetOrCreateSession (no owner → userID=0); fix it up now.
-	if tenantOwner > 0 {
-		if xm, ok := tenantSession.Memory().(*xbotmemory.XbotMemory); ok {
-			xm.SetOwnerUserID(tenantOwner)
-		}
 	}
 
 	// Set tenant-scoped stores for this request.

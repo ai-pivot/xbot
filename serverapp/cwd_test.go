@@ -22,7 +22,6 @@ func newTestAgentForCWD(t *testing.T) *agent.Agent {
 		t.Fatalf("new agent: %v", err)
 	}
 	t.Cleanup(func() { _ = ag.Close() })
-	ag.SetIdentityResolver(agent.NewIdentityResolver(ag.MultiSession().DB().Conn()))
 	return ag
 }
 

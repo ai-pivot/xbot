@@ -263,30 +263,7 @@ func (m *MultiTenantSession) GetAllUserTokenUsage() ([]sqlite.UserTokenUsage, er
 // GetOrCreateSession retrieves or creates a tenant session for the given channel and chatID.
 // senderID is passed via context (letta.WithUserID) at call time, not here.
 func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*TenantSession, error) {
-	return m.getOrCreateSession(channel, chatID, 0)
-}
-
-// GetOrCreateSessionWithOwner creates or verifies a session against its
-// canonical owner before returning a cached or newly-built TenantSession.
-func (m *MultiTenantSession) GetOrCreateSessionWithOwner(channel, chatID string, canonicalUserID int64) (*TenantSession, error) {
-	return m.getOrCreateSession(channel, chatID, canonicalUserID)
-}
-
-func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonicalUserID int64) (*TenantSession, error) {
-	// Cache key: channel:chat_id (NOT senderID)
-	// Per-user human block is handled dynamically via Recall/Memorize with senderID parameter
 	key := sessKey(channel, chatID)
-
-	// Verify ownership before the cache fast path; a cached session must not turn
-	// a same-name session collision into an authorization bypass.
-	claimedTenantID := int64(0)
-	if canonicalUserID > 0 {
-		var err error
-		claimedTenantID, err = m.tenantSvc.GetOrCreateTenantIDWithOwner(channel, chatID, canonicalUserID)
-		if err != nil {
-			return nil, fmt.Errorf("claim tenant owner: %w", err)
-		}
-	}
 
 	// Fast path: check cache with read lock
 	m.mu.RLock()
@@ -310,13 +287,9 @@ func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonica
 	}
 
 	// Get or create tenant ID
-	tenantID := claimedTenantID
-	if tenantID == 0 {
-		var err error
-		tenantID, err = m.tenantSvc.GetOrCreateTenantID(channel, chatID)
-		if err != nil {
-			return nil, fmt.Errorf("get/create tenant: %w", err)
-		}
+	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("get/create tenant: %w", err)
 	}
 
 	// 创建会话 MCP 管理器（用户作用域由 ConfigureSessionMCP 在消息处理时注入）
@@ -332,10 +305,10 @@ func (m *MultiTenantSession) getOrCreateSession(channel, chatID string, canonica
 		memDir := filepath.Join(config.XbotHome(), "memory", fmt.Sprintf("%d", tenantID))
 		deps := memory.ProviderDeps{
 			TenantID: tenantID,
-			// Memories are scoped by canonical owner (cross-session shared).
-			// canonicalUserID may be 0 in legacy/standalone paths — provider
-			// falls back to tenant-scoped isolation in that case.
-			UserID:  canonicalUserID,
+			// Memories are scoped by the single operator (cross-session
+			// shared, user_id=1). The multi-user system was removed — there
+			// is exactly one owner for every session.
+			UserID:  1,
 			BaseDir: memDir,
 			DB:      m.db.Conn(),
 		}

@@ -608,12 +608,11 @@ func (a *Agent) SetUserMaxOutputTokensForSubModel(senderID, subID, model string,
 }
 
 // GetUserThinkingMode returns the user's global thinking_mode setting
-// ("" = auto). Thinking is a global per-user setting stored under the canonical
+// ("" = auto). Thinking is a global setting stored under the canonical
 // channel (see LLMFactory.thinkingModeChannel), no longer subscription-scoped.
+// After the multi-user removal the sender is always the operator — the
+// sender dimension IS the global dimension.
 func (a *Agent) GetUserThinkingMode(senderID string) string {
-	if uid, ok := a.resolveUserID(senderID); ok {
-		return a.GetUserThinkingModeForUserID(uid)
-	}
 	if a.userSys == nil || a.userSys.llmFactory == nil || a.userSys.settingsSvc == nil {
 		return ""
 	}
@@ -640,9 +639,6 @@ func (a *Agent) GetUserThinkingModeForUserID(userID int64) string {
 // channel) and invalidates the cached LLM client. It no longer touches
 // subscription rows — thinking is global, not per-subscription.
 func (a *Agent) SetUserThinkingMode(senderID string, mode string) error {
-	if uid, ok := a.resolveUserID(senderID); ok {
-		return a.SetUserThinkingModeForUserID(uid, mode)
-	}
 	if mode == "auto" {
 		mode = ""
 	}
@@ -677,9 +673,6 @@ func (a *Agent) SetUserThinkingModeForUserID(userID int64, mode string) error {
 // in resolveTierModel). Uses the same canonical channel as thinking_mode so tier
 // settings are shared across all channels (CLI, Feishu, Web) per user.
 func (a *Agent) GetUserTierModel(senderID, tier string) (subID, model string) {
-	if uid, ok := a.resolveUserID(senderID); ok {
-		return a.GetUserTierModelForUserID(uid, tier)
-	}
 	if a.userSys == nil || a.userSys.llmFactory == nil || a.userSys.settingsSvc == nil {
 		return "", ""
 	}
@@ -716,9 +709,6 @@ func (a *Agent) GetUserTierModelForUserID(userID int64, tier string) (subID, mod
 // a bare model name is rejected (subID is required). Invalidates the cached LLM
 // client for the sender.
 func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
-	if uid, ok := a.resolveUserID(senderID); ok {
-		return a.SetUserTierModelForUserID(uid, tier, subID, model)
-	}
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}

@@ -1537,7 +1537,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(originChannel + ":" + originChatID)
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
-	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", oneshotKey, cfg.UserID)
+	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", oneshotKey)
 	if err != nil {
 		a.interactiveSubAgents.Delete(oneshotKey)
 		return nil, fmt.Errorf("create oneshot agent tenant session: %w", err)

@@ -1885,7 +1885,6 @@ func TestSetCWDAllowsOwnedGeneratedWebChat(t *testing.T) {
 		t.Fatalf("new agent: %v", err)
 	}
 	t.Cleanup(func() { _ = ag.Close() })
-	ag.SetIdentityResolver(agent.NewIdentityResolver(ag.MultiSession().DB().Conn()))
 
 	const senderID = "web-2"
 	const chatID = "generated-chat"

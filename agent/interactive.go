@@ -856,7 +856,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 	// Interactive SubAgent gets its own TenantSession for message persistence.
 	// Channel="agent", ChatID=key → messages saved to DB like normal sessions.
-	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", key, cfg.UserID)
+	agentTenantSession, err := a.multiSession.GetOrCreateSession("agent", key)
 	if err != nil {
 		a.destroyInteractiveSession(key)
 		return nil, fmt.Errorf("create agent tenant session: %w", err)

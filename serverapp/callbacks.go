@@ -120,30 +120,20 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 }
 
 // llmCallbacks builds the shared LLM callback closures.
-// canonicalModelEntries returns model entries for the canonical user of
-// (channel, senderID). Subscriptions/settings are bound to user_id (v45+);
-// querying by senderID (old behavior) misses subscriptions of linked
-// identities (e.g. a Feishu ou_xxx linked to the admin user). Mirrors the RPC
-// layer (rpcUserID + ListAllModelEntriesForUserID). Uses ResolveSender — a
-// read-only lookup that never auto-creates users.
+// canonicalModelEntries returns model entries for the single operator.
+// After the multi-user removal there is exactly one operator identity
+// (user_id=1): subscriptions/settings are global, queried by the operator
+// sender dimension directly.
 func canonicalModelEntries(ag *agent.Agent, senderID string) []protocol.ModelEntry {
-	if ag.IdentityResolver() != nil {
-		if uid, _, err := ag.IdentityResolver().ResolveSender(senderID); err == nil && uid > 0 {
-			return ag.LLMFactory().ListAllModelEntriesForUserID(uid)
-		}
-	}
 	return ag.LLMFactory().ListAllModelEntriesForUser(senderID)
 }
 
 // resolveUID resolves senderID to its canonical user_id (read-only, no
 // auto-create). Returns 0 when the identity is unknown.
 func resolveUID(ag *agent.Agent, senderID string) int64 {
-	if ag.IdentityResolver() != nil {
-		if uid, _, err := ag.IdentityResolver().ResolveSender(senderID); err == nil {
-			return uid
-		}
-	}
-	return 0
+	// Multi-user removal: single operator — every sender resolves to the
+	// same operator user (id=1). The IdentityResolver is gone.
+	return 1
 }
 
 func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
@@ -422,38 +412,22 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// Session-scoped: always filter by the requested session (user request:
 		// "bg task 要会话维度展示，active session 哪个就展示哪个 session 的别混一起").
 		// Admin sees the CURRENT session's tasks too — not a cross-session dump.
-		if ag.IdentityResolver() != nil {
-			uid, _, err := ag.IdentityResolver().Resolve("web", senderID)
-			if err != nil {
-				return nil, fmt.Errorf("resolve identity for background tasks: %w", err)
-			}
-			_ = uid // admin and non-admin both get session-scoped tasks
-			if uid > 0 {
-				if owned, ok := webSessionOwnedByUser(ag, sel.Channel, sel.ChatID, uid); ok && !owned {
-					return nil, fmt.Errorf("access denied: session not owned by caller")
-				}
-			}
-		}
+		// Multi-user removal: one operator owns every session — no ownership check.
 		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
 			return []any{}, nil
 		}
-		// Query by canonical user_id so all identities linked to the same
-		// user see the same cron jobs, regardless of which session they're
-		// viewing.
-		if ag.IdentityResolver() != nil {
-			uid, _, err := ag.IdentityResolver().Resolve("web", senderID)
-			if err == nil && uid > 0 {
-				return sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByUserID(uid)
-			}
+		// Multi-user removal: one operator — cron jobs are global for the
+		// operator (user_id=1 after the v63 migration; the by-user query
+		// keeps working for pre-migration DBs where all rows resolve to the
+		// single operator anyway).
+		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByUserID(1)
+		if err != nil {
+			return nil, fmt.Errorf("list cron jobs: %w", err)
 		}
-		// Fallback: query by session (legacy behavior for standalone mode)
-		if _, err := sqlite.NewTenantService(ag.MultiSession().DB()).GetOrCreateTenantID(sel.Channel, sel.ChatID); err != nil {
-			return nil, fmt.Errorf("resolve tenant: %w", err)
-		}
-		return sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByChannelChatID(sel.Channel, sel.ChatID)
+		return jobs, nil
 	}
 	callbacks.CommandList = func(senderID string) ([]web.CommandInfo, error) {
 		byName := make(map[string]web.CommandInfo, len(channel.TUISlashCommands))
@@ -844,9 +818,6 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return channel == "cli" && cli.StoredSessionExists(chatID)
 	}
 
-	// Identity resolver — wire agent's IdentityResolver to WebChannel
-	callbacks.IdentityResolver = ag.IdentityResolver()
-
 	return callbacks
 }
 
@@ -882,39 +853,6 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	for i := range row.Children {
 		applyWebRunningStatus(ag, &row.Children[i])
 	}
-}
-
-// webSessionOwnedByUser checks the canonical ownership of a web-visible
-// session (tenants.owner_user_id). It reports (owned, ok):
-//   - ok=false when ownership cannot be determined (no DB / no tenant row) —
-//     callers treat this as "no ownership information" and must not deny on it
-//     (e.g. a freshly created session key has no tenant row yet).
-//   - owned=false only when the tenant exists and is explicitly owned by
-//     another canonical user.
-//
-// Defense-in-depth helper for web callbacks that receive a caller-supplied
-// session selector: the web REST layer gates access via canAccessSession,
-// but the callback layer serves every entry path and must not trust the
-// selector alone.
-func webSessionOwnedByUser(ag *agent.Agent, channelName, chatID string, uid int64) (owned, ok bool) {
-	if ag == nil || ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
-		return false, false
-	}
-	var ownerUserID int64
-	err := ag.MultiSession().DB().Conn().QueryRow(
-		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
-		channelName, chatID,
-	).Scan(&ownerUserID)
-	if err != nil {
-		// No tenant row (session never persisted) — no ownership info.
-		return false, false
-	}
-	if ownerUserID == 0 {
-		// Unclaimed tenant: ownership is governed by the web layer
-		// (user_chats) — do not deny here.
-		return true, false
-	}
-	return ownerUserID == uid, true
 }
 
 func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {

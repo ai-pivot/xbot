@@ -2,7 +2,6 @@ package serverapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -549,24 +548,10 @@ func Run(args []string) error {
 		log.WithError(err).Fatal("Failed to init server")
 	}
 
-	// Initialize canonical user identity resolver.
-	// Uses the shared DB if available (OAuth enabled), otherwise opens a direct
-	// connection to the DB path — IdentityResolver should always be available
-	// in server mode regardless of OAuth config.
-	var identityDB *sql.DB
-	if sharedDB != nil {
-		identityDB = sharedDB.Conn()
-	} else {
-		var err error
-		identityDB, err = sql.Open("sqlite", dbPath)
-		if err != nil {
-			log.WithError(err).Warn("Failed to open identity DB, identity resolver disabled")
-		}
-	}
-	if identityDB != nil {
-		resolver := agent.NewIdentityResolver(identityDB)
-		ag.SetIdentityResolver(resolver)
-	}
+	// Multi-user removal: the canonical IdentityResolver (users/
+	// user_identities/link_codes tables) was removed. Admin rights come from
+	// config agent.admins (Agent.isAdminSender); identity data collapsed to
+	// a single operator (user_id=1).
 
 	// Set the rpcTablePtr for the channel provider factory.
 	// Plugin activation happens during InitServer, so the factory was already called
@@ -818,45 +803,8 @@ func Run(args []string) error {
 		// 注入设置卡片回调（让飞书渠道能访问 Agent 的 LLM/Registry/Settings 功能）
 		feishuCh.SetSettingsCallbacks(buildFeishuSettingsCallbacks(cfg, ag))
 
-		// Wire cross-channel account linking for Feishu.
-		// When a Feishu user sends "/link <code>", the Feishu channel calls this
-		// function to consume the code and link their Feishu identity.
-		feishuCh.SetLinkAccountFn(func(code, channel, channelUserID string) (string, error) {
-			if ag.IdentityResolver() == nil {
-				return "", fmt.Errorf("identity resolver not available")
-			}
-			// Validate code without consuming (preview-safe)
-			targetUserID, err := ag.IdentityResolver().ValidateLinkCode(code)
-			if err != nil {
-				return "", err
-			}
-			// Resolve current Feishu user
-			currentUserID, _, _ := ag.IdentityResolver().Resolve(channel, channelUserID)
-			if currentUserID == targetUserID {
-				ag.IdentityResolver().ConsumeLinkCode(code)
-				return "已关联，无需重复操作", nil
-			}
-			// Try simple link
-			_, err = ag.IdentityResolver().LinkIdentity(targetUserID, channel, channelUserID)
-			if err == nil {
-				ag.IdentityResolver().ConsumeLinkCode(code)
-				return fmt.Sprintf("关联成功 (user_id=%d)", targetUserID), nil
-			}
-			// Merge required — log warning for audit trail, then auto-execute.
-			// Feishu has no practical two-step confirm mechanism; link code (8-char
-			// base32, 5min TTL, single-use) serves as bearer authorization.
-			log.WithFields(log.Fields{
-				"source_user_id": currentUserID,
-				"target_user_id": targetUserID,
-				"channel":        channel,
-				"channel_user":   channelUserID,
-			}).Warn("IdentityResolver: auto-merging users via Feishu /link (irreversible)")
-			ag.IdentityResolver().ConsumeLinkCode(code)
-			if mergeErr := ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
-				return "", fmt.Errorf("合并失败: %w", mergeErr)
-			}
-			return fmt.Sprintf("账号合并成功 (user_id=%d)。此操作不可撤销，旧账号的所有资产已迁移到目标账号。", targetUserID), nil
-		})
+		// Multi-user removal: the cross-channel account linking (/link code,
+		// IdentityResolver) was removed — there is a single operator identity.
 
 		// 注入飞书渠道特化 prompt 提供者
 		ag.SetChannelPromptProviders(&feishuPromptAdapter{ch: feishuCh})
