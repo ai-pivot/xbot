@@ -547,8 +547,8 @@ func (m *cliModel) handleSuHistoryLoad(msg suHistoryLoadMsg) []tea.Cmd {
 		// Independent guard: clear stale progress that restoreSession() may have
 		// restored from a previous visit. The session switch handler sets typing=false
 		// before this async handler runs, so endAgentTurn's typing guard above may
-		// not fire. But progress can still be non-nil → renderProgressBlock would
-		// show a phantom progress block.
+		// not fire. But progress can still be non-nil → the streaming message's
+		// inline rendering would show a phantom progress turn.
 		if m.progressState.current != nil {
 			m.progressState.current = nil
 			m.rc.valid = false

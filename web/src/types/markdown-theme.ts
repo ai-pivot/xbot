@@ -9,6 +9,9 @@ export type MarkdownThemeId =
   | 'vscode-dark'
   | 'github-dark'
   | 'github-light'
+  | 'solarized-light'
+  | 'one-light'
+  | 'quiet-light'
   | 'dracula'
   | 'one-dark'
   | 'monokai'
@@ -38,6 +41,9 @@ export const MARKDOWN_THEMES: MarkdownTheme[] = [
   { id: 'vscode-dark', labelKey: 'settings.mdThemeVscodeDark', mode: 'dark' },
   { id: 'github-dark', labelKey: 'settings.mdThemeGithubDark', mode: 'dark' },
   { id: 'github-light', labelKey: 'settings.mdThemeGithubLight', mode: 'light' },
+  { id: 'solarized-light', labelKey: 'settings.mdThemeSolarizedLight', mode: 'light' },
+  { id: 'one-light', labelKey: 'settings.mdThemeOneLight', mode: 'light' },
+  { id: 'quiet-light', labelKey: 'settings.mdThemeQuietLight', mode: 'light' },
   { id: 'dracula', labelKey: 'settings.mdThemeDracula', mode: 'dark' },
   { id: 'one-dark', labelKey: 'settings.mdThemeOneDark', mode: 'dark' },
   { id: 'monokai', labelKey: 'settings.mdThemeMonokai', mode: 'dark' },

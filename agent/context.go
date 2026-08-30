@@ -195,11 +195,6 @@ func (a *Agent) Pipeline() *MessagePipeline {
 	return a.pipeline
 }
 
-// CronPipeline 返回 Agent 的 Cron 消息构建管道。
-func (a *Agent) CronPipeline() *MessagePipeline {
-	return a.cronPipeline
-}
-
 // NewMessageContext 创建一个预填充的 MessageContext，用于主 pipeline。
 // 调用方设置动态字段（Extra 中的 ExtraKeySkillsCatalog、ExtraKeyAgentsCatalog、ExtraKeyMemoryProvider）后，
 // 传入 pipeline.Run(mc) 执行。

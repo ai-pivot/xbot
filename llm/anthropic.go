@@ -25,7 +25,6 @@ type AnthropicLLM struct {
 	apiKey       string
 	userAgent    string
 	httpClient   *http.Client
-	models       []string
 	defaultModel string
 	maxTokens    int
 }
@@ -39,18 +38,8 @@ type AnthropicConfig struct {
 	UserAgent    string // 自定义 User-Agent（留空使用默认值）
 }
 
-// 常用 Claude 模型列表（供 ListModels）
-var anthropicKnownModels = []string{
-	"claude-sonnet-4-20250514",
-	"claude-opus-4-20250115",
-	"claude-3-7-sonnet-20250219",
-	"claude-3-5-haiku-20241022",
-	"claude-3-5-sonnet-20241022",
-	"claude-3-5-sonnet-20240620",
-	"claude-3-opus-20240229",
-	"claude-3-sonnet-20240229",
-	"claude-3-haiku-20240307",
-}
+// defaultAnthropicModel is the fallback model when config leaves DefaultModel empty.
+const defaultAnthropicModel = "claude-sonnet-4-20250514"
 
 // NewAnthropicLLM 创建 Anthropic LLM 实例
 func NewAnthropicLLM(cfg AnthropicConfig) *AnthropicLLM {
@@ -69,12 +58,11 @@ func NewAnthropicLLM(cfg AnthropicConfig) *AnthropicLLM {
 		httpClient: &http.Client{
 			Timeout: 300 * time.Second,
 		},
-		models:       anthropicKnownModels,
 		defaultModel: cfg.DefaultModel,
 		maxTokens:    cfg.MaxTokens,
 	}
-	if a.defaultModel == "" && len(a.models) > 0 {
-		a.defaultModel = a.models[0]
+	if a.defaultModel == "" {
+		a.defaultModel = defaultAnthropicModel
 	}
 	// Default User-Agent: masquerade as Claude Code to avoid coding-agent rate limits.
 	if a.userAgent == "" {
@@ -95,13 +83,7 @@ func (a *AnthropicLLM) ListModels() []string {
 
 // GetDefaultModel 返回默认模型
 func (a *AnthropicLLM) GetDefaultModel() string {
-	if a.defaultModel != "" {
-		return a.defaultModel
-	}
-	if len(a.models) > 0 {
-		return a.models[0]
-	}
-	return ""
+	return a.defaultModel
 }
 
 // getMaxTokens returns the configured max output tokens, falling back to the default.

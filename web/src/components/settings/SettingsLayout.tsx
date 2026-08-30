@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { SettingsSection } from '@/components/settings/SettingsSection'
+import { postAPI } from '@/lib/api'
 import { useI18n } from '@/providers/i18n'
 import { useLayoutConfig } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutSlotId } from '@/plugin-runtime/layoutTypes'
@@ -39,8 +40,37 @@ export function SettingsLayout() {
   const { allItems, overrides, moveItem, moveItemTo, resetItem, resetAll } = useLayoutConfig()
   const [changed, setChanged] = useState(0) // force re-render after moves
   const [dragOverId, setDragOverId] = useState<string | null>(null)
+  // 重置面板布局：请求进行中 / 失败提示。
+  const [resetting, setResetting] = useState(false)
+  const [resetErr, setResetErr] = useState<string | null>(null)
 
   const slots = useMemo(() => Object.keys(SLOT_LABELS) as LayoutSlotId[], [])
+
+  // 重置面板布局：清 localStorage（v2 + 旧 v1 key）+ 服务端 user_settings，再
+  // reload 回到默认停靠状态。userSettings.ts 只有 debounced 同步写（500ms 后才
+  // 发请求，点击后立即 reload 会丢写）且无删除 API —— 直接 postAPI 写 '{}'
+  // 覆盖。v1 key 对应 SETTING_MAP 的 web:ui:panel-layout；v2 key 预写（引擎路
+  // 迁移到 v2 后服务端已有默认值，多余 key 对后端无害——任意 KV 均接受）。
+  const resetPanelLayout = async () => {
+    setResetting(true)
+    setResetErr(null)
+    try {
+      localStorage.removeItem('xbot:panel-layout-v2')
+      localStorage.removeItem('xbot:panel-layout')
+    } catch { /* ignore */ }
+    try {
+      await postAPI('/api/settings', { settings: {
+        'web:ui:panel-layout': '{}',
+        'web:ui:panel-layout-v2': '{}',
+      } })
+    } catch (err) {
+      setResetting(false)
+      setResetErr('云端同步失败，请重试（本地布局已清除）')
+      console.warn('[SettingsLayout] reset panel layout server sync failed:', err)
+      return
+    }
+    window.location.reload()
+  }
 
   // 按默认 slot 分组展示。
   const grouped = useMemo(() => {
@@ -57,7 +87,7 @@ export function SettingsLayout() {
   const itemName = (id: string, title: string) => BUILTIN_NAMES[id] ?? title
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection
         title={t('settings.nav.layout')}
         description="把按钮/面板移动到任意位置（手机底部导航、顶栏、桌面侧栏等），立即生效并记住偏好。"
@@ -66,6 +96,16 @@ export function SettingsLayout() {
           <Button type="button" variant="outline" size="sm" onClick={() => { resetAll(); setChanged((v) => v + 1) }}>
             恢复默认布局
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={resetting}
+            title="清除面板坞布局缓存（本地 + 云端）并刷新页面"
+            onClick={() => { void resetPanelLayout() }}
+          >
+            重置面板布局
+          </Button>
+          {resetErr && <span className="text-xs text-red-400">{resetErr}</span>}
         </div>
       </SettingsSection>
 
@@ -101,26 +141,26 @@ export function SettingsLayout() {
                     }
                     setDragOverId(null)
                   }}
-                  className={`flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 transition-shadow ${
+                  className={`flex items-center justify-between gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary ${
                     dragOverId === item.id ? 'ring-2 ring-accent' : ''
                   }`}
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">{itemName(item.id, item.title)}</div>
+                    <div className="truncate text-sm font-medium text-text-primary">{itemName(item.id, item.title)}</div>
                     <div className="truncate font-mono text-[10px] text-text-muted">{item.id}</div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <select
                       value={eff}
                       onChange={(e) => { moveItem(item.id, e.target.value as LayoutSlotId); setChanged((v) => v + 1) }}
-                      className="rounded-md border border-border bg-bg-secondary px-2 py-1 text-xs"
+                      className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-[#6c8cff]/40 focus:outline-none"
                     >
                       {slots.map((s) => (
                         <option key={s} value={s}>{SLOT_LABELS[s]}</option>
                       ))}
                     </select>
                     {overrides[item.id] !== undefined && (
-                      <Button type="button" variant="ghost" size="sm" onClick={() => { resetItem(item.id); setChanged((v) => v + 1) }}>
+                      <Button type="button" variant="ghost" size="sm" className="hover:bg-bg-hover" onClick={() => { resetItem(item.id); setChanged((v) => v + 1) }}>
                         重置
                       </Button>
                     )}

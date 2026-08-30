@@ -1,10 +1,10 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useChatMessages } from './useChatMessages'
 import type { WSConnection } from '@/types/ws'
 import type { WSMessage, ChatMessage } from '@/types/shared'
-import { MessageStore } from '@/components/agent/messageStore'
 import {
   bumpProgressGeneration,
   clearWebCaches,
@@ -671,167 +671,12 @@ describe('useChatMessages', () => {
     expect(result.current.messages[0].iterations[0].tools[0].name).toBe('Shell')
   })
 
-  it('appendAssistant 空 content + live 有流式内容：commit 保留 live 内容（快速回复不消失）', async () => {
-    // 用户 bug：回答极快且只有一个 agent iter，turn 结束后看不到 agent msg。
-    // 快速回复时 text 事件 content='' + progress_history='[]' → appendAssistant('', [])
-    // 的 `if (!content && !iterations.length) return` 跳过 commit → live 残留 +
-    // ProgressStore reset → agent msg 消失。修复：live 有内容时不跳过（commitAssistant
-    // 内部 fallback live.content）。
-    const ms = new MessageStore()
-    const ws = makeWS([])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'fast-chat', channel: 'web', ws, messageStore: ms }))
-    await waitFor(() => expect(result.current.loading).toBe(false))
-    // renderHook 后设置 live（模拟 SSE 流式内容 —— useChatMessages 初始化会
-    // clear store，所以必须在初始化后设置）
-    ms.setUser(100, { id: 'u100', role: 'user', content: 'hi', turnID: 100, iterations: [], timestamp: '', isPartial: false, persisted: true } as ChatMessage)
-    ms.updateLive(100, { turnID: 100, content: '好的', iterations: [] })
-    act(() => {
-      // 模拟 text 事件：content 空 + iterations 空（快速回复）
-      result.current.appendAssistant('', [], 600180, 100)
-    })
-    const rows = ms.toRows()
-    // committed assistant 必须保留 live 内容（content='好的'，非 isPartial）
-    expect(rows.some((r) => r.role === 'assistant' && r.content === '好的' && !r.isPartial)).toBe(true)
-    expect(rows.some((r) => r.id === 'turn-100-live')).toBe(false)
-  })
-
-  it('cancel: appendAssistant survives reload — assistant message does not vanish', async () => {
-    const ws = makeWS([
-      // First fetch: user message only (no assistant yet)
-      { messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 }], chat_id: 'cancel-chat', last_seq: 1 },
-    ])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-chat', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
-
-    // Simulate cancel: appendAssistant commits the assistant message
-    act(() => {
-      result.current.appendAssistant('partial reply', [], 2)
-    })
-    // messages = [user, assistant]
-    expect(result.current.messages.map(m => m.role)).toEqual(['user', 'assistant'])
-    expect(result.current.messages[1].content).toBe('partial reply')
-    expect(result.current.messages[1].persisted).toBe(false)
-    expect(result.current.messages[1].eventSeq).toBe(2)
-
-    // Now a reload comes back — server has user + [interrupted] assistant persisted
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      return new Response(JSON.stringify({
-        ok: true,
-        data: {
-          messages: [
-            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
-            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2,
-              iterations: [{ iteration: 1, content: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
-          ],
-          chat_id: 'cancel-chat', last_seq: 2,
-        },
-        error: null,
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }))
-
-    await act(async () => {
-      void result.current.reload()
-    })
-
-    // The assistant message must survive — not vanish
-    const assistantMsg = result.current.messages.find(m => m.role === 'assistant')
-    expect(assistantMsg).toBeDefined()
-    // content may be '' from server, but the message must exist
-    // (the live row with 'partial reply' is kept via >= watermark)
-  })
-
-  it('cancel: user message does NOT vanish after reload (persisted echo + DB row)', async () => {
-    // USER BUG: send a user message then cancel — the user message disappears
-    // until refresh. user_echo rows are persisted:true, so reconcile's first
-    // check (persisted !== false) drops them and the DB snapshot must carry
-    // them. This test pins the invariant: when the DB snapshot contains the
-    // row, the reload must render it (no vanish).
-    const ws = makeWS([{ messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 }], chat_id: 'cancel-user-chat', last_seq: 1 }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-user-chat', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
-    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
-
-    // User sends 'world' — backend echoes it deterministically (persisted:true)
-    act(() => handler({ type: 'user_echo', content: 'world', turn_id: 2, ts: 1000, id: 'r2' }))
-    expect(result.current.messages.map(m => m.content)).toContain('world')
-
-    // User cancels — destructive mutation marks next reload for reconcile
-    act(() => { result.current.markDestructiveMutation() })
-
-    // Reload returns a RACING snapshot that does NOT contain the user row yet
-    // (cancel landed between eager-save and the snapshot; the DB write is
-    // still in flight). This is the exact "user msg vanishes until refresh"
-    // bug: the persisted user_echo row (eventSeq=undefined) must survive the
-    // reload, otherwise the user message disappears and only a refresh (after
-    // the write lands) brings it back.
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      return new Response(JSON.stringify({
-        ok: true,
-        data: {
-          messages: [
-            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1, turn_id: 1 },
-            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:02Z', seq: 3, turn_id: 2,
-              iterations: [{ iteration: 1, content: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
-          ],
-          chat_id: 'cancel-user-chat', last_seq: 3,
-        },
-        error: null,
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }))
-
-    await act(async () => { void result.current.reload() })
-
-    // The user message must survive (persisted user_echo row is deterministic
-    // data — never dropped when the racing snapshot lacks it)
-    const contents = result.current.messages.map(m => m.content)
-    expect(contents).toContain('world')
-  })
-
-  it('cancel: appendAssistant with turnID does NOT duplicate after reload', async () => {
-    // Bug: after cancel, appendAssistant creates seq-N (turnID=3, persisted=false).
-    // markDestructiveMutation → next reload uses reconcileHistoryWithLiveRows.
-    // DB returns hist-N (turnID=3, content="" from [interrupted]).
-    // Old code kept BOTH because content/eventSeq didn't match.
-    // Fix: dedup by turnID:role — the DB message has the same turnID.
-    const ws = makeWS([
-      { messages: [{ role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 }], chat_id: 'dup-chat', last_seq: 1 },
-    ])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'dup-chat', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages.map(m => m.role)).toEqual(['user']))
-
-    // Simulate cancel: appendAssistant with turnID=3
-    act(() => {
-      result.current.appendAssistant('partial reply', [], 2, 3)
-    })
-    result.current.markDestructiveMutation()
-
-    // Reload returns the [interrupted] message with same turnID=3
-    vi.stubGlobal('fetch', vi.fn(async () => {
-      return new Response(JSON.stringify({
-        ok: true,
-        data: {
-          messages: [
-            { role: 'user', content: 'hello', timestamp: '2026-07-24T00:00:00Z', seq: 1 },
-            { role: 'assistant', content: '', timestamp: '2026-07-24T00:00:01Z', seq: 2, turn_id: 3,
-              iterations: [{ iteration: 1, content: 'partial reply', tools: [{ name: 'user_cancelled', status: 'done' }] }] },
-          ],
-          chat_id: 'dup-chat', last_seq: 2,
-        },
-        error: null,
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    }))
-
-    await act(async () => {
-      void result.current.reload()
-    })
-
-    // MUST have exactly ONE assistant message (no duplication)
-    const assistantMsgs = result.current.messages.filter(m => m.role === 'assistant')
-    expect(assistantMsgs).toHaveLength(1)
-    // The DB version (with iterations) should win
-    expect(assistantMsgs[0].persisted).toBe(true)
-    expect(assistantMsgs[0].iterations).toHaveLength(1)
-  })
+  // F#4：以下 useProgressStream 时代的死接口测试（appendAssistant /
+  // injectUserMessage / markDestructiveMutation）已删除 —— 接口生产零引用
+  //（useAgentChatState TDSM 状态机接管 commit/notification 注入路径），等价
+  // 行为由 reduce.test.ts / useAgentChatState.test.tsx / messageStore.test.ts
+  // 覆盖（commit 排序由 MessageStore turnID 槽位结构保证、notification dedup
+  // 由 reduce user_echo 幂等规则覆盖）。
 
   it('reloads messages from DB when replay_gap is dispatched (real data loss)', async () => {
     let messageHandler: ((message: WSMessage) => void) | null = null
@@ -866,111 +711,6 @@ describe('useChatMessages', () => {
     await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual([
       'initial', 'reply after gap',
     ]))
-  })
-
-  it('inserts a committed assistant after ITS OWN turn user even when the next turn user is already persisted', async () => {
-    // BUG: appendAssistant(insertBeforeLastUser=true) only looked for an
-    // UNPERSISTED user. When the next turn's user was persisted first (REST
-    // response arrived), it fell through to the END of the list, rendering
-    // turn N's iteration history AFTER turn N+1's user/live content — the
-    // "严重迭代混乱" layout (asst-42 appears below user-43).
-    const ws = makeWS([{ messages: [] }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'turn-order', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
-
-    // turn 42 + turn 43 users arrive via deterministic backend user_echo (turn_id included).
-    act(() => handler({ type: 'user_echo', content: 'u42', turn_id: 42, ts: 1000, id: 'r42' }))
-    act(() => handler({ type: 'user_echo', content: 'u43', turn_id: 43, ts: 1001, id: 'r43' }))
-
-    // turn 42's assistant committed late (turn_started(43) / text fallback)
-    act(() => result.current.appendAssistant('A42', [], undefined, 42, true))
-
-    const contents = result.current.messages.map((m) => m.content)
-    expect(contents.indexOf('A42')).toBeGreaterThan(contents.indexOf('u42'))
-    expect(contents.indexOf('A42')).toBeLessThan(contents.indexOf('u43'))
-  })
-
-  it('inserts committed assistant AFTER the AskUser answer user (same turnID, last user)', async () => {
-    // AskUser answer case: the answer is persisted as a user message with the
-    // SAME turnID as the iterations that follow, and it is the LAST user in
-    // the list. insertBeforeLastUser must locate THIS TURN's user (turnID
-    // match) and insert AFTER it — otherwise the new iterations render ABOVE
-    // the answer (broken order).
-    const ws = makeWS([{ messages: [] }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'askuser-order', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-    const handler = vi.mocked(ws.onMessage).mock.calls[0][0] as (m: WSMessage) => void
-
-    // original user + AskUser answer user — both arrive via backend user_echo
-    // (deterministic turn_id), same turn 2.
-    act(() => handler({ type: 'user_echo', content: 'u2', turn_id: 2, ts: 1000, id: 'r2a' }))
-    act(() => handler({ type: 'user_echo', content: 'answer', turn_id: 2, ts: 1001, id: 'r2b' }))
-
-    // post-answer iteration (turn 2) commits via insertBeforeLastUser
-    act(() => result.current.appendAssistant('A2', [], undefined, 2, true))
-
-    const contents = result.current.messages.map((m) => m.content)
-    expect(contents.indexOf('A2')).toBeGreaterThan(contents.indexOf('answer'))
-    expect(contents.indexOf('A2')).toBeGreaterThan(contents.indexOf('u2'))
-  })
-
-  it('injectUserMessage deduplicates notification by turnID (SSE reconnect replay)', async () => {
-    // BUG: turn_started events are buffered by the web hub's ring buffer as
-    // stateful messages and replayed on SSE reconnect. Without dedup, each
-    // replay calls injectUserMessage again, creating duplicate notification
-    // user messages. After refresh, reconcileHistoryWithLiveRows drops the
-    // live rows (eventSeq=-1 < watermark), so the duplicate "disappears".
-    // Fix: injectUserMessage checks if a notification with the same turnID
-    // already exists before creating a new one.
-    const ws = makeWS([{ messages: [] }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'notif-dedup', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    // First turn_started (notification) — creates the notification user message.
-    act(() => result.current.injectUserMessage('bg task completed', 55, true))
-    expect(result.current.messages).toHaveLength(1)
-    expect(result.current.messages[0].content).toBe('bg task completed')
-    expect(result.current.messages[0].turnID).toBe(55)
-    expect(result.current.messages[0].isNotification).toBe(true)
-
-    // SSE reconnect replays the same turn_started — must NOT create a duplicate.
-    act(() => result.current.injectUserMessage('bg task completed', 55, true))
-    expect(result.current.messages).toHaveLength(1)
-
-    // A different turnID (new notification) — should create a new message.
-    act(() => result.current.injectUserMessage('cron job done', 56, true))
-    expect(result.current.messages).toHaveLength(2)
-  })
-
-  it('reconcileHistoryWithLiveRows keeps a notification user message (eventSeq=-1) when history lacks it', async () => {
-    // Scenario 1 (weak network): a bg notification turn starts, the notification
-    // user message is injected (eventSeq=-1 marker), then a racing reload
-    // returns history WITHOUT the row yet (eager-save in flight). The old
-    // watermark rule (eventSeq=-1 < last_seq) dropped the notification until
-    // refresh. Fix: eventSeq=-1 notifications are kept unless history already
-    // covers the same turnID:role.
-    const ws = makeWS([
-      {
-        messages: [{
-          id: 90, role: 'assistant', content: 'older reply', turn_id: 54,
-          timestamp: '2026-08-03T00:00:00Z',
-          iterations: [],
-        }],
-        last_seq: 200, oldest_id: 90, has_more: false,
-      },
-    ])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'notif-reconcile', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages.length).toBeGreaterThan(0))
-    // Inject a notification whose DB row does not exist yet (racing reload).
-    act(() => result.current.injectUserMessage('bg task done', 55, true))
-    expect(result.current.messages.some((m) => m.isNotification && m.turnID === 55)).toBe(true)
-    // Reload: history (last_seq=200) lacks the notification row; the eventSeq=-1
-    // marker must NOT be dropped by the watermark rule.
-    await act(async () => { await result.current.reload() })
-    const notif = result.current.messages.find((m) => m.isNotification)
-    expect(notif).toBeDefined()
-    expect(notif?.turnID).toBe(55)
   })
 
   it('loadMore deduplicates by turnID:role across batch boundaries', async () => {
@@ -1053,51 +793,11 @@ describe('useChatMessages', () => {
     expect(result.current.messages[0].dbID).toBe(42)
   })
 
-  it('cancelled-turn assistant committed via commitLiveProgressAndReset lands AFTER its turn user, even when next user is not yet in the list', async () => {
-    // BUG: when turn_started(2) fires and commitLiveProgressAndReset commits
-    // the cancelled turn 1's assistant, appendAssistant(insertBeforeLastUser=true)
-    // scans backwards for the LAST user message. If user2's optimistic row
-    // hasn't been added to the messages array yet (race: turn_started arrives
-    // before sendMessage's setMessages is applied), the scan finds user1 at
-    // index 0 and inserts BEFORE it: [assistant1, user1]. Then user2 is added:
-    // [assistant1, user1, user2] — the assistant appears BEFORE user1.
-    //
-    // Fix: when insertBeforeLastUser=true AND turnID > 0, first scan for the
-    // assistant's OWN turn user (role=user && turnID matches) and insert AFTER
-    // it. This correctly positions the assistant even when the next turn's
-    // user is not yet in the list.
-    const ws = makeWS([{ messages: [] }])
-    const { result } = renderHook(() => useChatMessages({ chatID: 'cancel-race', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    // turn 1: user1 sent with turnID=1 (use injectUserMessage to set turnID directly)
-    act(() => result.current.injectUserMessage('u1', 1, false))
-    expect(result.current.messages).toHaveLength(1)
-    expect(result.current.messages[0].turnID).toBe(1)
-
-    // Simulate the race: commitLiveProgressAndReset fires BEFORE user2 is
-    // added to the messages array. The committed assistant has turnID=1
-    // (the cancelled turn's ID).
-    act(() => result.current.appendAssistant('A1', [], undefined, 1, true))
-
-    // The assistant must land AFTER user1 (its own turn user), not before it.
-    const contents = result.current.messages.map((m) => m.content)
-    expect(contents).toEqual(['u1', 'A1'])
-
-    // Now user2 is added (next turn's user)
-    act(() => result.current.injectUserMessage('u2', 2, false))
-    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2'])
-  })
-
   it('sendMessage updates optimistic message with REST response turn_id (prevents assistant displacement)', async () => {
     // BUG: sendMessage's .then() callback didn't update the optimistic message
     // with the REST response data (turn_id, message_id). The optimistic message
-    // stayed turnID=0, persisted=false until user_echo arrived. When
-    // commitLiveProgressAndReset fired (from turn_started of the NEXT turn),
-    // appendAssistant(insertBeforeLastUser=true, turnID=N) couldn't find a
-    // user with turnID=N (it was 0), fell back to inserting BEFORE the last
-    // user — which was user(N) itself — resulting in [assistant(N), user(N)]
-    // instead of [user(N), assistant(N)].
+    // stayed turnID=0, persisted=false until user_echo arrived — breaking
+    // turn binding (turn_started(N) couldn't bind the pending user).
     //
     // Fix: .then() updates the optimistic message with turn_id, dbID,
     // persisted=true, sending=false from the REST response.
@@ -1117,46 +817,6 @@ describe('useChatMessages', () => {
     expect(result.current.messages[0].turnID).toBe(42)
     expect(result.current.messages[0].persisted).toBe(true)
     expect(result.current.messages[0].dbID).toBe(100)
-
-    // Now commitLiveProgressAndReset (from turn_started of next turn) fires
-    // with turnID=42. appendAssistant scans for user with turnID=42 → found
-    // → inserts AFTER it (not before).
-    act(() => result.current.appendAssistant('reply', [], undefined, 42, true))
-    expect(result.current.messages.map((m) => m.content)).toEqual(['hello', 'reply'])
-  })
-
-  it('full linear consistency: user1 → assistant1(cancelled) → user2 → assistant2', async () => {
-    // End-to-end test covering the cancelled-turn rendering bug.
-    // After this fix, the order must ALWAYS be [u1, A1, u2, A2] — never
-    // [A1, u1, u2, A2] or [u1, u2, A1, A2].
-    const ws = makeWS([{ messages: [] }])
-    vi.mocked(ws.send).mockResolvedValue({ turn_id: 1, queued: false, message_id: 1, timestamp: 1 })
-    const { result } = renderHook(() => useChatMessages({ chatID: 'e2e-linear', channel: 'web', ws }))
-    await waitFor(() => expect(result.current.messages).toEqual([]))
-
-    // Turn 1: user1 sent (REST response binds turnID=1)
-    act(() => result.current.sendMessage('u1'))
-    await act(async () => { await Promise.resolve() })
-    expect(result.current.messages[0].turnID).toBe(1)
-
-    // Turn 1 cancelled: commitLiveProgressAndReset fires with turnID=1
-    // (simulating turn_started(2) committing turn 1's frozen content)
-    act(() => result.current.appendAssistant('A1', [], undefined, 1, true))
-    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1'])
-
-    // Turn 2: user2 sent (REST response binds turnID=2)
-    vi.mocked(ws.send).mockResolvedValue({ turn_id: 2, queued: false, message_id: 2, timestamp: 2 })
-    act(() => result.current.sendMessage('u2'))
-    await act(async () => { await Promise.resolve() })
-    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2'])
-    expect(result.current.messages[2].turnID).toBe(2)
-
-    // Turn 2 completes: text event commits assistant2 with turnID=2
-    act(() => result.current.appendAssistant('A2', [], undefined, 2, false))
-    expect(result.current.messages.map((m) => m.content)).toEqual(['u1', 'A1', 'u2', 'A2'])
-
-    // Verify turnIDs are correct
-    expect(result.current.messages.map((m) => m.turnID)).toEqual([1, 1, 2, 2])
   })
 
   it('user_echo deduplicates against REST-response-bound optimistic message', async () => {
@@ -1193,5 +853,118 @@ describe('useChatMessages', () => {
     expect(result.current.messages).toHaveLength(1)
     expect(result.current.messages[0].content).toBe('hello')
     expect(result.current.messages[0].turnID).toBe(42)
+  })
+
+  it('StrictMode 下 user_echo 只产生一行（F#5：副作用移出 setMessages updater）', async () => {
+    // React StrictMode 双调用 setState updater —— 旧实现把 messageMutationGenRef
+    // 自增、store 写入、syncMessages（嵌套 setMessages）放在 updater 内，双执行
+    // 导致 mutation 计数双递增（SSE 重连 last_event_id 水位回退的根因）。副作用
+    // 移到 listener 回调体后，StrictMode 下 echo 行为不变：单行、store 幂等。
+    let messageHandler: ((message: WSMessage) => void) | null = null
+    const ws = makeWS([])
+    vi.mocked(ws.onMessage).mockImplementation((handler) => {
+      messageHandler = handler
+      return vi.fn()
+    })
+    const { result } = renderHook(
+      () => useChatMessages({ chatID: 'strict-chat', channel: 'web', ws }),
+      { wrapper: React.StrictMode },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    act(() => {
+      messageHandler?.({
+        type: 'user_echo',
+        chat_id: 'strict-chat',
+        content: 'strict message',
+        ts: 1723600000,
+        seq: 1,
+      })
+    })
+
+    expect(result.current.messages.map((m) => m.content)).toEqual(['strict message'])
+  })
+
+  it('loadMore 无 id 无 seq 的历史行不因合成 id 跨批冲突被判重（分页截断）', async () => {
+    // Loop2 F4：E2E mock / 旧 fixture 的消息可能无 id 无 seq ——
+    // parseHistoryMessages 的 id fallback `hist-${i}`（i 是批内 index）每批
+    // 从 0 重来 → loadMore 第二批的 `hist-0`/`hist-1` 与第一批冲突 →
+    // noExactDups=0 → hasMore=false 分页截断（更老的消息永远加载不出来，
+    // 尽管第二批是新数据）。修复：loadMore 传批判别符（beforeId cursor），
+    // id fallback 变 `hist-{beforeId}-{i}`（跨批唯一）。
+    const ws = makeWS([
+      // 初始批：3 行（无 id 无 seq）
+      {
+        messages: [
+          { role: 'user', content: 'turn5 q', turn_id: 5, timestamp: '2026-08-03T00:00:05Z' },
+          { role: 'assistant', content: 'turn4 reply', turn_id: 4, timestamp: '2026-08-03T00:00:04Z' },
+          { role: 'user', content: 'turn4 q', turn_id: 4, timestamp: '2026-08-03T00:00:03Z' },
+        ],
+        last_seq: 200, oldest_id: 300, has_more: true,
+      },
+      // loadMore 批：2 行（无 id 无 seq —— id fallback hist-0/hist-1）
+      {
+        messages: [
+          { role: 'user', content: 'turn2 q', turn_id: 2, timestamp: '2026-08-03T00:00:02Z' },
+          { role: 'assistant', content: 'turn1 reply', turn_id: 1, timestamp: '2026-08-03T00:00:01Z' },
+        ],
+        last_seq: 100, oldest_id: 100, has_more: false,
+      },
+    ])
+
+    const { result } = renderHook(() => useChatMessages({ chatID: 'loadmore-synthid', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages).toHaveLength(3))
+
+    let loaded = false
+    await act(async () => { loaded = await result.current.loadMore() })
+    // 修复前：第二批合成 id hist-0/hist-1 与第一批冲突 → 全被判 dup →
+    // noExactDups=0 → hasMore=false，loaded=false（更老消息截断）。
+    expect(loaded).toBe(true)
+    // 第二批的老消息可见（分页未截断）
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents).toContain('turn2 q')
+    expect(contents).toContain('turn1 reply')
+    expect(result.current.hasMore).toBe(false) // 第三批 has_more=false（真实结束）
+  })
+
+  it('loadMore 无 id 无 seq 多批：合成 id 批间唯一（hist-{beforeId}-{i}）', async () => {
+    // 三批连续 loadMore（cursor 移动）—— 每批判别符不同，合成 id 不冲突。
+    const ws = makeWS([
+      {
+        messages: [
+          { role: 'user', content: 'newest', turn_id: 9, timestamp: '2026-08-03T00:00:09Z' },
+        ],
+        last_seq: 900, oldest_id: 90, has_more: true,
+      },
+      {
+        messages: [
+          { role: 'user', content: 'older1', turn_id: 8, timestamp: '2026-08-03T00:00:08Z' },
+          { role: 'user', content: 'older2', turn_id: 7, timestamp: '2026-08-03T00:00:07Z' },
+        ],
+        last_seq: 800, oldest_id: 70, has_more: true,
+      },
+      {
+        messages: [
+          { role: 'user', content: 'oldest', turn_id: 6, timestamp: '2026-08-03T00:00:06Z' },
+        ],
+        last_seq: 700, oldest_id: 60, has_more: false,
+      },
+    ])
+
+    const { result } = renderHook(() => useChatMessages({ chatID: 'loadmore-multi-batch', channel: 'web', ws }))
+    await waitFor(() => expect(result.current.messages.map((m) => m.content)).toEqual(['newest']))
+
+    let l1 = false
+    await act(async () => { l1 = await result.current.loadMore() })
+    expect(l1).toBe(true)
+    let l2 = false
+    await act(async () => { l2 = await result.current.loadMore() })
+    expect(l2).toBe(true)
+
+    // 三批全部加载（合成 id 批间唯一，无跨批误判重）；渲染按 turnID 升序：
+    // 6(oldest) → 7(older2) → 8(older1) → 9(newest)。
+    const contents = result.current.messages.map((m) => m.content)
+    expect(contents).toEqual(['oldest', 'older2', 'older1', 'newest'])
+    expect(result.current.hasMore).toBe(false)
   })
 })

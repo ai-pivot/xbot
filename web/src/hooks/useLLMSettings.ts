@@ -127,6 +127,7 @@ export function useLLMSettings() {
       base_url: string
       api_key: string
       model: string
+      api_type?: string
     }): Promise<boolean> => {
       setSaving(true)
       try {

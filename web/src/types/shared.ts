@@ -7,7 +7,7 @@
 
 export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en'
-export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'diff'
+export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'panel'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
 export type SessionCategory = 'time' | 'status' | 'path'
 
@@ -30,6 +30,8 @@ export interface Tab {
 }
 
 export interface TabData {
+  /** 布局 v2：侧栏「面板」区打开的 dockview 面板 id（files/search/info/tasks/terminal）。 */
+  panelId?: string
   filePath?: string
   /** Session channel for agent tabs (web/cli/feishu/...). */
   channel?: string
@@ -188,6 +190,8 @@ export interface WSMessage {
   content?: string
   original_content?: string
   ts?: number
+  /** bg_task_output: which task this delta belongs to */
+  task_id?: string
   progress?: ProgressEvent | null
   progress_history?: string
   channel?: string
@@ -316,11 +320,22 @@ export interface GoalInfo {
   summary?: string
 }
 
-/** TODO item — mirrors Go protocol.TodoItem (json: id, text, done). */
+/** TODO item — mirrors Go protocol.TodoItem (json: id, text, status). v2: status-only (done field removed). */
 export interface TodoItem {
   id: number
   text: string
-  done: boolean
+  /** "pending" | "doing" | "done"（必填——LLM 必须显式标记状态） */
+  status: string
+}
+
+/**
+ * Backward compat: 老后端发 {done: boolean}（无 status 字段）；新后端发 {status: string}。
+ * 在数据边界（normalize/integrate/useProgressStream）统一转换——前端内部只用 status。
+ */
+export function todoStatusOf(t: { status?: string; done?: boolean }): string {
+  if (typeof t.status === 'string' && t.status) return t.status
+  if (t.done === true) return 'done'
+  return 'pending'
 }
 
 /** SubAgent progress node — mirrors Go protocol.SubAgentInfo. */

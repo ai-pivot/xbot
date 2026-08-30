@@ -42,6 +42,7 @@ const (
 	MethodGetMemoryStats               = "get_memory_stats"
 	MethodGetUserTokenUsage            = "get_user_token_usage"
 	MethodGetDailyTokenUsage           = "get_daily_token_usage"
+	MethodGetSessionUsageStats         = "get_session_usage_stats"
 	MethodGetBgTaskCount               = "get_bg_task_count"
 	MethodListBgTasks                  = "list_bg_tasks"
 	MethodKillBgTask                   = "kill_bg_task"
@@ -225,6 +226,12 @@ type getUserTokenUsageReq struct {
 type getDailyTokenUsageReq struct {
 	SenderID string `json:"sender_id"`
 	Days     int    `json:"days"`
+}
+
+type getSessionUsageStatsReq struct {
+	Channel string `json:"channel"`
+	ChatID  string `json:"chat_id"`
+	Limit   int    `json:"limit"`
 }
 
 // --- Background Tasks ---

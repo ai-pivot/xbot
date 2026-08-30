@@ -30,8 +30,6 @@ func (f *fakeModelLister) ListAllModelEntries() []protocol.ModelEntry {
 	return f.entries
 }
 
-func (f *fakeModelLister) EnsureModelsLoaded() {}
-
 func (f *fakeModelLister) RefreshModelEntries() []protocol.ModelEntry {
 	f.refreshed = true
 	return f.entries

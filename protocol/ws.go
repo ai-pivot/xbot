@@ -24,6 +24,7 @@ const (
 	MsgTypeSession        = "session"
 	MsgTypeGenUI          = "genui"
 	MsgTypeResyncRequired = "resync_required"
+	MsgTypeBgTaskOutput   = "bg_task_output"
 	MsgTypePong           = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration
@@ -90,6 +91,7 @@ type WSMessage struct {
 	Content         string             `json:"content,omitempty"`
 	OriginalContent string             `json:"original_content,omitempty"`
 	TS              int64              `json:"ts,omitempty"`
+	TaskID          string             `json:"task_id,omitempty"` // bg_task_output: which task this delta belongs to
 	Progress        *ProgressEvent     `json:"progress,omitempty"`
 	ProgressHistory string             `json:"progress_history,omitempty"`
 	Channel         string             `json:"channel,omitempty"`
@@ -107,22 +109,6 @@ type WSMessage struct {
 	Error           string             `json:"error,omitempty"`
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
 	Session         *SessionEvent      `json:"session,omitempty"`
-}
-
-// GetStreamContent returns the StreamContent from the embedded Progress.
-func (m *WSMessage) GetStreamContent() string {
-	if m.Progress == nil {
-		return ""
-	}
-	return m.Progress.StreamContent
-}
-
-// GetReasoningStreamContent returns the ReasoningStreamContent from the embedded Progress.
-func (m *WSMessage) GetReasoningStreamContent() string {
-	if m.Progress == nil {
-		return ""
-	}
-	return m.Progress.ReasoningStreamContent
 }
 
 // WSClientMessage is the unified client→server WebSocket message envelope.

@@ -92,6 +92,13 @@ func TestHandleExecuteTool_ValidCode(t *testing.T) {
 }
 
 // TestHandleExecuteTool_InvalidCode verifies validation failures are errors.
+//
+// NOTE: syntax/balance validation deliberately lives in the FRONTEND (sucrase,
+// the same compiler the renderer uses). A Go-side hand-written bracket counter
+// was removed after it false-rejected perfectly valid code containing regex
+// literals (2026-08-28: every large GenUI draft failed with depth=2). Unbalanced
+// code now passes through and the frontend shows the compile error where it
+// renders — the tool result itself succeeds.
 func TestHandleExecuteTool_InvalidCode(t *testing.T) {
 	cases := []struct {
 		name string
@@ -99,9 +106,6 @@ func TestHandleExecuteTool_InvalidCode(t *testing.T) {
 	}{
 		{"empty", ""},
 		{"no app", "export default function Foo(){return <div/>}"},
-		{"unbalanced", "export default function App(){return <div>"},
-		// Multi-line (realistic LLM output): `return null` at line start.
-		{"null render", "export default function App() {\n  return null\n}"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -122,6 +126,52 @@ func TestHandleExecuteTool_InvalidCode(t *testing.T) {
 			}
 			if !resp.Result.IsError {
 				t.Fatalf("expected error for %q, got content=%q", c.name, resp.Result.Content)
+			}
+		})
+	}
+}
+
+// TestHandleExecuteTool_SyntaxLeftToFrontend verifies the plugin passes
+// syntactically-questionable-but-valid code through (regex literals, sub-component
+// null fallbacks). Genuinely broken syntax (unclosed strings, mismatched brackets)
+// IS rejected server-side by the string-context-aware bracket balancer (v2:
+// user report — frontend render error "Unexpected token" was not fed back to
+// the agent; the tool result said "UI rendered" and the agent thought it
+// succeeded while the user saw a broken panel).
+func TestHandleExecuteTool_SyntaxLeftToFrontend(t *testing.T) {
+	cases := []struct {
+		name string
+		code string
+	}{
+		{"regex literal with slashes", "export default function App(){const u='https://a.b';return <div>{u.replace(/^https?:\\/\\//, '')}</div>}"},
+		// Multi-line (realistic LLM output): `return null` in a SUB-component
+		// fallback branch — the App itself renders fine, must pass through.
+		{"null fallback in sub-component", "export default function App(){\n  const Inner = function(){return null}\n  return <div><Inner/></div>\n}"},
+		{"properly balanced", "export default function App(){return <div>{[1,2,3].map(i => <span key={i}>{i}</span>)}</div>}"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			req := rpcRequest{ID: "r4", Method: "execute_tool", Params: mustParams(t, map[string]any{
+				"name": "display_html", "input": mustJSON(t, map[string]any{"code": c.code}),
+			})}
+			handleExecuteTool(enc, req)
+			var resp struct {
+				Result struct {
+					IsError bool   `json:"is_error"`
+					Content string `json:"content"`
+					UICode  string `json:"ui_code"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if resp.Result.IsError {
+				t.Fatalf("expected pass-through for %q, got error: %s", c.name, resp.Result.Content)
+			}
+			if resp.Result.UICode == "" {
+				t.Fatalf("expected ui_code for %q", c.name)
 			}
 		})
 	}

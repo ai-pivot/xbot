@@ -130,6 +130,120 @@
   --text-muted: #6e7781;
 }
 
+/* ── Solarized Light ───────────────────────────────────────────────── */
+:root[data-md-theme="solarized-light"] {
+  --syntax-text: #657b83;
+  --syntax-keyword: #859900;
+  --syntax-string: #2aa198;
+  --syntax-number: #d33682;
+  --syntax-comment: #93a1a1;
+  --syntax-attr: #b58900;
+  --syntax-title: #268bd2;
+  --syntax-builtin: #6c71c4;
+  --syntax-type: #268bd2;
+  --syntax-meta: #93a1a1;
+  --syntax-regex: #cb4b16;
+
+  --md-text: #657b83;
+  --md-heading: #586e75;
+  --md-link: #268bd2;
+  --md-border: #eee8d5;
+  --md-blockquote-text: #93a1a1;
+  --md-blockquote-border: #268bd2;
+  --md-blockquote-bg: #eee8d5;
+  --md-table-header-bg: #eee8d5;
+  --md-table-border: #eee8d5;
+  --md-inline-code-bg: #eee8d5;
+  --md-inline-code-text: #cb4b16;
+  --md-code-bg: #fdf6e3;
+  --md-code-border: #eee8d5;
+  --md-code-lang-text: #93a1a1;
+
+  --bg-primary: #fdf6e3;
+  --bg-secondary: #eee8d5;
+  --bg-tertiary: #e0ddd0;
+  --border: #d5d0c0;
+  --text-primary: #586e75;
+  --text-secondary: #657b83;
+  --text-muted: #93a1a1;
+}
+
+/* ── One Light ──────────────────────────────────────────────────────── */
+:root[data-md-theme="one-light"] {
+  --syntax-text: #383a42;
+  --syntax-keyword: #a626a4;
+  --syntax-string: #50a14f;
+  --syntax-number: #986801;
+  --syntax-comment: #a0a1a7;
+  --syntax-attr: #4078f2;
+  --syntax-title: #e45649;
+  --syntax-builtin: #0184bc;
+  --syntax-type: #0184bc;
+  --syntax-meta: #a0a1a7;
+  --syntax-regex: #986801;
+
+  --md-text: #383a42;
+  --md-heading: #2c2e34;
+  --md-link: #4078f2;
+  --md-border: #e5e6e7;
+  --md-blockquote-text: #71727a;
+  --md-blockquote-border: #4078f2;
+  --md-blockquote-bg: #f2f3f4;
+  --md-table-header-bg: #f2f3f4;
+  --md-table-border: #e5e6e7;
+  --md-inline-code-bg: #f2f3f4;
+  --md-inline-code-text: #a626a4;
+  --md-code-bg: #fafafa;
+  --md-code-border: #e5e6e7;
+  --md-code-lang-text: #a0a1a7;
+
+  --bg-primary: #fafafa;
+  --bg-secondary: #f2f3f4;
+  --bg-tertiary: #e5e6e7;
+  --border: #dcdedf;
+  --text-primary: #2c2e34;
+  --text-secondary: #383a42;
+  --text-muted: #71727a;
+}
+
+/* ── Quiet Light ────────────────────────────────────────────────────── */
+:root[data-md-theme="quiet-light"] {
+  --syntax-text: #333333;
+  --syntax-keyword: #447fcf;
+  --syntax-string: #4d8f4d;
+  --syntax-number: #a0631a;
+  --syntax-comment: #8f8f8f;
+  --syntax-attr: #8f6f4f;
+  --syntax-title: #5a5a5a;
+  --syntax-builtin: #6f6f8f;
+  --syntax-type: #447fcf;
+  --syntax-meta: #8f8f8f;
+  --syntax-regex: #a0631a;
+
+  --md-text: #333333;
+  --md-heading: #1a1a1a;
+  --md-link: #447fcf;
+  --md-border: #dedede;
+  --md-blockquote-text: #666666;
+  --md-blockquote-border: #447fcf;
+  --md-blockquote-bg: #f5f5f5;
+  --md-table-header-bg: #f5f5f5;
+  --md-table-border: #dedede;
+  --md-inline-code-bg: #f0f0f0;
+  --md-inline-code-text: #8f6f4f;
+  --md-code-bg: #f8f8f8;
+  --md-code-border: #dedede;
+  --md-code-lang-text: #8f8f8f;
+
+  --bg-primary: #f8f8f8;
+  --bg-secondary: #f0f0f0;
+  --bg-tertiary: #e6e6e6;
+  --border: #dcdcdc;
+  --text-primary: #1a1a1a;
+  --text-secondary: #333333;
+  --text-muted: #666666;
+}
+
 /* ── Dracula ─────────────────────────────────────────────────────────── */
 :root[data-md-theme="dracula"] {
   --syntax-text: #f8f8f2;

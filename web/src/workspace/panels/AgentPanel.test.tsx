@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => {
     sendMessage: vi.fn(() => { order.push('send') }),
     cancel: vi.fn(),
     upload: vi.fn(),
-    appendAssistant: vi.fn(),
   }
   const context = {
     ws: { onSession: vi.fn(() => vi.fn()) },

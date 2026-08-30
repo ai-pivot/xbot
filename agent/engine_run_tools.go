@@ -26,6 +26,11 @@ type toolExecBatch struct {
 // initToolProgress sets up progress placeholders and structured progress for all
 // tool calls in the LLM response.
 func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *toolExecBatch {
+	// progressLines and structuredProgress share progressMu: background
+	// SubAgent callbacks (locked writes) outlive their spawning iteration and
+	// race against this reset on the main run goroutine, and this batch's own
+	// concurrent tool goroutines notifyProgress-clone the same state.
+	s.progressMu.Lock()
 	progressStartIdx := len(s.progressLines)
 	for _, tc := range response.ToolCalls {
 		s.toolsUsed = append(s.toolsUsed, tc.Name)
@@ -55,6 +60,7 @@ func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *t
 			}
 		}
 	}
+	s.progressMu.Unlock()
 	if s.autoNotify {
 		s.notifyProgress("")
 	}
@@ -133,9 +139,14 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 	}
 
 	start := time.Now()
+	// ActiveTools slot write must hold progressMu: this runs on concurrent
+	// tool goroutines (dispatchReadWriteSplit) while sibling goroutines'
+	// notifyProgress clones structuredProgress under the same lock.
+	s.progressMu.Lock()
 	if s.structuredProgress != nil && entry.index < len(s.structuredProgress.ActiveTools) {
 		s.structuredProgress.ActiveTools[entry.index].Status = ToolRunning
 	}
+	s.progressMu.Unlock()
 	// Notify CLI immediately so the running animation is visible
 	// before the tool blocks on execution.
 	if s.autoNotify {
@@ -164,7 +175,15 @@ func (s *runState) execOneTool(ctx context.Context, entry toolCallEntry, batch *
 }
 
 // updateToolResultProgress updates the structured progress entry for a completed tool.
+// The whole body holds progressMu: it runs on concurrent tool goroutines
+// (dispatchReadWriteSplit) writing the same structuredProgress.ActiveTools
+// slice that sibling goroutines' notifyProgress clones under the same lock,
+// and its entry-bounds read races with the clone too. The interspersed
+// registry/plugin lookups are map reads (microseconds) — kept inside for
+// atomicity of the slot update.
 func (s *runState) updateToolResultProgress(ctx context.Context, entry toolCallEntry, batch *toolExecBatch, result *tools.ToolResult, execErr error, elapsed time.Duration) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
 	if s.structuredProgress == nil || entry.index >= len(s.structuredProgress.ActiveTools) {
 		return
 	}
@@ -257,6 +276,9 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 		batch.results[entry.index].content = fmt.Sprintf("Error: %v\n\nPlease fix the issue and try again with corrected parameters.", execErr)
 		batch.results[entry.index].llmContent = batch.results[entry.index].content
 		if s.autoNotify {
+			// progressLines slot write: runs on concurrent tool goroutines —
+			// same progressMu contract as updateToolResultProgress.
+			s.progressMu.Lock()
 			if tc.Name == "SubAgent" {
 				line := s.progressLines[pi]
 				line = strings.ReplaceAll(line, "⏳", "❌")
@@ -265,6 +287,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			} else {
 				s.progressLines[pi] = fmt.Sprintf("> ❌ %s (%s)", toolLabel, elapsed.Round(time.Millisecond))
 			}
+			s.progressMu.Unlock()
 		}
 	} else {
 		batch.results[entry.index].content = result.Summary
@@ -282,6 +305,9 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 			"elapsed": elapsed.Round(time.Millisecond),
 		}).Debugf("Tool done: %s", resultPreview)
 		if s.autoNotify {
+			// progressLines slot write: runs on concurrent tool goroutines —
+			// same progressMu contract as updateToolResultProgress.
+			s.progressMu.Lock()
 			if tc.Name == "SubAgent" {
 				line := s.progressLines[pi]
 				// Replace both possible prefixes: ⏳ (initial placeholder) and 🔄 (progress-updated)
@@ -295,6 +321,7 @@ func (s *runState) updateToolResultLine(ctx context.Context, entry toolCallEntry
 				}
 				s.progressLines[pi] = fmt.Sprintf("> %s %s (%s)", icon, toolLabel, elapsed.Round(time.Millisecond))
 			}
+			s.progressMu.Unlock()
 		}
 	}
 }
@@ -426,30 +453,49 @@ func (s *runState) executeSubAgentOps(ctx context.Context, ops []toolCallEntry, 
 // writeIterationHistory. No other code path writes iteration_history — not
 // handleRunOutput, not handleCancelledRun. Detail JSON is no longer written.
 func (s *runState) snapshotCompletedIteration(iteration int) {
+	// M2 锁覆盖：写段（Active→Completed 合并）与 snap 构造读段（Content/
+	// ReasoningContent/CompletedTools/StreamStats/subAgentNodes）都与后台
+	// SubAgent 回调的 notifyProgress（锁内 Clone）并发，必须持 progressMu。
+	// notifyProgress 自身持锁、OnIterationSnapshot 回调与 writeIterationHistory
+	// 的 DB 写都不进临界区 —— 拆两段锁，中间的 snap 是局部值拷贝。
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, s.structuredProgress.ActiveTools...)
 		s.structuredProgress.ActiveTools = nil
 	}
+	s.progressMu.Unlock()
 	if s.autoNotify && !s.batchProgressByIteration && s.structuredProgress != nil {
 		s.notifyProgress("")
 	}
 	if s.structuredProgress != nil {
+		s.progressMu.Lock()
 		snap := IterationSnapshot{
 			Iteration: iteration,
 			Content:   s.structuredProgress.Content,
 			Reasoning: s.structuredProgress.ReasoningContent,
 			Tools:     make([]IterationToolSnapshot, len(s.structuredProgress.CompletedTools)),
 		}
-		// Per-iteration token count: delta of cumulative completion tokens since
-		// the previous snapshot. The tracker accumulates across the whole Run;
-		// the first snapshot's delta equals the tracker value (previous = 0).
-		if s.tokenTracker != nil {
-			cur := s.tokenTracker.CompletionTokens()
-			if cur >= s.lastSnapshotCompletionTokens {
-				snap.Tokens = cur - s.lastSnapshotCompletionTokens
-			}
-			s.lastSnapshotCompletionTokens = cur
-		}
+		// Per-iteration output tokens: each call's OWN completion value from
+		// response.Usage (accumulated in callLLM via iterOutputTokens — the API
+		// reports per-call values, NOT cumulative counters). This replaces the
+		// old tracker-delta logic (cur - lastSnapshotCompletionTokens) which
+		// assumed RecordLLMCall accumulates completion across the Run — it
+		// OVERWRITES instead, so a small-output iteration (e.g. a tiny tool
+		// call, 25 tokens) following a large one (500 tokens) had
+		// cur < lastSnapshot → the delta guard clamped tokens to 0 (~50-66% of
+		// iteration_history rows had tokens=0 since v58). Same semantics as
+		// iterInputTokens below.
+		snap.Tokens = s.iterOutputTokens
+		// Per-iteration LLM usage (v59): prompt + cache-hit tokens of this
+		// iteration's LLM call(s), accumulated in callLLM and reset at
+		// beginIteration. Persisted to iteration_history for usage aggregation.
+		snap.InputTokens = s.iterInputTokens
+		snap.CachedTokens = s.iterCachedTokens
+		snap.Model = s.cfg.Model
+		// Model-subscription integration (v62): the model never travels alone —
+		// per-iteration records carry the owning subscription for (sub, model)
+		// usage aggregation.
+		snap.SubscriptionID = s.cfg.SubID
 		// Per-iteration stream timing: the most recent LLM call's StreamStats.
 		// snapshotCompletedIteration runs right after callLLM → StreamStats
 		// belongs to the iteration being snapshotted.
@@ -482,6 +528,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)
+		s.progressMu.Unlock()
 		if s.cfg.OnIterationSnapshot != nil {
 			s.cfg.OnIterationSnapshot(snap)
 		}
@@ -537,17 +584,21 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
 	if err := appendFn(0, turnID, sqlite.IterationRecord{
-		MessageID:    0,
-		TurnID:       turnID,
-		Iteration:    snap.Iteration,
-		Content:      snap.Content,
-		Reasoning:    snap.Reasoning,
-		Tools:        toolsJSON,
-		Tokens:       snap.Tokens,
-		TTFTMs:       snap.TTFTMs,
-		TokensPerSec: snap.TokensPerSec,
-		TotalMs:      snap.TotalMs,
-		TPOTMs:       snap.TPOTMs,
+		MessageID:      0,
+		TurnID:         turnID,
+		Iteration:      snap.Iteration,
+		Content:        snap.Content,
+		Reasoning:      snap.Reasoning,
+		Tools:          toolsJSON,
+		Tokens:         snap.Tokens,
+		TTFTMs:         snap.TTFTMs,
+		TokensPerSec:   snap.TokensPerSec,
+		TotalMs:        snap.TotalMs,
+		TPOTMs:         snap.TPOTMs,
+		InputTokens:    snap.InputTokens,
+		CachedTokens:   snap.CachedTokens,
+		Model:          snap.Model,
+		SubscriptionID: snap.SubscriptionID,
 	}); err != nil {
 		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}

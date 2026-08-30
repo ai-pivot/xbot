@@ -64,34 +64,6 @@ func (rl *PluginRateLimiter) Allow(pluginID string) bool {
 	return true
 }
 
-// Remaining returns remaining calls in current window.
-// Returns -1 if no limit configured.
-func (rl *PluginRateLimiter) Remaining(pluginID string) int {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	limit, ok := rl.limits[pluginID]
-	if !ok {
-		return -1
-	}
-
-	now := time.Now()
-	windowStart := now.Add(-limit.Window)
-
-	timestamps := rl.windows[pluginID]
-	count := 0
-	for _, ts := range timestamps {
-		if ts.After(windowStart) {
-			count++
-		}
-	}
-	remaining := limit.MaxCalls - count
-	if remaining < 0 {
-		remaining = 0
-	}
-	return remaining
-}
-
 // Reset clears all recorded timestamps for pluginID.
 func (rl *PluginRateLimiter) Reset(pluginID string) {
 	rl.mu.Lock()

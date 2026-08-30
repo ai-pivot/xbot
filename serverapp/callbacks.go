@@ -126,7 +126,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 // identities (e.g. a Feishu ou_xxx linked to the admin user). Mirrors the RPC
 // layer (rpcUserID + ListAllModelEntriesForUserID). Uses ResolveSender — a
 // read-only lookup that never auto-creates users.
-func canonicalModelEntries(ag *agent.Agent, channelName, senderID string) []protocol.ModelEntry {
+func canonicalModelEntries(ag *agent.Agent, senderID string) []protocol.ModelEntry {
 	if ag.IdentityResolver() != nil {
 		if uid, _, err := ag.IdentityResolver().ResolveSender(senderID); err == nil && uid > 0 {
 			return ag.LLMFactory().ListAllModelEntriesForUserID(uid)
@@ -146,10 +146,10 @@ func resolveUID(ag *agent.Agent, senderID string) int64 {
 	return 0
 }
 
-func llmCallbacks(ag *agent.Agent, channelName string) channel.LLMCallbacks {
+func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
-			entries := canonicalModelEntries(ag, channelName, senderID)
+			entries := canonicalModelEntries(ag, senderID)
 			sub, model, err := ag.LLMFactory().ResolveActiveSubModel(senderID, "", "")
 			if err != nil || sub == nil {
 				return entries, protocol.ModelEntry{Model: model}
@@ -245,7 +245,7 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
 func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
-	llmc := llmCallbacks(ag, "web")
+	llmc := llmCallbacks(ag)
 
 	callbacks := web.WebCallbacks{
 		// Runner callbacks
@@ -306,6 +306,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return ag.GetPendingAskUser(channel, chatID)
 	}
 	callbacks.WithPendingAskUser = ag.WithPendingAskUser
+	// Session-scope callbacks below (HistorySnapshot/RewindHistory/GetCWD/
+	// GetTodos/SetCWD) are gated at the web layer: every REST entry
+	// (handleHistory/handleHistoryRewind/handleSessionStatus) routes through
+	// resolveAPISession → canAccessSession (user_chats/tenant ownership + admin
+	// exemption) before invoking the callback — single point of defense,
+	// verified 2026-08 Loop 3. BackgroundTasks additionally re-checks
+	// ownership here because its output (bg task shell output) is extra
+	// sensitive and the selector must not be trusted on any path.
 	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector, limit int, beforeID int64) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
@@ -411,15 +419,22 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.BgTaskManager() == nil {
 			return []webBgTaskJSON{}, nil
 		}
-		// Non-admin users only see their own session's tasks.
-		// Admin sees all sessions (same as TUI).
+		// Session-scoped: always filter by the requested session (user request:
+		// "bg task 要会话维度展示，active session 哪个就展示哪个 session 的别混一起").
+		// Admin sees the CURRENT session's tasks too — not a cross-session dump.
 		if ag.IdentityResolver() != nil {
-			uid, role, err := ag.IdentityResolver().Resolve("web", senderID)
-			if err == nil && uid > 0 && role != "admin" {
-				return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+			uid, _, err := ag.IdentityResolver().Resolve("web", senderID)
+			if err != nil {
+				return nil, fmt.Errorf("resolve identity for background tasks: %w", err)
+			}
+			_ = uid // admin and non-admin both get session-scoped tasks
+			if uid > 0 {
+				if owned, ok := webSessionOwnedByUser(ag, sel.Channel, sel.ChatID, uid); ok && !owned {
+					return nil, fmt.Errorf("access denied: session not owned by caller")
+				}
 			}
 		}
-		return marshalWebBgTasks(ag.BgTaskManager().ListAll()), nil
+		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
@@ -738,7 +753,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		result.NextOffset = nextOffset
 		return result, nil
 	}
-	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, model string) (string, error) {
+	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
 		if webDB == nil {
 			return "", fmt.Errorf("database not available")
 		}
@@ -755,18 +770,26 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// ensureSessionModel is idempotent — it checks GetSessionSubscription
 		// first and returns immediately if a binding already exists.
 		if model != "" {
-			// Explicit model override: resolve the subscription that serves this
-			// model and bind the new session to it. Resolution/binding failures
-			// are non-fatal — the session is created regardless and falls back
-			// to the default binding (Balance tier first).
+			// Explicit model override. Model-subscription integration: when the
+			// caller provides the (subscriptionID, model) pair (frontend
+			// inheritance passes both), bind directly — no reverse resolution.
+			// A bare model name (no subscriptionID) is resolved to its owning
+			// subscription exactly once (the single input resolver).
+			// Resolution/binding failures are non-fatal — the session is created
+			// regardless and falls back to the default binding (Balance tier).
 			llmFactory := ag.LLMFactory()
-			if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
-				if serr := llmFactory.SelectModel(senderID, chatID, "web", sub.ID, model); serr != nil {
-					log.WithError(serr).WithField("model", model).Warn("ChatCreate: failed to bind explicit model, falling back to default")
+			subID := subscriptionID
+			if subID == "" {
+				if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
+					subID = sub.ID
+				} else {
+					log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
 					llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
+					return chatID, nil
 				}
-			} else {
-				log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
+			}
+			if serr := llmFactory.SelectModel(senderID, chatID, "web", subID, model); serr != nil {
+				log.WithError(serr).WithFields(log.Fields{"model": model, "sub_id": subID}).Warn("ChatCreate: failed to bind explicit model, falling back to default")
 				llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
 			}
 		} else {
@@ -859,6 +882,39 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	for i := range row.Children {
 		applyWebRunningStatus(ag, &row.Children[i])
 	}
+}
+
+// webSessionOwnedByUser checks the canonical ownership of a web-visible
+// session (tenants.owner_user_id). It reports (owned, ok):
+//   - ok=false when ownership cannot be determined (no DB / no tenant row) —
+//     callers treat this as "no ownership information" and must not deny on it
+//     (e.g. a freshly created session key has no tenant row yet).
+//   - owned=false only when the tenant exists and is explicitly owned by
+//     another canonical user.
+//
+// Defense-in-depth helper for web callbacks that receive a caller-supplied
+// session selector: the web REST layer gates access via canAccessSession,
+// but the callback layer serves every entry path and must not trust the
+// selector alone.
+func webSessionOwnedByUser(ag *agent.Agent, channelName, chatID string, uid int64) (owned, ok bool) {
+	if ag == nil || ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		return false, false
+	}
+	var ownerUserID int64
+	err := ag.MultiSession().DB().Conn().QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
+		channelName, chatID,
+	).Scan(&ownerUserID)
+	if err != nil {
+		// No tenant row (session never persisted) — no ownership info.
+		return false, false
+	}
+	if ownerUserID == 0 {
+		// Unclaimed tenant: ownership is governed by the web layer
+		// (user_chats) — do not deny here.
+		return true, false
+	}
+	return ownerUserID == uid, true
 }
 
 func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
@@ -1224,9 +1280,18 @@ func displayLabelForCLILocalSession(sess cliDirSessionFile, dir string) string {
 	return sess.ChatID
 }
 
+// sortUserChats orders chat rows by last-active descending.
+//
+// LastActive timestamps are RFC3339 strings that may carry MIXED timezone
+// offsets (CLI-local sessions write "+08:00" offsets, server-side rows write
+// "Z" UTC). Lexicographic string comparison is wrong across offsets:
+// "2026-08-29T12:00:00+08:00" sorts after "2026-08-29T10:00:00Z" even though
+// 04:00Z is 6 hours EARLIER than 10:00Z. Compare parsed time.Time values
+// (parseTenantTime tolerates RFC3339/RFC3339Nano/legacy layouts; unparseable
+// values become the zero time and sort last).
 func sortUserChats(rows []web.UserChatWithPreview) {
 	sort.SliceStable(rows, func(i, j int) bool {
-		return rows[i].LastActive > rows[j].LastActive
+		return parseTenantTime(rows[i].LastActive).After(parseTenantTime(rows[j].LastActive))
 	})
 }
 
@@ -1242,11 +1307,17 @@ func sortUserChats(rows []web.UserChatWithPreview) {
 //
 // Starred is deliberately ignored — it is a frontend-only localStorage state
 // the backend cannot page over.
+//
+// LastActive/CreatedAt are RFC3339 strings with MIXED timezone offsets
+// (CLI-local "+08:00" vs server "Z") — lexicographic comparison mis-orders
+// across offsets (see sortUserChats). Compare parsed time.Time values; equal
+// instants expressed with different offsets tiebreak on SortOrder/CreatedAt.
 func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 	sort.SliceStable(rows, func(i, j int) bool {
 		// Primary: last_active desc (matches the frontend time buckets).
-		if rows[i].LastActive != rows[j].LastActive {
-			return rows[i].LastActive > rows[j].LastActive
+		ti, tj := parseTenantTime(rows[i].LastActive), parseTenantTime(rows[j].LastActive)
+		if !ti.Equal(tj) {
+			return ti.After(tj)
 		}
 		// Secondary: pinned first (sort_order > 0), then ascending.
 		oi, oj := rows[i].SortOrder, rows[j].SortOrder
@@ -1263,7 +1334,7 @@ func sortSessionTreeMains(rows []web.UserChatWithPreview) {
 		if oi != oj {
 			return oi < oj
 		}
-		return rows[i].CreatedAt < rows[j].CreatedAt
+		return parseTenantTime(rows[i].CreatedAt).Before(parseTenantTime(rows[j].CreatedAt))
 	})
 }
 
@@ -1836,7 +1907,7 @@ func looksLikeWorkDir(s string) bool {
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
 func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	llmc := llmCallbacks(ag, "feishu")
+	llmc := llmCallbacks(ag)
 
 	return feishu.SettingsCallbacks{
 		// LLM basic callbacks
@@ -2031,7 +2102,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			// Subscriptions are bound to the canonical user_id (v45+); a Feishu
 			// identity (ou_xxx) linked to the admin user must see the SAME
 			// subscriptions as web/cli — resolve canonical user like the RPC layer.
-			return canonicalModelEntries(ag, "feishu", senderID)
+			return canonicalModelEntries(ag, senderID)
 		},
 
 		// Context mode

@@ -388,6 +388,35 @@ func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bo
 	return ownerUserID == userID
 }
 
+// subOwnedByUser reports whether sub is manageable by the caller: the
+// canonical user (v45 user_id) owns it. Falls back to a sender_id match for
+// identities without a canonical user (userID==0, e.g. legacy CLI senders) to
+// preserve pre-v45 behavior. Write-path permission checks MUST use this
+// instead of `SenderID != rpcBizID(ctx)` — a subscription created through one
+// channel identity (e.g. web-7) is manageable through any linked identity
+// (cli/feishu) of the same canonical user.
+func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) bool {
+	if isAdmin(ctx) {
+		return true
+	}
+	if sub == nil {
+		return false
+	}
+	if uid := rpcUserID(ctx); uid > 0 {
+		subs, err := svc.ListByUserID(uid)
+		if err != nil {
+			return false
+		}
+		for _, s := range subs {
+			if s.ID == sub.ID {
+				return true
+			}
+		}
+		return false
+	}
+	return sub.SenderID == rpcBizID(ctx)
+}
+
 func (h *RPCContext) requireLLMFactory() error {
 	if h.Ag == nil || h.Ag.LLMFactory() == nil {
 		return fmt.Errorf("LLM factory not available")
@@ -739,19 +768,37 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 // ── LLM / model / tier / proxy handlers ──
 
 func registerLLMHandlers(t RPCTable, h *RPCContext) {
-	t["get_default_model"] = rpc0(func(ctx context.Context) string {
+	t["get_default_model"] = rpc0(func(ctx context.Context) any {
 		bizID := rpcBizID(ctx)
-		// Model-first: resolve the user's last-used (sub, model) pair via
-		// the model-first chain (sessionMemo → tenants → user_default_model),
-		// NOT the subscription's default Model field.
-		_, model, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", "")
-		if err != nil || model == "" {
-			// Fallback to GetLLM resolution
-			_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
-			model = m
+		uid := rpcUserID(ctx)
+		// Model-subscription integration: returns the (subID, model) PAIR —
+		// a bare model name is never handed to the client. Resolution chain:
+		// user_default_model (by canonical user_id) → ResolveActiveSubModel
+		// (tenants → user_default_model → legacy) → GetLLM fallback (deployment
+		// defaultLLM, subID empty).
+		if uid > 0 {
+			if svc, serr := h.requireSubscriptionSvc(); serr == nil {
+				if udm, uerr := svc.GetUserDefaultModelByUserID(uid); uerr == nil && udm != nil && udm.Model != "" && udm.SubscriptionID != "" {
+					return struct {
+						SubID string `json:"sub_id"`
+						Model string `json:"model"`
+					}{udm.SubscriptionID, udm.Model}
+				}
+			}
 		}
-		log.WithField("sender_id", bizID).WithField("model", model).Debug("RPC get_default_model")
-		return model
+		if sub, m, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", ""); err == nil && sub != nil && m != "" {
+			return struct {
+				SubID string `json:"sub_id"`
+				Model string `json:"model"`
+			}{sub.ID, m}
+		}
+		// Deployment-level fallback (defaultLLM built from cfg.LLM) — no
+		// subscription behind it, subID stays empty.
+		_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
+		return struct {
+			SubID string `json:"sub_id"`
+			Model string `json:"model"`
+		}{"", m}
 	})
 	t["set_user_model"] = rpc1void(func(ctx context.Context, p struct {
 		SubID string `json:"sub_id"`
@@ -986,6 +1033,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			Active          bool                               `json:"active"`
 			MaxOutputTokens int                                `json:"max_output_tokens"`
 			ThinkingMode    string                             `json:"thinking_mode"`
+			APIType         string                             `json:"api_type"` // "chat_completions" (default) | "responses" — OpenAI only
 			PerModelConfigs map[string]protocol.PerModelConfig `json:"per_model_configs"`
 		} `json:"sub"`
 	}) error {
@@ -1002,6 +1050,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			Model:           p.Sub.Model,
 			MaxOutputTokens: p.Sub.MaxOutputTokens,
 			ThinkingMode:    p.Sub.ThinkingMode,
+			APIType:         p.Sub.APIType,
 			IsDefault:       p.Sub.Active,
 		}
 		if len(p.Sub.PerModelConfigs) > 0 {
@@ -1036,7 +1085,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return fmt.Errorf("subscription %s not found: %w", p.ID, err)
 		}
 		bizID := rpcBizID(ctx)
-		if !isAdmin(ctx) && existing.SenderID != bizID {
+		if !h.subOwnedByUser(ctx, svc, existing) {
 			return fmt.Errorf("subscription not found")
 		}
 		if existing.PerModelConfigs == nil {
@@ -1070,7 +1119,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+		if !h.subOwnedByUser(ctx, svc, sub) {
 			return fmt.Errorf("subscription not found")
 		}
 		if err := svc.Remove(p.ID); err != nil {
@@ -1097,7 +1146,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+		if !h.subOwnedByUser(ctx, svc, sub) {
 			return fmt.Errorf("subscription not found")
 		}
 		return svc.Rename(p.ID, p.Name)
@@ -1118,7 +1167,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				if err != nil {
 					continue
 				}
-				if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+				if !h.subOwnedByUser(ctx, svc, sub) {
 					continue
 				}
 				subs = append(subs, sub)
@@ -1189,25 +1238,29 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		bizID := rpcBizID(ctx)
 		imported := 0
 		skipped := 0
+		// Hoist the duplicate-name snapshot out of the loop: a per-iteration
+		// ListByUserID is N+1 (M imports → M queries, each batch-loading every
+		// subscription's per-model configs). One snapshot + an in-memory name
+		// set. Imported names are added to the set so a second same-name entry
+		// within the SAME batch is still skipped (preserves the old
+		// per-iteration re-query semantics).
+		existingNames := map[string]bool{}
+		if !p.Overwrite {
+			if existing, err := svc.ListByUserID(uid); err == nil {
+				for _, e := range existing {
+					existingNames[e.Name] = true
+				}
+			}
+		}
 		for _, imp := range p.Subs {
 			// Skip masked keys (****) — user must fill in real key
 			if strings.Contains(imp.APIKey, "****") {
 				imp.APIKey = ""
 			}
 			// Check for duplicate name if not overwrite
-			if !p.Overwrite {
-				existing, _ := svc.ListByUserID(uid)
-				dup := false
-				for _, e := range existing {
-					if e.Name == imp.Name {
-						dup = true
-						break
-					}
-				}
-				if dup {
-					skipped++
-					continue
-				}
+			if !p.Overwrite && existingNames[imp.Name] {
+				skipped++
+				continue
 			}
 			newID := uuid.New().String()
 			dbSub := &sqlite.LLMSubscription{
@@ -1233,6 +1286,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			if uid > 0 {
 				svc.SetSubscriptionUserID(newID, uid)
 			}
+			existingNames[imp.Name] = true
 			imported++
 		}
 		return map[string]any{"imported": imported, "skipped": skipped}, nil
@@ -1283,6 +1337,29 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			return nil, err
 		}
 		return h.Ag.MultiSession().GetDailyTokenUsage(rpcBizID(ctx), p.Days)
+	})
+	t["get_session_usage_stats"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+		Limit   int    `json:"limit"`
+	}) (any, error) {
+		if err := h.requireMultiSession(); err != nil {
+			return nil, err
+		}
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		stats, err := h.Ag.MultiSession().GetSessionUsageStats(channelName, chatID, p.Limit)
+		if err != nil {
+			return nil, err
+		}
+		if stats == nil {
+			// Unknown session: return an empty aggregate instead of null so
+			// plugin/CLI consumers can render a zero-state panel.
+			return &sqlite.TenantUsageStats{RecentIterations: []sqlite.UsageIterationRow{}, ByModel: []sqlite.UsageModelRow{}}, nil
+		}
+		return stats, nil
 	})
 
 	// ── Sub-agents / sessions ──
@@ -1434,11 +1511,20 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 				}
 				if len(turnSet) > 0 {
 					svc := sqlite.NewSessionService(ms.DB())
-					turnIterMap = make(map[uint64][]sqlite.IterationRecord)
+					// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
+					// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
+					// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
+					turnIDs := make([]uint64, 0, len(turnSet))
 					for turnID := range turnSet {
-						recs, _ := svc.GetIterationHistoryByTurn(tenantID, turnID)
-						if len(recs) > 0 {
-							turnIterMap[turnID] = recs
+						turnIDs = append(turnIDs, turnID)
+					}
+					batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
+					if len(batch) > 0 {
+						turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+						for turnID, recs := range batch {
+							if len(recs) > 0 {
+								turnIterMap[turnID] = recs
+							}
 						}
 					}
 				}
@@ -2544,12 +2630,20 @@ func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscript
 }
 
 func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subscription, error) {
-	bizID := rpcBizID(ctx)
+	uid := rpcUserID(ctx)
 	svc, err := h.requireSubscriptionSvc()
 	if err != nil {
 		return nil, nil
 	}
-	sub, err := svc.GetDefault(bizID)
+	// User-level RPC — v45 rule: resolve by canonical user_id so identities
+	// linked to the same user (web-N, cli_user, ou_xxx) see the same default
+	// (consistent with list_subscriptions' ListByUserID). No uid → no default
+	// (the old bizID fallback queried by session key, which is not a sender_id
+	// and could never match).
+	if uid <= 0 {
+		return nil, nil
+	}
+	sub, err := svc.GetDefaultByUserID(uid)
 	if err != nil {
 		return nil, err
 	}
@@ -2584,7 +2678,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(ctx) && existing.SenderID != bizID {
+	if !h.subOwnedByUser(ctx, svc, existing) {
 		return fmt.Errorf("subscription not found")
 	}
 	// Start from existing subscription — client never has unmasked credentials,
@@ -2654,6 +2748,12 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	ID     string `json:"id"`
 	ChatID string `json:"chat_id"`
+	// Channel is the physical channel of the target session (e.g. "web" for a
+	// web session, "cli" for a CLI session). Defaults to "cli" for backward
+	// compatibility with existing callers. The per-session tenants mapping is
+	// keyed by (channel, chat_id) — persisting a web session under the
+	// hardcoded "cli" made the mapping land in the wrong channel row.
+	Channel string `json:"channel"`
 }) error {
 	bizID := rpcBizID(ctx)
 	svc, err := h.requireSubscriptionSvc()
@@ -2670,18 +2770,22 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	if sub == nil {
 		return fmt.Errorf("subscription not found")
 	}
-	if !isAdmin(ctx) && sub.SenderID != bizID {
+	if !h.subOwnedByUser(ctx, svc, sub) {
 		return fmt.Errorf("subscription not found")
 	}
 	if p.ChatID != "" {
+		channel := p.Channel
+		if channel == "" {
+			channel = "cli"
+		}
 		// Per-session switch: update per-chat cache AND persist to DB
 		// so the session→subscription mapping survives server restarts.
-		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub); err != nil {
+		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, channel, sub); err != nil {
 			return err
 		}
 		// Persist to tenants table (backend source of truth).
 		if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
-			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, sub.Model); err != nil {
+			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription(channel, p.ChatID, sub.ID, sub.Model); err != nil {
 				log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
 			}
 		}
@@ -2715,22 +2819,32 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+	if !h.subOwnedByUser(ctx, svc, sub) {
 		return fmt.Errorf("subscription not found")
 	}
 	if err := svc.SetModel(p.ID, p.Model); err != nil {
 		return err
 	}
+	// Invalidate the subscription client cache unconditionally — SetModel
+	// changed the subscription's Model, and a cached client built with the
+	// old model must not survive any caller path (per-subscription CRUD rule).
+	h.Ag.LLMFactory().InvalidateSubscription(p.ID)
 	updated, err := svc.Get(p.ID)
 	if err != nil {
 		return err
 	}
 	if updated != nil {
-		if def, _ := svc.GetDefault(updated.SenderID); def != nil && def.ID == updated.ID {
+		// Resolve the default by canonical user_id (v45): linked identities
+		// share the same user_default_model row. Fall back to the legacy
+		// sender-scoped lookup when the canonical user is unknown (userID==0).
+		var def *sqlite.LLMSubscription
+		if uid := rpcUserID(ctx); uid > 0 {
+			def, _ = svc.GetDefaultByUserID(uid)
+		} else {
+			def, _ = svc.GetDefault(updated.SenderID)
+		}
+		if def != nil && def.ID == updated.ID {
 			h.Ag.LLMFactory().InvalidateSender(updated.SenderID)
-			// Drop the new-path client cache for this subscription so ResolveLLM
-			// picks up the new default model + per-model config.
-			h.Ag.LLMFactory().InvalidateSubscription(updated.ID)
 			if err := h.Ag.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
 				return err
 			}
@@ -2886,7 +3000,10 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		}
 		userID := rpcUserID(ctx)
 		if userID == 0 {
-			userID = 1 // CLI admin fallback
+			// Unknown identity: MUST NOT fall back to user 1 — a link code
+			// lets the recipient merge into that user's account, so a silent
+			// fallback hands admin credentials to unresolvable callers.
+			return map[string]any{"error": "cannot resolve identity"}
 		}
 		code, err := h.Ag.IdentityResolver().GenerateLinkCode(userID)
 		if err != nil {
@@ -2903,6 +3020,12 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 	t["consume_link_code"] = rpc1(func(ctx context.Context, p struct {
 		Code    string `json:"code"`
 		Confirm bool   `json:"confirm"`
+		// Channel is the physical channel of the caller's identity (e.g. "web"
+		// when linking a web identity). Defaults to "cli" for backward
+		// compatibility with existing callers. The link row in channel_user_id
+		// is keyed by (channel, channel_user_id) — hardcoding "cli" bound a web
+		// sender's identity to the cli channel.
+		Channel string `json:"channel"`
 	}) (any, error) {
 		if h.Ag.IdentityResolver() == nil {
 			return nil, fmt.Errorf("identity resolver not available")
@@ -2911,6 +3034,10 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if currentUserID == 0 {
 			return nil, fmt.Errorf("cannot resolve current user identity")
 		}
+		linkChannel := p.Channel
+		if linkChannel == "" {
+			linkChannel = "cli"
+		}
 		// On preview (confirm=false), validate WITHOUT consuming the code
 		if !p.Confirm {
 			targetUserID, err := h.Ag.IdentityResolver().ValidateLinkCode(p.Code)
@@ -2918,7 +3045,7 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 				return nil, err
 			}
 			// Try simple link first
-			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, "cli", rpcBizID(ctx))
+			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, linkChannel, rpcBizID(ctx))
 			if err == nil {
 				// Simple link succeeded — consume the code now
 				h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
@@ -2953,7 +3080,9 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		}
 		userID := rpcUserID(ctx)
 		if userID == 0 {
-			userID = 1
+			// Unknown identity: MUST NOT fall back to user 1 — that would
+			// disclose another (admin) user's linked identities.
+			return map[string]any{"error": "cannot resolve identity"}
 		}
 		identities, err := h.Ag.IdentityResolver().ListIdentities(userID)
 		if err != nil {
@@ -2974,7 +3103,6 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 		ThinkingMode:    s.ThinkingMode,
 		APIType:         s.APIType,
 		PerModelConfigs: s.PerModelConfigs,
-		IsSystem:        s.IsSystem,
 	}
 }
 
@@ -3022,7 +3150,9 @@ type bgTaskJSON struct {
 func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 	result := make([]bgTaskJSON, len(tasks))
 	for i, t := range tasks {
-		result[i] = bgTaskJSON{t.ID, t.Command, string(t.Status), t.StartedAt.Format(time.RFC3339), "", t.Output, t.ExitCode, t.Error}
+		// CurrentOutput: locked read — the Adopt ticker and Start-path outputBuf
+		// mutate Output under t.mu; a plain field read races them (go test -race).
+		result[i] = bgTaskJSON{t.ID, t.Command, string(t.Status), t.StartedAt.Format(time.RFC3339), "", t.CurrentOutput(), t.ExitCode, t.Error}
 		if t.FinishedAt != nil {
 			result[i].FinishedAt = t.FinishedAt.Format(time.RFC3339)
 		}
@@ -3031,6 +3161,13 @@ func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 }
 
 // --- App RPC handlers ---
+
+// appPackOutputPath builds the app_pack zip output path from a user-supplied
+// name. The name is sanitized to its base component — a traversal name
+// ("../../etc/cron.d/x") must never escape os.TempDir().
+func appPackOutputPath(name string) string {
+	return filepath.Join(os.TempDir(), filepath.Base(name)+".xbot.zip")
+}
 
 func registerAppHandlers(t RPCTable, h *RPCContext) {
 
@@ -3050,7 +3187,7 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 		for i, it := range p.Items {
 			items[i] = agent.AppItem{Type: it.Type, Name: it.Name}
 		}
-		outputPath := filepath.Join(os.TempDir(), p.Name+".xbot.zip")
+		outputPath := appPackOutputPath(p.Name)
 		if err := rm.PackApp(items, outputPath, p.Author); err != nil {
 			return nil, err
 		}

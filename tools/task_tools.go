@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -10,23 +11,30 @@ import (
 	log "xbot/logger"
 )
 
-// TaskStatusTool returns the current status of a background task.
+// TaskStatusTool returns the current status of one or more background tasks.
 type TaskStatusTool struct{}
 
 func (t *TaskStatusTool) Name() string   { return "task_status" }
 func (t *TaskStatusTool) Required() bool { return false }
 func (t *TaskStatusTool) Description() string {
-	return `Check the status of a background task. Shows task ID, command, status (running/done/error/killed), elapsed time, and a preview of the output.
+	return `Check the status of background task(s). Shows task ID, command, status (running/done/error/killed), elapsed time, and a preview of the output.
+
+task_id is an ARRAY of task ID strings — check multiple tasks in ONE call:
+  - Single task:  task_id: ["bg-abc123"]
+  - Multiple:     task_id: ["bg-abc123", "sub-def456"]
+  - Each ID's status is reported independently; unknown IDs are listed as errors without aborting the rest.
 
 If status is "running", use task_wait to block until completion, or continue with other work — the result will be injected automatically when the task finishes.
 
 Parameters (JSON):
-  - task_id: string, the task ID to check`
+  - task_id: array of strings — the task ID(s) to check`
 }
 
 func (t *TaskStatusTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "task_id", Type: "string", Description: "The background task ID to check", Required: true},
+		// Pure array type (NOT a string/array union) — see task_wait.go for rationale.
+		// Execute tolerates a bare string for backward compatibility.
+		{Name: "task_id", Type: "array", Items: &llm.ToolParamItems{Type: "string"}, Description: "Array of background task IDs to check. Single task: [\"abc123\"]. Pass IDs EXACTLY as shown in the tool result (no 'bg:' prefix).", Required: true},
 	}
 }
 
@@ -36,37 +44,74 @@ func (t *TaskStatusTool) Execute(toolCtx *ToolContext, input string) (*ToolResul
 	}
 
 	params, err := parseToolArgs[struct {
-		TaskID string `json:"task_id"`
+		TaskID json.RawMessage `json:"task_id"`
 	}](input)
 	if err != nil {
 		return nil, err
 	}
 
-	// Shell background task first, then background sub-agent task.
-	if task, err := toolCtx.BgTaskManager.Status(params.TaskID); err == nil {
-		return NewResult(formatTask(task)), nil
+	taskIDs, err := parseTaskIDs(params.TaskID)
+	if err != nil {
+		return nil, err
 	}
-	if subTask, err := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID); err == nil {
-		return NewResult(formatSubAgentTask(subTask)), nil
+	if len(taskIDs) == 0 {
+		return nil, fmt.Errorf("task_id is required (string or array of strings)")
 	}
-	return nil, fmt.Errorf("task %s not found", params.TaskID)
+
+	// Single task — exact same output as before (backward compatible).
+	if len(taskIDs) == 1 {
+		id := taskIDs[0]
+		// Shell background task first, then background sub-agent task.
+		if task, err := toolCtx.BgTaskManager.Status(id); err == nil {
+			return NewResult(formatTask(task)), nil
+		}
+		if subTask, err := toolCtx.BgTaskManager.SubAgentStatus(id); err == nil {
+			return NewResult(formatSubAgentTask(subTask)), nil
+		}
+		return nil, fmt.Errorf("task %s not found", id)
+	}
+
+	// Multiple tasks — per-ID tolerant aggregation: an unknown ID is reported
+	// in the output instead of aborting the whole query.
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Status of %d tasks:\n", len(taskIDs))
+	for _, id := range taskIDs {
+		if task, err := toolCtx.BgTaskManager.Status(id); err == nil {
+			fmt.Fprintf(&sb, "\n%s\n", formatTask(task))
+			continue
+		}
+		if subTask, err := toolCtx.BgTaskManager.SubAgentStatus(id); err == nil {
+			fmt.Fprintf(&sb, "\n%s\n", formatSubAgentTask(subTask))
+			continue
+		}
+		fmt.Fprintf(&sb, "\nTask: %s\nStatus: not found (no background task or sub-agent with this ID)\n", id)
+	}
+	return NewResult(sb.String()), nil
 }
 
-// TaskKillTool terminates a running background task.
+// TaskKillTool terminates one or more running background tasks.
 type TaskKillTool struct{}
 
 func (t *TaskKillTool) Name() string   { return "task_kill" }
 func (t *TaskKillTool) Required() bool { return false }
 func (t *TaskKillTool) Description() string {
-	return `Terminate a running background task. All child processes of the task will be killed.
+	return `Terminate running background task(s). All child processes of each task will be killed.
+
+task_id is an ARRAY of task ID strings — kill multiple tasks in ONE call:
+  - Single task:  task_id: ["bg-abc123"]
+  - Multiple:     task_id: ["bg-abc123", "sub-def456"]
+  - Each ID's result is reported independently (killed / cancelled / not found); failures do not abort the rest
+  - Use with care in batch mode — verify the IDs before killing
 
 Parameters (JSON):
-  - task_id: string, the task ID to kill`
+  - task_id: array of strings — the task ID(s) to kill`
 }
 
 func (t *TaskKillTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "task_id", Type: "string", Description: "The background task ID to kill", Required: true},
+		// Pure array type (NOT a string/array union) — see task_wait.go for rationale.
+		// Execute tolerates a bare string for backward compatibility.
+		{Name: "task_id", Type: "array", Items: &llm.ToolParamItems{Type: "string"}, Description: "Array of background task IDs to kill. Single task: [\"abc123\"]. Pass IDs EXACTLY as shown in the tool result (no 'bg:' prefix).", Required: true},
 	}
 }
 
@@ -76,26 +121,60 @@ func (t *TaskKillTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 	}
 
 	params, err := parseToolArgs[struct {
-		TaskID string `json:"task_id"`
+		TaskID json.RawMessage `json:"task_id"`
 	}](input)
 	if err != nil {
 		return nil, err
 	}
 
-	// Shell background task first.
-	if err := toolCtx.BgTaskManager.Kill(params.TaskID); err == nil {
-		log.WithField("task_id", params.TaskID).Info("Background task killed by user")
-		return NewResult(fmt.Sprintf("Task %s killed successfully.", params.TaskID)), nil
+	taskIDs, err := parseTaskIDs(params.TaskID)
+	if err != nil {
+		return nil, err
 	}
-	// Background sub-agent task: cancel its context (interrupt).
-	if subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID); serr == nil {
-		if subTask.cancel != nil {
-			subTask.cancel()
+	if len(taskIDs) == 0 {
+		return nil, fmt.Errorf("task_id is required (string or array of strings)")
+	}
+
+	// Single task — exact same output as before (backward compatible).
+	if len(taskIDs) == 1 {
+		id := taskIDs[0]
+		// Shell background task first.
+		if err := toolCtx.BgTaskManager.Kill(id); err == nil {
+			log.WithField("task_id", id).Info("Background task killed by user")
+			return NewResult(fmt.Sprintf("Task %s killed successfully.", id)), nil
 		}
-		log.WithFields(log.Fields{"task_id": params.TaskID, "role": subTask.Role}).Info("Background sub-agent task cancelled by user")
-		return NewResult(fmt.Sprintf("Sub-agent task %s cancelled (interrupting role %q).", params.TaskID, subTask.Role)), nil
+		// Background sub-agent task: cancel its context (interrupt).
+		if subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(id); serr == nil {
+			if subTask.cancel != nil {
+				subTask.cancel()
+			}
+			log.WithFields(log.Fields{"task_id": id, "role": subTask.Role}).Info("Background sub-agent task cancelled by user")
+			return NewResult(fmt.Sprintf("Sub-agent task %s cancelled (interrupting role %q).", id, subTask.Role)), nil
+		}
+		return NewErrorResult(fmt.Sprintf("Failed to kill task %s: task not found", id)), nil
 	}
-	return NewErrorResult(fmt.Sprintf("Failed to kill task %s: task not found", params.TaskID)), nil
+
+	// Multiple tasks — per-ID aggregation; each result is reported explicitly
+	// so the model can see exactly which IDs were killed and which failed.
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Kill results for %d tasks:", len(taskIDs))
+	for _, id := range taskIDs {
+		if err := toolCtx.BgTaskManager.Kill(id); err == nil {
+			log.WithField("task_id", id).Info("Background task killed by user")
+			fmt.Fprintf(&sb, "\n- Task %s: killed successfully", id)
+			continue
+		}
+		if subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(id); serr == nil {
+			if subTask.cancel != nil {
+				subTask.cancel()
+			}
+			log.WithFields(log.Fields{"task_id": id, "role": subTask.Role}).Info("Background sub-agent task cancelled by user")
+			fmt.Fprintf(&sb, "\n- Sub-agent task %s: cancelled (interrupting role %q)", id, subTask.Role)
+			continue
+		}
+		fmt.Fprintf(&sb, "\n- Task %s: FAILED — task not found", id)
+	}
+	return NewResult(sb.String()), nil
 }
 
 // TaskReadTool reads the full output of a completed (or running) background task.
@@ -136,7 +215,9 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		return nil, err
 	}
 
-	output := task.Output
+	// CurrentOutput: locked read — the Adopt ticker and Start-path outputBuf
+	// mutate Output under t.mu; a plain field read races them.
+	output := task.CurrentOutput()
 	if params.Tail > 0 && len(output) > params.Tail {
 		output = "... (truncated) ...\n" + output[len(output)-params.Tail:]
 	}
@@ -146,7 +227,7 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 	}
 
 	return NewResult(fmt.Sprintf("[Task %s output (%s, %d bytes)]\n%s",
-		task.ID, task.Status, len(task.Output), output)), nil
+		task.ID, task.Status, len(output), output)), nil
 }
 
 // formatTask formats a task for display.
@@ -175,7 +256,7 @@ func formatTask(task *BackgroundTask) string {
 
 	// Show last 500 chars of output as preview (UTF-8 safe — byte slicing can
 	// cut mid-rune for CJK/multibyte content, producing invalid UTF-8).
-	preview := task.Output
+	preview := task.CurrentOutput()
 	if len(preview) > 500 {
 		preview = truncateTailPreview(preview, 500)
 	}
@@ -264,19 +345,23 @@ func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string 
 	// Otherwise, show the raw output (truncated if too large).
 	if outputOverride != "" {
 		fmt.Fprintf(&sb, "\n%s", outputOverride)
-	} else if task.Output != "" {
-		// Sanitize \r overwrites and ANSI escape sequences so that progress
-		// bar output (tqdm, curl, etc.) renders cleanly in the TUI.
-		output := SanitizeOutput(task.Output)
-		// Truncate large output to avoid bloating context
-		const maxOutputLen = 2000
-		if len(output) > maxOutputLen {
-			fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), output[:maxOutputLen], task.ID)
-		} else {
-			fmt.Fprintf(&sb, "\nOutput:\n%s", output)
-		}
 	} else {
-		sb.WriteString("\n(no output)")
+		// CurrentOutput: locked read (Adopt ticker / Start outputBuf write under mu).
+		taskOut := task.CurrentOutput()
+		if taskOut != "" {
+			// Sanitize \r overwrites and ANSI escape sequences so that progress
+			// bar output (tqdm, curl, etc.) renders cleanly in the TUI.
+			output := SanitizeOutput(taskOut)
+			// Truncate large output to avoid bloating context
+			const maxOutputLen = 2000
+			if len(output) > maxOutputLen {
+				fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), output[:maxOutputLen], task.ID)
+			} else {
+				fmt.Fprintf(&sb, "\nOutput:\n%s", output)
+			}
+		} else {
+			sb.WriteString("\n(no output)")
+		}
 	}
 
 	return sb.String()

@@ -206,7 +206,7 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 
 	// 生成摘要
 	summary := generateRuleSummary(toolName, args, result)
-	summaryContent := fmt.Sprintf("📂 [offload:%s] %s(%s)\n%s", id, toolName, truncateOffloadArgs(args), summary)
+	summaryContent := fmt.Sprintf("📂 [offload:%s] %s(%s)\n%s\n\n[Output truncated. Use offload_recall(id=%q) to retrieve the full content.]", id, toolName, truncateOffloadArgs(args), summary, id)
 
 	// 更新内存索引
 	entry := OffloadedResult{

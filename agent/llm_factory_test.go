@@ -151,7 +151,7 @@ func TestGetLLMForModel_EmptyTarget(t *testing.T) {
 
 	// Verify the early return path: targetModel="" should not try to list subscriptions
 	// (subscriptionSvc is nil, so if it tried, we'd get a different error)
-	_, model, _, tm, _, usedCustom := f.GetLLMForModel("user1", "")
+	_, _, model, _, tm, _, usedCustom := f.GetLLMForModel("user1", "")
 	if model != "default-model" {
 		t.Errorf("model = %q, want %q", model, "default-model")
 	}
@@ -167,11 +167,15 @@ func TestGetLLMForModel_NilSubscriptionSvc(t *testing.T) {
 	f := NewLLMFactory(nil, "default-model")
 	f.defaultThinkingMode = "auto"
 
-	// No subscriptionSvc + explicit model → model not found in any subscription,
-	// fallback to default client with the RESOLVED model (not the default model).
-	_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
-	if model != "claude-opus-4-20250115" {
-		t.Errorf("model = %q, want claude-opus-4-20250115 (resolved model preserved in fallback)", model)
+	// No subscriptionSvc + bare model name → no owning subscription can be
+	// resolved → deployment-default fallback (defaultModel), NOT the requested
+	// bare name (v62: no "any subscription + arbitrary model" hard-tries).
+	_, subID, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "claude-opus-4-20250115")
+	if model != "default-model" {
+		t.Errorf("model = %q, want %q (deployment default; bare names without an owner fall back)", model, "default-model")
+	}
+	if subID != "" {
+		t.Errorf("subID = %q, want empty (deployment defaultLLM has no subscription)", subID)
 	}
 	if usedCustom {
 		t.Error("usedCustom should be false when model not found in any subscription")
@@ -226,76 +230,13 @@ func TestHasCustomLLMChecksSubscriptionSvc(t *testing.T) {
 	}
 }
 
-// TestInvalidate_ClearsPerChatCache verifies that Invalidate(senderID) clears
-// both user-level and per-chat (senderID:chatID) cache entries.
-// This is the fix for: switching sub then changing model in settings was stuck
-// on the old model because Invalidate only cleared the user-level key.
-func TestInvalidate_ClearsPerChatCache(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-
-	senderID := "cli_user"
-	chatID := "/home/user/project"
-	subA := &sqlite.LLMSubscription{
-		ID: "sub-a", Provider: "openai", BaseURL: "https://api-a.com/v1", APIKey: "sk-a",
-		Model: "gpt-4o", MaxOutputTokens: 8192,
-	}
-	subB := &sqlite.LLMSubscription{
-		ID: "sub-b", Provider: "openai", BaseURL: "https://api-b.com/v1", APIKey: "sk-b",
-		Model: "deepseek-v3", MaxOutputTokens: 4096,
-	}
-
-	// Without subscriptionSvc, SwitchSubscription resolves model from
-	// user_default_model (which is also nil here). The default LLM client
-	// is still created. Model resolution happens when the user picks a model.
-	if err := f.SwitchSubscription(senderID, subA, chatID); err != nil {
-		t.Fatalf("SwitchSubscription subA: %v", err)
-	}
-
-	// Verify default LLM was created (model is "" without subscription_models)
-	_, modelA, _, _, _ := f.GetLLMForChat(senderID, chatID)
-	if modelA != "" {
-		t.Fatalf("initial model = %q, want \"\" (no subscription_models)", modelA)
-	}
-
-	// Simulate: set_default_subscription calls Invalidate then SwitchSubscription
-	f.Invalidate(senderID)
-	if err := f.SwitchSubscription(senderID, subB, chatID); err != nil {
-		t.Fatalf("SwitchSubscription subB: %v", err)
-	}
-
-	_, modelB, _, _, _ := f.GetLLMForChat(senderID, chatID)
-	if modelB != "" {
-		t.Errorf("after sub switch, model = %q, want \"\" (no subscription_models)", modelB)
-	}
-
-	// Simulate: update_subscription (settings panel) calls Invalidate + SwitchSubscription
-	// with chatID="" — per-chat cache was NOT cleared before the fix
-	f.Invalidate(senderID)
-	updatedSubB := *subB
-	updatedSubB.Model = "deepseek-r1"
-	updatedSubB.MaxOutputTokens = 16384
-	if err := f.SwitchSubscription(senderID, &updatedSubB, ""); err != nil {
-		t.Fatalf("SwitchSubscription updatedSubB: %v", err)
-	}
-
-	// GetLLMForChat should NOT return stale per-chat cache
-	_, modelUpdated, _, thinkingUpdated, _ := f.GetLLMForChat(senderID, chatID)
-	if modelUpdated != "" {
-		t.Errorf("after settings update, model = %q, want \"\" (no subscription_models, stale per-chat cache bug)", modelUpdated)
-	}
-	// Verify thinking mode is also not stale
-	if thinkingUpdated != "" {
-		t.Errorf("after settings update, thinkingMode = %q, want empty", thinkingUpdated)
-	}
-}
-
-// TestSwitchSubscription_UpdatesDefaultLLM verifies that SwitchSubscription
-// DOES update the global defaultLLM/defaultModel for cli_user. In CLI mode,
-// all sessions share senderID "cli_user", so defaultLLM is a user-level
-// preference that should follow the user's last subscription choice.
-// SubAgent fallback, ListModels(), and GetLLM() for sessions without
-// per-session subscriptions should all see the new default.
-func TestSwitchSubscription_UpdatesDefaultLLM(t *testing.T) {
+// TestSwitchSubscription_DoesNotTouchDefaultLLM guards the v62 invariant:
+// the deployment-level defaultLLM/defaultModel is built once from cfg.LLM at
+// NewLLMFactory time and is NEVER re-pointed at a user's subscription —
+// one user's model choice must not leak into every other user's fallback
+// (the old cli_user sync caused exactly that in multi-user deployments).
+// SwitchSubscription is a no-op hook kept for RPC/callback call sites.
+func TestSwitchSubscription_DoesNotTouchDefaultLLM(t *testing.T) {
 	f := NewLLMFactory(&llm.MockLLM{}, "original-default-model")
 
 	subDeepSeek := &sqlite.LLMSubscription{
@@ -308,289 +249,13 @@ func TestSwitchSubscription_UpdatesDefaultLLM(t *testing.T) {
 		t.Fatalf("initial default model = %q, want original-default-model", dm)
 	}
 
-	// Switch subscription for cli_user (the common CLI senderID)
+	// Switch subscription for cli_user — must NOT touch defaultLLM/defaultModel.
 	if err := f.SwitchSubscription("cli_user", subDeepSeek, ""); err != nil {
 		t.Fatalf("SwitchSubscription: %v", err)
 	}
 
-	// Global default SHOULD be updated — SwitchSubscription resolves model
-	// from user_default_model. Without subscriptionSvc, it returns "" (no
-	// model). The default LLM client is still created (credentials work),
-	// just without a model name.
-	// The model is resolved later when the user picks one from the panel.
-	if dm := f.GetDefaultModel(); dm != "" {
-		t.Errorf("default model after SwitchSubscription = %q, want \"\" (no subscription_models rows)", dm)
-	}
-}
-
-// TestGetLLMForModel_ConfigSubExactMatch verifies the config.json subscription path:
-// when configSubsFn returns a subscription whose Model matches the resolved model,
-// GetLLMForModel should use that subscription (usedCustom=true).
-func TestGetLLMForModel_ConfigSubExactMatch(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-	f.defaultThinkingMode = "auto"
-
-	// Set up configSubsFn with a matching subscription
-	f.SetConfigSubs(func() []config.SubscriptionConfig {
-		return []config.SubscriptionConfig{
-			{
-				ID:       "sub-1",
-				Name:     "test-sub",
-				Provider: "openai",
-				BaseURL:  "https://api.test/v1",
-				APIKey:   "sk-test",
-				Model:    "gpt-4o",
-			},
-		}
-	})
-
-	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
-	if !usedCustom {
-		t.Error("usedCustom should be true when config sub matches resolved model")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("model = %q, want %q", model, "gpt-4o")
-	}
-	if client == nil {
-		t.Error("client should not be nil when config sub matches")
-	}
-}
-
-// TestGetLLMForModel_ConfigSubNoMatch verifies that when configSubsFn returns
-// subscriptions with different Model fields, it still tries to use them with
-// the model name (OpenAI-compatible endpoints can serve any model).
-func TestGetLLMForModel_ConfigSubNoMatch(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-	f.defaultThinkingMode = "auto"
-
-	// Config sub has a different model — but still usable with gpt-4o
-	f.SetConfigSubs(func() []config.SubscriptionConfig {
-		return []config.SubscriptionConfig{
-			{
-				ID:       "sub-1",
-				Name:     "other-sub",
-				Provider: "openai",
-				BaseURL:  "https://api.test/v1",
-				APIKey:   "sk-test",
-				Model:    "other-model",
-			},
-		}
-	})
-
-	client, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
-	if !usedCustom {
-		t.Error("usedCustom should be true when config sub can serve the resolved model")
-	}
-	if model != "gpt-4o" {
-		t.Errorf("model = %q, want %q (resolved model)", model, "gpt-4o")
-	}
-	if client == nil {
-		t.Error("client should not be nil")
-	}
-}
-
-// TestGetLLMForModel_ConfigSubSkipsEmptyCredentials verifies that config
-// subscriptions with matching Model but empty BaseURL or APIKey are skipped,
-// and the function falls through to the default LLM.
-func TestGetLLMForModel_ConfigSubSkipsEmptyCredentials(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-	f.defaultThinkingMode = "auto"
-
-	tests := []struct {
-		name string
-		sub  config.SubscriptionConfig
-	}{
-		{
-			name: "empty BaseURL",
-			sub: config.SubscriptionConfig{
-				ID:       "sub-empty-url",
-				Name:     "no-url",
-				Provider: "openai",
-				BaseURL:  "",
-				APIKey:   "sk-test",
-				Model:    "gpt-4o",
-			},
-		},
-		{
-			name: "empty APIKey",
-			sub: config.SubscriptionConfig{
-				ID:       "sub-empty-key",
-				Name:     "no-key",
-				Provider: "openai",
-				BaseURL:  "https://api.test/v1",
-				APIKey:   "",
-				Model:    "gpt-4o",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			f.SetConfigSubs(func() []config.SubscriptionConfig {
-				return []config.SubscriptionConfig{tt.sub}
-			})
-
-			_, model, _, _, _, usedCustom := f.GetLLMForModel("user1", "gpt-4o")
-			if usedCustom {
-				t.Error("usedCustom should be false when config sub has empty credentials")
-			}
-			if model != "gpt-4o" {
-				t.Errorf("model = %q, want %q (resolved model preserved in fallback)", model, "gpt-4o")
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Tests for buildModelSubscriptionMap & configSubToLLMSubscription
-// ---------------------------------------------------------------------------
-
-// TestBuildModelSubscriptionMap_ConfigSubs verifies that config subscriptions
-// with different models each produce an entry in the model→subscription map.
-func TestBuildModelSubscriptionMap_ConfigSubs(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-
-	f.SetConfigSubs(func() []config.SubscriptionConfig {
-		return []config.SubscriptionConfig{
-			{
-				ID:       "sub-a",
-				Name:     "OpenAI",
-				Provider: "openai",
-				BaseURL:  "https://api.openai.com/v1",
-				APIKey:   "sk-openai",
-				Model:    "gpt-4o",
-			},
-			{
-				ID:       "sub-b",
-				Name:     "Anthropic",
-				Provider: "anthropic",
-				BaseURL:  "https://api.anthropic.com",
-				APIKey:   "sk-ant-key",
-				Model:    "claude-sonnet-4-20250514",
-			},
-		}
-	})
-
-	m := f.buildModelSubscriptionMap("user1")
-
-	if len(m) != 2 {
-		t.Fatalf("map size = %d, want 2", len(m))
-	}
-	if sub, ok := m["gpt-4o"]; !ok {
-		t.Error("missing gpt-4o entry")
-	} else if sub.ID != "sub-a" {
-		t.Errorf("gpt-4o mapped to sub %q, want sub-a", sub.ID)
-	}
-	if sub, ok := m["claude-sonnet-4-20250514"]; !ok {
-		t.Error("missing claude-sonnet-4-20250514 entry")
-	} else if sub.ID != "sub-b" {
-		t.Errorf("claude-sonnet-4-20250514 mapped to sub %q, want sub-b", sub.ID)
-	}
-}
-
-// TestBuildModelSubscriptionMap_ConfigSubsSkipsEmptyCredentials verifies that
-// config subscriptions with empty BaseURL or APIKey are not added to the map.
-func TestBuildModelSubscriptionMap_ConfigSubsSkipsEmptyCredentials(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-
-	// Sub with matching Model but empty BaseURL — must be skipped.
-	f.SetConfigSubs(func() []config.SubscriptionConfig {
-		return []config.SubscriptionConfig{
-			{
-				ID:       "sub-empty-url",
-				Name:     "No URL",
-				Provider: "openai",
-				BaseURL:  "",
-				APIKey:   "sk-test",
-				Model:    "gpt-4o",
-			},
-			{
-				ID:       "sub-empty-key",
-				Name:     "No Key",
-				Provider: "openai",
-				BaseURL:  "https://api.openai.com/v1",
-				APIKey:   "",
-				Model:    "gpt-4o-mini",
-			},
-		}
-	})
-
-	m := f.buildModelSubscriptionMap("user1")
-
-	if len(m) != 0 {
-		t.Fatalf("map size = %d, want 0 (both subs have empty credentials)", len(m))
-	}
-}
-
-// TestBuildModelSubscriptionMap_EmptySenderID verifies that with an empty
-// senderID and nil subscriptionSvc, only config subs are included.
-func TestBuildModelSubscriptionMap_EmptySenderID(t *testing.T) {
-	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
-	// subscriptionSvc is nil by default — no DB path at all.
-
-	f.SetConfigSubs(func() []config.SubscriptionConfig {
-		return []config.SubscriptionConfig{
-			{
-				ID:       "cfg-1",
-				Name:     "ConfigSub",
-				Provider: "openai",
-				BaseURL:  "https://api.test/v1",
-				APIKey:   "sk-cfg",
-				Model:    "gpt-4o",
-			},
-		}
-	})
-
-	// Empty senderID — DB path is also gated by senderID != ""
-	m := f.buildModelSubscriptionMap("")
-
-	if len(m) != 1 {
-		t.Fatalf("map size = %d, want 1 (only config sub)", len(m))
-	}
-	if _, ok := m["gpt-4o"]; !ok {
-		t.Error("missing gpt-4o entry from config sub")
-	}
-}
-
-// TestConfigSubToLLMSubscription verifies that configSubToLLMSubscription
-// correctly maps every field from SubscriptionConfig to LLMSubscription.
-func TestConfigSubToLLMSubscription(t *testing.T) {
-	cs := config.SubscriptionConfig{
-		ID:              "sub-42",
-		Name:            "My Sub",
-		Provider:        "deepseek",
-		BaseURL:         "https://api.deepseek.com/v1",
-		APIKey:          "sk-deep",
-		Model:           "deepseek-chat",
-		MaxOutputTokens: 4096,
-		ThinkingMode:    "enabled",
-	}
-
-	sub := configSubToLLMSubscription(cs)
-
-	if sub.ID != "sub-42" {
-		t.Errorf("ID = %q, want %q", sub.ID, "sub-42")
-	}
-	if sub.Name != "My Sub" {
-		t.Errorf("Name = %q, want %q", sub.Name, "My Sub")
-	}
-	if sub.Provider != "deepseek" {
-		t.Errorf("Provider = %q, want %q", sub.Provider, "deepseek")
-	}
-	if sub.BaseURL != "https://api.deepseek.com/v1" {
-		t.Errorf("BaseURL = %q, want %q", sub.BaseURL, "https://api.deepseek.com/v1")
-	}
-	if sub.APIKey != "sk-deep" {
-		t.Errorf("APIKey = %q, want %q", sub.APIKey, "sk-deep")
-	}
-	if sub.Model != "deepseek-chat" {
-		t.Errorf("Model = %q, want %q", sub.Model, "deepseek-chat")
-	}
-	if sub.MaxOutputTokens != 4096 {
-		t.Errorf("MaxOutputTokens = %d, want 4096", sub.MaxOutputTokens)
-	}
-	if sub.ThinkingMode != "enabled" {
-		t.Errorf("ThinkingMode = %q, want %q", sub.ThinkingMode, "enabled")
+	if dm := f.GetDefaultModel(); dm != "original-default-model" {
+		t.Errorf("default model after SwitchSubscription = %q, want original-default-model (deployment fallback is immutable)", dm)
 	}
 }
 
@@ -642,5 +307,125 @@ func TestParseOrDefault(t *testing.T) {
 				t.Errorf("parseOrDefault(%q, %d) = %d, want %d", tt.input, tt.defaultVal, got, tt.want)
 			}
 		})
+	}
+}
+
+// ── getGlobalSetting 三层链（canonical user 维度修复）─────────────────────────
+//
+// 复现 bug：tier 配置由 RPC 设置面板经 SetByUserID 写入（行 sender_id='user-N'、
+// user_id=N），而 getGlobalSetting 旧链只查 (channel, senderID) + 'cli_user'
+// fallback——user 维度行永远读不到。web 渠道 sender（如 web-4）spawn SubAgent
+// 时 resolveTierModel 拿不到 tier 配置 → "model not found for SubAgent,
+// falling back to main model (model=vanguard)"（vanguard tier 前端明明已配置）。
+
+// newSettingsTestFactory 构造带真实 sqlite settings 的 LLMFactory。
+func newSettingsTestFactory(t *testing.T) (*LLMFactory, *SettingsService, *sqlite.UserSettingsService) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	store := sqlite.NewUserSettingsService(db)
+	svc := NewSettingsService(store)
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
+	f.SetSettingsService(svc)
+	return f, svc, store
+}
+
+// TestGetGlobalSetting_UserDimensionRead 守护 canonical user 维度读取：
+// *ByUserID 写入的行必须能被任意身份（sender）经 userResolver 解析后读到。
+// 含旧链两跳 miss 的对照断言（sender 精确 + cli_user fallback 都读不到 user
+// 维度行——证明读取必须走 user 维度）。
+func TestGetGlobalSetting_UserDimensionRead(t *testing.T) {
+	f, svc, _ := newSettingsTestFactory(t)
+	f.SetUserResolver(func(senderID string) (int64, bool) {
+		if senderID == "web-4" {
+			return 1, true
+		}
+		return 0, false
+	})
+	// 写入：RPC 设置面板路径（SetByUserID → 行 sender_id='user-1', user_id=1）。
+	if err := svc.SetByUserID(thinkingModeChannel, 1, "tier_vanguard", "sub-123|glm-5.3"); err != nil {
+		t.Fatalf("SetByUserID: %v", err)
+	}
+	// 对照：旧 sender 维度链两跳都读不到 user 维度行（bug 根源）。
+	if got := f.getSetting("web-4", thinkingModeChannel, "tier_vanguard"); got != "" {
+		t.Errorf("sender-dimension read (web-4 exact) = %q, want empty", got)
+	}
+	if got := f.getSetting(canonicalSettingsSender, thinkingModeChannel, "tier_vanguard"); got != "" {
+		t.Errorf("sender-dimension read (cli_user fallback) = %q, want empty", got)
+	}
+	// 修复后：web-4（user 1 的另一身份）→ user 维度命中。
+	if got := f.userTierModel("web-4", "vanguard"); got != "sub-123|glm-5.3" {
+		t.Errorf("userTierModel(web-4, vanguard) = %q, want sub-123|glm-5.3 (user_id dimension read)", got)
+	}
+	// resolveTierModel 端到端（GetLLMForModel 的 tier 入口解析）。
+	subID, model, fromTier := f.resolveTierModel("web-4", "vanguard")
+	if subID != "sub-123" || model != "glm-5.3" || !fromTier {
+		t.Errorf("resolveTierModel(web-4, vanguard) = (%q, %q, %v), want (sub-123, glm-5.3, true)", subID, model, fromTier)
+	}
+}
+
+// TestGetGlobalSetting_SenderFallbackChainWithoutResolver 守护兼容链：
+// resolver 不可用（本地 CLI / 未注入）时，sender 精确行 + cli_user 兜底仍工作。
+func TestGetGlobalSetting_SenderFallbackChainWithoutResolver(t *testing.T) {
+	f, _, store := newSettingsTestFactory(t) // 无 userResolver
+	// sender 维度行（本地 CLI 写入路径：Set → user_id=NULL）。
+	if err := store.Set(thinkingModeChannel, "cli_user", "tier_swift", "sub-cli|model-cli"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// 任意 sender → cli_user 兜底命中（既有继承语义）。
+	if got := f.userTierModel("web-4", "swift"); got != "sub-cli|model-cli" {
+		t.Errorf("userTierModel(web-4, swift) = %q, want sub-cli|model-cli (cli_user fallback)", got)
+	}
+	// 未解析身份的 sender 也能走旧链（三层链的层 3）。
+	if got := f.userTierModel("unknown-sender", "swift"); got != "sub-cli|model-cli" {
+		t.Errorf("userTierModel(unknown-sender, swift) = %q, want sub-cli|model-cli", got)
+	}
+}
+
+// TestGetGlobalSetting_MultiUserIsolation 多用户：user 维度各自隔离，不串。
+func TestGetGlobalSetting_MultiUserIsolation(t *testing.T) {
+	f, svc, _ := newSettingsTestFactory(t)
+	f.SetUserResolver(func(senderID string) (int64, bool) {
+		switch senderID {
+		case "web-4":
+			return 1, true
+		case "web-5":
+			return 2, true
+		}
+		return 0, false
+	})
+	if err := svc.SetByUserID(thinkingModeChannel, 1, "tier_vanguard", "sub-1|model-one"); err != nil {
+		t.Fatalf("SetByUserID(user 1): %v", err)
+	}
+	if err := svc.SetByUserID(thinkingModeChannel, 2, "tier_vanguard", "sub-2|model-two"); err != nil {
+		t.Fatalf("SetByUserID(user 2): %v", err)
+	}
+	if got := f.userTierModel("web-4", "vanguard"); got != "sub-1|model-one" {
+		t.Errorf("web-4 read = %q, want sub-1|model-one", got)
+	}
+	if got := f.userTierModel("web-5", "vanguard"); got != "sub-2|model-two" {
+		t.Errorf("web-5 read = %q, want sub-2|model-two", got)
+	}
+}
+
+// TestGetGlobalSetting_UserDimensionWinsOverLegacy 优先级：user 维度（v45+
+// 规范路径、面板最新写入）必须赢过 cli_user sender 兜底旧行。
+func TestGetGlobalSetting_UserDimensionWinsOverLegacy(t *testing.T) {
+	f, svc, store := newSettingsTestFactory(t)
+	f.SetUserResolver(func(senderID string) (int64, bool) { return 1, true })
+	// 旧 sender 行 + 新 user 维度行并存。
+	if err := store.Set(thinkingModeChannel, "cli_user", "tier_vanguard", "sub-old|legacy-model"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := svc.SetByUserID(thinkingModeChannel, 1, "tier_vanguard", "sub-new|panel-model"); err != nil {
+		t.Fatalf("SetByUserID: %v", err)
+	}
+	if got := f.userTierModel("anyone", "vanguard"); got != "sub-new|panel-model" {
+		t.Errorf("userTierModel = %q, want sub-new|panel-model (user dimension wins over legacy cli_user row)", got)
 	}
 }

@@ -193,27 +193,6 @@ func (o *OpenAILLM) ListModels() []string {
 	return result
 }
 
-// EnsureModelsLoaded performs a synchronous model list fetch if not yet loaded.
-// Callers that need the full model list (e.g. the LLM panel picker) should
-// call this before ListModels to avoid getting a stale single-model fallback.
-func (o *OpenAILLM) EnsureModelsLoaded() {
-	o.mu.RLock()
-	loaded := o.modelsLoaded
-	o.mu.RUnlock()
-	if loaded {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := o.LoadModelsFromAPI(ctx); err != nil {
-		log.WithError(err).Debug("[LLM] EnsureModelsLoaded: failed to load models")
-	}
-	// Mark loaded so triggerModelLoad won't fire again.
-	o.mu.Lock()
-	o.modelsLoaded = true
-	o.mu.Unlock()
-}
-
 // triggerModelLoad fires a one-time async model list fetch.
 // Subsequent calls are no-ops once modelsLoaded is set.
 func (o *OpenAILLM) triggerModelLoad() {
@@ -1121,6 +1100,12 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	var lastUsage *TokenUsage
 	var lastFinishReason FinishReason
 	var hasToolCalls bool // track if any tool call deltas were seen
+	// Per-index accumulation of tool call arguments, used ONLY for the
+	// truncated-stream detection below: a cleanly-cut stream (no finish_reason)
+	// with invalid accumulated JSON args must be treated as a truncated
+	// response (EventError → RetryLLM), never passed downstream as a
+	// "complete" tool call ("parse args: unexpected end of JSON input" bug).
+	toolArgsByIdx := make(map[int]*strings.Builder)
 
 	for stream.Next() {
 		select {
@@ -1129,9 +1114,15 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 				"provider": "openai",
 				"reason":   ctx.Err().Error(),
 			}).Warn("[LLM] Stream cancelled")
-			eventChan <- StreamEvent{
+			// ctx is already cancelled: the consumer has stopped reading
+			// (CollectStreamWithCallback returns without draining). Deliver the
+			// cancellation event only if the channel has room; never block.
+			select {
+			case eventChan <- StreamEvent{
 				Type:  EventError,
 				Error: ctx.Err().Error(),
+			}:
+			default:
 			}
 			return
 		default:
@@ -1152,17 +1143,25 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		for _, choice := range chunk.Choices {
 			// 处理 reasoning_content（DeepSeek/OpenAI reasoning 模型）
 			if reasoningDelta := extractReasoningContentFromDelta(choice.Delta); reasoningDelta != "" {
-				eventChan <- StreamEvent{
+				select {
+				case eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: reasoningDelta,
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 
 			// 处理文本内容
 			if choice.Delta.Content != "" {
-				eventChan <- StreamEvent{
+				select {
+				case eventChan <- StreamEvent{
 					Type:    EventContent,
 					Content: choice.Delta.Content,
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 
@@ -1180,7 +1179,19 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 					}).Debug("[LLM] Tool call started")
 				}
 				hasToolCalls = true
-				eventChan <- StreamEvent{
+				// Accumulate arguments per index for the truncated-stream
+				// detection at the end of processStream (see the
+				// hasToolCalls+no-finish_reason branch).
+				if tc.Function.Arguments != "" {
+					b := toolArgsByIdx[int(tc.Index)]
+					if b == nil {
+						b = &strings.Builder{}
+						toolArgsByIdx[int(tc.Index)] = b
+					}
+					b.WriteString(tc.Function.Arguments)
+				}
+				select {
+				case eventChan <- StreamEvent{
 					Type: EventToolCall,
 					ToolCall: &ToolCallDelta{
 						Index:     int(tc.Index),
@@ -1188,6 +1199,9 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 						Name:      tc.Function.Name,
 						Arguments: tc.Function.Arguments,
 					},
+				}:
+				case <-ctx.Done():
+					return
 				}
 			}
 
@@ -1202,13 +1216,36 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		// 收集 usage（通常在最后一个 chunk），不单独打日志，合并到 Stream completed
 		hasUsage := chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0
 		if hasUsage {
-			lastUsage = &TokenUsage{
+			u := TokenUsage{
 				PromptTokens:     chunk.Usage.PromptTokens,
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
 			}
 			if ptd := chunk.Usage.PromptTokensDetails; ptd.CachedTokens > 0 {
-				lastUsage.CacheHitTokens = ptd.CachedTokens
+				u.CacheHitTokens = ptd.CachedTokens
+			}
+			if lastUsage == nil {
+				lastUsage = &u
+			} else {
+				// Streamed usage is CUMULATIVE (monotonic across chunks).
+				// Some gateways (sglang/MoL on tool-call streams) emit a
+				// trailing usage chunk with completion_tokens=0 — merging
+				// per-field MAX keeps the accumulated value instead of
+				// letting the trailing zero overwrite it (tool-iteration
+				// output tokens were recorded as 0 while input/cached stayed
+				// correct, because PromptTokens never zeroed).
+				if u.PromptTokens > lastUsage.PromptTokens {
+					lastUsage.PromptTokens = u.PromptTokens
+				}
+				if u.CompletionTokens > lastUsage.CompletionTokens {
+					lastUsage.CompletionTokens = u.CompletionTokens
+				}
+				if u.TotalTokens > lastUsage.TotalTokens {
+					lastUsage.TotalTokens = u.TotalTokens
+				}
+				if u.CacheHitTokens > lastUsage.CacheHitTokens {
+					lastUsage.CacheHitTokens = u.CacheHitTokens
+				}
 			}
 		}
 	}
@@ -1233,9 +1270,13 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
 		}).Warn("[LLM] Stream error: " + err.Error())
-		eventChan <- StreamEvent{
+		select {
+		case eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: err.Error(),
+		}:
+		case <-ctx.Done():
+			return
 		}
 		return
 	}
@@ -1254,29 +1295,70 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
 		}).Warn("[LLM] Stream ended without finish_reason — likely truncated by proxy/network")
-		eventChan <- StreamEvent{
+		select {
+		case eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: "stream ended without finish_reason (possible truncation)",
+		}:
+		case <-ctx.Done():
+			return
 		}
 		return
 	}
 
 	// BUG 2 fix: 先发 Usage，再发 Done。确保消费方在处理 Done 之前拿到 usage。
 	if lastUsage != nil {
-		eventChan <- StreamEvent{
+		select {
+		case eventChan <- StreamEvent{
 			Type:  EventUsage,
 			Usage: lastUsage,
+		}:
+		case <-ctx.Done():
+			return
 		}
 	}
 
 	// BUG 1 fix: 统一在 stream 结束后发送 EventDone。
 	// 如果 provider 没有发送 finish_reason，但有 tool_calls，推断为 tool_calls。
 	if lastFinishReason == "" && hasToolCalls {
+		// A cleanly-closed stream that produced tool calls but never received a
+		// finish_reason is EITHER (a) a gateway that omits finish_reason on the
+		// DONE tail (args complete — keep the old inference), OR (b) a proxy
+		// cutting the stream MID-tool-call (args truncated — observed on
+		// sglang/MoL gateways, 2026-08-30). Case (b) used to fall through with
+		// FinishReasonToolCalls inferred, passing half-generated JSON downstream
+		// as a "complete" tool call → "parse args: unexpected end of JSON input"
+		// → the LLM retried the same oversized call → token burn loop.
+		// Validate accumulated arguments: invalid JSON ⇒ truncated stream ⇒
+		// EventError so RetryLLM retries the whole request (same recovery path
+		// as the !hasToolCalls truncation check above).
+		if !allToolCallArgsValid(toolArgsByIdx) {
+			l.WithFields(log.Fields{
+				"provider":    "openai",
+				"model":       model,
+				"base_url":    o.baseURL,
+				"chunk_count": chunkCount,
+				"duration":    time.Since(startTime).String(),
+			}).Warn("[LLM] Stream ended without finish_reason — tool call arguments truncated by proxy/network")
+			select {
+			case eventChan <- StreamEvent{
+				Type:  EventError,
+				Error: "stream ended without finish_reason (tool call arguments truncated)",
+			}:
+			case <-ctx.Done():
+				return
+			}
+			return
+		}
 		lastFinishReason = FinishReasonToolCalls
 	}
-	eventChan <- StreamEvent{
+	select {
+	case eventChan <- StreamEvent{
 		Type:         EventDone,
 		FinishReason: lastFinishReason,
+	}:
+	case <-ctx.Done():
+		return
 	}
 
 	fields := log.Fields{
@@ -1298,6 +1380,26 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	} else {
 		l.WithFields(fields).Debug("[LLM] Stream completed")
 	}
+}
+
+// allToolCallArgsValid reports whether every accumulated tool call arguments
+// string is complete JSON (or empty — no-arg tool calls). A stream cut
+// mid-tool-call leaves half-generated JSON like `{"new_string":"abc` which
+// json.Valid rejects. Used by the no-finish_reason truncation detection:
+// valid args mean the gateway merely omitted finish_reason (safe to infer
+// tool_calls); invalid args mean the stream was truncated by the
+// proxy/network and the whole response must be retried.
+func allToolCallArgsValid(argsByIdx map[int]*strings.Builder) bool {
+	for _, b := range argsByIdx {
+		s := b.String()
+		if s == "" {
+			continue // no-arg tool call — empty arguments is legal
+		}
+		if !json.Valid([]byte(s)) {
+			return false
+		}
+	}
+	return true
 }
 
 func truncateStr(s string, maxLen int) string {

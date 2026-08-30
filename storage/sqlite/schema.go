@@ -7,9 +7,9 @@ import (
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v53 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v61 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
-// Windows where running 51 migrations per test DB causes CI timeouts (600s+).
+// Windows where running every migration per test DB causes CI timeouts (600s+).
 //
 // When adding a new migration, update this DDL and bump schema_version to match.
 func (db *DB) createSchema() error {
@@ -51,6 +51,16 @@ CREATE TABLE session_messages (
 );
 CREATE INDEX idx_session_messages_tenant_created ON session_messages(tenant_id, created_at);
 CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, id);
+-- v60: partial index for control records (ask_question/ask_answer/mask/context_edit...).
+-- WHERE record_type != 'message' keeps the hot-path INSERT (plain messages) zero-cost
+-- (message rows never enter the index), while control-record lookups (ask_answer
+-- anti-join by tenant_id+record_type+target_history_id) hit the index instead of a
+-- full tenant scan.
+CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, record_type, target_history_id) WHERE record_type != 'message';
+-- v61: partial index for the ListUserChats preview subquery (latest user/assistant
+-- message per tenant). WHERE role IN ('user','assistant') keeps tool/assistant-tool rows
+-- out of the index.
+CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant');
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -117,9 +127,11 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (58);
+INSERT INTO schema_version (version) VALUES (62);
 
--- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
+-- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
+-- dropped in v62 — the system subscription was removed, the global fallback
+-- LLM is the in-memory defaultLLM built from cfg.LLM)
 CREATE TABLE user_llm_subscriptions (
     id          TEXT PRIMARY KEY,
     sender_id   TEXT NOT NULL,
@@ -134,7 +146,6 @@ CREATE TABLE user_llm_subscriptions (
     cached_models TEXT NOT NULL DEFAULT '',
     api_type    TEXT DEFAULT '',
     enabled     INTEGER NOT NULL DEFAULT 1,
-    is_system   INTEGER NOT NULL DEFAULT 0,
     user_id     INTEGER DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -254,6 +265,7 @@ CREATE TABLE cron_jobs (
 );
 CREATE INDEX idx_cron_jobs_next_run ON cron_jobs(next_run);
 CREATE INDEX idx_cron_jobs_sender ON cron_jobs(sender_id);
+CREATE INDEX idx_cron_jobs_user ON cron_jobs(user_id);
 
 CREATE TABLE event_triggers (
     id          TEXT PRIMARY KEY,
@@ -300,11 +312,11 @@ CREATE TABLE IF NOT EXISTS pending_resumes (
 INSERT OR IGNORE INTO tenants (id, channel, chat_id, created_at, last_active_at)
 VALUES (0, '_shared', '_shared', datetime('now'), datetime('now'));
 
--- Seed: canonical admin user + CLI/system identities (v44→v45)
+-- Seed: canonical admin user + CLI identities (v44→v45; the system/__system__
+-- identity was removed in v62 along with the system subscription)
 INSERT OR IGNORE INTO users (id, display_name, role) VALUES (1, 'Admin', 'admin');
 INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'cli_user');
 INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'admin');
-INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'system', '__system__');
 
 -- v54: structured iteration history (replaces Detail JSON for iteration data)
 CREATE TABLE IF NOT EXISTS iteration_history (
@@ -321,6 +333,10 @@ CREATE TABLE IF NOT EXISTS iteration_history (
     tokens_per_sec INTEGER NOT NULL DEFAULT 0,
     total_ms INTEGER NOT NULL DEFAULT 0,
     tpot_ms INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '',
+    subscription_id TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);

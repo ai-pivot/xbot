@@ -116,11 +116,41 @@ Agent-level bg notifications are queued by session (`map[sessionKey][]BgNotifica
 
 When Ctrl+C cancels a turn, `handleCancelledRun` does not start a fresh bg-notification turn. It takes same-session pending notifications and records them into the interrupted turn as synthetic assistant tool-call + tool-result pairs, then appends a `user_cancelled` synthetic tool observation. This preserves completed bg work and records the user interruption in context without waking a new turn after the cancel ack. Notifications already drained into the Run are already persisted by the normal synthetic-tool path; cancel clears only their `drainedThisRun` tracking metadata.
 
+## Turn Identity & Restart Resume (turn reuse + iteration continuation)
+
+A restart-interrupted turn (graceful shutdown → `collectPendingResumes` → `resumePendingTurns` on boot, or manual `/continue`) is resumed via `InjectInboundResume`: an EMPTY message with `resume_turn` metadata (the original user message is already in DB; Assemble skips appending a user message). The resumed Run must continue the interrupted turn's identity — two invariants:
+
+1. **Turn id reuse.** `admitToMsgCh` does NOT pre-allocate a turn id for `resume_turn` messages (same path as `ask_user_answered`). `chatProcessLoop` resolves it at dequeue time via `resolveResumeTurnID`: the turn of the last non-display-only user message (`SessionService.GetLastUserTurnID`), falling back to `nextTurnID()` when unresolvable (no user message / legacy rows without turn_id). Every restart previously allocated a FRESH turn id — splitting one logical turn into user(N)/resume(N+1)/resume(N+2) — the frontend rendered each as a separate assistant block ("重启后 turn 产生两个大 dom" bug). The TURN_ID monotonicity check and `lastTurnID` baseline skip resume turns (the reused id comes from DB, not the counter — it can legitimately be below the baseline when e.g. a notification turn ran during the interruption).
+2. **Iteration number continuation.** `buildMainRunConfig` sets `RunConfig.IterationStart` = `GetMaxIterationForTurn(tenantID, turnID)` for resume turns; the engine's Run loop runs `i := n + s.iterStart` so the resumed Run's first iteration is K+1 (K = the interrupted Run's persisted max). Iteration numbers are turn-scoped: iteration_history is keyed by (turn_id, iteration), and the frontend's committed-turn shadow-lift upgrades a committed turn back to live only when `ev.iter > maxIter` — restarting at 1 would collide in DB and be dropped as a "replay".
+
+Frontend contract (zero changes needed — already supported): after reload the interrupted turn is a `committed` turn (from `history_replaced`); `turn_started(sameTurnID, trigger='resume')` keeps it committed; the resumed Run's first iteration/stream event (turn-scoped id, iteration K+1) triggers the committed shadow-lift (`reduce.ts` iteration/stream cases: `ev.iter > maxIter` / `hasStreamEvidence` upgrades to live preserving iterations); `text_final` unions the live iterations with the committed history → ONE assistant block with iterations 1..K+n — identical to an uninterrupted turn.
+
+`emitTurnStarted` already skips the per-session `iterationHistories` delete for resume ("Skip for resume — it continues the same turn" — now literally true with the reuse). `HasAssistantReplyAfterLastUser` (pending_resume.go) gates the resume itself: a turn whose last user message has a final (non-tool-calls) assistant reply is complete and is not resumed.
+
+Tests: `agent/resume_turn_allocation_test.go` (admitToMsgCh skip + resolveResumeTurnID), `agent/engine_resume_iteration_test.go` (IterationStart numbering), `storage/sqlite/session_resume_turn_test.go` (GetLastUserTurnID + GetMaxIterationForTurn), `channel/iteration_history_test.go` `TestConvert_WithIterations_ResumedTurnReusesTurnID` (single assistant block), `web/src/chat/reduce.test.ts`「重启 resume 复用同 turn」(frontend contract).
+
 ## Context Management
 
 - `Pipeline.Assemble()` safely deduplicates system messages (used to panic) (`middleware.go:170`)
 - Cd tool: must update both `tc.CurrentDir` and `cfg.InitialCWD` (`engine_test.go:1429`, `TestBuildToolContext_SubAgentCdPersists`)
 - Dynamic context injection detects CWD changes via `dynamic_context.go`
+
+### Compression loop protection (200k infinite-loop incident)
+
+**Trigger vs post-compress check use DIFFERENT measurement rulers, deliberately.** The TRIGGER (`maybeCompress`) uses the exact API-returned `prompt_tokens` (TokenTracker) vs `0.9×(maxContext−maxOutput)`. The POST-COMPRESS "did it fit" check uses `estimateMessagesTokens` (chars×2/3 full-message estimate incl. system prompt + summary + tail + tool args) — because no API call has seen the compressed messages yet. The trigger-side "API only" rule stands (never local-estimate the trigger); the post-compress check is the one place a local estimate is the correct tool.
+
+**Root cause of the infinite-compression loop (fixed):** the post-compress check compared against `CompressedTokens` — the SUMMARY-only estimate excluding system prompt + tail. A compressed result of [huge system + 150 tail messages] always "passed" while the real context stayed above the trigger line → compression re-fired every 5 iterations, each burning a full-context compaction LLM call. 200k-context models with large maxOutput (GLM 98k → trigger line 91.8k) hit this constantly; the un-shrinkable base (system prompt + tools + tail) simply exceeds the line.
+
+**Three defenses (all in `engine_run.go` + `trigger.go`):**
+1. `estimateMessagesTokens` full-message estimate drives the post-compress check, `setTokenUsageAfterCompress`, `SaveContextTokens`/`SaveTokenState`, and the CLI-visible token counts — the DB always restores a realistic post-compress value. `handleInputTooLong` uses the same ruler.
+2. Post-compress check (`postCompressTokens > postCompressLimit`): `aggressiveTruncate` → re-estimate → still over (or nothing to truncate — few messages, giant system) → `compressAbandoned=true` (no `len>10` guard — few-but-huge is exactly the case needing it). Error log + `compressWarning` tell the user to raise max_context / lower max_output.
+3. No-progress circuit breaker in `maybeCompress`: consecutive triggers where the REAL API prompt_tokens dropped <5% from the previous trigger (`lastCompressTriggerTokens`, same-measurement comparison — both sides are API values, never mixed with estimates) ≥2 → abandon. This catches estimate-underestimation (CJK chars×2/3) where the estimate passes but reality stays above the line.
+
+`compressAbandoned` is per-Run (runState): the next turn retries once with fresh content. The error-driven paths (`handleInputTooLong`, `context_window_exceeded` with `maxCompressRetries=3`) are NOT gated by it — API-visible failures still get full recovery attempts.
+
+**Effective compression is never abandoned**: the <5%-drop counter resets on any real drop; periodic compression on a growing session re-fires every cooldown expiry as before (`TestMaybeCompress_EffectiveCompressionNotAbandoned` guards this).
+
+Tests: `agent/compress_infinite_loop_test.go` (4 tests: full-estimate truncation net, unshrinkable abandon, consecutive-ineffective abandon, effective-not-abandoned control).
 
 ## Observation Masking
 

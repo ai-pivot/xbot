@@ -93,8 +93,17 @@ type RunConfig struct {
 	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
-	MaxIterations   int // 0 = 使用默认值 100
+	MaxIterations   int // 0 = 使用默认值 2000（DefaultMaxIterations）
 	MaxOutputTokens int // 0 = 使用 LLM client 默认值
+	// IterationStart 偏移 Run 的迭代编号（resume 场景）：> 0 时首个迭代号是
+	// IterationStart+1 而非 1。重启恢复的 Run（InjectInboundResume）复用被中断
+	// turn 的 turn_id，而迭代号是 turn 域唯一的（iteration_history 按
+	// (turn_id, iteration) 关联，前端按迭代号 advance/merge）——恢复 Run 的迭代
+	// 必须续接被中断 Run 已持久化的最大迭代号，否则迭代号从 1 重新开始会与
+	// 中断前的记录冲突（iteration_history 同 turn 重复迭代号 + 前端 committed
+	// turn 的迭代遮蔽解除失败——ev.iter <= maxIter 被判重放丢弃）。0 = 正常
+	// Run（迭代从 1 开始）。
+	IterationStart int
 
 	// === 可选能力（nil = 不启用） ===
 
@@ -222,12 +231,6 @@ type RunConfig struct {
 	// ContextEditor Context Editing 编辑器（nil = 不启用）
 	ContextEditor *ContextEditor
 
-	// MemoryToolDefs 记忆工具定义列表（nil = 压缩时不使用记忆工具）
-	MemoryToolDefs []llm.ToolDefinition
-
-	// MemoryToolExec 记忆工具执行函数（nil = 压缩时不使用记忆工具）
-	MemoryToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error)
-
 	// TodoManager TODO 管理器（可选）
 	TodoManager TodoManagerProvider
 
@@ -310,12 +313,14 @@ type RunConfig struct {
 	OnIterationChange func(iteration int)
 
 	// ResetStreamTiming resets the live stream stats timing baseline
-	// (requestStartAt / firstChunkAt / samples) at each iteration boundary.
-	// TTFT must reflect THE CURRENT LLM CALL's first-token latency, not the
-	// whole Run's — otherwise live frames report the Run-wide TTFT while
-	// committed iterations report their own response.StreamStats.TTFTMs,
-	// making the same iteration show different ttft values between its live
-	// phase and its committed row ("迭代内 ttft 变化" bug).
+	// (requestStartAt / firstChunkAt / samples) right before EACH LLM request
+	// is sent (callLLM: primary call + post-compression retry). The live TTFT
+	// baseline must be the request-send moment — the same contract as the
+	// llm-layer t0 (CollectStreamWithCallbackFrom) — so live frames and the
+	// committed/DB TTFT (response.StreamStats) measure the SAME window. An
+	// earlier baseline (iteration start) included the engine-side gap into
+	// live TTFT only, and the displayed TTFT jumped the moment the call
+	// returned ("tool 生成完毕后 ttft 突变成很小的数值" bug).
 	ResetStreamTiming func()
 
 	// StreamContentFunc is called with accumulated text content on each content delta
@@ -456,6 +461,18 @@ type IterationSnapshot struct {
 	// Time per output token (ms) for this iteration's LLM stream (true TPOT —
 	// model generation rate, excluding first-token latency).
 	TPOTMs int64 `json:"tpot_ms,omitempty"`
+	// InputTokens is the prompt tokens of this iteration's LLM call(s) (v59).
+	// Enables per-session / per-model usage aggregation from iteration_history.
+	InputTokens int64 `json:"input_tokens,omitempty"`
+	// CachedTokens is the prompt-cache hit tokens of this iteration's LLM
+	// call(s) (v59). Cache hit rate = CachedTokens / InputTokens.
+	CachedTokens int64 `json:"cached_tokens,omitempty"`
+	// Model is the LLM model used for this iteration (v59).
+	Model string `json:"model,omitempty"`
+	// SubscriptionID is the owning subscription of Model (v62,
+	// model-subscription integration: the model never travels alone —
+	// per-iteration usage aggregation is keyed by (subscription, model)).
+	SubscriptionID string `json:"subscription_id,omitempty"`
 	// SubAgents spawned in this iteration, frozen at the iteration boundary.
 	// Background subagents outlive the iteration — their LIVE progress stops at
 	// the boundary (the callback drops once the run moves on), and this frozen
@@ -532,10 +549,15 @@ func generateResponse(ctx context.Context, client llm.LLM, model string, message
 			if err != nil {
 				return nil, err
 			}
+			// Non-RetryLLM path: GenerateStream blocked until the SSE connection
+			// was established (request already in flight). TTFT must be measured
+			// from before the request was sent — same contract as
+			// RetryLLM.GenerateStreamAndCollect's t0.
+			t0 := time.Now()
 			if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
-				return llm.CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
+				return llm.CollectStreamWithCallbackFrom(ctx, eventCh, t0, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 			}
-			return llm.CollectStream(ctx, eventCh)
+			return llm.CollectStreamWithCallbackFrom(ctx, eventCh, t0, nil, nil, nil, nil)
 		}
 		// Fallback: client doesn't support streaming, use non-stream
 	}
@@ -605,14 +627,6 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	// Record conversation metrics on exit
 	defer s.recordMetrics()
 
-	// Setup structured progress tracking
-	s.initProgress()
-
-	// Ensure PhaseDone event is sent on exit
-	if s.progressFinalizer != nil {
-		defer s.progressFinalizer()
-	}
-
 	// Setup dynamic context injector for CWD change detection
 	s.initDynamicInjector()
 
@@ -660,7 +674,12 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 	// ConvertMessagesToHistory, reconstructIterationsFromMessages) uses
 	// the same 1-based numbering. 0 is reserved for "uninitialized"
 	// (structuredProgress.Iteration starts at 0 before beginIteration(1)).
-	for i := 1; i <= s.maxIter; i++ {
+	// Resume turns (iterStart > 0) continue the interrupted turn's numbering:
+	// the first iteration is iterStart+1, keeping iteration_history (keyed by
+	// (turn_id, iteration)) and the frontend's per-turn iteration advance/merge
+	// contiguous across the restart boundary. See RunConfig.IterationStart.
+	for n := 1; n <= s.maxIter; n++ {
+		i := n + s.iterStart
 		log.Ctx(ctx).WithField("iteration", i).Debug("Run loop iteration start")
 		// Check for cancellation before starting each iteration
 		select {

@@ -21,7 +21,18 @@ export const ShimmerThinking = memo(function ShimmerThinking() {
   // 每次渲染后检查（无依赖数组）：兄弟 DOM 动态变化（新 turn 插入）也能捕获。
   // 分级：下方是消息行（data-message-id/turn-id/iter-count）→ error（强违规）；
   //       下方是普通同级 DOM（如 footer/AskUserPanel）→ warn 一次性（不刷屏）。
+  //
+  // PERF（手机发烫根因之一）：该 effect 无依赖数组，ShimmerThinking 每次
+  // re-render 都执行 closest + nextElementSibling + 触发时
+  // querySelectorAll('[data-message-id]') 全列表扫描。busy placeholder 挂在
+  // AgentPanel 每帧 re-render 的树里，流式期间每帧 2 次 closest + 全列表
+  // DOM 扫描。这是纯诊断（console 输出，不渲染任何东西），生产环境跳过
+  // 对用户零感知（与 progressStore.assertInvariants 的既有 PROD 模式一致，
+  // progressStore.ts assertInvariants 同样 if (import.meta.env?.PROD) return）。
+  // Vite 构建时对 DEV 常量做 dead-code elimination，生产 bundle 完全不含
+  // 这段扫描代码。
   useEffect(() => {
+    if (!import.meta.env.DEV) return
     const el = ref.current
     if (!el) return
     // 找到思考中所在的行级容器：消息行（data-message-id 祖先，LiveIteration/

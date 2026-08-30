@@ -773,3 +773,61 @@ func TestRetryLLM_GenerateStreamAndCollect_NetworkErrorRetry(t *testing.T) {
 		t.Errorf("streamAttempts = %d, want 2", inner.streamAttempts.Load())
 	}
 }
+
+// slowSetupLLM simulates a provider whose stream connection takes time to
+// establish (DNS+TLS+request+response headers) BEFORE the first chunk becomes
+// available — and buffers the first chunk into the channel before the caller
+// starts collecting (mirrors RetryLLM.GenerateStreamAndCollect's structure:
+// GenerateStream blocks, CollectStreamWithCallback starts afterwards).
+type slowSetupLLM struct {
+	setupDelay time.Duration
+}
+
+func (m *slowSetupLLM) Generate(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (*LLMResponse, error) {
+	return &LLMResponse{Content: "ok", FinishReason: FinishReasonStop, Usage: TokenUsage{PromptTokens: 10, CompletionTokens: 5}}, nil
+}
+
+func (m *slowSetupLLM) ListModels() []string {
+	return []string{"slow-setup"}
+}
+
+func (m *slowSetupLLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
+	// Simulate the connection-setup window (request sent → SSE established).
+	// During this window the request is in flight — real TTFT must include it.
+	time.Sleep(m.setupDelay)
+	// First chunk is already buffered when the caller starts collecting:
+	// CollectStreamWithCallback's requestStart must still predate the setup
+	// delay for TTFT to be real.
+	ch := make(chan StreamEvent, 2)
+	ch <- StreamEvent{Type: EventContent, Content: "ok"}
+	ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}
+	close(ch)
+	return ch, nil
+}
+
+// TestRetryLLM_GenerateStreamAndCollect_TTFTIncludesRequestSetup reproduces
+// the TTFT bug: CollectStreamWithCallback measured requestStart from the
+// moment collection started (AFTER GenerateStream returned — i.e. after the
+// connection was established and the first chunk possibly already buffered),
+// silently dropping the entire request-setup window from TTFT. The agent's
+// live TTFT (baseline = iteration start) and the committed/DB TTFT then
+// disagreed — the live value dropped sharply the moment the LLM call
+// returned ("tool 生成完毕后 ttft 变成很小的数值").
+func TestRetryLLM_GenerateStreamAndCollect_TTFTIncludesRequestSetup(t *testing.T) {
+	inner := &slowSetupLLM{setupDelay: 120 * time.Millisecond}
+	r := NewRetryLLM(inner, DefaultRetryConfig())
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.StreamStats == nil {
+		t.Fatalf("StreamStats is nil")
+	}
+	// TTFT must cover the request-setup window (>= setupDelay), not just the
+	// local collection latency. Pre-fix: requestStart = Collect start → TTFT
+	// ≈ 0-5ms because the first chunk was already buffered in the channel.
+	if resp.StreamStats.TTFTMs < 110 {
+		t.Errorf("TTFTMs = %d, want >= 110 (request-setup window must be included in TTFT)", resp.StreamStats.TTFTMs)
+	}
+}

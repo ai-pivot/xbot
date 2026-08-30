@@ -900,7 +900,7 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 	done := 0
 	total := len(m.todos)
 	for _, item := range m.todos {
-		if item.Done {
+		if item.Status == "done" {
 			done++
 		}
 	}
@@ -932,7 +932,7 @@ func (m *cliModel) renderSidebarTodo(w int) string {
 		sb.WriteByte('\n')
 		icon := "○"
 		var style lipgloss.Style
-		if item.Done {
+		if item.Status == "done" {
 			icon = "✓"
 			style = s.TodoDone
 		} else {
@@ -1274,7 +1274,7 @@ func (m *cliModel) allTodosDone() bool {
 		return false
 	}
 	for _, t := range m.todos {
-		if !t.Done {
+		if t.Status != "done" {
 			return false
 		}
 	}
@@ -1392,7 +1392,7 @@ func (m *cliModel) renderTodoBar() string {
 	done := 0
 	total := len(m.todos)
 	for _, item := range m.todos {
-		if item.Done {
+		if item.Status == "done" {
 			done++
 		}
 	}
@@ -1431,7 +1431,7 @@ func (m *cliModel) renderTodoBar() string {
 		if utf8.RuneCountInString(text) > 60 {
 			text = string([]rune(text)[:59]) + "…"
 		}
-		if item.Done {
+		if item.Status == "done" {
 			sb.WriteString("  ")
 			sb.WriteString(todoDoneSt.Render("✓"))
 			sb.WriteString(" ")

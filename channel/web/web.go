@@ -176,7 +176,10 @@ type WebCallbacks struct {
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	// model is an optional explicit model name for the new session; when empty
 	// the backend falls back to the default binding (Balance tier first).
-	ChatCreate func(senderID, label string, canonicalUserID int64, model string) (string, error)
+	// subscriptionID pairs with model (model-subscription integration: the
+	// model never travels alone — the frontend passes both when it knows the
+	// owning subscription, e.g. inheriting the active session's pair).
+	ChatCreate func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
@@ -770,6 +773,9 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
+	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
+	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))
+	mux.HandleFunc("/api/plugin-files/", wc.authMiddleware(wc.handlePluginFiles))
 	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistory))
 	mux.HandleFunc("/api/history/rewind", wc.authenticatedPOST(wc.handleHistoryRewind))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))
@@ -1012,6 +1018,22 @@ func (wc *WebChannel) SendProgress(chatID string, payload *protocol.ProgressEven
 	if !wc.hub.sendToSession(routeChannel, chatID, wsMsg) {
 		log.WithField("chat_id", chatID).Debug("Web client offline, progress event buffered")
 	}
+}
+
+// SendBgTaskOutput pushes a real-time background task output delta to the
+// session's WS subscribers. Fired by BgTaskManager's onOutput callback for
+// every outputBuf delta — the frontend BackgroundPanel subscribes to these
+// events and writes the delta directly to xterm (replaces 2s polling).
+// chatID is the unqualified chat ID (sessionKey "web:xxx" → "xxx").
+func (wc *WebChannel) SendBgTaskOutput(chatID, taskID, delta string) {
+	wsMsg := protocol.WSMessage{
+		Type:    protocol.MsgTypeBgTaskOutput,
+		TS:      time.Now().Unix(),
+		ChatID:  chatID,
+		Content: delta,
+		TaskID:  taskID,
+	}
+	_ = wc.hub.sendToSession("web", chatID, wsMsg) // best-effort push
 }
 
 // InjectUserMessage implements channel.UserMessageInjector.
@@ -1425,7 +1447,7 @@ func (wc *WebChannel) writePump(c *Client) {
 				return
 			}
 			// Internal pong — reply to client ping via single-writer goroutine.
-			if msg.Type == "__pong__" {
+			if msg.Type == protocol.MsgTypePong {
 				c.wsConn.WriteControl(websocket.PongMessage, []byte(msg.Content), time.Now().Add(5*time.Second))
 				continue
 			}
@@ -1471,7 +1493,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 	c.wsConn.SetPingHandler(func(appData string) error {
 		c.wsConn.SetReadDeadline(time.Now().Add(120 * time.Second))
 		select {
-		case c.sendCh <- protocol.WSMessage{Type: "__pong__", Content: appData}:
+		case c.sendCh <- protocol.WSMessage{Type: protocol.MsgTypePong, Content: appData}:
 		default:
 		}
 		return nil

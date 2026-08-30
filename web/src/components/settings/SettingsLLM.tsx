@@ -1,1127 +1,544 @@
 /**
- * SettingsLLM — Full LLM config panel (Spec D).
+ * SettingsLLM — LLM 控制台（重写版）。
  *
- * Structure:
- *   ├── 模型与推理（用户级）
- *   │   ├── Thinking Mode 下拉
- *   │   ├── Max Concurrency 数字输入
- *   │   └── Tier 配置 × 3
- *   ├── 订阅管理
- *   │   ├── 订阅列表（可展开/折叠）
- *   │   │   └── 每个订阅：信息行 + 展开后模型列表 + 编辑表单
- *   │   └── [+ 添加订阅]
- *   └── 当前会话模型（只读）
+ * 替代旧的 480px sheet 内联表单实现。信息架构：卡片概览 → 详情抽屉 →
+ * 模态编辑（与设计稿一致）。数据层复用 useLLMSettings（由 SettingsDialog
+ * 创建并注入），组件自身只做展示与交互编排。
+ *
+ * 事实对齐（agent/llm_factory.go + llm/openai.go）：
+ * - 协议仅 openai / anthropic 两种（createClient 只有 case "anthropic" + default）
+ * - OpenAI 的 api_type：chat_completions（默认）| responses
+ * - 订阅启用/禁用：set_subscription_enabled（v40），禁用=模型从 picker 消失、凭据保留
+ * - 模型 max_context：预设含 1M/2M + 自定义输入；0 = 跟随默认（系统默认 1M）
  */
-import { useEffect, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
-import {
-  ChevronDown,
-  ChevronRight,
-  Download,
-  Loader2,
-  Pencil,
-  Plus,
-  Power,
-  RefreshCw,
-  Star,
-  Trash2,
-  Lock,
-  Upload,
-} from 'lucide-react'
-
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible'
-import { useI18n } from '@/providers/i18n'
-import { useLLMSettings } from '@/hooks/useLLMSettings'
 import { useWSConnection } from '@/hooks/useWSConnection'
-import { isMaskedAPIKey } from '@/components/agent/api'
-import type { Subscription, ModelEntry, PerModelConfig } from '@/types/shared'
+import type { useLLMSettings } from '@/hooks/useLLMSettings'
+import type { Subscription } from '@/types/shared'
+import {
+  ActionSheet,
+  AddModelModal,
+  DeleteConfirmModal,
+  EditModelModal,
+  LlmField,
+  LlmIcon,
+  LlmSwitch,
+  ProvBadge,
+  StatusPill,
+  SubFormModal,
+  TierPickerModal,
+  fmtTokens,
+  providerMeta,
+} from './llm-console'
 
-import { SettingsSection } from './SettingsSection'
+type Settings = ReturnType<typeof useLLMSettings>
+type LlmSub = Subscription
 
-interface SettingsLLMProps {
-  settings: ReturnType<typeof useLLMSettings>
+const THINK_OPTS: Array<[string, string]> = [
+  ['auto', '自动'],
+  ['think', '思考'],
+  ['think-max', '深度思考'],
+  ['disabled', '关闭'],
+]
+
+const TIER_META: Record<string, { label: string; icon: string; color: string }> = {
+  vanguard: { label: '先锋', icon: 'crown', color: '#a78bfa' },
+  balance: { label: '均衡', icon: 'scale', color: '#3aa6dd' },
+  swift: { label: '疾速', icon: 'gauge', color: '#34d399' },
 }
 
-// ── NumberField ──
-
-function NumberField({
-  value,
-  disabled,
-  onCommit,
-}: {
-  value: number
-  disabled?: boolean
-  onCommit: (n: number) => Promise<boolean>
-}) {
-  const { t } = useI18n()
-  const [text, setText] = useState(String(value))
-  useEffect(() => setText(String(value)), [value])
-
-  const commit = () => {
-    const n = Number(text)
-    if (!Number.isFinite(n) || n < 0 || n === value) return
-    void onCommit(n).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
-
-  return (
-    <Input
-      type="number"
-      min={0}
-      inputMode="numeric"
-      value={text}
-      disabled={disabled}
-      onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-      }}
-      className="max-w-[200px]"
-    />
-  )
-}
-
-// ── Subscription Form Data ──
-
-interface SubFormData {
-  name: string
-  provider: string
-  base_url: string
-  api_key: string
-  model: string
-}
-
-function emptySubForm(): SubFormData {
-  return { name: '', provider: 'openai', base_url: '', api_key: '', model: '' }
-}
-
-function subToForm(sub: Subscription): SubFormData {
-  return {
-    name: sub.name,
-    provider: sub.provider,
-    base_url: sub.base_url,
-    api_key: sub.api_key,
-    model: sub.model,
-  }
-}
-
-// ── Subscription Edit Form ──
-
-function SubscriptionEditForm({
-  initial,
-  saving,
-  onSave,
-  onCancel,
-}: {
-  initial: SubFormData
-  saving: boolean
-  onSave: (data: SubFormData) => void
-  onCancel: () => void
-}) {
-  const { t } = useI18n()
-  const [form, setForm] = useState(initial)
-
-  const set = (k: keyof SubFormData, v: string) => setForm((f) => ({ ...f, [k]: v }))
-
-  return (
-    <div className="flex flex-col gap-3 rounded-md border border-border bg-bg-secondary p-3">
-      <div className="flex flex-col gap-1">
-        <Label className="text-xs text-muted-foreground">{t('settings.subscriptionName')}</Label>
-        <Input
-          value={form.name}
-          onChange={(e) => set('name', e.target.value)}
-          placeholder="My OpenAI"
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label className="text-xs text-muted-foreground">{t('settings.subscriptionProvider')}</Label>
-        <Select value={form.provider} onValueChange={(v) => set('provider', v)}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="openai">{t('settings.providerOpenAI')}</SelectItem>
-            <SelectItem value="openai_responses">{t('settings.providerOpenAIResponses')}</SelectItem>
-            <SelectItem value="anthropic">{t('settings.providerAnthropic')}</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label className="text-xs text-muted-foreground">{t('settings.subscriptionBaseURL')}</Label>
-        <Input
-          value={form.base_url}
-          onChange={(e) => set('base_url', e.target.value)}
-          placeholder="https://api.openai.com/v1"
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label className="text-xs text-muted-foreground">{t('settings.subscriptionAPIKey')}</Label>
-        <Input
-          type="password"
-          value={form.api_key}
-          onChange={(e) => set('api_key', e.target.value)}
-          placeholder="sk-..."
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <Label className="text-xs text-muted-foreground">{t('settings.subscriptionDefaultModel')}</Label>
-        <Input
-          value={form.model}
-          onChange={(e) => set('model', e.target.value)}
-          placeholder="gpt-4o"
-        />
-      </div>
-      <div className="flex gap-2">
-        <Button size="sm" disabled={saving} onClick={() => onSave(form)}>
-          {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-          {t('common.save')}
-        </Button>
-        <Button size="sm" variant="outline" onClick={onCancel}>
-          {t('common.cancel')}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-// ── Model Edit Form ──
-
-interface ModelFormData {
-  enabled: boolean
-  max_output_tokens: number
-  max_context: number
-  api_type: string
-}
-
-function modelToForm(entry: ModelEntry, sub: Subscription | undefined): ModelFormData {
-  const pmc = sub?.per_model_configs?.[entry.model]
-  return {
-    enabled: entry.status !== 'disabled',
-    max_output_tokens: pmc?.max_output_tokens ?? 0,
-    max_context: pmc?.max_context ?? 0,
-    api_type: pmc?.api_type ?? '',
-  }
-}
-
-function ModelEditForm({
-  initial,
-  saving,
-  onSave,
-  onCancel,
-}: {
-  initial: ModelFormData
-  saving: boolean
-  onSave: (data: ModelFormData) => void
-  onCancel: () => void
-}) {
-  const { t } = useI18n()
-  const [form, setForm] = useState(initial)
-
-  const set = <K extends keyof ModelFormData>(k: K, v: ModelFormData[K]) =>
-    setForm((f) => ({ ...f, [k]: v }))
-
-  return (
-    <div className="flex flex-col gap-2 rounded-md border border-border bg-bg-tertiary p-2.5">
-      <div className="flex items-center gap-2">
-        <Label className="text-xs text-muted-foreground w-24">{t('settings.modelAPIType')}</Label>
-        <Select
-          value={form.api_type || 'default'}
-          onValueChange={(v) => set('api_type', v === 'default' ? '' : v)}
-        >
-          <SelectTrigger className="flex-1 h-8">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="default">{t('settings.apiTypeDefault')}</SelectItem>
-            <SelectItem value="chat_completions">{t('settings.apiTypeChatCompletions')}</SelectItem>
-            <SelectItem value="responses">{t('settings.apiTypeResponses')}</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex items-center gap-2">
-        <Label className="text-xs text-muted-foreground w-24">{t('settings.modelMaxOutput')}</Label>
-        <Input
-          type="number"
-          min={0}
-          value={String(form.max_output_tokens)}
-          onChange={(e) => set('max_output_tokens', Number(e.target.value))}
-          className="flex-1 h-8"
-        />
-      </div>
-      <div className="flex items-center gap-2">
-        <Label className="text-xs text-muted-foreground w-24">{t('settings.modelMaxContext')}</Label>
-        <Input
-          type="number"
-          min={0}
-          value={String(form.max_context)}
-          onChange={(e) => set('max_context', Number(e.target.value))}
-          className="flex-1 h-8"
-        />
-      </div>
-      <div className="flex gap-2 pt-1">
-        <Button size="sm" disabled={saving} onClick={() => onSave(form)}>
-          {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-          {t('common.save')}
-        </Button>
-        <Button size="sm" variant="outline" onClick={onCancel}>
-          {t('common.cancel')}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-// ── Model Row ──
-
-function statusColor(status: ModelEntry['status']): string {
-  switch (status) {
-    case 'normal':
-      return 'bg-green-500'
-    case 'offline':
-      return 'bg-yellow-500'
-    case 'disabled':
-      return 'bg-gray-400'
-  }
-}
-
-interface ModelRowProps {
-  entry: ModelEntry
-  isActive: boolean
-  isSystemSub: boolean
-  onEdit: () => void
-  onToggleEnabled: () => void
-  onRemove: () => void
-}
-
-function ModelRow({ entry, isActive, isSystemSub, onEdit, onToggleEnabled, onRemove }: ModelRowProps) {
-  const { t } = useI18n()
-  const statusLabel =
-    entry.status === 'normal'
-      ? t('settings.modelStatusNormal')
-      : entry.status === 'offline'
-        ? t('settings.modelStatusOffline')
-        : t('settings.modelStatusDisabled')
-
-  return (
-    <div className="group flex items-center gap-2 px-2 py-1.5 hover:bg-accent/5">
-      <span className={`size-2 shrink-0 rounded-full ${statusColor(entry.status)}`} />
-      <span className="flex-1 truncate text-sm">{entry.model}</span>
-      <span className="text-[10px] text-muted-foreground">{statusLabel}</span>
-      {isActive && <span className="text-accent text-xs">✓</span>}
-      {!isSystemSub && (
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="size-6"
-            onClick={onEdit}
-            aria-label={t('settings.editModel')}
-          >
-            <Pencil className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="size-6"
-            onClick={onToggleEnabled}
-            aria-label={entry.status === 'disabled' ? t('settings.enable') : t('settings.disable')}
-          >
-            <Power className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="size-6 text-destructive hover:text-destructive"
-            onClick={onRemove}
-            aria-label={t('common.delete')}
-          >
-            <Trash2 className="size-3" />
-          </Button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Subscription Row ──
-
-interface SubscriptionRowProps {
-  sub: Subscription
-  modelEntries: ModelEntry[]
-  activeModel: string | undefined
-  expanded: boolean
-  editingSub: boolean
-  editingModel: ModelEntry | null
-  saving: boolean
-  onToggle: () => void
-  onStartEditSub: () => void
-  onCancelEditSub: () => void
-  onSaveSub: (data: SubFormData) => void
-  onSetDefault: () => void
-  onToggleEnabled: () => void
-  onRemove: () => void
-  onStartEditModel: (entry: ModelEntry) => void
-  onCancelEditModel: () => void
-  onSaveModel: (data: ModelFormData) => void
-  onToggleModelEnabled: (entry: ModelEntry) => void
-  onRemoveModel: (entry: ModelEntry) => void
-  onAddModel: () => void
-  isAddingModel: boolean
-  onConfirmAddModel: (modelName: string) => void
-  onCancelAddModel: () => void
-}
-
-function SubscriptionRow({
-  sub,
-  modelEntries,
-  activeModel,
-  expanded,
-  editingSub,
-  editingModel,
-  saving,
-  onToggle,
-  onStartEditSub,
-  onCancelEditSub,
-  onSaveSub,
-  onSetDefault,
-  onToggleEnabled,
-  onRemove,
-  onStartEditModel,
-  onCancelEditModel,
-  onSaveModel,
-  onToggleModelEnabled,
-  onRemoveModel,
-  onAddModel,
-  isAddingModel,
-  onConfirmAddModel,
-  onCancelAddModel,
-}: SubscriptionRowProps) {
-  const { t } = useI18n()
-  const isSystem = sub.is_system
-  const subModels = modelEntries.filter((e) => e.sub_id === sub.id)
-
-  return (
-    <Collapsible open={expanded} onOpenChange={onToggle}>
-      <div className="group flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent/5">
-        <CollapsibleTrigger asChild>
-          <button type="button" className="flex items-center gap-2 flex-1 min-w-0 text-left">
-            {expanded ? (
-              <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
-            ) : (
-              <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-            )}
-            <span className={`size-2 shrink-0 rounded-full ${
-              sub.enabled ? (sub.active ? 'bg-accent' : 'bg-green-500') : 'bg-gray-400'
-            }`} />
-            <span className="truncate text-sm font-medium">{sub.name}</span>
-            <span className="truncate text-xs text-muted-foreground">{sub.provider}</span>
-            {isSystem && <Lock className="size-3 text-muted-foreground" />}
-            {sub.active && (
-              <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] text-accent">
-                {t('settings.subscriptionActive')}
-              </span>
-            )}
-          </button>
-        </CollapsibleTrigger>
-        {!isSystem && (
-          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="size-6"
-              onClick={onStartEditSub}
-              aria-label={t('common.rename')}
-            >
-              <Pencil className="size-3" />
-            </Button>
-            {!sub.active && (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="size-6"
-                onClick={onSetDefault}
-                aria-label={t('settings.setAsDefault')}
-              >
-                <Star className="size-3" />
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="size-6"
-              onClick={onToggleEnabled}
-              aria-label={sub.enabled ? t('settings.disable') : t('settings.enable')}
-            >
-              <Power className="size-3" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="size-6 text-destructive hover:text-destructive"
-              onClick={onRemove}
-              aria-label={t('common.delete')}
-            >
-              <Trash2 className="size-3" />
-            </Button>
-          </div>
-        )}
-      </div>
-      <CollapsibleContent>
-        <div className="ml-6 border-l border-border pl-2">
-          {/* Edit subscription form */}
-          {editingSub && !isSystem && (
-            <div className="py-2">
-              <SubscriptionEditForm
-                initial={subToForm(sub)}
-                saving={saving}
-                onCancel={onCancelEditSub}
-                onSave={onSaveSub}
-              />
-            </div>
-          )}
-          {/* Model list */}
-          {subModels.length === 0 ? (
-            <p className="px-2 py-1.5 text-xs text-muted-foreground">—</p>
-          ) : (
-            <div className="flex flex-col">
-              {subModels.map((entry) => (
-                <div key={`${entry.sub_id}-${entry.model}`}>
-                  {editingModel?.model === entry.model ? (
-                    <div className="py-1">
-                      <ModelEditForm
-                        initial={modelToForm(entry, sub)}
-                        saving={saving}
-                        onCancel={onCancelEditModel}
-                        onSave={onSaveModel}
-                      />
-                    </div>
-                  ) : (
-                    <ModelRow
-                      entry={entry}
-                      isActive={entry.model === activeModel}
-                      isSystemSub={isSystem}
-                      onEdit={() => onStartEditModel(entry)}
-                      onToggleEnabled={() => onToggleModelEnabled(entry)}
-                      onRemove={() => onRemoveModel(entry)}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          {/* Add model button / form */}
-          {!isSystem && (
-            isAddingModel ? (
-              <div className="mt-1">
-                <AddModelForm
-                  saving={saving}
-                  onAdd={onConfirmAddModel}
-                  onCancel={onCancelAddModel}
-                />
-              </div>
-            ) : (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="mt-1 gap-1 text-xs text-muted-foreground"
-                onClick={onAddModel}
-              >
-                <Plus className="size-3" />
-                {t('settings.addModel')}
-              </Button>
-            )
-          )}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-// ── Tier Selector ──
-
-function TierSelector({
-  label,
-  value,
-  options,
-  disabled,
-  onChange,
-}: {
-  label: string
-  value: string
-  options: { label: string; value: string }[]
-  disabled: boolean
-  onChange: (v: string) => void
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Label className="text-xs text-muted-foreground w-20 shrink-0">{label}</Label>
-      <Select value={value} onValueChange={onChange} disabled={disabled}>
-        <SelectTrigger className="flex-1 h-8">
-          <SelectValue placeholder="—" />
-        </SelectTrigger>
-        <SelectContent>
-          {options.map((opt) => (
-            <SelectItem key={opt.value} value={opt.value}>
-              {opt.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  )
-}
-
-// ── Add Model Form ──
-
-function AddModelForm({
-  saving,
-  onAdd,
-  onCancel,
-}: {
-  saving: boolean
-  onAdd: (modelName: string) => void
-  onCancel: () => void
-}) {
-  const { t } = useI18n()
-  const [modelName, setModelName] = useState('')
-
-  return (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-bg-tertiary p-2.5">
-      <Input
-        value={modelName}
-        onChange={(e) => setModelName(e.target.value)}
-        placeholder={t('settings.modelName')}
-        className="flex-1 h-8"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && modelName.trim()) onAdd(modelName)
-        }}
-      />
-      <Button size="sm" disabled={saving || !modelName.trim()} onClick={() => onAdd(modelName)}>
-        {saving ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
-      </Button>
-      <Button size="sm" variant="outline" onClick={onCancel}>
-        {t('common.cancel')}
-      </Button>
-    </div>
-  )
-}
-
-// ── Main Component ──
-
-export function SettingsLLM({ settings }: SettingsLLMProps) {
-  const { t } = useI18n()
-  const conn = useWSConnection()
-  const {
-    data,
-    loading,
-    error,
-    saving,
-    refreshing,
-    reload,
-    addSubscription,
-    updateSubscription,
-    removeSubscription,
-    setDefaultSubscription,
-    setSubscriptionEnabled,
-    updatePerModelConfig,
-    setModelEnabled,
-    removeModel,
-    upsertModel,
-    refreshModels,
-    setThinkingMode,
-    setLLMConcurrency,
-    setTier,
-  } = settings
-
-  const disabled = saving || !!error
-
-  // State
-  const [expandedSubs, setExpandedSubs] = useState<Set<string>>(new Set())
-  const [editingSubID, setEditingSubID] = useState<string | null>(null)
-  const [editingModel, setEditingModel] = useState<{ subID: string; model: string } | null>(null)
-  const [addingSub, setAddingSub] = useState(false)
-  const [addingModelForSub, setAddingModelForSub] = useState<string | null>(null)
-
-  // Derive the active model from the default (active) subscription
-  const activeSub = data.subscriptions.find((s) => s.active)
-  const activeModel = activeSub?.model
-
-  const toggleSub = (id: string) => {
-    setExpandedSubs((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  // Thinking mode
-  const [thinking, setThinking] = useState(data.thinkingMode === 'enabled' ? 'think' : data.thinkingMode)
-  useEffect(
-    () => setThinking(data.thinkingMode === 'enabled' ? 'think' : data.thinkingMode),
-    [data.thinkingMode],
-  )
-  const commitThinking = (mode: string) => {
-    if (mode === data.thinkingMode) return
-    void setThinkingMode(mode).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
-
-  // Tier options: exclude disabled models
-  const tierOptions = data.modelEntries
-    .filter((e) => e.status !== 'disabled')
-    .map((e) => ({
-      label: `${e.model} (${e.sub_name})`,
-      value: `${e.sub_id}|${e.model}`,
-    }))
-
-  // ── Subscription handlers ──
-
-  const handleAddSub = (form: SubFormData) => {
-    void addSubscription({
-      name: form.name,
-      provider: form.provider,
-      base_url: form.base_url,
-      api_key: form.api_key,
-      model: form.model,
-    }).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-      if (ok) setAddingSub(false)
-    })
-  }
-
-  const handleSaveSub = (sub: Subscription) => (form: SubFormData) => {
-    const apiKeyToSend = isMaskedAPIKey(form.api_key) ? '' : form.api_key
-    void updateSubscription(sub.id, {
-      name: form.name,
-      provider: form.provider,
-      base_url: form.base_url,
-      api_key: apiKeyToSend,
-      model: form.model,
-    }).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-      if (ok) setEditingSubID(null)
-    })
-  }
-
-  const handleRemoveSub = (sub: Subscription) => {
-    if (sub.is_system) {
-      toast.error(t('settings.systemSubscriptionProtected'))
-      return
-    }
-    if (!confirm(t('settings.deleteConfirm'))) return
-    void removeSubscription(sub.id).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
-
-  const handleSetDefault = (sub: Subscription) => {
-    if (sub.is_system) {
-      toast.error(t('settings.systemSubscriptionProtected'))
-      return
-    }
-    void setDefaultSubscription(sub.id).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
-
-  const handleToggleSubEnabled = (sub: Subscription) => {
-    if (sub.is_system) {
-      toast.error(t('settings.systemSubscriptionProtected'))
-      return
-    }
-    void setSubscriptionEnabled(sub.id, !sub.enabled).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
-
-  // ── Model handlers ──
-
-  const handleStartEditModel = (subID: string, entry: ModelEntry) => {
-    setEditingModel({ subID, model: entry.model })
-  }
-
-  const handleCancelEditModel = () => setEditingModel(null)
-
-  const handleSaveModel = (sub: Subscription, entry: ModelEntry) => (form: ModelFormData) => {
-    // Per protocol.PerModelConfig comment: Enabled is a read-side projection,
-    // NOT authoritative on writes. We pass the form value for consistency but
-    // the actual enabled state is managed by the separate setModelEnabled call below.
-    const config: PerModelConfig = {
-      max_output_tokens: form.max_output_tokens,
-      max_context: form.max_context,
-      api_type: form.api_type,
-      enabled: form.enabled,
-    }
-    void updatePerModelConfig(sub.id, entry.model, config).then(async (ok) => {
-      if (!ok) {
-        toast.error(t('settings.saveFailed'))
+function exportSubscriptions(conn: ReturnType<typeof useWSConnection>) {
+  conn.rpc('export_subscriptions', { ids: [] })
+    .then((resp: unknown) => {
+      const r = resp as { subscriptions?: Array<Record<string, unknown>> }
+      const subs = r?.subscriptions ?? []
+      if (subs.length === 0) {
+        toast.info('没有可导出的订阅')
         return
       }
-      // Toggle enabled state if changed
-      if (entry.status === 'disabled' && form.enabled) {
-        await setModelEnabled(sub.id, entry.model, true)
-      } else if (entry.status !== 'disabled' && !form.enabled) {
-        await setModelEnabled(sub.id, entry.model, false)
-      }
-      toast.success(t('settings.saved'))
-      setEditingModel(null)
+      const json = JSON.stringify(resp, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'xbot-llm-subscriptions.json'
+      a.click()
+      URL.revokeObjectURL(url)
+      toast.success('已导出 ' + subs.length + ' 个订阅')
     })
-  }
+    .catch((e: unknown) => toast.error('导出失败：' + (e instanceof Error ? e.message : String(e))))
+}
 
-  const handleToggleModelEnabled = (sub: Subscription, entry: ModelEntry) => {
-    if (sub.is_system) {
-      toast.error(t('settings.systemSubscriptionProtected'))
-      return
-    }
-    void setModelEnabled(sub.id, entry.model, entry.status !== 'disabled' ? false : true).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
+export function SettingsLLM({ settings }: { settings: Settings }) {
+  const conn = useWSConnection()
+  const { data, loading, saving, refreshing } = settings
+  const {
+    addSubscription, updateSubscription, removeSubscription, setDefaultSubscription,
+    setSubscriptionEnabled, updatePerModelConfig, setModelEnabled, removeModel,
+    upsertModel, refreshModels, setThinkingMode, setLLMConcurrency, setTier,
+  } = settings
 
-  const handleRemoveModel = (sub: Subscription, entry: ModelEntry) => {
-    if (sub.is_system) {
-      toast.error(t('settings.systemSubscriptionProtected'))
-      return
-    }
-    void removeModel(sub.id, entry.model).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-    })
-  }
-
-  const handleAddModel = (subID: string) => (modelName: string) => {
-    if (!modelName.trim()) return
-    void upsertModel(subID, modelName.trim()).then((ok) => {
-      toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed'))
-      if (ok) setAddingModelForSub(null)
-    })
-  }
-
-  const handleRefresh = () => {
-    void refreshModels().then((ok) => {
-      toast[ok ? 'success' : 'error'](
-        ok ? t('settings.refreshModels') : t('settings.refreshTimeout'),
-      )
-    })
-  }
-
-  // ── Export / Import subscriptions ──
-  const [exporting, setExporting] = useState(false)
+  const [q, setQ] = useState('')
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [editSub, setEditSub] = useState<LlmSub | null>(null)
+  const [addModelFor, setAddModelFor] = useState<string | null>(null)
+  const [editModel, setEditModel] = useState<{ sid: string; model: string } | null>(null)
+  const [confirmDel, setConfirmDel] = useState<LlmSub | null>(null)
+  const [tierPick, setTierPick] = useState<string | null>(null)
+  const [menuSub, setMenuSub] = useState<LlmSub | null>(null)
+  const [menuModel, setMenuModel] = useState<{ sid: string; model: string; status: string } | null>(null)
+  const [thinking, setThinking] = useState<string | null>(null)
+  const [conc, setConc] = useState<number | null>(null)
   const [importing, setImporting] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handleExport = () => {
-    setExporting(true)
-    conn.rpc('export_subscriptions', { ids: [] })
-      .then((resp: unknown) => {
-        const r = resp as { subscriptions?: Array<Record<string, unknown>> }
-        const subs = r?.subscriptions ?? []
-        if (subs.length === 0) {
-          toast.info('No subscriptions to export')
-          return
-        }
-        const json = JSON.stringify(resp, null, 2)
-        const blob = new Blob([json], { type: 'application/json' })
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `xbot-subscriptions-${new Date().toISOString().slice(0, 10)}.json`
-        a.click()
-        URL.revokeObjectURL(url)
-        toast.success(`Exported ${subs.length} subscription(s)`)
-      })
-      .catch(() => toast.error('Export failed'))
-      .finally(() => setExporting(false))
+  const thinkingVal = thinking ?? (data.thinkingMode === 'enabled' ? 'think' : data.thinkingMode || 'auto')
+  const concVal = conc ?? data.llmConcurrency ?? 0
+
+  const subs = useMemo(() => data.subscriptions, [data.subscriptions])
+  const totalModels = data.modelEntries.length
+  const liveModels = data.modelEntries.filter((e) => e.status === 'normal').length
+  const filtered = subs.filter((s) => {
+    if (!q) return true
+    const ql = q.toLowerCase()
+    if (s.name.toLowerCase().includes(ql) || s.provider.toLowerCase().includes(ql)) return true
+    return data.modelEntries.some((e) => e.sub_id === s.id && e.model.toLowerCase().includes(ql))
+  })
+  const detailSub = subs.find((s) => s.id === detailId) || null
+  const detailModels = detailSub ? data.modelEntries.filter((e) => e.sub_id === detailSub.id) : []
+
+  const fail = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e))
+
+  const commitThinking = (mode: string) => {
+    setThinking(mode)
+    const dbMode = mode === 'think' ? 'enabled' : mode
+    void setThinkingMode(dbMode).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已保存' : '保存失败'))
   }
-
+  const commitConc = (n: number) => {
+    setConc(n)
+    void setLLMConcurrency(n).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已保存' : '保存失败'))
+  }
+  const toggleSub = (s: LlmSub) => {
+    void setSubscriptionEnabled(s.id, !s.enabled).then((ok) => {
+      if (!ok) return fail('操作失败')
+      toast[!s.enabled ? 'success' : 'warning'](!s.enabled ? '已启用 ' + s.name : '已停用 ' + s.name)
+    })
+  }
+  const makeDefault = (s: LlmSub) => {
+    void setDefaultSubscription(s.id).then((ok) => toast[ok ? 'success' : 'error'](ok ? '默认订阅 → ' + s.name : '设置失败'))
+  }
+  const confirmDelete = (s: LlmSub) => {
+    setConfirmDel(null)
+    if (detailId === s.id) setDetailId(null)
+    void removeSubscription(s.id).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已删除 ' + s.name : '删除失败'))
+  }
+  const toggleModel = (sid: string, model: string, curEnabled: boolean) => {
+    void setModelEnabled(sid, model, !curEnabled).then((ok) =>
+      toast[ok ? 'success' : 'error'](ok ? (curEnabled ? '已停用 ' + model : '已启用 ' + model) : '操作失败'))
+  }
+  const removeModelById = (sid: string, model: string) => {
+    setMenuModel(null)
+    void removeModel(sid, model).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已移除 ' + model : '移除失败'))
+  }
+  const saveModel = (sid: string, model: string, cfg: { max_context: number; max_output_tokens: number; api_type: string }) => {
+    setEditModel(null)
+    void updatePerModelConfig(sid, model, {
+      max_context: cfg.max_context,
+      max_output_tokens: cfg.max_output_tokens,
+      api_type: cfg.api_type,
+      enabled: true,
+    }).then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型配置已保存' : '保存失败'))
+  }
+  const addModelByName = (sid: string, name: string) => {
+    setAddModelFor(null)
+    void upsertModel(sid, name, 0, 0, '').then((ok) => toast[ok ? 'success' : 'error'](ok ? '已注册 ' + name : '添加失败'))
+  }
+  const saveSub = (d: {
+    name: string; provider: string; base_url: string; api_key: string; model: string; api_type: string
+  }) => {
+    setFormOpen(false)
+    const editing = editSub
+    setEditSub(null)
+    const p = editing ? updateSubscription(editing.id, d) : addSubscription(d)
+    void p.then((ok) => toast[ok ? 'success' : 'error'](ok ? (editing ? '订阅已保存' : '已添加 ' + d.name) : '保存失败'))
+  }
+  const pickTier = (tier: string, subID: string, model: string) => {
+    setTierPick(null)
+    void setTier(tier as 'vanguard' | 'balance' | 'swift', subID + '|' + model).then((ok) =>
+      toast[ok ? 'success' : 'error'](ok ? 'Tier ' + TIER_META[tier].label + ' → ' + model : '设置失败'))
+  }
   const handleImport = (file: File) => {
     setImporting(true)
     const reader = new FileReader()
     reader.onload = () => {
+      // JSON.parse throws synchronously on malformed files — BEFORE conn.rpc()
+      // is even called, so the .catch() chain below never runs and
+      // setImporting(false) never executes → UI stuck on "导入中…" forever.
+      // Parse first, fail fast.
+      let subs: unknown
       try {
-        const data = JSON.parse(reader.result as string) as { subscriptions?: Array<Record<string, unknown>>; subs?: Array<Record<string, unknown>> }
-        const subs = data?.subscriptions ?? data?.subs ?? []
-        if (!Array.isArray(subs) || subs.length === 0) {
-          toast.error('No subscriptions found in file')
-          setImporting(false)
-          return
-        }
-        conn.rpc('import_subscriptions', { subs, overwrite: false })
-          .then((resp: unknown) => {
-            const r = resp as { imported?: number; skipped?: number }
-            const imported = r?.imported ?? 0
-            const skipped = r?.skipped ?? 0
-            toast.success(`Imported ${imported}, skipped ${skipped} (duplicate name)`)
-            if (imported > 0) void reload()
-          })
-          .catch(() => toast.error('Import failed'))
-          .finally(() => setImporting(false))
-      } catch {
-        toast.error('Invalid JSON file')
+        subs = JSON.parse(String(reader.result))
+      } catch (e) {
+        fail('导入失败：' + (e instanceof Error ? e.message : String(e)))
         setImporting(false)
+        return
       }
-    }
-    reader.onerror = () => {
-      toast.error('Failed to read file')
-      setImporting(false)
+      conn.rpc('import_subscriptions', { subs, overwrite: false })
+        .then(() => {
+          toast.success('导入成功')
+          void settings.reload()
+        })
+        .catch((e: unknown) => fail('导入失败：' + (e instanceof Error ? e.message : String(e))))
+        .finally(() => setImporting(false))
     }
     reader.readAsText(file)
   }
 
+  const currentTierRaw = (tier: string) =>
+    tier === 'vanguard' ? data.tierVanguard : tier === 'balance' ? data.tierBalance : data.tierSwift || ''
+  const tierCur = (tier: string): { model: string; sub: string } | null => {
+    const raw = currentTierRaw(tier)
+    if (!raw) return null
+    const idx = raw.indexOf('|')
+    if (idx < 0) {
+      const owner = data.modelEntries.find((e) => e.model === raw)
+      return { model: raw, sub: owner ? owner.sub_name : '' }
+    }
+    const sub = subs.find((s) => s.id === raw.slice(0, idx))
+    return { model: raw.slice(idx + 1), sub: sub ? sub.name : '' }
+  }
+  const modelPmc = (sub: LlmSub | null, model: string) =>
+    (sub && sub.per_model_configs?.[model]) || undefined
+  const subById = (id: string) => subs.find((s) => s.id === id)
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-muted)' }}>
+        加载中…
+      </div>
+    )
+  }
+
   return (
-    <div className="flex flex-col">
-      {/* Model & Inference (user-level) */}
-      <SettingsSection title={t('settings.modelInference')}>
-        {/* Thinking Mode */}
-        <div className="flex items-center gap-2">
-          <Label className="text-xs text-muted-foreground w-24 shrink-0">
-            {t('settings.thinkingMode')}
-          </Label>
-          <Select
-            value={thinking || 'auto'}
-            onValueChange={(v) => {
-              const mode = v === 'auto' ? '' : v
-              setThinking(mode)
-              commitThinking(mode)
-            }}
-            disabled={disabled}
-          >
-            <SelectTrigger className="flex-1 h-8">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="auto">{t('settings.thinkingAuto')}</SelectItem>
-                <SelectItem value="think">{t('settings.thinkingStandard')}</SelectItem>
-                <SelectItem value="think-max">{t('settings.thinkingMaximum')}</SelectItem>
-                <SelectItem value="disabled">{t('settings.thinkingDisabled')}</SelectItem>
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+    <div className="relative flex h-full min-h-0 flex-col">
+      {/* ── header ── */}
+      {/* px-4 与正文 p-4 对齐（左缘一致）；pt-4 给标题顶部留白（原 px-1 无 pt
+          —— 标题贴顶且比正文缩进少 12px，视觉错位）。统计行 truncate：窄宽度
+          下一行省略而非折行（折行会把按钮组挤成多行 —— 排版错乱根源）。按钮组
+          shrink-0：桌面一行放下（sheet 720px），窄屏由 header 的 flex-wrap 整组
+          掉到标题下方，组内 flex-wrap 兜底避免横向溢出。按钮组 min-w-0（不用
+          shrink-0）：shrink-0 让按钮组保持 ~281px 内容宽不收缩，手机端内容区
+          （375px 视口 - padding 后 ~343px）单标题行放不下时整组溢出屏幕；
+          min-w-0 允许收缩到容器内，组内 flex-wrap 换行。 */}
+      <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b px-4 pb-3 pt-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-base font-bold" style={{ color: 'var(--text-primary)' }}>LLM 控制台</h2>
+          <p className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            {subs.length} 个订阅 · {totalModels} 个模型 · {liveModels} 个可用
+          </p>
+        </div>
+        <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
+          <button onClick={function() { void refreshModels().then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型列表已刷新' : '刷新失败')) }}
+            disabled={refreshing}
+            className="flex h-8 items-center gap-1 rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
+            <LlmIcon n="refresh" s={12} c={refreshing ? 'var(--accent)' : undefined} />{refreshing ? '刷新中…' : '刷新模型'}
+          </button>
+          <button onClick={function() { exportSubscriptions(conn) }}
+            className="flex h-8 items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">导出</button>
+          <label className="flex h-8 cursor-pointer items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">
+            {importing ? '导入中…' : '导入'}
+            <input type="file" accept="application/json" className="hidden"
+              onChange={function(e) { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = '' }} />
+          </label>
+          <button onClick={function() { setEditSub(null); setFormOpen(true) }}
+            className="flex h-8 items-center gap-1 rounded-lg bg-[#6c8cff]/14 px-2.5 text-[12px] font-semibold text-[#6c8cff] transition-colors hover:bg-[#6c8cff]/25">
+            <LlmIcon n="plus" s={13} c="currentColor" />添加订阅
+          </button>
+        </div>
+      </div>
+
+      {/* ── scroll area ── */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 pt-4">
+        <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          <LlmIcon n="spark" s={14} c="var(--accent)" />模型与推理
+        </div>
+        <div className="rounded-xl border p-3.5" style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
+          <LlmField label="思考模式" hint="全局用户设置 · Ctrl+M">
+            <div className="relative flex rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.05)' }}>
+              <span className="absolute rounded-lg transition-all duration-300"
+                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal) + ' * 24.5%)', width: '24%', background: 'var(--bg-primary)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
+              {THINK_OPTS.map(function(o) {
+                const cur = thinkingVal === o[0]
+                return (
+                  <button key={o[0]} onClick={function() { commitThinking(o[0]) }}
+                    className="relative z-10 flex-1 rounded-lg py-1.5 text-[11px] font-medium transition-colors"
+                    style={{ color: cur ? 'var(--text-primary)' : 'var(--text-muted)' }}>{o[1]}</button>
+                )
+              })}
+            </div>
+          </LlmField>
+          <div className="mt-3 flex items-center justify-between border-t pt-3" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+            <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>最大并发会话</div>
+            <div className="flex items-center gap-2">
+              <button onClick={function() { commitConc(Math.max(1, concVal - 1)) }}
+                className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>−</button>
+              <span className="w-8 text-center font-mono text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{concVal}</span>
+              <button onClick={function() { commitConc(concVal + 1) }}
+                className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>＋</button>
+            </div>
+          </div>
         </div>
 
-        {/* Max Concurrency */}
-        <div className="flex items-center gap-2">
-          <Label className="text-xs text-muted-foreground w-24 shrink-0">
-            {t('settings.maxConcurrency')}
-          </Label>
-          {loading ? (
-            <Skeleton className="h-8 w-[200px]" />
-          ) : (
-            <NumberField
-              value={data.llmConcurrency}
-              disabled={disabled}
-              onCommit={setLLMConcurrency}
-            />
-          )}
+        <div className="mb-2 mt-4 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          <LlmIcon n="crown" s={14} c="var(--accent)" />模型分层
+          <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>未配置回落系统默认</span>
         </div>
-      </SettingsSection>
-
-      {/* Tier Config */}
-      <SettingsSection title={t('settings.tierVanguard')} description={t('settings.tierDesc')}>
-        {loading ? (
-          <Skeleton className="h-8 w-full" />
-        ) : (
-          <div className="flex flex-col gap-2">
-            <TierSelector
-              label={t('settings.tierVanguard')}
-              value={data.tierVanguard}
-              options={tierOptions}
-              disabled={disabled}
-              onChange={(v) => void setTier('vanguard', v).then((ok) => {
-                if (!ok) toast.error(t('settings.saveFailed'))
-              })}
-            />
-            <TierSelector
-              label={t('settings.tierBalance')}
-              value={data.tierBalance}
-              options={tierOptions}
-              disabled={disabled}
-              onChange={(v) => void setTier('balance', v).then((ok) => {
-                if (!ok) toast.error(t('settings.saveFailed'))
-              })}
-            />
-            <TierSelector
-              label={t('settings.tierSwift')}
-              value={data.tierSwift}
-              options={tierOptions}
-              disabled={disabled}
-              onChange={(v) => void setTier('swift', v).then((ok) => {
-                if (!ok) toast.error(t('settings.saveFailed'))
-              })}
-            />
-          </div>
-        )}
-      </SettingsSection>
-
-      {/* Subscription Management */}
-      <SettingsSection
-        title={t('settings.subscriptionManagement')}
-        description={undefined}
-      >
-        <div className="flex items-center gap-2 pb-1">
-          <span className="text-xs text-muted-foreground">
-            {data.subscriptions.length} {t('settings.subscriptionManagement')}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1 text-xs"
-            disabled={refreshing || disabled}
-            onClick={handleRefresh}
-          >
-            {refreshing ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <RefreshCw className="size-3" />
-            )}
-            {refreshing ? t('settings.refreshing') : t('settings.refreshModels')}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1 text-xs"
-            disabled={exporting || disabled}
-            onClick={handleExport}
-          >
-            {exporting ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Download className="size-3" />
-            )}
-            Export
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1 text-xs"
-            disabled={importing || disabled}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            {importing ? (
-              <Loader2 className="size-3 animate-spin" />
-            ) : (
-              <Upload className="size-3" />
-            )}
-            Import
-          </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              if (file) handleImport(file)
-              e.target.value = ''
-            }}
-          />
+        <div className="grid grid-cols-1 gap-2.5">
+          {Object.keys(TIER_META).map(function(k) {
+            const m = TIER_META[k]
+            const cur = tierCur(k)
+            return (
+              <button key={k} onClick={function() { setTierPick(k) }}
+                className="flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all hover:bg-bg-tertiary"
+                style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ background: m.color + '22', color: m.color }}>
+                  <LlmIcon n={m.icon} s={15} c={m.color} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{m.label}</span>
+                    <span className="text-[10px] tracking-wider" style={{ color: 'var(--text-muted)' }}>{k.toUpperCase()}</span>
+                  </div>
+                  <div className="truncate font-mono text-[11px]" style={{ color: cur ? m.color : 'var(--text-muted)' }}>
+                    {cur ? cur.model + ' · ' + cur.sub : '未配置 · 回落系统默认'}
+                  </div>
+                </div>
+                <span className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>更换 ›</span>
+              </button>
+            )
+          })}
         </div>
 
-        {loading ? (
-          <div className="flex flex-col gap-2">
-            <Skeleton className="h-9 w-full" />
-            <Skeleton className="h-9 w-full" />
-          </div>
-        ) : error && error !== 'not_connected' ? (
-          <div className="flex items-center justify-between py-2">
-            <span className="text-xs text-destructive">{t('settings.loadFailed')}</span>
-            <Button variant="outline" size="sm" onClick={() => void reload()}>
-              {t('common.retry')}
-            </Button>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {data.subscriptions.map((sub) => {
-              const isEditingSub = editingSubID === sub.id
-              const editingModelEntry = editingModel?.subID === sub.id
-                ? data.modelEntries.find(
-                    (e) => e.sub_id === sub.id && e.model === editingModel.model,
-                  ) ?? null
-                : null
-              return (
-                <SubscriptionRow
-                  key={sub.id}
-                  sub={sub}
-                  modelEntries={data.modelEntries}
-                  activeModel={activeModel}
-                  expanded={expandedSubs.has(sub.id)}
-                  editingSub={isEditingSub}
-                  editingModel={editingModelEntry}
-                  saving={saving}
-                  onToggle={() => toggleSub(sub.id)}
-                  onStartEditSub={() => setEditingSubID(isEditingSub ? null : sub.id)}
-                  onCancelEditSub={() => setEditingSubID(null)}
-                  onSaveSub={handleSaveSub(sub)}
-                  onSetDefault={() => handleSetDefault(sub)}
-                  onToggleEnabled={() => handleToggleSubEnabled(sub)}
-                  onRemove={() => handleRemoveSub(sub)}
-                  onStartEditModel={(entry) => handleStartEditModel(sub.id, entry)}
-                  onCancelEditModel={handleCancelEditModel}
-                  onSaveModel={
-                    editingModelEntry
-                      ? handleSaveModel(sub, editingModelEntry)
-                      : () => {}
-                  }
-                  onToggleModelEnabled={(entry) => handleToggleModelEnabled(sub, entry)}
-                  onRemoveModel={(entry) => handleRemoveModel(sub, entry)}
-                  onAddModel={() =>
-                    setAddingModelForSub(addingModelForSub === sub.id ? null : sub.id)
-                  }
-                  isAddingModel={addingModelForSub === sub.id}
-                  onConfirmAddModel={(modelName) => handleAddModel(sub.id)(modelName)}
-                  onCancelAddModel={() => setAddingModelForSub(null)}
-                />
-              )
-            })}
-
-            {/* Add subscription form */}
-            {addingSub ? (
-              <div className="mt-2">
-                <SubscriptionEditForm
-                  initial={emptySubForm()}
-                  saving={saving}
-                  onCancel={() => setAddingSub(false)}
-                  onSave={handleAddSub}
-                />
+        <div className="mb-2 mt-4 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+          <LlmIcon n="globe" s={14} c="var(--accent)" />订阅
+          <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>点击卡片查看详情</span>
+        </div>
+        <div className="mb-1.5 flex h-8 items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+          <LlmIcon n="search" s={13} />
+          <input value={q} onChange={function(e) { setQ(e.target.value) }} placeholder="搜索订阅或模型…"
+            className="w-full bg-transparent text-[12px] outline-none" style={{ color: 'var(--text-primary)' }} />
+        </div>
+        <div className="space-y-2.5 pb-2">
+          {filtered.map(function(s) {
+            const meta = providerMeta(s.provider)
+            const models = data.modelEntries.filter(function(e) { return e.sub_id === s.id })
+            const avail = models.filter(function(e) { return e.status !== 'disabled' })
+            const chips = avail.slice(0, 3)
+            return (
+              <div key={s.id} onClick={function() { setDetailId(s.id) }} role="button" tabIndex={0}
+                className="cursor-pointer overflow-hidden rounded-xl border transition-all hover:bg-bg-tertiary"
+                style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}
+                onMouseEnter={function(e) { e.currentTarget.style.borderColor = meta.color + '66' }}
+                onMouseLeave={function(e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)' }}>
+                <div className="h-0.5 w-full" style={{ background: 'linear-gradient(90deg,' + meta.color + ',' + meta.color + '44)' }} />
+                <div className="flex items-center gap-2.5 p-3">
+                  <ProvBadge provider={s.provider} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{s.name}</span>
+                      {s.is_system ? <LlmIcon n="lock" s={11} /> : null}
+                      {s.active ? <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>默认</span> : null}
+                    </div>
+                    <div className="truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      {s.base_url.replace(/^https?:\/\//, '')}{s.provider === 'openai' && s.api_type === 'responses' ? ' · responses' : ''}
+                    </div>
+                  </div>
+                  <LlmSwitch on={s.enabled} onClick={function() { toggleSub(s) }} />
+                  <button onClick={function(e) { e.stopPropagation(); setMenuSub(s) }} aria-label="更多操作"
+                    className="flex size-7 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--text-secondary)' }}>
+                    <LlmIcon n="more" s={15} w={2.5} />
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 px-3 pb-3">
+                  <StatusPill status={s.enabled ? 'normal' : 'disabled'} />
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{avail.length}/{models.length} 可用</span>
+                  {chips.map(function(e) {
+                    return <span key={e.model} className="rounded-md px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{e.model}</span>
+                  })}
+                  {avail.length > 3 ? <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>+{avail.length - 3}</span> : null}
+                </div>
               </div>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-1 gap-1"
-                disabled={disabled}
-                onClick={() => setAddingSub(true)}
-              >
-                <Plus className="size-4" />
-                {t('settings.addSubscription')}
-              </Button>
-            )}
-          </div>
-        )}
-      </SettingsSection>
+            )
+          })}
+          {filtered.length === 0 ? (
+            <div className="rounded-xl border border-dashed p-6 text-center text-xs" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
+              {q ? '无匹配订阅' : '暂无订阅 · 点击右上角「添加订阅」'}
+            </div>
+          ) : null}
+        </div>
+      </div>
 
-      {/* Error display */}
-      {error === 'not_connected' ? (
-        <p className="px-5 py-3 text-xs text-muted-foreground">{t('settings.notConnected')}</p>
+      {/* ── detail drawer（面板内覆盖，主从布局） ── */}
+      <div onClick={function() { setDetailId(null) }} className="absolute inset-0 z-30 transition-opacity duration-200"
+        style={{ background: 'rgba(0,0,0,0.5)', opacity: detailId ? 1 : 0, pointerEvents: detailId ? 'auto' : 'none' }} />
+      {/* translateX(100%) 而非 105%：transform 后的位置计入 CSS scrollable overflow region，
+          105% 会给父容器留下 5% 的横向 scrollWidth 溢出（内容区 overflow-x 可滚 18px，
+          手机端拖动可见空白——宽度异常来源之一）。100% 恰好贴齐父右缘，0px 溢出。 */}
+      <aside className="absolute inset-y-0 right-0 z-40 flex w-full flex-col transition-transform duration-300"
+        style={{ background: 'var(--bg-primary)', borderLeft: '1px solid rgba(255,255,255,0.06)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
+        {detailSub ? (
+          <div className="flex h-full flex-col">
+            <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+              <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
+                <LlmIcon n="left" s={16} />
+              </button>
+              <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>订阅详情</span>
+            </div>
+            <div className="flex items-center gap-2.5 border-b p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+              <ProvBadge provider={detailSub.provider} size={36} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {detailSub.name}{detailSub.is_system ? <LlmIcon n="lock" s={12} /> : null}
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  {detailSub.base_url}{detailSub.provider === 'openai' && detailSub.api_type === 'responses' ? ' · responses' : ''}
+                </div>
+              </div>
+              <LlmSwitch on={detailSub.enabled} onClick={function() { toggleSub(detailSub) }} />
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>凭据</span>
+                {!detailSub.is_system ? (
+                  <button onClick={function() { setEditSub(detailSub); setFormOpen(true) }}
+                    className="flex items-center gap-1 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
+                    <LlmIcon n="pencil" s={11} /> 编辑
+                  </button>
+                ) : null}
+              </div>
+              <div className="mb-4 space-y-2 rounded-xl border p-3" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+                <div className="flex items-center justify-between text-[12px]">
+                  <span style={{ color: 'var(--text-secondary)' }}>API Key</span>
+                  <span className="font-mono text-[11px]" style={{ color: 'var(--text-primary)' }}>{detailSub.api_key || '—'}</span>
+                </div>
+                <div className="flex items-center justify-between text-[12px]">
+                  <span style={{ color: 'var(--text-secondary)' }}>协议</span>
+                  <span style={{ color: 'var(--text-primary)' }}>{providerMeta(detailSub.provider).label}{detailSub.provider === 'openai' ? ' · ' + (detailSub.api_type === 'responses' ? 'Responses' : 'Chat Completions') : ''}</span>
+                </div>
+                <div className="flex items-center justify-between text-[12px]">
+                  <span style={{ color: 'var(--text-secondary)' }}>默认模型</span>
+                  <span className="font-mono text-[11px]" style={{ color: 'var(--text-primary)' }}>{detailSub.model || '—'}</span>
+                </div>
+              </div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>模型 · {detailModels.length}</span>
+                {!detailSub.is_system ? (
+                  <button onClick={function() { setAddModelFor(detailSub.id) }} className="flex items-center gap-1 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
+                    <LlmIcon n="plus" s={11} /> 添加模型
+                  </button>
+                ) : null}
+              </div>
+              <div className="space-y-0.5">
+                {detailModels.map(function(e) {
+                  const pmc = modelPmc(detailSub, e.model)
+                  return (
+                    <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-bg-tertiary">
+                      <StatusPill status={e.status} />
+                      <span className="min-w-0 flex-1 truncate font-mono text-[12px]" style={{ color: e.status === 'disabled' ? 'var(--text-muted)' : 'var(--text-primary)' }}>{e.model}</span>
+                      {pmc?.max_context ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{fmtTokens(pmc.max_context)}</span> : null}
+                      {pmc?.max_output_tokens ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>out {fmtTokens(pmc.max_output_tokens)}</span> : null}
+                      {e.status === 'disabled'
+                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--accent)' }}>启用</button>
+                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>停用</button>}
+                      <button onClick={function() { setMenuModel({ sid: detailSub.id, model: e.model, status: e.status }) }}
+                        aria-label="模型操作" className="flex size-6 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
+                        <LlmIcon n="more" s={13} w={2.5} />
+                      </button>
+                    </div>
+                  )
+                })}
+                {detailModels.length === 0 ? (
+                  <div className="rounded-xl border border-dashed p-5 text-center text-[11px]" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
+                    暂无模型 · 点「刷新模型列表」拉取，或手动添加
+                  </div>
+                ) : null}
+              </div>
+              {!detailSub.is_system ? (
+                <div className="mt-5 flex gap-2.5">
+                  <button onClick={function() { makeDefault(detailSub) }} disabled={detailSub.active}
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border bg-bg-tertiary py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-hover disabled:opacity-40"
+                    style={{ color: detailSub.active ? 'var(--text-muted)' : 'var(--text-primary)' }}>
+                    <LlmIcon n="star" s={12} />{detailSub.active ? '当前默认' : '设为默认'}
+                  </button>
+                  <button onClick={function() { setConfirmDel(detailSub) }}
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-tertiary"
+                    style={{ color: 'var(--status-error, #ef4444)' }}>
+                    <LlmIcon n="trash" s={12} /> 删除订阅
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </aside>
+
+      {/* ── modals ── */}
+      {formOpen ? (
+        <SubFormModal
+          initial={editSub ? {
+            id: editSub.id, name: editSub.name, provider: editSub.provider,
+            base_url: editSub.base_url, api_key: editSub.api_key,
+            model: editSub.model, api_type: editSub.api_type || '',
+          } : null}
+          saving={saving}
+          onSave={saveSub}
+          onClose={function() { setFormOpen(false); setEditSub(null) }}
+        />
+      ) : null}
+      {addModelFor && detailSub ? (
+        <AddModelModal subName={detailSub.name} saving={saving}
+          onAdd={function(name) { addModelByName(addModelFor, name) }}
+          onClose={function() { setAddModelFor(null) }} />
+      ) : null}
+      {confirmDel ? (
+        <DeleteConfirmModal subName={confirmDel.name}
+          modelCount={data.modelEntries.filter(function(e) { return e.sub_id === confirmDel.id }).length}
+          saving={saving} onConfirm={function() { confirmDelete(confirmDel) }} onClose={function() { setConfirmDel(null) }} />
+      ) : null}
+      {tierPick ? (
+        <TierPickerModal tierLabel={TIER_META[tierPick].label} entries={data.modelEntries}
+          value={currentTierRaw(tierPick)} onClose={function() { setTierPick(null) }}
+          onPick={function(subID, model) { pickTier(tierPick, subID, model) }} />
+      ) : null}
+      {editModel ? (
+        <EditModelModal
+          subName={(subById(editModel.sid) || { name: '' }).name}
+          provider={(subById(editModel.sid) || { provider: 'openai' }).provider}
+          model={editModel.model}
+          pmc={modelPmc(subById(editModel.sid) || null, editModel.model)}
+          saving={saving}
+          onSave={function(cfg) { saveModel(editModel.sid, editModel.model, cfg) }}
+          onClose={function() { setEditModel(null) }} />
+      ) : null}
+      {menuSub ? (
+        <ActionSheet title={menuSub.name} onClose={function() { setMenuSub(null) }}
+          items={[
+            { icon: 'pencil', label: '编辑凭据', onClick: function() { setEditSub(menuSub); setFormOpen(true); setMenuSub(null) } },
+            { icon: 'star', label: '设为默认', onClick: function() { makeDefault(menuSub); setMenuSub(null) } },
+            { icon: 'power', label: menuSub.enabled ? '停用订阅' : '启用订阅', onClick: function() { toggleSub(menuSub); setMenuSub(null) } },
+            { icon: 'trash', label: '删除订阅', danger: true, onClick: function() { setConfirmDel(menuSub); setMenuSub(null) } },
+          ]} />
+      ) : null}
+      {menuModel ? (
+        <ActionSheet title={menuModel.model} onClose={function() { setMenuModel(null) }}
+          items={[
+            { icon: 'pencil', label: '编辑配置', onClick: function() { setEditModel({ sid: menuModel.sid, model: menuModel.model }); setMenuModel(null) } },
+            menuModel.status === 'disabled'
+              ? { icon: 'check', label: '启用模型', onClick: function() { toggleModel(menuModel.sid, menuModel.model, false); setMenuModel(null) } }
+              : { icon: 'power', label: '停用模型', onClick: function() { toggleModel(menuModel.sid, menuModel.model, true); setMenuModel(null) } },
+            { icon: 'trash', label: '移除模型', danger: true, onClick: function() { removeModelById(menuModel.sid, menuModel.model) } },
+          ]} />
       ) : null}
     </div>
   )

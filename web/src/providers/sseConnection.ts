@@ -51,6 +51,7 @@ export const SSE_EVENT_TYPES = [
   // EventSource 不注册 addEventListener → 收不到 → 插件热重载/事件桥完全失效。
   'web_plugin_init',
   'web_plugin_deactivate',
+  'web_plugin_config_changed',
   'web_plugin_event',
   'web_plugin_push',
   'web_plugin_rpc',
@@ -274,7 +275,14 @@ export class SSEConnectionImpl implements WSConnection {
     // (refreshing lastActivityAt above) but carries no payload. Do NOT dispatch
     // it to business handlers (they'd re-render / reload for every 15s tick).
     if (msg.type === 'heartbeat') return
-    const seq = msg.seq ?? parseSequence(event.lastEventId)
+    // 控制面广播消息（web_plugin_config_changed / web_plugin_init 等）无
+    // eventStream 序号 —— 后端 SSE 无 id: 行写出，JSON 无 seq 字段（omitempty）。
+    // event.lastEventId 是上一个业务事件的残留（SSE 规范：lastEventId 只被
+    // 有 id 的事件推进），绝不能继承为控制消息的 seq —— 否则进入业务 dedup
+    // （seq === previousSeq → return）被静默丢弃，或污染 lastSeq 水位。
+    // seq 归 0 → 下方 `seq > 0` gate 跳过 dedup/水位推进，直接 dispatch。
+    // 业务消息的 seq 总是 > 0（ring buffer 分配），msg.seq === undefined ⇔ 控制消息。
+    const seq = typeof msg.seq === 'number' ? msg.seq : 0
     const chatID = this._chatID
     const channel = this._channel
     const cacheKey = chatID ? sessionCacheKey(channel, chatID) : null
@@ -379,6 +387,14 @@ export class SSEConnectionImpl implements WSConnection {
     if ((msg.type === 'progress_structured' || msg.type === 'stream_content' || msg.type === 'sync_progress') && msg.progress) {
       this.progressHandlers.forEach((handler) => handler(msg.progress!))
     }
+    // Background task output push (SSE): real-time output deltas for the
+    // BackgroundPanel xterm. Dispatched as a window CustomEvent — the panel
+    // filters by task_id (same pattern as agent-idle for useSessionStore).
+    if (msg.type === 'bg_task_output' && msg.task_id && msg.content) {
+      window.dispatchEvent(new CustomEvent('bg-task-output', {
+        detail: { taskID: msg.task_id, delta: msg.content, chatID: msg.chat_id },
+      }))
+    }
     this.messageHandlers.forEach((handler) => handler(msg))
   }
 
@@ -481,6 +497,23 @@ export class SSEConnectionImpl implements WSConnection {
       // the in-progress turn "vanishes" until a manual refresh (user report:
       // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
       if (!progress || progress.phase === 'done') {
+        // Turn ended: dispatch agent-idle so useSessionStore clears the
+        // session's busy state. The session(idle) SSE event may have been
+        // LOST during the gap — ring buffer evicted it on resync, or the
+        // disconnect window dropped it — leaving executingSessionsRef with a
+        // stale busy key that mergeStatus forces into running FOREVER (the
+        // "stuck busy after returning from settings/background on mobile"
+        // bug: the reply renders via reload, but the busy indicator never
+        // clears). This branch is the AUTHORITATIVE turn-ended signal
+        // (get_active_progress said done/null). agent-idle is the
+        // useSessionStore-only channel — it clears running WITHOUT touching
+        // the live store (unlike session(idle), which would clear the live
+        // store and cause rendered iterations to vanish — see the 449 test).
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('agent-idle', {
+            detail: { chatID, channel },
+          }))
+        }
         // Turn ended on server (or no active progress). Do NOT dispatch
         // replay_gap — it triggers useChatMessages.reload() → history_replaced
         // on every tab switch (restoreActiveProgress runs when SSE reconnects
@@ -491,7 +524,8 @@ export class SSEConnectionImpl implements WSConnection {
         // Do NOT dispatch session(idle) either — it clears the live store
         // (liveMessage returns null), causing rendered iterations to vanish.
         //
-        // Instead: dispatch nothing. Recovery is handled by:
+        // Instead: dispatch nothing (EXCEPT the agent-idle window event above
+        // — useSessionStore-only). Recovery is handled by:
         //   1. SSE last_event_id replay (server replays missed text/session events)
         //   2. activateSession's refresh() (updates sidebar busy state)
         //   3. useChatMessages initial history fetch (committed messages already loaded)
@@ -709,6 +743,11 @@ export class MultiSSEManager implements WSConnection {
   private primary: SSEConnectionImpl
   private extra = new Map<string, SSEConnectionImpl>()
   private disposed = false
+  // primary 引用计数（split view）：两个 AgentPanel 同 chatID 各得 'primary'
+  // 订阅，关一个 removeSubscription('primary') 直接 disconnect 会断掉存活
+  // 面板的 SSE。计数归零才真正 disconnect。legacy subscribe()/disconnect()
+  // 不走计数（直通 primary 的单订阅语义，与旧实现一致）。
+  private primaryRefs = 0
 
   // Track registered handlers so new connections can be subscribed to them.
   private messageHandlers = new Set<Handler<WSMessage>>()
@@ -771,11 +810,13 @@ export class MultiSSEManager implements WSConnection {
     // If the primary connection is idle (no chatID), use it as the primary sub.
     if (!this.primary.chatID && !this.primary.channel) {
       this.primary.subscribe(chatID, channel)
+      this.primaryRefs = 1
       return 'primary'
     }
 
     // If the primary already targets this pair, return it.
     if (this.primary.chatID === chatID && this.primary.channel === channel) {
+      this.primaryRefs += 1
       return 'primary'
     }
 
@@ -803,6 +844,12 @@ export class MultiSSEManager implements WSConnection {
   /** Remove a persistent SSE subscription by its ID. */
   removeSubscription(id: string): void {
     if (id === 'primary') {
+      // 引用计数归零才 disconnect（split view 多面板共享 primary，关一个
+      // 不能断掉存活面板的连接）。idle→subscribe 首次 + 复用各 +1，
+      // 计数到 0 说明没有存活面板再用 primary —— 断开回 idle 供下次复用。
+      this.primaryRefs -= 1
+      if (this.primaryRefs > 0) return
+      if (this.primaryRefs < 0) this.primaryRefs = 0
       // Disconnect the primary connection back to idle state so it can be
       // reused by the next addSubscription call. Without this, the primary
       // SSE connection stays open after the panel closes, leaking resources.
@@ -899,11 +946,6 @@ export class MultiSSEManager implements WSConnection {
 
 function sessionBody(msg: WSClientMessage): { channel?: string; chat_id?: string } {
   return { channel: msg.channel, chat_id: msg.chat_id }
-}
-
-function parseSequence(raw: string): number {
-  const value = Number.parseInt(raw, 10)
-  return Number.isFinite(value) ? value : 0
 }
 
 function delay(ms: number): Promise<void> {

@@ -139,11 +139,17 @@ function assistantRow(t: Turn): Row | null {
       // 空壳 frozen（完全无产出）不出行 —— Bug 6/8 的"幽灵行"根治点。
       if (!hasVisibleOutput(t.phase.data)) return null
       const d = t.phase.data
-      // cancel 时正在执行的工具（activeTools，已标 error）折进最后迭代 ——
-      // rowsToChatMessages 不向渲染层传 activeTools（liveProgress 在 frozen 时
-      // 为空），TurnBody 从 iterations 读工具。保证"已渲染内容永不消失"
-      //（cancel 后正在执行的 tool 保留在最新迭代 —— 用户/测试要求）。
-      const errTools = d.activeTools.map(markError)
+      // cancel 时正在执行的工具折进最后迭代 —— rowsToChatMessages 不向渲染层
+      // 传 activeTools（liveProgress 在 frozen 时为空），TurnBody 从 iterations 读
+      // 工具。保证"已渲染内容永不消失"（cancel 后正在执行的 tool 保留在最新迭代
+      // —— 用户/测试要求）。
+      // F1（Loop2）：streamingTools（参数流式生成中，generating）与 activeTools
+      // 同折 —— 只折 activeTools 会让 generating 工具在 cancel/text 丢失定格时
+      // 从 frozen 行消失（text_final/reduce 的 foldInFlightToIterations 同原则：
+      // activeTools + streamingTools 都是"从未完成、不在 iteration_history"的
+      // in-flight 工具）。markError 对 done 工具恒等（既有语义：activeTools 里
+      // 已完成的工具也保留折入 —— SSE 丢迭代 delta 时 frozen 渲染的最后防线）。
+      const errTools = [...d.activeTools, ...d.streamingTools].map(markError)
       const iterations = foldToolsIntoIterations(d.iterations, errTools, d.iter)
       return {
         kind: 'frozen',
@@ -160,14 +166,14 @@ function assistantRow(t: Turn): Row | null {
     }
     case 'committed': {
       // I2：payload 必可渲染（via text → content 非空；via fold → iterations 非空）。
-      const content =
-        t.phase.payload.via === 'text' ? t.phase.payload.content : t.phase.payload.content
+      // via 仅区分构造路径的 I2 保证，消费侧无差异 —— content 两分支同源
+      //（恒等三元已删，F#7）。
       return {
         kind: 'committed',
         id: `turn-${t.id}-c`,
         turnID: t.id,
         isPartial: false,
-        content,
+        content: t.phase.payload.content,
         iterations: t.phase.payload.iterations,
       }
     }

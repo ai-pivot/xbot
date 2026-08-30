@@ -8,10 +8,16 @@ import (
 	"strings"
 
 	"xbot/llm"
+	"xbot/protocol"
 	"xbot/tools"
 )
 
-// resolveAbsolutePath expands ~ and resolves . / .. to an absolute path.
+// wrapCDATA 100% 防 XML 注入：内容里的 ]]> 拆分为两个 CDATA 区段。
+// 用于包裹用户消息、goal summary 等可能含 XML 特殊字符的内容。
+func wrapCDATA(content string) string {
+	safe := strings.ReplaceAll(content, "]]>", "]]]]><![CDATA[>")
+	return "<![CDATA[" + safe + "]]>"
+}
 func resolveAbsolutePath(path string) string {
 	if path == "" {
 		return ""
@@ -41,92 +47,79 @@ const systemReminderToolName = "system_reminder"
 
 // BuildSystemReminder builds a system reminder appended to the last tool message.
 // agentID "main" = main Agent, otherwise SubAgent.
-// roundToolCalls is the current round's tool calls (used to detect git commit).
 // sessionKey is the unique session identifier (used for worktree peer lookup).
 // sessionName is the current session display name (used to detect auto-generated names needing rename).
-func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCall, todoSummary string, agentID string, cwd string, sessionKey string, sessionName string, activeSubAgents []SubAgentStatus) string {
+//
+// v5.2 结构：<user-msg> CDATA（不贴 task 标签）+ <goal> + 结构化 <todos> + 4 条 guidelines。
+func BuildSystemReminder(
+	messages []llm.ChatMessage,
+	todoItems []TodoProgressItem,
+	goalInfo *protocol.GoalInfo,
+	agentID string,
+	cwd string,
+	sessionKey string,
+	sessionName string,
+	activeSubAgents []SubAgentStatus,
+) string {
 	if len(messages) == 0 {
 		return ""
 	}
 
 	isSubAgent := agentID != "main"
 
-	// 1. 提取任务目标：最后一条 user message（去掉时间戳和引导文本）
-	//   - 主 Agent：用户最新需求
-	//   - SubAgent：父 Agent 分配的任务命令
-	// 同时记录该 user message 的位置，用于计算 toolsSinceUser。
-	var taskGoal string
-	lastUserIdx := -1
+	// 提取用户原始消息（过滤系统注入的时间戳/引导文本/memory CDATA 块）
+	var userMsg string
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
 		if msg.Role == "user" && msg.Content != "" {
-			taskGoal = extractUserGoal(msg.Content)
-			if taskGoal != "" {
-				lastUserIdx = i
+			userMsg = extractUserGoal(msg.Content)
+			if userMsg != "" {
 				break
 			}
 		}
 	}
 
-	// 2b. 统计用户消息之后的 tool 调用数（用于区分新旧消息）
-	toolsSinceUser := 0
-	if lastUserIdx >= 0 {
-		for i := lastUserIdx + 1; i < len(messages); i++ {
-			if messages[i].Role == "tool" {
-				toolsSinceUser++
-			}
-		}
+	var sb strings.Builder
+	sb.WriteString("<system-reminder role=\"reminder\">")
+	sb.WriteString("<note>This is a system reminder injected per-iteration. It is NOT a user message or tool result — do not acknowledge, reply to, or confirm it. The &lt;user-msg&gt; below is the original user message from this turn (for context only; may be outdated or a continuation).</note>")
+
+	// 用户原始消息（CDATA 包裹，100% 防 XML 注入——wrapCDATA 拆分 ]]> ）
+	if userMsg != "" {
+		fmt.Fprintf(&sb, "<user-msg>%s</user-msg>", wrapCDATA(userMsg))
 	}
 
-	// 4. 构建提醒 —— 严格 XML 结构化，不自然语言。
-	// 注入格式全程用标签 + 值，状态用属性表达（kind/status），
-	// 避免自然语言句子占上下文。
-	var sb strings.Builder
-	sb.WriteString("<system-reminder>")
-
-	if taskGoal != "" {
-		kind := "user_processing" // 历史需求正在处理中
-		if toolsSinceUser == 0 {
-			kind = "user_latest" // 用户最新需求
+	// 当前 goal（如有 active goal）
+	if goalInfo != nil && goalInfo.Status == "active" {
+		summary := goalInfo.Summary
+		if summary == "" {
+			summary = goalInfo.Objective
 		}
-		if isSubAgent {
-			kind = "subagent"
+		if summary != "" {
+			fmt.Fprintf(&sb, "<goal status=%q>%s</goal>", goalInfo.Status, wrapCDATA(summary))
 		}
-		sb.WriteString("<task>")
-		fmt.Fprintf(&sb, "<kind>%s</kind>", kind)
-		fmt.Fprintf(&sb, "<content>%s</content>", html.EscapeString(taskGoal))
-		sb.WriteString("</task>")
 	}
 
 	if cwd != "" {
 		cwd = resolveAbsolutePath(cwd)
-		fmt.Fprintf(&sb, "<working-dir>%s</working-dir>", html.EscapeString(cwd))
+		fmt.Fprintf(&sb, "<cwd>%s</cwd>", html.EscapeString(cwd))
 	}
 
-	if todoSummary != "" {
-		fmt.Fprintf(&sb, "<todo>%s</todo>", html.EscapeString(todoSummary))
+	// 结构化 todos（具体项 + status——LLM 一眼看清进度）
+	if len(todoItems) > 0 {
+		sb.WriteString("<todos>")
+		for _, t := range todoItems {
+			fmt.Fprintf(&sb, `<todo status=%q id="%d">%s</todo>`, t.Status, t.ID, html.EscapeString(t.Text))
+		}
+		sb.WriteString("</todos>")
 	}
 
 	// Peer awareness: show who else is working in the same repo.（仅活跃 worktree + busy）
-	// Only show peers with actual worktrees (physical isolation) — lightweight
-	// peer-awareness registrations without worktrees do not indicate collaboration.
-	// This prevents injecting misleading "3 peers collaborating" when the user
-	// simply has multiple independent sessions in the same git repo.
 	if !isSubAgent && sessionKey != "" {
 		repoPath := ""
 		if entry := tools.GlobalWorktreeRegistry.GetBySession(sessionKey); entry != nil {
 			repoPath = entry.RepoPath
 		}
 		peers := tools.GlobalWorktreeRegistry.GetPeers(repoPath, sessionKey)
-		// Filter: only show peers with actual worktrees (real collaboration)
-		// AND currently BUSY — Busy means the session's chatProcessLoop is
-		// processing a turn (an iteration is running), set via
-		// WorktreeRegistry.SetBusy alongside ss.busy.Store (agent.go
-		// chatProcessLoop). A registered session lingers in the registry for the
-		// process lifetime; without the live iterating signal every peer (even
-		// one idle for hours) is reported as "collaborating", falsely implying
-		// concurrent work and distracting the agent (user report: "peer 已 idle
-		// 仍被提示协作中"). busy/idle = 是否在迭代中 — not time-based.
 		var activePeers []*tools.WorktreeEntry
 		for _, p := range peers {
 			if p.WorktreeDir != "" && p.Busy {
@@ -159,11 +152,12 @@ func BuildSystemReminder(messages []llm.ChatMessage, roundToolCalls []llm.ToolCa
 		sb.WriteString("</subagents>")
 	}
 
-	// 行为准则：精简固定 3 条（去"优先编辑已有文件"；git commit 并入常驻准则）。
+	// 行为准则（4 条——v5.2 加"主动维护 TODO 进度"）
 	sb.WriteString("<guidelines>")
 	sb.WriteString("<guideline>修改后运行测试验证</guideline>")
 	sb.WriteString("<guideline>错误时先分析根因再修改</guideline>")
 	sb.WriteString("<guideline>主动维护知识文档和代码质量</guideline>")
+	sb.WriteString("<guideline>每完成一个 TODO 立即用 TodoWrite 标记 done；已完成的过时 TODO（不再相关的条目）直接删除，不要保留在列表里</guideline>")
 	sb.WriteString("</guidelines>")
 
 	sb.WriteString("</system-reminder>")
@@ -195,6 +189,20 @@ func extractUserGoal(content string) string {
 		if strings.HasPrefix(trimmed, "<context>") || strings.HasPrefix(trimmed, "</context>") ||
 			strings.HasPrefix(trimmed, "<time>") || strings.HasPrefix(trimmed, "</time>") ||
 			strings.HasPrefix(trimmed, "<sender>") || strings.HasPrefix(trimmed, "</sender>") {
+			continue
+		}
+		// 跳过 <system-reminder> CDATA 块（用户消息里注入的 memory/system-reminder——不是用户写的）
+		if strings.HasPrefix(trimmed, "<system-reminder>") {
+			if strings.Contains(trimmed, "</system-reminder>") {
+				// 单行完整块（<system-reminder>...</system-reminder> 同一行）：跳过本行，不进入跳过模式
+				continue
+			}
+			inGuide = true
+			continue
+		}
+		if strings.Contains(trimmed, "</system-reminder>") {
+			// 多行块的结束行（</system-reminder> 可能在行中间/行尾）：结束跳过模式
+			inGuide = false
 			continue
 		}
 		// Skip auto-naming rename hint (injected by UserMessageMiddleware)

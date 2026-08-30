@@ -13,9 +13,9 @@ type ToolCallSnapshot struct {
 
 // TodoItem represents a TODO item for CLI display.
 type TodoItem struct {
-	ID   int    `json:"id"`
-	Text string `json:"text"`
-	Done bool   `json:"done"`
+	ID     int    `json:"id"`
+	Text   string `json:"text"`
+	Status string `json:"status"` // "pending" | "doing" | "done"
 }
 
 // GoalInfo carries the active goal state for a session.
@@ -265,10 +265,6 @@ type Subscription struct {
 	// stops contributing models to the picker; credentials are preserved. Populated
 	// from user_llm_subscriptions.enabled by listSubscriptions/mergeSubscriptionModels.
 	Enabled bool `json:"enabled,omitempty"`
-	// IsSystem marks the shared system subscription (v44): reconciled from
-	// config/env at boot, read-only, and the lowest-priority default/fallback.
-	// The UI uses this to render a lock badge and disable edit/disable/delete.
-	IsSystem bool `json:"is_system,omitempty"`
 }
 
 // PerModelConfig stores per-model token overrides within a subscription.

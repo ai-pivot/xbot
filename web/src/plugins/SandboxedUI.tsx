@@ -255,7 +255,6 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
   const codeRef = useRef(code)
   const timerRef = useRef<number | null>(null)
   const compileSeqRef = useRef(0)
-  const lastRenderRef = useRef(0)
 
   // Compile TSX → JS → evaluate with React injected as parameter.
   const compileAndLoad = useCallback(async (tsx: string | undefined, seq: number, isStreaming: boolean) => {
@@ -264,6 +263,10 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
     const cached = compileCache.get(hash)
     if (cached) {
       if (seq !== compileSeqRef.current) return
+      // Same component already mounted → skip the tick (the streaming tick
+      // chain re-runs this on an unchanged code tail every 100ms; a redundant
+      // setTick would flushSync re-render the whole UI for nothing).
+      if (slotRef.current.current === cached) return
       slotRef.current.current = cached
       slotRef.current.lastGood = cached
       setFailed(null)
@@ -358,23 +361,40 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
     }
   }, [])
 
-  // Throttled scheduling (100ms during streaming, immediate otherwise).
+  // Fixed-cadence scheduling (streaming): compile the LATEST code, then wait
+  // 100ms before the next pass. The timer re-arms AFTER compilation finishes —
+  // never while it is in flight — so the cadence is always ≥100ms apart and
+  // never queues up.
+  //
+  // ⚠️ History: the old elapsed-compensation throttle stamped lastRender
+  // BEFORE compiling. Any compile pass slower than 100ms (large TSX: sucrase
+  // transform + normalizeGeneratedTsx is hundreds of ms) made delay=0 on the
+  // next chunk, so the throttle degenerated into per-chunk full recompiles
+  // (~20/s) — main thread saturated, streaming visibly slow.
   useEffect(() => {
     codeRef.current = code
     if (!streaming) {
-      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+      if (timerRef.current != null) { clearTimeout(timerRef.current); timerRef.current = null }
       compileAndLoad(code, ++compileSeqRef.current, false)
       return
     }
-    if (timerRef.current) return
-    const elapsed = Date.now() - lastRenderRef.current
-    const delay = Math.max(0, 100 - elapsed)
-    timerRef.current = window.setTimeout(() => {
+    if (timerRef.current != null) return // chain already running; tick reads codeRef
+    const tick = () => {
       timerRef.current = null
-      lastRenderRef.current = Date.now()
       compileAndLoad(codeRef.current, ++compileSeqRef.current, true)
-    }, delay)
+      // Re-arm only AFTER compilation finished → slow compiles stretch the
+      // cadence instead of piling up; fast compiles hold a steady 100ms beat.
+      timerRef.current = window.setTimeout(tick, 100)
+    }
+    tick()
   }, [code, streaming, compileAndLoad])
+
+  // Unmount cleanup: the tick chain re-arms itself on every pass, so a
+  // dependency-scoped cleanup would kill it on every code change — clear it
+  // once on unmount instead.
+  useEffect(() => () => {
+    if (timerRef.current != null) clearTimeout(timerRef.current)
+  }, [])
 
   // ── DOM persistence pool: avoid createRoot remount during virtual scroll ──
   // On mount: acquire a pooled { root, host } by codeHash. If a pooled entry
@@ -496,10 +516,24 @@ function CodeUI({ code, widgetId, onAction, className, streaming = false, onErro
 
   if (!code || code.trim().length < 10) return null
 
+  // ── Escape-proof container (host-enforced, independent of generated code) ──
+  // `contain: layout paint` guarantees, per CSS spec, that NO descendant can
+  // escape this box, however the generated code positions itself:
+  //   1. PAINT CLIPPING — every descendant's drawing is clipped to this box:
+  //      position:fixed/absolute, negative offsets, oversized elements, all of it.
+  //   2. CONTAINING BLOCK — this element becomes the positioning ancestor for
+  //      fixed/absolute descendants, so a `fixed inset-0` modal anchors to the
+  //      PANEL (a sane in-panel modal) instead of leaking over the whole row.
+  //   3. STACKING CONTEXT — a descendant with z-index: 2147483647 can never
+  //      paint above the host app chrome.
+  // The className prop (max-h + overflow-auto from the renderer) is applied to
+  // the HOST div (the createRoot container) — inner scrolling works there; the
+  // containment layer here never scrolls and never lets anything out.
   return (
     <div
       ref={containerRef}
-      className={`w-full ${className ?? ''}`}
+      className="w-full"
+      style={{ contain: 'layout paint', overflow: 'hidden' }}
     />
   )
 }

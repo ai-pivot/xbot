@@ -226,16 +226,23 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 		writeResult(enc, req.ID, map[string]any{"content": "code must define an App component (e.g. `export default function App()` or `function App()`)", "is_error": true})
 		return
 	}
-	// Basic syntax validation (brace/paren balance).
-	if err := validateSyntax(code); err != nil {
-		writeResult(enc, req.ID, map[string]any{"content": fmt.Sprintf("syntax error: %v. Please fix and retry.", err), "is_error": true})
-		return
-	}
-	// Empty render guard.
-	if isEmptyRender(code) {
-		writeResult(enc, req.ID, map[string]any{"content": "the App component renders nothing (returns null or an empty fragment). It must return visible JSX content.", "is_error": true})
-		return
-	}
+
+	// NOTE: NO syntax validation and NO empty-render detection here — on
+	// purpose. Both are static heuristics that CANNOT judge the actual render
+	// result: the bracket counter false-rejected valid code with regex
+	// literals (depth=2, 2026-08-28), and the `return null` scan false-rejected
+	// apps whose SUB-components have null fallback branches while the App
+	// itself renders fine (same-day incident: a full layout mockup rejected as
+	// "renders nothing" while rendering perfectly). The frontend sucrase
+	// pipeline is the only correct judge; a truly empty App just shows a blank
+	// panel that the user re-prompts for — no server-side gate needed.
+	//
+	// v3 (user request): the tool result now includes a `render_ack` channel —
+	// the frontend reports back the actual render outcome (success or error)
+	// via the web_ui_action RPC after the sucrase compile + React render.
+	// The result is initially "pending" and updated by the frontend's feedback.
+	// This is a GENERIC plugin capability (web_ui_action render_ack), not a
+	// genui-specific hack.
 
 	writeResult(enc, req.ID, map[string]any{
 		"content":      fmt.Sprintf("🎨 UI rendered (%d chars)", len(code)),
@@ -243,6 +250,69 @@ func handleExecuteTool(enc *json.Encoder, req rpcRequest) {
 		"ui_code":      code,
 		"render_check": true,
 	})
+}
+
+// basicSyntaxCheck validates bracket/string balance in TSX code.
+// Returns "" if OK, or a descriptive error string.
+// It tracks string context (backtick, single-quote, double-quote) and only
+// counts brackets OUTSIDE strings. Handles escape sequences within strings.
+// Does NOT handle regex literals (e.g. /[/]/) — accepted false-positive risk
+// for the common case benefit.
+func basicSyntaxCheck(code string) string {
+	var stack []rune
+	var stackLines []int
+	inString := rune(0) // 0 = not in string; '\'' | '"' | '`'
+	escaped := false
+	line := 1
+
+	for i, r := range code {
+		if r == '\n' {
+			line++
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && inString != 0 {
+			escaped = true
+			continue
+		}
+
+		if inString != 0 {
+			// Inside a string — only look for the closing quote
+			if r == inString {
+				inString = 0
+			}
+			continue
+		}
+
+		// Outside a string
+		switch r {
+		case '\'', '"', '`':
+			inString = r
+		case '{', '(', '[':
+			stack = append(stack, r)
+			stackLines = append(stackLines, line)
+		case '}', ')', ']':
+			if len(stack) == 0 {
+				return fmt.Sprintf("unmatched closing %c at line %d (position %d) — no matching opening bracket", r, line, i)
+			}
+			top := stack[len(stack)-1]
+			if (r == '}' && top != '{') || (r == ')' && top != '(') || (r == ']' && top != '[') {
+				return fmt.Sprintf("mismatched closing %c at line %d (position %d) — expected closing for %c", r, line, i, top)
+			}
+			stack = stack[:len(stack)-1]
+			stackLines = stackLines[:len(stackLines)-1]
+		}
+	}
+
+	if inString != 0 {
+		return fmt.Sprintf("unclosed string literal (%c) starting before line %d", inString, line)
+	}
+	if len(stack) > 0 {
+		return fmt.Sprintf("unclosed bracket %c opened at line %d — %d unclosed bracket(s) total", stack[len(stack)-1], stackLines[len(stackLines)-1], len(stack))
+	}
+	return ""
 }
 
 // ─── Validation helpers (migrated from the removed tools/display_html.go) ──
@@ -257,104 +327,6 @@ func stripMarkdownFences(code string) string {
 	}
 	s = strings.TrimSuffix(strings.TrimSpace(s), "```")
 	return strings.TrimSpace(s)
-}
-
-func validateSyntax(code string) error {
-	depth := 0
-	inString := byte(0)
-	inTemplate := false
-	inLineComment := false
-	inBlockComment := false
-
-	for i := 0; i < len(code); i++ {
-		ch := code[i]
-
-		if inLineComment {
-			if ch == '\n' {
-				inLineComment = false
-			}
-			continue
-		}
-		if inBlockComment {
-			if ch == '*' && i+1 < len(code) && code[i+1] == '/' {
-				inBlockComment = false
-				i++
-			}
-			continue
-		}
-		if inString != 0 {
-			if ch == '\\' {
-				i++
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
-		if inTemplate {
-			if ch == '\\' {
-				i++
-				continue
-			}
-			if ch == '`' {
-				inTemplate = false
-			}
-			continue
-		}
-
-		if ch == '/' && i+1 < len(code) {
-			if code[i+1] == '/' {
-				inLineComment = true
-				i++
-				continue
-			}
-			if code[i+1] == '*' {
-				inBlockComment = true
-				i++
-				continue
-			}
-		}
-		if ch == '"' || ch == '\'' {
-			inString = ch
-			continue
-		}
-		if ch == '`' {
-			inTemplate = true
-			continue
-		}
-
-		switch ch {
-		case '(', '[', '{':
-			depth++
-		case ')', ']', '}':
-			depth--
-			if depth < 0 {
-				return fmt.Errorf("unexpected closing bracket '%c' at position %d", ch, i)
-			}
-		}
-	}
-
-	if depth != 0 {
-		return fmt.Errorf("unclosed brackets (depth=%d) — check for missing ) ] }", depth)
-	}
-	return nil
-}
-
-func isEmptyRender(code string) bool {
-	lines := strings.Split(code, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "return ") {
-			ret := strings.TrimSpace(strings.TrimPrefix(trimmed, "return "))
-			ret = strings.TrimRight(ret, ");")
-			ret = strings.TrimSpace(ret)
-			if ret == "null" || ret == "undefined" || ret == "false" || ret == "<></>" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // ─── stdout helpers ─────────────────────────────────────────────────────────

@@ -40,8 +40,15 @@ type toolExecResult struct {
 // without passing dozens of parameters.
 type runState struct {
 	// Configuration (read-only after init)
-	cfg                      RunConfig
-	maxIter                  int
+	cfg     RunConfig
+	maxIter int
+	// iterStart offsets the Run's iteration numbering (resume turns): the
+	// first iteration is iterStart+1 instead of 1. A restart-resumed Run
+	// (InjectInboundResume) reuses the interrupted turn's id and must CONTINUE
+	// the turn's iteration numbering — iteration_history is keyed by
+	// (turn_id, iteration) and the frontend advances/merges iterations by
+	// number within the turn. See RunConfig.IterationStart.
+	iterStart                int
 	sessionKey               string
 	offloadSessionKey        string
 	toolExecutor             func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error)
@@ -82,6 +89,29 @@ type runState struct {
 	compressAttempts   int
 	lastCompressIter   int
 
+	// --- Infinite-compression loop protection (200k-context incident) ---
+	// The trigger compares REAL API prompt_tokens against 0.9×(maxContext−maxOutput),
+	// but compression targets maxContext in full, and the post-compress "does it
+	// fit" check used the summary-only estimate. When the un-shrinkable part
+	// (system prompt + tools + tail) exceeds the trigger line, compression can
+	// NEVER get below it — without the counters below the engine re-compresses
+	// every 5 iterations forever, each round burning a full-context compaction
+	// LLM call. See maybeCompress / runCompression post-compress check.
+	//
+	// compressAbandoned: set when post-compress (post-truncation) context still
+	// exceeds the trigger line, or after consecutiveIneffectiveCompress
+	// consecutive no-progress compressions. Auto-compression is disabled for the
+	// REST OF THIS RUN (runState is per-Run; the next turn retries once).
+	compressAbandoned bool
+	// lastCompressTriggerTokens is the REAL API prompt_tokens at the moment the
+	// previous compression was triggered (same measurement on both sides of the
+	// comparison — no estimate/API mixing).
+	lastCompressTriggerTokens int64
+	// consecutiveIneffectiveCompress counts consecutive compressions whose trigger
+	// tokens dropped less than 5% from the previous trigger (compression is
+	// having no real effect — e.g. estimate passes but real value stays).
+	consecutiveIneffectiveCompress int
+
 	// Metrics (local counters for this Run)
 	localIterCount    int
 	localToolCalls    int
@@ -89,10 +119,25 @@ type runState struct {
 	localInputTokens  int
 	localOutputTokens int
 	localCachedTokens int
-	// lastSnapshotCompletionTokens is the cumulative completion-token count at
-	// the most recent iteration snapshot. The delta between the current tracker
-	// value and this gives the per-iteration token count.
-	lastSnapshotCompletionTokens int64
+	// iterInputTokens/iterOutputTokens/iterCachedTokens accumulate the CURRENT
+	// iteration's LLM usage (prompt / completion / cache-hit tokens — each
+	// call's OWN value from response.Usage, the API reports per-call values
+	// NOT cumulative counters). Reset at beginIteration, read at
+	// snapshotCompletedIteration → persisted to iteration_history (v59) for
+	// per-session/per-model usage aggregation.
+	//
+	// iterOutputTokens replaces the old tracker-delta logic
+	// (cur - lastSnapshotCompletionTokens): that logic assumed the tracker
+	// accumulates completion across the Run, but RecordLLMCall OVERWRITES with
+	// each call's own value (per-call semantics) — when a small-output
+	// iteration (e.g. a tiny tool call, 25 tokens) followed a large one
+	// (500 tokens), cur < lastSnapshot → the delta guard clamped tokens to 0
+	// (~50-66% of iteration_history rows had tokens=0 since v58). Fixed by
+	// recording each call's CompletionTokens directly (same semantics as
+	// iterInputTokens).
+	iterInputTokens  int64
+	iterOutputTokens int64
+	iterCachedTokens int64
 
 	// Progress
 	progressLines      []string
@@ -166,6 +211,7 @@ func newRunState(cfg RunConfig) *runState {
 	state := &runState{
 		cfg:                      cfg,
 		maxIter:                  maxIter,
+		iterStart:                cfg.IterationStart,
 		sessionKey:               sessionKey,
 		offloadSessionKey:        offloadSessionKey,
 		toolExecutor:             toolExecutor,
@@ -218,6 +264,10 @@ func (s *runState) initProgress() {
 
 	if s.structuredProgress != nil {
 		s.progressFinalizer = func() {
+			// M2 锁覆盖：progressFinalizer 与后台 SubAgent 进度回调的
+			// notifyProgress（锁内 Clone progressLines/structuredProgress）并发，
+			// 全部共享状态读写必须持 progressMu。handler 调用在锁外（快照已拷贝）。
+			s.progressMu.Lock()
 			if len(s.structuredProgress.ActiveTools) > 0 {
 				for _, t := range s.structuredProgress.ActiveTools {
 					if t.Status == ToolDone || t.Status == ToolError {
@@ -234,17 +284,21 @@ func (s *runState) initProgress() {
 			// which is sufficient. The next notifyProgress from a subsequent
 			// callLLM will carry the correct state.
 			if s.waitingUser {
+				s.progressMu.Unlock()
 				return
 			}
 			s.structuredProgress.Phase = PhaseDone
 			if s.cfg.ProgressSeq != nil {
 				s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
 			}
+			s.structuredProgress.SubAgents = s.subAgentNodes
+			structured := s.structuredProgress.Clone()
+			lines := copyLines(s.progressLines)
+			s.progressMu.Unlock()
 			if s.autoNotify && s.cfg.ProgressEventHandler != nil {
-				s.structuredProgress.SubAgents = s.subAgentNodes
 				s.cfg.ProgressEventHandler(&ProgressEvent{
-					Lines:      copyLines(s.progressLines),
-					Structured: s.structuredProgress.Clone(),
+					Lines:      lines,
+					Structured: structured,
 					Timestamp:  time.Now(),
 				})
 			}
@@ -276,7 +330,7 @@ func (s *runState) cleanupTodos() {
 		if len(items) > 0 {
 			allDone := true
 			for _, item := range items {
-				if !item.Done {
+				if item.Status != "done" {
 					allDone = false
 					break
 				}
@@ -326,9 +380,9 @@ func (s *runState) refreshStructuredTodos() {
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
-			ID:   td.ID,
-			Text: td.Text,
-			Done: td.Done,
+			ID:     td.ID,
+			Text:   td.Text,
+			Status: td.Status,
 		}
 	}
 	s.structuredProgress.Todos = todos
@@ -389,12 +443,16 @@ func (s *runState) notifyProgress(extra string) {
 	// (todo_write([]) cleared the list). Previously `len(todos) > 0` skipped
 	// the refresh, so the frontend never learned the todos were emptied and
 	// kept stale items forever.
+	// All structuredProgress writes must hold progressMu: notifyProgress runs
+	// on concurrent tool goroutines (dispatchReadWriteSplit) whose
+	// execOneTool/updateToolResult* writes race against the locked clone below.
+	// The todo refresh + seq bump + lines copy share ONE critical section.
+	s.progressMu.Lock()
 	s.refreshStructuredTodos()
 	// Increment seq and assign to structuredProgress (unified entry point).
 	if s.structuredProgress != nil && s.cfg.ProgressSeq != nil {
 		s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
 	}
-	s.progressMu.Lock()
 	lines := make([]string, len(s.progressLines))
 	copy(lines, s.progressLines)
 	s.progressMu.Unlock()
@@ -506,6 +564,12 @@ func (s *runState) beginIteration(i int) {
 			}).Warn("ITER_ID_GAP: iteration number jumped — intermediate iteration(s) may have been lost")
 		}
 	}
+	// beginIteration runs on the main run goroutine, but background SubAgent
+	// callbacks (progressMu-held, engine_run_tools.go) read
+	// structuredProgress.Iteration and write progressLines/subAgentNodes across
+	// iteration boundaries — this reset section must hold progressMu to be
+	// race-free against them (same lock, opposite side).
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.Iteration = i
 		s.structuredProgress.Phase = PhaseThinking
@@ -515,16 +579,14 @@ func (s *runState) beginIteration(i int) {
 		s.structuredProgress.ReasoningContent = ""
 		s.structuredProgress.SubAgents = nil
 	}
-	// Reset live stream timing baseline at each iteration boundary: TTFT must
-	// reflect THIS LLM CALL's first-token latency, not the whole Run's.
-	// buildStreamCallbacks is created once per Run (its requestStartAt/firstChunkAt
-	// are Run-wide); without a per-iteration reset, live frames keep reporting
-	// the Run-wide TTFT while committed iterations report their own
-	// response.StreamStats.TTFTMs — the same iteration showed different ttft
-	// values between its live phase and its committed row ("迭代内 ttft 变化").
-	if s.cfg.ResetStreamTiming != nil {
-		s.cfg.ResetStreamTiming()
-	}
+	// NOTE: ResetStreamTiming now runs in callLLM right before generateResponse
+	// (both the primary call and the post-compression retry), anchoring the
+	// live TTFT baseline at the request-send moment — the same contract as the
+	// llm-layer t0 (CollectStreamWithCallbackFrom). Anchoring here at
+	// beginIteration instead included the engine-side gap (message building)
+	// into live TTFT while committed rows measured from the request itself —
+	// the two disagreed and the displayed TTFT jumped the moment the LLM call
+	// returned ("tool 生成完毕后 ttft 变成很小的数值").
 	// Clear subAgentNodes at iteration boundary. SubAgents are one-shot tools
 	// that complete synchronously within execOneTool — by the time the next
 	// iteration begins, they are done. Carrying them forward causes completed
@@ -532,7 +594,16 @@ func (s *runState) beginIteration(i int) {
 	// (the "explore card that never disappears" bug). resolveSubAgents returns
 	// nil when SubAgents is empty — there is no text-based fallback.
 	s.subAgentNodes = nil
+	// Reset per-iteration usage accumulators (v59): each iteration's
+	// input/cached tokens belong to its own iteration_history row.
+	s.iterInputTokens = 0
+	s.iterOutputTokens = 0
+	s.iterCachedTokens = 0
+	// refreshStructuredTodos writes structuredProgress.Todos/Goal — same
+	// race window as above (called under progressMu; the function itself
+	// never takes progressMu, so no re-entrancy).
 	s.refreshStructuredTodos()
+	s.progressMu.Unlock()
 	// Notify the agent of the iteration boundary so stream callbacks can stamp
 	// iteration on stream_content events (frontend iteration-boundary clearing).
 	if s.cfg.OnIterationChange != nil {
@@ -578,6 +649,9 @@ func (s *runState) updateTokenUsage() {
 	if s.structuredProgress == nil {
 		return
 	}
+	// M2 锁覆盖：TokenUsage 写与后台 SubAgent 回调的 notifyProgress（锁内
+	// Clone）并发，写点必须持 progressMu。sessionCtx 字段非 progress 共享态，锁外。
+	s.progressMu.Lock()
 	s.structuredProgress.TokenUsage = &TokenUsageSnapshot{
 		PromptTokens:     s.tokenTracker.PromptTokens(),
 		CompletionTokens: s.tokenTracker.CompletionTokens(),
@@ -587,6 +661,7 @@ func (s *runState) updateTokenUsage() {
 		CacheHitTokens:  int64(s.localCachedTokens),
 		MaxOutputTokens: int64(s.cfg.MaxOutputTokens),
 	}
+	s.progressMu.Unlock()
 	// Update session context for plugin hooks (model/token data)
 	if s.sessionCtx != nil {
 		s.sessionCtx.PromptTokens = s.tokenTracker.PromptTokens()
@@ -663,6 +738,19 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		releaseLLMSem = s.cfg.LLMSemAcquire(ctx)
 	}
 
+	// Anchor the live TTFT baseline at the request-send moment (same contract
+	// as the llm-layer t0 in GenerateStreamAndCollect). Previously resetTiming
+	// ran at beginIteration — the live baseline then included the engine-side
+	// gap (message building etc.) between beginIteration and the actual
+	// request, while the committed/DB TTFT (response.StreamStats) measured from
+	// the request itself. The two disagreed, so the moment callLLM returned and
+	// structuredProgress.StreamStats took over the progress events, the
+	// displayed TTFT jumped ("tool 生成完毕后 ttft 变成很小的数值" — live showed
+	// the wide window, the committed row the narrow one).
+	if s.cfg.ResetStreamTiming != nil {
+		s.cfg.ResetStreamTiming()
+	}
+
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
 
 	s.localLLMCalls++
@@ -676,10 +764,19 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		if response.Usage.PromptTokens > 0 {
 			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+			// Per-iteration usage (v59): persisted to iteration_history for
+			// per-session/per-model usage aggregation (cache hit rate, input/
+			// cached split). Same guard as the tracker — zero usage means the
+			// stream was cancelled mid-flight (no valid data point).
+			s.iterInputTokens += int64(response.Usage.PromptTokens)
+			s.iterOutputTokens += int64(response.Usage.CompletionTokens)
+			s.iterCachedTokens += int64(response.Usage.CacheHitTokens)
 		}
 		// Record stream timing stats (TTFT, TPOT, total duration, chunk count)
 		s.tokenTracker.RecordStreamStats(response.StreamStats)
 		if s.structuredProgress != nil && response.StreamStats != nil {
+			// M2 锁覆盖：StreamStats 写与后台 SubAgent 回调的 notifyProgress 并发。
+			s.progressMu.Lock()
 			s.structuredProgress.StreamStats = &protocol.StreamStats{
 				TTFTMs:        response.StreamStats.TTFTMs,
 				TPOTMs:        response.StreamStats.TPOTMs,
@@ -688,6 +785,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 				TotalMs:       response.StreamStats.TotalMs,
 				Chunks:        response.StreamStats.Chunks,
 			}
+			s.progressMu.Unlock()
 		}
 		// Persist stream stats to session-level storage (survives turn end)
 		if s.cfg.SaveStreamStats != nil && response.StreamStats != nil {
@@ -766,25 +864,43 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		return nil, compressErr
 	}
 	s.messages = pipelineResult.NewMessages
-	// Update token estimate so CLI shows reduced context immediately
-	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
-	// Persist API-returned token count in case retry fails and Run ends.
-	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+	// Update token estimate so CLI shows reduced context immediately. Use the
+	// FULL message estimate (system + summary + tail), NOT the summary-only
+	// CompressedTokens — same ruler as runCompression's post-compress check.
+	// The retry below will overwrite the tracker with the real API value.
+	postCompressTokens := estimateMessagesTokens(s.messages)
+	s.setTokenUsageAfterCompress(postCompressTokens)
+	// Persist the post-compress estimate in case retry fails and Run ends.
+	if s.cfg.SaveContextTokens != nil && postCompressTokens > 0 {
+		s.cfg.SaveContextTokens(postCompressTokens)
 	}
-	if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+	if s.cfg.SaveTokenState != nil && postCompressTokens > 0 {
+		s.cfg.SaveTokenState(postCompressTokens, 0)
 	}
 	if s.autoNotify {
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", pipelineResult.NewTokenCount))
+		// M2 锁覆盖：progressLines/Phase/HistoryCompacted 与后台 SubAgent 回调
+		// 的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
+		s.progressMu.Lock()
+		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", postCompressTokens))
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 			s.structuredProgress.HistoryCompacted = true
 		}
+		s.progressMu.Unlock()
 		s.notifyProgress("")
 	}
 	if s.structuredProgress != nil {
+		s.progressMu.Lock()
 		s.structuredProgress.HistoryCompacted = false
+		s.progressMu.Unlock()
+	}
+
+	// Post-compression retry sends a NEW request — reset the live TTFT
+	// baseline here too (same contract as the primary call above), so live
+	// frames report the retry's own first-token latency instead of spanning
+	// the compression window.
+	if s.cfg.ResetStreamTiming != nil {
+		s.cfg.ResetStreamTiming()
 	}
 
 	response, err := generateResponse(retryNotifyCtx, s.cfg.LLMClient, s.cfg.Model, s.llmMessages(), toolDefs, s.cfg.ThinkingMode, s.cfg.Stream, s.cfg.StreamContentFunc, s.cfg.StreamReasoningFunc, s.cfg.StreamToolCallFunc, s.cfg.StreamUsageFunc)
@@ -793,6 +909,13 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		if response.Usage.PromptTokens > 0 {
 			s.tokenTracker.RecordLLMCall(response.Usage.PromptTokens, response.Usage.CompletionTokens)
 			s.localCachedTokens += int(response.Usage.CacheHitTokens)
+			// Per-iteration usage (v59): persisted to iteration_history for
+			// per-session/per-model usage aggregation (cache hit rate, input/
+			// cached split). Same guard as the tracker — zero usage means the
+			// stream was cancelled mid-flight (no valid data point).
+			s.iterInputTokens += int64(response.Usage.PromptTokens)
+			s.iterOutputTokens += int64(response.Usage.CompletionTokens)
+			s.iterCachedTokens += int64(response.Usage.CacheHitTokens)
 		}
 		s.tokenTracker.RecordStreamStats(response.StreamStats)
 		s.localInputTokens += int(response.Usage.PromptTokens)
@@ -850,6 +973,10 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 	// is persisted to iteration_history. The frontend renders it like any
 	// other iteration (tool with error status + summary).
 	if s.structuredProgress != nil {
+		// M2 锁覆盖：partial content / reqerr 工具写点与后台 SubAgent 回调的
+		// notifyProgress（锁内 Clone）并发。snapshotCompletedIteration 与
+		// notifyProgress 自身持锁，必须留在临界区外。
+		s.progressMu.Lock()
 		// Capture partial content from the stream (if any).
 		if partialResp != nil {
 			partialContent := llm.StripThinkBlocks(partialResp.Content)
@@ -869,6 +996,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 			Summary: errSummary,
 			Detail:  err.Error(),
 		})
+		s.progressMu.Unlock()
 		// Snapshot this iteration (writes to iteration_history + s.iterationSnapshots).
 		s.snapshotCompletedIteration(iteration)
 		// Notify progress so the frontend sees the reqerr tool.
@@ -990,6 +1118,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			// that the output was cut short — structurally identical to a
 			// normal tool call (name, status, summary, detail).
 			if s.structuredProgress != nil {
+				s.progressMu.Lock()
 				s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
 					Name:    "truncated",
 					Label:   "truncated",
@@ -997,6 +1126,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					Summary: "Output truncated (max output token limit reached)",
 					Detail:  fmt.Sprintf("finish_reason=length, content_len=%d, max_output=%d", len(cleanContent), s.cfg.MaxOutputTokens),
 				})
+				s.progressMu.Unlock()
 			}
 		}
 		// content_filter: model output was filtered by safety system
@@ -1018,6 +1148,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		// both fields must be set here for SubAgent session viewers and CLI
 		// tool_summary rendering.
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			if cleanContent != "" {
 				s.structuredProgress.Content = cleanContent
 			} else if response.ReasoningContent != "" {
@@ -1033,6 +1164,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			if response.ReasoningContent != "" {
 				s.structuredProgress.ReasoningContent = response.ReasoningContent
 			}
+			s.progressMu.Unlock()
 		}
 
 		// Write the final iteration to iteration_history (content + reasoning,
@@ -1073,29 +1205,35 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		s.lastContent = cleanContent
 	}
 
+	// M2 锁覆盖：progressLines/Content/ReasoningContent/Phase 写点与后台
+	// SubAgent 回调的 notifyProgress（锁内 Clone）并发。notifyProgress 自身
+	// 持锁，必须在临界区外调用。
+	s.progressMu.Lock()
 	if s.autoNotify && cleanContent != "" {
 		s.progressLines = append(s.progressLines, cleanContent)
 	}
-	if s.structuredProgress != nil && cleanContent != "" {
-		s.structuredProgress.Content = cleanContent
+	if s.structuredProgress != nil {
+		if cleanContent != "" {
+			s.structuredProgress.Content = cleanContent
+		}
+		// Wire the model's reasoning chain (reasoning_content) to progress
+		// so the CLI can display the thinking process to the user.
+		if response.ReasoningContent != "" {
+			s.structuredProgress.ReasoningContent = response.ReasoningContent
+		}
+		// Push progress so CLI can display reasoning immediately after LLM
+		// completes, rather than waiting for the next notifyProgress call.
+		// CRITICAL: if the LLM returned tool_calls, set Phase=tool_exec BEFORE
+		// pushing. Without this, the structured event carries Phase=thinking
+		// with no tools (ActiveTools is still nil — initToolProgress hasn't
+		// run yet). The frontend sees an empty snapshot during the window
+		// between this push and initToolProgress, causing ShimmerThinking
+		// ("思考中...") to flash over the generating tool indicator.
+		if response.HasToolCalls() {
+			s.structuredProgress.Phase = PhaseToolExec
+		}
 	}
-	// Wire the model's reasoning chain (reasoning_content) to progress
-	// so the CLI can display the thinking process to the user.
-	if s.structuredProgress != nil && response.ReasoningContent != "" {
-		s.structuredProgress.ReasoningContent = response.ReasoningContent
-	}
-
-	// Push progress so CLI can display reasoning immediately after LLM completes,
-	// rather than waiting for the next notifyProgress call (e.g. executeToolCalls).
-	// CRITICAL: if the LLM returned tool_calls, set Phase=tool_exec BEFORE pushing.
-	// Without this, the structured event carries Phase=thinking with no tools
-	// (ActiveTools is still nil — initToolProgress hasn't run yet). The frontend
-	// sees an empty snapshot (no tools, no text, no reasoning) during the window
-	// between this push and initToolProgress, causing ShimmerThinking ("思考中...")
-	// to flash over the generating tool indicator.
-	if s.structuredProgress != nil && response.HasToolCalls() {
-		s.structuredProgress.Phase = PhaseToolExec
-	}
+	s.progressMu.Unlock()
 	if s.autoNotify {
 		s.notifyProgress("")
 	}
@@ -1250,7 +1388,7 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	if s.cfg.ContextManagerConfig != nil && s.cfg.ContextManagerConfig.CompressionThreshold > 0 {
 		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
 	}
-	needCompress := len(s.messages) > 3 && shouldCompact(int(totalTokens), promptBudget, compressThreshold) && (s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
+	needCompress := !s.compressAbandoned && len(s.messages) > 3 && shouldCompact(int(totalTokens), promptBudget, compressThreshold) && (s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"total_tokens":       totalTokens,
@@ -1272,10 +1410,42 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 		// "auto compression is disabled (mode=none)" error.
 		if cm.Mode() == ContextModeNone {
 			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
-		} else {
-			return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+			return nil
 		}
-		return nil
+		// No-progress circuit breaker (same-measurement comparison: BOTH sides are
+		// real API prompt_tokens at trigger time — no estimate mixing). If the
+		// current trigger tokens dropped less than 5% from the previous trigger,
+		// compression had no real effect (the estimate-based post-compress check
+		// can pass while the real value stays above the line — e.g. CJK content
+		// under the chars×2/3 heuristic). Two consecutive no-progress triggers
+		// mean compression cannot fix this context (un-shrinkable base) — abandon
+		// auto-compression for the rest of this Run instead of burning a
+		// full-context compaction LLM call every 5 iterations.
+		if s.lastCompressTriggerTokens > 0 && totalTokens >= s.lastCompressTriggerTokens*95/100 {
+			s.consecutiveIneffectiveCompress++
+		} else {
+			s.consecutiveIneffectiveCompress = 0
+		}
+		if s.consecutiveIneffectiveCompress >= 2 {
+			s.compressAbandoned = true
+			log.Ctx(ctx).WithFields(log.Fields{
+				"chat_id":                 s.cfg.ChatID,
+				"turn_id":                 s.cfg.TurnID,
+				"total_tokens":            totalTokens,
+				"last_trigger_tokens":     s.lastCompressTriggerTokens,
+				"trigger_threshold":       int(float64(promptBudget) * compressThreshold),
+				"consecutive_ineffective": s.consecutiveIneffectiveCompress,
+			}).Error("COMPRESSION ABANDONED: real prompt_tokens did not drop ≥5% across consecutive compression triggers — " +
+				"the un-shrinkable part (system prompt + tools + tail) exceeds the trigger line. " +
+				"Auto-compression is disabled for the rest of this Run to stop the infinite loop. " +
+				"Consider raising max_context_tokens, lowering max_output_tokens, or shrinking the system prompt.")
+			s.compressWarning = "⚠️ 自动压缩已停止：上下文不可压缩部分（system prompt + 工具定义 + 近期消息）已超过触发线，继续压缩只会无限循环。" +
+				"建议增大 max_context、调小 max_output_tokens 或精简系统提示词。"
+			s.notifyProgress("")
+			return nil
+		}
+		s.lastCompressTriggerTokens = totalTokens
+		return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 	}
 
 	// Observation masking (lightweight, no LLM call).
@@ -1285,14 +1455,19 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 
 // runCompression performs the actual context compression.
 func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) error {
+	// M2 锁覆盖：Phase/progressLines 写与后台 SubAgent 回调的 notifyProgress
+	// （锁内 Clone）并发，必须持 progressMu；notifyProgress 自身持锁留在临界区外。
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.Phase = PhaseCompressing
 	}
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> 📦 上下文过大 (%d tokens)，正在压缩 + 记忆整理...", totalTokens))
+	}
+	s.progressMu.Unlock()
+	if s.autoNotify {
 		s.notifyProgress("")
 	}
-
 	log.Ctx(ctx).Info("Auto context compaction triggered")
 
 	// Emit PreCompact event (notification, non-blocking)
@@ -1337,12 +1512,11 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if sessionCM == nil {
 		log.Ctx(ctx).Warn("No ContextManager available for compression")
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			s.structuredProgress.Phase = PhaseThinking
+			s.progressMu.Unlock()
 		}
 		return nil
-	}
-	if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
-		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 	}
 
 	// --- Memory system integration: PreCompress ---
@@ -1369,7 +1543,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			if preResult.SkipCompress {
 				log.Ctx(ctx).Info("PreCompress: memory system requested skip, skipping compression")
 				if s.structuredProgress != nil {
+					s.progressMu.Lock()
 					s.structuredProgress.Phase = PhaseThinking
+					s.progressMu.Unlock()
 				}
 				return nil
 			}
@@ -1395,27 +1571,44 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if compressErr != nil {
 		log.Ctx(ctx).WithError(compressErr).Warn("Auto context compaction failed")
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			s.structuredProgress.Phase = PhaseThinking
+			s.progressMu.Unlock()
 		}
 		return compressErr
 	}
 	s.messages = pipelineResult.NewMessages
 	s.lastCompressIter = s.compressAttempts
 	s.validateInvariantsAt(ctx, "post_compress")
+
+	// Measure the compressed context with the FULL message estimate (system +
+	// summary + continuation + tail — everything the next LLM call sends).
+	// This is the value that decides whether compression actually got us below
+	// the trigger line, feeds the tracker/DB (so restart restores a realistic
+	// count), and drives the post-compress safety check below.
+	//
+	// NOTE: pipelineResult.NewTokenCount (CompressedTokens) is the SUMMARY-only
+	// estimate — it excludes the system prompt and the tail entirely. Using it
+	// for the budget check was the root cause of the infinite-compression loop:
+	// a compressed result of [huge system + 150 tail messages] always "passed"
+	// while the real context stayed above the line, so compression re-fired
+	// every 5 iterations forever (200k-context incident).
+	postCompressTokens := estimateMessagesTokens(s.messages)
+
 	// Update token usage estimate so progress events show reduced tokens
 	// immediately instead of showing 0 (from ResetAfterCompress) or stale
 	// pre-compress values until the next LLM API call.
-	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+	s.setTokenUsageAfterCompress(postCompressTokens)
 
-	// Persist the API-returned token count so that after a restart, the next Run
-	// restores an accurate value instead of the pre-compress count. Without this,
+	// Persist the post-compress estimate so that after a restart, the next Run
+	// restores a realistic value instead of the pre-compress count. Without this,
 	// ResetAfterCompress zeros the tracker, SaveState skips (no LLM call), and
 	// the DB still holds the old large value → immediate re-compression on restart.
-	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+	if s.cfg.SaveContextTokens != nil && postCompressTokens > 0 {
+		s.cfg.SaveContextTokens(postCompressTokens)
 	}
-	if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+	if s.cfg.SaveTokenState != nil && postCompressTokens > 0 {
+		s.cfg.SaveTokenState(postCompressTokens, 0)
 	}
 
 	oldTokenCount := totalTokens
@@ -1428,7 +1621,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 				SenderID: s.cfg.OriginUserID, ChatID: s.cfg.ChatID,
 			},
 			Trigger:              "token_limit",
-			EstimatedTokensAfter: pipelineResult.NewTokenCount,
+			EstimatedTokensAfter: postCompressTokens,
 		})
 	}
 
@@ -1459,6 +1652,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		}
 	}
 
+	// M2 锁覆盖：Phase/HistoryCompacted/progressLines 更新与后台 SubAgent 回调的
+	// notifyProgress（锁内 Clone）并发，写点持锁；notifyProgress 自身持锁在锁外。
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.Phase = PhaseThinking
 		s.structuredProgress.HistoryCompacted = true
@@ -1466,32 +1662,38 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if s.autoNotify {
 		for i := len(s.progressLines) - 1; i >= 0; i-- {
 			if strings.Contains(s.progressLines[i], "正在压缩") {
-				s.progressLines[i] = fmt.Sprintf("> ✅ 压缩完成: %d → %d tokens", oldTokenCount, pipelineResult.NewTokenCount)
+				s.progressLines[i] = fmt.Sprintf("> ✅ 压缩完成: %d → %d tokens", oldTokenCount, postCompressTokens)
 				break
 			}
 		}
+	}
+	s.progressMu.Unlock()
+	if s.autoNotify {
 		s.notifyProgress("")
 	}
 	// Reset HistoryCompacted after the notification is sent so subsequent
 	// progress events don't repeatedly trigger CLI message rebuild.
 	if s.structuredProgress != nil {
+		s.progressMu.Lock()
 		s.structuredProgress.HistoryCompacted = false
+		s.progressMu.Unlock()
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
-		"new_tokens": pipelineResult.NewTokenCount,
+		"new_tokens":          postCompressTokens,
+		"summary_only_tokens": pipelineResult.NewTokenCount,
 	}).Info("Auto context compaction completed")
 
 	GlobalMetrics.CompressEvents.Add(1)
 	GlobalMetrics.CompressTokensIn.Add(int64(oldTokenCount))
-	GlobalMetrics.CompressTokensOut.Add(pipelineResult.NewTokenCount)
+	GlobalMetrics.CompressTokensOut.Add(postCompressTokens)
 
 	if oldTokenCount > 0 {
-		reductionRate := 1.0 - float64(pipelineResult.NewTokenCount)/float64(oldTokenCount)
+		reductionRate := 1.0 - float64(postCompressTokens)/float64(oldTokenCount)
 		if reductionRate < 0.10 {
 			log.Ctx(ctx).WithFields(log.Fields{
 				"old_tokens": oldTokenCount,
-				"new_tokens": pipelineResult.NewTokenCount,
+				"new_tokens": postCompressTokens,
 				"reduction":  fmt.Sprintf("%.1f%%", reductionRate*100),
 			}).Warn("Compaction ineffective (reduction < 10%)")
 		}
@@ -1501,10 +1703,21 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		hook.AfterPersist(ctx, s.cfg.Session, pipelineResult.CompressOutput)
 	}
 
-	// Post-compression safety check: if the compressed result still exceeds the
-	// context budget, the next iteration will trigger another compress cycle,
-	// creating an infinite loop.  This happens when there are 500+ iterations and
-	// the tail alone is too large.  Apply aggressive truncation as a last resort.
+	// Post-compression safety check: the compressed context (FULL estimate —
+	// system + summary + tail, see postCompressTokens above) must fit below the
+	// trigger line, otherwise the next iteration re-triggers compression and the
+	// engine loops forever (each round burns a full-context compaction LLM call).
+	//
+	// Trigger-vs-measurement symmetry: maybeCompress triggers on REAL API
+	// prompt_tokens >= threshold; here we verify the compressed output against
+	// the same threshold with the full-message estimate. The old code compared
+	// the SUMMARY-only estimate (CompressedTokens) which never exceeds the line
+	// for any realistic summary — the truncation net never fired.
+	//
+	// The len(s.messages) > 10 guard is intentionally GONE: a compressed result
+	// with few but HUGE messages (one giant tool result, a giant system prompt)
+	// is exactly the case that needs truncation/abandonment. aggressiveTruncate
+	// itself protects against over-truncation (conversationMsgs <= 6 → no-op).
 	maxOutputTokens := s.cfg.MaxOutputTokens
 	if maxOutputTokens <= 0 {
 		maxOutputTokens = 32_768
@@ -1518,19 +1731,21 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
 	}
 	postCompressLimit := float64(promptBudget) * compressThreshold
-	if pipelineResult.NewTokenCount > int64(postCompressLimit) && len(s.messages) > 10 {
+	if postCompressTokens > int64(postCompressLimit) {
 		log.Ctx(ctx).WithFields(log.Fields{
-			"new_tokens":      pipelineResult.NewTokenCount,
-			"prompt_budget":   promptBudget,
-			"threshold_limit": int64(postCompressLimit),
-			"msg_count":       len(s.messages),
+			"post_compress_tokens": postCompressTokens,
+			"prompt_budget":        promptBudget,
+			"threshold_limit":      int64(postCompressLimit),
+			"msg_count":            len(s.messages),
 		}).Warn("Compressed context still exceeds budget, applying aggressive truncation")
-		if s.aggressiveTruncate(ctx) {
+		truncated := s.aggressiveTruncate(ctx)
+		stillOver := estimateMessagesTokens(s.messages) > int64(postCompressLimit)
+		if truncated && !stillOver {
 			// aggressiveTruncate already called ResetAfterCompress, zeroing
-			// the tracker to no_data. Do NOT use local estimation
-			// (CountMessagesTokens) — the next LLM API call will fill in the
-			// real value. Save 0 to clear persisted state so restart doesn't
-			// see the stale post-compress count and trigger re-compression.
+			// the tracker to no_data. Do NOT use local estimation for the tracker —
+			// the next LLM API call will fill in the real value. Save 0 to clear
+			// persisted state so restart doesn't see the stale post-compress count
+			// and trigger re-compression.
 			if s.cfg.SaveContextTokens != nil {
 				s.cfg.SaveContextTokens(0)
 			}
@@ -1539,7 +1754,30 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			}
 			s.compressWarning = "⚠️ 压缩后仍超限，已截断旧消息"
 			s.notifyProgress("")
+			return nil
 		}
+		// Truncation did not get us below the line (or there was nothing left to
+		// truncate — few messages, giant system prompt / giant single messages).
+		// Compression can never fix this context in this Run: every retry burns a
+		// full-context compaction LLM call and the un-shrinkable part (system
+		// prompt + tools + recent tail) stays above the trigger line. Abandon
+		// auto-compression for the rest of this Run.
+		s.compressAbandoned = true
+		log.Ctx(ctx).WithFields(log.Fields{
+			"chat_id":              s.cfg.ChatID,
+			"turn_id":              s.cfg.TurnID,
+			"post_compress_tokens": postCompressTokens,
+			"post_truncate_tokens": estimateMessagesTokens(s.messages),
+			"truncated":            truncated,
+			"threshold_limit":      int64(postCompressLimit),
+			"msg_count":            len(s.messages),
+		}).Error("COMPRESSION ABANDONED: post-compression (post-truncation) context still exceeds the trigger line — " +
+			"the un-shrinkable part (system prompt + tools + recent tail) is too large for this model's context budget. " +
+			"Auto-compression is disabled for the rest of this Run to stop the infinite loop. " +
+			"Consider raising max_context_tokens, lowering max_output_tokens, or shrinking the system prompt.")
+		s.compressWarning = "⚠️ 自动压缩已停止：压缩并截断后上下文仍超过触发线（不可压缩部分过大），继续压缩只会无限循环。" +
+			"建议增大 max_context、调小 max_output_tokens 或精简系统提示词。"
+		s.notifyProgress("")
 	}
 	return nil
 }
@@ -1700,6 +1938,9 @@ func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMRes
 				Summary: shortSummary,
 			},
 		}
+		// M2 锁覆盖：loop-breaker 的 ActiveTools/progressLines 标记与后台
+		// SubAgent 回调的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
+		s.progressMu.Lock()
 		if s.structuredProgress != nil && idx < len(s.structuredProgress.ActiveTools) {
 			s.structuredProgress.ActiveTools[idx].Status = ToolError
 			s.structuredProgress.ActiveTools[idx].Summary = shortSummary
@@ -1710,6 +1951,7 @@ func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMRes
 				s.progressLines[pi] = fmt.Sprintf("> ❌ %s (loop detected, skipped)", formatToolProgress(tc.Name, tc.Arguments))
 			}
 		}
+		s.progressMu.Unlock()
 		log.Ctx(ctx).WithFields(log.Fields{
 			"tool":       tc.Name,
 			"id":         tc.ID,
@@ -1880,7 +2122,10 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 
 	// --- Sync CWD to progress (may change via Cd or worktree cleanup) ---
 	if s.structuredProgress != nil && s.cfg.Session != nil {
+		// M2 锁覆盖：CWD 写与后台 SubAgent 回调的 notifyProgress 并发。
+		s.progressMu.Lock()
 		s.structuredProgress.CWD = s.cfg.Session.GetCurrentDir()
+		s.progressMu.Unlock()
 	}
 
 	// --- System Reminder generation (transient, NOT persisted) ---
@@ -1890,9 +2135,15 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	// 算进「已持久化」），下一轮删除 reminder 后真实消息索引前移、落到虚高
 	// watermark 之下被当作已持久化跳过 —— AskUser 报 "no pending messages"。
 	if len(response.ToolCalls) > 0 {
-		var todoSummary string
+		var todoItems []TodoProgressItem
 		if s.cfg.TodoManager != nil && s.todoKey() != "" {
-			todoSummary = s.cfg.TodoManager.GetTodoSummary(s.todoKey())
+			todoItems = s.cfg.TodoManager.GetTodoItems(s.todoKey())
+		}
+
+		// 当前 goal（如有 active goal 则注入）
+		var goalInfo *protocol.GoalInfo
+		if s.cfg.GoalManager != nil {
+			goalInfo = s.cfg.GoalManager.GoalInfo(s.sessionKey)
 		}
 
 		// Get current CWD for system reminder
@@ -1917,7 +2168,7 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
 		}
 
-		s.systemReminder = BuildSystemReminder(s.messages, response.ToolCalls, todoSummary, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
+		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
 	}
 
 	// --- Incremental session persistence ---
@@ -2118,6 +2369,9 @@ func (s *runState) injectSyntheticToolPair(
 	}
 
 	if s.structuredProgress != nil {
+		// M2 锁覆盖：CompletedTools append 与后台 SubAgent 回调的 notifyProgress
+		// （锁内 Clone）并发，写点持锁；notifyProgress 自身持锁留在临界区外。
+		s.progressMu.Lock()
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
 			Name:      toolName,
 			Label:     progressLabel,
@@ -2125,6 +2379,7 @@ func (s *runState) injectSyntheticToolPair(
 			Elapsed:   progressElapsed,
 			Iteration: iteration,
 		})
+		s.progressMu.Unlock()
 		if s.autoNotify {
 			s.notifyProgress("")
 		}

@@ -142,39 +142,24 @@ func (s *SessionService) GetHistoryBefore(tenantID int64, beforeID int64, limit 
 // count — so has_more = (total > len(returned)) converges to false at the
 // earliest page instead of staying true forever.
 func (s *SessionService) GetHistoryBeforeForDisplay(tenantID int64, beforeID int64, limit int) ([]llm.ChatMessage, int, error) {
-	replay, err := s.ReplayForDisplay(tenantID)
-	if err != nil {
-		return nil, 0, err
-	}
 	if limit <= 0 {
 		return nil, 0, nil
 	}
-	msgs := replay.Messages
-	// If beforeID specified, slice to only messages with id < beforeID.
-	if beforeID > 0 {
-		cut := len(msgs)
-		for i, m := range msgs {
-			if m.ID >= beforeID {
-				cut = i
-				break
-			}
-		}
-		msgs = msgs[:cut]
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return nil, 0, err
 	}
-	// total = messages before beforeID (after filtering). hasMore in
-	// callbacks.go is total > len(returned), which converges to false
-	// when all remaining messages fit in one page.
-	total := len(msgs)
-	if len(msgs) == 0 {
+	replay, total, err := replayForDisplayWindow(conn, tenantID, beforeID, int64(limit))
+	if err != nil {
+		return nil, 0, err
+	}
+	if total == 0 {
 		return nil, 0, nil
 	}
-	// Walk backwards counting messages; start is the first message of the
-	// window (oldest). Messages are already in chronological order.
-	start := 0
-	if len(msgs) > limit {
-		start = len(msgs) - limit
-	}
-	return append([]llm.ChatMessage(nil), msgs[start:]...), total, nil
+	return replay.Messages, total, nil
 }
 
 // GetAllMessages retrieves all non-display-only messages for a tenant.
@@ -229,14 +214,6 @@ func (s *SessionService) Clear(tenantID int64) error {
 		"messages":  rows,
 	}).Debug("Session messages cleared")
 	return nil
-}
-
-// PurgeOldMessages is retained for compatibility. Compression is append-only and
-// must never physically delete its source messages.
-func (s *SessionService) PurgeOldMessages(tenantID int64, keepCount int) (int64, error) {
-	// Append-only history: compression writes a snapshot record instead of
-	// physically deleting source messages. Retained as a no-op for API compat.
-	return 0, nil
 }
 
 // UpdateMessageContent updates the content of the Nth message (0-indexed) for a tenant.
@@ -369,6 +346,61 @@ func (s *SessionService) GetMaxTurnID(tenantID int64) (uint64, error) {
 	return max, nil
 }
 
+// GetLastUserTurnID returns the turn_id of the LAST non-display-only user
+// message in the session. A restart-resumed Run (InjectInboundResume) reuses
+// this turn id so the interrupted work and the resumed work belong to ONE turn
+// — the frontend renders a single assistant block instead of one per restart.
+// Returns 0 when the session has no user message or the last one predates
+// turn_id stamping (legacy rows) — the caller then falls back to allocating a
+// fresh turn id.
+func (s *SessionService) GetLastUserTurnID(tenantID int64) (uint64, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	var turnID sql.NullInt64
+	if err := conn.QueryRow(`
+		SELECT turn_id FROM session_messages
+		WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
+		ORDER BY id DESC LIMIT 1
+	`, tenantID).Scan(&turnID); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("get last user turn_id: %w", err)
+	}
+	if !turnID.Valid || turnID.Int64 <= 0 {
+		return 0, nil
+	}
+	return uint64(turnID.Int64), nil
+}
+
+// GetMaxIterationForTurn returns the highest iteration number recorded for a
+// turn in iteration_history. A restart-resumed Run uses it to CONTINUE the
+// interrupted turn's iteration numbering (IterationStart offset): iteration
+// numbers are turn-scoped ((turn_id, iteration) uniqueness), so restarting at 1
+// would collide with the interrupted Run's records and break the frontend's
+// per-turn iteration advance/merge checks. Returns 0 when the turn has no
+// records (fresh turn — a resume of a turn interrupted before its first
+// iteration snapshot).
+func (s *SessionService) GetMaxIterationForTurn(tenantID int64, turnID uint64) (int, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	var maxIter sql.NullInt64
+	if err := conn.QueryRow(
+		"SELECT MAX(iteration) FROM iteration_history WHERE tenant_id = ? AND turn_id = ?",
+		tenantID, turnID,
+	).Scan(&maxIter); err != nil {
+		return 0, fmt.Errorf("get max iteration for turn: %w", err)
+	}
+	if !maxIter.Valid || maxIter.Int64 < 0 {
+		return 0, nil
+	}
+	return int(maxIter.Int64), nil
+}
+
 // SetTenantCWD persists a session's current working directory in the tenants
 // table (the single authoritative store; file-based session_cwd is retired).
 func (s *SessionService) SetTenantCWD(tenantID int64, cwd string) error {
@@ -423,6 +455,15 @@ type IterationRecord struct {
 	TotalMs int64 `json:"total_ms"`
 	// TPOTMs is the time-per-output-token (ms) for this iteration's LLM stream.
 	TPOTMs int64 `json:"tpot_ms"`
+	// InputTokens is the prompt tokens of this iteration's LLM call(s) (v59).
+	InputTokens int64 `json:"input_tokens"`
+	// CachedTokens is the prompt-cache hit tokens of this iteration's LLM call(s) (v59).
+	CachedTokens int64 `json:"cached_tokens"`
+	// Model is the LLM model used for this iteration (v59).
+	Model string `json:"model"`
+	// SubscriptionID is the owning subscription of the model (v62,
+	// model-subscription integration: the model never travels alone).
+	SubscriptionID string `json:"subscription_id"`
 }
 
 // AppendIterationHistory inserts a single iteration record linked to a message.
@@ -432,9 +473,9 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 		return err
 	}
 	_, err = conn.Exec(`
-		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs)
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
 	if err != nil {
 		return fmt.Errorf("append iteration_history: %w", err)
 	}
@@ -450,7 +491,7 @@ func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 		return nil, err
 	}
 	rows, err := conn.Query(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
 		FROM iteration_history
 		WHERE tenant_id = ? AND turn_id = ?
 		ORDER BY iteration ASC
@@ -482,7 +523,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		args = append(args, id)
 	}
 	query := fmt.Sprintf(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
 		FROM iteration_history
 		WHERE tenant_id = ? AND turn_id IN (%s)
 		ORDER BY turn_id ASC, iteration ASC
@@ -494,7 +535,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 	defer rows.Close()
 	for rows.Next() {
 		var rec IterationRecord
-		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs); err != nil {
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID); err != nil {
 			continue
 		}
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
@@ -506,7 +547,7 @@ func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
 	var records []IterationRecord
 	for rows.Next() {
 		var rec IterationRecord
-		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs); err != nil {
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID); err != nil {
 			continue
 		}
 		records = append(records, rec)
@@ -523,7 +564,7 @@ func (s *SessionService) GetAllIterationHistory(tenantID int64) ([]IterationReco
 		return nil, err
 	}
 	rows, err := conn.Query(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
 		FROM iteration_history
 		WHERE tenant_id = ?
 		ORDER BY turn_id ASC, iteration ASC
@@ -533,4 +574,166 @@ func (s *SessionService) GetAllIterationHistory(tenantID int64) ([]IterationReco
 	}
 	defer rows.Close()
 	return scanIterationRecords(rows)
+}
+
+// ── Tenant usage aggregation (v59) ─────────────────────────────────────────
+//
+// iteration_history now carries input_tokens / cached_tokens / model per
+// iteration, making it the single source for usage & perf aggregation. The
+// helpers below answer "what did this session consume / how did it perform"
+// without a separate session-level ledger.
+
+// UsageModelRow is a per-(subscription, model) usage breakdown
+// (GROUP BY subscription_id, model — v62 model-subscription integration).
+type UsageModelRow struct {
+	SubscriptionID string  `json:"subscription_id"`
+	Model          string  `json:"model"`
+	Iterations     int64   `json:"iterations"`
+	Turns          int64   `json:"turns"`
+	InputTokens    int64   `json:"input_tokens"`
+	OutputTokens   int64   `json:"output_tokens"`
+	CachedTokens   int64   `json:"cached_tokens"`
+	AvgTTFTMs      float64 `json:"avg_ttft_ms"`
+	AvgTPOTMs      float64 `json:"avg_tpot_ms"`
+}
+
+// UsageIterationRow is a single recent iteration's usage/perf record.
+type UsageIterationRow struct {
+	TurnID         uint64 `json:"turn_id"`
+	Iteration      int    `json:"iteration"`
+	InputTokens    int64  `json:"input_tokens"`
+	OutputTokens   int64  `json:"output_tokens"`
+	CachedTokens   int64  `json:"cached_tokens"`
+	TTFTMs         int64  `json:"ttft_ms"`
+	TPOTMs         int64  `json:"tpot_ms"`
+	TokensPerSec   int64  `json:"tokens_per_sec"`
+	TotalMs        int64  `json:"total_ms"`
+	Model          string `json:"model"`
+	SubscriptionID string `json:"subscription_id"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// TenantUsageStats aggregates a session's usage & performance from
+// iteration_history (plus tenant watermark / metadata).
+type TenantUsageStats struct {
+	// iteration_history aggregates (pre-v59 rows have input_tokens=0 /
+	// cached_tokens=0 / model='' — they still count toward iterations/turns).
+	IterationCount  int64   `json:"iteration_count"`
+	TurnCount       int64   `json:"turn_count"`
+	InputTokens     int64   `json:"input_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	CachedTokens    int64   `json:"cached_tokens"`
+	LLMTotalMs      int64   `json:"llm_total_ms"`
+	AvgTTFTMs       float64 `json:"avg_ttft_ms"`
+	AvgTPOTMs       float64 `json:"avg_tpot_ms"`
+	AvgTokensPerSec float64 `json:"avg_tokens_per_sec"`
+	// iteration_time_range
+	FirstIterationAt string `json:"first_iteration_at"`
+	LastIterationAt  string `json:"last_iteration_at"`
+	// tenant_state watermark (current context level)
+	LastPromptTokens     int64 `json:"last_prompt_tokens"`
+	LastCompletionTokens int64 `json:"last_completion_tokens"`
+	// tenants metadata
+	CurrentModel      string `json:"current_model"`
+	SessionCreatedAt  string `json:"session_created_at"`
+	SessionLastActive string `json:"session_last_active"`
+	// Breakdowns
+	ByModel          []UsageModelRow     `json:"by_model"`
+	RecentIterations []UsageIterationRow `json:"recent_iterations"`
+}
+
+// GetTenantUsageStats aggregates usage & perf stats for a tenant from
+// iteration_history, tenant_state and tenants. recentLimit caps the
+// RecentIterations detail rows (0 = default 20, negative = skip).
+func (s *SessionService) GetTenantUsageStats(tenantID int64, recentLimit int) (*TenantUsageStats, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	stats := &TenantUsageStats{}
+
+	// Main aggregate. NULLIF excludes unrecorded zeros (pre-v59 rows /
+	// non-streaming iterations) from the averages so they don't skew means.
+	err = conn.QueryRow(`
+		SELECT COUNT(*), COUNT(DISTINCT turn_id),
+		       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(SUM(total_ms), 0),
+		       COALESCE(AVG(NULLIF(ttft_ms, 0)), 0), COALESCE(AVG(NULLIF(tpot_ms, 0)), 0), COALESCE(AVG(NULLIF(tokens_per_sec, 0)), 0),
+		       COALESCE(MIN(created_at), ''), COALESCE(MAX(created_at), '')
+		FROM iteration_history WHERE tenant_id = ?
+	`, tenantID).Scan(
+		&stats.IterationCount, &stats.TurnCount,
+		&stats.InputTokens, &stats.OutputTokens, &stats.CachedTokens,
+		&stats.LLMTotalMs,
+		&stats.AvgTTFTMs, &stats.AvgTPOTMs, &stats.AvgTokensPerSec,
+		&stats.FirstIterationAt, &stats.LastIterationAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant usage stats: %w", err)
+	}
+
+	// Per-(subscription, model) breakdown. model='' rows are pre-v59 history
+	// (before the model column existed) — they have no model attribution and no
+	// input/cached data, showing as a nameless "in=0 all-out" entry that drowns
+	// the real models. Exclude them from the per-model split (they still count
+	// toward the main aggregate above). subscription_id='' is pre-v62 history —
+	// grouped under the empty subscription (model-only attribution).
+	rows, err := conn.Query(`
+		SELECT COALESCE(subscription_id, ''), COALESCE(model, ''), COUNT(*), COUNT(DISTINCT turn_id),
+		       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(AVG(NULLIF(ttft_ms, 0)), 0), COALESCE(AVG(NULLIF(tpot_ms, 0)), 0)
+		FROM iteration_history WHERE tenant_id = ? AND model != ''
+		GROUP BY subscription_id, model ORDER BY SUM(input_tokens) + SUM(tokens) DESC
+	`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant usage by model: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var r UsageModelRow
+		if err := rows.Scan(&r.SubscriptionID, &r.Model, &r.Iterations, &r.Turns, &r.InputTokens, &r.OutputTokens, &r.CachedTokens, &r.AvgTTFTMs, &r.AvgTPOTMs); err != nil {
+			continue
+		}
+		stats.ByModel = append(stats.ByModel, r)
+	}
+	rows.Close()
+
+	// Recent iterations (newest first, then chronological for display).
+	if recentLimit != 0 {
+		if recentLimit < 0 || recentLimit > 500 {
+			recentLimit = 500
+		} else if recentLimit < 1 {
+			recentLimit = 20
+		}
+		rows, err = conn.Query(`
+			SELECT turn_id, iteration, input_tokens, tokens, cached_tokens, ttft_ms, tpot_ms, tokens_per_sec, total_ms, COALESCE(model, ''), COALESCE(created_at, ''), COALESCE(subscription_id, '')
+			FROM iteration_history WHERE tenant_id = ?
+			ORDER BY id DESC LIMIT ?
+		`, tenantID, recentLimit)
+		if err != nil {
+			return nil, fmt.Errorf("get recent iterations: %w", err)
+		}
+		for rows.Next() {
+			var r UsageIterationRow
+			if err := rows.Scan(&r.TurnID, &r.Iteration, &r.InputTokens, &r.OutputTokens, &r.CachedTokens, &r.TTFTMs, &r.TPOTMs, &r.TokensPerSec, &r.TotalMs, &r.Model, &r.CreatedAt, &r.SubscriptionID); err != nil {
+				continue
+			}
+			stats.RecentIterations = append(stats.RecentIterations, r)
+		}
+		rows.Close()
+		// Reverse to chronological order (oldest → newest).
+		for i, j := 0, len(stats.RecentIterations)-1; i < j; i, j = i+1, j-1 {
+			stats.RecentIterations[i], stats.RecentIterations[j] = stats.RecentIterations[j], stats.RecentIterations[i]
+		}
+	}
+
+	// tenant_state watermark (current context level).
+	_ = conn.QueryRow(`SELECT COALESCE(last_prompt_tokens, 0), COALESCE(last_completion_tokens, 0) FROM tenant_state WHERE tenant_id = ?`, tenantID).
+		Scan(&stats.LastPromptTokens, &stats.LastCompletionTokens)
+
+	// tenants metadata.
+	_ = conn.QueryRow(`SELECT COALESCE(model, ''), COALESCE(created_at, ''), COALESCE(last_active_at, '') FROM tenants WHERE id = ?`, tenantID).
+		Scan(&stats.CurrentModel, &stats.SessionCreatedAt, &stats.SessionLastActive)
+
+	return stats, nil
 }

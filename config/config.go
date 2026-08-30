@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xbot/protocol"
@@ -293,8 +294,6 @@ type AgentConfig struct {
 	ModelContexts        map[string]int `json:"model_contexts,omitempty"` // model -> max context tokens, overrides MaxContextTokens
 	CompressionThreshold float64        `json:"compression_threshold"`
 	DynamicMaxTokens     *bool          `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
-
-	PurgeOldMessages bool `json:"purge_old_messages"`
 
 	// DeltaPush 启用流式 delta push（增量文本，带宽优化）。默认 false = 每次
 	// 推送完整累积文本（简单可靠，gap 追赶无需特殊处理）。delta push 曾引入
@@ -648,7 +647,21 @@ func LoadFromFile(path string) *Config {
 // 它会先读取磁盘上已有的文件，将 Go struct 序列化后的顶层 key 覆盖到原始 JSON 上，
 // 同时保留磁盘文件中存在但 Go struct 未定义的字段（未知 key）。
 // 这样用户手动添加的自定义字段或未来新增的 struct 字段不会被静默丢弃。
+// saveToFileLocks serializes concurrent SaveToFile calls per path (in-process).
+// Windows: os.Rename fails with "Access is denied" when another writer's
+// os.ReadFile(path) handle (the deep-merge read) is open on the destination
+// while a rename targets it. POSIX rename is atomic and immune. Locking the
+// whole read-merge-write-rename flow eliminates the in-process race; the
+// rename retry below stays as a cross-process safety net.
+var saveToFileLocks sync.Map // path -> *sync.Mutex
+
+// SaveToFile writes the config atomically (temp file + rename) with a deep
+// JSON merge to preserve unknown fields from the existing disk file.
 func SaveToFile(path string, cfg *Config) error {
+	mu, _ := saveToFileLocks.LoadOrStore(path, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
@@ -671,13 +684,47 @@ func SaveToFile(path string, cfg *Config) error {
 		// 合并失败时回退到纯 struct 序列化（安全降级）
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, finalData, 0o600); err != nil {
+	// Write via a UNIQUE temp file per call (os.CreateTemp), never a fixed
+	// "path.tmp": concurrent SaveToFile calls racing on a shared fixed name
+	// clobber each other's tmp write and make the loser's rename fail with
+	// ENOENT — the winner then renames the loser's content (silent update
+	// loss). Rename stays atomic; the unique name makes writers independent.
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config file: %w", err)
+	}
+	tmp := f.Name()
+	if _, err := f.Write(finalData); err != nil {
+		f.Close()
+		os.Remove(tmp) // best-effort cleanup
 		return fmt.Errorf("write temp config: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("chmod temp config: %w", err)
+	}
+	// Windows: concurrent renames onto the same target can transiently fail
+	// with "Access is denied" (another writer's handle briefly holds the
+	// destination while its own rename completes). The unique temp name (per
+	// call) already prevents the fixed-name clobber race; this retry covers
+	// the remaining target-lock window. POSIX rename is atomic and never
+	// fails this way — the retry is a fast no-op there.
+	var renameErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 10 * time.Millisecond)
+		}
+		if renameErr = os.Rename(tmp, path); renameErr == nil {
+			break
+		}
+	}
+	if renameErr != nil {
 		os.Remove(tmp) // best-effort cleanup
-		return fmt.Errorf("rename config: %w", err)
+		return fmt.Errorf("rename config: %w", renameErr)
 	}
 	return nil
 }
@@ -825,7 +872,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	setIntEnv("AGENT_MAX_CONTEXT_TOKENS", &cfg.Agent.MaxContextTokens)
 	setFloatEnv("AGENT_COMPRESSION_THRESHOLD", &cfg.Agent.CompressionThreshold)
-	setBoolEnv("AGENT_PURGE_OLD_MESSAGES", &cfg.Agent.PurgeOldMessages)
 	setIntEnv("MAX_SUBAGENT_DEPTH", &cfg.Agent.MaxSubAgentDepth)
 
 	// Sandbox

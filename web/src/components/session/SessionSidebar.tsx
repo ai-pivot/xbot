@@ -1,6 +1,16 @@
 /**
  * SessionSidebar — the left session panel (Spec 3 §3.1).
  *
+ * ⚠️ 布局 v4（一切皆面板）桌面端已废弃：AppShell 左栏改用 PanelDock
+ * （core.sessions 面板渲染 SessionList+SessionSearch 主体）。本容器仅剩
+ * MobileAppShell（手机端抽屉）消费——手机端渠道筛选/新会话/多选批量删除
+ * 等容器级功能仍在使用，勿删；子组件 SessionItem/SessionSearch/
+ * SessionGroup/SessionList 已由 core.sessions 直接复用。
+ *
+ * 布局 v2 的「会话|面板」segmented 与面板网格视图已删除：面板在 v4 是
+ * PanelDock/浮动实体（不再是 dockview tab），该视图在手机抽屉里是无回调
+ * 的死 UI（MobileAppShell 从未传 onOpenPanel/pluginViews 等 props）。
+
  * Replaces Spec 2's empty left-sidebar body for the "sessions" view.
  * Wires useSessionStore to the search box, category switcher, the list, and
  * the new-session dialog. Pure presentational composition on top of the store.
@@ -328,10 +338,26 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
         </div>
       </header>
 
+      {/* 布局 v2：全宽「+ 新会话」主按钮（设计稿 1:1）——原 header 的 ghost
+          新会话图标保留为次入口。 */}
+      <div className="shrink-0 px-2.5 pt-2.5">
+        <button
+          type="button"
+          onClick={() => setNewOpen(true)}
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-[12px] font-semibold text-white transition-opacity hover:opacity-90"
+          style={{ background: 'var(--accent)' }}
+        >
+          <Plus className="size-3.5" />
+          {t('session.newSession')}
+        </button>
+      </div>
+
       {/* Category switcher */}
       <div
         className="flex shrink-0 items-center gap-0.5 px-2 py-1"
-        style={{ borderBottom: '1px solid var(--border)' }}
+        style={{
+          borderBottom: '1px solid var(--border)',
+        }}
       >
         {CATEGORIES.map((c) => {
           const active = store.category === c
@@ -393,6 +419,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
         />
         )}
       </div>
+
 
       {/* Batch operation bar — shown when multi-select is active and items are selected */}
       {multiSelectMode && selectedIds.size > 0 && (

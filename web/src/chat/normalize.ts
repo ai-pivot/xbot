@@ -27,7 +27,6 @@ import {
   turnID,
   type DomainEvent,
   type LiveSnapshot,
-  type UserRow,
 } from './types'
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -49,7 +48,10 @@ function optTodos(v: unknown): TodoItem[] | undefined {
     return {
       id: typeof r?.id === 'number' ? r.id : 0,
       text: typeof r?.text === 'string' ? r.text : '',
-      done: Boolean(r?.done),
+      // 新格式 status 必填；老数据兼容 done: true → "done"
+      status: typeof r?.status === 'string' && r.status
+        ? r.status
+        : r?.done === true ? 'done' : 'pending',
     }
   })
 }
@@ -312,9 +314,16 @@ function normalizeSession(env: Record<string, unknown>): readonly DomainEvent[] 
 
 // ─── user_echo / inject_user → user_echo ──
 
+// F#9：同毫秒两条 echo（后端连续注入）→ Date.now() 相同 → id 碰撞 →
+// React key 重复 + TanStack Virtual 高度测量串行。echoSeq 单调后缀保证唯一
+//（与 useChatMessages.ts 乐观行 id 的既有模式一致）。
+let echoSeq = 0
+
 function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[] | null {
-  const content = typeof env.content === 'string' ? env.content : ''
-  if (content === '') return null
+  // F#10：nonEmptyStr smart constructor 直接产出 NonEmptyS（原 gate +
+  // `as never` 绕过 branded 类型 —— no-as 规则）。'' → null（非法，丢弃）。
+  const content = nonEmptyStr(typeof env.content === 'string' ? env.content : '')
+  if (content === null) return null
   const turn = optTurnID(env.turn_id)
   // ⚠️ requestID 字段兼容（双 user 行 + 双思考中根因）：后端 web_inbound.go
   // 把 requestID 序列化到 WSMessage.ID（json:"id"），不带 request_id 字段。
@@ -329,8 +338,8 @@ function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[]
   return [{
     type: 'user_echo',
     row: {
-      id: `echo-${turn ?? 'x'}-${Date.now()}`,
-      content: content as never,
+      id: `echo-${turn ?? 'x'}-${Date.now()}-${echoSeq++}`,
+      content,
       timestamp: new Date().toISOString(),
       isNotification: env.is_notification === true,
       queued: false,
@@ -344,28 +353,5 @@ function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[]
 }
 
 // ─── 本地事件构造器（非 SSE —— UI 侧直接构造已规范化的 DomainEvent） ──
-
-let localSeq = 0
-
-/** 乐观 user 行创建（sendMessage 瞬间）。 */
-export function userSentEvent(row: Omit<UserRow, 'id'>): DomainEvent {
-  return { type: 'user_sent', row: { ...row, id: `local-${Date.now()}-${++localSeq}` } }
-}
-
-/** history reload / hydration / rewind：全量替换状态（后端权威）。 */
-export function historyReplacedEvent(ev: {
-  legacy: readonly import('./types').LegacyRow[]
-  turns: readonly import('./types').Turn[]
-  active: { turnID: number; snapshot: import('./types').LiveSnapshot } | null
-  lastSeq: number | null
-  todos?: readonly TodoItem[]
-}): DomainEvent {
-  return {
-    type: 'history_replaced',
-    legacy: ev.legacy,
-    turns: ev.turns,
-    active: ev.active ? { turnID: turnID(ev.active.turnID), snapshot: ev.active.snapshot } : null,
-    lastSeq: ev.lastSeq !== null ? eventSeq(ev.lastSeq) : null,
-    todos: ev.todos ?? [],
-  }
-}
+// F#8：userSentEvent/historyReplacedEvent 已删除 —— grep 全项目零引用
+//（useAgentChatState 直接内联构造 DomainEvent，不经过这两个包装）。

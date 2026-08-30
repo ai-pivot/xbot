@@ -11,8 +11,10 @@ import type { EventsAPI } from '@/plugin-api'
 import type { RPCAPI } from '@/plugin-api'
 import type { StateAPI } from '@/plugin-api'
 import type { UIAPI } from '@/plugin-api'
+import type { PanelsAPI } from '@/plugin-api'
 import type { PluginsAPI } from '@/plugin-api'
 import type { ConfigAPI } from '@/plugin-api'
+import type { FilesAPI } from '@/plugin-api/files'
 import type { ContributionAPI, Disposable, PluginMeta } from '@/plugin-api'
 import type { Contribution } from '@/plugin-api'
 
@@ -23,8 +25,10 @@ export interface ContextServices {
   rpc: RPCAPI
   state: StateAPI
   ui: UIAPI
+  panels: PanelsAPI
   plugins: PluginsAPI
   config: ConfigAPI
+  files: FilesAPI
   registerContribution: (c: Contribution) => Disposable
 }
 
@@ -53,8 +57,12 @@ export function buildContext(
   if (has('commands')) ctx.commands = svc.commands
   if (has('rpc')) ctx.rpc = svc.rpc
   if (has('state')) ctx.state = svc.state
-  if (has('ui')) ctx.ui = svc.ui
+  if (has('ui')) {
+    ctx.ui = svc.ui
+    ctx.panels = svc.panels
+  }
   if (has('plugins')) ctx.plugins = svc.plugins
   if (has('config')) ctx.config = svc.config
+  if (has('files')) ctx.files = svc.files
   return ctx as PluginContext<readonly Permission[]>
 }

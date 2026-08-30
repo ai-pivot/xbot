@@ -16,6 +16,7 @@ import type { ComponentType } from 'react'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPanel'
+import { SessionStatsPanel } from '@/plugins/session-stats/SessionStatsPanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
 
@@ -90,6 +91,12 @@ function BuiltinView({ view }: { view: ViewContribution }) {
       return (
         <PluginViewErrorBoundary>
           <SkillManagerPanel />
+        </PluginViewErrorBoundary>
+      )
+    case 'xbot.session-stats.panel':
+      return (
+        <PluginViewErrorBoundary>
+          <SessionStatsPanel />
         </PluginViewErrorBoundary>
       )
     default:

@@ -130,14 +130,16 @@ func (uc *UserContext) GetSettingBool(key string) bool {
 
 // llmFactoryRef bridges UserContext to LLMFactory for model-specific resolution.
 type llmFactoryRef struct {
-	getLLMForModel            func(senderID, model string) (llm.LLM, string, int, string, int, bool)
+	getLLMForModel            func(senderID, model string) (llm.LLM, string, string, int, string, int, bool)
 	getLLM                    func(senderID string) (llm.LLM, string, int, string, int)
-	resolveSubIDForModel      func(senderID, model string) string
 	llmSemAcquireForUser      func(senderID, channel string) func(context.Context) func()
 	subAgentSemAcquireForUser func(senderID, channel string) func(context.Context) func()
 }
 
 // ResolveLLMForModel resolves an LLM client for a specific model (SubAgent path).
+// Model-subscription integration: the (subID, model) pair is returned together —
+// GetLLMForModel resolves the owning subscription exactly once; there is no
+// separate "resolve subID for a resolved model" second pass.
 func (uc *UserContext) ResolveLLMForModel(model string) (client llm.LLM, resolvedModel string, maxCtx int, thinkingMode string, maxOut int, subID string) {
 	if model == "" || model == uc.Model {
 		return uc.LLMClient, uc.Model, uc.MaxContextTokens, uc.ThinkingMode, uc.MaxOutputTokens, uc.SubID
@@ -147,11 +149,10 @@ func (uc *UserContext) ResolveLLMForModel(model string) (client llm.LLM, resolve
 		return uc.LLMClient, uc.Model, uc.MaxContextTokens, uc.ThinkingMode, uc.MaxOutputTokens, uc.SubID
 	}
 	var ok bool
-	client, resolvedModel, maxCtx, thinkingMode, maxOut, ok = uc.factory.getLLMForModel(uc.SenderID, model)
+	client, subID, resolvedModel, maxCtx, thinkingMode, maxOut, ok = uc.factory.getLLMForModel(uc.SenderID, model)
 	if !ok {
 		log.WithFields(log.Fields{"model": model, "sender": uc.SenderID}).Warn("model not found for SubAgent, falling back to main model")
 	}
-	subID = uc.factory.resolveSubIDForModel(uc.SenderID, resolvedModel)
 	return client, resolvedModel, maxCtx, thinkingMode, maxOut, subID
 }
 

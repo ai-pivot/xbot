@@ -28,9 +28,6 @@ func TestInjectInbound_IsCronFalse(t *testing.T) {
 
 	msg := <-a.bus.Inbound
 
-	if msg.IsCron {
-		t.Error("injectInbound should set IsCron=false, got true — this would bypass persistence")
-	}
 	if msg.Channel != "cli" {
 		t.Errorf("Channel = %q, want %q", msg.Channel, "cli")
 	}
@@ -54,10 +51,10 @@ func TestDrainAndProcessNotifications_Synchronous(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	_ = mgr.Start("cli:test-chat", "user-1", "echo hello", func(ctx context.Context, outputBuf func(string)) (int, error) {
 		outputBuf("hello output")
@@ -102,10 +99,10 @@ func TestDrainAndProcessNotifications_CrossSessionIsolation(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	// Create two tasks for different sessions
 	_ = mgr.Start("cli:chat-a", "user-1", "echo a", func(ctx context.Context, outputBuf func(string)) (int, error) {
@@ -171,10 +168,10 @@ func TestBgNotifyLoop_AlwaysBuffers_NoIdlePath(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:test-chat"
 
@@ -260,10 +257,10 @@ func TestBgNotifyLoop_SignalsMultipleSessions(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	// Register two sessions
 	ssA := &bgSessionState{notifyCh: make(chan struct{}, 1)}
@@ -323,10 +320,10 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:test-chat"
 
@@ -396,10 +393,10 @@ func TestDrainAndProcessNotifications_AfterResponseSent(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:test-chat"
 
@@ -483,10 +480,10 @@ func TestBgNotifyLoop_NoDirectProcessing_WithActiveSession(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:active-session"
 
@@ -559,10 +556,10 @@ func TestDrainAndProcessNotifications_CronFired(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	// Buffer a CronFired notification
 	cronNotif := &tools.CronFired{
@@ -605,10 +602,10 @@ func TestBgNotifyLoop_CronFired_BuffersAndSignals(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:test-chat"
 
@@ -672,10 +669,10 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:test-chat"
 
@@ -744,10 +741,10 @@ func TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:restart-test-chat"
 
@@ -804,10 +801,10 @@ func TestBgNotifyLoop_CronFired_NoSession_MultipleNotifications(t *testing.T) {
 
 	mgr := tools.NewBackgroundTaskManager()
 	a := &Agent{
-		bus:       bus.NewMessageBus(),
-		agentCtx:  ctx,
-		bgTaskMgr: mgr,
+		bus:      bus.NewMessageBus(),
+		agentCtx: ctx,
 	}
+	a.bgTaskMgr.Store(mgr)
 
 	chatKey := "cli:multi-restart-chat"
 

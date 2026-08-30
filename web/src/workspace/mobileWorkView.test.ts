@@ -61,4 +61,27 @@ describe('mobileWorkView 单例', () => {
     const { result } = renderHook(() => useMobileWorkView())
     expect(result.current).toEqual({ kind: 'file', title: 'x', filePath: '/x' })
   })
+
+  it('后台任务详情（TasksPanel 点击后台任务）走 background kind——手机端无 Dockview，必须经全屏工作视图', () => {
+    // 守护手机端 task 详情路由：mobileTabManager wrapper 把 openTab({type:'background'})
+    // 推入 kind='background' 的 workView。透传原始 openTab 会因 api=null 进 pending
+    // 队列永不执行（点击无反应，进不了详情页）。
+    const { result } = renderHook(() => useMobileWorkView())
+    act(() => {
+      pushMobileWorkView({
+        kind: 'background',
+        title: 'go test ./...',
+        taskID: '3f8f492a',
+        command: 'go test ./...',
+        taskChannel: 'web',
+        taskChatID: 'chat_abc',
+      })
+    })
+    expect(result.current).toMatchObject({
+      kind: 'background',
+      taskID: '3f8f492a',
+      taskChannel: 'web',
+      taskChatID: 'chat_abc',
+    })
+  })
 })

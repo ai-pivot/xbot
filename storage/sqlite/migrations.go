@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	log "xbot/logger"
 )
@@ -361,6 +363,268 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v59: add per-iteration LLM usage (input/prompt-cache-hit tokens + model)
+	// to iteration_history. Enables per-session / per-model / per-day usage
+	// aggregation (cache hit rate, input vs output split) straight from the
+	// iteration table — no separate session-level ledger needed.
+	if from < 59 {
+		if err := migrateV58ToV59(conn); err != nil {
+			return fmt.Errorf("migrate to v59: %w", err)
+		}
+	}
+
+	// v60: partial index for session_messages control records
+	// (record_type != 'message': ask_question/ask_answer/mask/context_edit...).
+	// The partial WHERE clause keeps the message hot-path INSERT zero-cost
+	// (plain messages never enter the index) while control-record lookups
+	// (ask_answer anti-join by tenant_id+record_type+target_history_id) hit
+	// the index instead of a full tenant scan.
+	if from < 60 {
+		if err := migrateV59ToV60(conn); err != nil {
+			return fmt.Errorf("migrate to v60: %w", err)
+		}
+	}
+
+	// v61: two lookup-path indexes.
+	// - idx_cron_jobs_user: ListJobsByUserID (web cron panel) filters by
+	//   user_id; AddJob now persists the caller's canonical user id (M1).
+	// - idx_sm_tenant_role_id: the ListUserChats preview subquery scans
+	//   (tenant_id, role, id DESC) per tenant; the partial WHERE keeps tool rows
+	//   out of the index.
+	if from < 61 {
+		if err := migrateV60ToV61(conn); err != nil {
+			return fmt.Errorf("migrate to v61: %w", err)
+		}
+	}
+
+	// v62: remove the system subscription (v44) and the is_system column —
+	// model-subscription integration. The global fallback LLM returns to the
+	// in-memory defaultLLM built from cfg.LLM; every persisted model reference
+	// must carry its owning subscription id.
+	if from < 62 {
+		if err := migrateV61ToV62(db); err != nil {
+			return fmt.Errorf("migrate to v62: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV61ToV62 removes the system subscription (v44) and its is_system
+// column, and adds subscription_id to iteration_history — the
+// model-subscription integration migration. The global fallback LLM returns to
+// the in-memory defaultLLM built from cfg.LLM; every persisted model reference
+// must carry its owning subscription id.
+//
+// Steps (order matters):
+//  1. Back up the DB file once (VACUUM INTO, file DBs only). Failure aborts
+//     the migration — DROP COLUMN is irreversible, user data safety first.
+//  2. Reference cleanup: user_default_model / tenants / subscription_models /
+//     user_identities rows pointing at the system subscription.
+//  3. Delete the system row itself.
+//  4. Tier cleanup: tier_vanguard/tier_balance/tier_swift values referencing
+//     the deleted system subscription (system|model) or legacy bare model
+//     names are re-resolved to a user-owned (subID|model) pair; unresolvable
+//     values are removed so the tier fallback chain takes over.
+//  5. Drop the is_system column (idempotent via columnExists).
+//  6. Add iteration_history.subscription_id (idempotent via columnExists).
+//
+// Idempotent: re-running is a no-op (DELETEs match nothing, columnExists
+// guards both ALTERs, already-rewritten tier values are skipped).
+func migrateV61ToV62(db *DB) error {
+	conn := db.Conn()
+
+	// 1. One-time backup (file DBs only). VACUUM INTO requires the target not
+	// to exist; a leftover backup from an interrupted run is kept as-is.
+	if db.path != "" && db.path != ":memory:" {
+		backup := db.path + ".pre-v62.bak"
+		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {
+			escaped := strings.ReplaceAll(backup, "'", "''")
+			if _, err := conn.Exec("VACUUM INTO '" + escaped + "'"); err != nil {
+				return fmt.Errorf("migrate v61->v62 backup to %s: %w", backup, err)
+			}
+			log.WithField("backup", backup).Info("v62: database backed up before system-subscription removal")
+		}
+	}
+
+	// 2. Reference cleanup (before row deletion so tier re-resolution in step 4
+	// can never pick the system subscription as the new owner).
+	if _, err := conn.Exec(`DELETE FROM user_default_model WHERE subscription_id = 'system'`); err != nil {
+		return fmt.Errorf("migrate v61->v62 clean user_default_model: %w", err)
+	}
+	if _, err := conn.Exec(`UPDATE tenants SET subscription_id = '' WHERE subscription_id = 'system'`); err != nil {
+		return fmt.Errorf("migrate v61->v62 clean tenants: %w", err)
+	}
+	if _, err := conn.Exec(`DELETE FROM subscription_models WHERE subscription_id = 'system'`); err != nil {
+		return fmt.Errorf("migrate v61->v62 clean subscription_models: %w", err)
+	}
+	if _, err := conn.Exec(`DELETE FROM user_identities WHERE channel = 'system' AND channel_user_id = '__system__'`); err != nil {
+		return fmt.Errorf("migrate v61->v62 clean user_identities: %w", err)
+	}
+
+	// 3. Delete the system row. id='system' alone is sufficient (the row id is
+	// fixed by UpsertSystemSubscription) and stays valid after the is_system
+	// column is dropped (idempotent re-runs would fail on the missing column).
+	if _, err := conn.Exec(`DELETE FROM user_llm_subscriptions WHERE id = 'system'`); err != nil {
+		return fmt.Errorf("migrate v61->v62 delete system subscription: %w", err)
+	}
+
+	// 4. Tier cleanup.
+	if err := migrateTierValuesV62(conn); err != nil {
+		return fmt.Errorf("migrate v61->v62 tier cleanup: %w", err)
+	}
+
+	// 5. Drop the is_system column.
+	sysCol, err := columnExists(conn, "user_llm_subscriptions", "is_system")
+	if err != nil {
+		return fmt.Errorf("migrate v61->v62 check is_system: %w", err)
+	}
+	if sysCol {
+		if _, err := conn.Exec(`ALTER TABLE user_llm_subscriptions DROP COLUMN is_system`); err != nil {
+			return fmt.Errorf("migrate v61->v62 drop is_system: %w", err)
+		}
+	}
+
+	// 6. iteration_history.subscription_id (model-subscription integration).
+	subCol, err := columnExists(conn, "iteration_history", "subscription_id")
+	if err != nil {
+		return fmt.Errorf("migrate v61->v62 check subscription_id: %w", err)
+	}
+	if !subCol {
+		if _, err := conn.Exec(`ALTER TABLE iteration_history ADD COLUMN subscription_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate v61->v62 add subscription_id: %w", err)
+		}
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 62"); err != nil {
+		return fmt.Errorf("migrate v61->v62 update version: %w", err)
+	}
+	log.Info("Database migrated to v62 (system subscription removed; iteration_history.subscription_id added)")
+	return nil
+}
+
+// migrateTierValuesV62 rewrites tier_* settings values that reference the
+// deleted system subscription (system|model) or are legacy bare model names
+// into "subID|model" pairs owned by user subscriptions. Values whose model
+// cannot be resolved to any subscription are deleted (the tier fallback
+// chain takes over). Runs AFTER the system row deletion so the system
+// subscription is never picked as the new owner.
+func migrateTierValuesV62(conn *sql.DB) error {
+	rows, err := conn.Query(`SELECT rowid, value FROM user_settings WHERE key IN ('tier_vanguard','tier_balance','tier_swift')`)
+	if err != nil {
+		return fmt.Errorf("list tier settings: %w", err)
+	}
+	type tierRow struct {
+		rowid int64
+		value string
+	}
+	var tiers []tierRow
+	for rows.Next() {
+		var r tierRow
+		if err := rows.Scan(&r.rowid, &r.value); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan tier setting: %w", err)
+		}
+		tiers = append(tiers, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, t := range tiers {
+		val := strings.TrimSpace(t.value)
+		if val == "" {
+			continue
+		}
+		if idx := strings.Index(val, "|"); idx >= 0 {
+			if val[:idx] != "system" {
+				continue // already a user-owned pair — leave as-is
+			}
+			// system|model → bare model, re-resolve below.
+			val = val[idx+1:]
+			if val == "" {
+				if _, err := conn.Exec(`DELETE FROM user_settings WHERE rowid = ?`, t.rowid); err != nil {
+					return fmt.Errorf("delete empty system tier value: %w", err)
+				}
+				continue
+			}
+		}
+		// Bare model name → resolve an owning subscription.
+		owner := resolveTierOwnerV62(conn, val)
+		if owner == "" {
+			if _, err := conn.Exec(`DELETE FROM user_settings WHERE rowid = ?`, t.rowid); err != nil {
+				return fmt.Errorf("delete unresolvable tier value: %w", err)
+			}
+			log.WithField("model", val).Info("v62: tier value had no owning subscription; removed")
+			continue
+		}
+		if _, err := conn.Exec(`UPDATE user_settings SET value = ?, updated_at = ? WHERE rowid = ?`,
+			owner+"|"+val, time.Now().Unix(), t.rowid); err != nil {
+			return fmt.Errorf("rewrite tier value: %w", err)
+		}
+		log.WithFields(log.Fields{"owner": owner, "model": val}).Info("v62: tier value re-paired with owning subscription")
+	}
+	return nil
+}
+
+// resolveTierOwnerV62 finds a subscription that owns the model (SQL-level
+// mirror of ResolveSubscriptionForModel's passes): enabled subscription_models
+// rows first, then subscription default models, then cached model lists. The
+// system row is already deleted when this runs.
+func resolveTierOwnerV62(conn *sql.DB, model string) string {
+	var owner string
+	// Pass 1: enabled subscription_models rows.
+	if err := conn.QueryRow(`SELECT subscription_id FROM subscription_models WHERE model = ? AND enabled = 1 LIMIT 1`, model).Scan(&owner); err == nil {
+		return owner
+	}
+	// Pass 2: subscription default model.
+	if err := conn.QueryRow(`SELECT id FROM user_llm_subscriptions WHERE model = ? AND enabled = 1 LIMIT 1`, model).Scan(&owner); err == nil {
+		return owner
+	}
+	// Pass 3: cached models (JSON array — the quoted pattern is an exact match).
+	pattern := `%"` + model + `"%`
+	if err := conn.QueryRow(`SELECT id FROM user_llm_subscriptions WHERE enabled = 1 AND cached_models LIKE ? LIMIT 1`, pattern).Scan(&owner); err == nil {
+		return owner
+	}
+	return ""
+}
+
+// migrateV60ToV61 adds the user_id index on cron_jobs (ListJobsByUserID lookup
+// path, backing the web cron panel) and the partial role index on
+// session_messages (ListUserChats preview subquery).
+// Idempotent: CREATE INDEX IF NOT EXISTS (safe to re-run on a schema.go-built
+// DB that already has both indexes from the v61 DDL).
+func migrateV60ToV61(conn *sql.DB) error {
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_cron_jobs_user ON cron_jobs(user_id)`); err != nil {
+		return fmt.Errorf("migrate v60->v61 create idx_cron_jobs_user: %w", err)
+	}
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant')`); err != nil {
+		return fmt.Errorf("migrate v60->v61 create idx_sm_tenant_role_id: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 61"); err != nil {
+		return fmt.Errorf("migrate v60->v61 update version: %w", err)
+	}
+	log.Info("Database migrated to v61 (idx_cron_jobs_user + idx_sm_tenant_role_id)")
+	return nil
+}
+
+// migrateV59ToV60 creates the partial index for session_messages control
+// records. Only non-'message' rows (ask_question/ask_answer answers, mask
+// markers, context snapshots) enter the index, so plain-message INSERTs pay
+// zero index-maintenance cost. Control-record lookups by
+// (tenant_id, record_type, target_history_id) — the ask_answer anti-join in
+// AppendAskAnswerWithUserMessage and Replay — use this index.
+// Idempotent: CREATE INDEX IF NOT EXISTS (safe to re-run on a schema.go-built
+// DB that already has the index from the v60 DDL).
+func migrateV59ToV60(conn *sql.DB) error {
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, record_type, target_history_id) WHERE record_type != 'message'`); err != nil {
+		return fmt.Errorf("migrate v59->v60 create partial index: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 60"); err != nil {
+		return fmt.Errorf("migrate v59->v60 update version: %w", err)
+	}
+	log.Info("Database migrated to v60 (partial index for control records)")
 	return nil
 }
 
@@ -380,6 +644,34 @@ func migrateV57ToV58(conn *sql.DB) error {
 		return fmt.Errorf("migrate v57->v58 update version: %w", err)
 	}
 	log.Info("Database migrated to v58 (added tpot_ms to iteration_history)")
+	return nil
+}
+
+// migrateV58ToV59 adds per-iteration LLM usage columns to iteration_history:
+// input_tokens (prompt tokens), cached_tokens (prompt-cache hit tokens), and
+// model (LLM model name used for that iteration). This makes iteration_history
+// the single source for usage/perf aggregation — per-session, per-model,
+// per-day — without a separate session-level ledger.
+// Idempotent: columns may already exist when a test fixture set
+// schema_version to 58 but the table was created by the current createSchema
+// DDL (which already includes them).
+func migrateV58ToV59(conn *sql.DB) error {
+	for _, c := range []struct{ name, ddl string }{
+		{"input_tokens", "ALTER TABLE iteration_history ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0"},
+		{"cached_tokens", "ALTER TABLE iteration_history ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0"},
+		{"model", "ALTER TABLE iteration_history ADD COLUMN model TEXT NOT NULL DEFAULT ''"},
+	} {
+		exists, err := columnExists(conn, "iteration_history", c.name)
+		if err == nil && !exists {
+			if _, err := conn.Exec(c.ddl); err != nil {
+				return fmt.Errorf("migrate v58->v59 add %s: %w", c.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 59"); err != nil {
+		return fmt.Errorf("migrate v58->v59 update version: %w", err)
+	}
+	log.Info("Database migrated to v59 (added input_tokens/cached_tokens/model to iteration_history)")
 	return nil
 }
 

@@ -30,12 +30,10 @@ type RPCCtxData struct {
 	Role         string // user role ("admin" | "user")
 }
 
-// WithRPCCtx injects per-request identity into context.
-func WithRPCCtx(ctx context.Context, authSenderID, bizID string) context.Context {
-	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID, Role: "admin"})
-}
-
 // WithRPCCtxResolved injects per-request identity with canonical user_id + role.
+// Callers that cannot resolve a canonical user_id yet must NOT fall back to a
+// privileged context — pass the real role and userID=0 (the RPC layer rejects
+// identity-dependent operations for unresolved users; see m2).
 func WithRPCCtxResolved(ctx context.Context, authSenderID, bizID string, userID int64, role string) context.Context {
 	return context.WithValue(ctx, rpcCtxKey, &RPCCtxData{AuthSenderID: authSenderID, BizID: bizID, UserID: userID, Role: role})
 }

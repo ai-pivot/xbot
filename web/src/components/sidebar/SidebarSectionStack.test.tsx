@@ -55,7 +55,7 @@ describe('SidebarSectionStack', () => {
       />,
     )
     fireEvent.click(screen.getByTitle('收起Git'))
-    expect(screen.queryByText('git-panel')).toBeNull()
+    expect(screen.getByText('git-panel').parentElement?.style.display).toBe('none')
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}')).toEqual({ git: true })
 
     fireEvent.click(screen.getByTitle('展开Git'))
@@ -73,7 +73,7 @@ describe('SidebarSectionStack', () => {
         ]}
       />,
     )
-    expect(screen.queryByText('git-panel')).toBeNull()
+    expect(screen.getByText('git-panel').parentElement?.style.display).toBe('none')
   })
 
   it('resizes the section above the handle via pointer drag and persists the height', () => {

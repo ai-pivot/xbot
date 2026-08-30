@@ -139,7 +139,7 @@ export function SettingsAccountLinking() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5 p-4">
       {/* Generate link code */}
       <SettingsSection title="生成关联码" description="生成一个一次性关联码，在其他渠道（CLI / 飞书）输入此码完成关联。有效期 5 分钟。">
         <div className="flex flex-col gap-2">
@@ -159,61 +159,61 @@ export function SettingsAccountLinking() {
           </Button>
           {generatedCode && genStatus === 'success' && (
             <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-secondary px-3 py-2">
-                <code className="flex-1 font-mono text-base font-semibold tracking-wider text-foreground">
+              <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2">
+                <code className="flex-1 font-mono text-base font-semibold tracking-wider text-text-primary">
                   {generatedCode}
                 </code>
                 <Button
                   onClick={handleCopy}
                   variant="ghost"
                   size="sm"
-                  className="h-7 w-7 p-0"
+                  className="h-7 w-7 p-0 hover:bg-bg-hover"
                 >
                   {copied ? (
-                    <Check className="size-4 text-green-500" />
+                    <Check className="size-4 text-[#22c55e]" />
                   ) : (
                     <Copy className="size-4" />
                   )}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-text-muted">
                 请在需要关联的渠道执行以下命令（5 分钟内有效）：
               </p>
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-2.5">
                 {/* CLI command */}
-                <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-2.5 py-1.5">
-                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">CLI</span>
-                  <code className="flex-1 font-mono text-xs text-foreground">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-2.5 py-2">
+                  <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-[10px] font-medium text-[#6c8cff]">CLI</span>
+                  <code className="flex-1 font-mono text-xs text-text-primary">
                     /link-account {generatedCode}
                   </code>
                   <Button
                     onClick={() => navigator.clipboard.writeText(`/link-account ${generatedCode}`)}
                     variant="ghost"
                     size="sm"
-                    className="h-6 w-6 p-0"
+                    className="h-6 w-6 p-0 hover:bg-bg-hover"
                   >
                     <Copy className="size-3" />
                   </Button>
                 </div>
                 {/* Feishu command */}
-                <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-2.5 py-1.5">
-                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">飞书</span>
-                  <code className="flex-1 font-mono text-xs text-foreground">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-2.5 py-2">
+                  <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-[10px] font-medium text-[#6c8cff]">飞书</span>
+                  <code className="flex-1 font-mono text-xs text-text-primary">
                     /link {generatedCode}
                   </code>
                   <Button
                     onClick={() => navigator.clipboard.writeText(`/link ${generatedCode}`)}
                     variant="ghost"
                     size="sm"
-                    className="h-6 w-6 p-0"
+                    className="h-6 w-6 p-0 hover:bg-bg-hover"
                   >
                     <Copy className="size-3" />
                   </Button>
                 </div>
                 {/* Web consume hint */}
-                <div className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-2.5 py-1.5">
-                  <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">Web</span>
-                  <code className="flex-1 font-mono text-xs text-muted-foreground">
+                <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-2.5 py-2">
+                  <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-[10px] font-medium text-[#6c8cff]">Web</span>
+                  <code className="flex-1 font-mono text-xs text-text-muted">
                     在上方「关联其他渠道」输入此码
                   </code>
                 </div>
@@ -221,7 +221,7 @@ export function SettingsAccountLinking() {
             </div>
           )}
           {genStatus === 'error' && (
-            <p className="flex items-center gap-1.5 text-xs text-red-500">
+            <p className="flex items-center gap-1.5 text-xs text-[var(--status-error,#ef4444)]">
               <AlertCircle className="size-3.5" />
               {generatedCode}
             </p>
@@ -231,13 +231,13 @@ export function SettingsAccountLinking() {
 
       {/* Consume link code */}
       <SettingsSection title="关联其他渠道" description="输入在其他渠道生成的关联码，将当前账号与该渠道关联。">
-        <div className="flex flex-col gap-2">
-          <div className="flex gap-2">
+        <div className="flex flex-col gap-2.5">
+          <div className="flex gap-2.5">
             <Input
               value={inputCode}
               onChange={(e) => setInputCode(e.target.value)}
               placeholder="输入关联码..."
-              className="font-mono"
+              className="rounded-lg border-border bg-bg-secondary font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && inputCode.trim()) {
                   handleLink()
@@ -248,7 +248,7 @@ export function SettingsAccountLinking() {
               onClick={handleLink}
               disabled={linkStatus === 'loading' || !inputCode.trim()}
               size="sm"
-              className="gap-2"
+              className="gap-2 bg-[#6c8cff]/14 text-[#6c8cff] hover:bg-[#6c8cff]/25"
             >
               {linkStatus === 'loading' ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -262,7 +262,7 @@ export function SettingsAccountLinking() {
             <p
               className={cn(
                 'flex items-center gap-1.5 text-xs',
-                linkStatus === 'error' ? 'text-red-500' : 'text-green-500',
+                linkStatus === 'error' ? 'text-[var(--status-error,#ef4444)]' : 'text-[#22c55e]',
               )}
             >
               <AlertCircle className="size-3.5" />
@@ -274,34 +274,34 @@ export function SettingsAccountLinking() {
 
       {/* Linked identities */}
       <SettingsSection title="已关联的身份" description="当前账号关联的所有渠道身份。解除关联不会丢失已迁移的资产。">
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2.5">
           {identitiesLoading ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 text-xs text-text-muted">
               <Loader2 className="size-3.5 animate-spin" />
               加载中...
             </div>
           ) : identities.length === 0 ? (
-            <p className="text-xs text-muted-foreground">暂无关联身份</p>
+            <p className="text-xs text-text-muted">暂无关联身份</p>
           ) : (
             identities.map((id) => (
               <div
                 key={id.id}
-                className="flex items-center gap-2 rounded-lg border border-border px-3 py-2"
+                className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary"
               >
-                <span className="rounded bg-accent/15 px-1.5 py-0.5 text-xs font-medium text-foreground">
+                <span className="rounded bg-[#6c8cff]/14 px-1.5 py-0.5 text-xs font-medium text-[#6c8cff]">
                   {channelLabel(id.channel)}
                 </span>
-                <code className="flex-1 truncate font-mono text-xs text-muted-foreground">
+                <code className="flex-1 truncate font-mono text-xs text-text-muted">
                   {id.channel_user_id}
                 </code>
-                <span className="text-xs text-muted-foreground">
+                <span className="text-xs text-text-muted">
                   {id.linked_at ? new Date(id.linked_at).toLocaleDateString() : ''}
                 </span>
                 <Button
                   onClick={() => handleUnlink(id.id)}
                   variant="ghost"
                   size="sm"
-                  className="h-7 w-7 p-0 text-muted-foreground hover:text-red-500"
+                  className="h-7 w-7 p-0 text-text-muted hover:bg-bg-hover hover:text-[var(--status-error,#ef4444)]"
                 >
                   <Trash2 className="size-3.5" />
                 </Button>

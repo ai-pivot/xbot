@@ -33,6 +33,10 @@ const SETTING_MAP: Record<string, string> = {
   'xbot:layout:overrides': 'web:ui:layout-overrides',
   // Layout ordering (slot → ordered item ids; widths/heights/collapse stay frontend-only)
   'xbot:layout:order': 'web:ui:layout-order',
+  // Panel layout (v4「一切皆面板」：per-panel mode/x/y/w/h/collapsed + dockOrder)
+  'xbot:panel-layout': 'web:ui:panel-layout',
+  // Panel layout v2（v5 停靠引擎：Record<panelId, {loc, collapsed}>，zone/segment/order/xywh）
+  'xbot:panel-layout-v2': 'web:ui:panel-layout-v2',
   // Session data (user-authored)
   'xbot-starred': 'web:session:starred',
   'xbot:session-category': 'web:session:category',

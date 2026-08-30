@@ -2416,11 +2416,6 @@ func (l *backendModelLister) ListModels() []string {
 	return l.client.ListModels()
 }
 
-func (l *backendModelLister) EnsureModelsLoaded() {
-	// Remote mode: model list is fetched from the server on demand.
-	// No-op — the server handles caching and freshness.
-}
-
 func (l *backendModelLister) ListAllModels() []string {
 	return l.client.ListAllModels()
 }
@@ -2533,6 +2528,6 @@ func (s *backendLLMSubscriber) SelectModel(senderID, channelName, subID, model, 
 	return s.client.SelectModel(senderID, channelName, subID, model, chatID)
 }
 
-func (s *backendLLMSubscriber) GetDefaultModel() string {
-	return s.client.GetDefaultModel()
+func (s *backendLLMSubscriber) GetDefaultModelPair() (string, string) {
+	return s.client.GetDefaultModelPair()
 }

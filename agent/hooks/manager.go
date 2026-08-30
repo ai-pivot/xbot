@@ -10,6 +10,12 @@ import (
 	log "xbot/logger"
 )
 
+// maxAsyncHookTimeout bounds every async hook handler's context. Async hooks
+// detach from the caller's cancellation (WithoutCancel), which also strips
+// every deadline — without this cap a hook def with Timeout: 3600 (or a
+// stuck command) hangs the goroutine forever.
+const maxAsyncHookTimeout = 10 * time.Minute
+
 // ---------------------------------------------------------------------------
 // Manager — central hook lifecycle coordinator
 // ---------------------------------------------------------------------------
@@ -223,6 +229,10 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 	}
 
 	// Async handler — fire and forget with independent context.
+	// WithoutCancel detaches from the caller's cancellation, which also
+	// removes EVERY deadline — a hook def with Timeout: 3600 (or a stuck
+	// command) would hang the goroutine forever. Bound the async context
+	// with a hard cap instead.
 	if def.Async {
 		go func(d *HookDef) {
 			defer func() {
@@ -230,7 +240,8 @@ func (m *Manager) executeHandler(ctx context.Context, h hookEntry, event Event, 
 					log.Errorf("hooks: async %s handler panicked: %v", d.Type, r)
 				}
 			}()
-			asyncCtx := context.WithoutCancel(ctx)
+			asyncCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maxAsyncHookTimeout)
+			defer cancel()
 			exec := m.getExecutor(d.Type)
 			if exec == nil {
 				log.Errorf("hooks: no executor for type %q", d.Type)

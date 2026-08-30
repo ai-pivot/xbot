@@ -247,6 +247,15 @@ func (wc *WebChannel) replaySSEWindow(sel SessionSelector, lastSeq uint64) ([]pr
 func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 	events := wc.replaySSEEvents(sel, lastSeq)
 	if !containsSSEEvent(events, protocol.MsgTypeProgress, "") && wc.callbacks.GetActiveProgress != nil {
+		// Two deliberate GetActiveProgress calls (NOT a redundant double fetch):
+		// the first is the cheap nil gate; the second revalidates the snapshot
+		// AFTER the first lookup returned — the active-progress store may have
+		// gone terminal (turn ended, snapshot cleared) in between. Publishing a
+		// stale thinking snapshot after turn end resurrects a dead turn in the
+		// UI. Guarded by TestSSEActiveProgressFallbackRevalidatesSnapshot /
+		// TestSSEActiveProgressFallbackStopsAtIdleEvent /
+		// TestSSEActiveProgressFallbackHonorsIdleAtHighWater and the lock-order
+		// test (the second lookup must NOT run under seqMu).
 		if progress := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); progress != nil {
 			if current := wc.callbacks.GetActiveProgress(sel.Channel, sel.ChatID); current != nil {
 				wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
@@ -520,15 +529,109 @@ func collectSSEBatch(ch <-chan protocol.WSMessage) ([]protocol.WSMessage, bool) 
 	return batch, false
 }
 
+// sseEventShouldWrite reports whether msg should be delivered on the SSE
+// stream. AskUser events are delivered only while their prompt is pending;
+// a resolved prompt must be treated as consumed (cursor advanced without
+// emitting, reconnect must not re-announce it). Pending-existence is the
+// only signal — there is exactly one pending AskUser per (channel, chatID),
+// so no request-ID check is needed (a transient ID mismatch must never
+// swallow a LIVE event; the producer already skips re-announcing cleared
+// prompts). Shared by the single-event path (writeCurrentSSEEvent) and the
+// batched path (writeSSEBatch).
+func (wc *WebChannel) sseEventShouldWrite(client *Client, msg protocol.WSMessage) bool {
+	if msg.Type != protocol.MsgTypeAskUser {
+		return true
+	}
+	return wc.callbacks.WithPendingAskUser != nil &&
+		wc.callbacks.WithPendingAskUser(client.sessionChannel, client.chatID, func(*protocol.ProgressEvent) bool {
+			return true
+		})
+}
+
+// writeSSEBatch writes a seq-sorted batch of events with ONE write deadline
+// arm and ONE encoder+TCP flush at batch end. Each event is marshalled and
+// Fprintf'd to the writer buffer without flushing (writeSSEEventNoFlush); the
+// batch dedups by a local watermark (the same seq can appear twice in a batch
+// — ring-buffer replay and the sendCh drain can both carry it, matching
+// writeSSEEvent's per-event cursor rule). lastSentSeq advances only after the
+// flush succeeds — a failed batch leaves the cursor at the last flushed seq
+// so a reconnect replays the unsent events. Resolved AskUser prompts are
+// consumed (cursor advanced, nothing written). For a 1-event batch this is
+// equivalent to the old per-event writeSSEEvent cycle (one arm, one write,
+// one flush).
 func (wc *WebChannel) writeSSEBatch(ctx context.Context, client *Client, batch []protocol.WSMessage) error {
 	sort.SliceStable(batch, func(i, j int) bool { return batch[i].Seq < batch[j].Seq })
+	if len(batch) == 0 {
+		return nil
+	}
+	armSSEWriteDeadline(client)
+	defer clearSSEWriteDeadline(client)
+	watermark := client.lastSentSeq
 	for _, msg := range batch {
 		if err := sseContextError(ctx, client); err != nil {
 			return err
 		}
-		if err := wc.writeCurrentSSEEvent(client, msg); err != nil {
+		if !wc.sseEventShouldWrite(client, msg) {
+			// Resolved prompt — treat as consumed, omit from the response
+			// stream. The cursor advances via the local watermark ONLY (the
+			// batch-end commit below), never here: a mid-batch write must not
+			// move lastSentSeq ahead of the last flushed seq. If the batch
+			// later fails, the reconnect replay re-derives consumption (the
+			// resolved prompt is re-answered by sseEventShouldWrite) and
+			// every unflushed event is replayed.
+			watermark = msg.Seq
+			continue
+		}
+		// Dedup within the batch: writeSSEEventNoFlush skips already-sent seqs,
+		// but the cursor (client.lastSentSeq) only advances at batch end — use a
+		// local watermark so a duplicate later in the same batch is skipped too.
+		if msg.Seq != 0 && msg.Seq <= watermark {
+			continue
+		}
+		if err := writeSSEEventNoFlush(client, msg); err != nil {
 			return err
 		}
+		if msg.Seq > watermark {
+			watermark = msg.Seq
+		}
+	}
+	if err := flushSSE(client); err != nil {
+		return err
+	}
+	// Batch is seq-sorted; commit the cursor to the highest seq processed
+	// (Seq==0 control broadcasts never participate — writeSSEEventNoFlush
+	// writes them without an id line, they carry no replay cursor).
+	client.lastSentSeq = watermark
+	return nil
+}
+
+// writeSSEEventNoFlush writes one SSE event to the writer buffer WITHOUT
+// arming a write deadline, flushing, or advancing lastSentSeq. Batched
+// writers (writeSSEBatch) call this per event and flush once at batch end;
+// writeSSEEvent wraps it with the per-event arm/flush/clear cycle and cursor
+// advance for single-event paths. Events already at/below the replay cursor
+// are skipped; Seq==0 control broadcasts (web_plugin_config_changed etc.)
+// carry no id: line (they never participate in Last-Event-ID resume).
+func writeSSEEventNoFlush(client *Client, msg protocol.WSMessage) error {
+	if msg.Seq == 0 {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("marshal SSE event: %w", err)
+		}
+		if _, err := fmt.Fprintf(client.sseWriter(), "event:%s\ndata:%s\n\n", msg.Type, data); err != nil {
+			return fmt.Errorf("write SSE event: %w", err)
+		}
+		return nil
+	}
+	if msg.Seq <= client.lastSentSeq {
+		return nil
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal SSE event: %w", err)
+	}
+	if _, err := fmt.Fprintf(client.sseWriter(), "id:%d\nevent:%s\ndata:%s\n\n", msg.Seq, msg.Type, data); err != nil {
+		return fmt.Errorf("write SSE event: %w", err)
 	}
 	return nil
 }
@@ -541,13 +644,7 @@ func (wc *WebChannel) writeCurrentSSEEvent(client *Client, msg protocol.WSMessag
 	// (channel, chatID), so no request-ID check is needed (a transient ID
 	// mismatch must never swallow a LIVE event; the producer already skips
 	// re-announcing cleared prompts).
-	if msg.Type == protocol.MsgTypeAskUser {
-		if wc.callbacks.WithPendingAskUser != nil &&
-			wc.callbacks.WithPendingAskUser(client.sessionChannel, client.chatID, func(*protocol.ProgressEvent) bool {
-				return true
-			}) {
-			return writeSSEEvent(client, msg)
-		}
+	if !wc.sseEventShouldWrite(client, msg) {
 		// Resolved prompt — treat as consumed, omit from the response stream.
 		client.lastSentSeq = msg.Seq
 		return nil
@@ -557,19 +654,27 @@ func (wc *WebChannel) writeCurrentSSEEvent(client *Client, msg protocol.WSMessag
 
 func writeSSEEvent(client *Client, msg protocol.WSMessage) error {
 	if msg.Seq == 0 {
-		return fmt.Errorf("SSE event %q has no sequence", msg.Type)
+		// 控制面广播消息（BroadcastToWeb 的 web_plugin_config_changed /
+		// web_plugin_init / web_plugin_deactivate）无 eventStream 序号 ——
+		// 按"无序号控制事件"写出：无 id: 行（不参与 Last-Event-ID 续传），
+		// 不推进 lastSentSeq。SSE 规范允许无 id 事件。
+		// 旧实现直接报错 "has no sequence" → catchUpSSE 返回 err →
+		// sseWriteLoopCore 退出并关闭连接 —— 控制广播永远到不了客户端，
+		// 且活跃 SSE 连接被随机断开（插件配置热重载失效的根因）。
+		armSSEWriteDeadline(client)
+		defer clearSSEWriteDeadline(client)
+		if err := writeSSEEventNoFlush(client, msg); err != nil {
+			return err
+		}
+		return flushSSE(client)
 	}
 	if msg.Seq <= client.lastSentSeq {
 		return nil
 	}
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal SSE event: %w", err)
-	}
 	armSSEWriteDeadline(client)
 	defer clearSSEWriteDeadline(client)
-	if _, err := fmt.Fprintf(client.sseWriter(), "id:%d\nevent:%s\ndata:%s\n\n", msg.Seq, msg.Type, data); err != nil {
-		return fmt.Errorf("write SSE event: %w", err)
+	if err := writeSSEEventNoFlush(client, msg); err != nil {
+		return err
 	}
 	if err := flushSSE(client); err != nil {
 		return err

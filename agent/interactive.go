@@ -392,7 +392,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		}
 		payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 		for i, td := range s.Todos {
-			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+			payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Status: td.Status}
 		}
 		if s.TokenUsage != nil {
 			payload.TokenUsage = &protocol.TokenUsage{
@@ -431,6 +431,13 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 		a.attachIterationDelta(agentProgressKey, s.Iteration, payload)
 		broadcast(payload)
 		a.lastProgressSnapshot.Store(agentProgressKey, progressSnapshotWithoutHistory(payload))
+		// Same contract as the main agent's buildProgressEventHandler
+		// (engine_wire.go: a.clearStreamState(progressKey) after the Store):
+		// the structured snapshot supersedes the live stream — clear
+		// streamState so GetActiveProgress's mergeStreamState does not leak
+		// the pre-boundary stream content into the new iteration/turn's
+		// snapshot.
+		a.clearStreamState(agentProgressKey)
 	}
 
 	// Wire stream callbacks
@@ -499,11 +506,17 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 	agentProgressKey := "agent:" + key
 
 	// Build PhaseDone payload from the last known progress snapshot.
+	// Deep-copy via cloneProgressEvent (not `cp := *snap`) — the shallow copy
+	// shared slice backing arrays with the stored snapshot, and the broadcast
+	// below must give every channel its own independent clone (same contract
+	// as wireSubAgentProgress's broadcast: a channel mutating its payload or
+	// appending to its slices must never corrupt the snapshot or the payloads
+	// other channels received).
 	var payload *protocol.ProgressEvent
 	if snap, ok := a.lastProgressSnapshot.Load(agentProgressKey); ok {
-		cp := *snap.(*protocol.ProgressEvent)
+		cp := cloneProgressEvent(snap.(*protocol.ProgressEvent))
 		cp.Phase = "done"
-		payload = &cp
+		payload = cp
 	} else {
 		payload = &protocol.ProgressEvent{
 			ChatID: agentProgressKey,
@@ -512,13 +525,14 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 	}
 
 	// Broadcast PhaseDone to ALL registered channels that implement
-	// ProgressSender — including plugin channels.
+	// ProgressSender — including plugin channels. Each channel gets its own
+	// clone (per-channel payload independence).
 	if a.channelRange == nil {
 		return
 	}
 	a.channelRange(func(name string, ch channelpkg.Channel) bool {
 		if ps, ok := ch.(channelpkg.ProgressSender); ok {
-			ps.SendProgress(key, payload)
+			ps.SendProgress(key, cloneProgressEvent(payload))
 		}
 		return true
 	})
@@ -535,8 +549,13 @@ func (a *Agent) destroyInteractiveSession(key string) {
 	if val, ok := a.interactiveSubAgents.Load(key); ok {
 		if ia, ok := val.(*interactiveAgent); ok && ia != nil {
 			ia.mu.Lock()
-			if ia.bgTask != nil && a.bgTaskMgr != nil {
-				a.bgTaskMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
+			// TOCTOU fix (xbotgh cr): Load() once into a local — a second Load()
+			// between the nil check and the method call can return nil if another
+			// goroutine swapped the manager (SetBgTaskManager(nil)) in between.
+			if ia.bgTask != nil {
+				if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
+					bgMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
+				}
 			}
 			ia.mu.Unlock()
 		}
@@ -871,13 +890,19 @@ func (a *Agent) SpawnInteractiveSession(
 	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no
 	// user message turn boundary. Run()'s incremental persistence skips
 	// messages[0:lastPersistedCount] which includes this user message.
-	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(msg.Content))
+	// TurnID stamp: without it the user row persists with turn_id=0 — the
+	// frontend renders it below the assistant reply (the turn-0 row sorts
+	// differently). Same fix as the main agent's eager-save stamp.
+	userMsg := llm.NewUserMessage(msg.Content)
+	userMsg.TurnID = cfg.TurnID
+	historyID, err := agentTenantSession.AppendMessage(userMsg)
 	if err != nil {
 		a.destroyInteractiveSession(key)
 		return nil, fmt.Errorf("append interactive agent user message: %w", err)
 	}
 	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
 		cfg.Messages[1].ID = historyID
+		cfg.Messages[1].TurnID = cfg.TurnID
 	}
 
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
@@ -938,7 +963,7 @@ func (a *Agent) SpawnInteractiveSession(
 		// during Run(), not only after it completes.
 		// Also send progress notifications to the parent agent via BgTaskManager.
 		sessionKey := originChannel + ":" + originChatID
-		notifyMgr := a.bgTaskMgr
+		notifyMgr := a.bgTaskMgr.Load()
 		cfg.OnIterationSnapshot = func(snap IterationSnapshot) {
 			placeholder.mu.Lock()
 			placeholder.iterationHistory = append(placeholder.iterationHistory, snap)
@@ -1226,7 +1251,9 @@ func (a *Agent) SpawnInteractiveSession(
 			if out.Content != "" {
 				// Check if the last message is already this assistant reply
 				if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Content != out.Content || newMsgs[len(newMsgs)-1].Role != "assistant" {
-					newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
+					finalMsg := llm.NewAssistantMessage(out.Content)
+					finalMsg.TurnID = cfg.TurnID
+					newMsgs = append(newMsgs, finalMsg)
 				}
 			}
 			// Carry ReasoningContent to the in-memory message for subsequent turns
@@ -1237,6 +1264,12 @@ func (a *Agent) SpawnInteractiveSession(
 			if agentTenantSession != nil && out.Content != "" {
 				assistantMsg := llm.NewAssistantMessage(out.Content)
 				assistantMsg.ReasoningContent = out.ReasoningContent
+				// TurnID stamp: the final reply must persist with this Run's turn
+				// (same as the Run's intermediate rows). Without it the row lands with
+				// turn_id=0 while the user message and iterations carry turn_id=N —
+				// the frontend renders the reply ABOVE the user message that
+				// triggered it ("user message below the assistant reply").
+				assistantMsg.TurnID = cfg.TurnID
 				if len(out.IterationHistory) > 0 {
 					if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 						assistantMsg.Detail = string(jsonBytes)
@@ -1291,7 +1324,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 		msgText := fmt.Sprintf("Interactive sub-agent %q (instance=%q) started in background. Use action=\"inspect\" to check progress, action=\"send\" to send messages, action=\"interrupt\" to interrupt, or action=\"unload\" to terminate.", roleName, instance)
 		if bgTask != nil {
-			msgText += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=%q) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+			msgText += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=[%q]) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
 		}
 		return &channelpkg.OutboundMsg{
 			Content: msgText,
@@ -1387,6 +1420,9 @@ func (a *Agent) SpawnInteractiveSession(
 	if agentTenantSession != nil && out.Content != "" {
 		assistantMsg := llm.NewAssistantMessage(out.Content)
 		assistantMsg.ReasoningContent = out.ReasoningContent
+		// TurnID stamp — same fix as the background path above (turn_id=0 rows
+		// render above the user message in the session view).
+		assistantMsg.TurnID = cfg.TurnID
 		if len(out.IterationHistory) > 0 {
 			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 				assistantMsg.Detail = string(jsonBytes)
@@ -1402,6 +1438,7 @@ func (a *Agent) SpawnInteractiveSession(
 	} else if out.Content != "" {
 		assistantMsg := llm.NewAssistantMessage(out.Content)
 		assistantMsg.ReasoningContent = out.ReasoningContent
+		assistantMsg.TurnID = cfg.TurnID
 		ia.messages = append(ia.messages, assistantMsg)
 	}
 	// Publish only the fully initialized state. Readers can never observe the
@@ -1626,6 +1663,10 @@ func (a *Agent) SendToInteractiveSession(
 		ia.mu.Lock()
 		ia.messages = append([]llm.ChatMessage(nil), persisted...)
 		ia.mu.Unlock()
+		// TurnID stamp: the send user row must persist with this Run's turn
+		// (assignSubAgentTurnID above), same fix as the spawn path — turn_id=0
+		// rows render out of order in the session view.
+		newMessages[len(newMessages)-1].TurnID = cfg.TurnID
 		historyID, err := cfg.Session.AppendMessage(newMessages[len(newMessages)-1])
 		if err != nil {
 			return nil, fmt.Errorf("append interactive agent user message: %w", err)
@@ -1680,7 +1721,7 @@ func (a *Agent) SendToInteractiveSession(
 		// Re-wire OnIterationSnapshot for incremental history updates
 		// (same as SpawnInteractiveSession does for the initial Run).
 		sessionKey := originChannel + ":" + originChatID
-		notifyMgr := a.bgTaskMgr
+		notifyMgr := a.bgTaskMgr.Load()
 		cfg.OnIterationSnapshot = func(snap IterationSnapshot) {
 			ia.mu.Lock()
 			ia.iterationHistory = append(ia.iterationHistory, snap)
@@ -1715,14 +1756,50 @@ func (a *Agent) SendToInteractiveSession(
 	ia.running = true
 	ia.interrupted = false // clear any stale interrupt flag from previous Run
 
-	// --- Pre-Run state reset for background mode ---
+	// --- Pre-Run per-turn state reset ---
+	// Each send is a NEW turn in the subagent session: assignSubAgentTurnID
+	// allocates a fresh turn_id and iterations restart at 1. The previous
+	// turn's per-turn state MUST be cleared for BOTH background and foreground
+	// sessions — this mirrors the main agent's turn boundary
+	// (emitTurnStarted → iterationHistories.Delete). Without the clear:
+	//   1. recordIterationSnapshot dedups by iteration NUMBER only, so the new
+	//      turn's iterations 1..M append to the old turn's 1..N → duplicate
+	//      iteration numbers in GetActiveProgress's history.
+	//   2. attachIterationDelta's shouldAppend (nextIteration > prev.Iteration)
+	//      uses the old turn's max iteration as baseline, dropping the new
+	//      turn's first N deltas — GetActiveProgress/PhaseDone lose early
+	//      iterations of the new turn.
+	// The old code only reset inside `if ia.background`, leaving foreground
+	// sessions (SubAgent spawned with explicit background=false) polluted
+	// across sends.
 	if ia.background {
+		// Background mode: the user message was NOT appended to ia.messages
+		// before Run (it was only in cfg.Messages). Add it here so the
+		// write-back's out.Messages[preLen:] slicing sees it. Foreground mode
+		// appends it during write-back instead.
 		ia.messages = append(ia.messages, newMessages[len(newMessages)-1])
-		ia.iterationHistory = nil
-		agentProgressKey := "agent:" + key
-		a.lastProgressSnapshot.Delete(agentProgressKey)
-		a.iterationHistories.Delete(agentProgressKey)
 	}
+	ia.iterationHistory = nil
+	agentProgressKey := "agent:" + key
+	a.lastProgressSnapshot.Delete(agentProgressKey)
+	a.iterationHistories.Delete(agentProgressKey)
+	// A2: streamState is part of the same per-turn reset — the main agent's
+	// turn boundary (emitTurnStarted) clears it too. Without this, the
+	// previous turn's final StreamContent/ReasoningStreamContent survives and
+	// mergeStreamState (which only fills EMPTY snapshot fields) leaks it into
+	// the NEW turn's GetActiveProgress snapshot: switching sessions / SSE
+	// reconnect mid-run renders turn N's streamed text as turn N+1's live
+	// content (duplicate rendering).
+	a.streamState.Delete(agentProgressKey)
+	// A1: write the NEW turn id back to ia.cfg — the stream callbacks
+	// (wireSubAgentProgress closures read cfg.TurnID via lazy evaluation over
+	// this ia.cfg pointer) and GetActiveProgress's running-correction branch
+	// (runTurnID = ia.cfg.TurnID) both consume it. Leaving the id on the
+	// local cfg copy only makes every stream event of this send turn carry the
+	// SPAWN turn's id while structured events (runState initialized from the
+	// copy) carry the new one — the frontend writes live stream content into
+	// the committed OLD turn's slot.
+	ia.cfg.TurnID = cfg.TurnID
 
 	// Derive context from agent lifecycle so the async Run survives
 	// past the caller's tool execution deadline. Without this, a parent
@@ -1777,9 +1854,9 @@ func (a *Agent) SendToInteractiveSession(
 				ia.cancelCurrent = nil
 				ia.lastError = fmt.Sprintf("panic: %v", r)
 				ia.mu.Unlock()
-				if a.bgTaskMgr != nil {
+				if a.bgTaskMgr.Load() != nil {
 					sessionKey := originChannel + ":" + originChatID
-					a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
 						Key:      sessionKey,
 						Type:     tools.SubAgentBgNotifyCompleted,
 						Role:     roleName,
@@ -1827,17 +1904,37 @@ func (a *Agent) SendToInteractiveSession(
 				appended, appendErr := appendInteractiveInterruption(cfg.Session, out.Content)
 				if appendErr != nil {
 					ia.lastError = fmt.Sprintf("append interruption history: %v", appendErr)
-					if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
-						ia.messages = persisted
+					// cfg.Session may be nil (appendInteractiveInterruption already
+					// guards it and returns the error above) — the persisted
+					// reload fallback must guard too, or a nil dereference
+					// panics the whole send goroutine (SendAsync recover).
+					if cfg.Session != nil {
+						if persisted, loadErr := cfg.Session.GetMessages(); loadErr == nil {
+							ia.messages = persisted
+						}
 					}
 				} else {
 					ia.messages = append(ia.messages, appended...)
 				}
+				// A4: pending messages belong to the CANCELLED turn — take them
+				// out (replied with an error below) instead of leaving them for
+				// the next Run's wirePendingMessageDrain to inject as stale
+				// instructions. Mirrors syncInteractiveSessionAfterRewind's
+				// pending cleanup (take under the lock, reply outside).
+				pending := ia.pendingMessages
+				ia.pendingMessages = nil
 				ia.mu.Unlock()
+
+				for _, message := range pending {
+					select {
+					case message.replyCh <- fmt.Errorf("interactive session interrupted"):
+					default:
+					}
+				}
 
 				a.sendSubAgentPhaseDone(key)
 
-				if a.bgTaskMgr != nil {
+				if a.bgTaskMgr.Load() != nil {
 					content := "[interrupted] "
 					if out.Content != "" {
 						content += out.Content
@@ -1848,7 +1945,7 @@ func (a *Agent) SendToInteractiveSession(
 						content = content[:2000] + "... [truncated, use inspect for details]"
 					}
 					sessionKey := originChannel + ":" + originChatID
-					a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
 						Key:      sessionKey,
 						Type:     tools.SubAgentBgNotifyCompleted,
 						Role:     roleName,
@@ -1886,7 +1983,7 @@ func (a *Agent) SendToInteractiveSession(
 		}
 
 		// Notify parent via BgTaskManager.
-		if a.bgTaskMgr != nil {
+		if a.bgTaskMgr.Load() != nil {
 			content := out.Content
 			if out.Error != nil {
 				content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
@@ -1895,7 +1992,7 @@ func (a *Agent) SendToInteractiveSession(
 				content = content[:2000] + "... [truncated, use inspect for details]"
 			}
 			sessionKey := originChannel + ":" + originChatID
-			a.bgTaskMgr.SendSubAgentNotify(&tools.SubAgentBgNotify{
+			a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
 				Key:      sessionKey,
 				Type:     tools.SubAgentBgNotifyCompleted,
 				Role:     roleName,
@@ -1925,6 +2022,9 @@ func (a *Agent) SendToInteractiveSession(
 		if out.Error == nil && cfg.Session != nil && out.Content != "" {
 			assistantMsg := llm.NewAssistantMessage(out.Content)
 			assistantMsg.ReasoningContent = out.ReasoningContent
+			// TurnID stamp — same fix as the spawn/send paths above (turn_id=0
+			// rows render above the user message in the session view).
+			assistantMsg.TurnID = cfg.TurnID
 			if len(out.IterationHistory) > 0 {
 				if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 					assistantMsg.Detail = string(jsonBytes)
@@ -1993,7 +2093,9 @@ func (a *Agent) SendToInteractiveSession(
 					if persistedAssistant != nil {
 						ia.messages = append(ia.messages, *persistedAssistant)
 					} else {
-						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+						memMsg := llm.NewAssistantMessage(out.Content)
+						memMsg.TurnID = cfg.TurnID
+						ia.messages = append(ia.messages, memMsg)
 					}
 				}
 			}
@@ -2305,8 +2407,11 @@ func (a *Agent) UnloadInteractiveSession(
 	}
 	// Close the waitable task so a pending task_wait unblocks immediately
 	// instead of blocking until its timeout (the parent triggered the unload).
-	if ia.bgTask != nil && a.bgTaskMgr != nil {
-		a.bgTaskMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "interactive session unloaded")
+	// TOCTOU fix (xbotgh cr): Load() once into a local — same as destroyInteractiveSession.
+	if ia.bgTask != nil {
+		if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
+			bgMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "interactive session unloaded")
+		}
 	}
 	messages := make([]llm.ChatMessage, len(ia.messages))
 	copy(messages, ia.messages)
@@ -2597,6 +2702,34 @@ type AgentSessionDump struct {
 	CompletionTokens int64   `json:"completionTokens,omitempty"`
 }
 
+// formatAgentSessionMessages renders an interactive session's messages (plus
+// the system prompt when non-empty) as display messages for session viewers
+// (GetAgentSessionDump / GetAgentSessionDumpByFullKey / GetSessionMessages).
+// Tool-call-only assistant messages (empty content) are summarized as
+// "[Tool calls: ...]". Caller must hold ia.mu.
+func formatAgentSessionMessages(ia *interactiveAgent) []SessionMessage {
+	var msgs []SessionMessage
+	// Include system prompt if available
+	if ia.systemPrompt.Content != "" {
+		msgs = append(msgs, SessionMessage{Role: "system", Content: ia.systemPrompt.Content})
+	}
+	for _, m := range ia.messages {
+		content := m.Content
+		if content == "" && len(m.ToolCalls) > 0 {
+			// Summarize tool calls for display
+			var toolNames []string
+			for _, tc := range m.ToolCalls {
+				toolNames = append(toolNames, tc.Name)
+			}
+			content = "[Tool calls: " + strings.Join(toolNames, ", ") + "]"
+		}
+		if content != "" {
+			msgs = append(msgs, SessionMessage{Role: string(m.Role), Content: content})
+		}
+	}
+	return msgs
+}
+
 // GetAgentSessionDump returns the full session state for viewer rendering.
 func (a *Agent) GetAgentSessionDump(channel, chatID, roleName, instance string) (*AgentSessionDump, bool) {
 	key := interactiveKey(channel, chatID, roleName, instance)
@@ -2612,23 +2745,7 @@ func (a *Agent) GetAgentSessionDump(channel, chatID, roleName, instance string) 
 	ia.mu.Lock()
 	defer ia.mu.Unlock()
 
-	var msgs []SessionMessage
-	if ia.systemPrompt.Content != "" {
-		msgs = append(msgs, SessionMessage{Role: "system", Content: ia.systemPrompt.Content})
-	}
-	for _, m := range ia.messages {
-		content := m.Content
-		if content == "" && len(m.ToolCalls) > 0 {
-			var toolNames []string
-			for _, tc := range m.ToolCalls {
-				toolNames = append(toolNames, tc.Name)
-			}
-			content = "[Tool calls: " + strings.Join(toolNames, ", ") + "]"
-		}
-		if content != "" {
-			msgs = append(msgs, SessionMessage{Role: string(m.Role), Content: content})
-		}
-	}
+	msgs := formatAgentSessionMessages(ia)
 
 	iters := make([]IterationSnapshot, len(ia.iterationHistory))
 	copy(iters, ia.iterationHistory)
@@ -2661,23 +2778,7 @@ func (a *Agent) GetAgentSessionDumpByFullKey(fullKey string) (*AgentSessionDump,
 	ia.mu.Lock()
 	defer ia.mu.Unlock()
 
-	var msgs []SessionMessage
-	if ia.systemPrompt.Content != "" {
-		msgs = append(msgs, SessionMessage{Role: "system", Content: ia.systemPrompt.Content})
-	}
-	for _, m := range ia.messages {
-		content := m.Content
-		if content == "" && len(m.ToolCalls) > 0 {
-			var toolNames []string
-			for _, tc := range m.ToolCalls {
-				toolNames = append(toolNames, tc.Name)
-			}
-			content = "[Tool calls: " + strings.Join(toolNames, ", ") + "]"
-		}
-		if content != "" {
-			msgs = append(msgs, SessionMessage{Role: string(m.Role), Content: content})
-		}
-	}
+	msgs := formatAgentSessionMessages(ia)
 
 	iters := make([]IterationSnapshot, len(ia.iterationHistory))
 	copy(iters, ia.iterationHistory)
@@ -2711,24 +2812,5 @@ func (a *Agent) GetSessionMessages(channel, chatID, roleName, instance string) (
 	ia.mu.Lock()
 	defer ia.mu.Unlock()
 
-	var msgs []SessionMessage
-	// Include system prompt if available
-	if ia.systemPrompt.Content != "" {
-		msgs = append(msgs, SessionMessage{Role: "system", Content: ia.systemPrompt.Content})
-	}
-	for _, m := range ia.messages {
-		content := m.Content
-		if content == "" && len(m.ToolCalls) > 0 {
-			// Summarize tool calls for display
-			var toolNames []string
-			for _, tc := range m.ToolCalls {
-				toolNames = append(toolNames, tc.Name)
-			}
-			content = "[Tool calls: " + strings.Join(toolNames, ", ") + "]"
-		}
-		if content != "" {
-			msgs = append(msgs, SessionMessage{Role: string(m.Role), Content: content})
-		}
-	}
-	return msgs, true
+	return formatAgentSessionMessages(ia), true
 }

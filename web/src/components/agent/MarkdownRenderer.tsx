@@ -267,7 +267,11 @@ const COMPONENTS = {
 };
 
 const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath];
-const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false }]];
+// KaTeX 只输出 HTML 树（默认 htmlAndMathml 双份 DOM）：数学密集的 reasoning
+// 巨块渲染节点数减半 —— 挂载 commit 与 style recalc 同步降半（Trace-
+// 20260829T181624：新行 mount 100ms 级 commit + UpdateLayoutTree 22-29ms，
+// KaTeX 数千节点是主要成分）。MathML 副本仅服务读屏 a11y，视觉零变化。
+const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false, katexOptions: { output: 'html' as const } }]];
 
 /**
  * remark-math follows Markdown math syntax ($ / $$), while models commonly
@@ -528,27 +532,30 @@ export const MarkdownRenderer = memo(
         // (React just set it, so text.data is the full value). No restore needed.
         sourceContentRef.current = debouncedContent;
         sourceRef.current = new Map();
-      } else {
-        // Typewriter tick (same content) → text.data was clipped by previous
-        // tick. Restore full text from sourceRef before re-clipping.
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-        let node: Node | null;
-        while ((node = walker.nextNode())) {
-          const text = node as Text;
-          const saved = sourceRef.current.get(text);
-          if (saved !== undefined) {
-            text.data = saved;
-          }
-        }
       }
 
-      // Capture full text for all current Text nodes (new or restored).
+      // PERF: single TreeWalker pass for restore + capture. The old code ran TWO
+      // full passes on every typewriter tick (restore: saved → text.data, then
+      // capture: unsaved → sourceRef). Each pass is O(text nodes) — on long
+      // streamed markdown this doubles the per-tick (50ms) DOM walk cost.
+      // Merged semantics are identical per node: saved nodes restore their full
+      // text; unsaved nodes (fresh DOM from content change, or nodes React
+      // re-created within the same key) are captured at full value. Order
+      // between restore and capture within one node is irrelevant — they touch
+      // disjoint node sets (a node is either in the cache or not).
+      const sourceCache = sourceRef.current;
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       let node: Node | null;
       while ((node = walker.nextNode())) {
         const text = node as Text;
-        if (!sourceRef.current.has(text)) {
-          sourceRef.current.set(text, text.data);
+        const saved = sourceCache.get(text);
+        if (saved !== undefined) {
+          // Typewriter tick restore: text.data was clipped by the previous
+          // tick — put back the full value before re-clipping below.
+          text.data = saved;
+        } else {
+          // Capture: full text from fresh DOM (React just set it).
+          sourceCache.set(text, text.data);
         }
       }
 

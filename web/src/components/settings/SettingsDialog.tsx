@@ -74,10 +74,10 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection title={t('settings.nav.account')} description={t('auth.currentUser')}>
-        <div className="flex flex-col gap-3">
-          <p className="text-sm text-foreground">
+        <div className="flex flex-col gap-2.5">
+          <p className="text-sm text-text-primary">
             {user?.username || '—'}
           </p>
           <Button
@@ -85,7 +85,7 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
             size="sm"
             onClick={handleLogout}
             disabled={loggingOut}
-            className="w-fit gap-2"
+            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
           >
             {loggingOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut className="size-4" />}
             {t('auth.logout')}
@@ -119,16 +119,23 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
-        className="flex h-full w-[480px] max-w-full flex-col gap-0 p-0 sm:max-w-[480px]"
+        // 固定 720px，全部 tab 统一 —— 切换 tab 零宽度跳变（按 active 切宽度
+        // 的方案被否决："切换选项居然会改变 panel 宽度"）。LLM 控制台是重内容
+        // 面板（订阅卡片 + 模型网格 + 4 按钮工具行），720px - w-36 导航 = 576px
+        // 内容区才够一行放下 header；表单类 tab 是 flex 自适应单列布局，
+        // 加宽无副作用。max-w-full 兜底小屏。
+        className="flex h-full w-[720px] max-w-full flex-col gap-0 rounded-l-2xl border-l border-border p-0 shadow-2xl sm:max-w-[720px]"
       >
         <SheetHeader className="border-b border-border px-5 py-4">
           <SheetTitle>{t('settings.title')}</SheetTitle>
           <SheetDescription className="sr-only">{t('settings.title')}</SheetDescription>
         </SheetHeader>
 
-        <div className="flex min-h-0 flex-1">
-          {/* Left nav */}
-          <nav className="flex w-36 shrink-0 flex-col gap-0.5 border-r border-border bg-bg-secondary p-2">
+        <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
+          {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
+              375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
+              桌面（≥sm）：竖直侧栏不变 */}
+          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
             {nav.map(({ key, labelKey }) => (
               <button
                 key={key}
@@ -136,10 +143,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 aria-current={active === key}
                 onClick={() => setActive(key)}
                 className={cn(
-                  'rounded-md px-3 py-2 text-left text-sm transition-colors',
+                  'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:shrink sm:whitespace-normal',
                   active === key
-                    ? 'bg-accent/15 font-medium text-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                    ? 'bg-[#6c8cff]/14 font-medium text-[#6c8cff]'
+                    : 'text-text-muted hover:bg-bg-tertiary hover:text-text-primary',
                 )}
               >
                 {t(`settings.${labelKey}`)}
@@ -147,8 +154,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             ))}
           </nav>
 
-          {/* Right content */}
-          <div className="min-w-0 flex-1 overflow-y-auto">
+          {/* Right content — overflow-x-hidden：表单/控制台面板无横向滚动场景，
+              防止内容横向溢出产生可拖动的空白（mobile 上可感知） */}
+          <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
             {active === 'appearance' ? <SettingsAppearance /> : null}
             {active === 'interaction' ? <SettingsInteraction /> : null}
             {active === 'language' ? <SettingsGeneral /> : null}

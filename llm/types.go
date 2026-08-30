@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -354,11 +355,39 @@ type StreamEvent struct {
 
 // ToolParam 工具参数定义
 type ToolParam struct {
-	Name        string          `json:"name"`
-	Type        string          `json:"type"`
+	Name string `json:"name"`
+	// Type is the JSON Schema type of the parameter: a single type string
+	// ("string" | "number" | "boolean" | "array" | "object") OR a UNION
+	// []string{"string", "array"} which serializes as "type": ["string", "array"]
+	// (valid JSON Schema). Union exists because some tools accept either a
+	// single value or a list (task_wait/task_status/task_kill task_id):
+	// strict providers validate arguments against the schema and reject arrays
+	// when the schema declares a bare "string" — description text can not
+	// override the type declaration.
+	//
+	// All existing single-type literals (`Type: "string"`) compile unchanged
+	// (untyped string constants assign to any). JSON Schema serialization
+	// sites (toOpenAITools / toResponsesTools / toAnthropicTools) assign this
+	// field directly into map[string]any{"type": ...} — both forms marshal
+	// correctly. Display-only consumers (prompt dry-run tool listing) must use
+	// TypeDisplay().
+	Type        any             `json:"type"`
 	Description string          `json:"description"`
 	Required    bool            `json:"required"`
 	Items       *ToolParamItems `json:"items,omitempty"` // For array types
+}
+
+// TypeDisplay returns the human-readable type for the /prompt dry-run tool
+// listing: single types pass through; unions render as "string|array".
+func (p ToolParam) TypeDisplay() string {
+	switch t := p.Type.(type) {
+	case string:
+		return t
+	case []string:
+		return strings.Join(t, "|")
+	default:
+		return fmt.Sprintf("%v", p.Type)
+	}
 }
 
 // ToolParamItems 定义数组类型的元素类型（支持完整 JSON Schema 子结构）

@@ -144,7 +144,7 @@ func (m *cliModel) syncProgressTodos(payload *protocol.ProgressEvent) {
 	if len(payload.Todos) > 0 {
 		allDone := true
 		for _, t := range payload.Todos {
-			if !t.Done {
+			if t.Status != "done" {
 				allDone = false
 				break
 			}
@@ -175,7 +175,7 @@ func todosEqual(a, b []protocol.TodoItem) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].ID != b[i].ID || a[i].Text != b[i].Text || a[i].Done != b[i].Done {
+		if a[i].ID != b[i].ID || a[i].Text != b[i].Text || a[i].Status != b[i].Status {
 			return false
 		}
 	}

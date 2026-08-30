@@ -427,6 +427,61 @@ func TestConvert_WithIterations_ResumeTurnEmptyShellAssistant(t *testing.T) {
 	}
 }
 
+// TestConvert_WithIterations_ResumedTurnReusesTurnID renders the FIXED data
+// shape for restart resume: the resume Run reuses the interrupted turn's id
+// (resolveResumeTurnID) and continues its iteration numbering (IterationStart)
+// — the interrupted Run's rows and the resumed Run's rows ALL carry the SAME
+// turn_id, with iteration_history records contiguous (1..3). The rendering
+// must produce ONE assistant block with ALL iterations — identical to an
+// uninterrupted turn (user report: "重启后这个 turn 产生两个大 dom，与不重启
+// 最终渲染的样子有差别" — the old shape was user(67) + asst(67,1iter) +
+// asst(68,4iters) as two separate turns).
+func TestConvert_WithIterations_ResumedTurnReusesTurnID(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		// Turn 67's user message.
+		{Role: "user", Content: "修一下越界", TurnID: 67},
+		// Interrupted Run's rows (killed by graceful shutdown mid-turn).
+		{ID: 400, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "d1", Name: "Shell", Arguments: "{}"}}, TurnID: 67},
+		{Role: "tool", ToolCallID: "d1", ToolName: "Shell", Content: "ok", TurnID: 67},
+		// Resumed Run's rows (SAME turn 67 — resolveResumeTurnID reuses it).
+		{ID: 402, Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "d2", Name: "Read", Arguments: "{}"}}, TurnID: 67},
+		{Role: "tool", ToolCallID: "d2", ToolName: "Read", Content: "file", TurnID: 67},
+		// Final assistant (resumed Run's reply).
+		{ID: 404, Role: "assistant", Content: "修复完成", TurnID: 67},
+	}
+
+	// iteration_history: interrupted Run recorded iteration 1; the resumed Run
+	// CONTINUED at 2 (IterationStart=1) — contiguous, one turn.
+	turnIterMap := map[uint64][]sqlite.IterationRecord{
+		67: {
+			{TurnID: 67, Iteration: 1, Tools: `[{"name":"Shell","status":"done"}]`},
+			{TurnID: 67, Iteration: 2, Tools: `[{"name":"Read","status":"done"}]`},
+			{TurnID: 67, Iteration: 3, Content: "修复完成", Tools: "[]"},
+		},
+	}
+
+	history := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+
+	// Expected: user(67) + ONE assistant(67) with iterations 1..3.
+	if len(history) != 2 {
+		t.Fatalf("expected 2 HistoryMessages (user + single assistant block), got %d: %+v", len(history), summaryOf(history))
+	}
+	if history[0].Role != "user" || history[0].TurnID != 67 {
+		t.Fatalf("history[0]: expected user turn 67, got role=%s turn=%d", history[0].Role, history[0].TurnID)
+	}
+	if history[1].Role != "assistant" || history[1].TurnID != 67 {
+		t.Fatalf("history[1]: expected assistant turn 67, got role=%s turn=%d", history[1].Role, history[1].TurnID)
+	}
+	if len(history[1].Iterations) != 3 {
+		t.Fatalf("expected 3 iterations in the single assistant block, got %d: %+v", len(history[1].Iterations), history[1].Iterations)
+	}
+	for i, want := range []int{1, 2, 3} {
+		if history[1].Iterations[i].Iteration != want {
+			t.Errorf("iter[%d] = %d, want %d (contiguous across the resume boundary)", i, history[1].Iterations[i].Iteration, want)
+		}
+	}
+}
+
 func summaryOf(hs []HistoryMessage) []string {
 	out := make([]string, 0, len(hs))
 	for _, h := range hs {

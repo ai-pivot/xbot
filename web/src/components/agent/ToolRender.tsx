@@ -19,7 +19,7 @@
  */
 import { memo, useMemo, type ReactNode } from 'react'
 import {
-  FileText, ChevronRight, CheckCircle2, Circle,
+  FileText, ChevronRight, CheckCircle2, Circle, Loader2,
 } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 import { ToolCallBlock } from './ToolCallBlock'
@@ -31,6 +31,8 @@ import { GenUIPanel } from './GenUIPanel'
 
 interface ToolRenderProps {
   tool: WebToolProgress
+  /** 隐藏 fallback ToolCallBlock 的 args 块（统一参数渲染：浮窗已自行渲染 ArgsView）。 */
+  hideArgs?: boolean
 }
 
 /** Try to parse the tool's args as JSON. Returns null on failure. */
@@ -110,7 +112,7 @@ function elapsedBadge(ms: number): string | null {
   return ms < 10_000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
-export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
+export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: ToolRenderProps) {
   const runtime = useOptionalPluginRuntime()
   const name = tool.name || ''
   const summary = tool.summary || ''
@@ -153,7 +155,7 @@ export const ToolRender = memo(function ToolRender({ tool }: ToolRenderProps) {
         }
         return rendered
       }
-      return <ToolCallBlock tool={tool} />
+      return <ToolCallBlock tool={tool} hideArgs={hideArgs} />
     }
   }
 })
@@ -361,7 +363,7 @@ function FileCreateRender({ tool, summary }: { tool: WebToolProgress; summary: s
           </div>
         </div>
       ) : (
-        summary && <div className="text-text-muted">{summary}</div>
+        summary && <div className="text-text-muted"><AnsiText text={summary} /></div>
       )}
       {!path && !content && !summary && <div className="text-text-muted">—</div>}
     </div>
@@ -404,7 +406,7 @@ function FileReplaceRender({ tool, summary }: { tool: WebToolProgress; summary: 
           </pre>
         </div>
       ) : (
-        summary && <div className="text-text-muted">{summary}</div>
+        summary && <div className="text-text-muted"><AnsiText text={summary} /></div>
       )}
       {!path && !oldStr && !summary && <div className="text-text-muted">—</div>}
     </div>
@@ -585,7 +587,7 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
 
 interface TodoEntry {
   text: string
-  done: boolean
+  status: string // "pending" | "doing" | "done"
 }
 
 function TodoWriteRender({ tool, summary }: { tool: WebToolProgress; summary: string }) {
@@ -595,7 +597,14 @@ function TodoWriteRender({ tool, summary }: { tool: WebToolProgress; summary: st
     if (!Array.isArray(raw)) return []
     return raw.map((t) => {
       const r = t as Record<string, unknown>
-      return { text: typeof r.text === 'string' ? r.text : '', done: Boolean(r.done) }
+      // 新格式（v2）：status 必填。老数据兼容：done: true → status: "done"。
+      let status = typeof r.status === 'string' && r.status ? r.status : ''
+      if (!status) {
+        // 老格式 fallback：done boolean → status
+        if (r.done === true) status = 'done'
+        else status = 'pending'
+      }
+      return { text: typeof r.text === 'string' ? r.text : '', status }
     })
   }, [tool.args])
 
@@ -609,14 +618,15 @@ function TodoWriteRender({ tool, summary }: { tool: WebToolProgress; summary: st
     )
   }
 
-  const done = todos.filter((t) => t.done).length
+  const done = todos.filter((t) => t.status === 'done').length
+  const doing = todos.filter((t) => t.status === 'doing').length
   const pct = Math.round((done / todos.length) * 100)
 
   return (
     <div className="flex flex-col gap-1.5 py-1 text-xs">
       <div className="flex items-center gap-1.5">
-        {/* No icon — the ToolCard header above already shows the tool icon. */}
         <span className="text-text-muted">{done}/{todos.length}</span>
+        {doing > 0 && <Badge tone="accent">{doing} doing</Badge>}
         <Badge tone={done === todos.length ? 'green' : 'accent'}>{pct}%</Badge>
       </div>
       {/* Progress bar */}
@@ -629,10 +639,19 @@ function TodoWriteRender({ tool, summary }: { tool: WebToolProgress; summary: st
       <div className="flex flex-col gap-0.5">
         {todos.map((t, i) => (
           <div key={i} className="flex items-start gap-1.5">
-            {t.done
+            {t.status === 'done'
               ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" style={{ color: 'var(--status-running)' }} />
-              : <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" />}
-            <span className={`min-w-0 flex-1 break-words leading-5 ${t.done ? 'text-text-muted line-through' : 'text-text-primary'}`}>
+              : t.status === 'doing'
+                ? <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" style={{ color: 'var(--accent)' }} />
+                : <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" />}
+            <span className={`min-w-0 flex-1 break-words leading-5 ${
+              t.status === 'done'
+                ? 'text-text-muted line-through'
+                : t.status === 'doing'
+                  ? 'font-medium text-text-primary'
+                  : 'text-text-primary'
+            }`}>
+              {t.status === 'doing' && <span className="mr-1 text-[9px] font-bold uppercase" style={{ color: 'var(--accent)' }}>▶</span>}
               {t.text}
             </span>
           </div>

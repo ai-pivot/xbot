@@ -9,8 +9,10 @@ import type { EventsAPI } from './events'
 import type { RPCAPI } from './rpc'
 import type { StateAPI } from './state'
 import type { UIAPI } from './ui'
+import type { PanelsAPI } from './panels'
 import type { PluginsAPI } from './plugins'
 import type { ConfigAPI } from './config'
+import type { FilesAPI } from './files'
 
 interface PermissionAPI {
   events: EventsAPI
@@ -18,8 +20,10 @@ interface PermissionAPI {
   rpc: RPCAPI
   state: StateAPI
   ui: UIAPI
+  panels: PanelsAPI
   plugins: PluginsAPI
   config: ConfigAPI
+  files: FilesAPI
 }
 
 export type PluginContext<P extends readonly Permission[]> = {

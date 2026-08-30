@@ -10,11 +10,14 @@ import (
 
 // MaskedRecallStore 是 ObservationMaskStore 暴露给 tools 包的接口。
 // 返回字符串而非 struct，避免 tools/agent 循环依赖。
+// tenantID 参数将调用路由到 per-tenant store 实例——多租户 server 下
+// 共享单例 + SetTenantID 切换是数据竞态（跨租户泄漏），实现必须按
+// tenantID 隔离存储与目录（agent.tenantMaskRouter）。
 type MaskedRecallStore interface {
 	// RecallMasked 按 ID 召回已遮蔽的内容，返回 (toolName, fullContent, error)
-	RecallMasked(id string) (toolName string, content string, err error)
+	RecallMasked(tenantID int64, id string) (toolName string, content string, err error)
 	// ListMasked 列出所有已遮蔽的 observation，返回 JSON 格式的列表
-	ListMasked() []map[string]any
+	ListMasked(tenantID int64) []map[string]any
 }
 
 // RecallMaskedTool 召回已被 observation masking 遮蔽的工具结果。
@@ -67,7 +70,7 @@ func (t *RecallMaskedTool) Execute(ctx *ToolContext, args string) (*ToolResult, 
 
 	// 列出所有已遮蔽的 observation
 	if params.List {
-		return t.listMasked()
+		return t.listMasked(ctx.TenantID)
 	}
 
 	// 召回特定 ID
@@ -75,11 +78,11 @@ func (t *RecallMaskedTool) Execute(ctx *ToolContext, args string) (*ToolResult, 
 		return nil, fmt.Errorf("missing required parameter: id (or set list=true to list all)")
 	}
 
-	return t.recallByID(params)
+	return t.recallByID(ctx.TenantID, params)
 }
 
-func (t *RecallMaskedTool) listMasked() (*ToolResult, error) {
-	entries := t.Store.ListMasked()
+func (t *RecallMaskedTool) listMasked(tenantID int64) (*ToolResult, error) {
+	entries := t.Store.ListMasked(tenantID)
 
 	if len(entries) == 0 {
 		return NewResult("No masked observations found."), nil
@@ -100,8 +103,8 @@ func (t *RecallMaskedTool) listMasked() (*ToolResult, error) {
 	return NewResult(sb.String()), nil
 }
 
-func (t *RecallMaskedTool) recallByID(params recallMaskedParams) (*ToolResult, error) {
-	toolName, content, err := t.Store.RecallMasked(params.ID)
+func (t *RecallMaskedTool) recallByID(tenantID int64, params recallMaskedParams) (*ToolResult, error) {
+	toolName, content, err := t.Store.RecallMasked(tenantID, params.ID)
 	if err != nil {
 		return nil, err
 	}

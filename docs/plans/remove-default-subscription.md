@@ -1,5 +1,7 @@
 # Plan: 移除"默认订阅"和"当前订阅"概念
 
+> **STATUS: SUPERSEDED（2026-08-30）** — 本计划已被 `docs/plan-remove-system-subscription.md` 取代并落地（v62）。v62 删除了 system 订阅并实现了模型订阅一体化（模型永远携带所属订阅）；本计划的"移除 user_default_model/GetDefault"部分**未实施**（user_default_model 作为"last-used (subID, model)"存储保留，语义与 v39+ 一致）。方向相反部分（把 system 订阅当作唯一 default 保留）已被推翻。
+
 ## Summary
 
 订阅只是模型来源（凭证+endpoint），用于拉取模型列表。模型标识永远是 `(subscription, model)` 二元组。

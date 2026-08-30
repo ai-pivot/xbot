@@ -40,7 +40,7 @@ func callRPC(t *testing.T, table RPCTable, method string, params any) json.RawMe
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := WithRPCCtx(context.Background(), "web-admin", "web-admin")
+	ctx := WithRPCCtxResolved(context.Background(), "web-admin", "web-admin", 0, "admin")
 	out, err := table.Dispatch(ctx, method, data)
 	if err != nil {
 		t.Fatalf("RPC %s: %v", method, err)

@@ -20,6 +20,10 @@ func NewTriggerService(db *DB) *TriggerService {
 }
 
 // AddTrigger inserts a new event trigger.
+// The user_id column is resolved from the trigger's (channel, sender_id) via
+// user_identities — new rows must carry the owner's canonical user id (0 when
+// unresolvable) so per-user queries (merge preview counting, future panels)
+// see them. Same root cause as CronJob.UserID (M1).
 func (s *TriggerService) AddTrigger(t *event.Trigger) error {
 	conn := s.db.Conn()
 	var lastFiredStr *string
@@ -27,10 +31,14 @@ func (s *TriggerService) AddTrigger(t *event.Trigger) error {
 		v := t.LastFired.Format(time.RFC3339)
 		lastFiredStr = &v
 	}
-	_, err := conn.Exec(`
-		INSERT INTO event_triggers (id, name, event_type, channel, chat_id, sender_id, message_tpl, secret, enabled, one_shot, created_at, last_fired, fire_count)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, t.ID, t.Name, t.EventType, t.Channel, t.ChatID, t.SenderID, t.MessageTpl, t.Secret,
+	userID, err := canonicalUserID(conn, t.Channel, t.SenderID)
+	if err != nil {
+		return fmt.Errorf("resolve trigger owner user_id: %w", err)
+	}
+	_, err = conn.Exec(`
+		INSERT INTO event_triggers (id, name, event_type, channel, chat_id, sender_id, user_id, message_tpl, secret, enabled, one_shot, created_at, last_fired, fire_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, t.ID, t.Name, t.EventType, t.Channel, t.ChatID, t.SenderID, userID, t.MessageTpl, t.Secret,
 		t.Enabled, t.OneShot, t.CreatedAt.Format(time.RFC3339), lastFiredStr, t.FireCount)
 	if err != nil {
 		return fmt.Errorf("insert event trigger: %w", err)

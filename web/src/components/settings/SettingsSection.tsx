@@ -1,9 +1,10 @@
 /**
- * SettingsSection — generic settings-item layout (Spec 7 §3.7).
+ * SettingsSection — generic settings-item layout (布局 v2 视觉).
  *
- * Renders a title, an optional description, then the setting control(s).
- * A top border separates consecutive sections inside a settings category so
- * the panel reads as a clean vertical list of options (VSCode-style).
+ * Renders a group title, an optional description, then the setting control(s).
+ * Each section is a rounded-xl card (border white/[.06] + bg white/[.02])
+ * with a 10px uppercase tracking group title — the unified "new visual"
+ * language shared across the settings center.
  */
 import type { ReactNode } from 'react'
 import { useId } from 'react'
@@ -25,17 +26,17 @@ export function SettingsSection({ title, description, children }: SettingsSectio
   return (
     <section
       aria-labelledby={titleId}
-      className="flex flex-col gap-3 border-t border-border px-5 py-4 first:border-t-0"
+      className="flex flex-col gap-2.5 rounded-xl border border-border bg-bg-secondary px-4 py-4"
     >
       <div className="flex flex-col gap-1">
-        <h3 id={titleId} className="text-sm font-medium text-foreground">
+        <h3 id={titleId} className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           {title}
         </h3>
         {description ? (
-          <p className="text-xs text-muted-foreground">{description}</p>
+          <p className="text-xs text-text-muted">{description}</p>
         ) : null}
       </div>
-      <div className="flex flex-col gap-2">{children}</div>
+      <div className="flex flex-col gap-2.5">{children}</div>
     </section>
   )
 }

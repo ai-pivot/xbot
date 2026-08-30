@@ -67,20 +67,24 @@ func TestContextWindowExceeded_UsesRunCompression(t *testing.T) {
 	// that handleFinalResponse now makes after this fix.
 	state.runCompression(context.Background(), cm, 180000, 200000)
 
-	// Verify: TokenUsage reflects the compressed value
+	// Verify: TokenUsage reflects the compressed value — the FULL post-compress
+	// message estimate (system + summary + tail), NOT the summary-only
+	// CompressedTokens estimate. messages[:2] = ["system"(6 chars) + "hello"(5
+	// chars)] → estimateMessagesTokens = (6+5)*2/3 = 7.
+	const wantPostCompressTokens = int64(7)
 	if state.structuredProgress.TokenUsage == nil {
 		t.Fatal("TokenUsage should be set after compression")
 	}
-	if state.structuredProgress.TokenUsage.PromptTokens != 5000 {
-		t.Errorf("TokenUsage.PromptTokens = %d, want 5000 (compressed)", state.structuredProgress.TokenUsage.PromptTokens)
+	if state.structuredProgress.TokenUsage.PromptTokens != wantPostCompressTokens {
+		t.Errorf("TokenUsage.PromptTokens = %d, want %d (full post-compress estimate, not summary-only 5000)", state.structuredProgress.TokenUsage.PromptTokens, wantPostCompressTokens)
 	}
 
 	// Verify: token state was persisted (so restart doesn't see stale 180k)
-	if savedPrompt != 5000 {
-		t.Errorf("SaveTokenState prompt = %d, want 5000", savedPrompt)
+	if savedPrompt != wantPostCompressTokens {
+		t.Errorf("SaveTokenState prompt = %d, want %d (full post-compress estimate)", savedPrompt, wantPostCompressTokens)
 	}
-	if savedContext != 5000 {
-		t.Errorf("SaveContextTokens = %d, want 5000", savedContext)
+	if savedContext != wantPostCompressTokens {
+		t.Errorf("SaveContextTokens = %d, want %d (full post-compress estimate)", savedContext, wantPostCompressTokens)
 	}
 
 	// Verify: messages were reduced

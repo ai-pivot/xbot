@@ -40,7 +40,7 @@ func (a *todoManagerAdapter) GetTodoItems(sessionKey string) []TodoProgressItem 
 	items := a.mgr.GetTodos(sessionKey)
 	result := make([]TodoProgressItem, len(items))
 	for i, item := range items {
-		result[i] = TodoProgressItem{ID: item.ID, Text: item.Text, Done: item.Done}
+		result[i] = TodoProgressItem{ID: item.ID, Text: item.Text, Status: item.Status}
 	}
 	return result
 }
@@ -248,11 +248,37 @@ func (a *Agent) buildMainRunConfig(
 	// TurnID is assigned by chatProcessLoop (per-session monotonic counter) and
 	// carried via msg.Metadata. Propagate to RunConfig so every progress event
 	// and the final reply carry it for frontend association.
+	// Resume turns REUSE the interrupted turn's id (resolveResumeTurnID) — the
+	// dequeued turn_id maps the resumed work onto the same turn as the
+	// interrupted work, so the frontend renders ONE assistant block.
 	if raw := msg.Metadata["turn_id"]; raw != "" {
 		if tid, err := strconv.ParseUint(raw, 10, 64); err == nil {
 			cfg.TurnID = tid
 		} else {
 			log.WithFields(log.Fields{"raw": raw}).Warn("buildMainRunConfig: failed to parse turn_id from metadata")
+		}
+	}
+
+	// Resume turn iteration continuation: the resumed Run reuses the interrupted
+	// turn's id, and the turn's iteration_history already holds the interrupted
+	// Run's records (iterations 1..K). Restarting at 1 would collide ((turn_id,
+	// iteration) duplicates in iteration_history) and the frontend's
+	// committed-turn shadow-lift (iteration events upgrade a committed turn only
+	// when ev.iter > maxIter) would drop every resumed iteration as a "replay".
+	// Continue at K+1 via IterationStart so the turn's iterations stay contiguous.
+	if msg.Metadata["resume_turn"] == "true" && cfg.TurnID > 0 {
+		if maxIter, err := tenantSession.GetMaxIterationForTurn(cfg.TurnID); err != nil {
+			log.WithFields(log.Fields{
+				"chat_id": chatID,
+				"turn_id": cfg.TurnID,
+			}).WithError(err).Warn("buildMainRunConfig: GetMaxIterationForTurn failed, resume starts iterations at 1")
+		} else if maxIter > 0 {
+			cfg.IterationStart = maxIter
+			log.WithFields(log.Fields{
+				"chat_id":         chatID,
+				"turn_id":         cfg.TurnID,
+				"iteration_start": maxIter,
+			}).Info("Resume turn continues interrupted turn's iteration numbering")
 		}
 	}
 
@@ -439,8 +465,10 @@ func (a *Agent) buildMainRunConfig(
 	// OffloadStore — Layer 1 offload
 	cfg.OffloadStore = a.offloadStore
 
-	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）
-	cfg.MaskStore = a.maskStore
+	// MaskStore — Observation Masking（默认开启，可通过 settings 的 enable_masking 关闭）。
+	// per-tenant 实例（maskStoreFor）：Run 内 mask 目录不可变，消除共享单例
+	// SetTenantID 切换的跨租户竞态。
+	cfg.MaskStore = a.maskStoreFor(cfg.TenantID)
 	streamDisabled := false
 	if userCtx.GetSetting("enable_masking") == "false" {
 		cfg.MaskStore = nil
@@ -490,14 +518,6 @@ func (a *Agent) buildMainRunConfig(
 		ListActiveFn: func(ch, cid string) []SubAgentStatus {
 			return interactiveSessionsToStatuses(a.ListInteractiveSessions(ch, cid))
 		},
-	}
-
-	// Memory tools for compaction — allows the compaction LLM to archive
-	// important context into core/archival memory before it gets compacted away.
-	// Uses the real tool registry instead of hand-written execution logic.
-	if defs, exec := a.buildMemoryToolSetup(channel, chatID); defs != nil {
-		cfg.MemoryToolDefs = defs
-		cfg.MemoryToolExec = exec
 	}
 
 	return cfg
@@ -834,8 +854,23 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 2. OffloadStore：共享父 Agent 实例（按 sessionKey 隔离，完全安全）
 	cfg.OffloadStore = a.offloadStore
 
-	// 3. MaskStore：共享父 Agent 实例（通过随机 ID 查找，容量共享但 SubAgent 生命周期短影响可忽略）
-	cfg.MaskStore = a.maskStore
+	// 3. MaskStore：per-tenant 实例（SubAgent 的独立 tenantID，与 DB tenant 对齐）。
+	// deriveSubAgentTenantID 与 buildSubAgentMemory 用同一纯函数（幂等）——SubAgent
+	// 的 mask 隔离在自己的 tenant 目录，父/子及并发 SubAgent 互不可见。
+	derivedTenantID := deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName)
+	cfg.MaskStore = a.maskStoreFor(derivedTenantID)
+
+	// 读写路由同源：recall_masked 工具经 ctx.TenantID → tenantMaskRouter 反查 store，
+	// 而 ctx.TenantID 的唯一注入点是 cfg.ToolContextExtras.TenantID（buildToolContext
+	// 只在 extras != nil 时覆盖）。caps.Memory=false（大多数 SubAgent 角色）或
+	// buildSubAgentMemory 失败时 extras 为 nil → tc.TenantID=0 → recall_masked 路由到
+	// maskStoreFor(0)（空 store）而非上面写入的 derived store，被遮蔽内容静默
+	// not found。此处无条件注入最小 extras 保证读写同 key；caps.Memory=true 时
+	// buildSubAgentMemory 返回的 extras.TenantID 与 derivedTenantID 同值（同一纯
+	// 函数同参数），下方的完整覆盖赋值与本注入等价。
+	if cfg.ToolContextExtras == nil {
+		cfg.ToolContextExtras = &ToolContextExtras{TenantID: derivedTenantID}
+	}
 
 	// 4. ContextEditor：创建独立实例（每个 Agent 需要自己的 messages 引用和编辑历史）
 	cfg.ContextEditor = NewContextEditor(NewContextEditStore(100))
@@ -996,7 +1031,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		SandboxMode:            a.sandboxMode,
 		InjectInbound:          a.injectInbound,
 		Tools:                  a.tools,
-		BgTaskManager:          a.bgTaskMgr,
+		BgTaskManager:          a.bgTaskMgr.Load(),
 		MessageSender:          a.messageSender,
 		RegisterAgentChannel:   a.registerAgentChannel,
 		UnregisterAgentChannel: a.unregisterAgentChannel,
@@ -1155,53 +1190,6 @@ func (a *Agent) buildOAuthHandler(channel, chatID, senderID, sessionKey string) 
 		log.Ctx(ctx).WithError(oauthErr).Error("Failed to execute oauth_authorize tool")
 		return "OAuth authorization required. Please configure OAUTH_ENABLE=true and OAUTH_BASE_URL in your environment.", true
 	}
-}
-
-// buildMemoryToolSetup returns tool definitions and executor for memory tools during compaction.
-// Uses the real tool registry instead of hand-written execution logic,
-// ensuring tool behavior stays in sync with the main agent loop.
-// Returns (nil, nil) if memory tools are not available.
-func (a *Agent) buildMemoryToolSetup(channel, chatID string) ([]llm.ToolDefinition, func(ctx context.Context, tc llm.ToolCall) (string, error)) {
-	extras := a.buildToolContextExtras(channel, chatID)
-	if extras == nil || extras.CoreMemory == nil {
-		return nil, nil
-	}
-
-	memToolNames := []string{
-		"core_memory_append", "core_memory_replace", "rethink",
-		"archival_memory_insert", "archival_memory_search",
-	}
-	var defs []llm.ToolDefinition
-	for _, name := range memToolNames {
-		if t, ok := a.tools.Get(name); ok {
-			defs = append(defs, t)
-		}
-	}
-	if len(defs) == 0 {
-		return nil, nil
-	}
-
-	// Minimal RunConfig for building ToolContext — memory tools only need ToolContextExtras.
-	memCfg := &RunConfig{
-		Channel:           channel,
-		ChatID:            chatID,
-		ToolContextExtras: extras,
-	}
-
-	exec := func(ctx context.Context, tc llm.ToolCall) (string, error) {
-		tool, ok := a.tools.Get(tc.Name)
-		if !ok {
-			return "Unknown tool: " + tc.Name, nil
-		}
-		toolCtx := buildToolContext(ctx, memCfg)
-		result, err := tool.Execute(toolCtx, tc.Arguments)
-		if err != nil {
-			return fmt.Sprintf("Error: %v", err), nil
-		}
-		return result.Summary, nil
-	}
-
-	return defs, exec
 }
 
 // buildToolContextExtras 构建 ToolContext 扩展字段。
@@ -1531,6 +1519,13 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		task:       task,
 	}
 	a.interactiveSubAgents.Store(oneshotKey, oneshotIA)
+	// A3: wire the pending-message drain — a SendMessage arriving while this
+	// one-shot Run is in flight queues into oneshotIA.pendingMessages
+	// (SendToInteractiveSession's running=true branch). Without the drain
+	// callback the Run loop never drains between iterations and the sender
+	// blocks on replyCh until its timeout. Mirrors the three interactive Run
+	// call sites (SpawnInteractiveSession ×2 + SendToInteractiveSession).
+	cfg.DrainBgNotifications = oneshotIA.wirePendingMessageDrain(originChannel + ":" + originChatID)
 
 	// Create TenantSession for message persistence (same as interactive SubAgents).
 	agentTenantSession, err := a.multiSession.GetOrCreateSessionWithOwner("agent", oneshotKey, cfg.UserID)
@@ -1759,7 +1754,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		oneshotIA.mu.Unlock()
 
 		sessionKey := originChannel + ":" + originChatID
-		notifyMgr := a.bgTaskMgr
+		notifyMgr := a.bgTaskMgr.Load()
 		var bgTask *tools.SubAgentTask
 		if notifyMgr != nil {
 			bgTask = notifyMgr.RegisterSubAgentTask("", sessionKey, originSender, roleName, oneshotInstance, bgCancel)
@@ -1825,7 +1820,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 		startedMsg := fmt.Sprintf("Sub-agent %q (instance=%s) started in background.", roleName, oneshotInstance)
 		if bgTask != nil {
-			startedMsg += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=%q) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+			startedMsg += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=[%q]) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
 		}
 		return &channelpkg.OutboundMsg{Content: startedMsg}, nil
 	}
@@ -1910,7 +1905,7 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 	payload.SubAgents = resolveSubAgents(event)
 	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 	for i, td := range s.Todos {
-		payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Done: td.Done}
+		payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Status: td.Status}
 	}
 	payload.Goal = s.Goal
 	if s.TokenUsage != nil {
@@ -2028,13 +2023,40 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	// payload.ChatID (qualified progressKey) is the session identity for
 	// the TUI's handleProgressMsg filter. These are two different semantics —
 	// never mix them.
+	//
+	// When the originating channel is NOT a ProgressSender (feishu/qq/napcat
+	// implement PreReplyNotifier instead), sender stays nil and the stream
+	// events would be silently dropped — a web user viewing that channel's
+	// session saw no typewriter stream, no generating tools, no live tkps
+	// (only the 15s heartbeat snapshot + iteration-boundary structured
+	// events). Fall back to the channelRange fan-out over ALL registered
+	// ProgressSenders — the same contract as buildProgressEventHandler /
+	// emitTurnStarted. WebChannel.SendProgress derives its route from
+	// payload.ChatID (the qualified progressKey, e.g. "feishu:chatID"), so the
+	// event reaches exactly that session's subscribers. The single-sender
+	// fast path above keeps cli/web-originated turns duplicate-free (the
+	// originating sender's own SendProgress already broadcasts to every Hub
+	// subscriber of that channel).
 	broadcastProgress := func(payload *protocol.ProgressEvent) {
 		if payload.ChatID == "" {
 			payload.ChatID = progressKey
 		}
 		if sender != nil {
 			sender.SendProgress(chatID, payload)
+			return
 		}
+		if a.channelRange == nil {
+			return
+		}
+		a.channelRange(func(_ string, ch channelpkg.Channel) bool {
+			if ps, ok := ch.(channelpkg.ProgressSender); ok {
+				// Per-sender clone: a channel mutating its payload (or its
+				// slices) must never corrupt what other channels receive —
+				// same contract as sendSubAgentPhaseDone / emitTurnStarted.
+				ps.SendProgress(chatID, cloneProgressEvent(payload))
+			}
+			return true
+		})
 	}
 
 	// Live stream timing: attach a REAL-TIME StreamStats (tkps/ttft/totalMs)
@@ -2075,6 +2097,21 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		streamTokens = 0
 		samples = samples[:0]
 	}
+	// noteFirstChunk anchors the live TTFT at the FIRST stream callback of
+	// this LLM call — including name-less tool_call deltas. streamToolCallFunc
+	// suppresses the PUSH while no tool name has arrived (name-gate), but the
+	// early index/ID fragments ARE the real first chunks of the stream: without
+	// touching firstChunkAt there, tool-only iterations (no content/reasoning
+	// stream) anchored TTFT at the NAME-arrival frame instead → live TTFT
+	// overstated by the name-fragment delay (user report: "只有 tool 的迭代的
+	// ttft 也有 bug").
+	noteFirstChunk := func() {
+		mu.Lock()
+		if firstChunkAt.IsZero() {
+			firstChunkAt = time.Now()
+		}
+		mu.Unlock()
+	}
 	liveStats := func(payload *protocol.ProgressEvent) *protocol.StreamStats {
 		now := time.Now()
 		mu.Lock()
@@ -2093,12 +2130,19 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		// ReasoningStreamContent); reading the frame would make the estimate
 		// drop when the model switches reasoning→content (dtTokens < 0 → tkps
 		// frozen at the previous value, the "123 tok/s never changes" bug).
+		// Tool args count too (GenChars = accumulated argument chars): a
+		// tool-only iteration's ENTIRE output is the tool call JSON — without
+		// it the estimate stays 0 during tool streaming ("tool 的 sse 没计算"
+		// → tok/s displayed 0 for tool-only iterations).
 		if tokens <= 0 {
 			n := 0
 			if v, ok := a.streamState.Load(progressKey); ok {
 				if ap, ok := v.(*atomic.Pointer[protocol.ProgressEvent]); ok {
 					if ss := ap.Load(); ss != nil {
 						n = len(ss.StreamContent) + len(ss.ReasoningStreamContent)
+						for i := range ss.StreamingTools {
+							n += ss.StreamingTools[i].GenChars
+						}
 					}
 				}
 			}
@@ -2126,12 +2170,30 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			samples = samples[1:]
 		}
 		tps := int64(0)
+		windowFormed := false
 		if len(samples) >= 2 {
 			oldest := samples[0]
 			dtMs := now.Sub(oldest.at).Milliseconds()
 			dtTokens := tokens - oldest.tokens
-			if dtMs >= 200 && dtTokens > 0 {
-				tps = dtTokens * 1000 / dtMs
+			if dtMs >= 200 {
+				windowFormed = true
+				if dtTokens > 0 {
+					tps = dtTokens * 1000 / dtMs
+				}
+			}
+		}
+		// Short-stream fallback: a 1-2 chunk stream (chunks sub-200ms apart)
+		// never forms the ≥200ms window, so tps stayed 0 the whole time even
+		// though tokens were flowing ("tok/s 有计算问题，在只有一两个 sse 的时候").
+		// Fall back to the average rate since the first chunk
+		// (tokens×1000/elapsed) — same semantics as the committed
+		// StreamStats.TokensPerSec. Only when the window hasn't formed: a
+		// formed window with dtTokens=0 is a genuine stall (true 0, no
+		// fallback). elapsed>0 guards the first frame (first == now).
+		if !windowFormed && tokens > 0 && first.Before(now) {
+			elapsed := now.Sub(first).Milliseconds()
+			if elapsed > 0 {
+				tps = tokens * 1000 / elapsed
 			}
 		}
 		mu.Unlock()
@@ -2247,6 +2309,12 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 		}
 	}
 	streamToolCallFunc = func(toolCalls []llm.ToolCallDelta) {
+		// Anchor the live TTFT at the first tool_call delta — even before the
+		// tool NAME arrives (index/ID fragments). The name-gate below suppresses
+		// the PUSH for name-less deltas, but they are the stream's real first
+		// chunks: without this touch, tool-only iterations anchored TTFT at the
+		// name-arrival frame and overstated it by the fragment delay.
+		noteFirstChunk()
 		toolProgs := make([]protocol.ToolProgress, 0, len(toolCalls))
 		var genuiContent string
 		for _, tc := range toolCalls {

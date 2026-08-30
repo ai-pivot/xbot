@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"unicode/utf8"
 
 	log "xbot/logger"
 )
@@ -219,8 +220,10 @@ func (s *CoreMemoryService) SetBlock(tenantID int64, blockName, content string, 
 	if err != nil {
 		return err
 	}
-	if len(content) > charLimit {
-		return fmt.Errorf("content length %d exceeds block %q char_limit %d", len(content), blockName, charLimit)
+	// char_limit counts CHARACTERS (runes), not bytes — CJK content is 3
+	// bytes/rune in UTF-8 and byte counting rejects blocks well under the limit.
+	if utf8.RuneCountInString(content) > charLimit {
+		return fmt.Errorf("content length %d exceeds block %q char_limit %d", utf8.RuneCountInString(content), blockName, charLimit)
 	}
 
 	// user_id is TEXT NOT NULL DEFAULT '', so ON CONFLICT works correctly

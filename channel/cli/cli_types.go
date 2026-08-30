@@ -593,9 +593,6 @@ type ModelLister interface {
 	// persists to CachedModels, and returns the fresh entry list. Use before
 	// opening the model picker so it reflects providers' true available models.
 	RefreshModelEntries() []protocol.ModelEntry
-	// EnsureModelsLoaded triggers a synchronous model list fetch if not yet loaded.
-	// After this call returns, ListModels() should return the full model list.
-	EnsureModelsLoaded()
 }
 
 // SubscriptionManager manages user LLM subscriptions.
@@ -632,7 +629,10 @@ type LLMSubscriber interface {
 	// exact subscription that serves a model even when the same model name is
 	// served by multiple subscriptions.
 	SelectModel(senderID, channelName, subID, model, chatID string) error
-	GetDefaultModel() string
+	// GetDefaultModelPair returns the user's default (subscription, model) pair.
+	// Model-subscription integration: models never travel alone. subID is empty
+	// only for the deployment-level defaultLLM fallback.
+	GetDefaultModelPair() (subID, model string)
 }
 
 // SendTUIControl sends a TUI session control message through asyncCh

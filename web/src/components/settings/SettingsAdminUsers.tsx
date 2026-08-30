@@ -61,7 +61,7 @@ export function SettingsAdminUsers() {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 px-5 py-4 text-sm text-muted-foreground">
+      <div className="flex items-center gap-2 p-4 text-sm text-text-muted">
         <Loader2 className="size-4 animate-spin" />
         加载中...
       </div>
@@ -70,12 +70,12 @@ export function SettingsAdminUsers() {
 
   if (error) {
     return (
-      <div className="px-5 py-4">
-        <p className="flex items-center gap-1.5 text-sm text-red-500">
+      <div className="p-4">
+        <p className="flex items-center gap-1.5 text-sm text-[var(--status-error,#ef4444)]">
           <AlertCircle className="size-4" />
           {error}
         </p>
-        <p className="mt-2 text-xs text-muted-foreground">
+        <p className="mt-2 text-xs text-text-muted">
           此面板仅对 admin 用户可见。
         </p>
       </div>
@@ -83,24 +83,24 @@ export function SettingsAdminUsers() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection title="用户管理" description="查看所有用户并管理角色权限。">
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2.5">
           {users.map((user) => (
             <div
               key={user.id}
-              className="flex items-center gap-2 rounded-lg border border-border px-3 py-2"
+              className="flex items-center gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary"
             >
-              <span className="flex-1 truncate text-sm text-foreground">
+              <span className="flex-1 truncate text-sm text-text-primary">
                 {user.display_name || `(user ${user.id})`}
               </span>
               {user.role === 'admin' ? (
-                <span className="flex items-center gap-1 rounded bg-green-500/15 px-1.5 py-0.5 text-xs font-medium text-green-600">
+                <span className="flex items-center gap-1 rounded bg-[#22c55e]/12 px-1.5 py-0.5 text-xs font-medium text-[#22c55e]">
                   <ShieldCheck className="size-3" />
                   admin
                 </span>
               ) : (
-                <span className="flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+                <span className="flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-medium text-text-muted">
                   <Shield className="size-3" />
                   user
                 </span>
@@ -110,7 +110,7 @@ export function SettingsAdminUsers() {
                 disabled={updatingId === user.id}
                 variant="outline"
                 size="sm"
-                className="h-7 px-2 text-xs"
+                className="h-7 border-border bg-bg-tertiary px-2 text-xs hover:bg-bg-hover"
               >
                 {updatingId === user.id ? (
                   <Loader2 className="size-3 animate-spin" />

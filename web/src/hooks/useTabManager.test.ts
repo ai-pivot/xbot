@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { filterAgentPanels, tabLogicalKey, tabLogicalKeyFromParams } from './useTabManager'
+import { filterAgentPanels, groupCloseTargets, tabLogicalKey, tabLogicalKeyFromParams } from './useTabManager'
 
 function agentPanel(id: string) {
   return { id, params: { type: 'agent', closable: false }, contentComponent: 'agent' }
@@ -142,5 +142,47 @@ describe('tabLogicalKey: plugin view tabs', () => {
     expect(
       tabLogicalKeyFromParams({ type: 'plugin', viewId: 'v', tabId: 't', title: '', closable: true }),
     ).toBe('plugin:v')
+  })
+})
+
+describe('groupCloseTargets (tab 右键菜单批量关闭目标)', () => {
+  // [A(不可关), B, C(self), D, E(不可关)] —— A/E 模拟常驻 tab（closable=false）。
+  const tabs = [
+    { tabId: 'A', closable: false },
+    { tabId: 'B', closable: true },
+    { tabId: 'C', closable: true },
+    { tabId: 'D', closable: true },
+    { tabId: 'E', closable: false },
+  ]
+
+  it('left：self 之前的可关 tab（常驻 tab 跳过）', () => {
+    expect(groupCloseTargets(tabs, 'C', 'left')).toEqual(['B'])
+  })
+
+  it('right：self 之后的可关 tab（常驻 tab 跳过）', () => {
+    expect(groupCloseTargets(tabs, 'C', 'right')).toEqual(['D'])
+  })
+
+  it('others：除 self 外全部可关 tab', () => {
+    expect(groupCloseTargets(tabs, 'C', 'others')).toEqual(['B', 'D'])
+  })
+
+  it('all：全部可关 tab（含 self；常驻 tab 永不关闭）', () => {
+    expect(groupCloseTargets(tabs, 'C', 'all')).toEqual(['B', 'C', 'D'])
+  })
+
+  it('边界：self 是第一个/最后一个 → left/right 为空；常驻 tab 全组 → 全空', () => {
+    expect(groupCloseTargets(tabs, 'A', 'left')).toEqual([])
+    expect(groupCloseTargets(tabs, 'E', 'right')).toEqual([])
+    const allPinned = [
+      { tabId: 'X', closable: false },
+      { tabId: 'Y', closable: false },
+    ]
+    expect(groupCloseTargets(allPinned, 'X', 'all')).toEqual([])
+    expect(groupCloseTargets(allPinned, 'X', 'others')).toEqual([])
+  })
+
+  it('未知 tabId（不在组内）→ 空结果', () => {
+    expect(groupCloseTargets(tabs, 'Z', 'all')).toEqual([])
   })
 })

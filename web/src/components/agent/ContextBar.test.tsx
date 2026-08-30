@@ -9,12 +9,12 @@ import type { TodoState } from '@/hooks/useTodos'
 function makeTodoState(overrides: Partial<TodoState> = {}): TodoState {
   return {
     todos: [
-      { id: 1, text: 'Task 1', done: true },
-      { id: 2, text: 'Task 2', done: false },
+      { id: 1, text: 'Task 1', status: 'done' },
+      { id: 2, text: 'Task 2', status: 'pending' },
     ],
     doneCount: 1,
     total: 2,
-    currentTask: { id: 2, text: 'Task 2', done: false },
+    currentTask: { id: 2, text: 'Task 2', status: 'pending' },
     ...overrides,
   }
 }

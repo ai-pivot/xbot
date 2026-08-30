@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -395,11 +396,10 @@ func (ss *bgSessionState) setActiveTurn(id uint64) {
 
 // Agent 核心 Agent 引擎
 type Agent struct {
-	bus              *bus.MessageBus
-	multiSession     *session.MultiTenantSession // Multi-tenant session manager
-	tools            *tools.Registry
-	maxIterations    int
-	purgeOldMessages bool
+	bus           *bus.MessageBus
+	multiSession  *session.MultiTenantSession // Multi-tenant session manager
+	tools         *tools.Registry
+	maxIterations int
 
 	skills             *SkillStore
 	agents             *AgentStore
@@ -524,9 +524,6 @@ type Agent struct {
 	// hookManager is the shared tool execution hook manager for this Agent and all SubAgents.
 	hookManager *hooks.Manager
 
-	// timingData collects per-tool execution timing statistics.
-	timingData *hooks.TimingData
-
 	// approvalState manages approval handling for privileged operations.
 	approvalState *hooks.ApprovalState
 
@@ -538,8 +535,15 @@ type Agent struct {
 	// OffloadStore manages large tool result offload to disk
 	offloadStore *OffloadStore
 
-	// maskStore manages observation masking storage
-	maskStore *ObservationMaskStore
+	// maskStores caches per-tenant observation masking stores keyed by tenantID
+	// (map[int64]*ObservationMaskStore, lazily created by maskStoreFor). The old
+	// shared-singleton + SetTenantID-per-message design raced across tenants:
+	// tenant A's Mask could persist into tenant B's directory (cross-tenant data
+	// leak) and Recall's disk fallback read B's storeDir. Per-tenant instances
+	// bind {baseDir}/{tenantID} once and never switch.
+	maskStores sync.Map
+	// maskBaseDir is the disk base directory for per-tenant mask stores.
+	maskBaseDir string
 
 	// lifecycleStopCh and lifecycleWG own the Agent's long-lived goroutines.
 	lifecycleStopCh chan struct{}
@@ -594,13 +598,16 @@ type Agent struct {
 	// IdentityResolver is accessed via a.userSys.identityResolver (no direct field).
 	// nil in standalone CLI mode (no multi-user DB).
 
-	// bgTaskMgr manages background shell tasks (shared across all sessions)
+	// bgTaskMgr manages background shell tasks (shared across all sessions).
+	// atomic.Pointer: read by background goroutines (bgNotifyLoop) and the
+	// message-processing path, replaced via SetBgTaskManager (tests) after
+	// New() has started those goroutines — plain field access is a data race.
 
 	// PluginManager manages the plugin system lifecycle
 	pluginMgr *plugin.PluginManager
 	// webUIReg stores channel-plugin web UI component declarations (web_ui protocol).
 	webUIReg  *plugin.WebUIRegistry
-	bgTaskMgr *tools.BackgroundTaskManager
+	bgTaskMgr atomic.Pointer[tools.BackgroundTaskManager]
 
 	// bgRunPending buffers bg notifications by session. The Run loop drains the
 	// current session between iterations; idle sessions drain their own bucket.
@@ -623,9 +630,6 @@ type pendingAskUserEntry struct {
 	mu      sync.RWMutex
 	pending *protocol.ProgressEvent
 }
-
-// SetRegistryManager sets the RegistryManager (for external injection or override).
-func (a *Agent) SetRegistryManager(rm *RegistryManager) { a.registryManager = rm }
 
 // SetSettingsService sets the SettingsService (for external injection or override).
 func (a *Agent) SetSettingsService(svc *SettingsService) {
@@ -830,10 +834,11 @@ func (a *Agent) SetLLMFactory(f *LLMFactory) {
 }
 
 // BgTaskManager returns the Agent's BackgroundTaskManager.
-func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
+func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr.Load() }
 
 // SetBgTaskManager replaces the background task manager (used in tests).
-func (a *Agent) SetBgTaskManager(manager *tools.BackgroundTaskManager) { a.bgTaskMgr = manager }
+// Safe against the bgNotifyLoop goroutine (started in New) — atomic swap.
+func (a *Agent) SetBgTaskManager(manager *tools.BackgroundTaskManager) { a.bgTaskMgr.Store(manager) }
 
 // Commands returns the Agent's CommandRegistry (for external consumers like RPC handlers).
 func (a *Agent) Commands() *CommandRegistry { return a.commands }
@@ -843,12 +848,6 @@ func (a *Agent) SetCommandRegistry(r *CommandRegistry) { a.commands = r }
 
 // SetMessageSender sets the Dispatcher reference for unified messaging.
 func (a *Agent) SetMessageSender(ms bus.MessageSender) { a.messageSender = ms }
-
-// SetAgentChannelRegistry sets the callbacks for registering/unregistering AgentChannels.
-func (a *Agent) SetAgentChannelRegistry(register func(name string, runFn bus.RunFn) error, unregister func(name string)) {
-	a.registerAgentChannel = register
-	a.unregisterAgentChannel = unregister
-}
 
 // RegistryManager returns the Agent's RegistryManager (for external injection of callbacks).
 func (a *Agent) RegistryManager() *RegistryManager { return a.registryManager }
@@ -991,18 +990,15 @@ func checkpointOutcome(checkpoint *protocol.RewindResult, err error) (bool, stri
 
 // SetUserModel sets the user's default model via an explicit (subID, model) pair.
 // Used by the settings card callback (feishu/web) and the set_user_model RPC.
-// When subID is empty, falls back to ResolveSubscriptionForModel (legacy UIs
-// that only know the model name). Persists the choice to user_default_model.
+// Model-subscription integration: subID is required — a bare model name is
+// rejected (the caller must resolve the owning subscription first). Persists
+// the choice to user_default_model.
 func (a *Agent) SetUserModel(senderID, subID, model string) error {
 	if model == "" {
 		return fmt.Errorf("model is required")
 	}
 	if subID == "" {
-		sub, err := a.userSys.llmFactory.ResolveSubscriptionForModel(senderID, model)
-		if err != nil {
-			return fmt.Errorf("resolve subscription for model %q: %w", model, err)
-		}
-		subID = sub.ID
+		return fmt.Errorf("subID is required (model-subscription pair); bare model %q is not allowed — resolve the owning subscription first", model)
 	}
 	// Persist the default model under the canonical user_id so linked
 	// identities (web/cli/feishu) all see the same selection.
@@ -1455,12 +1451,6 @@ func (a *Agent) ClearProxyLLM(senderID string) {
 func (a *Agent) GetDefaultModel() string {
 	return a.userSys.llmFactory.GetDefaultModel()
 }
-func (a *Agent) GetSettingsService() *SettingsService {
-	if a.userSys == nil {
-		return nil
-	}
-	return a.userSys.settingsSvc
-}
 
 func buildToolMessageContent(result *tools.ToolResult) string {
 	if result == nil {
@@ -1543,16 +1533,8 @@ type Config struct {
 	CompressionThreshold float64 // 触发压缩的 token 比例阈值（默认 0.7）
 	EnableAutoCompress   bool    // 是否启用自动上下文压缩（默认 true，旧字段）
 
-	// DynamicMaxTokens dynamically adjusts max_output_tokens based on remaining
-	// context space. When enabled, max_output_tokens is reduced when the context
-	// is large to prevent context_window_exceeded errors.
-	DynamicMaxTokens bool
-
 	// SubAgent 深度控制
 	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
-
-	// 压缩后清理旧消息
-	PurgeOldMessages bool // 压缩后自动删除旧消息（默认 false）
 
 	// OffloadDir: offload 文件存储目录（默认 ~/.xbot/offload_store）
 	OffloadDir string
@@ -1748,14 +1730,15 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 初始化 ObservationMaskStore（Phase 3: Observation Masking）
 	// 默认关闭：通过 settings 的 enable_masking 开启。
-	// 始终创建（工具注册需要），但 engine 层通过 RunConfig.MaskStore 控制。
+	// Per-tenant 惰性实例（maskStoreFor）：多租户 server 下共享单例 +
+	// SetTenantID 切换是跨租户数据竞态（A 的 Mask 落进 B 的目录），改为
+	// map[tenantID]*ObservationMaskStore 隔离。engine 层通过 RunConfig.MaskStore 控制。
 	// 磁盘落在全局 ~/.xbot/mask/{tenantID}/，避免污染当前工作目录。
 	maskDir := cfg.MaskDir
 	if maskDir == "" {
 		maskDir = filepath.Join(a.xbotHome, "mask")
 	}
-	a.maskStore = NewObservationMaskStore(200)
-	a.maskStore.SetBaseDir(maskDir)
+	a.maskBaseDir = maskDir
 
 	// Start periodic cleanup for offload and mask data.
 	// Runs immediately at startup, then every 6 hours.
@@ -1771,10 +1754,10 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 		registry.RegisterCore(recallTool)
 	}
 
-	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）
-	if a.maskStore != nil {
-		registry.RegisterCore(&tools.RecallMaskedTool{Store: a.maskStore})
-	}
+	// 注册 recall_masked 工具（需要 MaskStore 依赖注入）。
+	// tenantMaskRouter 按执行时 ToolContext.TenantID 路由到 per-tenant 实例，
+	// 多租户 server 下并发会话互不可见。
+	registry.RegisterCore(&tools.RecallMaskedTool{Store: &tenantMaskRouter{a: a}})
 
 	// 初始化 ContextEditor（Context Editing 工具 — 精确编辑上下文）
 	editStore := NewContextEditStore(100)
@@ -1808,6 +1791,12 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	llmSemMgr := llm.NewLLMSemaphoreManager()
 	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
+	// Canonical-user settings resolution: getGlobalSetting (tier/thinking_mode)
+	// reads the user_id dimension first — *ByUserID writes (RPC panel settings)
+	// store sender_id='user-N', invisible to sender-dimension reads. Without
+	// this, web-channel senders never see tier configs written by the panel
+	// (SubAgent "model not found for vanguard, falling back to main model").
+	a.userSys.llmFactory.SetUserResolver(a.resolveUserID)
 
 	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
 	a.initPipelines(memoryProvider)
@@ -1872,13 +1861,12 @@ func New(cfg Config) (*Agent, error) {
 
 	rm := runner.NewManager()
 	agent := &Agent{
-		bus:              cfg.Bus,
-		multiSession:     multiSession,
-		tools:            registry,
-		maxIterations:    cfg.MaxIterations,
-		maxConcurrency:   cfg.MaxConcurrency,
-		purgeOldMessages: cfg.PurgeOldMessages,
-		deltaPush:        cfg.DeltaPush,
+		bus:            cfg.Bus,
+		multiSession:   multiSession,
+		tools:          registry,
+		maxIterations:  cfg.MaxIterations,
+		maxConcurrency: cfg.MaxConcurrency,
+		deltaPush:      cfg.DeltaPush,
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -1900,10 +1888,9 @@ func New(cfg Config) (*Agent, error) {
 		// NOTE: .xbot is the server-side config directory; not accessible in user sandbox
 		agentsDir: filepath.Join(cfg.WorkDir, ".xbot", "agents"),
 		xbotHome:  cfg.XbotHome,
-		// timingData and approvalState are created before hookManager so they
-		// can be shared: the same instances are registered as builtins and
-		// exposed via accessor methods.
-		timingData:    hooks.NewTimingData(),
+		// approvalState is created before hookManager so it can be shared:
+		// the same instance is registered as a builtin and exposed via
+		// accessor methods.
 		approvalState: hooks.NewApprovalState(nil), // handler set later by channel when available
 		hookManager: func() *hooks.Manager {
 			mgr, err := hooks.NewManager(cfg.XbotHome, cfg.WorkDir)
@@ -1913,19 +1900,21 @@ func New(cfg Config) (*Agent, error) {
 			}
 			return mgr
 		}(),
-		bgTaskMgr:       tools.NewBackgroundTaskManager(),
 		cliSenderID:     cfg.CLISenderID,
 		singleUser:      cfg.SingleUser,
 		lifecycleStopCh: make(chan struct{}),
 	}
 
+	// bgTaskMgr via atomic Store (before any background goroutine starts —
+	// bgNotifyLoop reads it via Load; SetBgTaskManager may replace it later).
+	agent.bgTaskMgr.Store(tools.NewBackgroundTaskManager())
+
 	// 5. 初始化各类服务（修改 agent 指针）
 	initServices(agent, cfg, multiSession, registry)
 
 	// 5b. Register builtin hooks on the shared hookManager.
-	// Uses the same timingData/approvalState instances stored on the Agent.
+	// Uses the same approvalState instance stored on the Agent.
 	agent.hookManager.RegisterBuiltin(hooks.LoggingCallback())
-	agent.hookManager.RegisterBuiltin(hooks.TimingCallback(agent.timingData))
 	agent.hookManager.RegisterBuiltin(hooks.ApprovalCallback(agent.approvalState))
 
 	// 5b-2. Create checkpoint state and register checkpoint hook for rewind file rollback.
@@ -2284,9 +2273,6 @@ func (a *Agent) HookManager() *hooks.Manager {
 	return a.hookManager
 }
 
-// TimingData returns the shared timing statistics collector.
-func (a *Agent) TimingData() *hooks.TimingData { return a.timingData }
-
 // ApprovalState returns the shared approval state for privileged operations.
 func (a *Agent) ApprovalState() *hooks.ApprovalState { return a.approvalState }
 
@@ -2508,11 +2494,16 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
 		sessionKey := channel + ":" + chatID
-		a.bgTaskMgr.SendCronFired(&tools.CronFired{
-			Key:     sessionKey,
-			Sid:     senderID,
-			Message: message,
-		})
+		// nil-guard: bare &Agent{} construction (no New() Store) must not
+		// panic on a cron trigger — same contract as the interactive.go read
+		// sites. Normal chain stores the manager before cron starts.
+		if mgr := a.bgTaskMgr.Load(); mgr != nil {
+			mgr.SendCronFired(&tools.CronFired{
+				Key:     sessionKey,
+				Sid:     senderID,
+				Message: message,
+			})
+		}
 	})
 	a.cronSch.StartDelayed(3 * time.Second)
 
@@ -2846,10 +2837,16 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 // 处理的 turn），若在此提前 setActiveTurn 会被排队消息污染（排队消息会
 // 把 activeTurnID 改写成自己的 turn，导致 answer 复用错误的 turn id）。
 // answer 的复用由 chatProcessLoop 在真正出队处理时完成。
+//
+// resume_turn（InjectInboundResume —— 重启恢复 / /continue）同样不预分配：
+// 恢复的 Run 必须复用被中断 turn 的 id（最后一条 user 消息的 turn），预分配
+// nextTurnID 会把同一逻辑 turn 拆成两个 turn —— 前端渲染成两个 assistant
+// 块（用户报告"重启后这个 turn 产生两个大 dom"）。复用由 chatProcessLoop
+// 出队时经 resolveResumeTurnID 从 DB 解析。
 func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.InboundMessage, ss *bgSessionState, msgCh chan<- bus.InboundMessage) {
 	queued := len(msgCh) > 0 || ss.busy.Load()
 	var turnID uint64
-	if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
+	if msg.Metadata == nil || (msg.Metadata["ask_user_answered"] != "true" && msg.Metadata["resume_turn"] != "true") {
 		turnID = ss.nextTurnID()
 		if msg.Metadata == nil {
 			msg.Metadata = map[string]string{}
@@ -2861,6 +2858,36 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 	case msgCh <- msg:
 	case <-ctx.Done():
 	}
+}
+
+// resolveResumeTurnID returns the turn id a restart-resumed Run
+// (InjectInboundResume) must CONTINUE: the turn of the last non-display-only
+// user message — the owner of the interrupted turn. Reusing it keeps the
+// interrupted work and the resumed work in ONE turn (session_messages rows,
+// iteration_history records and the frontend's per-turn rendering all merge
+// into a single assistant block — identical to an uninterrupted turn).
+// Every restart previously allocated a FRESH turn id (admitToMsgCh →
+// nextTurnID), splitting the logical turn into user(N)/resume(N+1)/resume(N+2)
+// — the frontend rendered each as a separate block ("two big DOMs").
+// Returns 0 when no resolvable user turn exists (no user message / legacy rows
+// without turn_id) — the caller falls back to allocating a fresh turn id.
+func (a *Agent) resolveResumeTurnID(channel, chatID string) uint64 {
+	if a.multiSession == nil {
+		return 0
+	}
+	sess, err := a.multiSession.GetOrCreateSession(channel, chatID)
+	if err != nil {
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).WithError(err).
+			Warn("resolveResumeTurnID: GetOrCreateSession failed, allocating fresh turn id")
+		return 0
+	}
+	tid, err := sess.GetLastUserTurnID()
+	if err != nil {
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).WithError(err).
+			Warn("resolveResumeTurnID: GetLastUserTurnID failed, allocating fresh turn id")
+		return 0
+	}
+	return tid
 }
 
 func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
@@ -2947,9 +2974,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 同 turn，前端按 turn 合并迭代时把回答前后的内容（如 pwd 与
 			// task_wait）混进同一个 assistant 块。新 turn 保证回答后的消息
 			// 与回答前严格分离。
+			//
+			// resume_turn（InjectInboundResume —— 重启恢复 / /continue）出队时
+			// 复用被中断 turn 的 id（最后一条非 display-only user 消息的 turn，
+			// resolveResumeTurnID 从 DB 解析）：中断前后的消息/迭代归属同一个
+			// turn，前端按 turn 合并渲染为单个 assistant 块（与不重启一致）。
+			// 无法解析（无 user 消息 / legacy 无 turn_id）时退回分配新 turn id。
+			resumeTurn := msg.Metadata != nil && msg.Metadata["resume_turn"] == "true"
 			turnID, _ := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64)
 			if turnID == 0 {
-				turnID = ss.nextTurnID()
+				if resumeTurn {
+					turnID = a.resolveResumeTurnID(msg.Channel, msg.ChatID)
+				}
+				if turnID == 0 {
+					turnID = ss.nextTurnID()
+				}
 				if msg.Metadata == nil {
 					msg.Metadata = map[string]string{}
 				}
@@ -2961,24 +3000,33 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// AskUser answer is its OWN turn with a fresh turn_id (nextTurnID,
 			// allocated above) — never a reuse of the previous active turn.
 			// Only turnID < prev is a real violation.
-			if prev := ss.lastTurnID.Load(); prev > 0 {
-				if turnID < prev {
-					log.WithFields(log.Fields{
-						"session_key":  chatKey,
-						"prev_turn_id": prev,
-						"new_turn_id":  turnID,
-						"delta":        int64(turnID) - int64(prev),
-					}).Error("TURN_ID_INVARIANT_VIOLATION: TurnID must be strictly increasing — got non-increasing value")
-				} else if turnID > prev && turnID != prev+1 {
-					log.WithFields(log.Fields{
-						"session_key":  chatKey,
-						"prev_turn_id": prev,
-						"new_turn_id":  turnID,
-						"gap":          turnID - prev - 1,
-					}).Warn("TURN_ID_GAP: TurnID jumped — intermediate turn(s) may have been lost")
+			// resume_turn 豁免：它复用 DB 中被中断 turn 的 id（非计数器分配），
+			// 可能小于 lastTurnID（如中断期间插入过通知 turn）——复用是合法的
+			// 续turn，不是生命周期 bug；且它不消耗计数器，跳过检查与基线更新
+			// 避免伪告警（gap 由后续正常分配自然对齐）。
+			if !resumeTurn {
+				if prev := ss.lastTurnID.Load(); prev > 0 {
+					if turnID < prev {
+						log.WithFields(log.Fields{
+							"session_key":  chatKey,
+							"prev_turn_id": prev,
+							"new_turn_id":  turnID,
+							"delta":        int64(turnID) - int64(prev),
+						}).Error("TURN_ID_INVARIANT_VIOLATION: TurnID must be strictly increasing — got non-increasing value")
+					} else if turnID > prev && turnID != prev+1 {
+						log.WithFields(log.Fields{
+							"session_key":  chatKey,
+							"prev_turn_id": prev,
+							"new_turn_id":  turnID,
+							"gap":          turnID - prev - 1,
+						}).Warn("TURN_ID_GAP: TurnID jumped — intermediate turn(s) may have been lost")
+					}
 				}
+				// resume 不更新 lastTurnID 基线：复用 id 来自 DB（非计数器分配），
+				// 可能小于当前基线（如中断期间插入过通知 turn）——存储它会让下一个
+				// 正常分配触发伪 TURN_ID_GAP 告警。
+				ss.lastTurnID.Store(turnID)
 			}
-			ss.lastTurnID.Store(turnID)
 			a.emitTurnStarted(msg, turnID)
 
 			sem := a.getSemaphoreForMessage(msg)
@@ -3032,6 +3080,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			wasCancelled := false
 			func() {
 				defer func() {
+					// Panic 兜底：processMessage panic 时 goroutine 会被 clipanic.Go
+					// recover（进程存活）但从此退出 —— 下方 err/正常分支的
+					// ss.busy.Store(false) 永不可达，会话永久卡 busy（用户后续消息
+					// 永远排队）。recover 后置 err，走统一 err 分支清理（busy 复位 +
+					// 用户收到错误提示），会话可继续服务。
+					if r := recover(); r != nil {
+						log.WithFields(log.Fields{
+							"request_id": msg.RequestID,
+							"chat":       chatKey,
+							"panic":      r,
+							"stack":      string(debug.Stack()),
+						}).Error("panic recovered in processMessage")
+						response = nil
+						err = fmt.Errorf("internal error: %v", r)
+					}
 					wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
 
 					// WaitingUser: the turn is PAUSED, not ended. Do NOT emit
@@ -3142,10 +3205,16 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					if busMsg.Metadata == nil {
 						busMsg.Metadata = make(map[string]string)
 					}
+					// WaitingUser 消息不可静默丢弃：AskUser 面板不显示 = turn 永久暂停
+					// 等一个不会到达的回答（ss.busy 保持 true，会话卡死）。带超时的
+					// 阻塞发送替代立即丢弃（对齐上方 err 分支的直接写语义），仅在
+					// shutdown（reqCtx.Done）或 10s 仍满时放弃。
 					select {
 					case a.bus.Outbound <- busMsg:
-					default:
-						log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
+					case <-reqCtx.Done():
+						log.Ctx(ctx).Warn("Context cancelled, dropping WaitingUser response")
+					case <-time.After(10 * time.Second):
+						log.Ctx(ctx).Error("Message bus outbound channel full for 10s, dropping WaitingUser response")
 					}
 				} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
 					log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
@@ -3285,10 +3354,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// Set tenant-scoped stores for this request.
+	// MaskStore 不再在此切换租户：per-tenant 实例由 maskStoreFor(tenantID) 惰性
+	// 创建（engine 装配 RunConfig.MaskStore 时解析），运行中租户目录不可变，
+	// 消除共享单例 SetTenantID 的跨租户竞态（A 的 Mask 落进 B 的目录）。
 	tenantID := tenantSession.TenantID()
-	if a.maskStore != nil {
-		a.maskStore.SetTenantID(tenantID)
-	}
 	if a.pluginMgr != nil {
 		a.pluginMgr.RefreshTenantID(tenantID)
 		// Wire plugin tools for this tenant if not already done
@@ -4249,8 +4318,7 @@ func (a *Agent) injectInboundWithMetadata(channel, chatID, senderID, content str
 }
 
 // injectEventMessage 向入站队列注入事件触发的消息。
-// Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop，
-// 并设置 EventSource/EventTrigger 元数据。
+// Event Router 通过此函数将外部事件（webhook 等）路由到 agent loop。
 // 同时通过 injectCLIUserMessage 通知 TUI 显示。
 func (a *Agent) injectEventMessage(msg event.Message) {
 	// Route through unified async message pipeline
@@ -4273,10 +4341,23 @@ func (a *Agent) injectEventMessage(msg event.Message) {
 // notifications would silently accumulate in bgRunPending until the first user message.
 func (a *Agent) bgNotifyLoop() {
 	for {
+		// Resolve the manager per iteration: SetBgTaskManager may replace it at
+		// runtime (tests). A bare &Agent{} (no New() Store) yields nil here —
+		// poll lightly instead of panicking on nil.NotifyCh (same nil contract
+		// as the interactive.go read sites).
+		mgr := a.bgTaskMgr.Load()
+		if mgr == nil {
+			select {
+			case <-a.lifecycleStopCh:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+			continue
+		}
 		select {
 		case <-a.lifecycleStopCh:
 			return
-		case notif, ok := <-a.bgTaskMgr.NotifyCh:
+		case notif, ok := <-mgr.NotifyCh:
 			if !ok {
 				return
 			}
@@ -4353,12 +4434,16 @@ func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source st
 	// This guarantees:
 	// - Busy: injected as tool result on Run loop's goroutine (no data race)
 	// - Idle: injected as user message with correct TUI notification
-	a.bgTaskMgr.SendAsyncMessage(&tools.AsyncMessageNotification{
-		Key:     sessionKey,
-		Sid:     senderID,
-		Content: content,
-		Source:  source,
-	})
+	// nil-guard: bare &Agent{} construction (no New() Store) — same
+	// contract as the interactive.go read sites.
+	if mgr := a.bgTaskMgr.Load(); mgr != nil {
+		mgr.SendAsyncMessage(&tools.AsyncMessageNotification{
+			Key:     sessionKey,
+			Sid:     senderID,
+			Content: content,
+			Source:  source,
+		})
+	}
 
 	return fmt.Sprintf("✅ queued for %s", sessionKey)
 }
@@ -4443,31 +4528,6 @@ func (a *Agent) addReaction(msg bus.InboundMessage) {
 	a.addReactionToMessage(msg.Channel, msg.ChatID, messageID, "DONE")
 }
 
-// ProcessDirect 直接处理一条消息（用于 CLI 模式）
-func (a *Agent) ProcessDirect(ctx context.Context, content string) (string, error) {
-	msg := bus.InboundMessage{
-		Channel:   "cli",
-		SenderID:  "cli_user",
-		ChatID:    "direct",
-		Content:   content,
-		Time:      time.Now(),
-		RequestID: log.NewRequestID(),
-	}
-	gate := a.sessionOperationGate(msg.Channel, msg.ChatID)
-	if !gate.lock(ctx) {
-		return "", ctx.Err()
-	}
-	defer gate.unlock()
-	resp, err := a.processMessage(ctx, msg)
-	if err != nil {
-		return "", err
-	}
-	if resp == nil {
-		return "", nil
-	}
-	return resp.Content, nil
-}
-
 // CleanupSessionFiles removes offload data for a session identified by (channel, chatID).
 // Called from delete_chat RPC handler and CLI session deletion to ensure disk-stored
 // offload data is cleaned when a session is removed from DB.
@@ -4501,8 +4561,46 @@ func (a *Agent) doCleanup() {
 	if a.offloadStore != nil {
 		a.offloadStore.CleanStale()
 	}
-	if a.maskStore != nil {
-		a.maskStore.CleanStale(7)
+	a.cleanAllMaskStores(7)
+}
+
+// maskStoreFor returns the per-tenant ObservationMaskStore, creating it on
+// first use (LoadOrStore makes concurrent first access idempotent). The
+// instance binds {maskBaseDir}/{tenantID} once and never switches tenants —
+// this is what makes concurrent tenants safe (the old shared-singleton
+// SetTenantID switching leaked tenant A's masks into tenant B's directory).
+func (a *Agent) maskStoreFor(tenantID int64) *ObservationMaskStore {
+	if v, ok := a.maskStores.Load(tenantID); ok {
+		return v.(*ObservationMaskStore)
+	}
+	v, _ := a.maskStores.LoadOrStore(tenantID, newObservationMaskStoreForTenant(a.maskBaseDir, tenantID))
+	return v.(*ObservationMaskStore)
+}
+
+// cleanAllMaskStores runs stale cleanup for every tenant mask store: already
+// created in-memory instances plus every tenant directory on disk (lazily
+// instantiated so their files are cleaned too).
+func (a *Agent) cleanAllMaskStores(maxAgeDays int) {
+	a.maskStores.Range(func(_, v any) bool {
+		v.(*ObservationMaskStore).CleanStale(maxAgeDays)
+		return true
+	})
+	if a.maskBaseDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(a.maskBaseDir)
+	if err != nil {
+		return // not created yet — nothing on disk
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		tid, err := strconv.ParseInt(e.Name(), 10, 64)
+		if err != nil {
+			continue // non-tenant directory
+		}
+		a.maskStoreFor(tid).CleanStale(maxAgeDays)
 	}
 }
 

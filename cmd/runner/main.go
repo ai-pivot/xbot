@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -36,6 +37,26 @@ const (
 	maxRetries = 0 // 0 = infinite retries
 )
 
+// userIDFromServerURL extracts the user ID from the last non-empty PATH
+// segment of the server URL. Query strings ("?foo=bar") and fragments are
+// stripped — the old strings.LastIndex("/") parsing produced "admin?foo=bar"
+// for "ws://host:8080/ws/admin?foo=bar".
+func userIDFromServerURL(server string) string {
+	u, err := url.Parse(server)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		// Not an absolute URL — no user ID to extract (the old parser also
+		// failed to find a segment here and the caller Fatal-exits).
+		return ""
+	}
+	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i := len(segs) - 1; i >= 0; i-- {
+		if segs[i] != "" {
+			return segs[i]
+		}
+	}
+	return ""
+}
+
 func main() {
 	flag.Parse()
 
@@ -50,9 +71,7 @@ func main() {
 
 	userID := *flagUserID
 	if userID == "" {
-		if idx := strings.LastIndex(*flagServer, "/"); idx > 0 {
-			userID = (*flagServer)[idx+1:]
-		}
+		userID = userIDFromServerURL(*flagServer)
 	}
 	if userID == "" {
 		log.Fatal("--user-id is required (or embed in server URL)")

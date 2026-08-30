@@ -162,6 +162,11 @@ func isRetryableError(err error) bool {
 		// Not a net.Error type (string-only from CollectStreamWithCallback),
 		// so string matching is the only way to catch it.
 		"stream ended without finish_reason",
+		// Tool-call arguments corrupted mid-flight (SSE chunk loss/repeat by
+		// gateway, finish_reason still arrives). Detected by the
+		// stream-completion gate in CollectStreamWithCallbackFrom. Retrying
+		// regenerates the whole request — chunk loss is transient.
+		"tool call arguments corrupted",
 		"unexpected EOF",
 	} {
 		if strings.Contains(msg, kw) {
@@ -310,13 +315,6 @@ func (r *RetryLLM) ListModels() []string {
 	return r.inner.ListModels()
 }
 
-// EnsureModelsLoaded delegates to the inner LLM if it supports synchronous model loading.
-func (r *RetryLLM) EnsureModelsLoaded() {
-	if eml, ok := r.inner.(interface{ EnsureModelsLoaded() }); ok {
-		eml.EnsureModelsLoaded()
-	}
-}
-
 // GenerateStream 仅在获取 channel 时重试，流开始后不重试。
 // 注意：不使用 perAttemptCtx，因为 GenerateStream 是异步的（启动 goroutine 后立即返回），
 // perAttemptCtx 的 defer cancel() 会在 goroutine 仍在运行时过早取消上下文，
@@ -377,6 +375,15 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 			ch  <-chan StreamEvent
 			err error
 		}
+		// Request-send timestamp — recorded BEFORE initiating the stream
+		// request. TTFT must be measured from here: GenerateStream blocks until
+		// the SSE connection is established (and the first chunks may already
+		// be buffered in eventCh when collection starts), so collecting from
+		// "now" at CollectStreamWithCallback time would silently drop the
+		// entire request-setup window from TTFT (the "ttft suddenly tiny after
+		// tool generation finished" bug: live frames reported the full window,
+		// the committed/DB value reported ~0-5ms local latency).
+		t0 := time.Now()
 		resultCh := make(chan genResult, 1)
 		go func() {
 			ch, err2 := streaming.GenerateStream(ctx, model, messages, tools, thinkingMode)
@@ -395,8 +402,8 @@ func (r *RetryLLM) GenerateStreamAndCollect(ctx context.Context, model string, m
 		}
 
 		if streamContentFn != nil || streamReasoningFn != nil || streamToolCallFn != nil || streamUsageFn != nil {
-			return CollectStreamWithCallback(ctx, eventCh, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
+			return CollectStreamWithCallbackFrom(ctx, eventCh, t0, streamContentFn, streamReasoningFn, streamToolCallFn, streamUsageFn)
 		}
-		return CollectStream(ctx, eventCh)
+		return CollectStreamWithCallbackFrom(ctx, eventCh, t0, nil, nil, nil, nil)
 	})
 }

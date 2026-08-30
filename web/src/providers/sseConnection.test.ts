@@ -8,7 +8,7 @@ import {
   progressSnapshotCache,
   sessionCacheKey,
 } from '@/lib/webCache'
-import { SSEConnectionImpl, SSE_EVENT_TYPES } from './sseConnection'
+import { SSEConnectionImpl, SSE_EVENT_TYPES, MultiSSEManager } from './sseConnection'
 import type { WSMessage } from '@/types/shared'
 
 vi.mock('@/lib/api', () => ({
@@ -210,6 +210,43 @@ describe('SSEConnectionImpl', () => {
     expect(lastSeqCache.get(cacheKey)).toBe(4)
     expect(progressSnapshotCache.get(cacheKey)).toMatchObject({ phase: 'tool' })
     expect(getProgressGeneration(cacheKey)).toBeGreaterThan(0)
+    connection.dispose()
+  })
+
+  it('dispatches seq-less control broadcasts despite a stale lastEventId', () => {
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    // web_plugin_config_changed 必须在 EventSource 监听白名单里 —— 不在
+    // SSE_EVENT_TYPES 里 addEventListener 根本不注册，广播永远收不到。
+    expect(SSE_EVENT_TYPES).toContain('web_plugin_config_changed')
+
+    // 业务事件 seq=42 推进 lastSeq 水位。
+    source.emit('text', { type: 'text', seq: 42, content: 'business' })
+    expect(received.filter((m) => m.type === 'text')).toHaveLength(1)
+
+    // 控制广播：JSON 无 seq 字段（后端 Seq=0 + omitempty），event.lastEventId
+    // 残留 '42'（SSE 规范：无 id 事件不推进 lastEventId）。绝不能把残留 id
+    // 继承为 seq —— 否则 seq === previousSeq(42) 走业务 dedup 被静默丢弃。
+    source.emit(
+      'web_plugin_config_changed',
+      {
+        type: 'web_plugin_config_changed',
+        content: JSON.stringify({ plugin_id: 'xbot.ambience', value: { glassOpacity: 0.5 } }),
+      },
+      '42',
+    )
+    const control = received.filter((m) => m.type === 'web_plugin_config_changed')
+    expect(control).toHaveLength(1)
+
+    // 水位未被控制消息污染 —— 后续业务事件照常去重。
+    source.emit('text', { type: 'text', seq: 43, content: 'next' })
+    expect(received.filter((m) => m.type === 'text')).toHaveLength(2)
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(43)
     connection.dispose()
   })
 
@@ -466,6 +503,77 @@ describe('SSEConnectionImpl', () => {
     // No phase='done' — the live row is preserved
     expect(received.some((m) => m.type === 'progress_structured' && (m as { progress?: { phase?: string } }).progress?.phase === 'done')).toBe(false)
     connection.dispose()
+  })
+
+  it('dispatches agent-idle when active-progress recovery returns done — restores running state lost in the SSE gap', async () => {
+    // Mobile bug (user report 2026-08-30): user opens settings (app backgrounds
+    // → SSE disconnects), the turn completes during the gap, and after
+    // returning the session is STUCK busy — the reply renders (replay_gap
+    // force_reload) but the busy indicator never clears. Root cause: the
+    // session(idle) SSE event was lost in the gap (ring buffer evicted on
+    // resync, or the disconnect window), so useSessionStore's
+    // executingSessionsRef keeps the busy key and mergeStatus forces running
+    // forever. restoreActiveProgress's done/null branch is the AUTHORITATIVE
+    // turn-ended signal here — it must dispatch agent-idle (the
+    // useSessionStore-only channel that clears running WITHOUT touching the
+    // live store — unlike session(idle), which clears the live store and
+    // causes rendered iterations to vanish, see the 449 test above).
+    vi.useFakeTimers()
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') return { phase: 'done', iteration: 2 }
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    const idleEvents: Array<{ chatID?: string; channel?: string }> = []
+    const handler = (e: Event) => {
+      idleEvents.push((e as CustomEvent).detail)
+    }
+    window.addEventListener('agent-idle', handler)
+    try {
+      await vi.advanceTimersByTimeAsync(1_000)
+    } finally {
+      window.removeEventListener('agent-idle', handler)
+    }
+    connection.dispose()
+
+    expect(idleEvents.length).toBeGreaterThanOrEqual(1)
+    expect(idleEvents.some((ev) => ev.chatID === 'chat-a')).toBe(true)
+  })
+
+  it('dispatches agent-idle when active-progress recovery returns null — same stuck-busy recovery', async () => {
+    // null = no active progress (turn ended, lastProgressSnapshot cleaned) —
+    // the same authoritative turn-ended signal as phase='done'.
+    vi.useFakeTimers()
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') return null
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    const idleEvents: Array<{ chatID?: string; channel?: string }> = []
+    const handler = (e: Event) => {
+      idleEvents.push((e as CustomEvent).detail)
+    }
+    window.addEventListener('agent-idle', handler)
+    try {
+      await vi.advanceTimersByTimeAsync(1_000)
+    } finally {
+      window.removeEventListener('agent-idle', handler)
+    }
+    connection.dispose()
+
+    expect(idleEvents.some((ev) => ev.chatID === 'chat-a')).toBe(true)
   })
 
   it('does NOT dispatch replay_gap when recovery returns done even if a newer SSE event bumped progressVersion', async () => {
@@ -1173,5 +1281,48 @@ describe('half-open connection watchdog', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('MultiSSEManager primary 引用计数（split view）', () => {
+  it('两个订阅同 chatID：移除一个不断连接，全部移除才断开（F#3）', () => {
+    // split view 两个 AgentPanel 同 chatID 各得 'primary'，关一个 → 旧实现
+    // removeSubscription('primary') 直接 disconnect → 存活面板的 SSE 被断。
+    const mgr = new MultiSSEManager()
+    const sub1 = mgr.addSubscription('chat-a', 'web')
+    const sub2 = mgr.addSubscription('chat-a', 'web')
+    expect(sub1).toBe('primary')
+    expect(sub2).toBe('primary')
+    // 复用同一 primary 连接（不建第二条 SSE）。
+    expect(MockEventSource.instances).toHaveLength(1)
+    MockEventSource.instances[0].open()
+    expect(mgr.connected).toBe(true)
+
+    // 移除第一个订阅：仍有一个存活 → primary 不断。
+    mgr.removeSubscription(sub1)
+    expect(MockEventSource.instances[0].closed).toBe(false)
+    expect(mgr.connected).toBe(true)
+
+    // 移除最后一个订阅 → 断开（无泄漏）。
+    mgr.removeSubscription(sub2)
+    expect(MockEventSource.instances[0].closed).toBe(true)
+    mgr.dispose()
+  })
+
+  it('非 primary 订阅行为不变（同 chatID 不同 channel 建独立连接）', () => {
+    const mgr = new MultiSSEManager()
+    const p = mgr.addSubscription('chat-b', 'web')
+    const extra = mgr.addSubscription('chat-b', 'cli')
+    expect(p).toBe('primary')
+    expect(extra).toBe('cli:chat-b')
+    expect(MockEventSource.instances).toHaveLength(2)
+
+    // extra 断开不影响 primary；primary 断开不影响 extra（原有行为保持）。
+    mgr.removeSubscription(extra)
+    expect(MockEventSource.instances[0].closed).toBe(false)
+    expect(MockEventSource.instances[1].closed).toBe(true)
+    mgr.removeSubscription(p)
+    expect(MockEventSource.instances[0].closed).toBe(true)
+    mgr.dispose()
   })
 })

@@ -36,7 +36,15 @@ function parseToolArgs(args?: string): Record<string, unknown> | null {
 }
 function genUICode(result: unknown): string {
   if (!result || typeof result !== 'object') return ''
-  const r = result as { args?: string; detail?: string }
+  const r = result as { args?: string; detail?: string; status?: string; content?: string }
+  // ⚠️ NEVER render UI for a FAILED tool call. A rejected/rejected-then-retried
+  // display_html keeps its complete args.code but has NO persisted ui_code
+  // (empty detail, error result) — rendering it produced a full-height expanded
+  // panel for UI that never rendered, poisoning the virtual row height
+  // (2026-08-28: three depth-2-rejected drafts each rendered ~700px of ghost
+  // panel and broke fold/height calculations).
+  if (r.status === 'error') return ''
+  if (typeof r.content === 'string' && r.content.startsWith('Error:')) return ''
   const args = parseToolArgs(r.args)
   if (typeof args?.code === 'string' && args.code.trim()) return stripGenUIPrefix(args.code)
   if (r.detail) return stripGenUIPrefix(r.detail)
@@ -65,7 +73,14 @@ export function activate(ctx: ActivateCtx): () => void {
     render: (msg) => {
       const code = genUICode(msg.tool?.result)
       if (!code) return null
-      return React.createElement(SandboxedUI, { code, streaming: false })
+      // ⚠️ The committed render MUST be height-bounded. The streaming path wraps
+      // SandbredUI in GenUIPanel (max-h-[70vh] content), but the historical path
+      // may render BARE (surface metadata is not persisted on every historical
+      // tool snapshot → ToolRender skips its GenUIPanel wrapper). An unbounded
+      // 2000px+ dashboard inside a virtual row estimated at 560px made rows
+      // overlap (2026-08-28 历史渲染重叠). Renderer output contract: GenUI
+      // content is ALWAYS height-bounded.
+      return React.createElement(SandboxedUI, { code, streaming: false, className: 'max-h-[70vh] overflow-auto' })
     },
   })
 

@@ -9,7 +9,7 @@ import type { EventMap } from './events'
 import type { MessageRendererContribution } from './renderer'
 
 /** 能力权限：决定 `PluginContext<P>` 上哪些能力接口可用（§3.2 能力即类型）。 */
-export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config'
+export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config' | 'files'
 
 /** 视图容器（映射到前端布局位）。 */
 export type ViewContainer = 'right_sidebar' | 'panel' | 'bottom' | 'info_bar' | 'status_bar_right' | 'iteration' | 'main'
@@ -114,6 +114,7 @@ export type Contribution =
   | SettingContribution
   | EventHandlerContribution
   | ThemeContribution
+  | import('./ambience').AmbienceContribution
 
 /** 插件清单。`contributes` 必须是 Contribution 数组；`permissions` 是能力源头。 */
 export interface PluginManifest {

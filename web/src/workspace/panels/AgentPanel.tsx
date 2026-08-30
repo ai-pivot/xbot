@@ -12,7 +12,7 @@
  *   - The main Agent tab follows SessionStore.activeSession directly.
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -232,6 +232,40 @@ export function AgentPanel({ params, api }: PanelProps) {
   const resetAgentChatRef = useRef(agentChat.reset)
   resetAgentChatRef.current = agentChat.reset
   const progressSnapshot = agentChat.liveProgress
+
+  // ── 渲染暂停（面板不可见时挂起 React 通知）──
+  // MobileAppShell 用 display:none 切换视图（AgentPanel 保持挂载——store
+  // 不可销毁，见 MobileAppShell 文件头不变量）。IntersectionObserver 检测
+  // display:none（元素无渲染盒 → 0 交叉）→ store.pause() 挂起 rAF 通知。
+  // dispatch 照常（状态机数据流完整，SSE 事件不丢）；resume 时一次 flush
+  // （useSyncExternalStore 读最新 state，与"持续渲染"的最终态一致——正是
+  // rAF 合并的结构保证）。桌面 DockviewContainer 的 tab 切走同样受益
+  // （不可见面不渲染）。手机上切到工具页/终端页后 JS 渲染全停（此前
+  // display:none 只省 paint，React reconciliation 照常满负荷跑）。
+  const agentPanelRootRef = useRef<HTMLDivElement>(null)
+  const pauseRenderRef = useRef(agentChat.pauseRender)
+  const resumeRenderRef = useRef(agentChat.resumeRender)
+  pauseRenderRef.current = agentChat.pauseRender
+  resumeRenderRef.current = agentChat.resumeRender
+  useEffect(() => {
+    const el = agentPanelRootRef.current
+    if (!el) return
+    // SSR / jsdom（测试环境）安全：无 IntersectionObserver 时跳过（渲染照常）。
+    if (typeof IntersectionObserver === 'undefined') return
+    const io = new IntersectionObserver((entries) => {
+      const visible = entries[entries.length - 1]?.isIntersecting ?? true
+      if (visible) resumeRenderRef.current()
+      else pauseRenderRef.current()
+    })
+    io.observe(el)
+    return () => {
+      io.disconnect()
+      // 卸载/会话切换时恢复（防 paused 泄漏——store 重建时新 store 从未
+      // pause（初始 paused=false），resume 是 no-op；同 store 复用时确保
+      // 残留的 paused 状态被清除，否则该 store 永久无通知）。
+      resumeRenderRef.current()
+    }
+  }, [])
   // liveMessage comes from useProgressStream's live store — its visibility is
   // governed by the store's own hydration/reset lifecycle (initialProgress →
   // historyProgressToLive → store.replace, SSE-driven updates, reset on
@@ -283,12 +317,14 @@ export function AgentPanel({ params, api }: PanelProps) {
     : undefined
   // busy 来源（三路 OR，覆盖所有窗口）：
   // 1. currentSession.running（SSE session(busy) 事件设置 —— 主路径）
-  // 2. progressSnapshot.streaming && phase 非 done/frozen（live turn 在跑）
+  // 2. progressSnapshot.streaming（live turn 在跑 —— TDSM 状态机经
+  //    liveProgressFromState 输出快照，phase 值域仅 'thinking'|'tool_exec'，
+  //    committed/frozen turn 不进 liveProgress，无需再比较 phase）
   // 3. agentChat.busyFallback（状态机 activeTurn !== null —— 覆盖 REST ack
   //    到 turn_started 之间的窗口：sending 已清但 live turn 可能已由 lazy
   //    采纳/stream 事件建立，session(busy) 尚未到达）
   const busy = ((currentSession?.running ?? false) ||
-    (progressSnapshot.streaming && progressSnapshot.phase !== 'done' && progressSnapshot.phase !== 'frozen') ||
+    progressSnapshot.streaming ||
     agentChat.busyFallback) &&
     !askUser.prompt
 
@@ -368,6 +404,13 @@ export function AgentPanel({ params, api }: PanelProps) {
     }
   }, [chatID, messageChannel, setGoalOverride])
 
+  // chatRef：rewindTo/footer 的稳定闭包读取（useChatMessages 每帧返回新对象，
+  // 若 rewindTo deps 含 chat 则每帧重建 → 传给 MessageList 的 onRewind 引用
+  // 每帧变化 → 击穿 MessageList/MessageItem 的 memo。ref 化后 deps 全部低频
+  // （chatID/isSubAgent/messageChannel/ws/t），回调行为不变（调用时读最新 chat）。
+  const chatRef = useRef(chat)
+  chatRef.current = chat
+
   // Rewind via inline edit: rewind to the message's DB id, then send
   // the edited content as a new message.
   const rewindTo = useCallback(async (editedContent: string, originalMessage: ChatMessage) => {
@@ -399,7 +442,7 @@ export function AgentPanel({ params, api }: PanelProps) {
       setEditingMessageId(null)
       // Rewind is destructive: clear the visible/cache rows before reload so
       // an empty truncated history is not mistaken for a background refresh.
-      chat.clearMessages()
+      chatRef.current.clearMessages()
       // Rewind MUST also reset the state machine — otherwise the pre-rewind
       // turn's live residue is committed on the next turn_started,
       // re-rendering the rewind-deleted assistant below the new turn.
@@ -409,7 +452,7 @@ export function AgentPanel({ params, api }: PanelProps) {
       // messageMutationGenRef, the subsequent reload captures the incremented
       // value, requestHasMessageMutation() returns false, and the optimistic
       // message is silently wiped by the fresh history.
-      await chat.reload()
+      await chatRef.current.reload()
       // Send the edited content as a new message (sendMessage increments
       // followResetToken so the viewport scrolls to bottom for the response)
       sendMessage(editedContent)
@@ -418,7 +461,7 @@ export function AgentPanel({ params, api }: PanelProps) {
       // Keep edit mode active when the rewind request fails.
       toast.error(e instanceof Error ? e.message : t('agent.rewindFailed'))
     }
-  }, [chatID, isSubAgent, messageChannel, chat, ws, t, sendMessage])
+  }, [chatID, isSubAgent, messageChannel, ws, t, sendMessage])
 
   const rewindLatest = useCallback(() => {
     if (busy) return
@@ -440,8 +483,31 @@ export function AgentPanel({ params, api }: PanelProps) {
     setEditingMessageId(null)
   }, [])
 
+  // footer（AskUserPanel）：useMemo 保持引用稳定 —— AgentPanel 每帧 re-render
+  // （AgentPanel 是状态机订阅点，busy/draft/context 等任何变化都触发整树
+  // re-render）时，footer JSX 若每帧新对象会击穿 MessageList 的 React.memo
+  // （props 浅比较失败）。deps 全部为稳定引用：prompt（store 稳定对象，
+  // 变化时新引用）、respond/cancel（useAskUser 的 useCallback）、isSubAgent
+  // （boolean）。chat.reload 走 chatRef（闭包读最新，不进 deps）。
+  const askUserFooter = useMemo(() => {
+    if (!askUser.prompt || isSubAgent) return null
+    return (
+      <AskUserPanel
+        prompt={askUser.prompt}
+        onRespond={(answers) => {
+          askUser.respond(answers)
+          // Deterministic: the backend persists the answer as a user
+          // message; reload history so it renders with its authoritative
+          // turn_id (NO optimistic rendering).
+          void chatRef.current.reload()
+        }}
+        onCancel={askUser.cancel}
+      />
+    )
+  }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
       {!ws.connected && !isSubAgent && chatID && (
         <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
           <Loader2 className="size-3 animate-spin" />
@@ -489,21 +555,7 @@ export function AgentPanel({ params, api }: PanelProps) {
         editingMessageId={editingMessageId}
         onStartEdit={handleStartEdit}
         onEndEdit={handleEndEdit}
-        footer={
-          askUser.prompt && !isSubAgent ? (
-            <AskUserPanel
-              prompt={askUser.prompt}
-              onRespond={(answers) => {
-                askUser.respond(answers)
-                // Deterministic: the backend persists the answer as a user
-                // message; reload history so it renders with its authoritative
-                // turn_id (NO optimistic rendering).
-                void chat.reload()
-              }}
-              onCancel={askUser.cancel}
-            />
-          ) : null
-        }
+        footer={askUserFooter}
       />
       {!isSubAgent && (
         <MessageInput

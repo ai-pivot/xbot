@@ -71,6 +71,9 @@ export function FileSearch({ tabManager }: FileSearchProps) {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t('sidebar.searchPlaceholder')}
+          autoComplete="off"
+          readOnly
+          onFocus={(e) => { if (e.currentTarget.readOnly) e.currentTarget.readOnly = false }}
           className="h-7 pl-8 pr-7 text-xs"
           aria-label={t('sidebar.search')}
           autoFocus

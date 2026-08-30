@@ -61,26 +61,6 @@ func TestRateLimiter_SlidingWindowExpiry(t *testing.T) {
 	}
 }
 
-func TestRateLimiter_Remaining(t *testing.T) {
-	rl := NewPluginRateLimiter(map[string]RateLimit{
-		"p1": {MaxCalls: 5, Window: time.Minute},
-	})
-
-	if r := rl.Remaining("p1"); r != 5 {
-		t.Fatalf("initial remaining should be 5, got %d", r)
-	}
-
-	rl.Allow("p1")
-	if r := rl.Remaining("p1"); r != 4 {
-		t.Fatalf("after 1 call remaining should be 4, got %d", r)
-	}
-
-	// Unconfigured plugin
-	if r := rl.Remaining("unknown"); r != -1 {
-		t.Fatalf("unconfigured plugin remaining should be -1, got %d", r)
-	}
-}
-
 func TestRateLimiter_Reset(t *testing.T) {
 	rl := NewPluginRateLimiter(map[string]RateLimit{
 		"p1": {MaxCalls: 1, Window: time.Minute},
@@ -192,15 +172,17 @@ func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			rl.Allow("p1")
-			rl.Remaining("p1")
 			rl.Allow("p1")
 		}()
 	}
 	wg.Wait()
 
 	// Should not panic; 200 calls made, limit is 1000, so all should succeed
-	if r := rl.Remaining("p1"); r < 800 {
-		t.Fatalf("expected at least 800 remaining, got %d", r)
+	rl.mu.Lock()
+	count := len(rl.windows["p1"])
+	rl.mu.Unlock()
+	if count != 200 {
+		t.Fatalf("expected exactly 200 recorded calls, got %d", count)
 	}
 }
 

@@ -796,8 +796,8 @@ describe('useProgressStream event dispatch', () => {
     // phase==='done'), so todos were lost at the turn boundary and only
     // reappeared on the next history reload (idle) — never during busy.
     const todos = [
-      { id: 1, text: 'task A', done: true },
-      { id: 2, text: 'task B', done: false },
+      { id: 1, text: 'task A', status: 'done' },
+      { id: 2, text: 'task B', status: 'pending' },
     ]
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
@@ -830,8 +830,8 @@ describe('useProgressStream event dispatch', () => {
     // was IGNORED — the frontend kept stale todos indefinitely, diverging
     // from the server's authoritative (cleared) state.
     const todos = [
-      { id: 1, text: 'task A', done: true },
-      { id: 2, text: 'task B', done: true },
+      { id: 1, text: 'task A', status: 'done' },
+      { id: 2, text: 'task B', status: 'done' },
     ]
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
@@ -879,8 +879,8 @@ describe('useProgressStream event dispatch', () => {
 
   it('PhaseDone with todos present preserves them (not cleared)', () => {
     const todos = [
-      { id: 1, text: 'task A', done: true },
-      { id: 2, text: 'task B', done: false },
+      { id: 1, text: 'task A', status: 'done' },
+      { id: 2, text: 'task B', status: 'pending' },
     ]
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),
@@ -903,8 +903,8 @@ describe('useProgressStream event dispatch', () => {
     // checks — a todo_write([]) (clear) never reached the frontend, so stale
     // todos lingered indefinitely (inconsistent with the server).
     const todos = [
-      { id: 1, text: 'task A', done: true },
-      { id: 2, text: 'task B', done: false },
+      { id: 1, text: 'task A', status: 'done' },
+      { id: 2, text: 'task B', status: 'pending' },
     ]
     const { result } = renderHook(() =>
       useProgressStream({ chatID: 'c1', ws: currentWS as unknown as WSConnection }),

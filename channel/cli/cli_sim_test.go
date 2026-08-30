@@ -75,9 +75,9 @@ type SimToolRecord struct {
 
 // SimTodoItem describes a TODO item for progress bar simulation.
 type SimTodoItem struct {
-	ID   int    `json:"id"`
-	Text string `json:"text"`
-	Done bool   `json:"done"`
+	ID     int    `json:"id"`
+	Text   string `json:"text"`
+	Status string `json:"status"`
 }
 
 // SimStep is a single event in the simulation.
@@ -2300,8 +2300,8 @@ func TestSimProgressWithTools(t *testing.T) {
 			{Action: "user_msg", Content: "read the file"},
 			{Action: "progress", Phase: "thinking", Iteration: 0,
 				ActiveTools: []SimToolRecord{{Name: "Read", Label: "Read main.go", Status: "active"}}},
-			// renderProgressBlock always returns empty now (inline rendering).
-			// Verify typing state instead of progress panel content.
+			// Progress renders inline in the streaming message (renderTurnBody /
+			// renderLiveIteration); verify typing state instead of panel content.
 			{Action: "assert", AssertState: map[string]any{"typing": true}},
 			{Action: "progress", Phase: "done", Iteration: 0,
 				CompletedTools: []SimToolRecord{{Name: "Read", Label: "Read main.go", Status: "done", Elapsed: 150}}},

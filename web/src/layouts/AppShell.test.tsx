@@ -58,14 +58,19 @@ vi.mock('@/hooks/useAuth', () => ({
 }))
 // Heavy chrome mocked away; keep InfoBar + DockviewContainer real (they own the
 // layout under test).
-vi.mock('@/layouts/ActivityBar', () => ({ ActivityBar: () => <div data-testid="activity-bar" /> }))
-vi.mock('@/components/session/SessionSidebar', () => ({ SessionSidebar: () => <div data-testid="session-sidebar" /> }))
-vi.mock('@/components/sidebar/RightSidebar', () => ({ RightSidebar: () => <div data-testid="right-sidebar" /> }))
-vi.mock('@/components/sidebar/RightActivityBar', () => ({ RightActivityBar: () => <div data-testid="right-activity-bar" /> }))
 vi.mock('@/components/settings/SettingsDialog', () => ({ SettingsDialog: () => null }))
-// 布局测试不关心插件视图面板（PluginPanelContainer 需要 PluginRuntimeProvider）；
-// mock 为 null，保持测试聚焦 flex-col 布局回归。
-vi.mock('@/plugins/manager/PluginPanelContainer', () => ({ PluginPanelContainer: () => null }))
+// 布局测试不关心插件视图面板内容，但要记录挂载的 container 名——布局 v5 断言
+// status_bar_right 容器已移除（被引擎路 TopRail 替代），info_bar 仍在（InfoBar 内部）。
+const panelContainers = vi.hoisted(() => ({ list: [] as string[] }))
+vi.mock('@/plugins/manager/PluginPanelContainer', () => ({
+  PluginPanelContainer: ({ container }: { container: string }) => {
+    panelContainers.list.push(container)
+    return null
+  },
+}))
+// 布局 v4：面板系统聚焦外——builtin 面板不注册（dock 空），PanelDock/
+// FloatingLayer 用真实实现渲染空壳，测试聚焦 main flex-col 布局回归。
+vi.mock('@/components/panel/builtinPanels', () => ({ registerBuiltinPanels: vi.fn() }))
 
 import { renderWithProviders } from '@/test-utils'
 import { AppShell } from './AppShell'
@@ -74,6 +79,7 @@ import { PluginWidgetsContext } from '@/plugins/PluginWidgetProvider'
 describe('AppShell workspace layout (info bar must not squeeze the dockview)', () => {
   beforeEach(() => {
     localStorage.clear()
+    panelContainers.list.length = 0
   })
 
   it('stacks the info bar above the dockview (flex column), never side by side', () => {
@@ -102,31 +108,32 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // w-full dockview would share a row and overflow the screen.
     expect(main!.className).toContain('flex-col')
 
-    // Order: children[0] = top status bar header (status_bar_right container),
-    // children[1] = dockview host, children[2] = InfoBar (status-bar style at
-    // the BOTTOM, VSCode-like).
+    // Order: children[0] = header, children[1] = dockview host,
+    // children[2] = bottom rail row (InfoBar + separator; BottomRailBadges
+    // wired later — status-bar style at the BOTTOM, VSCode-like).
     expect(main!.children.length).toBeGreaterThanOrEqual(3)
     const topHeader = main!.children[0]
     const dockview = main!.children[1]
-    const infoBar = main!.children[2]
-    // Top status bar: hosts the status_bar_right plugin container (iter-stats).
+    const railRow = main!.children[2]
+    // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
     expect(topHeader.className).toContain('items-center')
     expect(topHeader.className).toContain('bg-bg-secondary')
     // Dockview host fills the REMAINING space (flex-1 min-h-0), not
-    // h-full w-full — h-full would overflow since the InfoBar consumed height.
+    // h-full w-full — h-full would overflow since the rail row consumed height.
     expect(dockview.className).toContain('flex-1')
     expect(dockview.className).toContain('min-h-0')
     expect(dockview.className).toContain('w-full')
     expect(dockview.className).not.toContain('h-full')
-    // InfoBar is a slim fixed-height status bar BELOW the workspace. Its
-    // height (inline style) is 1.5rem + the bottom safe-area inset — a plain
-    // h-6 on desktop (inset 0), and it paints through the iOS home-indicator
-    // strip in standalone PWA mode.
-    const infoBarEl = infoBar as HTMLElement
+    // Bottom rail row: flex line, shrink-0 (fixed height, never squeezed).
+    expect(railRow.className).toContain('flex')
+    expect(railRow.className).toContain('shrink-0')
+    // InfoBar stays INSIDE the rail row with its fixed-height strip (the
+    // always-rendered gotcha is untouched): height = 1.5rem + bottom
+    // safe-area inset, top border (sits below the workspace).
+    const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
     expect(infoBarEl.style.paddingBottom).toBe('var(--safe-area-bottom)')
-    // It uses a TOP border (sits below the workspace), not a bottom one.
-    expect(infoBar.className).toContain('border-t')
+    expect(infoBarEl.className).toContain('border-t')
   })
 
   it('ALWAYS renders the info bar (empty zone shows a stable empty strip — no sudden pop-in)', () => {
@@ -139,9 +146,29 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     const main = document.querySelector('main')
     expect(main).not.toBeNull()
     expect(main!.className).toContain('flex-col')
-    // The info bar is ALWAYS rendered as a fixed-height strip, even with no
-    // plugin content — so it never suddenly pops in/out.
-    const infoBar = main!.children[2]
-    expect((infoBar as HTMLElement).style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
+    // The info bar is ALWAYS rendered as a fixed-height strip (inside the
+    // bottom rail row), even with no plugin content — it never pops in/out.
+    const railRow = main!.children[2]
+    const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
+    expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
+  })
+
+  it('layout v5 header: no model pill / think pill, no status_bar_right container', () => {
+    renderWithProviders(
+      <PluginWidgetsContext.Provider value={{ zones: {}, components: [], revision: 0 }}>
+        <AppShell />
+      </PluginWidgetsContext.Provider>,
+    )
+
+    // 模型 pill（Popover 下拉）与 think pill 已整体移除（布局 v5：将来由
+    // 居中插件实现，本期不留占位）。ctxUsage 上下文环保留。
+    expect(screen.queryByTitle('切换模型')).not.toBeInTheDocument()
+    expect(screen.queryByText(/think/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: '上下文用量' })).toBeInTheDocument()
+
+    // status_bar_right 插件容器已移除（被 TopRail 替代）；InfoBar 内部的
+    // info_bar 容器不受影响。
+    expect(panelContainers.list).not.toContain('status_bar_right')
+    expect(panelContainers.list).toContain('info_bar')
   })
 })

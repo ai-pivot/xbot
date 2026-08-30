@@ -920,6 +920,21 @@ func (m *MultiTenantSession) GetMemoryStats(ctx context.Context, channel, chatID
 	return stats
 }
 
+// GetSessionUsageStats aggregates a session's usage & performance from
+// iteration_history (v59: per-iteration input/cached tokens + model).
+// Read-only: resolves the tenant via GetTenantIDByChannelChatID (no tenant
+// creation side effect). Returns (nil, nil) when the session doesn't exist.
+func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recentLimit int) (*sqlite.TenantUsageStats, error) {
+	tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant: %w", err)
+	}
+	if tenantID == 0 {
+		return nil, nil
+	}
+	return m.sessionSvc.GetTenantUsageStats(tenantID, recentLimit)
+}
+
 // RewindHistory truncates a session at a stable user history node.
 func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int64) (llm.ChatMessage, int, error) {
 	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)

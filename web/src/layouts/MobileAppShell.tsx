@@ -23,6 +23,8 @@ const FilePanel = lazy(() =>
   import('@/workspace/panels/FilePanel').then(m => ({ default: m.FilePanel })))
 const DiffPanel = lazy(() =>
   import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
+const BackgroundPanel = lazy(() =>
+  import('@/workspace/panels/BackgroundPanel').then(m => ({ default: m.BackgroundPanel })))
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
@@ -32,6 +34,7 @@ import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
 import { InfoBar } from '@/plugins/InfoBar'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
+import { AmbienceBackground } from '@/ambience/AmbienceRoot'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
@@ -195,6 +198,26 @@ export function MobileAppShell() {
         })
         return ''
       }
+      if (input.type === 'background') {
+        // TasksPanel 点击后台任务 → 全屏任务详情（BackgroundPanel）。手机端
+        // 无 Dockview tab 容器（AgentPanel 直渲染，api=null）——透传原始 openTab
+        // 只会进 pending 队列永不执行（点击无反应，进不了详情页）。
+        const d = input.data as {
+          taskID?: string
+          command?: string
+          taskChannel?: string
+          taskChatID?: string
+        }
+        pushMobileWorkView({
+          kind: 'background',
+          title: input.title,
+          taskID: d.taskID ?? '',
+          command: d.command,
+          taskChannel: d.taskChannel,
+          taskChatID: d.taskChatID,
+        })
+        return ''
+      }
       return tabManager.openTab(input)
     },
   }), [tabManager])
@@ -314,7 +337,12 @@ export function MobileAppShell() {
          *  viewport-fit=cover. This is the community-verified iOS PWA
          *  full-bleed fix. */}
         <div className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary">
-          <header className="flex shrink-0 items-center gap-0.5 border-b border-border bg-bg-secondary pr-1" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
+          {/* Ambience 壁纸层（z:0）——第一子元素 */}
+          <AmbienceBackground />
+          {/* relative（定位元素）必须保留在 header/main/nav 上：壁纸层是
+              absolute z-0 定位元素，CSS 层叠规则下 z-0 定位元素画在普通流
+              元素之上——无 relative 的内容会被壁纸完全遮挡。 */}
+          <header className="relative flex shrink-0 items-center gap-0.5 border-b border-border bg-bg-secondary pr-1" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
             <Button type="button" variant="ghost" size="icon" aria-label={headerNavLabel} onClick={handleHeaderNav}>
               {view === 'agent' && !subAgentView ? <Menu className="size-5" /> : <ArrowLeft className="size-5" />}
             </Button>
@@ -331,7 +359,7 @@ export function MobileAppShell() {
             }))}
           </header>
 
-          <main className="min-h-0 flex-1 overflow-hidden">
+          <main className="relative min-h-0 flex-1 overflow-hidden">
             {/* Agent 面板始终挂载（display:none 切换视图）——见文件头不变量说明。 */}
             <div className="h-full" style={{ display: view === 'agent' ? undefined : 'none' }}>
               <AgentPanel {...agentPanelProps} />
@@ -380,6 +408,25 @@ export function MobileAppShell() {
                       containerApi={{} as PanelProps['containerApi']}
                     />
                   </Suspense>
+                ) : workView.kind === 'background' ? (
+                  <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
+                    <BackgroundPanel
+                      params={{
+                        tabId: `mobile-bg-${workView.taskID}`,
+                        type: 'background',
+                        title: workView.title,
+                        icon: 'background',
+                        closable: true,
+                        active: true,
+                        taskID: workView.taskID,
+                        command: workView.command,
+                        taskChannel: workView.taskChannel,
+                        taskChatID: workView.taskChatID,
+                      }}
+                      api={{} as PanelProps['api']}
+                      containerApi={{} as PanelProps['containerApi']}
+                    />
+                  </Suspense>
                 ) : (
                   <MobilePluginWorkView view={workView} />
                 )}
@@ -410,7 +457,7 @@ export function MobileAppShell() {
 
           {/* 按需底部导航：仅当用户把布局项移入 mobile.bottom_nav 时渲染。 */}
           {bottomNavItems.length > 0 && (
-            <nav className="grid shrink-0 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))', gridTemplateColumns: `repeat(${bottomNavItems.length}, minmax(0, 1fr))` }}>
+            <nav className="relative grid shrink-0 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))', gridTemplateColumns: `repeat(${bottomNavItems.length}, minmax(0, 1fr))` }}>
               {bottomNavItems.map((item) => renderBottomNavItem(item, {
                 view,
                 activePanel,

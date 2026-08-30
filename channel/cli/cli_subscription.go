@@ -232,9 +232,10 @@ func (m *cliModel) refreshCachedModelName() {
 // Idempotent: if the session already has a binding (GetSessionSubscription
 // returns non-empty), the function is a no-op.
 //
-// Priority:
-//  1. Balance tier config (user_settings "tier_balance") — "subID|model" format
-//  2. Last-used model (GetDefault — returns the user's default subscription)
+// Priority: Balance tier config only (user_settings "tier_balance",
+// "subID|model" format) — no last-used fallback (user request: new sessions
+// default to the Balance tier exclusively; without it no binding is created
+// and ResolveLLM falls through to the system default).
 //
 // Uses settingsSvc to read tier config and llmSubscriber.SelectModel to bind.
 func (m *cliModel) ensureSessionModelBinding() {
@@ -268,19 +269,8 @@ func (m *cliModel) ensureSessionModelBinding() {
 		}
 	}
 
-	// Priority 2: Last-used model (GetDefault).
-	if m.subscriptionMgr != nil {
-		if defSub, err := m.subscriptionMgr.GetDefault(m.senderID); err == nil && defSub != nil && defSub.Model != "" {
-			if err := m.llmSubscriber.SelectModel(m.senderID, m.channelName, defSub.ID, defSub.Model, m.chatID); err == nil {
-				m.cachedModelName = defSub.Model
-				m.activeSubID = defSub.ID
-				return
-			}
-		}
-	}
-
-	// No model to bind — leave cachedModelName empty. ResolveLLM will still
-	// auto-bind on first message via the agent-side ensureSessionModel.
+	// Balance tier 未配置 → 不绑定（无 last-used fallback：新会话默认一律
+	// balance，没有就不绑）。cachedModelName 留空，走系统默认（GetLLM）。
 }
 
 // parseTierValueCLI splits a tier config value into (subID, model).

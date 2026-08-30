@@ -351,13 +351,23 @@ func nextCronTime(expr string, now time.Time) (time.Time, error) {
 	t := now.Truncate(time.Minute).Add(time.Minute)
 	limit := t.Add(4 * 365 * 24 * time.Hour)
 
+	// Day-field semantics (Vixie cron): when BOTH day-of-month and day-of-week
+	// are restricted (neither is "*"), a day matches if EITHER field hits (OR).
+	// Otherwise the AND applies — but one side being "*" makes it a no-op there.
+	domRestricted := !isFullCronSet(domSet, 1, 31)
+	dowRestricted := !isFullCronSet(dowSet, 0, 6)
+
 	for t.Before(limit) {
 		if !monSet[int(t.Month())] {
 			// Skip to next month
 			t = time.Date(t.Year(), t.Month()+1, 1, 0, 0, 0, 0, t.Location())
 			continue
 		}
-		if !domSet[t.Day()] || !dowSet[int(t.Weekday())] {
+		dayMatch := domSet[t.Day()] && dowSet[int(t.Weekday())]
+		if domRestricted && dowRestricted {
+			dayMatch = domSet[t.Day()] || dowSet[int(t.Weekday())]
+		}
+		if !dayMatch {
 			t = t.AddDate(0, 0, 1)
 			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 			continue
@@ -374,6 +384,18 @@ func nextCronTime(expr string, now time.Time) (time.Time, error) {
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("no next run found within 4 years")
+}
+
+// isFullCronSet reports whether every value in [min, max] is allowed — i.e.
+// the parsed cron field was "*" (unrestricted). Used for the Vixie day-field
+// OR rule: OR applies only when BOTH dom and dow are restricted.
+func isFullCronSet(set map[int]bool, min, max int) bool {
+	for v := min; v <= max; v++ {
+		if !set[v] {
+			return false
+		}
+	}
+	return true
 }
 
 // parseCronField parses a single cron field and returns a set of allowed values

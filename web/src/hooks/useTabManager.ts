@@ -89,6 +89,8 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
                   diffPath: params.diffPath,
                   diffScope: params.diffScope,
                 }
+              : params.type === 'panel'
+            ? { panelId: params.panelId }
               : undefined,
   }
 }
@@ -100,6 +102,10 @@ export interface TabManager {
   openTab: (tab: Omit<Tab, 'id'>) => string
   /** Close a tab (agent tabs protected). */
   closeTab: (id: string) => void
+  /** Same-group tabs in tab-bar order (tab 右键菜单 disable 态计算用)。 */
+  groupTabsOf: (id: string) => Array<{ tabId: string; closable: boolean }>
+  /** Batch-close same-group tabs（tab 右键菜单：'left'|'right'|'others'|'all'）。复用 closeTab 的保护（closable=false 跳过、最后一个 agent tab 跳过）。 */
+  closeTabsInGroup: (id: string, which: 'left' | 'right' | 'others' | 'all') => void
   /** Focus a tab by id. */
   setActiveTab: (id: string) => void
   /** Move a tab's panel into a new group to its right (split view). */
@@ -229,6 +235,7 @@ function useTabManagerImpl(): TabManager {
       initialHighlight: input.type === 'file' ? input.data?.initialHighlight : undefined,
       fileLanguage: input.type === 'file' ? input.data?.fileLanguage : undefined,
       fileViewMode: input.type === 'file' ? input.data?.fileViewMode : undefined,
+      panelId: input.type === 'panel' ? input.data?.panelId : undefined,
     }
     // File/work tabs open in the same group as Agent, as a sibling tab
     // (not a separate right-side column). Agent panels use renderer 'always'
@@ -278,6 +285,29 @@ function useTabManagerImpl(): TabManager {
     if (rightGroupPanelIdRef.current === panelId) rightGroupPanelIdRef.current = null
   }, [])
 
+  /** Same-group tabs in tab-bar order（右键菜单 disable 态计算用）。 */
+  const groupTabsOf = useCallback((id: string): Array<{ tabId: string; closable: boolean }> => {
+    const api = apiRef.current
+    const panelId = panelIdByTab.current.get(id)
+    const panel = panelId ? api?.getPanel(panelId) : undefined
+    if (!api || !panel) return []
+    // panel.group.panels：dockview readonly 有序列表（GroupPanel 的 tab 条顺序）。
+    return (panel.group?.panels ?? []).map((p) => {
+      const params = p.params as PanelParams
+      return { tabId: params.tabId, closable: params.closable === true }
+    })
+  }, [])
+
+  /** Batch-close same-group tabs（右键菜单 left/right/others/all）。逐个走 closeTab，复用其保护（closable=false 跳过、最后一个 agent tab 跳过）。 */
+  const closeTabsInGroup = useCallback(
+    (id: string, which: 'left' | 'right' | 'others' | 'all') => {
+      for (const tabId of groupCloseTargets(groupTabsOf(id), id, which)) {
+        closeTab(tabId)
+      }
+    },
+    [closeTab, groupTabsOf],
+  )
+
   const setActiveTab = useCallback((id: string) => {
     const api = apiRef.current
     const panelId = panelIdByTab.current.get(id)
@@ -326,6 +356,8 @@ function useTabManagerImpl(): TabManager {
       activeTabId,
       openTab,
       closeTab,
+      groupTabsOf,
+      closeTabsInGroup,
       setActiveTab,
       splitRight,
       resetWorkGroup,
@@ -334,7 +366,7 @@ function useTabManagerImpl(): TabManager {
       applyLayoutJSON,
       getWorkLayoutJSON,
     }),
-    [tabs, activeTabId, openTab, closeTab, setActiveTab, splitRight, resetWorkGroup, bindApi, getLayoutJSON, applyLayoutJSON, getWorkLayoutJSON],
+    [tabs, activeTabId, openTab, closeTab, groupTabsOf, closeTabsInGroup, setActiveTab, splitRight, resetWorkGroup, bindApi, getLayoutJSON, applyLayoutJSON, getWorkLayoutJSON],
   )
 }
 
@@ -375,6 +407,31 @@ export function tabLogicalKeyFromParams(p: PanelParams): string {
   if (p.type === 'plugin') return p.viewId ? `plugin:${p.viewId}` : ''
   if (p.type === 'diff') return p.diffKey ? `diff:${p.diffKey}` : ''
   return ''
+}
+
+/**
+ * 同组批量关闭的目标 tab（tab 右键菜单）：按 which 切片同组有序 tab 列表，
+ * 过滤掉不可关闭项（closable=false 的 tab 菜单操作中永不关闭）。纯函数——
+ * 保护语义（最后一个 agent tab 不可关）由 closeTab 在执行时逐个把关。
+ *   - left：self 之前的 tab
+ *   - right：self 之后的 tab
+ *   - others：除 self 外全部
+ *   - all：全部（含 self）
+ * self 不在列表中（未知 tabId）→ 空结果。
+ */
+export function groupCloseTargets(
+  tabs: ReadonlyArray<{ tabId: string; closable: boolean }>,
+  selfTabId: string,
+  which: 'left' | 'right' | 'others' | 'all',
+): string[] {
+  const idx = tabs.findIndex((t) => t.tabId === selfTabId)
+  if (idx < 0) return []
+  const slice =
+    which === 'left' ? tabs.slice(0, idx)
+    : which === 'right' ? tabs.slice(idx + 1)
+    : which === 'others' ? tabs.filter((_, i) => i !== idx)
+    : tabs
+  return slice.filter((t) => t.closable).map((t) => t.tabId)
 }
 
 /**

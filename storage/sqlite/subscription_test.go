@@ -206,78 +206,31 @@ func TestV39Migration_ModelFirstFoundation(t *testing.T) {
 	}
 }
 
-// TestSystemSubscription verifies the shared system subscription lifecycle:
-// UpsertSystemSubscription reconciles fields on each boot, GetSystemSubscription
-// returns it, List injects it for every user, mutation guards refuse it, and
-// GetDefault falls back to it when a user has no default.
-func TestSystemSubscription(t *testing.T) {
+// TestSystemSubscriptionRemoved verifies the v62 semantics: no system
+// subscription exists, List does not inject one for arbitrary users, and
+// GetDefault returns (nil, nil) when the user has no default (the caller
+// falls back to the in-memory defaultLLM built from cfg.LLM).
+func TestSystemSubscriptionRemoved(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewLLMSubscriptionService(db)
 
-	// No system subscription initially.
-	if sys, err := svc.GetSystemSubscription(); err != nil || sys != nil {
-		t.Fatalf("GetSystemSubscription before upsert: err=%v sys=%v", err, sys)
-	}
-
-	// Reconcile from "config/env" values.
-	first := &LLMSubscription{Provider: "openai", BaseURL: "http://api", APIKey: "sk-first", Model: "gpt-4o"}
-	if err := svc.UpsertSystemSubscription(first); err != nil {
-		t.Fatalf("UpsertSystemSubscription: %v", err)
-	}
-	sys, err := svc.GetSystemSubscription()
-	if err != nil || sys == nil {
-		t.Fatalf("GetSystemSubscription after upsert: err=%v sys=%v", err, sys)
-	}
-	if sys.ID != "system" || sys.SenderID != SystemSenderID || sys.Name != SystemSubscriptionName || !sys.IsSystem {
-		t.Errorf("system sub identity: id=%q sender=%q name=%q isSystem=%v", sys.ID, sys.SenderID, sys.Name, sys.IsSystem)
-	}
-	if sys.Provider != "openai" || sys.Model != "gpt-4o" || sys.APIKey != "sk-first" {
-		t.Errorf("system sub fields: provider=%q model=%q key=%q", sys.Provider, sys.Model, sys.APIKey)
-	}
-
-	// Reconcile again with different values — fields overwrite, ID stable.
-	second := &LLMSubscription{Provider: "deepseek", BaseURL: "http://ds", APIKey: "sk-second", Model: "deepseek-v4"}
-	if err := svc.UpsertSystemSubscription(second); err != nil {
-		t.Fatalf("UpsertSystemSubscription reconcile: %v", err)
-	}
-	sys, _ = svc.GetSystemSubscription()
-	if sys == nil || sys.Provider != "deepseek" || sys.Model != "deepseek-v4" || sys.APIKey != "sk-second" {
-		t.Errorf("reconciled fields wrong: %+v", sys)
-	}
-
-	// List injects the system sub for an arbitrary user.
-	subs, err := svc.List("any-user")
-	if err != nil {
+	// List returns only the user's own subscriptions — no injected rows.
+	if subs, err := svc.List("any-user"); err != nil {
 		t.Fatalf("List: %v", err)
-	}
-	found := false
-	for _, s := range subs {
-		if s.IsSystem {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("List should include system subscription for any user, got %d subs", len(subs))
+	} else if len(subs) != 0 {
+		t.Errorf("List for unknown user should be empty, got %d subs", len(subs))
 	}
 
-	// Mutation guards refuse the system subscription.
-	if err := svc.SetSubscriptionEnabled("system", false); err == nil {
-		t.Errorf("SetSubscriptionEnabled on system should error")
-	}
-	if err := svc.Rename("system", "x"); err == nil {
-		t.Errorf("Rename on system should error")
-	}
-	if err := svc.Remove("system"); err == nil {
-		t.Errorf("Remove on system should error")
-	}
-	if err := svc.Update(&LLMSubscription{ID: "system", SenderID: SystemSenderID, Name: "x"}); err == nil {
-		t.Errorf("Update on system should error")
-	}
-
-	// GetDefault falls back to system when user has no default.
+	// GetDefault returns (nil, nil) when the user has no default.
 	def, err := svc.GetDefault("user-without-default")
-	if err != nil || def == nil || !def.IsSystem {
-		t.Errorf("GetDefault fallback to system: err=%v def=%+v", err, def)
+	if err != nil || def != nil {
+		t.Errorf("GetDefault with no default: err=%v def=%+v (want nil, nil)", err, def)
+	}
+
+	// GetDefaultByUserID likewise.
+	defBy, err := svc.GetDefaultByUserID(42)
+	if err != nil || defBy != nil {
+		t.Errorf("GetDefaultByUserID with no default: err=%v def=%+v (want nil, nil)", err, defBy)
 	}
 
 	// GetDefault prefers the user's explicit default when set.

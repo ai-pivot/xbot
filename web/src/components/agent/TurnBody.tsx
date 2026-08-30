@@ -7,16 +7,15 @@
  * When a live progress snapshot is present (streaming), appends a
  * LiveIteration at the end for the in-flight iteration.
  */
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 
+import { ThinkingLine } from './ThinkingLine'
 import { IterationGroup } from './IterationHistory'
-import { FoldedLine } from './FoldedLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
 import { LiveIteration } from './LiveIteration'
 import { continuousIterations } from './progressStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
-import { useI18n } from '@/providers/i18n'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
@@ -33,7 +32,7 @@ interface TurnBodyProps {
 
 /** A flattened content block extracted from iterations. */
 type ContentBlock =
-  | { kind: 'reasoning'; text: string; iteration: number }
+  | { kind: 'reasoning'; text: string; iteration: number; elapsedMs?: number }
   | { kind: 'text'; content: string; iteration: number }
   | { kind: 'tools'; tools: WebToolProgress[]; iterations: number[] }
   | { kind: 'subagents'; nodes: WebSubAgentProgress[]; iteration: number }
@@ -44,7 +43,7 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
   for (const iter of iterations) {
     const iterNum = iter.iteration
     if (iter.reasoning) {
-      blocks.push({ kind: 'reasoning', text: iter.reasoning, iteration: iterNum })
+      blocks.push({ kind: 'reasoning', text: iter.reasoning, iteration: iterNum, elapsedMs: iter.elapsedMs })
     }
     if (iter.content) {
       blocks.push({ kind: 'text', content: iter.content, iteration: iterNum })
@@ -72,6 +71,8 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
   return blocks
 }
 
+/** 卡片顶部状态条（设计稿 v2 B2）：live turn 进行中=accent 渐变，committed 完成=ok 低透明度。 */
+
 export const TurnBody = memo(function TurnBody({
   iterations,
   liveProgress,
@@ -79,14 +80,19 @@ export const TurnBody = memo(function TurnBody({
   mergeTools = true,
   turnID,
 }: TurnBodyProps) {
-  const { t } = useI18n()
-
   // Linear-consistency guard: only render the CONTIGUOUS prefix of iterations.
   // On a weak network a middle iteration's delta may be dropped before
   // restoreActiveProgress backfills it — rendering iteration 3 while 2 is
   // missing would show a non-contiguous sequence (1, 3). Rendering the
   // contiguous prefix keeps the visible history linear.
-  const contiguous = continuousIterations(iterations)
+  //
+  // PERF: both derivations memoized on `iterations` — TurnBody re-renders every
+  // streaming frame (its liveProgress prop changes identity per frame, memo
+  // can't block it), but committed iterations only change when history grows.
+  // useMemo lets those frames skip the O(N) contiguous-prefix scan and the
+  // O(N×blocks) flatten. Pure computation, same inputs → same output.
+  const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
+  const blocks = useMemo(() => flattenIterations(contiguous), [contiguous])
 
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
@@ -113,21 +119,16 @@ export const TurnBody = memo(function TurnBody({
     )
   }
 
-  // mergeTools on: flatten iterations into content blocks, merging consecutive tools.
-  const blocks = flattenIterations(contiguous)
-
   return (
     <div className="flex flex-col gap-1" data-iter-range={contiguous.length > 0 ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}` : undefined} data-iter-total={contiguous.length}>
+      <div className="flex flex-col gap-1">
       {blocks.map((block, i) => {
         if (block.kind === 'reasoning') {
           return (
             <div key={`r-${i}`} data-iter-id={block.iteration} data-turn-id={turnID}>
-              <FoldedLine
-                title={t('agent.thinkingChars', { count: block.text.length })}
-                defaultOpen={false}
-              >
+              <ThinkingLine label={'思考 ' + (block.elapsedMs && block.elapsedMs > 0 ? (block.elapsedMs / 1000).toFixed(1) + 's' : Math.ceil(block.text.length / 4) + ' 字')}>
                 <ReasoningBlock content={block.text} />
-              </FoldedLine>
+              </ThinkingLine>
             </div>
           )
         }
@@ -162,6 +163,7 @@ export const TurnBody = memo(function TurnBody({
           </div>
         )
       })}
+      </div>
       {liveProgress && (
         <div data-iter-id="live" data-iter-num={liveProgress.iteration || undefined} data-turn-id={liveProgress.turnID || turnID}>
           <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />

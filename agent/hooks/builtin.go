@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	log "xbot/logger"
@@ -74,125 +72,6 @@ func LoggingCallback() *CallbackHook {
 			case *PostToolUseFailureEvent:
 				log.Ctx(ctx).WithField("tool", e.ToolName_).Warnf("Tool failed: %s", e.ToolError)
 			}
-			return &Result{Decision: "allow"}, nil
-		},
-	}
-}
-
-// ---------------------------------------------------------------------------
-// TimingCallback
-// ---------------------------------------------------------------------------
-
-// timingStat holds per-tool timing counters. Fields are updated atomically.
-type timingStat struct {
-	Count int64
-	Total int64 // nanoseconds
-	Min   int64
-	Max   int64
-}
-
-// TimingSnapshot is a point-in-time copy of timing statistics for one tool.
-type TimingSnapshot struct {
-	Count   int64
-	Total   time.Duration
-	Average time.Duration
-	Min     time.Duration
-	Max     time.Duration
-}
-
-// TimingData collects per-tool execution timing. Expose Stats()/Reset() to
-// callers (e.g. CLI) that need to query or clear statistics.
-type TimingData struct {
-	mu    sync.RWMutex
-	stats map[string]*timingStat
-}
-
-// NewTimingData creates an empty TimingData collector.
-func NewTimingData() *TimingData {
-	return &TimingData{stats: make(map[string]*timingStat)}
-}
-
-// Stats returns a snapshot of all collected timing statistics.
-func (td *TimingData) Stats() map[string]TimingSnapshot {
-	td.mu.RLock()
-	defer td.mu.RUnlock()
-
-	result := make(map[string]TimingSnapshot, len(td.stats))
-	for name, s := range td.stats {
-		count := atomic.LoadInt64(&s.Count)
-		total := atomic.LoadInt64(&s.Total)
-		min := atomic.LoadInt64(&s.Min)
-		max := atomic.LoadInt64(&s.Max)
-
-		snap := TimingSnapshot{
-			Count: count,
-			Total: time.Duration(total),
-			Min:   time.Duration(min),
-			Max:   time.Duration(max),
-		}
-		if count > 0 {
-			snap.Average = time.Duration(total / count)
-		}
-		result[name] = snap
-	}
-	return result
-}
-
-// Reset clears all timing statistics.
-func (td *TimingData) Reset() {
-	td.mu.Lock()
-	defer td.mu.Unlock()
-	td.stats = make(map[string]*timingStat)
-}
-
-// TimingCallback returns a CallbackHook that records per-tool elapsed time
-// into the supplied TimingData. It always allows execution.
-func TimingCallback(td *TimingData) *CallbackHook {
-	return &CallbackHook{
-		Name: "timing",
-		Fn: func(_ context.Context, event Event) (*Result, error) {
-			post, ok := event.(*PostToolUseEvent)
-			if !ok {
-				return &Result{Decision: "allow"}, nil
-			}
-
-			ns := post.ToolElapsedMs * int64(time.Millisecond)
-			toolName := post.ToolName_
-
-			// Get or create stats entry (map access needs mutex).
-			td.mu.RLock()
-			s, exists := td.stats[toolName]
-			td.mu.RUnlock()
-
-			if !exists {
-				td.mu.Lock()
-				// Double-check after acquiring write lock.
-				s, exists = td.stats[toolName]
-				if !exists {
-					s = &timingStat{Min: ns, Max: ns}
-					td.stats[toolName] = s
-				}
-				td.mu.Unlock()
-			}
-
-			// Atomic counter updates (no mutex needed for struct fields).
-			atomic.AddInt64(&s.Count, 1)
-			atomic.AddInt64(&s.Total, ns)
-
-			// Atomic min/max update via CAS loop.
-			for {
-				old := atomic.LoadInt64(&s.Min)
-				if ns >= old || atomic.CompareAndSwapInt64(&s.Min, old, ns) {
-					break
-				}
-			}
-			for {
-				old := atomic.LoadInt64(&s.Max)
-				if ns <= old || atomic.CompareAndSwapInt64(&s.Max, old, ns) {
-					break
-				}
-			}
-
 			return &Result{Decision: "allow"}, nil
 		},
 	}

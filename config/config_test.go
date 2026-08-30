@@ -565,9 +565,6 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	if cfg.Agent.CompressionThreshold != 0.7 {
 		t.Errorf("agent.compression_threshold: got %f, want 0.7", cfg.Agent.CompressionThreshold)
 	}
-	if cfg.Agent.PurgeOldMessages != false {
-		t.Errorf("agent.purge_old_messages: got %v, want false", cfg.Agent.PurgeOldMessages)
-	}
 	if cfg.Agent.MaxSubAgentDepth != 6 {
 		t.Errorf("agent.max_sub_agent_depth: got %d, want 6", cfg.Agent.MaxSubAgentDepth)
 	}

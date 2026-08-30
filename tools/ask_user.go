@@ -53,10 +53,46 @@ type askUserArgs struct {
 }
 
 type askQItem struct {
-	Question    string   `json:"question"`
-	Options     []string `json:"options,omitempty"`
-	MultiSelect bool     `json:"multi_select,omitempty"`
-	AllowOther  bool     `json:"allow_other,omitempty"`
+	Question    string      `json:"question"`
+	Options     flexStrings `json:"options,omitempty"`
+	MultiSelect bool        `json:"multi_select,omitempty"`
+	AllowOther  bool        `json:"allow_other,omitempty"`
+}
+
+// flexStrings accepts both ["a", "b"] and [{"label": "a", ...}] formats.
+// LLMs sometimes send options as semantic objects (label/value/description)
+// instead of plain strings — normalize to the string form instead of failing
+// with an opaque "cannot unmarshal object into Go struct field ... of type
+// string" that the agent cannot act on (user report: AskUser parse error with
+// no agent retry).
+type flexStrings []string
+
+func (f *flexStrings) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		var s string
+		if err := json.Unmarshal(item, &s); err == nil {
+			result = append(result, s)
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(item, &obj); err == nil {
+			for _, key := range []string{"label", "value", "name", "text", "description"} {
+				if v, ok := obj[key].(string); ok && v != "" {
+					result = append(result, v)
+					break
+				}
+			}
+			continue
+		}
+		result = append(result, string(item))
+	}
+	*f = result
+	return nil
 }
 
 func (t *AskUserTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {

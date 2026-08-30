@@ -12,8 +12,8 @@
  * comes from useChatMessages; a single live streaming message is appended as
  * the last row when present.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucide-react'
 
@@ -59,13 +59,109 @@ interface MessageListProps {
 }
 
 const ESTIMATE = 120
-// genui 行（顶层面板）：⚠️ 禁止 estimate —— TanStack 反复 measure（独立 createRoot
-// 内容在行滚出/滚回重挂载时高度不稳定）→ estimate(400)↔measure(实际) 反复震荡 → 跳变。
-// 用 module-level map 缓存高度：measure 一次后永久固定，之后 estimateSize 直接返回
-// 缓存值，绝不重新 estimate。key = getItemKey 返回的稳定键（`turn-{turnID}-{role}`）。
-const GENUI_ESTIMATE = 400
-const genuiHeights = new Map<string, number>()
+// GenUI 行（顶层面板）：内容高度是动态的（createRoot 渲染的 UI + max-h-[70vh]
+// 容器，图片/图表/折叠展开都会改变高度）。禁止任何"测一次固化"缓存 —— 固化后
+// 内容长高时 virtualizer 仍按旧尺寸 translateY 定位，后续行与 GenUI 面板重叠
+// （2026-08-28 文字重叠事故）。统一走 measureElement（内部 ResizeObserver 持续
+// 跟踪高度变化并 resizeItem），estimate 只需给接近的初值。
+const GENUI_PANEL_ESTIMATE = 560
 const EDGE_EPSILON = 2
+
+// ── 历史高度抖动根治：高度记忆 + 内容感知估算 ──────────────────────────────
+// 抖动机制：历史加载时 estimateSize 返回常数（120），而实际高度 200–900px →
+// TanStack 逐行 measureElement 修正 → 行位置级联跳动。两层修复（都不跳过测量，
+// ResizeObserver 仍持续跟踪，与已删除的"固化"缓存本质不同）：
+//   1. heightMemory：module 级 Map<rowKey, 实测高度>。measureElement 时记录
+//      实测值；下次同一行 estimate 直接命中记忆值 → 二次加载零修正、零抖动。
+//      记忆的是初值，不是固化 —— 高度变化仍由 ResizeObserver 修正。
+//   2. estimateRowByContent：首次访问（无记忆）时按内容长度/迭代数/工具数粗估，
+//      比常数 120 的误差缩小数倍。
+const heightMemory = new Map<string, number>()
+
+/** 与 getItemKey 相同的稳定行键（turn-N-role / row.id）。 */
+function rowMemoryKey(row: ChatMessage, index: number): string {
+  if (row.turnID > 0 && row.turnID < Number.MAX_SAFE_INTEGER) {
+    return `turn-${row.turnID}-${row.role}`
+  }
+  return row.id ?? `row-${index}`
+}
+
+/** 首次访问（无记忆）时的内容感知估算：量级正确即可，精度由实测修正。 */
+function estimateRowByContent(row: ChatMessage): number {
+  if (row.role === 'user') {
+    const len = (row.content || '').length
+    return Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
+  }
+  const iters = row.iterations ?? []
+  const tools = iters.reduce((a, it) => a + (it.tools?.length ?? 0), 0)
+  // 高度估算必须计入 iteration 的 content/reasoning（展开思考后巨块的主体，
+  // iteration_count × thinking 字段不在 row.content 里）。旧实现只算
+  // row.content + cap 1200 —— reasoning 巨块实际 2000-5000px，低估 3-5×
+  // → TanStack range 按低估高度计算 → overscan 前瞻量不足 → 大行首 mount
+  // 落在滚动临界帧（Trace-20260829T181624 的 100ms mount commit 直接掉帧）。
+  // 宁可高估：overscan（items 数固定）覆盖的像素提前量随 estimate 增大，
+  // 大行在滚到视口前就完成 mount；实测后 heightMemory 覆盖估算。
+  const iterLen = iters.reduce((a, it) => a + (it.content?.length ?? 0) + (it.reasoning?.length ?? 0), 0)
+  const len = (row.content || '').length + iterLen
+  const lines = Math.ceil(len / 90) || 1
+  return Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
+}
+
+// ── scroll → rAF 合帧（2026-08-29 滚动掉帧根治，Trace-20260829T181624）──────
+// TanStack 默认 observeElementOffset 在每个 scroll 事件里同步 cb（onChange →
+// virtualizer 内部 setState）。两个放大器让它在高刷屏 + 大 reasoning 行下
+// 变成掉帧主源：
+//   1) scroll/wheel 事件频率 = 合成器滚动事件率（120-135Hz），每次都触发
+//      React render —— 新行 mount 的大 commit（remark parse + KaTeX DOM +
+//      measureElement 强制全树 style recalc）83-110ms 直接阻塞滚动关键帧。
+//   2) wheel 的 React discrete 事件窗口内，同帧的 scroll listener setState
+//      被提升为 sync flush（fp@vendor-react dispatch 68ms 实测）——
+//      "滚轮一下 = wheel sync render + scroll sync render" 双路叠加。
+// 修复：包装默认 observer —— 滚动中的 offset 通知（isScrolling=true）经
+// rAF 合帧（一帧最多一次 notify，rAF 里读最新 scrollTop，vsync 对齐）；
+// isScrolling=false（scrollend / isScrollingResetDelay debounce 的停止通知）
+// 保持同步直达（取消 pending rAF）——isScrolling 的状态语义不变，仅通知
+// 频率锁帧率。渲染结果零变化（合帧不改语义，只改时机）。
+const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (instance, cb) => {
+  const win = instance.targetWindow
+  if (!win || typeof win.requestAnimationFrame !== 'function') {
+    return defaultObserveElementOffset(instance, cb)
+  }
+  let raf = 0
+  const wrappedCb: (offset: number, isScrolling: boolean) => void = (offset, isScrolling) => {
+    if (!isScrolling) {
+      // 滚动停止通知：取消 pending 合帧，同步直达（isScrolling=false 语义
+      // 是"滚动已停"，延迟它会让 TanStack 的 isScrolling 状态晚一帧）。
+      if (raf) {
+        win.cancelAnimationFrame(raf)
+        raf = 0
+      }
+      cb(offset, false)
+      return
+    }
+    // 滚动中：一帧一次。pending 期间到达的 scroll 事件被合帧丢弃（rAF 执行
+    // 时读最新 scrollTop，offset 参数的旧值不用）。
+    if (raf) return
+    raf = win.requestAnimationFrame(() => {
+      raf = 0
+      const el = instance.scrollElement
+      if (!el) {
+        cb(offset, true)
+        return
+      }
+      const { horizontal, isRtl } = instance.options
+      cb(horizontal ? el.scrollLeft * (isRtl ? -1 : 1) : el.scrollTop, true)
+    })
+  }
+  const cleanup = defaultObserveElementOffset(instance, wrappedCb)
+  return () => {
+    if (raf) {
+      win.cancelAnimationFrame(raf)
+      raf = 0
+    }
+    cleanup?.()
+  }
+}
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
   let idx = -1
@@ -81,7 +177,7 @@ export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boo
 }
 
 
-export function MessageList({
+export const MessageList = memo(function MessageList({
   chatKey,
   followResetToken = 0,
   messages,
@@ -201,39 +297,27 @@ export function MessageList({
     [rows],
   )
 
-  // TanStack Virtual
+  // TanStack Virtual —— API 返回函数，React Compiler 无法安全 memo；
+  // virtualizer 按设计每次渲染重建内部映射。
   // eslint-disable-next-line react-hooks/incompatible-library
-  // ── Scroll jitter debug: track scrollHeight / scrollTop / totalSize mutations ──
-  // Detects height jumps during scrolling that cause visual jitter. When
-  // scrollHeight changes between consecutive onScroll events WITHOUT a row count
-  // change (i.e. no content added — just re-measurement), it means an item's
-  // real height differs from its estimate, causing the virtualizer to resizeItem
-  // → shouldAdjustScrollPosition → scrollTop correction → visual jump.
-  const jitterDebugRef = useRef({
-    lastScrollHeight: 0,
-    lastScrollTop: 0,
-    lastTotalSize: 0,
-    lastRowCount: 0,
-    lastEventTime: 0,
-  })
-
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => {
       const row = rows[index]
       if (!row) return ESTIMATE
-      // genui 行：⚠️ 禁用 estimate。从 genuiHeights map 取缓存高度（measure 一次后永久
-      // 固定）。无缓存时用占位 GENUI_ESTIMATE，measure 回调会写入 map 并固化——
-      // 之后绝不再 estimate/measure，行高恒定 → 滚动无跳变。
-      if (rowHasGenUI(row)) {
-        const key = stableRowKey(row)
-        const cached = key && genuiHeights.has(key) ? genuiHeights.get(key)! : null
-        return cached ?? GENUI_ESTIMATE
-      }
-      return ESTIMATE
+      const key = rowMemoryKey(row, index)
+      const remembered = heightMemory.get(key)
+      if (remembered !== undefined) return remembered
+      // GenUI 行给接近实际的初值（面板 header + 典型 UI 高度），真实高度由
+      // measureElement 的 ResizeObserver 持续跟踪 —— 内容长高/折叠/展开自动修正。
+      if (rowHasGenUI(row)) return GENUI_PANEL_ESTIMATE
+      return estimateRowByContent(row)
     },
     overscan: dynamicOverscan,
+    // scroll → rAF 合帧（模块级 rafCoalescedObserveElementOffset，见上方注释）：
+    // 滚动中每帧最多一次 offset 通知（isScrolling=false 停止通知保持同步直达）。
+    observeElementOffset: rafCoalescedObserveElementOffset,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return `row-${index}`
@@ -264,87 +348,51 @@ export function MessageList({
     const v = virtualizer as unknown as {
       shouldAdjustScrollPositionOnItemSizeChange?: (item: { start: number; end: number }, delta: number, instance: { scrollOffset: number | null }) => boolean
     }
-    v.shouldAdjustScrollPositionOnItemSizeChange = (item, delta, instance) => {
-      const shouldAdjust = item.end < (instance.scrollOffset ?? 0)
-      if (shouldAdjust && Math.abs(delta) > 1) {
-        console.warn('[JITTER] virtualizer scroll correction', {
-          itemStart: Math.round(item.start),
-          itemEnd: Math.round(item.end),
-          delta: Math.round(delta),
-          scrollOffset: Math.round(instance.scrollOffset ?? 0),
-          msg: `item [${Math.round(item.start)}-${Math.round(item.end)}] resized by ${Math.round(delta)}px → scrollTop corrected`,
-        })
-      }
-      return shouldAdjust
+    v.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+      return item.end < (instance.scrollOffset ?? 0)
     }
   }, [virtualizer])
 
-  // ── GenUI 行高度固化（缓存后永不重测，彻底消除滚动跳变）──────────────────
-  // 问题：GenUI 行使用 createRoot（独立 React root），TanStack Virtual 滚动时
-  // unmount/remount 行 → measureElement 重新测量 → createRoot 还没渲染完时高度
-  // 只有 header（~50px）→ 与缓存值（~500px）差值 > 5px → measureElement 被调用
-  // → resizeItem → shouldAdjustScrollPosition → 滚动跳变。
+  // Row measurement: wrap the official measureElement (it prunes disconnected
+  // nodes on ref(null) — do NOT early-return on null, that leaked stale nodes).
+  // After measureElement (which has already forced layout internally, so the
+  // read is cheap) record the REAL height into heightMemory keyed by the row's
+  // stable key — the next history reload estimates this row from the remembered
+  // value instead of the content heuristic, making reloads zero-correction
+  // (zero jitter). This is NOT the old freeze cache: nothing skips
+  // measurement; the ResizeObserver keeps tracking and overrides the estimate
+  // the moment real height changes. Scroll stability is handled by
+  // shouldAdjustScrollPositionOnItemSizeChange above, fold transitions get an
+  // authoritative re-measure via onTransitionEnd below.
   //
-  // 修复：GenUI 行首次测量后写入 genuiHeights 缓存，之后永不调 measureElement。
-  // 高度完全由 estimateSize 的缓存值决定。createRoot remount 不触发任何重测。
-  // 展开折叠时高度变化通过 resizeItem 手动更新（GenUIPanel onOpenChange 回调）。
-  // Track previous measured sizes per index to detect re-measurement jitter.
-  // When measureElement reports a size different from the virtualizer's current
-  // estimate, resizeItem fires → shouldAdjustScrollPosition → scrollTop correction.
-  const measuredSizesRef = useRef<Map<number, number>>(new Map())
+  // PERF: deps MUST be [virtualizer] only — `rows` changes identity every
+  // streaming frame, which would recreate this callback per frame → React
+  // detaches/reattaches the ref on EVERY visible row (ref identity change)
+  // → forced synchronous layout (getBoundingClientRect) for every visible row
+  // on every frame (~300-600 forced layouts/sec while streaming on phones).
+  // Row data is read through rowsRef (kept in sync at line ~rowsRef.current
+  // = rows), so the callback body always sees the CURRENT row. virtualizer
+  // is a stable instance (useVirtualizer keeps one instance; only its options
+  // are updated per render).
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
-      if (!node) return
-      const index = Number(node.dataset?.index ?? -1)
-      const row = rows[index]
-      if (row && rowHasGenUI(row)) {
-        const key = stableRowKey(row)
-        if (key) {
-          if (genuiHeights.has(key)) {
-            return
-          }
-          const rect = node.getBoundingClientRect()
-          if (rect.height > 0) genuiHeights.set(key, rect.height)
+      if (!node) {
+        virtualizer.measureElement(null)
+        return
+      }
+      virtualizer.measureElement(node)
+      const idx = Number(node.dataset?.index ?? -1)
+      const row = rowsRef.current[idx]
+      if (row) {
+        const h = node.getBoundingClientRect().height
+        if (h > 0) {
+          heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
+          if (heightMemory.size > 3000) heightMemory.clear()
         }
       }
-      // Pre-measurement: record estimated size to compare with actual.
-      const v = virtualizer as unknown as {
-        measurements: Array<{ size: number }> | undefined
-        getVirtualItems: () => Array<{ index: number; size: number }>
-      }
-      const virtualItems = v.getVirtualItems?.() ?? []
-      const vi = virtualItems.find((i) => i.index === index)
-      const estimatedSize = vi?.size ?? ESTIMATE
-      // TanStack measureElement: call it, then compare the node's actual height
-      // with the estimate. A large delta means the virtualizer will resizeItem,
-      // potentially triggering scroll correction.
-      virtualizer.measureElement(node)
-      // After measurement, read the actual node height and compare with estimate.
-      const actualHeight = node.getBoundingClientRect().height
-      if (actualHeight > 0 && Math.abs(actualHeight - estimatedSize) > 5) {
-        console.warn('[JITTER] measureRef size mismatch', {
-          index,
-          rowId: row?.id?.slice(0, 24),
-          estimated: Math.round(estimatedSize),
-          actual: Math.round(actualHeight),
-          delta: Math.round(actualHeight - estimatedSize),
-          msg: `row ${index} estimated ${Math.round(estimatedSize)}px → measured ${Math.round(actualHeight)}px (Δ${Math.round(actualHeight - estimatedSize)}px)`,
-        })
-      }
-      // Track size changes across re-measurements for the same index.
-      const prevSize = measuredSizesRef.current.get(index)
-      if (prevSize !== undefined && Math.abs(actualHeight - prevSize) > 2) {
-        console.warn('[JITTER] measureRef re-measure size changed', {
-          index,
-          prevSize: Math.round(prevSize),
-          newSize: Math.round(actualHeight),
-          delta: Math.round(actualHeight - prevSize),
-          msg: `row ${index} re-measured: ${Math.round(prevSize)}px → ${Math.round(actualHeight)}px (Δ${Math.round(actualHeight - prevSize)}px)`,
-        })
-      }
-      if (actualHeight > 0) measuredSizesRef.current.set(index, actualHeight)
     },
-    [rows, virtualizer],
+    // PERF note above explains deps choice; rowsRef is a stable closure ref covering row identity
+    [virtualizer],
   )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
@@ -515,48 +563,6 @@ export function MessageList({
     const el = scrollRef.current
     if (!el) return
     const now = performance.now()
-    // ── JITTER DEBUG (ref-only, no setState) ────────────────────────────────
-    const dbg = jitterDebugRef.current
-    const curScrollHeight = el.scrollHeight
-    const curScrollTop = el.scrollTop
-    const curTotalSize = virtualizer.getTotalSize()
-    const curRowCount = rows.length
-    if (dbg.lastScrollHeight > 0) {
-      const heightDelta = curScrollHeight - dbg.lastScrollHeight
-      const scrollTopDelta = curScrollTop - dbg.lastScrollTop
-      const totalSizeDelta = curTotalSize - dbg.lastTotalSize
-      const dt = now - dbg.lastEventTime
-      if (Math.abs(heightDelta) > 2 && curRowCount === dbg.lastRowCount) {
-        console.warn('[JITTER] scrollHeight changed without row count change', {
-          scrollHeight: Math.round(curScrollHeight), prevScrollHeight: Math.round(dbg.lastScrollHeight),
-          heightDelta: Math.round(heightDelta), scrollTop: Math.round(curScrollTop),
-          scrollTopDelta: Math.round(scrollTopDelta), totalSize: Math.round(curTotalSize),
-          totalSizeDelta: Math.round(totalSizeDelta), rowCount: curRowCount, dt: Math.round(dt),
-          isProgrammatic: programmaticScrollRef.current,
-          msg: `scrollHeight ${Math.round(dbg.lastScrollHeight)}→${Math.round(curScrollHeight)} (Δ${Math.round(heightDelta)}px) without rows change — item re-measurement jitter`,
-        })
-      }
-      if (!programmaticScrollRef.current && Math.abs(scrollTopDelta) > 50 && dt < 16) {
-        console.warn('[JITTER] scrollTop jump detected', {
-          scrollTop: Math.round(curScrollTop), prevScrollTop: Math.round(dbg.lastScrollTop),
-          scrollTopDelta: Math.round(scrollTopDelta), dt: Math.round(dt),
-          scrollHeight: Math.round(curScrollHeight), heightDelta: Math.round(heightDelta),
-          msg: `scrollTop jumped ${Math.round(scrollTopDelta)}px in ${Math.round(dt)}ms — possible virtualizer correction`,
-        })
-      }
-      if (Math.abs(totalSizeDelta) > 2 && curRowCount === dbg.lastRowCount) {
-        console.warn('[JITTER] totalSize changed without row count change', {
-          totalSize: Math.round(curTotalSize), prevTotalSize: Math.round(dbg.lastTotalSize),
-          totalSizeDelta: Math.round(totalSizeDelta), rowCount: curRowCount,
-          msg: `virtualizer totalSize ${Math.round(dbg.lastTotalSize)}→${Math.round(curTotalSize)} (Δ${Math.round(totalSizeDelta)}px) — estimate→measure delta`,
-        })
-      }
-    }
-    dbg.lastScrollHeight = curScrollHeight
-    dbg.lastScrollTop = curScrollTop
-    dbg.lastTotalSize = curTotalSize
-    dbg.lastRowCount = curRowCount
-    dbg.lastEventTime = now
 
     // ── Ref-only updates (zero React render) ────────────────────────────────
     const dt = now - lastScrollTimeRef.current
@@ -931,6 +937,18 @@ export function MessageList({
                     key={item.key}
                     data-index={item.index}
                     ref={measureRef}
+                    onTransitionEnd={(e) => {
+                      // Fold/expand animations (grid-template-rows 180ms in
+                      // AnimatedCollapse) resize the row OUTSIDE React's commit
+                      // knowledge. If the virtualizer's ResizeObserver misses
+                      // the transition frames, it keeps the pre-fold size and
+                      // the space below the folded panel stays blank
+                      // (2026-08-28 report). Re-measure authoritatively when
+                      // any descendant fold transition settles.
+                      if (e.propertyName === 'grid-template-rows') {
+                        virtualizer.measureElement(e.currentTarget)
+                      }
+                    }}
                     style={{
                       position: 'absolute',
                       top: 0,
@@ -1045,7 +1063,7 @@ export function MessageList({
       </div>
     </div>
   )
-}
+})
 
 // ── Navigation button ────────────────────────────────────────────────────────
 function NavButton({
@@ -1074,15 +1092,6 @@ function NavButton({
       {children}
     </button>
   )
-}
-
-// 稳定行 key（与 getItemKey 一致）：turnID>0 用 `turn-${turnID}-${role}`，否则 row.id。
-// 用于 genui 高度缓存 map 的 key —— 行在 live→committed 间保持同一 key → 高度只 measure 一次。
-export function stableRowKey(row: ChatMessage): string {
-  if (row.turnID > 0 && row.turnID < Number.MAX_SAFE_INTEGER) {
-    return `turn-${row.turnID}-${row.role}`
-  }
-  return row.id ?? ''
 }
 
 // 判断一行是否含 GenUI 面板（committed：迭代里有 uiMode 工具；live：流式 genuiContent）。

@@ -9,9 +9,9 @@
  *
  * Render order: T → O → C (Spec A §2).
  */
-import { memo, useEffect } from 'react'
+import { memo, useEffect, useMemo } from 'react'
 
-import { FoldedLine } from './FoldedLine'
+import { ThinkingLine } from './ThinkingLine'
 import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
@@ -21,7 +21,6 @@ import { ShimmerThinking } from './ShimmerThinking'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
-import { useI18n } from '@/providers/i18n'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { dedupTools } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
@@ -40,8 +39,6 @@ export const LiveIteration = memo(function LiveIteration({
   level,
   mergeTools = true,
 }: LiveIterationProps) {
-  const { t } = useI18n()
-
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
   const hasReasoning = Boolean(reasoningContent)
@@ -72,10 +69,8 @@ export const LiveIteration = memo(function LiveIteration({
   // by TurnBody under their original iteration — the live area must not show
   // them ("后台 subagent 污染最新迭代" 的前端兜底).
   const currentIter = progress.iteration
-  const liveSubAgents = progress.subAgents.filter(
-    (n) => n.iteration === undefined || n.iteration === currentIter,
-  )
-  const hasSubAgents = liveSubAgents.length > 0
+  // PERF note: liveSubAgents/hasSubAgents are memoized below (toolDeriv block) —
+  // the original inline filter recomputed on every frame.
   // Streaming GenUI（display_html 参数流式累积）——在工具调用的 iteration 位置
   // 实时渲染面板，而非 stream 结束后才出现。
   const hasGenUI = Boolean(progress.genuiContent)
@@ -119,60 +114,55 @@ export const LiveIteration = memo(function LiveIteration({
   // 完成后静止，显示完整长度。
   const reasoningCount = reasoningStreaming ? rw.visibleChars : reasoningContent.length
 
-  // Merge all tool groups, using the shared dedupTools (generating skips dedup).
-  // Filter activeTools AND completedTools by iteration number — only keep tools
-  // from the current (in-flight) iteration. Tools from completed iterations are
-  // already rendered by TurnBody via iterationHistory.
-  //
-  // We determine "completed" by comparing against the max iteration in
-  // iterationHistory. Tools with iteration <= maxCompletedIter are already
-  // rendered; tools with iteration > maxCompletedIter (or no iteration field
-  // when iterationHistory is empty) are current.
-  const maxCompletedIter = progress.iterationHistory.length > 0
-    ? Math.max(...progress.iterationHistory.map((i) => i.iteration))
-    : -1
-  // Filter activeTools by iteration — stale activeTools from a completed
-  // iteration persist because the backend clears ActiveTools (nil→omitted by
-  // omitempty) so the frontend keeps the previous event's value.
-  const currentActive = progress.activeTools.filter(
-    (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
-  )
-  // Same filter for streamingTools — a stale generating tool from a COMPLETED
-  // iteration (catchup gap residue: the backend's streamState.StreamingTools is
-  // merged into get_active_progress snapshots and can carry the previous
-  // iteration's generating tool) must NOT render on the current iteration.
-  // Previously streamingTools bypassed this filter entirely, so the old tool
-  // showed until the current iteration's real tool replaced it (user report:
-  // "过去的 generating 状态错误的在最新迭代上渲染").
-  const currentStreaming = progress.streamingTools.filter(
-    (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
-  )
-  const currentCompleted = progress.completedTools.filter(
-    (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
-  )
-  // Exclude stale completedTools already rendered in completed iterations
-  // (by name+label). This filter does NOT apply to activeTools — a running
-  // tool in the current iteration must NOT be filtered out just because a
-  // tool with the same name+label exists in a completed iteration.
-  const completedIterToolKeys = new Set<string>()
-  for (const iter of progress.iterationHistory) {
-    for (const tool of iter.tools) {
-      completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
+  // PERF：工具派生链 useMemo（字段级依赖）—— 此前每帧重算（progress prop 每帧
+  // 新引用，memo 挡不住流式帧）。reduce 的 withTurn patch 是结构性共享：stream 帧
+  // 只改 content/reasoning/streamingTools/genui 字段（`...prev` 引用透传），
+  // activeTools/completedTools/iterationHistory 引用不变 → 字段级 useMemo 让
+  // stream 帧跳过全部工具推导（3×filter + O(H×tools) Set 构建 + dedupTools +
+  // Math.max spread）。输入相同 → 输出必然相同（纯函数），零行为差异。
+  const liveSubAgents = useMemo(() =>
+    progress.subAgents.filter(
+      (n) => n.iteration === undefined || n.iteration === currentIter,
+    ),
+  [progress.subAgents, currentIter])
+  const hasSubAgents = liveSubAgents.length > 0
+
+  const toolDeriv = useMemo(() => {
+    const maxCompletedIter = progress.iterationHistory.length > 0
+      ? Math.max(...progress.iterationHistory.map((i) => i.iteration))
+      : -1
+    const currentActive = progress.activeTools.filter(
+      (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
+    )
+    const currentStreaming = progress.streamingTools.filter(
+      (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
+    )
+    const currentCompleted = progress.completedTools.filter(
+      (t) => t.iteration === undefined || t.iteration === null || t.iteration > maxCompletedIter,
+    )
+    const completedIterToolKeys = new Set<string>()
+    for (const iter of progress.iterationHistory) {
+      for (const tool of iter.tools) {
+        completedIterToolKeys.add(`${tool.name}\x00${tool.label}`)
+      }
     }
-  }
-  const filteredCompleted = currentCompleted.filter(
-    (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
-  )
-  const allTools = dedupTools([
-    ...currentStreaming,
-    ...currentActive,
-    ...filteredCompleted,
-    // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
-    // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
-    // GenUIPanel）→ 高度双倍 + DOM 反复出现/消失 + 虚拟列表高度跳变（busy 时最严重）。
-  ]).filter((t) => !t.uiMode)
+    const filteredCompleted = currentCompleted.filter(
+      (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
+    )
+    const allTools = dedupTools([
+      ...currentStreaming,
+      ...currentActive,
+      ...filteredCompleted,
+      // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
+      // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
+      // GenUIPanel）→ 高度双倍 + DOM 反复出现/消失 + 虚拟列表高度跳变（busy 时最严重）。
+    ]).filter((t) => !t.uiMode)
+    const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
+    return { allTools, hasToolInProgress }
+  }, [progress.activeTools, progress.streamingTools, progress.completedTools, progress.iterationHistory])
+  const allTools = toolDeriv.allTools
   const hasTools = allTools.length > 0
-  const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
+  const hasToolInProgress = toolDeriv.hasToolInProgress
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
 
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
@@ -209,16 +199,14 @@ export const LiveIteration = memo(function LiveIteration({
 
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
-        <FoldedLine
-          title={reasoningInProgress ? (
-            <SweepText
-              text={t('agent.thinkingChars', { count: reasoningCount })}
-              color="var(--text-muted)"
-              className="text-xs"
-            />
-          ) : t('agent.thinkingChars', { count: reasoningCount })}
-          defaultOpen={false}
-          keepMounted
+        <ThinkingLine
+          label={reasoningInProgress
+            ? <SweepText
+                text={'思考中… ' + reasoningCount + ' 字'}
+                color="var(--text-muted)"
+                className="text-[10px]"
+              />
+            : '思考 ' + reasoningCount + ' 字'}
         >
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock
@@ -227,7 +215,7 @@ export const LiveIteration = memo(function LiveIteration({
               visibleChars={isLive ? rw.visibleChars : undefined}
             />
           </div>
-        </FoldedLine>
+        </ThinkingLine>
       )}
 
       {/* Streaming O — typewriter reveal + fade-in effect */}

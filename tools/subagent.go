@@ -54,9 +54,11 @@ model_tier parameter takes priority over the role's model setting. If neither is
 
 Sub-agents run in BACKGROUND by default: spawn returns immediately with a task ID,
 the sub-agent works asynchronously, and the result is injected into your conversation
-when it finishes. Use task_wait(task_id=...) to block until it completes, task_status
-to check progress, or action="inspect" to see its latest activity. Set background=false
-only when you must block synchronously and get the final reply directly.
+when it finishes. Use task_wait(task_id=["sub-xxx"]) to block until it completes,
+task_status(task_id=["sub-xxx"]) to check progress, or action="inspect" to see its
+latest activity (task_id is ALWAYS an array of ID strings). For multiple sub-agents,
+pass all IDs in one array: task_wait(task_id=["sub-a","sub-b"], mode="any").
+Set background=false only when you must block synchronously and get the final reply directly.
 
 ## One-shot mode (default)
 SubAgent(task, role, instance="...") — runs once (background by default; set background=false to block for the result).
@@ -74,9 +76,10 @@ Persistent multi-turn session. Create once, send multiple messages, unload when 
 
 ## Background rule
 Background sub-agents report progress automatically; when one finishes, the result is injected into your
-conversation and you can also await it with task_wait(task_id=...). Use action="inspect"
+conversation and you can also await it with task_wait(task_id=["sub-xxx"]). Use action="inspect"
 to check progress, action="send" to send messages, action="interrupt" to stop,
-action="unload" to terminate.
+action="unload" to terminate. For multiple background sub-agents, pass all IDs in one array:
+task_wait(task_id=["sub-a","sub-b"], mode="all" or "any").
 
 Parameters (JSON):
   - task: string (required except some control actions), the task or message for the sub-agent

@@ -22,11 +22,7 @@ type MessagePayload struct {
 
 	Metadata  map[string]string `json:"metadata,omitempty"`
 	Time      time.Time         `json:"time"`
-	IsCron    bool              `json:"is_cron,omitempty"` // Deprecated: cron now uses same pipeline as regular messages
 	RequestID string            `json:"request_id,omitempty"`
-
-	EventSource  string `json:"event_source,omitempty"`
-	EventTrigger string `json:"event_trigger,omitempty"`
 
 	ParentAgentID string          `json:"parent_agent_id,omitempty"`
 	SystemPrompt  string          `json:"system_prompt,omitempty"`
@@ -82,9 +78,10 @@ type InboundMessage struct {
 	Media   []string // 媒体文件路径
 
 	// === 元数据 ===
-	Metadata  map[string]string // 渠道/调用方特定元数据
-	Time      time.Time
-	IsCron    bool   // Deprecated: cron now uses same pipeline as regular messages. Kept for backward compat.
+	Metadata map[string]string // 渠道/调用方特定元数据
+	Time     time.Time
+	// RequestID is the request tracking ID (UUID without hyphens), generated
+	// by the channel when a message arrives.
 	RequestID string // 请求追踪 ID（UUID 无横线），在渠道收到消息时生成
 	// DeliveryAck is set by transports that require acknowledgement from the
 	// agent's per-chat queue. It is process-local and never serialized.
@@ -93,10 +90,6 @@ type InboundMessage struct {
 	// the caller whether the message was admitted while the chat was already
 	// processing an earlier message (it will be handled after the current turn).
 	DeliveryAck chan DeliveryResult
-
-	// Event-triggered metadata (generalization beyond IsCron)
-	EventSource  string // event origin: "webhook", "cron", "" (user message)
-	EventTrigger string // trigger ID that fired this message (optional)
 
 	// === Agent 间通信扩展（仅 Channel="agent" 时有值） ===
 	ParentAgentID string   // 父 Agent ID（如 "main"）

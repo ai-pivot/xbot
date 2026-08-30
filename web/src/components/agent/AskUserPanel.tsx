@@ -199,7 +199,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         )}
                       >
                         {otherSelected && (
-                          <Check className="size-3 text-white dark:text-black" strokeWidth={3.5} />
+                          <Check className="size-3 text-text-primary dark:text-black" strokeWidth={3.5} />
                         )}
                       </span>
                       <span className="min-w-0 flex-1 leading-relaxed">{opt}</span>
@@ -230,7 +230,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         )}
                       >
                         {selectedOpt && (
-                          <Check className="size-3 text-white dark:text-black" strokeWidth={3.5} />
+                          <Check className="size-3 text-text-primary dark:text-black" strokeWidth={3.5} />
                         )}
                       </span>
                       <span className="min-w-0 flex-1 leading-relaxed">{opt}</span>

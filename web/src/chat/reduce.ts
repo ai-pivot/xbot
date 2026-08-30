@@ -183,10 +183,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // 看不到 system notification 本身（用户报告）。通知无 REST 请求
       //（requestID=null），迟到 inject_user 走 useChatMessages →
       // history_replaced 过滤（dbID undefined），不会双行。
-      if (user === null && ev.trigger === 'notification' && ev.content !== null && ev.content !== '') {
+      // F#10：nonEmptyStr smart constructor 收窄为 NonEmptyS（原 `as never`
+      // 绕过 branded 类型 —— no-as 规则）。
+      const notifContent = ev.trigger === 'notification' ? nonEmptyStr(ev.content) : null
+      if (user === null && notifContent !== null) {
         user = {
           id: `notif-${ev.turnID}`,
-          content: ev.content as never,
+          content: notifContent,
           timestamp: new Date().toISOString(),
           isNotification: true,
           queued: false,
@@ -458,11 +461,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // cancel：正在执行的工具（activeTools/streamingTools，从未完成 ——
       // progress_history 不含它们）折进最后迭代（标 error）—— "已渲染内容
       // 永不消失"（cancel 后正在执行的 tool 保留在最新迭代）。不折则丢失。
-      const inFlight = [...live.activeTools, ...live.streamingTools].filter((t) =>
-        t.status === 'running' || t.status === 'generating' || t.status === 'pending')
-      const iterations = inFlight.length > 0
-        ? foldInFlightTools(iterations0, inFlight, live.iter)
-        : iterations0
+      // foldInFlightToIterations 与 foldPhase（turn_started 收尸路径）共用 ——
+      // 两条 commit 路径的 in-flight 折叠语义永不分叉。append 传 ('','')：
+      // finalText 覆盖逻辑（下方 inFlightIter map/追加）统一处理新迭代的
+      // content 写入。
+      const iterations = foldInFlightToIterations(live.activeTools, live.streamingTools, iterations0, live.iter, '', '')
       // 最终回复文本：text 顶层 content（v55 唯一权威值）> cancel 定格 content。
       const finalText = ev.content !== null ? ev.content : nonEmptyStr(live.content)
       // v55 渲染层 hasIterations=true 时不渲染顶层 content —— 最终回复必须存在于
@@ -475,7 +478,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       //    （cancel 定格 content）属于 progressHistory 的最后一个迭代。
       //    - 该迭代已在 iterations 里 → 覆盖它（正常完成 / progressHistory 补齐）。
       //    - 未在且比最后一个大（AskUser cancel：AskUser 工具调用中取消，无
-      //      in-flight 工具 → 不触发 foldInFlightTools 追加）→ 【追加】新迭代。
+      //      in-flight 工具 → 不触发 foldInFlightToIterations 追加）→ 【追加】新迭代。
       //      旧代码无条件覆盖最后一个已存在迭代，把已完成迭代的 content 替换成
       //      当前迭代文本 —— 用户报告"askuser 取消后迭代渲染混乱顺序错乱"
       //      （iter2 内容变成 iter3 文本）。
@@ -575,7 +578,29 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       for (const h of ev.turns) {
         const cur = s.turns.get(h.id)
         if (cur && cur.phase.kind === 'live') {
-          turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
+          // live 胜（SSE 比 DB 快照新）—— 但 live 只含【增量】迭代（重启
+          // resume 后 SSE 先到的 lazy 采纳只带 resume Run 的迭代 k+1..；DB
+          // committed 携带全量 1..k）。不 union 会竞态性丢失 1..k（SSE 先到
+          // + fetchHistory 后到 → "重启后 turn 的 iter 1..k 全消失"、"切换
+          // 会话有时能看到迭代有时看不到"）。union：同号 live 权威（SSE 比
+          // DB 新）——与 step 3.5 的 active 快照 union 同原则（I4 append-only）。
+          const incomingIts = h.phase.kind === 'committed'
+            ? h.phase.payload.iterations
+            : h.phase.kind === 'frozen'
+              ? h.phase.data.iterations
+              : []
+          if (incomingIts.length === 0) {
+            turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
+          } else {
+            turns.set(h.id, {
+              ...cur,
+              user: cur.user ?? h.user,
+              phase: {
+                kind: 'live',
+                data: { ...cur.phase.data, iterations: mergeIterations(incomingIts, cur.phase.data.iterations) },
+              },
+            })
+          }
         } else if (
           cur &&
           cur.phase.kind !== 'live' &&
@@ -718,6 +743,25 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           return withTurn(s, tid, (tt) => ({ ...tt, user: ev.row }))
         }
       }
+      // ③.5 notification echo 内容幂等（同一通知双行根治）：turn_started(notification)
+      //    已用 turn_start.content 构造 notif user 行后，后端 InjectUserMessage 的
+      //    inject_user echo 后到 —— web.go 的 WSMessage 只有 Type/TS/ChatID/Content
+      //    （无 request_id/turn_id/is_notification）→ ①②③ 全不命中 → ④ 无条件
+      //    append → 同一通知渲染两行（turn.user 的 notif-${turnID} 行 + 沉底 echo 行）。
+      //    幂等锚点在 turns/pending 侧的 isNotification 行（echo 侧无归属标记可匹配）：
+      //    已存在 isNotification 且 content 相同的 user 行 → 同一逻辑消息，丢弃 echo。
+      //    echo 自带 requestID/turnHint 的正常路径（①②③）不受影响。
+      if (
+        ev.row.isNotification ||
+        [...s.turns.values()].some((t) => t.user?.isNotification === true && t.user.content === ev.row.content)
+      ) {
+        if (
+          [...s.turns.values()].some((t) => t.user?.isNotification === true && t.user.content === ev.row.content) ||
+          s.pendingUsers.some((u) => u.isNotification && u.content === ev.row.content)
+        ) {
+          return s
+        }
+      }
       // ④ 全新 user（无未绑定 pending）→ 入 pending（turnHint 后续绑定）。
       return { ...s, pendingUsers: [...s.pendingUsers, ev.row] }
     }
@@ -762,15 +806,26 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
   }
 }
 
-/** text_final(cancel) 时把正在执行的工具（标 error）折进最后迭代 ——
- *  progress_history 不含从未完成的工具，不折会丢（"已渲染内容永不消失"）。 */
-function foldInFlightTools(
-  its: readonly WebIteration[],
-  tools: readonly WebToolProgress[],
+/** in-flight 工具折叠（"已渲染内容永不消失"）—— foldPhase（turn_started 收尸）
+ * 与 text_final（权威 finalizer）共用：running/generating/pending 工具从未完成
+ * （iteration_history 不含），不折则从渲染消失。
+ * 标 error 折进 lastIter 迭代：已有该迭代 → 合并 tools；无 → 追加新迭代
+ * （appendContent/appendReasoning 写入新迭代 —— v55 渲染 hasIterations 时不渲染
+ * 顶层 content，流式文本必须存在于迭代内；text_final 传 ('','')，finalText
+ * 覆盖逻辑统一处理 content）。 */
+function foldInFlightToIterations(
+  activeTools: readonly WebToolProgress[],
+  streamingTools: readonly WebToolProgress[],
+  iterations: readonly WebIteration[],
   lastIter: IterNum,
+  appendContent: string,
+  appendReasoning: string,
 ): readonly WebIteration[] {
-  const errTools = tools.map((t) => ({ ...t, status: 'error' as const }))
-  const arr = [...its]
+  const inFlight = [...activeTools, ...streamingTools].filter((t) =>
+    t.status === 'running' || t.status === 'generating' || t.status === 'pending')
+  if (inFlight.length === 0) return iterations
+  const errTools = inFlight.map((t) => ({ ...t, status: 'error' as const }))
+  const arr = [...iterations]
   const idx = arr.findIndex((it) => it.iteration === lastIter)
   if (idx >= 0) {
     arr[idx] = {
@@ -779,7 +834,7 @@ function foldInFlightTools(
       toolCount: (arr[idx].toolCount ?? 0) + errTools.length,
     }
   } else {
-    arr.push({ iteration: lastIter, content: '', reasoning: '', tools: errTools, toolCount: errTools.length })
+    arr.push({ iteration: lastIter, content: appendContent, reasoning: appendReasoning, tools: errTools, toolCount: errTools.length })
   }
   return arr
 }
@@ -813,7 +868,14 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
 }
 
 function foldPhase(data: LiveSnapshot): Turn['phase'] {
-  const its = nonEmptyArr(data.iterations)
+  // F2（Loop2）：in-flight 工具折叠 —— 与 text_final 同语义
+  // （foldInFlightToIterations 共用）。收尸时 text 可能永不到达（用户发新
+  // 消息触发 turn_started 收尸旧 turn），正在执行的工具（activeTools/
+  // streamingTools，从未完成，不在 iteration_history）若不折进 committed 的
+  // 迭代就从渲染消失。追加新迭代时 content/reasoning 写进迭代（v55 渲染
+  // hasIterations 时不渲染顶层 content —— 流式文本必须存在于迭代内）。
+  const iterations = foldInFlightToIterations(data.activeTools, data.streamingTools, data.iterations, data.iter, data.content, data.reasoning)
+  const its = nonEmptyArr(iterations)
   if (its !== null) return { kind: 'committed', payload: commitViaFold(its, data.content) }
   const text = nonEmptyStr(data.content)
   if (text !== null) return { kind: 'committed', payload: commitViaText(text, []) }

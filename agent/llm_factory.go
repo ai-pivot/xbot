@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"xbot/channel"
-	"xbot/config"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/protocol"
@@ -25,8 +24,13 @@ import (
 type LLMFactory struct {
 	subscriptionSvc *sqlite.LLMSubscriptionService
 	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
-	configSubsFn    func() []config.SubscriptionConfig
 	settingsSvc     *SettingsService
+
+	// userResolver resolves a senderID to its canonical user_id (v45+
+	// canonical-user design). Wired from Agent.resolveUserID (identity
+	// resolver). nil = unavailable (early init / local CLI without identity
+	// DB) — getGlobalSetting then falls back to the sender-dimension chain.
+	userResolver func(senderID string) (int64, bool)
 
 	// Global defaults (no per-user override)
 	defaultLLM          llm.LLM
@@ -128,13 +132,16 @@ func (f *LLMFactory) GetTenantSvc() *sqlite.TenantService {
 	return f.tenantSvc
 }
 
-func (f *LLMFactory) SetConfigSubs(fn func() []config.SubscriptionConfig) {
-	f.mu.Lock()
-	f.configSubsFn = fn
-	f.mu.Unlock()
-}
-
 func (f *LLMFactory) SetSettingsService(svc *SettingsService) { f.settingsSvc = svc }
+
+// SetUserResolver injects the sender→canonical user_id resolver (Agent wires
+// a.resolveUserID from the identity resolver). getGlobalSetting uses it to
+// read user-scoped settings (v45+ canonical-user dimension): user_settings
+// rows written via *ByUserID RPCs carry user_id with sender_id='user-N' —
+// sender-dimension reads (Get(channel, senderID)) never see them, which broke
+// tier resolution for web-channel senders (SubAgent "model not found for
+// vanguard, falling back to main model" despite the tier being configured).
+func (f *LLMFactory) SetUserResolver(fn func(senderID string) (int64, bool)) { f.userResolver = fn }
 
 func (f *LLMFactory) SetLLMSemaphoreManager(mgr *llm.LLMSemaphoreManager) {
 	f.llmSemManager = mgr
@@ -212,17 +219,6 @@ func (f *LLMFactory) ResolveContextConfig(senderID, chatID, channel string, defa
 	if sub == nil {
 		if selected, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && selected != nil {
 			sub, model = resolve(selected.SubscriptionID, selected.Model)
-		}
-	}
-	if sub == nil {
-		if systemSub, err := f.subscriptionSvc.GetSystemSubscription(); err == nil && systemSub != nil {
-			f.mu.RLock()
-			defaultModel := f.defaultModel
-			f.mu.RUnlock()
-			if defaultModel == "" {
-				defaultModel = systemSub.Model
-			}
-			sub, model = resolve(systemSub.ID, defaultModel)
 		}
 	}
 	if sub == nil {
@@ -345,7 +341,7 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 		subs, err := f.subscriptionSvc.List(senderID)
 		if err == nil {
 			for _, sub := range subs {
-				if !sub.IsSystem && sub.BaseURL != "" && sub.APIKey != "" {
+				if sub.BaseURL != "" && sub.APIKey != "" {
 					return true
 				}
 			}
@@ -354,36 +350,28 @@ func (f *LLMFactory) HasCustomLLM(senderID string) bool {
 	return false
 }
 
-// SwitchSubscription switches a user's active LLM to the specified subscription.
-// With the entries cache removed, this only updates the global default LLM/model
-// for cli_user (so SubAgent fallback, ListModels(), and GetLLM follow the user's
-// last choice). Per-session state lives in DB (tenants table).
+// SwitchSubscription is retained as a no-op hook for the RPC/callback call
+// sites. The global defaultLLM is a deployment-level fallback built once from
+// cfg.LLM (config.json + env) at NewLLMFactory time — it is never re-pointed
+// at a user's subscription, so one user's model choice can't leak into every
+// other user's fallback (the old cli_user sync caused exactly that in
+// multi-user deployments). Per-session state lives in DB (tenants table).
 func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscription, chatID string) error {
 	if sub == nil {
 		return fmt.Errorf("SwitchSubscription: sub is required")
-	}
-	if senderID == "cli_user" {
-		// Model is user-level — resolve from user_default_model, not sub.Model.
-		model := ""
-		if f.subscriptionSvc != nil {
-			if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
-				model = udm.Model
-			}
-		}
-		client := f.createClientFromSub(sub, model)
-		f.mu.Lock()
-		if client != nil {
-			f.defaultLLM = client
-		}
-		f.defaultModel = model
-		f.mu.Unlock()
 	}
 	return nil
 }
 
 // SetSessionLLM persists the per-session subscription mapping to the tenants
 // table. This is the write counterpart of GetLLMForChat's read path.
-func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubscription) error {
+// channel is the physical channel of the target session ("cli", "web", ...) —
+// the tenants mapping is keyed by (channel, chat_id), so it must match the
+// session's real channel, not the caller's.
+func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite.LLMSubscription) error {
+	if channel == "" {
+		channel = "cli"
+	}
 	if f.tenantSvc != nil && chatID != "" && sub != nil {
 		// Model is user-level — resolve from user_default_model, not sub.Model.
 		model := ""
@@ -392,7 +380,7 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubsc
 				model = udm.Model
 			}
 		}
-		return f.tenantSvc.SetTenantSubscription("cli", chatID, sub.ID, model)
+		return f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model)
 	}
 	return nil
 }
@@ -409,39 +397,13 @@ func (f *LLMFactory) SetUserMaxOutputTokens(senderID string, n int) {
 }
 
 // SetUserThinkingMode is a no-op: thinking mode is a global user setting stored
-// in user_settings DB via Agent.SetUserThinkingMode.
+// SetUserThinkingMode retained as a no-op hook (thinking mode is a global
+// user setting in user_settings DB via Agent.SetUserThinkingMode).
 func (f *LLMFactory) SetUserThinkingMode(senderID, mode string) {
 }
 
-// SetDefaults updates the global default LLM and model.
-func (f *LLMFactory) SetDefaults(newLLM llm.LLM, newModel string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.retryConfig.Attempts > 0 {
-		if _, ok := newLLM.(*llm.RetryLLM); !ok {
-			newLLM = llm.NewRetryLLM(newLLM, f.retryConfig)
-		}
-	}
-	f.defaultLLM = newLLM
-	f.defaultModel = newModel
-}
-
-// SetSystemLLM sets the factory's fallback LLM from the shared system
-// subscription (reconciled from config/env at boot). Unlike SetDefaults it does
-// NOT clear per-user caches — it only updates the lowest-priority fallback used
-// when no per-user/per-chat entry and no DB default subscription resolve.
-func (f *LLMFactory) SetSystemLLM(newLLM llm.LLM, newModel string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.retryConfig.Attempts > 0 {
-		if _, ok := newLLM.(*llm.RetryLLM); !ok {
-			newLLM = llm.NewRetryLLM(newLLM, f.retryConfig)
-		}
-	}
-	f.defaultLLM = newLLM
-	f.defaultModel = newModel
-}
-
+// SetDefaultThinkingMode updates the fallback thinking mode used by the
+// deployment-level defaultLLM (cfg.LLM-built, no subscription behind it).
 func (f *LLMFactory) SetDefaultThinkingMode(mode string) {
 	f.mu.Lock()
 	f.defaultThinkingMode = mode
@@ -840,11 +802,11 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 // etc.) get an explicit model binding on first use, not just those created via
 // the CLI session panel.
 //
-// Priority:
-//  1. Balance tier config (user_settings "tier_balance") — the preferred default
-//  2. Last-used model (user_default_model table) — fallback when Balance is unset
+// Priority: Balance tier config only (user_settings "tier_balance") — the sole
+// default source for new sessions. If unset, no binding is created (the caller
+// falls through to GetLLM / system default). No last-used fallback (user
+// request: new sessions default to the Balance tier exclusively).
 //
-// If neither exists, no binding is created (the caller falls through to GetLLM).
 // Already-bound sessions are skipped (idempotent — safe to call every turn).
 //
 // On success, the session is bound via SelectModel (writes to both tenants table
@@ -870,21 +832,8 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 		}
 	}
 
-	// Priority 2: Last-used model (user_default_model).
-	// SelectModel writes to both tenants table (per-session) and user_default_model
-	// (per-user). When user_default_model exists but tenants doesn't, we bind it
-	// to make the session self-contained.
-	if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil &&
-		udm.SubscriptionID != "" && udm.Model != "" {
-		if err := f.SelectModel(senderID, chatID, channel, udm.SubscriptionID, udm.Model); err == nil {
-			log.WithFields(log.Fields{
-				"chatID": chatID, "subID": udm.SubscriptionID, "model": udm.Model,
-				"source": "last_used_model",
-			}).Info("ensureSessionModel: auto-bound session to last-used model")
-			return true
-		}
-	}
-
+	// Balance tier 未配置 → 不绑定（无 last-used fallback：新会话默认一律
+	// balance，没有就不绑，由调用方落到 GetLLM 系统默认）。
 	return false
 }
 
@@ -927,7 +876,6 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 	// find returns the subscription for the model, preferring the system subscription.
 	// matchFn reports whether a subscription provides the model.
 	find := func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
-		var fallback *sqlite.LLMSubscription
 		for i := range subs {
 			sub := subs[i]
 			if !sub.Enabled {
@@ -936,16 +884,9 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 			if !matchFn(sub) {
 				continue
 			}
-			// No "default subscription" concept — prefer system subscription,
-			// then first-enabled by creation order.
-			if sub.IsSystem {
-				return sub
-			}
-			if fallback == nil {
-				fallback = sub
-			}
+			return sub
 		}
-		return fallback
+		return nil
 	}
 	// Pass 1: enabled subscription_models rows.
 	if owner := find(func(sub *sqlite.LLMSubscription) bool {
@@ -1125,11 +1066,9 @@ func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled 
 		seen[key] = true
 		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
 	}
-	const systemModelLabel = "system"
 	if f.subscriptionSvc == nil {
-		for _, m := range f.defaultLLM.ListModels() {
-			add("", systemModelLabel, m, "normal")
-		}
+		// No subscription service — the deployment-level defaultLLM is a
+		// memory-only fallback (never listed, never selectable).
 		return result
 	}
 	subs, err := f.subscriptionSvc.ListByUserID(userID)
@@ -1157,9 +1096,6 @@ func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled 
 	emitInfo := func(info subInfo) {
 		sub := info.sub
 		subName := sub.Name
-		if sub.IsSystem {
-			subName = systemModelLabel
-		}
 		emitted := make(map[string]bool)
 		for _, r := range info.rows {
 			status := "normal"
@@ -1183,18 +1119,8 @@ func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled 
 			add(sub.ID, subName, sub.Model, status)
 		}
 	}
-	// User subscriptions first, system fallback LAST — pickers that truncate
-	// (e.g. Feishu card, maxModels) must never hide a user's own models behind
-	// the shared system models.
 	for _, info := range infos {
-		if !info.sub.IsSystem {
-			emitInfo(info)
-		}
-	}
-	for _, info := range infos {
-		if info.sub.IsSystem {
-			emitInfo(info)
-		}
+		emitInfo(info)
 	}
 	return result
 }
@@ -1208,8 +1134,7 @@ func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled 
 //
 // Within a single subscription, a model name is emitted at most once (CachedModels,
 // sub.Model, and subscription_models rows are merged). Disabled subscriptions
-// contribute nothing. Emitted in subscription order (stable), system subscription
-// first (it is injected at the head of the list by the storage layer).
+// contribute nothing. Emitted in subscription order (stable, by created_at).
 func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool) []protocol.ModelEntry {
 	seen := make(map[string]bool)
 	var result []protocol.ModelEntry
@@ -1224,11 +1149,9 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 		seen[key] = true
 		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
 	}
-	const systemModelLabel = "system"
 	if f.subscriptionSvc == nil {
-		for _, m := range f.defaultLLM.ListModels() {
-			add("", systemModelLabel, m, "normal")
-		}
+		// No subscription service — the deployment-level defaultLLM is a
+		// memory-only fallback (never listed, never selectable).
 		return result
 	}
 	var subs []*sqlite.LLMSubscription
@@ -1303,9 +1226,8 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 // Surfaced to the user via /models so they can see WHY a subscription's models
 // are missing — previously the failure was Warn-level log only, invisible in chat.
 type RefreshResult struct {
-	SubName    string // display name (may be empty for system sub)
+	SubName    string
 	SubID      string
-	IsSystem   bool
 	Status     string // "ok" | "fail" | "skipped" | "noloader" | "noclient"
 	ModelCount int    // models fetched (ok) or already cached (skipped)
 	Error      string // short failure cause (fail only)
@@ -1376,7 +1298,7 @@ func (f *LLMFactory) refreshModelEntriesCore(subs []*sqlite.LLMSubscription) []R
 	results := make([]RefreshResult, 0, len(subs))
 	resultByID := make(map[string]*RefreshResult, len(subs))
 	for _, sub := range subs {
-		r := RefreshResult{SubName: sub.Name, SubID: sub.ID, IsSystem: sub.IsSystem}
+		r := RefreshResult{SubName: sub.Name, SubID: sub.ID}
 		switch {
 		case !sub.Enabled:
 			r.Status = "skipped"
@@ -1443,189 +1365,65 @@ func truncateErrMsg(msg string) string {
 	return msg[:max] + "..."
 }
 
-// GetLLMForModel returns (client, model, maxContext, thinkingMode, maxOutputTokens, usedCustom).
-// All subscription-derived values come from a single subscription, guaranteeing consistency.
-// Used by SubAgent when a role specifies a model (or tier name like vanguard/balance/swift).
-func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, int, string, int, bool) {
+// GetLLMForModel returns (client, subID, model, maxContext, thinkingMode,
+// maxOutputTokens, usedCustom). Model-subscription integration: the model
+// ALWAYS travels with its owning subscription id — subID is empty only for the
+// deployment-level defaultLLM fallback (which has no subscription behind it).
+// All subscription-derived values come from a single subscription, guaranteeing
+// consistency. Used by SubAgent when a role specifies a model (or a tier name
+// like vanguard/balance/swift).
+//
+// Input resolution happens exactly once, here:
+//   - tier name → resolveTierModel (tier values are always "subID|model")
+//   - bare model name → ResolveSubscriptionForModel (the single input resolver)
+//
+// There are NO "any subscription + arbitrary model name" hard-tries: a model
+// without an owning subscription falls back to the deployment default with a
+// warning (usedCustom=false).
+func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, string, int, string, int, bool) {
 	subID, resolvedModel, fromTier := f.resolveTierModel(senderID, targetModel)
-	if resolvedModel == "" {
+
+	switch {
+	case resolvedModel == "":
+		// Tier name that is not configured (resolveTierModel exhausted the
+		// fallback chain), or an empty input → deployment default.
 		client, model, maxCtx, tm, maxOut := f.GetLLM(senderID)
-		return client, model, maxCtx, tm, maxOut, false
-	}
+		return client, "", model, maxCtx, tm, maxOut, false
 
-	// When tier config provides an explicit subID (new "subID|model" format),
-	// look up the subscription directly — no model→subscription resolution.
-	if fromTier && subID != "" {
+	case subID != "":
+		// Tier config with an explicit (subID, model) pair — the normal path
+		// since v62 (tier values are always "subID|model").
 		if f.subscriptionSvc != nil {
-			sub, err := f.subscriptionSvc.Get(subID)
-			if err == nil && sub != nil && sub.Enabled {
-				client := f.createClientFromSub(sub, resolvedModel)
-				if client != nil {
-					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-subid"}).Info("[LLM] GetLLMForModel: exact match via subID")
-					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
-				}
-			}
-		}
-		// subID provided but subscription not found/unavailable — log and
-		// fall through to model-name lookup as a safety net.
-		log.WithFields(log.Fields{"subID": subID, "model": resolvedModel}).Warn("[LLM] GetLLMForModel: subID not found, falling back to model-name lookup")
-	}
-
-	modelMap := f.buildModelSubscriptionMap(senderID)
-	if sub, ok := modelMap[resolvedModel]; ok {
-		client := f.createClientFromSub(sub, resolvedModel)
-		if client != nil {
-			source := "direct"
-			if fromTier {
-				source = "tier-exact"
-			}
-			log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: exact match")
-			return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
-		}
-	}
-
-	f.mu.RLock()
-	getConfigSubs := f.configSubsFn
-	f.mu.RUnlock()
-	if getConfigSubs != nil {
-		for _, cs := range getConfigSubs() {
-			if cs.BaseURL == "" || cs.APIKey == "" || cs.Model != resolvedModel {
-				continue
-			}
-			sub := configSubToLLMSubscription(cs)
-			client := f.createClientFromSub(sub, resolvedModel)
-			if client != nil {
-				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "config-exact"}).Info("[LLM] GetLLMForModel: config sub exact match")
-				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
-			}
-		}
-	}
-
-	if f.subscriptionSvc != nil && senderID != "" {
-		subs, err := f.subscriptionSvc.List(senderID)
-		if err == nil {
-			for _, sub := range subs {
-				if sub.BaseURL == "" || sub.APIKey == "" {
-					continue
-				}
-				// Check if subscription already has models registered.
-				models, _ := f.subscriptionSvc.GetModels(sub.ID)
-				if len(models) > 0 {
-					continue
-				}
-				client := f.createClientFromSub(sub, resolvedModel)
-				if client == nil {
-					continue
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				if loader, ok := client.(llm.ModelLoader); ok {
-					_ = loader.LoadModelsFromAPI(ctx)
-				}
-				cancel()
-				// After API load, OnModelsLoaded upserts into subscription_models.
-				// Check if the target model is now registered.
-				updatedModels, _ := f.subscriptionSvc.GetModels(sub.ID)
-				for _, sm := range updatedModels {
-					if sm.Model == resolvedModel {
-						log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "api-load"}).Info("[LLM] GetLLMForModel: found after API load")
-						return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
+			if sub, err := f.subscriptionSvc.Get(subID); err == nil && sub != nil && sub.Enabled {
+				if client := f.createClientFromSub(sub, resolvedModel); client != nil {
+					source := "tier-pair"
+					if !fromTier {
+						source = "pair"
 					}
+					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": source}).Info("[LLM] GetLLMForModel: matched via (subID, model) pair")
+					return client, sub.ID, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 				}
 			}
 		}
-	}
+		log.WithFields(log.Fields{"subID": subID, "model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: subscription for (subID, model) pair not found; falling back to default")
 
-	// No subscription for the resolved model. Try using any available
-	// subscription with the resolved model as the requested model name.
-	// OpenAI-compatible endpoints can serve arbitrary model names even if
-	// they're not in cached_models. This prevents the tier system from
-	// silently falling back to the parent's model and confusing the user.
-	f.mu.RLock()
-	getConfigSubs2 := f.configSubsFn
-	f.mu.RUnlock()
-	if getConfigSubs2 != nil {
-		for _, cs := range getConfigSubs2() {
-			if cs.BaseURL == "" || cs.APIKey == "" {
-				continue
-			}
-			sub := configSubToLLMSubscription(cs)
-			client := f.createClientFromSub(sub, resolvedModel)
-			if client != nil {
-				log.WithFields(log.Fields{"model": resolvedModel, "sub": cs.Name, "source": "tier-fallback-config"}).Info("[LLM] GetLLMForModel: using config subscription with resolved model")
-				return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
+	default:
+		// Bare model name (a legacy bare tier value, or a concrete model name
+		// from the SubAgent model parameter): resolve the owning subscription
+		// ONCE via ResolveSubscriptionForModel — the single input resolver.
+		if sub, err := f.ResolveSubscriptionForModel(senderID, resolvedModel); err == nil && sub != nil {
+			if client := f.createClientFromSub(sub, resolvedModel); client != nil {
+				log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name}).Info("[LLM] GetLLMForModel: resolved bare model name to owning subscription")
+				return client, sub.ID, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
 			}
 		}
-	}
-	if f.subscriptionSvc != nil && senderID != "" {
-		subs, err := f.subscriptionSvc.List(senderID)
-		if err == nil {
-			for _, sub := range subs {
-				if sub.BaseURL == "" || sub.APIKey == "" {
-					continue
-				}
-				client := f.createClientFromSub(sub, resolvedModel)
-				if client != nil {
-					log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name, "source": "tier-fallback-sub"}).Info("[LLM] GetLLMForModel: using subscription with resolved model")
-					return client, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
-				}
-			}
-		}
+		log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: no subscription provides the model; falling back to default")
 	}
 
-	// Last resort: use parent LLM but keep the resolved model name so the
-	// TUI status bar shows what was requested, not the fallback model.
-	log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: not found, using parent LLM with resolved model name")
-	client, _, maxCtx, tm, maxOut := f.GetLLM(senderID)
-	return client, resolvedModel, maxCtx, tm, maxOut, false
-}
-
-func (f *LLMFactory) buildModelSubscriptionMap(senderID string) map[string]*sqlite.LLMSubscription {
-	m := make(map[string]*sqlite.LLMSubscription)
-
-	f.mu.RLock()
-	getConfigSubs := f.configSubsFn
-	f.mu.RUnlock()
-	if getConfigSubs != nil {
-		for _, cs := range getConfigSubs() {
-			if cs.BaseURL == "" || cs.APIKey == "" {
-				continue
-			}
-			sub := configSubToLLMSubscription(cs)
-			if sub.Model != "" {
-				if _, exists := m[sub.Model]; !exists {
-					m[sub.Model] = sub
-				}
-			}
-		}
-	}
-
-	if f.subscriptionSvc != nil && senderID != "" {
-		subs, err := f.subscriptionSvc.List(senderID)
-		if err == nil && len(subs) > 0 {
-			for _, sub := range subs {
-				if sub.BaseURL == "" || sub.APIKey == "" {
-					continue
-				}
-				models, _ := f.subscriptionSvc.GetModels(sub.ID)
-				for _, sm := range models {
-					if _, exists := m[sm.Model]; !exists {
-						m[sm.Model] = sub
-					}
-				}
-			}
-		}
-	}
-	return m
-}
-
-func configSubToLLMSubscription(cs config.SubscriptionConfig) *sqlite.LLMSubscription {
-	sub := &sqlite.LLMSubscription{
-		ID: cs.ID, Name: cs.Name, Provider: cs.Provider,
-		BaseURL: cs.BaseURL, APIKey: cs.APIKey, Model: cs.Model,
-		MaxOutputTokens: cs.MaxOutputTokens, ThinkingMode: cs.ThinkingMode,
-	}
-	sub.PerModelConfigs = cs.PerModelConfigs
-	return sub
+	// Fallback: deployment-level defaultLLM (cfg.LLM). No subscription behind
+	// it — subID is empty and usedCustom=false.
+	client, model, maxCtx, tm, maxOut := f.GetLLM(senderID)
+	return client, "", model, maxCtx, tm, maxOut, false
 }
 
 // ─── Tier resolution ─────────────────────────────────────
@@ -1680,18 +1478,54 @@ func (f *LLMFactory) resolveTierModel(senderID, value string) (subID, model stri
 // single per-user value regardless of which channel the LLM call comes from.
 const canonicalSettingsSender = "cli_user"
 
-// getGlobalSetting reads a global user setting from the canonical channel,
-// falling back to the canonical sender "cli_user" when the current sender has
-// no value. This lets non-CLI channels inherit the CLI user's global config
-// (tier, thinking_mode) without each channel needing its own copy.
+// getGlobalSetting reads a global user setting (tier_*, thinking_mode — canonical
+// channel 'cli') across ALL dimensions of the v45+ canonical-user design:
+//
+//  1. user_id dimension (authoritative): rows written via *ByUserID RPCs
+//     (SetByUserID stores sender_id='user-N' + user_id=N — sender-dimension
+//     reads never see them). v46-backfilled legacy sender rows also carry
+//     user_id, so they are covered here too. Multi-user isolation is exact:
+//     each canonical user reads its own row only.
+//  2. sender dimension (legacy/CLI): rows written via Set(channel, senderID)
+//     with user_id=NULL (local CLI ApplySettings, resolveUserID-failure
+//     fallback) — only the writing sender can read them.
+//  3. canonical CLI sender "cli_user" (pre-v45 global inheritance):
+//     non-CLI senders inherit the CLI user's config. Kept for resolver-
+//     unavailable environments (early init, local CLI without identity DB).
+//
+// Ordering matters: the user_id dimension holds the v45+ canonical writes
+// (RPC panel settings) and must win over stale sender-dimension rows.
 func (f *LLMFactory) getGlobalSetting(senderID, key string) string {
+	// 1. Canonical user_id dimension — the v45+ canonical write path.
+	if f.userResolver != nil {
+		if uid, ok := f.userResolver(senderID); ok {
+			if val := f.getByUserID(thinkingModeChannel, uid, key); val != "" {
+				return val
+			}
+		}
+	}
+	// 2. Sender-dimension exact row.
 	if val := f.getSetting(senderID, thinkingModeChannel, key); val != "" {
 		return val
 	}
+	// 3. Canonical CLI sender fallback.
 	if senderID != canonicalSettingsSender {
 		return f.getSetting(canonicalSettingsSender, thinkingModeChannel, key)
 	}
 	return ""
+}
+
+// getByUserID reads a single setting from the user_id dimension (channel is
+// still the canonical 'cli' namespace for global settings).
+func (f *LLMFactory) getByUserID(channel string, userID int64, key string) string {
+	if f.settingsSvc == nil {
+		return ""
+	}
+	settings, err := f.settingsSvc.GetByUserID(channel, userID)
+	if err != nil || settings == nil {
+		return ""
+	}
+	return settings[key]
 }
 
 // userTierModel returns the per-user tier model setting from user_settings DB.
@@ -1817,15 +1651,4 @@ const thinkingModeChannel = channel.ThinkingModeChannel
 // consulted.
 func (f *LLMFactory) userThinkingMode(senderID string) string {
 	return f.getGlobalSetting(senderID, "thinking_mode")
-}
-
-// ResolveSubIDForModel returns the subscription ID that owns the given model
-// for the given user. Used by UserContext to provide subID without exposing
-// the LLMSubscription type to downstream code.
-func (f *LLMFactory) ResolveSubIDForModel(senderID, model string) string {
-	sub, err := f.ResolveSubscriptionForModel(senderID, model)
-	if err != nil || sub == nil {
-		return ""
-	}
-	return sub.ID
 }

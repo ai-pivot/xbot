@@ -9,11 +9,13 @@ import { deriveRows } from './derive'
 import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
+  commitViaFold,
   initialChatState,
   iterNum,
   turnID,
   type ChatState,
   type DomainEvent,
+  type Turn,
 } from './types'
 import type { WebIteration } from '@/types/shared'
 
@@ -598,6 +600,56 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(deriveRows(s3)).toHaveLength(2) // user + live(思考中)，无第二份
   })
 
+  it('REPRO: notification echo 在 turn_started(notification) 绑定后到达不产生第二行（F#1 双行）', () => {
+    // 真实时序：后端 drainAndProcessNotifications 注入通知 turn →
+    // turn_started(trigger=notification, content=通知全文) 经 SSE progress 通道
+    // 先到 → reduce 用 turn_start.content 构造 notif user 行（isNotification=true）。
+    // 后端 web.go InjectUserMessage 的 inject_user echo 后到 —— WSMessage 只有
+    // Type/TS/ChatID/Content 四个字段（无 id/turn_id/is_notification）→ normalize
+    // 后 requestID=null + turnHint=undefined → ③ 不命中（hint 缺失）→ ④ 无条件
+    // append pendingUsers → 同一通知渲染两行（turn.user 的 notif-${turnID} 行 +
+    // 沉底 echo 行）。
+    const s0 = run([
+      {
+        type: 'turn_started', turnID: T1, requestID: null, trigger: 'notification',
+        content: '[System Notification] bg task completed',
+      },
+      iteration1(T1, '思考中'),
+    ])
+    // turn_started(notification) 已构造 notif user 行。
+    expect(s0.turns.get(T1)?.user?.isNotification).toBe(true)
+    expect(s0.pendingUsers).toHaveLength(0)
+
+    // inject_user echo：后端真实形状（无 requestID、无 turnHint）。
+    const evs = normalizeEvent({
+      type: 'inject_user',
+      content: '[System Notification] bg task completed',
+      ts: 1723600000,
+      chat_id: 'chat-1',
+    }, 'chat-1')!
+    expect(evs).toHaveLength(1)
+    const s1 = evs.reduce(reduce, s0)
+    // 修复后：内容幂等丢弃 —— 同一通知恰好一行（notif 行），echo 不入 pending。
+    const userRows = deriveRows(s1).filter((r) => r.kind === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(s1.pendingUsers).toHaveLength(0)
+    // 保留的行是 turn.user 的 notif 行（不是沉底 echo 行）。
+    expect(userRows[0].id).toBe('notif-1')
+  })
+
+  it('F#9: 同毫秒两条 echo 的 id 不碰撞（React key + TanStack 高度测量串行）', () => {
+    // 后端连续注入两条消息（同一毫秒内）→ normalizeUserEcho 的
+    // `echo-${turn}-${Date.now()}` id 相同 → React key 重复 + TanStack
+    // Virtual 高度测量串行。echoSeq 单调后缀保证唯一。
+    const a = normalizeEvent({ type: 'inject_user', content: '第一条', chat_id: 'chat-1' }, 'chat-1')
+    const b = normalizeEvent({ type: 'inject_user', content: '第二条', chat_id: 'chat-1' }, 'chat-1')
+    expect(a).toHaveLength(1)
+    expect(b).toHaveLength(1)
+    const idA = (a![0] as Extract<DomainEvent, { type: 'user_echo' }>).row.id
+    const idB = (b![0] as Extract<DomainEvent, { type: 'user_echo' }>).row.id
+    expect(idA).not.toBe(idB)
+  })
+
   it('REPRO: gap 修复 delta 携带旧迭代 —— 不得清空 live 正在流式更新的迭代（CR #1 committedNow）', () => {
     // 场景：前端缺失中间迭代（iterations=[1,2,5]，缺 3,4），live 已流式到迭代 5。
     // 进来一个 gap 修复事件：iterationsDelta 补了早前丢失的迭代 3，ev.iter=3。
@@ -704,13 +756,13 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     // 快照的【旧 todos】（快照可能滞后于实时 progress 事件）。
     // 旧逻辑 ev.todos.length>0 ? ev.todos : s.todos 用旧值覆盖 → todo 列表消失。
     const s0 = run([
-      { type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never, content: undefined, reasoning: undefined, activeTools: [], completedTools: [], iterationsDelta: [], todos: [{ id: 1, text: '新任务', done: false }, { id: 2, text: '任务2', done: false }], subAgents: undefined, tokenUsage: undefined, streamStats: undefined },
+      { type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never, content: undefined, reasoning: undefined, activeTools: [], completedTools: [], iterationsDelta: [], todos: [{ id: 1, text: '新任务', status: "pending" }, { id: 2, text: '任务2', status: "pending" }], subAgents: undefined, tokenUsage: undefined, streamStats: undefined },
     ])
     expect(s0.todos).toHaveLength(2)
     // history_replaced 携带快照旧 todos（只有 1 条，旧值）。
     const s1 = reduce(s0, {
       type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null,
-      todos: [{ id: 1, text: '新任务', done: false }],
+      todos: [{ id: 1, text: '新任务', status: "pending" }],
     })
     // 修复后：实时 state.todos（2 条）优先，不被快照旧值（1 条）覆盖。
     expect(s1.todos).toHaveLength(2)
@@ -819,5 +871,282 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(t5.phase.data.streamStats?.tokensPerSec).toBe(0)
     // ttftMs 保留前一迭代的值（per-Run 不变）。
     expect(t5.phase.data.streamStats?.ttftMs).toBe(500)
+  })
+})
+
+// ─── 重启 resume 后切换会话竞态：SSE 增量先到（lazy live 只含 resume 后迭代）+
+// fetchHistory 后到（committed 全量 1..k）→ "live 胜"必须 union，否则 iter 1..k
+// 竞态性消失（用户报告："重启后 turn n 的 iter 1..k 全消失"、"切换那个会话
+// 有时候能看到迭代有时候看不到"）。时序 A（fetchHistory 先到）走 committed
+// 遮蔽解除路径正常；时序 B（SSE 先到）走 step 1 "live 胜"——旧代码直接保留
+// live（只含增量）丢弃 incoming committed 的全量迭代 → 概率性丢 1..k。
+describe('TDSM reduce — 重启 resume 切换会话竞态（live 胜 union）', () => {
+  const T7 = turnID(7)
+  const mkIter = (n: number, c: string): WebIteration => ({ iteration: n, content: c, reasoning: '', tools: [], toolCount: 0 })
+
+  const committedTurn = (): Turn => ({
+    id: T7,
+    user: {
+      id: 'db-u7', content: 'user msg' as never, timestamp: 't', isNotification: false,
+      queued: false, sending: false, requestID: null, turnHint: 7, dbID: 7,
+    },
+    phase: { kind: 'committed', payload: commitViaFold([mkIter(1, 'iter 1'), mkIter(2, 'iter 2'), mkIter(3, 'iter 3')] as never, 'final') },
+    requestID: null,
+  })
+
+  it('REPRO: SSE 增量先到（lazy live 只含 resume 后的迭代 4）→ history_replaced 的 committed（1..3）后到 → live 胜时必须 union（不丢 1..3）', () => {
+    // 时序 B：重启 resume 后切换/重连会话——SSE 增量事件先于 fetchHistory 到达
+    //（lazy 采纳建立 live，只含 resume Run 的迭代 4）。
+    const s0 = run([
+      // 无 turn_started（重启后 resume 的 turn_started 已过 SSE buffer /
+      // lazy 采纳场景），iteration 事件 lazy 建立 live。SSE push 协议：事件
+      // 携带新完成的迭代 delta（resume Run 的迭代 4）。
+      {
+        type: 'iteration', turnID: T7, iter: iterNum(4), seq: 10 as never,
+        content: 'resumed iter 4', reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [mkIter(4, 'resumed iter 4')], todos: undefined, subAgents: undefined,
+        tokenUsage: undefined, streamStats: undefined,
+      } as never,
+    ])
+    const t0 = s0.turns.get(T7)
+    if (t0?.phase.kind !== 'live') throw new Error('lazy 采纳应建立 live')
+    expect(t0.phase.data.iterations.map((i) => i.iteration)).toEqual([4])
+    expect(s0.activeTurn).toBe(T7)
+
+    // fetchHistory 后到：history_replaced 携带 DB 全量（committed 1..3 +
+    // user 行——重启前 Run 持久化的迭代）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced', legacy: [], turns: [committedTurn()], active: null, lastSeq: null, todos: [],
+    })
+
+    // live 胜（SSE 比 DB 新）——但 incoming committed 的 1..3 必须 union 进
+    // live（旧代码直接保留 live 丢弃 1..3 → "iter 1..k 全消失"）。
+    const t1 = s1.turns.get(T7)
+    if (t1?.phase.kind !== 'live') throw new Error('live turn died across history_replaced')
+    expect(s1.activeTurn).toBe(T7)
+    expect(t1.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2, 3, 4])
+    // user 行嫁接（lazy live 无 user，DB 行补）。
+    expect(t1.user?.content).toBe('user msg')
+    // 渲染：单 turn（不分裂）。
+    const rows = deriveRows(s1)
+    expect(rows.filter((r) => r.kind === 'live')).toHaveLength(1)
+  })
+
+  it('同号迭代 live 权威（SSE 比 DB 新）——union 时 live 的 4 覆盖 committed 同号 4', () => {
+    // committed 携带过时的迭代 4（DB 快照滞后于 SSE），live 的 4（SSE 较新）
+    // 在 union 中覆盖同号（mergeIterations 权威方向）。
+    const s0 = run([{
+      type: 'iteration', turnID: T7, iter: iterNum(4), seq: 10 as never,
+      content: 'resumed iter 4 (new)', reasoning: undefined, activeTools: [], completedTools: [],
+      iterationsDelta: [mkIter(4, 'resumed iter 4 (new)')], todos: undefined, subAgents: undefined,
+      tokenUsage: undefined, streamStats: undefined,
+    } as never])
+    const staleTurn: Turn = {
+      id: T7,
+      user: null,
+      phase: { kind: 'committed', payload: commitViaFold([mkIter(1, 'a'), mkIter(2, 'b'), mkIter(4, 'stale iter 4')] as never, '') },
+      requestID: null,
+    }
+    const s1 = reduce(s0, { type: 'history_replaced', legacy: [], turns: [staleTurn], active: null, lastSeq: null, todos: [] })
+    const t1 = s1.turns.get(T7)
+    if (t1?.phase.kind !== 'live') throw new Error('live turn died')
+    expect(t1.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2, 4])
+    const it4 = t1.phase.data.iterations.find((i) => i.iteration === 4)
+    expect(it4?.content).toBe('resumed iter 4 (new)')
+  })
+})
+
+// ─── Loop2 F1/F2：in-flight 工具折叠（"已渲染内容永不消失"） ────
+//
+// F1（derive frozen）：frozen 行的 errTools 只折 activeTools —— streamingTools
+// （参数流式生成中，generating）在 cancel/text 丢失定格时消失。
+// F2（reduce foldPhase）：turn_started 收尸路径 commitViaFold 不折 in-flight
+// 工具（text_final 的 foldInFlightTools 有折 —— 收尸路径没有）。
+describe('Loop2 — in-flight 工具折叠（frozen / 收尸 / text_final 三路径同语义）', () => {
+  const runningTool = (name: string) => ({
+    name, label: '', status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '',
+  })
+  const generatingTool = (name: string) => ({
+    name, label: '', status: 'generating', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '',
+  })
+
+  it('F1: frozen 行渲染折入 streamingTools（generating 工具 cancel/idle 定格不消失）', () => {
+    // stream 事件带 streamingTools（参数生成中）+ content（hasOutput 成立）→
+    // session(idle) 定格 frozen（text/PhaseDone 丢失的兜底路径）→ deriveRows。
+    // 修复前：errTools 只折 activeTools（空）→ generating 工具从 frozen 行消失
+    // （违反"已渲染内容永不消失"）。
+    const s = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: '流式输出到一半', reasoning: undefined,
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      { type: 'session', busy: false },
+    ])
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'frozen') throw new Error(`must be frozen, got ${t1.phase.kind}`)
+    // frozen 的 LiveSnapshot 保留 streamingTools（session idle freeze 全保留）。
+    expect(t1.phase.data.streamingTools.map((t) => t.name)).toContain('Read')
+
+    const rows = deriveRows(s)
+    const frozenRow = rows.find((r) => r.kind === 'frozen' && r.turnID === 1)
+    if (!frozenRow || frozenRow.kind !== 'frozen') throw new Error('frozen row must render')
+    // 修复后：streamingTools 折进最后迭代（标 error —— generating → error）。
+    const folded = frozenRow.iterations.flatMap((it) => it.tools)
+    const readTool = folded.find((t) => t.name === 'Read')
+    expect(readTool).toBeDefined()
+    expect(readTool?.status).toBe('error')
+  })
+
+  it('F1（对照）: frozen 行仍折入 activeTools（running 工具，既有行为不回归）', () => {
+    // activeTools（running）经 session(idle) frozen 后折入 —— 修复不得破坏。
+    const s = run([
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: '流式中', reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [], iterationsDelta: [],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      { type: 'session', busy: false },
+    ])
+    const rows = deriveRows(s)
+    const frozenRow = rows.find((r) => r.kind === 'frozen' && r.turnID === 1)
+    if (!frozenRow || frozenRow.kind !== 'frozen') throw new Error('frozen row must render')
+    const folded = frozenRow.iterations.flatMap((it) => it.tools)
+    expect(folded.map((t) => t.name)).toContain('Shell')
+    expect(folded.find((t) => t.name === 'Shell')?.status).toBe('error')
+  })
+
+  it('F2: turn_started 收尸（foldPhase）折 in-flight 工具 —— activeTools+streamingTools 标 error 进最后迭代', () => {
+    // turn 1 流式中：iteration 事件带 activeTools（Shell running）+ 已完成迭代 1
+    // 快照（iterationsDelta）+ stream 事件带 streamingTools（Read generating）。
+    // 用户发新消息 → turn_started(2) 收尸 turn 1 → foldPhase commit。
+    // 修复前：commitViaFold 只带已完成迭代（iterationsDelta 的 iter1 无工具）
+    // —— Shell/Read 从 committed payload 消失（text_final 有 foldInFlightTools，
+    // 收尸路径没有 —— 语义分叉）。
+    const s = run([
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: undefined, reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '迭代1完成', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: undefined, reasoning: '思考中',
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      started(T2), // 收尸 turn 1（text 未到 —— fold commit）
+    ])
+    assertInvariants(s)
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'committed') throw new Error(`turn 1 must be committed (fold), got ${t1.phase.kind}`)
+    // 收尸 committed：in-flight 工具折进最后迭代（iter1）—— 与 text_final 的
+    // foldInFlightTools 同语义（"已渲染内容永不消失"）。
+    const it1 = t1.phase.payload.iterations.find((it) => it.iteration === 1)
+    const toolNames = it1?.tools.map((t) => t.name) ?? []
+    expect(toolNames).toContain('Shell')
+    expect(toolNames).toContain('Read')
+    expect(it1?.tools.find((t) => t.name === 'Shell')?.status).toBe('error')
+    expect(it1?.tools.find((t) => t.name === 'Read')?.status).toBe('error')
+    // 已有迭代内容不被折叠破坏。
+    expect(it1?.content).toBe('迭代1完成')
+  })
+
+  it('F2b: 收尸时无已完成迭代 + content 流式中 → in-flight 工具折入新迭代（content 写进迭代内 —— v55 渲染）', () => {
+    // iterations 为空 + content 非空 + streamingTools 非空 → 修复前
+    // commitViaText(text, [])（工具丢失）；修复后折入新迭代（iteration=live.iter，
+    // content 写进迭代 —— v55 hasIterations 时不渲染顶层 content）。
+    const s = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: '流式输出中', reasoning: undefined,
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      started(T2), // 收尸
+    ])
+    assertInvariants(s)
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'committed') throw new Error(`turn 1 must be committed, got ${t1.phase.kind}`)
+    // 折入新迭代：工具 + 流式 content 都在迭代内。
+    expect(t1.phase.payload.iterations).toHaveLength(1)
+    const it1 = t1.phase.payload.iterations[0]
+    expect(it1.tools.map((t) => t.name)).toContain('Read')
+    expect(it1.tools.find((t) => t.name === 'Read')?.status).toBe('error')
+    // v55：顶层 content 不渲染（hasIterations）—— 流式文本必须存在于迭代内。
+    expect(it1.content).toBe('流式输出中')
+  })
+
+  it('F2c: 收尸路径与 text_final 的 in-flight 折叠语义一致（同输入同输出）', () => {
+    // 同样的 live 状态（activeTools=Shell running + streamingTools=Read generating
+    // + 迭代1快照），经收尸（turn_started fold）与经 text_final 两条路径 commit，
+    // 最后迭代的工具集合必须一致（foldInFlightToIterations 共用 —— 语义永不分叉）。
+    const base = (): DomainEvent[] => [
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: undefined, reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '迭代1', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: undefined, reasoning: '思考中',
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+    ]
+    // 路径 A：turn_started 收尸 fold。
+    const sA = run([...base(), started(T2)])
+    // 路径 B：text_final commit（cancel —— content null 走 fold）。
+    const sB = run([...base(), textFinal(T1, null, true)])
+    const pA = sA.turns.get(T1)!.phase
+    const pB = sB.turns.get(T1)!.phase
+    if (pA.kind !== 'committed' || pB.kind !== 'committed') throw new Error('both must be committed')
+    const toolsA = (pA.payload.iterations.find((it) => it.iteration === 1)?.tools ?? []).map((t) => `${t.name}:${t.status}`).sort()
+    const toolsB = (pB.payload.iterations.find((it) => it.iteration === 1)?.tools ?? []).map((t) => `${t.name}:${t.status}`).sort()
+    expect(toolsA).toEqual(toolsB)
+    expect(toolsA).toContain('Read:error')
+    expect(toolsA).toContain('Shell:error')
+  })
+
+  it('F2 对照: text_final 的既有折叠行为不回归（activeTools+streamingTools 都折）', () => {
+    // text_final(cancel) 的既有 foldInFlightTools 语义（reduce.ts:464）——
+    // 提取共享 helper 后不得改变。
+    const s = run([
+      started(T1),
+      {
+        type: 'iteration', turnID: T1, iter: iterNum(2), seq: 10 as never,
+        content: undefined, reasoning: undefined,
+        activeTools: [runningTool('Shell') as never],
+        completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: 'iter1', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      },
+      {
+        type: 'stream', turnID: T1, seq: null, iteration: null,
+        content: undefined, reasoning: 'r',
+        streamingTools: [generatingTool('Grep') as never],
+        genui: undefined, streamStats: undefined,
+      },
+      textFinal(T1, null, true), // cancel：content null → fold 路径
+    ])
+    const t1 = s.turns.get(T1)!
+    if (t1.phase.kind !== 'committed') throw new Error('must be committed')
+    // live.iter=2（iteration 事件）→ in-flight 折进迭代 2（追加新迭代）。
+    const it2 = t1.phase.payload.iterations.find((it) => it.iteration === 2)
+    expect(it2?.tools.map((t) => t.name).sort()).toEqual(['Grep', 'Shell'])
   })
 })

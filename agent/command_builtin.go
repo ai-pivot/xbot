@@ -146,7 +146,12 @@ type getLLMCmd struct{}
 func (c *getLLMCmd) Name() string        { return "/llm" }
 func (c *getLLMCmd) Aliases() []string   { return nil }
 func (c *getLLMCmd) Match(s string) bool { return strings.ToLower(s) == "/llm" }
-func (c *getLLMCmd) Concurrent() bool    { return true } // read-only
+func (c *getLLMCmd) Concurrent() bool {
+	return false // needs UserContext (only available in processMessage path)
+	// Queuing semantics: Concurrent()=false routes this command through the
+	// per-chat serial msgCh (admitToMsgCh) — during a busy turn it QUEUES and
+	// executes only after the current turn completes, it does NOT run in parallel.
+}
 
 func (c *getLLMCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleGetLLM(ctx, msg)
@@ -159,7 +164,12 @@ type listLLMsCmd struct{}
 func (c *listLLMsCmd) Name() string        { return "/llms" }
 func (c *listLLMsCmd) Aliases() []string   { return nil }
 func (c *listLLMsCmd) Match(s string) bool { return strings.ToLower(s) == "/llms" }
-func (c *listLLMsCmd) Concurrent() bool    { return true } // read-only
+func (c *listLLMsCmd) Concurrent() bool {
+	return false // needs UserContext (only available in processMessage path)
+	// Queuing semantics: Concurrent()=false routes this command through the
+	// per-chat serial msgCh (admitToMsgCh) — during a busy turn it QUEUES and
+	// executes only after the current turn completes, it does NOT run in parallel.
+}
 
 func (c *listLLMsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleListLLMs(ctx, msg)
@@ -266,7 +276,12 @@ func (c *contextInfoCmd) Match(s string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(s))
 	return trimmed == "/context" || trimmed == "/context info"
 }
-func (c *contextInfoCmd) Concurrent() bool { return true } // read-only
+func (c *contextInfoCmd) Concurrent() bool {
+	return false // needs UserContext (only available in processMessage path)
+	// Queuing semantics: Concurrent()=false routes this command through the
+	// per-chat serial msgCh (admitToMsgCh) — during a busy turn it QUEUES and
+	// executes only after the current turn completes, it does NOT run in parallel.
+}
 
 func (c *contextInfoCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	tenantSession, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
@@ -301,7 +316,12 @@ type modelsCmd struct{}
 func (c *modelsCmd) Name() string        { return "/models" }
 func (c *modelsCmd) Aliases() []string   { return nil }
 func (c *modelsCmd) Match(s string) bool { return strings.ToLower(s) == "/models" }
-func (c *modelsCmd) Concurrent() bool    { return true } // read-only
+func (c *modelsCmd) Concurrent() bool {
+	return false // needs UserContext (only available in processMessage path)
+	// Queuing semantics: Concurrent()=false routes this command through the
+	// per-chat serial msgCh (admitToMsgCh) — during a busy turn it QUEUES and
+	// executes only after the current turn completes, it does NOT run in parallel.
+}
 
 func (c *modelsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	return a.handleModels(ctx, msg)
@@ -350,7 +370,12 @@ func (c *settingsCmd) Match(s string) bool {
 	lower := strings.ToLower(s)
 	return lower == "/settings" || strings.HasPrefix(lower, "/settings ")
 }
-func (c *settingsCmd) Concurrent() bool { return true }
+func (c *settingsCmd) Concurrent() bool {
+	return false // needs UserContext (only available in processMessage path)
+	// Queuing semantics: Concurrent()=false routes this command through the
+	// per-chat serial msgCh (admitToMsgCh) — during a busy turn it QUEUES and
+	// executes only after the current turn completes, it does NOT run in parallel.
+}
 
 func (c *settingsCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMessage) (*channel.OutboundMsg, error) {
 	if msg.ChatType == "group" {

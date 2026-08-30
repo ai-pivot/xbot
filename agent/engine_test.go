@@ -161,7 +161,7 @@ func TestRun_TodosCarriedInMidBusyProgress(t *testing.T) {
 			{
 				FinishReason: llm.FinishReasonToolCalls,
 				ToolCalls: []llm.ToolCall{
-					{ID: "tc1", Name: "TodoWrite", Arguments: `{"todos":[{"id":1,"text":"task A","done":false}]}`},
+					{ID: "tc1", Name: "TodoWrite", Arguments: `{"todos":[{"id":1,"text":"task A","status":"pending"}]}`},
 				},
 			},
 			{Content: "done"},
@@ -1775,61 +1775,6 @@ func TestRun_WithHookManager_Nil(t *testing.T) {
 	}
 }
 
-func TestRun_WithHookManager_TimingHookCollects(t *testing.T) {
-	td := hooks.NewTimingData()
-	mgr, _ := hooks.NewManager("", "")
-	mgr.RegisterBuiltin(hooks.TimingCallback(td))
-
-	shellTool := &mockTool{
-		name:   "Shell",
-		result: tools.NewResult("output"),
-	}
-
-	mock := &mockLLM{
-		responses: []llm.LLMResponse{
-			{
-				FinishReason: llm.FinishReasonToolCalls,
-				ToolCalls: []llm.ToolCall{
-					{ID: "tc1", Name: "Shell", Arguments: `{"command":"ls"}`},
-				},
-			},
-			{
-				FinishReason: llm.FinishReasonToolCalls,
-				ToolCalls: []llm.ToolCall{
-					{ID: "tc2", Name: "Shell", Arguments: `{"command":"pwd"}`},
-				},
-			},
-			{Content: "Done."},
-		},
-	}
-
-	out := Run(context.Background(), RunConfig{
-		LLMClient:   mock,
-		Model:       "test",
-		Tools:       newTestRegistry(shellTool),
-		Messages:    baseMessages(),
-		AgentID:     "main",
-		HookManager: mgr,
-	})
-
-	if out.Error != nil {
-		t.Fatalf("unexpected error: %v", out.Error)
-	}
-
-	stats := td.Stats()
-	shellStats, ok := stats["Shell"]
-	if !ok {
-		t.Fatal("expected Shell timing stats")
-	}
-	if shellStats.Count != 2 {
-		t.Fatalf("expected 2 Shell calls, got %d", shellStats.Count)
-	}
-}
-
-// TestBuildToolContext_SubAgentCdPersists verifies that Cd tool's directory change
-// persists across subsequent buildToolContext calls for SubAgent (no session).
-// This was a bug: buildToolContext is called per tool execution, and the old closure
-// only set tc.CurrentDir on the old ToolContext, which was discarded after each call.
 func TestBuildToolContext_SubAgentCdPersists(t *testing.T) {
 	// Simulate SubAgent: no Session, InitialCWD set
 	cfg := &RunConfig{
