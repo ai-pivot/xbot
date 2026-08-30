@@ -505,6 +505,77 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('dispatches agent-idle when active-progress recovery returns done — restores running state lost in the SSE gap', async () => {
+    // Mobile bug (user report 2026-08-30): user opens settings (app backgrounds
+    // → SSE disconnects), the turn completes during the gap, and after
+    // returning the session is STUCK busy — the reply renders (replay_gap
+    // force_reload) but the busy indicator never clears. Root cause: the
+    // session(idle) SSE event was lost in the gap (ring buffer evicted on
+    // resync, or the disconnect window), so useSessionStore's
+    // executingSessionsRef keeps the busy key and mergeStatus forces running
+    // forever. restoreActiveProgress's done/null branch is the AUTHORITATIVE
+    // turn-ended signal here — it must dispatch agent-idle (the
+    // useSessionStore-only channel that clears running WITHOUT touching the
+    // live store — unlike session(idle), which clears the live store and
+    // causes rendered iterations to vanish, see the 449 test above).
+    vi.useFakeTimers()
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') return { phase: 'done', iteration: 2 }
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    const idleEvents: Array<{ chatID?: string; channel?: string }> = []
+    const handler = (e: Event) => {
+      idleEvents.push((e as CustomEvent).detail)
+    }
+    window.addEventListener('agent-idle', handler)
+    try {
+      await vi.advanceTimersByTimeAsync(1_000)
+    } finally {
+      window.removeEventListener('agent-idle', handler)
+    }
+    connection.dispose()
+
+    expect(idleEvents.length).toBeGreaterThanOrEqual(1)
+    expect(idleEvents.some((ev) => ev.chatID === 'chat-a')).toBe(true)
+  })
+
+  it('dispatches agent-idle when active-progress recovery returns null — same stuck-busy recovery', async () => {
+    // null = no active progress (turn ended, lastProgressSnapshot cleaned) —
+    // the same authoritative turn-ended signal as phase='done'.
+    vi.useFakeTimers()
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') return null
+      return {}
+    })
+    const connection = new SSEConnectionImpl()
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    source.fail()
+    source.open()
+
+    const idleEvents: Array<{ chatID?: string; channel?: string }> = []
+    const handler = (e: Event) => {
+      idleEvents.push((e as CustomEvent).detail)
+    }
+    window.addEventListener('agent-idle', handler)
+    try {
+      await vi.advanceTimersByTimeAsync(1_000)
+    } finally {
+      window.removeEventListener('agent-idle', handler)
+    }
+    connection.dispose()
+
+    expect(idleEvents.some((ev) => ev.chatID === 'chat-a')).toBe(true)
+  })
+
   it('does NOT dispatch replay_gap when recovery returns done even if a newer SSE event bumped progressVersion', async () => {
     // v2: done/null branch dispatches nothing — no replay_gap regardless of
     // progressVersion. The old test verified replay_gap fired BEFORE the

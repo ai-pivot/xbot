@@ -162,6 +162,11 @@ func isRetryableError(err error) bool {
 		// Not a net.Error type (string-only from CollectStreamWithCallback),
 		// so string matching is the only way to catch it.
 		"stream ended without finish_reason",
+		// Tool-call arguments corrupted mid-flight (SSE chunk loss/repeat by
+		// gateway, finish_reason still arrives). Detected by the
+		// stream-completion gate in CollectStreamWithCallbackFrom. Retrying
+		// regenerates the whole request — chunk loss is transient.
+		"tool call arguments corrupted",
 		"unexpected EOF",
 	} {
 		if strings.Contains(msg, kw) {

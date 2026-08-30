@@ -885,13 +885,19 @@ func (a *Agent) SpawnInteractiveSession(
 	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no
 	// user message turn boundary. Run()'s incremental persistence skips
 	// messages[0:lastPersistedCount] which includes this user message.
-	historyID, err := agentTenantSession.AppendMessage(llm.NewUserMessage(msg.Content))
+	// TurnID stamp: without it the user row persists with turn_id=0 — the
+	// frontend renders it below the assistant reply (the turn-0 row sorts
+	// differently). Same fix as the main agent's eager-save stamp.
+	userMsg := llm.NewUserMessage(msg.Content)
+	userMsg.TurnID = cfg.TurnID
+	historyID, err := agentTenantSession.AppendMessage(userMsg)
 	if err != nil {
 		a.destroyInteractiveSession(key)
 		return nil, fmt.Errorf("append interactive agent user message: %w", err)
 	}
 	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
 		cfg.Messages[1].ID = historyID
+		cfg.Messages[1].TurnID = cfg.TurnID
 	}
 
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
@@ -1240,7 +1246,9 @@ func (a *Agent) SpawnInteractiveSession(
 			if out.Content != "" {
 				// Check if the last message is already this assistant reply
 				if len(newMsgs) == 0 || newMsgs[len(newMsgs)-1].Content != out.Content || newMsgs[len(newMsgs)-1].Role != "assistant" {
-					newMsgs = append(newMsgs, llm.NewAssistantMessage(out.Content))
+					finalMsg := llm.NewAssistantMessage(out.Content)
+					finalMsg.TurnID = cfg.TurnID
+					newMsgs = append(newMsgs, finalMsg)
 				}
 			}
 			// Carry ReasoningContent to the in-memory message for subsequent turns
@@ -1251,6 +1259,12 @@ func (a *Agent) SpawnInteractiveSession(
 			if agentTenantSession != nil && out.Content != "" {
 				assistantMsg := llm.NewAssistantMessage(out.Content)
 				assistantMsg.ReasoningContent = out.ReasoningContent
+				// TurnID stamp: the final reply must persist with this Run's turn
+				// (same as the Run's intermediate rows). Without it the row lands with
+				// turn_id=0 while the user message and iterations carry turn_id=N —
+				// the frontend renders the reply ABOVE the user message that
+				// triggered it ("user message below the assistant reply").
+				assistantMsg.TurnID = cfg.TurnID
 				if len(out.IterationHistory) > 0 {
 					if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 						assistantMsg.Detail = string(jsonBytes)
@@ -1305,7 +1319,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 		msgText := fmt.Sprintf("Interactive sub-agent %q (instance=%q) started in background. Use action=\"inspect\" to check progress, action=\"send\" to send messages, action=\"interrupt\" to interrupt, or action=\"unload\" to terminate.", roleName, instance)
 		if bgTask != nil {
-			msgText += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=%q) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+			msgText += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=[%q]) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
 		}
 		return &channelpkg.OutboundMsg{
 			Content: msgText,
@@ -1401,6 +1415,9 @@ func (a *Agent) SpawnInteractiveSession(
 	if agentTenantSession != nil && out.Content != "" {
 		assistantMsg := llm.NewAssistantMessage(out.Content)
 		assistantMsg.ReasoningContent = out.ReasoningContent
+		// TurnID stamp — same fix as the background path above (turn_id=0 rows
+		// render above the user message in the session view).
+		assistantMsg.TurnID = cfg.TurnID
 		if len(out.IterationHistory) > 0 {
 			if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 				assistantMsg.Detail = string(jsonBytes)
@@ -1416,6 +1433,7 @@ func (a *Agent) SpawnInteractiveSession(
 	} else if out.Content != "" {
 		assistantMsg := llm.NewAssistantMessage(out.Content)
 		assistantMsg.ReasoningContent = out.ReasoningContent
+		assistantMsg.TurnID = cfg.TurnID
 		ia.messages = append(ia.messages, assistantMsg)
 	}
 	// Publish only the fully initialized state. Readers can never observe the
@@ -1640,6 +1658,10 @@ func (a *Agent) SendToInteractiveSession(
 		ia.mu.Lock()
 		ia.messages = append([]llm.ChatMessage(nil), persisted...)
 		ia.mu.Unlock()
+		// TurnID stamp: the send user row must persist with this Run's turn
+		// (assignSubAgentTurnID above), same fix as the spawn path — turn_id=0
+		// rows render out of order in the session view.
+		newMessages[len(newMessages)-1].TurnID = cfg.TurnID
 		historyID, err := cfg.Session.AppendMessage(newMessages[len(newMessages)-1])
 		if err != nil {
 			return nil, fmt.Errorf("append interactive agent user message: %w", err)
@@ -1995,6 +2017,9 @@ func (a *Agent) SendToInteractiveSession(
 		if out.Error == nil && cfg.Session != nil && out.Content != "" {
 			assistantMsg := llm.NewAssistantMessage(out.Content)
 			assistantMsg.ReasoningContent = out.ReasoningContent
+			// TurnID stamp — same fix as the spawn/send paths above (turn_id=0
+			// rows render above the user message in the session view).
+			assistantMsg.TurnID = cfg.TurnID
 			if len(out.IterationHistory) > 0 {
 				if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
 					assistantMsg.Detail = string(jsonBytes)
@@ -2063,7 +2088,9 @@ func (a *Agent) SendToInteractiveSession(
 					if persistedAssistant != nil {
 						ia.messages = append(ia.messages, *persistedAssistant)
 					} else {
-						ia.messages = append(ia.messages, llm.NewAssistantMessage(out.Content))
+						memMsg := llm.NewAssistantMessage(out.Content)
+						memMsg.TurnID = cfg.TurnID
+						ia.messages = append(ia.messages, memMsg)
 					}
 				}
 			}

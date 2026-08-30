@@ -489,6 +489,23 @@ export class SSEConnectionImpl implements WSConnection {
       // the in-progress turn "vanishes" until a manual refresh (user report:
       // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
       if (!progress || progress.phase === 'done') {
+        // Turn ended: dispatch agent-idle so useSessionStore clears the
+        // session's busy state. The session(idle) SSE event may have been
+        // LOST during the gap — ring buffer evicted it on resync, or the
+        // disconnect window dropped it — leaving executingSessionsRef with a
+        // stale busy key that mergeStatus forces into running FOREVER (the
+        // "stuck busy after returning from settings/background on mobile"
+        // bug: the reply renders via reload, but the busy indicator never
+        // clears). This branch is the AUTHORITATIVE turn-ended signal
+        // (get_active_progress said done/null). agent-idle is the
+        // useSessionStore-only channel — it clears running WITHOUT touching
+        // the live store (unlike session(idle), which would clear the live
+        // store and cause rendered iterations to vanish — see the 449 test).
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('agent-idle', {
+            detail: { chatID, channel },
+          }))
+        }
         // Turn ended on server (or no active progress). Do NOT dispatch
         // replay_gap — it triggers useChatMessages.reload() → history_replaced
         // on every tab switch (restoreActiveProgress runs when SSE reconnects
@@ -499,7 +516,8 @@ export class SSEConnectionImpl implements WSConnection {
         // Do NOT dispatch session(idle) either — it clears the live store
         // (liveMessage returns null), causing rendered iterations to vanish.
         //
-        // Instead: dispatch nothing. Recovery is handled by:
+        // Instead: dispatch nothing (EXCEPT the agent-idle window event above
+        // — useSessionStore-only). Recovery is handled by:
         //   1. SSE last_event_id replay (server replays missed text/session events)
         //   2. activateSession's refresh() (updates sidebar busy state)
         //   3. useChatMessages initial history fetch (committed messages already loaded)

@@ -616,6 +616,24 @@ func deriveTurnIDs(msgs []llm.ChatMessage) {
 			msgs[i].TurnID = lastTurnID
 		}
 	}
+	// Pass 3 (forward, assistant/tool only): rows still at turn 0 after Pass 2 —
+	// the trailing final-reply shape. SubAgent completion paths historically
+	// persisted the final assistant message WITHOUT TurnID (spawn/send
+	// AppendMessage before the fix), while the Run's intermediate rows carry
+	// turn_id=N. The trailing un-stamped row is hit FIRST by the backward scan
+	// (lastTurnID still 0), so Pass 2 cannot derive it. Forward scan assigns
+	// the nearest PRECEDING turn>0 (its own turn's iterations) — without this,
+	// the row renders with turnID=0 and the frontend (turnID, roleRank) sort
+	// pins it ABOVE the user message that triggered it ("user message renders
+	// below the assistant reply" in the SubAgent session view).
+	var prevTurnID uint64
+	for i := 0; i < len(msgs); i++ {
+		if msgs[i].TurnID > 0 {
+			prevTurnID = msgs[i].TurnID
+		} else if prevTurnID > 0 && msgs[i].Role != "user" {
+			msgs[i].TurnID = prevTurnID
+		}
+	}
 }
 
 func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
