@@ -59,9 +59,9 @@ type RemoteTransport struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
-	// readPump lifecycle — WaitGroup ensures old readPump exits
-	// before reconnect spawns a new one, preventing goroutine leaks.
-	readPumpWg sync.WaitGroup
+	// NOTE: readPump synchronization relies on the `t.conn == conn` identity
+	// guard in readPump (a stale readPump never clears a replaced connection)
+	// and the done-channel checks — not a WaitGroup.
 
 	// Event replay cursors are scoped by the server transport route. A remote
 	// CLI connection can switch sessions, and each route has an independent
@@ -211,7 +211,6 @@ func (t *RemoteTransport) Start(ctx context.Context) error {
 	if err := t.connect(ctx); err != nil {
 		return fmt.Errorf("connect to %s: %w", t.serverURL, err)
 	}
-	t.readPumpWg.Add(1)
 	go t.readPump(ctx)
 	go t.reconnectLoop(ctx)
 	go t.pingLoop(ctx)
@@ -442,6 +441,17 @@ func (t *RemoteTransport) connect(ctx context.Context) error {
 	// Atomically replace the connection and restore the active route before
 	// releasing connMu. No replay is requested until a route has been bound.
 	t.connMu.Lock()
+	// Stop() may have completed while this dial was blocked (the dial happens
+	// outside connMu). Nobody owns the transport anymore — closing the fresh
+	// connection here is the ONLY chance to release its fd, and publishing it
+	// would leak the connection plus emit a ghost ReconnectEvent after Stop.
+	select {
+	case <-t.done:
+		t.connMu.Unlock()
+		_ = conn.Close()
+		return fmt.Errorf("transport stopped during dial")
+	default:
+	}
 	old := t.conn
 	t.conn = conn
 	t.routeMu.Lock()
@@ -482,7 +492,6 @@ func (t *RemoteTransport) subscriptionForRoute(route remoteRoute) protocol.WSCli
 
 // readPump reads messages from the WebSocket connection and dispatches them.
 func (t *RemoteTransport) readPump(ctx context.Context) {
-	defer t.readPumpWg.Done()
 	for {
 		select {
 		case <-t.done:
@@ -596,8 +605,22 @@ func (t *RemoteTransport) handleTUIControlRequest(ctx context.Context, msg *prot
 		reqID := msg.ID
 		action := msg.TUIControl.Action
 		params := msg.TUIControl.Params
+		// Pin the connection this request arrived on — a late response must
+		// not be written to a NEW connection (the old one may be the one the
+		// server expects the reply on, and after a reconnect the new
+		// connection's server-side has no matching pending request).
+		t.connMu.Lock()
+		pinnedConn := t.conn
+		t.connMu.Unlock()
 		go func() {
 			result, err := t.tuiControlReqCb(action, params)
+			// Stop() completed while the callback was running — drop the
+			// response; the transport is no longer owned by anyone.
+			select {
+			case <-t.done:
+				return
+			default:
+			}
 			resp := protocol.WSClientMessage{
 				Type: protocol.MsgTypeTUIControlResp,
 				ID:   reqID,
@@ -611,7 +634,11 @@ func (t *RemoteTransport) handleTUIControlRequest(ctx context.Context, msg *prot
 				resp.TUIControl.Result = result
 			}
 			t.connMu.Lock()
-			if t.conn != nil {
+			// Connection drifted (reconnect/Stop replaced it) — the pending
+			// request belonged to the pinned connection; writing to a
+			// different connection corrupts the new one's request/response
+			// matching.
+			if t.conn != nil && t.conn == pinnedConn {
 				if writeErr := t.conn.WriteJSON(resp); writeErr != nil {
 					log.WithError(writeErr).Debug("Failed to send tui_control_resp")
 				}
@@ -671,7 +698,21 @@ func (t *RemoteTransport) sendPing() {
 	}
 }
 
-// reconnectLoop handles exponential-backoff reconnection with event replay.
+// maxReconnectDelay caps the exponential reconnect backoff (1s → 2s → 4s …
+// → 60s). A fixed 1s retry loop hammered a down server and its own logs.
+const maxReconnectDelay = 60 * time.Second
+
+// nextReconnectDelay doubles the reconnect delay, capped at maxReconnectDelay.
+func nextReconnectDelay(cur time.Duration) time.Duration {
+	next := cur * 2
+	if next > maxReconnectDelay {
+		return maxReconnectDelay
+	}
+	return next
+}
+
+// reconnectLoop handles reconnection with exponential backoff (1s doubling
+// up to 60s) and event replay. The backoff resets after a successful connect.
 func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 	for {
 		select {
@@ -713,15 +754,15 @@ func (t *RemoteTransport) reconnectLoop(ctx context.Context) {
 							Content: fmt.Sprintf("Connection lost, reconnecting (attempt %d)...", consecutiveFailures),
 						})
 					}
-					// Retry every second.
-					delay = time.Second
+					// Retry with exponential backoff: delay doubles on each
+					// consecutive failure, capped at maxReconnectDelay (60s).
+					delay = nextReconnectDelay(delay)
 					continue
 				}
 				log.Info("Reconnected to server")
 				consecutiveFailures = 0
 				// Start readPump BEFORE emitting ReconnectEvent, so the new
 				// reader is ready to receive RPC responses (BindChat etc.).
-				t.readPumpWg.Add(1)
 				go t.readPump(ctx)
 				t.emitLocal(ctx, protocol.ReconnectEvent{})
 				break

@@ -388,6 +388,39 @@ func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bo
 	return ownerUserID == userID
 }
 
+// subOwnedByUser reports whether sub is manageable by the caller: the
+// canonical user (v45 user_id) owns it, or it is the shared system
+// subscription. Falls back to a sender_id match for identities without a
+// canonical user (userID==0, e.g. legacy CLI senders) to preserve pre-v45
+// behavior. Write-path permission checks MUST use this instead of
+// `SenderID != rpcBizID(ctx)` — a subscription created through one channel
+// identity (e.g. web-7) is manageable through any linked identity
+// (cli/feishu) of the same canonical user.
+func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) bool {
+	if isAdmin(ctx) {
+		return true
+	}
+	if sub == nil {
+		return false
+	}
+	if uid := rpcUserID(ctx); uid > 0 {
+		// ListByUserID returns the user's subscriptions plus the shared
+		// system subscription (is_system=1) — system rows pass the check
+		// here and are rejected by the storage layer's own mutation guards.
+		subs, err := svc.ListByUserID(uid)
+		if err != nil {
+			return false
+		}
+		for _, s := range subs {
+			if s.ID == sub.ID {
+				return true
+			}
+		}
+		return false
+	}
+	return sub.SenderID == rpcBizID(ctx)
+}
+
 func (h *RPCContext) requireLLMFactory() error {
 	if h.Ag == nil || h.Ag.LLMFactory() == nil {
 		return fmt.Errorf("LLM factory not available")
@@ -1057,7 +1090,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			return fmt.Errorf("subscription %s not found: %w", p.ID, err)
 		}
 		bizID := rpcBizID(ctx)
-		if !isAdmin(ctx) && existing.SenderID != bizID {
+		if !h.subOwnedByUser(ctx, svc, existing) {
 			return fmt.Errorf("subscription not found")
 		}
 		if existing.PerModelConfigs == nil {
@@ -1091,7 +1124,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+		if !h.subOwnedByUser(ctx, svc, sub) {
 			return fmt.Errorf("subscription not found")
 		}
 		if err := svc.Remove(p.ID); err != nil {
@@ -1118,7 +1151,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return err
 		}
-		if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+		if !h.subOwnedByUser(ctx, svc, sub) {
 			return fmt.Errorf("subscription not found")
 		}
 		return svc.Rename(p.ID, p.Name)
@@ -1139,7 +1172,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				if err != nil {
 					continue
 				}
-				if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+				if !h.subOwnedByUser(ctx, svc, sub) {
 					continue
 				}
 				subs = append(subs, sub)
@@ -2610,8 +2643,10 @@ func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subsc
 	}
 	// User-level RPC — v45 rule: resolve by canonical user_id so identities
 	// linked to the same user (web-N, cli_user, ou_xxx) see the same default
-	// (consistent with list_subscriptions' ListByUserID). bizID (sender_id)
-	// fallback only when the canonical user is unknown (uid==0).
+	// (consistent with list_subscriptions' ListByUserID). uid==0 fallback:
+	// GetDefault(bizID) resolves via the session key's tenant binding and
+	// ultimately the system default subscription (bizID is the session key,
+	// NOT a sender_id).
 	var sub *sqlite.LLMSubscription
 	if uid > 0 {
 		sub, err = svc.GetDefaultByUserID(uid)
@@ -2652,7 +2687,7 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(ctx) && existing.SenderID != bizID {
+	if !h.subOwnedByUser(ctx, svc, existing) {
 		return fmt.Errorf("subscription not found")
 	}
 	// Start from existing subscription — client never has unmasked credentials,
@@ -2722,6 +2757,12 @@ func (h *RPCContext) updateSubscription(ctx context.Context, p struct {
 func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	ID     string `json:"id"`
 	ChatID string `json:"chat_id"`
+	// Channel is the physical channel of the target session (e.g. "web" for a
+	// web session, "cli" for a CLI session). Defaults to "cli" for backward
+	// compatibility with existing callers. The per-session tenants mapping is
+	// keyed by (channel, chat_id) — persisting a web session under the
+	// hardcoded "cli" made the mapping land in the wrong channel row.
+	Channel string `json:"channel"`
 }) error {
 	bizID := rpcBizID(ctx)
 	svc, err := h.requireSubscriptionSvc()
@@ -2738,18 +2779,22 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 	if sub == nil {
 		return fmt.Errorf("subscription not found")
 	}
-	if !isAdmin(ctx) && sub.SenderID != bizID {
+	if !h.subOwnedByUser(ctx, svc, sub) {
 		return fmt.Errorf("subscription not found")
 	}
 	if p.ChatID != "" {
+		channel := p.Channel
+		if channel == "" {
+			channel = "cli"
+		}
 		// Per-session switch: update per-chat cache AND persist to DB
 		// so the session→subscription mapping survives server restarts.
-		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, sub); err != nil {
+		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, channel, sub); err != nil {
 			return err
 		}
 		// Persist to tenants table (backend source of truth).
 		if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
-			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription("cli", p.ChatID, sub.ID, sub.Model); err != nil {
+			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription(channel, p.ChatID, sub.ID, sub.Model); err != nil {
 				log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
 			}
 		}
@@ -2783,22 +2828,32 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 	if err != nil {
 		return err
 	}
-	if !isAdmin(ctx) && sub.SenderID != rpcBizID(ctx) {
+	if !h.subOwnedByUser(ctx, svc, sub) {
 		return fmt.Errorf("subscription not found")
 	}
 	if err := svc.SetModel(p.ID, p.Model); err != nil {
 		return err
 	}
+	// Invalidate the subscription client cache unconditionally — SetModel
+	// changed the subscription's Model, and a cached client built with the
+	// old model must not survive any caller path (per-subscription CRUD rule).
+	h.Ag.LLMFactory().InvalidateSubscription(p.ID)
 	updated, err := svc.Get(p.ID)
 	if err != nil {
 		return err
 	}
 	if updated != nil {
-		if def, _ := svc.GetDefault(updated.SenderID); def != nil && def.ID == updated.ID {
+		// Resolve the default by canonical user_id (v45): linked identities
+		// share the same user_default_model row. Fall back to the legacy
+		// sender-scoped lookup when the canonical user is unknown (userID==0).
+		var def *sqlite.LLMSubscription
+		if uid := rpcUserID(ctx); uid > 0 {
+			def, _ = svc.GetDefaultByUserID(uid)
+		} else {
+			def, _ = svc.GetDefault(updated.SenderID)
+		}
+		if def != nil && def.ID == updated.ID {
 			h.Ag.LLMFactory().InvalidateSender(updated.SenderID)
-			// Drop the new-path client cache for this subscription so ResolveLLM
-			// picks up the new default model + per-model config.
-			h.Ag.LLMFactory().InvalidateSubscription(updated.ID)
 			if err := h.Ag.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
 				return err
 			}
@@ -2954,7 +3009,10 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		}
 		userID := rpcUserID(ctx)
 		if userID == 0 {
-			userID = 1 // CLI admin fallback
+			// Unknown identity: MUST NOT fall back to user 1 — a link code
+			// lets the recipient merge into that user's account, so a silent
+			// fallback hands admin credentials to unresolvable callers.
+			return map[string]any{"error": "cannot resolve identity"}
 		}
 		code, err := h.Ag.IdentityResolver().GenerateLinkCode(userID)
 		if err != nil {
@@ -2971,6 +3029,12 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 	t["consume_link_code"] = rpc1(func(ctx context.Context, p struct {
 		Code    string `json:"code"`
 		Confirm bool   `json:"confirm"`
+		// Channel is the physical channel of the caller's identity (e.g. "web"
+		// when linking a web identity). Defaults to "cli" for backward
+		// compatibility with existing callers. The link row in channel_user_id
+		// is keyed by (channel, channel_user_id) — hardcoding "cli" bound a web
+		// sender's identity to the cli channel.
+		Channel string `json:"channel"`
 	}) (any, error) {
 		if h.Ag.IdentityResolver() == nil {
 			return nil, fmt.Errorf("identity resolver not available")
@@ -2979,6 +3043,10 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if currentUserID == 0 {
 			return nil, fmt.Errorf("cannot resolve current user identity")
 		}
+		linkChannel := p.Channel
+		if linkChannel == "" {
+			linkChannel = "cli"
+		}
 		// On preview (confirm=false), validate WITHOUT consuming the code
 		if !p.Confirm {
 			targetUserID, err := h.Ag.IdentityResolver().ValidateLinkCode(p.Code)
@@ -2986,7 +3054,7 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 				return nil, err
 			}
 			// Try simple link first
-			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, "cli", rpcBizID(ctx))
+			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, linkChannel, rpcBizID(ctx))
 			if err == nil {
 				// Simple link succeeded — consume the code now
 				h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
@@ -3021,7 +3089,9 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		}
 		userID := rpcUserID(ctx)
 		if userID == 0 {
-			userID = 1
+			// Unknown identity: MUST NOT fall back to user 1 — that would
+			// disclose another (admin) user's linked identities.
+			return map[string]any{"error": "cannot resolve identity"}
 		}
 		identities, err := h.Ag.IdentityResolver().ListIdentities(userID)
 		if err != nil {
@@ -3100,6 +3170,13 @@ func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 
 // --- App RPC handlers ---
 
+// appPackOutputPath builds the app_pack zip output path from a user-supplied
+// name. The name is sanitized to its base component — a traversal name
+// ("../../etc/cron.d/x") must never escape os.TempDir().
+func appPackOutputPath(name string) string {
+	return filepath.Join(os.TempDir(), filepath.Base(name)+".xbot.zip")
+}
+
 func registerAppHandlers(t RPCTable, h *RPCContext) {
 
 	t["app_pack"] = rpc1(func(ctx context.Context, p struct {
@@ -3118,7 +3195,7 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 		for i, it := range p.Items {
 			items[i] = agent.AppItem{Type: it.Type, Name: it.Name}
 		}
-		outputPath := filepath.Join(os.TempDir(), p.Name+".xbot.zip")
+		outputPath := appPackOutputPath(p.Name)
 		if err := rm.PackApp(items, outputPath, p.Author); err != nil {
 			return nil, err
 		}

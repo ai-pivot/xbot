@@ -489,14 +489,13 @@ plugin/
 ├── ratelimit.go           # PluginRateLimiter + PluginQuotaManager
 ├── audit.go               # AuditLogger (append-only JSONL audit trail)
 ├── errors.go              # Standard error types (sentinel errors, PermissionError, ErrPluginActivationFailed, ErrRateLimitExceeded)
-├── calltracer.go          # CallTracer (ring-buffered tool call audit trail)
 ├── sdk.go                 # SDK helpers (ToolFromFunc, QuickManifest, hook/enricher factories)
 ├── testkit.go             # TestKit testing framework for plugin development
 ├── registry.go            # Marketplace registry for plugin distribution
 ├── migration.go           # Plugin migration system with backup/rollback
 ├── runtime.go             # Native + gRPC runtime factories
 ├── runtime_wasm_skel.go   # WASM runtime skeleton (Phase 2)
-├── integration.go         # WireAll, PluginToolBridge, CallTracer integration, rate-limit aware bridge
+├── integration.go         # WireAll, PluginToolBridge, rate-limit aware bridge
 ├── adapter_tool.go        # PluginToolAdapter, SimplePluginTool, BuildToolDef, SchemaBuilder
 ├── adapter_hook.go        # PluginHookBridge, hook dispatch, matcher
 ├── adapter_enricher.go    # EnricherRegistry
@@ -507,7 +506,6 @@ plugin/
 ├── ratelimit_test.go      # Rate limiter tests
 ├── sdk_test.go            # SDK helper tests
 ├── errors_test.go         # Error type tests
-├── calltrace_test.go      # CallTracer tests
 ├── eventbus_test.go       # Event Bus tests
 ├── events_test.go         # Event notifier tests
 ├── json_test.go           # JSON protocol tests
@@ -995,51 +993,6 @@ type PermissionError struct {
 - `ErrPluginActivationFailed` 实现 `Unwrap()` 支持 `errors.Is()` 链
 - `PermissionError` 从 `context.go` 迁移至 `errors.go`，保持 API 兼容
 
-### 29. CallTracer（工具调用追踪）
-
-`CallTracer` 为插件工具调用提供固定容量的环形缓冲区追踪：
-
-```go
-type CallTrace struct {
-    PluginID  string
-    ToolName  string
-    StartTime time.Time
-    EndTime   time.Time
-    Duration  time.Duration
-    InputLen  int
-    OutputLen int
-    IsError   bool
-}
-
-type CallTracer struct { ... }
-
-func NewCallTracer(maxTraces int) *CallTracer
-func (ct *CallTracer) Record(trace CallTrace)
-func (ct *CallTracer) Recent(n int) []CallTrace
-func (ct *CallTracer) ByPlugin(pluginID string) []CallTrace
-func (ct *CallTracer) Clear()
-```
-
-**与 PluginToolBridge 集成**：
-
-```go
-bridge := NewPluginToolBridge(adapter)
-bridge.SetCallTracer(NewCallTracer(100))
-```
-
-`PluginToolBridge.Execute` 自动记录每次调用到 CallTracer：
-- 在 Execute 入口捕获 startTime
-- 通过 `sync.Mutex` 安全读取 `callTracer` 引用
-- 在 defer 中记录完整的 CallTrace（包含 Duration、IsError、InputLen、OutputLen）
-
-**设计要点**：
-- 固定容量环形缓冲区，满时覆盖最旧记录（O(1) 写入）
-- `Recent(n)` 返回最新 n 条记录（逆序，最新在前）
-- `ByPlugin(pluginID)` 过滤指定插件的追踪记录
-- 并发安全（`sync.Mutex` 保护）
-- 默认容量 100 条（`NewCallTracer(0)` 使用默认值）
-- 可选功能：不设置 CallTracer 时零开销
-
 ### 30. Concurrency Bug Fixes（并发安全修复）
 
 第 38 轮迭代修复了 3 个严重并发 bug：
@@ -1051,7 +1004,6 @@ bridge.SetCallTracer(NewCallTracer(100))
 | 指数退避 `1<<30` 整数溢出 | manager.go | shift 上限从 30 降至 5（2^5=32s，不超过 retryMaxDelay=30s） |
 
 **其他并发安全改进**：
-- `integration.go`: `SetCallTracer()` 添加 `sync.Mutex` 保护
 - `events.go`: `Notify()` panic 时记录 value 而非丢弃
 - `context.go`: nil handler/enricher 返回 error 而非静默返回 nil
 - `ratelimit.go`: `Allow()` 预分配切片防止无限增长
@@ -1213,13 +1165,6 @@ Reload 需要原子性地替换插件条目。如果中间状态被读取（如�
 1. **避免雪崩**：故障插件如果被高频重试，会消耗大量资源并可能影响其他插件
 2. **给故障插件恢复时间**：指数退避让底层依赖有时间恢复（如网络抖动、外部服务过载）
 3. **上限控制**：30s 上限防止退避间隔过长，平衡恢复速度和资源消耗
-
-### Why ring buffer for CallTracer?
-
-1. **固定内存**：环形缓冲区预分配固定大小数组，不会随调用次数增长而无限膨胀
-2. **O(1) 写入**：`Record` 只需更新 head 指针和数组元素，无内存分配
-3. **关注近期调用**：调试和审计最关心最近的调用记录，旧记录可安全丢弃
-4. **无 GC 压力**：预分配数组，Record 不触发内存分配
 
 ### Why centralized error types?
 

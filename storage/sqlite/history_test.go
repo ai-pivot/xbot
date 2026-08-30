@@ -854,6 +854,24 @@ func TestMigrationV47KeepsExistingRowsAsBaseline(t *testing.T) {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		INSERT INTO session_messages(id, tenant_id, role, content) VALUES (7, 1, 'user', 'survives');
+		-- cron_jobs exists in every real v46 DB (user_id added by the v45
+		-- migration); migrations touching it (v61 idx_cron_jobs_user) require it.
+		CREATE TABLE cron_jobs (
+			id TEXT PRIMARY KEY,
+			message TEXT NOT NULL,
+			channel TEXT NOT NULL,
+			chat_id TEXT NOT NULL,
+			sender_id TEXT NOT NULL DEFAULT '',
+			cron_expr TEXT,
+			every_seconds INTEGER DEFAULT 0,
+			delay_seconds INTEGER DEFAULT 0,
+			at TEXT,
+			created_at DATETIME NOT NULL,
+			next_run DATETIME NOT NULL,
+			last_trigger DATETIME,
+			one_shot INTEGER NOT NULL DEFAULT 0,
+			user_id INTEGER DEFAULT 0
+		);
 		CREATE TABLE user_chats (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			channel TEXT NOT NULL, sender_id TEXT NOT NULL, chat_id TEXT NOT NULL,

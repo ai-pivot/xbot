@@ -520,14 +520,6 @@ func (a *Agent) buildMainRunConfig(
 		},
 	}
 
-	// Memory tools for compaction — allows the compaction LLM to archive
-	// important context into core/archival memory before it gets compacted away.
-	// Uses the real tool registry instead of hand-written execution logic.
-	if defs, exec := a.buildMemoryToolSetup(channel, chatID); defs != nil {
-		cfg.MemoryToolDefs = defs
-		cfg.MemoryToolExec = exec
-	}
-
 	return cfg
 }
 
@@ -865,7 +857,20 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 3. MaskStore：per-tenant 实例（SubAgent 的独立 tenantID，与 DB tenant 对齐）。
 	// deriveSubAgentTenantID 与 buildSubAgentMemory 用同一纯函数（幂等）——SubAgent
 	// 的 mask 隔离在自己的 tenant 目录，父/子及并发 SubAgent 互不可见。
-	cfg.MaskStore = a.maskStoreFor(deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName))
+	derivedTenantID := deriveSubAgentTenantID(parentExtras.TenantID, parentAgentID, roleName)
+	cfg.MaskStore = a.maskStoreFor(derivedTenantID)
+
+	// 读写路由同源：recall_masked 工具经 ctx.TenantID → tenantMaskRouter 反查 store，
+	// 而 ctx.TenantID 的唯一注入点是 cfg.ToolContextExtras.TenantID（buildToolContext
+	// 只在 extras != nil 时覆盖）。caps.Memory=false（大多数 SubAgent 角色）或
+	// buildSubAgentMemory 失败时 extras 为 nil → tc.TenantID=0 → recall_masked 路由到
+	// maskStoreFor(0)（空 store）而非上面写入的 derived store，被遮蔽内容静默
+	// not found。此处无条件注入最小 extras 保证读写同 key；caps.Memory=true 时
+	// buildSubAgentMemory 返回的 extras.TenantID 与 derivedTenantID 同值（同一纯
+	// 函数同参数），下方的完整覆盖赋值与本注入等价。
+	if cfg.ToolContextExtras == nil {
+		cfg.ToolContextExtras = &ToolContextExtras{TenantID: derivedTenantID}
+	}
 
 	// 4. ContextEditor：创建独立实例（每个 Agent 需要自己的 messages 引用和编辑历史）
 	cfg.ContextEditor = NewContextEditor(NewContextEditStore(100))
@@ -1026,7 +1031,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 		SandboxMode:            a.sandboxMode,
 		InjectInbound:          a.injectInbound,
 		Tools:                  a.tools,
-		BgTaskManager:          a.bgTaskMgr,
+		BgTaskManager:          a.bgTaskMgr.Load(),
 		MessageSender:          a.messageSender,
 		RegisterAgentChannel:   a.registerAgentChannel,
 		UnregisterAgentChannel: a.unregisterAgentChannel,
@@ -1185,53 +1190,6 @@ func (a *Agent) buildOAuthHandler(channel, chatID, senderID, sessionKey string) 
 		log.Ctx(ctx).WithError(oauthErr).Error("Failed to execute oauth_authorize tool")
 		return "OAuth authorization required. Please configure OAUTH_ENABLE=true and OAUTH_BASE_URL in your environment.", true
 	}
-}
-
-// buildMemoryToolSetup returns tool definitions and executor for memory tools during compaction.
-// Uses the real tool registry instead of hand-written execution logic,
-// ensuring tool behavior stays in sync with the main agent loop.
-// Returns (nil, nil) if memory tools are not available.
-func (a *Agent) buildMemoryToolSetup(channel, chatID string) ([]llm.ToolDefinition, func(ctx context.Context, tc llm.ToolCall) (string, error)) {
-	extras := a.buildToolContextExtras(channel, chatID)
-	if extras == nil || extras.CoreMemory == nil {
-		return nil, nil
-	}
-
-	memToolNames := []string{
-		"core_memory_append", "core_memory_replace", "rethink",
-		"archival_memory_insert", "archival_memory_search",
-	}
-	var defs []llm.ToolDefinition
-	for _, name := range memToolNames {
-		if t, ok := a.tools.Get(name); ok {
-			defs = append(defs, t)
-		}
-	}
-	if len(defs) == 0 {
-		return nil, nil
-	}
-
-	// Minimal RunConfig for building ToolContext — memory tools only need ToolContextExtras.
-	memCfg := &RunConfig{
-		Channel:           channel,
-		ChatID:            chatID,
-		ToolContextExtras: extras,
-	}
-
-	exec := func(ctx context.Context, tc llm.ToolCall) (string, error) {
-		tool, ok := a.tools.Get(tc.Name)
-		if !ok {
-			return "Unknown tool: " + tc.Name, nil
-		}
-		toolCtx := buildToolContext(ctx, memCfg)
-		result, err := tool.Execute(toolCtx, tc.Arguments)
-		if err != nil {
-			return fmt.Sprintf("Error: %v", err), nil
-		}
-		return result.Summary, nil
-	}
-
-	return defs, exec
 }
 
 // buildToolContextExtras 构建 ToolContext 扩展字段。
@@ -1789,7 +1747,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 		oneshotIA.mu.Unlock()
 
 		sessionKey := originChannel + ":" + originChatID
-		notifyMgr := a.bgTaskMgr
+		notifyMgr := a.bgTaskMgr.Load()
 		var bgTask *tools.SubAgentTask
 		if notifyMgr != nil {
 			bgTask = notifyMgr.RegisterSubAgentTask("", sessionKey, originSender, roleName, oneshotInstance, bgCancel)

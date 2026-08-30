@@ -232,7 +232,6 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	// single-connection, so a nested query inside the rows loop would deadlock.
 	// Batched: one subscription_models IN(...) query for the whole list.
 	s.loadPerModelConfigsBatch(subs)
-	s.markDefaultsAll(subs)
 	return subs, nil
 }
 
@@ -265,7 +264,6 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 	}
 	rows.Close()
 	s.loadPerModelConfigsBatch(subs)
-	s.markDefaultsFor(subs, senderID)
 	return subs, nil
 }
 
@@ -303,19 +301,6 @@ func (s *LLMSubscriptionService) ListByUserID(userID int64) ([]*LLMSubscription,
 	return subs, nil
 }
 
-// markDefaultsFor is a no-op. IsDefault/Active projection has been retired —
-// subscriptions no longer have a "default" concept. The user_default_model
-// table is repurposed as "last used model" storage, not a default marker.
-// Kept as no-op to avoid touching all List/GetDefault call sites.
-func (s *LLMSubscriptionService) markDefaultsFor(subs []*LLMSubscription, senderID string) {
-	// IsDefault is always false — no "default subscription" concept.
-}
-
-// markDefaultsAll is a no-op (see markDefaultsFor).
-func (s *LLMSubscriptionService) markDefaultsAll(subs []*LLMSubscription) {
-	// IsDefault is always false — no "default subscription" concept.
-}
-
 // GetDefault returns the user's last-used subscription (from user_default_model,
 // repurposed as "last used model" storage). If none set, falls back to the shared
 // system subscription (v44), which is always present after boot reconcile.
@@ -327,21 +312,32 @@ func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, 
 		return nil, fmt.Errorf("get default subscription: %w", err)
 	}
 	if udm == nil {
-		sys, err := s.GetSystemSubscription()
-		if err != nil {
-			return nil, fmt.Errorf("get default subscription (system fallback): %w", err)
-		}
-		if sys != nil {
-			sys.IsDefault = true
-		}
-		return sys, nil
+		return s.systemFallback()
 	}
 	sub, err := s.Get(udm.SubscriptionID)
 	if err != nil {
 		return nil, fmt.Errorf("get default subscription: %w", err)
 	}
+	// Dangling reference (subscription removed while user_default_model still
+	// points at it) — fall back to the system subscription instead of nil.
+	if sub == nil {
+		return s.systemFallback()
+	}
 	// IsDefault is always false — no "default subscription" concept.
 	return sub, nil
+}
+
+// systemFallback returns the shared system subscription marked IsDefault, or
+// nil when absent. Shared by the GetDefault/GetDefaultByUserID fallback paths.
+func (s *LLMSubscriptionService) systemFallback() (*LLMSubscription, error) {
+	sys, err := s.GetSystemSubscription()
+	if err != nil {
+		return nil, fmt.Errorf("get default subscription (system fallback): %w", err)
+	}
+	if sys != nil {
+		sys.IsDefault = true
+	}
+	return sys, nil
 }
 
 // GetDefaultByUserID returns the user's last-used subscription, resolving
@@ -352,18 +348,15 @@ func (s *LLMSubscriptionService) GetDefaultByUserID(userID int64) (*LLMSubscript
 		return nil, fmt.Errorf("get default subscription by user_id: %w", err)
 	}
 	if udm == nil {
-		sys, err := s.GetSystemSubscription()
-		if err != nil {
-			return nil, fmt.Errorf("get default subscription (system fallback): %w", err)
-		}
-		if sys != nil {
-			sys.IsDefault = true
-		}
-		return sys, nil
+		return s.systemFallback()
 	}
 	sub, err := s.Get(udm.SubscriptionID)
 	if err != nil {
 		return nil, fmt.Errorf("get default subscription: %w", err)
+	}
+	// Dangling reference — same fallback as GetDefault.
+	if sub == nil {
+		return s.systemFallback()
 	}
 	return sub, nil
 }
@@ -606,10 +599,6 @@ func (s *LLMSubscriptionService) Remove(id string) error {
 	}
 	defer tx.Rollback()
 
-	// Get sender_id before deleting (for user_default_model cleanup).
-	var senderID string
-	_ = tx.QueryRow("SELECT sender_id FROM user_llm_subscriptions WHERE id = ?", id).Scan(&senderID)
-
 	if _, err := tx.Exec("DELETE FROM user_llm_subscriptions WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete subscription: %w", err)
 	}
@@ -617,14 +606,15 @@ func (s *LLMSubscriptionService) Remove(id string) error {
 	if _, err := tx.Exec("DELETE FROM subscription_models WHERE subscription_id = ?", id); err != nil {
 		return fmt.Errorf("delete subscription_models: %w", err)
 	}
-	// Cascade: clear user_default_model if it points to the deleted subscription.
-	if senderID != "" {
-		if _, err := tx.Exec(
-			"DELETE FROM user_default_model WHERE sender_id = ? AND subscription_id = ?",
-			senderID, id,
-		); err != nil {
-			return fmt.Errorf("clear user_default_model: %w", err)
-		}
+	// Cascade: clear user_default_model rows pointing at the deleted subscription.
+	// Subscription_id-scoped (ALL sender dimensions — legacy sender_id rows and
+	// canonical "user-%d" rows written by SetUserDefaultModelByUserID): a dangling
+	// reference would make GetDefault resolve a nil subscription for the user.
+	if _, err := tx.Exec(
+		"DELETE FROM user_default_model WHERE subscription_id = ?",
+		id,
+	); err != nil {
+		return fmt.Errorf("clear user_default_model: %w", err)
 	}
 	return tx.Commit()
 }
@@ -1032,9 +1022,14 @@ func (s *LLMSubscriptionService) SetUserDefaultModelByUserID(userID int64, subID
 		return fmt.Errorf("set user default model by user id: update: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		// sender_id is the single-column PK; user_id has no UNIQUE constraint.
+		// Hardcoding '' would collide once a second user upserts (M3) — use the
+		// same "user-%d" convention as UserSettingsService.SetByUserID so each
+		// canonical user gets its own row.
+		senderID := fmt.Sprintf("user-%d", userID)
 		if _, err := tx.Exec(`INSERT INTO user_default_model
 			(user_id, sender_id, subscription_id, model, updated_at)
-			VALUES (?, '', ?, ?, datetime('now'))`, userID, subID, model); err != nil {
+			VALUES (?, ?, ?, ?, datetime('now'))`, userID, senderID, subID, model); err != nil {
 			return fmt.Errorf("set user default model by user id: insert: %w", err)
 		}
 	}

@@ -383,6 +383,37 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v61: two lookup-path indexes.
+	// - idx_cron_jobs_user: ListJobsByUserID (web cron panel) filters by
+	//   user_id; AddJob now persists the caller's canonical user id (M1).
+	// - idx_sm_tenant_role_id: the ListUserChats preview subquery scans
+	//   (tenant_id, role, id DESC) per tenant; the partial WHERE keeps tool rows
+	//   out of the index.
+	if from < 61 {
+		if err := migrateV60ToV61(conn); err != nil {
+			return fmt.Errorf("migrate to v61: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV60ToV61 adds the user_id index on cron_jobs (ListJobsByUserID lookup
+// path, backing the web cron panel) and the partial role index on
+// session_messages (ListUserChats preview subquery).
+// Idempotent: CREATE INDEX IF NOT EXISTS (safe to re-run on a schema.go-built
+// DB that already has both indexes from the v61 DDL).
+func migrateV60ToV61(conn *sql.DB) error {
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_cron_jobs_user ON cron_jobs(user_id)`); err != nil {
+		return fmt.Errorf("migrate v60->v61 create idx_cron_jobs_user: %w", err)
+	}
+	if _, err := conn.Exec(`CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant')`); err != nil {
+		return fmt.Errorf("migrate v60->v61 create idx_sm_tenant_role_id: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 61"); err != nil {
+		return fmt.Errorf("migrate v60->v61 update version: %w", err)
+	}
+	log.Info("Database migrated to v61 (idx_cron_jobs_user + idx_sm_tenant_role_id)")
 	return nil
 }
 

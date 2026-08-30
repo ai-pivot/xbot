@@ -572,8 +572,13 @@ func (wc *WebChannel) writeSSEBatch(ctx context.Context, client *Client, batch [
 			return err
 		}
 		if !wc.sseEventShouldWrite(client, msg) {
-			// Resolved prompt — treat as consumed, omit from the response stream.
-			client.lastSentSeq = msg.Seq
+			// Resolved prompt — treat as consumed, omit from the response
+			// stream. The cursor advances via the local watermark ONLY (the
+			// batch-end commit below), never here: a mid-batch write must not
+			// move lastSentSeq ahead of the last flushed seq. If the batch
+			// later fails, the reconnect replay re-derives consumption (the
+			// resolved prompt is re-answered by sseEventShouldWrite) and
+			// every unflushed event is replayed.
 			watermark = msg.Seq
 			continue
 		}

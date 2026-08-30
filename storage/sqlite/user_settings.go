@@ -109,19 +109,29 @@ func (s *UserSettingsService) SetByUserID(channel string, userID int64, key, val
 	}
 	now := time.Now().UnixMilli()
 	senderID := fmt.Sprintf("user-%d", userID)
+	// Atomic DELETE+INSERT in ONE transaction: outside a transaction, readers
+	// between the DELETE and the INSERT see the key vanish (intermediate
+	// "deleted, not yet re-inserted" state), and a crash between the two
+	// statements loses the setting entirely.
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("set user setting by user_id: %w", err)
+	}
+	defer tx.Rollback()
 	// Delete any existing rows for this (channel, user_id, key) first to
 	// avoid UNIQUE(channel, sender_id, key) conflicts from stale sender_ids.
-	conn.Exec(`DELETE FROM user_settings WHERE channel = ? AND user_id = ? AND key = ?`, channel, userID, key)
-	_, err := conn.Exec(
+	if _, err := tx.Exec(`DELETE FROM user_settings WHERE channel = ? AND user_id = ? AND key = ?`, channel, userID, key); err != nil {
+		return fmt.Errorf("set user setting by user_id: %w", err)
+	}
+	if _, err := tx.Exec(
 		`INSERT INTO user_settings (channel, sender_id, user_id, key, value, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(channel, sender_id, key) DO UPDATE SET value = excluded.value, user_id = excluded.user_id, updated_at = excluded.updated_at`,
 		channel, senderID, userID, key, value, now,
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("set user setting by user_id: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // Delete removes a single setting.

@@ -34,8 +34,6 @@ func (m *mockContextManager) ContextInfo([]llm.ChatMessage, string, int) *Contex
 	return nil
 }
 func (m *mockContextManager) SessionHook() SessionCompressHook { return nil }
-func (m *mockContextManager) SetMemoryTools([]llm.ToolDefinition, func(context.Context, llm.ToolCall) (string, error)) {
-}
 
 // sampleCompressResult returns a deterministic CompressResult for tests.
 func sampleCompressResult() *CompressResult {

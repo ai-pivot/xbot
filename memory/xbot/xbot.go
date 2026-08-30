@@ -52,9 +52,10 @@ const (
 	// longTermMaxEntries is the per-user cap on long-term memories. Beyond it,
 	// the lowest-heat entries are pruned (memory bloat control).
 	longTermMaxEntries = 300
-	// dedupSimilarityThreshold: BM25 similarity above which a candidate is
-	// considered a duplicate. SQLite bm25() returns negative values (closer to
-	// 0 = more similar). Threshold -6 ≈ strong keyword overlap.
+	// dedupSimilarityThreshold: BM25 similarity below which a candidate is
+	// considered a duplicate. SQLite bm25() returns negative values (LOWER =
+	// more relevant — same ordering as ORDER BY score ASC in searchLongTerm).
+	// A score below (more negative than) -6 ≈ strong keyword overlap.
 	dedupSimilarityThreshold = -6.0
 )
 
@@ -1023,9 +1024,12 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 	entry.TenantID = m.tenantID
 
 	// Check for similar memories using FTS5 BM25 similarity.
-	// bm25() returns negative values; closer to 0 = more similar.
-	// If a similar entry exists (score > dedupSimilarityThreshold), treat as
-	// duplicate and skip — this prevents memory bloat from near-identical facts.
+	// bm25() returns negative values; LOWER = more relevant (SQLite docs:
+	// "better matches are assigned numerically lower scores" — same ordering
+	// as the `ORDER BY score ASC` in searchLongTerm). A candidate whose
+	// bm25() score is BELOW the threshold (more negative) has strong keyword
+	// overlap → treat as duplicate and skip. This prevents memory bloat from
+	// near-identical facts.
 	var dupID int64
 	err := m.db.QueryRow(`
 		SELECT ltm.id
@@ -1033,8 +1037,8 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
 		WHERE `+m.scopeWhere("ltm")+`
 		  AND xbot_long_term_memories_fts MATCH ?
-		  AND bm25(xbot_long_term_memories_fts) > ?
-		ORDER BY bm25(xbot_long_term_memories_fts) DESC
+		  AND bm25(xbot_long_term_memories_fts) < ?
+		ORDER BY bm25(xbot_long_term_memories_fts) ASC
 		LIMIT 1
 	`, m.scopeArg(), fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold).Scan(&dupID)
 	if err == nil && dupID > 0 {

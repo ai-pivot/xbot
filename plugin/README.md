@@ -643,31 +643,6 @@ params := plugin.NewSchemaBuilder().
     Build()
 ```
 
-## Call Tracer
-
-Ring-buffered tool call audit trail with fixed memory footprint.
-
-```go
-// Create a tracer (100-entry ring buffer)
-tracer := plugin.NewCallTracer(100)
-
-// Attach to bridge
-bridge.SetCallTracer(tracer)
-
-// Query recent calls
-traces := tracer.Recent(10)          // newest 10 traces
-traces = tracer.ByPlugin("my-plugin") // filter by plugin
-tracer.Clear()                        // reset
-```
-
-Each `CallTrace` records: `PluginID`, `ToolName`, `StartTime`, `EndTime`, `Duration`, `InputLen`, `OutputLen`, `IsError`.
-
-Features:
-- Fixed-capacity ring buffer (O(1) write, no GC pressure)
-- Thread-safe (`sync.Mutex`)
-- Optional — zero overhead when not attached
-- Default capacity: 100 entries
-
 ## Standard Errors
 
 Centralized error types for consistent error handling:

@@ -383,7 +383,13 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 
 // SetSessionLLM persists the per-session subscription mapping to the tenants
 // table. This is the write counterpart of GetLLMForChat's read path.
-func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubscription) error {
+// channel is the physical channel of the target session ("cli", "web", ...) —
+// the tenants mapping is keyed by (channel, chat_id), so it must match the
+// session's real channel, not the caller's.
+func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite.LLMSubscription) error {
+	if channel == "" {
+		channel = "cli"
+	}
 	if f.tenantSvc != nil && chatID != "" && sub != nil {
 		// Model is user-level — resolve from user_default_model, not sub.Model.
 		model := ""
@@ -392,7 +398,7 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID string, sub *sqlite.LLMSubsc
 				model = udm.Model
 			}
 		}
-		return f.tenantSvc.SetTenantSubscription("cli", chatID, sub.ID, model)
+		return f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model)
 	}
 	return nil
 }

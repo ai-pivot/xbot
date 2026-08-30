@@ -669,9 +669,28 @@ func SaveToFile(path string, cfg *Config) error {
 		// 合并失败时回退到纯 struct 序列化（安全降级）
 	}
 
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, finalData, 0o600); err != nil {
+	// Write via a UNIQUE temp file per call (os.CreateTemp), never a fixed
+	// "path.tmp": concurrent SaveToFile calls racing on a shared fixed name
+	// clobber each other's tmp write and make the loser's rename fail with
+	// ENOENT — the winner then renames the loser's content (silent update
+	// loss). Rename stays atomic; the unique name makes writers independent.
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config file: %w", err)
+	}
+	tmp := f.Name()
+	if _, err := f.Write(finalData); err != nil {
+		f.Close()
+		os.Remove(tmp) // best-effort cleanup
 		return fmt.Errorf("write temp config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close temp config: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("chmod temp config: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp) // best-effort cleanup

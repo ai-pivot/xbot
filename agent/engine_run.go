@@ -241,6 +241,10 @@ func (s *runState) initProgress() {
 
 	if s.structuredProgress != nil {
 		s.progressFinalizer = func() {
+			// M2 锁覆盖：progressFinalizer 与后台 SubAgent 进度回调的
+			// notifyProgress（锁内 Clone progressLines/structuredProgress）并发，
+			// 全部共享状态读写必须持 progressMu。handler 调用在锁外（快照已拷贝）。
+			s.progressMu.Lock()
 			if len(s.structuredProgress.ActiveTools) > 0 {
 				for _, t := range s.structuredProgress.ActiveTools {
 					if t.Status == ToolDone || t.Status == ToolError {
@@ -257,17 +261,21 @@ func (s *runState) initProgress() {
 			// which is sufficient. The next notifyProgress from a subsequent
 			// callLLM will carry the correct state.
 			if s.waitingUser {
+				s.progressMu.Unlock()
 				return
 			}
 			s.structuredProgress.Phase = PhaseDone
 			if s.cfg.ProgressSeq != nil {
 				s.structuredProgress.Seq = s.cfg.ProgressSeq.Add(1)
 			}
+			s.structuredProgress.SubAgents = s.subAgentNodes
+			structured := s.structuredProgress.Clone()
+			lines := copyLines(s.progressLines)
+			s.progressMu.Unlock()
 			if s.autoNotify && s.cfg.ProgressEventHandler != nil {
-				s.structuredProgress.SubAgents = s.subAgentNodes
 				s.cfg.ProgressEventHandler(&ProgressEvent{
-					Lines:      copyLines(s.progressLines),
-					Structured: s.structuredProgress.Clone(),
+					Lines:      lines,
+					Structured: structured,
 					Timestamp:  time.Now(),
 				})
 			}
@@ -618,6 +626,9 @@ func (s *runState) updateTokenUsage() {
 	if s.structuredProgress == nil {
 		return
 	}
+	// M2 锁覆盖：TokenUsage 写与后台 SubAgent 回调的 notifyProgress（锁内
+	// Clone）并发，写点必须持 progressMu。sessionCtx 字段非 progress 共享态，锁外。
+	s.progressMu.Lock()
 	s.structuredProgress.TokenUsage = &TokenUsageSnapshot{
 		PromptTokens:     s.tokenTracker.PromptTokens(),
 		CompletionTokens: s.tokenTracker.CompletionTokens(),
@@ -627,6 +638,7 @@ func (s *runState) updateTokenUsage() {
 		CacheHitTokens:  int64(s.localCachedTokens),
 		MaxOutputTokens: int64(s.cfg.MaxOutputTokens),
 	}
+	s.progressMu.Unlock()
 	// Update session context for plugin hooks (model/token data)
 	if s.sessionCtx != nil {
 		s.sessionCtx.PromptTokens = s.tokenTracker.PromptTokens()
@@ -740,6 +752,8 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 		// Record stream timing stats (TTFT, TPOT, total duration, chunk count)
 		s.tokenTracker.RecordStreamStats(response.StreamStats)
 		if s.structuredProgress != nil && response.StreamStats != nil {
+			// M2 锁覆盖：StreamStats 写与后台 SubAgent 回调的 notifyProgress 并发。
+			s.progressMu.Lock()
 			s.structuredProgress.StreamStats = &protocol.StreamStats{
 				TTFTMs:        response.StreamStats.TTFTMs,
 				TPOTMs:        response.StreamStats.TPOTMs,
@@ -748,6 +762,7 @@ func (s *runState) callLLM(ctx context.Context, retryNotifyCtx context.Context) 
 				TotalMs:       response.StreamStats.TotalMs,
 				Chunks:        response.StreamStats.Chunks,
 			}
+			s.progressMu.Unlock()
 		}
 		// Persist stream stats to session-level storage (survives turn end)
 		if s.cfg.SaveStreamStats != nil && response.StreamStats != nil {
@@ -836,15 +851,21 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
 	}
 	if s.autoNotify {
+		// M2 锁覆盖：progressLines/Phase/HistoryCompacted 与后台 SubAgent 回调
+		// 的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
+		s.progressMu.Lock()
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", pipelineResult.NewTokenCount))
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 			s.structuredProgress.HistoryCompacted = true
 		}
+		s.progressMu.Unlock()
 		s.notifyProgress("")
 	}
 	if s.structuredProgress != nil {
+		s.progressMu.Lock()
 		s.structuredProgress.HistoryCompacted = false
+		s.progressMu.Unlock()
 	}
 
 	// Post-compression retry sends a NEW request — reset the live TTFT
@@ -925,6 +946,10 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 	// is persisted to iteration_history. The frontend renders it like any
 	// other iteration (tool with error status + summary).
 	if s.structuredProgress != nil {
+		// M2 锁覆盖：partial content / reqerr 工具写点与后台 SubAgent 回调的
+		// notifyProgress（锁内 Clone）并发。snapshotCompletedIteration 与
+		// notifyProgress 自身持锁，必须留在临界区外。
+		s.progressMu.Lock()
 		// Capture partial content from the stream (if any).
 		if partialResp != nil {
 			partialContent := llm.StripThinkBlocks(partialResp.Content)
@@ -944,6 +969,7 @@ func (s *runState) handleLLMError(ctx context.Context, err error, partialResp *l
 			Summary: errSummary,
 			Detail:  err.Error(),
 		})
+		s.progressMu.Unlock()
 		// Snapshot this iteration (writes to iteration_history + s.iterationSnapshots).
 		s.snapshotCompletedIteration(iteration)
 		// Notify progress so the frontend sees the reqerr tool.
@@ -1065,6 +1091,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			// that the output was cut short — structurally identical to a
 			// normal tool call (name, status, summary, detail).
 			if s.structuredProgress != nil {
+				s.progressMu.Lock()
 				s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
 					Name:    "truncated",
 					Label:   "truncated",
@@ -1072,6 +1099,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 					Summary: "Output truncated (max output token limit reached)",
 					Detail:  fmt.Sprintf("finish_reason=length, content_len=%d, max_output=%d", len(cleanContent), s.cfg.MaxOutputTokens),
 				})
+				s.progressMu.Unlock()
 			}
 		}
 		// content_filter: model output was filtered by safety system
@@ -1093,6 +1121,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 		// both fields must be set here for SubAgent session viewers and CLI
 		// tool_summary rendering.
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			if cleanContent != "" {
 				s.structuredProgress.Content = cleanContent
 			} else if response.ReasoningContent != "" {
@@ -1108,6 +1137,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			if response.ReasoningContent != "" {
 				s.structuredProgress.ReasoningContent = response.ReasoningContent
 			}
+			s.progressMu.Unlock()
 		}
 
 		// Write the final iteration to iteration_history (content + reasoning,
@@ -1148,29 +1178,35 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		s.lastContent = cleanContent
 	}
 
+	// M2 锁覆盖：progressLines/Content/ReasoningContent/Phase 写点与后台
+	// SubAgent 回调的 notifyProgress（锁内 Clone）并发。notifyProgress 自身
+	// 持锁，必须在临界区外调用。
+	s.progressMu.Lock()
 	if s.autoNotify && cleanContent != "" {
 		s.progressLines = append(s.progressLines, cleanContent)
 	}
-	if s.structuredProgress != nil && cleanContent != "" {
-		s.structuredProgress.Content = cleanContent
+	if s.structuredProgress != nil {
+		if cleanContent != "" {
+			s.structuredProgress.Content = cleanContent
+		}
+		// Wire the model's reasoning chain (reasoning_content) to progress
+		// so the CLI can display the thinking process to the user.
+		if response.ReasoningContent != "" {
+			s.structuredProgress.ReasoningContent = response.ReasoningContent
+		}
+		// Push progress so CLI can display reasoning immediately after LLM
+		// completes, rather than waiting for the next notifyProgress call.
+		// CRITICAL: if the LLM returned tool_calls, set Phase=tool_exec BEFORE
+		// pushing. Without this, the structured event carries Phase=thinking
+		// with no tools (ActiveTools is still nil — initToolProgress hasn't
+		// run yet). The frontend sees an empty snapshot during the window
+		// between this push and initToolProgress, causing ShimmerThinking
+		// ("思考中...") to flash over the generating tool indicator.
+		if response.HasToolCalls() {
+			s.structuredProgress.Phase = PhaseToolExec
+		}
 	}
-	// Wire the model's reasoning chain (reasoning_content) to progress
-	// so the CLI can display the thinking process to the user.
-	if s.structuredProgress != nil && response.ReasoningContent != "" {
-		s.structuredProgress.ReasoningContent = response.ReasoningContent
-	}
-
-	// Push progress so CLI can display reasoning immediately after LLM completes,
-	// rather than waiting for the next notifyProgress call (e.g. executeToolCalls).
-	// CRITICAL: if the LLM returned tool_calls, set Phase=tool_exec BEFORE pushing.
-	// Without this, the structured event carries Phase=thinking with no tools
-	// (ActiveTools is still nil — initToolProgress hasn't run yet). The frontend
-	// sees an empty snapshot (no tools, no text, no reasoning) during the window
-	// between this push and initToolProgress, causing ShimmerThinking ("思考中...")
-	// to flash over the generating tool indicator.
-	if s.structuredProgress != nil && response.HasToolCalls() {
-		s.structuredProgress.Phase = PhaseToolExec
-	}
+	s.progressMu.Unlock()
 	if s.autoNotify {
 		s.notifyProgress("")
 	}
@@ -1360,14 +1396,19 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 
 // runCompression performs the actual context compression.
 func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) error {
+	// M2 锁覆盖：Phase/progressLines 写与后台 SubAgent 回调的 notifyProgress
+	// （锁内 Clone）并发，必须持 progressMu；notifyProgress 自身持锁留在临界区外。
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.Phase = PhaseCompressing
 	}
 	if s.autoNotify {
 		s.progressLines = append(s.progressLines, fmt.Sprintf("> 📦 上下文过大 (%d tokens)，正在压缩 + 记忆整理...", totalTokens))
+	}
+	s.progressMu.Unlock()
+	if s.autoNotify {
 		s.notifyProgress("")
 	}
-
 	log.Ctx(ctx).Info("Auto context compaction triggered")
 
 	// Emit PreCompact event (notification, non-blocking)
@@ -1412,12 +1453,11 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if sessionCM == nil {
 		log.Ctx(ctx).Warn("No ContextManager available for compression")
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			s.structuredProgress.Phase = PhaseThinking
+			s.progressMu.Unlock()
 		}
 		return nil
-	}
-	if s.cfg.MemoryToolDefs != nil && s.cfg.MemoryToolExec != nil {
-		sessionCM.SetMemoryTools(s.cfg.MemoryToolDefs, s.cfg.MemoryToolExec)
 	}
 
 	// --- Memory system integration: PreCompress ---
@@ -1444,7 +1484,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			if preResult.SkipCompress {
 				log.Ctx(ctx).Info("PreCompress: memory system requested skip, skipping compression")
 				if s.structuredProgress != nil {
+					s.progressMu.Lock()
 					s.structuredProgress.Phase = PhaseThinking
+					s.progressMu.Unlock()
 				}
 				return nil
 			}
@@ -1470,7 +1512,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if compressErr != nil {
 		log.Ctx(ctx).WithError(compressErr).Warn("Auto context compaction failed")
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			s.structuredProgress.Phase = PhaseThinking
+			s.progressMu.Unlock()
 		}
 		return compressErr
 	}
@@ -1534,6 +1578,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		}
 	}
 
+	// M2 锁覆盖：Phase/HistoryCompacted/progressLines 更新与后台 SubAgent 回调的
+	// notifyProgress（锁内 Clone）并发，写点持锁；notifyProgress 自身持锁在锁外。
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.Phase = PhaseThinking
 		s.structuredProgress.HistoryCompacted = true
@@ -1545,12 +1592,17 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 				break
 			}
 		}
+	}
+	s.progressMu.Unlock()
+	if s.autoNotify {
 		s.notifyProgress("")
 	}
 	// Reset HistoryCompacted after the notification is sent so subsequent
 	// progress events don't repeatedly trigger CLI message rebuild.
 	if s.structuredProgress != nil {
+		s.progressMu.Lock()
 		s.structuredProgress.HistoryCompacted = false
+		s.progressMu.Unlock()
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
@@ -1775,6 +1827,9 @@ func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMRes
 				Summary: shortSummary,
 			},
 		}
+		// M2 锁覆盖：loop-breaker 的 ActiveTools/progressLines 标记与后台
+		// SubAgent 回调的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
+		s.progressMu.Lock()
 		if s.structuredProgress != nil && idx < len(s.structuredProgress.ActiveTools) {
 			s.structuredProgress.ActiveTools[idx].Status = ToolError
 			s.structuredProgress.ActiveTools[idx].Summary = shortSummary
@@ -1785,6 +1840,7 @@ func (s *runState) fakeLoopToolResults(ctx context.Context, response *llm.LLMRes
 				s.progressLines[pi] = fmt.Sprintf("> ❌ %s (loop detected, skipped)", formatToolProgress(tc.Name, tc.Arguments))
 			}
 		}
+		s.progressMu.Unlock()
 		log.Ctx(ctx).WithFields(log.Fields{
 			"tool":       tc.Name,
 			"id":         tc.ID,
@@ -1955,7 +2011,10 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 
 	// --- Sync CWD to progress (may change via Cd or worktree cleanup) ---
 	if s.structuredProgress != nil && s.cfg.Session != nil {
+		// M2 锁覆盖：CWD 写与后台 SubAgent 回调的 notifyProgress 并发。
+		s.progressMu.Lock()
 		s.structuredProgress.CWD = s.cfg.Session.GetCurrentDir()
+		s.progressMu.Unlock()
 	}
 
 	// --- System Reminder generation (transient, NOT persisted) ---
@@ -2199,6 +2258,9 @@ func (s *runState) injectSyntheticToolPair(
 	}
 
 	if s.structuredProgress != nil {
+		// M2 锁覆盖：CompletedTools append 与后台 SubAgent 回调的 notifyProgress
+		// （锁内 Clone）并发，写点持锁；notifyProgress 自身持锁留在临界区外。
+		s.progressMu.Lock()
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, ToolProgress{
 			Name:      toolName,
 			Label:     progressLabel,
@@ -2206,6 +2268,7 @@ func (s *runState) injectSyntheticToolPair(
 			Elapsed:   progressElapsed,
 			Iteration: iteration,
 		})
+		s.progressMu.Unlock()
 		if s.autoNotify {
 			s.notifyProgress("")
 		}

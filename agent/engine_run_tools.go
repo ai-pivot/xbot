@@ -453,14 +453,22 @@ func (s *runState) executeSubAgentOps(ctx context.Context, ops []toolCallEntry, 
 // writeIterationHistory. No other code path writes iteration_history — not
 // handleRunOutput, not handleCancelledRun. Detail JSON is no longer written.
 func (s *runState) snapshotCompletedIteration(iteration int) {
+	// M2 锁覆盖：写段（Active→Completed 合并）与 snap 构造读段（Content/
+	// ReasoningContent/CompletedTools/StreamStats/subAgentNodes）都与后台
+	// SubAgent 回调的 notifyProgress（锁内 Clone）并发，必须持 progressMu。
+	// notifyProgress 自身持锁、OnIterationSnapshot 回调与 writeIterationHistory
+	// 的 DB 写都不进临界区 —— 拆两段锁，中间的 snap 是局部值拷贝。
+	s.progressMu.Lock()
 	if s.structuredProgress != nil {
 		s.structuredProgress.CompletedTools = append(s.structuredProgress.CompletedTools, s.structuredProgress.ActiveTools...)
 		s.structuredProgress.ActiveTools = nil
 	}
+	s.progressMu.Unlock()
 	if s.autoNotify && !s.batchProgressByIteration && s.structuredProgress != nil {
 		s.notifyProgress("")
 	}
 	if s.structuredProgress != nil {
+		s.progressMu.Lock()
 		snap := IterationSnapshot{
 			Iteration: iteration,
 			Content:   s.structuredProgress.Content,
@@ -516,6 +524,7 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 			}
 		}
 		s.iterationSnapshots = append(s.iterationSnapshots, snap)
+		s.progressMu.Unlock()
 		if s.cfg.OnIterationSnapshot != nil {
 			s.cfg.OnIterationSnapshot(snap)
 		}

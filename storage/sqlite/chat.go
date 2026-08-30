@@ -130,8 +130,9 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string, off
 
 	query := fmt.Sprintf(`
 		SELECT t.chat_id, t.last_active_at,
-			(SELECT sm.content FROM session_messages sm
+			(SELECT substr(sm.content, 1, 256) FROM session_messages sm
 			 WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
+			   AND COALESCE(sm.display_only, 0) = 0
 			 ORDER BY sm.id DESC LIMIT 1) AS preview
 		FROM tenants t
 		WHERE t.channel = ? AND t.chat_id IN (%s)
@@ -297,10 +298,43 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 		return fmt.Errorf("check chat ownership: %w", err)
 	}
 
+	// Resolve the tenant id BEFORE deleting the tenant row: iteration_history
+	// has no FK to tenants (removed on purpose in v56), so it must be deleted
+	// explicitly by tenant_id. ErrNoRows (no tenant — CLI session without
+	// persistence yet) leaves tenantID 0, matching DeleteTenant's behavior.
+	var tenantID int64
+	_ = conn.QueryRow(
+		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?",
+		channel, chatID,
+	).Scan(&tenantID)
+
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete iteration_history (no FK cascade — see tenant id resolution above).
+	if _, err := tx.Exec("DELETE FROM iteration_history WHERE tenant_id = ?", tenantID); err != nil {
+		return fmt.Errorf("delete iteration history: %w", err)
+	}
+	// Delete chat-scoped rows that have no FK cascade: otherwise a deleted
+	// chat's cron job keeps firing (GetOrCreateSession resurrects the tenant)
+	// and its event triggers / pending resumes keep targeting a dead session.
+	if _, err := tx.Exec("DELETE FROM cron_jobs WHERE channel = ? AND chat_id = ?", channel, chatID); err != nil {
+		return fmt.Errorf("delete cron jobs: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM event_triggers WHERE channel = ? AND chat_id = ?", channel, chatID); err != nil {
+		return fmt.Errorf("delete event triggers: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM pending_resumes WHERE channel = ? AND chat_id = ?", channel, chatID); err != nil {
+		return fmt.Errorf("delete pending resumes: %w", err)
+	}
+
 	// A session can acquire labels from more than one authenticated surface
 	// (for example cli_user plus an admin Web identity). Delete them together
 	// so a later session with the same key cannot inherit stale metadata.
-	_, err = conn.Exec(
+	_, err = tx.Exec(
 		"DELETE FROM user_chats WHERE channel = ? AND chat_id = ?",
 		channel, chatID,
 	)
@@ -310,7 +344,7 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 
 	// Delete tenant (cascades to session_messages, memory, etc.) regardless of user_chats.
 	// CLI sessions may not have a user_chats entry but still have tenant data.
-	result, err := conn.Exec(
+	result, err := tx.Exec(
 		"DELETE FROM tenants WHERE channel = ? AND chat_id = ?",
 		channel, chatID,
 	)
@@ -321,6 +355,10 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 	rows, _ := result.RowsAffected()
 	if rows == 0 && count == 0 {
 		return ErrChatNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit chat deletion: %w", err)
 	}
 
 	log.WithFields(log.Fields{
@@ -335,11 +373,22 @@ func (s *ChatService) RenameChat(channel, senderID, chatID, label string) error 
 	// This handles renaming CLI/feishu sessions from the Web UI, where the
 	// caller passes channel="web" but the session lives under a different channel.
 	conn := s.db.Conn()
-	_, err := conn.Exec(`
-		INSERT INTO user_chats (channel, sender_id, chat_id, label)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET label = ?`,
-		channel, senderID, chatID, label, label,
+	// Stamp the canonical user on the row: the INSERT path (no prior row —
+	// CLI/feishu sessions renamed before ever being created in user_chats) and
+	// legacy user_id=0 rows would otherwise stay invisible to user-scoped
+	// queries. canonicalUserID returns 0 for unknown senders (no identity row),
+	// keeping the old default behavior in that case.
+	uid, err := canonicalUserID(conn, channel, senderID)
+	if err != nil {
+		return fmt.Errorf("rename chat: %w", err)
+	}
+	_, err = conn.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET
+			label = excluded.label,
+			user_id = CASE WHEN user_chats.user_id = 0 THEN excluded.user_id ELSE user_chats.user_id END`,
+		channel, senderID, chatID, label, uid,
 	)
 	return err
 }
@@ -367,6 +416,11 @@ func generateChatLabel() (string, error) {
 }
 
 func truncate(s string, maxRunes int) string {
+	// Guard: maxRunes < 4 makes maxRunes-3 negative — runes[:negative] panics.
+	// Nothing sensible to clip; return the input unchanged.
+	if maxRunes < 4 {
+		return s
+	}
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
 		return s

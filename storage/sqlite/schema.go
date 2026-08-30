@@ -7,9 +7,9 @@ import (
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v53 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v61 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
-// Windows where running 51 migrations per test DB causes CI timeouts (600s+).
+// Windows where running every migration per test DB causes CI timeouts (600s+).
 //
 // When adding a new migration, update this DDL and bump schema_version to match.
 func (db *DB) createSchema() error {
@@ -57,6 +57,10 @@ CREATE INDEX idx_session_messages_tenant_history ON session_messages(tenant_id, 
 -- anti-join by tenant_id+record_type+target_history_id) hit the index instead of a
 -- full tenant scan.
 CREATE INDEX IF NOT EXISTS idx_sm_tenant_record ON session_messages(tenant_id, record_type, target_history_id) WHERE record_type != 'message';
+-- v61: partial index for the ListUserChats preview subquery (latest user/assistant
+-- message per tenant). WHERE role IN ('user','assistant') keeps tool/assistant-tool rows
+-- out of the index.
+CREATE INDEX IF NOT EXISTS idx_sm_tenant_role_id ON session_messages(tenant_id, role, id) WHERE role IN ('user','assistant');
 
 CREATE TABLE tenant_state (
     tenant_id INTEGER PRIMARY KEY,
@@ -123,7 +127,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (60);
+INSERT INTO schema_version (version) VALUES (61);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
 CREATE TABLE user_llm_subscriptions (
@@ -260,6 +264,7 @@ CREATE TABLE cron_jobs (
 );
 CREATE INDEX idx_cron_jobs_next_run ON cron_jobs(next_run);
 CREATE INDEX idx_cron_jobs_sender ON cron_jobs(sender_id);
+CREATE INDEX idx_cron_jobs_user ON cron_jobs(user_id);
 
 CREATE TABLE event_triggers (
     id          TEXT PRIMARY KEY,

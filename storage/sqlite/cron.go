@@ -13,11 +13,16 @@ import (
 
 // CronJob represents a scheduled cron job
 type CronJob struct {
-	ID           string     `json:"id"`
-	Message      string     `json:"message"`
-	Channel      string     `json:"channel"`
-	ChatID       string     `json:"chat_id"`
-	SenderID     string     `json:"sender_id,omitempty"`
+	ID       string `json:"id"`
+	Message  string `json:"message"`
+	Channel  string `json:"channel"`
+	ChatID   string `json:"chat_id"`
+	SenderID string `json:"sender_id,omitempty"`
+	// UserID is the canonical user id (users.id) that owns the job. Set by the
+	// caller (tools/cron.go passes ToolContext.UserID); 0 = no owner (plugin
+	// jobs, legacy rows). Drives ListJobsByUserID (web cron panel) and the
+	// user-merge migrations.
+	UserID       int64      `json:"user_id,omitempty"`
 	CronExpr     string     `json:"cron_expr,omitempty"`
 	EverySeconds int        `json:"every_seconds,omitempty"`
 	DelaySeconds int        `json:"delay_seconds,omitempty"`
@@ -47,9 +52,9 @@ func (s *CronService) AddJob(job *CronJob) error {
 		lastTriggerStr = &s
 	}
 	_, err := conn.Exec(`
-		INSERT INTO cron_jobs (id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, job.ID, job.Message, job.Channel, job.ChatID, job.SenderID, job.CronExpr, job.EverySeconds, job.DelaySeconds, job.At, job.CreatedAt.Format(time.RFC3339), job.NextRun.Format(time.RFC3339), lastTriggerStr, job.OneShot)
+		INSERT INTO cron_jobs (id, message, channel, chat_id, sender_id, user_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, job.ID, job.Message, job.Channel, job.ChatID, job.SenderID, job.UserID, job.CronExpr, job.EverySeconds, job.DelaySeconds, job.At, job.CreatedAt.Format(time.RFC3339), job.NextRun.Format(time.RFC3339), lastTriggerStr, job.OneShot)
 	if err != nil {
 		return fmt.Errorf("insert cron job: %w", err)
 	}
@@ -184,21 +189,16 @@ func (s *CronService) ListJobsByChannelChatID(channel, chatID string) ([]*CronJo
 			&job.EverySeconds, &job.DelaySeconds, &job.At, &createdAt, &nextRun, &lastTriggerStr, &job.OneShot); err != nil {
 			return nil, fmt.Errorf("scan cron job row: %w", err)
 		}
-		var parseErr error
-		job.CreatedAt, parseErr = time.Parse(time.RFC3339, createdAt)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse created_at %q for job %s: %w", createdAt, job.ID, parseErr)
-		}
-		job.NextRun, parseErr = time.Parse(time.RFC3339, nextRun)
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse next_run %q for job %s: %w", nextRun, job.ID, parseErr)
-		}
+		// parseSQLiteTime (same as ListAllJobs): tolerates legacy/driver
+		// timestamp formats; a bad value yields the zero time, never fails the
+		// whole listing. Unparseable last_trigger silently stays nil.
+		job.CreatedAt = parseSQLiteTime(createdAt)
+		job.NextRun = parseSQLiteTime(nextRun)
 		if lastTriggerStr != nil {
-			t, err := time.Parse(time.RFC3339, *lastTriggerStr)
-			if err != nil {
-				return nil, fmt.Errorf("parse last_trigger %q for job %s: %w", *lastTriggerStr, job.ID, err)
+			t := parseSQLiteTime(*lastTriggerStr)
+			if !t.IsZero() {
+				job.LastTrigger = &t
 			}
-			job.LastTrigger = &t
 		}
 		jobs = append(jobs, job)
 	}
@@ -353,9 +353,12 @@ func (s *CronService) MigrateFromJSON(dataDir string) error {
 			job.NextRun = now
 		}
 
-		// Skip expired one-shot jobs
-		if job.OneShot && job.NextRun.Before(now) {
-			log.WithField("job_id", job.ID).Info("Skipping expired one-shot job during migration")
+		// Skip expired at-based one-shot jobs only. delay_seconds one-shots are
+		// RELATIVE ("N seconds from creation"): if they expired during downtime
+		// they must be preserved to fire on the first tick (same rule as
+		// cleanupExpiredJobs, AGENTS.md Cron Scheduler).
+		if job.At != "" && job.NextRun.Before(now) {
+			log.WithField("job_id", job.ID).Info("Skipping expired at-based one-shot job during migration")
 			continue
 		}
 

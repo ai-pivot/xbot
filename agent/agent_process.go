@@ -24,9 +24,9 @@ func (a *Agent) injectSystemNotes(messages []llm.ChatMessage, channel, chatID st
 	var systemNotes []string
 
 	// Background tasks
-	if a.bgTaskMgr != nil {
+	if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
 		sessionKey := qualifyChatID(channel, chatID)
-		running := a.bgTaskMgr.ListRunning(sessionKey)
+		running := bgMgr.ListRunning(sessionKey)
 		if len(running) > 0 {
 			var ids []string
 			for _, t := range running {

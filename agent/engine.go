@@ -93,7 +93,7 @@ type RunConfig struct {
 	IsWorktreeIsolated bool
 
 	// === 循环控制 ===
-	MaxIterations   int // 0 = 使用默认值 100
+	MaxIterations   int // 0 = 使用默认值 2000（DefaultMaxIterations）
 	MaxOutputTokens int // 0 = 使用 LLM client 默认值
 	// IterationStart 偏移 Run 的迭代编号（resume 场景）：> 0 时首个迭代号是
 	// IterationStart+1 而非 1。重启恢复的 Run（InjectInboundResume）复用被中断
@@ -230,12 +230,6 @@ type RunConfig struct {
 
 	// ContextEditor Context Editing 编辑器（nil = 不启用）
 	ContextEditor *ContextEditor
-
-	// MemoryToolDefs 记忆工具定义列表（nil = 压缩时不使用记忆工具）
-	MemoryToolDefs []llm.ToolDefinition
-
-	// MemoryToolExec 记忆工具执行函数（nil = 压缩时不使用记忆工具）
-	MemoryToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error)
 
 	// TodoManager TODO 管理器（可选）
 	TodoManager TodoManagerProvider

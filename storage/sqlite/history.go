@@ -960,7 +960,10 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 			// Don't replace existing messages — keep the full history.
 			var snapshot ContextSnapshot
 			if err := decodeHistoryData(record, &snapshot); err != nil {
-				return nil, err
+				// Corrupted/partially-written record — skip it, same tolerant
+				// policy as countDisplayRowsBefore: one bad record must not
+				// take down the whole history read.
+				continue
 			}
 			// Guard against mismatched arrays — same validation as replayWith.
 			// A corrupted/partially-written record could have HistoryIDs and

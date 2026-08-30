@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -597,13 +598,16 @@ type Agent struct {
 	// IdentityResolver is accessed via a.userSys.identityResolver (no direct field).
 	// nil in standalone CLI mode (no multi-user DB).
 
-	// bgTaskMgr manages background shell tasks (shared across all sessions)
+	// bgTaskMgr manages background shell tasks (shared across all sessions).
+	// atomic.Pointer: read by background goroutines (bgNotifyLoop) and the
+	// message-processing path, replaced via SetBgTaskManager (tests) after
+	// New() has started those goroutines — plain field access is a data race.
 
 	// PluginManager manages the plugin system lifecycle
 	pluginMgr *plugin.PluginManager
 	// webUIReg stores channel-plugin web UI component declarations (web_ui protocol).
 	webUIReg  *plugin.WebUIRegistry
-	bgTaskMgr *tools.BackgroundTaskManager
+	bgTaskMgr atomic.Pointer[tools.BackgroundTaskManager]
 
 	// bgRunPending buffers bg notifications by session. The Run loop drains the
 	// current session between iterations; idle sessions drain their own bucket.
@@ -830,10 +834,11 @@ func (a *Agent) SetLLMFactory(f *LLMFactory) {
 }
 
 // BgTaskManager returns the Agent's BackgroundTaskManager.
-func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr }
+func (a *Agent) BgTaskManager() *tools.BackgroundTaskManager { return a.bgTaskMgr.Load() }
 
 // SetBgTaskManager replaces the background task manager (used in tests).
-func (a *Agent) SetBgTaskManager(manager *tools.BackgroundTaskManager) { a.bgTaskMgr = manager }
+// Safe against the bgNotifyLoop goroutine (started in New) — atomic swap.
+func (a *Agent) SetBgTaskManager(manager *tools.BackgroundTaskManager) { a.bgTaskMgr.Store(manager) }
 
 // Commands returns the Agent's CommandRegistry (for external consumers like RPC handlers).
 func (a *Agent) Commands() *CommandRegistry { return a.commands }
@@ -1892,11 +1897,14 @@ func New(cfg Config) (*Agent, error) {
 			}
 			return mgr
 		}(),
-		bgTaskMgr:       tools.NewBackgroundTaskManager(),
 		cliSenderID:     cfg.CLISenderID,
 		singleUser:      cfg.SingleUser,
 		lifecycleStopCh: make(chan struct{}),
 	}
+
+	// bgTaskMgr via atomic Store (before any background goroutine starts —
+	// bgNotifyLoop reads it via Load; SetBgTaskManager may replace it later).
+	agent.bgTaskMgr.Store(tools.NewBackgroundTaskManager())
 
 	// 5. 初始化各类服务（修改 agent 指针）
 	initServices(agent, cfg, multiSession, registry)
@@ -2474,7 +2482,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	a.cronSch.SetNotifyCronFunc(func(channel, chatID, senderID, message string) {
 		sessionKey := channel + ":" + chatID
-		a.bgTaskMgr.SendCronFired(&tools.CronFired{
+		a.bgTaskMgr.Load().SendCronFired(&tools.CronFired{
 			Key:     sessionKey,
 			Sid:     senderID,
 			Message: message,
@@ -3056,6 +3064,21 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			wasCancelled := false
 			func() {
 				defer func() {
+					// Panic 兜底：processMessage panic 时 goroutine 会被 clipanic.Go
+					// recover（进程存活）但从此退出 —— 下方 err/正常分支的
+					// ss.busy.Store(false) 永不可达，会话永久卡 busy（用户后续消息
+					// 永远排队）。recover 后置 err，走统一 err 分支清理（busy 复位 +
+					// 用户收到错误提示），会话可继续服务。
+					if r := recover(); r != nil {
+						log.WithFields(log.Fields{
+							"request_id": msg.RequestID,
+							"chat":       chatKey,
+							"panic":      r,
+							"stack":      string(debug.Stack()),
+						}).Error("panic recovered in processMessage")
+						response = nil
+						err = fmt.Errorf("internal error: %v", r)
+					}
 					wasCancelled = a.finishActiveCancelState(cancelKey, reqCtx, reqCancel)
 
 					// WaitingUser: the turn is PAUSED, not ended. Do NOT emit
@@ -3166,10 +3189,16 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					if busMsg.Metadata == nil {
 						busMsg.Metadata = make(map[string]string)
 					}
+					// WaitingUser 消息不可静默丢弃：AskUser 面板不显示 = turn 永久暂停
+					// 等一个不会到达的回答（ss.busy 保持 true，会话卡死）。带超时的
+					// 阻塞发送替代立即丢弃（对齐上方 err 分支的直接写语义），仅在
+					// shutdown（reqCtx.Done）或 10s 仍满时放弃。
 					select {
 					case a.bus.Outbound <- busMsg:
-					default:
-						log.Ctx(ctx).Warn("Message bus outbound channel is full, dropping WaitingUser response")
+					case <-reqCtx.Done():
+						log.Ctx(ctx).Warn("Context cancelled, dropping WaitingUser response")
+					case <-time.After(10 * time.Second):
+						log.Ctx(ctx).Error("Message bus outbound channel full for 10s, dropping WaitingUser response")
 					}
 				} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
 					log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
@@ -4299,7 +4328,7 @@ func (a *Agent) bgNotifyLoop() {
 		select {
 		case <-a.lifecycleStopCh:
 			return
-		case notif, ok := <-a.bgTaskMgr.NotifyCh:
+		case notif, ok := <-a.bgTaskMgr.Load().NotifyCh:
 			if !ok {
 				return
 			}
@@ -4376,7 +4405,7 @@ func (a *Agent) injectAsyncMessage(channel, chatID, senderID, content, source st
 	// This guarantees:
 	// - Busy: injected as tool result on Run loop's goroutine (no data race)
 	// - Idle: injected as user message with correct TUI notification
-	a.bgTaskMgr.SendAsyncMessage(&tools.AsyncMessageNotification{
+	a.bgTaskMgr.Load().SendAsyncMessage(&tools.AsyncMessageNotification{
 		Key:     sessionKey,
 		Sid:     senderID,
 		Content: content,

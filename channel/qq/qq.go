@@ -1509,7 +1509,22 @@ func (q *QQChannel) nextMsgSeq(msgID string) int {
 	q.msgSeqMap[msgID] = entry
 	seq := entry.seq
 
-	// Prevent unbounded growth: evict entries not used recently
+	// Prevent unbounded growth: evict entries not used recently.
+	//
+	// Deliberate amortized partial-scan (NOT a full sweep): when len exceeds
+	// cacheMaxEntries, each call scans at most cacheMaxScanPerCleanup randomly
+	// ordered keys and evicts those idle for longer than cacheExpiry. This
+	// bounds the lock hold on the hot send path (nextMsgSeq runs per outbound
+	// message) — cacheMaxScanPerCleanup's doc comment states this design intent
+	// ("avoid holding the lock too long"), so switching to a full sweep on a
+	// threshold would put an O(N) lock spike exactly on the busiest path.
+	//
+	// Bound analysis: entries become evictable after cacheExpiry (30min), so the
+	// steady-state size is ~writeRate×30min. Under sustained writes faster than
+	// ~5.5 entries/sec the map overshoots cacheMaxEntries and shrinks back at
+	// a bounded rate (each call evicts ~scanSize×expiredFraction). The
+	// transient overshoot is a few MB of memory — acceptable, which is why no
+	// full-sweep alternative is implemented. Same pattern as cacheChatType.
 	if len(q.msgSeqMap) > cacheMaxEntries {
 		cutoff := time.Now().Add(-cacheExpiry)
 		scanned := 0

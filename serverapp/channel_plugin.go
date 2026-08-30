@@ -159,6 +159,16 @@ func (p *stdioChannelPluginProvider) replaceChannelProcess(proc *channelProcess,
 		if err := proc.cmd.Process.Kill(); err != nil {
 			log.WithField("channel", p.decl.Name).WithError(err).Warn("Failed to kill previous channel plugin process")
 		}
+		// Reap the child (avoids a zombie) and close the parent-side stderr
+		// fd. cmd.Stderr only dups the fd into the child — the parent's fd
+		// would leak on every plugin reload without this close.
+		w := proc.stderrWriter
+		go func() {
+			_ = proc.cmd.Wait()
+			if w != nil {
+				_ = w.Close()
+			}
+		}()
 	}
 }
 
@@ -230,6 +240,11 @@ type channelProcess struct {
 	cmd        *exec.Cmd
 	stdinPipe  io.WriteCloser
 	stdoutPipe io.Reader
+	// stderrWriter is the parent-side fd of the per-plugin stderr log file
+	// (cmd.Stderr). It MUST be closed when the process is torn down — the OS
+	// only closes the child's dup, not the parent's fd. Tracked here so
+	// replaceChannelProcess can release it after killing the process.
+	stderrWriter io.WriteCloser
 }
 
 func spawnChannelProcess(decl *plugin.ChannelProviderDecl, xbotHome string) (*channelProcess, error) {
@@ -273,16 +288,19 @@ func spawnChannelProcess(decl *plugin.ChannelProviderDecl, xbotHome string) (*ch
 	log.WithField("channel", decl.Name).WithField("pid", cmd.Process.Pid).Info("Channel process spawned")
 
 	return &channelProcess{
-		cmd:        cmd,
-		stdinPipe:  stdinPipe,
-		stdoutPipe: stdoutPipe,
+		cmd:          cmd,
+		stdinPipe:    stdinPipe,
+		stdoutPipe:   stdoutPipe,
+		stderrWriter: stderrWriter,
 	}, nil
 }
 
 // openPluginStderrWriter creates (or opens) a log file for the channel plugin
 // process's stderr. The file is at <xbotHome>/plugins/<channelName>/logs/stderr.log.
-// Returns an *os.File that the caller assigns to cmd.Stderr. The OS will close
-// the file when the process exits.
+// Returns an *os.File that the caller assigns to cmd.Stderr. The child gets a
+// dup of the fd; the parent-side fd returned here MUST be closed explicitly
+// when the process is torn down (replaceChannelProcess does this) — the OS
+// does NOT close the parent's fd when the child exits.
 // If xbotHome is empty, returns an error so the caller falls back to os.Stderr.
 func openPluginStderrWriter(channelName, xbotHome string) (*os.File, error) {
 	if xbotHome == "" {

@@ -900,7 +900,19 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		}(),
 	}).Info("Feishu: message event received")
 
-	// 消息去重
+	// 消息去重。
+	//
+	// ⚠️ Deliberate AT-MOST-ONCE semantics: isDuplicate MARKS the message as
+	// processed BEFORE the handler runs. If the handler later fails (e.g. the
+	// Inbound channel blocks, the agent rejects it, or this callback panics
+	// mid-way), the message is NOT redelivered — it is lost. This trade-off is
+	// intentional: Feishu at-least-once webhook delivery (network retries /
+	// WebSocket reconnects) makes duplicate messages far more common than
+	// handler failures, and reprocessing a duplicate user message would
+	// trigger duplicate agent turns (duplicate billing, duplicate tool side
+	// effects) — the worse failure mode. Do NOT "fix" this into a
+	// mark-after-success (at-least-once) scheme without also adding
+	// idempotency to every downstream consumer.
 	messageID := *msg.MessageId
 	if f.isDuplicate(messageID) {
 		l.WithField("message_id", messageID).Debug("Feishu: duplicate message, skipping")
@@ -3158,7 +3170,6 @@ func (f *FeishuChannel) getHistoryMsgById(currentMsgEV *larkim.P2MessageReceiveV
 	return resp.Data.Items[0]
 }
 
-// isDuplicate 检查消息是否重复
 // handleAdminCommand handles admin-only commands (e.g., !webadd).
 // Returns true if the message was an admin command and was handled.
 func (f *FeishuChannel) handleAdminCommand(content, replyTo, senderID, messageID string) bool {
@@ -3236,6 +3247,15 @@ func (f *FeishuChannel) sendTextReply(chatID, parentID, text string) {
 	}
 }
 
+// isDuplicate 检查消息是否重复。
+//
+// ⚠️ AT-MOST-ONCE semantics: this both CHECKS and MARKS the messageID as
+// processed in a single call — the caller marks the message *before* handling
+// it. A handler failure after isDuplicate returns false means the message is
+// permanently dropped (never redelivered). This is a deliberate trade-off
+// against Feishu's at-least-once webhook redelivery: replaying a user message
+// would spawn duplicate agent turns, which is worse than a rare lost message.
+// See the call site in onMessage for the full rationale.
 func (f *FeishuChannel) isDuplicate(messageID string) bool {
 	f.processedMu.Lock()
 	defer f.processedMu.Unlock()

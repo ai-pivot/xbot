@@ -126,7 +126,7 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 // identities (e.g. a Feishu ou_xxx linked to the admin user). Mirrors the RPC
 // layer (rpcUserID + ListAllModelEntriesForUserID). Uses ResolveSender — a
 // read-only lookup that never auto-creates users.
-func canonicalModelEntries(ag *agent.Agent, channelName, senderID string) []protocol.ModelEntry {
+func canonicalModelEntries(ag *agent.Agent, senderID string) []protocol.ModelEntry {
 	if ag.IdentityResolver() != nil {
 		if uid, _, err := ag.IdentityResolver().ResolveSender(senderID); err == nil && uid > 0 {
 			return ag.LLMFactory().ListAllModelEntriesForUserID(uid)
@@ -146,10 +146,10 @@ func resolveUID(ag *agent.Agent, senderID string) int64 {
 	return 0
 }
 
-func llmCallbacks(ag *agent.Agent, channelName string) channel.LLMCallbacks {
+func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
-			entries := canonicalModelEntries(ag, channelName, senderID)
+			entries := canonicalModelEntries(ag, senderID)
 			sub, model, err := ag.LLMFactory().ResolveActiveSubModel(senderID, "", "")
 			if err != nil || sub == nil {
 				return entries, protocol.ModelEntry{Model: model}
@@ -245,7 +245,7 @@ func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, d
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
 func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
-	llmc := llmCallbacks(ag, "web")
+	llmc := llmCallbacks(ag)
 
 	callbacks := web.WebCallbacks{
 		// Runner callbacks
@@ -306,6 +306,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return ag.GetPendingAskUser(channel, chatID)
 	}
 	callbacks.WithPendingAskUser = ag.WithPendingAskUser
+	// Session-scope callbacks below (HistorySnapshot/RewindHistory/GetCWD/
+	// GetTodos/SetCWD) are gated at the web layer: every REST entry
+	// (handleHistory/handleHistoryRewind/handleSessionStatus) routes through
+	// resolveAPISession → canAccessSession (user_chats/tenant ownership + admin
+	// exemption) before invoking the callback — single point of defense,
+	// verified 2026-08 Loop 3. BackgroundTasks additionally re-checks
+	// ownership here because its output (bg task shell output) is extra
+	// sensitive and the selector must not be trusted on any path.
 	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector, limit int, beforeID int64) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
@@ -423,6 +431,16 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				return nil, fmt.Errorf("resolve identity for background tasks: %w", err)
 			}
 			if uid > 0 && role != "admin" {
+				// Defense in depth: the web layer (canAccessSession) already
+				// gates REST access, but the callback must not trust the
+				// caller-supplied session selector — bg task output contains
+				// full shell output. Deny sessions explicitly owned by another
+				// canonical user; unclaimed tenants (owner_user_id=0, e.g. a
+				// freshly created web chat before its first message) pass —
+				// their ownership is enforced upstream.
+				if owned, ok := webSessionOwnedByUser(ag, sel.Channel, sel.ChatID, uid); ok && !owned {
+					return nil, fmt.Errorf("access denied: session not owned by caller")
+				}
 				return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 			}
 		}
@@ -866,6 +884,39 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 	for i := range row.Children {
 		applyWebRunningStatus(ag, &row.Children[i])
 	}
+}
+
+// webSessionOwnedByUser checks the canonical ownership of a web-visible
+// session (tenants.owner_user_id). It reports (owned, ok):
+//   - ok=false when ownership cannot be determined (no DB / no tenant row) —
+//     callers treat this as "no ownership information" and must not deny on it
+//     (e.g. a freshly created session key has no tenant row yet).
+//   - owned=false only when the tenant exists and is explicitly owned by
+//     another canonical user.
+//
+// Defense-in-depth helper for web callbacks that receive a caller-supplied
+// session selector: the web REST layer gates access via canAccessSession,
+// but the callback layer serves every entry path and must not trust the
+// selector alone.
+func webSessionOwnedByUser(ag *agent.Agent, channelName, chatID string, uid int64) (owned, ok bool) {
+	if ag == nil || ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+		return false, false
+	}
+	var ownerUserID int64
+	err := ag.MultiSession().DB().Conn().QueryRow(
+		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
+		channelName, chatID,
+	).Scan(&ownerUserID)
+	if err != nil {
+		// No tenant row (session never persisted) — no ownership info.
+		return false, false
+	}
+	if ownerUserID == 0 {
+		// Unclaimed tenant: ownership is governed by the web layer
+		// (user_chats) — do not deny here.
+		return true, false
+	}
+	return ownerUserID == uid, true
 }
 
 func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
@@ -1858,7 +1909,7 @@ func looksLikeWorkDir(s string) bool {
 // buildFeishuSettingsCallbacks builds SettingsCallbacks for Feishu using shared builders.
 func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.SettingsCallbacks {
 	rc := runnerCallbacks(cfg)
-	llmc := llmCallbacks(ag, "feishu")
+	llmc := llmCallbacks(ag)
 
 	return feishu.SettingsCallbacks{
 		// LLM basic callbacks
@@ -2053,7 +2104,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			// Subscriptions are bound to the canonical user_id (v45+); a Feishu
 			// identity (ou_xxx) linked to the admin user must see the SAME
 			// subscriptions as web/cli — resolve canonical user like the RPC layer.
-			return canonicalModelEntries(ag, "feishu", senderID)
+			return canonicalModelEntries(ag, senderID)
 		},
 
 		// Context mode

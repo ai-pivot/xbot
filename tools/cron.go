@@ -138,6 +138,9 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 		job.Channel = ctx.Channel
 		job.ChatID = ctx.ChatID
 		job.SenderID = ctx.SenderID
+		// Canonical user id — drives ListJobsByUserID (web cron panel) and
+		// user-merge migrations. 0 in standalone mode (no identity system).
+		job.UserID = ctx.UserID
 	}
 
 	// Calculate next run and one_shot flag

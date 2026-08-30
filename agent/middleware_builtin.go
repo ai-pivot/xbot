@@ -72,6 +72,12 @@ const (
 // Priority=5: runs after SystemPromptMiddleware(0), before SkillsCatalogMiddleware(100).
 type ProjectContextMiddleware struct {
 	cache projectContextCache
+	// globalEntry caches the $XBOT_HOME context (loadGlobal). Kept separate
+	// from the per-directory cache because global and project searches use
+	// different file lists (globalContextFiles vs agentContextFiles) — sharing
+	// a key would let them evict each other when xbotHome == a project dir.
+	globalMu    sync.RWMutex
+	globalEntry *projectContextEntry
 }
 
 // projectContextCache caches the loaded context content keyed by directory path.
@@ -151,19 +157,78 @@ var globalContextFiles = []string{
 
 // loadGlobal searches for a global context file in xbotHome (e.g. ~/.xbot).
 // Only searches globalContextFiles (AGENTS.md, CLAUDE.md, AGENT.md).
-// Does NOT use the project-level cache — global files are read directly.
+// Uses the same TTL+modTime cache semantics as load: Process runs on EVERY
+// message build, so reading the global file from disk each time is wasted
+// I/O (i5). Content is re-read only after TTL expiry AND modTime change.
 func (m *ProjectContextMiddleware) loadGlobal(xbotHome string) (content string, filePath string) {
+	now := time.Now()
+
+	m.globalMu.RLock()
+	entry := m.globalEntry
+	var (
+		cachedContent  string
+		cachedPath     string
+		cachedModTime  time.Time
+		cachedExpireAt time.Time
+	)
+	if entry != nil {
+		cachedContent = entry.content
+		cachedPath = entry.filePath
+		cachedModTime = entry.modTime
+		cachedExpireAt = entry.expireAt
+	}
+	m.globalMu.RUnlock()
+
+	if entry != nil && now.Before(cachedExpireAt) {
+		return cachedContent, cachedPath
+	}
+
 	for _, name := range globalContextFiles {
 		fullPath := filepath.Join(xbotHome, name)
+		info, err := os.Stat(fullPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		// modTime unchanged — refresh TTL only (on the current entry; the
+		// cached pointer may have been replaced by a concurrent loader).
+		if entry != nil && cachedPath == name && cachedModTime.Equal(info.ModTime()) {
+			m.globalMu.Lock()
+			if cur := m.globalEntry; cur != nil {
+				cur.expireAt = now.Add(projectContextCacheTTL)
+			}
+			m.globalMu.Unlock()
+			return cachedContent, cachedPath
+		}
+
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
 			continue
 		}
 		content = strings.TrimSpace(string(data))
-		if content != "" {
-			return content, name
+		if content == "" {
+			continue
 		}
+
+		m.globalMu.Lock()
+		m.globalEntry = &projectContextEntry{
+			content:  content,
+			filePath: name,
+			modTime:  info.ModTime(),
+			expireAt: now.Add(projectContextCacheTTL),
+		}
+		m.globalMu.Unlock()
+
+		return content, name
 	}
+
+	// No file found — cache the empty result to avoid repeated scans.
+	m.globalMu.Lock()
+	m.globalEntry = &projectContextEntry{
+		expireAt: now.Add(projectContextCacheTTL),
+	}
+	m.globalMu.Unlock()
+
 	return "", ""
 }
 
@@ -190,13 +255,28 @@ func formatGlobalContext(content string, filePath string) string {
 func (m *ProjectContextMiddleware) load(dir string) (content string, filePath string) {
 	now := time.Now()
 
-	// Check cache
+	// Check cache — copy entry fields under RLock (entry pointers can be
+	// concurrently replaced/written by other loaders; reading fields after
+	// RUnlock races the TTL-refresh write path below).
 	m.cache.mu.RLock()
-	entry, hit := m.cache.items[dir]
+	var (
+		cachedOK       bool
+		cachedContent  string
+		cachedPath     string
+		cachedModTime  time.Time
+		cachedExpireAt time.Time
+	)
+	if e, ok := m.cache.items[dir]; ok {
+		cachedOK = true
+		cachedContent = e.content
+		cachedPath = e.filePath
+		cachedModTime = e.modTime
+		cachedExpireAt = e.expireAt
+	}
 	m.cache.mu.RUnlock()
 
-	if hit && now.Before(entry.expireAt) {
-		return entry.content, entry.filePath
+	if cachedOK && now.Before(cachedExpireAt) {
+		return cachedContent, cachedPath
 	}
 
 	// Cache miss or expired — scan files
@@ -208,12 +288,16 @@ func (m *ProjectContextMiddleware) load(dir string) (content string, filePath st
 		}
 
 		// If cached entry matches file name and modTime, reuse content (avoid re-reading unchanged file)
-		if hit && entry.filePath == name && entry.modTime.Equal(info.ModTime()) {
-			// Refresh TTL only
+		if cachedOK && cachedPath == name && cachedModTime.Equal(info.ModTime()) {
+			// Refresh TTL only — on the CURRENT map entry (cached may have been
+			// replaced by a concurrent loader; refreshing a stale pointer would be
+			// a lost write the map never sees).
 			m.cache.mu.Lock()
-			entry.expireAt = now.Add(projectContextCacheTTL)
+			if cur, ok := m.cache.items[dir]; ok {
+				cur.expireAt = now.Add(projectContextCacheTTL)
+			}
 			m.cache.mu.Unlock()
-			return entry.content, entry.filePath
+			return cachedContent, cachedPath
 		}
 
 		data, err := os.ReadFile(fullPath)

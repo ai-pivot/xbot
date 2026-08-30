@@ -275,6 +275,8 @@ ResolveEffectiveMaxContext(state, subMgr)
 
 ## Subscription Switch Scenarios（订阅切换场景）
 
+> **写路径权限（v45/M1）**：所有订阅写 RPC（update/remove/rename/set_model/set_default/per_model_config/export）按 canonical user_id（`rpcUserID(ctx)`）做归属校验（`sub.UserID != rpcUserID` 拒绝），跨渠道身份（web-N / cli_user / ou_xxx linked 同一 user）可管理自己的订阅；admin 豁免（`isAdmin`）不变。
+
 ### 场景 1: TUI 切换模型（跨订阅，per-session）
 
 用户在 TUI 用 Ctrl+N 统一面板选中一个模型，该模型可能属于**另一个订阅**。

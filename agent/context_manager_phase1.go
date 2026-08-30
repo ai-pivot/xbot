@@ -9,15 +9,7 @@ import (
 
 // phase1Manager implements ContextManager using single-pass structured compaction.
 type phase1Manager struct {
-	config      *ContextManagerConfig
-	memTools    []llm.ToolDefinition
-	memToolExec func(ctx context.Context, tc llm.ToolCall) (content string, err error)
-}
-
-// SetMemoryTools injects memory tool definitions and executor for use during compaction.
-func (m *phase1Manager) SetMemoryTools(tools []llm.ToolDefinition, exec func(ctx context.Context, tc llm.ToolCall) (string, error)) {
-	m.memTools = tools
-	m.memToolExec = exec
+	config *ContextManagerConfig
 }
 
 func newPhase1Manager(cfg *ContextManagerConfig) *phase1Manager {

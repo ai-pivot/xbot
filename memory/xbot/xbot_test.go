@@ -2,6 +2,7 @@ package xbot
 
 import (
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -225,5 +226,65 @@ func TestRecallCapsTotalRunes(t *testing.T) {
 	}
 	if !strings.Contains(out, "memory truncated to budget") {
 		t.Errorf("over-budget recall should carry the truncation marker\nfirst 200: %q", out[:min(200, len(out))])
+	}
+}
+
+// TestAddLongTermMemoryBM25DedupDirection: 去重阈值方向必须是"越负越相似"。
+// SQLite FTS5 bm25() 返回负值，better matches are assigned numerically LOWER
+// scores（官方语义：ORDER BY bm25() ASC 把最佳匹配排最前——searchLongTerm 即此用法）。
+// 强 keyword 重叠（bm25 << dedupSimilarityThreshold=-6）判 duplicate skip；
+// 未达阈值的弱相关不误去重。实测（zz_probe）：真实语料（9 行）强重叠 bm25≈-9.9，
+// 1 行语料 bm25≈0（IDF 无区分度）——测试必须种 filler 行到真实规模。
+// 回归：旧代码 `bm25() > ?` + `ORDER BY DESC` 方向反了——强重叠不去重（内存膨胀），
+// 弱相似反而被误 skip（丢新记忆）。
+// 注意：去重在私有 addLongTermMemory（LLM 记忆管道路径）；公开 AddMemory 是
+// 显式添加 API，设计上不去重。
+func TestAddLongTermMemoryBM25DedupDirection(t *testing.T) {
+	m, db := newTestMemory(t)
+
+	// Seed 8 filler rows so the FTS corpus has realistic IDF (bm25() on a
+	// 1-row corpus ≈ 0 — no discrimination; filler keywords are pairwise
+	// disjoint so they don't dedup each other).
+	for i := 0; i < 8; i++ {
+		if err := m.addLongTermMemory(LongTermMemory{
+			Type:     "fact",
+			Content:  fmt.Sprintf("filler row %d unrelated words", i),
+			Keywords: fmt.Sprintf("filler%d unique%d", i, i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 场景 1：强重叠（同 keywords 全部 token 命中）→ duplicate skip
+	kw := "alpha beta gamma delta epsilon zeta"
+	if err := m.addLongTermMemory(LongTermMemory{
+		Type: "fact", Content: "first memory", Keywords: kw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.addLongTermMemory(LongTermMemory{
+		Type: "fact", Content: "second memory nearly identical", Keywords: kw,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM xbot_long_term_memories`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 9 { // 8 filler + 1 (duplicate skipped)
+		t.Errorf("strong-overlap duplicate was not deduped: rows=%d, want 9 (bm25 lower = more relevant, threshold %v)", count, dedupSimilarityThreshold)
+	}
+
+	// 场景 2：弱相关（无共同 token）→ 不误去重
+	if err := m.addLongTermMemory(LongTermMemory{
+		Type: "fact", Content: "unrelated memory", Keywords: "database backup schedule",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM xbot_long_term_memories`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 10 { // 8 filler + 1 alpha + 1 unrelated
+		t.Errorf("weak-similarity memory was incorrectly deduped: rows=%d, want 10", count)
 	}
 }

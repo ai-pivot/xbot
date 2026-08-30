@@ -239,12 +239,6 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 
 	cm := a.GetContextManager()
 
-	// Inject memory tools so manual compaction can archive important context
-	// (same as the auto-compress path in engine.Run).
-	if defs, exec := a.buildMemoryToolSetup(msg.Channel, msg.ChatID); defs != nil {
-		cm.SetMemoryTools(defs, exec)
-	}
-
 	userCtx := UserContextFromContext(ctx)
 	result, err := cm.ManualCompress(ctx, messages, userCtx.LLMClient, userCtx.Model)
 	if err != nil {
