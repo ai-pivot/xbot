@@ -172,7 +172,19 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
     setImporting(true)
     const reader = new FileReader()
     reader.onload = () => {
-      conn.rpc('import_subscriptions', { subs: JSON.parse(String(reader.result)), overwrite: false })
+      // JSON.parse throws synchronously on malformed files — BEFORE conn.rpc()
+      // is even called, so the .catch() chain below never runs and
+      // setImporting(false) never executes → UI stuck on "导入中…" forever.
+      // Parse first, fail fast.
+      let subs: unknown
+      try {
+        subs = JSON.parse(String(reader.result))
+      } catch (e) {
+        fail('导入失败：' + (e instanceof Error ? e.message : String(e)))
+        setImporting(false)
+        return
+      }
+      conn.rpc('import_subscriptions', { subs, overwrite: false })
         .then(() => {
           toast.success('导入成功')
           void settings.reload()

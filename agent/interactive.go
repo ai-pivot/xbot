@@ -549,8 +549,13 @@ func (a *Agent) destroyInteractiveSession(key string) {
 	if val, ok := a.interactiveSubAgents.Load(key); ok {
 		if ia, ok := val.(*interactiveAgent); ok && ia != nil {
 			ia.mu.Lock()
-			if ia.bgTask != nil && a.bgTaskMgr.Load() != nil {
-				a.bgTaskMgr.Load().CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
+			// TOCTOU fix (xbotgh cr): Load() once into a local — a second Load()
+			// between the nil check and the method call can return nil if another
+			// goroutine swapped the manager (SetBgTaskManager(nil)) in between.
+			if ia.bgTask != nil {
+				if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
+					bgMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "session destroyed")
+				}
 			}
 			ia.mu.Unlock()
 		}
@@ -2402,8 +2407,11 @@ func (a *Agent) UnloadInteractiveSession(
 	}
 	// Close the waitable task so a pending task_wait unblocks immediately
 	// instead of blocking until its timeout (the parent triggered the unload).
-	if ia.bgTask != nil && a.bgTaskMgr.Load() != nil {
-		a.bgTaskMgr.Load().CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "interactive session unloaded")
+	// TOCTOU fix (xbotgh cr): Load() once into a local — same as destroyInteractiveSession.
+	if ia.bgTask != nil {
+		if bgMgr := a.bgTaskMgr.Load(); bgMgr != nil {
+			bgMgr.CloseSubAgentTask(ia.bgTask.ID, tools.BgTaskKilled, "interactive session unloaded")
+		}
 	}
 	messages := make([]llm.ChatMessage, len(ia.messages))
 	copy(messages, ia.messages)
