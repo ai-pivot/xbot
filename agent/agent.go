@@ -1791,6 +1791,12 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	llmSemMgr := llm.NewLLMSemaphoreManager()
 	a.userSys.llmFactory.SetLLMSemaphoreManager(llmSemMgr)
 	a.userSys.llmFactory.SetSettingsService(a.userSys.settingsSvc)
+	// Canonical-user settings resolution: getGlobalSetting (tier/thinking_mode)
+	// reads the user_id dimension first — *ByUserID writes (RPC panel settings)
+	// store sender_id='user-N', invisible to sender-dimension reads. Without
+	// this, web-channel senders never see tier configs written by the panel
+	// (SubAgent "model not found for vanguard, falling back to main model").
+	a.userSys.llmFactory.SetUserResolver(a.resolveUserID)
 
 	// 初始化消息构建管道（必须在 settingsSvc 之后，LanguageMiddleware 依赖它）
 	a.initPipelines(memoryProvider)

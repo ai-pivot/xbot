@@ -26,6 +26,12 @@ type LLMFactory struct {
 	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
 	settingsSvc     *SettingsService
 
+	// userResolver resolves a senderID to its canonical user_id (v45+
+	// canonical-user design). Wired from Agent.resolveUserID (identity
+	// resolver). nil = unavailable (early init / local CLI without identity
+	// DB) — getGlobalSetting then falls back to the sender-dimension chain.
+	userResolver func(senderID string) (int64, bool)
+
 	// Global defaults (no per-user override)
 	defaultLLM          llm.LLM
 	defaultModel        string
@@ -127,6 +133,15 @@ func (f *LLMFactory) GetTenantSvc() *sqlite.TenantService {
 }
 
 func (f *LLMFactory) SetSettingsService(svc *SettingsService) { f.settingsSvc = svc }
+
+// SetUserResolver injects the sender→canonical user_id resolver (Agent wires
+// a.resolveUserID from the identity resolver). getGlobalSetting uses it to
+// read user-scoped settings (v45+ canonical-user dimension): user_settings
+// rows written via *ByUserID RPCs carry user_id with sender_id='user-N' —
+// sender-dimension reads (Get(channel, senderID)) never see them, which broke
+// tier resolution for web-channel senders (SubAgent "model not found for
+// vanguard, falling back to main model" despite the tier being configured).
+func (f *LLMFactory) SetUserResolver(fn func(senderID string) (int64, bool)) { f.userResolver = fn }
 
 func (f *LLMFactory) SetLLMSemaphoreManager(mgr *llm.LLMSemaphoreManager) {
 	f.llmSemManager = mgr
@@ -1463,18 +1478,54 @@ func (f *LLMFactory) resolveTierModel(senderID, value string) (subID, model stri
 // single per-user value regardless of which channel the LLM call comes from.
 const canonicalSettingsSender = "cli_user"
 
-// getGlobalSetting reads a global user setting from the canonical channel,
-// falling back to the canonical sender "cli_user" when the current sender has
-// no value. This lets non-CLI channels inherit the CLI user's global config
-// (tier, thinking_mode) without each channel needing its own copy.
+// getGlobalSetting reads a global user setting (tier_*, thinking_mode — canonical
+// channel 'cli') across ALL dimensions of the v45+ canonical-user design:
+//
+//  1. user_id dimension (authoritative): rows written via *ByUserID RPCs
+//     (SetByUserID stores sender_id='user-N' + user_id=N — sender-dimension
+//     reads never see them). v46-backfilled legacy sender rows also carry
+//     user_id, so they are covered here too. Multi-user isolation is exact:
+//     each canonical user reads its own row only.
+//  2. sender dimension (legacy/CLI): rows written via Set(channel, senderID)
+//     with user_id=NULL (local CLI ApplySettings, resolveUserID-failure
+//     fallback) — only the writing sender can read them.
+//  3. canonical CLI sender "cli_user" (pre-v45 global inheritance):
+//     non-CLI senders inherit the CLI user's config. Kept for resolver-
+//     unavailable environments (early init, local CLI without identity DB).
+//
+// Ordering matters: the user_id dimension holds the v45+ canonical writes
+// (RPC panel settings) and must win over stale sender-dimension rows.
 func (f *LLMFactory) getGlobalSetting(senderID, key string) string {
+	// 1. Canonical user_id dimension — the v45+ canonical write path.
+	if f.userResolver != nil {
+		if uid, ok := f.userResolver(senderID); ok {
+			if val := f.getByUserID(thinkingModeChannel, uid, key); val != "" {
+				return val
+			}
+		}
+	}
+	// 2. Sender-dimension exact row.
 	if val := f.getSetting(senderID, thinkingModeChannel, key); val != "" {
 		return val
 	}
+	// 3. Canonical CLI sender fallback.
 	if senderID != canonicalSettingsSender {
 		return f.getSetting(canonicalSettingsSender, thinkingModeChannel, key)
 	}
 	return ""
+}
+
+// getByUserID reads a single setting from the user_id dimension (channel is
+// still the canonical 'cli' namespace for global settings).
+func (f *LLMFactory) getByUserID(channel string, userID int64, key string) string {
+	if f.settingsSvc == nil {
+		return ""
+	}
+	settings, err := f.settingsSvc.GetByUserID(channel, userID)
+	if err != nil || settings == nil {
+		return ""
+	}
+	return settings[key]
 }
 
 // userTierModel returns the per-user tier model setting from user_settings DB.

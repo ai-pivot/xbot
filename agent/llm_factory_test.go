@@ -309,3 +309,123 @@ func TestParseOrDefault(t *testing.T) {
 		})
 	}
 }
+
+// ── getGlobalSetting 三层链（canonical user 维度修复）─────────────────────────
+//
+// 复现 bug：tier 配置由 RPC 设置面板经 SetByUserID 写入（行 sender_id='user-N'、
+// user_id=N），而 getGlobalSetting 旧链只查 (channel, senderID) + 'cli_user'
+// fallback——user 维度行永远读不到。web 渠道 sender（如 web-4）spawn SubAgent
+// 时 resolveTierModel 拿不到 tier 配置 → "model not found for SubAgent,
+// falling back to main model (model=vanguard)"（vanguard tier 前端明明已配置）。
+
+// newSettingsTestFactory 构造带真实 sqlite settings 的 LLMFactory。
+func newSettingsTestFactory(t *testing.T) (*LLMFactory, *SettingsService, *sqlite.UserSettingsService) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(config.DBFilePath())
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	store := sqlite.NewUserSettingsService(db)
+	svc := NewSettingsService(store)
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
+	f.SetSettingsService(svc)
+	return f, svc, store
+}
+
+// TestGetGlobalSetting_UserDimensionRead 守护 canonical user 维度读取：
+// *ByUserID 写入的行必须能被任意身份（sender）经 userResolver 解析后读到。
+// 含旧链两跳 miss 的对照断言（sender 精确 + cli_user fallback 都读不到 user
+// 维度行——证明读取必须走 user 维度）。
+func TestGetGlobalSetting_UserDimensionRead(t *testing.T) {
+	f, svc, _ := newSettingsTestFactory(t)
+	f.SetUserResolver(func(senderID string) (int64, bool) {
+		if senderID == "web-4" {
+			return 1, true
+		}
+		return 0, false
+	})
+	// 写入：RPC 设置面板路径（SetByUserID → 行 sender_id='user-1', user_id=1）。
+	if err := svc.SetByUserID(thinkingModeChannel, 1, "tier_vanguard", "sub-123|glm-5.3"); err != nil {
+		t.Fatalf("SetByUserID: %v", err)
+	}
+	// 对照：旧 sender 维度链两跳都读不到 user 维度行（bug 根源）。
+	if got := f.getSetting("web-4", thinkingModeChannel, "tier_vanguard"); got != "" {
+		t.Errorf("sender-dimension read (web-4 exact) = %q, want empty", got)
+	}
+	if got := f.getSetting(canonicalSettingsSender, thinkingModeChannel, "tier_vanguard"); got != "" {
+		t.Errorf("sender-dimension read (cli_user fallback) = %q, want empty", got)
+	}
+	// 修复后：web-4（user 1 的另一身份）→ user 维度命中。
+	if got := f.userTierModel("web-4", "vanguard"); got != "sub-123|glm-5.3" {
+		t.Errorf("userTierModel(web-4, vanguard) = %q, want sub-123|glm-5.3 (user_id dimension read)", got)
+	}
+	// resolveTierModel 端到端（GetLLMForModel 的 tier 入口解析）。
+	subID, model, fromTier := f.resolveTierModel("web-4", "vanguard")
+	if subID != "sub-123" || model != "glm-5.3" || !fromTier {
+		t.Errorf("resolveTierModel(web-4, vanguard) = (%q, %q, %v), want (sub-123, glm-5.3, true)", subID, model, fromTier)
+	}
+}
+
+// TestGetGlobalSetting_SenderFallbackChainWithoutResolver 守护兼容链：
+// resolver 不可用（本地 CLI / 未注入）时，sender 精确行 + cli_user 兜底仍工作。
+func TestGetGlobalSetting_SenderFallbackChainWithoutResolver(t *testing.T) {
+	f, _, store := newSettingsTestFactory(t) // 无 userResolver
+	// sender 维度行（本地 CLI 写入路径：Set → user_id=NULL）。
+	if err := store.Set(thinkingModeChannel, "cli_user", "tier_swift", "sub-cli|model-cli"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// 任意 sender → cli_user 兜底命中（既有继承语义）。
+	if got := f.userTierModel("web-4", "swift"); got != "sub-cli|model-cli" {
+		t.Errorf("userTierModel(web-4, swift) = %q, want sub-cli|model-cli (cli_user fallback)", got)
+	}
+	// 未解析身份的 sender 也能走旧链（三层链的层 3）。
+	if got := f.userTierModel("unknown-sender", "swift"); got != "sub-cli|model-cli" {
+		t.Errorf("userTierModel(unknown-sender, swift) = %q, want sub-cli|model-cli", got)
+	}
+}
+
+// TestGetGlobalSetting_MultiUserIsolation 多用户：user 维度各自隔离，不串。
+func TestGetGlobalSetting_MultiUserIsolation(t *testing.T) {
+	f, svc, _ := newSettingsTestFactory(t)
+	f.SetUserResolver(func(senderID string) (int64, bool) {
+		switch senderID {
+		case "web-4":
+			return 1, true
+		case "web-5":
+			return 2, true
+		}
+		return 0, false
+	})
+	if err := svc.SetByUserID(thinkingModeChannel, 1, "tier_vanguard", "sub-1|model-one"); err != nil {
+		t.Fatalf("SetByUserID(user 1): %v", err)
+	}
+	if err := svc.SetByUserID(thinkingModeChannel, 2, "tier_vanguard", "sub-2|model-two"); err != nil {
+		t.Fatalf("SetByUserID(user 2): %v", err)
+	}
+	if got := f.userTierModel("web-4", "vanguard"); got != "sub-1|model-one" {
+		t.Errorf("web-4 read = %q, want sub-1|model-one", got)
+	}
+	if got := f.userTierModel("web-5", "vanguard"); got != "sub-2|model-two" {
+		t.Errorf("web-5 read = %q, want sub-2|model-two", got)
+	}
+}
+
+// TestGetGlobalSetting_UserDimensionWinsOverLegacy 优先级：user 维度（v45+
+// 规范路径、面板最新写入）必须赢过 cli_user sender 兜底旧行。
+func TestGetGlobalSetting_UserDimensionWinsOverLegacy(t *testing.T) {
+	f, svc, store := newSettingsTestFactory(t)
+	f.SetUserResolver(func(senderID string) (int64, bool) { return 1, true })
+	// 旧 sender 行 + 新 user 维度行并存。
+	if err := store.Set(thinkingModeChannel, "cli_user", "tier_vanguard", "sub-old|legacy-model"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := svc.SetByUserID(thinkingModeChannel, 1, "tier_vanguard", "sub-new|panel-model"); err != nil {
+		t.Fatalf("SetByUserID: %v", err)
+	}
+	if got := f.userTierModel("anyone", "vanguard"); got != "sub-new|panel-model" {
+		t.Errorf("userTierModel = %q, want sub-new|panel-model (user dimension wins over legacy cli_user row)", got)
+	}
+}
