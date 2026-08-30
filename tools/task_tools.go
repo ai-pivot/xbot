@@ -215,7 +215,9 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		return nil, err
 	}
 
-	output := task.Output
+	// CurrentOutput: locked read — the Adopt ticker and Start-path outputBuf
+	// mutate Output under t.mu; a plain field read races them.
+	output := task.CurrentOutput()
 	if params.Tail > 0 && len(output) > params.Tail {
 		output = "... (truncated) ...\n" + output[len(output)-params.Tail:]
 	}
@@ -225,7 +227,7 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 	}
 
 	return NewResult(fmt.Sprintf("[Task %s output (%s, %d bytes)]\n%s",
-		task.ID, task.Status, len(task.Output), output)), nil
+		task.ID, task.Status, len(output), output)), nil
 }
 
 // formatTask formats a task for display.
@@ -254,7 +256,7 @@ func formatTask(task *BackgroundTask) string {
 
 	// Show last 500 chars of output as preview (UTF-8 safe — byte slicing can
 	// cut mid-rune for CJK/multibyte content, producing invalid UTF-8).
-	preview := task.Output
+	preview := task.CurrentOutput()
 	if len(preview) > 500 {
 		preview = truncateTailPreview(preview, 500)
 	}
@@ -343,19 +345,23 @@ func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string 
 	// Otherwise, show the raw output (truncated if too large).
 	if outputOverride != "" {
 		fmt.Fprintf(&sb, "\n%s", outputOverride)
-	} else if task.Output != "" {
-		// Sanitize \r overwrites and ANSI escape sequences so that progress
-		// bar output (tqdm, curl, etc.) renders cleanly in the TUI.
-		output := SanitizeOutput(task.Output)
-		// Truncate large output to avoid bloating context
-		const maxOutputLen = 2000
-		if len(output) > maxOutputLen {
-			fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), output[:maxOutputLen], task.ID)
-		} else {
-			fmt.Fprintf(&sb, "\nOutput:\n%s", output)
-		}
 	} else {
-		sb.WriteString("\n(no output)")
+		// CurrentOutput: locked read (Adopt ticker / Start outputBuf write under mu).
+		taskOut := task.CurrentOutput()
+		if taskOut != "" {
+			// Sanitize \r overwrites and ANSI escape sequences so that progress
+			// bar output (tqdm, curl, etc.) renders cleanly in the TUI.
+			output := SanitizeOutput(taskOut)
+			// Truncate large output to avoid bloating context
+			const maxOutputLen = 2000
+			if len(output) > maxOutputLen {
+				fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), output[:maxOutputLen], task.ID)
+			} else {
+				fmt.Fprintf(&sb, "\nOutput:\n%s", output)
+			}
+		} else {
+			sb.WriteString("\n(no output)")
+		}
 	}
 
 	return sb.String()

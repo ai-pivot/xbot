@@ -3150,7 +3150,9 @@ type bgTaskJSON struct {
 func marshalBgTasks(tasks []*tools.BackgroundTask) []bgTaskJSON {
 	result := make([]bgTaskJSON, len(tasks))
 	for i, t := range tasks {
-		result[i] = bgTaskJSON{t.ID, t.Command, string(t.Status), t.StartedAt.Format(time.RFC3339), "", t.Output, t.ExitCode, t.Error}
+		// CurrentOutput: locked read — the Adopt ticker and Start-path outputBuf
+		// mutate Output under t.mu; a plain field read races them (go test -race).
+		result[i] = bgTaskJSON{t.ID, t.Command, string(t.Status), t.StartedAt.Format(time.RFC3339), "", t.CurrentOutput(), t.ExitCode, t.Error}
 		if t.FinishedAt != nil {
 			result[i].FinishedAt = t.FinishedAt.Format(time.RFC3339)
 		}

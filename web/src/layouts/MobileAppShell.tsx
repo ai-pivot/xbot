@@ -23,6 +23,8 @@ const FilePanel = lazy(() =>
   import('@/workspace/panels/FilePanel').then(m => ({ default: m.FilePanel })))
 const DiffPanel = lazy(() =>
   import('@/workspace/panels/DiffPanel').then(m => ({ default: m.DiffPanel })))
+const BackgroundPanel = lazy(() =>
+  import('@/workspace/panels/BackgroundPanel').then(m => ({ default: m.BackgroundPanel })))
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
@@ -193,6 +195,26 @@ export function MobileAppShell() {
           diffPath: d.diffPath,
           diffScope: d.diffScope,
           editorId: d.editorId,
+        })
+        return ''
+      }
+      if (input.type === 'background') {
+        // TasksPanel 点击后台任务 → 全屏任务详情（BackgroundPanel）。手机端
+        // 无 Dockview tab 容器（AgentPanel 直渲染，api=null）——透传原始 openTab
+        // 只会进 pending 队列永不执行（点击无反应，进不了详情页）。
+        const d = input.data as {
+          taskID?: string
+          command?: string
+          taskChannel?: string
+          taskChatID?: string
+        }
+        pushMobileWorkView({
+          kind: 'background',
+          title: input.title,
+          taskID: d.taskID ?? '',
+          command: d.command,
+          taskChannel: d.taskChannel,
+          taskChatID: d.taskChatID,
         })
         return ''
       }
@@ -381,6 +403,25 @@ export function MobileAppShell() {
                         diffPath: workView.diffPath,
                         diffScope: workView.diffScope,
                         editorId: workView.editorId,
+                      }}
+                      api={{} as PanelProps['api']}
+                      containerApi={{} as PanelProps['containerApi']}
+                    />
+                  </Suspense>
+                ) : workView.kind === 'background' ? (
+                  <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
+                    <BackgroundPanel
+                      params={{
+                        tabId: `mobile-bg-${workView.taskID}`,
+                        type: 'background',
+                        title: workView.title,
+                        icon: 'background',
+                        closable: true,
+                        active: true,
+                        taskID: workView.taskID,
+                        command: workView.command,
+                        taskChannel: workView.taskChannel,
+                        taskChatID: workView.taskChatID,
                       }}
                       api={{} as PanelProps['api']}
                       containerApi={{} as PanelProps['containerApi']}

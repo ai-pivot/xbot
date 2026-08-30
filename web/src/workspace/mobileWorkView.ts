@@ -41,6 +41,16 @@ export type MobileWorkView =
       diffScope?: string
       editorId?: string
     }
+  | {
+      /** Background Shell task detail（TasksPanel 点击后台任务）——手机端无 Dockview
+       * tab 容器，background tab 同 file/plugin/diff 路由到全屏工作视图。 */
+      kind: 'background'
+      title: string
+      taskID: string
+      command?: string
+      taskChannel?: string
+      taskChatID?: string
+    }
 
 let current: MobileWorkView | null = null
 const listeners = new Set<(v: MobileWorkView | null) => void>()

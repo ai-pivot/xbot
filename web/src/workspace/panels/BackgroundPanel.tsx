@@ -68,15 +68,27 @@ export function BackgroundPanel({ params }: PanelProps) {
   }, [theme])
 
   // Write output delta to xterm (handles \r, ANSI, cursor sequences correctly).
+  // Tail truncation: the backend caps task output at 50KB (maxBgOutputSize keeps
+  // only the tail) — a shrinking `output` means the offset-based delta slice is
+  // invalid, so reset the terminal and rewrite the full snapshot instead of
+  // freezing forever (old code's `length > lastLen` guard never fired again).
   useEffect(() => {
     const term = termRef.current
     if (!term || !output) return
-    if (output.length > lastLenRef.current) {
+    if (output.length < lastLenRef.current) {
+      // Backend tail-truncated the output (length went backwards) — the delta
+      // offset is meaningless now; rewrite the full current snapshot.
+      term.reset()
+      term.write(output)
+      lastLenRef.current = output.length
+    } else if (output.length > lastLenRef.current) {
       term.write(output.slice(lastLenRef.current))
       lastLenRef.current = output.length
-      if (followRef.current) {
-        term.scrollToBottom()
-      }
+    } else {
+      return
+    }
+    if (followRef.current) {
+      term.scrollToBottom()
     }
   }, [output])
 

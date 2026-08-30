@@ -124,6 +124,21 @@ func (s *NoneSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, err
 	return result, nil
 }
 
+// lockedWriter serializes each Write with a shared mutex so the capture
+// goroutine (io.Copy) can write while OngoingOutput/snapshot reads take a
+// consistent view — a plain bytes.Buffer would be a data race once a timed-out
+// command is adopted as a background task (reads no longer wait for wg.Done).
+type lockedWriter struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (w lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
 func waitForPipeCapture(wg *sync.WaitGroup, stdoutPipe, stderrPipe io.Closer) {
 	done := make(chan struct{})
 	go func() {
@@ -153,7 +168,12 @@ func (s *NoneSandbox) execKeepAlive(ctx context.Context, cmd *exec.Cmd, timeout 
 	}
 
 	// Collect output from pipes
+	// outMu guards stdoutBuf/stderrBuf against concurrent snapshot reads: the
+	// capture goroutines (io.Copy) keep writing after a timeout promotes the
+	// command to a background task, while OngoingOutput() reads a live snapshot
+	// for real-time progress (web /api/tasks/list polls it every 2s).
 	var stdoutBuf, stderrBuf bytes.Buffer
+	var outMu sync.Mutex   // protects stdoutBuf/stderrBuf (write vs snapshot read)
 	var pipesClosed bool   // guards against double pipe close
 	var pipesMu sync.Mutex // protects pipesClosed
 	var wg sync.WaitGroup
@@ -172,12 +192,39 @@ func (s *NoneSandbox) execKeepAlive(ctx context.Context, cmd *exec.Cmd, timeout 
 
 	capture := func(dst *bytes.Buffer, r io.Reader) {
 		defer wg.Done()
-		if _, err := io.Copy(dst, r); err != nil {
+		// lockedWriter serializes each Write with OngoingOutput snapshot reads
+		// (plain bytes.Buffer would be a data race once the task is adopted).
+		if _, err := io.Copy(lockedWriter{mu: &outMu, buf: dst}, r); err != nil {
 			log.WithError(err).Debug("sandbox: stdout/stderr capture incomplete")
 		}
 	}
 	go capture(&stdoutBuf, stdoutPipe)
 	go capture(&stderrBuf, stderrPipe)
+
+	// snapshotOutput returns the CURRENT stdout+stderr content without waiting
+	// for the capture goroutines (safe to call while the process runs — the
+	// mutex yields a consistent interleaving). Completion paths (exitCodeCh
+	// fired → wg.Wait already done) pay only an uncontended lock.
+	snapshotOutput := func() string {
+		outMu.Lock()
+		defer outMu.Unlock()
+		var sb strings.Builder
+		if stdoutBuf.Len() > 0 {
+			sb.Write(stdoutBuf.Bytes())
+		}
+		if stderrBuf.Len() > 0 {
+			if sb.Len() > 0 {
+				sb.WriteByte('\n')
+			}
+			sb.Write(stderrBuf.Bytes())
+		}
+		return sb.String()
+	}
+	lockedString := func(buf *bytes.Buffer) string {
+		outMu.Lock()
+		defer outMu.Unlock()
+		return buf.String()
+	}
 
 	// Wait for the command to finish or timeout/cancel.
 	// NOTE: Use cmd.Process.Wait() instead of cmd.Wait() because cmd.Wait()
@@ -220,34 +267,23 @@ func (s *NoneSandbox) execKeepAlive(ctx context.Context, cmd *exec.Cmd, timeout 
 			// Timeout — do NOT kill the process. Return it to the caller.
 			// The background goroutine is still running (cmd.Process.Wait()).
 			// Capture goroutines continue writing to stdoutBuf/stderrBuf.
-			// OngoingOutput lets the caller (Adopt) read the final full output
-			// once the process exits and all capture goroutines complete.
+			// OngoingOutput returns a LOCKED, NON-BLOCKING snapshot of the
+			// current output: safe to call while the process still runs
+			// (Adopt polls it for real-time progress on /api/tasks/list) and
+			// after exit (Adopt's completion path reads the final full output —
+			// exitCodeCh fired means wg.Wait already returned, snapshot is final).
 			exitCodeCh := make(chan int, 1)
 			go func() {
 				exitCodeCh <- <-waitCh
 			}()
-			ongoingOutput := func() string {
-				wg.Wait() // ensure capture goroutines have finished writing
-				var sb strings.Builder
-				if stdoutBuf.Len() > 0 {
-					sb.Write(stdoutBuf.Bytes())
-				}
-				if stderrBuf.Len() > 0 {
-					if sb.Len() > 0 {
-						sb.WriteByte('\n')
-					}
-					sb.Write(stderrBuf.Bytes())
-				}
-				return sb.String()
-			}
 			result := &ExecResult{
-				Stdout:        stdoutBuf.String(),
-				Stderr:        stderrBuf.String(),
+				Stdout:        lockedString(&stdoutBuf),
+				Stderr:        lockedString(&stderrBuf),
 				ExitCode:      -1,
 				TimedOut:      true,
 				Process:       cmd.Process,
 				ExitCodeCh:    exitCodeCh,
-				OngoingOutput: ongoingOutput,
+				OngoingOutput: snapshotOutput,
 			}
 			return result, nil
 
