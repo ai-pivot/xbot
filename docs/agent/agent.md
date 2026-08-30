@@ -135,6 +135,23 @@ Tests: `agent/resume_turn_allocation_test.go` (admitToMsgCh skip + resolveResume
 - Cd tool: must update both `tc.CurrentDir` and `cfg.InitialCWD` (`engine_test.go:1429`, `TestBuildToolContext_SubAgentCdPersists`)
 - Dynamic context injection detects CWD changes via `dynamic_context.go`
 
+### Compression loop protection (200k infinite-loop incident)
+
+**Trigger vs post-compress check use DIFFERENT measurement rulers, deliberately.** The TRIGGER (`maybeCompress`) uses the exact API-returned `prompt_tokens` (TokenTracker) vs `0.9×(maxContext−maxOutput)`. The POST-COMPRESS "did it fit" check uses `estimateMessagesTokens` (chars×2/3 full-message estimate incl. system prompt + summary + tail + tool args) — because no API call has seen the compressed messages yet. The trigger-side "API only" rule stands (never local-estimate the trigger); the post-compress check is the one place a local estimate is the correct tool.
+
+**Root cause of the infinite-compression loop (fixed):** the post-compress check compared against `CompressedTokens` — the SUMMARY-only estimate excluding system prompt + tail. A compressed result of [huge system + 150 tail messages] always "passed" while the real context stayed above the trigger line → compression re-fired every 5 iterations, each burning a full-context compaction LLM call. 200k-context models with large maxOutput (GLM 98k → trigger line 91.8k) hit this constantly; the un-shrinkable base (system prompt + tools + tail) simply exceeds the line.
+
+**Three defenses (all in `engine_run.go` + `trigger.go`):**
+1. `estimateMessagesTokens` full-message estimate drives the post-compress check, `setTokenUsageAfterCompress`, `SaveContextTokens`/`SaveTokenState`, and the CLI-visible token counts — the DB always restores a realistic post-compress value. `handleInputTooLong` uses the same ruler.
+2. Post-compress check (`postCompressTokens > postCompressLimit`): `aggressiveTruncate` → re-estimate → still over (or nothing to truncate — few messages, giant system) → `compressAbandoned=true` (no `len>10` guard — few-but-huge is exactly the case needing it). Error log + `compressWarning` tell the user to raise max_context / lower max_output.
+3. No-progress circuit breaker in `maybeCompress`: consecutive triggers where the REAL API prompt_tokens dropped <5% from the previous trigger (`lastCompressTriggerTokens`, same-measurement comparison — both sides are API values, never mixed with estimates) ≥2 → abandon. This catches estimate-underestimation (CJK chars×2/3) where the estimate passes but reality stays above the line.
+
+`compressAbandoned` is per-Run (runState): the next turn retries once with fresh content. The error-driven paths (`handleInputTooLong`, `context_window_exceeded` with `maxCompressRetries=3`) are NOT gated by it — API-visible failures still get full recovery attempts.
+
+**Effective compression is never abandoned**: the <5%-drop counter resets on any real drop; periodic compression on a growing session re-fires every cooldown expiry as before (`TestMaybeCompress_EffectiveCompressionNotAbandoned` guards this).
+
+Tests: `agent/compress_infinite_loop_test.go` (4 tests: full-estimate truncation net, unshrinkable abandon, consecutive-ineffective abandon, effective-not-abandoned control).
+
 ## Observation Masking
 
 Long tool results auto-masked with `masked:mk_xxxx` placeholders.

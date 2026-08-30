@@ -89,6 +89,29 @@ type runState struct {
 	compressAttempts   int
 	lastCompressIter   int
 
+	// --- Infinite-compression loop protection (200k-context incident) ---
+	// The trigger compares REAL API prompt_tokens against 0.9×(maxContext−maxOutput),
+	// but compression targets maxContext in full, and the post-compress "does it
+	// fit" check used the summary-only estimate. When the un-shrinkable part
+	// (system prompt + tools + tail) exceeds the trigger line, compression can
+	// NEVER get below it — without the counters below the engine re-compresses
+	// every 5 iterations forever, each round burning a full-context compaction
+	// LLM call. See maybeCompress / runCompression post-compress check.
+	//
+	// compressAbandoned: set when post-compress (post-truncation) context still
+	// exceeds the trigger line, or after consecutiveIneffectiveCompress
+	// consecutive no-progress compressions. Auto-compression is disabled for the
+	// REST OF THIS RUN (runState is per-Run; the next turn retries once).
+	compressAbandoned bool
+	// lastCompressTriggerTokens is the REAL API prompt_tokens at the moment the
+	// previous compression was triggered (same measurement on both sides of the
+	// comparison — no estimate/API mixing).
+	lastCompressTriggerTokens int64
+	// consecutiveIneffectiveCompress counts consecutive compressions whose trigger
+	// tokens dropped less than 5% from the previous trigger (compression is
+	// having no real effect — e.g. estimate passes but real value stays).
+	consecutiveIneffectiveCompress int
+
 	// Metrics (local counters for this Run)
 	localIterCount    int
 	localToolCalls    int
@@ -841,20 +864,24 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		return nil, compressErr
 	}
 	s.messages = pipelineResult.NewMessages
-	// Update token estimate so CLI shows reduced context immediately
-	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
-	// Persist API-returned token count in case retry fails and Run ends.
-	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+	// Update token estimate so CLI shows reduced context immediately. Use the
+	// FULL message estimate (system + summary + tail), NOT the summary-only
+	// CompressedTokens — same ruler as runCompression's post-compress check.
+	// The retry below will overwrite the tracker with the real API value.
+	postCompressTokens := estimateMessagesTokens(s.messages)
+	s.setTokenUsageAfterCompress(postCompressTokens)
+	// Persist the post-compress estimate in case retry fails and Run ends.
+	if s.cfg.SaveContextTokens != nil && postCompressTokens > 0 {
+		s.cfg.SaveContextTokens(postCompressTokens)
 	}
-	if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+	if s.cfg.SaveTokenState != nil && postCompressTokens > 0 {
+		s.cfg.SaveTokenState(postCompressTokens, 0)
 	}
 	if s.autoNotify {
 		// M2 锁覆盖：progressLines/Phase/HistoryCompacted 与后台 SubAgent 回调
 		// 的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
 		s.progressMu.Lock()
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", pipelineResult.NewTokenCount))
+		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", postCompressTokens))
 		if s.structuredProgress != nil {
 			s.structuredProgress.Phase = PhaseThinking
 			s.structuredProgress.HistoryCompacted = true
@@ -1361,7 +1388,7 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	if s.cfg.ContextManagerConfig != nil && s.cfg.ContextManagerConfig.CompressionThreshold > 0 {
 		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
 	}
-	needCompress := len(s.messages) > 3 && shouldCompact(int(totalTokens), promptBudget, compressThreshold) && (s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
+	needCompress := !s.compressAbandoned && len(s.messages) > 3 && shouldCompact(int(totalTokens), promptBudget, compressThreshold) && (s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"total_tokens":       totalTokens,
@@ -1383,10 +1410,42 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 		// "auto compression is disabled (mode=none)" error.
 		if cm.Mode() == ContextModeNone {
 			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
-		} else {
-			return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+			return nil
 		}
-		return nil
+		// No-progress circuit breaker (same-measurement comparison: BOTH sides are
+		// real API prompt_tokens at trigger time — no estimate mixing). If the
+		// current trigger tokens dropped less than 5% from the previous trigger,
+		// compression had no real effect (the estimate-based post-compress check
+		// can pass while the real value stays above the line — e.g. CJK content
+		// under the chars×2/3 heuristic). Two consecutive no-progress triggers
+		// mean compression cannot fix this context (un-shrinkable base) — abandon
+		// auto-compression for the rest of this Run instead of burning a
+		// full-context compaction LLM call every 5 iterations.
+		if s.lastCompressTriggerTokens > 0 && totalTokens >= s.lastCompressTriggerTokens*95/100 {
+			s.consecutiveIneffectiveCompress++
+		} else {
+			s.consecutiveIneffectiveCompress = 0
+		}
+		if s.consecutiveIneffectiveCompress >= 2 {
+			s.compressAbandoned = true
+			log.Ctx(ctx).WithFields(log.Fields{
+				"chat_id":                 s.cfg.ChatID,
+				"turn_id":                 s.cfg.TurnID,
+				"total_tokens":            totalTokens,
+				"last_trigger_tokens":     s.lastCompressTriggerTokens,
+				"trigger_threshold":       int(float64(promptBudget) * compressThreshold),
+				"consecutive_ineffective": s.consecutiveIneffectiveCompress,
+			}).Error("COMPRESSION ABANDONED: real prompt_tokens did not drop ≥5% across consecutive compression triggers — " +
+				"the un-shrinkable part (system prompt + tools + tail) exceeds the trigger line. " +
+				"Auto-compression is disabled for the rest of this Run to stop the infinite loop. " +
+				"Consider raising max_context_tokens, lowering max_output_tokens, or shrinking the system prompt.")
+			s.compressWarning = "⚠️ 自动压缩已停止：上下文不可压缩部分（system prompt + 工具定义 + 近期消息）已超过触发线，继续压缩只会无限循环。" +
+				"建议增大 max_context、调小 max_output_tokens 或精简系统提示词。"
+			s.notifyProgress("")
+			return nil
+		}
+		s.lastCompressTriggerTokens = totalTokens
+		return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 	}
 
 	// Observation masking (lightweight, no LLM call).
@@ -1521,20 +1580,35 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	s.messages = pipelineResult.NewMessages
 	s.lastCompressIter = s.compressAttempts
 	s.validateInvariantsAt(ctx, "post_compress")
+
+	// Measure the compressed context with the FULL message estimate (system +
+	// summary + continuation + tail — everything the next LLM call sends).
+	// This is the value that decides whether compression actually got us below
+	// the trigger line, feeds the tracker/DB (so restart restores a realistic
+	// count), and drives the post-compress safety check below.
+	//
+	// NOTE: pipelineResult.NewTokenCount (CompressedTokens) is the SUMMARY-only
+	// estimate — it excludes the system prompt and the tail entirely. Using it
+	// for the budget check was the root cause of the infinite-compression loop:
+	// a compressed result of [huge system + 150 tail messages] always "passed"
+	// while the real context stayed above the line, so compression re-fired
+	// every 5 iterations forever (200k-context incident).
+	postCompressTokens := estimateMessagesTokens(s.messages)
+
 	// Update token usage estimate so progress events show reduced tokens
 	// immediately instead of showing 0 (from ResetAfterCompress) or stale
 	// pre-compress values until the next LLM API call.
-	s.setTokenUsageAfterCompress(pipelineResult.NewTokenCount)
+	s.setTokenUsageAfterCompress(postCompressTokens)
 
-	// Persist the API-returned token count so that after a restart, the next Run
-	// restores an accurate value instead of the pre-compress count. Without this,
+	// Persist the post-compress estimate so that after a restart, the next Run
+	// restores a realistic value instead of the pre-compress count. Without this,
 	// ResetAfterCompress zeros the tracker, SaveState skips (no LLM call), and
 	// the DB still holds the old large value → immediate re-compression on restart.
-	if s.cfg.SaveContextTokens != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveContextTokens(pipelineResult.NewTokenCount)
+	if s.cfg.SaveContextTokens != nil && postCompressTokens > 0 {
+		s.cfg.SaveContextTokens(postCompressTokens)
 	}
-	if s.cfg.SaveTokenState != nil && pipelineResult.NewTokenCount > 0 {
-		s.cfg.SaveTokenState(pipelineResult.NewTokenCount, 0)
+	if s.cfg.SaveTokenState != nil && postCompressTokens > 0 {
+		s.cfg.SaveTokenState(postCompressTokens, 0)
 	}
 
 	oldTokenCount := totalTokens
@@ -1547,7 +1621,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 				SenderID: s.cfg.OriginUserID, ChatID: s.cfg.ChatID,
 			},
 			Trigger:              "token_limit",
-			EstimatedTokensAfter: pipelineResult.NewTokenCount,
+			EstimatedTokensAfter: postCompressTokens,
 		})
 	}
 
@@ -1588,7 +1662,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	if s.autoNotify {
 		for i := len(s.progressLines) - 1; i >= 0; i-- {
 			if strings.Contains(s.progressLines[i], "正在压缩") {
-				s.progressLines[i] = fmt.Sprintf("> ✅ 压缩完成: %d → %d tokens", oldTokenCount, pipelineResult.NewTokenCount)
+				s.progressLines[i] = fmt.Sprintf("> ✅ 压缩完成: %d → %d tokens", oldTokenCount, postCompressTokens)
 				break
 			}
 		}
@@ -1606,19 +1680,20 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
-		"new_tokens": pipelineResult.NewTokenCount,
+		"new_tokens":          postCompressTokens,
+		"summary_only_tokens": pipelineResult.NewTokenCount,
 	}).Info("Auto context compaction completed")
 
 	GlobalMetrics.CompressEvents.Add(1)
 	GlobalMetrics.CompressTokensIn.Add(int64(oldTokenCount))
-	GlobalMetrics.CompressTokensOut.Add(pipelineResult.NewTokenCount)
+	GlobalMetrics.CompressTokensOut.Add(postCompressTokens)
 
 	if oldTokenCount > 0 {
-		reductionRate := 1.0 - float64(pipelineResult.NewTokenCount)/float64(oldTokenCount)
+		reductionRate := 1.0 - float64(postCompressTokens)/float64(oldTokenCount)
 		if reductionRate < 0.10 {
 			log.Ctx(ctx).WithFields(log.Fields{
 				"old_tokens": oldTokenCount,
-				"new_tokens": pipelineResult.NewTokenCount,
+				"new_tokens": postCompressTokens,
 				"reduction":  fmt.Sprintf("%.1f%%", reductionRate*100),
 			}).Warn("Compaction ineffective (reduction < 10%)")
 		}
@@ -1628,10 +1703,21 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		hook.AfterPersist(ctx, s.cfg.Session, pipelineResult.CompressOutput)
 	}
 
-	// Post-compression safety check: if the compressed result still exceeds the
-	// context budget, the next iteration will trigger another compress cycle,
-	// creating an infinite loop.  This happens when there are 500+ iterations and
-	// the tail alone is too large.  Apply aggressive truncation as a last resort.
+	// Post-compression safety check: the compressed context (FULL estimate —
+	// system + summary + tail, see postCompressTokens above) must fit below the
+	// trigger line, otherwise the next iteration re-triggers compression and the
+	// engine loops forever (each round burns a full-context compaction LLM call).
+	//
+	// Trigger-vs-measurement symmetry: maybeCompress triggers on REAL API
+	// prompt_tokens >= threshold; here we verify the compressed output against
+	// the same threshold with the full-message estimate. The old code compared
+	// the SUMMARY-only estimate (CompressedTokens) which never exceeds the line
+	// for any realistic summary — the truncation net never fired.
+	//
+	// The len(s.messages) > 10 guard is intentionally GONE: a compressed result
+	// with few but HUGE messages (one giant tool result, a giant system prompt)
+	// is exactly the case that needs truncation/abandonment. aggressiveTruncate
+	// itself protects against over-truncation (conversationMsgs <= 6 → no-op).
 	maxOutputTokens := s.cfg.MaxOutputTokens
 	if maxOutputTokens <= 0 {
 		maxOutputTokens = 32_768
@@ -1645,19 +1731,21 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
 	}
 	postCompressLimit := float64(promptBudget) * compressThreshold
-	if pipelineResult.NewTokenCount > int64(postCompressLimit) && len(s.messages) > 10 {
+	if postCompressTokens > int64(postCompressLimit) {
 		log.Ctx(ctx).WithFields(log.Fields{
-			"new_tokens":      pipelineResult.NewTokenCount,
-			"prompt_budget":   promptBudget,
-			"threshold_limit": int64(postCompressLimit),
-			"msg_count":       len(s.messages),
+			"post_compress_tokens": postCompressTokens,
+			"prompt_budget":        promptBudget,
+			"threshold_limit":      int64(postCompressLimit),
+			"msg_count":            len(s.messages),
 		}).Warn("Compressed context still exceeds budget, applying aggressive truncation")
-		if s.aggressiveTruncate(ctx) {
+		truncated := s.aggressiveTruncate(ctx)
+		stillOver := estimateMessagesTokens(s.messages) > int64(postCompressLimit)
+		if truncated && !stillOver {
 			// aggressiveTruncate already called ResetAfterCompress, zeroing
-			// the tracker to no_data. Do NOT use local estimation
-			// (CountMessagesTokens) — the next LLM API call will fill in the
-			// real value. Save 0 to clear persisted state so restart doesn't
-			// see the stale post-compress count and trigger re-compression.
+			// the tracker to no_data. Do NOT use local estimation for the tracker —
+			// the next LLM API call will fill in the real value. Save 0 to clear
+			// persisted state so restart doesn't see the stale post-compress count
+			// and trigger re-compression.
 			if s.cfg.SaveContextTokens != nil {
 				s.cfg.SaveContextTokens(0)
 			}
@@ -1666,7 +1754,30 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			}
 			s.compressWarning = "⚠️ 压缩后仍超限，已截断旧消息"
 			s.notifyProgress("")
+			return nil
 		}
+		// Truncation did not get us below the line (or there was nothing left to
+		// truncate — few messages, giant system prompt / giant single messages).
+		// Compression can never fix this context in this Run: every retry burns a
+		// full-context compaction LLM call and the un-shrinkable part (system
+		// prompt + tools + recent tail) stays above the trigger line. Abandon
+		// auto-compression for the rest of this Run.
+		s.compressAbandoned = true
+		log.Ctx(ctx).WithFields(log.Fields{
+			"chat_id":              s.cfg.ChatID,
+			"turn_id":              s.cfg.TurnID,
+			"post_compress_tokens": postCompressTokens,
+			"post_truncate_tokens": estimateMessagesTokens(s.messages),
+			"truncated":            truncated,
+			"threshold_limit":      int64(postCompressLimit),
+			"msg_count":            len(s.messages),
+		}).Error("COMPRESSION ABANDONED: post-compression (post-truncation) context still exceeds the trigger line — " +
+			"the un-shrinkable part (system prompt + tools + recent tail) is too large for this model's context budget. " +
+			"Auto-compression is disabled for the rest of this Run to stop the infinite loop. " +
+			"Consider raising max_context_tokens, lowering max_output_tokens, or shrinking the system prompt.")
+		s.compressWarning = "⚠️ 自动压缩已停止：压缩并截断后上下文仍超过触发线（不可压缩部分过大），继续压缩只会无限循环。" +
+			"建议增大 max_context、调小 max_output_tokens 或精简系统提示词。"
+		s.notifyProgress("")
 	}
 	return nil
 }
