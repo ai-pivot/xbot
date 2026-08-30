@@ -108,6 +108,8 @@ const tabManager = {
   getLayoutJSON: vi.fn(() => null),
   applyLayoutJSON: vi.fn(),
   getWorkLayoutJSON: vi.fn(() => null),
+  groupTabsOf: vi.fn(() => []),
+  closeTabsInGroup: vi.fn(),
 } satisfies TabManager
 
 describe('SessionSidebar', () => {
