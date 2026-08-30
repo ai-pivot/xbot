@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xbot/protocol"
@@ -646,7 +647,21 @@ func LoadFromFile(path string) *Config {
 // 它会先读取磁盘上已有的文件，将 Go struct 序列化后的顶层 key 覆盖到原始 JSON 上，
 // 同时保留磁盘文件中存在但 Go struct 未定义的字段（未知 key）。
 // 这样用户手动添加的自定义字段或未来新增的 struct 字段不会被静默丢弃。
+// saveToFileLocks serializes concurrent SaveToFile calls per path (in-process).
+// Windows: os.Rename fails with "Access is denied" when another writer's
+// os.ReadFile(path) handle (the deep-merge read) is open on the destination
+// while a rename targets it. POSIX rename is atomic and immune. Locking the
+// whole read-merge-write-rename flow eliminates the in-process race; the
+// rename retry below stays as a cross-process safety net.
+var saveToFileLocks sync.Map // path -> *sync.Mutex
+
+// SaveToFile writes the config atomically (temp file + rename) with a deep
+// JSON merge to preserve unknown fields from the existing disk file.
 func SaveToFile(path string, cfg *Config) error {
+	mu, _ := saveToFileLocks.LoadOrStore(path, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
