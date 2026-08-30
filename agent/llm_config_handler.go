@@ -220,14 +220,10 @@ func (a *Agent) handleSetLLM(ctx context.Context, msg bus.InboundMessage) (*chan
 		}, nil
 	}
 
-	// Find the existing non-system subscription by name (case-insensitive).
-	// System subscriptions are read-only and never matched.
+	// Find the existing subscription by name (case-insensitive).
 	subs, _ := svc.List(msg.SenderID)
 	var existing *sqlite.LLMSubscription
 	for _, s := range subs {
-		if s.IsSystem {
-			continue
-		}
 		if existing == nil && strings.EqualFold(s.Name, subName) {
 			existing = s
 		}
@@ -412,9 +408,6 @@ func (a *Agent) handleListLLMs(ctx context.Context, msg bus.InboundMessage) (*ch
 			status = "✗"
 		}
 		label := sub.Name
-		if sub.IsSystem {
-			label = "system (系统默认)"
-		}
 		model := sub.Model
 		if model == "" {
 			model = "(未设置)"
@@ -719,8 +712,9 @@ func (a *Agent) GetUserTierModelForUserID(userID int64, tier string) (subID, mod
 }
 
 // SetUserTierModel updates the per-user tier model setting in user_settings DB.
-// Value is stored as "subID|model" (or plain "model" when subID is empty).
-// Invalidates the cached LLM client for the sender.
+// Model-subscription integration: the tier value is ALWAYS a "subID|model" pair —
+// a bare model name is rejected (subID is required). Invalidates the cached LLM
+// client for the sender.
 func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
 	if uid, ok := a.resolveUserID(senderID); ok {
 		return a.SetUserTierModelForUserID(uid, tier, subID, model)
@@ -728,10 +722,10 @@ func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
-	val := model
-	if subID != "" {
-		val = subID + "|" + model
+	if subID == "" {
+		return fmt.Errorf("tier_%s requires a subscription id (subID|model pair); bare model %q is not allowed", tier, model)
 	}
+	val := subID + "|" + model
 	if err := a.userSys.settingsSvc.SetSetting(thinkingModeChannel, senderID, "tier_"+tier, val); err != nil {
 		return fmt.Errorf("save tier_%s: %w", tier, err)
 	}
@@ -742,15 +736,16 @@ func (a *Agent) SetUserTierModel(senderID, tier, subID, model string) error {
 }
 
 // SetUserTierModelForUserID updates the per-user tier setting keyed by
-// canonical user_id.
+// canonical user_id. subID is required — the stored value is always a
+// "subID|model" pair.
 func (a *Agent) SetUserTierModelForUserID(userID int64, tier, subID, model string) error {
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
-	val := model
-	if subID != "" {
-		val = subID + "|" + model
+	if subID == "" {
+		return fmt.Errorf("tier_%s requires a subscription id (subID|model pair); bare model %q is not allowed", tier, model)
 	}
+	val := subID + "|" + model
 	if err := a.userSys.settingsSvc.SetByUserID(thinkingModeChannel, userID, "tier_"+tier, val); err != nil {
 		return fmt.Errorf("save tier_%s: %w", tier, err)
 	}
@@ -788,13 +783,10 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 	subName := trimmed
 
 	if subName == "" {
-		// No name given — list available personal subscriptions.
+		// No name given — list available subscriptions.
 		subs, _ := svc.List(msg.SenderID)
 		var names []string
 		for _, s := range subs {
-			if s.IsSystem {
-				continue
-			}
 			names = append(names, s.Name)
 		}
 		if len(names) == 0 {
@@ -809,13 +801,10 @@ func (a *Agent) handleUnsetLLM(ctx context.Context, msg bus.InboundMessage) (*ch
 		}, nil
 	}
 
-	// Find subscription by name (case-insensitive, skip system).
+	// Find subscription by name (case-insensitive).
 	subs, _ := svc.List(msg.SenderID)
 	var target *sqlite.LLMSubscription
 	for _, s := range subs {
-		if s.IsSystem {
-			continue
-		}
 		if strings.EqualFold(s.Name, subName) {
 			target = s
 			break

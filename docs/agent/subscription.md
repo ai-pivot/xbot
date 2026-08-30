@@ -32,16 +32,14 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 - **v43**：`DROP COLUMN user_llm_subscriptions.is_default`。默认订阅由 `user_default_model` 派生（v39 seed）。`LLMSubscription.IsDefault` / `channel.Subscription.Active` 保留为**读侧投射**：`GetDefault` 标记命中订阅；`List`/`ListAll` 通过 `markDefaultsFor`/`markDefaultsAll` 标记。`SetDefault(id)` 改为 upsert `user_default_model`。`Add`/`Update` 在 `IsDefault=true` 时同步 `user_default_model`。
 - **代码层**：删除 `UserLLMConfigService`（旧 shim，平行写路径）。`NewLLMFactory` 不再接收 `configSvc`。agent 的 `GetUserMaxContext`/`SetUserMaxContext`/`GetUserMaxOutputTokens`/`SetUserMaxOutputTokens`/`SetUserModel` 改走 `subscriptionSvc`（默认订阅 + `subscription_models`）。`GetUserThinkingMode`/`SetUserThinkingMode` **例外**：改走 `settingsSvc`（全局用户设置，见「ThinkingMode 全局开关」），不再写订阅行。`HasCustomLLM` 移除 configSvc 读路径。`GetUserLLMConfig`/`SetUserLLM`/`DeleteUserLLM` 死方法删除。`user_llm_config.go` 仅保留 `UserLLMConfig` 结构体（client 构造/`/set-llm` 解析用的字段袋）。
 
-### 系统订阅：单源 LLM（v44 迁移）
+### 系统订阅已删除（v44 引入，v62 删除）+ 模型订阅一体化（v62）
 
-把"config 种子 + DB 覆盖 + 运行时 SwitchSubscription 同步 defaultLLM"三段舞收敛为**DB 单源**：全局默认 LLM 作为一条共享**系统订阅** DB 记录，启动时从 `config.json llm`/env reconcile 一次。
+v44 曾把"全局默认 LLM"做成共享**系统订阅** DB 行（`sender_id="__system__"`、`is_system=1`、启动 reconcile）——审计发现它是 bug 温床（storage 守卫矩阵不全、List 注入顺序打架、`ResolveSubscriptionForModel` system 优先与列表顺序矛盾、`SetSystemLLM` ≡ `SetDefaults`、`defaultLLM` 被 cli_user 个人订阅污染导致多用户串号），v62 **彻底删除**：
 
-- **v44**：`ALTER TABLE user_llm_subscriptions ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0`。系统订阅 `sender_id="__system__"`、`is_system=1`、`name="system"`、`id="system"`。
-- **启动 reconcile**（`serverapp.reconcileSystemSubscription`）：每次启动用 `cfg.LLM`（含 env 覆盖）upsert 系统订阅的凭证/配置字段（`provider/base_url/api_key/model/max_output_tokens/thinking_mode`），`cached_models` 与 `subscription_models` 保留。`cli_user` 无默认时把系统订阅设为其默认（首跑）；已有用户默认不覆盖。`xbot-cli serve` 与 `xbot` 共用 `serverapp.Run`，同步逻辑一处覆盖。
-- **LLMFactory**：`SetSystemLLM(client, model)` 用系统订阅行构建 `defaultLLM` 兜底（不清空 per-user 缓存，区别于 `SetDefaults`）。picker 里系统模型不再走 `defaultLLM.ListModels()` 伪条目，而是经系统订阅行的标准订阅-owned 路径，`SubName="system"`。`GetDefault` 用户无默认时回退系统订阅。
-- **可见性与只读**：`List(senderID)`/`ListAll` 注入系统订阅行（`is_system=1`），所有用户可见。`Remove`/`SetSubscriptionEnabled`/`Rename`/`Update` 对 `is_system=1` 行拒绝（storage 层守卫 + UI `subIsSystem` 守卫 + 🔒 标记）。系统订阅下的模型正常可选（跨订阅切模型不变）。
-- **config 写回收敛**：`saveServerConfig`/`saveCLIConfig` 不再把 `cfg.LLM` 凭证写回 config.json（DB 单源，且 `cfg.LLM` 启动后可能含从 DB 解密的明文 key，回写会泄漏）。config.json 仅保留 tier 模型（vanguard/balance/swift）和原有凭证（SaveToFile 深合并保留）作为系统订阅的启动种子。
-- **协议**：`protocol.Subscription` / `channel.Subscription` 新增 `IsSystem bool`，`subToChannel` 填充，UI 据此渲染只读标记。
+- **v62 迁移**：删 system 行 + 全部引用（`user_default_model`/`tenants.subscription_id`/`subscription_models`/`user_identities (1,'system','__system__')`）；`tier_*` 值 `system|model` 降级裸名后反查 owner 重写为 `subID|model`（反查不到清空）；`DROP COLUMN is_system`；`iteration_history` 加 `subscription_id` 列。迁移前 `VACUUM INTO` 备份 DB（`*.pre-v62.bak`）。
+- **defaultLLM 回归内存兜底**：恒由 `NewLLMFactory(cfg.LLM)` 初始值提供（config.json `llm` 段 + env 覆盖 = 部署级兜底的唯一定义处），**不进 DB、不进订阅列表、不进 picker、不可选中**。`SwitchSubscription` 是 no-op hook（`SetSystemLLM`/`SetDefaults`/`reconcileSystemSubscription`/`createAdminLLM` 全删）。
+- **GetDefault 语义**：udm 未设置/悬空 → 返回 `(nil, nil)`（无 system fallback），调用方落 defaultLLM。
+- **模型订阅一体化不变量**：持久层/协议层的模型引用**永远携带所属订阅**——tier 值恒 `subID|model`（`SetUserTierModel` 拒绝裸名）；`get_default_model` RPC 返回 `{sub_id, model}` 对象（`Client.GetDefaultModelPair`）；`Agent.SetUserModel` 要求 subID；`iteration_history.subscription_id`（v62 列，by_model 聚合按 `(subscription_id, model)` 复合分组）；web `createSession` 传 `subscription_id`；`GetLLMForModel` 返回 `(client, subID, model, ...)` 配对（无 `ResolveSubIDForModel` 二次反查）。裸模型名**只允许在人机输入边界**（SubAgent `model` 参数、tier 名）出现，由 `ResolveSubscriptionForModel` 一次性解析——它是唯一保留的"模型名→订阅"输入解析器。`GetLLMForModel` 无"任意订阅+任意模型名"硬试（`tier-fallback-config`/`config-exact`/`buildModelSubscriptionMap`/`SetConfigSubs` 全删）：模型无归属订阅 → 警告后落 defaultLLM。
 
 ### 新增 LLMFactory API
 
@@ -99,7 +97,7 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
   - **`E` 编辑模型参数**：在模型行按 `E` → `openEditModelPanel` 打开 mini 面板编辑 `max_context`/`max_output`/`api_type`/`enabled`，提交时 `UpdatePerModelConfig`（走 `UpsertModel`，**只增不减**——以 (订阅,模型) 为键 INSERT OR REPLACE，禁用即 enabled=0，永不 DELETE）+ `SetModelEnabled`（仅当 enabled 状态变更）。保存后 `reopenLLMPanelOn(model)` 用 DB 快照重开面板，状态标签即时刷新。
   - **`N` 添加模型**：按 `N` → `openAddModelPanel` 打开 mini 面板：选择启用订阅 + 输入模型名 + 可选 `max_context`/`max_output`/`api_type`，提交 `UpdatePerModelConfig`/`UpsertModel`（只增）。新模型以 `offline` 出现（直到 provider `/models` 列出它），立即可选。
   - **`S` 显示全部**：切换 `quickSwitchShowAll`，默认用 `isNoiseModel` 过滤掉噪声模型（image/realtime/whisper/tts/audio/embed/moderation/dated-snapshot 如 `gpt-5.2-2025-12-11`），`S` 显示全部。
-  - **`applyQuickSwitch`** 从 `quickSwitchRows[cursor]` 取当前行：模型行调 `applyModelSwitch(model, subID)`（**拒绝 `disabled`**，保持面板开放提示按 `E` 复启；`normal`/`offline` 都可选）。`subID` 非空（picker 行携带 owner 订阅）时走 `SelectModel(senderID, subID, model, chatID)` **直接钉住该订阅**——同一模型名被多个订阅提供时（如 `system · deepseek-v4-pro` 与 `deepseek · deepseek-v4-pro`），用户点哪行就切到哪个订阅；`SelectModel` 失败（订阅在渲染与点击间被禁用/删除）则回退 `SwitchModel`（按模型名服务端解析 owner）。`subID` 为空（`subscriptionSvc==nil` 的裸系统默认条目）时直接 `SwitchModel`。`applyModelSwitch` 在切换之后用 `GetSessionSubscription` 回读 owner 订阅，修正 `activeSubID`/上下文上限/输出上限并持久化（local 模式同样走 RPC，tenants 表是 source of truth）。
+  - **`applyQuickSwitch`** 从 `quickSwitchRows[cursor]` 取当前行：模型行调 `applyModelSwitch(model, subID)`（**拒绝 `disabled`**，保持面板开放提示按 `E` 复启；`normal`/`offline` 都可选）。`subID` 非空（picker 行携带 owner 订阅）时走 `SelectModel(senderID, subID, model, chatID)` **直接钉住该订阅**——同一模型名被多个订阅提供时（如 `deepseek · deepseek-v4-pro` 与 `xin · deepseek-v4-pro`），用户点哪行就切到哪个订阅；`SelectModel` 失败（订阅在渲染与点击间被禁用/删除）则回退 `SwitchModel`（按模型名服务端解析 owner）。`applyModelSwitch` 在切换之后用 `GetSessionSubscription` 回读 owner 订阅，修正 `activeSubID`/上下文上限/输出上限并持久化（local 模式同样走 RPC，tenants 表是 source of truth）。
   - **状态栏**显示 `订阅名 · 模型名`（窄屏回退为只显示模型名），由 `cachedSubName` 缓存（`refreshCachedSubName` 在 `activeSubID` 变更路径上刷新：`applyModelSwitch` / `refreshCachedModelName`(defer) / `applySessionLLMState`，每次一次 `List("")` RPC，View() 只读缓存，非每帧）。
   - **开面板即时刷新**：`openLLMPanel` 先用 DB 快照渲染，同时后台调 `RefreshModelEntries()` → RPC `refresh_model_entries` → `LLMFactory.RefreshModelEntriesForUser`：并行（并发上限 8、每订阅 8s 超时、失败软降级保留旧 `CachedModels`）对每个启用订阅拉 `/models`，经 `OnModelsLoaded` 回调落 `CachedModels`，返回最新 entries（拉取到的模型 `offline`→`normal`）。CLI 收到 `cliModelEntriesRefreshedMsg` 后 `rebuildLLMRows`（保留当前过滤文本与光标位置，越界则夹紧），面板顶部显示 `↻ 刷新模型列表…`。不同 provider 的 `/models` 列表本就不同（按订阅类型各异），未列出的模型可用 `N` 手动添加（显示为 `offline`）。
 - **订阅是订阅，模型是模型**（订阅面板只改凭证）：`openEditSubscriptionPanel` / `openAddSubscriptionPanel` / `addSubscriptionSchema` 只收集 `name/provider/base_url/api_key`——`sub_model`/`sub_max_output_tokens`/`sub_thinking_mode` 已从面板移除。订阅行不再显示 `sub.Model` 列，过滤只按订阅名匹配。`/set-llm` 提示（`setLLMCmdForSub`）也只展示凭证参数（`provider/base_url/api_key`），不再带 model/max_context/max_output/thinking_mode。订阅内部仍保留 `Model`/`MaxOutputTokens`/`ThinkingMode` 字段作为兜底（`Update` 时原样回写），但 UI 不再编辑它们。模型来自 `/models` 拉取 + 模型行 `N` 手动添加；`max_output` 在模型行 `E` 编辑；`thinking_mode` 是全局开关（见下）。
@@ -111,7 +109,7 @@ xbot 的 LLM 配置分为 3 层：全局默认 → 用户级别订阅 → 会话
 | `agent/llm_factory.go` | LLM 客户端缓存、订阅解析、模型切换 |
 | `serverapp/rpc_table.go` | `setDefaultSubscription` / `setSubscriptionModel` 等 RPC handler |
 | `serverapp/callbacks.go` | `LLMSetDefaultSubscription` 等 Backend callback |
-| `serverapp/server.go` | 启动 reconcile 系统订阅 + 从 DB 同步 defaultLLM |
+| `serverapp/server.go` | 启动 migrateConfigSubscriptions（config.json subscriptions[] → DB，仅首跑）+ thinking_mode seed |
 | `channel/cli_session.go` | `SessionLLMState` — TUI 端 per-session LLM 状态持久化 |
 | `channel/cli_settings.go` | TUI settings 面板读取/写入订阅配置 |
 | `channel/cli_update_handlers.go` | `handleSwitchLLMDoneMsg` — TUI 订阅切换完成回调 |
@@ -134,7 +132,6 @@ Model           string    — 默认模型名
 MaxOutputTokens int       — 默认 max_output_tokens
 ThinkingMode    string    — 兜底字段（UI 不再编辑）；生效 thinking 由全局用户设置决定（见「ThinkingMode 全局开关」）
 IsDefault       bool      — 读侧投射：由 user_default_model 派生（GetDefault/List 标记，无 DB 列，v43）
-IsSystem        bool      — 共享系统订阅标记（v44，DB `is_system` 列）：sender_id="__system__"，只读兜底，启动从 config/env reconcile
 PerModelConfigs map       — 读侧投射：由 subscription_models 表填充（loadPerModelConfigs，无 DB JSON 列，v42）
 ```
 
@@ -213,11 +210,10 @@ type llmEntry struct {
 
 ### defaultLLM / defaultModel
 
-- **启动时**: `server.go` reconcile 系统订阅 → `GetDefault`（用户默认，否则回退系统订阅）→ 创建客户端 → `SetSystemLLM(client, model)`（不清空 per-user 缓存）
-- **用户全局切换**: `SwitchSubscription` 对 `cli_user` 会同步更新 `defaultLLM`/`defaultModel`
+- **构建**（v62）：`NewLLMFactory(cfg.LLM)` 构造时一次性设置——config.json `llm` 段 + env 覆盖是部署级兜底的**唯一定义处**。**不进 DB、不进订阅列表、不进 picker、模型不可被选中**。
+- **不可变**：`SwitchSubscription` 是 no-op hook（cli_user 切换不再同步 defaultLLM——多用户部署下个人选择不得污染全局兜底）；`SetSystemLLM`/`SetDefaults` 已删除（v62）。
 - **作用**: SubAgent fallback（无指定模型时）、`ListModels()`、`GetLLM()` 最终 fallback
-- **不覆盖的场景**: Feishu 用户（`senderID != "cli_user"`）不会影响 `defaultLLM`
-- **单源**: v44 起 `defaultLLM` 的凭证源自 DB 系统订阅行（启动从 config/env reconcile），不再由 `cfg.LLM` 直接构建，也不再 `SetDefaults` 重建。`cfg.LLM` 仅作启动种子与 tier 模型载体。
+- **无订阅时**: `GetDefault` 返回 `(nil, nil)`（v62 删 system fallback）→ `GetLLM` 落到 defaultLLM——无订阅用户的 LLM 调用由此兜底（config.json 必须配 `llm` 段，否则无 LLM 可用）。
 
 ## LLM Resolution（LLM 获取逻辑）
 
@@ -239,18 +235,19 @@ type llmEntry struct {
 3. fallback → GetLLM(senderID)（用户级别）
 ```
 
-### GetLLMForModel(senderID, targetModel) — SubAgent 专用
+### GetLLMForModel(senderID, targetModel) — SubAgent 专用（v62 一体化重写）
 
-SubAgent 角色可以指定模型或 tier（vanguard/balance/swift）。
+SubAgent 角色可以指定模型或 tier（vanguard/balance/swift）。返回 `(client, subID, model, ...)` 配对。
 
 ```
-1. 解析 tier → 具体模型名
-2. buildModelSubscriptionMap → 按 model→sub 映射精确匹配
-3. configSubsFn（config.json 订阅）精确匹配
-4. 订阅 API 动态加载模型列表
-5. tier-fallback: 任意订阅 + 目标模型名（OpenAI 兼容）
-6. 最终 fallback: GetLLM(senderID) 的 client + 解析后的模型名
+1. resolveTierModel：tier 名 → (subID, model)（tier 值恒 "subID|model"，v62 迁移+写入收口保证）
+   - subID 非空 → Get(subID) 直达（enabled 校验）
+2. 裸模型名（SubAgent model 参数，人机输入边界）→ ResolveSubscriptionForModel
+   一次性解析 owner 订阅（唯一保留的"模型名→订阅"输入解析器）
+3. 解析失败 → GetLLM(senderID) 兜底（defaultLLM，usedCustom=false）
 ```
+
+**已删除（v62）**：`buildModelSubscriptionMap` 反查、config-exact 匹配、API 动态加载探测、`tier-fallback`（任意订阅凭据+任意模型名硬试）——模型无归属订阅时不再硬试，警告后落 defaultLLM。
 
 ### Max Context Resolution 优先级
 
@@ -298,7 +295,7 @@ ResolveEffectiveMaxContext(state, subMgr)
 
 ### 场景 2: TUI 切换模型（Ctrl+N 统一面板）
 
-- **Ctrl+N / 点状态栏模型名 / palette "Models & Subscriptions"** → 打开**统一 LLM 面板**：模型行 `ListAllModelEntries()` 按 `(订阅, 模型)` 配对列出（`订阅名 · 模型名` + 状态标签）——**同一模型名被多个订阅提供时每个订阅各列一行**（如 `system · deepseek-v4-pro` 与 `deepseek · deepseek-v4-pro` 同时出现），`/` 按订阅名/模型名子串过滤，↑↓ + Enter 选中，走 `applyModelSwitch(model, subID)`（同场景 1）。同一面板内订阅行做管理（添加/禁用/删除），模型行 `E` 编辑参数、`N` 添加未拉取模型。模型多时用过滤比轮转快得多。
+- **Ctrl+N / 点状态栏模型名 / palette "Models & Subscriptions"** → 打开**统一 LLM 面板**：模型行 `ListAllModelEntries()` 按 `(订阅, 模型)` 配对列出（`订阅名 · 模型名` + 状态标签）——**同一模型名被多个订阅提供时每个订阅各列一行**（如 `deepseek · deepseek-v4-pro` 与 `xin · deepseek-v4-pro` 同时出现），`/` 按订阅名/模型名子串过滤，↑↓ + Enter 选中，走 `applyModelSwitch(model, subID)`（同场景 1）。同一面板内订阅行做管理（添加/禁用/删除），模型行 `E` 编辑参数、`N` 添加未拉取模型。模型多时用过滤比轮转快得多。
 
 选中模型时，picker 行携带的 `SubID` 直接走 `SelectModel(senderID, subID, model, chatID)` 钉住该订阅凭据（不再仅按模型名服务端解析 owner）；`SubID` 为空时回退 `ResolveSubscriptionForModel` + `SwitchModel`。
 
@@ -331,13 +328,11 @@ ResolveEffectiveMaxContext(state, subMgr)
 
 ### 场景 5: 启动时订阅恢复
 
-**server.go 启动** (`server.go` reconcile 流程):
+**server.go 启动** (v62 起简化 — 无 system 订阅 reconcile):
 1. `migrateConfigSubscriptions` — config.json `subscriptions[]` → DB 用户订阅（仅首跑）
-2. `reconcileSystemSubscription` — 从 `cfg.LLM`/env upsert 系统订阅（每次启动覆盖凭证字段）
-3. `cli_user` 无默认时把系统订阅设为其默认（首跑）
-4. `subSvc.GetDefault("cli_user")` → 用户默认，否则回退系统订阅
-5. `SetSystemLLM(newClient, defSub.Model)` — 设置 defaultLLM 兜底（不清空 per-user 缓存）
-6. `SetUserMaxOutputTokens("cli_user", ...)` — 恢复 per-user 配置
+2. thinking_mode seed — `user_settings` 无 `thinking_mode` 时从 `cfg.LLM.ThinkingMode` seed 一次（不再经 defSub）
+3. defaultLLM = `NewLLMFactory(cfg.LLM)` 初始值（构造时已定，启动序列不再触碰——无 GetDefault 覆写、无 SetSystemLLM）
+4. `SetUserMaxOutputTokens("cli_user", ...)` — 恢复 per-user 配置
 
 **TUI 启动** (`cli.go:191-208`):
 1. `refreshCachedModelName()` → 从后端 `GetSessionSubscription` RPC（remote mode）或 Session JSON（local mode）恢复 `activeSubID`/`cachedModelName`。**per-session model 优先**：如果 tenants 表有该会话的 model 记录，就用它，不用订阅默认 model。
@@ -543,5 +538,4 @@ v45 之后所有 user 级数据（`user_llm_subscriptions.user_id`、`user_setti
 修复：`buildModelsCardContent` 模型选择改为**两级**：
 - **订阅 select**（`subscription_select`，action `settings_select_subscription`）：canonical 用户的所有订阅（≤16 个），当前查看订阅高亮（per-sender 记忆 `settingsSubFilter`，默认当前使用模型的订阅）。
 - **模型 select**（`model_select`，action `settings_set_model`）：**只显示当前查看订阅的模型**（≤40），每个订阅都可达，不超飞书 options 上限。
-- `maxModels`/`maxTierModels` 均回到 40（单订阅模型数安全值）；`listModelEntriesCoreByUserID` 用户订阅先于 system 输出（截断时优先用户模型）。
-- 回归测试：`TestListAllModelEntries_UserModelsBeforeSystem`。
+- `maxModels`/`maxTierModels` 均回到 40（单订阅模型数安全值）。v62 起 system 订阅已删除，`listModelEntriesCore` 系列按 `created_at` 单序输出（无 system 排序特例，`TestListAllModelEntries_UserModelsBeforeSystem` 已随之删除）。

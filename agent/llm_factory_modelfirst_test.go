@@ -30,22 +30,10 @@ func newModelFirstTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptio
 
 // TestListAllModelEntriesByCanonicalUserID reproduces the Feishu /models bug:
 // subscriptions are bound to the canonical user_id, but the Feishu card queried
-// by senderID (ou_xxx) and only saw the system fallback. The canonical-user
-// query must return the user's subscriptions.
+// by senderID (ou_xxx) and could not see the canonical user's subscriptions.
+// The canonical-user query must return the user's subscriptions.
 func TestListAllModelEntriesByCanonicalUserID(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
-
-	// System subscription (shared fallback, read-only).
-	sys := &sqlite.LLMSubscription{
-		ID: "system", SenderID: "__system__", Name: "system", Provider: "openai",
-		BaseURL: "https://api.example/v1", APIKey: "sk", Model: "sys-model", IsSystem: true,
-	}
-	if err := subSvc.Add(sys); err != nil {
-		t.Fatalf("Add system sub: %v", err)
-	}
-	if err := subSvc.UpsertModel(sys.ID, "sys-model", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel sys: %v", err)
-	}
 
 	// User subscription owned by canonical user_id 42 (sender_id is the linked
 	// CLI identity — a Feishu identity ou_xxx is a DIFFERENT sender_id).
@@ -76,7 +64,7 @@ func TestListAllModelEntriesByCanonicalUserID(t *testing.T) {
 	}
 
 	// senderID query (the OLD Feishu path with an unrelated ou_xxx sender):
-	// must NOT return the canonical user's subscription (only system fallback).
+	// must NOT return the canonical user's subscription.
 	entriesBySender := f.ListAllModelEntriesForUser("ou_b90fbcfdce7ff144cdfb6326ca317c8e")
 	for _, e := range entriesBySender {
 		if e.Model == "user-model" {
@@ -106,48 +94,6 @@ func TestSetUserDefaultModelByUserID_RoundTrip(t *testing.T) {
 	}
 	if got == nil || got.SubscriptionID != sub.ID || got.Model != "glm-5.2" {
 		t.Errorf("default model mismatch: got %+v, want sub=%s model=glm-5.2", got, sub.ID)
-	}
-}
-
-// TestListAllModelEntries_UserModelsBeforeSystem guards the picker ordering:
-// user subscriptions' models must come BEFORE the shared system models, so a
-// truncated picker (Feishu maxModels) never hides user models behind system.
-func TestListAllModelEntries_UserModelsBeforeSystem(t *testing.T) {
-	f, subSvc, _ := newModelFirstTestFactory(t)
-	sys := &sqlite.LLMSubscription{
-		ID: "system", SenderID: "__system__", Name: "system", Provider: "openai",
-		BaseURL: "https://api.example/v1", APIKey: "sk", Model: "sys-model", IsSystem: true,
-	}
-	subSvc.Add(sys)
-	subSvc.UpsertModel(sys.ID, "sys-model", 0, 0, "", "")
-
-	user := &sqlite.LLMSubscription{
-		ID: "sub-xin", SenderID: "cli_user", Name: "xin", Provider: "openai",
-		BaseURL: "https://api.xin.example/v1", APIKey: "sk-xin", Model: "",
-	}
-	subSvc.Add(user)
-	subSvc.UpsertModel(user.ID, "xin-model", 0, 0, "", "")
-	subSvc.SetSubscriptionUserID(user.ID, 42)
-
-	entries := f.ListAllModelEntriesForUserID(42)
-	// xin-model must appear before sys-model.
-	xinIdx, sysIdx := -1, -1
-	for i, e := range entries {
-		switch e.Model {
-		case "xin-model":
-			xinIdx = i
-		case "sys-model":
-			sysIdx = i
-		}
-	}
-	if xinIdx < 0 {
-		t.Fatalf("xin-model missing from entries: %+v", entries)
-	}
-	if sysIdx < 0 {
-		t.Fatalf("sys-model missing from entries: %+v", entries)
-	}
-	if xinIdx > sysIdx {
-		t.Errorf("user model xin-model(%d) must precede system model sys-model(%d)", xinIdx, sysIdx)
 	}
 }
 

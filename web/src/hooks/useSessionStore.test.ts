@@ -1971,6 +1971,9 @@ describe('normalizeSessionTree', () => {
     const createBody = JSON.parse(String(createCall?.[1]?.body))
     expect(createBody.label).toBe('my-new-session')
     expect(createBody.model).toBe('gpt-4o')
+    // Model-subscription integration: the inherited (subscription_id, model) pair
+    // travels together — never a bare model name.
+    expect(createBody.subscription_id).toBe('sub-1')
   })
 
   it('createSession prefers an explicit model param over the current session model', async () => {
@@ -2026,6 +2029,9 @@ describe('normalizeSessionTree', () => {
     expect(createCall).toBeDefined()
     const createBody = JSON.parse(String(createCall?.[1]?.body))
     expect(createBody.model).toBe('explicit-model')
+    // Explicit model without a subscriptionId → empty subscription_id (the
+    // backend resolves the owning subscription exactly once).
+    expect(createBody.subscription_id).toBe('')
   })
 
   it('createSession omits the model when the current session model is unavailable', async () => {

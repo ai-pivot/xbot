@@ -142,38 +142,6 @@ func maskAPIKey(key string) string {
 	return key[:4] + "****"
 }
 
-// createAdminLLM creates a new LLM client from the admin config.
-func createAdminLLM(cfg *config.Config) (llm_pkg.LLM, error) {
-	switch cfg.LLM.Provider {
-	case "openai":
-		return llm_pkg.NewOpenAILLM(llm_pkg.OpenAIConfig{
-			BaseURL:      cfg.LLM.BaseURL,
-			APIKey:       cfg.LLM.APIKey,
-			DefaultModel: cfg.LLM.Model,
-			MaxTokens:    cfg.LLM.MaxOutputTokens,
-		}), nil
-	case "anthropic":
-		return llm_pkg.NewAnthropicLLM(llm_pkg.AnthropicConfig{
-			BaseURL:      cfg.LLM.BaseURL,
-			APIKey:       cfg.LLM.APIKey,
-			DefaultModel: cfg.LLM.Model,
-			MaxTokens:    cfg.LLM.MaxOutputTokens,
-		}), nil
-	default:
-		// All other providers (custom, openrouter, ollama, azure, google, deepseek, etc.)
-		// use OpenAI-compatible API — same as LLMFactory.createClient.
-		return llm_pkg.NewOpenAILLM(llm_pkg.OpenAIConfig{
-			BaseURL:      cfg.LLM.BaseURL,
-			APIKey:       cfg.LLM.APIKey,
-			DefaultModel: cfg.LLM.Model,
-			MaxTokens:    cfg.LLM.MaxOutputTokens,
-			OnModelsLoadError: func(err error) {
-				log.WithError(err).Warn("Failed to load models list (admin LLM)")
-			},
-		}), nil
-	}
-}
-
 // resolveStaticDir returns the frontend static directory.
 // Priority: explicit config → binary-relative web/dist → XBOT_HOME/web/dist.
 func resolveStaticDir(cfg *config.Config) string {
@@ -596,70 +564,25 @@ func Run(args []string) error {
 	rpcTablePtr = &rpcTable
 	registryPtr = ag.Tools() // resolve lazy registry getter for channel providers
 
-	// Reconcile subscriptions into DB (single source of truth).
-	// 1. migrate config.json subscriptions[] into DB user subscriptions (one-time).
-	// 2. reconcile the shared system subscription from cfg.LLM/env every boot.
-	// 3. set cli_user's default to the system subscription if it has none (first run).
-	// 4. build the factory's fallback LLM from the system subscription.
+	// Migrate config.json subscriptions[] into DB user subscriptions (one-time).
+	// Since v62 (system subscription removed), the global fallback LLM is the
+	// in-memory defaultLLM built from cfg.LLM — no DB row, no reconcile, no seed.
 	if subSvc := ag.LLMFactory().GetSubscriptionSvc(); subSvc != nil {
 		if err := migrateConfigSubscriptions(cfg, subSvc, cliSenderID); err != nil {
 			log.WithError(err).Warn("Failed to migrate config subscriptions to DB")
 		}
-		if err := reconcileSystemSubscription(cfg, subSvc); err != nil {
-			log.WithError(err).Warn("Failed to reconcile system subscription")
-		}
-		// Seed cli_user's default to the system subscription only if it has no
-		// default yet (first run). Existing user defaults are preserved.
-		if udm, err := subSvc.GetUserDefaultModel(cliSenderID); err == nil && udm == nil {
-			if sys, err := subSvc.GetSystemSubscription(); err == nil && sys != nil {
-				_ = subSvc.SetUserDefaultModel(cliSenderID, sys.ID, sys.Model)
-			}
-		}
-		// Build the factory fallback LLM from the resolved default subscription
-		// (user default, or system subscription as fallback). This replaces the
-		// old "override cfg.LLM → createAdminLLM → SetDefaults" dance: DB is the
-		// single source, and the system subscription carries the config/env values.
-		if defSub, errDef := subSvc.GetDefault(cliSenderID); errDef != nil {
-			log.WithError(errDef).Error("GetDefault failed")
-		} else if defSub == nil {
-			log.Warn("GetDefault returned nil — no default or system subscription in DB")
-		} else {
-			log.WithFields(log.Fields{
-				"id": defSub.ID, "name": defSub.Name, "model": defSub.Model,
-				"provider": defSub.Provider, "is_system": defSub.IsSystem,
-			}).Info("Default subscription from DB")
-			// Refresh cfg.LLM from the authoritative DB row so tier-model mappings
-			// and any cfg.LLM consumers see the resolved values.
-			cfg.LLM.Provider = defSub.Provider
-			cfg.LLM.BaseURL = defSub.BaseURL
-			cfg.LLM.APIKey = defSub.APIKey
-			cfg.LLM.Model = ""
-			cfg.LLM.MaxOutputTokens = defSub.MaxOutputTokens
-			if newClient, err := createAdminLLM(cfg); err == nil {
-				ag.LLMFactory().SetSystemLLM(newClient, "")
-				// max_output_tokens is per-model in DB now — no cache to seed.
-				// thinking_mode is no longer carried on the factory user cache
-				// from the subscription; it is a global user setting seeded below.
-				log.WithFields(log.Fields{"provider": defSub.Provider, "model": defSub.Model, "max_output_tokens": defSub.MaxOutputTokens}).Info("LLM client synced from DB default subscription")
-			}
-			// Seed the global thinking_mode user setting once, if unset. Source
-			// priority: existing user_settings row → cfg.LLM.ThinkingMode →
-			// default-sub ThinkingMode → "" (auto). After seeding, ResolveLLM
-			// reads it from the user_settings DB (canonical channel); changing it
-			// via Ctrl+M or /settings only needs InvalidateSender. This replaces
-			// the old per-subscription thinking.
-			if ss := ag.SettingsService(); ss != nil {
-				if vals, err := ss.GetSettings(channel.ThinkingModeChannel, cliSenderID); err == nil {
-					if _, set := vals["thinking_mode"]; !set {
-						seed := strings.TrimSpace(cfg.LLM.ThinkingMode)
-						if seed == "" {
-							seed = defSub.ThinkingMode
-						}
-						if err := ss.SetSetting(channel.ThinkingModeChannel, cliSenderID, "thinking_mode", seed); err != nil {
-							log.WithError(err).Warn("Failed to seed global thinking_mode")
-						} else {
-							log.WithField("thinking_mode", seed).Info("Seeded global thinking_mode user setting")
-						}
+		// Seed the global thinking_mode user setting once, if unset. Source:
+		// cfg.LLM.ThinkingMode (config.json / env). After seeding, ResolveLLM
+		// reads it from the user_settings DB (canonical channel); changing it
+		// via Ctrl+M or /settings only needs InvalidateSender.
+		if ss := ag.SettingsService(); ss != nil {
+			if vals, err := ss.GetSettings(channel.ThinkingModeChannel, cliSenderID); err == nil {
+				if _, set := vals["thinking_mode"]; !set {
+					seed := strings.TrimSpace(cfg.LLM.ThinkingMode)
+					if err := ss.SetSetting(channel.ThinkingModeChannel, cliSenderID, "thinking_mode", seed); err != nil {
+						log.WithError(err).Warn("Failed to seed global thinking_mode")
+					} else {
+						log.WithField("thinking_mode", seed).Info("Seeded global thinking_mode user setting")
 					}
 				}
 			}
@@ -1401,19 +1324,12 @@ func migrateConfigSubscriptions(cfg *config.Config, subSvc *sqlite.LLMSubscripti
 	if len(cfg.Subscriptions) == 0 {
 		return nil
 	}
-	// Skip if user already has non-system DB subscriptions. The system subscription
-	// (is_system=1) is injected by List and must not count as a user subscription.
+	// Skip if the user already has DB subscriptions.
 	existing, err := subSvc.List(senderID)
 	if err != nil {
 		return fmt.Errorf("list subscriptions: %w", err)
 	}
-	userOwned := 0
-	for _, e := range existing {
-		if !e.IsSystem {
-			userOwned++
-		}
-	}
-	if userOwned > 0 {
+	if len(existing) > 0 {
 		return nil
 	}
 	for i, s := range cfg.Subscriptions {
@@ -1446,32 +1362,4 @@ func hasActiveSub(cfg *config.Config) bool {
 		}
 	}
 	return false
-}
-
-// reconcileSystemSubscription upserts the shared system subscription into the DB
-// from cfg.LLM (+ env overrides) on every boot. The system subscription is the
-// single source for the global/default LLM: read-only, visible to all users, and
-// the lowest-priority fallback in ResolveLLM. Env vars take precedence over
-// config.json values, matching the original config loading semantics.
-func reconcileSystemSubscription(cfg *config.Config, subSvc *sqlite.LLMSubscriptionService) error {
-	llmCfg := cfg.LLM
-	if llmCfg.Provider == "" && llmCfg.BaseURL == "" && llmCfg.APIKey == "" && llmCfg.Model == "" {
-		// No global LLM configured — leave any existing system subscription untouched.
-		return nil
-	}
-	sysSub := &sqlite.LLMSubscription{
-		Provider:        llmCfg.Provider,
-		BaseURL:         llmCfg.BaseURL,
-		APIKey:          llmCfg.APIKey,
-		Model:           llmCfg.Model,
-		MaxOutputTokens: llmCfg.MaxOutputTokens,
-		ThinkingMode:    llmCfg.ThinkingMode,
-	}
-	if err := subSvc.UpsertSystemSubscription(sysSub); err != nil {
-		return fmt.Errorf("upsert system subscription: %w", err)
-	}
-	log.WithFields(log.Fields{
-		"provider": sysSub.Provider, "model": sysSub.Model,
-	}).Info("System subscription reconciled from config/env")
-	return nil
 }

@@ -2528,6 +2528,6 @@ func (s *backendLLMSubscriber) SelectModel(senderID, channelName, subID, model, 
 	return s.client.SelectModel(senderID, channelName, subID, model, chatID)
 }
 
-func (s *backendLLMSubscriber) GetDefaultModel() string {
-	return s.client.GetDefaultModel()
+func (s *backendLLMSubscriber) GetDefaultModelPair() (string, string) {
+	return s.client.GetDefaultModelPair()
 }

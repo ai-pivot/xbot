@@ -293,9 +293,9 @@ function ImageSelectControl({
                 type="button"
                 disabled={saving || uploading}
                 onClick={() => void onDelete(img)}
-                className="absolute right-0.5 top-0.5 hidden rounded bg-black/60 p-0.5 text-white hover:bg-red-500 group-hover/img:block"
+                className="absolute right-0.5 top-0.5 rounded bg-black/60 p-0.5 text-white opacity-70 hover:bg-red-500 hover:opacity-100"
                 aria-label={`删除 ${img.filename}`}
-                title={current === img.url ? '使用中，不能删除' : '删除'}
+                title="删除"
               >
                 <X className="size-3" />
               </button>

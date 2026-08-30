@@ -450,7 +450,7 @@ describe('拖拽协议 v5', () => {
     vi.spyOn(layer, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 1000, height: 800 } as DOMRect)
     const before = localStorage.getItem(V2_KEY)
     // resize：move 中尺寸跟随（width 370px）但 localStorage 不写。
-    const handle = document.querySelector<HTMLElement>('[aria-label="调整面板大小"]')!
+    const handle = document.querySelector<HTMLElement>('[data-panel-id="p.a"] [data-resize-dir="se"]')!
     fireEvent.pointerDown(handle, { button: 0, clientX: 420, clientY: 380 })
     fireEvent.pointerMove(handle, { clientX: 470, clientY: 430 })
     const panel = document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!
@@ -577,6 +577,116 @@ describe('TopRail ＋N 收纳', () => {
     } finally {
       clientWidthSpy.mockRestore()
     }
+  })
+})
+
+// ── 皮肤 theme token 化（浮窗/钉选不硬编码颜色）────────────────────────────
+
+describe('皮肤 theme token 化', () => {
+  it('floating/docked 面板皮肤走 theme 语义 token（light/dark/glass 自适应，不硬编码 rgba 深色）', () => {
+    registerPanel(makeDef('p.float', '浮窗'))
+    // docked 断言用 core.sessions（PINNED_DEFAULTS → side 钉选）；普通面板的
+    // side entry 会被 migrateV2Layout 迁到 chip。floating entry 必须带 order
+    // （isValidPanelEntry：order 缺失 → 整个 entry 丢弃）。
+    registerPanel(makeDef('core.sessions', '会话'))
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'p.float': { loc: { zone: 'floating', order: 0, x: 10, y: 20, w: 300, h: 200 }, collapsed: false },
+    }))
+    renderShell()
+    // floating：毛玻璃 = color-mix(var(--bg-primary) 90%, transparent) + var(--border) ring。
+    // 回归守护：曾硬编码 rgba(17,20,29,.9) 深色底 + 白色 ring —— light 主题下浮窗是黑块。
+    const floating = document.querySelector<HTMLElement>('[data-panel-id="p.float"]')!
+    expect(floating.style.background).toContain('var(--bg-primary)')
+    expect(floating.style.background).not.toContain('17,20,29')
+    expect(floating.style.boxShadow).toContain('var(--border)')
+    expect(floating.style.boxShadow).not.toContain('255,255,255')
+    // docked：bg-secondary 底 + var(--border) ring。
+    // 回归守护：曾硬编码 rgba(255,255,255,.02)——light 主题下与侧栏底色无区分。
+    const side = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')!
+    expect(side).not.toBeNull()
+    expect(side.style.boxShadow).toContain('var(--border)')
+    expect(side.style.boxShadow).not.toContain('255,255,255')
+    // hover 反馈走语义类（曾硬编码 hover:bg-white/5，light 主题下 hover 不可见）。
+    expect(side.querySelector('button')!.className).toContain('hover:bg-bg-tertiary/60')
+    expect(side.querySelector('button')!.className).not.toContain('hover:bg-white/5')
+  })
+})
+
+// ── floating 全方向 resize（四角+四边）────────────────────────────────────────
+
+describe('floating 全方向 resize', () => {
+  /** 注册浮窗面板（初始 100,80 300x200）并渲染。 */
+  function setupFloating(id = 'p.float'): void {
+    registerPanel(makeDef(id, '浮窗'))
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      [id]: { loc: { zone: 'floating', order: 0, x: 100, y: 80, w: 300, h: 200 }, collapsed: false },
+    }))
+    renderShell()
+  }
+
+  function handleOf(id: string, dir: string): HTMLElement {
+    const el = document.querySelector<HTMLElement>(`[data-panel-id="${id}"] [data-resize-dir="${dir}"]`)
+    if (!el) throw new Error(`resize handle ${dir} of ${id} not found`)
+    return el
+  }
+
+  it('se：右下拖大 → w/h 落盘（x/y 不变），move 中零持久化', () => {
+    setupFloating()
+    const saved0 = localStorage.getItem(V2_KEY)
+    const se = handleOf('p.float', 'se')
+    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
+    fireEvent.pointerMove(se, { clientX: 280, clientY: 260 })
+    // 拖拽协议 v5：move 中零持久化（localStorage 不变）。
+    expect(localStorage.getItem(V2_KEY)).toBe(saved0)
+    fireEvent.pointerUp(se)
+    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
+    expect(saved['p.float'].loc).toMatchObject({ zone: 'floating', x: 100, y: 80, w: 380, h: 260 })
+  })
+
+  it('nw：左上拖 → x/y/w/h 联动（右下边缘固定）', () => {
+    setupFloating()
+    const nw = handleOf('p.float', 'nw')
+    fireEvent.pointerDown(nw, { button: 0, clientX: 200, clientY: 200 })
+    fireEvent.pointerMove(nw, { clientX: 160, clientY: 170 })
+    fireEvent.pointerUp(nw)
+    // dx=-40 dy=-30：w=300+40=340 h=200+30=230，x=100-40=60 y=80-30=50。
+    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
+    expect(saved['p.float'].loc).toMatchObject({ x: 60, y: 50, w: 340, h: 230 })
+  })
+
+  it('clamp：se 缩到 MIN 以下 → MIN_W/MIN_H；拖超浮层 → layer 边界', () => {
+    setupFloating()
+    const se = handleOf('p.float', 'se')
+    // 缩到 MIN 以下 → clamp 220x120。
+    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
+    fireEvent.pointerMove(se, { clientX: -500, clientY: -500 })
+    fireEvent.pointerUp(se)
+    expect(JSON.parse(localStorage.getItem(V2_KEY)!)['p.float'].loc).toMatchObject({ x: 100, y: 80, w: 220, h: 120 })
+    // 拖超浮层（jsdom layer=0 → FALLBACK_VIEWPORT 1280x800）→ clamp 右/下缘。
+    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
+    fireEvent.pointerMove(se, { clientX: 5000, clientY: 5000 })
+    fireEvent.pointerUp(se)
+    expect(JSON.parse(localStorage.getItem(V2_KEY)!)['p.float'].loc).toMatchObject({ x: 100, y: 80, w: 1180, h: 720 })
+  })
+
+  it('clamp：nw 拖到负坐标 → x/y ≥ 0（初始右/下缘为 w/h 极限）', () => {
+    setupFloating()
+    const nw = handleOf('p.float', 'nw')
+    fireEvent.pointerDown(nw, { button: 0, clientX: 200, clientY: 200 })
+    fireEvent.pointerMove(nw, { clientX: 0, clientY: 0 })
+    fireEvent.pointerUp(nw)
+    // w clamp 到 r.x+r.w=400（x=0），h clamp 到 r.y+r.h=280（y=0）。
+    expect(JSON.parse(localStorage.getItem(V2_KEY)!)['p.float'].loc).toMatchObject({ x: 0, y: 0, w: 400, h: 280 })
+  })
+
+  it('Esc 取消：尺寸/位置零状态变更', () => {
+    setupFloating()
+    const saved0 = localStorage.getItem(V2_KEY)
+    const se = handleOf('p.float', 'se')
+    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
+    fireEvent.pointerMove(se, { clientX: 280, clientY: 260 })
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(localStorage.getItem(V2_KEY)).toBe(saved0)
   })
 })
 

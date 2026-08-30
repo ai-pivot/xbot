@@ -176,7 +176,10 @@ type WebCallbacks struct {
 	// ChatCreate creates a new chatroom for a user. Returns new chatID.
 	// model is an optional explicit model name for the new session; when empty
 	// the backend falls back to the default binding (Balance tier first).
-	ChatCreate func(senderID, label string, canonicalUserID int64, model string) (string, error)
+	// subscriptionID pairs with model (model-subscription integration: the
+	// model never travels alone — the frontend passes both when it knows the
+	// owning subscription, e.g. inheriting the active session's pair).
+	ChatCreate func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.

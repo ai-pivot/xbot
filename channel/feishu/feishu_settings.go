@@ -276,15 +276,13 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 				if val == "" {
 					continue
 				}
-				// Parse "subID|model" encoding
-				subID, model := "", ""
-				if idx := strings.Index(val, "|"); idx >= 0 {
-					subID = val[:idx]
-					model = val[idx+1:]
-				} else {
-					// Legacy plain model name (no subID)
-					model = val
+				// Parse "subID|model" encoding — a bare model name is rejected
+				// (model-subscription integration: tiers are always pairs).
+				idx := strings.Index(val, "|")
+				if idx <= 0 {
+					return nil, fmt.Errorf("tier %s 值格式错误（需要 subID|model）: %q", tier, val)
 				}
+				subID, model := val[:idx], val[idx+1:]
 				if model == "" {
 					continue
 				}
@@ -1569,20 +1567,10 @@ func (f *FeishuChannel) buildModelsCardContent(ctx context.Context, senderID str
 		// Only set initial_option if it matches an option value.
 		if currentModel != "" {
 			currentKey := currentSubID + "|" + currentModel
-			if currentSubID == "" {
-				// Legacy: try matching by model-only (value without "|")
-				for _, opt := range tierOptions {
-					if opt["value"] == currentModel || strings.HasSuffix(opt["value"].(string), "|"+currentModel) {
-						tierCtrl["initial_option"] = opt["value"]
-						break
-					}
-				}
-			} else {
-				for _, opt := range tierOptions {
-					if opt["value"] == currentKey {
-						tierCtrl["initial_option"] = currentKey
-						break
-					}
+			for _, opt := range tierOptions {
+				if opt["value"] == currentKey {
+					tierCtrl["initial_option"] = opt["value"]
+					break
 				}
 			}
 		}
@@ -1636,7 +1624,6 @@ func (f *FeishuChannel) BuildLLMsCard(ctx context.Context, senderID string) (map
 
 // buildLLMsCardContent builds the body elements for the LLMs (subscription) card.
 // Subscriptions are listed with enable/disable, edit, delete buttons.
-// System subscriptions (is_system) are read-only — only shown with a 🔒 badge.
 func (f *FeishuChannel) buildLLMsCardContent(senderID string) ([]map[string]any, error) {
 	var elements []map[string]any
 
@@ -1660,25 +1647,6 @@ func (f *FeishuChannel) buildLLMsCardContent(senderID string) ([]map[string]any,
 		})
 	} else {
 		for _, sub := range subs {
-			// System subscription: read-only badge, no action buttons
-			if sub.IsSystem {
-				label := fmt.Sprintf("🔒 %s — %s (%s)", sub.Name, sub.Provider, sub.Model)
-				elements = append(elements, buildItemRow(label, "", []map[string]any{
-					{
-						"tag":  "button",
-						"text": map[string]any{"tag": "plain_text", "content": "系统内置"},
-						"type": "default",
-					},
-				}...))
-				if sub.BaseURL != "" {
-					elements = append(elements, map[string]any{
-						"tag":     "markdown",
-						"content": "　　" + sub.BaseURL,
-					})
-				}
-				continue
-			}
-
 			// Enabled/disabled indicator
 			statusMark := "✅ "
 			if !sub.Enabled {

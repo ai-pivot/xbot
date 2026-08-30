@@ -377,10 +377,17 @@ func (c *Client) SetSetting(namespace, senderID, key, value string) error {
 // Model / LLM (via RPC)
 // ---------------------------------------------------------------------------
 
-func (c *Client) GetDefaultModel() string {
-	var r string
+// GetDefaultModelPair returns the user's default (subscription, model) pair.
+// Model-subscription integration: models never travel alone — the RPC returns
+// a {sub_id, model} object. subID is empty only for the deployment-level
+// defaultLLM fallback (no subscription behind it).
+func (c *Client) GetDefaultModelPair() (subID, model string) {
+	var r struct {
+		SubID string `json:"sub_id"`
+		Model string `json:"model"`
+	}
 	_ = c.call(MethodGetDefaultModel, struct{}{}, &r)
-	return r
+	return r.SubID, r.Model
 }
 
 func (c *Client) GetContextMode() string {

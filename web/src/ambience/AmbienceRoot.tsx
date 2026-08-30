@@ -136,13 +136,15 @@ export function AmbienceBackground() {
     // 原色）——主题切换时 src 经 CSS 级联自动重算，glass 无需 JS 重新读色。
     // （原实现读 getComputedStyle 的时机早于 ThemeProvider 的 .dark class
     // 更新——子组件 effect 先于父组件——读到旧主题色 → 切主题后色调反转。）
-    // 内容层级对比：primary 最低透明度（壁纸透出最多），次级面板逐级加深保可读。
+    // 内容层级对比：primary 最低透明度（壁纸透出最多），次级面板逐级加深保
+    // 可读。cap 0.95 ——secondary/tertiary 加成永不 100% 饱和（min(1, 0.9+0.12)
+    // = 1.0 → header/tab 栏完全不透 → 图片壁纸下扎眼的实色条带）。
     root.style.setProperty('--bg-primary', alphaColor('var(--bg-primary-src)', opacity))
-    root.style.setProperty('--bg-secondary', alphaColor('var(--bg-secondary-src)', Math.min(1, opacity + 0.12)))
-    root.style.setProperty('--bg-tertiary', alphaColor('var(--bg-tertiary-src)', Math.min(1, opacity + 0.2)))
+    root.style.setProperty('--bg-secondary', alphaColor('var(--bg-secondary-src)', Math.min(0.95, opacity + 0.12)))
+    root.style.setProperty('--bg-tertiary', alphaColor('var(--bg-tertiary-src)', Math.min(0.95, opacity + 0.2)))
     // Dockview --dv-* 变量同步覆盖（绕过库内部硬编码背景）。
     root.style.setProperty('--dv-group-view-background-color', alphaColor('var(--bg-primary-src)', opacity))
-    root.style.setProperty('--dv-tabs-and-actions-container-background-color', alphaColor('var(--bg-secondary-src)', Math.min(1, opacity + 0.12)))
+    root.style.setProperty('--dv-tabs-and-actions-container-background-color', alphaColor('var(--bg-secondary-src)', Math.min(0.95, opacity + 0.12)))
     return () => {
       for (const t of ALL_OVERRIDES) root.style.removeProperty(t)
       root.style.removeProperty('--dv-group-view-background-color')

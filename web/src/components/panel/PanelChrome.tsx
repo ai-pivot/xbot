@@ -5,15 +5,42 @@
  * 停靠⇄浮动 + 取消钉选 + 折叠 + docked grip）+ 主体 + docked 底边调高 handle。
  * docked 与 floating 两套皮肤：
  *  - docked：rounded-xl + bg-bg-secondary + inset ring white/5%
- *  - floating：毛玻璃 rgba(17,20,29,.9) + backdrop-blur(14px) + 大阴影 + ring
+ *  - floating：毛玻璃 bg-primary 90% + backdrop-blur(14px) + 大阴影 + var(--border) ring
  *
  * 图标统一经 pluginIcons.ts 的 pluginIcon 映射（与插件 view tab 一致）。
+ *
+ * 皮肤全部走 theme 语义 token（light/dark/glass 均自适应）：
+ *  - docked：bg-secondary（微亮/微暗于侧栏底 bg-primary）+ var(--border) inset ring
+ *  - floating：bg-primary 90% 半透明毛玻璃 + backdrop-blur + var(--border) ring
+ *    （glass 模式下 --bg-primary 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
  */
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { ChevronDown, ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import type { PanelBadge, PanelMode } from '@/plugin-api'
+import type { ResizeDir } from './PanelLayout'
+
+/**
+ * floating 全方向 resize 手柄（四角 + 四边，OS 窗口式）。
+ * 热区纯透明（光标形状提示），仅 se 角保留条纹渐变视觉（可发现性锚点）；
+ * 边手柄内缩 12px（left-3 等）避让角手柄。cursor 按方向：nw/se=nwse、ne/sw=nesw、
+ * n/s=ns、e/w=ew。touch-none 防触摸滚动干扰（拖拽协议 v5 规格 7）。
+ */
+const RESIZE_HANDLES: ReadonlyArray<{ dir: ResizeDir; cls: string; label: string }> = [
+  { dir: 'nw', cls: 'left-0 top-0 size-3 cursor-nwse-resize', label: '左上角' },
+  { dir: 'n', cls: 'left-3 right-3 top-0 h-1.5 cursor-ns-resize', label: '上' },
+  { dir: 'ne', cls: 'right-0 top-0 size-3 cursor-nesw-resize', label: '右上角' },
+  { dir: 'e', cls: 'bottom-3 right-0 top-3 w-1.5 cursor-ew-resize', label: '右' },
+  { dir: 'se', cls: 'bottom-0 right-0 size-3 cursor-nwse-resize', label: '右下角' },
+  { dir: 's', cls: 'bottom-0 left-3 right-3 h-1.5 cursor-ns-resize', label: '下' },
+  { dir: 'sw', cls: 'bottom-0 left-0 size-3 cursor-nesw-resize', label: '左下角' },
+  { dir: 'w', cls: 'bottom-3 left-0 top-3 w-1.5 cursor-ew-resize', label: '左' },
+]
+
+/** se 角视觉锚点：条纹渐变用 text-primary 低透明（dark=白条纹/light=黑条纹，两主题可见）。 */
+const SE_RESIZE_GRADIENT =
+  'linear-gradient(135deg, transparent 0 50%, color-mix(in srgb, var(--text-primary) 18%, transparent) 50% 60%, transparent 60% 72%, color-mix(in srgb, var(--text-primary) 18%, transparent) 72% 84%, transparent 84%)'
 
 export interface PanelChromeProps {
   /** 面板 id（data-dock-item 定位 + 拖拽数据）。 */
@@ -38,8 +65,8 @@ export interface PanelChromeProps {
   onTitlePointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** 双击标题回启动器（floating 语义）。 */
   onTitleDoubleClick?: () => void
-  /** floating 右下角 resize（pointerdown 起始）。 */
-  onResizePointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
+  /** floating 全方向 resize（pointerdown 起始；dir = 手柄方向，四角+四边）。 */
+  onResizePointerDown?: (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => void
   /** v5.1 docked 展开态底边调高 handle（pointerdown 起始；拖拽协议 v5）。 */
   onResizeHeightPointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** docked 拖拽重排的插入线位置（PanelLayout 计算）。 */
@@ -100,18 +127,23 @@ export function PanelChrome({
   const floating = mode === 'floating'
   const stop = (e: ReactPointerEvent) => e.stopPropagation()
 
+  // 皮肤走 theme token（light/dark/glass 自适应）：
+  //  - floating：bg-primary 90% 半透明毛玻璃（glass 模式下 --bg-primary 已被
+  //    AmbienceBackground 覆盖为半透明，自动继承玻璃效果）；ring 用 var(--border)。
+  //  - docked：bg-secondary（相对侧栏底 bg-primary 微亮/微暗形成层次）。
+  // 阴影保持黑色系（阴影无色相，两主题通用）。
   const shellStyle: CSSProperties = floating
     ? {
-        background: 'rgba(17,20,29,0.9)',
+        background: 'color-mix(in srgb, var(--bg-primary) 90%, transparent)',
         backdropFilter: 'blur(14px)',
         WebkitBackdropFilter: 'blur(14px)',
-        boxShadow: '0 16px 48px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.08)',
+        boxShadow: '0 16px 48px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.4), inset 0 0 0 1px var(--border)',
         pointerEvents: 'auto',
         ...style,
       }
     : {
-        background: 'rgba(255,255,255,0.02)',
-        boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.05)',
+        background: 'var(--bg-secondary)',
+        boxShadow: 'inset 0 0 0 1px var(--border)',
         opacity: isDragSource ? 0.4 : undefined,
         pointerEvents: isDragSource ? 'none' : undefined,
         ...style,
@@ -162,7 +194,7 @@ export function PanelChrome({
           {...iconButtonProps(floating ? '收回启动器' : '浮动')}
           onPointerDown={stop}
           onClick={onToggleMode}
-          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-white/5 hover:text-text-secondary"
+          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-secondary"
         >
           {floating ? <PanelLeft className="size-3" /> : <PictureInPicture2 className="size-3" />}
         </button>
@@ -171,7 +203,7 @@ export function PanelChrome({
             {...iconButtonProps('取消钉选（收入底部启动器）')}
             onPointerDown={stop}
             onClick={onUnpin}
-            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-white/5 hover:text-text-primary"
+            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-primary"
           >
             <X className="size-3" />
           </button>
@@ -181,7 +213,7 @@ export function PanelChrome({
             {...iconButtonProps('关闭浮窗（收入启动器）')}
             onPointerDown={stop}
             onClick={onClose}
-            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-white/5 hover:text-text-primary"
+            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-primary"
           >
             <X className="size-3" />
           </button>
@@ -190,7 +222,7 @@ export function PanelChrome({
           {...iconButtonProps(collapsed ? '展开' : '折叠')}
           onPointerDown={stop}
           onClick={onToggleCollapse}
-          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-white/5 hover:text-text-secondary"
+          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-secondary"
         >
           {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
         </button>
@@ -236,20 +268,21 @@ export function PanelChrome({
           onPointerDown={onResizeHeightPointerDown}
           className="group flex h-[7px] shrink-0 cursor-ns-resize touch-none items-center justify-center"
         >
-          <span className="h-[3px] w-10 rounded-full bg-white/10 transition-colors group-hover:bg-app-accent" />
+          <span className="h-[3px] w-10 rounded-full bg-text-muted/30 transition-colors group-hover:bg-app-accent" />
         </span>
       ) : null}
       {floating && onResizePointerDown ? (
-        <span
-          role="separator"
-          aria-label="调整面板大小"
-          onPointerDown={onResizePointerDown}
-          className="absolute bottom-0 right-0 z-10 size-3 cursor-nwse-resize touch-none"
-          style={{
-            background:
-              'linear-gradient(135deg, transparent 0 50%, rgba(255,255,255,0.18) 50% 60%, transparent 60% 72%, rgba(255,255,255,0.18) 72% 84%, transparent 84%)',
-          }}
-        />
+        RESIZE_HANDLES.map(({ dir, cls, label }) => (
+          <span
+            key={dir}
+            data-resize-dir={dir}
+            role="separator"
+            aria-label={`从${label}边缘调整面板大小`}
+            onPointerDown={(e) => onResizePointerDown(dir, e)}
+            className={`absolute z-10 touch-none ${cls}`}
+            style={dir === 'se' ? { background: SE_RESIZE_GRADIENT } : undefined}
+          />
+        ))
       ) : null}
     </section>
   )

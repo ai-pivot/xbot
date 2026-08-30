@@ -26,15 +26,13 @@ func (t *TaskWaitTool) Required() bool { return false }
 func (t *TaskWaitTool) Description() string {
 	return `Block until background task(s) finish, or the timeout expires. Returns the final status and output preview for each task.
 
-Supports waiting on MULTIPLE tasks at once:
-  - task_id: ["bg-abc123", "sub-def456"]  (array of IDs)
-  - mode: "all" (default — wait for every task) or "any" (return when the FIRST task finishes)
+	task_id is an ARRAY of task ID strings — pass all IDs you are waiting on in ONE call:
+  - Single task:  task_id: ["bg-abc123"]
+  - Multiple:     task_id: ["bg-abc123", "sub-def456"]  (mode "any" returns on the first completion, "all" waits for every task)
 
-For a single task, pass a string: task_id: "bg-abc123"
-
-NOTE: pass the task_id EXACTLY as shown in the tool result, without any
-prefix — e.g. "3f8f492a" for Shell background tasks (raw hex),
-"sub-1eefac7a" for sub-agents. Never add a "bg:" or "bg-" prefix.
+	NOTE: pass the IDs EXACTLY as shown in the tool result, without any prefix —
+	e.g. "3f8f492a" for Shell background tasks (raw hex), "sub-1eefac7a" for
+	sub-agents. Never add a "bg:" or "bg-" prefix.
 
 Use this instead of running "sleep N" in a foreground Shell to wait for a
 background task. The current iteration blocks until the task(s) are done — no
@@ -43,15 +41,21 @@ wasted iterations on sleep polling.
 If the task is already completed, returns immediately.
 
 Parameters (JSON):
-  - task_id: string OR array of strings — the background task ID(s) to wait for
-  - mode: string (optional) — "all" (default, wait for all) or "any" (return on first completion)
+  - task_id: array of strings — the background task ID(s) to wait for
+  - mode: string (optional) — "all" (default, wait for all) or "any" (return on first completion; for multiple IDs)
   - timeout: number (optional), max seconds to wait (default: 60, max: 300)`
 }
 
 func (t *TaskWaitTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
-		{Name: "task_id", Type: "string", Description: "The background task ID to wait for, OR an array of IDs. Pass it EXACTLY as shown in the tool result — Shell background task IDs are raw hex like \"3f8f492a\" (no prefix), sub-agent IDs start with 'sub-'. Do NOT add any 'bg:' or 'bg-' prefix.", Required: true},
-		{Name: "mode", Type: "string", Description: "Wait mode: 'all' (default — wait for every task to finish) or 'any' (return as soon as the first task finishes). Only relevant when task_id is an array.", Required: false},
+		// Pure array type (NOT a string/array union): some providers validate
+		// arguments against the schema and unions get shaky support; a bare
+		// "string" schema also made models pass single strings. The schema is
+		// now the single source of truth — ALWAYS an array. The Execute side
+		// (parseTaskIDs) still tolerates a bare string for backward
+		// compatibility with older tool-call history.
+		{Name: "task_id", Type: "array", Items: &llm.ToolParamItems{Type: "string"}, Description: "Array of background task IDs to wait for. Single task: [\"3f8f492a\"]. Pass IDs EXACTLY as shown in the tool result — Shell background task IDs are raw hex like \"3f8f492a\" (no prefix), sub-agent IDs start with 'sub-'. Do NOT add any 'bg:' or 'bg-' prefix.", Required: true},
+		{Name: "mode", Type: "string", Description: "Wait mode: 'all' (default — wait for every task to finish) or 'any' (return as soon as the first task finishes). For multiple IDs.", Required: false},
 		{Name: "timeout", Type: "number", Description: "Max seconds to wait (default: 60, max: 300)", Required: false},
 	}
 }

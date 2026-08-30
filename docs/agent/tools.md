@@ -219,7 +219,7 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `ChatHistory` | `tools/chat_history.go` | Query recent chat message history |
 | `Skill` | `tools/skill.go` | Load skill documentation on demand |
 | `ManageTools` | `tools/manage_tools.go` | Manage MCP servers (add/remove/list/reload) |
-| `task_status` / `task_kill` | `tools/task_tools.go` | Check/terminate background tasks |
+| `task_status` / `task_kill` | `tools/task_tools.go` | Check/terminate background tasks — `task_id` accepts a single ID string OR an array of IDs (per-ID tolerant aggregation; unknown IDs reported in the output without aborting the rest) |
 | `recall_masked` | `tools/recall_masked.go` | Retrieve full content of masked observations |
 | `offload_recall` | `tools/offload_recall.go` | Retrieve full content of offloaded tool results |
 | `knowledge_tools` | `tools/knowledge_tools.go` | ~~Removed~~ — project knowledge now via AGENTS.md + docs/agent/ using standard Read/FileReplace |

@@ -257,7 +257,11 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
     }
   }, [])
 
-  return <div ref={hostRef} className="min-h-0 w-full flex-1 bg-bg-primary" />
+  // bg 层交给 AppShell 根容器的 bg-bg-primary（单层）——这里再加一层会
+  // 双叠 alpha（82%×82% ≈ 97% 不透明）把壁纸几乎完全挡住（"壁纸只作用于
+  // 侧边栏"根因：侧边栏单层透壁纸，主区双叠不透）。玻璃激活时 dockview
+  // 内部由 .ambience-glass CSS 强制透明，背景由根容器单层提供。
+  return <div ref={hostRef} className="min-h-0 w-full flex-1" />
 }
 
 /* ── React ↔ dockview renderers ── */

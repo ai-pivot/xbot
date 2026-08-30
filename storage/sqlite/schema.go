@@ -127,9 +127,11 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (61);
+INSERT INTO schema_version (version) VALUES (62);
 
--- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations)
+-- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
+-- dropped in v62 — the system subscription was removed, the global fallback
+-- LLM is the in-memory defaultLLM built from cfg.LLM)
 CREATE TABLE user_llm_subscriptions (
     id          TEXT PRIMARY KEY,
     sender_id   TEXT NOT NULL,
@@ -144,7 +146,6 @@ CREATE TABLE user_llm_subscriptions (
     cached_models TEXT NOT NULL DEFAULT '',
     api_type    TEXT DEFAULT '',
     enabled     INTEGER NOT NULL DEFAULT 1,
-    is_system   INTEGER NOT NULL DEFAULT 0,
     user_id     INTEGER DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -311,11 +312,11 @@ CREATE TABLE IF NOT EXISTS pending_resumes (
 INSERT OR IGNORE INTO tenants (id, channel, chat_id, created_at, last_active_at)
 VALUES (0, '_shared', '_shared', datetime('now'), datetime('now'));
 
--- Seed: canonical admin user + CLI/system identities (v44→v45)
+-- Seed: canonical admin user + CLI identities (v44→v45; the system/__system__
+-- identity was removed in v62 along with the system subscription)
 INSERT OR IGNORE INTO users (id, display_name, role) VALUES (1, 'Admin', 'admin');
 INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'cli_user');
 INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'admin');
-INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'system', '__system__');
 
 -- v54: structured iteration history (replaces Detail JSON for iteration data)
 CREATE TABLE IF NOT EXISTS iteration_history (
@@ -335,6 +336,7 @@ CREATE TABLE IF NOT EXISTS iteration_history (
     input_tokens INTEGER NOT NULL DEFAULT 0,
     cached_tokens INTEGER NOT NULL DEFAULT 0,
     model TEXT NOT NULL DEFAULT '',
+    subscription_id TEXT NOT NULL DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);

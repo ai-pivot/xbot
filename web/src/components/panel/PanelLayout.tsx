@@ -313,17 +313,23 @@ interface PanelDragState {
   layer: LayerRect
 }
 
+/** 浮窗 resize 方向（四角 + 四边，子串包含方向字母：'ne' 含 n+e）。 */
+export type ResizeDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
 interface ResizeDragState {
   kind: 'resize'
   id: string
+  /** resize 方向（哪条边/角被拖）。 */
+  dir: ResizeDir
   startX: number
   startY: number
-  /** 当前尺寸（move 中本地跟随；up 落盘）。 */
+  /** 起拖矩形（move 从 startRect + 指针总 delta 绝对计算——零增量累计误差）。 */
+  startRect: { x: number; y: number; w: number; h: number }
+  /** 当前矩形（move 中本地跟随；up 落盘）。 */
+  curX: number
+  curY: number
   curW: number
   curH: number
-  /** resize 的面板 xy（clamp 上界用）。 */
-  x: number
-  y: number
   layer: LayerRect
 }
 
@@ -369,7 +375,8 @@ interface PanelDockContextValue {
   unpinPanel: (id: string) => void
   onGripPointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   onTitlePointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
-  onResizePointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
+  /** floating 全方向 resize（pointerdown 起始；四角+四边手柄，dir 见 ResizeDir）。 */
+  onResizePointerDown: (id: string) => (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => void
   /** v5.1 side 面板底边调高（拖拽协议 v5：move 零持久化，up 一次落盘 clamp 140–640）。 */
   onHeightPointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   registerDockEl: (el: HTMLElement | null) => void
@@ -758,23 +765,26 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [startPanelDrag],
   )
 
-  /** floating 右下角 resize（move 中本地跟随，up 一次写入；Esc/pointercancel 恢复）。 */
+  /** floating 全方向 resize（四角+四边；move 中本地跟随，up 一次写入；Esc/pointercancel 恢复）。 */
   const onResizePointerDown = useCallback(
-    (id: string) => (e: ReactPointerEvent<HTMLElement>) => {
+    (id: string) => (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0) return
       e.preventDefault()
       e.stopPropagation()
       const handle = e.currentTarget
       const cur = stateRef.current[id] ?? entryOf(id)
       const layer = layerRectOf(layerElRef.current)
-      const x = cur.loc.x ?? 0
-      const y = cur.loc.y ?? 0
+      // 起拖矩形（move 从 startRect + 指针总 delta 绝对计算——零增量累计误差）。
+      const startRect = { x: cur.loc.x ?? 0, y: cur.loc.y ?? 0, w: cur.loc.w ?? 320, h: cur.loc.h ?? 280 }
       try {
         handle.setPointerCapture(e.pointerId)
       } catch {
         /* pointer capture unsupported (jsdom) */
       }
-      setDrag({ kind: 'resize', id, startX: e.clientX, startY: e.clientY, curW: cur.loc.w ?? 320, curH: cur.loc.h ?? 280, x, y, layer })
+      setDrag({
+        kind: 'resize', id, dir, startX: e.clientX, startY: e.clientY, startRect,
+        curX: startRect.x, curY: startRect.y, curW: startRect.w, curH: startRect.h, layer,
+      })
 
       const detach = () => {
         handle.removeEventListener('pointermove', onMove)
@@ -785,9 +795,26 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       const onMove = (ev: PointerEvent) => {
         const d = dragRef.current
         if (!d || d.kind !== 'resize' || d.id !== id) return
-        const w = Math.min(Math.max(MIN_W, d.curW + (ev.clientX - d.startX)), Math.max(MIN_W, layer.width - x))
-        const h = Math.min(Math.max(MIN_H, d.curH + (ev.clientY - d.startY)), Math.max(MIN_H, layer.height - y))
-        setDrag({ ...d, startX: ev.clientX, startY: ev.clientY, curW: w, curH: h })
+        const dx = ev.clientX - d.startX
+        const dy = ev.clientY - d.startY
+        const r = d.startRect
+        // 方向分量（dir 子串匹配方向字母：'ne' 含 n+e）。
+        const we = d.dir.includes('e')
+        const ws = d.dir.includes('s')
+        const ww = d.dir.includes('w')
+        const wn = d.dir.includes('n')
+        // 尺寸期望值：e/s 拖大右侧/下侧；w/n 拖大左侧/上侧（右/下边缘固定）。
+        let w = r.w + (we ? dx : 0) - (ww ? dx : 0)
+        let h = r.h + (ws ? dy : 0) - (wn ? dy : 0)
+        // clamp 下限 MIN_W/MIN_H；上限按方向——e/s 不越浮层右/下缘（r.x/r.y 起），
+        // w/n 不越过初始左/上缘（右/下边缘 r.x+r.w 为极限：x=0 时 w 最大）。
+        w = Math.min(Math.max(MIN_W, w), Math.max(MIN_W, ww ? r.x + r.w : d.layer.width - r.x))
+        h = Math.min(Math.max(MIN_H, h), Math.max(MIN_H, wn ? r.y + r.h : d.layer.height - r.y))
+        // 位置联动：w/n 方向拖动时对侧边缘固定（clamp 保证 x/y ≥ 0——w 上限即右缘，
+        // x = 右缘 - w；w 收到 MIN_W 时 x 最大 = 右缘 - MIN_W）。
+        const x = ww ? r.x + r.w - w : r.x
+        const y = wn ? r.y + r.h - h : r.y
+        setDrag({ ...d, curX: x, curY: y, curW: w, curH: h })
       }
       const onUp = () => {
         detach()
@@ -796,12 +823,12 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
         if (!d || d.kind !== 'resize') return
         update((prev) => {
           const e2 = prev[id] ?? entryOf(id)
-          return { ...prev, [id]: { ...e2, loc: { ...e2.loc, w: d.curW, h: d.curH } } }
+          return { ...prev, [id]: { ...e2, loc: { ...e2.loc, x: d.curX, y: d.curY, w: d.curW, h: d.curH } } }
         })
       }
       const onCancel = () => {
         detach()
-        endDrag() // 取消：尺寸不落盘（零状态变更）
+        endDrag() // 取消：尺寸/位置不落盘（零状态变更）
       }
       const onKey = (ev: KeyboardEvent) => {
         if (ev.key !== 'Escape') return
@@ -1032,14 +1059,19 @@ export function FloatingLayer(): ReactNode {
         const d = dock.drag
         // 拖动跟随：本地 drag state 渲染（零持久化），up 落盘。
         const follow = d && d.kind === 'panel' && d.id === id && d.started ? d : null
-        // resize 跟随：本地 curW/curH 渲染（零持久化），up 落盘。
+        // resize 跟随：本地 curX/curY/curW/curH 渲染（零持久化），up 落盘。
+        // 左/上方向拖动时 x/y 联动（对侧边缘固定）。
         const resizing = d && d.kind === 'resize' && d.id === id ? d : null
         const x = follow
           ? Math.max(0, follow.pointer.x - follow.layer.left - follow.grabOffset.x)
-          : (entry.loc.x ?? 0)
+          : resizing
+            ? resizing.curX
+            : (entry.loc.x ?? 0)
         const y = follow
           ? Math.max(0, follow.pointer.y - follow.layer.top - follow.grabOffset.y)
-          : (entry.loc.y ?? 0)
+          : resizing
+            ? resizing.curY
+            : (entry.loc.y ?? 0)
         const style: CSSProperties = {
           left: x,
           top: y,
@@ -1102,8 +1134,9 @@ function DragGhost(): ReactNode {
         zIndex: 50,
         // transform 替代 left/top——GPU 合成层，不触发布局回流，拖拽更顺滑。
         transform: `translate3d(${dragPointer.x + 8}px, ${dragPointer.y + 8}px, 0)`,
-        background: 'rgba(17,20,29,0.95)',
-        border: '1px solid rgba(255,255,255,0.12)',
+        // theme token（light/dark 自适应）：bg-primary 高不透明 + var(--border) 描边
+        background: 'color-mix(in srgb, var(--bg-primary) 95%, transparent)',
+        border: '1px solid var(--border)',
         boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
         color: 'var(--text-primary)',
         pointerEvents: 'none',

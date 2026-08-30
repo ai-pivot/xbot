@@ -103,7 +103,6 @@ func (a *Agent) ResolveUserContext(channel, chatID, senderID string, metadata ma
 	factoryRef := &llmFactoryRef{
 		getLLMForModel:            a.userSys.llmFactory.GetLLMForModel,
 		getLLM:                    a.userSys.llmFactory.GetLLM,
-		resolveSubIDForModel:      a.userSys.llmFactory.ResolveSubIDForModel,
 		llmSemAcquireForUser:      a.userSys.llmFactory.LLMSemAcquireForUser,
 		subAgentSemAcquireForUser: a.userSys.llmFactory.SubAgentSemAcquireForUser,
 	}

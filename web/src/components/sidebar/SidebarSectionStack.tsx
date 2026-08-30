@@ -363,9 +363,19 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                       />
                       <span className="truncate normal-case">{sec.title}</span>
                     </button>
-                    {!isCollapsed && (
-                      <div className="min-h-0 flex-1 overflow-hidden">{sec.content}</div>
-                    )}
+                    {/* 折叠常驻（display:none 而非条件 unmount——2026-08-30 侧边栏
+                        展开卡顿修复）：条件渲染让每次展开都重新 mount 面板
+                        （SessionList 数百行 render + 插件面板 RPC + DOM 构建，
+                        100ms+ 掉帧）。display:none 保留 DOM/state/RPC 缓存，
+                        展开零成本（与 PanelChrome 的折叠模式一致）；display:none
+                        的子树不参与布局（折叠时 section 高度塌缩到 header 不变），
+                        IntersectionObserver/ResizeObserver 也不触发（不可见）。 */}
+                    <div
+                      className="min-h-0 flex-1 overflow-hidden"
+                      style={{ display: isCollapsed ? 'none' : undefined }}
+                    >
+                      {sec.content}
+                    </div>
                   </>
                 )}
               </section>

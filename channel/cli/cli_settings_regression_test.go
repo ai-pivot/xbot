@@ -625,8 +625,8 @@ func (m *mockLLMSubscriber) SelectModel(senderID, channelName, subID, model, cha
 	return nil
 }
 
-func (m *mockLLMSubscriber) GetDefaultModel() string {
-	return m.defaultModel
+func (m *mockLLMSubscriber) GetDefaultModelPair() (string, string) {
+	return "", m.defaultModel
 }
 
 // TestScheduleSessionLLMRestore_UsesPerSessionModel verifies that when a session

@@ -63,7 +63,7 @@ func (a *Agent) handlePromptQuery(ctx context.Context, msg bus.InboundMessage, t
 			if p.Required {
 				req = " (required)"
 			}
-			fmt.Fprintf(&buf, "    %s (%s)%s: %s\n", p.Name, p.Type, req, p.Description)
+			fmt.Fprintf(&buf, "    %s (%s)%s: %s\n", p.Name, p.TypeDisplay(), req, p.Description)
 		}
 	}
 

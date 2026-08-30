@@ -557,7 +557,7 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64, model string) (string, error) {
+		ChatCreate: func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
 			return "created-chat", nil
 		},
 	})
@@ -583,18 +583,19 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 func TestChatsCreateForwardsModelParam(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
-	var gotLabel, gotModel string
+	var gotLabel, gotModel, gotSubID string
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64, model string) (string, error) {
+		ChatCreate: func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
 			gotLabel = label
 			gotModel = model
+			gotSubID = subscriptionID
 			return "created-chat", nil
 		},
 	})
 	server := startTestServer(t, wc)
 	sessionCookie := loginTestAdmin(t, server.URL)
 
-	req, _ := http.NewRequest("POST", server.URL+"/api/chats", strings.NewReader(`{"label":"my-chat","model":"gpt-4o"}`))
+	req, _ := http.NewRequest("POST", server.URL+"/api/chats", strings.NewReader(`{"label":"my-chat","subscription_id":"sub-42","model":"gpt-4o"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(sessionCookie)
 	resp, err := http.DefaultClient.Do(req)
@@ -610,6 +611,9 @@ func TestChatsCreateForwardsModelParam(t *testing.T) {
 	}
 	if gotModel != "gpt-4o" {
 		t.Fatalf("model not forwarded, got %q", gotModel)
+	}
+	if gotSubID != "sub-42" {
+		t.Fatalf("subscription_id not forwarded, got %q", gotSubID)
 	}
 }
 

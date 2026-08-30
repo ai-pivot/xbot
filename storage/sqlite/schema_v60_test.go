@@ -107,6 +107,8 @@ func TestV60ControlRecordPartialIndex(t *testing.T) {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			channel TEXT NOT NULL,
 			chat_id TEXT NOT NULL,
+			subscription_id TEXT DEFAULT '',
+			model TEXT DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(channel, chat_id)
@@ -150,6 +152,53 @@ func TestV60ControlRecordPartialIndex(t *testing.T) {
 			last_trigger DATETIME,
 			one_shot INTEGER NOT NULL DEFAULT 0,
 			user_id INTEGER DEFAULT 0
+		);
+		-- Tables the v62 migration touches (system-subscription removal +
+		-- reference cleanup). Every real v59 DB has them (created by v12/v22/
+		-- v35/v39/v44/v45 migrations); the fixture pins only what earlier
+		-- migrations needed, so they are pinned here explicitly for v62.
+		CREATE TABLE user_llm_subscriptions (
+			id TEXT PRIMARY KEY, sender_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+			provider TEXT NOT NULL DEFAULT 'openai', base_url TEXT NOT NULL DEFAULT '',
+			api_key TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+			max_context INTEGER DEFAULT 0, max_output_tokens INTEGER DEFAULT 0,
+			thinking_mode TEXT DEFAULT '', cached_models TEXT NOT NULL DEFAULT '',
+			api_type TEXT DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+			is_system INTEGER NOT NULL DEFAULT 0, user_id INTEGER DEFAULT 0,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE user_default_model (
+			sender_id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL,
+			model TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			user_id INTEGER DEFAULT 0
+		);
+		CREATE TABLE subscription_models (
+			id TEXT PRIMARY KEY, subscription_id TEXT NOT NULL, model TEXT NOT NULL,
+			max_context INTEGER NOT NULL DEFAULT 0, max_output_tokens INTEGER NOT NULL DEFAULT 0,
+			thinking_mode TEXT NOT NULL DEFAULT '', api_type TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);
+		CREATE TABLE user_identities (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+			channel TEXT NOT NULL, channel_user_id TEXT NOT NULL,
+			linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(channel, channel_user_id)
+		);
+		CREATE TABLE user_settings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, sender_id TEXT NOT NULL,
+			key TEXT NOT NULL, value TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+			UNIQUE(channel, sender_id, key)
+		);
+		CREATE TABLE iteration_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, message_id INTEGER NOT NULL DEFAULT 0,
+			tenant_id INTEGER NOT NULL, turn_id INTEGER NOT NULL DEFAULT 0,
+			iteration INTEGER NOT NULL, content TEXT NOT NULL DEFAULT '',
+			reasoning TEXT NOT NULL DEFAULT '', tools TEXT NOT NULL DEFAULT '[]',
+			tokens INTEGER NOT NULL DEFAULT 0, ttft_ms INTEGER NOT NULL DEFAULT 0,
+			tokens_per_sec INTEGER NOT NULL DEFAULT 0, total_ms INTEGER NOT NULL DEFAULT 0,
+			tpot_ms INTEGER NOT NULL DEFAULT 0,
+			input_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0,
+			model TEXT NOT NULL DEFAULT ''
 		);
 		CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
 		INSERT INTO schema_version (version) VALUES (59);

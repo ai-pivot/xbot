@@ -347,24 +347,9 @@ func (m *cliModel) expandOnly(subID string) {
 	m.expandedSubs[subID] = true
 }
 
-// subIsSystem reports whether the subscription with the given ID is the shared
-// read-only system subscription, according to the panel's current row cache.
-func (m *cliModel) subIsSystem(subID string) bool {
-	for _, r := range m.quickSwitchRows {
-		if r.kind == qsSub && r.sub.ID == subID {
-			return r.sub.IsSystem
-		}
-	}
-	return false
-}
-
 // toggleSubscription flips the subscription-level enabled flag and keeps the
 // panel open + refreshed.
 func (m *cliModel) toggleSubscription(sub ch.Subscription) {
-	if sub.IsSystem {
-		m.showTempStatus("系统订阅只读，不可禁用")
-		return
-	}
 	if m.subscriptionMgr == nil {
 		return
 	}
@@ -404,14 +389,9 @@ func (m *cliModel) editCurrentRow() {
 	row := m.quickSwitchRows[m.quickSwitchCursor]
 	switch row.kind {
 	case qsSub:
-		if row.sub.IsSystem {
-			m.showTempStatus("系统订阅只读，不可编辑")
-			return
-		}
 		m.openEditSubscriptionPanel(row.sub.ID)
 	case qsModel:
-		if row.model.SubID == "" || m.subIsSystem(row.model.SubID) {
-			m.showTempStatus("系统订阅模型只读，不可编辑")
+		if row.model.SubID == "" {
 			return
 		}
 		m.openEditModelPanel(row.model.SubID, row.model.Model)
@@ -426,14 +406,10 @@ func (m *cliModel) disableCurrentRow() {
 	row := m.quickSwitchRows[m.quickSwitchCursor]
 	switch row.kind {
 	case qsSub:
-		if row.sub.IsSystem {
-			m.showTempStatus("系统订阅只读，不可禁用")
-			return
-		}
 		// D on subscription row = toggle enabled/disabled
 		m.toggleSubscription(row.sub)
 	case qsModel:
-		if row.model.SubID == "" || m.subIsSystem(row.model.SubID) {
+		if row.model.SubID == "" {
 			return
 		}
 		m.toggleModelEnabled(row.model.SubID, row.model.Model, row.model.Status)
@@ -481,8 +457,7 @@ func (m *cliModel) deleteModelRow(subID, model string) {
 	if m.subscriptionMgr == nil {
 		return
 	}
-	if subID == "" || m.subIsSystem(subID) {
-		m.showTempStatus("系统订阅模型不可删除")
+	if subID == "" {
 		return
 	}
 	if err := m.subscriptionMgr.RemoveModel(subID, model); err != nil {
@@ -652,21 +627,8 @@ func (m *cliModel) deleteSubscription(subID string) {
 	if err != nil {
 		return
 	}
-	// Refuse to delete the read-only system subscription.
-	for _, s := range subs {
-		if s.ID == subID && s.IsSystem {
-			m.showTempStatus("系统订阅只读，不可删除")
-			return
-		}
-	}
-	// Count user-owned (non-system) subscriptions; must keep at least one.
-	userOwned := 0
-	for _, s := range subs {
-		if !s.IsSystem {
-			userOwned++
-		}
-	}
-	if userOwned <= 0 {
+	// Must keep at least one subscription.
+	if len(subs) <= 0 {
 		m.showTempStatus("Cannot delete the last subscription")
 		return
 	}
@@ -987,11 +949,7 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			if r.sub.ID == activeID {
 				active = " ✓"
 			}
-			sysTag := ""
-			if r.sub.IsSystem {
-				sysTag = " 🔒"
-			}
-			lines = append(lines, style.Render(fmt.Sprintf(" %s %s %s%s%s%s", cursor, expMark, name, disabledTag, active, sysTag)))
+			lines = append(lines, style.Render(fmt.Sprintf(" %s %s %s%s%s", cursor, expMark, name, disabledTag, active)))
 		case qsModel:
 			label := r.model.Model
 			statusTag := ""
@@ -1087,18 +1045,10 @@ func (m *cliModel) buildQuickSwitchHint() string {
 		case qsSection:
 			rowHint = "↑↓ Nav"
 		case qsSub:
-			if r.sub.IsSystem {
-				if r.expanded {
-					rowHint = "🔒 ↑↓ Nav  Enter/← Collapse  E View params  N Add model"
-				} else {
-					rowHint = "🔒 ↑↓ Nav  Enter/→ Expand  N Add model"
-				}
+			if r.expanded {
+				rowHint = "↑↓ Nav  Enter/← Collapse  E Edit  D Toggle enabled  X Delete  N Add model"
 			} else {
-				if r.expanded {
-					rowHint = "↑↓ Nav  Enter/← Collapse  E Edit  D Toggle enabled  X Delete  N Add model"
-				} else {
-					rowHint = "↑↓ Nav  Enter/→ Expand  E Edit  D Toggle enabled  X Delete  N Add model"
-				}
+				rowHint = "↑↓ Nav  Enter/→ Expand  E Edit  D Toggle enabled  X Delete  N Add model"
 			}
 		case qsModel:
 			if r.model.Status == "disabled" {

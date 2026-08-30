@@ -469,6 +469,10 @@ type IterationSnapshot struct {
 	CachedTokens int64 `json:"cached_tokens,omitempty"`
 	// Model is the LLM model used for this iteration (v59).
 	Model string `json:"model,omitempty"`
+	// SubscriptionID is the owning subscription of Model (v62,
+	// model-subscription integration: the model never travels alone —
+	// per-iteration usage aggregation is keyed by (subscription, model)).
+	SubscriptionID string `json:"subscription_id,omitempty"`
 	// SubAgents spawned in this iteration, frozen at the iteration boundary.
 	// Background subagents outlive the iteration — their LIVE progress stops at
 	// the boundary (the callback drops once the run moves on), and this frozen

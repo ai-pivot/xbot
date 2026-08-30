@@ -83,7 +83,7 @@ export interface SessionStore {
   /** Fetch the next page of web sessions and append them (backend pagination). */
   loadMore: () => Promise<void>
   toggleStar: (id: string) => void
-  createSession: (label?: string, workPath?: string, model?: string) => Promise<string | null>
+  createSession: (label?: string, workPath?: string, model?: string, subscriptionId?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
   /** Lightweight session activation (no cache clearing, no async wait).
    * Used when switching active tabs — each tab keeps its own state, so we
@@ -1058,25 +1058,30 @@ export function useSessionStoreImpl(): SessionStore {
   }, [])
 
   const createSession = useCallback(
-    async (label?: string, workPath?: string, model?: string): Promise<string | null> => {
+    async (label?: string, workPath?: string, model?: string, subscriptionId?: string): Promise<string | null> => {
       let chatID: string
       let appliedWorkDir: string | undefined
       try {
         // Default the new session's model to the current active session's model —
-        // new sessions inherit the model the user is currently using. An explicit
-        // model param wins; when neither is available the backend falls back to
-        // the Balance tier model.
+        // new sessions inherit the (subscription, model) pair the user is currently
+        // using. Model-subscription integration: the pair travels together; an
+        // explicit model param (with its subscriptionId) wins; when neither is
+        // available the backend falls back to the Balance tier model.
         let effectiveModel = model ?? ''
+        let effectiveSubID = subscriptionId ?? ''
         if (!effectiveModel && activeSessionRef.current) {
           const cur = activeSessionRef.current
           try {
             const ctx = await getContextUsage(wsRef.current, cur.channel, cur.chatID)
-            if (ctx.model) effectiveModel = ctx.model
+            if (ctx.model) {
+              effectiveModel = ctx.model
+              effectiveSubID = ctx.subscription_id ?? ''
+            }
           } catch {
             // Non-fatal — the backend falls back to the Balance tier model.
           }
         }
-        const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '', model: effectiveModel })
+        const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '', model: effectiveModel, subscription_id: effectiveSubID })
         if (!data.chat_id) return null
         chatID = data.chat_id
       } catch {

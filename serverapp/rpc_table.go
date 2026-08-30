@@ -389,12 +389,11 @@ func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bo
 }
 
 // subOwnedByUser reports whether sub is manageable by the caller: the
-// canonical user (v45 user_id) owns it, or it is the shared system
-// subscription. Falls back to a sender_id match for identities without a
-// canonical user (userID==0, e.g. legacy CLI senders) to preserve pre-v45
-// behavior. Write-path permission checks MUST use this instead of
-// `SenderID != rpcBizID(ctx)` — a subscription created through one channel
-// identity (e.g. web-7) is manageable through any linked identity
+// canonical user (v45 user_id) owns it. Falls back to a sender_id match for
+// identities without a canonical user (userID==0, e.g. legacy CLI senders) to
+// preserve pre-v45 behavior. Write-path permission checks MUST use this
+// instead of `SenderID != rpcBizID(ctx)` — a subscription created through one
+// channel identity (e.g. web-7) is manageable through any linked identity
 // (cli/feishu) of the same canonical user.
 func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) bool {
 	if isAdmin(ctx) {
@@ -404,9 +403,6 @@ func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscrip
 		return false
 	}
 	if uid := rpcUserID(ctx); uid > 0 {
-		// ListByUserID returns the user's subscriptions plus the shared
-		// system subscription (is_system=1) — system rows pass the check
-		// here and are rejected by the storage layer's own mutation guards.
 		subs, err := svc.ListByUserID(uid)
 		if err != nil {
 			return false
@@ -772,38 +768,37 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 // ── LLM / model / tier / proxy handlers ──
 
 func registerLLMHandlers(t RPCTable, h *RPCContext) {
-	t["get_default_model"] = rpc0(func(ctx context.Context) string {
+	t["get_default_model"] = rpc0(func(ctx context.Context) any {
 		bizID := rpcBizID(ctx)
 		uid := rpcUserID(ctx)
-		// Model-first: resolve the user's last-used (sub, model) pair via
-		// the model-first chain (sessionMemo → tenants → user_default_model),
-		// NOT the subscription's default Model field.
-		// User-level RPC — v45 rule: resolve by canonical user_id so
-		// identities linked to the same user see the same last-used model
-		// (consistent with list_subscriptions). bizID fallback only when
-		// uid==0. GetUserDefaultModelByUserID hits the same table
-		// ResolveActiveSubModel reads, keyed by user_id.
-		model := ""
+		// Model-subscription integration: returns the (subID, model) PAIR —
+		// a bare model name is never handed to the client. Resolution chain:
+		// user_default_model (by canonical user_id) → ResolveActiveSubModel
+		// (tenants → user_default_model → legacy) → GetLLM fallback (deployment
+		// defaultLLM, subID empty).
 		if uid > 0 {
 			if svc, serr := h.requireSubscriptionSvc(); serr == nil {
-				if udm, uerr := svc.GetUserDefaultModelByUserID(uid); uerr == nil && udm != nil && udm.Model != "" {
-					model = udm.Model
+				if udm, uerr := svc.GetUserDefaultModelByUserID(uid); uerr == nil && udm != nil && udm.Model != "" && udm.SubscriptionID != "" {
+					return struct {
+						SubID string `json:"sub_id"`
+						Model string `json:"model"`
+					}{udm.SubscriptionID, udm.Model}
 				}
 			}
 		}
-		if model == "" {
-			_, m, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", "")
-			if err == nil {
-				model = m
-			}
+		if sub, m, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", ""); err == nil && sub != nil && m != "" {
+			return struct {
+				SubID string `json:"sub_id"`
+				Model string `json:"model"`
+			}{sub.ID, m}
 		}
-		if model == "" {
-			// Fallback to GetLLM resolution
-			_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
-			model = m
-		}
-		log.WithField("sender_id", bizID).WithField("model", model).Debug("RPC get_default_model")
-		return model
+		// Deployment-level fallback (defaultLLM built from cfg.LLM) — no
+		// subscription behind it, subID stays empty.
+		_, m, _, _, _ := h.Ag.LLMFactory().GetLLM(bizID)
+		return struct {
+			SubID string `json:"sub_id"`
+			Model string `json:"model"`
+		}{"", m}
 	})
 	t["set_user_model"] = rpc1void(func(ctx context.Context, p struct {
 		SubID string `json:"sub_id"`
@@ -2636,23 +2631,19 @@ func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscript
 
 func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subscription, error) {
 	uid := rpcUserID(ctx)
-	bizID := rpcBizID(ctx)
 	svc, err := h.requireSubscriptionSvc()
 	if err != nil {
 		return nil, nil
 	}
 	// User-level RPC — v45 rule: resolve by canonical user_id so identities
 	// linked to the same user (web-N, cli_user, ou_xxx) see the same default
-	// (consistent with list_subscriptions' ListByUserID). uid==0 fallback:
-	// GetDefault(bizID) resolves via the session key's tenant binding and
-	// ultimately the system default subscription (bizID is the session key,
-	// NOT a sender_id).
-	var sub *sqlite.LLMSubscription
-	if uid > 0 {
-		sub, err = svc.GetDefaultByUserID(uid)
-	} else {
-		sub, err = svc.GetDefault(bizID)
+	// (consistent with list_subscriptions' ListByUserID). No uid → no default
+	// (the old bizID fallback queried by session key, which is not a sender_id
+	// and could never match).
+	if uid <= 0 {
+		return nil, nil
 	}
+	sub, err := svc.GetDefaultByUserID(uid)
 	if err != nil {
 		return nil, err
 	}
@@ -3112,7 +3103,6 @@ func subToChannel(s *sqlite.LLMSubscription) channel.Subscription {
 		ThinkingMode:    s.ThinkingMode,
 		APIType:         s.APIType,
 		PerModelConfigs: s.PerModelConfigs,
-		IsSystem:        s.IsSystem,
 	}
 }
 

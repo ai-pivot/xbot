@@ -990,18 +990,15 @@ func checkpointOutcome(checkpoint *protocol.RewindResult, err error) (bool, stri
 
 // SetUserModel sets the user's default model via an explicit (subID, model) pair.
 // Used by the settings card callback (feishu/web) and the set_user_model RPC.
-// When subID is empty, falls back to ResolveSubscriptionForModel (legacy UIs
-// that only know the model name). Persists the choice to user_default_model.
+// Model-subscription integration: subID is required — a bare model name is
+// rejected (the caller must resolve the owning subscription first). Persists
+// the choice to user_default_model.
 func (a *Agent) SetUserModel(senderID, subID, model string) error {
 	if model == "" {
 		return fmt.Errorf("model is required")
 	}
 	if subID == "" {
-		sub, err := a.userSys.llmFactory.ResolveSubscriptionForModel(senderID, model)
-		if err != nil {
-			return fmt.Errorf("resolve subscription for model %q: %w", model, err)
-		}
-		subID = sub.ID
+		return fmt.Errorf("subID is required (model-subscription pair); bare model %q is not allowed — resolve the owning subscription first", model)
 	}
 	// Persist the default model under the canonical user_id so linked
 	// identities (web/cli/feishu) all see the same selection.

@@ -1018,16 +1018,29 @@
  * 覆盖 --dv-* 变量不够（内部 JS 直接 style.backgroundColor）。
  * 修复：glass 激活时强制所有 Dockview 容器透明——玻璃效果由 AppShell 根
  * 容器的 bg-bg-primary（覆盖为半透明）提供。tab 栏保留 --bg-secondary。
+ *
+ * dv-grid-view / dv-render-overlay / dv-shell-middle-column / dv-view-container
+ * / dv-branch-node 是 dockview 7.0.2 的实际结构类（Playwright 实测 DOM：
+ * dv-grid-view.dv-dockview 带 var(--dv-group-view-background-color) 背景
+ * ——#1e1e1e 90% 直接挡壁纸，"主 view 看不到壁纸"的根因；旧列表只有
+ * dv-view/dv-render 覆盖不到这些层）。
  */
 .ambience-glass .dockview-theme-vs,
 .ambience-glass .dockview-theme-vs > div,
 .ambience-glass .dv-root-wrapper,
 .ambience-glass .dv-root,
+.ambience-glass .dv-shell,
+.ambience-glass .dv-shell-middle-column,
+.ambience-glass .dv-grid-view,
+.ambience-glass .dv-render-overlay,
+.ambience-glass .dv-view-container,
+.ambience-glass .dv-branch-node,
 .ambience-glass .dv-groupview,
 .ambience-glass .dv-view,
 .ambience-glass .dv-render,
 .ambience-glass .dv-split-view-container,
-.ambience-glass .dv-resize-container {
+.ambience-glass .dv-resize-container,
+.ambience-glass .dv-content-container {
   background-color: transparent !important;
 }
 /* tab 栏保留 --bg-secondary（半透明玻璃——变量覆盖链生效） */

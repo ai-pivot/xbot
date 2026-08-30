@@ -4,29 +4,18 @@ import (
 	"testing"
 )
 
-// seedSystemSubscription creates the shared system row that
-// reconcileSystemSubscription writes at boot in production — GetDefault's
-// dangling/empty fallback resolves to it.
-func seedSystemSubscription(t *testing.T, svc *LLMSubscriptionService) {
-	t.Helper()
-	if err := svc.UpsertSystemSubscription(&LLMSubscription{
-		ID: "system", Name: "system", Provider: "openai",
-		BaseURL: "http://system", APIKey: "k", Model: "sys-m", SenderID: "__system__",
-	}); err != nil {
-		t.Fatalf("seed system subscription: %v", err)
-	}
-}
-
 // TestRemoveSubscriptionCleansUserDefaultModel (m8) verifies Remove deletes
 // ALL user_default_model rows pointing at the removed subscription — across
 // every sender dimension, including the canonical "user-%d" rows written by
 // SetUserDefaultModelByUserID. Previously the cleanup was
 // `sender_id = <sub's sender_id>`, leaving "user-%d" rows dangling → GetDefault
 // resolved a NULL subscription for every canonical-user read path.
+// Since v62 (system subscription removed), GetDefault returns (nil, nil) when
+// the user has no default — the caller falls back to the in-memory
+// defaultLLM built from cfg.LLM.
 func TestRemoveSubscriptionCleansUserDefaultModel(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewLLMSubscriptionService(db)
-	seedSystemSubscription(t, svc)
 
 	const sender = "subowner-m8"
 	sub := &LLMSubscription{
@@ -72,27 +61,24 @@ func TestRemoveSubscriptionCleansUserDefaultModel(t *testing.T) {
 		}
 	}
 
-	// GetDefault must fall back to the system subscription instead of nil.
+	// GetDefault returns (nil, nil) after the default subscription was removed —
+	// there is no system fallback anymore; the caller falls back to defaultLLM.
 	got, err := svc.GetDefault(sender)
 	if err != nil {
 		t.Fatalf("GetDefault after removal: %v", err)
 	}
-	if got == nil {
-		t.Fatal("GetDefault returned nil after the default subscription was removed — must fall back to the system subscription")
-	}
-	if got.ID != "system" {
-		t.Errorf("GetDefault = %q, want system subscription fallback (id=system)", got.ID)
+	if got != nil {
+		t.Errorf("GetDefault = %+v, want nil (no system fallback since v62)", got)
 	}
 }
 
-// TestGetDefaultDanglingSubscriptionFallsBack (m8 part 2) simulates the
+// TestGetDefaultDanglingSubscriptionNil (m8 part 2) simulates the
 // dangling-reference read path WITHOUT Remove: user_default_model still points
 // at a deleted subscription (legacy dangling row from before the cleanup fix).
-// GetDefault must return the system subscription fallback, not nil.
-func TestGetDefaultDanglingSubscriptionFallsBack(t *testing.T) {
+// Since v62, GetDefault returns (nil, nil) — no system subscription fallback.
+func TestGetDefaultDanglingSubscriptionNil(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewLLMSubscriptionService(db)
-	seedSystemSubscription(t, svc)
 
 	const sender = "dangler-m8"
 	if _, err := db.Conn().Exec(
@@ -106,10 +92,7 @@ func TestGetDefaultDanglingSubscriptionFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDefault with dangling subscription_id: %v", err)
 	}
-	if got == nil {
-		t.Fatal("GetDefault returned nil for a dangling subscription reference — must fall back to the system subscription")
-	}
-	if got.ID != "system" {
-		t.Errorf("GetDefault = %q, want system subscription fallback", got.ID)
+	if got != nil {
+		t.Errorf("GetDefault = %+v, want nil for a dangling subscription reference (no system fallback since v62)", got)
 	}
 }

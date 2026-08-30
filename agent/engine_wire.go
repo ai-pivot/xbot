@@ -1820,7 +1820,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 		startedMsg := fmt.Sprintf("Sub-agent %q (instance=%s) started in background.", roleName, oneshotInstance)
 		if bgTask != nil {
-			startedMsg += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=%q) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+			startedMsg += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=[%q]) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
 		}
 		return &channelpkg.OutboundMsg{Content: startedMsg}, nil
 	}
@@ -2170,12 +2170,30 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 			samples = samples[1:]
 		}
 		tps := int64(0)
+		windowFormed := false
 		if len(samples) >= 2 {
 			oldest := samples[0]
 			dtMs := now.Sub(oldest.at).Milliseconds()
 			dtTokens := tokens - oldest.tokens
-			if dtMs >= 200 && dtTokens > 0 {
-				tps = dtTokens * 1000 / dtMs
+			if dtMs >= 200 {
+				windowFormed = true
+				if dtTokens > 0 {
+					tps = dtTokens * 1000 / dtMs
+				}
+			}
+		}
+		// Short-stream fallback: a 1-2 chunk stream (chunks sub-200ms apart)
+		// never forms the ≥200ms window, so tps stayed 0 the whole time even
+		// though tokens were flowing ("tok/s 有计算问题，在只有一两个 sse 的时候").
+		// Fall back to the average rate since the first chunk
+		// (tokens×1000/elapsed) — same semantics as the committed
+		// StreamStats.TokensPerSec. Only when the window hasn't formed: a
+		// formed window with dtTokens=0 is a genuine stall (true 0, no
+		// fallback). elapsed>0 guards the first frame (first == now).
+		if !windowFormed && tokens > 0 && first.Before(now) {
+			elapsed := now.Sub(first).Milliseconds()
+			if elapsed > 0 {
+				tps = tokens * 1000 / elapsed
 			}
 		}
 		mu.Unlock()

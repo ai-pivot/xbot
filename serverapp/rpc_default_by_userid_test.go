@@ -127,11 +127,19 @@ func TestGetDefaultModelByLinkedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get_default_model via linked identity: %v", err)
 	}
-	var model string
-	if err := json.Unmarshal(raw, &model); err != nil {
+	// v62 model-subscription integration: the RPC returns the (subID, model)
+	// pair — a bare model name never crosses the protocol boundary.
+	var pair struct {
+		SubID string `json:"sub_id"`
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &pair); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if model != "owned-model" {
-		t.Fatalf("get_default_model via linked identity = %q, want owned-model (user_id resolution)", model)
+	if pair.Model != "owned-model" {
+		t.Fatalf("get_default_model via linked identity = %q, want owned-model (user_id resolution)", pair.Model)
+	}
+	if pair.SubID != "sub-owned" {
+		t.Fatalf("get_default_model sub_id = %q, want sub-owned (model-subscription pair)", pair.SubID)
 	}
 }

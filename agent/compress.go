@@ -548,9 +548,21 @@ Output the structured working state directly.`
 		Messages:      compactionMsgs,
 		Tools:         tools.NewRegistry(), // empty — no tools for compression
 		MaxIterations: 1,                   // single LLM call, no tool execution needed
-		Stream:        false,
-		ThinkingMode:  "",
-		AgentID:       "compressor",
+		// Stream MUST be true — the same timeout semantics as normal chat.
+		// The non-stream path carries perAttemptCtx's HARD 120s deadline
+		// (llm/retry.go); a large compaction summary (e.g. a 52,884-token
+		// target for a 176k-token context) takes 9-17 minutes at single-stream
+		// decode speeds — every attempt was killed at 120s, all 5 retries
+		// failed, and the turn burned 16 minutes per compression cycle before
+		// re-triggering (870k-context infinite loop, 2026-08-30). The streaming
+		// path has NO total deadline: only the 120s IDLE timeout between SSE
+		// chunks, reset on EVERY chunk (CollectStreamWithCallback) — an
+		// actively-streaming summary never times out. Clients that don't
+		// implement llm.StreamingLLM fall back to Generate automatically
+		// (generateResponse).
+		Stream:       true,
+		ThinkingMode: "",
+		AgentID:      "compressor",
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{

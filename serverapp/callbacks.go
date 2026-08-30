@@ -763,7 +763,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		result.NextOffset = nextOffset
 		return result, nil
 	}
-	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, model string) (string, error) {
+	callbacks.ChatCreate = func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
 		if webDB == nil {
 			return "", fmt.Errorf("database not available")
 		}
@@ -780,18 +780,26 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// ensureSessionModel is idempotent — it checks GetSessionSubscription
 		// first and returns immediately if a binding already exists.
 		if model != "" {
-			// Explicit model override: resolve the subscription that serves this
-			// model and bind the new session to it. Resolution/binding failures
-			// are non-fatal — the session is created regardless and falls back
-			// to the default binding (Balance tier first).
+			// Explicit model override. Model-subscription integration: when the
+			// caller provides the (subscriptionID, model) pair (frontend
+			// inheritance passes both), bind directly — no reverse resolution.
+			// A bare model name (no subscriptionID) is resolved to its owning
+			// subscription exactly once (the single input resolver).
+			// Resolution/binding failures are non-fatal — the session is created
+			// regardless and falls back to the default binding (Balance tier).
 			llmFactory := ag.LLMFactory()
-			if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
-				if serr := llmFactory.SelectModel(senderID, chatID, "web", sub.ID, model); serr != nil {
-					log.WithError(serr).WithField("model", model).Warn("ChatCreate: failed to bind explicit model, falling back to default")
+			subID := subscriptionID
+			if subID == "" {
+				if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
+					subID = sub.ID
+				} else {
+					log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
 					llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
+					return chatID, nil
 				}
-			} else {
-				log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
+			}
+			if serr := llmFactory.SelectModel(senderID, chatID, "web", subID, model); serr != nil {
+				log.WithError(serr).WithFields(log.Fields{"model": model, "sub_id": subID}).Warn("ChatCreate: failed to bind explicit model, falling back to default")
 				llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
 			}
 		} else {

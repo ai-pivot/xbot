@@ -492,6 +492,10 @@ func (s *runState) snapshotCompletedIteration(iteration int) {
 		snap.InputTokens = s.iterInputTokens
 		snap.CachedTokens = s.iterCachedTokens
 		snap.Model = s.cfg.Model
+		// Model-subscription integration (v62): the model never travels alone —
+		// per-iteration records carry the owning subscription for (sub, model)
+		// usage aggregation.
+		snap.SubscriptionID = s.cfg.SubID
 		// Per-iteration stream timing: the most recent LLM call's StreamStats.
 		// snapshotCompletedIteration runs right after callLLM → StreamStats
 		// belongs to the iteration being snapshotted.
@@ -580,20 +584,21 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 	// is queried by turn_id on read. This avoids the dependency on
 	// IncrementalPersist populating message IDs.
 	if err := appendFn(0, turnID, sqlite.IterationRecord{
-		MessageID:    0,
-		TurnID:       turnID,
-		Iteration:    snap.Iteration,
-		Content:      snap.Content,
-		Reasoning:    snap.Reasoning,
-		Tools:        toolsJSON,
-		Tokens:       snap.Tokens,
-		TTFTMs:       snap.TTFTMs,
-		TokensPerSec: snap.TokensPerSec,
-		TotalMs:      snap.TotalMs,
-		TPOTMs:       snap.TPOTMs,
-		InputTokens:  snap.InputTokens,
-		CachedTokens: snap.CachedTokens,
-		Model:        snap.Model,
+		MessageID:      0,
+		TurnID:         turnID,
+		Iteration:      snap.Iteration,
+		Content:        snap.Content,
+		Reasoning:      snap.Reasoning,
+		Tools:          toolsJSON,
+		Tokens:         snap.Tokens,
+		TTFTMs:         snap.TTFTMs,
+		TokensPerSec:   snap.TokensPerSec,
+		TotalMs:        snap.TotalMs,
+		TPOTMs:         snap.TPOTMs,
+		InputTokens:    snap.InputTokens,
+		CachedTokens:   snap.CachedTokens,
+		Model:          snap.Model,
+		SubscriptionID: snap.SubscriptionID,
 	}); err != nil {
 		log.WithError(err).WithField("iteration", iteration).Warn("Failed to write iteration_history")
 	}
