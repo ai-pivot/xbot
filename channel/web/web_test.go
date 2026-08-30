@@ -680,17 +680,17 @@ func TestSessionTreeReturnsChildrenForAdmin(t *testing.T) {
 	}
 }
 
-func TestIsAdminIdentityRecognizesFirstWebUser(t *testing.T) {
+// TestIsAdminIdentityRecognizesOperator verifies the v63 semantics: after the
+// multi-user removal every authenticated web login IS the operator — the
+// IsAdminIdentity bridge (used by the sandbox router) returns true for any
+// web sender. Password authentication is the trust boundary.
+func TestIsAdminIdentityRecognizesOperator(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
-	if !wc.IsAdminIdentity("web-1") {
-		t.Fatal("web-1 should be treated as admin identity")
-	}
-	if wc.IsAdminIdentity("web-2") {
-		t.Fatal("web-2 should not be treated as admin identity")
-	}
-	if wc.IsAdminIdentity("cli_user") {
-		t.Fatal("plain business sender should not be treated as web admin")
+	for _, sender := range []string{"web-1", "web-2", "cli_user"} {
+		if !wc.IsAdminIdentity(sender) {
+			t.Fatalf("%s should be treated as admin identity (single operator)", sender)
+		}
 	}
 }
 

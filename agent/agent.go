@@ -2166,14 +2166,14 @@ func (a *Agent) SetSandbox(sb tools.Sandbox, mode string) {
 	}
 }
 
-// GetLLMConcurrencyForUserID returns the max_concurrency for a canonical user.
-// This reads the same "max_concurrency" key (channel "cli") that the CLI uses,
-// so the web UI and CLI always show the same value.
-func (a *Agent) GetLLMConcurrencyForUserID(userID int64) int {
+// GetLLMConcurrency returns the operator's max_concurrency (channel "cli",
+// operator sender row — the single user after the multi-user removal).
+// The web UI and CLI always show the same value.
+func (a *Agent) GetLLMConcurrency() int {
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return a.getMaxConcurrency()
 	}
-	vals, err := a.userSys.settingsSvc.GetByUserID("cli", userID)
+	vals, err := a.userSys.settingsSvc.GetSettings("cli", "cli_user")
 	if err != nil || vals == nil {
 		return a.getMaxConcurrency()
 	}
@@ -2188,13 +2188,13 @@ func (a *Agent) GetLLMConcurrencyForUserID(userID int64) int {
 	return v
 }
 
-// SetLLMConcurrencyForUserID sets max_concurrency for a canonical user.
+// SetLLMConcurrency sets the operator's max_concurrency.
 // Writes to the same "max_concurrency" key (channel "cli") as the CLI.
-func (a *Agent) SetLLMConcurrencyForUserID(userID int64, personal int) error {
+func (a *Agent) SetLLMConcurrency(personal int) error {
 	if a.userSys == nil || a.userSys.settingsSvc == nil {
 		return ErrSettingsUnavailable
 	}
-	return a.userSys.settingsSvc.SetByUserID("cli", userID, "max_concurrency", fmt.Sprintf("%d", personal))
+	return a.userSys.settingsSvc.SetSetting("cli", "cli_user", "max_concurrency", fmt.Sprintf("%d", personal))
 }
 
 // SetDirectSend 注入同步发送函数（绕过 bus，用于消息更新跟踪）

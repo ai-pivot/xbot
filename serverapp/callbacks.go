@@ -128,14 +128,6 @@ func canonicalModelEntries(ag *agent.Agent, senderID string) []protocol.ModelEnt
 	return ag.LLMFactory().ListAllModelEntriesForUser(senderID)
 }
 
-// resolveUID resolves senderID to its canonical user_id (read-only, no
-// auto-create). Returns 0 when the identity is unknown.
-func resolveUID(ag *agent.Agent, senderID string) int64 {
-	// Multi-user removal: single operator — every sender resolves to the
-	// same operator user (id=1). The IdentityResolver is gone.
-	return 1
-}
-
 func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	return channel.LLMCallbacks{
 		LLMList: func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry) {
@@ -419,11 +411,8 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
 			return []any{}, nil
 		}
-		// Multi-user removal: one operator — cron jobs are global for the
-		// operator (user_id=1 after the v63 migration; the by-user query
-		// keeps working for pre-migration DBs where all rows resolve to the
-		// single operator anyway).
-		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByUserID(1)
+		// Multi-user removal: one operator — cron jobs are global.
+		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobs()
 		if err != nil {
 			return nil, fmt.Errorf("list cron jobs: %w", err)
 		}
@@ -732,7 +721,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return "", fmt.Errorf("database not available")
 		}
 		cs := sqlite.NewChatService(webDB)
-		chatID, err := cs.CreateChatOwned("web", senderID, label, canonicalUserID)
+		chatID, err := cs.CreateChat("web", senderID, label)
 		if err != nil {
 			return "", err
 		}
@@ -1869,17 +1858,11 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 			return fmt.Errorf("not supported in server mode")
 		},
 
-		// Subscription management — all keyed by canonical user_id so web/cli/
-		// feishu linked identities see the SAME subscriptions (v45 user_id).
+		// Subscription management — single operator (multi-user removal): the
+		// sender dimension IS the operator dimension after v63 migration.
 		LLMListSubscriptions: func(senderID string) ([]channel.Subscription, error) {
 			svc := ag.LLMFactory().GetSubscriptionSvc()
-			var subs []*sqlite.LLMSubscription
-			var err error
-			if uid := resolveUID(ag, senderID); uid > 0 {
-				subs, err = svc.ListByUserID(uid)
-			} else {
-				subs, err = svc.List(senderID)
-			}
+			subs, err := svc.List(senderID)
 			if err != nil {
 				return nil, err
 			}
@@ -1891,13 +1874,7 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		},
 		LLMGetDefaultSubscription: func(senderID string) (*channel.Subscription, error) {
 			svc := ag.LLMFactory().GetSubscriptionSvc()
-			var sub *sqlite.LLMSubscription
-			var err error
-			if uid := resolveUID(ag, senderID); uid > 0 {
-				sub, err = svc.GetDefaultByUserID(uid)
-			} else {
-				sub, err = svc.GetDefault(senderID)
-			}
+			sub, err := svc.GetDefault(senderID)
 			if err != nil || sub == nil {
 				return nil, err
 			}
@@ -1922,26 +1899,12 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 				Model:    sub.Model,
 			}
 			// If user has no default subscription yet, auto-set the first one.
-			uid := resolveUID(ag, senderID)
-			if uid > 0 {
-				existing, _ := svc.ListByUserID(uid)
-				if len(existing) == 0 {
-					newSub.IsDefault = true
-				}
-			} else {
-				existing, _ := svc.List(senderID)
-				if len(existing) == 0 {
-					newSub.IsDefault = true
-				}
+			existing, _ := svc.List(senderID)
+			if len(existing) == 0 {
+				newSub.IsDefault = true
 			}
 			if err := svc.Add(newSub); err != nil {
 				return err
-			}
-			// Bind to canonical user so every linked identity sees it (v45).
-			if uid > 0 {
-				if err := svc.SetSubscriptionUserID(newSub.ID, uid); err != nil {
-					log.WithError(err).WithField("sub_id", newSub.ID).Warn("failed to bind subscription to canonical user")
-				}
 			}
 			ag.LLMFactory().InvalidateSender(senderID)
 			ag.LLMFactory().InvalidateSubscription(newSub.ID)

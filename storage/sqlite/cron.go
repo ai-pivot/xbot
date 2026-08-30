@@ -13,16 +13,11 @@ import (
 
 // CronJob represents a scheduled cron job
 type CronJob struct {
-	ID       string `json:"id"`
-	Message  string `json:"message"`
-	Channel  string `json:"channel"`
-	ChatID   string `json:"chat_id"`
-	SenderID string `json:"sender_id,omitempty"`
-	// UserID is the canonical user id (users.id) that owns the job. Set by the
-	// caller (tools/cron.go passes ToolContext.UserID); 0 = no owner (plugin
-	// jobs, legacy rows). Drives ListJobsByUserID (web cron panel) and the
-	// user-merge migrations.
-	UserID       int64      `json:"user_id,omitempty"`
+	ID           string     `json:"id"`
+	Message      string     `json:"message"`
+	Channel      string     `json:"channel"`
+	ChatID       string     `json:"chat_id"`
+	SenderID     string     `json:"sender_id,omitempty"`
 	CronExpr     string     `json:"cron_expr,omitempty"`
 	EverySeconds int        `json:"every_seconds,omitempty"`
 	DelaySeconds int        `json:"delay_seconds,omitempty"`
@@ -52,9 +47,9 @@ func (s *CronService) AddJob(job *CronJob) error {
 		lastTriggerStr = &s
 	}
 	_, err := conn.Exec(`
-		INSERT INTO cron_jobs (id, message, channel, chat_id, sender_id, user_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, job.ID, job.Message, job.Channel, job.ChatID, job.SenderID, job.UserID, job.CronExpr, job.EverySeconds, job.DelaySeconds, job.At, job.CreatedAt.Format(time.RFC3339), job.NextRun.Format(time.RFC3339), lastTriggerStr, job.OneShot)
+		INSERT INTO cron_jobs (id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, job.ID, job.Message, job.Channel, job.ChatID, job.SenderID, job.CronExpr, job.EverySeconds, job.DelaySeconds, job.At, job.CreatedAt.Format(time.RFC3339), job.NextRun.Format(time.RFC3339), lastTriggerStr, job.OneShot)
 	if err != nil {
 		return fmt.Errorf("insert cron job: %w", err)
 	}
@@ -135,13 +130,14 @@ func (s *CronService) ListJobsBySender(senderID string) ([]*CronJob, error) {
 	return jobs, nil
 }
 
-// ListJobsByUserID lists all cron jobs for a canonical user (by user_id).
-func (s *CronService) ListJobsByUserID(userID int64) ([]*CronJob, error) {
+// ListJobs lists ALL cron jobs (single operator — the user_id dimension was
+// removed in v63). Used by the web cron panel.
+func (s *CronService) ListJobs() ([]*CronJob, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
 		SELECT id, message, channel, chat_id, sender_id, cron_expr, every_seconds, delay_seconds, at, created_at, next_run, last_trigger, one_shot
-		FROM cron_jobs WHERE user_id = ? ORDER BY created_at
-	`, userID)
+		FROM cron_jobs ORDER BY created_at
+	`)
 	if err != nil {
 		return nil, fmt.Errorf("query cron jobs by user_id: %w", err)
 	}

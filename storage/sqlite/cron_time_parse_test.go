@@ -20,7 +20,7 @@ func TestListJobsByChannelChatIDTolerantTimeParse(t *testing.T) {
 		return &CronJob{
 			ID: id, Message: "m", Channel: "web", ChatID: "chat-i6",
 			SenderID: "web-1", CronExpr: "0 9 * * *",
-			CreatedAt: now, NextRun: now.Add(time.Hour), UserID: 7,
+			CreatedAt: now, NextRun: now.Add(time.Hour),
 		}
 	}
 	for _, id := range []string{"i6-legacy", "i6-bad"} {

@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,128 +13,9 @@ type TenantService struct {
 	db *DB
 }
 
-var ErrTenantOwnerConflict = errors.New("tenant belongs to another user")
-
-type rowQuerier interface {
-	QueryRow(query string, args ...any) *sql.Row
-}
-
-func canonicalUserID(q rowQuerier, channel, senderID string) (int64, error) {
-	if channel == "" || senderID == "" {
-		return 0, nil
-	}
-	var userID int64
-	err := q.QueryRow(
-		`SELECT user_id FROM user_identities WHERE channel = ? AND channel_user_id = ?`,
-		channel, senderID,
-	).Scan(&userID)
-	if err == sql.ErrNoRows {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, fmt.Errorf("resolve canonical user: %w", err)
-	}
-	return userID, nil
-}
-
-func backfillSessionOwnership(tx *sql.Tx, channel, chatID string) error {
-	if _, err := tx.Exec(`
-UPDATE user_chats
-SET user_id = COALESCE((
-    SELECT ui.user_id FROM user_identities ui
-    WHERE ui.channel = user_chats.channel
-      AND ui.channel_user_id = user_chats.sender_id
-), 0)
-WHERE channel = ? AND chat_id = ? AND COALESCE(user_id, 0) = 0
-`, channel, chatID); err != nil {
-		return fmt.Errorf("backfill chat owner: %w", err)
-	}
-	if _, err := tx.Exec(`
-UPDATE tenants
-SET owner_user_id = COALESCE(
-    (SELECT NULLIF(uc.user_id, 0) FROM user_chats uc
-     WHERE uc.channel = tenants.channel AND uc.chat_id = tenants.chat_id
-     ORDER BY uc.id LIMIT 1),
-    (SELECT ui.user_id FROM user_identities ui
-     WHERE ui.channel = tenants.channel AND ui.channel_user_id = tenants.chat_id),
-    0
-)
-WHERE channel = ? AND chat_id = ? AND COALESCE(owner_user_id, 0) = 0
-`, channel, chatID); err != nil {
-		return fmt.Errorf("backfill tenant owner: %w", err)
-	}
-	return nil
-}
-
 // NewTenantService creates a new tenant service
 func NewTenantService(db *DB) *TenantService {
 	return &TenantService{db: db}
-}
-
-// ClaimOrVerifyTenantOwner atomically creates or claims a tenant for a
-// canonical user, and rejects tenants already owned by another user.
-func ClaimOrVerifyTenantOwner(conn *sql.DB, channel, chatID string, canonicalUserID int64) (int64, error) {
-	if conn == nil {
-		return 0, fmt.Errorf("database not initialized")
-	}
-	if channel == "" || chatID == "" || canonicalUserID <= 0 {
-		return 0, fmt.Errorf("channel, chat ID, and canonical user ID are required")
-	}
-
-	tx, err := conn.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("begin tenant owner claim: %w", err)
-	}
-	defer tx.Rollback()
-
-	now := time.Now()
-	if _, err := tx.Exec(
-		`INSERT OR IGNORE INTO tenants (channel, chat_id, owner_user_id, created_at, last_active_at) VALUES (?, ?, ?, ?, ?)`,
-		channel, chatID, canonicalUserID, now, now,
-	); err != nil {
-		return 0, fmt.Errorf("create tenant owner claim: %w", err)
-	}
-	if _, err := tx.Exec(
-		`UPDATE tenants SET owner_user_id = ? WHERE channel = ? AND chat_id = ? AND COALESCE(owner_user_id, 0) = 0`,
-		canonicalUserID, channel, chatID,
-	); err != nil {
-		return 0, fmt.Errorf("claim tenant owner: %w", err)
-	}
-
-	var tenantID, ownerUserID int64
-	if err := tx.QueryRow(
-		`SELECT id, COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
-		channel, chatID,
-	).Scan(&tenantID, &ownerUserID); err != nil {
-		return 0, fmt.Errorf("verify tenant owner: %w", err)
-	}
-	if ownerUserID != canonicalUserID {
-		return 0, ErrTenantOwnerConflict
-	}
-	if _, err := tx.Exec(`UPDATE tenants SET last_active_at = ? WHERE id = ?`, now, tenantID); err != nil {
-		return 0, fmt.Errorf("update tenant activity: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit tenant owner claim: %w", err)
-	}
-	return tenantID, nil
-}
-
-func (s *TenantService) ClaimOrVerifyTenantOwner(channel, chatID string, canonicalUserID int64) (int64, error) {
-	if s == nil || s.db == nil {
-		return 0, fmt.Errorf("tenant service not initialized")
-	}
-	return ClaimOrVerifyTenantOwner(s.db.Conn(), channel, chatID, canonicalUserID)
-}
-
-// GetOrCreateTenantIDWithOwner is the owned-session creation path. A positive
-// canonical user ID is claimed atomically; standalone callers can keep using
-// GetOrCreateTenantID without ownership.
-func (s *TenantService) GetOrCreateTenantIDWithOwner(channel, chatID string, canonicalUserID int64) (int64, error) {
-	if canonicalUserID <= 0 {
-		return s.GetOrCreateTenantID(channel, chatID)
-	}
-	return s.ClaimOrVerifyTenantOwner(channel, chatID, canonicalUserID)
 }
 
 // GetOrCreateTenantID retrieves a tenant ID by (channel, chat_id), creating it if it doesn't exist.
@@ -179,9 +59,6 @@ func (s *TenantService) GetOrCreateTenantID(channel, chatID string) (int64, erro
 	).Scan(&tenantID)
 	if err != nil {
 		return 0, fmt.Errorf("select tenant: %w", err)
-	}
-	if err := backfillSessionOwnership(tx, channel, chatID); err != nil {
-		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -345,9 +222,6 @@ func (s *TenantService) SetTenantSubscription(channel, chatID, subscriptionID, m
 		channel, chatID,
 	).Scan(&tenantID, &oldSubscriptionID, &oldModel); err != nil {
 		return fmt.Errorf("read tenant subscription: %w", err)
-	}
-	if err := backfillSessionOwnership(tx, channel, chatID); err != nil {
-		return err
 	}
 
 	var modelID string

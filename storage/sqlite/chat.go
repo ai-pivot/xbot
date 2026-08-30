@@ -194,25 +194,10 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string, off
 
 // CreateChat creates a new chatroom for a user. Returns the new chatID.
 func (s *ChatService) CreateChat(channel, senderID, label string) (string, error) {
-	conn := s.db.Conn()
-	userID, err := canonicalUserID(conn, channel, senderID)
-	if err != nil {
-		return "", fmt.Errorf("resolve chat owner: %w", err)
-	}
-	return s.createChat(channel, senderID, label, userID)
+	return s.createChat(channel, senderID, label)
 }
 
-// CreateChatOwned creates a chat using the canonical identity resolved at the
-// authenticated channel boundary. This is required when a linked identity uses
-// Web transport with a non-Web sender ID.
-func (s *ChatService) CreateChatOwned(channel, senderID, label string, canonicalUserID int64) (string, error) {
-	if canonicalUserID <= 0 {
-		return s.CreateChat(channel, senderID, label)
-	}
-	return s.createChat(channel, senderID, label, canonicalUserID)
-}
-
-func (s *ChatService) createChat(channel, senderID, label string, userID int64) (string, error) {
+func (s *ChatService) createChat(channel, senderID, label string) (string, error) {
 	conn := s.db.Conn()
 
 	// Generate a unique chat ID
@@ -250,8 +235,8 @@ func (s *ChatService) createChat(channel, senderID, label string, userID int64) 
 	}
 
 	_, err := conn.Exec(
-		"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
-		channel, senderID, chatID, label, userID,
+		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
+		channel, senderID, chatID, label,
 	)
 	if err != nil {
 		return "", fmt.Errorf("create chat: %w", err)
@@ -373,22 +358,12 @@ func (s *ChatService) RenameChat(channel, senderID, chatID, label string) error 
 	// This handles renaming CLI/feishu sessions from the Web UI, where the
 	// caller passes channel="web" but the session lives under a different channel.
 	conn := s.db.Conn()
-	// Stamp the canonical user on the row: the INSERT path (no prior row —
-	// CLI/feishu sessions renamed before ever being created in user_chats) and
-	// legacy user_id=0 rows would otherwise stay invisible to user-scoped
-	// queries. canonicalUserID returns 0 for unknown senders (no identity row),
-	// keeping the old default behavior in that case.
-	uid, err := canonicalUserID(conn, channel, senderID)
-	if err != nil {
-		return fmt.Errorf("rename chat: %w", err)
-	}
-	_, err = conn.Exec(`
-		INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id)
-		VALUES (?, ?, ?, ?, ?)
+	_, err := conn.Exec(`
+		INSERT INTO user_chats (channel, sender_id, chat_id, label)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(channel, sender_id, chat_id) DO UPDATE SET
-			label = excluded.label,
-			user_id = CASE WHEN user_chats.user_id = 0 THEN excluded.user_id ELSE user_chats.user_id END`,
-		channel, senderID, chatID, label, uid,
+			label = excluded.label`,
+		channel, senderID, chatID, label,
 	)
 	return err
 }

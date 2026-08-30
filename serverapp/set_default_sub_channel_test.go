@@ -1,15 +1,54 @@
 package serverapp
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
 
 	"xbot/agent"
+	"xbot/channel"
 	"xbot/config"
 	"xbot/llm"
 	"xbot/storage/sqlite"
 )
+
+// identityCtx builds an RPC context with a resolved identity (shared test helper).
+func identityCtx(senderID string, userID int64, role string) context.Context {
+	return WithRPCCtxResolved(context.Background(), senderID, senderID, userID, role)
+}
+
+// addAuthTestSubscription adds a subscription via the RPC table and returns its ID.
+func addAuthTestSubscription(t *testing.T, table RPCTable, ctx context.Context, name string) string {
+	t.Helper()
+	params, _ := json.Marshal(map[string]any{
+		"sub": map[string]any{
+			"name":     name,
+			"provider": "openai",
+			"base_url": "https://api.example/v1",
+			"api_key":  "sk-test-key-123",
+			"model":    "gpt-4o",
+		},
+	})
+	if _, err := table.Dispatch(ctx, "add_subscription", params); err != nil {
+		t.Fatalf("add_subscription: %v", err)
+	}
+	raw, err := table.Dispatch(ctx, "list_subscriptions", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("list_subscriptions: %v", err)
+	}
+	var subs []channel.Subscription
+	if err := json.Unmarshal(raw, &subs); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	for _, s := range subs {
+		if s.Name == name {
+			return s.ID
+		}
+	}
+	t.Fatalf("subscription %q not found after add", name)
+	return ""
+}
 
 // m3: set_default_subscription (per-session branch) must persist the session
 // mapping under the CALLER'S channel. The hardcoded "cli" wrote web sessions

@@ -123,7 +123,9 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	}
 	allowed := wc.canAccessSessionAs(access, sel.Channel, sel.ChatID)
 	if !allowed && identity.IsCLI && sel.Channel == "cli" {
-		allowed = wc.claimCLIClientSession(sel.ChatID, identity.CanonicalUserID)
+		// CLI sessions are created by the local operator — no owner claim
+		// needed (multi-user removal: one operator owns every session).
+		allowed = true
 	}
 	if !allowed {
 		return SessionSelector{}, fmt.Errorf("access denied")

@@ -256,40 +256,6 @@ func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, erro
 	return subs, nil
 }
 
-// ListByUserID returns all subscriptions for a canonical user (by user_id).
-// This is the canonical-user-scoped query — all identities linked to the same
-// user see the same subscriptions.
-func (s *LLMSubscriptionService) ListByUserID(userID int64) ([]*LLMSubscription, error) {
-	conn := s.db.Conn()
-	rows, err := conn.Query(`
-			SELECT `+userLLMSubscriptionSelectCols+`
-				FROM user_llm_subscriptions
-				WHERE user_id = ?
-				ORDER BY created_at ASC
-			`, userID)
-	if err != nil {
-		return nil, fmt.Errorf("list subscriptions by user_id: %w", err)
-	}
-	defer rows.Close()
-
-	var subs []*LLMSubscription
-	for rows.Next() {
-		sub := &LLMSubscription{}
-		encryptedAPIKey, err := scanSubscription(rows, sub)
-		if err != nil {
-			return nil, fmt.Errorf("scan subscription: %w", err)
-		}
-		decryptAPIKey(sub, encryptedAPIKey)
-		subs = append(subs, sub)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
-	s.loadPerModelConfigsBatch(subs)
-	return subs, nil
-}
-
 // GetDefault returns the user's last-used subscription (from user_default_model,
 // repurposed as "last used model" storage). Returns (nil, nil) when the user
 // has no default — the caller falls back to the in-memory defaultLLM (cfg.LLM).
@@ -309,24 +275,6 @@ func (s *LLMSubscriptionService) GetDefault(senderID string) (*LLMSubscription, 
 	}
 	// Dangling reference (subscription removed while user_default_model still
 	// points at it) — treat as no default.
-	return sub, nil
-}
-
-// GetDefaultByUserID returns the user's last-used subscription, resolving
-// by canonical user_id instead of sender_id.
-func (s *LLMSubscriptionService) GetDefaultByUserID(userID int64) (*LLMSubscription, error) {
-	udm, err := s.GetUserDefaultModelByUserID(userID)
-	if err != nil {
-		return nil, fmt.Errorf("get default subscription by user_id: %w", err)
-	}
-	if udm == nil {
-		return nil, nil
-	}
-	sub, err := s.Get(udm.SubscriptionID)
-	if err != nil {
-		return nil, fmt.Errorf("get default subscription: %w", err)
-	}
-	// Dangling reference — treat as no default.
 	return sub, nil
 }
 
@@ -483,9 +431,9 @@ func (s *LLMSubscriptionService) Remove(id string) error {
 		return fmt.Errorf("delete subscription_models: %w", err)
 	}
 	// Cascade: clear user_default_model rows pointing at the deleted subscription.
-	// Subscription_id-scoped (ALL sender dimensions — legacy sender_id rows and
-	// canonical "user-%d" rows written by SetUserDefaultModelByUserID): a dangling
-	// reference would make GetDefault resolve a nil subscription for the user.
+	// Subscription_id-scoped (every sender dimension — the single operator row
+	// after the v63 multi-user removal): a dangling reference would make
+	// GetDefault resolve a nil subscription for the user.
 	if _, err := tx.Exec(
 		"DELETE FROM user_default_model WHERE subscription_id = ?",
 		id,
@@ -722,16 +670,7 @@ func (s *LLMSubscriptionService) SetSubscriptionEnabled(subID string, enabled bo
 	return nil
 }
 
-// SetSubscriptionUserID sets the user_id for a subscription. Called after Add
-// to ensure ListByUserID can find the subscription.
-func (s *LLMSubscriptionService) SetSubscriptionUserID(subID string, userID int64) error {
-	conn := s.db.Conn()
-	_, err := conn.Exec(`UPDATE user_llm_subscriptions SET user_id = ? WHERE id = ?`, userID, subID)
-	if err != nil {
-		return fmt.Errorf("set subscription user_id: %w", err)
-	}
-	return nil
-}
+// ClearUserDefaultModel removes the user's default model selection.
 
 // SetModelEnabled toggles a model's enabled flag (v38). Disabling a model removes
 // it from the selectable catalog without deleting its per-model config.
@@ -832,28 +771,6 @@ func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefa
 	return m, nil
 }
 
-// GetUserDefaultModelByUserID returns the most recently updated default model
-// for a canonical user. After MergeUsers, all rows share the same user_id;
-// we pick the latest updated_at to handle edge cases.
-func (s *LLMSubscriptionService) GetUserDefaultModelByUserID(userID int64) (*UserDefaultModel, error) {
-	conn := s.db.Conn()
-	m := &UserDefaultModel{}
-	var updatedAt string
-	err := conn.QueryRow(`
-		SELECT sender_id, subscription_id, model, updated_at
-		FROM user_default_model WHERE user_id = ?
-		ORDER BY updated_at DESC LIMIT 1
-	`, userID).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get user default model by user_id: %w", err)
-	}
-	m.UpdatedAt = parseSQLiteTime(updatedAt)
-	return m, nil
-}
-
 // SetUserDefaultModel sets the user's default (subscription, model). An empty
 // model means "use the subscription's default model" and is allowed only when the
 // caller intends to defer model selection.
@@ -871,39 +788,6 @@ func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model stri
 		return fmt.Errorf("set user default model: %w", err)
 	}
 	return nil
-}
-
-// SetUserDefaultModelByUserID upserts the default (subscription, model) keyed by
-// canonical user_id (v43 user_default_model.user_id). Channel UIs and linked
-// identities (web/cli/feishu sharing one user_id) must persist via this method
-// so every channel sees the same default model. user_id has no UNIQUE
-// constraint (sender_id is the PK), so this uses an explicit UPDATE/INSERT.
-func (s *LLMSubscriptionService) SetUserDefaultModelByUserID(userID int64, subID, model string) error {
-	conn := s.db.Conn()
-	tx, err := conn.Begin()
-	if err != nil {
-		return fmt.Errorf("set user default model by user id: begin tx: %w", err)
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(`UPDATE user_default_model
-		SET subscription_id = ?, model = ?, updated_at = datetime('now')
-		WHERE user_id = ?`, subID, model, userID)
-	if err != nil {
-		return fmt.Errorf("set user default model by user id: update: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		// sender_id is the single-column PK; user_id has no UNIQUE constraint.
-		// Hardcoding '' would collide once a second user upserts (M3) — use the
-		// same "user-%d" convention as UserSettingsService.SetByUserID so each
-		// canonical user gets its own row.
-		senderID := fmt.Sprintf("user-%d", userID)
-		if _, err := tx.Exec(`INSERT INTO user_default_model
-			(user_id, sender_id, subscription_id, model, updated_at)
-			VALUES (?, ?, ?, ?, datetime('now'))`, userID, senderID, subID, model); err != nil {
-			return fmt.Errorf("set user default model by user id: insert: %w", err)
-		}
-	}
-	return tx.Commit()
 }
 
 // ClearUserDefaultModel removes the user's default model selection.

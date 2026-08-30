@@ -407,6 +407,15 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v63: remove the multi-user identity system — the canonical user layer
+	// (users/user_identities/link_codes) is dropped and all per-user data is
+	// collapsed to the single operator ("cli_user" sender / user_id=1).
+	if from < 63 {
+		if err := migrateV62ToV63(db); err != nil {
+			return fmt.Errorf("migrate to v63: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -588,6 +597,312 @@ func resolveTierOwnerV62(conn *sql.DB, model string) string {
 		return owner
 	}
 	return ""
+}
+
+// migrateV62ToV63 removes the multi-user identity system: the canonical user
+// layer (users/user_identities/link_codes) is dropped and all per-user data
+// is collapsed to the single operator ("cli_user" sender / user_id=1).
+//
+// What changes:
+//   - identity tables: users, user_identities, link_codes → DROP TABLE
+//   - INTEGER canonical columns → DROP: tenants.owner_user_id,
+//     runners.owner_user_id, user_llm_subscriptions.user_id,
+//     user_settings.user_id, user_default_model.user_id, user_chats.user_id,
+//     cron_jobs.user_id, event_triggers.user_id
+//   - TEXT sender collapse → 'cli_user' (conflict rows deleted/renamed
+//     first to respect UNIQUE constraints): user_settings, user_chats,
+//     runners, user_default_model, user_profiles, runner_tokens
+//   - token usage: per-sender rows SUM-merged into the operator row
+//   - xbot_short/long_term_memories.user_id → 1 (column KEPT — the memory
+//     provider scopes on it; single operator = constant 1)
+//
+// Idempotent: every DELETE matches nothing on re-run, UNIQUE-conflict
+// resolution is order-independent, columnExists guards every DROP, and
+// DROP TABLE IF EXISTS never fails on re-run.
+func migrateV62ToV63(db *DB) error {
+	conn := db.Conn()
+
+	// 1. One-time backup (file DBs only). VACUUM INTO requires the target
+	// not to exist; a leftover backup from an interrupted run is kept as-is.
+	if db.path != "" && db.path != ":memory:" {
+		backup := db.path + ".pre-v63.bak"
+		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {
+			escaped := strings.ReplaceAll(backup, "'", "''")
+			if _, err := conn.Exec("VACUUM INTO '" + escaped + "'"); err != nil {
+				return fmt.Errorf("migrate v62->v63 backup to %s: %w", backup, err)
+			}
+			log.WithField("backup", backup).Info("v63: database backed up before multi-user removal")
+		}
+	}
+
+	// 2. Resolve UNIQUE conflicts BEFORE collapsing senders to 'cli_user'.
+	//    The operator's own row always wins (cli_user is the canonical
+	//    operator identity post-collapse).
+	//    Every step is guarded by tableExists: old migration-test fixtures
+	//    hand-build partial schemas (e.g. a v47 fixture without runners) —
+	//    tables the DB never had are simply skipped.
+
+	// 2a. user_settings UNIQUE(channel, sender_id, key): drop non-operator
+	//     rows that collide with a cli_user row on (channel, key).
+	if ok, err := tableExists(conn, "user_settings"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_settings: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`DELETE FROM user_settings WHERE sender_id != 'cli_user'
+			AND EXISTS (SELECT 1 FROM user_settings o
+				WHERE o.sender_id = 'cli_user'
+				AND o.channel = user_settings.channel AND o.key = user_settings.key)`); err != nil {
+			return fmt.Errorf("migrate v62->v63 dedupe user_settings: %w", err)
+		}
+	}
+
+	// 2b. user_chats UNIQUE(channel, sender_id, chat_id): drop non-operator
+	//     rows colliding on (channel, chat_id) — keep the operator's row.
+	if ok, err := tableExists(conn, "user_chats"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_chats: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`DELETE FROM user_chats WHERE sender_id != 'cli_user'
+			AND EXISTS (SELECT 1 FROM user_chats o
+				WHERE o.sender_id = 'cli_user'
+				AND o.channel = user_chats.channel AND o.chat_id = user_chats.chat_id)`); err != nil {
+			return fmt.Errorf("migrate v62->v63 dedupe user_chats: %w", err)
+		}
+	}
+
+	// 2c. runners UNIQUE(user_id, name): rename rows that would collide with
+	//     the operator's runner names (suffix with the old user_id).
+	if ok, err := tableExists(conn, "runners"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check runners: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE runners SET name = name || '_' || user_id
+			WHERE user_id != 'cli_user'
+			AND EXISTS (SELECT 1 FROM runners o WHERE o.user_id = 'cli_user' AND o.name = runners.name)`); err != nil {
+			return fmt.Errorf("migrate v62->v63 dedupe runners: %w", err)
+		}
+	}
+
+	// 2d. user_default_model PK=sender_id: keep the freshest row only
+	//     (ORDER BY updated_at DESC — mirrors the old multi-row tolerance of
+	//     GetUserDefaultModelByUserID).
+	if ok, err := tableExists(conn, "user_default_model"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_default_model: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`DELETE FROM user_default_model WHERE sender_id != (
+			SELECT sender_id FROM user_default_model ORDER BY updated_at DESC LIMIT 1)`); err != nil {
+			return fmt.Errorf("migrate v62->v63 dedupe user_default_model: %w", err)
+		}
+	}
+
+	// 2e. user_profiles PK=sender_id: keep the operator's row; when absent,
+	//     promote one surviving row to the operator identity, then drop the rest.
+	if ok, err := tableExists(conn, "user_profiles"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_profiles: %w", err)
+	} else if ok {
+		if err := collapseSingleSenderTable(conn, "user_profiles", "sender_id"); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse user_profiles: %w", err)
+		}
+	}
+
+	// 2f. runner_tokens PK=user_id: same single-row collapse.
+	if ok, err := tableExists(conn, "runner_tokens"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check runner_tokens: %w", err)
+	} else if ok {
+		if err := collapseSingleSenderTable(conn, "runner_tokens", "user_id"); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse runner_tokens: %w", err)
+		}
+	}
+
+	// 2g. user_token_usage PK=sender_id: SUM-merge non-operator rows into the
+	//     operator row (UPSERT), then delete them.
+	//     HAVING COUNT(*) > 0 guards the empty case — an aggregate SELECT
+	//     without GROUP BY emits one NULL row on an empty set, which would
+	//     violate the NOT NULL columns.
+	if ok, err := tableExists(conn, "user_token_usage"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_token_usage: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`INSERT INTO user_token_usage
+				(sender_id, input_tokens, output_tokens, total_tokens, cached_tokens, conversation_count, llm_call_count, updated_at)
+			SELECT 'cli_user', SUM(input_tokens), SUM(output_tokens), SUM(total_tokens), SUM(cached_tokens),
+				SUM(conversation_count), SUM(llm_call_count), MAX(updated_at)
+			FROM user_token_usage WHERE sender_id != 'cli_user'
+			HAVING COUNT(*) > 0
+			ON CONFLICT(sender_id) DO UPDATE SET
+				input_tokens = user_token_usage.input_tokens + excluded.input_tokens,
+				output_tokens = user_token_usage.output_tokens + excluded.output_tokens,
+				total_tokens = user_token_usage.total_tokens + excluded.total_tokens,
+				cached_tokens = user_token_usage.cached_tokens + excluded.cached_tokens,
+				conversation_count = user_token_usage.conversation_count + excluded.conversation_count,
+				llm_call_count = user_token_usage.llm_call_count + excluded.llm_call_count,
+				updated_at = excluded.updated_at`); err != nil {
+			return fmt.Errorf("migrate v62->v63 merge user_token_usage: %w", err)
+		}
+		if _, err := conn.Exec(`DELETE FROM user_token_usage WHERE sender_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 prune user_token_usage: %w", err)
+		}
+	}
+
+	// 2h. daily_token_usage PK(date, sender_id, model): SUM-merge per
+	//     (date, model) into the operator row, then delete the rest.
+	if ok, err := tableExists(conn, "daily_token_usage"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check daily_token_usage: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`INSERT INTO daily_token_usage
+				(date, sender_id, model, input_tokens, output_tokens, cached_tokens, conversation_count, llm_call_count, updated_at)
+			SELECT date, 'cli_user', model, SUM(input_tokens), SUM(output_tokens), SUM(cached_tokens),
+				SUM(conversation_count), SUM(llm_call_count), MAX(updated_at)
+			FROM daily_token_usage WHERE sender_id != 'cli_user' GROUP BY date, model
+			ON CONFLICT(date, sender_id, model) DO UPDATE SET
+				input_tokens = daily_token_usage.input_tokens + excluded.input_tokens,
+				output_tokens = daily_token_usage.output_tokens + excluded.output_tokens,
+				cached_tokens = daily_token_usage.cached_tokens + excluded.cached_tokens,
+				conversation_count = daily_token_usage.conversation_count + excluded.conversation_count,
+				llm_call_count = daily_token_usage.llm_call_count + excluded.llm_call_count,
+				updated_at = excluded.updated_at`); err != nil {
+			return fmt.Errorf("migrate v62->v63 merge daily_token_usage: %w", err)
+		}
+		if _, err := conn.Exec(`DELETE FROM daily_token_usage WHERE sender_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 prune daily_token_usage: %w", err)
+		}
+	}
+
+	// 3. Collapse senders to the operator identity. The UNIQUE conflicts
+	//    were resolved in step 2 — these UPDATEs cannot violate constraints.
+	//    Subscriptions: the legacy sender_id column (v22-era creator sender)
+	//    is the List(senderID) query dimension post-v63 — collapse it too so
+	//    the operator sees every subscription regardless of who created it.
+	if ok, err := tableExists(conn, "user_llm_subscriptions"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_llm_subscriptions: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE user_llm_subscriptions SET sender_id = 'cli_user' WHERE sender_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse subscription senders: %w", err)
+		}
+	}
+	if ok, err := tableExists(conn, "user_settings"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_settings: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE user_settings SET sender_id = 'cli_user' WHERE sender_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse user_settings sender: %w", err)
+		}
+	}
+	if ok, err := tableExists(conn, "user_chats"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_chats: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE user_chats SET sender_id = 'cli_user' WHERE sender_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse user_chats sender: %w", err)
+		}
+	}
+	if ok, err := tableExists(conn, "runners"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check runners: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE runners SET user_id = 'cli_user' WHERE user_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse runners user: %w", err)
+		}
+	}
+	if ok, err := tableExists(conn, "user_default_model"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check user_default_model: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE user_default_model SET sender_id = 'cli_user' WHERE sender_id != 'cli_user'`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse user_default_model sender: %w", err)
+		}
+	}
+
+	// 4. xbot memories: collapse the canonical user_id to the single
+	//    operator (rows UNION — no unique constraint on user_id).
+	//    The column is KEPT: memory scopeWhere reads it; every row is now
+	//    the same operator (user_id=1).
+	if ok, err := tableExists(conn, "xbot_short_term_memories"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check xbot_short_term_memories: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE xbot_short_term_memories SET user_id = 1 WHERE user_id != 1`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse xbot_short_term_memories: %w", err)
+		}
+	}
+	if ok, err := tableExists(conn, "xbot_long_term_memories"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check xbot_long_term_memories: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`UPDATE xbot_long_term_memories SET user_id = 1 WHERE user_id != 1`); err != nil {
+			return fmt.Errorf("migrate v62->v63 collapse xbot_long_term_memories: %w", err)
+		}
+	}
+
+	// 5. Drop the canonical INTEGER columns (guarded — idempotent re-runs).
+	// cron_jobs.user_id must drop its index first (idx_cron_jobs_user
+	// references the column — SQLite refuses DROP COLUMN while an index
+	// depends on it).
+	if ok, err := tableExists(conn, "cron_jobs"); err != nil {
+		return fmt.Errorf("migrate v62->v63 check cron_jobs: %w", err)
+	} else if ok {
+		if _, err := conn.Exec(`DROP INDEX IF EXISTS idx_cron_jobs_user`); err != nil {
+			return fmt.Errorf("migrate v62->v63 drop idx_cron_jobs_user: %w", err)
+		}
+	}
+	userIDCols := [][2]string{
+		{"tenants", "owner_user_id"},
+		{"runners", "owner_user_id"},
+		{"user_llm_subscriptions", "user_id"},
+		{"user_settings", "user_id"},
+		{"user_default_model", "user_id"},
+		{"user_chats", "user_id"},
+		{"cron_jobs", "user_id"},
+		{"event_triggers", "user_id"},
+	}
+	for _, tc := range userIDCols {
+		exists, err := columnExists(conn, tc[0], tc[1])
+		if err != nil {
+			return fmt.Errorf("migrate v62->v63 check %s.%s: %w", tc[0], tc[1], err)
+		}
+		if !exists {
+			continue
+		}
+		if _, err := conn.Exec(fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, tc[0], tc[1])); err != nil {
+			return fmt.Errorf("migrate v62->v63 drop %s.%s: %w", tc[0], tc[1], err)
+		}
+	}
+
+	// 6. Drop the identity tables (children first — they FK-reference users).
+	for _, table := range []string{"user_identities", "link_codes", "users"} {
+		if _, err := conn.Exec(`DROP TABLE IF EXISTS ` + table); err != nil {
+			return fmt.Errorf("migrate v62->v63 drop %s: %w", table, err)
+		}
+	}
+
+	if _, err := conn.Exec("UPDATE schema_version SET version = 63"); err != nil {
+		return fmt.Errorf("migrate v62->v63 update version: %w", err)
+	}
+	log.Info("Database migrated to v63 (multi-user identity system removed — single operator)")
+	return nil
+}
+
+// collapseSingleSenderTable keeps exactly one row of a sender-keyed table,
+// normalized to the operator 'cli_user'. The operator's own row wins; when
+// absent, the first surviving row (lowest rowid) is promoted. All other
+// rows are deleted. col is the TEXT sender column ('sender_id' for
+// user_profiles, 'user_id' for runner_tokens).
+func collapseSingleSenderTable(conn *sql.DB, table, col string) error {
+	// Promote one row to the operator identity when the operator has none.
+	if _, err := conn.Exec(fmt.Sprintf(`UPDATE %s SET %s = 'cli_user' WHERE rowid = (
+		SELECT rowid FROM %s WHERE %s != 'cli_user' ORDER BY rowid LIMIT 1)
+		AND NOT EXISTS (SELECT 1 FROM %s WHERE %s = 'cli_user')`, table, col, table, col, table, col)); err != nil {
+		return fmt.Errorf("promote %s operator row: %w", table, err)
+	}
+	// Drop every non-operator row.
+	if _, err := conn.Exec(fmt.Sprintf(`DELETE FROM %s WHERE %s != 'cli_user'`, table, col)); err != nil {
+		return fmt.Errorf("prune %s: %w", table, err)
+	}
+	return nil
+}
+
+// tableExists reports whether the table exists in the current schema.
+// Migration v63 guards every per-table step with this: old fixtures
+// (hand-built partial schemas in migration tests, e.g. a v47 fixture
+// without runners) skip the steps for tables they never had.
+func tableExists(conn *sql.DB, table string) (bool, error) {
+	var count int
+	if err := conn.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table,
+	).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // migrateV60ToV61 adds the user_id index on cron_jobs (ListJobsByUserID lookup
