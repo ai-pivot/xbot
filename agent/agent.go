@@ -2742,6 +2742,20 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 					"concurrent":  cmd.Concurrent(),
 					"content_len": len(msg.Content),
 				}).Info("Command matched in chatWorker")
+				// Admin gate: management commands only the operator may execute
+				// (see the processMessage dispatch for details).
+				if commandRequiresAdmin(cmd) && !a.isAdminSender(msg.Channel, msg.SenderID) {
+					log.Ctx(ctx).WithFields(log.Fields{
+						"channel": msg.Channel,
+						"sender":  msg.SenderID,
+						"command": cmd.Name(),
+					}).Warn("Command rejected: admin-only command from non-admin sender")
+					acknowledgeInboundDelivery(msg, bus.DeliveryResult{})
+					if sendErr := a.sendMessage(msg.Channel, msg.ChatID, "⛔ 该命令仅操作员可用（管理类命令）"); sendErr != nil {
+						log.WithError(sendErr).Warn("failed to send admin-only rejection")
+					}
+					continue
+				}
 				if cmd.Concurrent() {
 					// 无状态命令：独立 goroutine 处理，不占信号量，不阻塞
 					m := msg
@@ -3332,6 +3346,21 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			"channel": msg.Channel,
 			"command": cmd.Name(),
 		}).Info("Command matched")
+		// Admin gate: management commands (subscriptions/settings/plugins are
+		// GLOBAL post-multi-user-removal) only the operator may execute —
+		// non-admin channel users (feishu group members not in agent.admins)
+		// get rejected before Execute.
+		if commandRequiresAdmin(cmd) && !a.isAdminSender(msg.Channel, msg.SenderID) {
+			log.Ctx(ctx).WithFields(log.Fields{
+				"channel": msg.Channel,
+				"sender":  msg.SenderID,
+				"command": cmd.Name(),
+			}).Warn("Command rejected: admin-only command from non-admin sender")
+			return &channel.OutboundMsg{
+				Channel: msg.Channel, ChatID: msg.ChatID,
+				Content: "⛔ 该命令仅操作员可用（管理类命令，多用户系统已移除后配置全局共享）",
+			}, nil
+		}
 		out, err := cmd.Execute(ctx, a, msg)
 		if err != nil {
 			return nil, err

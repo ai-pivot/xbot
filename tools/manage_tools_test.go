@@ -37,6 +37,7 @@ func TestManageTools_WritePathByChannel(t *testing.T) {
 			Channel:             "cli",
 			MCPConfigPath:       userPath,
 			GlobalMCPConfigPath: globalPath,
+			OriginUserIsAdmin:   true,
 		}
 
 		input, _ := json.Marshal(manageToolsArgs{
@@ -86,6 +87,7 @@ func TestManageTools_WritePathByChannel(t *testing.T) {
 			Channel:             "feishu",
 			MCPConfigPath:       userPath,
 			GlobalMCPConfigPath: globalPath,
+			OriginUserIsAdmin:   true,
 		}
 
 		input, _ := json.Marshal(manageToolsArgs{
@@ -135,6 +137,7 @@ func TestManageTools_WritePathByChannel(t *testing.T) {
 			MCPConfigPath:       userPath,
 			GlobalMCPConfigPath: globalPath,
 			SandboxEnabled:      true,
+			OriginUserIsAdmin:   true,
 		}
 
 		input, _ := json.Marshal(manageToolsArgs{
@@ -226,8 +229,9 @@ func TestManageTools_AddRemoveMCP(t *testing.T) {
 	registry := NewRegistry()
 
 	ctx := &ToolContext{
-		Registry:      registry,
-		MCPConfigPath: mcpConfigPath,
+		Registry:          registry,
+		MCPConfigPath:     mcpConfigPath,
+		OriginUserIsAdmin: true,
 	}
 
 	// Test add_mcp
@@ -296,8 +300,9 @@ func TestManageTools_ListMCP(t *testing.T) {
 	registry := NewRegistry()
 
 	ctx := &ToolContext{
-		Registry:      registry,
-		MCPConfigPath: mcpConfigPath,
+		Registry:          registry,
+		MCPConfigPath:     mcpConfigPath,
+		OriginUserIsAdmin: true,
 	}
 
 	// Test with no MCP config
@@ -393,6 +398,7 @@ func TestManageTools_CLIWritesGlobalConfig(t *testing.T) {
 		Channel:             "cli",
 		MCPConfigPath:       userConfigPath,
 		GlobalMCPConfigPath: globalConfigPath,
+		OriginUserIsAdmin:   true,
 	}
 
 	addInput, _ := json.Marshal(manageToolsArgs{
@@ -454,8 +460,8 @@ func TestManageTools_UserIsolationAndGlobalMerge(t *testing.T) {
 
 	user1Path := filepath.Join(tempDir, "u1", "mcp.json")
 	user2Path := filepath.Join(tempDir, "u2", "mcp.json")
-	ctx1 := &ToolContext{Registry: NewRegistry(), MCPConfigPath: user1Path, GlobalMCPConfigPath: globalConfigPath}
-	ctx2 := &ToolContext{Registry: NewRegistry(), MCPConfigPath: user2Path, GlobalMCPConfigPath: globalConfigPath}
+	ctx1 := &ToolContext{Registry: NewRegistry(), MCPConfigPath: user1Path, GlobalMCPConfigPath: globalConfigPath, OriginUserIsAdmin: true}
+	ctx2 := &ToolContext{Registry: NewRegistry(), MCPConfigPath: user2Path, GlobalMCPConfigPath: globalConfigPath, OriginUserIsAdmin: true}
 
 	addArgs := manageToolsArgs{
 		Action:       "add_mcp",
@@ -506,6 +512,7 @@ func TestManageTools_AddMCPInvalidatesImmediately(t *testing.T) {
 	ctx := &ToolContext{
 		Registry:                registry,
 		MCPConfigPath:           mcpConfigPath,
+		OriginUserIsAdmin:       true,
 		InvalidateAllSessionMCP: func() { invalidated++ },
 	}
 

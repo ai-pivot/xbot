@@ -108,6 +108,17 @@ func (t *ConfigTool) Execute(ctx *ToolContext, raw string) (*ToolResult, error) 
 
 	log.WithFields(log.Fields{"action": params.Action, "key": params.Key}).Debug("config tool called")
 
+	// Admin gate: management actions mutate the operator's GLOBAL config
+	// (multi-user removal: subscriptions/models/runners/plugins are shared).
+	// Non-admin channel users (feishu group members not in agent.admins)
+	// may only use the read-only actions (list/get/subscriptions).
+	switch params.Action {
+	case "model", "subscription", "runner", "reload_plugins", "reload_hooks":
+		if !ctx.OriginUserIsAdmin {
+			return nil, fmt.Errorf("config: %q is a management action and requires operator (admin) rights", params.Action)
+		}
+	}
+
 	switch params.Action {
 	case "list":
 		if ctx.ConfigList == nil {

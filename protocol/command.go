@@ -9,6 +9,13 @@ type CommandInfo struct {
 	Usage       string   `json:"usage,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Hidden      bool     `json:"-"`
+	// AdminOnly marks management commands (subscription/settings/plugin
+	// mutation) that only the operator may execute. After the multi-user
+	// removal, subscriptions and settings are GLOBAL — a non-admin channel
+	// user (e.g. a Feishu group member not listed in agent.admins) must not
+	// mutate the operator's configuration. Dispatch points reject non-admin
+	// senders before Execute.
+	AdminOnly bool `json:"admin_only,omitempty"`
 }
 
 // MergeCommandInfoLists merges command metadata in group order. The first

@@ -565,23 +565,26 @@ func registerBuiltinCommands(r *CommandRegistry) {
 	r.Register(&versionCmd{}, CommandInfo{Usage: "/version", Description: "显示版本信息"})
 	r.Register(&helpCmd{}, CommandInfo{Usage: "/help", Description: "显示帮助"})
 	r.Register(&promptCmd{}, CommandInfo{Usage: "/prompt [query]", Description: "预览完整提示词（不调用 LLM）"})
-	r.Register(&setLLMCmd{}, CommandInfo{Usage: "/set-llm <name> provider=<p> base_url=<url> api_key=<key>", Description: "创建/更新个人 LLM 订阅"})
-	r.Register(&unsetLLMCmd{}, CommandInfo{Usage: "/unset-llm <name>", Description: "删除指定订阅"})
-	r.Register(&getLLMCmd{}, CommandInfo{Usage: "/llm", Description: "查看当前解析到的订阅与模型"})
-	r.Register(&listLLMsCmd{}, CommandInfo{Usage: "/llms", Description: "列出所有个人 LLM 订阅"})
+	// Admin-only management commands (multi-user removal: subscriptions,
+	// settings and models are GLOBAL — non-admin channel users such as Feishu
+	// group members must not read or mutate the operator's configuration).
+	r.Register(&setLLMCmd{}, CommandInfo{Usage: "/set-llm <name> provider=<p> base_url=<url> api_key=<key>", Description: "创建/更新个人 LLM 订阅", AdminOnly: true})
+	r.Register(&unsetLLMCmd{}, CommandInfo{Usage: "/unset-llm <name>", Description: "删除指定订阅", AdminOnly: true})
+	r.Register(&getLLMCmd{}, CommandInfo{Usage: "/llm", Description: "查看当前解析到的订阅与模型", AdminOnly: true})
+	r.Register(&listLLMsCmd{}, CommandInfo{Usage: "/llms", Description: "列出所有个人 LLM 订阅", AdminOnly: true})
 	r.Register(&compressCmd{}, CommandInfo{Usage: "/compress", Description: "手动触发上下文压缩"})
 	r.Register(&continueCmd{}, CommandInfo{Usage: "/continue", Description: "继续上一轮被中断的对话（基于 DB 断点恢复）"})
-	r.Register(&usageCmd{}, CommandInfo{Usage: "/usage", Description: "查看 token 用量统计"})
+	r.Register(&usageCmd{}, CommandInfo{Usage: "/usage", Description: "查看 token 用量统计", AdminOnly: true})
 	r.Register(&contextModeCmd{}, CommandInfo{Usage: "/context mode [phase1|none|default]", Description: "查看/切换压缩模式"}) // 先注册（更精确的匹配优先）
 	r.Register(&contextInfoCmd{}, CommandInfo{Usage: "/context", Description: "查看上下文统计"})                              // 后注册（更宽泛的匹配）
-	r.Register(&modelsCmd{}, CommandInfo{Usage: "/models", Description: "列出可选模型（带正常/离线/禁用状态）"})
-	r.Register(&setModelCmd{}, CommandInfo{Usage: "/set-model <subscription> <model>", Description: "切换当前会话模型"})
+	r.Register(&modelsCmd{}, CommandInfo{Usage: "/models", Description: "列出可选模型（带正常/离线/禁用状态）", AdminOnly: true})
+	r.Register(&setModelCmd{}, CommandInfo{Usage: "/set-model <subscription> <model>", Description: "切换当前会话模型", AdminOnly: true})
 	r.Register(&bangCmd{}, CommandInfo{Usage: "!<command>", Description: "快捷执行命令（跳过 LLM，直接在 sandbox 中运行）"})
 
 	// Registry & settings commands
-	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）"})
-	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件"})
-	r.Register(&appCmd{}, CommandInfo{Usage: "/app", Description: "应用管理（打包、安装、卸载）"})
+	r.Register(&settingsCmd{}, CommandInfo{Usage: "/settings", Description: "打开个人设置（仅私聊）", AdminOnly: true})
+	r.Register(&pluginReloadAllCmd{}, CommandInfo{Usage: "/plugin reload-all", Description: "重新加载所有插件", AdminOnly: true})
+	r.Register(&appCmd{}, CommandInfo{Usage: "/app", Description: "应用管理（打包、安装、卸载）", AdminOnly: true})
 
 	// Goal commands
 	r.Register(&goalClearCmd{}, CommandInfo{Usage: "/goal clear", Description: "清除当前目标"}) // 先注册（更精确的匹配优先）
