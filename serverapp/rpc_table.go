@@ -3293,6 +3293,22 @@ func registerAppHandlers(t RPCTable, h *RPCContext) {
 		return map[string]bool{"ok": true}, nil
 	})
 
+	t["skill_install_file"] = rpc1(func(ctx context.Context, p struct {
+		ZipPath  string `json:"zip_path"`
+		SenderID string `json:"sender_id"`
+		Force    bool   `json:"force"`
+	}) (any, error) {
+		rm := h.Ag.RegistryManager()
+		if rm == nil {
+			return nil, fmt.Errorf("registry manager not initialized")
+		}
+		name, err := rm.InstallSkillFromFile(p.ZipPath, rpcAuthID(ctx), p.Force)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"name": name}, nil
+	})
+
 	t["skill_get_content"] = rpc1(func(ctx context.Context, p struct {
 		Path string `json:"path"`
 	}) (any, error) {

@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { SkillManagerPanel } from './SkillManagerPanel'
+import { postAPI } from '@/lib/api'
 
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
@@ -61,6 +62,7 @@ const skills = [
 
 describe('SkillManagerPanel 启禁用开关', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     rpcCall.mockReset()
     rpcCall.mockResolvedValue(skills)
   })
@@ -91,6 +93,31 @@ describe('SkillManagerPanel 启禁用开关', () => {
     await waitFor(() => {
       expect(rpcCall).toHaveBeenCalledWith('skill_set_enabled', { name: 'issue-solver', enabled: true })
     })
+  })
+
+  it('防抖：快速连续切换只发最后一次 RPC', async () => {
+    render(<SkillManagerPanel />)
+    const switches = await screen.findAllByRole('switch')
+    // 等数据加载完成
+    await waitFor(() => expect(screen.getAllByRole('switch')).toHaveLength(2))
+
+    vi.useFakeTimers()
+    // 快速切换 debug: enable → disable → enable → disable
+    fireEvent.click(switches[0]) // → disabled
+    fireEvent.click(switches[0]) // → enabled
+    fireEvent.click(switches[0]) // → disabled
+    fireEvent.click(switches[0]) // → enabled
+    // 防抖窗口内不应有 RPC 调用
+    expect(rpcCall).not.toHaveBeenCalledWith('skill_set_enabled', expect.anything())
+    // 等防抖结束
+    vi.advanceTimersByTime(300)
+    await vi.waitFor(() => {
+      // 只调用了一次，且是最终状态 enabled=true
+      const toggleCalls = rpcCall.mock.calls.filter((c) => c[0] === 'skill_set_enabled')
+      expect(toggleCalls).toHaveLength(1)
+      expect(toggleCalls[0]).toEqual(['skill_set_enabled', { name: 'debug', enabled: true }])
+    })
+    vi.useRealTimers()
   })
 
   it('已禁用 skill 显示「已禁用」标签', async () => {
@@ -167,5 +194,30 @@ describe('SkillManagerPanel SKILL.md 预览', () => {
       'skill_get_content',
       expect.anything(),
     )
+  })
+})
+
+describe('SkillManagerPanel 安装 skill', () => {
+  beforeEach(() => {
+    rpcCall.mockReset()
+    rpcCall.mockResolvedValue(skills)
+    vi.mocked(postAPI).mockReset()
+    vi.mocked(postAPI).mockResolvedValue({ ok: true, name: 'test-skill' })
+  })
+
+  it('安装按钮调用 /api/skills/install-file（非 /api/app/install-file）', async () => {
+    render(<SkillManagerPanel />)
+    await screen.findByText('skills.install')
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+
+    // 模拟文件选择
+    const file = new File(['fake-zip'], 'test-skill.zip', { type: 'application/zip' })
+    fireEvent.change(fileInput, { target: { files: [file] } })
+
+    await waitFor(() => {
+      expect(postAPI).toHaveBeenCalledWith('/api/skills/install-file', expect.any(FormData))
+    })
+    // 确保不调用旧的 app 接口
+    expect(postAPI).not.toHaveBeenCalledWith('/api/app/install-file', expect.anything())
   })
 })

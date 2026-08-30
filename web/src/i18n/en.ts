@@ -19,6 +19,13 @@ const en: Translations = {
     retry: 'Retry',
     back: 'Back',
   },
+  tabs: {
+    close: 'Close Tab',
+    closeLeft: 'Close Tabs to the Left',
+    closeRight: 'Close Tabs to the Right',
+    closeOthers: 'Close Other Tabs',
+    closeAll: 'Close All Tabs',
+  },
   sidebar: {
     sessions: 'Sessions',
     toggle: 'Toggle sidebar',

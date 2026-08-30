@@ -39,10 +39,12 @@ export function SkillManagerPanel() {
   const [installing, setInstalling] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const requestRef = useRef(0)
+  const toggleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingTogglesRef = useRef<Map<string, boolean>>(new Map())
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     const id = ++requestRef.current
-    setLoading(true)
+    if (!silent) setLoading(true)
     setError('')
     try {
       const res = (await runtime.rpc.call(
@@ -55,7 +57,7 @@ export function SkillManagerPanel() {
       if (id !== requestRef.current) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
-      if (id === requestRef.current) setLoading(false)
+      if (id === requestRef.current && !silent) setLoading(false)
     }
   }, [runtime, cwd])
 
@@ -63,14 +65,41 @@ export function SkillManagerPanel() {
     void load()
   }, [load])
 
+  // Cleanup debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (toggleTimerRef.current) clearTimeout(toggleTimerRef.current)
+    }
+  }, [])
+
   const handleToggle = useCallback(
-    async (name: string, enabled: boolean) => {
-      try {
-        await runtime.rpc.call('skill_set_enabled' as never, { name, enabled } as never)
-        await load()
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e))
-      }
+    (name: string, enabled: boolean) => {
+      // Optimistic update: toggle immediately so the UI doesn't flash
+      setSkills((prev) => prev.map((s) => (s.name === name ? { ...s, enabled } : s)))
+
+      // Track the latest desired state for this skill
+      pendingTogglesRef.current.set(name, enabled)
+
+      // Debounce: clear any pending timer, schedule a new one.
+      // Rapid toggles within 300ms only fire the final state.
+      if (toggleTimerRef.current) clearTimeout(toggleTimerRef.current)
+      toggleTimerRef.current = setTimeout(async () => {
+        toggleTimerRef.current = null
+        const pending = new Map(pendingTogglesRef.current)
+        pendingTogglesRef.current.clear()
+
+        for (const [skillName, desiredEnabled] of pending) {
+          try {
+            await runtime.rpc.call('skill_set_enabled' as never, { name: skillName, enabled: desiredEnabled } as never)
+          } catch (e) {
+            // Revert on failure
+            setSkills((prev) => prev.map((s) => (s.name === skillName ? { ...s, enabled: !desiredEnabled } : s)))
+            setError(e instanceof Error ? e.message : String(e))
+          }
+        }
+        // Silent reload to sync server state
+        await load(true)
+      }, 300)
     },
     [runtime, load],
   )
@@ -125,7 +154,7 @@ export function SkillManagerPanel() {
       try {
         const form = new FormData()
         form.append('file', file)
-        await postAPI('/api/app/install-file', form)
+        await postAPI('/api/skills/install-file', form)
         await load()
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))

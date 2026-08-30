@@ -159,6 +159,10 @@ func (rm *RegistryManager) uninstallSkill(name, senderID string) error {
 			return fmt.Errorf("remove skill: %w", err)
 		}
 	}
+	// Invalidate the skill cache so the uninstalled skill disappears immediately.
+	if rm.store != nil {
+		rm.store.InvalidateCache()
+	}
 	log.WithFields(log.Fields{"type": "skill", "name": name, "sender": senderID}).Info("Uninstalled")
 	return nil
 }
@@ -607,6 +611,107 @@ func (rm *RegistryManager) InstallAppFromFile(zipPath, senderID string, force bo
 		"sender": senderID,
 	}).Info("Installed app from file")
 	return result, nil
+}
+
+// InstallSkillFromFile installs a skill from a plain zip (no xbot.json manifest).
+// The zip must contain a top-level directory with a SKILL.md file, e.g.:
+//
+//	my-skill/
+//	  SKILL.md
+//	  references/...
+//	  scripts/...
+//
+// The top-level directory name becomes the skill name. If SKILL.md is at the
+// zip root (no wrapping directory), the zip filename (without extension) is used.
+func (rm *RegistryManager) InstallSkillFromFile(zipPath, senderID string, force bool) (string, error) {
+	tmpDir, err := os.MkdirTemp("", "xbot-skill-unpack-*")
+	if err != nil {
+		return "", fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := unzipToDir(zipPath, tmpDir); err != nil {
+		return "", fmt.Errorf("unzip: %w", err)
+	}
+
+	// Find the skill directory: either a top-level dir containing SKILL.md,
+	// or SKILL.md at the root (use zip filename as skill name).
+	skillName, srcDir, err := findSkillDir(tmpDir, zipPath)
+	if err != nil {
+		return "", err
+	}
+
+	destDir := filepath.Join(rm.userSkillsDir(senderID), skillName)
+
+	if rm.useSandbox() {
+		ctx, cancel := rm.sandboxCtx()
+		defer cancel()
+		if _, err := rm.sandbox.Stat(ctx, destDir, senderID); err == nil {
+			if !force {
+				return "", fmt.Errorf("skill %q already exists (use force=true to overwrite)", skillName)
+			}
+			if err := rm.sandbox.RemoveAll(ctx, destDir, senderID); err != nil {
+				return "", fmt.Errorf("remove old skill: %w", err)
+			}
+		}
+		if err := rm.copyDirToSandbox(ctx, srcDir, destDir, senderID); err != nil {
+			return "", fmt.Errorf("copy skill: %w", err)
+		}
+	} else {
+		if _, err := os.Stat(destDir); err == nil {
+			if !force {
+				return "", fmt.Errorf("skill %q already exists (use force=true to overwrite)", skillName)
+			}
+			if err := os.RemoveAll(destDir); err != nil {
+				return "", fmt.Errorf("remove old skill: %w", err)
+			}
+		}
+		if err := copyDir(srcDir, destDir); err != nil {
+			return "", fmt.Errorf("copy skill: %w", err)
+		}
+	}
+
+	// Invalidate the skill cache so the newly installed skill shows up immediately.
+	if rm.store != nil {
+		rm.store.InvalidateCache()
+	}
+
+	log.WithFields(log.Fields{
+		"skill":  skillName,
+		"sender": senderID,
+	}).Info("Installed skill from zip")
+	return skillName, nil
+}
+
+// findSkillDir locates the skill directory and name from an unpacked zip.
+// Returns (skillName, srcDir, error).
+func findSkillDir(tmpDir, zipPath string) (string, string, error) {
+	// Check if SKILL.md is at the root
+	rootSkill := filepath.Join(tmpDir, "SKILL.md")
+	if _, err := os.Stat(rootSkill); err == nil {
+		// SKILL.md at root — use zip filename (without extension) as skill name
+		base := filepath.Base(zipPath)
+		name := strings.TrimSuffix(base, filepath.Ext(base))
+		return name, tmpDir, nil
+	}
+
+	// Look for a top-level directory containing SKILL.md
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return "", "", fmt.Errorf("read unpacked dir: %w", err)
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		skillMD := filepath.Join(tmpDir, e.Name(), "SKILL.md")
+		if _, err := os.Stat(skillMD); err == nil {
+			return e.Name(), filepath.Join(tmpDir, e.Name()), nil
+		}
+	}
+
+	return "", "", fmt.Errorf("no SKILL.md found in zip (expected a directory containing SKILL.md)")
 }
 
 // InstallAppFromURL downloads a .xbot.zip from a URL and installs it.

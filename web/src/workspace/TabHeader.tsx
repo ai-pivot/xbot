@@ -13,6 +13,15 @@ import type { DockviewPanelApi } from 'dockview'
 import type { PanelParams } from '@/types/tab'
 import { cn } from '@/lib/utils'
 import { useIsTouch } from '@/hooks/useIsMobile'
+import { useDockviewContext } from '@/workspace/types'
+import { useI18n } from '@/providers/i18n'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -42,63 +51,112 @@ export interface TabHeaderProps {
 
 export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps) {
   const isTouch = useIsTouch()
+  const { t } = useI18n()
+  const ctx = useDockviewContext()
+  const tabManager = ctx.tabManager
   const Icon = (params.icon ? ICONS[params.icon] : null) ?? TYPE_ICONS[params.type]
   const fullTitle = params.type === 'file' ? (params.filePath || params.title) : params.title
 
+  // 右键菜单 disable 态：同 group 的可关 tab 分布（TabManager 是 dockview 状态
+  // 的镜像——tabs 变化时 ctx 更新触发 panel.update → 本组件 re-render）。
+  const groupTabs = tabManager?.groupTabsOf(params.tabId) ?? []
+  const selfIdx = groupTabs.findIndex((tab) => tab.tabId === params.tabId)
+  const hasClosableLeft = selfIdx > 0 && groupTabs.slice(0, selfIdx).some((tab) => tab.closable)
+  const hasClosableRight = selfIdx >= 0 && groupTabs.slice(selfIdx + 1).some((tab) => tab.closable)
+  const hasClosableOther = groupTabs.some((tab, i) => i !== selfIdx && tab.closable)
+  const hasClosableAny = groupTabs.some((tab) => tab.closable)
+
   return (
-    <div
-      className={cn(
-        'group flex h-[35px] w-full min-w-0 cursor-pointer select-none items-center gap-1.5',
-        'rounded-lg border px-2.5 py-1 text-[13px] transition-colors duration-100',
-        isActive
-          ? 'border-border bg-bg-primary text-text-primary'
-          : 'border-transparent bg-transparent text-text-muted',
-      )}
-      title={fullTitle}
-      role="tab"
-      aria-selected={isActive}
-      tabIndex={isActive ? 0 : -1}
-      onMouseDown={(e) => {
-        if (e.button === 1) {
-          if (params.closable) {
-            e.preventDefault()
-            api.close()
-          } else {
-            e.preventDefault()
-          }
-        }
-      }}
-      onClick={(e) => {
-        e.stopPropagation()
-        onActivate()
-      }}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onActivate()
-        }
-      }}
-    >
-      <Icon aria-hidden className={cn('size-3.5 shrink-0', isActive ? 'text-accent' : 'text-text-muted')} />
-      <span className="min-w-0 flex-1 truncate leading-none">{params.title}</span>
-      {params.closable && (
-        <button
-          type="button"
-          aria-label="Close tab"
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
           className={cn(
-            'ml-0.5 flex size-[18px] shrink-0 items-center justify-center rounded-sm text-text-secondary',
-            'transition-[color,background-color,opacity] duration-100 hover:bg-bg-tertiary hover:text-text-primary',
-            'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent',
-            isActive || isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+            'group flex h-[35px] w-full min-w-0 cursor-pointer select-none items-center gap-1.5',
+            'rounded-lg border px-2.5 py-1 text-[13px] transition-colors duration-100',
+            isActive
+              ? 'border-border bg-bg-primary text-text-primary'
+              : 'border-transparent bg-transparent text-text-muted',
           )}
+          title={fullTitle}
+          role="tab"
+          aria-selected={isActive}
+          tabIndex={isActive ? 0 : -1}
+          onMouseDown={(e) => {
+            if (e.button === 1) {
+              if (params.closable) {
+                e.preventDefault()
+                api.close()
+              } else {
+                e.preventDefault()
+              }
+            }
+          }}
           onClick={(e) => {
             e.stopPropagation()
-            api.close()
+            onActivate()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              onActivate()
+            }
           }}
         >
-          <X aria-hidden className="size-3" />
-        </button>
-      )}
-    </div>
+          <Icon aria-hidden className={cn('size-3.5 shrink-0', isActive ? 'text-accent' : 'text-text-muted')} />
+          <span className="min-w-0 flex-1 truncate leading-none">{params.title}</span>
+          {params.closable && (
+            <button
+              type="button"
+              aria-label={t('common.close')}
+              className={cn(
+                'ml-0.5 flex size-[18px] shrink-0 items-center justify-center rounded-sm text-text-secondary',
+                'transition-[color,background-color,opacity] duration-100 hover:bg-bg-tertiary hover:text-text-primary',
+                'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent',
+                isActive || isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+              )}
+              onClick={(e) => {
+                e.stopPropagation()
+                api.close()
+              }}
+            >
+              <X aria-hidden className="size-3" />
+            </button>
+          )}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem
+          disabled={!params.closable}
+          onSelect={() => tabManager?.closeTab(params.tabId)}
+        >
+          {t('tabs.close')}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={!hasClosableLeft}
+          onSelect={() => tabManager?.closeTabsInGroup(params.tabId, 'left')}
+        >
+          {t('tabs.closeLeft')}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!hasClosableRight}
+          onSelect={() => tabManager?.closeTabsInGroup(params.tabId, 'right')}
+        >
+          {t('tabs.closeRight')}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!hasClosableOther}
+          onSelect={() => tabManager?.closeTabsInGroup(params.tabId, 'others')}
+        >
+          {t('tabs.closeOthers')}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!hasClosableAny}
+          onSelect={() => tabManager?.closeTabsInGroup(params.tabId, 'all')}
+        >
+          {t('tabs.closeAll')}
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
