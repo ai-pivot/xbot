@@ -1,10 +1,8 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,26 +20,40 @@ const maxMCPConnections = 20
 // The caller should NOT set initialized=true so that the next access retries.
 var errNotInitialized = fmt.Errorf("MCP config not found, will retry on next access")
 
-// SessionMCPManager 管理单个会话的 MCP 连接
+// SessionMCPManager is the per-session VIEW over the shared MCP connection
+// pool (tools/mcp_pool.go). All connections live in pool entries keyed by
+// the scope 4-tuple (globalConfigPath, userConfigPath, workspaceRoot,
+// userID) — N sessions with the same tuple share ONE set of MCP child
+// processes.
+//
+// Historical bugs fixed by pooling:
+//   - per-session connection duplication: N sessions × M stdio servers
+//     spawned N×M processes for identical config;
+//   - the 30-minute inactivity timeout was a dead parameter (unload only
+//     ran for sessions evicted from the 24h session cache) — the pool
+//     reaper now reclaims idle entries (refCount==0 && idle>30min) every
+//     30s, independent of session caches;
+//   - unloaded servers never reconnected (initOnce stayed 2) — a reaped
+//     pool entry is deleted; the next Acquire builds a fresh one;
+//   - UpdateScope disconnected everything on a scope change — it now
+//     detaches from the old entry (kept alive for other sharers) and
+//     attaches to the new one.
 type SessionMCPManager struct {
 	mu                sync.RWMutex
-	sessionKey        string                    // "channel:chatID"
-	userID            string                    // 用户 ID（用于沙箱容器标识）
-	globalConfigPath  string                    // 全局 mcp.json 路径（只读）
-	userConfigPath    string                    // 用户 mcp.json 路径（可写）
-	workspaceRoot     string                    // 用户命令执行工作区
-	connections       map[string]*mcpConnection // 懒加载的连接
-	lastActive        map[string]time.Time      // 每个服务器的最后活跃时间
-	sessionLastUsed   time.Time                 // 会话级别活跃时间
-	inactivityTimeout time.Duration             // 不活跃超时配置
-	initialized       bool                      // 是否已初始化配置加载
-	initOnce          uint32                    // atomic state: 0=idle, 1=starting, 2=started (background goroutine launched)
-	initDone          chan struct{}             // 后台初始化完成信号（closed = done）
-	closed            uint32                    // atomic: 1 = Close() has been called
-	onChange          func()                    // 初始化完成后的回调（通知调用方重新索引）
+	sessionKey        string        // "channel:chatID" (logging only)
+	userID            string        // 沙箱容器标识（池 key 的一部分）
+	globalConfigPath  string        // 全局 mcp.json 路径（只读）
+	userConfigPath    string        // 用户 mcp.json 路径（可写）
+	workspaceRoot     string        // 用户命令执行工作区
+	entry             *mcpPoolEntry // shared pool entry (lazy-attached)
+	sessionLastUsed   time.Time     // 会话级别活跃时间（兼容清理链）
+	inactivityTimeout time.Duration // Deprecated: pool reaper owns idle reclamation (kept for API compat)
+	closed            uint32        // atomic: 1 = Close() has been called
+	onChange          func()        // init-complete callback（转发到池条目）
 }
 
-// NewSessionMCPManager 创建会话 MCP 管理器
+// NewSessionMCPManager 创建会话 MCP 管理器（池视图）。
+// 连接在首次使用时从全局池按 scope 4-tuple 懒加载获取。
 func NewSessionMCPManager(sessionKey, userID, globalConfigPath, userConfigPath, workspaceRoot string, inactivityTimeout time.Duration) *SessionMCPManager {
 	return &SessionMCPManager{
 		sessionKey:        sessionKey,
@@ -49,15 +61,14 @@ func NewSessionMCPManager(sessionKey, userID, globalConfigPath, userConfigPath, 
 		globalConfigPath:  globalConfigPath,
 		userConfigPath:    userConfigPath,
 		workspaceRoot:     workspaceRoot,
-		connections:       make(map[string]*mcpConnection),
-		lastActive:        make(map[string]time.Time),
 		sessionLastUsed:   time.Now(),
 		inactivityTimeout: inactivityTimeout,
-		initDone:          make(chan struct{}),
 	}
 }
 
 // UpdateScope 更新当前会话可见的用户配置与工作区。
+// 作用域变化时切换池条目——不断开旧条目的连接（其它共享者继续使用；
+// 无人引用后由池 reaper 回收）。
 func (sm *SessionMCPManager) UpdateScope(userID, userConfigPath, workspaceRoot string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -66,30 +77,53 @@ func (sm *SessionMCPManager) UpdateScope(userID, userConfigPath, workspaceRoot s
 		return
 	}
 
-	for _, conn := range sm.connections {
-		sm.closeConnection(conn)
-	}
-	sm.connections = make(map[string]*mcpConnection)
-	sm.lastActive = make(map[string]time.Time)
+	old := sm.entry
 	sm.userID = userID
 	sm.userConfigPath = userConfigPath
 	sm.workspaceRoot = workspaceRoot
-	sm.initialized = false
-	sm.initOnce = 0
-	sm.initDone = make(chan struct{})
+	sm.entry = globalMCPPool.Acquire(sm.globalConfigPath, userConfigPath, workspaceRoot, userID)
+	if old != nil {
+		old.removeOnChange(sm)
+		globalMCPPool.Release(old)
+	}
+	if sm.onChange != nil {
+		sm.entry.addOnChange(sm, sm.onChange)
+	}
+	log.WithFields(log.Fields{
+		"session": sm.sessionKey,
+		"user":    userID,
+	}).Debug("Session MCP scope switched (pool entry swap, no disconnect)")
+}
+
+// ensureEntry returns the current pool entry, lazily acquiring one on first
+// use (or re-acquiring after the previous entry was invalidated/reaped).
+// Callers must not hold sm.mu.
+func (sm *SessionMCPManager) ensureEntry() *mcpPoolEntry {
+	sm.mu.Lock()
+	if sm.entry == nil || sm.entry.isClosed() {
+		old := sm.entry
+		sm.entry = globalMCPPool.Acquire(sm.globalConfigPath, sm.userConfigPath, sm.workspaceRoot, sm.userID)
+		if old != nil {
+			old.removeOnChange(sm)
+			globalMCPPool.Release(old)
+		}
+		if sm.onChange != nil {
+			sm.entry.addOnChange(sm, sm.onChange)
+		}
+	}
+	entry := sm.entry
+	sm.mu.Unlock()
+	return entry
 }
 
 // GetCatalog 返回此会话所有已连接 MCP Server 的目录信息。
 // 首次调用时启动后台初始化（非阻塞），立即返回空 catalog。
-// 后续调用在后台初始化完成后返回完整 catalog。
 func (sm *SessionMCPManager) GetCatalog() []MCPServerCatalogEntry {
-	sm.ensureInitAsync()
-
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
+	entry := sm.ensureEntry()
+	entry.ensureInitAsync(nil)
 
 	var catalog []MCPServerCatalogEntry
-	for _, conn := range sm.connections {
+	for _, conn := range entry.Snapshot() {
 		toolNames := make([]string, len(conn.tools))
 		for i, t := range conn.tools {
 			toolNames[i] = t.Name
@@ -104,328 +138,96 @@ func (sm *SessionMCPManager) GetCatalog() []MCPServerCatalogEntry {
 }
 
 // GetCatalogBlocking blocks until initialization is complete, then returns the catalog.
-// Use this when the caller needs the full catalog immediately and can tolerate blocking.
 func (sm *SessionMCPManager) GetCatalogBlocking() []MCPServerCatalogEntry {
-	sm.ensureInitAsync()
-	<-sm.initDone
+	entry := sm.ensureEntry()
+	entry.ensureInitAsync(nil)
+	entry.InitWait()
 	return sm.GetCatalog()
-}
-
-// ensureInitAsync starts background initialization on first call (idempotent).
-// On errNotInitialized, it resets so the next access retries.
-func (sm *SessionMCPManager) ensureInitAsync() {
-	// Fast path: already started
-	if atomic.LoadUint32(&sm.initOnce) != 0 {
-		return
-	}
-	// CAS from 0→1: we are the one to start the background goroutine
-	if !atomic.CompareAndSwapUint32(&sm.initOnce, 0, 1) {
-		return
-	}
-	go func() {
-		sm.mu.Lock()
-		if atomic.LoadUint32(&sm.closed) == 1 {
-			sm.mu.Unlock()
-			return
-		}
-		if err := sm.loadAndConnect(context.Background()); err != nil {
-			if err != errNotInitialized {
-				log.WithError(err).WithField("session", sm.sessionKey).Warn("Failed to load MCP servers for catalog")
-			}
-			// Reset to idle so the next access retries (config may be created later).
-			// Safe because only the goroutine that won CAS(0→1) can CAS back to 0,
-			// and concurrent callers that saw 1 will return on the fast path above.
-			atomic.StoreUint32(&sm.initOnce, 0)
-			sm.mu.Unlock()
-			return
-		}
-		sm.initialized = true
-		// Mark as fully started (prevent any retry)
-		atomic.StoreUint32(&sm.initOnce, 2)
-		// Close initDone to signal completion
-		if ch := sm.initDone; ch != nil {
-			close(ch)
-		}
-		onChange := sm.onChange
-		sm.mu.Unlock()
-		if onChange != nil {
-			onChange()
-		}
-	}()
 }
 
 // SetOnChange registers a callback invoked after background initialization completes.
 // Must be called before GetCatalog to guarantee the callback fires.
 func (sm *SessionMCPManager) SetOnChange(fn func()) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.onChange = fn
-	// If already initialized, invoke immediately
-	if sm.initialized {
-		fn()
+	entry := sm.entry
+	sm.mu.Unlock()
+	if entry != nil {
+		entry.addOnChange(sm, fn)
 	}
 }
 
 // GetSessionTools 懒加载并返回此会话的 MCP 工具（非阻塞）。
 // 首次调用时启动后台初始化，立即返回已有工具列表。
 func (sm *SessionMCPManager) GetSessionTools() []Tool {
-	sm.ensureInitAsync()
+	entry := sm.ensureEntry()
+	entry.ensureInitAsync(nil)
 
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	// 标记会话为活跃
 	sm.sessionLastUsed = time.Now()
+	sm.mu.Unlock()
+	entry.touch()
 
-	// 收集所有 MCP 工具
 	var tools []Tool
-	for _, conn := range sm.connections {
+	for _, conn := range entry.Snapshot() {
 		for _, tool := range conn.tools {
 			remoteTool := newSessionMCPRemoteTool(conn.name, tool, conn.session, sm)
 			tools = append(tools, remoteTool)
 		}
 	}
-
 	return tools
 }
 
-// MarkActive 标记服务器为活跃状态
+// MarkActive 标记服务器为活跃状态（池条目级 touch）。
 func (sm *SessionMCPManager) MarkActive(serverName string) {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	sm.lastActive[serverName] = time.Now()
 	sm.sessionLastUsed = time.Now()
+	entry := sm.entry
+	sm.mu.Unlock()
+	if entry != nil {
+		entry.touch()
+	}
 }
 
-// UnloadInactiveServers 卸载超时不活跃的服务器
-// 返回会话最后活跃时间（用于判断会话是否需要从缓存中移除）
+// UnloadInactiveServers 兼容接口：返回会话最后活跃时间（用于判断会话
+// 是否需要从缓存中移除）。闲置连接回收由池 reaper 统一处理
+// （refCount==0 && idle > 30min，独立于会话缓存驱逐）。
 func (sm *SessionMCPManager) UnloadInactiveServers() time.Time {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
-	now := time.Now()
-	var serversToUnload []string
-
-	// 检查每个服务器的活跃状态
-	for name, lastActive := range sm.lastActive {
-		if now.Sub(lastActive) > sm.inactivityTimeout {
-			serversToUnload = append(serversToUnload, name)
-		}
-	}
-
-	// 卸载不活跃的服务器
-	for _, name := range serversToUnload {
-		if conn, ok := sm.connections[name]; ok {
-			sm.closeConnection(conn)
-			delete(sm.connections, name)
-			delete(sm.lastActive, name)
-			log.WithFields(log.Fields{
-				"session": sm.sessionKey,
-				"server":  name,
-			}).Info("Unloaded inactive MCP server")
-		}
-	}
-
-	// 有服务器被卸载时重置 initialized，使下次访问时触发 loadAndConnect 重连
-	if len(serversToUnload) > 0 {
-		sm.initialized = false
-	}
-
 	return sm.sessionLastUsed
 }
 
-// Close 关闭所有连接
+// Close 释放会话对池条目的引用（refCount--；连接在无人引用且闲置后由
+// 池 reaper 回收，或立即被其它共享者继续使用）。
 func (sm *SessionMCPManager) Close() {
 	atomic.StoreUint32(&sm.closed, 1)
 
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	for name, conn := range sm.connections {
-		sm.closeConnection(conn)
-		log.WithFields(log.Fields{
-			"session": sm.sessionKey,
-			"server":  name,
-		}).Debug("Closed MCP connection")
+	entry := sm.entry
+	sm.entry = nil
+	sm.mu.Unlock()
+	if entry != nil {
+		entry.removeOnChange(sm)
+		globalMCPPool.Release(entry)
+		log.WithField("session", sm.sessionKey).Debug("Session MCP released pool entry")
 	}
-
-	sm.connections = make(map[string]*mcpConnection)
-	sm.lastActive = make(map[string]time.Time)
 }
 
-// Invalidate 重置初始化标志，强制下次调用时重新加载配置
+// Invalidate 重置池条目，强制下次调用时重新加载配置。
+// 该 scope 的池条目被关闭并从池中移除——所有共享该 scope 的会话
+// 下次访问时重建连接（读取新配置）。
 func (sm *SessionMCPManager) Invalidate() {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	for _, conn := range sm.connections {
-		sm.closeConnection(conn)
+	entry := sm.entry
+	sm.entry = nil
+	sm.mu.Unlock()
+	if entry != nil {
+		entry.removeOnChange(sm)
+		globalMCPPool.Release(entry)
 	}
-	sm.connections = make(map[string]*mcpConnection)
-	sm.lastActive = make(map[string]time.Time)
-	sm.initialized = false
-	sm.initOnce = 0
-	sm.initDone = make(chan struct{})
-
+	globalMCPPool.Invalidate(sm.globalConfigPath, sm.userConfigPath, sm.workspaceRoot, sm.userID)
 	log.WithField("session", sm.sessionKey).Info("Session MCP invalidated, will reload on next use")
-}
-
-// loadAndConnect 加载配置并连接所有启用的 MCP Server（跳过已连接的服务器）
-func (sm *SessionMCPManager) loadAndConnect(ctx context.Context) error {
-	config, err := sm.loadConfig()
-	if err != nil {
-		if os.IsNotExist(err) {
-			// 配置文件暂不存在，返回 errNotInitialized 让调用方不标记 initialized=true，
-			// 以便下次调用时重试（配置可能稍后被 ManageTools 创建）。
-			return errNotInitialized
-		}
-		return fmt.Errorf("load mcp config: %w", err)
-	}
-
-	for name, serverCfg := range config.MCPServers {
-		if serverCfg.Enabled != nil && !*serverCfg.Enabled {
-			continue
-		}
-
-		// 跳过已连接的服务器，避免重复连接
-		if _, connected := sm.connections[name]; connected {
-			continue
-		}
-
-		if err := sm.connectServer(ctx, name, serverCfg); err != nil {
-			log.WithError(err).WithFields(log.Fields{
-				"session": sm.sessionKey,
-				"server":  name,
-			}).Warn("MCP server connection failed")
-		}
-	}
-
-	return nil
-}
-
-// connectServer 连接单个 MCP Server
-func (sm *SessionMCPManager) connectServer(ctx context.Context, name string, cfg MCPServerConfig) error {
-	// 限制最大连接数，防止恶意或异常情况创建大量连接
-	if len(sm.connections) >= maxMCPConnections {
-		return fmt.Errorf("MCP connection limit reached (%d), cannot connect server %q", maxMCPConnections, name)
-	}
-
-	var (
-		session *mcp.ClientSession
-		err     error
-	)
-
-	// 优先使用 HTTP transport（如果配置了 URL）
-	if cfg.URL != "" {
-		session, err = ConnectHTTPServer(ctx, cfg)
-	} else if cfg.Command != "" {
-		configPath := sm.globalConfigPath
-		if configPath == "" {
-			configPath = sm.userConfigPath
-		}
-		session, err = ConnectStdioServer(ctx, cfg, configPath, sm.workspaceRoot, sm.userID, name)
-	} else {
-		return fmt.Errorf("mcp server config must have either 'url' or 'command'")
-	}
-
-	if err != nil {
-		return err
-	}
-
-	// 获取可用工具列表和服务器说明 (session is already initialized by Connect)
-	initResult, err := InitializeMCPClient(ctx, session)
-	if err != nil {
-		_ = session.Close()
-		return err
-	}
-
-	// 优先使用服务器返回的 instructions，否则使用 config 中的 fallback
-	instructions := initResult.Instructions
-	if instructions == "" {
-		instructions = cfg.Instructions
-	}
-
-	conn := &mcpConnection{
-		name:         name,
-		session:      session,
-		tools:        initResult.Tools,
-		instructions: instructions,
-	}
-
-	sm.connections[name] = conn
-	sm.lastActive[name] = time.Now() // 初始化时标记为活跃
-
-	toolNames := make([]string, len(conn.tools))
-	for i, t := range conn.tools {
-		toolNames[i] = t.Name
-	}
-
-	log.WithFields(log.Fields{
-		"session": sm.sessionKey,
-		"server":  name,
-		"tools":   toolNames,
-	}).Infof("MCP server connected for session (%d tools)", len(conn.tools))
-
-	return nil
-}
-
-// closeConnection 关闭单个连接
-func (sm *SessionMCPManager) closeConnection(conn *mcpConnection) {
-	if conn != nil && conn.session != nil {
-		if err := conn.session.Close(); err != nil {
-			if !IsProcessExitError(err) {
-				log.WithError(err).Debug("Error closing MCP session")
-			}
-		}
-	}
-}
-
-// loadConfig 从 JSON 文件加载 MCP 配置
-func (sm *SessionMCPManager) loadConfig() (*MCPConfig, error) {
-	merged := &MCPConfig{MCPServers: map[string]MCPServerConfig{}}
-
-	if sm.globalConfigPath != "" {
-		if data, err := os.ReadFile(sm.globalConfigPath); err == nil {
-			var cfg MCPConfig
-			if err := json.Unmarshal(data, &cfg); err != nil {
-				log.Errorf("Failed to parse global MCP configuration JSON: path=%s, error=%v", sm.globalConfigPath, err)
-			} else {
-				for name, server := range cfg.MCPServers {
-					merged.MCPServers[name] = server
-				}
-			}
-		} else if !os.IsNotExist(err) {
-			log.WithError(err).WithField("path", sm.globalConfigPath).Warn("Failed to read global MCP config")
-		}
-	}
-
-	if sm.userConfigPath == "" {
-		if len(merged.MCPServers) == 0 {
-			return nil, os.ErrNotExist
-		}
-		return merged, nil
-	}
-
-	data, err := os.ReadFile(sm.userConfigPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if len(merged.MCPServers) == 0 {
-				return nil, err
-			}
-			return merged, nil
-		}
-		return nil, err
-	}
-
-	var userConfig MCPConfig
-	if err := json.Unmarshal(data, &userConfig); err != nil {
-		return nil, fmt.Errorf("parse mcp.json: %w", err)
-	}
-	for name, server := range userConfig.MCPServers {
-		merged.MCPServers[name] = server
-	}
-
-	return merged, nil
 }
 
 // ---- SessionMCPRemoteTool: 会话感知的 MCP 远程工具 ----
@@ -534,15 +336,13 @@ func (t *SessionMCPRemoteTool) Execute(ctx *ToolContext, input string) (*ToolRes
 // GetActivatedToolDefs 返回已激活 MCP 工具的 LLM 工具定义（含完整参数 schema）。
 // kept for backward compatibility — all tools are always visible now.
 func (sm *SessionMCPManager) GetActivatedToolDefs(activated map[string]bool) []llm.ToolDefinition {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
 	if len(activated) == 0 {
 		return nil
 	}
+	entry := sm.ensureEntry()
 
 	var defs []llm.ToolDefinition
-	for _, conn := range sm.connections {
+	for _, conn := range entry.Snapshot() {
 		for _, tool := range conn.tools {
 			fullName := fmt.Sprintf("mcp_%s_%s", conn.name, tool.Name)
 			if !activated[fullName] {
