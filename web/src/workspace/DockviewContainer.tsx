@@ -78,6 +78,7 @@ import type { PanelParams } from '@/types/tab'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { PanelManager } from '@/hooks/usePanelManager'
 import { LayoutEngine } from '@/workspace/layoutEngine'
+import { enableCardDrag } from '@/workspace/cardDrag'
 
 interface DockviewContainerProps {
   /** The tab manager that owns tab operations; its api is bound on ready. */
@@ -220,6 +221,11 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
     mgr.bindApi(api)
     panelManagerRef.current.bindApi(api)
     layoutEngine.bindApi(api)
+    // 卡片 Ctrl 拖动（内容区按住 Ctrl 拖动 = 移动整张卡片；单 tab 卡片隐藏
+    // tab 栏后这是唯一拖动入口）。落子后显式 relayout —— group move 的
+    // 集合签名不变，引擎的事件兜底（onDidLayoutChange + structureChanged）
+    // 不保证触发。
+    const offCardDrag = enableCardDrag(api, host, { onDrop: () => layoutEngine.relayout() })
 
     // Track active panel changes: when an agent tab becomes active, update
     // store.activeSession so the sidebar highlight + terminal/context-ring
@@ -270,6 +276,7 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
     }
 
     return () => {
+      offCardDrag()
       offActiveChange.dispose()
       layoutEngine.bindApi(null)
       tabManagerRef.current.bindApi(null)
