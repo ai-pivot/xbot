@@ -682,6 +682,7 @@ type HookPayload struct {
 	ChatID        string         `json:"chat_id,omitempty"`
 	UserID        string         `json:"user_id,omitempty"`
 	TenantID      int64          `json:"tenant_id,omitempty"`
+	WorkDir       string         `json:"work_dir,omitempty"` // TRIGGER-TIME cwd snapshot (from hooks BasePayload.CWD)
 	Extra         map[string]any `json:"extra,omitempty"`
 }
 
