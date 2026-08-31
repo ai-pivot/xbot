@@ -105,7 +105,8 @@ export function restoreLayout(tabManager: TabManager, layout: LayoutState): void
   }
 }
 
-const GLOBAL_LAYOUT_KEY = 'xbot-layout:global'
+const LAYOUT_VERSION = 'v6-cards'
+const GLOBAL_LAYOUT_KEY = `xbot-layout:global:${LAYOUT_VERSION}`
 
 /**
  * v2 layout persistence: global save/restore (not per-session).
