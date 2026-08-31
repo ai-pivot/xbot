@@ -2,12 +2,18 @@
  * cardDrag — 卡片 Ctrl 拖动（全卡片化平铺布局的卡片移动入口）。
  *
  * 单 tab 卡片的 tab 栏被 LayoutEngine 隐藏后，卡片的拖动入口消失；多 tab
- * 卡片也要求精确抓取 tab 栏。Ctrl + 左键按住卡片内容区拖动 = 移动整张卡片
- * （平铺 WM / VS Code 无标题栏窗口的修饰键拖动惯例）。
+ * 卡片也要求精确抓取 tab 栏。Ctrl + 左键按住卡片任意区域（含输入框）拖动
+ * = 移动整张卡片（平铺 WM / VS Code 无标题栏窗口的修饰键拖动惯例）。
+ *
+ * 手势语义：Ctrl + 左键从按下起被完全征用为拖动手势 ——
+ * - pointerdown 立即 preventDefault（吞默认行为：输入框 focus/光标定位、
+ *   文本选择起点、图片原生拖动）+ stopPropagation（阻断传播：dockview
+ *   tab 拖动、React onMouseDown 等内部元素监听）—— 不触发卡片内任何交互
+ * - 手势期间（state 存在）click 全吞 + dragstart 全吞
  *
  * 机制：
- * - pointerdown（Ctrl + 主键，跳过 input/textarea/contenteditable）→ 记录
- *   源卡片（DOM `.dv-groupview` 反查 api.groups）
+ * - pointerdown（Ctrl + 主键）→ 记录源卡片（DOM `.dv-groupview` 反查
+ *   api.groups），吞交互（见手势语义）
  * - 位移超阈值（6px）进入拖动：body grabbing 光标 + 禁选择，实时计算
  *   drop 目标（pointer 下的其他 grid 卡片）与方位（hitZone：25% 边缘带，
  *   角部归最近边）
@@ -25,12 +31,18 @@ import type { DockviewApi, DockviewGroupPanel } from 'dockview-core'
 
 export type DropZone = 'left' | 'right' | 'top' | 'bottom' | 'center'
 
+/** 目标卡片矩形（viewport 坐标，getBoundingClientRect 提取） */
+export interface Rect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
 /** 边缘带宽度比例（目标卡片宽/高的 25% 区域判定四向 drop） */
 const EDGE = 0.25
 /** 位移阈值（px）：超过才进入拖动（区分 Ctrl+click） */
 const DRAG_THRESHOLD_PX = 6
-
-export interface Rect { x: number; y: number; w: number; h: number }
 
 /**
  * drop 方位判定（纯函数）：pointer 相对目标矩形的位置 → 四向边缘带或中心。
@@ -67,9 +79,6 @@ interface DragState {
   active: boolean
   overlay: HTMLDivElement | null
 }
-
-/** 交互元素内不启动拖动（输入框的 Ctrl+拖是文本/光标操作） */
-const INTERACTIVE_SELECTOR = 'input, textarea, select, [contenteditable="true"], [contenteditable=""]'
 
 /**
  * 启用卡片 Ctrl 拖动。返回 dispose（DockviewContainer 卸载时调用）。
@@ -200,9 +209,17 @@ export function enableCardDrag(
     if (e.key === 'Escape' && state?.active) cleanup(false)
   }
 
-  /** 拖动落子后抑制一次 click（避免误触发卡片内组件） */
+  /** 手势期间/落子后抑制 click（state 存在期间 = 手势全程，未过阈值也吞） */
   const onClickCapture = (e: MouseEvent) => {
-    if (Date.now() < clickSuppress) {
+    if (state || Date.now() < clickSuppress) {
+      e.preventDefault()
+      e.stopPropagation()
+    }
+  }
+
+  /** 手势期间抑制原生拖动（图片/链接 dragstart） */
+  const onDragStartCapture = (e: DragEvent) => {
+    if (state) {
       e.preventDefault()
       e.stopPropagation()
     }
@@ -210,11 +227,15 @@ export function enableCardDrag(
 
   const onPointerDown = (e: PointerEvent) => {
     if (!e.ctrlKey || e.button !== 0 || state) return
-    const target = e.target as HTMLElement | null
-    if (!target?.closest) return
-    if (target.closest(INTERACTIVE_SELECTOR)) return
     const source = groupAt(e.target)
     if (!source) return
+    // Ctrl+左键 = 拖动专用手势：从按下起吞掉一切交互。preventDefault 阻止
+    // 默认行为（输入框 focus/光标定位、文本选择起点、图片原生拖动）；
+    // stopPropagation 阻断传播（dockview tab 拖动、React onMouseDown 等内部
+    // 元素监听）。未过拖动阈值就松开时 click 也被吞（onClickCapture 的
+    // state 窗口）——Ctrl+左键绝不触发卡片内任何交互。
+    e.preventDefault()
+    e.stopPropagation()
     state = {
       pointerId: e.pointerId,
       startX: e.clientX,
@@ -229,11 +250,13 @@ export function enableCardDrag(
     window.addEventListener('keydown', onKeyDown, true)
   }
 
-  host.addEventListener('pointerdown', onPointerDown, { capture: true, passive: true })
+  host.addEventListener('pointerdown', onPointerDown, { capture: true, passive: false })
   window.addEventListener('click', onClickCapture, true)
+  window.addEventListener('dragstart', onDragStartCapture, true)
   return () => {
     cleanup(false)
     host.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions)
     window.removeEventListener('click', onClickCapture, true)
+    window.removeEventListener('dragstart', onDragStartCapture, true)
   }
 }
