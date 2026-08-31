@@ -212,6 +212,15 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 
 	task, err := toolCtx.BgTaskManager.Status(params.TaskID)
 	if err != nil {
+		// Sub-agent tasks exist but have no streaming output — distinguish
+		// "wrong kind of task" from "not found" (task_wait/task_status/
+		// task_kill all resolve sub-agent IDs; task_read must too, or a
+		// valid sub-xxx ID misleadingly reports "task not found").
+		if subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID); serr == nil {
+			return NewResult(fmt.Sprintf(
+				"Sub-agent task %s: no streaming output — sub-agent results are delivered via the completion notification, not an output buffer.\nUse task_status %q for its current status (role %q, status: %s).",
+				params.TaskID, params.TaskID, subTask.Role, subTask.Status)), nil
+		}
 		return nil, err
 	}
 
