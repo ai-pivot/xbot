@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import type { DockviewApi } from 'dockview-core'
 
-import { hitZone, type Rect } from './cardDrag'
+import { enableCardDrag, hitZone, type Rect } from './cardDrag'
 
 const R: Rect = { x: 0, y: 0, w: 400, h: 300 }
 // 边缘带：宽 400×0.25=100，高 300×0.25=75
@@ -43,5 +44,57 @@ describe('hitZone（drop 方位判定，25% 边缘带）', () => {
     expect(hitZone(r, 1020, 750)).toBe('left')
     expect(hitZone(r, 1200, 800)).toBe('center')
     expect(hitZone(r, 1200, 890)).toBe('bottom')
+  })
+})
+
+describe('Ctrl 光标提示（armed class 切换）', () => {
+  const setup = () => {
+    const host = document.createElement('div')
+    const api = { groups: [] } as unknown as DockviewApi
+    const dispose = enableCardDrag(api, host)
+    return { host, dispose }
+  }
+  const fire = (type: string, key: string) =>
+    window.dispatchEvent(new KeyboardEvent(type, { key }))
+
+  it('按住 Ctrl 时 host 加 ctrl-drag-armed（CSS 光标 grab），松开移除', () => {
+    const { host, dispose } = setup()
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(false)
+    fire('keydown', 'Control')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(true)
+    // keydown repeat（按住连发）幂等
+    fire('keydown', 'Control')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(true)
+    fire('keyup', 'Control')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(false)
+    dispose()
+  })
+
+  it('非 Ctrl 按键不触发 armed class', () => {
+    const { host, dispose } = setup()
+    fire('keydown', 'a')
+    fire('keydown', 'Shift')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(false)
+    dispose()
+  })
+
+  it('窗口失焦时复位（Ctrl 状态可能已丢失）', () => {
+    const { host, dispose } = setup()
+    fire('keydown', 'Control')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(true)
+    window.dispatchEvent(new Event('blur'))
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(false)
+    dispose()
+  })
+
+  it('dispose 后移除监听并清掉 class', () => {
+    const { host, dispose } = setup()
+    fire('keydown', 'Control')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(true)
+    dispose()
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(false)
+    // dispose 后监听已摘除，按键不再加 class
+    fire('keydown', 'Control')
+    expect(host.classList.contains('ctrl-drag-armed')).toBe(false)
   })
 })

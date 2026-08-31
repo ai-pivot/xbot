@@ -44,6 +44,9 @@ const EDGE = 0.25
 /** 位移阈值（px）：超过才进入拖动（区分 Ctrl+click） */
 const DRAG_THRESHOLD_PX = 6
 
+/** 按住 Ctrl 时 host 的 armed class（CSS `cursor: grab` 提示卡片可拖动） */
+const DRAG_ARMED_CLASS = 'ctrl-drag-armed'
+
 /**
  * drop 方位判定（纯函数）：pointer 相对目标矩形的位置 → 四向边缘带或中心。
  * 角部（两轴同时命中边缘带）归深度比例更近的边。
@@ -253,10 +256,28 @@ export function enableCardDrag(
   host.addEventListener('pointerdown', onPointerDown, { capture: true, passive: false })
   window.addEventListener('click', onClickCapture, true)
   window.addEventListener('dragstart', onDragStartCapture, true)
+  // Ctrl 光标提示：按住 Ctrl 时 host 加 armed class（CSS 光标 grab，子树
+  // !important 覆盖输入框 text 等元素光标）提示卡片可拖动；拖动激活后
+  // body.style.cursor = grabbing（beginDragVisual）接管。窗口失焦强制复位
+  //（Ctrl 状态可能已丢失）。
+  const onKeyDownCtrl = (e: KeyboardEvent) => {
+    if (e.key === 'Control') host.classList.add(DRAG_ARMED_CLASS)
+  }
+  const onKeyUpCtrl = (e: KeyboardEvent) => {
+    if (e.key === 'Control') host.classList.remove(DRAG_ARMED_CLASS)
+  }
+  const onWindowBlur = () => host.classList.remove(DRAG_ARMED_CLASS)
+  window.addEventListener('keydown', onKeyDownCtrl)
+  window.addEventListener('keyup', onKeyUpCtrl)
+  window.addEventListener('blur', onWindowBlur)
   return () => {
     cleanup(false)
     host.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions)
     window.removeEventListener('click', onClickCapture, true)
     window.removeEventListener('dragstart', onDragStartCapture, true)
+    window.removeEventListener('keydown', onKeyDownCtrl)
+    window.removeEventListener('keyup', onKeyUpCtrl)
+    window.removeEventListener('blur', onWindowBlur)
+    host.classList.remove(DRAG_ARMED_CLASS)
   }
 }

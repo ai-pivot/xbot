@@ -597,6 +597,15 @@
   background: var(--panel-bg);
 }
 
+/* 卡片 Ctrl 拖动手势预备提示：按住 Ctrl 时 host 加 ctrl-drag-armed
+   （cardDrag.ts 键盘监听切换），子树光标统一 grab（!important 覆盖输入框
+   text 等元素光标——手势征用语义）。拖动激活后 body.style.cursor =
+   grabbing 接管。 */
+.ctrl-drag-armed,
+.ctrl-drag-armed * {
+  cursor: grab !important;
+}
+
 /* Tab bar: transparent (inherits group card background) */
 .dockview-theme-vs .dv-tabs-and-actions-container {
   border-bottom: 1px solid var(--border) !important;
