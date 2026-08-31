@@ -233,7 +233,7 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
 
     if (!seededRef.current) {
       seededRef.current = true
-      // 默认布局：Agent 卡片（主）+ 会话列表卡片（左侧分屏）
+      // Master 布局：会话列表卡片（左侧 20%）+ Agent 卡片（右侧 80%）
       const activeSession = ctxRef.current.sessionStore.activeSession
       // 1. 先创建 Agent tab（主卡片）
       const agentTabId = mgr.openTab({
@@ -247,13 +247,29 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
         } : undefined,
       })
       // 2. 在 Agent 卡片左侧创建会话列表 Panel（独立卡片，不经过 tab 系统）
-      panelManagerRef.current.addPanel({
+      const sessionsPanelId = panelManagerRef.current.addPanel({
         component: 'panel',
         title: '会话',
         params: { type: 'panel', panelId: 'sessions', closable: false },
         direction: 'left',
         referencePanelId: `dv-${agentTabId}`,
       })
+      // 3. Master 布局比例：会话列表 20%，Agent 80%
+      // Dockview 的 group.api.setSize 设置 group 宽度（像素值）
+      // 用 setTimeout 确保 Dockview 完成 split 后再设宽度
+      setTimeout(() => {
+        const api = apiRef.current
+        if (!api) return
+        const sessionsPanel = api.getPanel(sessionsPanelId)
+        if (sessionsPanel?.group) {
+          const totalWidth = api.width
+          const sidebarWidth = Math.round(totalWidth * 0.2)
+          sessionsPanel.group.api.setSize({ width: sidebarWidth })
+        }
+        // 确保 Agent 面板是活跃的
+        const agentPanel = api.getPanel(`dv-${agentTabId}`)
+        agentPanel?.api.setActive()
+      }, 0)
       onReady?.()
     }
 
