@@ -21,6 +21,7 @@ function mockGroup(id: string, types: string[]): DockviewGroupPanel {
     id,
     panels: types.map((type) => ({ params: { type } })),
     api: { setSize: vi.fn() },
+    model: { header: { hidden: false } },
   } as unknown as DockviewGroupPanel
 }
 
@@ -29,6 +30,8 @@ function mockApi(groups: DockviewGroupPanel[], width: number, height = 600) {
   const listeners = {
     addGroup: new Set<(g: DockviewGroupPanel) => void>(),
     removeGroup: new Set<(g: DockviewGroupPanel) => void>(),
+    addPanel: new Set<(p: unknown) => void>(),
+    removePanel: new Set<(p: unknown) => void>(),
     layoutChange: new Set<() => void>(),
   }
   const api = {
@@ -43,15 +46,27 @@ function mockApi(groups: DockviewGroupPanel[], width: number, height = 600) {
       listeners.removeGroup.add(l)
       return { dispose: () => listeners.removeGroup.delete(l) }
     },
+    onDidAddPanel: (l: (p: unknown) => void) => {
+      listeners.addPanel.add(l)
+      return { dispose: () => listeners.addPanel.delete(l) }
+    },
+    onDidRemovePanel: (l: (p: unknown) => void) => {
+      listeners.removePanel.add(l)
+      return { dispose: () => listeners.removePanel.delete(l) }
+    },
     onDidLayoutChange: (l: () => void) => {
       listeners.layoutChange.add(l)
       return { dispose: () => listeners.layoutChange.delete(l) }
     },
     fireAddGroup: (g: DockviewGroupPanel) => listeners.addGroup.forEach((l) => l(g)),
+    fireAddPanel: () => listeners.addPanel.forEach((l) => l({})),
+    fireRemovePanel: () => listeners.removePanel.forEach((l) => l({})),
     fireLayoutChange: () => listeners.layoutChange.forEach((l) => l()),
   }
   return api as unknown as DockviewApi & {
     fireAddGroup: (g: DockviewGroupPanel) => void
+    fireAddPanel: () => void
+    fireRemovePanel: () => void
     fireLayoutChange: () => void
   }
 }
@@ -259,5 +274,52 @@ describe('LayoutEngine', () => {
     engine.dispose()
     api.fireAddGroup(sec)
     expect(sec.api.setSize).not.toHaveBeenCalled()
+  })
+
+  // ── tab 栏可见性策略（单 tab 隐藏） ──────────────────────────────────────
+
+  it('单 tab 卡片隐藏 tab 栏，多 tab 卡片显示', () => {
+    const single = mockGroup('single', ['panel']) // 单 panel（sidebar 卡片）
+    const multi = mockGroup('multi', ['agent', 'file']) // 双 tab（主卡片）
+    const api = mockApi([single, multi], 1000)
+    const engine = new LayoutEngine()
+    engine.bindApi(api)
+    expect(single.model.header.hidden).toBe(true)
+    expect(multi.model.header.hidden).toBe(false)
+    engine.dispose()
+  })
+
+  it('tab 增删（onDidAddPanel/onDidRemovePanel）联动 header 可见性', () => {
+    const sec = mockGroup('sec', ['panel'])
+    const master = mockGroup('master', ['agent'])
+    const api = mockApi([sec, master], 1000)
+    const engine = new LayoutEngine()
+    engine.bindApi(api)
+    expect(sec.model.header.hidden).toBe(true)
+
+    // group 内 tab 1 → 2：显示
+    ;(sec as unknown as { panels: Array<{ params: { type: string } }> }).panels.push({
+      params: { type: 'panel' },
+    })
+    api.fireAddPanel()
+    expect(sec.model.header.hidden).toBe(false)
+
+    // group 内 tab 2 → 1：隐藏
+    ;(sec as unknown as { panels: Array<{ params: { type: string } }> }).panels.pop()
+    api.fireRemovePanel()
+    expect(sec.model.header.hidden).toBe(true)
+    engine.dispose()
+  })
+
+  it('header 策略不依赖容器尺寸（width=0 时 bindApi 即应用）', () => {
+    const sec = mockGroup('sec', ['panel'])
+    const master = mockGroup('master', ['agent'])
+    const api = mockApi([sec, master], 0, 0) // 容器未就绪（播种时机）
+    const engine = new LayoutEngine()
+    engine.bindApi(api)
+    // 尺寸分配 pending，但 header 策略立即可用（不依赖 api.width）
+    expect(sec.api.setSize).not.toHaveBeenCalled()
+    expect(sec.model.header.hidden).toBe(true)
+    engine.dispose()
   })
 })

@@ -1,11 +1,12 @@
 /**
  * 集中式布局引擎（平铺式窗口管理器 master/stack 语义）。
  *
- * 布局计算是一条集中式管线：任何结构更改（卡片增删、tab 拆分/合并）发生后、
- * paint 前，引擎按卡片优先级统一重新计算所有卡片的尺寸，再把计算结果应用到
- * gridview。不存在"先渲染默认布局再事后 setSize 修正"的路径。
+ * 布局计算是一条集中式管线：任何结构更改（卡片增删、tab 增删/移动）发生后、
+ * paint 前，引擎统一重新计算布局呈现策略并应用。不存在"先渲染默认布局
+ * 再事后修正"的路径。
  *
- * 布局模型（master/stack）：
+ * 两个呈现策略：
+ * 1. 尺寸分配（master/stack）：
  *
  *   ┌────────┬──────────────────────┐
  *   │ sec 1  │                      │
@@ -16,19 +17,22 @@
  *   └────────┴──────────────────────┘
  *    堆叠列 20% 宽，卡片上下排列（水平切分）
  *
- * - master 卡片（含 agent tab 的 group）：root 层水平排列，合计占
- *   masterRatio（默认 80%）宽度，多张平分
- * - secondary 卡片（sidebar panels）：在与 master 并列的堆叠列内上下排列，
- *   平分容器高度；堆叠列整体宽度（1 - masterRatio）由 master 设宽后的
- *   delta 吸收（gridview splitview 语义：resizeView 的差值由同级吸收）
- * - dockview grid 语义（getRelativeLocation）：root 层 leaf 是 HORIZONTAL，
- *   'bottom' 相对 root 层 secondary 会建嵌套 VERTICAL branch（首张建列），
- *   相对嵌套层 secondary 则同层追加 —— addPanel 依赖此语义堆叠
+ *   - master 卡片（含 agent tab 的 group）：root 层水平排列，合计占
+ *     masterRatio（默认 80%）宽度，多张平分
+ *   - secondary 卡片（sidebar panels）：在与 master 并列的堆叠列内上下
+ *     排列，平分容器高度；堆叠列整体宽度由 master 设宽后的 delta 吸收
+ *
+ * 2. tab 栏可见性（单 tab 隐藏）：卡片只有 1 个 tab 时隐藏 tab 栏——
+ *    平铺卡片语义下 header 只在多 tab 时有意义，单 tab 卡片隐藏 header
+ *    释放垂直空间（group.model.header.hidden，dockview 原生路径，
+ *    toJSON 自动持久化 hideHeader）。
  *
  * 触发管线（统一入口，不散落在 Manager 里）：
- * - `onDidAddGroup` / `onDidRemoveGroup`：结构变化。这两个事件在
- *   addPanel/removePanel/moveTo 调用栈内同步触发（paint 前），重算结果
- *   与结构变更在同一次 DOM 更新里落地，用户看不到中间态
+ * - `onDidAddGroup` / `onDidRemoveGroup`：卡片增删 → 立即 relayout
+ *  （尺寸 + header 策略）。事件在 addPanel/removePanel 调用栈内同步触发
+ *  （paint 前），计算结果与结构变更同帧落地
+ * - `onDidAddPanel` / `onDidRemovePanel`：group 内 tab 增删/移动 → 只重算
+ *   header 策略（不影响尺寸分配）
  * - `onDidLayoutChange`：容器尺寸就绪（初次播种时 `api.width === 0`，
  *   引擎保持 pending，等 autoResize 的 ResizeObserver 触发首次 layout）
  *   或结构变化未被处理时补偿重算；纯 sash 拖拽（结构未变）不覆盖用户
@@ -150,6 +154,9 @@ export class LayoutEngine {
     // 结构变化 → 立即重算（事件在 addPanel/removePanel 调用栈内同步触发，paint 前）
     this.disposables.push(api.onDidAddGroup(() => this.relayout()))
     this.disposables.push(api.onDidRemoveGroup(() => this.relayout()))
+    // group 内 tab 增删/移动 → 只重算 header 策略（不影响尺寸分配）
+    this.disposables.push(api.onDidAddPanel(() => this.applyGroupHeaderPolicy()))
+    this.disposables.push(api.onDidRemovePanel(() => this.applyGroupHeaderPolicy()))
     // 容器尺寸就绪（首次）/ 结构变化补偿；纯 sash 拖拽不覆盖用户手动比例
     this.disposables.push(
       api.onDidLayoutChange(() => {
@@ -180,7 +187,7 @@ export class LayoutEngine {
   }
 
   /**
-   * 集中计算并应用布局。
+   * 集中计算并应用布局（尺寸分配 + header 可见性策略）。
    *
    * 返回是否完成（false = 容器尺寸未就绪，引擎保持 pending，
    * 待 onDidLayoutChange 首次触发时重试）。
@@ -194,6 +201,7 @@ export class LayoutEngine {
     }
     const groups = api.groups
     if (groups.length === 0) return false
+    this.applyGroupHeaderPolicy()
 
     const totalWidth = api.width
     const totalHeight = api.height
@@ -217,5 +225,18 @@ export class LayoutEngine {
       this.lastAppliedIds = this.groupSignature()
     }
     return totalWidth > 0 && totalHeight > 0
+  }
+
+  /**
+   * tab 栏可见性策略：卡片只有 1 个 tab 时隐藏 tab 栏（平铺卡片语义，
+   * header 只在多 tab 时有意义），多 tab 时显示。group.model.header.hidden
+   * 是 dockview 官方路径（toJSON 自动持久化 hideHeader）。
+   */
+  private applyGroupHeaderPolicy(): void {
+    const api = this.api
+    if (!api) return
+    for (const group of api.groups) {
+      group.model.header.hidden = group.panels.length <= 1
+    }
   }
 }
