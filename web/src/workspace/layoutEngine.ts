@@ -135,19 +135,25 @@ export function computeMasterStack(
  */
 export class LayoutEngine {
   private api: DockviewApi | null = null
+  private host: HTMLElement | null = null
   private disposables: Array<{ dispose(): void }> = []
   private appliedOnce = false
   private lastAppliedIds = ''
   private readonly options: LayoutEngineOptions
+  /** 显式展开收起态的非主卡 group id 集合（默认收起——6px 细条把手） */
+  private expandedHeaders = new Set<string>()
+  private onHeaderClick: ((e: MouseEvent) => void) | null = null
 
   constructor(options: Partial<LayoutEngineOptions> = {}) {
     this.options = { ...DEFAULT_LAYOUT_OPTIONS, ...options }
   }
 
   /** 绑定/解绑 DockviewApi（DockviewContainer onReady / dispose 时调用） */
-  bindApi(api: DockviewApi | null): void {
+  bindApi(api: DockviewApi | null, host?: HTMLElement | null): void {
     this.teardown()
+    this.expandedHeaders.clear()
     this.api = api
+    this.host = host ?? null
     this.appliedOnce = false
     this.lastAppliedIds = ''
     if (!api) return
@@ -163,6 +169,22 @@ export class LayoutEngine {
         if (!this.appliedOnce || this.structureChanged()) this.relayout()
       }),
     )
+    // header 点击委托（收起↔展开）：点击 tab 栏空白区（非 .dv-tab pill——
+    // pill 点击是 tab 激活）切换非主卡 header 的收起态。委托在 host 上
+    // （LayoutEngine 集中管理 header 策略的交互入口，不散落组件）。
+    if (this.host) {
+      this.onHeaderClick = (e: MouseEvent) => {
+        const target = e.target as HTMLElement | null
+        if (!target?.closest) return
+        const headerEl = target.closest('.dv-tabs-and-actions-container') as HTMLElement | null
+        if (!headerEl || target.closest('.dv-tab')) return
+        const groupEl = headerEl.closest('.dv-groupview') as HTMLElement | null
+        if (!groupEl) return
+        const group = api.groups.find((g) => g.element === groupEl)
+        if (group) this.toggleHeader(group.id)
+      }
+      this.host.addEventListener('click', this.onHeaderClick)
+    }
     // bindApi 时布局可能已存在（恢复持久化布局 / 热重建）—— 主动尝试一次。
     // 宽度未就绪时无害（pending，等 onDidLayoutChange 重试）。
     this.relayout()
@@ -175,6 +197,10 @@ export class LayoutEngine {
   private teardown(): void {
     for (const d of this.disposables) d.dispose()
     this.disposables = []
+    if (this.host && this.onHeaderClick) {
+      this.host.removeEventListener('click', this.onHeaderClick)
+    }
+    this.onHeaderClick = null
   }
 
   /** 当前卡片集合签名是否与上次应用时不同（sash 拖拽不改变签名） */
@@ -228,18 +254,36 @@ export class LayoutEngine {
   }
 
   /**
-   * tab 栏可见性策略：Tab 概念只存在于主卡片（用户架构原则——Tab = 主卡
-   * 内部标签页）。主卡（含 agent tab 的 group）tab 栏**常驻**（单 tab 也
-   * 显示：连接状态绿点 + 会话名在 tab 上）；其他卡片**永远隐藏**（不支持
-   * 卡片内 Tab，多 tab 也不显示——Tab 列表是主卡专属能力）。
-   * group.model.header.hidden 是 dockview 官方路径（toJSON 自动持久化
-   * hideHeader）。
+   * header 可见性策略（卡片标题栏/把手——方案 A）：
+   * - 所有卡片 header 显示（group.model.header.hidden = false）——header
+   *   是卡片标题栏 + 拖动把手（触屏拖动的入口；主卡 tab 栏空白区兼把手）
+   * - 主卡（含 agent tab 的 group）常驻全高（tab 功能区 + 连接状态绿点）
+   * - 非主卡默认收起（6px 细条把手，CSS .dv-header-collapsed——点击展开
+   *   显示卡片名；expandedHeaders 集合记录显式展开态）
+   * group.model.header.hidden 是 dockview 官方路径（toJSON 持久化 hideHeader）；
+   * 收起态走 group.element class（LayoutEngine 集中管理）。
    */
   private applyGroupHeaderPolicy(): void {
     const api = this.api
     if (!api) return
     for (const group of api.groups) {
-      group.model.header.hidden = !isMasterGroup(group)
+      group.model.header.hidden = false
+      const collapsed = !isMasterGroup(group) && !this.expandedHeaders.has(group.id)
+      group.element.classList.toggle('dv-header-collapsed', collapsed)
     }
+  }
+
+  /**
+   * 切换非主卡 header 的收起/展开（点击 header 空白区触发，见 bindApi 的
+   * click 委托）。主卡 no-op（tab 栏是功能区，常驻全高不收起）。
+   */
+  toggleHeader(groupId: string): void {
+    const api = this.api
+    if (!api) return
+    const group = api.groups.find((g) => g.id === groupId)
+    if (!group || isMasterGroup(group)) return
+    if (this.expandedHeaders.has(groupId)) this.expandedHeaders.delete(groupId)
+    else this.expandedHeaders.add(groupId)
+    group.element.classList.toggle('dv-header-collapsed', !this.expandedHeaders.has(groupId))
   }
 }

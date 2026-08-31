@@ -15,13 +15,15 @@ function info(id: string, isMaster: boolean): LayoutGroupInfo {
   return { id, isMaster }
 }
 
-/** 构造 mock group（isMasterGroup 走 panels[].params.type === 'agent'） */
+/** 构造 mock group（isMasterGroup 走 panels[].params.type === 'agent'；
+ * element 是真实 div——applyGroupHeaderPolicy 的 collapsed class 需要 classList） */
 function mockGroup(id: string, types: string[]): DockviewGroupPanel {
   return {
     id,
     panels: types.map((type) => ({ params: { type } })),
     api: { setSize: vi.fn() },
     model: { header: { hidden: false } },
+    element: document.createElement('div'),
   } as unknown as DockviewGroupPanel
 }
 
@@ -276,40 +278,68 @@ describe('LayoutEngine', () => {
     expect(sec.api.setSize).not.toHaveBeenCalled()
   })
 
-  // ── tab 栏可见性策略（主卡常显 / 非主卡永隐 — Tab 只存在于主卡片） ──────
+  // ── header 可见性策略（方案 A：卡片标题栏/把手） ──────────────────────────
+  // 所有卡片 header 显示（hidden=false，标题栏/把手）；主卡常驻全高（tab
+  // 功能区），非主卡默认收起（dv-header-collapsed 6px 细条把手，点击展开）。
 
-  it('主卡（含 agent tab）tab 栏常显（单 tab 也显示），非主卡永远隐藏', () => {
-    const single = mockGroup('single', ['panel']) // sidebar 卡片（单 panel）
+  it('所有卡片 header 显示；主卡常驻全高，非主卡默认收起（collapsed class）', () => {
+    const single = mockGroup('single', ['panel']) // sidebar 卡片
     const multi = mockGroup('multi', ['agent', 'file']) // 主卡片（双 tab）
     const agentOnly = mockGroup('agentOnly', ['agent']) // 主卡片（单 tab）
     const api = mockApi([single, multi, agentOnly], 1000)
     const engine = new LayoutEngine()
     engine.bindApi(api)
-    expect(single.model.header.hidden).toBe(true) // 非主卡：永隐（不支持卡片内 Tab）
-    expect(multi.model.header.hidden).toBe(false) // 主卡：常显
-    expect(agentOnly.model.header.hidden).toBe(false) // 主卡单 tab 也常显（连接状态绿点 + 会话名在 tab 上）
+    // 所有卡 header 显示（标题栏/把手——触屏拖动入口）
+    expect(single.model.header.hidden).toBe(false)
+    expect(multi.model.header.hidden).toBe(false)
+    expect(agentOnly.model.header.hidden).toBe(false)
+    // 非主卡默认收起（6px 细条）；主卡常驻全高（不 collapsed）
+    expect(single.element.classList.contains('dv-header-collapsed')).toBe(true)
+    expect(multi.element.classList.contains('dv-header-collapsed')).toBe(false)
+    expect(agentOnly.element.classList.contains('dv-header-collapsed')).toBe(false)
     engine.dispose()
   })
 
-  it('非主卡 tab 增删不影响 header 永隐（onDidAddPanel/onDidRemovePanel 不改变策略）', () => {
+  it('toggleHeader：非主卡收起↔展开切换；主卡 no-op（tab 功能区常驻）', () => {
+    const single = mockGroup('single', ['panel'])
+    const master = mockGroup('master', ['agent'])
+    const api = mockApi([single, master], 1000)
+    const engine = new LayoutEngine()
+    engine.bindApi(api)
+    // 展开（toggle → expandedHeaders 记录）
+    engine.toggleHeader('single')
+    expect(single.element.classList.contains('dv-header-collapsed')).toBe(false)
+    // 再 toggle → 收回收起态
+    engine.toggleHeader('single')
+    expect(single.element.classList.contains('dv-header-collapsed')).toBe(true)
+    // 主卡 no-op（永不收起）
+    engine.toggleHeader('master')
+    expect(master.element.classList.contains('dv-header-collapsed')).toBe(false)
+    // 未知 groupId no-op
+    engine.toggleHeader('nonexistent')
+    engine.dispose()
+  })
+
+  it('非主卡 tab 增删不影响收起态（onDidAddPanel/onDidRemovePanel 重算保持）', () => {
     const sec = mockGroup('sec', ['panel'])
     const master = mockGroup('master', ['agent'])
     const api = mockApi([sec, master], 1000)
     const engine = new LayoutEngine()
     engine.bindApi(api)
-    expect(sec.model.header.hidden).toBe(true)
+    engine.toggleHeader('sec') // 展开
+    expect(sec.element.classList.contains('dv-header-collapsed')).toBe(false)
 
-    // 非主卡 group 内 tab 1 → 2：仍然隐藏（策略只看 isMasterGroup，不看 tab 数）
+    // tab 增删触发 applyGroupHeaderPolicy 重算：展开态保持（expandedHeaders 持久）
     ;(sec as unknown as { panels: Array<{ params: { type: string } }> }).panels.push({
       params: { type: 'panel' },
     })
     api.fireAddPanel()
-    expect(sec.model.header.hidden).toBe(true)
+    expect(sec.model.header.hidden).toBe(false) // header 仍显示
+    expect(sec.element.classList.contains('dv-header-collapsed')).toBe(false) // 展开态保持
 
-    // tab 2 → 1：仍然隐藏
     ;(sec as unknown as { panels: Array<{ params: { type: string } }> }).panels.pop()
     api.fireRemovePanel()
-    expect(sec.model.header.hidden).toBe(true)
+    expect(sec.element.classList.contains('dv-header-collapsed')).toBe(false)
     engine.dispose()
   })
 
@@ -321,7 +351,8 @@ describe('LayoutEngine', () => {
     engine.bindApi(api)
     // 尺寸分配 pending，但 header 策略立即可用（不依赖 api.width）
     expect(sec.api.setSize).not.toHaveBeenCalled()
-    expect(sec.model.header.hidden).toBe(true)
+    expect(sec.model.header.hidden).toBe(false) // 显示（标题栏/把手）
+    expect(sec.element.classList.contains('dv-header-collapsed')).toBe(true) // 默认收起
     engine.dispose()
   })
 })

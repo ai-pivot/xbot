@@ -101,6 +101,18 @@ export function nearestRectIndex(x: number, y: number, rects: Rect[]): number {
   return nearest
 }
 
+/**
+ * header 把手判定：target 在 tab 栏（.dv-tabs-and-actions-container）且
+ * 不在 tab pill（.dv-tab）内——pill 点击是 tab 激活/原生 tab 拖动的交互区，
+ * 空白区是卡片拖动把手（无 Ctrl 直接拖——触屏拖动入口；主卡 tab 栏空白
+ * 区兼把手，非主卡收起细条/展开 header 同为把手）。
+ */
+export function isHeaderGrab(el: EventTarget | null): boolean {
+  const target = el as HTMLElement | null
+  if (!target?.closest) return false
+  return !!target.closest('.dv-tabs-and-actions-container') && !target.closest('.dv-tab')
+}
+
 interface DragState {
   pointerId: number
   startX: number
@@ -284,7 +296,12 @@ export function enableCardDrag(
   }
 
   const onPointerDown = (e: PointerEvent) => {
-    if (!e.ctrlKey || e.button !== 0 || state) return
+    if (e.button !== 0 || state) return
+    // 拖动入口（二选一）：① Ctrl+左键（内容区任意处，修饰键手势）；
+    // ② header 空白区把手（无 Ctrl——触屏拖动入口；主卡 tab 栏空白区
+    // 兼把手，非主卡收起细条/展开 header 都是把手）。pill（.dv-tab）内
+    // 不启动——那是 tab 激活/原生 tab 拖动的交互区。
+    if (!e.ctrlKey && !isHeaderGrab(e.target)) return
     const source = groupAt(e.target, e.clientX, e.clientY)
     if (!source) return
     // Ctrl+左键 = 拖动专用手势：从按下起吞掉一切交互。preventDefault 阻止
