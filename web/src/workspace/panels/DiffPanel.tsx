@@ -30,7 +30,7 @@ function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEd
     editorRef.current?.goDiff(dir)
   }
   return (
-    <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-sidebar-bg/90 p-0.5">
+    <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-card-chrome-bg/90 p-0.5">
       <button type="button" onClick={(e) => nav(e, -1)} title="上一个差异 (Shift+F7)" className={btn}>
         <ChevronUp className="size-3.5" />
       </button>
@@ -68,7 +68,7 @@ export function DiffPanel({ params, api }: PanelProps) {
   // 竞态报错，明确提示用户重新打开。
   if (!params.original && !params.modified) {
     return (
-      <div className="flex h-full flex-col bg-panel-bg">
+      <div className="flex h-full flex-col bg-card-bg">
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
           <span className="min-w-0 truncate font-mono text-xs text-text-primary">{params.title || params.diffPath}</span>
         </div>
@@ -81,7 +81,7 @@ export function DiffPanel({ params, api }: PanelProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-panel-bg">
+    <div className="flex h-full min-h-0 flex-col bg-card-bg">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
         <span className="min-w-0 truncate font-mono text-xs text-text-primary">{params.title || params.diffPath}</span>
         {params.diffScope && (

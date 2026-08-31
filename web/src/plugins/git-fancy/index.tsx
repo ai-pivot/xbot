@@ -327,7 +327,7 @@ export function GitFancyPanel() {
   return (
     <div className="flex h-full flex-col overflow-hidden text-xs">
       {header}
-      <div className="shrink-0 border-b border-border bg-sidebar-bg px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
+      <div className="card-chrome shrink-0 border-b border-border px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
         {`变更 ${status?.changes.length ?? 0} · +${totalAdded} -${totalDeleted}`}
       </div>
       {/* 上区（变更文件）—— flex-basis 按拖拽比例 */}
@@ -342,7 +342,7 @@ export function GitFancyPanel() {
       >
         <div className="h-[2px] w-8 rounded-full bg-border transition-all group-hover:w-12 group-hover:bg-accent/50 group-active:bg-accent" />
       </div>
-      <div className="shrink-0 border-t border-border bg-sidebar-bg px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
+      <div className="card-chrome shrink-0 border-t border-border px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
         {`提交 ${commits.length}/${total}`}
       </div>
       {/* 下区（commit 历史）—— flex-1 占剩余空间 */}
@@ -351,7 +351,7 @@ export function GitFancyPanel() {
         <button
           onClick={() => void loadMore()}
           disabled={loadingMore}
-          className="sticky bottom-0 border-t border-border bg-sidebar-bg px-2 py-1.5 text-center text-[10px] text-text-muted hover:bg-surface-bg hover:text-text-primary disabled:opacity-50"
+          className="card-chrome sticky bottom-0 border-t border-border px-2 py-1.5 text-center text-[10px] text-text-muted hover:bg-surface-bg hover:text-text-primary disabled:opacity-50"
         >
           {loadingMore ? '加载中…' : `加载更多（${total - commits.length} 条）`}
         </button>
@@ -394,7 +394,7 @@ function CommitExpand({ hash }: { hash: string }) {
   }
 
   return (
-    <div className="max-h-72 overflow-y-auto border-b border-border bg-sidebar-bg/50">
+    <div className="max-h-72 overflow-y-auto border-b border-border bg-card-chrome-bg/50">
       <div className="px-2.5 pt-1.5 pb-1">
         <div className="whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-text-secondary">
           {detail.message}

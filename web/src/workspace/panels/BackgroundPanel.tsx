@@ -170,7 +170,7 @@ export function BackgroundPanel({ params }: PanelProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-panel-bg">
+    <div className="flex h-full min-h-0 flex-col bg-card-bg">
       <header className="flex min-h-10 items-center gap-2 border-b border-border px-3">
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-text-primary">{title}</div>

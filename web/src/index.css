@@ -147,7 +147,11 @@
 
   /* ── Semantic area tokens (light) ──
    * --app-bg / --panel-bg: base + panel background (Ambience glass can semi-transparent)
-   * --sidebar-bg / --input-bg / --surface-bg / --tab-*: always opaque (UI chrome) */
+   * --sidebar-bg / --input-bg / --surface-bg / --tab-*: always opaque (UI chrome)
+   * --card-* (v3.1): 卡片令牌——全卡片化后"卡片"是基本视觉单位。统一默认视觉
+   * （一致性），子树就地覆盖令牌可差异化（灵活性）。--card-bg 引用 panel-bg
+   * （玻璃参与）；--card-chrome-bg 引用 sidebar-bg（卡片内实色条，v3 不透明
+   * 原则）。dark 区无需重复定义——引用式令牌级联自动跟随。 */
   --app-bg-src: #ffffff;
   --app-bg: var(--app-bg-src);
   --panel-bg-src: #ffffff;
@@ -157,6 +161,9 @@
   --surface-bg: #e4e4e4;
   --tab-active-bg: var(--app-bg);
   --tab-inactive-bg: var(--sidebar-bg);
+  --card-bg: var(--panel-bg);
+  --card-radius: 0.75rem;
+  --card-chrome-bg: var(--sidebar-bg);
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
@@ -206,7 +213,7 @@
 :root {
   --background: var(--app-bg);
   --foreground: var(--text-primary);
-  --card: var(--app-bg);
+  --card: var(--card-bg);
   --card-foreground: var(--text-primary);
   --popover: var(--input-bg);
   --popover-foreground: var(--text-primary);
@@ -302,7 +309,7 @@
 .dark {
   --background: var(--app-bg);
   --foreground: var(--text-primary);
-  --card: var(--sidebar-bg);
+  --card: var(--card-bg);
   --card-foreground: var(--text-primary);
   --popover: var(--input-bg);
   --popover-foreground: var(--text-primary);
@@ -383,6 +390,8 @@
   /* Semantic area tokens: bg-app-bg, bg-sidebar-bg, bg-panel-bg, ... */
   --color-app-bg: var(--app-bg);
   --color-panel-bg: var(--panel-bg);
+  --color-card-bg: var(--card-bg);
+  --color-card-chrome-bg: var(--card-chrome-bg);
   --color-sidebar-bg: var(--sidebar-bg);
   --color-input-bg: var(--input-bg);
   --color-surface-bg: var(--surface-bg);
@@ -589,12 +598,32 @@
   --dv-tabs-and-actions-container-font-size: 13px;
 }
 
-/* Card visual on the entire group (tab bar + content) — not just content */
+/* ── 卡片组件类（v3.1 统一抽象）──────────────────────────────────────────
+ * 全卡片化后"卡片"是基本视觉单位。默认视觉统一（bg/border/radius 全引用
+ * 令牌），差异化通过三层机制：① 子树就地覆盖令牌（--card-radius/--card-bg
+ * 只影响该子树）② 语义分层（弹窗内卡片继续 input-bg 实色，不强制 card-bg）
+ * ③ tailwind utility 拼合覆盖（@layer 顺序 utilities 赢 components）。
+ * .card-surface = 卡片本体（dockview 卡片/面板卡片/弹窗内卡片）；
+ * .card-chrome = 卡片内实色条（工具栏/头部/底部条，v3 不透明原则）。 */
+@layer components {
+  .card-surface {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--card-radius);
+  }
+  .card-chrome {
+    background: var(--card-chrome-bg);
+  }
+}
+
+/* Card visual on the entire group (tab bar + content) — not just content.
+ * 引用卡片令牌（--card-bg/--card-radius）与 .card-surface 同源——dockview
+ * 卡片与面板卡片视觉一致（改令牌一处全跟）。 */
 .dockview-theme-vs .dv-groupview {
   border: 1px solid var(--border) !important;
-  border-radius: 0.75rem !important;
+  border-radius: var(--card-radius) !important;
   overflow: hidden;
-  background: var(--panel-bg);
+  background: var(--card-bg);
 }
 
 /* 卡片 Ctrl 拖动手势预备提示：按住 Ctrl 时 host 加 ctrl-drag-armed

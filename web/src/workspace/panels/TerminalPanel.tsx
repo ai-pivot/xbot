@@ -227,7 +227,7 @@ export function TerminalPanel({ params }: PanelProps) {
   const activeKeys = ctrlActive ? CTRL_KEYS : showExpanded ? SECONDARY_KEYS : PRIMARY_KEYS
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-panel-bg">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-card-bg">
       {/* Terminal area — add bottom padding when keyboard is open so text
           isn't hidden behind the floating accessory bar. */}
       <div
@@ -239,7 +239,7 @@ export function TerminalPanel({ params }: PanelProps) {
       {/* Mobile accessory bar */}
       {isMobile && showAux && (
         <div
-          className="border-t border-border bg-sidebar-bg"
+          className="card-chrome border-t border-border"
           style={
             keyboardInset > 0
               ? {
@@ -351,7 +351,7 @@ export function TerminalPanel({ params }: PanelProps) {
             e.stopPropagation()
             setShowAux(true)
           }}
-          className="flex h-7 shrink-0 select-none items-center justify-center border-t border-border bg-sidebar-bg text-text-muted"
+          className="card-chrome flex h-7 shrink-0 select-none items-center justify-center border-t border-border text-text-muted"
           style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
         >
           <span className="text-xs">▴ Keys</span>
