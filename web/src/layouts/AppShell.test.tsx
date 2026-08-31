@@ -118,16 +118,12 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // w-full dockview would share a row and overflow the screen.
     expect(main!.className).toContain('flex-col')
 
-    // Order (布局 v6 全卡片化): children[0] = header, children[1] = dockview
-    // host, children[2] = PanelLauncher (底部 chip 启动栏),
-    // children[3] = bottom rail row (InfoBar + separator + BottomRailBadges).
-    expect(main!.children.length).toBeGreaterThanOrEqual(4)
-    const topHeader = main!.children[0]
-    const dockview = main!.children[1]
-    const railRow = main!.children[3]
-    // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
-    expect(topHeader.className).toContain('items-center')
-    expect(topHeader.className).toContain('bg-sidebar-bg')
+    // Order (布局 v6 全卡片化, 全局 header 已删): children[0] = dockview
+    // host, children[1] = PanelLauncher (底部 chip 启动栏 + 设置按钮),
+    // children[2] = bottom rail row (InfoBar + separator + BottomRailBadges).
+    expect(main!.children.length).toBeGreaterThanOrEqual(3)
+    const dockview = main!.children[0]
+    const railRow = main!.children[2]
     // Dockview host fills the REMAINING space (flex-1 min-h-0), not
     // h-full w-full — h-full would overflow since the rail row consumed height.
     expect(dockview.className).toContain('flex-1')
@@ -157,25 +153,28 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main).not.toBeNull()
     expect(main!.className).toContain('flex-col')
     // The info bar is ALWAYS rendered as a fixed-height strip (inside the
-    // bottom rail row — main.children[3], after the PanelLauncher),
+    // bottom rail row — main.children[2], after the PanelLauncher),
     // even with no plugin content — it never pops in/out.
-    const railRow = main!.children[3]
+    const railRow = main!.children[2]
     const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })
 
-  it('layout v5 header: no model pill / think pill, no status_bar_right container', () => {
+  it('layout v6: 全局 header 已删（连接状态/会话名在主卡片 header，设置按钮在 chip 栏）', () => {
     renderWithProviders(
       <PluginWidgetsContext.Provider value={{ zones: {}, components: [], revision: 0 }}>
         <AppShell />
       </PluginWidgetsContext.Provider>,
     )
 
-    // 模型 pill（Popover 下拉）与 think pill 已整体移除（布局 v5：将来由
-    // 居中插件实现，本期不留占位）。ctxUsage 上下文环保留。
+    // 模型 pill / think pill 已移除；全局 header（含 ctxUsage 上下文环 svg）
+    // 已删——上下文环由主卡片 AgentPanel 输入区（ContextRing）承载。
     expect(screen.queryByTitle('切换模型')).not.toBeInTheDocument()
     expect(screen.queryByText(/think/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('img', { name: '上下文用量' })).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: '上下文用量' })).not.toBeInTheDocument()
+    // 连接状态点也不再全局渲染（AgentPanel 卡片 header 内，面板被 mock）
+    expect(screen.queryByText('已连接')).not.toBeInTheDocument()
+    expect(screen.queryByText('连接中…')).not.toBeInTheDocument()
 
     // status_bar_right 插件容器已移除（被 TopRail 替代）；InfoBar 内部的
     // info_bar 容器不受影响。

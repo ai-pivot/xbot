@@ -1,7 +1,8 @@
 /**
  * PanelLauncher — 底部面板启动器（替代 SideChips）。
  *
- * 列出所有可用面板（内置 + 插件），点击 toggle 打开/关闭独立卡片。
+ * 列出所有可用面板（内置 + 插件），点击 toggle 打开/关闭独立卡片；
+ * 尾部固定设置按钮（全局设置入口，原 AppShell 全局 header 迁入）。
  *
  * 概念区分：
  *   - Panel（卡片）：独立分屏区域，不经过 tab 系统。
@@ -11,7 +12,7 @@
  *
  * 底部固定栏，位于 DockviewContainer 和 InfoBar 之间。
  */
-import { MessageSquare, FolderOpen, Search, Info, CheckSquare, TerminalSquare, type LucideIcon } from 'lucide-react'
+import { MessageSquare, FolderOpen, Search, Info, CheckSquare, TerminalSquare, Settings, type LucideIcon } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
@@ -39,9 +40,12 @@ const SIDEBAR_PANELS: LauncherEntry[] = [
 export function PanelLauncher({
   panelManager,
   tabManager,
+  onOpenSettings,
 }: {
   panelManager: PanelManager
   tabManager: TabManager
+  /** 打开全局设置（原 AppShell 全局 header 的设置按钮迁入） */
+  onOpenSettings: () => void
 }) {
   const pluginPanels = usePluginViewPanels('right_sidebar')
 
@@ -89,6 +93,12 @@ export function PanelLauncher({
           </button>
         )
       })}
+      {/* 设置按钮（全局设置入口，原 AppShell 全局 header 迁入；推到最右） */}
+      <button type="button" title="设置" aria-label="打开设置" onClick={onOpenSettings}
+        className="ml-auto flex size-7 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
+        style={{ color: 'var(--text-secondary)' }}>
+        <Settings className="size-4" />
+      </button>
     </div>
   )
 }

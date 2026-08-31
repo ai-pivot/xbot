@@ -152,6 +152,14 @@ export function AgentPanel({ params, api }: PanelProps) {
   const reloadChat = chat.reload
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
+  // 卡片 header 会话名：按本 tab 自己的会话查 label（卡片自持，非全局
+  // activeSession —— 多 agent 卡片各显示自己的会话）。
+  const sessionLabel = useMemo(() => {
+    if (!chatID) return ''
+    const hit = store.sessions.find((s) => s.chatID === chatID && s.channel === messageChannel)
+    return hit?.label ?? chatID
+  }, [store.sessions, chatID, messageChannel])
+
   // NOTE: The old wasSubscribed effect (reloadChat when shouldSubscribe
   // changes false→true) is REMOVED. When a tab becomes visible again (SSE
   // reconnects), the SSE reconnection mechanism already handles everything:
@@ -508,6 +516,27 @@ export function AgentPanel({ params, api }: PanelProps) {
 
   return (
     <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
+      {!isSubAgent && (
+        <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+            <span
+              className={
+                ws.connected
+                  ? 'size-1.5 rounded-full bg-emerald-500'
+                  : 'size-1.5 animate-pulse rounded-full bg-amber-500'
+              }
+            />
+            <span className="text-text-muted">{ws.connected ? '已连接' : '连接中…'}</span>
+          </span>
+          <span
+            className="shrink-0 max-w-[200px] truncate font-medium"
+            title={sessionLabel}
+            style={{ color: 'var(--text-primary)' }}
+          >
+            {sessionLabel}
+          </span>
+        </div>
+      )}
       {!ws.connected && !isSubAgent && chatID && (
         <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
           <Loader2 className="size-3 animate-spin" />
