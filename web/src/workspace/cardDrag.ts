@@ -120,6 +120,11 @@ export function isHeaderGrab(el: EventTarget | null): boolean {
 }
 
 interface DragState {
+  /** 手势来源流：鼠标（VS Code 模式 mousedown/mousemove/mouseup，无
+   * pointercancel——真实浏览器 pointer 流拖 SVG 把手会触发 HTML5 drag
+   * 切换 pointercancel 杀手势）/ 触屏（pointerdown + setPointerCapture） */
+  pointer: 'mouse' | 'touch'
+  /** 触屏 pointer id（鼠标为 0） */
   pointerId: number
   startX: number
   startY: number
@@ -233,9 +238,12 @@ export function enableCardDrag(
     setOverlay(null, null)
     endDragVisual()
     state = null
-    window.removeEventListener('pointermove', onPointerMove)
-    window.removeEventListener('pointerup', onPointerUp)
-    window.removeEventListener('pointercancel', onPointerCancel)
+    // 双路径监听全移除（哪个启动的移哪个——未注册的移除是 no-op）
+    window.removeEventListener('mousemove', onMouseMove, { passive: false } as EventListenerOptions)
+    window.removeEventListener('mouseup', onMouseUp)
+    window.removeEventListener('pointermove', onTouchPointerMove, { passive: false } as EventListenerOptions)
+    window.removeEventListener('pointerup', onTouchPointerUp)
+    window.removeEventListener('pointercancel', onTouchPointerCancel)
     window.removeEventListener('keydown', onKeyDown, true)
   }
 
@@ -245,40 +253,36 @@ export function enableCardDrag(
     return { x: r.left, y: r.top, w: r.width, h: r.height }
   }
 
-  const onPointerMove = (e: PointerEvent) => {
-    if (!state || e.pointerId !== state.pointerId) return
+  /** 手势 move 主体（鼠标/触屏共享）：阈值激活 + overlay 渲染 */
+  const gestureMoveBody = (clientX: number, clientY: number): void => {
+    if (!state) return
     if (!state.active) {
-      if (Math.hypot(e.clientX - state.startX, e.clientY - state.startY) < DRAG_THRESHOLD_PX) return
+      if (Math.hypot(clientX - state.startX, clientY - state.startY) < DRAG_THRESHOLD_PX) return
       state.active = true
       beginDragVisual()
     }
-    e.preventDefault()
-    const hit = targetAt(e.clientX, e.clientY)
+    const hit = targetAt(clientX, clientY)
     // 落点方位相对源卡片（拖向哪边放哪边）；中央小区 null → 无 overlay
-    const zone = quadrantZone(sourceRect(), e.clientX, e.clientY)
+    const zone = quadrantZone(sourceRect(), clientX, clientY)
     setOverlay(zone, hit?.rect ?? null)
   }
 
-  const onPointerUp = (e: PointerEvent) => {
-    if (!state || e.pointerId !== state.pointerId) return
+  /** 手势 up 主体（鼠标/触屏共享）：落子或放行 click。返回是否已激活（激活=吞） */
+  const gestureUpBody = (clientX: number, clientY: number): boolean => {
+    if (!state) return false
     if (!state.active) {
       cleanup(false) // 未过阈值 = click 语义，正常放行
-      return
+      return false
     }
-    e.preventDefault()
-    const hit = targetAt(e.clientX, e.clientY)
-    const zone = quadrantZone(sourceRect(), e.clientX, e.clientY)
+    const hit = targetAt(clientX, clientY)
+    const zone = quadrantZone(sourceRect(), clientX, clientY)
     if (hit && zone) {
       // zone = 拖动方向（相对源）：源放到最近邻居卡片的该侧
       state.source.api.moveTo({ group: hit.group, position: zone })
       options.onDrop?.()
     }
     cleanup(true)
-  }
-
-  const onPointerCancel = (e: PointerEvent) => {
-    if (!state || e.pointerId !== state.pointerId) return
-    cleanup(false)
+    return true
   }
 
   const onKeyDown = (e: KeyboardEvent) => {
@@ -293,7 +297,11 @@ export function enableCardDrag(
     }
   }
 
-  /** 手势期间抑制原生拖动（图片/链接 dragstart） */
+  /** 手势期间抑制原生拖动（图片/链接/SVG dragstart）。
+   * 鼠标流的关键防线：HTML5 drag 尝试（dragstart）被吞后 mousemove 继续
+   * 派发（VS Code 验证的行为）——pointer 流的 pointercancel 在 drag 尝试
+   * 时先杀（Chrome/Wayland 真实环境「overlay 闪一下就死」根因，setPointerCapture
+   * 也拦不住），mouse 流无此问题。 */
   const onDragStartCapture = (e: DragEvent) => {
     if (state) {
       e.preventDefault()
@@ -301,29 +309,78 @@ export function enableCardDrag(
     }
   }
 
-  const onPointerDown = (e: PointerEvent) => {
+  // ── 鼠标流（VS Code 模式：mousedown/mousemove/mouseup，无 pointercancel）──
+  // 真实浏览器（Chrome/Wayland）pointer 流拖动把手（SVG/文本）会触发
+  // pointercancel（HTML5 drag 切换干预，E2E 合成输入不触发故不可复现）
+  // —— 鼠标事件流没有 cancel 概念，dragstart 被吞后照常派发，手势稳。
+
+  const onMouseMove = (e: MouseEvent) => {
+    if (!state || state.pointer !== 'mouse') return
+    e.preventDefault()
+    gestureMoveBody(e.clientX, e.clientY)
+  }
+
+  const onMouseUp = (e: MouseEvent) => {
+    if (!state || state.pointer !== 'mouse') return
+    if (gestureUpBody(e.clientX, e.clientY)) e.preventDefault()
+  }
+
+  const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0 || state) return
     // 拖动入口（二选一）：① Ctrl+左键（内容区任意处，修饰键手势）；
-    // ② header 空白区把手（无 Ctrl——触屏拖动入口；主卡 tab 栏空白区
-    // 兼把手，非主卡收起细条/展开 header 都是把手）。pill（.dv-tab）内
-    // 不启动——那是 tab 激活/原生 tab 拖动的交互区。
+    // ② 显式把手/功能条/tab 栏空白区（无 Ctrl）。pill（.dv-tab）内不启动。
     if (!e.ctrlKey && !isHeaderGrab(e.target)) return
     const source = groupAt(e.target, e.clientX, e.clientY)
     if (!source) return
-    // Ctrl+左键/把手 = 拖动专用手势：从按下起吞掉一切交互。preventDefault
-    // 阻止默认行为（输入框 focus/光标定位、文本选择起点、图片原生拖动）；
-    // stopPropagation 阻断传播（dockview tab 拖动、React onMouseDown 等
-    // 内部元素监听）。未过拖动阈值就松开时 click 也被吞（onClickCapture
-    // 的 state 窗口）。
+    // 拖动专用手势：从按下起吞掉一切交互。preventDefault 阻止默认行为
+    //（输入框 focus/光标定位、文本选择起点）；stopPropagation 阻断传播
+    //（dockview tab 拖动、React onMouseDown 等内部元素监听）。
     e.preventDefault()
     e.stopPropagation()
-    // setPointerCapture：真实浏览器拖 SVG/文本把手会触发 HTML5 drag 切换
-    //（pointercancel → 手势中断 → overlay 闪现即死——用户「每次想拖都闪
-    // 一次」根因；Playwright 合成输入不触发 drag 切换，E2E 不复现）。
-    // W3C：pointer capture 后 UA 不再对该 pointer 启动 drag/兼容鼠标事件
-    // ——手势全程独占（VS Code 拖动手势的标准做法）。
-    try { host.setPointerCapture(e.pointerId) } catch { /* pointer 已释放（极端竞态）——忽略 */ }
     state = {
+      pointer: 'mouse',
+      pointerId: 0,
+      startX: e.clientX,
+      startY: e.clientY,
+      source,
+      active: false,
+      overlay: null,
+    }
+    window.addEventListener('mousemove', onMouseMove, { passive: false })
+    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('keydown', onKeyDown, true)
+  }
+
+  // ── 触屏 pointer 流（tap 无 HTML5 drag 切换；setPointerCapture 防滚动干预）──
+
+  const onTouchPointerMove = (e: PointerEvent) => {
+    if (!state || state.pointer !== 'touch' || e.pointerId !== state.pointerId) return
+    e.preventDefault()
+    gestureMoveBody(e.clientX, e.clientY)
+  }
+
+  const onTouchPointerUp = (e: PointerEvent) => {
+    if (!state || state.pointer !== 'touch' || e.pointerId !== state.pointerId) return
+    if (gestureUpBody(e.clientX, e.clientY)) e.preventDefault()
+  }
+
+  const onTouchPointerCancel = (e: PointerEvent) => {
+    if (!state || state.pointer !== 'touch' || e.pointerId !== state.pointerId) return
+    cleanup(false)
+  }
+
+  const onTouchPointerDown = (e: PointerEvent) => {
+    // 只处理触屏（鼠标走 onMouseDown——CDP/浏览器鼠标同时派发 pointerdown+
+    // mousedown，双路径会双启动；触屏 preventDefault 阻止合成 mouse 防双跳）
+    if (e.pointerType !== 'touch' || e.button !== 0 || state) return
+    if (!isHeaderGrab(e.target)) return // 触屏把手直接拖（无修饰键概念）
+    const source = groupAt(e.target, e.clientX, e.clientY)
+    if (!source) return
+    e.preventDefault()
+    e.stopPropagation()
+    try { host.setPointerCapture(e.pointerId) } catch { /* 极端竞态，忽略 */ }
+    state = {
+      pointer: 'touch',
       pointerId: e.pointerId,
       startX: e.clientX,
       startY: e.clientY,
@@ -331,13 +388,14 @@ export function enableCardDrag(
       active: false,
       overlay: null,
     }
-    window.addEventListener('pointermove', onPointerMove, { passive: false })
-    window.addEventListener('pointerup', onPointerUp)
-    window.addEventListener('pointercancel', onPointerCancel)
+    window.addEventListener('pointermove', onTouchPointerMove, { passive: false })
+    window.addEventListener('pointerup', onTouchPointerUp)
+    window.addEventListener('pointercancel', onTouchPointerCancel)
     window.addEventListener('keydown', onKeyDown, true)
   }
 
-  host.addEventListener('pointerdown', onPointerDown, { capture: true, passive: false })
+  host.addEventListener('mousedown', onMouseDown, { capture: true, passive: false })
+  host.addEventListener('pointerdown', onTouchPointerDown, { capture: true, passive: false })
   window.addEventListener('click', onClickCapture, true)
   window.addEventListener('dragstart', onDragStartCapture, true)
   // Ctrl 光标提示：按住 Ctrl 时 host 加 armed class（CSS 光标 grab，子树
@@ -356,7 +414,8 @@ export function enableCardDrag(
   window.addEventListener('blur', onWindowBlur)
   return () => {
     cleanup(false)
-    host.removeEventListener('pointerdown', onPointerDown, { capture: true } as EventListenerOptions)
+    host.removeEventListener('mousedown', onMouseDown, { capture: true } as EventListenerOptions)
+    host.removeEventListener('pointerdown', onTouchPointerDown, { capture: true } as EventListenerOptions)
     window.removeEventListener('click', onClickCapture, true)
     window.removeEventListener('dragstart', onDragStartCapture, true)
     window.removeEventListener('keydown', onKeyDownCtrl)
