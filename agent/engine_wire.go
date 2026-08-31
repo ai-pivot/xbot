@@ -1121,6 +1121,14 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 			tool, ok = a.tools.GetForSession(tc.Name, tenantID, sessionKey)
 		}
 		if !ok {
+			// Synthetic notification tools (background_task_result etc.) are
+			// injected as fake tool-call pairs into the LLM context; the
+			// model MIMICS these names from history. Return a friendly result
+			// instead of "unknown tool" — the model can act on it and the
+			// loop keeps running.
+			if isSyntheticToolName(tc.Name) {
+				return syntheticToolResult(tc)
+			}
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
 
