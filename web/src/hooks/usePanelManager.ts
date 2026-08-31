@@ -114,9 +114,21 @@ export function usePanelManager(): PanelManager {
       params: options.params as never,
     }
     if (options.direction) {
-      const ref = options.referencePanelId
-        ? api.getPanel(options.referencePanelId)
-        : api.activePanel ?? undefined
+      // 优先用显式传入的 referencePanelId；否则找主卡片（含 agent tab 的 group 的首个 panel）
+      // 不用 api.activePanel — 上一个新 Panel 的 setActive 会把它变成 sidebar panel
+      // 导致后续 Panel 相对于 sidebar 而非 Agent 分屏（"窄栏里上下分屏"根因）
+      let ref: IDockviewPanel | undefined
+      if (options.referencePanelId) {
+        ref = api.getPanel(options.referencePanelId) ?? undefined
+      } else {
+        const mainGroup = api.groups.find((g) =>
+          g.panels.some((p) => {
+            const params = p.params as Record<string, unknown> | undefined
+            return params?.type === 'agent'
+          }),
+        )
+        ref = mainGroup?.panels[0] ?? undefined
+      }
       if (ref) {
         addOpts.position = { direction: options.direction, referencePanel: ref }
       } else {
@@ -124,8 +136,7 @@ export function usePanelManager(): PanelManager {
       }
     }
     api.addPanel(addOpts)
-    const panel = api.getPanel(panelId)
-    panel?.api.setActive()
+    // 不调 setActive — 避免 activePanel 变成 sidebar panel 影响后续 addPanel 的 referencePanel
     return panelId
   }, [])
 
