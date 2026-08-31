@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { DockviewApi } from 'dockview-core'
 
-import { enableCardDrag, hitZone, type Rect } from './cardDrag'
+import { enableCardDrag, hitZone, nearestRectIndex, type Rect } from './cardDrag'
 
 const R: Rect = { x: 0, y: 0, w: 400, h: 300 }
 // 边缘带：宽 400×0.25=100，高 300×0.25=75
@@ -44,6 +44,37 @@ describe('hitZone（drop 方位判定，25% 边缘带）', () => {
     expect(hitZone(r, 1020, 750)).toBe('left')
     expect(hitZone(r, 1200, 800)).toBe('center')
     expect(hitZone(r, 1200, 890)).toBe('bottom')
+  })
+})
+
+describe('nearestRectIndex（drop 目标选择：精确命中优先 + 最近 fallback）', () => {
+  const rects: Rect[] = [
+    { x: 0, y: 0, w: 200, h: 300 }, // sidebar 列（左）
+    { x: 500, y: 0, w: 500, h: 300 }, // 另一候选（右）
+  ]
+
+  it('精确命中优先（pointer 在矩形内直接返回，不比距离）', () => {
+    expect(nearestRectIndex(100, 150, rects)).toBe(0)
+    expect(nearestRectIndex(700, 150, rects)).toBe(1)
+  })
+
+  it('rect 外 fallback 取最近 — 主卡片拖动场景（源已过滤，pointer 在源区域）', () => {
+    // 源主卡片（右侧 80%）被过滤后候选只剩左侧 sidebar；
+    // pointer 在原主卡片区域（rect 外）→ 最近 sidebar 兜底
+    const candidates = [rects[0]]
+    expect(nearestRectIndex(600, 150, candidates)).toBe(0)
+    expect(nearestRectIndex(950, 20, candidates)).toBe(0)
+  })
+
+  it('rect 外双候选按距离最近判定', () => {
+    // pointer (300, 50)：距 rect0 右边 100，距 rect1 左边 200 → 取 rect0
+    expect(nearestRectIndex(300, 50, rects)).toBe(0)
+    // pointer (420, 50)：距 rect0 右边 220，距 rect1 左边 80 → 取 rect1
+    expect(nearestRectIndex(420, 50, rects)).toBe(1)
+  })
+
+  it('空候选返回 -1（单卡片拖不动，无目标可落）', () => {
+    expect(nearestRectIndex(10, 10, [])).toBe(-1)
   })
 })
 

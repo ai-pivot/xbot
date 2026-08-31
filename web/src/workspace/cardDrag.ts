@@ -74,6 +74,32 @@ export interface CardDragOptions {
   onDrop?: () => void
 }
 
+/**
+ * drop 目标选择（纯函数）：精确命中（pointer 在矩形内）优先；否则取距离
+ * 最近的矩形（欧氏距离的平方，矩形外扩最近点）。
+ *
+ * fallback 是拖动可用性的关键：主卡片占屏 ~80%，拖动它时 pointer 几乎
+ * 总落在源卡片自身上（精确命中跳过源 → 永无目标 → 无 overlay、松手无
+ * 操作——「主卡片拖不动」的根因）。最近目标 fallback 让拖动全程都有
+ * 确定的目标与 overlay 反馈。返回 index（-1 = 无候选）。
+ */
+export function nearestRectIndex(x: number, y: number, rects: Rect[]): number {
+  let nearest = -1
+  let nearestDist = Infinity
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i]
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return i
+    const dx = Math.max(r.x - x, 0, x - (r.x + r.w))
+    const dy = Math.max(r.y - y, 0, y - (r.y + r.h))
+    const d = dx * dx + dy * dy
+    if (d < nearestDist) {
+      nearestDist = d
+      nearest = i
+    }
+  }
+  return nearest
+}
+
 interface DragState {
   pointerId: number
   startX: number
@@ -104,16 +130,22 @@ export function enableCardDrag(
     return group
   }
 
-  /** 拖动目标：pointer 下的其他 grid 卡片（跳过源自身与 floating） */
+  /** 拖动目标：跳过源自身与 floating；精确命中优先，pointer 落在源卡片/
+   *  间隙上时取最近候选（nearestRectIndex fallback——主卡片占屏 80%，
+   *  拖动时 pointer 几乎总在源内，无 fallback 则永无目标「拖不动」） */
   const targetAt = (x: number, y: number): { group: DockviewGroupPanel; rect: Rect } | null => {
-    for (const group of api.groups) {
-      if (group === state?.source || group.api.location.type !== 'grid') continue
-      const r = group.element.getBoundingClientRect()
-      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) {
-        return { group, rect: { x: r.left, y: r.top, w: r.width, h: r.height } }
-      }
-    }
-    return null
+    const candidates = api.groups
+      .filter((g) => g !== state?.source && g.api.location.type === 'grid')
+      .map((g) => {
+        const r = g.element.getBoundingClientRect()
+        return { group: g, rect: { x: r.left, y: r.top, w: r.width, h: r.height } }
+      })
+    const idx = nearestRectIndex(
+      x,
+      y,
+      candidates.map((c) => c.rect),
+    )
+    return idx >= 0 ? candidates[idx] : null
   }
 
   const setOverlay = (zone: DropZone | null, rect: Rect | null) => {
