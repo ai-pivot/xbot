@@ -102,14 +102,17 @@ export function nearestRectIndex(x: number, y: number, rects: Rect[]): number {
 }
 
 /**
- * header 把手判定：target 在 tab 栏（.dv-tabs-and-actions-container）且
- * 不在 tab pill（.dv-tab）内——pill 点击是 tab 激活/原生 tab 拖动的交互区，
- * 空白区是卡片拖动把手（无 Ctrl 直接拖——触屏拖动入口；主卡 tab 栏空白
- * 区兼把手，非主卡收起细条/展开 header 同为把手）。
+ * header 把手判定（两类，均无 Ctrl 直接拖动——触屏拖动入口）：
+ * 1. Tab 卡的 tab 栏空白区（.dv-tabs-and-actions-container，非 .dv-tab
+ *    pill 内——pill 点击是 tab 激活/原生 tab 拖动）
+ * 2. 非 Tab 卡的功能条（.card-handle-zone——面板内容自带的功能按钮条，
+ *    如会话卡的渠道/分组下拉行；卡片分类制下非 Tab 卡无 tab 栏，功能条
+ *    即卡片 Header，兼拖动把手）
  */
 export function isHeaderGrab(el: EventTarget | null): boolean {
   const target = el as HTMLElement | null
   if (!target?.closest) return false
+  if (target.closest('.card-handle-zone')) return true
   return !!target.closest('.dv-tabs-and-actions-container') && !target.closest('.dv-tab')
 }
 

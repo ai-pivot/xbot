@@ -220,7 +220,7 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
     const mgr = tabManagerRef.current
     mgr.bindApi(api)
     panelManagerRef.current.bindApi(api)
-    layoutEngine.bindApi(api, host)
+    layoutEngine.bindApi(api)
     // 卡片 Ctrl 拖动（内容区按住 Ctrl 拖动 = 移动整张卡片；单 tab 卡片隐藏
     // tab 栏后这是唯一拖动入口）。落子后显式 relayout —— group move 的
     // 集合签名不变，引擎的事件兜底（onDidLayoutChange + structureChanged）

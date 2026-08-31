@@ -69,6 +69,20 @@ export function isMasterGroup(group: DockviewGroupPanel): boolean {
   )
 }
 
+/**
+ * group 是否为 Tab 卡（卡片分类制）：panels[0].params.type ≠ 'panel'——
+ * TabManager.openTab 创建的 tab 类型卡片（agent/file/terminal/background/
+ * plugin/diff），tab 栏常驻（Header 融合）+ Tab 可互相拖入。
+ * 与之相对：type = 'panel'（PanelManager.addPanel 创建的 sidebar 卡：
+ * 会话/文件/搜索等）无 tab 栏组件，locked 禁止 Tab 拖入。
+ * 主卡（isMasterGroup，含 agent tab）是 Tab 卡的子集（用于 master/stack
+ * 尺寸计算，与 header 分类正交）。
+ */
+export function isTabGroup(group: DockviewGroupPanel): boolean {
+  const first = group.panels[0]?.params as Record<string, unknown> | undefined
+  return first?.type !== 'panel'
+}
+
 // ── 纯计算 ────────────────────────────────────────────────────────────────────
 
 export interface LayoutGroupInfo {
@@ -135,25 +149,19 @@ export function computeMasterStack(
  */
 export class LayoutEngine {
   private api: DockviewApi | null = null
-  private host: HTMLElement | null = null
   private disposables: Array<{ dispose(): void }> = []
   private appliedOnce = false
   private lastAppliedIds = ''
   private readonly options: LayoutEngineOptions
-  /** 显式展开收起态的非主卡 group id 集合（默认收起——6px 细条把手） */
-  private expandedHeaders = new Set<string>()
-  private onHeaderClick: ((e: MouseEvent) => void) | null = null
 
   constructor(options: Partial<LayoutEngineOptions> = {}) {
     this.options = { ...DEFAULT_LAYOUT_OPTIONS, ...options }
   }
 
   /** 绑定/解绑 DockviewApi（DockviewContainer onReady / dispose 时调用） */
-  bindApi(api: DockviewApi | null, host?: HTMLElement | null): void {
+  bindApi(api: DockviewApi | null): void {
     this.teardown()
-    this.expandedHeaders.clear()
     this.api = api
-    this.host = host ?? null
     this.appliedOnce = false
     this.lastAppliedIds = ''
     if (!api) return
@@ -169,22 +177,6 @@ export class LayoutEngine {
         if (!this.appliedOnce || this.structureChanged()) this.relayout()
       }),
     )
-    // header 点击委托（收起↔展开）：点击 tab 栏空白区（非 .dv-tab pill——
-    // pill 点击是 tab 激活）切换非主卡 header 的收起态。委托在 host 上
-    // （LayoutEngine 集中管理 header 策略的交互入口，不散落组件）。
-    if (this.host) {
-      this.onHeaderClick = (e: MouseEvent) => {
-        const target = e.target as HTMLElement | null
-        if (!target?.closest) return
-        const headerEl = target.closest('.dv-tabs-and-actions-container') as HTMLElement | null
-        if (!headerEl || target.closest('.dv-tab')) return
-        const groupEl = headerEl.closest('.dv-groupview') as HTMLElement | null
-        if (!groupEl) return
-        const group = api.groups.find((g) => g.element === groupEl)
-        if (group) this.toggleHeader(group.id)
-      }
-      this.host.addEventListener('click', this.onHeaderClick)
-    }
     // bindApi 时布局可能已存在（恢复持久化布局 / 热重建）—— 主动尝试一次。
     // 宽度未就绪时无害（pending，等 onDidLayoutChange 重试）。
     this.relayout()
@@ -197,10 +189,6 @@ export class LayoutEngine {
   private teardown(): void {
     for (const d of this.disposables) d.dispose()
     this.disposables = []
-    if (this.host && this.onHeaderClick) {
-      this.host.removeEventListener('click', this.onHeaderClick)
-    }
-    this.onHeaderClick = null
   }
 
   /** 当前卡片集合签名是否与上次应用时不同（sash 拖拽不改变签名） */
@@ -254,36 +242,23 @@ export class LayoutEngine {
   }
 
   /**
-   * header 可见性策略（卡片标题栏/把手——方案 A）：
-   * - 所有卡片 header 显示（group.model.header.hidden = false）——header
-   *   是卡片标题栏 + 拖动把手（触屏拖动的入口；主卡 tab 栏空白区兼把手）
-   * - 主卡（含 agent tab 的 group）常驻全高（tab 功能区 + 连接状态绿点）
-   * - 非主卡默认收起（6px 细条把手，CSS .dv-header-collapsed——点击展开
-   *   显示卡片名；expandedHeaders 集合记录显式展开态）
-   * group.model.header.hidden 是 dockview 官方路径（toJSON 持久化 hideHeader）；
-   * 收起态走 group.element class（LayoutEngine 集中管理）。
+   * header 可见性策略（卡片分类制）：
+   * - Tab 卡（isTabGroup：panels[0].params.type ≠ 'panel'，如主卡 agent/
+   *   file/terminal 等 tab 类型卡片）：tab 栏常驻显示（Header 与 Tab 列表
+   *   融合），Tab 可互相拖入（locked = false）
+   * - 非 Tab 卡（type = 'panel'，PanelManager.addPanel 创建的 sidebar 卡：
+   *   会话/文件/搜索等）：无 tab 栏组件（hidden = true，功能条由面板内容
+   *   自带——如会话卡的渠道/分组下拉就在内容顶部，即视觉上的卡片 Header），
+   *   locked = 'no-drop-target' 禁止 Tab 拖入（dockview 原生 API）
+   * group.model.header.hidden 是 dockview 官方路径（toJSON 持久化 hideHeader）。
    */
   private applyGroupHeaderPolicy(): void {
     const api = this.api
     if (!api) return
     for (const group of api.groups) {
-      group.model.header.hidden = false
-      const collapsed = !isMasterGroup(group) && !this.expandedHeaders.has(group.id)
-      group.element.classList.toggle('dv-header-collapsed', collapsed)
+      const tabGroup = isTabGroup(group)
+      group.model.header.hidden = !tabGroup
+      group.locked = tabGroup ? false : 'no-drop-target'
     }
-  }
-
-  /**
-   * 切换非主卡 header 的收起/展开（点击 header 空白区触发，见 bindApi 的
-   * click 委托）。主卡 no-op（tab 栏是功能区，常驻全高不收起）。
-   */
-  toggleHeader(groupId: string): void {
-    const api = this.api
-    if (!api) return
-    const group = api.groups.find((g) => g.id === groupId)
-    if (!group || isMasterGroup(group)) return
-    if (this.expandedHeaders.has(groupId)) this.expandedHeaders.delete(groupId)
-    else this.expandedHeaders.add(groupId)
-    group.element.classList.toggle('dv-header-collapsed', !this.expandedHeaders.has(groupId))
   }
 }

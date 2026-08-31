@@ -637,21 +637,6 @@
   overflow: hidden;
 }
 
-/* 卡片 header 收起态（LayoutEngine expandedHeaders 策略——非主卡默认
- * 收起）：tab 栏压缩为 6px 细条把手（可拖动移动卡片 / 点击展开显示
- * 卡片名）。主卡不收起（tab 功能区常驻全高）。 */
-.dv-header-collapsed .dv-tabs-and-actions-container {
-  height: 6px !important;
-  min-height: 6px !important;
-  padding: 0 !important;
-  overflow: hidden;
-  cursor: pointer;
-}
-/* 细条 hover 可见性提示（可点击展开） */
-.dv-header-collapsed .dv-tabs-and-actions-container:hover {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
 /* 卡片 Ctrl 拖动手势预备提示：按住 Ctrl 时 host 加 ctrl-drag-armed
    （cardDrag.ts 键盘监听切换），子树光标统一 grab（!important 覆盖输入框
    text 等元素光标——手势征用语义）。拖动激活后 body.style.cursor =

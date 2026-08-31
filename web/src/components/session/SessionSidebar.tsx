@@ -246,9 +246,11 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
 
   return (
     <div className="flex h-full w-full flex-col bg-card-bg">
-      {/* Header: channel filter + new-session button */}
+      {/* Header: channel filter + grouping selector（卡片分类制——非 Tab 卡
+          的功能条兼拖动把手：card-handle-zone 标记，cardDrag.isHeaderGrab
+          识别为无 Ctrl 拖动入口——触屏拖动） */}
       <header
-        className="flex h-9 shrink-0 items-center justify-between px-2"
+        className="card-handle-zone flex h-9 shrink-0 items-center justify-between px-2"
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         <div className="flex items-center gap-1">
