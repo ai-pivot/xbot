@@ -83,6 +83,16 @@ export function isTabGroup(group: DockviewGroupPanel): boolean {
   return first?.type !== 'panel'
 }
 
+/**
+ * 显式拖动把手图标（GripVertical 风格：两列 6 点阵）。原生 DOM 注入
+ * （buildDragHandle），不经 React——group 生命周期由 dockview 管理。
+ */
+const GRIP_SVG =
+  '<svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">' +
+  '<circle cx="3" cy="2" r="1.3"/><circle cx="7" cy="2" r="1.3"/>' +
+  '<circle cx="3" cy="7" r="1.3"/><circle cx="7" cy="7" r="1.3"/>' +
+  '<circle cx="3" cy="12" r="1.3"/><circle cx="7" cy="12" r="1.3"/></svg>'
+
 // ── 纯计算 ────────────────────────────────────────────────────────────────────
 
 export interface LayoutGroupInfo {
@@ -242,14 +252,16 @@ export class LayoutEngine {
   }
 
   /**
-   * header 可见性策略（卡片分类制）：
+   * header 可见性策略（卡片分类制）+ 显式拖动把手注入：
    * - Tab 卡（isTabGroup：panels[0].params.type ≠ 'panel'，如主卡 agent/
    *   file/terminal 等 tab 类型卡片）：tab 栏常驻显示（Header 与 Tab 列表
-   *   融合），Tab 可互相拖入（locked = false）
+   *   融合），Tab 可互相拖入（locked = false）+ **tab 栏左端显式 grip 把手**
    * - 非 Tab 卡（type = 'panel'，PanelManager.addPanel 创建的 sidebar 卡：
    *   会话/文件/搜索等）：无 tab 栏组件（hidden = true，功能条由面板内容
    *   自带——如会话卡的渠道/分组下拉就在内容顶部，即视觉上的卡片 Header），
-   *   locked = 'no-drop-target' 禁止 Tab 拖入（dockview 原生 API）
+   *   locked = 'no-drop-target' 禁止 Tab 拖入 + **顶部 24px 显式把手条**
+   *     （grip + 拖动区——用户要求把手可见不隐藏；原生 DOM 注入
+   *   group.element 顶部，LayoutEngine 集中管理，幂等）
    * group.model.header.hidden 是 dockview 官方路径（toJSON 持久化 hideHeader）。
    */
   private applyGroupHeaderPolicy(): void {
@@ -259,6 +271,42 @@ export class LayoutEngine {
       const tabGroup = isTabGroup(group)
       group.model.header.hidden = !tabGroup
       group.locked = tabGroup ? false : 'no-drop-target'
+      this.ensureDragHandle(group, tabGroup)
     }
+  }
+
+  /**
+   * 显式拖动把手（用户要求：可见把手，不再依赖隐藏的空白区/Ctrl）：
+   * - Tab 卡：tab 栏（.dv-tabs-and-actions-container）左端 grip 图标
+   * - 非 Tab 卡：group.element 顶部 24px 把手条（grip + 空白拖动区）
+   * 原生 DOM 注入（不走 React——group 生命周期由 dockview 管理，DOM 随
+   * element 移除；LayoutEngine 幂等注入，分类切换时清理旧形态）。
+   * isHeaderGrab 识别 .card-drag-handle（无 Ctrl 直接拖动，触屏可用）。
+   */
+  private ensureDragHandle(group: DockviewGroupPanel, tabGroup: boolean): void {
+    const el = group.element
+    if (tabGroup) {
+      // 非 Tab 卡残留的顶部把手条清理（分类切换场景）
+      el.querySelector(':scope > .card-drag-handle')?.remove()
+      const tabs = el.querySelector<HTMLElement>(':scope > .dv-tabs-and-actions-container')
+      if (tabs && !tabs.querySelector(':scope > .card-drag-handle')) {
+        tabs.prepend(this.buildDragHandle('tab'))
+      }
+    } else {
+      // Tab 卡残留的 tab 栏内 grip 清理
+      el.querySelector('.dv-tabs-and-actions-container .card-drag-handle')?.remove()
+      if (!el.querySelector(':scope > .card-drag-handle')) {
+        el.prepend(this.buildDragHandle('bar'))
+      }
+    }
+  }
+
+  /** 构建把手 DOM：'tab' = tab 栏内左端 grip 图标；'bar' = 24px 把手条 */
+  private buildDragHandle(kind: 'tab' | 'bar'): HTMLElement {
+    const handle = document.createElement('div')
+    handle.className = `card-drag-handle card-drag-handle-${kind}`
+    handle.title = '拖动卡片'
+    handle.innerHTML = GRIP_SVG
+    return handle
   }
 }
