@@ -111,27 +111,20 @@ func TestScriptPlugin_HookWorkDirSnapshotBeatsPctxRace(t *testing.T) {
 	deadline := time.After(5 * time.Second)
 	for {
 		sp.outputMu.RLock()
-		var markerInA, markerInB bool
+		var markerInA bool
 		for _, w := range sp.outputs[dirA] {
 			if strings.Contains(w, "race-marker") {
 				markerInA = true
 			}
 		}
-		for _, w := range sp.outputs[dirB] {
-			if strings.Contains(w, "race-marker") {
-				markerInB = true
-			}
-		}
 		sp.outputMu.RUnlock()
 		if markerInA {
 			// Snapshot won: the script ran in session A's directory despite
-			// pctx pointing at dirB. dirB MAY also run (the pctx fallback
-			// for widget/interval triggers — running it is harmless), but the
-			// snapshot dir MUST have run.
+			// pctx pointing at dirB. dirB may also run (the pctx fallback —
+			// running it is harmless and order-independent: runAndUpdate
+			// iterates a map, so dirB's output may appear BEFORE dirA's;
+			// the snapshot pin is proven by markerInA arriving AT ALL).
 			return
-		}
-		if markerInB && !markerInA {
-			t.Fatalf("RACE: script ran ONLY in pctx dir (%s), not the trigger-time snapshot dir (%s)", dirB, dirA)
 		}
 		select {
 		case <-deadline:
