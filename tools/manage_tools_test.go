@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
-	"time"
 
 	"xbot/llm"
 
@@ -555,8 +555,11 @@ func hasToolDefinitionName(defs []llm.ToolDefinition, name string) bool {
 func TestRegistry_AsDefinitionsForSession_IncludesSessionMCPTools(t *testing.T) {
 	registry := NewRegistry()
 
-	sm := &SessionMCPManager{
-		connections: map[string]*mcpConnection{
+	// Pool-backed manager: construct a manager with a pre-populated pool entry
+	// (bypasses connection setup — the entry's conns are the shared source).
+	entry := &mcpPoolEntry{
+		key: "mock-pool-key",
+		conns: map[string]*mcpConnection{
 			"demo": {
 				name: "demo",
 				tools: []*mcp.Tool{{
@@ -566,10 +569,15 @@ func TestRegistry_AsDefinitionsForSession_IncludesSessionMCPTools(t *testing.T) 
 				}},
 			},
 		},
-		lastActive:  make(map[string]time.Time),
-		initialized: true,
 		initDone:    make(chan struct{}),
+		onChangeFns: make(map[*SessionMCPManager]func()),
 	}
+	close(entry.initDone)
+	atomic.StoreUint32(&entry.initOnce, 2)
+	sm := &SessionMCPManager{sessionKey: "test:chat"}
+	sm.mu.Lock()
+	sm.entry = entry
+	sm.mu.Unlock()
 	registry.SetSessionMCPManagerProvider(&mockSessionMCPProvider{manager: sm})
 
 	defs := registry.AsDefinitionsForSession("test:chat", 0)
