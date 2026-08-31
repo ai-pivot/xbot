@@ -626,6 +626,17 @@
   background: var(--card-bg);
 }
 
+/* active panel 内容渲染在 dv-render-overlay 层（dockview overlayRenderContainer，
+ * DOM 在 dockview root 子树而非 .dv-groupview 内——与 190e9e07 拖动坐标反查
+ * 兜底同根因）：overlay 精确定位对齐 group 内容区（PositionCache），但不
+ * 受 .dv-groupview 的 overflow: hidden 裁剪——主卡（active）底部双角盖住
+ * 卡片圆角。对 overlay 容器施加同款圆角裁剪：单 tab 卡片（tab 栏隐藏）
+ * overlay = 整卡区域，四角与卡片圆角吻合。 */
+.dv-render-overlay {
+  border-radius: var(--card-radius);
+  overflow: hidden;
+}
+
 /* 卡片 Ctrl 拖动手势预备提示：按住 Ctrl 时 host 加 ctrl-drag-armed
    （cardDrag.ts 键盘监听切换），子树光标统一 grab（!important 覆盖输入框
    text 等元素光标——手势征用语义）。拖动激活后 body.style.cursor =

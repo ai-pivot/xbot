@@ -133,7 +133,7 @@ function TerminalRow({ term, onFocus, onClose }: TerminalRowProps) {
                 onClose()
               }}
               className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary transition-opacity hover:bg-sidebar-bg hover:text-error',
+                'flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary transition-opacity hover:bg-surface-bg hover:text-error',
                 isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
               )}
             >

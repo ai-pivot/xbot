@@ -245,7 +245,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   }, [filteredSessions])
 
   return (
-    <div className="flex h-full w-full flex-col bg-sidebar-bg">
+    <div className="flex h-full w-full flex-col bg-card-bg">
       {/* Header: channel filter + new-session button */}
       <header
         className="flex h-9 shrink-0 items-center justify-between px-2"
