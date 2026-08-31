@@ -176,6 +176,17 @@ type authResponse struct {
 	UserID  int    `json:"user_id,omitempty"`
 }
 
+// webUsersEmpty reports whether the web_users table has no rows (first-user
+// bootstrap check). Errors are treated as "not empty" (fail-closed — a
+// bootstrap path that misfires on DB errors would hand out registrations).
+func webUsersEmpty(db *sql.DB) (bool, error) {
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM web_users").Scan(&n); err != nil {
+		return false, err
+	}
+	return n == 0, nil
+}
+
 // handleRegister handles POST /api/auth/register
 func (wc *WebChannel) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -183,10 +194,23 @@ func (wc *WebChannel) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Invite-only mode: reject self-registration
+	// Invite-only mode: reject self-registration — UNLESS the web_users table
+	// is EMPTY (first-user bootstrap). The very first account is the
+	// operator's way into a fresh invite-only deployment; after it exists,
+	// registration closes again. The AdminToken (config web.admin_token)
+	// remains the escape hatch for a locked-out deployment.
+	bootstrap := false
 	if wc.config.InviteOnly {
-		writeJSON(w, http.StatusForbidden, authResponse{OK: false, Message: "registration is invite-only, please contact admin"})
-		return
+		empty, err := webUsersEmpty(wc.db)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
+			return
+		}
+		if !empty {
+			writeJSON(w, http.StatusForbidden, authResponse{OK: false, Message: "registration is invite-only, please contact admin"})
+			return
+		}
+		bootstrap = true
 	}
 
 	var req registerRequest
@@ -210,21 +234,56 @@ func (wc *WebChannel) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Insert user
-	result, err := wc.db.Exec(
-		"INSERT INTO web_users (username, password) VALUES (?, ?)",
-		req.Username, string(hash),
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			writeJSON(w, http.StatusConflict, authResponse{OK: false, Message: "username already exists"})
+	// Insert user. The bootstrap path (invite-only + empty table) runs the
+	// emptiness re-check and the INSERT in ONE transaction — two concurrent
+	// first registrations race for the same empty-table window; the loser
+	// gets a clean invite-only rejection instead of a second account.
+	var id int64
+	if bootstrap {
+		tx, txErr := wc.db.Begin()
+		if txErr != nil {
+			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
-		return
+		defer tx.Rollback()
+		var n int
+		if qErr := tx.QueryRow("SELECT COUNT(*) FROM web_users").Scan(&n); qErr != nil || n > 0 {
+			// Lost the race (another first-account landed first) — normal
+			// invite-only rules apply now.
+			writeJSON(w, http.StatusForbidden, authResponse{OK: false, Message: "registration is invite-only, please contact admin"})
+			return
+		}
+		result, insErr := tx.Exec("INSERT INTO web_users (username, password) VALUES (?, ?)", req.Username, string(hash))
+		if insErr != nil {
+			if strings.Contains(insErr.Error(), "UNIQUE constraint failed") {
+				writeJSON(w, http.StatusConflict, authResponse{OK: false, Message: "username already exists"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
+			return
+		}
+		id, _ = result.LastInsertId()
+		if cErr := tx.Commit(); cErr != nil {
+			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
+			return
+		}
+	} else {
+		// Open registration — the UNIQUE constraint catches duplicates.
+		result, err := wc.db.Exec(
+			"INSERT INTO web_users (username, password) VALUES (?, ?)",
+			req.Username, string(hash),
+		)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+				writeJSON(w, http.StatusConflict, authResponse{OK: false, Message: "username already exists"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, authResponse{OK: false, Message: "internal error"})
+			return
+		}
+		id, _ = result.LastInsertId()
 	}
 
-	id, _ := result.LastInsertId()
 	writeJSON(w, http.StatusOK, authResponse{OK: true, UserID: int(id)})
 }
 
@@ -418,8 +477,19 @@ func (wc *WebChannel) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	// Bootstrap: invite-only AND no web account exists yet — the frontend
+	// shows the "create the operator account" wizard instead of the login
+	// form (the first registration is allowed through even in invite-only
+	// mode; after the account exists, registration closes again).
+	bootstrap := false
+	if wc.config.InviteOnly {
+		if empty, err := webUsersEmpty(wc.db); err == nil {
+			bootstrap = empty
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"invite_only": wc.config.InviteOnly,
+		"bootstrap":   bootstrap,
 	})
 }
 

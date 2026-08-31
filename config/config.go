@@ -164,7 +164,23 @@ type WebConfig struct {
 	StaticDir        string `json:"static_dir"`
 	UploadDir        string `json:"upload_dir"`
 	PersonaIsolation bool   `json:"persona_isolation"`
-	InviteOnly       bool   `json:"invite_only"`
+	// InviteOnly disables self-registration. DEFAULTS TO TRUE (secure default):
+	// web login = operator (v63 single-operator semantics — isAdminSender
+	// returns true for the web channel), so an open registration endpoint
+	// would hand operator rights to ANYONE who can reach the port. nil (field
+	// absent in config.json) = invite-only; an explicit `false` opts back into
+	// open registration.
+	InviteOnly *bool `json:"invite_only,omitempty"`
+}
+
+// IsInviteOnly reports whether web self-registration is disabled. nil (unset)
+// means TRUE — the secure default (see the field comment). Explicit false
+// re-enables open registration.
+func (w WebConfig) IsInviteOnly() bool {
+	if w.InviteOnly == nil {
+		return true
+	}
+	return *w.InviteOnly
 }
 
 // Config 应用配置
@@ -950,7 +966,13 @@ func applyEnvOverrides(cfg *Config) {
 	setStringEnv("WEB_STATIC_DIR", &cfg.Web.StaticDir)
 	setStringEnv("WEB_UPLOAD_DIR", &cfg.Web.UploadDir)
 	setBoolEnv("WEB_PERSONA_ISOLATION", &cfg.Web.PersonaIsolation)
-	setBoolEnv("WEB_INVITE_ONLY", &cfg.Web.InviteOnly)
+	// WEB_INVITE_ONLY: pointer field (nil = secure default true) — set only
+	// when the env var is present.
+	if v := os.Getenv("WEB_INVITE_ONLY"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Web.InviteOnly = &b
+		}
+	}
 
 	// Event Webhook
 	setBoolEnv("EVENT_WEBHOOK_ENABLE", &cfg.EventWebhook.Enable)

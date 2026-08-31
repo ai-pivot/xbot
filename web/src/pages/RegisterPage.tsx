@@ -3,12 +3,19 @@
  *
  * Username + password + confirm password. Frontend validation: password ≥ 6
  * chars, both passwords match. On success, auto-login + redirect to root.
- * Bottom shows a "login" link. Hidden when invite_only=true (route still
- * accessible but link is hidden from login page).
+ * Bottom shows a "login" link.
+ *
+ * Invite-only semantics:
+ *   - invite_only && !bootstrap → the form is REPLACED by an invite-only
+ *     notice (direct /register navigation is guarded client-side too; the
+ *     server rejects with 403 anyway).
+ *   - bootstrap (invite-only + empty account table) → the page is the
+ *     FIRST-USER WIZARD ("create the operator account") — the only
+ *     registration an invite-only deployment ever accepts.
  */
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Eye, EyeOff, Loader2, ShieldAlert } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,7 +25,7 @@ import { useI18n } from '@/providers/i18n'
 
 export function RegisterPage() {
   const { t } = useI18n()
-  const { register } = useAuth()
+  const { register, inviteOnly, bootstrap } = useAuth()
   const navigate = useNavigate()
 
   const [username, setUsername] = useState('')
@@ -60,13 +67,34 @@ export function RegisterPage() {
     }
   }
 
+  // Invite-only and NOT in first-user bootstrap: the form is replaced by a
+  // notice (the server 403s anyway — this is the client-side guard).
+  if (inviteOnly && !bootstrap) {
+    return (
+      <div className="flex h-dvh w-full items-center justify-center bg-bg-primary">
+        <div className="w-full max-w-sm rounded-lg border border-border bg-bg-secondary p-8 shadow-xl text-center">
+          <ShieldAlert className="mx-auto mb-4 size-10 text-muted-foreground" />
+          <h1 className="text-lg font-semibold text-text-primary">{t('auth.inviteOnlyTitle')}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">{t('auth.inviteOnlyNotice')}</p>
+          <p className="mt-6 text-sm">
+            <Link to="/login" className="font-medium text-accent underline-offset-4 hover:underline">
+              {t('auth.backToLogin')}
+            </Link>
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-dvh w-full items-center justify-center bg-bg-primary">
       <div className="w-full max-w-sm rounded-lg border border-border bg-bg-secondary p-8 shadow-xl">
-        {/* Header */}
+        {/* Header — bootstrap mode shows the first-user wizard wording */}
         <div className="mb-6 text-center">
           <h1 className="text-2xl font-semibold text-text-primary">{t('auth.registerTitle')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t('auth.registerSubtitle')}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {bootstrap ? t('auth.bootstrapSubtitle') : t('auth.registerSubtitle')}
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">

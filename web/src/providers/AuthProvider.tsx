@@ -33,6 +33,10 @@ export interface AuthContextValue {
   user: AuthUser | null
   loading: boolean
   inviteOnly: boolean
+  /** First-user bootstrap: invite-only AND no web account exists yet — the
+   * register page shows the "create the operator account" wizard instead of
+   * a hidden route (after the first account, registration closes again). */
+  bootstrap: boolean
   login: (username: string, password: string) => Promise<boolean>
   register: (username: string, password: string) => Promise<boolean>
   logout: () => Promise<void>
@@ -46,23 +50,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
   const [inviteOnly, setInviteOnly] = useState(false)
+  const [bootstrap, setBootstrap] = useState(false)
 
-  // --- Init: check auth status + fetch invite_only config ---
+  // --- Init: check auth status + fetch auth config ---
   useEffect(() => {
     let cancelled = false
     void (async () => {
       try {
         // Fetch auth config (public, no cookie needed) + settings (checks auth) in parallel.
         const [configRes, settingsRes] = await Promise.allSettled([
-          postAPI<{ invite_only?: boolean }>('/api/auth/config'),
+          postAPI<{ invite_only?: boolean; bootstrap?: boolean }>('/api/auth/config'),
           postAPI('/api/settings'),
         ])
 
         if (cancelled) return
 
-        // invite_only config
+        // invite_only config + first-user bootstrap flag
         if (configRes.status === 'fulfilled') {
           setInviteOnly(Boolean(configRes.value.invite_only))
+          setBootstrap(Boolean(configRes.value.bootstrap))
         }
 
         // Auth status: 200 → logged in, 401 → not logged in
@@ -113,7 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, inviteOnly, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, inviteOnly, bootstrap, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   )
