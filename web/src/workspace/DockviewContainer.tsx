@@ -255,21 +255,22 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
         referencePanelId: `dv-${agentTabId}`,
       })
       // 3. Master 布局比例：会话列表 20%，Agent 80%
-      // Dockview 的 group.api.setSize 设置 group 宽度（像素值）
-      // 用 setTimeout 确保 Dockview 完成 split 后再设宽度
-      setTimeout(() => {
+      // Dockview group.api.setSize 需要在 layout 完成后调用
+      // 用 requestAnimationFrame 确保 DOM 已布局，再用 host 元素实际宽度
+      requestAnimationFrame(() => {
         const api = apiRef.current
-        if (!api) return
+        if (!api || !host) return
+        const totalWidth = host.clientWidth
+        if (totalWidth <= 0) return
+        const sidebarWidth = Math.round(totalWidth * 0.2)
         const sessionsPanel = api.getPanel(sessionsPanelId)
         if (sessionsPanel?.group) {
-          const totalWidth = api.width
-          const sidebarWidth = Math.round(totalWidth * 0.2)
           sessionsPanel.group.api.setSize({ width: sidebarWidth })
         }
         // 确保 Agent 面板是活跃的
         const agentPanel = api.getPanel(`dv-${agentTabId}`)
         agentPanel?.api.setActive()
-      }, 0)
+      })
       onReady?.()
     }
 
