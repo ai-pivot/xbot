@@ -229,8 +229,8 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
       seededRef.current = true
       // 默认布局：会话列表卡片（左）+ Agent 卡片（右）并列分屏
       const activeSession = ctxRef.current.sessionStore.activeSession
-      // 1. 先创建 Agent 面板
-      const agentPanelId = mgr.openTab({
+      // 1. 先创建 Agent 面板（openTab 返回 tabId，dockview panelId = dv-${tabId}）
+      const agentTabId = mgr.openTab({
         type: 'agent',
         title: activeSession?.chatID ?? 'Agent',
         icon: 'bot',
@@ -240,8 +240,8 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
           channel: activeSession.channel ?? 'web',
         } : undefined,
       })
-      // 2. 在 Agent 面板左侧创建会话列表面板（split left, 30% 宽度）
-      const agentPanel = api.getPanel(agentPanelId)
+      // 2. 用 dv-${tabId} 拿到 dockview panel，在其左侧创建会话列表卡片（独立 split group）
+      const agentPanel = api.getPanel(`dv-${agentTabId}`)
       if (agentPanel) {
         api.addPanel({
           id: 'sessions-panel',
@@ -249,16 +249,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
           component: 'panel',
           params: { type: 'panel', panelId: 'sessions', closable: false },
           position: { direction: 'left', referencePanel: agentPanel },
-          // 不给 closable（通过 params 传），Dockview tab renderer 控制
         })
-        // 设置会话面板宽度比例（约 30%）
-        const sessionsGroup = api.getPanel('sessions-panel')?.group
-        if (sessionsGroup) {
-          // Dockview group 比例通过 gridview API 设置
-          // 简单方案：设置最小宽度约束
-          // Dockview 的 split 比例默认 50/50，需要后续调整
-        }
-        // 确保 Agent 面板是活跃的
         agentPanel.api.setActive()
       }
       onReady?.()
