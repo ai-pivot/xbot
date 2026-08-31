@@ -17,7 +17,7 @@ export function SessionSearch({ value, onChange }: SessionSearchProps) {
   const { t } = useI18n()
   return (
     <div
-      className="mx-2 my-1.5 flex items-center gap-2 rounded-xl border px-3 py-2"
+      className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border px-3 py-2"
       style={{ borderColor: 'var(--border)', background: 'var(--app-bg)' }}
     >
       <Search className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />

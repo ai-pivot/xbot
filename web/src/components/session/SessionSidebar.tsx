@@ -76,6 +76,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   const [search, setSearch] = useState('')
   const [newOpen, setNewOpen] = useState(false)
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
+  const [groupPickerOpen, setGroupPickerOpen] = useState(false)
 
   // Multi-select state
   const [multiSelectMode, setMultiSelectMode] = useState(false)
@@ -303,6 +304,32 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
                 })}
             </PopoverContent>
           </Popover>
+
+          {/* 分组依据下拉（时间/状态/路径）——原独立切换行收进 header，
+              紧跟全部渠道选择器（VS Code 列表工具栏风格：筛选器并排） */}
+          <Popover open={groupPickerOpen} onOpenChange={setGroupPickerOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-secondary transition-colors hover:bg-surface-bg"
+              >
+                {labelForCategory(store.category, t)}
+                <ChevronDown className="size-3" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={4} className="w-36 p-1">
+              {CATEGORIES.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/10 ${store.category === c ? 'font-medium text-accent' : 'text-text-secondary'}`}
+                  onClick={() => { store.setCategory(c); setGroupPickerOpen(false) }}
+                >
+                  {labelForCategory(c, t)}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
         </div>
         <div className="flex items-center gap-0.5">
           <Tooltip>
@@ -338,48 +365,18 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
         </div>
       </header>
 
-      {/* 布局 v2：全宽「+ 新会话」主按钮（设计稿 1:1）——原 header 的 ghost
-          新会话图标保留为次入口。 */}
-      <div className="shrink-0 px-2.5 pt-2.5">
+      {/* 新建会话 + 搜索框同行（按钮左、搜索右填充剩余宽度）；
+          分组依据（时间/状态/路径）已收进 header 的下拉选择 */}
+      <div className="flex shrink-0 items-center gap-2 px-2.5 pt-2.5">
         <button
           type="button"
           onClick={() => setNewOpen(true)}
-          className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-[12px] font-semibold text-white transition-opacity hover:opacity-90"
+          className="flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2 text-[12px] font-semibold text-white transition-opacity hover:opacity-90"
           style={{ background: 'var(--accent)' }}
         >
           <Plus className="size-3.5" />
           {t('session.newSession')}
         </button>
-      </div>
-
-      {/* Category switcher */}
-      <div
-        className="flex shrink-0 items-center gap-0.5 px-2 py-1"
-        style={{
-          borderBottom: '1px solid var(--border)',
-        }}
-      >
-        {CATEGORIES.map((c) => {
-          const active = store.category === c
-          return (
-            <button
-              key={c}
-              type="button"
-              onClick={() => store.setCategory(c)}
-              className="flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors"
-              style={{
-                backgroundColor: active ? 'var(--surface-bg)' : 'transparent',
-                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-              }}
-            >
-              {labelForCategory(c, t)}
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Search */}
-      <div className="shrink-0">
         <SessionSearch value={search} onChange={setSearch} />
       </div>
 
