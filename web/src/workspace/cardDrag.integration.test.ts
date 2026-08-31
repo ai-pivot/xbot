@@ -107,11 +107,11 @@ describe('cardDrag 集成（真实 dockview 结构假设验证 + 手势链路）
 
     // 按在源卡片内容区（任意子元素），Ctrl+左键
     const content = source.element.querySelector('div') ?? source.element
-    firePointer(content, 'mousedown', { ctrlKey: true, button: 0, clientX: 50, clientY: 50 })
+    firePointer(content, 'pointerdown', { ctrlKey: true, button: 0, clientX: 50, clientY: 50 })
     // 拖动超阈值（50,50 → 120,60）
-    firePointer(window, 'mousemove', { clientX: 120, clientY: 60 })
+    firePointer(window, 'pointermove', { clientX: 120, clientY: 60 })
     // 松手在源右半（quadrantZone：relX > 0.5 → 'right'）→ 源放到目标右侧
-    firePointer(window, 'mouseup', { clientX: 700, clientY: 150 })
+    firePointer(window, 'pointerup', { clientX: 700, clientY: 150 })
 
     // 手势完成：onDrop 回调被调（quadrantZone 'right' → moveTo(target, right) 调用）
     // 位置验证交 E2E（真实布局）—— jsdom 的 api.groups 顺序不反映 gridview 树位置
@@ -135,10 +135,10 @@ describe('cardDrag 集成（真实 dockview 结构假设验证 + 手势链路）
     cleanup.push(dispose)
 
     const content = source.element.querySelector('div') ?? source.element
-    firePointer(content, 'mousedown', { ctrlKey: true, button: 0, clientX: 50, clientY: 50 })
-    firePointer(window, 'mousemove', { clientX: 120, clientY: 60 })
+    firePointer(content, 'pointerdown', { ctrlKey: true, button: 0, clientX: 50, clientY: 50 })
+    firePointer(window, 'pointermove', { clientX: 120, clientY: 60 })
     // 松手在源左半（relX < 0.5 → 'left'）→ 源移到目标左侧
-    firePointer(window, 'mouseup', { clientX: 100, clientY: 150 })
+    firePointer(window, 'pointerup', { clientX: 100, clientY: 150 })
 
     expect(onDrop).toHaveBeenCalledTimes(1)
     // 源 group 移到目标左侧（api.groups 顺序：源在目标前）

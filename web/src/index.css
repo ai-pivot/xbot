@@ -646,41 +646,6 @@
   cursor: grab !important;
 }
 
-/* ── 显式拖动把手（LayoutEngine ensureDragHandle 注入，用户要求可见不隐藏）──
- * - Tab 卡：tab 栏左端 grip 图标（card-drag-handle-tab）
- * - 非 Tab 卡：顶部 24px 把手条（card-drag-handle-bar，整条拖动区）
- * isHeaderGrab 识别 .card-drag-handle（无 Ctrl 直接拖动，触屏可用）。 */
-.card-drag-handle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  cursor: grab;
-  color: var(--text-muted);
-  user-select: none;
-}
-.card-drag-handle:hover {
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.card-drag-handle:active {
-  cursor: grabbing;
-}
-/* Tab 卡：tab 栏内左端 grip（与 tab pill 同排） */
-.card-drag-handle-tab {
-  width: 22px;
-  height: 100%;
-  margin-left: 4px;
-  border-radius: 4px;
-}
-/* 非 Tab 卡：顶部 24px 把手条（全宽拖动区 + 下边框分隔） */
-.card-drag-handle-bar {
-  width: 100%;
-  height: 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--card-chrome-bg);
-}
-
 /* Tab bar: transparent (inherits group card background) */
 .dockview-theme-vs .dv-tabs-and-actions-container {
   border-bottom: 1px solid var(--border) !important;
