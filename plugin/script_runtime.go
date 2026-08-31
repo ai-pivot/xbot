@@ -225,6 +225,15 @@ func (p *scriptPlugin) Activate(ctx PluginContext) error {
 				pluginPtr.lastHookMu.Lock()
 				pluginPtr.lastHook = hp
 				pluginPtr.lastHookMu.Unlock()
+				// TRIGGER-TIME WorkDir snapshot: the async trigger below may be
+				// consumed AFTER another session's RefreshWorkDir overwrote the
+				// shared PluginContext's workingDir — pinning the snapshot into
+				// pendingDirs keeps this run in the TRIGGERING session's
+				// directory (the race the OnWorkDirChanged pending-set patch
+				// documented; the snapshot generalizes it to hook triggers).
+				if hp.WorkDir != "" {
+					pluginPtr.addPendingDir(hp.WorkDir)
+				}
 			}
 			// Trigger async script run via the trigger channel
 			select {
@@ -326,18 +335,26 @@ func (p *scriptPlugin) renderForWidget(widgetID string, width int, fallbackWorkD
 	return p.renderFromCacheOrRun(widgetID, wd)
 }
 
+// addPendingDir records a workDir that must be included in the next
+// refresh run. Used by hook triggers (WorkDir snapshot — race-safe against
+// pctx overwrites) and OnWorkDirChanged (RefreshWorkDir broadcasts).
+func (p *scriptPlugin) addPendingDir(dir string) {
+	if dir == "" {
+		return
+	}
+	p.pendingMu.Lock()
+	if p.pendingDirs == nil {
+		p.pendingDirs = make(map[string]struct{})
+	}
+	p.pendingDirs[dir] = struct{}{}
+	p.pendingMu.Unlock()
+}
+
 // OnWorkDirChanged triggers an immediate script re-run when the session CWD changes.
 // The dir is stored in a pending set so runAndUpdate can process it even if
 // pctx.WorkingDir() is overwritten by another session's Cd before the trigger fires.
 func (p *scriptPlugin) OnWorkDirChanged(dir string) {
-	if dir != "" {
-		p.pendingMu.Lock()
-		if p.pendingDirs == nil {
-			p.pendingDirs = make(map[string]struct{})
-		}
-		p.pendingDirs[dir] = struct{}{}
-		p.pendingMu.Unlock()
-	}
+	p.addPendingDir(dir)
 	select {
 	case p.triggerCh <- struct{}{}:
 	default:
@@ -524,8 +541,14 @@ func (p *scriptPlugin) subscribeTrigger(ctx PluginContext, trigger string) error
 		if len(p.syncWidgets) > 0 {
 			// Synchronous execution: run script inline so the engine can read
 			// hint content immediately after the PostToolUse hook returns.
+			// WorkDir: TRIGGER-TIME snapshot from the hook payload (race-safe —
+			// the shared pctx may have been overwritten by another session's
+			// RefreshWorkDir between trigger and execution).
 			wd := ""
-			if p.pctx != nil {
+			if hp != nil {
+				wd = hp.WorkDir
+			}
+			if wd == "" && p.pctx != nil {
 				wd = p.pctx.WorkingDir()
 			}
 			// Use the first sync widget ID as primary for the hint content.

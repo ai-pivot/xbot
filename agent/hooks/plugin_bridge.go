@@ -50,6 +50,14 @@ func PluginBridgeCallback(bridge *plugin.PluginHookBridge) *CallbackHook {
 				if tid, ok := p["tenant_id"].(int64); ok {
 					payload.TenantID = tid
 				}
+				// TRIGGER-TIME cwd snapshot (BasePayload.CWD): the plugin-side
+				// execution must run in the TRIGGERING session's directory, not in
+				// whatever the shared PluginContext's workingDir happens to hold
+				// by the time the async trigger is consumed (race: another
+				// session's RefreshWorkDir overwrote it).
+				if wd, ok := p["cwd"].(string); ok {
+					payload.WorkDir = wd
+				}
 				// Pass tool output to plugins (e.g. for diff plugins)
 				if out, ok := p["tool_output"].(string); ok {
 					payload.ToolOutput = out
