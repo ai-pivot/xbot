@@ -310,13 +310,19 @@ export function enableCardDrag(
     if (!e.ctrlKey && !isHeaderGrab(e.target)) return
     const source = groupAt(e.target, e.clientX, e.clientY)
     if (!source) return
-    // Ctrl+左键 = 拖动专用手势：从按下起吞掉一切交互。preventDefault 阻止
-    // 默认行为（输入框 focus/光标定位、文本选择起点、图片原生拖动）；
-    // stopPropagation 阻断传播（dockview tab 拖动、React onMouseDown 等内部
-    // 元素监听）。未过拖动阈值就松开时 click 也被吞（onClickCapture 的
-    // state 窗口）——Ctrl+左键绝不触发卡片内任何交互。
+    // Ctrl+左键/把手 = 拖动专用手势：从按下起吞掉一切交互。preventDefault
+    // 阻止默认行为（输入框 focus/光标定位、文本选择起点、图片原生拖动）；
+    // stopPropagation 阻断传播（dockview tab 拖动、React onMouseDown 等
+    // 内部元素监听）。未过拖动阈值就松开时 click 也被吞（onClickCapture
+    // 的 state 窗口）。
     e.preventDefault()
     e.stopPropagation()
+    // setPointerCapture：真实浏览器拖 SVG/文本把手会触发 HTML5 drag 切换
+    //（pointercancel → 手势中断 → overlay 闪现即死——用户「每次想拖都闪
+    // 一次」根因；Playwright 合成输入不触发 drag 切换，E2E 不复现）。
+    // W3C：pointer capture 后 UA 不再对该 pointer 启动 drag/兼容鼠标事件
+    // ——手势全程独占（VS Code 拖动手势的标准做法）。
+    try { host.setPointerCapture(e.pointerId) } catch { /* pointer 已释放（极端竞态）——忽略 */ }
     state = {
       pointerId: e.pointerId,
       startX: e.clientX,
