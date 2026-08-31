@@ -1,8 +1,8 @@
 /**
  * TabHeader — dockview tab header, "rounded pill block" design (布局 v2):
- *   - Tab bar background is var(--bg-secondary) (owned by index.css `.dv-tab`
+ *   - Tab bar background is var(--sidebar-bg) (owned by index.css `.dv-tab`
  *     is transparent, so the bar shows through); each tab is a rounded-lg block.
- *   - Active tab: bg = var(--bg-primary) + 1px var(--border) border,
+ *   - Active tab: bg = var(--app-bg) + 1px var(--border) border,
  *     text = var(--text-primary), icon = var(--accent), close × always visible.
  *   - Inactive tab: transparent bg + var(--text-muted) text; close × appears
  *     on hover only (always visible on touch devices — no hover there).
@@ -74,7 +74,7 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
             'group flex h-[35px] w-full min-w-0 cursor-pointer select-none items-center gap-1.5',
             'rounded-lg border px-2.5 py-1 text-[13px] transition-colors duration-100',
             isActive
-              ? 'border-border bg-bg-primary text-text-primary'
+              ? 'border-border bg-tab-active-bg text-text-primary'
               : 'border-transparent bg-transparent text-text-muted',
           )}
           title={fullTitle}
@@ -110,7 +110,7 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
               aria-label={t('common.close')}
               className={cn(
                 'ml-0.5 flex size-[18px] shrink-0 items-center justify-center rounded-sm text-text-secondary',
-                'transition-[color,background-color,opacity] duration-100 hover:bg-bg-tertiary hover:text-text-primary',
+                'transition-[color,background-color,opacity] duration-100 hover:bg-surface-bg hover:text-text-primary',
                 'focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent',
                 isActive || isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
               )}

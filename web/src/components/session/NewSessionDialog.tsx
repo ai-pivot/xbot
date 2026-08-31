@@ -91,7 +91,7 @@ export function NewSessionDialog({ open, onOpenChange, onCreate }: NewSessionDia
             {recentWorkDirs.length > 0 ? (
               <div className="flex flex-wrap gap-1" aria-label={t('session.recentWorkPaths')}>
                 {recentWorkDirs.map((path) => (
-                  <div key={path} className="flex min-w-0 max-w-full items-center rounded-sm border border-border bg-bg-tertiary text-[11px]">
+                  <div key={path} className="flex min-w-0 max-w-full items-center rounded-sm border border-border bg-surface-bg text-[11px]">
                     <button
                       type="button"
                       className="min-w-0 truncate px-1.5 py-0.5 text-left text-text-secondary hover:text-text-primary"

@@ -152,7 +152,7 @@ export function PathPicker({ value, onChange, placeholder, className, compact, o
         aria-label={t('session.workPath')}
       />
       {open && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-bg-secondary shadow-lg">
+        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-sidebar-bg shadow-lg">
           <div className="max-h-[240px] overflow-y-auto py-1 text-sm">
             {loading ? (
               <div className="flex items-center gap-2 px-3 py-2 text-text-muted">
@@ -172,8 +172,8 @@ export function PathPicker({ value, onChange, placeholder, className, compact, o
                     onMouseEnter={() => setHighlightIdx(idx)}
                     onClick={() => navigateInto(entry)}
                     className={cn(
-                      'flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-bg-tertiary',
-                      highlightIdx === idx && 'bg-bg-tertiary',
+                      'flex w-full items-center gap-1.5 px-3 py-1.5 text-left transition-colors hover:bg-surface-bg',
+                      highlightIdx === idx && 'bg-surface-bg',
                     )}
                   >
                     {idx === highlightIdx ? (

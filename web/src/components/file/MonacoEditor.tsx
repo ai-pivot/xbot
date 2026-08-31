@@ -36,7 +36,7 @@ const THEME_ID: Record<Theme, string> = {
 /**
  * Normalize a CSS hex color to a 6-digit form (`#rrggbb`).
  *
- * Production CSS is minified, so a design token like `--bg-primary: #ffffff`
+ * Production CSS is minified, so a design token like `--app-bg: #ffffff`
  * is rewritten to the 3-digit `#fff`. Monaco's token-color ColorMap regex
  * only accepts 6-digit hex, so any color we feed into `editor.foreground` /
  * `editor.background` (which become token colors) must be expanded. Non-hex

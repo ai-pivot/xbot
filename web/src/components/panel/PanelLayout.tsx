@@ -1126,7 +1126,7 @@ function DragGhost(): ReactNode {
         // transform 替代 left/top——GPU 合成层，不触发布局回流，拖拽更顺滑。
         transform: `translate3d(${dragPointer.x + 8}px, ${dragPointer.y + 8}px, 0)`,
         // theme token（light/dark 自适应）：bg-primary 高不透明 + var(--border) 描边
-        background: 'color-mix(in srgb, var(--bg-primary) 95%, transparent)',
+        background: 'color-mix(in srgb, var(--app-bg) 95%, transparent)',
         border: '1px solid var(--border)',
         boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
         color: 'var(--text-primary)',

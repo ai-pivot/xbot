@@ -119,7 +119,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
           {t('agent.askUserTitle')}
         </span>
         {isMulti && (
-          <span className="ml-auto rounded-full bg-bg-tertiary px-2 py-0.5 text-xs font-medium text-text-muted">
+          <span className="ml-auto rounded-full bg-surface-bg px-2 py-0.5 text-xs font-medium text-text-muted">
             {currentIdx + 1} / {total}
           </span>
         )}
@@ -128,7 +128,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
       {/* Progress bar (multi-question only) */}
       {isMulti && (
         <div className="px-5 pt-2.5 pb-1">
-          <div className="h-1.5 overflow-hidden rounded-full bg-bg-tertiary">
+          <div className="h-1.5 overflow-hidden rounded-full bg-surface-bg">
             <div
               className="h-full rounded-full bg-accent transition-all duration-300 ease-out"
               style={{ width: `${((currentIdx + 1) / total) * 100}%` }}
@@ -189,7 +189,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         'group flex w-full items-start gap-3 rounded-xl border border-dashed px-4 py-3 text-left text-sm transition-all',
                         otherSelected
                           ? 'border-accent/70 bg-accent/[0.07] text-text-primary'
-                          : 'border-border/60 text-text-secondary hover:border-accent/40 hover:bg-bg-tertiary/60',
+                          : 'border-border/60 text-text-secondary hover:border-accent/40 hover:bg-surface-bg/60',
                       )}
                     >
                       <span
@@ -218,7 +218,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                         'group flex w-full items-start gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all',
                         selectedOpt
                           ? 'border-accent/70 bg-accent/[0.07] text-text-primary'
-                          : 'border-border/60 text-text-secondary hover:border-accent/40 hover:bg-bg-tertiary/60',
+                          : 'border-border/60 text-text-secondary hover:border-accent/40 hover:bg-surface-bg/60',
                       )}
                     >
                       <span
@@ -248,7 +248,7 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
                       'group flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left text-sm transition-all',
                       selectedOpt
                         ? 'border-accent/70 bg-accent/[0.07] text-text-primary'
-                        : 'border-border/60 text-text-secondary hover:border-accent/40 hover:bg-bg-tertiary/60',
+                        : 'border-border/60 text-text-secondary hover:border-accent/40 hover:bg-surface-bg/60',
                     )}
                   >
                     <span className="min-w-0 flex-1 leading-relaxed">{opt}</span>

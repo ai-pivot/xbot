@@ -186,7 +186,7 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
                 <button
                   type="button"
                   onClick={() => openFile(node)}
-                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-bg-tertiary"
+                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-surface-bg"
                 >
                   <span className="flex items-center gap-1.5">
                     <FileNodeIcon node={node} className="size-3.5 shrink-0 text-text-secondary" />
@@ -219,7 +219,7 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
                 type="button"
                 onClick={handleGoUp}
                 title={t('sidebar.goUp')}
-                className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-bg-tertiary"
+                className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-surface-bg"
                 style={{ paddingLeft: 4 }}
               >
                 <span className="flex size-4 shrink-0 items-center justify-center text-text-muted">
@@ -296,7 +296,7 @@ function PathBar({ path, onNavigate, onReset, onToggleSearch, searchActive }: Pa
           title={t('sidebar.search')}
           aria-pressed={searchActive}
           onClick={onToggleSearch}
-          className="flex size-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-bg-tertiary"
+          className="flex size-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-surface-bg"
           style={{ color: searchActive ? 'var(--accent)' : 'var(--text-secondary)' }}
         >
           <Search className="size-3" />
@@ -308,7 +308,7 @@ function PathBar({ path, onNavigate, onReset, onToggleSearch, searchActive }: Pa
           aria-label={t('sidebar.pathBarReset')}
           title={t('sidebar.pathBarReset')}
           onClick={onReset}
-          className="flex size-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-bg-tertiary"
+          className="flex size-5 shrink-0 items-center justify-center rounded transition-colors hover:bg-surface-bg"
           style={{ color: 'var(--text-secondary)' }}
         >
           <RotateCcw className="size-3" />
@@ -339,7 +339,7 @@ function FileTreeNode({ node, depth, expanded, onToggleDir, onOpenFile, expandin
     <button
       type="button"
       onClick={() => (isDir ? onToggleDir(node.path, !!node.children) : onOpenFile(node))}
-      className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-bg-tertiary"
+      className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-surface-bg"
       style={{ paddingLeft: depth * 12 + 4 }}
     >
       {isDir ? (

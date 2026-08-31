@@ -1083,7 +1083,7 @@ function NavButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`flex size-8 items-center justify-center rounded-md border border-border/50 bg-bg-secondary/80 backdrop-blur transition-all duration-150 ${
+      className={`flex size-8 items-center justify-center rounded-md border border-border/50 bg-sidebar-bg/80 backdrop-blur transition-all duration-150 ${
         disabled
           ? 'cursor-default opacity-20'
           : 'cursor-pointer opacity-40 hover:bg-accent/10 hover:text-accent hover:opacity-100'

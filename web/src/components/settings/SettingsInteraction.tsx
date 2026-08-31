@@ -48,13 +48,13 @@ export function SettingsInteraction() {
             'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             mergeTools
               ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
-              : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
+              : 'border-border bg-sidebar-bg hover:bg-surface-bg',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              mergeTools ? 'bg-[#6c8cff]' : 'bg-bg-hover',
+              mergeTools ? 'bg-[#6c8cff]' : 'bg-surface-bg',
             )}
           >
             <span
@@ -85,13 +85,13 @@ export function SettingsInteraction() {
             'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             wordWrap
               ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
-              : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
+              : 'border-border bg-sidebar-bg hover:bg-surface-bg',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              wordWrap ? 'bg-[#6c8cff]' : 'bg-bg-hover',
+              wordWrap ? 'bg-[#6c8cff]' : 'bg-surface-bg',
             )}
           >
             <span
@@ -127,7 +127,7 @@ export function SettingsInteraction() {
                   'flex items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
                   active
                     ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
-                    : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
+                    : 'border-border bg-sidebar-bg hover:bg-surface-bg',
                 )}
               >
                 <span

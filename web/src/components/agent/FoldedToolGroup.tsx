@@ -46,7 +46,7 @@ const ROW_ROW_CLASS = 'flex w-full flex-wrap items-center gap-2 px-0.5 py-1 text
 /** 浮层样式（设计稿 1:1）：固定深色玻璃底 + 大阴影；宽 430px、内部滚动。
  *  覆盖 ui/popover 默认的 w-72/rounded-md/bg-popover/p-4/shadow-md。 */
 const POPOVER_CLASS =
-  'w-[430px] max-w-[calc(100vw-2rem)] max-h-[min(60vh,480px)] overflow-y-auto rounded-xl border-border bg-bg-secondary p-2 text-text-primary shadow-2xl backdrop-blur-md'
+  'w-[430px] max-w-[calc(100vw-2rem)] max-h-[min(60vh,480px)] overflow-y-auto rounded-xl border-border bg-sidebar-bg p-2 text-text-primary shadow-2xl backdrop-blur-md'
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
@@ -228,7 +228,7 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <span data-testid="tool-pill-more" className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
+        <span data-testid="tool-pill-more" className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-surface-bg px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
           +{hidden.length}
         </span>
       </PopoverTrigger>
@@ -265,7 +265,7 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
               data-testid="tool-row"
               aria-expanded={active}
               onClick={() => setSel(active ? null : i)}
-              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-bg-hover"
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-bg"
             >
               {running
                 ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: c, animation: 'pulse-blue 1.2s infinite' }} />
@@ -305,7 +305,7 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
   const showSweep = status === 'running' && !isSubAgentTool(tool)
 
   return (
-    <div className="rounded-md border border-border/50 bg-bg-tertiary/30 p-2">
+    <div className="rounded-md border border-border/50 bg-surface-bg/30 p-2">
       {/* Card header: icon + name */}
       <div className="mb-1.5 flex items-center gap-1.5" style={{ color }}>
         <ToolIcon name={name} status={status} />

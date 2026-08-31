@@ -102,13 +102,13 @@ export function SettingsWebUsers() {
       >
         {/* One-time password banner — shown immediately after a successful create */}
         {oneTimePassword ? (
-          <div className="rounded-md border border-border bg-bg-tertiary p-4" data-testid="one-time-password">
+          <div className="rounded-md border border-border bg-surface-bg p-4" data-testid="one-time-password">
             <p className="text-sm font-medium text-text-primary">
               {t('settings.webUsers.oneTimePasswordTitle', { username: oneTimePassword.username })}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">{t('settings.webUsers.oneTimePasswordHint')}</p>
             <div className="mt-3 flex items-center gap-2">
-              <code className="flex-1 select-all break-all rounded bg-bg-primary px-3 py-2 font-mono text-sm">
+              <code className="flex-1 select-all break-all rounded bg-app-bg px-3 py-2 font-mono text-sm">
                 {oneTimePassword.password}
               </code>
               <Button variant="ghost" size="sm" onClick={() => setOneTimePassword(null)} aria-label="close">

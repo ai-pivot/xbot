@@ -588,10 +588,10 @@ describe('皮肤 theme token 化', () => {
       'p.float': { loc: { zone: 'floating', order: 0, x: 10, y: 20, w: 300, h: 200 }, collapsed: false },
     }))
     renderShell()
-    // floating：毛玻璃 = color-mix(var(--bg-primary) 90%, transparent) + var(--border) ring。
+    // floating：毛玻璃 = color-mix(var(--app-bg) 90%, transparent) + var(--border) ring。
     // 回归守护：曾硬编码 rgba(17,20,29,.9) 深色底 + 白色 ring —— light 主题下浮窗是黑块。
     const floating = document.querySelector<HTMLElement>('[data-panel-id="p.float"]')!
-    expect(floating.style.background).toContain('var(--bg-primary)')
+    expect(floating.style.background).toContain('var(--app-bg)')
     expect(floating.style.background).not.toContain('17,20,29')
     expect(floating.style.boxShadow).toContain('var(--border)')
     expect(floating.style.boxShadow).not.toContain('255,255,255')
@@ -602,7 +602,7 @@ describe('皮肤 theme token 化', () => {
     expect(side.style.boxShadow).toContain('var(--border)')
     expect(side.style.boxShadow).not.toContain('255,255,255')
     // hover 反馈走语义类（曾硬编码 hover:bg-white/5，light 主题下 hover 不可见）。
-    expect(side.querySelector('button')!.className).toContain('hover:bg-bg-tertiary/60')
+    expect(side.querySelector('button')!.className).toContain('hover:bg-surface-bg/60')
     expect(side.querySelector('button')!.className).not.toContain('hover:bg-white/5')
   })
 })

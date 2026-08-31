@@ -126,7 +126,7 @@ export function RightSidebar({ activePanel, tabManager }: RightSidebarProps) {
       initial={false}
       animate={{ width: targetWidth, opacity: activePanel === null ? 0 : 1 }}
       transition={{ duration: 0.18, ease: 'easeOut' }}
-      className="absolute right-12 top-0 z-40 flex h-full shrink-0 flex-col overflow-hidden bg-bg-secondary shadow-xl"
+      className="absolute right-12 top-0 z-40 flex h-full shrink-0 flex-col overflow-hidden bg-sidebar-bg shadow-xl"
       style={{ borderLeftWidth: activePanel === null ? 0 : 1, borderLeftStyle: 'solid', borderLeftColor: 'var(--border)' }}
     >
       {panel !== null && isPanelEnabled(panel) && (

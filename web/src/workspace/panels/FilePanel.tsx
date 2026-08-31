@@ -171,7 +171,7 @@ export function FilePanel({ params, api }: PanelProps) {
   // Image files are preview-only and have no text content.
   if (isImage) {
     return (
-      <div className="flex h-full flex-col bg-bg-primary">
+      <div className="flex h-full flex-col bg-panel-bg">
         <FileToolbar fileName={fileName} mode="preview" canToggle={false} />
         {loading ? (
           <PanelLoading />
@@ -187,7 +187,7 @@ export function FilePanel({ params, api }: PanelProps) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-bg-primary">
+    <div className="flex h-full flex-col bg-panel-bg">
       <FileToolbar
         fileName={fileName}
         mode={mode}

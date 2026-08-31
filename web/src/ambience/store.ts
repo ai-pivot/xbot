@@ -3,7 +3,7 @@
  *
  * 职责（Ambience Layer 方案 · 四层装饰模型）：
  *   z:0  wallpaper  壁纸层（AmbienceRoot 渲染；CSS 变量覆盖法玻璃化内容层）
- *   z:10 app        现有 UI（--bg-primary/secondary/tertiary alpha 化自动透明）
+ *   z:10 app        现有 UI（--app-bg/panel-bg alpha 化自动透明）
  *   z:50 decoration 装饰层（粒子/氛围光，pointer-events:none）
  *   z:60 hud        悬浮交互层（桌宠/挂件，可拖拽 + 位置记忆）
  *

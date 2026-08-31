@@ -97,7 +97,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
               {cronTasks.map((task) => (
                 <div
                   key={task.id}
-                  className="flex items-start gap-2 rounded-md bg-bg-tertiary px-2 py-1.5"
+                  className="flex items-start gap-2 rounded-md bg-surface-bg px-2 py-1.5"
                 >
                   <AlarmClock className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
                   <div className="min-w-0 flex-1">
@@ -138,7 +138,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
                 <button
                   type="button"
                   key={`${agent.channel}:${agent.chatID}`}
-                  className="flex w-full items-start gap-2 rounded-md bg-bg-tertiary px-2 py-1.5 text-left hover:bg-bg-hover"
+                  className="flex w-full items-start gap-2 rounded-md bg-surface-bg px-2 py-1.5 text-left hover:bg-surface-bg"
                   onClick={() => openSubAgent(agent)}
                 >
                   <Bot className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
@@ -168,7 +168,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
                 return (
                 <div
                   key={task.id}
-                  className="rounded-md bg-bg-tertiary px-2 py-1.5"
+                  className="rounded-md bg-surface-bg px-2 py-1.5"
                 >
                   <div className="flex items-start gap-2">
                     <BgTaskIcon task={task} />

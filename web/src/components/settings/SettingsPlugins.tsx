@@ -130,7 +130,7 @@ export function SettingsPlugins() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="搜索插件配置项…"
-          className="rounded-lg border-border bg-bg-secondary pl-9 focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+          className="rounded-lg border-border bg-sidebar-bg pl-9 focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
           autoFocus
         />
       </div>
@@ -264,7 +264,7 @@ function ImageSelectControl({
             disabled={saving}
             onClick={() => void onChange(propKey, o.value)}
             className={`relative h-14 w-24 overflow-hidden rounded-lg border-2 text-[10px] transition-transform hover:scale-[1.02] ${current === o.value ? 'border-[#6c8cff]' : 'border-border'}`}
-            style={{ background: o.css || 'var(--bg-tertiary)' }}
+            style={{ background: o.css || 'var(--surface-bg)' }}
             aria-label={o.label}
           >
             <span className="absolute inset-x-0 bottom-0 truncate bg-black/45 px-1 py-0.5 text-[9px] text-white">{o.label}</span>
@@ -307,7 +307,7 @@ function ImageSelectControl({
           type="button"
           disabled={saving || uploading}
           onClick={() => uploadRef.current?.click()}
-          className="flex h-14 w-24 flex-col items-center justify-center gap-0.5 rounded-lg border border-dashed border-border bg-bg-secondary text-[10px] text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+          className="flex h-14 w-24 flex-col items-center justify-center gap-0.5 rounded-lg border border-dashed border-border bg-sidebar-bg text-[10px] text-text-muted transition-colors hover:bg-surface-bg hover:text-text-primary disabled:opacity-50"
         >
           <ImagePlus className="size-4" />
           {uploading ? '…' : '上传'}
@@ -555,7 +555,7 @@ function ConfigField({
             disabled={saving}
             onValueChange={(v) => void onChange(propKey, v)}
           >
-            <SelectTrigger className="w-full rounded-lg border-border bg-bg-secondary focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
+            <SelectTrigger className="w-full rounded-lg border-border bg-sidebar-bg focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
               <SelectValue placeholder="选择…" />
             </SelectTrigger>
             <SelectContent>
@@ -629,7 +629,7 @@ function renderMultiselect(
           className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
             selected.includes(o.value)
               ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
-              : 'border-border bg-bg-secondary text-text-muted hover:bg-bg-tertiary hover:text-text-primary'
+              : 'border-border bg-sidebar-bg text-text-muted hover:bg-surface-bg hover:text-text-primary'
           }`}
         >
           {o.label}

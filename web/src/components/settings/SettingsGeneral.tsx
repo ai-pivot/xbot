@@ -39,7 +39,7 @@ export function SettingsGeneral() {
     <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection title={t('settings.language')} description={t('settings.languageDesc')}>
         <Select value={locale} onValueChange={(v) => setLocale(v as Locale)}>
-          <SelectTrigger className="w-full max-w-[320px] rounded-lg border-border bg-bg-secondary focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
+          <SelectTrigger className="w-full max-w-[320px] rounded-lg border-border bg-sidebar-bg focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

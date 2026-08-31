@@ -102,7 +102,7 @@ function Badge({ children, tone = 'muted' }: { children: ReactNode; tone?: 'mute
     tone === 'green' ? 'text-green-700 dark:text-green-400 bg-green-500/10'
     : tone === 'red' ? 'text-red-700 dark:text-red-400 bg-red-500/10'
     : tone === 'accent' ? 'text-accent bg-accent/10'
-    : 'text-text-muted bg-bg-tertiary/60'
+    : 'text-text-muted bg-surface-bg/60'
   return <span className={`shrink-0 rounded px-1.5 py-px font-mono text-[10px] leading-4 ${cls}`}>{children}</span>
 }
 
@@ -210,7 +210,7 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
         {/* Traffic-light header */}
         <div
           className="flex items-center gap-1.5 px-2.5 py-1"
-          style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}
+          style={{ backgroundColor: 'var(--sidebar-bg)', borderBottom: '1px solid var(--border)' }}
         >
           <span className="h-2 w-2 shrink-0 rounded-full bg-red-400/80" />
           <span className="h-2 w-2 shrink-0 rounded-full bg-yellow-400/80" />
@@ -219,7 +219,7 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
           <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-text-muted">{command}</span>
         </div>
         {/* Body: $ command echo + output */}
-        <div className="max-h-64 overflow-auto px-2.5 py-1.5" style={{ backgroundColor: 'var(--bg-primary)' }}>
+        <div className="max-h-64 overflow-auto px-2.5 py-1.5" style={{ backgroundColor: 'var(--app-bg)' }}>
           {command && (
             <div className="flex gap-1.5 font-mono text-[12px] leading-5">
               <span className="shrink-0 select-none text-accent">$</span>
@@ -499,13 +499,13 @@ function GrepRender({ tool, summary, detail }: { tool: WebToolProgress; summary:
         <div key={i} className="overflow-hidden rounded-md" style={{ border: '1px solid var(--border)' }}>
           <div
             className="flex items-center gap-1.5 px-2 py-1"
-            style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}
+            style={{ backgroundColor: 'var(--sidebar-bg)', borderBottom: '1px solid var(--border)' }}
           >
             <FileText className="h-3 w-3 shrink-0 text-text-muted" />
             <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-primary">{f.path}</span>
             <Badge tone="accent">{f.matches.length}</Badge>
           </div>
-          <div className="max-h-56 overflow-auto px-2 py-1" style={{ backgroundColor: 'var(--bg-primary)' }}>
+          <div className="max-h-56 overflow-auto px-2 py-1" style={{ backgroundColor: 'var(--app-bg)' }}>
             {f.matches.map((m, j) => (
               <div key={j} className="flex items-start gap-2 font-mono text-[11px] leading-5">
                 <span className="w-9 shrink-0 select-none text-right text-text-muted">{m.line}</span>
@@ -561,7 +561,7 @@ function GlobRender({ tool, summary }: { tool: WebToolProgress; summary: string 
       </div>
       {files.length > 0 && (
         <div className="overflow-hidden rounded-md" style={{ border: '1px solid var(--border)' }}>
-          <div className="max-h-56 overflow-auto px-2 py-1" style={{ backgroundColor: 'var(--bg-primary)' }}>
+          <div className="max-h-56 overflow-auto px-2 py-1" style={{ backgroundColor: 'var(--app-bg)' }}>
             {files.map((f, i) => {
               const slash = f.lastIndexOf('/')
               const dir = slash >= 0 ? f.slice(0, slash + 1) : ''
@@ -630,7 +630,7 @@ function TodoWriteRender({ tool, summary }: { tool: WebToolProgress; summary: st
         <Badge tone={done === todos.length ? 'green' : 'accent'}>{pct}%</Badge>
       </div>
       {/* Progress bar */}
-      <div className="h-1 overflow-hidden rounded-full bg-bg-tertiary">
+      <div className="h-1 overflow-hidden rounded-full bg-surface-bg">
         <div
           className="h-full rounded-full transition-all"
           style={{ width: `${pct}%`, backgroundColor: done === todos.length ? 'var(--status-running)' : 'var(--accent)' }}

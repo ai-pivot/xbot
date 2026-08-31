@@ -42,7 +42,7 @@ export function ContextRing({ available, promptTokens, maxContext, usagePercent 
           tabIndex={0}
           aria-label={label}
           data-testid="context-ring"
-          className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none hover:bg-bg-tertiary focus-visible:ring-1 focus-visible:ring-accent/50"
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-text-muted outline-none hover:bg-surface-bg focus-visible:ring-1 focus-visible:ring-accent/50"
         >
           <svg viewBox="0 0 20 20" className="size-5" aria-hidden="true">
             <circle

@@ -226,7 +226,7 @@ export function AppShell() {
     <PanelDockProvider tabManager={tabManager}>
       {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
           MobileAppShell (100dvh/height:100% stop at the safe area there). */}
-      <div className="fixed inset-0 flex overflow-hidden bg-bg-primary text-text-primary">
+      <div className="fixed inset-0 flex overflow-hidden bg-app-bg text-text-primary">
       {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}
       <AmbienceBackground />
       {/* Left sidebar — 布局 v4 面板坞（docked 面板堆叠，折叠由 header ☰ 控制） */}
@@ -252,14 +252,14 @@ export function AppShell() {
           {/* 布局 v5 header：左 ☰ + 连接点 + 会话名（shrink-0 刚性）/
               TopRail（min-w-0 flex-1，插件徽章溢出由 rail 内部收纳，绝不推挤
               内置元素）/ 右 上下文环 + ⚙（shrink-0 刚性）。header 常驻渲染。 */}
-          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 py-2 text-xs">
+          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-sidebar-bg px-3 py-2 text-xs">
             {/* 左：侧栏折叠 + 连接状态 + 会话名 */}
             <button
               type="button"
               aria-label="切换侧栏"
               title="切换侧栏"
               onClick={() => setSidebarCollapsed((v) => !v)}
-              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
+              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-surface-bg"
               style={{ color: 'var(--text-secondary)' }}
             >
               <PanelLeft className="size-3.5" />
@@ -311,7 +311,7 @@ export function AppShell() {
               aria-label="打开设置"
               title="设置"
               onClick={() => setSettingsOpen(true)}
-              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
+              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-surface-bg"
               style={{ color: 'var(--text-secondary)' }}
             >
               <Settings className="size-3.5" />

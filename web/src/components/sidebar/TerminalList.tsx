@@ -47,7 +47,7 @@ export function TerminalList({ terminalManager }: TerminalListProps) {
               type="button"
               aria-label={t('sidebar.terminalNew')}
               onClick={() => void createTerminal()}
-              className="flex size-6 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              className="flex size-6 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-bg hover:text-text-primary"
             >
               <Plus className="size-4" />
             </button>
@@ -104,7 +104,7 @@ function TerminalRow({ term, onFocus, onClose }: TerminalRowProps) {
             onFocus()
           }
         }}
-        className="group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-bg-tertiary"
+        className="group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-bg"
       >
         {/* status indicator */}
         {term.status === 'connecting' ? (
@@ -133,7 +133,7 @@ function TerminalRow({ term, onFocus, onClose }: TerminalRowProps) {
                 onClose()
               }}
               className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary transition-opacity hover:bg-bg-secondary hover:text-error',
+                'flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary transition-opacity hover:bg-sidebar-bg hover:text-error',
                 isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
               )}
             >

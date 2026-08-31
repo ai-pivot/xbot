@@ -41,7 +41,7 @@ export function CompletionPopup({
 
   return (
     <div
-      className="absolute bottom-full left-3 right-3 z-50 mb-1 overflow-hidden rounded-lg border border-border bg-bg-primary shadow-lg"
+      className="absolute bottom-full left-3 right-3 z-50 mb-1 overflow-hidden rounded-lg border border-border bg-input-bg shadow-lg"
     >
       <div ref={listRef} className="max-h-60 overflow-y-auto py-1">
         {candidates.map((c, i) => (
@@ -57,7 +57,7 @@ export function CompletionPopup({
               'flex items-center gap-2 px-3 py-1.5 text-sm',
               i === selectedIndex
                 ? 'bg-accent/15 text-text-primary'
-                : 'text-text-secondary hover:bg-bg-tertiary',
+                : 'text-text-secondary hover:bg-surface-bg',
             )}
           >
             {triggerType === 'file' ? (

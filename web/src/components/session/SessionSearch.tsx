@@ -18,7 +18,7 @@ export function SessionSearch({ value, onChange }: SessionSearchProps) {
   return (
     <div
       className="mx-2 my-1.5 flex items-center gap-2 rounded-xl border px-3 py-2"
-      style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
+      style={{ borderColor: 'var(--border)', background: 'var(--app-bg)' }}
     >
       <Search className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
       {/* readOnly-until-focus: Chrome IGNORES autoComplete="off" for form-history
@@ -43,7 +43,7 @@ export function SessionSearch({ value, onChange }: SessionSearchProps) {
           type="button"
           onClick={() => onChange('')}
           aria-label={t('common.close')}
-          className="shrink-0 rounded p-0.5 hover:bg-bg-tertiary"
+          className="shrink-0 rounded p-0.5 hover:bg-surface-bg"
           style={{ color: 'var(--text-muted)' }}
         >
           <X className="size-3.5" />

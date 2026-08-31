@@ -163,7 +163,7 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
   )
 
   return (
-    <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l bg-bg-secondary py-2">
+    <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l bg-sidebar-bg py-2">
       {tabs.map(({ layoutId, panel, icon: Icon, label }) => {
         const active = activePanel === panel
         const showLine = dropHint?.targetId === layoutId
@@ -186,7 +186,7 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
                   onDrop={onIconDrop(layoutId)}
                   onDragEnd={onIconDragEnd}
                   onDragLeave={onIconDragLeave(layoutId)}
-                  className="group relative flex size-9 shrink-0 select-none items-center justify-center rounded-md transition-opacity hover:bg-bg-tertiary"
+                  className="group relative flex size-9 shrink-0 select-none items-center justify-center rounded-md transition-opacity hover:bg-surface-bg"
                   style={{
                     color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
                     opacity: isDragSrc ? 0.4 : undefined,
@@ -217,7 +217,7 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
                   type="button"
                   aria-label={v.title}
                   onClick={() => onOpenMainView(v)}
-                  className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+                  className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-surface-bg"
                   style={{ color: 'var(--text-secondary)' }}
                 >
                   {(() => {

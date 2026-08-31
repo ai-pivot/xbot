@@ -161,7 +161,7 @@ export const DiffView = memo(function DiffView({ diff, maxHeight = 320 }: DiffVi
           {/* File header */}
           <div
             className="sticky top-0 z-[1] flex items-center gap-2 px-2 py-1"
-            style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}
+            style={{ backgroundColor: 'var(--sidebar-bg)', borderBottom: '1px solid var(--border)' }}
           >
             <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-primary">{f.path}</span>
             <span className={`shrink-0 font-mono text-[10px] ${ADD_TEXT}`}>+{f.adds}</span>
@@ -175,7 +175,7 @@ export const DiffView = memo(function DiffView({ diff, maxHeight = 320 }: DiffVi
       {files.length > 1 && (
         <div
           className="sticky bottom-0 flex items-center gap-2 px-2 py-0.5 font-mono text-[10px]"
-          style={{ backgroundColor: 'var(--bg-secondary)', borderTop: '1px solid var(--border)' }}
+          style={{ backgroundColor: 'var(--sidebar-bg)', borderTop: '1px solid var(--border)' }}
         >
           <span className="text-text-muted">{files.length} files</span>
           <span className={ADD_TEXT}>+{totalAdds}</span>

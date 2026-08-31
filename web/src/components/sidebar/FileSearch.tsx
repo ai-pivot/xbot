@@ -106,7 +106,7 @@ export function FileSearch({ tabManager }: FileSearchProps) {
                 <button
                   type="button"
                   onClick={() => openFile(node)}
-                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-bg-tertiary"
+                  className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-surface-bg"
                 >
                   <span className="flex items-center gap-1.5">
                     <FileNodeIcon

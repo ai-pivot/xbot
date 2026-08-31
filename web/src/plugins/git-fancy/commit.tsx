@@ -100,7 +100,7 @@ export function GitCommitView({ hash }: GitCommitViewProps) {
       <div
         key={f.path}
         onClick={() => openDiffTab(f.path, detail.hash)}
-        className="flex cursor-pointer items-center gap-2 px-3 py-1 hover:bg-bg-hover active:bg-bg-hover"
+        className="flex cursor-pointer items-center gap-2 px-3 py-1 hover:bg-surface-bg active:bg-surface-bg"
         title="在编辑区查看此 commit 内该文件的 diff"
       >
         <span

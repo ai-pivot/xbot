@@ -66,7 +66,7 @@ export function ArgsView({ args }: { args: string }) {
     <pre
       className="overflow-x-auto whitespace-pre rounded-md px-2.5 py-1.5 font-mono text-[12px] leading-5"
       style={{
-        backgroundColor: 'var(--bg-primary)',
+        backgroundColor: 'var(--app-bg)',
         border: '1px solid var(--border)',
         color: 'var(--text-primary)',
       }}
@@ -97,7 +97,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
           <div className="mb-1 text-text-muted">{t('agent.output')}</div>
           <pre
             className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md px-2.5 py-1.5 font-mono text-[12px] leading-5 text-text-secondary"
-            style={{ backgroundColor: 'var(--bg-primary)', border: '1px solid var(--border)' }}
+            style={{ backgroundColor: 'var(--app-bg)', border: '1px solid var(--border)' }}
           >
             <AnsiText text={detail} />
           </pre>
@@ -106,7 +106,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
       {!args && !detail && summary && (
         <pre
           className="max-h-60 overflow-auto whitespace-pre-wrap rounded-md px-2.5 py-1.5 text-text-secondary"
-          style={{ backgroundColor: 'var(--bg-secondary)' }}
+          style={{ backgroundColor: 'var(--sidebar-bg)' }}
         >
           <AnsiText text={summary} />
         </pre>

@@ -336,13 +336,13 @@ export function MobileAppShell() {
          *  LAYOUT viewport, which DOES span the full screen under
          *  viewport-fit=cover. This is the community-verified iOS PWA
          *  full-bleed fix. */}
-        <div className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary">
+        <div className="fixed inset-0 flex flex-col overflow-hidden bg-app-bg text-text-primary">
           {/* Ambience 壁纸层（z:0）——第一子元素 */}
           <AmbienceBackground />
           {/* relative（定位元素）必须保留在 header/main/nav 上：壁纸层是
               absolute z-0 定位元素，CSS 层叠规则下 z-0 定位元素画在普通流
               元素之上——无 relative 的内容会被壁纸完全遮挡。 */}
-          <header className="relative flex shrink-0 items-center gap-0.5 border-b border-border bg-bg-secondary pr-1" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
+          <header className="relative flex shrink-0 items-center gap-0.5 border-b border-border bg-sidebar-bg pr-1" style={{ paddingTop: 'var(--safe-area-top)', height: 'calc(3rem + var(--safe-area-top))' }}>
             <Button type="button" variant="ghost" size="icon" aria-label={headerNavLabel} onClick={handleHeaderNav}>
               {view === 'agent' && !subAgentView ? <Menu className="size-5" /> : <ArrowLeft className="size-5" />}
             </Button>
@@ -457,7 +457,7 @@ export function MobileAppShell() {
 
           {/* 按需底部导航：仅当用户把布局项移入 mobile.bottom_nav 时渲染。 */}
           {bottomNavItems.length > 0 && (
-            <nav className="relative grid shrink-0 border-t border-border bg-bg-secondary" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))', gridTemplateColumns: `repeat(${bottomNavItems.length}, minmax(0, 1fr))` }}>
+            <nav className="relative grid shrink-0 border-t border-border bg-sidebar-bg" style={{ paddingBottom: 'var(--safe-area-bottom)', height: 'calc(3.5rem + var(--safe-area-bottom))', gridTemplateColumns: `repeat(${bottomNavItems.length}, minmax(0, 1fr))` }}>
               {bottomNavItems.map((item) => renderBottomNavItem(item, {
                 view,
                 activePanel,
@@ -688,7 +688,7 @@ function MobileDetail({
                 'flex h-9 shrink-0 select-none items-center gap-1.5 rounded-full px-3.5 text-sm font-medium transition-all active:scale-95',
                 active
                   ? 'bg-accent/15 text-accent'
-                  : 'text-text-secondary active:bg-bg-tertiary',
+                  : 'text-text-secondary active:bg-surface-bg',
               )}
             >
               <Icon className="size-4 shrink-0" />

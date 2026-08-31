@@ -67,7 +67,7 @@ export function CollapsibleCard({
     <Collapsible
       open={currentOpen}
       onOpenChange={handleOpenChange}
-      className={cn('rounded-md border border-border bg-bg-secondary/40', className)}
+      className={cn('rounded-md border border-border bg-sidebar-bg/40', className)}
       {...(rest['aria-label'] ? { 'aria-label': rest['aria-label'] } : {})}
     >
       <CollapsibleTrigger asChild>
@@ -76,7 +76,7 @@ export function CollapsibleCard({
           aria-expanded={currentOpen}
           className={cn(
             'flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left text-xs',
-            'hover:bg-bg-tertiary/50 transition-colors',
+            'hover:bg-surface-bg/50 transition-colors',
             headerClassName,
           )}
         >

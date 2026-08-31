@@ -50,8 +50,8 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
         type="button"
         onClick={() => canExpand && setExpanded((v) => !v)}
         className={cn(
-          'relative flex h-6 w-full items-center overflow-hidden rounded-md bg-bg-secondary/50',
-          canExpand && 'cursor-pointer hover:bg-bg-secondary/80',
+          'relative flex h-6 w-full items-center overflow-hidden rounded-md bg-sidebar-bg/50',
+          canExpand && 'cursor-pointer hover:bg-sidebar-bg/80',
         )}
         title={canExpand ? (expanded ? t('agent.collapseTodos') : t('agent.expandTodos')) : undefined}
       >
@@ -145,7 +145,7 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="overflow-hidden rounded-md border border-border bg-bg-secondary"
+            className="overflow-hidden rounded-md border border-border bg-sidebar-bg"
           >
             <div className="max-h-[200px] overflow-y-auto px-3 py-1.5">
               {todoState!.todos.map((todo) => (

@@ -230,7 +230,7 @@ export function statusBadge(status: string): { label: string; cls: string } {
     case 'C':
       return { label: 'C', cls: 'text-cyan-600 bg-cyan-100 dark:bg-cyan-900/40' }
     default:
-      return { label: status || '?', cls: 'text-text-secondary bg-bg-hover' }
+      return { label: status || '?', cls: 'text-text-secondary bg-surface-bg' }
   }
 }
 
@@ -248,7 +248,7 @@ export function DiffLineRow({ line }: { line: DiffLine }) {
       gutter = '-'
       break
     case 'hunk':
-      cls = 'bg-bg-hover text-blue-500 font-semibold'
+      cls = 'bg-surface-bg text-blue-500 font-semibold'
       gutter = '@@'
       break
     case 'meta':

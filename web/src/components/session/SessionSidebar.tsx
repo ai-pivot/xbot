@@ -244,7 +244,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   }, [filteredSessions])
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg-secondary">
+    <div className="flex h-full w-full flex-col bg-sidebar-bg">
       {/* Header: channel filter + new-session button */}
       <header
         className="flex h-9 shrink-0 items-center justify-between px-2"
@@ -255,7 +255,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
             <PopoverTrigger asChild>
               <button
                 type="button"
-                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-secondary transition-colors hover:bg-bg-tertiary"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-secondary transition-colors hover:bg-surface-bg"
               >
                 {store.activeChannel
                   ? t(`channel.${store.activeChannel}`) || store.activeChannel
@@ -315,7 +315,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
                   if (multiSelectMode) exitMultiSelect()
                   else setMultiSelectMode(true)
                 }}
-                style={multiSelectMode ? { color: 'var(--accent)', backgroundColor: 'var(--bg-tertiary)' } : undefined}
+                style={multiSelectMode ? { color: 'var(--accent)', backgroundColor: 'var(--surface-bg)' } : undefined}
               >
                 <CheckSquare />
               </Button>
@@ -368,7 +368,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
               onClick={() => store.setCategory(c)}
               className="flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors"
               style={{
-                backgroundColor: active ? 'var(--bg-tertiary)' : 'transparent',
+                backgroundColor: active ? 'var(--surface-bg)' : 'transparent',
                 color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
               }}
             >
@@ -425,7 +425,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       {multiSelectMode && selectedIds.size > 0 && (
         <div
           className="flex shrink-0 items-center gap-2 px-3 py-2"
-          style={{ borderTop: '1px solid var(--border)', backgroundColor: 'var(--bg-tertiary)' }}
+          style={{ borderTop: '1px solid var(--border)', backgroundColor: 'var(--surface-bg)' }}
         >
           <span className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
             {t('session.selectedCount', { n: selectedIds.size })}

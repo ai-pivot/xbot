@@ -105,7 +105,7 @@ function SubAgentCard({
       exit={{ opacity: 0, height: 0 }}
       transition={{ duration: 0.2 }}
       className={cn(
-        'relative overflow-hidden rounded-lg border border-border/50 bg-bg-secondary/50',
+        'relative overflow-hidden rounded-lg border border-border/50 bg-sidebar-bg/50',
       )}
       style={{ paddingLeft: '2px' }}
     >

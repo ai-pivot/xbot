@@ -147,7 +147,7 @@ export const UserMessage = memo(function UserMessage({
       <div className="px-1">
         <div className="flex w-full flex-col items-end gap-1">
           <div
-            className="w-full rounded-lg border border-accent bg-bg-secondary px-3 py-2"
+            className="w-full rounded-lg border border-accent bg-sidebar-bg px-3 py-2"
             style={{ minHeight: editMinHeight ?? undefined }}
           >
             <textarea
@@ -189,7 +189,7 @@ export const UserMessage = memo(function UserMessage({
   if (compactBody) {
     return (
       <div className="flex justify-end px-1">
-        <details className="group w-full max-w-[85%] rounded-2xl rounded-br-sm border border-dashed border-border bg-bg-secondary px-3.5 py-2">
+        <details className="group w-full max-w-[85%] rounded-2xl rounded-br-sm border border-dashed border-border bg-sidebar-bg px-3.5 py-2">
           <summary className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-text-muted">
             <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
             <span>{compactBody.title}</span>
@@ -214,7 +214,7 @@ export const UserMessage = memo(function UserMessage({
           ref={displayRef}
           className={
             isNotification
-              ? 'rounded-2xl rounded-br-sm border border-border bg-bg-secondary px-3.5 py-2 text-text-muted'
+              ? 'rounded-2xl rounded-br-sm border border-border bg-sidebar-bg px-3.5 py-2 text-text-muted'
               : 'rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary'
           }
         >

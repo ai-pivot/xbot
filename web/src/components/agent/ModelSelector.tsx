@@ -87,7 +87,7 @@ export function ModelSelector({
           disabled={disabled}
           aria-label={t('agent.modelSelector')}
           title={busy ? t('agent.busy') : currentSubName || currentModel}
-          className="flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-md px-2 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-md px-2 text-xs text-text-secondary transition-colors hover:bg-surface-bg hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className="min-w-0 truncate font-mono">{currentModel || '—'}</span>
           <span className="shrink-0 font-mono text-xs text-text-muted md:text-[10px]">{thinkingModeLabel(thinkingMode)}</span>
@@ -109,7 +109,7 @@ export function ModelSelector({
         <div className="overflow-y-auto overflow-x-hidden min-h-0">
           {groups.map((group) => (
             <div key={group.subID}>
-              <div className="bg-bg-secondary px-2 py-1 text-xs font-medium text-muted-foreground md:text-[10px]">
+              <div className="bg-sidebar-bg px-2 py-1 text-xs font-medium text-muted-foreground md:text-[10px]">
                 {group.subName}
               </div>
               {group.entries.map((entry) => {

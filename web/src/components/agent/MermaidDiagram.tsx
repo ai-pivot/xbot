@@ -335,7 +335,7 @@ function FullscreenOverlay({ svg, onClose }: { svg: string; onClose: () => void 
         type="button"
         aria-label="Close fullscreen"
         onClick={onClose}
-        className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full transition-colors hover:bg-bg-hover"
+        className="absolute right-4 top-4 z-10 flex size-9 items-center justify-center rounded-full transition-colors hover:bg-surface-bg"
         style={{ color: '#fff' }}
       >
         <X className="size-5" />

@@ -4,7 +4,7 @@
  * 内置面板与插件面板的唯一形态：标题栏（icon + title + sub + badge +
  * 停靠⇄浮动 + 取消钉选 + 折叠 + docked grip）+ 主体 + docked 底边调高 handle。
  * docked 与 floating 两套皮肤：
- *  - docked：rounded-xl + bg-bg-secondary + inset ring white/5%
+ *  - docked：rounded-xl + bg-sidebar-bg + inset ring white/5%
  *  - floating：毛玻璃 bg-primary 90% + backdrop-blur(14px) + 大阴影 + var(--border) ring
  *
  * 图标统一经 pluginIcons.ts 的 pluginIcon 映射（与插件 view tab 一致）。
@@ -12,7 +12,7 @@
  * 皮肤全部走 theme 语义 token（light/dark/glass 均自适应）：
  *  - docked：bg-secondary（微亮/微暗于侧栏底 bg-primary）+ var(--border) inset ring
  *  - floating：bg-primary 90% 半透明毛玻璃 + backdrop-blur + var(--border) ring
- *    （glass 模式下 --bg-primary 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
+ *    （glass 模式下 --app-bg 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
  */
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
 import { ChevronDown, ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
@@ -122,13 +122,13 @@ export function PanelChrome({
   const stop = (e: ReactPointerEvent) => e.stopPropagation()
 
   // 皮肤走 theme token（light/dark/glass 自适应）：
-  //  - floating：bg-primary 90% 半透明毛玻璃（glass 模式下 --bg-primary 已被
+  //  - floating：bg-primary 90% 半透明毛玻璃（glass 模式下 --app-bg 已被
   //    AmbienceBackground 覆盖为半透明，自动继承玻璃效果）；ring 用 var(--border)。
   //  - docked：bg-secondary（相对侧栏底 bg-primary 微亮/微暗形成层次）。
   // 阴影保持黑色系（阴影无色相，两主题通用）。
   const shellStyle: CSSProperties = floating
     ? {
-        background: 'color-mix(in srgb, var(--bg-primary) 90%, transparent)',
+        background: 'color-mix(in srgb, var(--app-bg) 90%, transparent)',
         backdropFilter: 'blur(14px)',
         WebkitBackdropFilter: 'blur(14px)',
         boxShadow: '0 16px 48px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.4), inset 0 0 0 1px var(--border)',
@@ -136,7 +136,7 @@ export function PanelChrome({
         ...style,
       }
     : {
-        background: 'var(--bg-secondary)',
+        background: 'var(--sidebar-bg)',
         boxShadow: 'inset 0 0 0 1px var(--border)',
         opacity: isDragSource ? 0.4 : undefined,
         pointerEvents: isDragSource ? 'none' : undefined,
@@ -188,7 +188,7 @@ export function PanelChrome({
           {...iconButtonProps(floating ? '收回启动器' : '浮动')}
           onPointerDown={stop}
           onClick={onToggleMode}
-          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-secondary"
+          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-surface-bg/60 hover:text-text-secondary"
         >
           {floating ? <PanelLeft className="size-3" /> : <PictureInPicture2 className="size-3" />}
         </button>
@@ -197,7 +197,7 @@ export function PanelChrome({
             {...iconButtonProps('取消钉选（收入底部启动器）')}
             onPointerDown={stop}
             onClick={onUnpin}
-            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-primary"
+            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-surface-bg/60 hover:text-text-primary"
           >
             <X className="size-3" />
           </button>
@@ -207,7 +207,7 @@ export function PanelChrome({
             {...iconButtonProps('关闭浮窗（收入启动器）')}
             onPointerDown={stop}
             onClick={onClose}
-            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-primary"
+            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-surface-bg/60 hover:text-text-primary"
           >
             <X className="size-3" />
           </button>
@@ -216,7 +216,7 @@ export function PanelChrome({
           {...iconButtonProps(collapsed ? '展开' : '折叠')}
           onPointerDown={stop}
           onClick={onToggleCollapse}
-          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-secondary"
+          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-surface-bg/60 hover:text-text-secondary"
         >
           {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
         </button>

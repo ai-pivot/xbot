@@ -84,7 +84,7 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
             size="sm"
             onClick={handleLogout}
             disabled={loggingOut}
-            className="w-fit gap-2 border-border bg-bg-tertiary hover:bg-bg-hover"
+            className="w-fit gap-2 border-border bg-surface-bg hover:bg-surface-bg"
           >
             {loggingOut ? <Loader2 className="size-4 animate-spin" /> : <LogOut className="size-4" />}
             {t('auth.logout')}
@@ -133,7 +133,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
               375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
               桌面（≥sm）：竖直侧栏不变 */}
-          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
+          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-sidebar-bg p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
             {nav.map(({ key, labelKey }) => (
               <button
                 key={key}
@@ -144,7 +144,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:shrink sm:whitespace-normal',
                   active === key
                     ? 'bg-[#6c8cff]/14 font-medium text-[#6c8cff]'
-                    : 'text-text-muted hover:bg-bg-tertiary hover:text-text-primary',
+                    : 'text-text-muted hover:bg-surface-bg hover:text-text-primary',
                 )}
               >
                 {t(`settings.${labelKey}`)}

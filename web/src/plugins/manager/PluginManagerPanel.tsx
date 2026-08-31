@@ -131,7 +131,7 @@ export function PluginManagerPanel() {
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={installing}
-            className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-text-secondary hover:bg-surface-bg disabled:opacity-50"
           >
             {installing && <Loader2 className="h-3 w-3 animate-spin" />}
             {installing ? '安装中…' : '安装'}
@@ -139,7 +139,7 @@ export function PluginManagerPanel() {
           <button
             onClick={() => void refresh()}
             disabled={loading}
-            className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-text-secondary hover:bg-surface-bg disabled:opacity-50"
           >
             {loading && <Loader2 className="h-3 w-3 animate-spin" />}
             {loading ? '刷新中…' : '刷新'}
@@ -168,7 +168,7 @@ export function PluginManagerPanel() {
         {loading ? (
           // 加载骨架屏：列表项结构占位，避免空白等待
           Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="rounded border border-border bg-bg-elevated p-2">
+            <div key={i} className="rounded border border-border bg-surface-bg p-2">
               <div className="flex items-center gap-2">
                 <Skeleton className="h-2 w-2 rounded-full" />
                 <Skeleton className="h-3 w-24" />
@@ -196,7 +196,7 @@ export function PluginManagerPanel() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.98 }}
                   transition={{ duration: 0.18, ease: 'easeOut' }}
-                  className="rounded border border-border bg-bg-elevated p-2"
+                  className="rounded border border-border bg-surface-bg p-2"
                 >
                   <div className="flex items-center gap-2">
                     <motion.span
@@ -221,7 +221,7 @@ export function PluginManagerPanel() {
                     <button
                       onClick={() => void doReload(p.id)}
                       disabled={isPending === 'reload'}
-                      className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+                      className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-surface-bg disabled:opacity-50"
                     >
                       {isPending === 'reload' && <Loader2 className="h-3 w-3 animate-spin" />}
                       {isPending === 'reload' ? '重载中…' : '重载'}

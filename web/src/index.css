@@ -131,7 +131,7 @@
  * Design tokens — VSCode-style palette (Spec 1 设计系统基础).
  *
  * Two layers of variables:
- *   1. Application semantic tokens (--accent, --bg-primary, --border, ...) —
+ *   1. Application semantic tokens (--accent, --app-bg, --border, ...) —
  *      the Spec contract; ThemeProvider mutates --accent* at runtime to apply
  *      the user's accent color while keeping the rest of the palette fixed.
  *   2. shadcn semantic tokens (--background, --foreground, --primary, ...) —
@@ -145,17 +145,18 @@
   --accent-hover: #2a7aa8;
   --accent-foreground: #ffffff;
 
-  /* bg-*-src：主题原始色（glass 效果的引用源）。glass 激活时 JS inline 覆盖
-   * --bg-* 为 color-mix(var(--bg-*-src) N%, transparent) —— 主题切换时 .dark
-   * 的 src 值经 CSS 级联自动重算，glass 不需要 JS 重新读色（原实现读
-   * getComputedStyle 时机早于 ThemeProvider 的 class 更新（子组件 effect 先
-   * 于父组件），读到旧主题色 → 切主题后色调反转）。 */
-  --bg-primary-src: #ffffff;
-  --bg-secondary-src: #f3f3f3;
-  --bg-tertiary-src: #e4e4e4;
-  --bg-primary: var(--bg-primary-src);
-  --bg-secondary: var(--bg-secondary-src);
-  --bg-tertiary: var(--bg-tertiary-src);
+  /* ── Semantic area tokens (light) ──
+   * --app-bg / --panel-bg: base + panel background (Ambience glass can semi-transparent)
+   * --sidebar-bg / --input-bg / --surface-bg / --tab-*: always opaque (UI chrome) */
+  --app-bg-src: #ffffff;
+  --app-bg: var(--app-bg-src);
+  --panel-bg-src: #ffffff;
+  --panel-bg: var(--panel-bg-src);
+  --sidebar-bg: #f3f3f3;
+  --input-bg: #f3f3f3;
+  --surface-bg: #e4e4e4;
+  --tab-active-bg: var(--app-bg);
+  --tab-inactive-bg: var(--sidebar-bg);
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
@@ -183,10 +184,10 @@
   --md-border: var(--border);
   --md-blockquote-text: var(--text-secondary);
   --md-blockquote-border: var(--accent);
-  --md-blockquote-bg: var(--bg-secondary);
-  --md-table-header-bg: var(--bg-secondary);
+  --md-blockquote-bg: var(--sidebar-bg);
+  --md-table-header-bg: var(--sidebar-bg);
   --md-table-border: var(--border);
-  --md-inline-code-bg: var(--bg-tertiary);
+  --md-inline-code-bg: var(--surface-bg);
   --md-inline-code-text: var(--text-primary);
   --md-code-bg: var(--editor-bg);
   --md-code-border: var(--border);
@@ -201,22 +202,22 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
 }
 
-/* shadcn semantic tokens (light) → VSCode palette */
+/* shadcn semantic tokens (light) → semantic area tokens */
 :root {
-  --background: var(--bg-primary);
+  --background: var(--app-bg);
   --foreground: var(--text-primary);
-  --card: var(--bg-primary);
+  --card: var(--app-bg);
   --card-foreground: var(--text-primary);
-  --popover: var(--bg-primary);
+  --popover: var(--input-bg);
   --popover-foreground: var(--text-primary);
 
   --primary: var(--accent);
   --primary-foreground: var(--accent-foreground);
 
-  --secondary: var(--bg-secondary);
+  --secondary: var(--sidebar-bg);
   --secondary-foreground: var(--text-primary);
 
-  --muted: var(--bg-secondary);
+  --muted: var(--sidebar-bg);
   --muted-foreground: var(--text-secondary);
 
   /* `--accent` / `--accent-foreground` inherit the Spec theme color defined
@@ -235,11 +236,11 @@
   --chart-4: #6b6b6b;
   --chart-5: #d1242f;
 
-  --sidebar: var(--bg-secondary);
+  --sidebar: var(--sidebar-bg);
   --sidebar-foreground: var(--text-primary);
   --sidebar-primary: var(--accent);
   --sidebar-primary-foreground: var(--accent-foreground);
-  --sidebar-accent: var(--bg-tertiary);
+  --sidebar-accent: var(--surface-bg);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--accent);
@@ -251,11 +252,18 @@
   --accent-hover: #4499cc;
   --accent-foreground: #ffffff;
 
-  /* dark 主题只覆盖 src 原色（glass 的 color-mix 引用 var(--bg-*-src) 经 CSS
-   * 级联自动重算——主题切换零 JS 参与，无竞态）。 */
-  --bg-primary-src: #1e1e1e;
-  --bg-secondary-src: #252526;
-  --bg-tertiary-src: #2d2d2d;
+  /* dark 主题只覆盖 src 原色（glass 的 color-mix 引用 var(--app-bg-src) / 
+   * var(--panel-bg-src) 经 CSS 级联自动重算——主题切换零 JS 参与，无竞态）。
+   * 非 glass 令牌（--sidebar-bg / --input-bg / --surface-bg）直接设值。 */
+  --app-bg-src: #1e1e1e;
+  --app-bg: var(--app-bg-src);
+  --panel-bg-src: #1e1e1e;
+  --panel-bg: var(--panel-bg-src);
+  --sidebar-bg: #252526;
+  --input-bg: #252526;
+  --surface-bg: #2d2d2d;
+  --tab-active-bg: var(--app-bg);
+  --tab-inactive-bg: var(--sidebar-bg);
   --border: #3c3c3c;
   --text-primary: #cccccc;
   --text-secondary: #858585;
@@ -281,10 +289,10 @@
   --md-border: var(--border);
   --md-blockquote-text: var(--text-secondary);
   --md-blockquote-border: var(--accent);
-  --md-blockquote-bg: var(--bg-secondary);
-  --md-table-header-bg: var(--bg-secondary);
+  --md-blockquote-bg: var(--sidebar-bg);
+  --md-table-header-bg: var(--sidebar-bg);
   --md-table-border: var(--border);
-  --md-inline-code-bg: var(--bg-tertiary);
+  --md-inline-code-bg: var(--surface-bg);
   --md-inline-code-text: var(--text-primary);
   --md-code-bg: var(--editor-bg);
   --md-code-border: var(--border);
@@ -292,20 +300,20 @@
 }
 
 .dark {
-  --background: var(--bg-primary);
+  --background: var(--app-bg);
   --foreground: var(--text-primary);
-  --card: var(--bg-secondary);
+  --card: var(--sidebar-bg);
   --card-foreground: var(--text-primary);
-  --popover: var(--bg-primary);
+  --popover: var(--input-bg);
   --popover-foreground: var(--text-primary);
 
   --primary: var(--accent);
   --primary-foreground: var(--accent-foreground);
 
-  --secondary: var(--bg-tertiary);
+  --secondary: var(--surface-bg);
   --secondary-foreground: var(--text-primary);
 
-  --muted: var(--bg-tertiary);
+  --muted: var(--surface-bg);
   --muted-foreground: var(--text-secondary);
 
   /* `--accent` / `--accent-foreground` inherit the Spec theme color from the
@@ -324,11 +332,11 @@
   --chart-4: #858585;
   --chart-5: #f48771;
 
-  --sidebar: var(--bg-secondary);
+  --sidebar: var(--sidebar-bg);
   --sidebar-foreground: var(--text-primary);
   --sidebar-primary: var(--accent);
   --sidebar-primary-foreground: var(--accent-foreground);
-  --sidebar-accent: var(--bg-tertiary);
+  --sidebar-accent: var(--surface-bg);
   --sidebar-accent-foreground: var(--text-primary);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--accent);
@@ -372,10 +380,14 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
-  /* Spec palette as raw color utilities: bg-bg-primary, text-text-secondary, ... */
-  --color-bg-primary: var(--bg-primary);
-  --color-bg-secondary: var(--bg-secondary);
-  --color-bg-tertiary: var(--bg-tertiary);
+  /* Semantic area tokens: bg-app-bg, bg-sidebar-bg, bg-panel-bg, ... */
+  --color-app-bg: var(--app-bg);
+  --color-panel-bg: var(--panel-bg);
+  --color-sidebar-bg: var(--sidebar-bg);
+  --color-input-bg: var(--input-bg);
+  --color-surface-bg: var(--surface-bg);
+  --color-tab-active-bg: var(--tab-active-bg);
+  --color-tab-inactive-bg: var(--tab-inactive-bg);
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
   --color-text-muted: var(--text-muted);
@@ -565,12 +577,12 @@
  * the light/dark theme without runtime switching.
  */
 .dockview-theme-vs {
-  --dv-group-view-background-color: var(--bg-primary);
-  --dv-tabs-and-actions-container-background-color: var(--bg-secondary);
-  --dv-activegroup-visiblepanel-tab-background-color: var(--bg-primary);
-  --dv-activegroup-hiddenpanel-tab-background-color: var(--bg-tertiary);
-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--bg-primary);
-  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg-tertiary);
+  --dv-group-view-background-color: var(--app-bg);
+  --dv-tabs-and-actions-container-background-color: var(--sidebar-bg);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--app-bg);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-bg);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--app-bg);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-bg);
   --dv-draggable-tabs-active-tab-color: var(--text-primary);
   --dv-draggable-tabs-inactive-tab-color: var(--text-secondary);
   /* Override VS theme's default 20px tab height to match our 35px TabHeader */
@@ -581,7 +593,7 @@
 /* Remove VS theme decorative borders — replaces fragile inline style approach */
 .dockview-theme-vs .dv-tabs-and-actions-container {
   border-bottom: 1px solid var(--border) !important;
-  background-color: var(--bg-secondary) !important;
+  background-color: var(--sidebar-bg) !important;
 }
 
 /* VSCode-style: tabs sit flush in the tab bar, no extra decoration */
@@ -910,7 +922,7 @@
 .ProseMirror.xbot-editor em { font-style: italic; }
 .ProseMirror.xbot-editor s { text-decoration: line-through; opacity: 0.7; }
 .ProseMirror.xbot-editor code {
-  background: var(--bg-tertiary, #2d2d44);
+  background: var(--surface-bg, #2d2d44);
   border: 1px solid var(--border, rgba(99,102,241,0.2));
   border-radius: 4px;
   padding: 1px 6px;
@@ -920,7 +932,7 @@
 
 /* Block: code */
 .ProseMirror.xbot-editor pre {
-  background: var(--bg-primary, #15151e);
+  background: var(--app-bg, #15151e);
   border: 1px solid var(--border, #1f2937);
   border-radius: 8px;
   padding: 12px;
@@ -1017,7 +1029,7 @@
  * Dockview v7 的 themeVisualStudio 用内联样式 + CSS 变量设置面板背景，
  * 覆盖 --dv-* 变量不够（内部 JS 直接 style.backgroundColor）。
  * 修复：glass 激活时强制所有 Dockview 容器透明——玻璃效果由 AppShell 根
- * 容器的 bg-bg-primary（覆盖为半透明）提供。tab 栏保留 --bg-secondary。
+ * 容器的 bg-app-bg（覆盖为半透明）提供。tab 栏保留 --sidebar-bg。
  *
  * dv-grid-view / dv-render-overlay / dv-shell-middle-column / dv-view-container
  * / dv-branch-node 是 dockview 7.0.2 的实际结构类（Playwright 实测 DOM：
@@ -1043,7 +1055,7 @@
 .ambience-glass .dv-content-container {
   background-color: transparent !important;
 }
-/* tab 栏保留 --bg-secondary（半透明玻璃——变量覆盖链生效） */
+/* tab 栏保留 --sidebar-bg（半透明玻璃——变量覆盖链生效） */
 .ambience-glass .dv-tabs-and-actions-container {
-  background-color: var(--bg-secondary) !important;
+  background-color: var(--sidebar-bg) !important;
 }

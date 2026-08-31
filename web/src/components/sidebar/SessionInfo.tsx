@@ -153,7 +153,7 @@ export function SessionInfo({ tabManager }: SessionInfoProps) {
                       type="button"
                       onClick={() => void applyCwd()}
                       disabled={cwdBusy}
-                      className="flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary hover:bg-bg-tertiary"
+                      className="flex size-5 shrink-0 items-center justify-center rounded-sm text-text-secondary hover:bg-surface-bg"
                     >
                       {cwdBusy ? <Loader2 className="size-3 animate-spin" /> : <FolderOpen className="size-3" />}
                     </button>

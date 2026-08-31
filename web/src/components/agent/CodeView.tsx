@@ -55,7 +55,7 @@ export const CodeView = memo(function CodeView({
         {/* Line-number gutter */}
         <div
           className="sticky left-0 z-[1] shrink-0 select-none py-1.5 pl-2 pr-2 text-right font-mono text-[10px] leading-5"
-          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+          style={{ backgroundColor: 'var(--sidebar-bg)', color: 'var(--text-muted)' }}
         >
           {lineNumbers.map((n) => (
             <div key={n}>{n}</div>
@@ -77,7 +77,7 @@ export const CodeView = memo(function CodeView({
       {notice && (
         <div
           className="px-3 py-1 font-mono text-[10px] italic"
-          style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}
+          style={{ backgroundColor: 'var(--sidebar-bg)', color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}
         >
           {notice}
         </div>

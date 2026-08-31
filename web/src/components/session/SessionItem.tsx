@@ -131,7 +131,7 @@ export function SessionItem({
       }}
       className={cn(
         'group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors',
-        active && !multiSelectMode ? '' : !session.synthetic && 'hover:bg-bg-tertiary/60',
+        active && !multiSelectMode ? '' : !session.synthetic && 'hover:bg-surface-bg/60',
         session.synthetic && 'cursor-default opacity-80',
         selected && 'bg-accent/15 ring-1 ring-accent/40',
       )}

@@ -190,7 +190,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             )
           )}
           {message.displayOnly && (
-            <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-muted md:text-[11px]">
+            <span className="mt-1 inline-block rounded bg-surface-bg px-1.5 py-0.5 text-xs text-text-muted md:text-[11px]">
               {t('agent.displayOnly')}
             </span>
           )}
@@ -214,7 +214,7 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
             <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
           )}
           {message.displayOnly && (
-            <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
+            <span className="mt-1 inline-block rounded bg-surface-bg px-1.5 py-0.5 text-[11px] text-text-muted">
               {t('agent.displayOnly')}
             </span>
           )}

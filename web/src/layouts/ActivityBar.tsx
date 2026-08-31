@@ -102,7 +102,7 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
   const mergeAggregate = channelIdentities.length === 0
 
   return (
-    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between border-r bg-bg-secondary py-2">
+    <div className="flex h-full w-12 shrink-0 flex-col items-center justify-between border-r bg-sidebar-bg py-2">
       <nav className="flex flex-col items-center gap-1">
         {/* Aggregate channel icon (shows all channels) */}
         <Tooltip>
@@ -112,7 +112,7 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
               aria-label={t('channel.all')}
               aria-pressed={activeChannel === null}
               onClick={() => setActiveChannel(null)}
-              className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+              className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-surface-bg"
               style={{ color: activeChannel === null ? 'var(--accent)' : 'var(--text-secondary)' }}
             >
               {/* active accent bar (left edge) */}
@@ -165,7 +165,7 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
                 aria-label={t('sidebar.toggle')}
                 aria-pressed={sidebarCollapsed}
                 onClick={onToggleSidebar}
-                className="flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+                className="flex size-9 items-center justify-center rounded-md transition-colors hover:bg-surface-bg"
                 style={{ color: sidebarCollapsed ? 'var(--accent)' : 'var(--text-secondary)' }}
               >
                 <PanelLeft className="size-5" />
@@ -183,7 +183,7 @@ export function ActivityBar({ onOpenSettings, settingsVersion = 0, sidebarCollap
               aria-label={t('settings.appearance')}
               aria-pressed={false}
               onClick={onOpenSettings}
-              className="flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+              className="flex size-9 items-center justify-center rounded-md transition-colors hover:bg-surface-bg"
               style={{ color: 'var(--text-secondary)' }}
             >
               <Settings className="size-5" />
@@ -221,7 +221,7 @@ function ChannelIcon({
           aria-label={label}
           aria-pressed={active}
           onClick={onClick}
-          className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-bg-tertiary"
+          className="group relative flex size-9 items-center justify-center rounded-md transition-colors hover:bg-surface-bg"
           style={{
             color: active ? 'var(--accent)' : 'var(--text-secondary)',
             backgroundColor: active ? 'var(--accent-faint, rgba(99,102,241,0.12))' : undefined,
@@ -235,7 +235,7 @@ function ChannelIcon({
           <Icon className="size-5" />
           {badge && (
             <span
-              className="absolute -bottom-0.5 -right-0.5 flex size-3 items-center justify-center rounded-full border bg-bg-secondary"
+              className="absolute -bottom-0.5 -right-0.5 flex size-3 items-center justify-center rounded-full border bg-sidebar-bg"
               style={{ borderColor: 'var(--border)' }}
             >
               <span

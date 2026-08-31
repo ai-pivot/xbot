@@ -21,7 +21,7 @@ const MonacoDiffEditor = lazy(() =>
 /** VSCode 式 diff 导航按钮组（header 内——编辑器外 DOM，不被 monaco 捕获点击）。 */
 function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEditorHandle | null> }) {
   const btn =
-    'flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary'
+    'flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-surface-bg hover:text-text-primary'
   // stopPropagation + preventDefault：阻止点击冒泡/默认行为触达编辑器区域
   //（移动端任何到达 monaco 的事件都可能 focus → 弹软键盘）。
   const nav = (e: React.MouseEvent, dir: 1 | -1) => {
@@ -30,7 +30,7 @@ function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEd
     editorRef.current?.goDiff(dir)
   }
   return (
-    <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-bg-secondary/90 p-0.5">
+    <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-sidebar-bg/90 p-0.5">
       <button type="button" onClick={(e) => nav(e, -1)} title="上一个差异 (Shift+F7)" className={btn}>
         <ChevronUp className="size-3.5" />
       </button>
@@ -68,7 +68,7 @@ export function DiffPanel({ params, api }: PanelProps) {
   // 竞态报错，明确提示用户重新打开。
   if (!params.original && !params.modified) {
     return (
-      <div className="flex h-full flex-col bg-bg-primary">
+      <div className="flex h-full flex-col bg-panel-bg">
         <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
           <span className="min-w-0 truncate font-mono text-xs text-text-primary">{params.title || params.diffPath}</span>
         </div>
@@ -81,11 +81,11 @@ export function DiffPanel({ params, api }: PanelProps) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-bg-primary">
+    <div className="flex h-full min-h-0 flex-col bg-panel-bg">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
         <span className="min-w-0 truncate font-mono text-xs text-text-primary">{params.title || params.diffPath}</span>
         {params.diffScope && (
-          <span className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-muted">
+          <span className="shrink-0 rounded bg-surface-bg px-1.5 py-0.5 text-[10px] text-text-muted">
             {params.diffScope}
           </span>
         )}

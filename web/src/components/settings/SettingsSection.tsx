@@ -26,7 +26,7 @@ export function SettingsSection({ title, description, children }: SettingsSectio
   return (
     <section
       aria-labelledby={titleId}
-      className="flex flex-col gap-2.5 rounded-xl border border-border bg-bg-secondary px-4 py-4"
+      className="flex flex-col gap-2.5 rounded-xl border border-border bg-sidebar-bg px-4 py-4"
     >
       <div className="flex flex-col gap-1">
         <h3 id={titleId} className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">

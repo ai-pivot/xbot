@@ -346,7 +346,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const canSend = hasContent || pending.length > 0
 
   return (
-    <div className="border-t border-border bg-bg-primary px-3 py-2.5">
+    <div className="border-t border-border bg-input-bg px-3 py-2.5">
       {goal ? <GoalBanner goal={goal} onEdit={onSetGoal ?? (() => {})} onClear={onClearGoal ?? (() => {})} /> : null}
       {addingGoal && (
         <div className="mx-2 mb-1.5 flex items-center gap-2 rounded-md border border-accent/30 bg-accent/5 px-2.5 py-1.5">
@@ -387,7 +387,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       {/* Input container — single rounded box with chips, editor, and inline buttons */}
       <div
         className={cn(
-          'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
+          'rounded-xl border bg-sidebar-bg px-3 py-2 transition-[border-color,box-shadow]',
           goalMode
             ? 'border-accent/50 ring-1 ring-accent/20'
             : focused
@@ -401,7 +401,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             {pending.map((p, i) => (
               <span
                 key={`${p.uploadKey}-${i}`}
-                className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
+                className="inline-flex items-center gap-1 rounded-md bg-surface-bg px-2 py-1 text-xs text-text-secondary"
               >
                 <Paperclip className="size-3" />
                 <span className="max-w-[20ch] truncate">{p.name}</span>

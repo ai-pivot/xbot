@@ -57,7 +57,7 @@ export function ImagePreview({ src, fileName, className }: ImagePreviewProps) {
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="max-w-[90vw] border-bg-tertiary bg-bg-primary/95 p-2 sm:max-w-[80vw]"
+          className="max-w-[90vw] border-bg-tertiary bg-input-bg/95 p-2 sm:max-w-[80vw]"
           showCloseButton
         >
           <DialogTitle className="sr-only">{fileName}</DialogTitle>

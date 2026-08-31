@@ -241,12 +241,12 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           <button onClick={function() { void refreshModels().then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型列表已刷新' : '刷新失败')) }}
             disabled={refreshing}
-            className="flex h-8 items-center gap-1 rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
+            className="flex h-8 items-center gap-1 rounded-lg border border-border bg-surface-bg px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-surface-bg disabled:opacity-50">
             <LlmIcon n="refresh" s={12} c={refreshing ? 'var(--accent)' : undefined} />{refreshing ? '刷新中…' : '刷新模型'}
           </button>
           <button onClick={function() { exportSubscriptions(conn) }}
-            className="flex h-8 items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">导出</button>
-          <label className="flex h-8 cursor-pointer items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">
+            className="flex h-8 items-center rounded-lg border border-border bg-surface-bg px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-surface-bg">导出</button>
+          <label className="flex h-8 cursor-pointer items-center rounded-lg border border-border bg-surface-bg px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-surface-bg">
             {importing ? '导入中…' : '导入'}
             <input type="file" accept="application/json" className="hidden"
               onChange={function(e) { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = '' }} />
@@ -267,7 +267,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           <LlmField label="思考模式" hint="全局用户设置 · Ctrl+M">
             <div className="relative flex rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.05)' }}>
               <span className="absolute rounded-lg transition-all duration-300"
-                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal) + ' * 24.5%)', width: '24%', background: 'var(--bg-primary)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
+                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal) + ' * 24.5%)', width: '24%', background: 'var(--app-bg)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
               {THINK_OPTS.map(function(o) {
                 const cur = thinkingVal === o[0]
                 return (
@@ -282,10 +282,10 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>最大并发会话</div>
             <div className="flex items-center gap-2">
               <button onClick={function() { commitConc(Math.max(1, concVal - 1)) }}
-                className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>−</button>
+                className="flex size-7 items-center justify-center rounded-lg border border-border bg-surface-bg text-base transition-colors hover:bg-surface-bg" style={{ color: 'var(--text-primary)' }}>−</button>
               <span className="w-8 text-center font-mono text-sm font-bold" style={{ color: 'var(--text-primary)' }}>{concVal}</span>
               <button onClick={function() { commitConc(concVal + 1) }}
-                className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>＋</button>
+                className="flex size-7 items-center justify-center rounded-lg border border-border bg-surface-bg text-base transition-colors hover:bg-surface-bg" style={{ color: 'var(--text-primary)' }}>＋</button>
             </div>
           </div>
         </div>
@@ -300,7 +300,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             const cur = tierCur(k)
             return (
               <button key={k} onClick={function() { setTierPick(k) }}
-                className="flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all hover:bg-bg-tertiary"
+                className="flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all hover:bg-surface-bg"
                 style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ background: m.color + '22', color: m.color }}>
                   <LlmIcon n={m.icon} s={15} c={m.color} />
@@ -337,7 +337,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             const chips = avail.slice(0, 3)
             return (
               <div key={s.id} onClick={function() { setDetailId(s.id) }} role="button" tabIndex={0}
-                className="cursor-pointer overflow-hidden rounded-xl border transition-all hover:bg-bg-tertiary"
+                className="cursor-pointer overflow-hidden rounded-xl border transition-all hover:bg-surface-bg"
                 style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}
                 onMouseEnter={function(e) { e.currentTarget.style.borderColor = meta.color + '66' }}
                 onMouseLeave={function(e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)' }}>
@@ -356,7 +356,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                   </div>
                   <LlmSwitch on={s.enabled} onClick={function() { toggleSub(s) }} />
                   <button onClick={function(e) { e.stopPropagation(); setMenuSub(s) }} aria-label="更多操作"
-                    className="flex size-7 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--text-secondary)' }}>
+                    className="flex size-7 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--surface-bg)]" style={{ color: 'var(--text-secondary)' }}>
                     <LlmIcon n="more" s={15} w={2.5} />
                   </button>
                 </div>
@@ -386,11 +386,11 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           105% 会给父容器留下 5% 的横向 scrollWidth 溢出（内容区 overflow-x 可滚 18px，
           手机端拖动可见空白——宽度异常来源之一）。100% 恰好贴齐父右缘，0px 溢出。 */}
       <aside className="absolute inset-y-0 right-0 z-40 flex w-full flex-col transition-transform duration-300"
-        style={{ background: 'var(--bg-primary)', borderLeft: '1px solid rgba(255,255,255,0.06)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
+        style={{ background: 'var(--app-bg)', borderLeft: '1px solid rgba(255,255,255,0.06)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
         {detailSub ? (
           <div className="flex h-full flex-col">
             <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
-              <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
+              <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-surface-bg" style={{ color: 'var(--text-muted)' }}>
                 <LlmIcon n="left" s={16} />
               </button>
               <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>订阅详情</span>
@@ -443,16 +443,16 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                 {detailModels.map(function(e) {
                   const pmc = modelPmc(detailSub, e.model)
                   return (
-                    <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-bg-tertiary">
+                    <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-surface-bg">
                       <StatusPill status={e.status} />
                       <span className="min-w-0 flex-1 truncate font-mono text-[12px]" style={{ color: e.status === 'disabled' ? 'var(--text-muted)' : 'var(--text-primary)' }}>{e.model}</span>
                       {pmc?.max_context ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{fmtTokens(pmc.max_context)}</span> : null}
                       {pmc?.max_output_tokens ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>out {fmtTokens(pmc.max_output_tokens)}</span> : null}
                       {e.status === 'disabled'
-                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--accent)' }}>启用</button>
-                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>停用</button>}
+                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-surface-bg" style={{ color: 'var(--accent)' }}>启用</button>
+                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-surface-bg" style={{ color: 'var(--text-muted)' }}>停用</button>}
                       <button onClick={function() { setMenuModel({ sid: detailSub.id, model: e.model, status: e.status }) }}
-                        aria-label="模型操作" className="flex size-6 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
+                        aria-label="模型操作" className="flex size-6 items-center justify-center rounded-lg hover:bg-surface-bg" style={{ color: 'var(--text-muted)' }}>
                         <LlmIcon n="more" s={13} w={2.5} />
                       </button>
                     </div>
@@ -467,12 +467,12 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
               {!detailSub.is_system ? (
                 <div className="mt-5 flex gap-2.5">
                   <button onClick={function() { makeDefault(detailSub) }} disabled={detailSub.active}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border bg-bg-tertiary py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-hover disabled:opacity-40"
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border bg-surface-bg py-2.5 text-[12px] font-medium transition-colors hover:bg-surface-bg disabled:opacity-40"
                     style={{ color: detailSub.active ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                     <LlmIcon n="star" s={12} />{detailSub.active ? '当前默认' : '设为默认'}
                   </button>
                   <button onClick={function() { setConfirmDel(detailSub) }}
-                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-tertiary"
+                    className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border py-2.5 text-[12px] font-medium transition-colors hover:bg-surface-bg"
                     style={{ color: 'var(--status-error, #ef4444)' }}>
                     <LlmIcon n="trash" s={12} /> 删除订阅
                   </button>

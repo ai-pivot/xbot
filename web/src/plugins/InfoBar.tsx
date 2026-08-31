@@ -17,7 +17,7 @@ export function InfoBar() {
   // 避免两端重复"已连接"）。常驻固定高度条，更新按钮三态（检查/下载/重启）。
   return (
     <div
-      className="relative flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--bg-elevated)] px-3 text-xs"
+      className="relative flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--surface-bg)] px-3 text-xs"
       style={{ height: 'calc(1.5rem + var(--safe-area-bottom))', paddingBottom: 'var(--safe-area-bottom)' }}
     >
       <PluginPanelContainer container="info_bar" />

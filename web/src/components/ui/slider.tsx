@@ -49,7 +49,7 @@ function Slider({
           // Root 上的 aria-label 不会转发 —— 这里解构后显式传给每个 Thumb。
           aria-label={ariaLabel}
           aria-labelledby={ariaLabelledBy}
-          className="block size-3.5 shrink-0 rounded-full border-2 border-accent bg-bg-primary shadow-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none"
+          className="block size-3.5 shrink-0 rounded-full border-2 border-accent bg-app-bg shadow-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-accent/40 disabled:pointer-events-none"
         />
       ))}
     </SliderPrimitive.Root>

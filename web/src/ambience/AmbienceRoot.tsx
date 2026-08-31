@@ -4,7 +4,7 @@
  * 两个独立组件（注入宿主根容器，见 AppShell/MobileAppShell）：
  *   <AmbienceBackground />  放根容器第一个子元素——壁纸层（z:0，
  *                          pointer-events:none）+ 玻璃化 CSS 变量注入
- *                          （--bg-primary/secondary/tertiary alpha 化，
+ *                          （--app-bg/panel-bg alpha 化，
  *                          color-mix 半透明 → 面板透出壁纸，dsh 同款效果）。
  *   <AmbienceOverlays />    放根容器最后一个子元素——decoration（z:30，
  *                          粒子/氛围光，pointer-events:none）+ hud（z-[35]，
@@ -15,7 +15,7 @@
  * 装饰绝不遮挡浮动面板与对话框。
  *
  * 玻璃化实现（CSS 变量覆盖法）：壁纸启用时在 <html> inline style 覆盖
- * --bg-primary/--bg-secondary/--bg-tertiary 为 color-mix(alpha)——所有
+ * --app-bg/--panel-bg 为 color-mix(alpha)——所有
  * 消费点（根容器/面板/卡片，tailwind bg-bg-* 经 @theme inline 链到这些
  * token）整体半透明化，壁纸大面积透出；禁用时 removeProperty 恢复。
  * 主题切换（.dark class 变化）经 effect deps 重算（先恢复再读新值）。
@@ -66,11 +66,13 @@ function alphaColor(token: string, opacity: number): string {
   return `color-mix(in srgb, ${token} ${pct}%, transparent)`
 }
 
-const GLASS_TOKENS = ['--bg-primary', '--bg-secondary', '--bg-tertiary'] as const
+const GLASS_TOKENS = ['--app-bg', '--panel-bg'] as const
 /**
  * 全部覆盖 token（cleanup 全恢复用）。文字 token 保留清理项——tone 感知
  * 分支已删除（2026-08-29 用户反馈"自动颜色反转太奇怪"），但部署前
  * light 分支可能 set 过文字 inline 值，cleanup 需能清干净。
+ * V3: 只覆盖 --app-bg / --panel-bg（内容区玻璃化）；--sidebar-bg / --input-bg /
+ * --surface-bg / --tab-* 不覆盖 → UI chrome 始终不透明。
  */
 const ALL_OVERRIDES = [
   ...GLASS_TOKENS,
@@ -132,19 +134,16 @@ export function AmbienceBackground() {
     }
     root.classList.add('ambience-glass')
     for (const t of ALL_OVERRIDES) root.style.removeProperty(t)
-    // 引用式覆盖：color-mix 引用 var(--bg-*-src)（CSS 段 :root/.dark 定义的主题
-    // 原色）——主题切换时 src 经 CSS 级联自动重算，glass 无需 JS 重新读色。
-    // （原实现读 getComputedStyle 的时机早于 ThemeProvider 的 .dark class
-    // 更新——子组件 effect 先于父组件——读到旧主题色 → 切主题后色调反转。）
-    // 内容层级对比：primary 最低透明度（壁纸透出最多），次级面板逐级加深保
-    // 可读。cap 0.95 ——secondary/tertiary 加成永不 100% 饱和（min(1, 0.9+0.12)
-    // = 1.0 → header/tab 栏完全不透 → 图片壁纸下扎眼的实色条带）。
-    root.style.setProperty('--bg-primary', alphaColor('var(--bg-primary-src)', opacity))
-    root.style.setProperty('--bg-secondary', alphaColor('var(--bg-secondary-src)', Math.min(0.95, opacity + 0.12)))
-    root.style.setProperty('--bg-tertiary', alphaColor('var(--bg-tertiary-src)', Math.min(0.95, opacity + 0.2)))
+    // 引用式覆盖：color-mix 引用 var(--app-bg-src) / var(--panel-bg-src)
+    // （CSS 段 :root/.dark 定义的主题原色）——主题切换时 src 经 CSS 级联自动重算，
+    // glass 无需 JS 重新读色。
+    // V3: 只覆盖内容区（--app-bg / --panel-bg）；UI chrome（--sidebar-bg /
+    // --input-bg / --surface-bg / --tab-*）不覆盖 → 始终不透明。
+    root.style.setProperty('--app-bg', alphaColor('var(--app-bg-src)', opacity))
+    root.style.setProperty('--panel-bg', alphaColor('var(--panel-bg-src)', opacity))
     // Dockview --dv-* 变量同步覆盖（绕过库内部硬编码背景）。
-    root.style.setProperty('--dv-group-view-background-color', alphaColor('var(--bg-primary-src)', opacity))
-    root.style.setProperty('--dv-tabs-and-actions-container-background-color', alphaColor('var(--bg-secondary-src)', Math.min(0.95, opacity + 0.12)))
+    root.style.setProperty('--dv-group-view-background-color', alphaColor('var(--app-bg-src)', opacity))
+    root.style.setProperty('--dv-tabs-and-actions-container-background-color', alphaColor('var(--sidebar-bg)', Math.min(0.95, opacity + 0.12)))
     return () => {
       for (const t of ALL_OVERRIDES) root.style.removeProperty(t)
       root.style.removeProperty('--dv-group-view-background-color')
@@ -159,7 +158,7 @@ export function AmbienceBackground() {
   if (!profile.enabled || !wp) return null
 
   // 壁纸不透明度（glass.wallpaperOpacity，缺省 1 完全显示）——调低壁纸变淡
-  // 露出底色（底层 bg-bg-primary 透出 → 文字清晰）。
+  // 露出底色（底层 bg-app-bg 透出 → 文字清晰）。
   const wallpaperOpacity = profile.glass.wallpaperOpacity ?? DEFAULT_GLASS.wallpaperOpacity
 
   return (
