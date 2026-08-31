@@ -223,3 +223,13 @@ func commandInfoFor(cmd Command) CommandInfo {
 	}
 	return info
 }
+
+// commandRequiresAdmin reports whether the matched command is an operator-only
+// management command (AdminOnly metadata). Dispatch points MUST reject
+// non-admin senders before Execute — after the multi-user removal,
+// subscriptions/settings are GLOBAL, so a non-admin channel user (e.g. a
+// Feishu group member not listed in agent.admins) must not mutate the
+// operator's configuration.
+func commandRequiresAdmin(cmd Command) bool {
+	return commandInfoFor(cmd).AdminOnly
+}

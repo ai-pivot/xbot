@@ -227,12 +227,6 @@ func TestSystemSubscriptionRemoved(t *testing.T) {
 		t.Errorf("GetDefault with no default: err=%v def=%+v (want nil, nil)", err, def)
 	}
 
-	// GetDefaultByUserID likewise.
-	defBy, err := svc.GetDefaultByUserID(42)
-	if err != nil || defBy != nil {
-		t.Errorf("GetDefaultByUserID with no default: err=%v def=%+v (want nil, nil)", err, defBy)
-	}
-
 	// GetDefault prefers the user's explicit default when set.
 	own := &LLMSubscription{ID: "own-sub", SenderID: "u1", Name: "Own", Provider: "openai", BaseURL: "http://api", APIKey: "sk"}
 	if err := svc.Add(own); err != nil {

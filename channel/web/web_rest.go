@@ -233,142 +233,15 @@ func (wc *WebChannel) handleRPC(w http.ResponseWriter, r *http.Request) {
 func (wc *WebChannel) rpcIdentityFromRequest(r *http.Request) RPCIdentity {
 	identity := wc.inboundIdentityFromRequest(r)
 	return RPCIdentity{
-		SenderID:        identity.SenderID,
-		CanonicalUserID: identity.CanonicalUserID,
-		CanonicalRole:   identity.CanonicalRole,
+		SenderID: identity.SenderID,
 	}
-}
-
-var nonAdminRESTRPCMethods = map[string]struct{}{
-	"get_context_mode":                   {},
-	"set_cwd":                            {},
-	"get_settings":                       {},
-	"list_command_names":                 {},
-	"list_commands":                      {},
-	"set_setting":                        {},
-	"get_default_model":                  {},
-	"get_user_max_context":               {},
-	"set_user_max_context":               {},
-	"get_user_max_output_tokens":         {},
-	"set_user_max_output_tokens":         {},
-	"get_user_thinking_mode":             {},
-	"set_user_thinking_mode":             {},
-	"get_llm_concurrency":                {},
-	"set_llm_concurrency":                {},
-	"list_models":                        {},
-	"list_all_models":                    {},
-	"list_all_model_entries":             {},
-	"refresh_model_entries":              {},
-	"clear_proxy_llm":                    {},
-	"list_subscriptions":                 {},
-	"get_default_subscription":           {},
-	"get_session_subscription":           {},
-	"get_context_usage":                  {},
-	"add_subscription":                   {},
-	"update_subscription":                {},
-	"remove_subscription":                {},
-	"rename_subscription":                {},
-	"set_default_subscription":           {},
-	"set_subscription_enabled":           {},
-	"select_model":                       {},
-	"set_default_model":                  {},
-	"update_per_model_config":            {},
-	"set_model_enabled":                  {},
-	"remove_model":                       {},
-	"upsert_model":                       {},
-	"get_user_token_usage":               {},
-	"get_daily_token_usage":              {},
-	"get_session_usage_stats":            {},
-	"get_agent_session_dump":             {},
-	"get_agent_session_dump_by_full_key": {},
-	"continue_interactive_session":       {},
-	"get_session_messages":               {},
-	"get_active_progress":                {},
-	"get_pending_ask_user":               {},
-	"kill_bg_task":                       {},
-	"plugin_widgets":                     {},
-	"genui_action":                       {},
-	// skill 管理（内置 skill-manager 插件）——列表/启停/查看/校验，登录即可
-	"skill_list":          {},
-	"skill_set_enabled":   {},
-	"skill_get_content":   {},
-	"skill_validate_path": {},
-	// web_plugin_list 是前端插件运行时启动必调方法——只读插件清单
-	// （含贡献点声明 + 模块 URL），对普通登录用户开放（无 admin 需求）。
-	"web_plugin_list": {},
-	// web_plugin_rpc：前端插件 view 调后端只读数据（如 git status/diff）——
-	// 方法与参数经插件进程校验，对普通登录用户开放。
-	"web_plugin_rpc": {},
-	// plugin_status 只读返回插件状态（名称/版本/state），供内置插件管理面板
-	// 展示；写操作（plugin_reload/plugin_uninstall）仍保持 admin-only。
-	"plugin_status": {},
 }
 
 func (wc *WebChannel) authorizeRESTRPC(r *http.Request, identity RPCIdentity, method string, params json.RawMessage) (int, error) {
-	senderID := identity.SenderID
-	if identity.CanonicalRole == "admin" || (identity.CanonicalRole == "" && wc.isAdmin(r.Context(), senderID)) {
-		return 0, nil
-	}
-	if _, ok := nonAdminRESTRPCMethods[method]; !ok {
-		return http.StatusForbidden, fmt.Errorf("RPC method requires admin access")
-	}
-	if method == "plugin_widgets" {
-		var request struct {
-			ChatID string `json:"chat_id"`
-		}
-		if err := json.Unmarshal(params, &request); err != nil {
-			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
-		}
-		if request.ChatID == "" {
-			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
-		}
-		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, "cli", request.ChatID) {
-			return http.StatusForbidden, fmt.Errorf("access denied")
-		}
-	}
-	if method == "plugin_status" {
-		var request struct {
-			Rescan bool `json:"rescan"`
-		}
-		if err := json.Unmarshal(params, &request); err == nil && request.Rescan {
-			// rescan 触发 Discover + ActivateAll（扫描磁盘、激活插件、启动 stdio
-			// 进程）——这是写操作，而 nonAdmin 白名单里的 plugin_status 仅允许只读。
-			return http.StatusForbidden, fmt.Errorf("plugin rescan requires admin access")
-		}
-	}
-	if method == "get_session_subscription" {
-		var request sessionBody
-		if err := json.Unmarshal(params, &request); err != nil {
-			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
-		}
-		if request.ChatID == "" {
-			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
-		}
-		if request.Channel == "" {
-			request.Channel = "cli"
-		}
-		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, request.Channel, request.ChatID) {
-			return http.StatusForbidden, fmt.Errorf("access denied")
-		}
-	}
-	if method == "get_active_progress" || method == "get_pending_ask_user" {
-		var request sessionBody
-		if err := json.Unmarshal(params, &request); err != nil {
-			return http.StatusBadRequest, fmt.Errorf("invalid params: %w", err)
-		}
-		if request.ChatID == "" {
-			return http.StatusBadRequest, fmt.Errorf("chat_id is required")
-		}
-		if request.Channel == "" {
-			request.Channel = "web"
-		}
-		if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, request.Channel, request.ChatID) {
-			return http.StatusForbidden, fmt.Errorf("access denied")
-		}
-	}
+	// Multi-user removal: every web login IS the operator (password auth is
+	// the trust boundary) — all REST RPC methods are authorized.
 	return 0, nil
 }
-
 func restRPCErrorStatus(err error) int {
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{"access denied", "admin only", "requires admin", "not your"} {
@@ -715,16 +588,8 @@ func (wc *WebChannel) handleRunnerActivePOST(w http.ResponseWriter, r *http.Requ
 	wc.handleRunnerActive(w, legacyRequest(r, method, nil, body))
 }
 
-func (wc *WebChannel) handleIdentitiesListPOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleIdentities(w, legacyRequest(r, http.MethodGet, nil, nil))
-}
-
-func (wc *WebChannel) handleUnlinkIdentityPOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleUnlinkIdentity(w, legacyRequest(r, http.MethodDelete, nil, nil))
-}
-
-func (wc *WebChannel) handleAdminUsersListPOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleAdminUsers(w, legacyRequest(r, http.MethodGet, nil, nil))
+func (wc *WebChannel) handleChannelsPOST(w http.ResponseWriter, r *http.Request) {
+	wc.handleChannels(w, legacyRequest(r, http.MethodGet, nil, nil))
 }
 
 func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request) {

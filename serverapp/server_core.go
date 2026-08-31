@@ -101,6 +101,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		PluginEnabled:         cfg.Plugins.IsEnabled(),
 		PluginDirs:            cfg.Plugins.Dirs,
 		PluginDisabledPlugins: cfg.Plugins.DisabledPlugins,
+		Admins:                cfg.Agent.Admins,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("create agent: %w", err)

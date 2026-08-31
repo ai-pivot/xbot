@@ -257,6 +257,39 @@ func (m *XbotMemory) SetLLM(client llm.LLM, model string) {
 	m.model = model
 }
 
+// generateLLM issues a memory-pipeline LLM call (session summaries, atomic
+// memory extraction, core-summary updates) through the STREAMING path whenever
+// the client supports it, falling back to non-stream Generate otherwise.
+//
+// Root cause this guards (web:chat_BD94FA4BB469 turn 367, 2026-08-30): the
+// memory LLM calls used llmClient.Generate — the non-stream retry path whose
+// perAttemptCtx carries a HARD 120s deadline (llm/retry.go). On a busy cluster
+// the PostCompress updateCoreSummary call was killed at exactly 120s, then
+// retried 5×2 minutes, burning ~10 minutes AFTER a successful compression
+// while the turn sat "stuck". The streaming path has NO total deadline — only
+// the 120s IDLE timeout between SSE chunks, reset on EVERY chunk
+// (CollectStreamWithCallback) — an actively-streaming response never times
+// out. Same semantics the compression LLM call itself now uses
+// (agent/compress.go Stream:true).
+//
+// RetryLLM gets the full-cycle GenerateStreamAndCollect (connection + event
+// collection retried as a whole); plain StreamingLLM gets GenerateStream +
+// CollectStream; clients that implement neither (test mocks) fall back to
+// Generate.
+func (m *XbotMemory) generateLLM(ctx context.Context, messages []llm.ChatMessage, tools []llm.ToolDefinition) (*llm.LLMResponse, error) {
+	if rl, ok := m.llmClient.(*llm.RetryLLM); ok {
+		return rl.GenerateStreamAndCollect(ctx, m.model, messages, tools, "", nil, nil, nil, nil)
+	}
+	if sc, ok := m.llmClient.(llm.StreamingLLM); ok {
+		eventCh, err := sc.GenerateStream(ctx, m.model, messages, tools, "")
+		if err != nil {
+			return nil, err
+		}
+		return llm.CollectStream(ctx, eventCh)
+	}
+	return m.llmClient.Generate(ctx, m.model, messages, tools, "")
+}
+
 // SetOwnerUserID sets the canonical owner user_id at runtime.
 //
 // The XbotMemory is created per-tenant by both the agent loop (which knows the
@@ -1174,10 +1207,10 @@ Update the core summary to incorporate any new critical information.
 Keep it under %d characters. Preserve existing important information.
 Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
 
-	resp, err := m.llmClient.Generate(ctx, m.model, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
 		llm.NewUserMessage(prompt),
-	}, nil, "")
+	}, nil)
 	if err != nil {
 		return
 	}
@@ -1257,10 +1290,10 @@ Conversation:
 
 Return ONLY the summary, no preamble. Also provide 3-5 comma-separated key topics.`, msgSB.String())
 
-	resp, err := m.llmClient.Generate(ctx, m.model, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a conversation summarizer. Be concise and factual."),
 		llm.NewUserMessage(prompt),
-	}, nil, "")
+	}, nil)
 	if err != nil || resp.Content == "" {
 		return "", ""
 	}
@@ -1399,10 +1432,10 @@ to the agent in a brand-new session next week?" If the answer is no, drop it.
 Conversation:
 %s`, text)
 
-	resp, err := m.llmClient.Generate(ctx, m.model, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a long-term memory curator. Extract only DURABLE, CROSS-SESSION memories. Never store session-local state, transient task progress, or system-injected metadata. If nothing durable exists, return an empty array."),
 		llm.NewUserMessage(prompt),
-	}, []llm.ToolDefinition{&extractMemoriesToolDef{}}, "")
+	}, []llm.ToolDefinition{&extractMemoriesToolDef{}})
 	if err != nil || resp == nil {
 		return nil
 	}

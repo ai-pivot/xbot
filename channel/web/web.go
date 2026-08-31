@@ -59,10 +59,11 @@ func limitBodySize(next http.HandlerFunc) http.HandlerFunc {
 // ---------------------------------------------------------------------------
 
 // RPCIdentity identifies the authenticated user for RPC dispatch.
+// Multi-user removal: the canonical user fields are gone — the senderID is
+// the transport identity (web-N / admin / cli_user), and every web login IS
+// the single operator.
 type RPCIdentity struct {
-	SenderID        string
-	CanonicalUserID int64
-	CanonicalRole   string
+	SenderID string
 }
 
 // WebChannelConfig Web 渠道配置（channel 包内部使用）
@@ -73,7 +74,6 @@ type WebChannelConfig struct {
 	AdminToken string  // global admin token for privileged auth
 	InviteOnly bool    // 禁止自主注册，新账号只能由 admin 创建
 	PublicURL  string  // 对外访问地址，用于生成 Runner 连接命令
-	SingleUser bool    // 单用户模式：所有用户共享同一身份，视为 admin
 }
 
 // WebCallbacks holds callback functions for Web channel API endpoints.
@@ -179,7 +179,7 @@ type WebCallbacks struct {
 	// subscriptionID pairs with model (model-subscription integration: the
 	// model never travels alone — the frontend passes both when it knows the
 	// owning subscription, e.g. inheriting the active session's pair).
-	ChatCreate func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error)
+	ChatCreate func(senderID, label string, subscriptionID, model string) (string, error)
 	// ChatDelete deletes a chatroom (except the default one).
 	ChatDelete func(senderID, channel, chatID string) error
 	// ChatRename renames a chatroom.
@@ -188,60 +188,6 @@ type WebCallbacks struct {
 	ChatReorder func(senderID, channel string, orders map[string]int) error
 	// LocalSessionExists reports whether a local session exists outside the database.
 	LocalSessionExists func(channel, chatID string) bool
-
-	// IdentityResolver provides canonical user identity resolution, link code
-	// generation, merge preview/execution, and admin user management.
-	IdentityResolver IdentityResolverAPI
-}
-
-// IdentityResolverAPI is the interface WebChannel uses for account linking.
-// Implemented by *agent.IdentityResolver.
-type IdentityResolverAPI interface {
-	Resolve(channel, channelUserID string) (int64, string, error)
-	IsAdmin(userID int64) bool
-	SetRole(userID int64, role string) error
-	ListIdentities(userID int64) (any, error)
-	ListAllUsers() (any, error)
-	GenerateLinkCode(userID int64) (string, error)
-	ConsumeLinkCode(code string) (int64, error)
-	ValidateLinkCode(code string) (int64, error)
-	LinkIdentity(targetUserID int64, channel, channelUserID string) (bool, error)
-	PreviewMerge(sourceUserID, targetUserID int64) (any, error)
-	MergeUsers(sourceUserID, targetUserID int64) error
-	UnlinkIdentity(userID, identityID int64) error
-}
-
-// IdentityEntry is a channel identity linked to a canonical user.
-type IdentityEntry struct {
-	ID            int64  `json:"id"`
-	UserID        int64  `json:"user_id"`
-	Channel       string `json:"channel"`
-	ChannelUserID string `json:"channel_user_id"`
-	LinkedAt      string `json:"linked_at"`
-}
-
-// UserInfo represents a canonical user's metadata.
-type UserInfo struct {
-	ID          int64  `json:"id"`
-	DisplayName string `json:"display_name"`
-	Role        string `json:"role"`
-	CreatedAt   string `json:"created_at"`
-}
-
-// MergePreview shows what would happen if sourceUser is merged into targetUser.
-type MergePreview struct {
-	SourceUserID  int64    `json:"source_user_id"`
-	TargetUserID  int64    `json:"target_user_id"`
-	Identities    int      `json:"identities"`
-	Subscriptions int      `json:"subscriptions"`
-	Runners       int      `json:"runners"`
-	Settings      int      `json:"settings"`
-	DefaultModel  int      `json:"default_model"`
-	UserChats     int      `json:"user_chats"`
-	Tenants       int      `json:"tenants"`
-	CronJobs      int      `json:"cron_jobs"`
-	EventTriggers int      `json:"event_triggers"`
-	Conflicts     []string `json:"conflicts"`
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -394,10 +340,6 @@ type WebChannel struct {
 	userCurrentSession   map[string]SessionSelector
 	userCurrentSessionMu sync.RWMutex
 
-	// singleUser mirrors config.Experimental.SingleUser — when true, all
-	// web users are treated as admin (no identity isolation).
-	singleUser bool
-
 	// Plugin widget registry (injected via WidgetSubscriber). Non-nil only
 	// when the plugin system is enabled and this channel was wired.
 	widgetReg     *plugin.WidgetRegistry
@@ -411,10 +353,9 @@ type WebChannel struct {
 }
 
 type sessionInfo struct {
-	userID       int
-	username     string
-	feishuUserID string // non-empty when logged in via Feishu identity
-	expires      time.Time
+	userID   int
+	username string
+	expires  time.Time
 }
 
 // Compile-time interface assertions.
@@ -611,7 +552,6 @@ func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 		ptyMgr:             newPtyManager(),
 		inboundRequests:    make(map[inboundRequestKey]*inboundRequestState),
 		userCurrentSession: make(map[string]SessionSelector),
-		singleUser:         cfg.SingleUser,
 	}
 	wc.hub.seqFn = wc.stampAndBuffer
 	wc.hub.resetReplayFn = wc.clearReplayStream
@@ -765,8 +705,6 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/auth/register", limitBodySize(postOnly(wc.handleRegister)))
 	mux.HandleFunc("/api/auth/login", limitBodySize(postOnly(wc.handleLogin)))
 	mux.HandleFunc("/api/auth/logout", postOnly(wc.handleLogout))
-	mux.HandleFunc("/api/auth/feishu-link", limitBodySize(postOnly(wc.handleFeishuLink)))
-	mux.HandleFunc("/api/auth/feishu-login", limitBodySize(postOnly(wc.handleFeishuLogin)))
 	mux.HandleFunc("/api/auth/config", postOnly(wc.handleAuthConfig))
 
 	mux.HandleFunc("/api/message", wc.authenticatedPOST(wc.handleMessage))
@@ -810,19 +748,16 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/chats/{chatID}/delete", wc.authenticatedPOST(wc.handleChatDeletePOST))
 	mux.HandleFunc("/api/session-tree", wc.authenticatedPOST(wc.handleSessionTreePOST))
 
-	mux.HandleFunc("/api/account/link-code", wc.authenticatedPOST(wc.handleLinkCode))
-	mux.HandleFunc("/api/account/link", wc.authenticatedPOST(wc.handleLink))
-	mux.HandleFunc("/api/account/identities/list", wc.authenticatedPOST(wc.handleIdentitiesListPOST))
-	mux.HandleFunc("/api/account/identities/{id}/delete", wc.authenticatedPOST(wc.handleUnlinkIdentityPOST))
+	// Channel discovery — the surviving piece of the removed account-identity
+	// endpoints. The frontend ActivityBar uses the discovered channel list to
+	// show channel icons (including plugin channels like github/gitlab).
+	mux.HandleFunc("/api/channels/list", wc.authenticatedPOST(wc.handleChannelsPOST))
 
 	// Lightweight task list endpoints — split from /api/session/status so
 	// the frequently-polled status endpoint doesn't bundle large payloads
 	// (e.g. completed bg task output ~1MB).
 	mux.HandleFunc("/api/cron/list", wc.authenticatedPOST(wc.handleCronListPOST))
 	mux.HandleFunc("/api/tasks/list", wc.authenticatedPOST(wc.handleTasksListPOST))
-
-	mux.HandleFunc("/api/admin/users/list", wc.authenticatedPOST(wc.handleAdminUsersListPOST))
-	mux.HandleFunc("/api/admin/users/{id}/set-role", wc.authenticatedPOST(wc.handleAdminSetRole))
 
 	// App bundle API
 	mux.HandleFunc("/api/app/pack", wc.authenticatedPOST(wc.handleMarketPack))
@@ -1173,17 +1108,8 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		senderID = "web-" + strconv.Itoa(si.userID)
-		// If linked to Feishu account, use Feishu identity directly.
-		// This makes the web user share the same session/persona/workspace/skills/agents
-		// as their Feishu account — effectively the same user.
-		if si.feishuUserID != "" {
-			senderID = si.feishuUserID
-		}
 		username = si.username
 	}
-
-	// Resolve canonical identity once at the authenticated transport boundary.
-	wsUserID, wsRole := wc.resolveWSCanonicalIdentity(senderID, isCLI, si)
 
 	// Upgrade to WebSocket
 	conn, err := wc.wsUpgrader().Upgrade(w, r, nil)
@@ -1193,18 +1119,16 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &Client{
-		connType:        clientConnTypeWS,
-		wsConn:          conn,
-		sendCh:          make(chan protocol.WSMessage, webSendChBufSize),
-		done:            make(chan struct{}),
-		hub:             wc.hub,
-		userID:          senderID,
-		id:              strings.ReplaceAll(uuid.New().String(), "-", ""),
-		isCLI:           isCLI,
-		canonicalUserID: wsUserID,
-		canonicalRole:   wsRole,
-		routeReplay:     true,
-		statelessSig:    make(chan struct{}, 1),
+		connType:     clientConnTypeWS,
+		wsConn:       conn,
+		sendCh:       make(chan protocol.WSMessage, webSendChBufSize),
+		done:         make(chan struct{}),
+		hub:          wc.hub,
+		userID:       senderID,
+		id:           strings.ReplaceAll(uuid.New().String(), "-", ""),
+		isCLI:        isCLI,
+		routeReplay:  true,
+		statelessSig: make(chan struct{}, 1),
 	}
 	if si != nil {
 		client.webUserID = si.userID
@@ -1245,33 +1169,6 @@ func (wc *WebChannel) handleWS(w http.ResponseWriter, r *http.Request) {
 	// Read pump (blocks until disconnect)
 	// si is nil for CLI token auth; readPump uses it only for username lookup
 	wc.readPump(client, si)
-}
-
-func (wc *WebChannel) resolveWSCanonicalIdentity(senderID string, isCLI bool, si *sessionInfo) (int64, string) {
-	role := ""
-	if senderID == "admin" || wc.singleUser {
-		role = "admin"
-	}
-	if wc.callbacks.IdentityResolver == nil {
-		return 0, role
-	}
-	identityChannel := "web"
-	switch {
-	case si != nil && si.feishuUserID != "":
-		identityChannel = "feishu"
-	case isCLI && strings.HasPrefix(senderID, "ou_"):
-		identityChannel = "feishu"
-	case isCLI && !strings.HasPrefix(senderID, "web-"):
-		identityChannel = "cli"
-	}
-	userID, resolvedRole, err := wc.callbacks.IdentityResolver.Resolve(identityChannel, senderID)
-	if err != nil {
-		return 0, role
-	}
-	if role == "" {
-		role = resolvedRole
-	}
-	return userID, role
 }
 
 // validateCLIToken validates a CLI auth token and returns the associated senderID.
@@ -1501,10 +1398,8 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 
 	// Resolve username safely (si is nil for CLI token-authed clients)
 	username := "cli-remote"
-	var feishuUserID string
 	if si != nil {
 		username = si.username
-		feishuUserID = si.feishuUserID
 	}
 
 	// NOTE: chatID is NOT resolved once here. It was previously set to
@@ -1642,9 +1537,7 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 						Error("RPC response send timeout (10s)")
 				}
 			}(rpcReq.ID, rpcReq.Method, rpcReq.Params, RPCIdentity{
-				SenderID:        c.userID,
-				CanonicalUserID: c.canonicalUserID,
-				CanonicalRole:   c.canonicalRole,
+				SenderID: c.userID,
 			})
 			continue
 		case protocol.MsgTypeSubscribe:
@@ -1720,14 +1613,6 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 
 			metadata := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
 			withPhysicalChannel(metadata, c.isCLI)
-			if feishuUserID != "" {
-				metadata["feishu_user_id"] = feishuUserID
-			}
-			// Inject canonical user identity for agent layer
-			if c.canonicalUserID > 0 {
-				metadata["user_id"] = strconv.FormatInt(c.canonicalUserID, 10)
-				metadata["user_role"] = c.canonicalRole
-			}
 
 			// Resolve active session (channel + chatID) — supports cross-channel browsing.
 			sel := wc.GetCurrentSession(c.userID)

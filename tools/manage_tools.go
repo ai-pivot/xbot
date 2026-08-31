@@ -75,6 +75,17 @@ func (t *ManageTools) Execute(ctx *ToolContext, input string) (*ToolResult, erro
 		return nil, err
 	}
 
+	// Admin gate: MCP server management mutates the operator's global MCP
+	// config. Non-admin channel users (feishu group members not in
+	// agent.admins) may only list. A nil ctx is an internal/test path
+	// (ManageTools tolerates nil for its anonymous-fallback paths) — allowed.
+	switch args.Action {
+	case "add_mcp", "remove_mcp", "reload":
+		if ctx != nil && !ctx.OriginUserIsAdmin {
+			return nil, fmt.Errorf("manage_tools: %q is a management action and requires operator (admin) rights", args.Action)
+		}
+	}
+
 	switch args.Action {
 	case "add_mcp":
 		return t.addMCP(ctx, *args)

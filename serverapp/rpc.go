@@ -52,14 +52,6 @@ func rpcBizID(ctx context.Context) string {
 	return ""
 }
 
-// rpcUserID returns the canonical user ID from context (0 if unresolved).
-func rpcUserID(ctx context.Context) int64 {
-	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
-		return v.UserID
-	}
-	return 0
-}
-
 func rpcRole(ctx context.Context) string {
 	if v, ok := ctx.Value(rpcCtxKey).(*RPCCtxData); ok {
 		return v.Role

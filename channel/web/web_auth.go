@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -177,23 +176,6 @@ type authResponse struct {
 	UserID  int    `json:"user_id,omitempty"`
 }
 
-type feishuLinkRequest struct {
-	FeishuUserID string `json:"feishu_user_id"`
-	Username     string `json:"username"`
-	Password     string `json:"password"`
-}
-
-type feishuLoginRequest struct {
-	FeishuUserID string `json:"feishu_user_id"`
-	Password     string `json:"password"`
-}
-
-type feishuLinkResponse struct {
-	OK       bool   `json:"ok"`
-	Message  string `json:"message,omitempty"`
-	Username string `json:"username,omitempty"`
-}
-
 // handleRegister handles POST /api/auth/register
 func (wc *WebChannel) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -277,22 +259,13 @@ func (wc *WebChannel) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-detect Feishu identity: look up linked feishu user ID
-	feishuUID := FeishuGetLinkedUserID(wc.db, id)
-	log.WithFields(log.Fields{
-		"username":    req.Username,
-		"user_id":     id,
-		"feishu_user": feishuUID,
-	}).Info("Password login — feishu link check")
-
 	// Create session
 	token := strings.ReplaceAll(uuid.New().String(), "-", "")
 	wc.sessionsMu.Lock()
 	wc.sessions[token] = sessionInfo{
-		userID:       id,
-		username:     strings.TrimSpace(req.Username),
-		feishuUserID: feishuUID,
-		expires:      time.Now().Add(webSessionMaxAge),
+		userID:   id,
+		username: strings.TrimSpace(req.Username),
+		expires:  time.Now().Add(webSessionMaxAge),
 	}
 	wc.sessionsMu.Unlock()
 
@@ -381,259 +354,11 @@ func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		senderID := "web-" + strconv.Itoa(si.userID)
-		identityChannel := "web"
-		// If linked to Feishu account, use Feishu identity for all operations.
-		// This ensures web users share session/persona/workspace/skills/agents with their Feishu account.
-		if si.feishuUserID != "" {
-			senderID = si.feishuUserID
-			identityChannel = "feishu"
-		}
-		var canonicalUserID int64
-		var canonicalRole string
-		if wc.callbacks.IdentityResolver != nil {
-			canonicalUserID, canonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(identityChannel, senderID)
-			if wc.singleUser {
-				canonicalRole = "admin"
-			}
-		}
 		ctx := contextWithSenderID(r.Context(), senderID)
 		ctx = contextWithUserID(ctx, si.userID)
-		if wc.callbacks.IdentityResolver != nil {
-			ctx = contextWithCanonicalIdentity(ctx, canonicalUserID, canonicalRole)
-		} else if wc.singleUser {
-			ctx = contextWithCanonicalIdentity(ctx, 0, "admin")
-		}
 		ctx = context.WithValue(ctx, webSessionKey, *si)
 		next(w, r.WithContext(ctx))
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Feishu-Web account linking
-// ---------------------------------------------------------------------------
-
-// FeishuLinkUser creates or retrieves a web account linked to a Feishu user.
-// If the feishu user is already linked, returns the existing web username.
-// Otherwise creates a new web user with bcrypt-hashed password and stores the link.
-func FeishuLinkUser(db *sql.DB, feishuUserID, username, password string) (string, error) {
-	// Check if already linked
-	var webUserIDStr string
-	err := db.QueryRow(
-		`SELECT value FROM user_settings WHERE channel = 'feishu' AND sender_id = ? AND key = 'web_user_id'`,
-		feishuUserID,
-	).Scan(&webUserIDStr)
-	if err == nil {
-		// Already linked — return existing username
-		var existingName string
-		if err := db.QueryRow("SELECT username FROM web_users WHERE id = ?", webUserIDStr).Scan(&existingName); err != nil {
-			return "", fmt.Errorf("linked web user not found")
-		}
-		return existingName, nil
-	}
-
-	// Not linked — validate input
-	username = strings.TrimSpace(username)
-	password = strings.TrimSpace(password)
-	if username == "" || len(username) > 64 || password == "" || len(password) > 128 {
-		return "", fmt.Errorf("invalid username or password")
-	}
-
-	// Check username uniqueness
-	var existingID int
-	if err := db.QueryRow("SELECT id FROM web_users WHERE username = ?", username).Scan(&existingID); err == nil {
-		return "", fmt.Errorf("username already exists")
-	}
-
-	// Hash password with bcrypt
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("internal error")
-	}
-
-	// Create web user
-	result, err := db.Exec(
-		"INSERT INTO web_users (username, password) VALUES (?, ?)",
-		username, string(hash),
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return "", fmt.Errorf("username already exists")
-		}
-		return "", fmt.Errorf("failed to create user")
-	}
-
-	id, _ := result.LastInsertId()
-
-	// Store the feishu→web link in user_settings
-	now := time.Now().Unix()
-	if _, err := db.Exec(
-		`INSERT OR REPLACE INTO user_settings (channel, sender_id, key, value, updated_at) VALUES ('feishu', ?, 'web_user_id', ?, ?)`,
-		feishuUserID, strconv.FormatInt(id, 10), now,
-	); err != nil {
-		log.WithError(err).Error("Failed to store feishu-web link")
-		return "", fmt.Errorf("failed to store account link: %w", err)
-	}
-
-	return username, nil
-}
-
-// FeishuGetLinkedUserID returns the Feishu user ID linked to a web user ID.
-// Returns empty string if no link exists.
-func FeishuGetLinkedUserID(db *sql.DB, webUserID int) string {
-	var feishuUID string
-	err := db.QueryRow(
-		`SELECT sender_id FROM user_settings WHERE channel = 'feishu' AND key = 'web_user_id' AND value = ?`,
-		strconv.Itoa(webUserID),
-	).Scan(&feishuUID)
-	if err != nil {
-		return ""
-	}
-	return feishuUID
-}
-
-// FeishuGetLinkedUser returns the linked web username for a Feishu user.
-func FeishuGetLinkedUser(db *sql.DB, feishuUserID string) (string, bool) {
-	var webUserIDStr string
-	err := db.QueryRow(
-		`SELECT value FROM user_settings WHERE channel = 'feishu' AND sender_id = ? AND key = 'web_user_id'`,
-		feishuUserID,
-	).Scan(&webUserIDStr)
-	if err != nil {
-		return "", false
-	}
-
-	var username string
-	if err := db.QueryRow("SELECT username FROM web_users WHERE id = ?", webUserIDStr).Scan(&username); err != nil {
-		return "", false
-	}
-	return username, true
-}
-
-// FeishuUnlinkUser removes the Feishu-Web account link and deletes the web user account.
-func FeishuUnlinkUser(db *sql.DB, feishuUserID string) error {
-	var webUserIDStr string
-	err := db.QueryRow(
-		`SELECT value FROM user_settings WHERE channel = 'feishu' AND sender_id = ? AND key = 'web_user_id'`,
-		feishuUserID,
-	).Scan(&webUserIDStr)
-	if err != nil {
-		return fmt.Errorf("no linked web account")
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	if _, err := tx.Exec(
-		`DELETE FROM user_settings WHERE channel = 'feishu' AND sender_id = ? AND key = 'web_user_id'`,
-		feishuUserID,
-	); err != nil {
-		return fmt.Errorf("failed to remove link: %w", err)
-	}
-
-	if _, err := tx.Exec(`DELETE FROM web_users WHERE id = ?`, webUserIDStr); err != nil {
-		return fmt.Errorf("failed to delete web account: %w", err)
-	}
-
-	return tx.Commit()
-}
-
-// handleFeishuLink handles POST /api/auth/feishu-link
-// Requires global admin token (Authorization: Bearer <secret>).
-func (wc *WebChannel) handleFeishuLink(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	// Verify admin token
-	if wc.config.AdminToken != "" {
-		auth := r.Header.Get("Authorization")
-		expected := "Bearer " + wc.config.AdminToken
-		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
-			writeJSON(w, http.StatusUnauthorized, authResponse{OK: false, Message: "unauthorized"})
-			return
-		}
-	} else {
-		writeJSON(w, http.StatusForbidden, authResponse{OK: false, Message: "admin token not configured"})
-		return
-	}
-
-	var req feishuLinkRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, authResponse{OK: false, Message: "invalid request body"})
-		return
-	}
-
-	username, err := FeishuLinkUser(wc.db, req.FeishuUserID, req.Username, req.Password)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, feishuLinkResponse{OK: false, Message: err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, feishuLinkResponse{OK: true, Username: username})
-}
-
-// handleFeishuLogin handles POST /api/auth/feishu-login
-// Allows a Feishu user to log in to the web using their linked credentials.
-func (wc *WebChannel) handleFeishuLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	var req feishuLoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, authResponse{OK: false, Message: "invalid request body"})
-		return
-	}
-
-	// Look up linked web user
-	username, ok := FeishuGetLinkedUser(wc.db, req.FeishuUserID)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, authResponse{OK: false, Message: "no linked web account"})
-		return
-	}
-
-	// Verify password
-	var id int
-	var hash string
-	err := wc.db.QueryRow("SELECT id, password FROM web_users WHERE username = ?", username).Scan(&id, &hash)
-	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, authResponse{OK: false, Message: "invalid credentials"})
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
-		writeJSON(w, http.StatusUnauthorized, authResponse{OK: false, Message: "invalid credentials"})
-		return
-	}
-
-	// Create session
-	token := strings.ReplaceAll(uuid.New().String(), "-", "")
-	wc.sessionsMu.Lock()
-	wc.sessions[token] = sessionInfo{
-		userID:       id,
-		username:     username,
-		feishuUserID: req.FeishuUserID,
-		expires:      time.Now().Add(webSessionMaxAge),
-	}
-	wc.sessionsMu.Unlock()
-
-	// Set cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     webSessionCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   wc.isSecureCookie(),
-		MaxAge:   int(webSessionMaxAge.Seconds()),
-	})
-
-	writeJSON(w, http.StatusOK, authResponse{OK: true, UserID: id})
 }
 
 // isSecureCookie returns true if the web channel is served over HTTPS.
@@ -675,17 +400,6 @@ func userIDFromContext(ctx context.Context) int {
 		return id
 	}
 	return 0
-}
-
-func contextWithCanonicalIdentity(ctx context.Context, userID int64, role string) context.Context {
-	ctx = context.WithValue(ctx, canonicalUserIDKey, userID)
-	return context.WithValue(ctx, canonicalRoleKey, role)
-}
-
-func canonicalIdentityFromContext(ctx context.Context) (int64, string, bool) {
-	userID, userOK := ctx.Value(canonicalUserIDKey).(int64)
-	role, roleOK := ctx.Value(canonicalRoleKey).(string)
-	return userID, role, userOK || roleOK
 }
 
 func webSessionFromContext(ctx context.Context) (sessionInfo, bool) {

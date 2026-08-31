@@ -21,23 +21,6 @@ import (
 	"xbot/tools"
 )
 
-type fixedIdentityResolver struct {
-	IdentityResolverAPI
-	userID int64
-	role   string
-}
-
-type channelAwareIdentityResolver struct {
-	fixedIdentityResolver
-}
-
-func (r channelAwareIdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
-	if channel == "feishu" && channelUserID == "ou_linked" {
-		return 42, "user", nil
-	}
-	return 99, "user", nil
-}
-
 type fixedOSSProvider struct{}
 
 func (fixedOSSProvider) Upload(string, []byte) error { return nil }
@@ -46,10 +29,6 @@ func (fixedOSSProvider) GetDownloadURL(string) (string, error) {
 }
 func (fixedOSSProvider) Name() string   { return "fixed" }
 func (fixedOSSProvider) Domain() string { return "https://files.example" }
-
-func (r fixedIdentityResolver) Resolve(channel, channelUserID string) (int64, string, error) {
-	return r.userID, r.role, nil
-}
 
 func authedAPIRequest(method, target string, body []byte) *http.Request {
 	return authedAPIRequestFor(method, target, body, "web-1", 1)
@@ -142,12 +121,7 @@ func TestProductionRoutesUseWebPOSTContract(t *testing.T) {
 		"/api/chats/chat-a/rename",
 		"/api/chats/chat-a/delete",
 		"/api/session-tree",
-		"/api/account/link-code",
-		"/api/account/link",
-		"/api/account/identities/list",
-		"/api/account/identities/1/delete",
-		"/api/admin/users/list",
-		"/api/admin/users/1/set-role",
+		"/api/channels/list",
 	} {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
@@ -206,39 +180,6 @@ func TestProductionSessionTreeAcceptsAuthenticatedPOST(t *testing.T) {
 	envelope := decodeAPIData(t, response.Body, &data)
 	if !envelope.OK || data.Sessions == nil {
 		t.Fatalf("unexpected session tree response: ok=%v sessions=%#v", envelope.OK, data.Sessions)
-	}
-}
-
-func TestSessionTreeAdminFlagHonorsSingleUserMode(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		singleUser bool
-		wantAdmin  bool
-	}{
-		{name: "single user", singleUser: true, wantAdmin: true},
-		{name: "multi user", singleUser: false, wantAdmin: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db := newTestDB(t)
-			wc, _ := newTestWebChannel(t, db)
-			wc.singleUser = tc.singleUser
-			wc.SetCallbacks(WebCallbacks{
-				SessionTree: func(_ string, _ SessionSelector, admin bool, offset, limit int) (SessionTreeResult, error) {
-					if admin != tc.wantAdmin {
-						t.Fatalf("admin = %v, want %v", admin, tc.wantAdmin)
-					}
-					return SessionTreeResult{}, nil
-				},
-			})
-
-			recorder := httptest.NewRecorder()
-			request := authedAPIRequestFor(http.MethodGet, "/api/session-tree", nil, "web-2", 2)
-			wc.handleSessionTree(recorder, request)
-
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
-			}
-		})
 	}
 }
 
@@ -336,68 +277,6 @@ func TestHistoryRewindRejectsLegacyTimestampWithoutHistoryID(t *testing.T) {
 	}
 }
 
-func TestRESTChatDeleteAllowsAdminVerifiedLocalCLISession(t *testing.T) {
-	db := newTestDB(t)
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
-	deleted := false
-	wc.SetCallbacks(WebCallbacks{
-		LocalSessionExists: func(channel, chatID string) bool {
-			return channel == "cli" && chatID == "/repo/project:local-only"
-		},
-		ChatDelete: func(senderID, channel, chatID string) error {
-			deleted = senderID == "web-1" && channel == "cli" && chatID == "/repo/project:local-only"
-			return nil
-		},
-	})
-	foreignSwitch := authedAPIRequestFor(
-		http.MethodPost,
-		"/api/chats/local/switch?channel=cli",
-		nil,
-		"web-2",
-		2,
-	)
-	foreignSwitch.SetPathValue("chatID", "/repo/project:local-only")
-	foreignSwitchRecorder := httptest.NewRecorder()
-	wc.handleChatSwitch(foreignSwitchRecorder, foreignSwitch)
-	if foreignSwitchRecorder.Code != http.StatusForbidden {
-		t.Fatalf("non-admin local CLI switch status=%d", foreignSwitchRecorder.Code)
-	}
-
-	adminSwitch := authedAPIRequest(http.MethodPost, "/api/chats/local/switch?channel=cli", nil)
-	adminSwitch.SetPathValue("chatID", "/repo/project:local-only")
-	adminSwitchRecorder := httptest.NewRecorder()
-	wc.handleChatSwitch(adminSwitchRecorder, adminSwitch)
-	if adminSwitchRecorder.Code != http.StatusOK {
-		t.Fatalf("admin local CLI switch status=%d body=%s", adminSwitchRecorder.Code, adminSwitchRecorder.Body.String())
-	}
-	if got := wc.GetCurrentSession("web-1"); got != (SessionSelector{Channel: "cli", ChatID: "/repo/project:local-only"}) {
-		t.Fatalf("admin local CLI selector=%#v", got)
-	}
-
-	foreignRequest := authedAPIRequestFor(
-		http.MethodDelete,
-		"/api/chats/local?channel=cli",
-		nil,
-		"web-2",
-		2,
-	)
-	foreignRequest.SetPathValue("chatID", "/repo/project:local-only")
-	foreignRecorder := httptest.NewRecorder()
-	wc.handleChatDelete(foreignRecorder, foreignRequest)
-	if foreignRecorder.Code != http.StatusForbidden || deleted {
-		t.Fatalf("non-admin local CLI delete status=%d deleted=%v", foreignRecorder.Code, deleted)
-	}
-
-	request := authedAPIRequest(http.MethodDelete, "/api/chats/local?channel=cli", nil)
-	request.SetPathValue("chatID", "/repo/project:local-only")
-	recorder := httptest.NewRecorder()
-	wc.handleChatDelete(recorder, request)
-
-	if recorder.Code != http.StatusOK || !deleted {
-		t.Fatalf("local CLI delete status=%d deleted=%v body=%s", recorder.Code, deleted, recorder.Body.String())
-	}
-}
-
 func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	db := newTestDB(t)
 	msgBus := bus.NewMessageBus()
@@ -448,34 +327,6 @@ func TestRESTMessageCancelAndAskUserReuseInboundPath(t *testing.T) {
 	wc.handleAskUserRespond(recorder, authedAPIRequest(http.MethodPost, "/api/ask_user/respond", []byte(`{"chat_id":"web-1","question_id":"q1","answer":"yes"}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("AskUser status = %d: %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestRESTMessageInjectsCanonicalIdentity(t *testing.T) {
-	db := newTestDB(t)
-	msgBus := bus.NewMessageBus()
-	msgBus.EnableDeliveryAcknowledgement()
-	wc := NewWebChannel(WebChannelConfig{DB: db}, msgBus)
-	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "web", "web-1", time.Now().Format(time.RFC3339)); err != nil {
-		t.Fatal(err)
-	}
-	// IdentityResolver resolves the web sender to canonical userID=42, role=admin.
-	wc.SetCallbacks(WebCallbacks{
-		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
-	})
-
-	go func() {
-		message := <-msgBus.Inbound
-		if message.Metadata["user_id"] != "42" || message.Metadata["user_role"] != "admin" {
-			t.Errorf("canonical identity not injected into metadata: %#v", message.Metadata)
-		}
-		message.DeliveryAck <- bus.DeliveryResult{TurnID: 7}
-	}()
-	recorder := httptest.NewRecorder()
-	wc.handleMessage(recorder, authedAPIRequest(http.MethodPost, "/api/message", []byte(`{"content":"hello"}`)))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("message status = %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -769,151 +620,6 @@ func TestRESTRPCAllowsModelManagementMethodsForNonAdmin(t *testing.T) {
 	}
 }
 
-func TestRESTRPCSessionRecoveryMethodsCheckAgentOwnership(t *testing.T) {
-	db := newTestDB(t)
-	for _, chat := range []struct {
-		senderID string
-		chatID   string
-	}{
-		{senderID: "web-2", chatID: "owned-chat"},
-		{senderID: "web-3", chatID: "foreign-chat"},
-	} {
-		owner := int64(2)
-		if chat.senderID == "web-3" {
-			owner = 3
-		}
-		if _, err := db.Exec(
-			"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
-			"web", chat.senderID, chat.chatID, chat.chatID, owner,
-		); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(
-			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
-			"agent", "web:"+chat.chatID+"/review:1", owner, time.Now().Format(time.RFC3339),
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	dispatched := 0
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
-	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-		dispatched++
-		return json.RawMessage(`{"phase":"tool"}`), nil
-	})
-
-	for _, method := range []string{"get_active_progress", "get_pending_ask_user"} {
-		t.Run(method, func(t *testing.T) {
-			before := dispatched
-			owned := httptest.NewRecorder()
-			ownedBody := []byte(`{"method":"` + method + `","params":{"channel":"agent","chat_id":"web:owned-chat/review:1"}}`)
-			ownedRequest := authedAPIRequestFor(http.MethodPost, "/api/rpc", ownedBody, "web-2", 2)
-			ownedRequest = ownedRequest.WithContext(contextWithCanonicalIdentity(ownedRequest.Context(), 2, "user"))
-			wc.handleRPC(owned, ownedRequest)
-			if owned.Code != http.StatusOK || dispatched != before+1 {
-				t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
-			}
-
-			foreign := httptest.NewRecorder()
-			foreignBody := []byte(`{"method":"` + method + `","params":{"channel":"agent","chat_id":"web:foreign-chat/review:1"}}`)
-			foreignRequest := authedAPIRequestFor(http.MethodPost, "/api/rpc", foreignBody, "web-2", 2)
-			foreignRequest = foreignRequest.WithContext(contextWithCanonicalIdentity(foreignRequest.Context(), 2, "user"))
-			wc.handleRPC(foreign, foreignRequest)
-			if foreign.Code != http.StatusForbidden || dispatched != before+1 {
-				t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
-			}
-		})
-	}
-}
-
-func TestRESTRPCRejectsUnsafeNonAdminMethods(t *testing.T) {
-	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
-	dispatched := false
-	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-		dispatched = true
-		return json.RawMessage(`{}`), nil
-	})
-
-	tests := []struct {
-		method string
-		params string
-	}{
-		{method: "send_inbound", params: `{"channel":"web","chat_id":"web-1","sender_id":"web-1","content":"injected"}`},
-		{method: "plugin_reload", params: `{"id":"plugin-a"}`},
-		{method: "plugin_reload_all", params: `{}`},
-		{method: "plugin_install", params: `{"source_dir":"/tmp/plugin"}`},
-		{method: "plugin_uninstall", params: `{"id":"plugin-a"}`},
-		{method: "get_token_state", params: `{"channel":"cli","chat_id":"/foreign"}`},
-		{method: "get_history", params: `{"channel":"agent","chat_id":"web:web-1/private:1"}`},
-		{method: "plugin_widgets", params: `{"chat_id":"/another-users-session"}`},
-	}
-	for _, test := range tests {
-		t.Run(test.method, func(t *testing.T) {
-			dispatched = false
-			body := []byte(`{"method":"` + test.method + `","params":` + test.params + `}`)
-			recorder := httptest.NewRecorder()
-			wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", body, "web-2", 2))
-			if recorder.Code != http.StatusForbidden || dispatched {
-				t.Fatalf("status=%d dispatched=%v body=%s", recorder.Code, dispatched, recorder.Body.String())
-			}
-		})
-	}
-}
-
-func TestRESTRPCGetSessionSubscriptionChecksOwnership(t *testing.T) {
-	db := newTestDB(t)
-	if _, err := db.Exec(
-		"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
-		"cli", "/owned", 42, time.Now().Format(time.RFC3339),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(
-		"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES (?, ?, ?, ?)",
-		"cli", "/foreign", 7, time.Now().Format(time.RFC3339),
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	dispatched := 0
-	wc := NewWebChannel(WebChannelConfig{DB: db}, bus.NewMessageBus())
-	wc.SetCallbacks(WebCallbacks{
-		IdentityResolver: fixedIdentityResolver{userID: 42, role: "user"},
-		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-			dispatched++
-			return json.RawMessage(`{"subscription_id":"sub-a","model":"model-a"}`), nil
-		},
-	})
-
-	owned := httptest.NewRecorder()
-	wc.handleRPC(owned, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_session_subscription","params":{"channel":"cli","chat_id":"/owned"}}`), "web-2", 2))
-	if owned.Code != http.StatusOK || dispatched != 1 {
-		t.Fatalf("owned status=%d dispatched=%d body=%s", owned.Code, dispatched, owned.Body.String())
-	}
-
-	foreign := httptest.NewRecorder()
-	wc.handleRPC(foreign, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"get_session_subscription","params":{"channel":"cli","chat_id":"/foreign"}}`), "web-2", 2))
-	if foreign.Code != http.StatusForbidden || dispatched != 1 {
-		t.Fatalf("foreign status=%d dispatched=%d body=%s", foreign.Code, dispatched, foreign.Body.String())
-	}
-}
-
-func TestRESTRPCRejectsMalformedPluginWidgetParamsAsBadRequest(t *testing.T) {
-	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
-	dispatched := false
-	wc.SetRPCHandler(func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
-		dispatched = true
-		return json.RawMessage(`{}`), nil
-	})
-	recorder := httptest.NewRecorder()
-	wc.handleRPC(recorder, authedAPIRequestFor(http.MethodPost, "/api/rpc", []byte(`{"method":"plugin_widgets","params":{"chat_id":123}}`), "web-2", 2))
-	envelope := decodeAPIData(t, recorder.Body, nil)
-	if recorder.Code != http.StatusBadRequest || dispatched || envelope.Error == nil || envelope.Error.Code != "bad_request" {
-		t.Fatalf("status=%d dispatched=%v envelope=%#v", recorder.Code, dispatched, envelope)
-	}
-}
-
 func TestRESTRPCClassifiesDispatchErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -945,10 +651,9 @@ func TestRESTRPCPreservesAdminDispatch(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	dispatched := false
 	wc.SetCallbacks(WebCallbacks{
-		IdentityResolver: fixedIdentityResolver{userID: 42, role: "admin"},
 		RPCHandler: func(method string, params json.RawMessage, identity RPCIdentity) (json.RawMessage, error) {
 			dispatched = true
-			if identity.SenderID != "web-2" || identity.CanonicalUserID != 42 || identity.CanonicalRole != "admin" {
+			if identity.SenderID != "web-2" {
 				t.Fatalf("unexpected RPC identity: %#v", identity)
 			}
 			return json.RawMessage(`{}`), nil
@@ -1064,8 +769,8 @@ func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
 func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 	db := newTestDB(t)
 	if _, err := db.Exec(
-		"INSERT INTO user_chats (channel, sender_id, chat_id, label, user_id) VALUES (?, ?, ?, ?, ?)",
-		"web", "web-2", "owned-chat", "Owned", 2,
+		"INSERT INTO user_chats (channel, sender_id, chat_id, label) VALUES (?, ?, ?, ?)",
+		"web", "web-2", "owned-chat", "Owned",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1080,7 +785,6 @@ func TestRESTSessionStatusReturnsIdleOwnedSessionCWD(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	request := authedAPIRequestFor(http.MethodPost, "/api/session/status", []byte(`{"channel":"web","chat_id":"owned-chat"}`), "web-2", 2)
-	request = request.WithContext(contextWithCanonicalIdentity(request.Context(), 2, "user"))
 	wc.handleSessionStatus(recorder, request)
 	_, data := decodeAPIResponse(t, recorder)
 	if recorder.Code != http.StatusOK || data["cwd"] != "/workspace/idle" {
@@ -1233,59 +937,6 @@ func TestRESTFileEndpointsUseJSONBodyAndMergedBehavior(t *testing.T) {
 	wc.handleFsRaw(rawRecorder, authedAPIRequest(http.MethodGet, "/api/fs/raw?path="+url.QueryEscape(textPath), nil))
 	if rawRecorder.Code != http.StatusOK || rawRecorder.Body.String() != "hello" || rawRecorder.Header().Get("Content-Type") == "application/json" {
 		t.Fatalf("unexpected raw response: status=%d type=%q body=%q", rawRecorder.Code, rawRecorder.Header().Get("Content-Type"), rawRecorder.Body.String())
-	}
-}
-
-func TestCanAccessAgentSessionUsesTenantAndWebParentOwnership(t *testing.T) {
-	db := newTestDB(t)
-	wc, _ := newTestWebChannel(t, db)
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "agent", "web:web-2/review:1", time.Now().Format(time.RFC3339)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO tenants (channel, chat_id, last_active_at) VALUES (?, ?, ?)", "agent", "cli:/repo:Agent-main/review:1", time.Now().Format(time.RFC3339)); err != nil {
-		t.Fatal(err)
-	}
-
-	if !wc.canAccessSession(contextWithUserID(context.Background(), 2), 2, "web-2", "agent", "web:web-2/review:1") {
-		t.Fatal("web user should access SubAgent under their default web session")
-	}
-	if wc.canAccessSession(contextWithUserID(context.Background(), 3), 3, "web-3", "agent", "web:web-2/review:1") {
-		t.Fatal("different web user must not access another user's SubAgent")
-	}
-	if !wc.canAccessSession(contextWithUserID(context.Background(), 1), 1, "web-1", "agent", "cli:/repo:Agent-main/review:1") {
-		t.Fatal("admin web user should access existing cli-backed SubAgent")
-	}
-	if wc.canAccessSession(contextWithUserID(context.Background(), 1), 1, "web-1", "agent", "cli:/repo:Agent-main/missing:1") {
-		t.Fatal("admin access still requires an existing agent tenant")
-	}
-}
-
-func TestCanAccessSessionUsesLinkedCanonicalIdentityAndTenantOwner(t *testing.T) {
-	db := newTestDB(t)
-	wc, _ := newTestWebChannel(t, db)
-	wc.SetCallbacks(WebCallbacks{IdentityResolver: channelAwareIdentityResolver{}})
-	for _, tenant := range []struct {
-		chatID string
-		owner  int64
-	}{
-		{chatID: "ou_linked", owner: 99},
-		{chatID: "owned-web-chat", owner: 42},
-	} {
-		if _, err := db.Exec(
-			"INSERT INTO tenants (channel, chat_id, owner_user_id, last_active_at) VALUES ('web', ?, ?, ?)",
-			tenant.chatID, tenant.owner, time.Now().Format(time.RFC3339),
-		); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ctx := contextWithSenderID(contextWithUserID(context.Background(), 2), "ou_linked")
-	ctx = context.WithValue(ctx, webSessionKey, sessionInfo{userID: 2, feishuUserID: "ou_linked"})
-
-	if wc.canAccessSession(ctx, 2, "ou_linked", "web", "ou_linked") {
-		t.Fatal("raw chat_id == sender_id bypassed the canonical tenant owner")
-	}
-	if !wc.canAccessSession(ctx, 2, "ou_linked", "web", "owned-web-chat") {
-		t.Fatal("linked Feishu canonical owner could not access its Web tenant")
 	}
 }
 

@@ -557,7 +557,7 @@ func TestChatsCreateSetsCurrentSession(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
+		ChatCreate: func(senderID, label string, subscriptionID, model string) (string, error) {
 			return "created-chat", nil
 		},
 	})
@@ -585,7 +585,7 @@ func TestChatsCreateForwardsModelParam(t *testing.T) {
 	wc, _ := newTestWebChannel(t, db)
 	var gotLabel, gotModel, gotSubID string
 	wc.SetCallbacks(WebCallbacks{
-		ChatCreate: func(senderID, label string, canonicalUserID int64, subscriptionID, model string) (string, error) {
+		ChatCreate: func(senderID, label string, subscriptionID, model string) (string, error) {
 			gotLabel = label
 			gotModel = model
 			gotSubID = subscriptionID
@@ -680,17 +680,17 @@ func TestSessionTreeReturnsChildrenForAdmin(t *testing.T) {
 	}
 }
 
-func TestIsAdminIdentityRecognizesFirstWebUser(t *testing.T) {
+// TestIsAdminIdentityRecognizesOperator verifies the v63 semantics: after the
+// multi-user removal every authenticated web login IS the operator — the
+// IsAdminIdentity bridge (used by the sandbox router) returns true for any
+// web sender. Password authentication is the trust boundary.
+func TestIsAdminIdentityRecognizesOperator(t *testing.T) {
 	db := newTestDB(t)
 	wc, _ := newTestWebChannel(t, db)
-	if !wc.IsAdminIdentity("web-1") {
-		t.Fatal("web-1 should be treated as admin identity")
-	}
-	if wc.IsAdminIdentity("web-2") {
-		t.Fatal("web-2 should not be treated as admin identity")
-	}
-	if wc.IsAdminIdentity("cli_user") {
-		t.Fatal("plain business sender should not be treated as web admin")
+	for _, sender := range []string{"web-1", "web-2", "cli_user"} {
+		if !wc.IsAdminIdentity(sender) {
+			t.Fatalf("%s should be treated as admin identity (single operator)", sender)
+		}
 	}
 }
 
@@ -876,7 +876,7 @@ func TestRemoteCLIUploadEchoUsesCLITransportRoute(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 	db := newTestDB(t)
 	wc := NewWebChannel(WebChannelConfig{Host: "127.0.0.1", Port: 0, DB: db, AdminToken: "test-token"}, msgBus)
-	wc.SetCallbacks(WebCallbacks{IdentityResolver: fixedIdentityResolver{userID: 1, role: "admin"}})
+	wc.SetCallbacks(WebCallbacks{})
 	wc.SetOSSProvider(fixedOSSProvider{})
 	t.Cleanup(wc.Stop) // stop hub + background goroutines to avoid connection leaks on Windows
 	server := startTestServer(t, wc)

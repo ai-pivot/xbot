@@ -33,9 +33,6 @@ func TestImportSubscriptionsDupCheckSnapshotsExistingNames(t *testing.T) {
 	if err := subSvc.Add(&sqlite.LLMSubscription{ID: "sub-dup", SenderID: "cli_user", Name: "dup", Provider: "openai", BaseURL: "https://api.example/v1", APIKey: "sk-x", Model: "m1"}); err != nil {
 		t.Fatalf("add pre-existing: %v", err)
 	}
-	if err := subSvc.SetSubscriptionUserID("sub-dup", 1); err != nil {
-		t.Fatalf("bind pre-existing to user: %v", err)
-	}
 
 	ag := &agent.Agent{}
 	ag.SetLLMFactory(factory)

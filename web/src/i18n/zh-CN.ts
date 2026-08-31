@@ -400,8 +400,6 @@ const zhCN = {
       language: '语言',
       llm: 'LLM 配置',
       account: '账号',
-      linking: '账号关联',
-      users: '用户管理',
       developer: '开发者',
       layout: '布局',
       plugins: '插件',

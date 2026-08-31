@@ -16,9 +16,8 @@ import (
 // from UserContext (resolved by ResolveUserContext); infrastructure
 // code accesses a.userSys directly.
 type userSystem struct {
-	llmFactory       *LLMFactory
-	settingsSvc      *SettingsService
-	identityResolver *IdentityResolver
+	llmFactory  *LLMFactory
+	settingsSvc *SettingsService
 }
 
 // userContextKey is the context key for UserContext.
@@ -28,20 +27,6 @@ type userContextKey struct{}
 // Called once at processMessage entry — everything downstream reads from ctx.
 func WithUserContext(ctx context.Context, uc *UserContext) context.Context {
 	return context.WithValue(ctx, userContextKey{}, uc)
-}
-
-// resolveUserID resolves a senderID to its canonical user_id via the identity
-// resolver (cross-channel). Returns (0, false) when the identity is unknown or
-// the resolver is unavailable — callers then fall back to sender-scoped storage.
-func (a *Agent) resolveUserID(senderID string) (int64, bool) {
-	if a.userSys == nil || a.userSys.identityResolver == nil {
-		return 0, false
-	}
-	uid, _, err := a.userSys.identityResolver.ResolveSender(senderID)
-	if err != nil || uid <= 0 {
-		return 0, false
-	}
-	return uid, true
 }
 
 // UserContextFromContext extracts the UserContext from context.

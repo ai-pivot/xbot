@@ -2,7 +2,6 @@ package serverapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -144,33 +143,14 @@ func (h *RPCContext) requireAdmin(next RPCHandler) RPCHandler {
 }
 
 // ownOrAdmin checks that the caller owns the complete channel+chatID resource
-// or has admin privileges. Callers must resolve empty defaults before checking.
-// Also checks canonical session ownership: if the session (channel+chatID) is
-// owned by the same canonical user_id, access is granted even if chatID != bizID.
+// or has admin privileges. After the multi-user removal there is a single
+// operator: every RPC caller (web password login, local CLI, WS admin) IS the
+// operator, so session access is always granted. Channel-level isolation
+// remains (a feishu group member never reaches the RPC layer without
+// credentials); the canonical-ownership checks that read the dropped
+// owner_user_id/user_identities columns are gone.
 func (h *RPCContext) ownOrAdmin(ctx context.Context, channel, chatID string) bool {
-	if isAdmin(ctx) {
-		return true
-	}
-	if channel == "" || chatID == "" {
-		return false
-	}
-	if channel == "web" {
-		exists, owned := h.webSessionOwnership(chatID, rpcAuthID(ctx), rpcUserID(ctx))
-		if exists {
-			return owned
-		}
-		// The default Web chat has no row before first use. It is the only
-		// resource that may be authorized by its self ID and created lazily.
-		return owned && chatID == rpcBizID(ctx)
-	}
-	if channel == "agent" && h.agentSessionOwnedBySender(chatID, rpcAuthID(ctx), rpcUserID(ctx)) {
-		return true
-	}
-	// Check canonical session ownership
-	if userID := rpcUserID(ctx); userID > 0 {
-		return h.sessionOwnedByUser(channel, chatID, userID)
-	}
-	return false
+	return true
 }
 
 func (h *RPCContext) resolveOwnedSession(ctx context.Context, channel, chatID, defaultChannel string) (string, string, error) {
@@ -180,171 +160,7 @@ func (h *RPCContext) resolveOwnedSession(ctx context.Context, channel, chatID, d
 	if chatID == "" {
 		chatID = rpcBizID(ctx)
 	}
-	if !h.ownOrAdmin(ctx, channel, chatID) {
-		return "", "", fmt.Errorf("access denied")
-	}
 	return channel, chatID, nil
-}
-
-func (h *RPCContext) agentSessionOwnedBySender(chatID, senderID string, userID int64) bool {
-	if senderID == "" || userID <= 0 || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
-		return false
-	}
-	if !h.sessionOwnedByUser("agent", chatID, userID) {
-		return false
-	}
-	for depth := 0; depth < 32; depth++ {
-		parentChannel, parentChatID := sessionKeyParent(chatID)
-		if parentChannel == "" || parentChatID == "" {
-			return false
-		}
-		switch parentChannel {
-		case "web":
-			exists, owned := h.webSessionOwnership(parentChatID, senderID, userID)
-			return exists && owned
-		case "agent":
-			if !h.sessionOwnedByUser("agent", parentChatID, userID) {
-				return false
-			}
-			chatID = parentChatID
-		default:
-			return userID > 0 && h.sessionOwnedByUser(parentChannel, parentChatID, userID)
-		}
-	}
-	return false
-}
-
-func sessionKeyParent(key string) (string, string) {
-	slash := strings.LastIndex(key, "/")
-	if slash <= 0 {
-		return "", ""
-	}
-	parent := key[:slash]
-	parts := strings.SplitN(parent, ":", 2)
-	if len(parts) != 2 {
-		return "", ""
-	}
-	return parts[0], parts[1]
-}
-
-// webSessionOwnership resolves existing Web resources to one canonical user.
-// The bools report (resource exists, canonical identity is authorized). Query
-// failures are fail-closed and therefore report an existing, unowned resource.
-func (h *RPCContext) webSessionOwnership(chatID, senderID string, userID int64) (bool, bool) {
-	if chatID == "" || userID <= 0 || h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
-		return true, false
-	}
-	db := h.Ag.MultiSession().DB().Conn()
-	var tenantOwner int64
-	tenantExists := true
-	if err := db.QueryRow(
-		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = 'web' AND chat_id = ?`, chatID,
-	).Scan(&tenantOwner); err != nil {
-		if err != sql.ErrNoRows {
-			return true, false
-		}
-		tenantExists = false
-	}
-
-	rows, err := db.Query(`
-		SELECT uc.sender_id, COALESCE(uc.user_id, 0), COALESCE(ui.user_id, 0)
-		FROM user_chats uc
-		LEFT JOIN user_identities ui
-			ON ui.channel = uc.channel AND ui.channel_user_id = uc.sender_id
-		WHERE uc.channel = 'web' AND uc.chat_id = ?
-	`, chatID)
-	if err != nil {
-		return true, false
-	}
-	defer rows.Close()
-	chatExists := false
-	var chatOwner int64
-	for rows.Next() {
-		chatExists = true
-		var rowSender string
-		var storedOwner, identityOwner int64
-		if err := rows.Scan(&rowSender, &storedOwner, &identityOwner); err != nil {
-			return true, false
-		}
-		if storedOwner > 0 && identityOwner > 0 && storedOwner != identityOwner {
-			return true, false
-		}
-		resolvedOwner := storedOwner
-		if resolvedOwner == 0 {
-			resolvedOwner = identityOwner
-		}
-		// Legacy user_chats rows can predate user_id. The authenticated
-		// sender has already been resolved to userID in the RPC context.
-		if resolvedOwner == 0 && rowSender == senderID {
-			resolvedOwner = userID
-		}
-		if resolvedOwner == 0 || (chatOwner != 0 && chatOwner != resolvedOwner) {
-			return true, false
-		}
-		chatOwner = resolvedOwner
-	}
-	if err := rows.Err(); err != nil {
-		return true, false
-	}
-	if err := rows.Close(); err != nil {
-		return true, false
-	}
-
-	var channelIdentityOwner int64
-	if err := db.QueryRow(`
-		SELECT user_id FROM user_identities
-		WHERE channel = 'web' AND channel_user_id = ?
-	`, chatID).Scan(&channelIdentityOwner); err != nil && err != sql.ErrNoRows {
-		return true, false
-	}
-	if !tenantExists && !chatExists {
-		return false, channelIdentityOwner == userID
-	}
-	if tenantOwner > 0 && chatOwner > 0 && tenantOwner != chatOwner {
-		return true, false
-	}
-	owner := tenantOwner
-	if owner == 0 {
-		owner = chatOwner
-	}
-	if owner == 0 {
-		// Legacy default sessions may have a tenant but no user_chats row.
-		// Resolve their channel identity instead of trusting chatID equality.
-		owner = channelIdentityOwner
-	}
-	return true, owner == userID
-}
-
-func (h *RPCContext) ownHistoryOrAdmin(ctx context.Context, channel, chatID string) bool {
-	if isAdmin(ctx) {
-		return true
-	}
-	agentRoot := channel == "agent"
-	userID := rpcUserID(ctx)
-	if agentRoot && userID <= 0 {
-		return false
-	}
-	// Agent sessions inherit access from their actual root session. Verify each
-	// agent tenant exists before walking to its encoded parent; a matching chatID
-	// alone is never proof of ownership.
-	for depth := 0; channel == "agent" && depth < 32; depth++ {
-		if !h.sessionOwnedByUser("agent", chatID, userID) {
-			return false
-		}
-		parentChannel, parentChatID, ok := parentSessionKey(chatID)
-		if !ok {
-			return false
-		}
-		channel, chatID = parentChannel, parentChatID
-	}
-	if channel == "agent" {
-		return false
-	}
-	if agentRoot && channel == "web" {
-		exists, owned := h.webSessionOwnership(chatID, rpcAuthID(ctx), rpcUserID(ctx))
-		return exists && owned
-	}
-	return h.ownOrAdmin(ctx, channel, chatID)
 }
 
 func (h *RPCContext) resolveOwnedHistorySession(ctx context.Context, channel, chatID, defaultChannel string) (string, string, error) {
@@ -354,47 +170,12 @@ func (h *RPCContext) resolveOwnedHistorySession(ctx context.Context, channel, ch
 	if chatID == "" {
 		chatID = rpcBizID(ctx)
 	}
-	if !h.ownHistoryOrAdmin(ctx, channel, chatID) {
-		return "", "", fmt.Errorf("access denied")
-	}
 	return channel, chatID, nil
 }
 
-func parentSessionKey(key string) (string, string, bool) {
-	slash := strings.LastIndex(key, "/")
-	if slash <= 0 {
-		return "", "", false
-	}
-	parts := strings.SplitN(key[:slash], ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
-}
-
-// sessionOwnedByUser checks if a tenant (channel+chatID) has owner_user_id == userID.
-func (h *RPCContext) sessionOwnedByUser(channel, chatID string, userID int64) bool {
-	if h.Ag == nil || h.Ag.MultiSession() == nil || h.Ag.MultiSession().DB() == nil {
-		return false
-	}
-	var ownerUserID int64
-	err := h.Ag.MultiSession().DB().Conn().QueryRow(
-		`SELECT COALESCE(owner_user_id, 0) FROM tenants WHERE channel = ? AND chat_id = ?`,
-		channel, chatID,
-	).Scan(&ownerUserID)
-	if err != nil {
-		return false
-	}
-	return ownerUserID == userID
-}
-
-// subOwnedByUser reports whether sub is manageable by the caller: the
-// canonical user (v45 user_id) owns it. Falls back to a sender_id match for
-// identities without a canonical user (userID==0, e.g. legacy CLI senders) to
-// preserve pre-v45 behavior. Write-path permission checks MUST use this
-// instead of `SenderID != rpcBizID(ctx)` — a subscription created through one
-// channel identity (e.g. web-7) is manageable through any linked identity
-// (cli/feishu) of the same canonical user.
+// subOwnedByUser reports whether sub is manageable by the caller. After the
+// multi-user removal there is a single operator: every subscription belongs
+// to them (sender 'cli_user' post-v63 sender collapse).
 func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscriptionService, sub *sqlite.LLMSubscription) bool {
 	if isAdmin(ctx) {
 		return true
@@ -402,19 +183,16 @@ func (h *RPCContext) subOwnedByUser(ctx context.Context, svc *sqlite.LLMSubscrip
 	if sub == nil {
 		return false
 	}
-	if uid := rpcUserID(ctx); uid > 0 {
-		subs, err := svc.ListByUserID(uid)
-		if err != nil {
-			return false
-		}
-		for _, s := range subs {
-			if s.ID == sub.ID {
-				return true
-			}
-		}
+	subs, err := svc.List(cliSenderID)
+	if err != nil {
 		return false
 	}
-	return sub.SenderID == rpcBizID(ctx)
+	for _, s := range subs {
+		if s.ID == sub.ID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *RPCContext) requireLLMFactory() error {
@@ -657,11 +435,10 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		Namespace string `json:"namespace"`
 		SenderID  string `json:"sender_id"`
 	}) (any, error) {
-		userID := rpcUserID(ctx)
 		if h.Ag.SettingsService() == nil {
 			return nil, errSettingsUnavailable
 		}
-		result, err := h.Ag.SettingsService().GetByUserID(p.Namespace, userID)
+		result, err := h.Ag.SettingsService().GetSettings(p.Namespace, cliSenderID)
 		if err != nil {
 			return nil, err
 		}
@@ -710,7 +487,6 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		Value     string `json:"value"`
 	}) error {
 		bizID := rpcBizID(ctx)
-		userID := rpcUserID(ctx)
 		switch p.Key {
 		case "llm_provider", "llm_api_key", "llm_model", "llm_base_url":
 			return nil
@@ -733,9 +509,9 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.SettingsService() == nil {
 			return errSettingsUnavailable
 		}
-		// Write by canonical user_id — all identities linked to the same user
-		// share the same settings.
-		if err := h.Ag.SettingsService().SetByUserID(p.Namespace, userID, p.Key, p.Value); err != nil {
+		// Multi-user removal: one operator — settings are global (the v63
+		// migration collapsed every sender row to 'cli_user').
+		if err := h.Ag.SettingsService().SetSetting(p.Namespace, cliSenderID, p.Key, p.Value); err != nil {
 			return err
 		}
 		if isAdmin(ctx) {
@@ -770,20 +546,17 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	t["get_default_model"] = rpc0(func(ctx context.Context) any {
 		bizID := rpcBizID(ctx)
-		uid := rpcUserID(ctx)
 		// Model-subscription integration: returns the (subID, model) PAIR —
 		// a bare model name is never handed to the client. Resolution chain:
-		// user_default_model (by canonical user_id) → ResolveActiveSubModel
+		// user_default_model (operator row) → ResolveActiveSubModel
 		// (tenants → user_default_model → legacy) → GetLLM fallback (deployment
 		// defaultLLM, subID empty).
-		if uid > 0 {
-			if svc, serr := h.requireSubscriptionSvc(); serr == nil {
-				if udm, uerr := svc.GetUserDefaultModelByUserID(uid); uerr == nil && udm != nil && udm.Model != "" && udm.SubscriptionID != "" {
-					return struct {
-						SubID string `json:"sub_id"`
-						Model string `json:"model"`
-					}{udm.SubscriptionID, udm.Model}
-				}
+		if svc, serr := h.requireSubscriptionSvc(); serr == nil {
+			if udm, uerr := svc.GetUserDefaultModel(cliSenderID); uerr == nil && udm != nil && udm.Model != "" && udm.SubscriptionID != "" {
+				return struct {
+					SubID string `json:"sub_id"`
+					Model string `json:"model"`
+				}{udm.SubscriptionID, udm.Model}
 			}
 		}
 		if sub, m, err := h.Ag.LLMFactory().ResolveActiveSubModel(bizID, "", ""); err == nil && sub != nil && m != "" {
@@ -891,17 +664,17 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	}) error {
 		return h.Ag.SetUserMaxOutputTokens(rpcBizID(ctx), "", "", p.MaxTokens)
 	})
-	t["get_user_thinking_mode"] = rpc0(func(ctx context.Context) string { return h.Ag.GetUserThinkingModeForUserID(rpcUserID(ctx)) })
+	t["get_user_thinking_mode"] = rpc0(func(ctx context.Context) string { return h.Ag.GetUserThinkingMode(cliSenderID) })
 	t["set_user_thinking_mode"] = rpc1void(func(ctx context.Context, p struct {
 		Mode string `json:"mode"`
 	}) error {
-		return h.Ag.SetUserThinkingModeForUserID(rpcUserID(ctx), p.Mode)
+		return h.Ag.SetUserThinkingMode(cliSenderID, p.Mode)
 	})
-	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return h.Ag.GetLLMConcurrencyForUserID(rpcUserID(ctx)) })
+	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return h.Ag.GetLLMConcurrency() })
 	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
 		Personal int `json:"personal"`
 	}) error {
-		if err := h.Ag.SetLLMConcurrencyForUserID(rpcUserID(ctx), p.Personal); err != nil {
+		if err := h.Ag.SetLLMConcurrency(p.Personal); err != nil {
 			return err
 		}
 		// Rebuild the global semaphore immediately. SetMaxConcurrency is a
@@ -933,7 +706,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		models := h.Ag.LLMFactory().ListAllModelsForUserID(rpcUserID(ctx))
+		models := h.Ag.LLMFactory().ListAllModelsForUser(cliSenderID)
 		log.WithField("count", len(models)).Debug("RPC list_all_models")
 		return models, nil
 	})
@@ -941,7 +714,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		entries := h.Ag.LLMFactory().ListAllModelEntriesForUserID(rpcUserID(ctx))
+		entries := h.Ag.LLMFactory().ListAllModelEntriesForUser(cliSenderID)
 		log.WithField("count", len(entries)).Debug("RPC list_all_model_entries")
 		return entries, nil
 	})
@@ -949,7 +722,7 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 		if h.Ag.LLMFactory() == nil {
 			return nil, fmt.Errorf("LLM factory not available")
 		}
-		entries := h.Ag.LLMFactory().RefreshModelEntriesForUserID(rpcUserID(ctx))
+		entries := h.Ag.LLMFactory().RefreshModelEntriesForUser(cliSenderID)
 		log.WithField("count", len(entries)).Info("RPC refresh_model_entries")
 		return entries, nil
 	})
@@ -1059,14 +832,11 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				dbSub.PerModelConfigs[model] = sqlite.PerModelConfig(cfg)
 			}
 		}
-		dbSub.SenderID = rpcBizID(ctx)
+		// Single operator (multi-user removal): every subscription belongs to
+		// the operator sender 'cli_user' — List(cliSenderID) must see it.
+		dbSub.SenderID = cliSenderID
 		if err := svc.Add(dbSub); err != nil {
 			return err
-		}
-		// Write user_id so ListByUserID can find this subscription.
-		// Add() doesn't write user_id (legacy schema), so we patch it here.
-		if uid := rpcUserID(ctx); uid > 0 {
-			svc.SetSubscriptionUserID(dbSub.ID, uid)
 		}
 		return nil
 	})
@@ -1159,7 +929,6 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return nil, err
 		}
-		uid := rpcUserID(ctx)
 		var subs []*sqlite.LLMSubscription
 		if len(p.IDs) > 0 {
 			for _, id := range p.IDs {
@@ -1173,7 +942,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				subs = append(subs, sub)
 			}
 		} else {
-			all, err := svc.ListByUserID(uid)
+			all, err := svc.List(cliSenderID)
 			if err != nil {
 				return nil, err
 			}
@@ -1234,19 +1003,15 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		if err != nil {
 			return nil, err
 		}
-		uid := rpcUserID(ctx)
-		bizID := rpcBizID(ctx)
 		imported := 0
 		skipped := 0
 		// Hoist the duplicate-name snapshot out of the loop: a per-iteration
-		// ListByUserID is N+1 (M imports → M queries, each batch-loading every
-		// subscription's per-model configs). One snapshot + an in-memory name
-		// set. Imported names are added to the set so a second same-name entry
-		// within the SAME batch is still skipped (preserves the old
-		// per-iteration re-query semantics).
+		// One snapshot + an in-memory name set. Imported names are added to
+		// the set so a second same-name entry within the SAME batch is still
+		// skipped (preserves the old per-iteration re-query semantics).
 		existingNames := map[string]bool{}
 		if !p.Overwrite {
-			if existing, err := svc.ListByUserID(uid); err == nil {
+			if existing, err := svc.List(cliSenderID); err == nil {
 				for _, e := range existing {
 					existingNames[e.Name] = true
 				}
@@ -1272,7 +1037,7 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				Model:           imp.Model,
 				MaxOutputTokens: imp.MaxOutputTokens,
 				ThinkingMode:    imp.ThinkingMode,
-				SenderID:        bizID,
+				SenderID:        cliSenderID,
 			}
 			if len(imp.PerModelConfigs) > 0 {
 				dbSub.PerModelConfigs = make(map[string]sqlite.PerModelConfig, len(imp.PerModelConfigs))
@@ -1282,9 +1047,6 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			}
 			if err := svc.Add(dbSub); err != nil {
 				continue
-			}
-			if uid > 0 {
-				svc.SetSubscriptionUserID(newID, uid)
 			}
 			existingNames[imp.Name] = true
 			imported++
@@ -2596,27 +2358,21 @@ func HandleCLIRPC(table RPCTable, method string, params json.RawMessage, senderI
 	if senderID == adminSenderID || senderID == cliSenderID {
 		bizID = cliSenderID
 	}
-	// Resolve canonical user identity via IdentityResolver when available.
-	// This ensures role and userID are correctly set for all access checks.
-	userID := int64(0)
-	role := "user"
-	if senderID == "admin" || senderID == "cli_user" {
-		role = "admin"
-		userID = 1
-	}
-	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, userID, role)
+	// Multi-user removal: the CLI WS channel is always a trusted local
+	// operator — role is unconditionally "admin" and userID collapses to
+	// the single operator (1). The IdentityResolver lookup is gone.
+	ctx := WithRPCCtxResolved(context.Background(), senderID, bizID, 1, "admin")
 	return table.Dispatch(ctx, method, params)
 }
 
 // ── Complex subscription handlers (extracted for readability) ──
 
 func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscription, error) {
-	userID := rpcUserID(ctx)
 	svc, err := h.requireSubscriptionSvc()
 	if err != nil {
 		return []channel.Subscription{}, nil
 	}
-	subs, err := svc.ListByUserID(userID)
+	subs, err := svc.List(cliSenderID)
 	if err != nil {
 		return nil, err
 	}
@@ -2630,20 +2386,14 @@ func (h *RPCContext) listSubscriptions(ctx context.Context) ([]channel.Subscript
 }
 
 func (h *RPCContext) getDefaultSubscription(ctx context.Context) (*channel.Subscription, error) {
-	uid := rpcUserID(ctx)
 	svc, err := h.requireSubscriptionSvc()
 	if err != nil {
 		return nil, nil
 	}
-	// User-level RPC — v45 rule: resolve by canonical user_id so identities
-	// linked to the same user (web-N, cli_user, ou_xxx) see the same default
-	// (consistent with list_subscriptions' ListByUserID). No uid → no default
-	// (the old bizID fallback queried by session key, which is not a sender_id
-	// and could never match).
-	if uid <= 0 {
-		return nil, nil
-	}
-	sub, err := svc.GetDefaultByUserID(uid)
+	// Single operator (multi-user removal): the default model lives in the
+	// user_default_model row owned by the operator sender ('cli_user' after
+	// the v63 sender collapse).
+	sub, err := svc.GetDefault(cliSenderID)
 	if err != nil {
 		return nil, err
 	}
@@ -2834,15 +2584,9 @@ func (h *RPCContext) setSubscriptionModel(ctx context.Context, p struct {
 		return err
 	}
 	if updated != nil {
-		// Resolve the default by canonical user_id (v45): linked identities
-		// share the same user_default_model row. Fall back to the legacy
-		// sender-scoped lookup when the canonical user is unknown (userID==0).
-		var def *sqlite.LLMSubscription
-		if uid := rpcUserID(ctx); uid > 0 {
-			def, _ = svc.GetDefaultByUserID(uid)
-		} else {
-			def, _ = svc.GetDefault(updated.SenderID)
-		}
+		// Single operator (multi-user removal): resolve the default from the
+		// operator sender row (v63 collapsed every sender to 'cli_user').
+		def, _ := svc.GetDefault(cliSenderID)
 		if def != nil && def.ID == updated.ID {
 			h.Ag.LLMFactory().InvalidateSender(updated.SenderID)
 			if err := h.Ag.LLMFactory().SwitchSubscription(updated.SenderID, updated, ""); err != nil {
@@ -2993,103 +2737,6 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		return tools.NewRunnerTokenStore(db).RenameRunner(bizID, p.OldName, p.NewName)
 	})
 
-	// generate_link_code generates a cross-channel link code for the current user.
-	t["generate_link_code"] = rpc0(func(ctx context.Context) any {
-		if h.Ag.IdentityResolver() == nil {
-			return map[string]any{"error": "identity resolver not available"}
-		}
-		userID := rpcUserID(ctx)
-		if userID == 0 {
-			// Unknown identity: MUST NOT fall back to user 1 — a link code
-			// lets the recipient merge into that user's account, so a silent
-			// fallback hands admin credentials to unresolvable callers.
-			return map[string]any{"error": "cannot resolve identity"}
-		}
-		code, err := h.Ag.IdentityResolver().GenerateLinkCode(userID)
-		if err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-		return map[string]any{"code": code, "expires_in": 300}
-	})
-
-	// consume_link_code consumes a link code and links current identity to the target user.
-	// Returns one of:
-	//   {"action": "linked", "user_id": N}  — simple link, identity wasn't previously bound
-	//   {"action": "merge_required", "preview": {...}} — identity is bound to another user, merge needed
-	//   {"action": "merged", "user_id": N} — merge executed (confirm=true was passed)
-	t["consume_link_code"] = rpc1(func(ctx context.Context, p struct {
-		Code    string `json:"code"`
-		Confirm bool   `json:"confirm"`
-		// Channel is the physical channel of the caller's identity (e.g. "web"
-		// when linking a web identity). Defaults to "cli" for backward
-		// compatibility with existing callers. The link row in channel_user_id
-		// is keyed by (channel, channel_user_id) — hardcoding "cli" bound a web
-		// sender's identity to the cli channel.
-		Channel string `json:"channel"`
-	}) (any, error) {
-		if h.Ag.IdentityResolver() == nil {
-			return nil, fmt.Errorf("identity resolver not available")
-		}
-		currentUserID := rpcUserID(ctx)
-		if currentUserID == 0 {
-			return nil, fmt.Errorf("cannot resolve current user identity")
-		}
-		linkChannel := p.Channel
-		if linkChannel == "" {
-			linkChannel = "cli"
-		}
-		// On preview (confirm=false), validate WITHOUT consuming the code
-		if !p.Confirm {
-			targetUserID, err := h.Ag.IdentityResolver().ValidateLinkCode(p.Code)
-			if err != nil {
-				return nil, err
-			}
-			// Try simple link first
-			_, err = h.Ag.IdentityResolver().LinkIdentity(targetUserID, linkChannel, rpcBizID(ctx))
-			if err == nil {
-				// Simple link succeeded — consume the code now
-				h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
-				return map[string]any{"action": "linked", "user_id": targetUserID}, nil
-			}
-			// Merge required — return preview (code NOT consumed yet)
-			preview, err := h.Ag.IdentityResolver().PreviewMerge(currentUserID, targetUserID)
-			if err != nil {
-				return nil, fmt.Errorf("merge preview failed: %w", err)
-			}
-			return map[string]any{
-				"action":  "merge_required",
-				"preview": preview,
-				"message": "Re-send with confirm=true to execute merge.",
-			}, nil
-		}
-		// Confirm=true: consume code and execute merge
-		targetUserID, err := h.Ag.IdentityResolver().ConsumeLinkCode(p.Code)
-		if err != nil {
-			return nil, err
-		}
-		if mergeErr := h.Ag.IdentityResolver().MergeUsers(currentUserID, targetUserID); mergeErr != nil {
-			return nil, fmt.Errorf("merge failed: %w", mergeErr)
-		}
-		return map[string]any{"action": "merged", "user_id": targetUserID}, nil
-	})
-
-	// list_identities lists the current user's linked channel identities.
-	t["list_identities"] = rpc0(func(ctx context.Context) any {
-		if h.Ag.IdentityResolver() == nil {
-			return map[string]any{"identities": []any{}}
-		}
-		userID := rpcUserID(ctx)
-		if userID == 0 {
-			// Unknown identity: MUST NOT fall back to user 1 — that would
-			// disclose another (admin) user's linked identities.
-			return map[string]any{"error": "cannot resolve identity"}
-		}
-		identities, err := h.Ag.IdentityResolver().ListIdentities(userID)
-		if err != nil {
-			return map[string]any{"error": err.Error()}
-		}
-		return map[string]any{"user_id": userID, "identities": identities}
-	})
 }
 
 // ── Helpers ──

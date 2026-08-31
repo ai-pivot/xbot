@@ -17,7 +17,6 @@ import (
 
 	ch "xbot/channel"
 	"xbot/protocol"
-	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -1365,8 +1364,7 @@ func (wc *WebChannel) handleChats(w http.ResponseWriter, r *http.Request) {
 			jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
 			return
 		}
-		identity := wc.inboundIdentityFromRequest(r)
-		chatID, err := wc.callbacks.ChatCreate(senderID, body.Label, identity.CanonicalUserID, body.SubscriptionID, body.Model)
+		chatID, err := wc.callbacks.ChatCreate(senderID, body.Label, body.SubscriptionID, body.Model)
 		if err != nil {
 			jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1640,38 +1638,15 @@ func (wc *WebChannel) handleChatRename(w http.ResponseWriter, r *http.Request) {
 // admin-only unless canonical ownership is recorded. CLI metadata-only rows
 // surfaced in the session tree are also addressable by admins.
 func (wc *WebChannel) canAccessSession(ctx context.Context, webUserID int, senderID, channelName, chatID string) bool {
-	identity := wc.sessionAccessIdentityFromContext(ctx, webUserID, senderID)
-	if wc.singleUser {
-		identity.canonicalRole = "admin"
-	}
-	return wc.canAccessSessionAs(identity, channelName, chatID)
-}
-
-func (wc *WebChannel) sessionAccessIdentityFromContext(ctx context.Context, webUserID int, senderID string) sessionAccessIdentity {
-	identity := sessionAccessIdentity{senderID: senderID, webUserID: webUserID}
-	if userID, role, ok := canonicalIdentityFromContext(ctx); ok {
-		identity.canonicalUserID = userID
-		identity.canonicalRole = role
-		return identity
-	}
-	if wc.callbacks.IdentityResolver == nil {
-		return identity
-	}
-	resolveChannel := "web"
-	resolveID := senderID
-	if si, ok := webSessionFromContext(ctx); ok && si.feishuUserID != "" {
-		resolveChannel = "feishu"
-		resolveID = si.feishuUserID
-	}
-	identity.canonicalUserID, identity.canonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
-	return identity
+	// Multi-user removal: every web login IS the single operator (password
+	// authentication is the trust boundary). Session ownership checks are
+	// obsolete — access is always granted.
+	return true
 }
 
 type sessionAccessIdentity struct {
-	senderID        string
-	webUserID       int
-	canonicalUserID int64
-	canonicalRole   string
+	senderID  string
+	webUserID int
 }
 
 func (wc *WebChannel) canAccessClientSession(client *Client, channelName, chatID string, allowCreate bool) bool {
@@ -1683,138 +1658,35 @@ func (wc *WebChannel) canAccessClientSession(client *Client, channelName, chatID
 			return false
 		}
 	}
-	identity := sessionAccessIdentity{
-		senderID:        client.userID,
-		webUserID:       client.webUserID,
-		canonicalUserID: client.canonicalUserID,
-		canonicalRole:   client.canonicalRole,
-	}
-	if wc.canAccessSessionAs(identity, channelName, chatID) {
-		return true
-	}
-	if !allowCreate || !client.isCLI || channelName != "cli" || chatID == "" {
-		return false
-	}
-	return wc.claimCLIClientSession(chatID, identity.canonicalUserID)
-}
-
-func (wc *WebChannel) claimCLIClientSession(chatID string, canonicalUserID int64) bool {
-	if wc.db == nil {
-		return false
-	}
-	_, err := sqlite.ClaimOrVerifyTenantOwner(wc.db, "cli", chatID, canonicalUserID)
-	return err == nil
+	// Multi-user removal: single operator — every authenticated client
+	// (web password login or CLI WS) may access every session.
+	return true
 }
 
 func (wc *WebChannel) canAccessSessionAs(identity sessionAccessIdentity, channelName, chatID string) bool {
-	return wc.canAccessSessionAsDepth(identity, channelName, chatID, 0)
-}
-
-func (wc *WebChannel) canAccessSessionAsDepth(identity sessionAccessIdentity, channelName, chatID string, depth int) bool {
-	if channelName == "" {
-		channelName = "web"
-	}
-	if chatID == "" || depth >= 32 {
-		return false
-	}
-	if channelName == "web" {
-		exists, ownerUserID := wc.canonicalSessionOwner("web", chatID)
-		if exists {
-			if wc.accessIdentityIsAdmin(identity) {
-				return true
-			}
-			return identity.canonicalUserID > 0 && ownerUserID == identity.canonicalUserID
-		}
-		return wc.identityOwnsUncreatedWebChat(identity, chatID)
-	}
-	if wc.db == nil {
-		return false
-	}
-	if channelName == "agent" {
-		return wc.canAccessAgentSessionAs(identity, chatID, depth)
-	}
-	return wc.canAccessCanonicalSessionAs(identity, channelName, chatID)
-}
-
-func (wc *WebChannel) canAccessCanonicalSessionAs(identity sessionAccessIdentity, channelName, chatID string) bool {
-	if wc.accessIdentityIsAdmin(identity) {
-		return wc.canonicalSessionExists(channelName, chatID)
-	}
-	_, ownerUserID := wc.canonicalSessionOwner(channelName, chatID)
-	return identity.canonicalUserID > 0 && ownerUserID == identity.canonicalUserID
-}
-
-func (wc *WebChannel) canonicalSessionExists(channelName, chatID string) bool {
-	if wc.tenantExists(channelName, chatID) {
-		return true
-	}
-	return wc.callbacks.LocalSessionExists != nil && wc.callbacks.LocalSessionExists(channelName, chatID)
+	// Multi-user removal: single operator — access always granted.
+	return true
 }
 
 func (wc *WebChannel) tenantExists(channelName, chatID string) bool {
-	exists, _ := wc.canonicalSessionOwner(channelName, chatID)
-	return exists
-}
-
-func (wc *WebChannel) canonicalSessionOwner(channelName, chatID string) (bool, int64) {
 	if wc.db == nil {
-		return false, 0
+		return false
 	}
 	var count int
-	var ownerUserID int64
 	err := wc.db.QueryRow(
-		"SELECT COUNT(*), COALESCE(MAX(owner_user_id), 0) FROM tenants WHERE channel = ? AND chat_id = ?",
+		"SELECT COUNT(*) FROM tenants WHERE channel = ? AND chat_id = ?",
 		channelName, chatID,
-	).Scan(&count, &ownerUserID)
-	return err == nil && count > 0, ownerUserID
-}
-
-func (wc *WebChannel) canAccessAgentSessionAs(identity sessionAccessIdentity, chatID string, depth int) bool {
-	exists, ownerUserID := wc.canonicalSessionOwner("agent", chatID)
-	if !exists {
-		return false
-	}
-	if wc.accessIdentityIsAdmin(identity) {
-		return true
-	}
-	if identity.canonicalUserID > 0 && ownerUserID != identity.canonicalUserID {
-		return false
-	}
-	info, ok := parseWebAgentTenantChatID(chatID)
-	if !ok {
-		return false
-	}
-	return wc.canAccessSessionAsDepth(identity, info.parentChannel, info.parentChatID, depth+1)
-}
-
-func (wc *WebChannel) accessIdentityIsAdmin(identity sessionAccessIdentity) bool {
-	return wc.singleUser || identity.canonicalRole == "admin" || identity.senderID == "admin" ||
-		identity.canonicalUserID == 0 && identity.webUserID == 1
+	).Scan(&count)
+	return err == nil && count > 0
 }
 
 // IsAdminIdentity reports whether a Web senderID belongs to an admin web user.
 // It is used by the server RPC bridge, where only the senderID survives after
 // WebSocket auth and the original HTTP request context is no longer available.
+// Multi-user removal: every authenticated web user IS the operator — always
+// admin.
 func (wc *WebChannel) IsAdminIdentity(senderID string) bool {
-	if wc.singleUser {
-		return true
-	}
-	if senderID == "admin" {
-		return true
-	}
-	// Use IdentityResolver when available (canonical role from DB)
-	if wc.callbacks.IdentityResolver != nil {
-		userID, _, err := wc.callbacks.IdentityResolver.Resolve("web", senderID)
-		if err == nil && userID > 0 {
-			return wc.callbacks.IdentityResolver.IsAdmin(userID)
-		}
-	}
-	// Backward compat: first web user is admin
-	if !strings.HasPrefix(senderID, "web-") || wc.db == nil {
-		return false
-	}
-	id, err := strconv.Atoi(strings.TrimPrefix(senderID, "web-"))
-	return err == nil && id == 1
+	return true
 }
 
 // GetCurrentSession returns the active SessionSelector (channel + chatID).
@@ -1829,58 +1701,10 @@ func (wc *WebChannel) GetCurrentSession(senderID string) SessionSelector {
 }
 
 // isAdmin returns true if the user is an admin.
-// Uses IdentityResolver when available (canonical role), falls back to
-// senderID == "admin" and web user ID == 1 for backward compat.
-// In single-user mode, all users are admin (no identity isolation).
+// Multi-user removal: every web login IS the operator (password
+// authentication is the trust boundary) — always admin.
 func (wc *WebChannel) isAdmin(ctx context.Context, senderID string) bool {
-	if wc.singleUser {
-		return true
-	}
-	if senderID == "admin" {
-		return true
-	}
-	if userID, role, ok := canonicalIdentityFromContext(ctx); ok {
-		return role == "admin" || userID > 0 && wc.callbacks.IdentityResolver != nil && wc.callbacks.IdentityResolver.IsAdmin(userID)
-	}
-	// Use IdentityResolver if available (canonical user role)
-	if wc.callbacks.IdentityResolver != nil {
-		resolveChannel := "web"
-		resolveID := senderID
-		if si, ok := webSessionFromContext(ctx); ok && si.feishuUserID != "" {
-			resolveChannel = "feishu"
-			resolveID = si.feishuUserID
-		}
-		userID, _, err := wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
-		if err == nil && userID > 0 {
-			return wc.callbacks.IdentityResolver.IsAdmin(userID)
-		}
-	}
-	// Backward compat: first web user is admin
-	if userID := userIDFromContext(ctx); userID == 1 {
-		return true
-	}
-	return false
-}
-
-// userOwnsChat checks whether senderID owns the given chatID.
-// A user owns their default chat (chatID == senderID) or a chat in user_chats.
-func (wc *WebChannel) identityOwnsUncreatedWebChat(identity sessionAccessIdentity, chatID string) bool {
-	// The authenticated sender may initialize only its own default chat.
-	if chatID == identity.senderID {
-		return true
-	}
-	// Named chats use canonical ownership populated on user_chats.
-	if wc.db != nil && identity.canonicalUserID > 0 {
-		var count int
-		err := wc.db.QueryRow(
-			"SELECT COUNT(*) FROM user_chats WHERE channel = 'web' AND chat_id = ? AND user_id = ?",
-			chatID, identity.canonicalUserID,
-		).Scan(&count)
-		if err == nil && count > 0 {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 // maskSensitive masks a sensitive string for display, showing only first 4 chars.

@@ -28,7 +28,8 @@ func TestV61LookupPathIndexes(t *testing.T) {
 		}
 	}
 
-	assertIndex(t, db.Conn(), "idx_cron_jobs_user", "")
+	// idx_cron_jobs_user was removed in v63 (cron_jobs.user_id dropped with
+	// the multi-user system); only the session_messages partial index remains.
 	assertIndex(t, db.Conn(), "idx_sm_tenant_role_id", "role IN ('user','assistant')")
 
 	// Path 2: v60 → v61 migration on a legacy DB (fixture pinned at v60,
@@ -126,11 +127,12 @@ func TestV61LookupPathIndexes(t *testing.T) {
 	if version != schemaVersion {
 		t.Fatalf("schema version = %d, want %d (current schemaVersion)", version, schemaVersion)
 	}
-	assertIndex(t, migDB.Conn(), "idx_cron_jobs_user", "")
+	// idx_cron_jobs_user was removed in v63 (cron_jobs.user_id dropped with
+	// the multi-user system); only the session_messages partial index remains.
 	assertIndex(t, migDB.Conn(), "idx_sm_tenant_role_id", "role IN ('user','assistant')")
 
-	// Idempotency: re-running the migration body must not error.
-	if err := migrateV60ToV61(migDB.Conn()); err != nil {
-		t.Fatalf("re-run migrateV60ToV61 must be idempotent: %v", err)
-	}
+	// Idempotency note: re-running migrateV60ToV61 is NOT valid on a v63
+	// database — its CREATE INDEX references cron_jobs.user_id, dropped in
+	// v63. Migration bodies only ever run forward on their own version's
+	// schema, so this is fine.
 }

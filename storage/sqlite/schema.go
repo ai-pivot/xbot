@@ -22,7 +22,6 @@ CREATE TABLE tenants (
     subscription_id TEXT DEFAULT '',
     model TEXT DEFAULT '',
     model_id TEXT DEFAULT '',
-    owner_user_id INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_active_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     cwd TEXT DEFAULT '',
@@ -127,7 +126,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (62);
+INSERT INTO schema_version (version) VALUES (63);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
 -- dropped in v62 — the system subscription was removed, the global fallback
@@ -146,7 +145,6 @@ CREATE TABLE user_llm_subscriptions (
     cached_models TEXT NOT NULL DEFAULT '',
     api_type    TEXT DEFAULT '',
     enabled     INTEGER NOT NULL DEFAULT 1,
-    user_id     INTEGER DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -168,38 +166,12 @@ CREATE TABLE IF NOT EXISTS subscription_models (
 CREATE INDEX IF NOT EXISTS idx_sub_models_sub ON subscription_models(subscription_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sub_models_uniq ON subscription_models(subscription_id, model);
 
--- User default model mapping (v38→v39)
+-- User default model mapping (v38→v39; user_id dropped in v63 multi-user removal)
 CREATE TABLE IF NOT EXISTS user_default_model (
     sender_id       TEXT PRIMARY KEY,
     subscription_id TEXT NOT NULL,
     model           TEXT NOT NULL DEFAULT '',
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    user_id         INTEGER DEFAULT 0
-);
-
--- Canonical user identity system (v44→v45)
-CREATE TABLE IF NOT EXISTS users (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    display_name TEXT NOT NULL DEFAULT '',
-    role         TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user')),
-    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS user_identities (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id         INTEGER NOT NULL,
-    channel         TEXT NOT NULL,
-    channel_user_id TEXT NOT NULL,
-    linked_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(channel, channel_user_id),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_user_identities_user ON user_identities(user_id);
-CREATE TABLE IF NOT EXISTS link_codes (
-    code        TEXT PRIMARY KEY,
-    user_id     INTEGER NOT NULL,
-    expires_at  TIMESTAMP NOT NULL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE runner_tokens (
@@ -223,7 +195,6 @@ CREATE TABLE runners (
     llm_api_key  TEXT    NOT NULL DEFAULT '',
     llm_model    TEXT    NOT NULL DEFAULT '',
     llm_base_url TEXT    NOT NULL DEFAULT '',
-    owner_user_id INTEGER DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, name)
 );
@@ -242,7 +213,6 @@ CREATE TABLE user_settings (
     key        TEXT NOT NULL,
     value      TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL,
-    user_id    INTEGER DEFAULT 0,
     UNIQUE(channel, sender_id, key)
 );
 CREATE INDEX idx_user_settings_sender ON user_settings(channel, sender_id);
@@ -260,12 +230,10 @@ CREATE TABLE cron_jobs (
     created_at DATETIME NOT NULL,
     next_run DATETIME NOT NULL,
     last_trigger DATETIME,
-    one_shot INTEGER NOT NULL DEFAULT 0,
-    user_id INTEGER DEFAULT 0
+    one_shot INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_cron_jobs_next_run ON cron_jobs(next_run);
 CREATE INDEX idx_cron_jobs_sender ON cron_jobs(sender_id);
-CREATE INDEX idx_cron_jobs_user ON cron_jobs(user_id);
 
 CREATE TABLE event_triggers (
     id          TEXT PRIMARY KEY,
@@ -280,8 +248,7 @@ CREATE TABLE event_triggers (
     one_shot    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     last_fired  TEXT,
-    fire_count  INTEGER NOT NULL DEFAULT 0,
-    user_id     INTEGER DEFAULT 0
+    fire_count  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_event_triggers_sender ON event_triggers(sender_id);
 CREATE INDEX idx_event_triggers_type ON event_triggers(event_type, enabled);
@@ -294,7 +261,6 @@ CREATE TABLE user_chats (
     label TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     sort_order INTEGER DEFAULT 0,
-    user_id INTEGER DEFAULT 0,
     UNIQUE(channel, sender_id, chat_id)
 );
 CREATE INDEX idx_user_chats_sender ON user_chats(channel, sender_id);
@@ -311,12 +277,6 @@ CREATE TABLE IF NOT EXISTS pending_resumes (
 -- Seed: shared tenant (id=0) for core_memory human blocks (v32→v33)
 INSERT OR IGNORE INTO tenants (id, channel, chat_id, created_at, last_active_at)
 VALUES (0, '_shared', '_shared', datetime('now'), datetime('now'));
-
--- Seed: canonical admin user + CLI identities (v44→v45; the system/__system__
--- identity was removed in v62 along with the system subscription)
-INSERT OR IGNORE INTO users (id, display_name, role) VALUES (1, 'Admin', 'admin');
-INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'cli_user');
-INSERT OR IGNORE INTO user_identities (user_id, channel, channel_user_id) VALUES (1, 'cli', 'admin');
 
 -- v54: structured iteration history (replaces Detail JSON for iteration data)
 CREATE TABLE IF NOT EXISTS iteration_history (

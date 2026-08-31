@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -46,9 +45,6 @@ type inboundIdentity struct {
 	SenderID           string
 	SenderName         string
 	WebUserID          int
-	FeishuUserID       string
-	CanonicalUserID    int64
-	CanonicalRole      string
 	IsCLI              bool
 	OverrideSenderID   string
 	OverrideSenderName string
@@ -79,28 +75,9 @@ func (wc *WebChannel) inboundIdentityFromRequest(r *http.Request) inboundIdentit
 	}
 	if si, ok := webSessionFromContext(r.Context()); ok {
 		identity.SenderName = si.username
-		identity.FeishuUserID = si.feishuUserID
 	}
 	if identity.SenderName == "" {
 		identity.SenderName = identity.SenderID
-	}
-	if userID, role, ok := canonicalIdentityFromContext(r.Context()); ok {
-		identity.CanonicalUserID = userID
-		identity.CanonicalRole = role
-	} else if wc.callbacks.IdentityResolver != nil {
-		resolveChannel := "web"
-		if identity.FeishuUserID != "" {
-			resolveChannel = "feishu"
-		}
-		resolveID := identity.SenderID
-		if identity.FeishuUserID != "" {
-			resolveID = identity.FeishuUserID
-		}
-		identity.CanonicalUserID, identity.CanonicalRole, _ = wc.callbacks.IdentityResolver.Resolve(resolveChannel, resolveID)
-	}
-	// In single-user mode, all users share one identity and are treated as admin.
-	if wc.singleUser {
-		identity.CanonicalRole = "admin"
 	}
 	return identity
 }
@@ -111,10 +88,8 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 		sel = SessionSelector{Channel: channelName, ChatID: chatID}
 	}
 	access := sessionAccessIdentity{
-		senderID:        identity.SenderID,
-		webUserID:       identity.WebUserID,
-		canonicalUserID: identity.CanonicalUserID,
-		canonicalRole:   identity.CanonicalRole,
+		senderID:  identity.SenderID,
+		webUserID: identity.WebUserID,
 	}
 	if identity.IsCLI && sel.Channel == "cli" {
 		if _, agentShaped := parseWebAgentTenantChatID(sel.ChatID); agentShaped {
@@ -123,7 +98,9 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	}
 	allowed := wc.canAccessSessionAs(access, sel.Channel, sel.ChatID)
 	if !allowed && identity.IsCLI && sel.Channel == "cli" {
-		allowed = wc.claimCLIClientSession(sel.ChatID, identity.CanonicalUserID)
+		// CLI sessions are created by the local operator — no owner claim
+		// needed (multi-user removal: one operator owns every session).
+		allowed = true
 	}
 	if !allowed {
 		return SessionSelector{}, fmt.Errorf("access denied")
@@ -162,18 +139,6 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	content := wc.expandUploadKeys(msg)
 	metadata := map[string]string{bus.MetadataReplyPolicy: bus.ReplyPolicyOptional}
 	withPhysicalChannel(metadata, identity.IsCLI)
-	if identity.FeishuUserID != "" {
-		metadata["feishu_user_id"] = identity.FeishuUserID
-	}
-	// Inject canonical user identity for agent layer.
-	// Without this, ResolveUserContext re-resolves via (msg.Channel, senderID),
-	// which misses when browsing a CLI session cross-channel (msg.Channel=="cli"
-	// but the web user identity is registered under channel=="web") → userID=0
-	// fallback → wrong LLM/subscription/settings + role downgrade.
-	if identity.CanonicalUserID > 0 {
-		metadata["user_id"] = strconv.FormatInt(identity.CanonicalUserID, 10)
-		metadata["user_role"] = identity.CanonicalRole
-	}
 
 	msgSenderID := identity.SenderID
 	msgSenderName := identity.SenderName

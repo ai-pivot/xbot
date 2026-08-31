@@ -28,15 +28,13 @@ func newModelFirstTestFactory(t *testing.T) (*LLMFactory, *sqlite.LLMSubscriptio
 	return f, subSvc, tenantSvc
 }
 
-// TestListAllModelEntriesByCanonicalUserID reproduces the Feishu /models bug:
-// subscriptions are bound to the canonical user_id, but the Feishu card queried
-// by senderID (ou_xxx) and could not see the canonical user's subscriptions.
-// The canonical-user query must return the user's subscriptions.
-func TestListAllModelEntriesByCanonicalUserID(t *testing.T) {
+// TestListAllModelEntriesSingleOperator verifies the post-v63 semantics:
+// subscriptions are global (single operator) — the v63 migration collapsed
+// user_llm_subscriptions.sender_id to 'cli_user', so every channel identity
+// (cli_user, ou_xxx, web-N) sees the SAME subscription list.
+func TestListAllModelEntriesSingleOperator(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
 
-	// User subscription owned by canonical user_id 42 (sender_id is the linked
-	// CLI identity — a Feishu identity ou_xxx is a DIFFERENT sender_id).
 	sub := &sqlite.LLMSubscription{
 		ID: "sub-user", SenderID: "cli_user", Name: "user-sub", Provider: "openai",
 		BaseURL: "https://api.user.example/v1", APIKey: "sk-user", Model: "user-model",
@@ -47,36 +45,24 @@ func TestListAllModelEntriesByCanonicalUserID(t *testing.T) {
 	if err := subSvc.UpsertModel(sub.ID, "user-model", 0, 0, "", ""); err != nil {
 		t.Fatalf("UpsertModel user: %v", err)
 	}
-	if err := subSvc.SetSubscriptionUserID(sub.ID, 42); err != nil {
-		t.Fatalf("SetSubscriptionUserID: %v", err)
-	}
 
-	// Canonical-user query (what the Feishu fix must use): returns user models.
-	entriesByUID := f.ListAllModelEntriesForUserID(42)
+	// The operator's query (any sender identity — v63 collapsed senders to
+	// 'cli_user' in user_llm_subscriptions) returns the subscription.
+	entries := f.ListAllModelEntriesForUser("cli_user")
 	found := false
-	for _, e := range entriesByUID {
+	for _, e := range entries {
 		if e.Model == "user-model" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("ListAllModelEntriesForUserID(42) missing user-model; got %+v", entriesByUID)
-	}
-
-	// senderID query (the OLD Feishu path with an unrelated ou_xxx sender):
-	// must NOT return the canonical user's subscription.
-	entriesBySender := f.ListAllModelEntriesForUser("ou_b90fbcfdce7ff144cdfb6326ca317c8e")
-	for _, e := range entriesBySender {
-		if e.Model == "user-model" {
-			t.Errorf("ListAllModelEntriesForUser(ou_xxx) leaked canonical user model %q (bug: Feishu must query by canonical user_id)", e.Model)
-		}
+		t.Errorf("ListAllModelEntriesForUser(cli_user) missing user-model; got %+v", entries)
 	}
 }
 
-// TestSetUserDefaultModelByUserID_RoundTrip verifies the canonical-user default
-// model write path: linked identities (web/cli/feishu sharing user_id) persist
-// and read the SAME default model — no data loss across channels.
-func TestSetUserDefaultModelByUserID_RoundTrip(t *testing.T) {
+// TestSetUserDefaultModelRoundTrip verifies the default-model write path
+// (single operator post-v63): the sender-scoped row persists and reads back.
+func TestSetUserDefaultModelRoundTrip(t *testing.T) {
 	_, subSvc, _ := newModelFirstTestFactory(t)
 	sub := &sqlite.LLMSubscription{
 		ID: "sub-xin", SenderID: "cli_user", Name: "xin", Provider: "openai",
@@ -85,12 +71,12 @@ func TestSetUserDefaultModelByUserID_RoundTrip(t *testing.T) {
 	if err := subSvc.Add(sub); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if err := subSvc.SetUserDefaultModelByUserID(42, sub.ID, "glm-5.2"); err != nil {
-		t.Fatalf("SetUserDefaultModelByUserID: %v", err)
+	if err := subSvc.SetUserDefaultModel("cli_user", sub.ID, "glm-5.2"); err != nil {
+		t.Fatalf("SetUserDefaultModel: %v", err)
 	}
-	got, err := subSvc.GetUserDefaultModelByUserID(42)
+	got, err := subSvc.GetUserDefaultModel("cli_user")
 	if err != nil {
-		t.Fatalf("GetUserDefaultModelByUserID: %v", err)
+		t.Fatalf("GetUserDefaultModel: %v", err)
 	}
 	if got == nil || got.SubscriptionID != sub.ID || got.Model != "glm-5.2" {
 		t.Errorf("default model mismatch: got %+v, want sub=%s model=glm-5.2", got, sub.ID)

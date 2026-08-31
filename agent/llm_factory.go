@@ -26,12 +26,6 @@ type LLMFactory struct {
 	tenantSvc       *sqlite.TenantService // for per-session model restoration from DB
 	settingsSvc     *SettingsService
 
-	// userResolver resolves a senderID to its canonical user_id (v45+
-	// canonical-user design). Wired from Agent.resolveUserID (identity
-	// resolver). nil = unavailable (early init / local CLI without identity
-	// DB) — getGlobalSetting then falls back to the sender-dimension chain.
-	userResolver func(senderID string) (int64, bool)
-
 	// Global defaults (no per-user override)
 	defaultLLM          llm.LLM
 	defaultModel        string
@@ -133,15 +127,6 @@ func (f *LLMFactory) GetTenantSvc() *sqlite.TenantService {
 }
 
 func (f *LLMFactory) SetSettingsService(svc *SettingsService) { f.settingsSvc = svc }
-
-// SetUserResolver injects the sender→canonical user_id resolver (Agent wires
-// a.resolveUserID from the identity resolver). getGlobalSetting uses it to
-// read user-scoped settings (v45+ canonical-user dimension): user_settings
-// rows written via *ByUserID RPCs carry user_id with sender_id='user-N' —
-// sender-dimension reads (Get(channel, senderID)) never see them, which broke
-// tier resolution for web-channel senders (SubAgent "model not found for
-// vanguard, falling back to main model" despite the tier being configured).
-func (f *LLMFactory) SetUserResolver(fn func(senderID string) (int64, bool)) { f.userResolver = fn }
 
 func (f *LLMFactory) SetLLMSemaphoreManager(mgr *llm.LLMSemaphoreManager) {
 	f.llmSemManager = mgr
@@ -930,30 +915,6 @@ func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
 	return nil
 }
 
-// SetUserDefaultModelByUserID persists the default (subscription, model) keyed
-// by canonical user_id so all linked identities (web/cli/feishu) share it.
-func (f *LLMFactory) SetUserDefaultModelByUserID(userID int64, subID, model string) error {
-	if f.subscriptionSvc == nil {
-		return fmt.Errorf("SetUserDefaultModelByUserID: subscription service unavailable")
-	}
-	if subID == "" {
-		return fmt.Errorf("SetUserDefaultModelByUserID: subID is required")
-	}
-	sub, err := f.subscriptionSvc.Get(subID)
-	if err != nil || sub == nil {
-		return fmt.Errorf("SetUserDefaultModelByUserID: subscription %s not found", subID)
-	}
-	if model != "" {
-		if sm, gerr := f.subscriptionSvc.GetModel(subID, model); gerr == nil && sm != nil && !sm.Enabled {
-			return fmt.Errorf("SetUserDefaultModelByUserID: model %q is disabled", model)
-		}
-	}
-	if err := f.subscriptionSvc.SetUserDefaultModelByUserID(userID, subID, model); err != nil {
-		return fmt.Errorf("SetUserDefaultModelByUserID: persist: %w", err)
-	}
-	return nil
-}
-
 // SetModelEnabled toggles a model's enabled flag and invalidates any cached
 // state for its subscription so resolution picks up the change.
 func (f *LLMFactory) SetModelEnabled(subID, model string, enabled bool) error {
@@ -1026,103 +987,6 @@ func (f *LLMFactory) ListAllModelsForUser(senderID string) []string {
 // within a single subscription a model name is emitted at most once.
 func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.ModelEntry {
 	return f.listModelEntriesCore(senderID, true)
-}
-
-// ListAllModelEntriesForUserID returns model entries for a canonical user_id.
-// Uses ListByUserID instead of List(senderID).
-func (f *LLMFactory) ListAllModelEntriesForUserID(userID int64) []protocol.ModelEntry {
-	return f.listModelEntriesCoreByUserID(userID, true)
-}
-
-// ListAllModelsForUserID returns model names for a canonical user_id.
-func (f *LLMFactory) ListAllModelsForUserID(userID int64) []string {
-	entries := f.listModelEntriesCoreByUserID(userID, false)
-	result := make([]string, 0, len(entries))
-	seen := make(map[string]bool, len(entries))
-	for _, e := range entries {
-		if seen[e.Model] {
-			continue
-		}
-		seen[e.Model] = true
-		result = append(result, e.Model)
-	}
-	return result
-}
-
-// listModelEntriesCoreByUserID is the canonical-user-scoped variant of
-// listModelEntriesCore. It queries subscriptions by user_id instead of
-// sender_id, so all identities linked to the same user see the same data.
-func (f *LLMFactory) listModelEntriesCoreByUserID(userID int64, includeDisabled bool) []protocol.ModelEntry {
-	seen := make(map[string]bool)
-	var result []protocol.ModelEntry
-	add := func(subID, subName, model, status string) {
-		if model == "" {
-			return
-		}
-		key := subID + "\x00" + model
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
-	}
-	if f.subscriptionSvc == nil {
-		// No subscription service — the deployment-level defaultLLM is a
-		// memory-only fallback (never listed, never selectable).
-		return result
-	}
-	subs, err := f.subscriptionSvc.ListByUserID(userID)
-	if err != nil || len(subs) == 0 {
-		return result
-	}
-
-	type subInfo struct {
-		sub   *sqlite.LLMSubscription
-		rows  []*sqlite.SubscriptionModel
-		rowEn map[string]bool
-	}
-	infos := make([]subInfo, 0, len(subs))
-	for _, sub := range subs {
-		if !sub.Enabled {
-			continue
-		}
-		rows, _ := f.subscriptionSvc.GetModels(sub.ID)
-		rowEn := make(map[string]bool, len(rows))
-		for _, r := range rows {
-			rowEn[r.Model] = r.Enabled
-		}
-		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn})
-	}
-	emitInfo := func(info subInfo) {
-		sub := info.sub
-		subName := sub.Name
-		emitted := make(map[string]bool)
-		for _, r := range info.rows {
-			status := "normal"
-			if !r.Enabled {
-				if !includeDisabled {
-					continue
-				}
-				status = "disabled"
-			}
-			add(sub.ID, subName, r.Model, status)
-			emitted[r.Model] = true
-		}
-		if sub.Model != "" && !emitted[sub.Model] {
-			status := "normal"
-			if en, ok := info.rowEn[sub.Model]; ok && !en {
-				if !includeDisabled {
-					return
-				}
-				status = "disabled"
-			}
-			add(sub.ID, subName, sub.Model, status)
-		}
-	}
-	for _, info := range infos {
-		emitInfo(info)
-	}
-	return result
 }
 
 // listModelEntriesCore is the shared DB-driven list builder.
@@ -1246,25 +1110,6 @@ type RefreshResult struct {
 func (f *LLMFactory) RefreshModelEntriesForUser(senderID string) []protocol.ModelEntry {
 	entries, _ := f.RefreshModelEntriesForUserWithResults(senderID)
 	return entries
-}
-
-// RefreshModelEntriesForUserID refreshes models for a canonical user_id.
-func (f *LLMFactory) RefreshModelEntriesForUserID(userID int64) []protocol.ModelEntry {
-	entries, _ := f.RefreshModelEntriesForUserIDWithResults(userID)
-	return entries
-}
-
-// RefreshModelEntriesForUserIDWithResults is the canonical-user variant.
-func (f *LLMFactory) RefreshModelEntriesForUserIDWithResults(userID int64) ([]protocol.ModelEntry, []RefreshResult) {
-	if f.subscriptionSvc == nil {
-		return f.ListAllModelEntriesForUserID(userID), nil
-	}
-	subs, err := f.subscriptionSvc.ListByUserID(userID)
-	if err != nil {
-		return f.ListAllModelEntriesForUserID(userID), nil
-	}
-	results := f.refreshModelEntriesCore(subs)
-	return f.ListAllModelEntriesForUserID(userID), results
 }
 
 // RefreshModelEntriesForUserWithResults is the extended variant that also
@@ -1478,54 +1323,22 @@ func (f *LLMFactory) resolveTierModel(senderID, value string) (subID, model stri
 // single per-user value regardless of which channel the LLM call comes from.
 const canonicalSettingsSender = "cli_user"
 
-// getGlobalSetting reads a global user setting (tier_*, thinking_mode — canonical
-// channel 'cli') across ALL dimensions of the v45+ canonical-user design:
-//
-//  1. user_id dimension (authoritative): rows written via *ByUserID RPCs
-//     (SetByUserID stores sender_id='user-N' + user_id=N — sender-dimension
-//     reads never see them). v46-backfilled legacy sender rows also carry
-//     user_id, so they are covered here too. Multi-user isolation is exact:
-//     each canonical user reads its own row only.
-//  2. sender dimension (legacy/CLI): rows written via Set(channel, senderID)
-//     with user_id=NULL (local CLI ApplySettings, resolveUserID-failure
-//     fallback) — only the writing sender can read them.
-//  3. canonical CLI sender "cli_user" (pre-v45 global inheritance):
-//     non-CLI senders inherit the CLI user's config. Kept for resolver-
-//     unavailable environments (early init, local CLI without identity DB).
-//
-// Ordering matters: the user_id dimension holds the v45+ canonical writes
-// (RPC panel settings) and must win over stale sender-dimension rows.
+// getGlobalSetting reads a global setting (tier_*, thinking_mode — canonical
+// channel 'cli') for the single operator. After the multi-user removal there
+// is exactly one operator: the sender dimension (every UserContext sender
+// collapses to "cli_user") IS the global dimension. The fallback to the
+// canonical CLI sender covers direct caller-site passes of non-collapsed
+// senders (early init, cron paths).
 func (f *LLMFactory) getGlobalSetting(senderID, key string) string {
-	// 1. Canonical user_id dimension — the v45+ canonical write path.
-	if f.userResolver != nil {
-		if uid, ok := f.userResolver(senderID); ok {
-			if val := f.getByUserID(thinkingModeChannel, uid, key); val != "" {
-				return val
-			}
-		}
-	}
-	// 2. Sender-dimension exact row.
+	// Sender-dimension exact row.
 	if val := f.getSetting(senderID, thinkingModeChannel, key); val != "" {
 		return val
 	}
-	// 3. Canonical CLI sender fallback.
+	// Canonical CLI sender fallback.
 	if senderID != canonicalSettingsSender {
 		return f.getSetting(canonicalSettingsSender, thinkingModeChannel, key)
 	}
 	return ""
-}
-
-// getByUserID reads a single setting from the user_id dimension (channel is
-// still the canonical 'cli' namespace for global settings).
-func (f *LLMFactory) getByUserID(channel string, userID int64, key string) string {
-	if f.settingsSvc == nil {
-		return ""
-	}
-	settings, err := f.settingsSvc.GetByUserID(channel, userID)
-	if err != nil || settings == nil {
-		return ""
-	}
-	return settings[key]
 }
 
 // userTierModel returns the per-user tier model setting from user_settings DB.
