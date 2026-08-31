@@ -2,8 +2,13 @@
  * PanelLauncher — 底部面板启动器（替代 SideChips）。
  *
  * 列出所有可用面板（内置 + 插件），点击在 Dockview 中打开。
- * sidebar 面板（sessions/files/search 等）创建为独立 split 卡片（direction: 'left'），
- * 不加入 Agent 的 tab 栏。插件面板用 openTab（作为 tab 打开）。
+ *
+ * 概念区分：
+ *   - Panel（卡片）：独立分屏区域，不经过 tab 系统。
+ *     sidebar 面板（sessions/files/search/info/tasks/terminal）用 addPanel 创建。
+ *   - Tab：主卡片内部的标签页，用于多会话切换。
+ *     Agent 面板和插件面板用 openTab 创建。
+ *
  * 底部固定栏，位于 DockviewContainer 和 InfoBar 之间。
  */
 import { MessageSquare, FolderOpen, Search, Info, CheckSquare, TerminalSquare, type LucideIcon } from 'lucide-react'
@@ -21,7 +26,7 @@ interface LauncherEntry {
   viewId?: string
 }
 
-/** sidebar 面板 → 独立 split 卡片（direction: 'left'）；插件面板 → tab */
+/** sidebar 面板 → 独立 Panel（addPanel + direction）；插件面板 → Tab（openTab） */
 const SIDEBAR_PANELS: LauncherEntry[] = [
   { id: 'sessions', icon: MessageSquare, label: '会话', panelId: 'sessions' },
   { id: 'files', icon: FolderOpen, label: '文件', panelId: 'files' },
@@ -33,25 +38,18 @@ const SIDEBAR_PANELS: LauncherEntry[] = [
 
 export function PanelLauncher({ tabManager }: { tabManager: TabManager }) {
   const pluginPanels = usePluginViewPanels('right_sidebar')
-  // 拿到 dockview api（通过 tabManager.bindApi 注入的引用）
-  // tabManager 不暴露 api，但我们可以从 DockviewContainer 的 context 间接拿
-  // 简单方案：直接从 DOM 查 dockview 实例（hack-free：用 tabManager 的 splitRight 思路）
-  // 更好方案：扩展 TabManager 暴露 addPanelToSplit 方法
-  // 最简方案：给 openTab 加可选 position 参数
+
   const handleClick = (entry: LauncherEntry) => {
     if (entry.panelId) {
-      // sidebar 面板：openTab 先作为 tab 打开，再 splitRight 拆为独立卡片
-      const tabId = tabManager.openTab({
-        type: 'panel' as never,
+      // Panel（卡片）：直接用 addPanel 创建独立分屏，不经过 tab 系统
+      tabManager.addPanel({
+        component: 'panel',
         title: entry.label,
-        closable: true,
-        data: { panelId: entry.panelId },
-      } as never)
-      // splitRight 把面板从 tab 栏拆出为右侧独立卡片
-      if (tabId) {
-        tabManager.splitRight(tabId)
-      }
+        params: { type: 'panel', panelId: entry.panelId, closable: true },
+        direction: 'left',
+      })
     } else if (entry.pluginId && entry.viewId) {
+      // Tab：插件面板作为主卡片内部的 tab
       tabManager.openTab({
         type: 'plugin',
         title: entry.label,

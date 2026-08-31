@@ -227,9 +227,9 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
 
     if (!seededRef.current) {
       seededRef.current = true
-      // 默认布局：会话列表卡片（左）+ Agent 卡片（右）并列分屏
+      // 默认布局：Agent 卡片（主）+ 会话列表卡片（左侧分屏）
       const activeSession = ctxRef.current.sessionStore.activeSession
-      // 1. 先创建 Agent 面板（openTab 返回 tabId，dockview panelId = dv-${tabId}）
+      // 1. 先创建 Agent tab（主卡片）
       const agentTabId = mgr.openTab({
         type: 'agent',
         title: activeSession?.chatID ?? 'Agent',
@@ -240,18 +240,14 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
           channel: activeSession.channel ?? 'web',
         } : undefined,
       })
-      // 2. 用 dv-${tabId} 拿到 dockview panel，在其左侧创建会话列表卡片（独立 split group）
-      const agentPanel = api.getPanel(`dv-${agentTabId}`)
-      if (agentPanel) {
-        api.addPanel({
-          id: 'sessions-panel',
-          title: '会话',
-          component: 'panel',
-          params: { type: 'panel', panelId: 'sessions', closable: false },
-          position: { direction: 'left', referencePanel: agentPanel },
-        })
-        agentPanel.api.setActive()
-      }
+      // 2. 在 Agent 卡片左侧创建会话列表 Panel（独立卡片，不经过 tab 系统）
+      mgr.addPanel({
+        component: 'panel',
+        title: '会话',
+        params: { type: 'panel', panelId: 'sessions', closable: false },
+        direction: 'left',
+        referencePanelId: `dv-${agentTabId}`,
+      })
       onReady?.()
     }
 

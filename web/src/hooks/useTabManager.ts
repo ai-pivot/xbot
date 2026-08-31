@@ -35,7 +35,7 @@ function genId(prefix: string): string {
 }
 
 /** Build a logical Tab from a dockview panel (params is the source). */
-function panelToTab(panel: IDockviewPanel): Tab | null {
+function dockviewPanelToTab(panel: IDockviewPanel): Tab | null {
   const params = panel.params as PanelParams | undefined
   if (!params?.tabId) return null
   return {
@@ -95,6 +95,23 @@ function panelToTab(panel: IDockviewPanel): Tab | null {
   }
 }
 
+/** Panel 方向（分屏位置） */
+export type PanelDirection = 'left' | 'right' | 'above' | 'below'
+
+/** Panel 选项 — 直接创建独立卡片，不经过 tab 系统 */
+export interface AddPanelOptions {
+  /** Dockview component 名（如 'panel', 'agent', 'file', 'terminal'） */
+  component: string
+  /** 面板标题 */
+  title: string
+  /** 面板参数 */
+  params: Record<string, unknown>
+  /** 分屏方向；不传 = 默认加到活跃 group（行为同 openTab） */
+  direction?: PanelDirection
+  /** 引用面板 id（在其旁边分屏）；不传 = 默认在活跃 group 旁分屏 */
+  referencePanelId?: string
+}
+
 export interface TabManager {
   tabs: Tab[]
   activeTabId: string | null
@@ -108,10 +125,20 @@ export interface TabManager {
   closeTabsInGroup: (id: string, which: 'left' | 'right' | 'others' | 'all') => void
   /** Focus a tab by id. */
   setActiveTab: (id: string) => void
-  /** Move a tab's panel into a new group to its right (split view). */
-  splitRight: (id: string) => void
-  /** Forget the remembered right-side work group after a session layout swap. */
-  resetWorkGroup: () => void
+
+  // ── Panel 管理（独立卡片，不经过 tab 系统）──
+
+  /** 创建独立 Panel（卡片），直接调 api.addPanel + position，不走 tab 逻辑。返回 panel id。 */
+  addPanel: (options: AddPanelOptions) => string
+  /** 关闭独立 Panel。 */
+  removePanel: (panelId: string) => void
+  /** Tab → Panel：把 tab 从 tab 栏拆出为独立卡片。 */
+  tabToPanel: (tabId: string, direction?: PanelDirection) => void
+  /** Panel → Tab：把独立卡片合并回主 group 的 tab 栏。 */
+  panelToTab: (panelId: string) => void
+
+  // ── 布局持久化 ──
+
   /** Register the DockviewApi (called by DockviewContainer on ready). */
   bindApi: (api: DockviewApi | null) => void
   /** Serialize the full dockview layout (grid groups, panel positions, multi-instance). */
@@ -136,7 +163,7 @@ function useTabManagerImpl(): TabManager {
   const resync = useCallback(() => {
     const api = apiRef.current
     if (!api) return
-    const nextTabs = api.panels.map(panelToTab).filter(Boolean) as Tab[]
+    const nextTabs = api.panels.map(dockviewPanelToTab).filter(Boolean) as Tab[]
     const nextPanelMap = new Map<string, string>()
     for (const panel of api.panels) {
       const params = panel.params as PanelParams | undefined
@@ -315,18 +342,66 @@ function useTabManagerImpl(): TabManager {
     panel?.api.setActive()
   }, [])
 
-  const splitRight = useCallback((id: string) => {
+  // ── Panel 管理（独立卡片，不经过 tab 系统）──
+
+  /** 创建独立 Panel：直接调 api.addPanel + position，不注册 panelIdByTab */
+  const addPanel = useCallback((options: AddPanelOptions): string => {
     const api = apiRef.current
-    const panelId = panelIdByTab.current.get(id)
-    const panel = panelId ? api?.getPanel(panelId) : undefined
-    if (!api || !panel) return
-    // Move the panel into a brand-new group to the right of its current group.
-    panel.api.moveTo({ group: panel.group, position: 'right' })
-    rightGroupPanelIdRef.current = panelId ?? null
+    if (!api) return ''
+    const panelId = `panel-${genId('panel')}`
+    const addOpts: Parameters<DockviewApi['addPanel']>[0] = {
+      id: panelId,
+      title: options.title,
+      component: options.component,
+      params: options.params as never,
+    }
+    if (options.direction) {
+      const ref = options.referencePanelId
+        ? api.getPanel(options.referencePanelId)
+        : api.activePanel ?? undefined
+      if (ref) {
+        addOpts.position = { direction: options.direction, referencePanel: ref }
+      } else {
+        addOpts.position = { direction: options.direction }
+      }
+    }
+    api.addPanel(addOpts)
+    const panel = api.getPanel(panelId)
+    panel?.api.setActive()
+    return panelId
   }, [])
 
-  const resetWorkGroup = useCallback(() => {
-    rightGroupPanelIdRef.current = null
+  /** 关闭独立 Panel */
+  const removePanel = useCallback((panelId: string) => {
+    const api = apiRef.current
+    const panel = api?.getPanel(panelId)
+    if (!api || !panel) return
+    api.removePanel(panel)
+  }, [])
+
+  /** Tab → Panel：把 tab 从 tab 栏拆出为独立卡片 */
+  const tabToPanel = useCallback((tabId: string, direction: PanelDirection = 'right') => {
+    const api = apiRef.current
+    const panelId = panelIdByTab.current.get(tabId)
+    const panel = panelId ? api?.getPanel(panelId) : undefined
+    if (!api || !panel) return
+    // PanelDirection 'above'/'below' → Dockview Position 'top'/'bottom'
+    const pos = direction === 'above' ? 'top' : direction === 'below' ? 'bottom' : direction
+    panel.api.moveTo({ group: panel.group, position: pos as never })
+  }, [])
+
+  /** Panel → Tab：把独立卡片合并回主 group（包含 agent tabs 的 group） */
+  const panelToTab = useCallback((panelId: string) => {
+    const api = apiRef.current
+    const panel = api?.getPanel(panelId)
+    if (!api || !panel) return
+    // 找到主 group：包含 agent tab 的 group（如果有多个，取活跃的那个）
+    const mainGroup = api.groups.find((g) =>
+      g.panels.some((p) => (p.params as PanelParams).type === 'agent'),
+    ) ?? api.activePanel?.group
+    if (mainGroup) {
+      panel.api.moveTo({ group: mainGroup })
+    }
   }, [])
 
   const getLayoutJSON = useCallback(() => apiRef.current?.toJSON() ?? null, [])
@@ -359,14 +434,16 @@ function useTabManagerImpl(): TabManager {
       groupTabsOf,
       closeTabsInGroup,
       setActiveTab,
-      splitRight,
-      resetWorkGroup,
+      addPanel,
+      removePanel,
+      tabToPanel,
+      panelToTab,
       bindApi,
       getLayoutJSON,
       applyLayoutJSON,
       getWorkLayoutJSON,
     }),
-    [tabs, activeTabId, openTab, closeTab, groupTabsOf, closeTabsInGroup, setActiveTab, splitRight, resetWorkGroup, bindApi, getLayoutJSON, applyLayoutJSON, getWorkLayoutJSON],
+    [tabs, activeTabId, openTab, closeTab, groupTabsOf, closeTabsInGroup, setActiveTab, addPanel, removePanel, tabToPanel, panelToTab, bindApi, getLayoutJSON, applyLayoutJSON, getWorkLayoutJSON],
   )
 }
 
