@@ -255,8 +255,7 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
         referencePanelId: `dv-${agentTabId}`,
       })
       // 3. Master 布局比例：sessions group 设为 20% 宽度
-      //    addPanel 同步触发 layout change，onDidLayoutChange 注册在 addPanel 之后会错过事件
-      //    所以直接同步调 setSize（gridview 此时已完成 split 布局）
+      //    addPanel 后强制 relayout + setSize
       const totalWidth = host.clientWidth
       if (totalWidth > 0) {
         const sidebarWidth = Math.max(200, Math.round(totalWidth * 0.2))
@@ -264,6 +263,8 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
         if (sp?.group) {
           sp.group.api.setSize({ width: sidebarWidth })
         }
+        // 强制 Dockview 重新计算布局，确保 setSize 生效
+        api.layout(totalWidth, host.clientHeight)
       }
       const agentPanel = api.getPanel(`dv-${agentTabId}`)
       agentPanel?.api.setActive()
