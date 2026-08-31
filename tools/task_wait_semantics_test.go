@@ -72,3 +72,31 @@ func TestTaskWait_MultiID_AllVsAnySemantics(t *testing.T) {
 		t.Errorf("mode=any with a pending slow task must report it as still running:\n%s", res2.Summary)
 	}
 }
+
+// TestTaskRead_SubAgentID_NotMisleadingNotFound verifies task_read resolves
+// sub-agent task IDs (consistency with task_wait/task_status/task_kill): a
+// valid sub-xxx ID must NOT report "task not found" — sub-agent tasks have no
+// streaming output, and the tool must say so (pointing at task_status).
+func TestTaskRead_SubAgentID_NotMisleadingNotFound(t *testing.T) {
+	mgr := NewBackgroundTaskManager()
+	defer mgr.UnregisterSubAgentTask("sub-read1")
+
+	sub := mgr.RegisterSubAgentTask("sub-read1", "web:chat", "user1", "explore", "inst-1", func() {})
+	mgr.CloseSubAgentTask(sub.ID, BgTaskDone, "finished output preview")
+
+	toolCtx := &ToolContext{BgTaskManager: mgr, Ctx: context.Background()}
+	res, err := (&TaskReadTool{}).Execute(toolCtx, `{"task_id":"sub-read1"}`)
+	if err != nil {
+		t.Fatalf("task_read on a sub-agent ID must not return an error, got: %v", err)
+	}
+	for _, want := range []string{"Sub-agent task sub-read1", "no streaming output", "task_status"} {
+		if !strings.Contains(res.Summary, want) {
+			t.Errorf("task_read(sub-agent) output missing %q, got:\n%s", want, res.Summary)
+		}
+	}
+
+	// A genuinely unknown ID still errors (not-found is correct there).
+	if _, err := (&TaskReadTool{}).Execute(toolCtx, `{"task_id":"ghost-id"}`); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("unknown ID must keep the not-found error, got: %v", err)
+	}
+}
