@@ -148,6 +148,23 @@ test.describe('卡片 Ctrl 拖动（真实浏览器）', () => {
     const deltaX = boxBefore!.x - boxAfter!.x
     console.log('[e2e-diag] deltaX (向左换边):', deltaX)
     expect(deltaX, `主卡片未换边: before=${boxBefore!.x} after=${boxAfter!.x}`).toBeGreaterThan(100)
+
+    // 颜色一致性断言：主卡（active，overlay 层渲染）与会话卡（group 内渲染）
+    // 背景一致——所有 .dv-groupview 同 card-bg；主卡内容宿主（dv-render-overlay
+    // 下 ReactContentRenderer div，bg-card-bg）与 group 背景同变量。
+    const bgCheck = await page.evaluate(() => {
+      const groups = Array.from(document.querySelectorAll('.dv-groupview'))
+      const groupBgs = groups.map((g) => getComputedStyle(g).backgroundColor)
+      const overlayHost = document.querySelector('.dv-render-overlay > div')
+      return {
+        groupBgs,
+        overlayHostBg: overlayHost ? getComputedStyle(overlayHost).backgroundColor : null,
+      }
+    })
+    console.log('[e2e-diag] bg check:', JSON.stringify(bgCheck))
+    const uniqueGroupBgs = new Set(bgCheck.groupBgs)
+    expect(uniqueGroupBgs.size, `group 背景不一致: ${[...uniqueGroupBgs].join(' vs ')}`).toBe(1)
+    expect(bgCheck.overlayHostBg, '主卡 overlay 宿主背景应与 group card-bg 一致').toBe(bgCheck.groupBgs[0])
     expect(pageErrors, `page errors: ${pageErrors.join('; ')}`).toEqual([])
   })
 })

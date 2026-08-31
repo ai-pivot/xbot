@@ -276,20 +276,22 @@ describe('LayoutEngine', () => {
     expect(sec.api.setSize).not.toHaveBeenCalled()
   })
 
-  // ── tab 栏可见性策略（单 tab 隐藏） ──────────────────────────────────────
+  // ── tab 栏可见性策略（主卡常显 / 非主卡永隐 — Tab 只存在于主卡片） ──────
 
-  it('单 tab 卡片隐藏 tab 栏，多 tab 卡片显示', () => {
-    const single = mockGroup('single', ['panel']) // 单 panel（sidebar 卡片）
-    const multi = mockGroup('multi', ['agent', 'file']) // 双 tab（主卡片）
-    const api = mockApi([single, multi], 1000)
+  it('主卡（含 agent tab）tab 栏常显（单 tab 也显示），非主卡永远隐藏', () => {
+    const single = mockGroup('single', ['panel']) // sidebar 卡片（单 panel）
+    const multi = mockGroup('multi', ['agent', 'file']) // 主卡片（双 tab）
+    const agentOnly = mockGroup('agentOnly', ['agent']) // 主卡片（单 tab）
+    const api = mockApi([single, multi, agentOnly], 1000)
     const engine = new LayoutEngine()
     engine.bindApi(api)
-    expect(single.model.header.hidden).toBe(true)
-    expect(multi.model.header.hidden).toBe(false)
+    expect(single.model.header.hidden).toBe(true) // 非主卡：永隐（不支持卡片内 Tab）
+    expect(multi.model.header.hidden).toBe(false) // 主卡：常显
+    expect(agentOnly.model.header.hidden).toBe(false) // 主卡单 tab 也常显（连接状态绿点 + 会话名在 tab 上）
     engine.dispose()
   })
 
-  it('tab 增删（onDidAddPanel/onDidRemovePanel）联动 header 可见性', () => {
+  it('非主卡 tab 增删不影响 header 永隐（onDidAddPanel/onDidRemovePanel 不改变策略）', () => {
     const sec = mockGroup('sec', ['panel'])
     const master = mockGroup('master', ['agent'])
     const api = mockApi([sec, master], 1000)
@@ -297,14 +299,14 @@ describe('LayoutEngine', () => {
     engine.bindApi(api)
     expect(sec.model.header.hidden).toBe(true)
 
-    // group 内 tab 1 → 2：显示
+    // 非主卡 group 内 tab 1 → 2：仍然隐藏（策略只看 isMasterGroup，不看 tab 数）
     ;(sec as unknown as { panels: Array<{ params: { type: string } }> }).panels.push({
       params: { type: 'panel' },
     })
     api.fireAddPanel()
-    expect(sec.model.header.hidden).toBe(false)
+    expect(sec.model.header.hidden).toBe(true)
 
-    // group 内 tab 2 → 1：隐藏
+    // tab 2 → 1：仍然隐藏
     ;(sec as unknown as { panels: Array<{ params: { type: string } }> }).panels.pop()
     api.fireRemovePanel()
     expect(sec.model.header.hidden).toBe(true)

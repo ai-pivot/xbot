@@ -54,6 +54,9 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
   const { t } = useI18n()
   const ctx = useDockviewContext()
   const tabManager = ctx.tabManager
+  // 连接状态（agent tab 绿点）——卡片 header 已删（主卡 tab 栏常驻承载
+  // 连接状态），agent tab 上的小圆点显示 ws 连接状态
+  const ws = ctx.ws
   const Icon = (params.icon ? ICONS[params.icon] : null) ?? TYPE_ICONS[params.type]
   const fullTitle = params.type === 'file' ? (params.filePath || params.title) : params.title
 
@@ -102,6 +105,16 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
             }
           }}
         >
+          {params.type === 'agent' && (
+            <span
+              aria-label={ws.connected ? '已连接' : '连接中…'}
+              title={ws.connected ? '已连接' : '连接中…'}
+              className={cn(
+                'size-1.5 shrink-0 rounded-full',
+                ws.connected ? 'bg-emerald-500' : 'animate-pulse bg-amber-500',
+              )}
+            />
+          )}
           <Icon aria-hidden className={cn('size-3.5 shrink-0', isActive ? 'text-accent' : 'text-text-muted')} />
           <span className="min-w-0 flex-1 truncate leading-none">{params.title}</span>
           {params.closable && (

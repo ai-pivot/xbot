@@ -228,15 +228,18 @@ export class LayoutEngine {
   }
 
   /**
-   * tab 栏可见性策略：卡片只有 1 个 tab 时隐藏 tab 栏（平铺卡片语义，
-   * header 只在多 tab 时有意义），多 tab 时显示。group.model.header.hidden
-   * 是 dockview 官方路径（toJSON 自动持久化 hideHeader）。
+   * tab 栏可见性策略：Tab 概念只存在于主卡片（用户架构原则——Tab = 主卡
+   * 内部标签页）。主卡（含 agent tab 的 group）tab 栏**常驻**（单 tab 也
+   * 显示：连接状态绿点 + 会话名在 tab 上）；其他卡片**永远隐藏**（不支持
+   * 卡片内 Tab，多 tab 也不显示——Tab 列表是主卡专属能力）。
+   * group.model.header.hidden 是 dockview 官方路径（toJSON 自动持久化
+   * hideHeader）。
    */
   private applyGroupHeaderPolicy(): void {
     const api = this.api
     if (!api) return
     for (const group of api.groups) {
-      group.model.header.hidden = group.panels.length <= 1
+      group.model.header.hidden = !isMasterGroup(group)
     }
   }
 }
