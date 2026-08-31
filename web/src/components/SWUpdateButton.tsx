@@ -17,6 +17,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import { RefreshCw, Download, RotateCcw } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 export type SWUpdateStatus = 'idle' | 'downloading' | 'ready'
 
@@ -97,11 +98,12 @@ const TITLE_BY_STATUS: Record<SWUpdateStatus, string> = {
 }
 
 /**
- * 状态栏 SW 更新按钮（InfoBar 底部用）。
+ * SW 更新按钮（三态：检查更新 / 下载中 / 重启加载新版本）。
+ * 默认 chip 栏风格（PanelLauncher）；InfoBar（手机端）通过 className 适配。
  * idle=刷新icon（点击短暂转圈检查中）；downloading=下载icon+spin；
  * ready=重启icon，点击 reload。点击检查至少有动画反馈，不做"点了没反应"。
  */
-export function SWUpdateButton() {
+export function SWUpdateButton({ className }: { className?: string }) {
   const { status, check, reload } = useSWUpdate()
   // 手动点击"检查中"的短暂动画状态（区别于后台 10s poll 的自动状态）。
   const [manualChecking, setManualChecking] = useState(false)
@@ -131,9 +133,13 @@ export function SWUpdateButton() {
       aria-label={spinIcon ? '检查中…' : title}
       onClick={onClick}
       disabled={status === 'downloading'}
-      className="flex shrink-0 items-center gap-1 whitespace-nowrap text-text-muted hover:text-text-primary disabled:cursor-wait disabled:opacity-70"
+      className={cn(
+        'flex size-7 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-accent/10 disabled:cursor-wait disabled:opacity-70',
+        className,
+      )}
+      style={{ color: 'var(--text-secondary)' }}
     >
-      <Icon className={`size-3.5 ${showSpin ? 'animate-spin' : ''}`} />
+      <Icon className={`size-4 ${showSpin ? 'animate-spin' : ''}`} />
     </button>
   )
 }

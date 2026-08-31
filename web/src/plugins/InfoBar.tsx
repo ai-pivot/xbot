@@ -13,8 +13,9 @@ import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { SWUpdateButton } from '@/components/SWUpdateButton'
 
 export function InfoBar() {
-  // 底部状态栏只放 SW 更新按钮（用户要求：上方显示连接状态，下方改更新按钮，
-  // 避免两端重复"已连接"）。常驻固定高度条，更新按钮三态（检查/下载/重启）。
+  // 手机端底部状态栏（MobileAppShell 渲染；桌面端 rail row 已删，检查更新
+  // 按钮在 PanelLauncher chip 栏）。SWUpdateButton 默认 chip 栏尺寸（size-7），
+  // 这里覆盖为状态条内联尺寸。
   return (
     <div
       className="relative flex min-w-0 shrink-0 items-center gap-2 overflow-hidden border-t border-[var(--border)] bg-[var(--surface-bg)] px-3 text-xs"
@@ -22,7 +23,7 @@ export function InfoBar() {
     >
       <PluginPanelContainer container="info_bar" />
       <WidgetZone zone="infoBar" className="min-w-0 flex-1" excludePrefixes={['git:']} />
-      <SWUpdateButton />
+      <SWUpdateButton className="h-5 w-5 hover:bg-transparent hover:text-text-primary" />
     </div>
   )
 }

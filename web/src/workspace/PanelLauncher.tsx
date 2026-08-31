@@ -14,6 +14,7 @@
  */
 import { MessageSquare, FolderOpen, Search, Info, CheckSquare, TerminalSquare, Settings, type LucideIcon } from 'lucide-react'
 
+import { SWUpdateButton } from '@/components/SWUpdateButton'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import type { PanelManager } from '@/hooks/usePanelManager'
@@ -93,12 +94,15 @@ export function PanelLauncher({
           </button>
         )
       })}
-      {/* 设置按钮（全局设置入口，原 AppShell 全局 header 迁入；推到最右） */}
-      <button type="button" title="设置" aria-label="打开设置" onClick={onOpenSettings}
-        className="ml-auto flex size-7 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
-        style={{ color: 'var(--text-secondary)' }}>
-        <Settings className="size-4" />
-      </button>
+      {/* 右侧组：检查更新 + 设置（推到最右）。检查更新三态：检查/下载中/重启加载 */}
+      <div className="ml-auto flex items-center gap-1">
+        <SWUpdateButton />
+        <button type="button" title="设置" aria-label="打开设置" onClick={onOpenSettings}
+          className="flex size-7 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
+          style={{ color: 'var(--text-secondary)' }}>
+          <Settings className="size-4" />
+        </button>
+      </div>
     </div>
   )
 }
