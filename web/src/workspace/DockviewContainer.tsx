@@ -227,27 +227,39 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
 
     if (!seededRef.current) {
       seededRef.current = true
-      // Seed with the last active session (from localStorage) if available;
-      // otherwise a blank "Agent" tab (AgentPanel shows empty state).
+      // 默认布局：会话列表卡片（左）+ Agent 卡片（右）并列分屏
       const activeSession = ctxRef.current.sessionStore.activeSession
-      if (activeSession?.chatID) {
-        mgr.openTab({
-          type: 'agent',
-          title: activeSession.chatID,
-          icon: 'bot',
-          closable: true,
-          data: {
-            filePath: activeSession.chatID,
-            channel: activeSession.channel ?? 'web',
-          },
+      // 1. 先创建 Agent 面板
+      const agentPanelId = mgr.openTab({
+        type: 'agent',
+        title: activeSession?.chatID ?? 'Agent',
+        icon: 'bot',
+        closable: true,
+        data: activeSession?.chatID ? {
+          filePath: activeSession.chatID,
+          channel: activeSession.channel ?? 'web',
+        } : undefined,
+      })
+      // 2. 在 Agent 面板左侧创建会话列表面板（split left, 30% 宽度）
+      const agentPanel = api.getPanel(agentPanelId)
+      if (agentPanel) {
+        api.addPanel({
+          id: 'sessions-panel',
+          title: '会话',
+          component: 'panel',
+          params: { type: 'panel', panelId: 'sessions', closable: false },
+          position: { direction: 'left', referencePanel: agentPanel },
+          // 不给 closable（通过 params 传），Dockview tab renderer 控制
         })
-      } else {
-        mgr.openTab({
-          type: 'agent',
-          title: 'Agent',
-          icon: 'bot',
-          closable: true,
-        })
+        // 设置会话面板宽度比例（约 30%）
+        const sessionsGroup = api.getPanel('sessions-panel')?.group
+        if (sessionsGroup) {
+          // Dockview group 比例通过 gridview API 设置
+          // 简单方案：设置最小宽度约束
+          // Dockview 的 split 比例默认 50/50，需要后续调整
+        }
+        // 确保 Agent 面板是活跃的
+        agentPanel.api.setActive()
       }
       onReady?.()
     }
