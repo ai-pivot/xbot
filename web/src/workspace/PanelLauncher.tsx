@@ -1,13 +1,13 @@
 /**
  * PanelLauncher — 底部面板启动器（替代 SideChips）。
  *
- * 列出所有可用面板（内置 + 插件），点击在 Dockview 中打开。
+ * 列出所有可用面板（内置 + 插件），点击 toggle 打开/关闭独立卡片。
  *
  * 概念区分：
  *   - Panel（卡片）：独立分屏区域，不经过 tab 系统。
- *     sidebar 面板（sessions/files/search/info/tasks/terminal）用 addPanel 创建。
+ *     sidebar 面板（sessions/files/search/info/tasks/terminal）用 panelManager.togglePanel。
  *   - Tab：主卡片内部的标签页，用于多会话切换。
- *     Agent 面板和插件面板用 openTab 创建。
+ *     Agent 面板和插件面板用 tabManager.openTab 创建。
  *
  * 底部固定栏，位于 DockviewContainer 和 InfoBar 之间。
  */
@@ -15,6 +15,7 @@ import { MessageSquare, FolderOpen, Search, Info, CheckSquare, TerminalSquare, t
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import type { PanelManager } from '@/hooks/usePanelManager'
 import type { TabManager } from '@/hooks/useTabManager'
 
 interface LauncherEntry {
@@ -26,7 +27,6 @@ interface LauncherEntry {
   viewId?: string
 }
 
-/** sidebar 面板 → 独立 Panel（addPanel + direction）；插件面板 → Tab（openTab） */
 const SIDEBAR_PANELS: LauncherEntry[] = [
   { id: 'sessions', icon: MessageSquare, label: '会话', panelId: 'sessions' },
   { id: 'files', icon: FolderOpen, label: '文件', panelId: 'files' },
@@ -36,17 +36,24 @@ const SIDEBAR_PANELS: LauncherEntry[] = [
   { id: 'terminal', icon: TerminalSquare, label: '终端', panelId: 'terminal' },
 ]
 
-export function PanelLauncher({ tabManager }: { tabManager: TabManager }) {
+export function PanelLauncher({
+  panelManager,
+  tabManager,
+}: {
+  panelManager: PanelManager
+  tabManager: TabManager
+}) {
   const pluginPanels = usePluginViewPanels('right_sidebar')
 
   const handleClick = (entry: LauncherEntry) => {
     if (entry.panelId) {
-      // Panel（卡片）：直接用 addPanel 创建独立分屏，不经过 tab 系统
-      tabManager.addPanel({
+      // Panel（卡片）：toggle — 已打开则关闭，未打开则创建独立分屏
+      panelManager.togglePanel({
         component: 'panel',
         title: entry.label,
-        params: { type: 'panel', panelId: entry.panelId, closable: true },
+        params: { type: 'panel', panelId: entry.panelId, closable: true, panelKey: entry.panelId },
         direction: 'left',
+        panelKey: entry.panelId,
       })
     } else if (entry.pluginId && entry.viewId) {
       // Tab：插件面板作为主卡片内部的 tab
@@ -61,13 +68,16 @@ export function PanelLauncher({ tabManager }: { tabManager: TabManager }) {
 
   return (
     <div className="flex shrink-0 items-center gap-1 border-t border-border bg-sidebar-bg px-2 py-1">
-      {SIDEBAR_PANELS.map((entry) => (
-        <button key={entry.id} type="button" title={entry.label} onClick={() => handleClick(entry)}
-          className="flex size-7 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
-          style={{ color: 'var(--text-secondary)' }}>
-          <entry.icon className="size-4" />
-        </button>
-      ))}
+      {SIDEBAR_PANELS.map((entry) => {
+        const isOpen = panelManager.isPanelOpen(entry.panelId!)
+        return (
+          <button key={entry.id} type="button" title={entry.label} onClick={() => handleClick(entry)}
+            className="flex size-7 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
+            style={{ color: isOpen ? 'var(--accent)' : 'var(--text-secondary)', background: isOpen ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : undefined }}>
+            <entry.icon className="size-4" />
+          </button>
+        )
+      })}
       {pluginPanels.map((p) => {
         const Icon = pluginIcon(p.view.icon)
         return (

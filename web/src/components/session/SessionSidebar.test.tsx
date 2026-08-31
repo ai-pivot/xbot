@@ -102,10 +102,6 @@ const tabManager = {
   openTab,
   closeTab: vi.fn(),
   setActiveTab: vi.fn(),
-  tabToPanel: vi.fn(),
-    addPanel: vi.fn(),
-    removePanel: vi.fn(),
-    panelToTab: vi.fn(),
   
   bindApi: vi.fn(),
   getLayoutJSON: vi.fn(() => null),

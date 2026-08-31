@@ -20,6 +20,7 @@ import { PanelLauncher } from '@/workspace/PanelLauncher'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
+import { usePanelManager } from '@/hooks/usePanelManager'
 
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
@@ -36,6 +37,7 @@ const SettingsDialog = lazy(() =>
 export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
+  const panelManager = usePanelManager()
   const ws = useWSConnection()
   const sessionStore = useSessionStore()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -112,8 +114,8 @@ export function AppShell() {
               <Settings className="size-3.5" />
             </button>
           </header>
-          <DockviewContainer tabManager={tabManager} />
-          <PanelLauncher tabManager={tabManager} />
+          <DockviewContainer tabManager={tabManager} panelManager={panelManager} />
+          <PanelLauncher panelManager={panelManager} tabManager={tabManager} />
           <div className="flex min-w-0 shrink-0 items-stretch border-t border-border">
             <div className="min-w-0 flex-1"><InfoBar /></div>
             <div aria-hidden className="w-px shrink-0 bg-border" />

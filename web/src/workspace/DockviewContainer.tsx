@@ -76,10 +76,13 @@ import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
 import type { TabManager } from '@/hooks/useTabManager'
+import type { PanelManager } from '@/hooks/usePanelManager'
 
 interface DockviewContainerProps {
   /** The tab manager that owns tab operations; its api is bound on ready. */
   tabManager: TabManager
+  /** The panel manager that owns independent panel (card) operations. */
+  panelManager: PanelManager
   /** Called once dockview is ready and seeded (for App-level wiring). */
   onReady?: () => void
 }
@@ -130,12 +133,14 @@ function LeftTerminalPanel({ tabManager }: { tabManager: TabManager }) {
   return <TerminalList terminalManager={terminalManager} />
 }
 
-export function DockviewContainer({ tabManager, onReady }: DockviewContainerProps) {
+export function DockviewContainer({ tabManager, panelManager, onReady }: DockviewContainerProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<DockviewApi | null>(null)
   const seededRef = useRef(false)
   const tabManagerRef = useRef(tabManager)
   tabManagerRef.current = tabManager
+  const panelManagerRef = useRef(panelManager)
+  panelManagerRef.current = panelManager
 
   // Collect live context values from the outer tree.
   const themeValue = useTheme()
@@ -208,6 +213,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
     apiRef.current = api
     const mgr = tabManagerRef.current
     mgr.bindApi(api)
+    panelManagerRef.current.bindApi(api)
 
     // Track active panel changes: when an agent tab becomes active, update
     // store.activeSession so the sidebar highlight + terminal/context-ring
@@ -241,7 +247,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
         } : undefined,
       })
       // 2. 在 Agent 卡片左侧创建会话列表 Panel（独立卡片，不经过 tab 系统）
-      mgr.addPanel({
+      panelManagerRef.current.addPanel({
         component: 'panel',
         title: '会话',
         params: { type: 'panel', panelId: 'sessions', closable: false },
@@ -254,6 +260,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
     return () => {
       offActiveChange.dispose()
       tabManagerRef.current.bindApi(null)
+      panelManagerRef.current.bindApi(null)
       apiRef.current = null
       try { dockview.dispose() } catch { /* ignore */ }
     }
