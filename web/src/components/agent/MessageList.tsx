@@ -967,11 +967,11 @@ export const MessageList = memo(function MessageList({
                       liveProgress={row.id === liveId ? liveProgress : null}
                       collapseLevel={collapseLevel}
                       mergeTools={mergeTools}
-                      onRewind={canRewind && onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
+                      onRewind={onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
                       isEditing={isEditing}
-                      onStartEdit={canRewind && onStartEdit ? () => onStartEdit(row.id) : undefined}
+                      onStartEdit={onStartEdit ? () => onStartEdit(row.id) : undefined}
                       onEndEdit={onEndEdit}
-                      editDisabled={editDisabled}
+                      editDisabled={editDisabled || !canRewind}
                     />
                   </div>
                 )
