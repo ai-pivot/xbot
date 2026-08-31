@@ -17,7 +17,7 @@ import { useI18n } from '@/providers/i18n'
 
 export function LoginPage() {
   const { t } = useI18n()
-  const { login, inviteOnly } = useAuth()
+  const { login, inviteOnly, bootstrap } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
@@ -122,15 +122,17 @@ export function LoginPage() {
           </Button>
         </form>
 
-        {/* Register link */}
-        {!inviteOnly ? (
+        {/* Register link — visible when registration is open, or when the
+            first-user bootstrap is active (invite-only + empty account table:
+            the "register" entry is the operator-account wizard). */}
+        {!inviteOnly || bootstrap ? (
           <p className="mt-6 text-center text-sm text-muted-foreground">
             {t('auth.noAccount')}{' '}
             <Link
               to="/register"
               className="font-medium text-accent underline-offset-4 hover:underline"
             >
-              {t('auth.register')}
+              {bootstrap ? t('auth.createAdmin') : t('auth.register')}
             </Link>
           </p>
         ) : null}
