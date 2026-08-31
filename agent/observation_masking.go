@@ -545,7 +545,7 @@ type MaskedEntry struct {
 //   - assistant 消息的思考内容保留（不 strip think blocks）
 //
 // 返回：修改后的 messages（新 slice），实际遮蔽数量，被修改的消息条目（用于持久化）。
-func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore, keepGroups int) ([]llm.ChatMessage, int, []MaskedEntry) {
+func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore, keepGroups int, minMaskable int) ([]llm.ChatMessage, int, []MaskedEntry) {
 	if keepGroups <= 0 {
 		keepGroups = 3
 	}
@@ -618,6 +618,30 @@ func MaskOldToolResults(messages []llm.ChatMessage, store *ObservationMaskStore,
 
 	if len(candidates) == 0 {
 		return messages, 0, nil
+	}
+
+	// Minimum maskable-message threshold (user request 2026-08-31):
+	// count the tool results that would ACTUALLY be masked (excluding
+	// already-masked, short content, active files). If fewer than
+	// minMaskable, the readability cost outweighs the context
+	// savings — masking a handful of tool outputs saves nothing while
+	// replacing readable content with confusing placeholders.
+	// Production passes 30; tests pass 0 (no threshold).
+	if minMaskable > 0 {
+		maskableMsgCount := 0
+		for _, cand := range candidates {
+			for j := cand.grp.start; j <= cand.grp.end; j++ {
+				if messages[j].Role == "tool" {
+					content := messages[j].Content
+					if content != "" && content != "null" && !strings.HasPrefix(content, "📂 [masked:") && len([]rune(content)) >= 300 {
+						maskableMsgCount++
+					}
+				}
+			}
+		}
+		if maskableMsgCount < minMaskable {
+			return messages, 0, nil
+		}
 	}
 
 	// 按 token 收益排序：字符数最多的优先 mask
