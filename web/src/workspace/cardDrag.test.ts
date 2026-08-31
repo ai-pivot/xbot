@@ -1,49 +1,54 @@
 import { describe, expect, it } from 'vitest'
 import type { DockviewApi } from 'dockview-core'
 
-import { enableCardDrag, hitZone, nearestRectIndex, type Rect } from './cardDrag'
+import { enableCardDrag, nearestRectIndex, quadrantZone, type Rect } from './cardDrag'
 
 const R: Rect = { x: 0, y: 0, w: 400, h: 300 }
-// 边缘带：宽 400×0.25=100，高 300×0.25=75
+// 中央 no-op 容差 ±0.15：x ∈ (140, 260) 且 y ∈ (105, 195) → null
 
-describe('hitZone（drop 方位判定，25% 边缘带）', () => {
-  it('中心区 → center（并入目标卡片为 tab）', () => {
-    expect(hitZone(R, 200, 150)).toBe('center')
-    expect(hitZone(R, 150, 120)).toBe('center')
-    expect(hitZone(R, 250, 180)).toBe('center')
+describe('quadrantZone（拖动落点方位：相对源卡片四分，拖向哪边放哪边）', () => {
+  it('源中央小区 → null（拖动意图不明确，不落子）', () => {
+    expect(quadrantZone(R, 200, 150)).toBeNull()
+    // 中央容差 ±0.1：x∈(160,240) 且 y∈(120,180)
+    expect(quadrantZone(R, 230, 155)).toBeNull()
+    expect(quadrantZone(R, 180, 150)).toBeNull()
   })
 
-  it('左边缘带 → left', () => {
-    expect(hitZone(R, 30, 150)).toBe('left')
-    expect(hitZone(R, 0, 150)).toBe('left')
+  it('源左半（含源外更左）→ left（换边：源放到最近邻居左边）', () => {
+    expect(quadrantZone(R, 100, 150)).toBe('left')
+    expect(quadrantZone(R, 0, 150)).toBe('left')
+    // pointer 拖到源外远处（左侧 sidebar 区域）→ 仍 left
+    expect(quadrantZone(R, -200, 150)).toBe('left')
   })
 
-  it('右边缘带 → right', () => {
-    expect(hitZone(R, 380, 150)).toBe('right')
-    expect(hitZone(R, 400, 150)).toBe('right')
+  it('源右半（含源外更右）→ right', () => {
+    expect(quadrantZone(R, 300, 150)).toBe('right')
+    expect(quadrantZone(R, 400, 150)).toBe('right')
+    expect(quadrantZone(R, 600, 150)).toBe('right')
   })
 
-  it('上/下边缘带 → top/bottom', () => {
-    expect(hitZone(R, 200, 30)).toBe('top')
-    expect(hitZone(R, 200, 290)).toBe('bottom')
+  it('源上/下半 → top/bottom（垂直分屏）', () => {
+    expect(quadrantZone(R, 200, 50)).toBe('top')
+    expect(quadrantZone(R, 200, 0)).toBe('top')
+    expect(quadrantZone(R, 200, 250)).toBe('bottom')
   })
 
-  it('角部 → 深度比例更近的边（左上角落左/上取决于比例）', () => {
-    // 左上角 (20, 15)：距左 20/100=0.2，距上 15/75=0.2 → 相等归水平（left）
-    expect(hitZone(R, 20, 15)).toBe('left')
-    // 更靠上：(20, 5)：距左 20/100=0.2，距上 5/75=0.067 → top
-    expect(hitZone(R, 20, 5)).toBe('top')
-    // 更靠左：(5, 40)：距左 5/100=0.05 < 距上 40/75=0.53 → left
-    expect(hitZone(R, 5, 40)).toBe('left')
-    // 右下角 (390, 280)：距右 10/100=0.1，距下 20/75=0.27 → right
-    expect(hitZone(R, 390, 280)).toBe('right')
+  it('斜向落点 → 归一化距离更远的轴（dx vs dy）', () => {
+    // (50, 50)：relX=0.125, relY=0.167 → dx=0.375 > dy=0.333 → 水平主导 → left
+    expect(quadrantZone(R, 50, 50)).toBe('left')
+    // (200, 20)：relY=0.067 → dy=0.433 > dx=0 → top
+    expect(quadrantZone(R, 200, 20)).toBe('top')
   })
 
-  it('非原点矩形同样成立', () => {
-    const r: Rect = { x: 1000, y: 600, w: 400, h: 300 }
-    expect(hitZone(r, 1020, 750)).toBe('left')
-    expect(hitZone(r, 1200, 800)).toBe('center')
-    expect(hitZone(r, 1200, 890)).toBe('bottom')
+  it('master/stack 场景：主卡片（右侧 80%）拖向左半屏 → left（换边核心路径）', () => {
+    // viewport 1400：sidebar 左 280 宽，主卡 {x:280, w:1120}
+    const main: Rect = { x: 280, y: 0, w: 1120, h: 900 }
+    // pointer 拖到左侧（sidebar 区域上方，relX 为负）→ left
+    expect(quadrantZone(main, 100, 450)).toBe('left')
+    // pointer 在主卡左半内 → left
+    expect(quadrantZone(main, 700, 450)).toBe('left')
+    // pointer 在主卡右半内 → right（原位方向）
+    expect(quadrantZone(main, 1200, 450)).toBe('right')
   })
 })
 

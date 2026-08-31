@@ -29,7 +29,7 @@
  */
 import type { DockviewApi, DockviewGroupPanel } from 'dockview-core'
 
-export type DropZone = 'left' | 'right' | 'top' | 'bottom' | 'center'
+export type DropZone = 'left' | 'right' | 'top' | 'bottom'
 
 /** 目标卡片矩形（viewport 坐标，getBoundingClientRect 提取） */
 export interface Rect {
@@ -39,34 +39,35 @@ export interface Rect {
   h: number
 }
 
-/** 边缘带宽度比例（目标卡片宽/高的 25% 区域判定四向 drop） */
-const EDGE = 0.25
 /** 位移阈值（px）：超过才进入拖动（区分 Ctrl+click） */
 const DRAG_THRESHOLD_PX = 6
 
 /** 按住 Ctrl 时 host 的 armed class（CSS `cursor: grab` 提示卡片可拖动） */
 const DRAG_ARMED_CLASS = 'ctrl-drag-armed'
 
+/** 源卡片中央 no-op 容差（归一化 ±0.1 —— 拖动意图不明确时不落子） */
+const CENTER_TOLERANCE = 0.1
+
 /**
- * drop 方位判定（纯函数）：pointer 相对目标矩形的位置 → 四向边缘带或中心。
- * 角部（两轴同时命中边缘带）归深度比例更近的边。
+ * 拖动落点方位（相对**源卡片**四分，平铺 WM 语义：拖向哪个方向，源就放到
+ * 最近邻居的那边）。
+ *
+ * 与「相对目标卡片判方位」（旧 hitZone）的关键差异：master/stack 两列布局
+ * 下源卡片占屏大半，pointer 的自然落点（目标卡片近侧，如拖主卡停在
+ * sidebar 右半）按目标方位判定恒为 'right' —— 源放目标右边 = 原位，
+ * 落子 no-op（「主卡片拖不动」根因：手势/overlay 全正常，moveTo 执行了
+ * 但位置不变）。改为相对源四分：pointer 在源左半（或更左）→ 'left'
+ * （换边），右半 → 'right'，上/下 → 垂直分屏。
+ *
+ * 中央小区（±0.15）→ null（no-op —— 拖动意图不明确时不落子，防误操作）。
  */
-export function hitZone(rect: Rect, px: number, py: number): DropZone {
-  const ex = rect.w * EDGE
-  const ey = rect.h * EDGE
-  const inLeft = px < rect.x + ex
-  const inRight = px > rect.x + rect.w - ex
-  const inTop = py < rect.y + ey
-  const inBottom = py > rect.y + rect.h - ey
-  if (!inLeft && !inRight && !inTop && !inBottom) return 'center'
-  if ((inLeft || inRight) && (inTop || inBottom)) {
-    const dx = inLeft ? px - rect.x : rect.x + rect.w - px
-    const dy = inTop ? py - rect.y : rect.y + rect.h - py
-    return dx / ex <= dy / ey ? (inLeft ? 'left' : 'right') : (inTop ? 'top' : 'bottom')
-  }
-  if (inLeft) return 'left'
-  if (inRight) return 'right'
-  return inTop ? 'top' : 'bottom'
+export function quadrantZone(source: Rect, px: number, py: number): DropZone | null {
+  const relX = (px - source.x) / source.w
+  const relY = (py - source.y) / source.h
+  const dx = Math.abs(relX - 0.5)
+  const dy = Math.abs(relY - 0.5)
+  if (dx < CENTER_TOLERANCE && dy < CENTER_TOLERANCE) return null
+  return dx >= dy ? (relX < 0.5 ? 'left' : 'right') : (relY < 0.5 ? 'top' : 'bottom')
 }
 
 export interface CardDragOptions {
@@ -120,14 +121,31 @@ export function enableCardDrag(
   let state: DragState | null = null
   let clickSuppress = 0
 
-  const groupAt = (el: EventTarget | null): DockviewGroupPanel | null => {
+  /**
+   * 源卡片反查（pointerdown 时）。两层路径：
+   * 1. DOM 反查：target.closest('.dv-groupview')——tab 栏 / 渲染在 group 内的
+   *    panel 内容
+   * 2. 坐标反查兜底：pointer 坐标落在哪个 group 的 rect 内——active panel
+   *    的内容渲染在 dv-render-overlay 层（dockview overlayRenderContainer，
+   *    DOM 不在 .dv-groupview 子树），DOM 反查对它恒 null（「主卡片拖不动」
+   *    的根因：主卡内容在 overlay 层，closest 永远失败）
+   */
+  const groupAt = (el: EventTarget | null, x: number, y: number): DockviewGroupPanel | null => {
     const target = el as HTMLElement | null
-    if (!target?.closest) return null
-    const groupEl = target.closest('.dv-groupview') as HTMLElement | null
-    if (!groupEl) return null
-    const group = api.groups.find((g) => g.element === groupEl)
-    if (!group || group.api.location.type !== 'grid') return null
-    return group
+    if (target?.closest) {
+      const groupEl = target.closest('.dv-groupview') as HTMLElement | null
+      if (groupEl) {
+        const group = api.groups.find((g) => g.element === groupEl)
+        if (group && group.api.location.type === 'grid') return group
+      }
+    }
+    // 坐标反查兜底（overlay 渲染的内容：按 pointer 落点找 group rect）
+    for (const g of api.groups) {
+      if (g.api.location.type !== 'grid') continue
+      const r = g.element.getBoundingClientRect()
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return g
+    }
+    return null
   }
 
   /** 拖动目标：跳过源自身与 floating；精确命中优先，pointer 落在源卡片/
@@ -165,13 +183,13 @@ export function enableCardDrag(
       document.body.appendChild(el)
       state.overlay = el
     }
-    // 半区指示：left/right = 左右半张卡片，top/bottom = 上下半张，center 整卡
+    // 半区指示（显示在目标卡片上）：left/right = 左右半张，top/bottom = 上下
+    // 半张——指示源卡片松手后将出现在目标的哪一侧
     const half = {
       left: { x: rect.x, y: rect.y, w: rect.w / 2, h: rect.h },
       right: { x: rect.x + rect.w / 2, y: rect.y, w: rect.w / 2, h: rect.h },
       top: { x: rect.x, y: rect.y, w: rect.w, h: rect.h / 2 },
       bottom: { x: rect.x, y: rect.y + rect.h / 2, w: rect.w, h: rect.h / 2 },
-      center: { x: rect.x, y: rect.y, w: rect.w, h: rect.h },
     }[zone]
     const s = state.overlay.style
     s.left = `${half.x}px`
@@ -203,6 +221,12 @@ export function enableCardDrag(
     window.removeEventListener('keydown', onKeyDown, true)
   }
 
+  /** 源卡片矩形（拖动落点方位的判定基准 — quadrantZone 相对源四分） */
+  const sourceRect = (): Rect => {
+    const r = state!.source.element.getBoundingClientRect()
+    return { x: r.left, y: r.top, w: r.width, h: r.height }
+  }
+
   const onPointerMove = (e: PointerEvent) => {
     if (!state || e.pointerId !== state.pointerId) return
     if (!state.active) {
@@ -212,7 +236,9 @@ export function enableCardDrag(
     }
     e.preventDefault()
     const hit = targetAt(e.clientX, e.clientY)
-    setOverlay(hit ? hitZone(hit.rect, e.clientX, e.clientY) : null, hit?.rect ?? null)
+    // 落点方位相对源卡片（拖向哪边放哪边）；中央小区 null → 无 overlay
+    const zone = quadrantZone(sourceRect(), e.clientX, e.clientY)
+    setOverlay(zone, hit?.rect ?? null)
   }
 
   const onPointerUp = (e: PointerEvent) => {
@@ -223,13 +249,10 @@ export function enableCardDrag(
     }
     e.preventDefault()
     const hit = targetAt(e.clientX, e.clientY)
-    if (hit) {
-      const zone = hitZone(hit.rect, e.clientX, e.clientY)
-      state.source.api.moveTo({
-        group: hit.group,
-        // center 省略 position（moveTo 默认并入目标卡片为 tab）
-        position: zone === 'center' ? undefined : zone,
-      })
+    const zone = quadrantZone(sourceRect(), e.clientX, e.clientY)
+    if (hit && zone) {
+      // zone = 拖动方向（相对源）：源放到最近邻居卡片的该侧
+      state.source.api.moveTo({ group: hit.group, position: zone })
       options.onDrop?.()
     }
     cleanup(true)
@@ -262,7 +285,7 @@ export function enableCardDrag(
 
   const onPointerDown = (e: PointerEvent) => {
     if (!e.ctrlKey || e.button !== 0 || state) return
-    const source = groupAt(e.target)
+    const source = groupAt(e.target, e.clientX, e.clientY)
     if (!source) return
     // Ctrl+左键 = 拖动专用手势：从按下起吞掉一切交互。preventDefault 阻止
     // 默认行为（输入框 focus/光标定位、文本选择起点、图片原生拖动）；
