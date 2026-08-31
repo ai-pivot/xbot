@@ -1207,7 +1207,11 @@ func (a *Agent) buildOAuthHandler(channel, chatID, senderID, sessionKey string) 
 // 新增 provider 无需修改此函数——工具通过 ctx.MemoryProvider 类型断言获取特有方法。
 func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtras {
 	extras := &ToolContextExtras{
-		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+		// Pool-level invalidation: every entry in the process-wide MCP pool
+		// is dropped (config files changed via ManageTools) — attached
+		// managers re-acquire fresh entries on next access. One call covers
+		// every scope; per-session iteration is no longer needed.
+		InvalidateAllSessionMCP: tools.GlobalMCPPool().InvalidateAll,
 	}
 
 	ts, err := a.multiSession.GetOrCreateSession(channel, chatID)
@@ -1320,7 +1324,7 @@ func (a *Agent) buildSubAgentMemory(
 	extras := &ToolContextExtras{
 		TenantID:                subTenantID,
 		MemoryProvider:          mem, // generic: tools type-assert to get provider-specific methods
-		InvalidateAllSessionMCP: func() { a.multiSession.InvalidateAll() },
+		InvalidateAllSessionMCP: tools.GlobalMCPPool().InvalidateAll,
 	}
 
 	// LettaMemory-specific fields (backward compat for existing letta tools)

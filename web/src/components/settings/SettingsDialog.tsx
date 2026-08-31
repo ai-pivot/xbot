@@ -29,6 +29,7 @@ import { SettingsAppearance } from './SettingsAppearance'
 import { SettingsInteraction } from './SettingsInteraction'
 import { SettingsGeneral } from './SettingsGeneral'
 import { SettingsLLM } from './SettingsLLM'
+import { SettingsWebUsers } from './SettingsWebUsers'
 import { SettingsSection } from './SettingsSection'
 import { SettingsAbout } from './SettingsAbout'
 import { SettingsDeveloper } from './SettingsDeveloper'
@@ -36,7 +37,7 @@ import { SettingsLayout } from './SettingsLayout'
 import { SettingsPlugins } from './SettingsPlugins'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'developer' | 'layout' | 'plugins' | 'about'
+type Category = 'appearance' | 'interaction' | 'language' | 'llm' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
 
 interface SettingsDialogProps {
   open: boolean
@@ -105,6 +106,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     { key: 'language', labelKey: 'nav.language' },
     { key: 'llm', labelKey: 'nav.llm' },
     { key: 'account', labelKey: 'nav.account' },
+    { key: 'webusers', labelKey: 'nav.webUsers' },
     { key: 'developer', labelKey: 'nav.developer' },
     { key: 'layout', labelKey: 'nav.layout' },
     { key: 'plugins', labelKey: 'nav.plugins' },
@@ -160,6 +162,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             {active === 'account' ? (
               <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />
             ) : null}
+            {active === 'webusers' ? <SettingsWebUsers /> : null}
             {active === 'developer' ? <SettingsDeveloper /> : null}
             {active === 'layout' ? <SettingsLayout /> : null}
             {active === 'plugins' ? <SettingsPlugins /> : null}

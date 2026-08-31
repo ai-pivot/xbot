@@ -171,6 +171,13 @@ type taskWaitResult struct {
 	done bool
 }
 
+// taskChan is one pending task's done channel within waitMultipleTasks.
+type taskChan struct {
+	id     string
+	doneCh <-chan struct{}
+	isSub  bool
+}
+
 // waitMultipleTasks waits for multiple tasks concurrently. In "all" mode it
 // blocks until every task finishes (or timeout). In "any" mode it returns as
 // soon as the first task finishes.
@@ -180,11 +187,6 @@ func waitMultipleTasks(toolCtx *ToolContext, taskIDs []string, mode string, time
 	defer timer.Stop()
 
 	// Collect done channels for all tasks.
-	type taskChan struct {
-		id     string
-		doneCh <-chan struct{}
-		isSub  bool
-	}
 	var chans []taskChan
 	var alreadyDone []taskWaitResult
 
@@ -222,20 +224,26 @@ func waitMultipleTasks(toolCtx *ToolContext, taskIDs []string, mode string, time
 		}
 	}
 
-	// "any" mode: if any task is already done, return immediately.
+	// "any" mode: if any task is already done, return immediately — but the
+	// still-pending tasks MUST be included in the output as ⏳ still-running
+	// (the caller sees "1/2 tasks done", not "1/1": a vanished task is
+	// indistinguishable from a completed one).
 	if mode == "any" && len(alreadyDone) > 0 {
-		return NewResult(formatMultiResults(alreadyDone, mode, timeoutSec, false)), nil
+		results := append([]taskWaitResult{}, alreadyDone...)
+		results = collectPendingStatus(toolCtx, results, chans)
+		return NewResult(formatMultiResults(results, mode, timeoutSec, false, false)), nil
 	}
 
 	// "all" mode: if all tasks are already done, return immediately.
 	if mode == "all" && len(chans) == 0 {
-		return NewResult(formatMultiResults(alreadyDone, mode, timeoutSec, false)), nil
+		return NewResult(formatMultiResults(alreadyDone, mode, timeoutSec, false, false)), nil
 	}
 
 	// Wait for tasks to complete.
 	results := make([]taskWaitResult, 0, len(taskIDs))
 	results = append(results, alreadyDone...)
 	timedOut := false
+	interrupted := false
 
 	for len(chans) > 0 {
 		// Build select cases dynamically.
@@ -266,7 +274,9 @@ func waitMultipleTasks(toolCtx *ToolContext, taskIDs []string, mode string, time
 			break
 		}
 		if chosen == len(cases)-1 {
-			// Context cancelled.
+			// Context cancelled — report honestly, NOT "all completed"
+			// (the caller must see the true N/M and the pending tasks).
+			interrupted = true
 			break
 		}
 
@@ -291,7 +301,17 @@ func waitMultipleTasks(toolCtx *ToolContext, taskIDs []string, mode string, time
 		}
 	}
 
-	// For tasks still running (timeout or "any" mode), fetch current status.
+	// For tasks still running (timeout, interruption or "any" mode), fetch current status.
+	results = collectPendingStatus(toolCtx, results, chans)
+
+	return NewResult(formatMultiResults(results, mode, timeoutSec, timedOut, interrupted)), nil
+}
+
+// collectPendingStatus fetches the current status of tasks still in chans
+// (not yet done) and appends them to results as done:false. Used by every
+// incomplete-exit path (any-mode early return, timeout, ctx cancellation) —
+// pending tasks must NEVER vanish from the output.
+func collectPendingStatus(toolCtx *ToolContext, results []taskWaitResult, chans []taskChan) []taskWaitResult {
 	for _, tc := range chans {
 		var text string
 		if tc.isSub {
@@ -303,12 +323,11 @@ func waitMultipleTasks(toolCtx *ToolContext, taskIDs []string, mode string, time
 		}
 		results = append(results, taskWaitResult{id: tc.id, text: text, done: false})
 	}
-
-	return NewResult(formatMultiResults(results, mode, timeoutSec, timedOut)), nil
+	return results
 }
 
 // formatMultiResults formats the results of waiting on multiple tasks.
-func formatMultiResults(results []taskWaitResult, mode string, timeoutSec int, timedOut bool) string {
+func formatMultiResults(results []taskWaitResult, mode string, timeoutSec int, timedOut, interrupted bool) string {
 	var b strings.Builder
 	doneCount := 0
 	for _, r := range results {
@@ -317,11 +336,14 @@ func formatMultiResults(results []taskWaitResult, mode string, timeoutSec int, t
 		}
 	}
 
-	if timedOut {
+	switch {
+	case timedOut:
 		fmt.Fprintf(&b, "Timed out after %ds — %d/%d tasks completed (mode: %s).\n\n", timeoutSec, doneCount, len(results), mode)
-	} else if mode == "any" {
+	case interrupted:
+		fmt.Fprintf(&b, "Wait interrupted — %d/%d tasks completed (mode: %s).\n\n", doneCount, len(results), mode)
+	case mode == "any":
 		fmt.Fprintf(&b, "First task completed (mode: any). %d/%d tasks done.\n\n", doneCount, len(results))
-	} else {
+	default:
 		fmt.Fprintf(&b, "All tasks completed (%d/%d, mode: all).\n\n", doneCount, len(results))
 	}
 

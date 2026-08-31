@@ -286,7 +286,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				Port:       cfg.Web.Port,
 				DB:         webDB.Conn(),
 				AdminToken: cfg.Admin.Token,
-				InviteOnly: cfg.Web.InviteOnly,
+				InviteOnly: cfg.Web.IsInviteOnly(),
 				PublicURL:  cfg.Sandbox.PublicURL,
 			}, msgBus)
 			// Auto-detect frontend static files if not explicitly configured.
