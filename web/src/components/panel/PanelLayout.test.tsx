@@ -268,9 +268,9 @@ describe('v5.1 Focus + Drawer', () => {
     renderShell()
     expect(chipOrder()).toEqual(['p.a', 'p.b'])
     expect(sideRenderOrder()).toEqual([])
-    // 零挤压：堆叠区 overflow-y-auto（超高整栏滚动），chips 条固定底部。
+    // 面板铺满堆叠区：overflow-hidden（面板内部各自滚动），chips 条固定底部。
     const stack = document.querySelector('[data-testid="panel-dock-stack"]')!
-    expect(stack.className).toContain('overflow-y-auto')
+    expect(stack.className).toContain('overflow-hidden')
     expect(stack.className).toContain('flex-1')
     // SideChips 外层 div（data-panel-zone="chip"）内含 shrink-0 的 chips 条。
     const chipDock = document.querySelector('[data-testid="panel-chip-dock"]')!
@@ -293,14 +293,14 @@ describe('v5.1 Focus + Drawer', () => {
   it('side ✕ 取消钉选 → chip；PINNED_DEFAULTS（sessions）无 ✕ 且可调高', () => {
     registerPanel(makeDef('core.sessions', '会话', { source: 'core', icon: 'message' }))
     renderShell()
-    // sessions 默认 side 置顶、h 420 展开（entryOf 合成，未交互不落盘）。
+    // sessions 默认 side 置顶、h 420 展开（flex-basis 420，撑满堆叠区）。
     expect(sideRenderOrder()).toEqual(['core.sessions'])
     expect(chipOrder()).toEqual(['p.a', 'p.b'])
     expect(localStorage.getItem(V2_KEY)).toBeNull()
-    const sessionsBody = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"] > div')!
-    expect(sessionsBody.style.height).toBe('420px')
-    expect(sessionsPanel(sessionsBody).querySelector('[aria-label="取消钉选（收入底部启动器）"]')).toBeNull()
-    expect(sessionsPanel(sessionsBody).querySelector('[aria-label="调整面板高度"]')).not.toBeNull()
+    const sessionsPanel = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')!
+    expect(sessionsPanel.style.flex).toContain('420')
+    expect(sessionsPanel.querySelector('[aria-label="取消钉选（收入底部启动器）"]')).toBeNull()
+    expect(sessionsPanel.querySelector('[aria-label="调整面板高度"]')).not.toBeNull()
 
     // p.a 钉选 → 有 ✕ → 取消钉选回 chip。
     fireEvent.click(screen.getByLabelText('钉选 A'))
@@ -339,16 +339,16 @@ describe('v5.1 Focus + Drawer', () => {
     expect(chipOrder()).toEqual(['p.a', 'p.b'])
   })
 
-  it('底边调高：move 零持久化 + body height 跟随，up 一次落盘', () => {
+  it('底边调高：move 零持久化 + flex-basis 跟随，up 一次落盘', () => {
     renderShell()
     fireEvent.click(screen.getByLabelText('钉选 A'))
     const before = localStorage.getItem(V2_KEY)
     const handle = document.querySelector<HTMLElement>('[aria-label="调整面板高度"]')!
     fireEvent.pointerDown(handle, { button: 0, clientX: 100, clientY: 100 })
     fireEvent.pointerMove(handle, { clientX: 100, clientY: 150 })
-    // move 中本地跟随（220 + 50 = 270），零持久化。
-    const body = document.querySelector<HTMLElement>('[data-panel-id="p.a"] > div')!
-    expect(body.style.height).toBe('270px')
+    // move 中本地跟随（220 + 50 = 270），零持久化。flex-basis 跟随 curH。
+    const panel = document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!
+    expect(panel.style.flex).toContain('270')
     expect(localStorage.getItem(V2_KEY)).toBe(before)
     fireEvent.pointerUp(handle)
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
@@ -373,15 +373,15 @@ describe('v5.1 Focus + Drawer', () => {
     expect(saved['p.a'].loc.h).toBe(140)
   })
 
-  it('插件 contribution 尊重：def.location side h 220 → 默认钉选（折叠态标题栏，展开后 body 220）', () => {
+  it('插件 contribution 尊重：def.location side h 220 → 默认钉选（flex-basis 220）', () => {
     registerPanel(makeDef('git.panel', 'Git', { source: 'xbot.git', location: { zone: 'side', h: 220, order: 0 } }))
     renderShell()
     expect(sideRenderOrder()).toEqual(['git.panel'])
     expect(chipOrder()).toEqual(['p.a', 'p.b'])
     const panel = document.querySelector<HTMLElement>('[data-panel-id="git.panel"]')!
     fireEvent.click(within(panel).getByLabelText('展开'))
-    const body = panel.querySelector<HTMLElement>(':scope > div')!
-    expect(body.style.height).toBe('220px')
+    // body 不再有固定 height（flex-1 撑满）；flex-basis 通过 PanelChrome 的 style.flex 携带。
+    expect(panel.style.flex).toContain('220')
   })
 
   it('拖 side 面板到底部 chips 条 → zone chip（跨 zone 放置）', () => {
@@ -408,11 +408,6 @@ describe('v5.1 Focus + Drawer', () => {
     expect(saved['p.a'].collapsed).toBe(false)
   })
 })
-
-/** 由 body 元素向上找面板 section（✕/handle 断言用）。 */
-function sessionsPanel(body: HTMLElement): HTMLElement {
-  return body.closest<HTMLElement>('[data-panel-id]')!
-}
 
 // ── 拖拽协议 v5 ─────────────────────────────────────────────────────────────
 

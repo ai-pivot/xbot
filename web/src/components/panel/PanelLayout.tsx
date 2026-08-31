@@ -958,15 +958,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
   return <PanelDockContext.Provider value={value}>{children}</PanelDockContext.Provider>
 }
 
-/**
- * v5.1 docked body 高度策略：h 存在（拖拽调高/钉选默认）→ body 固定高度
- * （内部滚动）；缺省 → 自适应内容 max-h（DOCK_BODY_MAX_H）。无任何 flex 收缩
- * 分配——任何面板都不被压缩（硬性要求「永不挤压」）。
- */
-function dockBodyStyle(h: number | null): { bodyHeight: number | null; bodyMaxHeight: number | null } {
-  if (h != null) return { bodyHeight: h, bodyMaxHeight: null }
-  return { bodyHeight: null, bodyMaxHeight: DOCK_BODY_MAX_H }
-}
 
 /** zone 宿主 ring 高亮样式（activeZone 命中宿主根元素时）。 */
 export function zoneHighlightStyle(active: boolean): CSSProperties | undefined {
@@ -983,6 +974,7 @@ export function PanelDock(): ReactNode {
   const dock = usePanelDock()
   const setDockEl = useCallback((el: HTMLDivElement | null) => dock.registerDockEl(el), [dock])
   const zoneActive = dock.activeZone === 'side'
+  const sideIds = dock.zoneIds('side')
   return (
     <div
       ref={setDockEl}
@@ -991,8 +983,8 @@ export function PanelDock(): ReactNode {
       className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden p-1.5"
       style={zoneHighlightStyle(zoneActive)}
     >
-      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto">
-        {dock.zoneIds('side').map((id) => {
+      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
+        {sideIds.map((id) => {
           const def = dock.defs.find((d) => d.id === id)
           if (!def) return null
           const entry = dock.entryOf(id)
@@ -1000,9 +992,10 @@ export function PanelDock(): ReactNode {
           const heightDrag = dock.drag && dock.drag.kind === 'height' && dock.drag.id === id ? dock.drag : null
           const h = heightDrag
             ? heightDrag.curH
-            : (entry.loc.h != null ? entry.loc.h : (PINNED_DEFAULTS[id]?.h ?? null))
-          const special = dockBodyStyle(h)
+            : (entry.loc.h != null ? entry.loc.h : (PINNED_DEFAULTS[id]?.h ?? PIN_DEFAULT_H))
           const isDropTarget = dock.dropHint?.targetId === id
+          // flex 比例分配：面板按 flex-basis(h) 比例撑满堆叠区，无空白
+          const flexBasis = entry.collapsed ? 'auto' : `${h}px`
           return (
             <PanelChrome
               key={id}
@@ -1018,17 +1011,15 @@ export function PanelDock(): ReactNode {
               onGripPointerDown={dock.onGripPointerDown(id)}
               isDragSource={dock.dragSrcId === id}
               dropIndicator={isDropTarget ? (dock.dropHint!.before ? 'before' : 'after') : null}
-              bodyHeight={special.bodyHeight}
-              bodyMaxHeight={special.bodyMaxHeight}
               emptyHint={def.emptyHint}
               onResizeHeightPointerDown={dock.onHeightPointerDown(id)}
-              style={{ flex: '0 0 auto' }}
+              style={{ flex: entry.collapsed ? '0 0 auto' : `1 1 ${flexBasis}`, minHeight: 0 }}
             >
               {def.render({ tabManager: dock.tabManager })}
             </PanelChrome>
           )
         })}
-        {dock.zoneIds('side').length === 0 ? (
+        {sideIds.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-text-muted">
             暂无钉选面板
           </div>

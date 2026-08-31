@@ -75,10 +75,6 @@ export interface PanelChromeProps {
   isDragSource?: boolean
   /** floating 绝对定位（left/top/width/height 由 PanelLayout 传）。 */
   style?: CSSProperties
-  /** v5.1 docked 主体固定高度 px（loc.h 存在/钉选默认/调高拖拽跟随；内部滚动）。 */
-  bodyHeight?: number | null
-  /** docked 展开主体 max-height（px；null = 不设上限；bodyHeight 存在时不生效）。 */
-  bodyMaxHeight?: number | null
   /** 空态协议：render(ctx) 返回 null 时 body 显示统一空态（此文案可自定义，默认「暂无内容」）。 */
   emptyHint?: string
   children: ReactNode
@@ -118,8 +114,6 @@ export function PanelChrome({
   dropIndicator = null,
   isDragSource = false,
   style,
-  bodyHeight,
-  bodyMaxHeight,
   emptyHint,
   children,
 }: PanelChromeProps) {
@@ -242,16 +236,9 @@ export function PanelChrome({
           （useState/useEffect/订阅不卸载），展开时恢复（git-fancy 的 commit
           accordion 展开、技能面板的子项展开等不再丢失）。 */}
       <div
-        className={floating ? 'min-h-0 flex-1 overflow-y-auto' : 'min-h-0 overflow-y-auto'}
+        className={floating ? 'min-h-0 flex-1 overflow-y-auto' : 'min-h-0 flex-1 overflow-y-auto'}
         style={{
           display: collapsed ? 'none' : undefined,
-          ...(!floating
-            ? (bodyHeight != null
-              ? { height: bodyHeight }
-              : bodyMaxHeight != null
-                ? { maxHeight: bodyMaxHeight }
-                : {})
-            : {}),
         }}
       >
         {/* 空态协议：面板 render(ctx) 返回 null → 统一空态占位（无边框，
