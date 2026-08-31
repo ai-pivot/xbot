@@ -13,7 +13,14 @@ import { isMasterGroup } from '@/workspace/layoutEngine'
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
-export type PanelDirection = 'left' | 'right' | 'above' | 'below'
+/**
+ * Panel 分屏方向：只允许水平切分（left/right）。
+ *
+ * LayoutEngine 按横向宽度分配所有卡片（master 80% + secondary 平分剩余），
+ * 垂直切分（above/below）会产生嵌套 vertical branch，破坏该计算模型。
+ * 非主卡片一律与主卡片在 root 层水平并列。
+ */
+export type PanelDirection = 'left' | 'right'
 
 export interface AddPanelOptions {
   /** Dockview component 名（如 'panel', 'agent', 'file', 'terminal'） */
@@ -22,7 +29,7 @@ export interface AddPanelOptions {
   title: string
   /** 面板参数 */
   params: Record<string, unknown>
-  /** 分屏方向；不传 = 默认加到活跃 group */
+  /** 分屏方向，默认 'left'（与主卡片水平分屏）。Panel 是独立卡片，必须分屏。 */
   direction?: PanelDirection
   /** 引用面板 id（在其旁边分屏）；不传 = 默认在主 group 旁分屏 */
   referencePanelId?: string
@@ -121,22 +128,23 @@ export function usePanelManager(): PanelManager {
     // Dockview addPanel 原生支持 initialWidth/initialHeight
     if (options.initialWidth) addOpts.initialWidth = options.initialWidth
     if (options.initialHeight) addOpts.initialHeight = options.initialHeight
-    if (options.direction) {
-      // 优先用显式传入的 referencePanelId；否则找主卡片（含 agent tab 的 group 的首个 panel）
-      // 不用 api.activePanel — 上一个新 Panel 的 setActive 会把它变成 sidebar panel
-      // 导致后续 Panel 相对于 sidebar 而非 Agent 分屏（"窄栏里上下分屏"根因）
-      let ref: IDockviewPanel | undefined
-      if (options.referencePanelId) {
-        ref = api.getPanel(options.referencePanelId) ?? undefined
-      } else {
-        const mainGroup = api.groups.find(isMasterGroup)
-        ref = mainGroup?.panels[0] ?? undefined
-      }
-      if (ref) {
-        addOpts.position = { direction: options.direction, referencePanel: ref }
-      } else {
-        addOpts.position = { direction: options.direction }
-      }
+    // Panel 是独立卡片，必须水平分屏（默认 'left'，与主卡片并列）。
+    // 不存在"加入活跃 group"——那是 Tab 的语义（openTab）。
+    const direction = options.direction ?? 'left'
+    // 优先用显式传入的 referencePanelId；否则找主卡片（含 agent tab 的 group 的首个 panel）
+    // 不用 api.activePanel — 上一个新 Panel 的 setActive 会把它变成 sidebar panel
+    // 导致后续 Panel 相对于 sidebar 而非 Agent 分屏（"窄栏里上下分屏"根因）
+    let ref: IDockviewPanel | undefined
+    if (options.referencePanelId) {
+      ref = api.getPanel(options.referencePanelId) ?? undefined
+    } else {
+      const mainGroup = api.groups.find(isMasterGroup)
+      ref = mainGroup?.panels[0] ?? undefined
+    }
+    if (ref) {
+      addOpts.position = { direction, referencePanel: ref }
+    } else {
+      addOpts.position = { direction }
     }
     api.addPanel(addOpts)
     // 不调 setActive — 避免 activePanel 变成 sidebar panel 影响后续 addPanel 的 referencePanel
@@ -181,8 +189,8 @@ export function usePanelManager(): PanelManager {
     const api = apiRef.current
     const panel = api?.getPanel(dockviewPanelId)
     if (!api || !panel) return
-    const pos = direction === 'above' ? 'top' : direction === 'below' ? 'bottom' : direction
-    panel.api.moveTo({ group: panel.group, position: pos as never })
+    // 水平切分（left/right）；垂直切分被 PanelDirection 类型禁止
+    panel.api.moveTo({ group: panel.group, position: direction })
   }, [])
 
   const panelToTab = useCallback((panelId: string) => {
