@@ -606,11 +606,18 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 
 // maybeMaskObservations applies lightweight observation masking when context
 // exceeds 60% of max tokens but hasn't reached compression threshold.
+// Minimum guard: conversations with fewer than minMaskMessages total messages
+// are never masked — masking a short history saves negligible context while
+// replacing readable tool output with confusing placeholders.
 func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64, maxTokens int) {
 	if s.cfg.MaskStore == nil {
 		return
 	}
 	if totalTokens <= 0 {
+		return
+	}
+	const minMaskMessages = 30
+	if len(s.messages) < minMaskMessages {
 		return
 	}
 	maskingThreshold := float64(maxTokens) * 0.6
