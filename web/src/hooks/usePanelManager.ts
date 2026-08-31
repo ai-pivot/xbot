@@ -23,8 +23,12 @@ export interface AddPanelOptions {
   params: Record<string, unknown>
   /** 分屏方向；不传 = 默认加到活跃 group */
   direction?: PanelDirection
-  /** 引用面板 id（在其旁边分屏）；不传 = 默认在活跃 panel 旁分屏 */
+  /** 引用面板 id（在其旁边分屏）；不传 = 默认在主 group 旁分屏 */
   referencePanelId?: string
+  /** 初始宽度（像素）；Dockview addPanel 原生支持 */
+  initialWidth?: number
+  /** 初始高度（像素） */
+  initialHeight?: number
 }
 
 export interface PanelInfo {
@@ -113,6 +117,9 @@ export function usePanelManager(): PanelManager {
       component: options.component,
       params: options.params as never,
     }
+    // Dockview addPanel 原生支持 initialWidth/initialHeight
+    if (options.initialWidth) addOpts.initialWidth = options.initialWidth
+    if (options.initialHeight) addOpts.initialHeight = options.initialHeight
     if (options.direction) {
       // 优先用显式传入的 referencePanelId；否则找主卡片（含 agent tab 的 group 的首个 panel）
       // 不用 api.activePanel — 上一个新 Panel 的 setActive 会把它变成 sidebar panel

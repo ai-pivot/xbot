@@ -246,31 +246,16 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
           channel: activeSession.channel ?? 'web',
         } : undefined,
       })
-      // 2. 在 Agent 卡片左侧创建会话列表 Panel（独立卡片，不经过 tab 系统）
-      const sessionsPanelId = panelManagerRef.current.addPanel({
+      // 2. 在 Agent 卡片左侧创建会话列表 Panel（独立卡片）
+      //    Dockview addPanel 原生支持 initialWidth — 创建时直接设宽度，不需要事后 setSize
+      const sidebarWidth = Math.max(200, Math.round(host.clientWidth * 0.2))
+      panelManagerRef.current.addPanel({
         component: 'panel',
         title: '会话',
         params: { type: 'panel', panelId: 'sessions', closable: false },
         direction: 'left',
         referencePanelId: `dv-${agentTabId}`,
-      })
-      // 3. Master 布局比例：会话列表 20%，Agent 80%
-      // 用 onDidLayoutChange 事件确保 Dockview 完成 gridview 布局后再设宽度
-      // requestAnimationFrame 可能在 gridview 分配宽度前触发 → setSize 无效
-      let sizeApplied = false
-      const offLayout = api.onDidLayoutChange(() => {
-        if (sizeApplied) return
-        const totalWidth = host.clientWidth
-        if (totalWidth <= 0) return
-        sizeApplied = true
-        offLayout.dispose()
-        const sidebarWidth = Math.round(totalWidth * 0.2)
-        const sp = api.getPanel(sessionsPanelId)
-        if (sp?.group) {
-          sp.group.api.setSize({ width: sidebarWidth })
-        }
-        const agentPanel = api.getPanel(`dv-${agentTabId}`)
-        agentPanel?.api.setActive()
+        initialWidth: sidebarWidth,
       })
       onReady?.()
     }
