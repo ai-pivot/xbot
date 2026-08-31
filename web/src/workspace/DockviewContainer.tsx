@@ -319,7 +319,7 @@ export class ReactContentRenderer implements IContentRenderer {
     this.name = name
     this.ctxRef = ctxRef
     this.element = document.createElement('div')
-    this.element.className = 'h-full w-full overflow-hidden rounded-xl border bg-panel-bg'
+    this.element.className = 'h-full w-full overflow-hidden'
   }
 
   init(parameters: GroupPanelPartInitParameters): void {
