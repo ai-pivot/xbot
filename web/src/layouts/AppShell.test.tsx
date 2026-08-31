@@ -15,7 +15,10 @@ import { screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
-vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => false }))
+vi.mock('@/hooks/useIsMobile', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useIsMobile: () => false,
+}))
 vi.mock('@/hooks/useTabManager', () => ({
   useTabManager: () => ({
     tabs: [],
@@ -25,10 +28,12 @@ vi.mock('@/hooks/useTabManager', () => ({
     setActiveTab: vi.fn(),
     splitRight: vi.fn(),
     resetWorkGroup: vi.fn(),
+    groupTabsOf: () => [],
     bindApi: vi.fn(),
   }),
 }))
-vi.mock('@/hooks/useSessionStore', () => ({
+vi.mock('@/hooks/useSessionStore', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useSessionStore: () => ({
     activeSession: null,
     activeChannel: null,
@@ -47,13 +52,18 @@ vi.mock('@/hooks/useLayoutPersistence', () => ({ useLayoutPersistence: () => {} 
 vi.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'dark', accentColor: '#3388BB', setAccentColor: vi.fn(), mdTheme: 'vscode-dark', setMdTheme: vi.fn() }),
 }))
-vi.mock('@/providers/WSProvider', () => ({
+// Partial mocks：只覆盖 hook，保留真实 Context 导出（DockviewContainer 的
+// withDockviewProviders 需要 import WSContext/CwdContext/AuthContext）。
+vi.mock('@/providers/WSProvider', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useWSConnection: () => ({ connected: true, send: vi.fn(), rpc: vi.fn(), onMessage: vi.fn(() => vi.fn()), onSession: vi.fn(() => vi.fn()), onProgress: vi.fn(() => vi.fn()) }),
 }))
-vi.mock('@/providers/CwdProvider', () => ({
+vi.mock('@/providers/CwdProvider', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useCwd: () => ({ cwd: '/repo', loading: false }),
 }))
-vi.mock('@/hooks/useAuth', () => ({
+vi.mock('@/hooks/useAuth', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   useAuth: () => ({ user: null, loading: false, login: vi.fn(), register: vi.fn(), logout: vi.fn(), refresh: vi.fn() }),
 }))
 // Heavy chrome mocked away; keep InfoBar + DockviewContainer real (they own the
@@ -108,13 +118,13 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // w-full dockview would share a row and overflow the screen.
     expect(main!.className).toContain('flex-col')
 
-    // Order: children[0] = header, children[1] = dockview host,
-    // children[2] = bottom rail row (InfoBar + separator; BottomRailBadges
-    // wired later — status-bar style at the BOTTOM, VSCode-like).
-    expect(main!.children.length).toBeGreaterThanOrEqual(3)
+    // Order (布局 v6 全卡片化): children[0] = header, children[1] = dockview
+    // host, children[2] = PanelLauncher (底部 chip 启动栏),
+    // children[3] = bottom rail row (InfoBar + separator + BottomRailBadges).
+    expect(main!.children.length).toBeGreaterThanOrEqual(4)
     const topHeader = main!.children[0]
     const dockview = main!.children[1]
-    const railRow = main!.children[2]
+    const railRow = main!.children[3]
     // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
     expect(topHeader.className).toContain('items-center')
     expect(topHeader.className).toContain('bg-sidebar-bg')
@@ -147,8 +157,9 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main).not.toBeNull()
     expect(main!.className).toContain('flex-col')
     // The info bar is ALWAYS rendered as a fixed-height strip (inside the
-    // bottom rail row), even with no plugin content — it never pops in/out.
-    const railRow = main!.children[2]
+    // bottom rail row — main.children[3], after the PanelLauncher),
+    // even with no plugin content — it never pops in/out.
+    const railRow = main!.children[3]
     const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })

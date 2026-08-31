@@ -77,6 +77,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { PanelManager } from '@/hooks/usePanelManager'
+import { LayoutEngine } from '@/workspace/layoutEngine'
 
 interface DockviewContainerProps {
   /** The tab manager that owns tab operations; its api is bound on ready. */
@@ -141,6 +142,10 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
   tabManagerRef.current = tabManager
   const panelManagerRef = useRef(panelManager)
   panelManagerRef.current = panelManager
+  // 集中式布局引擎：卡片增删 → paint 前统一计算（master/secondary 优先级）
+  // 并应用。Master 80/20 比例由引擎按 api.width 计算，不再依赖播种时的
+  // clientWidth（effect 里为 0）事后 setSize。
+  const layoutEngine = useMemo(() => new LayoutEngine(), [])
 
   // Collect live context values from the outer tree.
   const themeValue = useTheme()
@@ -214,6 +219,7 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
     const mgr = tabManagerRef.current
     mgr.bindApi(api)
     panelManagerRef.current.bindApi(api)
+    layoutEngine.bindApi(api)
 
     // Track active panel changes: when an agent tab becomes active, update
     // store.activeSession so the sidebar highlight + terminal/context-ring
@@ -233,7 +239,11 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
 
     if (!seededRef.current) {
       seededRef.current = true
-      // Master 布局：会话列表卡片（左侧 20%）+ Agent 卡片（右侧 80%）
+      // Master 布局播种：会话列表卡片（左）+ Agent 主卡片（右）。
+      // 80/20 比例不在这里设置 — 布局由 LayoutEngine 集中计算：
+      // addPanel 触发 onDidAddGroup（同步、paint 前）重算；若容器宽度
+      // 尚未就绪（api.width === 0），引擎保持 pending，待 onDidLayoutChange
+      // 首次触发（autoResize 的 ResizeObserver 完成 layout）时应用。
       const activeSession = ctxRef.current.sessionStore.activeSession
       // 1. 先创建 Agent tab（主卡片）
       const agentTabId = mgr.openTab({
@@ -247,25 +257,13 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
         } : undefined,
       })
       // 2. 在 Agent 卡片左侧创建会话列表 Panel（独立卡片）
-      const sessionsPanelId = panelManagerRef.current.addPanel({
+      panelManagerRef.current.addPanel({
         component: 'panel',
         title: '会话',
         params: { type: 'panel', panelId: 'sessions', closable: false },
         direction: 'left',
         referencePanelId: `dv-${agentTabId}`,
       })
-      // 3. Master 布局比例：sessions group 设为 20% 宽度
-      //    addPanel 后强制 relayout + setSize
-      const totalWidth = host.clientWidth
-      if (totalWidth > 0) {
-        const sidebarWidth = Math.max(200, Math.round(totalWidth * 0.2))
-        const sp = api.getPanel(sessionsPanelId)
-        if (sp?.group) {
-          sp.group.api.setSize({ width: sidebarWidth })
-        }
-        // 强制 Dockview 重新计算布局，确保 setSize 生效
-        api.layout(totalWidth, host.clientHeight)
-      }
       const agentPanel = api.getPanel(`dv-${agentTabId}`)
       agentPanel?.api.setActive()
       onReady?.()
@@ -273,6 +271,7 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
 
     return () => {
       offActiveChange.dispose()
+      layoutEngine.bindApi(null)
       tabManagerRef.current.bindApi(null)
       panelManagerRef.current.bindApi(null)
       apiRef.current = null

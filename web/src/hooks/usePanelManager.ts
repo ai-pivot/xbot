@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DockviewApi, IDockviewPanel } from 'dockview-core'
+import { isMasterGroup } from '@/workspace/layoutEngine'
 
 // ── 类型 ──────────────────────────────────────────────────────────────────────
 
@@ -128,12 +129,7 @@ export function usePanelManager(): PanelManager {
       if (options.referencePanelId) {
         ref = api.getPanel(options.referencePanelId) ?? undefined
       } else {
-        const mainGroup = api.groups.find((g) =>
-          g.panels.some((p) => {
-            const params = p.params as Record<string, unknown> | undefined
-            return params?.type === 'agent'
-          }),
-        )
+        const mainGroup = api.groups.find(isMasterGroup)
         ref = mainGroup?.panels[0] ?? undefined
       }
       if (ref) {
@@ -194,12 +190,7 @@ export function usePanelManager(): PanelManager {
     const panel = api?.getPanel(panelId)
     if (!api || !panel) return
     // 找到主 group：包含 agent tab 的 group
-    const mainGroup = api.groups.find((g) =>
-      g.panels.some((p) => {
-        const params = p.params as Record<string, unknown> | undefined
-        return params?.type === 'agent'
-      }),
-    ) ?? api.activePanel?.group
+    const mainGroup = api.groups.find(isMasterGroup) ?? api.activePanel?.group
     if (mainGroup) {
       panel.api.moveTo({ group: mainGroup })
     }
