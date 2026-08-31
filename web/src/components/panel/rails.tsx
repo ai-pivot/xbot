@@ -353,62 +353,10 @@ export function SideChips(): ReactNode {
   const zoneActive = dock.activeZone === 'chip'
   const [expandedChip, setExpandedChip] = useState<string | null>(null)
   return (
-    <div data-panel-zone="chip" data-testid="panel-chip-dock">
-      <div
-        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
-        style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
-      >
-        {ids.map((id) => {
-          const def = dock.defs.find((d) => d.id === id)
-          if (!def) return null
-          const badge: PanelBadge | null = def.badges?.() ?? null
-          const Icon = pluginIcon(def.icon)
-          const isActive = expandedChip === id
-          return (
-            <div key={id} className="group relative shrink-0">
-              <button
-                type="button"
-                data-panel-chip={id}
-                title={`${def.title}（单击展开/收起）`}
-                onClick={() => setExpandedChip(isActive ? null : id)}
-                className="flex size-9 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
-                style={isActive ? { background: 'color-mix(in srgb, var(--accent) 15%, transparent)' } : undefined}
-              >
-                <Icon className="size-4" style={{ color: isActive ? 'var(--accent)' : 'var(--text-secondary)' }} />
-                {badge ? (
-                  <span
-                    className="absolute right-0 top-0 max-w-[32px] truncate rounded-full px-1 text-[8px] font-semibold leading-3"
-                    style={{ background: `color-mix(in srgb, ${badge.color} 22%, transparent)`, color: badge.color }}
-                  >
-                    {badge.text}
-                  </span>
-                ) : null}
-                {isActive && (
-                  <span className="absolute bottom-0 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full" style={{ background: 'var(--accent)' }} />
-                )}
-              </button>
-              <button
-                type="button"
-                aria-label={`钉选 ${def.title}`}
-                title={`钉选 ${def.title} 到侧栏`}
-                onClick={() => dock.pinPanel(id)}
-                className="absolute right-0.5 top-0.5 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
-                style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
-              >
-                <Pin className="size-2.5" />
-              </button>
-            </div>
-          )
-        })}
-        {ids.length === 0 ? (
-          <span className="px-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            无收纳面板
-          </span>
-        ) : null}
-      </div>
-      {/* 原地展开内容区（chip 单击 = 精简内容，不弹浮窗；max-h 滚动；点别处/再点收起） */}
+    <div data-panel-zone="chip" data-testid="panel-chip-dock" className="flex flex-col">
+      {/* 展开内容区——在 chip 行上方向上弹出（chip 行保持底部固定） */}
       {expandedChip ? (
-        <div className="mt-1 max-h-[240px] overflow-y-auto rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+        <div className="mb-1 max-h-[240px] overflow-y-auto rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
               {dock.defs.find((d) => d.id === expandedChip)?.title ?? expandedChip}
@@ -445,6 +393,58 @@ export function SideChips(): ReactNode {
           </div>
         </div>
       ) : null}
+      <div
+        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
+        style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
+      >
+        {ids.map((id) => {
+          const def = dock.defs.find((d) => d.id === id)
+          if (!def) return null
+          const badge: PanelBadge | null = def.badges?.() ?? null
+          const Icon = pluginIcon(def.icon)
+          const isActive = expandedChip === id
+          return (
+            <div key={id} className="group relative shrink-0">
+              <button
+                type="button"
+                data-panel-chip={id}
+                title={`${def.title}（单击展开/收起）`}
+                onClick={() => setExpandedChip(isActive ? null : id)}
+                className="flex size-9 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
+                style={isActive ? { background: 'color-mix(in srgb, var(--accent) 15%, transparent)' } : undefined}
+              >
+                <Icon className="size-4" style={{ color: isActive ? 'var(--accent)' : 'var(--text-secondary)' }} />
+                {badge ? (
+                  <span
+                    className="absolute right-0 top-0 max-w-[32px] truncate rounded-full px-1 text-[8px] font-semibold leading-3"
+                    style={{ background: `color-mix(in srgb, ${badge.color} 22%, transparent)`, color: badge.color }}
+                  >
+                    {badge.text}
+                  </span>
+                ) : null}
+                {isActive && (
+                  <span className="absolute top-0 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full" style={{ background: 'var(--accent)' }} />
+                )}
+              </button>
+              <button
+                type="button"
+                aria-label={`钉选 ${def.title}`}
+                title={`钉选 ${def.title} 到侧栏`}
+                onClick={() => dock.pinPanel(id)}
+                className="absolute right-0.5 top-0.5 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
+                style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+              >
+                <Pin className="size-2.5" />
+              </button>
+            </div>
+          )
+        })}
+        {ids.length === 0 ? (
+          <span className="px-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            无收纳面板
+          </span>
+        ) : null}
+      </div>
     </div>
   )
 }
