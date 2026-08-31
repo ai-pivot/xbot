@@ -255,19 +255,20 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
         referencePanelId: `dv-${agentTabId}`,
       })
       // 3. Master 布局比例：会话列表 20%，Agent 80%
-      // Dockview group.api.setSize 需要在 layout 完成后调用
-      // 用 requestAnimationFrame 确保 DOM 已布局，再用 host 元素实际宽度
-      requestAnimationFrame(() => {
-        const api = apiRef.current
-        if (!api || !host) return
+      // 用 onDidLayoutChange 事件确保 Dockview 完成 gridview 布局后再设宽度
+      // requestAnimationFrame 可能在 gridview 分配宽度前触发 → setSize 无效
+      let sizeApplied = false
+      const offLayout = api.onDidLayoutChange(() => {
+        if (sizeApplied) return
         const totalWidth = host.clientWidth
         if (totalWidth <= 0) return
+        sizeApplied = true
+        offLayout.dispose()
         const sidebarWidth = Math.round(totalWidth * 0.2)
-        const sessionsPanel = api.getPanel(sessionsPanelId)
-        if (sessionsPanel?.group) {
-          sessionsPanel.group.api.setSize({ width: sidebarWidth })
+        const sp = api.getPanel(sessionsPanelId)
+        if (sp?.group) {
+          sp.group.api.setSize({ width: sidebarWidth })
         }
-        // 确保 Agent 面板是活跃的
         const agentPanel = api.getPanel(`dv-${agentTabId}`)
         agentPanel?.api.setActive()
       })
