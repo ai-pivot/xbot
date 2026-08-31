@@ -821,4 +821,3 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
     expect(contentElement(container).contains(footer)).toBe(true)
   })
 })
-
