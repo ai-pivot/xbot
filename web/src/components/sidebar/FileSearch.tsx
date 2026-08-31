@@ -64,7 +64,7 @@ export function FileSearch({ tabManager }: FileSearchProps) {
   )
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-card-bg">
       <div className="relative px-2 py-2">
         <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
         <Input

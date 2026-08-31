@@ -342,7 +342,11 @@ export class ReactContentRenderer implements IContentRenderer {
     this.name = name
     this.ctxRef = ctxRef
     this.element = document.createElement('div')
-    this.element.className = 'h-full w-full overflow-hidden'
+    // bg-card-bg：所有卡片内容宿主统一涂底——active panel 渲染在 dv-render-overlay
+    // 层（dockview root 子树），透明内容透出的层不可控（overlay 下不一定是
+    // .dv-groupview 的 card-bg，曾致 active 卡与非 active 卡背景不一致）。
+    // 显式底色不依赖透出，双保险统一（.dv-groupview 也是 card-bg）。
+    this.element.className = 'h-full w-full overflow-hidden bg-card-bg'
   }
 
   init(parameters: GroupPanelPartInitParameters): void {

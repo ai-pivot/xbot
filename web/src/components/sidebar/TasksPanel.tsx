@@ -85,7 +85,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
   }
 
   return (
-    <ScrollArea className="h-full">
+    <ScrollArea className="h-full bg-card-bg">
       <div className="flex flex-col gap-4 px-3 py-3 text-sm">
         {/* Cron tasks */}
         <section className="flex flex-col gap-2">

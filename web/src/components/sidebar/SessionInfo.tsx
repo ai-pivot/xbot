@@ -120,7 +120,7 @@ export function SessionInfo({ tabManager }: SessionInfoProps) {
   }, [cwdInput, displayCwd, session.activeSession, t, workspaceChannel, workspaceId])
 
   return (
-    <ScrollArea className="h-full">
+    <ScrollArea className="h-full bg-card-bg">
       <div className="flex flex-col gap-5 px-3 py-3 text-sm">
         {/* Session info */}
         <section className="flex flex-col gap-2">

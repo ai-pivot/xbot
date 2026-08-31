@@ -136,7 +136,7 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
   }, [])
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-card-bg">
       {/* Path bar */}
       <PathBar
         path={displayPath}
