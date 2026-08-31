@@ -10,6 +10,7 @@ import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { Loader2, Settings } from 'lucide-react'
 
 import { TopRail, BottomRailBadges } from '@/components/panel/rails'
+import { PanelDockProvider } from '@/components/panel/PanelLayout'
 import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { InfoBar } from '@/plugins/InfoBar'
@@ -83,6 +84,7 @@ export function AppShell() {
   if (isMobile) return <MobileAppShell />
 
   return (
+    <PanelDockProvider tabManager={tabManager}>
     <RightSidebarControlContext.Provider value={{ openPanel: () => undefined }}>
       <div className="fixed inset-0 flex flex-col overflow-hidden bg-app-bg text-text-primary">
         <AmbienceBackground />
@@ -123,5 +125,6 @@ export function AppShell() {
         </Suspense>
       </div>
     </RightSidebarControlContext.Provider>
+    </PanelDockProvider>
   )
 }
