@@ -1,15 +1,29 @@
 /**
- * 集中式布局引擎（平铺式窗口管理器语义，master/stack 布局）。
+ * 集中式布局引擎（平铺式窗口管理器 master/stack 语义）。
  *
  * 布局计算是一条集中式管线：任何结构更改（卡片增删、tab 拆分/合并）发生后、
  * paint 前，引擎按卡片优先级统一重新计算所有卡片的尺寸，再把计算结果应用到
  * gridview。不存在"先渲染默认布局再事后 setSize 修正"的路径。
  *
- * 规则：
- * - master 卡片（含 agent tab 的 group）合计占 masterRatio（默认 80%）宽度，
- *   多个 master（用户拖拽 agent tab 拆分出的卡片）平分该区域
- * - secondary 卡片（sidebar panels）平分剩余宽度
- * - 两类卡片都有最小宽度下限；容器不足时 secondary 先压缩到下限
+ * 布局模型（master/stack）：
+ *
+ *   ┌────────┬──────────────────────┐
+ *   │ sec 1  │                      │
+ *   ├────────┤      master(s)       │
+ *   │ sec 2  │    （80% 宽）         │
+ *   ├────────┤                      │
+ *   │ sec 3  │                      │
+ *   └────────┴──────────────────────┘
+ *    堆叠列 20% 宽，卡片上下排列（水平切分）
+ *
+ * - master 卡片（含 agent tab 的 group）：root 层水平排列，合计占
+ *   masterRatio（默认 80%）宽度，多张平分
+ * - secondary 卡片（sidebar panels）：在与 master 并列的堆叠列内上下排列，
+ *   平分容器高度；堆叠列整体宽度（1 - masterRatio）由 master 设宽后的
+ *   delta 吸收（gridview splitview 语义：resizeView 的差值由同级吸收）
+ * - dockview grid 语义（getRelativeLocation）：root 层 leaf 是 HORIZONTAL，
+ *   'bottom' 相对 root 层 secondary 会建嵌套 VERTICAL branch（首张建列），
+ *   相对嵌套层 secondary 则同层追加 —— addPanel 依赖此语义堆叠
  *
  * 触发管线（统一入口，不散落在 Manager 里）：
  * - `onDidAddGroup` / `onDidRemoveGroup`：结构变化。这两个事件在
@@ -19,9 +33,6 @@
  *   引擎保持 pending，等 autoResize 的 ResizeObserver 触发首次 layout）
  *   或结构变化未被处理时补偿重算；纯 sash 拖拽（结构未变）不覆盖用户
  *   手动调整的比例
- *
- * 误差吸收：splitview 的 view size 是绝对像素，`setSize` 的 delta 由同级
- * view 吸收。计划中省略最后一个 group，由它吸收舍入误差。
  */
 import type { DockviewApi, DockviewGroupPanel } from 'dockview-core'
 
@@ -30,8 +41,10 @@ import type { DockviewApi, DockviewGroupPanel } from 'dockview-core'
 export interface LayoutEngineOptions {
   /** master 卡片（agent 主卡片）合计宽度占比，0-1 */
   masterRatio: number
-  /** secondary 卡片最小宽度（px） */
+  /** 堆叠列最小宽度（px，单张 secondary 直接占列时） */
   minSecondaryWidth: number
+  /** 堆叠列内单张 secondary 卡片最小高度（px） */
+  minSecondaryHeight: number
   /** master 卡片最小宽度（px） */
   minMasterWidth: number
 }
@@ -39,6 +52,7 @@ export interface LayoutEngineOptions {
 export const DEFAULT_LAYOUT_OPTIONS: LayoutEngineOptions = {
   masterRatio: 0.8,
   minSecondaryWidth: 200,
+  minSecondaryHeight: 120,
   minMasterWidth: 380,
 }
 
@@ -58,46 +72,54 @@ export interface LayoutGroupInfo {
   isMaster: boolean
 }
 
+/** 一张卡片的目标尺寸：root 层 master 设宽度，堆叠列内 secondary 设高度 */
+export type SizeSpec = { width?: number; height?: number }
+
 /**
- * 集中计算：给定卡片集合与容器宽度，输出每个卡片的目标宽度。
+ * 集中计算（master/stack 布局）：给定卡片集合与容器尺寸，输出每张卡片的
+ * 目标尺寸（master → 宽度，secondary → 高度/单张时宽度）。
  *
- * 返回 null = 不干预（卡片少于 2 个、无 master、无 secondary、或容器宽度
- * 未就绪）。结果中省略最后一个卡片（由它吸收 splitview 的舍入误差）。
+ * 返回 null = 不干预（卡片少于 2 张、无 master、无 secondary、或容器尺寸
+ * 未就绪）。堆叠列内最后一张 secondary 省略 —— 由它吸收 splitview 的舍入
+ * 误差；master 全部设置（堆叠列/同级 branch 吸收 delta，总宽守恒）。
  */
-export function computeWidths(
+export function computeMasterStack(
   groups: LayoutGroupInfo[],
   totalWidth: number,
+  totalHeight: number,
   options: LayoutEngineOptions = DEFAULT_LAYOUT_OPTIONS,
-): Map<string, number> | null {
-  if (groups.length < 2 || totalWidth <= 0) return null
+): Map<string, SizeSpec> | null {
+  if (groups.length < 2 || totalWidth <= 0 || totalHeight <= 0) return null
   const masters = groups.filter((g) => g.isMaster)
   const secondaries = groups.filter((g) => !g.isMaster)
   if (masters.length === 0 || secondaries.length === 0) return null
 
-  // secondary 理想宽度：剩余区域均分，且不低于下限。
+  // 堆叠列宽度：理想 = 1 - masterRatio，抬到下限（列太窄不可用），
+  // 再被 master 保底封顶（master 拿剩余宽度，容器不足时列被压缩）。
   // Math.round 消除浮点误差（1200 × (1-0.8) = 239.999...）
-  const secBudget = Math.round(totalWidth * (1 - options.masterRatio))
-  let secEach = Math.floor(secBudget / secondaries.length)
-  secEach = Math.max(secEach, options.minSecondaryWidth)
-
-  // master 保底：master 合计不得低于 minMasterWidth × 数量，必要时压缩 secondary
+  let stackWidth = Math.round(totalWidth * (1 - options.masterRatio))
+  stackWidth = Math.max(stackWidth, options.minSecondaryWidth)
   const masterFloor = options.minMasterWidth * masters.length
-  if (totalWidth - secEach * secondaries.length < masterFloor) {
-    const secTotal = Math.max(
-      totalWidth - masterFloor,
-      options.minSecondaryWidth * secondaries.length,
+  stackWidth = Math.min(stackWidth, totalWidth - masterFloor)
+  if (stackWidth < 0) stackWidth = 0
+  const masterEach = Math.floor((totalWidth - stackWidth) / masters.length)
+
+  const plan = new Map<string, SizeSpec>()
+  if (secondaries.length === 1) {
+    // 单张 secondary 直接在 root 层（与 master 并列）：设列宽
+    plan.set(secondaries[0].id, { width: stackWidth })
+  } else {
+    // 堆叠列内多张：每张设高度（均分容器高，最后一张省略吸收误差）
+    const secEachH = Math.max(
+      Math.floor(totalHeight / secondaries.length),
+      options.minSecondaryHeight,
     )
-    secEach = Math.floor(secTotal / secondaries.length)
+    for (let i = 0; i < secondaries.length - 1; i++) {
+      plan.set(secondaries[i].id, { height: secEachH })
+    }
   }
-
-  const masterEach = Math.floor((totalWidth - secEach * secondaries.length) / masters.length)
-
-  const plan = new Map<string, number>()
-  for (const g of secondaries) plan.set(g.id, secEach)
-  for (const g of masters) plan.set(g.id, masterEach)
-  // 最后一个卡片省略：splitview resizeView 的 delta 由同级吸收，
-  // 留一个不设值可让所有已设值精确落地、余数归到它
-  plan.delete(groups[groups.length - 1].id)
+  // master 全部设宽（root 层水平）；堆叠列整体宽度由 delta 吸收
+  for (const m of masters) plan.set(m.id, { width: masterEach })
   return plan
 }
 
@@ -135,7 +157,7 @@ export class LayoutEngine {
       }),
     )
     // bindApi 时布局可能已存在（恢复持久化布局 / 热重建）—— 主动尝试一次。
-    // width 未就绪时无害（pending，等 onDidLayoutChange 重试）。
+    // 宽度未就绪时无害（pending，等 onDidLayoutChange 重试）。
     this.relayout()
   }
 
@@ -160,7 +182,7 @@ export class LayoutEngine {
   /**
    * 集中计算并应用布局。
    *
-   * 返回是否完成（false = 容器宽度未就绪，引擎保持 pending，
+   * 返回是否完成（false = 容器尺寸未就绪，引擎保持 pending，
    * 待 onDidLayoutChange 首次触发时重试）。
    */
   relayout(): boolean {
@@ -174,25 +196,26 @@ export class LayoutEngine {
     if (groups.length === 0) return false
 
     const totalWidth = api.width
+    const totalHeight = api.height
     const infos: LayoutGroupInfo[] = groups.map((g) => ({
       id: g.id,
       isMaster: isMasterGroup(g),
     }))
-    const plan = computeWidths(infos, totalWidth, this.options)
+    const plan = computeMasterStack(infos, totalWidth, totalHeight, this.options)
 
     if (plan) {
       const byId = new Map(groups.map((g) => [g.id, g]))
-      for (const [id, width] of plan) {
+      for (const [id, size] of plan) {
         const group = byId.get(id)
-        group?.api.setSize({ width })
+        group?.api.setSize(size)
       }
     }
-    // 宽度未就绪（computeWidths 返回 null 且 totalWidth<=0）→ 保持 pending；
+    // 尺寸未就绪（totalWidth/Height <= 0）→ 保持 pending；
     // 否则记录签名（含"不干预但已处理"的场景：<2 卡片、无 master 等）
-    if (totalWidth > 0) {
+    if (totalWidth > 0 && totalHeight > 0) {
       this.appliedOnce = true
       this.lastAppliedIds = this.groupSignature()
     }
-    return totalWidth > 0
+    return totalWidth > 0 && totalHeight > 0
   }
 }
