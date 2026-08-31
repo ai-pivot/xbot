@@ -72,6 +72,7 @@ import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
+import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -106,6 +107,8 @@ function PanelTabHost({ params }: { params: PanelParams }) {
     return <div className="p-4 text-xs text-text-muted">面板加载中…</div>
   }
   switch (panelId) {
+    case 'sessions':
+      return <SessionSidebar tabManager={tabManager} />
     case 'files':
       return <FileExplorer tabManager={tabManager} />
     case 'search':
@@ -257,11 +260,9 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
     }
   }, [])
 
-  // bg 层交给 AppShell 根容器的 bg-app-bg（单层）——这里再加一层会
-  // 双叠 alpha（82%×82% ≈ 97% 不透明）把壁纸几乎完全挡住（"壁纸只作用于
-  // 侧边栏"根因：侧边栏单层透壁纸，主区双叠不透）。玻璃激活时 dockview
-  // 内部由 .ambience-glass CSS 强制透明，背景由根容器单层提供。
-  return <div ref={hostRef} className="min-h-0 w-full flex-1" />
+  // bg 层交给 AppShell 根容器的 bg-app-bg（单层）。Dockview host 加 padding
+  // 让卡片间缝隙透出 Ambience 壁纸。
+  return <div ref={hostRef} className="min-h-0 w-full flex-1 p-1.5" />
 }
 
 /* ── React ↔ dockview renderers ── */
@@ -315,7 +316,7 @@ export class ReactContentRenderer implements IContentRenderer {
     this.name = name
     this.ctxRef = ctxRef
     this.element = document.createElement('div')
-    this.element.className = 'h-full w-full overflow-hidden'
+    this.element.className = 'h-full w-full overflow-hidden rounded-xl border bg-panel-bg'
   }
 
   init(parameters: GroupPanelPartInitParameters): void {

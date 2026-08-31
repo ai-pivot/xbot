@@ -577,7 +577,7 @@
  * the light/dark theme without runtime switching.
  */
 .dockview-theme-vs {
-  --dv-group-view-background-color: var(--app-bg);
+  --dv-group-view-background-color: transparent;
   --dv-tabs-and-actions-container-background-color: var(--sidebar-bg);
   --dv-activegroup-visiblepanel-tab-background-color: var(--app-bg);
   --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-bg);
@@ -585,7 +585,6 @@
   --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-bg);
   --dv-draggable-tabs-active-tab-color: var(--text-primary);
   --dv-draggable-tabs-inactive-tab-color: var(--text-secondary);
-  /* Override VS theme's default 20px tab height to match our 35px TabHeader */
   --dv-tabs-and-actions-container-height: 35px;
   --dv-tabs-and-actions-container-font-size: 13px;
 }
