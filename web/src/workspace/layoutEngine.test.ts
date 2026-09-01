@@ -284,7 +284,7 @@ describe('LayoutEngine', () => {
   // Tab 卡（type≠panel）：tab 栏常驻（Header 融合）+ locked=false 可拖入；
   // 非 Tab 卡（type=panel）：无 tab 栏组件 + locked='no-drop-target' 禁拖。
 
-  it('Tab 卡 tab 栏常驻 + 可拖入；非 Tab 卡无 tab 栏 + locked 禁拖入', () => {
+  it('Tab 卡 tab 栏常驻 + 可拖入；非 Tab 卡无 tab 栏 + locked 禁拖入；所有卡片注入右上角 grip 把手', () => {
     const master = mockGroup('master', ['agent']) // Tab 卡（主卡）
     const file = mockGroup('file', ['file']) // Tab 卡（拖出的 file 卡）
     const panel = mockGroup('panel', ['panel']) // 非 Tab 卡（sidebar 面板）
@@ -299,6 +299,14 @@ describe('LayoutEngine', () => {
     // 非 Tab 卡：无 tab 栏组件（功能条由面板内容自带）+ locked 禁拖入
     expect(panel.model.header.hidden).toBe(true)
     expect(panel.locked).toBe('no-drop-target')
+    // 所有卡片（Tab/非 Tab）注入右上角拖动把手（.card-drag-handle）
+    expect(master.element.querySelector('.card-drag-handle')).not.toBeNull()
+    expect(file.element.querySelector('.card-drag-handle')).not.toBeNull()
+    expect(panel.element.querySelector('.card-drag-handle')).not.toBeNull()
+    // grip 幂等：策略重算（tab 增删等触发 applyGroupHeaderPolicy）不重复注入
+    api.fireAddPanel()
+    expect(master.element.querySelectorAll('.card-drag-handle').length).toBe(1)
+    expect(panel.element.querySelectorAll('.card-drag-handle').length).toBe(1)
     engine.dispose()
   })
 

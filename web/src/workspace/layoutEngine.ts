@@ -242,7 +242,7 @@ export class LayoutEngine {
   }
 
   /**
-   * header 可见性策略（卡片分类制）：
+   * header 可见性策略（卡片分类制）+ 拖动把手注入：
    * - Tab 卡（isTabGroup：panels[0].params.type ≠ 'panel'，如主卡 agent/
    *   file/terminal 等 tab 类型卡片）：tab 栏常驻显示（Header 与 Tab 列表
    *   融合），Tab 可互相拖入（locked = false）
@@ -251,6 +251,8 @@ export class LayoutEngine {
    *   自带——如会话卡的渠道/分组下拉就在内容顶部，即视觉上的卡片 Header），
    *   locked = 'no-drop-target' 禁止 Tab 拖入（dockview 原生 API）
    * group.model.header.hidden 是 dockview 官方路径（toJSON 持久化 hideHeader）。
+   * 每个卡片注入 .card-drag-handle（右上角 grip——统一显式拖动入口，
+   * ensureDragHandle 幂等：已存在跳过；group 移除时 DOM 随之销毁）。
    */
   private applyGroupHeaderPolicy(): void {
     const api = this.api
@@ -259,6 +261,31 @@ export class LayoutEngine {
       const tabGroup = isTabGroup(group)
       group.model.header.hidden = !tabGroup
       group.locked = tabGroup ? false : 'no-drop-target'
+      ensureDragHandle(group)
     }
   }
+}
+
+/**
+ * 向卡片（group.element = .dv-groupview）注入右上角拖动把手（grip 点阵）。
+ * 幂等：已存在 .card-drag-handle 则跳过。group 移除时 DOM 随 group 销毁。
+ * 视觉：absolute 右上（.dv-groupview position:relative 锚点，index.css）——
+ * Tab 卡落在 tab 栏右侧空区（高度对齐 tab 栏 35px），非 Tab 卡浮在功能条
+ * 右上（功能条右侧让位——padding 预留）。cardDrag.isHeaderGrab 识别它为
+ * 无 Ctrl 直接拖动入口（触屏拖动）。
+ */
+function ensureDragHandle(group: DockviewGroupPanel): void {
+  if (group.element.querySelector('.card-drag-handle')) return
+  const handle = document.createElement('div')
+  handle.className = 'card-drag-handle'
+  handle.title = '拖动卡片'
+  handle.setAttribute('aria-label', '拖动卡片')
+  handle.innerHTML =
+    '<svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">' +
+    '<g fill="currentColor">' +
+    '<circle cx="3" cy="2.5" r="1"/><circle cx="7" cy="2.5" r="1"/>' +
+    '<circle cx="3" cy="5" r="1"/><circle cx="7" cy="5" r="1"/>' +
+    '<circle cx="3" cy="7.5" r="1"/><circle cx="7" cy="7.5" r="1"/>' +
+    '</g></svg>'
+  group.element.appendChild(handle)
 }

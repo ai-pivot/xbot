@@ -618,12 +618,43 @@
 
 /* Card visual on the entire group (tab bar + content) — not just content.
  * 引用卡片令牌（--card-bg/--card-radius）与 .card-surface 同源——dockview
- * 卡片与面板卡片视觉一致（改令牌一处全跟）。 */
+ * 卡片与面板卡片视觉一致（改令牌一处全跟）。position: relative 是
+ * .card-drag-handle（右上角拖动把手，LayoutEngine 注入）的 absolute 锚点。 */
 .dockview-theme-vs .dv-groupview {
+  position: relative;
   border: 1px solid var(--border) !important;
   border-radius: var(--card-radius) !important;
   overflow: hidden;
   background: var(--card-bg);
+}
+
+/* 卡片拖动把手（.card-drag-handle，LayoutEngine.applyGroupHeaderPolicy 幂等
+ * 注入到每个 group.element）：右上角 grip 点阵——Tab 卡落在 tab 栏右侧
+ * 空区（高度对齐 tab 栏），非 Tab 卡浮在功能条右上（功能条右侧让位）。
+ * 半透明 muted 常态（低调），hover 变色提示可拖；cursor grab。 */
+.card-drag-handle {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  width: 20px;
+  padding: 0 4px;
+  color: var(--text-muted);
+  opacity: 0.65;
+  cursor: grab;
+  border-radius: 6px;
+}
+.card-drag-handle:hover {
+  color: var(--text-primary);
+  opacity: 1;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.card-drag-handle:active {
+  cursor: grabbing;
 }
 
 /* active panel 内容渲染在 dv-render-overlay 层（dockview overlayRenderContainer，

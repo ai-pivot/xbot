@@ -333,7 +333,10 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
             </PopoverContent>
           </Popover>
         </div>
-        <div className="flex items-center gap-0.5">
+        {/* 右侧按钮组让位（pr-7）——LayoutEngine 注入的 .card-drag-handle
+            （卡片右上角 grip，absolute right:2px）叠在 header 右上，padding
+            预留避免按钮被 grip 遮挡 */}
+        <div className="flex items-center gap-0.5 pr-7">
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
