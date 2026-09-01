@@ -63,7 +63,11 @@ class PluginViewErrorBoundary extends Component<
         </div>
       )
     }
-    return this.props.children
+    // 单层原则（玻璃模式透明度一致性）：卡片背景的唯一层是面板根（显式
+    // bg-card-bg）。宿主（ReactContentRenderer element）已去 bg——插件面板
+    // 的统一显式层在此包裹（h-full 容器 + bg-card-bg），非 Tab 卡插件面板
+    // 不依赖透出（a7907a62 原则）。
+    return <div className="h-full w-full overflow-hidden bg-card-bg">{this.props.children}</div>
   }
 }
 

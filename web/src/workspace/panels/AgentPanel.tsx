@@ -507,7 +507,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
 
   return (
-    <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
+    <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col bg-card-bg">
       {!ws.connected && !isSubAgent && chatID && (
         <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
           <Loader2 className="size-3 animate-spin" />

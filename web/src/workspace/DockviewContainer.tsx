@@ -125,7 +125,7 @@ function PanelTabHost({ params }: { params: PanelParams }) {
     case 'terminal':
       return <LeftTerminalPanel tabManager={tabManager} />
     default:
-      return <div className="p-4 text-xs text-text-muted">未知面板：{panelId}</div>
+      return <div className="h-full w-full bg-card-bg p-4 text-xs text-text-muted">未知面板：{panelId}</div>
   }
 }
 
@@ -351,11 +351,14 @@ export class ReactContentRenderer implements IContentRenderer {
     this.name = name
     this.ctxRef = ctxRef
     this.element = document.createElement('div')
-    // bg-card-bg：所有卡片内容宿主统一涂底——active panel 渲染在 dv-render-overlay
-    // 层（dockview root 子树），透明内容透出的层不可控（overlay 下不一定是
-    // .dv-groupview 的 card-bg，曾致 active 卡与非 active 卡背景不一致）。
-    // 显式底色不依赖透出，双保险统一（.dv-groupview 也是 card-bg）。
-    this.element.className = 'h-full w-full overflow-hidden bg-card-bg'
+    // 无背景：卡片背景的唯一层是面板根（各面板组件自带 bg-card-bg）。
+    // 曾有 bg-card-bg（a7907a62 防 overlay 透出）——与非 Tab 卡面板根的双层
+    // card-bg 在玻璃模式下透明度不一致（0.6²=0.36 vs 单层 0.6，用户报告
+    // "会话列表与 tab 栏/聊天区透明度完全不同"）。单层原则：active panel
+    // 在 dv-render-overlay，其面板根 bg 即唯一层；AgentPanel 根此前无 bg
+    // （靠宿主）已补。宿主保持透明（圆角 .card-content-top-round 的
+    // 裁剪容器仍有效）。
+    this.element.className = 'h-full w-full overflow-hidden'
   }
 
   init(parameters: GroupPanelPartInitParameters): void {
