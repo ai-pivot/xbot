@@ -3,6 +3,7 @@ package web
 import (
 	"bytes"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -764,3 +765,47 @@ func TestSearchDirUnit(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Helper
 // ---------------------------------------------------------------------------
+
+// TestPluginFileUploadLargeBody verifies /api/plugin-files/upload is exempt
+// from authMiddleware's 1MB MaxBytesReader (web_auth.go): the handler enforces
+// its own size policy (ParseMultipartForm 32MB memory buffer, spill to disk,
+// no request-body cap — user requirement: wallpaper uploads unbounded).
+// Regression: large wallpaper uploads were rejected with
+// "parse multipart: http: request body too large" before the exemption.
+func TestPluginFileUploadLargeBody(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	// Route chain mirrors production (web.go): authMiddleware wraps the
+	// upload handler — the 1MB cap in the middleware must exempt this route.
+	// auth routes are needed by registerAndGetCookie.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/register", wc.handleRegister)
+	mux.HandleFunc("/api/auth/login", wc.handleLogin)
+	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	cookie := registerAndGetCookie(t, server)
+
+	// 2MB body (> 1MB maxBodySize) — must NOT be rejected by MaxBytesReader.
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	w.WriteField("plugin_id", "xbot.ambience")
+	fw, _ := w.CreateFormFile("file", "bg.jpg")
+	fw.Write(bytes.Repeat([]byte("x"), 2<<20))
+	w.Close()
+
+	req, _ := http.NewRequest("POST", server.URL+"/api/plugin-files/upload", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Cookie", cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for 2MB upload, got %d: %s", resp.StatusCode, string(b))
+	}
+	// Cleanup uploaded file.
+	os.RemoveAll(wc.pluginFileDir("xbot.ambience"))
+}

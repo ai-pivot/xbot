@@ -403,8 +403,15 @@ func (wc *WebChannel) validateSession(r *http.Request) *sessionInfo {
 // authMiddleware wraps a handler with session validation
 func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Uploads enforce their own 10MB limit in handleFileUpload.
-		if r.Method != http.MethodGet && r.URL.Path != "/api/files/upload" {
+		// Uploads enforce their own size policy in their handlers:
+		//   - /api/files/upload: handleFileUpload 自带 10MB 限制
+		//   - /api/plugin-files/upload: handlePluginFileUpload 无上限（用户明确
+		//     要求壁纸上传不限大小——ParseMultipartForm(32MB) 只是内存缓冲，
+		//     超出自动落盘临时文件）。这里若再包 1MB MaxBytesReader 会在
+		//     handler 之前拒绝请求体（"http: request body too large"）。
+		if r.Method != http.MethodGet &&
+			r.URL.Path != "/api/files/upload" &&
+			r.URL.Path != "/api/plugin-files/upload" {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		}
 		si := wc.validateSession(r)
