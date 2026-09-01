@@ -207,6 +207,27 @@ export interface WSMessage {
   result?: unknown
   error?: string
   session?: SessionEvent | null
+  /** Session queue snapshot (Staging Tray data source). Full-snapshot semantics —
+   *  frontends replace, never merge. */
+  queue_state?: QueueStatePayload | null
+}
+
+/** Pending queue item (mirrors protocol.QueueItemPayload). */
+export interface QueueItemPayload {
+  msg_id: string
+  turn_id: number
+  /** FULL content — the interject path re-sends it on cancel+resend (preview is truncated). */
+  content: string
+  preview: string
+  source: string // user | notification | answer | resume | command
+  enqueued_at: number
+}
+
+/** Full queue snapshot for a session (mirrors protocol.QueueStatePayload). */
+export interface QueueStatePayload {
+  channel: string
+  chat_id: string
+  items: QueueItemPayload[]
 }
 
 /** Client → server envelope. */
@@ -230,6 +251,9 @@ export interface WSClientMessage {
   answers?: Record<string, string>
   /** ask_user_response: true to cancel the prompt. */
   cancelled?: boolean
+  /** ⚡ interject: deliver into the active turn as a synthetic tool (no new
+   *  turn, no queueing). Ignored when the session is idle (degrades to normal send). */
+  interrupt?: boolean
   /** sync: last event seq the client has processed (from history API last_seq).
    *  Omitted or 0 = full replay (backward compatible). */
   last_seq?: number
@@ -299,6 +323,10 @@ export interface SessionEvent {
   role?: string
   instance?: string
   parent_id?: string
+  /** subagent_stopped with removed=true — the session was DESTROYED (TTL
+   * eviction / unload / spawn-failure cleanup): delete the sidebar row instead
+   * of parking it as idle (the DB tenant is cascade-deleted). */
+  removed?: boolean
 }
 
 /* ---------------------------------------------------------------------------

@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -28,24 +27,6 @@ func snapshotToolCalls(toolCalls map[int]*ToolCallDelta) []ToolCallDelta {
 		}
 	}
 	return result
-}
-
-// firstInvalidToolCallArgs returns the first tool call whose Arguments is
-// non-empty invalid JSON (nil when all are valid). Empty arguments are valid
-// (no-arg tool calls). Used by the stream-completion gate in
-// CollectStreamWithCallbackFrom: mid-stream chunk loss/repeat corrupts the
-// accumulated JSON (e.g. `{"id": 2", "status": ...`) WITHOUT any stream-level
-// error signal (finish_reason arrives normally), so the corrupted arguments
-// would otherwise flow into tool execution and fail with an opaque
-// "parse args: invalid character ... after object key:value pair" that the
-// LLM retries blindly (token burn). See TestGenerate_CorruptedToolCallArgs_FinishReasonArrived.
-func firstInvalidToolCallArgs(calls []ToolCall) *ToolCall {
-	for i := range calls {
-		if calls[i].Arguments != "" && !json.Valid([]byte(calls[i].Arguments)) {
-			return &calls[i]
-		}
-	}
-	return nil
 }
 
 // orderedToolCalls converts the map-based tool call accumulation into an
@@ -228,21 +209,6 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 				// Some providers send "stop" instead of "tool_calls" even when tool_calls are present.
 				if resp.FinishReason == "" && len(resp.ToolCalls) > 0 {
 					resp.FinishReason = FinishReasonToolCalls
-				}
-
-				// Tool-call arguments integrity gate (stream-completion checkpoint).
-				// Gateways (observed on sglang/MoL PD setups, 2026-08-29/30 DB
-				// evidence: 20 corrupted calls across two days) can lose or repeat
-				// SSE chunks MID-STREAM while still delivering a normal
-				// finish_reason — the accumulated arguments end up as spliced
-				// invalid JSON (e.g. `{"id": 2", "status": ...`) with NO
-				// stream-level error signal. Without this gate the corrupted JSON
-				// flows into tool execution and fails with an opaque
-				// "parse args: invalid character ... after object key:value pair"
-				// that the LLM retries blindly (token burn). Fail the attempt
-				// here so RetryLLM regenerates the whole request.
-				if bad := firstInvalidToolCallArgs(resp.ToolCalls); bad != nil {
-					return &resp, fmt.Errorf("stream error: tool call arguments corrupted (invalid JSON) for %s — SSE chunks lost or repeated mid-flight (finish_reason=%s)", bad.Name, resp.FinishReason)
 				}
 				return &resp, nil
 			}

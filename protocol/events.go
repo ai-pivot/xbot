@@ -385,6 +385,18 @@ type SessionEvent struct {
 	SessionKey      string `json:"session_key,omitempty"`
 	ParentID        string `json:"parent_id,omitempty"`
 	TargetHistoryID int64  `json:"target_history_id,omitempty"`
+	// SenderID is the session OWNER's user id (for user-scoped fan-out filtering
+	// in the web hub — CR#5: broadcastSessionStateToWebClients delivers sidebar
+	// events only to the owner's clients; empty = no filtering (CLI/agent-channel
+	// events, legacy emitters).
+	SenderID string `json:"sender_id,omitempty"`
+	// Removed marks a subagent_stopped event as a full session REMOVAL
+	// (destroyInteractiveSession: TTL eviction, unload, spawn-failure cleanup).
+	// The frontend deletes the sidebar row instead of parking it as idle —
+	// the DB tenant is cascade-deleted, so an idle row would linger until the
+	// next tree refresh ("subagent 被卸载了却还显示"). Natural completion keeps
+	// the interactive session and emits removed=false (absent).
+	Removed bool `json:"removed,omitempty"`
 }
 
 func (SessionEvent) EventType() string { return "session" }

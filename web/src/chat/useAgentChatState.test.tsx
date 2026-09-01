@@ -382,13 +382,15 @@ describe('useAgentChatState 全链路', () => {
   it('L: ack 透传 queued / fail 移除乐观行', async () => {
     const ws = makeWS()
     const h = mountHook(ws)
-    // 排队场景：chat 忙 → resp.queued=true → 行显示排队中（非发送中）。
+    // 排队场景：chat 忙 → resp.queued=true → 行从 pendingUsers 移除（v3 staging-tray：
+    // 排队消息不进主 view，只在 StagingTray 显示）。turn_started 时从 content
+    // 构造 user 行（后端 emitTurnStarted user trigger 带 content）。
     h.result.current.sendUser('排队消息', 'req-L1')
     h.result.current.ackUser('req-L1', 0, true)
     await waitFor(() => {
       const row = h.result.current.messages.find((m) => m.content === '排队消息')
-      expect(row?.queued).toBe(true)
-      expect(row?.sending ?? false).toBe(false)
+      // queued=true → 从 pendingUsers 移除（不在主 view 渲染）
+      expect(row ?? null).toBeNull()
     })
     // 失败场景：乐观行移除。
     h.result.current.sendUser('会失败的消息', 'req-L2')

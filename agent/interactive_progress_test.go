@@ -311,6 +311,7 @@ func TestGetActiveProgress_WatermarkFilter(t *testing.T) {
 	result := a.GetActiveProgress("cli", "/cwd", protocol.FetchSinceWatermark(2))
 	if result == nil {
 		t.Fatal("nil")
+		return
 	}
 	if len(result.IterationHistory) != 1 {
 		t.Fatalf("expected 1 iteration after watermark, got %d", len(result.IterationHistory))

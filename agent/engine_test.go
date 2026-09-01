@@ -301,6 +301,48 @@ func TestLoopSignature_Identical(t *testing.T) {
 	}
 }
 
+func TestDetectIterationLoop_DisabledByDefault(t *testing.T) {
+	// 实验开关：iteration_loop_detection 默认关闭（config.Agent.Experimental）。
+	// 关闭时连续相同迭代不得拦截——重复 tool call 正常执行、不注入 fake
+	// LOOP DETECTED 结果（breaker 的误报代价 > token 节省，opt-in 实验）。
+	var execCount int
+	cfg := RunConfig{
+		Channel: "web",
+		ChatID:  "chat-test",
+		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
+			execCount++
+			return &tools.ToolResult{Summary: "ok"}, nil
+		},
+		// IterationLoopDetection 缺省 = false（默认关闭，须在 experiments 显式开启）
+	}
+	s := newRunState(cfg)
+
+	resp := &llm.LLMResponse{
+		Content:   "same output",
+		ToolCalls: []llm.ToolCall{{ID: "tc1", Name: "Shell", Arguments: `{"command":"ls"}`}},
+	}
+
+	// 两个完全相同的迭代（签名逐字节一致 + 上轮无报错 —— 开启时会触发拦截）
+	s.recordAssistantMsg(context.Background(), resp)
+	res1 := s.executeToolCalls(context.Background(), resp, 1)
+	s.processToolResults(context.Background(), resp, res1)
+	s.recordAssistantMsg(context.Background(), resp)
+	res2 := s.executeToolCalls(context.Background(), resp, 2)
+	s.processToolResults(context.Background(), resp, res2)
+
+	if execCount != 2 {
+		t.Fatalf("loop breaker disabled by default: duplicate iteration must execute normally, got %d executions", execCount)
+	}
+	if s.loopDetected {
+		t.Fatal("loopDetected must never be set when the breaker is disabled")
+	}
+	for _, m := range s.messages {
+		if m.Role == "tool" && strings.Contains(m.Content, "LOOP DETECTED") {
+			t.Fatal("loop breaker disabled by default: no fake LOOP DETECTED result should be injected")
+		}
+	}
+}
+
 func TestDetectIterationLoop_ReplacesDuplicateCallsWithFakeToolResult(t *testing.T) {
 	// 连续两次相同迭代的完整流程（recordAssistantMsg → executeToolCalls →
 	// processToolResults）→ 第二次不得执行真实工具，重复调用被替换成
@@ -311,7 +353,8 @@ func TestDetectIterationLoop_ReplacesDuplicateCallsWithFakeToolResult(t *testing
 	// 用户的真实消息（用户报告的严重 bug）。
 	var execCount int
 	s := &runState{
-		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		cfg:                  RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		loopDetectionEnabled: true,
 		toolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 			execCount++
 			return &tools.ToolResult{Summary: "ok"}, nil
@@ -398,7 +441,8 @@ func TestDetectIterationLoop_FlagDoesNotLeakAcrossNonToolIterations(t *testing.T
 	// fakeLoopToolResults 误拦截（模型收到假的 LOOP DETECTED 错误）。
 	var execCount int
 	s := &runState{
-		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		cfg:                  RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		loopDetectionEnabled: true,
 		toolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 			execCount++
 			return &tools.ToolResult{Summary: "ok"}, nil
@@ -435,7 +479,8 @@ func TestDetectIterationLoop_SkipsAfterToolError(t *testing.T) {
 	// 工具正常执行（不注入 fake tool result，也不插入 user msg）
 	var execCount int
 	s := &runState{
-		cfg: RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		cfg:                  RunConfig{AgentID: "main", Channel: "cli", ChatID: "test"},
+		loopDetectionEnabled: true,
 		toolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 			execCount++
 			return &tools.ToolResult{Summary: "done", IsError: false}, nil

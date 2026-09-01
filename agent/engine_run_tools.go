@@ -606,6 +606,8 @@ func (s *runState) writeIterationHistory(iteration int, snap IterationSnapshot) 
 
 // maybeMaskObservations applies lightweight observation masking when context
 // exceeds 60% of max tokens but hasn't reached compression threshold.
+// The minimum maskable-message threshold (30) lives inside MaskOldToolResults —
+// it checks the count of messages that would actually be masked, not total messages.
 func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64, maxTokens int) {
 	if s.cfg.MaskStore == nil {
 		return
@@ -618,7 +620,13 @@ func (s *runState) maybeMaskObservations(ctx context.Context, totalTokens int64,
 		return
 	}
 	keepGroups := calculateKeepGroups(int(totalTokens), maxTokens)
-	masked, count, maskedEntries := MaskOldToolResults(s.messages, s.cfg.MaskStore, keepGroups)
+	// Minimum maskable-message threshold (user request 2026-08-31): skip masking
+	// entirely when fewer than 30 tool results would actually be masked — the
+	// readability cost (replacing readable output with placeholders) outweighs
+	// the negligible context savings. Passed to MaskOldToolResults which counts
+	// actual maskable messages (excluding already-masked, short, active-file).
+	const minMaskableMessages = 30
+	masked, count, maskedEntries := MaskOldToolResults(s.messages, s.cfg.MaskStore, keepGroups, minMaskableMessages)
 	if count == 0 {
 		return
 	}

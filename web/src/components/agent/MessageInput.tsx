@@ -17,7 +17,7 @@ import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
-import { Loader2, Paperclip, Send, Square, Target, X } from 'lucide-react'
+import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -40,8 +40,9 @@ interface MessageInputProps {
   busy: boolean
   /** True while cancel is in flight; shows spinner on cancel button. */
   cancelling?: boolean
-  /** Send a message, optionally with uploaded attachments. */
-  onSend: (content: string, attachments?: Attachments) => void
+  /** Send a message, optionally with uploaded attachments.
+   *  interrupt=true: ⚡ interject — deliver into the active turn (no new turn). */
+  onSend: (content: string, attachments?: Attachments, interrupt?: boolean) => void
   /** Cancel the running agent. */
   onCancel: () => void
   /** Rewind to the latest user message, matching TUI /rewind intent in Web. */
@@ -69,6 +70,10 @@ interface MessageInputProps {
   onDraftConsumed?: () => void
   /** Session identifier for localStorage draft persistence. */
   sessionKey?: string
+  /** ⚡ Interject mode: when true, onSend is called with interrupt=true. */
+  interruptMode?: boolean
+  /** Callback when interject mode is toggled. */
+  onInterruptModeChange?: (mode: boolean) => void
 }
 
 interface PendingAttachment {
@@ -81,7 +86,7 @@ interface PendingAttachment {
 /** Module-level editor instance ref for test access. */
 let __testEditor: import('@tiptap/react').Editor | null = null
 
-export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey }: MessageInputProps) {
+export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
@@ -102,10 +107,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const sendKeyModeRef = useRef(sendKeyMode)
   sendKeyModeRef.current = sendKeyMode
 
-  // Dynamic placeholder text (updates with goalMode/sendKeyMode)
+  // Dynamic placeholder text (updates with goalMode/sendKeyMode/interruptMode/busy)
   const placeholderText = goalMode
     ? '🎯 输入目标描述，发送后将设为 Goal 并开始执行...'
-    : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')
+    : interruptMode
+      ? t('agent.inputPlaceholderInterject') || '⚡ 插话：立即注入当前 Turn，不打断…'
+      : busy
+        ? t('agent.inputPlaceholderBusy') || 'Agent 处理中 — 消息将排队…'
+        : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')
   const placeholderRef = useRef(placeholderText)
   placeholderRef.current = placeholderText
 
@@ -249,12 +258,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         }
       : undefined
     // When goalMode is on, send as /goal command (sets goal + starts working).
+    // When interruptMode is on, pass interrupt=true (⚡ interject into active turn).
     const content = goalMode ? `/goal ${text}` : text
-    onSend(content, attachments)
+    onSend(content, attachments, interruptMode || undefined)
     setGoalMode(false)
+    if (interruptMode) onInterruptModeChange?.(false)
     editor.commands.clearContent()
     setPending([])
-  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, t])
+  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, interruptMode, onInterruptModeChange, t])
 
   // Update submit ref (so handleKeyDown always calls the latest submit)
   submitRef.current = submit
@@ -390,9 +401,11 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
           goalMode
             ? 'border-accent/50 ring-1 ring-accent/20'
-            : focused
-              ? 'border-accent ring-1 ring-accent/30'
-              : 'border-border',
+            : interruptMode
+              ? 'border-violet-400/60 ring-1 ring-violet-500/30 shadow-[0_0_12px_rgba(139,92,246,0.15)]'
+              : focused
+                ? 'border-accent ring-1 ring-accent/30'
+                : 'border-border',
         )}
       >
         {/* Attachment chips (inside container, above editor) */}
@@ -471,40 +484,60 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             >
               <Target className={cn('size-4', goalMode && 'animate-pulse [animation-duration:2s]')} />
             </Button>
+            {/* ⚡ Interject / 💬 Queue mode toggle — icon-only on narrow screens
+                (text overflows on mobile). Title attr carries the full label. */}
+            {busy && onInterruptModeChange && (
+              <button
+                type="button"
+                aria-label={interruptMode ? '切换到排队模式' : '切换到插话模式'}
+                onClick={() => onInterruptModeChange(!interruptMode)}
+                className={cn(
+                  'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-all',
+                  interruptMode
+                    ? 'bg-violet-500/15 text-violet-600 ring-1 ring-violet-500/40 shadow-[0_0_8px_rgba(139,92,246,0.3)] dark:text-violet-400'
+                    : 'bg-indigo-500/10 text-indigo-600 ring-1 ring-indigo-500/20 dark:text-indigo-400',
+                  'hover:opacity-80',
+                )}
+                title={interruptMode ? '插话模式：发送后立即注入当前 Turn' : '排队模式：发送后排队等待'}
+              >
+                {interruptMode ? <Zap className="size-4" /> : <span className="text-sm">💬</span>}
+              </button>
+            )}
           </div>
 
+          {/* Send / Cancel button: empty input + busy → Cancel (stop agent);
+              has input → Send (queue/interject depending on mode). Single slot,
+              no overflow — icon only. */}
           <div className="flex min-w-0 items-center gap-1">
             {trailingControls}
-            {busy ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="icon-sm"
-                aria-label={t('common.cancel')}
-                onClick={onCancel}
-                disabled={cancelling}
-                className="size-9 rounded-md"
-              >
-                {cancelling ? <Loader2 className="size-4 animate-spin" /> : <Square className="size-4" />}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                size="icon-sm"
-                aria-label={goalMode ? '设为目标' : t('agent.send')}
-                disabled={!canSend}
-                onClick={submit}
-                className={cn(
-                  'size-9 rounded-md transition-all',
-                  goalMode
+            <Button
+              type="button"
+              size="icon-sm"
+              aria-label={hasContent && busy ? (interruptMode ? '↵ 插话' : '↵ 排队发送') : busy ? t('common.cancel') : goalMode ? '设为目标' : t('agent.send')}
+              disabled={hasContent ? !canSend : (busy ? cancelling : !canSend)}
+              onClick={hasContent || !busy ? submit : onCancel}
+              className={cn(
+                'size-9 shrink-0 rounded-md transition-all',
+                hasContent || !busy
+                  ? goalMode
                     ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'
-                    : 'bg-accent text-accent-foreground',
-                  !canSend && 'opacity-40',
-                )}
-              >
-                {goalMode ? <Target className="size-4" /> : <Send className="size-4" />}
-              </Button>
-            )}
+                    : interruptMode
+                      ? 'bg-violet-600 text-white shadow-[0_0_12px_rgba(139,92,246,0.4)] dark:bg-violet-500'
+                      : busy
+                        ? 'bg-indigo-500/80 text-white shadow-[0_0_8px_rgba(99,102,241,0.3)] dark:bg-indigo-500'
+                        : 'bg-accent text-accent-foreground'
+                  : 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+                (hasContent ? !canSend : (busy ? cancelling : !canSend)) && 'opacity-40',
+              )}
+            >
+              {(cancelling && !hasContent && busy) ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : hasContent || !busy ? (
+                goalMode ? <Target className="size-4" /> : interruptMode ? <Zap className="size-4" /> : busy ? <Mail className="size-4" /> : <Send className="size-4" />
+              ) : (
+                <Square className="size-4" />
+              )}
+            </Button>
           </div>
         </div>
       </div>

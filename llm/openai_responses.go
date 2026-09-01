@@ -736,34 +736,6 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 
 	// Infer finish_reason if not set
 	if lastFinishReason == "" && hasToolCalls {
-		// A cleanly-ended stream that never received response.completed but
-		// produced tool calls is EITHER a gateway that omits the completed
-		// event (args complete — keep the old inference), OR a proxy cutting
-		// the stream MID-tool-call (args truncated). Same fix as openai.go's
-		// processStream: truncated args must error out so RetryLLM retries the
-		// whole request, never pass half JSON downstream as a "complete" tool
-		// call ("parse args: unexpected end of JSON input" bug).
-		truncated := false
-		for _, tc := range toolCallList {
-			if tc.Arguments != "" && !json.Valid([]byte(tc.Arguments)) {
-				truncated = true
-				break
-			}
-		}
-		if truncated {
-			l.WithFields(log.Fields{
-				"provider":    "openai-responses",
-				"model":       model,
-				"base_url":    o.baseURL,
-				"event_count": eventCount,
-				"duration":    time.Since(startTime).String(),
-			}).Warn("[LLM] Stream ended without response.completed — tool call arguments truncated by proxy/network")
-			eventChan <- StreamEvent{
-				Type:  EventError,
-				Error: "stream ended without response.completed (tool call arguments truncated)",
-			}
-			return
-		}
 		lastFinishReason = FinishReasonToolCalls
 	}
 

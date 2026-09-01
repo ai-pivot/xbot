@@ -411,8 +411,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
 			return []any{}, nil
 		}
-		// Multi-user removal: one operator — cron jobs are global.
-		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobs()
+		// Session-scoped (user request 2026-08-31: "web task面板里的定时任务没做会话隔离"):
+		// filter by the requested session — same policy as BackgroundTasks above.
+		// The task panel shows only the active session's cron jobs, not a cross-session dump.
+		jobs, err := sqlite.NewCronService(ag.MultiSession().DB()).ListJobsByChannelChatID(sel.Channel, sel.ChatID)
 		if err != nil {
 			return nil, fmt.Errorf("list cron jobs: %w", err)
 		}
@@ -807,6 +809,21 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return channel == "cli" && cli.StoredSessionExists(chatID)
 	}
 
+	// ─── Session queue (v3 staging tray + ⚡ interject) ───
+	// All three route to the agent's per-session queue state (session_queue.go).
+	// InjectInterrupt delivers a ⚡ interject into the ACTIVE turn (synthetic
+	// user_interrupt tool — no new turn, no queueing); idle sessions degrade
+	// to a normal message and the REST response reports interrupted=false.
+	callbacks.InjectInterrupt = func(channel, chatID, senderID, content string) bool {
+		return ag.InjectUserInterrupt(channel, chatID, senderID, content)
+	}
+	callbacks.GetQueueState = func(channel, chatID string) []protocol.QueueItemPayload {
+		return ag.QueueSnapshotFor(channel, chatID)
+	}
+	callbacks.CancelQueued = func(channel, chatID, msgID string) bool {
+		return ag.CancelQueuedMessage(channel, chatID, msgID)
+	}
+
 	return callbacks
 }
 
@@ -835,6 +852,15 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 		row.Running = ag.IsProcessingByChannel(ch, chatID)
 		if row.Running {
 			row.Status = "running"
+		} else if ag.HasPendingAskUserFast(ch, chatID) {
+			// WaitingUser: the turn is paused for an AskUser answer. The pause
+			// intentionally keeps ss.busy + lastProgressSnapshot (for reconnect
+			// recovery) but chatCancelCh is already deregistered, so
+			// IsProcessingByChannel reports false — without this branch the
+			// sidebar shows idle while the panel shows busy (two state sources
+			// disagreeing after a page refresh).
+			row.Running = true
+			row.Status = "waiting_input"
 		} else if row.Status == "" {
 			row.Status = "idle"
 		}

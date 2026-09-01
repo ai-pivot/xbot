@@ -72,7 +72,7 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 	if request.ChatID != "" && request.Channel == "" {
 		request.Channel = wc.inferAPISessionChannel(identity.SenderID, request.ChatID)
 	}
-	sel, msgID, ts, turnID, queued, err := wc.dispatchUserMessage(r.Context(), identity, request)
+	sel, msgID, ts, turnID, queued, interrupted, err := wc.dispatchUserMessage(r.Context(), identity, request)
 	if err != nil {
 		writeInboundError(w, err)
 		return
@@ -83,6 +83,16 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		"message_id": msgID,
 		"timestamp":  ts.UnixMilli(),
 		"queued":     queued,
+	}
+	if interrupted {
+		// ⚡ INTERJECT: the message was delivered into the ACTIVE turn as a
+		// synthetic user_interrupt tool result (no new turn, no queueing, no
+		// user message row). No turn_id is allocated — the frontend renders
+		// it inside the live turn (purple interject card on the tool timeline)
+		// and shows a transient "⚡ delivered" chip.
+		resp["interrupted"] = true
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
 	if queued {
 		// QUEUED: the chat was already busy; the message will be handled after
@@ -118,6 +128,83 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleQueueList returns the pending queue snapshot for a session (the Web
+// Staging Tray data source). Items are admitted-but-not-yet-dequeued messages
+// (user messages, bg notifications) in strict FIFO order.
+func (wc *WebChannel) handleQueueList(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.GetQueueState == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "queue state not available")
+		return
+	}
+	var body sessionBody
+	if err := decodeJSONBody(r, &body, true); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	identity := wc.inboundIdentityFromRequest(r)
+	if body.ChatID != "" && body.Channel == "" {
+		body.Channel = wc.inferAPISessionChannel(identity.SenderID, body.ChatID)
+	}
+	sel, err := wc.resolveInboundSession(r.Context(), identity, body.Channel, body.ChatID)
+	if err != nil {
+		writeInboundError(w, err)
+		return
+	}
+	items := wc.callbacks.GetQueueState(sel.Channel, sel.ChatID)
+	if items == nil {
+		items = []protocol.QueueItemPayload{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id": sel.ChatID,
+		"channel": sel.Channel,
+		"items":   items,
+	})
+}
+
+// handleQueueCancel cancels a queued-but-unstarted message (Staging Tray ✕).
+// The message is skipped at dequeue time — no turn runs for it.
+func (wc *WebChannel) handleQueueCancel(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.CancelQueued == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "queue cancel not available")
+		return
+	}
+	var body struct {
+		Channel string `json:"channel,omitempty"`
+		ChatID  string `json:"chat_id,omitempty"`
+		MsgID   string `json:"msg_id"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.MsgID == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "msg_id is required")
+		return
+	}
+	identity := wc.inboundIdentityFromRequest(r)
+	if body.ChatID != "" && body.Channel == "" {
+		body.Channel = wc.inferAPISessionChannel(identity.SenderID, body.ChatID)
+	}
+	sel, err := wc.resolveInboundSession(r.Context(), identity, body.Channel, body.ChatID)
+	if err != nil {
+		writeInboundError(w, err)
+		return
+	}
+	ok := wc.callbacks.CancelQueued(sel.Channel, sel.ChatID, body.MsgID)
+	// "Not queued" (already dequeued/processing) is NOT an error — it means
+	// the message was briefly in the queue (admitted while busy=true) but was
+	// already dequeued (cancel completed → chatProcessLoop picked it up →
+	// ss.busy cleared → message is now being processed). The user's intent
+	// (remove from queue) is already satisfied. Return 200 with
+	// already_processing=true so the frontend can distinguish (optional).
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id":            sel.ChatID,
+		"channel":            sel.Channel,
+		"cancelled":          ok,
+		"already_processing": !ok,
+	})
 }
 
 // isSlashCommand reports whether a message content is a slash command (e.g.

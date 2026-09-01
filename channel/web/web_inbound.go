@@ -23,6 +23,36 @@ var (
 
 const inboundRequestRetention = 10 * time.Minute
 
+// isInterjected reports whether a ⚡ interject with this requestID has already
+// been injected into the active turn (CR#6: REST timeout retry with the same
+// msg.ID must not re-inject — each attempt would deliver a fresh user_interrupt
+// synthetic tool). TTL mirrors inboundRequestRetention.
+func (wc *WebChannel) isInterjected(msgID string) bool {
+	if msgID == "" {
+		return false
+	}
+	now := time.Now()
+	wc.interjectedRequestsMu.Lock()
+	defer wc.interjectedRequestsMu.Unlock()
+	for id, marked := range wc.interjectedRequests {
+		if now.Sub(marked) > inboundRequestRetention {
+			delete(wc.interjectedRequests, id)
+		}
+	}
+	_, ok := wc.interjectedRequests[msgID]
+	return ok
+}
+
+// markInterjected records a successful interject injection (dedup marker).
+func (wc *WebChannel) markInterjected(msgID string) {
+	if msgID == "" {
+		return
+	}
+	wc.interjectedRequestsMu.Lock()
+	defer wc.interjectedRequestsMu.Unlock()
+	wc.interjectedRequests[msgID] = time.Now()
+}
+
 type inboundRequestState struct {
 	done        chan struct{}
 	sel         SessionSelector
@@ -108,15 +138,46 @@ func (wc *WebChannel) resolveInboundSession(ctx context.Context, identity inboun
 	return sel, nil
 }
 
-func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundIdentity, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, uint64, bool, error) {
+func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundIdentity, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, uint64, bool, bool, error) {
 	if strings.TrimSpace(msg.Content) == "" && len(msg.UploadKeys) == 0 {
-		return SessionSelector{}, 0, time.Time{}, 0, false, errEmptyMessage
+		return SessionSelector{}, 0, time.Time{}, 0, false, false, errEmptyMessage
 	}
 
 	sel, err := wc.resolveInboundSession(ctx, identity, msg.Channel, msg.ChatID)
 	if err != nil {
-		return SessionSelector{}, 0, time.Time{}, 0, false, err
+		return SessionSelector{}, 0, time.Time{}, 0, false, false, err
 	}
+
+	// ⚡ Interject: deliver into the ACTIVE turn instead of queueing. Bypasses
+	// the session queue entirely — no turn_id, no user_echo, no user row: the
+	// agent injects the message as a synthetic user_interrupt tool result at
+	// the next tool boundary. Returns interrupted=true so the transport can
+	// report it (the frontend renders it inside the live turn, not as a new
+	// message). Idle sessions fall through to the normal queue path.
+	if msg.Interrupt && wc.callbacks.InjectInterrupt != nil {
+		content := wc.expandUploadKeys(msg)
+		// CR#6/复审#2: REST timeout retry with the same msg.ID must not
+		// re-inject — each attempt would deliver a fresh user_interrupt synthetic
+		// tool into the active turn. Only the FIRST attempt injects; retries
+		// return the cached interrupted=true outcome (idempotent).
+		// Dedup key is session-scoped (channel|chatID|msgID) — an API client
+		// reusing the same request id across DIFFERENT sessions must not have
+		// its interject swallowed (mirrors inboundRequestKey's composition).
+		interruptKey := sel.Channel + "|" + sel.ChatID + "|" + msg.ID
+		if msg.ID != "" && wc.isInterjected(interruptKey) {
+			return sel, 0, time.Now(), 0, false, true, nil
+		}
+		if wc.callbacks.InjectInterrupt(sel.Channel, sel.ChatID, identity.SenderID, content) {
+			if msg.ID != "" {
+				wc.markInterjected(interruptKey)
+			}
+			return sel, 0, time.Now(), 0, false, true, nil
+		}
+		// Session idle (or callback refused) — degrade to a normal send below.
+		// NOT marked: the fall-through dispatch handles retries via its own
+		// dispatchUserMessageOnce gate.
+	}
+
 	msg.ID = strings.TrimSpace(msg.ID)
 	if msg.ID == "" {
 		return wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
@@ -128,12 +189,15 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 		requestID: msg.ID,
 	}
 	sel2, msgID, ts, turnID, queued, err := wc.dispatchUserMessageOnce(ctx, key, func() (SessionSelector, int64, time.Time, uint64, bool, error) {
-		return wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
+		// The interject path returns BEFORE the Once dedup (it never enqueues),
+		// so the 7th return value (interrupted) is always false here — discard it.
+		sel, msgID, ts, turnID, queued, _, err := wc.dispatchResolvedUserMessage(ctx, identity, sel, msg)
+		return sel, msgID, ts, turnID, queued, err
 	})
-	return sel2, msgID, ts, turnID, queued, err
+	return sel2, msgID, ts, turnID, queued, false, err
 }
 
-func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, uint64, bool, error) {
+func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity inboundIdentity, sel SessionSelector, msg protocol.WSClientMessage) (SessionSelector, int64, time.Time, uint64, bool, bool, error) {
 
 	originalContent := msg.Content
 	content := wc.expandUploadKeys(msg)
@@ -180,7 +244,7 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 		Metadata:   metadata,
 	})
 	if err != nil {
-		return sel, 0, time.Time{}, 0, false, err
+		return sel, 0, time.Time{}, 0, false, false, err
 	}
 
 	// The agent persists accepted user messages before running the turn. Echo
@@ -188,7 +252,14 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	// frontend renders user messages deterministically from this echo (NO
 	// optimistic rendering; turn_id is authoritative). Expanded attachments
 	// keep the original content for display.
-	if res.TurnID > 0 {
+	//
+	// QUEUED messages are NOT echoed: the v3 staging-tray design renders a
+	// queued message ONLY in the tray (not in the message flow) — it enters
+	// the flow when its turn starts, materialized from turn_started.content.
+	// An echo here would re-create the message-flow row the tray design
+	// deliberately removed. The queue_state SSE snapshot carries the tray
+	// data instead.
+	if res.TurnID > 0 && !res.Queued {
 		wc.hub.sendToSession(sel.Channel, sel.ChatID, protocol.WSMessage{
 			Type:            protocol.MsgTypeUserEcho,
 			ID:              requestID,
@@ -210,7 +281,7 @@ func (wc *WebChannel) dispatchResolvedUserMessage(ctx context.Context, identity 
 	// (by agent.chatWorker.admitToMsgCh); res.Queued reports whether the chat
 	// was already busy processing an earlier message. Both are returned to the
 	// REST layer so the API response can carry them directly.
-	return sel, msgDBID, receivedAt, res.TurnID, res.Queued, nil
+	return sel, msgDBID, receivedAt, res.TurnID, res.Queued, false, nil
 }
 
 func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRequestKey, fn func() (SessionSelector, int64, time.Time, uint64, bool, error)) (SessionSelector, int64, time.Time, uint64, bool, error) {

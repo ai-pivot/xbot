@@ -245,6 +245,15 @@ type ExperimentalConfig struct {
 	// AutoWorktree enables automatic git worktree creation when multiple agents
 	// work on the same repo. Default: false (opt-in experimental).
 	AutoWorktree bool `json:"auto_worktree,omitempty"`
+
+	// IterationLoopDetection enables the iteration-loop breaker: when
+	// consecutive iterations produce byte-for-byte identical content +
+	// tool_calls, duplicate calls are replaced with a fake "LOOP DETECTED"
+	// tool result (and repeated loops eventually terminate the Run).
+	// Default: false — disabled unless explicitly turned on here. The
+	// breaker trades token safety for a risk of false positives on
+	// legitimately-repeated calls, so it is opt-in.
+	IterationLoopDetection bool `json:"iteration_loop_detection,omitempty"`
 }
 
 // PluginConfig configures the plugin system.

@@ -29,6 +29,7 @@ import {
 import { normalizeWebIteration } from '@/components/agent/normalize'
 import { MessageStore } from '@/components/agent/messageStore'
 import { assertIterationContinuity } from '@/components/agent/progressStore'
+import { postAPI } from '@/lib/api'
 import { getProgressGeneration, sessionCacheKey } from '@/lib/webCache'
 import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
@@ -83,8 +84,11 @@ export interface UseChatMessagesResult {
    *  dbID) or null when superseded/failed — rewind resolves a missing dbID
    *  from them. */
   reload: () => Promise<ChatMessage[] | null>
-  /** Send a user message (+ optional uploaded file references). */
-  sendMessage: (content: string, attachments?: Attachments, requestID?: string) => void
+  /** Send a user message (+ optional uploaded file references).
+   *  interrupt=true: ⚡ interject — deliver into the active turn as a synthetic
+   *  tool (no new turn, no queueing). The frontend shows a toast instead of an
+   *  optimistic user row; the message appears inside the turn's tool timeline. */
+  sendMessage: (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => void
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
   /** True while cancel is in flight (shows spinner on cancel button). */
@@ -99,6 +103,11 @@ export interface UseChatMessagesResult {
   hasMore: boolean
   /** True while loadMore is fetching. */
   loadingMore: boolean
+  /** Cancel a queued message by msg_id (REST RPC queue_cancel). */
+  cancelQueued: (msgID: string) => void
+  /** Convert a queued message to an interjection: cancel it from the queue,
+   *  then re-send as an interrupt (injects into the active turn). */
+  interjectQueued: (msgID: string, content: string) => void
 }
 
 /** File references resolved from an upload, ready to attach to a message. */
@@ -651,13 +660,47 @@ export function useChatMessages({
   }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
 
   const sendMessage = useCallback(
-    (content: string, attachments?: Attachments, requestID?: string) => {
+    (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => {
       const text = content.trim()
       if (!text && !attachments?.uploadKeys.length) return
       // 注入的 requestID（AgentPanel 经 agentChat.sendUser 生成的乐观行 ID）：
       // REST 请求 id = 状态机 pendingUser.requestID → user_echo/turn_started
       // 按 requestID 精确去重/绑定（否则两套 id 并存 → 双行）。
       const rid = requestID ?? newMessageRequestID()
+      // ⚡ interrupt=true：不渲染乐观 user 行 —— 插话注入活跃 turn 的工具时间线，
+      // 不产生新的 user 消息行。REST 响应 interrupted=true 时显示 toast（后续 SSE
+      // 的 user_interrupt 工具会出现在 turn 内）。
+      if (interrupt) {
+        void ws.send({
+          type: 'message',
+          id: rid,
+          channel,
+          chat_id: chatIDRef.current ?? undefined,
+          content: text,
+          upload_keys: attachments?.uploadKeys,
+          file_names: attachments?.fileNames,
+          file_sizes: attachments?.fileSizes,
+          file_mimes: attachments?.fileMimes,
+          interrupt: true,
+        })
+          .then((resp) => {
+            if (resp?.interrupted) {
+              toast.success('⚡ 已送达')
+            } else {
+              // Server degraded to normal send (idle session) — treat as
+              // a regular message. onSendSuccess triggers agentChat.ackUser
+              // which is a no-op when no pendingUser exists (we skipped
+              // optimistic rendering), and the turn_started/user_echo will
+              // arrive via SSE to render the message normally.
+              onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
+            }
+          })
+          .catch((error: unknown) => {
+            onSendFail?.(rid)
+            toast.error(error instanceof Error ? error.message : 'message send failed')
+          })
+        return
+      }
       // Optimistic rendering: show the user message immediately.
       // No "sending" spinner — the REST response is typically <200ms, and
       // the spinner's height change (appear → disappear) causes the user
@@ -764,6 +807,45 @@ export function useChatMessages({
 
   const upload = useCallback(async (file: File) => uploadFile(file), [])
 
+  // ── 队列操作（Staging Tray 回调）──
+  // cancelQueued: REST POST /api/queue/cancel. Returns 200 even when the message
+  // is already being processed (already_processing=true) — the user's intent
+  // (remove from queue) is already satisfied. The StagingTray's leavingIDs
+  // animation handles optimistic removal before the REST call completes.
+  const cancelQueued = useCallback((msgID: string) => {
+    void postAPI('/api/queue/cancel', { channel, chat_id: chatIDRef.current ?? undefined, msg_id: msgID })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : 'cancel queued message failed')
+      })
+  }, [channel, chatIDRef])
+
+  const interjectQueued = useCallback((msgID: string, content: string) => {
+    // 1. 先从队列移除（REST POST /api/queue/cancel）
+    void postAPI('/api/queue/cancel', { channel, chat_id: chatIDRef.current ?? undefined, msg_id: msgID })
+      .then(() => {
+        // 2. 以 interrupt=true 重发内容（注入活跃 turn）
+        void ws.send({
+          type: 'message',
+          id: newMessageRequestID(),
+          channel,
+          chat_id: chatIDRef.current ?? undefined,
+          content,
+          interrupt: true,
+        })
+          .then((resp) => {
+            if (resp?.interrupted) {
+              toast.success('⚡ 已插话')
+            }
+          })
+          .catch((e: unknown) => {
+            toast.error(e instanceof Error ? e.message : 'interject failed')
+          })
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : 'cancel queued message failed')
+      })
+  }, [ws, channel, chatIDRef])
+
   const clearMessages = useCallback(() => {
     messageMutationGenRef.current += 1
     destructiveMutationGenRef.current += 1
@@ -801,6 +883,8 @@ export function useChatMessages({
     loadMore,
     hasMore,
     loadingMore,
+    cancelQueued,
+    interjectQueued,
   }
 }
 

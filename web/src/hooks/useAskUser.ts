@@ -32,6 +32,19 @@ export function useAskUser({ chatID, channel = 'web' }: UseAskUserOptions): UseA
   const key = `${channel}:${chatID ?? ''}`
   const prompt = chatID ? askUserPrompts.get(key) ?? null : null
 
+  // [ASKDEBUG] 诊断：store 里有 pending ask 但本面板 miss —— key 匹配问题的
+  // 直接证据（wantKey vs store 实际 keys 的对比暴露格式差异）。只在
+  // askUserPrompts 非空（确实有 ask 到达过）时打印；DEV-only（CR#9: PR 描述
+  // 承诺"正常流程静默"——生产不打）。
+  if (!prompt && askUserPrompts.size > 0 && import.meta.env.DEV) {
+    console.warn('[ASKDEBUG] panel miss (ask exists in store, key mismatch?)', {
+      wantKey: key,
+      wantChatID: chatID,
+      wantChannel: channel,
+      storeKeys: [...askUserPrompts.keys()],
+    })
+  }
+
   const respond = useCallback(
     (answers: Record<string, string>) => {
       void ws.send({ type: 'ask_user_response', channel, chat_id: chatID ?? undefined, answers, cancelled: false })

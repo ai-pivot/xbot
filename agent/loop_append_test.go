@@ -29,7 +29,8 @@ func TestLoopIterationAppendIntegrity(t *testing.T) {
 		ToolExecutor: func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 			return &tools.ToolResult{Summary: "Successfully replaced 1 occurrence(s) in /a.ts"}, nil
 		},
-		TurnID: 13,
+		TurnID:                 13,
+		IterationLoopDetection: true, // loop breaker 是实验开关（默认关闭），本测试显式开启
 	}
 	s := newRunState(cfg)
 	s.initDynamicInjector() // postToolProcessing 依赖（InjectIfNeeded）

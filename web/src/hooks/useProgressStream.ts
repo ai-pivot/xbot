@@ -33,6 +33,7 @@ import {
   parseWebIterations,
 } from '@/components/agent/normalize'
 import type { WSConnection } from '@/types/ws'
+import { dispatchAgentIdle } from '@/lib/sessionEvents'
 import type {
   ProgressSnapshot,
   WebIteration,
@@ -541,7 +542,7 @@ export function useProgressStream({
       if (chatIDRef.current && !matchesChatID(msg, chatIDRef.current, channel)) {
         return
       }
-      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore, historyReadyRef.current)
+      handleProgressMessage(msg, store, completeRef, compactedRef, resetRef, finalizedRef, finalizedTurnIDRef, phaseDoneRef, injectRef, turnStartedRef, cancelCompleteRef, turnCommittedRef, iterationGapRef, iterationGapFiredRef, messageStore, historyReadyRef.current, chatIDRef.current ?? msg.chat_id ?? '', channel)
     })
     return offMessage
   }, [store, disabled, channel, messageStore])
@@ -878,6 +879,12 @@ function handleProgressMessage(
   iterationGapFiredRef?: React.MutableRefObject<boolean>,
   messageStore?: MessageStore,
   historyReady = true,
+  /** The panel's OWN session identity — every agent-idle dispatch MUST carry it
+   * (dispatchAgentIdle enforces non-empty). The old identity-less dispatch hit
+   * useSessionStore's "clear the ACTIVE session" fallback and corrupted OTHER
+   * sessions' state (cancel A → busy B idled). */
+  ownChatID: string = '',
+  ownChannel: string = 'web',
 ): void {
   switch (msg.type) {
     case 'stream_content': {
@@ -1153,9 +1160,14 @@ function handleProgressMessage(
           finalizedTurnIDRef.current = p.turn_id ?? store.lastTurnID
         }
         // Dispatch agent-idle so the sidebar clears the busy indicator.
-        window.dispatchEvent(new CustomEvent('agent-idle', {
-          detail: { chatID: p.chat_id ?? undefined, channel: undefined },
-        }))
+        // chatID is the panel's OWN session (this hook only processes its own
+        // connection's events) — NEVER identity-less: an agent-idle without
+        // chatID used to hit useSessionStore's "clear the ACTIVE session"
+        // fallback, so a BACKGROUND session's PhaseDone (inner payload carries
+        // no chat_id) idled whatever the user was viewing — cancelling session
+        // A broke every busy session's state ("cancel 一个 session 导致所有
+        // busy 的 session 状态异常"). dispatchAgentIdle enforces the identity.
+        dispatchAgentIdle(ownChatID, ownChannel)
         // PhaseDone: the turn is over. Stop streaming animations AND clear the
         // busy fallback signal (progressSnapshot.streaming) — without this, the
         // AgentPanel busy fallback (streaming && phase !== 'done') keeps showing
@@ -1650,9 +1662,11 @@ function handleProgressMessage(
       // Dispatch agent-idle so useSessionStore clears the busy state.
       // PhaseDone normally handles this, but bang commands and slash commands
       // bypass Run() and never send PhaseDone.
-      window.dispatchEvent(new CustomEvent('agent-idle', {
-        detail: { chatID: msg.chat_id ?? undefined, channel: msg.channel ?? undefined },
-      }))
+      // Identity is REQUIRED: msg.chat_id falls back to the panel's own chatID
+      // (this hook only processes its own connection's events) — an
+      // identity-less dispatch used to hit useSessionStore's "clear the ACTIVE
+      // session" fallback and corrupt other sessions' state.
+      dispatchAgentIdle(msg.chat_id ?? ownChatID, msg.channel ?? ownChannel)
       return
     }
 

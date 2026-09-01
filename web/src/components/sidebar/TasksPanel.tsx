@@ -12,7 +12,6 @@ import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTasks } from '@/hooks/useTasks'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { flattenSubAgentTree } from '@/components/session/session-tree'
 import { parseAgentChatID } from '@/lib/session-grouping'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -85,7 +84,12 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
   }
 
   return (
-    <ScrollArea className="h-full">
+    // 普通垂直滚动容器，不用 radix ScrollArea——radix Viewport 内部的
+    // `display: table; min-width: 100%` wrapper 按内容 min-content 计宽，
+    // nowrap 长消息（cron message 可达数百字符）会把 table 撑到面板外
+    // （实测 320px 面板被撑到 4073px），气泡超出屏幕。min-w-0 flex-1
+    // truncate 链在 table 布局测量中失效——纯垂直列表没有横向滚动需求。
+    <div className="h-full overflow-y-auto overflow-x-hidden">
       <div className="flex flex-col gap-4 px-3 py-3 text-sm">
         {/* Cron tasks */}
         <section className="flex flex-col gap-2">
@@ -221,7 +225,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
           <p className="text-xs text-text-muted">{t('sidebar.disconnectedHint')}</p>
         )}
       </div>
-    </ScrollArea>
+    </div>
   )
 }
 

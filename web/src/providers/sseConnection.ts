@@ -55,6 +55,7 @@ export const SSE_EVENT_TYPES = [
   'web_plugin_event',
   'web_plugin_push',
   'web_plugin_rpc',
+  'queue_state',
 ] as const
 
 type Handler<T> = (payload: T) => void
@@ -223,7 +224,15 @@ export class SSEConnectionImpl implements WSConnection {
       this.lastActivityAt = Date.now()
       this.startWatchdog()
       this.setConnected(true)
-      if (resumed) this.scheduleReplayFallback(source, channel, chatID)
+      if (resumed) {
+        this.scheduleReplayFallback(source, channel, chatID)
+        // Reconnect: events during the disconnect window were lost (only events
+        // still inside the ring buffer are replayed; evicted ones are gone
+        // forever). Sidebar session state (busy/idle/subagent lifecycle for ANY
+        // session, not just this connection's) may be stale — signal the
+        // session store to reconcile against HTTP truth.
+        this.dispatchSessionsResync()
+      }
     }
     source.onerror = () => {
       if (this.source !== source) return
@@ -346,7 +355,24 @@ export class SSEConnectionImpl implements WSConnection {
       bumpProgressGeneration(cacheKey)
     }
     this.dispatch(msg)
+    if (msg.type === 'resync_required') {
+      // Ring-buffer eviction: events beyond the replay window were permanently
+      // lost (progress deltas AND session busy/idle/subagent lifecycle for ANY
+      // session). useChatMessages reloads this session's messages from DB (the
+      // replay_gap handler); the SIDEBAR needs the same reconciliation — signal
+      // the session store to clear stale executing timestamps and refresh the
+      // session tree from HTTP truth.
+      this.dispatchSessionsResync()
+    }
     if (chatID && replayGap) {
+      // Stateful seq gap = events were DROPPED in-connection (sendCh
+      // backpressure during a write stall; stateless events coalesce but
+      // stateful ones don't — a gap means real loss). The drop may include
+      // session busy/idle events (the sidebar's real-time state source).
+      // Real-time event-driven correction — the poll replacement: the gap
+      // itself is the trigger (the next delivered event's seq jumped), no
+      // timer. The store's debounced refresh reconciles the sidebar from HTTP.
+      this.dispatchSessionsResync()
       if (crossedIteration) {
         // Gap crossed an iteration boundary (e.g. iteration 3's events, then a
         // seq gap, then iteration 4's events). Iteration 3's COMPLETION delta
@@ -398,6 +424,16 @@ export class SSEConnectionImpl implements WSConnection {
     this.messageHandlers.forEach((handler) => handler(msg))
   }
 
+  /** Signal the session store to reconcile sidebar state against HTTP truth
+   * (clear executing timestamps + session-tree refresh). Emitted when events
+   * were provably lost: SSE reconnect, resync_required (ring eviction), and
+   * active-progress recovery gaps. The store debounces (300ms) — several
+   * connections (dockview tabs) may dispatch within the same window. */
+  private dispatchSessionsResync(): void {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent('sessions-resync'))
+  }
+
   private async sendMessageWithRetry(msg: WSClientMessage): Promise<SendMessageResponse> {
     const requestID = msg.id || newMessageRequestID()
     const body = {
@@ -408,6 +444,7 @@ export class SSEConnectionImpl implements WSConnection {
       file_sizes: msg.file_sizes,
       upload_keys: msg.upload_keys,
       file_mimes: msg.file_mimes,
+      interrupt: msg.interrupt,
       ...sessionBody(msg),
     }
     for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt += 1) {
@@ -514,6 +551,11 @@ export class SSEConnectionImpl implements WSConnection {
             detail: { chatID, channel },
           }))
         }
+        // The disconnect window may also have lost session state for OTHER
+        // sessions (the current session's busy is corrected by agent-idle
+        // above; busy/idle changes for background sessions never reached this
+        // client). Reconcile the whole sidebar against HTTP truth.
+        this.dispatchSessionsResync()
         // Turn ended on server (or no active progress). Do NOT dispatch
         // replay_gap — it triggers useChatMessages.reload() → history_replaced
         // on every tab switch (restoreActiveProgress runs when SSE reconnects
@@ -581,6 +623,9 @@ export class SSEConnectionImpl implements WSConnection {
         // and iteration-id gaps, the UI is too stale to render incrementally — a
         // clean reload is better than a partially-inconsistent view.
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
+        // The recovery gap also implies possible session-state loss (busy/idle
+        // for other sessions during the same window) — reconcile the sidebar.
+        this.dispatchSessionsResync()
       }
       // Recovery snapshot — carry its seq so setStructuredTools can apply the
       // stale watermark check (an old snapshot must not roll back a newer

@@ -1758,7 +1758,7 @@ func TestSSEContractEventsReceiveSequences(t *testing.T) {
 	}
 }
 
-func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
+func TestSSESessionBroadcastSidebarFanoutAndRouteIsolation(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	client1 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-1", userID: "web-1"}
 	client2 := &Client{connType: clientConnTypeSSE, sendCh: make(chan protocol.WSMessage, 1), done: make(chan struct{}), id: "user-2", userID: "web-2"}
@@ -1772,8 +1772,15 @@ func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
 	wc.hub.subscribe(wsClient.id, sessionRouteKey("web", "web-1"))
 	wc.hub.subscribe(cliClient.id, sessionRouteKey("cli", "web-1"))
 
+	// Barrier events must never bypass route sequencing — isSidebarSessionEvent
+	// is the fan-out gate inside SendSessionState.
+	if isSidebarSessionEvent(protocol.SessionEvent{Action: "history_rewound"}) {
+		t.Fatal("history_rewound must stay route-scoped (transport barrier)")
+	}
+
 	wc.SendSessionState(protocol.SessionEvent{Channel: "web", ChatID: "web-1", Action: "busy"})
 
+	// Own-route SSE subscriber: the sequenced (ring-replayable) copy.
 	var sseMsg protocol.WSMessage
 	select {
 	case sseMsg = <-client1.sendCh:
@@ -1783,11 +1790,26 @@ func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
 	default:
 		t.Fatal("authorized SSE client did not receive session event")
 	}
+	// Foreign-route WEB client: the sidebar fan-out copy (seq=0 control
+	// broadcast). The session tree is a user-level view — busy/idle for
+	// session A must reach a browser currently viewing session B; route-scoped
+	// delivery alone left the sidebar stale until a manual tree refresh
+	// (user report: "侧边栏会话状态经常落后 / 有了 subagent 侧边栏不显示").
 	select {
 	case msg := <-client2.sendCh:
-		t.Fatalf("foreign SSE client received session event: %#v", msg)
+		if msg.Type != protocol.MsgTypeSession {
+			t.Fatalf("foreign SSE client fan-out copy = %#v (want session event)", msg)
+		}
+		if msg.Seq != 0 {
+			t.Fatalf("fan-out copy must be a seq=0 control broadcast (no ring replay), got seq=%d", msg.Seq)
+		}
+		if msg.Session == nil || msg.Session.Action != "busy" || msg.Session.ChatID != "web-1" {
+			t.Fatalf("fan-out session payload = %#v", msg.Session)
+		}
 	default:
+		t.Fatal("foreign SSE client did not receive the sidebar fan-out session event")
 	}
+	// Own-route WS subscriber: same sequenced copy as the SSE subscriber.
 	select {
 	case msg := <-wsClient.sendCh:
 		if msg.Seq != sseMsg.Seq {
@@ -1796,9 +1818,23 @@ func TestSSESessionBroadcastIsIsolatedBySubscription(t *testing.T) {
 	default:
 		t.Fatal("browser WS broadcast behavior changed")
 	}
+	// CLI clients are never part of the sidebar fan-out.
 	select {
 	case msg := <-cliClient.sendCh:
-		t.Fatalf("CLI WS client on a different route received session event: %#v", msg)
+		t.Fatalf("CLI WS client received session event: %#v", msg)
+	default:
+	}
+	// Own-route subscribers must NOT receive a second (fan-out) copy — they
+	// already hold the sequenced one and double delivery would duplicate
+	// sidebar state transitions.
+	select {
+	case msg := <-client1.sendCh:
+		t.Fatalf("own-route SSE client received duplicate fan-out copy: %#v", msg)
+	default:
+	}
+	select {
+	case msg := <-wsClient.sendCh:
+		t.Fatalf("own-route WS client received duplicate fan-out copy: %#v", msg)
 	default:
 	}
 }

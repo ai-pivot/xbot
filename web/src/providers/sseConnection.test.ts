@@ -945,6 +945,81 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('resync_required dispatches sessions-resync (sidebar state reconciliation)', () => {
+    // Regression: resync_required means events were permanently lost (ring
+    // eviction beyond the replay window). useChatMessages reloads THIS
+    // session's messages from DB, but the SIDEBAR busy/idle state for ALL
+    // sessions also needs reconciliation — a session(idle) lost in the same
+    // eviction window left executingSessionsRef stuck running forever
+    // ("明明 idle 却显示 busy"). The SSE layer dispatches the sessions-resync
+    // window event; useSessionStore clears executing timestamps + refreshes
+    // from HTTP truth.
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    let resyncDispatched = 0
+    const handler = () => { resyncDispatched += 1 }
+    window.addEventListener('sessions-resync', handler)
+
+    source.emit('resync_required', { type: 'resync_required' })
+
+    expect(received.map((m) => m.type)).toContain('resync_required')
+    expect(resyncDispatched).toBe(1)
+
+    window.removeEventListener('sessions-resync', handler)
+    connection.dispose()
+  })
+
+  it('stateful seq gap dispatches sessions-resync (in-connection event-drop correction — poll replacement)', () => {
+    // A stateful seq jump (5 after 2) means events were DROPPED in-connection
+    // (sendCh backpressure during a write stall; stateless events coalesce but
+    // stateful ones don't — a gap is real loss). The drop may include session
+    // busy/idle (the sidebar's real-time state source). The gap itself is the
+    // real-time correction trigger: dispatchSessionsResync → the store's
+    // debounced refresh reconciles from HTTP. This REPLACES the 30s poll
+    // (removed — the user demands 100% event-driven): no timer, the next
+    // delivered event's seq jump fires the correction immediately.
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+
+    let resyncDispatched = 0
+    const handler = () => { resyncDispatched += 1 }
+    window.addEventListener('sessions-resync', handler)
+
+    // Establish the watermark with contiguous stateful events (seq 1 → 2).
+    source.emit('text', { type: 'text', seq: 1, content: 'establish' })
+    source.emit('text', { type: 'text', seq: 2, content: 'establish 2' })
+    expect(lastSeqCache.get(sessionCacheKey('web', 'chat-a'))).toBe(2)
+    expect(resyncDispatched).toBe(0)
+
+    // In-connection drop: the next stateful event jumps (5 > 2+1) — a session
+    // busy/idle may have been dropped from sendCh during a write stall. The
+    // gap fires sessions-resync synchronously (real-time, no timer).
+    source.emit('text', { type: 'text', seq: 5, content: 'after gap' })
+    expect(resyncDispatched).toBe(1)
+
+    // Contiguous delivery (6 = 5+1) fires nothing — the correction is
+    // event-driven (gap-triggered), not periodic.
+    source.emit('text', { type: 'text', seq: 6, content: 'contiguous' })
+    expect(resyncDispatched).toBe(1)
+
+    // Stateless coalescing (stream_content seq jumps) does NOT fire the
+    // correction — coalescing is normal, not a loss.
+    source.emit('stream_content', { type: 'stream_content', seq: 20, content: 'coalesced' })
+    expect(resyncDispatched).toBe(1)
+
+    window.removeEventListener('sessions-resync', handler)
+    connection.dispose()
+  })
+
   it('stale turn_started with lower turnID is dropped (prevents state corruption)', () => {
     // Regression: SSE replay can deliver a stale turn_started (turnID=9) after
     // the store has advanced to turnID=10. Without a guard, the stale event

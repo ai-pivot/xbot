@@ -54,15 +54,12 @@ async function setupMock(page: Page) {
 }
 
 /** Check whether the input area shows a cancel/stop button (busy) or send button (idle).
- *  Types text in the editor first so the send button is visible. */
+ *  The action button is a SINGLE slot with three states (MessageInput dual-mode,
+ *  single button by design): empty-input+busy → Cancel, has-input+busy →
+ *  '↵ 排队发送'/'↵ 插话' (queue/interject), idle → Send. We check the EMPTY-input
+ *  state: typing text would switch busy into the queue-send state whose aria-label
+ *  contains the substring '发送' and would misclassify as send. */
 async function getInputMode(page: Page): Promise<{ hasSend: boolean; hasCancel: boolean }> {
-  // Type a character so the send button becomes visible (it's hidden when empty)
-  const editor = page.locator('.tiptap, textarea, [contenteditable]').first()
-  if (await editor.isVisible().catch(() => false)) {
-    await editor.click()
-    await page.keyboard.type('x')
-    await page.waitForTimeout(100)
-  }
   return page.evaluate(() => {
     // The MessageInput's action button: cancel uses aria-label t('common.cancel')
     // ("Cancel"/"取消"), send uses aria-label t('agent.send') ("Send"/"发送").

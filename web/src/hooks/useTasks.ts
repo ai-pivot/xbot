@@ -80,7 +80,7 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
       ])
       const latest = sessionRef.current
       if (seq !== refreshSeqRef.current || !latest || `${latest.channel}:${latest.chatID}` !== sessionKey) return
-      setCronTasks(cron)
+      setCronTasks(cron.map(normalizeCronTask))
       setBgTasks(bg.map(normalizeBgTask).filter(isRunningBgTask))
       hasLoadedRef.current = true
     } catch (e) {
@@ -128,6 +128,30 @@ function normalizeBgTask(raw: unknown): BgTask {
     exitCode: numberField(r.exitCode ?? r.exit_code),
     error: optionalString(r.error),
     output: optionalString(r.output),
+  }
+}
+
+/**
+ * Normalize a backend CronJob (Go storage/sqlite/cron.go, snake_case json
+ * tags: cron_expr/every_seconds/delay_seconds/one_shot/...) into the
+ * camelCase CronTask shape the UI consumes. Without this, task.cronExpr /
+ * task.everySeconds / task.oneShot are all undefined — the bubble renders an
+ * empty schedule line.
+ */
+function normalizeCronTask(raw: unknown): CronTask {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  return {
+    id: stringField(r.id),
+    message: stringField(r.message),
+    channel: stringField(r.channel),
+    chatID: stringField(r.chatID ?? r.chat_id),
+    cronExpr: optionalString(r.cronExpr ?? r.cron_expr),
+    everySeconds: numberField(r.everySeconds ?? r.every_seconds),
+    delaySeconds: numberField(r.delaySeconds ?? r.delay_seconds),
+    at: optionalString(r.at),
+    createdAt: optionalString(r.createdAt ?? r.created_at),
+    nextRun: optionalString(r.nextRun ?? r.next_run),
+    oneShot: Boolean(r.oneShot ?? r.one_shot),
   }
 }
 

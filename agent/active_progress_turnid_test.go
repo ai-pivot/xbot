@@ -18,6 +18,7 @@ func TestGetActiveProgress_TurnIDIteration(t *testing.T) {
 	result := a.GetActiveProgress("web", "chat-1", protocol.FetchAll())
 	if result == nil {
 		t.Fatal("GetActiveProgress returned nil")
+		return
 	}
 	if result.TurnID != 7 {
 		t.Errorf("TurnID = %d, want 7 — active progress must carry turn_id", result.TurnID)

@@ -1100,12 +1100,6 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	var lastUsage *TokenUsage
 	var lastFinishReason FinishReason
 	var hasToolCalls bool // track if any tool call deltas were seen
-	// Per-index accumulation of tool call arguments, used ONLY for the
-	// truncated-stream detection below: a cleanly-cut stream (no finish_reason)
-	// with invalid accumulated JSON args must be treated as a truncated
-	// response (EventError → RetryLLM), never passed downstream as a
-	// "complete" tool call ("parse args: unexpected end of JSON input" bug).
-	toolArgsByIdx := make(map[int]*strings.Builder)
 
 	for stream.Next() {
 		select {
@@ -1179,17 +1173,6 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 					}).Debug("[LLM] Tool call started")
 				}
 				hasToolCalls = true
-				// Accumulate arguments per index for the truncated-stream
-				// detection at the end of processStream (see the
-				// hasToolCalls+no-finish_reason branch).
-				if tc.Function.Arguments != "" {
-					b := toolArgsByIdx[int(tc.Index)]
-					if b == nil {
-						b = &strings.Builder{}
-						toolArgsByIdx[int(tc.Index)] = b
-					}
-					b.WriteString(tc.Function.Arguments)
-				}
 				select {
 				case eventChan <- StreamEvent{
 					Type: EventToolCall,
@@ -1318,38 +1301,22 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		}
 	}
 
-	// BUG 1 fix: 统一在 stream 结束后发送 EventDone。
-	// 如果 provider 没有发送 finish_reason，但有 tool_calls，推断为 tool_calls。
 	if lastFinishReason == "" && hasToolCalls {
-		// A cleanly-closed stream that produced tool calls but never received a
-		// finish_reason is EITHER (a) a gateway that omits finish_reason on the
-		// DONE tail (args complete — keep the old inference), OR (b) a proxy
-		// cutting the stream MID-tool-call (args truncated — observed on
-		// sglang/MoL gateways, 2026-08-30). Case (b) used to fall through with
-		// FinishReasonToolCalls inferred, passing half-generated JSON downstream
-		// as a "complete" tool call → "parse args: unexpected end of JSON input"
-		// → the LLM retried the same oversized call → token burn loop.
-		// Validate accumulated arguments: invalid JSON ⇒ truncated stream ⇒
-		// EventError so RetryLLM retries the whole request (same recovery path
-		// as the !hasToolCalls truncation check above).
-		if !allToolCallArgsValid(toolArgsByIdx) {
-			l.WithFields(log.Fields{
-				"provider":    "openai",
-				"model":       model,
-				"base_url":    o.baseURL,
-				"chunk_count": chunkCount,
-				"duration":    time.Since(startTime).String(),
-			}).Warn("[LLM] Stream ended without finish_reason — tool call arguments truncated by proxy/network")
-			select {
-			case eventChan <- StreamEvent{
-				Type:  EventError,
-				Error: "stream ended without finish_reason (tool call arguments truncated)",
-			}:
-			case <-ctx.Done():
-				return
-			}
-			return
-		}
+		// Stream ended cleanly but no finish_reason — if any accumulated tool call
+		// arguments are truncated (invalid JSON), the stream was cut mid-tool-call
+		// (proxy/network). The old behavior passed the truncated JSON downstream as a
+		// "complete" tool call → "parse args: unexpected end of JSON input" → LLM
+		// retried blindly (token burn). EventError triggers RetryLLM which regenerates
+		// the whole request.
+		//
+		// NOTE (rollback 2026-08-31): this json.Valid gate was TOO AGGRESSIVE — it
+		// rejected legitimately formatted tool calls (e.g. task_status with array
+		// params) and caused infinite retry loops. Reverted to simple finish_reason
+		// inference (the original BUG 1 fix behavior before the gate was added).
+		// The gate in CollectStreamWithCallbackFrom (stream.go) was also reverted —
+		// upstream chunk corruption must be fixed at the gateway, not by rejecting
+		// every malformed JSON in the consumer (which can't distinguish corruption
+		// from provider-specific formatting).
 		lastFinishReason = FinishReasonToolCalls
 	}
 	select {
@@ -1380,26 +1347,6 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	} else {
 		l.WithFields(fields).Debug("[LLM] Stream completed")
 	}
-}
-
-// allToolCallArgsValid reports whether every accumulated tool call arguments
-// string is complete JSON (or empty — no-arg tool calls). A stream cut
-// mid-tool-call leaves half-generated JSON like `{"new_string":"abc` which
-// json.Valid rejects. Used by the no-finish_reason truncation detection:
-// valid args mean the gateway merely omitted finish_reason (safe to infer
-// tool_calls); invalid args mean the stream was truncated by the
-// proxy/network and the whole response must be retried.
-func allToolCallArgsValid(argsByIdx map[int]*strings.Builder) bool {
-	for _, b := range argsByIdx {
-		s := b.String()
-		if s == "" {
-			continue // no-arg tool call — empty arguments is legal
-		}
-		if !json.Valid([]byte(s)) {
-			return false
-		}
-	}
-	return true
 }
 
 func truncateStr(s string, maxLen int) string {

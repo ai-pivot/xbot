@@ -188,6 +188,17 @@ type WebCallbacks struct {
 	ChatReorder func(senderID, channel string, orders map[string]int) error
 	// LocalSessionExists reports whether a local session exists outside the database.
 	LocalSessionExists func(channel, chatID string) bool
+
+	// InjectInterrupt delivers a ⚡ user interject into the ACTIVE turn of a
+	// session (synthetic user_interrupt tool result — no new turn, no queueing).
+	// Returns false when the session is idle (caller degrades to a normal send).
+	InjectInterrupt func(channel, chatID, senderID, content string) bool
+	// GetQueueState returns the pending queue entries (admitted, not yet
+	// dequeued) for a session — the Web Staging Tray data source.
+	GetQueueState func(channel, chatID string) []protocol.QueueItemPayload
+	// CancelQueued cancels a queued-but-unstarted message (skipped at dequeue).
+	// Returns false when the message is not queued (already processing/unknown).
+	CancelQueued func(channel, chatID, msgID string) bool
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -304,6 +315,13 @@ type WebChannel struct {
 	// Inbound request dedup
 	inboundRequests   map[inboundRequestKey]*inboundRequestState
 	inboundRequestsMu sync.Mutex
+
+	// interjectedRequests: ⚡ interject dedup (CR#6) — REST timeout retry with
+	// the same msg.ID must not re-inject the synthetic tool (each attempt would
+	// deliver a fresh user_interrupt into the active turn). requestID → marked
+	// time; TTL retention mirrors inboundRequests (swept on lookup).
+	interjectedRequests   map[string]time.Time
+	interjectedRequestsMu sync.Mutex
 
 	// DB
 	db *sql.DB
@@ -518,16 +536,67 @@ func webWidgetZonesEqual(a, b plugin.WebWidgetZones) bool {
 // SendSessionState implements ch.SessionStateSender.
 // Events are route-scoped. SubAgent lifecycle also reaches the canonical child
 // route used by browser Agent panels.
+// Sidebar fan-out: lightweight state events additionally reach ALL web clients
+// (seq=0 control broadcast; subscribers of the event's own route are excluded —
+// they receive the sequenced, replayable copy). The session tree is a user-level
+// view: busy/idle/created/deleted/renamed and SubAgent lifecycle for session A
+// must reach a browser currently viewing session B, but route-scoped delivery
+// never reaches it — the sidebar only updated on the next tree refresh (user
+// report: "侧边栏会话状态经常落后 / 有了 subagent 侧边栏不显示").
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
+	// Top-level ChatID: the message is SELF-DESCRIBING — every consumer
+	// (normalizeEvent's chat filter, matchesChatID Layer 1, debugging/DB dumps)
+	// resolves ownership from the top level without knowing where the event
+	// type nests it. Historical bug (2026-09 "cancel one panel froze the
+	// other"): ChatID was only in msg.Session.ChatID, the frontend
+	// normalizeEvent only checked the top level, and the user-level fan-out
+	// (broadcastSessionStateToWebClients) delivered session B's idle to panel
+	// A's connection → A's ChatStore froze A's own live turn.
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
+		ChatID:  ev.ChatID,
 		Session: &ev,
 	}
 	wc.hub.broadcastSessionState(ev.Channel, ev.ChatID, msg)
 	if isSubAgentLifecycle(ev) && ev.Channel != "cli" {
 		wc.hub.broadcastSessionState("agent", ev.SessionKey, msg)
 	}
+	if isSidebarSessionEvent(ev) {
+		exclude := []string{sessionRouteKey(ev.Channel, ev.ChatID)}
+		if isSubAgentLifecycle(ev) && ev.SessionKey != "" && ev.Channel != "cli" {
+			exclude = append(exclude, sessionRouteKey("agent", ev.SessionKey))
+		}
+		wc.hub.broadcastSessionStateToWebClients(msg, exclude...)
+	}
+}
+
+// isSidebarSessionEvent reports whether the event is a lightweight sidebar state
+// change every web client should see. Heavyweight/barrier events stay
+// route-scoped: history_rewound resets per-route replay streams and must not
+// bypass route sequencing.
+func isSidebarSessionEvent(ev protocol.SessionEvent) bool {
+	switch ev.Action {
+	case "busy", "idle", "created", "deleted", "renamed", "subagent_started", "subagent_stopped":
+		return true
+	}
+	return false
+}
+
+// SendQueueState implements channel.QueueStateSender — broadcasts the pending
+// queue snapshot (Staging Tray data source) to the session's SSE/WS
+// subscribers. Full-snapshot semantics: the frontend replaces, never merges.
+func (wc *WebChannel) SendQueueState(channelName, chatID string, payload *protocol.QueueStatePayload) {
+	// Top-level ChatID: self-describing message (same contract as
+	// SendSessionState — consumers resolve ownership from the top level).
+	msg := protocol.WSMessage{
+		Type:       protocol.MsgTypeQueueState,
+		TS:         time.Now().Unix(),
+		ChatID:     chatID,
+		QueueState: payload,
+	}
+	// Route-scoped: same routing as user messages (agent channel + chatID).
+	wc.hub.sendToSession(channelName, chatID, msg)
 }
 
 func isSubAgentLifecycle(ev protocol.SessionEvent) bool {
@@ -543,15 +612,16 @@ type SessionSelector struct {
 // NewWebChannel 创建 Web 渠道
 func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 	wc := &WebChannel{
-		config:             cfg,
-		msgBus:             msgBus,
-		hub:                newHub(),
-		sessions:           make(map[string]sessionInfo),
-		db:                 cfg.DB,
-		stopCh:             make(chan struct{}),
-		ptyMgr:             newPtyManager(),
-		inboundRequests:    make(map[inboundRequestKey]*inboundRequestState),
-		userCurrentSession: make(map[string]SessionSelector),
+		config:              cfg,
+		msgBus:              msgBus,
+		hub:                 newHub(),
+		sessions:            make(map[string]sessionInfo),
+		db:                  cfg.DB,
+		stopCh:              make(chan struct{}),
+		ptyMgr:              newPtyManager(),
+		inboundRequests:     make(map[inboundRequestKey]*inboundRequestState),
+		interjectedRequests: make(map[string]time.Time),
+		userCurrentSession:  make(map[string]SessionSelector),
 	}
 	wc.hub.seqFn = wc.stampAndBuffer
 	wc.hub.resetReplayFn = wc.clearReplayStream
@@ -709,6 +779,8 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/message", wc.authenticatedPOST(wc.handleMessage))
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
+	mux.HandleFunc("/api/queue/list", wc.authenticatedPOST(wc.handleQueueList))
+	mux.HandleFunc("/api/queue/cancel", wc.authenticatedPOST(wc.handleQueueCancel))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。

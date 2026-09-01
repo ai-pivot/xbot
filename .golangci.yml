@@ -6,6 +6,17 @@ linters:
   exclusions:
     paths:
       - web/node_modules
+    rules:
+      # SA5011 in _test.go: staticcheck does not recognize t.Fatal/t.Fatalf as
+      # a terminating call, so the idiomatic nil-check-then-deref pattern
+      # (if x == nil { t.Fatal(...) }; x.Field) is flagged as a "possible nil
+      # pointer dereference". This is a well-known false positive for Go tests
+      # — t.Fatal calls runtime.Goexit in the test goroutine. Excluding SA5011
+      # from test files only (production code keeps the check).
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "SA5011"
 
 formatters:
   enable:

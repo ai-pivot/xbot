@@ -39,6 +39,14 @@ const UNREAD_KEY = 'xbot:session-unread'
 const ACTIVE_CHANNEL_KEY = 'xbot:active-channel'
 const DEFAULT_CHANNEL = 'web'
 const TRANSIENT_SUBAGENT_TTL_MS = 10 * 60 * 1000
+/** How long an SSE session(busy)/subagent_started event is trusted over a
+ * contradicting HTTP session-tree response. The session-tree RPC reads
+ * chatCancelCh, which lags the SSE idle event by up to one round-trip — the
+ * window absorbs that lag. Past the window, HTTP is authoritative (idle wins),
+ * so a LOST idle event (SSE ring eviction, disconnect window, cross-route
+ * delivery gap) is corrected on the next refresh instead of forcing running
+ * forever. */
+const EXECUTING_TRUST_WINDOW_MS = 15_000
 /** Sidebar session-tree page size (backend pagination). */
 const SESSION_TREE_PAGE_SIZE = 60
 
@@ -744,15 +752,42 @@ function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, i
   )
 }
 
-function addRunningSessionKeys(nodes: SessionInfo[], target: Set<string>): void {
+/** Remove SubAgent nodes matching the lifecycle matcher from the tree.
+ * subagent_stopped(removed=true) means the backend cascade-deleted the tenant
+ * (TTL eviction / unload / spawn-failure cleanup) — the row must not linger as
+ * a stale "idle" entry until the next tree refresh. */
+function removeSubAgentNodes(nodes: SessionInfo[], matches: (s: SessionInfo) => boolean): SessionInfo[] {
+  let changed = false
+  const next: SessionInfo[] = []
   for (const node of nodes) {
-    if (node.running || node.status === 'running' || node.status === 'pending') {
-      target.add(sessionKey(node))
+    if (matches(node)) {
+      changed = true
+      continue
     }
-    addRunningSessionKeys(node.children || [], target)
+    const children = node.children
+    if (children?.length) {
+      const pruned = removeSubAgentNodes(children, matches)
+      if (pruned !== children) {
+        changed = true
+        next.push({ ...node, children: pruned.length ? pruned : undefined })
+        continue
+      }
+    }
+    next.push(node)
   }
+  return changed ? next : nodes
 }
 
+// ⚠️ SESSION-PANEL GLOBAL-STATE BAN (eslint.config.js): per-session code
+// (useProgressStream / useChatMessages / components/agent) MUST NOT use
+// window.dispatchEvent / addEventListener / removeEventListener — route
+// cross-session signals through src/lib/sessionEvents.ts (enforces the
+// session identity at the type level). Root cause: useProgressStream
+// dispatched IDENTITY-LESS agent-idle events (PhaseDone's inner payload
+// carries no chat_id) and useSessionStore's listener fell back to "clear
+// the ACTIVE session" — cancelling a background session idled the busy
+// session the user was viewing (user report: "cancel 一个 session 导致
+// 所有 busy 的 session 状态异常").
 function applyPersistedUnreadStatuses(
   nodes: SessionInfo[],
   unread: Set<string>,
@@ -819,7 +854,25 @@ export function useSessionStoreImpl(): SessionStore {
   const switchSeqRef = useRef(0)
   const subAgentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transientSubAgentsRef = useRef(new Map<string, TransientSubAgent>())
-  const executingSessionsRef = useRef(new Set<string>())
+  // SSE intents per session key ("channel:chatID"): the LAST session event
+  // (busy/idle) with its timestamp. Intents are the ONLY frontend-held overlay
+  // and are a bounded 15s race-window hint — NEVER a source of truth: HTTP
+  // (session-tree) is the persistent authority, and the unconditional 30s poll
+  // guarantees convergence even when every SSE event is missed. A FRESH intent
+  // overrides a contradicting HTTP response (the tree RPC lags SSE by up to one
+  // round-trip); an expired (or absent) intent means HTTP ALWAYS wins.
+  //
+  // This replaces the previous busy-only map which had two deadlock modes:
+  // (1) a lost idle left busy forever (no HTTP correction — the original
+  //     "明明 idle 却显示 busy");
+  // (2) — worse — "no busy key + carried idle" suppressed HTTP running FOREVER
+  //     (mergeStatus couldn't distinguish "SSE idle just arrived" from "never
+  //     saw busy / backend-restart race"), so a session that auto-resumed
+  //     after a backend restart showed idle while actually running (user
+  //     report: "明明 busy 侧边栏却显示 idle"). The timestamped IDLE intent
+  //     closes both: idle is only trusted within the same window, and the
+  //     unconditional poll gives HTTP the last word.
+  const sseIntentsRef = useRef(new Map<string, { ts: number; busy: boolean }>())
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeqRef.current
@@ -844,10 +897,9 @@ export function useSessionStoreImpl(): SessionStore {
       if (typeof data.next_offset === 'number') nextOffsetRef.current = data.next_offset
       const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
       const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
-      if (initialLoad) addRunningSessionKeys(mainSessions, executingSessionsRef.current)
       const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
       const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
-      const cachedSessions = mergeStatus(sessionsRef.current, withUnread, executingSessionsRef.current)
+      const cachedSessions = mergeStatus(sessionsRef.current, withUnread, sseIntentsRef.current, Date.now())
       sessionsRef.current = cachedSessions
       const cachedAgents = flattenTreeAgents(cachedSessions)
       saveSessionTreeCache(cachedSessions, cachedAgents)
@@ -893,7 +945,7 @@ export function useSessionStoreImpl(): SessionStore {
       // the incoming page. Passing `withUnread` (new page only) as `next` would
       // discard all existing sessions.
       const appended = appendUniqueSessions(sessionsRef.current, withUnread)
-      const merged = mergeStatus(sessionsRef.current, appended, executingSessionsRef.current)
+      const merged = mergeStatus(sessionsRef.current, appended, sseIntentsRef.current, Date.now())
       sessionsRef.current = merged
       const cachedAgents = flattenTreeAgents(merged)
       saveSessionTreeCache(merged, cachedAgents)
@@ -908,18 +960,28 @@ export function useSessionStoreImpl(): SessionStore {
   /* Preserve live status across refresh: a fresh fetch resets every row to
    * 'idle', so carry over the inferred status keyed by chatID.
    *
-   * Running status is resolved from `executingSessionsRef` — the authoritative
-   * set of sessions that received SSE session(busy) without a matching
-   * session(idle). This avoids two bugs:
-   *   1. Stale idle carry-over: session goes busy (HTTP says running) but prev
-   *      still has idle → mergeStatus wrongly carried over idle.
-   *   2. Stale HTTP running: session just went idle (SSE idle fired, key removed
-   *      from executingSessionsRef) but HTTP still says running → we trust
-   *      executingSessionsRef (not running) over the stale HTTP response.
-   * For the brief window where HTTP is stale after idle, the next refresh
-   * cycle (≤2s) corrects it — much better than being stuck on idle when busy.
+   * Running status resolution — HTTP is the persistent authority; SSE intents
+   * are a bounded 15s race-window overlay, NEVER a source of truth:
+   *   1. Fresh intent (busy) + HTTP idle  → running: the busy event beat the
+   *      in-flight tree response (chatCancelCh lags SSE by up to one
+   *      round-trip).
+   *   2. Fresh intent (idle) + HTTP running → idle: the idle event beat the
+   *      in-flight response (same lag in reverse). TIME-BOUNDED — the old
+   *      unbounded rule ("no busy key + carried idle → idle") suppressed HTTP
+   *      running FOREVER after a backend-restart race: the busy event was
+   *      consumed before the race, so nothing ever contradicted the stale
+   *      carried idle while the session kept running (user report: "明明 busy
+   *      侧边栏却显示 idle" for an auto-resumed session).
+   *   3. Expired / absent intent → HTTP ALWAYS wins. This is the core fix for
+   *      "must be fully synced with the backend": a lost idle (busy intent
+   *      goes stale) self-corrects on the next refresh; a backend-restart
+   *      resume (no intent at all — the busy event was missed) converges to
+   *      HTTP running; a restart race (carried idle + HTTP running) converges
+   *      to running instead of deadlocking.
+   * The 30s unconditional poll guarantees HTTP gets the last word even when
+   * every SSE event is missed.
    */
-  function mergeStatus(prev: SessionInfo[], next: SessionInfo[], executingKeys: Set<string>): SessionInfo[] {
+  function mergeStatus(prev: SessionInfo[], next: SessionInfo[], intents: Map<string, { ts: number; busy: boolean }>, now: number): SessionInfo[] {
     if (prev.length === 0) return next
     const statusBy = new Map<string, Pick<SessionInfo, 'status' | 'running'>>()
     const collect = (nodes: SessionInfo[]) => {
@@ -937,29 +999,26 @@ export function useSessionStoreImpl(): SessionStore {
       if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
         return { ...node, status: carried.status, running: false, children }
       }
-      // Running status: executingSessionsRef is authoritative for main sessions.
-      // If SSE busy was received (key in set), force running.
-      // If SSE idle was received (key not in set), don't carry over a stale
-      // idle from prev — trust the HTTP response which may now say running
-      // (the session went busy after the last SSE idle).
-      if (executingKeys.has(sessionKey(node))) {
+      const key = sessionKey(node)
+      const intent = intents.get(key)
+      const fresh = intent !== undefined && now - intent.ts <= EXECUTING_TRUST_WINDOW_MS
+      if (fresh && intent.busy && !node.running) {
+        // Case 1: the busy event beat the in-flight tree response (chatCancelCh
+        // registers before the busy emit, but the RPC may have been answered
+        // before the turn's chatCancelCh registration reached it).
         return { ...node, status: 'running', running: true, children }
       }
-      // SSE idle cooldown: if prev's status was set by SSE to idle (not
-      // running), and HTTP says running=true, trust SSE (not HTTP). HTTP has
-      // inherent latency — the session-tree RPC reads chatCancelCh which may
-      // not have been updated yet (race between SSE idle event and RPC handler).
-      if (node.running && carried.status === 'idle') {
+      if (fresh && !intent.busy && node.running) {
+        // Case 2: the idle event beat the in-flight tree response. Bounded by
+        // the window — past it, HTTP wins (the RPC has caught up).
         return { ...node, status: 'idle', running: false, children }
       }
-      // SubAgents: the backend's IsProcessingByChannel checks chatCancelCh,
-      // but one-shot SubAgents don't register there. So the HTTP response
-      // may report running=false even while the SubAgent is actively running.
-      // Carry over the SSE-driven running state from prev (set by
-      // applySubAgentLifecycle via subagent_started).
-      if (node.type === 'agent' && carried.running === true) {
-        return { ...node, status: 'running', running: true, children }
-      }
+      // Case 3 (no intent / expired / agreeing): HTTP authority. This is the
+      // restart-race fix: a session auto-resumed by the backend (busy event
+      // missed during the reconnect window) has NO intent — HTTP running shows
+      // running regardless of a stale carried idle. The old
+      // "busySince===undefined && carried.status==='idle' → idle" rule
+      // deadlocked exactly here forever.
       return { ...node, children }
     }
     collect(prev)
@@ -1034,9 +1093,24 @@ export function useSessionStoreImpl(): SessionStore {
   const applySubAgentLifecycle = useCallback((ev: SessionEvent, running: boolean) => {
     if (!ev.role && !parseAgentChatID(ev.chat_id || '')) return
     const created = subAgentFromEvent(ev, running)
+    const createdKey = created ? sessionKey(created) : ''
     if (created) {
       if (running) {
-        transientSubAgentsRef.current.set(sessionKey(created), { session: created, updatedAt: Date.now() })
+        transientSubAgentsRef.current.set(createdKey, { session: created, updatedAt: Date.now() })
+        // Record the busy INTENT so mergeStatus trusts the SSE-driven running
+        // only for EXECUTING_TRUST_WINDOW_MS — a missed subagent_stopped (route
+        // gap / ring eviction) previously left the row running forever with no
+        // HTTP correction path ("subagent 被卸载了却还显示"). HTTP
+        // (IsProcessingByChannel reads interactiveSubAgents running state for
+        // agent sessions — accurate) wins after the window.
+        sseIntentsRef.current.set(createdKey, { ts: Date.now(), busy: true })
+      } else if (ev.removed) {
+        // Destroyed (TTL eviction / unload / spawn-failure cleanup): the DB
+        // tenant is cascade-deleted — drop the transient row immediately
+        // instead of parking it idle for the transient TTL (10min), which
+        // resurrected destroyed rows on every mergeTransientSubAgents pass.
+        transientSubAgentsRef.current.delete(createdKey)
+        sseIntentsRef.current.delete(createdKey)
       } else {
         // Don't delete from transient map immediately — the backend may not
         // have persisted the agent tenant yet. Let mergeTransientSubAgents'
@@ -1044,13 +1118,25 @@ export function useSessionStoreImpl(): SessionStore {
         // the persisted row from the DB, and markSubAgentLifecycle will set
         // it to idle. This prevents the subagent from disappearing between
         // subagent_stopped and DB persistence.
-        transientSubAgentsRef.current.set(sessionKey(created), { session: { ...created, running: false, status: 'idle' }, updatedAt: Date.now() })
+        transientSubAgentsRef.current.set(createdKey, { session: { ...created, running: false, status: 'idle' }, updatedAt: Date.now() })
+        sseIntentsRef.current.set(createdKey, { ts: Date.now(), busy: false })
       }
     }
     const merged = mergeTransientSubAgents(sessionsRef.current, transientSubAgentsRef.current, Date.now(), false)
-    const mainSessions = running
-      ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
-      : markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, false, ev.session_key)
+    let mainSessions: SessionInfo[]
+    if (!running && ev.removed) {
+      // Destroyed: remove the node from the tree outright — the backend
+      // cascade-deleted the tenant, so the row must not linger as idle until
+      // the next tree refresh.
+      mainSessions = removeSubAgentNodes(
+        merged.mainSessions,
+        subAgentLifecycleMatcher(ev.role, ev.instance, ev.parent_id || ev.chat_id, ev.session_key),
+      )
+    } else {
+      mainSessions = running
+        ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
+        : markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, false, ev.session_key)
+    }
     const agents = flattenTreeAgents(mainSessions)
     sessionsRef.current = mainSessions
     setSessions((prev) => (sameSessionList(prev, mainSessions) ? prev : mainSessions))
@@ -1151,9 +1237,12 @@ export function useSessionStoreImpl(): SessionStore {
       sessionsRef.current = nextSessions
       saveSessionTreeCache(nextSessions, flattenTreeAgents(nextSessions))
       setSessions(nextSessions)
-      // Clear ALL executing sessions — stale busy keys (from lost idle events)
-      // would force running in mergeStatus, overriding the server's correct state.
-      executingSessionsRef.current.clear()
+      // Intents are per-session keyed and 15s-bounded (self-expiring) — no clear
+      // needed on switch. The old unbounded-Set clear guarded against stale busy
+      // keys; with the intent window, HTTP wins past 15s and refresh() below
+      // re-syncs from the server anyway. Clearing here would re-introduce the
+      // switch race (clear + HTTP refresh caught before a re-registered
+      // chatCancelCh → idle for a busy session).
       // No snapshot cache — todos are restored authoritatively by the session's
       // active_progress via reload. A cached snapshot can be stale (user report:
       // "全是缓存的错误").
@@ -1274,14 +1363,21 @@ export function useSessionStoreImpl(): SessionStore {
       }
       switch (ev.action) {
         case 'busy':
-          executingSessionsRef.current.add(sessionKey(selector))
+          sseIntentsRef.current.set(sessionKey(selector), { ts: Date.now(), busy: true })
           setStatus(selector, 'running')
           break
         case 'idle': {
-          const wasExecuting = executingSessionsRef.current.delete(sessionKey(selector))
+          const key = sessionKey(selector)
+          const wasExecuting = sseIntentsRef.current.get(key)?.busy === true
+          // Record the idle INTENT (not a delete): the 15s window lets it beat a
+          // lagging HTTP running response (chatCancelCh deregistration races the
+          // tree RPC), and — critically — an idle timestamp (vs the old "no key
+          // + carried idle" rule) can never suppress HTTP running FOREVER: a
+          // backend-restart resume race leaves NO intent at all, and HTTP wins.
+          sseIntentsRef.current.set(key, { ts: Date.now(), busy: false })
           if (wasExecuting && !sameSession(activeSessionRef.current, selector)) {
             setStatus(selector, 'unread')
-            addUnread(sessionKey(selector))
+            addUnread(key)
           } else {
             setStatus(selector, 'idle')
           }
@@ -1293,7 +1389,7 @@ export function useSessionStoreImpl(): SessionStore {
           break
         }
         case 'deleted':
-          executingSessionsRef.current.delete(sessionKey(selector))
+          sseIntentsRef.current.delete(sessionKey(selector))
           markRead(sessionKey(selector))
           setSessions((prev) => prev.filter((s) => !sameSession(s, selector)))
           break
@@ -1316,25 +1412,75 @@ export function useSessionStoreImpl(): SessionStore {
   // Run() fully exits). Listen for it to clear running state immediately.
   // The event carries chatID+channel so it can clear the correct session
   // even when the user has already switched to a different one.
+  // IDENTITY IS MANDATORY: an agent-idle WITHOUT chatID is dropped — the old
+  // "clear the active session" fallback was the cross-session pollution that
+  // made cancelling session A idle busy session B (a background session's
+  // PhaseDone payload carries no chat_id, the identity-less dispatch hit the
+  // fallback, and the active session got a fresh idle intent that beat HTTP
+  // running for 15s — "cancel one session breaks ALL busy sessions").
+  // Per-session panels dispatch via sessionEvents.ts, which enforces the
+  // identity; dispatchAgentIdle logs+drops empty chatIDs.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { chatID?: string; channel?: string } | undefined
-      if (detail?.chatID) {
-        const selector = { channel: detail.channel || DEFAULT_CHANNEL, chatID: detail.chatID }
-        executingSessionsRef.current.delete(sessionKey(selector))
-        setStatus(selector, 'idle')
-        return
-      }
-      // Fallback: clear the active session (legacy behavior)
-      const active = activeSessionRef.current
-      if (!active) return
-      const selector = { channel: active.channel || DEFAULT_CHANNEL, chatID: active.chatID }
-      executingSessionsRef.current.delete(sessionKey(selector))
+      if (!detail?.chatID) return
+      const selector = { channel: detail.channel || DEFAULT_CHANNEL, chatID: detail.chatID }
+      sseIntentsRef.current.set(sessionKey(selector), { ts: Date.now(), busy: false })
       setStatus(selector, 'idle')
     }
     window.addEventListener('agent-idle', handler)
     return () => window.removeEventListener('agent-idle', handler)
   }, [setStatus])
+
+  // ── Sidebar state reconciliation ──────────────────────────────────────────
+  // sessions-resync is dispatched by the SSE layer when events were PROVABLY
+  // lost (reconnect, resync_required ring eviction, active-progress recovery
+  // gap). Do NOT clear the intents here — a busy event replayed by catch-up
+  // just re-armed the 15s window, and clearing it would re-introduce the
+  // backend-restart race (clear + HTTP refresh answered before the resumed
+  // turn registered chatCancelCh → idle; the one-shot busy event was already
+  // consumed → idle forever). The 15s window self-heals stale intents and the
+  // unconditional 30s poll converges to HTTP regardless.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const handler = () => {
+      // Debounce: several SSE connections (dockview tabs) can dispatch
+      // sessions-resync within the same reconnect window — one refresh covers all.
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = null
+        void refresh()
+      }, 300)
+    }
+    window.addEventListener('sessions-resync', handler)
+    return () => {
+      window.removeEventListener('sessions-resync', handler)
+      if (timer) clearTimeout(timer)
+    }
+  }, [refresh])
+
+  // Tab foregrounded: SSE was likely throttled/disconnected while hidden —
+  // missed session events are the #1 sidebar-staleness source. Reconcile via
+  // refresh (HTTP authority); the 15s intent window self-heals stale intents
+  // (no clear — same restart-race reasoning as sessions-resync).
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState !== 'visible') return
+      void refresh()
+    }
+    document.addEventListener('visibilitychange', handler)
+    return () => document.removeEventListener('visibilitychange', handler)
+  }, [refresh])
+
+  // NOTE: no periodic poll — the sidebar is 100% event-driven (user's
+  // requirement "必须100%实时"). busy/idle session events reach every web
+  // client via the user-level broadcast (real-time), in-connection drops are
+  // detected by the seq-gap → sessions-resync path in sseConnection (real-time,
+  // event-driven correction, not polling), reconnect / resync_required /
+  // visibilitychange trigger HTTP reconciliation, and mergeStatus converges to
+  // HTTP authority once the 15s intent window expires. The old 30s poll was a
+  // crutch for a Case-3 deadlock that no longer exists — removed.
+
 
   useEffect(() => {
     return () => {
@@ -1352,6 +1498,21 @@ export function useSessionStoreImpl(): SessionStore {
       const channel = msg.channel
         ?? (chatID === wsRef.current.chatID ? wsRef.current.channel : null)
         ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
+      // [ASKDEBUG] 诊断：双面板 split view 下 ask_user 面板不渲染的定位日志
+      //（复现后看 console：无此日志 = 连接层没送达 handler；有此日志但面板
+      // miss = key 匹配问题 —— 与 useAskUser 的 [ASKDEBUG] miss 配对看）。
+      // DEV-only（CR#9: PR 描述承诺"正常流程静默"——生产不打）。
+      if (import.meta.env.DEV) {
+        console.warn('[ASKDEBUG] ask_user received', {
+          explicitChatID: explicitChatID ?? null,
+          msgChannel: msg.channel ?? null,
+          resolvedChatID: chatID,
+          resolvedChannel: channel,
+          resolvedKey: channel && chatID ? `${channel}:${chatID}` : null,
+          primaryChatID: wsRef.current.chatID,
+          questions: Array.isArray(msg.progress?.questions) ? msg.progress.questions.length : 0,
+        })
+      }
       if (chatID) {
         setStatus({ channel, chatID }, 'waiting_input')
         // Store the prompt so it survives session switch.

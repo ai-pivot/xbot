@@ -971,7 +971,7 @@ export const MessageList = memo(function MessageList({
                       isEditing={isEditing}
                       onStartEdit={onStartEdit ? () => onStartEdit(row.id) : undefined}
                       onEndEdit={onEndEdit}
-                      editDisabled={editDisabled || !canRewind}
+                      editDisabled={editDisabled || !canRewind || busy}
                     />
                   </div>
                 )

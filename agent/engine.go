@@ -364,6 +364,11 @@ type RunConfig struct {
 	PeerMessageFn func(targetSessionKey, message string) string
 	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
 	AutoWorktreeEnabled bool
+	// IterationLoopDetection enables the iteration-loop breaker (consecutive
+	// identical iterations → duplicate tool calls replaced with a fake LOOP
+	// DETECTED result, repeated loops force-terminate the Run). Experimental —
+	// default false; set from config.Agent.Experimental.IterationLoopDetection.
+	IterationLoopDetection bool
 }
 
 // TodoManagerProvider 提供 TODO 状态查询和清理
@@ -927,6 +932,14 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 	return func(ctx context.Context, tc llm.ToolCall) (*tools.ToolResult, error) {
 		tool, ok := cfg.Tools.GetForSession(tc.Name, cfg.TenantID, cfg.SessionKey)
 		if !ok {
+			// Synthetic notification tools (background_task_result etc.) are
+			// injected as fake tool-call pairs into the LLM context; the
+			// model MIMICS these names from history. Return a friendly result
+			// instead of "unknown tool" — the model can act on it and the
+			// loop keeps running.
+			if isSyntheticToolName(tc.Name) {
+				return syntheticToolResult(tc)
+			}
 			return nil, fmt.Errorf("unknown tool: %s", tc.Name)
 		}
 

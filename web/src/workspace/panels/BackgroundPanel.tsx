@@ -80,6 +80,17 @@ export function BackgroundPanel({ params }: PanelProps) {
   // only the tail) — a shrinking `output` means the offset-based delta slice is
   // invalid, so reset the terminal and rewrite the full snapshot instead of
   // freezing forever (old code's `length > lastLen` guard never fired again).
+  //
+  // deps include container + theme (not just output): the terminal is created
+  // in a LATER commit than the first task snapshot. Sequence: poll completes →
+  // setTask + setLoading land together → container div first renders → its
+  // callback ref fires setContainer → xterm mounts in the NEXT commit. With
+  // deps [output] only, this effect ran on the FIRST commit while
+  // termRef.current was still null → early return → the existing-output
+  // snapshot was DROPPED, and output never changed again so the effect never
+  // re-ran (user report: "打开 task 页面看不到虚拟 terminal 输出"). With
+  // container/theme in deps the effect re-runs after the terminal is (re)created;
+  // the xterm cleanup resets lastLenRef to 0 so the full snapshot rewrites.
   useEffect(() => {
     const term = termRef.current
     if (!term || !output) return
@@ -98,7 +109,7 @@ export function BackgroundPanel({ params }: PanelProps) {
     if (followRef.current) {
       term.scrollToBottom()
     }
-  }, [output])
+  }, [output, container, theme])
 
   // Track scroll position.
   useEffect(() => {

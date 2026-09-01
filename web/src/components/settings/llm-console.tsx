@@ -15,6 +15,7 @@
  *   api_type（"" = 跟随订阅默认）/ enabled（写走 set_model_enabled）。
  */
 import { useEffect, useState, type ReactNode } from 'react'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -450,28 +451,29 @@ export function SubFormModal(props: {
   )
 }
 
-// ── 底部 ActionSheet（移动端菜单） ────────────────────────────────────────
+// ── ActionSheet（响应式：移动端底部弹窗 / 桌面端居中浮层菜单） ────────────
 
 export function ActionSheet(props: { title: string; onClose: () => void; items: Array<{ icon: string; label: string; danger?: boolean; onClick: () => void }> }) {
   const es = useState(false)
   const shown = es[0], setShown = es[1]
+  const isMobile = useIsMobile()
   useEffect(function() {
     const frame = requestAnimationFrame(function() { setShown(true) })
     return function() { cancelAnimationFrame(frame) }
   }, [])
   return (
     <div role="dialog" aria-modal="true" onClick={props.onClose}
-      className="fixed inset-0 z-50 flex items-end p-3"
+      className={'fixed inset-0 z-50 flex p-3 ' + (isMobile ? 'items-end' : 'items-center justify-center')}
       style={{ background: 'rgba(0,0,0,0.5)', opacity: shown ? 1 : 0, transition: 'opacity 200ms ease' }}>
       <div onClick={function(e) { e.stopPropagation() }}
-        className="w-full overflow-hidden rounded-2xl border transition-transform duration-250"
-        style={{ background: 'var(--bg-primary)', borderColor: 'rgba(255,255,255,0.06)', boxShadow: '0 24px 64px rgba(0,0,0,0.45)', transform: shown ? 'translateY(0)' : 'translateY(40px)' }}>
+        className={'overflow-hidden rounded-2xl border transition-all duration-250 ' + (isMobile ? 'w-full' : 'w-[300px]')}
+        style={{ background: 'var(--bg-primary)', borderColor: 'rgba(255,255,255,0.06)', boxShadow: '0 24px 64px rgba(0,0,0,0.45)', transform: shown ? 'translateY(0)' : 'translateY(40px)', opacity: shown ? 1 : 0 }}>
         <div className="border-b px-4 py-3 text-center text-xs" style={{ borderColor: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}>{props.title}</div>
         {props.items.map(function(it, i) {
           const c = it.danger ? 'var(--status-error, #ef4444)' : 'var(--text-primary)'
           return (
             <button key={i} onClick={function() { it.onClick() }}
-              className="flex w-full items-center gap-2.5 px-4 py-3.5 text-[14px] transition-colors active:bg-bg-tertiary"
+              className={'flex w-full items-center gap-2.5 px-4 py-3.5 text-[14px] transition-colors ' + (isMobile ? 'active:bg-bg-tertiary' : 'hover:bg-bg-hover')}
               style={{ color: c, borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
               <LlmIcon n={it.icon} s={16} c={c} />{it.label}
             </button>

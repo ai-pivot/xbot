@@ -543,6 +543,17 @@ func (a *Agent) sendSubAgentPhaseDone(key string) {
 // offload data, and mask data on disk.
 // This ensures the next SubAgent with the same role/instance starts with a clean slate.
 func (a *Agent) destroyInteractiveSession(key string) {
+	// Emit subagent_stopped(removed) BEFORE deleting the registry entry — the
+	// sidebar learns the row is destroyed (DB tenant cascade-deleted) instead of
+	// lingering as a stale running/idle row until the next tree refresh
+	// (user report: "subagent 被卸载了却还显示"). destroyInteractiveSession is
+	// the single funnel for ALL removal paths (TTL eviction in
+	// cleanupExpiredSessions, unload, cancel, panic recovery, spawn-failure
+	// cleanup, cascade child cleanup), so emitting here guarantees coverage;
+	// natural-completion paths that KEEP the session emit their own
+	// non-removed subagent_stopped and never reach this function.
+	a.emitRemovedSubAgentEvent(key)
+
 	// Close the waitable task (done channel) if this session had one — covers
 	// ALL destroy paths (panic, unload, shutdown, cleanup) so task_wait never
 	// blocks until timeout on a destroyed session. Idempotent.
@@ -592,6 +603,47 @@ func (a *Agent) destroyInteractiveSession(key string) {
 		}
 	}
 }
+
+// emitRemovedSubAgentEvent emits subagent_stopped(Removed=true) for a session
+// being destroyed by destroyInteractiveSession. Reads the role/instance from the
+// still-registered interactiveAgent entry (before any cleanup deletes it) and
+// the parent (channel, chatID) from the registry key itself, so it works on
+// EVERY removal path (TTL eviction, unload, cancel, panic, spawn-failure
+// cleanup, cascade child cleanup) without per-call-site plumbing.
+func (a *Agent) emitRemovedSubAgentEvent(key string) {
+	var role, instance string
+	if val, ok := a.interactiveSubAgents.Load(key); ok {
+		if ia, ok := val.(*interactiveAgent); ok && ia != nil {
+			ia.mu.Lock()
+			role = ia.roleName
+			instance = ia.instance
+			ia.mu.Unlock()
+		}
+	}
+	if role == "" {
+		// Entry already gone (double destroy / spawn placeholder never
+		// registered) — nothing the frontend tracks under this key.
+		return
+	}
+	parentChannel, parentChatID := parseInteractiveKeyParent(key)
+	if parentChannel == "" || parentChatID == "" {
+		return
+	}
+	a.emitSessionState(protocol.SessionEvent{
+		Channel:    parentChannel,
+		ChatID:     parentChatID,
+		Action:     "subagent_stopped",
+		Role:       role,
+		Instance:   instance,
+		SessionKey: key,
+		ParentID:   parentChatID,
+		Removed:    true,
+	})
+}
+
+// parseInteractiveKeyParent is defined near ListInteractiveSessions (2-value
+// form, handles CLI workdir chatIDs containing "/"). Reused here — do NOT
+// redeclare.
 
 // interactiveKey 生成 interactive session 在 map 中的 key。
 // 使用 channel:chatID/roleName[:instance] 保证同一个 chat + role + instance 只有一个 session。
@@ -1050,16 +1102,8 @@ func (a *Agent) SpawnInteractiveSession(
 							Sid:      originSender,
 						})
 					}
-					// Emit subagent_stopped so sidebar updates immediately
-					a.emitSessionState(protocol.SessionEvent{
-						Channel:    originChannel,
-						ChatID:     originChatID,
-						Action:     "subagent_stopped",
-						Role:       roleName,
-						Instance:   instance,
-						SessionKey: key,
-						ParentID:   originChatID,
-					})
+					// subagent_stopped(removed=true) is emitted by
+					// destroyInteractiveSession above — no duplicate emit here.
 				}
 			}()
 
@@ -2429,19 +2473,9 @@ func (a *Agent) UnloadInteractiveSession(
 	// 清理
 	a.destroyInteractiveSession(key)
 
-	// Emit subagent_stopped so sidebar updates immediately.
-	// Other completion paths (foreground/bg Run, timeout) emit this event,
-	// but the explicit unload path was missing it, causing sidebar to
-	// only refresh on the 30s safety-net poll.
-	a.emitSessionState(protocol.SessionEvent{
-		Channel:    channel,
-		ChatID:     chatID,
-		Action:     "subagent_stopped",
-		Role:       roleName,
-		Instance:   instance,
-		SessionKey: key,
-		ParentID:   chatID,
-	})
+	// subagent_stopped(removed=true) is emitted by destroyInteractiveSession
+	// itself — the sidebar drops the row immediately (the DB tenant is
+	// cascade-deleted). No duplicate emit here.
 
 	log.WithField("role", roleName).Info("Interactive session unloaded")
 	return nil

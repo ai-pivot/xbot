@@ -150,6 +150,19 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       if (s.activeTurn !== null && s.activeTurn !== ev.turnID) {
         const old = s.turns.get(s.activeTurn)
         if (old && old.phase.kind === 'live') {
+          // [TURNDROP] 诊断：turn_started(N+1) 到达时旧 turn 还是 live（mid-turn
+          // 收尸）。正常时序 text_final(N) 先 commit（旧 turn 已 committed，这里
+          // 不触发）。此路径会把旧 live 收尸（有产出 → committed/fold；无产出 →
+          // frozen 空壳 → derive 跳过 → "整个 turn 的 assistant 消失"形态），
+          // 且旧 turn 的后续事件因 kind!=='live' 被丢弃。捕获触发证据。
+          console.warn('[TURNDROP] turn_started(N+1) folded a LIVE turn mid-flight', {
+            chatID: s.chatID, oldTurn: old.id, newTurn: ev.turnID,
+            oldHasOutput: hasOutput(old.phase.data), oldUser: old.user !== null,
+            contentLen: old.phase.data.content.length,
+            reasoningLen: old.phase.data.reasoning.length,
+            iterations: old.phase.data.iterations.length, iter: old.phase.data.iter,
+            trigger: ev.trigger, lastSeq: s.lastSeq,
+          })
           const folded: Turn =
             hasOutput(old.phase.data) || old.user !== null
               ? { ...old, phase: foldPhase(old.phase.data) }
@@ -173,8 +186,33 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         idx = s.pendingUsers.findIndex((u) => u.turnHint !== undefined && u.turnHint === ev.turnID)
       }
       if (idx >= 0) {
-        user = s.pendingUsers[idx]
+        // B1 修复：排队消息开始处理时清除 queued 标记（turn_started 是权威
+        // "开始处理"信号 —— 排队中的 pendingUser 不再排队）。
+        user = { ...s.pendingUsers[idx], queued: false }
         pending = s.pendingUsers.filter((_, i) => i !== idx)
+      }
+      // v3 staging-tray fallback: queued message was removed from pendingUsers
+      // by user_ack(queued=true) — turn_started(trigger=user) is the authoritative
+      // signal that the queued message is now being processed. Materialize the
+      // user row from turn_start.content (same pattern as notification fallback
+      // above, but isNotification=false). Non-queued messages always have a
+      // pendingUsers entry (user_ack queued=false keeps it) — this fallback only
+      // fires for queued messages dequeued from the StagingTray.
+      if (user === null && ev.trigger === 'user') {
+        const userContent = nonEmptyStr(ev.content)
+        if (userContent !== null) {
+          user = {
+            id: `dequeue-${ev.turnID}`,
+            content: userContent,
+            timestamp: new Date().toISOString(),
+            isNotification: false,
+            queued: false,
+            sending: false,
+            requestID: ev.requestID,
+            turnHint: undefined,
+            dbID: undefined,
+          }
+        }
       }
       // notification trigger：turn_start.content 携带通知内容（后端
       // TurnStartInfo）。弱网下 inject_user WS 消息丢失时，turn_started 是
@@ -451,6 +489,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const t = s.turns.get(target)
       if (!t) return s
 
+      // [TURNDROP] 诊断：text_final 到达时 target 已 frozen（session-idle mid-flight
+      // 冻结 / turn_started 收尸后 text 迟到恢复的证据链 —— 与上面两条配对看）。
+      if (t.phase.kind === 'frozen') {
+        console.warn('[TURNDROP] late text_final recovered a FROZEN turn', {
+          chatID: s.chatID, turnID: target, cancelled: ev.cancelled,
+          contentLen: ev.content?.length ?? 0,
+        })
+      }
+
       if (t.phase.kind === 'committed') return s // 已提交（重放）—— 幂等
 
       // live / frozen → committed。cancelled 时保留 cancel 定格内容作为 fold content。
@@ -536,11 +583,29 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const live = t.phase.data
       if (hasOutput(live)) {
         // 有产出：frozen 定格（text 迟到仍可 commit —— turnID 匹配 frozen）。
+        // [TURNDROP] 诊断：idle 在 activeTurn 还是 live 时到达（mid-turn idle
+        // —— text_final/PhaseDone 之前）。正常时序 text_final 先 commit
+        //（activeTurn=null，上面已 return）。此路径会把 live 冻结 + 后续
+        // iteration/stream 事件因 kind!=='live' 被丢弃（"live progress 消失
+        // 再也不更新"的 reduce 层形态）。捕获触发证据。
+        console.warn('[TURNDROP] session(idle) froze a LIVE turn mid-flight', {
+          chatID: s.chatID, turnID: t.id, lastSeq: s.lastSeq,
+          contentLen: live.content.length, reasoningLen: live.reasoning.length,
+          iterations: live.iterations.length, iter: live.iter, streaming: live.streaming,
+        })
         const turns = new Map(s.turns)
         turns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...live, streaming: false } } })
         return { ...s, turns, activeTurn: null, busy: false }
       }
       // 无产出：删槽（空壳行灭绝）+ pendingUsers 保留（user 行仍渲染）。
+      // [TURNDROP] 诊断：mid-turn idle 删除无产出 live（整个 turn 的 assistant
+      // 消失形态 —— user 行保留）。reasoning-only streaming 若 reasoning 已被
+      // 迭代边界清空（advanced 清流式字段后新内容未到）即命中此分支。
+      console.warn('[TURNDROP] session(idle) DELETED a live turn with no output', {
+        chatID: s.chatID, turnID: t.id, lastSeq: s.lastSeq,
+        contentLen: live.content.length, reasoningLen: live.reasoning.length,
+        iterations: live.iterations.length, iter: live.iter, streaming: live.streaming,
+      })
       const turns = new Map(s.turns)
       turns.delete(t.id)
       return { ...s, turns, activeTurn: null, busy: false }
@@ -699,7 +764,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
       )
 
-      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, todos: s.todos.length > 0 ? s.todos : ev.todos }
+      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──
@@ -767,19 +832,25 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     }
 
     // ── user_ack：REST 发送成功 —— 清 sending、回填服务端信息 ──
-    // ⚠️ queued 显式赋值（resp.queued === true 才排队；成功即非发送中）。
-    // turnHint 补填（未被 turn_started 绑定时），供后续 echo/started 嫁接。
+    // v3 staging-tray: queued=true → 从 pendingUsers 移除（排队消息不进主 view，
+    // 只在 StagingTray 显示；turn_started 时从 content 构造 user 行）。
     case 'user_ack': {
       const dbID = ev.dbID > 0 ? ev.dbID : undefined
       const idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
       if (idx >= 0) {
+        // queued → 撤出消息流（StagingTray 是唯一渲染面）。
+        if (ev.queued === true) {
+          const pendingUsers = s.pendingUsers.filter((_, i) => i !== idx)
+          return { ...s, pendingUsers }
+        }
+        // 非 queued → 正常更新（清 sending、回填 dbID/turnHint）。
         const pendingUsers = s.pendingUsers.slice()
         const u = pendingUsers[idx]
         pendingUsers[idx] = {
           ...u,
           dbID: dbID ?? u.dbID,
           sending: false,
-          queued: ev.queued === true,
+          queued: false,
           turnHint: u.turnHint ?? ev.turnHint,
         }
         return { ...s, pendingUsers }
@@ -789,7 +860,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         if (t.user?.requestID === ev.requestID) {
           return withTurn(s, t.id, (tt) =>
             tt.user
-              ? { ...tt, user: { ...tt.user, dbID: dbID ?? tt.user.dbID, sending: false, queued: ev.queued === true } }
+              ? { ...tt, user: { ...tt.user, dbID: dbID ?? tt.user.dbID, sending: false } }
               : tt,
           )
         }
@@ -802,6 +873,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const pendingUsers = s.pendingUsers.filter((u) => u.requestID !== ev.requestID)
       if (pendingUsers.length === s.pendingUsers.length) return s
       return { ...s, pendingUsers }
+    }
+
+    // ── queue_state：全量替换排队消息快照（Staging Tray 数据源） ──
+    case 'queue_state': {
+      return { ...s, queue: ev.queue }
     }
   }
 }
