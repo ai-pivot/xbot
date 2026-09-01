@@ -199,12 +199,15 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
     if (!host) return
 
     const options: DockviewComponentOptions = {
-      theme: themeVisualStudio,
+      // gap: 卡片间真实缝隙（gridview margin，官方机制——DockviewTheme.gap）。
+      // 卡片贴边时相邻 border 叠加成 2px 粗线（用户报告"单独的分割线"——
+      // sash 4px 透明把手覆盖其上，DevTools 指认 .dv-sash 但线是双 border）。
+      // gap 4px（与 sash 宽度对齐）：双 border 分离为两条 1px + 缝隙透 app-bg
+      // （VS Code 式卡片独立浮起）；sash 落在缝隙上（拖动把手自然融入）。
+      theme: { ...themeVisualStudio, gap: 4 },
       // 隐藏 gridview 内置分隔线（dv-separator-border：非首 view 的
-      // ::before 画 --dv-separator-border 深灰线，叠在卡片 border 上——
-      // "两卡之间多一条单独分割线"的来源）。卡片分界由 .dv-groupview 的
-      // border（--border）承载，内置线冗余。官方路径：hideBorders →
-      // gridview styles.separatorBorder='transparent' → 移除 class。
+      // ::before 画 --dv-separator-border 深灰线，叠在卡片 border 上）。
+      // 卡片分界由 .dv-groupview 的 border（--border）承载，内置线冗余。
       hideBorders: true,
       createComponent: (opts) => new ReactContentRenderer(opts.name, ctxRef),
       createTabComponent: () => new ReactTabRenderer(ctxRef),
