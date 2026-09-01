@@ -2468,4 +2468,141 @@ describe('sidebar state reconciliation (trust window + lost events)', () => {
     expect(tree.subAgents[0].running).toBe(false)
     expect(tree.subAgents[0].status).toBe('idle')
   })
+
+  it('identity-less agent-idle must NOT touch the active session (cancel of a background session must not corrupt other busy sessions)', async () => {
+    // User report: "只要我在前端cancel一个session，会导致所有busy的session状态异常"
+    // Root cause: useProgressStream's PhaseDone dispatched agent-idle with
+    // `p.chat_id ?? undefined` — the inner progress payload carries no chat_id,
+    // so the dispatch was IDENTITY-LESS for most PhaseDone events. useSessionStore's
+    // listener had a "legacy" fallback: clear the ACTIVE session. Cancelling
+    // session A (background tab) → A's PhaseDone → identity-less agent-idle →
+    // the fallback idled the ACTIVE session B (busy, what the user was viewing)
+    // — my fresh-idle-intent change made it authoritative for 15s (beat HTTP
+    // running). The fallback is now deleted: identity-less events are DROPPED,
+    // and per-session dispatches go through sessionEvents.dispatchAgentIdle
+    // (chatID required at the type level).
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-07-08T00:00:00Z' },
+              { chat_id: 'web-chat-2', channel: 'web', label: 'Other Chat', last_active: '2026-07-08T00:00:00Z' },
+            ],
+            chats: [
+              { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-07-08T00:00:00Z' },
+              { chat_id: 'web-chat-2', channel: 'web', label: 'Other Chat', last_active: '2026-07-08T00:00:00Z' },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result, unmount } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID).sort()).toEqual(['web-chat-1', 'web-chat-2'])
+    })
+
+    vi.useFakeTimers()
+    // Session B (web-chat-2) is BUSY — a real SSE busy event + the user is viewing it.
+    await act(async () => {
+      sessionHandler?.({ action: 'busy', channel: 'web', chat_id: 'web-chat-2' })
+      await Promise.resolve()
+    })
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-2')?.running).toBe(true)
+
+    // Session A (web-chat-1, background) is CANCELLED. Its useProgressStream
+    // PhaseDone used to dispatch agent-idle with `p.chat_id ?? undefined` —
+    // identity-less. The OLD fallback idled the ACTIVE session (web-chat-2).
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agent-idle', {
+        // detail carries NO chatID — the exact identity-less shape the old
+        // PhaseDone dispatch produced.
+      }))
+      await Promise.resolve()
+    })
+    // B MUST stay running: identity-less events are dropped, never routed to
+    // "the active session" (that guess was the cross-session pollution).
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-2')?.running).toBe(true)
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-2')?.status).toBe('running')
+
+    // A properly-addressed agent-idle for A still works (its own session).
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agent-idle', {
+        detail: { chatID: 'web-chat-1', channel: 'web' },
+      }))
+      await Promise.resolve()
+    })
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-1')?.running).toBe(false)
+
+    // And within the intent window, a refresh with HTTP running keeps B busy
+    // (the fresh busy intent beats the lagging HTTP response — the corruption
+    // would previously ALSO show as B idle via HTTP winning with a fresh idle
+    // intent).
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-2')?.running).toBe(true)
+    unmount()
+  })
+
+  it('agent-idle with an explicit chatID only clears THAT session (background busy sessions unaffected)', async () => {
+    // The happy path after the fix: A's PhaseDone dispatches
+    // agent-idle with A's OWN chatID (via sessionEvents.dispatchAgentIdle —
+    // the panel's identity passed through handleProgressMessage). Only A
+    // goes idle; B's busy intent and status are untouched.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              { chat_id: 'web-chat-1', channel: 'web', label: 'A', last_active: '2026-07-08T00:00:00Z' },
+              { chat_id: 'web-chat-2', channel: 'web', label: 'B', last_active: '2026-07-08T00:00:00Z' },
+            ],
+            chats: [
+              { chat_id: 'web-chat-1', channel: 'web', label: 'A', last_active: '2026-07-08T00:00:00Z' },
+              { chat_id: 'web-chat-2', channel: 'web', label: 'B', last_active: '2026-07-08T00:00:00Z' },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result, unmount } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID).sort()).toEqual(['web-chat-1', 'web-chat-2'])
+    })
+
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({ action: 'busy', channel: 'web', chat_id: 'web-chat-1' })
+      sessionHandler?.({ action: 'busy', channel: 'web', chat_id: 'web-chat-2' })
+      await Promise.resolve()
+    })
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-1')?.running).toBe(true)
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-2')?.running).toBe(true)
+
+    // A's turn ends (PhaseDone with A's identity) — only A clears.
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('agent-idle', {
+        detail: { chatID: 'web-chat-1', channel: 'web' },
+      }))
+      await Promise.resolve()
+    })
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-1')?.running).toBe(false)
+    expect(result.current.sessions.find((s) => s.chatID === 'web-chat-2')?.running).toBe(true)
+    unmount()
+  })
 })

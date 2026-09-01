@@ -778,13 +778,16 @@ function removeSubAgentNodes(nodes: SessionInfo[], matches: (s: SessionInfo) => 
   return changed ? next : nodes
 }
 
-// NOTE: HTTP-running rows are NOT seeded into sseIntentsRef — intents are set
-// ONLY by SSE events (busy/idle/subagent lifecycle). HTTP running flows through
-// node.running in mergeStatus directly (no intent needed for agreement), and
-// seeding would re-introduce "frontend stores state" that the backend resume
-// race can contradict (initial HTTP running → intent busy → stale after the
-// 15s window while the real state diverged). addRunningSessionKeys was removed
-// for this reason.
+// ⚠️ SESSION-PANEL GLOBAL-STATE BAN (eslint.config.js): per-session code
+// (useProgressStream / useChatMessages / components/agent) MUST NOT use
+// window.dispatchEvent / addEventListener / removeEventListener — route
+// cross-session signals through src/lib/sessionEvents.ts (enforces the
+// session identity at the type level). Root cause: useProgressStream
+// dispatched IDENTITY-LESS agent-idle events (PhaseDone's inner payload
+// carries no chat_id) and useSessionStore's listener fell back to "clear
+// the ACTIVE session" — cancelling a background session idled the busy
+// session the user was viewing (user report: "cancel 一个 session 导致
+// 所有 busy 的 session 状态异常").
 function applyPersistedUnreadStatuses(
   nodes: SessionInfo[],
   unread: Set<string>,
@@ -1409,19 +1412,19 @@ export function useSessionStoreImpl(): SessionStore {
   // Run() fully exits). Listen for it to clear running state immediately.
   // The event carries chatID+channel so it can clear the correct session
   // even when the user has already switched to a different one.
+  // IDENTITY IS MANDATORY: an agent-idle WITHOUT chatID is dropped — the old
+  // "clear the active session" fallback was the cross-session pollution that
+  // made cancelling session A idle busy session B (a background session's
+  // PhaseDone payload carries no chat_id, the identity-less dispatch hit the
+  // fallback, and the active session got a fresh idle intent that beat HTTP
+  // running for 15s — "cancel one session breaks ALL busy sessions").
+  // Per-session panels dispatch via sessionEvents.ts, which enforces the
+  // identity; dispatchAgentIdle logs+drops empty chatIDs.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail as { chatID?: string; channel?: string } | undefined
-      if (detail?.chatID) {
-        const selector = { channel: detail.channel || DEFAULT_CHANNEL, chatID: detail.chatID }
-        sseIntentsRef.current.set(sessionKey(selector), { ts: Date.now(), busy: false })
-        setStatus(selector, 'idle')
-        return
-      }
-      // Fallback: clear the active session (legacy behavior)
-      const active = activeSessionRef.current
-      if (!active) return
-      const selector = { channel: active.channel || DEFAULT_CHANNEL, chatID: active.chatID }
+      if (!detail?.chatID) return
+      const selector = { channel: detail.channel || DEFAULT_CHANNEL, chatID: detail.chatID }
       sseIntentsRef.current.set(sessionKey(selector), { ts: Date.now(), busy: false })
       setStatus(selector, 'idle')
     }
