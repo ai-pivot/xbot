@@ -587,7 +587,7 @@
  */
 .dockview-theme-vs {
   --dv-group-view-background-color: transparent;
-  --dv-tabs-and-actions-container-background-color: transparent;
+  --dv-tabs-and-actions-container-background-color: var(--card-bg);
   --dv-activegroup-visiblepanel-tab-background-color: transparent;
   --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-bg);
   --dv-inactivegroup-visiblepanel-tab-background-color: transparent;
@@ -680,7 +680,11 @@
 /* Tab bar: transparent (inherits group card background) */
 .dockview-theme-vs .dv-tabs-and-actions-container {
   border-bottom: 1px solid var(--border) !important;
-  background-color: transparent !important;
+  /* 卡片统一背景（不再 transparent）：玻璃模式下 .ambience-glass .dv-groupview
+   * 被 !important 设为 transparent（壁纸直透），tab 栏 transparent 会零层
+   * card-bg 而内容区（overlay 宿主 bg-card-bg）单层——色深不一致。
+   * tab 栏自身涂 card-bg 与内容区对齐（非玻璃模式双层同色无视觉差）。 */
+  background-color: var(--card-bg) !important;
 }
 
 /* VSCode-style: tabs sit flush in the tab bar, no extra decoration */
