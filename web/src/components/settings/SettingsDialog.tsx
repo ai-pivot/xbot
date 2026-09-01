@@ -8,7 +8,6 @@
  *   卡片化布局）；桌面端走设置卡片（floating 悬浮卡片，拖边缘停靠平铺）。
  */
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Loader2, LogOut } from 'lucide-react'
 
 import {
@@ -100,7 +99,6 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
  */
 export function SettingsPanel() {
   const { t } = useI18n()
-  const navigate = useNavigate()
   const [active, setActive] = useState<Category>('appearance')
 
   const nav: { key: Category; labelKey: string }[] = [
@@ -148,7 +146,7 @@ export function SettingsPanel() {
         {active === 'language' ? <SettingsGeneral /> : null}
         {active === 'llm' ? <SettingsLLMPanel /> : null}
         {active === 'account' ? (
-          <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />
+          <SettingsAccountPanel onLoggedOut={() => window.location.replace('/login')} />
         ) : null}
         {active === 'webusers' ? <SettingsWebUsers /> : null}
         {active === 'developer' ? <SettingsDeveloper /> : null}
