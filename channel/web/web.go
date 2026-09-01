@@ -537,9 +537,18 @@ func webWidgetZonesEqual(a, b plugin.WebWidgetZones) bool {
 // never reaches it — the sidebar only updated on the next tree refresh (user
 // report: "侧边栏会话状态经常落后 / 有了 subagent 侧边栏不显示").
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
+	// Top-level ChatID: the message is SELF-DESCRIBING — every consumer
+	// (normalizeEvent's chat filter, matchesChatID Layer 1, debugging/DB dumps)
+	// resolves ownership from the top level without knowing where the event
+	// type nests it. Historical bug (2026-09 "cancel one panel froze the
+	// other"): ChatID was only in msg.Session.ChatID, the frontend
+	// normalizeEvent only checked the top level, and the user-level fan-out
+	// (broadcastSessionStateToWebClients) delivered session B's idle to panel
+	// A's connection → A's ChatStore froze A's own live turn.
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
+		ChatID:  ev.ChatID,
 		Session: &ev,
 	}
 	wc.hub.broadcastSessionState(ev.Channel, ev.ChatID, msg)
@@ -571,9 +580,12 @@ func isSidebarSessionEvent(ev protocol.SessionEvent) bool {
 // queue snapshot (Staging Tray data source) to the session's SSE/WS
 // subscribers. Full-snapshot semantics: the frontend replaces, never merges.
 func (wc *WebChannel) SendQueueState(channelName, chatID string, payload *protocol.QueueStatePayload) {
+	// Top-level ChatID: self-describing message (same contract as
+	// SendSessionState — consumers resolve ownership from the top level).
 	msg := protocol.WSMessage{
 		Type:       protocol.MsgTypeQueueState,
 		TS:         time.Now().Unix(),
+		ChatID:     chatID,
 		QueueState: payload,
 	}
 	// Route-scoped: same routing as user messages (agent channel + chatID).

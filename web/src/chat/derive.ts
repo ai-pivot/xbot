@@ -13,6 +13,10 @@
 import type { TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 import type { ChatState, LiveSnapshot, Turn } from './types'
 
+// [TURNDROP] 诊断去重（derive 每帧调用 —— 同一 turnID 的 hollow-frozen 跳过
+// 只报告一次；生产保留 console.warn 以便用户复现时捕获触发链）。
+const turndropReported = new Set<string>()
+
 // ─── Row 判别联合（渲染层唯一数据契约） ────────────────────────
 
 export interface UserRowView {
@@ -137,7 +141,16 @@ function assistantRow(t: Turn): Row | null {
     }
     case 'frozen': {
       // 空壳 frozen（完全无产出）不出行 —— Bug 6/8 的"幽灵行"根治点。
-      if (!hasVisibleOutput(t.phase.data)) return null
+      if (!hasVisibleOutput(t.phase.data)) {
+        // [TURNDROP] 诊断：空壳 frozen 被 derive 跳过 —— turn 从渲染层消失
+        // （"整个 turn 的 assistant 消息完全消失"的渲染层形态）。每个 turnID
+        // 只打一次（derive 每帧调用，Set 去重防刷屏）。
+        turndropReported.add(`hollow-frozen:${t.id}`)
+        console.warn('[TURNDROP] derive skipped hollow frozen (turn vanishes from render)', {
+          turnID: t.id,
+        })
+        return null
+      }
       const d = t.phase.data
       // cancel 时正在执行的工具折进最后迭代 —— rowsToChatMessages 不向渲染层
       // 传 activeTools（liveProgress 在 frozen 时为空），TurnBody 从 iterations 读

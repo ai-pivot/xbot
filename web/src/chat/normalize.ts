@@ -57,6 +57,34 @@ function optTodos(v: unknown): TodoItem[] | undefined {
 }
 
 /**
+ * extractEventChatID — 从一条 raw WS/SSE 消息提取其归属的 chat_id（单一来源）。
+ *
+ * chat_id 的位置因事件类型而异：
+ *   - 顶层 `chat_id`（progress/stream/text/user_echo —— 后端构造 WSMessage 时
+ *     设置顶层 ChatID）
+ *   - 嵌套 `session.chat_id`（session 事件 —— 历史上 SendSessionState 只填
+ *     Session 字段，顶层留空）
+ *   - 嵌套 `progress.chat_id`（部分 progress 事件）
+ *   - 全部缺省（queue_state 等控制消息）→ 返回 undefined（调用方按"无归属"
+ *     处理 —— legacy 行为：不过滤，依赖路由层保证）
+ *
+ * ⚠️ 必须与 useProgressStream 的 matchesChatID 保持同一提取视图：同一 SSE
+ * 连接上有两个 chat 过滤器（matchesChatID 守 useProgressStream/
+ * useChatMessages；normalizeEvent 守 ChatStore）。历史 bug（2026-09 "cancel
+ * 右边，左边立刻变 idle view"）：normalizeEvent 只查顶层，session 事件的
+ * 嵌套 chat_id 被漏掉 —— user 级 fan-out（broadcastSessionStateToWebClients）
+ * 把 session B 的 idle（seq=0）送达 session A 的连接 → A 的 ChatStore
+ * reduce session case 冻结/删除 A 自己的 live turn。修复后两层都做三层提取。
+ */
+export function extractEventChatID(env: Record<string, unknown>): string | undefined {
+  return (
+    optStr(env.chat_id) ??
+    optStr(asRecord(env.session)?.chat_id) ??
+    optStr(asRecord(env.progress)?.chat_id)
+  )
+}
+
+/**
  * normalizeEvent — 把一条 raw WS/SSE 消息规范化为 DomainEvent。
  * 返回 null 表示事件非法或不属于本 chat（调用方直接丢弃）。
  *
@@ -76,9 +104,12 @@ export function normalizeEvent(raw: unknown, chatID: string): readonly DomainEve
   const env = asRecord(raw)
   if (!env) return null
 
-  // chat 过滤：消息携带的 chat_id 不匹配本 chat → 丢弃。双剥 channel 前缀
-  // （本地可能带 "web:" 前缀而远端 bare，或反之 —— 两个方向都兼容）。
-  const msgChat = optStr(env.chat_id)
+  // chat 过滤（ChatStore 的唯一会话边界）：消息归属的 chat_id 与本面板不符 →
+  // 丢弃。user 级 fan-out 会把其他 session 的 session 事件送达本连接（侧边栏
+  // 需要它们，ChatStore 不需要）。双剥 channel 前缀（本地可能带 "web:" 前缀
+  // 而远端 bare，或反之 —— 两个方向都兼容）。无归属标识（undefined）→ 通过
+  //（legacy 控制消息，路由层已保证送达目标）。
+  const msgChat = extractEventChatID(env)
   if (msgChat && stripChannel(msgChat) !== stripChannel(chatID)) return null
 
   switch (typeof env.type === 'string' ? env.type : '') {

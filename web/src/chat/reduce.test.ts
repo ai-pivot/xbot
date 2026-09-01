@@ -1150,3 +1150,82 @@ describe('Loop2 — in-flight 工具折叠（frozen / 收尸 / text_final 三路
     expect(it2?.tools.map((t) => t.name).sort()).toEqual(['Grep', 'Shell'])
   })
 })
+
+// ─── REPRO: session 事件嵌套 chat_id 必须过滤（跨 session 污染根治） ──────────
+// 用户报告（100% 复现）：两个 active session 平铺，cancel 右边（B），左边
+// （A）立刻变成 idle view，live progress 消失。
+// 根因：后端 SendSessionState 构造 WSMessage{Type, TS, Session} —— 顶层
+// chat_id 未设置，chat_id 只在嵌套 env.session.chat_id。第一轮 user 级
+// fan-out（broadcastSessionStateToWebClients）把 B 的 busy/idle 送达 A 的
+// SSE 连接（seq=0）；normalizeEvent 的 chat 过滤只查顶层 env.chat_id →
+// B 的 session(idle) 直接通过 → A 的 ChatStore reduce session case 把 A 的
+// live turn 冻结/删除 + busy=false（"左边立刻变 idle view"）。
+// master 无 fan-out（B 的 idle 只走 B 的 route）→ 无此 bug。
+describe('REPRO: session 事件嵌套 chat_id 过滤（跨 session 污染根治）', () => {
+  const bIdleFanout = {
+    type: 'session',
+    ts: 1730000000,
+    // 后端真实形态：顶层无 chat_id（SendSessionState 只填 Session 字段）。
+    session: { channel: 'web', chat_id: 'chat-B', action: 'idle' },
+  }
+
+  it('B 的 session(idle)（fan-out 副本，顶层 chat_id 未设）不得进入 A 的状态机', () => {
+    const evs = normalizeEvent(bIdleFanout, 'chat-A')
+    expect(evs).toBeNull() // 修复前：[{type:'session', busy:false}]（红灯）
+  })
+
+  it('B 的 session(busy) 同样被过滤', () => {
+    const evs = normalizeEvent(
+      { type: 'session', session: { channel: 'web', chat_id: 'chat-B', action: 'busy' } },
+      'chat-A',
+    )
+    expect(evs).toBeNull()
+  })
+
+  it('A 自己的 session(idle)（嵌套 chat_id 匹配）正常通过 —— 不回归', () => {
+    const idle = normalizeEvent(
+      { type: 'session', session: { channel: 'web', chat_id: 'chat-A', action: 'idle' } },
+      'chat-A',
+    )
+    expect(idle).toEqual([{ type: 'session', busy: false }])
+  })
+
+  it('A 自己的 session(busy) 带 channel 前缀也通过（stripChannel 兼容）', () => {
+    const busy = normalizeEvent(
+      { type: 'session', session: { channel: 'web', chat_id: 'web:chat-A', action: 'busy' } },
+      'chat-A',
+    )
+    expect(busy).toEqual([{ type: 'session', busy: true }])
+  })
+
+  it('端到端：B 的 idle 不再冻结 A 的 live turn；A 自己的 idle 正常收尾', () => {
+    // A 的 live turn（streaming reasoning 中，有产出）。
+    let s = run([started(T1)], initialChatState('chat-A'))
+    s = reduce(s, {
+      type: 'stream', turnID: T1, seq: null, iteration: null,
+      content: undefined, reasoning: 'A 正在流式思考',
+      streamingTools: [], genui: undefined, streamStats: undefined,
+    })
+    expect(s.activeTurn).toBe(T1)
+    expect(s.turns.get(T1)?.phase.kind).toBe('live')
+
+    // B 的 idle fan-out 到达 A 的连接 → normalizeEvent 必须过滤。
+    const evs = normalizeEvent(bIdleFanout, 'chat-A')
+    expect(evs).toBeNull()
+
+    // 修复前（事件直接进 reduce）的对照 —— A 的 live turn 被冻结（症状）：
+    const polluted = reduce(s, { type: 'session', busy: false })
+    expect(polluted.activeTurn).toBeNull() // ← 被 B 的 idle 冻结（这就是 bug）
+    expect(polluted.turns.get(T1)?.phase.kind).toBe('frozen')
+
+    // A 自己的 idle 才收尾 A 的 turn。
+    const own = normalizeEvent(
+      { type: 'session', session: { channel: 'web', chat_id: 'chat-A', action: 'idle' } },
+      'chat-A',
+    )
+    expect(own).toEqual([{ type: 'session', busy: false }])
+    const s2 = reduce(s, own![0])
+    expect(s2.activeTurn).toBeNull()
+    expect(s2.turns.get(T1)?.phase.kind).toBe('frozen') // A 自己的 idle：正常收尾
+  })
+})

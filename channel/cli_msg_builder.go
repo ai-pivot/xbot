@@ -92,10 +92,15 @@ func (cliMessageBuilder) BuildStreamContentMsg(chatID, content, reasoning string
 }
 
 // buildSessionStateMsg creates a session state change message.
+// Top-level ChatID makes the message self-describing (same contract as
+// WebChannel.SendSessionState — consumers resolve ownership from the top
+// level; historical bug: only msg.Session.ChatID was set, so frontend
+// top-level-only filters passed other sessions' fan-out events through).
 func (cliMessageBuilder) BuildSessionStateMsg(ev protocol.SessionEvent) protocol.WSMessage {
 	return protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
 		TS:      time.Now().Unix(),
+		ChatID:  ev.ChatID,
 		Session: &ev,
 	}
 }
