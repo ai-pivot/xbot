@@ -231,7 +231,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           shrink-0）：shrink-0 让按钮组保持 ~281px 内容宽不收缩，手机端内容区
           （375px 视口 - padding 后 ~343px）单标题行放不下时整组溢出屏幕；
           min-w-0 允许收缩到容器内，组内 flex-wrap 换行。 */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b px-4 pb-3 pt-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+      <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b px-4 pb-3 pt-4" style={{ borderColor: 'var(--border)' }}>
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-base font-bold" style={{ color: 'var(--text-primary)' }}>LLM 控制台</h2>
           <p className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
@@ -263,11 +263,11 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
         <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
           <LlmIcon n="spark" s={14} c="var(--accent)" />模型与推理
         </div>
-        <div className="rounded-xl border p-3.5" style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
+        <div className="rounded-xl border p-3.5" style={{ background: 'transparent', borderColor: 'var(--border)' }}>
           <LlmField label="思考模式" hint="全局用户设置 · Ctrl+M">
-            <div className="relative flex rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.05)' }}>
+            <div className="relative flex rounded-xl p-1" style={{ background: 'var(--surface-bg)' }}>
               <span className="absolute rounded-lg transition-all duration-300"
-                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal) + ' * 24.5%)', width: '24%', background: 'var(--app-bg)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
+                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal) + ' * 24.5%)', width: '24%', background: 'var(--surface-bg)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
               {THINK_OPTS.map(function(o) {
                 const cur = thinkingVal === o[0]
                 return (
@@ -278,7 +278,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
               })}
             </div>
           </LlmField>
-          <div className="mt-3 flex items-center justify-between border-t pt-3" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+          <div className="mt-3 flex items-center justify-between border-t pt-3" style={{ borderColor: 'var(--border)' }}>
             <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>最大并发会话</div>
             <div className="flex items-center gap-2">
               <button onClick={function() { commitConc(Math.max(1, concVal - 1)) }}
@@ -301,7 +301,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             return (
               <button key={k} onClick={function() { setTierPick(k) }}
                 className="flex items-center gap-2.5 rounded-xl border p-3 text-left transition-all hover:bg-surface-bg"
-                style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
+                style={{ background: 'transparent', borderColor: 'var(--border)' }}>
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-lg" style={{ background: m.color + '22', color: m.color }}>
                   <LlmIcon n={m.icon} s={15} c={m.color} />
                 </span>
@@ -324,7 +324,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           <LlmIcon n="globe" s={14} c="var(--accent)" />订阅
           <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>点击卡片查看详情</span>
         </div>
-        <div className="mb-1.5 flex h-8 items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+        <div className="mb-1.5 flex h-8 items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'var(--border)', background: 'transparent' }}>
           <LlmIcon n="search" s={13} />
           <input value={q} onChange={function(e) { setQ(e.target.value) }} placeholder="搜索订阅或模型…"
             className="w-full bg-transparent text-[12px] outline-none" style={{ color: 'var(--text-primary)' }} />
@@ -338,9 +338,9 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             return (
               <div key={s.id} onClick={function() { setDetailId(s.id) }} role="button" tabIndex={0}
                 className="cursor-pointer overflow-hidden rounded-xl border transition-all hover:bg-surface-bg"
-                style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}
+                style={{ background: 'transparent', borderColor: 'var(--border)' }}
                 onMouseEnter={function(e) { e.currentTarget.style.borderColor = meta.color + '66' }}
-                onMouseLeave={function(e) { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)' }}>
+                onMouseLeave={function(e) { e.currentTarget.style.borderColor = 'var(--border)' }}>
                 <div className="h-0.5 w-full" style={{ background: 'linear-gradient(90deg,' + meta.color + ',' + meta.color + '44)' }} />
                 <div className="flex items-center gap-2.5 p-3">
                   <ProvBadge provider={s.provider} />
@@ -364,7 +364,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                   <StatusPill status={s.enabled ? 'normal' : 'disabled'} />
                   <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{avail.length}/{models.length} 可用</span>
                   {chips.map(function(e) {
-                    return <span key={e.model} className="rounded-md px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{e.model}</span>
+                    return <span key={e.model} className="rounded-md px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'var(--surface-bg)', color: 'var(--text-muted)' }}>{e.model}</span>
                   })}
                   {avail.length > 3 ? <span className="text-[9px]" style={{ color: 'var(--text-muted)' }}>+{avail.length - 3}</span> : null}
                 </div>
@@ -372,7 +372,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             )
           })}
           {filtered.length === 0 ? (
-            <div className="rounded-xl border border-dashed p-6 text-center text-xs" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
+            <div className="rounded-xl border border-dashed p-6 text-center text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
               {q ? '无匹配订阅' : '暂无订阅 · 点击右上角「添加订阅」'}
             </div>
           ) : null}
@@ -386,16 +386,16 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           105% 会给父容器留下 5% 的横向 scrollWidth 溢出（内容区 overflow-x 可滚 18px，
           手机端拖动可见空白——宽度异常来源之一）。100% 恰好贴齐父右缘，0px 溢出。 */}
       <aside className="absolute inset-y-0 right-0 z-40 flex w-full flex-col transition-transform duration-300"
-        style={{ background: 'var(--app-bg)', borderLeft: '1px solid rgba(255,255,255,0.06)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
+        style={{ borderLeft: '1px solid var(--border)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
         {detailSub ? (
           <div className="flex h-full flex-col">
-            <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+            <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'var(--border)' }}>
               <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-surface-bg" style={{ color: 'var(--text-muted)' }}>
                 <LlmIcon n="left" s={16} />
               </button>
               <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>订阅详情</span>
             </div>
-            <div className="flex items-center gap-2.5 border-b p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+            <div className="flex items-center gap-2.5 border-b p-4" style={{ borderColor: 'var(--border)' }}>
               <ProvBadge provider={detailSub.provider} size={36} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5 text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -417,7 +417,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                   </button>
                 ) : null}
               </div>
-              <div className="mb-4 space-y-2 rounded-xl border p-3" style={{ borderColor: 'rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+              <div className="mb-4 space-y-2 rounded-xl border p-3" style={{ borderColor: 'var(--border)', background: 'transparent' }}>
                 <div className="flex items-center justify-between text-[12px]">
                   <span style={{ color: 'var(--text-secondary)' }}>API Key</span>
                   <span className="font-mono text-[11px]" style={{ color: 'var(--text-primary)' }}>{detailSub.api_key || '—'}</span>
@@ -446,8 +446,8 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                     <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-surface-bg">
                       <StatusPill status={e.status} />
                       <span className="min-w-0 flex-1 truncate font-mono text-[12px]" style={{ color: e.status === 'disabled' ? 'var(--text-muted)' : 'var(--text-primary)' }}>{e.model}</span>
-                      {pmc?.max_context ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{fmtTokens(pmc.max_context)}</span> : null}
-                      {pmc?.max_output_tokens ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>out {fmtTokens(pmc.max_output_tokens)}</span> : null}
+                      {pmc?.max_context ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'var(--surface-bg)', color: 'var(--text-muted)' }}>{fmtTokens(pmc.max_context)}</span> : null}
+                      {pmc?.max_output_tokens ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'var(--surface-bg)', color: 'var(--text-muted)' }}>out {fmtTokens(pmc.max_output_tokens)}</span> : null}
                       {e.status === 'disabled'
                         ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-surface-bg" style={{ color: 'var(--accent)' }}>启用</button>
                         : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-surface-bg" style={{ color: 'var(--text-muted)' }}>停用</button>}
@@ -459,7 +459,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                   )
                 })}
                 {detailModels.length === 0 ? (
-                  <div className="rounded-xl border border-dashed p-5 text-center text-[11px]" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
+                  <div className="rounded-xl border border-dashed p-5 text-center text-[11px]" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
                     暂无模型 · 点「刷新模型列表」拉取，或手动添加
                   </div>
                 ) : null}
