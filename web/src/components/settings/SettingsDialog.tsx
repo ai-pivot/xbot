@@ -14,12 +14,12 @@ import { useNavigate } from 'react-router-dom'
 import { Loader2, LogOut } from 'lucide-react'
 
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
 import { useAuth } from '@/hooks/useAuth'
@@ -114,20 +114,19 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   ]
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent
-        side="right"
-        // 固定 720px，全部 tab 统一 —— 切换 tab 零宽度跳变（按 active 切宽度
-        // 的方案被否决："切换选项居然会改变 panel 宽度"）。LLM 控制台是重内容
-        // 面板（订阅卡片 + 模型网格 + 4 按钮工具行），720px - w-36 导航 = 576px
-        // 内容区才够一行放下 header；表单类 tab 是 flex 自适应单列布局，
-        // 加宽无副作用。max-w-full 兜底小屏。
-        className="flex h-full w-[720px] max-w-full flex-col gap-0 rounded-l-2xl border-l border-border p-0 shadow-2xl sm:max-w-[720px]"
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        // 居中弹窗（原右侧 Sheet 改造）：固定 720px + 80vh 高（切换 tab 零
+        // 尺寸跳变，同原 Sheet 理由——LLM 控制台 576px 内容区一行放下 header）。
+        // 覆盖 DialogContent 默认（sm:max-w-lg p-6 grid gap-4）：p-0（内部自管
+        // padding）+ flex flex-col（header + 左导航右内容）+ rounded-xl（对齐
+        // --card-radius 卡片圆角）+ overflow-hidden（圆角裁剪内部滚动区）。
+        className="flex h-[80vh] w-[720px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-[720px]"
       >
-        <SheetHeader className="border-b border-border px-5 py-4">
-          <SheetTitle>{t('settings.title')}</SheetTitle>
-          <SheetDescription className="sr-only">{t('settings.title')}</SheetDescription>
-        </SheetHeader>
+        <DialogHeader className="border-b border-border px-5 py-4">
+          <DialogTitle>{t('settings.title')}</DialogTitle>
+          <DialogDescription className="sr-only">{t('settings.title')}</DialogDescription>
+        </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
           {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
@@ -169,7 +168,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             {active === 'about' ? <SettingsAbout /> : null}
           </div>
         </div>
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   )
 }

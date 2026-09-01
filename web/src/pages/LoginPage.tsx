@@ -54,8 +54,8 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex h-dvh w-full items-center justify-center bg-app-bg">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-sidebar-bg p-8 shadow-xl">
+    <div className="flex h-dvh w-full items-center justify-center bg-system-bg">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-system-bg p-8 shadow-xl">
         {/* Header */}
         <div className="mb-6 text-center">
           <h1 className="text-2xl font-semibold text-text-primary">{t('auth.loginTitle')}</h1>

@@ -159,6 +159,7 @@
   --sidebar-bg: #f3f3f3;
   --input-bg: #f3f3f3;
   --surface-bg: #e4e4e4;
+  --system-bg: #f6f6f6;
   --tab-active-bg: var(--card-bg);
   --tab-inactive-bg: var(--card-raised-bg);
   --card-bg: var(--panel-bg);
@@ -274,6 +275,7 @@
   --sidebar-bg: #252526;
   --input-bg: #252526;
   --surface-bg: #2d2d2d;
+  --system-bg: #222225;
   --tab-active-bg: var(--card-bg);
   --tab-inactive-bg: var(--card-raised-bg);
   --border: #3c3c3c;
@@ -395,6 +397,7 @@
   /* Semantic area tokens: bg-app-bg, bg-sidebar-bg, bg-panel-bg, ... */
   --color-app-bg: var(--app-bg);
   --color-panel-bg: var(--panel-bg);
+  --color-system-bg: var(--system-bg);
   --color-card-bg: var(--card-bg);
   --color-card-raised-bg: var(--card-raised-bg);
   --color-card-chrome-bg: var(--card-chrome-bg);

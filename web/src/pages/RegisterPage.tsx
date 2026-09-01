@@ -71,8 +71,8 @@ export function RegisterPage() {
   // notice (the server 403s anyway — this is the client-side guard).
   if (inviteOnly && !bootstrap) {
     return (
-      <div className="flex h-dvh w-full items-center justify-center bg-app-bg">
-        <div className="w-full max-w-sm rounded-lg border border-border bg-sidebar-bg p-8 shadow-xl text-center">
+      <div className="flex h-dvh w-full items-center justify-center bg-system-bg">
+        <div className="w-full max-w-sm rounded-lg border border-border bg-system-bg p-8 shadow-xl text-center">
           <ShieldAlert className="mx-auto mb-4 size-10 text-muted-foreground" />
           <h1 className="text-lg font-semibold text-text-primary">{t('auth.inviteOnlyTitle')}</h1>
           <p className="mt-2 text-sm text-muted-foreground">{t('auth.inviteOnlyNotice')}</p>
@@ -87,8 +87,8 @@ export function RegisterPage() {
   }
 
   return (
-    <div className="flex h-dvh w-full items-center justify-center bg-app-bg">
-      <div className="w-full max-w-sm rounded-lg border border-border bg-sidebar-bg p-8 shadow-xl">
+    <div className="flex h-dvh w-full items-center justify-center bg-system-bg">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-system-bg p-8 shadow-xl">
         {/* Header — bootstrap mode shows the first-user wizard wording */}
         <div className="mb-6 text-center">
           <h1 className="text-2xl font-semibold text-text-primary">{t('auth.registerTitle')}</h1>
