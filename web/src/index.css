@@ -159,11 +159,16 @@
   --sidebar-bg: #f3f3f3;
   --input-bg: #f3f3f3;
   --surface-bg: #e4e4e4;
-  --tab-active-bg: var(--surface-bg);
-  --tab-inactive-bg: var(--sidebar-bg);
+  --tab-active-bg: var(--card-bg);
+  --tab-inactive-bg: var(--card-raised-bg);
   --card-bg: var(--panel-bg);
   --card-radius: 0.75rem;
   --card-chrome-bg: var(--sidebar-bg);
+  /* 卡片内"凸起"chrome 层（tab 栏/输入区/未选中 tab）：card-bg 与原色 50/50
+   * 混合——非玻璃 = card-bg 原色不变；玻璃 = 同色调 alpha 提升（0.6→0.8），
+   * 略实于内容区（VS Code 模式：tab 栏整体比内容区实一档，选中 tab 融入
+   * 内容区）。dark 引用式级联自动跟随，无需重复定义。 */
+  --card-raised-bg: color-mix(in srgb, var(--card-bg) 50%, var(--panel-bg-src));
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
@@ -269,8 +274,8 @@
   --sidebar-bg: #252526;
   --input-bg: #252526;
   --surface-bg: #2d2d2d;
-  --tab-active-bg: var(--surface-bg);
-  --tab-inactive-bg: var(--sidebar-bg);
+  --tab-active-bg: var(--card-bg);
+  --tab-inactive-bg: var(--card-raised-bg);
   --border: #3c3c3c;
   --text-primary: #cccccc;
   --text-secondary: #858585;
@@ -391,6 +396,7 @@
   --color-app-bg: var(--app-bg);
   --color-panel-bg: var(--panel-bg);
   --color-card-bg: var(--card-bg);
+  --color-card-raised-bg: var(--card-raised-bg);
   --color-card-chrome-bg: var(--card-chrome-bg);
   --color-sidebar-bg: var(--sidebar-bg);
   --color-input-bg: var(--input-bg);
@@ -693,11 +699,10 @@
 /* Tab bar: transparent (inherits group card background) */
 .dockview-theme-vs .dv-tabs-and-actions-container {
   border-bottom: 1px solid var(--border) !important;
-  /* 卡片统一背景（不再 transparent）：玻璃模式下 .ambience-glass .dv-groupview
-   * 被 !important 设为 transparent（壁纸直透），tab 栏 transparent 会零层
-   * card-bg 而内容区（overlay 宿主 bg-card-bg）单层——色深不一致。
-   * tab 栏自身涂 card-bg 与内容区对齐（非玻璃模式双层同色无视觉差）。 */
-  background-color: var(--card-bg) !important;
+  /* tab 栏（含未选中 tab）= 增加不透明度的卡片背景（--card-raised-bg：
+   * VS Code 模式——tab 栏整体略实于内容区，选中 tab 融入内容区）。
+   * 非玻璃 = card-bg 原色；玻璃 = 同色调 alpha 提升（0.6→0.8）。 */
+  background-color: var(--card-raised-bg) !important;
 }
 
 /* VSCode-style: tabs sit flush in the tab bar, no extra decoration */
@@ -1123,12 +1128,12 @@
   background-color: var(--dv-group-view-background-color) !important;
 }
 .ambience-glass .dockview-theme-vs .dv-tabs-and-actions-container {
-  /* 直接 var(--card-bg)，不走 --dv-tabs-and-actions-container-background-color
-   * 变量链——dockview.css 的 vs 主题定义了同名变量（#252526），CSS 变量
-   * 同特异性按加载顺序解析存在覆盖歧义（用户取色 tab 栏 #2d2e31 ≠
-   * card-bg 渲染 #262628 的根因）。直接引用让 tab 栏与卡片内容区同色
-   * （bcf087cd 的 681 行规则同款，此处玻璃区分支也走直引）。 */
-  background-color: var(--card-bg) !important;
+  /* tab 栏 = --card-raised-bg（与非玻璃分支 694 行同款，一处定义多处引用）。
+   * 不走 --dv-tabs-and-actions-container-background-color 变量链——
+   * dockview.css vs 主题定义同名变量（#252526）存在加载顺序歧义
+   * （1aa89293 教训）。玻璃下 = 同色调 alpha 提升（0.6→0.8），
+   * tab 栏比内容区实一档（VS Code 模式）。 */
+  background-color: var(--card-raised-bg) !important;
 }
 .ambience-glass [data-slot="sheet-overlay"] {
   background-color: rgba(0, 0, 0, 0.25) !important;

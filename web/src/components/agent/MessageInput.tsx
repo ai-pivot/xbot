@@ -346,7 +346,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const canSend = hasContent || pending.length > 0
 
   return (
-    <div className="border-t border-border bg-input-bg px-3 py-2.5">
+    <div className="border-t border-border bg-card-raised-bg px-3 py-2.5">
       {goal ? <GoalBanner goal={goal} onEdit={onSetGoal ?? (() => {})} onClear={onClearGoal ?? (() => {})} /> : null}
       {addingGoal && (
         <div className="mx-2 mb-1.5 flex items-center gap-2 rounded-md border border-accent/30 bg-accent/5 px-2.5 py-1.5">
