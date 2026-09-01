@@ -56,6 +56,7 @@ func TestLiveStats_TokensPerSec_ShortStream(t *testing.T) {
 	st := events[1].StreamStats
 	if st == nil {
 		t.Fatalf("second event missing live StreamStats")
+		return
 	}
 	// Pre-fix: window never formed (1 sample gap 40ms < 200ms) → tps = 0
 	// even though ~400 tokens arrived. Post-fix: fallback average rate =
