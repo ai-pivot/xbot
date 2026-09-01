@@ -386,7 +386,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           105% 会给父容器留下 5% 的横向 scrollWidth 溢出（内容区 overflow-x 可滚 18px，
           手机端拖动可见空白——宽度异常来源之一）。100% 恰好贴齐父右缘，0px 溢出。 */}
       <aside className="absolute inset-y-0 right-0 z-40 flex w-full flex-col transition-transform duration-300"
-        style={{ borderLeft: '1px solid var(--border)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
+        style={{ background: 'var(--system-bg)', borderLeft: '1px solid var(--border)', transform: detailId ? 'translateX(0)' : 'translateX(100%)' }}>
         {detailSub ? (
           <div className="flex h-full flex-col">
             <div className="flex items-center gap-1 border-b px-2 py-2" style={{ borderColor: 'var(--border)' }}>
