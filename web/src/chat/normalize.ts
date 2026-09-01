@@ -19,7 +19,7 @@ import {
   normalizeWebSubAgents,
   normalizeWebTools,
 } from '@/components/agent/progressStore'
-import type { TodoItem } from '@/types/shared'
+import type { QueueItemPayload, TodoItem } from '@/types/shared'
 import {
   eventSeq,
   iterNum,
@@ -93,6 +93,11 @@ export function normalizeEvent(raw: unknown, chatID: string): readonly DomainEve
     case 'user_echo':
     case 'inject_user':
       return normalizeUserEcho(env)
+    case 'queue_state': {
+      const qs = asRecord(env.queue_state)
+      const items = qs && Array.isArray(qs.items) ? qs.items as QueueItemPayload[] : []
+      return [{ type: 'queue_state', queue: items }]
+    }
     default:
       return null
   }

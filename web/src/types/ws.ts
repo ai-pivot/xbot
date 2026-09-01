@@ -25,6 +25,10 @@ export interface SendMessageResponse {
   timestamp?: number
   turn_id?: number
   queued?: boolean
+  /** ⚡ interject was delivered into the active turn (synthetic user_interrupt
+   * tool — no new turn, no queueing). The frontend renders it inside the live
+   * turn, not as a user message row. */
+  interrupted?: boolean
 }
 
 export interface WSConnection {

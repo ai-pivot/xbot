@@ -364,6 +364,11 @@ type RunConfig struct {
 	PeerMessageFn func(targetSessionKey, message string) string
 	// AutoWorktreeEnabled controls whether Worktree(init) can create worktrees.
 	AutoWorktreeEnabled bool
+	// IterationLoopDetection enables the iteration-loop breaker (consecutive
+	// identical iterations → duplicate tool calls replaced with a fake LOOP
+	// DETECTED result, repeated loops force-terminate the Run). Experimental —
+	// default false; set from config.Agent.Experimental.IterationLoopDetection.
+	IterationLoopDetection bool
 }
 
 // TodoManagerProvider 提供 TODO 状态查询和清理

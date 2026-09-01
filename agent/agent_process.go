@@ -263,9 +263,11 @@ func (a *Agent) requeueDrainedBgNotifications(sessionKey string) {
 // Called by chatProcessLoop after each turn completes (response sent), and by
 // chatWorker when idle. Safe for concurrent use — bgRunPendingMu serializes access.
 //
-// Batching: ALL drained notifications are merged into a SINGLE user message
-// (joined by separators). This avoids spamming the TUI with N separate messages
-// and triggering N separate agent turns when multiple bg tasks complete at once.
+// Per-notification injection (one user message each): every notification gets
+// its own turn, its own 🔔 row and its own traceable turn_id — the queue tray
+// shows each as an individually cancellable FIFO item. The previous batching
+// (N notifications joined by "\n\n---\n\n" into one giant message) merged
+// unrelated events behind a single turn and made them untraceable in the UI.
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	mine := a.takePendingBgNotifications(sessionKey)
 	if len(mine) == 0 {
@@ -279,9 +281,11 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	}
 	channelName, chatID := parts[0], parts[1]
 
-	// Format all notifications into content strings, collect senderID
-	var contents []string
+	// Inject each notification individually. Notifications are admitted
+	// sequentially through the session queue, so per-session FIFO ordering is
+	// preserved (queue seq = turn_id = processing order).
 	senderID := ""
+	injected := 0
 	for _, notif := range mine {
 		var content string
 		switch n := notif.(type) {
@@ -297,7 +301,7 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 				}
 			}
 			content = tools.FormatBgTaskCompletion(n, outputOverride)
-			if senderID == "" {
+			if n.SenderID() != "" {
 				senderID = n.SenderID()
 			}
 		case *tools.SubAgentBgNotify:
@@ -305,41 +309,36 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 				continue // drop progress during idle
 			}
 			content = tools.FormatSubAgentBgNotify(n)
-			if senderID == "" {
+			if n.SenderID() != "" {
 				senderID = n.SenderID()
 			}
 		case *tools.CronFired:
 			content = fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)
-			if senderID == "" {
+			if n.SenderID() != "" {
 				senderID = n.SenderID()
 			}
 		case *tools.AsyncMessageNotification:
 			content = n.Content
-			if senderID == "" {
+			if n.SenderID() != "" {
 				senderID = n.SenderID()
 			}
 		default:
 			continue
 		}
-		if content != "" {
-			contents = append(contents, content)
+		if content == "" {
+			continue
 		}
+		a.injectBgUserMessage(channelName, chatID, senderID, content)
+		injected++
 	}
 
-	if len(contents) == 0 {
-		return
+	if injected > 0 {
+		log.WithFields(log.Fields{
+			"channel":     channelName,
+			"chat_id":     chatID,
+			"notif_count": injected,
+		}).Info("Bg notifications: injecting individually (one turn each)")
 	}
-
-	// Merge into a single message
-	combined := strings.Join(contents, "\n\n---\n\n")
-
-	log.WithFields(log.Fields{
-		"channel":     channelName,
-		"chat_id":     chatID,
-		"notif_count": len(contents),
-	}).Info("Bg notifications: injecting as batched user message")
-
-	a.injectBgUserMessage(channelName, chatID, senderID, combined)
 }
 
 // handleCancelledRun persists un-saved engine messages and iteration history

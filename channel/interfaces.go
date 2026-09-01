@@ -28,6 +28,14 @@ type SessionStateSender interface {
 	SendSessionState(ev protocol.SessionEvent)
 }
 
+// QueueStateSender is implemented by channels that can receive the session
+// message-queue snapshot (pending messages admitted but not yet dequeued).
+// The agent broadcasts a full snapshot on every queue change (enqueue /
+// dequeue / cancel); Web renders it as the Staging Tray (queue_state SSE).
+type QueueStateSender interface {
+	SendQueueState(channel, chatID string, payload *protocol.QueueStatePayload)
+}
+
 // PreReplyNotifier is implemented by channels that require text-based ack
 // and progress messages before the final LLM reply. These channels lack
 // streaming/structured progress (e.g. Feishu patches the existing message

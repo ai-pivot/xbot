@@ -812,6 +812,11 @@ const (
 	AsyncSourcePeer     = "peer_message"
 	AsyncSourceEvent    = "event_trigger"
 	AsyncSourceUIAction = "ui_action"
+	// AsyncSourceUserInterrupt marks a ⚡ user interject — a message the user
+	// wants delivered into the ACTIVE turn immediately (as a synthetic tool,
+	// without interrupting the run) instead of queueing for a new turn.
+	// Web's ⚡ mode and "convert queued → interject" both use this source.
+	AsyncSourceUserInterrupt = "user_interrupt"
 )
 
 // AsyncMessageNotification is a BgNotification that wraps an arbitrary async message.

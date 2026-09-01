@@ -163,6 +163,10 @@ func (a *Agent) buildBaseRunConfig(
 		// read path for user-scoped settings. Same source as /settings panel.
 		AutoWorktreeEnabled: userCtx.GetSettingBool("auto_worktree"),
 
+		// Iteration-loop breaker: experimental, default off — must be enabled
+		// via config.Agent.Experimental.IterationLoopDetection.
+		IterationLoopDetection: a.iterationLoopDetection,
+
 		// Session
 		SessionKey: sessionKey,
 
@@ -768,6 +772,9 @@ func (a *Agent) buildSubAgentRunConfig(
 		// SubAgent inherits the parent's precomputed admin decision — spawned
 		// tools run with the same admin rights as the parent run.
 		OriginUserIsAdmin: parentCtx.OriginUserIsAdmin,
+		// Iteration-loop breaker: experimental, default off — inherited from
+		// the agent-level config.Agent.Experimental.IterationLoopDetection.
+		IterationLoopDetection: a.iterationLoopDetection,
 
 		// 从父 Agent 继承工作区 & 沙箱配置
 		WorkingDir:       parentCtx.WorkingDir,

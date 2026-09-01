@@ -165,6 +165,12 @@ type runState struct {
 	// loopFatal is set when loopBreakCount reaches maxLoopBreaks; the main
 	// loop checks it after executeToolCalls and terminates the Run.
 	loopFatal bool
+	// loopDetectionEnabled gates the iteration-loop breaker (experimental —
+	// config.Agent.Experimental.IterationLoopDetection, default false). When
+	// false, detectIterationLoop never flags an iteration and the breaker
+	// (fake results + loopFatal termination) stays dormant. Signature tracking
+	// still runs so toggling the flag takes effect on the next iteration.
+	loopDetectionEnabled bool
 
 	// runDone is set when Run() returns. Background-subagent progress callbacks
 	// outlive the Run (their runCtx derives from the agent lifecycle) — after
@@ -221,6 +227,7 @@ func newRunState(cfg RunConfig) *runState {
 		initialMsgCount:          len(messages),
 		persistence:              NewPersistenceBridgeWithTurnID(cfg.Session, len(messages), cfg.TurnID),
 		tokenTracker:             NewTokenTracker(cfg.LastPromptTokens, cfg.LastCompletionTokens),
+		loopDetectionEnabled:     cfg.IterationLoopDetection,
 	}
 	if cfg.ContextEditor != nil {
 		cfg.ContextEditor.BindSession(cfg.Session)
@@ -1271,10 +1278,13 @@ func (s *runState) detectIterationLoop(ctx context.Context, response *llm.LLMRes
 	// Build a signature: content + each tool call (name + arguments).
 	sig := loopSignature(response.Content, response.ToolCalls)
 
-	// Only trigger when: previous iteration exists, signature matches exactly,
-	// and the previous iteration did NOT end with a tool error (an error is a
-	// legitimate reason for the model to retry the same call).
-	if s.lastIterSignature != "" && sig == s.lastIterSignature && !s.lastIterHadError {
+	// Only trigger when: the experimental breaker is enabled, previous
+	// iteration exists, signature matches exactly, and the previous iteration
+	// did NOT end with a tool error (an error is a legitimate reason for the
+	// model to retry the same call). Disabled by default — opt in via
+	// config.Agent.Experimental.IterationLoopDetection; signature tracking
+	// below still runs either way so toggling takes effect immediately.
+	if s.loopDetectionEnabled && s.lastIterSignature != "" && sig == s.lastIterSignature && !s.lastIterHadError {
 		s.loopDetected = true
 		iterNum := 0
 		if s.structuredProgress != nil {
@@ -2243,6 +2253,17 @@ func (s *runState) drainAndInjectBgNotifications(ctx context.Context, iteration 
 			err = s.injectCronFiredNotification(ctx, iteration, n)
 		case *tools.QueuedUserMessage:
 			err = s.injectQueuedUserMessage(ctx, iteration, n)
+		case *tools.AsyncMessageNotification:
+			// Async messages (peer/webhook/UI-action) were previously silently
+			// consumed here (no case → err=nil → acknowledged + dropped) —
+			// injectAsyncMessage's documented "busy: injected as synthetic
+			// tool pair" contract was never wired in the Run drain. The user
+			// interject (⚡ Web mode) routes through the same pipeline.
+			if n.Source == tools.AsyncSourceUserInterrupt {
+				err = s.injectUserInterruptNotification(ctx, iteration, n)
+			} else {
+				err = s.injectAsyncMessageNotification(ctx, iteration, n)
+			}
 		}
 		if err != nil {
 			// Interactive message drains are destructive and do not use the main
@@ -2443,6 +2464,56 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 	)
 	if err == nil {
 		log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
+	}
+	return err
+}
+
+// injectUserInterruptNotification injects a ⚡ user interject into the ACTIVE
+// turn as a synthetic tool result (user_interrupt). The agent sees it at the
+// next tool boundary / iteration start — the run is NOT interrupted, no new
+// turn is started, no user message row is created. This is the Web ⚡ mode:
+// "say something to the agent right now without stopping it".
+//
+// The content explicitly instructs the model to continue its current task —
+// the interject is additional context, not a direction change.
+func (s *runState) injectUserInterruptNotification(ctx context.Context, iteration int, n *tools.AsyncMessageNotification) error {
+	content := fmt.Sprintf("💬 [用户插话 — 无需停止当前任务]\n\n%s\n\n请继续当前任务；如果这条插话需要回应，在完成当前步骤后顺带回答即可。", n.Content)
+	toolID := fmt.Sprintf("user_interrupt_%d", time.Now().UnixNano())
+	log.Ctx(ctx).WithFields(log.Fields{
+		"raw_content_len":       len(n.Content),
+		"formatted_content_len": len(content),
+		"iteration":             iteration,
+	}).Info("injectUserInterruptNotification: about to inject interject")
+	err := s.injectSyntheticToolPair(ctx, iteration,
+		"user_interrupt", toolID,
+		content, "💬 插话", 0,
+	)
+	if err == nil {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"content_len": len(content),
+			"tool_id":     toolID,
+			"iteration":   iteration,
+		}).Info("Injected user interject into active Run loop")
+	}
+	return err
+}
+
+// injectAsyncMessageNotification injects a peer/webhook/UI-action async message
+// into the active Run as a synthetic tool result (async_message). This fixes
+// the long-standing gap where these notifications were consumed by the Run
+// drain without a matching switch case — silently acknowledged and dropped.
+func (s *runState) injectAsyncMessageNotification(ctx context.Context, iteration int, n *tools.AsyncMessageNotification) error {
+	toolID := fmt.Sprintf("async_%d", time.Now().UnixNano())
+	err := s.injectSyntheticToolPair(ctx, iteration,
+		"async_message", toolID,
+		n.Content, "async:"+n.Source, 0,
+	)
+	if err == nil {
+		log.Ctx(ctx).WithFields(log.Fields{
+			"source":      n.Source,
+			"content_len": len(n.Content),
+			"iteration":   iteration,
+		}).Info("Injected async message into Run loop")
 	}
 	return err
 }

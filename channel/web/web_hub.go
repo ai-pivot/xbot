@@ -618,7 +618,8 @@ func isSSEEventType(msgType string) bool {
 		protocol.MsgTypeRunnerStatus,
 		protocol.MsgTypeSyncProgress,
 		protocol.MsgTypeResyncRequired,
-		protocol.MsgTypeBgTaskOutput:
+		protocol.MsgTypeBgTaskOutput,
+		protocol.MsgTypeQueueState:
 		return true
 	default:
 		return false

@@ -121,6 +121,8 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
   switch (name) {
     case 'Shell':
       return <ShellRender tool={tool} summary={summary} detail={detail} />
+    case 'user_interrupt':
+      return <UserInterruptRender tool={tool} />
     case 'FileCreate':
       return <FileCreateRender tool={tool} summary={summary} />
     case 'FileReplace':
@@ -159,6 +161,24 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     }
   }
 })
+
+// ── user_interrupt ────────────────────────────────────────────────────
+
+/** user_interrupt synthetic tool — rendered as a violet interjection card. */
+function UserInterruptRender({ tool }: { tool: WebToolProgress }) {
+  const text = tool.summary || tool.args || ''
+  return (
+    <div className="border-l-2 border-violet-400/70 bg-violet-500/[0.07] py-1.5 pl-3 pr-2 text-xs dark:border-violet-500/60 dark:bg-violet-500/[0.10]">
+      <div className="flex items-center gap-1.5">
+        <span className="text-violet-500 dark:text-violet-400">⚡</span>
+        <span className="min-w-0 flex-1 break-words text-text-primary">{text || '(interjection)'}</span>
+      </div>
+      <div className="mt-1 text-[10px] font-mono text-text-muted">
+        user_interrupt · synthetic tool
+      </div>
+    </div>
+  )
+}
 
 // ── Shell ──────────────────────────────────────────────────────────────
 

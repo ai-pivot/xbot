@@ -173,7 +173,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         idx = s.pendingUsers.findIndex((u) => u.turnHint !== undefined && u.turnHint === ev.turnID)
       }
       if (idx >= 0) {
-        user = s.pendingUsers[idx]
+        // B1 修复：排队消息开始处理时清除 queued 标记（turn_started 是权威
+        // "开始处理"信号 —— 排队中的 pendingUser 不再排队）。
+        user = { ...s.pendingUsers[idx], queued: false }
         pending = s.pendingUsers.filter((_, i) => i !== idx)
       }
       // notification trigger：turn_start.content 携带通知内容（后端
@@ -699,7 +701,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
       )
 
-      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, todos: s.todos.length > 0 ? s.todos : ev.todos }
+      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──
@@ -767,19 +769,25 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     }
 
     // ── user_ack：REST 发送成功 —— 清 sending、回填服务端信息 ──
-    // ⚠️ queued 显式赋值（resp.queued === true 才排队；成功即非发送中）。
-    // turnHint 补填（未被 turn_started 绑定时），供后续 echo/started 嫁接。
+    // v3 staging-tray: queued=true → 从 pendingUsers 移除（排队消息不进主 view，
+    // 只在 StagingTray 显示；turn_started 时从 content 构造 user 行）。
     case 'user_ack': {
       const dbID = ev.dbID > 0 ? ev.dbID : undefined
       const idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
       if (idx >= 0) {
+        // queued → 撤出消息流（StagingTray 是唯一渲染面）。
+        if (ev.queued === true) {
+          const pendingUsers = s.pendingUsers.filter((_, i) => i !== idx)
+          return { ...s, pendingUsers }
+        }
+        // 非 queued → 正常更新（清 sending、回填 dbID/turnHint）。
         const pendingUsers = s.pendingUsers.slice()
         const u = pendingUsers[idx]
         pendingUsers[idx] = {
           ...u,
           dbID: dbID ?? u.dbID,
           sending: false,
-          queued: ev.queued === true,
+          queued: false,
           turnHint: u.turnHint ?? ev.turnHint,
         }
         return { ...s, pendingUsers }
@@ -789,7 +797,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         if (t.user?.requestID === ev.requestID) {
           return withTurn(s, t.id, (tt) =>
             tt.user
-              ? { ...tt, user: { ...tt.user, dbID: dbID ?? tt.user.dbID, sending: false, queued: ev.queued === true } }
+              ? { ...tt, user: { ...tt.user, dbID: dbID ?? tt.user.dbID, sending: false } }
               : tt,
           )
         }
@@ -802,6 +810,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const pendingUsers = s.pendingUsers.filter((u) => u.requestID !== ev.requestID)
       if (pendingUsers.length === s.pendingUsers.length) return s
       return { ...s, pendingUsers }
+    }
+
+    // ── queue_state：全量替换排队消息快照（Staging Tray 数据源） ──
+    case 'queue_state': {
+      return { ...s, queue: ev.queue }
     }
   }
 }

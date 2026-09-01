@@ -174,6 +174,8 @@ const zhCN = {
   agent: {
     inputPlaceholder: '给 Agent 发消息…（Ctrl+Enter 发送）',
     inputPlaceholderEnter: '给 Agent 发消息…（Enter 发送）',
+    inputPlaceholderBusy: 'Agent 处理中 — 消息将排队…',
+    inputPlaceholderInterject: '⚡ 插话：立即注入当前 Turn，不打断…',
     send: '发送',
     attach: '附件',
     uploadFailed: '文件上传失败',

@@ -163,8 +163,12 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 	// LLM must read IN FULL in-context; offloading it to disk and substituting a summary
 	// marker defeats the purpose of the Skill tool (the model cannot follow a skill it
 	// only sees a truncated marker for).
+	// Also never offload user_interrupt / async_message — these are USER CONTENT
+	// (interjects, peer messages) that must be inline in the LLM context. Offloading
+	// replaces the content with a summary marker, making the LLM unable to see the
+	// actual text — the agent would see an empty/truncated tool result and ignore it.
 	switch toolName {
-	case "offload_recall", "recall_masked", "Skill":
+	case "offload_recall", "recall_masked", "Skill", "user_interrupt", "async_message":
 		return OffloadedResult{}, false
 	}
 

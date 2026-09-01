@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
-import type { ChatMessage, ProgressSnapshot } from '@/types/shared'
+import type { ChatMessage, ProgressSnapshot, QueueItemPayload } from '@/types/shared'
 import type { WSConnection } from '@/hooks/useWSConnection'
 import { deriveRows } from './derive'
 import { historyToReplaced, liveProgressFromState, rowsToChatMessages } from './integrate'
@@ -42,6 +42,8 @@ export interface AgentChatState {
   readonly liveProgress: ProgressSnapshot
   readonly busyFallback: boolean
   readonly tokenPrompt: number | null
+  /** 排队中的消息（queue_state SSE 事件 → Staging Tray 数据源）。 */
+  readonly queue: readonly QueueItemPayload[]
   readonly reset: () => void
   /** 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行，
    *  零等待 —— 不等 REST/echo）。返回 requestID 供调用方注入 REST 请求，
@@ -180,6 +182,7 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   // + 切换会话后 currentSession.running 是旧会话状态的场景。
   busyFallback: state.activeTurn !== null,
     tokenPrompt,
+    queue: state.queue,
     reset,
     sendUser,
     ackUser,

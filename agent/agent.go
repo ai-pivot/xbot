@@ -281,6 +281,16 @@ type bgSessionState struct {
 	// Cleared on normal/error completion (notifications were processed).
 	drainedThisRunMu sync.Mutex
 	drainedThisRun   []tools.BgNotification
+
+	// queue mirrors the messages sitting in the serial per-chat msgCh
+	// (admitted, not yet dequeued by chatProcessLoop). msgCh is a plain Go
+	// channel — it cannot be inspected or selectively removed — so this
+	// shadow list is the ONLY source of queue visibility (Web Staging Tray,
+	// queue list/cancel REST). Lifecycle: append on admit, shift on dequeue,
+	// mark-cancelled from the REST queue API (dequeue then skips processing).
+	// See session_queue.go for the invariant (seq = turn_id = dequeue order).
+	queueMu sync.Mutex
+	queue   []queuedEntry
 }
 
 // sessionOperationGate serializes a chat turn with destructive session
@@ -426,6 +436,11 @@ type Agent struct {
 	// deltaPush 启用流式 delta push（增量文本）。默认 false = 每次推送完整
 	// 累积文本（streamContentFunc/streamReasoningFunc 用）。见 Config.DeltaPush。
 	deltaPush bool
+
+	// iterationLoopDetection 启用迭代循环检测（连续相同迭代 → 重复 tool call
+	// 被替换成 fake LOOP DETECTED 结果 + 连续拦截达上限强制终止 Run）。
+	// 来自 config.Agent.Experimental.IterationLoopDetection，默认 false（实验开关）。
+	iterationLoopDetection bool
 
 	// 上下文管理配置
 	contextManagerConfig *ContextManagerConfig
@@ -1478,6 +1493,12 @@ type Config struct {
 	SandboxMode string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
 	Sandbox     tools.Sandbox // Sandbox 实例引用（V4 新增）
 
+	// IterationLoopDetection enables the iteration-loop breaker (consecutive
+	// identical iterations → duplicate calls replaced with a fake LOOP
+	// DETECTED tool result). Set from config.Agent.Experimental.IterationLoopDetection.
+	// Default: false — opt-in experimental.
+	IterationLoopDetection bool
+
 	SandboxIdleTimeout time.Duration // 沙箱空闲超时（0 禁用）
 
 	MemoryProvider     string // 记忆提供者: "flat" 或 "letta"
@@ -1832,12 +1853,13 @@ func New(cfg Config) (*Agent, error) {
 
 	rm := runner.NewManager()
 	agent := &Agent{
-		bus:            cfg.Bus,
-		multiSession:   multiSession,
-		tools:          registry,
-		maxIterations:  cfg.MaxIterations,
-		maxConcurrency: cfg.MaxConcurrency,
-		deltaPush:      cfg.DeltaPush,
+		bus:                    cfg.Bus,
+		multiSession:           multiSession,
+		tools:                  registry,
+		maxIterations:          cfg.MaxIterations,
+		maxConcurrency:         cfg.MaxConcurrency,
+		deltaPush:              cfg.DeltaPush,
+		iterationLoopDetection: cfg.IterationLoopDetection,
 
 		skills:             skillStore,
 		agents:             agentStore,
@@ -2839,9 +2861,40 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 		msg.Metadata["turn_id"] = strconv.FormatUint(turnID, 10)
 	}
 	acknowledgeInboundDelivery(msg, bus.DeliveryResult{TurnID: turnID, Queued: queued})
+
+	// Only track in the shadow queue + emit queue_state for QUEUED messages.
+	// Non-queued messages (chatProcessLoop idle — picked up immediately) must NOT
+	// enter the shadow queue: they would flash in the StagingTray for one SSE
+	// frame before chatProcessLoop dequeues them, and the race below would leave
+	// a stale entry that never gets cleaned (queueDequeue already ran before
+	// queueAppend — "shadow drift" — leaving a phantom queue item the user can
+	// see but not cancel because it was never really queued).
+	//
+	// For queued messages: queueAppend BEFORE the msgCh send — the goroutine race
+	// (chatProcessLoop picking up the message between msgCh <- msg and queueAppend)
+	// caused queueDequeue to find an empty shadow queue, then queueAppend added a
+	// stale entry AFTER the dequeue, and emitQueueState broadcast the stale state
+	// (message in queue) AFTER chatProcessLoop's empty-queue broadcast — the SSE
+	// events arrive out of logical order and the StagingTray shows a message
+	// that's already being processed (user report: "cancel 后发消息被判定为排队，
+	// 点取消排队报 message is not queued").
+	if queued {
+		ss.queueAppend(newQueuedEntry(msg, turnID))
+		a.emitQueueState(msg.Channel, msg.ChatID, ss)
+	}
 	select {
 	case msgCh <- msg:
+		// Message entered the channel. For queued messages, chatProcessLoop's
+		// queueDequeue will find and remove the shadow entry (added above, BEFORE
+		// this send — no race). For non-queued messages, queueDequeue returns
+		// false (empty shadow queue — never added) and the message is processed
+		// normally without any StagingTray flash.
 	case <-ctx.Done():
+		// Context cancelled — remove the shadow entry so it doesn't linger.
+		if queued {
+			ss.queueMarkCancelled(msg.RequestID)
+			a.emitQueueState(msg.Channel, msg.ChatID, ss)
+		}
 	}
 }
 
@@ -2923,6 +2976,25 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 	var lastSenderID string // 记录最后活跃的 senderID
 
 	for msg := range ch {
+		// Shadow-queue dequeue: pop the matching entry and broadcast the new
+		// snapshot. A cancelled entry means the user removed this message via
+		// the REST queue API while it waited in msgCh — skip it entirely (no
+		// turn runs for it). Its pre-allocated turn_id is consumed without
+		// processing, so we advance the lastTurnID baseline to keep the gap
+		// check clean (no spurious TURN_ID_GAP warnings for intentional skips).
+		if ss.queueDequeue(msg.RequestID) {
+			if tid, err := strconv.ParseUint(msg.Metadata["turn_id"], 10, 64); err == nil && tid > 0 {
+				ss.lastTurnID.Store(tid)
+			}
+			a.emitQueueState(msg.Channel, msg.ChatID, ss)
+			log.WithFields(log.Fields{
+				"request_id": msg.RequestID,
+				"chat":       chatKey,
+			}).Info("Skipped cancelled queued message at dequeue")
+			continue
+		}
+		a.emitQueueState(msg.Channel, msg.ChatID, ss)
+
 		keepRunning := func() bool {
 			if ctx.Err() != nil {
 				return false
@@ -4007,13 +4079,20 @@ func (a *Agent) emitTurnStarted(msg bus.InboundMessage, turnID uint64) {
 	}
 
 	trigger := "user"
-	content := ""
+	// content carries the message text for triggers whose user row is NOT
+	// rendered optimistically by the frontend: notifications (weak-network
+	// turn_started-only path) and QUEUED user messages (the v3 staging-tray
+	// design — a queued message is NOT in the message flow until it dequeues,
+	// so turn_started.content is what materializes its user row). The CLI
+	// ignores content for trigger=user (its user row is already displayed
+	// locally by sendMessage) — carrying it is harmless there.
+	content := msg.Content
 	if msg.Metadata != nil {
 		if msg.Metadata[bgNotificationMetadataKey] == "true" {
 			trigger = "notification"
-			content = msg.Content
 		} else if msg.Metadata["resume_turn"] == "true" {
 			trigger = "resume"
+			content = "" // resume carries no user content (empty message)
 		} else if msg.Metadata["ask_user_answered"] == "true" {
 			// AskUser answer is a NEW turn (new turnID allocated by chatProcessLoop).
 			// trigger="user" so the frontend does commitLiveProgressAndReset

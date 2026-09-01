@@ -25,6 +25,7 @@ const (
 	MsgTypeGenUI          = "genui"
 	MsgTypeResyncRequired = "resync_required"
 	MsgTypeBgTaskOutput   = "bg_task_output"
+	MsgTypeQueueState     = "queue_state"
 	MsgTypePong           = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration
@@ -102,13 +103,35 @@ type WSMessage struct {
 	SenderName      string             `json:"sender_name,omitempty"`
 	ChatType        string             `json:"chat_type,omitempty"`
 	SessionReset    bool               `json:"session_reset,omitempty"`
-	Cancelled       bool               `json:"cancelled,omitempty"` // true = turn was cancelled by user
-	TurnID          uint64             `json:"turn_id,omitempty"`   // associates reply with user message by turn
+	Cancelled       bool               `json:"cancelled,omitempty"`   // true = turn was cancelled by user
+	TurnID          uint64             `json:"turn_id,omitempty"`     // associates reply with user message by turn
+	Interrupted     bool               `json:"interrupted,omitempty"` // true = ⚡ interject was delivered into the active turn
 	Metadata        map[string]string  `json:"metadata,omitempty"`
 	Result          json.RawMessage    `json:"result,omitempty"`
 	Error           string             `json:"error,omitempty"`
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
 	Session         *SessionEvent      `json:"session,omitempty"`
+	QueueState      *QueueStatePayload `json:"queue_state,omitempty"`
+}
+
+// QueueItemPayload describes a single queued message in the session queue
+// (admitted to the serial per-chat queue but not yet dequeued for processing).
+// Broadcast to Web via MsgTypeQueueState whenever the queue changes
+// (enqueue / dequeue / cancel) so the Staging Tray can render the live queue.
+type QueueItemPayload struct {
+	MsgID      string `json:"msg_id"`      // requestID — the cancel handle
+	TurnID     uint64 `json:"turn_id"`     // pre-allocated at admission
+	Preview    string `json:"preview"`     // first ~80 chars of content
+	Source     string `json:"source"`      // user | notification | answer | resume | command
+	EnqueuedAt int64  `json:"enqueued_at"` // unix millis
+}
+
+// QueueStatePayload is the full snapshot of a session's pending queue.
+// Frontends treat it as authoritative — no delta merging, snapshot replace.
+type QueueStatePayload struct {
+	Channel string             `json:"channel"`
+	ChatID  string             `json:"chat_id"`
+	Items   []QueueItemPayload `json:"items"`
 }
 
 // WSClientMessage is the unified client→server WebSocket message envelope.
@@ -129,6 +152,7 @@ type WSClientMessage struct {
 	LastSeq    uint64             `json:"last_seq,omitempty"`
 	Resume     bool               `json:"resume,omitempty"`
 	ID         string             `json:"id,omitempty"`
+	Interrupt  bool               `json:"interrupt,omitempty"` // ⚡ interject: inject into the active turn instead of queueing
 	Method     string             `json:"method,omitempty"`
 	Params     json.RawMessage    `json:"params,omitempty"`
 	TUIControl *TUIControlPayload `json:"tui_control,omitempty"`

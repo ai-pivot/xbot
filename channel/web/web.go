@@ -188,6 +188,17 @@ type WebCallbacks struct {
 	ChatReorder func(senderID, channel string, orders map[string]int) error
 	// LocalSessionExists reports whether a local session exists outside the database.
 	LocalSessionExists func(channel, chatID string) bool
+
+	// InjectInterrupt delivers a ⚡ user interject into the ACTIVE turn of a
+	// session (synthetic user_interrupt tool result — no new turn, no queueing).
+	// Returns false when the session is idle (caller degrades to a normal send).
+	InjectInterrupt func(channel, chatID, senderID, content string) bool
+	// GetQueueState returns the pending queue entries (admitted, not yet
+	// dequeued) for a session — the Web Staging Tray data source.
+	GetQueueState func(channel, chatID string) []protocol.QueueItemPayload
+	// CancelQueued cancels a queued-but-unstarted message (skipped at dequeue).
+	// Returns false when the message is not queued (already processing/unknown).
+	CancelQueued func(channel, chatID, msgID string) bool
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -530,6 +541,19 @@ func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
 	}
 }
 
+// SendQueueState implements channel.QueueStateSender — broadcasts the pending
+// queue snapshot (Staging Tray data source) to the session's SSE/WS
+// subscribers. Full-snapshot semantics: the frontend replaces, never merges.
+func (wc *WebChannel) SendQueueState(channelName, chatID string, payload *protocol.QueueStatePayload) {
+	msg := protocol.WSMessage{
+		Type:       protocol.MsgTypeQueueState,
+		TS:         time.Now().Unix(),
+		QueueState: payload,
+	}
+	// Route-scoped: same routing as user messages (agent channel + chatID).
+	wc.hub.sendToSession(channelName, chatID, msg)
+}
+
 func isSubAgentLifecycle(ev protocol.SessionEvent) bool {
 	return ev.SessionKey != "" && (ev.Action == "subagent_started" || ev.Action == "subagent_stopped")
 }
@@ -709,6 +733,8 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/message", wc.authenticatedPOST(wc.handleMessage))
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
+	mux.HandleFunc("/api/queue/list", wc.authenticatedPOST(wc.handleQueueList))
+	mux.HandleFunc("/api/queue/cancel", wc.authenticatedPOST(wc.handleQueueCancel))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。

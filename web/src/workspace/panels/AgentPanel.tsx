@@ -34,6 +34,7 @@ import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
 import { ModelSelector } from '@/components/agent/ModelSelector'
+import { StagingTray } from '@/components/agent/StagingTray'
 import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
@@ -65,6 +66,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   const [draft, setDraft] = useState<string | undefined>(undefined)
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [interruptMode, setInterruptMode] = useState(false)
 
   // Track dockview panel visibility — only visible panels subscribe to SSE
   // (split view: both panels are visible → both subscribe; tab switch: only
@@ -362,7 +364,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   const failUserRef = useRef(agentChat.failUser)
   failUserRef.current = agentChat.failUser
 
-  const sendMessage = useCallback((content: string, attachments?: Attachments) => {
+  const sendMessage = useCallback((content: string, attachments?: Attachments, interrupt?: boolean) => {
     setFollowResetToken((v) => v + 1)
     // Detect /goal command and optimistically set goalOverride (frontend-only,
     // no backend needed — progress event may not carry goal reliably).
@@ -372,12 +374,13 @@ export function AgentPanel({ params, api }: PanelProps) {
         setGoalOverride({ objective, status: 'active' })
       }
     }
-    // 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行），
-    // 再走 REST。requestID 贯穿（状态机 pendingUser === REST id → echo/
-    // turn_started 按 requestID 去重/绑定）。
+    // ⚡ Interject mode: skip optimistic rendering (no user row — the message
+    // appears inside the active turn as a user_interrupt tool via SSE).
     const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    sendUserRef.current(content, rid)
-    sendMessageRef.current(content, attachments, rid)
+    if (!interrupt) {
+      sendUserRef.current(content, rid)
+    }
+    sendMessageRef.current(content, attachments, rid, interrupt)
   }, [setGoalOverride])
 
   // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
@@ -551,12 +554,26 @@ export function AgentPanel({ params, api }: PanelProps) {
         hasMore={chat.hasMore}
         onLoadMore={chat.loadMore}
         error={chat.error}
-        onRewind={isSubAgent || busy ? undefined : rewindTo}
+        onRewind={isSubAgent ? undefined : rewindTo}
         editingMessageId={editingMessageId}
         onStartEdit={handleStartEdit}
         onEndEdit={handleEndEdit}
         footer={askUserFooter}
       />
+      {!isSubAgent && (
+        <StagingTray
+          items={agentChat.queue}
+          busy={busy}
+          onCancel={(msgID) => chat.cancelQueued(msgID)}
+          onInterject={(msgID) => {
+            const item = agentChat.queue.find((q) => q.msg_id === msgID)
+            if (item) chat.interjectQueued(msgID, item.preview)
+          }}
+          onClear={() => {
+            agentChat.queue.forEach((q) => chat.cancelQueued(q.msg_id))
+          }}
+        />
+      )}
       {!isSubAgent && (
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
@@ -571,6 +588,8 @@ export function AgentPanel({ params, api }: PanelProps) {
           goal={goal}
           onSetGoal={handleSetGoal}
           onClearGoal={handleClearGoal}
+          interruptMode={interruptMode}
+          onInterruptModeChange={setInterruptMode}
           trailingControls={
             chatID ? (
               <>

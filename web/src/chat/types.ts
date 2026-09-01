@@ -13,7 +13,7 @@
  * 断言（构造函数内部）——渲染层/reducer 一律禁止（ESLint no-as 规则管 辖）。
  */
 
-import type { TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
+import type { QueueItemPayload, TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 
 // ─── Brand：ID 防混淆 ─────────────────────────────────────────
 
@@ -196,10 +196,12 @@ export interface ChatState {
    * （iteration/phase_done）携带 todos 时更新；hydration（active_progress，
    * 含 phase=done 快照）回填。渲染层（liveProgressFromState）统一读此处。 */
   readonly todos: readonly TodoItem[]
+  /** 排队中的消息（Staging Tray 数据源）。queue_state SSE 事件全量替换。 */
+  readonly queue: readonly QueueItemPayload[]
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [] }
+  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], queue: [] }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -317,4 +319,10 @@ export type DomainEvent =
       /** REST 发送失败：移除乐观行（对齐旧 removeById 语义）。 */
       readonly type: 'user_fail'
       readonly requestID: string
+    }
+  | {
+      /** 排队消息快照（queue_state SSE 事件 → Staging Tray 数据源）。
+       *  全量替换语义：后端推送整个队列状态，前端直接替换。 */
+      readonly type: 'queue_state'
+      readonly queue: readonly QueueItemPayload[]
     }

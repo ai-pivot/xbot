@@ -156,7 +156,7 @@ describe('AgentPanel rewind', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'rewind' }))
 
-    await waitFor(() => expect(mocks.chat.sendMessage).toHaveBeenCalledWith('edited message', undefined, expect.any(String)))
+    await waitFor(() => expect(mocks.chat.sendMessage).toHaveBeenCalledWith('edited message', undefined, expect.any(String), undefined))
     expect(mocks.rewindHistory).toHaveBeenCalledWith(
       { channel: 'web', chatID: 'chat-1' },
       42,

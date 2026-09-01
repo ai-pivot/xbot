@@ -362,26 +362,36 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Count messages in bus.Inbound — should be exactly 1 (batched, no duplicates, no losses)
-	count := 0
+	// Per-notification injection (v3 queue redesign): each of the 10 drained
+	// notifications becomes its OWN user message (one turn each, individually
+	// traceable in the queue tray). Collect all 10 — no losses.
+	var msgs []bus.InboundMessage
 	timeout := time.After(2 * time.Second)
-	for count < 1 {
+	for len(msgs) < 10 {
 		select {
-		case <-a.bus.Inbound:
-			count++
+		case msg := <-a.bus.Inbound:
+			msgs = append(msgs, msg)
 		case <-timeout:
-			t.Fatalf("expected 1 batched message in bus.Inbound, got %d (duplicates or losses)", count)
+			t.Fatalf("expected 10 individual messages in bus.Inbound (one per notification), got %d (duplicates or losses)", len(msgs))
 		}
 	}
 
-	// Check no more messages (no duplicates)
+	// Check no more messages (no duplicates from the concurrent drains)
 	select {
 	case <-a.bus.Inbound:
-		t.Fatal("should not have more than 1 message — possible duplicate")
+		t.Fatal("should not have more than 10 messages — possible duplicate")
 	default:
 	}
 
-	t.Logf("SUCCESS: exactly 1 batched message for 10 notifications (no duplicates, no losses)")
+	// Every message must carry the bg-notification marker (injected via
+	// injectBgUserMessage → bgNotificationMetadataKey).
+	for i, msg := range msgs {
+		if msg.Metadata["xbot_internal_bg_notification"] != "true" {
+			t.Errorf("msg[%d] missing bg notification marker", i)
+		}
+	}
+
+	t.Logf("SUCCESS: exactly 10 individual messages for 10 notifications (no duplicates, no losses)")
 }
 
 // TestDrainAndProcessNotifications_AfterResponseSent verifies the KEY INVARIANT:
@@ -700,29 +710,37 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 
 	a.drainAndProcessNotifications(chatKey)
 
-	// Should receive 1 batched message in bus.Inbound (bg task + cron merged)
+	// Per-notification injection (v3 queue redesign): bg task and CronFired
+	// are injected as TWO separate user messages — each gets its own turn,
+	// own 🔔 row and stays individually traceable in the queue tray.
 	var msgs []bus.InboundMessage
 	timeout := time.After(2 * time.Second)
-	for len(msgs) < 1 {
+	for len(msgs) < 2 {
 		select {
 		case msg := <-a.bus.Inbound:
 			msgs = append(msgs, msg)
 		case <-timeout:
-			t.Fatalf("expected 1 batched message in bus.Inbound, got %d", len(msgs))
+			t.Fatalf("expected 2 individual messages in bus.Inbound (one per notification), got %d", len(msgs))
 		}
 	}
 
-	// The single message should contain both cron (⏰) and bg task content
-	hasCron := strings.Contains(msgs[0].Content, "⏰")
-	hasBgTask := strings.Contains(msgs[0].Content, "[System Notification]")
+	var hasCron, hasBgTask bool
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "⏰") {
+			hasCron = true
+		}
+		if strings.Contains(msg.Content, "[System Notification]") {
+			hasBgTask = true
+		}
+	}
 	if !hasCron {
-		t.Error("expected batched message to contain ⏰ prefix (cron)")
+		t.Error("expected one individual message to contain ⏰ prefix (cron)")
 	}
 	if !hasBgTask {
-		t.Error("expected batched message to contain [System Notification] (bg task)")
+		t.Error("expected one individual message to contain [System Notification] (bg task)")
 	}
 
-	t.Logf("SUCCESS: bg task and CronFired merged into 1 batched message")
+	t.Logf("SUCCESS: bg task and CronFired injected as 2 individual messages (one turn each)")
 }
 
 // TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly is the regression test for

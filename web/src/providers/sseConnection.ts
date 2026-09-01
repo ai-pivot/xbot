@@ -55,6 +55,7 @@ export const SSE_EVENT_TYPES = [
   'web_plugin_event',
   'web_plugin_push',
   'web_plugin_rpc',
+  'queue_state',
 ] as const
 
 type Handler<T> = (payload: T) => void
@@ -408,6 +409,7 @@ export class SSEConnectionImpl implements WSConnection {
       file_sizes: msg.file_sizes,
       upload_keys: msg.upload_keys,
       file_mimes: msg.file_mimes,
+      interrupt: msg.interrupt,
       ...sessionBody(msg),
     }
     for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt += 1) {

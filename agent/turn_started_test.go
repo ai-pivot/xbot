@@ -99,8 +99,10 @@ func TestEmitTurnStarted_Notification(t *testing.T) {
 }
 
 // TestEmitTurnStarted_UserTrigger verifies that user-typed messages get
-// trigger="user" and empty content (the frontend already has the optimistic
-// message — it just needs the TurnID).
+// trigger="user" and CARRY the message content (v3 staging-tray: queued
+// messages materialize their user row from turn_started.content — the
+// frontend no longer renders an optimistic row; the CLI ignores content for
+// trigger=user since it already displayed the message locally via sendMessage).
 func TestEmitTurnStarted_UserTrigger(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -130,8 +132,8 @@ func TestEmitTurnStarted_UserTrigger(t *testing.T) {
 	if ev.TurnStart.Trigger != "user" {
 		t.Errorf("Trigger = %q, want %q", ev.TurnStart.Trigger, "user")
 	}
-	if ev.TurnStart.Content != "" {
-		t.Errorf("Content = %q, want empty (user-typed already displayed)", ev.TurnStart.Content)
+	if ev.TurnStart.Content != "hello world" {
+		t.Errorf("Content = %q, want %q (v3 staging-tray: queued user rows materialize from turn_started.content)", ev.TurnStart.Content, "hello world")
 	}
 	if ev.TurnStart.RequestID != "req-1" {
 		t.Errorf("RequestID = %q, want req-1", ev.TurnStart.RequestID)

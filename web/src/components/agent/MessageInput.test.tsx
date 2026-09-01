@@ -132,12 +132,9 @@ describe('MessageInput', () => {
 
     await setEditorContent('/cancel')
 
-    // While busy, send button is cancel button. Use Enter key via editor
-    const editor = __getTestEditor()
-    expect(editor).not.toBeNull()
-    // The /cancel command is handled by submit(), which is called via keyboard or button
-    // While busy, clicking the cancel button sends cancel
-    fireEvent.click(screen.getByLabelText(/cancel/i))
+    // While busy + has content: button is Send (not Cancel). Clicking it
+    // triggers submit(), which intercepts /cancel → onCancel().
+    fireEvent.click(screen.getByLabelText(/排队发送/))
 
     expect(onCancel).toHaveBeenCalledOnce()
     expect(onSend).not.toHaveBeenCalled()
@@ -204,6 +201,6 @@ describe('MessageInput', () => {
     await setEditorContent('/new')
     fireEvent.click(screen.getByLabelText(/send/i))
 
-    expect(onSend).toHaveBeenCalledWith('/new', undefined)
+    expect(onSend).toHaveBeenCalledWith('/new', undefined, undefined)
   })
 })
