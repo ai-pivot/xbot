@@ -575,7 +575,20 @@ func (h *Hub) broadcastToConnType(msg protocol.WSMessage, match func(*Client) bo
 // refresh. The frontend's seq>0 gate skips dedup for seq=0 messages and the
 // session handlers are idempotent, so a client receiving both copies (should
 // not happen — subscribers of excludeRoutes are skipped) is harmless.
+//
+// CR#5 user isolation: web-channel events carrying a SenderID (session owner)
+// are delivered ONLY to that user's clients — other users' browsers never
+// receive them (the event payload can carry the session's Label / busy state /
+// subagent session keys; ChatList is sender-scoped, so the fan-out must not
+// cross the user boundary). CLI/agent-channel events and legacy emitters with
+// an empty SenderID keep the unfiltered broadcast (v63 single-operator admin
+// semantics: CLI sessions are admin-visible).
 func (h *Hub) broadcastSessionStateToWebClients(msg protocol.WSMessage, excludeRoutes ...string) {
+	// Owner filter: web-channel session events scoped to the session owner.
+	ownerFilter := ""
+	if msg.Session != nil && msg.Session.Channel == "web" && msg.Session.SenderID != "" {
+		ownerFilter = msg.Session.SenderID
+	}
 	h.mu.RLock()
 	excluded := make(map[string]bool)
 	for _, route := range excludeRoutes {
@@ -588,6 +601,10 @@ func (h *Hub) broadcastSessionStateToWebClients(msg protocol.WSMessage, excludeR
 	clients := make([]*Client, 0, len(h.conns))
 	for id, c := range h.conns {
 		if c.isCLI || excluded[id] {
+			continue
+		}
+		// CR#5: owner-scoped delivery for web-channel events with a SenderID.
+		if ownerFilter != "" && c.userID != ownerFilter {
 			continue
 		}
 		clients = append(clients, c)

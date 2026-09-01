@@ -111,7 +111,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const placeholderText = goalMode
     ? '🎯 输入目标描述，发送后将设为 Goal 并开始执行...'
     : interruptMode
-      ? '⚡ 插话：立即注入当前 Turn，不打断…'
+      ? t('agent.inputPlaceholderInterject') || '⚡ 插话：立即注入当前 Turn，不打断…'
       : busy
         ? t('agent.inputPlaceholderBusy') || 'Agent 处理中 — 消息将排队…'
         : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')

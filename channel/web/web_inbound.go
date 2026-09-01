@@ -23,6 +23,36 @@ var (
 
 const inboundRequestRetention = 10 * time.Minute
 
+// isInterjected reports whether a ⚡ interject with this requestID has already
+// been injected into the active turn (CR#6: REST timeout retry with the same
+// msg.ID must not re-inject — each attempt would deliver a fresh user_interrupt
+// synthetic tool). TTL mirrors inboundRequestRetention.
+func (wc *WebChannel) isInterjected(msgID string) bool {
+	if msgID == "" {
+		return false
+	}
+	now := time.Now()
+	wc.interjectedRequestsMu.Lock()
+	defer wc.interjectedRequestsMu.Unlock()
+	for id, marked := range wc.interjectedRequests {
+		if now.Sub(marked) > inboundRequestRetention {
+			delete(wc.interjectedRequests, id)
+		}
+	}
+	_, ok := wc.interjectedRequests[msgID]
+	return ok
+}
+
+// markInterjected records a successful interject injection (dedup marker).
+func (wc *WebChannel) markInterjected(msgID string) {
+	if msgID == "" {
+		return
+	}
+	wc.interjectedRequestsMu.Lock()
+	defer wc.interjectedRequestsMu.Unlock()
+	wc.interjectedRequests[msgID] = time.Now()
+}
+
 type inboundRequestState struct {
 	done        chan struct{}
 	sel         SessionSelector
@@ -126,10 +156,22 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 	// message). Idle sessions fall through to the normal queue path.
 	if msg.Interrupt && wc.callbacks.InjectInterrupt != nil {
 		content := wc.expandUploadKeys(msg)
+		// CR#6: REST timeout retry with the same msg.ID must not re-inject —
+		// each attempt would deliver a fresh user_interrupt synthetic tool into
+		// the active turn. Only the FIRST attempt injects; retries return the
+		// cached interrupted=true outcome (idempotent).
+		if msg.ID != "" && wc.isInterjected(msg.ID) {
+			return sel, 0, time.Now(), 0, false, true, nil
+		}
 		if wc.callbacks.InjectInterrupt(sel.Channel, sel.ChatID, identity.SenderID, content) {
+			if msg.ID != "" {
+				wc.markInterjected(msg.ID)
+			}
 			return sel, 0, time.Now(), 0, false, true, nil
 		}
 		// Session idle (or callback refused) — degrade to a normal send below.
+		// NOT marked: the fall-through dispatch handles retries via its own
+		// dispatchUserMessageOnce gate.
 	}
 
 	msg.ID = strings.TrimSpace(msg.ID)

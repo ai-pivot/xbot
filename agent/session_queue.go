@@ -38,7 +38,8 @@ import (
 type queuedEntry struct {
 	MsgID      string // msg.RequestID — the cancel handle
 	TurnID     uint64 // pre-allocated at admission (0 for answer/resume)
-	Preview    string // first ~80 chars of content
+	Content    string // FULL content — the interject path re-sends it on cancel+resend
+	Preview    string // first ~80 chars of content (tray rendering)
 	Source     string // user | notification | answer | resume | command
 	EnqueuedAt int64  // unix millis
 	Cancelled  bool   // set by CancelQueuedMessage; dequeue skips processing
@@ -55,6 +56,7 @@ func newQueuedEntry(msg bus.InboundMessage, turnID uint64) queuedEntry {
 	return queuedEntry{
 		MsgID:      msg.RequestID,
 		TurnID:     turnID,
+		Content:    msg.Content,
 		Preview:    preview,
 		Source:     queuedEntrySource(msg),
 		EnqueuedAt: time.Now().UnixMilli(),
@@ -174,6 +176,7 @@ func (a *Agent) QueueSnapshotFor(channelName, chatID string) []protocol.QueueIte
 		items = append(items, protocol.QueueItemPayload{
 			MsgID:      e.MsgID,
 			TurnID:     e.TurnID,
+			Content:    e.Content,
 			Preview:    e.Preview,
 			Source:     e.Source,
 			EnqueuedAt: e.EnqueuedAt,
@@ -214,6 +217,7 @@ func (a *Agent) emitQueueState(channelName, chatID string, ss *bgSessionState) {
 		items = append(items, protocol.QueueItemPayload{
 			MsgID:      e.MsgID,
 			TurnID:     e.TurnID,
+			Content:    e.Content,
 			Preview:    e.Preview,
 			Source:     e.Source,
 			EnqueuedAt: e.EnqueuedAt,
@@ -279,7 +283,11 @@ func (a *Agent) emitQueueState(channelName, chatID string, ss *bgSessionState) {
 
 // InjectUserInterrupt delivers a ⚡ user interject into the active turn.
 // Returns true when the interrupt was routed for injection; false when the
-// session is idle and the message was degraded to a normal user message.
+// session is idle — the caller (web_inbound) falls through to the normal
+// send path. ⚠️ This function MUST NOT send the message itself on idle:
+// the web caller's false-branch already dispatches it as a regular user
+// message (doing both = the message is processed twice — two turns, two
+// replies; the frontend busy state lags the server, so the race is real).
 func (a *Agent) InjectUserInterrupt(channelName, chatID, senderID, content string) bool {
 	key := qualifyChatID(channelName, chatID)
 
@@ -298,7 +306,7 @@ func (a *Agent) InjectUserInterrupt(channelName, chatID, senderID, content strin
 			return true
 		}
 	}
-	// Idle (or no bg manager): degrade to a normal user message.
-	a.injectInbound(channelName, chatID, senderID, content)
+	// Idle (or no bg manager): return false — the caller degrades to a normal
+	// user message through its own dispatch path (web_inbound fall-through).
 	return false
 }

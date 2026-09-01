@@ -1501,15 +1501,18 @@ export function useSessionStoreImpl(): SessionStore {
       // [ASKDEBUG] 诊断：双面板 split view 下 ask_user 面板不渲染的定位日志
       //（复现后看 console：无此日志 = 连接层没送达 handler；有此日志但面板
       // miss = key 匹配问题 —— 与 useAskUser 的 [ASKDEBUG] miss 配对看）。
-      console.warn('[ASKDEBUG] ask_user received', {
-        explicitChatID: explicitChatID ?? null,
-        msgChannel: msg.channel ?? null,
-        resolvedChatID: chatID,
-        resolvedChannel: channel,
-        resolvedKey: channel && chatID ? `${channel}:${chatID}` : null,
-        primaryChatID: wsRef.current.chatID,
-        questions: Array.isArray(msg.progress?.questions) ? msg.progress.questions.length : 0,
-      })
+      // DEV-only（CR#9: PR 描述承诺"正常流程静默"——生产不打）。
+      if (import.meta.env.DEV) {
+        console.warn('[ASKDEBUG] ask_user received', {
+          explicitChatID: explicitChatID ?? null,
+          msgChannel: msg.channel ?? null,
+          resolvedChatID: chatID,
+          resolvedChannel: channel,
+          resolvedKey: channel && chatID ? `${channel}:${chatID}` : null,
+          primaryChatID: wsRef.current.chatID,
+          questions: Array.isArray(msg.progress?.questions) ? msg.progress.questions.length : 0,
+        })
+      }
       if (chatID) {
         setStatus({ channel, chatID }, 'waiting_input')
         // Store the prompt so it survives session switch.

@@ -316,6 +316,13 @@ type WebChannel struct {
 	inboundRequests   map[inboundRequestKey]*inboundRequestState
 	inboundRequestsMu sync.Mutex
 
+	// interjectedRequests: ⚡ interject dedup (CR#6) — REST timeout retry with
+	// the same msg.ID must not re-inject the synthetic tool (each attempt would
+	// deliver a fresh user_interrupt into the active turn). requestID → marked
+	// time; TTL retention mirrors inboundRequests (swept on lookup).
+	interjectedRequests   map[string]time.Time
+	interjectedRequestsMu sync.Mutex
+
 	// DB
 	db *sql.DB
 
@@ -605,15 +612,16 @@ type SessionSelector struct {
 // NewWebChannel 创建 Web 渠道
 func NewWebChannel(cfg WebChannelConfig, msgBus *bus.MessageBus) *WebChannel {
 	wc := &WebChannel{
-		config:             cfg,
-		msgBus:             msgBus,
-		hub:                newHub(),
-		sessions:           make(map[string]sessionInfo),
-		db:                 cfg.DB,
-		stopCh:             make(chan struct{}),
-		ptyMgr:             newPtyManager(),
-		inboundRequests:    make(map[inboundRequestKey]*inboundRequestState),
-		userCurrentSession: make(map[string]SessionSelector),
+		config:              cfg,
+		msgBus:              msgBus,
+		hub:                 newHub(),
+		sessions:            make(map[string]sessionInfo),
+		db:                  cfg.DB,
+		stopCh:              make(chan struct{}),
+		ptyMgr:              newPtyManager(),
+		inboundRequests:     make(map[inboundRequestKey]*inboundRequestState),
+		interjectedRequests: make(map[string]time.Time),
+		userCurrentSession:  make(map[string]SessionSelector),
 	}
 	wc.hub.seqFn = wc.stampAndBuffer
 	wc.hub.resetReplayFn = wc.clearReplayStream

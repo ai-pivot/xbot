@@ -27,6 +27,8 @@ import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
+import { postAPI } from '@/lib/api'
+import type { QueueItemPayload } from '@/types/shared'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { ContextRing } from '@/components/agent/ContextRing'
@@ -234,6 +236,32 @@ export function AgentPanel({ params, api }: PanelProps) {
   const resetAgentChatRef = useRef(agentChat.reset)
   resetAgentChatRef.current = agentChat.reset
   const progressSnapshot = agentChat.liveProgress
+
+  // ── Queue state hydration (refresh / session switch) ──
+  // SSE queue_state events only fire on enqueue/dequeue — page refresh has no
+  // events to restore the StagingTray. Fetch the queue snapshot from REST
+  // (/api/queue/list) on mount / chatID change and hydrate the ChatStore.
+  // SubAgent sessions don't have a queue (their messages go through the
+  // parent's session queue).
+  const hydrateQueueRef = useRef(agentChat.hydrateQueue)
+  hydrateQueueRef.current = agentChat.hydrateQueue
+  useEffect(() => {
+    if (!chatID || !messageChannel || isSubAgent) return
+    let cancelled = false
+    void postAPI<{ items?: QueueItemPayload[] }>('/api/queue/list', {
+      channel: messageChannel,
+      chat_id: chatID,
+    })
+      .then((resp) => {
+        if (cancelled) return
+        const items = Array.isArray(resp?.items) ? resp.items : []
+        hydrateQueueRef.current(items)
+      })
+      .catch(() => {
+        // non-fatal — queue hydration is best-effort (session may not have a queue)
+      })
+    return () => { cancelled = true }
+  }, [chatID, messageChannel, isSubAgent])
 
   // ── 渲染暂停（面板不可见时挂起 React 通知）──
   // MobileAppShell 用 display:none 切换视图（AgentPanel 保持挂载——store
@@ -567,7 +595,13 @@ export function AgentPanel({ params, api }: PanelProps) {
           onCancel={(msgID) => chat.cancelQueued(msgID)}
           onInterject={(msgID) => {
             const item = agentChat.queue.find((q) => q.msg_id === msgID)
-            if (item) chat.interjectQueued(msgID, item.preview)
+            // CR#2: use the FULL content — preview is server-truncated to ~80
+            // runes (queue tray rendering only); interjecting with it would
+            // deliver a truncated message to the agent AND the queued original
+            // is already cancelled (unrecoverable content loss for >80-rune
+            // messages). Content falls back to preview for entries admitted
+            // before this field existed (server upgrade window).
+            if (item) chat.interjectQueued(msgID, item.content || item.preview)
           }}
           onClear={() => {
             agentChat.queue.forEach((q) => chat.cancelQueued(q.msg_id))

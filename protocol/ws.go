@@ -121,7 +121,8 @@ type WSMessage struct {
 type QueueItemPayload struct {
 	MsgID      string `json:"msg_id"`      // requestID — the cancel handle
 	TurnID     uint64 `json:"turn_id"`     // pre-allocated at admission
-	Preview    string `json:"preview"`     // first ~80 chars of content
+	Content    string `json:"content"`     // FULL content — the interject path re-sends it on cancel+resend (preview is truncated to ~80 runes)
+	Preview    string `json:"preview"`     // first ~80 chars of content (tray rendering)
 	Source     string `json:"source"`      // user | notification | answer | resume | command
 	EnqueuedAt int64  `json:"enqueued_at"` // unix millis
 }

@@ -1117,10 +1117,11 @@ func (a *Agent) renameSession(chatID, newName string) (oldName string, err error
 
 	// Push state change
 	a.emitSessionState(protocol.SessionEvent{
-		Channel: ch,
-		ChatID:  chatID,
-		Action:  "renamed",
-		Label:   finalName,
+		Channel:  ch,
+		ChatID:   chatID,
+		Action:   "renamed",
+		Label:    finalName,
+		SenderID: senderID,
 	})
 
 	return oldName, nil
@@ -3106,8 +3107,11 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			hadPending := a.registerActiveCancelState(cancelKey, cancelCh, reqCancel)
 
 			// Emit session busy event for instant sidebar push.
+			// SenderID: session owner — the web hub's user-level fan-out filters
+			// by it (CR#5: other users' clients no longer receive this session's
+			// sidebar events; CLI/agent channels ignore the filter).
 			a.emitSessionState(protocol.SessionEvent{
-				Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy",
+				Channel: msg.Channel, ChatID: msg.ChatID, Action: "busy", SenderID: msg.SenderID,
 			})
 
 			if hadPending {
@@ -3163,7 +3167,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					isWaitingUser := response != nil && response.WaitingUser
 					if !isWaitingUser {
 						a.emitSessionState(protocol.SessionEvent{
-							Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+							Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
 						})
 						key := qualifyChatID(msg.Channel, msg.ChatID)
 						a.lastProgressSnapshot.Delete(key)

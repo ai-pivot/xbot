@@ -39,6 +39,12 @@ const STAGING_TRAY_STYLES = `
 .staging-card-leave { animation: stagingSlideOut 0.2s ease-out forwards; overflow: hidden; }
 .staging-shimmer-bar { animation: stagingShimmer 1.8s ease-in-out infinite; }
 .staging-glow-num { animation: stagingGlow 2s ease-in-out infinite; }
+
+/* Touch devices (no hover): always show action buttons + enlarge tap targets */
+@media (hover: none) {
+  .staging-card .staging-card-actions { opacity: 1 !important; }
+  .staging-card .staging-card-actions button { min-width: 32px; min-height: 32px; }
+}
 `
 
 let styleInjected = false
@@ -85,7 +91,7 @@ function QueueCard({
   return (
     <div
       className={cn(
-        'group relative rounded-lg border px-3 py-2 transition-colors',
+        'staging-card group relative rounded-lg border px-3 py-2 transition-colors',
         leaving ? 'staging-card-leave' : 'staging-card-enter',
         isHead
           ? 'border-indigo-400/60 bg-indigo-500/[0.07] dark:border-indigo-500/50'
@@ -127,8 +133,8 @@ function QueueCard({
           Turn {item.turn_id}
         </span>
 
-        {/* hover 操作 */}
-        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        {/* hover/touch 操作（触屏始终可见，桌面 hover 显示） */}
+        <div className="staging-card-actions flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           {!isNotification && (
             <button
               type="button"
@@ -138,7 +144,7 @@ function QueueCard({
                 e.stopPropagation()
                 onInterject(item.msg_id)
               }}
-              className="flex size-5.5 items-center justify-center rounded text-violet-500 hover:bg-violet-500/15 hover:text-violet-400"
+              className="flex size-6 items-center justify-center rounded text-violet-500 hover:bg-violet-500/15 hover:text-violet-400"
             >
               <Zap className="size-3.5" />
             </button>
@@ -151,7 +157,7 @@ function QueueCard({
               e.stopPropagation()
               onCancel(item.msg_id)
             }}
-            className="flex size-5.5 items-center justify-center rounded text-text-muted hover:bg-destructive/10 hover:text-destructive"
+            className="flex size-6 items-center justify-center rounded text-text-muted hover:bg-destructive/10 hover:text-destructive"
           >
             <X className="size-3.5" />
           </button>

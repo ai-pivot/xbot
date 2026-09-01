@@ -284,10 +284,13 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// Inject each notification individually. Notifications are admitted
 	// sequentially through the session queue, so per-session FIFO ordering is
 	// preserved (queue seq = turn_id = processing order).
-	senderID := ""
 	injected := 0
 	for _, notif := range mine {
 		var content string
+		// Per-notification sender: NOT inherited across iterations. A
+		// SenderID-less notification (e.g. CronFired without a sender) following
+		// one WITH a sender must not adopt the previous identity (CR#4).
+		senderID := ""
 		switch n := notif.(type) {
 		case *tools.BackgroundTask:
 			// Offload large output per-task
@@ -301,27 +304,19 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 				}
 			}
 			content = tools.FormatBgTaskCompletion(n, outputOverride)
-			if n.SenderID() != "" {
-				senderID = n.SenderID()
-			}
+			senderID = n.SenderID()
 		case *tools.SubAgentBgNotify:
 			if n.Type != tools.SubAgentBgNotifyCompleted {
 				continue // drop progress during idle
 			}
 			content = tools.FormatSubAgentBgNotify(n)
-			if n.SenderID() != "" {
-				senderID = n.SenderID()
-			}
+			senderID = n.SenderID()
 		case *tools.CronFired:
 			content = fmt.Sprintf("⏰ [定时任务触发] %s", n.Message)
-			if n.SenderID() != "" {
-				senderID = n.SenderID()
-			}
+			senderID = n.SenderID()
 		case *tools.AsyncMessageNotification:
 			content = n.Content
-			if n.SenderID() != "" {
-				senderID = n.SenderID()
-			}
+			senderID = n.SenderID()
 		default:
 			continue
 		}

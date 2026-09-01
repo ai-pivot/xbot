@@ -216,6 +216,8 @@ export interface WSMessage {
 export interface QueueItemPayload {
   msg_id: string
   turn_id: number
+  /** FULL content — the interject path re-sends it on cancel+resend (preview is truncated). */
+  content: string
   preview: string
   source: string // user | notification | answer | resume | command
   enqueued_at: number

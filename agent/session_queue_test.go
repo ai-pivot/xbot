@@ -217,13 +217,14 @@ func TestInjectUserInterrupt_IdleDegradesToNormalMessage(t *testing.T) {
 	if a.InjectUserInterrupt("cli", "interrupt-idle", "user-1", "plain message") {
 		t.Fatal("InjectUserInterrupt(idle) = true, want false (degraded to normal send)")
 	}
+	// CR#1 (double-send fix): the idle branch MUST NOT inject the message itself —
+	// the caller (web_inbound) falls through to its own normal dispatch path, and
+	// doing both would process the same message twice (two turns, two replies).
+	// Assert the bus stayed silent; the degrade is the caller's contract.
 	select {
 	case msg := <-a.bus.Inbound:
-		if msg.Content != "plain message" || msg.Channel != "cli" || msg.ChatID != "interrupt-idle" {
-			t.Fatalf("degraded message=%+v", msg)
-		}
+		t.Fatalf("idle branch must NOT self-inject (double-send); got %+v", msg)
 	default:
-		t.Fatal("idle degradation did not inject a normal inbound message")
 	}
 }
 

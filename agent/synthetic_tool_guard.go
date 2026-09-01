@@ -29,6 +29,8 @@ var syntheticToolPrefixes = []string{
 	"user_cancelled",         // cancel marker
 	"loop_detected",          // loop breaker fake tool result
 	"ask_user",               // AskUser fake tool result
+	"user_interrupt",         // ⚡ interject injected into the active turn (CR#3: has a dedicated ToolRender renderer — high history visibility)
+	"async_message",          // peer/webhook/UI-action async message injection (CR#3)
 }
 
 // isSyntheticToolName reports whether the given tool name is one of the
