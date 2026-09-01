@@ -99,6 +99,7 @@ func TestLiveStats_TokensPerSec_LongStreamWindowKept(t *testing.T) {
 	st := events[len(events)-1].StreamStats
 	if st == nil {
 		t.Fatalf("event missing live StreamStats")
+		return
 	}
 	// Window rate: ~200 tokens over ~300ms ≈ 600-700 tok/s. The
 	// since-first-chunk average (~1000) would be WRONG here — the window
@@ -142,6 +143,7 @@ func TestLiveStats_TokensPerSec_StallKeepsZero(t *testing.T) {
 	st := events[len(events)-1].StreamStats
 	if st == nil {
 		t.Fatalf("event missing live StreamStats")
+		return
 	}
 	if st.TokensPerSec != 0 {
 		t.Errorf("TokensPerSec = %d, want 0 for a genuine stall (dtTokens=0 with a formed window must not fall back to the since-first-chunk average)", st.TokensPerSec)
@@ -194,6 +196,7 @@ func TestLiveStats_TokensPerSec_DenseChunks_RealStreamShape(t *testing.T) {
 	st := events[len(events)-1].StreamStats
 	if st == nil {
 		t.Fatalf("last event missing live StreamStats")
+		return
 	}
 	// ~25 tokens per 20ms = ~1250 tok/s sustained. The window (span >= 200ms
 	// by chunk 11) must be formed and reporting a positive rate — this pins
