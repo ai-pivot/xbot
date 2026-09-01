@@ -159,7 +159,7 @@
   --sidebar-bg: #f3f3f3;
   --input-bg: #f3f3f3;
   --surface-bg: #e4e4e4;
-  --tab-active-bg: var(--app-bg);
+  --tab-active-bg: var(--surface-bg);
   --tab-inactive-bg: var(--sidebar-bg);
   --card-bg: var(--panel-bg);
   --card-radius: 0.75rem;
@@ -269,7 +269,7 @@
   --sidebar-bg: #252526;
   --input-bg: #252526;
   --surface-bg: #2d2d2d;
-  --tab-active-bg: var(--app-bg);
+  --tab-active-bg: var(--surface-bg);
   --tab-inactive-bg: var(--sidebar-bg);
   --border: #3c3c3c;
   --text-primary: #cccccc;
@@ -1123,7 +1123,12 @@
   background-color: var(--dv-group-view-background-color) !important;
 }
 .ambience-glass .dockview-theme-vs .dv-tabs-and-actions-container {
-  background-color: var(--dv-tabs-and-actions-container-background-color) !important;
+  /* 直接 var(--card-bg)，不走 --dv-tabs-and-actions-container-background-color
+   * 变量链——dockview.css 的 vs 主题定义了同名变量（#252526），CSS 变量
+   * 同特异性按加载顺序解析存在覆盖歧义（用户取色 tab 栏 #2d2e31 ≠
+   * card-bg 渲染 #262628 的根因）。直接引用让 tab 栏与卡片内容区同色
+   * （bcf087cd 的 681 行规则同款，此处玻璃区分支也走直引）。 */
+  background-color: var(--card-bg) !important;
 }
 .ambience-glass [data-slot="sheet-overlay"] {
   background-color: rgba(0, 0, 0, 0.25) !important;
