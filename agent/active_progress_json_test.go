@@ -34,6 +34,7 @@ func TestGetActiveProgress_JSONFields(t *testing.T) {
 	result := a.GetActiveProgress("web", "chat-1", protocol.FetchAll())
 	if result == nil {
 		t.Fatal("GetActiveProgress returned nil")
+		return
 	}
 	b, err := json.Marshal(result)
 	if err != nil {
@@ -113,6 +114,7 @@ func TestGetActiveProgress_GapTooLarge_ResyncRequired(t *testing.T) {
 	res := a.GetActiveProgress("web", "chat-gap", protocol.FetchSinceWatermark(0))
 	if res == nil {
 		t.Fatal("GetActiveProgress returned nil")
+		return
 	}
 	if !res.ResyncRequired {
 		t.Errorf("incremental gap (40 iters > %d cap) should set ResyncRequired", maxIncrementalIterations)
@@ -125,6 +127,7 @@ func TestGetActiveProgress_GapTooLarge_ResyncRequired(t *testing.T) {
 	res2 := a.GetActiveProgress("web", "chat-gap", protocol.FetchSinceWatermark(maxIncrementalIterations+8))
 	if res2 == nil {
 		t.Fatal("GetActiveProgress returned nil")
+		return
 	}
 	if res2.ResyncRequired {
 		t.Errorf("small incremental gap should NOT set ResyncRequired")
@@ -138,6 +141,7 @@ func TestGetActiveProgress_GapTooLarge_ResyncRequired(t *testing.T) {
 	res3 := a.GetActiveProgress("web", "chat-gap", protocol.FetchAll())
 	if res3 == nil {
 		t.Fatal("GetActiveProgress returned nil")
+		return
 	}
 	if res3.ResyncRequired {
 		t.Errorf("FetchAll should never set ResyncRequired")

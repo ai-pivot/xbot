@@ -151,9 +151,9 @@ func main() {
 		default:
 		}
 		err := runSession(serverURL, userID, *flagToken, execWorkspace, shell, handler)
-		if err == nil {
-			return
-		}
+		// SA4023: runSession never returns nil (a clean read-loop exit is also a
+		// disconnection from this side's perspective — it always returns an
+		// error to drive the reconnect loop). No err == nil fast path exists.
 		select {
 		case <-stopCh:
 			return

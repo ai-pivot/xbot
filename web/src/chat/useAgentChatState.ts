@@ -44,6 +44,8 @@ export interface AgentChatState {
   readonly tokenPrompt: number | null
   /** 排队中的消息（queue_state SSE 事件 → Staging Tray 数据源）。 */
   readonly queue: readonly QueueItemPayload[]
+  /** 全量替换排队快照（queue_state 事件 / 恢复时重建 Staging Tray）。 */
+  readonly hydrateQueue: (items: readonly QueueItemPayload[]) => void
   readonly reset: () => void
   /** 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行，
    *  零等待 —— 不等 REST/echo）。返回 requestID 供调用方注入 REST 请求，
@@ -173,6 +175,17 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     [store],
   )
 
+  // Queue state hydration (refresh/reconnect): SSE queue_state events only
+  // fire on enqueue/dequeue — page refresh has no events to restore the
+  // StagingTray. AgentPanel calls this on mount/chatID-change with the
+  // /api/queue/list snapshot.
+  const hydrateQueue = useMemo(
+    () => (items: readonly QueueItemPayload[]) => {
+      store.dispatch({ type: 'queue_state', queue: items })
+    },
+    [store],
+  )
+
   return {
     messages,
     liveProgress,
@@ -187,6 +200,7 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     sendUser,
     ackUser,
     failUser,
+    hydrateQueue,
     pauseRender,
     resumeRender,
   }
