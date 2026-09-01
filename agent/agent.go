@@ -1374,8 +1374,11 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 			if ss := state.(*bgSessionState); ss.busy.Load() {
 				ss.busy.Store(false)
 				tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
+				// SenderID: session owner — CR#5 复审补漏。此 idle 发射漏填
+				// SenderID 时对 web 渠道走无过滤 fan-out 分支（广播给所有
+				// 用户，多用户部署下暴露会话元数据）。取消者 = 会话 owner。
 				a.emitSessionState(protocol.SessionEvent{
-					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle",
+					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
 				})
 			}
 		}

@@ -156,16 +156,20 @@ func (wc *WebChannel) dispatchUserMessage(ctx context.Context, identity inboundI
 	// message). Idle sessions fall through to the normal queue path.
 	if msg.Interrupt && wc.callbacks.InjectInterrupt != nil {
 		content := wc.expandUploadKeys(msg)
-		// CR#6: REST timeout retry with the same msg.ID must not re-inject —
-		// each attempt would deliver a fresh user_interrupt synthetic tool into
-		// the active turn. Only the FIRST attempt injects; retries return the
-		// cached interrupted=true outcome (idempotent).
-		if msg.ID != "" && wc.isInterjected(msg.ID) {
+		// CR#6/复审#2: REST timeout retry with the same msg.ID must not
+		// re-inject — each attempt would deliver a fresh user_interrupt synthetic
+		// tool into the active turn. Only the FIRST attempt injects; retries
+		// return the cached interrupted=true outcome (idempotent).
+		// Dedup key is session-scoped (channel|chatID|msgID) — an API client
+		// reusing the same request id across DIFFERENT sessions must not have
+		// its interject swallowed (mirrors inboundRequestKey's composition).
+		interruptKey := sel.Channel + "|" + sel.ChatID + "|" + msg.ID
+		if msg.ID != "" && wc.isInterjected(interruptKey) {
 			return sel, 0, time.Now(), 0, false, true, nil
 		}
 		if wc.callbacks.InjectInterrupt(sel.Channel, sel.ChatID, identity.SenderID, content) {
 			if msg.ID != "" {
-				wc.markInterjected(msg.ID)
+				wc.markInterjected(interruptKey)
 			}
 			return sel, 0, time.Now(), 0, false, true, nil
 		}
