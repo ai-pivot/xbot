@@ -38,7 +38,7 @@
  *   或结构变化未被处理时补偿重算；纯 sash 拖拽（结构未变）不覆盖用户
  *   手动调整的比例
  */
-import type { DockviewApi, DockviewGroupPanel } from 'dockview-core'
+import type { DockviewApi, DockviewGroupPanel, IDockviewPanel } from 'dockview-core'
 
 // ── 配置 ─────────────────────────────────────────────────────────────────────
 
@@ -262,8 +262,29 @@ export class LayoutEngine {
       group.model.header.hidden = !tabGroup
       group.locked = tabGroup ? false : 'no-drop-target'
       ensureDragHandle(group)
+      // 内容根顶部圆角（非 Tab 卡专属）：.dv-render-overlay 只保底两角
+      // （Tab 卡 tab 栏交界平直一体），非 Tab 卡（tab 栏 hidden，overlay
+      // 占满整卡）的顶部两角由内容根（ReactContentRenderer 宿主 div，
+      // overflow-hidden）补齐——active panel 的渲染在 overlay 层（dockview
+      // root 子树），.dv-groupview 的裁剪管不到它。panel 跨卡片移动
+      // （panelToTab）时 applyGroupHeaderPolicy 重算自动纠正。
+      for (const p of group.panels) {
+        const el = panelContentElement(p)
+        el?.classList.toggle('card-content-top-round', !tabGroup)
+      }
     }
   }
+}
+
+/**
+ * 取 panel 的内容根 DOM（ReactContentRenderer 宿主 div）——active panel 时
+ * 它被 dockview 搬进 dv-render-overlay focusContainer（per-panel），非
+ * active 时留在 group contentContainer。dockview 内部同款访问路径
+ * （overlayRenderContainer.js: panel.view.content.element）。
+ */
+function panelContentElement(p: IDockviewPanel): HTMLElement | null {
+  const view = (p as { view?: { content?: { element?: HTMLElement } } }).view
+  return view?.content?.element ?? null
 }
 
 /**

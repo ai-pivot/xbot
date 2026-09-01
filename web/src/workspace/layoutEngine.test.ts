@@ -21,7 +21,12 @@ function info(id: string, isMaster: boolean): LayoutGroupInfo {
 function mockGroup(id: string, types: string[]): DockviewGroupPanel {
   return {
     id,
-    panels: types.map((type) => ({ params: { type } })),
+    panels: types.map((type) => ({
+      params: { type },
+      // panelContentElement（applyGroupHeaderPolicy 顶角圆角 toggle）的
+      // 访问路径：p.view.content.element——mock 真实 div 供 classList 断言
+      view: { content: { element: document.createElement('div') } },
+    })),
     api: { setSize: vi.fn() },
     model: { header: { hidden: false } },
     element: document.createElement('div'),
@@ -303,6 +308,13 @@ describe('LayoutEngine', () => {
     expect(master.element.querySelector('.card-drag-handle')).not.toBeNull()
     expect(file.element.querySelector('.card-drag-handle')).not.toBeNull()
     expect(panel.element.querySelector('.card-drag-handle')).not.toBeNull()
+    // 内容根顶部圆角（非 Tab 卡专属——overlay 只保底两角，非 Tab 卡
+    // tab 栏 hidden 时 overlay 占满整卡，顶部两角由内容根补齐）：
+    // Tab 卡的 panel 内容根无顶角圆角（tab 栏/内容交界平直一体）
+    const panelContent = (panel.panels[0] as unknown as { view: { content: { element: HTMLElement } } }).view.content.element
+    const masterContent = (master.panels[0] as unknown as { view: { content: { element: HTMLElement } } }).view.content.element
+    expect(panelContent.classList.contains('card-content-top-round')).toBe(true)
+    expect(masterContent.classList.contains('card-content-top-round')).toBe(false)
     // grip 幂等：策略重算（tab 增删等触发 applyGroupHeaderPolicy）不重复注入
     api.fireAddPanel()
     expect(master.element.querySelectorAll('.card-drag-handle').length).toBe(1)

@@ -661,11 +661,24 @@
  * DOM 在 dockview root 子树而非 .dv-groupview 内——与 190e9e07 拖动坐标反查
  * 兜底同根因）：overlay 精确定位对齐 group 内容区（PositionCache），但不
  * 受 .dv-groupview 的 overflow: hidden 裁剪——主卡（active）底部双角盖住
- * 卡片圆角。对 overlay 容器施加同款圆角裁剪：单 tab 卡片（tab 栏隐藏）
- * overlay = 整卡区域，四角与卡片圆角吻合。 */
+ * 卡片圆角。
+ *
+ * 圆角策略（32c7ae21 分类制后）：Tab 卡 tab 栏常驻 → overlay 对齐 tab 栏
+ * 下方，只保底部两角（顶部是 tab 栏/内容交界，一体平直无圆角）；非 Tab
+ * 卡 tab 栏 hidden → overlay 占满整卡，顶部两角圆角由 LayoutEngine 动态
+ * 给内容根（panel.view.content.element）加 .card-content-top-round 补齐
+ * （applyGroupHeaderPolicy 按分类 toggle，panel 移动时自动纠正）。 */
 .dv-render-overlay {
-  border-radius: var(--card-radius);
+  border-radius: 0 0 var(--card-radius) var(--card-radius);
   overflow: hidden;
+}
+
+/* 非 Tab 卡内容根顶部圆角（LayoutEngine 按卡片分类动态 toggle）：
+ * ReactContentRenderer 宿主 div（overflow-hidden + bg-card-bg）补 overlay
+ * 顶部两角的圆角——Tab 卡不加（tab 栏交界平直一体）。 */
+.card-content-top-round {
+  border-top-left-radius: var(--card-radius);
+  border-top-right-radius: var(--card-radius);
 }
 
 /* 卡片 Ctrl 拖动手势预备提示：按住 Ctrl 时 host 加 ctrl-drag-armed
