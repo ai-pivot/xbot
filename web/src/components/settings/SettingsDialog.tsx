@@ -116,15 +116,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        // 居中弹窗（原右侧 Sheet 改造）：黄金比例矩形（φ≈1.618）——高 80vh，
-        // 宽 = min(80vh×1.618, 100vw-4rem) 显式计算（1080p ≈ 1398×864）。
-        // ⚠️ 不用 aspect-ratio：DialogContent 基础类残留 w-full + sm:max-w-lg
-        // ——w-full 使 aspect 失效，sm:max-w-lg 把桌面宽截到 512px（高度
-        // 80vh=864 → 512×864 竖长条，用户报告"高度远比宽度大"）。显式 w-[]
-        // 覆盖 w-full + max-w-none/sm:max-w-none 清掉两级残留。
+        // 居中弹窗（原右侧 Sheet 改造）：黄金比例矩形（φ≈1.618）——高 40vh，
+        // 宽 = min(40vh×1.618, 100vw-4rem) 显式计算（用户要求整体缩小一半，
+        // 原 80vh → 40vh）。⚠️ 不用 aspect-ratio：DialogContent 基础类残留
+        // w-full + sm:max-w-lg——w-full 使 aspect 失效，sm:max-w-lg 把桌面宽
+        // 截到 512px。显式 w-[] 覆盖 w-full + max-w-none/sm:max-w-none 清残留。
         // 覆盖 DialogContent 默认（p-6 grid gap-4）：p-0 + flex flex-col
         // （header + 左导航右内容）+ rounded-xl（--card-radius）+ overflow-hidden。
-        className="flex h-[80vh] w-[min(calc(80vh*1.618),calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-none"
+        className="flex h-[40vh] w-[min(calc(40vh*1.618),calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-none"
       >
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle>{t('settings.title')}</DialogTitle>

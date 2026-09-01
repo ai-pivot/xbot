@@ -128,7 +128,7 @@ export function PresetChip(props: { active: boolean; onClick: () => void; childr
       className="rounded-full px-2.5 py-1 text-[11px] font-mono transition-colors"
       style={props.active
         ? { background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)', border: '1px solid var(--accent)' }
-        : { background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)', border: '1px solid rgba(255,255,255,0.08)' }}>
+        : { background: 'var(--surface-bg)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
       {props.children}
     </button>
   )
@@ -160,8 +160,8 @@ export function ModalShell(props: { open: boolean; onClose: () => void; maxWidth
       <div onClick={function(e) { e.stopPropagation() }}
         className="flex w-full flex-col overflow-hidden rounded-2xl border"
         style={{
-          maxWidth: props.maxWidth || '26rem', background: 'var(--app-bg)',
-          borderColor: 'rgba(255,255,255,0.06)', boxShadow: '0 24px 64px rgba(0,0,0,0.45)',
+          maxWidth: props.maxWidth || '26rem', background: 'var(--system-bg)',
+          borderColor: 'var(--border)', boxShadow: '0 24px 64px rgba(0,0,0,0.45)',
           transform: open ? 'scale(1)' : 'scale(0.96)', transition: 'transform 200ms cubic-bezier(0.2,0.8,0.3,1)',
           maxHeight: 'calc(100vh - 32px)',
         }}>
@@ -173,7 +173,7 @@ export function ModalShell(props: { open: boolean; onClose: () => void; maxWidth
 
 export function ModalHeader(props: { title: string; sub?: string; onClose: () => void }) {
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+    <div className="flex shrink-0 items-center gap-2 border-b p-4" style={{ borderColor: 'var(--border)' }}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{props.title}</div>
         {props.sub ? <div className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{props.sub}</div> : null}
@@ -233,7 +233,7 @@ export function EditModelModal(props: {
                 return (
                   <button key={at.k} type="button" onClick={function() { set({ api: at.k }) }}
                     className="flex-1 rounded-xl border px-3 py-2 text-left transition-colors"
-                    style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
+                    style={{ borderColor: cur ? 'var(--accent)' : 'var(--border)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
                     <div className="text-[12px] font-medium" style={{ color: cur ? 'var(--accent)' : 'var(--text-primary)' }}>{at.label}</div>
                     <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{at.desc}</div>
                   </button>
@@ -243,7 +243,7 @@ export function EditModelModal(props: {
           </LlmField>
         ) : null}
       </div>
-      <div className="shrink-0 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+      <div className="shrink-0 border-t p-4" style={{ borderColor: 'var(--border)' }}>
         <button onClick={function() { props.onSave({ max_context: cfg.ctx, max_output_tokens: cfg.out, api_type: isOpenAI ? cfg.api : '' }) }}
           disabled={props.saving}
           className="w-full rounded-xl py-2.5 text-sm font-semibold transition-opacity disabled:opacity-40" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
@@ -296,8 +296,8 @@ export function DeleteConfirmModal(props: { subName: string; modelCount: number;
           </div>
         </div>
       </div>
-      <div className="flex gap-2.5 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-        <button onClick={props.onClose} className="flex-1 rounded-xl border py-2.5 text-[13px] font-medium transition-colors hover:bg-surface-bg" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>取消</button>
+      <div className="flex gap-2.5 border-t p-4" style={{ borderColor: 'var(--border)' }}>
+        <button onClick={props.onClose} className="flex-1 rounded-xl border py-2.5 text-[13px] font-medium transition-colors hover:bg-surface-bg" style={{ borderColor: 'var(--border)', color: 'var(--text-primary)' }}>取消</button>
         <button onClick={props.onConfirm} disabled={props.saving}
           className="flex-1 rounded-xl py-2.5 text-[13px] font-medium text-text-primary transition-opacity disabled:opacity-40" style={{ background: 'var(--status-error, #ef4444)' }}>
           {props.saving ? '删除中…' : '删除'}
@@ -327,7 +327,7 @@ export function TierPickerModal(props: {
     <ModalShell open onClose={props.onClose} maxWidth="30rem">
       <ModalHeader title={'选择' + props.tierLabel + '模型'} sub="点击即切换；未配置的分层回落系统默认" onClose={props.onClose} />
       <div className="shrink-0 p-3 pb-0">
-        <div className="flex items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+        <div className="flex items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'var(--border)', background: 'var(--surface-bg)' }}>
           <LlmIcon n="search" s={14} />
           <input value={q} onChange={function(e) { setQ(e.target.value) }} autoFocus placeholder="搜索模型或订阅…"
             className="w-full bg-transparent py-2.5 text-sm outline-none" style={{ color: 'var(--text-primary)' }} />
@@ -392,7 +392,7 @@ export function SubFormModal(props: {
               return (
                 <button key={pv.k} type="button" onClick={function() { pickProvider(pv.k) }}
                   className="flex items-center gap-2 rounded-xl border py-2.5 transition-all"
-                  style={{ borderColor: cur ? pv.color : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, ' + pv.color + ' 14%, transparent)' : 'transparent' }}>
+                  style={{ borderColor: cur ? pv.color : 'var(--border)', background: cur ? 'color-mix(in srgb, ' + pv.color + ' 14%, transparent)' : 'transparent' }}>
                   <span className="ml-3 size-4 rounded" style={{ background: pv.color }} />
                   <span className="text-[12px] font-medium" style={{ color: cur ? 'var(--text-primary)' : 'var(--text-secondary)' }}>{pv.label}</span>
                 </button>
@@ -408,7 +408,7 @@ export function SubFormModal(props: {
                 return (
                   <button key={at.k} type="button" onClick={function() { set({ api_type: at.k }) }}
                     className="flex-1 rounded-xl border px-3 py-2 text-left transition-colors"
-                    style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
+                    style={{ borderColor: cur ? 'var(--accent)' : 'var(--border)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent' }}>
                     <div className="text-[12px] font-medium" style={{ color: cur ? 'var(--accent)' : 'var(--text-primary)' }}>{at.label}</div>
                     <div className="font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>{at.desc}</div>
                   </button>
@@ -434,7 +434,7 @@ export function SubFormModal(props: {
             className={llmInputCls + ' w-full px-3 py-2.5 font-mono text-xs'} />
         </LlmField>
       </div>
-      <div className="shrink-0 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+      <div className="shrink-0 border-t p-4" style={{ borderColor: 'var(--border)' }}>
         <button onClick={function() {
           props.onSave({
             name: form.name.trim(), provider: form.provider, base_url: form.base_url.trim(),
@@ -450,7 +450,7 @@ export function SubFormModal(props: {
   )
 }
 
-// ── 底部 ActionSheet（移动端菜单） ────────────────────────────────────────
+// ── 居中菜单弹窗（原移动端底部 ActionSheet——用户要求原地弹出 + 系统背景） ──
 
 export function ActionSheet(props: { title: string; onClose: () => void; items: Array<{ icon: string; label: string; danger?: boolean; onClick: () => void }> }) {
   const es = useState(false)
@@ -461,24 +461,24 @@ export function ActionSheet(props: { title: string; onClose: () => void; items: 
   }, [])
   return (
     <div role="dialog" aria-modal="true" onClick={props.onClose}
-      className="fixed inset-0 z-50 flex items-end p-3"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3"
       style={{ background: 'rgba(0,0,0,0.5)', opacity: shown ? 1 : 0, transition: 'opacity 200ms ease' }}>
       <div onClick={function(e) { e.stopPropagation() }}
         className="w-full overflow-hidden rounded-2xl border transition-transform duration-250"
-        style={{ background: 'var(--app-bg)', borderColor: 'rgba(255,255,255,0.06)', boxShadow: '0 24px 64px rgba(0,0,0,0.45)', transform: shown ? 'translateY(0)' : 'translateY(40px)' }}>
-        <div className="border-b px-4 py-3 text-center text-xs" style={{ borderColor: 'rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}>{props.title}</div>
+        style={{ background: 'var(--system-bg)', borderColor: 'var(--border)', boxShadow: '0 24px 64px rgba(0,0,0,0.45)', maxWidth: '24rem', transform: shown ? 'scale(1)' : 'scale(0.96)', transition: 'opacity 150ms ease, transform 200ms cubic-bezier(0.2,0.8,0.3,1)' }}>
+        <div className="border-b px-4 py-3 text-center text-xs" style={{ borderColor: 'var(--border)', color: 'var(--text-muted)' }}>{props.title}</div>
         {props.items.map(function(it, i) {
           const c = it.danger ? 'var(--status-error, #ef4444)' : 'var(--text-primary)'
           return (
             <button key={i} onClick={function() { it.onClick() }}
               className="flex w-full items-center gap-2.5 px-4 py-3.5 text-[14px] transition-colors active:bg-surface-bg"
-              style={{ color: c, borderTop: i ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
+              style={{ color: c, borderTop: i ? '1px solid var(--border)' : 'none' }}>
               <LlmIcon n={it.icon} s={16} c={c} />{it.label}
             </button>
           )
         })}
-        <div className="p-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-          <button onClick={props.onClose} className="w-full rounded-xl py-2.5 text-[13px] font-semibold transition-colors hover:bg-surface-bg" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>取消</button>
+        <div className="p-3" style={{ borderTop: '1px solid var(--border)' }}>
+          <button onClick={props.onClose} className="w-full rounded-xl py-2.5 text-[13px] font-semibold transition-colors hover:bg-surface-bg" style={{ background: 'var(--surface-bg)', color: 'var(--text-muted)' }}>取消</button>
         </div>
       </div>
     </div>
