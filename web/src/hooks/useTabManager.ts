@@ -27,6 +27,7 @@ import {
 import type { DockviewApi, IDockviewPanel } from 'dockview'
 import type { Tab } from '@/types/shared'
 import type { PanelParams } from '@/types/tab'
+import { isTabGroup, isMasterGroup } from '@/workspace/layoutEngine'
 
 let idSeq = 0
 function genId(prefix: string): string {
@@ -249,12 +250,26 @@ function useTabManagerImpl(): TabManager {
     // ReactContentRenderer looks up CONTENT_COMPONENTS[component] first and
     // falls back to the plugin view by `view.id === component` — a generic
     // 'plugin' component name would never match any view id (rendered blank).
+    // 落点：Tab 卡（用户架构——只有 Tab 卡有 tab，非 Tab 卡 locked 禁拖但
+    // 编程式 addPanel 不受 locked 约束）。active group 是非 Tab 卡（type=
+    // 'panel'，如用户刚点击的会话列表卡片——addPanel 无 position 时 dockview
+    // 默认落 active group，tab 会开进会话卡）时显式 fallback 到主 Tab 卡
+    // （master 优先，否则第一个 Tab 卡）；无 Tab 卡（主卡全关）时新建。
+    const activeGroup = api.activePanel?.group
+    let position: Parameters<DockviewApi['addPanel']>[0]['position']
+    if (!activeGroup || !isTabGroup(activeGroup)) {
+      const targetGroup = api.groups.find(isMasterGroup) ?? api.groups.find(isTabGroup)
+      position = targetGroup
+        ? { referenceGroup: targetGroup }
+        : { direction: 'right' }
+    }
     api.addPanel({
       id: panelId,
       title: input.title,
       component: input.type === 'plugin' ? (input.data?.viewId ?? 'plugin') : input.type,
       params,
       renderer: input.type === 'agent' ? 'always' : 'onlyWhenVisible',
+      position,
     })
     panelIdByTab.current.set(tabId, panelId)
     const panel = api.getPanel(panelId)
