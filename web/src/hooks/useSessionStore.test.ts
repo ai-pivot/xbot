@@ -2334,11 +2334,16 @@ describe('sidebar state reconciliation (trust window + lost events)', () => {
     expect(result.current.sessions[0].children ?? []).toHaveLength(0)
   })
 
-  it('sessions-resync clears stale executing keys and refreshes from HTTP (reconnect reconcile)', async () => {
-    // sessions-resync is dispatched by the SSE layer when events were provably
-    // lost (reconnect, resync_required ring eviction, active-progress recovery
-    // gap). The busy hint is worthless once events were dropped — full HTTP
-    // reconcile instead of running-stuck-until-manual-switch.
+  it('sessions-resync refreshes WITHOUT clearing intents (restart-race protection)', async () => {
+    // Backend-restart race (user report: "明明 busy 侧边栏却显示 idle"): the
+    // turn auto-resumes, busy is replayed via catch-up (fresh intent), reconnect
+    // fires sessions-resync, and the HTTP refresh races the resume (chatCancelCh
+    // not yet registered → tree says idle). The OLD design cleared the intents
+    // then trusted that racy idle response — the one-shot busy event was already
+    // consumed → idle forever. The intent window protects: fresh busy intent +
+    // racy HTTP idle → running for 15s; the resumed turn's next state (busy
+    // event / seq-gap resync / reconnect refresh) converges once the window
+    // expires or HTTP catches up.
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/chats' || url === '/api/session-tree') {
@@ -2360,15 +2365,77 @@ describe('sidebar state reconciliation (trust window + lost events)', () => {
     })
     expect(result.current.sessions[0].running).toBe(true)
 
-    // The idle event was lost during the disconnect window. The SSE layer
-    // dispatches sessions-resync on reconnect; the store debounces 300ms and
-    // reconciles: clear the executing key + refresh from HTTP (idle).
+    // Reconnect fires sessions-resync; the refresh races the backend resume
+    // (HTTP still reports idle). The fresh busy intent (≤15s) protects the
+    // sidebar — running, NOT the racy idle.
     await act(async () => {
       window.dispatchEvent(new CustomEvent('sessions-resync'))
       await vi.advanceTimersByTimeAsync(400)
     })
+    expect(result.current.sessions[0].running).toBe(true)
+
+    // The window expires → HTTP (idle) is authoritative. (Lost-idle recovery:
+    // the same path corrects a stale busy whose idle event was missed.)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000)
+      await result.current.refresh()
+    })
     expect(result.current.sessions[0].running).toBe(false)
     expect(result.current.sessions[0].status).toBe('idle')
+  })
+
+  it('backend restart resume without SSE intents converges to HTTP running (Case-3 deadlock fix)', async () => {
+    // The deadlock the old mergeStatus rule created: a restart race left
+    // carried idle (racy refresh) + no busy key (busy event missed during the
+    // reconnect window) + HTTP running (turn resumed). The old rule
+    // ("busySince===undefined && carried.status==='idle' → idle") suppressed
+    // HTTP running FOREVER — the resumed session showed idle permanently
+    // ("明明 busy 侧边栏却显示 idle"). Now: no intent → HTTP wins
+    // unconditionally; the unconditional event chain (busy on resume,
+    // seq-gap resync) keeps convergence real-time.
+    let treeRunning = false
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              {
+                chat_id: 'web-chat-1', channel: 'web', label: 'My Chat',
+                last_active: '2026-07-08T00:00:00Z',
+                running: treeRunning,
+                status: treeRunning ? 'running' : undefined,
+              },
+            ],
+            chats: [
+              { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-07-08T00:00:00Z' },
+            ],
+            orphan_subagents: [],
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+    // Carried idle (the restart race left the sidebar idle — no intents at all).
+    expect(result.current.sessions[0].running).toBe(false)
+
+    // The backend resumed the turn (chatCancelCh registered) — HTTP now reports
+    // running. No SSE intent exists (busy missed during the reconnect window).
+    // mergeStatus must take HTTP running — NOT the stale carried idle.
+    treeRunning = true
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions[0].running).toBe(true)
+    expect(result.current.sessions[0].status).toBe('running')
   })
 
   it('loadSessionTreeCache strips volatile running state (busy ghost after page reload)', () => {

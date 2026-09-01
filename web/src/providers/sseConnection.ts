@@ -365,6 +365,14 @@ export class SSEConnectionImpl implements WSConnection {
       this.dispatchSessionsResync()
     }
     if (chatID && replayGap) {
+      // Stateful seq gap = events were DROPPED in-connection (sendCh
+      // backpressure during a write stall; stateless events coalesce but
+      // stateful ones don't — a gap means real loss). The drop may include
+      // session busy/idle events (the sidebar's real-time state source).
+      // Real-time event-driven correction — the poll replacement: the gap
+      // itself is the trigger (the next delivered event's seq jumped), no
+      // timer. The store's debounced refresh reconciles the sidebar from HTTP.
+      this.dispatchSessionsResync()
       if (crossedIteration) {
         // Gap crossed an iteration boundary (e.g. iteration 3's events, then a
         // seq gap, then iteration 4's events). Iteration 3's COMPLETION delta
@@ -373,9 +381,6 @@ export class SSEConnectionImpl implements WSConnection {
         // restoreActiveProgress is skipped — its recovery snapshot cannot
         // repair a lost delta and would race the reload.
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
-        // The same eviction window may have dropped session events (busy/idle
-        // for this or other sessions) — reconcile the sidebar.
-        this.dispatchSessionsResync()
       } else {
         // Gap on the SAME iteration: lost events were snapshots (reasoning /
         // tool updates) — the recovery snapshot below covers them. No reload.
