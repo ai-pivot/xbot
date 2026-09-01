@@ -200,6 +200,12 @@ export function DockviewContainer({ tabManager, panelManager, onReady }: Dockvie
 
     const options: DockviewComponentOptions = {
       theme: themeVisualStudio,
+      // 隐藏 gridview 内置分隔线（dv-separator-border：非首 view 的
+      // ::before 画 --dv-separator-border 深灰线，叠在卡片 border 上——
+      // "两卡之间多一条单独分割线"的来源）。卡片分界由 .dv-groupview 的
+      // border（--border）承载，内置线冗余。官方路径：hideBorders →
+      // gridview styles.separatorBorder='transparent' → 移除 class。
+      hideBorders: true,
       createComponent: (opts) => new ReactContentRenderer(opts.name, ctxRef),
       createTabComponent: () => new ReactTabRenderer(ctxRef),
       // Without this, dockview falls back to its built-in DefaultTab which
