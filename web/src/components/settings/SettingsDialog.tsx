@@ -116,14 +116,15 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        // 居中弹窗（原右侧 Sheet 改造）：黄金比例矩形（φ≈1.618）——高度 80vh
-        // 驱动，宽度由 aspect-ratio 从高度推导（1080p ≈ 1398×864 黄金矩形；
-        // 内容区 = 宽-144px 导航 ≈ 1254px，LLM 控制台等面板更宽敞）。
-        // 小视口/竖屏：max-w 截断（比例退化但可用性优先，内容 flex 自适应）。
-        // 覆盖 DialogContent 默认（sm:max-w-lg p-6 grid gap-4）：p-0（内部自管
-        // padding）+ flex flex-col（header + 左导航右内容）+ rounded-xl（对齐
-        // --card-radius 卡片圆角）+ overflow-hidden（圆角裁剪内部滚动区）。
-        className="flex h-[80vh] aspect-[1.618] max-w-[calc(100vw-3rem)] flex-col gap-0 overflow-hidden rounded-xl p-0"
+        // 居中弹窗（原右侧 Sheet 改造）：黄金比例矩形（φ≈1.618）——高 80vh，
+        // 宽 = min(80vh×1.618, 100vw-4rem) 显式计算（1080p ≈ 1398×864）。
+        // ⚠️ 不用 aspect-ratio：DialogContent 基础类残留 w-full + sm:max-w-lg
+        // ——w-full 使 aspect 失效，sm:max-w-lg 把桌面宽截到 512px（高度
+        // 80vh=864 → 512×864 竖长条，用户报告"高度远比宽度大"）。显式 w-[]
+        // 覆盖 w-full + max-w-none/sm:max-w-none 清掉两级残留。
+        // 覆盖 DialogContent 默认（p-6 grid gap-4）：p-0 + flex flex-col
+        // （header + 左导航右内容）+ rounded-xl（--card-radius）+ overflow-hidden。
+        className="flex h-[80vh] w-[min(calc(80vh*1.618),calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-none"
       >
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle>{t('settings.title')}</DialogTitle>
