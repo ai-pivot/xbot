@@ -116,12 +116,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        // 居中弹窗（原右侧 Sheet 改造）：固定 720px + 80vh 高（切换 tab 零
-        // 尺寸跳变，同原 Sheet 理由——LLM 控制台 576px 内容区一行放下 header）。
+        // 居中弹窗（原右侧 Sheet 改造）：黄金比例矩形（φ≈1.618）——高度 80vh
+        // 驱动，宽度由 aspect-ratio 从高度推导（1080p ≈ 1398×864 黄金矩形；
+        // 内容区 = 宽-144px 导航 ≈ 1254px，LLM 控制台等面板更宽敞）。
+        // 小视口/竖屏：max-w 截断（比例退化但可用性优先，内容 flex 自适应）。
         // 覆盖 DialogContent 默认（sm:max-w-lg p-6 grid gap-4）：p-0（内部自管
         // padding）+ flex flex-col（header + 左导航右内容）+ rounded-xl（对齐
         // --card-radius 卡片圆角）+ overflow-hidden（圆角裁剪内部滚动区）。
-        className="flex h-[80vh] w-[720px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-[720px]"
+        className="flex h-[80vh] aspect-[1.618] max-w-[calc(100vw-3rem)] flex-col gap-0 overflow-hidden rounded-xl p-0"
       >
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle>{t('settings.title')}</DialogTitle>
