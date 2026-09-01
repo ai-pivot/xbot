@@ -172,6 +172,10 @@ type FeishuChannel struct {
 	userNameCache map[string]string
 	userNameMu    sync.RWMutex
 
+	// @mention 闭环状态（接收感知 + 群成员 TTL 缓存 + 回复 at 转换）。
+	// 见 feishu_mention.go：nameIndex（mention 记忆 Name→OpenID）+ memberCache。
+	mentions *mentionRegistry
+
 	// 卡片 message_id -> card_id 映射（用于回调路由）
 	cardMsgIDs sync.Map
 
@@ -232,6 +236,7 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		processedIDs:  make(map[string]struct{}),
 		maxProcessed:  1000,
 		userNameCache: make(map[string]string),
+		mentions:      newMentionRegistry(),
 		approvals:     make(map[string]*feishuPendingApproval),
 		askUsers:      make(map[string]*feishuPendingAskUser),
 	}
@@ -487,6 +492,9 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	content := f.extractAndSendLocalFiles(msg.ChatID, msg.Content)
 	// 2) 替换 markdown 中的本地图片引用 ![alt](path) 为飞书 image_key
 	content = f.replaceLocalImages(content)
+	// @提及：LLM 直接输出飞书原生 <at id=open_id>名字</at> 标签（open_id 由
+	// 群成员名单注入提供，prompt 教学见 prompt/channels/feishu.md）——不做事后
+	// 转换（@名字 自动匹配已按用户决策移除：误判 + bug 多）。
 
 	if strings.TrimSpace(content) == "" {
 		return "", nil
@@ -986,13 +994,14 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 	}
 	l.WithField("content_preview", truncateForLog(content, 100)).Debug("Feishu: parsed message content")
 
-	// 剥离 @mention 占位符（群聊中 @bot 后内容带 @_user_N 前缀）
+	// @mention 闭环（接收方向，见 feishu_mention.go）：@bot 剥离（原行为）、
+	// @所有人 语义保留、@用户 → "@名字"（LLM 可见谁被提及）+ Name→OpenID
+	// 记忆（回复可 @ 回）。
 	if msg.Mentions != nil {
-		for _, m := range msg.Mentions {
-			if m.Key != nil {
-				content = strings.ReplaceAll(content, *m.Key, "")
-			}
-		}
+		f.mu.Lock()
+		selfOpenID := f.botOpenID
+		f.mu.Unlock()
+		content = f.replaceMentionPlaceholders(msg, content, chatID, selfOpenID)
 		content = strings.TrimSpace(content)
 		if content == "" {
 			return nil
@@ -1001,6 +1010,15 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 
 	if mentionScope == "at_all_optional" {
 		content = "[群聊 @所有人 消息：按相关性决定是否需要回复；不相关可不回复]\n" + content
+	}
+
+	// @mention 闭环（上下文注入）：群聊注入成员名单 —— LLM 据此自然输出
+	// @名字 提及成员（回复时 convertAtMentions 转为飞书 at 标签，被 @ 的
+	// 用户收到提及通知）。TTL 缓存拉群成员 API，首条群消息 +~200ms。
+	if chatType == "group" {
+		if memberCtx := f.groupMemberContext(chatID); memberCtx != "" {
+			content = memberCtx + "\n" + content
+		}
 	}
 
 	// 确定回复目标
