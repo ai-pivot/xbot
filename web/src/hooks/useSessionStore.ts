@@ -39,6 +39,14 @@ const UNREAD_KEY = 'xbot:session-unread'
 const ACTIVE_CHANNEL_KEY = 'xbot:active-channel'
 const DEFAULT_CHANNEL = 'web'
 const TRANSIENT_SUBAGENT_TTL_MS = 10 * 60 * 1000
+/** How long an SSE session(busy)/subagent_started event is trusted over a
+ * contradicting HTTP session-tree response. The session-tree RPC reads
+ * chatCancelCh, which lags the SSE idle event by up to one round-trip — the
+ * window absorbs that lag. Past the window, HTTP is authoritative (idle wins),
+ * so a LOST idle event (SSE ring eviction, disconnect window, cross-route
+ * delivery gap) is corrected on the next refresh instead of forcing running
+ * forever. */
+const EXECUTING_TRUST_WINDOW_MS = 15_000
 /** Sidebar session-tree page size (backend pagination). */
 const SESSION_TREE_PAGE_SIZE = 60
 
@@ -744,10 +752,37 @@ function markSubAgentLifecycle(nodes: SessionInfo[], role: string | undefined, i
   )
 }
 
-function addRunningSessionKeys(nodes: SessionInfo[], target: Set<string>): void {
+/** Remove SubAgent nodes matching the lifecycle matcher from the tree.
+ * subagent_stopped(removed=true) means the backend cascade-deleted the tenant
+ * (TTL eviction / unload / spawn-failure cleanup) — the row must not linger as
+ * a stale "idle" entry until the next tree refresh. */
+function removeSubAgentNodes(nodes: SessionInfo[], matches: (s: SessionInfo) => boolean): SessionInfo[] {
+  let changed = false
+  const next: SessionInfo[] = []
+  for (const node of nodes) {
+    if (matches(node)) {
+      changed = true
+      continue
+    }
+    const children = node.children
+    if (children?.length) {
+      const pruned = removeSubAgentNodes(children, matches)
+      if (pruned !== children) {
+        changed = true
+        next.push({ ...node, children: pruned.length ? pruned : undefined })
+        continue
+      }
+    }
+    next.push(node)
+  }
+  return changed ? next : nodes
+}
+
+function addRunningSessionKeys(nodes: SessionInfo[], target: Map<string, number>): void {
+  const now = Date.now()
   for (const node of nodes) {
     if (node.running || node.status === 'running' || node.status === 'pending') {
-      target.add(sessionKey(node))
+      target.set(sessionKey(node), now)
     }
     addRunningSessionKeys(node.children || [], target)
   }
@@ -819,7 +854,15 @@ export function useSessionStoreImpl(): SessionStore {
   const switchSeqRef = useRef(0)
   const subAgentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transientSubAgentsRef = useRef(new Map<string, TransientSubAgent>())
-  const executingSessionsRef = useRef(new Set<string>())
+  // busy-since timestamps per session key ("channel:chatID"). Replaces the old
+  // Set: an unbounded Set made a lost session(idle) (SSE ring eviction,
+  // disconnect window, cross-route delivery gap) leave the key FOREVER —
+  // mergeStatus forced running with no correction path (user report: sidebar
+  // stuck busy / "明明 idle 却显示 busy"). The timestamp bounds how long SSE
+  // busy is trusted over a contradicting HTTP response; past
+  // EXECUTING_TRUST_WINDOW_MS the HTTP session-tree state is authoritative and
+  // the key is dropped (see mergeStatus).
+  const executingSessionsRef = useRef(new Map<string, number>())
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeqRef.current
@@ -847,7 +890,7 @@ export function useSessionStoreImpl(): SessionStore {
       if (initialLoad) addRunningSessionKeys(mainSessions, executingSessionsRef.current)
       const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
       const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
-      const cachedSessions = mergeStatus(sessionsRef.current, withUnread, executingSessionsRef.current)
+      const cachedSessions = mergeStatus(sessionsRef.current, withUnread, executingSessionsRef.current, Date.now())
       sessionsRef.current = cachedSessions
       const cachedAgents = flattenTreeAgents(cachedSessions)
       saveSessionTreeCache(cachedSessions, cachedAgents)
@@ -893,7 +936,7 @@ export function useSessionStoreImpl(): SessionStore {
       // the incoming page. Passing `withUnread` (new page only) as `next` would
       // discard all existing sessions.
       const appended = appendUniqueSessions(sessionsRef.current, withUnread)
-      const merged = mergeStatus(sessionsRef.current, appended, executingSessionsRef.current)
+      const merged = mergeStatus(sessionsRef.current, appended, executingSessionsRef.current, Date.now())
       sessionsRef.current = merged
       const cachedAgents = flattenTreeAgents(merged)
       saveSessionTreeCache(merged, cachedAgents)
@@ -908,18 +951,35 @@ export function useSessionStoreImpl(): SessionStore {
   /* Preserve live status across refresh: a fresh fetch resets every row to
    * 'idle', so carry over the inferred status keyed by chatID.
    *
-   * Running status is resolved from `executingSessionsRef` — the authoritative
-   * set of sessions that received SSE session(busy) without a matching
-   * session(idle). This avoids two bugs:
-   *   1. Stale idle carry-over: session goes busy (HTTP says running) but prev
-   *      still has idle → mergeStatus wrongly carried over idle.
-   *   2. Stale HTTP running: session just went idle (SSE idle fired, key removed
-   *      from executingSessionsRef) but HTTP still says running → we trust
-   *      executingSessionsRef (not running) over the stale HTTP response.
-   * For the brief window where HTTP is stale after idle, the next refresh
-   * cycle (≤2s) corrects it — much better than being stuck on idle when busy.
+   * Running status resolution — SSE busy is trusted for a BOUNDED window
+   * (EXECUTING_TRUST_WINDOW_MS) over a contradicting HTTP response:
+   *   1. Fresh SSE busy: overrides HTTP idle — the session-tree RPC reads
+   *      chatCancelCh which lags the SSE idle event by up to one round-trip
+   *      (the original reason executingSessionsRef existed).
+   *   2. Stale SSE busy (> window) + HTTP not running: HTTP is AUTHORITATIVE —
+   *      the idle event was lost (SSE ring eviction, disconnect window,
+   *      cross-route delivery gap). Drop the key and take idle. Previously the
+   *      key (an unbounded Set, no timestamp) forced running FOREVER with no
+   *      correction path (user report: sidebar stuck busy / "明明 idle 却显示
+   *      busy" after reconnect).
+   *   3. SSE idle (no key) + HTTP running: SSE wins — the same RPC lag in
+   *      reverse (the race between the idle event and the in-flight tree
+   *      response).
+   *   4. No key: HTTP truth. A turn started on a route the browser wasn't
+   *      subscribed to is covered by the user-level session broadcast (busy
+   *      events reach every web client now) which also timestamps the key.
+   *
+   * The timestamp is NOT extended by HTTP-agreeing refreshes: a long turn
+   * whose idle is lost must become correctable as soon as the window from the
+   * ORIGINAL busy event expires, not be re-armed by every refresh.
+   *
+   * SubAgent rows share the same mechanism: subagent_started timestamps the
+   * key, so a missed subagent_stopped is corrected by HTTP after the window
+   * (IsProcessingByChannel reads interactiveSubAgents running state for agent
+   * sessions — accurate). The old unconditional carry (carried.running →
+   * force running) made a missed stop event permanent.
    */
-  function mergeStatus(prev: SessionInfo[], next: SessionInfo[], executingKeys: Set<string>): SessionInfo[] {
+  function mergeStatus(prev: SessionInfo[], next: SessionInfo[], executing: Map<string, number>, now: number): SessionInfo[] {
     if (prev.length === 0) return next
     const statusBy = new Map<string, Pick<SessionInfo, 'status' | 'running'>>()
     const collect = (nodes: SessionInfo[]) => {
@@ -937,28 +997,30 @@ export function useSessionStoreImpl(): SessionStore {
       if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
         return { ...node, status: carried.status, running: false, children }
       }
-      // Running status: executingSessionsRef is authoritative for main sessions.
-      // If SSE busy was received (key in set), force running.
-      // If SSE idle was received (key not in set), don't carry over a stale
-      // idle from prev — trust the HTTP response which may now say running
-      // (the session went busy after the last SSE idle).
-      if (executingKeys.has(sessionKey(node))) {
+      const key = sessionKey(node)
+      const busySince = executing.get(key)
+      const freshBusy = busySince !== undefined && now - busySince <= EXECUTING_TRUST_WINDOW_MS
+      if (node.running) {
+        // Case 3: SSE idle (no key — the idle event deletes it) beats a stale
+        // HTTP running response; the tree RPC lags the idle event by up to one
+        // round-trip. Fresh or stale busy keys + HTTP running agree → running.
+        if (busySince === undefined && carried.status === 'idle') {
+          return { ...node, status: 'idle', running: false, children }
+        }
         return { ...node, status: 'running', running: true, children }
       }
-      // SSE idle cooldown: if prev's status was set by SSE to idle (not
-      // running), and HTTP says running=true, trust SSE (not HTTP). HTTP has
-      // inherent latency — the session-tree RPC reads chatCancelCh which may
-      // not have been updated yet (race between SSE idle event and RPC handler).
-      if (node.running && carried.status === 'idle') {
-        return { ...node, status: 'idle', running: false, children }
-      }
-      // SubAgents: the backend's IsProcessingByChannel checks chatCancelCh,
-      // but one-shot SubAgents don't register there. So the HTTP response
-      // may report running=false even while the SubAgent is actively running.
-      // Carry over the SSE-driven running state from prev (set by
-      // applySubAgentLifecycle via subagent_started).
-      if (node.type === 'agent' && carried.running === true) {
+      // HTTP says not running.
+      if (freshBusy) {
+        // Case 1: SSE busy is fresher than the in-flight tree response (the
+        // busy event arrived after the request was issued) — trust SSE within
+        // the window.
         return { ...node, status: 'running', running: true, children }
+      }
+      if (busySince !== undefined) {
+        // Case 2: stale busy — the idle event was lost. HTTP is now
+        // authoritative; drop the key so the correction sticks on subsequent
+        // refreshes (previously: forced running forever).
+        executing.delete(key)
       }
       return { ...node, children }
     }
@@ -1034,9 +1096,24 @@ export function useSessionStoreImpl(): SessionStore {
   const applySubAgentLifecycle = useCallback((ev: SessionEvent, running: boolean) => {
     if (!ev.role && !parseAgentChatID(ev.chat_id || '')) return
     const created = subAgentFromEvent(ev, running)
+    const createdKey = created ? sessionKey(created) : ''
     if (created) {
       if (running) {
-        transientSubAgentsRef.current.set(sessionKey(created), { session: created, updatedAt: Date.now() })
+        transientSubAgentsRef.current.set(createdKey, { session: created, updatedAt: Date.now() })
+        // Timestamp the busy state so mergeStatus trusts the SSE-driven running
+        // only for EXECUTING_TRUST_WINDOW_MS — a missed subagent_stopped (route
+        // gap / ring eviction) previously left the row running forever with no
+        // HTTP correction path ("subagent 被卸载了却还显示"). HTTP
+        // (IsProcessingByChannel reads interactiveSubAgents running state for
+        // agent sessions — accurate) corrects it after the window.
+        executingSessionsRef.current.set(createdKey, Date.now())
+      } else if (ev.removed) {
+        // Destroyed (TTL eviction / unload / spawn-failure cleanup): the DB
+        // tenant is cascade-deleted — drop the transient row immediately
+        // instead of parking it idle for the transient TTL (10min), which
+        // resurrected destroyed rows on every mergeTransientSubAgents pass.
+        transientSubAgentsRef.current.delete(createdKey)
+        executingSessionsRef.current.delete(createdKey)
       } else {
         // Don't delete from transient map immediately — the backend may not
         // have persisted the agent tenant yet. Let mergeTransientSubAgents'
@@ -1044,13 +1121,25 @@ export function useSessionStoreImpl(): SessionStore {
         // the persisted row from the DB, and markSubAgentLifecycle will set
         // it to idle. This prevents the subagent from disappearing between
         // subagent_stopped and DB persistence.
-        transientSubAgentsRef.current.set(sessionKey(created), { session: { ...created, running: false, status: 'idle' }, updatedAt: Date.now() })
+        transientSubAgentsRef.current.set(createdKey, { session: { ...created, running: false, status: 'idle' }, updatedAt: Date.now() })
+        executingSessionsRef.current.delete(createdKey)
       }
     }
     const merged = mergeTransientSubAgents(sessionsRef.current, transientSubAgentsRef.current, Date.now(), false)
-    const mainSessions = running
-      ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
-      : markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, false, ev.session_key)
+    let mainSessions: SessionInfo[]
+    if (!running && ev.removed) {
+      // Destroyed: remove the node from the tree outright — the backend
+      // cascade-deleted the tenant, so the row must not linger as idle until
+      // the next tree refresh.
+      mainSessions = removeSubAgentNodes(
+        merged.mainSessions,
+        subAgentLifecycleMatcher(ev.role, ev.instance, ev.parent_id || ev.chat_id, ev.session_key),
+      )
+    } else {
+      mainSessions = running
+        ? markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, true, ev.session_key)
+        : markSubAgentLifecycle(merged.mainSessions, ev.role, ev.instance, ev.parent_id || ev.chat_id, false, ev.session_key)
+    }
     const agents = flattenTreeAgents(mainSessions)
     sessionsRef.current = mainSessions
     setSessions((prev) => (sameSessionList(prev, mainSessions) ? prev : mainSessions))
@@ -1274,7 +1363,7 @@ export function useSessionStoreImpl(): SessionStore {
       }
       switch (ev.action) {
         case 'busy':
-          executingSessionsRef.current.add(sessionKey(selector))
+          executingSessionsRef.current.set(sessionKey(selector), Date.now())
           setStatus(selector, 'running')
           break
         case 'idle': {
@@ -1335,6 +1424,62 @@ export function useSessionStoreImpl(): SessionStore {
     window.addEventListener('agent-idle', handler)
     return () => window.removeEventListener('agent-idle', handler)
   }, [setStatus])
+
+  // ── Sidebar state reconciliation ──────────────────────────────────────────
+  // sessions-resync is dispatched by the SSE layer when events were PROVABLY
+  // lost (reconnect, resync_required ring eviction, active-progress recovery).
+  // The executing timestamps (SSE busy hints) are worthless once events were
+  // dropped — full HTTP reconcile: clear them and refresh. Running sessions
+  // re-enter via the HTTP response itself (IsProcessingByChannel is the live
+  // truth); no timestamp is needed for HTTP-agreeing rows.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const handler = () => {
+      // Debounce: several SSE connections (dockview tabs) can dispatch
+      // sessions-resync within the same reconnect window — one refresh covers all.
+      if (timer) return
+      timer = setTimeout(() => {
+        timer = null
+        executingSessionsRef.current.clear()
+        void refresh()
+      }, 300)
+    }
+    window.addEventListener('sessions-resync', handler)
+    return () => {
+      window.removeEventListener('sessions-resync', handler)
+      if (timer) clearTimeout(timer)
+    }
+  }, [refresh])
+
+  // Tab foregrounded: SSE was likely throttled/disconnected while hidden —
+  // missed session events are the #1 sidebar-staleness source. Full HTTP
+  // reconcile (same as sessions-resync): the clear drops stale busy hints
+  // whose idle event was missed during suspension.
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState !== 'visible') return
+      executingSessionsRef.current.clear()
+      void refresh()
+    }
+    document.addEventListener('visibilitychange', handler)
+    return () => document.removeEventListener('visibilitychange', handler)
+  }, [refresh])
+
+  // Low-frequency safety net (30s, only while something is running): even with
+  // the user-level session broadcast, an SSE drop can still miss a state
+  // change (ring eviction beyond the reconnect window, phone backgrounding,
+  // slow consumer). The refresh reconciles against HTTP truth; the trust
+  // window keeps fresh SSE state winning over the (older) HTTP response.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const busy = sessionsRef.current.some(
+        (s) => s.running || s.status === 'running' || s.status === 'pending'
+          || (s.children || []).some((c) => c.running || c.status === 'running' || c.status === 'pending'),
+      )
+      if (busy) void refresh()
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [refresh])
 
   useEffect(() => {
     return () => {

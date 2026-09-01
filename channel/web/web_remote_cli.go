@@ -167,6 +167,15 @@ func (c *RemoteCLIChannel) SendSessionState(ev protocol.SessionEvent) {
 	if ev.Channel == "cli" && isSubAgentLifecycle(ev) {
 		c.hub.broadcastSessionState("agent", ev.SessionKey, msg)
 	}
+	// Sidebar fan-out for cli-channel events: in shared-hub mode the agent's
+	// emitSessionState SKIPS the web channel publish for cli events (and vice
+	// versa) to avoid double delivery, so this is the ONLY web-reachable
+	// publisher for CLI session busy/idle — without the fan-out the web
+	// sidebar (which lists CLI sessions for admins) never learns their state
+	// changes live. Web-channel events are fanned out by WebChannel.SendSessionState.
+	if ev.Channel == "cli" && isSidebarSessionEvent(ev) {
+		c.hub.broadcastSessionStateToWebClients(msg, sessionRouteKey("cli", ev.ChatID))
+	}
 }
 
 // SendStreamContent sends streaming LLM content to remote CLI clients via the Hub.

@@ -559,6 +559,49 @@ func (h *Hub) broadcastToConnType(msg protocol.WSMessage, match func(*Client) bo
 	}
 }
 
+// broadcastSessionStateToWebClients fans a lightweight session state event out
+// to every web (non-CLI) client REGARDLESS of their subscribed route. The
+// sidebar is a user-level view: busy/idle/created/deleted/renamed and SubAgent
+// lifecycle for session A must reach a browser that is currently viewing session
+// B, but route-scoped delivery (sendToSession) only reaches subscribers of A's
+// route — a browser never subscribed to A (or whose SSE was disconnected when
+// the event was published and later evicted from the ring buffer) misses it
+// forever, leaving the sidebar stuck on stale state until a manual tree refresh
+// (user report: "侧边栏会话状态经常落后").
+//
+// The fan-out copy is a seq=0 control broadcast (same semantics as plugin
+// control messages): it is NOT sequenced into any route's event stream and is
+// NOT replayed on reconnect — missed copies are reconciled by the session-tree
+// refresh. The frontend's seq>0 gate skips dedup for seq=0 messages and the
+// session handlers are idempotent, so a client receiving both copies (should
+// not happen — subscribers of excludeRoutes are skipped) is harmless.
+func (h *Hub) broadcastSessionStateToWebClients(msg protocol.WSMessage, excludeRoutes ...string) {
+	h.mu.RLock()
+	excluded := make(map[string]bool)
+	for _, route := range excludeRoutes {
+		if subs := h.subs[route]; len(subs) > 0 {
+			for clientID := range subs {
+				excluded[clientID] = true
+			}
+		}
+	}
+	clients := make([]*Client, 0, len(h.conns))
+	for id, c := range h.conns {
+		if c.isCLI || excluded[id] {
+			continue
+		}
+		clients = append(clients, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range clients {
+		select {
+		case c.sendCh <- msg:
+		default:
+			log.WithFields(log.Fields{"client_id": c.userID, "msg_type": msg.Type}).Debug("Hub.broadcastSessionStateToWebClients: sendCh full, skipping")
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Client: a single WebSocket or SSE connection
 // ---------------------------------------------------------------------------

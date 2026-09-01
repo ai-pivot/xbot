@@ -36,7 +36,24 @@ export function loadSessionTreeCache(): StoredSessionTree | null {
     if (parsed.version !== 1 || !Array.isArray(parsed.sessions) || !Array.isArray(parsed.subAgents)) {
       return null
     }
-    return parsed as StoredSessionTree
+    // Strip volatile live state: the cache exists for first-paint structure
+    // (labels, ordering, unread), NOT for running/busy state. Restoring a cached
+    // `running: true` makes idle sessions show busy after a page reload until
+    // the first session-tree refresh completes — and if that refresh fails
+    // (network error), the stale busy persists with nothing to correct it
+    // (user report: "明明 idle 却显示 busy"). The refresh restores live state
+    // from the server (running / waiting_input).
+    const stripVolatile = (nodes: SessionInfo[]): SessionInfo[] =>
+      nodes.map((n) => {
+        const children = n.children?.length ? stripVolatile(n.children) : n.children
+        const volatile = n.running === true || n.status === 'running' || n.status === 'pending' || n.status === 'waiting_input'
+        return volatile ? { ...n, running: false, status: 'idle', children } : { ...n, children }
+      })
+    return {
+      version: 1,
+      sessions: stripVolatile(parsed.sessions),
+      subAgents: stripVolatile(parsed.subAgents),
+    }
   } catch {
     return null
   }

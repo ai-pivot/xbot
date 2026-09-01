@@ -72,6 +72,21 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 	return false
 }
 
+// HasPendingAskUserFast reports whether the session has a pending AskUser
+// prompt, checking ONLY the in-memory waitingUserSessions registry (no DB
+// Replay fallback — loadPendingAskUserEntry's Replay is far too expensive to
+// call per session-tree row). Used by the session tree to mark waiting_input
+// rows so the sidebar and the panel agree during a WaitingUser pause:
+// chatCancelCh is already deregistered there, so IsProcessingByChannel reports
+// false and the sidebar showed idle while the panel showed busy.
+func (a *Agent) HasPendingAskUserFast(ch, chatID string) bool {
+	if ch == "" || chatID == "" {
+		return false
+	}
+	_, ok := a.waitingUserSessions.Load(qualifyChatID(ch, chatID))
+	return ok
+}
+
 // GetActiveProgress returns the latest progress snapshot for the given channel:chatID.
 // The fromIter parameter is the TUI's watermark — only iterations with
 // Iteration > fromIter are included in the returned IterationHistory. This keeps

@@ -4,13 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { normalizeCanonicalSessionTree, normalizeSessionTree, useSessionStoreImpl } from './useSessionStore'
 import {
   lastSeqCache,
+  loadSessionTreeCache,
   progressSnapshotCache,
   SESSION_TREE_CACHE_KEY,
   sessionCacheKey,
 } from '@/lib/webCache'
 import type { SessionInfo, WSMessage } from '@/types/shared'
 
-let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string }) => void) | null = null
+let sessionHandler: ((event: { channel?: string; chat_id?: string; session_key?: string; action?: string; role?: string; instance?: string; parent_id?: string; removed?: boolean }) => void) | null = null
 let messageHandler: ((event: WSMessage) => void) | null = null
 
 const wsMocks = vi.hoisted(() => ({
@@ -1842,7 +1843,7 @@ describe('normalizeSessionTree', () => {
       label: 'review/1',
       lastActive: '2026-07-08T00:00:01Z',
       preview: '',
-      status: 'running',
+      status: 'idle',
       isCurrent: false,
       type: 'agent',
       role: 'review',
@@ -1851,7 +1852,7 @@ describe('normalizeSessionTree', () => {
       parentChatID,
       fullKey: `cli:${parentChatID}/review:1`,
       agentChatID: `cli:${parentChatID}/review:1`,
-      running: true,
+      running: false,
       children: [],
     })
     const childA = child('/repo-a:Agent-main')
@@ -1867,6 +1868,10 @@ describe('normalizeSessionTree', () => {
       type: 'main',
       children: [agent],
     })
+    // The localStorage cache seeds STRUCTURE only — volatile running state is
+    // stripped on load (a cached busy must not resurrect as stale busy after a
+    // page reload). Running state comes from the SSE subagent_started events,
+    // matching production where the sidebar learns subagent state live.
     localStorage.setItem('xbot_session_tree', JSON.stringify({
       version: 1,
       sessions: [parent('/repo-a:Agent-main', childA), parent('/repo-b:Agent-main', childB)],
@@ -1876,6 +1881,30 @@ describe('normalizeSessionTree', () => {
 
     const { result, unmount } = renderHook(() => useSessionStoreImpl())
     expect(result.current.subAgents).toHaveLength(2)
+
+    // Bring both subagents to running via the canonical SSE path — this also
+    // timestamps the executing map (mergeStatus trusts SSE busy for the trust
+    // window; HTTP corrects past it).
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'cli',
+        chat_id: '/repo-a:Agent-main',
+        session_key: childA.chatID,
+        role: 'review',
+        instance: '1',
+      })
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'cli',
+        chat_id: '/repo-b:Agent-main',
+        session_key: childB.chatID,
+        role: 'review',
+        instance: '1',
+      })
+    })
+    expect(result.current.subAgents.find((a) => a.chatID === childA.chatID)?.running).toBe(true)
+    expect(result.current.subAgents.find((a) => a.chatID === childB.chatID)?.running).toBe(true)
 
     await act(async () => {
       sessionHandler?.({
@@ -2088,5 +2117,288 @@ describe('normalizeSessionTree', () => {
     expect(createCall).toBeDefined()
     const createBody = JSON.parse(String(createCall?.[1]?.body))
     expect(createBody.model).toBe('')
+  })
+})
+
+describe('sidebar state reconciliation (trust window + lost events)', () => {
+  const idleTreeResponse = () => ({
+    ok: true,
+    json: async () => ({
+      ok: true,
+      sessions: [
+        { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-07-08T00:00:00Z' },
+      ],
+      chats: [
+        { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-07-08T00:00:00Z' },
+      ],
+      orphan_subagents: [],
+    }),
+  }) as Response
+
+  const subagentTreeResponse = () => ({
+    ok: true,
+    json: async () => ({
+      ok: true,
+      sessions: [
+        {
+          chat_id: 'web-chat-1',
+          channel: 'web',
+          label: 'My Chat',
+          last_active: '2026-07-08T00:00:00Z',
+          children: [
+            {
+              chat_id: 'web:web-chat-1/explore:mem-1',
+              full_key: 'web:web-chat-1/explore:mem-1',
+              channel: 'agent',
+              type: 'agent',
+              label: 'explore',
+              role: 'explore',
+              instance: 'mem-1',
+              parent_channel: 'web',
+              parent_chat_id: 'web-chat-1',
+              running: false,
+              last_active: '2026-07-08T00:00:01Z',
+            },
+          ],
+        },
+      ],
+      chats: [
+        { chat_id: 'web-chat-1', channel: 'web', label: 'My Chat', last_active: '2026-07-08T00:00:00Z' },
+      ],
+      orphan_subagents: [],
+    }),
+  }) as Response
+
+  it('HTTP corrects a stale busy key after the trust window (lost idle event)', async () => {
+    // User report: "明明 idle 却显示 busy" — a session(idle) lost in an SSE
+    // ring eviction / disconnect window previously left executingSessionsRef
+    // stuck FOREVER (an unbounded Set with no timestamp); mergeStatus forced
+    // running with no correction path. Now the SSE busy hint is trusted for
+    // EXECUTING_TRUST_WINDOW_MS; past the window HTTP is authoritative.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return idleTreeResponse()
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({ action: 'busy', channel: 'web', chat_id: 'web-chat-1' })
+      await Promise.resolve()
+    })
+    expect(result.current.sessions[0].running).toBe(true)
+    expect(result.current.sessions[0].status).toBe('running')
+
+    // Refresh WITHIN the trust window: fresh SSE busy beats the lagging HTTP
+    // idle response (chatCancelCh lags the idle event by up to one round-trip).
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions[0].running).toBe(true)
+
+    // The idle event was lost (ring eviction / disconnect window). Advance
+    // past the trust window: HTTP (idle) is now authoritative — the busy key
+    // is dropped and the session goes idle instead of running forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000)
+    })
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions[0].running).toBe(false)
+    expect(result.current.sessions[0].status).toBe('idle')
+
+    // The correction sticks (the key was deleted, not just masked).
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions[0].running).toBe(false)
+  })
+
+  it('HTTP corrects a subagent left running by a missed subagent_stopped after the trust window', async () => {
+    // User report: "subagent 被卸载了却还显示" — the old mergeStatus carried
+    // running=true for agent rows UNCONDITIONALLY (one-shot agents don't
+    // register chatCancelCh), so a missed subagent_stopped left the row
+    // running forever. subagent_started now timestamps the executing map;
+    // past the window HTTP (IsProcessingByChannel reads interactiveSubAgents
+    // running state — accurate) corrects it.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return subagentTreeResponse()
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.subAgents.map((a) => a.chatID)).toEqual(['web:web-chat-1/explore:mem-1'])
+    })
+    // HTTP says idle (running: false) before the started event.
+    expect(result.current.subAgents[0].running).toBe(false)
+
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:mem-1',
+        role: 'explore',
+        instance: 'mem-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents[0].running).toBe(true)
+
+    // Within the trust window: SSE-driven running wins over the (lagging) HTTP
+    // idle row.
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.subAgents[0].running).toBe(true)
+
+    // Missed subagent_stopped + past the trust window: HTTP idle is
+    // authoritative — the row goes idle instead of running forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(16_000)
+    })
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.subAgents[0].running).toBe(false)
+    expect(result.current.subAgents[0].status).toBe('idle')
+  })
+
+  it('subagent_stopped removed=true deletes the sidebar row (destroyed session)', async () => {
+    // User report: "subagent 被卸载了却还显示" — destroyInteractiveSession
+    // (TTL eviction / unload / spawn-failure cleanup) cascade-deletes the DB
+    // tenant; removed=true makes the frontend drop the row immediately instead
+    // of parking it idle until the next tree refresh (the transient TTL
+    // re-attached it for up to 10 minutes).
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return idleTreeResponse()
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_started',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:mem-1',
+        role: 'explore',
+        instance: 'mem-1',
+        parent_id: 'web-chat-1',
+      })
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents.map((a) => a.chatID)).toEqual(['web:web-chat-1/explore:mem-1'])
+    expect(result.current.subAgents[0].running).toBe(true)
+
+    // Destroyed (removed=true): the row must be GONE, not parked idle.
+    await act(async () => {
+      sessionHandler?.({
+        action: 'subagent_stopped',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        session_key: 'web:web-chat-1/explore:mem-1',
+        role: 'explore',
+        instance: 'mem-1',
+        parent_id: 'web-chat-1',
+        removed: true,
+      })
+      await Promise.resolve()
+    })
+    expect(result.current.subAgents).toHaveLength(0)
+    expect(result.current.sessions[0].children ?? []).toHaveLength(0)
+  })
+
+  it('sessions-resync clears stale executing keys and refreshes from HTTP (reconnect reconcile)', async () => {
+    // sessions-resync is dispatched by the SSE layer when events were provably
+    // lost (reconnect, resync_required ring eviction, active-progress recovery
+    // gap). The busy hint is worthless once events were dropped — full HTTP
+    // reconcile instead of running-stuck-until-manual-switch.
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        return idleTreeResponse()
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.chatID)).toEqual(['web-chat-1'])
+    })
+
+    vi.useFakeTimers()
+    await act(async () => {
+      sessionHandler?.({ action: 'busy', channel: 'web', chat_id: 'web-chat-1' })
+      await Promise.resolve()
+    })
+    expect(result.current.sessions[0].running).toBe(true)
+
+    // The idle event was lost during the disconnect window. The SSE layer
+    // dispatches sessions-resync on reconnect; the store debounces 300ms and
+    // reconciles: clear the executing key + refresh from HTTP (idle).
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('sessions-resync'))
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(result.current.sessions[0].running).toBe(false)
+    expect(result.current.sessions[0].status).toBe('idle')
+  })
+
+  it('loadSessionTreeCache strips volatile running state (busy ghost after page reload)', () => {
+    // User report: "登录进入会话明明 idle 却显示 busy" — the localStorage tree
+    // cache restored running:true from the previous page's state; a slow/failed
+    // first refresh left the stale busy on screen. The cache is for first-paint
+    // STRUCTURE only; running/waiting must come from the server.
+    localStorage.setItem(SESSION_TREE_CACHE_KEY, JSON.stringify({
+      version: 1,
+      sessions: [{
+        chatID: 'web-chat-1', channel: 'web', label: 'My Chat',
+        lastActive: '2026-07-08T00:00:00Z', preview: '', status: 'running',
+        isCurrent: false, type: 'main', running: true, children: [],
+      }],
+      subAgents: [{
+        chatID: 'web:web-chat-1/explore:mem-1', channel: 'agent', label: 'explore/mem-1',
+        lastActive: '2026-07-08T00:00:01Z', preview: '', status: 'waiting_input',
+        isCurrent: false, type: 'agent', role: 'explore', instance: 'mem-1',
+        parentChannel: 'web', parentChatID: 'web-chat-1', historical: false,
+        agentChatID: 'web:web-chat-1/explore:mem-1', synthetic: false,
+        running: true, status_original: undefined as never, children: [],
+      } as unknown as SessionInfo],
+    }))
+    const tree = loadSessionTreeCache()
+    if (!tree) {
+      throw new Error('cached tree must load')
+    }
+    expect(tree.sessions[0].running).toBe(false)
+    expect(tree.sessions[0].status).toBe('idle')
+    expect(tree.subAgents[0].running).toBe(false)
+    expect(tree.subAgents[0].status).toBe('idle')
   })
 })

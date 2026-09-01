@@ -529,6 +529,13 @@ func webWidgetZonesEqual(a, b plugin.WebWidgetZones) bool {
 // SendSessionState implements ch.SessionStateSender.
 // Events are route-scoped. SubAgent lifecycle also reaches the canonical child
 // route used by browser Agent panels.
+// Sidebar fan-out: lightweight state events additionally reach ALL web clients
+// (seq=0 control broadcast; subscribers of the event's own route are excluded —
+// they receive the sequenced, replayable copy). The session tree is a user-level
+// view: busy/idle/created/deleted/renamed and SubAgent lifecycle for session A
+// must reach a browser currently viewing session B, but route-scoped delivery
+// never reaches it — the sidebar only updated on the next tree refresh (user
+// report: "侧边栏会话状态经常落后 / 有了 subagent 侧边栏不显示").
 func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
 	msg := protocol.WSMessage{
 		Type:    protocol.MsgTypeSession,
@@ -539,6 +546,25 @@ func (wc *WebChannel) SendSessionState(ev protocol.SessionEvent) {
 	if isSubAgentLifecycle(ev) && ev.Channel != "cli" {
 		wc.hub.broadcastSessionState("agent", ev.SessionKey, msg)
 	}
+	if isSidebarSessionEvent(ev) {
+		exclude := []string{sessionRouteKey(ev.Channel, ev.ChatID)}
+		if isSubAgentLifecycle(ev) && ev.SessionKey != "" && ev.Channel != "cli" {
+			exclude = append(exclude, sessionRouteKey("agent", ev.SessionKey))
+		}
+		wc.hub.broadcastSessionStateToWebClients(msg, exclude...)
+	}
+}
+
+// isSidebarSessionEvent reports whether the event is a lightweight sidebar state
+// change every web client should see. Heavyweight/barrier events stay
+// route-scoped: history_rewound resets per-route replay streams and must not
+// bypass route sequencing.
+func isSidebarSessionEvent(ev protocol.SessionEvent) bool {
+	switch ev.Action {
+	case "busy", "idle", "created", "deleted", "renamed", "subagent_started", "subagent_stopped":
+		return true
+	}
+	return false
 }
 
 // SendQueueState implements channel.QueueStateSender — broadcasts the pending

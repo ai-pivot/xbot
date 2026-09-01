@@ -321,6 +321,10 @@ export interface SessionEvent {
   role?: string
   instance?: string
   parent_id?: string
+  /** subagent_stopped with removed=true — the session was DESTROYED (TTL
+   * eviction / unload / spawn-failure cleanup): delete the sidebar row instead
+   * of parking it as idle (the DB tenant is cascade-deleted). */
+  removed?: boolean
 }
 
 /* ---------------------------------------------------------------------------
