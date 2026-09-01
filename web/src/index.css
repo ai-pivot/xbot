@@ -597,6 +597,10 @@
 .dockview-theme-vs {
   --dv-group-view-background-color: transparent;
   --dv-tabs-and-actions-container-background-color: var(--card-bg);
+  /* floating 卡（悬浮卡片，如设置卡）边框：dockview 默认 rgba(255,255,255,0.1)
+   * 硬编码（浅色主题不可见）→ 令牌。titlebar 背景自动跟随
+   * --dv-tabs-and-actions-container-background-color（= card-bg）。 */
+  --dv-floating-border: 1px solid var(--border);
   --dv-activegroup-visiblepanel-tab-background-color: transparent;
   --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-bg);
   --dv-inactivegroup-visiblepanel-tab-background-color: transparent;

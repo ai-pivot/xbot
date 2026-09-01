@@ -7,8 +7,7 @@
  * 连接状态/会话名在主卡片（AgentPanel）header 内（卡片自持）；检查更新 +
  * 设置入口在 PanelLauncher 右侧组。Ambience 壁纸从卡片间距透出。
  */
-import { Suspense, lazy, useEffect, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useEffect } from 'react'
 
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
 import { AmbienceBackground } from '@/ambience/AmbienceRoot'
@@ -24,15 +23,11 @@ import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 
-const SettingsDialog = lazy(() =>
-  import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
-
 export function AppShell() {
   const isMobile = useIsMobile()
   const tabManager = useTabManager()
   const panelManager = usePanelManager()
   const sessionStore = useSessionStore()
-  const [settingsOpen, setSettingsOpen] = useState(false)
 
   useLayoutPersistence(tabManager, sessionStore)
 
@@ -64,11 +59,8 @@ export function AppShell() {
         <AmbienceBackground />
         <main className="relative flex min-h-0 flex-1 flex-col z-10">
           <DockviewContainer tabManager={tabManager} panelManager={panelManager} />
-          <PanelLauncher panelManager={panelManager} tabManager={tabManager} onOpenSettings={() => setSettingsOpen(true)} />
+          <PanelLauncher panelManager={panelManager} tabManager={tabManager} />
         </main>
-        <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>
-          <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
-        </Suspense>
       </div>
     </RightSidebarControlContext.Provider>
   )

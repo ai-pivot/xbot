@@ -38,6 +38,16 @@ export interface AddPanelOptions {
   initialWidth?: number
   /** 初始高度（像素） */
   initialHeight?: number
+  /**
+   * 悬浮卡片（floating）：addPanel 后转为 dockview floating group——
+   * 弹窗式悬浮（拖动 handle 移动 + 拖到 grid 边缘停靠平铺）。
+   * false/省略 = 平铺（master/stack 堆叠列）。
+   */
+  floating?: boolean
+  /** 悬浮卡片宽（px，floating=true 时生效；省略 = dockview 默认） */
+  floatWidth?: number
+  /** 悬浮卡片高（px，floating=true 时生效；省略 = dockview 默认） */
+  floatHeight?: number
 }
 
 export interface PanelInfo {
@@ -129,6 +139,23 @@ export function usePanelManager(): PanelManager {
     // Dockview addPanel 原生支持 initialWidth/initialHeight
     if (options.initialWidth) addOpts.initialWidth = options.initialWidth
     if (options.initialHeight) addOpts.initialHeight = options.initialHeight
+
+    // 悬浮卡片（floating）：addPanel 独立位置（不进堆叠列）→ addFloatingGroup
+    // 转出 grid——弹窗式悬浮卡片（dockview 原生：拖 handle 移动 + 拖到 grid
+    // 边缘停靠平铺）。位置/尺寸由 FloatingGroupOptions 控制。
+    if (options.floating) {
+      addOpts.position = { direction: 'right' }
+      api.addPanel(addOpts)
+      const panel = api.getPanel(panelId)
+      if (panel) {
+        api.addFloatingGroup(panel, {
+          ...(options.floatWidth ? { width: options.floatWidth } : {}),
+          ...(options.floatHeight ? { height: options.floatHeight } : {}),
+        })
+      }
+      return panelId
+    }
+
     // Panel（sidebar 卡片）进 master 旁的堆叠列，卡片上下排列（水平切分）：
     // - 堆叠列已存在（有非 master group）→ 'bottom' 相对列内最后一个 group
     //   追加。dockview grid 语义（getRelativeLocation）：'bottom' 相对 root 层

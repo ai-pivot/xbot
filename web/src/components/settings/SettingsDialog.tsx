@@ -1,13 +1,11 @@
 /**
- * SettingsDialog — global settings panel container (Spec 7 §3.2).
+ * SettingsDialog / SettingsPanel — global settings（卡片化重构：弹窗拆为
+ * 内容区 + 壳两个导出）。
  *
- * A right-side Sheet (VSCode-style) with a left category nav and a right
- * content area. Width is fixed at 480px. The Sheet is controlled (open /
- * onOpenChange) so the launcher owns visibility.
- *
- * Categories: 外观 / 折叠 / 语言 / LLM 配置 / 账号. The LLM panel mounts its hook
- * lazily (only when selected) so a disconnected server doesn't fire RPCs on
- * every panel open. The Account panel shows current username + logout button.
+ * - SettingsPanel（内容区）：左分类导航 + 右内容——dockview 设置卡片
+ *   （PanelLauncher 打开的非 Tab 卡）与 Dialog 壳共用的唯一实现。
+ * - SettingsDialog（弹窗壳）：手机端 MobileAppShell 专用（手机无 dockview
+ *   卡片化布局）；桌面端走设置卡片（floating 悬浮卡片，拖边缘停靠平铺）。
  */
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -95,7 +93,12 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
   )
 }
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+/**
+ * SettingsPanel（内容区）：左分类导航 + 右内容。dockview 设置卡片
+ * （PanelLauncher 打开，floating 悬浮卡片）与 Dialog 壳共用的唯一实现。
+ * 根部 flex-1 撑满父容器（卡片内容区 / DialogContent）。
+ */
+export function SettingsPanel() {
   const { t } = useI18n()
   const navigate = useNavigate()
   const [active, setActive] = useState<Category>('appearance')
@@ -114,15 +117,70 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   ]
 
   return (
+    <div className="flex min-h-0 flex-1 flex-col bg-card-bg sm:flex-row">
+      {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
+          375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
+          桌面（≥sm）：竖直侧栏不变 */}
+      <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-sidebar-bg p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
+        {nav.map(({ key, labelKey }) => (
+          <button
+            key={key}
+            type="button"
+            aria-current={active === key}
+            onClick={() => setActive(key)}
+            className={cn(
+              'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:shrink sm:whitespace-normal',
+              active === key
+                ? 'bg-[#6c8cff]/14 font-medium text-[#6c8cff]'
+                : 'text-text-muted hover:bg-surface-bg hover:text-text-primary',
+            )}
+          >
+            {t(`settings.${labelKey}`)}
+          </button>
+        ))}
+      </nav>
+
+      {/* Right content — overflow-x-hidden：表单/控制台面板无横向滚动场景，
+          防止内容横向溢出产生可拖动的空白（mobile 上可感知） */}
+      <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+        {active === 'appearance' ? <SettingsAppearance /> : null}
+        {active === 'interaction' ? <SettingsInteraction /> : null}
+        {active === 'language' ? <SettingsGeneral /> : null}
+        {active === 'llm' ? <SettingsLLMPanel /> : null}
+        {active === 'account' ? (
+          <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />
+        ) : null}
+        {active === 'webusers' ? <SettingsWebUsers /> : null}
+        {active === 'developer' ? <SettingsDeveloper /> : null}
+        {active === 'layout' ? <SettingsLayout /> : null}
+        {active === 'plugins' ? <SettingsPlugins /> : null}
+        {active === 'about' ? <SettingsAbout /> : null}
+      </div>
+    </div>
+  )
+}
+
+interface SettingsDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}
+
+/**
+ * SettingsDialog（弹窗壳）：手机端 MobileAppShell 专用（手机无 dockview
+ * 卡片化布局）。桌面端走设置卡片（PanelLauncher togglePanel → floating
+ * 悬浮卡片，拖边缘停靠平铺）。内容区 = SettingsPanel（唯一实现）。
+ */
+export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+  const { t } = useI18n()
+
+  return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        // 居中弹窗（原右侧 Sheet 改造）：黄金比例矩形（φ≈1.618）——高 40vh，
-        // 宽 = min(40vh×1.618, 100vw-4rem) 显式计算（用户要求整体缩小一半，
-        // 原 80vh → 40vh）。⚠️ 不用 aspect-ratio：DialogContent 基础类残留
-        // w-full + sm:max-w-lg——w-full 使 aspect 失效，sm:max-w-lg 把桌面宽
-        // 截到 512px。显式 w-[] 覆盖 w-full + max-w-none/sm:max-w-none 清残留。
-        // 覆盖 DialogContent 默认（p-6 grid gap-4）：p-0 + flex flex-col
-        // （header + 左导航右内容）+ rounded-xl（--card-radius）+ overflow-hidden。
+        // 居中弹窗（手机端）：黄金比例矩形（φ≈1.618）——高 40vh，
+        // 宽 = min(40vh×1.618, 100vw-4rem) 显式计算。⚠️ 不用 aspect-ratio：
+        // DialogContent 基础类残留 w-full + sm:max-w-lg（w-full 使 aspect
+        // 失效，sm:max-w-lg 把桌面宽截到 512px）。显式 w-[] 覆盖 w-full +
+        // max-w-none/sm:max-w-none 清残留。
         className="flex h-[40vh] w-[min(calc(40vh*1.618),calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden rounded-xl p-0 sm:max-w-none"
       >
         <DialogHeader className="border-b border-border px-5 py-4">
@@ -130,46 +188,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           <DialogDescription className="sr-only">{t('settings.title')}</DialogDescription>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
-          {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
-              375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
-              桌面（≥sm）：竖直侧栏不变 */}
-          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-sidebar-bg p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
-            {nav.map(({ key, labelKey }) => (
-              <button
-                key={key}
-                type="button"
-                aria-current={active === key}
-                onClick={() => setActive(key)}
-                className={cn(
-                  'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:shrink sm:whitespace-normal',
-                  active === key
-                    ? 'bg-[#6c8cff]/14 font-medium text-[#6c8cff]'
-                    : 'text-text-muted hover:bg-surface-bg hover:text-text-primary',
-                )}
-              >
-                {t(`settings.${labelKey}`)}
-              </button>
-            ))}
-          </nav>
-
-          {/* Right content — overflow-x-hidden：表单/控制台面板无横向滚动场景，
-              防止内容横向溢出产生可拖动的空白（mobile 上可感知） */}
-          <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
-            {active === 'appearance' ? <SettingsAppearance /> : null}
-            {active === 'interaction' ? <SettingsInteraction /> : null}
-            {active === 'language' ? <SettingsGeneral /> : null}
-            {active === 'llm' ? <SettingsLLMPanel /> : null}
-            {active === 'account' ? (
-              <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />
-            ) : null}
-            {active === 'webusers' ? <SettingsWebUsers /> : null}
-            {active === 'developer' ? <SettingsDeveloper /> : null}
-            {active === 'layout' ? <SettingsLayout /> : null}
-            {active === 'plugins' ? <SettingsPlugins /> : null}
-            {active === 'about' ? <SettingsAbout /> : null}
-          </div>
-        </div>
+        <SettingsPanel />
       </DialogContent>
     </Dialog>
   )

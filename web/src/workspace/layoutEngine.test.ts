@@ -27,7 +27,7 @@ function mockGroup(id: string, types: string[]): DockviewGroupPanel {
       // 访问路径：p.view.content.element——mock 真实 div 供 classList 断言
       view: { content: { element: document.createElement('div') } },
     })),
-    api: { setSize: vi.fn() },
+    api: { setSize: vi.fn(), location: { type: 'grid' } },
     model: { header: { hidden: false } },
     element: document.createElement('div'),
     locked: false as boolean | 'no-drop-target',

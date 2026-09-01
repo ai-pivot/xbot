@@ -41,12 +41,9 @@ const SIDEBAR_PANELS: LauncherEntry[] = [
 export function PanelLauncher({
   panelManager,
   tabManager,
-  onOpenSettings,
 }: {
   panelManager: PanelManager
   tabManager: TabManager
-  /** 打开全局设置（原 AppShell 全局 header 的设置按钮迁入） */
-  onOpenSettings: () => void
 }) {
   const pluginPanels = usePluginViewPanels('right_sidebar')
 
@@ -69,6 +66,23 @@ export function PanelLauncher({
         data: { viewId: entry.viewId, pluginId: entry.pluginId },
       } as never)
     }
+  }
+
+  // 设置按钮 → 悬浮卡片（dockview floating group）：弹窗式悬浮（拖 handle
+  // 移动 + 拖到 grid 边缘停靠平铺）。黄金比例尺寸（φ=1.618，高 40vh 同弹窗），
+  // 视口约束（min 保证小屏不溢出）。
+  const toggleSettings = () => {
+    const height = Math.min(window.innerHeight * 0.4, window.innerHeight - 48)
+    const width = Math.min(height * 1.618, window.innerWidth - 32)
+    panelManager.togglePanel({
+      component: 'panel',
+      title: '设置',
+      params: { type: 'panel', panelId: 'settings', closable: true, panelKey: 'settings' },
+      floating: true,
+      floatWidth: Math.round(width),
+      floatHeight: Math.round(height),
+      panelKey: 'settings',
+    })
   }
 
   return (
@@ -94,12 +108,13 @@ export function PanelLauncher({
           </button>
         )
       })}
-      {/* 右侧组：检查更新 + 设置（推到最右）。检查更新三态：检查/下载中/重启加载 */}
+      {/* 右侧组：检查更新 + 设置（推到最右）。设置 = 悬浮卡片 toggle（floating
+          卡片：拖 handle 移动 + 拖到 grid 边缘停靠平铺）；检查更新三态。 */}
       <div className="ml-auto flex items-center gap-1">
         <SWUpdateButton />
-        <button type="button" title="设置" aria-label="打开设置" onClick={onOpenSettings}
+        <button type="button" title="设置" aria-label="打开设置" onClick={toggleSettings}
           className="flex size-7 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
-          style={{ color: 'var(--text-secondary)' }}>
+          style={{ color: panelManager.isPanelOpen('settings') ? 'var(--accent)' : 'var(--text-secondary)', background: panelManager.isPanelOpen('settings') ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : undefined }}>
           <Settings className="size-4" />
         </button>
       </div>

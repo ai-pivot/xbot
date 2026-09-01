@@ -213,7 +213,9 @@ export class LayoutEngine {
     if (typeof api.hasMaximizedGroup === 'function' && api.hasMaximizedGroup()) {
       return false
     }
-    const groups = api.groups
+    // 只参与 grid 布局：floating group（悬浮卡片，如设置卡）不在 splitview
+    // 里，setSize 无效且污染布局计算；api.groups 含 floating（布局前过滤）
+    const groups = api.groups.filter((g) => g.api.location.type === 'grid')
     if (groups.length === 0) return false
     this.applyGroupHeaderPolicy()
 
@@ -257,7 +259,10 @@ export class LayoutEngine {
   private applyGroupHeaderPolicy(): void {
     const api = this.api
     if (!api) return
+    // 只管 grid 卡：floating group（悬浮卡片，如设置卡）由 dockview
+    // floating titlebar 管理（拖动/关闭），不参与 tab 栏策略/grip/圆角
     for (const group of api.groups) {
+      if (group.api.location.type !== 'grid') continue
       const tabGroup = isTabGroup(group)
       group.model.header.hidden = !tabGroup
       group.locked = tabGroup ? false : 'no-drop-target'

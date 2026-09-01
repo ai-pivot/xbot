@@ -73,6 +73,7 @@ import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
+import { SettingsPanel } from '@/components/settings/SettingsDialog'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { PanelParams } from '@/types/tab'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -124,6 +125,10 @@ function PanelTabHost({ params }: { params: PanelParams }) {
       return <TasksPanel tabManager={tabManager} />
     case 'terminal':
       return <LeftTerminalPanel tabManager={tabManager} />
+    case 'settings':
+      // 设置卡片（PanelLauncher togglePanel → floating 悬浮卡片）：内容区
+      // = SettingsPanel（与手机端 Dialog 壳共用的唯一实现）
+      return <SettingsPanel />
     default:
       return <div className="h-full w-full bg-card-bg p-4 text-xs text-text-muted">未知面板：{panelId}</div>
   }
