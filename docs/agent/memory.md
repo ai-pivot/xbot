@@ -96,6 +96,32 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
   (engine_run.go passes `s.cfg.LLMClient/s.cfg.Model`); the dead `SetLLM` method
   is deleted. Any new memory LLM call site MUST take its client from the input —
   never from shared state.
+- **Session isolation (2026-09-02 redesign)**: `xbot_long_term_memories.scope`
+  ('global' | 'session', legacy rows default 'global') + `superseded_by` columns
+  (idempotent migration in `migrateLegacyTenantData`). **Auto-extraction
+  (extractAtomicMemories via ConsolidateTurn/PreCompress/Memorize) writes
+  scope='session'** — session-local task state never crosses sessions; the
+  global pool is written ONLY by explicit `memory_add` (default 'global',
+  scope param exposed to the model). **Recall's "## Recent Sessions" section is
+  DELETED** (it injected OTHER sessions' short-term summaries into unrelated
+  conversations — query-anchored searchShortTerm had no session filter);
+  cross-session recall goes through `memory_search` on demand only. Long-term
+  injection filters `scope='global' AND superseded_by IS NULL` and carries
+  created dates (model-side staleness judgment). SearchMemories/ListMemories
+  return scope provenance in results.
+- **Supersede chain (2026-09-02 redesign)**: an explicit global AddMemory with
+  strong keyword overlap (same BM25 threshold as dedup, < -6.0) marks the
+  matched ACTIVE GLOBAL entries `superseded_by=<new id>` instead of
+  double-storing contradictory facts ("cluster at X" + "cluster moved to Y").
+  Rows are preserved (rollback), but Recall/SearchMemories/ListMemories all
+  filter superseded — only current facts are visible. Session-scoped
+  auto-extraction NEVER supersedes global entries (task-local state must not
+  invalidate user-level facts).
+- **Compression hooks are async (2026-09-02)**: PreCompress/PostCompress run
+  on background goroutines (`RunConfig.SpawnBackground` — lifecycleWG-tracked,
+  lifecycleStopCh-cancelled, NOT the turn ctx) on message snapshots; only the
+  compaction LLM call itself is synchronous. PostCompressInput.RemovedMessageCount
+  is captured PRE-swap (the old post-swap computation was always 0).
 - **Bloat control**: BM25 similarity dedup (bm25 > -6.0 = duplicate), per-user cap
   (`longTermMaxEntries=300`, lowest-heat pruned), heat decay + forget threshold.
 - **Tools**: `memory_search` (BM25), `memory_add`, `memory_manage`.
