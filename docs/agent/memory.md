@@ -84,6 +84,18 @@ Zero-dependency memory provider (no embedding API) built on SQLite FTS5 BM25.
 - **CompressionAware**: PreCompress extracts atomic memories + returns PreserveHints
   before context compression; PostCompress saves the compaction summary; CompressContext
   tells the compression LLM what's already backed up.
+- **LLM client ownership (2026-09-02 fix)**: every LLM-using memory operation
+  (Memorize/ConsolidateTurn/PreCompress/PostCompress) receives its `llm.LLM` client
+  + model EXPLICITLY in its input and threads them down to `generateLLM` — the
+  provider holds NO shared llmClient field. The old shared mutable `m.llmClient`
+  was raced by concurrent sessions' memory ops (single-operator: one XbotMemory
+  instance serves ALL sessions — the 2026-09-02 chat_BD94FA4BB469 incident had
+  PostCompress's core-summary update land on another session's model/endpoint
+  after a concurrent ConsolidateTurn overwrote the field; PostCompressInput had
+  no LLMClient at all). PostCompressInput now carries `LLMClient`/`Model`
+  (engine_run.go passes `s.cfg.LLMClient/s.cfg.Model`); the dead `SetLLM` method
+  is deleted. Any new memory LLM call site MUST take its client from the input —
+  never from shared state.
 - **Bloat control**: BM25 similarity dedup (bm25 > -6.0 = duplicate), per-user cap
   (`longTermMaxEntries=300`, lowest-heat pruned), heat decay + forget threshold.
 - **Tools**: `memory_search` (BM25), `memory_add`, `memory_manage`.

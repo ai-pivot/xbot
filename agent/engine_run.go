@@ -1656,6 +1656,13 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			CompactionSummary:   compactionSummary,
 			RemovedMessageCount: removedCount,
 			SessionID:           s.cfg.ChatID,
+			// LLM client ownership: the memory provider (single-operator shared
+			// instance) must use THIS session's client for the core-summary
+			// update — never a shared mutable field (concurrent sessions'
+			// ConsolidateTurn/PreCompress would overwrite it; 2026-09-02 incident:
+			// a PostCompress landed on another session's model/endpoint).
+			LLMClient: s.cfg.LLMClient,
+			Model:     s.cfg.Model,
 		})
 		if err != nil {
 			log.Ctx(ctx).WithError(err).Warn("PostCompress failed")

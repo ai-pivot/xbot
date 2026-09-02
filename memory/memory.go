@@ -149,6 +149,14 @@ type PostCompressInput struct {
 	RemovedMessageCount int
 	// SessionID 当前会话 ID。
 	SessionID string
+	// LLMClient 用于 core summary 更新的 LLM（必须传本次压缩会话自己的 client）。
+	// 历史事故（2026-09-02 chat_BD94FA4BB469）：PostCompress 曾不接收 client，
+	// 靠共享可变 m.llmClient 字段——单 operator 下所有会话共享一个 XbotMemory
+	// 实例，并发的 ConsolidateTurn/PreCompress 会互相覆盖该字段，导致内存管道
+	// 用错别的会话的模型/端点（F64D 用了 feishu 的 deepseek 配置，反之亦然）。
+	LLMClient llm.LLM
+	// Model LLM 模型名。
+	Model string
 }
 
 // --- Provider Registry (decoupled from agent/session code) ---

@@ -64,9 +64,9 @@ func TestGenerateSessionSummary_UsesStream(t *testing.T) {
 		{Type: llm.EventContent, Content: "User worked on xbot memory streaming fix."},
 		{Type: llm.EventDone, FinishReason: llm.FinishReasonStop},
 	}}
-	m := &XbotMemory{llmClient: mock, model: "test"}
+	m := &XbotMemory{}
 
-	summary, _ := m.generateSessionSummary(context.Background(), []llm.ChatMessage{
+	summary, _ := m.generateSessionSummary(context.Background(), mock, "test", []llm.ChatMessage{
 		llm.NewUserMessage("hello"),
 		llm.NewAssistantMessage("hi"),
 	})
@@ -94,9 +94,9 @@ func TestExtractAtomicMemories_UsesStream(t *testing.T) {
 		{Type: llm.EventToolCall, ToolCall: &llm.ToolCallDelta{Index: 0, ID: "tc1", Name: "extract_memories", Arguments: toolArgs}},
 		{Type: llm.EventDone, FinishReason: llm.FinishReasonToolCalls},
 	}}
-	m := &XbotMemory{llmClient: mock, model: "test"}
+	m := &XbotMemory{}
 
-	entries := m.extractAtomicMemories(context.Background(), []llm.ChatMessage{
+	entries := m.extractAtomicMemories(context.Background(), mock, "test", []llm.ChatMessage{
 		llm.NewUserMessage("I prefer dark theme for all my tools"),
 	}, 0)
 
@@ -120,9 +120,9 @@ func TestExtractAtomicMemories_UsesStream(t *testing.T) {
 // llm.StreamingLLM (test mocks, future providers) still work via Generate.
 func TestGenerateLLM_NonStreamFallback(t *testing.T) {
 	nonStream := &nonStreamOnlyLLM{content: "fallback ok"}
-	m := &XbotMemory{llmClient: nonStream, model: "test"}
+	m := &XbotMemory{}
 
-	resp, err := m.generateLLM(context.Background(), []llm.ChatMessage{llm.NewUserMessage("hi")}, nil)
+	resp, err := m.generateLLM(context.Background(), nonStream, "test", []llm.ChatMessage{llm.NewUserMessage("hi")}, nil)
 	if err != nil {
 		t.Fatalf("generateLLM fallback error: %v", err)
 	}

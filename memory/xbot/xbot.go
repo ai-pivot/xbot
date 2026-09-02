@@ -152,14 +152,22 @@ END;
 // The same user sees the same memories across ALL sessions/tenants — this is
 // the definition of "cross-session memory". tenantID is retained as an
 // informational column (source tenant) but never used for filtering.
+//
+// LLM CLIENT OWNERSHIP: this provider holds NO llmClient/model fields. The
+// single-operator deployment shares ONE XbotMemory instance across ALL sessions,
+// and a mutable client field was a cross-session race (2026-09-02 incident:
+// chat_BD94FA4BB469's PostCompress core-summary update landed on a different
+// session's model/endpoint after concurrent ConsolidateTurns overwrote the
+// shared field — F64D's extraction ran with feishu's deepseek config and vice
+// versa, a perfect swap). Every LLM-using operation (Memorize/ConsolidateTurn/
+// PreCompress/PostCompress) receives its client+model EXPLICITLY in its input
+// and threads them down to generateLLM — no shared mutable state.
 type XbotMemory struct {
-	userID    int64  // canonical owner user_id (isolation scope)
-	tenantID  int64  // source tenant (informational, not used for filtering)
-	baseDir   string // ~/.xbot/memory/{tenantID}/
-	db        *sql.DB
-	llmClient llm.LLM
-	model     string
-	mu        sync.RWMutex
+	userID   int64  // canonical owner user_id (isolation scope)
+	tenantID int64  // source tenant (informational, not used for filtering)
+	baseDir  string // ~/.xbot/memory/{tenantID}/
+	db       *sql.DB
+	mu       sync.RWMutex
 
 	// Time-based consolidation throttle (guarded by mu).
 	// At most ONE LLM extraction per consolidateInterval per provider instance.
@@ -250,16 +258,15 @@ func (m *XbotMemory) scopeArg() int64 {
 	return m.userID
 }
 
-// SetLLM sets the LLM client and model for Memorize operations.
-// Called by the agent loop before Memorize is invoked.
-func (m *XbotMemory) SetLLM(client llm.LLM, model string) {
-	m.llmClient = client
-	m.model = model
-}
-
 // generateLLM issues a memory-pipeline LLM call (session summaries, atomic
 // memory extraction, core-summary updates) through the STREAMING path whenever
 // the client supports it, falling back to non-stream Generate otherwise.
+//
+// The client+model are EXPLICIT parameters (threaded from the operation's
+// input — Memorize/ConsolidateTurn/PreCompress/PostCompress), NEVER shared
+// struct state: one XbotMemory instance serves all sessions (single operator),
+// and a shared mutable field was raced by concurrent memory operations
+// (2026-09-02 incident — see the struct comment).
 //
 // Root cause this guards (web:chat_BD94FA4BB469 turn 367, 2026-08-30): the
 // memory LLM calls used llmClient.Generate — the non-stream retry path whose
@@ -276,18 +283,18 @@ func (m *XbotMemory) SetLLM(client llm.LLM, model string) {
 // collection retried as a whole); plain StreamingLLM gets GenerateStream +
 // CollectStream; clients that implement neither (test mocks) fall back to
 // Generate.
-func (m *XbotMemory) generateLLM(ctx context.Context, messages []llm.ChatMessage, tools []llm.ToolDefinition) (*llm.LLMResponse, error) {
-	if rl, ok := m.llmClient.(*llm.RetryLLM); ok {
-		return rl.GenerateStreamAndCollect(ctx, m.model, messages, tools, "", nil, nil, nil, nil)
+func (m *XbotMemory) generateLLM(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition) (*llm.LLMResponse, error) {
+	if rl, ok := client.(*llm.RetryLLM); ok {
+		return rl.GenerateStreamAndCollect(ctx, model, messages, tools, "", nil, nil, nil, nil)
 	}
-	if sc, ok := m.llmClient.(llm.StreamingLLM); ok {
-		eventCh, err := sc.GenerateStream(ctx, m.model, messages, tools, "")
+	if sc, ok := client.(llm.StreamingLLM); ok {
+		eventCh, err := sc.GenerateStream(ctx, model, messages, tools, "")
 		if err != nil {
 			return nil, err
 		}
 		return llm.CollectStream(ctx, eventCh)
 	}
-	return m.llmClient.Generate(ctx, m.model, messages, tools, "")
+	return client.Generate(ctx, model, messages, tools, "")
 }
 
 // SetOwnerUserID sets the canonical owner user_id at runtime.
@@ -734,6 +741,9 @@ func isCJKRune(r rune) bool {
 
 // Memorize processes conversation messages and stores memories.
 // Called on /new command and session end.
+// The LLM client+model come from the input — NEVER shared struct state (the
+// provider instance serves all sessions; a shared field was raced by concurrent
+// memory operations, 2026-09-02 incident).
 func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (memory.MemorizeResult, error) {
 	if !input.ArchiveAll {
 		return memory.MemorizeResult{OK: true}, nil
@@ -741,18 +751,16 @@ func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	if input.LLMClient == nil {
 		return memory.MemorizeResult{OK: true}, nil
 	}
-
-	m.llmClient = input.LLMClient
-	m.model = input.Model
+	client, model := input.LLMClient, input.Model
 
 	// 1. Generate session summary → short-term memory
-	summary, topics := m.generateSessionSummary(ctx, input.Messages)
+	summary, topics := m.generateSessionSummary(ctx, client, model, input.Messages)
 	if summary != "" {
 		m.addShortTermMemory(summary, topics, "")
 	}
 
 	// 2. Extract atomic memories → long-term memory
-	entries := m.extractAtomicMemories(ctx, input.Messages, 0)
+	entries := m.extractAtomicMemories(ctx, client, model, input.Messages, 0)
 	for _, entry := range entries {
 		if err := m.addLongTermMemory(entry); err != nil {
 			log.WithError(err).Debug("xbot-memory: failed to add long-term memory")
@@ -760,7 +768,7 @@ func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	}
 
 	// 3. Update core summary
-	m.updateCoreSummary(ctx)
+	m.updateCoreSummary(ctx, client, model)
 
 	// 4. Decay heat scores
 	m.decayMemories()
@@ -820,12 +828,12 @@ func (m *XbotMemory) ConsolidateTurn(ctx context.Context, input memory.MemorizeI
 		return memory.MemorizeResult{NewLastConsolidated: len(input.Messages), OK: true}, nil
 	}
 
-	m.llmClient = input.LLMClient
-	m.model = input.Model
-
 	// Extract atomic memories from the full list, watermark = start.
 	// No slice → identical prefix across consolidations.
-	entries := m.extractAtomicMemories(ctx, input.Messages, start)
+	// The LLM client comes from THIS input (per-operation ownership — the shared
+	// m.llmClient field was a cross-session race: concurrent sessions' memory
+	// ops overwrote each other's model/endpoint, 2026-09-02 incident).
+	entries := m.extractAtomicMemories(ctx, input.LLMClient, input.Model, input.Messages, start)
 	added := 0
 	for _, entry := range entries {
 		if err := m.addLongTermMemory(entry); err == nil {
@@ -1174,8 +1182,8 @@ func (m *XbotMemory) writeCoreSummary(content string) {
 	os.Rename(tmpPath, path)
 }
 
-func (m *XbotMemory) updateCoreSummary(ctx context.Context) {
-	if m.llmClient == nil {
+func (m *XbotMemory) updateCoreSummary(ctx context.Context, client llm.LLM, model string) {
+	if client == nil {
 		return
 	}
 
@@ -1207,7 +1215,7 @@ Update the core summary to incorporate any new critical information.
 Keep it under %d characters. Preserve existing important information.
 Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
 
-	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
 		llm.NewUserMessage(prompt),
 	}, nil)
@@ -1266,8 +1274,8 @@ func (m *XbotMemory) evictShortTerm() {
 
 // --- LLM-driven memory extraction ---
 
-func (m *XbotMemory) generateSessionSummary(ctx context.Context, messages []llm.ChatMessage) (string, string) {
-	if m.llmClient == nil || len(messages) == 0 {
+func (m *XbotMemory) generateSessionSummary(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage) (string, string) {
+	if client == nil || len(messages) == 0 {
 		return "", ""
 	}
 
@@ -1290,7 +1298,7 @@ Conversation:
 
 Return ONLY the summary, no preamble. Also provide 3-5 comma-separated key topics.`, msgSB.String())
 
-	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a conversation summarizer. Be concise and factual."),
 		llm.NewUserMessage(prompt),
 	}, nil)
@@ -1348,8 +1356,8 @@ type extractedMemory struct {
 // <dynamic-context>, peer/collaborator notes, workdir hints, sender/language
 // meta) are STRIPPED before sending to the LLM. These are already in the system
 // prompt — storing them as memories is pure bloat (the "垃圾记忆" complaint).
-func (m *XbotMemory) extractAtomicMemories(ctx context.Context, messages []llm.ChatMessage, startIdx int) []LongTermMemory {
-	if m.llmClient == nil || len(messages) == 0 {
+func (m *XbotMemory) extractAtomicMemories(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, startIdx int) []LongTermMemory {
+	if client == nil || len(messages) == 0 {
 		return nil
 	}
 	if startIdx < 0 {
@@ -1432,7 +1440,7 @@ to the agent in a brand-new session next week?" If the answer is no, drop it.
 Conversation:
 %s`, text)
 
-	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a long-term memory curator. Extract only DURABLE, CROSS-SESSION memories. Never store session-local state, transient task progress, or system-injected metadata. If nothing durable exists, return an empty array."),
 		llm.NewUserMessage(prompt),
 	}, []llm.ToolDefinition{&extractMemoriesToolDef{}})
@@ -1742,17 +1750,17 @@ func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywor
 
 // PreCompress extracts critical information from messages about to be compressed
 // and saves it to long-term memory before the compression discards them.
+// The LLM client+model come from the input (per-operation ownership — NEVER
+// shared struct state; see the XbotMemory struct comment).
 func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressInput) (*memory.PreCompressResult, error) {
 	if input.LLMClient == nil {
 		return &memory.PreCompressResult{}, nil
 	}
-
-	m.llmClient = input.LLMClient
-	m.model = input.Model
+	client, model := input.LLMClient, input.Model
 
 	// 1. Extract atomic memories from messages about to be compressed
 	//    (full list, watermark 0 — compression discards everything, so extract all)
-	entries := m.extractAtomicMemories(ctx, input.MessagesToCompress, 0)
+	entries := m.extractAtomicMemories(ctx, client, model, input.MessagesToCompress, 0)
 	savedCount := 0
 	for _, entry := range entries {
 		entry.SourceSession = input.SessionID
@@ -1762,7 +1770,7 @@ func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressIn
 	}
 
 	// 2. Generate session summary → short-term memory
-	summary, topics := m.generateSessionSummary(ctx, input.MessagesToCompress)
+	summary, topics := m.generateSessionSummary(ctx, client, model, input.MessagesToCompress)
 	if summary != "" {
 		m.addShortTermMemory(summary, topics, input.SessionID)
 	}
@@ -1790,6 +1798,16 @@ func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressIn
 }
 
 // PostCompress saves the compaction summary and updates memory state after compression.
+// The LLM client+model come from the input (per-operation ownership). Historical
+// incident (2026-09-02 chat_BD94FA4BB469): PostCompress did NOT receive a client
+// and read a shared mutable m.llmClient field — the single-operator deployment
+// shares ONE XbotMemory instance across ALL sessions, so a concurrent session's
+// ConsolidateTurn/PreCompress overwrote the field between this compression's
+// PreCompress and PostCompress, sending the core-summary update to ANOTHER
+// session's model/endpoint (F64D's extraction ran with feishu's deepseek config
+// and vice versa — a perfect swap). With input.LLMClient the core-summary
+// update always uses THIS compression's own client; nil skips the LLM leg
+// (summary save + decay still run).
 func (m *XbotMemory) PostCompress(ctx context.Context, input memory.PostCompressInput) error {
 	// 1. Save compaction summary as a short-term memory entry
 	if input.CompactionSummary != "" {
@@ -1797,7 +1815,7 @@ func (m *XbotMemory) PostCompress(ctx context.Context, input memory.PostCompress
 	}
 
 	// 2. Update core summary
-	m.updateCoreSummary(ctx)
+	m.updateCoreSummary(ctx, input.LLMClient, input.Model)
 
 	// 3. Decay heat scores
 	m.decayMemories()
