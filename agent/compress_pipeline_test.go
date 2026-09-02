@@ -10,23 +10,23 @@ import (
 
 // mockContextManager implements ContextManager for pipeline tests.
 type mockContextManager struct {
-	compressFn       func(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error)
-	manualCompressFn func(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error)
+	compressFn       func(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error)
+	manualCompressFn func(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error)
 }
 
 func (m *mockContextManager) Mode() ContextMode { return ContextModePhase1 }
 func (m *mockContextManager) ShouldCompress([]llm.ChatMessage, string, int) bool {
 	return false
 }
-func (m *mockContextManager) Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+func (m *mockContextManager) Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
 	if m.compressFn != nil {
-		return m.compressFn(ctx, messages, client, model)
+		return m.compressFn(ctx, messages, client, model, promptTokens)
 	}
 	return nil, errors.New("compress not configured")
 }
-func (m *mockContextManager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+func (m *mockContextManager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
 	if m.manualCompressFn != nil {
-		return m.manualCompressFn(ctx, messages, client, model)
+		return m.manualCompressFn(ctx, messages, client, model, promptTokens)
 	}
 	return nil, errors.New("manual compress not configured")
 }
@@ -57,7 +57,7 @@ func sampleCompressResult() *CompressResult {
 func TestApplyCompress_CompressSuccess(t *testing.T) {
 	result := sampleCompressResult()
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return result, nil
 		},
 	}
@@ -138,11 +138,11 @@ func TestApplyCompress_ManualCompressSuccess(t *testing.T) {
 	result := sampleCompressResult()
 	manualCalled := false
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			t.Error("Compress should not be called when UseManual=true")
 			return nil, nil
 		},
-		manualCompressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		manualCompressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			manualCalled = true
 			return result, nil
 		},
@@ -173,7 +173,7 @@ func TestApplyCompress_ManualCompressSuccess(t *testing.T) {
 
 func TestApplyCompress_CompressError(t *testing.T) {
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return nil, errors.New("compression failed")
 		},
 	}
@@ -201,7 +201,7 @@ func TestApplyCompress_CompressError(t *testing.T) {
 func TestApplyCompress_NilStores(t *testing.T) {
 	result := sampleCompressResult()
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return result, nil
 		},
 	}
@@ -233,7 +233,7 @@ func TestApplyCompress_NilStores(t *testing.T) {
 func TestApplyCompress_NilTrackerAndPersistence(t *testing.T) {
 	result := sampleCompressResult()
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return result, nil
 		},
 	}
@@ -271,7 +271,7 @@ func TestApplyCompress_NilTrackerAndPersistence(t *testing.T) {
 func TestApplyCompress_NilSyncMessages(t *testing.T) {
 	result := sampleCompressResult()
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return result, nil
 		},
 	}
@@ -324,7 +324,7 @@ func TestApplyCompress_SanitizesCompressedLLMView(t *testing.T) {
 		CompressedTokens: 42,
 	}
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return result, nil
 		},
 	}
@@ -351,7 +351,7 @@ func TestApplyCompress_SanitizesCompressedLLMView(t *testing.T) {
 func TestApplyCompress_NilAccumulateUsage(t *testing.T) {
 	result := sampleCompressResult()
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return result, nil
 		},
 	}

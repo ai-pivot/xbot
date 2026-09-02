@@ -84,7 +84,7 @@ func newCompressLoopState(t *testing.T, cm ContextManager, msgs []llm.ChatMessag
 // （保 system + notice + 最后 6 条 = 40k+36k ≈ 76k < 91.8k）→ 收敛。
 func TestRunCompression_PostCompressCheckUsesFullEstimate_NotSummaryOnly(t *testing.T) {
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return &CompressResult{
 				// LLMView ≈ 40k(system) + 1k(summary) + 0.2k + 12×6k(tail) ≈ 113k tokens
 				LLMView:          bigLLMView(60000, 12, 9000),
@@ -122,7 +122,7 @@ func TestRunCompression_PostCompressCheckUsesFullEstimate_NotSummaryOnly(t *test
 func TestRunCompression_GivesUpWhenUnshrinkable_NoInfiniteRetry(t *testing.T) {
 	compressCalls := 0
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			compressCalls++
 			// system 200k chars ≈ 133k tokens > 91.8k；只有 2 条对话消息 →
 			// aggressiveTruncate 无可截断（conversationMsgs ≤ 6）。
@@ -167,7 +167,7 @@ func TestRunCompression_GivesUpWhenUnshrinkable_NoInfiniteRetry(t *testing.T) {
 func TestMaybeCompress_ConsecutiveIneffectiveCompressionGivesUp(t *testing.T) {
 	compressCalls := 0
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			compressCalls++
 			// 压缩产出很小（估算 ~22k < 91.8k）：达标检查（估算口径）通过。
 			// 但真实 API 值（测试模拟）始终 ~185k —— 估算严重低估的场景。
@@ -236,7 +236,7 @@ func TestMaybeCompress_ConsecutiveIneffectiveCompressionGivesUp(t *testing.T) {
 func TestMaybeCompress_EffectiveCompressionNotAbandoned(t *testing.T) {
 	compressCalls := 0
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, _ []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			compressCalls++
 			return &CompressResult{
 				LLMView:          bigLLMView(30000, 4, 100),

@@ -11,6 +11,7 @@ import (
 
 	"xbot/agent/hooks"
 	"xbot/channel"
+	"xbot/clipanic"
 	"xbot/llm"
 	log "xbot/logger"
 	"xbot/memory"
@@ -853,11 +854,14 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	}
 
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-		CM:                cm,
-		Messages:          s.messages,
-		LLMClient:         s.cfg.LLMClient,
-		Model:             s.cfg.Model,
-		UseManual:         true,
+		CM:        cm,
+		Messages:  s.messages,
+		LLMClient: s.cfg.LLMClient,
+		Model:     s.cfg.Model,
+		UseManual: true,
+		// RealPromptTokens: 0 (intentional) — the input-too-long ERROR path
+		// carries no usage; compactMessages takes the conservative flatten
+		// fallback for unknown token counts (Never-Estimate-Tokens rule).
 		TokenTracker:      s.tokenTracker,
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
@@ -1463,6 +1467,27 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	return nil
 }
 
+// spawnBackground runs fn as a task that must OUTLIVE the current Run's ctx
+// (turn ctx dies at Run end — the async memory hooks keep running after the
+// compression turn finishes). Uses the agent's lifecycle wiring
+// (cfg.SpawnBackground: lifecycleWG-tracked + lifecycleStopCh-cancelled) when
+// available; falls back to fire-and-forget (clipanic.Go + context.WithoutCancel
+// keeps log fields) for tests and runs without the wiring.
+func (s *runState) spawnBackground(ctx context.Context, name string, fn func(ctx context.Context)) {
+	if s.cfg.SpawnBackground != nil {
+		s.cfg.SpawnBackground(name, fn)
+		return
+	}
+	// TEST-ONLY fallback (CR CjiW Nit): production paths always wire
+	// cfg.SpawnBackground (buildBaseRunConfig / buildSubAgentRunConfig →
+	// agent.spawnBackgroundTask: lifecycleWG-tracked + lifecycleStopCh-cancelled).
+	// This branch exists for tests that build a bare RunConfig — it has NO
+	// lifecycle tracking (Close neither waits nor cancels), so a minute-scale
+	// background hook (e.g. PostCompress core-summary LLM) could outlive the
+	// agent's shutdown here. Do NOT wire production code onto this path.
+	clipanic.Go(name, func() { fn(context.WithoutCancel(ctx)) })
+}
+
 // runCompression performs the actual context compression.
 func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalTokens, maxTokens int) error {
 	// M2 锁覆盖：Phase/progressLines 写与后台 SubAgent 回调的 notifyProgress
@@ -1529,44 +1554,55 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		return nil
 	}
 
-	// --- Memory system integration: PreCompress ---
-	// If the memory provider implements CompressionAware, extract critical
-	// information from messages about to be compressed before they're lost.
-	var preserveHints []string
+	// --- Memory system integration: PreCompress (BACKGROUND) ---
+	// Extracts memories from the messages about to be compressed. Runs ASYNC
+	// on a snapshot — its LLM calls must NOT block the compression path
+	// (2026-09-02 incident: Pre 2m51s + Post 8m32s blocked the turn for 11m23s
+	// while the compression itself took only 75s).
+	//
+	// PreserveHints were never consumed by ApplyCompress (dead wiring — the
+	// CompressPipelineParams field is removed); the SkipCompress field is
+	// deleted from PreCompressResult (the hooks are async — they cannot block
+	// the compression path, and the only provider never set it).
 	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
-		// Split messages: approximate the toCompress/tail boundary
-		// (the actual split is done inside compactMessages, but we need
-		// to pass the full set to PreCompress — it will extract what it can)
-		preResult, err := mem.PreCompress(ctx, memory.PreCompressInput{
-			MessagesToCompress: s.messages,
-			SessionID:          s.cfg.ChatID,
-			LLMClient:          s.cfg.LLMClient,
-			Model:              s.cfg.Model,
+		// Shallow-copy the snapshot: the messages slice is swapped by the
+		// compression below while the hook is still reading it.
+		snapshot := make([]llm.ChatMessage, len(s.messages))
+		copy(snapshot, s.messages)
+		chatID := s.cfg.ChatID
+		client, model := s.cfg.LLMClient, s.cfg.Model
+		s.spawnBackground(ctx, "compress.preCompress", func(bgCtx context.Context) {
+			preResult, err := mem.PreCompress(bgCtx, memory.PreCompressInput{
+				MessagesToCompress: snapshot,
+				SessionID:          chatID,
+				LLMClient:          client,
+				Model:              model,
+			})
+			if err != nil {
+				log.Ctx(bgCtx).WithError(err).WithField("chat_id", chatID).Warn("PreCompress failed (background)")
+				return
+			}
+			log.Ctx(bgCtx).WithFields(log.Fields{
+				"chat_id":     chatID,
+				"saved_count": preResult.SavedCount,
+			}).Info("PreCompress: saved memories before compression (background)")
 		})
-		if err != nil {
-			log.Ctx(ctx).WithError(err).Warn("PreCompress failed, continuing with compression")
-		} else {
-			preserveHints = preResult.PreserveHints
-			if preResult.SavedCount > 0 {
-				log.Ctx(ctx).WithField("saved_count", preResult.SavedCount).Info("PreCompress: saved memories before compression")
-			}
-			if preResult.SkipCompress {
-				log.Ctx(ctx).Info("PreCompress: memory system requested skip, skipping compression")
-				if s.structuredProgress != nil {
-					s.progressMu.Lock()
-					s.structuredProgress.Phase = PhaseThinking
-					s.progressMu.Unlock()
-				}
-				return nil
-			}
-		}
 	}
 
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-		CM:                sessionCM,
-		Messages:          s.messages,
-		LLMClient:         s.cfg.LLMClient,
-		Model:             s.cfg.Model,
+		CM:        sessionCM,
+		Messages:  s.messages,
+		LLMClient: s.cfg.LLMClient,
+		Model:     s.cfg.Model,
+		RealPromptTokens: func() int64 {
+			// Real API prompt_tokens (maybeCompress's token source — the
+			// tracker value THIS compression was triggered by). 0 = unknown →
+			// flatten fallback (Never-Estimate-Tokens: never guess).
+			if pt, _ := s.tokenTracker.GetPromptTokens(); pt > 0 {
+				return pt
+			}
+			return 0
+		}(),
 		TokenTracker:      s.tokenTracker,
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
@@ -1576,7 +1612,6 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		SyncMessages:      s.syncMessages,
 		Memory:            s.cfg.Memory,
 		SessionID:         s.cfg.ChatID,
-		PreserveHints:     preserveHints,
 	})
 	if compressErr != nil {
 		log.Ctx(ctx).WithError(compressErr).Warn("Auto context compaction failed")
@@ -1587,6 +1622,11 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		}
 		return compressErr
 	}
+	// Capture the pre-swap message count for the PostCompress hook's
+	// RemovedMessageCount. The OLD code computed len(s.messages) - len(new)
+	// AFTER the swap below — s.messages was already the new slice, so it
+	// always evaluated to 0 (DB logs confirmed removed_msg_count=0 forever).
+	preCount := len(s.messages)
 	s.messages = pipelineResult.NewMessages
 	s.lastCompressIter = s.compressAttempts
 	s.validateInvariantsAt(ctx, "post_compress")
@@ -1635,31 +1675,45 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		})
 	}
 
-	// --- Memory system integration: PostCompress ---
-	// If the memory provider implements CompressionAware, save the compaction
-	// summary and update memory state after compression completes.
+	// --- Memory system integration: PostCompress (BACKGROUND) ---
+	// Saves the compaction summary + updates the core summary via LLM. Runs
+	// ASYNC on a snapshot — in the 2026-09-02 incident its updateCoreSummary
+	// call queued 8m32s on the production cluster while the turn sat blocked
+	// AFTER compression had already completed.
 	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
-		// Extract compaction summary from the compressed messages
+		newMsgs := make([]llm.ChatMessage, len(pipelineResult.NewMessages))
+		copy(newMsgs, pipelineResult.NewMessages)
 		compactionSummary := ""
-		for _, msg := range pipelineResult.NewMessages {
+		for _, msg := range newMsgs {
 			if msg.Role == "user" && strings.Contains(msg.Content, "[Compacted context]") {
 				compactionSummary = msg.Content
 				break
 			}
 		}
-		removedCount := len(s.messages) - len(pipelineResult.NewMessages)
+		removedCount := preCount - len(newMsgs)
 		if removedCount < 0 {
 			removedCount = 0
 		}
-		err := mem.PostCompress(ctx, memory.PostCompressInput{
-			CompressedMessages:  pipelineResult.NewMessages,
-			CompactionSummary:   compactionSummary,
-			RemovedMessageCount: removedCount,
-			SessionID:           s.cfg.ChatID,
+		chatID := s.cfg.ChatID
+		client, model := s.cfg.LLMClient, s.cfg.Model
+		s.spawnBackground(ctx, "compress.postCompress", func(bgCtx context.Context) {
+			// LLM client ownership: the memory provider (single-operator shared
+			// instance) must use THIS session's client for the core-summary
+			// update — never a shared mutable field (concurrent sessions'
+			// ConsolidateTurn/PreCompress would overwrite it; 2026-09-02 incident:
+			// a PostCompress landed on another session's model/endpoint).
+			err := mem.PostCompress(bgCtx, memory.PostCompressInput{
+				CompressedMessages:  newMsgs,
+				CompactionSummary:   compactionSummary,
+				RemovedMessageCount: removedCount,
+				SessionID:           chatID,
+				LLMClient:           client,
+				Model:               model,
+			})
+			if err != nil {
+				log.Ctx(bgCtx).WithError(err).WithField("chat_id", chatID).Warn("PostCompress failed (background)")
+			}
 		})
-		if err != nil {
-			log.Ctx(ctx).WithError(err).Warn("PostCompress failed")
-		}
 	}
 
 	// M2 锁覆盖：Phase/HistoryCompacted/progressLines 更新与后台 SubAgent 回调的

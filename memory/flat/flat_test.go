@@ -20,7 +20,7 @@ func TestFlatMemory_Recall_Empty(t *testing.T) {
 	memDir, tenantID := setupTestDir(t)
 	m := New(tenantID, memDir)
 
-	result, err := m.Recall(context.Background(), "any query")
+	result, err := m.Recall(context.Background(), "any query", "")
 	if err != nil {
 		t.Fatalf("Recall failed: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestFlatMemory_Recall_WithContent(t *testing.T) {
 		t.Fatalf("Failed to write MEMORY.md: %v", err)
 	}
 
-	result, err := m.Recall(context.Background(), "ignored query")
+	result, err := m.Recall(context.Background(), "ignored query", "")
 	if err != nil {
 		t.Fatalf("Recall failed: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestFlatMemory_Recall_Truncation(t *testing.T) {
 		t.Fatalf("Failed to write MEMORY.md: %v", err)
 	}
 
-	result, err := m.Recall(context.Background(), "any query")
+	result, err := m.Recall(context.Background(), "any query", "")
 	if err != nil {
 		t.Fatalf("Recall failed: %v", err)
 	}

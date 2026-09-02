@@ -19,6 +19,11 @@ type CompressPipelineParams struct {
 	Model string
 	// UseManual selects ManualCompress (true) or Compress (false).
 	UseManual bool
+	// RealPromptTokens is the REAL API prompt_tokens of the most recent LLM
+	// call (TokenTracker / usage) — the compactMessages verbatim budget check
+	// uses it (Never-Estimate-Tokens rule, AGENTS.md). 0 = unknown (error
+	// paths without usage) → the flatten fallback.
+	RealPromptTokens int64
 	// TokenTracker receives the ResetAfterCompress call.
 	TokenTracker *TokenTracker
 	// Persistence receives the RewriteAfterCompress call.
@@ -41,9 +46,6 @@ type CompressPipelineParams struct {
 	Memory memory.MemoryProvider
 	// SessionID is the current session ID (for memory PreCompress/PostCompress).
 	SessionID string
-	// PreserveHints are critical information hints from PreCompress,
-	// injected into the compression prompt to prevent information loss.
-	PreserveHints []string
 }
 
 // CompressPipelineResult holds the outputs of a compression pipeline execution.
@@ -73,9 +75,9 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	var err error
 
 	if params.UseManual {
-		result, err = params.CM.ManualCompress(ctx, params.Messages, params.LLMClient, params.Model)
+		result, err = params.CM.ManualCompress(ctx, params.Messages, params.LLMClient, params.Model, params.RealPromptTokens)
 	} else {
-		result, err = params.CM.Compress(ctx, params.Messages, params.LLMClient, params.Model)
+		result, err = params.CM.Compress(ctx, params.Messages, params.LLMClient, params.Model, params.RealPromptTokens)
 	}
 	if err != nil {
 		return nil, err

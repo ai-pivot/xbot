@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS xbot_long_term_memories (
     last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     file_path TEXT,
-    search_text TEXT NOT NULL DEFAULT ''   -- CJK 逐字空格切分后的检索文本
+    search_text TEXT NOT NULL DEFAULT '',  -- CJK 逐字空格切分后的检索文本
+    scope TEXT NOT NULL DEFAULT 'global',  -- 'global' = 注入所有会话；'session' = 自动提取的会话内记忆（永不跨会话注入）
+    superseded_by INTEGER                  -- 被替代条目的 ID（新事实取代旧事实，如集群搬迁；NULL = 活跃）
 );
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_user ON xbot_long_term_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_type ON xbot_long_term_memories(type);
@@ -152,14 +154,22 @@ END;
 // The same user sees the same memories across ALL sessions/tenants — this is
 // the definition of "cross-session memory". tenantID is retained as an
 // informational column (source tenant) but never used for filtering.
+//
+// LLM CLIENT OWNERSHIP: this provider holds NO llmClient/model fields. The
+// single-operator deployment shares ONE XbotMemory instance across ALL sessions,
+// and a mutable client field was a cross-session race (2026-09-02 incident:
+// chat_BD94FA4BB469's PostCompress core-summary update landed on a different
+// session's model/endpoint after concurrent ConsolidateTurns overwrote the
+// shared field — F64D's extraction ran with feishu's deepseek config and vice
+// versa, a perfect swap). Every LLM-using operation (Memorize/ConsolidateTurn/
+// PreCompress/PostCompress) receives its client+model EXPLICITLY in its input
+// and threads them down to generateLLM — no shared mutable state.
 type XbotMemory struct {
-	userID    int64  // canonical owner user_id (isolation scope)
-	tenantID  int64  // source tenant (informational, not used for filtering)
-	baseDir   string // ~/.xbot/memory/{tenantID}/
-	db        *sql.DB
-	llmClient llm.LLM
-	model     string
-	mu        sync.RWMutex
+	userID   int64  // canonical owner user_id (isolation scope)
+	tenantID int64  // source tenant (informational, not used for filtering)
+	baseDir  string // ~/.xbot/memory/{tenantID}/
+	db       *sql.DB
+	mu       sync.RWMutex
 
 	// Time-based consolidation throttle (guarded by mu).
 	// At most ONE LLM extraction per consolidateInterval per provider instance.
@@ -250,16 +260,15 @@ func (m *XbotMemory) scopeArg() int64 {
 	return m.userID
 }
 
-// SetLLM sets the LLM client and model for Memorize operations.
-// Called by the agent loop before Memorize is invoked.
-func (m *XbotMemory) SetLLM(client llm.LLM, model string) {
-	m.llmClient = client
-	m.model = model
-}
-
 // generateLLM issues a memory-pipeline LLM call (session summaries, atomic
 // memory extraction, core-summary updates) through the STREAMING path whenever
 // the client supports it, falling back to non-stream Generate otherwise.
+//
+// The client+model are EXPLICIT parameters (threaded from the operation's
+// input — Memorize/ConsolidateTurn/PreCompress/PostCompress), NEVER shared
+// struct state: one XbotMemory instance serves all sessions (single operator),
+// and a shared mutable field was raced by concurrent memory operations
+// (2026-09-02 incident — see the struct comment).
 //
 // Root cause this guards (web:chat_BD94FA4BB469 turn 367, 2026-08-30): the
 // memory LLM calls used llmClient.Generate — the non-stream retry path whose
@@ -276,18 +285,18 @@ func (m *XbotMemory) SetLLM(client llm.LLM, model string) {
 // collection retried as a whole); plain StreamingLLM gets GenerateStream +
 // CollectStream; clients that implement neither (test mocks) fall back to
 // Generate.
-func (m *XbotMemory) generateLLM(ctx context.Context, messages []llm.ChatMessage, tools []llm.ToolDefinition) (*llm.LLMResponse, error) {
-	if rl, ok := m.llmClient.(*llm.RetryLLM); ok {
-		return rl.GenerateStreamAndCollect(ctx, m.model, messages, tools, "", nil, nil, nil, nil)
+func (m *XbotMemory) generateLLM(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition) (*llm.LLMResponse, error) {
+	if rl, ok := client.(*llm.RetryLLM); ok {
+		return rl.GenerateStreamAndCollect(ctx, model, messages, tools, "", nil, nil, nil, nil)
 	}
-	if sc, ok := m.llmClient.(llm.StreamingLLM); ok {
-		eventCh, err := sc.GenerateStream(ctx, m.model, messages, tools, "")
+	if sc, ok := client.(llm.StreamingLLM); ok {
+		eventCh, err := sc.GenerateStream(ctx, model, messages, tools, "")
 		if err != nil {
 			return nil, err
 		}
 		return llm.CollectStream(ctx, eventCh)
 	}
-	return m.llmClient.Generate(ctx, m.model, messages, tools, "")
+	return client.Generate(ctx, model, messages, tools, "")
 }
 
 // SetOwnerUserID sets the canonical owner user_id at runtime.
@@ -348,6 +357,38 @@ func (m *XbotMemory) migrateLegacyTenantData() {
 				log.WithError(err).WithField("table", table).Warn("xbot-memory: failed to add user_id column")
 			} else {
 				log.WithField("table", table).Info("xbot-memory: added user_id column")
+			}
+		}
+	}
+
+	// Step 1b: ensure scope + superseded_by columns exist (session isolation,
+	// 2026-09-02 redesign). scope DEFAULT 'global' keeps existing rows'
+	// behavior unchanged — they were user-scoped global memories. superseded_by
+	// is the supersede-chain link (new facts replace stale ones instead of
+	// double-storing both). Same idempotent columnExists pattern as Step 1.
+	for _, col := range []struct{ name, ddl string }{
+		{"scope", `ALTER TABLE xbot_long_term_memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'`},
+		{"superseded_by", "ALTER TABLE xbot_long_term_memories ADD COLUMN superseded_by INTEGER"},
+	} {
+		var hasCol bool
+		rows, err := m.db.Query("PRAGMA table_info(xbot_long_term_memories)")
+		if err == nil {
+			for rows.Next() {
+				var cid int
+				var name, typ string
+				var notNull, pk int
+				var dflt any
+				if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == col.name {
+					hasCol = true
+				}
+			}
+			rows.Close()
+		}
+		if !hasCol {
+			if _, err := m.db.Exec(col.ddl); err != nil {
+				log.WithError(err).WithField("column", col.name).Warn("xbot-memory: failed to add column")
+			} else {
+				log.WithField("column", col.name).Info("xbot-memory: added column")
 			}
 		}
 	}
@@ -442,11 +483,17 @@ func (m *XbotMemory) backfillSearchText() {
 
 // Recall retrieves relevant memories for the current conversation.
 // Uses BM25 keyword search (SQLite FTS5) — zero LLM calls.
-// Total injected content is capped at recallMaxRunes; short-term memories
-// (other sessions' summaries) are injected ONLY when a query is present —
-// with an empty query they are unrelated to the current session and only
-// dilute attention.
-func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
+//
+// Session isolation (2026-09-02 redesign): ONLY global-scope, non-superseded
+// long-term memories + the core summary are injected. The OLD "## Recent
+// Sessions" section (query-anchored searchShortTerm) injected OTHER sessions'
+// short-term summaries into unrelated conversations (live evidence: a GPU
+// tuning session's [Compacted context] summary appeared in a design
+// conversation) — cross-session recall now goes through memory_search on
+// demand, never auto-injection. Total injected content is capped at
+// recallMaxRunes; every injected memory carries its created date so the model
+// can judge staleness itself.
+func (m *XbotMemory) Recall(ctx context.Context, query, sessionID string) (string, error) {
 	var sb strings.Builder
 	var err error
 	sb.WriteString("# Memory\n\n")
@@ -459,26 +506,36 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 		sb.WriteString("\n\n")
 	}
 
-	// 2. Short-term memories (BM25 + heat) — ONLY when query is non-empty.
-	//    recentShortTerm() returns the most recent session summaries, which
-	//    are OTHER sessions' context unrelated to the current one — omit them
-	//    when there's no query to anchor relevance.
-	var shortTermMems []ShortTermMemory
-	if query != "" {
-		shortTermMems, err = m.searchShortTerm(query, 3)
+	// 2. Session memories — this session's OWN scoped memories only
+	// (auto-extracted task state written by ConsolidateTurn/PreCompress with
+	// scope='session' AND source_session=<this session>). Other sessions'
+	// scoped memories NEVER leak here (the session isolation contract);
+	// superseded entries are filtered. Empty sessionID = skip the section
+	// (legacy unscoped callers).
+	var sessionMems []LongTermMemory
+	if sessionID != "" {
+		sessionMems, err = m.sessionMemories(sessionID, defaultRecallTopK)
 		if err != nil {
-			log.WithError(err).Debug("xbot-memory: short-term search failed")
+			log.WithError(err).Debug("xbot-memory: session memory lookup failed")
 		}
-		if len(shortTermMems) > 0 {
-			sb.WriteString("## Recent Sessions\n")
-			for _, mem := range shortTermMems {
-				fmt.Fprintf(&sb, "- %s\n", mem.Summary)
+		if len(sessionMems) > 0 {
+			sb.WriteString("## Session Memory\n")
+			for _, mem := range sessionMems {
+				// created date on every line — same staleness signal as the
+				// Long-term section below: session chatIDs are long-lived and
+				// ConsolidateTurn/PreCompress keep accumulating session memories,
+				// so week-old task state must be distinguishable from fresh facts
+				// (CR xbotgh: align with the "model-side staleness judgment" design).
+				fmt.Fprintf(&sb, "- [%s] %s (created %s)\n", mem.Type, mem.Content, mem.CreatedAt.Format("2006-01-02"))
 			}
 			sb.WriteString("\n")
 		}
 	}
 
-	// 3. Long-term memories (BM25)
+	// 3. Long-term memories (BM25) — global scope, non-superseded only.
+	// Session-scoped memories (auto-extracted task state from other sessions)
+	// never leak into this session's injection; superseded entries (replaced by
+	// newer contradicting facts) are filtered at the query level.
 	var longTermMems []LongTermMemory
 	longTermMems, err = m.searchLongTerm(query, defaultRecallTopK)
 	if err != nil {
@@ -487,7 +544,9 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	if len(longTermMems) > 0 {
 		sb.WriteString("## Long-term Memories\n")
 		for _, mem := range longTermMems {
-			fmt.Fprintf(&sb, "- [%s] %s\n", mem.Type, mem.Content)
+			// created date on every line: the model is the final staleness
+			// judge ("cluster moved from X" last month beats "cluster at X" last year)
+			fmt.Fprintf(&sb, "- [%s] %s (created %s)\n", mem.Type, mem.Content, mem.CreatedAt.Format("2006-01-02"))
 		}
 		sb.WriteString("\n")
 	}
@@ -509,7 +568,8 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	if injectedRunes > 0 {
 		log.WithFields(log.Fields{
 			"query":          truncateForLog(query, 120),
-			"short_term":     len(shortTermMems),
+			"session_id":     sessionID,
+			"session_memory": len(sessionMems),
 			"long_term":      len(longTermMems),
 			"has_core":       coreSummary != "",
 			"injected_chars": injectedRunes,
@@ -734,6 +794,9 @@ func isCJKRune(r rune) bool {
 
 // Memorize processes conversation messages and stores memories.
 // Called on /new command and session end.
+// The LLM client+model come from the input — NEVER shared struct state (the
+// provider instance serves all sessions; a shared field was raced by concurrent
+// memory operations, 2026-09-02 incident).
 func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (memory.MemorizeResult, error) {
 	if !input.ArchiveAll {
 		return memory.MemorizeResult{OK: true}, nil
@@ -741,26 +804,29 @@ func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	if input.LLMClient == nil {
 		return memory.MemorizeResult{OK: true}, nil
 	}
-
-	m.llmClient = input.LLMClient
-	m.model = input.Model
+	client, model := input.LLMClient, input.Model
 
 	// 1. Generate session summary → short-term memory
-	summary, topics := m.generateSessionSummary(ctx, input.Messages)
+	summary, topics := m.generateSessionSummary(ctx, client, model, input.Messages)
 	if summary != "" {
 		m.addShortTermMemory(summary, topics, "")
 	}
 
 	// 2. Extract atomic memories → long-term memory
-	entries := m.extractAtomicMemories(ctx, input.Messages, 0)
+	// SourceSession: /new 归档的提取固定 scope='session'（extractAtomicMemories）
+	// —— 必须带上 input.SessionID，否则落库 source_session='' → sessionMemories
+	// 的 `source_session = ?` 过滤永不命中，本会话的 Recall 也注入不到
+	//（ConsolidateTurn/PreCompress 都写 SourceSession，唯独这里漏——CR xbotgh）。
+	entries := m.extractAtomicMemories(ctx, client, model, input.Messages, 0)
 	for _, entry := range entries {
+		entry.SourceSession = input.SessionID
 		if err := m.addLongTermMemory(entry); err != nil {
 			log.WithError(err).Debug("xbot-memory: failed to add long-term memory")
 		}
 	}
 
 	// 3. Update core summary
-	m.updateCoreSummary(ctx)
+	m.updateCoreSummary(ctx, client, model)
 
 	// 4. Decay heat scores
 	m.decayMemories()
@@ -820,14 +886,18 @@ func (m *XbotMemory) ConsolidateTurn(ctx context.Context, input memory.MemorizeI
 		return memory.MemorizeResult{NewLastConsolidated: len(input.Messages), OK: true}, nil
 	}
 
-	m.llmClient = input.LLMClient
-	m.model = input.Model
-
 	// Extract atomic memories from the full list, watermark = start.
 	// No slice → identical prefix across consolidations.
-	entries := m.extractAtomicMemories(ctx, input.Messages, start)
+	// The LLM client comes from THIS input (per-operation ownership — the shared
+	// m.llmClient field was a cross-session race: concurrent sessions' memory
+	// ops overwrote each other's model/endpoint, 2026-09-02 incident).
+	entries := m.extractAtomicMemories(ctx, input.LLMClient, input.Model, input.Messages, start)
 	added := 0
 	for _, entry := range entries {
+		// Session isolation: auto-extracted memories carry the session's own
+		// source_session (scope='session' is set inside extractAtomicMemories)
+		// so they only ever inject into THIS session's Recall.
+		entry.SourceSession = input.SessionID
 		if err := m.addLongTermMemory(entry); err == nil {
 			added++
 		}
@@ -884,6 +954,16 @@ type LongTermMemory struct {
 	AccessCount    int
 	CreatedAt      time.Time
 	LastAccessedAt time.Time
+	// Scope: 'global' (injected into every session's Recall) or 'session'
+	// (auto-extracted session-local state — NEVER cross-session injected;
+	// searchable on demand via memory_search). Auto-extraction paths
+	// (ConsolidateTurn/PreCompress/Memorize) write 'session'; explicit
+	// memory_add defaults to 'global' (the model decided it is durable).
+	Scope string
+	// SupersededBy: the ID of the entry that replaced this one (0 = active).
+	// A new fact that contradicts an old one supersedes it instead of
+	// double-storing both ("cluster moved from X to Y" keeps only the new one).
+	SupersededBy int64
 }
 
 // ShortTermMemory is a row in xbot_short_term_memories.
@@ -908,6 +988,7 @@ type MemoryEntry struct {
 	Importance float64 `json:"importance"`
 	CreatedAt  string  `json:"created_at"`
 	Score      float64 `json:"score,omitempty"` // BM25 score (lower = more relevant)
+	Scope      string  `json:"scope,omitempty"` // 'global' or 'session' (provenance for the model)
 }
 
 // --- Internal search methods ---
@@ -920,6 +1001,11 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 
 	// FTS5 BM25 search
 	// Note: SQLite FTS5 bm25() returns negative values (lower = more relevant)
+	// Session isolation (2026-09-02 redesign): the Recall injection path is
+	// GLOBAL-scope, non-superseded only — session-scoped memories (auto-extracted
+	// task state from other sessions) never leak into this session; superseded
+	// entries (replaced by newer contradicting facts) are filtered at the query
+	// level. memory_search (SearchMemories) searches all scopes on demand.
 	rows, err := m.db.Query(`
 		SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
 		       ltm.source_session, ltm.importance, ltm.heat_score, ltm.access_count,
@@ -927,7 +1013,7 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 		       bm25(xbot_long_term_memories_fts) as score
 		FROM xbot_long_term_memories_fts fts
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-		WHERE `+m.scopeWhere("ltm")+` AND xbot_long_term_memories_fts MATCH ?
+		WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
 		ORDER BY score ASC
 		LIMIT ?
 	`, m.scopeArg(), fts5OrQuery(query), topK)
@@ -952,12 +1038,47 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 	return results, nil
 }
 
-func (m *XbotMemory) recentLongTerm(topK int) ([]LongTermMemory, error) {
+// sessionMemories returns THIS session's scoped memories (auto-extracted task
+// state from ConsolidateTurn/PreCompress — scope='session' AND
+// source_session=sessionID, non-superseded), top-K by importance then
+// recency. Other sessions' scoped memories NEVER appear (the session
+// isolation contract); used only by the session's own Recall injection.
+func (m *XbotMemory) sessionMemories(sessionID string, topK int) ([]LongTermMemory, error) {
 	rows, err := m.db.Query(`
 		SELECT id, type, content, keywords, tags, source_session,
 		       importance, heat_score, access_count, created_at, last_accessed_at
 		FROM xbot_long_term_memories
-		WHERE `+m.scopeWhere("")+`
+		WHERE `+m.scopeWhere("")+` AND scope = 'session' AND superseded_by IS NULL AND source_session = ?
+		ORDER BY importance DESC, created_at DESC
+		LIMIT ?
+	`, m.scopeArg(), sessionID, topK)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var mems []LongTermMemory
+	for rows.Next() {
+		var mem LongTermMemory
+		if err := rows.Scan(&mem.ID, &mem.Type, &mem.Content, &mem.Keywords, &mem.Tags,
+			&mem.SourceSession, &mem.Importance, &mem.HeatScore, &mem.AccessCount,
+			&mem.CreatedAt, &mem.LastAccessedAt); err != nil {
+			continue
+		}
+		mems = append(mems, mem)
+	}
+	return mems, nil
+}
+
+func (m *XbotMemory) recentLongTerm(topK int) ([]LongTermMemory, error) {
+	// Global-scope, non-superseded only (same filter as searchLongTerm — this
+	// feeds the Recall injection, updateCoreSummary and CompressContext, all
+	// user-global paths).
+	rows, err := m.db.Query(`
+		SELECT id, type, content, keywords, tags, source_session,
+		       importance, heat_score, access_count, created_at, last_accessed_at
+		FROM xbot_long_term_memories
+		WHERE `+m.scopeWhere("")+` AND scope = 'global' AND superseded_by IS NULL
 		ORDER BY importance DESC, heat_score DESC, created_at DESC
 		LIMIT ?
 	`, m.scopeArg(), topK)
@@ -1069,11 +1190,20 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		FROM xbot_long_term_memories_fts fts
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
 		WHERE `+m.scopeWhere("ltm")+`
+		  AND ltm.superseded_by IS NULL
+		  -- Dedup scope filter (CR xbotgh): a session-scoped extraction must ONLY
+		  -- dedup against global entries + ITS OWN session's entries. Without this,
+		  -- session A's extracted fact makes session B's identical extraction
+		  -- dedup-skip — B's Recall sees nothing (A's entry doesn't inject into B,
+		  -- and B never wrote its own). Global-scope callers (empty SourceSession)
+		  -- match only global rows: a task-local session fact must never swallow
+		  -- an explicit global write either.
+		  AND (ltm.scope = 'global' OR (ltm.scope = 'session' AND ltm.source_session = ?))
 		  AND xbot_long_term_memories_fts MATCH ?
 		  AND bm25(xbot_long_term_memories_fts) < ?
 		ORDER BY bm25(xbot_long_term_memories_fts) ASC
 		LIMIT 1
-	`, m.scopeArg(), fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold).Scan(&dupID)
+	`, m.scopeArg(), entry.SourceSession, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold).Scan(&dupID)
 	if err == nil && dupID > 0 {
 		// Duplicate found — skip. Log at debug to avoid noise.
 		log.WithFields(log.Fields{
@@ -1083,11 +1213,18 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		return nil
 	}
 
+	// Session isolation: resolve the scope ('global' default — legacy callers
+	// and explicit memory_add; auto-extraction sets 'session').
+	scope := entry.Scope
+	if scope == "" {
+		scope = "global"
+	}
+
 	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags))
+		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags), scope)
 	if err != nil {
 		return err
 	}
@@ -1174,8 +1311,8 @@ func (m *XbotMemory) writeCoreSummary(content string) {
 	os.Rename(tmpPath, path)
 }
 
-func (m *XbotMemory) updateCoreSummary(ctx context.Context) {
-	if m.llmClient == nil {
+func (m *XbotMemory) updateCoreSummary(ctx context.Context, client llm.LLM, model string) {
+	if client == nil {
 		return
 	}
 
@@ -1207,7 +1344,7 @@ Update the core summary to incorporate any new critical information.
 Keep it under %d characters. Preserve existing important information.
 Return ONLY the updated summary text, no explanations.`, currentSummary, memSB.String(), coreSummaryMaxChars)
 
-	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a memory consolidation agent. Update the core summary concisely."),
 		llm.NewUserMessage(prompt),
 	}, nil)
@@ -1266,8 +1403,8 @@ func (m *XbotMemory) evictShortTerm() {
 
 // --- LLM-driven memory extraction ---
 
-func (m *XbotMemory) generateSessionSummary(ctx context.Context, messages []llm.ChatMessage) (string, string) {
-	if m.llmClient == nil || len(messages) == 0 {
+func (m *XbotMemory) generateSessionSummary(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage) (string, string) {
+	if client == nil || len(messages) == 0 {
 		return "", ""
 	}
 
@@ -1290,7 +1427,7 @@ Conversation:
 
 Return ONLY the summary, no preamble. Also provide 3-5 comma-separated key topics.`, msgSB.String())
 
-	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a conversation summarizer. Be concise and factual."),
 		llm.NewUserMessage(prompt),
 	}, nil)
@@ -1348,8 +1485,8 @@ type extractedMemory struct {
 // <dynamic-context>, peer/collaborator notes, workdir hints, sender/language
 // meta) are STRIPPED before sending to the LLM. These are already in the system
 // prompt — storing them as memories is pure bloat (the "垃圾记忆" complaint).
-func (m *XbotMemory) extractAtomicMemories(ctx context.Context, messages []llm.ChatMessage, startIdx int) []LongTermMemory {
-	if m.llmClient == nil || len(messages) == 0 {
+func (m *XbotMemory) extractAtomicMemories(ctx context.Context, client llm.LLM, model string, messages []llm.ChatMessage, startIdx int) []LongTermMemory {
+	if client == nil || len(messages) == 0 {
 		return nil
 	}
 	if startIdx < 0 {
@@ -1432,7 +1569,7 @@ to the agent in a brand-new session next week?" If the answer is no, drop it.
 Conversation:
 %s`, text)
 
-	resp, err := m.generateLLM(ctx, []llm.ChatMessage{
+	resp, err := m.generateLLM(ctx, client, model, []llm.ChatMessage{
 		llm.NewSystemMessage("You are a long-term memory curator. Extract only DURABLE, CROSS-SESSION memories. Never store session-local state, transient task progress, or system-injected metadata. If nothing durable exists, return an empty array."),
 		llm.NewUserMessage(prompt),
 	}, []llm.ToolDefinition{&extractMemoriesToolDef{}})
@@ -1465,6 +1602,13 @@ Conversation:
 				Keywords:   mem.Keywords,
 				Tags:       mem.Tags,
 				Importance: mem.Importance,
+				// Session isolation (2026-09-02 redesign): auto-extracted
+				// memories are SESSION-scoped — they never inject into other
+				// sessions' Recall (the global pool is explicit-add only, via
+				// memory_add with default scope='global' or PR-4's profile
+				// promotion). This kills the "auto-extraction garbage pollutes
+				// every session" problem at the storage level.
+				Scope: "session",
 			})
 		}
 	}
@@ -1574,28 +1718,29 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 
 	var entries []MemoryEntry
 
-	// Search long-term memories
+	// Search long-term memories (superseded entries filtered — only current
+	// facts are visible; the DB keeps the supersede chain for rollback).
 	var rows *sql.Rows
 	var err error
 	if memType != "" && memType != "all" {
 		rows, err = m.db.Query(`
 			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-			       ltm.importance, ltm.created_at,
+			       ltm.importance, ltm.created_at, ltm.scope,
 			       bm25(xbot_long_term_memories_fts) as score
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND ltm.type = ? AND xbot_long_term_memories_fts MATCH ?
+			WHERE `+m.scopeWhere("ltm")+` AND ltm.type = ? AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
 			ORDER BY score ASC
 			LIMIT ?
 		`, m.scopeArg(), memType, fts5OrQuery(query), limit)
 	} else {
 		rows, err = m.db.Query(`
 			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-			       ltm.importance, ltm.created_at,
+			       ltm.importance, ltm.created_at, ltm.scope,
 			       bm25(xbot_long_term_memories_fts) as score
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND xbot_long_term_memories_fts MATCH ?
+			WHERE `+m.scopeWhere("ltm")+` AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
 			ORDER BY score ASC
 			LIMIT ?
 		`, m.scopeArg(), fts5OrQuery(query), limit)
@@ -1608,7 +1753,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 		for rows.Next() {
 			var e MemoryEntry
 			if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags,
-				&e.Importance, &e.CreatedAt, &e.Score); err != nil {
+				&e.Importance, &e.CreatedAt, &e.Scope, &e.Score); err != nil {
 				continue
 			}
 			entries = append(entries, e)
@@ -1635,6 +1780,8 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 }
 
 // AddMemory manually adds a long-term memory entry.
+// The entry's Scope is respected ("" defaults to 'global' — the explicit
+// memory_add path; auto-extraction writes 'session' via addLongTermMemory).
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
@@ -1644,18 +1791,94 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
+	scope := entry.Scope
+	if scope == "" {
+		scope = "global"
+	}
 
-	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	// Transaction (CR CjiW Low + CR xbotgh): INSERT + supersede UPDATE must be
+	// atomic. A crash between the two left the new row written while the old
+	// contradictory rows stayed ACTIVE (both injected — the pre-redesign state).
+	// Concurrency guard (CR xbotgh): two concurrent AddMemory calls with
+	// strong-matching facts each SELECT the other's row (inserted but not yet
+	// superseded) → both UPDATE superseded_by → both disappear from every view
+	// (Recall/SearchMemories/ListMemories filter superseded rows — not even
+	// memory_manage list shows them). SELECT is bounded to ltm.id < new id
+	// (only supersede OLDER rows — concurrent same-fact writes break the tie
+	// naturally, last writer wins) and the UPDATE carries a superseded_by IS
+	// NULL guard (a second writer never overwrites an already-superseded row).
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	txCommitted := false
+	defer func() {
+		if !txCommitted {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.Exec(`
+		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags))
+		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags), scope)
 	if err != nil {
 		return 0, err
 	}
 
 	id, _ := result.LastInsertId()
 	entry.ID = id
+
+	// Supersede chain (2026-09-02 redesign): an explicit add is the model
+	// DELIBERATELY writing an updated fact. Strong-matching ACTIVE GLOBAL
+	// entries are marked superseded_by=<new id> (rows preserved for rollback,
+	// filtered from injection/search) instead of double-storing contradictory
+	// facts ("cluster at X" + "cluster moved to Y" both injected — the model
+	// could not tell which was current: the "stale memory" complaint).
+	// Session-scoped auto-extraction (addLongTermMemory) keeps its dedup-skip
+	// and NEVER supersedes: task-local state must not invalidate user-level facts.
+	if scope == "global" {
+		rows, err := tx.Query(`
+			SELECT ltm.id
+			FROM xbot_long_term_memories_fts fts
+			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
+			WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL
+			  AND ltm.id < ?
+			  AND xbot_long_term_memories_fts MATCH ?
+			  AND bm25(xbot_long_term_memories_fts) < ?
+		`, m.scopeArg(), id, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold)
+		if err == nil {
+			var staleIDs []int64
+			for rows.Next() {
+				var staleID int64
+				if err := rows.Scan(&staleID); err == nil {
+					staleIDs = append(staleIDs, staleID)
+				}
+			}
+			rows.Close()
+			for _, staleID := range staleIDs {
+				if _, err := tx.Exec(`UPDATE xbot_long_term_memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND superseded_by IS NULL`, id, staleID); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"stale_id": staleID,
+						"new_id":   id,
+					}).Warn("xbot-memory: supersede update failed")
+				} else {
+					log.WithFields(log.Fields{
+						"stale_id": staleID,
+						"new_id":   id,
+						"type":     entry.Type,
+					}).Debug("xbot-memory: stale memory superseded")
+				}
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	txCommitted = true
+
 	m.writeMemoryFile(id, entry)
 	return id, nil
 }
@@ -1695,17 +1918,17 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	var err error
 	if memType != "" && memType != "all" {
 		rows, err = m.db.Query(`
-			SELECT id, type, content, keywords, tags, importance, created_at
+			SELECT id, type, content, keywords, tags, importance, created_at, scope
 			FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+` AND type = ?
+			WHERE `+m.scopeWhere("")+` AND superseded_by IS NULL AND type = ?
 			ORDER BY importance DESC, created_at DESC
 			LIMIT ?
 		`, m.scopeArg(), memType, limit)
 	} else {
 		rows, err = m.db.Query(`
-			SELECT id, type, content, keywords, tags, importance, created_at
+			SELECT id, type, content, keywords, tags, importance, created_at, scope
 			FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+`
+			WHERE `+m.scopeWhere("")+` AND superseded_by IS NULL
 			ORDER BY importance DESC, created_at DESC
 			LIMIT ?
 		`, m.scopeArg(), limit)
@@ -1719,7 +1942,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	var entries []MemoryEntry
 	for rows.Next() {
 		var e MemoryEntry
-		if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags, &e.Importance, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags, &e.Importance, &e.CreatedAt, &e.Scope); err != nil {
 			continue
 		}
 		entries = append(entries, e)
@@ -1742,17 +1965,17 @@ func (m *XbotMemory) UpdateMemory(ctx context.Context, id int64, content, keywor
 
 // PreCompress extracts critical information from messages about to be compressed
 // and saves it to long-term memory before the compression discards them.
+// The LLM client+model come from the input (per-operation ownership — NEVER
+// shared struct state; see the XbotMemory struct comment).
 func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressInput) (*memory.PreCompressResult, error) {
 	if input.LLMClient == nil {
 		return &memory.PreCompressResult{}, nil
 	}
-
-	m.llmClient = input.LLMClient
-	m.model = input.Model
+	client, model := input.LLMClient, input.Model
 
 	// 1. Extract atomic memories from messages about to be compressed
 	//    (full list, watermark 0 — compression discards everything, so extract all)
-	entries := m.extractAtomicMemories(ctx, input.MessagesToCompress, 0)
+	entries := m.extractAtomicMemories(ctx, client, model, input.MessagesToCompress, 0)
 	savedCount := 0
 	for _, entry := range entries {
 		entry.SourceSession = input.SessionID
@@ -1762,7 +1985,7 @@ func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressIn
 	}
 
 	// 2. Generate session summary → short-term memory
-	summary, topics := m.generateSessionSummary(ctx, input.MessagesToCompress)
+	summary, topics := m.generateSessionSummary(ctx, client, model, input.MessagesToCompress)
 	if summary != "" {
 		m.addShortTermMemory(summary, topics, input.SessionID)
 	}
@@ -1785,11 +2008,20 @@ func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressIn
 	return &memory.PreCompressResult{
 		SavedCount:    savedCount,
 		PreserveHints: hints,
-		SkipCompress:  false,
 	}, nil
 }
 
 // PostCompress saves the compaction summary and updates memory state after compression.
+// The LLM client+model come from the input (per-operation ownership). Historical
+// incident (2026-09-02 chat_BD94FA4BB469): PostCompress did NOT receive a client
+// and read a shared mutable m.llmClient field — the single-operator deployment
+// shares ONE XbotMemory instance across ALL sessions, so a concurrent session's
+// ConsolidateTurn/PreCompress overwrote the field between this compression's
+// PreCompress and PostCompress, sending the core-summary update to ANOTHER
+// session's model/endpoint (F64D's extraction ran with feishu's deepseek config
+// and vice versa — a perfect swap). With input.LLMClient the core-summary
+// update always uses THIS compression's own client; nil skips the LLM leg
+// (summary save + decay still run).
 func (m *XbotMemory) PostCompress(ctx context.Context, input memory.PostCompressInput) error {
 	// 1. Save compaction summary as a short-term memory entry
 	if input.CompactionSummary != "" {
@@ -1797,7 +2029,7 @@ func (m *XbotMemory) PostCompress(ctx context.Context, input memory.PostCompress
 	}
 
 	// 2. Update core summary
-	m.updateCoreSummary(ctx)
+	m.updateCoreSummary(ctx, input.LLMClient, input.Model)
 
 	// 3. Decay heat scores
 	m.decayMemories()

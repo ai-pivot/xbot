@@ -10,6 +10,8 @@ import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
   commitViaFold,
+  commitViaText,
+  EMPTY_LIVE,
   initialChatState,
   iterNum,
   turnID,
@@ -1227,5 +1229,350 @@ describe('REPRO: session 事件嵌套 chat_id 过滤（跨 session 污染根治�
     const s2 = reduce(s, own![0])
     expect(s2.activeTurn).toBeNull()
     expect(s2.turns.get(T1)?.phase.kind).toBe('frozen') // A 自己的 idle：正常收尾
+  })
+})
+
+// ─── REPRO: user msg 消失（iPhone 切走/切回 + resync + 错误回复未持久化）──────
+//
+// 2026-09-02 14:18 实录（DOM 铁证）：turn-24-c → turn-26-c 直接相邻，user(26)
+// 无处渲染。DB 铁证：user(26) 行存在（id=1408796, turn_id=26）+ turn 26 无
+// assistant 行（LLM 错误回复不持久化——Error processing path 不写 DB）。
+// 时序：切走 app → SSE 断（turn_started(26) 丢失）→ turn 26 以 LLM 错误结束
+// （text 经 SSE replay 到达——lazy iteration 建立空 user 的 turn + commit）→
+// 切回 → reload → history_replaced incoming：turns[26] = {DB user, frozen 空壳}
+// （DB 无 assistant 行 → 空壳）→ step1 "空壳不覆盖"分支 `turns.set(h.id, cur)`
+// 直接保留状态机的 committed（user=null——turn_started 丢失，绑定失败），
+// **incoming 的 DB user 行被丢弃** → user 消失。
+//
+// 根因：空壳分支（cur 非 live + incoming frozen 无输出）缺 user 嫁接 ——
+// live 胜分支有 `cur.user ? cur : { ...cur, user: h.user }`，空壳分支没有。
+describe('REPRO: 空壳 incoming（DB user-only）不丢 user —— turn_started 丢失场景', () => {
+  const T26 = turnID(26)
+
+  it('committed（错误回复）+ incoming 空壳（DB 只有 user 行）→ user 必须从 DB 嫁接', () => {
+    // 状态机侧（切回时 SSE replay 建立，无 turn_started —— user 绑定失败）：
+    // lazy iteration 建立 live（无 user）→ text_final（LLM 错误回复）commit。
+    const s0 = run([
+      {
+        type: 'iteration', turnID: T26, iter: iterNum(1), seq: 10 as never,
+        content: 'LLM 服务调用失败', reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: 'LLM 服务调用失败', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      } as never,
+      textFinal(T26, 'LLM 服务调用失败，请稍后重试或检查配置。'),
+    ])
+    const t0 = s0.turns.get(T26)!
+    if (t0.phase.kind !== 'committed') throw new Error('场景前提：错误回复已 commit')
+    expect(t0.user).toBeNull() // 场景前提：turn_started 丢失 → user 未绑定
+
+    // 切回 reload：DB 行 user(26) 存在 + 无 assistant 行（错误回复不持久化）
+    // → historyToReplaced 构造 frozen 空壳（"无产出 assistant 行"）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [{
+        id: T26,
+        user: {
+          id: 'db-u26', content: '继续修复那个渲染问题' as never, timestamp: 't',
+          isNotification: false, queued: false, sending: false,
+          requestID: null, turnHint: 26, dbID: 1408796,
+        },
+        phase: { kind: 'frozen', data: { ...EMPTY_LIVE } }, // DB 无 assistant → 空壳
+        requestID: null,
+      }],
+      active: null, lastSeq: null, todos: [],
+    })
+
+    // 修复断言：空壳不覆盖 committed（错误回复保留）+ user 从 DB 嫁接。
+    const t1 = s1.turns.get(T26)!
+    if (t1.phase.kind !== 'committed') throw new Error('空壳不得覆盖 committed（错误回复消失）')
+    // RED（修复前 null —— DB user 被丢弃）：user 必须嫁接。
+    expect(t1.user?.content).toBe('继续修复那个渲染问题')
+    expect(t1.user?.dbID).toBe(1408796) // DB 权威行（rewind 需要 dbID）
+    // 渲染：user + committed 两行（user 消失根治）。
+    const rows = deriveRows(s1)
+    expect(rows.filter((r) => r.kind === 'user').map((r) => r.content)).toContain('继续修复那个渲染问题')
+    expect(rows.some((r) => r.kind === 'committed' && r.turnID === 26)).toBe(true)
+  })
+
+  it('对照组：state 侧 user 已绑定 → 空壳分支不覆盖（既有行为不回归）', () => {
+    // turn_started 正常到达（user_sent 的 pendingUser 先入 → 绑定成功）→
+    // committed → 空壳 incoming → 既有行为：保留 state 的 user（只补空，不覆盖已有）。
+    const s0 = run([
+      { type: 'user_sent', row: { id: 'opt-26', content: '用户消息' as never, timestamp: 't', isNotification: false, queued: false, sending: false, requestID: 'req-26', turnHint: undefined, dbID: undefined } },
+      started(T26, 'req-26'), // requestID 绑定 → turns[26].user
+      textFinal(T26, '错误回复'),
+    ])
+    expect(s0.turns.get(T26)?.user?.requestID).toBe('req-26')
+
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [{
+        id: T26,
+        user: {
+          id: 'db-u26', content: 'DB user 行' as never, timestamp: 't',
+          isNotification: false, queued: false, sending: false,
+          requestID: null, turnHint: 26, dbID: 1408796,
+        },
+        phase: { kind: 'frozen', data: { ...EMPTY_LIVE } },
+        requestID: null,
+      }],
+      active: null, lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T26)!
+    // 已绑定的 user 保留（嫁接方向：只补空，不覆盖已有）。
+    expect(t1.user?.requestID).toBe('req-26')
+  })
+})
+
+// ─── REPRO: cron 通知 turn 的 user 消失（tab 缓存 + resync 场景）──────────────
+// 2026-09-02 14:35 实录（tenant 166286，电脑端 tab 后台）：cron 每分钟触发同内容
+// 通知 turn（"背诵出师表"）→ tab 后台（SSE 断，turn_started/text 丢失）→ tab 恢复
+// （resync reload）→ DOM 实证 turn-1030-c / turn-1031-c 相邻渲染，user 行消失
+//（DB 铁证：user 行存在 turn_id 正确）。根因链候选：③.5 的内容幂等（同内容
+// notification echo 被 turn N-1 的 notif 行误杀）+ turn_started 丢失（SSE 断连
+// 窗口）→ turn N 的 user 两条腿全断（echo 误杀 + notif 构造丢失）→ 只剩
+// reload 的 DB user 嫁接（mergeTurnData cur.user ?? h.user）。本组测试验证
+// 每条腿的最终归属。
+describe('REPRO: cron 通知 turn user 消失（tab 缓存 + resync）', () => {
+  const N1029 = turnID(1029)
+  const N1030 = turnID(1030)
+  const N1031 = turnID(1031)
+  const notifStarted = (t: ReturnType<typeof turnID>, content: string): DomainEvent => ({
+    type: 'turn_started', turnID: t, requestID: null, trigger: 'notification', content,
+  })
+  const dbUserTurn = (t: ReturnType<typeof turnID>, n: number): Turn => ({
+    id: t,
+    user: {
+      id: `db-u-${n}`, content: '⏰ [定时任务触发] 背诵一次出师表（全文，不要省略）' as never,
+      timestamp: 't', isNotification: true, queued: false, sending: false,
+      requestID: null, turnHint: n, dbID: 1000000 + n,
+    },
+    phase: { kind: 'committed', payload: commitViaText('出师表正文' as never, []) },
+    requestID: null,
+  })
+
+  it('turn N 的 echo（同内容）被 ③.5 误杀 + turn_started 丢失 → reload 后 DB user 嫁接（不丢）', () => {
+    // tab 活跃时 turn 1029 完整到达（notif 行 + commit）。
+    const s = run([
+      notifStarted(N1029, '⏰ [定时任务触发] 背诵一次出师表（全文，不要省略）'),
+      iteration1(N1029, '出师表正文'),
+      textFinal(N1029, '出师表正文（全文）'),
+    ])
+    expect(s.turns.get(N1029)?.user?.isNotification).toBe(true)
+    expect(s.turns.get(N1029)?.phase.kind).toBe('committed')
+
+    // tab 后台：turn 1030 的 turn_started/iteration/text 全部丢失（SSE 断）。
+    // tab 恢复：inject_user echo(1030)（normalizeEvent 真实形状：无 id/无 turn_id
+    // —— normalizeUserEcho requestID=null, turnHint=undefined）→ ③.5 内容幂等
+    // 误杀（turn 1029 的 notif 行同内容——cron 每分钟同任务）→ ④ 不达（return s）。
+    const echoEvs = normalizeEvent(
+      { type: 'inject_user', content: '⏰ [定时任务触发] 背诵一次出师表（全文，不要省略）', ts: 1726000000, chat_id: 'chat-1' },
+      'chat-1',
+    )!
+    expect(echoEvs).toHaveLength(1)
+    const sAfterEcho = echoEvs.reduce(reduce, s)
+    expect(sAfterEcho.pendingUsers.filter((u) => u.isNotification)).toHaveLength(0) // ③.5 误杀 ✓
+
+    // resync reload：DB rows（turn 1030 user+assistant）→ history_replaced。
+    // 状态机无 turn 1030（SSE 断连丢失）→ step 1 else → turns.set(h.id, h)
+    // —— incoming 的 DB user 直接进 → user 必须在。
+    const s2 = reduce(sAfterEcho, {
+      type: 'history_replaced', legacy: [],
+      turns: [dbUserTurn(N1030, 1030)],
+      active: null, lastSeq: null, todos: [],
+    })
+    const t1030 = s2.turns.get(N1030)
+    expect(t1030?.user?.dbID).toBe(1001030) // RED 或 GREEN：DB user 必须在
+    expect(t1030?.user?.isNotification).toBe(true)
+
+    // 三个 cron turn 的完整链（1029 notif + 1030/1031 DB）+ 渲染 user 行。
+    const s3 = reduce(s2, {
+      type: 'history_replaced', legacy: [],
+      turns: [dbUserTurn(N1029, 1029), dbUserTurn(N1030, 1030), dbUserTurn(N1031, 1031)],
+      active: null, lastSeq: null, todos: [],
+    })
+    const rows = deriveRows(s3)
+    const userRows = rows.filter((r) => r.kind === 'user').map((r) => (r as { turnID: number }).turnID)
+    expect(userRows).toContain(1029)
+    expect(userRows).toContain(1030)
+    expect(userRows).toContain(1031)
+  })
+
+  it('SSE replay 先到（iteration lazy 建立 user=null 的 turn）→ reload 后到 → mergeTurnData 嫁接 DB user', () => {
+    // 时序 B：SSE replay 的 iteration(1030)（lazy——turn_started 丢失）+ text(1030)
+    // commit（user=null）→ reload 的 incoming（DB user + committed）后到。
+    const s = run([
+      {
+        type: 'iteration', turnID: N1030, iter: iterNum(1), seq: 10 as never,
+        content: '出师表正文', reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '出师表正文', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      } as never,
+      textFinal(N1030, '出师表正文（全文）'),
+    ])
+    const t0 = s.turns.get(N1030)!
+    expect(t0.phase.kind).toBe('committed')
+    expect(t0.user).toBeNull() // 场景前提：SSE replay 路径无 user（echo 被误杀 + notif 丢失）
+
+    // reload：incoming turns[1030]（DB user + committed）→ mergeTurnData 嫁接。
+    const s2 = reduce(s, {
+      type: 'history_replaced', legacy: [],
+      turns: [dbUserTurn(N1030, 1030)],
+      active: null, lastSeq: null, todos: [],
+    })
+    expect(s2.turns.get(N1030)?.user?.dbID).toBe(1001030)
+    expect(s2.turns.get(N1030)?.user?.isNotification).toBe(true)
+  })
+})
+
+// ─── REPRO 连续序列：cron 每 1 分钟同内容通知 turn（tab 持续开着的真实序列）──
+// 电脑端 tab 不关（SSE 持续）——cron 通知 turn 1029/1030/1031 顺序到达：
+// turn_started(1029, notif) → text(1029) → turn_started(1030, notif)（收尸 1029
+// 若 live）→ text(1030) → turn_started(1031)（收尸 1030）→ text(1031)。
+// DOM 实证（user 报告）：1030-c 与 1031-c 相邻（user(1031) 缺失——1030 与
+// 1031 之间无 user 行）。本测试验证 M4 reduce 层的连续 notif 构造 + 收尸链。
+describe('REPRO: 连续 cron 通知 turn 链（tab 持续开的 SSE 完整序列）', () => {
+  const NOTIF = '⏰ [定时任务触发] 背诵一次出师表（全文，不要省略）'
+  const t1029 = turnID(1029), t1030 = turnID(1030), t1031 = turnID(1031)
+  const notifStart = (t: ReturnType<typeof turnID>): DomainEvent => ({
+    type: 'turn_started', turnID: t, requestID: null, trigger: 'notification', content: NOTIF,
+  })
+
+  it('连续 3 个 notif turn（同内容）——每个 turn 的 user 都必须构造（DOM: user(1031) 消失）', () => {
+    const s = run([
+      notifStart(t1029),
+      iteration1(t1029, '出师表 回复 1029'),
+      textFinal(t1029, '出师表 回复 1029'),
+      notifStart(t1030), // 1029 已 committed（text 到达）→ 不触发收尸
+      iteration1(t1030, '出师表 回复 1030'),
+      textFinal(t1030, '出师表 回复 1030'),
+      notifStart(t1031),
+      iteration1(t1031, '出师表 回复 1031'),
+      textFinal(t1031, '出师表 回复 1031'),
+    ])
+    // 三个 turn 的 notif user 全部构造（DOM: 1030-c/1031-c 相邻——user(1031) 缺失）。
+    for (const [t, n] of [[t1029, 1029], [t1030, 1030], [t1031, 1031]] as const) {
+      const tt = s.turns.get(t)
+      expect(tt?.user, `turn ${n} user must exist (notif construction)`).toBeDefined()
+      expect(tt?.user?.isNotification, `turn ${n} user isNotification`).toBe(true)
+      expect(tt?.user?.content, `turn ${n} user content`).toBe(NOTIF)
+      expect(tt?.phase.kind, `turn ${n} committed`).toBe('committed')
+    }
+    // 渲染：每 turn 的 user → committed 序列（user 在 assistant 前——T5）。
+    const rows = deriveRows(s)
+    const userRows = rows.filter((r) => r.kind === 'user')
+    expect(userRows).toHaveLength(3)
+    // DOM 实证复现点：1030-c 与 1031-c 之间必须有 user(1031)。
+    const idx1030c = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1030)
+    const idx1031c = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1031)
+    expect(idx1030c).toBeGreaterThanOrEqual(0)
+    expect(idx1031c).toBe(idx1030c + 2) // 中间必有 user(1031)（DOM 实证是 +1 → user 缺失）
+  })
+
+  it('收尸链变体：text 迟到（turn_started(1031) 在 text(1030) 前到达——收尸 1030 的 live）', () => {
+    // cron turn 的回复生成中（1030 live）→ 下一分钟的 turn_started(1031) 先到
+    // （收尸 1030 的 live → fold committed）→ 1030 的 text 后到（幂等——已 committed）。
+    const s = run([
+      notifStart(t1029),
+      iteration1(t1029, '回复 1029'),
+      textFinal(t1029, '回复 1029'),
+      notifStart(t1030),
+      iteration1(t1030, '回复 1030（live 中）'),
+      notifStart(t1031), // text(1030) 未到 → 收尸 1030 的 live（fold，user 保留）
+      textFinal(t1030, '回复 1030'), // 迟到（幂等——committed 已定）
+      iteration1(t1031, '回复 1031'),
+      textFinal(t1031, '回复 1031'),
+    ])
+    // 收尸后 1030 的 user 保留（fold 保留 user——old.user !== null → fold 而非 frozen）。
+    const tt1030 = s.turns.get(t1030)
+    expect(tt1030?.user?.content).toBe(NOTIF)
+    expect(tt1030?.phase.kind).toBe('committed')
+    // 1031 的 notif user 构造 ✓。
+    expect(s.turns.get(t1031)?.user?.content).toBe(NOTIF)
+    // 渲染：3 个 user 行。
+    expect(deriveRows(s).filter((r) => r.kind === 'user')).toHaveLength(3)
+  })
+})
+
+// ─── REPRO: turn_started 丢失（tab 后台 SSE 节流）+ cron 同内容 echo 误杀 ──────
+// 2026-09-02 14:35 实录（tenant 166286，电脑端 tab 后台）：cron 每分钟同内容通知
+// turn（"背诵出师表"）→ tab 后台浏览器节流丢弃 turn_started(1031)（连接不断——
+// 无 resync/reload）→ iteration(1031) lazy 采纳（activeTurn=1031, user=null）→
+// text(1031) commit → inject_user echo(1031) 到达（无 turnHint——inject_user
+// WSMessage 四字段无 turn_id）→ ③ hint 匹配不命中（turnHint=undefined）→ ③.5
+// 内容幂等误杀（turns 里 1029/1030 的 notif user 同内容"背诵出师表"匹配 →
+// echo 丢弃）→ user(1031) 永缺（DOM 实证：turn-1030-c 与 turn-1031-c 相邻，
+// 之间无 user 行）。修复：③ hint 匹配扩展 activeTurn 兜底——echo 无 turnHint
+// 时挂 active turn 的空 user 槽（turn 进行中——lazy 采纳的 activeTurn 是权威
+// 归属），在 ③.5 误杀之前恢复 user。
+describe('REPRO: turn_started 丢失 + cron 同内容 echo —— activeTurn 兜底挂载', () => {
+  const NOTIF = '⏰ [定时任务触发] 背诵一次出师表（全文，不要省略）'
+  const N1029 = turnID(1029)
+  const N1031 = turnID(1031)
+
+  it('lazy 采纳（turn_started 丢失）+ echo（无 turnHint，同内容被旧 notif 匹配）→ user 挂 activeTurn', () => {
+    // tab 前台：turn 1029 正常（notif user 构造 + commit）。
+    const s0 = run([
+      { type: 'turn_started', turnID: N1029, requestID: null, trigger: 'notification', content: NOTIF },
+      iteration1(N1029, '回复 1029'),
+      textFinal(N1029, '回复 1029'),
+    ])
+    expect(s0.turns.get(N1029)?.user?.isNotification).toBe(true)
+
+    // tab 后台：turn_started(1031) 丢失（浏览器节流）→ iteration(1031) lazy 采纳
+    //（activeTurn=1031, user=null——M4 无 turn_started 的 notif 构造）。
+    const s1 = run([
+      {
+        type: 'iteration', turnID: N1031, iter: iterNum(1), seq: 20 as never,
+        content: '回复 1031', reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '回复 1031', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      } as never,
+    ], s0)
+    expect(s1.activeTurn).toBe(N1031) // lazy 采纳建立 activeTurn
+    expect(s1.turns.get(N1031)?.user).toBeNull() // 场景前提：user 未构造
+
+    // echo(1031) 到达（inject_user 真实形状：无 turn_id → turnHint=undefined；
+    // 同内容 NOTIF —— 修复前 ③ 不命中 + ③.5 被 1029 的 notif user 误杀）。
+    const evs = normalizeEvent(
+      { type: 'inject_user', content: NOTIF, ts: 1726000000, chat_id: 'chat-1' },
+      'chat-1',
+    )!
+    expect(evs).toHaveLength(1)
+    const s2 = evs.reduce(reduce, s1)
+
+    // 修复后：③ activeTurn 兜底 —— echo 挂载 active turn（1031）的空 user 槽。
+    // 修复前：user=null（③ turnHint=undefined 不命中 → ③.5 误杀丢弃）。
+    const t1031 = s2.turns.get(N1031)
+    expect(t1031?.user?.content, 'echo 必须挂载 activeTurn 的空 user（SSE turn_started 丢失恢复）').toBe(NOTIF)
+    // echo row 本身不带 is_notification（inject_user WSMessage 四字段）—— 挂载后
+    // 显示为普通 user 行（content 完整，比消失好；🔔 badge 是 notif 行的增强样式）。
+    expect(t1031?.user?.isNotification).toBe(false)
+
+    // turn 完成（text）→ user 保留（committed turn 的 user 不丢）。
+    const s3 = run([textFinal(N1031, '回复 1031')], s2)
+    expect(s3.turns.get(N1031)?.user?.content).toBe(NOTIF)
+    expect(s3.turns.get(N1031)?.phase.kind).toBe('committed')
+    // 渲染：user 行存在（user 消失根治）。
+    expect(deriveRows(s3).some((r) => r.kind === 'user' && r.content === NOTIF)).toBe(true)
+  })
+
+  it('对照组：echo 在 turn 完成后到达（activeTurn=null）→ ③.5 误杀（旧行为）——不挂已完成 turn', () => {
+    // turn 1031 已完成（text commit → activeTurn=null）→ echo 到达 → ③ activeTurn
+    // 无可挂（null）→ ③.5 误杀（1029 同内容匹配）→ 不产生重复行（F#1 语义保持）。
+    const s0 = run([
+      { type: 'turn_started', turnID: N1029, requestID: null, trigger: 'notification', content: NOTIF },
+      textFinal(N1029, '回复 1029'),
+    ])
+    const evs = normalizeEvent(
+      { type: 'inject_user', content: NOTIF, ts: 1726000000, chat_id: 'chat-1' },
+      'chat-1',
+    )!
+    const s1 = evs.reduce(reduce, s0)
+    // ②/③/④ 全不命中（activeTurn=null，无 pending）→ ③.5 误杀（不新增行）。
+    expect(s1.pendingUsers).toHaveLength(0)
+    expect(deriveRows(s1).filter((r) => r.kind === 'user')).toHaveLength(1) // 只有 1029 的 notif 行
   })
 })

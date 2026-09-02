@@ -102,7 +102,8 @@ func New(tenantID int64, coreSvc *sqlite.CoreMemoryService, archivalSvc *vectord
 // Unlike FlatMemory which dumps everything, Letta injects only structured blocks.
 // Archival memory is accessed on-demand via tools.
 // userID for per-user human block is extracted from ctx via GetUserID(ctx).
-func (m *LettaMemory) Recall(ctx context.Context, _ string) (string, error) {
+// sessionID is ignored (letta memory has no session scoping).
+func (m *LettaMemory) Recall(ctx context.Context, _, _ string) (string, error) {
 	// Get userID from context for per-user human block (empty = global)
 	userID := GetUserID(ctx)
 

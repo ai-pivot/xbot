@@ -49,13 +49,16 @@ func (a *todoManagerAdapter) ClearTodos(sessionKey string) {
 	a.mgr.SetTodos(sessionKey, nil)
 }
 
-// applyUserMaxContext 如果模型订阅中设置了 MaxContext，
-// 创建一个新的 ContextManagerConfig 副本覆盖 MaxContextTokens，
-// 避免污染 Agent 级别的原始配置（含 sync.RWMutex）。
-// 模型级别的 MaxContext 优先级高于全局 MaxContextTokens：
-//   - userMaxCtx > 0 → 直接使用模型配置的值
-//   - userMaxCtx == 0 → 回退到全局 base.MaxContextTokens
-func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextManagerConfig {
+// applyUserContextLimits applies the user's per-model limits (max_context +
+// max_output, from PerModelConfig / subscription defaults via UserContext) to
+// the agent-level ContextManagerConfig, returning a fresh copy so the shared
+// base (with its sync.RWMutex) is never polluted.
+// 模型级别配置优先级高于全局值：
+//   - userMaxCtx > 0 → 覆盖 MaxContextTokens；== 0 → 回退 base 值
+//   - userMaxOut > 0 → 覆盖 MaxOutputTokens（压缩输出预算上限——"总是优先用
+//     用户配置"，压缩的 targetTokens hard cap 与 API max_tokens 都不再用固定
+//     16000/32768）；== 0 → base 值（通常 0 = 未配置 → compactMessages 用默认 cap）
+func applyUserContextLimits(base *ContextManagerConfig, userMaxCtx, userMaxOut int) *ContextManagerConfig {
 	if base == nil {
 		return nil
 	}
@@ -66,12 +69,17 @@ func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextMan
 	if effective <= 0 {
 		return base
 	}
-	if effective == base.MaxContextTokens {
+	if effective == base.MaxContextTokens && userMaxOut <= 0 {
+		return base
+	}
+	if effective == base.MaxContextTokens && userMaxOut == base.MaxOutputTokens {
 		return base
 	}
 	return &ContextManagerConfig{
 		MaxContextTokens:     effective,
 		CompressionThreshold: base.CompressionThreshold,
+		CompressionModel:     base.CompressionModel,
+		MaxOutputTokens:      userMaxOut,
 		DefaultMode:          base.DefaultMode,
 	}
 }
@@ -109,6 +117,9 @@ func (a *Agent) buildBaseRunConfig(
 		ThinkingMode: thinkingMode,
 		Tools:        a.tools,
 		Messages:     messages,
+		// Agent-lifecycle background tasks (async Pre/Post compress memory
+		// hooks etc.) — turn-outliving, Close()-cancelled, WG-tracked.
+		SpawnBackground: a.spawnBackgroundTask,
 
 		// 身份
 		AgentID: "main",
@@ -447,7 +458,10 @@ func (a *Agent) buildMainRunConfig(
 
 	// 注入 ContextManager
 	cfg.ContextManager = a.GetContextManager()
-	cfg.ContextManagerConfig = applyUserMaxContext(a.contextManagerConfig, userMaxCtx)
+	// 用户 per-model 配置（max_context + max_output）优先于 agent 级全局值：
+	// max_output 透传到压缩的输出预算（compactMessages 的 hard cap 与 API
+	// max_tokens 都用用户值，不用固定 16000/32768——用户配置是权威）。
+	cfg.ContextManagerConfig = applyUserContextLimits(a.contextManagerConfig, userMaxCtx, cfg.MaxOutputTokens)
 
 	// After Cd changes session CWD, refresh all plugin contexts so script plugins
 	// (e.g. git-info) re-execute in the new directory.
@@ -814,6 +828,15 @@ func (a *Agent) buildSubAgentRunConfig(
 		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
+		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks
+		// etc.) — same wiring as buildBaseRunConfig. CR xbotgh: without this, a
+		// memory-capable SubAgent's runCompression Pre/PostCompress hooks fall
+		// back to the fire-and-forget path (clipanic.Go + WithoutCancel) —
+		// outside lifecycleWG, so Close() neither waits nor cancels them:
+		// PostCompress's minute-scale core-summary LLM call can race shutdown
+		// right after lifecycleWG.Wait() (DB already closed).
+		SpawnBackground: a.spawnBackgroundTask,
+
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
 		LLMSemAcquire: userCtx.LLMSemAcquire,
 
@@ -860,7 +883,8 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 1. ContextManager：创建独立实例（不共享父 Agent 的触发器，避免计数交叉）
 	//    从 caps.Memory 条件中移出，所有 SubAgent 都需要压缩能力。
 	if a.contextManagerConfig != nil {
-		cmCfg := applyUserMaxContext(a.contextManagerConfig, userMaxCtx)
+		// 用户 per-model 配置（max_output 透传到压缩输出预算——同主 Agent 路径）。
+		cmCfg := applyUserContextLimits(a.contextManagerConfig, userMaxCtx, maxOutputTokens)
 		cfg.ContextManager = newPhase1Manager(cmCfg)
 		cfg.ContextManagerConfig = cmCfg
 	}
@@ -914,7 +938,10 @@ func (a *Agent) buildSubAgentRunConfig(
 				subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 				memCtx = letta.WithUserID(ctx, subSenderID)
 			}
-			if recallText, err := mem.Recall(memCtx, task); err == nil && recallText != "" {
+			// Inject memory into system prompt (SubAgents don't use the pipeline,
+			// call Recall manually). sessionID = the SubAgent's own chat (cfg.ChatID
+			// is assigned above) so its session-scoped memories inject only here.
+			if recallText, err := mem.Recall(memCtx, task, cfg.ChatID); err == nil && recallText != "" {
 				messages[0].Content += "\n\n" + recallText
 			}
 

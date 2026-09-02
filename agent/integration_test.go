@@ -22,8 +22,8 @@ import (
 // It enables out.Messages to be populated (engine.go only fills out.Messages when Memory != nil).
 type mockMemory struct{}
 
-func (m *mockMemory) Name() string                                             { return "mock" }
-func (m *mockMemory) Recall(ctx context.Context, query string) (string, error) { return "", nil }
+func (m *mockMemory) Name() string                                                { return "mock" }
+func (m *mockMemory) Recall(ctx context.Context, query, _ string) (string, error) { return "", nil }
 func (m *mockMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (memory.MemorizeResult, error) {
 	return memory.MemorizeResult{}, nil
 }
@@ -143,8 +143,8 @@ func hasMasked(messages []llm.ChatMessage) bool {
 type mockCompressor struct {
 	mu                   sync.Mutex
 	shouldCompressFn     func([]llm.ChatMessage, string, int) bool
-	compressFn           func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error)
-	manualCompressFn     func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error)
+	compressFn           func(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error)
+	manualCompressFn     func(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error)
 	shouldCompressCalled int
 	compressCalled       int
 }
@@ -161,12 +161,12 @@ func (mc *mockCompressor) ShouldCompress(msgs []llm.ChatMessage, model string, t
 	return false
 }
 
-func (mc *mockCompressor) Compress(ctx context.Context, msgs []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+func (mc *mockCompressor) Compress(ctx context.Context, msgs []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
 	mc.mu.Lock()
 	mc.compressCalled++
 	mc.mu.Unlock()
 	if mc.compressFn != nil {
-		return mc.compressFn(ctx, msgs, client, model)
+		return mc.compressFn(ctx, msgs, client, model, promptTokens)
 	}
 	// Default: return a simple summary
 	return &CompressResult{
@@ -176,11 +176,11 @@ func (mc *mockCompressor) Compress(ctx context.Context, msgs []llm.ChatMessage, 
 	}, nil
 }
 
-func (mc *mockCompressor) ManualCompress(ctx context.Context, msgs []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+func (mc *mockCompressor) ManualCompress(ctx context.Context, msgs []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
 	if mc.manualCompressFn != nil {
-		return mc.manualCompressFn(ctx, msgs, client, model)
+		return mc.manualCompressFn(ctx, msgs, client, model, promptTokens)
 	}
-	return mc.Compress(ctx, msgs, client, model)
+	return mc.Compress(ctx, msgs, client, model, promptTokens)
 }
 
 func (mc *mockCompressor) ContextInfo(msgs []llm.ChatMessage, model string, toolTokens int) *ContextStats {
@@ -778,7 +778,7 @@ func TestIntegration_Compress_TriggeredWhenOverThreshold(t *testing.T) {
 	env.cmConfig.MaxContextTokens = 2000
 
 	compressor := &mockCompressor{
-		compressFn: func(ctx context.Context, msgs []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+		compressFn: func(ctx context.Context, msgs []llm.ChatMessage, client llm.LLM, model string, _ int64) (*CompressResult, error) {
 			return &CompressResult{
 				LLMView: []llm.ChatMessage{
 					llm.NewSystemMessage("You are a test agent."),

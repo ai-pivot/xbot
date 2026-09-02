@@ -1532,7 +1532,11 @@ type Config struct {
 	// 旧压缩配置（保留用于初始化 ContextManagerConfig，向后兼容 main.go 传参）
 	MaxContextTokens     int     // 最大上下文 token 数（默认 100000）
 	CompressionThreshold float64 // 触发压缩的 token 比例阈值（默认 0.7）
-	EnableAutoCompress   bool    // 是否启用自动上下文压缩（默认 true，旧字段）
+	// CompressionModel overrides the model name for compaction LLM calls
+	// ("" = the session's model). Wired from config agent.compression_model —
+	// lets compaction run on a faster/cheaper model of the same endpoint.
+	CompressionModel   string
+	EnableAutoCompress bool // 是否启用自动上下文压缩（默认 true，旧字段）
 
 	// SubAgent 深度控制
 	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
@@ -1708,6 +1712,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.contextManagerConfig = &ContextManagerConfig{
 		MaxContextTokens:     cfg.MaxContextTokens,
 		CompressionThreshold: cfg.CompressionThreshold,
+		CompressionModel:     cfg.CompressionModel,
 		DefaultMode:          contextMode,
 	}
 	a.contextManager = NewContextManager(a.contextManagerConfig)
@@ -2317,6 +2322,32 @@ func (a *Agent) Close() error {
 		}
 	})
 	return nil
+}
+
+// spawnBackgroundTask runs fn as an Agent-lifecycle-scoped background task.
+// The task's ctx is NOT derived from any Run's ctx — those are cancelled at
+// turn end (e.g. the async Pre/Post compress memory hooks outlive the
+// compression turn); it is cancelled by lifecycleStopCh so the task never
+// touches a closed DB / released LLM client after Close. Registered on
+// lifecycleWG so Close waits for in-flight tasks (same pattern as the
+// auto-memorize ConsolidateTurn goroutine).
+func (a *Agent) spawnBackgroundTask(name string, fn func(ctx context.Context)) {
+	a.lifecycleWG.Add(1)
+	clipanic.Go(name, func() {
+		defer a.lifecycleWG.Done()
+		bgCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if a.lifecycleStopCh != nil {
+			go func() {
+				select {
+				case <-a.lifecycleStopCh:
+					cancel()
+				case <-bgCtx.Done():
+				}
+			}()
+		}
+		fn(bgCtx)
+	})
 }
 
 // PluginManager returns the plugin manager for this agent.
@@ -3693,6 +3724,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 				LLMClient:        llmClient,
 				Model:            model,
 				ArchiveAll:       false, // incremental — never full archive per turn
+				// SessionID: auto-extracted memories carry the session's own
+				// source_session (scope='session') so they only ever inject into
+				// THIS session's Recall — never other sessions'.
+				SessionID: chatID,
 			}
 
 			var result memory.MemorizeResult

@@ -17,7 +17,12 @@ type MemoryProvider interface {
 
 	// Recall 为当前对话检索相关记忆，返回注入 system prompt 的文本。
 	// query 为用户当前消息，用于按需检索（flat 实现忽略此参数）。
-	Recall(ctx context.Context, query string) (string, error)
+	// Recall retrieves relevant memories for the current conversation.
+	//
+	// sessionID scopes the recall to the current session: the xbot provider
+	// injects the session's OWN scoped memories (auto-extracted task state,
+	// never other sessions'); flat/letta ignore it. Empty = unscoped.
+	Recall(ctx context.Context, query, sessionID string) (string, error)
 
 	// Memorize 对话结束后处理记忆（压缩、存储、进化等）。
 	Memorize(ctx context.Context, input MemorizeInput) (MemorizeResult, error)
@@ -51,6 +56,10 @@ type MemorizeInput struct {
 	LLMClient        llm.LLM           // 用于压缩/分析的 LLM
 	Model            string            // 模型名称
 	ArchiveAll       bool              // true=归档所有消息（/new 命令）
+	// SessionID is the current session's identifier: auto-extracted memories
+	// are written scope='session' with this source_session so they only ever
+	// inject into THIS session's Recall. Empty = unscoped (legacy callers).
+	SessionID string
 }
 
 // TurnConsolidator 可选接口：每轮对话后的轻量增量记忆整理。
@@ -133,10 +142,10 @@ type PreCompressResult struct {
 	SavedCount int
 	// PreserveHints 需要压缩 LLM 务必保留的关键信息提示。
 	// 这些提示会被注入到压缩 prompt 中。
+	// （历史：曾有 SkipCompress 字段——PreCompress 请求跳过压缩；
+	// 2026-09-02 异步化后删除：Pre/Post 压缩钩子已后台化，
+	// 压缩本体同步执行，钩子无法阻断压缩路径。）
 	PreserveHints []string
-	// SkipCompress 如果为 true，表示记忆系统已处理所有信息，
-	// 可以跳过压缩（极端情况：记忆系统已保存全部信息，直接清空上下文）。
-	SkipCompress bool
 }
 
 // PostCompressInput 压缩后输入。
@@ -149,6 +158,14 @@ type PostCompressInput struct {
 	RemovedMessageCount int
 	// SessionID 当前会话 ID。
 	SessionID string
+	// LLMClient 用于 core summary 更新的 LLM（必须传本次压缩会话自己的 client）。
+	// 历史事故（2026-09-02 chat_BD94FA4BB469）：PostCompress 曾不接收 client，
+	// 靠共享可变 m.llmClient 字段——单 operator 下所有会话共享一个 XbotMemory
+	// 实例，并发的 ConsolidateTurn/PreCompress 会互相覆盖该字段，导致内存管道
+	// 用错别的会话的模型/端点（F64D 用了 feishu 的 deepseek 配置，反之亦然）。
+	LLMClient llm.LLM
+	// Model LLM 模型名。
+	Model string
 }
 
 // --- Provider Registry (decoupled from agent/session code) ---

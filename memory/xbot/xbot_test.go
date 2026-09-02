@@ -180,7 +180,7 @@ func TestRecallEmptyQuerySkipsShortTerm(t *testing.T) {
 	m, _ := newTestMemory(t)
 	seedTestMemory(t, m)
 
-	out, err := m.Recall(t.Context(), "")
+	out, err := m.Recall(t.Context(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,17 +192,23 @@ func TestRecallEmptyQuerySkipsShortTerm(t *testing.T) {
 	}
 }
 
-// TestRecallWithQueryInjectsShortTerm: 有 query 时 short-term 可注入（BM25 相关）。
-func TestRecallWithQueryInjectsShortTerm(t *testing.T) {
+// TestRecallWithQuerySkipsShortTerm: short-term（其他会话的摘要）永不自动注入——
+// 即便 query 命中（2026-09-02 会话隔离重设计）。跨会话内容进入本会话的唯一
+// 路径是 memory_search 按需检索；自动注入曾是"另一个会话的压缩摘要污染无关
+// 会话"的根源（query 命中即注入 searchShortTerm 的全局 BM25）。
+func TestRecallWithQuerySkipsShortTerm(t *testing.T) {
 	m, _ := newTestMemory(t)
 	seedTestMemory(t, m)
 
-	out, err := m.Recall(t.Context(), "frpc 转发")
+	out, err := m.Recall(t.Context(), "frpc 转发", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "## Recent Sessions") {
-		t.Errorf("query-anchored short-term should be injected\n%q", out)
+	if strings.Contains(out, "## Recent Sessions") {
+		t.Errorf("BUG REPRODUCED: query-anchored cross-session short-term injection — another session's summary must NEVER auto-inject (session isolation)\n%q", out)
+	}
+	if strings.Contains(out, "另一个无关会话的总结") {
+		t.Errorf("BUG REPRODUCED: other session's short-term summary leaked into Recall\n%q", out)
 	}
 }
 
@@ -217,7 +223,7 @@ func TestRecallCapsTotalRunes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := m.Recall(t.Context(), "注意力预算")
+	out, err := m.Recall(t.Context(), "注意力预算", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -672,7 +672,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           h.phase.kind === 'frozen' &&
           !hasOutput(h.phase.data)
         ) {
-          turns.set(h.id, cur) // 空壳不覆盖（状态机数据保全）
+          // 空壳不覆盖（状态机数据保全）—— 但 user 必须嫁接（DB 权威行）。
+          // 2026-09-02 user 消失实录（tenant 167343 turn 26）：切走 app →
+          // turn_started(26) 丢失（SSE 断连窗口）→ SSE replay 的 lazy iteration
+          // + text_final 把错误回复 commit 成 user=null 的 turn → 切回 reload
+          // 的 incoming 是空壳（DB 只有 user 行——错误回复不持久化）→ 本分支
+          // `turns.set(h.id, cur)` 直接保留 user=null → DB user(1408796) 被丢弃
+          // → 渲染 turn-24-c → turn-26-c 直接相邻，user 无处显示。
+          // 对齐 live 胜分支（cur.user ? cur : { ...cur, user: h.user }）。
+          turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
         } else if (cur && cur.phase.kind !== 'live') {
           turns.set(h.id, mergeTurnData(cur, h)) // union 合并（不丢任何一侧迭代）
         } else {
@@ -800,12 +808,26 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         }
       }
       // ③ hint 指向未绑定 turn → 直接挂 user。
+      // ③b activeTurn 兜底（2026-09-02 cron user 消失实录，tenant 166286 turn
+      // 1030/1031）：turn_started 丢失（tab 后台 SSE 节流——连接不断，无 resync/
+      // reload）→ iteration lazy 采纳（activeTurn 的 user=null）→ inject_user echo
+      // 到达（WSMessage 四字段无 turn_id → turnHint=undefined → ③ 不命中）→ ③.5
+      // 内容幂等误杀（turns 里旧 turn 的同内容 notif user 匹配——cron 每分钟同
+      // 内容通知，1029/1030 的 notif user 挡住 1031 的 echo）→ user 永缺（DOM：
+      // turn-1030-c 与 turn-1031-c 相邻无 user 行，DB 铁证 user 行存在）。
+      // 修复：echo 无 turnHint 时挂 active turn 的空 user 槽（lazy 采纳的
+      // activeTurn 是权威归属——turn 进行中），在 ③.5 误杀之前恢复。
       const hint = ev.row.turnHint
       if (hint !== undefined) {
         const tid = turnID(hint)
         const t = s.turns.get(tid)
         if (t && t.user === null) {
           return withTurn(s, tid, (tt) => ({ ...tt, user: ev.row }))
+        }
+      } else if (s.activeTurn !== null) {
+        const t = s.turns.get(s.activeTurn)
+        if (t && t.user === null && !ev.row.isNotification) {
+          return withTurn(s, s.activeTurn, (tt) => ({ ...tt, user: ev.row }))
         }
       }
       // ③.5 notification echo 内容幂等（同一通知双行根治）：turn_started(notification)

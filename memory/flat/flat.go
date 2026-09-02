@@ -89,7 +89,8 @@ func (m *FlatMemory) BaseDir() string {
 }
 
 // Recall reads MEMORY.md content for system prompt injection.
-func (m *FlatMemory) Recall(ctx context.Context, _ string) (string, error) {
+// sessionID is ignored (flat memory has no session scoping).
+func (m *FlatMemory) Recall(ctx context.Context, _, _ string) (string, error) {
 	memoryPath := filepath.Join(m.baseDir, memoryFileName)
 	content, err := os.ReadFile(memoryPath)
 	if err != nil {

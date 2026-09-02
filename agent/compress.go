@@ -93,6 +93,71 @@ What should happen next to continue from where we left off.
 // continuationMessage is injected after compaction to tell the LLM to resume work.
 const continuationMessage = `This conversation was compacted from a longer session. The "Recent Work" section above is the most critical context — it reflects what was happening immediately before compaction. Continue from where you left off without re-asking the user any questions.`
 
+// compactionInstructionTmpl is the trailing instruction for the verbatim-history
+// compaction request (cache-hit path). The conversation history arrives ABOVE
+// as-is — byte-identical to the messages the model just served — so the radix
+// cache hits the full history prefix and only this instruction + the output are
+// new compute. Same structured contract as compactionPrompt, but phrased as a
+// continuation request over the conversation the model can already see (Claude
+// Cookbook auto-compaction pattern).
+const compactionInstructionTmpl = `You have been working on the task in the conversation history above (oldest first, most recent last). The conversation is about to be compacted: the full history above will be REPLACED by your summary, and work will continue with only your summary plus the most recent messages.
+
+## CRITICAL: Recency Priority
+Messages near the END of the history are the most recent work and MUST be preserved in maximum detail. Older messages unrelated to the current topic may be aggressively compressed or omitted entirely. NEVER sacrifice recent context for old history.
+
+## Required Sections
+
+### Historical Context (from previous compactions)
+If the history contains a summary from a previous compaction (marked with "[Compacted context]"), extract only what remains relevant to the CURRENT topic. Do NOT bloat this section — relevance to the current task is the filter.
+
+### Task Summary
+What the user asked for and current overall progress (1-3 sentences).
+
+### Key Decisions
+Decisions made during this session and WHY (so they are not re-litigated). Include rejected approaches and the reasoning.
+
+### Active Files
+Files currently being worked on (full paths). Include key function signatures if relevant.
+
+### Errors & Fixes
+Errors encountered and how they were resolved. Preserve error messages verbatim.
+
+### Recent Work (HIGHEST PRIORITY)
+What was being worked on most recently — preserve in detail:
+- The last few user requests and what was done for each
+- Files modified, code changes made, commands run
+- Current state of in-progress work
+- Any pending items or incomplete steps
+This section gets the most space in your output. Omitting recent work is NOT acceptable.
+
+### Next Steps
+What should happen next to continue from where we left off.
+
+## Constraints
+- Preserve ALL file paths from active operations
+- Preserve ALL error messages verbatim
+- PRESERVE offload markers (📂 [offload:ol_xxx]) and masked markers (📂 [masked:mk_xxx]) in their original form — these markers allow recalling the full original data when needed. Do NOT strip or remove offload IDs (ol_...) or mask IDs (mk_...) from your output. If a marker's summary text is important, include BOTH the marker and its summary.
+- Be concise — focus on facts, not narrative
+- Allocate the majority of your output budget to "Recent Work" — this is the most important section
+
+## Output Length
+Your output MUST be at most %d characters. Be concise — facts over narrative.
+
+Output ONLY the structured working state — no preamble, no explanations.`
+
+// buildCompactionInstruction renders the verbatim-path instruction with the
+// output budget (in characters).
+func buildCompactionInstruction(targetRunes int) string {
+	return fmt.Sprintf(compactionInstructionTmpl, targetRunes)
+}
+
+// maxCompactionOutputTokens caps the compaction output budget. The decode is
+// the synchronous compression path's floor (~3k tokens observed at 40-80 tok/s
+// ≈ 40-75s); the old 30%-of-original formula could theoretically demand 270k
+// output tokens on a 900k context. Capping keeps the synchronous wait bounded
+// and the behavior predictable.
+const maxCompactionOutputTokens = 16000
+
 // extractDialogueFromTail extracts a pure user/assistant view from a tail
 // that may contain tool messages. Tool group summaries are folded into
 // assistant messages.
@@ -233,6 +298,36 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}, nil
 	}
 
+	// Real API prompt_tokens from the session's token state (usage) — the
+	// compactMessages verbatim budget check consumes it (Never-Estimate-Tokens
+	// rule, AGENTS.md). 0 = unknown (e.g. fresh session with no LLM call yet)
+	// → the conservative flatten fallback inside compactMessages.
+	// CR xbotgh conservative guard: the auto-compression path writes an
+	// ESTIMATE into tenant_state (SaveContextTokens ← estimateMessagesTokens,
+	// chars×2/3 — CJK underestimates ~33%). A manual /compress right after an
+	// auto-compression (no LLM call in between — /compress is a command) reads
+	// that stale estimate → verbatimFits falsely passes → input-too-long. Never
+	// trust a stored value below the full-message conservative bound: take
+	// max(pt, totalRunes) — runes≈tokens is the CJK upper bound (1:1), the
+	// safe direction for a budget check (over-estimating → flatten fallback,
+	// never a request that exceeds the model limit).
+	var realPromptTokens int64
+	if memSvc := tenantSession.MemoryService(); memSvc != nil {
+		if pt, _, err := memSvc.GetTokenState(ctx, tenantSession.TenantID()); err == nil && pt > 0 {
+			realPromptTokens = pt
+		}
+	}
+	var totalRunes int
+	for _, m := range messages {
+		totalRunes += len([]rune(m.Content))
+		for _, tc := range m.ToolCalls {
+			totalRunes += len([]rune(tc.Arguments))
+		}
+	}
+	if int64(totalRunes) > realPromptTokens {
+		realPromptTokens = int64(totalRunes)
+	}
+
 	tokenCount := len(messages) * 200 // rough estimate for display only
 
 	// Always allow manual /compress regardless of threshold — user explicitly requested it.
@@ -240,7 +335,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	cm := a.GetContextManager()
 
 	userCtx := UserContextFromContext(ctx)
-	result, err := cm.ManualCompress(ctx, messages, userCtx.LLMClient, userCtx.Model)
+	result, err := cm.ManualCompress(ctx, messages, userCtx.LLMClient, userCtx.Model, realPromptTokens)
 	if err != nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -362,7 +457,29 @@ func capTailLength(messages []llm.ChatMessage, tailStart int, maxContextTokens i
 	}
 	tailLen := len(messages) - tailStart
 	if tailLen > maxTailMessages {
-		return len(messages) - maxTailMessages
+		newTailStart := len(messages) - maxTailMessages
+		// Pairing boundary alignment (PR #336 review defect 2): if the cap lands
+		// BETWEEN an assistant(tool_calls) and its tool results, the orphaned
+		// tool messages starting the tail get stripped by SanitizeMessages in the
+		// verbatim compression request → the prefix is no longer byte-identical
+		// (radix cache miss) and the paired context is silently lost. Roll back
+		// so the paired assistant(tool_calls) joins its tool results in the tail.
+		// Rollback budget (CR CjiW): tool-heavy conversations can have MANY
+		// consecutive tool messages (multi-round tool-call batches) — an unbounded
+		// rollback could pull entire assistant+tool groups past the cap and make
+		// the tail significantly exceed maxTailMessages. Bounded to 25% of the
+		// cap: pairing integrity wins for the boundary batch only, not for every
+		// batch above it (a boundary that overshoots by more means the pairing
+		// happened far above the cap — the cap wins and SanitizeMessages handles
+		// any orphaned tools as before this fix).
+		rollbackFloor := newTailStart - maxTailMessages/4
+		if rollbackFloor < tailStart {
+			rollbackFloor = tailStart
+		}
+		for newTailStart > rollbackFloor && messages[newTailStart].Role == "tool" {
+			newTailStart--
+		}
+		return newTailStart
 	}
 	return tailStart
 }
@@ -412,6 +529,21 @@ func compactMessages(
 	client llm.LLM,
 	model string,
 	maxContextTokens int,
+	// promptTokens is the REAL API prompt_tokens of the most recent LLM call
+	// for this conversation (TokenTracker / usage — the maybeCompress token
+	// source threaded down via RunConfig/ApplyCompress). 0 = unknown (e.g. the
+	// handleInputTooLong error path carries no usage) → the verbatim cache-hit
+	// path is skipped (flatten fallback). NEVER estimate here — see the
+	// Never-Estimate-Tokens principle in AGENTS.md.
+	promptTokens int64,
+	// maxOutputTokens is the USER-CONFIGURED per-model output budget
+	// (PerModelConfig max_output_tokens via UserContext → ContextManagerConfig).
+	// It takes priority over the built-in 16000 cap: the user's configured
+	// budget is authoritative for the compaction request's target length AND the
+	// engine's API max_tokens (compressCfg.MaxOutputTokens). 0 = not configured
+	// → fall back to maxCompactionOutputTokens for the target cap, and leave
+	// the engine at its own default (32_768) for max_tokens.
+	maxOutputTokens int,
 ) (*CompressResult, error) {
 	// Step 1: find tail cut point — keep the last user message and everything after it.
 	tailStart, originalUserMsg := findTailCutPoint(messages)
@@ -459,55 +591,16 @@ func compactMessages(
 		}, nil
 	}
 
-	// Step 4: build the history text for the compaction prompt.
-	var historyText strings.Builder
-
-	perMsgTokens := make([]int, len(toCompress))
-	totalCompressTokens := 0
-	for i, msg := range toCompress {
-		charEstimate := len([]rune(msg.Content)) * 2 / 3
-		perMsgTokens[i] = charEstimate
-		totalCompressTokens += charEstimate
-	}
-
-	const compactionOverhead = 1500
-	historyBudget := maxContextTokens - compactionOverhead
-	if historyBudget < 1000 {
-		historyBudget = 1000
-	}
-
-	fitCount := 0
-	usedTokens := 0
-	for i := len(toCompress) - 1; i >= 0; i-- {
-		if usedTokens+perMsgTokens[i] > historyBudget {
-			break
-		}
-		usedTokens += perMsgTokens[i]
-		fitCount++
-	}
-
-	omittedCount := len(toCompress) - fitCount
-	if omittedCount > 0 {
-		fmt.Fprintf(&historyText, "[Note: %d older messages omitted from compaction]\n\n", omittedCount)
-	}
-	fitting := toCompress[omittedCount:]
-	recentStart := len(fitting) * 3 / 5
-	for i, msg := range fitting {
-		if i == recentStart && recentStart > 0 && recentStart < len(fitting) {
-			historyText.WriteString("--- RECENT WORK BEGINS (messages below are highest priority) ---\n\n")
-		}
-		historyText.WriteString(formatCompactLine(msg))
-	}
-
-	// Step 5: calculate token-budget-aware target output length.
-	// Unlike the old fixed 5000-char cap, we compute based on the available context budget:
-	// target = min(30% of original tokens, 50% of available budget after tail + overhead)
+	// Step 4: calculate token-budget-aware target output length (needed by both
+	// request paths below).
+	// target = min(30% of original tokens, 50% of available budget, hard cap)
 	totalChars := 0
 	for _, msg := range messages {
 		totalChars += len([]rune(msg.Content))
 	}
 	originalTokens := totalChars / 3
 
+	const compactionOverhead = 1500
 	tailEstTokens := len(tail) * 200 // rough estimate
 	availableBudget := maxContextTokens - tailEstTokens - compactionOverhead
 	if availableBudget < 1000 {
@@ -518,12 +611,109 @@ func compactMessages(
 	if targetTokens > maxTarget {
 		targetTokens = maxTarget
 	}
+	// Hard cap: the decode is the synchronous compression path's floor — the
+	// old 30%-of-original formula could theoretically demand 270k output tokens
+	// on a 900k context (~90 min at single-stream decode speeds).
+	// The USER-CONFIGURED per-model output budget (maxOutputTokens, from
+	// PerModelConfig via UserContext → ContextManagerConfig) always takes
+	// priority over the built-in 16000 default ("总是优先用用户配置"): a smaller
+	// configured budget (e.g. 8k) caps the summary tighter; a larger one (e.g.
+	// 65k) lets the 30% formula breathe (the formula + availableBudget/2 still
+	// constrain the target). 0 = not configured → the built-in default.
+	outputCap := maxCompactionOutputTokens
+	if maxOutputTokens > 0 {
+		outputCap = maxOutputTokens
+	}
+	if targetTokens > outputCap {
+		targetTokens = outputCap
+	}
 	if targetTokens < 500 {
 		targetTokens = 500
 	}
 	targetRunes := int(float64(targetTokens) * 1.5) // tokens → chars (rough)
 
-	prompt := compactionPrompt + fmt.Sprintf(`
+	// Step 5: build the compaction request.
+	//
+	// Cache-hit path (default): [original system, ...verbatim to-compress
+	// messages, trailing instruction user msg]. The prefix is byte-identical
+	// to the conversation the model just served → the radix cache hits the
+	// ENTIRE history and only the instruction + the output are new compute
+	// (a 900k-token history compresses with ~2k new prefill instead of a full
+	// re-prefill — the flatten path's rewritten prompt shares zero prefix with
+	// the live conversation). Fidelity is also better: tool messages keep
+	// their role + tool_calls structure — formatCompactLine collapses them
+	// into text lines and truncates every message to 2000 runes.
+	//
+	// Never-Estimate-Tokens rule (AGENTS.md): the verbatim budget check uses
+	// the REAL API prompt_tokens threaded in by the caller (maybeCompress's
+	// token source via RunConfig/ApplyCompress), never chars-based estimates —
+	// estimateMessagesTokens underestimates CJK content by 33%+ and would pass
+	// requests that actually exceed the model limit (LLM input-too-long
+	// bubbles up instead of the flatten fallback).
+	//
+	// promptTokens covers system + ALL messages (incl. the tail) — an UPPER
+	// BOUND of the verbatim request (which drops the tail), so the check is
+	// conservative. promptTokens == 0 (no usage data — e.g. the
+	// handleInputTooLong error path carries no usage) → flatten fallback:
+	// never gamble on a missing measurement.
+	instruction := buildCompactionInstruction(targetRunes)
+	// instructionReserveTokens: the instruction is OUR OWN constructed text
+	// (~1.5k chars, bounded by the fixed template + the %d budget line) — a
+	// fixed 4k reserve, not an estimate of the conversation.
+	const instructionReserveTokens = 4096
+	verbatimFits := promptTokens > 0 &&
+		promptTokens+instructionReserveTokens+int64(targetTokens) <= int64(maxContextTokens)
+
+	var compactionMsgs []llm.ChatMessage
+	if verbatimFits {
+		compactionMsgs = make([]llm.ChatMessage, 0, len(systemMsgs)+len(toCompress)+1)
+		compactionMsgs = append(compactionMsgs, systemMsgs...)
+		compactionMsgs = append(compactionMsgs, toCompress...)
+		compactionMsgs = append(compactionMsgs, llm.NewUserMessage(instruction))
+		log.Ctx(ctx).WithFields(log.Fields{
+			"path":          "verbatim_cache_hit",
+			"prompt_tokens": promptTokens,
+			"to_compress":   len(toCompress),
+			"tail_messages": len(tail),
+			"target_runes":  targetRunes,
+		}).Info("Context compaction: verbatim-history request (radix cache hit)")
+	} else {
+		// Flatten fallback (bounded). Budget = the model limit (a configured
+		// REAL constraint) minus the prompt wrapper + output reserves; the
+		// per-message fill counts the flattened text's OWN chars against that
+		// budget under the WORST-CASE tokenizer density (1 token ≥ 1 char) —
+		// conservative direction, never an underestimate (CJK ≈ 1 token/char;
+		// ASCII ≈ 0.67 token/char, so ASCII history gets extra headroom).
+		// Oldest messages drop from the head until the text fits.
+		var historyText strings.Builder
+		flattenBudget := int64(maxContextTokens-compactionOverhead) - int64(targetTokens)
+		if flattenBudget < 1000 {
+			flattenBudget = 1000
+		}
+		fitCount := 0
+		var usedChars int64
+		for i := len(toCompress) - 1; i >= 0; i-- {
+			msgChars := int64(len([]rune(toCompress[i].Content)))
+			if usedChars+msgChars > flattenBudget {
+				break
+			}
+			usedChars += msgChars
+			fitCount++
+		}
+		omittedCount := len(toCompress) - fitCount
+		if omittedCount > 0 {
+			fmt.Fprintf(&historyText, "[Note: %d older messages omitted from compaction]\n\n", omittedCount)
+		}
+		fitting := toCompress[omittedCount:]
+		recentStart := len(fitting) * 3 / 5
+		for i, msg := range fitting {
+			if i == recentStart && recentStart > 0 && recentStart < len(fitting) {
+				historyText.WriteString("--- RECENT WORK BEGINS (messages below are highest priority) ---\n\n")
+			}
+			historyText.WriteString(formatCompactLine(msg))
+		}
+
+		prompt := compactionPrompt + fmt.Sprintf(`
 
 ## Output Length
 Your output MUST be at most %d characters. Be concise — facts over narrative.
@@ -533,13 +723,17 @@ Your output MUST be at most %d characters. Be concise — facts over narrative.
 
 Output the structured working state directly.`
 
-	// Step 6: call engine.Run() — REUSE THE AGENT LOOP.
-	// Instead of a custom client.Generate() loop, we build a minimal RunConfig
-	// and let engine.Run() handle LLM calling, retry, streaming, and sanitization.
-	// This eliminates the duplicated LLM call logic that the old compactMessages had.
-	compactionMsgs := []llm.ChatMessage{
-		llm.NewSystemMessage("You are a context compaction expert. Create a structured working state for task continuation. Stay under the specified length limit."),
-		llm.NewUserMessage(prompt),
+		compactionMsgs = []llm.ChatMessage{
+			llm.NewSystemMessage("You are a context compaction expert. Create a structured working state for task continuation. Stay under the specified length limit."),
+			llm.NewUserMessage(prompt),
+		}
+		log.Ctx(ctx).WithFields(log.Fields{
+			"path":          "flatten_fallback",
+			"prompt_tokens": promptTokens,
+			"to_compress":   len(toCompress),
+			"tail_messages": len(tail),
+			"target_runes":  targetRunes,
+		}).Info("Context compaction: flatten fallback (no real usage data or verbatim over budget)")
 	}
 
 	compressCfg := RunConfig{
@@ -563,6 +757,18 @@ Output the structured working state directly.`
 		Stream:       true,
 		ThinkingMode: "",
 		AgentID:      "compressor",
+		// User-configured per-model output budget (PerModelConfig via
+		// ContextManagerConfig) — the target-length cap (outputCap) honors it
+		// ("总是优先用用户配置"). NOTE (CR xbotgh): this field does NOT reach the
+		// HTTP request's max_tokens — generateResponse has no max-tokens param
+		// and the API limit comes from the LLM client's construction-time config
+		// (llm client maxTokens ← subscription/per-model max_output). It only
+		// drives engine-side display/finish-reason detection. The 16k-or-user
+		// output cap above is therefore a PROMPT-level instruction (the
+		// instruction's character budget), not a hard API bound — a model that
+		// ignores the instruction can decode up to the client's configured
+		// max_tokens (default 32_768).
+		MaxOutputTokens: maxOutputTokens,
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{

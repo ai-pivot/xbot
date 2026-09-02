@@ -158,6 +158,16 @@ type RunConfig struct {
 	// Memory 记忆提供者（nil = 无记忆）
 	Memory memory.MemoryProvider
 
+	// SpawnBackground runs fn as a background task that must OUTLIVE the current
+	// Run's ctx (turn ctx dies at Run end — e.g. the async Pre/Post compress
+	// hooks keep running after the compression turn finishes). The agent
+	// implementation registers it on lifecycleWG and cancels its ctx when the
+	// Agent closes so the task never touches a closed DB / released LLM client
+	// (same pattern as the auto-memorize ConsolidateTurn goroutine).
+	// nil → fire-and-forget fallback (clipanic.Go + context.WithoutCancel) —
+	// tests and runs without the wiring.
+	SpawnBackground func(name string, fn func(ctx context.Context))
+
 	// ToolContextExtras Letta 记忆相关的 ToolContext 扩展字段
 	ToolContextExtras *ToolContextExtras
 
