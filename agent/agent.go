@@ -2319,6 +2319,32 @@ func (a *Agent) Close() error {
 	return nil
 }
 
+// spawnBackgroundTask runs fn as an Agent-lifecycle-scoped background task.
+// The task's ctx is NOT derived from any Run's ctx — those are cancelled at
+// turn end (e.g. the async Pre/Post compress memory hooks outlive the
+// compression turn); it is cancelled by lifecycleStopCh so the task never
+// touches a closed DB / released LLM client after Close. Registered on
+// lifecycleWG so Close waits for in-flight tasks (same pattern as the
+// auto-memorize ConsolidateTurn goroutine).
+func (a *Agent) spawnBackgroundTask(name string, fn func(ctx context.Context)) {
+	a.lifecycleWG.Add(1)
+	clipanic.Go(name, func() {
+		defer a.lifecycleWG.Done()
+		bgCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		if a.lifecycleStopCh != nil {
+			go func() {
+				select {
+				case <-a.lifecycleStopCh:
+					cancel()
+				case <-bgCtx.Done():
+				}
+			}()
+		}
+		fn(bgCtx)
+	})
+}
+
 // PluginManager returns the plugin manager for this agent.
 // Returns nil if the plugin system is not initialized.
 func (a *Agent) PluginManager() *plugin.PluginManager {

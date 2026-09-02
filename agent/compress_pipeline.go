@@ -41,9 +41,6 @@ type CompressPipelineParams struct {
 	Memory memory.MemoryProvider
 	// SessionID is the current session ID (for memory PreCompress/PostCompress).
 	SessionID string
-	// PreserveHints are critical information hints from PreCompress,
-	// injected into the compression prompt to prevent information loss.
-	PreserveHints []string
 }
 
 // CompressPipelineResult holds the outputs of a compression pipeline execution.

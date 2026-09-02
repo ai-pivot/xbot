@@ -109,6 +109,9 @@ func (a *Agent) buildBaseRunConfig(
 		ThinkingMode: thinkingMode,
 		Tools:        a.tools,
 		Messages:     messages,
+		// Agent-lifecycle background tasks (async Pre/Post compress memory
+		// hooks etc.) — turn-outliving, Close()-cancelled, WG-tracked.
+		SpawnBackground: a.spawnBackgroundTask,
 
 		// 身份
 		AgentID: "main",
