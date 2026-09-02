@@ -808,12 +808,26 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         }
       }
       // ③ hint 指向未绑定 turn → 直接挂 user。
+      // ③b activeTurn 兜底（2026-09-02 cron user 消失实录，tenant 166286 turn
+      // 1030/1031）：turn_started 丢失（tab 后台 SSE 节流——连接不断，无 resync/
+      // reload）→ iteration lazy 采纳（activeTurn 的 user=null）→ inject_user echo
+      // 到达（WSMessage 四字段无 turn_id → turnHint=undefined → ③ 不命中）→ ③.5
+      // 内容幂等误杀（turns 里旧 turn 的同内容 notif user 匹配——cron 每分钟同
+      // 内容通知，1029/1030 的 notif user 挡住 1031 的 echo）→ user 永缺（DOM：
+      // turn-1030-c 与 turn-1031-c 相邻无 user 行，DB 铁证 user 行存在）。
+      // 修复：echo 无 turnHint 时挂 active turn 的空 user 槽（lazy 采纳的
+      // activeTurn 是权威归属——turn 进行中），在 ③.5 误杀之前恢复。
       const hint = ev.row.turnHint
       if (hint !== undefined) {
         const tid = turnID(hint)
         const t = s.turns.get(tid)
         if (t && t.user === null) {
           return withTurn(s, tid, (tt) => ({ ...tt, user: ev.row }))
+        }
+      } else if (s.activeTurn !== null) {
+        const t = s.turns.get(s.activeTurn)
+        if (t && t.user === null && !ev.row.isNotification) {
+          return withTurn(s, s.activeTurn, (tt) => ({ ...tt, user: ev.row }))
         }
       }
       // ③.5 notification echo 内容幂等（同一通知双行根治）：turn_started(notification)
