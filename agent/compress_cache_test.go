@@ -83,7 +83,7 @@ func TestCompactMessages_VerbatimHistoryCacheHit(t *testing.T) {
 		llm.NewToolMessage("Shell", "tc2", `{"command":"go test ./..."}`, "PASS ok\tfake_test.go"),
 	}
 
-	result, err := compactMessages(context.Background(), messages, client, "test-model", 200000, 1000)
+	result, err := compactMessages(context.Background(), messages, client, "test-model", 200000, 1000, 0)
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestCompactMessages_FlattenFallbackWhenOverBudget(t *testing.T) {
 		llm.NewUserMessage("latest request"), // tail cut
 	}
 
-	result, err := compactMessages(context.Background(), messages, client, "test-model", 20000, 0) // no usage data → flatten; tiny budget → bounded
+	result, err := compactMessages(context.Background(), messages, client, "test-model", 20000, 0, 0) // no usage data → flatten; tiny budget → bounded
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestCompactMessages_RealUsageDrivesBudget(t *testing.T) {
 		llm.NewUserMessage("latest request"),                            // tail cut point
 	}
 
-	_, err := compactMessages(context.Background(), messages, client, "test-model", 60000, 55000)
+	_, err := compactMessages(context.Background(), messages, client, "test-model", 60000, 55000, 0)
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCompactMessages_UnknownUsageFallsBack(t *testing.T) {
 		llm.NewUserMessage("latest request"),
 	}
 
-	_, err := compactMessages(context.Background(), messages, client, "test-model", 200000, 0)
+	_, err := compactMessages(context.Background(), messages, client, "test-model", 200000, 0, 0)
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestCompactMessages_FitsByRealUsage(t *testing.T) {
 	}
 
 	// REAL usage 10k on a 200k budget: 10k + 4k + target ≤ 200k → verbatim.
-	_, err := compactMessages(context.Background(), messages, client, "test-model", 200000, 10000)
+	_, err := compactMessages(context.Background(), messages, client, "test-model", 200000, 10000, 0)
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}

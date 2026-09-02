@@ -505,6 +505,14 @@ func compactMessages(
 	// path is skipped (flatten fallback). NEVER estimate here — see the
 	// Never-Estimate-Tokens principle in AGENTS.md.
 	promptTokens int64,
+	// maxOutputTokens is the USER-CONFIGURED per-model output budget
+	// (PerModelConfig max_output_tokens via UserContext → ContextManagerConfig).
+	// It takes priority over the built-in 16000 cap: the user's configured
+	// budget is authoritative for the compaction request's target length AND the
+	// engine's API max_tokens (compressCfg.MaxOutputTokens). 0 = not configured
+	// → fall back to maxCompactionOutputTokens for the target cap, and leave
+	// the engine at its own default (32_768) for max_tokens.
+	maxOutputTokens int,
 ) (*CompressResult, error) {
 	// Step 1: find tail cut point — keep the last user message and everything after it.
 	tailStart, originalUserMsg := findTailCutPoint(messages)
@@ -575,8 +583,18 @@ func compactMessages(
 	// Hard cap: the decode is the synchronous compression path's floor — the
 	// old 30%-of-original formula could theoretically demand 270k output tokens
 	// on a 900k context (~90 min at single-stream decode speeds).
-	if targetTokens > maxCompactionOutputTokens {
-		targetTokens = maxCompactionOutputTokens
+	// The USER-CONFIGURED per-model output budget (maxOutputTokens, from
+	// PerModelConfig via UserContext → ContextManagerConfig) always takes
+	// priority over the built-in 16000 default ("总是优先用用户配置"): a smaller
+	// configured budget (e.g. 8k) caps the summary tighter; a larger one (e.g.
+	// 65k) lets the 30% formula breathe (the formula + availableBudget/2 still
+	// constrain the target). 0 = not configured → the built-in default.
+	outputCap := maxCompactionOutputTokens
+	if maxOutputTokens > 0 {
+		outputCap = maxOutputTokens
+	}
+	if targetTokens > outputCap {
+		targetTokens = outputCap
 	}
 	if targetTokens < 500 {
 		targetTokens = 500
@@ -708,6 +726,12 @@ Output the structured working state directly.`
 		Stream:       true,
 		ThinkingMode: "",
 		AgentID:      "compressor",
+		// User-configured per-model output budget (PerModelConfig via
+		// ContextManagerConfig) — passed through to the engine so the compaction
+		// request's API max_tokens honors the user's setting instead of the
+		// engine default (32_768). 0 = not configured → leave unset (engine
+		// default applies).
+		MaxOutputTokens: maxOutputTokens,
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{

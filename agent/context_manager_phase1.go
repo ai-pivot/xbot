@@ -62,7 +62,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 		"max_tokens":      m.config.MaxContextTokens,
 	}).Info("Context compaction: starting")
 
-	result, err := compactMessages(ctx, messages, client, model, m.config.MaxContextTokens, promptTokens)
+	result, err := compactMessages(ctx, messages, client, model, m.config.MaxContextTokens, promptTokens, m.config.MaxOutputTokens)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 // ManualCompress handles /compress command. promptTokens is the REAL API
 // prompt_tokens (usage) — same Never-Estimate-Tokens contract as Compress.
 func (m *phase1Manager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
-	return compactMessages(ctx, messages, client, m.compressionModel(model), m.config.MaxContextTokens, promptTokens)
+	return compactMessages(ctx, messages, client, m.compressionModel(model), m.config.MaxContextTokens, promptTokens, m.config.MaxOutputTokens)
 }
 
 func (m *phase1Manager) ContextInfo(messages []llm.ChatMessage, model string, toolTokens int) *ContextStats {

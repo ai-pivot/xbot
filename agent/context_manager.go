@@ -73,6 +73,14 @@ type ContextManagerConfig struct {
 	// lets compaction run on a faster/cheaper model of the same endpoint.
 	CompressionModel string
 
+	// MaxOutputTokens is the USER-CONFIGURED per-model output budget
+	// (PerModelConfig max_output_tokens via UserContext → applyUserContextLimits).
+	// It takes priority over the built-in 16000 compaction cap: the user's
+	// configured budget is authoritative for the compaction request's target
+	// length AND the engine's API max_tokens. 0 = not configured (built-in
+	// default applies).
+	MaxOutputTokens int
+
 	DefaultMode ContextMode
 	runtimeMode ContextMode
 }

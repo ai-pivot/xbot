@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -164,7 +166,7 @@ func TestCompactMessages_PreservesOriginalUserMsg(t *testing.T) {
 		},
 	}
 
-	result, err := compactMessages(context.Background(), messages, mockClient, "test-model", 100000, 1000)
+	result, err := compactMessages(context.Background(), messages, mockClient, "test-model", 100000, 1000, 0)
 	if err != nil {
 		t.Fatalf("compactMessages failed: %v", err)
 	}
@@ -214,5 +216,70 @@ func TestCompactMessages_PreservesOriginalUserMsg(t *testing.T) {
 		t.Errorf("LLMView too large after compression (%d messages) — tail capping may not be working.\n"+
 			"Expected ~80 messages (system + summary + continuation + user msg + capped tail), got %d",
 			len(result.LLMView), len(result.LLMView))
+	}
+}
+
+// TestCompactMessages_UserMaxOutputTokensPriority verifies the user-configured
+// per-model output budget (PerModelConfig max_output_tokens) takes priority
+// over the built-in 16000 compaction cap: targetTokens/targetRunes follow the
+// USER value when set, and fall back to the built-in default when 0.
+func TestCompactMessages_UserMaxOutputTokensPriority(t *testing.T) {
+	// Build a large history so the 30% formula exceeds both caps:
+	// 200 messages × ~1000 runes ≈ 200k chars → originalTokens ≈ 66k →
+	// 30% ≈ 20k > 16000 (built-in) > 8000 (user).
+	messages := []llm.ChatMessage{llm.NewSystemMessage("system prompt")}
+	big := strings.Repeat("历史内容测试", 200) // ~1000 runes → ~333 tokens each
+	for i := 0; i < 200; i++ {
+		messages = append(messages, llm.NewUserMessage(big))
+	}
+	messages = append(messages, llm.NewUserMessage("最新消息"))
+
+	// instructionRunes extracts the targetRunes number from the compaction
+	// instruction (the trailing user message of the verbatim request).
+	instructionRunes := func(client *mockLLM) int {
+		if len(client.calls) == 0 {
+			t.Fatal("mockLLM received no calls")
+		}
+		last := client.calls[0].Messages[len(client.calls[0].Messages)-1]
+		re := regexp.MustCompile(`at most (\d+) characters`)
+		m := re.FindStringSubmatch(last.Content)
+		if m == nil {
+			t.Fatalf("compaction instruction missing the output-length line; got: %q", truncateRunes(last.Content, 200))
+		}
+		n := 0
+		fmt.Sscanf(m[1], "%d", &n)
+		return n
+	}
+
+	// Case 1: user-configured 8000 → cap 8000 (targetRunes = 8000*1.5 = 12000).
+	mock8k := &mockLLM{responses: []llm.LLMResponse{{Content: "Compacted summary"}}}
+	if _, err := compactMessages(context.Background(), messages, mock8k, "test-model", 1000000, 1000, 8000); err != nil {
+		t.Fatalf("compactMessages (user 8000) failed: %v", err)
+	}
+	got := instructionRunes(mock8k)
+	if got != 12000 {
+		t.Errorf("user-configured 8000 must cap the output budget: got targetRunes=%d, want 12000 (8000*1.5, NOT the 24000 built-in)", got)
+	}
+
+	// Case 2: not configured (0) → built-in 16000 (targetRunes = 24000).
+	mock0 := &mockLLM{responses: []llm.LLMResponse{{Content: "Compacted summary"}}}
+	if _, err := compactMessages(context.Background(), messages, mock0, "test-model", 1000000, 1000, 0); err != nil {
+		t.Fatalf("compactMessages (default) failed: %v", err)
+	}
+	got0 := instructionRunes(mock0)
+	if got0 != 24000 {
+		t.Errorf("unconfigured (0) must fall back to the built-in cap: got targetRunes=%d, want 24000 (16000*1.5)", got0)
+	}
+
+	// Case 3: user-configured 65000 (LARGER than the built-in) → user wins
+	// ("总是优先用用户配置"): cap 65000 → 30% formula (≈20k) governs below it.
+	mock65k := &mockLLM{responses: []llm.LLMResponse{{Content: "Compacted summary"}}}
+	if _, err := compactMessages(context.Background(), messages, mock65k, "test-model", 1000000, 1000, 65000); err != nil {
+		t.Fatalf("compactMessages (user 65000) failed: %v", err)
+	}
+	got65 := instructionRunes(mock65k)
+	// 30% of ~66k tokens ≈ 20k < 65000 → formula governs (NOT capped to 16000).
+	if got65 <= 24000 {
+		t.Errorf("user-configured 65000 must NOT be capped down by the built-in 16000: got targetRunes=%d, want ~30000 (30%% formula, 20k*1.5)", got65)
 	}
 }
