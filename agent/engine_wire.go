@@ -72,6 +72,7 @@ func applyUserMaxContext(base *ContextManagerConfig, userMaxCtx int) *ContextMan
 	return &ContextManagerConfig{
 		MaxContextTokens:     effective,
 		CompressionThreshold: base.CompressionThreshold,
+		CompressionModel:     base.CompressionModel,
 		DefaultMode:          base.DefaultMode,
 	}
 }

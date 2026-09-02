@@ -311,7 +311,12 @@ type AgentConfig struct {
 	MaxContextTokens     int            `json:"max_context_tokens"`
 	ModelContexts        map[string]int `json:"model_contexts,omitempty"` // model -> max context tokens, overrides MaxContextTokens
 	CompressionThreshold float64        `json:"compression_threshold"`
-	DynamicMaxTokens     *bool          `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
+	// CompressionModel overrides the model used for context compaction LLM
+	// calls (default "" = the session's model). Point it at a fast/cheap model
+	// served by the same endpoint — the compaction call reuses the session's
+	// LLM client, so only the model NAME changes.
+	CompressionModel string `json:"compression_model,omitempty"`
+	DynamicMaxTokens *bool  `json:"dynamic_max_tokens,omitempty"` // DEPRECATED: no longer used, kept for config.json compat
 
 	// DeltaPush 启用流式 delta push（增量文本，带宽优化）。默认 false = 每次
 	// 推送完整累积文本（简单可靠，gap 追赶无需特殊处理）。delta push 曾引入

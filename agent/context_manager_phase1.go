@@ -18,6 +18,17 @@ func newPhase1Manager(cfg *ContextManagerConfig) *phase1Manager {
 	}
 }
 
+// compressionModel returns the model name for a compaction LLM call:
+// config.CompressionModel overrides the session's model when set (compaction
+// on a faster/cheaper model of the same endpoint — the summary needs speed,
+// not the session flagship's intelligence). Empty config → the session's model.
+func (m *phase1Manager) compressionModel(sessionModel string) string {
+	if m.config.CompressionModel != "" {
+		return m.config.CompressionModel
+	}
+	return sessionModel
+}
+
 func (m *phase1Manager) Mode() ContextMode { return ContextModePhase1 }
 
 func (m *phase1Manager) ShouldCompress(messages []llm.ChatMessage, model string, toolTokens int) bool {
@@ -36,6 +47,11 @@ func (m *phase1Manager) ShouldCompress(messages []llm.ChatMessage, model string,
 
 // Compress executes structured compaction via the agent loop (engine.Run).
 func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+	// CompressionModel override: compaction runs on a faster/cheaper model of
+	// the same endpoint when configured (config agent.compression_model). The
+	// summary needs speed, not the session flagship's intelligence — Claude
+	// Code's ecosystem practice is a cheap summarizer model.
+	model = m.compressionModel(model)
 	originalTokens := len(messages) * 200 // rough estimate
 
 	log.Ctx(ctx).WithFields(map[string]any{
@@ -72,7 +88,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 
 // ManualCompress handles /compress command.
 func (m *phase1Manager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
-	return compactMessages(ctx, messages, client, model, m.config.MaxContextTokens)
+	return compactMessages(ctx, messages, client, m.compressionModel(model), m.config.MaxContextTokens)
 }
 
 func (m *phase1Manager) ContextInfo(messages []llm.ChatMessage, model string, toolTokens int) *ContextStats {

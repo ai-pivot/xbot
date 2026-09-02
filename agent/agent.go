@@ -1532,7 +1532,11 @@ type Config struct {
 	// 旧压缩配置（保留用于初始化 ContextManagerConfig，向后兼容 main.go 传参）
 	MaxContextTokens     int     // 最大上下文 token 数（默认 100000）
 	CompressionThreshold float64 // 触发压缩的 token 比例阈值（默认 0.7）
-	EnableAutoCompress   bool    // 是否启用自动上下文压缩（默认 true，旧字段）
+	// CompressionModel overrides the model name for compaction LLM calls
+	// ("" = the session's model). Wired from config agent.compression_model —
+	// lets compaction run on a faster/cheaper model of the same endpoint.
+	CompressionModel   string
+	EnableAutoCompress bool // 是否启用自动上下文压缩（默认 true，旧字段）
 
 	// SubAgent 深度控制
 	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
@@ -1708,6 +1712,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.contextManagerConfig = &ContextManagerConfig{
 		MaxContextTokens:     cfg.MaxContextTokens,
 		CompressionThreshold: cfg.CompressionThreshold,
+		CompressionModel:     cfg.CompressionModel,
 		DefaultMode:          contextMode,
 	}
 	a.contextManager = NewContextManager(a.contextManagerConfig)

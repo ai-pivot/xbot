@@ -91,6 +91,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		EnableAutoCompress:     cfg.Agent.EffectiveEnableAutoCompress(),
 		MaxContextTokens:       cfg.Agent.MaxContextTokens,
 		CompressionThreshold:   cfg.Agent.CompressionThreshold,
+		CompressionModel:       cfg.Agent.CompressionModel,
 		ContextMode:            agent.ContextMode(cfg.Agent.ContextMode),
 		MaxSubAgentDepth:       cfg.Agent.MaxSubAgentDepth,
 		DeltaPush:              cfg.Agent.DeltaPush,

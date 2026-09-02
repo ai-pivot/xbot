@@ -68,6 +68,11 @@ type ContextManagerConfig struct {
 	MaxContextTokens     int
 	CompressionThreshold float64
 
+	// CompressionModel overrides the model name for compaction LLM calls
+	// ("" = the session's model). Wired from config agent.compression_model —
+	// lets compaction run on a faster/cheaper model of the same endpoint.
+	CompressionModel string
+
 	DefaultMode ContextMode
 	runtimeMode ContextMode
 }
