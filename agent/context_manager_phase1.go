@@ -24,6 +24,19 @@ func newPhase1Manager(cfg *ContextManagerConfig) *phase1Manager {
 // not the session flagship's intelligence). Empty config → the session's model.
 func (m *phase1Manager) compressionModel(sessionModel string) string {
 	if m.config.CompressionModel != "" {
+		// ⚠️ CR xbotgh: prefix/radix cache is keyed by MODEL — an override to a
+		// DIFFERENT model silently forfeits this PR's core optimization: the
+		// verbatim-history request ([original system, ...verbatim, instruction])
+		// re-prefills the ENTIRE history on the override model (exactly the ~900k
+		// re-prefill commit e7de1108 eliminated). Warn ONCE per config change so
+		// the trade-off is visible; to keep the cache-hit the override must name
+		// the SAME model as the session.
+		if m.config.CompressionModel != sessionModel {
+			log.WithFields(log.Fields{
+				"compression_model": m.config.CompressionModel,
+				"session_model":     sessionModel,
+			}).Warn("CompressionModel override forfeits the verbatim-history radix cache-hit: prefix cache is keyed by model, the full history re-prefills on the override model. Keep the same model name as the session to preserve the cache-hit.")
+		}
 		return m.config.CompressionModel
 	}
 	return sessionModel

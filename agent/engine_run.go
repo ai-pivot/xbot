@@ -1478,6 +1478,13 @@ func (s *runState) spawnBackground(ctx context.Context, name string, fn func(ctx
 		s.cfg.SpawnBackground(name, fn)
 		return
 	}
+	// TEST-ONLY fallback (CR CjiW Nit): production paths always wire
+	// cfg.SpawnBackground (buildBaseRunConfig / buildSubAgentRunConfig →
+	// agent.spawnBackgroundTask: lifecycleWG-tracked + lifecycleStopCh-cancelled).
+	// This branch exists for tests that build a bare RunConfig — it has NO
+	// lifecycle tracking (Close neither waits nor cancels), so a minute-scale
+	// background hook (e.g. PostCompress core-summary LLM) could outlive the
+	// agent's shutdown here. Do NOT wire production code onto this path.
 	clipanic.Go(name, func() { fn(context.WithoutCancel(ctx)) })
 }
 

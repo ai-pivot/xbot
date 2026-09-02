@@ -521,7 +521,12 @@ func (m *XbotMemory) Recall(ctx context.Context, query, sessionID string) (strin
 		if len(sessionMems) > 0 {
 			sb.WriteString("## Session Memory\n")
 			for _, mem := range sessionMems {
-				fmt.Fprintf(&sb, "- [%s] %s\n", mem.Type, mem.Content)
+				// created date on every line — same staleness signal as the
+				// Long-term section below: session chatIDs are long-lived and
+				// ConsolidateTurn/PreCompress keep accumulating session memories,
+				// so week-old task state must be distinguishable from fresh facts
+				// (CR xbotgh: align with the "model-side staleness judgment" design).
+				fmt.Fprintf(&sb, "- [%s] %s (created %s)\n", mem.Type, mem.Content, mem.CreatedAt.Format("2006-01-02"))
 			}
 			sb.WriteString("\n")
 		}
@@ -808,8 +813,13 @@ func (m *XbotMemory) Memorize(ctx context.Context, input memory.MemorizeInput) (
 	}
 
 	// 2. Extract atomic memories → long-term memory
+	// SourceSession: /new 归档的提取固定 scope='session'（extractAtomicMemories）
+	// —— 必须带上 input.SessionID，否则落库 source_session='' → sessionMemories
+	// 的 `source_session = ?` 过滤永不命中，本会话的 Recall 也注入不到
+	//（ConsolidateTurn/PreCompress 都写 SourceSession，唯独这里漏——CR xbotgh）。
 	entries := m.extractAtomicMemories(ctx, client, model, input.Messages, 0)
 	for _, entry := range entries {
+		entry.SourceSession = input.SessionID
 		if err := m.addLongTermMemory(entry); err != nil {
 			log.WithError(err).Debug("xbot-memory: failed to add long-term memory")
 		}
@@ -1181,11 +1191,19 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
 		WHERE `+m.scopeWhere("ltm")+`
 		  AND ltm.superseded_by IS NULL
+		  -- Dedup scope filter (CR xbotgh): a session-scoped extraction must ONLY
+		  -- dedup against global entries + ITS OWN session's entries. Without this,
+		  -- session A's extracted fact makes session B's identical extraction
+		  -- dedup-skip — B's Recall sees nothing (A's entry doesn't inject into B,
+		  -- and B never wrote its own). Global-scope callers (empty SourceSession)
+		  -- match only global rows: a task-local session fact must never swallow
+		  -- an explicit global write either.
+		  AND (ltm.scope = 'global' OR (ltm.scope = 'session' AND ltm.source_session = ?))
 		  AND xbot_long_term_memories_fts MATCH ?
 		  AND bm25(xbot_long_term_memories_fts) < ?
 		ORDER BY bm25(xbot_long_term_memories_fts) ASC
 		LIMIT 1
-	`, m.scopeArg(), fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold).Scan(&dupID)
+	`, m.scopeArg(), entry.SourceSession, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold).Scan(&dupID)
 	if err == nil && dupID > 0 {
 		// Duplicate found — skip. Log at debug to avoid noise.
 		log.WithFields(log.Fields{
@@ -1778,7 +1796,29 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 		scope = "global"
 	}
 
-	result, err := m.db.Exec(`
+	// Transaction (CR CjiW Low + CR xbotgh): INSERT + supersede UPDATE must be
+	// atomic. A crash between the two left the new row written while the old
+	// contradictory rows stayed ACTIVE (both injected — the pre-redesign state).
+	// Concurrency guard (CR xbotgh): two concurrent AddMemory calls with
+	// strong-matching facts each SELECT the other's row (inserted but not yet
+	// superseded) → both UPDATE superseded_by → both disappear from every view
+	// (Recall/SearchMemories/ListMemories filter superseded rows — not even
+	// memory_manage list shows them). SELECT is bounded to ltm.id < new id
+	// (only supersede OLDER rows — concurrent same-fact writes break the tie
+	// naturally, last writer wins) and the UPDATE carries a superseded_by IS
+	// NULL guard (a second writer never overwrites an already-superseded row).
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	txCommitted := false
+	defer func() {
+		if !txCommitted {
+			_ = tx.Rollback()
+		}
+	}()
+
+	result, err := tx.Exec(`
 		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
@@ -1799,12 +1839,12 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	// Session-scoped auto-extraction (addLongTermMemory) keeps its dedup-skip
 	// and NEVER supersedes: task-local state must not invalidate user-level facts.
 	if scope == "global" {
-		rows, err := m.db.Query(`
+		rows, err := tx.Query(`
 			SELECT ltm.id
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
 			WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL
-			  AND ltm.id != ?
+			  AND ltm.id < ?
 			  AND xbot_long_term_memories_fts MATCH ?
 			  AND bm25(xbot_long_term_memories_fts) < ?
 		`, m.scopeArg(), id, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold)
@@ -1818,7 +1858,7 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 			}
 			rows.Close()
 			for _, staleID := range staleIDs {
-				if _, err := m.db.Exec(`UPDATE xbot_long_term_memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id, staleID); err != nil {
+				if _, err := tx.Exec(`UPDATE xbot_long_term_memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND superseded_by IS NULL`, id, staleID); err != nil {
 					log.WithError(err).WithFields(log.Fields{
 						"stale_id": staleID,
 						"new_id":   id,
@@ -1833,6 +1873,11 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 			}
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	txCommitted = true
 
 	m.writeMemoryFile(id, entry)
 	return id, nil

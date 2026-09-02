@@ -135,13 +135,22 @@ func (t *MemoryAddTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return NewResult("Memory is not available (memory provider is not xbot)."), nil
 	}
 
+	// SourceSession: scope='session' 必须带上会话标识（CR xbotgh 🔴）——
+	// AddMemory 落库 source_session='' 时 Recall 的 sessionMemories 过滤
+	//（scope='session' AND source_session = ?）永不命中，仅 memory_search
+	// 可搜、注入永远看不到（工具描述引导的用法即静默失效）。
+	var sourceSession string
+	if params.Scope == "session" && ctx.ChatID != "" {
+		sourceSession = ctx.ChatID
+	}
 	id, err := mem.AddMemory(ctx.Ctx, xbotmemory.LongTermMemory{
-		Type:       params.Type,
-		Content:    params.Content,
-		Keywords:   params.Keywords,
-		Tags:       params.Tags,
-		Importance: params.Importance,
-		Scope:      params.Scope,
+		Type:          params.Type,
+		Content:       params.Content,
+		Keywords:      params.Keywords,
+		Tags:          params.Tags,
+		Importance:    params.Importance,
+		Scope:         params.Scope,
+		SourceSession: sourceSession,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add memory: %w", err)

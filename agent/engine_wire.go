@@ -828,6 +828,15 @@ func (a *Agent) buildSubAgentRunConfig(
 		MaxIterations: a.getMaxIterations(), // 继承主 Agent 配置
 		// SubAgent 不设独立超时，直接使用父 context 携带的 deadline
 
+		// Agent-lifecycle background tasks (async Pre/Post compress memory hooks
+		// etc.) — same wiring as buildBaseRunConfig. CR xbotgh: without this, a
+		// memory-capable SubAgent's runCompression Pre/PostCompress hooks fall
+		// back to the fire-and-forget path (clipanic.Go + WithoutCancel) —
+		// outside lifecycleWG, so Close() neither waits nor cancels them:
+		// PostCompress's minute-scale core-summary LLM call can race shutdown
+		// right after lifecycleWG.Wait() (DB already closed).
+		SpawnBackground: a.spawnBackgroundTask,
+
 		// LLM 并发限流：继承父 Agent 的 per-tenant 信号量
 		LLMSemAcquire: userCtx.LLMSemAcquire,
 

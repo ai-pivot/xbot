@@ -302,11 +302,30 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	// compactMessages verbatim budget check consumes it (Never-Estimate-Tokens
 	// rule, AGENTS.md). 0 = unknown (e.g. fresh session with no LLM call yet)
 	// → the conservative flatten fallback inside compactMessages.
+	// CR xbotgh conservative guard: the auto-compression path writes an
+	// ESTIMATE into tenant_state (SaveContextTokens ← estimateMessagesTokens,
+	// chars×2/3 — CJK underestimates ~33%). A manual /compress right after an
+	// auto-compression (no LLM call in between — /compress is a command) reads
+	// that stale estimate → verbatimFits falsely passes → input-too-long. Never
+	// trust a stored value below the full-message conservative bound: take
+	// max(pt, totalRunes) — runes≈tokens is the CJK upper bound (1:1), the
+	// safe direction for a budget check (over-estimating → flatten fallback,
+	// never a request that exceeds the model limit).
 	var realPromptTokens int64
 	if memSvc := tenantSession.MemoryService(); memSvc != nil {
 		if pt, _, err := memSvc.GetTokenState(ctx, tenantSession.TenantID()); err == nil && pt > 0 {
 			realPromptTokens = pt
 		}
+	}
+	var totalRunes int
+	for _, m := range messages {
+		totalRunes += len([]rune(m.Content))
+		for _, tc := range m.ToolCalls {
+			totalRunes += len([]rune(tc.Arguments))
+		}
+	}
+	if int64(totalRunes) > realPromptTokens {
+		realPromptTokens = int64(totalRunes)
 	}
 
 	tokenCount := len(messages) * 200 // rough estimate for display only
@@ -445,7 +464,19 @@ func capTailLength(messages []llm.ChatMessage, tailStart int, maxContextTokens i
 		// verbatim compression request → the prefix is no longer byte-identical
 		// (radix cache miss) and the paired context is silently lost. Roll back
 		// so the paired assistant(tool_calls) joins its tool results in the tail.
-		for newTailStart > tailStart && messages[newTailStart].Role == "tool" {
+		// Rollback budget (CR CjiW): tool-heavy conversations can have MANY
+		// consecutive tool messages (multi-round tool-call batches) — an unbounded
+		// rollback could pull entire assistant+tool groups past the cap and make
+		// the tail significantly exceed maxTailMessages. Bounded to 25% of the
+		// cap: pairing integrity wins for the boundary batch only, not for every
+		// batch above it (a boundary that overshoots by more means the pairing
+		// happened far above the cap — the cap wins and SanitizeMessages handles
+		// any orphaned tools as before this fix).
+		rollbackFloor := newTailStart - maxTailMessages/4
+		if rollbackFloor < tailStart {
+			rollbackFloor = tailStart
+		}
+		for newTailStart > rollbackFloor && messages[newTailStart].Role == "tool" {
 			newTailStart--
 		}
 		return newTailStart
@@ -727,10 +758,16 @@ Output the structured working state directly.`
 		ThinkingMode: "",
 		AgentID:      "compressor",
 		// User-configured per-model output budget (PerModelConfig via
-		// ContextManagerConfig) — passed through to the engine so the compaction
-		// request's API max_tokens honors the user's setting instead of the
-		// engine default (32_768). 0 = not configured → leave unset (engine
-		// default applies).
+		// ContextManagerConfig) — the target-length cap (outputCap) honors it
+		// ("总是优先用用户配置"). NOTE (CR xbotgh): this field does NOT reach the
+		// HTTP request's max_tokens — generateResponse has no max-tokens param
+		// and the API limit comes from the LLM client's construction-time config
+		// (llm client maxTokens ← subscription/per-model max_output). It only
+		// drives engine-side display/finish-reason detection. The 16k-or-user
+		// output cap above is therefore a PROMPT-level instruction (the
+		// instruction's character budget), not a hard API bound — a model that
+		// ignores the instruction can decode up to the client's configured
+		// max_tokens (default 32_768).
 		MaxOutputTokens: maxOutputTokens,
 	}
 
