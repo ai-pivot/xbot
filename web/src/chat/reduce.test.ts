@@ -10,6 +10,7 @@ import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
   commitViaFold,
+  EMPTY_LIVE,
   initialChatState,
   iterNum,
   turnID,
@@ -1227,5 +1228,99 @@ describe('REPRO: session 事件嵌套 chat_id 过滤（跨 session 污染根治�
     const s2 = reduce(s, own![0])
     expect(s2.activeTurn).toBeNull()
     expect(s2.turns.get(T1)?.phase.kind).toBe('frozen') // A 自己的 idle：正常收尾
+  })
+})
+
+// ─── REPRO: user msg 消失（iPhone 切走/切回 + resync + 错误回复未持久化）──────
+//
+// 2026-09-02 14:18 实录（DOM 铁证）：turn-24-c → turn-26-c 直接相邻，user(26)
+// 无处渲染。DB 铁证：user(26) 行存在（id=1408796, turn_id=26）+ turn 26 无
+// assistant 行（LLM 错误回复不持久化——Error processing path 不写 DB）。
+// 时序：切走 app → SSE 断（turn_started(26) 丢失）→ turn 26 以 LLM 错误结束
+// （text 经 SSE replay 到达——lazy iteration 建立空 user 的 turn + commit）→
+// 切回 → reload → history_replaced incoming：turns[26] = {DB user, frozen 空壳}
+// （DB 无 assistant 行 → 空壳）→ step1 "空壳不覆盖"分支 `turns.set(h.id, cur)`
+// 直接保留状态机的 committed（user=null——turn_started 丢失，绑定失败），
+// **incoming 的 DB user 行被丢弃** → user 消失。
+//
+// 根因：空壳分支（cur 非 live + incoming frozen 无输出）缺 user 嫁接 ——
+// live 胜分支有 `cur.user ? cur : { ...cur, user: h.user }`，空壳分支没有。
+describe('REPRO: 空壳 incoming（DB user-only）不丢 user —— turn_started 丢失场景', () => {
+  const T26 = turnID(26)
+
+  it('committed（错误回复）+ incoming 空壳（DB 只有 user 行）→ user 必须从 DB 嫁接', () => {
+    // 状态机侧（切回时 SSE replay 建立，无 turn_started —— user 绑定失败）：
+    // lazy iteration 建立 live（无 user）→ text_final（LLM 错误回复）commit。
+    const s0 = run([
+      {
+        type: 'iteration', turnID: T26, iter: iterNum(1), seq: 10 as never,
+        content: 'LLM 服务调用失败', reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: 'LLM 服务调用失败', reasoning: '', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined,
+      } as never,
+      textFinal(T26, 'LLM 服务调用失败，请稍后重试或检查配置。'),
+    ])
+    const t0 = s0.turns.get(T26)!
+    if (t0.phase.kind !== 'committed') throw new Error('场景前提：错误回复已 commit')
+    expect(t0.user).toBeNull() // 场景前提：turn_started 丢失 → user 未绑定
+
+    // 切回 reload：DB 行 user(26) 存在 + 无 assistant 行（错误回复不持久化）
+    // → historyToReplaced 构造 frozen 空壳（"无产出 assistant 行"）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [{
+        id: T26,
+        user: {
+          id: 'db-u26', content: '继续修复那个渲染问题' as never, timestamp: 't',
+          isNotification: false, queued: false, sending: false,
+          requestID: null, turnHint: 26, dbID: 1408796,
+        },
+        phase: { kind: 'frozen', data: { ...EMPTY_LIVE } }, // DB 无 assistant → 空壳
+        requestID: null,
+      }],
+      active: null, lastSeq: null, todos: [],
+    })
+
+    // 修复断言：空壳不覆盖 committed（错误回复保留）+ user 从 DB 嫁接。
+    const t1 = s1.turns.get(T26)!
+    if (t1.phase.kind !== 'committed') throw new Error('空壳不得覆盖 committed（错误回复消失）')
+    // RED（修复前 null —— DB user 被丢弃）：user 必须嫁接。
+    expect(t1.user?.content).toBe('继续修复那个渲染问题')
+    expect(t1.user?.dbID).toBe(1408796) // DB 权威行（rewind 需要 dbID）
+    // 渲染：user + committed 两行（user 消失根治）。
+    const rows = deriveRows(s1)
+    expect(rows.filter((r) => r.kind === 'user').map((r) => r.content)).toContain('继续修复那个渲染问题')
+    expect(rows.some((r) => r.kind === 'committed' && r.turnID === 26)).toBe(true)
+  })
+
+  it('对照组：state 侧 user 已绑定 → 空壳分支不覆盖（既有行为不回归）', () => {
+    // turn_started 正常到达（user_sent 的 pendingUser 先入 → 绑定成功）→
+    // committed → 空壳 incoming → 既有行为：保留 state 的 user（只补空，不覆盖已有）。
+    const s0 = run([
+      { type: 'user_sent', row: { id: 'opt-26', content: '用户消息' as never, timestamp: 't', isNotification: false, queued: false, sending: false, requestID: 'req-26', turnHint: undefined, dbID: undefined } },
+      started(T26, 'req-26'), // requestID 绑定 → turns[26].user
+      textFinal(T26, '错误回复'),
+    ])
+    expect(s0.turns.get(T26)?.user?.requestID).toBe('req-26')
+
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [{
+        id: T26,
+        user: {
+          id: 'db-u26', content: 'DB user 行' as never, timestamp: 't',
+          isNotification: false, queued: false, sending: false,
+          requestID: null, turnHint: 26, dbID: 1408796,
+        },
+        phase: { kind: 'frozen', data: { ...EMPTY_LIVE } },
+        requestID: null,
+      }],
+      active: null, lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T26)!
+    // 已绑定的 user 保留（嫁接方向：只补空，不覆盖已有）。
+    expect(t1.user?.requestID).toBe('req-26')
   })
 })

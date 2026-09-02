@@ -672,7 +672,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           h.phase.kind === 'frozen' &&
           !hasOutput(h.phase.data)
         ) {
-          turns.set(h.id, cur) // 空壳不覆盖（状态机数据保全）
+          // 空壳不覆盖（状态机数据保全）—— 但 user 必须嫁接（DB 权威行）。
+          // 2026-09-02 user 消失实录（tenant 167343 turn 26）：切走 app →
+          // turn_started(26) 丢失（SSE 断连窗口）→ SSE replay 的 lazy iteration
+          // + text_final 把错误回复 commit 成 user=null 的 turn → 切回 reload
+          // 的 incoming 是空壳（DB 只有 user 行——错误回复不持久化）→ 本分支
+          // `turns.set(h.id, cur)` 直接保留 user=null → DB user(1408796) 被丢弃
+          // → 渲染 turn-24-c → turn-26-c 直接相邻，user 无处显示。
+          // 对齐 live 胜分支（cur.user ? cur : { ...cur, user: h.user }）。
+          turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
         } else if (cur && cur.phase.kind !== 'live') {
           turns.set(h.id, mergeTurnData(cur, h)) // union 合并（不丢任何一侧迭代）
         } else {
