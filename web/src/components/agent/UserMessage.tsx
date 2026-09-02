@@ -13,7 +13,7 @@
  *   - Edit container inherits the display height as min-height to prevent jitter
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronRight, Clock, Loader2, Pencil, X } from 'lucide-react'
+import { Archive, Check, ChevronRight, Clock, Loader2, Pencil, X } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
@@ -192,7 +192,10 @@ export const UserMessage = memo(function UserMessage({
         <details className="group w-full max-w-[85%] rounded-2xl rounded-br-sm border border-dashed border-border bg-bg-secondary px-3.5 py-2">
           <summary className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-text-muted">
             <ChevronRight className="size-3 transition-transform group-open:rotate-90" />
-            <span>{compactBody.title}</span>
+            <Archive className="size-3.5 shrink-0" />
+            <span className="font-medium">{t('agent.compacted')}</span>
+            <span className="text-text-muted/60">·</span>
+            <span className="truncate">{compactBody.title}</span>
           </summary>
           {compactBody.body && (
             <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-muted">

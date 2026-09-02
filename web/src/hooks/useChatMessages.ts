@@ -616,6 +616,18 @@ export function useChatMessages({
         void reload()
         return
       }
+      // HistoryCompacted (progress_structured 的 history_compacted 字段): the
+      // backend replaced the active context with the compaction snapshot
+      // ([Compacted context] + tail). The compacted user row only exists in
+      // DB — without a reload the row does not render until the next session
+      // switch / refresh (user report: "compacted context 有时不渲染 — 压缩后
+      // 当前会话看不到压缩行"). The old handler lived in useProgressStream
+      // (onHistoryCompacted → reload) which became dead code after the M4
+      // dual-track removal — rewire here, same pattern as resync_required.
+      if (msg.type === 'progress_structured' && msg.progress?.history_compacted) {
+        void reload()
+        return
+      }
       if (!matchesChatID(msg, listenerChatID, channel)) return
       if (msg.type !== 'user_echo' && msg.type !== 'inject_user') return
       const content = msg.content ?? msg.original_content ?? ''

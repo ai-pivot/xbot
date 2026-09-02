@@ -40,6 +40,9 @@ type CompressResult struct {
 const compactionPrompt = `You are performing a CONTEXT COMPACTION. Create a structured working state
 that allows another LLM to continue this task without re-asking any questions.
 
+## CRITICAL: This is a HANDOVER to YOURSELF
+After the compaction, YOU are the one who will see ONLY this summary (plus the most recent messages) and must continue the task seamlessly. Write the summary so that FUTURE YOU can pick up the work without re-reading the original history, without re-asking the user anything, and without redoing steps already completed. If a detail matters for continuing, it must be in the summary.
+
 ## CRITICAL: Recency Priority
 
 The conversation history below is ordered oldest → newest. Messages near the END
@@ -58,9 +61,17 @@ Do NOT bloat this section — relevance to the current task is the filter.
 ### Task Summary
 What the user asked for and current overall progress (1-3 sentences).
 
+### User Preferences & Constraints
+Explicit user preferences, constraints, and directives that govern how work
+should continue — coding standards, tone/language, "never do X", "always
+prefer Y", budget limits, review requirements. These MUST survive compaction
+or the agent re-violates them.
+
 ### Key Decisions
 Decisions made during this session and WHY they were made (so they are not
-re-litigated). Include rejected approaches and the reasoning.
+re-litigated). Include rejected approaches and the reasoning. Include critical
+data, examples, or references needed to continue (IDs, coordinates, commands,
+URLs, error codes).
 
 ### Active Files
 Files currently being worked on (full paths). Include key function signatures
@@ -91,7 +102,10 @@ What should happen next to continue from where we left off.
 - Allocate the majority of your output budget to "Recent Work" — this is the most important section`
 
 // continuationMessage is injected after compaction to tell the LLM to resume work.
-const continuationMessage = `This conversation was compacted from a longer session. The "Recent Work" section above is the most critical context — it reflects what was happening immediately before compaction. Continue from where you left off without re-asking the user any questions.`
+// Phrased in the Codex CLI summary_prefix style (codex-rs/core/templates/compact/
+// summary_prefix.md — the battle-tested "another LLM already did part of the work"
+// handoff framing): state-of-tools + build-on-existing + avoid-duplicating.
+const continuationMessage = `This conversation was compacted from a longer session. The "Recent Work" section above is the most critical context — it reflects what was happening immediately before compaction. Build on the work that has already been done and avoid duplicating it. The most recent messages after this summary are verbatim (not compressed) and offload markers (📂) can recall their original data. Continue from where you left off without re-asking the user any questions.`
 
 // compactionInstructionTmpl is the trailing instruction for the verbatim-history
 // compaction request (cache-hit path). The conversation history arrives ABOVE
@@ -101,6 +115,9 @@ const continuationMessage = `This conversation was compacted from a longer sessi
 // continuation request over the conversation the model can already see (Claude
 // Cookbook auto-compaction pattern).
 const compactionInstructionTmpl = `You have been working on the task in the conversation history above (oldest first, most recent last). The conversation is about to be compacted: the full history above will be REPLACED by your summary, and work will continue with only your summary plus the most recent messages.
+
+## CRITICAL: This is a HANDOVER to YOURSELF
+After the compaction, YOU are the one who will see ONLY this summary (plus the most recent messages) and must continue the task seamlessly. Write the summary so that FUTURE YOU can pick up the work without re-reading the original history, without re-asking the user anything, and without redoing steps already completed. If a detail matters for continuing, it must be in the summary.
 
 ## CRITICAL: Recency Priority
 Messages near the END of the history are the most recent work and MUST be preserved in maximum detail. Older messages unrelated to the current topic may be aggressively compressed or omitted entirely. NEVER sacrifice recent context for old history.
@@ -113,8 +130,11 @@ If the history contains a summary from a previous compaction (marked with "[Comp
 ### Task Summary
 What the user asked for and current overall progress (1-3 sentences).
 
+### User Preferences & Constraints
+Explicit user preferences, constraints, and directives that govern how work should continue — coding standards, tone/language, "never do X", "always prefer Y", budget limits, review requirements. These MUST survive compaction or the agent re-violates them.
+
 ### Key Decisions
-Decisions made during this session and WHY (so they are not re-litigated). Include rejected approaches and the reasoning.
+Decisions made during this session and WHY (so they are not re-litigated). Include rejected approaches and the reasoning. Include critical data, examples, or references needed to continue (IDs, coordinates, commands, URLs, error codes).
 
 ### Active Files
 Files currently being worked on (full paths). Include key function signatures if relevant.
