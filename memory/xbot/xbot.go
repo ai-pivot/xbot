@@ -1641,7 +1641,8 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 
 	var entries []MemoryEntry
 
-	// Search long-term memories
+	// Search long-term memories (superseded entries filtered — only current
+	// facts are visible; the DB keeps the supersede chain for rollback).
 	var rows *sql.Rows
 	var err error
 	if memType != "" && memType != "all" {
@@ -1651,7 +1652,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 			       bm25(xbot_long_term_memories_fts) as score
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND ltm.type = ? AND xbot_long_term_memories_fts MATCH ?
+			WHERE `+m.scopeWhere("ltm")+` AND ltm.type = ? AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
 			ORDER BY score ASC
 			LIMIT ?
 		`, m.scopeArg(), memType, fts5OrQuery(query), limit)
@@ -1662,7 +1663,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 			       bm25(xbot_long_term_memories_fts) as score
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-			WHERE `+m.scopeWhere("ltm")+` AND xbot_long_term_memories_fts MATCH ?
+			WHERE `+m.scopeWhere("ltm")+` AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
 			ORDER BY score ASC
 			LIMIT ?
 		`, m.scopeArg(), fts5OrQuery(query), limit)
@@ -1729,6 +1730,51 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 
 	id, _ := result.LastInsertId()
 	entry.ID = id
+
+	// Supersede chain (2026-09-02 redesign): an explicit add is the model
+	// DELIBERATELY writing an updated fact. Strong-matching ACTIVE GLOBAL
+	// entries are marked superseded_by=<new id> (rows preserved for rollback,
+	// filtered from injection/search) instead of double-storing contradictory
+	// facts ("cluster at X" + "cluster moved to Y" both injected — the model
+	// could not tell which was current: the "stale memory" complaint).
+	// Session-scoped auto-extraction (addLongTermMemory) keeps its dedup-skip
+	// and NEVER supersedes: task-local state must not invalidate user-level facts.
+	if scope == "global" {
+		rows, err := m.db.Query(`
+			SELECT ltm.id
+			FROM xbot_long_term_memories_fts fts
+			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
+			WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL
+			  AND ltm.id != ?
+			  AND xbot_long_term_memories_fts MATCH ?
+			  AND bm25(xbot_long_term_memories_fts) < ?
+		`, m.scopeArg(), id, fts5SafeQuery(entry.Keywords), dedupSimilarityThreshold)
+		if err == nil {
+			var staleIDs []int64
+			for rows.Next() {
+				var staleID int64
+				if err := rows.Scan(&staleID); err == nil {
+					staleIDs = append(staleIDs, staleID)
+				}
+			}
+			rows.Close()
+			for _, staleID := range staleIDs {
+				if _, err := m.db.Exec(`UPDATE xbot_long_term_memories SET superseded_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, id, staleID); err != nil {
+					log.WithError(err).WithFields(log.Fields{
+						"stale_id": staleID,
+						"new_id":   id,
+					}).Warn("xbot-memory: supersede update failed")
+				} else {
+					log.WithFields(log.Fields{
+						"stale_id": staleID,
+						"new_id":   id,
+						"type":     entry.Type,
+					}).Debug("xbot-memory: stale memory superseded")
+				}
+			}
+		}
+	}
+
 	m.writeMemoryFile(id, entry)
 	return id, nil
 }
@@ -1770,7 +1816,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 		rows, err = m.db.Query(`
 			SELECT id, type, content, keywords, tags, importance, created_at, scope
 			FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+` AND type = ?
+			WHERE `+m.scopeWhere("")+` AND superseded_by IS NULL AND type = ?
 			ORDER BY importance DESC, created_at DESC
 			LIMIT ?
 		`, m.scopeArg(), memType, limit)
@@ -1778,7 +1824,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 		rows, err = m.db.Query(`
 			SELECT id, type, content, keywords, tags, importance, created_at, scope
 			FROM xbot_long_term_memories
-			WHERE `+m.scopeWhere("")+`
+			WHERE `+m.scopeWhere("")+` AND superseded_by IS NULL
 			ORDER BY importance DESC, created_at DESC
 			LIMIT ?
 		`, m.scopeArg(), limit)
