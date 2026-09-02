@@ -27,7 +27,7 @@ type asyncHookMemory struct {
 
 func (m *asyncHookMemory) Name() string { return "async-hook" }
 
-func (m *asyncHookMemory) Recall(_ context.Context, _ string) (string, error) {
+func (m *asyncHookMemory) Recall(_ context.Context, _, _ string) (string, error) {
 	return "", nil
 }
 

@@ -147,7 +147,7 @@ func TestMultiTenantSession_MemoryIsolation(t *testing.T) {
 
 	// Verify memory isolation via Recall
 	ctx := context.Background()
-	content1, err := sess1.Memory().Recall(ctx, "")
+	content1, err := sess1.Memory().Recall(ctx, "", "")
 	if err != nil {
 		t.Fatalf("Failed to recall memory 1: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestMultiTenantSession_MemoryIsolation(t *testing.T) {
 		t.Errorf("Memory 1 incorrect: %s", content1)
 	}
 
-	content2, err := sess2.Memory().Recall(ctx, "")
+	content2, err := sess2.Memory().Recall(ctx, "", "")
 	if err != nil {
 		t.Fatalf("Failed to recall memory 2: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestMultiTenantSession_LettaSessionRecall(t *testing.T) {
 
 	// Recall should include core memory blocks
 	ctx := context.Background()
-	content, err := sess.Memory().Recall(ctx, "")
+	content, err := sess.Memory().Recall(ctx, "", "")
 	if err != nil {
 		t.Fatalf("Failed to recall: %v", err)
 	}

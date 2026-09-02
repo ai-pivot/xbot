@@ -57,7 +57,7 @@ func TestRecallNoCrossSessionInjection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := m.Recall(t.Context(), "GLM TPOT 调优 theme preference")
+	out, err := m.Recall(t.Context(), "GLM TPOT 调优 theme preference", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestConsolidateTurnWritesSessionScope(t *testing.T) {
 	}
 
 	// And the auto-injection path (Recall) must NOT inject it — global only.
-	out, err := m.Recall(t.Context(), "gpu cluster")
+	out, err := m.Recall(t.Context(), "gpu cluster", "session-current")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestRecallTimestampsInjected(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := m.Recall(t.Context(), "gpu b300 cluster")
+	out, err := m.Recall(t.Context(), "gpu b300 cluster", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,5 +188,66 @@ func TestScopeMigrationAddsColumns(t *testing.T) {
 	}
 	if supersededBy != nil {
 		t.Errorf("legacy row superseded_by = %v, want NULL", supersededBy)
+	}
+}
+
+// TestRecallSessionScopedInjection — THIS session's scoped memories (auto-
+// extracted task state, source_session=<this session>) inject into Recall via
+// the "## Session Memory" section; OTHER sessions' scoped memories never do.
+// PR #336 review defect 3 fix: session-scoped memories had no injection path
+// at all (Recall had no session parameter) — the design's "session notes
+// inject into their own session only" is now implemented.
+func TestRecallSessionScopedInjection(t *testing.T) {
+	m, _ := newTestMemory(t)
+
+	// THIS session's auto-extracted task state (scope='session', source_session='session-A').
+	if err := m.addLongTermMemory(LongTermMemory{
+		Type:          "decision",
+		Content:       "session-A task state: use the tail-aligned cap for the fix",
+		Keywords:      "task,sessionA",
+		SourceSession: "session-A",
+		Scope:         "session",
+		Importance:    0.8,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// ANOTHER session's scoped memory — must NEVER inject here.
+	if err := m.addLongTermMemory(LongTermMemory{
+		Type:          "decision",
+		Content:       "session-B task state: unrelated debugging notes",
+		Keywords:      "task,sessionB",
+		SourceSession: "session-B",
+		Scope:         "session",
+		Importance:    0.9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := m.Recall(t.Context(), "task state", "session-A")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(out, "## Session Memory") {
+		t.Error("this session's scoped memories must inject via the Session Memory section")
+	}
+	if !strings.Contains(out, "session-A task state") {
+		t.Errorf("this session's own scoped memory must inject:\n%s", out)
+	}
+	if strings.Contains(out, "session-B") {
+		t.Errorf("BUG REPRODUCED: another session's scoped memory leaked into this session's Recall:\n%s", out)
+	}
+
+	// Unscoped callers (empty sessionID) get NO session memories at all —
+	// legacy behavior preserved.
+	legacyOut, err := m.Recall(t.Context(), "task state", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "session-A task state") == false {
+		t.Fatal("test setup: session-A memory missing")
+	}
+	if strings.Contains(legacyOut, "## Session Memory") {
+		t.Errorf("unscoped Recall (empty sessionID) must not inject session memories:\n%s", legacyOut)
 	}
 }

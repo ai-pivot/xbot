@@ -918,7 +918,10 @@ func (a *Agent) buildSubAgentRunConfig(
 				subSenderID := subAgentHumanBlockSenderID(parentAgentID)
 				memCtx = letta.WithUserID(ctx, subSenderID)
 			}
-			if recallText, err := mem.Recall(memCtx, task); err == nil && recallText != "" {
+			// Inject memory into system prompt (SubAgents don't use the pipeline,
+			// call Recall manually). sessionID = the SubAgent's own chat (cfg.ChatID
+			// is assigned above) so its session-scoped memories inject only here.
+			if recallText, err := mem.Recall(memCtx, task, cfg.ChatID); err == nil && recallText != "" {
 				messages[0].Content += "\n\n" + recallText
 			}
 

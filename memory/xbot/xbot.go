@@ -493,7 +493,7 @@ func (m *XbotMemory) backfillSearchText() {
 // demand, never auto-injection. Total injected content is capped at
 // recallMaxRunes; every injected memory carries its created date so the model
 // can judge staleness itself.
-func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
+func (m *XbotMemory) Recall(ctx context.Context, query, sessionID string) (string, error) {
 	var sb strings.Builder
 	var err error
 	sb.WriteString("# Memory\n\n")
@@ -506,7 +506,28 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 		sb.WriteString("\n\n")
 	}
 
-	// 2. Long-term memories (BM25) — global scope, non-superseded only.
+	// 2. Session memories — this session's OWN scoped memories only
+	// (auto-extracted task state written by ConsolidateTurn/PreCompress with
+	// scope='session' AND source_session=<this session>). Other sessions'
+	// scoped memories NEVER leak here (the session isolation contract);
+	// superseded entries are filtered. Empty sessionID = skip the section
+	// (legacy unscoped callers).
+	var sessionMems []LongTermMemory
+	if sessionID != "" {
+		sessionMems, err = m.sessionMemories(sessionID, defaultRecallTopK)
+		if err != nil {
+			log.WithError(err).Debug("xbot-memory: session memory lookup failed")
+		}
+		if len(sessionMems) > 0 {
+			sb.WriteString("## Session Memory\n")
+			for _, mem := range sessionMems {
+				fmt.Fprintf(&sb, "- [%s] %s\n", mem.Type, mem.Content)
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	// 3. Long-term memories (BM25) — global scope, non-superseded only.
 	// Session-scoped memories (auto-extracted task state from other sessions)
 	// never leak into this session's injection; superseded entries (replaced by
 	// newer contradicting facts) are filtered at the query level.
@@ -525,7 +546,7 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 		sb.WriteString("\n")
 	}
 
-	// 3. Tool hint
+	// 4. Tool hint
 	sb.WriteString("Use `memory_search` to find more memories, `memory_add` to save new ones.\n")
 
 	// Enforce a hard cap on total injected runes (attention budget). The core
@@ -542,6 +563,8 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	if injectedRunes > 0 {
 		log.WithFields(log.Fields{
 			"query":          truncateForLog(query, 120),
+			"session_id":     sessionID,
+			"session_memory": len(sessionMems),
 			"long_term":      len(longTermMems),
 			"has_core":       coreSummary != "",
 			"injected_chars": injectedRunes,
@@ -861,6 +884,10 @@ func (m *XbotMemory) ConsolidateTurn(ctx context.Context, input memory.MemorizeI
 	entries := m.extractAtomicMemories(ctx, input.LLMClient, input.Model, input.Messages, start)
 	added := 0
 	for _, entry := range entries {
+		// Session isolation: auto-extracted memories carry the session's own
+		// source_session (scope='session' is set inside extractAtomicMemories)
+		// so they only ever inject into THIS session's Recall.
+		entry.SourceSession = input.SessionID
 		if err := m.addLongTermMemory(entry); err == nil {
 			added++
 		}
@@ -999,6 +1026,38 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 		m.touchMemory(mem.ID)
 	}
 	return results, nil
+}
+
+// sessionMemories returns THIS session's scoped memories (auto-extracted task
+// state from ConsolidateTurn/PreCompress — scope='session' AND
+// source_session=sessionID, non-superseded), top-K by importance then
+// recency. Other sessions' scoped memories NEVER appear (the session
+// isolation contract); used only by the session's own Recall injection.
+func (m *XbotMemory) sessionMemories(sessionID string, topK int) ([]LongTermMemory, error) {
+	rows, err := m.db.Query(`
+		SELECT id, type, content, keywords, tags, source_session,
+		       importance, heat_score, access_count, created_at, last_accessed_at
+		FROM xbot_long_term_memories
+		WHERE `+m.scopeWhere("")+` AND scope = 'session' AND superseded_by IS NULL AND source_session = ?
+		ORDER BY importance DESC, created_at DESC
+		LIMIT ?
+	`, m.scopeArg(), sessionID, topK)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var mems []LongTermMemory
+	for rows.Next() {
+		var mem LongTermMemory
+		if err := rows.Scan(&mem.ID, &mem.Type, &mem.Content, &mem.Keywords, &mem.Tags,
+			&mem.SourceSession, &mem.Importance, &mem.HeatScore, &mem.AccessCount,
+			&mem.CreatedAt, &mem.LastAccessedAt); err != nil {
+			continue
+		}
+		mems = append(mems, mem)
+	}
+	return mems, nil
 }
 
 func (m *XbotMemory) recentLongTerm(topK int) ([]LongTermMemory, error) {
@@ -1904,7 +1963,6 @@ func (m *XbotMemory) PreCompress(ctx context.Context, input memory.PreCompressIn
 	return &memory.PreCompressResult{
 		SavedCount:    savedCount,
 		PreserveHints: hints,
-		SkipCompress:  false,
 	}, nil
 }
 

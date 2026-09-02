@@ -438,7 +438,17 @@ func capTailLength(messages []llm.ChatMessage, tailStart int, maxContextTokens i
 	}
 	tailLen := len(messages) - tailStart
 	if tailLen > maxTailMessages {
-		return len(messages) - maxTailMessages
+		newTailStart := len(messages) - maxTailMessages
+		// Pairing boundary alignment (PR #336 review defect 2): if the cap lands
+		// BETWEEN an assistant(tool_calls) and its tool results, the orphaned
+		// tool messages starting the tail get stripped by SanitizeMessages in the
+		// verbatim compression request → the prefix is no longer byte-identical
+		// (radix cache miss) and the paired context is silently lost. Roll back
+		// so the paired assistant(tool_calls) joins its tool results in the tail.
+		for newTailStart > tailStart && messages[newTailStart].Role == "tool" {
+			newTailStart--
+		}
+		return newTailStart
 	}
 	return tailStart
 }

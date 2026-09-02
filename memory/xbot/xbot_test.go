@@ -180,7 +180,7 @@ func TestRecallEmptyQuerySkipsShortTerm(t *testing.T) {
 	m, _ := newTestMemory(t)
 	seedTestMemory(t, m)
 
-	out, err := m.Recall(t.Context(), "")
+	out, err := m.Recall(t.Context(), "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestRecallWithQuerySkipsShortTerm(t *testing.T) {
 	m, _ := newTestMemory(t)
 	seedTestMemory(t, m)
 
-	out, err := m.Recall(t.Context(), "frpc 转发")
+	out, err := m.Recall(t.Context(), "frpc 转发", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestRecallCapsTotalRunes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := m.Recall(t.Context(), "注意力预算")
+	out, err := m.Recall(t.Context(), "注意力预算", "")
 	if err != nil {
 		t.Fatal(err)
 	}

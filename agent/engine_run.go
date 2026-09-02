@@ -1554,8 +1554,9 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	// while the compression itself took only 75s).
 	//
 	// PreserveHints were never consumed by ApplyCompress (dead wiring — the
-	// CompressPipelineParams field is removed); SkipCompress is not acted on
-	// (the only CompressionAware provider — xbot — always returns false).
+	// CompressPipelineParams field is removed); the SkipCompress field is
+	// deleted from PreCompressResult (the hooks are async — they cannot block
+	// the compression path, and the only provider never set it).
 	if mem, ok := s.cfg.Memory.(memory.CompressionAware); ok && mem != nil {
 		// Shallow-copy the snapshot: the messages slice is swapped by the
 		// compression below while the hook is still reading it.

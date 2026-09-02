@@ -71,7 +71,7 @@ func TestAddMemorySupersedesStaleMatch(t *testing.T) {
 	}
 
 	// Recall injects ONLY the current fact (superseded filtered at query level).
-	out, err := m.Recall(context.Background(), "gpu cluster")
+	out, err := m.Recall(context.Background(), "gpu cluster", "")
 	if err != nil {
 		t.Fatal(err)
 	}

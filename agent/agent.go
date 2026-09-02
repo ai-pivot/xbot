@@ -3724,6 +3724,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 				LLMClient:        llmClient,
 				Model:            model,
 				ArchiveAll:       false, // incremental — never full archive per turn
+				// SessionID: auto-extracted memories carry the session's own
+				// source_session (scope='session') so they only ever inject into
+				// THIS session's Recall — never other sessions'.
+				SessionID: chatID,
 			}
 
 			var result memory.MemorizeResult

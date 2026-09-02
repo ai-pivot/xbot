@@ -508,7 +508,7 @@ func (m *MemoryMiddleware) Process(mc *MessageContext) error {
 	if ctx == nil {
 		ctx = context.TODO()
 	}
-	memCtx, err := mem.Recall(ctx, mc.UserContent)
+	memCtx, err := mem.Recall(ctx, mc.UserContent, mc.ChatID)
 	if err != nil {
 		return fmt.Errorf("recall memory: %w", err)
 	}
