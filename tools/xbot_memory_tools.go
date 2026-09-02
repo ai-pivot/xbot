@@ -83,7 +83,7 @@ type MemoryAddTool struct{}
 
 func (t *MemoryAddTool) Name() string { return "memory_add" }
 func (t *MemoryAddTool) Description() string {
-	return "Save a memory for future conversations. Memories persist across sessions and can be searched with memory_search. Use this for important facts, user preferences, key decisions, or anything worth remembering."
+	return "Save a memory for future conversations. Memories persist across sessions and can be searched with memory_search. Use this for important facts, user preferences, key decisions, or anything worth remembering. Default scope is 'global' (injected into every session); use scope='session' for task-local state that should NOT appear in other sessions."
 }
 func (t *MemoryAddTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
@@ -92,6 +92,7 @@ func (t *MemoryAddTool) Parameters() []llm.ToolParam {
 		{Name: "keywords", Type: "string", Description: "3-5 comma-separated keywords for search (auto-extracted if empty)", Required: false},
 		{Name: "tags", Type: "string", Description: "1-3 comma-separated category tags", Required: false},
 		{Name: "importance", Type: "number", Description: "Importance score 0.0-1.0 (default: 0.5)", Required: false},
+		{Name: "scope", Type: "string", Description: "'global' (default, injected into all sessions) or 'session' (this session only — task-local state)", Required: false},
 	}
 }
 
@@ -102,6 +103,7 @@ func (t *MemoryAddTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		Keywords   string  `json:"keywords"`
 		Tags       string  `json:"tags"`
 		Importance float64 `json:"importance"`
+		Scope      string  `json:"scope"`
 	}](input)
 	if err != nil {
 		return nil, err
@@ -118,6 +120,16 @@ func (t *MemoryAddTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return nil, fmt.Errorf("type must be one of: fact, preference, event, decision, skill")
 	}
 
+	// Session isolation (2026-09-02 redesign): 'global' is the default — the
+	// explicit add path means the model decided this is durable cross-session
+	// knowledge. 'session' keeps it out of other sessions' Recall injection.
+	if params.Scope == "" {
+		params.Scope = "global"
+	}
+	if params.Scope != "global" && params.Scope != "session" {
+		return nil, fmt.Errorf("scope must be 'global' or 'session'")
+	}
+
 	mem := getXbotMemory(ctx)
 	if mem == nil {
 		return NewResult("Memory is not available (memory provider is not xbot)."), nil
@@ -129,17 +141,19 @@ func (t *MemoryAddTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		Keywords:   params.Keywords,
 		Tags:       params.Tags,
 		Importance: params.Importance,
+		Scope:      params.Scope,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to add memory: %w", err)
 	}
 
 	log.WithFields(log.Fields{
-		"id":   id,
-		"type": params.Type,
+		"id":    id,
+		"type":  params.Type,
+		"scope": params.Scope,
 	}).Info("Memory added via tool")
 
-	return NewResult(fmt.Sprintf("Memory saved (ID: %d). Use memory_search to find it later.", id)), nil
+	return NewResult(fmt.Sprintf("Memory saved (ID: %d, scope: %s). Use memory_search to find it later.", id, params.Scope)), nil
 }
 
 // --- memory_manage ---
@@ -196,7 +210,11 @@ func (t *MemoryManageTool) Execute(ctx *ToolContext, input string) (*ToolResult,
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "## All Memories (%d)\n\n", len(entries))
 		for _, e := range entries {
-			fmt.Fprintf(&sb, "- **#%d [%s]** (importance: %.1f) %s", e.ID, e.Type, e.Importance, e.Content)
+			fmt.Fprintf(&sb, "- **#%d [%s]** (importance: %.1f", e.ID, e.Type, e.Importance)
+			if e.Scope != "" {
+				fmt.Fprintf(&sb, ", scope: %s", e.Scope)
+			}
+			fmt.Fprintf(&sb, ") %s", e.Content)
 			if e.Keywords != "" {
 				fmt.Fprintf(&sb, "  *(keywords: %s)*", e.Keywords)
 			}

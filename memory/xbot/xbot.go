@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS xbot_long_term_memories (
     last_accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     file_path TEXT,
-    search_text TEXT NOT NULL DEFAULT ''   -- CJK 逐字空格切分后的检索文本
+    search_text TEXT NOT NULL DEFAULT '',  -- CJK 逐字空格切分后的检索文本
+    scope TEXT NOT NULL DEFAULT 'global',  -- 'global' = 注入所有会话；'session' = 自动提取的会话内记忆（永不跨会话注入）
+    superseded_by INTEGER                  -- 被替代条目的 ID（新事实取代旧事实，如集群搬迁；NULL = 活跃）
 );
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_user ON xbot_long_term_memories(user_id);
 CREATE INDEX IF NOT EXISTS idx_xbot_ltm_type ON xbot_long_term_memories(type);
@@ -359,6 +361,38 @@ func (m *XbotMemory) migrateLegacyTenantData() {
 		}
 	}
 
+	// Step 1b: ensure scope + superseded_by columns exist (session isolation,
+	// 2026-09-02 redesign). scope DEFAULT 'global' keeps existing rows'
+	// behavior unchanged — they were user-scoped global memories. superseded_by
+	// is the supersede-chain link (new facts replace stale ones instead of
+	// double-storing both). Same idempotent columnExists pattern as Step 1.
+	for _, col := range []struct{ name, ddl string }{
+		{"scope", `ALTER TABLE xbot_long_term_memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'`},
+		{"superseded_by", "ALTER TABLE xbot_long_term_memories ADD COLUMN superseded_by INTEGER"},
+	} {
+		var hasCol bool
+		rows, err := m.db.Query("PRAGMA table_info(xbot_long_term_memories)")
+		if err == nil {
+			for rows.Next() {
+				var cid int
+				var name, typ string
+				var notNull, pk int
+				var dflt any
+				if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == col.name {
+					hasCol = true
+				}
+			}
+			rows.Close()
+		}
+		if !hasCol {
+			if _, err := m.db.Exec(col.ddl); err != nil {
+				log.WithError(err).WithField("column", col.name).Warn("xbot-memory: failed to add column")
+			} else {
+				log.WithField("column", col.name).Info("xbot-memory: added column")
+			}
+		}
+	}
+
 	// Step 2: backfill user_id from tenants.owner_user_id (runs once per owner).
 	// The UPDATE is idempotent: user_id=0 rows get filled; already-filled rows
 	// are untouched. This is safe to run every startup.
@@ -449,10 +483,16 @@ func (m *XbotMemory) backfillSearchText() {
 
 // Recall retrieves relevant memories for the current conversation.
 // Uses BM25 keyword search (SQLite FTS5) — zero LLM calls.
-// Total injected content is capped at recallMaxRunes; short-term memories
-// (other sessions' summaries) are injected ONLY when a query is present —
-// with an empty query they are unrelated to the current session and only
-// dilute attention.
+//
+// Session isolation (2026-09-02 redesign): ONLY global-scope, non-superseded
+// long-term memories + the core summary are injected. The OLD "## Recent
+// Sessions" section (query-anchored searchShortTerm) injected OTHER sessions'
+// short-term summaries into unrelated conversations (live evidence: a GPU
+// tuning session's [Compacted context] summary appeared in a design
+// conversation) — cross-session recall now goes through memory_search on
+// demand, never auto-injection. Total injected content is capped at
+// recallMaxRunes; every injected memory carries its created date so the model
+// can judge staleness itself.
 func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	var sb strings.Builder
 	var err error
@@ -466,26 +506,10 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 		sb.WriteString("\n\n")
 	}
 
-	// 2. Short-term memories (BM25 + heat) — ONLY when query is non-empty.
-	//    recentShortTerm() returns the most recent session summaries, which
-	//    are OTHER sessions' context unrelated to the current one — omit them
-	//    when there's no query to anchor relevance.
-	var shortTermMems []ShortTermMemory
-	if query != "" {
-		shortTermMems, err = m.searchShortTerm(query, 3)
-		if err != nil {
-			log.WithError(err).Debug("xbot-memory: short-term search failed")
-		}
-		if len(shortTermMems) > 0 {
-			sb.WriteString("## Recent Sessions\n")
-			for _, mem := range shortTermMems {
-				fmt.Fprintf(&sb, "- %s\n", mem.Summary)
-			}
-			sb.WriteString("\n")
-		}
-	}
-
-	// 3. Long-term memories (BM25)
+	// 2. Long-term memories (BM25) — global scope, non-superseded only.
+	// Session-scoped memories (auto-extracted task state from other sessions)
+	// never leak into this session's injection; superseded entries (replaced by
+	// newer contradicting facts) are filtered at the query level.
 	var longTermMems []LongTermMemory
 	longTermMems, err = m.searchLongTerm(query, defaultRecallTopK)
 	if err != nil {
@@ -494,12 +518,14 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	if len(longTermMems) > 0 {
 		sb.WriteString("## Long-term Memories\n")
 		for _, mem := range longTermMems {
-			fmt.Fprintf(&sb, "- [%s] %s\n", mem.Type, mem.Content)
+			// created date on every line: the model is the final staleness
+			// judge ("cluster moved from X" last month beats "cluster at X" last year)
+			fmt.Fprintf(&sb, "- [%s] %s (created %s)\n", mem.Type, mem.Content, mem.CreatedAt.Format("2006-01-02"))
 		}
 		sb.WriteString("\n")
 	}
 
-	// 4. Tool hint
+	// 3. Tool hint
 	sb.WriteString("Use `memory_search` to find more memories, `memory_add` to save new ones.\n")
 
 	// Enforce a hard cap on total injected runes (attention budget). The core
@@ -516,7 +542,6 @@ func (m *XbotMemory) Recall(ctx context.Context, query string) (string, error) {
 	if injectedRunes > 0 {
 		log.WithFields(log.Fields{
 			"query":          truncateForLog(query, 120),
-			"short_term":     len(shortTermMems),
 			"long_term":      len(longTermMems),
 			"has_core":       coreSummary != "",
 			"injected_chars": injectedRunes,
@@ -892,6 +917,16 @@ type LongTermMemory struct {
 	AccessCount    int
 	CreatedAt      time.Time
 	LastAccessedAt time.Time
+	// Scope: 'global' (injected into every session's Recall) or 'session'
+	// (auto-extracted session-local state — NEVER cross-session injected;
+	// searchable on demand via memory_search). Auto-extraction paths
+	// (ConsolidateTurn/PreCompress/Memorize) write 'session'; explicit
+	// memory_add defaults to 'global' (the model decided it is durable).
+	Scope string
+	// SupersededBy: the ID of the entry that replaced this one (0 = active).
+	// A new fact that contradicts an old one supersedes it instead of
+	// double-storing both ("cluster moved from X to Y" keeps only the new one).
+	SupersededBy int64
 }
 
 // ShortTermMemory is a row in xbot_short_term_memories.
@@ -916,6 +951,7 @@ type MemoryEntry struct {
 	Importance float64 `json:"importance"`
 	CreatedAt  string  `json:"created_at"`
 	Score      float64 `json:"score,omitempty"` // BM25 score (lower = more relevant)
+	Scope      string  `json:"scope,omitempty"` // 'global' or 'session' (provenance for the model)
 }
 
 // --- Internal search methods ---
@@ -928,6 +964,11 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 
 	// FTS5 BM25 search
 	// Note: SQLite FTS5 bm25() returns negative values (lower = more relevant)
+	// Session isolation (2026-09-02 redesign): the Recall injection path is
+	// GLOBAL-scope, non-superseded only — session-scoped memories (auto-extracted
+	// task state from other sessions) never leak into this session; superseded
+	// entries (replaced by newer contradicting facts) are filtered at the query
+	// level. memory_search (SearchMemories) searches all scopes on demand.
 	rows, err := m.db.Query(`
 		SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
 		       ltm.source_session, ltm.importance, ltm.heat_score, ltm.access_count,
@@ -935,7 +976,7 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 		       bm25(xbot_long_term_memories_fts) as score
 		FROM xbot_long_term_memories_fts fts
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
-		WHERE `+m.scopeWhere("ltm")+` AND xbot_long_term_memories_fts MATCH ?
+		WHERE `+m.scopeWhere("ltm")+` AND ltm.scope = 'global' AND ltm.superseded_by IS NULL AND xbot_long_term_memories_fts MATCH ?
 		ORDER BY score ASC
 		LIMIT ?
 	`, m.scopeArg(), fts5OrQuery(query), topK)
@@ -961,11 +1002,14 @@ func (m *XbotMemory) searchLongTerm(query string, topK int) ([]LongTermMemory, e
 }
 
 func (m *XbotMemory) recentLongTerm(topK int) ([]LongTermMemory, error) {
+	// Global-scope, non-superseded only (same filter as searchLongTerm — this
+	// feeds the Recall injection, updateCoreSummary and CompressContext, all
+	// user-global paths).
 	rows, err := m.db.Query(`
 		SELECT id, type, content, keywords, tags, source_session,
 		       importance, heat_score, access_count, created_at, last_accessed_at
 		FROM xbot_long_term_memories
-		WHERE `+m.scopeWhere("")+`
+		WHERE `+m.scopeWhere("")+` AND scope = 'global' AND superseded_by IS NULL
 		ORDER BY importance DESC, heat_score DESC, created_at DESC
 		LIMIT ?
 	`, m.scopeArg(), topK)
@@ -1077,6 +1121,7 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		FROM xbot_long_term_memories_fts fts
 		JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
 		WHERE `+m.scopeWhere("ltm")+`
+		  AND ltm.superseded_by IS NULL
 		  AND xbot_long_term_memories_fts MATCH ?
 		  AND bm25(xbot_long_term_memories_fts) < ?
 		ORDER BY bm25(xbot_long_term_memories_fts) ASC
@@ -1091,11 +1136,18 @@ func (m *XbotMemory) addLongTermMemory(entry LongTermMemory) error {
 		return nil
 	}
 
+	// Session isolation: resolve the scope ('global' default — legacy callers
+	// and explicit memory_add; auto-extraction sets 'session').
+	scope := entry.Scope
+	if scope == "" {
+		scope = "global"
+	}
+
 	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags))
+		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags), scope)
 	if err != nil {
 		return err
 	}
@@ -1473,6 +1525,13 @@ Conversation:
 				Keywords:   mem.Keywords,
 				Tags:       mem.Tags,
 				Importance: mem.Importance,
+				// Session isolation (2026-09-02 redesign): auto-extracted
+				// memories are SESSION-scoped — they never inject into other
+				// sessions' Recall (the global pool is explicit-add only, via
+				// memory_add with default scope='global' or PR-4's profile
+				// promotion). This kills the "auto-extraction garbage pollutes
+				// every session" problem at the storage level.
+				Scope: "session",
 			})
 		}
 	}
@@ -1588,7 +1647,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 	if memType != "" && memType != "all" {
 		rows, err = m.db.Query(`
 			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-			       ltm.importance, ltm.created_at,
+			       ltm.importance, ltm.created_at, ltm.scope,
 			       bm25(xbot_long_term_memories_fts) as score
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
@@ -1599,7 +1658,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 	} else {
 		rows, err = m.db.Query(`
 			SELECT ltm.id, ltm.type, ltm.content, ltm.keywords, ltm.tags,
-			       ltm.importance, ltm.created_at,
+			       ltm.importance, ltm.created_at, ltm.scope,
 			       bm25(xbot_long_term_memories_fts) as score
 			FROM xbot_long_term_memories_fts fts
 			JOIN xbot_long_term_memories ltm ON ltm.id = fts.rowid
@@ -1616,7 +1675,7 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 		for rows.Next() {
 			var e MemoryEntry
 			if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags,
-				&e.Importance, &e.CreatedAt, &e.Score); err != nil {
+				&e.Importance, &e.CreatedAt, &e.Scope, &e.Score); err != nil {
 				continue
 			}
 			entries = append(entries, e)
@@ -1643,6 +1702,8 @@ func (m *XbotMemory) SearchMemories(ctx context.Context, query string, memType s
 }
 
 // AddMemory manually adds a long-term memory entry.
+// The entry's Scope is respected ("" defaults to 'global' — the explicit
+// memory_add path; auto-extraction writes 'session' via addLongTermMemory).
 func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64, error) {
 	entry.UserID = m.scopeArg()
 	entry.TenantID = m.tenantID
@@ -1652,12 +1713,16 @@ func (m *XbotMemory) AddMemory(ctx context.Context, entry LongTermMemory) (int64
 	if entry.Keywords == "" {
 		entry.Keywords = extractKeywords(entry.Content)
 	}
+	scope := entry.Scope
+	if scope == "" {
+		scope = "global"
+	}
 
 	result, err := m.db.Exec(`
-		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO xbot_long_term_memories (user_id, tenant_id, type, content, keywords, tags, source_session, importance, search_text, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, entry.UserID, entry.TenantID, entry.Type, entry.Content, entry.Keywords, entry.Tags,
-		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags))
+		entry.SourceSession, entry.Importance, buildSearchText(entry.Content, entry.Keywords, entry.Tags), scope)
 	if err != nil {
 		return 0, err
 	}
@@ -1703,7 +1768,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	var err error
 	if memType != "" && memType != "all" {
 		rows, err = m.db.Query(`
-			SELECT id, type, content, keywords, tags, importance, created_at
+			SELECT id, type, content, keywords, tags, importance, created_at, scope
 			FROM xbot_long_term_memories
 			WHERE `+m.scopeWhere("")+` AND type = ?
 			ORDER BY importance DESC, created_at DESC
@@ -1711,7 +1776,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 		`, m.scopeArg(), memType, limit)
 	} else {
 		rows, err = m.db.Query(`
-			SELECT id, type, content, keywords, tags, importance, created_at
+			SELECT id, type, content, keywords, tags, importance, created_at, scope
 			FROM xbot_long_term_memories
 			WHERE `+m.scopeWhere("")+`
 			ORDER BY importance DESC, created_at DESC
@@ -1727,7 +1792,7 @@ func (m *XbotMemory) ListMemories(ctx context.Context, memType string, limit int
 	var entries []MemoryEntry
 	for rows.Next() {
 		var e MemoryEntry
-		if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags, &e.Importance, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.Content, &e.Keywords, &e.Tags, &e.Importance, &e.CreatedAt, &e.Scope); err != nil {
 			continue
 		}
 		entries = append(entries, e)
