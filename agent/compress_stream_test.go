@@ -64,7 +64,7 @@ func TestCompactMessages_UsesStreamingForCompressionLLM(t *testing.T) {
 		llm.NewUserMessage("latest question"), // tail anchor (last user msg)
 	}
 
-	result, err := compactMessages(context.Background(), msgs, mock, "test-model", 200000)
+	result, err := compactMessages(context.Background(), msgs, mock, "test-model", 200000, 1000)
 	if err != nil {
 		t.Fatalf("compactMessages: %v", err)
 	}

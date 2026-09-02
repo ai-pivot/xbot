@@ -35,8 +35,8 @@ func IsValidContextMode(mode ContextMode) bool {
 type ContextManager interface {
 	Mode() ContextMode
 	ShouldCompress(messages []llm.ChatMessage, model string, toolTokens int) bool
-	Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error)
-	ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error)
+	Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error)
+	ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error)
 	ContextInfo(messages []llm.ChatMessage, model string, toolTokens int) *ContextStats
 	SessionHook() SessionCompressHook
 }
@@ -125,12 +125,12 @@ func (m *noopManager) Mode() ContextMode                                  { retu
 func (m *noopManager) ShouldCompress([]llm.ChatMessage, string, int) bool { return false }
 func (m *noopManager) SessionHook() SessionCompressHook                   { return nil }
 
-func (m *noopManager) Compress(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+func (m *noopManager) Compress(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error) {
 	return nil, fmt.Errorf("auto compression is disabled (mode=none)")
 }
 
-func (m *noopManager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
-	return m.phase1.ManualCompress(ctx, messages, client, model)
+func (m *noopManager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
+	return m.phase1.ManualCompress(ctx, messages, client, model, promptTokens)
 }
 
 func (m *noopManager) ContextInfo(messages []llm.ChatMessage, model string, toolTokens int) *ContextStats {

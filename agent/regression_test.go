@@ -21,7 +21,7 @@ import (
 // are sent, and token state is persisted.
 func TestContextWindowExceeded_UsesRunCompression(t *testing.T) {
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return &CompressResult{
 				LLMView:          messages[:2],
 				CompressedTokens: 5000,
@@ -97,7 +97,7 @@ func TestContextWindowExceeded_UsesRunCompression(t *testing.T) {
 // PhaseCompressing during compression and reverts to PhaseThinking after.
 func TestContextWindowExceeded_SetsPhase(t *testing.T) {
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return &CompressResult{
 				LLMView:          messages[:2],
 				CompressedTokens: 5000,
@@ -141,7 +141,7 @@ func TestContextWindowExceeded_SetsPhase(t *testing.T) {
 
 func TestRunCompressionEmitsCompressingAndCompactedSnapshots(t *testing.T) {
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return &CompressResult{
 				LLMView:          messages[:2],
 				CompressedTokens: 5000,

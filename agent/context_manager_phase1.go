@@ -46,7 +46,10 @@ func (m *phase1Manager) ShouldCompress(messages []llm.ChatMessage, model string,
 }
 
 // Compress executes structured compaction via the agent loop (engine.Run).
-func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
+// promptTokens is the REAL API prompt_tokens (usage) — the verbatim
+// cache-hit path's budget check uses it (Never-Estimate-Tokens rule); 0
+// (unknown, e.g. error paths without usage) forces the flatten fallback.
+func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
 	// CompressionModel override: compaction runs on a faster/cheaper model of
 	// the same endpoint when configured (config agent.compression_model). The
 	// summary needs speed, not the session flagship's intelligence — Claude
@@ -59,7 +62,7 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 		"max_tokens":      m.config.MaxContextTokens,
 	}).Info("Context compaction: starting")
 
-	result, err := compactMessages(ctx, messages, client, model, m.config.MaxContextTokens)
+	result, err := compactMessages(ctx, messages, client, model, m.config.MaxContextTokens, promptTokens)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +89,10 @@ func (m *phase1Manager) Compress(ctx context.Context, messages []llm.ChatMessage
 	return result, nil
 }
 
-// ManualCompress handles /compress command.
-func (m *phase1Manager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string) (*CompressResult, error) {
-	return compactMessages(ctx, messages, client, m.compressionModel(model), m.config.MaxContextTokens)
+// ManualCompress handles /compress command. promptTokens is the REAL API
+// prompt_tokens (usage) — same Never-Estimate-Tokens contract as Compress.
+func (m *phase1Manager) ManualCompress(ctx context.Context, messages []llm.ChatMessage, client llm.LLM, model string, promptTokens int64) (*CompressResult, error) {
+	return compactMessages(ctx, messages, client, m.compressionModel(model), m.config.MaxContextTokens, promptTokens)
 }
 
 func (m *phase1Manager) ContextInfo(messages []llm.ChatMessage, model string, toolTokens int) *ContextStats {

@@ -125,7 +125,7 @@ func TestNoopManager(t *testing.T) {
 	}
 
 	// Compress should return error
-	_, err := m.Compress(context.TODO(), nil, nil, "model")
+	_, err := m.Compress(context.TODO(), nil, nil, "model", 0)
 	if err == nil {
 		t.Error("noopManager.Compress should return error")
 	}

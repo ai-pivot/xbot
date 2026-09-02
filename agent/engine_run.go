@@ -854,11 +854,14 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	}
 
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-		CM:                cm,
-		Messages:          s.messages,
-		LLMClient:         s.cfg.LLMClient,
-		Model:             s.cfg.Model,
-		UseManual:         true,
+		CM:        cm,
+		Messages:  s.messages,
+		LLMClient: s.cfg.LLMClient,
+		Model:     s.cfg.Model,
+		UseManual: true,
+		// RealPromptTokens: 0 (intentional) — the input-too-long ERROR path
+		// carries no usage; compactMessages takes the conservative flatten
+		// fallback for unknown token counts (Never-Estimate-Tokens rule).
 		TokenTracker:      s.tokenTracker,
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
@@ -1579,10 +1582,19 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 	}
 
 	pipelineResult, compressErr := ApplyCompress(ctx, CompressPipelineParams{
-		CM:                sessionCM,
-		Messages:          s.messages,
-		LLMClient:         s.cfg.LLMClient,
-		Model:             s.cfg.Model,
+		CM:        sessionCM,
+		Messages:  s.messages,
+		LLMClient: s.cfg.LLMClient,
+		Model:     s.cfg.Model,
+		RealPromptTokens: func() int64 {
+			// Real API prompt_tokens (maybeCompress's token source — the
+			// tracker value THIS compression was triggered by). 0 = unknown →
+			// flatten fallback (Never-Estimate-Tokens: never guess).
+			if pt, _ := s.tokenTracker.GetPromptTokens(); pt > 0 {
+				return pt
+			}
+			return 0
+		}(),
 		TokenTracker:      s.tokenTracker,
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,

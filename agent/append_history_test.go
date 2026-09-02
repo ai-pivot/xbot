@@ -123,7 +123,7 @@ func TestApplyCompressAssignsSyntheticHistoryIDForSameRunEdit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error) {
 		view := []llm.ChatMessage{{Role: "system", Content: "system"}, {Role: "user", Content: "synthetic summary that can be truncated"}}
 		view = append(view, loaded...)
 		return &CompressResult{LLMView: view, CompressedTokens: 10}, nil
@@ -363,7 +363,7 @@ func TestApplyCompressDoesNotResetTrackerWhenHistoryAppendFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	tracker := NewTokenTracker(321, 45)
-	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error) {
 		return sampleCompressResult(), nil
 	}}
 	syncCalled := false
@@ -391,7 +391,7 @@ func TestCompressionWatermarkDoesNotDuplicateSnapshotTail(t *testing.T) {
 	}
 	messages := []llm.ChatMessage{{Role: "system", Content: "system"}, {ID: userID, Role: "user", Content: "raw"}}
 	bridge := NewPersistenceBridge(sess, len(messages))
-	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error) {
 		return &CompressResult{LLMView: []llm.ChatMessage{{Role: "system", Content: "system"}, {Role: "user", Content: "summary"}}, CompressedTokens: 10}, nil
 	}}
 	compressed, err := ApplyCompress(context.Background(), CompressPipelineParams{
@@ -421,7 +421,7 @@ func TestContextWindowExceededStopsWhenCompressionAppendFails(t *testing.T) {
 	if err := mt.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string) (*CompressResult, error) {
+	cm := &mockContextManager{compressFn: func(context.Context, []llm.ChatMessage, llm.LLM, string, int64) (*CompressResult, error) {
 		return sampleCompressResult(), nil
 	}}
 	messages := []llm.ChatMessage{{Role: "system", Content: "system"}, {Role: "user", Content: "one"}, {Role: "assistant", Content: "two"}, {Role: "user", Content: "three"}}

@@ -83,7 +83,7 @@ func TestRunCompression_PrePostCompressAsync(t *testing.T) {
 	}
 
 	cm := &mockContextManager{
-		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string) (*CompressResult, error) {
+		compressFn: func(_ context.Context, messages []llm.ChatMessage, _ llm.LLM, _ string, _ int64) (*CompressResult, error) {
 			return &CompressResult{
 				LLMView:          messages[:2], // system + first user
 				SessionView:      messages[:2],

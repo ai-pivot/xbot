@@ -298,6 +298,17 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 		}, nil
 	}
 
+	// Real API prompt_tokens from the session's token state (usage) — the
+	// compactMessages verbatim budget check consumes it (Never-Estimate-Tokens
+	// rule, AGENTS.md). 0 = unknown (e.g. fresh session with no LLM call yet)
+	// → the conservative flatten fallback inside compactMessages.
+	var realPromptTokens int64
+	if memSvc := tenantSession.MemoryService(); memSvc != nil {
+		if pt, _, err := memSvc.GetTokenState(ctx, tenantSession.TenantID()); err == nil && pt > 0 {
+			realPromptTokens = pt
+		}
+	}
+
 	tokenCount := len(messages) * 200 // rough estimate for display only
 
 	// Always allow manual /compress regardless of threshold — user explicitly requested it.
@@ -305,7 +316,7 @@ func (a *Agent) handleCompress(ctx context.Context, msg bus.InboundMessage, tena
 	cm := a.GetContextManager()
 
 	userCtx := UserContextFromContext(ctx)
-	result, err := cm.ManualCompress(ctx, messages, userCtx.LLMClient, userCtx.Model)
+	result, err := cm.ManualCompress(ctx, messages, userCtx.LLMClient, userCtx.Model, realPromptTokens)
 	if err != nil {
 		return &channel.OutboundMsg{
 			Channel: msg.Channel,
@@ -477,6 +488,13 @@ func compactMessages(
 	client llm.LLM,
 	model string,
 	maxContextTokens int,
+	// promptTokens is the REAL API prompt_tokens of the most recent LLM call
+	// for this conversation (TokenTracker / usage — the maybeCompress token
+	// source threaded down via RunConfig/ApplyCompress). 0 = unknown (e.g. the
+	// handleInputTooLong error path carries no usage) → the verbatim cache-hit
+	// path is skipped (flatten fallback). NEVER estimate here — see the
+	// Never-Estimate-Tokens principle in AGENTS.md.
+	promptTokens int64,
 ) (*CompressResult, error) {
 	// Step 1: find tail cut point — keep the last user message and everything after it.
 	tailStart, originalUserMsg := findTailCutPoint(messages)
@@ -567,18 +585,25 @@ func compactMessages(
 	// their role + tool_calls structure — formatCompactLine collapses them
 	// into text lines and truncates every message to 2000 runes.
 	//
-	// Fallback (flatten): when the verbatim history exceeds the compression
-	// budget (manual /compress near the model limit), build the bounded
-	// flattened-text request (old messages omitted from the head) — the
-	// legacy path, unchanged.
-	verbatimTokens := estimateMessagesTokens(systemMsgs) + estimateMessagesTokens(toCompress)
+	// Never-Estimate-Tokens rule (AGENTS.md): the verbatim budget check uses
+	// the REAL API prompt_tokens threaded in by the caller (maybeCompress's
+	// token source via RunConfig/ApplyCompress), never chars-based estimates —
+	// estimateMessagesTokens underestimates CJK content by 33%+ and would pass
+	// requests that actually exceed the model limit (LLM input-too-long
+	// bubbles up instead of the flatten fallback).
+	//
+	// promptTokens covers system + ALL messages (incl. the tail) — an UPPER
+	// BOUND of the verbatim request (which drops the tail), so the check is
+	// conservative. promptTokens == 0 (no usage data — e.g. the
+	// handleInputTooLong error path carries no usage) → flatten fallback:
+	// never gamble on a missing measurement.
 	instruction := buildCompactionInstruction(targetRunes)
-	instructionTokens := int64(len([]rune(instruction)) * 2 / 3)
-	// 15% headroom: tokenizer drift (CJK-heavy content estimates ~33% low) +
-	// the instruction + output budget. The verbatim content minus the tail
-	// just fit the model (the live conversation was served at this size), so
-	// the margin only guards the additions and the estimate error.
-	verbatimFits := verbatimTokens+instructionTokens+int64(targetTokens) <= int64(maxContextTokens)*85/100
+	// instructionReserveTokens: the instruction is OUR OWN constructed text
+	// (~1.5k chars, bounded by the fixed template + the %d budget line) — a
+	// fixed 4k reserve, not an estimate of the conversation.
+	const instructionReserveTokens = 4096
+	verbatimFits := promptTokens > 0 &&
+		promptTokens+instructionReserveTokens+int64(targetTokens) <= int64(maxContextTokens)
 
 	var compactionMsgs []llm.ChatMessage
 	if verbatimFits {
@@ -587,31 +612,33 @@ func compactMessages(
 		compactionMsgs = append(compactionMsgs, toCompress...)
 		compactionMsgs = append(compactionMsgs, llm.NewUserMessage(instruction))
 		log.Ctx(ctx).WithFields(log.Fields{
-			"path":            "verbatim_cache_hit",
-			"verbatim_tokens": verbatimTokens,
-			"to_compress":     len(toCompress),
-			"tail_messages":   len(tail),
-			"target_runes":    targetRunes,
+			"path":          "verbatim_cache_hit",
+			"prompt_tokens": promptTokens,
+			"to_compress":   len(toCompress),
+			"tail_messages": len(tail),
+			"target_runes":  targetRunes,
 		}).Info("Context compaction: verbatim-history request (radix cache hit)")
 	} else {
-		// Flatten fallback (bounded): oldest messages dropped from the head
-		// until the flattened text fits historyBudget.
+		// Flatten fallback (bounded). Budget = the model limit (a configured
+		// REAL constraint) minus the prompt wrapper + output reserves; the
+		// per-message fill counts the flattened text's OWN chars against that
+		// budget under the WORST-CASE tokenizer density (1 token ≥ 1 char) —
+		// conservative direction, never an underestimate (CJK ≈ 1 token/char;
+		// ASCII ≈ 0.67 token/char, so ASCII history gets extra headroom).
+		// Oldest messages drop from the head until the text fits.
 		var historyText strings.Builder
-		perMsgTokens := make([]int, len(toCompress))
-		for i, msg := range toCompress {
-			perMsgTokens[i] = len([]rune(msg.Content)) * 2 / 3
-		}
-		historyBudget := maxContextTokens - compactionOverhead
-		if historyBudget < 1000 {
-			historyBudget = 1000
+		flattenBudget := int64(maxContextTokens-compactionOverhead) - int64(targetTokens)
+		if flattenBudget < 1000 {
+			flattenBudget = 1000
 		}
 		fitCount := 0
-		usedTokens := 0
+		var usedChars int64
 		for i := len(toCompress) - 1; i >= 0; i-- {
-			if usedTokens+perMsgTokens[i] > historyBudget {
+			msgChars := int64(len([]rune(toCompress[i].Content)))
+			if usedChars+msgChars > flattenBudget {
 				break
 			}
-			usedTokens += perMsgTokens[i]
+			usedChars += msgChars
 			fitCount++
 		}
 		omittedCount := len(toCompress) - fitCount
@@ -642,12 +669,12 @@ Output the structured working state directly.`
 			llm.NewUserMessage(prompt),
 		}
 		log.Ctx(ctx).WithFields(log.Fields{
-			"path":            "flatten_fallback",
-			"verbatim_tokens": verbatimTokens,
-			"to_compress":     len(toCompress),
-			"tail_messages":   len(tail),
-			"target_runes":    targetRunes,
-		}).Info("Context compaction: flatten fallback (verbatim history over budget)")
+			"path":          "flatten_fallback",
+			"prompt_tokens": promptTokens,
+			"to_compress":   len(toCompress),
+			"tail_messages": len(tail),
+			"target_runes":  targetRunes,
+		}).Info("Context compaction: flatten fallback (no real usage data or verbatim over budget)")
 	}
 
 	compressCfg := RunConfig{
