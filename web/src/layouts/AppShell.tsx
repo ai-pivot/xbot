@@ -274,10 +274,7 @@ export function AppShell() {
             <span className="shrink-0 text-text-muted">{sessionLabel}</span>
             <SideChips />
             <TopRail className="min-w-0 flex-1" />
-            <div className="min-w-0 flex-1 max-w-[400px]">
-              <InfoBar />
-            </div>
-            <div aria-hidden className="h-4 w-px shrink-0 bg-border" />
+            <InfoBar />
             <BottomRailBadges />
             <Suspense fallback={null}>
               <SWUpdateButton />
