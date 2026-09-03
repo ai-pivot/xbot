@@ -2,9 +2,11 @@ package channel
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"xbot/llm"
+	"xbot/storage/sqlite"
 )
 
 // TestConvertMessagesToHistory_DerivesAssistantTurnID verifies that
@@ -92,5 +94,60 @@ func TestConvertMessagesToHistory_SuperLongTurnBatchBoundary(t *testing.T) {
 		t.Fatalf("batch2 tool_summary TurnID = %d, want 5 — "+
 			"without matching turnID, loadMore's turnID:role dedup fails and "+
 			"the same turn's iterations render twice at the batch boundary", batch2[1].TurnID)
+	}
+}
+
+// TestConvertMessagesToHistory_CompactMarkerKeepsTurnIDZero verifies that
+// [Compacted context] marker rows stay turn-less (turn_id=0) through the
+// conversion — they must NOT inherit the next user turn's id via the legacy
+// turn derivation (chat_F64D4096DA6F root cause layer 2, 2026-09-03).
+//
+// The marker is turn-less BY DESIGN: the frontend keys its legacy/anchor
+// rendering off turn_id=0 (MessageStore.addLegacy → historyToReplaced
+// anchorTurnID → deriveRows anchored insertion). Pass 1 of deriveTurnIDs
+// previously derived the marker to the following user turn's id — the marker
+// then left the legacy path entirely (never hit the marker branch) and could
+// even squat the real user slot in byTurn.
+func TestConvertMessagesToHistory_CompactMarkerKeepsTurnIDZero(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		{ID: 1, Role: "user", Content: "old user", TurnID: 1758},
+		{ID: 2, Role: "assistant", Content: "old answer", TurnID: 1758},
+		// The compact marker — MUST stay turn_id=0.
+		{ID: 3, Role: "user", Content: "[Compacted context]\n\nSummary"},
+		// A turn-less legacy user row (pre-eager-save) — MUST still derive the
+		// turn of the first following non-user row (Pass 1 stops at next user).
+		{ID: 4, Role: "user", Content: "legacy user without turn"},
+		{ID: 5, Role: "assistant", Content: "legacy tail answer", TurnID: 1761},
+		{ID: 6, Role: "user", Content: "tail user", TurnID: 1762},
+		{ID: 7, Role: "assistant", Content: "tail answer", TurnID: 1762},
+	}
+	history := ConvertMessagesToHistory(msgs)
+	var markerTurnID, legacyTurnID uint64
+	for _, h := range history {
+		if h.Role == "user" && strings.HasPrefix(h.Content, "[Compacted context]") {
+			markerTurnID = h.TurnID
+		}
+		if h.Role == "user" && h.Content == "legacy user without turn" {
+			legacyTurnID = h.TurnID
+		}
+	}
+	if markerTurnID != 0 {
+		t.Fatalf("[Compacted context] marker must keep turn_id=0 (frontend legacy/anchor path), got %d", markerTurnID)
+	}
+	if legacyTurnID != 1761 {
+		t.Fatalf("ordinary turn-less user row must still derive the next turn id (1761), got %d", legacyTurnID)
+	}
+
+	// Same invariant through ConvertMessagesToHistoryWithIterations (the
+	// path web get_history actually takes — callbacks.go HistorySnapshot).
+	withIters := ConvertMessagesToHistoryWithIterations(msgs, map[uint64][]sqlite.IterationRecord{
+		1761: {{Iteration: 1, Content: "tail answer"}},
+	})
+	for _, h := range withIters {
+		if h.Role == "user" && strings.HasPrefix(h.Content, "[Compacted context]") {
+			if h.TurnID != 0 {
+				t.Fatalf("WithIterations: [Compacted context] marker must keep turn_id=0, got %d", h.TurnID)
+			}
+		}
 	}
 }

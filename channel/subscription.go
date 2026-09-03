@@ -598,21 +598,32 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 // Extracted from ConvertMessagesToHistory for reuse.
 func deriveTurnIDs(msgs []llm.ChatMessage) {
 	// Pass 1 (forward, user only): assign the first turn_id>0 to preceding user rows.
+	// [Compacted context] marker rows are EXEMPT (chat_F64D4096DA6F root cause
+	// layer 2, 2026-09-03): the marker is turn-less BY DESIGN — the frontend
+	// keys its legacy/anchor rendering off turn_id=0 (MessageStore.addLegacy →
+	// historyToReplaced anchorTurnID → deriveRows anchored insertion). Deriving
+	// the next user turn's id here reclassified the marker as turn N's user
+	// message — it left the legacy path (never hit historyToReplaced's marker
+	// branch) and could even squat turn N's user slot in byTurn ("if !slot.user
+	// slot.user = m" — marker sorts first by id). Result: the marker vanished
+	// from the rendered list AND the real user message could be displaced.
 	nextTurnID := uint64(0)
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" && msgs[i].TurnID > 0 {
 			nextTurnID = msgs[i].TurnID
 		}
-		if msgs[i].Role == "user" && msgs[i].TurnID == 0 && nextTurnID > 0 {
+		if msgs[i].Role == "user" && msgs[i].TurnID == 0 && nextTurnID > 0 &&
+			!strings.HasPrefix(msgs[i].Content, "[Compacted context]") {
 			msgs[i].TurnID = nextTurnID
 		}
 	}
 	// Pass 2 (backward): assign nearest preceding turn_id>0 to assistant/tool rows.
+	// [Compacted context] markers are exempt here too (same rationale as Pass 1).
 	var lastTurnID uint64
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].TurnID > 0 {
 			lastTurnID = msgs[i].TurnID
-		} else if lastTurnID > 0 {
+		} else if lastTurnID > 0 && !strings.HasPrefix(msgs[i].Content, "[Compacted context]") {
 			msgs[i].TurnID = lastTurnID
 		}
 	}
@@ -656,6 +667,12 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		if msgs[i].Role != "user" || msgs[i].TurnID > 0 {
 			continue
 		}
+		// [Compacted context] marker rows are EXEMPT from turn derivation —
+		// same as deriveTurnIDs Pass 1 (see its comment): the marker must stay
+		// turn-less so the frontend renders it via the legacy/anchor path.
+		if strings.HasPrefix(msgs[i].Content, "[Compacted context]") {
+			continue
+		}
 		for j := i + 1; j < len(msgs); j++ {
 			if msgs[j].Role == "user" {
 				break
@@ -668,8 +685,10 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	}
 	// Pass 2: backward search for assistant messages with turn_id=0.
 	// Stops at the preceding user message (turn boundary).
+	// [Compacted context] marker rows are EXEMPT (same as Pass 1 above).
 	for i := range msgs {
-		if msgs[i].TurnID > 0 {
+		if msgs[i].TurnID > 0 ||
+			strings.HasPrefix(msgs[i].Content, "[Compacted context]") {
 			continue
 		}
 		for j := i - 1; j >= 0; j-- {
