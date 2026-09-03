@@ -980,10 +980,10 @@ export function PanelDock(): ReactNode {
       ref={setDockEl}
       data-panel-zone="side"
       data-zone-active={zoneActive || undefined}
-      className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden p-1.5"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
       style={zoneHighlightStyle(zoneActive)}
     >
-      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
+      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {sideIds.map((id) => {
           const def = dock.defs.find((d) => d.id === id)
           if (!def) return null
