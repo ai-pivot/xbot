@@ -156,9 +156,6 @@
   --bg-primary: var(--bg-primary-src);
   --bg-secondary: var(--bg-secondary-src);
   --bg-tertiary: var(--bg-tertiary-src);
-  /* 系统 UI 令牌：始终不透明（glass 只覆盖 --bg-primary/secondary/tertiary，
-   * -src 原色永不被触碰）。系统 UI（底栏/设置面板/InfoBar/Chip 栏）用这套，
-   * 与内容区（dockview/sidebar，可 glass 半透明）视觉分离。 */
   --bg-elevated: var(--bg-secondary-src);
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
