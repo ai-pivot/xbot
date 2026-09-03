@@ -121,7 +121,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         // 全部 tab 统一宽度（切换 tab 零宽度跳变）；LLM 控制台重内容面板
         // 需 576px 内容区。rounded-none 直角 + bg-bg-elevated 不透明。
         // max-h 80vh 视口适配（小屏竖滚）。
-        className="flex max-h-[80vh] w-[min(92vw,56rem)] max-w-full flex-col gap-0 rounded-none border border-border bg-bg-elevated p-0 shadow-2xl sm:max-w-[56rem]"
+        className="flex h-[70vh] max-h-[80vh] w-[min(92vw,56rem)] max-w-full flex-col gap-0 rounded-none border border-border bg-bg-elevated p-0 shadow-2xl sm:max-w-[56rem]"
       >
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle>{t('settings.title')}</DialogTitle>
