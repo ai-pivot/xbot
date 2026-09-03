@@ -126,7 +126,11 @@ export const TurnBody = memo(function TurnBody({
         if (block.kind === 'reasoning') {
           return (
             <div key={`r-${i}`} data-iter-id={block.iteration} data-turn-id={turnID}>
-              <ThinkingLine label={'思考 ' + (block.elapsedMs && block.elapsedMs > 0 ? (block.elapsedMs / 1000).toFixed(1) + 's' : Math.ceil(block.text.length / 4) + ' 字')}>
+              {/* 思考字符数（与 LiveIteration 的 reasoningCount 同语义）：真实
+                  字符数——live 显示 reasoningContent.length（真实），committed
+                  侧曾用 chars/4（token 估算）——完成后数字骤降 4 倍（live 297 字
+                  → committed 75 字——"思考字符数量和实际不符"）。统一用真实长度。 */}
+              <ThinkingLine label={'思考 ' + (block.elapsedMs && block.elapsedMs > 0 ? (block.elapsedMs / 1000).toFixed(1) + 's' : block.text.length + ' 字')}>
                 <ReasoningBlock content={block.text} />
               </ThinkingLine>
             </div>
