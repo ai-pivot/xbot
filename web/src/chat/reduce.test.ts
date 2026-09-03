@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { MessageStore } from '@/components/agent/messageStore'
+import { normalizeWebIteration } from '@/components/agent/normalize'
 import { deriveRows } from './derive'
 import { historyToReplaced, liveProgressFromState } from './integrate'
 import { normalizeEvent } from './normalize'
@@ -2022,5 +2023,56 @@ describe('REPRO: 3 压缩点 loadMore 完整链（旧形状标记不覆盖不重
     expect(iM2).toBeLessThan(idx('user 1710'))     // 且在 user 1710（锚）之前
     expect(iM3).toBeGreaterThan(idx('reply 1750')) // 标记 3 在 reply 1750 之后
     expect(iM3).toBeLessThan(idx('user 1759'))     // 且在 user 1759（锚）之前
+  })
+})
+
+// ─── E2E: 真实 API 数据（tenant 166286）——多批 loadMore 累积标记数 ──────────
+// 用户报告（chat_F64D4096DA6F 04:29）："重复渲染了几十个截不完"——用真实
+// web handleHistory 路径的 dump（Go 程序从生产 DB 拉取的
+// ConvertMessagesToHistoryWithIterations 输出）跑前端完整链。
+describe('E2E: 真实 API 数据多批 loadMore', () => {
+  it('单批（98 行 1 标记）→ MessageStore→M4→deriveRows 恰 1 条标记', async () => {
+    const apiRows = (await import('./__fixtures__/api-batch0.json')).default as {
+      id?: number; role: string; content: string; turn_id?: number; iterations?: unknown[]
+    }[]
+    // parseHistoryMessages 的模拟（与 useChatMessages 相同的形状转换）
+    const idCounts = new Map<string, number>()
+    const parsed = apiRows.map((m, i) => {
+      const baseId = m.id != null ? `db-${m.id}` : `hist-0-${i}`
+      const n = (idCounts.get(baseId) ?? 0) + 1
+      idCounts.set(baseId, n)
+      return {
+        id: n > 1 ? `${baseId}-${n}` : baseId,
+        role: m.role,
+        content: m.content ?? '',
+        iterations: (Array.isArray(m.iterations) ? m.iterations.map(normalizeWebIteration).filter(Boolean) : []) as never[],
+        timestamp: new Date().toISOString(),
+        isPartial: false,
+        displayOnly: false,
+        persisted: true,
+        turnID: typeof m.turn_id === 'number' ? m.turn_id : 0,
+        dbID: m.id ?? undefined,
+      }
+    })
+    // MessageStore（reload replace）
+    const store = new MessageStore()
+    store.mergeHistory(parsed as never, { replace: true })
+    const toRows1 = store.toRows()
+    const markers1 = toRows1.filter((m: { content?: string }) => (m.content ?? '').startsWith('[Compacted context]'))
+    // M4
+    const ev = historyToReplaced(toRows1 as never, null)
+    const s = reduce(initialChatState('chat-1'), ev)
+    const rows1 = deriveRows(s)
+    const out1 = rows1.filter((r) => r.kind === 'user' || r.kind === 'committed') as { content: string }[]
+    const markers1M4 = out1.filter((r) => r.content.startsWith('[Compacted context]'))
+    expect(markers1.length, `MessageStore 标记条数 = API 返回数（实际 ${markers1.length}）`).toBe(1)
+    expect(markers1M4.length, `M4 渲染标记条数（实际 ${markers1M4.length}）`).toBe(1)
+    // 极端模拟：游标错误时同批数据重复 merge 5 次（addLegacy 按 id 去重）
+    for (let round = 0; round < 5; round++) {
+      store.mergeHistory(parsed as never)
+    }
+    const toRows6 = store.toRows()
+    const markers6 = toRows6.filter((m: { content?: string }) => (m.content ?? '').startsWith('[Compacted context]'))
+    expect(markers6.length, `重复 merge 同批 5 次后标记仍 = 1（实际 ${markers6.length}）`).toBe(1)
   })
 })
