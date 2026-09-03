@@ -664,12 +664,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           } else {
             turns.set(h.id, {
               ...cur,
-              // M4 旧残留清理（chat_F64D4096DA6F 04:25）：cur.user 是
-              // [Compacted context] 标记（旧 bundle 无拦截时进过 user 槽）
-              // 时用 incoming 的真实 user 替换——否则 `cur.user ?? h.user`
-              // 短路让旧标记永远占据 user 槽（DOM：data-turn-id=1759 的
-              // 标记行——userRowOf 路径渲染——正常消息被覆盖）。
-              user: isCompactMarkerRow(cur.user) ? (h.user ?? null) : (cur.user ?? h.user),
+              user: cur.user ?? h.user,
               phase: {
                 kind: 'live',
                 data: { ...cur.phase.data, iterations: mergeIterations(incomingIts, cur.phase.data.iterations) },
@@ -957,21 +952,6 @@ function foldInFlightToIterations(
  * DB 的 dbID 行）。进此函数的两侧都必有输出（空壳已在 step1 前分流），构造
  * committed 是渲染等价的安全形态。
  */
-// isCompactMarkerRow: M4 旧残留清理（chat_F64D4096DA6F 04:25 DOM 铁证——
-// 4 条同 data-index 的标记行 + data-turn-id=1759 = userRowOf 路径渲染 =
-// M4 turn 1759 的 user 槽被标记占据）。旧 bundle（54bf1f1b 拦截部署前）
-// 的 historyToReplaced 无标记拦截——标记（旧 API 形状 turnID>0）进过
-// byTurn 的 user 槽——M4 state 的 turns.get(N).user = 标记——mergeTurnData
-// 的 `cur.user ?? h.user` 短路让旧标记永远占据（新 incoming 的真实 user
-// 被阻塞）。此 helper 识别标记行（任何层的数据——不管 turnID 新旧形状）。
-function isCompactMarkerRow(user: Turn['user']): boolean {
-  return (
-    user !== null &&
-    typeof user.content === 'string' &&
-    user.content.trimStart().startsWith('[Compacted context]')
-  )
-}
-
 function mergeTurnData(cur: Turn, h: Turn): Turn {
   const curIts = cur.phase.kind === 'committed' ? cur.phase.payload.iterations : cur.phase.data.iterations
   const incIts = h.phase.kind === 'committed' ? h.phase.payload.iterations : h.phase.data.iterations
@@ -987,7 +967,7 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
       : its !== null
         ? { kind: 'committed', payload: commitViaFold(its, content) }
         : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }
-  return { id: h.id, user: isCompactMarkerRow(cur.user) ? (h.user ?? null) : (cur.user ?? h.user), phase, requestID: cur.requestID ?? h.requestID }
+  return { id: h.id, user: cur.user ?? h.user, phase, requestID: cur.requestID ?? h.requestID }
 }
 
 function foldPhase(data: LiveSnapshot): Turn['phase'] {

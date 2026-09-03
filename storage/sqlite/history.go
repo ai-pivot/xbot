@@ -1075,20 +1075,6 @@ func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit in
 	if limit > 0 && int64(len(msgs)) > limit {
 		msgs = msgs[int64(len(msgs))-limit:]
 	}
-
-	// NOTE (2026-09-03 user directive, chat_F64D4096DA6F): NO below-window
-	// marker prepending. The window semantics are strict — a [Compacted
-	// context] marker renders ONLY when the user has actually paged to its
-	// compression point (the compress record is inside [minID, beforeID) and
-	// the fold injects it at its stream position). A prepended below-window
-	// marker renders at the TOP of the window — a position unrelated to its
-	// actual compression point (the user complained: "为什么压缩 turn 还没
-	// 加载你就渲染 [Compacted context] 了" — the marker appeared ~80 messages
-	// before its compression point), and across loadMore batches the prepend
-	// + fold double-sourcing of the SAME compress record (same dbID, batch A
-	// prepended it / batch B folded it) caused markers to stack at the top
-	// and dedup-disappear. With tens of thousands of compressions the window
-	// must never fabricate rows it did not load.
 	result.Messages = msgs
 	return result, total, nil
 }

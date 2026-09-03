@@ -11,7 +11,7 @@
  */
 
 import type { TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
-import type { ChatState, LegacyRow, LiveSnapshot, Turn } from './types'
+import type { ChatState, LiveSnapshot, Turn } from './types'
 
 // [TURNDROP] 诊断去重（derive 每帧调用 —— 同一 turnID 的 hollow-frozen 跳过
 // 只报告一次；生产保留 console.warn 以便用户复现时捕获触发链）。
@@ -75,69 +75,43 @@ export interface CommittedRowView {
 
 export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
 
-// ─── legacyRowView：legacy 行（无 turn 消息）→ Row（压缩行复用） ─────
-
-function legacyRowView(l: LegacyRow): Row {
-  if (l.role === 'user') {
-    return {
-      kind: 'user',
-      id: l.id,
-      content: l.content,
-      timestamp: l.timestamp,
-      isNotification: false,
-      queued: false,
-      sending: false,
-      dbID: l.dbID,
-      turnID: 0,
-    }
-  }
-  return {
-    kind: 'committed',
-    id: l.id,
-    turnID: 0,
-    isPartial: false,
-    content: l.content,
-    iterations: l.iterations,
-  }
-}
-
 // ─── deriveRows：ρ（T5 顺序 = legacy ⊕ turnID 升序 ⊕ user<assistant） ──
 
 export function deriveRows(s: ChatState): readonly Row[] {
-  // 压缩行（legacy 带 anchorTurnID）：按锚插入 turns 之间 —— turnID < anchor
-  // 的 turns 之后、>= anchor 的之前（= 压缩发生的时间位置）。此前压缩行渲染
-  // 在 legacy 前缀段（列表最顶部）——1700 条消息的会话用户永远看不到
-  // （chat_F64D4096DA6F"压缩了但和没压缩一样"）。anchor = 首个 incoming
-  // turn 的 turnID（压缩行是 active 第一条，时间位置 = 压缩点 = tail 首行之前
-  // 旧消息之后）。普通无 turn 行（无锚）保持前缀段（旧行为）。
-  const anchoredLegacy = s.legacy
-    .filter((l): l is LegacyRow & { anchorTurnID: number } => l.anchorTurnID !== undefined)
-    .sort((a, b) => a.anchorTurnID - b.anchorTurnID)
-  const prefixLegacy = s.legacy.filter((l) => l.anchorTurnID === undefined)
-
   const turnRows: Row[] = []
   const sorted = [...s.turns.values()].sort((a, b) => a.id - b.id)
-  let ai = 0
   for (const t of sorted) {
-    while (ai < anchoredLegacy.length && anchoredLegacy[ai].anchorTurnID <= t.id) {
-      turnRows.push(legacyRowView(anchoredLegacy[ai]))
-      ai++
-    }
     if (t.user) turnRows.push(userRowOf(t))
     const ar = assistantRow(t)
     if (ar !== null) turnRows.push(ar)
-  }
-  // 尾部剩余（锚 > 所有 turns 的 turnID —— active 无 tail turn 的防御场景）。
-  for (; ai < anchoredLegacy.length; ai++) {
-    turnRows.push(legacyRowView(anchoredLegacy[ai]))
   }
 
   // pendingUsers（未绑定的乐观行）：沉到底部（发送中/排队 —— 归属 turn 未知）。
   const pending: Row[] = s.pendingUsers.map(userRowView)
 
   // legacy 段保持 DB 顺序：user/assistant 交错（非 turn 模型 —— 直接按原序映射）。
-  // 仅无锚的普通行（anchoredLegacy 已按锚插入 turns 之间）。
-  const legacySorted: Row[] = prefixLegacy.map(legacyRowView)
+  const legacySorted: Row[] = s.legacy.map((l): Row =>
+    l.role === 'user'
+      ? {
+          kind: 'user',
+          id: l.id,
+          content: l.content,
+          timestamp: l.timestamp,
+          isNotification: false,
+          queued: false,
+          sending: false,
+          dbID: l.dbID,
+          turnID: 0,
+        }
+      : {
+          kind: 'committed',
+          id: l.id,
+          turnID: 0,
+          isPartial: false,
+          content: l.content,
+          iterations: l.iterations,
+        },
+  )
 
   return [...legacySorted, ...turnRows, ...pending]
 }

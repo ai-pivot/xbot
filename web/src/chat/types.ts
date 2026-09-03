@@ -181,13 +181,6 @@ export interface LegacyRow {
   readonly iterations: readonly WebIteration[]
   readonly timestamp: string
   readonly dbID: number | undefined
-  /** 压缩行（[Compacted context]）的位置锚：渲染在 turnID < anchorTurnID 的
-   *  turns 之后、turnID >= anchorTurnID 的 turns 之前（= 压缩发生的时间位置
-   *  —— 压缩行是 active 的第一条，anchor = 首个 incoming turn 的 turnID）。
-   *  undefined = 普通无 turn 行（渲染在前缀段 —— 旧行为）。压缩行此前渲染在
-   *  legacy 前缀段（列表最顶部）——1700 条消息的会话里用户永远看不到（用户
-   *  报告"压缩了但和没压缩一样"——2026-09-03 chat_F64D4096DA6F）。 */
-  readonly anchorTurnID?: number
 }
 
 /**
