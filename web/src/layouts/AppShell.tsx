@@ -33,7 +33,6 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
-import type { ContextUsage } from '@/types/shared'
 
 // 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
 // registerBuiltinLayoutItems 在 App.tsx 模块级注册的模式一致）。
@@ -41,6 +40,7 @@ registerBuiltinPanels()
 
 // SettingsDialog is only needed when the user opens settings — lazy-load it
 // so its code (form components, etc.) is not on the initial render path.
+const SWUpdateButton = lazy(() => import('@/components/SWUpdateButton').then(m => ({ default: m.SWUpdateButton })))
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 
@@ -65,7 +65,6 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   // header 上下文环：当前会话的上下文用量（get_context_usage）。
-  const [ctxUsage, setCtxUsage] = useState<ContextUsage | null>(null)
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
   const leftWidthRef = useRef(leftWidth)
@@ -139,8 +138,8 @@ export function AppShell() {
 
   // ── header 状态条数据 ──
   const act = sessionStore.activeSession
-  const actChannel = act?.channel ?? ''
-  const actChatID = act?.chatID ?? ''
+
+
   // 会话名：activeSession 只带 channel/chatID，label 从会话列表匹配。
   const sessionLabel = useMemo(() => {
     if (!act) return ''
@@ -148,20 +147,7 @@ export function AppShell() {
     return hit?.label || act.chatID
   }, [sessionStore.sessions, act])
 
-  // 当前会话上下文用量——activeSession 变化时重新拉取。
-  useEffect(() => {
-    if (!actChannel || !actChatID) {
-      setCtxUsage(null)
-      return
-    }
-    let cancelled = false
-    ws.rpc<ContextUsage>('get_context_usage', { channel: actChannel, chat_id: actChatID })
-      .then((u) => { if (!cancelled) setCtxUsage(u) })
-      .catch(() => { if (!cancelled) setCtxUsage(null) })
-    return () => { cancelled = true }
-  }, [actChannel, actChatID, ws])
-
-  // 布局 v4：插件面板已由 panelRegistry 统一渲染（view 贡献点自动注册，
+    // 布局 v4：插件面板已由 panelRegistry 统一渲染（view 贡献点自动注册，
   // 经 PanelDock/FloatingLayer 展示）——无需单独的 openTab 入口。
 
   const onLeftResizeStart = useCallback((e: React.PointerEvent) => {
@@ -246,6 +232,16 @@ export function AppShell() {
             onPointerDown={onLeftResizeStart}
             className="absolute right-0 top-0 h-full w-1 cursor-col-resize bg-transparent transition-colors hover:bg-app-accent/40"
           />
+          <button
+            type="button"
+            aria-label="切换侧栏"
+            title="切换侧栏"
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            className="group absolute right-0 top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded border border-border bg-bg-elevated text-text-muted opacity-0 transition-opacity hover:bg-bg-tertiary"
+            style={{ right: '-10px' }}
+          >
+            <PanelLeft className="size-3" />
+          </button>
         </div>
       )}
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
@@ -262,69 +258,36 @@ export function AppShell() {
       </RightSidebarControlContext.Provider>
       </div>
 
-      {/* 全局底栏：横跨全宽（sidebar + workspace 下方），高度 h-10（与原 chip 栏一致） */}
-      <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="flex h-10 min-w-0 shrink-0 items-center gap-2 border-t border-border bg-bg-elevated px-2 text-xs">
-            {/* 左：侧栏折叠 + 连接状态 + 会话名 */}
-            <button
-              type="button"
-              aria-label="切换侧栏"
-              title="切换侧栏"
-              onClick={() => setSidebarCollapsed((v) => !v)}
-              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              <PanelLeft className="size-3.5" />
-            </button>
-            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
+      {/* 全局底栏：连接状态 + chips + TopRail + InfoBar + Badges + SW 更新 + 设置 */}
+      <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-t border-border bg-bg-elevated px-2 text-xs">
+            {/* 左：连接状态（VS Code 远程连接风格：色点+文本，含会话名） */}
+            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={ws.connected ? '已连接' : '连接中…'}>
               <span
                 className={
                   ws.connected
-                    ? 'size-1.5 rounded-full bg-emerald-500'
-                    : 'size-1.5 animate-pulse rounded-full bg-amber-500'
+                    ? 'size-1.5 shrink-0 rounded-full bg-emerald-500'
+                    : 'size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500'
                 }
               />
               <span className="text-text-muted">{ws.connected ? '已连接' : '连接中…'}</span>
             </span>
-            <span
-              className="shrink-0 max-w-[200px] truncate font-medium"
-              title={sessionLabel}
-              style={{ color: 'var(--text-primary)' }}
-            >
-              {sessionLabel}
-            </span>
+            <span className="shrink-0 text-text-muted">{sessionLabel}</span>
             <SideChips />
             <TopRail className="min-w-0 flex-1" />
-            {/* InfoBar */}
             <div className="min-w-0 flex-1 max-w-[400px]">
               <InfoBar />
             </div>
-            <div aria-hidden className="w-px shrink-0 bg-border" />
+            <div aria-hidden className="h-4 w-px shrink-0 bg-border" />
             <BottomRailBadges />
-            {/* 右：上下文环 + 设置齿轮 */}
-            <span
-              className="flex shrink-0 items-center"
-              title={ctxUsage?.max_context_tokens
-                ? `上下文 ${ctxUsage.prompt_tokens.toLocaleString()} / ${ctxUsage.max_context_tokens.toLocaleString()} tokens`
-                : '上下文用量'}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="上下文用量">
-                <circle cx="8" cy="8" r="6" fill="none" stroke="var(--border)" strokeWidth="2" />
-                {ctxUsage?.usage_percent != null && (
-                  <circle
-                    cx="8" cy="8" r="6" fill="none" stroke="var(--accent)" strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeDasharray={`${(Math.max(0, Math.min(100, ctxUsage.usage_percent)) / 100) * 2 * Math.PI * 6} ${2 * Math.PI * 6}`}
-                    transform="rotate(-90 8 8)"
-                  />
-                )}
-              </svg>
-            </span>
+            <Suspense fallback={null}>
+              <SWUpdateButton />
+            </Suspense>
             <button
               type="button"
               aria-label="打开设置"
               title="设置"
               onClick={() => setSettingsOpen(true)}
-              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-teriary"
+              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
               style={{ color: 'var(--text-secondary)' }}
             >
               <Settings className="size-3.5" />

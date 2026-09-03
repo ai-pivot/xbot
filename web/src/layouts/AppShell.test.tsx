@@ -113,7 +113,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // wired later — status-bar style at the BOTTOM, VSCode-like).
     expect(main!.children.length).toBeGreaterThanOrEqual(1)
     const dockview = main!.children[0]
-    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center.gap-2.border-t') as HTMLElement
+    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center.border-t') as HTMLElement
     // railRow 已上面赋值
     // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
     // header 已删——功能统一到底栏
@@ -148,7 +148,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main!.className).toContain('flex-col')
     // The info bar is ALWAYS rendered as a fixed-height strip (inside the
     // bottom rail row), even with no plugin content — it never pops in/out.
-    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center.gap-2.border-t') as HTMLElement as HTMLElement
+    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center.border-t') as HTMLElement as HTMLElement
     const infoBarEl = railRow.querySelector('[class*="border-t"]') as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })
@@ -164,7 +164,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // 居中插件实现，本期不留占位）。ctxUsage 上下文环保留。
     expect(screen.queryByTitle('切换模型')).not.toBeInTheDocument()
     expect(screen.queryByText(/think/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('img', { name: '上下文用量' })).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: '上下文用量' })).not.toBeInTheDocument()
 
     // status_bar_right 插件容器已移除（被 TopRail 替代）；InfoBar 内部的
     // info_bar 容器不受影响。

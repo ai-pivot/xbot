@@ -394,7 +394,7 @@ export function SideChips(): ReactNode {
         </div>
       ) : null}
       <div
-        className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto px-0.5"
+        className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto px-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
       >
         {ids.map((id) => {
