@@ -125,6 +125,7 @@ const zhCN = {
     exportNative: 'xbot 格式 (JSON)',
     exportOpenAI: 'OpenAI 请求格式 (JSON)',
     exportCodex: 'Codex JSONL 格式',
+    fork: '分叉会话',
     exitMultiSelect: '退出多选',
     justNow: '刚刚',
     minutesAgo: '{{n}} 分钟前',

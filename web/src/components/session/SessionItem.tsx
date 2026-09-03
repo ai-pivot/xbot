@@ -8,7 +8,7 @@
  * shows a Bot icon instead of the status dot, and hides the star/time.
  */
 import { useCallback } from 'react'
-import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink, Check, Download } from 'lucide-react'
+import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink, Check, Download, GitFork } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -38,6 +38,8 @@ interface SessionItemProps {
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
+  /** Fork the session: copy its conversation context into a new session. */
+  onFork?: (session: SessionInfo) => void
   /** Export the session in the given format. */
   onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode: show checkbox, click toggles selection. */
@@ -71,6 +73,7 @@ export function SessionItem({
   onToggleStar,
   onRename,
   onDelete,
+  onFork,
   onExport,
   multiSelectMode = false,
   selected = false,
@@ -267,6 +270,12 @@ export function SessionItem({
           <Pencil className="size-4" />
           {t('common.rename')}
         </ContextMenuItem>
+        {onFork && !isSubAgent && (
+          <ContextMenuItem onClick={() => onFork(session)}>
+            <GitFork className="size-4" />
+            {t('session.fork')}
+          </ContextMenuItem>
+        )}
         {onExport && (
           <ContextMenuSub>
             <ContextMenuSubTrigger>

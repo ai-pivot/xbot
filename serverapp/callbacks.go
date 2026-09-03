@@ -805,6 +805,27 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		cs := sqlite.NewChatService(webDB)
 		return cs.UpdateChatSortOrders(channel, senderID, orders)
 	}
+	callbacks.ChatFork = func(senderID, sourceChannel, sourceChatID, label string) (string, error) {
+		if webDB == nil {
+			return "", fmt.Errorf("database not available")
+		}
+		cs := sqlite.NewChatService(webDB)
+		newChatID, err := cs.CreateChat("web", senderID, label)
+		if err != nil {
+			return "", fmt.Errorf("create fork session: %w", err)
+		}
+		// Bind a model for the new session (Balance tier fallback — model
+		// inheritance from the source session is a future enhancement; the
+		// user can switch the model in the new session after fork).
+		ag.LLMFactory().EnsureSessionModelBinding(senderID, newChatID, "web")
+		// Copy the source session's active conversation context (post-Replay
+		// messages + iteration_history) into the new session. Non-fatal on
+		// failure: the session is created regardless (empty if copy fails).
+		if err := ag.ForkSessionMessages(sourceChannel, sourceChatID, "web", newChatID); err != nil {
+			log.WithError(err).Warn("ChatFork: message copy failed (session created without history)")
+		}
+		return newChatID, nil
+	}
 	callbacks.LocalSessionExists = func(channel, chatID string) bool {
 		return channel == "cli" && cli.StoredSessionExists(chatID)
 	}

@@ -26,6 +26,7 @@ interface SessionGroupProps {
   onToggleStar: (id: string) => void
   onRename: (session: SessionInfo) => void
   onDelete: (session: SessionInfo) => void
+  onFork?: (session: SessionInfo) => void
   onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode props (passed through to SessionItem). */
   multiSelectMode?: boolean
@@ -47,6 +48,7 @@ export function SessionGroup({
   onToggleStar,
   onRename,
   onDelete,
+  onFork,
   onExport,
   multiSelectMode = false,
   selectedIds,
@@ -88,6 +90,7 @@ export function SessionGroup({
                 onToggleStar={onToggleStar}
                 onRename={onRename}
                 onDelete={onDelete}
+                onFork={onFork}
                 onExport={onExport}
                 multiSelectMode={multiSelectMode}
                 selected={selectedIds?.has(sessionKey(s)) ?? false}

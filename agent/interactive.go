@@ -938,6 +938,55 @@ func (a *Agent) SpawnInteractiveSession(
 		return nil, fmt.Errorf("clear interactive agent tenant session: %w", err)
 	}
 
+	// === SubAgent fork: inherit conversation context from a source session ===
+	// The fork reference (msg.Metadata["fork"]) is set by the SubAgent tool's
+	// "fork" parameter. Resolution + copy happen AFTER Clear() (fresh session)
+	// and BEFORE the task message is persisted, so the new session reads:
+	//   [forked history (source turn IDs preserved)] → [task turn].
+	// Anti-confusion contract: the sub-agent's system prompt gains an
+	// inherited-context note, the forked history sits between system and task,
+	// and the sub-agent keeps its OWN role identity.
+	if forkRef := msg.Metadata["fork"]; forkRef != "" {
+		srcSess, srcLabel, forkErr := a.resolveForkSourceSession(ctx, originChannel, originChatID, forkRef)
+		if forkErr != nil {
+			a.destroyInteractiveSession(key)
+			return nil, fmt.Errorf("fork %q: %w", forkRef, forkErr)
+		}
+		forked, forkErr := copyForkMessages(srcSess, agentTenantSession)
+		if forkErr != nil {
+			a.destroyInteractiveSession(key)
+			return nil, fmt.Errorf("fork %q: copy context: %w", forkRef, forkErr)
+		}
+		if len(forked) > 0 {
+			// Rearrange cfg.Messages: [system, forked..., task].
+			// buildSubAgentRunConfig set Messages = [system, user(task)].
+			if len(cfg.Messages) >= 2 {
+				sys := cfg.Messages[0]
+				task := cfg.Messages[len(cfg.Messages)-1]
+				sys.Content += forkContextNote(srcLabel, len(forked))
+				cfg.Messages = append(append([]llm.ChatMessage{sys}, forked...), task)
+			}
+			// Forked messages carry SOURCE turn IDs — re-assign this Run's
+			// turn after them so turn IDs stay monotonic (frontend grouping).
+			a.assignSubAgentTurnID(&cfg, agentTenantSession)
+			// Placeholder preview (CLI session viewer during Run) must include
+			// the forked history, not just the task message.
+			placeholder.mu.Lock()
+			if len(cfg.Messages) > 1 {
+				placeholder.messages = append([]llm.ChatMessage(nil), cfg.Messages[1:]...)
+			}
+			placeholder.mu.Unlock()
+			log.WithFields(log.Fields{
+				"key":           key,
+				"fork":          forkRef,
+				"source":        srcLabel,
+				"fork_messages": len(forked),
+			}).Info("SubAgent fork: copied source session context")
+		} else {
+			log.WithFields(log.Fields{"fork": forkRef, "source": srcLabel}).Info("SubAgent fork: source session empty, no context copied")
+		}
+	}
+
 	// Eager-save user message so get_history returns it during Run().
 	// Without this, the CLI shows "已加载 0 条历史消息" and the DB has no
 	// user message turn boundary. Run()'s incremental persistence skips
@@ -952,9 +1001,11 @@ func (a *Agent) SpawnInteractiveSession(
 		a.destroyInteractiveSession(key)
 		return nil, fmt.Errorf("append interactive agent user message: %w", err)
 	}
-	if len(cfg.Messages) > 1 && cfg.Messages[1].Role == "user" {
-		cfg.Messages[1].ID = historyID
-		cfg.Messages[1].TurnID = cfg.TurnID
+	// The task user message is the LAST entry in cfg.Messages (fork places
+	// forked history between system and task). Without fork it is at index 1.
+	if taskIdx := len(cfg.Messages) - 1; taskIdx > 0 && cfg.Messages[taskIdx].Role == "user" {
+		cfg.Messages[taskIdx].ID = historyID
+		cfg.Messages[taskIdx].TurnID = cfg.TurnID
 	}
 
 	// Wire CLI progress + stream callbacks for ALL sessions (foreground and background).
@@ -1280,9 +1331,12 @@ func (a *Agent) SpawnInteractiveSession(
 				newMsgs = make([]llm.ChatMessage, len(out.Messages))
 				copy(newMsgs, out.Messages)
 			} else {
-				// Normal case: include original user message + messages from Run
+				// Normal case: include the initial non-system messages (fork
+				// context + task user message) + messages from Run. With fork,
+				// cfg.Messages = [system, forked..., task] so [1:preLen] covers
+				// the full inherited prefix; without fork it is just [task].
 				if preLen > 1 {
-					newMsgs = append(newMsgs, cfg.Messages[1])
+					newMsgs = append(newMsgs, cfg.Messages[1:preLen]...)
 				}
 				if len(out.Messages) > preLen {
 					newMsgs = append(newMsgs, out.Messages[preLen:]...)
@@ -1427,10 +1481,12 @@ func (a *Agent) SpawnInteractiveSession(
 
 	// --- 阶段 4：替换占位符为完整 session 数据 ---
 	var newMessages []llm.ChatMessage
-	// Include the original user message (cfg.Messages[1]) so GetAgentSessionDump
-	// shows what the parent agent sent. cfg.Messages[0] is system prompt (stored separately).
+	// Include the initial non-system messages (fork context + task user message)
+	// so GetAgentSessionDump shows what the session started with. cfg.Messages[0]
+	// is the system prompt (stored separately). With fork, [1:preLen] covers the
+	// full inherited prefix; without fork it is just the task user message.
 	if preLen > 1 {
-		newMessages = append(newMessages, cfg.Messages[1])
+		newMessages = append(newMessages, cfg.Messages[1:preLen]...)
 	}
 	if len(out.Messages) > preLen {
 		newMessages = append(newMessages, out.Messages[preLen:]...)

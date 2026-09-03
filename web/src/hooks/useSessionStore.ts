@@ -92,6 +92,8 @@ export interface SessionStore {
   loadMore: () => Promise<void>
   toggleStar: (id: string) => void
   createSession: (label?: string, workPath?: string, model?: string, subscriptionId?: string) => Promise<string | null>
+  /** Fork: copy a session's conversation context into a new session. Returns new chatID or null. */
+  forkSession: (sourceChatID: string, sourceChannel?: string, label?: string) => Promise<string | null>
   switchSession: (id: string, channel: string) => Promise<void>
   /** Lightweight session activation (no cache clearing, no async wait).
    * Used when switching active tabs — each tab keeps its own state, so we
@@ -1208,6 +1210,41 @@ export function useSessionStoreImpl(): SessionStore {
     [refresh],
   )
 
+  const forkSession = useCallback(
+    async (sourceChatID: string, sourceChannel: string = DEFAULT_CHANNEL, label?: string): Promise<string | null> => {
+      try {
+        const data = await postAPI<{ chat_id: string }>('/api/chats/fork', {
+          source_channel: sourceChannel,
+          source_chat_id: sourceChatID,
+          label: label ?? '',
+        })
+        if (!data.chat_id) return null
+        const chatID = data.chat_id
+        const selector = { channel: DEFAULT_CHANNEL, chatID }
+        activeSessionRef.current = selector
+        setActiveSession(selector)
+        // Optimistic insert; refresh reconciles with the real label from DB.
+        setSessions((prev) => [
+          {
+            chatID,
+            channel: DEFAULT_CHANNEL,
+            label: label || `${chatID.slice(0, 12)}…`,
+            lastActive: new Date().toISOString(),
+            preview: '',
+            status: 'idle',
+            isCurrent: true,
+          },
+          ...prev.map((s) => ({ ...s, isCurrent: false })),
+        ])
+        void refresh()
+        return chatID
+      } catch {
+        return null
+      }
+    },
+    [refresh],
+  )
+
   const switchSession = useCallback(
     async (id: string, ch: string): Promise<void> => {
       const switchSeq = ++switchSeqRef.current
@@ -1595,6 +1632,7 @@ export function useSessionStoreImpl(): SessionStore {
     loadMore,
     toggleStar,
     createSession,
+    forkSession,
     switchSession,
     activateSession,
     renameSession,
@@ -1602,7 +1640,7 @@ export function useSessionStoreImpl(): SessionStore {
     reorderSessions,
     clearAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

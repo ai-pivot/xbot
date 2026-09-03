@@ -128,6 +128,7 @@ const en: Translations = {
     exportNative: 'xbot format (JSON)',
     exportOpenAI: 'OpenAI request format (JSON)',
     exportCodex: 'Codex JSONL format',
+    fork: 'Fork',
     exitMultiSelect: 'Exit Multi-select',
     justNow: 'just now',
     minutesAgo: '{{n}}m ago',

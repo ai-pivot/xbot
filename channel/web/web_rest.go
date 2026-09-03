@@ -547,6 +547,43 @@ func (wc *WebChannel) handleChatsCreatePOST(w http.ResponseWriter, r *http.Reque
 	wc.handleChats(w, r)
 }
 
+// handleChatsForkPOST forks an existing session into a NEW session: creates a
+// new chat, copies the source session's active message history + iteration
+// history, and returns the new chatID. The new session continues independently.
+func (wc *WebChannel) handleChatsForkPOST(w http.ResponseWriter, r *http.Request) {
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		SourceChannel string `json:"source_channel,omitempty"`
+		SourceChatID  string `json:"source_chat_id"`
+		Label         string `json:"label,omitempty"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.SourceChatID == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "source_chat_id is required")
+		return
+	}
+	if body.SourceChannel == "" {
+		body.SourceChannel = "web"
+	}
+	if wc.callbacks.ChatFork == nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, "fork not available")
+		return
+	}
+	newChatID, err := wc.callbacks.ChatFork(senderID, body.SourceChannel, body.SourceChatID, body.Label)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chat_id": newChatID, "channel": "web"})
+}
+
 func (wc *WebChannel) handleChatsReorderPOST(w http.ResponseWriter, r *http.Request) {
 	senderID := senderIDFromContext(r.Context())
 	if senderID == "" {

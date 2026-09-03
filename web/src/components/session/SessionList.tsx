@@ -54,6 +54,8 @@ interface SessionListProps {
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
   onDelete: (id: string, channel: string) => Promise<boolean>
+  /** Fork: copy session context into a new session. Returns new chatID or null. */
+  onFork?: (id: string, channel: string) => Promise<string | null>
   onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode props. */
   multiSelectMode?: boolean
@@ -82,6 +84,7 @@ export function SessionList({
   onToggleStar,
   onRename,
   onDelete,
+  onFork,
   onExport,
   multiSelectMode = false,
   selectedIds,
@@ -292,6 +295,14 @@ export function SessionList({
     setDelete(null)
   }
 
+  // Fork: copy the session's context into a new session. The store's
+  // forkSession handles optimistic insert + auto-switch to the new session,
+  // so no toast is needed — the user sees the new session appear and activate.
+  const handleFork = (session: SessionInfo) => {
+    if (!onFork) return
+    void onFork(session.chatID, session.channel || 'web')
+  }
+
   return (
     <div ref={scrollAreaRef} className={`flex h-full flex-col${isScrolling ? ' is-scrolling' : ''}`}>
       <ScrollArea className="min-h-0 flex-1">
@@ -310,6 +321,7 @@ export function SessionList({
                   onToggleStar={onToggleStar}
                   onRename={openRename}
                   onDelete={openDelete}
+                  onFork={handleFork}
                   onExport={onExport}
                   multiSelectMode={multiSelectMode}
                   selected={selectedIds?.has(sessionKey(s)) ?? false}
@@ -348,6 +360,7 @@ export function SessionList({
                 onToggleStar={onToggleStar}
                 onRename={openRename}
                 onDelete={openDelete}
+                onFork={handleFork}
                 onExport={onExport}
                 multiSelectMode={multiSelectMode}
                 selectedIds={selectedIds}

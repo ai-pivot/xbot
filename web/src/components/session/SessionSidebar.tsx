@@ -409,6 +409,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           onToggleStar={store.toggleStar}
           onRename={store.renameSession}
           onDelete={store.deleteSession}
+          onFork={async (id, channel) => store.forkSession(id, channel)}
           onExport={handleExport}
           onReorder={store.reorderSessions}
           multiSelectMode={multiSelectMode}
