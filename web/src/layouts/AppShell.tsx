@@ -40,7 +40,6 @@ registerBuiltinPanels()
 
 // SettingsDialog is only needed when the user opens settings — lazy-load it
 // so its code (form components, etc.) is not on the initial render path.
-const SWUpdateButton = lazy(() => import('@/components/SWUpdateButton').then(m => ({ default: m.SWUpdateButton })))
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 
@@ -276,9 +275,6 @@ export function AppShell() {
             <TopRail className="min-w-0 flex-1" />
             <InfoBar />
             <BottomRailBadges />
-            <Suspense fallback={null}>
-              <SWUpdateButton />
-            </Suspense>
             <button
               type="button"
               aria-label="打开设置"
