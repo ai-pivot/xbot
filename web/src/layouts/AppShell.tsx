@@ -136,15 +136,9 @@ export function AppShell() {
   const rightSidebarControl = useMemo(() => ({ openPanel }), [openPanel])
 
   // ── header 状态条数据 ──
-  const act = sessionStore.activeSession
 
 
   // 会话名：activeSession 只带 channel/chatID，label 从会话列表匹配。
-  const sessionLabel = useMemo(() => {
-    if (!act) return ''
-    const hit = sessionStore.sessions.find((s) => s.chatID === act.chatID && s.channel === act.channel)
-    return hit?.label || act.chatID
-  }, [sessionStore.sessions, act])
 
     // 布局 v4：插件面板已由 panelRegistry 统一渲染（view 贡献点自动注册，
   // 经 PanelDock/FloatingLayer 展示）——无需单独的 openTab 入口。
@@ -267,7 +261,6 @@ export function AppShell() {
               />
               <span className="text-text-muted">{ws.connected ? '已连接' : '连接中…'}</span>
             </span>
-            <span className="shrink-0 text-text-muted">{sessionLabel}</span>
             <SideChips />
             <TopRail className="min-w-0 flex-1" />
             <BottomRailBadges />
