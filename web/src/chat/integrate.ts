@@ -248,7 +248,7 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
   return {
     ...EMPTY_PROGRESS_SNAPSHOT,
     eventSeq: s.lastSeq !== null ? s.lastSeq : 0,
-    phase: d.streaming ? 'thinking' : 'tool_exec',
+    phase: d.progressPhase || (d.streaming ? 'thinking' : 'tool_exec'),
     iteration: d.iter,
     lastIter: d.iter,
     streamContent: d.content,

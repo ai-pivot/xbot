@@ -6,6 +6,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { deriveRows } from './derive'
+import { liveProgressFromState } from './integrate'
 import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
@@ -1574,5 +1575,73 @@ describe('REPRO: turn_started 丢失 + cron 同内容 echo —— activeTurn 兜
     // ②/③/④ 全不命中（activeTurn=null，无 pending）→ ③.5 误杀（不新增行）。
     expect(s1.pendingUsers).toHaveLength(0)
     expect(deriveRows(s1).filter((r) => r.kind === 'user')).toHaveLength(1) // 只有 1029 的 notif 行
+  })
+})
+
+// ─── REPRO: web 压缩提示永不渲染（progressPhase 三处断点，2026-09-03）──────────
+// 用户报告"web 端一直不渲染压缩提示"。后端链路是通的（runCompression 设置
+// Phase=PhaseCompressing → notifyProgress 推 structured 事件——Web 的 autoNotify
+// =true 因 no-op ProgressNotifier 非 nil），但前端 M4 三处断点：
+// ① normalize 的 iteration 事件丢 p.phase；② LiveSnapshot 无 progressPhase 字段
+//（types.ts:159 的 TurnPhase 是 turn 三态 live/frozen/committed，不是 progress
+// phase）；③ liveProgressFromState 硬编码 `d.streaming ? 'thinking' : 'tool_exec'`
+// → MessageList/AssistantMessage 的 `liveProgress?.phase === 'compressing'`
+// 永远 false（agent.compressing 提示永不渲染）。
+// 修复：phase 全链透传——normalize 携带 → reduce 写 LiveSnapshot.progressPhase
+// → liveProgressFromState 透传（派生仅作 fallback）。
+describe('REPRO: progressPhase 全链透传（web 压缩提示）', () => {
+  it("normalize: progress_structured(phase='compressing') → iteration 事件携带 phase", () => {
+    const evs = normalizeEvent(
+      {
+        type: 'progress_structured',
+        progress: {
+          phase: 'compressing',
+          turn_id: 5,
+          iteration: 1,
+          seq: 10,
+        },
+      },
+      'chat-1',
+    )
+    expect(evs).not.toBeNull()
+    const iter = evs!.find((e) => e.type === 'iteration')
+    expect(iter).toBeDefined()
+    expect((iter as { phase: string | undefined }).phase).toBe('compressing')
+  })
+
+  it("reduce + liveProgressFromState: iteration(phase='compressing') → liveProgress.phase='compressing'", () => {
+    // 后端真实链：turn_started → iteration(phase=compressing)。
+    const s = run([
+      { type: 'turn_started', turnID: T1, requestID: 'r1', trigger: 'user', content: '任务' },
+      {
+        type: 'iteration',
+        turnID: T1,
+        phase: 'compressing',
+        iter: iterNum(1),
+        seq: 10 as never,
+        content: undefined,
+        reasoning: undefined,
+        activeTools: [],
+        completedTools: [],
+        iterationsDelta: [],
+        todos: undefined,
+        subAgents: undefined,
+        tokenUsage: undefined,
+        streamStats: undefined,
+      } as never,
+    ])
+    // 修复前：liveProgressFromState 硬编码 thinking|tool_exec——'compressing'
+    // 永不出现 → MessageList 的提示条件永远 false。
+    const live = liveProgressFromState(s)
+    expect(live.phase).toBe('compressing')
+  })
+
+  it('对照组：无 phase 的 iteration 事件 → 派生 fallback（thinking）不回归', () => {
+    const s = run([
+      { type: 'turn_started', turnID: T1, requestID: 'r1', trigger: 'user', content: null },
+      iteration1(T1, '流式中'),
+    ])
+    const live = liveProgressFromState(s)
+    expect(live.phase).toBe('thinking') // streaming=true → thinking（旧派生保持）
   })
 })

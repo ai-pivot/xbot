@@ -345,6 +345,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const data: LiveSnapshot = {
         ...prev,
         iter: ev.iter,
+        // progressPhase（后端 structuredProgress.Phase 透传——'compressing' 等）：
+        // 事件携带时更新；undefined 保留 prev（同 LiveSnapshot 其他字段的覆盖
+        // 语义——phase 缺失不回退初始值）。这是 web 端压缩提示（agent.compressing
+        // 的 liveProgress?.phase === 'compressing'）的渲染数据源。
+        progressPhase: ev.phase !== undefined ? ev.phase : prev.progressPhase,
         // 迭代边界：清空流式字段（新迭代从零开始）；commit 同样清空（已进
         // iterations 权威版本）；非前进非 commit 则替换。
         content: advanced
