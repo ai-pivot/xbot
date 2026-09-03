@@ -217,15 +217,126 @@ func TestGetHistoryBeforeForDisplay_WindowEquivalence(t *testing.T) {
 			if gotTotal != wantTotal {
 				t.Fatalf("beforeID=%d limit=%d: total want %d, got %d", beforeID, limit, wantTotal, gotTotal)
 			}
-			if len(gotMsgs) != len(wantMsgs) {
+			// The windowed path may prepend ONE below-window compress marker
+			// (chat_F64D4096DA6F fix): when the tail bound lands after a
+			// compression point, the window fold cannot see the compress
+			// record and the marker is prepended after the tail-slice. The
+			// oracle (full fold + in-memory slice) also drops it — allow the
+			// single prepended marker row at the head of got.
+			gotBody := gotMsgs
+			if len(gotMsgs) == len(wantMsgs)+1 &&
+				len(gotMsgs) > 0 && strings.HasPrefix(gotMsgs[0].Content, "[Compacted context]") {
+				gotBody = gotMsgs[1:]
+			}
+			if len(gotBody) != len(wantMsgs) {
 				t.Fatalf("beforeID=%d limit=%d: len want %d, got %d", beforeID, limit, len(wantMsgs), len(gotMsgs))
 			}
 			for i := range wantMsgs {
-				if gotMsgs[i].ID != wantMsgs[i].ID || gotMsgs[i].Content != wantMsgs[i].Content {
+				if gotBody[i].ID != wantMsgs[i].ID || gotBody[i].Content != wantMsgs[i].Content {
 					t.Fatalf("beforeID=%d limit=%d: row %d want (id=%d %q), got (id=%d %q)",
-						beforeID, limit, i, wantMsgs[i].ID, wantMsgs[i].Content, gotMsgs[i].ID, gotMsgs[i].Content)
+						beforeID, limit, i, wantMsgs[i].ID, wantMsgs[i].Content, gotBody[i].ID, gotBody[i].Content)
 				}
 			}
 		}
+	}
+}
+
+// TestGetHistoryBeforeForDisplayBelowWindowMarker verifies that a compress
+// record sitting BELOW the display window boundary still surfaces its
+// [Compacted context] marker (prepended at the window top).
+//
+// Bug (chat_F64D4096DA6F, 2026-09-03): displayTailBoundQuery counts message
+// rows only — a compression point just below minID never enters
+// [minID, beforeID), so replayDisplayRecords cannot emit its marker and the
+// user sees an unmarked wall of messages ("消息列表全是连续的cron和回复，
+// 看不到 compacted context"). The fix prepends the newest below-window
+// marker after the tail-slice.
+func TestGetHistoryBeforeForDisplayBelowWindowMarker(t *testing.T) {
+	_, svc, tenantID := newHistoryTestService(t)
+
+	// Pre-compression messages.
+	svc.AppendMessage(tenantID, llm.NewUserMessage("old user 1"))
+	svc.AppendMessage(tenantID, llm.NewAssistantMessage("old answer 1"))
+
+	// Compress record.
+	if _, err := svc.AppendContextSnapshot(tenantID, HistoryRecordCompress, []llm.ChatMessage{
+		{Role: "user", Content: "[Compacted context]\n\nSummary"},
+		{Role: "user", Content: "This conversation was compacted."},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Post-compression messages: enough that the window (small limit) excludes
+	// the compress record entirely — window opens on an unmarked wall.
+	for i := 0; i < 6; i++ {
+		svc.AppendMessage(tenantID, llm.NewUserMessage("post user"))
+		svc.AppendMessage(tenantID, llm.NewAssistantMessage("post answer"))
+	}
+
+	// Window of 6: the compress record is far below minID.
+	msgs, _, err := svc.GetHistoryBeforeForDisplay(tenantID, 0, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 7 { // 1 prepended marker + 6 window rows
+		t.Fatalf("expected 7 rows (1 marker + 6 window), got %d: %+v", len(msgs), msgs)
+	}
+	if !strings.HasPrefix(msgs[0].Content, "[Compacted context]") {
+		t.Fatalf("window must open with the below-window compress marker, got %q", msgs[0].Content)
+	}
+	for i := 1; i < len(msgs); i++ {
+		if strings.HasPrefix(msgs[i].Content, "[Compacted context]") {
+			t.Fatalf("marker must appear exactly once, found duplicate at %d", i)
+		}
+	}
+
+	// Wide window (compress record inside): marker comes from the window fold
+	// — no prepend, exactly one marker, at its stream position (after the
+	// pre-compression messages).
+	wide, _, err := svc.GetHistoryBeforeForDisplay(tenantID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerCount := 0
+	markerIdx := -1
+	for i, m := range wide {
+		if strings.HasPrefix(m.Content, "[Compacted context]") {
+			markerCount++
+			markerIdx = i
+		}
+	}
+	if markerCount != 1 {
+		t.Fatalf("wide window must have exactly 1 marker, got %d", markerCount)
+	}
+	if markerIdx < 2 {
+		t.Fatalf("in-window marker must sit after the 2 pre-compression messages, got idx %d", markerIdx)
+	}
+
+	// loadMore (page 2, beforeID = oldest id of page 1): the compress record
+	// is inside the wider historical window — the fold emits the marker; the
+	// prepend query (id < minID of page 2) finds nothing NEW below — no
+	// duplicate. Page-1 already rendered the same marker: ids must match.
+	var oldestID int64
+	for _, m := range msgs {
+		if !strings.HasPrefix(m.Content, "[Compacted context]") {
+			oldestID = m.ID
+			break
+		}
+	}
+	if oldestID == 0 {
+		t.Fatal("page 1 must contain message rows")
+	}
+	page2, _, err := svc.GetHistoryBeforeForDisplay(tenantID, oldestID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page2Markers := 0
+	for _, m := range page2 {
+		if strings.HasPrefix(m.Content, "[Compacted context]") {
+			page2Markers++
+		}
+	}
+	if page2Markers != 1 {
+		t.Fatalf("page 2 must contain exactly 1 marker (in-window fold), got %d", page2Markers)
 	}
 }

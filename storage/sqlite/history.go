@@ -1020,6 +1020,19 @@ const displayMessageCountQuery = `SELECT COUNT(*) FROM session_messages
 const displayMarkerRecordsQuery = `SELECT COALESCE(record_data, '') FROM session_messages
 	WHERE tenant_id = ? AND record_type IN ('compress', 'prune') AND id < ?`
 
+// displayBelowWindowMarkerQuery finds the newest compress/prune record that
+// sits BELOW the display window's lower bound (id < minID). Its [Compacted
+// context] marker must be prepended to the window: the tail bound query counts
+// message rows only, so a compression point just below minID never enters the
+// window and replayDisplayRecords cannot emit its marker (user report
+// chat_F64D4096DA6F: "消息列表全是连续的cron和回复，看不到 compacted
+// context" — the compression happened 9 messages below the 30-row window
+// boundary). id < minID guarantees no duplicate with markers the window fold
+// already emitted.
+const displayBelowWindowMarkerQuery = `SELECT id, COALESCE(record_data, '') FROM session_messages
+	WHERE tenant_id = ? AND record_type IN ('compress', 'prune') AND id < ?
+	ORDER BY id DESC LIMIT 1`
+
 func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit int64) (*ReplayResult, int, error) {
 	// Normalize beforeID: 0 (unbounded) becomes MaxInt64 so every id matches.
 	if beforeID <= 0 {
@@ -1074,6 +1087,41 @@ func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit in
 	msgs := result.Messages
 	if limit > 0 && int64(len(msgs)) > limit {
 		msgs = msgs[int64(len(msgs))-limit:]
+	}
+
+	// 5. Prepend the newest compress marker BELOW the window boundary. The
+	// tail bound (step 1) counts message rows only — a compress record just
+	// below minID stays outside [minID, beforeID) and the window fold never
+	// emits its [Compacted context] marker. Without this the window opens on
+	// an unmarked wall of messages and the user cannot tell a compression
+	// happened below the visible window. The prepended marker answers
+	// "everything above this point was compacted" — exactly the boundary
+	// semantics of the in-window markers. Prepend AFTER the tail-slice so
+	// the marker row does not consume a limit slot.
+	if minID > 0 {
+		var markerID int64
+		var markerData string
+		err := queryer.QueryRow(displayBelowWindowMarkerQuery, tenantID, minID).Scan(&markerID, &markerData)
+		if err == nil && markerID > 0 {
+			var record HistoryRecord
+			record.Data = json.RawMessage(markerData)
+			var snapshot ContextSnapshot
+			if decodeHistoryData(record, &snapshot) == nil &&
+				snapshot.Messages != nil && snapshot.HistoryIDs != nil &&
+				len(snapshot.HistoryIDs) == len(snapshot.Messages) {
+				for i, msg := range snapshot.Messages {
+					if snapshot.HistoryIDs[i] == 0 &&
+						strings.HasPrefix(msg.Content, "[Compacted context]") {
+						msg.ID = markerID
+						msgs = append([]llm.ChatMessage{msg}, msgs...)
+						break // newest marker only — older ones surface on loadMore
+					}
+				}
+			}
+		} else if err != nil && err != sql.ErrNoRows {
+			// Non-fatal: a broken marker query must not take down history reads.
+			_ = err
+		}
 	}
 	result.Messages = msgs
 	return result, total, nil
