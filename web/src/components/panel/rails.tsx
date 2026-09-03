@@ -356,7 +356,7 @@ export function SideChips(): ReactNode {
     <div data-panel-zone="chip" data-testid="panel-chip-dock" className="flex flex-col">
       {/* 展开内容区——在 chip 行上方向上弹出（chip 行保持底部固定） */}
       {expandedChip ? (
-        <div className="mb-1 max-h-[240px] overflow-y-auto rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}>
+        <div className="mb-1 max-h-[240px] overflow-y-auto rounded-lg border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
               {dock.defs.find((d) => d.id === expandedChip)?.title ?? expandedChip}
@@ -394,7 +394,7 @@ export function SideChips(): ReactNode {
         </div>
       ) : null}
       <div
-        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto rounded-xl border px-1"
+        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto rounded-lg border px-1 bg-bg-elevated"
         style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
       >
         {ids.map((id) => {
@@ -432,7 +432,7 @@ export function SideChips(): ReactNode {
                 title={`钉选 ${def.title} 到侧栏`}
                 onClick={() => dock.pinPanel(id)}
                 className="absolute right-0.5 top-0.5 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
-                style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-muted)' }}
+                style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}
               >
                 <Pin className="size-2.5" />
               </button>
