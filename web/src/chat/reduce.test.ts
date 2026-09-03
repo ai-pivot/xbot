@@ -1913,3 +1913,45 @@ describe('REPRO: toRows legacy 前置 + loadMore 多批次多标记', () => {
     }
   })
 })
+
+// ─── REPRO: 旧形状标记（turnID>0）强制 legacy——不进 turn user 槽 ────────────
+// chat_F64D4096DA6F 04:10 DOM 铁证：同 db-1412774 两条 + data-turn-id=1759
+// （标记被关联到 turn 1759——userRowOf 路径 = M4 turn 1759 的 user 槽被标记
+// 占据 + anchoredLegacy 双渲染）。旧 API 形状（54bf1f1b 派生豁免部署前——
+// deriveTurnIDs Pass 1 把标记 turn_id 派生为后继 turn id）的标记 turnID>0
+// 进过 MessageStore slot(1759).user 与 M4 byTurn。修复：标记行强制 legacy
+// （不管 turnID）——绝不占 turn 的 user 槽（用户约束：一个 turn 只能一个
+// user 一个 assistant）。
+describe('REPRO: 旧形状标记（turnID>0）强制 legacy 不进 user 槽', () => {
+  const COMPACT = '[Compacted context]\n\n# Working State 测试'
+
+  it('标记 turnID=1759（旧 API 形状）→ 不进 turn 1759 user 槽 + 单条渲染', () => {
+    const store = new MessageStore()
+    // 旧形状：标记行 turnID=1759（54bf1f1b 前 Pass 1 派生的形状）。
+    store.mergeHistory([
+      { id: 'db-1412774', role: 'user' as const, content: COMPACT, iterations: [], timestamp: 't', isPartial: false, turnID: 1759, displayOnly: false, persisted: true, dbID: 1412774 },
+      { id: 'db-1412780', role: 'user' as const, content: '真实 user 1759', iterations: [], timestamp: 't', isPartial: false, turnID: 1759, displayOnly: false, persisted: true, dbID: 1412780 },
+      { id: 'db-1412781', role: 'assistant' as const, content: 'reply 1759', iterations: [], timestamp: 't', isPartial: false, turnID: 1759, displayOnly: false, persisted: true, dbID: 1412781 },
+    ], { replace: true })
+    const toRows = store.toRows()
+    // MessageStore 层：标记不进 slot(1759).user（真实 user 占据）。
+    const user1759 = toRows.find((m: { content?: string }) => m.content === '真实 user 1759')
+    expect(user1759, 'turn 1759 的真实 user 必须在（不被标记挤掉）').toBeDefined()
+    const markerInRows = toRows.filter((m: { content?: string }) => m.content === COMPACT)
+    expect(markerInRows, '标记恰好一条（legacy）').toHaveLength(1)
+    // M4 层：标记进 legacy（不进 byTurn）+ dbID 序锚 + 单条渲染。
+    const ev = historyToReplaced(toRows as never, null)
+    const s = reduce(initialChatState('chat-1'), ev)
+    const turn1759 = s.turns.get(turnID(1759))
+    expect(turn1759?.user?.content, 'M4 turn 1759 的 user 是真实 user（不被标记占据）').toBe('真实 user 1759')
+    const rows = deriveRows(s)
+    const out = rows.filter((r) => r.kind === 'user' || r.kind === 'committed') as { content: string }[]
+    const markers = out.filter((r) => r.content === COMPACT)
+    expect(markers, '标记单条渲染（无双条）').toHaveLength(1)
+    // 标记在 turn 1759 之前（dbID 1412774 < 1412780——锚=后继消息 turn 1759）。
+    const idxMarker = out.findIndex((r) => r.content === COMPACT)
+    const idxReal = out.findIndex((r) => r.content === '真实 user 1759')
+    expect(idxMarker).toBeGreaterThanOrEqual(0)
+    expect(idxMarker).toBeLessThan(idxReal)
+  })
+})

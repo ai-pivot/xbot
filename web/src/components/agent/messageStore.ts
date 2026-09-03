@@ -389,6 +389,16 @@ export class MessageStore {
       }
     }
     for (const row of rows) {
+      // [Compacted context] 标记行强制 legacy（不管 turnID）——chat_F64D4096DA6F
+      // 04:10 DOM 铁证：旧 API 形状（54bf1f1b 派生豁免部署前——Pass 1 把标记
+      // turn_id 派生为后继 turn id）的标记行 turnID>0 进过 slot(N).user——
+      // 挤掉真实 user 消息 + 与 anchoredLegacy 双渲染（同 dbID 两条 DOM）。
+      // 语义约束（用户：一个 turn 只能一个 user 一个 assistant）：标记是
+      // 压缩边界行，绝不占 turn 的 user 槽。任何层的旧形状在此拦截。
+      if (row.role === 'user' && typeof row.content === 'string' && row.content.trimStart().startsWith('[Compacted context]')) {
+        this.addLegacy(row)
+        continue
+      }
       if (row.turnID > 0) {
         let slot = this.slots.get(row.turnID)
         if (!slot) {

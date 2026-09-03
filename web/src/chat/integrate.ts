@@ -68,22 +68,29 @@ export function historyToReplaced(
     // - 无 dbID 的行（乐观/echo 副本）一律跳过 —— 渲染源是状态机
     // - 有 dbID 的行（DB 权威历史）放行进 turns/legacy
     if (m.dbID === undefined) continue
-    if (!m.turnID || m.turnID <= 0) {
+    // [Compacted context] 标记行强制走 legacy（不管 turnID）——chat_F64D4096DA6F
+    // 04:10 DOM 铁证：标记被关联 turn-id=1759（旧 API 形状——54bf1f1b 派生
+    // 豁免部署前 Pass 1 把标记 turn_id 派生为后继 turn 的 id）进过
+    // MessageStore 的 slot(1759).user 与 M4 byTurn 的 user 槽 → 与
+    // anchoredLegacy（dbID 序锚的正常路径）双渲染（同 db-1412774 两条 DOM）。
+    // 语义约束（用户：一个 turn 只能一个 user 一个 assistant）：标记是
+    // 压缩边界行，绝不占 turn 的 user 槽（挤掉真实 user 消息）。任何层
+    // 的旧形状（turnID>0 的标记）在此拦截——强制 legacy + dbID 序锚。
+    const isCompactMarker =
+      m.role === 'user' &&
+      typeof m.content === 'string' &&
+      m.content.trimStart().startsWith('[Compacted context]')
+    if (!m.turnID || m.turnID <= 0 || isCompactMarker) {
       legacy.push({
         id: m.id,
-        role: m.role === 'user' ? 'user' : 'assistant',
+        role: 'user',
         content: m.content,
         iterations: m.iterations,
         timestamp: m.timestamp,
         dbID: m.dbID,
         // 压缩行位置锚：dbID 序的逐标记锚（压缩点后第一条消息的 turnID）。
         // undefined（无后继 turn，或普通无 turn 行）→ 前缀段（旧行为）。
-        anchorTurnID:
-          m.role === 'user' &&
-          typeof m.content === 'string' &&
-          m.content.trimStart().startsWith('[Compacted context]')
-            ? compactAnchor.get(m.dbID) || undefined
-            : undefined,
+        anchorTurnID: isCompactMarker ? compactAnchor.get(m.dbID) || undefined : undefined,
       })
       continue
     }
