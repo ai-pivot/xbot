@@ -579,8 +579,7 @@
 /* 卡片圆角统一（uiux-shadcn §4 Card radius lg=8px）
  * dockview group 卡片 + PanelDock 面板（rounded-lg=8px）——视觉一致 */
 .dv-groupview {
-  border-radius: 8px;
-  overflow: hidden;
+  /* 全局直角扁平化——统一无圆角 */
 }
 
 /* ── Dockview theme override — follow app light/dark palette ────────────────
