@@ -1955,3 +1955,72 @@ describe('REPRO: 旧形状标记（turnID>0）强制 legacy 不进 user 槽', ()
     expect(idxMarker).toBeLessThan(idxReal)
   })
 })
+
+// ─── REPRO: 3 压缩点 × loadMore 多批次 × 旧形状（turnID>0 标记）完整链 ──────
+// 用户报告（chat_F64D4096DA6F 04:17）："它直接覆盖渲染在正常 msg 上。
+// 重复了七八个"（DB 实际 3 个压缩点：1399628/1406215/1412774）。完整链
+// 验证：初始批次 + loadMore 批次（各含压缩点标记，含旧形状 turnID>0）
+// → MessageStore → toRows → historyToReplaced → deriveRows——3 个标记
+// 各自压缩点位置、不覆盖 user、总数恰 3（不重复）。
+describe('REPRO: 3 压缩点 loadMore 完整链（旧形状标记不覆盖不重复）', () => {
+  const COMPACT = (n: number) => `[Compacted context]\n\n# Working State 压缩 ${n}`
+  const mkUser = (turn: number, dbID: number, c: string) => ({ id: `db-${dbID}`, role: 'user' as const, content: c, iterations: [], timestamp: 't', isPartial: false, turnID: turn, displayOnly: false, persisted: true, dbID })
+  const mkAsst = (turn: number, dbID: number, c: string) => ({ id: `db-${dbID}`, role: 'assistant' as const, content: c, iterations: [], timestamp: 't', isPartial: false, turnID: turn, displayOnly: false, persisted: true, dbID })
+  // 旧形状标记（54bf1f1b 部署前的 API——turnID 派生为后继 turn）
+  const mkMarkerOld = (turn: number, dbID: number, n: number) => ({ id: `db-${dbID}`, role: 'user' as const, content: COMPACT(n), iterations: [], timestamp: 't', isPartial: false, turnID: turn, displayOnly: false, persisted: true, dbID })
+
+  it('3 标记各自位置、user 不被覆盖、总数恰 3（不重复）', () => {
+    const store = new MessageStore()
+    // 初始批次（最近）：turn 1750+ 消息 + 标记 3（1412774——含旧形状 turnID=1759）
+    store.mergeHistory([
+      mkUser(1750, 1412700, 'user 1750'), mkAsst(1750, 1412701, 'reply 1750'),
+      mkMarkerOld(1759, 1412774, 3),
+      mkUser(1759, 1412780, 'user 1759'), mkAsst(1759, 1412781, 'reply 1759'),
+      mkUser(1760, 1412900, 'user 1760'), mkAsst(1760, 1412901, 'reply 1760'),
+    ], { replace: true })
+    // loadMore 批次 1（更早）：标记 2（1406215 旧形状）+ turn 1700-1710
+    store.mergeHistory([
+      mkMarkerOld(1710, 1406215, 2),
+      mkUser(1710, 1406216, 'user 1710'), mkAsst(1710, 1406217, 'reply 1710'),
+      mkUser(1700, 1406000, 'user 1700'), mkAsst(1700, 1406001, 'reply 1700'),
+    ])
+    // loadMore 批次 2（最早）：标记 1（1399628 旧形状）+ turn 1600-1650
+    store.mergeHistory([
+      mkMarkerOld(1650, 1399628, 1),
+      mkUser(1650, 1399630, 'user 1650'), mkAsst(1650, 1399631, 'reply 1650'),
+      mkUser(1600, 1399000, 'user 1600'), mkAsst(1600, 1399001, 'reply 1600'),
+    ])
+
+    const toRows = store.toRows()
+    // MessageStore 层：标记不进 slot（强制 addLegacy）——真实 user 不被覆盖。
+    const user1759 = toRows.find((m: { content?: string }) => m.content === 'user 1759')
+    expect(user1759, 'turn 1759 的真实 user 在（标记不覆盖）').toBeDefined()
+    // 完整链：M4 → deriveRows。
+    const ev = historyToReplaced(toRows as never, null)
+    const s = reduce(initialChatState('chat-1'), ev)
+    // M4 层：3 个 turn 的 user 都是真实 user（不被标记覆盖）。
+    for (const turn of [1750, 1759, 1760, 1710, 1700, 1650, 1600]) {
+      const t = s.turns.get(turnID(turn))
+      expect(t?.user?.content, `turn ${turn} 的 user 是真实 user`).toContain(`user ${turn}`)
+    }
+    const rows = deriveRows(s)
+    const out = rows.filter((r) => r.kind === 'user' || r.kind === 'committed') as { content: string }[]
+    // 标记总数恰 3（不重复——旧形状 turnID>0 不产生双路径）。
+    for (const n of [1, 2, 3]) {
+      const markers = out.filter((r) => r.content === COMPACT(n))
+      expect(markers, `标记 ${n} 恰一条`).toHaveLength(1)
+    }
+    // 各自位置：标记 N 插在压缩点之后第一条消息（锚 turn）的 user 之前、
+    // 前一个 turn 的 reply 之后（deriveRows 的 anchoredLegacy 按
+    // anchorTurnID <= t.id 插入——turn 的 user 之前）。
+    const idx = (needle: string) => out.findIndex((r) => r.content === needle)
+    const iM1 = idx(COMPACT(1)), iM2 = idx(COMPACT(2)), iM3 = idx(COMPACT(3))
+    expect(iM1).toBeGreaterThanOrEqual(0)
+    expect(iM1).toBeGreaterThan(idx('reply 1600')) // 标记 1 在 reply 1600 之后
+    expect(iM1).toBeLessThan(idx('user 1650'))     // 且在 user 1650（锚）之前
+    expect(iM2).toBeGreaterThan(idx('reply 1700')) // 标记 2 在 reply 1700 之后
+    expect(iM2).toBeLessThan(idx('user 1710'))     // 且在 user 1710（锚）之前
+    expect(iM3).toBeGreaterThan(idx('reply 1750')) // 标记 3 在 reply 1750 之后
+    expect(iM3).toBeLessThan(idx('user 1759'))     // 且在 user 1759（锚）之前
+  })
+})

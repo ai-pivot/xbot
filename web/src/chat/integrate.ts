@@ -39,6 +39,10 @@ export function historyToReplaced(
   // 条消息——DB 行 id 单调递增 = append-only 流顺序）。
   const compactAnchor = new Map<number, number>()
   {
+    const isMarkerRow = (m: { role?: string; content?: unknown }) =>
+      m.role === 'user' &&
+      typeof m.content === 'string' &&
+      m.content.trimStart().startsWith('[Compacted context]')
     const sorted = messages
       .filter((m) => m.dbID !== undefined && m.dbID > 0)
       .sort((a, b) => (a.dbID as number) - (b.dbID as number))
@@ -46,16 +50,16 @@ export function historyToReplaced(
     for (let i = sorted.length - 1; i >= 0; i--) {
       const m = sorted[i]
       if (m.role === 'system') continue
-      if (typeof m.turnID === 'number' && m.turnID > 0) {
-        nextTurn = m.turnID
+      // ⚠️ 标记行（不管 turnID 新旧形状——旧 API 形状 turnID>0）必须进
+      // compactAnchor 且【不更新 nextTurn】（标记不是 turn 消息）。否则旧
+      // 形状标记被 turnID>0 分支跳过 → 无锚 → 前缀段顶部（chat_F64D4096DA6F
+      // 04:17"覆盖渲染在正常 msg 上 + 重复七八个"的根因之一）。
+      if (isMarkerRow(m)) {
+        compactAnchor.set(m.dbID as number, nextTurn) // 0 = 无后继 turn → 前缀段
         continue
       }
-      if (
-        m.role === 'user' &&
-        typeof m.content === 'string' &&
-        m.content.trimStart().startsWith('[Compacted context]')
-      ) {
-        compactAnchor.set(m.dbID as number, nextTurn) // 0 = 无后继 turn（全部历史压缩）→ 前缀段
+      if (typeof m.turnID === 'number' && m.turnID > 0) {
+        nextTurn = m.turnID
       }
     }
   }
