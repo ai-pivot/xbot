@@ -230,7 +230,10 @@ export function AppShell() {
       {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}
       <AmbienceBackground />
       {/* Left sidebar — 布局 v4 面板坞（docked 面板堆叠，折叠由 header ☰ 控制） */}
-      {!sidebarCollapsed && (
+      
+
+      <div className="flex min-h-0 flex-1">
+{!sidebarCollapsed && (
         <div
           className="relative flex h-full shrink-0 flex-col overflow-hidden"
           style={{ width: leftWidth, borderRight: '1px solid var(--border)' }}
@@ -245,8 +248,6 @@ export function AppShell() {
           />
         </div>
       )}
-
-      <div className="flex min-h-0 flex-1">
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative flex h-full min-w-0 flex-1 flex-col">
