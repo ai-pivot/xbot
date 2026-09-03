@@ -343,6 +343,13 @@ export class MessageStore {
 
   /** 无 turnID 的 persisted 行（legacy）→ 顶部。 */
   addLegacy(msg: ChatMessage): void {
+    // Dedup by id（chat_F64D4096DA6F 04:25 DOM 铁证：同 db-1412774 四条
+    // DOM 同 data-index——MessageStore.legacy 被 loadMore/poll 的多轮
+    // mergeHistory 累积推入同 id 标记行，toRows 输出多条 → M4 legacy 多条
+    // → React 同 key 多行）。noExactDups 按 id 过滤了 fetch 批次间的重复，
+    // 但 reload（replace 清空后重建）与 loadMore（增量 addLegacy）交替、
+    // 以及任何未来路径的同 id 行都必须在这里兜底：legacy 永远单条。
+    if (msg.id && this.legacy.some((l) => l.id === msg.id)) return
     this.legacy.push(msg)
     this.bumpCommitted()
     this.invalidate()
