@@ -1798,18 +1798,18 @@ describe('REPRO: 多压缩标记各自压缩点（loadMore 多批场景）', () 
     const rows = [
       { id: 'db-1', role: 'user', content: 'user 100', iterations: [], timestamp: 't', isPartial: false, turnID: 100, displayOnly: false, persisted: true, dbID: 1 },
       { id: 'db-2', role: 'assistant', content: 'reply 100', iterations: [], timestamp: 't', isPartial: false, turnID: 100, displayOnly: false, persisted: true, dbID: 2 },
-      // 标记 1（09-01 压缩点——后继 turn 101）
-      { id: 'db-c1', role: 'user', content: COMPACT(1), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 100 },
-      { id: 'db-3', role: 'user', content: 'user 101', iterations: [], timestamp: 't', isPartial: false, turnID: 101, displayOnly: false, persisted: true, dbID: 3 },
-      { id: 'db-4', role: 'assistant', content: 'reply 101', iterations: [], timestamp: 't', isPartial: false, turnID: 101, displayOnly: false, persisted: true, dbID: 4 },
-      // 标记 2（09-02 压缩点——后继 turn 102）
-      { id: 'db-c2', role: 'user', content: COMPACT(2), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 200 },
-      { id: 'db-5', role: 'user', content: 'user 102', iterations: [], timestamp: 't', isPartial: false, turnID: 102, displayOnly: false, persisted: true, dbID: 5 },
-      { id: 'db-6', role: 'assistant', content: 'reply 102', iterations: [], timestamp: 't', isPartial: false, turnID: 102, displayOnly: false, persisted: true, dbID: 6 },
-      // 标记 3（09-03 压缩点——后继 turn 103）
-      { id: 'db-c3', role: 'user', content: COMPACT(3), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 300 },
-      { id: 'db-7', role: 'user', content: 'user 103', iterations: [], timestamp: 't', isPartial: false, turnID: 103, displayOnly: false, persisted: true, dbID: 7 },
-      { id: 'db-8', role: 'assistant', content: 'reply 103', iterations: [], timestamp: 't', isPartial: false, turnID: 103, displayOnly: false, persisted: true, dbID: 8 },
+      // 标记 1（压缩点——dbID 夹在前后消息之间：2 < c1 < 3）
+      { id: 'db-c1', role: 'user', content: COMPACT(1), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 3 },
+      { id: 'db-3', role: 'user', content: 'user 101', iterations: [], timestamp: 't', isPartial: false, turnID: 101, displayOnly: false, persisted: true, dbID: 4 },
+      { id: 'db-4', role: 'assistant', content: 'reply 101', iterations: [], timestamp: 't', isPartial: false, turnID: 101, displayOnly: false, persisted: true, dbID: 5 },
+      // 标记 2（dbID 夹在 4 与 5 之间）
+      { id: 'db-c2', role: 'user', content: COMPACT(2), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 6 },
+      { id: 'db-5', role: 'user', content: 'user 102', iterations: [], timestamp: 't', isPartial: false, turnID: 102, displayOnly: false, persisted: true, dbID: 7 },
+      { id: 'db-6', role: 'assistant', content: 'reply 102', iterations: [], timestamp: 't', isPartial: false, turnID: 102, displayOnly: false, persisted: true, dbID: 8 },
+      // 标记 3（dbID 夹在 6 与 7 之间）
+      { id: 'db-c3', role: 'user', content: COMPACT(3), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 9 },
+      { id: 'db-7', role: 'user', content: 'user 103', iterations: [], timestamp: 't', isPartial: false, turnID: 103, displayOnly: false, persisted: true, dbID: 10 },
+      { id: 'db-8', role: 'assistant', content: 'reply 103', iterations: [], timestamp: 't', isPartial: false, turnID: 103, displayOnly: false, persisted: true, dbID: 11 },
     ] as never[]
     const ev = historyToReplaced(rows, null)
     const s = reduce(initialChatState('chat-1'), ev)
@@ -1829,5 +1829,87 @@ describe('REPRO: 多压缩标记各自压缩点（loadMore 多批场景）', () 
     // 不堆叠：三条标记互不相邻（各自间隔一条消息段）。
     expect(iC2 - iC1).toBeGreaterThanOrEqual(2)
     expect(iC3 - iC2).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// ─── REPRO: toRows legacy 前置下的多标记锚 + loadMore 批次不重复 ─────────────
+// 用户报告（chat_F64D4096DA6F，04:00）："往上加载历史都是重复的，而且
+// [Compacted context] 还是永远在顶上"。根因：chat.messages 来自
+// MessageStore.toRows()——legacy 行前置在数组最前 + turnIDs 升序——所有标记
+// 的"数组后继"都是同一条（最旧 turn）→ anchor 全部=最旧 turn → deriveRows
+// 全部插在已加载消息顶部。修复：dbID 序锚（压缩记录 id 的 DB 时间顺序）。
+// 本测试走真实链：MessageStore.mergeHistory（初始 replace + loadMore 增量）
+// → toRows（legacy 前置扭曲顺序）→ historyToReplaced → deriveRows。
+describe('REPRO: toRows legacy 前置 + loadMore 多批次多标记', () => {
+  const COMPACT = (n: number) => `[Compacted context]\n\n# Working State 压缩 ${n}`
+  const mkUser = (turn: number, dbID: number, content: string) => ({
+    id: `db-${dbID}`, role: 'user' as const, content, iterations: [], timestamp: 't',
+    isPartial: false, turnID: turn, displayOnly: false, persisted: true, dbID,
+  })
+  const mkAsst = (turn: number, dbID: number, content: string) => ({
+    id: `db-${dbID}`, role: 'assistant' as const, content, iterations: [], timestamp: 't',
+    isPartial: false, turnID: turn, displayOnly: false, persisted: true, dbID,
+  })
+
+  it('dbID 序锚：多标记各自压缩点（不被 toRows 的 legacy 前置扭曲）+ 批次合并无重复', () => {
+    const store = new MessageStore()
+    // 初始加载（replace——最近批次）：turn 1700-1720（dbID > 标记 B）。
+    store.mergeHistory([
+      mkUser(1700, 1412780, 'user 1700'),
+      mkAsst(1700, 1412781, 'reply 1700'),
+      mkUser(1710, 1415000, 'user 1710'),
+      mkAsst(1710, 1415001, 'reply 1710'),
+      mkUser(1720, 1420000, 'user 1720'),
+      mkAsst(1720, 1420001, 'reply 1720'),
+    ], { replace: true })
+    // loadMore 批次 1（增量）：标记 B（压缩点 dbID=1412774）+ 更早消息
+    //（标记 dbID 落在消息 dbID 序中间——1640/1650 的 dbID < 标记 B）。
+    store.mergeHistory([
+      mkUser(1650, 1406220, 'user 1650'),
+      mkAsst(1650, 1406221, 'reply 1650'),
+      // 标记 B（turn_id=0——API 派生豁免后保持）
+      { id: 'db-1412774', role: 'user' as const, content: COMPACT(2), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 1412774 },
+      mkUser(1700, 1412780, 'user 1700'), // 同 dbID（批次边界重叠——去重后单条）
+      mkAsst(1700, 1412781, 'reply 1700'),
+    ])
+    // loadMore 批次 2（增量）：标记 C（更早压缩点 dbID=1406215）+ turn 1640。
+    store.mergeHistory([
+      mkUser(1640, 1406000, 'user 1640'),
+      mkAsst(1640, 1406001, 'reply 1640'),
+      // 标记 C
+      { id: 'db-1406215', role: 'user' as const, content: COMPACT(1), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 1406215 },
+      mkUser(1650, 1406220, 'user 1650'), // 同 dbID 重叠
+      mkAsst(1650, 1406221, 'reply 1650'),
+    ])
+
+    const toRows = store.toRows()
+    // toRows 的 legacy 前置：标记 B、C 在数组最前（顺序扭曲——dbID 序修复的
+    // 前提）。断言 toRows 结构（legacy 前 + turns 升序）。
+    expect(toRows[0]?.content).toBe(COMPACT(2)) // legacy 前置（push 顺序）
+    // 完整链：historyToReplaced → M4 → deriveRows。
+    const ev = historyToReplaced(toRows as never, null)
+    const s = reduce(initialChatState('chat-1'), ev)
+    const rows = deriveRows(s)
+    const out = rows.filter((r) => r.kind === 'user' || r.kind === 'committed') as { kind: string; content: string; turnID: number }[]
+
+    // 期望渲染序（dbID 序锚——标记在各自压缩点）：
+    // 1640 → 标记C → 1650 → 标记B → 1700 → 1710 → 1720。
+    const idx = (needle: string) => out.findIndex((r) => r.content === needle)
+    const i1640 = idx('user 1640'), iC = idx(COMPACT(1))
+    const i1650 = idx('user 1650'), iB = idx(COMPACT(2))
+    const i1700 = idx('user 1700'), i1720 = idx('user 1720')
+    expect(i1640).toBeGreaterThanOrEqual(0)
+    expect(iC).toBeGreaterThan(i1640)          // 标记 C 在 1640 之后（压缩点后）
+    expect(iC).toBeLessThan(i1650)             // 且在 1650 之前
+    expect(iB).toBeGreaterThan(i1650)           // 标记 B 在 1650 之后
+    expect(iB).toBeLessThan(i1700)             // 且在 1700 之前
+    expect(i1700).toBeGreaterThan(iB)
+    expect(i1720).toBeGreaterThan(i1700)
+
+    // 不重复：每个 turn 的 user/assistant 恰一条 + 标记各一条。
+    const contents = out.map((r) => r.content)
+    for (const needle of ['user 1640', 'reply 1640', 'user 1650', 'reply 1650', 'user 1700', 'reply 1700', 'user 1710', 'reply 1710', 'user 1720', 'reply 1720', COMPACT(1), COMPACT(2)]) {
+      expect(contents.filter((c) => c === needle), `${needle} 恰一次`).toHaveLength(1)
+    }
   })
 })

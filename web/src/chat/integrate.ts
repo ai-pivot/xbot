@@ -28,22 +28,24 @@ export function historyToReplaced(
   const legacy: LegacyRow[] = []
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
 
-  // 预扫描：为每条 [Compacted context] 标记计算位置锚——它后面第一条
-  // turnID>0 消息的 turnID（= 该压缩点之后的第一条消息）。
-  // ⚠️ 不能统一用 firstIncomingTurnID（全局最小 turnID）：loadMore 多批
-  // 加载后窗口最小 turnID 随翻页变小，所有标记的锚都变成同一个值 →
-  // 全部堆叠在列表最顶部（用户报告："所有上下文已压缩都渲染在最顶上，
-  // 整整三条，并且我们会动态加载内容所以几乎看不到"——chat_F64D4096DA6F
-  // 三次压缩的标记本应各自插在 09-01/09-02/09-03 的压缩点位置）。
-  // 每条标记锚定自己的后继消息：标记行在 display 流中的位置 = 压缩记录
-  // 的流位置（replayDisplayRecords 按记录顺序注入 / storage prepend 在
-  // 窗口顶部），其后第一条 turnID>0 的消息就是压缩点后的第一条消息。
+  // 预扫描：为每条 [Compacted context] 标记计算位置锚——按 dbID 序（DB 时间
+  // 顺序），不依赖 messages 数组顺序。
+  // ⚠️ 数组顺序不可用（chat_F64D4096DA6F 04:00 用户报告"标记永远在顶上"）：
+  // chat.messages 来自 MessageStore.toRows()——legacy 行前置在数组最前 +
+  // turnIDs 升序——所有标记的"数组后继"都是同一条（最旧 turn）→ anchor
+  // 全部=最旧 turn → deriveRows 全部插在已加载消息顶部 → loadMore 越往上
+  // 加载标记越往上跑（"永远在顶上"）。dbID 序（压缩记录 id）才是压缩点的
+  // 真实时间位置：标记的后继 = dbID 大于它的第一条消息（压缩点之后的第一
+  // 条消息——DB 行 id 单调递增 = append-only 流顺序）。
   const compactAnchor = new Map<number, number>()
   {
+    const sorted = messages
+      .filter((m) => m.dbID !== undefined && m.dbID > 0)
+      .sort((a, b) => (a.dbID as number) - (b.dbID as number))
     let nextTurn = 0
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i]
-      if (m.role === 'system' || m.dbID === undefined) continue
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const m = sorted[i]
+      if (m.role === 'system') continue
       if (typeof m.turnID === 'number' && m.turnID > 0) {
         nextTurn = m.turnID
         continue
@@ -53,7 +55,7 @@ export function historyToReplaced(
         typeof m.content === 'string' &&
         m.content.trimStart().startsWith('[Compacted context]')
       ) {
-        compactAnchor.set(m.dbID, nextTurn) // 0 = 无后继 turn（全部历史压缩）→ 前缀段
+        compactAnchor.set(m.dbID as number, nextTurn) // 0 = 无后继 turn（全部历史压缩）→ 前缀段
       }
     }
   }
@@ -74,7 +76,7 @@ export function historyToReplaced(
         iterations: m.iterations,
         timestamp: m.timestamp,
         dbID: m.dbID,
-        // 压缩行位置锚：预扫描的逐标记锚（后继第一条消息的 turnID）。
+        // 压缩行位置锚：dbID 序的逐标记锚（压缩点后第一条消息的 turnID）。
         // undefined（无后继 turn，或普通无 turn 行）→ 前缀段（旧行为）。
         anchorTurnID:
           m.role === 'user' &&
