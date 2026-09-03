@@ -195,6 +195,7 @@ const zhCN = {
     sending: '发送中…',
     queued: '排队中 — 等待当前轮次完成…',
     compressing: '正在压缩上下文…',
+    compacted: '上下文已压缩',
     iterations: '迭代历史',
     tools: '工具',
     iteration: '迭代',

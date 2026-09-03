@@ -133,6 +133,16 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	if !cfg.DisableWebSearch {
 		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	}
+	// Agent-initiated compaction (config agent.allow_self_compact, default
+	// off): registers compact_context so the LLM can trigger a context
+	// compression itself (Codex CLI parity — the model observes context pressure
+	// and requests the handover; the engine runs the same runCompression path as
+	// the token-threshold trigger). Unregistered when off: the model never sees
+	// the tool.
+	if cfg.Agent.AllowSelfCompact {
+		ag.RegisterCoreTool(&tools.CompactContextTool{})
+		ag.RegisterTool(&tools.CompactContextTool{})
+	}
 
 	// 全局 tool 黑名单：覆盖在 agent.New 之后注册的 tool（DownloadFileTool /
 	// WebSearchTool），initStores 里已对内置 tool 应用过一次。

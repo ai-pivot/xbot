@@ -343,6 +343,15 @@ type AgentConfig struct {
 	// Experimental features
 	Experimental ExperimentalConfig `json:"experimental,omitempty"`
 
+	// AllowSelfCompact registers the compact_context tool for the agent (config
+	// agent.allow_self_compact, default false — opt-in). The tool lets the LLM
+	// trigger a context compression itself (same runCompression path as the
+	// token-threshold auto-compaction) when it judges the context too large or
+	// a task phase completed. Codex CLI parity: compaction is agent-observable
+	// there ("Context automatically compacted" in-session); here it is a
+	// deliberate tool call gated by this switch.
+	AllowSelfCompact bool `json:"allow_self_compact,omitempty"`
+
 	LLMRetryAttempts int      `json:"llm_retry_attempts"`
 	LLMRetryDelay    Duration `json:"llm_retry_delay"`
 	LLMRetryMaxDelay Duration `json:"llm_retry_max_delay"`

@@ -198,6 +198,7 @@ const en: Translations = {
     sending: 'Sending…',
     queued: 'Queued — waiting for the current turn to finish…',
     compressing: 'Compressing context…',
+    compacted: 'Context compacted',
     iterations: 'Iterations',
     tools: 'tools',
     iteration: 'Iteration',

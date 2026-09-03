@@ -104,6 +104,13 @@ type runState struct {
 	// consecutive no-progress compressions. Auto-compression is disabled for the
 	// REST OF THIS RUN (runState is per-Run; the next turn retries once).
 	compressAbandoned bool
+	// selfCompactRequested: set by the compact_context tool result (agent-
+	// initiated compaction — config agent.allow_self_compact, default off).
+	// maybeCompress ORs it into needCompress so the compression runs before the
+	// next LLM call (same runCompression path as the threshold trigger). It
+	// still respects compressAbandoned — a fused Run must not re-enter the
+	// compression loop because the agent asked nicely.
+	selfCompactRequested bool
 	// lastCompressTriggerTokens is the REAL API prompt_tokens at the moment the
 	// previous compression was triggered (same measurement on both sides of the
 	// comparison — no estimate/API mixing).
@@ -1402,7 +1409,29 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	if s.cfg.ContextManagerConfig != nil && s.cfg.ContextManagerConfig.CompressionThreshold > 0 {
 		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
 	}
-	needCompress := !s.compressAbandoned && len(s.messages) > 3 && shouldCompact(int(totalTokens), promptBudget, compressThreshold) && (s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
+	needCompress := !s.compressAbandoned && len(s.messages) > 3 &&
+		(shouldCompact(int(totalTokens), promptBudget, compressThreshold) || s.selfCompactRequested) &&
+		(s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5 || s.selfCompactRequested)
+
+	// Agent-initiated (compact_context tool): consume the request flag when the
+	// compression actually runs — a fused Run (compressAbandoned) or an
+	// otherwise-skipped iteration must not re-fire it on every subsequent
+	// maybeCompress check. The 5-iteration cooldown is bypassed for an explicit
+	// agent request (the model asked NOW), but the abandoned guard above still
+	// applies (a fused Run never re-enters the loop).
+	// Turn-end semantics (Codex new_context parity: `should_roll_over =
+	// needs_follow_up && take_request() || token_limit` — a request on the
+	// FINAL iteration is dropped when the turn ends): selfCompactRequested
+	// lives on runState (per-Run). A request made on the last iteration (no
+	// further LLM call → maybeCompress never runs again) dies with the Run —
+	// the flag does NOT leak into the next turn. Same discard behavior.
+	if s.selfCompactRequested && needCompress {
+		s.selfCompactRequested = false
+	} else if s.selfCompactRequested {
+		// The request cannot be honored (abandoned / mode=none / too few
+		// messages) — clear the flag so it does not fire later unexpectedly.
+		s.selfCompactRequested = false
+	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
 		"total_tokens":       totalTokens,
@@ -2138,6 +2167,17 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 
 		if r.result != nil && r.result.WaitingUser {
 			s.setWaitingUser(r.result.Summary, r.result.Metadata)
+		}
+
+		// Agent-initiated compaction (compact_context tool, config
+		// agent.allow_self_compact): the tool's CompactRequested flag makes the
+		// next maybeCompress (start of the next iteration, before the LLM call)
+		// run the compression regardless of the token threshold — the model
+		// judged the context too large or a phase completed. Same WaitingUser
+		// pattern: a control field consumed by the engine loop, never serialized
+		// into the LLM context.
+		if r.result != nil && r.result.CompactRequested {
+			s.selfCompactRequested = true
 		}
 
 		toolMsg := llm.NewToolMessage(tc.Name, tc.ID, tc.Arguments, content)

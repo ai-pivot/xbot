@@ -288,12 +288,18 @@ type SubAgentManager interface {
 
 // ToolResult 工具执行结果
 type ToolResult struct {
-	Summary     string            `json:"summary,omitempty"` // 精简结果，log用
-	Detail      string            `json:"detail,omitempty"`  // 详细内容
-	Tips        string            `json:"tips,omitempty"`    // 操作指引，帮助 LLM 理解下一步操作
-	WaitingUser bool              `json:"-"`                 // 控制字段：是否等待用户响应（不进入 LLM 上下文）
-	IsError     bool              `json:"-"`                 // 控制字段：工具本身执行成功但底层操作失败（如 shell 非零退出码），影响进度图标
-	Metadata    map[string]string `json:"-"`                 // 额外元数据，传递到 OutboundMessage.Metadata
+	Summary     string `json:"summary,omitempty"` // 精简结果，log用
+	Detail      string `json:"detail,omitempty"`  // 详细内容
+	Tips        string `json:"tips,omitempty"`    // 操作指引，帮助 LLM 理解下一步操作
+	WaitingUser bool   `json:"-"`                 // 控制字段：是否等待用户响应（不进入 LLM 上下文）
+	IsError     bool   `json:"-"`                 // 控制字段：工具本身执行成功但底层操作失败（如 shell 非零退出码），影响进度图标
+	// CompactRequested: control field — the compact_context tool sets this so the
+	// engine triggers a context compression before the next LLM call (same path
+	// as maybeCompress's threshold trigger, but agent-initiated: the model judged
+	// the context too large / a phase completed and wants the handover now).
+	// Registered ONLY when config agent.allow_self_compact is enabled.
+	CompactRequested bool              `json:"-"`
+	Metadata         map[string]string `json:"-"` // 额外元数据，传递到 OutboundMessage.Metadata
 }
 
 // NewResult 创建 Summary == Detail 的简单结果
