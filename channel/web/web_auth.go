@@ -403,8 +403,12 @@ func (wc *WebChannel) validateSession(r *http.Request) *sessionInfo {
 // authMiddleware wraps a handler with session validation
 func (wc *WebChannel) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Uploads enforce their own 10MB limit in handleFileUpload.
-		if r.Method != http.MethodGet && r.URL.Path != "/api/files/upload" {
+		// Uploads enforce their own limits in their handlers:
+		// /api/files/upload (10MB) and /api/plugin-files/upload (no limit —
+		// plugin/wallpaper upload; handler reads multipart to disk, no
+		// body cap). Both must bypass the 1MB middleware limit — wallpaper
+		// and plugin files routinely exceed 1MB.
+		if r.Method != http.MethodGet && r.URL.Path != "/api/files/upload" && r.URL.Path != "/api/plugin-files/upload" {
 			r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		}
 		si := wc.validateSession(r)
