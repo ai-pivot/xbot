@@ -156,6 +156,9 @@
   --bg-primary: var(--bg-primary-src);
   --bg-secondary: var(--bg-secondary-src);
   --bg-tertiary: var(--bg-tertiary-src);
+  /* 不透明抬升面：系统 UI（设置面板/状态栏/InfoBar）——glass 只覆盖
+   * --bg-primary/secondary/tertiary（alpha 化），-src 变量不被触碰。 */
+  --bg-elevated: var(--bg-secondary-src);
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
@@ -363,6 +366,7 @@
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
+  --color-bg-elevated: var(--bg-elevated);
   --color-foreground-3: var(--foreground-3);
   --color-success: var(--success);
   --color-warning: var(--warning);

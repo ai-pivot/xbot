@@ -122,7 +122,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         // 面板（订阅卡片 + 模型网格 + 4 按钮工具行），720px - w-36 导航 = 576px
         // 内容区才够一行放下 header；表单类 tab 是 flex 自适应单列布局，
         // 加宽无副作用。max-w-full 兜底小屏。
-        className="flex h-full w-[720px] max-w-full flex-col gap-0 rounded-l-2xl border-l border-border p-0 shadow-2xl sm:max-w-[720px]"
+        className="flex h-full w-[720px] max-w-full flex-col gap-0 rounded-l-2xl border-l border-border bg-bg-elevated p-0 shadow-2xl sm:max-w-[720px]"
       >
         <SheetHeader className="border-b border-border px-5 py-4">
           <SheetTitle>{t('settings.title')}</SheetTitle>

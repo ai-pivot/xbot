@@ -117,7 +117,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     const railRow = main!.children[2]
     // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
     expect(topHeader.className).toContain('items-center')
-    expect(topHeader.className).toContain('bg-bg-secondary')
+    expect(topHeader.className).toContain('bg-bg-elevated')
     // Dockview host fills the REMAINING space (flex-1 min-h-0), not
     // h-full w-full — h-full would overflow since the rail row consumed height.
     expect(dockview.className).toContain('flex-1')

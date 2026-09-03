@@ -252,7 +252,7 @@ export function AppShell() {
           {/* 布局 v5 header：左 ☰ + 连接点 + 会话名（shrink-0 刚性）/
               TopRail（min-w-0 flex-1，插件徽章溢出由 rail 内部收纳，绝不推挤
               内置元素）/ 右 上下文环 + ⚙（shrink-0 刚性）。header 常驻渲染。 */}
-          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-3 py-2 text-xs">
+          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-elevated px-3 py-2 text-xs">
             {/* 左：侧栏折叠 + 连接状态 + 会话名 */}
             <button
               type="button"
