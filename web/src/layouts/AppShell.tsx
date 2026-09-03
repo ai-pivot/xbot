@@ -321,7 +321,7 @@ export function AppShell() {
           {/* Bottom rail 行：左 InfoBar（min-w-0 flex-1；InfoBar 常驻渲染/固定
               高度的既有约定保留）+ 竖分隔线 + 右 BottomRailBadges（引擎路，
               最后接线）。整行 shrink-0 固定高度，不随内容跳动。 */}
-          <div className="flex min-w-0 shrink-0 items-stretch border-t border-border">
+          <div className="flex min-w-0 shrink-0 items-stretch border-t border-border bg-bg-elevated">
             <div className="min-w-0 flex-1">
               <InfoBar />
             </div>

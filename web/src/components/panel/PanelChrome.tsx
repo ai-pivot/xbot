@@ -149,10 +149,10 @@ export function PanelChrome({
       {...(!floating ? { 'data-dock-item': id } : {})}
       className={
         floating
-          ? 'absolute flex flex-col overflow-hidden rounded-xl'
+          ? 'absolute flex flex-col overflow-hidden rounded-lg'
           // v5 规格 9：docked section overflow-hidden——flex 收缩时 body 溢出
           // 叠到相邻面板（重叠 corner case）。
-          : 'relative flex min-h-0 flex-col overflow-hidden rounded-xl'
+          : 'relative flex min-h-0 flex-col overflow-hidden rounded-lg'
       }
       style={shellStyle}
     >
