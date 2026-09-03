@@ -156,9 +156,10 @@
   --bg-primary: var(--bg-primary-src);
   --bg-secondary: var(--bg-secondary-src);
   --bg-tertiary: var(--bg-tertiary-src);
-  /* 不透明抬升面：系统 UI（设置面板/状态栏/InfoBar）——glass 只覆盖
-   * --bg-primary/secondary/tertiary（alpha 化），-src 变量不被触碰。 */
-  --bg-elevated: var(--bg-secondary-src);
+  /* 不透明抬升面：系统 UI（底栏/设置面板/InfoBar）——跟随 --bg-secondary
+   * （glass 时与其他系统 UI 同步半透明，保持视觉一致）；glass off 时两者
+   * 同为 --bg-secondary-src 原色。 */
+  --bg-elevated: var(--bg-secondary);
   --border: #e0e0e0;
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
