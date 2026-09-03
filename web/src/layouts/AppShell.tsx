@@ -9,7 +9,7 @@
  * 「会话|面板」segmented 已删——面板开 tab 的 dockview 入口一并移除（panel
  * 布局 v5：原 header 中列「模型 pill + think pill」删除（将来由居中插件实现），
  * 改嵌引擎路 TopRail（min-w-0 flex-1，插件徽章只在 rail 内排布，绝不推挤内置
- * 元素）；底部状态栏行 = InfoBar（min-w-0 flex-1）+ 竖分隔线 + BottomRailBadges。
+ * 元素）；底部状态栏行 = SWUpdateButton + BottomRailBadges + 设置。
  * header（☰ + 连接点 + 会话名 / TopRail / 上下文环 + ⚙）承担折叠与设置入口。
  */
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -20,7 +20,6 @@ import { TopRail, BottomRailBadges, SideChips } from '@/components/panel/rails'
 import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
-import { InfoBar } from '@/plugins/InfoBar'
 import { AmbienceBackground } from '@/ambience/AmbienceRoot'
 import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
@@ -40,6 +39,7 @@ registerBuiltinPanels()
 
 // SettingsDialog is only needed when the user opens settings — lazy-load it
 // so its code (form components, etc.) is not on the initial render path.
+const SWUpdateButton = lazy(() => import('@/components/SWUpdateButton').then(m => ({ default: m.SWUpdateButton })))
 const SettingsDialog = lazy(() =>
   import('@/components/settings/SettingsDialog').then(m => ({ default: m.SettingsDialog })))
 
@@ -250,9 +250,6 @@ export function AppShell() {
               TopRail（min-w-0 flex-1，插件徽章溢出由 rail 内部收纳，绝不推挤
               内置元素）/ 右 上下文环 + ⚙（shrink-0 刚性）。header 常驻渲染。 */}
           <DockviewContainer tabManager={tabManager} />
-          {/* Bottom rail 行：左 InfoBar（min-w-0 flex-1；InfoBar 常驻渲染/固定
-              高度的既有约定保留）+ 竖分隔线 + 右 BottomRailBadges（引擎路，
-              最后接线）。整行 shrink-0 固定高度，不随内容跳动。 */}
                   </main>
       </RightSidebarControlContext.Provider>
       </div>
@@ -273,8 +270,10 @@ export function AppShell() {
             <span className="shrink-0 text-text-muted">{sessionLabel}</span>
             <SideChips />
             <TopRail className="min-w-0 flex-1" />
-            <InfoBar />
             <BottomRailBadges />
+            <Suspense fallback={null}>
+              <SWUpdateButton />
+            </Suspense>
             <button
               type="button"
               aria-label="打开设置"
