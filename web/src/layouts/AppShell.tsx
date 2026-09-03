@@ -252,7 +252,11 @@ export function AppShell() {
           {/* 布局 v5 header：左 ☰ + 连接点 + 会话名（shrink-0 刚性）/
               TopRail（min-w-0 flex-1，插件徽章溢出由 rail 内部收纳，绝不推挤
               内置元素）/ 右 上下文环 + ⚙（shrink-0 刚性）。header 常驻渲染。 */}
-          <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border bg-bg-elevated px-3 py-2 text-xs">
+          <DockviewContainer tabManager={tabManager} />
+          {/* Bottom rail 行：左 InfoBar（min-w-0 flex-1；InfoBar 常驻渲染/固定
+              高度的既有约定保留）+ 竖分隔线 + 右 BottomRailBadges（引擎路，
+              最后接线）。整行 shrink-0 固定高度，不随内容跳动。 */}
+          <div className="flex h-8 min-w-0 shrink-0 items-center gap-2 border-t border-border bg-bg-elevated px-2 text-xs">
             {/* 左：侧栏折叠 + 连接状态 + 会话名 */}
             <button
               type="button"
@@ -282,23 +286,24 @@ export function AppShell() {
               {sessionLabel}
             </span>
             <TopRail className="min-w-0 flex-1" />
-            {/* 右：上下文环（usage_percent）+ 设置齿轮 */}
+            {/* InfoBar */}
+            <div className="min-w-0 flex-1 max-w-[400px]">
+              <InfoBar />
+            </div>
+            <div aria-hidden className="w-px shrink-0 bg-border" />
+            <BottomRailBadges />
+            {/* 右：上下文环 + 设置齿轮 */}
             <span
               className="flex shrink-0 items-center"
               title={ctxUsage?.max_context_tokens
                 ? `上下文 ${ctxUsage.prompt_tokens.toLocaleString()} / ${ctxUsage.max_context_tokens.toLocaleString()} tokens`
                 : '上下文用量'}
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" role="img" aria-label="上下文用量">
+              <svg width="14" height="14" viewBox="0 0 16 16" role="img" aria-label="上下文用量">
                 <circle cx="8" cy="8" r="6" fill="none" stroke="var(--border)" strokeWidth="2" />
                 {ctxUsage?.usage_percent != null && (
                   <circle
-                    cx="8"
-                    cy="8"
-                    r="6"
-                    fill="none"
-                    stroke="var(--accent)"
-                    strokeWidth="2"
+                    cx="8" cy="8" r="6" fill="none" stroke="var(--accent)" strokeWidth="2"
                     strokeLinecap="round"
                     strokeDasharray={`${(Math.max(0, Math.min(100, ctxUsage.usage_percent)) / 100) * 2 * Math.PI * 6} ${2 * Math.PI * 6}`}
                     transform="rotate(-90 8 8)"
@@ -311,22 +316,11 @@ export function AppShell() {
               aria-label="打开设置"
               title="设置"
               onClick={() => setSettingsOpen(true)}
-              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
+              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-teriary"
               style={{ color: 'var(--text-secondary)' }}
             >
               <Settings className="size-3.5" />
             </button>
-          </header>
-          <DockviewContainer tabManager={tabManager} />
-          {/* Bottom rail 行：左 InfoBar（min-w-0 flex-1；InfoBar 常驻渲染/固定
-              高度的既有约定保留）+ 竖分隔线 + 右 BottomRailBadges（引擎路，
-              最后接线）。整行 shrink-0 固定高度，不随内容跳动。 */}
-          <div className="flex min-w-0 shrink-0 items-stretch border-t border-border bg-bg-elevated">
-            <div className="min-w-0 flex-1">
-              <InfoBar />
-            </div>
-            <div aria-hidden className="w-px shrink-0 bg-border" />
-            <BottomRailBadges />
           </div>
         </main>
       </RightSidebarControlContext.Provider>

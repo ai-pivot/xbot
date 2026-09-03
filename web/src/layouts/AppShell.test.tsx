@@ -111,13 +111,13 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // Order: children[0] = header, children[1] = dockview host,
     // children[2] = bottom rail row (InfoBar + separator; BottomRailBadges
     // wired later — status-bar style at the BOTTOM, VSCode-like).
-    expect(main!.children.length).toBeGreaterThanOrEqual(3)
-    const topHeader = main!.children[0]
-    const dockview = main!.children[1]
-    const railRow = main!.children[2]
+    expect(main!.children.length).toBeGreaterThanOrEqual(2)
+    const dockview = main!.children[0]
+    const railRow = main!.children[1]
+    // railRow 已上面赋值
     // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
-    expect(topHeader.className).toContain('items-center')
-    expect(topHeader.className).toContain('bg-bg-elevated')
+    // header 已删——功能统一到底栏
+    expect(dockview.className).toContain('flex-1')
     // Dockview host fills the REMAINING space (flex-1 min-h-0), not
     // h-full w-full — h-full would overflow since the rail row consumed height.
     expect(dockview.className).toContain('flex-1')
@@ -130,7 +130,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // InfoBar stays INSIDE the rail row with its fixed-height strip (the
     // always-rendered gotcha is untouched): height = 1.5rem + bottom
     // safe-area inset, top border (sits below the workspace).
-    const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
+    const infoBarEl = railRow.querySelector('[class*="border-t"]') as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
     expect(infoBarEl.style.paddingBottom).toBe('var(--safe-area-bottom)')
     expect(infoBarEl.className).toContain('border-t')
@@ -148,8 +148,8 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main!.className).toContain('flex-col')
     // The info bar is ALWAYS rendered as a fixed-height strip (inside the
     // bottom rail row), even with no plugin content — it never pops in/out.
-    const railRow = main!.children[2]
-    const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
+    const railRow = main!.children[1] as HTMLElement
+    const infoBarEl = railRow.querySelector('[class*="border-t"]') as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })
 
