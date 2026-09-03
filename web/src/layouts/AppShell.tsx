@@ -249,7 +249,7 @@ export function AppShell() {
       </div>
 
       {/* 全局底栏：连接状态 + chips + TopRail + InfoBar + Badges + SW 更新 + 设置 */}
-      <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-t border-border bg-bg-elevated px-2 text-xs">
+      <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-t border-border px-2 text-xs" style={{ background: 'var(--bg-secondary-src)' }}>
             {/* 左：连接状态（VS Code 远程连接风格：色点+文本，含会话名） */}
             <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={ws.connected ? '已连接' : '连接中…'}>
               <span
