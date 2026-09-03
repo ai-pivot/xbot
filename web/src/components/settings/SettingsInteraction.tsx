@@ -47,14 +47,14 @@ export function SettingsInteraction() {
           className={cn(
             'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             mergeTools
-              ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
+              ? 'border-accent/40 bg-accent/14'
               : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              mergeTools ? 'bg-[#6c8cff]' : 'bg-bg-hover',
+              mergeTools ? 'bg-accent' : 'bg-bg-hover',
             )}
           >
             <span
@@ -84,14 +84,14 @@ export function SettingsInteraction() {
           className={cn(
             'flex items-center gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
             wordWrap
-              ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
+              ? 'border-accent/40 bg-accent/14'
               : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
           )}
         >
           <span
             className={cn(
               'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-              wordWrap ? 'bg-[#6c8cff]' : 'bg-bg-hover',
+              wordWrap ? 'bg-accent' : 'bg-bg-hover',
             )}
           >
             <span
@@ -126,17 +126,17 @@ export function SettingsInteraction() {
                 className={cn(
                   'flex items-start gap-3 rounded-lg border px-3 py-2 text-left transition-colors',
                   active
-                    ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14'
+                    ? 'border-accent/40 bg-accent/14'
                     : 'border-border bg-bg-secondary hover:bg-bg-tertiary',
                 )}
               >
                 <span
                   className={cn(
                     'mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border',
-                    active ? 'border-[#6c8cff]' : 'border-border',
+                    active ? 'border-accent' : 'border-border',
                   )}
                 >
-                  {active ? <span className="size-2 rounded-full bg-[#6c8cff]" /> : null}
+                  {active ? <span className="size-2 rounded-full bg-accent" /> : null}
                 </span>
                 <span className="flex flex-col gap-0.5">
                   <span className="text-sm font-medium text-text-primary">

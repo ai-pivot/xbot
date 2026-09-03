@@ -252,7 +252,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
               onChange={function(e) { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = '' }} />
           </label>
           <button onClick={function() { setEditSub(null); setFormOpen(true) }}
-            className="flex h-8 items-center gap-1 rounded-lg bg-[#6c8cff]/14 px-2.5 text-[12px] font-semibold text-[#6c8cff] transition-colors hover:bg-[#6c8cff]/25">
+            className="flex h-8 items-center gap-1 rounded-lg bg-accent/14 px-2.5 text-[12px] font-semibold text-accent transition-colors hover:bg-accent/25">
             <LlmIcon n="plus" s={13} c="currentColor" />添加订阅
           </button>
         </div>

@@ -160,11 +160,16 @@
   --text-primary: #1e1e1e;
   --text-secondary: #6b6b6b;
   --text-muted: #999999;
+  --foreground-3: #bbbbbb;
 
   --status-running: #3388bb;
   --status-waiting: #e6a700;
   --status-idle: #6b6b6b;
   --status-error: #d1242f;
+  --success: #059669;
+  --warning: #d97706;
+
+  --border-strong: #cccccc;
 
   --editor-bg: #ffffff;
   --editor-gutter: #f0f0f0;
@@ -247,8 +252,9 @@
 
 /* Dark theme — <html class="dark"> */
 .dark {
-  --accent: #3388bb;
-  --accent-hover: #4499cc;
+  /* 深色 accent 提亮一档（uiux-shadcn §2.4：dark 模式 accent 提亮保对比）*/
+  --accent: #4499cc;
+  --accent-hover: #55aae0;
   --accent-foreground: #ffffff;
 
   /* dark 主题只覆盖 src 原色（glass 的 color-mix 引用 var(--bg-*-src) 经 CSS
@@ -260,11 +266,16 @@
   --text-primary: #cccccc;
   --text-secondary: #858585;
   --text-muted: #6b6b6b;
+  --foreground-3: #4f4f4f;
 
   --status-running: #3388bb;
   --status-waiting: #e6a700;
   --status-idle: #858585;
   --status-error: #f48771;
+  --success: #34d399;
+  --warning: #fbbf24;
+
+  --border-strong: #555555;
 
   --editor-bg: #1e1e1e;
   --editor-gutter: #1e1e1e;
@@ -352,6 +363,9 @@
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);
+  --color-foreground-3: var(--foreground-3);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);

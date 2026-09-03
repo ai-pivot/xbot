@@ -74,7 +74,7 @@ export function SettingsAppearance() {
                 className={cn(
                   'rounded-lg border px-3 py-1.5 text-xs transition-colors',
                   active
-                    ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
+                    ? 'border-accent/40 bg-accent/14 text-accent'
                     : 'border-border bg-bg-secondary text-text-muted hover:bg-bg-tertiary hover:text-text-primary',
                 )}
               >
@@ -142,7 +142,7 @@ export function SettingsAppearance() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
               }}
-              className="max-w-[180px] rounded-lg border-border bg-bg-secondary font-mono focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+              className="max-w-[180px] rounded-lg border-border bg-bg-secondary font-mono focus-visible:border-accent/40 focus-visible:ring-accent/25"
               placeholder={DEFAULT_ACCENT_COLOR}
             />
           </div>

@@ -70,7 +70,7 @@ export function SettingsAbout() {
 
         {/* Install button (Chrome/Edge) */}
         {!isInstalled && canInstall && (
-          <Button type="button" variant="default" onClick={() => install()} className="w-fit gap-2 bg-[#6c8cff]/14 text-[#6c8cff] hover:bg-[#6c8cff]/25">
+          <Button type="button" variant="default" onClick={() => install()} className="w-fit gap-2 bg-accent/14 text-accent hover:bg-accent/25">
             <Download className="size-4" />
             安装应用
           </Button>
@@ -135,7 +135,7 @@ export function SettingsAbout() {
             className={cn(
               'w-fit gap-2',
               updateAvailable
-                ? 'bg-[#6c8cff]/14 text-[#6c8cff] hover:bg-[#6c8cff]/25'
+                ? 'bg-accent/14 text-accent hover:bg-accent/25'
                 : 'border-border bg-bg-tertiary hover:bg-bg-hover',
             )}
           >
