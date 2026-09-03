@@ -111,9 +111,9 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // Order: children[0] = header, children[1] = dockview host,
     // children[2] = bottom rail row (InfoBar + separator; BottomRailBadges
     // wired later — status-bar style at the BOTTOM, VSCode-like).
-    expect(main!.children.length).toBeGreaterThanOrEqual(2)
+    expect(main!.children.length).toBeGreaterThanOrEqual(1)
     const dockview = main!.children[0]
-    const railRow = main!.children[1]
+    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center.gap-2.border-t') as HTMLElement
     // railRow 已上面赋值
     // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
     // header 已删——功能统一到底栏
@@ -148,7 +148,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     expect(main!.className).toContain('flex-col')
     // The info bar is ALWAYS rendered as a fixed-height strip (inside the
     // bottom rail row), even with no plugin content — it never pops in/out.
-    const railRow = main!.children[1] as HTMLElement
+    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center.gap-2.border-t') as HTMLElement as HTMLElement
     const infoBarEl = railRow.querySelector('[class*="border-t"]') as HTMLElement
     expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
   })

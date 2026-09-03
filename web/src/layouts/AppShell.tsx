@@ -226,7 +226,7 @@ export function AppShell() {
     <PanelDockProvider tabManager={tabManager}>
       {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
           MobileAppShell (100dvh/height:100% stop at the safe area there). */}
-      <div className="fixed inset-0 flex overflow-hidden bg-bg-primary text-text-primary">
+      <div className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary">
       {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}
       <AmbienceBackground />
       {/* Left sidebar — 布局 v4 面板坞（docked 面板堆叠，折叠由 header ☰ 控制） */}
@@ -246,6 +246,7 @@ export function AppShell() {
         </div>
       )}
 
+      <div className="flex min-h-0 flex-1">
       <RightSidebarControlContext.Provider value={rightSidebarControl}>
         {/* Workspace — always present (Agent tab lives here). */}
         <main className="relative flex h-full min-w-0 flex-1 flex-col">
@@ -256,7 +257,12 @@ export function AppShell() {
           {/* Bottom rail 行：左 InfoBar（min-w-0 flex-1；InfoBar 常驻渲染/固定
               高度的既有约定保留）+ 竖分隔线 + 右 BottomRailBadges（引擎路，
               最后接线）。整行 shrink-0 固定高度，不随内容跳动。 */}
-          <div className="flex h-8 min-w-0 shrink-0 items-center gap-2 border-t border-border bg-bg-elevated px-2 text-xs">
+                  </main>
+      </RightSidebarControlContext.Provider>
+      </div>
+
+      {/* 全局底栏：横跨全宽（sidebar + workspace 下方），高度 h-10（与原 chip 栏一致） */}
+      <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="flex h-10 min-w-0 shrink-0 items-center gap-2 border-t border-border bg-bg-elevated px-2 text-xs">
             {/* 左：侧栏折叠 + 连接状态 + 会话名 */}
             <button
               type="button"
@@ -323,7 +329,6 @@ export function AppShell() {
               <Settings className="size-3.5" />
             </button>
           </div>
-        </main>
       </RightSidebarControlContext.Provider>
 
       {/* Floating panel layer — 窗口内浮层（根容器内 absolute inset-0，非 body portal），
