@@ -36,7 +36,7 @@ import {
   migrateV2Layout,
   parsePanelLayoutV2,
 } from './PanelLayout'
-import { TopRail } from './rails'
+import { SideChips, TopRail } from './rails'
 
 // radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
 class ROStub {
@@ -97,6 +97,7 @@ function renderShell(): ReturnType<typeof renderWithProviders> {
       <div style={{ position: 'relative', width: 1000, height: 800 }}>
         <PanelDock />
         <TopRail className="max-w-[300px]" />
+        <SideChips />
         <FloatingLayer />
       </div>
     </PanelDockProvider>,

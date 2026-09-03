@@ -64,7 +64,6 @@ import type {
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import type { TabManager } from '@/hooks/useTabManager'
 import { PanelChrome } from './PanelChrome'
-import { SideChips } from './rails'
 
 const LS_KEY_V2 = 'xbot:panel-layout-v2'
 const LS_KEY_V1 = 'xbot:panel-layout'
@@ -1025,7 +1024,6 @@ export function PanelDock(): ReactNode {
           </div>
         ) : null}
       </div>
-      <SideChips />
     </div>
   )
 }

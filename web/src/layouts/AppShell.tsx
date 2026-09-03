@@ -16,7 +16,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Loader2, PanelLeft, Settings } from 'lucide-react'
 
 import { PanelDockProvider, PanelDock, FloatingLayer } from '@/components/panel/PanelLayout'
-import { TopRail, BottomRailBadges } from '@/components/panel/rails'
+import { TopRail, BottomRailBadges, SideChips } from '@/components/panel/rails'
 import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
@@ -285,6 +285,7 @@ export function AppShell() {
             >
               {sessionLabel}
             </span>
+            <SideChips />
             <TopRail className="min-w-0 flex-1" />
             {/* InfoBar */}
             <div className="min-w-0 flex-1 max-w-[400px]">

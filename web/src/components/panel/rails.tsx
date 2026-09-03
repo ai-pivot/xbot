@@ -353,10 +353,10 @@ export function SideChips(): ReactNode {
   const zoneActive = dock.activeZone === 'chip'
   const [expandedChip, setExpandedChip] = useState<string | null>(null)
   return (
-    <div data-panel-zone="chip" data-testid="panel-chip-dock" className="flex flex-col">
+    <div data-panel-zone="chip" data-testid="panel-chip-dock" className="relative flex items-center">
       {/* 展开内容区——在 chip 行上方向上弹出（chip 行保持底部固定） */}
       {expandedChip ? (
-        <div className="mb-0 max-h-[240px] overflow-y-auto rounded-none border p-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}>
+        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-[240px] w-64 overflow-y-auto rounded-none border p-2 bg-bg-elevated shadow-lg" style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}>
           <div className="mb-1 flex items-center justify-between">
             <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
               {dock.defs.find((d) => d.id === expandedChip)?.title ?? expandedChip}
@@ -394,7 +394,7 @@ export function SideChips(): ReactNode {
         </div>
       ) : null}
       <div
-        className="flex h-10 shrink-0 items-center gap-1 overflow-x-auto rounded-none border px-1 bg-bg-elevated"
+        className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto px-0.5"
         style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
       >
         {ids.map((id) => {
