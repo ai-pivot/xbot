@@ -28,18 +28,32 @@ export function historyToReplaced(
   const legacy: LegacyRow[] = []
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
 
-  // 预扫描：incoming 消息的最小 turnID（首个 turn）。压缩行（[Compacted
-  // context]）的位置锚用它——压缩行是 active（压缩后上下文）的第一条，
-  // 它的时间位置 = 压缩发生点 = 首个 tail turn 之前、旧消息之后。deriveRows
-  // 按"turnID < anchor 的 turns 之后"插入压缩行（chat_F64D4096DA6F 报告
-  // "压缩了但和没压缩一样"——压缩行渲染在 legacy 前缀段 = 1700 条消息的
-  // 顶部，用户永远看不到）。
-  let firstIncomingTurnID: number | undefined
-  for (const m of messages) {
-    if (m.role === 'system' || m.dbID === undefined) continue
-    if (typeof m.turnID === 'number' && m.turnID > 0) {
-      if (firstIncomingTurnID === undefined || m.turnID < firstIncomingTurnID) {
-        firstIncomingTurnID = m.turnID
+  // 预扫描：为每条 [Compacted context] 标记计算位置锚——它后面第一条
+  // turnID>0 消息的 turnID（= 该压缩点之后的第一条消息）。
+  // ⚠️ 不能统一用 firstIncomingTurnID（全局最小 turnID）：loadMore 多批
+  // 加载后窗口最小 turnID 随翻页变小，所有标记的锚都变成同一个值 →
+  // 全部堆叠在列表最顶部（用户报告："所有上下文已压缩都渲染在最顶上，
+  // 整整三条，并且我们会动态加载内容所以几乎看不到"——chat_F64D4096DA6F
+  // 三次压缩的标记本应各自插在 09-01/09-02/09-03 的压缩点位置）。
+  // 每条标记锚定自己的后继消息：标记行在 display 流中的位置 = 压缩记录
+  // 的流位置（replayDisplayRecords 按记录顺序注入 / storage prepend 在
+  // 窗口顶部），其后第一条 turnID>0 的消息就是压缩点后的第一条消息。
+  const compactAnchor = new Map<number, number>()
+  {
+    let nextTurn = 0
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]
+      if (m.role === 'system' || m.dbID === undefined) continue
+      if (typeof m.turnID === 'number' && m.turnID > 0) {
+        nextTurn = m.turnID
+        continue
+      }
+      if (
+        m.role === 'user' &&
+        typeof m.content === 'string' &&
+        m.content.trimStart().startsWith('[Compacted context]')
+      ) {
+        compactAnchor.set(m.dbID, nextTurn) // 0 = 无后继 turn（全部历史压缩）→ 前缀段
       }
     }
   }
@@ -60,11 +74,13 @@ export function historyToReplaced(
         iterations: m.iterations,
         timestamp: m.timestamp,
         dbID: m.dbID,
-        // 压缩行位置锚：anchorTurnID = 首个 incoming turn 的 turnID。
-        // undefined = 普通无 turn 行（旧行为——legacy 前缀段）。
+        // 压缩行位置锚：预扫描的逐标记锚（后继第一条消息的 turnID）。
+        // undefined（无后继 turn，或普通无 turn 行）→ 前缀段（旧行为）。
         anchorTurnID:
-          m.role === 'user' && m.content.trimStart().startsWith('[Compacted context]')
-            ? firstIncomingTurnID
+          m.role === 'user' &&
+          typeof m.content === 'string' &&
+          m.content.trimStart().startsWith('[Compacted context]')
+            ? compactAnchor.get(m.dbID) || undefined
             : undefined,
       })
       continue

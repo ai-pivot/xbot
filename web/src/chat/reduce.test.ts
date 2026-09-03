@@ -5,8 +5,9 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { MessageStore } from '@/components/agent/messageStore'
 import { deriveRows } from './derive'
-import { liveProgressFromState } from './integrate'
+import { historyToReplaced, liveProgressFromState } from './integrate'
 import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import {
@@ -1733,5 +1734,100 @@ describe('REPRO: 压缩行渲染在压缩发生的位置（anchorTurnID 锚）',
     const idxTail = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1764)
     expect(idxCompact).toBe(1)
     expect(idxTail).toBe(3)
+  })
+})
+
+// ─── REPRO: 完整链集成（真实快照恢复形状）——压缩行经 MessageStore 后渲染位置 ──
+// chat_F64D4096DA6F 用户报告（03:11 修复部署后仍看不到）。Go 验证 GetHistory
+// 输出（真实形状）：[0] 压缩行(id=1412774, turn_id=0) + [1] continuation
+// (id=1412774 重复——快照 HistoryID=0→record.HistoryID) + [2] tail-user
+// (id=1412772, turn_id=0——快照恢复丢失 turn 归属) + [3] turn1759 assistant
+// + [4] turn1760...。本测试走完整链：MessageStore.mergeHistory（useChatMessages
+// reload 的真实路径）→ toRows → historyToReplaced → reduce → deriveRows。
+describe('REPRO: 完整链——压缩行经 MessageStore 后渲染（真实快照形状）', () => {
+  it('reload 链（mergeHistory → toRows → historyToReplaced → deriveRows）压缩行在 turns 之间', () => {
+    // parseHistoryMessages 的输出形状（真实 GetHistory → web RPC 的前端形状）：
+    // 压缩行 + continuation 共享 dbID=1412774（快照 HistoryID=0 → record.HistoryID
+    // 替代——两条共用）；tail-user turn_id=0（快照恢复丢失）；turn 1759+ 正常。
+    const rows = [
+      { id: 'db-1412774', role: 'user', content: '[Compacted context]\n\n# Working State: 出师表 cron', iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 1412774 },
+      { id: 'db-1412774-1', role: 'user', content: 'This conversation was compacted from a longer session.', iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 1412774 },
+      { id: 'db-1412772', role: 'user', content: '⏰ [定时任务触发] 背诵一次出师表', iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 1412772 },
+      { id: 'db-1412779', role: 'assistant', content: '出师表全文', iterations: [], timestamp: 't', isPartial: false, turnID: 1759, displayOnly: false, persisted: true, dbID: 1412779 },
+      { id: 'db-1412780', role: 'user', content: '⏰ [定时任务触发] 背诵一次出师表', iterations: [], timestamp: 't', isPartial: false, turnID: 1760, displayOnly: false, persisted: true, dbID: 1412780 },
+      { id: 'db-1412782', role: 'assistant', content: '出师表全文2', iterations: [], timestamp: 't', isPartial: false, turnID: 1760, displayOnly: false, persisted: true, dbID: 1412782 },
+    ] as never[]
+    const store = new MessageStore()
+    store.mergeHistory(rows, { replace: true })
+    const toRows = store.toRows()
+    // toRows 含压缩行（legacy——dbID/turnID 保留）？
+    const compactInRows = toRows.filter((m: { content?: string }) => (m.content ?? '').startsWith('[Compacted context]'))
+    expect(compactInRows.length, '压缩行必须在 MessageStore.toRows 输出里').toBe(1)
+    // 完整链：historyToReplaced → reduce → deriveRows。
+    const ev = historyToReplaced(toRows as never, null)
+    const s = reduce(initialChatState('chat-1'), ev)
+    const rowsOut = deriveRows(s)
+    // 断言：压缩行渲染在 turns 之间（不在前缀段顶部）——锚=1759（最小 turnID）。
+    const legacyPrefix = rowsOut.filter((r) => r.kind === 'user' || r.kind === 'committed')
+    const idxCompact = legacyPrefix.findIndex((r) => r.kind === 'user' && r.content.startsWith('[Compacted context]'))
+    expect(idxCompact, '压缩行必须渲染').toBeGreaterThanOrEqual(0)
+    const idxTurn1759 = legacyPrefix.findIndex((r) => r.turnID === 1759)
+    // 顺序断言（真实渲染顺序）：前缀段（continuation + tail-user，无锚 turn_id=0
+    // legacy）→ 压缩行（锚 1759）→ turn 1759 → turn 1760。
+    // 压缩行不在顶部（continuation 在前——turn_id=0 的无锚 legacy 前缀段），
+    // 在 turn 1759 之前（锚生效），且 tail-user（前缀段最后一条）在它之前。
+    expect(idxCompact).toBeGreaterThan(0) // 不在顶部（前缀段在前）
+    expect(idxCompact).toBeLessThan(idxTurn1759) // 在 turn 1759 之前（锚 1759）
+    expect(legacyPrefix[idxCompact - 1]?.kind).toBe('user') // 紧邻前一行是无锚 legacy（tail-user）
+    expect(idxTurn1759).toBe(idxCompact + 1) // 紧邻后一行是 turn 1759
+  })
+})
+
+// ─── REPRO: 多压缩标记各自锚定压缩点（不堆叠在窗口顶部）────────────────────
+// 用户报告（chat_F64D4096DA6F，2026-09-03 03:45）："所有上下文已压缩都渲染在
+// 最顶上，整整三条，并且我们会动态加载内容所以几乎看不到"——loadMore 多批
+// 后旧实现（anchorTurnID = 全局 firstIncomingTurnID）让所有标记共享同一锚
+//（当前窗口最小 turnID——随翻页变小）→ 3 条标记堆叠在列表最顶部。修复：
+// 逐标记锚定自己的压缩点（后继第一条消息的 turnID）。
+describe('REPRO: 多压缩标记各自压缩点（loadMore 多批场景）', () => {
+  const COMPACT = (n: number) => `[Compacted context]\n\n# Working State 压缩 ${n}`
+
+  it('3 条标记各自插在压缩点（后继消息前），不堆叠', () => {
+    // loadMore 后的完整消息流：旧消息（turn 100）+ 标记1 + turn 101 段 +
+    // 标记2 + turn 102 段 + 标记3 + turn 103 段（三次压缩 09-01/02/03）。
+    const rows = [
+      { id: 'db-1', role: 'user', content: 'user 100', iterations: [], timestamp: 't', isPartial: false, turnID: 100, displayOnly: false, persisted: true, dbID: 1 },
+      { id: 'db-2', role: 'assistant', content: 'reply 100', iterations: [], timestamp: 't', isPartial: false, turnID: 100, displayOnly: false, persisted: true, dbID: 2 },
+      // 标记 1（09-01 压缩点——后继 turn 101）
+      { id: 'db-c1', role: 'user', content: COMPACT(1), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 100 },
+      { id: 'db-3', role: 'user', content: 'user 101', iterations: [], timestamp: 't', isPartial: false, turnID: 101, displayOnly: false, persisted: true, dbID: 3 },
+      { id: 'db-4', role: 'assistant', content: 'reply 101', iterations: [], timestamp: 't', isPartial: false, turnID: 101, displayOnly: false, persisted: true, dbID: 4 },
+      // 标记 2（09-02 压缩点——后继 turn 102）
+      { id: 'db-c2', role: 'user', content: COMPACT(2), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 200 },
+      { id: 'db-5', role: 'user', content: 'user 102', iterations: [], timestamp: 't', isPartial: false, turnID: 102, displayOnly: false, persisted: true, dbID: 5 },
+      { id: 'db-6', role: 'assistant', content: 'reply 102', iterations: [], timestamp: 't', isPartial: false, turnID: 102, displayOnly: false, persisted: true, dbID: 6 },
+      // 标记 3（09-03 压缩点——后继 turn 103）
+      { id: 'db-c3', role: 'user', content: COMPACT(3), iterations: [], timestamp: 't', isPartial: false, turnID: 0, displayOnly: false, persisted: true, dbID: 300 },
+      { id: 'db-7', role: 'user', content: 'user 103', iterations: [], timestamp: 't', isPartial: false, turnID: 103, displayOnly: false, persisted: true, dbID: 7 },
+      { id: 'db-8', role: 'assistant', content: 'reply 103', iterations: [], timestamp: 't', isPartial: false, turnID: 103, displayOnly: false, persisted: true, dbID: 8 },
+    ] as never[]
+    const ev = historyToReplaced(rows, null)
+    const s = reduce(initialChatState('chat-1'), ev)
+    const out = deriveRows(s)
+    const idx = (needle: string) => out.findIndex((r) => (r.kind === 'user' || r.kind === 'committed') && r.content === needle)
+    const i100 = idx('user 100'), iC1 = idx(COMPACT(1)), i101 = idx('user 101')
+    const iC2 = idx(COMPACT(2)), i102 = idx('user 102')
+    const iC3 = idx(COMPACT(3)), i103 = idx('user 103')
+    // 各自压缩点：标记 N 在 turn N-1 的消息之后、turn N 之前。
+    expect(i100).toBeGreaterThanOrEqual(0)
+    expect(iC1).toBeGreaterThan(i100) // 标记1 在 turn 100 之后
+    expect(iC1).toBeLessThan(i101)   // 且在 turn 101 之前
+    expect(iC2).toBeGreaterThan(i101) // 标记2 在 turn 101 之后
+    expect(iC2).toBeLessThan(i102)    // 且在 turn 102 之前
+    expect(iC3).toBeGreaterThan(i102) // 标记3 在 turn 102 之后
+    expect(iC3).toBeLessThan(i103)    // 且在 turn 103 之前
+    // 不堆叠：三条标记互不相邻（各自间隔一条消息段）。
+    expect(iC2 - iC1).toBeGreaterThanOrEqual(2)
+    expect(iC3 - iC2).toBeGreaterThanOrEqual(2)
   })
 })
