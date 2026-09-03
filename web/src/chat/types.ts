@@ -57,6 +57,17 @@ export interface LiveSnapshot {
   readonly iter: IterNum
   /** LLM 是否仍在产出（PhaseDone 置 false，数据不动）。 */
   readonly streaming: boolean
+  /** 后端 structuredProgress.Phase 的透传（'thinking' / 'tool_exec' /
+   *  'compressing' / …）。M4 重构时被丢掉——liveProgressFromState 只能硬编码
+   *  派生 thinking|tool_exec，phase='compressing' 的压缩提示（MessageList/
+   *  AssistantMessage 的 agent.compressing）永不渲染（用户报告"web 一直
+   *  不渲染压缩提示"）。后端 runCompression 设置 Phase 后经 notifyProgress
+   *  推送 structured 事件（链路通——Web 的 autoNotify=true：no-op
+   *  ProgressNotifier 非 nil），前端三处断点：normalize 丢 p.phase、
+   *  LiveSnapshot 无字段、liveProgressFromState 硬编码。此字段全链透传。
+   *  可选：手写构造（hydration/test）缺省 → EMPTY_LIVE 的 'thinking' 初始值
+   *  或 reduce 的 prev 保留。 */
+  readonly progressPhase?: string
   /** 流式累积文本（后端全量推送 —— 覆盖语义，非 append）。 */
   readonly content: string
   /** 流式累积思考（覆盖语义）。 */
@@ -82,6 +93,7 @@ export interface LiveSnapshot {
 export const EMPTY_LIVE: LiveSnapshot = {
   iter: iterNum(1),
   streaming: true,
+  progressPhase: 'thinking',
   content: '',
   reasoning: '',
   iterations: [],
@@ -228,6 +240,11 @@ export type DomainEvent =
        *  activeTurn（与 stream 事件一致）。todos 是会话级状态，不因 turn 缺失
        *  而丢弃。 */
       readonly turnID: TurnID | null
+      /** 后端 structuredProgress.Phase 的透传（'thinking' / 'tool_exec' /
+       *  'compressing' / …）。LiveSnapshot.progressPhase 的写入源 —— M4 重构
+       *  时丢失导致 phase='compressing' 的压缩提示永不渲染（本次修复）。
+       *  可选：未携带（旧事件/mock）= undefined，reduce 保留 prev。 */
+      readonly phase?: string
       readonly iter: IterNum
       /** null = 事件未携带 seq（E2E mock 省略）—— I5 基准不推进（无重放检测）。 */
       readonly seq: EventSeq | null

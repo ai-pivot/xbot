@@ -275,6 +275,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
   const iter: DomainEvent = {
     type: 'iteration',
     turnID: turn !== null ? turnID(turn) : null,
+    phase: optStr(p.phase),
     iter: iterNum(typeof p.iteration === 'number' && p.iteration >= 1 ? p.iteration : 1),
     seq,
     content: optStr(p.content),
