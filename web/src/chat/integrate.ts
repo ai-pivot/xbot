@@ -28,6 +28,22 @@ export function historyToReplaced(
   const legacy: LegacyRow[] = []
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
 
+  // 预扫描：incoming 消息的最小 turnID（首个 turn）。压缩行（[Compacted
+  // context]）的位置锚用它——压缩行是 active（压缩后上下文）的第一条，
+  // 它的时间位置 = 压缩发生点 = 首个 tail turn 之前、旧消息之后。deriveRows
+  // 按"turnID < anchor 的 turns 之后"插入压缩行（chat_F64D4096DA6F 报告
+  // "压缩了但和没压缩一样"——压缩行渲染在 legacy 前缀段 = 1700 条消息的
+  // 顶部，用户永远看不到）。
+  let firstIncomingTurnID: number | undefined
+  for (const m of messages) {
+    if (m.role === 'system' || m.dbID === undefined) continue
+    if (typeof m.turnID === 'number' && m.turnID > 0) {
+      if (firstIncomingTurnID === undefined || m.turnID < firstIncomingTurnID) {
+        firstIncomingTurnID = m.turnID
+      }
+    }
+  }
+
   for (const m of messages) {
     if (m.role === 'system') continue
     // ⚠️ useChatMessages 的 store（旧 MessageStore）仍在运行 —— 它往 messages
@@ -44,6 +60,12 @@ export function historyToReplaced(
         iterations: m.iterations,
         timestamp: m.timestamp,
         dbID: m.dbID,
+        // 压缩行位置锚：anchorTurnID = 首个 incoming turn 的 turnID。
+        // undefined = 普通无 turn 行（旧行为——legacy 前缀段）。
+        anchorTurnID:
+          m.role === 'user' && m.content.trimStart().startsWith('[Compacted context]')
+            ? firstIncomingTurnID
+            : undefined,
       })
       continue
     }

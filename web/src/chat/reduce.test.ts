@@ -1645,3 +1645,93 @@ describe('REPRO: progressPhase 全链透传（web 压缩提示）', () => {
     expect(live.phase).toBe('thinking') // streaming=true → thinking（旧派生保持）
   })
 })
+
+// ─── REPRO: 压缩行渲染在压缩发生的位置（chat_F64D4096DA6F）──────────────────
+// 2026-09-03 用户报告："压缩后没显示 compacted context，看起来和没压缩完全一样"。
+// 根因：压缩行（[Compacted context]，turn_id=0）渲染在 legacy 前缀段 = 消息列表
+// 最顶部——1700 条消息的会话里用户永远看不到。修复：LegacyRow.anchorTurnID
+//（= 首个 incoming turn 的 turnID）+ deriveRows 按锚插入 turns 之间。
+describe('REPRO: 压缩行渲染在压缩发生的位置（anchorTurnID 锚）', () => {
+  const mkIncomingTurn = (n: number) => ({
+    id: turnID(n),
+    user: {
+      id: `db-u-${n}`, content: `tail user ${n}` as never, timestamp: 't',
+      isNotification: false, queued: false, sending: false,
+      requestID: null, turnHint: n, dbID: 9000000 + n,
+    },
+    phase: { kind: 'committed' as const, payload: commitViaText(`tail reply ${n}` as never, []) },
+    requestID: null,
+  })
+  const COMPACT = '[Compacted context]\n\n# Working State: 测试摘要'
+
+  it('merge 场景：旧 turns（merge 保留）+ 压缩行 → 压缩行在旧 turns 之后、tail 之前', () => {
+    // 状态机有旧 turns 1029/1763（committed——merge 会保留）。
+    const s0 = run([
+      { type: 'turn_started', turnID: turnID(1029), requestID: 'r1', trigger: 'user', content: '旧任务1' },
+      textFinal(turnID(1029), '旧回复1'),
+      { type: 'turn_started', turnID: turnID(1763), requestID: 'r2', trigger: 'user', content: '旧任务2' },
+      textFinal(turnID(1763), '旧回复2'),
+    ])
+    // reload（history_compacted 触发）：incoming = 压缩行（anchor=首个 incoming
+    // turn 1764）+ tail turn 1764。merge 保留旧 turns（committed）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [{
+        id: 'compact-1', role: 'user', content: COMPACT, iterations: [],
+        timestamp: 't', dbID: 1412775, anchorTurnID: 1764,
+      }],
+      turns: [mkIncomingTurn(1764)],
+      active: null, lastSeq: null, todos: [],
+    })
+    const rows = deriveRows(s1)
+    // 顺序断言：旧 turns → 压缩行 → tail turn。
+    const idxOld = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1029)
+    const idxOld2 = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1763)
+    const idxCompact = rows.findIndex((r) => r.kind === 'user' && r.content === COMPACT)
+    const idxTail = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1764)
+    expect(idxOld).toBeGreaterThanOrEqual(0)
+    expect(idxOld2).toBeGreaterThan(idxOld)
+    expect(idxCompact).toBeGreaterThan(idxOld2) // 压缩行在旧 turns 之后
+    expect(idxCompact).toBeLessThan(idxTail)    // 且在 tail turn 之前
+  })
+
+  it('刷新场景：状态机空 + incoming（压缩行 + tail）→ 压缩行在顶部（tail 之前）', () => {
+    const s1 = run([{
+      type: 'history_replaced',
+      legacy: [{
+        id: 'compact-1', role: 'user', content: COMPACT, iterations: [],
+        timestamp: 't', dbID: 1412775, anchorTurnID: 1764,
+      }],
+      turns: [mkIncomingTurn(1764), mkIncomingTurn(1765)],
+      active: null, lastSeq: null, todos: [],
+    }])
+    const rows = deriveRows(s1)
+    // 压缩行是第一行（无旧 turns——刷新后 active 只有压缩行 + tail）。
+    const first = rows[0]
+    expect(first.kind).toBe('user')
+    if (first.kind === 'user') expect(first.content).toBe(COMPACT)
+    // tail turns 在压缩行之后（rows: 压缩行, user(1764), committed(1764)）。
+    const idxTail = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1764)
+    expect(idxTail).toBe(2)
+  })
+
+  it('普通无锚 legacy 行保持前缀段（旧行为不回归）', () => {
+    const s1 = run([{
+      type: 'history_replaced',
+      legacy: [
+        { id: 'legacy-1', role: 'user', content: '老消息（无 turn）', iterations: [], timestamp: 't', dbID: 1 },
+        { id: 'compact-1', role: 'user', content: COMPACT, iterations: [], timestamp: 't', dbID: 2, anchorTurnID: 1764 },
+      ],
+      turns: [mkIncomingTurn(1764)],
+      active: null, lastSeq: null, todos: [],
+    }])
+    const rows = deriveRows(s1)
+    // 普通行在前缀段（第 0），压缩行按锚在 tail 之前（第 1）。
+    expect(rows[0].kind).toBe('user')
+    if (rows[0].kind === 'user') expect(rows[0].content).toBe('老消息（无 turn）')
+    const idxCompact = rows.findIndex((r) => r.kind === 'user' && r.content === COMPACT)
+    const idxTail = rows.findIndex((r) => r.kind === 'committed' && r.turnID === 1764)
+    expect(idxCompact).toBe(1)
+    expect(idxTail).toBe(3)
+  })
+})
