@@ -17,6 +17,7 @@ import { continuousIterations } from './progressStore'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
+import { useI18n } from '@/providers/i18n'
 import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 
@@ -93,6 +94,7 @@ export const TurnBody = memo(function TurnBody({
   // O(N×blocks) flatten. Pure computation, same inputs → same output.
   const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
   const blocks = useMemo(() => flattenIterations(contiguous), [contiguous])
+  const { t } = useI18n()
 
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
@@ -126,7 +128,12 @@ export const TurnBody = memo(function TurnBody({
         if (block.kind === 'reasoning') {
           return (
             <div key={`r-${i}`} data-iter-id={block.iteration} data-turn-id={turnID}>
-              <ThinkingLine label={'思考 ' + (block.elapsedMs && block.elapsedMs > 0 ? (block.elapsedMs / 1000).toFixed(1) + 's' : Math.ceil(block.text.length / 4) + ' 字')}>
+              {/* REPRO（committed 后"思考 N 字"数字不对）：旧代码 Math.ceil(block.text.length / 4)
+                  是【估算】（670 字符显示"思考 167 字"）——违反"永远显示真实字符数"。
+                  与 IterationHistory 路径（t('agent.thinkingChars', { count: iteration.reasoning.length })）
+                  语义统一：真实 block.text.length + i18n。elapsedMs 时长分支删除
+                  （用户要求：永远显示正确的 char 数）。 */}
+              <ThinkingLine label={t('agent.thinkingChars', { count: block.text.length })}>
                 <ReasoningBlock content={block.text} />
               </ThinkingLine>
             </div>

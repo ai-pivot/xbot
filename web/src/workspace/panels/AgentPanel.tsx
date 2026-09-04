@@ -237,12 +237,11 @@ export function AgentPanel({ params, api }: PanelProps) {
   resetAgentChatRef.current = agentChat.reset
   const progressSnapshot = agentChat.liveProgress
 
-  // ── Queue state hydration (refresh / session switch) ──
-  // SSE queue_state events only fire on enqueue/dequeue — page refresh has no
-  // events to restore the StagingTray. Fetch the queue snapshot from REST
-  // (/api/queue/list) on mount / chatID change and hydrate the ChatStore.
-  // SubAgent sessions don't have a queue (their messages go through the
-  // parent's session queue).
+  // ── Queue state hydration（refresh / session switch / tab 可见性恢复）──
+  // SSE queue_state events only fire on enqueue/dequeue — refresh has no events to
+  // restore the StagingTray. ⚰️ 2026-09-04 queue 残留修复（用户："切 tab 时
+  // user msg 已 dequeue 但 web 仍显示"）：切 tab → SSE 断开 → 后端 dequeue 的 queue_state 事件丢失 → 切回后无对账 → StagingTray 残留已 dequeue 的消息，刷新才正常（remount 重新 hydrate）。修复：shouldSubscribe（面板可见性）恢复时重新拉 REST 快照对账 —— queue 是后端权威，hydrateQueue 全量替换。
+  // SubAgent sessions don't have a queue (parent's session queue).
   const hydrateQueueRef = useRef(agentChat.hydrateQueue)
   hydrateQueueRef.current = agentChat.hydrateQueue
   useEffect(() => {
@@ -261,7 +260,7 @@ export function AgentPanel({ params, api }: PanelProps) {
         // non-fatal — queue hydration is best-effort (session may not have a queue)
       })
     return () => { cancelled = true }
-  }, [chatID, messageChannel, isSubAgent])
+  }, [chatID, messageChannel, isSubAgent, shouldSubscribe])
 
   // ── 渲染暂停（面板不可见时挂起 React 通知）──
   // MobileAppShell 用 display:none 切换视图（AgentPanel 保持挂载——store
@@ -441,6 +440,36 @@ export function AgentPanel({ params, api }: PanelProps) {
   // （chatID/isSubAgent/messageChannel/ws/t），回调行为不变（调用时读最新 chat）。
   const chatRef = useRef(chat)
   chatRef.current = chat
+
+  // ── user 缺失自动补拉（"强刷恢复"的程序化等价，user msg 消失根治）──
+  // SSE 丢 turn_started/user_echo（断连窗口/ring evict/coalescing）后，
+  // lazy 采纳 commit 的 turn user=null（DOM: turn-c 相邻无 user 行；DB
+  // eager-save 有 user 行 —— 强刷恢复证明）。运行中无 reload 触发 → user
+  // 永缺。检测最新 committed turn 无 user 行 → 程序化 reload：fetchHistory →
+  // history_replaced 的 mergeTurnData（user: cur.user ?? h.user）嫁接 DB user
+  // —— 一次 reload 补齐所有缺 user 的 committed turn（不只最新）。防抖：每
+  // turnID 只触发一次（reload 失败由下次 resync/会话切换兜底；resume turn
+  // DB 本无 user 行 → reload 后仍缺 → Set 防抖挡住，不循环）。
+  const userMissingReloadedRef = useRef<Set<number>>(new Set())
+  useEffect(() => {
+    if (isSubAgent || !chatID) return
+    const msgs = agentChat.messages
+    // 最新 committed assistant 行（跳过 live/frozen —— 在跑的 turn user 可能未绑定）
+    let lastCommitted: ChatMessage | undefined
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      if (m.role === 'assistant' && !m.isPartial) { lastCommitted = m; break }
+    }
+    if (!lastCommitted || !lastCommitted.turnID) return
+    const turnID = lastCommitted.turnID
+    if (userMissingReloadedRef.current.has(turnID)) return
+    // 同 turnID 的 user 行缺失（deriveRows：user 行 turnID 绑定 turn ——
+    // pendingUsers 沉底行 turnID=MAX_SAFE_INTEGER 不误判）
+    const hasUserRow = msgs.some((m) => m.role === 'user' && m.turnID === turnID)
+    if (hasUserRow) return
+    userMissingReloadedRef.current.add(turnID)
+    void chatRef.current.reload()
+  }, [agentChat.messages, isSubAgent, chatID])
 
   // Rewind via inline edit: rewind to the message's DB id, then send
   // the edited content as a new message.

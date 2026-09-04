@@ -777,7 +777,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
       )
 
-      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
+      // legacy 合并（不替换）：旧 legacy 消息不在新快照里也保留 —— tab 切换 →
+      // SSE 重连 → reload → fetchHistory 可能返回更短的 legacy（分页窗口不含旧消息
+      // / DB 压缩移除旧消息）。直接替换会丢失旧消息（用户报告 msg 消失）。
+      // 同 id 消息以 incoming 为权威（DB 是持久化权威）。
+      const legacyById = new Map(s.legacy.map((l) => [l.id, l]))
+      for (const l of ev.legacy) legacyById.set(l.id, l)
+
+      return { chatID: s.chatID, turns, legacy: [...legacyById.values()], activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

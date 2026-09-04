@@ -473,6 +473,61 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(rows[1].kind === 'committed' && rows[1].content).toBe('旧回复1')
   })
 
+  it('REPRO: history_replaced legacy 合并——旧 legacy 不被新快照替换丢失（tab 缓存 msg 消失）', () => {
+    // 第一次 history_replaced：DB 快照含 2 条 legacy 消息（旧消息 turn_id=0）。
+    const s0 = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h1', role: 'user', content: '旧消息1', iterations: [], timestamp: 't1', dbID: 1 },
+        { id: 'h2', role: 'assistant', content: '旧回复1', iterations: [], timestamp: 't2', dbID: 2 },
+      ],
+      turns: [],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    expect(s0.legacy).toHaveLength(2)
+
+    // tab 切换 → SSE 重连 → reload → fetchHistory 返回的 legacy 为空
+    // （分页窗口不含旧消息 / DB 压缩移除了旧消息）。
+    // 修复前：legacy 被直接替换 → 旧消息消失。
+    // 修复后：legacy 合并 → 旧消息保留。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [], // 新快照不含旧 legacy 消息
+      turns: [],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    expect(s1.legacy).toHaveLength(2) // 旧 legacy 消息保留
+    const rows = deriveRows(s1)
+    expect(rows.some((r) => r.kind === 'user' && r.content === '旧消息1')).toBe(true)
+    expect(rows.some((r) => r.kind === 'committed' && r.content === '旧回复1')).toBe(true)
+  })
+
+  it('REPRO: history_replaced legacy 合并——新快照的同 id 消息覆盖旧消息（DB 权威）', () => {
+    const s0 = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h1', role: 'user', content: '旧消息', iterations: [], timestamp: 't1', dbID: 1 },
+      ],
+      turns: [],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    // 新快照同 id 消息内容更新（DB 权威覆盖）
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h1', role: 'user', content: '更新后消息', iterations: [], timestamp: 't1b', dbID: 1 },
+      ],
+      turns: [],
+      active: null,
+      lastSeq: null, todos: [],
+    })
+    expect(s1.legacy).toHaveLength(1)
+    expect(s1.legacy[0].content).toBe('更新后消息')
+  })
+
   it('history_replaced MERGE：committed turn 不在 DB 快照里也保留（发 user msg 后 agent 消息不消失）', () => {
     // turn 1 经 text_final commit（只存在于状态机 —— messages 未同步）。
     const s0 = run([
@@ -520,6 +575,84 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     const t = s2.turns.get(T1)
     if (t?.phase.kind === 'live') expect(t.phase.data.content).toBe('流式后半（打字机继续）')
     else throw new Error('live turn died across history_replaced')
+  })
+
+  it('REPRO: 排队消息 dequeue 链路 —— turn_started(trigger=user, content) 物化 user 行（busy 连发场景）', () => {
+    // 用户 busy 时连发相同消息（"不断背诵出师表"）：user_ack(queued=true)
+    // 把乐观行从 pendingUsers 撤出（StagingTray）→ turn_started 的 requestID
+    // 匹配不到 pending → dequeue fallback 必须用 turn_start.content
+    // （后端 agent.go:4131 排队 dequeue 也带 Content）物化 user 行。
+    const s0 = run([
+      started(T1, 'req-1'),
+      iteration1(T1, '第一轮流式'),
+      textFinal(T1, '第一轮回复'),
+    ])
+    // busy 中发第二条（相同内容）→ 排队 → REST ack queued=true 撤出 pending
+    const s1 = reduce(s0, { type: 'user_sent', row: {
+      id: 'opt-2', content: '再背一遍' as never, timestamp: 't',
+      isNotification: false, queued: false, sending: true,
+      requestID: 'req-2', turnHint: undefined, dbID: undefined,
+    } })
+    const s2 = reduce(s1, { type: 'user_ack', requestID: 'req-2', dbID: 0, turnHint: undefined, queued: true })
+    expect(s2.pendingUsers).toHaveLength(0) // 排队撤出（StagingTray）
+    // turn_started(T2, req-2)：pending 已空 → dequeue fallback 构造 user
+    const s3 = reduce(s2, {
+      type: 'turn_started', turnID: T2, requestID: 'req-2',
+      trigger: 'user', content: '再背一遍' as never,
+    })
+    // 【断言】dequeue fallback 物化 user 行 —— 丢失即本 bug（DOM: turn-c 相邻无 user 行）
+    expect(s3.turns.get(T2)?.user?.content).toBe('再背一遍')
+    // 后续 user_echo 幂等（①匹配 T2.user.requestID）—— 不双行
+    const s4 = reduce(s3, { type: 'user_echo', row: {
+      id: 'echo-2', content: '再背一遍' as never, timestamp: 't',
+      isNotification: false, queued: false, sending: false,
+      requestID: 'req-2', turnHint: 2, dbID: undefined,
+    } })
+    const userRows = deriveRows(s4).filter((r) => r.kind === 'user')
+    expect(userRows).toHaveLength(1)
+    expect(s4.turns.get(T2)?.user?.requestID).toBe('req-2')
+  })
+
+  it('REPRO: SSE 断连双丢（turn_started+user_echo 都丢）—— lazy 采纳 commit 后 user 永缺；history_replaced 嫁接恢复（强刷等价）', () => {
+    // "不断背诵"场景：断连窗口恰好丢 turn_started+user_echo（SSE ring
+    // evict/gap），iteration/text_final 在窗口外正常到达 → lazy 采纳
+    // （user=null）→ text_final commit → user 永缺（DOM: turn-c 相邻无
+    // user 行；DB 有 user 行 —— 强刷恢复）。唯一恢复路径：任意
+    // history_replaced 的 mergeTurnData 嫁接（cur.user ?? h.user）。
+    const s0 = run([
+      started(T1, 'req-1'),
+      iteration1(T1, '第一轮流式'),
+      textFinal(T1, '第一轮回复'),
+      { type: 'user_sent', row: {
+        id: 'opt-2', content: '再背一遍' as never, timestamp: 't',
+        isNotification: false, queued: false, sending: true,
+        requestID: 'req-2', turnHint: undefined, dbID: undefined,
+      } },
+      { type: 'user_ack', requestID: 'req-2', dbID: 0, turnHint: undefined, queued: true },
+    ])
+    expect(s0.pendingUsers).toHaveLength(0)
+    // 双丢：turn_started(T2)/user_echo 都没到达 → iteration lazy 采纳（user=null）
+    const s1 = reduce(s0, iteration1(T2, '第二轮流式'))
+    expect(s1.turns.get(T2)?.phase.kind).toBe('live')
+    // text_final commit —— user=null（永缺 bug 形态）
+    const s2 = reduce(s1, textFinal(T2, '第二轮回复'))
+    expect(s2.turns.get(T2)?.phase.kind).toBe('committed')
+    expect(s2.turns.get(T2)?.user).toBeNull() // ← user 永缺（直到 reload）
+    // 强刷等价：history_replaced 携带 DB user 行 → mergeTurnData 嫁接
+    const incoming: Turn = {
+      id: T2,
+      user: {
+        id: 'db-u2', content: '再背一遍' as never, timestamp: 't',
+        isNotification: false, queued: false, sending: false,
+        requestID: 'req-2', turnHint: 2, dbID: 2,
+      },
+      phase: { kind: 'committed', payload: commitViaFold([{ iteration: 1, content: '第二轮回复', reasoning: '', tools: [], toolCount: 0 } as never] as never, '第二轮回复') },
+      requestID: 'req-2',
+    }
+    const s3 = reduce(s2, { type: 'history_replaced', legacy: [], turns: [incoming], active: null, lastSeq: null, todos: [] })
+    expect(s3.turns.get(T2)?.user?.content).toBe('再背一遍') // 嫁接恢复
+    const userRows = deriveRows(s3).filter((r) => r.kind === 'user')
+    expect(userRows.some((r) => r.kind === 'user' && r.content === '再背一遍')).toBe(true)
   })
 
   it('REPRO: turn 已绑定乐观 user 后,user_echo(同 request) 不得再产生 pending 行（双 user 行+双思考中）', () => {
