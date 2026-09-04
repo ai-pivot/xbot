@@ -368,7 +368,7 @@ export function SideChips(): ReactNode {
                 className="rounded px-1.5 py-0.5 text-[9px] font-medium"
                 style={{ background: 'color-mix(in srgb, var(--accent) 18%, transparent)', color: 'var(--accent)' }}
               >
-                📌 钉选到侧栏
+                <Pin className="inline size-3 align-[-1px]" /> 钉选到侧栏
               </button>
               <button
                 type="button"
