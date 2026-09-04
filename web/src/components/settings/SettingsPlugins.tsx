@@ -130,7 +130,7 @@ export function SettingsPlugins() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="搜索插件配置项…"
-          className="rounded-lg border-border bg-bg-secondary pl-9 focus-visible:border-[#6c8cff]/40 focus-visible:ring-[#6c8cff]/25"
+          className="rounded-lg border-border bg-bg-secondary pl-9 focus-visible:border-accent/40 focus-visible:ring-accent/25"
           autoFocus
         />
       </div>
@@ -263,7 +263,7 @@ function ImageSelectControl({
             type="button"
             disabled={saving}
             onClick={() => void onChange(propKey, o.value)}
-            className={`relative h-14 w-24 overflow-hidden rounded-lg border-2 text-[10px] transition-transform hover:scale-[1.02] ${current === o.value ? 'border-[#6c8cff]' : 'border-border'}`}
+            className={`relative h-14 w-24 overflow-hidden rounded-lg border-2 text-[10px] transition-transform hover:scale-[1.02] ${current === o.value ? 'border-accent' : 'border-border'}`}
             style={{ background: o.css || 'var(--bg-tertiary)' }}
             aria-label={o.label}
           >
@@ -273,7 +273,7 @@ function ImageSelectControl({
         {images.map((img) => (
           <div
             key={img.url}
-            className={`group/img relative h-14 w-24 overflow-hidden rounded-lg border-2 transition-transform hover:scale-[1.02] ${current === img.url ? 'border-[#6c8cff]' : 'border-border'}`}
+            className={`group/img relative h-14 w-24 overflow-hidden rounded-lg border-2 transition-transform hover:scale-[1.02] ${current === img.url ? 'border-accent' : 'border-border'}`}
           >
             <button
               type="button"
@@ -555,7 +555,7 @@ function ConfigField({
             disabled={saving}
             onValueChange={(v) => void onChange(propKey, v)}
           >
-            <SelectTrigger className="w-full rounded-lg border-border bg-bg-secondary focus:border-[#6c8cff]/40 focus:ring-[#6c8cff]/25">
+            <SelectTrigger className="w-full rounded-lg border-border bg-bg-secondary focus:border-accent/40 focus:ring-accent/25">
               <SelectValue placeholder="选择…" />
             </SelectTrigger>
             <SelectContent>
@@ -628,7 +628,7 @@ function renderMultiselect(
           }}
           className={`rounded-lg border px-2.5 py-1 text-xs transition-colors ${
             selected.includes(o.value)
-              ? 'border-[#6c8cff]/40 bg-[#6c8cff]/14 text-[#6c8cff]'
+              ? 'border-accent/40 bg-accent/14 text-accent'
               : 'border-border bg-bg-secondary text-text-muted hover:bg-bg-tertiary hover:text-text-primary'
           }`}
         >

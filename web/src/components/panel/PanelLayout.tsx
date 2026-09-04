@@ -64,7 +64,6 @@ import type {
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import type { TabManager } from '@/hooks/useTabManager'
 import { PanelChrome } from './PanelChrome'
-import { SideChips } from './rails'
 
 const LS_KEY_V2 = 'xbot:panel-layout-v2'
 const LS_KEY_V1 = 'xbot:panel-layout'
@@ -980,10 +979,10 @@ export function PanelDock(): ReactNode {
       ref={setDockEl}
       data-panel-zone="side"
       data-zone-active={zoneActive || undefined}
-      className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden p-1.5"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden"
       style={zoneHighlightStyle(zoneActive)}
     >
-      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-hidden">
+      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {sideIds.map((id) => {
           const def = dock.defs.find((d) => d.id === id)
           if (!def) return null
@@ -1025,7 +1024,6 @@ export function PanelDock(): ReactNode {
           </div>
         ) : null}
       </div>
-      <SideChips />
     </div>
   )
 }

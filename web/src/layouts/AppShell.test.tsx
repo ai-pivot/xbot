@@ -82,7 +82,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     panelContainers.list.length = 0
   })
 
-  it('stacks the info bar above the dockview (flex column), never side by side', () => {
+  it('bottom bar stacks below the dockview (flex column), never side by side', () => {
     renderWithProviders(
       <PluginWidgetsContext.Provider
         value={{
@@ -97,8 +97,7 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
       </PluginWidgetsContext.Provider>,
     )
 
-    // InfoBar content is rendered (plugin widget present).
-    expect(screen.getByText('status: ready')).toBeInTheDocument()
+    // InfoBar removed from bottom bar (user decision) — no 'status: ready'
 
     const main = document.querySelector('main')
     expect(main).not.toBeNull()
@@ -111,13 +110,13 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // Order: children[0] = header, children[1] = dockview host,
     // children[2] = bottom rail row (InfoBar + separator; BottomRailBadges
     // wired later — status-bar style at the BOTTOM, VSCode-like).
-    expect(main!.children.length).toBeGreaterThanOrEqual(3)
-    const topHeader = main!.children[0]
-    const dockview = main!.children[1]
-    const railRow = main!.children[2]
+    expect(main!.children.length).toBeGreaterThanOrEqual(1)
+    const dockview = main!.children[0]
+    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center') as HTMLElement
+    // railRow 已上面赋值
     // Top header bar (☰ + 连接点 + 会话名 / TopRail / 环 + ⚙).
-    expect(topHeader.className).toContain('items-center')
-    expect(topHeader.className).toContain('bg-bg-secondary')
+    // header 已删——功能统一到底栏
+    expect(dockview.className).toContain('flex-1')
     // Dockview host fills the REMAINING space (flex-1 min-h-0), not
     // h-full w-full — h-full would overflow since the rail row consumed height.
     expect(dockview.className).toContain('flex-1')
@@ -130,27 +129,16 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // InfoBar stays INSIDE the rail row with its fixed-height strip (the
     // always-rendered gotcha is untouched): height = 1.5rem + bottom
     // safe-area inset, top border (sits below the workspace).
-    const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
-    expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
-    expect(infoBarEl.style.paddingBottom).toBe('var(--safe-area-bottom)')
-    expect(infoBarEl.className).toContain('border-t')
+    // InfoBar removed from bottom bar
+    // InfoBar 已移除——底栏仍是固定高度 h-10
+    expect(railRow.className).toContain('h-10')
   })
 
-  it('ALWAYS renders the info bar (empty zone shows a stable empty strip — no sudden pop-in)', () => {
-    renderWithProviders(
-      <PluginWidgetsContext.Provider value={{ zones: {}, components: [], revision: 0 }}>
-        <AppShell />
-      </PluginWidgetsContext.Provider>,
-    )
-
-    const main = document.querySelector('main')
-    expect(main).not.toBeNull()
-    expect(main!.className).toContain('flex-col')
-    // The info bar is ALWAYS rendered as a fixed-height strip (inside the
-    // bottom rail row), even with no plugin content — it never pops in/out.
-    const railRow = main!.children[2]
-    const infoBarEl = railRow.firstElementChild!.firstElementChild as HTMLElement
-    expect(infoBarEl.style.height).toBe('calc(1.5rem + var(--safe-area-bottom))')
+  it('bottom bar renders (no InfoBar, SWUpdateButton + Badges only)', () => {
+    renderWithProviders(<AppShell />)
+    const railRow = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center') as HTMLElement
+    expect(railRow).toBeTruthy()
+    expect(railRow.className).toContain('h-10')
   })
 
   it('layout v5 header: no model pill / think pill, no status_bar_right container', () => {
@@ -164,11 +152,11 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // 居中插件实现，本期不留占位）。ctxUsage 上下文环保留。
     expect(screen.queryByTitle('切换模型')).not.toBeInTheDocument()
     expect(screen.queryByText(/think/)).not.toBeInTheDocument()
-    expect(screen.queryByRole('img', { name: '上下文用量' })).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: '上下文用量' })).not.toBeInTheDocument()
 
     // status_bar_right 插件容器已移除（被 TopRail 替代）；InfoBar 内部的
     // info_bar 容器不受影响。
     expect(panelContainers.list).not.toContain('status_bar_right')
-    expect(panelContainers.list).toContain('info_bar')
+    // info_bar panel container removed (InfoBar deleted from bottom bar)
   })
 })

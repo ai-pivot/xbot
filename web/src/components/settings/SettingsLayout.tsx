@@ -153,7 +153,7 @@ export function SettingsLayout() {
                     <select
                       value={eff}
                       onChange={(e) => { moveItem(item.id, e.target.value as LayoutSlotId); setChanged((v) => v + 1) }}
-                      className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-[#6c8cff]/40 focus:outline-none"
+                      className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-accent/40 focus:outline-none"
                     >
                       {slots.map((s) => (
                         <option key={s} value={s}>{SLOT_LABELS[s]}</option>

@@ -147,7 +147,7 @@ export function LlmField(props: { label: string; hint?: string; children: ReactN
 
 /** 规范输入框类（布局 v2）：rounded-lg + white/[.08] 边 + white/[.03] 底 + accent focus。 */
 export const llmInputCls =
-  'rounded-lg border border-border bg-bg-secondary text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-[#6c8cff]/40 focus:ring-2 focus:ring-[#6c8cff]/25'
+  'rounded-lg border border-border bg-bg-secondary text-text-primary outline-none transition-colors placeholder:text-text-muted focus:border-accent/40 focus:ring-2 focus:ring-accent/25'
 
 // ── ModalShell：backdrop + 居中卡片 ───────────────────────────────────────
 // SettingsDialog 的 sheet 覆盖视口，fixed 锚定到 sheet ≈ 视口，弹层不会跑出设置面板。
