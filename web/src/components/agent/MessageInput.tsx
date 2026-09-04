@@ -17,7 +17,7 @@ import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
-import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap } from 'lucide-react'
+import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -111,7 +111,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const placeholderText = goalMode
     ? '🎯 输入目标描述，发送后将设为 Goal 并开始执行...'
     : interruptMode
-      ? t('agent.inputPlaceholderInterject') || '⚡ 插话：立即注入当前 Turn，不打断…'
+      ? t('agent.inputPlaceholderInterject') || '插话：立即注入当前 Turn，不打断…'
       : busy
         ? t('agent.inputPlaceholderBusy') || 'Agent 处理中 — 消息将排队…'
         : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')
@@ -500,7 +500,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 )}
                 title={interruptMode ? '插话模式：发送后立即注入当前 Turn' : '排队模式：发送后排队等待'}
               >
-                {interruptMode ? <Zap className="size-4" /> : <span className="text-sm">💬</span>}
+                {interruptMode ? <Zap className="size-4" /> : <Clock className="size-4" />}
               </button>
             )}
           </div>

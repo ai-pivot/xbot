@@ -14,6 +14,8 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       theme={theme as ToasterProps["theme"]}
+      // 右上角弹出：右下角会挡住输入框与底栏交互控件（全局直角扁平化同语言）
+      position="top-right"
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

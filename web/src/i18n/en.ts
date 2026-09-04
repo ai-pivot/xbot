@@ -178,7 +178,7 @@ const en: Translations = {
     inputPlaceholder: 'Message the Agent… (Ctrl+Enter to send)',
     inputPlaceholderEnter: 'Message the Agent… (Enter to send)',
     inputPlaceholderBusy: 'Agent is busy — message will be queued…',
-    inputPlaceholderInterject: '⚡ Interject: deliver to the active turn (no new turn, no queueing)…',
+    inputPlaceholderInterject: 'Interject: deliver to the active turn (no new turn, no queueing)…',
     send: 'Send',
     attach: 'Attach',
     uploadFailed: 'File upload failed',
