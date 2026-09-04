@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"xbot/llm"
+	log "xbot/logger"
 	"xbot/session"
 )
 
@@ -167,10 +168,17 @@ func copyForkMessages(src, dst *session.TenantSession) ([]llm.ChatMessage, error
 		return nil, nil
 	}
 	// Copy: reset DB IDs (destination re-assigns), keep turn IDs (render grouping).
+	// Deep-copy the ToolCalls slice — a shallow copy would share the backing
+	// array with the source, a hidden bug if either side later mutates a slice
+	// element in place (post-Replay messages are read-only today, but this
+	// guards against future regressions).
 	copied := make([]llm.ChatMessage, len(msgs))
 	for i, m := range msgs {
+		m.ID = 0
+		if len(m.ToolCalls) > 0 {
+			m.ToolCalls = append([]llm.ToolCall(nil), m.ToolCalls...)
+		}
 		copied[i] = m
-		copied[i].ID = 0
 	}
 	if _, err := dst.AppendMessages(copied); err != nil {
 		return nil, fmt.Errorf("append forked messages: %w", err)
@@ -178,11 +186,16 @@ func copyForkMessages(src, dst *session.TenantSession) ([]llm.ChatMessage, error
 	// Copy iteration_history rows (turn_id preserved — the forked messages keep
 	// their source turn IDs, so the read side's (tenant, turn) join still works).
 	// message_id=0 per the write-side convention (read side queries by turn_id).
-	if recs, err := src.GetAllIterationHistory(); err == nil {
+	// Non-fatal on failure: iteration detail is a rendering nicety, not context
+	// data — forked messages are still valid. Log for observability.
+	if recs, err := src.GetAllIterationHistory(); err != nil {
+		log.WithError(err).Warn("fork: read source iteration history failed (skipped)")
+	} else {
 		for _, r := range recs {
 			r.MessageID = 0
 			if err := dst.AppendIterationHistory(0, r.TurnID, r); err != nil {
-				return nil, fmt.Errorf("append forked iteration history: %w", err)
+				log.WithError(err).Warn("fork: copy iteration history record failed (skipped)")
+				break
 			}
 		}
 	}
