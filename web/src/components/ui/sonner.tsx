@@ -29,8 +29,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
-          // 直角扁平化：toast 不用 --radius（0.5rem 圆角残留），对齐全局 rounded-none
-          "--border-radius": "0px",
+          "--border-radius": "var(--radius)",
         } as React.CSSProperties
       }
       {...props}

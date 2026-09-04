@@ -13,7 +13,7 @@
  * 动画：CSS keyframes（fadeUp 入场、左滑淡出取消、队首呼吸进度条）
  */
 import { memo, useState, useCallback } from 'react'
-import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox } from 'lucide-react'
+import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox, User } from 'lucide-react'
 import type { QueueItemPayload } from '@/types/shared'
 import { cn } from '@/lib/utils'
 
@@ -120,7 +120,7 @@ function QueueCard({
 
         {/* 图标 */}
         <span className="shrink-0 text-text-secondary">
-          {isNotification ? <Bell className="size-3.5" /> : <span className="text-[13px]">👤</span>}
+          {isNotification ? <Bell className="size-3.5" /> : <User className="size-3.5" />}
         </span>
 
         {/* preview 文本 */}
@@ -139,7 +139,7 @@ function QueueCard({
             <button
               type="button"
               aria-label="转插话"
-              title="⚡ 转为插话（立即注入当前 Turn）"
+              title="转为插话（立即注入当前 Turn）"
               onClick={(e) => {
                 e.stopPropagation()
                 onInterject(item.msg_id)
