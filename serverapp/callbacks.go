@@ -819,10 +819,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// user can switch the model in the new session after fork).
 		ag.LLMFactory().EnsureSessionModelBinding(senderID, newChatID, "web")
 		// Copy the source session's active conversation context (post-Replay
-		// messages + iteration_history) into the new session. Non-fatal on
-		// failure: the session is created regardless (empty if copy fails).
+		// messages + iteration_history) into the new session. On failure,
+		// roll back: delete the just-created empty chat so the user doesn't
+		// get a "successful fork" that's actually empty.
 		if err := ag.ForkSessionMessages(sourceChannel, sourceChatID, "web", newChatID); err != nil {
-			log.WithError(err).Warn("ChatFork: message copy failed (session created without history)")
+			log.WithError(err).Error("ChatFork: message copy failed — rolling back")
+			_ = cs.DeleteChat("web", senderID, newChatID)
+			return "", fmt.Errorf("fork failed: %w", err)
 		}
 		return newChatID, nil
 	}

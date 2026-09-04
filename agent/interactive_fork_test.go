@@ -194,3 +194,150 @@ func TestResolveForkSourceSession_NotFound(t *testing.T) {
 		t.Error("resolveForkSourceSession should error for non-existent session")
 	}
 }
+
+func TestResolveForkSourceSession_AgentPrefix(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/fork-agent.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{multiSession: mt}
+	// Interactive subagent session: stored under channel "agent" with interactiveKey as chatID.
+	interactiveKey := "cli:/path/explore:mem-1"
+	mt.GetOrCreateSession("agent", interactiveKey)
+
+	ctx := context.Background()
+
+	// 2a. Full interactive key with "agent:" prefix.
+	sess, _, err := a.resolveForkSourceSession(ctx, "cli", "/path", "agent:"+interactiveKey)
+	if err != nil {
+		t.Fatalf("agent: full key: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("sess is nil for agent: full key")
+	}
+
+	// 2b. "agent:role/instance" address style — should resolve via lookupSubAgentForkSource.
+	_, _, err = a.resolveForkSourceSession(ctx, "cli", "/path", "agent:explore/mem-1")
+	if err != nil {
+		t.Fatalf("agent:role/instance: %v", err)
+	}
+}
+
+func TestResolveForkSourceSession_RoleInstanceSlashForm(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/fork-slash.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{multiSession: mt}
+	interactiveKey := "cli:/path/explore:mem-1"
+	mt.GetOrCreateSession("agent", interactiveKey)
+
+	ctx := context.Background()
+	// "role/instance" slash form — should resolve to the same session as "role:instance".
+	_, _, err = a.resolveForkSourceSession(ctx, "cli", "/path", "explore/mem-1")
+	if err != nil {
+		t.Fatalf("role/instance slash: %v", err)
+	}
+}
+
+func TestResolveForkSourceSession_ChannelChatIDWithPath(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/fork-path.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{multiSession: mt}
+	mt.GetOrCreateSession("cli", "/home/user/project")
+
+	ctx := context.Background()
+	// "cli:/home/user/project" — contains "/" so rule 3 tries interactive key first
+	// (miss), then falls through to rule 6 (channel:chatID) → GetSession("cli", "/home/user/project").
+	sess, label, err := a.resolveForkSourceSession(ctx, "web", "chat_default", "cli:/home/user/project")
+	if err != nil {
+		t.Fatalf("channel:chatID with path: %v", err)
+	}
+	if sess == nil {
+		t.Fatal("sess is nil")
+	}
+	if label != "cli:/home/user/project" {
+		t.Errorf("label = %q, want 'cli:/home/user/project'", label)
+	}
+}
+
+func TestResolveForkSourceSession_Me_SubAgentCaller(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/fork-me-sub.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{multiSession: mt}
+	// Subagent's own interactive session in cache.
+	subKey := "cli:/path/explore:mem-1"
+	mt.GetOrCreateSession("agent", subKey)
+
+	// "me" with bgParentKey on context → subagent caller → its own interactive session.
+	ctx := context.WithValue(context.Background(), bgParentKey{}, subKey)
+	sess, label, err := a.resolveForkSourceSession(ctx, "cli", "/path", "me")
+	if err != nil {
+		t.Fatalf("resolveForkSourceSession me (subagent): %v", err)
+	}
+	if sess == nil {
+		t.Fatal("sess is nil")
+	}
+	if label != "agent:"+subKey {
+		t.Errorf("label = %q, want 'agent:%s'", label, subKey)
+	}
+}
+
+func TestLookupSubAgentForkSource_Ambiguous(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/fork-ambig.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{multiSession: mt}
+	// Two subagent sessions with the same role:instance under different parents.
+	key1 := "cli:/path1/explore:mem-1"
+	key2 := "web:chat_abc/explore:mem-1"
+	mt.GetOrCreateSession("agent", key1)
+	mt.GetOrCreateSession("agent", key2)
+	// Register in interactiveSubAgents so the suffix match finds both.
+	a.interactiveSubAgents.Store(key1, &interactiveAgent{roleName: "explore", instance: "mem-1"})
+	a.interactiveSubAgents.Store(key2, &interactiveAgent{roleName: "explore", instance: "mem-1"})
+
+	ctx := context.Background()
+	// "explore:mem-1" → not found under origin ("web:chat_default") → global suffix
+	// match finds 2 → ambiguous → error.
+	_, _, err = a.resolveForkSourceSession(ctx, "web", "chat_default", "explore:mem-1")
+	if err == nil {
+		t.Fatal("ambiguous sub-agent ref should error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error should mention 'ambiguous', got: %v", err)
+	}
+}
+
+func TestForkSessionMessages_SourceNotFound(t *testing.T) {
+	mt, err := session.NewMultiTenant(t.TempDir() + "/fork-snf.db")
+	if err != nil {
+		t.Fatalf("NewMultiTenant: %v", err)
+	}
+	defer mt.Close()
+
+	a := &Agent{multiSession: mt}
+	// Source session NOT in cache → must error (not silently create empty tenant).
+	err = a.ForkSessionMessages("web", "nonexistent_chat", "web", "chat_dst")
+	if err == nil {
+		t.Fatal("ForkSessionMessages should error for non-existent source")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention 'not found', got: %v", err)
+	}
+}

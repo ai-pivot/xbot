@@ -72,8 +72,13 @@ func (a *Agent) resolveForkSourceSession(ctx context.Context, originChannel, ori
 			return sess, "agent:" + rest, nil
 		}
 		// 2b. "role/instance" address — resolve via the sub-agent lookup.
+		// Ambiguous → error (don't fall through); not found → fall through.
 		if role, instance, ok2 := splitRoleInstance(rest); ok2 {
-			return a.lookupSubAgentForkSource(originChannel, originChatID, role, instance)
+			if sess, label, err := a.lookupSubAgentForkSource(originChannel, originChatID, role, instance); err != nil {
+				return nil, "", err
+			} else if sess != nil {
+				return sess, label, nil
+			}
 		}
 		return nil, "", fmt.Errorf("fork %q: sub-agent session not found", fork)
 	}
@@ -84,20 +89,27 @@ func (a *Agent) resolveForkSourceSession(ctx context.Context, originChannel, ori
 			return sess, fork, nil
 		}
 		// "role/instance" address — resolve via the sub-agent lookup.
+		// Ambiguous → error; not found → fall through to rule 5/6.
 		if role, instance, ok2 := splitRoleInstance(fork); ok2 {
-			return a.lookupSubAgentForkSource(originChannel, originChatID, role, instance)
+			if sess, label, err := a.lookupSubAgentForkSource(originChannel, originChatID, role, instance); err != nil {
+				return nil, "", err
+			} else if sess != nil {
+				return sess, label, nil
+			}
 		}
 		// Fall through: might be a "channel:chatID" whose chatID contains "/"
-		// (e.g. "cli:/home/user/project") — rule 6 handles it below.
+		// (e.g. "cli:/home/user/project") — rule 5/6 handle it below.
 	}
 
 	// 5. "role:instance" — interactive sub-agent of the current session.
 	// Fall through to rule 6 if not found: a "channel:chatID" value like
 	// "web:chat_abc" also matches splitRoleInstance (role="web", instance=
 	// "chat_abc"), so the sub-agent lookup must miss before we try the
-	// channel:chatID interpretation.
+	// channel:chatID interpretation. Ambiguous → error (don't fall through).
 	if role, instance, ok2 := splitRoleInstance(fork); ok2 {
-		if sess, label, err := a.lookupSubAgentForkSource(originChannel, originChatID, role, instance); err == nil {
+		if sess, label, err := a.lookupSubAgentForkSource(originChannel, originChatID, role, instance); err != nil {
+			return nil, "", err
+		} else if sess != nil {
 			return sess, label, nil
 		}
 	}
@@ -119,7 +131,9 @@ func (a *Agent) resolveForkSourceSession(ctx context.Context, originChannel, ori
 
 // lookupSubAgentForkSource resolves a "role:instance" reference to an interactive
 // sub-agent session: first under the current origin session, then a globally
-// unique suffix match (ambiguous matches are rejected with the candidate list).
+// unique suffix match. Returns (nil, "", nil) when not found (so the caller
+// can fall through to the next rule), and an error only for ambiguous matches
+// (multiple candidates — must NOT fall through).
 func (a *Agent) lookupSubAgentForkSource(originChannel, originChatID, role, instance string) (*session.TenantSession, string, error) {
 	// Exact key under the current origin session.
 	key := interactiveKey(originChannel, originChatID, role, instance)
@@ -143,7 +157,9 @@ func (a *Agent) lookupSubAgentForkSource(originChannel, originChatID, role, inst
 	if len(matches) > 1 {
 		return nil, "", fmt.Errorf("fork reference %q:%s is ambiguous — it matches %d sessions (%s); use the full session key", role, instance, len(matches), strings.Join(matches, ", "))
 	}
-	return nil, "", fmt.Errorf("fork reference %q:%s: no such sub-agent session under the current session; spawn it first or use a full session key", role, instance)
+	// 0 matches: not found — return (nil, "", nil) so the caller can fall
+	// through to the next resolution rule (e.g. "channel:chatID").
+	return nil, "", nil
 }
 
 // copyForkMessages copies the active conversation state (post-Replay:
@@ -212,6 +228,14 @@ func copyForkMessages(src, dst *session.TenantSession) ([]llm.ChatMessage, error
 // forked turns keep their grouping. SanitizeMessages strips dangling tool_calls
 // so the forked context is a valid prefix for the LLM.
 func (a *Agent) ForkSessionMessages(srcChannel, srcChatID, dstChannel, dstChatID string) error {
+	// Validate source session exists WITHOUT creating an empty tenant — a
+	// non-existent source (typo'd chat_id, or a deleted session) must NOT
+	// silently create a garbage tenant row. GetSession is cache-only; if the
+	// source is not in cache it must be re-activated first (the REST fork path
+	// operates on sessions visible in the session tree, which are cached).
+	if _, found := a.multiSession.GetSession(srcChannel, srcChatID); !found {
+		return fmt.Errorf("source session %s:%s not found (it must exist and be active)", srcChannel, srcChatID)
+	}
 	srcSess, err := a.multiSession.GetOrCreateSession(srcChannel, srcChatID)
 	if err != nil {
 		return fmt.Errorf("open source session %s:%s: %w", srcChannel, srcChatID, err)
