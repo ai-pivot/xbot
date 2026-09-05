@@ -63,10 +63,8 @@ func (t *CronTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		return nil, err
 	}
 
-	senderID := ""
 	channel, chatID := "", ""
 	if ctx != nil {
-		senderID = ctx.SenderID
 		channel = ctx.Channel
 		chatID = ctx.ChatID
 	}
@@ -77,7 +75,7 @@ func (t *CronTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 	case "list":
 		return t.listJobs(channel, chatID)
 	case "remove":
-		return t.removeJob(p.JobID, channel, chatID, senderID)
+		return t.removeJob(p.JobID, channel, chatID)
 	default:
 		return nil, fmt.Errorf("unknown action: %s (use add, list, remove)", p.Action)
 	}
@@ -206,7 +204,7 @@ func (t *CronTool) listJobs(channel, chatID string) (*ToolResult, error) {
 // from another session returns "not found" — no existence leak. Jobs created
 // by SubAgents carry the parent session's origin (channel+chatID), so the
 // parent session manages them.
-func (t *CronTool) removeJob(jobID, channel, chatID, senderID string) (*ToolResult, error) {
+func (t *CronTool) removeJob(jobID, channel, chatID string) (*ToolResult, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("job_id is required for remove")
 	}
