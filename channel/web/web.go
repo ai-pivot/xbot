@@ -186,6 +186,12 @@ type WebCallbacks struct {
 	ChatRename func(senderID, channel, chatID, label string) error
 	// ChatReorder updates sort_order for multiple chats (drag-and-drop reordering).
 	ChatReorder func(senderID, channel string, orders map[string]int) error
+	// ChatFork forks (copies the conversation context of) an existing session
+	// into a NEW session. sourceChannel/sourceChatID identify the source; label
+	// is the optional new session name (auto-generated when empty). Returns the
+	// new chatID. The new session inherits the source's active message history
+	// (post-Replay state) + iteration_history, and can continue independently.
+	ChatFork func(senderID, sourceChannel, sourceChatID, label string) (newChatID string, err error)
 	// LocalSessionExists reports whether a local session exists outside the database.
 	LocalSessionExists func(channel, chatID string) bool
 
@@ -814,6 +820,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/chats/list", wc.authenticatedPOST(wc.handleChatsListPOST))
 	mux.HandleFunc("/api/chats/create", wc.authenticatedPOST(wc.handleChatsCreatePOST))
+	mux.HandleFunc("/api/chats/fork", wc.authenticatedPOST(wc.handleChatsForkPOST))
 	mux.HandleFunc("/api/chats/reorder", wc.authenticatedPOST(wc.handleChatsReorderPOST))
 	mux.HandleFunc("/api/chats/{chatID}/switch", wc.authenticatedPOST(wc.handleChatSwitchPOST))
 	mux.HandleFunc("/api/chats/{chatID}/rename", wc.authenticatedPOST(wc.handleChatRename))

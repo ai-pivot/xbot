@@ -89,6 +89,15 @@ Parameters (JSON):
   - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (await with task_wait). Set false to block for the final reply synchronously.
   - action: string (optional), one of "send", "unload", "inspect", "interrupt"
   - model_tier: string (optional), model tier for this call: "vanguard", "swift", or "balance" (default). Overrides the role's model setting.
+  - fork: string (optional), fork (inherit) the conversation context of an existing session into this NEW sub-agent.
+    Only valid when creating a new session (error on action="send"). Values:
+      * "me" — fork the calling agent's own current conversation context.
+      * "role:instance" or "role/instance" (e.g. "explore:mem-1") — fork an existing sub-agent of the current session.
+      * "agent:role/instance" (SendMessage address style, e.g. "agent:explore/mem-1") — same as above.
+      * full session key (e.g. "web:chat_abc", "cli:/path/to/repo", or a full interactive key like "cli:/path/role:inst") — fork any session.
+    The forked history is copied verbatim (post-compression state) and precedes the task message;
+    the sub-agent's system prompt explains the inherited context. Use it to continue work from
+    an existing conversation without re-explaining, or to branch a specialist from current state.
 
 Available roles are listed in the <available_agents> section of the system prompt.
 
@@ -105,6 +114,7 @@ func (t *SubAgentTool) Parameters() []llm.ToolParam {
 		{Name: "action", Type: "string", Description: `Optional control action: "send", "unload", "inspect", or "interrupt".`},
 		{Name: "tail", Type: "integer", Description: "For action=\"inspect\": number of recent iterations to show (default: 5)."},
 		{Name: "model_tier", Type: "string", Description: `Model tier for this call: "vanguard" (strongest), "swift" (fastest), or "balance" (default). Overrides the role's model setting. Use when you need a different model than the role's default for a specific task.`},
+		{Name: "fork", Type: "string", Description: `Optional: fork (inherit) the conversation context of an existing session into this NEW sub-agent at creation time. Only valid when creating a new session (ignored-with-error on action="send"). Values: "me" = the calling agent's current conversation context; "role:instance" or "role/instance" (e.g. "explore:mem-1") = an existing sub-agent of the current session; "agent:role/instance" (SendMessage address style, e.g. "agent:explore/mem-1"); or a full session key like "web:chat_abc" / "cli:/path". The forked history is copied verbatim before the task message, and the sub-agent's system prompt carries an inherited-context note.`},
 	}
 }
 
@@ -120,9 +130,16 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		Instance   string `json:"instance"`
 		Tail       int    `json:"tail"`
 		ModelTier  string `json:"model_tier"`
+		Fork       string `json:"fork"`
 	}](input)
 	if err != nil {
 		return nil, err
+	}
+
+	// fork is only valid when creating a NEW session. On existing sessions
+	// (action="send") or control actions the session already has its context.
+	if params.Fork != "" && params.Action != "" {
+		return nil, fmt.Errorf("fork is only valid when creating a new session (omit action), not with action=%q", params.Action)
 	}
 
 	// Default: BACKGROUND. Sub-agents run async by default — spawn returns
@@ -267,6 +284,10 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			} else {
 				ctx.Metadata["background"] = "false"
 			}
+			// Propagate fork source via ToolContext metadata (same pattern as
+			// background). Empty = no fork. Resolved by the agent layer in
+			// SpawnInteractiveSession.
+			ctx.Metadata["fork"] = params.Fork
 			// action="" + interactive=true → spawn/reuse
 			result, err := im.SpawnInteractive(ctx, params.Task, params.Role, role.SystemPrompt, role.AllowedTools, role.Capabilities, params.Instance, effectiveModel)
 			if err != nil {

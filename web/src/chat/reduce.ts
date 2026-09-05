@@ -777,7 +777,34 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           !(u.requestID !== null && [...turns.values()].some((t) => t.user?.requestID === u.requestID)),
       )
 
-      return { chatID: s.chatID, turns, legacy: ev.legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
+      // legacy 合并（不替换）：旧 legacy 消息不在新快照里也保留 —— tab 切换 →
+      // SSE 重连 → reload → fetchHistory 可能返回更短的 legacy（分页窗口不含旧消息
+      // / DB 压缩移除旧消息）。直接替换会丢失旧消息（用户报告 msg 消失）。
+      // 同 id 消息以 incoming 为权威（DB 是持久化权威）。
+      //
+      // 乱序 + 脏行修复（xbotgh CR）：
+      // 1. 脏行清理：旧行 dbID >= 新窗口最小 dbID 且不在 incoming 中 → 已被 DB
+      //    删除（rewind/压缩——fetchHistory 窗口是"最新 N 条"，不会跳过中间消息，
+      //    窗口内不存在的行唯一解释是被删）→ 剔除。dbID < minDb 的旧行保留
+      //    （窗口外，分页缩短不是删除）。空窗口（ev.legacy=[]）不清理——
+      //    空可能是 fetchHistory 异常/首开返回（非删除语义），保留旧行
+      //    （"tab 缓存 msg 消失"的既有防线）。
+      // 2. 乱序：Map.values() 按插入序返回（旧 state 行在前、新窗口消息 append
+      //    尾部）—— 窗口扩大（回翻页/loadMore，含更旧消息）时新旧行错位，
+      //    时间线错乱。合并后按 dbID 排序（DB 自增 id = 时间线顺序）。
+      const legacyById = new Map(s.legacy.map((l) => [l.id, l]))
+      if (ev.legacy.length > 0) {
+        const minDb = Math.min(...ev.legacy.map((l) => l.dbID ?? Infinity))
+        for (const [id, l] of legacyById) {
+          if (l.dbID !== undefined && l.dbID >= minDb && !ev.legacy.some((e) => e.id === id)) {
+            legacyById.delete(id)
+          }
+        }
+      }
+      for (const l of ev.legacy) legacyById.set(l.id, l)
+      const legacy = [...legacyById.values()].sort((a, b) => (a.dbID ?? 0) - (b.dbID ?? 0))
+
+      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

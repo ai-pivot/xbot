@@ -20,8 +20,6 @@ import { toast } from 'sonner'
 import { FoldedLine } from './FoldedLine'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { TurnBody } from './TurnBody'
-import { ShimmerThinking } from './ShimmerThinking'
-import { isToolInProgress } from './statusVisual'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, CollapseLevel, LiveProgress } from '@/types/agent'
 
@@ -81,46 +79,14 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
   // collapseLevel for both streaming and committed messages.
   const effectiveLevel: CollapseLevel = collapseLevel
 
-  const hasReasoning = Boolean(progress?.reasoningStreamContent || progress?.lastReasoning)
-  const hasToolInProgress = progress
-    ? progress.streamingTools.some((tool) => isToolInProgress(tool.status)) ||
-      progress.activeTools.some((tool) => isToolInProgress(tool.status)) ||
-      progress.completedTools.some((tool) => isToolInProgress(tool.status))
-    : false
-  const hasAnyTools = progress
-    ? progress.streamingTools.length > 0 ||
-      progress.activeTools.length > 0 ||
-      progress.completedTools.length > 0
-    : false
-  // Shimmer only during pure thinking (no tools, no text, no reasoning).
-  // The phase guard prevents a delivery-race flicker: when the LLM returns
-  // tool_calls, recordAssistantMsg pushes Phase=tool_exec BEFORE
-  // initToolProgress populates ActiveTools. If this structured event arrives
-  // before the stream_content event (stateless, different Hub path), the
-  // snapshot briefly has no tools — but phase=tool_exec tells us tools are
-  // coming, so we must NOT show the thinking placeholder.
-  const isThinkingPhase = !progress || progress.phase === '' || progress.phase === 'thinking'
-  // MUTUAL EXCLUSION with LiveIteration's boundary placeholder: LiveIteration
-  // (rendered inside TurnBody) shows "思考中…" at a NON-FIRST iteration
-  // boundary when `streaming && lastIter >= 1 && iterationHistory.length > 0`.
-  // If the snapshot has completed iterations, LiveIteration is in charge of
-  // the placeholder — rendering it here too produces TWO "思考中…" indicators
-  // after a session switch (progress.completedTools is empty because the tools
-  // live in iterationHistory's iterations, so hasAnyTools=false and the old
-  // condition alone was insufficient; user report: "切换会话后渲染两个思考中").
-  const liveIterationShowsPlaceholder =
-    Boolean(progress?.streaming) &&
-    (progress?.lastIter ?? 0) >= 1 &&
-    (progress?.iterationHistory?.length ?? 0) > 0
-  const showThinkingIndicator =
-    isStreaming &&
-    Boolean(progress?.streaming) &&
-    isThinkingPhase &&
-    !progress?.streamContent &&
-    !hasReasoning &&
-    !hasToolInProgress &&
-    !hasAnyTools &&
-    !liveIterationShowsPlaceholder
+  // "思考中"占位符的唯一渲染点是 LiveIteration（TurnBody 内部，live 行）：
+  // 第一迭代（无 iterationHistory 前置）+ 无可见内容 + streaming 时渲染。
+  // 本组件【不再】渲染第二个 ShimmerThinking —— 双渲染根治（用户报告
+  // "切换会话后渲染两个思考中"）：LiveIteration 的空内容分支条件与这里的
+  // showThinkingIndicator 几乎完全重叠，修复 LiveIteration 首迭代渲染后两者
+  // 同时渲染（.sweep-text ×2）。phase guard（isThinkingPhase）的差异留给
+  // LiveIteration 内部处理（tool_exec + 无内容 + streaming 短暂显示占位符
+  // 比完全空白好 —— 用户报的"切换会话后 agent 消息空白"形态）。
   const emptyResponse = isEmptyResponseContent(message.content)
   // "一个 iter 的内容只能渲染在 iter 内"（禁止任何字符串比较/内容判断 hack）：
   // - 行有迭代（iterations 非空，结构判断）：内容（含最终输出的 content）由
@@ -218,7 +184,6 @@ function AssistantMessageImpl({ message, progress, collapseLevel, mergeTools = t
               {t('agent.displayOnly')}
             </span>
           )}
-          {showThinkingIndicator && <ShimmerThinking />}
           {isStreaming && liveProgress?.phase === 'compressing' && (
             <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
               <Loader2 className="size-3.5 animate-spin" />

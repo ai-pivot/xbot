@@ -1106,11 +1106,16 @@ func (a *spawnAgentAdapter) buildMsg(parentCtx *tools.ToolContext, task, roleNam
 		if bg, ok := parentCtx.Metadata["background"]; ok {
 			metadata["background"] = bg
 		}
-		if gid, ok := parentCtx.Metadata["group_id"]; ok {
+		if gid, ok := parentCtx.Metadata["group_id"]; ok && gid != "" {
 			metadata["group_id"] = gid
 		}
-		if gms, ok := parentCtx.Metadata["group_members"]; ok {
+		if gms, ok := parentCtx.Metadata["group_members"]; ok && gms != "" {
 			metadata["group_members"] = gms
+		}
+		// Propagate fork source (SubAgent fork feature): "me" or a session
+		// reference. Resolved by SpawnInteractiveSession in the agent layer.
+		if fk, ok := parentCtx.Metadata["fork"]; ok && fk != "" {
+			metadata["fork"] = fk
 		}
 	}
 	// Also propagate group from ToolContext fields (set by SpawnInteractive for group agents)

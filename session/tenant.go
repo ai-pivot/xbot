@@ -54,6 +54,13 @@ func (s *TenantSession) GetIterationHistoryByTurns(turnIDs []uint64) (map[uint64
 	return s.sessionSvc.GetIterationHistoryByTurns(s.tenantID, turnIDs)
 }
 
+// GetAllIterationHistory returns ALL iteration records for this tenant, ordered
+// by (turn_id, iteration). Used by session fork to copy per-iteration render
+// detail (content/reasoning/tools per iteration) into the fork target session.
+func (s *TenantSession) GetAllIterationHistory() ([]sqlite.IterationRecord, error) {
+	return s.sessionSvc.GetAllIterationHistory(s.tenantID)
+}
+
 // GetUsageStats aggregates this session's usage & performance from
 // iteration_history (v59: per-iteration input/cached tokens + model).
 // recentLimit caps the recent-iteration detail rows (0 = default 20, negative = skip).

@@ -983,22 +983,17 @@ export const MessageList = memo(function MessageList({
               switched to a busy tab with no iterations). Shown during
               loading when rows exist (the spinner handles the empty case),
               so the user always sees feedback on a busy session.
-              INVARIANT: never show the placeholder below a FINISHED
-              assistant message (one with a copy button — turn complete).
-              A finished turn followed by "thinking…" would imply the
-              completed turn is still running (linear-consistency
-              violation). The placeholder only appears when the last row is
-              a user message (new turn) or nothing at all. */}
-          {busy && !(loading && rows.length === 0) &&
-            (liveId === null || rows.length === 0 || rows[rows.length - 1].role === 'user') && (
-            // busy placeholder 显示条件（方案 A）：
-            // 1. 没有 live 行（liveId=null）—— 新 iter 还没到达，或切换会话后
-            //    live 还没渲染。即使最后一个 row 是 committed assistant（turn
-            //    还在跑），也应该显示"思考中"——否则用户看到卡死。
-            // 2. 最后一个 row 是 user —— 新 turn 刚发，live 还没到。
-            // 3. rows 为空 —— 首次加载 + busy。
-            // 不再检查 lastIsFinishedAssistant：committed assistant 后面也可能
-            // 有新 iter 在跑（busy=true），需要显示 placeholder。
+              INVARIANT: exactly ONE thinking indicator in every state —
+              liveId === null 时（无 live 行）由本 placeholder 渲染；live 行
+              存在时由 LiveIteration 的空内容分支渲染 ShimmerThinking（第一
+              迭代 + 迭代边界）。旧条件 `rows 最后是 user` 在 M4 架构下失效：
+              turn_started 立即创建 live 行（isPartial）→ liveId 非 null 且
+              最后一行是 live assistant → 本 placeholder 不渲染，而
+              LiveIteration 的旧条件（iterationHistory.length > 0）第一迭代
+              也不渲染 → 完全空白（切换会话新 turn，用户报告）。收紧为
+              liveId === null 与 LiveIteration 严格互斥（排队消息沉底在 live
+              行之后时 rows 最后是 user，旧条件会与本组件双渲染）。 */}
+          {busy && !(loading && rows.length === 0) && liveId === null && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

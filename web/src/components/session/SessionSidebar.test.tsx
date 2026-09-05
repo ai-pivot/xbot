@@ -72,6 +72,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
     refresh: vi.fn(),
     toggleStar: vi.fn(),
     createSession: vi.fn(),
+    forkSession: vi.fn(),
     switchSession,
     activateSession,
     renameSession: vi.fn(),

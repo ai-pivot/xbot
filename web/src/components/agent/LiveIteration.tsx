@@ -174,11 +174,13 @@ export const LiveIteration = memo(function LiveIteration({
     // 有些情况没显示"). Reuse the SAME ShimmerThinking ("思考中…") component —
     // NOT a second indicator: it shows here when the live row exists, and in
     // the busy placeholder when the live row doesn't (mutually exclusive).
-    // The FIRST iteration is special (user): iterationHistory is EMPTY (no
-    // predecessor) — the busy placeholder already covers the pre-first-iter /
-    // before-first-SSE window, so requiring iterationHistory.length > 0 here
-    // keeps exactly ONE thinking indicator in every state.
-    if (progress.streaming && progress.lastIter >= 1 && progress.iterationHistory.length > 0) {
+    // ⚠️ 第一迭代也必须渲染（切换会话新 turn 空白根治）：M4 架构下 turn_started
+    // 立即创建 live 行（EMPTY_LIVE，无内容）→ MessageList 的 liveId 非 null 且
+    // 最后一行是 live assistant（非 user）→ busy placeholder 的旧条件
+    // （rows 最后是 user）不满足 → 两个指示器都不渲染 → 完全空白（用户报告：
+    // "切换会话后新 agent turn 完全是空，不渲染思考中"）。busy placeholder 已
+    // 收紧为 liveId===null（互斥），第一迭代窗口由本组件渲染。
+    if (progress.streaming) {
       return <ShimmerThinking />
     }
     return null

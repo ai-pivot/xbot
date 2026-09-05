@@ -314,21 +314,28 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     expect(container.textContent).toMatch(/思考中|thinking/)
   })
 
-  it('returns null for the FIRST iteration (iterationHistory empty — busy placeholder covers it)', () => {
-    // User: "第一个 iter 是特殊的" — no predecessor iteration, so the busy
-    // placeholder (MessageList ShimmerThinking) covers the window; rendering
-    // ShimmerThinking here would show TWO thinking indicators.
+  it('renders ShimmerThinking for the FIRST iteration (iterationHistory empty — M4: live row exists so MessageList busy placeholder is suppressed)', () => {
+    // REPRO（切换会话后新 agent turn 完全空白，不渲染思考中）：
+    // M4 架构下 turn_started 立即创建 live turn（EMPTY_LIVE streaming=true）
+    // → deriveRows 输出 live 行（isPartial）→ MessageList liveId 非 null 且
+    // 最后一行是 live assistant（非 user）→ busy placeholder 条件
+    // （liveId===null || rows 最后是 user）失败 → 不渲染。旧代码此处也
+    // return null（第一迭代 iterationHistory 空）→ 两个指示器都不渲染 →
+    // 完全空白。修复：第一迭代空内容 + streaming → 渲染 ShimmerThinking。
     const { container } = renderWithProviders(
       <LiveIteration progress={makeSnapshot({ lastIter: 1 })} level="all" />,
     )
-    expect(container.textContent).not.toMatch(/思考中|thinking/)
+    expect(container.textContent).toMatch(/思考中|thinking/)
   })
 
-  it('returns null in the pre-iteration phase (lastIter=0 — busy placeholder covers it)', () => {
+  it('renders ShimmerThinking in the pre-iteration phase (lastIter=0 — turn just started, no SSE delta yet)', () => {
+    // turn_started 刚到、第一个 stream/iteration 事件未到：EMPTY_LIVE 快照
+    // （lastIter=0，无任何内容）。live 行已存在 → busy placeholder 不渲染
+    // （条件 3 失败）→ 此处必须渲染思考中，否则空白。
     const { container } = renderWithProviders(
       <LiveIteration progress={makeSnapshot({ lastIter: 0 })} level="all" />,
     )
-    expect(container.textContent).not.toMatch(/思考中|thinking/)
+    expect(container.textContent).toMatch(/思考中|thinking/)
   })
 
   it('returns null when the turn is not streaming (ended — committed reply replaces the row)', () => {

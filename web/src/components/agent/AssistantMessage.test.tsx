@@ -197,14 +197,19 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
   })
 
   it('renders the thinking indicator when iterationHistory is EMPTY (first iteration / pre-first-SSE)', () => {
-    // The FIRST iteration has no predecessor — LiveIteration returns null
-    // (needs iterationHistory.length > 0). AssistantMessage's own indicator is
-    // the only one here (matches the busy-placeholder window).
+    // REPRO（切换会话后新 turn 空白）：M4 下 turn_started 立即建 live 行
+    // （EMPTY_LIVE，无已完成迭代）→ 行外 busy placeholder（liveId !== null）
+    // 不渲染 → 第一迭代的"思考中"必须由 LiveIteration 渲染（2026-09-04 修复：
+    // 空内容分支去掉 iterationHistory.length > 0 限制）。AssistantMessage 的
+    // 行级 indicator 已删除（与 LiveIteration 双渲染根治）。
     const m = msg({ isPartial: true, iterations: [] })
     const { container } = renderMsg(
       <AssistantMessage message={m} collapseLevel="none" progress={progress({ iterationHistory: [], lastIter: 0 })} />,
     )
     expect(container.querySelectorAll('.sweep-text').length).toBe(1)
+    // 唯一的 indicator 来自 LiveIteration（data-iter-id="live" 内部），
+    // 不是 AssistantMessage 追加的第二个。
+    expect(container.querySelectorAll('[data-iter-id="live"] .sweep-text').length).toBe(1)
   })
 
   it('does NOT render the thinking indicator when the turn has no live progress', () => {
