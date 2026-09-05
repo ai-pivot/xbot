@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import Link from '@tiptap/extension-link'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
 import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock } from 'lucide-react'
@@ -31,6 +32,7 @@ import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
 import { GoalBanner } from './GoalBanner'
 import { CompletionPopup } from './CompletionPopup'
+import { SelectionToolbar } from './SelectionToolbar'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
 import type { GoalInfo } from '@/types/shared'
@@ -86,6 +88,56 @@ interface PendingAttachment {
 /** Module-level editor instance ref for test access. */
 let __testEditor: import('@tiptap/react').Editor | null = null
 
+/**
+ * Chat-input Link extension — reconfigured for an INPUT box, not a document editor:
+ *
+ *  - inclusive:false      → typed text NEVER merges into an existing link
+ *                            (upstream default `inclusive = autolink = true` is the
+ *                            "意料之外的文字变成超链接" root cause; autolink re-scans on
+ *                            whitespace so it is unaffected by inclusivity)
+ *  - openOnClick:false    → editing, not navigating (upstream default true opens
+ *                            a new tab when a link inside the input is clicked)
+ *  - linkOnPaste:false    → pasting a URL never converts selected text into a
+ *                            link (predictable paste semantics)
+ *  - markdownLinks:true   → typing `[text](url)` renders as a live link (WYSIWYG
+ *                            — otherwise the syntax stays literal and invisible)
+ *  - shouldAutoLink       → strict: only http(s):// or www. — bare domains like
+ *                            `file.tar.gz` (`.gz` is a valid TLD!) are NOT
+ *                            auto-linked (upstream linkifies them → false positives)
+ *  - autolink:true        → typing a full URL then whitespace still auto-links
+ *  - target:null          → no target=_blank in the editing surface
+ */
+const EditorLink = Link.extend({
+  inclusive() {
+    return false
+  },
+}).configure({
+  openOnClick: false,
+  enableClickSelection: false,
+  linkOnPaste: false,
+  autolink: true,
+  markdownLinks: true,
+  shouldAutoLink: (url: string) => /^(https?:\/\/|www\.)/i.test(url),
+  HTMLAttributes: { target: null, rel: 'noopener noreferrer nofollow' },
+})
+
+/** Select the word at the cursor (used by Ctrl/Cmd+K with an empty selection). */
+function selectWordAtCursor(editor: Editor): boolean {
+  const { selection } = editor.state
+  const { $from } = selection
+  if (!$from.parent.isTextblock) return false
+  const text = $from.parent.textContent
+  const offset = $from.parentOffset
+  const isBoundary = (ch: string) => /\s/.test(ch)
+  let start = offset
+  let end = offset
+  while (start > 0 && !isBoundary(text[start - 1])) start -= 1
+  while (end < text.length && !isBoundary(text[end])) end += 1
+  if (start >= end) return false
+  const base = $from.pos - offset
+  return editor.commands.setTextSelection({ from: base + start, to: base + end })
+}
+
 export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
@@ -106,6 +158,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const submitRef = useRef<() => void>(() => {})
   const sendKeyModeRef = useRef(sendKeyMode)
   sendKeyModeRef.current = sendKeyMode
+  // File-pick/upload handler ref — editorProps closures capture this once, the
+  // ref always points at the latest onPickFiles (which depends on onUpload).
+  const onPickFilesRef = useRef<(files: FileList | null) => void>(() => {})
+  // Ctrl/Cmd+K → open the selection toolbar's link editor (SelectionToolbar)
+  const [linkEditSignal, setLinkEditSignal] = useState(0)
+  // File drag-over highlight (dragenter/dragleave depth counted — children fire both)
+  const [dragOverFiles, setDragOverFiles] = useState(false)
+  const dragDepthRef = useRef(0)
 
   // Dynamic placeholder text (updates with goalMode/sendKeyMode/interruptMode/busy)
   const placeholderText = goalMode
@@ -142,7 +202,13 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       StarterKit.configure({
         heading: false,
         horizontalRule: false,
+        // StarterKit ships the Link extension with document-editor defaults
+        // (openOnClick, inclusive marks, aggressive autolink) — replaced by
+        // our chat-input-tuned EditorLink below.
+        link: false,
+        dropcursor: { color: 'var(--accent, #6366f1)', width: 2 },
       }),
+      EditorLink,
       Placeholder.configure({
         placeholder: () => placeholderRef.current,
       }),
@@ -164,13 +230,73 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         if (event.isComposing) return false
         // 1. Completion first (ArrowUp/Down, Tab, Escape, Enter for file completion)
         if (completionHandlerRef.current(event)) return true
-        // 2. Send key (Enter or Ctrl+Enter depending on settings)
+        // 2. Link editor shortcut (Ctrl/Cmd+K) — before the send key so it
+        //    never collides with Enter / Ctrl+Enter modes
+        if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+          event.preventDefault()
+          const ed = editorRef.current
+          if (ed) {
+            // Sync PM state from the DOM before word detection — the browser may
+            // have just moved the caret (Home/End/arrows) and prosemirror-view
+            // reads DOM selection on the async 'selectionchange' task, which
+            // can lag a same-frame keychord (PM itself flushes on mousedown).
+            ;(ed.view as unknown as { domObserver: { flush: () => void } }).domObserver.flush()
+            // Select the word at the cursor (or the whole link under it) so the
+            // toolbar has a target even when nothing is selected
+            if (ed.state.selection.empty) {
+              if (ed.isActive('link')) ed.chain().extendMarkRange('link').focus().run()
+              else selectWordAtCursor(ed)
+            }
+            setLinkEditSignal((n) => n + 1)
+          }
+          return true
+        }
+        // 3. Send key (Enter or Ctrl+Enter depending on settings)
         if (isSendKey(event, sendKeyModeRef.current)) {
           event.preventDefault()
           submitRef.current()
           return true
         }
         return false
+      },
+      // Paste files/images (screenshots) → upload as attachments instead of
+      // letting the clipboard content hit the editor
+      handlePaste: (_view, event) => {
+        const files = event.clipboardData?.files
+        if (files && files.length > 0) {
+          event.preventDefault()
+          onPickFilesRef.current(files)
+          return true
+        }
+        return false
+      },
+      // Drag-and-drop files onto the editor → upload as attachments
+      handleDrop: (_view, event, _slice, moved) => {
+        if (moved) return false
+        const files = event.dataTransfer?.files
+        if (!files || files.length === 0) return false
+        event.preventDefault()
+        onPickFilesRef.current(files)
+        return true
+      },
+      // Drag-over highlight (depth-counted — dragenter/leave fire per child element)
+      handleDOMEvents: {
+        dragenter: () => {
+          dragDepthRef.current += 1
+          setDragOverFiles(true)
+          return false
+        },
+        dragleave: () => {
+          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+          if (dragDepthRef.current === 0) setDragOverFiles(false)
+          return false
+        },
+        dragover: () => false,
+        drop: () => {
+          dragDepthRef.current = 0
+          setDragOverFiles(false)
+          return false
+        },
       },
     },
     onUpdate: ({ editor }) => {
@@ -356,6 +482,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 
   const canSend = hasContent || pending.length > 0
 
+  // Keep the ref current — editorProps closures capture it once (paste/drop).
+  onPickFilesRef.current = onPickFiles
+
   return (
     <div className="border-t border-border bg-bg-primary px-3 py-2.5">
       {goal ? <GoalBanner goal={goal} onEdit={onSetGoal ?? (() => {})} onClear={onClearGoal ?? (() => {})} /> : null}
@@ -398,7 +527,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       {/* Input container — single rounded box with chips, editor, and inline buttons */}
       <div
         className={cn(
-          'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
+          'relative rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
           goalMode
             ? 'border-accent/50 ring-1 ring-accent/20'
             : interruptMode
@@ -406,8 +535,18 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               : focused
                 ? 'border-accent ring-1 ring-accent/30'
                 : 'border-border',
+          dragOverFiles && 'border-accent/70 ring-2 ring-accent/25',
         )}
       >
+        {/* File drag-over hint — files dropped on the editor auto-upload as attachments */}
+        {dragOverFiles && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-bg-primary/75 backdrop-blur-[2px]">
+            <span className="flex items-center gap-2 text-sm font-medium text-accent">
+              <Paperclip className="size-4" />
+              {t('agent.dropToUpload') || '松开以上传文件'}
+            </span>
+          </div>
+        )}
         {/* Attachment chips (inside container, above editor) */}
         {pending.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -441,6 +580,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             onSelect={completion.completeCandidate}
           />
           <EditorContent editor={editor} />
+          {/* Floating selection toolbar — link add/edit/unlink + inline marks.
+              Hidden while the completion popup is open (it takes priority). */}
+          <SelectionToolbar editor={editor} hidden={completion.visible} linkEditSignal={linkEditSignal} />
         </div>
 
         {/* Bottom row: attach button (left) + goal toggle + send/cancel button (right) */}

@@ -905,6 +905,37 @@
   line-height: 1.6;
   color: var(--text-primary, #e5e7eb);
   caret-color: var(--accent, #6366f1);
+  /* Long URLs must wrap instead of overflowing the composer width */
+  overflow-wrap: anywhere;
+}
+
+/* Selection highlight — accent-tinted (theme-aware, both modes) */
+.ProseMirror.xbot-editor ::selection {
+  background: color-mix(in srgb, var(--accent, #6366f1) 28%, transparent);
+}
+
+/* Gapcursor (block cursor at empty paragraphs) — accent caret, visible on dark */
+.ProseMirror.xbot-editor .ProseMirror-gapcursor::after {
+  border-top-color: var(--accent, #6366f1);
+}
+
+/* Links — accent color + underline so pasted/typed links are VISIBLE.
+   Tailwind preflight resets <a> to color:inherit + no underline, which made
+   links pixel-identical to plain text (the "看不见超链接" bug). Visual language
+   matches the markdown renderer's --md-link tokens. */
+.ProseMirror.xbot-editor a {
+  color: var(--accent, #6366f1);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent, #6366f1) 45%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  border-radius: 2px;
+  transition: background-color 0.15s ease, text-decoration-color 0.15s ease;
+  cursor: text; /* editing surface — not a navigation target */
+}
+.ProseMirror.xbot-editor a:hover {
+  text-decoration-color: var(--accent, #6366f1);
+  background-color: color-mix(in srgb, var(--accent, #6366f1) 10%, transparent);
 }
 
 /* Placeholder — tiptap Placeholder extension puts text in data-placeholder attr */
