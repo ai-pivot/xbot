@@ -316,7 +316,7 @@ func (t *TodoWriteTool) Name() string { return "TodoWrite" }
 func (t *TodoWriteTool) Description() string {
 	return `管理当前任务的 TODO 列表。传入完整的 todo 数组覆盖更新。
 参数（JSON）:
-  - todos: array of {id(number), text(string), status(string, required: "pending"|"doing"|"done")}
+  - todos: array of {id(number), text(string, required: 非空任务描述), status(string, required: "pending"|"doing"|"done")}
 
 ⚠️ 当前正在执行的 TODO 项必须标记 status: "doing"（UI 显示旋转图标+高亮）。
 已完成的过时 TODO（不再相关的条目）直接删除，不要保留在列表里。
@@ -328,13 +328,13 @@ func (t *TodoWriteTool) Parameters() []llm.ToolParam {
 		{
 			Name:        "todos",
 			Type:        "array",
-			Description: "Complete TODO list (overwrites). Each item: {id(number), text(string), status(string: 'pending'|'doing'|'done')}. 当前正在执行的项必须标记 status='doing'；已完成的过时项直接删除",
+			Description: "Complete TODO list (overwrites). Each item: {id(number), text(string, required — non-empty task description), status(string: 'pending'|'doing'|'done')}. 当前正在执行的项必须标记 status='doing'；已完成的过时项直接删除",
 			Required:    true,
 			Items: &llm.ToolParamItems{
 				Type: "object",
 				Properties: map[string]any{
 					"id":     map[string]any{"type": "number"},
-					"text":   map[string]any{"type": "string"},
+					"text":   map[string]any{"type": "string", "description": "non-empty task description"},
 					"status": map[string]any{"type": "string", "enum": []string{"pending", "doing", "done"}},
 				},
 				Required: []string{"id", "text", "status"},
@@ -353,9 +353,18 @@ func (t *TodoWriteTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 		return nil, err
 	}
 	sk := t.Manager.sessionKey(ctx)
-	// 严格校验：每项 status 必填且合法。旧格式 done=true → status 为空 → 报错
-	// 让 LLM 自行纠正（不做兼容转换——schema 就是 status: pending|doing|done）。
+	// 严格校验：text 必填（2026-09-04 用户要求）——空/缺失 text 的条目直接
+	// 报错，不做静默接受（否则渲染出空行 TODO）。与 status 校验同模式：
+	// 报错让 LLM 自行纠正（json 静默丢弃缺失字段 → text 为空字符串）。
 	for i, item := range a.Todos {
+		if strings.TrimSpace(item.Text) == "" {
+			return &ToolResult{
+				Summary: fmt.Sprintf("⛔ item %d (id=%d): missing required field 'text'. Every TODO item needs a non-empty task description.", i+1, item.ID),
+				IsError: true,
+			}, nil
+		}
+		// 严格校验：每项 status 必填且合法。旧格式 done=true → status 为空 → 报错
+		// 让 LLM 自行纠正（不做兼容转换——schema 就是 status: pending|doing|done）。
 		if item.Status == "" {
 			return &ToolResult{
 				Summary: fmt.Sprintf("⛔ item %d (%s): missing required field 'status'. The 'done' boolean has been REMOVED. Use status: \"pending\"|\"doing\"|\"done\".", i+1, truncateStr(item.Text, 30)),

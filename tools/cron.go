@@ -31,8 +31,8 @@ func (t *CronTool) Name() string { return "Cron" }
 func (t *CronTool) Description() string {
 	return `Schedule tasks that trigger the agent at specified times. Actions: add, list, remove.
 - add: create a job with message + one of (cron_expr, every_seconds, delay_seconds, at). When triggered, the message is sent to the agent as a user message, initiating a full processing loop (LLM reasoning + tool calls + reply).
-- list: show all scheduled jobs
-- remove: delete a job by job_id`
+- list: show scheduled jobs for the CURRENT session only (session-scoped — each session manages only its own jobs)
+- remove: delete a job by job_id (only jobs created by the current session)`
 }
 
 func (t *CronTool) Parameters() []llm.ToolParam {
@@ -63,18 +63,19 @@ func (t *CronTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) 
 		return nil, err
 	}
 
-	senderID := ""
+	channel, chatID := "", ""
 	if ctx != nil {
-		senderID = ctx.SenderID
+		channel = ctx.Channel
+		chatID = ctx.ChatID
 	}
 
 	switch p.Action {
 	case "add":
 		return t.addJob(ctx, *p)
 	case "list":
-		return t.listJobs(senderID)
+		return t.listJobs(channel, chatID)
 	case "remove":
-		return t.removeJob(p.JobID, senderID)
+		return t.removeJob(p.JobID, channel, chatID)
 	default:
 		return nil, fmt.Errorf("unknown action: %s (use add, list, remove)", p.Action)
 	}
@@ -166,8 +167,14 @@ func (t *CronTool) addJob(ctx *ToolContext, p cronParams) (*ToolResult, error) {
 		job.ID, schedDesc, job.Message, job.NextRun.Format("2006-01-02 15:04:05 MST"))), nil
 }
 
-func (t *CronTool) listJobs(senderID string) (*ToolResult, error) {
-	jobs, err := t.cronSvc.ListJobsBySender(senderID)
+// listJobs lists the CURRENT session's cron jobs only (session-scoped: each
+// session sees and manages only its own jobs — the same policy as the web
+// task panel's CronTasks callback, ListJobsByChannelChatID). The ToolContext's
+// Channel+ChatID is the session key the job was created with; SubAgents inherit
+// the parent session's origin (ctx.ChatID = root session), so jobs created by
+// a SubAgent belong to the parent session and are managed from there.
+func (t *CronTool) listJobs(channel, chatID string) (*ToolResult, error) {
+	jobs, err := t.cronSvc.ListJobsByChannelChatID(channel, chatID)
 	if err != nil {
 		log.WithError(err).Error("Failed to list cron jobs")
 		return nil, fmt.Errorf("failed to list cron jobs: %w", err)
@@ -183,21 +190,26 @@ func (t *CronTool) listJobs(senderID string) (*ToolResult, error) {
 	})
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Scheduled jobs (%d):\n\n", len(jobs))
+	fmt.Fprintf(&sb, "Scheduled jobs for this session (%d):\n\n", len(jobs))
 	for _, j := range jobs {
-		fmt.Fprintf(&sb, "- **%s**\n  Schedule: %s\n  Message: %s\n  Channel: %s\n  Next: %s\n\n",
-			j.ID, t.scheduleDescription(j), j.Message, j.Channel,
+		fmt.Fprintf(&sb, "- **%s**\n  Schedule: %s\n  Message: %s\n  Next: %s\n\n",
+			j.ID, t.scheduleDescription(j), j.Message,
 			j.NextRun.Format("2006-01-02 15:04:05 MST"))
 	}
 	return NewResult(sb.String()), nil
 }
 
-func (t *CronTool) removeJob(jobID string, senderID string) (*ToolResult, error) {
+// removeJob deletes a job by ID, verifying it belongs to the CURRENT session
+// (session-scoped ownership: a session can only cancel its own jobs). A job
+// from another session returns "not found" — no existence leak. Jobs created
+// by SubAgents carry the parent session's origin (channel+chatID), so the
+// parent session manages them.
+func (t *CronTool) removeJob(jobID, channel, chatID string) (*ToolResult, error) {
 	if jobID == "" {
 		return nil, fmt.Errorf("job_id is required for remove")
 	}
 
-	// Verify job exists and belongs to sender
+	// Verify job exists and belongs to the calling session (channel+chatID).
 	job, err := t.cronSvc.GetJob(jobID)
 	if err != nil {
 		log.WithError(err).Error("Failed to get cron job")
@@ -206,8 +218,8 @@ func (t *CronTool) removeJob(jobID string, senderID string) (*ToolResult, error)
 	if job == nil {
 		return nil, fmt.Errorf("job not found: %s", jobID)
 	}
-	if job.SenderID != senderID {
-		return nil, fmt.Errorf("job not found: %s", jobID)
+	if job.Channel != channel || job.ChatID != chatID {
+		return nil, fmt.Errorf("job not found: %s (jobs can only be removed from the session that created them)", jobID)
 	}
 
 	if err := t.cronSvc.RemoveJob(jobID); err != nil {

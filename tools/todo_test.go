@@ -233,6 +233,48 @@ func TestTodoWrite_LegacyDoneRejected(t *testing.T) {
 	}
 }
 
+// 严格校验：text 必填（用户要求 2026-09-04）——空/缺失 text 的条目必须报错，
+// 不做静默接受（否则渲染出空行 TODO）。与 status 校验同模式：报错让 LLM 自行纠正。
+func TestTodoWrite_EmptyTextRejected(t *testing.T) {
+	// 磁盘隔离：GetTodos 内存未命中时从 ~/.xbot/todos/<hash>.json 懒加载。
+	// 不隔离 HOME 时，红灯运行的未校验写入会持久化到真实用户目录，绿灯
+	// 运行读到脏数据（"rejected call must NOT write todos, got 1 items" 的
+	// 假失败）。t.TempDir() 让本测试的持久化与真实 HOME 完全隔离。
+	t.Setenv("HOME", t.TempDir())
+	mgr := NewTodoManager()
+	ctx := &ToolContext{
+		Ctx:     context.Background(),
+		AgentID: "main",
+		Channel: "cli",
+		ChatID:  "chat-strict-text",
+	}
+	tool := &TodoWriteTool{Manager: mgr}
+
+	// 缺失 text（json 静默丢弃缺失字段 → text 为空字符串）→ 必须报错
+	res, err := tool.Execute(ctx, `{"todos":[{"id":1,"status":"doing"},{"id":2,"text":"real-task","status":"pending"}]}`)
+	if err != nil {
+		t.Fatalf("Execute returned err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("missing text must be REJECTED with IsError=true, got summary: %q", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "text") {
+		t.Errorf("error message must mention the 'text' field, got: %q", res.Summary)
+	}
+
+	// 确认没有半写状态：报错时不得写入任何 TODO（含合法的第 2 项）
+	todos := mgr.GetTodos(mgr.sessionKey(ctx))
+	if len(todos) != 0 {
+		t.Errorf("rejected call must NOT write todos, got %d items", len(todos))
+	}
+
+	// 空白字符串 text（"   "）同样报错
+	res2, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"   ","status":"doing"}]}`)
+	if !res2.IsError {
+		t.Errorf("whitespace-only text must be rejected, got: %q", res2.Summary)
+	}
+}
+
 // 严格校验：非法 status 值报错。
 func TestTodoWrite_InvalidStatusRejected(t *testing.T) {
 	mgr := NewTodoManager()

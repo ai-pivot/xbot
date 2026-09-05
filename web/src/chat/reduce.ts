@@ -744,6 +744,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         if (t && t.phase.kind === 'live') {
           const snap = ev.active.snapshot
           const d = t.phase.data
+          // 工具相变不变量（streamingTools ∩ activeTools = ∅，与 reduce 的
+          // stream/iteration case 同语义）：合并两侧数据新鲜度不同 —— 保留
+          // live 的 stale streamingTools（切 tab 断连丢了清除它的结构化事件）
+          // + 快照的 activeTools（running）→ 同一工具双渲染（用户实录：切 tab
+          // 后 task_wait 一个 generating pill + 一个 running pill）。同名
+          // generating 条目在 activeTools 声明 running 时即过期 —— 合并结果
+          // 强制过滤；不同名条目各自独立（Read generating + Shell running 共存）。
+          const mergedActiveTools = d.activeTools.length > 0 ? d.activeTools : snap.activeTools
+          const mergedStreamingTools = (d.streamingTools.length > 0 ? d.streamingTools : snap.streamingTools)
+            .filter((t2) => !mergedActiveTools.some((a) => a.name === t2.name))
           turns.set(activeTurn, {
             ...t,
             phase: {
@@ -754,8 +764,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                 content: d.content !== '' ? d.content : snap.content,
                 reasoning: d.reasoning !== '' ? d.reasoning : snap.reasoning,
                 iterations: mergeIterations(d.iterations, snap.iterations),
-                activeTools: d.activeTools.length > 0 ? d.activeTools : snap.activeTools,
-                streamingTools: d.streamingTools.length > 0 ? d.streamingTools : snap.streamingTools,
+                activeTools: mergedActiveTools,
+                streamingTools: mergedStreamingTools,
                 genui: d.genui !== '' ? d.genui : snap.genui,
                 todos: d.todos.length > 0 ? d.todos : snap.todos,
                 subAgents: d.subAgents.length > 0 ? d.subAgents : snap.subAgents,

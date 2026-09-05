@@ -1877,3 +1877,129 @@ describe('REPRO: progressPhase 全链透传（web 压缩提示）', () => {
     expect(live.phase).toBe('thinking') // streaming=true → thinking（旧派生保持）
   })
 })
+
+// ─── 切 tab 双渲染：streamingTools ∩ activeTools = ∅ 在 history_replaced 合并点强制 ───
+// 用户实录（2026-09-04，turn-580-live DOM dump）：task_wait 一个 generating pill
+// （无参数）+ 一个 running pill（带 task_id 参数）同时渲染。事故链：
+//   1. turn 流式输出 content + task_wait 参数生成中（stream 事件带
+//      streamingTools=[task_wait generating]）。
+//   2. 用户切 tab → SSE 断开 → 清除 generating 的结构化事件
+//      （activeTools=[task_wait running]）丢失（ring 驱逐 → resync_required）。
+//   3. 切回 reload → history_replaced step 3.5 合并：activeTools 取快照
+//      （running）、streamingTools 保留 live 的 stale generating → 双渲染。
+// reduce 的 stream/iteration 两个 case 都有同名过滤（"H: 同一工具不得双渲染"），
+// 唯独 step 3.5 合并点没有 —— 修复在此强制不变量。
+describe('切 tab 双渲染（history_replaced 合并的工具相变不变量）', () => {
+  const generatingTool = (name: string) => ({
+    name, label: '', status: 'generating', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '',
+  })
+  const runningTool = (name: string, label = '') => ({
+    name, label, status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '',
+  })
+
+  it('REPRO: 切 tab 回来 reload —— 保留 live 的 stale streamingTools 与快照 activeTools 不得双渲染', () => {
+    // 现场：turn 1 流式中，task_wait 参数生成中（streamingTools），
+    // 结构化事件（activeTools=running）在断连窗口丢失。
+    const s0 = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: 5 as never, iteration: null,
+        content: '继续冲 100 tok/s', reasoning: undefined,
+        streamingTools: [generatingTool('task_wait') as never],
+        genui: undefined, streamStats: undefined,
+      },
+    ])
+    const live0 = s0.turns.get(T1)?.phase
+    if (live0?.kind !== 'live') throw new Error('turn 1 must be live')
+    expect(live0.data.streamingTools.map((t) => t.name)).toContain('task_wait')
+    expect(live0.data.activeTools).toHaveLength(0)
+
+    // 切回 reload：history_replaced 的 active 快照（activeTools=[task_wait running]；
+    // historyProgressToLive 硬编码 streamingTools=[]）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [],
+      active: {
+        turnID: T1,
+        snapshot: {
+          ...EMPTY_LIVE,
+          iter: iterNum(1),
+          content: '',
+          activeTools: [runningTool('task_wait', '{"task_id":["5352cf55"]}') as never],
+          streamingTools: [],
+        },
+      },
+      lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T1)?.phase
+    if (t1?.kind !== 'live') throw new Error('turn 1 must stay live (step 3.5)')
+    // 修复后：相变不变量 —— task_wait 只剩 running（activeTools），
+    // stale generating 条目被清除（双渲染根治）。
+    expect(t1.data.activeTools.map((t) => t.name)).toEqual(['task_wait'])
+    expect(t1.data.activeTools[0]?.status).toBe('running')
+    expect(t1.data.streamingTools.map((t) => t.name)).not.toContain('task_wait')
+  })
+
+  it('对照：不同名 streamingTools 不被误杀（live 的 Read generating + 快照的 Shell running 共存）', () => {
+    // 过滤只针对同名相变；不同工具各自独立（Read 还在生成参数、Shell 已执行）。
+    const s0 = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: 5 as never, iteration: null,
+        content: '流式', reasoning: undefined,
+        streamingTools: [generatingTool('Read') as never],
+        genui: undefined, streamStats: undefined,
+      },
+    ])
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [],
+      active: {
+        turnID: T1,
+        snapshot: {
+          ...EMPTY_LIVE,
+          iter: iterNum(1),
+          activeTools: [runningTool('Shell') as never],
+          streamingTools: [],
+        },
+      },
+      lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T1)?.phase
+    if (t1?.kind !== 'live') throw new Error('live')
+    expect(t1.data.activeTools.map((t) => t.name)).toEqual(['Shell'])
+    expect(t1.data.streamingTools.map((t) => t.name)).toEqual(['Read'])
+  })
+
+  it('对照：live 无 streamingTools 时快照 activeTools 正常合并（既有行为不回归）', () => {
+    const s0 = run([
+      started(T1),
+      {
+        type: 'stream', turnID: T1, seq: 5 as never, iteration: null,
+        content: '流式', reasoning: undefined, streamingTools: undefined,
+        genui: undefined, streamStats: undefined,
+      },
+    ])
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [],
+      active: {
+        turnID: T1,
+        snapshot: {
+          ...EMPTY_LIVE,
+          iter: iterNum(1),
+          activeTools: [runningTool('Shell') as never],
+          streamingTools: [],
+        },
+      },
+      lastSeq: null, todos: [],
+    })
+    const t1 = s1.turns.get(T1)?.phase
+    if (t1?.kind !== 'live') throw new Error('live')
+    expect(t1.data.activeTools.map((t) => t.name)).toEqual(['Shell'])
+    expect(t1.data.streamingTools).toHaveLength(0)
+  })
+})
