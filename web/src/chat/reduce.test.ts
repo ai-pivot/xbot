@@ -528,6 +528,105 @@ describe('TDSM reduce — 历史 P0 回归', () => {
     expect(s1.legacy[0].content).toBe('更新后消息')
   })
 
+  it('REPRO: legacy 合并乱序 —— 窗口扩大（回翻页/loadMore 含更旧消息）按 dbID 排序，时间线不乱', () => {
+    // xbotgh CR（#342）：Map.values() 按插入序返回 —— state 的 [5,6] 在前，
+    // 新窗口扩大的更旧消息 [3,4] append 尾部 → 渲染顺序 [5,6,3,4]（时间线
+    // 错乱：更旧的消息排到新消息之后）。修复：合并后按 dbID 排序。
+    const s0 = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h5', role: 'user', content: '消息5', iterations: [], timestamp: 't5', dbID: 5 },
+        { id: 'h6', role: 'assistant', content: '回复6', iterations: [], timestamp: 't6', dbID: 6 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    // 窗口扩大（loadMore 向前翻页）：新窗口含更旧的 [3,4] + 原有 [5,6]（同 id）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h3', role: 'user', content: '消息3', iterations: [], timestamp: 't3', dbID: 3 },
+        { id: 'h4', role: 'assistant', content: '回复4', iterations: [], timestamp: 't4', dbID: 4 },
+        { id: 'h5', role: 'user', content: '消息5', iterations: [], timestamp: 't5', dbID: 5 },
+        { id: 'h6', role: 'assistant', content: '回复6', iterations: [], timestamp: 't6', dbID: 6 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    // 修复前（插入序）：Map 先放 state 的 [5,6] 再 append 新增 [3,4] → [5,6,3,4]
+    // （时间线错乱）。修复后（dbID 排序）：[3,4,5,6] —— 时间线正确。
+    expect(s1.legacy.map((l) => l.dbID)).toEqual([3, 4, 5, 6])
+    expect(s1.legacy.map((l) => l.content)).toEqual(['消息3', '回复4', '消息5', '回复6'])
+  })
+
+  it('REPRO: legacy 合并脏行 —— rewind 已删消息从窗口内清理（不再永久残留）', () => {
+    // xbotgh CR（#342）：rewind 等操作从 DB 删除消息后 reload，新快照已不含被删
+    // 行，但旧代码把它当"窗口缩短"保留 —— 已删消息在 UI 永远删不掉（直到刷新）。
+    // 修复：窗口内（dbID >= 窗口最小 dbID）且不在 incoming 的旧行 → 已删 → 剔除。
+    const s0 = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h5', role: 'user', content: '消息5', iterations: [], timestamp: 't5', dbID: 5 },
+        { id: 'h6', role: 'assistant', content: '回复6', iterations: [], timestamp: 't6', dbID: 6 },
+        { id: 'h7', role: 'assistant', content: '被 rewind 删的行', iterations: [], timestamp: 't7', dbID: 7 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    // rewind 删除 dbID=7 → reload 新窗口 [5,6]（7 已不在 DB）。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h5', role: 'user', content: '消息5', iterations: [], timestamp: 't5', dbID: 5 },
+        { id: 'h6', role: 'assistant', content: '回复6', iterations: [], timestamp: 't6', dbID: 6 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    // 7 在窗口内（>= minDb=5）且不在 incoming → 已删 → 清理（修复前：保留）。
+    expect(s1.legacy.map((l) => l.dbID)).toEqual([5, 6])
+    expect(s1.legacy.some((l) => l.content === '被 rewind 删的行')).toBe(false)
+  })
+
+  it('对照：窗口缩短（分页）不清理窗口外的旧行（dbID < minDb 保留）', () => {
+    // 分页窗口缩短（loadMore 反向：新窗口只含 [5]，旧行 1,2 在窗口外）—— 不是
+    // 删除，保留（与 rewind 删除区分：窗口外的行不参与清理判断）。
+    const s0 = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h1', role: 'user', content: '消息1', iterations: [], timestamp: 't1', dbID: 1 },
+        { id: 'h2', role: 'user', content: '消息2', iterations: [], timestamp: 't2', dbID: 2 },
+        { id: 'h5', role: 'assistant', content: '回复5', iterations: [], timestamp: 't5', dbID: 5 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    // 新窗口只含 [5]（窗口缩短）—— 1,2 在窗口外（dbID < minDb=5）→ 保留。
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h5', role: 'assistant', content: '回复5', iterations: [], timestamp: 't5', dbID: 5 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    expect(s1.legacy.map((l) => l.dbID)).toEqual([1, 2, 5])
+  })
+
+  it('对照：空窗口（fetchHistory 异常/首开）不清理旧行（既有"msg 消失"防线保持）', () => {
+    // 空窗口不是删除语义（fetchHistory 异常返回空 / 新会话首开）—— 不清理任何
+    // 旧行（xbotgh 建议代码的空窗口 bug 修正：minDb=0 会清掉全部旧行，破坏
+    // "tab 缓存 msg 消失"的既有防线——上面的 L476 测试场景）。
+    const s0 = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [
+        { id: 'h1', role: 'user', content: '消息1', iterations: [], timestamp: 't1', dbID: 1 },
+        { id: 'h2', role: 'assistant', content: '回复2', iterations: [], timestamp: 't2', dbID: 2 },
+      ],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    const s1 = reduce(s0, {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [], active: null, lastSeq: null, todos: [],
+    })
+    expect(s1.legacy.map((l) => l.dbID)).toEqual([1, 2])
+  })
+
   it('history_replaced MERGE：committed turn 不在 DB 快照里也保留（发 user msg 后 agent 消息不消失）', () => {
     // turn 1 经 text_final commit（只存在于状态机 —— messages 未同步）。
     const s0 = run([

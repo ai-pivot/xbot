@@ -450,7 +450,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   // —— 一次 reload 补齐所有缺 user 的 committed turn（不只最新）。防抖：每
   // turnID 只触发一次（reload 失败由下次 resync/会话切换兜底；resume turn
   // DB 本无 user 行 → reload 后仍缺 → Set 防抖挡住，不循环）。
-  const userMissingReloadedRef = useRef<Set<number>>(new Set())
+  const userMissingReloadedRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (isSubAgent || !chatID) return
     const msgs = agentChat.messages
@@ -462,12 +462,17 @@ export function AgentPanel({ params, api }: PanelProps) {
     }
     if (!lastCommitted || !lastCommitted.turnID) return
     const turnID = lastCommitted.turnID
-    if (userMissingReloadedRef.current.has(turnID)) return
+    // 复合 key（chatID:turnID）：turnID 是 per-session 计数器（各会话都从 1
+    // 开始），而 MobileAppShell 的 <AgentPanel> 无 key —— 会话切换不重挂载，
+    // 同一组件实例跨会话复用这个 Set。裸 turnID 会让会话 A 的 turn 3 挡掉
+    // 会话 B 的 turn 3（reload 被永久跳过，user 行缺失直到手刷）。
+    const dedupKey = `${chatID}:${turnID}`
+    if (userMissingReloadedRef.current.has(dedupKey)) return
     // 同 turnID 的 user 行缺失（deriveRows：user 行 turnID 绑定 turn ——
     // pendingUsers 沉底行 turnID=MAX_SAFE_INTEGER 不误判）
     const hasUserRow = msgs.some((m) => m.role === 'user' && m.turnID === turnID)
     if (hasUserRow) return
-    userMissingReloadedRef.current.add(turnID)
+    userMissingReloadedRef.current.add(dedupKey)
     void chatRef.current.reload()
   }, [agentChat.messages, isSubAgent, chatID])
 
