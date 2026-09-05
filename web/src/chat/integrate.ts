@@ -241,9 +241,13 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
   // turn 生命周期外存活（E2E："todos survive after turn completes / text
   // event / session switch"）。其余字段在无 live 时空。
   const todos = [...s.todos]
-  if (activeTurn === null) return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
+  // 会话级 goal：与 todos 同语义 —— turn 结束后仍存活（GoalBanner 读
+  // liveProgress.goal；agent set_goal_complete 后 banner 实时切换到 completed
+  // 样式，不依赖 get_goal RPC 的 session 切换重取）。
+  const goal = s.goal
+  if (activeTurn === null) return { ...EMPTY_PROGRESS_SNAPSHOT, todos, goal }
   const t = s.turns.get(activeTurn)
-  if (!t || t.phase.kind !== 'live') return { ...EMPTY_PROGRESS_SNAPSHOT, todos }
+  if (!t || t.phase.kind !== 'live') return { ...EMPTY_PROGRESS_SNAPSHOT, todos, goal }
   const d = t.phase.data
   return {
     ...EMPTY_PROGRESS_SNAPSHOT,
@@ -263,6 +267,7 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
     // todos 统一读会话级（iteration/phase_done 事件同步写入；live data 的
     // todos 仅作 hydration union 的中间态）。
     todos,
+    goal,
     subAgents: [...d.subAgents],
     tokenUsage: d.tokenUsage,
     streamStats: d.streamStats,

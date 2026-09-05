@@ -31,7 +31,7 @@ function run(events: readonly DomainEvent[], from: ChatState = initialChatState(
   return events.reduce(reduce, from)
 }
 
-const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1): DomainEvent => ({
+const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1, goal?: import('@/types/shared').GoalInfo): DomainEvent => ({
   type: 'iteration',
   turnID: turn,
   iter: iterNum(iter),
@@ -42,6 +42,7 @@ const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1): Do
   completedTools: [],
   iterationsDelta: [],
   todos: undefined,
+  goal,
   subAgents: undefined,
   tokenUsage: undefined,
   streamStats: undefined,
@@ -69,12 +70,13 @@ const phaseDone = (turn: ReturnType<typeof turnID>, finalIteration: DomainEvent 
   reasoning: string
   tools: never[]
   toolCount: number
-} | null): DomainEvent => ({
+} | null, goal?: import('@/types/shared').GoalInfo): DomainEvent => ({
   type: 'phase_done',
   turnID: turn,
   seq: 99 as never,
   finalIteration,
   todos: undefined,
+  goal,
 }) as DomainEvent
 
 // ─── I1-I6 不变量断言器（性质测试的基石） ─────────────────────
@@ -2001,5 +2003,64 @@ describe('切 tab 双渲染（history_replaced 合并的工具相变不变量）
     if (t1?.kind !== 'live') throw new Error('live')
     expect(t1.data.activeTools.map((t) => t.name)).toEqual(['Shell'])
     expect(t1.data.streamingTools).toHaveLength(0)
+  })
+})
+
+describe('TDSM reduce — goal 会话级状态（agent set_goal_complete 后 banner 实时更新）', () => {
+  it('iteration 事件携带 goal → 写入会话级状态，liveProgressFromState 输出（GoalBanner 数据源）', () => {
+    const s1 = run([
+      started(T1),
+      iteration1(T1, 'working', 1, { objective: '写完报告', status: 'active' }),
+    ])
+    expect(s1.goal?.objective).toBe('写完报告')
+    expect(s1.goal?.status).toBe('active')
+    expect(liveProgressFromState(s1).goal?.status).toBe('active')
+  })
+
+  it('phase_done 携带 completed goal → turn 结束（committed）后 goal 仍存活 —— banner 保持 completed 样式', () => {
+    const s1 = run([
+      started(T1),
+      iteration1(T1, 'working', 1, { objective: '写完报告', status: 'active' }),
+      phaseDone(T1, null, { objective: '写完报告', status: 'completed', summary: '报告已交付' }),
+      textFinal(T1, 'Done'),
+    ])
+    // turn 已 committed（activeTurn null）—— goal 是会话级状态，不随 turn 结束消失
+    expect(s1.activeTurn).toBeNull()
+    expect(s1.goal?.status).toBe('completed')
+    expect(s1.goal?.summary).toBe('报告已交付')
+    expect(liveProgressFromState(s1).goal?.status).toBe('completed')
+  })
+
+  it('事件未携带 goal（undefined）→ 保持现有状态不覆盖（goal 非目标的迭代事件不清空 banner）', () => {
+    const s1 = run([
+      started(T1),
+      iteration1(T1, 'w', 1, { objective: '写完报告', status: 'active' }),
+    ])
+    const s2 = reduce(s1, iteration1(T1, 'w2', 2)) // 无 goal 字段
+    expect(s2.goal?.status).toBe('active')
+  })
+
+  it('normalize：progress_structured 的 goal 字段进事件（optGoal —— 修复前 TDSM 完全丢弃 goal）', () => {
+    const evs = normalizeEvent({
+      type: 'progress_structured',
+      chat_id: 'chat-1',
+      progress: {
+        phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 5,
+        active_tools: [],
+        goal: { objective: '写完报告', status: 'completed', summary: 'ok' },
+      },
+    }, 'chat-1')
+    const iter = evs?.find((e) => e.type === 'iteration')
+    expect(iter && 'goal' in iter ? iter.goal : undefined).toEqual({ objective: '写完报告', status: 'completed', summary: 'ok' })
+  })
+
+  it('normalize：goal 字段缺失/非法 → undefined（保持状态不覆盖）', () => {
+    const evs = normalizeEvent({
+      type: 'progress_structured',
+      chat_id: 'chat-1',
+      progress: { phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 5, active_tools: [], goal: 'not-an-object' },
+    }, 'chat-1')
+    const iter = evs?.find((e) => e.type === 'iteration')
+    expect(iter && 'goal' in iter ? iter.goal : 'sentinel').toBeUndefined()
   })
 })

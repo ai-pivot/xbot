@@ -19,7 +19,7 @@ import {
   normalizeWebSubAgents,
   normalizeWebTools,
 } from '@/components/agent/progressStore'
-import type { QueueItemPayload, TodoItem } from '@/types/shared'
+import type { GoalInfo, QueueItemPayload, TodoItem } from '@/types/shared'
 import {
   eventSeq,
   iterNum,
@@ -54,6 +54,23 @@ function optTodos(v: unknown): TodoItem[] | undefined {
         : r?.done === true ? 'done' : 'pending',
     }
   })
+}
+
+/**
+ * optGoal — progress 载荷的 goal 字段（protocol.ProgressEvent.Goal，engine 的
+ * refreshStructuredTodos 每个 iteration 刷新 + set_goal_complete 工具完成后
+ * emitGoalProgress 直发）。缺省 → undefined（"事件未携带 goal"——保持状态不覆盖；
+ * 与 todos 的 optTodos 语义一致）。目标状态是会话级状态，banner 靠它实时更新
+ * （"agent set_goal_complete 后前端样式不更新"根因：TDSM 此前完全丢弃 goal 字段）。
+ */
+function optGoal(v: unknown): GoalInfo | undefined {
+  const r = asRecord(v)
+  if (!r || typeof r.objective !== 'string' || !r.objective) return undefined
+  return {
+    objective: r.objective,
+    status: typeof r.status === 'string' && r.status ? r.status : 'active',
+    summary: typeof r.summary === 'string' && r.summary ? r.summary : undefined,
+  }
 }
 
 /**
@@ -239,6 +256,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
       seq,
       finalIteration,
       todos: optTodos(p.todos),
+      goal: optGoal(p.goal),
     }
     // 快照合并场景：done + 流式载荷并存 → stream 先应用（收尾定格流式文本）。
     return streamPayload ? [streamEventFrom(p, turn, seq), done] : [done]
@@ -285,6 +303,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
     completedTools: normalizeWebTools(Array.isArray(p.completed_tools) ? p.completed_tools : []),
     iterationsDelta: rawDelta.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null),
     todos: optTodos(p.todos),
+    goal: optGoal(p.goal),
     subAgents: Array.isArray(p.sub_agents)
       ? normalizeWebSubAgents(p.sub_agents as unknown[])
       : undefined,

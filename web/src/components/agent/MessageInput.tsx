@@ -428,6 +428,16 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     }
   }, [placeholderText, editor])
 
+  // Auto-reset interject mode when the session leaves busy — the ⚡/queue toggle
+  // is meaningless while idle, and a stale interruptMode=true keeps the composer
+  // in 插话 UI (violet send button + interject placeholder) after busy→idle
+  // (user report: "插话/排队 UI 不会自动转变普通发送 UI")，and a queued
+  // message would carry interrupt=true against an idle session. Resetting also
+  // makes the next busy period start from the default queue mode (反之亦然).
+  useEffect(() => {
+    if (!busy && interruptMode) onInterruptModeChange?.(false)
+  }, [busy, interruptMode, onInterruptModeChange])
+
   // --- Cleanup draft timer on unmount + flush draft synchronously ---
   useEffect(() => {
     return () => {

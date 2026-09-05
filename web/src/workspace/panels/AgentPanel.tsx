@@ -357,6 +357,26 @@ export function AgentPanel({ params, api }: PanelProps) {
     agentChat.busyFallback) &&
     !askUser.prompt
 
+  // Turn 结束（busy→idle 边沿）时重取 get_goal —— goal 状态变化的事件兜底：
+  // set_goal_complete 后端 emitGoalProgress 会推 goal 事件（TDSM 实时更新），
+  // 但 SSE 丢事件 / 事件被合并时 banner 会滞留旧状态，RPC 兜底保证收敛。
+  const prevBusyRef = useRef(busy)
+  useEffect(() => {
+    const was = prevBusyRef.current
+    prevBusyRef.current = busy
+    if (was && !busy && chatID && messageChannel) {
+      getGoal({ channel: messageChannel, chatID })
+        .then((g) => {
+          if (g && g.objective) {
+            setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
+          } else {
+            setGoalOverride(null)
+          }
+        })
+        .catch(() => {})
+    }
+  }, [busy, chatID, messageChannel])
+
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
   const progressTokenRef = useRef<{ key: string; promptTokens: number | null }>({

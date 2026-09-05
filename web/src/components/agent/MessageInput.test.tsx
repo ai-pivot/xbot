@@ -64,6 +64,28 @@ describe('MessageInput', () => {
     expect((wrapper as HTMLElement).style.paddingBottom).toBe('')
   })
 
+  it('auto-resets interject mode when the session leaves busy (busy→idle switches back to the normal send UI)', () => {
+    const onInterruptModeChange = vi.fn()
+    const base = { onSend: vi.fn(), onCancel: vi.fn(), onUpload: vi.fn(), onInterruptModeChange }
+    const { rerender } = renderWithProviders(
+      <MessageInput {...base} busy interruptMode />,
+    )
+    // While busy + interruptMode: no reset (interject is a valid per-busy-period choice)
+    expect(onInterruptModeChange).not.toHaveBeenCalled()
+
+    // busy→idle while the user is typing: the stale interruptMode kept the
+    // composer in 插话 UI (violet send button + interject placeholder) —
+    // it must auto-reset so the UI reverts to the normal send state.
+    rerender(<MessageInput {...base} busy={false} interruptMode />)
+    expect(onInterruptModeChange).toHaveBeenCalledTimes(1)
+    expect(onInterruptModeChange).toHaveBeenCalledWith(false)
+
+    // 反之亦然: once reset, the next busy period starts from the default queue
+    // mode — interruptMode=false renders the queue UI, not the interject UI.
+    rerender(<MessageInput {...base} busy interruptMode={false} />)
+    expect(onInterruptModeChange).toHaveBeenCalledTimes(1) // no spurious calls
+  })
+
   it('maps /rewind to the Web rewind action instead of sending it as a message', async () => {
     const onSend = vi.fn()
     const onRewindLatest = vi.fn()

@@ -15,6 +15,11 @@ import (
 // handler sees the completed status and stops injecting continuation prompts.
 type setGoalCompleteTool struct {
 	manager *GoalManager
+	// onComplete notifies the frontend in real time: without it the GoalBanner
+	// keeps rendering the "active" goal until the next session switch (the
+	// frontend's only other goal sources are the get_goal RPC on session load
+	// and optimistic user-action updates). Wired to Agent.emitGoalProgress.
+	onComplete func(chName, chatID string)
 }
 
 func (t *setGoalCompleteTool) Name() string { return "set_goal_complete" }
@@ -57,6 +62,14 @@ func (t *setGoalCompleteTool) Execute(ctx *tools.ToolContext, input string) (*to
 
 	sessionKey := ctx.Channel + ":" + ctx.ChatID
 	t.manager.Complete(sessionKey, a.Summary)
+
+	// Real-time frontend update: emit a progress event carrying the completed
+	// goal so the GoalBanner switches to its completed style immediately (the
+	// banner otherwise sticks on "active" until the next session switch — the
+	// frontend's goal state only refreshes via progress events / get_goal RPC).
+	if t.onComplete != nil {
+		t.onComplete(ctx.Channel, ctx.ChatID)
+	}
 
 	return tools.NewResultWithTips(
 		fmt.Sprintf("✅ 目标已完成: %s", a.Summary),

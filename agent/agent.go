@@ -1780,7 +1780,7 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 初始化 GoalManager 并注册工具 + PreTurnEnd hook
 	a.goalManager = NewGoalManager()
-	registry.RegisterCore(&setGoalCompleteTool{manager: a.goalManager})
+	registry.RegisterCore(&setGoalCompleteTool{manager: a.goalManager, onComplete: a.emitGoalProgress})
 	a.hookManager.RegisterBuiltin(a.goalManager.PreTurnEndHook())
 
 	// Register AI-Native TUI & Config tools as core (always available)
