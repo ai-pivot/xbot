@@ -111,6 +111,10 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     if (historyChatID === null) return
     if (historyOwner === null || historyOwner !== historyChatID) return
     const ev = historyToReplaced(historyMessages, initialProgress)
+    // 诊断：history_replaced 是 reload/恢复链路的关键事件（active 快照合并、
+    // step 3.5 live/snapshot union 都在这里）—— 此前 chatDiag 只记录 SSE 事件，
+    // reload 是否到达状态机是排障盲区（切 tab 双渲染排查实录）。
+    chatDiag('history_replaced', ev, store)
     store.dispatch(ev)
   }, [historyReady, historyMessages, initialProgress, progressChatID, store, historyOwner, historyChatID])
 

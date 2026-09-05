@@ -478,6 +478,12 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if _, ok := result["compression_threshold"]; !ok {
 			result["compression_threshold"] = fmt.Sprintf("%g", h.Cfg.Agent.CompressionThreshold)
 		}
+		// allow_self_compact: DB value wins; config.json is the fallback default
+		// (the boot-time registration reads config.json — keep the web switch in
+		// sync with the actual startup state when the user never saved a value).
+		if _, ok := result["allow_self_compact"]; !ok {
+			result["allow_self_compact"] = fmt.Sprintf("%v", h.Cfg.Agent.AllowSelfCompact)
+		}
 		return result, nil
 	})
 	t["set_setting"] = rpc1void(func(ctx context.Context, p struct {

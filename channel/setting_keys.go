@@ -123,6 +123,14 @@ var AllSettingDefs = []SettingDef{
 	// ── Worktree isolation ──
 	{Key: "auto_worktree", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Automatically create isolated git worktrees for each session (no shared workspace)", ValidValues: "true|false", DefaultValue: "false"},
 
+	// ── Agent behavior ──
+	// allow_self_compact registers the compact_context tool so the agent can
+	// trigger a context compression itself (agent-initiated compaction). The
+	// runtime handler (SettingHandlerRegistry) registers/unregisters the tool
+	// live; saveServerConfig persists the value to config.json so the startup
+	// registration path (server_core.go) survives restarts.
+	{Key: "allow_self_compact", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Let the agent call compact_context to compress its own context on demand (in addition to the threshold-driven auto compression)", ValidValues: "true|false", DefaultValue: "false"},
+
 	{Key: "language", Scope: ScopeUser, Source: SourceUserDB, Permission: PermTransient, AIDescription: "UI language", ValidValues: "zh|en|ja", DefaultValue: "zh"},
 	{Key: "context_mode", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Context handling: auto or manual", ValidValues: "auto|manual", DefaultValue: "auto"},
 	{Key: "max_iterations", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Max tool iterations per turn", ValidValues: "1-500", DefaultValue: "30"},

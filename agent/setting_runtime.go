@@ -73,6 +73,30 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 		},
 	},
 
+	// allow_self_compact: registers/unregisters the compact_context tool LIVE
+	// (server_core.go registers it at boot from config.json — saveServerConfig
+	// persists this runtime change there, so restarts keep the state). The tool
+	// is the agent-initiated compaction entry (Codex CLI parity): the model
+	// observes context pressure and requests the handover itself. Off = the
+	// model never sees the tool (unregistered), threshold-driven auto
+	// compression is unaffected.
+	"allow_self_compact": {
+		ApplyConfig: func(cfg *config.Config, value string) {
+			cfg.Agent.AllowSelfCompact = cli.ParseSettingBool(value)
+		},
+		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
+			if ag == nil {
+				return
+			}
+			if cli.ParseSettingBool(value) {
+				ag.RegisterCoreTool(&tools.CompactContextTool{})
+				ag.RegisterTool(&tools.CompactContextTool{})
+			} else {
+				ag.DisableTools([]string{"compact_context"})
+			}
+		},
+	},
+
 	// --- Runtime state settings (config + agent side-effects) ---
 	"context_mode": {
 		ApplyConfig: func(cfg *config.Config, value string) { cfg.Agent.ContextMode = value },
