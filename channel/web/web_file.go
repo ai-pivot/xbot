@@ -47,20 +47,6 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	detectedMIME := http.DetectContentType(data)
-	if !isAllowedExtension(ext) {
-		jsonErrorResponse(w, http.StatusBadRequest, "file type not allowed")
-		return
-	}
-	if isBlockedMIME(detectedMIME) {
-		log.WithFields(log.Fields{
-			"filename":  header.Filename,
-			"mime_type": detectedMIME,
-		}).Warn("Blocked file upload with dangerous MIME type")
-		jsonErrorResponse(w, http.StatusBadRequest, "file type not allowed")
-		return
-	}
-
 	mimeType := mime.TypeByExtension(ext)
 	if mimeType == "" {
 		mimeType = http.DetectContentType(data)
@@ -107,27 +93,4 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		"size":       len(data),
 		"mime":       mimeType,
 	})
-}
-
-func isAllowedExtension(ext string) bool {
-	allowed := map[string]bool{
-		".txt": true, ".md": true, ".csv": true, ".json": true, ".xml": true, ".yaml": true, ".yml": true,
-		".log": true, ".py": true, ".js": true, ".ts": true, ".go": true, ".rs": true, ".java": true,
-		".c": true, ".cpp": true, ".h": true, ".sh": true, ".bash": true, ".zsh": true,
-		".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true,
-		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
-		".zip": true, ".tar": true, ".gz": true, ".7z": true, ".rar": true,
-		".mp3": true, ".mp4": true, ".wav": true, ".webm": true, ".ogg": true,
-		".toml": true, ".cfg": true, ".ini": true, ".env": true, ".sql": true,
-	}
-	return allowed[ext]
-}
-
-func isBlockedMIME(mimeType string) bool {
-	blocked := map[string]bool{
-		"text/html":               true,
-		"application/xhtml+xml":   true,
-		"application/x-httpd-php": true,
-	}
-	return blocked[mimeType]
 }
