@@ -280,7 +280,7 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 		TurnID:    a.getActiveTurnID(progressKey),
 		Iteration: 0,
 		Todos:     a.GetTodos(ch, chatID),
-		Goal:      nil, // explicitly nil → frontend clears the banner
+		Goal:      &protocol.GoalInfo{Objective: "", Status: protocol.GoalStatusCleared}, // explicit cleared marker (objective:"" survives GoalInfo's non-omitempty json tag) — Goal: nil is invisible to the frontend (ProgressEvent.Goal omitempty drops the field entirely, indistinguishable from "not carried"), which broke the clear chain (xbotgh CR: "用户删除目标后 GoalBanner 不消失")
 	}
 	if a.channelRange != nil {
 		a.channelRange(func(_ string, ch channel.Channel) bool {

@@ -260,8 +260,10 @@ export type DomainEvent =
       /** 本事件携带的已完成迭代增量（dedup by iteration#）。 */
       readonly iterationsDelta: readonly WebIteration[]
       readonly todos: readonly TodoItem[] | undefined
-      /** 会话级 goal（active/completed）—— 可选：事件未携带（undefined=保持状态不覆盖）。 */
-      readonly goal?: GoalInfo
+      /** 会话级 goal 三态（xbotgh CR 🔴 清除链路）：GoalInfo = 状态更新；null = 显式清除
+       * （后端 ClearGoal 推 {objective:"",status:"cleared"} 标记——nil Goal 经 omitempty 字段消失，与"未携带"不可区分）；
+       * undefined/缺省 = 事件未携带（保持状态不覆盖）。 */
+      readonly goal?: GoalInfo | null
       readonly subAgents: readonly WebSubAgentProgress[] | undefined
       /** Token 用量（ContextRing/会话上下文刷新用）。 */
       readonly tokenUsage: NonNullable<LiveSnapshot['tokenUsage']> | undefined
@@ -296,8 +298,9 @@ export type DomainEvent =
       /** 后端 recordFinalIteration 补记的最后迭代（normalize 后无 null 数组）。 */
       readonly finalIteration: WebIteration | null
       readonly todos: readonly TodoItem[] | undefined
-      /** 会话级 goal（active/completed）—— 可选：事件未携带（undefined=保持状态不覆盖）。 */
-      readonly goal?: GoalInfo
+      /** 会话级 goal 三态：GoalInfo = 状态更新；null = 显式清除（后端 ClearGoal cleared 标记）；
+       * undefined/缺省 = 事件未携带（保持状态不覆盖）。 */
+      readonly goal?: GoalInfo | null
     }
   | {
       readonly type: 'text_final'

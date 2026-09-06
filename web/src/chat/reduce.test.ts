@@ -31,11 +31,11 @@ function run(events: readonly DomainEvent[], from: ChatState = initialChatState(
   return events.reduce(reduce, from)
 }
 
-const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1, goal?: import('@/types/shared').GoalInfo): DomainEvent => ({
+const iteration1 = (turn: ReturnType<typeof turnID>, content = '', iter = 1, goal?: import('@/types/shared').GoalInfo | null, seq: number = 10): DomainEvent => ({
   type: 'iteration',
   turnID: turn,
   iter: iterNum(iter),
-  seq: 10 as never,
+  seq: seq as never,
   content: content || undefined,
   reasoning: undefined,
   activeTools: [],
@@ -2062,5 +2062,32 @@ describe('TDSM reduce — goal 会话级状态（agent set_goal_complete 后 ban
     }, 'chat-1')
     const iter = evs?.find((e) => e.type === 'iteration')
     expect(iter && 'goal' in iter ? iter.goal : 'sentinel').toBeUndefined()
+  })
+
+  it('xbotgh CR 🔴: ClearGoal 的显式清除标记（objective:"" + status:"cleared"）→ goal=null 写入会话级状态 —— banner 消失链路', () => {
+    // 后端 ClearGoal 推 {objective:"",status:"cleared"}（nil Goal 经 omitempty 字段消失，
+    // 与"未携带"不可区分——回归：用户删除目标后 GoalBanner 不消失）
+    const s1 = run([
+      started(T1),
+      iteration1(T1, 'working', 1, { objective: '写完报告', status: 'active' }),
+    ])
+    expect(s1.goal?.status).toBe('active')
+
+    const s2 = reduce(s1, iteration1(T1, 'w', 2, null, 11))
+    // null（显式清除）写入 s.goal —— 区别于 undefined（未携带，保持状态）
+    expect(s2.goal).toBeNull()
+    // liveProgressFromState.goal=null → AgentPanel `progressSnapshot.goal ?? goalOverride`
+    // → goalOverride（clearGoal RPC 已置 null）→ banner 消失 ✓
+    expect(liveProgressFromState(s2).goal).toBeNull()
+  })
+
+  it('normalize：cleared 标记解析为 null（区别于"未携带"的 undefined）', () => {
+    const evs = normalizeEvent({
+      type: 'progress_structured',
+      chat_id: 'chat-1',
+      progress: { phase: 'tool_exec', turn_id: 1, iteration: 1, seq: 5, active_tools: [], goal: { objective: '', status: 'cleared' } },
+    }, 'chat-1')
+    const iter = evs?.find((e) => e.type === 'iteration')
+    expect(iter && 'goal' in iter ? iter.goal : 'sentinel').toBeNull()
   })
 })

@@ -31,14 +31,17 @@ interface SelectionToolbarProps {
   linkEditSignal?: number
 }
 
-/** Normalize a user-entered URL: pass through schemes/anchors/relative paths,
- *  auto-prefix bare domains with https:// (a bare href would be a relative link). */
+/** Normalize a user-entered URL: allow ONLY known-safe schemes (http/https/mailto/tel) plus
+ *  anchors and root-relative paths — anything else (javascript:, data:, vbscript:, ftp:, …) is
+ *  treated as a bare domain and prefixed with https:// (xbotgh CR: the old generic
+ *  `^[a-z][a-z0-9+.-]*:` passthrough let Ctrl+K set `javascript:` links; the markdown
+ *  `javascript:` URL then persists to DB and other render surfaces may not sanitize it).
+ */
 export function normalizeHref(raw: string): string {
   const url = raw.trim()
   if (!url) return ''
-  if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('#') || url.startsWith('/') || url.startsWith('//')) {
-    return url
-  }
+  if (url.startsWith('#') || url.startsWith('/') || url.startsWith('//')) return url
+  if (/^https?:\/\//i.test(url) || /^(mailto|tel):/i.test(url)) return url
   return `https://${url}`
 }
 

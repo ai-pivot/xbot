@@ -37,13 +37,14 @@ import {
  * 会话级状态携带（todos + goal）：iteration/phase_done 事件在【任何】路径（早期
  * return / 主路径）都必须应用事件携带的会话级字段 —— 事件未携带（undefined）时保留
  * 现值（与 optTodos/optGoal 的"缺省=不覆盖"语义一致）。
- * goal 是 GoalBanner 实时性的唯一事件源（"agent set_goal_complete 后前端样式
- * 不更新"根因：goal 此前完全不进 TDSM，banner 只靠 session 切换时的 get_goal RPC）。
+ * goal 三态（xbotgh CR 🔴 清除链路）：GoalInfo = 状态更新；null = 显式清除（后端
+ * ClearGoal 推 {objective:"",status:"cleared"} 标记——nil Goal 经 omitempty 字段消失与"未携带"
+ * 不可区分，故用标记表达"目标已删除"，null 写入 s.goal）；undefined = 事件未携带。
  */
 function applySessionFields(
   s: ChatState,
   todos: readonly TodoItem[] | undefined,
-  goal: GoalInfo | undefined,
+  goal: GoalInfo | null | undefined,
 ): ChatState {
   let next = s
   if (todos !== undefined) next = { ...next, todos }

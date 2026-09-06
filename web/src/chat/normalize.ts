@@ -59,13 +59,20 @@ function optTodos(v: unknown): TodoItem[] | undefined {
 /**
  * optGoal — progress 载荷的 goal 字段（protocol.ProgressEvent.Goal，engine 的
  * refreshStructuredTodos 每个 iteration 刷新 + set_goal_complete 工具完成后
- * emitGoalProgress 直发）。缺省 → undefined（"事件未携带 goal"——保持状态不覆盖；
- * 与 todos 的 optTodos 语义一致）。目标状态是会话级状态，banner 靠它实时更新
- * （"agent set_goal_complete 后前端样式不更新"根因：TDSM 此前完全丢弃 goal 字段）。
+ * emitGoalProgress 直发）。三态语义（xbotgh CR 🔴 goal 清除链路）：
+ *  - undefined = "事件未携带 goal"（ProgressEvent.Goal 带 omitempty，字段整体消失）→ 保持状态不覆盖
+ *  - null      = "显式清除标记"（后端 ClearGoal 推 {objective:"", status:"cleared"}——
+ *               nil Goal 经 omitempty 序列化后字段消失，前端无法与"未携带"区分，因此用
+ *               空 objective 的 cleared 标记表达"目标已删除"）→ 写入 s.goal = null
+ *  - GoalInfo  = 目标状态（active/completed）→ 写入 s.goal
+ * 目标是会话级状态，banner 靠它实时更新。
  */
-function optGoal(v: unknown): GoalInfo | undefined {
+function optGoal(v: unknown): GoalInfo | null | undefined {
   const r = asRecord(v)
-  if (!r || typeof r.objective !== 'string' || !r.objective) return undefined
+  if (!r || typeof r.objective !== 'string') return undefined
+  // 显式清除标记：ClearGoal 推送（objective:"" 的 cleared 状态）
+  if (r.objective === '' || r.status === 'cleared') return null
+  if (!r.objective) return undefined
   return {
     objective: r.objective,
     status: typeof r.status === 'string' && r.status ? r.status : 'active',

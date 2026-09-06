@@ -365,8 +365,12 @@ export function AgentPanel({ params, api }: PanelProps) {
     const was = prevBusyRef.current
     prevBusyRef.current = busy
     if (was && !busy && chatID && messageChannel) {
+      // Stale-guard（xbotgh CR）：慢响应跨会话切换会把旧会话的 goal 写进新会话的
+      // banner —— 与 session-load getGoal effect（cancelled flag 模式）保持一致。
+      let cancelled = false
       getGoal({ channel: messageChannel, chatID })
         .then((g) => {
+          if (cancelled) return
           if (g && g.objective) {
             setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
           } else {
@@ -374,6 +378,7 @@ export function AgentPanel({ params, api }: PanelProps) {
           }
         })
         .catch(() => {})
+      return () => { cancelled = true }
     }
   }, [busy, chatID, messageChannel])
 
