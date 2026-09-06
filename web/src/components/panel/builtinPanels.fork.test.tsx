@@ -84,13 +84,14 @@ vi.mock('@/components/ui/scroll-area', () => ({
   ),
 }))
 
-const ctx = { tabManager: { openTab: vi.fn(), closeTab: vi.fn(), setActiveTab: vi.fn() } } as never
+const tabManagerMock = { openTab: vi.fn(), closeTab: vi.fn(), setActiveTab: vi.fn() }
+const ctx = { tabManager: tabManagerMock } as never
 
 describe('CoreSessionsPanel fork（REPRO: 主会话面板的 SessionList 漏传 onFork）', () => {
   it('右键点"分叉会话"→ 对话框预填名 → 确认创建 → forkSession(id, channel, label) + 桌面 tab', async () => {
     forkSession.mockClear()
     forkSession.mockResolvedValue('web:chat-new')
-    const openTab = ctx.tabManager.openTab as ReturnType<typeof vi.fn>
+    const openTab = tabManagerMock.openTab
     openTab.mockClear()
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
 
