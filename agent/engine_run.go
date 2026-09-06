@@ -2272,7 +2272,20 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 			subAgentStatuses = s.cfg.InteractiveCallbacks.ListActiveFn(s.cfg.Channel, s.cfg.ChatID)
 		}
 
-		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses)
+		// Agent-facing context pressure (60%+): 60% masking only silently relieves OLD
+		// observations — this tells the MODEL to change its behavior (conserve/wrap up).
+		// Real API data only (Never Estimate Tokens): GetPromptTokens returns "no_data"
+		// until the first LLM call of the Run reports usage.
+		var contextPressure *ContextPressure
+		if pt, src := s.tokenTracker.GetPromptTokens(); src == "api" {
+			maxCtx := 0
+			if s.cfg.ContextManagerConfig != nil {
+				maxCtx = s.cfg.ContextManagerConfig.MaxContextTokens
+			}
+			contextPressure = BuildContextPressure(pt, src, maxCtx)
+		}
+
+		s.systemReminder = BuildSystemReminder(s.messages, todoItems, goalInfo, s.cfg.AgentID, cwd, s.sessionKey, sessionName, subAgentStatuses, contextPressure)
 	}
 
 	// --- Incremental session persistence ---

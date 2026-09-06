@@ -45,12 +45,58 @@ func resolveAbsolutePath(path string) string {
 // appended to a fresh message copy in llmMessages() just before the LLM call.
 const systemReminderToolName = "system_reminder"
 
+// ContextPressure carries REAL API token usage for the per-iteration reminder
+// (agent-facing context-pressure notice). Built ONLY from TokenTracker's API-returned
+// prompt_tokens ("api" source) — never from local estimation (Never Estimate Tokens).
+type ContextPressure struct {
+	Percent      float64 // 0..1 = promptTokens / maxContextTokens
+	PromptTokens int64
+	MaxTokens    int64
+}
+
+// Context-pressure reminder thresholds. The 60% gate aligns with the observation
+// masking threshold (maybeMaskObservations) — masking silently relieves OLD tool
+// results; this reminder tells the MODEL to change its behavior (conserve/wrap up).
+const (
+	ContextPressureInfoThreshold = 0.6
+	ContextPressureHighThreshold = 0.8
+)
+
+// BuildContextPressure derives the reminder payload from real token data.
+// Returns nil when unknown (no API data / maxTokens unresolvable / below 60%) —
+// a nil pressure renders NO block (the common case must stay noise-free).
+func BuildContextPressure(promptTokens int64, tokenSource string, maxTokens int) *ContextPressure {
+	if tokenSource != "api" || promptTokens <= 0 || maxTokens <= 0 {
+		return nil
+	}
+	ratio := float64(promptTokens) / float64(maxTokens)
+	if ratio < ContextPressureInfoThreshold {
+		return nil
+	}
+	return &ContextPressure{Percent: ratio, PromptTokens: promptTokens, MaxTokens: int64(maxTokens)}
+}
+
+func formatTokensShort(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%dk", n/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 // BuildSystemReminder builds a system reminder appended to the last tool message.
 // agentID "main" = main Agent, otherwise SubAgent.
 // sessionKey is the unique session identifier (used for worktree peer lookup).
 // sessionName is the current session display name (used to detect auto-generated names needing rename).
+// contextPressure: nil = below 60% or no real token data (renders no block);
+// non-nil = inject <context-pressure> so the model can proactively conserve/wrap up.
 //
 // v5.2 结构：<user-msg> CDATA（不贴 task 标签）+ <goal> + 结构化 <todos> + 4 条 guidelines。
+// v5.3 +<context-pressure>（60%+ 提醒 agent 上下文压力——60% masking 只静默缓解旧输出，
+// 这个块让模型主动改变行为：收敛读取/尽快收尾）。
 func BuildSystemReminder(
 	messages []llm.ChatMessage,
 	todoItems []TodoProgressItem,
@@ -60,6 +106,7 @@ func BuildSystemReminder(
 	sessionKey string,
 	sessionName string,
 	activeSubAgents []SubAgentStatus,
+	contextPressure *ContextPressure,
 ) string {
 	if len(messages) == 0 {
 		return ""
@@ -150,6 +197,25 @@ func BuildSystemReminder(
 			fmt.Fprintf(&sb, "<subagent status=%q>%s</subagent>", status, html.EscapeString(label))
 		}
 		sb.WriteString("</subagents>")
+	}
+
+	// Agent-facing context pressure (60%+): 60% masking only silently relieves OLD
+	// observations — this block tells the MODEL to change its behavior (conserve
+	// context / wrap up). Real API data only (BuildContextPressure guards source).
+	if contextPressure != nil {
+		pct := int(contextPressure.Percent * 100)
+		fmt.Fprintf(&sb, "<context-pressure percent=\"%d\" used=\"%s\" max=\"%s\">", pct,
+			formatTokensShort(contextPressure.PromptTokens), formatTokensShort(contextPressure.MaxTokens))
+		if contextPressure.Percent >= ContextPressureHighThreshold {
+			sb.WriteString("上下文用量已超过 80% —— 严重压力。立即收尾：完成当前任务后直接回复用户，" +
+				"不再读取大文件/长输出（必要时用 offset/limit/head/tail 截取）；不要开启新的探索方向；" +
+				"新任务建议用户新开会话（/new）。如可用，建议用户手动 /compress 压缩上下文。")
+		} else {
+			sb.WriteString("上下文用量已超过 60%。收敛行为：避免整读大文件（用 offset/limit 分段读取），" +
+				"长输出截取关键部分（head/tail/grep 定位），不要重复粘贴大段内容；" +
+				"优先完成当前任务而非展开新探索。")
+		}
+		sb.WriteString("</context-pressure>")
 	}
 
 	// 行为准则（4 条——v5.2 加"主动维护 TODO 进度"）
