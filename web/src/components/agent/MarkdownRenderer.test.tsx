@@ -321,4 +321,35 @@ A paragraph.`
     const h2s = Array.from(container.querySelectorAll('h2'))
     expect(h2s.some((h) => h.textContent?.includes('sglang-bench'))).toBe(false)
   })
+
+  it('renders markdown images — history messages display pasted/uploaded media inline (UserMessage → shared MarkdownRenderer)', async () => {
+    // 粘贴上传的图片以 ![name](/api/files/download?key=...&inline=1) markdown 落进消息正文，
+    // 历史消息（DB 存的 markdown）经 UserMessage → MarkdownRenderer 渲染：
+    // ① markdown image → 自定义 img 组件（max-w-full 圆角 lazy）
+    // ② 同源相对 URL 必须经 defaultUrlTransform（percent-encoded key 无裸冒号 → relative → 放行）
+    const { container } = render(
+      <MarkdownRenderer
+        content={'![photo.png](/api/files/download?key=uploads%2Fweb%3Achat-1%2Fabc.png&inline=1)\n\n正文段落。'}
+      />,
+    )
+    const img = container.querySelector('img')
+    if (!img) throw new Error('markdown image did not render (img element missing)')
+    // URL 原样保留（relative URL 不被 sanitize 剥掉）
+    expect(img).toHaveAttribute('src', '/api/files/download?key=uploads%2Fweb%3Achat-1%2Fabc.png&inline=1')
+    expect(img).toHaveAttribute('alt', 'photo.png')
+    // 宽度约束样式在（消息内联不撑破）
+    expect(img.className).toContain('max-w-full')
+    // 正文正常渲染
+    expect(container.textContent).toContain('正文段落。')
+  })
+
+  it('renders non-image file references as markdown links (attachment → clickable download link)', async () => {
+    const { container } = render(
+      <MarkdownRenderer content={'[data.bin](/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key)'} />,
+    )
+    const a = container.querySelector('a')
+    if (!a) throw new Error('markdown link did not render (a element missing)')
+    expect(a).toHaveAttribute('href', '/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key')
+    expect(a).toHaveAttribute('target', '_blank')
+  })
 })
