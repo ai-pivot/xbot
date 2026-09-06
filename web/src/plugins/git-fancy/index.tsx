@@ -20,9 +20,9 @@ import {
   setSharedApi,
   getRpc,
   gitRpc,
+  resolveChat,
   openDiffTab,
   onSessionChange,
-  resolveChat,
   statusBadge,
   type GitStatus,
   type GitCommit,
@@ -133,6 +133,11 @@ export function GitFancyPanel() {
 
   const refresh = useCallback(async () => {
     if (!getRpc()) return
+    // 协议修复：会话身份未就绪（布局恢复早于会话加载——resolveChat null）时
+    // 不发 RPC（旧行为伪造 chatID:'default' → 后端 GetOrCreateSession 创建
+    // 幽灵会话 → 非 repo cwd → 面板渲染"不是 git 仓库"且不自愈）。保持
+    // loading 态，session.switched 事件 / 3s 轮询重读身份后自愈。
+    if (!resolveChat()) return
     try {
       const [st, lg] = await Promise.all([
         gitRpc<GitStatus>('status'),
@@ -150,8 +155,9 @@ export function GitFancyPanel() {
   }, [])
 
   // 状态-only 轮询：只刷 status，不重置 commits（"加载更多"的分页累积状态
-  // 不能被轮询冲掉）。
+  // 不能被轮询冲掉）。身份未就绪时静默跳过（下次 tick 重读——自愈路径）。
   const refreshStatusOnly = useCallback(async () => {
+    if (!resolveChat()) return
     try {
       const st = await gitRpc<GitStatus>('status')
       setStatus(st)
@@ -168,6 +174,7 @@ export function GitFancyPanel() {
   useEffect(() => {
     const checkSessionKey = () => {
       const chat = resolveChat()
+      if (!chat) return // 身份未就绪：保持 lastSessionKeyRef 不变——身份到达后 key 变化触发全量刷新（自愈路径）
       const key = `${chat.channel}:${chat.chatID}`
       if (lastSessionKeyRef.current && lastSessionKeyRef.current !== key) {
         // Session 变了——全量刷新（status + commits）

@@ -143,19 +143,39 @@ export function onSessionChange(handler: () => void): () => void {
 
 // ---------- 会话解析 ----------
 
-/** 从当前会话解析 channel/chatID —— 宿主注入 window.__xbot_session__（若有）。 */
-export function resolveChat(): { channel: string; chatID: string } {
+/**
+ * 从当前会话解析 channel/chatID —— 宿主注入 window.__xbot_session__（若有）。
+ *
+ * ⚡ 协议修复（2026-09-06 "刷新后 git 面板显示不是 repo"根因）：会话身份未知时
+ * 返回 null，绝不伪造 {chatID:'default'} —— 布局恢复的 tab 可能先于会话加载 mount，
+ * 伪造身份会让后端 GetOrCreateSession('web','default') 创建幽灵会话并以初始
+ * workdir（非 repo）注入 cwd → 面板渲染"当前目录不是 git 仓库"且不自愈
+ * （关闭重开 tab 才恢复）。调用方必须处理 null：延迟请求直到身份就绪
+ * （session.switched 事件 / 轮询重读），不得用假身份发 RPC。
+ */
+export function resolveChat(): { channel: string; chatID: string } | null {
   const s = (window as unknown as { __xbot_session__?: { channel?: string; chatID?: string } }).__xbot_session__
   if (s?.chatID) {
     return { channel: s.channel ?? 'web', chatID: s.chatID }
   }
-  return { channel: 'web', chatID: 'default' }
+  return null
 }
 
-/** 调用 git-fancy 后端 RPC（带 session 标识，后端注入 cwd）。 */
+/** 会话身份尚未就绪（resolveChat 返回 null）——调用方应延迟请求，不是错误重试场景。 */
+export class SessionNotReadyError extends Error {
+  constructor() {
+    super('会话身份尚未就绪（__xbot_session__ 未设置）——等待 session.switched 或轮询重试')
+    this.name = 'SessionNotReadyError'
+  }
+}
+
+/** 调用 git-fancy 后端 RPC（带 session 标识，后端注入 cwd）。
+ * 身份未知时抛 SessionNotReadyError（调用方延迟到 session.switched / 轮询身份就绪后重试）。 */
 export async function gitRpc<T>(method: string, extra: Record<string, unknown> = {}): Promise<T> {
   if (!rpc) throw new Error('Git 插件未初始化（rpc 未注入）')
-  const res = await rpc(`xbot.git-fancy.${method}`, { ...resolveChat(), ...extra })
+  const chat = resolveChat()
+  if (!chat) throw new SessionNotReadyError()
+  const res = await rpc(`xbot.git-fancy.${method}`, { ...chat, ...extra })
   return res as T
 }
 
