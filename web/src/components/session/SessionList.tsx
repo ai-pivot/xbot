@@ -13,6 +13,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -54,8 +55,9 @@ interface SessionListProps {
   onToggleStar: (id: string) => void
   onRename: (id: string, channel: string, label: string) => Promise<boolean>
   onDelete: (id: string, channel: string) => Promise<boolean>
-  /** Fork: copy session context into a new session. Returns new chatID or null. */
-  onFork?: (id: string, channel: string) => Promise<string | null>
+  /** Fork: copy session context into a new session (with the user-confirmed
+   *  label from the Fork dialog). Returns new chatID or null. */
+  onFork?: (id: string, channel: string, label: string) => Promise<string | null>
   onExport?: (session: SessionInfo, format: ExportFormat) => void
   /** Multi-select mode props. */
   multiSelectMode?: boolean
@@ -96,7 +98,9 @@ export function SessionList({
   const { t } = useI18n()
   const [rename, setRename] = useState<DialogState>(null)
   const [del, setDelete] = useState<DialogState>(null)
+  const [forkTarget, setForkTarget] = useState<DialogState>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [forkDraft, setForkDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const draggedKeyRef = useRef<string | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -295,12 +299,23 @@ export function SessionList({
     setDelete(null)
   }
 
-  // Fork: copy the session's context into a new session. The store's
-  // forkSession handles optimistic insert + auto-switch to the new session,
-  // so no toast is needed — the user sees the new session appear and activate.
-  const handleFork = (session: SessionInfo) => {
-    if (!onFork) return
-    void onFork(session.chatID, session.channel || 'web')
+  // Fork: open the Fork dialog with a prefilled name (user confirms the label
+  // BEFORE creating — no silent auto-fork). submitFork calls onFork with the
+  // confirmed label; the store's forkSession then creates + fully switches to
+  // the new session (switchSession path — backend /switch + cache clear).
+  const openFork = (session: SessionInfo) => {
+    setForkTarget({ id: session.chatID, channel: session.channel, label: session.label || session.chatID })
+    setForkDraft(`${session.label || session.chatID} fork`)
+  }
+
+  const submitFork = async () => {
+    if (!forkTarget || !onFork) return
+    const label = forkDraft.trim()
+    if (!label) return
+    setBusy(true)
+    const newID = await onFork(forkTarget.id, forkTarget.channel, label)
+    setBusy(false)
+    if (newID) setForkTarget(null)
   }
 
   return (
@@ -321,7 +336,7 @@ export function SessionList({
                   onToggleStar={onToggleStar}
                   onRename={openRename}
                   onDelete={openDelete}
-                  onFork={handleFork}
+                  onFork={openFork}
                   onExport={onExport}
                   multiSelectMode={multiSelectMode}
                   selected={selectedIds?.has(sessionKey(s)) ?? false}
@@ -360,7 +375,7 @@ export function SessionList({
                 onToggleStar={onToggleStar}
                 onRename={openRename}
                 onDelete={openDelete}
-                onFork={handleFork}
+                onFork={openFork}
                 onExport={onExport}
                 multiSelectMode={multiSelectMode}
                 selectedIds={selectedIds}
@@ -394,6 +409,38 @@ export function SessionList({
             </Button>
             <Button onClick={() => void submitRename()} disabled={busy || !renameDraft.trim()}>
               {t('common.save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Fork dialog — user confirms the new session's name BEFORE creating
+          (user requirement: no silent auto-fork; rename → create → switch).
+          Prefilled with "{source label} fork"; submit creates the fork and
+          fully switches to it (switchSession path in the store). */}
+      <Dialog open={forkTarget !== null} onOpenChange={(o) => !o && setForkTarget(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t('session.forkTitle')}</DialogTitle>
+            <DialogDescription>
+              {t('session.forkDesc', { name: forkTarget?.label ?? '' })}
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            autoFocus
+            value={forkDraft}
+            onChange={(e) => setForkDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void submitFork()
+            }}
+            aria-label={t('session.nameLabel')}
+          />
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setForkTarget(null)} disabled={busy}>
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={() => void submitFork()} disabled={busy || !forkDraft.trim()}>
+              {t('session.forkConfirm')}
             </Button>
           </DialogFooter>
         </DialogContent>

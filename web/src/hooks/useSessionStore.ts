@@ -1210,41 +1210,6 @@ export function useSessionStoreImpl(): SessionStore {
     [refresh],
   )
 
-  const forkSession = useCallback(
-    async (sourceChatID: string, sourceChannel: string = DEFAULT_CHANNEL, label?: string): Promise<string | null> => {
-      try {
-        const data = await postAPI<{ chat_id: string }>('/api/chats/fork', {
-          source_channel: sourceChannel,
-          source_chat_id: sourceChatID,
-          label: label ?? '',
-        })
-        if (!data.chat_id) return null
-        const chatID = data.chat_id
-        const selector = { channel: DEFAULT_CHANNEL, chatID }
-        activeSessionRef.current = selector
-        setActiveSession(selector)
-        // Optimistic insert; refresh reconciles with the real label from DB.
-        setSessions((prev) => [
-          {
-            chatID,
-            channel: DEFAULT_CHANNEL,
-            label: label || `${chatID.slice(0, 12)}…`,
-            lastActive: new Date().toISOString(),
-            preview: '',
-            status: 'idle',
-            isCurrent: true,
-          },
-          ...prev.map((s) => ({ ...s, isCurrent: false })),
-        ])
-        void refresh()
-        return chatID
-      } catch {
-        return null
-      }
-    },
-    [refresh],
-  )
-
   const switchSession = useCallback(
     async (id: string, ch: string): Promise<void> => {
       const switchSeq = ++switchSeqRef.current
@@ -1290,6 +1255,53 @@ export function useSessionStoreImpl(): SessionStore {
       void refresh()
     },
     [markRead, refresh],
+  )
+
+  /**
+   * Fork a session: copy its conversation context into a NEW session, then
+   * FULLY switch to it (switchSession path — backend /switch, cache clear,
+   * markCurrent — NOT a bare setActiveSession, which left the backend on the
+   * old session and the desktop tab unswitched, user-visible as "fork doesn't
+   * auto-switch"). The label comes from the Fork dialog (user confirms the
+   * name BEFORE creating — no silent auto-fork).
+   */
+  const forkSession = useCallback(
+    async (sourceChatID: string, sourceChannel: string = DEFAULT_CHANNEL, label?: string): Promise<string | null> => {
+      try {
+        const data = await postAPI<{ chat_id: string }>('/api/chats/fork', {
+          source_channel: sourceChannel,
+          source_chat_id: sourceChatID,
+          label: label ?? '',
+        })
+        if (!data.chat_id) return null
+        const chatID = data.chat_id
+        // Optimistic insert so the new session appears immediately in the
+        // tree; the switchSession below reconciles isCurrent via markCurrent
+        // and refresh() brings the real label/preview from the server.
+        setSessions((prev) => [
+          {
+            chatID,
+            channel: DEFAULT_CHANNEL,
+            label: label || `${chatID.slice(0, 12)}…`,
+            lastActive: new Date().toISOString(),
+            preview: '',
+            status: 'idle',
+            isCurrent: true,
+          },
+          ...prev.map((s) => ({ ...s, isCurrent: false })),
+        ])
+        // Full switch (same path as the user clicking the new session):
+        // backend /switch + old-cache clear + activeSession + markCurrent +
+        // refresh. A bare setActiveSession here was the "fork doesn't
+        // auto-switch" bug — the backend stayed on the old session (no SSE
+        // retarget) and the sidebar current marker never reconciled.
+        await switchSession(chatID, DEFAULT_CHANNEL)
+        return chatID
+      } catch {
+        return null
+      }
+    },
+    [switchSession],
   )
 
   /**

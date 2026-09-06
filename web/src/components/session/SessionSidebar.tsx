@@ -409,7 +409,23 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           onToggleStar={store.toggleStar}
           onRename={store.renameSession}
           onDelete={store.deleteSession}
-          onFork={async (id, channel) => store.forkSession(id, channel)}
+          onFork={async (id, channel, label) => {
+            const newID = await store.forkSession(id, channel, label)
+            if (newID) {
+              // Desktop: open the forked session's agent tab (same flow as
+              // clicking the session — handleSelect). forkSession already
+              // switched the store (switchSession path); the tab completes the
+              // desktop switch.
+              tabManager.openTab({
+                type: 'agent',
+                title: label,
+                icon: 'bot',
+                closable: true,
+                data: { filePath: newID, channel: 'web' },
+              })
+            }
+            return newID
+          }}
           onExport={handleExport}
           onReorder={store.reorderSessions}
           multiSelectMode={multiSelectMode}

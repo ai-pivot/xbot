@@ -87,8 +87,11 @@ vi.mock('@/components/ui/scroll-area', () => ({
 const ctx = { tabManager: { openTab: vi.fn(), closeTab: vi.fn(), setActiveTab: vi.fn() } } as never
 
 describe('CoreSessionsPanel fork（REPRO: 主会话面板的 SessionList 漏传 onFork）', () => {
-  it('右键会话菜单必须渲染 Fork 项，点击触发 store.forkSession（web 端用户可 fork 会话）', async () => {
+  it('右键点"分叉会话"→ 对话框预填名 → 确认创建 → forkSession(id, channel, label) + 桌面 tab', async () => {
     forkSession.mockClear()
+    forkSession.mockResolvedValue('web:chat-new')
+    const openTab = ctx.tabManager.openTab as ReturnType<typeof vi.fn>
+    openTab.mockClear()
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
 
     // 右键会话项打开 ContextMenu。
@@ -101,11 +104,25 @@ describe('CoreSessionsPanel fork（REPRO: 主会话面板的 SessionList 漏传 
     const forkEntry = await screen.findByRole('menuitem', { name: /分叉会话|Fork/ })
     expect(forkEntry).toBeInTheDocument()
 
-    // 点击 Fork 项 → store.forkSession(chatID, channel) 被调用
-    // （→ POST /api/chats/fork → 新会话 + 自动切换）。
+    // 点击 Fork 项 → 打开 Fork 对话框（用户确认新会话名——不自动创建）。
     fireEvent.click(forkEntry)
+    // 对话框出现且 Input 预填 "{源会话名} fork"（用户可改）。
+    const nameInput = await screen.findByDisplayValue('我的会话 fork')
+    expect(nameInput).toBeInTheDocument()
+
+    // 确认（创建并切换）→ store.forkSession(chatID, channel, label) 被调用
+    // （→ POST /api/chats/fork → switchSession 完整切换 + 桌面 tab 打开）。
+    const confirmBtn = await screen.findByRole('button', { name: /创建并切换|Create & Switch/ })
+    fireEvent.click(confirmBtn)
     await waitFor(() => {
-      expect(forkSession).toHaveBeenCalledWith('web:chat-abc', 'web')
+      expect(forkSession).toHaveBeenCalledWith('web:chat-abc', 'web', '我的会话 fork')
+    })
+    // fork 成功后打开新会话的桌面 agent tab（desktop switch 完成）。
+    await waitFor(() => {
+      expect(openTab).toHaveBeenCalledWith(expect.objectContaining({
+        type: 'agent',
+        data: expect.objectContaining({ filePath: 'web:chat-new', channel: 'web' }),
+      }))
     })
   })
 })
