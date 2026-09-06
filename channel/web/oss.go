@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -149,6 +151,16 @@ func (p *QiniuProvider) Upload(key string, data []byte) error {
 func (p *QiniuProvider) GetDownloadURL(key string) (string, error) {
 	deadline := time.Now().Add(time.Hour).Unix()
 	signedURL := storage.MakePrivateURL(p.mac, p.domain, key, deadline)
+	// Force Content-Disposition: attachment on download (CR security note, PR #345):
+	// uploads are type-unrestricted by design, so OSS-served .html/.svg files
+	// would otherwise render INLINE in the browser when the download link is
+	// clicked. The qiniu `attname` query param forces a file download instead.
+	// This is a serving-side change only — it does NOT gate any upload.
+	sep := "?"
+	if strings.Contains(signedURL, "?") {
+		sep = "&"
+	}
+	signedURL += sep + "attname=" + url.QueryEscape(path.Base(key))
 	log.WithField("key", key).Debug("Generated Qiniu download URL")
 	return signedURL, nil
 }

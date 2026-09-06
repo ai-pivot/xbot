@@ -20,7 +20,7 @@ vi.mock('@/providers/i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/providers/i18n')>()
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key }),
+    useI18n: () => ({ t: (key: string, _params?: Record<string, unknown>) => key }),
   }
 })
 
@@ -326,6 +326,22 @@ describe('MessageInput links & file paste', () => {
     } finally {
       doc.elementFromPoint = origElementFromPoint
     }
+  })
+
+  it('client-side 10MB size pre-check: oversized files are skipped with a toast, valid ones still upload', async () => {
+    const onUpload = vi.fn().mockResolvedValue({ upload_key: 'up-ok', name: 'ok.bin', size: 1, mime: 'application/octet-stream' })
+    const { editor } = await renderInput({ onUpload })
+    // 11MB file (> 10MB cap) + a valid 1KB file in the same paste batch
+    const big = new File([new Uint8Array(11 * 1024 * 1024)], 'big.bin', { type: 'application/octet-stream' })
+    const small = new File([new Uint8Array(1024)], 'small.bin', { type: 'application/octet-stream' })
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [big, small], getData: () => '', types: [] },
+    })
+    // The oversized file is rejected client-side (no upload round-trip → no 413),
+    // the valid file still uploads
+    await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(1))
+    // Assert by name — deep File structural equality is ambiguous in jsdom
+    expect(onUpload.mock.calls[0][0].name).toBe('small.bin')
   })
 
   it('Ctrl/Cmd+K opens the link editor on the word at the cursor and applies the URL', async () => {

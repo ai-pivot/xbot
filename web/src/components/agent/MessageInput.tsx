@@ -465,13 +465,27 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   }, [])
 
   // --- File upload ---
+  // Server-side size cap (web_file.go maxFileSize = 10 << 20). Client-side
+  // pre-check gives instant feedback — no upload round-trip just to be
+  // rejected with 413 (CR note: handleDrop/handlePaste previously uploaded
+  // oversized files blindly). Size-only: uploads stay type-unrestricted.
+  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
+      // Client-side size pre-check (faster feedback than the server's 413)
+      const all = Array.from(files)
+      const oversized = all.filter((f) => f.size > MAX_UPLOAD_BYTES)
+      const valid = all.filter((f) => f.size <= MAX_UPLOAD_BYTES)
+      if (oversized.length > 0) {
+        toast.error(t('agent.uploadTooLarge', { names: oversized.map((f) => f.name).join('、'), size: '10MB' }))
+      }
+      if (valid.length === 0) return
       setUploading(true)
       try {
         const added: PendingAttachment[] = []
-        for (const file of Array.from(files)) {
+        for (const file of valid) {
           const res = await onUpload(file)
           added.push({
             name: res.name ?? file.name,

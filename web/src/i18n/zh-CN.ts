@@ -189,6 +189,7 @@ const zhCN = {
     editorLinkApply: '应用链接',
     editorLinkPlaceholder: '链接地址（https://…）',
     dropToUpload: '松开以上传文件',
+    uploadTooLarge: '{{names}} 超过 {{size}} 上限，已跳过',
     askUserTitle: 'Agent 需要你的输入',
     askUserPlaceholder: '请输入…',
     askUserSubmit: '提交',

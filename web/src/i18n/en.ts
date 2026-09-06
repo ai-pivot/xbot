@@ -192,6 +192,7 @@ const en: Translations = {
     editorLinkApply: 'Apply link',
     editorLinkPlaceholder: 'Link URL (https://…)',
     dropToUpload: 'Drop to upload files',
+    uploadTooLarge: '{{names}} exceeds the {{size}} limit — skipped',
     askUserTitle: 'The Agent needs your input',
     askUserPlaceholder: 'Type a reply…',
     askUserSubmit: 'Submit',

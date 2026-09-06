@@ -52,6 +52,20 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		mimeType = http.DetectContentType(data)
 	}
 
+	// Non-blocking observability (CR security note, PR #345): uploads are
+	// type-unrestricted BY DESIGN (user requirement 2026-09-05 — never
+	// reintroduce a whitelist/blacklist). Flag executable/web content types
+	// in the log stream for downstream security auditing — a log line only,
+	// NEVER a gate. Download-side mitigation: OSS URLs force
+	// Content-Disposition: attachment (oss.go GetDownloadURL attname).
+	if isExecutableLikeUpload(ext, mimeType) {
+		log.WithFields(log.Fields{
+			"filename":  header.Filename,
+			"mime_type": mimeType,
+			"size":      len(data),
+		}).Info("Accepted executable-like upload (unrestricted by design; forced attachment download on serve)")
+	}
+
 	// Web uploads MUST go to cloud OSS - local storage is never allowed for security
 	if wc.ossProvider == nil || wc.ossProvider.Name() == "local" {
 		log.Error("Web file upload rejected: no cloud OSS provider configured (local storage is forbidden for web uploads)")
@@ -60,6 +74,27 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wc.handleCloudUpload(w, r, header.Filename, ext, data, mimeType)
+}
+
+// isExecutableLikeUpload reports whether the uploaded file is executable- or
+// web-content-like — used ONLY for a non-blocking observability log (audit
+// trail), never as a gate. Uploads stay type-unrestricted by design.
+func isExecutableLikeUpload(ext, mimeType string) bool {
+	switch mimeType {
+	case "text/html", "application/xhtml+xml", "application/x-httpd-php",
+		"application/javascript", "text/javascript", "application/x-sh",
+		"application/x-msdownload", "application/x-dosexec", "application/x-sharedlib":
+		return true
+	}
+	switch ext {
+	case ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1",
+		".sh", ".bash", ".zsh", ".fish", ".ksh",
+		".php", ".jsp", ".asp", ".aspx",
+		".html", ".htm", ".xhtml", ".svg", ".xml",
+		".so", ".dylib", ".dll", ".app", ".deb", ".rpm", ".apk", ".jar":
+		return true
+	}
+	return false
 }
 
 // handleCloudUpload uploads a file to cloud OSS (e.g., Qiniu) and returns the upload key.
