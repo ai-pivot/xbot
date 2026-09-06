@@ -35,7 +35,7 @@ import type { ExportFormat } from '@/components/agent/api'
 import { downloadSession } from '@/components/agent/api'
 
 /** core.sessions：SessionList + SessionSearch 主体（docked flex-1）。 */
-function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
+export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const store = useSessionStore()
   const tabManager = ctx.tabManager
   const [search, setSearch] = useState('')
@@ -143,6 +143,7 @@ function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
             onToggleStar={store.toggleStar}
             onRename={store.renameSession}
             onDelete={store.deleteSession}
+            onFork={async (id, channel) => store.forkSession(id, channel)}
             onExport={handleExport}
             onReorder={store.reorderSessions}
             hasMore={store.hasMore}

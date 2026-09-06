@@ -241,7 +241,7 @@ export function SessionItem({
      <ContextMenu>
        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
        <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
-          <ContextMenuItem onClick={openInBrowserTab}>
+          <ContextMenuItem onSelect={openInBrowserTab}>
             <ExternalLink className="size-4" />
             {t('session.openInTab')}
           </ContextMenuItem>
@@ -254,11 +254,11 @@ export function SessionItem({
      <ContextMenu>
        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
        <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
-          <ContextMenuItem onClick={openInBrowserTab}>
+          <ContextMenuItem onSelect={openInBrowserTab}>
           <ExternalLink className="size-4" />
           {t('session.openInTab')}
         </ContextMenuItem>
-        <ContextMenuItem onClick={() => onToggleStar(key)}>
+        <ContextMenuItem onSelect={() => onToggleStar(key)}>
           <Star
             className="size-4"
             fill={starred ? 'currentColor' : 'none'}
@@ -266,12 +266,12 @@ export function SessionItem({
           />
           {starred ? t('session.unstar') : t('session.star')}
         </ContextMenuItem>
-        <ContextMenuItem onClick={() => onRename(session)}>
+        <ContextMenuItem onSelect={() => onRename(session)}>
           <Pencil className="size-4" />
           {t('common.rename')}
         </ContextMenuItem>
         {onFork && !isSubAgent && (
-          <ContextMenuItem onClick={() => onFork(session)}>
+          <ContextMenuItem onSelect={() => onFork(session)}>
             <GitFork className="size-4" />
             {t('session.fork')}
           </ContextMenuItem>
@@ -283,20 +283,20 @@ export function SessionItem({
               {t('session.export')}
             </ContextMenuSubTrigger>
             <ContextMenuSubContent>
-              <ContextMenuItem onClick={() => onExport(session, 'native')}>
+              <ContextMenuItem onSelect={() => onExport(session, 'native')}>
                 {t('session.exportNative')}
               </ContextMenuItem>
-              <ContextMenuItem onClick={() => onExport(session, 'openai')}>
+              <ContextMenuItem onSelect={() => onExport(session, 'openai')}>
                 {t('session.exportOpenAI')}
               </ContextMenuItem>
-              <ContextMenuItem onClick={() => onExport(session, 'codex')}>
+              <ContextMenuItem onSelect={() => onExport(session, 'codex')}>
                 {t('session.exportCodex')}
               </ContextMenuItem>
             </ContextMenuSubContent>
           </ContextMenuSub>
         )}
         <ContextMenuSeparator />
-        <ContextMenuItem onClick={() => onDelete(session)} variant="destructive">
+        <ContextMenuItem onSelect={() => onDelete(session)} variant="destructive">
           <Trash2 className="size-4" />
           {t('common.delete')}
         </ContextMenuItem>
