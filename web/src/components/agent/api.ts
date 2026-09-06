@@ -9,7 +9,7 @@
  */
 import type { WSConnection } from '@/types/ws'
 import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem } from '@/types/shared'
-import { postAPI } from '@/lib/api'
+import { APIError, postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
@@ -458,13 +458,50 @@ export async function continueInteractiveSession(ws: WSConnection, fullKey: stri
   await ws.rpc('continue_interactive_session', { full_key: fullKey, content })
 }
 
-/** Upload a single file; returns the server-issued upload key + metadata. */
-export async function uploadFile(file: File): Promise<UploadResponse> {
-  const form = new FormData()
-  form.append('file', file)
-  const data = await postAPI<UploadResponse>('/api/files/upload', form)
-  if (!data.upload_key) throw new Error('upload response missing upload_key')
-  return data
+/** Upload a single file; returns the server-issued upload key + metadata.
+ * XHR-based（fetch 无上传进度事件）——onProgress 收到 (loaded, total) 字节数，驱动
+ * 粘贴/拖拽上传的 per-file 进度提示（"上传卡住 spin 很久"修复）。
+ * 响应 envelope 与 postAPI 同语义（{ok, data, error}）。 */
+export async function uploadFile(
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<UploadResponse> {
+  return new Promise<UploadResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/files/upload')
+    xhr.responseType = 'json'
+    xhr.setRequestHeader('Accept', 'application/json')
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) onProgress(e.loaded, e.total)
+      }
+    }
+    xhr.onload = () => {
+      const env = (xhr.response ?? {}) as {
+        ok?: boolean
+        data?: UploadResponse
+        error?: { message?: string; code?: string }
+      }
+      if (xhr.status >= 200 && xhr.status < 300 && env.ok) {
+        if (!env.data?.upload_key) {
+          reject(new APIError('upload response missing upload_key', 'invalid_response', xhr.status))
+          return
+        }
+        resolve(env.data)
+        return
+      }
+      reject(new APIError(
+        env.error?.message || `upload failed with status ${xhr.status}`,
+        env.error?.code || 'invalid_response',
+        xhr.status,
+      ))
+    }
+    xhr.onerror = () => reject(new APIError('上传失败（网络错误）', 'network_error', 0))
+    xhr.ontimeout = () => reject(new APIError('上传超时', 'timeout', 0))
+    const form = new FormData()
+    form.append('file', file)
+    xhr.send(form)
+  })
 }
 
 /** Install a single-plugin zip via multipart upload (no OSS round-trip). */

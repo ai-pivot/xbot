@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
+import Image from '@tiptap/extension-image'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
 import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock } from 'lucide-react'
@@ -52,7 +53,7 @@ interface MessageInputProps {
   /** Open the right Tasks panel for the current session. */
   onOpenTasks?: () => void
   /** Upload a file; resolves with server metadata. */
-  onUpload: (file: File) => Promise<{
+  onUpload: (file: File, onProgress?: (loaded: number, total: number) => void) => Promise<{
     upload_key?: string
     name?: string
     size?: number
@@ -83,6 +84,10 @@ interface PendingAttachment {
   size: number
   uploadKey: string
   mime: string
+  /** Upload-in-progress state（乐观 chip：上传中渲染进度条，完成前 uploadKey 为空）。 */
+  uploading?: boolean
+  /** 0..1 — XHR upload.onprogress（驱动 chip 进度条）。 */
+  progress?: number
 }
 
 /** Module-level editor instance ref for test access. */
@@ -208,6 +213,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         link: false,
         dropcursor: { color: 'var(--accent, #6366f1)', width: 2 },
       }),
+      // Paste-markdown image rendering: pasted/uploaded images insert as ![name](url)
+      // markdown — this extension makes tiptap render them inline in the composer
+      // (tiptap-markdown parses ![alt](src) into image nodes when the schema has one).
+      Image.configure({ inline: true }),
       EditorLink,
       Placeholder.configure({
         placeholder: () => placeholderRef.current,
@@ -375,12 +384,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       toast.error(t('agent.busy'))
       return
     }
-    const attachments: Attachments | undefined = pending.length
+    // 只发完成态的附件（uploading 中的 chip uploadKey 为空——乐观 chip 上传期间不可发送）
+    const completed = pending.filter((p) => !p.uploading && p.uploadKey)
+    const attachments: Attachments | undefined = completed.length
       ? {
-          uploadKeys: pending.map((p) => p.uploadKey),
-          fileNames: pending.map((p) => p.name),
-          fileSizes: pending.map((p) => p.size),
-          fileMimes: pending.map((p) => p.mime),
+          uploadKeys: completed.map((p) => p.uploadKey),
+          fileNames: completed.map((p) => p.name),
+          fileSizes: completed.map((p) => p.size),
+          fileMimes: completed.map((p) => p.mime),
         }
       : undefined
     // When goalMode is on, send as /goal command (sets goal + starts working).
@@ -471,6 +482,28 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   // oversized files blindly). Size-only: uploads stay type-unrestricted.
   const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
+  /** 上传成功后向编辑器插入媒体引用（用户需求：粘贴的文件/图片在 tiptap 里可见）：
+   *  - 图片（image/* 或图片扩展名）→ markdown 图片 ![name](view-url)，
+   *    经 /api/files/download?inline=1 在编辑器内 <img> 渲染（tiptap Image 扩展）
+   *  - 其他文件 → markdown 引用链接 [name](download-url)（点击下载，attachment 语义）
+   * URL 是同源相对路径（cookie 认证）—— 302 到签名 OSS URL；attachment upload_key
+   * 随消息单独发送（agent 的语义载荷），编辑器里的链接仅供用户浏览。 */
+  const insertUploadedMedia = useCallback(
+    (res: { upload_key?: string; name?: string }, file: File) => {
+      if (!editor || !res.upload_key) return
+      const fileName = res.name ?? file.name
+      const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i.test(fileName)
+      const url = `/api/files/download?key=${encodeURIComponent(res.upload_key)}${isImage ? '&inline=1' : ''}`
+      // alt 文本里的 markdown 特殊字符（] / 换行）会破坏解析 —— 清洗
+      const safeAlt = fileName.replace(/[[\]\n]/g, ' ')
+      const md = isImage ? `![${safeAlt}](${url})` : `[${safeAlt}](${url})`
+      const current = editor.getText()
+      const sep = !current || current.endsWith('\n') ? '' : '\n'
+      editor.chain().focus().insertContent(sep + md + '\n').run()
+    },
+    [editor],
+  )
+
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
@@ -484,27 +517,50 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       if (valid.length === 0) return
       setUploading(true)
       try {
-        const added: PendingAttachment[] = []
+        // 顺序上传（每个文件一个乐观 chip：上传中渲染进度条，完成后写 uploadKey + 插入编辑器媒体引用）
         for (const file of valid) {
-          const res = await onUpload(file)
-          added.push({
-            name: res.name ?? file.name,
-            size: res.size ?? file.size,
-            uploadKey: res.upload_key ?? '',
-            mime: res.mime ?? file.type,
-          })
+          setPending((prev) => [...prev, {
+            name: file.name,
+            size: file.size,
+            uploadKey: '',
+            mime: file.type,
+            uploading: true,
+            progress: 0,
+          }])
+          try {
+            const res = await onUpload(file, (loaded, total) => {
+              setPending((prev) => prev.map((p) => (p.uploading && p.name === file.name)
+                ? { ...p, progress: total > 0 ? loaded / total : 0 }
+                : p))
+            })
+            // finalize：chip 落定（uploadKey 填充，进度 100%）
+            setPending((prev) => prev.map((p) => (p.uploading && p.name === file.name)
+              ? {
+                ...p,
+                uploading: false,
+                progress: 1,
+                uploadKey: res.upload_key ?? '',
+                name: res.name ?? file.name,
+                size: res.size ?? file.size,
+                mime: res.mime ?? file.type,
+              }
+              : p))
+            // 编辑器插入媒体引用（图片 → 内联渲染；文件 → 引用链接）
+            insertUploadedMedia(res, file)
+          } catch (e) {
+            // 失败：移除该文件的乐观 chip + toast（其他文件继续）
+            setPending((prev) => prev.filter((p) => !(p.uploading && p.name === file.name)))
+            toast.error(`${file.name}: ${e instanceof Error ? e.message : t('agent.uploadFailed')}`)
+          }
         }
-        setPending((prev) => [...prev, ...added])
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : t('agent.uploadFailed'))
       } finally {
         setUploading(false)
       }
     },
-    [onUpload, t],
+    [onUpload, t, insertUploadedMedia],
   )
 
-  const canSend = hasContent || pending.length > 0
+  const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey)
 
   // Keep the ref current — editorProps closures capture it once (paste/drop).
   onPickFilesRef.current = onPickFiles
@@ -579,13 +635,33 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 key={`${p.uploadKey}-${i}`}
                 className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
               >
-                <Paperclip className="size-3" />
+                {p.uploading
+                  ? <Loader2 className="size-3 animate-spin shrink-0" />
+                  : <Paperclip className="size-3 shrink-0" />}
                 <span className="max-w-[20ch] truncate">{p.name}</span>
+                {p.uploading && (
+                  <span
+                    data-testid={`upload-progress-${p.name}`}
+                    className="flex w-16 shrink-0 select-none items-center gap-1"
+                    aria-label={`uploading ${(p.progress ?? 0)}`}
+                  >
+                    <span className="h-1 flex-1 overflow-hidden rounded-full bg-text-muted/20">
+                      <span
+                        className="block h-full rounded-full bg-accent transition-[width] duration-150"
+                        style={{ width: `${Math.round((p.progress ?? 0) * 100)}%` }}
+                      />
+                    </span>
+                    <span className="w-7 text-right text-[10px] tabular-nums text-text-muted">
+                      {Math.round((p.progress ?? 0) * 100)}%
+                    </span>
+                  </span>
+                )}
                 <button
                   type="button"
                   aria-label="remove"
+                  disabled={p.uploading}
                   onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
-                  className="text-text-muted hover:text-text-primary"
+                  className="text-text-muted hover:text-text-primary disabled:opacity-30"
                 >
                   <X className="size-3" />
                 </button>

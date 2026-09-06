@@ -806,6 +806,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/runners/{name}/delete", wc.authenticatedPOST(wc.handleRunnerDeletePOST))
 
 	mux.HandleFunc("/api/files/upload", wc.authenticatedPOST(wc.handleFileUpload))
+	mux.HandleFunc("/api/files/download", wc.authMiddleware(wc.handleFileDownload))
 
 	// Terminal (PTY) endpoints
 	mux.HandleFunc("/api/terminal/create", wc.authenticatedPOST(wc.handleTerminalCreate))

@@ -97,6 +97,54 @@ func isExecutableLikeUpload(ext, mimeType string) bool {
 	return false
 }
 
+// handleFileDownload handles GET /api/files/download?key=<upload_key>&inline=1
+// — resolves the OSS signed URL and 302-redirects. Two modes:
+//   - default: attachment download (GetDownloadURL — qiniu attname forces
+//     Content-Disposition: attachment, the CR security mitigation)
+//   - ?inline=1: inline rendering (GetViewURL — no attname) for composer
+//     <img> src (pasted images render inline in the tiptap editor).
+//
+// Same-origin + cookie auth: the URL is embedded in composer markdown
+// ([name](/api/files/download?key=...)) — works in editor rendering AND in
+// rendered chat history; the agent receives the semantic payload separately
+// via the attachments upload_key array.
+func (wc *WebChannel) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "key is required")
+		return
+	}
+	// Only upload-issued keys are addressable (uploads/<uid>/<uuid><ext>) —
+	// blocks arbitrary object probing of the OSS bucket.
+	if !strings.HasPrefix(key, "uploads/") || strings.Contains(key, "..") {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid key")
+		return
+	}
+	if wc.ossProvider == nil || wc.ossProvider.Name() == "local" {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "file storage not configured")
+		return
+	}
+	var (
+		target string
+		err    error
+	)
+	if r.URL.Query().Get("inline") == "1" {
+		target, err = wc.ossProvider.GetViewURL(key)
+	} else {
+		target, err = wc.ossProvider.GetDownloadURL(key)
+	}
+	if err != nil {
+		log.WithError(err).WithField("key", key).Warn("File download URL resolve failed")
+		jsonErrorResponse(w, http.StatusInternalServerError, "failed to resolve download URL")
+		return
+	}
+	log.WithFields(log.Fields{
+		"key":    key,
+		"inline": r.URL.Query().Get("inline") == "1",
+	}).Debug("File download redirect")
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
 // handleCloudUpload uploads a file to cloud OSS (e.g., Qiniu) and returns the upload key.
 func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, filename, ext string, data []byte, mimeType string) {
 	userID := "anonymous"

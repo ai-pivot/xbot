@@ -23,6 +23,11 @@ type OSSProvider interface {
 	Upload(key string, data []byte) error
 	// GetDownloadURL returns a publicly accessible URL for the given object key.
 	GetDownloadURL(key string) (url string, err error)
+	// GetViewURL returns an INLINE URL (no Content-Disposition: attachment) for
+	// browser-side rendering (<img> src in the composer). Differs from
+	// GetDownloadURL which forces attachment download via attname — images
+	// must render inline in the editor, everything else downloads.
+	GetViewURL(key string) (url string, err error)
 	// Name returns the provider name.
 	Name() string
 	// Domain returns the CDN domain URL for this provider (empty if not applicable).
@@ -55,6 +60,10 @@ func (p *LocalProvider) GetDownloadURL(key string) (string, error) {
 	// Local mode: return the file path (relative to uploadDir/web/)
 	// This is only used as fallback; normally local files are embedded or copied directly.
 	return "", fmt.Errorf("local provider does not support GetDownloadURL; files are accessed directly")
+}
+
+func (p *LocalProvider) GetViewURL(key string) (string, error) {
+	return "", fmt.Errorf("local provider does not support GetViewURL; files are accessed directly")
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +171,16 @@ func (p *QiniuProvider) GetDownloadURL(key string) (string, error) {
 	}
 	signedURL += sep + "attname=" + url.QueryEscape(path.Base(key))
 	log.WithField("key", key).Debug("Generated Qiniu download URL")
+	return signedURL, nil
+}
+
+// GetViewURL returns the INLINE variant (no attname) — for <img> rendering in the
+// composer (pasted images render inline via ![name](/api/files/download?inline=1)).
+// Content-Disposition: attachment would make browsers download instead of render.
+func (p *QiniuProvider) GetViewURL(key string) (string, error) {
+	deadline := time.Now().Add(time.Hour).Unix()
+	signedURL := storage.MakePrivateURL(p.mac, p.domain, key, deadline)
+	log.WithField("key", key).Debug("Generated Qiniu view URL")
 	return signedURL, nil
 }
 func (p *QiniuProvider) Domain() string { return p.domain }

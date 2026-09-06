@@ -28,6 +28,10 @@ func (f *fakeOSSProvider) Upload(key string, data []byte) error {
 }
 
 func (f *fakeOSSProvider) GetDownloadURL(key string) (string, error) {
+	return "https://fake.example/" + key + "?attname=1", nil
+}
+
+func (f *fakeOSSProvider) GetViewURL(key string) (string, error) {
 	return "https://fake.example/" + key, nil
 }
 

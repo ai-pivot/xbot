@@ -19,6 +19,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/vite": "^4.2.2",
     "@tanstack/react-virtual": "3.13.12",
+    "@tiptap/extension-image": "3.30.3",
     "@tiptap/extension-placeholder": "^3.30.3",
     "@tiptap/pm": "^3.30.3",
     "@tiptap/react": "^3.30.3",

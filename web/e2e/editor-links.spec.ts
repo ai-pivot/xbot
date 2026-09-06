@@ -154,8 +154,13 @@ test.describe('tiptap composer: links, toolbar, file paste', () => {
     // The attachment chip with the file name appears
     await expect(page.getByText('shot.png').first()).toBeVisible({ timeout: 5_000 })
     expect(uploadHits).toBe(1)
-    // The pasted image must NOT insert content into the editor itself
-    await expect(editor).not.toContainText('shot.png')
+    // The pasted image ALSO inserts an inline media reference into the composer
+    // (markdown image → tiptap Image extension renders <img> with the inline download URL).
+    // NB: exclude ProseMirror's internal cursor-positioning element (img.ProseMirror-separator)
+    // — it renders alongside inline non-text nodes (prosemirror-view:2012).
+    const contentImg = editor.locator('img[src*="/api/files/download"]')
+    await expect(contentImg).toHaveCount(1)
+    await expect(contentImg).toHaveAttribute('src', /\/api\/files\/download\?key=uploads%2Fe2e%2Fshot\.png/)
 
     await page.close()
   })

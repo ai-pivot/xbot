@@ -27,6 +27,9 @@ func (fixedOSSProvider) Upload(string, []byte) error { return nil }
 func (fixedOSSProvider) GetDownloadURL(string) (string, error) {
 	return "https://files.example/test.txt", nil
 }
+func (fixedOSSProvider) GetViewURL(string) (string, error) {
+	return "https://files.example/test.txt?inline", nil
+}
 func (fixedOSSProvider) Name() string   { return "fixed" }
 func (fixedOSSProvider) Domain() string { return "https://files.example" }
 

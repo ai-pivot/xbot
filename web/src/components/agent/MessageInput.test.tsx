@@ -305,8 +305,54 @@ describe('MessageInput links & file paste', () => {
     fireEvent.paste(editor.view.dom as HTMLElement, {
       clipboardData: { files: [file], getData: () => '', types: [] },
     })
-    await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file))
+    // onUpload now receives the progress callback as its 2nd arg (XHR upload.onprogress)
+    await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
     expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('upload success inserts media into the editor: image → inline ![name](view-url), file → [name](download-url)', async () => {
+    const onUpload = vi.fn().mockImplementation((file: File) =>
+      file.name.endsWith('.png')
+        ? Promise.resolve({ upload_key: 'uploads/web/c/img-key.png', name: file.name, size: 5, mime: 'image/png' })
+        : Promise.resolve({ upload_key: 'uploads/web/c/bin-key', name: file.name, size: 4, mime: 'application/octet-stream' }))
+    const { editor } = await renderInput({ onUpload })
+    const img = new File([new Uint8Array([1])], 'photo.png', { type: 'image/png' })
+    const bin = new File([new Uint8Array([2])], 'data.bin', { type: 'application/octet-stream' })
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [img, bin], getData: () => '', types: [] },
+    })
+    await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(2))
+    // Image renders inline in the editor (tiptap Image extension parses the markdown)
+    await waitFor(() => expect(editor.getHTML()).toContain('<img'))
+    // NB: getHTML() serializes '&' as '&amp;' — assert the key part only (raw & in the markdown round-trip below)
+    expect(editor.getHTML()).toContain('/api/files/download?key=uploads%2Fweb%2Fc%2Fimg-key.png')
+    // Non-image file becomes a markdown reference link
+    expect(editor.getHTML()).toContain('/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key')
+    // Markdown round-trip (what the agent receives on send)
+    const md = (editor.storage as unknown as { markdown: { getMarkdown: () => string } }).markdown.getMarkdown()
+    expect(md).toContain('![photo.png](/api/files/download?key=uploads%2Fweb%2Fc%2Fimg-key.png&inline=1)')
+    expect(md).toContain('[data.bin](/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key)')
+  })
+
+  it('upload progress streams to the chip (XHR onProgress → per-file 进度条)', async () => {
+    let progressCb: ((loaded: number, total: number) => void) | undefined
+    let resolveUpload: ((v: { upload_key: string; name: string; size: number; mime: string }) => void) | undefined
+    const onUpload = vi.fn().mockImplementation((_file: File, onProgress?: (loaded: number, total: number) => void) => {
+      progressCb = onProgress
+      return new Promise((resolve) => { resolveUpload = resolve as typeof resolveUpload })
+    })
+    const { editor } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [new File([new Uint8Array([1])], 'up.png', { type: 'image/png' })], getData: () => '', types: [] },
+    })
+    // Optimistic chip with progress bar visible while uploading
+    await waitFor(() => expect(screen.getByTestId('upload-progress-up.png')).toBeInTheDocument())
+    act(() => progressCb?.(40, 100))
+    await waitFor(() => expect(screen.getByTestId('upload-progress-up.png').getAttribute('aria-label')).toBe('uploading 0.4'))
+    // Upload completes → chip finalized (progress 100%) + media inserted
+    act(() => resolveUpload?.({ upload_key: 'uploads/web/c/k.png', name: 'up.png', size: 1, mime: 'image/png' }))
+    await waitFor(() => expect(screen.queryByTestId('upload-progress-up.png')).not.toBeInTheDocument())
+    await waitFor(() => expect(editor.getHTML()).toContain('<img'))
   })
 
   it('dropped files upload as attachments', async () => {
@@ -322,7 +368,7 @@ describe('MessageInput links & file paste', () => {
       fireEvent.drop(editor.view.dom as HTMLElement, {
         dataTransfer: { files: [file], getData: () => '', types: [] },
       })
-      await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file))
+      await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
     } finally {
       doc.elementFromPoint = origElementFromPoint
     }
