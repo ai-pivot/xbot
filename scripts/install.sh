@@ -349,20 +349,24 @@ for p in preserved: print(f'[WARN] Config preserved: {p}', file=sys.stderr)
 PY
 }
 
-download_web_dist() {
-    local version="$1" target_dir="$2"
-    local dist_url="https://github.com/${REPO}/releases/download/${version}/xbot-web-dist.tar.gz"
-    info "Downloading Web UI frontend..."
-    mkdir -p "$target_dir"
-    if curl -fSL "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
-        info "Web UI installed to ${target_dir} ✓"
-    elif curl -fSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
-        warn "Web UI downloaded from fallback repo ${FALLBACK_REPO}"
-        info "Web UI installed to ${target_dir} ✓"
+# Run the freshly-installed binary's `setup` subcommand: downloads the Web UI
+# dist + built-in plugins (version-pinned to this release, checksum-verified)
+# and activates channel plugins in config.json (channels.<name>.enabled=true).
+# Runs in BOTH modes (standalone included — web/plugins are small and the user
+# can flip to `xbot-cli serve` at any time). Replaces the old download_web_dist
+# inline logic; one implementation (Go, cross-platform) shared with install.ps1.
+# Soft-fail semantics: a non-zero exit warns with the remediation command but
+# does NOT abort the install (old releases lack plugin tarballs → exit 3).
+run_setup() {
+    local version="$1"
+    info "Setting up Web UI + built-in plugins (xbot-cli setup)..."
+    if "${INSTALL_PATH}/${BINARY}" setup --tag "$version" --mirror "$GH_MIRROR"; then
+        info "Web UI + built-in plugins installed"
     else
-        warn "Failed to download Web UI frontend. The server will run in API-only mode."
-        warn "You can manually download it later from: ${dist_url}"
-        warn "Extract to: ${target_dir}"
+        local rc=$?
+        warn "xbot-cli setup exited with code ${rc} (see messages above)."
+        warn "The server will run without the Web UI / plugins until this is fixed."
+        warn "Re-run later with: ${INSTALL_PATH}/${BINARY} setup"
     fi
 }
 
@@ -595,8 +599,12 @@ main() {
     backup_config
     write_config "$MODE" "$PORT" "$TOKEN"
 
+    # Web UI + built-in plugins + channel activation config (both modes —
+    # standalone users can flip to `xbot-cli serve` at any time; the binary
+    # knows its own release version and downloads matching artifacts).
+    run_setup "$VERSION"
+
     if [ "$MODE" = "server-client" ]; then
-        download_web_dist "$VERSION" "$XBOT_HOME/web/dist"
         case "$(uname -s)" in
             Linux)
                 install_systemd_user "${INSTALL_PATH}/${BINARY}" "$CONFIG_PATH"
@@ -630,6 +638,8 @@ main() {
         esac
     else
         info "Run '${BINARY}' to start."
+        info "Web UI + built-in plugins were installed by 'xbot-cli setup' (see ${XBOT_HOME})."
+        info "Want the local web server too? Run: ${BINARY} serve  (then open http://localhost:8082)"
     fi
     if ! command -v "$BINARY" >/dev/null 2>&1; then
         echo ""

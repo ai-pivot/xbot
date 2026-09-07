@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -386,15 +388,38 @@ func GetProcess(p Plugin) *StdioPluginProcess {
 // Process lifecycle
 // ---------------------------------------------------------------------------
 
+// resolvePluginBinary returns the executable path for a manifest entry/executable
+// on the given GOOS. Manifest entries are platform-neutral ("./bin/genui-plugin")
+// but Windows release tarballs carry the platform-suffixed binary
+// ("bin/genui-plugin.exe") — on windows, when the entry has no ".exe" suffix and
+// the suffixed sibling exists in the plugin dir, return the suffixed name.
+// Relative paths resolve against dir (the child process's working directory).
+// The goos parameter is injected for testability; callers pass runtime.GOOS.
+func resolvePluginBinary(path, dir, goos string) string {
+	if path == "" || goos != "windows" {
+		return path
+	}
+	if filepath.IsAbs(path) || strings.HasSuffix(strings.ToLower(path), ".exe") {
+		return path
+	}
+	// Only bare/relative paths can carry sibling resolution semantics.
+	exe := strings.TrimSuffix(path, "/") + ".exe"
+	if _, err := os.Stat(filepath.Join(dir, exe)); err == nil {
+		return exe
+	}
+	return path
+}
+
 func startPluginProcess(entry, executable string, args []string, dir string) (*StdioPluginProcess, error) {
 	var cmd *exec.Cmd
 	if executable != "" {
-		cmd = exec.Command(executable, args...)
+		cmd = exec.Command(resolvePluginBinary(executable, dir, runtime.GOOS), args...)
 	} else {
 		parts := strings.Fields(entry)
 		if len(parts) == 0 {
 			return nil, fmt.Errorf("empty entry command")
 		}
+		parts[0] = resolvePluginBinary(parts[0], dir, runtime.GOOS)
 		cmd = exec.Command(parts[0], parts[1:]...)
 	}
 	cmd.Dir = dir

@@ -44,8 +44,17 @@ Build only the CLI:
 go build -o xbot-cli ./cmd/xbot-cli
 ```
 
-Requirements: **Go 1.26+**. The Web UI bundles are committed, so no Node.js
-is needed to build the Go binaries.
+One-command local setup — the source-checkout equivalent of the installer
+(build CLI + Web UI + built-in plugins, install to `~/.xbot`, activate
+channel plugins):
+
+```bash
+make setup           # needs Node.js (web build) + Go
+```
+
+Requirements: **Go 1.26+** (plus Node.js for `make setup`'s web build). The
+Web UI bundles are committed, so no Node.js is needed to build the Go binaries
+alone.
 
 ## Two installation modes
 
@@ -97,7 +106,48 @@ Start the server with: `xbot-cli serve`
 1. Downloads `xbot-cli` to `~/.local/bin/` (or your custom path)
 2. Generates a random admin token
 3. Writes / updates `~/.xbot/config.json`
-4. Server mode: installs a system service + downloads the Web UI
+4. Runs `xbot-cli setup` — installs **everything for this release in one go**:
+   - Web UI dist → `~/.xbot/web/dist` (checksum-verified from the same
+     GitHub release, in **both** standalone and server modes)
+   - Built-in plugins (`xbot.genui`, `xbot.git-fancy`, `xbot.ambience`) →
+     `~/.xbot/plugins/builtin/` (version-pinned, plugin binaries for your
+     platform + git-fancy web assets)
+   - Channel activation: writes `channels.<name>.enabled=true` for shipped
+     channel plugins (e.g. `channels.genui.enabled=true`) so the GenUI
+     (`display_html`) and Git panels work out of the box
+5. Server mode: installs a system service (the Web UI is served at
+   `http://localhost:8082`)
+
+If the release-artifact download fails (offline install, or a very old
+release without plugin tarballs), the installer warns but keeps the binary
+install usable — re-run `xbot-cli setup` later to complete it.
+
+## Completing or repairing an installation: `xbot-cli setup`
+
+The `setup` subcommand is idempotent — safe to re-run any time:
+
+```bash
+xbot-cli setup            # install/refresh Web UI + plugins + activation config
+xbot-cli setup --check    # diagnose only (exit 1 when pieces are missing)
+xbot-cli setup --force    # re-download even if the version stamp matches
+```
+
+It downloads artifacts **matching your binary's release** (nightly binaries
+pull the `nightly` tag, stable binaries pull their own version), verifies
+SHA-256 checksums, and skips work already done for this version (version
+stamps in `~/.xbot/web/.dist-version` and `~/.xbot/plugins/.builtin-version`).
+
+Air-gapped machines: download these two files from the
+[releases page](https://github.com/ai-pivot/xbot/releases) and install
+locally:
+
+```bash
+xbot-cli setup --offline-web xbot-web-dist.tar.gz \
+               --offline-plugins xbot-plugins-$(go env GOOS)-$(go env GOARCH).tar.gz
+```
+
+After upgrading (`curl ... install.sh | bash` again), just run
+`xbot-cli setup` once — the new binary version refreshes both components.
 
 ## First-run configuration
 

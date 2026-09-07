@@ -294,6 +294,12 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			if staticDir != "" {
 				webCh.SetStaticDir(staticDir)
 				log.WithField("static_dir", staticDir).Info("Frontend static files detected")
+			} else {
+				// Web is enabled but no static dir resolved — the server will run
+				// in API-only mode (no Web UI). Point the operator at the fix.
+				log.Warn("Web UI static files NOT found (web.static_dir unset, no " +
+					filepath.Join(config.XbotHome(), "web", "dist") + ", no binary-relative web/dist). " +
+					"The server runs in API-only mode. Fix with: xbot-cli setup (downloads the web dist + built-in plugins for this release)")
 			}
 			// Web file uploads go through cloud OSS only — no local storage
 			webCh.SetWorkDir(workDir)

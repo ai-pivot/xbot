@@ -32,6 +32,22 @@ make build          # 构建 xbot (server + runner)
 make run            # 构建并运行 server
 ```
 
+只构建 CLI：
+
+```bash
+go build -o xbot-cli ./cmd/xbot-cli
+```
+
+一条命令完成本地全套安装（构建 CLI + Web UI + 内置插件，装入 `~/.xbot`，
+激活 channel 插件——安装器在源码场景的等价物）：
+
+```bash
+make setup           # 需要 Node.js（web 构建）+ Go
+```
+
+环境要求：**Go 1.26+**（`make setup` 额外需要 Node.js）。Go 二进制构建本身
+不需要 Node.js（Web 产物已提交）。
+
 ## 两种安装模式
 
 安装器会让你选择 **Standalone** 或 **Server** 模式。
@@ -79,7 +95,44 @@ Server 启动命令：`xbot-cli serve`
 1. 下载 `xbot-cli` 二进制到 `~/.local/bin/`（或你指定的路径）
 2. 生成随机 admin token
 3. 写入/更新 `~/.xbot/config.json`
-4. Server 模式额外：安装系统服务 + 下载 Web UI
+4. 运行 `xbot-cli setup` —— **一条命令装齐本发行版的全部组件**：
+   - Web UI 前端 → `~/.xbot/web/dist`（与二进制同一 GitHub release，SHA-256 校验；
+     **standalone 和 server 模式都安装**）
+   - 内置插件（`xbot.genui`、`xbot.git-fancy`、`xbot.ambience`）→
+     `~/.xbot/plugins/builtin/`（版本对齐，含对应平台的插件二进制 +
+     git-fancy 前端资产）
+   - Channel 激活配置：为随发行的 channel 插件写入
+     `channels.<name>.enabled=true`（如 `channels.genui.enabled=true`），
+     GenUI（`display_html`）与 Git 面板开箱即用
+5. Server 模式额外：安装系统服务（Web UI 服务于 `http://localhost:8082`）
+
+若 release 资产下载失败（离线安装、或旧 release 没有插件 tarball），安装器
+只警告不中断——之后随时运行 `xbot-cli setup` 补齐。
+
+## 补齐 / 修复安装：`xbot-cli setup`
+
+`setup` 子命令幂等，可随时重跑：
+
+```bash
+xbot-cli setup            # 安装/刷新 Web UI + 插件 + 激活配置
+xbot-cli setup --check    # 仅诊断（缺件时 exit 1）
+xbot-cli setup --force    # 版本戳匹配也强制重新下载
+```
+
+它下载**与当前二进制版本严格对应**的资产（nightly 二进制拉 `nightly` tag，
+stable 二进制拉自身版本号），校验 SHA-256，并对已完成安装的版本跳过重复
+下载（版本戳：`~/.xbot/web/.dist-version` 与 `~/.xbot/plugins/.builtin-version`）。
+
+离线机器：从 [releases 页面](https://github.com/ai-pivot/xbot/releases)手动下载
+两个文件后本地安装：
+
+```bash
+xbot-cli setup --offline-web xbot-web-dist.tar.gz \
+               --offline-plugins xbot-plugins-$(go env GOOS)-$(go env GOARCH).tar.gz
+```
+
+升级（重新跑 `curl ... install.sh | bash`）后运行一次 `xbot-cli setup` ——
+新二进制版本号会自动刷新两个组件。
 
 ## 首次配置
 

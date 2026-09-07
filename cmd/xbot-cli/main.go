@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -930,7 +931,11 @@ func main() {
 	xbotHome := config.XbotHome()
 	clipanic.EnableFileLogging(filepath.Join(xbotHome, "logs", "cli-panic.log"))
 	defer clipanic.Recover("main.main", nil, true)
-	fmt.Printf("xbot CLI %s\n", version.Version)
+	// Version banner: suppressed for the "setup" subcommand (machine-parseable
+	// output for install scripts / CI assertions).
+	if len(os.Args) <= 1 || os.Args[1] != "setup" {
+		fmt.Printf("xbot CLI %s\n", version.Version)
+	}
 
 	// pluginWidgetSyncFn bridges SetCWDFn (inside if app.client != nil) and
 	// cliCh.SyncPluginWidgetChatID (inside if app.client.IsRemote()).
@@ -970,6 +975,20 @@ func main() {
 		case "install":
 			fmt.Println("install 子命令已不再主推，请使用 scripts/install.sh")
 			fmt.Println("例如: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash")
+			fmt.Println("安装完成后可用 'xbot-cli setup' 补齐 Web UI / 内置插件 / channel 激活配置")
+			return
+		case "setup":
+			// One-command post-install setup: web dist + built-in plugins +
+			// channel activation config (delegated to by install.sh/install.ps1).
+			if err := runSetup(os.Args[2:]); err != nil {
+				if errors.Is(err, errSetupIncomplete) {
+					// Completed with warnings (e.g. old release without plugin
+					// tarballs). Exit 3 so callers can distinguish soft failure.
+					os.Exit(3)
+				}
+				fmt.Fprintf(os.Stderr, "setup: %v\n", err)
+				os.Exit(1)
+			}
 			return
 		case "serve":
 			if err := serverapp.Run(os.Args[2:]); err != nil {

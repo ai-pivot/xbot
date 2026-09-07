@@ -667,8 +667,28 @@ $token = New-RandomToken
 Backup-Config
 Write-Config -Mode $selectedMode -Port $selectedPort -Token $token
 
+# Web UI + built-in plugins + channel activation config (BOTH modes — same
+# Go implementation as install.sh). Delegates to the freshly-installed
+# binary's `setup` subcommand: downloads the version-pinned web dist + plugin
+# tarballs from this release, installs to $XbotHome, and sets
+# channels.<name>.enabled=true for shipped channel plugins.
+# Soft-fail: any non-zero exit keeps the install usable (old releases lack
+# the plugin tarballs → exit 3) — warn with the remediation command only.
+$binFullPath = Join-Path $InstallPath $BINARY
+Write-Info "Setting up Web UI + built-in plugins (xbot-cli setup)..."
+$setupArgs = @("setup", "--tag", $tag)
+if ($GhMirror) { $setupArgs += @("--mirror", $GhMirror) }
+& $binFullPath @setupArgs
+if ($LASTEXITCODE -eq 0) {
+    Write-Info "Web UI + built-in plugins installed"
+} else {
+    Write-Warn "xbot-cli setup exited with code $LASTEXITCODE (see messages above)."
+    Write-Warn "The install is usable, but the Web UI / built-in plugins may be missing."
+    Write-Warn "Re-run later with: $binFullPath setup"
+    $global:LASTEXITCODE = 0
+}
+
 if ($selectedMode -eq "server-client") {
-    $binFullPath = Join-Path $InstallPath $BINARY
     Install-WindowsService -BinPath $binFullPath -CfgPath $ConfigPath
 }
 

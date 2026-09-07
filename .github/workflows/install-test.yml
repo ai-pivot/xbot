@@ -6,12 +6,16 @@ on:
     paths:
       - 'scripts/install.sh'
       - 'scripts/install.ps1'
+      - 'cmd/xbot-cli/setup.go'
+      - 'plugins/package.sh'
       - '.github/workflows/install-test.yml'
   pull_request:
     branches: [master]
     paths:
       - 'scripts/install.sh'
       - 'scripts/install.ps1'
+      - 'cmd/xbot-cli/setup.go'
+      - 'plugins/package.sh'
       - '.github/workflows/install-test.yml'
   workflow_dispatch:
 
@@ -43,6 +47,10 @@ jobs:
           token=$(jq -r '.admin.token' "${XBOT_HOME}/config.json")
           [ -n "$token" ] && [ "$token" != "null" ]
           echo "✅ Admin token set"
+          # Web dist installs in BOTH modes now (install.sh delegates to
+          # 'xbot-cli setup'; v0.0.23 already ships xbot-web-dist.tar.gz).
+          test -f "${XBOT_HOME}/web/dist/index.html"
+          echo "✅ Web dist installed (standalone mode also runs setup)"
 
   linux-server-client:
     runs-on: ubuntu-latest
@@ -74,6 +82,10 @@ jobs:
           token=$(jq -r '.admin.token' "${XBOT_HOME}/config.json")
           [ -n "$token" ] && [ "$token" != "null" ]
           echo "✅ Admin token set"
+          # Web dist installs via 'xbot-cli setup' (install.sh delegation; the
+          # v0.0.23 release already ships xbot-web-dist.tar.gz).
+          test -f "${XBOT_HOME}/web/dist/index.html"
+          echo "✅ Web dist installed (setup delegation)"
           unit_file="${HOME}/.config/systemd/user/xbot-server.service"
           test -f "$unit_file"
           echo "✅ systemd --user unit created"
@@ -131,6 +143,54 @@ jobs:
           port=$(jq -r '.server.port' "${XBOT_HOME}/config.json")
           [ "$port" = "8082" ]
           echo "✅ Default port 8082 applied"
+
+  # ── One-click full setup: web dist + built-in plugins + channel activation ──
+  # Uses the nightly release (rebuilt on every master merge) so the plugin
+  # tarballs exist. Tiered assertions:
+  #   - plugins present in the release → HARD assertions (web dist, plugin
+  #     manifests, plugin binary exec bit, channels.genui.enabled=true)
+  #   - plugins tarballs missing (nightly predates this feature, or the PR
+  #     branch ran before the first release.yml run) → warning + web-dist-only
+  #     assertions (web dist predates plugins in the release pipeline)
+  # After this PR merges and the first nightly release builds, the hard path
+  # always runs.
+  linux-full-setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test full one-click install (nightly, web + plugins + channels config)
+        env:
+          CHANNEL: nightly
+          MODE: server-client
+          INSTALL_PATH: ${{ github.workspace }}/test-install/bin
+          XBOT_HOME: ${{ github.workspace }}/test-install/.xbot
+          NONINTERACTIVE: "1"
+        run: |
+          bash scripts/install.sh
+          test -x "${INSTALL_PATH}/xbot-cli"
+          echo "✅ Binary installed"
+          # install.sh delegates web dist + plugins + channel activation to
+          # 'xbot-cli setup' (run_setup). Both modes install both components.
+          test -f "${XBOT_HOME}/web/dist/index.html"
+          echo "✅ Web dist installed (nightly)"
+          genui_manifest="${XBOT_HOME}/plugins/builtin/xbot.genui/plugin.json"
+          if [ -f "$genui_manifest" ]; then
+            test -f "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/plugin.json"
+            test -f "${XBOT_HOME}/plugins/builtin/xbot.ambience/plugin.json"
+            test -x "${XBOT_HOME}/plugins/builtin/xbot.genui/bin/genui-plugin"
+            test -x "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/bin/git-fancy-plugin"
+            echo "✅ Built-in plugins installed (genui + git-fancy + ambience)"
+            test -f "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/web/index.js"
+            echo "✅ git-fancy web assets installed (esbuild bundles)"
+            genui_enabled=$(jq -r '.channels.genui.enabled // empty' "${XBOT_HOME}/config.json")
+            [ "$genui_enabled" = "true" ]
+            echo "✅ Channel activation config written (channels.genui.enabled=true)"
+            "${INSTALL_PATH}/xbot-cli" setup --check
+            echo "✅ setup --check exits 0"
+          else
+            echo "::warning::nightly release has no plugin tarballs yet (pre-feature nightly or PR branch). Skipping plugin assertions."
+            echo "Plugins will install automatically once release.yml ships xbot-plugins-*.tar.gz."
+          fi
 
   # ── macOS ──────────────────────────────────────────────
   macos-standalone:
@@ -310,6 +370,12 @@ jobs:
           Write-Host "✅ Web enabled"
           $cfg.admin.token | Should -Not -BeNullOrEmpty
           Write-Host "✅ Admin token set"
+          # Web dist installs via 'xbot-cli setup' delegation (v0.0.23 already
+          # ships xbot-web-dist.tar.gz; the plugins tarballs land in later
+          # releases — install.ps1 tolerates their absence with a warning).
+          $webDist = Join-Path $env:XBOT_HOME "web\dist\index.html"
+          Test-Path $webDist | Should -BeTrue
+          Write-Host "✅ Web dist installed (setup delegation)"
           $wrapper = Join-Path $env:XBOT_HOME "scripts\run-server.bat"
           Test-Path $wrapper | Should -BeTrue
           Write-Host "✅ Wrapper script created"
