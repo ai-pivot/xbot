@@ -397,6 +397,10 @@ export interface WebToolProgress {
    * Frontend renders via GenUIBlock — metadata-driven, never tool-name-driven.
    * (see docs/agent/genui-plugin-design.md §9) */
   uiMode?: string
+  /** LLM tool_call id — stable per-call identity. Present on ActiveTools
+   * entries; used by the promote-to-background RPC to target the exact
+   * running shell. Empty on legacy/history events. */
+  callID?: string
   /** Global libraries the UI needs (echarts/three/motion). */
   uiLibs?: string[]
   /** Top-level panel declaration (from UIDecl.Surface) — the UI result renders

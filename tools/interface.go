@@ -96,6 +96,11 @@ type ToolContext struct {
 	BgTaskManager *BackgroundTaskManager
 	// SessionKey for task scoping (set by engine, not via RunConfig)
 	BgSessionKey string
+	// ToolCallID is the LLM tool_call id of the call currently being executed.
+	// Set by the engine's tool executor per call; used by the foreground shell
+	// promote-to-background registry to correlate a running tool with the
+	// server-side execution handle (see tools/shell_promote.go).
+	ToolCallID string
 	// MessageSender allows sending messages to any Channel via Dispatcher.
 	MessageSender bus.MessageSender
 	// RegisterAgentChannel registers an AgentChannel in the Dispatcher.

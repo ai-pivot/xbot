@@ -753,6 +753,15 @@ type UserDefaultModel struct {
 }
 
 // GetUserDefaultModel returns the user's default model selection, or nil if unset.
+//
+// Single-operator semantics (post-v63): the sender dimension collapsed to one
+// operator, but PRE-v63 rows may survive under their original sender ids
+// (e.g. a web login's 'web-4' row). When the exact sender row misses, fall
+// back to the most recently updated row — a single operator has exactly one
+// default model, and missing the legacy row made GetLLM's chain land on the
+// deployment defaultModel (config llm.model) instead of the user's actual
+// choice (user report: "模型在用户没切换的情况下会莫名其妙变化" — the
+// ResolveLLM fallback chain resolved a model the user never picked).
 func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefaultModel, error) {
 	conn := s.db.Conn()
 	m := &UserDefaultModel{}
@@ -761,11 +770,24 @@ func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefa
 		SELECT sender_id, subscription_id, model, updated_at
 		FROM user_default_model WHERE sender_id = ?
 	`, senderID).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
+	if err == nil {
+		m.UpdatedAt = parseSQLiteTime(updatedAt)
+		return m, nil
 	}
-	if err != nil {
+	if err != sql.ErrNoRows {
 		return nil, fmt.Errorf("get user default model: %w", err)
+	}
+	// Exact row miss → single-operator fallback: the most recently updated row
+	// regardless of sender id. Returns nil only when the table is empty.
+	row := conn.QueryRow(`
+		SELECT sender_id, subscription_id, model, updated_at
+		FROM user_default_model ORDER BY updated_at DESC LIMIT 1
+	`)
+	if err := row.Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get user default model (operator fallback): %w", err)
 	}
 	m.UpdatedAt = parseSQLiteTime(updatedAt)
 	return m, nil

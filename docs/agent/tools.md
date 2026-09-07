@@ -227,6 +227,17 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `WebSearch` | `tools/web_search.go` | Tavily web search |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |
 
+## Foreground shell promote-to-background (`tools/shell.go` + `tools/shell_promote.go`)
+
+Users can move a RUNNING foreground shell to the background from the web UI so the agent iteration stops blocking. Full chain:
+
+- **`executeForeground` is stream-first**: the command runs via `sandboxExecAsync` in a goroutine (output streamed into a locked buffer); the tool call select-waits on four channels — completion / timeout / user-promote / tool-ctx cancel. The exec context derives from `context.Background()` (NOT the tool ctx) so a promoted process survives the tool call's return; every non-promote exit path defers `cancelExec()` (user stop kills the process group).
+- **`ForegroundShellRegistry`** (`tools/shell_promote.go`): process-level, keyed `(sessionKey, toolCallID)` → `ForegroundShellHandle` (promote signal channel + RPC result backchannel). `PromoteForegroundShell(sessionKey, callID)` is the RPC entry — a second racing promote returns the cached `adoptTaskID` instantly.
+- **`BgTaskManager.AdoptRunning`**: adopts an already-running execution (`RunningExecHandle{Output, Done, Result, Cancel}`) as a background task — no re-execution, ever. Completion follows the same NotifyCh injection as `Start` tasks; `SetOnDelta` bridges output chunks to the SSE `bg_task_output` push after adoption.
+- **Timeout auto-promote uses the same path** (no more docker/remote re-exec with `--- [restarted after timeout] ---` markers — the live process is adopted in place, output is continuous).
+- **Tool call identity**: `protocol.ToolProgress.CallID` / `agent.ToolProgress.CallID` / `tools.ToolContext.ToolCallID` carry the LLM `tool_call_id` end-to-end so the web promote button targets the exact running tool card (`promote_shell` RPC: `{session_key, tool_call_id}`).
+- **Web frontend**: `ToolRender.tsx` `ShellPromoteBar` (running Shell cards below the terminal card) → `promote_shell` REST RPC → success shows a done bar + task id + sonner toast. `parseShell` recognizes `[PROMOTED to background...]` + `[task_id: "xxx"]` (extraction MUST run BEFORE stripping the headline — the task id shares the first line). Task panels refresh immediately via the `bg-task-promoted` window event (dispatched through `sessionEvents.ts` — direct `window.dispatchEvent` is ESLint-banned in `components/agent/**`).
+
 ## GrpcPluginTransport (`agent/transport_grpc.go`)
 
 Bidirectional JSON-RPC over stdin/stdout for gRPC plugin channel providers. Replaces the old `serverapp/channel_bridge_grpc.go` approach where the plugin's activation process was reused for channel communication.

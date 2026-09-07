@@ -1741,6 +1741,22 @@ func registerTaskHandlers(t RPCTable, h *RPCContext) {
 		}
 		return true, nil
 	})
+	t["promote_shell"] = rpc1(func(ctx context.Context, p struct {
+		SessionKey string `json:"session_key"`
+		ToolCallID string `json:"tool_call_id"`
+	}) (any, error) {
+		bizID := rpcBizID(ctx)
+		if !isAdmin(ctx) && p.SessionKey != "" {
+			if owner := sessionKeyOwner(p.SessionKey); owner != "" && owner != bizID {
+				return nil, fmt.Errorf("access denied")
+			}
+		}
+		taskID, err := tools.PromoteForegroundShell(p.SessionKey, p.ToolCallID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "task_id": taskID}, nil
+	})
 
 	// ── Tenants ──
 	t["list_tenants"] = rpc0err(h.listTenants)
@@ -2536,13 +2552,30 @@ func (h *RPCContext) setDefaultSubscription(ctx context.Context, p struct {
 		}
 		// Per-session switch: update per-chat cache AND persist to DB
 		// so the session→subscription mapping survives server restarts.
+		// SetSessionLLM resolves a NON-EMPTY model (user_default_model →
+		// sub.Model → first enabled model row) — never writes an empty model
+		// ("任何时候禁止会话绑定的模型为空": an empty-model binding makes
+		// ResolveLLM follow the user-level default on every call — the model
+		// drifts whenever another session switches the user default).
 		if err := h.Ag.LLMFactory().SetSessionLLM(bizID, p.ChatID, channel, sub); err != nil {
-			return err
-		}
-		// Persist to tenants table (backend source of truth).
-		if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
-			if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription(channel, p.ChatID, sub.ID, sub.Model); err != nil {
-				log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
+			// SetSessionLLM refuses to write when NO model is derivable at all
+			// (picker-style sub with no model rows). Fall back to a direct write
+			// ONLY when a non-empty model is available; otherwise fail loudly.
+			resolvedModel := sub.Model
+			if resolvedModel == "" {
+				if svc, gerr := h.requireSubscriptionSvc(); gerr == nil {
+					if udm, uerr := svc.GetUserDefaultModel(bizID); uerr == nil && udm != nil && udm.Model != "" {
+						resolvedModel = udm.Model
+					}
+				}
+			}
+			if resolvedModel == "" {
+				return fmt.Errorf("subscription %s has no selectable model (empty Model column and no user default) — cannot bind session %s", sub.ID, p.ChatID)
+			}
+			if ms := h.Ag.MultiSession(); ms != nil && ms.DB() != nil {
+				if err := sqlite.NewTenantService(ms.DB()).SetTenantSubscription(channel, p.ChatID, sub.ID, resolvedModel); err != nil {
+					log.WithError(err).Warn("RPC setDefaultSubscription: SetTenantSubscription failed")
+				}
 			}
 		}
 		return nil

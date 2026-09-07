@@ -60,6 +60,11 @@ type ToolProgress struct {
 	// (Status="generating"). Populated from streaming tool call deltas — shows
 	// real-time progress of argument generation (e.g. "42 chars").
 	GenChars int `json:"gen_chars,omitempty"`
+	// CallID is the LLM tool_call id (stable per-call identity). The engine
+	// stamps it on ActiveTools entries so the frontend can correlate a running
+	// tool card with server-side execution state (e.g. the promote-to-background
+	// RPC targets the exact foreground shell by session + call id).
+	CallID string `json:"call_id,omitempty"`
 }
 
 // UISurface is the wire form of tools.UISurface (mirror to break the

@@ -62,6 +62,13 @@ export interface BackendRPC {
     params: { channel?: string; chat_id: string; limit?: number }
     result: TenantUsageStats
   }
+  // ---- 前台 shell 转后台（promote-to-background）----
+  // 把当前会话正在前台执行的 shell 命令转入后台（用户在工具卡片上点"转后台"）。
+  // tool_call_id 来自 progress 事件的 ActiveTools.call_id（运行中的 Shell 工具）。
+  'promote_shell': {
+    params: { session_key: string; tool_call_id?: string }
+    result: { ok: boolean; task_id: string }
+  }
 }
 
 // ---- 会话用量/性能聚合（对应 Go sqlite.TenantUsageStats JSON）----

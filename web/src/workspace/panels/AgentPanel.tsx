@@ -32,6 +32,7 @@ import type { QueueItemPayload } from '@/types/shared'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { ContextRing } from '@/components/agent/ContextRing'
+import { ToolSessionContext } from '@/components/agent/ToolSessionContext'
 import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
@@ -603,6 +604,9 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
 
   return (
+    <ToolSessionContext.Provider
+      value={{ channel: progressChannel, chatID: progressChatID }}
+    >
     <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
       {!ws.connected && !isSubAgent && chatID && (
         <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
@@ -720,6 +724,7 @@ export function AgentPanel({ params, api }: PanelProps) {
         />
       )}
     </div>
+    </ToolSessionContext.Provider>
   )
 }
 

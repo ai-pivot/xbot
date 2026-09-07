@@ -33,6 +33,8 @@ xbot 内置 50+ 工具，Agent 在对话中可以随时调用。所有工具默�
 **后台模式**：设置 `background: true` 用于开发服务器或构建进程。Agent 会收到任务 ID 并继续工作。使用 `task_status` 查看进度——但不要反复轮询。
 
 ![后台任务](/img/cli/bg-tasks.gif)
+
+**转后台（Web UI）**：前台执行中的 Shell 命令可以在 Web 上点"转后台"按钮（运行中的终端卡片下方）——命令立即转入后台，Agent 本轮继续工作，输出完成后自动注入对话。执行中的命令超时也会自动转后台（不再重新执行，原进程直接接管）。转入后台后可用 `task_wait` / `task_status` / `task_kill` 管理。
 {{< /hint >}}
 
 ## Web & Search

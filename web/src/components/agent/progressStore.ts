@@ -194,6 +194,7 @@ export function normalizeWebTool(raw: unknown): WebToolProgress | null {
     toolHints: typeof r.tool_hints === 'string' ? r.tool_hints : '',
     iteration: typeof r.iteration === 'number' ? r.iteration : undefined,
     uiMode: typeof r.ui_mode === 'string' ? r.ui_mode : undefined,
+    callID: typeof r.call_id === 'string' && r.call_id ? r.call_id : undefined,
     uiLibs: uiLibs && uiLibs.length > 0 ? uiLibs : undefined,
     surface: normalizeUISurface(r.ui_surface),
   }

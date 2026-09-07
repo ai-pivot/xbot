@@ -44,3 +44,15 @@ export function dispatchAgentIdle(chatID: string, channel?: string): void {
 export function dispatchSessionsResync(): void {
   window.dispatchEvent(new CustomEvent('sessions-resync'))
 }
+
+/**
+ * Dispatch bg-task-promoted: a foreground shell was moved to the background
+ * (promote-to-background). Task panels (useTasks) refresh immediately instead
+ * of waiting for the 30s poll tick. NOT per-session state — the event carries
+ * no session identity and listeners (useTasks) scope by their own session
+ * selector. Same dispatch pattern as the SSE-bridged 'bg-task-output' event
+ * (BackgroundPanel listens for that one directly).
+ */
+export function dispatchBgTaskPromoted(): void {
+  window.dispatchEvent(new CustomEvent('bg-task-promoted'))
+}

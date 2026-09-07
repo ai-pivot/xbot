@@ -123,6 +123,10 @@ type ToolProgress struct {
 	// UIDecl.Surface) so it persists into the iteration snapshot → DB history →
 	// frontend (fancy header + collapse + fullscreen). Mirrors protocol.UISurface.
 	UISurface *protocol.UISurface
+	// CallID is the LLM tool_call id — stable per-call identity. Flows into
+	// protocol.ToolProgress (wire) so the frontend can correlate a running
+	// tool card with server-side execution state (promote-to-background RPC).
+	CallID string
 }
 
 // ToolStatus 工具执行状态。

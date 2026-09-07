@@ -986,6 +986,7 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 			toolExecCtx = tools.WithPermUsers(toolExecCtx, cfg.PermUsers.DefaultUser, cfg.PermUsers.PrivilegedUser)
 		}
 		toolCtx := buildToolContext(toolExecCtx, cfg)
+		toolCtx.ToolCallID = tc.ID
 
 		return executeWithHooks(cfg.HookManager, toolExecCtx, toolCtx, tc.Name, tc.Arguments, tool, hooks.BasePayload{
 			SessionID: cfg.ChatID,

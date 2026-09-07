@@ -38,6 +38,14 @@ The agent receives a task ID and continues working. Use `task_status` to check
 progress — but don't poll repeatedly.
 
 ![Background tasks](/img/cli/bg-tasks.gif)
+
+**Promote to background (Web UI):** while a foreground shell command is still
+running, click the "转后台" (promote) button below its terminal card — the
+command immediately moves to the background, the agent continues its iteration,
+and the output is injected into the conversation when it finishes. Timed-out
+commands are auto-promoted the same way (the live process is adopted in place,
+never re-executed). Manage promoted tasks with `task_wait` / `task_status` /
+`task_kill`.
 {{< /hint >}}
 
 ## Web & Search

@@ -353,17 +353,46 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 // channel is the physical channel of the target session ("cli", "web", ...) —
 // the tenants mapping is keyed by (channel, chat_id), so it must match the
 // session's real channel, not the caller's.
+//
+// The session's bound model must NEVER be empty ("任何时候禁止会话绑定的模型
+// 为空"): an empty-model binding poisons ResolveLLM (subID set, model empty →
+// falls through to the user-level default on every call — the session model
+// drifts whenever another session switches the user default) and defeats
+// ensureSessionModel's repair check. Model resolution: user_default_model →
+// the subscription's own Model column → the subscription's first enabled
+// subscription_models row. A subscription with NO resolvable model is a caller
+// bug — refuse rather than write a poisoned empty-model row.
 func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite.LLMSubscription) error {
 	if channel == "" {
 		channel = "cli"
 	}
 	if f.tenantSvc != nil && chatID != "" && sub != nil {
-		// Model is user-level — resolve from user_default_model, not sub.Model.
 		model := ""
 		if f.subscriptionSvc != nil {
 			if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
 				model = udm.Model
 			}
+		}
+		if model == "" {
+			model = sub.Model
+		}
+		if model == "" {
+			// Last resort: the subscription's first enabled model row. Picker-style
+			// subscriptions often carry an empty Model column — the model identity
+			// lives in subscription_models.
+			if f.subscriptionSvc != nil {
+				if models, err := f.subscriptionSvc.GetModels(sub.ID); err == nil {
+					for _, sm := range models {
+						if sm.Enabled && sm.Model != "" {
+							model = sm.Model
+							break
+						}
+					}
+				}
+			}
+		}
+		if model == "" {
+			return fmt.Errorf("SetSessionLLM: refusing to write an empty model for chat %s (subscription %s has no resolvable model)", chatID, sub.ID)
 		}
 		return f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model)
 	}
@@ -672,7 +701,27 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 		return f.GetLLM(senderID)
 	}
 	if model == "" {
-		return f.GetLLM(senderID)
+		// Empty-model binding (legacy SetSessionLLM write, pre-v63 row, or a
+		// tenants row written with the subscription's empty Model column).
+		// Falling straight through to GetLLM made the session follow the
+		// USER-LEVEL default on every call — the "model drifts without any
+		// switch" bug (another session's SelectModel update moved this
+		// session's model) and split the compression threshold from the
+		// displayed max-context. Repair the binding instead (ensureSessionModel
+		// treats an empty-model row as unbound and rebinds: balance tier →
+		// last-used → the bound subscription's own model).
+		if f.ensureSessionModel(senderID, chatID, channel) {
+			subID, model, _ = f.tenantSvc.GetTenantSubscription(channel, chatID)
+			if subID != "" && model != "" {
+				sub = f.lookupSub(subID)
+				if sub == nil {
+					return f.GetLLM(senderID)
+				}
+			}
+		}
+		if model == "" {
+			return f.GetLLM(senderID)
+		}
 	}
 	client := f.getOrCreateClient(sub, model)
 	if client == nil {
@@ -782,17 +831,27 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 	return nil
 }
 
-// ensureSessionModel auto-binds a model to a session that has no per-session
-// binding in the tenants table. This ensures ALL sessions (CLI, Web, Feishu,
-// etc.) get an explicit model binding on first use, not just those created via
-// the CLI session panel.
+// ensureSessionModel auto-binds a model to a session that has no COMPLETE
+// per-session binding in the tenants table. This ensures ALL sessions (CLI,
+// Web, Feishu, etc.) get an explicit model binding on first use, not just
+// those created via the CLI session panel.
 //
-// Priority: Balance tier config only (user_settings "tier_balance") — the sole
-// default source for new sessions. If unset, no binding is created (the caller
-// falls through to GetLLM / system default). No last-used fallback (user
-// request: new sessions default to the Balance tier exclusively).
+// A binding is COMPLETE only when BOTH subscription_id and model are non-empty.
+// A (subID, model="") row is a poisoned binding (written by legacy
+// SetSessionLLM when user_default_model had no model): ResolveLLM falls through
+// it to the USER-LEVEL default on every call, so the session model drifts
+// whenever another session switches the user default — and the drift splits
+// the compression threshold from the displayed max-context (the display chain
+// reads the tenants pair, the compression chain follows the drifted model).
+// Such rows are treated as UNBOUND and repaired here.
 //
-// Already-bound sessions are skipped (idempotent — safe to call every turn).
+// Priority: Balance tier config (user_settings "tier_balance") → user_default_model
+// (last-used, incl. the single-operator legacy-row fallback) → the bound
+// subscription's own Model column. The session binding must NEVER stay empty
+// while a concrete model is derivable.
+//
+// Already-COMPLETELY-bound sessions are skipped (idempotent — safe to call
+// every turn).
 //
 // On success, the session is bound via SelectModel (writes to both tenants table
 // and user_default_model), so subsequent ResolveLLM calls hit the tenants table
@@ -801,8 +860,9 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 	if chatID == "" || f.tenantSvc == nil || f.subscriptionSvc == nil {
 		return false
 	}
-	// Already bound? Skip.
-	if subID, _, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); subID != "" {
+	// Already bound? Skip — BOTH subID and model must be non-empty. An
+	// empty-model row is treated as unbound and repaired below.
+	if subID, model, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); subID != "" && model != "" {
 		return false
 	}
 
@@ -817,8 +877,72 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 		}
 	}
 
-	// Balance tier 未配置 → 不绑定（无 last-used fallback：新会话默认一律
-	// balance，没有就不绑，由调用方落到 GetLLM 系统默认）。
+	// Priority 2: user_default_model (last-used pair). GetUserDefaultModel's
+	// single-operator fallback also covers legacy pre-v63 rows (e.g. 'web-4').
+	if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil && udm.SubscriptionID != "" && udm.Model != "" {
+		if err := f.SelectModel(senderID, chatID, channel, udm.SubscriptionID, udm.Model); err == nil {
+			log.WithFields(log.Fields{
+				"chatID": chatID, "subID": udm.SubscriptionID, "model": udm.Model,
+				"source": "last_used",
+			}).Info("ensureSessionModel: auto-bound session to last-used model")
+			return true
+		}
+	}
+
+	// Priority 3: the existing (poisoned) binding's subscription — repair with
+	// its own Model column / first enabled model row. Only applies when a subID
+	// is present but the model is empty (repair path, not initial binding).
+	if boundSubID, _, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); boundSubID != "" {
+		if sub := f.lookupSub(boundSubID); sub != nil {
+			m := sub.Model
+			if m == "" && f.subscriptionSvc != nil {
+				if models, err := f.subscriptionSvc.GetModels(sub.ID); err == nil {
+					for _, sm := range models {
+						if sm.Enabled && sm.Model != "" {
+							m = sm.Model
+							break
+						}
+					}
+				}
+			}
+			if m != "" {
+				if err := f.SelectModel(senderID, chatID, channel, sub.ID, m); err == nil {
+					log.WithFields(log.Fields{
+						"chatID": chatID, "subID": sub.ID, "model": m,
+						"source": "bound_sub_repair",
+					}).Info("ensureSessionModel: repaired empty-model binding from the bound subscription")
+					return true
+				}
+			}
+		}
+	}
+
+	// Priority 4: the user's default subscription (GetDefault), first enabled
+	// model. Covers fresh installs with no tier config and no last-used model.
+	if sub, err := f.subscriptionSvc.GetDefault(senderID); err == nil && sub != nil {
+		m := sub.Model
+		if m == "" {
+			if models, gerr := f.subscriptionSvc.GetModels(sub.ID); gerr == nil {
+				for _, sm := range models {
+					if sm.Enabled && sm.Model != "" {
+						m = sm.Model
+						break
+					}
+				}
+			}
+		}
+		if m != "" {
+			if err := f.SelectModel(senderID, chatID, channel, sub.ID, m); err == nil {
+				log.WithFields(log.Fields{
+					"chatID": chatID, "subID": sub.ID, "model": m,
+					"source": "default_sub",
+				}).Info("ensureSessionModel: auto-bound session to default subscription model")
+				return true
+			}
+		}
+	}
+
+	// Nothing derivable — leave unbound (deployment has no subscriptions at all).
 	return false
 }
 

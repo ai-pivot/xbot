@@ -65,6 +65,27 @@ describe('parseShell', () => {
     const r = parseShell(tool, 'Background task running: bg:3f8f492a', '')
     expect(r.bgTask).toBe('bg:3f8f492a')
   })
+
+  it('extracts the task id from the promote/timeout/background result format [task_id: "xxx"]', () => {
+    const tool = makeTool({ label: 'Shell: x' })
+    const r = parseShell(tool, '[PROMOTED to background by user] Command moved to the background [task_id: "9adfa651"]\nPartial output so far:\nok', '')
+    expect(r.promoted).toBe(true)
+    expect(r.bgTask).toBe('9adfa651')
+    expect(r.output).toContain('Partial output so far')
+  })
+
+  it('extracts the task id from timeout auto-promote results', () => {
+    const tool = makeTool({ label: 'Shell: x' })
+    const r = parseShell(tool, '[TIMEOUT after 2m0s] Command timed out. Auto-promoted to background task [task_id: "f6695704"]\nPartial output before timeout:\nbuild...', '')
+    expect(r.timeout).toBe(true)
+    expect(r.bgTask).toBe('f6695704')
+  })
+
+  it('extracts the task id from background-start results ("Background task started")', () => {
+    const tool = makeTool({ label: 'Shell: x' })
+    const r = parseShell(tool, 'Background task started [task_id: "1a2b3c4d"]\nCommand: npm run dev\n\nThe task is running in the background.', '')
+    expect(r.bgTask).toBe('1a2b3c4d')
+  })
 })
 
 // ── parseRead ───────────────────────────────────────────────────────────

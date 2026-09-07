@@ -57,6 +57,9 @@ func (s *runState) initToolProgress(response *llm.LLMResponse, iteration int) *t
 				Status:    ToolPending,
 				Iteration: iteration,
 				Args:      tc.Arguments,
+				// CallID: stable per-call identity — the web promote-to-background
+				// RPC targets the exact running tool card by (session, call_id).
+				CallID: tc.ID,
 			}
 		}
 	}

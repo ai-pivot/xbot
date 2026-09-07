@@ -1120,3 +1120,120 @@
 .ambience-glass .dv-tabs-and-actions-container {
   background-color: var(--bg-secondary) !important;
 }
+
+/* ─── Shell promote-to-background（转后台）交互 ─────────────────────────────
+ * 运行中的 shell 卡片：终端头部呼吸绿点 + 输出区扫描高光（shell-run-*），
+ * promote 按钮（.shell-promote-btn）半透明 accent 渐变 + hover 高光 +
+ * sheen 流光；完成后（.shell-promote-done）绿色确认条。
+ * 手机优先：按钮高 36px 触控目标、文字清晰；禁用态降饱和。
+ */
+@keyframes shellRunPulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--status-running) 60%, transparent); }
+  50% { opacity: 0.55; box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-running) 0%, transparent); }
+}
+.shell-run-dot {
+  height: 6px;
+  width: 6px;
+  border-radius: 9999px;
+  background-color: var(--status-running, #22c55e);
+  animation: shellRunPulse 1.6s ease-in-out infinite;
+}
+
+/* 运行中的终端输出区：顶部一条缓慢扫过的高光（subtle，不与文本争抢） */
+@keyframes shellSheenSweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+.shell-run-body::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 34%;
+  pointer-events: none;
+  background: linear-gradient(
+    100deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent, #6366f1) 7%, transparent) 50%,
+    transparent 100%
+  );
+  animation: shellSheenSweep 2.4s ease-in-out infinite;
+}
+
+/* 转后台按钮 */
+.shell-promote-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  min-height: 36px; /* 手机触控目标 */
+  padding: 0 0.875rem;
+  border-radius: 0.5rem;
+  font-size: 12px;
+  color: var(--accent, #6366f1);
+  background: color-mix(in srgb, var(--accent, #6366f1) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent, #6366f1) 35%, transparent);
+  overflow: hidden;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, transform 100ms ease, color 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.shell-promote-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #6366f1) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #6366f1) 60%, transparent);
+}
+.shell-promote-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+.shell-promote-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* 按钮上的流光（fancy）：hover 时从左滑过 */
+.shell-promote-btn-sheen {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    color-mix(in srgb, var(--accent, #6366f1) 18%, transparent) 50%,
+    transparent 70%
+  );
+  transform: translateX(-120%);
+}
+.shell-promote-btn:hover:not(:disabled) .shell-promote-btn-sheen {
+  animation: shellSheenSweep 0.9s ease-out 1;
+}
+
+/* promote 成功确认条 */
+.shell-promote-done {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 36px;
+  padding: 0 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 12px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  background: color-mix(in srgb, #10b981 8%, transparent);
+  border: 1px solid color-mix(in srgb, #10b981 35%, transparent);
+}
+/* 确认条入场后短暂的高光渐隐 */
+@keyframes shellDoneGlow {
+  0% { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.15); }
+}
+.shell-promote-done-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at 20% 50%,
+    color-mix(in srgb, #10b981 25%, transparent),
+    transparent 70%
+  );
+  animation: shellDoneGlow 1.2s ease-out 1 forwards;
+}
