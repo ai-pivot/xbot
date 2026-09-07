@@ -1,7 +1,7 @@
 {
   "id": "xbot.git-fancy",
   "name": "Git Fancy",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Fancy Git 面板：分支、变更文件、提交历史（分页）、commit 详情、全宽 diff tab（VSCode editor view）。纯 stdio IPC 后端（独立 Go 进程）。",
   "author": "xbot",
   "runtime": "stdio",

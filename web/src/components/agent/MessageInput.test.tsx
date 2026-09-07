@@ -20,7 +20,7 @@ vi.mock('@/providers/i18n', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/providers/i18n')>()
   return {
     ...actual,
-    useI18n: () => ({ t: (key: string) => key }),
+    useI18n: () => ({ t: (key: string, _params?: Record<string, unknown>) => key }),
   }
 })
 
@@ -62,6 +62,28 @@ describe('MessageInput', () => {
     const wrapper = container.querySelector('.border-t')
     expect(wrapper).not.toBeNull()
     expect((wrapper as HTMLElement).style.paddingBottom).toBe('')
+  })
+
+  it('auto-resets interject mode when the session leaves busy (busy→idle switches back to the normal send UI)', () => {
+    const onInterruptModeChange = vi.fn()
+    const base = { onSend: vi.fn(), onCancel: vi.fn(), onUpload: vi.fn(), onInterruptModeChange }
+    const { rerender } = renderWithProviders(
+      <MessageInput {...base} busy interruptMode />,
+    )
+    // While busy + interruptMode: no reset (interject is a valid per-busy-period choice)
+    expect(onInterruptModeChange).not.toHaveBeenCalled()
+
+    // busy→idle while the user is typing: the stale interruptMode kept the
+    // composer in 插话 UI (violet send button + interject placeholder) —
+    // it must auto-reset so the UI reverts to the normal send state.
+    rerender(<MessageInput {...base} busy={false} interruptMode />)
+    expect(onInterruptModeChange).toHaveBeenCalledTimes(1)
+    expect(onInterruptModeChange).toHaveBeenCalledWith(false)
+
+    // 反之亦然: once reset, the next busy period starts from the default queue
+    // mode — interruptMode=false renders the queue UI, not the interject UI.
+    rerender(<MessageInput {...base} busy interruptMode={false} />)
+    expect(onInterruptModeChange).toHaveBeenCalledTimes(1) // no spurious calls
   })
 
   it('maps /rewind to the Web rewind action instead of sending it as a message', async () => {
@@ -202,5 +224,215 @@ describe('MessageInput', () => {
     fireEvent.click(screen.getByLabelText(/send/i))
 
     expect(onSend).toHaveBeenCalledWith('/new', undefined, undefined)
+  })
+})
+
+describe('MessageInput links & file paste', () => {
+  /** Helper: get the live editor + wait for mount */
+  async function getEditor() {
+    const editor = await waitFor(() => {
+      const e = __getTestEditor()
+      if (!e) throw new Error('Editor not ready')
+      return e
+    })
+    return editor
+  }
+
+  /** Helper: render a MessageInput and get its editor (single-instance editor). */
+  async function renderInput(overrides?: { onUpload?: (file: File) => Promise<{ upload_key?: string; name?: string; size?: number; mime?: string }> }) {
+    const onSend = vi.fn()
+    const onUpload = overrides?.onUpload ?? vi.fn().mockResolvedValue({ upload_key: 'k', name: 'a.png', size: 1, mime: 'image/png' })
+    const utils = renderWithProviders(
+      <MessageInput busy={false} onSend={onSend} onCancel={vi.fn()} onUpload={onUpload} />,
+    )
+    const editor = await getEditor()
+    return { ...utils, editor, onSend, onUpload }
+  }
+
+  it('markdown link input rule renders [text](url) as a live link mark (WYSIWYG)', async () => {
+    const { editor } = await renderInput()
+    act(() => {
+      editor.commands.clearContent()
+      editor.commands.insertContent('[docs](https://example.com)', { applyInputRules: true })
+    })
+    const html = editor.getHTML()
+    expect(html).toContain('href="https://example.com"')
+    expect(html).toContain('docs')
+    // Markdown round-trip: getMarkdown keeps the link syntax
+    const md = (editor.storage as unknown as { markdown: { getMarkdown: () => string } }).markdown.getMarkdown()
+    expect(md).toContain('[docs](https://example.com)')
+  })
+
+  it('autolinks protocol URLs but NOT bare domains like file.tar.gz', async () => {
+    const { editor } = await renderInput()
+    // Autolink only processes the last word before a trailing whitespace (the
+    // typing simulation) — insert URL + space like a user typing it.
+    act(() => {
+      editor.commands.clearContent()
+      editor.commands.insertContent('go https://example.com ')
+    })
+    expect(editor.getHTML()).toContain('href="https://example.com"')
+
+    act(() => {
+      editor.commands.clearContent()
+      editor.commands.insertContent('archive file.tar.gz ')
+    })
+    // .gz is a valid TLD — the old shouldAutoLink linkified this. Strict mode must not.
+    expect(editor.getHTML()).not.toContain('<a ')
+  })
+
+  it('does NOT absorb typed text into a preceding link (inclusive=false)', async () => {
+    const { editor } = await renderInput()
+    act(() => {
+      editor.commands.clearContent()
+      editor.commands.insertContent('see link tail')
+      // Mark "link" ([5,9)) as a link, then type right after its end
+      editor.chain().setTextSelection({ from: 5, to: 9 }).setLink({ href: 'https://e.com' }).run()
+      editor.chain().setTextSelection(9).insertContent('X').run()
+    })
+    const html = editor.getHTML()
+    // X must be OUTSIDE the link — the old inclusive mark merged it in
+    expect(html).toContain('link</a>X')
+    expect(html).not.toContain('linkX</a>')
+  })
+
+  it('pasted clipboard files upload as attachments (paste a screenshot)', async () => {
+    const onUpload = vi.fn().mockResolvedValue({ upload_key: 'up-1', name: 'shot.png', size: 3, mime: 'image/png' })
+    const { editor, onSend } = await renderInput({ onUpload })
+    const file = new File([new Uint8Array([1, 2, 3])], 'shot.png', { type: 'image/png' })
+    // PM's internal paste handler reads clipboardData.getData before consulting
+    // editorProps.handlePaste — the synthetic clipboard needs a getData stub.
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [file], getData: () => '', types: [] },
+    })
+    // onUpload now receives the progress callback as its 2nd arg (XHR upload.onprogress)
+    await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('upload success inserts media into the editor: image → inline ![name](view-url), file → [name](download-url)', async () => {
+    const onUpload = vi.fn().mockImplementation((file: File) =>
+      file.name.endsWith('.png')
+        ? Promise.resolve({ upload_key: 'uploads/web/c/img-key.png', name: file.name, size: 5, mime: 'image/png' })
+        : Promise.resolve({ upload_key: 'uploads/web/c/bin-key', name: file.name, size: 4, mime: 'application/octet-stream' }))
+    const { editor } = await renderInput({ onUpload })
+    const img = new File([new Uint8Array([1])], 'photo.png', { type: 'image/png' })
+    const bin = new File([new Uint8Array([2])], 'data.bin', { type: 'application/octet-stream' })
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [img, bin], getData: () => '', types: [] },
+    })
+    await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(2))
+    // Image renders inline in the editor (tiptap Image extension parses the markdown)
+    await waitFor(() => expect(editor.getHTML()).toContain('<img'))
+    // NB: getHTML() serializes '&' as '&amp;' — assert the key part only (raw & in the markdown round-trip below)
+    expect(editor.getHTML()).toContain('/api/files/download?key=uploads%2Fweb%2Fc%2Fimg-key.png')
+    // Non-image file becomes a markdown reference link
+    expect(editor.getHTML()).toContain('/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key')
+    // Markdown round-trip (what the agent receives on send)
+    const md = (editor.storage as unknown as { markdown: { getMarkdown: () => string } }).markdown.getMarkdown()
+    expect(md).toContain('![photo.png](/api/files/download?key=uploads%2Fweb%2Fc%2Fimg-key.png&inline=1)')
+    expect(md).toContain('[data.bin](/api/files/download?key=uploads%2Fweb%2Fc%2Fbin-key)')
+  })
+
+  it('upload progress streams to the chip (XHR onProgress → per-file 进度条)', async () => {
+    let progressCb: ((loaded: number, total: number) => void) | undefined
+    let resolveUpload: ((v: { upload_key: string; name: string; size: number; mime: string }) => void) | undefined
+    const onUpload = vi.fn().mockImplementation((_file: File, onProgress?: (loaded: number, total: number) => void) => {
+      progressCb = onProgress
+      return new Promise((resolve) => { resolveUpload = resolve as typeof resolveUpload })
+    })
+    const { editor } = await renderInput({ onUpload })
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [new File([new Uint8Array([1])], 'up.png', { type: 'image/png' })], getData: () => '', types: [] },
+    })
+    // Optimistic chip with progress bar visible while uploading
+    await waitFor(() => expect(screen.getByTestId('upload-progress-up.png')).toBeInTheDocument())
+    act(() => progressCb?.(40, 100))
+    await waitFor(() => expect(screen.getByTestId('upload-progress-up.png').getAttribute('aria-label')).toBe('uploading 0.4'))
+    // Upload completes → chip finalized (progress 100%) + media inserted
+    act(() => resolveUpload?.({ upload_key: 'uploads/web/c/k.png', name: 'up.png', size: 1, mime: 'image/png' }))
+    await waitFor(() => expect(screen.queryByTestId('upload-progress-up.png')).not.toBeInTheDocument())
+    await waitFor(() => expect(editor.getHTML()).toContain('<img'))
+  })
+
+  it('dropped files upload as attachments', async () => {
+    const onUpload = vi.fn().mockResolvedValue({ upload_key: 'up-2', name: 'data.bin', size: 4, mime: 'application/octet-stream' })
+    const { editor } = await renderInput({ onUpload })
+    const file = new File([new Uint8Array([9, 9, 9, 9])], 'data.bin', { type: 'application/octet-stream' })
+    // PM resolves the drop position via document.elementFromPoint before calling
+    // editorProps.handleDrop — jsdom lacks it, so point it at the editor DOM.
+    const doc = document as Document & { elementFromPoint?: (x: number, y: number) => Element | null }
+    const origElementFromPoint = doc.elementFromPoint?.bind(doc)
+    doc.elementFromPoint = () => editor.view.dom as unknown as Element
+    try {
+      fireEvent.drop(editor.view.dom as HTMLElement, {
+        dataTransfer: { files: [file], getData: () => '', types: [] },
+      })
+      await waitFor(() => expect(onUpload).toHaveBeenCalledWith(file, expect.any(Function)))
+    } finally {
+      doc.elementFromPoint = origElementFromPoint
+    }
+  })
+
+  it('client-side 10MB size pre-check: oversized files are skipped with a toast, valid ones still upload', async () => {
+    const onUpload = vi.fn().mockResolvedValue({ upload_key: 'up-ok', name: 'ok.bin', size: 1, mime: 'application/octet-stream' })
+    const { editor } = await renderInput({ onUpload })
+    // 11MB file (> 10MB cap) + a valid 1KB file in the same paste batch
+    const big = new File([new Uint8Array(11 * 1024 * 1024)], 'big.bin', { type: 'application/octet-stream' })
+    const small = new File([new Uint8Array(1024)], 'small.bin', { type: 'application/octet-stream' })
+    fireEvent.paste(editor.view.dom as HTMLElement, {
+      clipboardData: { files: [big, small], getData: () => '', types: [] },
+    })
+    // The oversized file is rejected client-side (no upload round-trip → no 413),
+    // the valid file still uploads
+    await waitFor(() => expect(onUpload).toHaveBeenCalledTimes(1))
+    // Assert by name — deep File structural equality is ambiguous in jsdom
+    expect(onUpload.mock.calls[0][0].name).toBe('small.bin')
+  })
+
+  it('Ctrl/Cmd+K opens the link editor on the word at the cursor and applies the URL', async () => {
+    const { editor } = await renderInput()
+    act(() => {
+      editor.commands.clearContent()
+      editor.commands.setContent('hello world')
+      editor.commands.setTextSelection(3) // inside "hello"
+    })
+    fireEvent.keyDown(editor.view.dom as HTMLElement, { key: 'k', ctrlKey: true })
+
+    // The toolbar's URL input appears (BubbleMenu portals to body)
+    const input = await screen.findByTestId('st-link-input', {}, { timeout: 3000 })
+    expect(input).toBeInTheDocument()
+    fireEvent.change(input, { target: { value: 'example.com' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // Word "hello" is now linked; bare domain normalized to https://
+    await waitFor(() => expect(editor.getHTML()).toContain('href="https://example.com"'))
+    expect(editor.getHTML()).toContain('hello')
+
+    // …and it can be removed again (select the linked word → link button → remove)
+    act(() => {
+      // Explicit range selection over the link — focus() in jsdom collapses the
+      // PM selection to a cursor, and a collapsed cursor after an inclusive=false
+      // mark no longer reports isActive('link').
+      editor.commands.setTextSelection({ from: 1, to: 6 })
+    })
+    const linkBtn = await screen.findByTestId('st-link', {}, { timeout: 3000 })
+    fireEvent.click(linkBtn)
+    const removeBtn = await screen.findByTestId('st-link-remove', {}, { timeout: 3000 })
+    fireEvent.click(removeBtn)
+    await waitFor(() => expect(editor.getHTML()).not.toContain('<a '))
+  })
+
+  it('a URL typed mid-text becomes a link and neighboring text stays plain (typing simulation)', async () => {
+    const { editor } = await renderInput()
+    act(() => {
+      editor.commands.clearContent()
+      editor.commands.insertContent('check ')
+      editor.commands.insertContent('https://example.com ')
+      editor.commands.insertContent('ok')
+    })
+    const html = editor.getHTML()
+    expect(html).toContain('href="https://example.com"')
+    expect(editor.state.doc.textContent).toBe('check https://example.com ok')
   })
 })

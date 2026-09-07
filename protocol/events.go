@@ -21,10 +21,16 @@ type TodoItem struct {
 // GoalInfo carries the active goal state for a session.
 // Included in ProgressEvent so the frontend can display/modify the goal.
 type GoalInfo struct {
-	Objective string `json:"objective"`         // the goal text
-	Status    string `json:"status"`            // "active" | "completed"
+	Objective string `json:"objective"`         // the goal text ("" + Status=cleared is the explicit clear marker — survives the frontend's three-state goal parsing)
+	Status    string `json:"status"`            // "active" | "completed" | "cleared"
 	Summary   string `json:"summary,omitempty"` // set by set_goal_complete tool
 }
+
+// GoalStatusCleared is the wire-protocol clear marker: ClearGoal pushes
+// GoalInfo{Objective: "", Status: cleared} because Goal=nil is invisible to
+// the frontend (ProgressEvent.Goal has json:"goal,omitempty" — a nil goal
+// drops the field entirely, indistinguishable from "event not carrying goal").
+const GoalStatusCleared = "cleared"
 
 // ToolProgress represents a single tool's execution progress.
 type ToolProgress struct {

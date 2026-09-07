@@ -15,6 +15,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import Link from '@tiptap/extension-link'
+import Image from '@tiptap/extension-image'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
 import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock } from 'lucide-react'
@@ -31,6 +33,7 @@ import { setChatInsertHandler } from '@/lib/chatInputBridge'
 import { TodoPullOut } from './TodoPullOut'
 import { GoalBanner } from './GoalBanner'
 import { CompletionPopup } from './CompletionPopup'
+import { SelectionToolbar } from './SelectionToolbar'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
 import type { GoalInfo } from '@/types/shared'
@@ -50,7 +53,7 @@ interface MessageInputProps {
   /** Open the right Tasks panel for the current session. */
   onOpenTasks?: () => void
   /** Upload a file; resolves with server metadata. */
-  onUpload: (file: File) => Promise<{
+  onUpload: (file: File, onProgress?: (loaded: number, total: number) => void) => Promise<{
     upload_key?: string
     name?: string
     size?: number
@@ -81,10 +84,64 @@ interface PendingAttachment {
   size: number
   uploadKey: string
   mime: string
+  /** Upload-in-progress state（乐观 chip：上传中渲染进度条，完成前 uploadKey 为空）。 */
+  uploading?: boolean
+  /** 0..1 — XHR upload.onprogress（驱动 chip 进度条）。 */
+  progress?: number
 }
 
 /** Module-level editor instance ref for test access. */
 let __testEditor: import('@tiptap/react').Editor | null = null
+
+/**
+ * Chat-input Link extension — reconfigured for an INPUT box, not a document editor:
+ *
+ *  - inclusive:false      → typed text NEVER merges into an existing link
+ *                            (upstream default `inclusive = autolink = true` is the
+ *                            "意料之外的文字变成超链接" root cause; autolink re-scans on
+ *                            whitespace so it is unaffected by inclusivity)
+ *  - openOnClick:false    → editing, not navigating (upstream default true opens
+ *                            a new tab when a link inside the input is clicked)
+ *  - linkOnPaste:false    → pasting a URL never converts selected text into a
+ *                            link (predictable paste semantics)
+ *  - markdownLinks:true   → typing `[text](url)` renders as a live link (WYSIWYG
+ *                            — otherwise the syntax stays literal and invisible)
+ *  - shouldAutoLink       → strict: only http(s):// or www. — bare domains like
+ *                            `file.tar.gz` (`.gz` is a valid TLD!) are NOT
+ *                            auto-linked (upstream linkifies them → false positives)
+ *  - autolink:true        → typing a full URL then whitespace still auto-links
+ *  - target:null          → no target=_blank in the editing surface
+ */
+const EditorLink = Link.extend({
+  inclusive() {
+    return false
+  },
+}).configure({
+  openOnClick: false,
+  enableClickSelection: false,
+  linkOnPaste: false,
+  autolink: true,
+  markdownLinks: true,
+  shouldAutoLink: (url: string) => /^(https?:\/\/|www\.)/i.test(url),
+  HTMLAttributes: { target: null, rel: 'noopener noreferrer nofollow' },
+})
+
+/** Select the word at the cursor (used by Ctrl/Cmd+K with an empty selection). */
+function selectWordAtCursor(editor: Editor): boolean {
+  const { selection } = editor.state
+  const { $from } = selection
+  if (!$from.parent.isTextblock) return false
+  const text = $from.parent.textContent
+  const offset = $from.parentOffset
+  const isBoundary = (ch: string) => /\s/.test(ch)
+  let start = offset
+  let end = offset
+  while (start > 0 && !isBoundary(text[start - 1])) start -= 1
+  while (end < text.length && !isBoundary(text[end])) end += 1
+  if (start >= end) return false
+  const base = $from.pos - offset
+  return editor.commands.setTextSelection({ from: base + start, to: base + end })
+}
 
 export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange }: MessageInputProps) {
   const { t } = useI18n()
@@ -106,6 +163,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const submitRef = useRef<() => void>(() => {})
   const sendKeyModeRef = useRef(sendKeyMode)
   sendKeyModeRef.current = sendKeyMode
+  // File-pick/upload handler ref — editorProps closures capture this once, the
+  // ref always points at the latest onPickFiles (which depends on onUpload).
+  const onPickFilesRef = useRef<(files: FileList | null) => void>(() => {})
+  // Ctrl/Cmd+K → open the selection toolbar's link editor (SelectionToolbar)
+  const [linkEditSignal, setLinkEditSignal] = useState(0)
+  // File drag-over highlight (dragenter/dragleave depth counted — children fire both)
+  const [dragOverFiles, setDragOverFiles] = useState(false)
+  const dragDepthRef = useRef(0)
 
   // Dynamic placeholder text (updates with goalMode/sendKeyMode/interruptMode/busy)
   const placeholderText = goalMode
@@ -142,7 +207,17 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       StarterKit.configure({
         heading: false,
         horizontalRule: false,
+        // StarterKit ships the Link extension with document-editor defaults
+        // (openOnClick, inclusive marks, aggressive autolink) — replaced by
+        // our chat-input-tuned EditorLink below.
+        link: false,
+        dropcursor: { color: 'var(--accent, #6366f1)', width: 2 },
       }),
+      // Paste-markdown image rendering: pasted/uploaded images insert as ![name](url)
+      // markdown — this extension makes tiptap render them inline in the composer
+      // (tiptap-markdown parses ![alt](src) into image nodes when the schema has one).
+      Image.configure({ inline: true }),
+      EditorLink,
       Placeholder.configure({
         placeholder: () => placeholderRef.current,
       }),
@@ -164,13 +239,73 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
         if (event.isComposing) return false
         // 1. Completion first (ArrowUp/Down, Tab, Escape, Enter for file completion)
         if (completionHandlerRef.current(event)) return true
-        // 2. Send key (Enter or Ctrl+Enter depending on settings)
+        // 2. Link editor shortcut (Ctrl/Cmd+K) — before the send key so it
+        //    never collides with Enter / Ctrl+Enter modes
+        if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+          event.preventDefault()
+          const ed = editorRef.current
+          if (ed) {
+            // Sync PM state from the DOM before word detection — the browser may
+            // have just moved the caret (Home/End/arrows) and prosemirror-view
+            // reads DOM selection on the async 'selectionchange' task, which
+            // can lag a same-frame keychord (PM itself flushes on mousedown).
+            ;(ed.view as unknown as { domObserver: { flush: () => void } }).domObserver.flush()
+            // Select the word at the cursor (or the whole link under it) so the
+            // toolbar has a target even when nothing is selected
+            if (ed.state.selection.empty) {
+              if (ed.isActive('link')) ed.chain().extendMarkRange('link').focus().run()
+              else selectWordAtCursor(ed)
+            }
+            setLinkEditSignal((n) => n + 1)
+          }
+          return true
+        }
+        // 3. Send key (Enter or Ctrl+Enter depending on settings)
         if (isSendKey(event, sendKeyModeRef.current)) {
           event.preventDefault()
           submitRef.current()
           return true
         }
         return false
+      },
+      // Paste files/images (screenshots) → upload as attachments instead of
+      // letting the clipboard content hit the editor
+      handlePaste: (_view, event) => {
+        const files = event.clipboardData?.files
+        if (files && files.length > 0) {
+          event.preventDefault()
+          onPickFilesRef.current(files)
+          return true
+        }
+        return false
+      },
+      // Drag-and-drop files onto the editor → upload as attachments
+      handleDrop: (_view, event, _slice, moved) => {
+        if (moved) return false
+        const files = event.dataTransfer?.files
+        if (!files || files.length === 0) return false
+        event.preventDefault()
+        onPickFilesRef.current(files)
+        return true
+      },
+      // Drag-over highlight (depth-counted — dragenter/leave fire per child element)
+      handleDOMEvents: {
+        dragenter: () => {
+          dragDepthRef.current += 1
+          setDragOverFiles(true)
+          return false
+        },
+        dragleave: () => {
+          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+          if (dragDepthRef.current === 0) setDragOverFiles(false)
+          return false
+        },
+        dragover: () => false,
+        drop: () => {
+          dragDepthRef.current = 0
+          setDragOverFiles(false)
+          return false
+        },
       },
     },
     onUpdate: ({ editor }) => {
@@ -249,12 +384,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       toast.error(t('agent.busy'))
       return
     }
-    const attachments: Attachments | undefined = pending.length
+    // 只发完成态的附件（uploading 中的 chip uploadKey 为空——乐观 chip 上传期间不可发送）
+    const completed = pending.filter((p) => !p.uploading && p.uploadKey)
+    const attachments: Attachments | undefined = completed.length
       ? {
-          uploadKeys: pending.map((p) => p.uploadKey),
-          fileNames: pending.map((p) => p.name),
-          fileSizes: pending.map((p) => p.size),
-          fileMimes: pending.map((p) => p.mime),
+          uploadKeys: completed.map((p) => p.uploadKey),
+          fileNames: completed.map((p) => p.name),
+          fileSizes: completed.map((p) => p.size),
+          fileMimes: completed.map((p) => p.mime),
         }
       : undefined
     // When goalMode is on, send as /goal command (sets goal + starts working).
@@ -302,6 +439,16 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     }
   }, [placeholderText, editor])
 
+  // Auto-reset interject mode when the session leaves busy — the ⚡/queue toggle
+  // is meaningless while idle, and a stale interruptMode=true keeps the composer
+  // in 插话 UI (violet send button + interject placeholder) after busy→idle
+  // (user report: "插话/排队 UI 不会自动转变普通发送 UI")，and a queued
+  // message would carry interrupt=true against an idle session. Resetting also
+  // makes the next busy period start from the default queue mode (反之亦然).
+  useEffect(() => {
+    if (!busy && interruptMode) onInterruptModeChange?.(false)
+  }, [busy, interruptMode, onInterruptModeChange])
+
   // --- Cleanup draft timer on unmount + flush draft synchronously ---
   useEffect(() => {
     return () => {
@@ -329,32 +476,94 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   }, [])
 
   // --- File upload ---
+  // Server-side size cap (web_file.go maxFileSize = 10 << 20). Client-side
+  // pre-check gives instant feedback — no upload round-trip just to be
+  // rejected with 413 (CR note: handleDrop/handlePaste previously uploaded
+  // oversized files blindly). Size-only: uploads stay type-unrestricted.
+  const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+  /** 上传成功后向编辑器插入媒体引用（用户需求：粘贴的文件/图片在 tiptap 里可见）：
+   *  - 图片（image/* 或图片扩展名）→ markdown 图片 ![name](view-url)，
+   *    经 /api/files/download?inline=1 在编辑器内 <img> 渲染（tiptap Image 扩展）
+   *  - 其他文件 → markdown 引用链接 [name](download-url)（点击下载，attachment 语义）
+   * URL 是同源相对路径（cookie 认证）—— 302 到签名 OSS URL；attachment upload_key
+   * 随消息单独发送（agent 的语义载荷），编辑器里的链接仅供用户浏览。 */
+  const insertUploadedMedia = useCallback(
+    (res: { upload_key?: string; name?: string }, file: File) => {
+      if (!editor || !res.upload_key) return
+      const fileName = res.name ?? file.name
+      const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i.test(fileName)
+      const url = `/api/files/download?key=${encodeURIComponent(res.upload_key)}${isImage ? '&inline=1' : ''}`
+      // alt 文本里的 markdown 特殊字符（] / 换行）会破坏解析 —— 清洗
+      const safeAlt = fileName.replace(/[[\]\n]/g, ' ')
+      const md = isImage ? `![${safeAlt}](${url})` : `[${safeAlt}](${url})`
+      const current = editor.getText()
+      const sep = !current || current.endsWith('\n') ? '' : '\n'
+      editor.chain().focus().insertContent(sep + md + '\n').run()
+    },
+    [editor],
+  )
+
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return
+      // Client-side size pre-check (faster feedback than the server's 413)
+      const all = Array.from(files)
+      const oversized = all.filter((f) => f.size > MAX_UPLOAD_BYTES)
+      const valid = all.filter((f) => f.size <= MAX_UPLOAD_BYTES)
+      if (oversized.length > 0) {
+        toast.error(t('agent.uploadTooLarge', { names: oversized.map((f) => f.name).join('、'), size: '10MB' }))
+      }
+      if (valid.length === 0) return
       setUploading(true)
       try {
-        const added: PendingAttachment[] = []
-        for (const file of Array.from(files)) {
-          const res = await onUpload(file)
-          added.push({
-            name: res.name ?? file.name,
-            size: res.size ?? file.size,
-            uploadKey: res.upload_key ?? '',
-            mime: res.mime ?? file.type,
-          })
+        // 顺序上传（每个文件一个乐观 chip：上传中渲染进度条，完成后写 uploadKey + 插入编辑器媒体引用）
+        for (const file of valid) {
+          setPending((prev) => [...prev, {
+            name: file.name,
+            size: file.size,
+            uploadKey: '',
+            mime: file.type,
+            uploading: true,
+            progress: 0,
+          }])
+          try {
+            const res = await onUpload(file, (loaded, total) => {
+              setPending((prev) => prev.map((p) => (p.uploading && p.name === file.name)
+                ? { ...p, progress: total > 0 ? loaded / total : 0 }
+                : p))
+            })
+            // finalize：chip 落定（uploadKey 填充，进度 100%）
+            setPending((prev) => prev.map((p) => (p.uploading && p.name === file.name)
+              ? {
+                ...p,
+                uploading: false,
+                progress: 1,
+                uploadKey: res.upload_key ?? '',
+                name: res.name ?? file.name,
+                size: res.size ?? file.size,
+                mime: res.mime ?? file.type,
+              }
+              : p))
+            // 编辑器插入媒体引用（图片 → 内联渲染；文件 → 引用链接）
+            insertUploadedMedia(res, file)
+          } catch (e) {
+            // 失败：移除该文件的乐观 chip + toast（其他文件继续）
+            setPending((prev) => prev.filter((p) => !(p.uploading && p.name === file.name)))
+            toast.error(`${file.name}: ${e instanceof Error ? e.message : t('agent.uploadFailed')}`)
+          }
         }
-        setPending((prev) => [...prev, ...added])
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : t('agent.uploadFailed'))
       } finally {
         setUploading(false)
       }
     },
-    [onUpload, t],
+    [onUpload, t, insertUploadedMedia],
   )
 
-  const canSend = hasContent || pending.length > 0
+  const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey)
+
+  // Keep the ref current — editorProps closures capture it once (paste/drop).
+  onPickFilesRef.current = onPickFiles
 
   return (
     <div className="border-t border-border bg-bg-primary px-3 py-2.5">
@@ -398,7 +607,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       {/* Input container — single rounded box with chips, editor, and inline buttons */}
       <div
         className={cn(
-          'rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
+          'relative rounded-xl border bg-bg-secondary px-3 py-2 transition-[border-color,box-shadow]',
           goalMode
             ? 'border-accent/50 ring-1 ring-accent/20'
             : interruptMode
@@ -406,8 +615,18 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               : focused
                 ? 'border-accent ring-1 ring-accent/30'
                 : 'border-border',
+          dragOverFiles && 'border-accent/70 ring-2 ring-accent/25',
         )}
       >
+        {/* File drag-over hint — files dropped on the editor auto-upload as attachments */}
+        {dragOverFiles && (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-bg-primary/75 backdrop-blur-[2px]">
+            <span className="flex items-center gap-2 text-sm font-medium text-accent">
+              <Paperclip className="size-4" />
+              {t('agent.dropToUpload') || '松开以上传文件'}
+            </span>
+          </div>
+        )}
         {/* Attachment chips (inside container, above editor) */}
         {pending.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -416,13 +635,33 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                 key={`${p.uploadKey}-${i}`}
                 className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
               >
-                <Paperclip className="size-3" />
+                {p.uploading
+                  ? <Loader2 className="size-3 animate-spin shrink-0" />
+                  : <Paperclip className="size-3 shrink-0" />}
                 <span className="max-w-[20ch] truncate">{p.name}</span>
+                {p.uploading && (
+                  <span
+                    data-testid={`upload-progress-${p.name}`}
+                    className="flex w-16 shrink-0 select-none items-center gap-1"
+                    aria-label={`uploading ${(p.progress ?? 0)}`}
+                  >
+                    <span className="h-1 flex-1 overflow-hidden rounded-full bg-text-muted/20">
+                      <span
+                        className="block h-full rounded-full bg-accent transition-[width] duration-150"
+                        style={{ width: `${Math.round((p.progress ?? 0) * 100)}%` }}
+                      />
+                    </span>
+                    <span className="w-7 text-right text-[10px] tabular-nums text-text-muted">
+                      {Math.round((p.progress ?? 0) * 100)}%
+                    </span>
+                  </span>
+                )}
                 <button
                   type="button"
                   aria-label="remove"
+                  disabled={p.uploading}
                   onClick={() => setPending((prev) => prev.filter((_, idx) => idx !== i))}
-                  className="text-text-muted hover:text-text-primary"
+                  className="text-text-muted hover:text-text-primary disabled:opacity-30"
                 >
                   <X className="size-3" />
                 </button>
@@ -441,6 +680,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             onSelect={completion.completeCandidate}
           />
           <EditorContent editor={editor} />
+          {/* Floating selection toolbar — link add/edit/unlink + inline marks.
+              Hidden while the completion popup is open (it takes priority). */}
+          <SelectionToolbar editor={editor} hidden={completion.visible} linkEditSignal={linkEditSignal} />
         </div>
 
         {/* Bottom row: attach button (left) + goal toggle + send/cancel button (right) */}

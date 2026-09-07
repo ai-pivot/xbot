@@ -47,23 +47,23 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ext := strings.ToLower(filepath.Ext(header.Filename))
-	detectedMIME := http.DetectContentType(data)
-	if !isAllowedExtension(ext) {
-		jsonErrorResponse(w, http.StatusBadRequest, "file type not allowed")
-		return
-	}
-	if isBlockedMIME(detectedMIME) {
-		log.WithFields(log.Fields{
-			"filename":  header.Filename,
-			"mime_type": detectedMIME,
-		}).Warn("Blocked file upload with dangerous MIME type")
-		jsonErrorResponse(w, http.StatusBadRequest, "file type not allowed")
-		return
-	}
-
 	mimeType := mime.TypeByExtension(ext)
 	if mimeType == "" {
 		mimeType = http.DetectContentType(data)
+	}
+
+	// Non-blocking observability (CR security note, PR #345): uploads are
+	// type-unrestricted BY DESIGN (user requirement 2026-09-05 — never
+	// reintroduce a whitelist/blacklist). Flag executable/web content types
+	// in the log stream for downstream security auditing — a log line only,
+	// NEVER a gate. Download-side mitigation: OSS URLs force
+	// Content-Disposition: attachment (oss.go GetDownloadURL attname).
+	if isExecutableLikeUpload(ext, mimeType) {
+		log.WithFields(log.Fields{
+			"filename":  header.Filename,
+			"mime_type": mimeType,
+			"size":      len(data),
+		}).Info("Accepted executable-like upload (unrestricted by design; forced attachment download on serve)")
 	}
 
 	// Web uploads MUST go to cloud OSS - local storage is never allowed for security
@@ -74,6 +74,75 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wc.handleCloudUpload(w, r, header.Filename, ext, data, mimeType)
+}
+
+// isExecutableLikeUpload reports whether the uploaded file is executable- or
+// web-content-like — used ONLY for a non-blocking observability log (audit
+// trail), never as a gate. Uploads stay type-unrestricted by design.
+func isExecutableLikeUpload(ext, mimeType string) bool {
+	switch mimeType {
+	case "text/html", "application/xhtml+xml", "application/x-httpd-php",
+		"application/javascript", "text/javascript", "application/x-sh",
+		"application/x-msdownload", "application/x-dosexec", "application/x-sharedlib":
+		return true
+	}
+	switch ext {
+	case ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1",
+		".sh", ".bash", ".zsh", ".fish", ".ksh",
+		".php", ".jsp", ".asp", ".aspx",
+		".html", ".htm", ".xhtml", ".svg", ".xml",
+		".so", ".dylib", ".dll", ".app", ".deb", ".rpm", ".apk", ".jar":
+		return true
+	}
+	return false
+}
+
+// handleFileDownload handles GET /api/files/download?key=<upload_key>&inline=1
+// — resolves the OSS signed URL and 302-redirects. Two modes:
+//   - default: attachment download (GetDownloadURL — qiniu attname forces
+//     Content-Disposition: attachment, the CR security mitigation)
+//   - ?inline=1: inline rendering (GetViewURL — no attname) for composer
+//     <img> src (pasted images render inline in the tiptap editor).
+//
+// Same-origin + cookie auth: the URL is embedded in composer markdown
+// ([name](/api/files/download?key=...)) — works in editor rendering AND in
+// rendered chat history; the agent receives the semantic payload separately
+// via the attachments upload_key array.
+func (wc *WebChannel) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "key is required")
+		return
+	}
+	// Only upload-issued keys are addressable (uploads/<uid>/<uuid><ext>) —
+	// blocks arbitrary object probing of the OSS bucket.
+	if !strings.HasPrefix(key, "uploads/") || strings.Contains(key, "..") {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid key")
+		return
+	}
+	if wc.ossProvider == nil || wc.ossProvider.Name() == "local" {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "file storage not configured")
+		return
+	}
+	var (
+		target string
+		err    error
+	)
+	if r.URL.Query().Get("inline") == "1" {
+		target, err = wc.ossProvider.GetViewURL(key)
+	} else {
+		target, err = wc.ossProvider.GetDownloadURL(key)
+	}
+	if err != nil {
+		log.WithError(err).WithField("key", key).Warn("File download URL resolve failed")
+		jsonErrorResponse(w, http.StatusInternalServerError, "failed to resolve download URL")
+		return
+	}
+	log.WithFields(log.Fields{
+		"key":    key,
+		"inline": r.URL.Query().Get("inline") == "1",
+	}).Debug("File download redirect")
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 // handleCloudUpload uploads a file to cloud OSS (e.g., Qiniu) and returns the upload key.
@@ -107,27 +176,4 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		"size":       len(data),
 		"mime":       mimeType,
 	})
-}
-
-func isAllowedExtension(ext string) bool {
-	allowed := map[string]bool{
-		".txt": true, ".md": true, ".csv": true, ".json": true, ".xml": true, ".yaml": true, ".yml": true,
-		".log": true, ".py": true, ".js": true, ".ts": true, ".go": true, ".rs": true, ".java": true,
-		".c": true, ".cpp": true, ".h": true, ".sh": true, ".bash": true, ".zsh": true,
-		".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true, ".svg": true,
-		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true, ".ppt": true, ".pptx": true,
-		".zip": true, ".tar": true, ".gz": true, ".7z": true, ".rar": true,
-		".mp3": true, ".mp4": true, ".wav": true, ".webm": true, ".ogg": true,
-		".toml": true, ".cfg": true, ".ini": true, ".env": true, ".sql": true,
-	}
-	return allowed[ext]
-}
-
-func isBlockedMIME(mimeType string) bool {
-	blocked := map[string]bool{
-		"text/html":               true,
-		"application/xhtml+xml":   true,
-		"application/x-httpd-php": true,
-	}
-	return blocked[mimeType]
 }

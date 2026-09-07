@@ -14,7 +14,7 @@
  *   I6 无 null   — normalize 已保证（reducer 零格式防御）
  */
 
-import type { WebIteration, WebToolProgress } from '@/types/shared'
+import type { GoalInfo, TodoItem, WebIteration, WebToolProgress } from '@/types/shared'
 import {
   EMPTY_LIVE,
   commitViaFold,
@@ -32,6 +32,26 @@ import {
 } from './types'
 
 // ─── 工具：迭代合并（I4 append-only + 权威覆盖语义） ──────────
+
+/**
+ * 会话级状态携带（todos + goal）：iteration/phase_done 事件在【任何】路径（早期
+ * return / 主路径）都必须应用事件携带的会话级字段 —— 事件未携带（undefined）时保留
+ * 现值（与 optTodos/optGoal 的"缺省=不覆盖"语义一致）。
+ * goal 三态（xbotgh CR 🔴 清除链路）：GoalInfo = 状态更新；null = 显式清除（后端
+ * ClearGoal 推 {objective:"",status:"cleared"} 标记——nil Goal 经 omitempty 字段消失与"未携带"
+ * 不可区分，故用标记表达"目标已删除"，null 写入 s.goal）；undefined = 事件未携带。
+ */
+function applySessionFields(
+  s: ChatState,
+  todos: readonly TodoItem[] | undefined,
+  goal: GoalInfo | null | undefined,
+): ChatState {
+  let next = s
+  if (todos !== undefined) next = { ...next, todos }
+  if (goal !== undefined) next = { ...next, goal }
+  return next
+}
+
 
 /**
  * union 迭代按 iteration# 排序；同号时 authoritative 优先（text 的
@@ -283,7 +303,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // todos 是会话级状态，不因 turn 缺失而丢弃。
       const target = ev.turnID !== null ? ev.turnID : s.activeTurn
       if (target === null) {
-        return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+        return applySessionFields(s, ev.todos, ev.goal)
       }
       if (target !== s.activeTurn) {
         const t0 = s.turns.get(target)
@@ -384,7 +404,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
       // 会话级 todos：事件携带时同步 state.todos（turn 结束后存活）。
       const next = withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return { ...next, lastSeq: ev.seq, todos: ev.todos ?? s.todos }
+      return applySessionFields({ ...next, lastSeq: ev.seq }, ev.todos ?? s.todos, ev.goal)
     }
 
     // ── stream：仅 active turn；全量替换（无追加/回退歧义） ──
@@ -465,11 +485,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     case 'phase_done': {
       // turnID null（turn_id=0 缺失）→ 回退 activeTurn；todos 会话级不丢弃。
       const target = ev.turnID !== null ? ev.turnID : s.activeTurn
-      if (target === null) return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
-      if (target !== s.activeTurn) return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
-      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+      if (target === null) return applySessionFields(s, ev.todos, ev.goal)
+      if (target !== s.activeTurn) return applySessionFields(s, ev.todos, ev.goal)
+      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return applySessionFields(s, ev.todos, ev.goal)
       const t = s.turns.get(target)
-      if (!t || t.phase.kind !== 'live') return ev.todos !== undefined ? { ...s, todos: ev.todos } : s
+      if (!t || t.phase.kind !== 'live') return applySessionFields(s, ev.todos, ev.goal)
       const prev = t.phase.data
       // I4：finalIteration（后端 recordFinalIteration 补记的最后迭代）fold 进
       // iterations —— text 到达前它已在 committed 路径的数据里（不依赖 text 重建）。
@@ -483,7 +503,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       }
       // I5 基准推进。会话级 todos：事件携带时同步（turn 结束后存活）。
       const next = withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return { ...next, lastSeq: ev.seq, todos: ev.todos ?? s.todos }
+      return applySessionFields({ ...next, lastSeq: ev.seq }, ev.todos ?? s.todos, ev.goal)
     }
 
     // ── text_final：权威 finalizer —— live/frozen → committed（I2 构造） ──
@@ -814,7 +834,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       for (const l of ev.legacy) legacyById.set(l.id, l)
       const legacy = [...legacyById.values()].sort((a, b) => (a.dbID ?? 0) - (b.dbID ?? 0))
 
-      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos }
+      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos, goal: s.goal }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

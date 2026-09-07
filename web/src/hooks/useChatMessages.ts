@@ -93,8 +93,9 @@ export interface UseChatMessagesResult {
   cancel: () => void
   /** True while cancel is in flight (shows spinner on cancel button). */
   cancelling: boolean
-  /** Upload a file; returns the server upload metadata for sending with a message. */
-  upload: (file: File) => Promise<UploadResponse>
+  /** Upload a file; returns the server upload metadata for sending with a message.
+   * onProgress streams (loaded, total) byte counters for per-file upload progress. */
+  upload: (file: File, onProgress?: (loaded: number, total: number) => void) => Promise<UploadResponse>
   /** Clear committed messages immediately, used for TUI-style /new reset. */
   clearMessages: () => void
   /** Load older messages (scroll-up pagination). Returns false when no more. */
@@ -817,7 +818,7 @@ export function useChatMessages({
       })
   }, [ws, channel, onCancelSuccess])
 
-  const upload = useCallback(async (file: File) => uploadFile(file), [])
+  const upload = useCallback(async (file: File, onProgress?: (loaded: number, total: number) => void) => uploadFile(file, onProgress), [])
 
   // ── 队列操作（Staging Tray 回调）──
   // cancelQueued: REST POST /api/queue/cancel. Returns 200 even when the message

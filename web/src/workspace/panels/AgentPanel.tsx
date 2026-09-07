@@ -169,9 +169,15 @@ export function AgentPanel({ params, api }: PanelProps) {
   // 暴露当前会话给独立插件视图（window.__xbot_session__）。
   // 独立 ESM 插件（如 xbot.git-fancy）无法 import 宿主内部模块，通过此全局
   // 读取当前 channel/chatID，用于 ctx.rpc 拉取会话相关数据（git 状态等）。
+  // ⚡ 空值不覆盖（协议修复 2026-09-06）：布局恢复的 agent tab 无 sessionId 参数，
+  // activeSession 未加载时 progressChatID 为空——旧代码写入 chatID:'' 会把
+  // usePluginRuntimeHost 设置的正确身份毒化（resolveChat 对空值回落 'default'
+  // → 后端创建幽灵会话 → git 面板显示"不是 git 仓库"且不自愈）。跳过空值写入，
+  // 保留 bootstrap 写入的正确身份。
   useEffect(() => {
+    if (!progressChatID) return
     const w = window as unknown as { __xbot_session__?: { channel: string; chatID: string } }
-    w.__xbot_session__ = { channel: messageChannel, chatID: progressChatID ?? '' }
+    w.__xbot_session__ = { channel: messageChannel, chatID: progressChatID }
   }, [messageChannel, progressChatID])
 
   // Fetch goal on session load/switch — handles the case where progress events
@@ -356,6 +362,31 @@ export function AgentPanel({ params, api }: PanelProps) {
     progressSnapshot.streaming ||
     agentChat.busyFallback) &&
     !askUser.prompt
+
+  // Turn 结束（busy→idle 边沿）时重取 get_goal —— goal 状态变化的事件兜底：
+  // set_goal_complete 后端 emitGoalProgress 会推 goal 事件（TDSM 实时更新），
+  // 但 SSE 丢事件 / 事件被合并时 banner 会滞留旧状态，RPC 兜底保证收敛。
+  const prevBusyRef = useRef(busy)
+  useEffect(() => {
+    const was = prevBusyRef.current
+    prevBusyRef.current = busy
+    if (was && !busy && chatID && messageChannel) {
+      // Stale-guard（xbotgh CR）：慢响应跨会话切换会把旧会话的 goal 写进新会话的
+      // banner —— 与 session-load getGoal effect（cancelled flag 模式）保持一致。
+      let cancelled = false
+      getGoal({ channel: messageChannel, chatID })
+        .then((g) => {
+          if (cancelled) return
+          if (g && g.objective) {
+            setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
+          } else {
+            setGoalOverride(null)
+          }
+        })
+        .catch(() => {})
+      return () => { cancelled = true }
+    }
+  }, [busy, chatID, messageChannel])
 
   const llmSettings = useLLMSettings()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens

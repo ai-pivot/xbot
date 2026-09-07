@@ -55,6 +55,17 @@ For manual installation, download the web release archive and extract it to
 
 After starting the server, open `http://your-server:8082` in a browser.
 
+## Message Composer
+
+Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.) and links:
+
+| Feature | Description |
+|---------|-------------|
+| Links | Typing `https://…` followed by a space auto-links; pasted links and Markdown link syntax (`[text](URL)`) render live; links are highlighted in the theme accent color |
+| Link editing | Select text to reveal a floating toolbar (bold/italic/strikethrough/inline code/link); `Ctrl/Cmd+K` adds or edits a link, one-click unlink |
+| File upload | **Any file type is accepted** (no type whitelist). Click 📎, **paste** (screenshots upload automatically), or **drag-and-drop** files onto the composer to attach them |
+| Upload limit | 10MB per file (size only — no type restrictions) |
+
 ## Authentication
 
 | Method | Description |

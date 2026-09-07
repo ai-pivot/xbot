@@ -118,6 +118,13 @@ func (p *S3Provider) GetDownloadURL(key string) (string, error) {
 	return url, nil
 }
 
+// GetViewURL returns the INLINE variant (no Content-Disposition: attachment) for
+// composer <img> rendering. The S3 provider never sets response-content-disposition
+// (unlike the Qiniu attname variant), so download URLs are already inline — delegate.
+func (p *S3Provider) GetViewURL(key string) (string, error) {
+	return p.GetDownloadURL(key)
+}
+
 // ---------------------------------------------------------------------------
 // Internal: SigV4 signing (pure stdlib)
 // ---------------------------------------------------------------------------

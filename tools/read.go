@@ -43,12 +43,22 @@ func (t *ReadTool) Parameters() []llm.ToolParam {
 
 func (t *ReadTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
 	params, err := parseToolArgs[struct {
-		Path     string `json:"path"`
+		Path string `json:"path"`
+		// file_path alias: some models trained on OpenAI function-calling
+		// conventions pass {"file_path": "..."} instead of {"path": "..."}.
+		// Fallback below maps it so the call works instead of failing with
+		// "path is required".
+		FilePath string `json:"file_path"`
 		MaxLines int    `json:"max_lines"`
 		Offset   int    `json:"offset"`
 	}](input)
 	if err != nil {
 		return nil, err
+	}
+
+	// file_path → path fallback (the tool's canonical parameter is `path`).
+	if params.Path == "" && params.FilePath != "" {
+		params.Path = params.FilePath
 	}
 
 	if params.Path == "" {

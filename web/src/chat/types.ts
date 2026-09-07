@@ -13,7 +13,7 @@
  * 断言（构造函数内部）——渲染层/reducer 一律禁止（ESLint no-as 规则管 辖）。
  */
 
-import type { QueueItemPayload, TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
+import type { GoalInfo, QueueItemPayload, TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 
 // ─── Brand：ID 防混淆 ─────────────────────────────────────────
 
@@ -208,12 +208,17 @@ export interface ChatState {
    * （iteration/phase_done）携带 todos 时更新；hydration（active_progress，
    * 含 phase=done 快照）回填。渲染层（liveProgressFromState）统一读此处。 */
   readonly todos: readonly TodoItem[]
+  /** 会话级 goal —— progress 事件（iteration/phase_done，后端 refreshStructuredTodos
+   * 每 iteration 刷新 + set_goal_complete 工具完成后 emitGoalProgress 直发）携带时
+   * 更新。GoalBanner 实时性的唯一来源（"agent set_goal_complete 后前端样式不
+   * 更新"根因：TDSM 此前丢弃 goal 字段，banner 只靠 session 切换时的 get_goal RPC）。 */
+  readonly goal: GoalInfo | null
   /** 排队中的消息（Staging Tray 数据源）。queue_state SSE 事件全量替换。 */
   readonly queue: readonly QueueItemPayload[]
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], queue: [] }
+  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [] }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -255,6 +260,10 @@ export type DomainEvent =
       /** 本事件携带的已完成迭代增量（dedup by iteration#）。 */
       readonly iterationsDelta: readonly WebIteration[]
       readonly todos: readonly TodoItem[] | undefined
+      /** 会话级 goal 三态（xbotgh CR 🔴 清除链路）：GoalInfo = 状态更新；null = 显式清除
+       * （后端 ClearGoal 推 {objective:"",status:"cleared"} 标记——nil Goal 经 omitempty 字段消失，与"未携带"不可区分）；
+       * undefined/缺省 = 事件未携带（保持状态不覆盖）。 */
+      readonly goal?: GoalInfo | null
       readonly subAgents: readonly WebSubAgentProgress[] | undefined
       /** Token 用量（ContextRing/会话上下文刷新用）。 */
       readonly tokenUsage: NonNullable<LiveSnapshot['tokenUsage']> | undefined
@@ -289,6 +298,9 @@ export type DomainEvent =
       /** 后端 recordFinalIteration 补记的最后迭代（normalize 后无 null 数组）。 */
       readonly finalIteration: WebIteration | null
       readonly todos: readonly TodoItem[] | undefined
+      /** 会话级 goal 三态：GoalInfo = 状态更新；null = 显式清除（后端 ClearGoal cleared 标记）；
+       * undefined/缺省 = 事件未携带（保持状态不覆盖）。 */
+      readonly goal?: GoalInfo | null
     }
   | {
       readonly type: 'text_final'
