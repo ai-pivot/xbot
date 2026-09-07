@@ -49,6 +49,26 @@ func TestCommandCatalogFeedsHelpCompletionAndPalette(t *testing.T) {
 	t.Fatal("palette does not contain provider command /continue")
 }
 
+func TestHelpPanelDoesNotWrapLongCommandNames(t *testing.T) {
+	m := newCLIModel()
+	m.width = 120
+	m.locale = ch.GetLocale("en")
+	m.commandCatalogFn = func() []protocol.CommandInfo {
+		return []protocol.CommandInfo{
+			{Name: "/context mode", Usage: "/context mode [phase1|none|default]", Description: "show or change compression mode"},
+			{Name: "/plugin reload-all", Usage: "/plugin reload-all", Description: "reload all plugins"},
+		}
+	}
+
+	plain := stripANSI(m.renderHelpPanel())
+	if !strings.Contains(plain, "/context mode ") {
+		t.Fatalf("help wrapped /context mode command name:\n%s", plain)
+	}
+	if strings.Contains(plain, "/context\n") || strings.Contains(plain, "/plugin\n") {
+		t.Fatalf("help wrapped a multi-word command name:\n%s", plain)
+	}
+}
+
 func TestLocalCommandCatalogIncludesHandledVisibleCommands(t *testing.T) {
 	catalog := make(map[string]struct{})
 	for _, command := range ch.TUICommandList() {
