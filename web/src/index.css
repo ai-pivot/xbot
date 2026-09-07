@@ -712,6 +712,31 @@
   animation: collapsibleClose 180ms ease-out;
 }
 
+/* ── Touch devices (mobile web): NO layout-attribute animations ────────────────
+ * grid-template-rows (0fr→1fr) and the collapsible height keyframes are LAYOUT
+ * animations — every frame reflows the composer region, and anything mounted
+ * around the message list (TodoPullOut above MessageInput, FoldedToolGroup,
+ * ThinkingLine) makes the TanStack Virtual viewport resize + remeasure EVERY
+ * frame of the 180ms transition. On phones this janks badly (the todo panel
+ * expand was the reported case). Desktop hover devices are fast enough to hide
+ * it; `hover: none` reliably identifies touch devices.
+ * Fix (same principle as the Ambience paint-animation ban): drop the height
+ * animation on touch — the height snaps in ONE reflow, only the opacity fade
+ * (compositor-only) remains animated. prefers-reduced-motion already disables
+ * both via the global block below.
+ *
+ * NOTE: this block MUST stay AFTER the .fold-container/.collapsible-motion base
+ * rules above — same specificity, later-in-source wins the cascade. */
+@media (hover: none) {
+  .fold-container {
+    transition: opacity 180ms ease-out;
+  }
+  .collapsible-motion[data-state='open'],
+  .collapsible-motion[data-state='closed'] {
+    animation: none;
+  }
+}
+
 /* ── Tool status dot (Spec A §5) ──────────────────────────────────────────────
  * Status dots replace the old emoji status icons (◑ ✓ ✗ ◒) with CSS-animated
  * colored dots. Each status has its own animation:
