@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -139,12 +140,15 @@ func TestExtractTarGz_PreservesExecModeAndLayout(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(dest, "xbot.genui", "plugin.json")); err != nil || string(b) != `{"id":"xbot.genui"}` {
 		t.Fatalf("plugin.json content wrong: %q err=%v", b, err)
 	}
-	fi, err := os.Stat(filepath.Join(dest, "xbot.genui", "bin", "genui-plugin"))
-	if err != nil {
+	if fi, err := os.Stat(filepath.Join(dest, "xbot.genui", "bin", "genui-plugin")); err != nil {
 		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o755 {
-		t.Errorf("exec bit lost: mode=%v, want 0755", fi.Mode().Perm())
+	} else if runtime.GOOS != "windows" {
+		// Unix permission bits round-trip through the tar header. Windows has
+		// no exec bit (mode comes back as 0666) — exec semantics there are
+		// resolved by plugin/runtime.go's .exe sibling logic instead.
+		if fi.Mode().Perm() != 0o755 {
+			t.Errorf("exec bit lost: mode=%v, want 0755", fi.Mode().Perm())
+		}
 	}
 }
 
@@ -158,6 +162,14 @@ func TestExtractTarGz_RejectsTraversal(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "escape.txt")); err == nil {
 		t.Error("traversal file escaped the dest dir")
+	}
+	// The absolute-path rejection is tar-semantic (raw hdr.Name "/...")
+	// and must hold on Windows too, where filepath.IsAbs("/abs/x") is false
+	// (no drive letter) — covered by the "/abs/escape.txt" case above.
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(filepath.Join(dest, "abs", "escape.txt")); err == nil {
+			t.Error("absolute tar entry was joined under dest — must be rejected instead")
+		}
 	}
 }
 

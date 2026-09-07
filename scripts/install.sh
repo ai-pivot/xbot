@@ -349,6 +349,27 @@ for p in preserved: print(f'[WARN] Config preserved: {p}', file=sys.stderr)
 PY
 }
 
+# download_web_dist is the LEGACY inline web-dist download, used ONLY as the
+# fallback when the installed binary predates the `setup` subcommand (e.g.
+# curl'ing master install.sh while pinning an old VERSION). New releases do
+# this via `xbot-cli setup` instead.
+download_web_dist() {
+    local version="$1" target_dir="$2"
+    local dist_url="https://github.com/${REPO}/releases/download/${version}/xbot-web-dist.tar.gz"
+    info "Downloading Web UI frontend..."
+    mkdir -p "$target_dir"
+    if curl -fSL "$(gh_url "$dist_url")" | tar xzf - -C "$target_dir" 2>/dev/null; then
+        info "Web UI installed to ${target_dir} ✓"
+    elif curl -fSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-web-dist.tar.gz")" | tar xzf - -C "$target_dir" 2>/dev/null; then
+        warn "Web UI downloaded from fallback repo ${FALLBACK_REPO}"
+        info "Web UI installed to ${target_dir} ✓"
+    else
+        warn "Failed to download Web UI frontend. The server will run in API-only mode."
+        warn "You can manually download it later from: ${dist_url}"
+        warn "Extract to: ${target_dir}"
+    fi
+}
+
 # Run the freshly-installed binary's `setup` subcommand: downloads the Web UI
 # dist + built-in plugins (version-pinned to this release, checksum-verified)
 # and activates channel plugins in config.json (channels.<name>.enabled=true).
@@ -359,6 +380,18 @@ PY
 # does NOT abort the install (old releases lack plugin tarballs → exit 3).
 run_setup() {
     local version="$1"
+    # Capability probe: the `setup` subcommand only exists in releases that
+    # ship it. On an older binary, `setup ...` would be parsed as a PROMPT and
+    # run the agent non-interactively (panic in the worst case — CI caught
+    # exactly that with the v0.0.23 binary). Probe with `setup -h`: both old
+    # and new binaries print help text and exit 0, but only the new one prints
+    # the setup-specific usage line. Never invoke a subcommand blindly.
+    if ! "${INSTALL_PATH}/${BINARY}" setup -h 2>/dev/null | grep -q "Usage: xbot-cli setup"; then
+        warn "Installed binary does not support the setup subcommand (pre-setup release)."
+        warn "Falling back to legacy Web UI download; built-in plugins are not available for this release."
+        download_web_dist "$version" "${XBOT_HOME}/web/dist"
+        return 0
+    fi
     info "Setting up Web UI + built-in plugins (xbot-cli setup)..."
     if "${INSTALL_PATH}/${BINARY}" setup --tag "$version" --mirror "$GH_MIRROR"; then
         info "Web UI + built-in plugins installed"
@@ -547,51 +580,63 @@ main() {
     info "Downloading..."
     TMPDIR=$(mktemp -d)
     trap 'rm -rf "$TMPDIR"' EXIT
-    # Try new repo first; fall back to old repo if release not found
-    # (during migration from CjiW/xbot → ai-pivot/xbot)
-    if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
-        FALLBACK_URL="https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
-        warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
-        DOWNLOAD_URL="$FALLBACK_URL"
+    if [ "${INSTALL_LOCAL_BINARY:-}" = "1" ]; then
+        # CI mode: a pre-built binary from THIS branch already sits at
+        # ${INSTALL_PATH}/${BINARY} (caller-built via `go build`). Skips the
+        # release download/checksum — install.sh's config/setup/service logic
+        # is what's under test, and the `setup` subcommand only exists in
+        # this branch (a downloaded old release binary lacks it).
+        if [ ! -x "${INSTALL_PATH}/${BINARY}" ]; then
+            error "INSTALL_LOCAL_BINARY=1 but ${INSTALL_PATH}/${BINARY} not found — build it first (go build -o ${INSTALL_PATH}/${BINARY} ./cmd/xbot-cli)"
+        fi
+        info "Using pre-built local binary at ${INSTALL_PATH}/${BINARY} (INSTALL_LOCAL_BINARY=1)"
+    else
+        # Try new repo first; fall back to old repo if release not found
+        # (during migration from CjiW/xbot → ai-pivot/xbot)
         if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
-            error "Download failed from both repos. Check the version and platform."
-        fi
-    fi
-
-    if command -v shasum >/dev/null 2>&1; then
-        info "Verifying checksum..."
-        curl -fsSL "$(gh_url "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
-            || curl -fsSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
-            || warn "Checksum file not found, skipping verification."
-        if [ -f "${TMPDIR}/checksums.txt" ]; then
-            expected=$(grep "xbot-cli-${PLATFORM}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
-            actual=$(shasum -a 256 "${TMPDIR}/${BINARY}" | awk '{print $1}')
-            if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
-                error "Checksum mismatch! Expected: ${expected}, Got: ${actual}"
+            FALLBACK_URL="https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
+            warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
+            DOWNLOAD_URL="$FALLBACK_URL"
+            if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
+                error "Download failed from both repos. Check the version and platform."
             fi
-            info "Checksum verified ✓"
         fi
-    fi
 
-    # Stop running xbot-cli before overwriting the binary
-    if [ -x "${INSTALL_PATH}/${BINARY}" ]; then
-        info "Checking for running xbot-cli..."
-        if systemctl --user status "$SERVICE_NAME" >/dev/null 2>&1; then
-            systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+        if command -v shasum >/dev/null 2>&1; then
+            info "Verifying checksum..."
+            curl -fsSL "$(gh_url "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
+                || curl -fsSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
+                || warn "Checksum file not found, skipping verification."
+            if [ -f "${TMPDIR}/checksums.txt" ]; then
+                expected=$(grep "xbot-cli-${PLATFORM}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
+                actual=$(shasum -a 256 "${TMPDIR}/${BINARY}" | awk '{print $1}')
+                if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
+                    error "Checksum mismatch! Expected: ${expected}, Got: ${actual}"
+                fi
+                info "Checksum verified ✓"
+            fi
         fi
-        # Kill any running instances
-        pkill -f "${INSTALL_PATH}/${BINARY}" 2>/dev/null || true
-        # Wait for process to fully exit
-        for i in 1 2 3 4 5; do
-            pgrep -f "${INSTALL_PATH}/${BINARY}" >/dev/null 2>&1 || break
-            sleep 1
-        done
-    fi
 
-    # Install binary to user-local directory (no sudo)
-    chmod +x "${TMPDIR}/${BINARY}"
-    mkdir -p "$INSTALL_PATH"
-    mv "${TMPDIR}/${BINARY}" "${INSTALL_PATH}/${BINARY}"
+        # Stop running xbot-cli before overwriting the binary
+        if [ -x "${INSTALL_PATH}/${BINARY}" ]; then
+            info "Checking for running xbot-cli..."
+            if systemctl --user status "$SERVICE_NAME" >/dev/null 2>&1; then
+                systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+            fi
+            # Kill any running instances
+            pkill -f "${INSTALL_PATH}/${BINARY}" 2>/dev/null || true
+            # Wait for process to fully exit
+            for i in 1 2 3 4 5; do
+                pgrep -f "${INSTALL_PATH}/${BINARY}" >/dev/null 2>&1 || break
+                sleep 1
+            done
+        fi
+
+        # Install binary to user-local directory (no sudo)
+        chmod +x "${TMPDIR}/${BINARY}"
+        mkdir -p "$INSTALL_PATH"
+        mv "${TMPDIR}/${BINARY}" "${INSTALL_PATH}/${BINARY}"
+    fi
     info "Binary installed to ${INSTALL_PATH}/${BINARY}"
 
     add_to_path

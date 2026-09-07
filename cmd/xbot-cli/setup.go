@@ -402,7 +402,13 @@ func extractTarGz(data []byte, dest string) error {
 		if name == "." || name == "" {
 			continue
 		}
-		if filepath.IsAbs(name) || strings.HasPrefix(name, "..") {
+		// Absolute-path rejection must use the RAW tar header: on Windows
+		// filepath.Clean("/abs/x") → "\\abs\\x" and filepath.IsAbs returns false
+		// (no drive letter), so an absolute tar entry would slip through the
+		// platform check. Tar paths are Unix-style — a leading "/" (or "\") in
+		// hdr.Name is absolute regardless of host OS.
+		if strings.HasPrefix(hdr.Name, "/") || strings.HasPrefix(hdr.Name, "\\") ||
+			filepath.IsAbs(name) || strings.HasPrefix(name, "..") {
 			return fmt.Errorf("tarball entry escapes target dir: %q", hdr.Name)
 		}
 		target := filepath.Join(dest, name)

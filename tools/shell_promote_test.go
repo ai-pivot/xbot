@@ -2,11 +2,34 @@ package tools
 
 import (
 	"context"
+	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// crossPlatformSleepCmd returns a plain "sleep N seconds" command for the
+// host shell: the local sandbox on Windows runs commands via PowerShell,
+// where bare `sleep` works (alias) but `&&` chains are a ParserError.
+func crossPlatformSleepCmd(seconds int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Start-Sleep -Seconds %d", seconds)
+	}
+	return fmt.Sprintf("sleep %d", seconds)
+}
+
+// crossPlatformEchoSleepEcho returns "echo BEFORE; sleep N; echo AFTER" for
+// the host shell. Windows PowerShell 5.1 has no `&&` (ParserError
+// InvalidEndOfLine) and treats `$$`/`$x` as automatic variables — the CI
+// Windows job hit exactly that (TestExecuteForeground_TimeoutAdoptsRunning).
+func crossPlatformEchoSleepEcho(before string, seconds int, after string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Write-Output %s; Start-Sleep -Seconds %d; Write-Output %s", before, seconds, after)
+	}
+	return fmt.Sprintf("echo %s && sleep %d && echo %s", before, seconds, after)
+}
 
 // newPromoteTestCtx builds a ToolContext wired for foreground-shell promote tests.
 func newPromoteTestCtx(sessionKey, callID string, mgr *BackgroundTaskManager) *ToolContext {
@@ -33,7 +56,7 @@ func TestExecuteForeground_PromoteToBackground(t *testing.T) {
 	ctx := newPromoteTestCtx("web:chat-promote", "call-1", mgr)
 
 	go func() {
-		res, err := tool.Execute(ctx, `{"command":"echo promoted-$$ && sleep 2 && echo done"}`)
+		res, err := tool.Execute(ctx, fmt.Sprintf(`{"command":%q}`, crossPlatformEchoSleepEcho("promoted-start", 2, "done")))
 		if err != nil {
 			t.Errorf("Execute returned error: %v", err)
 		}
@@ -130,7 +153,7 @@ func TestExecuteForeground_PromoteDoubleFire(t *testing.T) {
 	ctx := newPromoteTestCtx("web:chat-dbl", "call-dbl", mgr)
 
 	go func() {
-		res, _ := tool.Execute(ctx, `{"command":"sleep 2"}`)
+		res, _ := tool.Execute(ctx, fmt.Sprintf(`{"command":%q}`, crossPlatformSleepCmd(2)))
 		done <- res
 	}()
 
@@ -184,7 +207,7 @@ func TestExecuteForeground_TimeoutAdoptsRunning(t *testing.T) {
 	tool := &ShellTool{}
 	ctx := newPromoteTestCtx("web:chat-timeout", "call-t", mgr)
 
-	res, err := tool.Execute(ctx, `{"command":"echo before-timeout && sleep 3 && echo after-timeout","timeout":1}`)
+	res, err := tool.Execute(ctx, fmt.Sprintf(`{"command":%q,"timeout":1}`, crossPlatformEchoSleepEcho("before-timeout", 3, "after-timeout")))
 	if err != nil {
 		t.Fatalf("Execute error: %v", err)
 	}
@@ -256,7 +279,7 @@ func TestExecuteForeground_UserCancelKillsProcess(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		res, err := tool.Execute(tc, `{"command":"sleep 30"}`)
+		res, err := tool.Execute(tc, fmt.Sprintf(`{"command":%q}`, crossPlatformSleepCmd(30)))
 		if err == nil {
 			t.Errorf("expected error on cancel, got result: %+v", res)
 		}

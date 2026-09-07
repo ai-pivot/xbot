@@ -145,12 +145,14 @@ jobs:
           echo "✅ Default port 8082 applied"
 
   # ── One-click full setup: web dist + built-in plugins + channel activation ──
-  # Uses the nightly release (rebuilt on every master merge) so the plugin
-  # tarballs exist. Tiered assertions:
+  # Uses a BRANCH-BUILT binary (INSTALL_LOCAL_BINARY=1) because the `setup`
+  # subcommand is branch code — no release binary has it until this merges.
+  # Assets come from the nightly release (web dist exists today; plugin
+  # tarballs land with the first release.yml run after merge).
+  # Tiered assertions:
   #   - plugins present in the release → HARD assertions (web dist, plugin
   #     manifests, plugin binary exec bit, channels.genui.enabled=true)
-  #   - plugins tarballs missing (nightly predates this feature, or the PR
-  #     branch ran before the first release.yml run) → warning + web-dist-only
+  #   - plugins tarballs missing (pre-feature nightly) → warning + web-dist-only
   #     assertions (web dist predates plugins in the release pipeline)
   # After this PR merges and the first nightly release builds, the hard path
   # always runs.
@@ -158,13 +160,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test full one-click install (nightly, web + plugins + channels config)
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build branch binary
+        run: |
+          mkdir -p test-install/bin
+          go build -ldflags "-X xbot/version.Version=nightly-ci -X xbot/version.Channel=nightly" -o test-install/bin/xbot-cli ./cmd/xbot-cli
+      - name: Test full one-click install (branch binary + nightly release assets)
         env:
           CHANNEL: nightly
+          VERSION: nightly
           MODE: server-client
           INSTALL_PATH: ${{ github.workspace }}/test-install/bin
           XBOT_HOME: ${{ github.workspace }}/test-install/.xbot
           NONINTERACTIVE: "1"
+          INSTALL_LOCAL_BINARY: "1"
         run: |
           bash scripts/install.sh
           test -x "${INSTALL_PATH}/xbot-cli"
@@ -172,7 +183,7 @@ jobs:
           # install.sh delegates web dist + plugins + channel activation to
           # 'xbot-cli setup' (run_setup). Both modes install both components.
           test -f "${XBOT_HOME}/web/dist/index.html"
-          echo "✅ Web dist installed (nightly)"
+          echo "✅ Web dist installed (branch binary + nightly release)"
           genui_manifest="${XBOT_HOME}/plugins/builtin/xbot.genui/plugin.json"
           if [ -f "$genui_manifest" ]; then
             test -f "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/plugin.json"
@@ -342,17 +353,32 @@ jobs:
           $cfg.agent.work_dir | Should -Not -BeNullOrEmpty
           Write-Host "✅ agent.work_dir set"
 
+  # Windows server-client uses a BRANCH-BUILT binary (INSTALL_LOCAL_BINARY=1):
+  # the `setup` subcommand is branch code — no release binary has it yet, and
+  # the v0.0.23 release binary would take the "pre-setup release" skip path in
+  # install.ps1 (no web dist). Assets come from the nightly release (web dist
+  # exists today; plugin tarballs land post-merge).
   windows-server-client:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Test Windows server-client install (autostart)
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build branch binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "D:\test-install\bin" | Out-Null
+          go build -ldflags "-X xbot/version.Version=nightly-ci -X xbot/version.Channel=nightly" -o "D:\test-install\bin\xbot-cli.exe" ./cmd/xbot-cli
+      - name: Test Windows server-client install (branch binary, autostart)
         env:
           MODE: server-client
           PORT: "6666"
-          VERSION: v0.0.23
+          CHANNEL: nightly
+          VERSION: nightly
           INSTALL_PATH: D:\test-install\bin
           XBOT_HOME: D:\test-install\.xbot
+          INSTALL_LOCAL_BINARY: "1"
         shell: pwsh
         run: |
           .\scripts\install.ps1 -NonInteractive
@@ -370,12 +396,12 @@ jobs:
           Write-Host "✅ Web enabled"
           $cfg.admin.token | Should -Not -BeNullOrEmpty
           Write-Host "✅ Admin token set"
-          # Web dist installs via 'xbot-cli setup' delegation (v0.0.23 already
-          # ships xbot-web-dist.tar.gz; the plugins tarballs land in later
-          # releases — install.ps1 tolerates their absence with a warning).
+          # Web dist installs via 'xbot-cli setup' (branch binary + nightly
+          # release assets). Plugin tarballs are not in the nightly release
+          # until this branch merges — install.ps1 tolerates that (exit 3 warn).
           $webDist = Join-Path $env:XBOT_HOME "web\dist\index.html"
           Test-Path $webDist | Should -BeTrue
-          Write-Host "✅ Web dist installed (setup delegation)"
+          Write-Host "✅ Web dist installed (setup delegation, nightly release)"
           $wrapper = Join-Path $env:XBOT_HOME "scripts\run-server.bat"
           Test-Path $wrapper | Should -BeTrue
           Write-Host "✅ Wrapper script created"
