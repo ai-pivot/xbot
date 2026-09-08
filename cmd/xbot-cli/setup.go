@@ -584,13 +584,16 @@ type setupPluginManifest struct {
 	} `json:"contributes"`
 }
 
-// scanChannelActivation walks the plugin dirs (user dir first, then builtin)
-// and returns channel names whose manifests default to enabled=true.
-// Manifest-driven: any shipped channel plugin (genui today, more tomorrow)
+// scanChannelActivation walks the BUILTIN plugin dir (release-shipped via
+// `xbot-cli setup` / install.sh) and returns channel names whose manifests
+// default to enabled=true.
+// Scope: plugins/builtin ONLY. The user dir (~/.xbot/plugins) is entirely
+// user-managed (make plugins-install / manual installs) — setup never
+// activates, deactivates, or reports plugins the user installed themselves.
+// Manifest-driven: any builtin channel plugin (genui today, more tomorrow)
 // activates without hardcoding names here.
 func scanChannelActivation(xbotHome string) map[string]string {
 	dirs := []string{
-		filepath.Join(xbotHome, "plugins"),            // user-installed (highest precedence)
 		filepath.Join(xbotHome, "plugins", "builtin"), // release-shipped
 	}
 	activated := map[string]string{} // channel name → plugin id
@@ -636,8 +639,11 @@ func isEnabledDefault(v string) bool {
 }
 
 // fixChannelActivationConfig writes channels.<name>.enabled="true" for every
-// shipped channel plugin that defaults to enabled — set_if_missing semantics:
-// an existing value (including the user's deliberate "false") is preserved.
+// BUILTIN channel plugin (release-shipped via setup/install.sh) that defaults
+// to enabled — set_if_missing semantics: an existing value (including the
+// user's deliberate "false") is preserved. Plugins in the USER dir
+// (~/.xbot/plugins) are entirely user-managed: setup never touches their
+// activation (they may be examples, experiments, or deliberately disabled).
 // Uses config.LoadFromFile + SaveToFile (deep merge preserves unknown fields).
 func fixChannelActivationConfig(xbotHome string) (bool, error) {
 	activated := scanChannelActivation(xbotHome)
@@ -694,32 +700,59 @@ func checkSetup(o *setupOptions) error {
 	webDir := componentDir(xbotHome, "web")
 	if _, err := os.Stat(filepath.Join(webDir, setupWebDistMarker)); err == nil {
 		stamp, _ := os.ReadFile(componentStampPath(xbotHome, "web"))
-		fmt.Printf("Web UI:  OK %s (installed by %s)\n", webDir, strings.TrimSpace(string(stamp)))
+		by := strings.TrimSpace(string(stamp))
+		if by == "" {
+			by = "unknown (installed outside setup — no version stamp)"
+		}
+		fmt.Printf("Web UI:  OK %s (installed by %s)\n", webDir, by)
 	} else {
 		fmt.Printf("Web UI:  MISSING %s — run: xbot-cli setup\n", webDir)
 		ok = false
 	}
 
-	// 2. Built-in plugins
-	pluginsDir := componentDir(xbotHome, "plugins")
-	entries, _ := os.ReadDir(pluginsDir)
-	var pluginIDs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			if _, err := os.Stat(filepath.Join(pluginsDir, e.Name(), setupPluginManifestFN)); err == nil {
-				pluginIDs = append(pluginIDs, e.Name())
+	// 2. Plugins — TWO layers with DIFFERENT semantics:
+	//    - builtin/ (release-shipped via setup/install.sh): completeness basis
+	//      for this check — missing = actionable by running setup.
+	//    - user dir (~/.xbot/plugins): entirely user-managed (make
+	//      plugins-install / manual installs). NEVER judged here — listed as
+	//      information only, so dev machines see their own installs instead of
+	//      a misleading "MISSING" (git-fancy etc. live there on dev machines).
+	listPluginIDs := func(dir string) []string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil
+		}
+		var ids []string
+		for _, e := range entries {
+			if e.IsDir() {
+				if _, err := os.Stat(filepath.Join(dir, e.Name(), setupPluginManifestFN)); err == nil {
+					ids = append(ids, e.Name())
+				}
 			}
 		}
+		return ids
 	}
-	if len(pluginIDs) > 0 {
+	builtinIDs := listPluginIDs(componentDir(xbotHome, "plugins")) // .../plugins/builtin
+	userIDs := listPluginIDs(filepath.Join(xbotHome, "plugins"))   // .../plugins (user dir)
+	if len(builtinIDs) > 0 {
 		stamp, _ := os.ReadFile(componentStampPath(xbotHome, "plugins"))
-		fmt.Printf("Plugins: OK %s (%s) (installed by %s)\n", pluginsDir, strings.Join(pluginIDs, ", "), strings.TrimSpace(string(stamp)))
+		by := strings.TrimSpace(string(stamp))
+		if by == "" {
+			by = "unknown"
+		}
+		fmt.Printf("Plugins: OK (builtin) %s (%s) (installed by %s)\n", componentDir(xbotHome, "plugins"), strings.Join(builtinIDs, ", "), by)
 	} else {
-		fmt.Printf("Plugins: MISSING %s — run: xbot-cli setup\n", pluginsDir)
+		fmt.Printf("Plugins: MISSING (builtin) %s — run: xbot-cli setup\n", componentDir(xbotHome, "plugins"))
 		ok = false
 	}
+	if len(userIDs) > 0 {
+		fmt.Printf("         user-dir %s: %s — user-managed (dev/manual install, not judged by setup)\n",
+			filepath.Join(xbotHome, "plugins"), strings.Join(userIDs, ", "))
+	}
 
-	// 3. Channel activation
+	// 3. Channel activation — BUILTIN plugins only (setup manages what it
+	//    shipped). Channel plugins in the user dir are the user's own
+	//    activation decision (config.json), never reported here.
 	activated := scanChannelActivation(xbotHome)
 	cfg := config.LoadFromFile(config.ConfigFilePath())
 	for name, pluginID := range activated {

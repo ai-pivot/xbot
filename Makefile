@@ -1,4 +1,4 @@
-.PHONY: fmt lint test build run dev clean ci clean-memory web-build web-lint web-dev install-cli plugins-build plugins-install plugins-clean plugins-web plugins-package setup
+.PHONY: fmt lint test build run dev clean ci clean-memory web-build web-lint web-dev install-cli plugins-build plugins-install plugins-install-builtin plugins-clean plugins-web plugins-package setup
 
 BINARY_NAME := xbot
 
@@ -90,8 +90,22 @@ plugins-install: plugins-build plugins-web
 	# ambience: script-runtime plugin, manifest only (frontend builtin handles the rest)
 	mkdir -p $(XBOT_HOME)/plugins/xbot.ambience
 	cp plugins/xbot-ambience/plugin.json $(XBOT_HOME)/plugins/xbot.ambience/
-	@echo "Builtin plugins installed to $(XBOT_HOME)/plugins/. Reload to activate: tui_control(action=reload_plugins)"
-	@echo "Channel plugin activation (channels.<name>.enabled) is fixed by: ./xbot-cli setup --config-only"
+	@echo "Builtin plugins installed to $(XBOT_HOME)/plugins/ (user dir — takes precedence over builtin/)."
+	@echo "Dev override: these copies win over release-installed ~/.xbot/plugins/builtin/."
+
+# Install the built-in plugins into the RELEASE-MANAGED dir (plugins/builtin/)
+# — the same place `xbot-cli setup` installs release tarballs. `setup
+# --config-only` (channel activation) only scans builtin/, so `make setup`
+# installs here; use plain `make plugins-install` for the user-dir dev
+# override instead.
+plugins-install-builtin: plugins-build plugins-web
+	$(MAKE) -C plugins/xbot-genui install PLUGIN_DIR='$(XBOT_HOME)/plugins/builtin/xbot.genui'
+	$(MAKE) -C plugins/xbot-git-fancy install PLUGIN_DIR='$(XBOT_HOME)/plugins/builtin/xbot.git-fancy'
+	mkdir -p $(XBOT_HOME)/plugins/builtin/xbot.git-fancy/web
+	cp -R plugins/xbot-git-fancy/web/. $(XBOT_HOME)/plugins/builtin/xbot.git-fancy/web/
+	mkdir -p $(XBOT_HOME)/plugins/builtin/xbot.ambience
+	cp plugins/xbot-ambience/plugin.json $(XBOT_HOME)/plugins/builtin/xbot.ambience/
+	@echo "Built-in plugins installed to $(XBOT_HOME)/plugins/builtin/ (release-managed dir)."
 
 plugins-clean:
 	$(MAKE) -C plugins/xbot-genui clean
@@ -108,9 +122,12 @@ plugins-package: plugins-web
 # One-command local setup for source checkouts: build CLI + web dist +
 # plugins, install everything to XBOT_HOME, activate channel plugins.
 #   - web dist      → $(XBOT_HOME)/web/dist (resolveStaticDir finds it there)
-#   - plugins       → $(XBOT_HOME)/plugins/ (user dir, wins over builtin)
+#   - plugins       → $(XBOT_HOME)/plugins/builtin/ (release-managed dir —
+#                    setup --config-only only scans builtin/ for channel
+#                    activation; use `make plugins-install` for the user-dir
+#                    dev override instead)
 #   - channels config fixup via ./xbot-cli setup --config-only
-setup: web-build plugins-install
+setup: web-build plugins-install-builtin
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o xbot-cli ./cmd/xbot-cli
 	mkdir -p $(XBOT_HOME)/web/dist
 	cp -R web/dist/. $(XBOT_HOME)/web/dist/
@@ -119,6 +136,6 @@ setup: web-build plugins-install
 	@echo "Setup complete:"
 	@echo "  binary:   ./xbot-cli (dev build)"
 	@echo "  web dist: $(XBOT_HOME)/web/dist"
-	@echo "  plugins:  $(XBOT_HOME)/plugins/"
+	@echo "  plugins:  $(XBOT_HOME)/plugins/builtin/"
 	@echo "  Start the server: ./xbot-cli serve"
 

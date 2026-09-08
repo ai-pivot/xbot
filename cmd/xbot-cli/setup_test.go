@@ -248,8 +248,12 @@ func TestScanChannelActivation(t *testing.T) {
 	home := t.TempDir()
 	writePluginManifest(t, filepath.Join(home, "plugins", "builtin", "xbot.genui"), "xbot.genui", "genui", "true")
 	writePluginManifest(t, filepath.Join(home, "plugins", "builtin", "xbot.git-fancy"), "xbot.git-fancy", "", "") // no channel provider
+	// User-dir plugins are NEVER scanned (setup manages builtin/ only — the
+	// user dir is entirely user-managed: examples, experiments, dev installs).
+	// default=true in the user dir must NOT activate; default=false must not either.
 	writePluginManifest(t, filepath.Join(home, "plugins", "xbot.ambience"), "xbot.ambience", "", "")
-	writePluginManifest(t, filepath.Join(home, "plugins", "xbot.custom"), "xbot.custom", "custom", "false") // explicit default false
+	writePluginManifest(t, filepath.Join(home, "plugins", "xbot.user-plugin"), "xbot.user-plugin", "userchan", "true")
+	writePluginManifest(t, filepath.Join(home, "plugins", "xbot.custom"), "xbot.custom", "custom", "false")
 	// Stray file (not a dir) must be skipped.
 	if err := os.WriteFile(filepath.Join(home, "plugins", "stray.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
@@ -257,7 +261,7 @@ func TestScanChannelActivation(t *testing.T) {
 
 	got := scanChannelActivation(home)
 	if len(got) != 1 {
-		t.Fatalf("scanChannelActivation = %v, want only genui (custom has default false, git-fancy/ambience have no provider)", got)
+		t.Fatalf("scanChannelActivation = %v, want only genui (user-dir plugins MUST NOT be scanned: user-plugin/custom live in the user dir, not builtin/)", got)
 	}
 	if got["genui"] != "xbot.genui" {
 		t.Errorf("genui → %q, want xbot.genui", got["genui"])
@@ -269,6 +273,9 @@ func TestFixChannelActivationConfig_SetIfMissing(t *testing.T) {
 	t.Setenv("XBOT_HOME", home)
 	writePluginManifest(t, filepath.Join(home, "plugins", "builtin", "xbot.genui"), "xbot.genui", "genui", "true")
 	writePluginManifest(t, filepath.Join(home, "plugins", "builtin", "xbot.custom"), "xbot.custom", "custom", "true")
+	// User-dir plugin with default=true — must NEVER be auto-activated by
+	// setup (the user dir is user-managed; setup manages builtin/ only).
+	writePluginManifest(t, filepath.Join(home, "plugins", "xbot.user-plugin"), "xbot.user-plugin", "userchan", "true")
 
 	// Pre-existing config: genui explicitly disabled by the user, custom absent.
 	if err := os.WriteFile(config.ConfigFilePath(), []byte(`{
@@ -295,6 +302,10 @@ func TestFixChannelActivationConfig_SetIfMissing(t *testing.T) {
 	// custom (missing) got enabled=true.
 	if v := cfg.Channels["custom"]["enabled"]; v != "true" {
 		t.Errorf("custom enabled = %q, want \"true\"", v)
+	}
+	// User-dir plugin MUST NOT be activated (builtin-only scope).
+	if v, exists := cfg.Channels["userchan"]["enabled"]; exists {
+		t.Errorf("userchan enabled = %q — user-dir plugins must never be auto-activated by setup", v)
 	}
 
 	// Idempotent: second run changes nothing.
