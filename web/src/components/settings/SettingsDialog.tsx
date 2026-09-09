@@ -9,7 +9,7 @@
  * lazily (only when selected) so a disconnected server doesn't fire RPCs on
  * every panel open. The Account panel shows current username + logout button.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Loader2, LogOut } from 'lucide-react'
 
@@ -40,9 +40,14 @@ import { useLLMSettings } from '@/hooks/useLLMSettings'
 
 type Category = 'appearance' | 'interaction' | 'language' | 'agent' | 'llm' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
 
+/** 设置分类（供命令路由 `xbot://settings.open?section=llm` 使用）。 */
+export type SettingsCategory = Category
+
 interface SettingsDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** 打开时直接激活的分类（命令路由 / 引导卡直达）。 */
+  initialSection?: SettingsCategory
 }
 
 /**
@@ -96,10 +101,15 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
   )
 }
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsDialogProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const [active, setActive] = useState<Category>('appearance')
+
+  // 命令路由 / 引导卡直达：打开时切到指定分类。
+  useEffect(() => {
+    if (open && initialSection) setActive(initialSection)
+  }, [open, initialSection])
 
   const nav: { key: Category; labelKey: string }[] = [
     { key: 'appearance', labelKey: 'nav.appearance' },

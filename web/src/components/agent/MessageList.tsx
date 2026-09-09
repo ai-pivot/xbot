@@ -15,12 +15,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2, Sparkles } from 'lucide-react'
+import { ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, Loader2, Sparkles } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
+import { commands } from '@/lib/commandRouter'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
 interface MessageListProps {
@@ -921,11 +922,36 @@ export const MessageList = memo(function MessageList({
               <Sparkles className="mx-auto mb-3 size-7 text-accent" />
               <div className="mb-1 text-sm font-medium text-text-primary">{t('agent.welcomeTitle')}</div>
               <div className="mb-4 text-xs text-text-muted">{t('agent.welcomeHint')}</div>
-              <ol className="mx-auto max-w-sm space-y-2 text-left text-xs text-text-secondary">
-                <li className="rounded-md bg-bg-secondary/50 px-3 py-2">{t('agent.welcomeStep1')}</li>
-                <li className="rounded-md bg-bg-secondary/50 px-3 py-2">{t('agent.welcomeStep2')}</li>
-                <li className="rounded-md bg-bg-secondary/50 px-3 py-2">{t('agent.welcomeStep3')}</li>
-              </ol>
+              {/* 每一步都是可点击的 —— 直接唤起对应面板（commandRouter）。 */}
+              <div className="mx-auto flex max-w-sm flex-col gap-2 text-left text-xs text-text-secondary">
+                <button
+                  type="button"
+                  data-testid="welcome-step-configure"
+                  onClick={() => void commands.execute('settings.open', { section: 'llm' })}
+                  className="group flex items-center gap-2 rounded-md bg-bg-secondary/50 px-3 py-2 text-left transition-colors hover:bg-bg-tertiary"
+                >
+                  <span className="min-w-0 flex-1">{t('agent.welcomeStep1')}</span>
+                  <ChevronRight className="size-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5" />
+                </button>
+                <button
+                  type="button"
+                  data-testid="welcome-step-session"
+                  onClick={() => void commands.execute('session.new')}
+                  className="group flex items-center gap-2 rounded-md bg-bg-secondary/50 px-3 py-2 text-left transition-colors hover:bg-bg-tertiary"
+                >
+                  <span className="min-w-0 flex-1">{t('agent.welcomeStep2')}</span>
+                  <ChevronRight className="size-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5" />
+                </button>
+                <button
+                  type="button"
+                  data-testid="welcome-step-chat"
+                  onClick={() => void commands.execute('input.focus')}
+                  className="group flex items-center gap-2 rounded-md bg-bg-secondary/50 px-3 py-2 text-left transition-colors hover:bg-bg-tertiary"
+                >
+                  <span className="min-w-0 flex-1">{t('agent.welcomeStep3')}</span>
+                  <ChevronRight className="size-3.5 shrink-0 text-text-muted transition-transform group-hover:translate-x-0.5" />
+                </button>
+              </div>
             </div>
           </div>
         )}

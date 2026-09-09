@@ -34,6 +34,8 @@ import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
+import { commands } from '@/lib/commandRouter'
+import type { SettingsCategory } from '@/components/settings/SettingsDialog'
 
 // 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
 // registerBuiltinLayoutItems 在 App.tsx 模块级注册的模式一致）。
@@ -66,6 +68,8 @@ export function AppShell() {
     return adaptiveLeftWidth()
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // 命令路由指定的设置分类（xbot://settings.open?section=llm）。
+  const [settingsSection, setSettingsSection] = useState<SettingsCategory | undefined>()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
       return localStorage.getItem(LEFT_COLLAPSED_KEY) === '1'
@@ -89,6 +93,47 @@ export function AppShell() {
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
+
+  // ── 通用命令注册（commandRouter）──────────────────────────────────────
+  // 让任何 UI（引导卡、插件、深链 `xbot://settings.open?section=llm`）都能
+  // 直接唤起宿主面板，而不是写一句「点击右下角齿轮」让用户自己找。
+  useEffect(
+    () =>
+      commands.registerAll([
+        {
+          id: 'settings.open',
+          titleKey: 'settings.title',
+          category: 'navigation',
+          handler: (args) => {
+            setSettingsSection(args.section as SettingsCategory | undefined)
+            setSettingsOpen(true)
+          },
+        },
+        {
+          id: 'sidebar.toggle',
+          titleKey: 'sidebar.toggle',
+          category: 'navigation',
+          handler: () => setSidebarCollapsed((v) => !v),
+        },
+        {
+          id: 'session.new',
+          titleKey: 'sidebar.newSession',
+          category: 'sessions',
+          handler: () => {
+            void sessionStore.createSession()
+          },
+        },
+        {
+          id: 'input.focus',
+          titleKey: 'agent.focusInput',
+          category: 'agent',
+          handler: () => {
+            document.querySelector<HTMLElement>('[contenteditable="true"], textarea')?.focus()
+          },
+        },
+      ]),
+    [sessionStore],
+  )
 
   // 桥接插件 editor-view API：PluginUI.openViewTab/openFileTab（React 树外）
   // 经模块级注册器走到 tabManager.openTab（VSCode webviewPanel 语义）。
@@ -309,6 +354,7 @@ export function AppShell() {
         <SettingsDialog
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
+          initialSection={settingsSection}
         />
       </Suspense>
       </div>
