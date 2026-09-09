@@ -673,6 +673,8 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 	}
 	maxCtx, maxOut, apiType := 0, 0, ""
 	enabled := true
+	vision := false
+	visionDetail := ""
 	if subs, err := m.subscriptionMgr.List(""); err == nil {
 		for i := range subs {
 			if subs[i].ID == subID {
@@ -681,6 +683,8 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 					maxOut = cfg.MaxOutputTokens
 					apiType = cfg.APIType
 					enabled = cfg.Enabled
+					vision = cfg.Vision
+					visionDetail = cfg.VisionDetail
 				}
 				break
 			}
@@ -690,6 +694,13 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 	if !enabled {
 		enabledDef = "disabled"
 	}
+	visionDef := "off"
+	if vision {
+		visionDef = "on"
+	}
+	if visionDetail == "" {
+		visionDetail = "auto"
+	}
 	schema := []ch.SettingDefinition{
 		{Key: "pm_enabled", Label: "Enabled", Description: "Disabled models show greyed and are rejected on switch", Type: ch.SettingTypeSelect, DefaultValue: enabledDef, Options: []ch.SettingOption{
 			{Label: "Enabled", Value: "enabled"},
@@ -697,6 +708,15 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 		}},
 		{Key: "pm_max_output", Label: "Max Output Tokens", Description: "Max output tokens (0 = use subscription default)", Type: ch.SettingTypeNumber, DefaultValue: strconv.Itoa(maxOut)},
 		{Key: "pm_max_context", Label: "Max Context", Description: "Max context tokens (0 = use subscription default)", Type: ch.SettingTypeNumber, DefaultValue: strconv.Itoa(maxCtx)},
+		{Key: "pm_vision", Label: "Vision 视觉输入", Description: "Manual per-model switch (no builtin whitelist): ON sends uploaded/injected images as multimodal input; OFF degrades them to text placeholders. Only enable for models that actually accept images (e.g. GPT-4o / Claude / GLM-4V).", Type: ch.SettingTypeSelect, DefaultValue: visionDef, Options: []ch.SettingOption{
+			{Label: "OFF (default — images degrade to placeholders)", Value: "off"},
+			{Label: "ON (multimodal image input)", Value: "on"},
+		}},
+		{Key: "pm_vision_detail", Label: "Vision Detail", Description: "OpenAI image_url.detail hint: low saves tokens, high maximizes detail. Anthropic ignores it.", Type: ch.SettingTypeSelect, DefaultValue: visionDetail, Options: []ch.SettingOption{
+			{Label: "Auto", Value: "auto"},
+			{Label: "Low (fewer tokens)", Value: "low"},
+			{Label: "High (more detail)", Value: "high"},
+		}},
 		{Key: "pm_api_type", Label: "API Type", Description: "API endpoint override (blank = use subscription default)", Type: ch.SettingTypeSelect, DefaultValue: apiType, Options: []ch.SettingOption{
 			{Label: "Default", Value: ""},
 			{Label: "Chat Completions", Value: "chat_completions"},
@@ -704,10 +724,12 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 		}},
 	}
 	values := map[string]string{
-		"pm_enabled":     enabledDef,
-		"pm_max_output":  strconv.Itoa(maxOut),
-		"pm_max_context": strconv.Itoa(maxCtx),
-		"pm_api_type":    apiType,
+		"pm_enabled":       enabledDef,
+		"pm_max_output":    strconv.Itoa(maxOut),
+		"pm_max_context":   strconv.Itoa(maxCtx),
+		"pm_vision":        visionDef,
+		"pm_vision_detail": visionDetail,
+		"pm_api_type":      apiType,
 	}
 	origEnabled := enabled
 	m.quickSwitchMode = "" // close overlay while editing
@@ -718,7 +740,12 @@ func (m *cliModel) openEditModelPanel(subID, model string) {
 		mo, _ := strconv.Atoi(values["pm_max_output"])
 		mc, _ := strconv.Atoi(values["pm_max_context"])
 		wantEnabled := values["pm_enabled"] != "disabled"
-		pmc := ch.PerModelConfig{MaxOutputTokens: mo, MaxContext: mc, APIType: values["pm_api_type"], Enabled: wantEnabled}
+		wantVision := values["pm_vision"] == "on"
+		vd := values["pm_vision_detail"]
+		if vd == "auto" {
+			vd = "" // auto = empty hint (API default)
+		}
+		pmc := ch.PerModelConfig{MaxOutputTokens: mo, MaxContext: mc, APIType: values["pm_api_type"], Enabled: wantEnabled, Vision: wantVision, VisionDetail: vd}
 		if err := m.subscriptionMgr.UpdatePerModelConfig(subID, model, pmc); err != nil {
 			m.showTempStatus(fmt.Sprintf("Failed to save %s: %v", model, err))
 			return
@@ -955,6 +982,12 @@ func (m *cliModel) viewQuickSwitch(width, height int) string {
 			statusTag := ""
 			if r.model.Status == "disabled" {
 				statusTag = " (disabled)"
+			}
+			// 👁 marks the model's manual vision switch (per-model, no
+			// builtin whitelist — subscription_models.vision). Vision models
+			// send uploaded/injected images as multimodal content parts.
+			if r.model.Vision {
+				statusTag += " 👁"
 			}
 			mark := ""
 			if r.model.Model == m.cachedModelName && r.model.SubID == m.activeSubID {

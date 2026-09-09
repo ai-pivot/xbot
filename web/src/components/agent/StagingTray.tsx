@@ -16,6 +16,8 @@ import { memo, useState, useCallback } from 'react'
 import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox, User } from 'lucide-react'
 import type { QueueItemPayload } from '@/types/shared'
 import { cn } from '@/lib/utils'
+import { useIsTouch } from '@/hooks/useIsMobile'
+import { useI18n } from '@/providers/i18n'
 
 // ─── CSS keyframes（注入一次，组件级 scope） ─────────────────────────
 const STAGING_TRAY_STYLES = `
@@ -86,6 +88,8 @@ function QueueCard({
   onInterject: (msgID: string) => void
   leaving: boolean
 }) {
+  const isTouch = useIsTouch()
+  const { t } = useI18n()
   const isNotification = item.source === 'notification' || item.source === 'resume'
 
   return (
@@ -134,12 +138,12 @@ function QueueCard({
         </span>
 
         {/* hover/touch 操作（触屏始终可见，桌面 hover 显示） */}
-        <div className="staging-card-actions flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className={`staging-card-actions flex shrink-0 items-center gap-0.5 transition-opacity ${isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
           {!isNotification && (
             <button
               type="button"
-              aria-label="转插话"
-              title="转为插话（立即注入当前 Turn）"
+              aria-label={t('agent.staging.toInterject')}
+              title={t('agent.staging.toInterjectTitle')}
               onClick={(e) => {
                 e.stopPropagation()
                 onInterject(item.msg_id)
@@ -151,8 +155,8 @@ function QueueCard({
           )}
           <button
             type="button"
-            aria-label="取消"
-            title="取消排队"
+            aria-label={t('common.cancel')}
+            title={t('agent.staging.cancelQueued')}
             onClick={(e) => {
               e.stopPropagation()
               onCancel(item.msg_id)
@@ -167,7 +171,7 @@ function QueueCard({
       {/* 队首 "下一个" 标签 */}
       {isHead && busy && (
         <div className="mt-1 pl-8.5 text-[10px] font-medium text-indigo-500/80 dark:text-indigo-400/80">
-          ▸ 下一个执行
+          ▸ {t('agent.staging.next')}
         </div>
       )}
     </div>
@@ -183,6 +187,7 @@ export const StagingTray = memo(function StagingTray({
   onInterject,
   onClear,
 }: StagingTrayProps) {
+  const { t } = useI18n()
   injectStyles()
 
   const [expanded, setExpanded] = useState(false)
@@ -221,7 +226,7 @@ export const StagingTray = memo(function StagingTray({
   const hiddenCount = items.length - visibleItems.length
 
   return (
-    <div className="border-t border-border/50 px-3 py-1.5">
+    <div className="border-t border-border/50 bg-bg-primary px-3 py-1.5">
       {/* Header 行 — 可折叠（默认折叠，只显示 count bar） */}
       <button
         type="button"
@@ -231,14 +236,14 @@ export const StagingTray = memo(function StagingTray({
         <div className="flex items-center gap-1.5 text-xs text-text-muted">
           <Inbox className="size-3.5 shrink-0" />
           <span className="font-medium">
-            📨 待发队列
+            📨 {t('agent.staging.title')}
             <span className="ml-1 rounded-full bg-bg-tertiary/80 px-1.5 py-px text-[10px] tabular-nums">
               {items.length}
             </span>
           </span>
           {items.length > 0 && (
             <span className="text-[10px] text-text-muted/70">
-              · 下一条 Turn {items[0].turn_id}
+              · {t('agent.staging.nextTurn', { turn: items[0].turn_id })}
             </span>
           )}
         </div>
@@ -246,7 +251,7 @@ export const StagingTray = memo(function StagingTray({
           {expanded ? (
             <button
               type="button"
-              aria-label="收起"
+              aria-label={t('agent.staging.collapse')}
               onClick={(e) => { e.stopPropagation(); setExpanded(false) }}
               className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:bg-bg-tertiary hover:text-text-secondary"
             >
@@ -288,8 +293,8 @@ export const StagingTray = memo(function StagingTray({
             >
               {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
               {expanded
-                ? '收起'
-                : `还有 ${hiddenCount} 条`}
+                ? t('agent.staging.collapse')
+                : t('agent.staging.more', { count: hiddenCount })}
             </button>
           )}
 
@@ -297,13 +302,13 @@ export const StagingTray = memo(function StagingTray({
           <div className="mt-1 flex justify-end">
             <button
               type="button"
-              aria-label="清空队列"
-              title="清空队列"
+              aria-label={t('agent.staging.clearQueue')}
+              title={t('agent.staging.clearQueue')}
               onClick={handleClear}
               className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
             >
               <Trash2 className="size-3" />
-              清空
+              {t('agent.staging.clear')}
             </button>
           </div>
         </>

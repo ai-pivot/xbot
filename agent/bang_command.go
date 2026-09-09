@@ -22,9 +22,18 @@ const (
 )
 
 // isBangCommand checks if the message is a `!` prefixed quick command.
+// Markdown images (`![alt](url)`) are EXCLUDED: a message starting with an
+// image reference (e.g. a pasted screenshot the composer turned into
+// `![image.png](/api/files/download?...)`) is a normal chat message, not a
+// shell command — treating it as Bang swallowed the message with a
+// turn_id-less response ("message accepted without a turn_id").
 func isBangCommand(content string) (string, bool) {
 	trimmed := strings.TrimSpace(content)
 	if strings.HasPrefix(trimmed, "!") && len(trimmed) > 1 {
+		// `![` is markdown image syntax, not a bang command.
+		if strings.HasPrefix(trimmed, "![") {
+			return "", false
+		}
 		cmd := strings.TrimSpace(trimmed[1:])
 		// Avoid conflict with `!!` or `!` followed by whitespace only
 		if cmd == "" {

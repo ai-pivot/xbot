@@ -87,6 +87,9 @@ func TestUserSettingsDifferentSenders(t *testing.T) {
 
 	svc := NewUserSettingsService(db)
 
+	// SINGLE OPERATOR (v63 removed the multi-user system): the sender dimension
+	// collapsed to one operator, so both sender ids address the SAME settings
+	// row and the last write wins. This previously asserted per-user isolation.
 	if err := svc.Set("feishu", "user1", "style", "a"); err != nil {
 		t.Fatalf("set user1: %v", err)
 	}
@@ -96,8 +99,8 @@ func TestUserSettingsDifferentSenders(t *testing.T) {
 
 	s1, _ := svc.Get("feishu", "user1")
 	s2, _ := svc.Get("feishu", "user2")
-	if s1["style"] != "a" || s2["style"] != "b" {
-		t.Errorf("settings should be per-user: user1=%q user2=%q", s1["style"], s2["style"])
+	if s1["style"] != "b" || s2["style"] != "b" {
+		t.Errorf("single operator: both sender ids read the same row, got user1=%q user2=%q", s1["style"], s2["style"])
 	}
 }
 func TestUserSettingsNilDB(t *testing.T) {

@@ -548,40 +548,36 @@ if (-not (Test-Path $InstallPath)) {
 
 Write-Info "Downloading..."
 $tmpFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-cli-download.exe"
-try {
-    Invoke-WebRequest -Uri (Get-GhUrl $downloadUrl) -OutFile $tmpFile -UseBasicParsing
-} catch {
-    Write-Warn "Download from $REPO failed, trying fallback $FALLBACK_REPO..."
-    $fallbackUrl = "https://github.com/$FALLBACK_REPO/releases/download/$tag/xbot-cli-$platform.exe"
-    $downloadUrl = $fallbackUrl
+# $binPath is needed by the INSTALL_LOCAL_BINARY check below (before the
+# download/copy else-branch defines it for release installs).
+$binPath = Join-Path $InstallPath $BINARY
+if ($env:INSTALL_LOCAL_BINARY -eq "1") {
+    # CI mode: a pre-built binary from THIS branch already sits at the install
+    # path (caller-built via `go build`). Skips the release download/checksum —
+    # install.ps1's config/setup/service logic is what's under test, and the
+    # `setup` subcommand only exists in this branch.
+    if (-not (Test-Path $binPath)) {
+        Write-Err "INSTALL_LOCAL_BINARY=1 but $binPath not found — build it first (go build -o $binPath ./cmd/xbot-cli)"
+    }
+    Write-Info "Using pre-built local binary at $binPath (INSTALL_LOCAL_BINARY=1)"
+} else {
     try {
         Invoke-WebRequest -Uri (Get-GhUrl $downloadUrl) -OutFile $tmpFile -UseBasicParsing
     } catch {
-        Write-Err "Download failed from both repos: $_"
-    }
-}
-
-$checksumUrl = "https://github.com/$REPO/releases/download/$tag/checksums.txt"
-try {
-    $checksumFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-checksums.txt"
-    Invoke-WebRequest -Uri (Get-GhUrl $checksumUrl) -OutFile $checksumFile -UseBasicParsing
-    $expectedLine = Get-Content $checksumFile | Where-Object { $_ -match "xbot-cli-$platform" }
-    if ($expectedLine) {
-        $expectedHash = ($expectedLine -split "\s+")[0]
-        $actualHash = (Get-FileHash -Path $tmpFile -Algorithm SHA256).Hash.ToLower()
-        if ($expectedHash -ne $actualHash) {
-            Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
-            Write-Err "Checksum mismatch! Expected: $expectedHash, Got: $actualHash"
+        Write-Warn "Download from $REPO failed, trying fallback $FALLBACK_REPO..."
+        $fallbackUrl = "https://github.com/$FALLBACK_REPO/releases/download/$tag/xbot-cli-$platform.exe"
+        $downloadUrl = $fallbackUrl
+        try {
+            Invoke-WebRequest -Uri (Get-GhUrl $downloadUrl) -OutFile $tmpFile -UseBasicParsing
+        } catch {
+            Write-Err "Download failed from both repos: $_"
         }
-        Write-Info "Checksum verified"
     }
-    Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
-} catch {
-    # Try fallback repo for checksum
+
+    $checksumUrl = "https://github.com/$REPO/releases/download/$tag/checksums.txt"
     try {
-        $fallbackChecksumUrl = "https://github.com/$FALLBACK_REPO/releases/download/$tag/checksums.txt"
         $checksumFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-checksums.txt"
-        Invoke-WebRequest -Uri (Get-GhUrl $fallbackChecksumUrl) -OutFile $checksumFile -UseBasicParsing
+        Invoke-WebRequest -Uri (Get-GhUrl $checksumUrl) -OutFile $checksumFile -UseBasicParsing
         $expectedLine = Get-Content $checksumFile | Where-Object { $_ -match "xbot-cli-$platform" }
         if ($expectedLine) {
             $expectedHash = ($expectedLine -split "\s+")[0]
@@ -590,67 +586,85 @@ try {
                 Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
                 Write-Err "Checksum mismatch! Expected: $expectedHash, Got: $actualHash"
             }
-            Write-Info "Checksum verified (from fallback repo)"
+            Write-Info "Checksum verified"
         }
         Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
     } catch {
-        Write-Warn "Checksum verification skipped"
-    }
-}
-
-# Stop running xbot-cli processes and scheduled task before overwriting the binary
-$binPath = Join-Path $InstallPath $BINARY
-if (Test-Path $binPath) {
-    Write-Info "Checking for running xbot-cli..."
-    # Stop and disable scheduled task to prevent auto-restart
-    try {
-        Stop-ScheduledTask -TaskName "xbot-server" -ErrorAction SilentlyContinue
-        Disable-ScheduledTask -TaskName "xbot-server" -ErrorAction SilentlyContinue
-    } catch {}
-    # Kill ALL xbot-cli processes (by full path match for accuracy)
-    $procs = Get-Process -Name "xbot-cli" -ErrorAction SilentlyContinue
-    if ($procs) {
-        Write-Info "Stopping running xbot-cli process(es)..."
-        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
-        # Wait up to 5 seconds for process to fully exit and release file handles
-        $waited = 0
-        while ((Get-Process -Name "xbot-cli" -ErrorAction SilentlyContinue) -and ($waited -lt 5000)) {
-            Start-Sleep -Milliseconds 500
-            $waited += 500
+        # Try fallback repo for checksum
+        try {
+            $fallbackChecksumUrl = "https://github.com/$FALLBACK_REPO/releases/download/$tag/checksums.txt"
+            $checksumFile = Join-Path ([System.IO.Path]::GetTempPath()) "xbot-checksums.txt"
+            Invoke-WebRequest -Uri (Get-GhUrl $fallbackChecksumUrl) -OutFile $checksumFile -UseBasicParsing
+            $expectedLine = Get-Content $checksumFile | Where-Object { $_ -match "xbot-cli-$platform" }
+            if ($expectedLine) {
+                $expectedHash = ($expectedLine -split "\s+")[0]
+                $actualHash = (Get-FileHash -Path $tmpFile -Algorithm SHA256).Hash.ToLower()
+                if ($expectedHash -ne $actualHash) {
+                    Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
+                    Write-Err "Checksum mismatch! Expected: $expectedHash, Got: $actualHash"
+                }
+                Write-Info "Checksum verified (from fallback repo)"
+            }
+            Remove-Item $checksumFile -Force -ErrorAction SilentlyContinue
+        } catch {
+            Write-Warn "Checksum verification skipped"
         }
     }
-}
 
-# Copy with retry — Windows may hold the file handle briefly after process exit
-$copied = $false
-for ($attempt = 1; $attempt -le 5; $attempt++) {
-    try {
-        Copy-Item $tmpFile $binPath -Force -ErrorAction Stop
-        $copied = $true
-        break
-    } catch {
-        if ($attempt -lt 5) {
-            Write-Warn "File locked, retrying ($attempt/5)..."
-            Start-Sleep -Seconds 2
+    # Stop running xbot-cli processes and scheduled task before overwriting the binary
+    $binPath = Join-Path $InstallPath $BINARY
+    if (Test-Path $binPath) {
+        Write-Info "Checking for running xbot-cli..."
+        # Stop and disable scheduled task to prevent auto-restart
+        try {
+            Stop-ScheduledTask -TaskName "xbot-server" -ErrorAction SilentlyContinue
+            Disable-ScheduledTask -TaskName "xbot-server" -ErrorAction SilentlyContinue
+        } catch {}
+        # Kill ALL xbot-cli processes (by full path match for accuracy)
+        $procs = Get-Process -Name "xbot-cli" -ErrorAction SilentlyContinue
+        if ($procs) {
+            Write-Info "Stopping running xbot-cli process(es)..."
+            $procs | Stop-Process -Force -ErrorAction SilentlyContinue
+            # Wait up to 5 seconds for process to fully exit and release file handles
+            $waited = 0
+            while ((Get-Process -Name "xbot-cli" -ErrorAction SilentlyContinue) -and ($waited -lt 5000)) {
+                Start-Sleep -Milliseconds 500
+                $waited += 500
+            }
         }
     }
-}
-if (-not $copied) {
-    # Last resort: rename old file and copy new one
-    Write-Warn "File still locked, renaming old binary..."
-    $oldFile = "$binPath.old"
-    Move-Item $binPath $oldFile -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 1
-    try {
-        Copy-Item $tmpFile $binPath -Force -ErrorAction Stop
-        Remove-Item $oldFile -Force -ErrorAction SilentlyContinue
-    } catch {
-        # Put old file back if copy still fails
-        if (Test-Path $oldFile) { Move-Item $oldFile $binPath -Force -ErrorAction SilentlyContinue }
-        throw "Cannot replace xbot-cli.exe after 5 retries: $_"
+
+    # Copy with retry — Windows may hold the file handle briefly after process exit
+    $copied = $false
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Copy-Item $tmpFile $binPath -Force -ErrorAction Stop
+            $copied = $true
+            break
+        } catch {
+            if ($attempt -lt 5) {
+                Write-Warn "File locked, retrying ($attempt/5)..."
+                Start-Sleep -Seconds 2
+            }
+        }
     }
+    if (-not $copied) {
+        # Last resort: rename old file and copy new one
+        Write-Warn "File still locked, renaming old binary..."
+        $oldFile = "$binPath.old"
+        Move-Item $binPath $oldFile -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+        try {
+            Copy-Item $tmpFile $binPath -Force -ErrorAction Stop
+            Remove-Item $oldFile -Force -ErrorAction SilentlyContinue
+        } catch {
+            # Put old file back if copy still fails
+            if (Test-Path $oldFile) { Move-Item $oldFile $binPath -Force -ErrorAction SilentlyContinue }
+            throw "Cannot replace xbot-cli.exe after 5 retries: $_"
+        }
+    }
+    Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
 }
-Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "[OK] xbot-cli $tag installed to $InstallPath\$BINARY" -ForegroundColor Green
@@ -667,8 +681,40 @@ $token = New-RandomToken
 Backup-Config
 Write-Config -Mode $selectedMode -Port $selectedPort -Token $token
 
+# Web UI + built-in plugins + channel activation config (BOTH modes — same
+# Go implementation as install.sh). Delegates to the freshly-installed
+# binary's `setup` subcommand: downloads the version-pinned web dist + plugin
+# tarballs from this release, installs to $XbotHome, and sets
+# channels.<name>.enabled=true for shipped channel plugins.
+# Capability probe first: the `setup` subcommand only exists in releases that
+# ship it. On an older binary, `setup ...` would be parsed as a PROMPT and run
+# the agent non-interactively (worst case: panic — CI caught exactly that with
+# the v0.0.23 binary). Probe with `setup -h`: both old and new binaries print
+# help text and exit 0, but only the new one prints the setup-specific usage
+# line. Never invoke a subcommand blindly.
+# Soft-fail: any non-zero exit keeps the install usable (old releases lack
+# the plugin tarballs → exit 3) — warn with the remediation command only.
+$binFullPath = Join-Path $InstallPath $BINARY
+$setupHelp = (& $binFullPath setup -h 2>$null) | Out-String
+if ($setupHelp -match "Usage: xbot-cli setup") {
+    Write-Info "Setting up Web UI + built-in plugins (xbot-cli setup)..."
+    $setupArgs = @("setup", "--tag", $tag)
+    if ($GhMirror) { $setupArgs += @("--mirror", $GhMirror) }
+    & $binFullPath @setupArgs
+    if ($LASTEXITCODE -eq 0) {
+        Write-Info "Web UI + built-in plugins installed"
+    } else {
+        Write-Warn "xbot-cli setup exited with code $LASTEXITCODE (see messages above)."
+        Write-Warn "The install is usable, but the Web UI / built-in plugins may be missing."
+        Write-Warn "Re-run later with: $binFullPath setup"
+        $global:LASTEXITCODE = 0
+    }
+} else {
+    Write-Warn "Installed binary does not support the setup subcommand (pre-setup release)."
+    Write-Warn "Skipping Web UI / plugin download for this release."
+}
+
 if ($selectedMode -eq "server-client") {
-    $binFullPath = Join-Path $InstallPath $BINARY
     Install-WindowsService -BinPath $binFullPath -CfgPath $ConfigPath
 }
 

@@ -68,12 +68,15 @@ export function SessionGroup({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide"
+        className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider transition-spring hover:bg-bg-tertiary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
         style={{ color: 'var(--text-secondary)' }}
       >
-        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
+        <ChevronRight className={cn('size-3.5 transition-transform duration-200', open && 'rotate-90')} />
         <span title={category === 'path' && groupKey !== '__unset__' ? groupKey : undefined}>{title}</span>
-        <span className="font-normal" style={{ color: 'var(--text-muted)' }}>
+        <span
+          className="rounded-full bg-bg-tertiary/70 px-1.5 py-px font-medium tabular-nums"
+          style={{ color: 'var(--text-muted)' }}
+        >
           {sessions.length}
         </span>
       </button>

@@ -50,6 +50,12 @@ func TestSessionKeyOwnerUsesLastSlashForCLIAbsolutePaths(t *testing.T) {
 		{key: "cli:/repo/project:Agent-main/review:1", want: "/repo/project:Agent-main"},
 		{key: "agent:cli:/repo/project:Agent-main/review:1/fix:2", want: "cli:/repo/project:Agent-main/review:1"},
 		{key: "web:chat_123/explore", want: "chat_123"},
+		// Bare "channel:chatID" (NO slash) — exactly what the web frontend sends
+		// (ShellPromoteBar / ToolSessionContext use `${channel}:${chatID}`).
+		// Without these cases the promote_shell / list_bg_tasks / kill_bg_task
+		// owner check silently no-ops for every web call (CR: 鉴权空操作).
+		{key: "web:chat_123", want: "chat_123"},
+		{key: "agent:agent-chat-1", want: "agent-chat-1"},
 	}
 	for _, tc := range cases {
 		if got := sessionKeyOwner(tc.key); got != tc.want {

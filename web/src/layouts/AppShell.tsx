@@ -16,7 +16,8 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Loader2, PanelLeft, Settings } from 'lucide-react'
 
 import { PanelDockProvider, PanelDock, FloatingLayer } from '@/components/panel/PanelLayout'
-import { TopRail, BottomRailBadges, SideChips } from '@/components/panel/rails'
+import { TopRail, BottomRailBadges } from '@/components/panel/rails'
+import { ActivityBar } from '@/components/panel/ActivityBar'
 import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
 import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { RightSidebarControlContext } from '@/components/sidebar/RightSidebarControl'
@@ -30,6 +31,7 @@ import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import { useI18n } from '@/providers/i18n'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 
@@ -47,9 +49,11 @@ const MIN_LEFT_WIDTH = 200
 const MAX_LEFT_WIDTH = 460
 const LEFT_RATIO = 0.22
 const LEFT_WIDTH_KEY = 'xbot:leftSidebarWidth'
+const LEFT_COLLAPSED_KEY = 'xbot:leftSidebarCollapsed'
 
 export function AppShell() {
   const isMobile = useIsMobile()
+  const { t } = useI18n()
   const tabManager = useTabManager()
   const ws = useWSConnection()
   const sessionStore = useSessionStore()
@@ -62,11 +66,26 @@ export function AppShell() {
     return adaptiveLeftWidth()
   })
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(LEFT_COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
   // header 上下文环：当前会话的上下文用量（get_context_usage）。
   const leftDragging = useRef(false)
   const leftUserSized = useRef(localStorage.getItem(LEFT_WIDTH_KEY) !== null)
   const leftWidthRef = useRef(leftWidth)
+
+  // 侧栏收起状态持久化（刷新后保持）——收起时 ActivityBar 常驻，点任意图标即展开。
+  useEffect(() => {
+    try {
+      localStorage.setItem(LEFT_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0')
+    } catch {
+      /* storage unavailable */
+    }
+  }, [sidebarCollapsed])
 
   // Persist and restore tab layout per session (Child 5 §3).
   useLayoutPersistence(tabManager, sessionStore)
@@ -212,6 +231,8 @@ export function AppShell() {
       
 
       <div className="flex min-h-0 flex-1">
+      {/* Activity Bar —— 最左边缘垂直图标列（VSCode 模型）：点击图标切换左栏内容 */}
+      <ActivityBar collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed((v) => !v)} />
 {!sidebarCollapsed && (
         <div
           className="relative flex h-full shrink-0 flex-col overflow-hidden"
@@ -227,8 +248,8 @@ export function AppShell() {
           />
           <button
             type="button"
-            aria-label="切换侧栏"
-            title="切换侧栏"
+            aria-label={t('sidebar.toggle')}
+            title={t('sidebar.toggle')}
             onClick={() => setSidebarCollapsed((v) => !v)}
             className="group absolute right-0 top-1/2 z-10 flex size-5 -translate-y-1/2 items-center justify-center rounded border border-border bg-bg-elevated text-text-muted opacity-0 transition-opacity hover:bg-bg-tertiary"
             style={{ right: '-10px' }}
@@ -251,17 +272,16 @@ export function AppShell() {
       {/* 全局底栏：连接状态 + chips + TopRail + InfoBar + Badges + SW 更新 + 设置 */}
       <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="relative z-10 flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-t border-border px-2 text-xs" style={{ background: 'var(--bg-secondary-src)' }}>
             {/* 左：连接状态（VS Code 远程连接风格：色点+文本，含会话名） */}
-            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={ws.connected ? '已连接' : '连接中…'}>
+            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={ws.connected ? t('layout.connected') : t('layout.connecting')}>
               <span
                 className={
                   ws.connected
-                    ? 'size-1.5 shrink-0 rounded-full bg-emerald-500'
-                    : 'size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500'
+                    ? 'size-1.5 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_6px_0_rgba(16,185,129,0.55)]'
+                    : 'size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500 shadow-[0_0_6px_0_rgba(245,158,11,0.55)]'
                 }
               />
-              <span className="text-text-muted">{ws.connected ? '已连接' : '连接中…'}</span>
+              <span className="text-text-muted">{ws.connected ? t('layout.connected') : t('layout.connecting')}</span>
             </span>
-            <SideChips />
             <TopRail className="min-w-0 flex-1" />
             <BottomRailBadges />
             <Suspense fallback={null}>
@@ -269,10 +289,10 @@ export function AppShell() {
             </Suspense>
             <button
               type="button"
-              aria-label="打开设置"
-              title="设置"
+              aria-label={t('layout.openSettings')}
+              title={t('settings.title')}
               onClick={() => setSettingsOpen(true)}
-              className="flex shrink-0 items-center rounded p-1 transition-colors hover:bg-bg-tertiary"
+              className="flex shrink-0 items-center rounded-md p-1.5 transition-spring hover:bg-bg-tertiary active:scale-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50"
               style={{ color: 'var(--text-secondary)' }}
             >
               <Settings className="size-3.5" />

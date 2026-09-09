@@ -75,9 +75,17 @@ export default defineConfig(({ mode }) => {
           // Exclude /api/sse — SSE is a streaming response that never
           // completes normally; caching it throws "Cache.put() network error"
           // when the connection drops (which is normal for long-lived SSE).
+          // Exclude /api/files/ — file/image downloads 302-redirect to
+          // signed OSS URLs: the SW's fetch follows the cross-origin redirect
+          // and the page CSP (connect-src 'self' ws: wss:) blocks the OSS
+          // domain → no-response → broken images (user report: "图片粘贴了
+          // 看不到"). Plain <img> loads without SW interception are governed
+          // by img-src (which includes the OSS domain) and work fine.
           {
             urlPattern: ({ url }) =>
-              url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/sse'),
+              url.pathname.startsWith('/api/') &&
+              !url.pathname.startsWith('/api/sse') &&
+              !url.pathname.startsWith('/api/files/'),
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
@@ -86,12 +94,18 @@ export default defineConfig(({ mode }) => {
               cacheableResponse: { statuses: [0, 200] },
             },
           },
-          // Static assets (fonts, images): cache-first, long TTL
+          // Static assets (fonts, images): cache-first, long TTL.
+          // MUST exclude /api/: <img src="/api/files/download?..."> has
+          // request.destination === 'image' and would otherwise be swallowed
+          // by this CacheFirst route — its 302-to-CDN fetch then fails inside
+          // the SW (cross-origin CSP) and the image dies with
+          // "workbox no-response" (user report: 图片全部加载失败).
           {
-            urlPattern: ({ request }) =>
-              request.destination === 'font' ||
-              request.destination === 'image' ||
-              request.destination === 'style',
+            urlPattern: ({ request, url }) =>
+              (request.destination === 'font' ||
+                request.destination === 'image' ||
+                request.destination === 'style') &&
+              !url.pathname.startsWith('/api/'),
             handler: 'CacheFirst',
             options: {
               cacheName: 'static-assets',

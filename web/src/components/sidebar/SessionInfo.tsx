@@ -135,7 +135,7 @@ export function SessionInfo({ tabManager }: SessionInfoProps) {
                 value={current?.channel ?? activeChannel}
               />
               {/* Editable work path */}
-              <div className="flex items-baseline gap-2">
+              <div className="flex items-baseline justify-between gap-2">
                 <dt className="shrink-0 text-xs text-text-secondary">{t('sidebar.workPath')}</dt>
                 {editingCwd ? (
                   <div className="flex min-w-0 flex-1 items-center gap-1">
@@ -160,7 +160,7 @@ export function SessionInfo({ tabManager }: SessionInfoProps) {
                   </div>
                 ) : (
                   <dd
-                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 truncate font-mono text-xs text-text-primary hover:text-accent"
+                    className="flex min-w-0 cursor-pointer items-center gap-1 truncate font-mono text-xs text-text-primary hover:text-accent"
                     title={cwd ?? ''}
                     onClick={() => {
                       setCwdInput(displayCwd ?? '')

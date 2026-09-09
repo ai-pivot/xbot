@@ -578,11 +578,14 @@ export const MessageList = memo(function MessageList({
     const atStart = el.scrollTop <= EDGE_EPSILON
     pendingAtTopRef.current = atStart
     pendingAtBottomRef.current = atEnd
-    if (!programmaticScrollRef.current) {
-      const items = virtualizer.getVirtualItems()
-      if (items.length > 0) {
-        pendingRangeRef.current = { start: items[0].index, end: items[items.length - 1].index }
-      }
+    // 导航按钮的可见范围：必须【无条件】更新。旧代码被 programmaticScrollRef
+    // 阻断（程序化滚动时跳过），而该 flag 在流式输出 / ResizeObserver /
+    // scheduleFollow 中频繁置位 → visibleRange 长期停留在初始 {0,0} →
+    // 「上一条/下一条用户消息」按钮恒 disabled（用户报告"滚动按钮一直不 work"）。
+    // 该 state 只用于导航按钮的可用性，程序化滚动时更新同样正确。
+    const items = virtualizer.getVirtualItems()
+    if (items.length > 0) {
+      pendingRangeRef.current = { start: items[0].index, end: items[items.length - 1].index }
     }
 
     // ── Schedule ONE RAF for all setStates (max 1 React render per frame) ───
@@ -830,13 +833,14 @@ export const MessageList = memo(function MessageList({
   }, [pauseFollowing, userMessageIndices, visibleRange.start, virtualizer])
 
   const scrollToNextUser = useCallback(() => {
-    const visibleStart = visibleRange.start
-    const next = userMessageIndices.find((i) => i > visibleStart)
+    // 与 hasNextUser 同语义：找可见范围【之后】的第一条 user 消息
+    const visibleEnd = visibleRange.end
+    const next = userMessageIndices.find((i) => i > visibleEnd)
     if (next !== undefined) {
       pauseFollowing()
       virtualizer.scrollToIndex(next, { align: 'start' })
     }
-  }, [pauseFollowing, userMessageIndices, visibleRange.start, virtualizer])
+  }, [pauseFollowing, userMessageIndices, visibleRange.end, virtualizer])
 
   const scrollToBottomClick = useCallback(() => {
     resumeFollowing()
@@ -844,9 +848,16 @@ export const MessageList = memo(function MessageList({
   }, [resumeFollowing, scheduleFollow])
 
   // ── Nav button disabled states ────────────────────────────────────────────
+  // 语义（用户报告"上下按钮反了"）：
+  //   「上一条」= 可见范围【之前】还有 user 消息 → 用 visibleStart 判定
+  //   「下一条」= 可见范围【之后】还有 user 消息 → 必须用 visibleEnd 判定
+  // 旧代码两者都用 visibleStart：短列表（全部可见，visibleStart=0）时
+  // `some(i > 0)` 恒为真 → 「下一条」永远可点、「上一条」永远禁用，
+  // 在会话最下方表现为"无法上一条、却能下一条"（方向反了）。
   const visibleStart = visibleRange.start
+  const visibleEnd = visibleRange.end
   const hasPrevUser = userMessageIndices.some((i) => i < visibleStart)
-  const hasNextUser = userMessageIndices.some((i) => i > visibleStart)
+  const hasNextUser = userMessageIndices.some((i) => i > visibleEnd)
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -891,7 +902,7 @@ export const MessageList = memo(function MessageList({
         onKeyDown={onKeyDown}
         tabIndex={0}
         style={{ overflowAnchor: 'none' }}
-        className="h-full overflow-y-auto overflow-x-hidden px-4 py-3 contain-content md:px-3 md:py-4"
+        className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-4 py-3 contain-content md:px-3 md:py-4"
       >
         {loading && rows.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-3">
@@ -917,7 +928,7 @@ export const MessageList = memo(function MessageList({
               {loadingMore ? (
                 <Loader2 className="size-4 animate-spin text-text-muted" />
               ) : (
-                <span className="text-xs text-text-muted">↑ 滚动加载更多</span>
+                <span className="text-xs text-text-muted">{t('agent.scrollLoadMore')}</span>
               )}
             </div>
           )}
@@ -956,7 +967,7 @@ export const MessageList = memo(function MessageList({
                       width: '100%',
                       transform: `translateY(${item.start}px)`,
                     }}
-                    className="py-1.5"
+                    className={`py-1.5${row.id === liveId ? ' animate-msg-in' : ''}`}
                     data-turn-id={row.turnID || undefined}
                     data-message-id={row.id}
                     data-role={row.role}
@@ -1078,10 +1089,10 @@ function NavButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`flex size-8 items-center justify-center rounded-md border border-border/50 bg-bg-secondary/80 backdrop-blur transition-all duration-150 ${
+      className={`flex size-10 items-center justify-center rounded-md border border-border/50 bg-bg-secondary/80 backdrop-blur transition-all duration-150 ${
         disabled
           ? 'cursor-default opacity-20'
-          : 'cursor-pointer opacity-40 hover:bg-accent/10 hover:text-accent hover:opacity-100'
+          : 'cursor-pointer opacity-60 hover:bg-accent/10 hover:text-accent hover:opacity-100'
       }`}
     >
       {children}

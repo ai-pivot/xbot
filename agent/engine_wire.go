@@ -1188,6 +1188,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 
 		// 5. 构建 ToolContext（统一路径，只有 ctx 变化）
 		toolCtx := buildToolContext(toolExecCtx, cfg)
+		toolCtx.ToolCallID = tc.ID
 
 		// 6-8. Execute with hooks (shared implementation — same as defaultToolExecutor)
 		return executeWithHooks(cfg.HookManager, toolExecCtx, toolCtx, tc.Name, tc.Arguments, tool, hooks.BasePayload{
@@ -1947,6 +1948,7 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 			Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+			CallID: t.CallID,
 		})
 	}
 	for _, t := range s.CompletedTools {
@@ -1955,6 +1957,7 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 			Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 			Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 			UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+			CallID: t.CallID,
 		})
 	}
 	payload.SubAgents = resolveSubAgents(event)

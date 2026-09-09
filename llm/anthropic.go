@@ -27,6 +27,7 @@ type AnthropicLLM struct {
 	httpClient   *http.Client
 	defaultModel string
 	maxTokens    int
+	mm           *MultimodalConfig // per-model vision config (manual switch; nil = off)
 }
 
 // AnthropicConfig Anthropic 配置
@@ -36,6 +37,10 @@ type AnthropicConfig struct {
 	DefaultModel string
 	MaxTokens    int    // 0 = use default (anthropicMaxTokens)
 	UserAgent    string // 自定义 User-Agent（留空使用默认值）
+
+	// Multimodal carries the per-model vision config (manual switch — no
+	// built-in model-name whitelist). nil = vision off.
+	Multimodal *MultimodalConfig
 }
 
 // defaultAnthropicModel is the fallback model when config leaves DefaultModel empty.
@@ -60,6 +65,7 @@ func NewAnthropicLLM(cfg AnthropicConfig) *AnthropicLLM {
 		},
 		defaultModel: cfg.DefaultModel,
 		maxTokens:    cfg.MaxTokens,
+		mm:           cfg.Multimodal,
 	}
 	if a.defaultModel == "" {
 		a.defaultModel = defaultAnthropicModel
@@ -132,6 +138,19 @@ type anthropicSystemBlock struct {
 		Type string `json:"type"` // "ephemeral"
 	} `json:"cache_control,omitempty"`
 }
+
+// anthropicImageBlock is a user-message image content block (multimodal input).
+// Anthropic requires base64-inline images: {"type":"image","source":{"type":"base64","media_type":...,"data":...}}.
+type anthropicImageBlock struct {
+	Type   string               `json:"type"` // "image"
+	Source anthropicImageSource `json:"source"`
+}
+
+type anthropicImageSource struct {
+	Type      string `json:"type"`       // "base64"
+	MediaType string `json:"media_type"` // "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+	Data      string `json:"data"`       // base64 payload (no data: prefix)
+}
 type anthropicReq struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
@@ -171,7 +190,10 @@ type anthropicResp struct {
 // thinkingEnabled controls whether assistant messages get a thinking content block.
 // Anthropic requires all assistant messages to include thinking blocks when thinking is enabled,
 // even if the original reasoning content was lost (e.g. after compression).
-func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthropicMessage {
+// mc carries the per-model multimodal (vision) config — image references in
+// user messages become image blocks (base64 source) when vision is enabled;
+// otherwise they degrade to text placeholders. nil mc = vision off.
+func toAnthropicMessages(ctx context.Context, messages []ChatMessage, thinkingEnabled bool, mc *MultimodalConfig) []anthropicMessage {
 	var msgs []anthropicMessage
 	// anthropicThinkingBlock represents a thinking content block in assistant messages.
 	type anthropicThinkingBlock struct {
@@ -186,7 +208,45 @@ func toAnthropicMessages(messages []ChatMessage, thinkingEnabled bool) []anthrop
 			// system 消息由 buildAnthropicSystem 单独处理，此处跳过
 			i++
 		case "user":
-			msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+			// Multimodal user messages: image references (markdown / legacy
+			// <image> tags) become base64 image blocks when vision is enabled.
+			var parts []imageContentPart
+			if hasMultimodalImages(msg.Content) {
+				parts = parseMultimodalContent(ctx, msg.Content, mc)
+			}
+			if len(parts) > 1 {
+				blocks := make([]any, 0, len(parts))
+				for _, p := range parts {
+					if p.Type == "text" {
+						if p.Text != "" {
+							blocks = append(blocks, anthropicTextBlock{Type: "text", Text: p.Text})
+						}
+						continue
+					}
+					mediaType, data, ok := splitDataURL(p.URL)
+					if !ok {
+						// The resolver only produces data: URLs; a non-data
+						// image part here means a placeholder slipped through
+						// (never happens with parseMultimodalContent) — degrade.
+						blocks = append(blocks, anthropicTextBlock{Type: "text", Text: imagePlaceholder("", "加载失败", p.URL)})
+						continue
+					}
+					blocks = append(blocks, anthropicImageBlock{
+						Type: "image",
+						Source: anthropicImageSource{
+							Type:      "base64",
+							MediaType: mediaType,
+							Data:      data,
+						},
+					})
+				}
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: blocks})
+			} else if len(parts) == 1 && parts[0].Type == "text" && parts[0].Text != msg.Content {
+				// Single text part with degraded image placeholders — use the part text.
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: parts[0].Text})
+			} else {
+				msgs = append(msgs, anthropicMessage{Role: "user", Content: msg.Content})
+			}
 			i++
 		case "assistant":
 			if len(msg.ToolCalls) > 0 {
@@ -373,7 +433,7 @@ func (a *AnthropicLLM) Generate(ctx context.Context, model string, messages []Ch
 		"msg_count":   len(messages),
 		"tools_count": len(tools),
 	}).Debug("[LLM] Starting non-stream request")
-	anthropicMsgs := toAnthropicMessages(messages, thinkingMode != "" && thinkingMode != "disabled")
+	anthropicMsgs := toAnthropicMessages(ctx, messages, thinkingMode != "" && thinkingMode != "disabled", a.mm)
 	body := anthropicReq{
 		Model:     model,
 		MaxTokens: a.getMaxTokens(),
@@ -488,7 +548,7 @@ func (a *AnthropicLLM) GenerateStream(ctx context.Context, model string, message
 		"msg_count":   len(messages),
 		"tools_count": len(tools),
 	}).Debug("[LLM] Starting stream request")
-	anthropicMsgs := toAnthropicMessages(messages, thinkingMode != "" && thinkingMode != "disabled")
+	anthropicMsgs := toAnthropicMessages(ctx, messages, thinkingMode != "" && thinkingMode != "disabled", a.mm)
 	body := anthropicReq{
 		Model:     model,
 		MaxTokens: a.getMaxTokens(),

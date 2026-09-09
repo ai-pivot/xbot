@@ -15,10 +15,12 @@
  *    （glass 模式下 --bg-primary 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
  */
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
-import { ChevronDown, ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
+import { ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import type { PanelBadge, PanelMode } from '@/plugin-api'
+import { useIsTouch } from '@/hooks/useIsMobile'
+import { useI18n } from '@/providers/i18n'
 import type { ResizeDir } from './PanelLayout'
 
 /**
@@ -26,16 +28,17 @@ import type { ResizeDir } from './PanelLayout'
  * 热区纯透明（光标形状提示），仅 se 角保留条纹渐变视觉（可发现性锚点）；
  * 边手柄内缩 12px（left-3 等）避让角手柄。cursor 按方向：nw/se=nwse、ne/sw=nesw、
  * n/s=ns、e/w=ew。touch-none 防触摸滚动干扰（拖拽协议 v5 规格 7）。
+ * label 为 i18n key（panel.edge.*），渲染时经 t() 解析。
  */
 const RESIZE_HANDLES: ReadonlyArray<{ dir: ResizeDir; cls: string; label: string }> = [
-  { dir: 'nw', cls: 'left-0 top-0 size-3 cursor-nwse-resize', label: '左上角' },
-  { dir: 'n', cls: 'left-3 right-3 top-0 h-1.5 cursor-ns-resize', label: '上' },
-  { dir: 'ne', cls: 'right-0 top-0 size-3 cursor-nesw-resize', label: '右上角' },
-  { dir: 'e', cls: 'bottom-3 right-0 top-3 w-1.5 cursor-ew-resize', label: '右' },
-  { dir: 'se', cls: 'bottom-0 right-0 size-3 cursor-nwse-resize', label: '右下角' },
-  { dir: 's', cls: 'bottom-0 left-3 right-3 h-1.5 cursor-ns-resize', label: '下' },
-  { dir: 'sw', cls: 'bottom-0 left-0 size-3 cursor-nesw-resize', label: '左下角' },
-  { dir: 'w', cls: 'bottom-3 left-0 top-3 w-1.5 cursor-ew-resize', label: '左' },
+  { dir: 'nw', cls: 'left-0 top-0 size-3 cursor-nwse-resize', label: 'panel.edge.nw' },
+  { dir: 'n', cls: 'left-3 right-3 top-0 h-1.5 cursor-ns-resize', label: 'panel.edge.n' },
+  { dir: 'ne', cls: 'right-0 top-0 size-3 cursor-nesw-resize', label: 'panel.edge.ne' },
+  { dir: 'e', cls: 'bottom-3 right-0 top-3 w-1.5 cursor-ew-resize', label: 'panel.edge.e' },
+  { dir: 'se', cls: 'bottom-0 right-0 size-3 cursor-nwse-resize', label: 'panel.edge.se' },
+  { dir: 's', cls: 'bottom-0 left-3 right-3 h-1.5 cursor-ns-resize', label: 'panel.edge.s' },
+  { dir: 'sw', cls: 'bottom-0 left-0 size-3 cursor-nesw-resize', label: 'panel.edge.sw' },
+  { dir: 'w', cls: 'bottom-3 left-0 top-3 w-1.5 cursor-ew-resize', label: 'panel.edge.w' },
 ]
 
 /** se 角视觉锚点：条纹渐变用 text-primary 低透明（dark=白条纹/light=黑条纹，两主题可见）。 */
@@ -86,10 +89,11 @@ function iconButtonProps(title: string): { type: 'button'; 'aria-label': string;
 
 /** 统一空态（空态协议宿主侧）：render(ctx) 返回 null 时显示。无边框、muted、居中。 */
 function PanelEmpty({ hint }: { hint?: string }) {
+  const { t } = useI18n()
   return (
     <div className="flex h-full min-h-16 flex-col items-center justify-center gap-1 py-3 text-center">
       <Inbox className="size-4 shrink-0 text-text-muted/50" />
-      <span className="text-[10.5px] leading-relaxed text-text-muted/70">{hint || '暂无内容'}</span>
+      <span className="text-[10.5px] leading-relaxed text-text-muted/70">{hint || t('panel.empty')}</span>
     </div>
   )
 }
@@ -117,6 +121,8 @@ export function PanelChrome({
   emptyHint,
   children,
 }: PanelChromeProps) {
+  const isTouch = useIsTouch()
+  const { t } = useI18n()
   const Icon = pluginIcon(icon)
   const floating = mode === 'floating'
   const stop = (e: ReactPointerEvent) => e.stopPropagation()
@@ -139,6 +145,8 @@ export function PanelChrome({
         background: 'var(--bg-secondary)',
         boxShadow: 'inset 0 0 0 1px var(--border)',
         opacity: isDragSource ? 0.4 : undefined,
+        // 拖拽物理感：源元素轻微缩小（被"提起"的错觉）
+        transform: isDragSource ? 'scale(0.98)' : undefined,
         pointerEvents: isDragSource ? 'none' : undefined,
         ...style,
       }
@@ -152,7 +160,8 @@ export function PanelChrome({
           ? 'absolute flex flex-col overflow-hidden'
           // v5 规格 9：docked section overflow-hidden——flex 收缩时 body 溢出
           // 叠到相邻面板（重叠 corner case）。
-          : 'relative flex min-h-0 flex-col overflow-hidden'
+          // 展开态层次：inset shadow 画分隔线（不占布局、不影响 flex 分配）。
+          : 'relative flex min-h-0 flex-col overflow-hidden shadow-[inset_0_-1px_0_0_rgba(255,255,255,0.055)]'
       }
       style={shellStyle}
     >
@@ -161,14 +170,21 @@ export function PanelChrome({
       {/* 标题栏 h-8。floating：整体可拖动（按钮豁免）；docked：grip 拖动。
           v5 规格 7：拖拽把手 touch-action:none（touch-none）防触摸滚动干扰。 */}
       <header
-        className={`flex h-8 shrink-0 select-none items-center gap-1.5 px-2 ${floating ? 'cursor-move touch-none' : ''}`}
+        className={`group/header flex h-9 shrink-0 select-none items-center gap-1.5 border-l-2 border-l-transparent px-2 transition-spring hover:border-l-app-accent/60 hover:bg-bg-tertiary/30 ${!collapsed ? 'bg-bg-tertiary/15' : ''} ${floating ? 'cursor-move touch-none' : ''}`}
         onPointerDown={floating ? onTitlePointerDown : undefined}
         onDoubleClick={floating ? onTitleDoubleClick : undefined}
+        onClick={(e) => {
+          // docked header 点击（按钮/grip 以外区域）= 切换折叠（VSCode 行为）。
+          // 旧版只有 14px 的箭头按钮能点开/收起——用户报"不符合人类直觉"。
+          if (floating) return
+          if ((e.target as HTMLElement).closest('button,[role="button"]')) return
+          onToggleCollapse()
+        }}
       >
         {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
             返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
-        <Icon className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
-        <span className="min-w-0 truncate text-[11.5px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+        <Icon className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
+        <span className="min-w-0 truncate text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
           {title}
         </span>
         {sub ? <span className="shrink-0 font-mono text-[9.5px] text-text-muted">{sub}</span> : null}
@@ -185,50 +201,53 @@ export function PanelChrome({
           </span>
         ) : null}
         <button
-          {...iconButtonProps(floating ? '收回启动器' : '浮动')}
+          {...iconButtonProps(floating ? t('panel.recall') : t('panel.float'))}
           onPointerDown={stop}
           onClick={onToggleMode}
-          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-secondary"
+          className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
         >
-          {floating ? <PanelLeft className="size-3" /> : <PictureInPicture2 className="size-3" />}
+          {floating ? <PanelLeft className="size-3.5" /> : <PictureInPicture2 className="size-3.5" />}
         </button>
         {!floating && onUnpin ? (
           <button
-            {...iconButtonProps('取消钉选（收入底部启动器）')}
+            {...iconButtonProps(t('panel.unpin'))}
             onPointerDown={stop}
             onClick={onUnpin}
-            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-primary"
+            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-primary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
           >
-            <X className="size-3" />
+            <X className="size-3.5" />
           </button>
         ) : null}
         {floating && onClose ? (
           <button
-            {...iconButtonProps('关闭浮窗（收入启动器）')}
+            {...iconButtonProps(t('panel.closeFloat'))}
             onPointerDown={stop}
             onClick={onClose}
-            className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-primary"
+            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-primary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
           >
-            <X className="size-3" />
+            <X className="size-3.5" />
           </button>
         ) : null}
         <button
-          {...iconButtonProps(collapsed ? '展开' : '折叠')}
+          {...iconButtonProps(collapsed ? t('panel.expand') : t('panel.collapse'))}
           onPointerDown={stop}
           onClick={onToggleCollapse}
-          className="flex shrink-0 items-center rounded p-1 text-text-muted transition-colors hover:bg-bg-tertiary/60 hover:text-text-secondary"
+          className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
         >
-          {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+          <ChevronRight
+            className={`size-3.5 shrink-0 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
+          />
         </button>
         {!floating && onGripPointerDown ? (
           <span
             role="button"
-            aria-label="拖拽重排面板"
-            title="拖拽重排（拖出左栏变浮动）"
+            data-testid="panel-grip"
+            aria-label={t('panel.dragReorder')}
+            title={t('panel.dragReorderHint')}
             onPointerDown={onGripPointerDown}
-            className="ml-0.5 flex shrink-0 cursor-grab touch-none items-center rounded p-0.5 text-text-muted active:cursor-grabbing hover:text-text-secondary"
+            className={`ml-0.5 flex shrink-0 cursor-grab touch-none items-center rounded-md p-2 text-text-muted transition-spring active:cursor-grabbing hover:bg-bg-tertiary/60 hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
           >
-            <GripVertical className="size-3" />
+            <GripVertical className="size-3.5" />
           </span>
         ) : null}
       </header>
@@ -236,7 +255,7 @@ export function PanelChrome({
           （useState/useEffect/订阅不卸载），展开时恢复（git-fancy 的 commit
           accordion 展开、技能面板的子项展开等不再丢失）。 */}
       <div
-        className={floating ? 'min-h-0 flex-1 overflow-y-auto' : 'min-h-0 flex-1 overflow-y-auto'}
+        className={`min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 py-2 ${!collapsed ? 'border-t border-border/25 bg-bg-secondary/25' : ''}`}
         style={{
           display: collapsed ? 'none' : undefined,
         }}
@@ -250,7 +269,7 @@ export function PanelChrome({
       {!floating && !collapsed && onResizeHeightPointerDown ? (
         <span
           role="separator"
-          aria-label="调整面板高度"
+          aria-label={t('panel.resizeHeight')}
           data-testid="panel-height-handle"
           onPointerDown={onResizeHeightPointerDown}
           className="group flex h-[7px] shrink-0 cursor-ns-resize touch-none items-center justify-center"
@@ -264,7 +283,7 @@ export function PanelChrome({
             key={dir}
             data-resize-dir={dir}
             role="separator"
-            aria-label={`从${label}边缘调整面板大小`}
+            aria-label={t('panel.resizeFromEdge', { edge: t(label) })}
             onPointerDown={(e) => onResizePointerDown(dir, e)}
             className={`absolute z-10 touch-none ${cls}`}
             style={dir === 'se' ? { background: SE_RESIZE_GRADIENT } : undefined}

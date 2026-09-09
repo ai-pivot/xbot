@@ -42,6 +42,13 @@ type LLMFactory struct {
 	// per request — so we cache at the subscription level, not the model level.
 	clientCache map[clientCacheKey]llm.LLM
 
+	// imageResolver materializes stable image references (/api/files/viewimg/,
+	// /api/files/download?key=, http URLs) into base64 data: URLs at
+	// LLM-request-build time (multimodal vision). Injected by the server once
+	// the OSS provider is created; nil = only inline data: URLs resolve.
+	// Guarded by mu (set once at boot, read on every client build).
+	imageResolver llm.ImageResolver
+
 	// proxyLLMs stores runtime-injected ProxyLLMs by senderID. These override
 	// DB-based resolution — when a runner has local LLM configured, the proxy
 	// takes priority over any cloud subscription. Not persisted: tied to the
@@ -60,9 +67,18 @@ type proxyEntry struct {
 }
 
 // clientCacheKey identifies a shared LLM client by subscription + API type.
+// clientCacheKey identifies a cached LLM client. Vision MUST be part of the
+// key: the multimodal switch is PER-MODEL (subscription_models.vision), so
+// two models of the same subscription with different vision settings need
+// different clients — sharing one (keyed only by subID+apiType) made every
+// model of the subscription inherit whichever client was built first, i.e.
+// enabling vision on a model silently kept sending text placeholders
+// ("当前模型未开启视觉输入") because the cached client's mm was nil.
 type clientCacheKey struct {
-	subID   string
-	apiType string
+	subID        string
+	apiType      string
+	vision       bool
+	visionDetail string
 }
 
 // NewLLMFactory 创建 LLM 工厂
@@ -353,17 +369,46 @@ func (f *LLMFactory) SwitchSubscription(senderID string, sub *sqlite.LLMSubscrip
 // channel is the physical channel of the target session ("cli", "web", ...) —
 // the tenants mapping is keyed by (channel, chat_id), so it must match the
 // session's real channel, not the caller's.
+//
+// The session's bound model must NEVER be empty ("任何时候禁止会话绑定的模型
+// 为空"): an empty-model binding poisons ResolveLLM (subID set, model empty →
+// falls through to the user-level default on every call — the session model
+// drifts whenever another session switches the user default) and defeats
+// ensureSessionModel's repair check. Model resolution: user_default_model →
+// the subscription's own Model column → the subscription's first enabled
+// subscription_models row. A subscription with NO resolvable model is a caller
+// bug — refuse rather than write a poisoned empty-model row.
 func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite.LLMSubscription) error {
 	if channel == "" {
 		channel = "cli"
 	}
 	if f.tenantSvc != nil && chatID != "" && sub != nil {
-		// Model is user-level — resolve from user_default_model, not sub.Model.
 		model := ""
 		if f.subscriptionSvc != nil {
 			if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil {
 				model = udm.Model
 			}
+		}
+		if model == "" {
+			model = sub.Model
+		}
+		if model == "" {
+			// Last resort: the subscription's first enabled model row. Picker-style
+			// subscriptions often carry an empty Model column — the model identity
+			// lives in subscription_models.
+			if f.subscriptionSvc != nil {
+				if models, err := f.subscriptionSvc.GetModels(sub.ID); err == nil {
+					for _, sm := range models {
+						if sm.Enabled && sm.Model != "" {
+							model = sm.Model
+							break
+						}
+					}
+				}
+			}
+		}
+		if model == "" {
+			return fmt.Errorf("SetSessionLLM: refusing to write an empty model for chat %s (subscription %s has no resolvable model)", chatID, sub.ID)
 		}
 		return f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model)
 	}
@@ -431,7 +476,7 @@ func (f *LLMFactory) InvalidateAll() {
 
 // ─── Client creation ─────────────────────────────────────
 
-func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
+func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig, mm *llm.MultimodalConfig) (llm.LLM, string) {
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return nil, ""
 	}
@@ -446,12 +491,14 @@ func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 		client = llm.NewAnthropicLLM(llm.AnthropicConfig{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
 			DefaultModel: model, MaxTokens: cfg.MaxOutputTokens,
+			Multimodal: mm,
 		})
 	default:
 		client = llm.NewOpenAILLM(llm.OpenAIConfig{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
 			DefaultModel: model, MaxTokens: cfg.MaxOutputTokens, APIType: cfg.APIType,
 			OnModelsLoaded: cfg.OnModelsLoaded, SubscriptionID: cfg.ID,
+			Multimodal: mm,
 		})
 	}
 
@@ -482,13 +529,16 @@ func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model stri
 	if pm := sub.GetPerModelAPIType(model); pm != "" {
 		apiType = pm
 	}
+	// Multimodal (vision) config: manual per-model switch from the model editor
+	// (no whitelist). buildMultimodalConfig returns nil when vision is off.
+	pmc := f.resolveModelConfig(sub.ID, model)
 	cfg := &sqlite.UserLLMConfig{
 		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
 		ID:             sub.ID,
 		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
-	client, _ := f.createClient(cfg)
+	client, _ := f.createClient(cfg, f.buildMultimodalConfig(pmc))
 	return client
 }
 
@@ -529,6 +579,23 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 // These methods are additive alongside the legacy Switch*/Set*/Invalidate*
 // matrix. The legacy matrix is removed once RPC + CLI migrate (later chunk).
 
+// SetImageResolver wires the multimodal image resolver (stable references →
+// base64 data: URLs at request-build time). Called once by the server after
+// the OSS provider exists; clients built afterwards carry it in their
+// MultimodalConfig. InvalidateSubscription/InvalidateAll rebuilds pick it up.
+func (f *LLMFactory) SetImageResolver(r llm.ImageResolver) {
+	f.mu.Lock()
+	f.imageResolver = r
+	f.mu.Unlock()
+}
+
+func (f *LLMFactory) getImageResolver() llm.ImageResolver {
+	f.mu.RLock()
+	r := f.imageResolver
+	f.mu.RUnlock()
+	return r
+}
+
 // modelPerModelConfig holds the per-model overrides read from subscription_models.
 type modelPerModelConfig struct {
 	maxContext      int
@@ -537,6 +604,12 @@ type modelPerModelConfig struct {
 	apiType         string
 	enabled         bool
 	present         bool
+	// vision (multimodal image input) is a PURELY MANUAL per-model switch —
+	// no built-in model-name whitelist. Set in the model editor (web LLM
+	// console / CLI Ctrl+N E panel); the LLM layer degrades image references
+	// to text placeholders when it is off.
+	vision       bool
+	visionDetail string
 }
 
 // resolveModelConfig reads per-model config from the subscription_models table.
@@ -556,7 +629,24 @@ func (f *LLMFactory) resolveModelConfig(subID, model string) modelPerModelConfig
 	c.thinkingMode = sm.ThinkingMode
 	c.apiType = sm.APIType
 	c.enabled = sm.Enabled
+	c.vision = sm.Vision
+	c.visionDetail = sm.VisionDetail
 	return c
+}
+
+// buildMultimodalConfig assembles the per-model vision (multimodal) config for
+// client construction. Vision is a PURELY MANUAL per-model switch — no
+// built-in model-name whitelist. Returns nil when vision is off (the client's
+// mm nil = zero MultimodalConfig → image references degrade to placeholders).
+func (f *LLMFactory) buildMultimodalConfig(pmc modelPerModelConfig) *llm.MultimodalConfig {
+	if !pmc.vision {
+		return nil
+	}
+	return &llm.MultimodalConfig{
+		VisionEnabled: true,
+		VisionDetail:  pmc.visionDetail,
+		ImageResolver: f.getImageResolver(),
+	}
 }
 
 // resolveSubContextFor is the (subID, model) variant of resolveSubContext,
@@ -587,7 +677,12 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 	if apiType == "" {
 		apiType = sub.APIType
 	}
-	key := clientCacheKey{subID: sub.ID, apiType: apiType}
+	// Vision is part of the cache key: the per-model multimodal switch means
+	// two models of the same subscription may need different clients. Without
+	// it, enabling vision on a model kept reusing a cached mm-less client
+	// (user report: "多模态模型没收到图片" — the model saw the text placeholder
+	// "当前模型未开启视觉输入" while subscription_models.vision was already 1).
+	key := clientCacheKey{subID: sub.ID, apiType: apiType, vision: pmc.vision, visionDetail: pmc.visionDetail}
 	f.mu.RLock()
 	if c, ok := f.clientCache[key]; ok && c != nil {
 		f.mu.RUnlock()
@@ -609,10 +704,26 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
 		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
-	client, _ := f.createClient(cfg)
+	// Multimodal (vision) config from the per-model manual switch. The client
+	// cache key is {subID, apiType, vision, visionDetail} — the vision switch
+	// is per-model (subscription_models.vision), so the key MUST include it:
+	// clients built for a vision-off model of a subscription would otherwise
+	// be reused for a vision-on model of the same subscription and silently
+	// drop image parts.
+	// user toggling vision invalidates the subscription
+	// (update_per_model_config → InvalidateSubscription).
+	client, _ := f.createClient(cfg, f.buildMultimodalConfig(pmc))
 	if client == nil {
 		return nil
 	}
+	// Observability: the vision switch decides whether image references in
+	// user messages become multimodal content parts or degrade to text
+	// placeholders. Log the resolved state per client build so "the model saw
+	// a placeholder" reports can be diagnosed from logs alone.
+	log.WithFields(log.Fields{
+		"sub": sub.Name, "model": model, "vision": pmc.vision,
+		"vision_detail": pmc.visionDetail, "resolver": f.getImageResolver() != nil,
+	}).Info("[LLM] built client (multimodal state)")
 	f.mu.Lock()
 	// Another goroutine may have raced; keep the first cached.
 	if existing, ok := f.clientCache[key]; ok && existing != nil {
@@ -672,7 +783,27 @@ func (f *LLMFactory) ResolveLLM(senderID, chatID, channel string) (llm.LLM, stri
 		return f.GetLLM(senderID)
 	}
 	if model == "" {
-		return f.GetLLM(senderID)
+		// Empty-model binding (legacy SetSessionLLM write, pre-v63 row, or a
+		// tenants row written with the subscription's empty Model column).
+		// Falling straight through to GetLLM made the session follow the
+		// USER-LEVEL default on every call — the "model drifts without any
+		// switch" bug (another session's SelectModel update moved this
+		// session's model) and split the compression threshold from the
+		// displayed max-context. Repair the binding instead (ensureSessionModel
+		// treats an empty-model row as unbound and rebinds: balance tier →
+		// last-used → the bound subscription's own model).
+		if f.ensureSessionModel(senderID, chatID, channel) {
+			subID, model, _ = f.tenantSvc.GetTenantSubscription(channel, chatID)
+			if subID != "" && model != "" {
+				sub = f.lookupSub(subID)
+				if sub == nil {
+					return f.GetLLM(senderID)
+				}
+			}
+		}
+		if model == "" {
+			return f.GetLLM(senderID)
+		}
 	}
 	client := f.getOrCreateClient(sub, model)
 	if client == nil {
@@ -782,17 +913,27 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 	return nil
 }
 
-// ensureSessionModel auto-binds a model to a session that has no per-session
-// binding in the tenants table. This ensures ALL sessions (CLI, Web, Feishu,
-// etc.) get an explicit model binding on first use, not just those created via
-// the CLI session panel.
+// ensureSessionModel auto-binds a model to a session that has no COMPLETE
+// per-session binding in the tenants table. This ensures ALL sessions (CLI,
+// Web, Feishu, etc.) get an explicit model binding on first use, not just
+// those created via the CLI session panel.
 //
-// Priority: Balance tier config only (user_settings "tier_balance") — the sole
-// default source for new sessions. If unset, no binding is created (the caller
-// falls through to GetLLM / system default). No last-used fallback (user
-// request: new sessions default to the Balance tier exclusively).
+// A binding is COMPLETE only when BOTH subscription_id and model are non-empty.
+// A (subID, model="") row is a poisoned binding (written by legacy
+// SetSessionLLM when user_default_model had no model): ResolveLLM falls through
+// it to the USER-LEVEL default on every call, so the session model drifts
+// whenever another session switches the user default — and the drift splits
+// the compression threshold from the displayed max-context (the display chain
+// reads the tenants pair, the compression chain follows the drifted model).
+// Such rows are treated as UNBOUND and repaired here.
 //
-// Already-bound sessions are skipped (idempotent — safe to call every turn).
+// Priority: Balance tier config (user_settings "tier_balance") → user_default_model
+// (last-used, incl. the single-operator legacy-row fallback) → the bound
+// subscription's own Model column. The session binding must NEVER stay empty
+// while a concrete model is derivable.
+//
+// Already-COMPLETELY-bound sessions are skipped (idempotent — safe to call
+// every turn).
 //
 // On success, the session is bound via SelectModel (writes to both tenants table
 // and user_default_model), so subsequent ResolveLLM calls hit the tenants table
@@ -801,8 +942,12 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 	if chatID == "" || f.tenantSvc == nil || f.subscriptionSvc == nil {
 		return false
 	}
-	// Already bound? Skip.
-	if subID, _, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); subID != "" {
+	// Already bound? Skip — BOTH subID and model must be non-empty. An
+	// empty-model row is treated as unbound and repaired below. The subID is
+	// reused by the Priority-3 repair path (one DB read per call — this runs
+	// every turn).
+	boundSubID, boundModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
+	if boundSubID != "" && boundModel != "" {
 		return false
 	}
 
@@ -817,8 +962,72 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 		}
 	}
 
-	// Balance tier 未配置 → 不绑定（无 last-used fallback：新会话默认一律
-	// balance，没有就不绑，由调用方落到 GetLLM 系统默认）。
+	// Priority 2: user_default_model (last-used pair). GetUserDefaultModel's
+	// single-operator fallback also covers legacy pre-v63 rows (e.g. 'web-4').
+	if udm, err := f.subscriptionSvc.GetUserDefaultModel(senderID); err == nil && udm != nil && udm.SubscriptionID != "" && udm.Model != "" {
+		if err := f.SelectModel(senderID, chatID, channel, udm.SubscriptionID, udm.Model); err == nil {
+			log.WithFields(log.Fields{
+				"chatID": chatID, "subID": udm.SubscriptionID, "model": udm.Model,
+				"source": "last_used",
+			}).Info("ensureSessionModel: auto-bound session to last-used model")
+			return true
+		}
+	}
+
+	// Priority 3: the existing (poisoned) binding's subscription — repair with
+	// its own Model column / first enabled model row. Only applies when a subID
+	// is present but the model is empty (repair path, not initial binding).
+	if boundSubID != "" {
+		if sub := f.lookupSub(boundSubID); sub != nil {
+			m := sub.Model
+			if m == "" && f.subscriptionSvc != nil {
+				if models, err := f.subscriptionSvc.GetModels(sub.ID); err == nil {
+					for _, sm := range models {
+						if sm.Enabled && sm.Model != "" {
+							m = sm.Model
+							break
+						}
+					}
+				}
+			}
+			if m != "" {
+				if err := f.SelectModel(senderID, chatID, channel, sub.ID, m); err == nil {
+					log.WithFields(log.Fields{
+						"chatID": chatID, "subID": sub.ID, "model": m,
+						"source": "bound_sub_repair",
+					}).Info("ensureSessionModel: repaired empty-model binding from the bound subscription")
+					return true
+				}
+			}
+		}
+	}
+
+	// Priority 4: the user's default subscription (GetDefault), first enabled
+	// model. Covers fresh installs with no tier config and no last-used model.
+	if sub, err := f.subscriptionSvc.GetDefault(senderID); err == nil && sub != nil {
+		m := sub.Model
+		if m == "" {
+			if models, gerr := f.subscriptionSvc.GetModels(sub.ID); gerr == nil {
+				for _, sm := range models {
+					if sm.Enabled && sm.Model != "" {
+						m = sm.Model
+						break
+					}
+				}
+			}
+		}
+		if m != "" {
+			if err := f.SelectModel(senderID, chatID, channel, sub.ID, m); err == nil {
+				log.WithFields(log.Fields{
+					"chatID": chatID, "subID": sub.ID, "model": m,
+					"source": "default_sub",
+				}).Info("ensureSessionModel: auto-bound session to default subscription model")
+				return true
+			}
+		}
+	}
+
+	// Nothing derivable — leave unbound (deployment has no subscriptions at all).
 	return false
 }
 
@@ -1002,7 +1211,7 @@ func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.Mode
 func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool) []protocol.ModelEntry {
 	seen := make(map[string]bool)
 	var result []protocol.ModelEntry
-	add := func(subID, subName, model, status string) {
+	add := func(subID, subName, model, status string, vision bool) {
 		if model == "" {
 			return
 		}
@@ -1011,7 +1220,7 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 			return
 		}
 		seen[key] = true
-		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
+		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status, Vision: vision})
 	}
 	if f.subscriptionSvc == nil {
 		// No subscription service — the deployment-level defaultLLM is a
@@ -1032,9 +1241,10 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 	// Only enabled subscriptions contribute. Models come from subscription_models
 	// table + sub.Model. No CachedModels — all models treated equally.
 	type subInfo struct {
-		sub   *sqlite.LLMSubscription
-		rows  []*sqlite.SubscriptionModel
-		rowEn map[string]bool // model → enabled flag from row (absent ⇒ true)
+		sub       *sqlite.LLMSubscription
+		rows      []*sqlite.SubscriptionModel
+		rowEn     map[string]bool // model → enabled flag from row (absent ⇒ true)
+		rowVision map[string]bool // model → manual vision switch from row (absent ⇒ off)
 	}
 	infos := make([]subInfo, 0, len(subs))
 	for _, sub := range subs {
@@ -1043,10 +1253,12 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 		}
 		rows, _ := f.subscriptionSvc.GetModels(sub.ID)
 		rowEn := make(map[string]bool, len(rows))
+		rowVision := make(map[string]bool, len(rows))
 		for _, r := range rows {
 			rowEn[r.Model] = r.Enabled
+			rowVision[r.Model] = r.Vision
 		}
-		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn})
+		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn, rowVision: rowVision})
 	}
 	// statusOf: only "normal" or "disabled". No "offline".
 	statusOf := func(i int, m string) string {
@@ -1080,7 +1292,7 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 			if !includeDisabled && st == "disabled" {
 				continue
 			}
-			add(infos[i].sub.ID, infos[i].sub.Name, m, st)
+			add(infos[i].sub.ID, infos[i].sub.Name, m, st, infos[i].rowVision[m])
 		}
 	}
 	return result

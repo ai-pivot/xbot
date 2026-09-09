@@ -213,13 +213,13 @@ export function FileExplorer({ tabManager }: FileExplorerProps) {
         </div>
       ) : (
         <ScrollArea className="min-h-0 flex-1">
-          <div className="py-1 text-sm">
+          <div className="py-1 px-1.5 text-sm">
             {canGoUp && (
               <button
                 type="button"
                 onClick={handleGoUp}
                 title={t('sidebar.goUp')}
-                className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-bg-tertiary"
+                className="flex w-full items-center gap-1.5 rounded-lg py-2 pr-2 text-left transition-colors hover:bg-accent/10"
                 style={{ paddingLeft: 4 }}
               >
                 <span className="flex size-4 shrink-0 items-center justify-center text-text-muted">
@@ -271,7 +271,7 @@ function PathBar({ path, onNavigate, onReset, onToggleSearch, searchActive }: Pa
 
   return (
     <div
-      className="flex h-8 shrink-0 items-center gap-1 border-b px-2"
+      className="flex h-9 shrink-0 items-center gap-1 border-b px-2"
       style={{ borderColor: 'var(--border)' }}
     >
       <input
@@ -286,7 +286,7 @@ function PathBar({ path, onNavigate, onReset, onToggleSearch, searchActive }: Pa
             onNavigate(value)
           }
         }}
-        className="min-w-0 flex-1 bg-transparent text-xs font-mono outline-none"
+        className="min-w-0 flex-1 rounded-lg bg-bg-secondary px-2 py-1.5 text-xs font-mono outline-none transition-shadow focus:ring-1 focus:ring-app-accent/40"
         style={{ color: 'var(--text-primary)' }}
       />
       {onToggleSearch && (
@@ -339,7 +339,7 @@ function FileTreeNode({ node, depth, expanded, onToggleDir, onOpenFile, expandin
     <button
       type="button"
       onClick={() => (isDir ? onToggleDir(node.path, !!node.children) : onOpenFile(node))}
-      className="flex w-full items-center gap-1 py-[3px] pr-2 text-left transition-colors hover:bg-bg-tertiary"
+      className="flex w-full items-center gap-1.5 rounded-lg py-2 pr-2 text-left transition-colors hover:bg-accent/10"
       style={{ paddingLeft: depth * 12 + 4 }}
     >
       {isDir ? (

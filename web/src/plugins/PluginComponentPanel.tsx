@@ -7,6 +7,7 @@
  */
 import { useState, useCallback } from 'react'
 
+import { useI18n } from '@/providers/i18n'
 import { usePluginWidgets } from './PluginWidgetProvider'
 import { renderDeclarativeComponent } from './components'
 import { SandboxedUI } from './SandboxedUI'
@@ -21,6 +22,7 @@ export interface PluginComponentPanelProps {
 }
 
 export function PluginComponentPanel({ slot, empty = null, className }: PluginComponentPanelProps) {
+  const { t } = useI18n()
   const { components } = usePluginWidgets()
   const [busy, setBusy] = useState(false)
   const list = components.filter((c) => c.slot === slot)
@@ -47,7 +49,7 @@ export function PluginComponentPanel({ slot, empty = null, className }: PluginCo
     // （表格/长文本/iframe）会撑破容器导致整个窗口被挤压超过可视范围。
     // overflow-hidden 让插件内容在面板内滚动，绝不挤压全局布局。
     <div className={`flex min-w-0 flex-col gap-3 overflow-hidden ${className ?? ''}`}>
-      {busy && <div className="text-right text-[10px] text-indigo-500">↻ 处理中…</div>}
+      {busy && <div className="text-right text-[10px] text-indigo-500">↻ {t('plugins.component.processing')}</div>}
       {list.map((decl) => (
         <PluginComponent key={decl.widget_id} decl={decl} onAction={onAction} />
       ))}

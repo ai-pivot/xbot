@@ -279,6 +279,14 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 		disp.Register(napcatCh)
 	}
 
+	// Multimodal image resolver is deployment-wide, NOT web-only: view_image and
+	// Feishu inbound images produce local view_images refs that must be
+	// materialized even when the web channel is disabled (CR: resolver 只在
+	// cfg.Web.Enable 分支内注册 → 纯 CLI / 纯 Feishu 部署的视觉静默失效).
+	// The OSS provider (web uploads) is filled in below when web+OSS are on;
+	// nil is fine — the resolver still handles view_images refs and data: URLs.
+	var imgProvider web.OSSProvider
+
 	if cfg.Web.Enable {
 		if webDB != nil {
 			webCh = web.NewWebChannel(web.WebChannelConfig{
@@ -294,10 +302,20 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			if staticDir != "" {
 				webCh.SetStaticDir(staticDir)
 				log.WithField("static_dir", staticDir).Info("Frontend static files detected")
+			} else {
+				// Web is enabled but no static dir resolved — the server will run
+				// in API-only mode (no Web UI). Point the operator at the fix.
+				log.Warn("Web UI static files NOT found (web.static_dir unset, no " +
+					filepath.Join(config.XbotHome(), "web", "dist") + ", no binary-relative web/dist). " +
+					"The server runs in API-only mode. Fix with: xbot-cli setup (downloads the web dist + built-in plugins for this release)")
 			}
 			// Web file uploads go through cloud OSS only — no local storage
 			webCh.SetWorkDir(workDir)
-			// Set OSS provider for file storage
+			// Set OSS provider for file storage. The same provider powers the
+			// multimodal image resolver (stable image references → base64 data
+			// URLs at LLM-request-build time, see serverapp/image_resolver.go).
+			// NOTE: imgProvider is declared OUTSIDE the web block (deployment-wide
+			// resolver registration below).
 			switch cfg.OSS.Provider {
 			case "qiniu":
 				ossProvider, err := web.NewOSSProvider(
@@ -314,6 +332,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if err != nil {
 					log.WithError(err).Error("Failed to create Qiniu OSS provider")
 				} else {
+					imgProvider = ossProvider
 					webCh.SetOSSProvider(ossProvider)
 					log.Info("OSS provider configured: qiniu")
 				}
@@ -330,11 +349,11 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if err != nil {
 					log.WithError(err).Error("Failed to create S3 OSS provider")
 				} else {
+					imgProvider = s3Provider
 					webCh.SetOSSProvider(s3Provider)
 					log.Info("OSS provider configured: s3")
 				}
 			}
-
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
 			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
 			// WS events. BackgroundPanel subscribes to these for live xterm updates
@@ -384,6 +403,19 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			log.Warn("Web channel enabled but no database available, skipping")
 		}
 	}
+
+	// Multimodal vision wiring — DEPLOYMENT-WIDE (outside the web block): the
+	// image resolver materializes image references (view_image's
+	// /api/files/viewimg/ refs, Feishu inbound images, web uploads'
+	// /api/files/download?key= refs, absolute URLs) into base64 parts at
+	// LLM-request-build time. Registering it inside `if cfg.Web.Enable` left
+	// pure CLI / Feishu deployments without a resolver, silently degrading
+	// every image to a placeholder even with vision=1 (CR: 多模态 resolver 只在
+	// cfg.Web.Enable 分支内注册). imgProvider is nil when web+OSS are off — the
+	// resolver still handles view_images refs and data: URLs.
+	resolver := NewImageResolver(imgProvider, config.XbotHome(), workDir)
+	SetImageResolver(resolver)
+	ag.LLMFactory().SetImageResolver(resolver)
 
 	// 注册插件 channel（从 ChannelProviderRegistry 查找）
 	reg := GetChannelProviderRegistry()
@@ -678,6 +710,12 @@ func Run(args []string) error {
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
+	// 注册 view_image 工具（多模态视觉：模型主动把自己环境里的图片注入上下文。
+	// 工具结果经 engine 注入 follow-up user 消息（markdown 引用）——OpenAI tool
+	// role 只能是纯文本，user role 是唯一的多模态载体。图片存 ~/.xbot/view_images/，
+	// 引用 /api/files/viewimg/<id>（浏览器可渲染 + llm resolver 可解析，双端同源）。
+	ag.RegisterCoreTool(tools.NewViewImageTool())
+	ag.RegisterTool(tools.NewViewImageTool())
 	if !cfg.DisableWebSearch {
 		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	}
@@ -1245,16 +1283,22 @@ func isAdmin(ctx context.Context) bool {
 }
 
 // sessionKeyOwner extracts the chatID (owner) from a session/full key.
-// Key format: "channel:chatID/roleName[:instance]"
-// Returns empty string if the format is invalid.
+// Full key format: "channel:chatID/roleName[:instance]" — strip the subagent
+// suffix at the LAST slash, then take the chatID after the FIRST colon.
+//
+// ⚠️ Bare "channel:chatID" (NO slash) is exactly what the web frontend sends
+// (ShellPromoteBar / ToolSessionContext use `${session.channel}:${session.chatID}`).
+// The old `slash <= 0 → ""` returned an empty owner for every web call, which
+// made the RPC auth check (`owner != "" && owner != bizID`) a no-op — any
+// logged-in user who knew another session's chatID could promote/kill that
+// session's running shell (CR: 鉴权对前端实际传的 key 是空操作（越权）).
 func sessionKeyOwner(key string) string {
-	slash := strings.LastIndex(key, "/")
-	if slash <= 0 {
-		return ""
+	base := key
+	if slash := strings.LastIndex(base, "/"); slash > 0 {
+		base = base[:slash]
 	}
-	parent := key[:slash]
-	parts := strings.SplitN(parent, ":", 2)
-	if len(parts) < 2 {
+	parts := strings.SplitN(base, ":", 2)
+	if len(parts) < 2 || parts[1] == "" {
 		return ""
 	}
 	return parts[1]

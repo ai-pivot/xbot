@@ -27,6 +27,14 @@ func TestIsBangCommand(t *testing.T) {
 		{"", "", false},         // empty
 		{"  !ls", "ls", true},   // leading whitespace
 		{"!!ls", "!ls", true},   // double bang (passes through, shell handles it)
+		// Markdown images are NOT bang commands — a pasted screenshot in the
+		// composer starts with `![image.png](/api/files/download?...)` and
+		// must flow through the normal chat pipeline (turn_id allocation),
+		// not be executed as a shell command (regression: image messages
+		// failed with "message accepted without a turn_id").
+		{"![image.png](/api/files/download?key=uploads%2F1%2Fa.png&inline=1)", "", false},
+		{"![chart](https://example.com/x.png) 这个图", "", false},
+		{"![alt](viewimg://abc.png)\n\nmore text", "", false},
 	}
 
 	for _, tt := range tests {

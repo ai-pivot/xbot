@@ -48,6 +48,10 @@ vi.mock('@/lib/api', () => ({
       return {
         sessions: data.sessions ?? data.chats ?? [],
         orphan_subagents: data.orphan_subagents ?? [],
+        // Pagination fields must pass through: loadMore's guards depend on
+        // has_more / next_offset (same-offset echo → stop, in-flight → skip).
+        has_more: data.has_more ?? false,
+        next_offset: data.next_offset ?? 0,
       }
     }
     if (endpoint === '/api/chats/create') target = '/api/chats'
@@ -2117,6 +2121,110 @@ describe('normalizeSessionTree', () => {
     expect(createCall).toBeDefined()
     const createBody = JSON.parse(String(createCall?.[1]?.body))
     expect(createBody.model).toBe('')
+  })
+})
+
+describe('sidebar pagination guards (mobile infinite-scroll loop)', () => {
+  // User report: "手机上加载更多的时候永远加载不完，向下滚一直看到重复内容循环".
+  // Two frontend defects combined: (1) SessionList's IntersectionObserver was
+  // re-created on every list change (deps included mainGroups) and fired again
+  // immediately for the still-visible sentinel; (2) loadMore had no in-flight
+  // guard, so the concurrent request reused the SAME not-yet-advanced offset
+  // and returned the SAME page. These tests pin the store-side guards.
+  it('stops paginating when the backend echoes the same next_offset (no infinite loop)', async () => {
+    let treeRequests = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        treeRequests++
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{ chat_id: 'chat-1', channel: 'web', label: 'c1', last_active: '2026-07-08T00:00:00Z' }],
+            chats: [{ chat_id: 'chat-1', channel: 'web', label: 'c1', last_active: '2026-07-08T00:00:00Z' }],
+            orphan_subagents: [],
+            has_more: true,
+            // A buggy/echoing backend: next_offset never advances.
+            next_offset: 0,
+          }),
+        } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+    const before = treeRequests
+
+    await act(async () => {
+      await result.current.loadMore()
+    })
+
+    // Same offset → hasMore flips false (pagination STOPS instead of looping)
+    // and exactly one extra request was made.
+    expect(result.current.hasMore).toBe(false)
+    expect(treeRequests).toBe(before + 1)
+  })
+
+  it('skips a second loadMore while the first page request is in flight', async () => {
+    let resolveTree!: (r: Response) => void
+    let treeRequests = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        treeRequests++
+        if (treeRequests === 1) {
+          // Initial refresh resolves immediately.
+          return {
+            ok: true,
+            json: async () => ({
+              ok: true,
+              sessions: [{ chat_id: 'chat-1', channel: 'web', label: 'c1', last_active: '2026-07-08T00:00:00Z' }],
+              chats: [{ chat_id: 'chat-1', channel: 'web', label: 'c1', last_active: '2026-07-08T00:00:00Z' }],
+              orphan_subagents: [],
+              has_more: true,
+              next_offset: 20,
+            }),
+          } as Response
+        }
+        // The loadMore page request is held open.
+        return new Promise<Response>((resolve) => { resolveTree = resolve })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    let first!: Promise<void>
+    act(() => {
+      first = result.current.loadMore()
+      // Second trigger while the first is still in flight (observer re-fired).
+      void result.current.loadMore()
+    })
+
+    resolveTree({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessions: [{ chat_id: 'chat-2', channel: 'web', label: 'c2', last_active: '2026-07-08T00:00:01Z' }],
+        chats: [{ chat_id: 'chat-2', channel: 'web', label: 'c2', last_active: '2026-07-08T00:00:01Z' }],
+        orphan_subagents: [],
+        has_more: true,
+        next_offset: 40,
+      }),
+    } as Response)
+    await act(async () => {
+      await first
+    })
+
+    // Exactly one page request was issued for the in-flight window (the
+    // second call returned immediately), and the page was appended once.
+    expect(treeRequests).toBe(2)
+    expect(result.current.sessions.map((s) => s.chatID)).toEqual(['chat-1', 'chat-2'])
   })
 })
 

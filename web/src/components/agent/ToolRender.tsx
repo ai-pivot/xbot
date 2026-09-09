@@ -17,17 +17,22 @@
  * `toolHints` (no `args` — transient during live execution), so history
  * renderers parse label+summary; live renderers prefer args/detail.
  */
-import { memo, useMemo, type ReactNode } from 'react'
+import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
 import {
-  FileText, ChevronRight, CheckCircle2, Circle, Loader2,
+  FileText, ChevronRight, CheckCircle2, Circle, FastForward, Loader2,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import type { WebToolProgress } from '@/types/shared'
+import { postAPI } from '@/lib/api'
+import { dispatchBgTaskPromoted } from '@/lib/sessionEvents'
 import { ToolCallBlock } from './ToolCallBlock'
 import { DiffView, extractDiffSource } from './DiffView'
 import { CodeView } from './CodeView'
 import { AnsiText } from './AnsiText'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { GenUIPanel } from './GenUIPanel'
+import { useToolSession } from './ToolSessionContext'
+import { useI18n } from '@/providers/i18n'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -187,17 +192,37 @@ interface ShellParsed {
   output: string
   exitCode: number | null
   timeout: boolean
+  promoted: boolean
   bgTask: string | null
 }
 
 /** Parse Shell summary/detail: "[EXIT N] cmd\n…", "[TIMEOUT after Xs] …",
- *  "Background task running: bg:xxx". */
+ *  "[PROMOTED to background by user] …", "Background task started
+ *  [task_id: "xxx"]" (and the legacy "Background task running: bg:xxx"). */
 export function parseShell(tool: WebToolProgress, summary: string, detail: string): ShellParsed {
   const command = shellCommand(tool)
   let text = detail || summary || ''
   let exitCode: number | null = null
   let timeout = false
+  let promoted = false
   let bgTask: string | null = null
+
+  // Task id extraction runs on the ORIGINAL text BEFORE the headline lines
+  // below are stripped: the promote/timeout/background-start formats all carry
+  // [task_id: "xxx"] on the FIRST line together with the headline. Anchoring to
+  // the first line (and dropping the old unanchored second pass) prevents a
+  // literal [task_id: "..."] inside ordinary command output from being
+  // mis-detected as a background task (CR: 注释描述的取 id 时机与代码相反，
+  // 且二次正则可能误判).
+  const firstLine = text.split('\n', 1)[0]
+  const bgM = /\[task_id: "([A-Za-z0-9-]+)"\]/.exec(firstLine)
+  if (bgM) {
+    bgTask = bgM[1]
+  } else {
+    // Legacy format (pre-promote results carried "Background task running: bg:xxx").
+    const legacyM = /Background task running: (bg:[A-Za-z0-9-]+)/.exec(firstLine)
+    if (legacyM) bgTask = legacyM[1]
+  }
 
   const exitM = /^\[EXIT (-?\d+)\] /.exec(text)
   if (exitM) {
@@ -212,22 +237,27 @@ export function parseShell(tool: WebToolProgress, summary: string, detail: strin
     const nl = text.indexOf('\n')
     text = nl >= 0 ? text.slice(nl + 1) : ''
   }
-  const bgM = /Background task running: (bg:[A-Za-z0-9-]+)/.exec(text)
-  if (bgM) bgTask = bgM[1]
+  if (text.startsWith('[PROMOTED to background')) {
+    promoted = true
+    const nl = text.indexOf('\n')
+    text = nl >= 0 ? text.slice(nl + 1) : ''
+  }
 
-  return { command, output: text.trimEnd(), exitCode, timeout, bgTask }
+  return { command, output: text.trimEnd(), exitCode, timeout, promoted, bgTask }
 }
 
 function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary: string; detail: string }) {
-  const { command, output, exitCode, timeout, bgTask } = parseShell(tool, summary, detail)
+  const { t } = useI18n()
+  const { command, output, exitCode, timeout, promoted, bgTask } = parseShell(tool, summary, detail)
   const elapsed = elapsedBadge(tool.elapsedMs)
   const isError = exitCode != null && exitCode !== 0
+  const isRunning = tool.status === 'running'
 
   return (
     <div className="flex flex-col gap-1.5 py-1 text-xs">
       {/* Terminal card */}
       <div className="overflow-hidden rounded-md" style={{ border: '1px solid var(--border)' }}>
-        {/* Traffic-light header */}
+        {/* Traffic-light header — running commands get a subtle accent edge */}
         <div
           className="flex items-center gap-1.5 px-2.5 py-1"
           style={{ backgroundColor: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)' }}
@@ -236,10 +266,16 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
           <span className="h-2 w-2 shrink-0 rounded-full bg-yellow-400/80" />
           <span className="h-2 w-2 shrink-0 rounded-full bg-green-400/80" />
           <span className="ml-1.5 shrink-0 font-mono text-[10px] uppercase tracking-wide text-text-muted">bash</span>
+          {isRunning && (
+            <span className="shell-run-dot ml-0.5 shrink-0" aria-label="running" />
+          )}
           <span className="min-w-0 flex-1 truncate text-right font-mono text-[11px] text-text-muted">{command}</span>
         </div>
-        {/* Body: $ command echo + output */}
-        <div className="max-h-64 overflow-auto px-2.5 py-1.5" style={{ backgroundColor: 'var(--bg-primary)' }}>
+        {/* Body: $ command echo + output — running commands carry a scanning sheen */}
+        <div
+          className={`relative max-h-64 overflow-auto px-2.5 py-1.5 ${isRunning ? 'shell-run-body' : ''}`}
+          style={{ backgroundColor: 'var(--bg-primary)' }}
+        >
           {command && (
             <div className="flex gap-1.5 font-mono text-[12px] leading-5">
               <span className="shrink-0 select-none text-accent">$</span>
@@ -254,16 +290,112 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
           {!command && !output && <div className="py-0.5 font-mono text-[12px] text-text-muted">—</div>}
         </div>
       </div>
+      {/* Running: promote-to-background bar */}
+      {isRunning && <ShellPromoteBar tool={tool} />}
       {/* Status badges */}
-      {(exitCode != null || timeout || bgTask || elapsed) && (
+      {(exitCode != null || timeout || promoted || bgTask || elapsed) && (
         <div className="flex flex-wrap items-center gap-1.5">
           {exitCode != null && <Badge tone={isError ? 'red' : 'green'}>exit {exitCode}</Badge>}
           {timeout && <Badge tone="red">timeout</Badge>}
-          {bgTask && <Badge tone="accent">{bgTask}</Badge>}
+          {promoted && <Badge tone="accent">{t('agent.tool.promotedBadge')}</Badge>}
+          {bgTask && (
+            <span title={t('agent.tool.bgTask', { id: bgTask })}>
+              <Badge tone="accent">
+                <span className="inline-flex items-center gap-1">
+                  <span aria-hidden>⧉</span>
+                  {bgTask}
+                </span>
+              </Badge>
+            </span>
+          )}
           {elapsed && <Badge>{elapsed}</Badge>}
         </div>
       )}
     </div>
+  )
+}
+
+// ── Shell promote-to-background ─────────────────────────────────────────
+
+type PromoteState = 'idle' | 'promoting' | 'done' | 'error'
+
+/**
+ * Running-shell promote bar: a one-tap action that moves the foreground
+ * command to the background so the agent iteration stops blocking on it.
+ *
+ * Renders only while the tool is running AND we have both the session
+ * identity (ToolSessionContext) and the tool call id (ActiveTools.call_id
+ * stamped by the engine) — history/completed renderers never show it.
+ * Mobile-first sizing (h-9 touch target, bold label); desktop keeps the
+ * same bar inline under the terminal card.
+ */
+function ShellPromoteBar({ tool }: { tool: WebToolProgress }) {
+  const { t } = useI18n()
+  const session = useToolSession()
+  const [state, setState] = useState<PromoteState>('idle')
+  const [taskID, setTaskID] = useState<string | null>(null)
+  const callID = tool.callID ?? ''
+  const enabled = Boolean(session.chatID) && callID !== ''
+
+  const onPromote = useCallback(async () => {
+    if (state === 'promoting' || !session.chatID) return
+    setState('promoting')
+    try {
+      const res = await postAPI<{ ok: boolean; task_id: string }>('/api/rpc', {
+        method: 'promote_shell',
+        params: { session_key: `${session.channel}:${session.chatID}`, tool_call_id: callID },
+      })
+      setTaskID(res.task_id)
+      setState('done')
+      // Task panels listening for promoted tasks refresh immediately (the
+      // 30s poll would otherwise hide the new task for up to 30s). Routed via
+      // sessionEvents (the ESLint no-restricted-properties rule bans direct
+      // window.dispatchEvent in components/agent/**).
+      dispatchBgTaskPromoted()
+      toast.success(t('agent.tool.bgSuccessTitle', { id: res.task_id }), {
+        description: t('agent.tool.bgSuccessDesc'),
+        duration: 5000,
+      })
+    } catch (e) {
+      setState('error')
+      toast.error(t('agent.tool.bgFailedTitle'), {
+        description: e instanceof Error ? e.message : t('agent.tool.retryLater'),
+        duration: 4000,
+      })
+    }
+  }, [state, session.channel, session.chatID, callID, t])
+
+  if (state === 'done') {
+    return (
+      <div className="shell-promote-done" role="status">
+        <span className="shell-promote-done-glow" aria-hidden />
+        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+        <span className="truncate text-text-secondary">{t('agent.tool.runningInBackground')}</span>
+        {taskID && <code className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-[10px] text-accent">{taskID}</code>}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation()
+        void onPromote()
+      }}
+      disabled={!enabled || state === 'promoting'}
+      className="shell-promote-btn group"
+      aria-label={t('agent.tool.promoteAria')}
+    >
+      <span className="shell-promote-btn-sheen" aria-hidden />
+      {state === 'promoting' ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+      ) : (
+        <FastForward className="h-3.5 w-3.5 shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" />
+      )}
+      <span className="font-medium">{state === 'promoting' ? t('agent.tool.promoting') : t('agent.tool.promote')}</span>
+      <span className="hidden text-text-muted sm:inline">· {t('agent.tool.promoteHint')}</span>
+    </button>
   )
 }
 

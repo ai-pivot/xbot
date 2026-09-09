@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -29,15 +28,16 @@ import (
 // OpenAILLM OpenAI LLM 实现
 type OpenAILLM struct {
 	client            *openai.Client
-	mu                sync.RWMutex   // 保护 models 和 defaultModel 的并发读写（C-12）
-	models            []string       // 可用模型列表
-	defaultModel      string         // 默认模型
-	maxTokens         int            // 最大生成 token 数（用户配置值，作为上限）
-	baseURL           string         // API base URL for error logging/diagnosis
-	apiType           string         // "chat_completions" (default) | "responses"
-	onModelsLoaded    func([]string) // callback after models loaded from API
-	onModelsLoadError func(error)    // callback after models load fails
-	modelsLoaded      bool           // true after first ListModels() triggers async fetch
+	mu                sync.RWMutex      // 保护 models 和 defaultModel 的并发读写（C-12）
+	models            []string          // 可用模型列表
+	defaultModel      string            // 默认模型
+	maxTokens         int               // 最大生成 token 数（用户配置值，作为上限）
+	baseURL           string            // API base URL for error logging/diagnosis
+	apiType           string            // "chat_completions" (default) | "responses"
+	onModelsLoaded    func([]string)    // callback after models loaded from API
+	onModelsLoadError func(error)       // callback after models load fails
+	modelsLoaded      bool              // true after first ListModels() triggers async fetch
+	mm                *MultimodalConfig // per-model vision config (manual switch; nil = off)
 
 	// maxTokensUpgrade tracks models that reject the legacy max_tokens param
 	// and need the newer max_completion_tokens. Learned at runtime via 400 errors.
@@ -73,6 +73,11 @@ type OpenAIConfig struct {
 	// SubscriptionID identifies the subscription that owns this client.
 	// Used by OnModelsLoaded to know which subscription to update.
 	SubscriptionID string
+
+	// Multimodal carries the per-model vision config (manual switch — no
+	// built-in model-name whitelist). nil = vision off + no resolver: image
+	// references in user messages degrade to text placeholders.
+	Multimodal *MultimodalConfig
 }
 
 // defaultMaxTokens 默认最大生成 token 数
@@ -104,6 +109,7 @@ func NewOpenAILLM(cfg OpenAIConfig) *OpenAILLM {
 		maxTokens:         cfg.MaxTokens,
 		onModelsLoaded:    cfg.OnModelsLoaded,
 		onModelsLoadError: cfg.OnModelsLoadError,
+		mm:                cfg.Multimodal,
 	}
 
 	// When both BaseURL and APIKey are empty, the client is a placeholder
@@ -359,7 +365,12 @@ func hasAssistantReasoningHistory(messages []ChatMessage) bool {
 //	这是 API 的数据完整性要求（DeepSeek thinking 模式硬性要求回传），
 //	不依赖 thinkingMode 配置——thinkingMode 只控制是否向 API 请求 thinking，
 //	不应影响历史消息的 round-trip 完整性。
-func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.ChatCompletionMessageParamUnion {
+//
+// mc carries the per-model multimodal (vision) config. nil = zero value
+// (vision off → image references degrade to text placeholders). Images are
+// materialized from stable references via mc.ImageResolver at request-build
+// time; see llm/multimodal.go.
+func toOpenAIMessages(ctx context.Context, messages []ChatMessage, thinkingMode string, mc *MultimodalConfig) []openai.ChatCompletionMessageParamUnion {
 	thinkingEnabled := thinkingMode != "" && thinkingMode != "disabled"
 	reasoningHistoryObserved := hasAssistantReasoningHistory(messages)
 	result := make([]openai.ChatCompletionMessageParamUnion, 0, len(messages))
@@ -368,8 +379,13 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 		case "system":
 			result = append(result, openai.SystemMessage(msg.Content))
 		case "user":
-			// Check for embedded images (data: URLs in markdown image syntax)
-			parts := parseEmbeddedImages(msg.Content)
+			// Multimodal user messages: image references (markdown / legacy
+			// <image> tags) become image_url content parts when vision is
+			// enabled; otherwise they degrade to text placeholders.
+			var parts []imageContentPart
+			if hasMultimodalImages(msg.Content) {
+				parts = parseMultimodalContent(ctx, msg.Content, mc)
+			}
 			if len(parts) > 1 {
 				// Multi-part message with images
 				var contentParts []openai.ChatCompletionContentPartUnionParam
@@ -378,9 +394,11 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 					case "text":
 						contentParts = append(contentParts, openai.TextContentPart(p.Text))
 					case "image":
-						contentParts = append(contentParts, openai.ImageContentPart(
-							openai.ChatCompletionContentPartImageImageURLParam{URL: p.URL},
-						))
+						imgParam := openai.ChatCompletionContentPartImageImageURLParam{URL: p.URL}
+						if p.Detail != "" {
+							imgParam.Detail = p.Detail
+						}
+						contentParts = append(contentParts, openai.ImageContentPart(imgParam))
 					}
 				}
 				result = append(result, openai.ChatCompletionMessageParamUnion{
@@ -391,7 +409,14 @@ func toOpenAIMessages(messages []ChatMessage, thinkingMode string) []openai.Chat
 					},
 				})
 			} else {
-				result = append(result, openai.UserMessage(msg.Content))
+				// Single text part (or no images): fast path preserves the
+				// exact original content when nothing was degraded.
+				if len(parts) == 1 && parts[0].Type == "text" && parts[0].Text != msg.Content {
+					// Degraded image(s) altered the content — use the part text.
+					result = append(result, openai.UserMessage(parts[0].Text))
+				} else {
+					result = append(result, openai.UserMessage(msg.Content))
+				}
 			}
 		case "assistant":
 			// Thinking mode 开启，或有实际 reasoning_content 时，使用 param.Override 路径
@@ -453,57 +478,19 @@ func buildToolCallsParamForJSON(toolCalls []ToolCall) []map[string]any {
 	return result
 }
 
-// embeddedImageRe matches markdown image syntax with data: URLs: ![alt](data:...)
-var embeddedImageRe = regexp.MustCompile(`!\[([^\]]*)\]\((data:[^)]+)\)`)
-
 // imageContentPart represents a parsed content segment (text or image).
 type imageContentPart struct {
 	Type string // "text" or "image"
 	Text string // for text parts
-	URL  string // for image parts
+	URL  string // for image parts (data: URL after resolve; raw ref before)
+	// Detail is the OpenAI image_url.detail hint ("low"|"high"|"" = auto).
+	Detail string
 }
 
-// parseEmbeddedImages splits content containing embedded data-URL images into parts.
-// Returns a single text part if no images found.
-func parseEmbeddedImages(content string) []imageContentPart {
-	if !strings.Contains(content, "data:") {
-		return []imageContentPart{{Type: "text", Text: content}}
-	}
-
-	locs := embeddedImageRe.FindAllStringSubmatchIndex(content, -1)
-	if len(locs) == 0 {
-		return []imageContentPart{{Type: "text", Text: content}}
-	}
-
-	var parts []imageContentPart
-	lastIdx := 0
-	for _, loc := range locs {
-		// loc[0:2] = full match, loc[2:4] = alt text group, loc[4:6] = URL group
-		// Add text before this image
-		if loc[0] > lastIdx {
-			text := strings.TrimSpace(content[lastIdx:loc[0]])
-			if text != "" {
-				parts = append(parts, imageContentPart{Type: "text", Text: text})
-			}
-		}
-		// Add the image part
-		url := content[loc[4]:loc[5]]
-		parts = append(parts, imageContentPart{Type: "image", URL: url})
-		lastIdx = loc[1]
-	}
-	// Add remaining text after last image
-	if lastIdx < len(content) {
-		text := strings.TrimSpace(content[lastIdx:])
-		if text != "" {
-			parts = append(parts, imageContentPart{Type: "text", Text: text})
-		}
-	}
-
-	if len(parts) == 0 {
-		return []imageContentPart{{Type: "text", Text: content}}
-	}
-	return parts
-}
+// parseMultimodalContent (llm/multimodal.go) supersedes the old data:-only
+// parseEmbeddedImages: it resolves ANY image reference kind (data:, viewimg:,
+// /api/files/download, http(s)://) through the ImageResolver and honors the
+// per-model vision switch (manual PerModelConfig.Vision — no whitelist).
 
 // toOpenAITools 将工具转换为 OpenAI 格式
 func toOpenAITools(tools []ToolDefinition) []openai.ChatCompletionToolUnionParam {
@@ -611,8 +598,8 @@ func modelMaxOutputTokens(model string) int {
 	return 0
 }
 
-func (o *OpenAILLM) buildParams(model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string, stream bool) openai.ChatCompletionNewParams {
-	openaiMessages := toOpenAIMessages(messages, thinkingMode)
+func (o *OpenAILLM) buildParams(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string, stream bool) openai.ChatCompletionNewParams {
+	openaiMessages := toOpenAIMessages(ctx, messages, thinkingMode, o.mm)
 
 	p := openai.ChatCompletionNewParams{
 		Model:    model,
@@ -871,7 +858,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 	}).Info("[LLM] Starting non-stream request")
 
 	startTime := time.Now()
-	params := o.buildParams(model, messages, tools, thinkingMode, false)
+	params := o.buildParams(ctx, model, messages, tools, thinkingMode, false)
 
 	// 构建 thinking mode 相关的 request options
 	opts := o.buildThinkingOptions(thinkingMode, model)
@@ -890,7 +877,7 @@ func (o *OpenAILLM) Generate(ctx context.Context, model string, messages []ChatM
 				o.maxTokensUpgrade.Delete(model)
 				log.Ctx(ctx).WithField("model", model).Info("[LLM] Model requires legacy max_tokens, retrying")
 			}
-			params = o.buildParams(model, messages, tools, thinkingMode, false)
+			params = o.buildParams(ctx, model, messages, tools, thinkingMode, false)
 			completion, err = o.client.Chat.Completions.New(ctx, params, opts...)
 		}
 	}
@@ -1045,7 +1032,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 }
 
 func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string, opts []option.RequestOption) (*ssestream.Stream[openai.ChatCompletionChunk], error) {
-	params := o.buildParams(model, messages, tools, thinkingMode, true)
+	params := o.buildParams(ctx, model, messages, tools, thinkingMode, true)
 	stream := o.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 	if err := stream.Err(); err != nil {
 		if verdict := isMaxTokensParamError(err); verdict != "" {
@@ -1057,7 +1044,7 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 				log.Ctx(ctx).WithField("model", model).Info("[LLM] Stream: model requires legacy max_tokens, retrying")
 			}
 			stream.Close()
-			params = o.buildParams(model, messages, tools, thinkingMode, true)
+			params = o.buildParams(ctx, model, messages, tools, thinkingMode, true)
 			stream = o.client.Chat.Completions.NewStreaming(ctx, params, opts...)
 			if retryErr := stream.Err(); retryErr != nil {
 				stream.Close()

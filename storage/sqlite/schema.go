@@ -126,7 +126,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (63);
+INSERT INTO schema_version (version) VALUES (64);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
 -- dropped in v62 — the system subscription was removed, the global fallback
@@ -150,7 +150,7 @@ CREATE TABLE user_llm_subscriptions (
 );
 CREATE INDEX IF NOT EXISTS idx_llm_subs_sender ON user_llm_subscriptions(sender_id);
 
--- Per-model config table (v34→v35 base, modified by v36-v38 migrations)
+-- Per-model config table (v34→v35 base, modified by v36-v38 migrations; v64 adds vision columns)
 CREATE TABLE IF NOT EXISTS subscription_models (
     id                TEXT PRIMARY KEY,
     subscription_id   TEXT NOT NULL REFERENCES user_llm_subscriptions(id) ON DELETE CASCADE,
@@ -160,6 +160,8 @@ CREATE TABLE IF NOT EXISTS subscription_models (
     thinking_mode     TEXT NOT NULL DEFAULT '',
     api_type          TEXT NOT NULL DEFAULT '',
     enabled           INTEGER NOT NULL DEFAULT 1,
+    vision            INTEGER NOT NULL DEFAULT 0,
+    vision_detail     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );

@@ -89,7 +89,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
     // nowrap 长消息（cron message 可达数百字符）会把 table 撑到面板外
     // （实测 320px 面板被撑到 4073px），气泡超出屏幕。min-w-0 flex-1
     // truncate 链在 table 布局测量中失效——纯垂直列表没有横向滚动需求。
-    <div className="h-full overflow-y-auto overflow-x-hidden">
+    <div className="h-full overflow-y-auto overflow-x-hidden overscroll-contain">
       <div className="flex flex-col gap-4 px-3 py-3 text-sm">
         {/* Cron tasks */}
         <section className="flex flex-col gap-2">

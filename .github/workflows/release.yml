@@ -80,10 +80,63 @@ jobs:
       - name: Package
         run: mkdir -p dist && tar czf dist/xbot-web-dist.tar.gz -C web/dist .
 
+      # Plugin web assets (git-fancy ESM views served at /plugins/<id>/web/*):
+      # esbuild bundles with --splitting so the shared chunk (rpc/ui singleton
+      # injected by activate(ctx)) is one instance across all view entries.
+      - name: Build plugin web assets
+        working-directory: web
+        run: |
+          mkdir -p ../build/plugin-web/xbot.git-fancy/web
+          npx esbuild src/plugins/git-fancy/index.tsx src/plugins/git-fancy/commit.tsx \
+            --bundle --splitting --format=esm --jsx=transform \
+            --outdir=../build/plugin-web/xbot.git-fancy/web
+          ls -la ../build/plugin-web/xbot.git-fancy/web/
+
       - uses: actions/upload-artifact@v4
         with:
           name: frontend-dist
           path: dist/xbot-web-dist.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-web-dist
+          path: build/plugin-web/
+
+  build-plugins:
+    name: Build built-in plugins
+    needs: [prepare, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Download plugin web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: plugin-web-dist
+          path: build/plugin-web
+
+      # Cross-compile all plugin binaries (pure Go, CGO_ENABLED=0) and assemble
+      # one tarball per release platform. Layout matches what `xbot-cli setup`
+      # extracts into $XBOT_HOME/plugins/builtin/ (plugin ID dirs = discovery
+      # layout; binary names keep the platform-neutral manifest entry, with
+      # .exe appended on windows — plugin/runtime.go resolves the suffix).
+      - name: Package plugins
+        run: |
+          mkdir -p dist
+          bash plugins/package.sh \
+            --out dist \
+            --web-dist-dir build/plugin-web \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --platforms "linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64"
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugins-dist
+          path: dist/xbot-plugins-*.tar.gz
 
   build-linux-amd64:
     name: Build linux/amd64
@@ -204,7 +257,7 @@ jobs:
 
   release:
     name: Release
-    needs: [prepare, frontend, build-linux-amd64, build-linux-arm64, build-darwin-arm64, build-windows-amd64, build-windows-arm64]
+    needs: [prepare, frontend, build-plugins, build-linux-amd64, build-linux-arm64, build-darwin-arm64, build-windows-amd64, build-windows-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -253,4 +306,9 @@ jobs:
             dist/xbot-cli-windows-amd64.exe
             dist/xbot-cli-windows-arm64.exe
             dist/xbot-web-dist.tar.gz
+            dist/xbot-plugins-linux-amd64.tar.gz
+            dist/xbot-plugins-linux-arm64.tar.gz
+            dist/xbot-plugins-darwin-arm64.tar.gz
+            dist/xbot-plugins-windows-amd64.tar.gz
+            dist/xbot-plugins-windows-arm64.tar.gz
             checksums.txt

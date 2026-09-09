@@ -36,6 +36,7 @@ import { Check, Copy } from "lucide-react";
 
 import { highlightSync, normalizeLanguage, ensureHljsLoaded, useHljsReady } from './highlight'
 import { MermaidDiagram, MermaidSourceBlock } from './MermaidDiagram'
+import { openLightbox } from './Lightbox'
 import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
@@ -235,6 +236,43 @@ const CodeBlock = memo(function CodeBlock({
   );
 });
 
+/**
+ * MarkdownImage — the markdown img renderer: height-constrained, click opens
+ * the lightbox (module-level host in App — no per-renderer state, keeps the
+ * memoized markdown tree untouched), load failure degrades to a compact
+ * placeholder with the original link (expired OSS signed URLs in history).
+ */
+function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<"img"> & { node?: unknown }) {
+  const [failed, setFailed] = useState(false)
+  const src = typeof props.src === 'string' ? props.src : ''
+  if (failed || !src) {
+    return (
+      <span
+        data-testid="img-load-failed"
+        className="my-2 inline-flex items-center gap-1.5 rounded-md border border-border bg-bg-tertiary px-2 py-1 text-xs text-text-muted"
+      >
+        <span aria-hidden>🖼</span>
+        <span className="max-w-[30ch] truncate">{alt || 'image'}</span>
+        {src ? (
+          <a href={src} target="_blank" rel="noopener noreferrer" className="underline hover:text-text-secondary" style={{ color: 'var(--md-link)' }}>
+            link
+          </a>
+        ) : null}
+      </span>
+    )
+  }
+  return (
+    <img
+      alt={alt ?? ''}
+      className="my-2 max-h-[400px] max-w-full cursor-zoom-in rounded object-contain"
+      loading="lazy"
+      onClick={() => openLightbox(src, alt ?? '')}
+      onError={() => setFailed(true)}
+      {...props}
+    />
+  )
+}
+
 /** Custom component map applied to the Markdown tree. */
 const COMPONENTS = {
   code: CodeBlock,
@@ -251,19 +289,11 @@ const COMPONENTS = {
       {...props}
     />
   ),
-  // Constrain images to the message width.
-  img: ({
-    node: _node,
-    alt,
-    ...props
-  }: ComponentPropsWithoutRef<"img"> & { node?: unknown }) => (
-    <img
-      alt={alt ?? ""}
-      className="my-2 max-w-full rounded"
-      loading="lazy"
-      {...props}
-    />
-  ),
+  // MarkdownImage: height-constrained, click opens the lightbox (module-level
+  // host — no per-renderer state, keeps the memoized markdown tree untouched),
+  // load failure degrades to a compact placeholder with the original link
+  // (expired OSS signed URLs in history).
+  img: MarkdownImage,
 };
 
 const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath];

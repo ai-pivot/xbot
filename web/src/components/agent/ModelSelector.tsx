@@ -124,6 +124,9 @@ export function ModelSelector({
                   >
                     <span className={`size-1.5 shrink-0 rounded-full ${entry.status === 'normal' ? 'bg-status-done' : entry.status === 'offline' ? 'bg-status-waiting' : 'bg-text-muted'}`} />
                     <span className="min-w-0 flex-1 truncate">{entry.model}</span>
+                    {entry.vision ? (
+                      <span title={t('agent.visionEnabled')} className="shrink-0 text-[10px]" aria-label="vision enabled">👁</span>
+                    ) : null}
                     {active ? <Check className="size-3 shrink-0" /> : null}
                   </button>
                 )

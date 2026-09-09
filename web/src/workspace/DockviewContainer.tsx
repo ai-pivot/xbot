@@ -99,11 +99,12 @@ const CONTENT_COMPONENTS = {
  * terminal 用 useTerminal 包装（与原 LeftTerminalPanel 相同的语义）。
  */
 function PanelTabHost({ params }: { params: PanelParams }) {
+  const { t } = useI18n()
   const ctx = useDockviewContext()
   const tabManager = ctx.tabManager
   const panelId = params.panelId ?? ''
   if (!tabManager) {
-    return <div className="p-4 text-xs text-text-muted">面板加载中…</div>
+    return <div className="p-4 text-xs text-text-muted">{t('panel.loading')}</div>
   }
   switch (panelId) {
     case 'files':
@@ -117,7 +118,7 @@ function PanelTabHost({ params }: { params: PanelParams }) {
     case 'terminal':
       return <LeftTerminalPanel tabManager={tabManager} />
     default:
-      return <div className="p-4 text-xs text-text-muted">未知面板：{panelId}</div>
+      return <div className="p-4 text-xs text-text-muted">{t('panel.unknown', { id: panelId })}</div>
   }
 }
 

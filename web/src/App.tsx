@@ -19,6 +19,7 @@ import { AppShell } from '@/layouts/AppShell'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
+import { ImageLightboxHost } from '@/components/agent/Lightbox'
 import { registerBuiltinLayoutItems } from '@/plugin-runtime/layoutRegistry'
 
 // Register built-in layout items once at app startup (session/view buttons etc).
@@ -51,6 +52,9 @@ export default function App() {
           />
         </Routes>
       </BrowserRouter>
+      {/* Markdown image lightbox (module-level openLightbox trigger from
+          MarkdownRenderer's img) — global singleton, portal to document.body. */}
+      <ImageLightboxHost />
       <Toaster />
     </TooltipProvider>
   )

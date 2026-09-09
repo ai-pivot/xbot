@@ -67,6 +67,8 @@ export interface PanelDefinition {
   /** 唯一 id。插件面板沿用 view.id；内置面板为 core.<name>。 */
   id: string
   title: string
+  /** i18n key：渲染时优先于 title（布局项 labelKey 同语义；缺省回退 title）。 */
+  labelKey?: string
   /** 图标名（经 pluginIcons.ts 的 pluginIcon 映射到 lucide）。 */
   icon: string
   /** 默认停靠槽位（v4 只有左栏）。 */

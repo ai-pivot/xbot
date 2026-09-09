@@ -15,6 +15,7 @@ import { ChevronDown, Maximize2, X } from 'lucide-react'
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 import { SandboxedUI } from '@/plugins/SandboxedUI'
 import { cn } from '@/lib/utils'
+import { useI18n } from '@/providers/i18n'
 
 export interface GenUIPanelProps {
   /** Panel title (falls back to the tool summary). */
@@ -41,6 +42,7 @@ export const GenUIPanel = memo(function GenUIPanel({
   errorHint,
   children,
 }: GenUIPanelProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(defaultOpen)
   const [full, setFull] = useState(false)
   const effectiveOpen = forceCollapsed ? false : open
@@ -65,14 +67,14 @@ export const GenUIPanel = memo(function GenUIPanel({
     <div className="genui-panel overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
       <div className="flex items-center gap-1.5 border-b border-slate-100 bg-slate-50/70 px-3 py-1.5 dark:border-slate-800 dark:bg-slate-800/50">
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-600 dark:text-slate-300">
-          {errorHint || title || '生成的界面'}
+          {errorHint || title || t('agent.genui.title')}
         </span>
         {collapsible && !forceCollapsed && (
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
             aria-expanded={effectiveOpen}
-            aria-label={effectiveOpen ? '折叠' : '展开'}
+            aria-label={effectiveOpen ? t('agent.genui.collapse') : t('agent.genui.expand')}
             className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
           >
             <ChevronDown className={cn('size-3.5 transition-transform duration-200', !effectiveOpen && '-rotate-90')} />
@@ -82,7 +84,7 @@ export const GenUIPanel = memo(function GenUIPanel({
           <button
             type="button"
             onClick={() => setFull(true)}
-            aria-label="全屏"
+            aria-label={t('agent.genui.fullscreen')}
             className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
           >
             <Maximize2 className="size-3.5" />
@@ -105,6 +107,7 @@ export const GenUIPanel = memo(function GenUIPanel({
 
 /** Fullscreen overlay — portal at document.body so it escapes ancestor overflow/transform. */
 function FullscreenOverlay({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+  const { t } = useI18n()
   const overlayRef = useRef<HTMLDivElement>(null)
   const onBackdrop = useCallback((e: React.MouseEvent) => {
     if (e.target === overlayRef.current) onClose()
@@ -123,7 +126,7 @@ function FullscreenOverlay({ children, onClose }: { children: ReactNode; onClose
         <div className="flex shrink-0 items-center justify-end border-b border-slate-200 px-3 py-1.5 dark:border-slate-700">
           <button
             type="button"
-            aria-label="关闭全屏"
+            aria-label={t('agent.genui.exitFullscreen')}
             onClick={onClose}
             className="flex h-8 w-8 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
           >
@@ -144,6 +147,7 @@ function FullscreenOverlay({ children, onClose }: { children: ReactNode; onClose
  * virtual list assumes collapsed height). Error state resets when code changes.
  */
 export function GenUICollapsiblePanel({ code, streaming, title }: { code: string; streaming?: boolean; title?: string }) {
+  const { t } = useI18n()
   const [error, setError] = useState(false)
   useEffect(() => { setError(false) }, [code])
   return (
@@ -153,7 +157,7 @@ export function GenUICollapsiblePanel({ code, streaming, title }: { code: string
       fullscreen
       defaultOpen
       forceCollapsed={error}
-      errorHint={error ? '⚠️ 渲染失败' : undefined}
+      errorHint={error ? t('agent.genui.renderFailed') : undefined}
     >
       <SandboxedUI code={code} streaming={streaming} onError={() => setError(true)} />
     </GenUIPanel>

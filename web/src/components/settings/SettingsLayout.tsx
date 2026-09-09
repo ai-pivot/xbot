@@ -13,26 +13,27 @@ import { useI18n } from '@/providers/i18n'
 import { useLayoutConfig } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutSlotId } from '@/plugin-runtime/layoutTypes'
 
+/** slot id → i18n key（显示名走 t()）。 */
 const SLOT_LABELS: Record<LayoutSlotId, string> = {
-  'mobile.bottom_nav': '📱 底部导航',
-  'mobile.top_bar': '📱 顶栏',
-  'desktop.activity_bar': '🖥️ 左侧栏',
-  'desktop.sidebar': '🖥️ 右侧面板',
-  'desktop.info_bar': '🖥️ 底部信息栏',
-  'desktop.main': '🖥️ 主编辑区',
+  'mobile.bottom_nav': 'settings.layout.slotMobileNav',
+  'mobile.top_bar': 'settings.layout.slotMobileTop',
+  'desktop.activity_bar': 'settings.layout.slotActivityBar',
+  'desktop.sidebar': 'settings.layout.slotSidebar',
+  'desktop.info_bar': 'settings.layout.slotInfoBar',
+  'desktop.main': 'settings.layout.slotMain',
 }
 
-/** 内置项 id → 显示名（插件项用 view 自带 title）。 */
+/** 内置项 id → i18n key（插件项用 view 自带 title）。 */
 const BUILTIN_NAMES: Record<string, string> = {
-  [BUILTIN_LAYOUT_ITEMS.mobileTools]: '工具按钮',
-  [BUILTIN_LAYOUT_ITEMS.mobileNewChat]: '新建会话',
-  [BUILTIN_LAYOUT_ITEMS.mobileSettings]: '设置',
-  [BUILTIN_LAYOUT_ITEMS.desktopSessions]: '会话列表',
-  [BUILTIN_LAYOUT_ITEMS.desktopFiles]: '文件面板',
-  [BUILTIN_LAYOUT_ITEMS.desktopSearch]: '搜索面板',
-  [BUILTIN_LAYOUT_ITEMS.desktopInfo]: '信息面板',
-  [BUILTIN_LAYOUT_ITEMS.desktopTasks]: '任务面板',
-  [BUILTIN_LAYOUT_ITEMS.desktopTerminal]: '终端面板',
+  [BUILTIN_LAYOUT_ITEMS.mobileTools]: 'settings.layout.itemMobileTools',
+  [BUILTIN_LAYOUT_ITEMS.mobileNewChat]: 'settings.layout.itemNewChat',
+  [BUILTIN_LAYOUT_ITEMS.mobileSettings]: 'settings.layout.itemSettings',
+  [BUILTIN_LAYOUT_ITEMS.desktopSessions]: 'settings.layout.itemSessions',
+  [BUILTIN_LAYOUT_ITEMS.desktopFiles]: 'settings.layout.itemFiles',
+  [BUILTIN_LAYOUT_ITEMS.desktopSearch]: 'settings.layout.itemSearch',
+  [BUILTIN_LAYOUT_ITEMS.desktopInfo]: 'settings.layout.itemInfo',
+  [BUILTIN_LAYOUT_ITEMS.desktopTasks]: 'settings.layout.itemTasks',
+  [BUILTIN_LAYOUT_ITEMS.desktopTerminal]: 'settings.layout.itemTerminal',
 }
 
 export function SettingsLayout() {
@@ -65,7 +66,7 @@ export function SettingsLayout() {
       } })
     } catch (err) {
       setResetting(false)
-      setResetErr('云端同步失败，请重试（本地布局已清除）')
+      setResetErr(t('settings.layout.resetSyncFailed'))
       console.warn('[SettingsLayout] reset panel layout server sync failed:', err)
       return
     }
@@ -84,33 +85,33 @@ export function SettingsLayout() {
     return [...map.entries()].sort((a, b) => slots.indexOf(a[0]) - slots.indexOf(b[0]))
   }, [allItems, overrides, slots, changed])
 
-  const itemName = (id: string, title: string) => BUILTIN_NAMES[id] ?? title
+  const itemName = (id: string, title: string) => (BUILTIN_NAMES[id] ? t(BUILTIN_NAMES[id]) : title)
 
   return (
     <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection
         title={t('settings.nav.layout')}
-        description="把按钮/面板移动到任意位置（手机底部导航、顶栏、桌面侧栏等），立即生效并记住偏好。"
+        description={t('settings.layout.desc')}
       >
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" size="sm" onClick={() => { resetAll(); setChanged((v) => v + 1) }}>
-            恢复默认布局
+            {t('settings.layout.resetAll')}
           </Button>
           <Button
             type="button"
             size="sm"
             disabled={resetting}
-            title="清除面板坞布局缓存（本地 + 云端）并刷新页面"
+            title={t('settings.layout.resetPanelTitle')}
             onClick={() => { void resetPanelLayout() }}
           >
-            重置面板布局
+            {t('settings.layout.resetPanel')}
           </Button>
           {resetErr && <span className="text-xs text-red-400">{resetErr}</span>}
         </div>
       </SettingsSection>
 
       {grouped.map(([slot, items]) => (
-        <SettingsSection key={slot} title={SLOT_LABELS[slot] ?? slot} description={`${items.length} 项`}>
+        <SettingsSection key={slot} title={t(SLOT_LABELS[slot] ?? slot)} description={t('settings.layout.itemCount', { count: items.length })}>
           <div className="flex flex-col gap-2">
             {items.map((item) => {
               const eff = overrides[item.id] ?? item.slot
@@ -156,12 +157,12 @@ export function SettingsLayout() {
                       className="rounded-lg border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary focus:border-accent/40 focus:outline-none"
                     >
                       {slots.map((s) => (
-                        <option key={s} value={s}>{SLOT_LABELS[s]}</option>
+                        <option key={s} value={s}>{t(SLOT_LABELS[s])}</option>
                       ))}
                     </select>
                     {overrides[item.id] !== undefined && (
                       <Button type="button" variant="ghost" size="sm" className="hover:bg-bg-hover" onClick={() => { resetItem(item.id); setChanged((v) => v + 1) }}>
-                        重置
+                        {t('settings.layout.resetItem')}
                       </Button>
                     )}
                   </div>

@@ -29,12 +29,13 @@
  *  3. visibleCount 稳定时 setState 同值 bail-out，无渲染循环。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Inbox, Maximize2, Pin, Plus, X } from 'lucide-react'
+import { Maximize2, Pin, Plus } from 'lucide-react'
 
 import { usePanelDock, zoneHighlightStyle } from './PanelLayout'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import type { PanelBadge, PanelDefinition } from '@/plugin-api'
 import type { TabManager } from '@/hooks/useTabManager'
+import { useI18n } from '@/providers/i18n'
 import { cn } from '@/lib/utils'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 
@@ -109,6 +110,7 @@ function BadgeDetail({
   tabManager: TabManager
   onFloat: () => void
 }): ReactNode {
+  const { t } = useI18n()
   return (
     <div data-rail-detail={def.id} className="flex min-w-56 flex-col gap-2 p-1">
       <div className="flex items-center gap-1.5">
@@ -122,13 +124,14 @@ function BadgeDetail({
         style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
       >
         <Maximize2 className="size-3" />
-        ⤢ 升为浮窗
+        {t('panel.floatAction')}
       </button>
     </div>
   )
 }
 
 function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: string }): ReactNode {
+  const { t } = useI18n()
   const dock = usePanelDock()
   const ids = dock.zoneIds(zone)
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -234,7 +237,7 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
             type="button"
             ref={setBadgeRef(id)}
             data-rail-badge={id}
-            title={`${def.title}（双击升为浮窗）`}
+            title={t('panel.badgeHint', { title: def.labelKey ? t(def.labelKey) : def.title })}
             onClick={() => setInlineDetailId((prev) => (prev === id ? null : id))}
             onDoubleClick={() => float(id)}
             className="flex max-w-[200px] shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[11px] transition-colors hover:bg-accent/10 has-[>[data-badge-slot]:empty]:hidden"
@@ -348,51 +351,16 @@ export function BottomRailBadges({ className }: { className?: string }): ReactNo
  * 根元素 data-panel-zone="chip"——拖拽落点判定宿主。
  */
 export function SideChips(): ReactNode {
+  const { t } = useI18n()
   const dock = usePanelDock()
   const ids = dock.zoneIds('chip')
   const zoneActive = dock.activeZone === 'chip'
-  const [expandedChip, setExpandedChip] = useState<string | null>(null)
+  // 当前"独占左栏"的面板（唯一展开的 side 面板）——图标高亮表示它在前台。
+  const sideIds = dock.zoneIds('side')
+  const expandedSideIds = sideIds.filter((pid) => !dock.entryOf(pid).collapsed)
+  const soloId = expandedSideIds.length === 1 ? expandedSideIds[0] : null
   return (
     <div data-panel-zone="chip" data-testid="panel-chip-dock" className="relative flex items-center">
-      {/* 展开内容区——在 chip 行上方向上弹出（chip 行保持底部固定） */}
-      {expandedChip ? (
-        <div className="absolute bottom-full left-0 z-50 mb-1 max-h-[240px] w-64 overflow-y-auto rounded-none border p-2 bg-bg-elevated shadow-lg" style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)' }}>
-          <div className="mb-1 flex items-center justify-between">
-            <span className="text-[9px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              {dock.defs.find((d) => d.id === expandedChip)?.title ?? expandedChip}
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => { dock.pinPanel(expandedChip); setExpandedChip(null) }}
-                className="rounded px-1.5 py-0.5 text-[9px] font-medium"
-                style={{ background: 'color-mix(in srgb, var(--accent) 18%, transparent)', color: 'var(--accent)' }}
-              >
-                <Pin className="inline size-3 align-[-1px]" /> 钉选到侧栏
-              </button>
-              <button
-                type="button"
-                onClick={() => setExpandedChip(null)}
-                className="rounded p-0.5"
-                style={{ color: 'var(--text-muted)' }}
-              >
-                <X className="size-3" />
-              </button>
-            </div>
-          </div>
-          <div className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-            {(() => {
-              const def = dock.defs.find((d) => d.id === expandedChip)
-              if (!def) return null
-              return def.render({ tabManager: dock.tabManager }) ?? (
-                <div className="flex items-center justify-center py-4 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                  <Inbox className="mr-1 size-3.5" /> 暂无内容
-                </div>
-              )
-            })()}
-          </div>
-        </div>
-      ) : null}
       <div
         className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto px-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         style={{ borderColor: 'var(--border)', ...zoneHighlightStyle(zoneActive) }}
@@ -402,14 +370,15 @@ export function SideChips(): ReactNode {
           if (!def) return null
           const badge: PanelBadge | null = def.badges?.() ?? null
           const Icon = pluginIcon(def.icon)
-          const isActive = expandedChip === id
+          const isActive = soloId === id
+          const chipTitle = def.labelKey ? t(def.labelKey) : def.title
           return (
             <div key={id} className="group relative shrink-0">
               <button
                 type="button"
                 data-panel-chip={id}
-                title={`${def.title}（单击展开/收起）`}
-                onClick={() => setExpandedChip(isActive ? null : id)}
+                title={t('panel.chipHint', { title: chipTitle })}
+                onClick={() => dock.focusPanel(id)}
                 className="flex size-9 items-center justify-center rounded-lg transition-colors hover:bg-accent/10"
                 style={isActive ? { background: 'color-mix(in srgb, var(--accent) 15%, transparent)' } : undefined}
               >
@@ -428,8 +397,8 @@ export function SideChips(): ReactNode {
               </button>
               <button
                 type="button"
-                aria-label={`钉选 ${def.title}`}
-                title={`钉选 ${def.title} 到侧栏`}
+                aria-label={t('panel.pinAria', { title: chipTitle })}
+                title={t('panel.pinToSideTitle', { title: chipTitle })}
                 onClick={() => dock.pinPanel(id)}
                 className="absolute right-0.5 top-0.5 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
                 style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}
@@ -441,7 +410,7 @@ export function SideChips(): ReactNode {
         })}
         {ids.length === 0 ? (
           <span className="px-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            无收纳面板
+            {t('panel.noChips')}
           </span>
         ) : null}
       </div>

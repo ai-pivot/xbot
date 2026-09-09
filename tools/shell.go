@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"xbot/llm"
 
@@ -247,8 +248,17 @@ func (t *ShellTool) executeBackground(
 	return NewResultWithTips(result, fmt.Sprintf("Background task running, use task_wait (task_id=[%q]) to wait for it", task.ID)), nil
 }
 
-// executeForeground runs a command synchronously. If it times out, auto-promotes
-// to a background task (like Claude Code) so no work is lost.
+// executeForeground runs a command synchronously with promote-to-background
+// support. The execution itself runs in a streaming goroutine (same core as
+// background tasks — sandboxExecAsync); the foreground wait selects on:
+//   - completion      → normal tool result
+//   - timeout         → auto-promote to a background task (no re-exec, the
+//     already-running process is adopted)
+//   - user promote    → manual promote (web UI button), same adoption path
+//   - tool ctx cancel → kill the process (user stop), return error
+//
+// The exec context is independent of the tool ctx so a promoted process
+// keeps running after the tool call returns.
 func (t *ShellTool) executeForeground(
 	toolCtx *ToolContext,
 	command string,
@@ -257,130 +267,230 @@ func (t *ShellTool) executeForeground(
 	timeout time.Duration,
 	buildSpec func() ExecSpec,
 ) (*ToolResult, error) {
-	// Build spec with KeepAlive for none-sandbox so timeout doesn't kill the process.
-	// The process can then be adopted by BgTaskManager on timeout.
 	spec := buildSpec()
-	if sandbox.Name() == "none" && toolCtx != nil && toolCtx.BgTaskManager != nil {
-		spec.KeepAlive = true
-	}
-	result, err := sandbox.Exec(parentCtx, spec)
+	// Lifetime is managed by the select below (timeout → promote, not kill);
+	// sandboxExecAsync's per-sandbox cores all treat Timeout=0 as unlimited.
+	spec.Timeout = 0
 
-	if err != nil {
-		return nil, fmt.Errorf("sandbox exec: %w", err)
+	// Shared output buffer: written by the streaming goroutine, snapshotted
+	// by the foreground wait and the background task (after promote).
+	var outMu sync.Mutex
+	var outBuf strings.Builder
+	snapshotOutput := func() string {
+		outMu.Lock()
+		defer outMu.Unlock()
+		return outBuf.String()
 	}
 
-	// 合并输出
-	var resultBuilder strings.Builder
-	if result.Stdout != "" {
-		resultBuilder.WriteString(result.Stdout)
-	}
-	if result.Stderr != "" {
-		if resultBuilder.Len() > 0 {
-			resultBuilder.WriteString("\n")
+	// Independent execution context: survives promote (the process keeps
+	// running under BgTaskManager after this tool call returns). On every
+	// non-promote exit path the deferred cancel kills the process group.
+	execCtx, cancelExec := context.WithCancel(context.Background())
+	promoted := false
+	defer func() {
+		if !promoted {
+			cancelExec()
 		}
-		resultBuilder.WriteString("[stderr] ")
-		resultBuilder.WriteString(result.Stderr)
-	}
-	output := strings.TrimSpace(resultBuilder.String())
+	}()
 
-	if result.TimedOut {
-		// AUTO-PROMOTE: convert timed-out command to background task
-		if toolCtx != nil && toolCtx.BgTaskManager != nil {
-			sessionKey := toolCtx.BgSessionKey
-			if sessionKey == "" {
-				sessionKey = toolCtx.Channel + ":" + toolCtx.ChatID
+	// Adoption handle: created up-front so the streaming output closure can
+	// fan output deltas into the background task's SSE push (set on promote).
+	execHandle := &RunningExecHandle{
+		Output: snapshotOutput,
+		Cancel: cancelExec,
+	}
+
+	type fgExecResult struct {
+		exitCode int
+		err      error
+	}
+	execDone := make(chan fgExecResult, 1)
+	execDoneSig := make(chan struct{})
+	execHandle.Done = execDoneSig
+	execHandle.Result = func() (int, error) {
+		r := <-execDone
+		return r.exitCode, r.err
+	}
+
+	outputBuf := func(s string) {
+		if s == "" {
+			return
+		}
+		outMu.Lock()
+		outBuf.WriteString(s)
+		// Tail-trim at write time: a promoted (background) command can run
+		// indefinitely (tail -f / training logs) and the buffer previously only
+		// got truncated at task END — unbounded growth while running (CR: 输出
+		// 缓冲无上限). Keep the newest maxBgOutputSize bytes, same semantics as
+		// the background task output cap.
+		if outBuf.Len() > maxBgOutputSize {
+			// rune-boundary-safe tail truncation: a raw byte slice can split a
+			// multi-byte character and emit invalid UTF-8 into task.Output /
+			// task_read / the web xterm (CR: 截断按字节切片会把多字节 UTF-8
+			// 字符切开).
+			trimmed := truncateTailPreview(outBuf.String(), maxBgOutputSize)
+			outBuf.Reset()
+			outBuf.WriteString(trimmed)
+		}
+		outMu.Unlock()
+		execHandle.fireDelta(s)
+	}
+
+	go func() {
+		code, err := sandboxExecAsync(execCtx, sandbox, spec, outputBuf)
+		execDone <- fgExecResult{exitCode: code, err: err}
+		close(execDoneSig)
+	}()
+
+	// Registry entry: web promote_shell RPC finds the running shell by
+	// (sessionKey, tool call id) and fires the signal. Only registered when
+	// a BgTaskManager exists (promote/timeout adoption needs it).
+	var mgr *BackgroundTaskManager
+	var sessionKey string
+	var senderID string
+	if toolCtx != nil {
+		mgr = toolCtx.BgTaskManager
+		sessionKey = toolCtx.BgSessionKey
+		if sessionKey == "" {
+			sessionKey = toolCtx.Channel + ":" + toolCtx.ChatID
+		}
+		senderID = toolCtx.OriginUserID
+	}
+	var fgHandle *ForegroundShellHandle
+	var promoteCh <-chan struct{}
+	if mgr != nil {
+		fgHandle = registerForegroundShell(sessionKey, toolCallIDOf(toolCtx), command)
+		defer unregisterForegroundShell(fgHandle)
+		promoteCh = fgHandle.promoteCh
+	}
+	startedAt := time.Now()
+
+	// promote adopts the running execution as a background task and builds
+	// the tool result for the LLM. manual=true is the user action, false is
+	// the timeout auto-promote.
+	promote := func(manual bool) (*ToolResult, error) {
+		promoted = true
+		task := mgr.AdoptRunning(sessionKey, senderID, command, startedAt, execHandle)
+		// Stream subsequent output to the web task panel (bg_task_output SSE).
+		taskID := task.ID
+		execHandle.SetOnDelta(func(delta string) {
+			mgr.fireOutput(sessionKey, taskID, delta)
+		})
+		if fgHandle != nil {
+			if manual {
+				notifyPromoteResult(fgHandle, task.ID, nil)
 			}
-			senderID := toolCtx.OriginUserID
-
-			var task *BackgroundTask
-
-			// If the sandbox supports KeepAlive and returned a live process,
-			// adopt it (no re-execution) — the original process continues running.
-			if result.Process != nil {
-				partialOutput := output
-				var ongoingFn func() string
-				if result.OngoingOutput != nil {
-					ongoingFn = result.OngoingOutput
-				}
-				task = toolCtx.BgTaskManager.Adopt(sessionKey, senderID, command, result.Process, partialOutput, result.ExitCodeCh, ongoingFn)
-				log.WithFields(log.Fields{
-					"command": command,
-					"timeout": timeout,
-					"task_id": task.ID,
-				}).Info("Timed-out command adopted as background task (no re-exec)")
-			} else {
-				// Sandbox doesn't support KeepAlive (docker/remote) — fall back to re-execution.
-				partialOutput := output
-				task = toolCtx.BgTaskManager.Start(sessionKey, senderID, command,
-					func(ctx context.Context, outputBuf func(string)) (int, error) {
-						spec := buildSpec()
-						spec.Timeout = 0
-						if partialOutput != "" {
-							outputBuf(partialOutput + "\n\n--- [restarted after timeout] ---\n")
-						}
-						return sandboxExecAsync(ctx, sandbox, spec, outputBuf)
-					},
-				)
-				log.WithFields(log.Fields{
-					"command": command,
-					"timeout": timeout,
-					"task_id": task.ID,
-				}).Info("Timed-out command auto-promoted to background task (re-exec)")
-			}
-
-			timeoutMsg := fmt.Sprintf(
-				"[TIMEOUT after %s] Command timed out. Auto-promoted to background task [task_id: %q]\n"+
-					"Partial output before timeout:\n%s\n\n"+
-					"The command continues running in the background. Its output will be injected when done.\n"+
-					"- Use task_wait (task_id=[%q]) to block until completion, or task_status (task_id=[%q]) to check progress\n"+
-					"- Use task_kill (task_id=[%q]) to terminate\n"+
-					"Note: for multiple tasks, pass all IDs in one array — task_wait(task_id=[\"id1\",\"id2\"], mode=\"any\")",
-				timeout, task.ID, output, task.ID, task.ID, task.ID,
-			)
-			return NewResultWithTips(timeoutMsg, fmt.Sprintf("Auto-promoted to background task, use task_wait (task_id=[%q]) to wait for it", task.ID)), nil
+			logPromote(sessionKey, fgHandle.CallID, task.ID, manual)
 		}
 
-		// No BgTaskManager — fall back to old behavior
-		timeoutErr := fmt.Sprintf("[TIMEOUT after %s] Command timed out", timeout)
-		if output != "" {
-			timeoutErr = fmt.Sprintf("[TIMEOUT after %s] Partial output:\n%s", timeout, output)
-		}
-		log.WithFields(log.Fields{
-			"command": command,
-			"timeout": timeout,
-			"output":  output,
-		}).Warn("Shell command timed out")
-		return NewErrorResult(timeoutErr), nil
-	}
-
-	if result.ExitCode != 0 {
-		var errMsg string
-		if output != "" {
-			errMsg = fmt.Sprintf("[EXIT %d] %s\n%s", result.ExitCode, command, output)
-		} else if result.Stderr != "" {
-			errMsg = fmt.Sprintf("[EXIT %d] %s\n[stderr] %s", result.ExitCode, command, result.Stderr)
+		output := snapshotOutput()
+		var headline, tips string
+		if manual {
+			headline = fmt.Sprintf(
+				"[PROMOTED to background by user] Command moved to the background [task_id: %q]\n"+
+					"Partial output so far:\n%s",
+				task.ID, output)
 		} else {
-			errMsg = fmt.Sprintf("[EXIT %d] %s (no output)", result.ExitCode, command)
+			headline = fmt.Sprintf(
+				"[TIMEOUT after %s] Command timed out. Auto-promoted to background task [task_id: %q]\n"+
+					"Partial output before timeout:\n%s",
+				timeout, task.ID, output)
 		}
-
-		log.WithFields(log.Fields{
-			"command":  command,
-			"exitCode": result.ExitCode,
-			"stderr":   result.Stderr,
-		}).Warn("Shell command failed")
-
-		return NewErrorResult(errMsg), nil
+		tips = fmt.Sprintf("Promoted to background task, use task_wait (task_id=[%q]) to wait for it", task.ID)
+		body := fmt.Sprintf(
+			"%s\n\nThe command continues running in the background. Its output will be injected when done.\n"+
+				"- Use task_wait (task_id=[%q]) to block until completion, or task_status (task_id=[%q]) to check progress\n"+
+				"- Use task_kill (task_id=[%q]) to terminate\n"+
+				"Note: for multiple tasks, pass all IDs in one array — task_wait(task_id=[\"id1\",\"id2\"], mode=\"any\")",
+			headline, task.ID, task.ID, task.ID)
+		return NewResultWithTips(body, tips), nil
 	}
 
-	if output == "" {
-		return NewResult("Command executed successfully (no output)"), nil
-	}
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
 
-	res := NewResult(output)
-	if tip := detectCdTip(command); tip != "" {
-		res = res.WithTips(tip)
+	select {
+	case r := <-execDone:
+		// Normal completion (or user-stop kill: execCtx cancelled by the
+		// tool ctx branch below — that branch waits on execDone itself, so
+		// this case is always a natural completion or a stray cancel race
+		// where output is still the best we have).
+		if r.err != nil && execCtx.Err() != nil {
+			// The only cancel source outside promote is the tool ctx branch,
+			// which returns before waiting here. A stray cancel (safety
+			// sandbox) surfaces as an error — mirror the old sandbox.Exec
+			// error semantics.
+			return nil, fmt.Errorf("sandbox exec: %w", r.err)
+		}
+		output := strings.TrimSpace(snapshotOutput())
+		if r.err != nil {
+			// Execution error (start failure, remote kill, …).
+			if output != "" {
+				return nil, fmt.Errorf("sandbox exec: %w\n%s", r.err, output)
+			}
+			return nil, fmt.Errorf("sandbox exec: %w", r.err)
+		}
+		if r.exitCode != 0 {
+			errMsg := fmt.Sprintf("[EXIT %d] %s", r.exitCode, command)
+			if output != "" {
+				errMsg += "\n" + output
+			}
+			log.WithFields(log.Fields{
+				"command":  command,
+				"exitCode": r.exitCode,
+			}).Warn("Shell command failed")
+			return NewErrorResult(errMsg), nil
+		}
+		if output == "" {
+			return NewResult("Command executed successfully (no output)"), nil
+		}
+		res := NewResult(output)
+		if tip := detectCdTip(command); tip != "" {
+			res = res.WithTips(tip)
+		}
+		return res, nil
+
+	case <-parentCtx.Done():
+		// User stop: kill the process group, wait for the kill to settle,
+		// then surface the cancel (same semantics as the old sandbox.Exec
+		// returning a context error on stop).
+		cancelExec()
+		<-execDone
+		return nil, fmt.Errorf("sandbox exec: %w", parentCtx.Err())
+
+	case <-promoteCh:
+		// User promote from the web UI — adopt the running execution.
+		return promote(true)
+
+	case <-timeoutTimer.C:
+		// Timeout — auto-promote when possible (no re-exec: the process is
+		// adopted in place), else the old timeout error.
+		if mgr == nil {
+			output := snapshotOutput()
+			timeoutErr := fmt.Sprintf("[TIMEOUT after %s] Command timed out", timeout)
+			if output != "" {
+				timeoutErr = fmt.Sprintf("[TIMEOUT after %s] Partial output:\n%s", timeout, output)
+			}
+			cancelExec()
+			<-execDone
+			log.WithFields(log.Fields{
+				"command": command,
+				"timeout": timeout,
+				"output":  output,
+			}).Warn("Shell command timed out")
+			return NewErrorResult(timeoutErr), nil
+		}
+		return promote(false)
 	}
-	return res, nil
+}
+
+// toolCallIDOf returns the tool call id from the context ("" when absent —
+// e.g. internal invocations without an LLM tool call).
+func toolCallIDOf(toolCtx *ToolContext) string {
+	if toolCtx == nil {
+		return ""
+	}
+	return toolCtx.ToolCallID
 }
 
 // sandboxExecAsync runs a sandbox command asynchronously, streaming output via outputBuf.

@@ -6,7 +6,7 @@
  */
 
 export type Theme = 'dark' | 'light'
-export type Locale = 'zh-CN' | 'en'
+export type Locale = 'zh-CN' | 'en' | 'ja'
 export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'panel'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
 export type SessionCategory = 'time' | 'status' | 'path'
@@ -397,6 +397,10 @@ export interface WebToolProgress {
    * Frontend renders via GenUIBlock — metadata-driven, never tool-name-driven.
    * (see docs/agent/genui-plugin-design.md §9) */
   uiMode?: string
+  /** LLM tool_call id — stable per-call identity. Present on ActiveTools
+   * entries; used by the promote-to-background RPC to target the exact
+   * running shell. Empty on legacy/history events. */
+  callID?: string
   /** Global libraries the UI needs (echarts/three/motion). */
   uiLibs?: string[]
   /** Top-level panel declaration (from UIDecl.Surface) — the UI result renders
@@ -571,6 +575,13 @@ export interface PerModelConfig {
   max_context: number
   api_type: string
   enabled: boolean
+  /** Vision (multimodal image input) switch — PURELY MANUAL, no built-in
+   * model-name whitelist. When true, image references in user messages are
+   * resolved into base64 content parts; when false (default), they degrade
+   * to text placeholders so non-vision models never receive image parts. */
+  vision?: boolean
+  /** OpenAI image_url.detail hint: "low" | "high" | "" (auto). */
+  vision_detail?: string
 }
 
 /** LLM subscription (mirrors protocol.Subscription JSON serialization). */
@@ -597,6 +608,9 @@ export interface ModelEntry {
   sub_name: string
   model: string
   status: 'normal' | 'offline' | 'disabled'
+  /** Manual per-model vision switch (NO builtin whitelist — set in the model
+   * editor). True → uploaded/injected images send as multimodal input. */
+  vision?: boolean
 }
 
 // ---------------------------------------------------------------------------

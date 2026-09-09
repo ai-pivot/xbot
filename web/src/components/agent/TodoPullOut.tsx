@@ -23,8 +23,8 @@ export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps)
   const percent = Math.round((doneCount / total) * 100)
 
   return (
-    <div className="mx-2 mb-1.5 overflow-hidden rounded-md border border-border bg-bg-secondary text-sm">
-      <div className="flex h-8 w-full items-center gap-2 px-2.5 text-left">
+    <div className="mx-1.5 mb-1 overflow-hidden rounded-md border border-border bg-bg-secondary text-sm md:mx-2 md:mb-1.5">
+      <div className="flex h-7 w-full items-center gap-2 px-2.5 text-left md:h-8">
         <button
           type="button"
           aria-expanded={expanded}
@@ -54,7 +54,7 @@ export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps)
             type="button"
             onClick={onSetGoal}
             className="shrink-0 rounded p-1 text-text-muted transition-colors hover:bg-accent/10 hover:text-accent"
-            title="设为目标"
+            title={t('agent.setAsGoal')}
           >
             <Target className="size-3.5" />
           </button>

@@ -60,6 +60,11 @@ type ToolProgress struct {
 	// (Status="generating"). Populated from streaming tool call deltas — shows
 	// real-time progress of argument generation (e.g. "42 chars").
 	GenChars int `json:"gen_chars,omitempty"`
+	// CallID is the LLM tool_call id (stable per-call identity). The engine
+	// stamps it on ActiveTools entries so the frontend can correlate a running
+	// tool card with server-side execution state (e.g. the promote-to-background
+	// RPC targets the exact foreground shell by session + call id).
+	CallID string `json:"call_id,omitempty"`
 }
 
 // UISurface is the wire form of tools.UISurface (mirror to break the
@@ -282,6 +287,15 @@ type PerModelConfig struct {
 	// mergeSubscriptionModels so the UI can show/toggle per-model enabled state. It is
 	// NOT authoritative on writes — enabled is managed by the set_model_enabled RPC.
 	Enabled bool `json:"enabled,omitempty"`
+	// Vision marks the model as accepting image (multimodal) input. Purely manual
+	// configuration — NO built-in model-name whitelist; the operator enables it per
+	// model in the model editor (web LLM console / CLI Ctrl+N E panel). When false
+	// (default), image references in user messages degrade to text placeholders
+	// instead of image content parts, so non-vision models never receive a 400.
+	Vision bool `json:"vision,omitempty"`
+	// VisionDetail is the OpenAI image_url.detail hint ("low" | "high" | "" = auto).
+	// Applies to OpenAI-compatible vision requests; Anthropic ignores it.
+	VisionDetail string `json:"vision_detail,omitempty"`
 }
 
 // ContextUsage is the authoritative context snapshot for one session.
@@ -316,6 +330,10 @@ type ModelEntry struct {
 	SubName string `json:"sub_name,omitempty"`
 	Model   string `json:"model"`
 	Status  string `json:"status"` // normal | offline | disabled
+	// Vision marks the model's manual multimodal switch (subscription_models.
+	// vision — NO built-in model-name whitelist). Purely informational for
+	// pickers/badges; the LLM layer reads the same column at client build.
+	Vision bool `json:"vision,omitempty"`
 }
 
 type OutboundEvent struct {

@@ -7,22 +7,23 @@
  */
 import type { PluginManifest } from '@/plugin-api'
 import { ambienceStore } from '@/ambience/store'
+import i18n from '@/i18n'
 
 export const manifest = {
   id: 'xbot.ambience',
   name: 'Ambience',
   version: '0.3.0',
-  description: '壁纸 + 玻璃拟态（Ambience Layer）',
+  description: i18n.t('plugins.ambience.description', { defaultValue: '壁纸 + 玻璃拟态（Ambience Layer）' }),
   permissions: ['config'] as const,
   contributes: [
     {
       kind: 'ambience',
       id: 'presets',
       wallpapers: [
-        { id: 'aurora', name: '星夜极光', css: 'linear-gradient(165deg, #070d24 0%, #101638 40%, #221a4e 75%, #150e38 100%)' },
-        { id: 'ember', name: '暮色余烬', css: 'radial-gradient(130% 110% at 72% 18%, #46201a 0%, #2a0f0d 42%, #150808 78%, #0d0505 100%)' },
-        { id: 'sakura', name: '樱花和纸', css: 'linear-gradient(170deg, #f8f2e9 0%, #f7e7ef 55%, #efdccd 100%)' },
-        { id: 'focus', name: '专注素色', css: 'linear-gradient(180deg, #14161b 0%, #191b21 100%)' },
+        { id: 'aurora', name: i18n.t('plugins.ambience.wallpaper.aurora', { defaultValue: '星夜极光' }), css: 'linear-gradient(165deg, #070d24 0%, #101638 40%, #221a4e 75%, #150e38 100%)' },
+        { id: 'ember', name: i18n.t('plugins.ambience.wallpaper.ember', { defaultValue: '暮色余烬' }), css: 'radial-gradient(130% 110% at 72% 18%, #46201a 0%, #2a0f0d 42%, #150808 78%, #0d0505 100%)' },
+        { id: 'sakura', name: i18n.t('plugins.ambience.wallpaper.sakura', { defaultValue: '樱花和纸' }), css: 'linear-gradient(170deg, #f8f2e9 0%, #f7e7ef 55%, #efdccd 100%)' },
+        { id: 'focus', name: i18n.t('plugins.ambience.wallpaper.focus', { defaultValue: '专注素色' }), css: 'linear-gradient(180deg, #14161b 0%, #191b21 100%)' },
       ],
     },
   ] as const,

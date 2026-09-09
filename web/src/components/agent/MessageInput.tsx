@@ -77,6 +77,11 @@ interface MessageInputProps {
   interruptMode?: boolean
   /** Callback when interject mode is toggled. */
   onInterruptModeChange?: (mode: boolean) => void
+  /** Current model's vision (multimodal image input) switch — purely manual
+   * per-model config (NO whitelist). undefined = unknown (no hint shown);
+   * false = attachments with images get the "vision not enabled" advisory
+   * bar; true = image attachments send a confirmation toast. */
+  modelVision?: boolean
 }
 
 interface PendingAttachment {
@@ -88,6 +93,12 @@ interface PendingAttachment {
   uploading?: boolean
   /** 0..1 — XHR upload.onprogress（驱动 chip 进度条）。 */
   progress?: number
+}
+
+/** Image attachment detection (matches insertUploadedMedia's mime/extension
+ * test — an attachment is an image when the pending chip carries it). */
+function isImageAttachment(p: PendingAttachment): boolean {
+  return p.mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico)$/i.test(p.name)
 }
 
 /** Module-level editor instance ref for test access. */
@@ -143,7 +154,7 @@ function selectWordAtCursor(editor: Editor): boolean {
   return editor.commands.setTextSelection({ from: base + start, to: base + end })
 }
 
-export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange }: MessageInputProps) {
+export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange, modelVision }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
@@ -174,11 +185,11 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 
   // Dynamic placeholder text (updates with goalMode/sendKeyMode/interruptMode/busy)
   const placeholderText = goalMode
-    ? '🎯 输入目标描述，发送后将设为 Goal 并开始执行...'
+    ? t('agent.goal.inputPlaceholderMain')
     : interruptMode
-      ? t('agent.inputPlaceholderInterject') || '插话：立即注入当前 Turn，不打断…'
+      ? t('agent.inputPlaceholderInterject')
       : busy
-        ? t('agent.inputPlaceholderBusy') || 'Agent 处理中 — 消息将排队…'
+        ? t('agent.inputPlaceholderBusy')
         : t(sendKeyMode === 'enter' ? 'agent.inputPlaceholderEnter' : 'agent.inputPlaceholder')
   const placeholderRef = useRef(placeholderText)
   placeholderRef.current = placeholderText
@@ -394,6 +405,12 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           fileMimes: completed.map((p) => p.mime),
         }
       : undefined
+    // Vision confirmation toast: image attachments + model vision ON → tell
+    // the user the images are actually sent to the model as multimodal input.
+    if (modelVision && completed.some(isImageAttachment)) {
+      const n = completed.filter(isImageAttachment).length
+      toast.success(t('agent.visionImagesAttached', { count: String(n) }))
+    }
     // When goalMode is on, send as /goal command (sets goal + starts working).
     // When interruptMode is on, pass interrupt=true (⚡ interject into active turn).
     const content = goalMode ? `/goal ${text}` : text
@@ -402,7 +419,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     if (interruptMode) onInterruptModeChange?.(false)
     editor.commands.clearContent()
     setPending([])
-  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, interruptMode, onInterruptModeChange, t])
+  }, [editor, getText, pending, onCancel, onRewindLatest, onOpenTasks, onSend, busy, goalMode, interruptMode, onInterruptModeChange, modelVision, t])
 
   // Update submit ref (so handleKeyDown always calls the latest submit)
   submitRef.current = submit
@@ -595,9 +612,9 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               setAddingGoal(false)
             }}
             className="min-w-0 flex-1 bg-transparent px-1 text-xs text-text-primary outline-none ring-1 ring-accent/40 rounded"
-            placeholder="输入目标..."
+            placeholder={t('agent.goal.inputPlaceholder')}
           />
-          <span className="shrink-0 text-[10px] text-text-muted">Enter 保存 · Esc 取消</span>
+          <span className="shrink-0 text-[10px] text-text-muted">{t('agent.goal.enterSaveHint')}</span>
         </div>
       )}
       {todoState ? <TodoPullOut todoState={todoState} hasGoal={!!goal || addingGoal} onSetGoal={onSetGoal ? () => {
@@ -623,15 +640,26 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-bg-primary/75 backdrop-blur-[2px]">
             <span className="flex items-center gap-2 text-sm font-medium text-accent">
               <Paperclip className="size-4" />
-              {t('agent.dropToUpload') || '松开以上传文件'}
+              {t('agent.dropToUpload')}
+            </span>
+          </div>
+        )}
+        {/* Vision advisory: image attachments + current model's vision switch OFF →
+            non-blocking hint (the images still send as name-only placeholders;
+            the model will tell the user it can't see them). modelVision ===
+            undefined = unknown state → no hint. */}
+        {modelVision === false && pending.some(isImageAttachment) && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5" data-testid="vision-off-hint">
+            <span className="shrink-0 text-[13px]" aria-hidden>👁</span>
+            <span className="min-w-0 flex-1 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+              {t('agent.visionOffHint')}
             </span>
           </div>
         )}
         {/* Attachment chips (inside container, above editor) */}
         {pending.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {pending.map((p, i) => (
-              <span
+            {pending.map((p, i) => (              <span
                 key={`${p.uploadKey}-${i}`}
                 className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-1 text-xs text-text-secondary"
               >
@@ -714,7 +742,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="设为目标模式"
+              aria-label={t('agent.goalModeAria')}
               onClick={() => setGoalMode((v) => !v)}
               className={cn(
                 'size-9 rounded-md transition-all',
@@ -722,7 +750,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                   ? 'bg-accent/15 text-accent ring-1 ring-accent/40 shadow-[0_0_8px_rgba(var(--accent-rgb),0.3)]'
                   : 'text-text-muted hover:text-text-primary',
               )}
-              title={goalMode ? '目标模式已开启（发送后将设为 Goal）' : '开启目标模式'}
+              title={goalMode ? t('agent.goalModeOn') : t('agent.goalModeOff')}
             >
               <Target className={cn('size-4', goalMode && 'animate-pulse [animation-duration:2s]')} />
             </Button>
@@ -731,7 +759,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             {busy && onInterruptModeChange && (
               <button
                 type="button"
-                aria-label={interruptMode ? '切换到排队模式' : '切换到插话模式'}
+                aria-label={interruptMode ? t('agent.switchToQueueMode') : t('agent.switchToInterjectMode')}
                 onClick={() => onInterruptModeChange(!interruptMode)}
                 className={cn(
                   'flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition-all',
@@ -740,7 +768,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
                     : 'bg-indigo-500/10 text-indigo-600 ring-1 ring-indigo-500/20 dark:text-indigo-400',
                   'hover:opacity-80',
                 )}
-                title={interruptMode ? '插话模式：发送后立即注入当前 Turn' : '排队模式：发送后排队等待'}
+                title={interruptMode ? t('agent.interjectModeHint') : t('agent.queueModeHint')}
               >
                 {interruptMode ? <Zap className="size-4" /> : <Clock className="size-4" />}
               </button>
@@ -755,11 +783,11 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             <Button
               type="button"
               size="icon-sm"
-              aria-label={hasContent && busy ? (interruptMode ? '↵ 插话' : '↵ 排队发送') : busy ? t('common.cancel') : goalMode ? '设为目标' : t('agent.send')}
+              aria-label={hasContent && busy ? (interruptMode ? t('agent.interjectSend') : t('agent.queuedSend')) : busy ? t('common.cancel') : goalMode ? t('agent.setAsGoal') : t('agent.send')}
               disabled={hasContent ? !canSend : (busy ? cancelling : !canSend)}
               onClick={hasContent || !busy ? submit : onCancel}
               className={cn(
-                'size-9 shrink-0 rounded-md transition-all',
+                'size-9 shrink-0 rounded-md transition-all duration-150 active:scale-95',
                 hasContent || !busy
                   ? goalMode
                     ? 'bg-accent text-accent-foreground shadow-[0_0_12px_rgba(var(--accent-rgb),0.4)]'

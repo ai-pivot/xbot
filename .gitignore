@@ -52,6 +52,9 @@ logs/
 bin/
 dist/
 build/
+# Plugin web assets built into the source tree (make plugins-web / plugins-install
+# esbuild output — release pipeline stages them separately via package.sh)
+plugins/*/web/
 
 # Runtime output
 data/

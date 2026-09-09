@@ -50,6 +50,8 @@ type SubscriptionModel struct {
 	ThinkingMode    string // thinking mode override
 	APIType         string // API type override: "" (use subscription default), "responses"
 	Enabled         bool   // whether this model is selectable (v38); default true
+	Vision          bool   // model accepts image (multimodal) input; purely manual, NO built-in model-name whitelist
+	VisionDetail    string // OpenAI image_url.detail hint ("low"|"high"|"" = auto)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -106,6 +108,8 @@ func (s *LLMSubscriptionService) loadPerModelConfigs(sub *LLMSubscription) {
 			MaxContext:      m.MaxContext,
 			APIType:         m.APIType,
 			Enabled:         m.Enabled,
+			Vision:          m.Vision,
+			VisionDetail:    m.VisionDetail,
 		}
 	}
 }
@@ -150,7 +154,7 @@ func (s *LLMSubscriptionService) loadPerModelConfigsBatch(subs []*LLMSubscriptio
 	}
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail
 		FROM subscription_models
 		WHERE subscription_id IN (`+strings.Join(placeholders, ",")+`)
 		ORDER BY subscription_id, created_at ASC
@@ -185,6 +189,8 @@ func (s *LLMSubscriptionService) loadPerModelConfigsBatch(subs []*LLMSubscriptio
 				MaxContext:      m.MaxContext,
 				APIType:         m.APIType,
 				Enabled:         m.Enabled,
+				Vision:          m.Vision,
+				VisionDetail:    m.VisionDetail,
 			}
 		}
 	}
@@ -224,15 +230,22 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	return subs, nil
 }
 
-// List returns all subscriptions for a user, ordered by creation time.
+// List returns all subscriptions of the (single) operator, ordered by creation
+// time.
+//
+// SINGLE OPERATOR (post-v63): every row belongs to the one operator — the v63
+// migration collapsed user_llm_subscriptions.sender_id to the operator id. The
+// senderID parameter is retained for call-site compatibility but is NOT used as
+// a filter: filtering by a stale pre-v63 sender id made the list come back
+// empty (same bug class as GetUserDefaultModel).
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
+	_ = senderID // single operator: all rows belong to the operator
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT `+userLLMSubscriptionSelectCols+`
+			SELECT ` + userLLMSubscriptionSelectCols + `
 				FROM user_llm_subscriptions
-				WHERE sender_id = ?
 				ORDER BY created_at ASC
-			`, senderID)
+			`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
@@ -336,7 +349,7 @@ func (s *LLMSubscriptionService) Add(sub *LLMSubscription) error {
 
 	// Persist any per-model overrides to the subscription_models table (sole source since v42).
 	for model, cfg := range sub.PerModelConfigs {
-		if err := s.upsertModelTx(tx, sub.ID, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType); err != nil {
+		if err := s.upsertModelTx(tx, sub.ID, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType, cfg.Vision, cfg.VisionDetail); err != nil {
 			return fmt.Errorf("upsert per-model %s: %w", model, err)
 		}
 	}
@@ -498,7 +511,7 @@ func (s *LLMSubscriptionService) UpdatePerModelConfigs(id string, configs map[st
 		return fmt.Errorf("clear subscription_models: %w", err)
 	}
 	for model, cfg := range configs {
-		if err := s.upsertModelTx(tx, id, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType); err != nil {
+		if err := s.upsertModelTx(tx, id, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType, cfg.Vision, cfg.VisionDetail); err != nil {
 			return fmt.Errorf("upsert model %s: %w", model, err)
 		}
 	}
@@ -544,15 +557,18 @@ func (sub *LLMSubscription) GetPerModelAPIType(model string) string {
 // ─── SubscriptionModel CRUD ─────────────────────────────
 
 // scanSubscriptionModel scans a subscription_models row into a SubscriptionModel.
+// Column order MUST match the SELECT lists (id, subscription_id, model, max_context,
+// max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail).
 func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *SubscriptionModel) error {
 	var createdAt, updatedAt string
-	var enabled int
+	var enabled, vision int
 	err := scanner.Scan(&m.ID, &m.SubscriptionID, &m.Model, &m.MaxContext,
-		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt, &enabled)
+		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt, &enabled, &vision, &m.VisionDetail)
 	if err != nil {
 		return err
 	}
 	m.Enabled = enabled == 1
+	m.Vision = vision == 1
 	m.CreatedAt = parseSQLiteTime(createdAt)
 	m.UpdatedAt = parseSQLiteTime(updatedAt)
 	return nil
@@ -562,7 +578,7 @@ func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *Subscript
 func (s *LLMSubscriptionService) GetModels(subID string) ([]*SubscriptionModel, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail
 		FROM subscription_models WHERE subscription_id = ? ORDER BY created_at ASC
 	`, subID)
 	if err != nil {
@@ -586,7 +602,7 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 	m := &SubscriptionModel{}
 	err := scanSubscriptionModel(
 		conn.QueryRow(`
-			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail
 			FROM subscription_models WHERE subscription_id = ? AND model = ?
 		`, subID, model),
 		m,
@@ -601,27 +617,71 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 }
 
 // UpsertModel inserts or updates a model row in subscription_models.
+// NOTE: on conflict the vision columns are NOT updated — vision is a manual
+// per-model switch (no built-in whitelist) managed exclusively via
+// SetModelVisionConfig, so token-config upserts never reset it.
 func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
 	conn := s.db.Conn()
-	return s.upsertModelTx(conn, subID, model, maxCtx, maxOut, thinking, apiType)
+	return s.upsertModelTx(conn, subID, model, maxCtx, maxOut, thinking, apiType, false, "")
 }
 
 // upsertModelTx is the tx-aware core of UpsertModel.
+// The INSERT carries vision/visionDetail (new rows honor the values — Add and
+// UpdatePerModelConfigs pass cfg.Vision), but the ON CONFLICT UPDATE does NOT
+// touch the vision columns: an existing row keeps its manual vision switch
+// unless SetModelVisionConfig changes it explicitly.
 func (s *LLMSubscriptionService) upsertModelTx(tx interface {
 	Exec(query string, args ...any) (sql.Result, error)
-}, subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
+}, subID, model string, maxCtx, maxOut int, thinking, apiType string, vision bool, visionDetail string) error {
+	v := 0
+	if vision {
+		v = 1
+	}
 	_, err := tx.Exec(`
-		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type)
-		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?)
+		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, vision, vision_detail)
+		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(subscription_id, model) DO UPDATE SET
 			max_context = excluded.max_context,
 			max_output_tokens = excluded.max_output_tokens,
 			thinking_mode = excluded.thinking_mode,
 			api_type = excluded.api_type,
 			updated_at = datetime('now')
-	`, subID, model, maxCtx, maxOut, thinking, apiType)
+	`, subID, model, maxCtx, maxOut, thinking, apiType, v, visionDetail)
 	if err != nil {
 		return fmt.Errorf("upsert model: %w", err)
+	}
+	return nil
+}
+
+// SetModelVisionConfig updates ONLY the vision columns for a model row,
+// preserving all per-model token/api_type config. This is the sole write path
+// for the vision switch (mirrors SetModelEnabled's single-column pattern) so
+// token-config upserts can never clobber it.
+func (s *LLMSubscriptionService) SetModelVisionConfig(subID, model string, vision bool, visionDetail string) error {
+	conn := s.db.Conn()
+	v := 0
+	if vision {
+		v = 1
+	}
+	res, err := conn.Exec(`
+		UPDATE subscription_models SET vision = ?, vision_detail = ?, updated_at = datetime('now')
+		WHERE subscription_id = ? AND model = ?
+	`, v, visionDetail, subID, model)
+	if err != nil {
+		return fmt.Errorf("set model vision: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Row doesn't exist yet — create it with only the vision config set.
+		if _, err := conn.Exec(`
+			INSERT INTO subscription_models (id, subscription_id, model, vision, vision_detail)
+			VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)
+			ON CONFLICT(subscription_id, model) DO UPDATE SET
+				vision = excluded.vision,
+				vision_detail = excluded.vision_detail,
+				updated_at = datetime('now')
+		`, subID, model, v, visionDetail); err != nil {
+			return fmt.Errorf("set model vision (insert): %w", err)
+		}
 	}
 	return nil
 }
@@ -752,15 +812,26 @@ type UserDefaultModel struct {
 	UpdatedAt      time.Time
 }
 
-// GetUserDefaultModel returns the user's default model selection, or nil if unset.
+// GetUserDefaultModel returns the operator's default model selection, or nil
+// if unset.
+//
+// SINGLE OPERATOR (post-v63): the multi-user architecture was removed and every
+// sender collapses to one operator identity, so this table holds AT MOST ONE
+// row. The senderID parameter is kept for call-site compatibility but is NOT
+// used for filtering — filtering by a stale pre-v63 sender id (e.g. 'web-4')
+// made the lookup miss and the fallback chain land on the deployment
+// defaultModel instead of the operator's actual choice. Reading the single row
+// unconditionally is both simpler and impossible to "cross users" (there is
+// exactly one user).
 func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefaultModel, error) {
+	_ = senderID // single operator: the table holds at most one row
 	conn := s.db.Conn()
 	m := &UserDefaultModel{}
 	var updatedAt string
 	err := conn.QueryRow(`
 		SELECT sender_id, subscription_id, model, updated_at
-		FROM user_default_model WHERE sender_id = ?
-	`, senderID).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
+		FROM user_default_model ORDER BY updated_at DESC LIMIT 1
+	`).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -771,11 +842,23 @@ func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefa
 	return m, nil
 }
 
-// SetUserDefaultModel sets the user's default (subscription, model). An empty
+// SetUserDefaultModel sets the operator's default (subscription, model). An empty
 // model means "use the subscription's default model" and is allowed only when the
 // caller intends to defer model selection.
+//
+// SINGLE OPERATOR: the row is stored under the canonical operator id and every
+// legacy row (pre-v63 sender ids) is purged first, so the sender-agnostic
+// reader (GetUserDefaultModel) and ClearUserDefaultModel always agree with the
+// writer (CR: 读取端已忽略 sender_id，但写入/清除端仍按 sender_id，两边不对称
+// → "清除默认模型"可能无效 / 多行共存).
 func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model string) error {
+	_ = senderID // single operator
 	conn := s.db.Conn()
+	if _, err := conn.Exec(
+		`DELETE FROM user_default_model WHERE sender_id != ?`, singleOperatorSender,
+	); err != nil {
+		return fmt.Errorf("set user default model (purge legacy rows): %w", err)
+	}
 	_, err := conn.Exec(`
 		INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
@@ -783,17 +866,20 @@ func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model stri
 			subscription_id = excluded.subscription_id,
 			model = excluded.model,
 			updated_at = datetime('now')
-	`, senderID, subID, model)
+	`, singleOperatorSender, subID, model)
 	if err != nil {
 		return fmt.Errorf("set user default model: %w", err)
 	}
 	return nil
 }
 
-// ClearUserDefaultModel removes the user's default model selection.
+// ClearUserDefaultModel removes the operator's default model selection.
+//
+// SINGLE OPERATOR: delete every row (legacy sender rows included) — a
+// sender-scoped DELETE left the row the sender-agnostic reader picked up.
 func (s *LLMSubscriptionService) ClearUserDefaultModel(senderID string) error {
-	conn := s.db.Conn()
-	_, err := conn.Exec(`DELETE FROM user_default_model WHERE sender_id = ?`, senderID)
+	_ = senderID // single operator
+	_, err := s.db.Conn().Exec(`DELETE FROM user_default_model`)
 	if err != nil {
 		return fmt.Errorf("clear user default model: %w", err)
 	}

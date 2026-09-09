@@ -22,6 +22,7 @@ import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
 import { useTypewriter } from '@/hooks/useTypewriter'
+import { useI18n } from '@/providers/i18n'
 import { dedupTools } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
 import type { CollapseLevel } from '@/types/agent'
@@ -39,6 +40,7 @@ export const LiveIteration = memo(function LiveIteration({
   level,
   mergeTools = true,
 }: LiveIterationProps) {
+  const { t } = useI18n()
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
   const hasReasoning = Boolean(reasoningContent)
@@ -204,11 +206,11 @@ export const LiveIteration = memo(function LiveIteration({
         <ThinkingLine
           label={reasoningInProgress
             ? <SweepText
-                text={'思考中… ' + reasoningCount + ' 字'}
+                text={t('agent.thinkingLive', { count: reasoningCount })}
                 color="var(--text-muted)"
                 className="text-[10px]"
               />
-            : '思考 ' + reasoningCount + ' 字'}
+            : t('agent.thoughtChars', { count: reasoningCount })}
         >
           <div className={rw.isTyping ? 'typewriter-fade' : 'typewriter-done'}>
             <ReasoningBlock

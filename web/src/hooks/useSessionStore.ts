@@ -853,6 +853,10 @@ export function useSessionStoreImpl(): SessionStore {
   activeSessionRef.current = activeSession
   const refreshSeqRef = useRef(0)
   const loadMoreSeqRef = useRef(0)
+  /** In-flight guard for loadMore (see loadMore below): a second trigger while
+   * a page request is in flight would reuse the same offset and duplicate the
+   * page — the "无限加载 + 重复内容" sidebar bug on mobile. */
+  const loadingMoreRef = useRef(false)
   const switchSeqRef = useRef(0)
   const subAgentRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const transientSubAgentsRef = useRef(new Map<string, TransientSubAgent>())
@@ -921,6 +925,14 @@ export function useSessionStoreImpl(): SessionStore {
     // concurrent refresh (SSE events trigger refresh frequently). Previously
     // they shared refreshSeqRef, so an SSE event mid-loadMore would cancel
     // the load (seq mismatch → early return → loaded page discarded).
+    //
+    // in-flight guard: the IntersectionObserver can fire again before the
+    // response lands (list re-render / sentinel still visible on a phone
+    // viewport). Without this guard both requests used the SAME not-yet-
+    // advanced offset and returned the SAME page — the list never grew, the
+    // sentinel stayed visible and the user saw "永远加载不完 + 重复内容循环".
+    if (loadingMoreRef.current) return
+    loadingMoreRef.current = true
     const seq = ++loadMoreSeqRef.current
     setError(null)
     try {
@@ -930,8 +942,16 @@ export function useSessionStoreImpl(): SessionStore {
         limit: SESSION_TREE_PAGE_SIZE,
       })
       if (seq !== loadMoreSeqRef.current) return
+      // offset MUST advance. A backend that echoes the same next_offset (or a
+      // non-number) would make the sentinel fire forever: stop paginating
+      // instead of looping on the same page.
+      const nextOffset = typeof data.next_offset === 'number' ? data.next_offset : offset
+      if (nextOffset <= offset) {
+        setHasMore(false)
+        return
+      }
+      nextOffsetRef.current = nextOffset
       setHasMore(data.has_more ?? false)
-      if (typeof data.next_offset === 'number') nextOffsetRef.current = data.next_offset
       const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
       const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
       const withUnread = applyPersistedUnreadStatuses(mainSessions, new Set(unreadIdsRef.current), activeSessionRef.current)

@@ -8,6 +8,7 @@
  *   后端从会话身份注入 sender_id，不信任前端参数）
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
 import { useCwd } from '@/hooks/useCwd'
 import { postAPI, postRawAPI } from '@/lib/api'
@@ -30,6 +31,7 @@ interface SkillDetail {
 }
 
 export function SkillManagerPanel() {
+  const isTouch = useIsTouch()
   const runtime = usePluginRuntime()
   const { t } = useI18n()
   const { cwd } = useCwd()
@@ -167,8 +169,8 @@ export function SkillManagerPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b px-3 py-2">
-        <span className="text-sm font-medium">{t('sidebar.skills')}</span>
+      {/* 不再重复 PanelChrome header 的标题（"技能"）——只留安装操作 */}
+      <div className="flex items-center justify-end border-b border-border/40 px-1.5 py-1">
         <Button
           size="sm"
           variant="ghost"
@@ -205,7 +207,7 @@ export function SkillManagerPanel() {
             {skills.map((skill) => (
               <li
                 key={`${skill.source}:${skill.name}`}
-                className="rounded-md border p-2"
+                className="group/card rounded-lg bg-bg-secondary/50 p-2.5 transition-spring hover:bg-bg-secondary/80"
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
@@ -226,7 +228,7 @@ export function SkillManagerPanel() {
                       </div>
                     )}
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
+                  <div className={`flex shrink-0 items-center gap-1 transition-spring ${isTouch ? '' : 'opacity-0 group-hover/card:opacity-100'}`}>
                     <Button size="sm" variant="ghost" title={t('skills.view')} onClick={() => void handleView(skill)}>
                       <Eye className="h-3.5 w-3.5" />
                     </Button>

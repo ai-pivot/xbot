@@ -416,6 +416,53 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v64: per-model vision (multimodal image input) configuration on
+	// subscription_models — purely manual per-model switches (no built-in
+	// model-name whitelist; the operator enables vision per model in the
+	// model editor). vision = image content parts enabled; vision_detail is
+	// the OpenAI image_url.detail hint (low|high|"" = auto).
+	if from < 64 {
+		if err := migrateV63ToV64(db); err != nil {
+			return fmt.Errorf("migrate to v64: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV63ToV64 adds the per-model vision columns to subscription_models.
+// Purely additive ALTER TABLE ADD COLUMN — no data rewrite. Idempotent via
+// columnExists (test fixtures may hand-build a v63 schema where createSchema
+// of the current version already included the columns).
+func migrateV63ToV64(db *DB) error {
+	conn := db.Conn()
+	// ⚠️ 测试 fixture 可能手建 v62 最小 schema（无 subscription_models 表）——
+	// 表不存在时跳过列添加（与 v63 迁移的 tableExists 守卫模式一致：
+	// migration_v63_test.go 的 fixture 会一路迁到最新版本，缺守卫即 "no such table"）。
+	hasTable, err := tableExists(conn, "subscription_models")
+	if err != nil {
+		return fmt.Errorf("migrate v63->v64 check table: %w", err)
+	}
+	if hasTable {
+		for _, c := range []struct{ name, ddl string }{
+			{"vision", "ALTER TABLE subscription_models ADD COLUMN vision INTEGER NOT NULL DEFAULT 0"},
+			{"vision_detail", "ALTER TABLE subscription_models ADD COLUMN vision_detail TEXT NOT NULL DEFAULT ''"},
+		} {
+			exists, err := columnExists(conn, "subscription_models", c.name)
+			if err != nil {
+				return fmt.Errorf("migrate v63->v64 check %s: %w", c.name, err)
+			}
+			if !exists {
+				if _, err := conn.Exec(c.ddl); err != nil {
+					return fmt.Errorf("migrate v63->v64 add %s: %w", c.name, err)
+				}
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 64"); err != nil {
+		return fmt.Errorf("migrate v63->v64 update version: %w", err)
+	}
+	log.Info("Database migrated to v64 (subscription_models.vision + vision_detail for multimodal image input)")
 	return nil
 }
 

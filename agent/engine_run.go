@@ -2187,6 +2187,22 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 		s.messages = s.syncMessages(append(s.messages, toolMsg))
 	}
 
+	// view_image tool: images cannot ride on tool messages (OpenAI tool role
+	// is text-only). Collect the injections and append a follow-up USER
+	// message carrying the stable markdown references — the only role
+	// multimodal content parts can travel on. The LLM layer resolves the
+	// references into base64 parts at request-build time (vision on) or
+	// degrades them to placeholders (vision off).
+	var pendingImages []tools.ImageInjection
+	for _, r := range execResults {
+		if r.result != nil {
+			pendingImages = append(pendingImages, r.result.Images...)
+		}
+	}
+	if len(pendingImages) > 0 {
+		s.injectViewImages(ctx, pendingImages)
+	}
+
 	// Invalidate stale Read offloads after any tool execution
 	if s.cfg.OffloadStore != nil {
 		staleIDs := s.cfg.OffloadStore.InvalidateStaleReads(ctx, s.offloadSessionKey, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID)
@@ -2305,6 +2321,42 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 	}
 
 	return nil
+}
+
+// injectViewImages appends the view_image tool's injections as a follow-up
+// USER message carrying stable markdown references. User role is the only
+// multimodal carrier (OpenAI tool messages are text-only) — the LLM layer
+// (llm.parseMultimodalContent) resolves each ![label](/api/files/viewimg/...)
+// reference into a base64 content part at request-build time when the model's
+// manual vision switch is on; vision off degrades them to placeholders.
+//
+// The message is persisted through the normal session pipeline (turnID
+// stamped, incremental watermark advanced) so history replay renders the
+// image (the relative viewimg URL renders in the web frontend's <img> too).
+func (s *runState) injectViewImages(ctx context.Context, injections []tools.ImageInjection) {
+	var b strings.Builder
+	b.WriteString("📷 以下图片已通过 view_image 工具加载，可直接进行视觉分析：\n\n")
+	for _, inj := range injections {
+		fmt.Fprintf(&b, "![%s](%s)\n", inj.Label, inj.Ref)
+	}
+	msg := llm.NewUserMessage(b.String())
+	msg.TurnID = s.cfg.TurnID
+	if s.cfg.Session != nil {
+		if historyIDs, err := s.cfg.Session.AppendMessages([]llm.ChatMessage{msg}); err != nil {
+			log.Ctx(ctx).WithError(err).Warn("view_image: persist injected user message failed — message still enters the in-memory context")
+		} else if len(historyIDs) > 0 {
+			msg.ID = historyIDs[0]
+		}
+	}
+	s.messages = s.syncMessages(append(s.messages, msg))
+	if s.cfg.Session != nil && s.persistence != nil {
+		s.persistence.MarkAllPersisted(len(s.messages))
+	}
+	log.Ctx(ctx).WithFields(log.Fields{
+		"images":    len(injections),
+		"turn_id":   s.cfg.TurnID,
+		"iteration": s.iterationNow(),
+	}).Info("view_image: injected user message with image references")
 }
 
 func (s *runState) waitingUserMetadata() map[string]string {

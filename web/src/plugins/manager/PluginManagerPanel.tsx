@@ -12,6 +12,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 import { usePluginRuntime } from '@/plugin-runtime'
+import { useIsTouch } from '@/hooks/useIsMobile'
+import { useI18n } from '@/providers/i18n'
 import { toManifest, type WebPluginDecl } from '@/plugin-runtime/usePluginRuntimeHost'
 import { installPluginFile } from '@/components/agent/api'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -33,7 +35,9 @@ interface PluginStatusResponse {
 type PendingAction = 'toggle' | 'reload'
 
 export function PluginManagerPanel() {
+  const isTouch = useIsTouch()
   const runtime = usePluginRuntime()
+  const { t } = useI18n()
   const [backendPlugins, setBackendPlugins] = useState<BackendPlugin[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -125,24 +129,24 @@ export function PluginManagerPanel() {
 
   return (
     <div className="flex h-full flex-col gap-2 p-3 text-xs">
-      <div className="flex items-center justify-between">
-        <span className="font-semibold uppercase tracking-wide text-text-secondary">插件</span>
+      {/* 不再重复 PanelChrome header 的标题（"插件"）——只留操作按钮 */}
+      <div className="flex items-center justify-end">
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={installing}
-            className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-md bg-bg-tertiary/50 px-2.5 py-1 text-text-secondary transition-spring hover:bg-bg-tertiary disabled:opacity-50"
           >
             {installing && <Loader2 className="h-3 w-3 animate-spin" />}
-            {installing ? '安装中…' : '安装'}
+            {installing ? t('plugins.manager.installing') : t('plugins.manager.install')}
           </button>
           <button
             onClick={() => void refresh()}
             disabled={loading}
-            className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-md bg-bg-tertiary/50 px-2.5 py-1 text-text-secondary transition-spring hover:bg-bg-tertiary disabled:opacity-50"
           >
             {loading && <Loader2 className="h-3 w-3 animate-spin" />}
-            {loading ? '刷新中…' : '刷新'}
+            {loading ? t('plugins.manager.refreshing') : t('plugins.manager.refresh')}
           </button>
           <input
             ref={fileInputRef}
@@ -168,7 +172,7 @@ export function PluginManagerPanel() {
         {loading ? (
           // 加载骨架屏：列表项结构占位，避免空白等待
           Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="rounded border border-border bg-bg-elevated p-2">
+            <div key={i} className="group/card rounded-lg bg-bg-secondary/50 p-2.5 transition-spring hover:bg-bg-secondary/80">
               <div className="flex items-center gap-2">
                 <Skeleton className="h-2 w-2 rounded-full" />
                 <Skeleton className="h-3 w-24" />
@@ -182,7 +186,7 @@ export function PluginManagerPanel() {
             </div>
           ))
         ) : backendPlugins.length === 0 ? (
-          <div className="py-6 text-center text-text-muted">暂无插件</div>
+          <div className="py-6 text-center text-text-muted">{t('plugins.manager.empty')}</div>
         ) : (
           <AnimatePresence initial={false}>
             {backendPlugins.map((p) => {
@@ -196,7 +200,7 @@ export function PluginManagerPanel() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.98 }}
                   transition={{ duration: 0.18, ease: 'easeOut' }}
-                  className="rounded border border-border bg-bg-elevated p-2"
+                  className="group/card rounded-lg bg-bg-secondary/50 p-2.5 transition-spring hover:bg-bg-secondary/80"
                 >
                   <div className="flex items-center gap-2">
                     <motion.span
@@ -206,25 +210,26 @@ export function PluginManagerPanel() {
                     <span className="truncate font-medium">{p.name}</span>
                     <span className="ml-auto text-[10px] text-text-muted">v{p.version}</span>
                   </div>
-                  <div className="mt-1 truncate text-[10px] text-text-muted">{p.id}</div>
-                  <div className="mt-2 flex gap-1.5">
+                  <div className={`mt-2 flex gap-1.5 transition-spring ${isTouch ? '' : 'opacity-0 group-hover/card:opacity-100'}`}>
                     <button
                       onClick={() => void doToggleEnabled(p.id, !isActive)}
                       disabled={isPending === 'toggle'}
-                      className={isActive
-                        ? 'flex items-center gap-1 rounded border border-red-200 px-2 py-0.5 text-red-600 hover:bg-red-50 disabled:opacity-50'
-                        : 'flex items-center gap-1 rounded border border-green-200 px-2 py-0.5 text-green-600 hover:bg-green-50 disabled:opacity-50'}
+                      className={`flex items-center gap-1 rounded-md px-2 py-0.5 transition-spring disabled:opacity-50 ${
+                        isActive
+                          ? 'bg-bg-tertiary/50 text-text-secondary hover:bg-red-500/15 hover:text-red-400'
+                          : 'bg-bg-tertiary/50 text-text-secondary hover:bg-emerald-500/15 hover:text-emerald-400'
+                      }`}
                     >
                       {isPending === 'toggle' && <Loader2 className="h-3 w-3 animate-spin" />}
-                      {isPending === 'toggle' ? '处理中…' : (isActive ? '禁用' : '启用')}
+                      {isPending === 'toggle' ? t('plugins.manager.processing') : (isActive ? t('plugins.manager.disable') : t('plugins.manager.enable'))}
                     </button>
                     <button
                       onClick={() => void doReload(p.id)}
                       disabled={isPending === 'reload'}
-                      className="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-text-secondary hover:bg-bg-hover disabled:opacity-50"
+                      className="flex items-center gap-1 rounded-md bg-bg-tertiary/50 px-2 py-0.5 text-text-secondary transition-spring hover:bg-bg-tertiary disabled:opacity-50"
                     >
                       {isPending === 'reload' && <Loader2 className="h-3 w-3 animate-spin" />}
-                      {isPending === 'reload' ? '重载中…' : '重载'}
+                      {isPending === 'reload' ? t('plugins.manager.reloading') : t('plugins.manager.reload')}
                     </button>
                   </div>
                 </motion.div>

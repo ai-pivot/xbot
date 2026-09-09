@@ -459,6 +459,144 @@ func (m *BackgroundTaskManager) Adopt(
 
 	return task
 }
+
+// RunningExecHandle wraps an ALREADY-RUNNING execution (started by
+// executeForeground's streaming goroutine) so BgTaskManager can adopt it as
+// a background task when the user promotes a foreground shell. The execution
+// keeps running in its original goroutine — AdoptRunning never re-executes.
+type RunningExecHandle struct {
+	// Output returns the output accumulated so far (thread-safe snapshot).
+	Output func() string
+	// Done is closed when the execution finishes (any exit code, incl. error).
+	Done <-chan struct{}
+	// Result returns the final exit code and exec error. Only call after
+	// Done is closed.
+	Result func() (int, error)
+	// Cancel kills the execution (process tree) and releases its resources.
+	Cancel context.CancelFunc
+
+	onDeltaMu sync.RWMutex
+	onDelta   func(string)
+}
+
+// SetOnDelta registers a real-time output push callback (e.g. SSE
+// bg_task_output for the web task panel). Called after adoption so output
+// produced from then on streams to subscribers — safe to call at any time.
+// The callback receives one output chunk; the adopter wraps it with the
+// session/task routing it captured.
+func (h *RunningExecHandle) SetOnDelta(fn func(delta string)) {
+	h.onDeltaMu.Lock()
+	h.onDelta = fn
+	h.onDeltaMu.Unlock()
+}
+
+// fireDelta pushes a streaming output chunk to the registered callback (if
+// any). Called by the executing goroutine's output buffer closure.
+func (h *RunningExecHandle) fireDelta(s string) {
+	h.onDeltaMu.RLock()
+	fn := h.onDelta
+	h.onDeltaMu.RUnlock()
+	if fn != nil && s != "" {
+		fn(s)
+	}
+}
+
+// AdoptRunning adopts an already-running execution (from a promoted foreground
+// shell) as a background task. Unlike Start (launches a new goroutine) or
+// Adopt (monitors an OS process), the execution was started elsewhere and is
+// still in flight — the manager only takes over lifecycle management:
+// completion notification, task_status/task_wait/task_kill, web task panel.
+func (m *BackgroundTaskManager) AdoptRunning(
+	sessionKey string,
+	senderID string,
+	command string,
+	startedAt time.Time,
+	handle *RunningExecHandle,
+) *BackgroundTask {
+	id := generateTaskID()
+	task := &BackgroundTask{
+		ID:         id,
+		Command:    command,
+		Status:     BgTaskRunning,
+		StartedAt:  startedAt,
+		ExitCode:   -1,
+		Output:     handle.Output(),
+		sessionKey: sessionKey,
+		senderID:   senderID,
+		done:       make(chan struct{}),
+	}
+	task.cancel = func() {
+		task.mu.Lock()
+		task.killed = true
+		task.mu.Unlock()
+		handle.Cancel()
+	}
+
+	m.mu.Lock()
+	m.tasks[id] = task
+	m.sessions[sessionKey] = append(m.sessions[sessionKey], id)
+	m.mu.Unlock()
+
+	go func() {
+		// Wait for the execution to finish (or a Kill to cancel it —
+		// handle.Cancel kills the process, which closes Done).
+		<-handle.Done
+		exitCode, execErr := handle.Result()
+
+		task.mu.Lock()
+		wasKilled := task.killed
+		now := time.Now()
+		task.FinishedAt = &now
+		task.ExitCode = exitCode
+		task.Output = handle.Output()
+		if len(task.Output) > maxBgOutputSize {
+			task.Output = task.Output[len(task.Output)-maxBgOutputSize:]
+		}
+
+		if execErr != nil {
+			if wasKilled {
+				task.Status = BgTaskKilled
+				task.Error = "killed by user"
+			} else {
+				task.Status = BgTaskError
+				task.Error = execErr.Error()
+			}
+		} else if wasKilled {
+			task.Status = BgTaskKilled
+			task.Error = "killed by user"
+			task.ExitCode = -1
+		} else {
+			task.Status = BgTaskDone
+		}
+		task.mu.Unlock()
+		close(task.done)
+
+		log.WithFields(log.Fields{
+			"task_id":   id,
+			"status":    task.Status,
+			"exit_code": exitCode,
+			"elapsed":   now.Sub(task.StartedAt).Round(time.Millisecond),
+		}).Info("Adopted running exec (promoted shell) completed")
+
+		// Fire callbacks
+		m.mu.RLock()
+		cbs := m.callbacks[sessionKey]
+		m.mu.RUnlock()
+		for _, cb := range cbs {
+			cb(task)
+		}
+
+		// Notify engine (non-blocking)
+		select {
+		case m.NotifyCh <- task:
+		default:
+			log.WithField("task_id", id).Warn("Background task notify channel full, dropping notification")
+		}
+	}()
+
+	return task
+}
+
 func (m *BackgroundTaskManager) Kill(taskID string) error {
 	m.mu.RLock()
 	task, ok := m.tasks[taskID]

@@ -110,6 +110,17 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
     return () => clearInterval(timer)
   }, [bgTasks, refresh, sessionKeyForEffect])
 
+  // Refresh immediately when a foreground shell is promoted to background
+  // (dispatched by the Shell promote button) — without this, a freshly
+  // promoted task only appears after the 30s poll tick. Same window-event
+  // pattern as 'bg-task-output' (BackgroundPanel); the refresh carries its
+  // own session/seq guards.
+  useEffect(() => {
+    const onPromoted = () => void refresh()
+    window.addEventListener('bg-task-promoted', onPromoted)
+    return () => window.removeEventListener('bg-task-promoted', onPromoted)
+  }, [refresh])
+
   return { cronTasks, bgTasks, loading, error, refresh, killBgTask }
 }
 

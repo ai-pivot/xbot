@@ -35,6 +35,7 @@ delegate, and schedule.
 | **Skills** | Markdown capability packs that guide the agent on specific tasks | [skills-agents.md](skills-agents/) |
 | **SubAgents** | Role-based child agents for delegation and parallel work | [skills-agents.md](skills-agents/) |
 | **Group Chat** | Moderated multi-agent meetings with @mention triggers | [skills-agents.md](skills-agents/) |
+| **Multimodal Vision** | Images into the model's visual context (uploads / Feishu / view_image tool; manual per-model switch) | [vision.md](vision/) |
 | **MCP** | Model Context Protocol for external tool integration | [mcp.md](mcp/) |
 | **Memory** | Flat (default) or Letta (MemGPT) memory providers | [memory.md](memory/) |
 | **Plugins** | Script-based plugins: info bar widgets, tool hints, custom tools | [plugins.md](plugins/) |

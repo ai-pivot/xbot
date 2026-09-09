@@ -222,13 +222,14 @@ func TestMigrateV62ToV63_CollapsesMultiUserToSingleOperator(t *testing.T) {
 		}
 	}
 
-	// schema_version = 63.
+	// schema_version 迁到最新（v63 之后还有 v64 vision 列迁移）——用常量断言，
+	// 后续版本升级无需再改此处。
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 63 {
-		t.Fatalf("schema version = %d, want 63", version)
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 	}
 
 	// user_settings: every row is cli_user; the operator wins conflicts;
@@ -406,6 +407,6 @@ func TestMigrateV62ToV63_Idempotent(t *testing.T) {
 		t.Fatalf("read version: %v", err)
 	}
 	if version != 63 {
-		t.Errorf("version after re-run = %d, want 63", version)
+		t.Errorf("version after re-run = %d, want %d", version, schemaVersion)
 	}
 }
