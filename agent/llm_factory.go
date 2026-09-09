@@ -977,7 +977,7 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 	// Priority 3: the existing (poisoned) binding's subscription — repair with
 	// its own Model column / first enabled model row. Only applies when a subID
 	// is present but the model is empty (repair path, not initial binding).
-	if boundSubID, _, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); boundSubID != "" {
+	if boundSubID != "" {
 		if sub := f.lookupSub(boundSubID); sub != nil {
 			m := sub.Model
 			if m == "" && f.subscriptionSvc != nil {

@@ -230,15 +230,22 @@ func (s *LLMSubscriptionService) ListAll() ([]*LLMSubscription, error) {
 	return subs, nil
 }
 
-// List returns all subscriptions for a user, ordered by creation time.
+// List returns all subscriptions of the (single) operator, ordered by creation
+// time.
+//
+// SINGLE OPERATOR (post-v63): every row belongs to the one operator — the v63
+// migration collapsed user_llm_subscriptions.sender_id to the operator id. The
+// senderID parameter is retained for call-site compatibility but is NOT used as
+// a filter: filtering by a stale pre-v63 sender id made the list come back
+// empty (same bug class as GetUserDefaultModel).
 func (s *LLMSubscriptionService) List(senderID string) ([]*LLMSubscription, error) {
+	_ = senderID // single operator: all rows belong to the operator
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-			SELECT `+userLLMSubscriptionSelectCols+`
+			SELECT ` + userLLMSubscriptionSelectCols + `
 				FROM user_llm_subscriptions
-				WHERE sender_id = ?
 				ORDER BY created_at ASC
-			`, senderID)
+			`)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
@@ -805,53 +812,31 @@ type UserDefaultModel struct {
 	UpdatedAt      time.Time
 }
 
-// GetUserDefaultModel returns the user's default model selection, or nil if unset.
+// GetUserDefaultModel returns the operator's default model selection, or nil
+// if unset.
 //
-// Single-operator semantics (post-v63): the sender dimension collapsed to one
-// operator, but PRE-v63 rows may survive under their original sender ids
-// (e.g. a web login's 'web-4' row). When the exact sender row misses, fall
-// back to the most recently updated row — a single operator has exactly one
-// default model, and missing the legacy row made GetLLM's chain land on the
-// deployment defaultModel (config llm.model) instead of the user's actual
-// choice (user report: "模型在用户没切换的情况下会莫名其妙变化" — the
-// ResolveLLM fallback chain resolved a model the user never picked).
+// SINGLE OPERATOR (post-v63): the multi-user architecture was removed and every
+// sender collapses to one operator identity, so this table holds AT MOST ONE
+// row. The senderID parameter is kept for call-site compatibility but is NOT
+// used for filtering — filtering by a stale pre-v63 sender id (e.g. 'web-4')
+// made the lookup miss and the fallback chain land on the deployment
+// defaultModel instead of the operator's actual choice. Reading the single row
+// unconditionally is both simpler and impossible to "cross users" (there is
+// exactly one user).
 func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefaultModel, error) {
+	_ = senderID // single operator: the table holds at most one row
 	conn := s.db.Conn()
 	m := &UserDefaultModel{}
 	var updatedAt string
 	err := conn.QueryRow(`
 		SELECT sender_id, subscription_id, model, updated_at
-		FROM user_default_model WHERE sender_id = ?
-	`, senderID).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
-	if err == nil {
-		m.UpdatedAt = parseSQLiteTime(updatedAt)
-		return m, nil
-	}
-	if err != sql.ErrNoRows {
-		return nil, fmt.Errorf("get user default model: %w", err)
-	}
-	// Exact row miss → single-operator fallback. ⚠️ ONLY when the table holds
-	// exactly ONE row (legacy pre-v63 sender rows left behind by the multi-user
-	// removal). With 2+ rows, "most recently updated" silently crosses users —
-	// user A first entering a session would inherit user B's last-used model
-	// (CR: 跨用户兜底会串号). Multiple rows → no fallback; the caller falls
-	// through to the subscription's own default model.
-	var rowCount int
-	if err := conn.QueryRow(`SELECT COUNT(*) FROM user_default_model`).Scan(&rowCount); err != nil {
-		return nil, fmt.Errorf("count user default model: %w", err)
-	}
-	if rowCount != 1 {
+		FROM user_default_model ORDER BY updated_at DESC LIMIT 1
+	`).Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt)
+	if err == sql.ErrNoRows {
 		return nil, nil
 	}
-	row := conn.QueryRow(`
-		SELECT sender_id, subscription_id, model, updated_at
-		FROM user_default_model ORDER BY updated_at DESC LIMIT 1
-	`)
-	if err := row.Scan(&m.SenderID, &m.SubscriptionID, &m.Model, &updatedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("get user default model (operator fallback): %w", err)
+	if err != nil {
+		return nil, fmt.Errorf("get user default model: %w", err)
 	}
 	m.UpdatedAt = parseSQLiteTime(updatedAt)
 	return m, nil

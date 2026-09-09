@@ -116,10 +116,12 @@ func TestGetEffectiveSetting(t *testing.T) {
 		t.Errorf("expected 'true', got %q", got)
 	}
 
-	// Case 3: Different user → no DB value, returns default
+	// Case 3: SINGLE OPERATOR — the sender dimension collapsed to one operator
+	// (v63 multi-user removal), so a different sender id reads the SAME
+	// settings row. This previously asserted multi-user isolation.
 	got = svc.GetEffectiveSetting("cli", "user2", "auto_worktree")
-	if got != "false" {
-		t.Errorf("expected default 'false' for user2, got %q", got)
+	if got != "true" {
+		t.Errorf("expected 'true' for the same operator under a different sender id, got %q", got)
 	}
 
 	// Case 4: Unknown key → returns "" (no default)

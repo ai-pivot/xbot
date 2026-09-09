@@ -15,8 +15,17 @@ func NewUserSettingsService(db *DB) *UserSettingsService {
 	return &UserSettingsService{db: db}
 }
 
-// Get retrieves all settings for a given channel and sender.
+// Get retrieves all settings for a given channel.
+//
+// SINGLE OPERATOR (post-v63): user_settings rows carry the operator identity;
+// the v63 migration deleted every non-operator sender row. The senderID
+// parameter is retained for call-site compatibility but is NOT used as a
+// filter — filtering by a stale pre-v63 sender id returned an empty map, which
+// silently reset settings (same bug class as GetUserDefaultModel). The channel
+// filter is kept: settings are scoped to the canonical channel (e.g. "cli" for
+// global tier/thinking settings).
 func (s *UserSettingsService) Get(channel, senderID string) (map[string]string, error) {
+	_ = senderID // single operator
 	if s.db == nil {
 		return nil, fmt.Errorf("user settings store: database not initialized")
 	}
@@ -25,8 +34,8 @@ func (s *UserSettingsService) Get(channel, senderID string) (map[string]string, 
 		return nil, fmt.Errorf("user settings store: database connection closed")
 	}
 	rows, err := conn.Query(
-		"SELECT key, value FROM user_settings WHERE channel = ? AND sender_id = ?",
-		channel, senderID,
+		"SELECT key, value FROM user_settings WHERE channel = ?",
+		channel,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get user settings: %w", err)

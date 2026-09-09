@@ -324,8 +324,11 @@ func (t *ShellTool) executeForeground(
 		// 缓冲无上限). Keep the newest maxBgOutputSize bytes, same semantics as
 		// the background task output cap.
 		if outBuf.Len() > maxBgOutputSize {
-			b := []byte(outBuf.String())
-			trimmed := string(b[len(b)-maxBgOutputSize:])
+			// rune-boundary-safe tail truncation: a raw byte slice can split a
+			// multi-byte character and emit invalid UTF-8 into task.Output /
+			// task_read / the web xterm (CR: 截断按字节切片会把多字节 UTF-8
+			// 字符切开).
+			trimmed := truncateTailPreview(outBuf.String(), maxBgOutputSize)
 			outBuf.Reset()
 			outBuf.WriteString(trimmed)
 		}

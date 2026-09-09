@@ -17,12 +17,17 @@ func NewUserProfileService(db *DB) *UserProfileService {
 	return &UserProfileService{db: db}
 }
 
-// GetProfile retrieves the name and profile for a sender
+// GetProfile retrieves the operator's name and profile.
+//
+// SINGLE OPERATOR (post-v63): the profile table belongs to the one operator.
+// The senderID parameter is retained for call-site compatibility but is NOT
+// used as a filter — a stale pre-v63 sender id missed the row and silently
+// returned an empty profile (same bug class as GetUserDefaultModel).
 func (s *UserProfileService) GetProfile(senderID string) (name, profile string, err error) {
+	_ = senderID // single operator
 	conn := s.db.Conn()
 	err = conn.QueryRow(
-		"SELECT name, profile FROM user_profiles WHERE sender_id = ?",
-		senderID,
+		"SELECT name, profile FROM user_profiles ORDER BY updated_at DESC LIMIT 1",
 	).Scan(&name, &profile)
 	if err == sql.ErrNoRows {
 		return "", "", nil
