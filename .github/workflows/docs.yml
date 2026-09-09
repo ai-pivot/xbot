@@ -32,13 +32,24 @@ jobs:
         with:
           node-version: "22"
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-
       - name: Install Hugo
         run: |
-          go install github.com/gohugoio/hugo@v${HUGO_VERSION}
+          set -euo pipefail
+          # Download the official release binary instead of `go install`.
+          # `go install` resolves the module graph through proxy.golang.org and
+          # verifies every module against sum.golang.org; that service
+          # intermittently answers INTERNAL_ERROR, which failed this job three
+          # times in a row (build never even reached the markdown step). The
+          # release tarball is a plain HTTP download, and the checksum file
+          # keeps the supply-chain guarantee that sumdb used to provide.
+          base="https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}"
+          archive="hugo_${HUGO_VERSION}_linux-amd64.tar.gz"
+          curl -sSfL --retry 5 --retry-delay 2 --retry-all-errors \
+            -o "/tmp/${archive}" "${base}/${archive}"
+          curl -sSfL --retry 5 --retry-delay 2 --retry-all-errors \
+            -o /tmp/hugo_checksums.txt "${base}/hugo_${HUGO_VERSION}_checksums.txt"
+          (cd /tmp && grep " ${archive}\$" hugo_checksums.txt | sha256sum -c -)
+          sudo tar -xzf "/tmp/${archive}" -C /usr/local/bin hugo
           hugo version
 
       - name: Build theme assets
