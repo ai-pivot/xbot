@@ -48,7 +48,18 @@ The installer asks you to pick:
 > **Most teams should choose Server mode.** Pick Standalone for a quick solo
 > test drive.
 
-## 3. Configure your LLM
+## 3. Open the Web UI
+
+Server mode enables the web channel (`"web": { "enable": true, "port": 8082 }`
+in `~/.xbot/config.json`). Browse to **http://localhost:8082** and click
+**Create account** — the first registration becomes the operator account.
+
+![First launch — new user guide](/img/web/welcome.png)
+
+The empty workspace shows a three-step guide: configure a model, create a
+session, start chatting.
+
+## 4. Configure your LLM
 
 Run `xbot-cli`. The first launch opens a **Setup wizard**:
 
@@ -70,7 +81,7 @@ Re-run the wizard anytime with `/setup` or `Ctrl+K → Setup`.
 `base_url` in the Setup wizard. xbot works with any OpenAI-compatible API.
 {{< /hint >}}
 
-## 4. Start chatting
+## 5. Start chatting
 
 You're ready. Type a message and press Enter. The agent can call tools, run
 commands, search the web, and delegate to sub-agents.

@@ -4,14 +4,16 @@ weight: 1
 geekdocCollapseSection: true
 ---
 
-xbot ships two built-in plugins in the repository under `plugins/`:
+xbot ships three built-in plugins in the repository under `plugins/`:
 
 | Plugin ID | Directory | Type | Purpose |
 |-----------|-----------|------|---------|
 | `xbot.genui` | `plugins/xbot-genui/` | Go stdio **channel plugin** | The `display_html` tool — LLM-generated interactive UI (charts, 3D, animations) rendered as a streaming preview in the web chat |
 | `xbot.git-fancy` | `plugins/xbot-git-fancy/` | Go stdio plugin | Fancy Git panel — branches, working-tree changes, paginated commit history, commit details, and a full-width Monaco diff tab |
+| `xbot.ambience` | `plugins/xbot-ambience/` | **script** runtime (UI-only) | Web ambience layer — wallpapers, glass effects, an animated desk-pet widget and particle overlays |
 
-Both are zero- or minimal-dependency Go binaries driven over JSON-on-stdio, so they are easy to build, audit, and replace.
+All three are zero- or minimal-dependency and installed by `xbot-cli setup` into
+`$XBOT_HOME/plugins/builtin/` (version-pinned to the release).
 
 ## Installation
 
@@ -90,3 +92,4 @@ to the LLM.
 
 - [xbot-genui](./xbot-genui/) — GenUI (display_html): interactive UI generation
 - [xbot-git-fancy](./xbot-git-fancy/) — Fancy Git panel
+- [xbot-ambience](./xbot-ambience/) — Web ambience layer (wallpapers, glass, desk pet)

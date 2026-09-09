@@ -45,7 +45,18 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/ma
 
 > **大多数团队应选 Server 模式。** 个人快速体验选 Standalone。
 
-## 3. 配置 LLM
+## 3. 打开 Web UI
+
+Server 模式会启用 Web 通道（`~/.xbot/config.json` 中
+`"web": { "enable": true, "port": 8082 }`）。浏览器访问
+**http://localhost:8082**，点击 **Create account** —— 第一个注册的账号即为
+操作员账号。
+
+![首次启动 —— 新用户引导](/img/web/welcome.png)
+
+空工作区会显示三步引导：配置模型、新建会话、开始对话。
+
+## 4. 配置 LLM
 
 运行 `xbot-cli`，首次启动会弹出 **Setup 向导**：
 
@@ -65,7 +76,7 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/ma
 `base_url`。xbot 兼容任何 OpenAI 兼容 API。
 {{< /hint >}}
 
-## 4. 开始对话
+## 5. 开始对话
 
 准备就绪。输入消息按回车，Agent 会调用工具、执行命令、搜索网页、委派子 Agent。
 

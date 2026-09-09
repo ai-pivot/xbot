@@ -15,7 +15,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2 } from 'lucide-react'
+import { ChevronDown, ChevronUp, ChevronsDown, ChevronsUp, Loader2, Sparkles } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
 import { ShimmerThinking } from './ShimmerThinking'
@@ -916,8 +916,17 @@ export const MessageList = memo(function MessageList({
           </div>
         )}
         {rows.length === 0 && !loading && !error && (
-          <div className="flex h-full items-center justify-center px-6 text-center text-sm text-text-muted">
-            {t('agent.emptyConversation')}
+          <div className="flex min-h-full items-center justify-center px-6 py-16">
+            <div className="max-w-md text-center">
+              <Sparkles className="mx-auto mb-3 size-7 text-accent" />
+              <div className="mb-1 text-sm font-medium text-text-primary">{t('agent.welcomeTitle')}</div>
+              <div className="mb-4 text-xs text-text-muted">{t('agent.welcomeHint')}</div>
+              <ol className="mx-auto max-w-sm space-y-2 text-left text-xs text-text-secondary">
+                <li className="rounded-md bg-bg-secondary/50 px-3 py-2">{t('agent.welcomeStep1')}</li>
+                <li className="rounded-md bg-bg-secondary/50 px-3 py-2">{t('agent.welcomeStep2')}</li>
+                <li className="rounded-md bg-bg-secondary/50 px-3 py-2">{t('agent.welcomeStep3')}</li>
+              </ol>
+            </div>
           </div>
         )}
 

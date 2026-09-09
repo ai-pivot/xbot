@@ -1,5 +1,9 @@
 <p align="center">
-  <strong>xbot</strong> — 自托管 AI Agent，接入你的飞书 / QQ / 终端 / 浏览器
+  <strong>xbot</strong> — 自托管 AI Agent，以 Web UI 为一等公民
+</p>
+
+<p align="center">
+  浏览器 · 飞书 · QQ · 终端 —— 一个 Agent，一份配置，跑在你自己的服务器上
 </p>
 
 <p align="center">
@@ -12,106 +16,163 @@
 <p align="center">
   <a href="README.md">English</a>
   &nbsp;·&nbsp;
-  <a href="https://ai-pivot.github.io/xbot/zh-cn/">文档</a>
+  <a href="https://ai-pivot.github.io/xbot/">文档</a>
   &nbsp;·&nbsp;
   <a href="CHANGELOG.md">更新日志</a>
 </p>
 
 <p align="center">
-<img alt="Streaming" src="docs-site/static/img/cli/streaming.gif" width="720">
+  <img alt="xbot Web UI — 首次启动" src="docs-site/static/img/web/welcome.png" width="860">
 </p>
 
 ---
 
 ## xbot 是什么？
 
-**xbot** 是一个自托管 AI Agent 框架。部署一次在你自己的服务器上，通过
-**飞书、QQ、终端、浏览器**与它对话。它能调用工具——Shell、文件读写、网页搜索、
-定时任务、子 Agent——完成实际工作，数据不出你的服务器。
+**xbot** 是跑在你自己服务器上的自托管 AI Agent，**以浏览器为主要使用界面**。
+它通过工具干活 —— Shell、文件读写、联网搜索、定时任务、子代理、插件 ——
+所有数据都留在你自己的服务器上。
 
-> 💡 **与终端专用 Agent 不同**（Codex / Claude Code / OpenCode）：xbot 接入团队
-> 使用的**每一个渠道**。配置一次，全团队就能通过飞书群、QQ、网页或终端与同一个
-> Agent 对话，共享 LLM 凭据。
+**Web UI 是主界面**：会话与实时流式输出、文件预览、Git diff、内置终端、
+插件面板、模型选择器，全都在浏览器里。飞书 / QQ / 终端通道把**同一个**
+Agent 接到团队日常使用的工具上，共用同一份 LLM 配置。
 
-| | xbot | Codex / Claude Code / OpenCode |
-|--|------|-------------------------------|
-| **渠道** | 飞书 · QQ · Web · CLI | 仅终端 |
-| **团队 LLM** | 管理员配一次，所有人用 | 各自配置 API Key |
-| **自托管** | ✅ 数据不出服务器 | ✅ |
-| **飞书工具** | 文档、多维表格、云盘、卡片 | ❌ |
-| **子 Agent + 群聊** | 委派、并行、辩论 | 仅子 Agent |
-| **插件系统** | 工具、hooks、widget、渠道插件 | 有限 |
+| | xbot | 纯终端 Agent |
+|--|------|-------------|
+| **主界面** | **浏览器 Web UI**（+ 飞书 · QQ · CLI） | 仅终端 |
+| **团队 LLM** | 管理员配置一次，所有人共用 | 每人自带 key |
+| **自托管** | ✅ 数据不出你的服务器 | ✅ |
+| **插件系统** | Web 视图、面板、工具、Hook、通道插件 | 有限 |
+| **子代理 + 群聊** | 委派、并行、多专家讨论 | 仅子代理 |
+| **飞书工具** | 文档、多维表格、云盘、交互卡片 | ❌ |
 
 ## 快速开始
 
-### 1. 安装
+### 1. 安装（一条命令）
 
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+```
 
+```powershell
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
 
 <details>
-<summary>🇨🇳 国内用户（无需翻墙）</summary>
+<summary>🇨🇳 国内网络（无需 VPN）</summary>
 
 ```bash
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
 ```
 
-脚本自动检测可用的 CDN 镜像并代理所有 GitHub 下载。也可手动设置
+脚本会自动探测可用的 CDN 镜像并代理所有 GitHub 下载，也可以手动设置
 `GH_MIRROR=ghfast.top`。
 
 </details>
 
-安装器会让你选择模式：
+安装脚本下载二进制后会自动执行 **`xbot-cli setup`** 完成安装：
 
-| | Standalone（单机） | Server（服务端） |
-|--|-----------|--------|
-| **架构** | CLI 直接运行 Agent | 后台 Server + CLI 远程连接 |
-| **适合** | 个人使用 | 团队、多渠道 |
-| **渠道** | 仅 CLI | 飞书 · QQ · Web · CLI |
-| **LLM** | 各自配置 | 管理员配一次，全团队共享 |
-| **持久化** | 关终端就停 | 系统服务，开机自启 |
+| 组件 | 安装位置 |
+|------|---------|
+| CLI + server 二进制 | `~/.local/bin/xbot-cli` |
+| **Web UI** | `$XBOT_HOME/web/dist` |
+| **内置插件** | `$XBOT_HOME/plugins/builtin` |
+| 通道激活配置 | `$XBOT_HOME/config.json` |
 
-> **大多数团队应选 Server 模式。**
+> 已经有二进制了？随时执行 `xbot-cli setup` 重新安装 Web UI 和内置插件，
+> 或 `xbot-cli setup --check` 诊断缺失的部分。
 
-### 2. 配置 LLM
+### 2. 启动服务
 
-运行 `xbot-cli`，首次启动会弹出 **Setup 向导**：
+```bash
+xbot-cli serve
+```
 
-1. 选择提供商（OpenAI / Anthropic / 兼容 API）
-2. 输入 API Key
-3. 配置 API 地址（DeepSeek、Qwen、Ollama 等需修改）
-4. 选择模型
-5. 配置模型层（Vanguard / Balance / Swift）
+在 `~/.xbot/config.json` 中启用 Web 通道（安装脚本可以帮你做）：
 
-xbot 使用**订阅系统**——可创建多个（如工作用 Claude、个人用 DeepSeek），按会话切换。
-随时用 `/setup` 或 `Ctrl+K → Setup` 重新配置。
+```json
+{
+  "web": { "enable": true, "port": 8082 }
+}
+```
 
-## TUI 功能速览
+### 3. 打开 Web UI
 
-| 功能 | 操作 |
+浏览器访问 **http://localhost:8082**，点击 **Create account** ——
+第一个注册的账号即为操作员账号。
+
+<p align="center">
+  <img alt="首次启动 —— 新用户引导" src="docs-site/static/img/web/welcome.png" width="860">
+</p>
+
+空工作区会显示三步引导：
+
+1. **配置模型** —— 点击右下角齿轮 → LLM，填入 API Key
+2. **新建会话** —— 点击左侧「+ New Session」
+3. **开始对话** —— 在下方输入并按下 <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
+
+### 4. 配置模型
+
+打开 **设置 → LLM**，添加一个订阅：
+
+| 字段 | 示例 |
 |------|------|
-| **命令面板** | `Ctrl+K` 模糊搜索所有命令 |
-| **会话管理** | 侧边栏显示所有会话；`Ctrl+T` 打开会话面板；`/new` 重置当前对话 |
-| **主题** | 通过 `/settings` 切换；支持自定义主题 |
-| **模型与订阅** | `Ctrl+N` 打开统一面板，按会话切换模型并管理订阅 |
-| **上下文** | `/context` 查看 token 用量，`/clear` 清空当前 TUI 显示 |
-| **子 Agent** | 侧边栏和 `Ctrl+T` 会话面板显示实时进度 |
-| **鼠标** | 点击侧边栏、滚动消息、点击设置 |
+| Provider | `openai`（或 `anthropic`，以及任何 OpenAI 兼容端点） |
+| Base URL | `https://api.deepseek.com/v1`（DeepSeek / Qwen / Ollama / vLLM …） |
+| API key | `sk-…` |
+| Model | `deepseek-chat`、`glm-5.3`、`gpt-5` … |
 
-在 TUI 中输入 `/` 查看所有 slash 命令。
+xbot 使用**订阅系统** —— 可以创建多个订阅（工作用 Claude、个人 DeepSeek），
+在输入框的模型选择器里按会话切换。模型档位（**vanguard / balance / swift**）
+让子代理自动选用更便宜的模型。
 
-## 渠道配置
+## Web UI 一览
 
-每个渠道在 `~/.xbot/config.json` 中启用。
+| 功能 | 位置 |
+|------|------|
+| **活动栏（Activity Bar）** | 最左侧 48px 图标列 —— 点击图标切换侧栏内容（会话 / 文件 / 搜索 / 任务 / 终端 / 统计 / 插件 / 技能 / Git） |
+| **会话** | 左侧栏；「+ New Session」、搜索、星标、右键重命名 / 分叉 / 删除 |
+| **实时进度** | 按迭代流式输出，含工具卡片、思考过程、tok/s 与 TTFT |
+| **输入框** | 支持 Markdown、图片、文件附件，`Ctrl+Enter` 发送，`@` 引用文件 |
+| **模型选择器** | 输入框 →「Choose model and thinking mode」；按会话选择模型与思考等级 |
+| **文件预览** | 文件树里点击文件 → 语法高亮预览、图片、Mermaid 图表 |
+| **Git 面板** | 内置（插件 `xbot.git-fancy`）—— 分支、diff、提交详情 |
+| **终端** | 标签页里的完整 PTY（本地或远程 runner） |
+| **插件** | 管理面板 + 插件提供的视图、挂件、信息栏条目 |
+| **移动端** | 响应式布局，底部导航 + 触屏友好的点击区域 |
+
+## 内置插件
+
+随每个 release 分发，由 `xbot-cli setup` 安装：
+
+| 插件 | 类型 | 功能 |
+|------|------|------|
+| **`xbot.genui`** | 通道 + 工具 | 生成式 UI —— 模型输出 TSX，在浏览器里实时渲染成可交互面板（`display_html` 工具） |
+| **`xbot.git-fancy`** | 工具 + Web 视图 | Git 状态面板、逐文件 diff、提交详情，渲染在编辑区 |
+| **`xbot.ambience`** | UI | 壁纸、毛玻璃效果、动态桌宠、粒子特效 |
+
+插件激活：通道插件还需要在 `config.json` 里设置
+`channels.<name>.enabled = true` —— `xbot-cli setup` 会自动写入
+（且绝不会覆盖用户显式的 `false`）。
+
+完整的 manifest / 权限 / Web 视图参考见
+[插件文档](https://ai-pivot.github.io/xbot/zh-cn/plugins/)。
+
+## 通道
+
+所有通道驱动同一个 Agent，共用同一份 LLM 配置。
+
+### Web（主界面）
+
+```json
+{ "web": { "enable": true, "port": 8082 } }
+```
 
 ### 飞书
 
-在 [飞书开放平台](https://open.feishu.cn) 创建应用后：
+在[飞书开放平台](https://open.feishu.cn)创建应用，然后：
 
 ```json
 {
@@ -123,54 +184,50 @@ xbot 使用**订阅系统**——可创建多个（如工作用 Claude、个人�
 }
 ```
 
-最小权限：`im:message`、`im:message.receive_v1`、`im:message:send_as_bot`、
-`contact:user.base:readonly`
+所需权限：`im:message`、`im:message.receive_v1`、
+`im:message:send_as_bot`、`contact:user.base:readonly`
 
-详见[飞书配置指南](https://ai-pivot.github.io/xbot/zh-cn/channels/feishu/)。
+### QQ / NapCat / CLI
 
-### QQ / NapCat / Web
+见[通道文档](https://ai-pivot.github.io/xbot/zh-cn/channels/)。
 
-详见[渠道文档](https://ai-pivot.github.io/xbot/zh-cn/channels/)。
+## 内置工具
 
-## 插件系统
+Agent 可以在对话中调用这些工具：
 
-xbot 拥有完善的插件系统，支持四种插件类型：
+| 分类 | 工具 |
+|------|------|
+| **执行** | `Shell`（前台 → 可转后台）、`Cd` |
+| **文件** | `Read`、`FileCreate`、`FileReplace`、`Grep`、`Glob`、`DownloadFile` |
+| **联网** | `Fetch`、`WebSearch` |
+| **视觉** | `view_image`（多模态图片输入） |
+| **会话** | `CreateChat`、`SubAgent`、`SendMessage` |
+| **上下文** | `context_edit`、`offload_recall`、`recall_masked` |
+| **调度** | `Cron`、`TodoWrite`、`TodoList` |
+| **配置** | `config`、`tui_control` |
+| **协作** | `Worktree`、`EventTrigger` |
+| **任务** | `task_status`、`task_kill`、`task_wait`、`task_read` |
+| **其他** | `AskUser`、`ChatHistory`、`ManageTools`、`Skill`、飞书工具 |
 
-| 类型 | 运行时 | 适用场景 |
-|------|--------|----------|
-| **Script** | Bash 脚本 | 快速 widget、git 状态、diff 预览 |
-| **Go 原生** | 进程内 | 高性能工具、hooks、上下文增强 |
-| **Stdio** | 外部进程（Python/Node/任意语言） | 语言特定集成 |
-| **Web** | ESM 模块（浏览器） | UI 面板、消息渲染器、布局扩展 |
+## 扩展能力
 
-内置插件：`xbot-genui`（GenUI 渲染）、`xbot-git-fancy`（git diff/commit 查看器）。
-
-```bash
-# 构建并安装内置插件
-make plugins-install
-
-# 或从仓库直接运行（开发模式）
-make plugins-build
-XBOT_PLUGIN_DIRS="$(pwd)/plugins" ./xbot
-```
-
-完整插件文档：**[插件系统](https://ai-pivot.github.io/xbot/zh-cn/plugins/)**
-——涵盖 manifest、hooks、widgets、工具、stdio JSON 协议、Web 插件类型契约 API、Cookbook 开发指南和完整 API 参考。
-
-## 从源码构建
-
-```bash
-git clone https://github.com/ai-pivot/xbot.git && cd xbot
-make build          # 构建 xbot (server + runner)
-go build -o xbot-cli ./cmd/xbot-cli   # 仅构建 CLI
-```
-
-需要 **Go 1.26+**。
+- **技能（Skills）** —— `~/.xbot/skills/` 下的 Markdown 能力包
+- **子代理（SubAgents）** —— 基于角色的子代理（`explore`、`code-reviewer` …）；自定义角色放在 `~/.xbot/agents/`
+- **群聊** —— 多代理主持人制讨论（Meeting Mode）
+- **MCP** —— 全局与按会话的 MCP 服务器（stdio + HTTP），跨会话连接池复用
+- **Hook** —— 工具与生命周期事件的命令 / 脚本处理器
 
 ## 文档
 
-完整文档：**[ai-pivot.github.io/xbot/zh-cn](https://ai-pivot.github.io/xbot/zh-cn/)**
+| | |
+|--|--|
+| [快速开始](https://ai-pivot.github.io/xbot/zh-cn/getting-started/) | 安装 → 第一次对话 |
+| [安装](https://ai-pivot.github.io/xbot/zh-cn/installation/) | 所有安装方式、离线与镜像 |
+| [配置](https://ai-pivot.github.io/xbot/zh-cn/configuration/) | `config.json` 参考 |
+| [插件](https://ai-pivot.github.io/xbot/zh-cn/plugins/) | Manifest、权限、Web 视图 |
+| [通道](https://ai-pivot.github.io/xbot/zh-cn/channels/) | Web · 飞书 · QQ · CLI |
+| [常见问题](https://ai-pivot.github.io/xbot/zh-cn/faq/) | FAQ |
 
-## License
+## 许可证
 
-MIT
+[MIT](LICENSE)

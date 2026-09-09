@@ -1,5 +1,9 @@
 <p align="center">
-  <strong>xbot</strong> — Self-hosted AI Agent for Feishu · QQ · Terminal · Web
+  <strong>xbot</strong> — Self-hosted AI Agent with a first-class Web UI
+</p>
+
+<p align="center">
+  Browser · Feishu · QQ · Terminal — one agent, one config, your server
 </p>
 
 <p align="center">
@@ -18,40 +22,42 @@
 </p>
 
 <p align="center">
-<img alt="Streaming" src="docs-site/static/img/cli/streaming.gif" width="720">
+  <img alt="xbot Web UI — first launch" src="docs-site/static/img/web/welcome.png" width="860">
 </p>
 
 ---
 
 ## What is xbot?
 
-**xbot** is a self-hosted AI agent framework. Deploy it once on your own
-server, then talk to it through **Feishu, QQ, the terminal, or a web browser**.
-It uses tools — Shell, file I/O, web search, scheduled tasks, sub-agents — to
-get real work done, and your data never leaves your server.
+**xbot** is a self-hosted AI agent you run on your own server and drive from the
+**browser**. It uses tools — Shell, file I/O, web search, scheduled tasks,
+sub-agents, plugins — to get real work done, and your data never leaves your
+server.
 
-> 💡 **Different from terminal-only agents** (Codex / Claude Code / OpenCode):
-> xbot connects to *every* channel your team uses. Configure it once, and your
-> whole team reaches the same agent through Feishu group chats, QQ, a web UI,
-> or the terminal — with shared LLM credentials.
+The **Web UI is the primary surface**: sessions and live streaming, file
+preview, git diffs, a built-in terminal, plugin panels, and a model picker —
+all in the browser. Feishu / QQ / terminal channels connect the *same* agent to
+wherever your team already works, sharing one LLM configuration.
 
-| | xbot | Codex / Claude Code / OpenCode |
-|--|------|-------------------------------|
-| **Channels** | Feishu · QQ · Web · CLI | Terminal only |
-| **Team LLM** | Admin configures once, everyone uses | Each user brings own key |
+| | xbot | Terminal-only agents |
+|--|------|----------------------|
+| **Primary UI** | **Web browser** (+ Feishu · QQ · CLI) | Terminal only |
+| **Team LLM** | Admin configures once, everyone uses | Each user brings their own key |
 | **Self-hosted** | ✅ Your data stays on your server | ✅ |
-| **Feishu tools** | Docs, Bitable, Drive, cards | ❌ |
+| **Plugin system** | Web views, panels, tools, hooks, channel plugins | Limited |
 | **SubAgents + Group Chat** | Delegate, parallelize, debate | SubAgents only |
-| **Plugin system** | Tools, hooks, widgets, channel plugins | Limited |
+| **Feishu tools** | Docs, Bitable, Drive, interactive cards | ❌ |
 
-## Quick Start
+## Quick start
 
-### 1. Install
+### 1. Install (one command)
 
 ```bash
 # Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+```
 
+```powershell
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
@@ -63,54 +69,112 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
 ```
 
-The script auto-detects a working CDN mirror and proxies all GitHub
-downloads. You can also set `GH_MIRROR=ghfast.top` manually.
+The script auto-detects a working CDN mirror and proxies all GitHub downloads.
+You can also set `GH_MIRROR=ghfast.top` manually.
 
 </details>
 
-The installer lets you choose a mode:
+The installer downloads the binary and then runs **`xbot-cli setup`**, which
+completes the installation:
 
-| | Standalone | Server |
-|--|-----------|--------|
-| **Architecture** | CLI runs the agent locally | Background server + CLI connects remotely |
-| **Best for** | Solo use | Teams, multi-channel |
-| **Channels** | CLI only | Feishu · QQ · Web · CLI |
-| **LLM** | Each user configures own | Admin configures once, all share |
-| **Persistence** | Stops when terminal closes | System service, auto-start |
+| Component | Installed to |
+|-----------|--------------|
+| CLI + server binary | `~/.local/bin/xbot-cli` |
+| **Web UI** | `$XBOT_HOME/web/dist` |
+| **Built-in plugins** | `$XBOT_HOME/plugins/builtin` |
+| Channel activation | `$XBOT_HOME/config.json` |
 
-> **Most teams should choose Server mode.**
+> Already have the binary? Run `xbot-cli setup` any time to (re)install the web
+> UI and built-in plugins, or `xbot-cli setup --check` to diagnose a partial
+> install.
 
-### 2. Configure your LLM
+### 2. Start the server
 
-Run `xbot-cli`. The first launch opens a **Setup wizard**:
+```bash
+xbot-cli serve
+```
 
-1. Choose a provider (OpenAI / Anthropic / OpenAI-compatible)
-2. Enter your API key
-3. Set the base URL (change for DeepSeek, Qwen, Ollama, etc.)
-4. Pick a model
-5. Configure model tiers (Vanguard / Balance / Swift)
+Enable the web channel in `~/.xbot/config.json` (the installer can do this for
+you):
 
-xbot uses a **subscription system** — create multiple (e.g. work Claude,
-personal DeepSeek) and switch per session. Re-run the wizard anytime with
-`/setup` or `Ctrl+K → Setup`.
+```json
+{
+  "web": { "enable": true, "port": 8082 }
+}
+```
 
-## TUI at a glance
+### 3. Open the Web UI
 
-| Feature | How |
-|---------|-----|
-| **Command palette** | `Ctrl+K` — fuzzy search all commands |
-| **Sessions** | Sidebar shows all sessions; `Ctrl+T` opens the Sessions panel; `/new` resets the current conversation |
-| **Themes** | `/settings` changes the theme; custom themes are supported |
-| **Models & subscriptions** | `Ctrl+N` opens the unified panel for per-session model switching and subscription management |
-| **Context** | `/context` views token usage; `/clear` clears the current TUI display |
-| **SubAgents** | Sidebar and the `Ctrl+T` Sessions panel show live sub-agent progress |
-| **Mouse** | Click sidebar, scroll messages, click settings |
+Browse to **http://localhost:8082**, then **Create account** — the first
+registration becomes the operator account.
 
-Type `/` in the TUI to see all slash commands.
+<p align="center">
+  <img alt="First launch — new user guide" src="docs-site/static/img/web/welcome.png" width="860">
+</p>
 
-## Channel configuration
+The empty workspace shows a three-step guide:
 
-Each channel is enabled in `~/.xbot/config.json`.
+1. **Configure a model** — gear icon (bottom-right) → LLM → add your API key
+2. **Create a session** — “+ New Session” in the left sidebar
+3. **Start chatting** — type below, press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
+
+### 4. Configure your LLM
+
+Open **Settings → LLM** and add a subscription:
+
+| Field | Example |
+|-------|---------|
+| Provider | `openai` (or `anthropic`, any OpenAI-compatible endpoint) |
+| Base URL | `https://api.deepseek.com/v1` (DeepSeek / Qwen / Ollama / vLLM …) |
+| API key | `sk-…` |
+| Model | `deepseek-chat`, `glm-5.3`, `gpt-5`, … |
+
+xbot uses a **subscription system** — create several (work Claude, personal
+DeepSeek) and switch per session from the model picker in the composer. Model
+tiers (**vanguard / balance / swift**) let SubAgents pick a cheaper model
+automatically.
+
+## Web UI at a glance
+
+| Feature | Where |
+|---------|-------|
+| **Activity Bar** | 48 px icon rail on the far left — click an icon to switch the sidebar (sessions / files / search / tasks / terminal / stats / plugins / skills / git) |
+| **Sessions** | Left sidebar; “+ New Session”, search, star, right-click for rename / fork / delete |
+| **Live progress** | Per-iteration streaming with tool cards, reasoning, token/s and TTFT |
+| **Composer** | Markdown + images + file attachments, `Ctrl+Enter` to send, `@` file mentions |
+| **Model picker** | Composer → “Choose model and thinking mode”; per-session model + thinking level |
+| **File preview** | Click a file in the explorer → syntax-highlighted preview, images, Mermaid |
+| **Git panel** | Built-in (plugin `xbot.git-fancy`) — branch, diff, commit details |
+| **Terminal** | Full PTY in a tab (local or remote runner) |
+| **Plugins** | Manage panel + plugin-provided views, widgets, info-bar items |
+| **Mobile** | Responsive layout with a bottom nav and touch-friendly targets |
+
+## Built-in plugins
+
+Shipped with every release and installed by `xbot-cli setup`:
+
+| Plugin | Type | What it does |
+|--------|------|--------------|
+| **`xbot.genui`** | channel + tool | Generative UI — the model emits TSX that renders as a live interactive panel in the browser (`display_html` tool) |
+| **`xbot.git-fancy`** | tool + web views | Git status panel, per-file diffs and commit details rendered in the editor area |
+| **`xbot.ambience`** | UI | Wallpapers, glass effects, an animated desk-pet and particle overlays for the web UI |
+
+Plugin activation: a channel plugin also needs
+`channels.<name>.enabled = true` in `config.json` — `xbot-cli setup` writes it
+automatically (and never overwrites an explicit `false`).
+
+See the [plugin docs](https://ai-pivot.github.io/xbot/plugins/) for the full
+manifest / permission / web-view reference.
+
+## Channels
+
+Every channel drives the same agent and shares the same LLM configuration.
+
+### Web (primary)
+
+```json
+{ "web": { "enable": true, "port": 8082 } }
+```
 
 ### Feishu
 
@@ -129,9 +193,7 @@ Create an app on the [Feishu Open Platform](https://open.feishu.cn), then:
 Required permissions: `im:message`, `im:message.receive_v1`,
 `im:message:send_as_bot`, `contact:user.base:readonly`
 
-See the [Feishu guide](https://ai-pivot.github.io/xbot/channels/feishu/).
-
-### QQ / NapCat / Web
+### QQ / NapCat / CLI
 
 See the [Channels documentation](https://ai-pivot.github.io/xbot/channels/).
 
@@ -141,94 +203,37 @@ The agent can call these tools in conversation:
 
 | Category | Tools |
 |----------|-------|
-| **Execution** | `Shell`, `Cd` |
+| **Execution** | `Shell` (foreground → promote to background), `Cd` |
 | **Files** | `Read`, `FileCreate`, `FileReplace`, `Grep`, `Glob`, `DownloadFile` |
 | **Web** | `Fetch`, `WebSearch` |
+| **Vision** | `view_image` (multimodal image input) |
 | **Sessions** | `CreateChat`, `SubAgent`, `SendMessage` |
 | **Context** | `context_edit`, `offload_recall`, `recall_masked` |
 | **Scheduling** | `Cron`, `TodoWrite`, `TodoList` |
 | **Config** | `config`, `tui_control` |
 | **Collaboration** | `Worktree`, `EventTrigger` |
-| **Feishu** | Docs, Bitable, Drive tools |
-| **Other** | `AskUser`, `ChatHistory`, `ManageTools`, `Skill`, `task_status`, `task_kill` |
+| **Tasks** | `task_status`, `task_kill`, `task_wait`, `task_read` |
+| **Other** | `AskUser`, `ChatHistory`, `ManageTools`, `Skill`, Feishu tools |
 
 ## Extensibility
 
 - **Skills** — Markdown capability packs in `~/.xbot/skills/`
-- **SubAgents** — Role-based child agents (`explore`, `code-reviewer`, …); custom roles in `~/.xbot/agents/`
-- **Group Chat** — Multi-agent moderated discussion (Meeting Mode)
-- **MCP** — Global and session-level MCP servers (stdio + HTTP)
-- **Plugins** — Tools, hooks, widgets, channel plugins, web UI extensions
-
-### Plugin System
-
-xbot has a comprehensive plugin system with four plugin types:
-
-| Type | Runtime | Use case |
-|------|---------|----------|
-| **Script** | Bash script | Quick widgets, git status, diff previews |
-| **Go native** | In-process | High-performance tools, hooks, context enrichers |
-| **Stdio** | External process (Python/Node/any) | Language-specific integrations |
-| **Web** | ESM module (browser) | UI panels, message renderers, layout extensions |
-
-Built-in plugins: `xbot-genui` (GenUI rendering), `xbot-git-fancy` (git diff/commit viewer).
-
-```bash
-# Build and install built-in plugins
-make plugins-install
-
-# Or run from repo checkout (development)
-make plugins-build
-XBOT_PLUGIN_DIRS="$(pwd)/plugins" ./xbot
-```
-
-Full plugin documentation: **[Plugin System](https://ai-pivot.github.io/xbot/plugins/)** —
-covers manifests, hooks, widgets, tools, the stdio JSON-line protocol, the web plugin
-type-as-contract API, cookbook guides, and complete API reference.
-
-## Build from source
-
-```bash
-git clone https://github.com/ai-pivot/xbot.git && cd xbot
-make build          # build xbot (server + runner)
-go build -o xbot-cli ./cmd/xbot-cli   # build CLI only
-```
-
-Requires **Go 1.26+**.
-
-## Architecture
-
-```
-┌──────────┐     ┌──────────────┐     ┌────────────┐     ┌──────────┐
-│  Feishu  │────▶│  Dispatcher  │────▶│  Backend    │────▶│   LLM    │
-│  QQ      │◀────│  (channel/)  │◀────│  (RPC)      │◀────│ (llm/)   │
-│  Web     │     └──────────────┘     │             │     └──────────┘
-│  CLI     │                          │  Transport  │
-└──────────┘                          │  (local/    │────▶ Tools
-                                      │   remote)   │      (tools/)
-                                      │  Agent Loop │────▶ Memory
-                                      │  (agent/)   │      (memory/)
-                                      └────────────┘
-```
-
-**Backend** is a pure RPC client (zero business logic); **Transport** is the
-execution layer. Read the full
-[Architecture overview](https://ai-pivot.github.io/xbot/architecture/).
+- **SubAgents** — role-based child agents (`explore`, `code-reviewer`, …); custom roles in `~/.xbot/agents/`
+- **Group chat** — multi-agent moderated discussion (meeting mode)
+- **MCP** — global and per-session MCP servers (stdio + HTTP), pooled across sessions
+- **Hooks** — command / script handlers on tool and lifecycle events
 
 ## Documentation
 
-Full docs: **[ai-pivot.github.io/xbot](https://ai-pivot.github.io/xbot/)**
-
-| Doc | Description |
-|-----|-------------|
-| [Getting Started](https://ai-pivot.github.io/xbot/getting-started/) | 5-minute quick start |
-| [Installation](https://ai-pivot.github.io/xbot/installation/) | Modes, service management |
-| [Configuration](https://ai-pivot.github.io/xbot/configuration/) | Every `config.json` field |
-| [Channels](https://ai-pivot.github.io/xbot/channels/) | Feishu / QQ / Web / CLI |
-| [Features](https://ai-pivot.github.io/xbot/features/) | Tools, skills, MCP, plugins |
-| [Plugins](https://ai-pivot.github.io/xbot/plugins/) | Plugin system: manifests, hooks, widgets, web extensions, cookbook |
-| [Architecture](https://ai-pivot.github.io/xbot/architecture/) | System design |
+| | |
+|--|--|
+| [Getting started](https://ai-pivot.github.io/xbot/getting-started/) | Install → first conversation |
+| [Installation](https://ai-pivot.github.io/xbot/installation/) | Every install path, offline & mirrors |
+| [Configuration](https://ai-pivot.github.io/xbot/configuration/) | `config.json` reference |
+| [Plugins](https://ai-pivot.github.io/xbot/plugins/) | Manifest, permissions, web views |
+| [Channels](https://ai-pivot.github.io/xbot/channels/) | Web · Feishu · QQ · CLI |
+| [FAQ](https://ai-pivot.github.io/xbot/faq/) | Common questions |
 
 ## License
 
-MIT
+[MIT](LICENSE)

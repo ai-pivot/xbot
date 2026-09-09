@@ -4,14 +4,16 @@ weight: 1
 geekdocCollapseSection: true
 ---
 
-xbot 在仓库的 `plugins/` 目录下随附两个内置插件：
+xbot 在仓库的 `plugins/` 目录下随附三个内置插件：
 
 | 插件 ID | 目录 | 类型 | 用途 |
 |---------|------|------|------|
 | `xbot.genui` | `plugins/xbot-genui/` | Go stdio **channel 插件** | `display_html` 工具——LLM 生成交互式 UI（图表、3D、动画），在 Web 聊天中流式渲染预览 |
 | `xbot.git-fancy` | `plugins/xbot-git-fancy/` | Go stdio 插件 | Fancy Git 面板——分支、工作区变更、分页提交历史、commit 详情、全宽 Monaco diff tab |
+| `xbot.ambience` | `plugins/xbot-ambience/` | **script** 运行时（纯 UI） | Web 氛围层——壁纸、毛玻璃效果、动态桌宠挂件、粒子特效 |
 
-两者都是零依赖（或仅依赖 protocol 包）的 Go 二进制，通过 stdio 上的 JSON 协议驱动，易于构建、审计和替换。
+三者都是零依赖（或仅依赖 protocol 包），由 `xbot-cli setup` 安装到
+`$XBOT_HOME/plugins/builtin/`（版本与 release 对齐）。
 
 ## 安装方式
 
@@ -84,3 +86,4 @@ GenUI 插件额外声明了一个 **channel provider**（`genui`）。channel �
 
 - [xbot-genui](./xbot-genui/) — GenUI（display_html）：交互式 UI 生成
 - [xbot-git-fancy](./xbot-git-fancy/) — Fancy Git 面板
+- [xbot-ambience](./xbot-ambience/) — Web 氛围层（壁纸 / 毛玻璃 / 桌宠）
