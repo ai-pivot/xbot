@@ -269,7 +269,10 @@ jobs:
 
       - name: Create checksums
         working-directory: dist
-        run: sha256sum * > ../checksums.txt
+        # `sha256sum *` fails when a merged artifact left a directory behind
+        # (plugin payloads land as directories). Hash regular files only and
+        # keep the bare file names install.sh expects.
+        run: find . -maxdepth 1 -type f -printf '%P\0' | sort -z | xargs -0 sha256sum > ../checksums.txt
 
       - name: Determine prerelease flag and release tag
         id: prerelease
