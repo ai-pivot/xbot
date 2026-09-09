@@ -122,10 +122,14 @@ func unregisterForegroundShell(h *ForegroundShellHandle) {
 	}
 }
 
-// foregroundShellFor looks up a handle by (sessionKey, callID). When callID
-// is empty, it returns the MOST RECENTLY registered handle of the session
-// (single running foreground shell is the common case — parallel shells can
-// still be promoted one by one via their call ids).
+// foregroundShellFor looks up a handle by (sessionKey, callID). With an empty
+// callID it returns the handle ONLY when exactly one foreground shell is
+// registered for the session — the unambiguous case. Parallel foreground
+// shells (multiple tool calls in one iteration) must be addressed by callID:
+// returning "the most recently registered" could silently promote the WRONG
+// command (CR: empty-callID fallback returns most-recent handle). Callers
+// (web promote_shell) always pass ToolProgress.CallID, so nil here is a safe
+// explicit miss rather than a mis-target.
 func foregroundShellFor(sessionKey, callID string) *ForegroundShellHandle {
 	globalForegroundShells.mu.Lock()
 	defer globalForegroundShells.mu.Unlock()
@@ -136,13 +140,13 @@ func foregroundShellFor(sessionKey, callID string) *ForegroundShellHandle {
 	if callID != "" {
 		return m[callID]
 	}
-	var last *ForegroundShellHandle
-	for _, h := range m {
-		if last == nil || h.registeredAt.After(last.registeredAt) {
-			last = h
-		}
+	if len(m) != 1 {
+		return nil
 	}
-	return last
+	for _, h := range m {
+		return h
+	}
+	return nil
 }
 
 // PromoteForegroundShell is the RPC-facing entry: it finds the running

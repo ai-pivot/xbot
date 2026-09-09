@@ -704,12 +704,12 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
 		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
-	// Multimodal (vision) config from the per-model manual switch. NOTE: the
-	// client cache key is (subID, apiType) — the vision switch is per-model
-	// (subscription_models.vision), so a cached client built for a
-	// non-vision model of the same subscription would not carry vision. That
-	// is correct: the manual switch is per-model, and the cache key models
-	// share only credentials/baseURL — vision off is the safe default and the
+	// Multimodal (vision) config from the per-model manual switch. The client
+	// cache key is {subID, apiType, vision, visionDetail} — the vision switch
+	// is per-model (subscription_models.vision), so the key MUST include it:
+	// clients built for a vision-off model of a subscription would otherwise
+	// be reused for a vision-on model of the same subscription and silently
+	// drop image parts.
 	// user toggling vision invalidates the subscription
 	// (update_per_model_config → InvalidateSubscription).
 	client, _ := f.createClient(cfg, f.buildMultimodalConfig(pmc))
@@ -943,8 +943,11 @@ func (f *LLMFactory) ensureSessionModel(senderID, chatID, channel string) bool {
 		return false
 	}
 	// Already bound? Skip — BOTH subID and model must be non-empty. An
-	// empty-model row is treated as unbound and repaired below.
-	if subID, model, _ := f.tenantSvc.GetTenantSubscription(channel, chatID); subID != "" && model != "" {
+	// empty-model row is treated as unbound and repaired below. The subID is
+	// reused by the Priority-3 repair path (one DB read per call — this runs
+	// every turn).
+	boundSubID, boundModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
+	if boundSubID != "" && boundModel != "" {
 		return false
 	}
 

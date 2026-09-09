@@ -207,6 +207,23 @@ export function parseShell(tool: WebToolProgress, summary: string, detail: strin
   let promoted = false
   let bgTask: string | null = null
 
+  // Task id extraction runs on the ORIGINAL text BEFORE the headline lines
+  // below are stripped: the promote/timeout/background-start formats all carry
+  // [task_id: "xxx"] on the FIRST line together with the headline. Anchoring to
+  // the first line (and dropping the old unanchored second pass) prevents a
+  // literal [task_id: "..."] inside ordinary command output from being
+  // mis-detected as a background task (CR: 注释描述的取 id 时机与代码相反，
+  // 且二次正则可能误判).
+  const firstLine = text.split('\n', 1)[0]
+  const bgM = /\[task_id: "([A-Za-z0-9-]+)"\]/.exec(firstLine)
+  if (bgM) {
+    bgTask = bgM[1]
+  } else {
+    // Legacy format (pre-promote results carried "Background task running: bg:xxx").
+    const legacyM = /Background task running: (bg:[A-Za-z0-9-]+)/.exec(firstLine)
+    if (legacyM) bgTask = legacyM[1]
+  }
+
   const exitM = /^\[EXIT (-?\d+)\] /.exec(text)
   if (exitM) {
     exitCode = parseInt(exitM[1], 10)
@@ -224,22 +241,6 @@ export function parseShell(tool: WebToolProgress, summary: string, detail: strin
     promoted = true
     const nl = text.indexOf('\n')
     text = nl >= 0 ? text.slice(nl + 1) : ''
-  }
-  // Task id extraction must run BEFORE the headline lines above are stripped:
-  // the promote/timeout/background-start formats all carry [task_id: "xxx"]
-  // on the FIRST line together with the headline.
-  const bgM = /\[task_id: "([A-Za-z0-9-]+)"\]/.exec(text)
-  if (bgM) {
-    bgTask = bgM[1]
-  } else {
-    // Legacy format (pre-promote results carried "Background task running: bg:xxx").
-    const legacyM = /Background task running: (bg:[A-Za-z0-9-]+)/.exec(text)
-    if (legacyM) bgTask = legacyM[1]
-  }
-  if (!bgM) {
-    // Second pass on the ORIGINAL text (headline already stripped above).
-    const bgM2 = /\[task_id: "([A-Za-z0-9-]+)"\]/.exec(detail || summary || '')
-    if (bgM2) bgTask = bgM2[1]
   }
 
   return { command, output: text.trimEnd(), exitCode, timeout, promoted, bgTask }

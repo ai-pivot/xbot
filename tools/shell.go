@@ -318,6 +318,17 @@ func (t *ShellTool) executeForeground(
 		}
 		outMu.Lock()
 		outBuf.WriteString(s)
+		// Tail-trim at write time: a promoted (background) command can run
+		// indefinitely (tail -f / training logs) and the buffer previously only
+		// got truncated at task END — unbounded growth while running (CR: 输出
+		// 缓冲无上限). Keep the newest maxBgOutputSize bytes, same semantics as
+		// the background task output cap.
+		if outBuf.Len() > maxBgOutputSize {
+			b := []byte(outBuf.String())
+			trimmed := string(b[len(b)-maxBgOutputSize:])
+			outBuf.Reset()
+			outBuf.WriteString(trimmed)
+		}
 		outMu.Unlock()
 		execHandle.fireDelta(s)
 	}

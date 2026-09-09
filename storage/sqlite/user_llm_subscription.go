@@ -830,8 +830,19 @@ func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefa
 	if err != sql.ErrNoRows {
 		return nil, fmt.Errorf("get user default model: %w", err)
 	}
-	// Exact row miss → single-operator fallback: the most recently updated row
-	// regardless of sender id. Returns nil only when the table is empty.
+	// Exact row miss → single-operator fallback. ⚠️ ONLY when the table holds
+	// exactly ONE row (legacy pre-v63 sender rows left behind by the multi-user
+	// removal). With 2+ rows, "most recently updated" silently crosses users —
+	// user A first entering a session would inherit user B's last-used model
+	// (CR: 跨用户兜底会串号). Multiple rows → no fallback; the caller falls
+	// through to the subscription's own default model.
+	var rowCount int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM user_default_model`).Scan(&rowCount); err != nil {
+		return nil, fmt.Errorf("count user default model: %w", err)
+	}
+	if rowCount != 1 {
+		return nil, nil
+	}
 	row := conn.QueryRow(`
 		SELECT sender_id, subscription_id, model, updated_at
 		FROM user_default_model ORDER BY updated_at DESC LIMIT 1
