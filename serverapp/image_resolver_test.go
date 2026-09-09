@@ -325,7 +325,8 @@ func TestResolveImage_FileURLReference(t *testing.T) {
 	r := NewImageResolver(nil, t.TempDir(), ws)
 	ctx := context.Background()
 
-	out, err := r.ResolveImage(ctx, "file://"+inside)
+	// file:// URLs use forward slashes (RFC 8089) — Windows paths need ToSlash.
+	out, err := r.ResolveImage(ctx, "file://"+filepath.ToSlash(inside))
 	if err != nil {
 		t.Fatalf("file:// inside workspace: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestResolveImage_FileURLReference(t *testing.T) {
 		t.Fatalf("expected png data URL, got %q", strings.SplitN(out, ",", 2)[0])
 	}
 	// localhost/ prefix variant resolves identically.
-	out2, err := r.ResolveImage(ctx, "file://localhost"+inside)
+	out2, err := r.ResolveImage(ctx, "file://localhost"+filepath.ToSlash(inside))
 	if err != nil {
 		t.Fatalf("file://localhost variant: %v", err)
 	}

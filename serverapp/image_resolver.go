@@ -257,9 +257,13 @@ func (r *webImageResolver) load(ctx context.Context, ref string) ([]byte, string
 	if strings.HasPrefix(ref, "file://") {
 		path := strings.TrimPrefix(ref, "file://")
 		// file://localhost/... and file:///abs/path both appear; normalize.
-		if strings.HasPrefix(path, "localhost/") {
-			path = strings.TrimPrefix(path, "localhost")
-		}
+		// ⚠️ Windows paths look like `C:\dir\img.png` — a caller concatenating
+		// "file://localhost"+path yields `file://localhostC:\dir\...` (no slash
+		// after localhost). Match the bare prefix so both forms normalize.
+		path = strings.TrimPrefix(path, "localhost")
+		// URLs use forward slashes; convert to the platform separator
+		// (FromSlash is a no-op on Unix).
+		path = filepath.FromSlash(path)
 		abs, err := filepath.Abs(path)
 		if err != nil {
 			return nil, "", fmt.Errorf("resolve file:// path: %w", err)

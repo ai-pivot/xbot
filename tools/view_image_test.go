@@ -6,6 +6,7 @@ package tools
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
@@ -110,7 +111,9 @@ func TestViewImage_PathWhitelist_RejectsOutside(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := NewViewImageTool()
-	_, err := tool.Execute(viewImageToolCtx(ws), `{"path": "`+outside+`"}`)
+	// json.Marshal avoids hand-escaping Windows paths (C:\... breaks JSON).
+	outsideArgs, _ := json.Marshal(map[string]string{"path": outside})
+	_, err := tool.Execute(viewImageToolCtx(ws), string(outsideArgs))
 	if err == nil {
 		t.Fatal("absolute path outside workspace must be rejected")
 	}
@@ -166,7 +169,8 @@ func TestViewImage_AbsoluteInsideWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := NewViewImageTool()
-	res, err := tool.Execute(viewImageToolCtx(ws), `{"path": "`+filepath.Join(sub, "shot.png")+`"}`)
+	insideArgs, _ := json.Marshal(map[string]string{"path": filepath.Join(sub, "shot.png")})
+	res, err := tool.Execute(viewImageToolCtx(ws), string(insideArgs))
 	if err != nil {
 		t.Fatalf("absolute path inside workspace must be allowed: %v", err)
 	}
