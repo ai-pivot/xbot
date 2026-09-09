@@ -13,6 +13,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Check, Pencil, Target, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useIsTouch } from '@/hooks/useIsMobile'
+import { useI18n } from '@/providers/i18n'
 import type { GoalInfo } from '@/types/shared'
 
 interface GoalBannerProps {
@@ -22,6 +24,8 @@ interface GoalBannerProps {
 }
 
 export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
+  const isTouch = useIsTouch()
+  const { t } = useI18n()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(goal.objective)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -56,10 +60,10 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
   return (
     <div
       className={cn(
-        'mx-2 mb-1.5 overflow-hidden rounded-md border text-sm transition-colors',
+        'mx-1.5 mb-1 overflow-hidden rounded-md border text-sm transition-colors md:mx-2 md:mb-1.5',
         completed
-          ? 'border-green-500/30 bg-green-500/5'
-          : 'border-accent/30 bg-accent/5',
+          ? 'border-green-500/30 bg-bg-primary/92'
+          : 'border-accent/30 bg-bg-primary/92',
       )}
     >
       {/* Goal row */}
@@ -96,7 +100,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
               'min-w-0 flex-1 bg-transparent px-1 text-xs outline-none',
               'ring-1 ring-accent/40 rounded',
             )}
-            placeholder="输入目标..."
+            placeholder={t('agent.goal.inputPlaceholder')}
           />
         ) : (
           <button
@@ -107,7 +111,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
               completed ? 'text-text-muted line-through' : 'text-text-primary',
               !completed && 'cursor-text hover:text-accent',
             )}
-            title={completed ? undefined : '点击编辑目标'}
+            title={completed ? undefined : t('agent.goal.clickToEdit')}
           >
             {goal.objective}
           </button>
@@ -122,7 +126,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
               : 'bg-accent/15 text-accent',
           )}
         >
-          {completed ? '已完成' : '进行中'}
+          {completed ? t('agent.goal.completed') : t('agent.goal.inProgress')}
         </span>
 
         {/* Edit button (only when active and not editing) */}
@@ -130,8 +134,8 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
           <button
             type="button"
             onClick={() => setEditing(true)}
-            className="shrink-0 text-text-muted opacity-0 transition-opacity hover:text-text-primary group-hover:opacity-100"
-            title="编辑目标"
+            className={`shrink-0 text-text-muted transition-opacity hover:text-text-primary ${isTouch ? 'opacity-70' : 'opacity-0 group-hover:opacity-100'}`}
+            title={t('agent.goal.edit')}
           >
             <Pencil className="size-3" />
           </button>
@@ -143,7 +147,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
             type="button"
             onClick={onClear}
             className="shrink-0 text-text-muted hover:text-destructive"
-            title="清除目标"
+            title={t('agent.goal.clear')}
           >
             <X className="size-3" />
           </button>

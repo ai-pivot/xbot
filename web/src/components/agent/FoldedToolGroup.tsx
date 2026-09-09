@@ -24,6 +24,7 @@ import { SweepText } from './SweepText'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
+import { useI18n } from '@/providers/i18n'
 
 import type { CollapseLevel } from '@/types/agent'
 import { Check, X } from 'lucide-react'
@@ -165,6 +166,7 @@ function formatElapsed(ms: number): string {
  * args JSON，fallback ToolCallBlock 由 hideArgs 抑制，全工具恰好一份参数块。
  */
 function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
+  const { t } = useI18n()
   const status = singleStatus(tool)
   const color = statusColorVar(status)
   const running = status === 'running'
@@ -188,7 +190,7 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
       {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary"><AnsiText text={tool.summary} /></p> : null}
       {tool.args ? (
         <div>
-          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">参数</div>
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">{t('agent.args')}</div>
           <div className="max-h-[150px] overflow-y-auto rounded-md border border-border">
             <ArgsView args={tool.args} />
           </div>

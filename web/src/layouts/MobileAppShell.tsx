@@ -615,6 +615,7 @@ function renderTopBarItem(item: LayoutItem, actions: {
  * DockviewContainer.renderPluginView 同一渲染链）。
  */
 function MobilePluginWorkView({ view: w }: { view: Extract<MobileWorkView, { kind: 'plugin' }> }) {
+  const { t } = useI18n()
   const runtime = useOptionalPluginRuntime()
   const [entry, setEntry] = useState<{ pluginId: string; view: import('@/plugin-api').ViewContribution } | null>(null)
 
@@ -634,8 +635,8 @@ function MobilePluginWorkView({ view: w }: { view: Extract<MobileWorkView, { kin
   if (!entry) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm text-text-muted">
-        <div>{`视图不可用：${w.viewId}`}</div>
-        <div className="text-xs">插件未激活或已被卸载</div>
+        <div>{t('workspace.viewUnavailable', { viewId: w.viewId })}</div>
+        <div className="text-xs">{t('workspace.pluginInactive')}</div>
       </div>
     )
   }

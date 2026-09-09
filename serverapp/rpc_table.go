@@ -873,6 +873,11 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		}
 		// Also write to subscription_models table (authoritative source for v35+)
 		svc.UpsertModel(existing.ID, p.Model, p.Config.MaxContext, p.Config.MaxOutputTokens, "", p.Config.APIType)
+		// Vision is a manual per-model switch (no whitelist) — write it through
+		// the dedicated single-column path so token-config upserts never clobber it.
+		if err := svc.SetModelVisionConfig(existing.ID, p.Model, p.Config.Vision, p.Config.VisionDetail); err != nil {
+			return fmt.Errorf("set model vision: %w", err)
+		}
 		// Invalidate ALL cached entries for this sender (user-level + per-session).
 		// Must use Invalidate() not InvalidateSender() because per-session entries
 		// (senderID:chatID keys) hold a cached *LLMSubscription pointer with stale

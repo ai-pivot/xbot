@@ -11,7 +11,7 @@
  * 本模块由 PluginRuntime 通过 `/plugins/xbot.git-fancy/web/commit.js` 动态
  * import；props（viewParams）由宿主 PluginView 透传。React 从 window 获取。
  */
-import { React, gitRpc, getRpc, openDiffTab, statusBadge, type CommitDetail } from './shared'
+import { React, gitRpc, getRpc, openDiffTab, statusBadge, t, type CommitDetail } from './shared'
 
 const { useState, useEffect } = React
 
@@ -32,7 +32,7 @@ export function GitCommitView({ hash }: GitCommitViewProps) {
     setError(null)
     if (!hash || !getRpc()) {
       setLoading(false)
-      setError(!hash ? '缺少 hash 参数' : 'Git 插件未初始化')
+      setError(!hash ? t('plugins.gitFancy.missingHash', '缺少 hash 参数') : t('plugins.gitFancy.pluginNotInitialized', 'Git 插件未初始化'))
       return
     }
     gitRpc<CommitDetail>('commit', { hash })
@@ -57,7 +57,7 @@ export function GitCommitView({ hash }: GitCommitViewProps) {
   }, [hash])
 
   if (loading) {
-    return <div className="flex h-full items-center justify-center text-xs text-text-muted">加载 commit 详情…</div>
+    return <div className="flex h-full items-center justify-center text-xs text-text-muted">{t('plugins.gitFancy.loadingCommit', '加载 commit 详情…')}</div>
   }
 
   if (error) {
@@ -76,7 +76,7 @@ export function GitCommitView({ hash }: GitCommitViewProps) {
         <span className="rounded bg-indigo-500/10 px-1.5 py-0.5 font-mono text-[11px] text-indigo-500">
           {detail.short}
         </span>
-        <span className="text-xs text-text-primary">{detail.files.length} 个文件变更</span>
+        <span className="text-xs text-text-primary">{t('plugins.gitFancy.fileChanges', '{{count}} 个文件变更', { count: detail.files.length })}</span>
         <span className="ml-auto flex items-center gap-2 font-mono text-[11px]">
           <span className="text-green-600">+{totalAdded}</span>
           <span className="text-red-600">-{totalDeleted}</span>
@@ -101,7 +101,7 @@ export function GitCommitView({ hash }: GitCommitViewProps) {
         key={f.path}
         onClick={() => openDiffTab(f.path, detail.hash)}
         className="flex cursor-pointer items-center gap-2 px-3 py-1 hover:bg-bg-hover active:bg-bg-hover"
-        title="在编辑区查看此 commit 内该文件的 diff"
+        title={t('plugins.gitFancy.openCommitFileDiff', '在编辑区查看此 commit 内该文件的 diff')}
       >
         <span
           className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold ${badge.cls}`}

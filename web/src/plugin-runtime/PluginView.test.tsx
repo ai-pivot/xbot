@@ -14,7 +14,12 @@
  */
 import { render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+
+import i18n from '@/i18n'
+
+// 中文断言依赖 zh-CN（jsdom 默认 en-US）——局部固定。
+beforeAll(async () => { await i18n.changeLanguage('zh-CN') })
 
 import type { ViewContribution } from '@/plugin-api'
 
@@ -103,21 +108,24 @@ function makeView(id: string, entry: string): ViewContribution {
 
 describe('PluginView 分发', () => {
   describe('builtin 视图分发', () => {
-    it('xbot.skill-manager.panel 渲染出 SkillManagerPanel（头部标题可见）', () => {
+    it('xbot.skill-manager.panel 渲染出 SkillManagerPanel（安装按钮可见）', async () => {
       render(<PluginView pluginId="xbot.skill-manager" view={makeView('xbot.skill-manager.panel', 'builtin:xbot.skill-manager.panel')} />)
-      expect(screen.getByText('sidebar.skills')).toBeTruthy()
+      // 面板标题由 PanelChrome 提供（面板内不再重复渲染标题）——断言面板内容。
+      expect(await screen.findByText('skills.install')).toBeTruthy()
     })
 
     it('xbot.plugin-manager.panel 仍正常渲染（回归守护）', async () => {
       render(<PluginView pluginId="xbot.plugin-manager" view={makeView('xbot.plugin-manager.panel', 'builtin:xbot.plugin-manager.panel')} />)
-      expect(await screen.findByText('暂无插件')).toBeTruthy()
+      // 本文件 mock 了 useI18n（t 原样返回 key）——断言 key 而非中文。
+      expect(await screen.findByText('plugins.manager.empty')).toBeTruthy()
     })
 
     it('xbot.session-stats.panel 渲染出 SessionStatsPanel（聚合数据可见）', async () => {
       render(<PluginView pluginId="xbot.session-stats" view={makeView('xbot.session-stats.panel', 'builtin:xbot.session-stats.panel')} />)
-      // 头部标题 + RPC 聚合数据（12,300 → 12.3k；命中率 8000/12300 → 65.0%）。
-      expect(screen.getByText('统计')).toBeTruthy()
-      expect(await screen.findByText('12.3k')).toBeTruthy()
+      // RPC 聚合数据（12,300 → 12.3k；命中率 8000/12300 → 65.0%）。
+      // 面板标题由 PanelChrome 提供（面板内不再重复渲染标题）——断言指标标签。
+      expect(await screen.findByText('plugins.sessionStats.input')).toBeTruthy()
+      expect(screen.getByText('12.3k')).toBeTruthy()
       expect(screen.getByText('65.0%')).toBeTruthy()
       expect(screen.getByText('glm-5.2')).toBeTruthy()
     })

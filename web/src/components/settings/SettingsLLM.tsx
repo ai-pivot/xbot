@@ -14,6 +14,7 @@
 import { useMemo, useState } from 'react'
 import { toast } from 'sonner'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import { useI18n } from '@/providers/i18n'
 import type { useLLMSettings } from '@/hooks/useLLMSettings'
 import type { Subscription } from '@/types/shared'
 import {
@@ -34,27 +35,29 @@ import {
 
 type Settings = ReturnType<typeof useLLMSettings>
 type LlmSub = Subscription
+/** i18n 翻译函数签名（与 providers/i18n 的 I18nContextValue.t 一致）。 */
+type TFn = (key: string, params?: Record<string, string | number>) => string
 
 const THINK_OPTS: Array<[string, string]> = [
-  ['auto', '自动'],
-  ['think', '思考'],
-  ['think-max', '深度思考'],
-  ['disabled', '关闭'],
+  ['auto', 'settings.thinking.auto'],
+  ['think', 'settings.thinking.think'],
+  ['think-max', 'settings.thinking.thinkMax'],
+  ['disabled', 'settings.thinking.disabled'],
 ]
 
 const TIER_META: Record<string, { label: string; icon: string; color: string }> = {
-  vanguard: { label: '先锋', icon: 'crown', color: '#a78bfa' },
-  balance: { label: '均衡', icon: 'scale', color: '#3aa6dd' },
-  swift: { label: '疾速', icon: 'gauge', color: '#34d399' },
+  vanguard: { label: 'settings.llmConsole.tierVanguard', icon: 'crown', color: '#a78bfa' },
+  balance: { label: 'settings.llmConsole.tierBalance', icon: 'scale', color: '#3aa6dd' },
+  swift: { label: 'settings.llmConsole.tierSwift', icon: 'gauge', color: '#34d399' },
 }
 
-function exportSubscriptions(conn: ReturnType<typeof useWSConnection>) {
+function exportSubscriptions(conn: ReturnType<typeof useWSConnection>, t: TFn) {
   conn.rpc('export_subscriptions', { ids: [] })
     .then((resp: unknown) => {
       const r = resp as { subscriptions?: Array<Record<string, unknown>> }
       const subs = r?.subscriptions ?? []
       if (subs.length === 0) {
-        toast.info('没有可导出的订阅')
+        toast.info(t('settings.llmConsole.exportEmpty'))
         return
       }
       const json = JSON.stringify(resp, null, 2)
@@ -65,13 +68,14 @@ function exportSubscriptions(conn: ReturnType<typeof useWSConnection>) {
       a.download = 'xbot-llm-subscriptions.json'
       a.click()
       URL.revokeObjectURL(url)
-      toast.success('已导出 ' + subs.length + ' 个订阅')
+      toast.success(t('settings.llmConsole.exportedSubs', { count: subs.length }))
     })
-    .catch((e: unknown) => toast.error('导出失败：' + (e instanceof Error ? e.message : String(e))))
+    .catch((e: unknown) => toast.error(t('settings.llmConsole.exportFailed', { msg: e instanceof Error ? e.message : String(e) })))
 }
 
 export function SettingsLLM({ settings }: { settings: Settings }) {
   const conn = useWSConnection()
+  const { t } = useI18n()
   const { data, loading, saving, refreshing } = settings
   const {
     addSubscription, updateSubscription, removeSubscription, setDefaultSubscription,
@@ -113,46 +117,48 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
   const commitThinking = (mode: string) => {
     setThinking(mode)
     const dbMode = mode === 'think' ? 'enabled' : mode
-    void setThinkingMode(dbMode).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已保存' : '保存失败'))
+    void setThinkingMode(dbMode).then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed')))
   }
   const commitConc = (n: number) => {
     setConc(n)
-    void setLLMConcurrency(n).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已保存' : '保存失败'))
+    void setLLMConcurrency(n).then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.saved') : t('settings.saveFailed')))
   }
   const toggleSub = (s: LlmSub) => {
     void setSubscriptionEnabled(s.id, !s.enabled).then((ok) => {
-      if (!ok) return fail('操作失败')
-      toast[!s.enabled ? 'success' : 'warning'](!s.enabled ? '已启用 ' + s.name : '已停用 ' + s.name)
+      if (!ok) return fail(t('settings.llmConsole.operationFailed'))
+      toast[!s.enabled ? 'success' : 'warning'](!s.enabled ? t('settings.llmConsole.subEnabledToast', { name: s.name }) : t('settings.llmConsole.subDisabledToast', { name: s.name }))
     })
   }
   const makeDefault = (s: LlmSub) => {
-    void setDefaultSubscription(s.id).then((ok) => toast[ok ? 'success' : 'error'](ok ? '默认订阅 → ' + s.name : '设置失败'))
+    void setDefaultSubscription(s.id).then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.defaultSetToast', { name: s.name }) : t('settings.llmConsole.setFailed')))
   }
   const confirmDelete = (s: LlmSub) => {
     setConfirmDel(null)
     if (detailId === s.id) setDetailId(null)
-    void removeSubscription(s.id).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已删除 ' + s.name : '删除失败'))
+    void removeSubscription(s.id).then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.subDeletedToast', { name: s.name }) : t('settings.llmConsole.deleteFailed')))
   }
   const toggleModel = (sid: string, model: string, curEnabled: boolean) => {
     void setModelEnabled(sid, model, !curEnabled).then((ok) =>
-      toast[ok ? 'success' : 'error'](ok ? (curEnabled ? '已停用 ' + model : '已启用 ' + model) : '操作失败'))
+      toast[ok ? 'success' : 'error'](ok ? (curEnabled ? t('settings.llmConsole.modelDisabledToast', { name: model }) : t('settings.llmConsole.modelEnabledToast', { name: model })) : t('settings.llmConsole.operationFailed')))
   }
   const removeModelById = (sid: string, model: string) => {
     setMenuModel(null)
-    void removeModel(sid, model).then((ok) => toast[ok ? 'success' : 'error'](ok ? '已移除 ' + model : '移除失败'))
+    void removeModel(sid, model).then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.modelRemovedToast', { name: model }) : t('settings.llmConsole.removeFailed')))
   }
-  const saveModel = (sid: string, model: string, cfg: { max_context: number; max_output_tokens: number; api_type: string }) => {
+  const saveModel = (sid: string, model: string, cfg: { max_context: number; max_output_tokens: number; api_type: string; vision: boolean; vision_detail: string }) => {
     setEditModel(null)
     void updatePerModelConfig(sid, model, {
       max_context: cfg.max_context,
       max_output_tokens: cfg.max_output_tokens,
       api_type: cfg.api_type,
       enabled: true,
-    }).then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型配置已保存' : '保存失败'))
+      vision: cfg.vision,
+      vision_detail: cfg.vision ? cfg.vision_detail : '',
+    }).then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.modelConfigSaved') : t('settings.saveFailed')))
   }
   const addModelByName = (sid: string, name: string) => {
     setAddModelFor(null)
-    void upsertModel(sid, name, 0, 0, '').then((ok) => toast[ok ? 'success' : 'error'](ok ? '已注册 ' + name : '添加失败'))
+    void upsertModel(sid, name, 0, 0, '').then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.modelRegisteredToast', { name }) : t('settings.llmConsole.addFailed')))
   }
   const saveSub = (d: {
     name: string; provider: string; base_url: string; api_key: string; model: string; api_type: string
@@ -161,12 +167,12 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
     const editing = editSub
     setEditSub(null)
     const p = editing ? updateSubscription(editing.id, d) : addSubscription(d)
-    void p.then((ok) => toast[ok ? 'success' : 'error'](ok ? (editing ? '订阅已保存' : '已添加 ' + d.name) : '保存失败'))
+    void p.then((ok) => toast[ok ? 'success' : 'error'](ok ? (editing ? t('settings.llmConsole.subSaved') : t('settings.llmConsole.subAddedToast', { name: d.name })) : t('settings.saveFailed')))
   }
   const pickTier = (tier: string, subID: string, model: string) => {
     setTierPick(null)
     void setTier(tier as 'vanguard' | 'balance' | 'swift', subID + '|' + model).then((ok) =>
-      toast[ok ? 'success' : 'error'](ok ? 'Tier ' + TIER_META[tier].label + ' → ' + model : '设置失败'))
+      toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.tierSetToast', { tier: t(TIER_META[tier].label), model }) : t('settings.llmConsole.setFailed')))
   }
   const handleImport = (file: File) => {
     setImporting(true)
@@ -180,16 +186,16 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
       try {
         subs = JSON.parse(String(reader.result))
       } catch (e) {
-        fail('导入失败：' + (e instanceof Error ? e.message : String(e)))
+        fail(t('settings.llmConsole.importFailed', { msg: e instanceof Error ? e.message : String(e) }))
         setImporting(false)
         return
       }
       conn.rpc('import_subscriptions', { subs, overwrite: false })
         .then(() => {
-          toast.success('导入成功')
+          toast.success(t('settings.llmConsole.importSuccess'))
           void settings.reload()
         })
-        .catch((e: unknown) => fail('导入失败：' + (e instanceof Error ? e.message : String(e))))
+        .catch((e: unknown) => fail(t('settings.llmConsole.importFailed', { msg: e instanceof Error ? e.message : String(e) })))
         .finally(() => setImporting(false))
     }
     reader.readAsText(file)
@@ -215,7 +221,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center text-sm" style={{ color: 'var(--text-muted)' }}>
-        加载中…
+        {t('common.loading')}
       </div>
     )
   }
@@ -233,27 +239,27 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           min-w-0 允许收缩到容器内，组内 flex-wrap 换行。 */}
       <div className="flex shrink-0 flex-wrap items-center gap-2.5 border-b px-4 pb-3 pt-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
         <div className="min-w-0 flex-1">
-          <h2 className="truncate text-base font-bold" style={{ color: 'var(--text-primary)' }}>LLM 控制台</h2>
+          <h2 className="truncate text-base font-bold" style={{ color: 'var(--text-primary)' }}>{t('settings.llmConsole.title')}</h2>
           <p className="mt-0.5 truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            {subs.length} 个订阅 · {totalModels} 个模型 · {liveModels} 个可用
+            {t('settings.llmConsole.stats', { subs: subs.length, models: totalModels, live: liveModels })}
           </p>
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-          <button onClick={function() { void refreshModels().then((ok) => toast[ok ? 'success' : 'error'](ok ? '模型列表已刷新' : '刷新失败')) }}
+          <button onClick={function() { void refreshModels().then((ok) => toast[ok ? 'success' : 'error'](ok ? t('settings.llmConsole.modelsRefreshed') : t('settings.llmConsole.refreshFailed'))) }}
             disabled={refreshing}
             className="flex h-8 items-center gap-1 rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
-            <LlmIcon n="refresh" s={12} c={refreshing ? 'var(--accent)' : undefined} />{refreshing ? '刷新中…' : '刷新模型'}
+            <LlmIcon n="refresh" s={12} c={refreshing ? 'var(--accent)' : undefined} />{refreshing ? t('settings.refreshing') : t('settings.llmConsole.refreshBtn')}
           </button>
-          <button onClick={function() { exportSubscriptions(conn) }}
-            className="flex h-8 items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">导出</button>
+          <button onClick={function() { exportSubscriptions(conn, t) }}
+            className="flex h-8 items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">{t('settings.llmConsole.export')}</button>
           <label className="flex h-8 cursor-pointer items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">
-            {importing ? '导入中…' : '导入'}
+            {importing ? t('settings.llmConsole.importing') : t('settings.llmConsole.import')}
             <input type="file" accept="application/json" className="hidden"
               onChange={function(e) { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = '' }} />
           </label>
           <button onClick={function() { setEditSub(null); setFormOpen(true) }}
             className="flex h-8 items-center gap-1 rounded-lg bg-accent/14 px-2.5 text-[12px] font-semibold text-accent transition-colors hover:bg-accent/25">
-            <LlmIcon n="plus" s={13} c="currentColor" />添加订阅
+            <LlmIcon n="plus" s={13} c="currentColor" />{t('settings.addSubscription')}
           </button>
         </div>
       </div>
@@ -261,25 +267,25 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
       {/* ── scroll area ── */}
       <div className="min-h-0 flex-1 overflow-y-auto p-4 pt-4">
         <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-          <LlmIcon n="spark" s={14} c="var(--accent)" />模型与推理
+          <LlmIcon n="spark" s={14} c="var(--accent)" />{t('settings.modelInference')}
         </div>
         <div className="rounded-xl border p-3.5" style={{ background: 'rgba(255,255,255,0.02)', borderColor: 'rgba(255,255,255,0.06)' }}>
-          <LlmField label="思考模式" hint="全局用户设置 · Ctrl+M">
+          <LlmField label={t('settings.thinkingMode')} hint={t('settings.llmConsole.thinkingHint')}>
             <div className="relative flex rounded-xl p-1" style={{ background: 'rgba(255,255,255,0.05)' }}>
               <span className="absolute rounded-lg transition-all duration-300"
-                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal) + ' * 24.5%)', width: '24%', background: 'var(--bg-primary)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
+                style={{ top: 4, bottom: 4, left: 'calc(4px + ' + Math.max(0, THINK_OPTS.map(function(o) { return o[0] }).indexOf(thinkingVal)) + ' * 24.5%)', width: '24%', background: 'var(--bg-primary)', boxShadow: '0 1px 4px rgba(0,0,0,0.15)' }} />
               {THINK_OPTS.map(function(o) {
                 const cur = thinkingVal === o[0]
                 return (
                   <button key={o[0]} onClick={function() { commitThinking(o[0]) }}
                     className="relative z-10 flex-1 rounded-lg py-1.5 text-[11px] font-medium transition-colors"
-                    style={{ color: cur ? 'var(--text-primary)' : 'var(--text-muted)' }}>{o[1]}</button>
+                    style={{ color: cur ? 'var(--text-primary)' : 'var(--text-muted)' }}>{t(o[1])}</button>
                 )
               })}
             </div>
           </LlmField>
           <div className="mt-3 flex items-center justify-between border-t pt-3" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-            <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>最大并发会话</div>
+            <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.maxConcurrencyLabel')}</div>
             <div className="flex items-center gap-2">
               <button onClick={function() { commitConc(Math.max(1, concVal - 1)) }}
                 className="flex size-7 items-center justify-center rounded-lg border border-border bg-bg-tertiary text-base transition-colors hover:bg-bg-hover" style={{ color: 'var(--text-primary)' }}>−</button>
@@ -291,8 +297,8 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
         </div>
 
         <div className="mb-2 mt-4 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-          <LlmIcon n="crown" s={14} c="var(--accent)" />模型分层
-          <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>未配置回落系统默认</span>
+          <LlmIcon n="crown" s={14} c="var(--accent)" />{t('settings.llmConsole.tierSection')}
+          <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.tierUnsetHint')}</span>
         </div>
         <div className="grid grid-cols-1 gap-2.5">
           {Object.keys(TIER_META).map(function(k) {
@@ -307,26 +313,26 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{m.label}</span>
+                    <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{t(m.label)}</span>
                     <span className="text-[10px] tracking-wider" style={{ color: 'var(--text-muted)' }}>{k.toUpperCase()}</span>
                   </div>
                   <div className="truncate font-mono text-[11px]" style={{ color: cur ? m.color : 'var(--text-muted)' }}>
-                    {cur ? cur.model + ' · ' + cur.sub : '未配置 · 回落系统默认'}
+                    {cur ? cur.model + ' · ' + cur.sub : t('settings.llmConsole.tierUnset')}
                   </div>
                 </div>
-                <span className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>更换 ›</span>
+                <span className="text-[11px] font-medium" style={{ color: 'var(--accent)' }}>{t('settings.llmConsole.changeTier')}</span>
               </button>
             )
           })}
         </div>
 
         <div className="mb-2 mt-4 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-          <LlmIcon n="globe" s={14} c="var(--accent)" />订阅
-          <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>点击卡片查看详情</span>
+          <LlmIcon n="globe" s={14} c="var(--accent)" />{t('settings.llmConsole.subscriptions')}
+          <span className="font-normal normal-case tracking-normal" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.subscriptionsHint')}</span>
         </div>
         <div className="mb-1.5 flex h-8 items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
           <LlmIcon n="search" s={13} />
-          <input value={q} onChange={function(e) { setQ(e.target.value) }} placeholder="搜索订阅或模型…"
+          <input value={q} onChange={function(e) { setQ(e.target.value) }} placeholder={t('settings.llmConsole.searchSubs')}
             className="w-full bg-transparent text-[12px] outline-none" style={{ color: 'var(--text-primary)' }} />
         </div>
         <div className="space-y-2.5 pb-2">
@@ -348,21 +354,21 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{s.name}</span>
                       {s.is_system ? <LlmIcon n="lock" s={11} /> : null}
-                      {s.active ? <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>默认</span> : null}
+                      {s.active ? <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>{t('settings.subscriptionActive')}</span> : null}
                     </div>
                     <div className="truncate font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
                       {s.base_url.replace(/^https?:\/\//, '')}{s.provider === 'openai' && s.api_type === 'responses' ? ' · responses' : ''}
                     </div>
                   </div>
                   <LlmSwitch on={s.enabled} onClick={function() { toggleSub(s) }} />
-                  <button onClick={function(e) { e.stopPropagation(); setMenuSub(s) }} aria-label="更多操作"
+                  <button onClick={function(e) { e.stopPropagation(); setMenuSub(s) }} aria-label={t('settings.llmConsole.moreActions')}
                     className="flex size-7 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--bg-tertiary)]" style={{ color: 'var(--text-secondary)' }}>
                     <LlmIcon n="more" s={15} w={2.5} />
                   </button>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 px-3 pb-3">
                   <StatusPill status={s.enabled ? 'normal' : 'disabled'} />
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{avail.length}/{models.length} 可用</span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.availableCount', { avail: avail.length, total: models.length })}</span>
                   {chips.map(function(e) {
                     return <span key={e.model} className="rounded-md px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{e.model}</span>
                   })}
@@ -373,7 +379,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           })}
           {filtered.length === 0 ? (
             <div className="rounded-xl border border-dashed p-6 text-center text-xs" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
-              {q ? '无匹配订阅' : '暂无订阅 · 点击右上角「添加订阅」'}
+              {q ? t('settings.llmConsole.noMatchSubs') : t('settings.llmConsole.noSubsHint')}
             </div>
           ) : null}
         </div>
@@ -393,7 +399,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
               <button onClick={function() { setDetailId(null) }} className="flex size-8 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
                 <LlmIcon n="left" s={16} />
               </button>
-              <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>订阅详情</span>
+              <span className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{t('settings.llmConsole.subDetail')}</span>
             </div>
             <div className="flex items-center gap-2.5 border-b p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
               <ProvBadge provider={detailSub.provider} size={36} />
@@ -409,11 +415,11 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-4">
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>凭据</span>
+                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.credentials')}</span>
                 {!detailSub.is_system ? (
                   <button onClick={function() { setEditSub(detailSub); setFormOpen(true) }}
                     className="flex items-center gap-1 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
-                    <LlmIcon n="pencil" s={11} /> 编辑
+                    <LlmIcon n="pencil" s={11} /> {t('settings.llmConsole.edit')}
                   </button>
                 ) : null}
               </div>
@@ -423,19 +429,19 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                   <span className="font-mono text-[11px]" style={{ color: 'var(--text-primary)' }}>{detailSub.api_key || '—'}</span>
                 </div>
                 <div className="flex items-center justify-between text-[12px]">
-                  <span style={{ color: 'var(--text-secondary)' }}>协议</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{t('settings.llmConsole.protocol')}</span>
                   <span style={{ color: 'var(--text-primary)' }}>{providerMeta(detailSub.provider).label}{detailSub.provider === 'openai' ? ' · ' + (detailSub.api_type === 'responses' ? 'Responses' : 'Chat Completions') : ''}</span>
                 </div>
                 <div className="flex items-center justify-between text-[12px]">
-                  <span style={{ color: 'var(--text-secondary)' }}>默认模型</span>
+                  <span style={{ color: 'var(--text-secondary)' }}>{t('settings.subscriptionDefaultModel')}</span>
                   <span className="font-mono text-[11px]" style={{ color: 'var(--text-primary)' }}>{detailSub.model || '—'}</span>
                 </div>
               </div>
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>模型 · {detailModels.length}</span>
+                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.modelsCount', { count: detailModels.length })}</span>
                 {!detailSub.is_system ? (
                   <button onClick={function() { setAddModelFor(detailSub.id) }} className="flex items-center gap-1 text-[11px] font-medium" style={{ color: 'var(--accent)' }}>
-                    <LlmIcon n="plus" s={11} /> 添加模型
+                    <LlmIcon n="plus" s={11} /> {t('settings.llmConsole.addModel')}
                   </button>
                 ) : null}
               </div>
@@ -446,13 +452,16 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                     <div key={e.model} className="group flex items-center gap-2.5 rounded-xl px-2.5 py-2 transition-colors hover:bg-bg-tertiary">
                       <StatusPill status={e.status} />
                       <span className="min-w-0 flex-1 truncate font-mono text-[12px]" style={{ color: e.status === 'disabled' ? 'var(--text-muted)' : 'var(--text-primary)' }}>{e.model}</span>
+                      {pmc?.vision ? (
+                        <span title={t('settings.llmConsole.visionBadgeTitle')} className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold" style={{ background: 'color-mix(in srgb, var(--accent) 16%, transparent)', color: 'var(--accent)' }}>👁 {t('settings.llmConsole.visionBadge')}</span>
+                      ) : null}
                       {pmc?.max_context ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{fmtTokens(pmc.max_context)}</span> : null}
                       {pmc?.max_output_tokens ? <span className="rounded px-1.5 py-0.5 font-mono text-[9px]" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>out {fmtTokens(pmc.max_output_tokens)}</span> : null}
                       {e.status === 'disabled'
-                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--accent)' }}>启用</button>
-                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>停用</button>}
+                        ? <button onClick={function() { toggleModel(detailSub.id, e.model, false) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--accent)' }}>{t('settings.enable')}</button>
+                        : <button onClick={function() { toggleModel(detailSub.id, e.model, true) }} className="rounded-lg px-2 py-1 text-[10px] font-medium hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>{t('settings.disable')}</button>}
                       <button onClick={function() { setMenuModel({ sid: detailSub.id, model: e.model, status: e.status }) }}
-                        aria-label="模型操作" className="flex size-6 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
+                        aria-label={t('settings.llmConsole.modelActions')} className="flex size-6 items-center justify-center rounded-lg hover:bg-bg-tertiary" style={{ color: 'var(--text-muted)' }}>
                         <LlmIcon n="more" s={13} w={2.5} />
                       </button>
                     </div>
@@ -460,7 +469,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                 })}
                 {detailModels.length === 0 ? (
                   <div className="rounded-xl border border-dashed p-5 text-center text-[11px]" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
-                    暂无模型 · 点「刷新模型列表」拉取，或手动添加
+                    {t('settings.llmConsole.noModelsHint')}
                   </div>
                 ) : null}
               </div>
@@ -469,12 +478,12 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
                   <button onClick={function() { makeDefault(detailSub) }} disabled={detailSub.active}
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border bg-bg-tertiary py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-hover disabled:opacity-40"
                     style={{ color: detailSub.active ? 'var(--text-muted)' : 'var(--text-primary)' }}>
-                    <LlmIcon n="star" s={12} />{detailSub.active ? '当前默认' : '设为默认'}
+                    <LlmIcon n="star" s={12} />{detailSub.active ? t('settings.llmConsole.currentDefault') : t('settings.setAsDefault')}
                   </button>
                   <button onClick={function() { setConfirmDel(detailSub) }}
                     className="flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-border py-2.5 text-[12px] font-medium transition-colors hover:bg-bg-tertiary"
                     style={{ color: 'var(--status-error, #ef4444)' }}>
-                    <LlmIcon n="trash" s={12} /> 删除订阅
+                    <LlmIcon n="trash" s={12} /> {t('settings.llmConsole.deleteSub')}
                   </button>
                 </div>
               ) : null}
@@ -507,7 +516,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
           saving={saving} onConfirm={function() { confirmDelete(confirmDel) }} onClose={function() { setConfirmDel(null) }} />
       ) : null}
       {tierPick ? (
-        <TierPickerModal tierLabel={TIER_META[tierPick].label} entries={data.modelEntries}
+        <TierPickerModal tierLabel={t(TIER_META[tierPick].label)} entries={data.modelEntries}
           value={currentTierRaw(tierPick)} onClose={function() { setTierPick(null) }}
           onPick={function(subID, model) { pickTier(tierPick, subID, model) }} />
       ) : null}
@@ -524,20 +533,20 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
       {menuSub ? (
         <ActionSheet title={menuSub.name} onClose={function() { setMenuSub(null) }}
           items={[
-            { icon: 'pencil', label: '编辑凭据', onClick: function() { setEditSub(menuSub); setFormOpen(true); setMenuSub(null) } },
-            { icon: 'star', label: '设为默认', onClick: function() { makeDefault(menuSub); setMenuSub(null) } },
-            { icon: 'power', label: menuSub.enabled ? '停用订阅' : '启用订阅', onClick: function() { toggleSub(menuSub); setMenuSub(null) } },
-            { icon: 'trash', label: '删除订阅', danger: true, onClick: function() { setConfirmDel(menuSub); setMenuSub(null) } },
+            { icon: 'pencil', label: t('settings.llmConsole.editCredentials'), onClick: function() { setEditSub(menuSub); setFormOpen(true); setMenuSub(null) } },
+            { icon: 'star', label: t('settings.setAsDefault'), onClick: function() { makeDefault(menuSub); setMenuSub(null) } },
+            { icon: 'power', label: menuSub.enabled ? t('settings.llmConsole.disableSub') : t('settings.llmConsole.enableSub'), onClick: function() { toggleSub(menuSub); setMenuSub(null) } },
+            { icon: 'trash', label: t('settings.llmConsole.deleteSub'), danger: true, onClick: function() { setConfirmDel(menuSub); setMenuSub(null) } },
           ]} />
       ) : null}
       {menuModel ? (
         <ActionSheet title={menuModel.model} onClose={function() { setMenuModel(null) }}
           items={[
-            { icon: 'pencil', label: '编辑配置', onClick: function() { setEditModel({ sid: menuModel.sid, model: menuModel.model }); setMenuModel(null) } },
+            { icon: 'pencil', label: t('settings.llmConsole.editConfig'), onClick: function() { setEditModel({ sid: menuModel.sid, model: menuModel.model }); setMenuModel(null) } },
             menuModel.status === 'disabled'
-              ? { icon: 'check', label: '启用模型', onClick: function() { toggleModel(menuModel.sid, menuModel.model, false); setMenuModel(null) } }
-              : { icon: 'power', label: '停用模型', onClick: function() { toggleModel(menuModel.sid, menuModel.model, true); setMenuModel(null) } },
-            { icon: 'trash', label: '移除模型', danger: true, onClick: function() { removeModelById(menuModel.sid, menuModel.model) } },
+              ? { icon: 'check', label: t('settings.llmConsole.enableModel'), onClick: function() { toggleModel(menuModel.sid, menuModel.model, false); setMenuModel(null) } }
+              : { icon: 'power', label: t('settings.llmConsole.disableModel'), onClick: function() { toggleModel(menuModel.sid, menuModel.model, true); setMenuModel(null) } },
+            { icon: 'trash', label: t('settings.llmConsole.removeModel'), danger: true, onClick: function() { removeModelById(menuModel.sid, menuModel.model) } },
           ]} />
       ) : null}
     </div>

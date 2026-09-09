@@ -61,7 +61,7 @@ describe('ShellPromoteBar', () => {
       makeTool({ callID: 'call_1', args: '{"command":"npm run build"}' }),
       { channel: 'web', chatID: 'chat-1' },
     )
-    expect(screen.getByRole('button', { name: /转后台|把这条命令转入后台/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /转后台|把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })).toBeInTheDocument()
   })
 
   it('hides the promote button for completed tools (history render)', () => {
@@ -69,7 +69,7 @@ describe('ShellPromoteBar', () => {
       makeTool({ status: 'done', callID: 'call_1', summary: 'build ok' }),
       { channel: 'web', chatID: 'chat-1' },
     )
-    expect(screen.queryByRole('button', { name: /转后台|把这条命令转入后台/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /转后台|把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })).not.toBeInTheDocument()
   })
 
   it('hides the promote button when there is no session identity (chatID null)', () => {
@@ -77,7 +77,7 @@ describe('ShellPromoteBar', () => {
       makeTool({ callID: 'call_1' }),
       { channel: 'web', chatID: null },
     )
-    const btn = screen.queryByRole('button', { name: /转后台|把这条命令转入后台/ })
+    const btn = screen.queryByRole('button', { name: /转后台|把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })
     // The bar renders but the button is disabled (no RPC possible).
     expect(btn).toBeDisabled()
   })
@@ -87,7 +87,7 @@ describe('ShellPromoteBar', () => {
       makeTool({ callID: undefined }),
       { channel: 'web', chatID: 'chat-1' },
     )
-    const btn = screen.queryByRole('button', { name: /转后台|把这条命令转入后台/ })
+    const btn = screen.queryByRole('button', { name: /转后台|把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })
     expect(btn).toBeDisabled()
   })
 
@@ -97,7 +97,7 @@ describe('ShellPromoteBar', () => {
       makeTool({ callID: 'call_9', args: '{"command":"npm run build"}' }),
       { channel: 'web', chatID: 'chat-1' },
     )
-    const btn = screen.getByRole('button', { name: /把这条命令转入后台执行/ })
+    const btn = screen.getByRole('button', { name: /把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })
     fireEvent.click(btn)
 
     await waitFor(() => {
@@ -109,7 +109,7 @@ describe('ShellPromoteBar', () => {
 
     // Success → done bar with the task id + toast.
     await waitFor(() => {
-      expect(screen.getByText('已在后台运行')).toBeInTheDocument()
+      expect(screen.getByText(/已在后台运行|Running in background|agent\.tool\.runningInBackground/)).toBeInTheDocument()
     })
     expect(screen.getByText('ab12cd34')).toBeInTheDocument()
     expect(toastMock.success).toHaveBeenCalled()
@@ -127,18 +127,18 @@ describe('ShellPromoteBar', () => {
       makeTool({ callID: 'call_x', args: '{"command":"sleep 100"}' }),
       { channel: 'web', chatID: 'chat-2' },
     )
-    const btn = screen.getByRole('button', { name: /把这条命令转入后台执行/ })
+    const btn = screen.getByRole('button', { name: /把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })
     fireEvent.click(btn)
 
     await waitFor(() => {
       expect(toastMock.error).toHaveBeenCalledWith(
-        '转入后台失败',
+        expect.stringMatching(/转入后台失败|Failed to move to background|agent\.tool\.bgFailedTitle/),
         expect.objectContaining({ description: 'no running foreground shell in this session' }),
       )
     })
     // Back to the retryable button (not the done bar).
-    expect(screen.getByRole('button', { name: /把这条命令转入后台执行/ })).toBeInTheDocument()
-    expect(screen.queryByText('已在后台运行')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /把这条命令转入后台|Move this command to the background|agent\.tool\.promoteAria/ })).toBeInTheDocument()
+    expect(screen.queryByText(/已在后台运行|Running in background|agent\.tool\.runningInBackground/)).not.toBeInTheDocument()
   })
 
   it('renders the promoted result badges for a finished shell (PROMOTED + task id)', () => {
@@ -149,7 +149,7 @@ describe('ShellPromoteBar', () => {
       }),
       { channel: 'web', chatID: 'chat-1' },
     )
-    expect(screen.getByText('已转后台')).toBeInTheDocument()
+    expect(screen.getByText(/已转后台|Moved to background|agent\.tool\.promotedBadge/)).toBeInTheDocument()
     expect(screen.getByText('9adfa651')).toBeInTheDocument()
   })
 })

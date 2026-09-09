@@ -52,6 +52,7 @@ import {
   type ReactNode,
 } from 'react'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
+import { useI18n } from '@/providers/i18n'
 
 import { panelRegistry } from '@/plugin-runtime/panelRegistry'
 import type {
@@ -69,7 +70,6 @@ const LS_KEY_V2 = 'xbot:panel-layout-v2'
 const LS_KEY_V1 = 'xbot:panel-layout'
 const MIN_W = 220
 const MIN_H = 120
-const DOCK_BODY_MAX_H = 320
 const FLOATING_STEP = 24
 /** 拖拽位移阈值：小于此值的 pointerup 视为误触（点击），零状态变更。 */
 const DRAG_THRESHOLD = 4
@@ -82,7 +82,7 @@ const FALLBACK_VIEWPORT = { w: 1280, h: 800 }
 const DOCK_H_MIN = 140
 const DOCK_H_MAX = 640
 /** chip → side 钉选时的默认 body 高度。 */
-const PIN_DEFAULT_H = 220
+const PIN_DEFAULT_H = 360
 /**
  * v5.1 唯一钉选面板默认值表（内置面板数据表，非插件特化——插件面板绝不进入
  * 此表，插件位置一律尊重 contribution）。key = 面板 id；h = 默认 body 高度。
@@ -231,7 +231,19 @@ function defaultEntryOf(id: string, def: PanelDefinition | undefined, order: num
   const pinned = PINNED_DEFAULTS[id]
   if (pinned) return { loc: { zone: 'side', order, h: pinned.h }, collapsed: false }
   if (def?.source === 'core') return { loc: { zone: 'chip', order }, collapsed: true }
-  if (def?.location) return { loc: def.location, collapsed: true }
+  // 插件面板：尊重 contribution 的 zone/segment，但 side 面板高度取「声明值」与
+  // 「统一默认」的较大者——插件声明的 220 常常装不下内容（用户报告"git 面板高度
+  // 太小、交互几乎不可用"）。总高超出时 panel-dock-stack 整栏滚动。
+  if (def?.location) {
+    const loc = def.location
+    return {
+      loc:
+        loc.zone === 'side'
+          ? { ...loc, h: Math.max(loc.h ?? PIN_DEFAULT_H, PIN_DEFAULT_H) }
+          : loc,
+      collapsed: true,
+    }
+  }
   return { loc: { zone: 'chip', order }, collapsed: true }
 }
 
@@ -332,13 +344,20 @@ interface ResizeDragState {
   layer: LayerRect
 }
 
-/** v5.1 side 面板底边调高（move 中本地跟随，up 一次落盘；clamp 140–640）。 */
+/**
+ * v5.1 side 面板底边调高（move 中本地跟随，up 一次落盘；clamp 140–640）。
+ * v6 成对分配：拖面板 i 时下一个【展开】面板等量反向补偿（总高恒定，拖拽有
+ * 真实的"空间重新分配"反馈——用户报"拖拽不符合人类直觉"的根因修复）。
+ * nextId=null 表示 i 是最后一个展开面板（下面无面板可补偿，只改自己）。
+ */
 interface HeightDragState {
   kind: 'height'
   id: string
+  nextId: string | null
   startX: number
   startY: number
   curH: number
+  nextCurH: number
 }
 
 type DragState = PanelDragState | ResizeDragState | HeightDragState
@@ -370,6 +389,13 @@ interface PanelDockContextValue {
   dockPanel: (id: string) => void
   /** 钉选（chips 📌）：zone 'side'，append 堆叠尾，默认 h 220。 */
   pinPanel: (id: string) => void
+  /**
+   * 点击 chip 图标 = 该面板【独占左侧栏】（VSCode Activity Bar 模式）：
+   * pin 到 side + 展开 + 其他 side 面板全部折叠 → 它占满左栏全高（grow）。
+   * 再次点击已独占的面板 = 取消独占（折叠自己 + 展开会话列表）。
+   * 取代旧的小浮层（340×440 空间局促、遮挡内容、点外部即消失）。
+   */
+  focusPanel: (id: string) => void
   /** 取消钉选（side 面板 ✕）：→ 'chip'。PINNED_DEFAULTS 面板不可取消（无 ✕ 入口）。 */
   unpinPanel: (id: string) => void
   onGripPointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
@@ -521,6 +547,43 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
         const h = cur.loc.h != null ? Math.min(Math.max(DOCK_H_MIN, cur.loc.h), DOCK_H_MAX) : PIN_DEFAULT_H
         const { x: _x, y: _y, w: _w, segment: _s, ...rest } = cur.loc
         return { ...prev, [id]: { ...cur, loc: { ...rest, zone: 'side', order: maxOrder + 1, h }, collapsed: false } }
+      })
+    },
+    [update, entryOf, defs],
+  )
+
+  /**
+   * 点击 chip/ActivityBar 图标 = 该面板【独占左侧栏】（VSCode Activity Bar 模型）。
+   * 独占 = 目标 pin 到 side + 展开，其他 side 面板全部折叠 → 它占满左栏全高。
+   * ⚠️ 不做"再次点击折叠自己"——那会让侧栏变成 329px 的空白区（用户报"布局有问题"）。
+   * 收起侧栏由 ActivityBar 层面处理（点已激活图标 → 收起整栏）。
+   */
+  const focusPanel = useCallback(
+    (id: string) => {
+      update((prev) => {
+        const next = { ...prev }
+        const entryOfId = (pid: string) => next[pid] ?? entryOf(pid)
+        const sideIds = defs.filter((d) => entryOfId(d.id).loc.zone === 'side').map((d) => d.id)
+        const cur = entryOfId(id)
+        // 独占：其他 side 面板折叠，目标 pin 到 side + 展开。
+        for (const pid of sideIds) {
+          if (pid === id) continue
+          const e = entryOfId(pid)
+          if (!e.collapsed) next[pid] = { ...e, collapsed: true }
+        }
+        const maxOrder = sideIds.reduce((m, pid) => Math.max(m, entryOfId(pid).loc.order), -1)
+        const { x: _x, y: _y, w: _w, segment: _s, ...rest } = cur.loc
+        next[id] = {
+          ...cur,
+          loc: {
+            ...rest,
+            zone: 'side',
+            order: cur.loc.zone === 'side' ? cur.loc.order : maxOrder + 1,
+            h: cur.loc.h ?? PIN_DEFAULT_H,
+          },
+          collapsed: false,
+        }
+        return next
       })
     },
     [update, entryOf, defs],
@@ -845,8 +908,15 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
   /**
    * v5.1 side 面板底边调高（复用 v5 拖拽协议：move 中零持久化本地跟随，
    * pointerup 一次 update+persist；pointer capture；handle touch-none）。
-   * clamp 140–640；Esc/pointercancel 零状态变更。起始 h：loc.h ?? 钉选默认
-   * （PINNED_DEFAULTS）?? 自适应上限（DOCK_BODY_MAX_H）。
+   * clamp 140–640；Esc/pointercancel 零状态变更。
+   *
+   * v6 成对分配 + 绝对基准（用户报"拖拽不符合人类直觉"的根因修复）：
+   * 1. 补偿对象 = 下一个【展开】面板——拖 i 变高时它等量变矮，总高恒定，用户
+   *    能看到真实的"空间重新分配"（旧模型只有被拖面板动，其他零响应）。
+   * 2. 起始高度取【实际渲染高度】而非 loc.h——两者可能不一致（兄弟面板变化、
+   *    flex 分配），用 loc.h 会让按下瞬间高度跳变。
+   * 3. move 用 pointerdown 的绝对基准（startY 不写回）——增量累积在 React
+   *    批处理下同帧多次 pointermove 会读到旧 dragRef 而丢步。
    */
   const onHeightPointerDown = useCallback(
     (id: string) => (e: ReactPointerEvent<HTMLElement>) => {
@@ -854,14 +924,24 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       e.preventDefault()
       e.stopPropagation()
       const handle = e.currentTarget
-      const cur = stateRef.current[id] ?? entryOf(id)
-      const startH = cur.loc.h ?? PINNED_DEFAULTS[id]?.h ?? DOCK_BODY_MAX_H
+      const sideIds = zoneIds('side')
+      const idx = sideIds.indexOf(id)
+      const nextId =
+        sideIds.slice(idx + 1).find((pid) => !(stateRef.current[pid] ?? entryOf(pid)).collapsed) ?? null
+      const el = document.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
+      const startH =
+        el?.getBoundingClientRect().height || (stateRef.current[id] ?? entryOf(id)).loc.h || PIN_DEFAULT_H
+      const nextEl = nextId ? document.querySelector<HTMLElement>(`[data-panel-id="${nextId}"]`) : null
+      const nextStartH = nextEl?.getBoundingClientRect().height || 0
+      // 补偿面板过小（≤ MIN，或 jsdom 无布局高度 0）时无法再让出空间 → 不补偿
+      // （只改自己），否则"回推"会让拖拽变成零位移。
+      const compensateId = nextId && nextStartH > DOCK_H_MIN ? nextId : null
       try {
         handle.setPointerCapture(e.pointerId)
       } catch {
         /* pointer capture unsupported (jsdom) */
       }
-      setDrag({ kind: 'height', id, startX: e.clientX, startY: e.clientY, curH: startH })
+      setDrag({ kind: 'height', id, nextId: compensateId, startX: e.clientX, startY: e.clientY, curH: startH, nextCurH: nextStartH })
 
       const detach = () => {
         handle.removeEventListener('pointermove', onMove)
@@ -872,8 +952,14 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       const onMove = (ev: PointerEvent) => {
         const d = dragRef.current
         if (!d || d.kind !== 'height' || d.id !== id) return
-        const h = Math.min(Math.max(DOCK_H_MIN, d.curH + (ev.clientY - d.startY)), DOCK_H_MAX)
-        setDrag({ ...d, startX: ev.clientX, startY: ev.clientY, curH: h })
+        let h = Math.min(Math.max(DOCK_H_MIN, startH + (ev.clientY - e.clientY)), DOCK_H_MAX)
+        let nextH = nextStartH
+        if (compensateId) {
+          // 补偿面板等量反向；触底时回推被拖面板，保证两者都在 [MIN, MAX] 内。
+          nextH = Math.min(Math.max(DOCK_H_MIN, nextStartH - (h - startH)), DOCK_H_MAX)
+          h = startH + (nextStartH - nextH)
+        }
+        setDrag({ ...d, curH: h, nextCurH: nextH })
       }
       const onUp = () => {
         detach()
@@ -881,8 +967,14 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
         endDrag()
         if (!d || d.kind !== 'height') return
         update((prev) => {
-          const e2 = prev[id] ?? entryOf(id)
-          return { ...prev, [id]: { ...e2, loc: { ...e2.loc, h: d.curH } } }
+          const next = { ...prev }
+          const e2 = next[id] ?? entryOf(id)
+          next[id] = { ...e2, loc: { ...e2.loc, h: d.curH } }
+          if (d.nextId) {
+            const e3 = next[d.nextId] ?? entryOf(d.nextId)
+            next[d.nextId] = { ...e3, loc: { ...e3.loc, h: d.nextCurH } }
+          }
+          return next
         })
       }
       const onCancel = () => {
@@ -899,7 +991,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       handle.addEventListener('pointercancel', onCancel)
       window.addEventListener('keydown', onKey, true)
     },
-    [entryOf, endDrag, update],
+    [entryOf, endDrag, update, zoneIds],
   )
 
   // openPanel 入口（RightSidebarControlContext / AgentPanel onOpenTasks）：
@@ -940,6 +1032,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       floatPanel,
       dockPanel,
       pinPanel,
+      focusPanel,
       unpinPanel,
       onGripPointerDown,
       onTitlePointerDown,
@@ -951,7 +1044,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     // ⚠️ deps 必须含 state：entryOf 读 stateRef 引用稳定——collapse/拖拽落盘只改
     // state，若缺则 context value 永不重建（v4 已修，保持）。v5 另需 drag +
     // activeZone + dropHint（拖拽本地跟随渲染全靠 context 重建）。
-    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, unpinPanel, onGripPointerDown, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
+    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, focusPanel, unpinPanel, onGripPointerDown, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
   )
 
   return <PanelDockContext.Provider value={value}>{children}</PanelDockContext.Provider>
@@ -970,10 +1063,19 @@ export function zoneHighlightStyle(active: boolean): CSSProperties | undefined {
  * 落点判定宿主）；SideChips 自带 data-panel-zone="chip"。
  */
 export function PanelDock(): ReactNode {
+  const { t } = useI18n()
   const dock = usePanelDock()
   const setDockEl = useCallback((el: HTMLDivElement | null) => dock.registerDockEl(el), [dock])
   const zoneActive = dock.activeZone === 'side'
   const sideIds = dock.zoneIds('side')
+  // ⚠️ 空间分配模型（VSCode 式 + 消灭底部空白）：
+  // 最后一个【展开】面板 flex-1 吸收剩余空间——旧模型所有面板 `flex: 0 0 h`
+  // （永不 grow）时，折叠面板多则总高远小于容器，底部留大片空白（用户："折叠的
+  // 部分多，都占不满区域好丑"；E2E 实测 664 vs 960 → 空白 296px）。
+  // grow 面板自己的 handle 隐藏（它已弹性，拖它无意义——VSCode 的最后一个
+  // section 下方也没有分隔条）；要调它就拖它上面那个面板的 handle（成对分配会
+  // 让它自动补偿）。
+  const lastExpandedId = [...sideIds].reverse().find((pid) => !dock.entryOf(pid).collapsed)
   return (
     <div
       ref={setDockEl}
@@ -982,16 +1084,25 @@ export function PanelDock(): ReactNode {
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
       style={zoneHighlightStyle(zoneActive)}
     >
-      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {sideIds.map((id) => {
+      {/* ⚠️ 只渲染【展开】的面板——入口全在 ActivityBar（最左边缘垂直图标列）。
+          旧模型把折叠面板的 header 也堆在侧栏底部（"统计/插件/技能/Git" 四行），
+          与新 ActivityBar 的图标功能重复、视觉杂乱（VSCode 的侧栏只显示当前 view）。 */}
+      <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+        {sideIds.filter((id) => !dock.entryOf(id).collapsed).map((id) => {
           const def = dock.defs.find((d) => d.id === id)
           if (!def) return null
           const entry = dock.entryOf(id)
-          // 高度渲染跟随：调高拖拽中用本地 curH（零持久化），否则 loc.h ?? 钉选默认。
-          const heightDrag = dock.drag && dock.drag.kind === 'height' && dock.drag.id === id ? dock.drag : null
-          const h = heightDrag
-            ? heightDrag.curH
-            : (entry.loc.h != null ? entry.loc.h : (PINNED_DEFAULTS[id]?.h ?? PIN_DEFAULT_H))
+          // 高度渲染跟随：被拖面板用 curH、补偿面板用 nextCurH（零持久化），
+          // 否则 loc.h ?? 钉选默认。
+          const heightDrag = dock.drag?.kind === 'height' ? dock.drag : null
+          const h =
+            heightDrag?.id === id
+              ? heightDrag.curH
+              : heightDrag?.nextId === id
+                ? heightDrag.nextCurH
+                : entry.loc.h != null
+                  ? entry.loc.h
+                  : (PINNED_DEFAULTS[id]?.h ?? PIN_DEFAULT_H)
           const isDropTarget = dock.dropHint?.targetId === id
           // flex 比例分配：面板按 flex-basis(h) 比例撑满堆叠区，无空白
           const flexBasis = entry.collapsed ? 'auto' : `${h}px`
@@ -1000,7 +1111,7 @@ export function PanelDock(): ReactNode {
               key={id}
               id={id}
               icon={def.icon}
-              title={def.title}
+              title={def.labelKey ? t(def.labelKey) : def.title}
               badge={def.badges?.() ?? null}
               mode="docked"
               collapsed={entry.collapsed}
@@ -1011,8 +1122,21 @@ export function PanelDock(): ReactNode {
               isDragSource={dock.dragSrcId === id}
               dropIndicator={isDropTarget ? (dock.dropHint!.before ? 'before' : 'after') : null}
               emptyHint={def.emptyHint}
-              onResizeHeightPointerDown={dock.onHeightPointerDown(id)}
-              style={{ flex: entry.collapsed ? '0 0 auto' : `1 1 ${flexBasis}`, minHeight: 0 }}
+              onResizeHeightPointerDown={id === lastExpandedId ? undefined : dock.onHeightPointerDown(id)}
+              style={{
+                // ⚠️ 空间分配模型（VSCode 式）：
+                // - 折叠：0 0 auto（只有 header 高）
+                // - 最后一个展开面板：1 0 <h>px —— grow=1 吸收剩余空间（消灭"折叠多
+                //   时底部大片空白"），**shrink=0 空间不足时绝不压缩**（旧写法 1 1 0
+                //   + minHeight 会在面板总高超出容器时把面板压到 140px → 用户报
+                //   "左侧边栏挤死了，展开 git 里面东西都无法交互"）。总高超出时由
+                //   容器滚动承接，每个面板保持自己的高度。
+                // - 其他展开面板：0 0 hpx（保持自己高度，绝不被兄弟压缩）
+                // 拖拽走成对分配（见 onHeightPointerDown）：被拖面板变高 → 下一个
+                // 展开面板等量变矮 → 总高恒定，拖拽有真实的重新分配反馈。
+                flex: entry.collapsed ? '0 0 auto' : id === lastExpandedId ? `1 0 ${flexBasis}` : `0 0 ${flexBasis}`,
+                minHeight: 0,
+              }}
             >
               {def.render({ tabManager: dock.tabManager })}
             </PanelChrome>
@@ -1020,7 +1144,7 @@ export function PanelDock(): ReactNode {
         })}
         {sideIds.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-text-muted">
-            暂无钉选面板
+            {t('panel.noPinned')}
           </div>
         ) : null}
       </div>
@@ -1030,6 +1154,7 @@ export function PanelDock(): ReactNode {
 
 /** floating 宿主：窗口内浮层（AppShell 根容器内 absolute inset-0，非 body portal）。 */
 export function FloatingLayer(): ReactNode {
+  const { t } = useI18n()
   const dock = usePanelDock()
   const setLayerEl = useCallback((el: HTMLDivElement | null) => dock.registerLayerEl(el), [dock])
   const zoneActive = dock.activeZone === 'floating'
@@ -1078,7 +1203,7 @@ export function FloatingLayer(): ReactNode {
             key={id}
             id={id}
             icon={def.icon}
-            title={def.title}
+            title={def.labelKey ? t(def.labelKey) : def.title}
             badge={def.badges?.() ?? null}
             mode="floating"
             collapsed={entry.collapsed}
@@ -1108,9 +1233,11 @@ export function FloatingLayer(): ReactNode {
  * 形态预告：activeZone floating → 完整面板预览；side/top/bottom → 徽章形态。
  */
 function DragGhost(): ReactNode {
+  const { t } = useI18n()
   const { drag, dragPointer, activeZone, defs } = usePanelDock()
   const def = drag?.kind === 'panel' && drag.started ? defs.find((p) => p.id === drag.id) : null
   if (!def || !dragPointer) return null
+  const title = def.labelKey ? t(def.labelKey) : def.title
   const Icon = pluginIcon(def.icon)
   const isFullPreview = activeZone === 'floating'
   return (
@@ -1136,7 +1263,7 @@ function DragGhost(): ReactNode {
       {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
           返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
       <Icon className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
-      {def.title}
+      {title}
     </div>
   )
 }

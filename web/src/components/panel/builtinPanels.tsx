@@ -30,12 +30,14 @@ import {
   sameSession,
   sortSessions,
 } from '@/lib/session-grouping'
+import { useI18n } from '@/providers/i18n'
 import type { SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
 import { downloadSession } from '@/components/agent/api'
 
 /** core.sessions：SessionList + SessionSearch 主体（docked flex-1）。 */
 export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
+  const { t } = useI18n()
   const store = useSessionStore()
   const tabManager = ctx.tabManager
   const [search, setSearch] = useState('')
@@ -118,15 +120,15 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           style={{ background: 'var(--accent)' }}
         >
           <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-          新建会话
+          {t('session.newSession')}
         </button>
       </div>
       <div className="min-h-0 flex-1">
         {store.loading ? (
-          <div className="flex h-full items-center justify-center px-4 text-xs text-text-muted">加载中…</div>
+          <div className="flex h-full items-center justify-center px-4 text-xs text-text-muted">{t('common.loading')}</div>
         ) : filteredSessions.length === 0 && store.activeChannel ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-text-muted">
-            该渠道暂无会话
+            {t('session.noSessionsForChannel')}
           </div>
         ) : (
           <SessionList
@@ -190,6 +192,7 @@ const BUILTIN_PANELS: PanelDefinition[] = [
   {
     id: 'core.sessions',
     title: '会话',
+    labelKey: 'sidebar.sessions',
     icon: 'message',
     defaultSlot: 'left',
     defaultMode: 'docked',
@@ -199,6 +202,7 @@ const BUILTIN_PANELS: PanelDefinition[] = [
   {
     id: 'core.files',
     title: '文件',
+    labelKey: 'sidebar.files',
     icon: 'files',
     defaultSlot: 'left',
     defaultMode: 'docked',
@@ -208,6 +212,7 @@ const BUILTIN_PANELS: PanelDefinition[] = [
   {
     id: 'core.search',
     title: '搜索',
+    labelKey: 'sidebar.search',
     icon: 'search',
     defaultSlot: 'left',
     defaultMode: 'docked',
@@ -217,6 +222,7 @@ const BUILTIN_PANELS: PanelDefinition[] = [
   {
     id: 'core.info',
     title: '信息',
+    labelKey: 'sidebar.info',
     icon: 'info',
     defaultSlot: 'left',
     defaultMode: 'docked',
@@ -226,6 +232,7 @@ const BUILTIN_PANELS: PanelDefinition[] = [
   {
     id: 'core.tasks',
     title: '任务',
+    labelKey: 'sidebar.tasks',
     icon: 'tasks',
     defaultSlot: 'left',
     defaultMode: 'docked',
@@ -235,6 +242,7 @@ const BUILTIN_PANELS: PanelDefinition[] = [
   {
     id: 'core.terminal',
     title: '终端',
+    labelKey: 'sidebar.terminal',
     icon: 'terminal',
     defaultSlot: 'left',
     defaultMode: 'docked',

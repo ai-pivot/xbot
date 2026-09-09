@@ -36,6 +36,7 @@ require (
 	github.com/tiktoken-go/tokenizer v0.7.0
 	golang.design/x/clipboard v0.8.0
 	golang.org/x/crypto v0.49.0
+	golang.org/x/image v0.28.0
 	modernc.org/sqlite v1.46.1
 )
 
@@ -89,7 +90,6 @@ require (
 	golang.design/x/x11 v0.2.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
-	golang.org/x/image v0.28.0 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect

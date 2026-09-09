@@ -32,6 +32,7 @@ import { AnsiText } from './AnsiText'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { GenUIPanel } from './GenUIPanel'
 import { useToolSession } from './ToolSessionContext'
+import { useI18n } from '@/providers/i18n'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -245,6 +246,7 @@ export function parseShell(tool: WebToolProgress, summary: string, detail: strin
 }
 
 function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary: string; detail: string }) {
+  const { t } = useI18n()
   const { command, output, exitCode, timeout, promoted, bgTask } = parseShell(tool, summary, detail)
   const elapsed = elapsedBadge(tool.elapsedMs)
   const isError = exitCode != null && exitCode !== 0
@@ -294,9 +296,9 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
         <div className="flex flex-wrap items-center gap-1.5">
           {exitCode != null && <Badge tone={isError ? 'red' : 'green'}>exit {exitCode}</Badge>}
           {timeout && <Badge tone="red">timeout</Badge>}
-          {promoted && <Badge tone="accent">已转后台</Badge>}
+          {promoted && <Badge tone="accent">{t('agent.tool.promotedBadge')}</Badge>}
           {bgTask && (
-            <span title={`后台任务 ${bgTask}`}>
+            <span title={t('agent.tool.bgTask', { id: bgTask })}>
               <Badge tone="accent">
                 <span className="inline-flex items-center gap-1">
                   <span aria-hidden>⧉</span>
@@ -327,6 +329,7 @@ type PromoteState = 'idle' | 'promoting' | 'done' | 'error'
  * same bar inline under the terminal card.
  */
 function ShellPromoteBar({ tool }: { tool: WebToolProgress }) {
+  const { t } = useI18n()
   const session = useToolSession()
   const [state, setState] = useState<PromoteState>('idle')
   const [taskID, setTaskID] = useState<string | null>(null)
@@ -348,25 +351,25 @@ function ShellPromoteBar({ tool }: { tool: WebToolProgress }) {
       // sessionEvents (the ESLint no-restricted-properties rule bans direct
       // window.dispatchEvent in components/agent/**).
       dispatchBgTaskPromoted()
-      toast.success(`已转入后台 · ${res.task_id}`, {
-        description: '命令在后台继续执行，输出完成后自动注入对话',
+      toast.success(t('agent.tool.bgSuccessTitle', { id: res.task_id }), {
+        description: t('agent.tool.bgSuccessDesc'),
         duration: 5000,
       })
     } catch (e) {
       setState('error')
-      toast.error('转入后台失败', {
-        description: e instanceof Error ? e.message : '请稍后重试',
+      toast.error(t('agent.tool.bgFailedTitle'), {
+        description: e instanceof Error ? e.message : t('agent.tool.retryLater'),
         duration: 4000,
       })
     }
-  }, [state, session.channel, session.chatID, callID])
+  }, [state, session.channel, session.chatID, callID, t])
 
   if (state === 'done') {
     return (
       <div className="shell-promote-done" role="status">
         <span className="shell-promote-done-glow" aria-hidden />
         <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-        <span className="truncate text-text-secondary">已在后台运行</span>
+        <span className="truncate text-text-secondary">{t('agent.tool.runningInBackground')}</span>
         {taskID && <code className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-[10px] text-accent">{taskID}</code>}
       </div>
     )
@@ -381,7 +384,7 @@ function ShellPromoteBar({ tool }: { tool: WebToolProgress }) {
       }}
       disabled={!enabled || state === 'promoting'}
       className="shell-promote-btn group"
-      aria-label="把这条命令转入后台执行"
+      aria-label={t('agent.tool.promoteAria')}
     >
       <span className="shell-promote-btn-sheen" aria-hidden />
       {state === 'promoting' ? (
@@ -389,8 +392,8 @@ function ShellPromoteBar({ tool }: { tool: WebToolProgress }) {
       ) : (
         <FastForward className="h-3.5 w-3.5 shrink-0 transition-transform duration-150 group-hover:translate-x-0.5" />
       )}
-      <span className="font-medium">{state === 'promoting' ? '转入中…' : '转后台'}</span>
-      <span className="hidden text-text-muted sm:inline">· 不阻塞本轮对话</span>
+      <span className="font-medium">{state === 'promoting' ? t('agent.tool.promoting') : t('agent.tool.promote')}</span>
+      <span className="hidden text-text-muted sm:inline">· {t('agent.tool.promoteHint')}</span>
     </button>
   )
 }

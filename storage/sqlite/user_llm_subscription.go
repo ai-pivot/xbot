@@ -50,6 +50,8 @@ type SubscriptionModel struct {
 	ThinkingMode    string // thinking mode override
 	APIType         string // API type override: "" (use subscription default), "responses"
 	Enabled         bool   // whether this model is selectable (v38); default true
+	Vision          bool   // model accepts image (multimodal) input; purely manual, NO built-in model-name whitelist
+	VisionDetail    string // OpenAI image_url.detail hint ("low"|"high"|"" = auto)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -106,6 +108,8 @@ func (s *LLMSubscriptionService) loadPerModelConfigs(sub *LLMSubscription) {
 			MaxContext:      m.MaxContext,
 			APIType:         m.APIType,
 			Enabled:         m.Enabled,
+			Vision:          m.Vision,
+			VisionDetail:    m.VisionDetail,
 		}
 	}
 }
@@ -150,7 +154,7 @@ func (s *LLMSubscriptionService) loadPerModelConfigsBatch(subs []*LLMSubscriptio
 	}
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail
 		FROM subscription_models
 		WHERE subscription_id IN (`+strings.Join(placeholders, ",")+`)
 		ORDER BY subscription_id, created_at ASC
@@ -185,6 +189,8 @@ func (s *LLMSubscriptionService) loadPerModelConfigsBatch(subs []*LLMSubscriptio
 				MaxContext:      m.MaxContext,
 				APIType:         m.APIType,
 				Enabled:         m.Enabled,
+				Vision:          m.Vision,
+				VisionDetail:    m.VisionDetail,
 			}
 		}
 	}
@@ -336,7 +342,7 @@ func (s *LLMSubscriptionService) Add(sub *LLMSubscription) error {
 
 	// Persist any per-model overrides to the subscription_models table (sole source since v42).
 	for model, cfg := range sub.PerModelConfigs {
-		if err := s.upsertModelTx(tx, sub.ID, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType); err != nil {
+		if err := s.upsertModelTx(tx, sub.ID, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType, cfg.Vision, cfg.VisionDetail); err != nil {
 			return fmt.Errorf("upsert per-model %s: %w", model, err)
 		}
 	}
@@ -498,7 +504,7 @@ func (s *LLMSubscriptionService) UpdatePerModelConfigs(id string, configs map[st
 		return fmt.Errorf("clear subscription_models: %w", err)
 	}
 	for model, cfg := range configs {
-		if err := s.upsertModelTx(tx, id, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType); err != nil {
+		if err := s.upsertModelTx(tx, id, model, cfg.MaxContext, cfg.MaxOutputTokens, "", cfg.APIType, cfg.Vision, cfg.VisionDetail); err != nil {
 			return fmt.Errorf("upsert model %s: %w", model, err)
 		}
 	}
@@ -544,15 +550,18 @@ func (sub *LLMSubscription) GetPerModelAPIType(model string) string {
 // ─── SubscriptionModel CRUD ─────────────────────────────
 
 // scanSubscriptionModel scans a subscription_models row into a SubscriptionModel.
+// Column order MUST match the SELECT lists (id, subscription_id, model, max_context,
+// max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail).
 func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *SubscriptionModel) error {
 	var createdAt, updatedAt string
-	var enabled int
+	var enabled, vision int
 	err := scanner.Scan(&m.ID, &m.SubscriptionID, &m.Model, &m.MaxContext,
-		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt, &enabled)
+		&m.MaxOutputTokens, &m.ThinkingMode, &m.APIType, &createdAt, &updatedAt, &enabled, &vision, &m.VisionDetail)
 	if err != nil {
 		return err
 	}
 	m.Enabled = enabled == 1
+	m.Vision = vision == 1
 	m.CreatedAt = parseSQLiteTime(createdAt)
 	m.UpdatedAt = parseSQLiteTime(updatedAt)
 	return nil
@@ -562,7 +571,7 @@ func scanSubscriptionModel(scanner interface{ Scan(...any) error }, m *Subscript
 func (s *LLMSubscriptionService) GetModels(subID string) ([]*SubscriptionModel, error) {
 	conn := s.db.Conn()
 	rows, err := conn.Query(`
-		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+		SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail
 		FROM subscription_models WHERE subscription_id = ? ORDER BY created_at ASC
 	`, subID)
 	if err != nil {
@@ -586,7 +595,7 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 	m := &SubscriptionModel{}
 	err := scanSubscriptionModel(
 		conn.QueryRow(`
-			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled
+			SELECT id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, created_at, updated_at, enabled, vision, vision_detail
 			FROM subscription_models WHERE subscription_id = ? AND model = ?
 		`, subID, model),
 		m,
@@ -601,27 +610,71 @@ func (s *LLMSubscriptionService) GetModel(subID, model string) (*SubscriptionMod
 }
 
 // UpsertModel inserts or updates a model row in subscription_models.
+// NOTE: on conflict the vision columns are NOT updated — vision is a manual
+// per-model switch (no built-in whitelist) managed exclusively via
+// SetModelVisionConfig, so token-config upserts never reset it.
 func (s *LLMSubscriptionService) UpsertModel(subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
 	conn := s.db.Conn()
-	return s.upsertModelTx(conn, subID, model, maxCtx, maxOut, thinking, apiType)
+	return s.upsertModelTx(conn, subID, model, maxCtx, maxOut, thinking, apiType, false, "")
 }
 
 // upsertModelTx is the tx-aware core of UpsertModel.
+// The INSERT carries vision/visionDetail (new rows honor the values — Add and
+// UpdatePerModelConfigs pass cfg.Vision), but the ON CONFLICT UPDATE does NOT
+// touch the vision columns: an existing row keeps its manual vision switch
+// unless SetModelVisionConfig changes it explicitly.
 func (s *LLMSubscriptionService) upsertModelTx(tx interface {
 	Exec(query string, args ...any) (sql.Result, error)
-}, subID, model string, maxCtx, maxOut int, thinking, apiType string) error {
+}, subID, model string, maxCtx, maxOut int, thinking, apiType string, vision bool, visionDetail string) error {
+	v := 0
+	if vision {
+		v = 1
+	}
 	_, err := tx.Exec(`
-		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type)
-		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?)
+		INSERT INTO subscription_models (id, subscription_id, model, max_context, max_output_tokens, thinking_mode, api_type, vision, vision_detail)
+		VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(subscription_id, model) DO UPDATE SET
 			max_context = excluded.max_context,
 			max_output_tokens = excluded.max_output_tokens,
 			thinking_mode = excluded.thinking_mode,
 			api_type = excluded.api_type,
 			updated_at = datetime('now')
-	`, subID, model, maxCtx, maxOut, thinking, apiType)
+	`, subID, model, maxCtx, maxOut, thinking, apiType, v, visionDetail)
 	if err != nil {
 		return fmt.Errorf("upsert model: %w", err)
+	}
+	return nil
+}
+
+// SetModelVisionConfig updates ONLY the vision columns for a model row,
+// preserving all per-model token/api_type config. This is the sole write path
+// for the vision switch (mirrors SetModelEnabled's single-column pattern) so
+// token-config upserts can never clobber it.
+func (s *LLMSubscriptionService) SetModelVisionConfig(subID, model string, vision bool, visionDetail string) error {
+	conn := s.db.Conn()
+	v := 0
+	if vision {
+		v = 1
+	}
+	res, err := conn.Exec(`
+		UPDATE subscription_models SET vision = ?, vision_detail = ?, updated_at = datetime('now')
+		WHERE subscription_id = ? AND model = ?
+	`, v, visionDetail, subID, model)
+	if err != nil {
+		return fmt.Errorf("set model vision: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Row doesn't exist yet — create it with only the vision config set.
+		if _, err := conn.Exec(`
+			INSERT INTO subscription_models (id, subscription_id, model, vision, vision_detail)
+			VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)
+			ON CONFLICT(subscription_id, model) DO UPDATE SET
+				vision = excluded.vision,
+				vision_detail = excluded.vision_detail,
+				updated_at = datetime('now')
+		`, subID, model, v, visionDetail); err != nil {
+			return fmt.Errorf("set model vision (insert): %w", err)
+		}
 	}
 	return nil
 }

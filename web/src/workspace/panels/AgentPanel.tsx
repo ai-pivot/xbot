@@ -390,6 +390,23 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [busy, chatID, messageChannel])
 
   const llmSettings = useLLMSettings()
+  // Vision state of the CURRENT model (purely manual per-model switch — NO
+  // built-in whitelist). Read from the owning subscription's per_model_configs
+  // (sessionContext.subscriptionID + model); undefined when the model is
+  // unknown (no hint shown). MessageInput uses this for the "vision off"
+  // advisory bar and the image-sent confirmation toast.
+  // 计算极轻（两次数组 find），不用 useMemo——React Compiler 对 source/inferred
+  // 依赖不一致会报 preserve-manual-memoization（推断 sessionContext.subscriptionID
+  // vs 手写 sessionContext?.subscriptionID），直接计算更简单且无行为差异。
+  const currentModelVision = (() => {
+    const model = sessionContext?.model
+    if (!model) return undefined
+    const subs = llmSettings.data.subscriptions
+    if (!subs || subs.length === 0) return undefined
+    const sub = subs.find((s) => s.id === sessionContext?.subscriptionID)
+      ?? subs.find((s) => s.per_model_configs?.[model] != null)
+    return Boolean(sub?.per_model_configs?.[model]?.vision)
+  })()
   const progressPromptTokens = progressSnapshot.tokenUsage?.promptTokens
   const progressTokenRef = useRef<{ key: string; promptTokens: number | null }>({
     key: '',
@@ -693,6 +710,7 @@ export function AgentPanel({ params, api }: PanelProps) {
           onClearGoal={handleClearGoal}
           interruptMode={interruptMode}
           onInterruptModeChange={setInterruptMode}
+          modelVision={currentModelVision}
           trailingControls={
             chatID ? (
               <>

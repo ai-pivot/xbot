@@ -26,6 +26,7 @@ import { SettingsSection } from './SettingsSection'
 const LOCALES: { value: Locale; label: string }[] = [
   { value: 'zh-CN', label: '中文' },
   { value: 'en', label: 'English' },
+  { value: 'ja', label: '日本語' },
 ]
 
 export function SettingsGeneral() {

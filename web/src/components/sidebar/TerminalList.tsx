@@ -57,7 +57,7 @@ export function TerminalList({ terminalManager }: TerminalListProps) {
       </div>
 
       {/* List */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1.5 pb-2">
         {terminals.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-text-secondary">
             <SquareTerminal className="size-7 opacity-40" />

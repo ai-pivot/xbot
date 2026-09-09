@@ -14,12 +14,14 @@ import { languageOf } from '@/components/file/fileTypes'
 import { attachEditor } from '@/plugin-runtime/editorRegistry'
 import type { MonacoDiffEditorHandle } from '@/components/file/MonacoEditor'
 import type { PanelProps } from '@/workspace/panels/types'
+import { useI18n } from '@/providers/i18n'
 
 const MonacoDiffEditor = lazy(() =>
   import('@/components/file/MonacoEditor').then(m => ({ default: m.MonacoDiffEditor })))
 
 /** VSCode 式 diff 导航按钮组（header 内——编辑器外 DOM，不被 monaco 捕获点击）。 */
 function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEditorHandle | null> }) {
+  const { t } = useI18n()
   const btn =
     'flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary'
   // stopPropagation + preventDefault：阻止点击冒泡/默认行为触达编辑器区域
@@ -31,11 +33,11 @@ function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEd
   }
   return (
     <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-bg-secondary/90 p-0.5">
-      <button type="button" onClick={(e) => nav(e, -1)} title="上一个差异 (Shift+F7)" className={btn}>
+      <button type="button" onClick={(e) => nav(e, -1)} title={t('panel.diffPrev')} className={btn}>
         <ChevronUp className="size-3.5" />
       </button>
       <div className="h-4 w-px bg-border" />
-      <button type="button" onClick={(e) => nav(e, 1)} title="下一个差异 (F7)" className={btn}>
+      <button type="button" onClick={(e) => nav(e, 1)} title={t('panel.diffNext')} className={btn}>
         <ChevronDown className="size-3.5" />
       </button>
     </div>
@@ -43,6 +45,7 @@ function DiffNavButtons({ editorRef }: { editorRef: React.RefObject<MonacoDiffEd
 }
 
 export function DiffPanel({ params, api }: PanelProps) {
+  const { t } = useI18n()
   const editorRef = useRef<MonacoDiffEditorHandle | null>(null)
   const language = useMemo(
     () => languageOf(params.diffPath || params.title || ''),
@@ -73,8 +76,8 @@ export function DiffPanel({ params, api }: PanelProps) {
           <span className="min-w-0 truncate font-mono text-xs text-text-primary">{params.title || params.diffPath}</span>
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 p-4 text-center text-sm text-text-muted">
-          <div>Diff 内容为空</div>
-          <div className="text-xs">该 tab 可能来自刷新后的持久化布局（diff 内容不持久化）。请从 Git 面板重新点击文件打开 diff。</div>
+          <div>{t('panel.diffEmpty')}</div>
+          <div className="text-xs">{t('panel.diffEmptyHint')}</div>
         </div>
       </div>
     )

@@ -11,6 +11,7 @@ import { ImagePlus, Loader2, Search, X } from 'lucide-react'
 
 import { postAPI } from '@/lib/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
+import { useI18n } from '@/providers/i18n'
 import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -50,6 +51,7 @@ interface PluginConfigView {
 }
 
 export function SettingsPlugins() {
+  const { t } = useI18n()
   const [plugins, setPlugins] = useState<PluginConfigView[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -129,7 +131,7 @@ export function SettingsPlugins() {
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索插件配置项…"
+          placeholder={t('settings.plugins.searchPlaceholder')}
           className="rounded-lg border-border bg-bg-secondary pl-9 focus-visible:border-accent/40 focus-visible:ring-accent/25"
           autoFocus
         />
@@ -138,19 +140,19 @@ export function SettingsPlugins() {
       {loading ? (
         <div className="flex items-center gap-2 py-8 text-sm text-text-muted">
           <Loader2 className="size-4 animate-spin" />
-          加载插件配置…
+          {t('settings.plugins.loading')}
         </div>
       ) : null}
 
       {error ? (
         <div className="py-6 text-sm text-[var(--status-error,#ef4444)]">
-          加载插件配置失败：{error}
+          {t('settings.plugins.loadFailed')}{error}
         </div>
       ) : null}
 
       {!loading && !error && filtered.length === 0 ? (
         <div className="py-8 text-sm text-text-muted">
-          {q ? '没有匹配的插件配置项。' : '没有插件声明配置。'}
+          {q ? t('settings.plugins.noMatch') : t('settings.plugins.none')}
         </div>
       ) : null}
 
@@ -195,6 +197,7 @@ function ImageSelectControl({
   onChange: (key: string, value: unknown) => Promise<void>
   pluginId: string
 }) {
+  const { t } = useI18n()
   const current = String(value ?? '')
   const uploadRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -294,8 +297,8 @@ function ImageSelectControl({
                 disabled={saving || uploading}
                 onClick={() => void onDelete(img)}
                 className="absolute right-0.5 top-0.5 rounded bg-black/60 p-0.5 text-white opacity-70 hover:bg-red-500 hover:opacity-100"
-                aria-label={`删除 ${img.filename}`}
-                title="删除"
+                aria-label={t('settings.plugins.deleteImage', { name: img.filename })}
+                title={t('common.delete')}
               >
                 <X className="size-3" />
               </button>
@@ -310,7 +313,7 @@ function ImageSelectControl({
           className="flex h-14 w-24 flex-col items-center justify-center gap-0.5 rounded-lg border border-dashed border-border bg-bg-secondary text-[10px] text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
         >
           <ImagePlus className="size-4" />
-          {uploading ? '…' : '上传'}
+          {uploading ? '…' : t('settings.plugins.upload')}
         </button>
         <input ref={uploadRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onUpload(e.target.files?.[0])} />
       </div>
@@ -453,6 +456,7 @@ function PluginConfigSection({
 }: {
   plugin: PluginConfigView
 }) {
+  const { t } = useI18n()
   const [values, setValues] = useState<Record<string, unknown>>(plugin.values)
   const [saving, setSaving] = useState<string | null>(null)
 
@@ -492,7 +496,7 @@ function PluginConfigSection({
       description={
         plugin.title && plugin.title !== plugin.name
           ? plugin.title
-          : `插件配置（${plugin.runtime}）`
+          : t('settings.plugins.configOf', { runtime: plugin.runtime })
       }
     >
       {groups.map(([section, props]) => (
@@ -535,6 +539,7 @@ function ConfigField({
   onChange: (key: string, value: unknown) => Promise<void>
   pluginId: string
 }) {
+  const { t } = useI18n()
   const label = prop.label || propKey
 
   const renderControl = (): React.ReactNode => {
@@ -556,7 +561,7 @@ function ConfigField({
             onValueChange={(v) => void onChange(propKey, v)}
           >
             <SelectTrigger className="w-full rounded-lg border-border bg-bg-secondary focus:border-accent/40 focus:ring-accent/25">
-              <SelectValue placeholder="选择…" />
+              <SelectValue placeholder={t('settings.plugins.selectPlaceholder')} />
             </SelectTrigger>
             <SelectContent>
               {(prop.options ?? []).map((o) => (

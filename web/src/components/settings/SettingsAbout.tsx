@@ -6,6 +6,7 @@ import { Download, Check, AlertCircle, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { usePwaInstall } from '@/hooks/usePwaInstall'
+import { useI18n } from '@/providers/i18n'
 
 /** One diagnostic row with a pass/fail indicator. */
 function DiagRow({ label, ok }: { label: string; ok: boolean }) {
@@ -22,6 +23,7 @@ function DiagRow({ label, ok }: { label: string; ok: boolean }) {
 
 export function SettingsAbout() {
   const { canInstall, isInstalled, install, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
+  const { t } = useI18n()
   const [checking, setChecking] = useState(false)
   const [upToDate, setUpToDate] = useState(false)
   const [reloading, setReloading] = useState(false)
@@ -53,18 +55,18 @@ export function SettingsAbout() {
       {/* App info */}
       <section className="flex flex-col gap-1">
         <h3 className="text-sm font-semibold text-text-primary">xbot</h3>
-        <p className="text-xs text-text-secondary">AI 智能对话助手</p>
+        <p className="text-xs text-text-secondary">{t('settings.about.tagline')}</p>
       </section>
 
       {/* PWA status */}
       <section className="flex flex-col gap-2.5">
-        <h3 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">应用安装</h3>
+        <h3 className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">{t('settings.about.installTitle')}</h3>
 
         {/* Installed */}
         {isInstalled && (
           <div className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-secondary px-3 py-2 text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
             <Check className="size-4" />
-            <span>已安装到桌面，以独立应用模式运行</span>
+            <span>{t('settings.about.installed')}</span>
           </div>
         )}
 
@@ -72,7 +74,7 @@ export function SettingsAbout() {
         {!isInstalled && canInstall && (
           <Button type="button" variant="default" onClick={() => install()} className="w-fit gap-2 bg-accent/14 text-accent hover:bg-accent/25">
             <Download className="size-4" />
-            安装应用
+            {t('settings.about.install')}
           </Button>
         )}
 
@@ -82,11 +84,11 @@ export function SettingsAbout() {
             <div className="flex items-start gap-2.5">
               <Download className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-success, #22c55e)' }} />
               <div className="flex flex-col gap-1 text-text-secondary">
-                <span className="font-medium text-text-primary">添加到主屏幕</span>
-                <span>Safari 不支持自动安装，请按以下步骤操作：</span>
-                <span>1. 点击底部「分享」按钮 (方框+向上箭头)</span>
-                <span>2. 滚动选择「添加到主屏幕」</span>
-                <span>3. 点击「添加」完成安装</span>
+                <span className="font-medium text-text-primary">{t('settings.about.addToHomeScreen')}</span>
+                <span>{t('settings.about.safariSteps')}</span>
+                <span>{t('settings.about.safariStep1')}</span>
+                <span>{t('settings.about.safariStep2')}</span>
+                <span>{t('settings.about.safariStep3')}</span>
               </div>
             </div>
           </div>
@@ -98,24 +100,23 @@ export function SettingsAbout() {
             <div className="flex items-start gap-2.5">
               <AlertCircle className="mt-0.5 size-4 shrink-0" style={{ color: 'var(--status-error)' }} />
               <span className="text-text-secondary">
-                暂未满足安装条件。Chrome 需要 Service Worker 激活后才会弹出安装提示，
-                请刷新页面或等待几秒后重试。
+                {t('settings.about.notInstallable')}
               </span>
             </div>
             {/* Diagnostics */}
             {diagnostics && (
               <div className="flex flex-col gap-1.5 border-t border-border pt-2">
-                <p className="font-medium text-text-secondary">诊断信息:</p>
-                <DiagRow label={`浏览器: ${diagnostics.browserName}`} ok={true} />
+                <p className="font-medium text-text-secondary">{t('settings.about.diagInfo')}</p>
+                <DiagRow label={t('settings.about.diagBrowser', { name: diagnostics.browserName })} ok={true} />
                 <DiagRow label="HTTPS" ok={diagnostics.isHttps} />
-                <DiagRow label="Service Worker 已激活" ok={diagnostics.hasSW} />
-                <DiagRow label="Manifest 可访问" ok={diagnostics.hasManifest} />
+                <DiagRow label={t('settings.about.diagSw')} ok={diagnostics.hasSW} />
+                <DiagRow label={t('settings.about.diagManifest')} ok={diagnostics.hasManifest} />
                 <DiagRow label={`display: ${diagnostics.manifestDisplay}`} ok={diagnostics.manifestDisplay === 'standalone'} />
-                <DiagRow label={`192x192 图标`} ok={diagnostics.has192Icon} />
-                <DiagRow label={`512x512 图标`} ok={diagnostics.has512Icon} />
-                <DiagRow label={`图标总数: ${diagnostics.iconCount}`} ok={diagnostics.iconCount >= 2} />
+                <DiagRow label={t('settings.about.diagIcon192')} ok={diagnostics.has192Icon} />
+                <DiagRow label={t('settings.about.diagIcon512')} ok={diagnostics.has512Icon} />
+                <DiagRow label={t('settings.about.diagIconCount', { count: diagnostics.iconCount })} ok={diagnostics.iconCount >= 2} />
                 {!diagnostics.isSafari && (
-                  <DiagRow label="beforeinstallprompt 事件" ok={canInstall} />
+                  <DiagRow label={t('settings.about.diagBeforeInstall')} ok={canInstall} />
                 )}
                 {diagnostics.swUrl && (
                   <p className="text-text-muted">SW: {diagnostics.swUrl.split('/').pop()}</p>
@@ -140,16 +141,16 @@ export function SettingsAbout() {
             )}
           >
             <RefreshCw className={`size-4 ${checking || reloading ? 'animate-spin' : ''}`} />
-            {reloading ? '正在刷新…' : updateAvailable ? '有新版本，点击更新' : checking ? '检查更新中…' : upToDate ? '已是最新版本' : '检查更新'}
+            {reloading ? t('settings.about.refreshing') : updateAvailable ? t('settings.about.updateAvailable') : checking ? t('settings.about.checking') : upToDate ? t('settings.about.upToDate') : t('settings.about.checkUpdate')}
           </Button>
           {updateAvailable && (
             <span className="text-xs" style={{ color: 'var(--status-warning, #f59e0b)' }}>
-              ● 有新版本可用
+              ● {t('settings.about.newVersionAvailable')}
             </span>
           )}
           {upToDate && !updateAvailable && (
             <span className="text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
-              ● 已是最新版本
+              ● {t('settings.about.upToDate')}
             </span>
           )}
         </div>

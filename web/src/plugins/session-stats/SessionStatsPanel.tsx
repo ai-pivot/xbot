@@ -14,8 +14,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { usePluginRuntime } from '@/plugin-runtime'
 import type { TenantUsageStats } from '@/plugin-api'
+import { useI18n } from '@/providers/i18n'
 import { Button } from '@/components/ui/button'
-import { Loader2, RefreshCw, Activity } from 'lucide-react'
+import { Loader2, RefreshCw } from 'lucide-react'
 import { subscribeStatsRefresh } from './sessionStats'
 /** token 数缩写：12,345 → 12.3k；1,234,567 → 1.23M。 */
 function fmtTokens(n: number): string {
@@ -40,12 +41,16 @@ function fmtPct(numerator: number, denominator: number): string {
   return `${((numerator / denominator) * 100).toFixed(1)}%`
 }
 
-function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Metric({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
   return (
-    <div className="rounded-md border border-border bg-card px-2.5 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="font-mono text-sm font-semibold tabular-nums">{value}</div>
-      {sub ? <div className="font-mono text-[10px] text-muted-foreground">{sub}</div> : null}
+    // min-h 统一卡片高度（2 行/3 行卡片视觉对齐）；truncate + title 防长模型名
+    // 换行撑高（旧版 deepseek-v4.1-flash-expires-on-0910 会换 2-3 行导致同行卡片不齐）。
+    <div className="flex min-h-[56px] min-w-0 flex-col justify-between rounded-lg bg-bg-secondary/50 px-3 py-2">
+      <div className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="truncate font-mono text-sm font-semibold tabular-nums" title={title ?? value}>
+        {value}
+      </div>
+      {sub ? <div className="truncate font-mono text-[10px] text-muted-foreground">{sub}</div> : null}
     </div>
   )
 }
@@ -53,6 +58,7 @@ function Metric({ label, value, sub }: { label: string; value: string; sub?: str
 export function SessionStatsPanel() {
   const runtime = usePluginRuntime()
   const activeSession = useSessionStore().activeSession
+  const { t } = useI18n()
   const [stats, setStats] = useState<TenantUsageStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -97,16 +103,13 @@ export function SessionStatsPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <span className="inline-flex items-center gap-1.5 text-sm font-medium">
-          <Activity className="size-3.5 text-muted-foreground" />
-          统计
-        </span>
+      {/* 内部工具栏：不再重复 PanelChrome header 的标题（"统计"）——只留刷新操作 */}
+      <div className="flex items-center justify-end border-b border-border/40 px-1.5 py-1">
         <Button
           size="sm"
           variant="ghost"
           className="size-6 p-0"
-          title="刷新"
+          title={t('plugins.sessionStats.refresh')}
           onClick={() => void load()}
         >
           {loading ? (
@@ -119,7 +122,7 @@ export function SessionStatsPanel() {
 
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
         {!activeSession && !loading ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">暂无活跃会话</div>
+          <div className="py-8 text-center text-sm text-muted-foreground">{t('plugins.sessionStats.noActiveSession')}</div>
         ) : error ? (
           <div className="py-4 text-center text-sm text-destructive">{error}</div>
         ) : !stats ? (
@@ -128,20 +131,20 @@ export function SessionStatsPanel() {
               <Loader2 className="size-4 animate-spin text-muted-foreground" />
             </div>
           ) : (
-            <div className="py-8 text-center text-sm text-muted-foreground">暂无数据</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">{t('plugins.sessionStats.noData')}</div>
           )
         ) : (
           <>
             {/* ── 用量指标 ── */}
             <div className="grid grid-cols-2 gap-1.5">
-              <Metric label="输入" value={fmtTokens(stats.input_tokens)} />
-              <Metric label="输出" value={fmtTokens(stats.output_tokens)} />
+              <Metric label={t('plugins.sessionStats.input')} value={fmtTokens(stats.input_tokens)} />
+              <Metric label={t('plugins.sessionStats.output')} value={fmtTokens(stats.output_tokens)} />
               <Metric
-                label="缓存命中"
+                label={t('plugins.sessionStats.cacheHit')}
                 value={fmtTokens(stats.cached_tokens)}
-                sub={`命中率 ${cacheRate}`}
+                sub={t('plugins.sessionStats.cacheRate', { rate: cacheRate })}
               />
-              <Metric label="LLM 时长" value={fmtMs(stats.llm_total_ms)} sub={`${stats.iteration_count} 次迭代 / ${stats.turn_count} turns`} />
+              <Metric label={t('plugins.sessionStats.llmDuration')} value={fmtMs(stats.llm_total_ms)} sub={t('plugins.sessionStats.iterationsTurns', { count: stats.iteration_count, turns: stats.turn_count })} />
             </div>
 
             {/* ── 性能指标 ── */}
@@ -156,25 +159,28 @@ export function SessionStatsPanel() {
 
             {/* ── 上下文水位 + 模型 ── */}
             <div className="grid grid-cols-2 gap-1.5">
-              <Metric label="上下文水位" value={fmtTokens(stats.last_prompt_tokens)} sub={`completion ${fmtTokens(stats.last_completion_tokens)}`} />
-              <Metric label="当前模型" value={stats.current_model || '—'} sub={stats.session_created_at ? `since ${stats.session_created_at.slice(5, 16)}` : undefined} />
+              <Metric label={t('plugins.sessionStats.contextLevel')} value={fmtTokens(stats.last_prompt_tokens)} sub={`completion ${fmtTokens(stats.last_completion_tokens)}`} />
+              <Metric label={t('plugins.sessionStats.currentModel')} value={stats.current_model || '—'} sub={stats.session_created_at ? `since ${stats.session_created_at.slice(5, 16)}` : undefined} />
             </div>
 
             {/* ── per-model 分组（多模型时才显示） ── */}
             {stats.by_model && stats.by_model.filter((m) => m.model).length > 1 && (
               <div>
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">按模型</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">{t('plugins.sessionStats.byModel')}</div>
                 <div className="space-y-1">
                   {stats.by_model.map((m) => (
-                    <div
-                      key={m.model}
-                      className="flex items-center justify-between rounded-md border border-border px-2 py-1.5 font-mono text-[11px] tabular-nums"
-                    >
-                      <span className="max-w-[45%] truncate" title={m.model}>{m.model}</span>
-                      <span className="text-muted-foreground">
-                        in {fmtTokens(m.input_tokens)} · out {fmtTokens(m.output_tokens)} · cache{' '}
-                        {fmtTokens(m.cached_tokens)} · {m.iterations} iters
-                      </span>
+                    // 两行布局（模型名 / 指标）——旧版单行塞 4 个指标，329px 窄栏下
+                    // 右侧数字被压到换行或溢出（用户："拥挤"）。
+                    <div key={m.model} className="rounded-lg bg-bg-secondary/40 px-2.5 py-1.5">
+                      <div className="truncate font-mono text-[11px] font-medium" title={m.model}>
+                        {m.model}
+                      </div>
+                      <div className="mt-0.5 flex flex-wrap gap-x-2.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+                        <span>in {fmtTokens(m.input_tokens)}</span>
+                        <span>out {fmtTokens(m.output_tokens)}</span>
+                        <span>cache {fmtTokens(m.cached_tokens)}</span>
+                        <span>{m.iterations} iters</span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -185,10 +191,10 @@ export function SessionStatsPanel() {
             {stats.recent_iterations && stats.recent_iterations.length > 0 && (
               <div>
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  最近迭代（{stats.recent_iterations.length}）
+                  {t('plugins.sessionStats.recentIterations', { count: stats.recent_iterations.length })}
                 </div>
                 <div className="overflow-x-auto rounded-md border border-border">
-                  <table className="w-full font-mono text-[10px] tabular-nums">
+                  <table className="w-full whitespace-nowrap font-mono text-[10px] tabular-nums">
                     <thead>
                       <tr className="border-b border-border text-muted-foreground">
                         <th className="px-1.5 py-1 text-left font-medium">T.I</th>

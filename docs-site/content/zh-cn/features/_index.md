@@ -35,6 +35,10 @@ Flat（默认）vs Letta（MemGPT 向量搜索）。
 生命周期事件钩子，扩展 Agent 行为。
 → [Hooks](/zh-cn/features/hooks/)
 
+### 多模态视觉
+上传/飞书/view_image 工具的图片进模型视觉上下文（手动 per-model 开关）。
+→ [多模态视觉](/zh-cn/features/vision/)
+
 {{< /columns >}}
 
 ## 功能概览
@@ -45,6 +49,7 @@ Flat（默认）vs Letta（MemGPT 向量搜索）。
 | **技能** | Markdown 能力包，指导 Agent 完成特定任务 | [skills-agents.md](skills-agents/) |
 | **子 Agent** | 基于角色的子 Agent，用于委派和并行工作 | [skills-agents.md](skills-agents/) |
 | **群聊** | 主持多 Agent 会议，通过 @mention 触发 | [skills-agents.md](skills-agents/) |
+| **多模态视觉** | 图片进模型视觉上下文（上传/飞书/view_image 工具，手动 per-model 开关） | [vision.md](vision/) |
 | **MCP** | 模型上下文协议，集成外部工具 | [mcp.md](mcp/) |
 | **记忆** | Flat（默认）或 Letta（MemGPT）记忆提供者 | [memory.md](memory/) |
 | **插件** | 脚本插件：信息栏 widget、工具提示、自定义工具 | [plugins.md](plugins/) |

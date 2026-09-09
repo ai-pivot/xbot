@@ -305,6 +305,22 @@ type ToolResult struct {
 	// Registered ONLY when config agent.allow_self_compact is enabled.
 	CompactRequested bool              `json:"-"`
 	Metadata         map[string]string `json:"-"` // 额外元数据，传递到 OutboundMessage.Metadata
+	// Images: multimodal image injections (view_image tool). The engine
+	// appends them as a FOLLOW-UP USER MESSAGE carrying markdown references —
+	// the only role multimodal content parts can ride on (OpenAI tool
+	// messages are text-only). Refs resolve into base64 parts at
+	// request-build time (llm.parseMultimodalContent) when the model's
+	// vision switch is on; otherwise they degrade to text placeholders.
+	Images []ImageInjection `json:"-"`
+}
+
+// ImageInjection is one image the engine appends to the conversation after a
+// tool run. Ref is the STABLE reference (relative URL — "/api/files/viewimg/<uuid>"),
+// never a data: URL (content stays ~100B; base64 is materialized per-request
+// by the LLM layer). Label is the display/alt name.
+type ImageInjection struct {
+	Ref   string
+	Label string
 }
 
 // NewResult 创建 Summary == Detail 的简单结果

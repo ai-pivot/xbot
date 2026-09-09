@@ -63,7 +63,7 @@ describe('SettingsPlugins', () => {
     mockPost.mockResolvedValue({ plugins: [plugin] })
     render(<SettingsPlugins />)
     await screen.findByText('Test Plugin')
-    fireEvent.change(screen.getByPlaceholderText('搜索插件配置项…'), {
+    fireEvent.change(screen.getByPlaceholderText(/搜索插件配置项…|Search plugin settings…/), {
       target: { value: 'Mode' },
     })
     expect(screen.getByText('Mode')).toBeInTheDocument()

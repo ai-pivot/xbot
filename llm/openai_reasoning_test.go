@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 )
@@ -30,7 +31,7 @@ func TestToOpenAIMessages_ReasoningContentPassedBack(t *testing.T) {
 		NewUserMessage("thanks"),
 	}
 
-	result := toOpenAIMessages(messages, "")
+	result := toOpenAIMessages(context.TODO(), messages, "", nil)
 
 	// Verify we have 5 messages
 	if len(result) != 5 {
@@ -112,7 +113,7 @@ func TestToOpenAIMessages_AssistantWithoutReasoningContent(t *testing.T) {
 		},
 	}
 
-	result := toOpenAIMessages(messages, "")
+	result := toOpenAIMessages(context.TODO(), messages, "", nil)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(result))
 	}
@@ -151,7 +152,7 @@ func TestToOpenAIMessages_ThinkingModeEmptyReasoning(t *testing.T) {
 		},
 	}
 
-	result := toOpenAIMessages(messages, "enabled")
+	result := toOpenAIMessages(context.TODO(), messages, "enabled", nil)
 	if len(result) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(result))
 	}
@@ -209,7 +210,7 @@ func TestToOpenAIMessages_AutoModeWithReasoningHistoryKeepsEmptyReasoningField(t
 		},
 	}
 
-	result := toOpenAIMessages(messages, "")
+	result := toOpenAIMessages(context.TODO(), messages, "", nil)
 	if len(result) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(result))
 	}
@@ -250,7 +251,7 @@ func TestToOpenAIMessages_ToolCallsArgumentsRemainJSONString(t *testing.T) {
 		},
 	}
 
-	result := toOpenAIMessages(messages, "")
+	result := toOpenAIMessages(context.TODO(), messages, "", nil)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(result))
 	}
@@ -295,7 +296,7 @@ func TestToOpenAIMessages_ThinkingDisabledNoReasoning(t *testing.T) {
 		},
 	}
 
-	result := toOpenAIMessages(messages, "disabled")
+	result := toOpenAIMessages(context.TODO(), messages, "disabled", nil)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(result))
 	}

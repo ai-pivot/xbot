@@ -303,7 +303,10 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			}
 			// Web file uploads go through cloud OSS only — no local storage
 			webCh.SetWorkDir(workDir)
-			// Set OSS provider for file storage
+			// Set OSS provider for file storage. The same provider powers the
+			// multimodal image resolver (stable image references → base64 data
+			// URLs at LLM-request-build time, see serverapp/image_resolver.go).
+			var imgProvider web.OSSProvider
 			switch cfg.OSS.Provider {
 			case "qiniu":
 				ossProvider, err := web.NewOSSProvider(
@@ -320,6 +323,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if err != nil {
 					log.WithError(err).Error("Failed to create Qiniu OSS provider")
 				} else {
+					imgProvider = ossProvider
 					webCh.SetOSSProvider(ossProvider)
 					log.Info("OSS provider configured: qiniu")
 				}
@@ -336,10 +340,22 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if err != nil {
 					log.WithError(err).Error("Failed to create S3 OSS provider")
 				} else {
+					imgProvider = s3Provider
 					webCh.SetOSSProvider(s3Provider)
 					log.Info("OSS provider configured: s3")
 				}
 			}
+			// Multimodal vision wiring: the image resolver materializes image
+			// references (user uploads' /api/files/download?key= refs, view_image
+			// tool's /api/files/viewimg/ refs, absolute URLs) into base64 parts
+			// at LLM-request-build time. Wired whenever an OSS provider exists;
+			// without one the resolver still handles local view_images refs and
+			// data: URLs (web uploads require OSS anyway — handleFileUpload
+			// rejects local storage). Registered as the factory-wide resolver so
+			// every vision-enabled model's client picks it up on build.
+			resolver := NewImageResolver(imgProvider, config.XbotHome(), workDir)
+			SetImageResolver(resolver)
+			ag.LLMFactory().SetImageResolver(resolver)
 
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
 			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
@@ -684,6 +700,12 @@ func Run(args []string) error {
 	// 注册 DownloadFile 工具（支持 Web/OSS 和飞书两种来源）
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
+	// 注册 view_image 工具（多模态视觉：模型主动把自己环境里的图片注入上下文。
+	// 工具结果经 engine 注入 follow-up user 消息（markdown 引用）——OpenAI tool
+	// role 只能是纯文本，user role 是唯一的多模态载体。图片存 ~/.xbot/view_images/，
+	// 引用 /api/files/viewimg/<id>（浏览器可渲染 + llm resolver 可解析，双端同源）。
+	ag.RegisterCoreTool(tools.NewViewImageTool())
+	ag.RegisterTool(tools.NewViewImageTool())
 	if !cfg.DisableWebSearch {
 		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	}

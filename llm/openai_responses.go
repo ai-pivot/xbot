@@ -50,7 +50,11 @@ func sanitizeID(s string) string {
 //   - tool/result messages become ResponseInputItemFunctionCallOutputParam items
 //   - reasoning_content from previous assistant turns is passed back as
 //     ResponseReasoningItemParam items
-func toResponsesParams(model string, messages []ChatMessage, maxTokens int) responses.ResponseNewParams {
+//
+// toResponsesParams converts xbot messages into Responses API params.
+// mc carries the per-model multimodal (vision) config — see llm/multimodal.go.
+// nil mc = zero value (vision off → image references degrade to placeholders).
+func toResponsesParams(model string, messages []ChatMessage, maxTokens int, mc *MultimodalConfig) responses.ResponseNewParams {
 	var instructions []string
 	inputItems := make([]responses.ResponseInputItemUnionParam, 0, len(messages))
 
@@ -63,8 +67,13 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int) resp
 			}
 
 		case "user":
-			// Check for embedded images (data: URLs in markdown image syntax)
-			parts := parseEmbeddedImages(msg.Content)
+			// Multimodal user messages: image references (markdown / legacy
+			// <image> tags) become input_image content parts when vision is
+			// enabled; otherwise they degrade to text placeholders.
+			var parts []imageContentPart
+			if hasMultimodalImages(msg.Content) {
+				parts = parseMultimodalContent(context.Background(), msg.Content, mc)
+			}
 			if len(parts) > 1 {
 				// Multi-part message with images
 				contentParts := make(responses.ResponseInputMessageContentListParam, 0, len(parts))
@@ -87,10 +96,16 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int) resp
 					},
 				})
 			} else {
+				// Single text part (or no images): preserve original content
+				// unless an image degraded to a placeholder.
+				content := msg.Content
+				if len(parts) == 1 && parts[0].Type == "text" && parts[0].Text != msg.Content {
+					content = parts[0].Text
+				}
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
 						Role:    responses.EasyInputMessageRoleUser,
-						Content: responses.EasyInputMessageContentUnionParam{OfString: param.Opt[string]{Value: msg.Content}},
+						Content: responses.EasyInputMessageContentUnionParam{OfString: param.Opt[string]{Value: content}},
 					},
 				})
 			}
@@ -305,7 +320,7 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 		effectiveMaxTokens = maxOut
 	}
 
-	params := toResponsesParams(model, messages, effectiveMaxTokens)
+	params := toResponsesParams(model, messages, effectiveMaxTokens, o.mm)
 
 	// Build reasoning config
 	reasoning := buildResponsesReasoning(thinkingMode)
@@ -450,7 +465,7 @@ func (o *OpenAILLM) generateStreamResponses(ctx context.Context, model string, m
 		effectiveMaxTokens = maxOut
 	}
 
-	params := toResponsesParams(model, messages, effectiveMaxTokens)
+	params := toResponsesParams(model, messages, effectiveMaxTokens, o.mm)
 
 	// Build reasoning config
 	reasoning := buildResponsesReasoning(thinkingMode)

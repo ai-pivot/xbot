@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/context-menu'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
+import i18n from '@/i18n'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
@@ -133,7 +134,7 @@ export function SessionItem({
         }
       }}
       className={cn(
-        'group flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors',
+        'group flex w-full items-center gap-2 rounded-xl px-2.5 py-2.5 text-left transition-spring active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50',
         active && !multiSelectMode ? '' : !session.synthetic && 'hover:bg-bg-tertiary/60',
         session.synthetic && 'cursor-default opacity-80',
         selected && 'bg-accent/15 ring-1 ring-accent/40',
@@ -144,13 +145,16 @@ export function SessionItem({
         // 非会话项常态带透明左条，避免选中时布局跳动。
         ...(active && !multiSelectMode
           ? {
-              background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+              // 未来感：渐变底（左浓右淡）+ accent 内发光，而非纯色块
+              background:
+                'linear-gradient(90deg, color-mix(in srgb, var(--accent) 22%, transparent) 0%, color-mix(in srgb, var(--accent) 6%, transparent) 100%)',
               borderLeft: '2px solid var(--accent)',
+              boxShadow: 'inset 0 0 18px -10px var(--accent)',
             }
           : { borderLeft: '2px solid transparent' }),
         ...(unread && !isSubAgent && !active ? {
           backgroundColor: 'color-mix(in srgb, var(--accent) 10%, transparent)',
-          boxShadow: 'inset 2px 0 var(--accent)',
+          boxShadow: 'inset 2px 0 var(--accent), inset 0 0 12px -8px var(--accent)',
         } : {}),
       }}
     >
@@ -181,10 +185,16 @@ export function SessionItem({
       ) : session.synthetic ? (
         <GitBranch className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
       ) : (
-        /* Other statuses: static colored dot */
+        /* Other statuses: static colored dot（运行中加呼吸光晕——未来感） */
         <span
-          className="size-2 shrink-0 rounded-full"
-          style={{ backgroundColor: STATUS_COLOR[session.status] }}
+          className={`size-2 shrink-0 rounded-full ${session.status === 'running' ? 'animate-pulse' : ''}`}
+          style={{
+            backgroundColor: STATUS_COLOR[session.status],
+            ...(session.status === 'running'
+              ? { boxShadow: `0 0 8px 0 ${STATUS_COLOR[session.status]}` }
+              : {}),
+          }}
+          title={t(`session.status.${session.status === 'waiting_input' ? 'waiting' : session.status}`)}
           aria-hidden
         />
       )}
@@ -199,8 +209,8 @@ export function SessionItem({
             onToggleStar(key)
           }}
           className={cn(
-            'shrink-0 rounded p-0.5 transition-opacity',
-            starred ? 'opacity-100' : isTouch ? 'opacity-60' : 'opacity-0 group-hover:opacity-60',
+            'shrink-0 rounded p-0.5 transition-spring',
+            starred ? 'opacity-100' : isTouch ? 'opacity-60' : 'opacity-0 group-hover:opacity-100',
           )}
           style={starred ? { color: '#e6a700' } : { color: 'var(--text-muted)' }}
         >
@@ -328,5 +338,5 @@ function relativeTime(
   if (hr < 24) return t('session.hoursAgo', { n: hr })
   const day = Math.floor(hr / 24)
   if (day < 30) return t('session.daysAgo', { n: day })
-  return new Date(ts).toLocaleDateString()
+  return new Date(ts).toLocaleDateString(i18n.language || 'zh-CN')
 }

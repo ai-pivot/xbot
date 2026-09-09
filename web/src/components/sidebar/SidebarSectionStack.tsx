@@ -18,7 +18,7 @@
  * - 两者皆无的 section：flex 平分剩余空间（自动 layout）
  * - 折叠的 section：只渲染 header（高度 auto）
  */
-import { ChevronRight } from 'lucide-react'
+import { BarChart3, Blocks, ChevronRight, GitBranch, MessageSquare, Sparkles, type LucideIcon } from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -38,6 +38,15 @@ import { DRAG_TYPE, DRAG_SLOT_TYPE, startDrag, getDrag, clearDrag, isOurDrag } f
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
 const MIN_SECTION_H = 80
+
+/** section 图标映射（内置 section id → lucide 图标）——左侧栏可扫读性。 */
+const SECTION_ICON: Record<string, LucideIcon> = {
+  [BUILTIN_LAYOUT_ITEMS.desktopSessions]: MessageSquare,
+  'xbot.session-stats': BarChart3,
+  'xbot.plugin-manager': Blocks,
+  'xbot.skill-manager': Sparkles,
+  'xbot.git-fancy': GitBranch,
+}
 
 export interface SidebarSection {
   id: string
@@ -354,13 +363,17 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                       onDragStart={onSectionDragStart(sec.id)}
                       onDragEnd={onSectionDragEnd}
                       title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
-                      className={`flex w-full shrink-0 select-none items-center gap-1 px-1.5 pb-1 pt-2 text-left text-[9px] font-semibold uppercase tracking-wider text-text-muted transition-colors hover:text-text-secondary ${
+                      className={`flex w-full shrink-0 select-none items-center gap-1.5 rounded-md px-2 pb-1.5 pt-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted transition-spring hover:bg-bg-tertiary/50 hover:text-text-secondary active:scale-[0.99] ${
                         canReorder ? 'cursor-grab active:cursor-grabbing' : ''
                       }`}
                     >
                       <ChevronRight
-                        className={`size-3 shrink-0 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                        className={`size-3.5 shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
                       />
+                      {(() => {
+                        const SectionIcon = SECTION_ICON[sec.id]
+                        return SectionIcon ? <SectionIcon className="size-3.5 shrink-0 opacity-70" /> : null
+                      })()}
                       <span className="truncate normal-case">{sec.title}</span>
                     </button>
                     {/* 折叠常驻（display:none 而非条件 unmount——2026-08-30 侧边栏
@@ -371,7 +384,7 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                         的子树不参与布局（折叠时 section 高度塌缩到 header 不变），
                         IntersectionObserver/ResizeObserver 也不触发（不可见）。 */}
                     <div
-                      className="min-h-0 flex-1 overflow-hidden"
+                      className={`min-h-0 flex-1 overflow-hidden ${isCollapsed ? '' : 'animate-section-in'}`}
                       style={{ display: isCollapsed ? 'none' : undefined }}
                     >
                       {sec.content}
@@ -388,7 +401,7 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                   aria-orientation="horizontal"
                   aria-label={`Resize ${sec.title}`}
                   onPointerDown={startResize(sec.id)}
-                  className={`h-1 shrink-0 cursor-row-resize transition-colors hover:bg-app-accent/40 ${
+                  className={`h-2 shrink-0 cursor-row-resize transition-colors hover:bg-app-accent/40 ${
                     draggingId === sec.id ? 'bg-app-accent/40' : 'bg-transparent'
                   }`}
                 />

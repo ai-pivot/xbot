@@ -19,6 +19,7 @@ import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPane
 import { SessionStatsPanel } from '@/plugins/session-stats/SessionStatsPanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
+import i18n from '@/i18n'
 
 interface LoadedViewProps {
   view: ViewContribution
@@ -53,7 +54,7 @@ class PluginViewErrorBoundary extends Component<
     if (this.state.failed) {
       return (
         <div className="rounded border border-red-200 bg-red-50 p-2 font-mono text-[10px] leading-relaxed text-red-700">
-          <div className="font-sans text-xs font-semibold">插件视图崩溃（已隔离，不影响应用）</div>
+          <div className="font-sans text-xs font-semibold">{i18n.t('plugins.view.crashIsolated')}</div>
           {this.state.message && (
             <pre className="mt-1 whitespace-pre-wrap break-all">{this.state.message}</pre>
           )}
@@ -130,7 +131,7 @@ function AsyncPluginView({
       // loadViewComponent 成功但返回 null（import 失败/非组件）—— 抛出，让
       // ErrorBoundary 把诊断信息渲染到崩溃界面（便于直接截图排查）。
       if (!c) {
-        setState({ comp: null, error: `组件加载失败或返回了非组件对象: plugin=${pluginId} view=${view.id} entry=${view.entry ?? ''}（详见 Console 的 [plugin-runtime] 日志）` })
+        setState({ comp: null, error: i18n.t('plugins.view.loadComponentFailed', { detail: `plugin=${pluginId} view=${view.id} entry=${view.entry ?? ''}` }) })
         return
       }
       setState({ comp: c, error: null })
@@ -143,14 +144,14 @@ function AsyncPluginView({
   if (state.error) {
     return (
       <div className="rounded border border-red-200 bg-red-50 p-2 font-mono text-[10px] text-red-700">
-        <div className="font-sans text-xs font-semibold">插件视图加载失败</div>
+        <div className="font-sans text-xs font-semibold">{i18n.t('plugins.view.loadFailed')}</div>
         <pre className="mt-1 whitespace-pre-wrap break-all">{state.error}</pre>
       </div>
     )
   }
 
   if (!state.comp) {
-    return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">加载 {view.title}…</div>
+    return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">{i18n.t('plugins.view.loadingView', { title: view.title })}</div>
   }
 
   // 动态视图（ctx.ui.openViewTab 打开）把 params 作为 props 传给组件——

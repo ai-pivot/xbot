@@ -42,6 +42,13 @@ type LLMFactory struct {
 	// per request — so we cache at the subscription level, not the model level.
 	clientCache map[clientCacheKey]llm.LLM
 
+	// imageResolver materializes stable image references (/api/files/viewimg/,
+	// /api/files/download?key=, http URLs) into base64 data: URLs at
+	// LLM-request-build time (multimodal vision). Injected by the server once
+	// the OSS provider is created; nil = only inline data: URLs resolve.
+	// Guarded by mu (set once at boot, read on every client build).
+	imageResolver llm.ImageResolver
+
 	// proxyLLMs stores runtime-injected ProxyLLMs by senderID. These override
 	// DB-based resolution — when a runner has local LLM configured, the proxy
 	// takes priority over any cloud subscription. Not persisted: tied to the
@@ -60,9 +67,18 @@ type proxyEntry struct {
 }
 
 // clientCacheKey identifies a shared LLM client by subscription + API type.
+// clientCacheKey identifies a cached LLM client. Vision MUST be part of the
+// key: the multimodal switch is PER-MODEL (subscription_models.vision), so
+// two models of the same subscription with different vision settings need
+// different clients — sharing one (keyed only by subID+apiType) made every
+// model of the subscription inherit whichever client was built first, i.e.
+// enabling vision on a model silently kept sending text placeholders
+// ("当前模型未开启视觉输入") because the cached client's mm was nil.
 type clientCacheKey struct {
-	subID   string
-	apiType string
+	subID        string
+	apiType      string
+	vision       bool
+	visionDetail string
 }
 
 // NewLLMFactory 创建 LLM 工厂
@@ -460,7 +476,7 @@ func (f *LLMFactory) InvalidateAll() {
 
 // ─── Client creation ─────────────────────────────────────
 
-func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
+func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig, mm *llm.MultimodalConfig) (llm.LLM, string) {
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return nil, ""
 	}
@@ -475,12 +491,14 @@ func (f *LLMFactory) createClient(cfg *sqlite.UserLLMConfig) (llm.LLM, string) {
 		client = llm.NewAnthropicLLM(llm.AnthropicConfig{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
 			DefaultModel: model, MaxTokens: cfg.MaxOutputTokens,
+			Multimodal: mm,
 		})
 	default:
 		client = llm.NewOpenAILLM(llm.OpenAIConfig{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey,
 			DefaultModel: model, MaxTokens: cfg.MaxOutputTokens, APIType: cfg.APIType,
 			OnModelsLoaded: cfg.OnModelsLoaded, SubscriptionID: cfg.ID,
+			Multimodal: mm,
 		})
 	}
 
@@ -511,13 +529,16 @@ func (f *LLMFactory) createClientFromSub(sub *sqlite.LLMSubscription, model stri
 	if pm := sub.GetPerModelAPIType(model); pm != "" {
 		apiType = pm
 	}
+	// Multimodal (vision) config: manual per-model switch from the model editor
+	// (no whitelist). buildMultimodalConfig returns nil when vision is off.
+	pmc := f.resolveModelConfig(sub.ID, model)
 	cfg := &sqlite.UserLLMConfig{
 		Provider: sub.Provider, BaseURL: sub.BaseURL, APIKey: sub.APIKey,
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
 		ID:             sub.ID,
 		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
-	client, _ := f.createClient(cfg)
+	client, _ := f.createClient(cfg, f.buildMultimodalConfig(pmc))
 	return client
 }
 
@@ -558,6 +579,23 @@ func (f *LLMFactory) makeOnModelsLoaded(subID string) func([]string) {
 // These methods are additive alongside the legacy Switch*/Set*/Invalidate*
 // matrix. The legacy matrix is removed once RPC + CLI migrate (later chunk).
 
+// SetImageResolver wires the multimodal image resolver (stable references →
+// base64 data: URLs at request-build time). Called once by the server after
+// the OSS provider exists; clients built afterwards carry it in their
+// MultimodalConfig. InvalidateSubscription/InvalidateAll rebuilds pick it up.
+func (f *LLMFactory) SetImageResolver(r llm.ImageResolver) {
+	f.mu.Lock()
+	f.imageResolver = r
+	f.mu.Unlock()
+}
+
+func (f *LLMFactory) getImageResolver() llm.ImageResolver {
+	f.mu.RLock()
+	r := f.imageResolver
+	f.mu.RUnlock()
+	return r
+}
+
 // modelPerModelConfig holds the per-model overrides read from subscription_models.
 type modelPerModelConfig struct {
 	maxContext      int
@@ -566,6 +604,12 @@ type modelPerModelConfig struct {
 	apiType         string
 	enabled         bool
 	present         bool
+	// vision (multimodal image input) is a PURELY MANUAL per-model switch —
+	// no built-in model-name whitelist. Set in the model editor (web LLM
+	// console / CLI Ctrl+N E panel); the LLM layer degrades image references
+	// to text placeholders when it is off.
+	vision       bool
+	visionDetail string
 }
 
 // resolveModelConfig reads per-model config from the subscription_models table.
@@ -585,7 +629,24 @@ func (f *LLMFactory) resolveModelConfig(subID, model string) modelPerModelConfig
 	c.thinkingMode = sm.ThinkingMode
 	c.apiType = sm.APIType
 	c.enabled = sm.Enabled
+	c.vision = sm.Vision
+	c.visionDetail = sm.VisionDetail
 	return c
+}
+
+// buildMultimodalConfig assembles the per-model vision (multimodal) config for
+// client construction. Vision is a PURELY MANUAL per-model switch — no
+// built-in model-name whitelist. Returns nil when vision is off (the client's
+// mm nil = zero MultimodalConfig → image references degrade to placeholders).
+func (f *LLMFactory) buildMultimodalConfig(pmc modelPerModelConfig) *llm.MultimodalConfig {
+	if !pmc.vision {
+		return nil
+	}
+	return &llm.MultimodalConfig{
+		VisionEnabled: true,
+		VisionDetail:  pmc.visionDetail,
+		ImageResolver: f.getImageResolver(),
+	}
 }
 
 // resolveSubContextFor is the (subID, model) variant of resolveSubContext,
@@ -616,7 +677,12 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 	if apiType == "" {
 		apiType = sub.APIType
 	}
-	key := clientCacheKey{subID: sub.ID, apiType: apiType}
+	// Vision is part of the cache key: the per-model multimodal switch means
+	// two models of the same subscription may need different clients. Without
+	// it, enabling vision on a model kept reusing a cached mm-less client
+	// (user report: "多模态模型没收到图片" — the model saw the text placeholder
+	// "当前模型未开启视觉输入" while subscription_models.vision was already 1).
+	key := clientCacheKey{subID: sub.ID, apiType: apiType, vision: pmc.vision, visionDetail: pmc.visionDetail}
 	f.mu.RLock()
 	if c, ok := f.clientCache[key]; ok && c != nil {
 		f.mu.RUnlock()
@@ -638,10 +704,26 @@ func (f *LLMFactory) getOrCreateClient(sub *sqlite.LLMSubscription, model string
 		Model: model, MaxOutputTokens: maxTokens, APIType: apiType,
 		OnModelsLoaded: f.makeOnModelsLoaded(sub.ID),
 	}
-	client, _ := f.createClient(cfg)
+	// Multimodal (vision) config from the per-model manual switch. NOTE: the
+	// client cache key is (subID, apiType) — the vision switch is per-model
+	// (subscription_models.vision), so a cached client built for a
+	// non-vision model of the same subscription would not carry vision. That
+	// is correct: the manual switch is per-model, and the cache key models
+	// share only credentials/baseURL — vision off is the safe default and the
+	// user toggling vision invalidates the subscription
+	// (update_per_model_config → InvalidateSubscription).
+	client, _ := f.createClient(cfg, f.buildMultimodalConfig(pmc))
 	if client == nil {
 		return nil
 	}
+	// Observability: the vision switch decides whether image references in
+	// user messages become multimodal content parts or degrade to text
+	// placeholders. Log the resolved state per client build so "the model saw
+	// a placeholder" reports can be diagnosed from logs alone.
+	log.WithFields(log.Fields{
+		"sub": sub.Name, "model": model, "vision": pmc.vision,
+		"vision_detail": pmc.visionDetail, "resolver": f.getImageResolver() != nil,
+	}).Info("[LLM] built client (multimodal state)")
 	f.mu.Lock()
 	// Another goroutine may have raced; keep the first cached.
 	if existing, ok := f.clientCache[key]; ok && existing != nil {
@@ -1126,7 +1208,7 @@ func (f *LLMFactory) ListAllModelEntriesForUser(senderID string) []protocol.Mode
 func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool) []protocol.ModelEntry {
 	seen := make(map[string]bool)
 	var result []protocol.ModelEntry
-	add := func(subID, subName, model, status string) {
+	add := func(subID, subName, model, status string, vision bool) {
 		if model == "" {
 			return
 		}
@@ -1135,7 +1217,7 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 			return
 		}
 		seen[key] = true
-		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status})
+		result = append(result, protocol.ModelEntry{SubID: subID, SubName: subName, Model: model, Status: status, Vision: vision})
 	}
 	if f.subscriptionSvc == nil {
 		// No subscription service — the deployment-level defaultLLM is a
@@ -1156,9 +1238,10 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 	// Only enabled subscriptions contribute. Models come from subscription_models
 	// table + sub.Model. No CachedModels — all models treated equally.
 	type subInfo struct {
-		sub   *sqlite.LLMSubscription
-		rows  []*sqlite.SubscriptionModel
-		rowEn map[string]bool // model → enabled flag from row (absent ⇒ true)
+		sub       *sqlite.LLMSubscription
+		rows      []*sqlite.SubscriptionModel
+		rowEn     map[string]bool // model → enabled flag from row (absent ⇒ true)
+		rowVision map[string]bool // model → manual vision switch from row (absent ⇒ off)
 	}
 	infos := make([]subInfo, 0, len(subs))
 	for _, sub := range subs {
@@ -1167,10 +1250,12 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 		}
 		rows, _ := f.subscriptionSvc.GetModels(sub.ID)
 		rowEn := make(map[string]bool, len(rows))
+		rowVision := make(map[string]bool, len(rows))
 		for _, r := range rows {
 			rowEn[r.Model] = r.Enabled
+			rowVision[r.Model] = r.Vision
 		}
-		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn})
+		infos = append(infos, subInfo{sub: sub, rows: rows, rowEn: rowEn, rowVision: rowVision})
 	}
 	// statusOf: only "normal" or "disabled". No "offline".
 	statusOf := func(i int, m string) string {
@@ -1204,7 +1289,7 @@ func (f *LLMFactory) listModelEntriesCore(senderID string, includeDisabled bool)
 			if !includeDisabled && st == "disabled" {
 				continue
 			}
-			add(infos[i].sub.ID, infos[i].sub.Name, m, st)
+			add(infos[i].sub.ID, infos[i].sub.Name, m, st, infos[i].rowVision[m])
 		}
 	}
 	return result

@@ -2791,6 +2791,16 @@ func (f *FeishuChannel) parseContent(msg feishuMsg) string {
 		if mid := msg.GetMessageId(); mid != nil {
 			messageID = *mid
 		}
+		// Multimodal vision (P2): download the image bytes by (message_id,
+		// image_key), store under view_images, and emit the canonical markdown
+		// reference — the same form the web upload path and the view_image tool
+		// produce. The LLM resolver turns it into base64 parts when the
+		// model's vision switch is on; vision off degrades to a placeholder.
+		// Download failure falls back to the legacy image_key tag (the agent
+		// can tell the user to re-send; the message itself still flows).
+		if ref := f.feishuImageRef(messageID, imageKey); ref != "" {
+			return ref
+		}
 		return fmt.Sprintf(`<image image_key="%s" message_id="%s" />`, imageKey, messageID)
 	case "folder":
 		// 文件夹
@@ -2895,7 +2905,14 @@ func (f *FeishuChannel) extractFromLang(langContent map[string]any, messageId st
 					}
 				case "img":
 					if imageKey, ok := elemMap["image_key"].(string); ok {
-						parts = append(parts, fmt.Sprintf("<image image_key=\"%s\" message_id=\"%s\" />", imageKey, messageId))
+						// Multimodal vision (P2): rich-text images download + canonical
+						// markdown reference, same as plain image messages. Failure
+						// degrades to the legacy tag.
+						if ref := f.feishuImageRef(messageId, imageKey); ref != "" {
+							parts = append(parts, ref)
+						} else {
+							parts = append(parts, fmt.Sprintf("<image image_key=\"%s\" message_id=\"%s\" />", imageKey, messageId))
+						}
 					}
 				case "code_block":
 					// 代码块 - 重点支持

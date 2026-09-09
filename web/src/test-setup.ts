@@ -1,5 +1,30 @@
 /** Vitest global setup — runs before all tests. */
 
+import { Fragment, createElement } from 'react'
+import { vi } from 'vitest'
+
+// Components now consume translations via useI18n() (providers/i18n), which
+// throws outside an <I18nProvider>. Tests render components directly without
+// the app shell, so provide a global stand-in backed by the real i18n
+// singleton (same t() semantics, no React context required). Tests that DO
+// wrap with <I18nProvider> keep working — the provider becomes a passthrough.
+vi.mock('@/providers/i18n', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/providers/i18n')>()
+  const i18n = (await import('@/i18n')).default
+  return {
+    // 保留真实导出（I18nContext 等）——测试可能直接消费它们。
+    ...actual,
+    useI18n: () => ({
+      t: (key: string, params?: Record<string, unknown>) => i18n.t(key, params) as string,
+      locale: i18n.language || 'zh-CN',
+      setLocale: (l: string) => { void i18n.changeLanguage(l) },
+    }),
+    // Fragment (not a wrapper div): tests assert on container.firstChild, so
+    // the provider must not introduce an extra DOM node.
+    I18nProvider: ({ children }: { children?: unknown }) => createElement(Fragment, null, children as never),
+  }
+})
+
 // jsdom does not implement ResizeObserver. Radix primitives using
 // @radix-ui/react-use-size (Slider etc.) construct one at mount — without
 // this the whole component tree unmounts ("ResizeObserver is not defined").

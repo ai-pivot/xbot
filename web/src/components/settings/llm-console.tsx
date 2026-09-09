@@ -1,7 +1,7 @@
 /**
  * llm-console.tsx — LLM 控制台的原子组件与模态集合。
- * 被 SettingsLLM（控制台主体）使用。文案直接中文（面板独立于 i18n 命名空间，
- * 与 genui 面板同策略；如需国际化后续统一迁移）。
+ * 被 SettingsLLM（控制台主体）使用。文案走 i18n（settings.llmConsole.* /
+ * settings.thinking.* 命名空间；资源由 src/i18n/zh-CN.ts 等统一维护）。
  *
  * 事实约束（与后端逐一对齐，勿凭记忆改）：
  * - 协议仅两种：openai / anthropic。后端 createClient（agent/llm_factory.go）只有
@@ -16,6 +16,8 @@
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { useIsMobile } from '@/hooks/useIsMobile'
+import i18n from '@/i18n'
+import { useI18n } from '@/providers/i18n'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -35,7 +37,7 @@ export const CTX_PRESETS = [0, 32000, 64000, 128000, 200000, 1000000, 2000000]
 export const OUT_PRESETS = [0, 8192, 16384, 32768, 65536]
 
 export function fmtTokens(n: number): string {
-  if (!n || n <= 0) return '跟随默认'
+  if (!n || n <= 0) return i18n.t('settings.llmConsole.followDefault')
   if (n >= 1000000) return n % 1000000 === 0 ? n / 1000000 + 'M' : (n / 1000000).toFixed(1) + 'M'
   if (n >= 1000) return n % 1000 === 0 ? n / 1000 + 'K' : Math.round(n / 1000) + 'K'
   return String(n)
@@ -85,17 +87,18 @@ export function LlmIcon(props: { n: string; s?: number; c?: string; w?: number }
 // ── 原子组件 ──────────────────────────────────────────────────────────────
 
 export function StatusPill(props: { status: string }) {
+  const { t } = useI18n()
   const map: Record<string, [string, string, string]> = {
-    normal: ['运行中', 'var(--status-success, #22c55e)', 'rgba(34,197,94,0.12)'],
-    offline: ['未同步', '#f59e0b', 'rgba(245,158,11,0.12)'],
-    disabled: ['已停用', 'var(--text-muted)', 'var(--bg-tertiary)'],
+    normal: ['settings.llmConsole.statusRunning', 'var(--status-success, #22c55e)', 'rgba(34,197,94,0.12)'],
+    offline: ['settings.llmConsole.statusOffline', '#f59e0b', 'rgba(245,158,11,0.12)'],
+    disabled: ['settings.llmConsole.statusDisabled', 'var(--text-muted)', 'var(--bg-tertiary)'],
   }
   const info = map[props.status] || map.disabled
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium"
       style={{ color: info[1], background: info[2] }}>
       <span className="size-1.5 rounded-full" style={{ background: info[1] }} />
-      {info[0]}
+      {t(info[0])}
     </span>
   )
 }
@@ -173,13 +176,14 @@ export function ModalShell(props: { open: boolean; onClose: () => void; maxWidth
 }
 
 export function ModalHeader(props: { title: string; sub?: string; onClose: () => void }) {
+  const { t } = useI18n()
   return (
     <div className="flex shrink-0 items-center gap-2 border-b p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>{props.title}</div>
         {props.sub ? <div className="truncate text-[11px]" style={{ color: 'var(--text-muted)' }}>{props.sub}</div> : null}
       </div>
-      <button onClick={props.onClose} aria-label="关闭" className="rounded-lg p-1.5 hover:bg-bg-tertiary">
+      <button onClick={props.onClose} aria-label={t('common.close')} className="rounded-lg p-1.5 hover:bg-bg-tertiary">
         <LlmIcon n="x" s={15} />
       </button>
     </div>
@@ -193,41 +197,48 @@ export function EditModelModal(props: {
   subName: string
   provider: string
   model: string
-  pmc?: { max_context?: number; max_output_tokens?: number; api_type?: string }
+  pmc?: { max_context?: number; max_output_tokens?: number; api_type?: string; vision?: boolean; vision_detail?: string }
   saving?: boolean
-  onSave: (cfg: { max_context: number; max_output_tokens: number; api_type: string }) => void
+  onSave: (cfg: { max_context: number; max_output_tokens: number; api_type: string; vision: boolean; vision_detail: string }) => void
   onClose: () => void
 }) {
-  const cs = useState({ ctx: props.pmc?.max_context || 0, out: props.pmc?.max_output_tokens || 0, api: props.pmc?.api_type || '' })
+  const cs = useState({
+    ctx: props.pmc?.max_context || 0,
+    out: props.pmc?.max_output_tokens || 0,
+    api: props.pmc?.api_type || '',
+    vision: props.pmc?.vision === true,
+    vd: props.pmc?.vision_detail || '',
+  })
+  const { t } = useI18n()
   const cfg = cs[0], setCfg = cs[1]
   const isOpenAI = props.provider !== 'anthropic'
-  const set = function(patch: { ctx?: number; out?: number; api?: string }) { setCfg(Object.assign({}, cfg, patch)) }
+  const set = function(patch: { ctx?: number; out?: number; api?: string; vision?: boolean; vd?: string }) { setCfg(Object.assign({}, cfg, patch)) }
   return (
     <ModalShell open onClose={props.onClose} maxWidth="28rem">
-      <ModalHeader title={props.model} sub={props.subName + ' · 上下文 / 输出上限（0 = 跟随默认）'} onClose={props.onClose} />
+      <ModalHeader title={props.model} sub={t('settings.llmConsole.ctxOutputLimit', { name: props.subName })} onClose={props.onClose} />
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        <LlmField label="Max Context（tokens）" hint="点选预设或直接输入任意值；0 表示跟随系统默认">
+        <LlmField label="Max Context（tokens）" hint={t('settings.llmConsole.ctxHint')}>
           <div className="flex flex-wrap gap-1.5">
             {CTX_PRESETS.map(function(cv) {
-              return <PresetChip key={cv} active={cfg.ctx === cv} onClick={function() { set({ ctx: cv }) }}>{cv === 0 ? '跟随默认' : fmtTokens(cv)}</PresetChip>
+              return <PresetChip key={cv} active={cfg.ctx === cv} onClick={function() { set({ ctx: cv }) }}>{cv === 0 ? t('settings.llmConsole.followDefault') : fmtTokens(cv)}</PresetChip>
             })}
           </div>
-          <input type="number" min={0} value={cfg.ctx || ''} placeholder="跟随默认"
+          <input type="number" min={0} value={cfg.ctx || ''} placeholder={t('settings.llmConsole.followDefault')}
             onChange={function(e) { set({ ctx: Math.max(0, Number(e.target.value) || 0) }) }}
             className={llmInputCls + ' mt-2 w-full px-3 py-2.5 text-sm'} />
         </LlmField>
-        <LlmField label="Max Output（tokens）" hint="0 = 跟随订阅默认">
+        <LlmField label="Max Output（tokens）" hint={t('settings.llmConsole.outHint')}>
           <div className="flex flex-wrap gap-1.5">
             {OUT_PRESETS.map(function(ov) {
-              return <PresetChip key={ov} active={cfg.out === ov} onClick={function() { set({ out: ov }) }}>{ov === 0 ? '默认' : fmtTokens(ov)}</PresetChip>
+              return <PresetChip key={ov} active={cfg.out === ov} onClick={function() { set({ out: ov }) }}>{ov === 0 ? t('settings.llmConsole.presetDefault') : fmtTokens(ov)}</PresetChip>
             })}
           </div>
-          <input type="number" min={0} value={cfg.out || ''} placeholder="默认"
+          <input type="number" min={0} value={cfg.out || ''} placeholder={t('settings.llmConsole.presetDefault')}
             onChange={function(e) { set({ out: Math.max(0, Number(e.target.value) || 0) }) }}
             className={llmInputCls + ' mt-2 w-full px-3 py-2.5 text-sm'} />
         </LlmField>
         {isOpenAI ? (
-          <LlmField label="API 类型" hint="Per-model 覆盖；留空跟随订阅默认">
+          <LlmField label={t('settings.modelAPIType')} hint={t('settings.llmConsole.apiTypeHint')}>
             <div className="flex gap-2">
               {API_TYPES.map(function(at) {
                 const cur = (cfg.api || 'chat_completions') === at.k
@@ -243,12 +254,39 @@ export function EditModelModal(props: {
             </div>
           </LlmField>
         ) : null}
+        <LlmField label={t('settings.llmConsole.visionLabel')} hint={t('settings.llmConsole.visionHint')}>
+          <div className="flex items-center gap-2.5">
+            <button type="button" role="switch" aria-checked={cfg.vision} onClick={function() { set({ vision: !cfg.vision, vd: !cfg.vision ? cfg.vd : '' }) }}
+              className="relative h-6 w-11 shrink-0 rounded-full transition-colors"
+              style={{ background: cfg.vision ? 'var(--accent)' : 'rgba(255,255,255,0.14)' }}>
+              <span className="absolute top-0.5 size-5 rounded-full bg-white transition-all"
+                style={{ left: cfg.vision ? 'calc(100% - 22px)' : '2px' }} />
+            </button>
+            <div className="min-w-0 text-[12px] leading-snug" style={{ color: cfg.vision ? 'var(--accent)' : 'var(--text-muted)' }}>
+              {cfg.vision ? t('settings.llmConsole.visionOn') : t('settings.llmConsole.visionOff')}
+            </div>
+          </div>
+          {cfg.vision ? (
+            <div className="mt-2 flex gap-1.5">
+              {[{ k: '', label: 'settings.llmConsole.visionDetailAuto' }, { k: 'low', label: 'settings.llmConsole.visionDetailLow' }, { k: 'high', label: 'settings.llmConsole.visionDetailHigh' }].map(function(d) {
+                const cur = (cfg.vd || '') === d.k
+                return (
+                  <button key={d.k || 'auto'} type="button" onClick={function() { set({ vd: d.k }) }}
+                    className="rounded-lg border px-2.5 py-1.5 text-[11px] transition-colors"
+                    style={{ borderColor: cur ? 'var(--accent)' : 'rgba(255,255,255,0.08)', background: cur ? 'color-mix(in srgb, var(--accent) 14%, transparent)' : 'transparent', color: cur ? 'var(--accent)' : 'var(--text-secondary)' }}>
+                    {t(d.label)}
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+        </LlmField>
       </div>
       <div className="shrink-0 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-        <button onClick={function() { props.onSave({ max_context: cfg.ctx, max_output_tokens: cfg.out, api_type: isOpenAI ? cfg.api : '' }) }}
+        <button onClick={function() { props.onSave({ max_context: cfg.ctx, max_output_tokens: cfg.out, api_type: isOpenAI ? cfg.api : '', vision: cfg.vision, vision_detail: cfg.vision ? cfg.vd : '' }) }}
           disabled={props.saving}
           className="w-full rounded-xl py-2.5 text-sm font-semibold transition-opacity disabled:opacity-40" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
-          {props.saving ? '保存中…' : '保存'}
+          {props.saving ? t('settings.llmConsole.saving') : t('common.save')}
         </button>
       </div>
     </ModalShell>
@@ -258,14 +296,15 @@ export function EditModelModal(props: {
 // ── 添加模型 ──────────────────────────────────────────────────────────────
 
 export function AddModelModal(props: { subName: string; saving?: boolean; onAdd: (name: string) => void; onClose: () => void }) {
+  const { t } = useI18n()
   const ns = useState('')
   const name = ns[0], setName = ns[1]
   return (
     <ModalShell open onClose={props.onClose}>
-      <ModalHeader title="添加模型" sub={props.subName} onClose={props.onClose} />
+      <ModalHeader title={t('settings.llmConsole.addModel')} sub={props.subName} onClose={props.onClose} />
       <div className="p-4">
         <input value={name} onChange={function(e) { setName(e.target.value) }} autoFocus
-          placeholder="输入模型名，如 gpt-5.2-mini"
+          placeholder={t('settings.llmConsole.modelNamePlaceholder')}
           onKeyDown={function(e) { if (e.key === 'Enter' && name.trim() && !props.saving) props.onAdd(name.trim()) }}
           className={llmInputCls + ' w-full px-3 py-2.5 font-mono text-xs'} />
         <div className="mt-3 flex flex-wrap gap-1.5">
@@ -273,9 +312,9 @@ export function AddModelModal(props: { subName: string; saving?: boolean; onAdd:
         </div>
         <button onClick={function() { if (name.trim()) props.onAdd(name.trim()) }} disabled={!name.trim() || props.saving}
           className="mt-4 w-full rounded-xl py-2.5 text-sm font-semibold transition-opacity disabled:opacity-40" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
-          {props.saving ? '添加中…' : '注册模型'}
+          {props.saving ? t('settings.llmConsole.adding') : t('settings.llmConsole.registerModel')}
         </button>
-        <div className="mt-2 text-center text-[11px]" style={{ color: 'var(--text-muted)' }}>注册后可在模型列表手动启用；「刷新模型列表」会自动校正状态</div>
+        <div className="mt-2 text-center text-[11px]" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.registerModelHint')}</div>
       </div>
     </ModalShell>
   )
@@ -284,6 +323,7 @@ export function AddModelModal(props: { subName: string; saving?: boolean; onAdd:
 // ── 删除确认 ──────────────────────────────────────────────────────────────
 
 export function DeleteConfirmModal(props: { subName: string; modelCount: number; saving?: boolean; onConfirm: () => void; onClose: () => void }) {
+  const { t } = useI18n()
   return (
     <ModalShell open onClose={props.onClose}>
       <div className="flex items-start gap-3 p-5">
@@ -291,17 +331,17 @@ export function DeleteConfirmModal(props: { subName: string; modelCount: number;
           <LlmIcon n="trash" s={16} c="#fff" />
         </span>
         <div>
-          <div className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>删除订阅「{props.subName}」？</div>
+          <div className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>{t('settings.llmConsole.deleteSubConfirm', { name: props.subName })}</div>
           <div className="mt-1.5 text-[13px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-            该订阅下 <b style={{ color: 'var(--text-primary)' }}>{props.modelCount} 个模型</b> 将从模型选择器中移除。进行中的会话不受影响，此操作不可撤销。
+            {t('settings.llmConsole.deleteSubBody1')} <b style={{ color: 'var(--text-primary)' }}>{t('settings.llmConsole.deleteSubCount', { count: props.modelCount })}</b> {t('settings.llmConsole.deleteSubBody2')}
           </div>
         </div>
       </div>
       <div className="flex gap-2.5 border-t p-4" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-        <button onClick={props.onClose} className="flex-1 rounded-xl border py-2.5 text-[13px] font-medium transition-colors hover:bg-bg-tertiary" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>取消</button>
+        <button onClick={props.onClose} className="flex-1 rounded-xl border py-2.5 text-[13px] font-medium transition-colors hover:bg-bg-tertiary" style={{ borderColor: 'rgba(255,255,255,0.08)', color: 'var(--text-primary)' }}>{t('common.cancel')}</button>
         <button onClick={props.onConfirm} disabled={props.saving}
           className="flex-1 rounded-xl py-2.5 text-[13px] font-medium text-text-primary transition-opacity disabled:opacity-40" style={{ background: 'var(--status-error, #ef4444)' }}>
-          {props.saving ? '删除中…' : '删除'}
+          {props.saving ? t('settings.llmConsole.deleting') : t('common.delete')}
         </button>
       </div>
     </ModalShell>
@@ -317,6 +357,7 @@ export function TierPickerModal(props: {
   onPick: (subID: string, model: string) => void
   onClose: () => void
 }) {
+  const { t } = useI18n()
   const qs = useState('')
   const q = qs[0], setQ = qs[1]
   const list = props.entries.filter(function(e) {
@@ -326,11 +367,11 @@ export function TierPickerModal(props: {
   })
   return (
     <ModalShell open onClose={props.onClose} maxWidth="30rem">
-      <ModalHeader title={'选择' + props.tierLabel + '模型'} sub="点击即切换；未配置的分层回落系统默认" onClose={props.onClose} />
+      <ModalHeader title={t('settings.llmConsole.selectTierModel', { tier: props.tierLabel })} sub={t('settings.llmConsole.tierPickerHint')} onClose={props.onClose} />
       <div className="shrink-0 p-3 pb-0">
         <div className="flex items-center gap-2 rounded-lg border px-3" style={{ borderColor: 'rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
           <LlmIcon n="search" s={14} />
-          <input value={q} onChange={function(e) { setQ(e.target.value) }} autoFocus placeholder="搜索模型或订阅…"
+          <input value={q} onChange={function(e) { setQ(e.target.value) }} autoFocus placeholder={t('settings.llmConsole.searchModelsSubs')}
             className="w-full bg-transparent py-2.5 text-sm outline-none" style={{ color: 'var(--text-primary)' }} />
         </div>
       </div>
@@ -350,7 +391,7 @@ export function TierPickerModal(props: {
             </button>
           )
         })}
-        {list.length === 0 ? <div className="p-6 text-center text-xs" style={{ color: 'var(--text-muted)' }}>无匹配的可用模型</div> : null}
+        {list.length === 0 ? <div className="p-6 text-center text-xs" style={{ color: 'var(--text-muted)' }}>{t('settings.llmConsole.noMatchModels')}</div> : null}
       </div>
     </ModalShell>
   )
@@ -366,6 +407,7 @@ export function SubFormModal(props: {
   onClose: () => void
 }) {
   const editing = props.initial || null
+  const { t } = useI18n()
   const fs = useState({
     name: editing ? editing.name : '',
     provider: editing ? editing.provider : 'openai',
@@ -384,9 +426,9 @@ export function SubFormModal(props: {
     (editing !== null || form.api_key.trim() !== '')
   return (
     <ModalShell open onClose={props.onClose} maxWidth="30rem">
-      <ModalHeader title={editing ? '编辑订阅' : '添加订阅'} sub="保存后可点「刷新模型列表」拉取该端点的模型" onClose={props.onClose} />
+      <ModalHeader title={editing ? t('settings.llmConsole.editSub') : t('settings.addSubscription')} sub={t('settings.llmConsole.subFormHint')} onClose={props.onClose} />
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-        <LlmField label="协议">
+        <LlmField label={t('settings.llmConsole.protocol')}>
           <div className="grid grid-cols-2 gap-2">
             {LLM_PROVIDERS.map(function(pv) {
               const cur = form.provider === pv.k
@@ -402,7 +444,7 @@ export function SubFormModal(props: {
           </div>
         </LlmField>
         {form.provider === 'openai' ? (
-          <LlmField label="API 类型" hint="chat_completions 走 /v1/chat/completions；responses 走 /v1/responses">
+          <LlmField label={t('settings.modelAPIType')} hint={t('settings.llmConsole.apiTypeHintForm')}>
             <div className="flex gap-2">
               {API_TYPES.map(function(at) {
                 const cur = (form.api_type || 'chat_completions') === at.k
@@ -418,19 +460,19 @@ export function SubFormModal(props: {
             </div>
           </LlmField>
         ) : null}
-        <LlmField label="名称">
-          <input value={form.name} onChange={function(e) { set({ name: e.target.value }) }} placeholder="例如：OpenAI 官方"
+        <LlmField label={t('settings.subscriptionName')}>
+          <input value={form.name} onChange={function(e) { set({ name: e.target.value }) }} placeholder={t('settings.llmConsole.namePlaceholder')}
             className={llmInputCls + ' w-full px-3 py-2.5 text-sm'} />
         </LlmField>
-        <LlmField label="Base URL" hint="选择协议时已自动填充，可修改">
+        <LlmField label="Base URL" hint={t('settings.llmConsole.baseUrlHint')}>
           <input value={form.base_url} onChange={function(e) { set({ base_url: e.target.value }) }} placeholder="https://…"
             className={llmInputCls + ' w-full px-3 py-2.5 font-mono text-xs'} />
         </LlmField>
-        <LlmField label="API Key" hint={editing ? '已掩码；留空保持现有 Key 不变' : '以 sk- 开头，仅存储于服务端'}>
-          <input type="password" value={form.api_key} onChange={function(e) { set({ api_key: e.target.value }) }} placeholder={editing ? 'sk-****（保持不变）' : 'sk-…'}
+        <LlmField label="API Key" hint={editing ? t('settings.llmConsole.apiKeyHintEdit') : t('settings.llmConsole.apiKeyHintNew')}>
+          <input type="password" value={form.api_key} onChange={function(e) { set({ api_key: e.target.value }) }} placeholder={editing ? t('settings.llmConsole.apiKeyPlaceholderKeep') : 'sk-…'}
             className={llmInputCls + ' w-full px-3 py-2.5 font-mono text-xs'} />
         </LlmField>
-        <LlmField label="默认模型" hint="订阅的首选模型，如 gpt-5.2 / claude-opus-4-6">
+        <LlmField label={t('settings.subscriptionDefaultModel')} hint={t('settings.llmConsole.defaultModelHint')}>
           <input value={form.model} onChange={function(e) { set({ model: e.target.value }) }} placeholder="model-name"
             className={llmInputCls + ' w-full px-3 py-2.5 font-mono text-xs'} />
         </LlmField>
@@ -444,7 +486,7 @@ export function SubFormModal(props: {
           })
         }} disabled={!valid || props.saving}
           className="w-full rounded-xl py-2.5 text-sm font-semibold transition-opacity disabled:opacity-40" style={{ background: 'color-mix(in srgb, var(--accent) 14%, transparent)', color: 'var(--accent)' }}>
-          {props.saving ? '保存中…' : editing ? '保存' : '添加订阅'}
+          {props.saving ? t('settings.llmConsole.saving') : editing ? t('common.save') : t('settings.addSubscription')}
         </button>
       </div>
     </ModalShell>
@@ -454,6 +496,7 @@ export function SubFormModal(props: {
 // ── ActionSheet（响应式：移动端底部弹窗 / 桌面端居中浮层菜单） ────────────
 
 export function ActionSheet(props: { title: string; onClose: () => void; items: Array<{ icon: string; label: string; danger?: boolean; onClick: () => void }> }) {
+  const { t } = useI18n()
   const es = useState(false)
   const shown = es[0], setShown = es[1]
   const isMobile = useIsMobile()
@@ -480,7 +523,7 @@ export function ActionSheet(props: { title: string; onClose: () => void; items: 
           )
         })}
         <div className="p-3" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-          <button onClick={props.onClose} className="w-full rounded-xl py-2.5 text-[13px] font-semibold transition-colors hover:bg-bg-hover" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>取消</button>
+          <button onClick={props.onClose} className="w-full rounded-xl py-2.5 text-[13px] font-semibold transition-colors hover:bg-bg-hover" style={{ background: 'rgba(255,255,255,0.05)', color: 'var(--text-muted)' }}>{t('common.cancel')}</button>
         </div>
       </div>
     </div>

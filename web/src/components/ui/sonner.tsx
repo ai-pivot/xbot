@@ -16,6 +16,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
       theme={theme as ToasterProps["theme"]}
       // 右上角弹出：右下角会挡住输入框与底栏交互控件（全局直角扁平化同语言）
       position="top-right"
+      // iPhone 灵动岛 / 刘海 / 状态栏：默认贴顶会被遮挡 —— 用安全区 + 基础间距
+      offset={{ top: 'calc(env(safe-area-inset-top, 0px) + 12px)', right: '16px' }}
+      mobileOffset={{ top: 'calc(env(safe-area-inset-top, 0px) + 10px)', right: '12px' }}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

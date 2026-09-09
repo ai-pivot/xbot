@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -322,6 +323,18 @@ func (wc *WebChannel) dispatchUserMessageOnce(ctx context.Context, key inboundRe
 	return sel, msgID, ts, turnID, queued, err
 }
 
+// expandUploadKeys appends upload references to the message content.
+// Images use ONE canonical markdown reference with a stable RELATIVE URL:
+//
+//	![name](/api/files/download?key=<encoded>&inline=1)
+//
+// The relative URL never expires (handleFileDownload signs on serve), so
+// persisted history renders forever — unlike the old absolute OSS signed
+// URLs that rotted after TTL. The LLM vision resolver (serverapp
+// imageResolver) resolves the very same reference into base64 parts at
+// request-build time (llm.parseMultimodalContent). Non-image attachments
+// keep the absolute signed URL inside <file> tags (DownloadFile needs a
+// directly fetchable URL; history expiry is acceptable for downloads).
 func (wc *WebChannel) expandUploadKeys(msg protocol.WSClientMessage) string {
 	content := msg.Content
 	if len(msg.UploadKeys) == 0 || wc.ossProvider == nil {
@@ -336,20 +349,30 @@ func (wc *WebChannel) expandUploadKeys(msg protocol.WSClientMessage) string {
 		if i < len(msg.FileSizes) {
 			fileSize = msg.FileSizes[i]
 		}
-		downloadURL, err := wc.ossProvider.GetDownloadURL(key)
-		if err != nil {
-			log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
-			content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(displayName))
-		if isImageExt(ext) {
-			content += fmt.Sprintf("\n\n<image url=\"%s\" name=\"%s\" size=\"%d\" />\n![%s](%s)", downloadURL, displayName, fileSize, displayName, downloadURL)
-		} else {
-			content += fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
-		}
+		content = wc.appendUploadRef(content, key, displayName, fileSize)
 	}
 	return content
+}
+
+// appendUploadRef appends ONE upload's reference to content. Shared by the
+// REST (expandUploadKeys) and WS message paths so both produce byte-identical
+// references.
+func (wc *WebChannel) appendUploadRef(content, key, displayName string, fileSize int64) string {
+	ext := strings.ToLower(filepath.Ext(displayName))
+	if isImageExt(ext) {
+		// Single canonical markdown image reference (stable relative URL —
+		// never expires, renders in history, parses in the vision resolver).
+		ref := "/api/files/download?key=" + url.QueryEscape(key) + "&inline=1"
+		return content + fmt.Sprintf("\n\n![%s](%s)", displayName, ref)
+	}
+	// Non-image attachment: absolute signed URL (DownloadFile fetches it
+	// directly; a relative URL would be useless to the tool).
+	downloadURL, err := wc.ossProvider.GetDownloadURL(key)
+	if err != nil {
+		log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
+		return content + fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
+	}
+	return content + fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
 }
 
 func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdentity, channelName, chatID string) (SessionSelector, error) {

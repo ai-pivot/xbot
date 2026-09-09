@@ -229,20 +229,35 @@ export function SessionList({
 
   // Sentinel at the bottom of the list: when it becomes visible (user scrolled
   // near the end), fetch the next backend page.
+  //
+  // ⚠️ The observer MUST NOT be re-created when the list content changes.
+  // The old deps included `mainGroups`/`searchResults`: every loadMore changed
+  // the list → effect re-ran → a FRESH observer was attached to the sentinel →
+  // IntersectionObserver fires its initial callback immediately (the sentinel
+  // is in view on a phone-sized viewport) → loadMore again → … an infinite
+  // load loop ("手机上永远加载不完，向下滚一直看到重复内容循环").
+  // onLoadMore is kept in a ref so the effect only depends on hasMore/searching.
+  const onLoadMoreRef = useRef(onLoadMore)
+  useEffect(() => {
+    onLoadMoreRef.current = onLoadMore
+  }, [onLoadMore])
   useEffect(() => {
     const sentinel = sentinelRef.current
-    if (!sentinel || !hasMore || !onLoadMore) return
+    if (!sentinel || !hasMore) return
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          onLoadMore()
-        }
+        if (entries.some((e) => e.isIntersecting)) onLoadMoreRef.current?.()
       },
-      { root: sentinel.closest('[data-slot="scroll-area-viewport"]') as Element | null },
+      {
+        root: sentinel.closest('[data-slot="scroll-area-viewport"]') as Element | null,
+        // Small pre-fetch margin; the store's in-flight guard prevents a second
+        // concurrent page request with the same (not yet advanced) offset.
+        rootMargin: '120px',
+      },
     )
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [hasMore, onLoadMore, searching, searchResults, mainGroups])
+  }, [hasMore, searching])
 
   const childrenForSearch = (parent: SessionInfo): SessionInfo[] => {
     const children = childrenForParent(parent).filter(isVisibleSubAgent)

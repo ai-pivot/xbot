@@ -807,6 +807,10 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/files/upload", wc.authenticatedPOST(wc.handleFileUpload))
 	mux.HandleFunc("/api/files/download", wc.authMiddleware(wc.handleFileDownload))
+	// viewimg: serves view_image tool images from ~/.xbot/view_images/
+	// (cookie-auth browser endpoint for the markdown references the engine
+	// injects; the LLM resolver reads the same files from disk).
+	mux.HandleFunc("/api/files/viewimg/", wc.authMiddleware(wc.handleViewImage))
 
 	// Terminal (PTY) endpoints
 	mux.HandleFunc("/api/terminal/create", wc.authenticatedPOST(wc.handleTerminalCreate))
@@ -1673,21 +1677,12 @@ func (wc *WebChannel) readPump(c *Client, si *sessionInfo) {
 					if i < len(msg.FileSizes) {
 						fileSize = msg.FileSizes[i]
 					}
-
-					// Get signed download URL (private OSS requires signed URLs with TTL)
-					downloadURL, err := wc.ossProvider.GetDownloadURL(key)
-					if err != nil {
-						log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
-						content += fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
-						continue
-					}
-
-					ext := strings.ToLower(filepath.Ext(displayName))
-					if isImageExt(ext) {
-						content += fmt.Sprintf("\n\n<image url=\"%s\" name=\"%s\" size=\"%d\" />\n![%s](%s)", downloadURL, displayName, fileSize, displayName, downloadURL)
-					} else {
-						content += fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
-					}
+					// Shared reference builder with the REST path (expandUploadKeys):
+					// images → single markdown reference with a stable relative
+					// /api/files/download?key= URL (never expires, renders in
+					// history, resolves in the LLM vision resolver); other files →
+					// <file> tag with an absolute signed URL (DownloadFile tool).
+					content = wc.appendUploadRef(content, key, displayName, fileSize)
 				}
 			}
 
@@ -1876,11 +1871,20 @@ func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler 
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 
-		// Build img-src with OSS domain whitelist (if configured)
+		// Build img-src AND connect-src with the OSS domain whitelist (if
+		// configured). connect-src must include the OSS domain too: any same-
+		// origin endpoint that 302-redirects to a signed OSS URL (e.g.
+		// /api/files/download) makes the fetch follow the cross-origin redirect,
+		// which CSP checks against connect-src — without the OSS domain there
+		// the follow-up request is blocked ("Connecting to http://xbot-cdn…
+		// violates Content Security Policy directive: connect-src 'self' ws:
+		// wss:" — user report: workbox SW + image downloads all failing).
 		imgSrc := "'self' data: blob:"
+		connectSrc := "'self' ws: wss:"
 		if wc.ossProvider != nil {
 			if d := wc.ossProvider.Domain(); d != "" {
 				imgSrc += " " + d
+				connectSrc += " " + d
 			}
 		}
 
@@ -1890,7 +1894,7 @@ func (wc *WebChannel) securityHeadersMiddleware(next http.Handler) http.Handler 
 				"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "+
 				"font-src 'self' data: https://fonts.gstatic.com; "+
 				"img-src "+imgSrc+"; "+
-				"connect-src 'self' ws: wss:; "+
+				"connect-src "+connectSrc+"; "+
 				"frame-ancestors 'none'",
 		)
 		next.ServeHTTP(w, r)

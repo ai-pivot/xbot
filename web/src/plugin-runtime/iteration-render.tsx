@@ -12,16 +12,20 @@ import * as React from 'react'
 
 import type { IterationStats, LiveStreamStats, ViewContribution } from '@/plugin-api'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
+import i18n from '@/i18n'
 
 import { PluginView } from './PluginView'
 
 // 暴露到 window 供独立 ESM 插件模块使用（无法 import 内部模块路径）。
 // 独立插件通过 window.__xbot_iteration__.useIterationStats() 获取数据，
 // 通过 window.React 获取 React（避免独立 bundle 重复打包 React）。
+// window.__xbot_i18n__ 暴露宿主 i18next 实例（t 函数）——git-fancy 等独立
+// bundle 的 UI 文案经 t(key, { defaultValue }) 翻译（key 缺失回退中文原文）。
 if (typeof window !== 'undefined') {
-  const w = window as unknown as { __xbot_iteration__?: unknown; React?: unknown }
+  const w = window as unknown as { __xbot_iteration__?: unknown; React?: unknown; __xbot_i18n__?: unknown }
   w.__xbot_iteration__ = { useIterationStats, useGlobalLiveStats, subscribeGlobalLiveStats, getGlobalLiveStats }
   w.React = React
+  w.__xbot_i18n__ = i18n
 }
 
 // ── 全局实时生成指标 store（ModelStatusBar / status 插件用）──────────────────────

@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import type { ViewContainer, ViewContribution } from '@/plugin-api'
+import { useI18n } from '@/providers/i18n'
 
 export interface ViewSlotProps {
   container: ViewContainer
@@ -34,6 +35,7 @@ export function ViewSlot({ container, getViews, loadView, empty = null, classNam
 }
 
 function LazyView({ view, loadView }: { view: ViewContribution; loadView: ViewSlotProps['loadView'] }) {
+  const { t } = useI18n()
   const [Comp, setComp] = useState<React.ComponentType | null>(null)
   const [failed, setFailed] = useState(false)
 
@@ -54,8 +56,8 @@ function LazyView({ view, loadView }: { view: ViewContribution; loadView: ViewSl
   }, [view, loadView])
 
   if (failed) {
-    return <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-600">插件视图加载失败: {view.id}</div>
+    return <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-600">{t('plugins.view.loadFailedWithId', { id: view.id })}</div>
   }
-  if (!Comp) return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">加载 {view.title}…</div>
+  if (!Comp) return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">{t('plugins.view.loadingView', { title: view.title })}</div>
   return <Comp />
 }

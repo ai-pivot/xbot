@@ -10,9 +10,33 @@
  * 时注入并存模块级变量。
  */
 
-const w = window as unknown as { React: typeof import('react') }
+const w = window as unknown as {
+  React: typeof import('react')
+  /** 宿主 iteration-render.tsx 挂载的 i18next 实例（独立 bundle 的 i18n 桥）。 */
+  __xbot_i18n__?: { t: (key: string, opts?: Record<string, unknown>) => string }
+}
 
 export const React = w.React
+
+// ---------- i18n 桥（独立 bundle 无法 import 宿主 '@/i18n'） ----------
+
+/**
+ * 翻译 helper：优先走宿主 i18next（window.__xbot_i18n__，key 命中时插值
+ * {{x}} 占位符）；key 缺失或桥未挂载时回退中文原文（defaultValue 同样插值）。
+ * 插件产物与主 bundle 的语言包可能不同步，fallback 保证 UI 永不显示裸 key。
+ */
+export function t(key: string, fallback: string, params?: Record<string, string | number>): string {
+  const inst = w.__xbot_i18n__
+  if (inst) {
+    try {
+      return inst.t(key, { ...params, defaultValue: fallback })
+    } catch { /* 桥异常时回退 */ }
+  }
+  if (params) {
+    return fallback.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ''))
+  }
+  return fallback
+}
 
 // ---------- 类型（与后端 main.go 的 JSON 输出一一对应） ----------
 
@@ -210,7 +234,7 @@ export async function openDiffTab(path: string, commit?: string): Promise<void> 
     modified: res.modified ?? '',
     path,
     key: commit ? `git-diff:${commit}:${path}` : `git-diff:worktree:${path}`,
-    scope: commit ? `commit ${commit.slice(0, 7)}` : '工作区',
+    scope: commit ? `commit ${commit.slice(0, 7)}` : t('plugins.gitFancy.scopeWorktree', '工作区'),
   })
 }
 

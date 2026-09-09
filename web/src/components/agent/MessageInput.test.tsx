@@ -156,7 +156,9 @@ describe('MessageInput', () => {
 
     // While busy + has content: button is Send (not Cancel). Clicking it
     // triggers submit(), which intercepts /cancel → onCancel().
-    fireEvent.click(screen.getByLabelText(/排队发送/))
+    // (i18n mock returns the key itself → the queued-send button's aria-label
+    // is the key string, not the localized "↵ 排队发送" text.)
+    fireEvent.click(screen.getByLabelText('agent.queuedSend'))
 
     expect(onCancel).toHaveBeenCalledOnce()
     expect(onSend).not.toHaveBeenCalled()

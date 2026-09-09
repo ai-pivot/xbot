@@ -19,11 +19,18 @@
  *  - 修 bug 3：重排基于渲染序 sideIds（钉选起点），落盘完整 order
  *  - 取消路径：落点无 zone / Esc / 4px 阈值内松手 → 零状态变更
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
+import i18n from '@/i18n'
+
+// 本文件断言中文文案；jsdom 的 navigator.language 是 en-US，i18n 初始化成
+// 英文会让所有中文断言失败 —— 局部固定为 zh-CN。
+beforeAll(async () => { await i18n.changeLanguage('zh-CN') })
+
 import { renderWithProviders } from '@/test-utils'
+import { I18nProvider } from '@/providers/i18n'
 import { panelRegistry } from '@/plugin-runtime/panelRegistry'
 import type { PanelDefinition } from '@/plugin-api'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -105,7 +112,9 @@ function renderShell(): ReturnType<typeof renderWithProviders> {
 }
 
 function gripOf(id: string): HTMLElement {
-  const el = document.querySelector<HTMLElement>(`[data-panel-id="${id}"] [aria-label="拖拽重排面板"]`)
+  // 用 data-testid 而非 aria-label：文案已 i18n 化（t('panel.dragReorder')），
+  // 硬编码中文选择器在英文环境下必然失配。
+  const el = document.querySelector<HTMLElement>(`[data-panel-id="${id}"] [data-testid="panel-grip"]`)
   if (!el) throw new Error(`grip of ${id} not found`)
   return el
 }
@@ -185,7 +194,7 @@ describe('migrateV1Layout（v1→v2 迁移）', () => {
     expect(localStorage.getItem(V2_KEY)).toBeNull()
     fireEvent.click(screen.getByLabelText('钉选 A'))
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 220 })
+    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 360 })
     expect(saved['p.b'].loc).toEqual({ zone: 'chip', order: 0 })
   })
 })
@@ -250,8 +259,8 @@ describe('defaultPanelLayout（v5.1 默认分配）', () => {
     const d = defaultPanelLayout(defs)
     expect(d['core.sessions']).toEqual({ loc: { zone: 'side', order: 0, h: 420 }, collapsed: false })
     expect(d['core.files']).toEqual({ loc: { zone: 'chip', order: 1 }, collapsed: true })
-    // 插件声明侧栏容器 → 默认钉选 side（默认 h 220）。
-    expect(d['git.panel']).toEqual({ loc: { zone: 'side', h: 220, order: 0 }, collapsed: true })
+    // 插件声明侧栏容器 → 默认钉选 side（声明 h 220 被统一默认 360 提升）。
+    expect(d['git.panel']).toEqual({ loc: { zone: 'side', h: 360, order: 0 }, collapsed: true })
     // 无 location 的插件面板兜底 chip。
     expect(d['p.x']).toEqual({ loc: { zone: 'chip', order: 3 }, collapsed: true })
   })
@@ -269,9 +278,9 @@ describe('v5.1 Focus + Drawer', () => {
     renderShell()
     expect(chipOrder()).toEqual(['p.a', 'p.b'])
     expect(sideRenderOrder()).toEqual([])
-    // 面板铺满堆叠区：overflow-hidden（面板内部各自滚动），chips 条固定底部。
+    // 面板铺满堆叠区：面板总高超出时整栏滚动（overflow-y-auto），chips 条固定底部。
     const stack = document.querySelector('[data-testid="panel-dock-stack"]')!
-    expect(stack.className).toContain('overflow-hidden')
+    expect(stack.className).toContain('overflow-y-auto')
     expect(stack.className).toContain('flex-1')
     // SideChips 外层 div（data-panel-zone="chip"）内含 shrink-0 的 chips 条。
     const chipDock = document.querySelector('[data-testid="panel-chip-dock"]')!
@@ -286,9 +295,9 @@ describe('v5.1 Focus + Drawer', () => {
     expect(sideRenderOrder()).toEqual(['p.a', 'p.b'])
     expect(chipOrder()).toEqual([])
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 220 })
+    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 360 })
     expect(saved['p.a'].collapsed).toBe(false)
-    expect(saved['p.b'].loc).toMatchObject({ zone: 'side', order: 1, h: 220 })
+    expect(saved['p.b'].loc).toMatchObject({ zone: 'side', order: 1, h: 360 })
   })
 
   it('side ✕ 取消钉选 → chip；PINNED_DEFAULTS（sessions）无 ✕ 且可调高', () => {
@@ -301,7 +310,9 @@ describe('v5.1 Focus + Drawer', () => {
     const sessionsPanel = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')!
     expect(sessionsPanel.style.flex).toContain('420')
     expect(sessionsPanel.querySelector('[aria-label="取消钉选（收入底部启动器）"]')).toBeNull()
-    expect(sessionsPanel.querySelector('[aria-label="调整面板高度"]')).not.toBeNull()
+    // sessions 是唯一展开面板 → 它是"最后一个展开面板"（flex-grow 吸收剩余空间），
+    // 自己的 handle 隐藏（VSCode 的最后一个 section 下方也没有分隔条）。
+    expect(sessionsPanel.querySelector('[aria-label="调整面板高度"]')).toBeNull()
 
     // p.a 钉选 → 有 ✕ → 取消钉选回 chip。
     fireEvent.click(screen.getByLabelText('钉选 A'))
@@ -342,25 +353,29 @@ describe('v5.1 Focus + Drawer', () => {
 
   it('底边调高：move 零持久化 + flex-basis 跟随，up 一次落盘', () => {
     renderShell()
+    // 两个展开面板 → A 有 handle（B 是"最后一个展开面板"，grow 无 handle）。
     fireEvent.click(screen.getByLabelText('钉选 A'))
+    fireEvent.click(screen.getByLabelText('钉选 B'))
     const before = localStorage.getItem(V2_KEY)
     const handle = document.querySelector<HTMLElement>('[aria-label="调整面板高度"]')!
     fireEvent.pointerDown(handle, { button: 0, clientX: 100, clientY: 100 })
     fireEvent.pointerMove(handle, { clientX: 100, clientY: 150 })
-    // move 中本地跟随（220 + 50 = 270），零持久化。flex-basis 跟随 curH。
+    // move 中本地跟随（360 + 50 = 410），零持久化。flex-basis 跟随 curH。
     const panel = document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!
-    expect(panel.style.flex).toContain('270')
+    expect(panel.style.flex).toContain('410')
     expect(localStorage.getItem(V2_KEY)).toBe(before)
     fireEvent.pointerUp(handle)
     const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.h).toBe(270)
+    expect(saved['p.a'].loc.h).toBe(410)
   })
 
   it('底边调高 clamp：拖超上界 640 / 拖过下界 140', () => {
     renderShell()
+    // 两个展开面板 → A 有 handle（B 是"最后一个展开面板"，grow 无 handle）。
     fireEvent.click(screen.getByLabelText('钉选 A'))
+    fireEvent.click(screen.getByLabelText('钉选 B'))
     const handle = document.querySelector<HTMLElement>('[aria-label="调整面板高度"]')!
-    // 上界：从 220 起 +2000 → clamp 640。
+    // 上界：从 360 起 +2000 → clamp 640。
     fireEvent.pointerDown(handle, { button: 0, clientX: 100, clientY: 100 })
     fireEvent.pointerMove(handle, { clientX: 100, clientY: 2100 })
     fireEvent.pointerUp(handle)
@@ -374,15 +389,13 @@ describe('v5.1 Focus + Drawer', () => {
     expect(saved['p.a'].loc.h).toBe(140)
   })
 
-  it('插件 contribution 尊重：def.location side h 220 → 默认钉选（flex-basis 220）', () => {
+  it('插件 contribution 尊重：def.location side h 220 → 默认钉选（统一默认 360）', () => {
     registerPanel(makeDef('git.panel', 'Git', { source: 'xbot.git', location: { zone: 'side', h: 220, order: 0 } }))
     renderShell()
-    expect(sideRenderOrder()).toEqual(['git.panel'])
-    expect(chipOrder()).toEqual(['p.a', 'p.b'])
+    // side zone 现在只渲染【展开】的面板（入口在 ActivityBar）——用 openPanel 事件展开。
+    fireEvent(window, new CustomEvent('xbot:panel-request', { detail: { id: 'git.panel' } }))
     const panel = document.querySelector<HTMLElement>('[data-panel-id="git.panel"]')!
-    fireEvent.click(within(panel).getByLabelText('展开'))
-    // body 不再有固定 height（flex-1 撑满）；flex-basis 通过 PanelChrome 的 style.flex 携带。
-    expect(panel.style.flex).toContain('220')
+    expect(panel.style.flex).toContain('360')
   })
 
   it('拖 side 面板到底部 chips 条 → zone chip（跨 zone 放置）', () => {
@@ -727,18 +740,22 @@ describe('BadgeSlot 徽章宽度锁定', () => {
       badgeText = '1042'
       slotW = 42
       view.rerender(
-        <PanelDockProvider tabManager={fakeTabManager}>
-          <TopRail className="max-w-[300px]" />
-        </PanelDockProvider>,
+        <I18nProvider>
+          <PanelDockProvider tabManager={fakeTabManager}>
+            <TopRail className="max-w-[300px]" />
+          </PanelDockProvider>
+        </I18nProvider>,
       )
       expect(slotOf().style.minWidth).toBe('42px')
       // 内容变窄（1042→1）→ minWidth 保持锁定（只增不减，锁定值由组件 ref 持有）。
       badgeText = '1'
       slotW = 10
       view.rerender(
-        <PanelDockProvider tabManager={fakeTabManager}>
-          <TopRail className="max-w-[300px]" />
-        </PanelDockProvider>,
+        <I18nProvider>
+          <PanelDockProvider tabManager={fakeTabManager}>
+            <TopRail className="max-w-[300px]" />
+          </PanelDockProvider>
+        </I18nProvider>,
       )
       expect(slotOf().style.minWidth).toBe('42px')
     } finally {

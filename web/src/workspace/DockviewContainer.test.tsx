@@ -1,6 +1,11 @@
 import { act, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
+
+import i18n from '@/i18n'
+
+// 中文断言依赖 zh-CN（jsdom 默认 en-US）——局部固定。
+beforeAll(async () => { await i18n.changeLanguage('zh-CN') })
 import type { GroupPanelPartInitParameters } from 'dockview'
 
 vi.mock('@/workspace/panels/AgentPanel', () => ({ AgentPanel: () => null }))

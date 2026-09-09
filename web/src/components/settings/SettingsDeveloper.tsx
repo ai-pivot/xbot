@@ -6,6 +6,7 @@ import { Switch } from '@/components/ui/switch'
 import { exportSession, downloadSession } from '@/components/agent/api'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import { useSessionStore } from '@/hooks/useSessionStore'
+import { useI18n } from '@/providers/i18n'
 import { SettingsSection } from './SettingsSection'
 
 /**
@@ -18,6 +19,7 @@ import { SettingsSection } from './SettingsSection'
  */
 export function SettingsDeveloper() {
   const { enabled, setEnabled } = useDeveloperMode()
+  const { t } = useI18n()
   const [devExporting, setDevExporting] = useState(false)
   const [devExportResult, setDevExportResult] = useState('')
   const sessionStore = useSessionStore()
@@ -25,23 +27,23 @@ export function SettingsDeveloper() {
   return (
     <div className="flex flex-col gap-2.5 p-4">
       <SettingsSection
-        title="开发者工具"
-        description="启用后显示 SSE 录制按钮（AgentPanel 顶部 REC）。点击开始录制所有事件，复现 bug 后点击 STOP 下载 .ev 文件，用于重放测试固定回归。"
+        title={t('settings.developer.toolsTitle')}
+        description={t('settings.developer.toolsDesc')}
       >
         <div className="flex items-center justify-between">
           <span className="flex items-center gap-2 text-sm">
             <Radio className="size-4 text-text-muted" />
-            启用开发者工具（REC 录制）
+            {t('settings.developer.enableRec')}
           </span>
           <Switch checked={enabled} onCheckedChange={setEnabled} />
         </div>
       </SettingsSection>
 
-      <SettingsSection title="会话导出" description="开发者调试 / benchmark 复现用的导出工具。">
+      <SettingsSection title={t('settings.developer.exportSection')} description={t('settings.developer.exportDesc')}>
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <Terminal className="size-4 shrink-0 text-text-muted" />
-            <span className="text-text-secondary">导出当前会话的 turn + iteration 顺序（排查线性一致性问题）</span>
+            <span className="text-text-secondary">{t('settings.developer.exportTurnIterDesc')}</span>
           </div>
           <Button
             type="button"
@@ -88,21 +90,21 @@ export function SettingsDeveloper() {
                 a.click()
                 document.body.removeChild(a)
                 URL.revokeObjectURL(url)
-                setDevExportResult(`已导出 ${data.messages.length} 条消息`)
+                setDevExportResult(t('settings.developer.exportedMsgs', { count: data.messages.length }))
               } catch (err) {
-                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+                setDevExportResult(t('settings.developer.exportFailed', { msg: err instanceof Error ? err.message : String(err) }))
               } finally {
                 setDevExporting(false)
               }
             }}
           >
             <Download className="size-4" />
-            {devExporting ? '导出中…' : '导出 Turn+Iter 顺序'}
+            {devExporting ? t('settings.developer.exporting') : t('settings.developer.exportTurnIterBtn')}
           </Button>
 
           <div className="mt-1 flex items-center gap-2">
             <FileJson className="size-4 shrink-0 text-text-muted" />
-            <span className="text-text-secondary">导出当前会话为 Multica JSONL（parentId 链式格式，兼容 Multica 导入）</span>
+            <span className="text-text-secondary">{t('settings.developer.exportMulticaDesc')}</span>
           </div>
           <Button
             type="button"
@@ -117,21 +119,21 @@ export function SettingsDeveloper() {
               setDevExportResult('')
               try {
                 await downloadSession({ channel: s.channel, chatID: s.chatID }, 'multica')
-                setDevExportResult('已导出 Multica JSONL 会话')
+                setDevExportResult(t('settings.developer.exportedMultica'))
               } catch (err) {
-                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+                setDevExportResult(t('settings.developer.exportFailed', { msg: err instanceof Error ? err.message : String(err) }))
               } finally {
                 setDevExporting(false)
               }
             }}
           >
             <Download className="size-4" />
-            {devExporting ? '导出中…' : '导出 Multica JSONL'}
+            {devExporting ? t('settings.developer.exporting') : t('settings.developer.exportMulticaBtn')}
           </Button>
 
           <div className="mt-1 flex items-center gap-2">
             <FileJson className="size-4 shrink-0 text-text-muted" />
-            <span className="text-text-secondary">导出当前会话为 benchmark JSONL（HLE / mint-bench 格式）</span>
+            <span className="text-text-secondary">{t('settings.developer.exportBenchmarkDesc')}</span>
           </div>
           <Button
             type="button"
@@ -146,21 +148,21 @@ export function SettingsDeveloper() {
               setDevExportResult('')
               try {
                 await downloadSession({ channel: s.channel, chatID: s.chatID }, 'benchmark')
-                setDevExportResult('已导出 benchmark JSONL 会话')
+                setDevExportResult(t('settings.developer.exportedBenchmark'))
               } catch (err) {
-                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+                setDevExportResult(t('settings.developer.exportFailed', { msg: err instanceof Error ? err.message : String(err) }))
               } finally {
                 setDevExporting(false)
               }
             }}
           >
             <Download className="size-4" />
-            {devExporting ? '导出中…' : '导出当前会话 JSONL'}
+            {devExporting ? t('settings.developer.exporting') : t('settings.developer.exportBenchmarkBtn')}
           </Button>
 
           <div className="mt-1 flex items-center gap-2">
             <FileJson className="size-4 shrink-0 text-text-muted" />
-            <span className="text-text-secondary">导出为 OpenAI Chat Completions 请求体（{`{model, messages:[...]}`}）</span>
+            <span className="text-text-secondary">{t('settings.developer.exportOpenAIDesc')}（{`{model, messages:[...]}`}）</span>
           </div>
           <Button
             type="button"
@@ -175,21 +177,21 @@ export function SettingsDeveloper() {
               setDevExportResult('')
               try {
                 await downloadSession({ channel: s.channel, chatID: s.chatID }, 'openai')
-                setDevExportResult('已导出 OpenAI JSON 会话')
+                setDevExportResult(t('settings.developer.exportedOpenAI'))
               } catch (err) {
-                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+                setDevExportResult(t('settings.developer.exportFailed', { msg: err instanceof Error ? err.message : String(err) }))
               } finally {
                 setDevExporting(false)
               }
             }}
           >
             <Download className="size-4" />
-            {devExporting ? '导出中…' : '导出 OpenAI JSON'}
+            {devExporting ? t('settings.developer.exporting') : t('settings.developer.exportOpenAIBtn')}
           </Button>
 
           <div className="mt-1 flex items-center gap-2">
             <FileJson className="size-4 shrink-0 text-text-muted" />
-            <span className="text-text-secondary">导出为 Codex CLI JSONL（每行一条消息，Codex 会话格式）</span>
+            <span className="text-text-secondary">{t('settings.developer.exportCodexDesc')}</span>
           </div>
           <Button
             type="button"
@@ -204,22 +206,22 @@ export function SettingsDeveloper() {
               setDevExportResult('')
               try {
                 await downloadSession({ channel: s.channel, chatID: s.chatID }, 'codex')
-                setDevExportResult('已导出 Codex JSONL 会话')
+                setDevExportResult(t('settings.developer.exportedCodex'))
               } catch (err) {
-                setDevExportResult(`导出失败: ${err instanceof Error ? err.message : String(err)}`)
+                setDevExportResult(t('settings.developer.exportFailed', { msg: err instanceof Error ? err.message : String(err) }))
               } finally {
                 setDevExporting(false)
               }
             }}
           >
             <Download className="size-4" />
-            {devExporting ? '导出中…' : '导出 Codex JSONL'}
+            {devExporting ? t('settings.developer.exporting') : t('settings.developer.exportCodexBtn')}
           </Button>
           {devExportResult && (
             <span className="text-text-muted">{devExportResult}</span>
           )}
           {!sessionStore.activeSession && (
-            <span className="text-text-muted">（无活跃会话）</span>
+            <span className="text-text-muted">{t('settings.developer.noActiveSession')}</span>
           )}
         </div>
       </SettingsSection>
