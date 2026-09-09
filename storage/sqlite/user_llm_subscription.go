@@ -842,11 +842,23 @@ func (s *LLMSubscriptionService) GetUserDefaultModel(senderID string) (*UserDefa
 	return m, nil
 }
 
-// SetUserDefaultModel sets the user's default (subscription, model). An empty
+// SetUserDefaultModel sets the operator's default (subscription, model). An empty
 // model means "use the subscription's default model" and is allowed only when the
 // caller intends to defer model selection.
+//
+// SINGLE OPERATOR: the row is stored under the canonical operator id and every
+// legacy row (pre-v63 sender ids) is purged first, so the sender-agnostic
+// reader (GetUserDefaultModel) and ClearUserDefaultModel always agree with the
+// writer (CR: 读取端已忽略 sender_id，但写入/清除端仍按 sender_id，两边不对称
+// → "清除默认模型"可能无效 / 多行共存).
 func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model string) error {
+	_ = senderID // single operator
 	conn := s.db.Conn()
+	if _, err := conn.Exec(
+		`DELETE FROM user_default_model WHERE sender_id != ?`, singleOperatorSender,
+	); err != nil {
+		return fmt.Errorf("set user default model (purge legacy rows): %w", err)
+	}
 	_, err := conn.Exec(`
 		INSERT INTO user_default_model (sender_id, subscription_id, model, updated_at)
 		VALUES (?, ?, ?, datetime('now'))
@@ -854,17 +866,20 @@ func (s *LLMSubscriptionService) SetUserDefaultModel(senderID, subID, model stri
 			subscription_id = excluded.subscription_id,
 			model = excluded.model,
 			updated_at = datetime('now')
-	`, senderID, subID, model)
+	`, singleOperatorSender, subID, model)
 	if err != nil {
 		return fmt.Errorf("set user default model: %w", err)
 	}
 	return nil
 }
 
-// ClearUserDefaultModel removes the user's default model selection.
+// ClearUserDefaultModel removes the operator's default model selection.
+//
+// SINGLE OPERATOR: delete every row (legacy sender rows included) — a
+// sender-scoped DELETE left the row the sender-agnostic reader picked up.
 func (s *LLMSubscriptionService) ClearUserDefaultModel(senderID string) error {
-	conn := s.db.Conn()
-	_, err := conn.Exec(`DELETE FROM user_default_model WHERE sender_id = ?`, senderID)
+	_ = senderID // single operator
+	_, err := s.db.Conn().Exec(`DELETE FROM user_default_model`)
 	if err != nil {
 		return fmt.Errorf("clear user default model: %w", err)
 	}
