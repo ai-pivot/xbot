@@ -338,7 +338,8 @@ test.describe('Turn order consistency', () => {
 
     // The reasoning must be restored from active_progress (header shows the
     // folded "Thought" summary). Without the fix, no assistant row exists.
-    expect(headerText).toMatch(/Thought|思考/)
+    // Locale-agnostic: en renders "Thought"/"Thinking", zh renders "思考".
+    expect(headerText).toMatch(/Thought|Thinking|思考/)
     expect(headerText).not.toContain('my question')
 
     await page.close()
