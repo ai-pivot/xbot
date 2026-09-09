@@ -37,7 +37,7 @@ mode, and persona isolation.
 | `static_dir` | ❌ | auto-detected | Path to the frontend static files directory |
 | `upload_dir` | ❌ | `""` | Custom directory for uploaded files |
 | `persona_isolation` | ❌ | `false` | Isolate each web user's persona from others |
-| `invite_only` | ❌ | `false` | Disable self-registration; only admin can create accounts |
+| `invite_only` | ❌ | **`true`** | Disable self-registration. **Defaults to true (secure default)** — the first account can still register (first-user bootstrap); after that only an admin can create accounts. Set explicitly to `false` to re-open public registration. |
 
 {{< hint type=warning >}}
 The JSON key is `enable` (not `enabled`), unlike other channels.

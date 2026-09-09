@@ -31,7 +31,7 @@ weight: 35
 | `static_dir` | ❌ | 自动检测 | 前端静态文件目录 |
 | `upload_dir` | ❌ | `""` | 上传文件自定义目录 |
 | `persona_isolation` | ❌ | `false` | 启用后每个 Web 用户的 persona 互相隔离 |
-| `invite_only` | ❌ | `false` | 启用后禁止自主注册，只能由管理员创建账号 |
+| `invite_only` | ❌ | **`true`** | 禁止自主注册。**默认 true（安全默认）**——第一个账号仍可注册（首用户引导），之后只能由管理员创建账号。显式设为 `false` 才会重新开放公开注册。 |
 
 ## Web UI 安装
 
