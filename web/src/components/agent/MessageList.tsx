@@ -15,9 +15,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
-import { ChevronDown, ChevronRight, ChevronUp, ChevronsDown, ChevronsUp, Loader2, Sparkles } from 'lucide-react'
+import { ChevronRight, Loader2, Sparkles } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
+import { MessageUserNav } from './MessageUserNav'
 import { ShimmerThinking } from './ShimmerThinking'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
@@ -224,8 +225,6 @@ export const MessageList = memo(function MessageList({
   // React state mirrors for re-rendering UI elements (bubble, nav buttons)
   const [hasNewContent, setHasNewContent] = useState(false)
   const [visibleRange, setVisibleRange] = useState({ start: 0, end: 0 })
-  const [atTop, setAtTop] = useState(false)
-  const [atBottom, setAtBottom] = useState(true)
 
   const { t } = useI18n()
 
@@ -556,8 +555,6 @@ export const MessageList = memo(function MessageList({
   const scrollRafRef = useRef<number | null>(null)
   const pendingOverscanRef = useRef<number | null>(null)
   const pendingRangeRef = useRef<{ start: number; end: number } | null>(null)
-  const pendingAtTopRef = useRef<boolean | null>(null)
-  const pendingAtBottomRef = useRef<boolean | null>(null)
   const dynamicOverscanRef = useRef(dynamicOverscan)
   dynamicOverscanRef.current = dynamicOverscan
   const onScroll = useCallback(() => {
@@ -575,15 +572,9 @@ export const MessageList = memo(function MessageList({
     }
     lastScrollTopRef.current = el.scrollTop
     lastScrollTimeRef.current = now
-    const atEnd = isAtBottom(el)
-    const atStart = el.scrollTop <= EDGE_EPSILON
-    pendingAtTopRef.current = atStart
-    pendingAtBottomRef.current = atEnd
-    // 导航按钮的可见范围：必须【无条件】更新。旧代码被 programmaticScrollRef
-    // 阻断（程序化滚动时跳过），而该 flag 在流式输出 / ResizeObserver /
-    // scheduleFollow 中频繁置位 → visibleRange 长期停留在初始 {0,0} →
-    // 「上一条/下一条用户消息」按钮恒 disabled（用户报告"滚动按钮一直不 work"）。
-    // 该 state 只用于导航按钮的可用性，程序化滚动时更新同样正确。
+    // 导航的可见范围：必须【无条件】更新（master 修复：程序化滚动期间
+    // programmaticScrollRef 频繁置位，旧守卫会让 visibleRange 停留在初始
+    // {0,0} → 导航 disabled / activeSeq 不更新）。程序化滚动时更新同样正确。
     const items = virtualizer.getVirtualItems()
     if (items.length > 0) {
       pendingRangeRef.current = { start: items[0].index, end: items[items.length - 1].index }
@@ -599,11 +590,6 @@ export const MessageList = memo(function MessageList({
         dynamicOverscanRef.current = targetOverscan
         setDynamicOverscan(targetOverscan)
       }
-      // Apply pending nav state
-      const atTop = pendingAtTopRef.current
-      if (atTop !== null) setAtTop((prev) => (prev === atTop ? prev : atTop))
-      const atBottom = pendingAtBottomRef.current
-      if (atBottom !== null) setAtBottom((prev) => (prev === atBottom ? prev : atBottom))
       // Apply pending visible range (only for nav button states)
       const range = pendingRangeRef.current
       if (range) {
@@ -819,46 +805,20 @@ export const MessageList = memo(function MessageList({
   // (Removed polling — was not effective. Investigating root cause.)
 
   // ── Navigation helpers ────────────────────────────────────────────────────
-  const scrollToTop = useCallback(() => {
-    pauseFollowing()
-    virtualizer.scrollToIndex(0, { align: 'start' })
-  }, [pauseFollowing, virtualizer])
-
-  const scrollToPrevUser = useCallback(() => {
-    const visibleStart = visibleRange.start
-    const prev = userMessageIndices.filter((i) => i < visibleStart).pop()
-    if (prev !== undefined) {
+  // 用户消息导航（MessageUserNav）：跳到目标行（user turn），解除贴底跟随
+  // 防流式更新拉回底部。scrollToIndex 直接支持虚拟列表外的行号。
+  const navigateToRow = useCallback(
+    (rowIndex: number) => {
       pauseFollowing()
-      virtualizer.scrollToIndex(prev, { align: 'start' })
-    }
-  }, [pauseFollowing, userMessageIndices, visibleRange.start, virtualizer])
-
-  const scrollToNextUser = useCallback(() => {
-    // 与 hasNextUser 同语义：找可见范围【之后】的第一条 user 消息
-    const visibleEnd = visibleRange.end
-    const next = userMessageIndices.find((i) => i > visibleEnd)
-    if (next !== undefined) {
-      pauseFollowing()
-      virtualizer.scrollToIndex(next, { align: 'start' })
-    }
-  }, [pauseFollowing, userMessageIndices, visibleRange.end, virtualizer])
+      virtualizer.scrollToIndex(rowIndex, { align: 'start' })
+    },
+    [pauseFollowing, virtualizer],
+  )
 
   const scrollToBottomClick = useCallback(() => {
     resumeFollowing()
     scheduleFollow()
   }, [resumeFollowing, scheduleFollow])
-
-  // ── Nav button disabled states ────────────────────────────────────────────
-  // 语义（用户报告"上下按钮反了"）：
-  //   「上一条」= 可见范围【之前】还有 user 消息 → 用 visibleStart 判定
-  //   「下一条」= 可见范围【之后】还有 user 消息 → 必须用 visibleEnd 判定
-  // 旧代码两者都用 visibleStart：短列表（全部可见，visibleStart=0）时
-  // `some(i > 0)` 恒为真 → 「下一条」永远可点、「上一条」永远禁用，
-  // 在会话最下方表现为"无法上一条、却能下一条"（方向反了）。
-  const visibleStart = visibleRange.start
-  const visibleEnd = visibleRange.end
-  const hasPrevUser = userMessageIndices.some((i) => i < visibleStart)
-  const hasNextUser = userMessageIndices.some((i) => i > visibleEnd)
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden">
@@ -1071,69 +1031,17 @@ export const MessageList = memo(function MessageList({
         )}
       </AnimatePresence>
 
-      {/* ── Right-side floating navigation button group ─────────────────────── */}
-      <div className="absolute right-2 top-1/2 -translate-y-1/2 z-10 flex flex-col gap-1">
-        <NavButton
-          onClick={scrollToTop}
-          disabled={atTop || rows.length === 0}
-          title={t('agent.navToTop')}
-        >
-          <ChevronsUp className="size-4" />
-        </NavButton>
-        <NavButton
-          onClick={scrollToPrevUser}
-          disabled={!hasPrevUser}
-          title={t('agent.navPrevUser')}
-        >
-          <ChevronUp className="size-4" />
-        </NavButton>
-        <NavButton
-          onClick={scrollToNextUser}
-          disabled={!hasNextUser}
-          title={t('agent.navNextUser')}
-        >
-          <ChevronDown className="size-4" />
-        </NavButton>
-        <NavButton
-          onClick={scrollToBottomClick}
-          disabled={atBottom || rows.length === 0}
-          title={t('agent.navToBottom')}
-        >
-          <ChevronsDown className="size-4" />
-        </NavButton>
-      </div>
+      {/* ── 用户消息导航（右上角悬浮按钮 + hover/click 展开列表 + 点击跳转）。
+          替换原 4 按钮导航组与 ChatMinimap 竖条。 ─────────────────────────── */}
+      <MessageUserNav
+        rows={rows}
+        userRowIndexes={userMessageIndices}
+        visibleStart={visibleRange.start}
+        onNavigate={navigateToRow}
+      />
     </div>
   )
 })
-
-// ── Navigation button ────────────────────────────────────────────────────────
-function NavButton({
-  onClick,
-  disabled,
-  title,
-  children,
-}: {
-  onClick: () => void
-  disabled?: boolean
-  title: string
-  children: ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className={`flex size-10 items-center justify-center rounded-md border border-border/50 bg-bg-secondary/80 backdrop-blur transition-all duration-150 ${
-        disabled
-          ? 'cursor-default opacity-20'
-          : 'cursor-pointer opacity-60 hover:bg-accent/10 hover:text-accent hover:opacity-100'
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
 
 // 判断一行是否含 GenUI 面板（committed：迭代里有 uiMode 工具；live：流式 genuiContent）。
 // estimateSize 据此返回更大的基数，缩小 estimate 与实际高度差距 → 滚动跳变小。

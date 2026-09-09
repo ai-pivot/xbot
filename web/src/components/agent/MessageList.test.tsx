@@ -655,9 +655,9 @@ describe('MessageList virtualization', () => {
   })
 })
 
-describe('MessageList navigation buttons (Spec A §4)', () => {
-  it('renders navigation button group', () => {
-    const messages = makeMessages(20)
+describe('MessageList user nav (hover/click turn list)', () => {
+  it('opens the user message list on click with an entry per turn', () => {
+    const messages = makeMessages(20) // 10 user turns
     const { container } = renderWithProviders(
       <MessageList
         messages={messages}
@@ -667,13 +667,18 @@ describe('MessageList navigation buttons (Spec A §4)', () => {
         error={null}
       />,
     )
-    // Should have 4 nav buttons
-    const navButtons = container.querySelectorAll('button[title]')
-    expect(navButtons.length).toBeGreaterThanOrEqual(4)
+    const btn = container.querySelector('[data-testid="message-user-nav"]')
+    expect(btn).not.toBeNull()
+    // 面板初始关闭
+    expect(container.querySelector('[data-testid="message-user-nav-panel"]')).toBeNull()
+    fireEvent.click(btn!)
+    const panel = container.querySelector('[data-testid="message-user-nav-panel"]')
+    expect(panel).not.toBeNull()
+    expect(panel!.querySelectorAll('[data-user-nav-item]').length).toBe(10)
   })
 
-  it('disables nav buttons when no messages', () => {
-    const { container } = renderWithProviders(
+  it('hides user nav when fewer than 2 turns', () => {
+    const { container: empty } = renderWithProviders(
       <MessageList
         messages={[]}
         liveProgress={null}
@@ -682,15 +687,25 @@ describe('MessageList navigation buttons (Spec A §4)', () => {
         error={null}
       />,
     )
-    const buttons = container.querySelectorAll('button[disabled]')
-    // At least scroll-to-top and scroll-to-bottom should be disabled
-    expect(buttons.length).toBeGreaterThanOrEqual(2)
+    expect(empty.querySelector('[data-testid="message-user-nav"]')).toBeNull()
+
+    const { container: single } = renderWithProviders(
+      <MessageList
+        messages={makeMessages(1)} // 1 user turn, 0 assistant
+        liveProgress={null}
+        collapseLevel="all"
+        loading={false}
+        error={null}
+      />,
+    )
+    expect(single.querySelector('[data-testid="message-user-nav"]')).toBeNull()
   })
 
-  it('renders nav buttons with correct titles', () => {
+  it('marks the active turn entry (visibleStart=0 → early turn)', () => {
     const messages = makeMessages(20)
     const { container } = renderWithProviders(
       <MessageList
+        chatKey="web:chat-1"
         messages={messages}
         liveProgress={null}
         collapseLevel="all"
@@ -698,42 +713,12 @@ describe('MessageList navigation buttons (Spec A §4)', () => {
         error={null}
       />,
     )
-    const titles = Array.from(container.querySelectorAll('button[title]')).map(
-      (b) => b.getAttribute('title'),
-    )
-    // Should contain scroll-to-top, prev-user, next-user, scroll-to-bottom titles
-    expect(titles.some((t) => t?.includes('最上方') || t?.includes('top'))).toBe(true)
-    expect(titles.some((t) => t?.includes('最下方') || t?.includes('bottom'))).toBe(true)
-  })
-
-  it('pauses follow for history navigation and resumes on End', async () => {
-    const { container } = renderWithProviders(
-      <MessageList
-        chatKey="web:chat-1"
-        messages={makeMessages(20)}
-        liveProgress={null}
-        collapseLevel="all"
-        loading={false}
-        error={null}
-      />,
-    )
-    const scroller = container.querySelector('.overflow-y-auto') as HTMLDivElement
-    await flushAnimationFrames()
-    const tracked = trackScrollTop(scroller, scroller.scrollHeight - scroller.clientHeight)
-    const topButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button[title]')).find((button) =>
-      button.title.includes('最上方') || button.title.toLowerCase().includes('top'),
-    )
-    if (!topButton) throw new Error('scroll-to-top button missing')
-
-    fireEvent.click(topButton)
-    tracked.writes.length = 0
-    act(() => RO.trigger(contentElement(container)))
-    await flushAnimationFrames(1)
-    expect(tracked.writes).toHaveLength(0)
-
-    fireEvent.keyDown(scroller, { key: 'End' })
-    await flushAnimationFrames(2)
-    expect(tracked.writes).toEqual([scroller.scrollHeight])
+    fireEvent.click(container.querySelector('[data-testid="message-user-nav"]')!)
+    // jsdom 无布局：visibleRange 初始 {start:0}。orderMessageRows 按 (turnID=0,
+    // roleRank) 排序 → user 全排前 → userRowIndexes=[0..9]，容差 2 内
+    // idx 0,1,2 → activeSeq=3（第 3 个条目 data-active）。
+    const active = container.querySelector('[data-user-nav-item][data-active]')
+    expect(active?.getAttribute('data-user-nav-item')).toBe('3')
   })
 })
 
