@@ -21,7 +21,7 @@ mode, and persona isolation.
     "static_dir": "",
     "upload_dir": "",
     "persona_isolation": false,
-    "invite_only": false
+    "invite_only": true
   },
   "admin": {
     "token": "your-secret-token"
@@ -82,6 +82,15 @@ When `invite_only` is `true`:
 - The admin can create accounts via Feishu admin commands or direct database
   operations
 - Suitable for internal team use
+
+### First-user bootstrap
+
+A brand-new deployment has no accounts yet, so the first registration is
+allowed — that account becomes the operator. The registration page says so
+explicitly (*"First-time setup · one-time only"*) and states that registration
+closes automatically afterwards, so a visitor never has to guess whether the
+endpoint is open to everyone. Once the account exists, `/register` shows an
+invite-only notice and the login page hides the register entry entirely.
 
 ## Persona isolation
 

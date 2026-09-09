@@ -15,7 +15,7 @@
  */
 import { useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Eye, EyeOff, Loader2, ShieldAlert } from 'lucide-react'
+import { Eye, EyeOff, Loader2, Lock, ShieldAlert } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -96,6 +96,29 @@ export function RegisterPage() {
             {bootstrap ? t('auth.bootstrapSubtitle') : t('auth.registerSubtitle')}
           </p>
         </div>
+
+        {/* First-user bootstrap: make the one-time-only nature unmistakable.
+            Without this the operator (or a curious visitor) has no way to tell
+            whether the registration endpoint is open to everyone. */}
+        {bootstrap ? (
+          <div
+            data-testid="bootstrap-notice"
+            className="mb-5 flex gap-2.5 rounded-md border px-3 py-2.5 text-xs leading-relaxed"
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent) 35%, transparent)',
+              background: 'color-mix(in srgb, var(--accent) 10%, transparent)',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <Lock className="mt-0.5 size-3.5 shrink-0" style={{ color: 'var(--accent)' }} />
+            <div>
+              <div className="font-medium" style={{ color: 'var(--accent)' }}>
+                {t('auth.bootstrapBadge')}
+              </div>
+              <div className="mt-0.5">{t('auth.bootstrapNotice')}</div>
+            </div>
+          </div>
+        ) : null}
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           {/* Username */}

@@ -718,6 +718,8 @@ const ja: Translations = {
     registerFailed: '登録に失敗しました',
     createAdmin: 'アカウントを作成',
     bootstrapSubtitle: '管理者アカウントを作成 — 招待制モードで唯一の登録機会です',
+    bootstrapBadge: '初回セットアップ · 一度きり',
+    bootstrapNotice: 'ここで作成するアカウントが管理者になります。登録はその後自動的に閉じられ、他の人は登録できません。',
     inviteOnlyTitle: '登録には招待が必要です',
     inviteOnlyNotice: '新しいアカウントは管理者が作成します（設定 → Web ユーザー）。アクセス権については管理者にお問い合わせください。',
     backToLogin: 'ログインに戻る',

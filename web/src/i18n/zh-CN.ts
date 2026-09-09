@@ -715,6 +715,8 @@ const zhCN = {
     registerFailed: '注册失败',
     createAdmin: '创建账号',
     bootstrapSubtitle: '创建管理员账号——这是 invite-only 模式下唯一一次注册机会',
+    bootstrapBadge: '首次设置 · 仅此一次',
+    bootstrapNotice: '你现在创建的账号将成为管理员。注册随后自动关闭——其他人无法再注册。',
     inviteOnlyTitle: '注册需要邀请',
     inviteOnlyNotice: '新账号由管理员创建（设置 → Web 用户）。请联系管理员获取访问权限。',
     backToLogin: '返回登录',

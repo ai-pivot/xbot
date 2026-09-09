@@ -718,6 +718,8 @@ const en: Translations = {
     registerFailed: 'Registration failed',
     createAdmin: 'Create account',
     bootstrapSubtitle: 'Create the operator account — this is the only registration an invite-only deployment accepts',
+    bootstrapBadge: 'First-time setup · one-time only',
+    bootstrapNotice: 'The account you create now becomes the operator. Registration closes automatically afterwards — no one else can sign up.',
     inviteOnlyTitle: 'Registration is invite-only',
     inviteOnlyNotice: 'New accounts are created by the administrator (Settings → Web Users). Contact the operator to get access.',
     backToLogin: 'Back to login',

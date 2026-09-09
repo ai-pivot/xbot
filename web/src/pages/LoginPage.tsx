@@ -126,15 +126,24 @@ export function LoginPage() {
             first-user bootstrap is active (invite-only + empty account table:
             the "register" entry is the operator-account wizard). */}
         {!inviteOnly || bootstrap ? (
-          <p className="mt-6 text-center text-sm text-muted-foreground">
-            {t('auth.noAccount')}{' '}
-            <Link
-              to="/register"
-              className="font-medium text-accent underline-offset-4 hover:underline"
-            >
-              {bootstrap ? t('auth.createAdmin') : t('auth.register')}
-            </Link>
-          </p>
+          <div className="mt-6 text-center text-sm text-muted-foreground">
+            <p>
+              {t('auth.noAccount')}{' '}
+              <Link
+                to="/register"
+                className="font-medium text-accent underline-offset-4 hover:underline"
+              >
+                {bootstrap ? t('auth.createAdmin') : t('auth.register')}
+              </Link>
+            </p>
+            {/* Bootstrap: make it obvious this is a one-time setup, not an
+                open registration endpoint. */}
+            {bootstrap ? (
+              <p data-testid="login-bootstrap-hint" className="mt-1.5 text-xs">
+                {t('auth.bootstrapBadge')}
+              </p>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </div>
