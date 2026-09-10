@@ -1952,6 +1952,69 @@ describe('normalizeSessionTree', () => {
     unmount()
   })
 
+
+  it('REPRO: createSession 自动切换到新会话（必须让后端也知道 current 变了）', async () => {
+    const switchCalls: string[] = []
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      if (url === '/api/chats') {
+        // create 请求带 label/model；session-tree 只带 offset/limit
+        if ('label' in body || 'model' in body) {
+          return {
+            ok: true,
+            json: async () => ({ ok: true, data: { chat_id: 'new-chat' }, error: null }),
+          } as Response
+        }
+        // 后端 session-tree：新会话已在列表里（create 之后），但 current 仍是 old
+        // —— 因为 createSession 没有调 /switch（这正是 bug：后端不知道 current 变了，
+        // SSE 不 retarget、侧边栏 current 标记不协调、刷新页面打回旧会话）。
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [
+              { chat_id: 'new-chat', channel: 'web', label: 'brand-new',
+                last_active: '2026-07-08T00:00:01Z', is_current: false },
+              { chat_id: 'old-chat', channel: 'web', label: 'old',
+                last_active: '2026-07-08T00:00:00Z', is_current: true },
+            ],
+          }),
+        } as Response
+      }
+      if (url.startsWith('/api/chats/') && url.includes('/switch')) {
+        switchCalls.push(url)
+        return {
+          ok: true,
+          json: async () => ({ ok: true, chat_id: 'new-chat', channel: 'web' }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    wsMocks.rpc.mockResolvedValue({})
+
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(2))
+    // 初始：后端说 old-chat 是当前会话
+    expect(result.current.activeSession?.chatID).toBe('old-chat')
+
+    await act(async () => {
+      await result.current.createSession('brand-new')
+    })
+    // 等待 refresh 完成（它会把后端 current 写回 activeSession）
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+
+    expect(result.current.activeSession?.chatID).toBe('new-chat')
+    // 核心断言：必须告知后端 current 变了。否则后端仍指向旧会话 —— SSE 不
+    // retarget、侧边栏 current 标记不协调、刷新页面直接打回旧会话（用户报告的
+    // "新建会话不会自动切换"）。
+    expect(switchCalls.some((u) => u.includes('new-chat'))).toBe(true)
+  })
+
   it('createSession defaults the new session model to the current active session model', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

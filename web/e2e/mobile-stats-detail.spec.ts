@@ -112,7 +112,6 @@ test.describe('mobile stats detail', () => {
     // 【核心断言】详情视图渲染详情布局（时间范围切换），而不是紧凑版复刻
     await expect(page.getByTestId('stats-range').first()).toBeVisible({ timeout: 5000 })
 
-    await page.screenshot({ path: '/home/smith/.xbot/view_images/mobile-stats-detail.png', fullPage: false })
     await page.close()
   })
 })

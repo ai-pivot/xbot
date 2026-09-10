@@ -1165,71 +1165,6 @@ export function useSessionStoreImpl(): SessionStore {
     setSubAgents((prev) => (sameSessionList(prev, agents) ? prev : agents))
   }, [])
 
-  const createSession = useCallback(
-    async (label?: string, workPath?: string, model?: string, subscriptionId?: string): Promise<string | null> => {
-      let chatID: string
-      let appliedWorkDir: string | undefined
-      try {
-        // Default the new session's model to the current active session's model —
-        // new sessions inherit the (subscription, model) pair the user is currently
-        // using. Model-subscription integration: the pair travels together; an
-        // explicit model param (with its subscriptionId) wins; when neither is
-        // available the backend falls back to the Balance tier model.
-        let effectiveModel = model ?? ''
-        let effectiveSubID = subscriptionId ?? ''
-        if (!effectiveModel && activeSessionRef.current) {
-          const cur = activeSessionRef.current
-          try {
-            const ctx = await getContextUsage(wsRef.current, cur.channel, cur.chatID)
-            if (ctx.model) {
-              effectiveModel = ctx.model
-              effectiveSubID = ctx.subscription_id ?? ''
-            }
-          } catch {
-            // Non-fatal — the backend falls back to the Balance tier model.
-          }
-        }
-        const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '', model: effectiveModel, subscription_id: effectiveSubID })
-        if (!data.chat_id) return null
-        chatID = data.chat_id
-      } catch {
-        return null
-      }
-      if (workPath) {
-        try {
-          await setCwd({ channel: DEFAULT_CHANNEL, chatID }, workPath)
-          rememberRecentWorkDir(workPath)
-          appliedWorkDir = workPath
-        } catch (e) {
-          // Non-fatal: session was created, but CWD is the default.
-          // Toast so the user knows their workPath didn't take effect.
-          const msg = e instanceof Error ? e.message : 'unknown error'
-          toast.error(`工作目录设置失败: ${msg}`)
-        }
-      }
-      const selector = { channel: DEFAULT_CHANNEL, chatID }
-      activeSessionRef.current = selector
-      setActiveSession(selector)
-      // Optimistic insert so the new session appears immediately; refresh reconciles.
-      setSessions((prev) => [
-        {
-          chatID,
-          channel: DEFAULT_CHANNEL,
-          label: label || chatID,
-          lastActive: new Date().toISOString(),
-          preview: '',
-          status: 'idle',
-          isCurrent: true,
-          workDir: appliedWorkDir,
-        },
-        ...prev.map((s) => ({ ...s, isCurrent: false })),
-      ])
-      void refresh()
-      return chatID
-    },
-    [refresh],
-  )
-
   const switchSession = useCallback(
     async (id: string, ch: string): Promise<void> => {
       const switchSeq = ++switchSeqRef.current
@@ -1276,6 +1211,75 @@ export function useSessionStoreImpl(): SessionStore {
     },
     [markRead, refresh],
   )
+
+  const createSession = useCallback(
+    async (label?: string, workPath?: string, model?: string, subscriptionId?: string): Promise<string | null> => {
+      let chatID: string
+      let appliedWorkDir: string | undefined
+      try {
+        // Default the new session's model to the current active session's model —
+        // new sessions inherit the (subscription, model) pair the user is currently
+        // using. Model-subscription integration: the pair travels together; an
+        // explicit model param (with its subscriptionId) wins; when neither is
+        // available the backend falls back to the Balance tier model.
+        let effectiveModel = model ?? ''
+        let effectiveSubID = subscriptionId ?? ''
+        if (!effectiveModel && activeSessionRef.current) {
+          const cur = activeSessionRef.current
+          try {
+            const ctx = await getContextUsage(wsRef.current, cur.channel, cur.chatID)
+            if (ctx.model) {
+              effectiveModel = ctx.model
+              effectiveSubID = ctx.subscription_id ?? ''
+            }
+          } catch {
+            // Non-fatal — the backend falls back to the Balance tier model.
+          }
+        }
+        const data = await postAPI<CreateChatResponse>('/api/chats/create', { label: label ?? '', model: effectiveModel, subscription_id: effectiveSubID })
+        if (!data.chat_id) return null
+        chatID = data.chat_id
+      } catch {
+        return null
+      }
+      if (workPath) {
+        try {
+          await setCwd({ channel: DEFAULT_CHANNEL, chatID }, workPath)
+          rememberRecentWorkDir(workPath)
+          appliedWorkDir = workPath
+        } catch (e) {
+          // Non-fatal: session was created, but CWD is the default.
+          // Toast so the user knows their workPath didn't take effect.
+          const msg = e instanceof Error ? e.message : 'unknown error'
+          toast.error(`工作目录设置失败: ${msg}`)
+        }
+      }
+      // Optimistic insert so the new session appears immediately; refresh reconciles.
+      setSessions((prev) => [
+        {
+          chatID,
+          channel: DEFAULT_CHANNEL,
+          label: label || chatID,
+          lastActive: new Date().toISOString(),
+          preview: '',
+          status: 'idle',
+          isCurrent: true,
+          workDir: appliedWorkDir,
+        },
+        ...prev.map((s) => ({ ...s, isCurrent: false })),
+      ])
+      // Full switch (same path as the user clicking the new session in the
+      // sidebar): backend /switch + old-cache clear + activeSession + markCurrent
+      // + refresh. A bare setActiveSession here was the "new session doesn't
+      // auto-switch" bug — the backend stayed on the old session (no SSE
+      // retarget) and the sidebar current marker never reconciled, so the next
+      // refresh() pulled the old current back. Same fix as forkSession.
+      await switchSession(chatID, DEFAULT_CHANNEL)
+      return chatID
+    },
+    [switchSession],
+  )
+
 
   /**
    * Fork a session: copy its conversation context into a NEW session, then
