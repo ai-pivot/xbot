@@ -879,7 +879,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	// if it has a tenant row (it ran before) or, for web, a user_chats row (the
 	// user created that chatroom). The implicit default session
 	// (chatID == senderID) is exempted at the call site, not here.
-	callbacks.SessionExists = func(channel, chatID string) bool {
+	sessionExists := func(channel, chatID string) bool {
 		if channel == "" || chatID == "" {
 			return false
 		}
@@ -899,6 +899,24 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 		}
 		return false
+	}
+	callbacks.SessionExists = sessionExists
+
+	// Phantom-session gate at the choke point EVERY read path funnels through:
+	// SSE, REST and RPC (handleRPC forwards straight to RPCHandler, bypassing
+	// resolveAPISession) all end up in MultiTenantSession.GetOrCreateSession.
+	//
+	// Deliberately narrow: only web ids shaped like user chatrooms ("chat_...")
+	// are gated, and only when they do not already exist. The implicit default
+	// session ("web-4", chatID == senderID) carries no chat_ prefix and passes
+	// untouched, so nothing else changes behaviour.
+	if ms := ag.MultiSession(); ms != nil {
+		ms.SetSessionCreateGuard(func(channel, chatID string) bool {
+			if channel != "web" || !strings.HasPrefix(chatID, "chat_") {
+				return true
+			}
+			return sessionExists(channel, chatID)
+		})
 	}
 
 	// ─── Session queue (v3 staging tray + ⚡ interject) ───

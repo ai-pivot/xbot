@@ -102,30 +102,36 @@ func WithToolIndexService(svc *vectordb.ToolIndexService) MultiTenantOption {
 
 // MultiTenantSession manages multiple tenant sessions with SQLite backing
 type MultiTenantSession struct {
-	db                    *sqlite.DB
-	tenantSvc             *sqlite.TenantService
-	sessionSvc            *sqlite.SessionService
-	memorySvc             *sqlite.MemoryService
-	userProfileSvc        *sqlite.UserProfileService
-	tokenUsageSvc         *sqlite.UserTokenUsageService
-	coreSvc               *sqlite.CoreMemoryService
-	archivalSvc           *vectordb.ArchivalService
-	toolIndexSvc          *vectordb.ToolIndexService
-	recallTimeRangeFn     vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
-	embeddingConfig       *EmbeddingConfig             // for auto-creating archival service
-	memoryProvider        string                       // "flat" or "letta"
-	mu                    sync.RWMutex
-	tenantCache           map[string]*TenantSession // key: "channel:chat_id"
-	dbPath                string
-	mcpConfigPath         string          // MCP 配置文件路径
-	mcpInactivityTimeout  time.Duration   // MCP 不活跃超时配置
-	mcpCleanupInterval    time.Duration   // MCP 清理扫描间隔
-	sessionCacheTimeout   time.Duration   // 会话缓存超时配置
-	cleanupStopCh         chan struct{}   // 清理协程停止信号
-	cleanupWg             sync.WaitGroup  // 清理协程等待组
-	cleanupStopOnce       sync.Once       // 确保 StopCleanupRoutine 只执行一次
-	shutdownCtx           context.Context // cancelled on StopCleanupRoutine; used as parent for background goroutines
-	shutdownCancel        context.CancelFunc
+	db                   *sqlite.DB
+	tenantSvc            *sqlite.TenantService
+	sessionSvc           *sqlite.SessionService
+	memorySvc            *sqlite.MemoryService
+	userProfileSvc       *sqlite.UserProfileService
+	tokenUsageSvc        *sqlite.UserTokenUsageService
+	coreSvc              *sqlite.CoreMemoryService
+	archivalSvc          *vectordb.ArchivalService
+	toolIndexSvc         *vectordb.ToolIndexService
+	recallTimeRangeFn    vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
+	embeddingConfig      *EmbeddingConfig             // for auto-creating archival service
+	memoryProvider       string                       // "flat" or "letta"
+	mu                   sync.RWMutex
+	tenantCache          map[string]*TenantSession // key: "channel:chat_id"
+	dbPath               string
+	mcpConfigPath        string          // MCP 配置文件路径
+	mcpInactivityTimeout time.Duration   // MCP 不活跃超时配置
+	mcpCleanupInterval   time.Duration   // MCP 清理扫描间隔
+	sessionCacheTimeout  time.Duration   // 会话缓存超时配置
+	cleanupStopCh        chan struct{}   // 清理协程停止信号
+	cleanupWg            sync.WaitGroup  // 清理协程等待组
+	cleanupStopOnce      sync.Once       // 确保 StopCleanupRoutine 只执行一次
+	shutdownCtx          context.Context // cancelled on StopCleanupRoutine; used as parent for background goroutines
+	shutdownCancel       context.CancelFunc
+	// sessionCreateGuard decides whether a NOT-YET-EXISTING (channel, chatID)
+	// may be materialized. Every read path (SSE, REST, RPC, internal) funnels
+	// through GetOrCreateSession, so this single choke point is what stops a
+	// client holding a DELETED chatID from resurrecting a phantom session.
+	// nil = allow (backward compatible).
+	sessionCreateGuard    func(channel, chatID string) bool
 	toolIndexFingerprints map[int64]string          // per-tenant catalog fingerprint (guarded by mu)
 	toolIndexPrevNames    map[int64]map[string]bool // per-tenant previous tool name set (guarded by mu)
 	onSessionEvict        func(sessionKey string)   // 会话被清理时的回调
@@ -260,6 +266,13 @@ func (m *MultiTenantSession) GetAllUserTokenUsage() ([]sqlite.UserTokenUsage, er
 	return m.tokenUsageSvc.GetAllUsage()
 }
 
+// SetSessionCreateGuard installs the phantom-session gate (see the field docs).
+func (m *MultiTenantSession) SetSessionCreateGuard(fn func(channel, chatID string) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessionCreateGuard = fn
+}
+
 // GetOrCreateSession retrieves or creates a tenant session for the given channel and chatID.
 // senderID is passed via context (letta.WithUserID) at call time, not here.
 func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*TenantSession, error) {
@@ -284,6 +297,15 @@ func (m *MultiTenantSession) GetOrCreateSession(channel, chatID string) (*Tenant
 	if sess, ok := m.tenantCache[key]; ok {
 		sess.MarkActive()
 		return sess, nil
+	}
+
+	// Phantom-session gate: the single choke point every read path funnels
+	// through. If the guard rejects a (channel, chatID) that does not exist yet,
+	// refuse instead of creating a tenant — a stale client holding a DELETED
+	// chatID must never resurrect it (sessions the user deleted kept coming
+	// back via SSE/REST/RPC).
+	if m.sessionCreateGuard != nil && !m.sessionCreateGuard(channel, chatID) {
+		return nil, fmt.Errorf("unknown session %s:%s", channel, chatID)
 	}
 
 	// Get or create tenant ID
