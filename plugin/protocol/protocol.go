@@ -28,6 +28,7 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
