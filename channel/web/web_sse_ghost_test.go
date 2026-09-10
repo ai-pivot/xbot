@@ -3,6 +3,7 @@ package web
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -74,5 +75,67 @@ func TestSSE_DefaultSessionStillAllowed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("default session (chatID == senderID) must be allowed, got %d", resp.StatusCode)
+	}
+}
+
+// TestSessionStatus_UnknownSessionRejected —— REST 读路径同样不得 materialize。
+//
+// /api/session/status 是前端每次加载都会调的端点；它走 resolveAPISession →
+// GetCWD → SetCWD → GetOrCreateSession。旧版在这里也会把已删除会话建回来，
+// 所以门控放在 resolveAPISession（所有 REST 端点的统一入口）而不是逐个端点。
+func TestSessionStatus_UnknownSessionRejected(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.callbacks.SessionExists = func(channel, chatID string) bool { return false }
+	wc.callbacks.GetCWD = func(senderID string, sel SessionSelector) (string, error) { return "", nil }
+
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/session/status",
+		strings.NewReader(`{"channel":"web","chat_id":"chat_GHOST_REST"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown session must be rejected with 404, got %d", resp.StatusCode)
+	}
+	if tenantExists(t, db, "web", "chat_GHOST_REST") {
+		t.Fatal("REST read path materialized a ghost tenant")
+	}
+}
+
+// TestSessionStatus_DefaultSessionAllowed —— 反向保护：隐式默认会话仍可用。
+func TestSessionStatus_DefaultSessionAllowed(t *testing.T) {
+	db := newTestDB(t)
+	wc, _ := newTestWebChannel(t, db)
+	wc.callbacks.SessionExists = func(channel, chatID string) bool { return false }
+	wc.callbacks.GetCWD = func(senderID string, sel SessionSelector) (string, error) { return "/tmp", nil }
+
+	server := startTestServer(t, wc)
+	cookie := loginTestAdmin(t, server.URL)
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/session/status",
+		strings.NewReader(`{"channel":"web","chat_id":"web-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		t.Fatalf("implicit default session must not be rejected, got %d", resp.StatusCode)
 	}
 }

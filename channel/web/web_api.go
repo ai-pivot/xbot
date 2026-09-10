@@ -24,6 +24,33 @@ import (
 // Web-only session APIs
 // ---------------------------------------------------------------------------
 
+// isUnknownSession reports whether (channel, chatID) is NOT a known session and
+// must therefore NOT be materialized by a read path.
+//
+// This is the single guard against "phantom sessions": every session lookup
+// funnels into GetOrCreateSession, so any read request carrying a DELETED
+// chatID (stale tab, cached layout, second device) used to recreate the tenant
+// — sessions the user deleted kept coming back.
+//
+// Exemptions (never treated as unknown):
+//   - the implicit default session (chatID == senderID, e.g. "web-4"), which is
+//     deliberately never created explicitly and must stay usable;
+//   - non-database session ids (sub-agent style "role:instance" / "role/inst"),
+//     which have their own registries;
+//   - when no probe is wired (callback nil), to preserve previous behaviour.
+func (wc *WebChannel) isUnknownSession(senderID, channelName, chatID string) bool {
+	if wc.callbacks.SessionExists == nil || chatID == "" {
+		return false
+	}
+	if chatID == senderID {
+		return false
+	}
+	if strings.Contains(chatID, ":") || webChatIDLooksLikeSubAgent(chatID) {
+		return false
+	}
+	return !wc.callbacks.SessionExists(channelName, chatID)
+}
+
 func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, senderID, channelName, chatID string) (SessionSelector, bool) {
 	if channelName == "" && chatID == "" {
 		return wc.GetCurrentSession(senderID), true
@@ -33,6 +60,12 @@ func (wc *WebChannel) resolveAPISession(w http.ResponseWriter, r *http.Request, 
 	}
 	if chatID == "" {
 		chatID = senderID
+	}
+	// 读路径绝不 materialize 未知会话（幽灵会话根因；前端每次加载都会调
+	// /api/session/status 等，带着本地缓存的旧 chatID）。
+	if wc.isUnknownSession(senderID, channelName, chatID) {
+		jsonErrorResponse(w, http.StatusNotFound, "session not found")
+		return SessionSelector{}, false
 	}
 	if !wc.canAccessSession(r.Context(), userIDFromContext(r.Context()), senderID, channelName, chatID) {
 		jsonErrorResponse(w, http.StatusForbidden, "access denied")

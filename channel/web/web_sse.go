@@ -62,16 +62,10 @@ func (wc *WebChannel) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Reject UNKNOWN sessions instead of materializing them.
-	//
-	// SSE is a read path, but every frame of it flows through session lookups
-	// that call GetOrCreateSession — so a stale client holding a DELETED chatID
-	// (old tab, cached layout, second device) recreated the tenant on every
-	// reconnect, producing phantom sessions that survived deletion forever.
-	// The implicit default session (chatID == senderID, e.g. "web-4") is always
-	// legitimate and therefore exempt.
-	if sel.ChatID != senderID && wc.callbacks.SessionExists != nil &&
-		!wc.callbacks.SessionExists(sel.Channel, sel.ChatID) {
+	// Reject UNKNOWN sessions instead of materializing them (see
+	// isUnknownSession — SSE was one of the read paths that let deleted
+	// sessions resurrect on every reconnect).
+	if wc.isUnknownSession(senderID, sel.Channel, sel.ChatID) {
 		jsonErrorResponse(w, http.StatusNotFound, "session not found")
 		return
 	}
