@@ -405,3 +405,48 @@ func decodeDataURL(dataURL string) ([]byte, error) {
 	}
 	return base64.StdEncoding.DecodeString(dataURL[comma+1:])
 }
+
+// TestWebImageResolver_LocalPath —— CR 缺陷 6：LocalPath 把引用映射成真实文件
+// 路径（安全敏感），此前零测试覆盖。逐条锁定 `..`/分隔符/非白名单 key/workspace
+// 越界都必须被拒。
+func TestWebImageResolver_LocalPath(t *testing.T) {
+	viewDir := filepath.Join(t.TempDir(), "view_images")
+	uploadDir := filepath.Join(t.TempDir(), "uploads")
+	ws := filepath.Join(t.TempDir(), "ws")
+	r := &webImageResolver{viewDir: viewDir, uploadDir: uploadDir, workspaceRoots: []string{ws}}
+
+	cases := []struct {
+		name   string
+		ref    string
+		want   string
+		wantOK bool
+	}{
+		{"viewimg scheme", "viewimg://abc.png", filepath.Join(viewDir, "abc.png"), true},
+		{"viewimg http path", "/api/files/viewimg/abc.png", filepath.Join(viewDir, "abc.png"), true},
+		{"viewimg traversal rejected", "viewimg://../etc/passwd", "", false},
+		{"viewimg separator rejected", "viewimg://a/b.png", "", false},
+		{"viewimg empty rejected", "viewimg://", "", false},
+		{"download uploads key", "/api/files/download?key=uploads%2Fu1%2Fab.png", filepath.Join(uploadDir, "uploads", "u1", "ab.png"), true},
+		{"download non-uploads key rejected", "/api/files/download?key=secrets%2Fx", "", false},
+		{"download traversal rejected", "/api/files/download?key=uploads%2F..%2F..%2Fetc%2Fshadow", "", false},
+		{"download no key rejected", "/api/files/download", "", false},
+		{"file under workspace", "file://" + filepath.Join(ws, "a.png"), filepath.Join(ws, "a.png"), true},
+		{"file outside workspace rejected", "file:///etc/shadow", "", false},
+		{"remote http unmapped", "https://example.com/a.png", "", false},
+		{"empty ref", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := r.LocalPath(tc.ref)
+			if ok != tc.wantOK || got != tc.want {
+				t.Fatalf("LocalPath(%q) = (%q, %v), want (%q, %v)", tc.ref, got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+
+	// uploadDir 未配置（老部署）时 download 分支必须安全降级。
+	r2 := &webImageResolver{viewDir: viewDir, workspaceRoots: []string{ws}}
+	if got, ok := r2.LocalPath("/api/files/download?key=uploads%2Fu1%2Fab.png"); ok {
+		t.Fatalf("no uploadDir must not map, got %q", got)
+	}
+}

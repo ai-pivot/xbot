@@ -479,9 +479,10 @@ export function useChatMessages({
       // mergeHistory 保留 store 已有 slot（进行中 turn 的 live/提交/乐观 user）
       // 并回填 DB 字段 —— store 的槽位结构天然保证 persisted user / notification
       // 在竞态 reload 时不消失（等价于现有 reconcile 的保护规则）。
-      if (requestHasDestructiveMutation()) {
-        store.clear()
-      }
+      // 注意：这里曾经有一个 `if (requestHasDestructiveMutation()) { store.clear() }`
+      // 分支，它是【不可达死代码】—— 同一条件下 :460 的 guard 已经 return null，
+      // 而 :460 与这里之间全是同步代码，表达式必然同值。相关保护（乐观 user 行
+      // 不因 reload 消失）由 messageStore.mergeHistory 的 slot 删除条件承担。
       store.mergeHistory(parsed, { replace: true, watermark: data.last_seq ?? 0 })
       syncMessages()
       // Track pagination cursor.

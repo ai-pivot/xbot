@@ -366,6 +366,11 @@ export class MessageStore {
         const slot = this.slots.get(tid)
         // 进行中 turn（live 权威）保留；notification（eventSeq=-1，DB 快照可能
         // 尚未持久化）保留；已完成但 DB 快照没有 → 删除（rewind 语义）
+        // DB 快照是权威：没有进行中 live、快照里也没有的 turn 一律删除
+        // （rewind / 服务端已删除）。**乐观 user 行不在这里** —— 它们尚未绑定
+        // turn，只存在于 pendingUsers，由下方 watermark 过滤单独保护（见该处
+        // 注释）。把条件放宽成"有 user 就不删"是错的：已绑定的 user 必然已
+        // eager-save 进 DB，快照缺失就意味着它真的不在了。
         if (slot && !slot.live && !rowTurns.has(tid) &&
             slot.user?.eventSeq !== -1 && !slot.user?.isNotification) {
           this.slots.delete(tid)
@@ -440,6 +445,7 @@ export class MessageStore {
     this.cacheKey = ''
     this.bumpCommitted()
   }
+
 
   /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。
    *  turnID 从 0 变 >0 时把 user 从 pending 迁移到对应 slot（绑定）。 */

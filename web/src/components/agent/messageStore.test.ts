@@ -517,3 +517,42 @@ describe('MessageStore — Loop2（frozen 污染 / watermark 乐观行）', () =
     expect(rows.some((r) => r.id === 'echo-old')).toBe(false) // 过期 echo 删除
   })
 })
+
+describe('destructive reload 与乐观 user 行', () => {
+  it('REPRO: 发完立刻 cancel —— destructive reload 后乐观 user 行不得消失', () => {
+    const store = new MessageStore()
+    // 用户刚发出消息：乐观行，turnID == 0（尚未绑定 turn），只存在于 pendingUsers。
+    store.setUser(0, {
+      id: 's-1',
+      role: 'user',
+      content: 'hello',
+      turnID: 0,
+      persisted: false,
+      timestamp: 1,
+    } as never)
+    expect(store.toRows().some((r) => r.content === 'hello')).toBe(true)
+
+    // cancel → reload 携带的 DB 快照里还没有这个 turn（session(idle) 已清掉
+    // live，快照尚未包含刚发的消息）。走【真实调用路径】mergeHistory(replace)：
+    // CR 指出只直调内部 helper 会掩盖"该路径在生产中根本没人走"。
+    store.mergeHistory([], { replace: true, watermark: 0 })
+
+    // 核心断言：消息仍在（修复前旧条件会把整个 slot 连同 user 一起删掉）。
+    expect(store.toRows().some((r) => r.content === 'hello')).toBe(true)
+  })
+
+
+  it('反向保护：clear()（会话切换）仍应清空乐观 user 行', () => {
+    const store = new MessageStore()
+    store.setUser(0, {
+      id: 's-2',
+      role: 'user',
+      content: 'bye',
+      turnID: 0,
+      persisted: false,
+      timestamp: 1,
+    } as never)
+    store.clear()
+    expect(store.toRows().some((r) => r.content === 'bye')).toBe(false)
+  })
+})

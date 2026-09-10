@@ -283,3 +283,38 @@ func TestRun_WebPluginRPCNotImplemented(t *testing.T) {
 		t.Errorf("expected 'web_plugin_rpc not implemented', got %q", resp.Error)
 	}
 }
+
+// TestRun_LongLine —— CR 缺陷 6 剩余项：Scanner→Reader 的动机场景（单行超过旧
+// 扫描器上限）。旧实现读到该行即以 "bufio.Scanner: token too long" 中止整个协议
+// 循环，宿主随即判定插件 stdout closed（用户遭遇的应用崩溃）。
+func TestRun_LongLine(t *testing.T) {
+	const payloadSize = 2 * 1024 * 1024 // 2MB，远超旧扫描器上限
+	big := strings.Repeat("x", payloadSize)
+
+	var gotPluginID string
+	h := &Handler{
+		Activate: func(params *ActivateParams) (*ActivateResult, error) {
+			gotPluginID = params.PluginID
+			return &ActivateResult{}, nil
+		},
+	}
+
+	// 超长单行之后还必须能继续读下一行（循环未在长行处终止）。
+	stdin := strings.NewReader(
+		`{"method":"activate","params":{"pluginId":"` + big + `"}}` + "\n" +
+			`{"method":"bogus"}` + "\n",
+	)
+	var stdout bytes.Buffer
+	run(h, stdin, &stdout)
+
+	if len(gotPluginID) != payloadSize {
+		t.Fatalf("long line truncated: got %d bytes, want %d", len(gotPluginID), payloadSize)
+	}
+	if !strings.Contains(stdout.String(), "unknown method") {
+		preview := stdout.String()
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		t.Fatalf("protocol loop stopped after the long line; stdout=%q", preview)
+	}
+}

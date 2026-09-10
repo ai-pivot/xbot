@@ -13,6 +13,11 @@ import (
 	log "xbot/logger"
 
 	"github.com/google/uuid"
+	"io/fs"
+	"os"
+	"sort"
+	"time"
+	"xbot/config"
 )
 
 const (
@@ -163,6 +168,23 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Spill a local copy so the model can be handed a REAL path (see
+	// webImageResolver.LocalPath). Without it a pasted screenshot exists only as
+	// an opaque OSS key: the vision model sees the pixels but has no filename to
+	// act on, so "ps this image" degenerates into a filesystem-wide search.
+	// Best-effort: a failure here must not fail the upload.
+	if home := config.XbotHome(); home != "" {
+		uploadRoot := LocalUploadRoot(home)
+		localPath := filepath.Join(uploadRoot, key)
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+			log.WithError(err).WithField("path", localPath).Warn("Failed to create local upload dir")
+		} else if err := os.WriteFile(localPath, data, 0o600); err != nil {
+			log.WithError(err).WithField("path", localPath).Warn("Failed to spill local copy of upload")
+		} else {
+			pruneLocalUploads(uploadRoot, maxLocalUploads)
+		}
+	}
+
 	log.WithFields(log.Fields{
 		"key":      key,
 		"filename": filename,
@@ -176,4 +198,50 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		"size":       len(data),
 		"mime":       mimeType,
 	})
+}
+
+// maxLocalUploads bounds the spill-to-disk directory. These copies are a CACHE
+// (they exist so the model can be handed a real path) — OSS stays the source of
+// truth — and without a cap the directory would grow without bound.
+const maxLocalUploads = 500
+
+// pruneLocalUploads keeps the newest `keep` files under root (recursively) and
+// removes older ones. Best-effort: the upload has already succeeded, so nothing
+// here is surfaced to the caller.
+func pruneLocalUploads(root string, keep int) {
+	type entry struct {
+		path string
+		mod  time.Time
+	}
+	var files []entry
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, ierr := d.Info(); ierr == nil {
+			files = append(files, entry{path: p, mod: info.ModTime()})
+		}
+		return nil
+	})
+	if len(files) <= keep {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	removed := 0
+	for _, f := range files[:len(files)-keep] {
+		if err := os.Remove(f.path); err == nil {
+			removed++
+		}
+	}
+	// 观测：全静默时「根目录不可读 → 永远剪不掉 → 无界增长」将无从发现。
+	log.WithFields(log.Fields{"root": root, "kept": keep, "removed": removed, "seen": len(files)}).
+		Debug("Pruned local upload spills")
+}
+
+// LocalUploadRoot is the single definition of the local spill root
+// (<xbotHome>/uploads). serverapp's image resolver must derive the same path —
+// see webImageResolver.LocalPath — so the two sides cannot drift apart and
+// silently stop mapping uploads to real files.
+func LocalUploadRoot(xbotHome string) string {
+	return filepath.Join(xbotHome, "uploads")
 }

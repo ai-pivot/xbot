@@ -145,7 +145,15 @@ func (p *QiniuProvider) Upload(key string, data []byte) error {
 	formUploader := storage.NewFormUploader(&cfg)
 	ret := storage.PutRet{}
 
-	err := formUploader.Put(context.TODO(), &ret, upToken, key, bytes.NewReader(data), int64(len(data)), nil)
+	// Bound the upload: qiniu SDK has no default timeout and context.TODO() made
+	// uploads hang for 50–128s (log: "Slow API request elapsed=2m8s"). The
+	// gateway's proxy_read_timeout fires first and returns 502 to the browser,
+	// while the upload keeps running in the background — the user sees failure
+	// for a request that eventually succeeds. A 30s cap turns that into a
+	// clean error the caller can surface ("上传超时，请重试") instead of a 502.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	err := formUploader.Put(ctx, &ret, upToken, key, bytes.NewReader(data), int64(len(data)), nil)
 	if err != nil {
 		return fmt.Errorf("qiniu upload failed: %w", err)
 	}

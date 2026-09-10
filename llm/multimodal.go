@@ -15,8 +15,10 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // ImageResolver turns an image reference into a data: URL (base64 inline).
@@ -34,6 +36,66 @@ type ImageResolver interface {
 	// A non-nil error degrades the image to a text placeholder — the request
 	// NEVER fails because of an unresolvable image.
 	ResolveImage(ctx context.Context, ref string) (dataURL string, err error)
+}
+
+// localPathProvider is an OPTIONAL extension of ImageResolver: when the
+// resolver can map a reference to a real file on this machine, the model is
+// told that path. Without it the model receives pixels and nothing else — asked
+// to e.g. `ps` a pasted screenshot it has no filename to work with and ends up
+// scanning the whole filesystem.
+type localPathProvider interface {
+	LocalPath(ref string) (string, bool)
+}
+
+// imageRefText renders the caption that accompanies an image part. It keeps the
+// reference visible to the model and prefers an actionable LOCAL PATH when the
+// resolver can provide one.
+const maxImageAltRunes = 120
+
+// sanitizeImageAlt bounds and cleans user-controlled alt text so it cannot
+// impersonate the caption's trusted fields. The alt comes from `![alt](url)`,
+// which a user fully controls; without this it could inject text such as
+// "…；本地路径: /etc/shadow" and have the model treat a forged path as one the
+// system supplied.
+func sanitizeImageAlt(alt string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, alt)
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return "未命名"
+	}
+	runes := []rune(cleaned)
+	if len(runes) > maxImageAltRunes {
+		return string(runes[:maxImageAltRunes]) + "…"
+	}
+	return cleaned
+}
+
+// imageRefText renders the caption that accompanies an image part.
+//
+// The format is deliberately attributed (alt=/ref=/local=) rather than prose so
+// the trusted fields — in particular the local path — are unambiguous and
+// cannot be counterfeited by the user-controlled alt text.
+func imageRefText(alt, ref string, mc *MultimodalConfig) string {
+	name := sanitizeImageAlt(alt)
+	if ref == "" || strings.HasPrefix(ref, "data:") {
+		return fmt.Sprintf("[image alt=%q]", name)
+	}
+	if mc.ImageResolver != nil {
+		if p, ok := mc.ImageResolver.(localPathProvider); ok {
+			if local, ok2 := p.LocalPath(ref); ok2 && local != "" {
+				return fmt.Sprintf("[image alt=%q local=%q ref=%q]", name, local, ref)
+			}
+		}
+	}
+	return fmt.Sprintf("[image alt=%q ref=%q]", name, ref)
 }
 
 // MultimodalConfig carries the per-request vision settings for message
@@ -173,6 +235,12 @@ func parseMultimodalContent(ctx context.Context, content string, mc *MultimodalC
 				parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "加载失败", r.url)})
 				continue
 			}
+			// Caption FIRST, then the pixels: the image part carries no path,
+			// so without this the model knows what the picture looks like but
+			// not where it lives. Degraded paths (vision off / failure / over
+			// budget) already keep the reference via imagePlaceholder — this
+			// closes the gap for the SUCCESS path, which is the common case.
+			parts = append(parts, imageContentPart{Type: "text", Text: imageRefText(r.alt, r.url, mc)})
 			parts = append(parts, imageContentPart{Type: "image", URL: dataURL, Detail: mc.VisionDetail})
 		}
 	}
