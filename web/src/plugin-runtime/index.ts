@@ -208,21 +208,11 @@ export class PluginRuntime {
       files: new PluginFileService(effective.id),
       share: createShareAPI({
         pluginId: effective.id,
-        registerRenderer: (decl) => {
-          void this.registry.registerPlugin({ ...effective, contributes: [decl] }, exports)
-          return () => {}
-        },
+        // 追加语义（绝不用 registerPlugin —— 那会整表替换、丢掉其它贡献点）。
+        registerRenderer: (decl) => this.registry.addContribution(effective.id, decl),
       }),
-      registerContribution: (c: Contribution) => {
-        // 动态贡献点：经 registry 挂载，返回 disposable。
-        this.registry.registerPlugin(
-          { ...effective, contributes: [c] },
-          exports,
-        ).then((r) => {
-          if (!r.ok) console.error(`[plugin-runtime] 动态贡献点失败: ${r.error}`)
-        })
-        return () => {}
-      },
+      // 动态贡献点：追加上去（不能整表替换 —— 见 registry.addContribution 注释）。
+      registerContribution: (c: Contribution) => this.registry.addContribution(effective.id, c),
     })
     try {
       const result = mod.activate?.(ctx)

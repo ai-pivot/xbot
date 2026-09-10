@@ -246,6 +246,63 @@ export class ContributionRegistry {
     return this.plugins.get(pluginId)?.manifest.contributes ?? []
   }
 
+  /**
+   * 动态追加【一个】贡献点（不重注册整个插件）。
+   *
+   * ⚠️ 绝不能用 registerPlugin 实现：它会对同 id 先 unregisterPlugin 再整表
+   * 替换 —— 于是每次 register(x) 都会把该插件**此前注册的所有贡献点丢掉**，
+   * 只剩最后一个。真实事故：genui 插件 activate 里注册
+   * d1(uiMode:'genui') → d2(tool:'display_html') →（新增的）d3(shareRenderer)，
+   * d3 把两个 messageRenderer 冲掉 → renderTool 找不到渲染器 → 静默 fallback
+   * 到 ToolCallBlock（页面只剩「引数/出力」JSON，且 console 无报错）。
+   *
+   * 返回 disposable 用于单独撤销这一个贡献点。
+   */
+  addContribution(pluginId: string, c: Contribution): Disposable {
+    const record = this.plugins.get(pluginId)
+    if (!record) {
+      // 插件未激活 → 没有可挂载的宿主记录（调用方应只在 activate 内注册）。
+      console.error(
+        `[plugin-runtime] 插件 ${pluginId} 未激活，忽略贡献点 ${String((c as { id?: string }).id ?? '')}`,
+      )
+      return () => {}
+    }
+    const added: Disposable[] = []
+    try {
+      this.mount(record.manifest, c, added)
+    } catch (error) {
+      for (const d of added.splice(0).reverse()) {
+        try {
+          d()
+        } catch {
+          /* ignore */
+        }
+      }
+      console.error(`[plugin-runtime] 追加贡献点失败 (${pluginId})`, error)
+      return () => {}
+    }
+    // 同时登记到 manifest（供查询/枚举）与 disposables（随插件卸载一并清理）。
+    record.manifest = { ...record.manifest, contributes: [...record.manifest.contributes, c] }
+    record.state = {
+      ...record.state,
+      contributionIds: [...record.state.contributionIds, (c as { id?: string }).id ?? ''],
+    }
+    record.disposables.push(...added)
+    return () => {
+      for (const d of added.slice().reverse()) {
+        try {
+          d()
+        } catch {
+          /* ignore */
+        }
+      }
+      record.manifest = {
+        ...record.manifest,
+        contributes: record.manifest.contributes.filter((x) => x !== c),
+      }
+    }
+  }
+
   /** 向已激活插件追加 disposer（activate 返回的清理函数，§3.7）。 */
   pushDisposable(pluginId: string, d: Disposable): void {
     const record = this.plugins.get(pluginId)
