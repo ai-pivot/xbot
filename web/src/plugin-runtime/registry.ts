@@ -9,7 +9,7 @@
  */
 import type { Contribution, Disposable, PluginManifest, Permission } from '@/plugin-api'
 import type { ViewContribution } from '@/plugin-api'
-import type { MessageRendererContribution } from '@/plugin-api'
+import type { MessageRendererContribution, ShareRendererContribution } from '@/plugin-api'
 import type { CommandContribution } from '@/plugin-api'
 
 /** 校验失败原因。 */
@@ -37,12 +37,16 @@ export type ViewMount = (view: ViewContribution, element: HTMLElement) => Dispos
 /** 消息渲染器注册回调。 */
 export type RendererMount = (renderer: MessageRendererContribution) => Disposable | void
 
+/** 分享渲染器注册回调（公开分享页按 contentType 派发）。 */
+export type ShareRendererMount = (renderer: ShareRendererContribution) => Disposable | void
+
 /** 命令注册回调。 */
 export type CommandMount = (command: CommandContribution, handler: (args: unknown) => void) => Disposable | void
 
 export interface RegistryHooks {
   onView?: ViewMount
   onRenderer?: RendererMount
+  onShareRenderer?: ShareRendererMount
   onCommand?: CommandMount
   /** 插件状态变化（管理面板用）。 */
   onStateChange?: (state: PluginRuntimeState) => void
@@ -99,7 +103,7 @@ export class ContributionRegistry {
         return { pluginId: manifest.id, message: `contributes 含非法条目: ${JSON.stringify(c)}` }
       }
       const kind = (c as Contribution).kind
-      if (!['view', 'command', 'messageRenderer', 'toolbar', 'contextMenu', 'setting', 'eventHandler', 'theme', 'ambience'].includes(kind)) {
+      if (!['view', 'command', 'messageRenderer', 'shareRenderer', 'toolbar', 'contextMenu', 'setting', 'eventHandler', 'theme', 'ambience'].includes(kind)) {
         return { pluginId: manifest.id, message: `未知贡献点 kind: ${String(kind)}` }
       }
       // ID 唯一性
@@ -210,6 +214,9 @@ export class ContributionRegistry {
       case 'messageRenderer':
         if (this.hooks.onRenderer) add(this.hooks.onRenderer(c as MessageRendererContribution))
         break
+      case 'shareRenderer':
+        if (this.hooks.onShareRenderer) add(this.hooks.onShareRenderer(c as ShareRendererContribution))
+        break
       default:
         // toolbar/contextMenu/setting/eventHandler/theme 由宿主在贡献点查询时消费，
         // 不需要挂载回调；但记录可查询（管理面板/其他插件可见）。
@@ -291,6 +298,17 @@ export class ContributionRegistry {
     }
     // 稳定排序：priority 大者优先（render 返回 null 时 fallback 到下一个）。
     out.sort((a, b) => b.renderer.priority - a.renderer.priority)
+    return out
+  }
+
+  /** 查询所有 shareRenderer 贡献点（跨插件），供公开分享页按 contentType 派发。 */
+  listAllShareRenderers(): Array<{ pluginId: string; renderer: ShareRendererContribution }> {
+    const out: Array<{ pluginId: string; renderer: ShareRendererContribution }> = []
+    for (const [pluginId, record] of this.plugins) {
+      for (const c of record.manifest.contributes) {
+        if (c.kind === 'shareRenderer') out.push({ pluginId, renderer: c as ShareRendererContribution })
+      }
+    }
     return out
   }
 }

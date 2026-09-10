@@ -427,6 +427,52 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v65: shared artifacts — generic storage for plugin-provided shareable
+	// content. New table only, no backfill.
+	if from < 65 {
+		if err := migrateV64ToV65(db); err != nil {
+			return fmt.Errorf("migrate to v65: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV64ToV65 adds shared_artifacts — the generic storage behind
+// plugin-provided shareable content.
+//
+// The host deliberately knows nothing about what is shared: `content_type` is
+// chosen by the producing plugin and `payload` is opaque (only that plugin's
+// share renderer can interpret it). The token IS the credential — a
+// high-entropy random string granting read access to one immutable artifact
+// without any session.
+func migrateV64ToV65(db *DB) error {
+	conn := db.Conn()
+	// Guarded like every other migration: a test fixture may have hand-built a
+	// minimal schema at an older version, so CREATE must be idempotent while the
+	// version bump still runs.
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS shared_artifacts (
+			token TEXT PRIMARY KEY,
+			plugin_id TEXT NOT NULL DEFAULT '',
+			content_type TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			created_by INTEGER NOT NULL DEFAULT 0,
+			expires_at TEXT NOT NULL DEFAULT '',
+			revoked_at TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(created_by)`,
+	} {
+		if _, err := conn.Exec(ddl); err != nil {
+			return fmt.Errorf("migrate v64->v65: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 65"); err != nil {
+		return fmt.Errorf("migrate v64->v65 update version: %w", err)
+	}
+	log.Info("Database migrated to v65 (shared_artifacts: plugin-provided shareable content)")
 	return nil
 }
 

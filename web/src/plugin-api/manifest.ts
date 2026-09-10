@@ -7,9 +7,10 @@
 import type { ComponentDecl } from './components'
 import type { EventMap } from './events'
 import type { MessageRendererContribution } from './renderer'
+import type { ShareRendererContribution } from './share'
 
 /** 能力权限：决定 `PluginContext<P>` 上哪些能力接口可用（§3.2 能力即类型）。 */
-export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config' | 'files'
+export type Permission = 'events' | 'commands' | 'rpc' | 'state' | 'ui' | 'plugins' | 'config' | 'files' | 'share'
 
 /** 视图容器（映射到前端布局位）。 */
 export type ViewContainer = 'right_sidebar' | 'panel' | 'bottom' | 'info_bar' | 'status_bar_right' | 'iteration' | 'main'
@@ -100,6 +101,9 @@ export interface EventHandlerContribution<E extends keyof EventMap = keyof Event
 /** 消息渲染器贡献点（§3.5：matches 精化 render 参数类型）。 */
 export type { MessageRendererContribution }
 
+/** 分享渲染器贡献点（公开分享页按 contentType 派发）。 */
+export type { ShareRendererContribution }
+
 export interface ThemeContribution {
   kind: 'theme'
   cssVars: Record<string, string>
@@ -109,6 +113,7 @@ export type Contribution =
   | ViewContribution
   | CommandContribution
   | MessageRendererContribution
+  | ShareRendererContribution
   | ToolbarContribution
   | ContextMenuContribution
   | SettingContribution

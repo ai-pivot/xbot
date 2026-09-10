@@ -396,9 +396,15 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 				if reg := ag.WebUIRegistry(); reg != nil {
 					webCh.SetWebUIRegistry(reg)
 				}
-				// Serve plugin web ESM modules at /plugins/<id>/web/*.
-				webCh.SetPluginDirs(plugin.DefaultPluginDirs(config.XbotHome()))
 			}
+			// Serve plugin web ESM modules at /plugins/<id>/web/*.
+			//
+			// Deliberately OUTSIDE the plugin-manager guard: these directories are
+			// a pure function of XBOT_HOME, and a public share page must be able to
+			// load a plugin's renderer even if the plugin subsystem is disabled
+			// (module_url resolution just reads plugin.json from them). Gating it on
+			// pm != nil silently broke shared links.
+			webCh.SetPluginDirs(plugin.DefaultPluginDirs(config.XbotHome()))
 		} else {
 			log.Warn("Web channel enabled but no database available, skipping")
 		}

@@ -126,7 +126,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (64);
+INSERT INTO schema_version (version) VALUES (65);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
 -- dropped in v62 — the system subscription was removed, the global fallback
@@ -303,6 +303,25 @@ CREATE TABLE IF NOT EXISTS iteration_history (
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
 CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
+
+-- v65: shared artifacts — generic storage behind plugin-provided shareable
+-- content. The host knows nothing about what is shared: content_type is named
+-- by the producing plugin and payload is opaque to the host; only that
+-- plugin's own share renderer can interpret it. token IS the credential — a
+-- high-entropy random string granting read access to one immutable artifact
+-- without any session.
+CREATE TABLE IF NOT EXISTS shared_artifacts (
+    token TEXT PRIMARY KEY,
+    plugin_id TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    created_by INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL DEFAULT '',
+    revoked_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(created_by);
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)

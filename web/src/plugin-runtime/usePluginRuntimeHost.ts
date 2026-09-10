@@ -10,7 +10,7 @@
  */
 import { createElement, Fragment, useCallback, useEffect, useMemo, useRef } from 'react'
 
-import type { ViewContribution } from '@/plugin-api'
+import type { ViewContribution, ShareRendererContribution } from '@/plugin-api'
 import type { MessageRendererContribution } from '@/plugin-api'
 import type { SessionSummary } from '@/plugin-api'
 
@@ -175,6 +175,7 @@ export function usePluginRuntimeHost(): PluginRuntimeHost {
       // MessageRenderer 调度器接入时 mountRenderer 才有真实逻辑）。
       mountView: () => () => {},
       mountRenderer: (_r: MessageRendererContribution) => () => {},
+      mountShareRenderer: (_r: ShareRendererContribution) => () => {},
       mountCommand: () => () => {},
     }),
     // 所有依赖稳定（useCallback 空依赖或稳定引用），host 只创建一次。

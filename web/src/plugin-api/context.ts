@@ -13,6 +13,7 @@ import type { PanelsAPI } from './panels'
 import type { PluginsAPI } from './plugins'
 import type { ConfigAPI } from './config'
 import type { FilesAPI } from './files'
+import type { ShareAPI } from './share'
 
 interface PermissionAPI {
   events: EventsAPI
@@ -24,6 +25,7 @@ interface PermissionAPI {
   plugins: PluginsAPI
   config: ConfigAPI
   files: FilesAPI
+  share: ShareAPI
 }
 
 export type PluginContext<P extends readonly Permission[]> = {

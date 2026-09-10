@@ -276,6 +276,48 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		},
 	}
 
+	// Wire shared artifacts (generic, plugin-facing share capability). The host
+	// stays content-agnostic: it stores content_type + an opaque payload and
+	// never branches on what a plugin shares.
+	if webDB := ag.MultiSession().DB(); webDB != nil {
+		shareSvc := sqlite.NewShareService(webDB)
+		callbacks.ShareCreate = func(createdBy int, pluginID, contentType, payload, title, expiresAt string) (*protocol.SharedArtifact, error) {
+			a := &sqlite.SharedArtifact{
+				PluginID:    pluginID,
+				ContentType: contentType,
+				Payload:     payload,
+				Title:       title,
+				CreatedBy:   int64(createdBy),
+				ExpiresAt:   expiresAt,
+			}
+			if err := shareSvc.Create(a); err != nil {
+				return nil, err
+			}
+			return shareToProtocol(a), nil
+		}
+		callbacks.ShareGet = func(token string) (*protocol.SharedArtifact, error) {
+			a, err := shareSvc.Get(token)
+			if err != nil {
+				return nil, err
+			}
+			return shareToProtocol(a), nil
+		}
+		callbacks.ShareRevoke = func(createdBy int, token string) error {
+			return shareSvc.Revoke(token, int64(createdBy))
+		}
+		callbacks.ShareList = func(createdBy int) ([]protocol.SharedArtifact, error) {
+			items, err := shareSvc.ListByCreator(int64(createdBy))
+			if err != nil {
+				return nil, err
+			}
+			out := make([]protocol.SharedArtifact, 0, len(items))
+			for i := range items {
+				out = append(out, *shareToProtocol(&items[i]))
+			}
+			return out, nil
+		}
+	}
+
 	// Wire IsProcessing
 	callbacks.IsProcessing = func(senderID string) bool {
 		return ag.IsProcessing(senderID)
@@ -2110,5 +2152,25 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		MemoryGetStats: func(senderID, chatID string) map[string]string {
 			return ag.MultiSession().GetMemoryStats(context.Background(), "feishu", chatID, senderID)
 		},
+	}
+}
+
+// shareToProtocol converts a storage row into the wire contract. The two types
+// stay separate on purpose: the wire contract must not drag storage concerns
+// (or a storage import) into channel/web.
+func shareToProtocol(a *sqlite.SharedArtifact) *protocol.SharedArtifact {
+	if a == nil {
+		return nil
+	}
+	return &protocol.SharedArtifact{
+		Token:       a.Token,
+		PluginID:    a.PluginID,
+		ContentType: a.ContentType,
+		Payload:     a.Payload,
+		Title:       a.Title,
+		CreatedAt:   a.CreatedAt,
+		CreatedBy:   a.CreatedBy,
+		ExpiresAt:   a.ExpiresAt,
+		RevokedAt:   a.RevokedAt,
 	}
 }

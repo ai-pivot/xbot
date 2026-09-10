@@ -15,6 +15,7 @@ import type { PanelsAPI } from '@/plugin-api'
 import type { PluginsAPI } from '@/plugin-api'
 import type { ConfigAPI } from '@/plugin-api'
 import type { FilesAPI } from '@/plugin-api/files'
+import type { ShareAPI } from '@/plugin-api'
 import type { ContributionAPI, Disposable, PluginMeta } from '@/plugin-api'
 import type { Contribution } from '@/plugin-api'
 
@@ -29,6 +30,7 @@ export interface ContextServices {
   plugins: PluginsAPI
   config: ConfigAPI
   files: FilesAPI
+  share: ShareAPI
   registerContribution: (c: Contribution) => Disposable
 }
 
@@ -64,5 +66,6 @@ export function buildContext(
   if (has('plugins')) ctx.plugins = svc.plugins
   if (has('config')) ctx.config = svc.config
   if (has('files')) ctx.files = svc.files
+  if (has('share')) ctx.share = svc.share
   return ctx as PluginContext<readonly Permission[]>
 }

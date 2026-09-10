@@ -34,7 +34,7 @@ func TestConfigPermissionValid(t *testing.T) {
 // preventing the "unknown permission" drift that rejects a plugin's manifest on
 // reload.
 func TestAllFrontendPermissionsRegistered(t *testing.T) {
-	frontend := []string{"events", "commands", "rpc", "state", "ui", "plugins", "config"}
+	frontend := []string{"events", "commands", "rpc", "state", "ui", "plugins", "config", "share"}
 	for _, p := range frontend {
 		if !IsValidPermission(p) {
 			t.Errorf("frontend Permission %q is missing from backend allPermissions — reload will reject it", p)

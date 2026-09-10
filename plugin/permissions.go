@@ -67,6 +67,11 @@ const (
 	// (ctx.config.get/set and ctx.config.onConfigChange). Matches the frontend
 	// Permission 'config' (web/src/plugin-api/manifest.ts).
 	PermConfig = "config"
+	// PermShare grants the generic shared-artifact capability
+	// (ctx.share.create/list/revoke + registerRenderer): publishing one's own
+	// content to a link that reads without a session. Matches the frontend
+	// Permission 'share' (web/src/plugin-api/manifest.ts).
+	PermShare = "share"
 )
 
 // allPermissions is the set of all recognized permission strings.
@@ -95,6 +100,7 @@ var allPermissions = map[string]bool{
 	PermUI:                true,
 	PermPlugins:           true,
 	PermConfig:            true,
+	PermShare:             true,
 }
 
 // IsValidPermission returns true if the given string is a known permission.

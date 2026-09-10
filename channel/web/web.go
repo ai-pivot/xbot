@@ -106,6 +106,17 @@ type WebCallbacks struct {
 	// GetActiveProgress returns the latest progress snapshot for an active turn.
 	// Used by Web history API to restore progress state on page refresh.
 	GetActiveProgress func(channel, chatID string) *protocol.ProgressEvent
+	// ─── Shared artifacts (generic, plugin-facing) ───────────────────────
+	// Shareable content produced by plugins. The host is deliberately
+	// content-agnostic: ContentType is named by the producing plugin and
+	// Payload is opaque — only that plugin's own share renderer interprets it.
+	// The token IS the credential, so ShareGet must be reachable without a
+	// session (see GET /api/share/{token}).
+	ShareCreate func(createdBy int, pluginID, contentType, payload, title, expiresAt string) (*protocol.SharedArtifact, error)
+	ShareGet    func(token string) (*protocol.SharedArtifact, error)
+	ShareRevoke func(createdBy int, token string) error
+	ShareList   func(createdBy int) ([]protocol.SharedArtifact, error)
+
 	// GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 	// Used by Web WS reconnect to resend ask_user so page refresh doesn't lose it.
 	GetPendingAskUser func(channel, chatID string) *protocol.ProgressEvent
@@ -792,6 +803,15 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
 	mux.HandleFunc("/api/plugin-files/upload", wc.authMiddleware(postOnly(wc.handlePluginFileUpload)))
 	mux.HandleFunc("/api/plugin-files/", wc.authMiddleware(wc.handlePluginFiles))
+	// Shared artifacts (generic, plugin-facing). create/list/revoke are
+	// authenticated — publishing a public link is an explicit act. The GET is
+	// deliberately NOT authenticated: the token is the credential, and the whole
+	// point is that the link works for someone with no account.
+	mux.HandleFunc("/api/share/create", wc.authenticatedPOST(wc.handleShareCreate))
+	mux.HandleFunc("/api/share/list", wc.authenticatedPOST(wc.handleShareList))
+	mux.HandleFunc("/api/share/revoke", wc.authenticatedPOST(wc.handleShareRevoke))
+	mux.HandleFunc("/api/share/", wc.handleShareGet)
+
 	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistory))
 	mux.HandleFunc("/api/history/rewind", wc.authenticatedPOST(wc.handleHistoryRewind))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))

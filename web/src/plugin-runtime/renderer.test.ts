@@ -24,6 +24,7 @@ function makeHost(): PluginRuntimeHost {
     getBackendPlugins: async () => [],
     mountView: () => () => {},
     mountRenderer: () => () => {},
+    mountShareRenderer: () => () => {},
     mountCommand: () => () => {},
   }
 }

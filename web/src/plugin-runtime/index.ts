@@ -15,7 +15,7 @@ import { createContext, createElement, useContext, useMemo, useRef } from 'react
 
 import type { Contribution, Disposable, PluginManifest, PluginMeta } from '@/plugin-api'
 import type { ViewContainer, ViewContribution } from '@/plugin-api'
-import type { Matcher, MessageRendererContribution, RenderContext } from '@/plugin-api'
+import type { Matcher, MessageRendererContribution, RenderContext, ShareRendererContribution } from '@/plugin-api'
 
 import { ContributionRegistry } from './registry'
 import { PluginEventBus } from './events'
@@ -28,6 +28,7 @@ import { PluginConfigService } from './config'
 import { panelRegistry } from './panelRegistry'
 import type { PanelsAPI } from '@/plugin-api'
 import { buildContext } from './context'
+import { createShareAPI } from './share'
 import { PluginFileService } from './files'
 import { loadPluginModule, versionedUrl, type PluginModule } from './loader'
 import { toSafeMessage } from './sanitize'
@@ -51,6 +52,8 @@ export interface PluginRuntimeHost {
   mountView: (view: ViewContribution) => Disposable | void
   /** 渲染器注册（宿主接到渲染器调度器）。 */
   mountRenderer: (renderer: MessageRendererContribution) => Disposable | void
+  /** 分享渲染器注册（宿主接到公开分享页的派发器）。 */
+  mountShareRenderer: (renderer: ShareRendererContribution) => Disposable | void
   /** 命令挂载（宿主把命令接入命令面板/快捷键）。 */
   mountCommand: (id: string, handler: (args: unknown) => void) => Disposable | void
   /** 状态变化通知（管理面板）。 */
@@ -104,6 +107,7 @@ export class PluginRuntime {
     this.registry = new ContributionRegistry({
       onView: (view) => host.mountView(view),
       onRenderer: (renderer) => host.mountRenderer(renderer),
+      onShareRenderer: (renderer) => host.mountShareRenderer(renderer),
       onCommand: (command, handler) => host.mountCommand(command.id, handler),
       onStateChange: (s) => host.onPluginStateChange?.(s),
     })
@@ -202,6 +206,13 @@ export class PluginRuntime {
       plugins: this.plugins,
       config: this.config.forPlugin(effective.id),
       files: new PluginFileService(effective.id),
+      share: createShareAPI({
+        pluginId: effective.id,
+        registerRenderer: (decl) => {
+          void this.registry.registerPlugin({ ...effective, contributes: [decl] }, exports)
+          return () => {}
+        },
+      }),
       registerContribution: (c: Contribution) => {
         // 动态贡献点：经 registry 挂载，返回 disposable。
         this.registry.registerPlugin(
