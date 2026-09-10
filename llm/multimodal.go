@@ -15,8 +15,10 @@ package llm
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // ImageResolver turns an image reference into a data: URL (base64 inline).
@@ -48,22 +50,52 @@ type localPathProvider interface {
 // imageRefText renders the caption that accompanies an image part. It keeps the
 // reference visible to the model and prefers an actionable LOCAL PATH when the
 // resolver can provide one.
-func imageRefText(alt, ref string, mc *MultimodalConfig) string {
-	name := strings.TrimSpace(alt)
-	if name == "" {
-		name = "未命名"
+const maxImageAltRunes = 120
+
+// sanitizeImageAlt bounds and cleans user-controlled alt text so it cannot
+// impersonate the caption's trusted fields. The alt comes from `![alt](url)`,
+// which a user fully controls; without this it could inject text such as
+// "…；本地路径: /etc/shadow" and have the model treat a forged path as one the
+// system supplied.
+func sanitizeImageAlt(alt string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' {
+			return ' '
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, alt)
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		return "未命名"
 	}
+	runes := []rune(cleaned)
+	if len(runes) > maxImageAltRunes {
+		return string(runes[:maxImageAltRunes]) + "…"
+	}
+	return cleaned
+}
+
+// imageRefText renders the caption that accompanies an image part.
+//
+// The format is deliberately attributed (alt=/ref=/local=) rather than prose so
+// the trusted fields — in particular the local path — are unambiguous and
+// cannot be counterfeited by the user-controlled alt text.
+func imageRefText(alt, ref string, mc *MultimodalConfig) string {
+	name := sanitizeImageAlt(alt)
 	if ref == "" || strings.HasPrefix(ref, "data:") {
-		return "[图片: " + name + "]"
+		return fmt.Sprintf("[image alt=%q]", name)
 	}
 	if mc.ImageResolver != nil {
 		if p, ok := mc.ImageResolver.(localPathProvider); ok {
 			if local, ok2 := p.LocalPath(ref); ok2 && local != "" {
-				return "[图片: " + name + "；本地路径: " + local + "（可直接读取/处理；引用: " + ref + "）]"
+				return fmt.Sprintf("[image alt=%q local=%q ref=%q]", name, local, ref)
 			}
 		}
 	}
-	return "[图片: " + name + "；引用: " + ref + "]"
+	return fmt.Sprintf("[image alt=%q ref=%q]", name, ref)
 }
 
 // MultimodalConfig carries the per-request vision settings for message

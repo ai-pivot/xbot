@@ -532,13 +532,15 @@ describe('destructive reload 与乐观 user 行', () => {
     } as never)
     expect(store.toRows().some((r) => r.content === 'hello')).toBe(true)
 
-    // cancel → destructive reload，DB 快照里还没有这条消息。
-    store.clearForDestructiveReload()
+    // cancel → reload 携带的 DB 快照里还没有这个 turn（session(idle) 已清掉
+    // live，快照尚未包含刚发的消息）。走【真实调用路径】mergeHistory(replace)：
+    // CR 指出只直调内部 helper 会掩盖"该路径在生产中根本没人走"。
     store.mergeHistory([], { replace: true, watermark: 0 })
 
-    // 核心断言：消息仍在（旧实现用 clear() 会把它清掉）。
+    // 核心断言：消息仍在（修复前旧条件会把整个 slot 连同 user 一起删掉）。
     expect(store.toRows().some((r) => r.content === 'hello')).toBe(true)
   })
+
 
   it('反向保护：clear()（会话切换）仍应清空乐观 user 行', () => {
     const store = new MessageStore()

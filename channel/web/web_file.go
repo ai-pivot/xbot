@@ -174,7 +174,7 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 	// act on, so "ps this image" degenerates into a filesystem-wide search.
 	// Best-effort: a failure here must not fail the upload.
 	if home := config.XbotHome(); home != "" {
-		uploadRoot := filepath.Join(home, "uploads")
+		uploadRoot := LocalUploadRoot(home)
 		localPath := filepath.Join(uploadRoot, key)
 		if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
 			log.WithError(err).WithField("path", localPath).Warn("Failed to create local upload dir")
@@ -227,7 +227,21 @@ func pruneLocalUploads(root string, keep int) {
 		return
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].mod.Before(files[j].mod) })
+	removed := 0
 	for _, f := range files[:len(files)-keep] {
-		_ = os.Remove(f.path)
+		if err := os.Remove(f.path); err == nil {
+			removed++
+		}
 	}
+	// 观测：全静默时「根目录不可读 → 永远剪不掉 → 无界增长」将无从发现。
+	log.WithFields(log.Fields{"root": root, "kept": keep, "removed": removed, "seen": len(files)}).
+		Debug("Pruned local upload spills")
+}
+
+// LocalUploadRoot is the single definition of the local spill root
+// (<xbotHome>/uploads). serverapp's image resolver must derive the same path —
+// see webImageResolver.LocalPath — so the two sides cannot drift apart and
+// silently stop mapping uploads to real files.
+func LocalUploadRoot(xbotHome string) string {
+	return filepath.Join(xbotHome, "uploads")
 }

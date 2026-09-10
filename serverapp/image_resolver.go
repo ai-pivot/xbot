@@ -152,8 +152,6 @@ func GetImageResolver() llm.ImageResolver {
 	return imageResolverSingleton
 }
 
-// ResolveImage implements llm.ImageResolver. Errors degrade to text
-// placeholders in the LLM layer — never fail the request here.
 // LocalPath maps a reference to a REAL file on this machine so the model can
 // act on it directly (open / ps / read) instead of guessing where the picture
 // lives. Returns ("", false) when the ref has no local counterpart — a remote
@@ -162,6 +160,11 @@ func GetImageResolver() llm.ImageResolver {
 // This is the actionable half of the fix for "asked to `ps` a pasted image, the
 // model scans the filesystem": the image part carries pixels only, so the
 // caption needs a path it can use.
+//
+// Existence is deliberately NOT checked (all branches behave identically): the
+// spill directory is a bounded cache and viewimg files can be evicted, so a path
+// may disappear before the model uses it. The caption always carries the ref as
+// well, so a stale path degrades rather than failing.
 func (r *webImageResolver) LocalPath(ref string) (string, bool) {
 	switch {
 	case strings.HasPrefix(ref, "viewimg://"):
@@ -189,21 +192,15 @@ func (r *webImageResolver) LocalPath(ref string) (string, bool) {
 		if r.uploadDir == "" {
 			return "", false
 		}
-		path := filepath.Join(r.uploadDir, key)
-		if _, err := os.Stat(path); err != nil {
-			return "", false
-		}
-		return path, true
+		return filepath.Join(r.uploadDir, key), true
 	case strings.HasPrefix(ref, "file://"):
-		path := strings.TrimPrefix(ref, "file://")
-		if isUnderAnyRoot(path, r.workspaceRoots...) {
-			return path, true
-		}
-		return "", false
+		return r.resolveFileRef(ref)
 	}
 	return "", false
 }
 
+// ResolveImage implements llm.ImageResolver. Errors degrade to text
+// placeholders in the LLM layer — never fail the request here.
 func (r *webImageResolver) ResolveImage(ctx context.Context, ref string) (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("empty image reference")
@@ -310,21 +307,9 @@ func (r *webImageResolver) load(ctx context.Context, ref string) ([]byte, string
 	// may embed workspace images). Whitelisted to the resolver's workspace
 	// roots + view_images dir; anything else fails (→ placeholder degrade).
 	if strings.HasPrefix(ref, "file://") {
-		path := strings.TrimPrefix(ref, "file://")
-		// file://localhost/... and file:///abs/path both appear; normalize.
-		// ⚠️ Windows paths look like `C:\dir\img.png` — a caller concatenating
-		// "file://localhost"+path yields `file://localhostC:\dir\...` (no slash
-		// after localhost). Match the bare prefix so both forms normalize.
-		path = strings.TrimPrefix(path, "localhost")
-		// URLs use forward slashes; convert to the platform separator
-		// (FromSlash is a no-op on Unix).
-		path = filepath.FromSlash(path)
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return nil, "", fmt.Errorf("resolve file:// path: %w", err)
-		}
-		if !isUnderAnyRoot(abs, r.workspaceRoots...) && !isUnderAnyRoot(abs, r.viewDir) {
-			return nil, "", fmt.Errorf("file:// path outside whitelisted roots: %s", path)
+		abs, ok := r.resolveFileRef(ref)
+		if !ok {
+			return nil, "", fmt.Errorf("file:// path outside whitelisted roots: %s", ref)
 		}
 		data, err := os.ReadFile(abs)
 		if err != nil {
@@ -341,6 +326,31 @@ func (r *webImageResolver) load(ctx context.Context, ref string) ([]byte, string
 }
 
 // isUnderAnyRoot reports whether path is equal to or under one of the roots.
+// resolveFileRef normalizes a file:// reference and validates it against the
+// resolver's whitelist (workspace roots ∪ view_images dir), returning the
+// absolute path.
+//
+// Shared by ResolveImage and LocalPath so the two can never drift: if they
+// disagreed on which file:// refs are legitimate, an image would render while
+// the model got no path — exactly the bug LocalPath exists to fix.
+func (r *webImageResolver) resolveFileRef(ref string) (string, bool) {
+	path := strings.TrimPrefix(ref, "file://")
+	// file://localhost/... and file:///abs/path both appear; normalize. Windows
+	// paths ("C:\dir\img.png") concatenated after "file://localhost" yield
+	// "...localhostC:\..." (no slash) — the bare prefix match covers both.
+	path = strings.TrimPrefix(path, "localhost")
+	// URLs use forward slashes; convert to the platform separator.
+	path = filepath.FromSlash(path)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	if !isUnderAnyRoot(abs, r.workspaceRoots...) && !isUnderAnyRoot(abs, r.viewDir) {
+		return "", false
+	}
+	return abs, true
+}
+
 func isUnderAnyRoot(path string, roots ...string) bool {
 	for _, root := range roots {
 		if root == "" {

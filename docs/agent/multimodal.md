@@ -73,12 +73,38 @@ Feishu 图片入站
 - **migration v64**：`subscription_models` 加 `vision`/`vision_detail` 列（columnExists 幂等）；`schemaVersion=64`。
 - **schema.go 的 CREATE TABLE 和 migration 必须同步**（新库直接建 v64；老库 ALTER——`migrateV63ToV64`）。
 
+## 本地路径透出（image caption + LocalPath）
+
+模型只拿到像素时**无法对文件做任何操作**：让它 `ps` 一张粘贴的图片，它只能在全盘
+find（用户报告）。因此成功解析的 image part 旁会附一个**结构化 caption**：
+
+```
+[image alt="…" local="…" ref="…"]
+```
+
+- `local` 仅在 `ImageResolver` 实现了**可选**扩展 `LocalPath(ref) (string, bool)`
+  时给出（type-assert，不破坏既有实现）。serverapp 的 resolver 映射：
+  `viewimg://` 与 `/api/files/viewimg/<id>` → `<xbotHome>/view_images/<id>`；
+  `/api/files/download?key=uploads/...` → `<xbotHome>/uploads/uploads/...`；
+  workspace 白名单内的 `file://`（与 `ResolveImage` 共用 `resolveFileRef`，两者
+  永不漂移）。
+- **落盘缓存**：web 上传除了进 OSS，还会在 `<xbotHome>/uploads/<key>` 留一份本地
+  副本（0600），以便模型有真实路径可用。**OSS 仍是唯一权威存储**，副本是缓存：
+  每次落盘后 `pruneLocalUploads` 只保留最新 500 份（best-effort，不影响上传结果）。
+- ⚠️ **安全边界（知情项）**：`local` 会把**服务器绝对路径**（含用户名/目录布局）
+  带进第三方 LLM 上下文。自托管/内网模型影响很小；公共 API 部署需知悉这一元数据面。
+- ⚠️ **抗伪造**：`alt` 完全由用户控制（`![alt](url)`）。caption 因此采用 `字段=值`
+  形式而非散文，且 alt 会被截断（≤120 runes）并清除控制字符/换行 —— user 文本
+  不可能伪装成系统注入的 `local=`/`ref=`。
+- 降级路径（vision off / 解析失败 / 超预算）走 `imagePlaceholder`，同样保留引用。
+
 ## 测试
 
-- `llm/multimodal_test.go`——四类引用/vision off 降级/预算(最近优先)/Anthropic blocks/splitDataURL/折叠行为
-- `serverapp/image_resolver_test.go`——四类 ref 解析/LRU 驱赶（entries+bytes 双预算）/2048px 缩放/file:// 白名单/bmp 透传
+- `llm/multimodal_test.go`——四类引用/vision off 降级/预算(最近优先)/Anthropic blocks/splitDataURL/折叠行为/**caption 携带引用与本地路径 + alt 不可伪造(结构化/截断/清洗)**
+- `serverapp/image_resolver_test.go`——四类 ref 解析/LRU 驱赶（entries+bytes 双预算）/2048px 缩放/file:// 白名单/bmp 透传/**LocalPath 校验矩阵（`..`/分隔符/非 uploads key/白名单越界全部拒绝）**
 - `tools/view_image_test.go`——白名单拒绝/magic bytes 拒绝非图片/参数互斥/ImageInjection 引用格式
 - `channel/web/web_inbound_expand_test.go`——单份 markdown 相对 URL（无 `<image>` 标签、无绝对签名 URL）
 - `agent/llm_factory_vision_test.go`——buildMultimodalConfig（off→nil）/resolveModelConfig 读取/UpsertModel 不重置 vision
 - `storage/sqlite/subscription_vision_test.go`——vision 列 round-trip/SetModelVisionConfig 唯一写路径/v64 幂等
 - `web/e2e/vision-input.spec.ts`——👁 徽标 / vision-off 提示条（route mock）
+- `plugin/protocol/protocol_test.go`——**协议超长单行（>2MB）不再以 token-too-long 中止循环**（Scanner→bufio.Reader 回归）

@@ -366,6 +366,11 @@ export class MessageStore {
         const slot = this.slots.get(tid)
         // 进行中 turn（live 权威）保留；notification（eventSeq=-1，DB 快照可能
         // 尚未持久化）保留；已完成但 DB 快照没有 → 删除（rewind 语义）
+        // DB 快照是权威：没有进行中 live、快照里也没有的 turn 一律删除
+        // （rewind / 服务端已删除）。**乐观 user 行不在这里** —— 它们尚未绑定
+        // turn，只存在于 pendingUsers，由下方 watermark 过滤单独保护（见该处
+        // 注释）。把条件放宽成"有 user 就不删"是错的：已绑定的 user 必然已
+        // eager-save 进 DB，快照缺失就意味着它真的不在了。
         if (slot && !slot.live && !rowTurns.has(tid) &&
             slot.user?.eventSeq !== -1 && !slot.user?.isNotification) {
           this.slots.delete(tid)
@@ -441,24 +446,6 @@ export class MessageStore {
     this.bumpCommitted()
   }
 
-  /**
-   * destructive reload（rewind / cancel）用的清理：重建 slots/legacy（DB 快照权威），
-   * 但【保留乐观 user 行】。
-   *
-   * 乐观行是"用户刚发出、还没绑定 turn"的消息（turnID == 0，只存在于
-   * pendingUsers，不在 slots 里）。把它一起清掉，就会出现用户报告的现象：
-   * 发一条消息后立刻 cancel → destructive reload → store.clear() 清光 pending
-   * → mergeHistory 只回填 DB 快照（快照里还没有这条刚发的消息）→ **消息消失**。
-   * 保留它对 rewind 无副作用：被回滚的消息早已持久化并挂在 slots 上，不在这里。
-   */
-  clearForDestructiveReload(): void {
-    this.slots.clear()
-    this.turnIDs = []
-    this.legacy = []
-    this.cache = null
-    this.cacheKey = ''
-    this.bumpCommitted()
-  }
 
   /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。
    *  turnID 从 0 变 >0 时把 user 从 pending 迁移到对应 slot（绑定）。 */
