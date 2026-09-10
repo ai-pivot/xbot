@@ -70,7 +70,7 @@ func TestBuildProgressPayload_TodosSerialization(t *testing.T) {
 	handler := a.buildProgressEventHandler("chat-1", "web")
 	handler(&ProgressEvent{Structured: &StructuredProgress{
 		Seq: 1, Phase: PhaseThinking, Iteration: 1, TurnID: 1,
-		Todos: []TodoProgressItem{{ID: 1, Text: "任务1", Status: "pending"}, {ID: 2, Text: "任务2", Status: "done"}},
+		Todos: []TodoProgressItem{{Text: "任务1", Status: "pending"}, {Text: "任务2", Status: "done"}},
 	}})
 	if len(ch.events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(ch.events))

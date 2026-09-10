@@ -395,7 +395,6 @@ func (s *runState) refreshStructuredTodos() {
 	todos := make([]TodoProgressItem, len(items))
 	for i, td := range items {
 		todos[i] = TodoProgressItem{
-			ID:     td.ID,
 			Text:   td.Text,
 			Status: td.Status,
 		}

@@ -1139,7 +1139,6 @@ function handleProgressMessage(
           // Stale PhaseDone — preserve todos only, skip everything else.
           if (Array.isArray(p.todos) && p.todos.length > 0) {
             store.setStructuredTools({ eventSeq: seq, todos: p.todos.map((t) => ({
-              id: typeof t.id === 'number' ? t.id : 0,
               text: typeof t.text === 'string' ? t.text : '',
               status: todoStatusOf(t),
             })) })
@@ -1200,7 +1199,6 @@ function handleProgressMessage(
           // turn-end cleanupTodos) — the frontend must learn the list is now
           // empty, otherwise stale items survive until the next event/refresh.
           doneTodos = p.todos.map((t) => ({
-            id: typeof t.id === 'number' ? t.id : 0,
             text: typeof t.text === 'string' ? t.text : '',
             status: todoStatusOf(t),
           }))
@@ -1282,7 +1280,6 @@ function handleProgressMessage(
             store.setStructuredTools({
               eventSeq: typeof p.seq === 'number' ? p.seq : undefined,
               todos: p.todos.map((t) => ({
-                id: typeof t.id === 'number' ? t.id : 0,
                 text: typeof t.text === 'string' ? t.text : '',
                 status: todoStatusOf(t),
               })),
@@ -1326,7 +1323,6 @@ function handleProgressMessage(
       let todos: TodoItem[] | undefined
       if (Array.isArray(p.todos)) {
         todos = p.todos.map((t) => ({
-          id: typeof t.id === 'number' ? t.id : 0,
           text: typeof t.text === 'string' ? t.text : '',
           status: todoStatusOf(t),
         }))

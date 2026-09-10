@@ -1673,17 +1673,17 @@ func TestSyncProgressTodos_SameCountPreservesCache(t *testing.T) {
 
 	// Initial todos: 3 items, none done
 	model.todos = []protocol.TodoItem{
-		{ID: 1, Text: "task-a", Status: "pending"},
-		{ID: 2, Text: "task-b", Status: "pending"},
-		{ID: 3, Text: "task-c", Status: "pending"},
+		{Text: "task-a", Status: "pending"},
+		{Text: "task-b", Status: "pending"},
+		{Text: "task-c", Status: "pending"},
 	}
 
 	// Same count, different content: item 2 marked done
 	payload := &protocol.ProgressEvent{
 		Todos: []protocol.TodoItem{
-			{ID: 1, Text: "task-a", Status: "pending"},
-			{ID: 2, Text: "task-b", Status: "done"}, // changed
-			{ID: 3, Text: "task-c", Status: "pending"},
+			{Text: "task-a", Status: "pending"},
+			{Text: "task-b", Status: "done"}, // changed
+			{Text: "task-c", Status: "pending"},
 		},
 	}
 

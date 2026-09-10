@@ -348,9 +348,9 @@ export interface GoalInfo {
   summary?: string
 }
 
-/** TODO item — mirrors Go protocol.TodoItem (json: id, text, status). v2: status-only (done field removed). */
+/** TODO item — mirrors Go protocol.TodoItem (json: text, status). v2: status-only (done field removed).
+ * No `id`: the array order the agent sends IS the display order. */
 export interface TodoItem {
-  id: number
   text: string
   /** "pending" | "doing" | "done"（必填——LLM 必须显式标记状态） */
   status: string

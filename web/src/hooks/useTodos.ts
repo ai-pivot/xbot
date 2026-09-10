@@ -2,7 +2,7 @@
  * useTodos — derives TODO display state from a ProgressSnapshot's todos field.
  *
  * Mirrors the TUI's todosEqual change detection: only re-derives when the
- * todo slice actually changes (id, text, done), preventing unnecessary
+ * todo slice actually changes (text, status), preventing unnecessary
  * re-renders on every progress frame.
  */
 import { useMemo } from 'react'
@@ -13,7 +13,7 @@ export function todosEqual(a: TodoItem[], b: TodoItem[]): boolean {
   if (a === b) return true
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) {
-    if (a[i].id !== b[i].id || a[i].text !== b[i].text || a[i].status !== b[i].status) {
+    if (a[i].text !== b[i].text || a[i].status !== b[i].status) {
       return false
     }
   }

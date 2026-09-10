@@ -148,9 +148,11 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
             className="overflow-hidden rounded-md border border-border bg-bg-secondary"
           >
             <div className="max-h-[200px] overflow-y-auto px-3 py-1.5">
-              {todoState!.todos.map((todo) => (
+              {todoState!.todos.map((todo, i) => (
                 <div
-                  key={todo.id}
+                  key={i}
+                  data-testid="todo-item"
+                  data-todo-text={todo.text}
                   className={cn(
                     'flex items-start gap-2 py-1',
                     todo.status === 'done' ? 'text-text-muted' : 'text-text-primary',

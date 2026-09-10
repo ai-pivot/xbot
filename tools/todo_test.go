@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -27,13 +28,13 @@ func TestTodoManager_SessionIsolation(t *testing.T) {
 
 	// 主 Agent 写入 2 个 TODO
 	mainTool := &TodoWriteTool{Manager: mgr}
-	_, err := mainTool.Execute(mainCtx, `{"todos":[{"id":1,"text":"main-task-1","status":"pending"},{"id":2,"text":"main-task-2","status":"pending"}]}`)
+	_, err := mainTool.Execute(mainCtx, `{"todos":[{"text":"main-task-1","status":"pending"},{"text":"main-task-2","status":"pending"}]}`)
 	if err != nil {
 		t.Fatalf("main TodoWrite failed: %v", err)
 	}
 
 	// SubAgent 写入 3 个 TODO
-	_, err = mainTool.Execute(subCtx, `{"todos":[{"id":1,"text":"sub-task-1","status":"pending"},{"id":2,"text":"sub-task-2","status":"pending"},{"id":3,"text":"sub-task-3","status":"pending"}]}`)
+	_, err = mainTool.Execute(subCtx, `{"todos":[{"text":"sub-task-1","status":"pending"},{"text":"sub-task-2","status":"pending"},{"text":"sub-task-3","status":"pending"}]}`)
 	if err != nil {
 		t.Fatalf("sub TodoWrite failed: %v", err)
 	}
@@ -167,10 +168,10 @@ func TestTodoListTool_Isolation(t *testing.T) {
 
 	// 主 Agent 写入
 	writeTool := &TodoWriteTool{Manager: mgr}
-	_, _ = writeTool.Execute(mainCtx, `{"todos":[{"id":1,"text":"main-task","status":"pending"}]}`)
+	_, _ = writeTool.Execute(mainCtx, `{"todos":[{"text":"main-task","status":"pending"}]}`)
 
 	// SubAgent 写入
-	_, _ = writeTool.Execute(subCtx, `{"todos":[{"id":1,"text":"sub-task","status":"done"}]}`)
+	_, _ = writeTool.Execute(subCtx, `{"todos":[{"text":"sub-task","status":"done"}]}`)
 
 	// TodoListTool 验证隔离
 	listTool := &TodoListTool{Manager: mgr}
@@ -209,7 +210,7 @@ func TestTodoWrite_LegacyDoneRejected(t *testing.T) {
 	tool := &TodoWriteTool{Manager: mgr}
 
 	// 旧格式：done: true，无 status → 必须报错（json 静默丢弃 done，status 为空）
-	res, err := tool.Execute(ctx, `{"todos":[{"id":1,"text":"task-a","done":true},{"id":2,"text":"task-b","done":false}]}`)
+	res, err := tool.Execute(ctx, `{"todos":[{"text":"task-a","done":true},{"text":"task-b","done":false}]}`)
 	if err != nil {
 		t.Fatalf("Execute returned err: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestTodoWrite_LegacyDoneRejected(t *testing.T) {
 	}
 
 	// 旧格式 done: false → 同样报错（无 status 就是无 status）
-	res2, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"x","done":false}]}`)
+	res2, _ := tool.Execute(ctx, `{"todos":[{"text":"x","done":false}]}`)
 	if !res2.IsError {
 		t.Errorf("done:false without status must also be rejected, got: %q", res2.Summary)
 	}
@@ -251,7 +252,7 @@ func TestTodoWrite_EmptyTextRejected(t *testing.T) {
 	tool := &TodoWriteTool{Manager: mgr}
 
 	// 缺失 text（json 静默丢弃缺失字段 → text 为空字符串）→ 必须报错
-	res, err := tool.Execute(ctx, `{"todos":[{"id":1,"status":"doing"},{"id":2,"text":"real-task","status":"pending"}]}`)
+	res, err := tool.Execute(ctx, `{"todos":[{"status":"doing"},{"text":"real-task","status":"pending"}]}`)
 	if err != nil {
 		t.Fatalf("Execute returned err: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestTodoWrite_EmptyTextRejected(t *testing.T) {
 	}
 
 	// 空白字符串 text（"   "）同样报错
-	res2, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"   ","status":"doing"}]}`)
+	res2, _ := tool.Execute(ctx, `{"todos":[{"text":"   ","status":"doing"}]}`)
 	if !res2.IsError {
 		t.Errorf("whitespace-only text must be rejected, got: %q", res2.Summary)
 	}
@@ -286,7 +287,7 @@ func TestTodoWrite_InvalidStatusRejected(t *testing.T) {
 	}
 	tool := &TodoWriteTool{Manager: mgr}
 
-	res, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"task","status":"finished"}]}`)
+	res, _ := tool.Execute(ctx, `{"todos":[{"text":"task","status":"finished"}]}`)
 	if !res.IsError {
 		t.Errorf("invalid status 'finished' must be rejected, got: %q", res.Summary)
 	}
@@ -295,7 +296,7 @@ func TestTodoWrite_InvalidStatusRejected(t *testing.T) {
 	}
 
 	// 空字符串 status 同样报错
-	res2, _ := tool.Execute(ctx, `{"todos":[{"id":1,"text":"task","status":""}]}`)
+	res2, _ := tool.Execute(ctx, `{"todos":[{"text":"task","status":""}]}`)
 	if !res2.IsError {
 		t.Errorf("empty status must be rejected, got: %q", res2.Summary)
 	}
@@ -312,7 +313,7 @@ func TestTodoWrite_ValidStatusAccepted(t *testing.T) {
 	}
 	tool := &TodoWriteTool{Manager: mgr}
 
-	res, err := tool.Execute(ctx, `{"todos":[{"id":1,"text":"a","status":"done"},{"id":2,"text":"b","status":"doing"},{"id":3,"text":"c","status":"pending"}]}`)
+	res, err := tool.Execute(ctx, `{"todos":[{"text":"a","status":"done"},{"text":"b","status":"doing"},{"text":"c","status":"pending"}]}`)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -330,9 +331,83 @@ func TestTodoWrite_ValidStatusAccepted(t *testing.T) {
 	if len(todos) != 3 {
 		t.Fatalf("expected 3 todos, got %d", len(todos))
 	}
-	for _, it := range todos {
+	for i, it := range todos {
 		if !isValidStatus(it.Status) {
-			t.Errorf("todo %d has invalid status %q", it.ID, it.Status)
+			t.Errorf("todo %d has invalid status %q", i+1, it.Status)
 		}
 	}
+}
+
+// TestTodoWrite_PreservesAgentOrder 验证 TODO 顺序 == agent 给的顺序，绝不被重排。
+//
+// 历史 bug（本次修复）：SetTodos 之前有一行
+//
+//	slices.SortFunc(todos, func(a, b TodoItem) int { return cmp.Compare(a.ID, b.ID) })
+//
+// —— agent 用 id 表达优先级/依赖时，展示顺序被 id 重排，与它写的计划不符
+// （web todo panel 用户可见：「有时候按照 id 排序了」）。现在列表顺序由数组
+// 位置决定，id 参数已彻底移除。
+//
+// 复现方式：输入顺序刻意不等于任何自然排序（既非 id 序、也非 text 字典序），
+// 断言输出 == 输入顺序。带排序时该断言红灯。
+func TestTodoWrite_PreservesAgentOrder(t *testing.T) {
+	mgr := NewTodoManager()
+	ctx := &ToolContext{
+		Ctx:     context.Background(),
+		AgentID: "main",
+		Channel: "cli",
+		ChatID:  "order-preserve",
+	}
+	tool := &TodoWriteTool{Manager: mgr}
+
+	// 顺序刻意「乱」：zebra → apple → mango（不是字典序/也不是编号序）
+	in := `{"todos":[` +
+		`{"text":"zebra step","status":"pending"},` +
+		`{"text":"apple step","status":"doing"},` +
+		`{"text":"mango step","status":"done"}]}`
+	if _, err := tool.Execute(ctx, in); err != nil {
+		t.Fatalf("todo_write failed: %v", err)
+	}
+
+	key := mgr.sessionKey(ctx)
+	want := []string{"zebra step", "apple step", "mango step"}
+	got := mgr.GetTodos(key)
+	if len(got) != len(want) {
+		t.Fatalf("got %d todos, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].Text != want[i] {
+			t.Fatalf("order changed at index %d: got %q, want %q (full=%v) — the list order IS the plan order",
+				i, got[i].Text, want[i], todoTexts(got))
+		}
+	}
+
+	// 持久化 round-trip 也必须保持顺序
+	if err := mgr.SaveToFile(key); err != nil {
+		t.Fatalf("SaveToFile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(todoFilePath(key)) })
+
+	loaded := NewTodoManager()
+	if err := loaded.LoadFromFile(key); err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+	got2 := loaded.GetTodos(key)
+	if len(got2) != len(want) {
+		t.Fatalf("after reload got %d todos, want %d", len(got2), len(want))
+	}
+	for i := range want {
+		if got2[i].Text != want[i] {
+			t.Fatalf("order changed after persistence at index %d: got %q, want %q",
+				i, got2[i].Text, want[i])
+		}
+	}
+}
+
+func todoTexts(items []TodoItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Text
+	}
+	return out
 }

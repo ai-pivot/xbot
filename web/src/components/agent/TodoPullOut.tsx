@@ -27,6 +27,7 @@ export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps)
       <div className="flex h-7 w-full items-center gap-2 px-2.5 text-left md:h-8">
         <button
           type="button"
+          data-testid="todo-toggle"
           aria-expanded={expanded}
           aria-label={expanded ? t('agent.collapseTodos') : t('agent.expandTodos')}
           onClick={() => setExpanded((open) => !open)}
@@ -62,9 +63,11 @@ export function TodoPullOut({ todoState, hasGoal, onSetGoal }: TodoPullOutProps)
       </div>
       <AnimatedCollapse open={expanded}>
         <div className="max-h-[200px] overflow-y-auto border-t border-border px-3 py-1.5">
-          {todos.map((todo) => (
+          {todos.map((todo, i) => (
             <div
-              key={todo.id}
+              key={i}
+              data-testid="todo-item"
+              data-todo-text={todo.text}
               className={cn('flex items-start gap-2 py-1 text-xs', todo.status === 'done' ? 'text-text-muted' : 'text-text-primary')}
             >
               <span className="mt-0.5 shrink-0">

@@ -175,7 +175,7 @@ func todosEqual(a, b []protocol.TodoItem) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].ID != b[i].ID || a[i].Text != b[i].Text || a[i].Status != b[i].Status {
+		if a[i].Text != b[i].Text || a[i].Status != b[i].Status {
 			return false
 		}
 	}

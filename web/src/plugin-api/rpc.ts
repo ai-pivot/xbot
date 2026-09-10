@@ -62,6 +62,16 @@ export interface BackendRPC {
     params: { channel?: string; chat_id: string; limit?: number }
     result: TenantUsageStats
   }
+  // ---- 用户累计用量（所有会话汇总）----
+  'get_user_token_usage': {
+    params: Record<string, never>
+    result: UserTokenUsage
+  }
+  // ---- 分日期聚合用量（按天 + 模型）----
+  'get_daily_token_usage': {
+    params: { days?: number; sender_id?: string }
+    result: DailyTokenUsage[]
+  }
   // ---- 前台 shell 转后台（promote-to-background）----
   // 把当前会话正在前台执行的 shell 命令转入后台（用户在工具卡片上点"转后台"）。
   // tool_call_id 来自 progress 事件的 ActiveTools.call_id（运行中的 Shell 工具）。
@@ -72,6 +82,29 @@ export interface BackendRPC {
 }
 
 // ---- 会话用量/性能聚合（对应 Go sqlite.TenantUsageStats JSON）----
+
+/** 用户累计 token 用量（所有会话汇总，对应 Go sqlite.UserTokenUsage）。 */
+export interface UserTokenUsage {
+  sender_id: string
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  conversation_count: number
+  llm_call_count: number
+}
+
+/** 分日期 token 用量（按天 + 模型，对应 Go sqlite.DailyTokenUsage）。 */
+export interface DailyTokenUsage {
+  date: string
+  sender_id: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  conversation_count: number
+  llm_call_count: number
+}
 
 export interface UsageModelRow {
   model: string

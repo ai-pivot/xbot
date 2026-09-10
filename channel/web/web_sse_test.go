@@ -2449,7 +2449,7 @@ func TestNormalizeSSEEventOnlyConvertsStreamOnlyProgress(t *testing.T) {
 		{name: "active tools", mutate: func(p *protocol.ProgressEvent) { p.ActiveTools = []protocol.ToolProgress{{Name: "Read"}} }},
 		{name: "completed tools", mutate: func(p *protocol.ProgressEvent) { p.CompletedTools = []protocol.ToolProgress{{Name: "Read"}} }},
 		{name: "subagents", mutate: func(p *protocol.ProgressEvent) { p.SubAgents = []protocol.SubAgentInfo{{Role: "reviewer"}} }},
-		{name: "todos", mutate: func(p *protocol.ProgressEvent) { p.Todos = []protocol.TodoItem{{ID: 1}} }},
+		{name: "todos", mutate: func(p *protocol.ProgressEvent) { p.Todos = []protocol.TodoItem{{Text: "t"}} }},
 		{name: "token usage", mutate: func(p *protocol.ProgressEvent) { p.TokenUsage = &protocol.TokenUsage{} }},
 		{name: "questions", mutate: func(p *protocol.ProgressEvent) { p.Questions = []protocol.AskUserQuestion{{Question: "Continue?"}} }},
 		{name: "request id", mutate: func(p *protocol.ProgressEvent) { p.RequestID = "request-1" }},

@@ -75,7 +75,6 @@ type SimToolRecord struct {
 
 // SimTodoItem describes a TODO item for progress bar simulation.
 type SimTodoItem struct {
-	ID     int    `json:"id"`
 	Text   string `json:"text"`
 	Status string `json:"status"`
 }
@@ -2084,7 +2083,7 @@ func convertSimTools(tools []SimToolRecord, iteration int) []protocol.ToolProgre
 func convertSimTodos(todos []SimTodoItem) []protocol.TodoItem {
 	result := make([]protocol.TodoItem, len(todos))
 	for i, t := range todos {
-		result[i] = protocol.TodoItem(t)
+		result[i] = protocol.TodoItem{Text: t.Text, Status: t.Status}
 	}
 	return result
 }

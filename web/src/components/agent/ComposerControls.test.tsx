@@ -73,12 +73,12 @@ describe('composer controls', () => {
       <TodoPullOut
         todoState={{
           todos: [
-            { id: 1, text: 'done task', status: "done" },
-            { id: 2, text: 'current task', status: "pending" },
+            { text: 'done task', status: "done" },
+            { text: 'current task', status: "pending" },
           ],
           doneCount: 1,
           total: 2,
-          currentTask: { id: 2, text: 'current task', status: "pending" },
+          currentTask: { text: 'current task', status: "pending" },
         }}
       />,
     )

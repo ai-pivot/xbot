@@ -40,7 +40,7 @@ func (a *todoManagerAdapter) GetTodoItems(sessionKey string) []TodoProgressItem 
 	items := a.mgr.GetTodos(sessionKey)
 	result := make([]TodoProgressItem, len(items))
 	for i, item := range items {
-		result[i] = TodoProgressItem{ID: item.ID, Text: item.Text, Status: item.Status}
+		result[i] = TodoProgressItem{Text: item.Text, Status: item.Status}
 	}
 	return result
 }
@@ -1963,7 +1963,7 @@ func buildProgressPayload(progressKey string, event *ProgressEvent) *protocol.Pr
 	payload.SubAgents = resolveSubAgents(event)
 	payload.Todos = make([]protocol.TodoItem, len(s.Todos))
 	for i, td := range s.Todos {
-		payload.Todos[i] = protocol.TodoItem{ID: td.ID, Text: td.Text, Status: td.Status}
+		payload.Todos[i] = protocol.TodoItem{Text: td.Text, Status: td.Status}
 	}
 	payload.Goal = s.Goal
 	if s.TokenUsage != nil {

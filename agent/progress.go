@@ -141,7 +141,6 @@ const (
 
 // TodoProgressItem represents a single TODO item for progress display.
 type TodoProgressItem struct {
-	ID     int
 	Text   string
 	Status string // "pending" | "doing" | "done"
 }

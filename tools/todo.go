@@ -1,13 +1,11 @@
 package tools
 
 import (
-	"cmp"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 
@@ -16,7 +14,6 @@ import (
 
 // TodoItem 单个 TODO 项。Status 必填："pending" | "doing" | "done"。
 type TodoItem struct {
-	ID     int    `json:"id"`
 	Text   string `json:"text"`
 	Status string `json:"status"` // "pending" | "doing" | "done"
 }
@@ -106,7 +103,7 @@ func (m *TodoManager) loadFromFileLocked(sessionKey string) {
 				if !isValidStatus(st) {
 					st = "pending"
 				}
-				items = append(items, TodoItem{ID: l.ID, Text: l.Text, Status: st})
+				items = append(items, TodoItem{Text: l.Text, Status: st})
 			}
 			m.todos[sessionKey] = items
 			return
@@ -131,7 +128,6 @@ func (m *TodoManager) loadFromFileLocked(sessionKey string) {
 
 // legacyTodoItem 老格式 TODO 项（done: boolean）。仅用于加载旧持久化数据。
 type legacyTodoItem struct {
-	ID     int    `json:"id"`
 	Text   string `json:"text"`
 	Done   bool   `json:"done"`
 	Status string `json:"status"`
@@ -222,7 +218,7 @@ func (m *TodoManager) GetTodoSummary(sessionKey string) string {
 	}
 	done := 0
 	var parts []string
-	for _, item := range items {
+	for i, item := range items {
 		status := "○"
 		switch item.Status {
 		case "done":
@@ -231,7 +227,7 @@ func (m *TodoManager) GetTodoSummary(sessionKey string) string {
 		case "doing":
 			status = "◐"
 		}
-		parts = append(parts, fmt.Sprintf("  %s [%d] %s", status, item.ID, item.Text))
+		parts = append(parts, fmt.Sprintf("  %s [%d] %s", status, i+1, item.Text))
 	}
 	return fmt.Sprintf("(%d/%d)\n%s", done, len(items), strings.Join(parts, "\n"))
 }
@@ -320,7 +316,7 @@ func (t *TodoWriteTool) Description() string {
 
 ⚠️ 当前正在执行的 TODO 项必须标记 status: "doing"（UI 显示旋转图标+高亮）。
 已完成的过时 TODO（不再相关的条目）直接删除，不要保留在列表里。
-示例: {"todos": [{"id": 1, "text": "read file", "status": "done"}, {"id": 2, "text": "edit file", "status": "doing"}, {"id": 3, "text": "write file", "status": "pending"}]}`
+示例: {"todos": [{"text": "read file", "status": "done"}, {"text": "edit file", "status": "doing"}, {"text": "write file", "status": "pending"}]}`
 }
 
 func (t *TodoWriteTool) Parameters() []llm.ToolParam {
@@ -328,16 +324,15 @@ func (t *TodoWriteTool) Parameters() []llm.ToolParam {
 		{
 			Name:        "todos",
 			Type:        "array",
-			Description: "Complete TODO list (overwrites). Each item: {id(number), text(string, required — non-empty task description), status(string: 'pending'|'doing'|'done')}. 当前正在执行的项必须标记 status='doing'；已完成的过时项直接删除",
+			Description: "Complete TODO list (overwrites). Each item: {text(string, required — non-empty task description), status(string: 'pending'|'doing'|'done')}. The array order IS the display order — write the steps in the order they should be executed. Do NOT include an id. 当前正在执行的项必须标记 status='doing'；已完成的过时项直接删除",
 			Required:    true,
 			Items: &llm.ToolParamItems{
 				Type: "object",
 				Properties: map[string]any{
-					"id":     map[string]any{"type": "number"},
 					"text":   map[string]any{"type": "string", "description": "non-empty task description"},
 					"status": map[string]any{"type": "string", "enum": []string{"pending", "doing", "done"}},
 				},
-				Required: []string{"id", "text", "status"},
+				Required: []string{"text", "status"},
 			},
 		},
 	}
@@ -359,7 +354,7 @@ func (t *TodoWriteTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	for i, item := range a.Todos {
 		if strings.TrimSpace(item.Text) == "" {
 			return &ToolResult{
-				Summary: fmt.Sprintf("⛔ item %d (id=%d): missing required field 'text'. Every TODO item needs a non-empty task description.", i+1, item.ID),
+				Summary: fmt.Sprintf("⛔ item %d: missing required field 'text'. Every TODO item needs a non-empty task description.", i+1),
 				IsError: true,
 			}, nil
 		}
@@ -378,8 +373,10 @@ func (t *TodoWriteTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 			}, nil
 		}
 	}
+	// Order is the LLM's order — never re-sort. A TODO list is a plan whose
+	// sequence carries meaning (which step comes first); sorting by any key
+	// would silently rewrite the plan the agent just wrote.
 	todos := a.Todos
-	slices.SortFunc(todos, func(a, b TodoItem) int { return cmp.Compare(a.ID, b.ID) })
 	t.Manager.SetTodos(sk, todos)
 	done := 0
 	doing := 0
@@ -429,7 +426,7 @@ func (t *TodoListTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 	}
 	done := 0
 	var lines []string
-	for _, item := range items {
+	for i, item := range items {
 		status := "○"
 		switch item.Status {
 		case "done":
@@ -438,7 +435,7 @@ func (t *TodoListTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		case "doing":
 			status = "◐"
 		}
-		lines = append(lines, fmt.Sprintf("%s [%d] %s", status, item.ID, item.Text))
+		lines = append(lines, fmt.Sprintf("%s [%d] %s", status, i+1, item.Text))
 	}
 	return NewResultWithTips(
 		fmt.Sprintf("(%d/%d 完成)\n%s", done, len(items), strings.Join(lines, "\n")),

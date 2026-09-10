@@ -12,8 +12,9 @@ type ToolCallSnapshot struct {
 }
 
 // TodoItem represents a TODO item for CLI display.
+// No ID: the list is replaced wholesale on every todo_write and the array
+// order IS the display order, so a per-item key carries no meaning.
 type TodoItem struct {
-	ID     int    `json:"id"`
 	Text   string `json:"text"`
 	Status string `json:"status"` // "pending" | "doing" | "done"
 }

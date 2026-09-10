@@ -89,8 +89,8 @@ func TestBuildSystemReminder_SubAgent(t *testing.T) {
 func TestBuildSystemReminder_WithTodos(t *testing.T) {
 	msgs := makeMsgs("Fix the bug", true)
 	todos := []TodoProgressItem{
-		{ID: 1, Text: "First task", Status: "done"},
-		{ID: 2, Text: "Second task", Status: "pending"},
+		{Text: "First task", Status: "done"},
+		{Text: "Second task", Status: "pending"},
 	}
 	result := BuildSystemReminder(msgs, todos, nil, "main", "", "", "", nil)
 	if !strings.Contains(result, `<todo status="done" id="1">First task</todo>`) {

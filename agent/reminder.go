@@ -107,8 +107,9 @@ func BuildSystemReminder(
 	// 结构化 todos（具体项 + status——LLM 一眼看清进度）
 	if len(todoItems) > 0 {
 		sb.WriteString("<todos>")
-		for _, t := range todoItems {
-			fmt.Fprintf(&sb, `<todo status=%q id="%d">%s</todo>`, t.Status, t.ID, html.EscapeString(t.Text))
+		for i, t := range todoItems {
+			// id is positional — the list order IS the plan order, there is no stored key.
+			fmt.Fprintf(&sb, `<todo status=%q id="%d">%s</todo>`, t.Status, i+1, html.EscapeString(t.Text))
 		}
 		sb.WriteString("</todos>")
 	}

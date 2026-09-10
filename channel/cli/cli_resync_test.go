@@ -16,7 +16,7 @@ func TestResyncRequiredRestoresAuthoritativeSessionSnapshot(t *testing.T) {
 	model.channelName, model.chatID = "cli", "chat"
 	model.todoManager = newCliTodoManager()
 	model.messages = []cliMessage{{historyID: 99, role: "user", content: "stale future"}}
-	model.todos = []protocol.TodoItem{{ID: 99, Text: "stale todo"}}
+	model.todos = []protocol.TodoItem{{Text: "stale todo"}}
 	model.todoManager.SetTodos(model.sessionKey(), model.todos)
 	model.typing = true
 	model.inputReady = true
@@ -44,7 +44,7 @@ func TestResyncRequiredRestoresAuthoritativeSessionSnapshot(t *testing.T) {
 			return &protocol.ProgressEvent{ChatID: "cli:chat", Phase: "thinking", Iteration: 2}
 		},
 		GetTodosFn: func(channelName, chatID string) []protocol.TodoItem {
-			return []protocol.TodoItem{{ID: 1, Text: "canonical todo"}}
+			return []protocol.TodoItem{{Text: "canonical todo"}}
 		},
 		GetPendingAskUserFn: func(channelName, chatID string) *protocol.ProgressEvent {
 			return nil
