@@ -205,6 +205,14 @@ type WebCallbacks struct {
 	ChatFork func(senderID, sourceChannel, sourceChatID, label string) (newChatID string, err error)
 	// LocalSessionExists reports whether a local session exists outside the database.
 	LocalSessionExists func(channel, chatID string) bool
+	// SessionExists reports whether (channel, chatID) is a KNOWN session — an
+	// existing tenant or a user-created chatroom.
+	//
+	// Read paths use it to REJECT unknown ids instead of materializing them. A
+	// client that still holds a deleted chatID (stale browser tab, cached
+	// layout, second device) used to make GetOrCreateSession recreate the
+	// tenant on every reconnect — the "phantom chat_XXXX sessions" bug.
+	SessionExists func(channel, chatID string) bool
 
 	// InjectInterrupt delivers a ⚡ user interject into the ACTIVE turn of a
 	// session (synthetic user_interrupt tool result — no new turn, no queueing).

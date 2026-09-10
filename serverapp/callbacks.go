@@ -874,6 +874,32 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.LocalSessionExists = func(channel, chatID string) bool {
 		return channel == "cli" && cli.StoredSessionExists(chatID)
 	}
+	// SessionExists — read paths use this to REJECT unknown ids instead of
+	// materializing a tenant (the phantom-session root cause). A session exists
+	// if it has a tenant row (it ran before) or, for web, a user_chats row (the
+	// user created that chatroom). The implicit default session
+	// (chatID == senderID) is exempted at the call site, not here.
+	callbacks.SessionExists = func(channel, chatID string) bool {
+		if channel == "" || chatID == "" {
+			return false
+		}
+		if channel == "cli" {
+			return cli.StoredSessionExists(chatID)
+		}
+		db := ag.MultiSession().DB()
+		if db == nil {
+			return false
+		}
+		if id, err := sqlite.NewTenantService(db).GetTenantIDByChannelChatID(channel, chatID); err == nil && id != 0 {
+			return true
+		}
+		if channel == "web" {
+			if sender, err := sqlite.NewChatService(db).GetSenderForChat(channel, chatID); err == nil && sender != "" {
+				return true
+			}
+		}
+		return false
+	}
 
 	// ─── Session queue (v3 staging tray + ⚡ interject) ───
 	// All three route to the agent's per-session queue state (session_queue.go).

@@ -130,6 +130,7 @@
 - **Recurring jobs skip missed executions on restart (by design).** `cleanupExpiredJobs` recalculates `next_run` from `now` for recurring jobs. This matches traditional cron semantics — no catch-up execution.
 
 ### Startup
+- **⚠️ 读路径绝不能被"已删除会话"重新 materialize（2026-09-10「幽灵会话」根治）**：`tenants` 里反复冒出用户没创建过的会话 —— 名字是默认的 `chat_XXXX`、`msgs=0`、**不在 `user_chats`**，删了又生（用户报告"总是莫名其妙多几个我没有的会话"）。根因：**任何携带（已删除）chatID 的读请求都会经 `GetOrCreateSession` 把 tenant 建回来**；客户端仍持有旧 chatID（旧标签页 / 缓存布局 / 次要设备）重连 **SSE** 即触发（日志实证：`SSE client connected chat_id=chat_B7FCB563CBCD`，而该会话此前已被 `Chat deleted` 两次并 `Tenant session destroyed`）。修复：`WebCallbacks.SessionExists`（tenant ∪ `user_chats` ∪ CLI 本地文件）+ **`handleSSE` 对未知会话直接 404，绝不 materialize**；隐式默认会话（`chatID == senderID`，如 `web-4`）豁免（它从不显式创建）。测试：`channel/web/web_sse_ghost_test.go`（未知会话 404 且不建 tenant + 默认会话仍放行）。**清理存量**：`tenants` 中 `channel='web'` ∧ 不在 `user_chats` ∧ **零消息**的行（**有消息的一律保留**）。
 - `NewOpenAILLM` loads model list asynchronously. `ListModels()` returns fallback immediately.
 - Settings save is synchronous — all local I/O, no network calls.
 - **`SaveToFile` uses deep JSON merge to preserve unknown fields.** `json.Unmarshal` silently drops fields not in the Go struct. `SaveToFile` reads the existing disk file first and recursively merges struct JSON into it, so user-added custom fields (or future struct fields added in newer versions) survive load→save cycles. Never bypass `SaveToFile` with raw `json.Marshal` writes to config.json.
