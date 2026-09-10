@@ -36,6 +36,36 @@ type ImageResolver interface {
 	ResolveImage(ctx context.Context, ref string) (dataURL string, err error)
 }
 
+// localPathProvider is an OPTIONAL extension of ImageResolver: when the
+// resolver can map a reference to a real file on this machine, the model is
+// told that path. Without it the model receives pixels and nothing else — asked
+// to e.g. `ps` a pasted screenshot it has no filename to work with and ends up
+// scanning the whole filesystem.
+type localPathProvider interface {
+	LocalPath(ref string) (string, bool)
+}
+
+// imageRefText renders the caption that accompanies an image part. It keeps the
+// reference visible to the model and prefers an actionable LOCAL PATH when the
+// resolver can provide one.
+func imageRefText(alt, ref string, mc *MultimodalConfig) string {
+	name := strings.TrimSpace(alt)
+	if name == "" {
+		name = "未命名"
+	}
+	if ref == "" || strings.HasPrefix(ref, "data:") {
+		return "[图片: " + name + "]"
+	}
+	if mc.ImageResolver != nil {
+		if p, ok := mc.ImageResolver.(localPathProvider); ok {
+			if local, ok2 := p.LocalPath(ref); ok2 && local != "" {
+				return "[图片: " + name + "；本地路径: " + local + "（可直接读取/处理；引用: " + ref + "）]"
+			}
+		}
+	}
+	return "[图片: " + name + "；引用: " + ref + "]"
+}
+
 // MultimodalConfig carries the per-request vision settings for message
 // building. Attached to OpenAI/Anthropic clients from the per-model
 // subscription config (PerModelConfig.Vision / VisionDetail) at
@@ -173,6 +203,12 @@ func parseMultimodalContent(ctx context.Context, content string, mc *MultimodalC
 				parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "加载失败", r.url)})
 				continue
 			}
+			// Caption FIRST, then the pixels: the image part carries no path,
+			// so without this the model knows what the picture looks like but
+			// not where it lives. Degraded paths (vision off / failure / over
+			// budget) already keep the reference via imagePlaceholder — this
+			// closes the gap for the SUCCESS path, which is the common case.
+			parts = append(parts, imageContentPart{Type: "text", Text: imageRefText(r.alt, r.url, mc)})
 			parts = append(parts, imageContentPart{Type: "image", URL: dataURL, Detail: mc.VisionDetail})
 		}
 	}

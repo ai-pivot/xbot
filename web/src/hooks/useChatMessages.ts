@@ -480,7 +480,11 @@ export function useChatMessages({
       // 并回填 DB 字段 —— store 的槽位结构天然保证 persisted user / notification
       // 在竞态 reload 时不消失（等价于现有 reconcile 的保护规则）。
       if (requestHasDestructiveMutation()) {
-        store.clear()
+        // destructive（rewind/cancel）→ DB 快照重建本地提交。但乐观 user 行
+        // （turnID==0，尚未绑定 turn）必须保留：用户"发一条立刻 cancel"时它
+        // 还没进 DB 快照，clear() 掉就是消息凭空消失（用户报告）。乐观行只
+        // 影响 pending 列表，rewind 的语义（slots 重建）不受影响。
+        store.clearForDestructiveReload()
       }
       store.mergeHistory(parsed, { replace: true, watermark: data.last_seq ?? 0 })
       syncMessages()

@@ -83,6 +83,9 @@ var viewimgIDRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}(\.[a-zA-Z0-9]{1,8})?
 type webImageResolver struct {
 	provider web.OSSProvider // may be nil (no OSS configured — key refs fail)
 	viewDir  string          // ~/.xbot/view_images
+	// uploadDir is <xbotHome>/uploads — where handleCloudUpload spills a local
+	// copy of every web upload so the model can be told a REAL path.
+	uploadDir string
 	// workspaceRoots whitelist file:// references (absolute local paths, e.g.
 	// CLI messages embedding workspace screenshots). Empty = file:// always
 	// fails to resolve (degrades to a placeholder, never blocks the request).
@@ -98,6 +101,7 @@ type webImageResolver struct {
 // image paths from the agent's own workspace).
 func NewImageResolver(provider web.OSSProvider, xbotHome string, workspaceRoots ...string) *webImageResolver {
 	dir := filepath.Join(xbotHome, "view_images")
+	uploadDir := filepath.Join(xbotHome, "uploads")
 	roots := make([]string, 0, len(workspaceRoots)+1)
 	for _, r := range workspaceRoots {
 		if r != "" {
@@ -108,6 +112,7 @@ func NewImageResolver(provider web.OSSProvider, xbotHome string, workspaceRoots 
 	}
 	return &webImageResolver{
 		provider:       provider,
+		uploadDir:      uploadDir,
 		viewDir:        dir,
 		workspaceRoots: roots,
 		http: &http.Client{
@@ -149,6 +154,56 @@ func GetImageResolver() llm.ImageResolver {
 
 // ResolveImage implements llm.ImageResolver. Errors degrade to text
 // placeholders in the LLM layer — never fail the request here.
+// LocalPath maps a reference to a REAL file on this machine so the model can
+// act on it directly (open / ps / read) instead of guessing where the picture
+// lives. Returns ("", false) when the ref has no local counterpart — a remote
+// http URL, or an upload that never got spilled to disk.
+//
+// This is the actionable half of the fix for "asked to `ps` a pasted image, the
+// model scans the filesystem": the image part carries pixels only, so the
+// caption needs a path it can use.
+func (r *webImageResolver) LocalPath(ref string) (string, bool) {
+	switch {
+	case strings.HasPrefix(ref, "viewimg://"):
+		id := strings.TrimPrefix(ref, "viewimg://")
+		if !viewimgIDRe.MatchString(id) {
+			return "", false
+		}
+		return filepath.Join(r.viewDir, id), true
+	case strings.HasPrefix(ref, "/api/files/viewimg/"):
+		id := strings.TrimPrefix(ref, "/api/files/viewimg/")
+		if !viewimgIDRe.MatchString(id) {
+			return "", false
+		}
+		return filepath.Join(r.viewDir, id), true
+	case strings.HasPrefix(ref, "/api/files/download"):
+		u, err := url.Parse(ref)
+		if err != nil {
+			return "", false
+		}
+		key := u.Query().Get("key")
+		if key == "" || !strings.HasPrefix(key, "uploads/") || strings.Contains(key, "..") {
+			return "", false
+		}
+		// Mirror of the spill-to-disk copy written by handleCloudUpload.
+		if r.uploadDir == "" {
+			return "", false
+		}
+		path := filepath.Join(r.uploadDir, key)
+		if _, err := os.Stat(path); err != nil {
+			return "", false
+		}
+		return path, true
+	case strings.HasPrefix(ref, "file://"):
+		path := strings.TrimPrefix(ref, "file://")
+		if isUnderAnyRoot(path, r.workspaceRoots...) {
+			return path, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
 func (r *webImageResolver) ResolveImage(ctx context.Context, ref string) (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("empty image reference")

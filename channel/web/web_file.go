@@ -13,6 +13,8 @@ import (
 	log "xbot/logger"
 
 	"github.com/google/uuid"
+	"os"
+	"xbot/config"
 )
 
 const (
@@ -161,6 +163,20 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		}).Error("Failed to upload file to cloud OSS")
 		jsonErrorResponse(w, http.StatusInternalServerError, "failed to upload to cloud storage")
 		return
+	}
+
+	// Spill a local copy so the model can be handed a REAL path (see
+	// webImageResolver.LocalPath). Without it a pasted screenshot exists only as
+	// an opaque OSS key: the vision model sees the pixels but has no filename to
+	// act on, so "ps this image" degenerates into a filesystem-wide search.
+	// Best-effort: a failure here must not fail the upload.
+	if home := config.XbotHome(); home != "" {
+		localPath := filepath.Join(home, "uploads", key)
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+			log.WithError(err).WithField("path", localPath).Warn("Failed to create local upload dir")
+		} else if err := os.WriteFile(localPath, data, 0o600); err != nil {
+			log.WithError(err).WithField("path", localPath).Warn("Failed to spill local copy of upload")
+		}
 	}
 
 	log.WithFields(log.Fields{

@@ -441,6 +441,25 @@ export class MessageStore {
     this.bumpCommitted()
   }
 
+  /**
+   * destructive reload（rewind / cancel）用的清理：重建 slots/legacy（DB 快照权威），
+   * 但【保留乐观 user 行】。
+   *
+   * 乐观行是"用户刚发出、还没绑定 turn"的消息（turnID == 0，只存在于
+   * pendingUsers，不在 slots 里）。把它一起清掉，就会出现用户报告的现象：
+   * 发一条消息后立刻 cancel → destructive reload → store.clear() 清光 pending
+   * → mergeHistory 只回填 DB 快照（快照里还没有这条刚发的消息）→ **消息消失**。
+   * 保留它对 rewind 无副作用：被回滚的消息早已持久化并挂在 slots 上，不在这里。
+   */
+  clearForDestructiveReload(): void {
+    this.slots.clear()
+    this.turnIDs = []
+    this.legacy = []
+    this.cache = null
+    this.cacheKey = ''
+    this.bumpCommitted()
+  }
+
   /** REST 响应回填 optimistic user（persisted/turnID/dbID/timestamp/queued）。
    *  turnID 从 0 变 >0 时把 user 从 pending 迁移到对应 slot（绑定）。 */
   patchUserById(id: string, patch: Partial<ChatMessage>): void {

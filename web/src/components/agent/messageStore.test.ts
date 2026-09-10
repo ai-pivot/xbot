@@ -517,3 +517,40 @@ describe('MessageStore — Loop2（frozen 污染 / watermark 乐观行）', () =
     expect(rows.some((r) => r.id === 'echo-old')).toBe(false) // 过期 echo 删除
   })
 })
+
+describe('destructive reload 与乐观 user 行', () => {
+  it('REPRO: 发完立刻 cancel —— destructive reload 后乐观 user 行不得消失', () => {
+    const store = new MessageStore()
+    // 用户刚发出消息：乐观行，turnID == 0（尚未绑定 turn），只存在于 pendingUsers。
+    store.setUser(0, {
+      id: 's-1',
+      role: 'user',
+      content: 'hello',
+      turnID: 0,
+      persisted: false,
+      timestamp: 1,
+    } as never)
+    expect(store.toRows().some((r) => r.content === 'hello')).toBe(true)
+
+    // cancel → destructive reload，DB 快照里还没有这条消息。
+    store.clearForDestructiveReload()
+    store.mergeHistory([], { replace: true, watermark: 0 })
+
+    // 核心断言：消息仍在（旧实现用 clear() 会把它清掉）。
+    expect(store.toRows().some((r) => r.content === 'hello')).toBe(true)
+  })
+
+  it('反向保护：clear()（会话切换）仍应清空乐观 user 行', () => {
+    const store = new MessageStore()
+    store.setUser(0, {
+      id: 's-2',
+      role: 'user',
+      content: 'bye',
+      turnID: 0,
+      persisted: false,
+      timestamp: 1,
+    } as never)
+    store.clear()
+    expect(store.toRows().some((r) => r.content === 'bye')).toBe(false)
+  })
+})
