@@ -151,7 +151,7 @@ func (p *QiniuProvider) Upload(key string, data []byte) error {
 	// while the upload keeps running in the background — the user sees failure
 	// for a request that eventually succeeds. A 30s cap turns that into a
 	// clean error the caller can surface ("上传超时，请重试") instead of a 502.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	err := formUploader.Put(ctx, &ret, upToken, key, bytes.NewReader(data), int64(len(data)), nil)
 	if err != nil {
