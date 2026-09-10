@@ -231,23 +231,37 @@ function Metric({ label, value, sub, title }: { label: string; value: string; su
 
 // ── 主组件 ─────────────────────────────────────────────────────────────────
 
-export function SessionStatsPanel() {
+export function SessionStatsPanel({
+  viewParams,
+}: {
+  /** openViewTab 传入的参数。{ mode: 'full' } = 详情形态（显式声明，不靠猜宽度）。 */
+  viewParams?: Record<string, unknown>
+} = {}) {
   const runtime = usePluginRuntime()
   const activeSession = useSessionStore().activeSession
   const { t } = useI18n()
 
-  // 容器宽度自适应：>= 640px 视为主编辑区形态（完整统计 + 图表），否则侧边栏紧凑形态。
+  // 形态判定：显式声明优先，容器宽度兜底。
+  // - 详情形态由【打开方式】声明（openViewTab 传 params:{mode:'full'}）。手机屏宽
+  //   只有 ~375px，纯按宽度判定会让「统计详情」渲染成侧边栏紧凑版的复刻——用户
+  //   报告的 bug。
+  // - 未声明时保持原行为：>= 640px 视为主编辑区形态，否则侧边栏紧凑形态。
+  const forceFull = viewParams?.mode === 'full'
   const rootRef = useRef<HTMLDivElement>(null)
-  const [wide, setWide] = useState(false)
+  const [wide, setWide] = useState(forceFull)
   useEffect(() => {
     const el = rootRef.current
     if (!el) return
+    if (forceFull) {
+      setWide(true)
+      return
+    }
     const ro = new ResizeObserver((entries) => {
       for (const e of entries) setWide(e.contentRect.width >= 640)
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [forceFull])
 
   const [stats, setStats] = useState<TenantUsageStats | null>(null)
   const [userUsage, setUserUsage] = useState<UserTokenUsage | null>(null)
@@ -334,6 +348,8 @@ export function SessionStatsPanel() {
       title: t('plugins.sessionStats.openOverview'),
       icon: 'chart',
       key: 'xbot.session-stats.panel',
+      // 显式声明详情形态——宿主据此渲染完整统计（不依赖容器宽度，手机端同样正确）。
+      params: { mode: 'full' },
     })
   }
 
@@ -342,7 +358,7 @@ export function SessionStatsPanel() {
       {/* 工具栏：窄=「统计详情」展开入口 + 刷新；宽=时间范围切换 + 刷新。 */}
       <div className="flex items-center justify-between gap-1 border-b border-border/40 px-1.5 py-1">
         {wide ? (
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1" data-testid="stats-range">
             {[7, 30, 90].map((d) => (
               <Button
                 key={d}
@@ -359,6 +375,7 @@ export function SessionStatsPanel() {
           <Button
             size="sm"
             variant="ghost"
+            data-testid="stats-open-detail"
             className="h-6 gap-1 px-1.5 text-[10px]"
             title={t('plugins.sessionStats.openOverviewHint')}
             onClick={openOverview}

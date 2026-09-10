@@ -74,7 +74,14 @@ class PluginViewErrorBoundary extends Component<
  * 加载态。否则在 framer-motion 的 AnimatePresence（flushSync）时序下，异步
  * setState 切换 loading→组件会让 hook 链断裂，触发 React #311。
  */
-function BuiltinView({ view }: { view: ViewContribution }) {
+function BuiltinView({
+  view,
+  viewParams,
+}: {
+  view: ViewContribution
+  /** openViewTab 传入的参数（显式形态声明，如 { mode: 'full' }）。 */
+  viewParams?: Record<string, unknown>
+}) {
   switch (view.id) {
     case 'xbot.plugin-manager.panel':
       return (
@@ -97,7 +104,7 @@ function BuiltinView({ view }: { view: ViewContribution }) {
     case 'xbot.session-stats.panel':
       return (
         <PluginViewErrorBoundary>
-          <SessionStatsPanel />
+          <SessionStatsPanel viewParams={viewParams} />
         </PluginViewErrorBoundary>
       )
     default:
@@ -109,7 +116,7 @@ function BuiltinView({ view }: { view: ViewContribution }) {
 export function PluginView({ pluginId, view, panelParams }: LoadedViewProps) {
   // 内置视图（builtin: 前缀）——同步渲染，无异步加载态。
   if (view.entry?.startsWith('builtin:')) {
-    return <BuiltinView view={view} />
+    return <BuiltinView view={view} viewParams={panelParams?.viewParams} />
   }
   // 第三方插件（URL 加载）：独立组件，hooks 数量恒定，不受内置视图影响。
   return <AsyncPluginView pluginId={pluginId} view={view} viewParams={panelParams?.viewParams} />
