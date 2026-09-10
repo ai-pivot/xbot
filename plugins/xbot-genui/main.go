@@ -107,12 +107,21 @@ Example:
 
 func main() {
 	enc := json.NewEncoder(os.Stdout)
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
-
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	// bufio.Reader, NOT bufio.Scanner: Scanner aborts with "token too long" past
+	// its cap, which would kill this loop on a large request (a big panel source
+	// is legitimate). Reader has no line limit — mirrors the host-side fix in
+	// plugin/json.go.
+	br := bufio.NewReader(os.Stdin)
+	for {
+		raw, rerr := br.ReadBytes('\n')
+		if rerr != nil && len(raw) == 0 {
+			return // EOF — host closed the pipe
+		}
+		line := strings.TrimSpace(string(raw))
 		if line == "" {
+			if rerr != nil {
+				return
+			}
 			continue
 		}
 		var peek struct {

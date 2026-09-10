@@ -109,3 +109,7 @@ web/*.jpeg
 /xbot-cli-static-riscv64
 .superpowers/
 core.*
+
+# plugin build artifacts — never commit compiled plugin binaries
+plugins/xbot-genui/xbot-genui
+plugins/*/bin/

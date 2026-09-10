@@ -242,12 +242,20 @@ func Run(h *Handler) {
 // run is the internal loop, split out for testing.
 func run(h *Handler, stdin io.Reader, stdout io.Writer) {
 	enc := json.NewEncoder(stdout)
-	sc := bufio.NewScanner(stdin)
-	sc.Buffer(make([]byte, 64*1024), maxLineSize)
-
-	for sc.Scan() {
-		line := sc.Bytes()
+	// bufio.Reader, NOT bufio.Scanner: Scanner aborts with "token too long" once
+	// a line exceeds its buffer, which would kill this protocol loop on a large
+	// request (big tool payloads are legitimate). Reader has no line limit.
+	br := bufio.NewReader(stdin)
+	for {
+		raw, err := br.ReadBytes('\n')
+		if err != nil && len(raw) == 0 {
+			return // EOF — host closed the pipe
+		}
+		line := bytes.TrimRight(raw, "\r\n")
 		if len(line) == 0 {
+			if err != nil {
+				return
+			}
 			continue
 		}
 
@@ -405,13 +413,13 @@ func Call(ctx context.Context, w io.Writer, r io.Reader, method string, params a
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), maxLineSize)
-	if !sc.Scan() {
+	// Reader, not Scanner — same reasoning as the run loop above.
+	respLine, err := bufio.NewReader(r).ReadBytes('\n')
+	if err != nil && len(respLine) == 0 {
 		return nil, fmt.Errorf("read response: EOF")
 	}
 	var resp Response
-	if err := json.Unmarshal(sc.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(bytes.TrimRight(respLine, "\r\n"), &resp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 	return &resp, nil
@@ -438,5 +446,3 @@ var HookResultAllow = &HookResult{Decision: "allow"}
 func HookResultDeny(msg string) *HookResult {
 	return &HookResult{Decision: "deny", Message: msg}
 }
-
-const maxLineSize = 1 * 1024 * 1024 // 1MB, matches plugin/json.go
