@@ -271,6 +271,11 @@ func formatTask(task *BackgroundTask) string {
 	}
 	if preview != "" {
 		fmt.Fprintf(&sb, "Output Preview:\n%s\n", preview)
+		if len(task.CurrentOutput()) > 500 {
+			// The model only sees this preview — tell it how to get the rest,
+			// otherwise it treats a truncated tail as the whole result.
+			fmt.Fprintf(&sb, "[Output truncated — use task_read (task_id=%q) for the full output.]\n", task.ID)
+		}
 	}
 
 	return sb.String()
@@ -301,6 +306,14 @@ func formatSubAgentTask(task *SubAgentTask) string {
 		preview := task.Content
 		if len(preview) > 500 {
 			preview = truncateTailPreview(preview, 500)
+			// The model only sees this preview. Point it at the places that
+			// actually hold the full text: the completion notification (which
+			// offloads oversized payloads and then carries an
+			// `offload_recall(id=…)` marker) and the sub-agent's own session.
+			fmt.Fprintf(&sb, "Result Preview:\n%s\n", preview)
+			fmt.Fprintf(&sb, "[Result truncated (%d chars total). Full text: the sub-agent completion notification (call offload_recall(id=…) if it carried an 📂 [offload:…] marker), or SubAgent(action=\"inspect\", role=%q, instance=%q).]\n",
+				len(task.Content), task.Role, task.Instance)
+			return sb.String()
 		}
 		fmt.Fprintf(&sb, "Result Preview:\n%s\n", preview)
 	}
@@ -322,6 +335,26 @@ func truncateTailPreview(s string, maxBytes int) string {
 		tail = tail[1:]
 	}
 	return "... " + tail
+}
+
+// truncateHeadPreview keeps the HEAD of s (up to maxBytes bytes) with a " ..."
+// suffix, adjusting the cut to a UTF-8 rune boundary so CJK/multibyte content
+// is never sliced mid-rune. Inputs shorter than maxBytes are returned
+// unchanged.
+//
+// Use this (not a bare `s[:n]`) whenever a truncated string reaches the model:
+// a raw byte slice can hand the LLM invalid UTF-8, and it silently drops the
+// tail with no way to recover it.
+func truncateHeadPreview(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	head := s[:maxBytes-4] // reserve 4 bytes for the " ..." suffix
+	// Drop trailing bytes until the slice ends on a rune boundary.
+	for len(head) > 0 && !utf8.ValidString(head) {
+		head = head[:len(head)-1]
+	}
+	return head + " ..."
 }
 
 // This is used by the engine to inject the task result into the conversation as a tool message.
@@ -361,10 +394,12 @@ func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string 
 			// Sanitize \r overwrites and ANSI escape sequences so that progress
 			// bar output (tqdm, curl, etc.) renders cleanly in the TUI.
 			output := SanitizeOutput(taskOut)
-			// Truncate large output to avoid bloating context
+			// Truncate large output to avoid bloating context.
 			const maxOutputLen = 2000
 			if len(output) > maxOutputLen {
-				fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), output[:maxOutputLen], task.ID)
+				// truncateHeadPreview is rune-safe (a raw output[:n] can slice
+				// CJK mid-rune and hand the model invalid UTF-8).
+				fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), truncateHeadPreview(output, maxOutputLen), task.ID)
 			} else {
 				fmt.Fprintf(&sb, "\nOutput:\n%s", output)
 			}
