@@ -176,15 +176,15 @@ func (f *LLMFactory) lookupSub(subID string) *sqlite.LLMSubscription {
 	return sub
 }
 
-// resolveEffectiveContext resolves max context for (model, subID):
-// per-model subscription config → global model_contexts → 0
+// resolveEffectiveContext resolves max context for (model, subID). It delegates to
+// resolveSubContextFor (the (subID, model) variant) so the SubAgent path
+// (GetLLMForModel) and the session path (GetLLM/GetLLMForChat) share ONE
+// priority chain — subscription_models table → sub.PerModelConfigs projection →
+// global model_contexts. The earlier projection-only lookup returned 0 whenever
+// the projection was empty/stale, silently capping a SubAgent at the
+// agent-global default (200k) while the session resolved the model's real 1M.
 func (f *LLMFactory) resolveEffectiveContext(model string, subID string) int {
-	if sub := f.lookupSub(subID); sub != nil {
-		if v := sub.GetPerModelMaxContext(model); v > 0 {
-			return v
-		}
-	}
-	return f.resolveModelContext(model)
+	return f.resolveSubContextFor(subID, model)
 }
 
 // GetEffectiveMaxContext is the single source of truth for "what max context should the UI show?".
@@ -1068,35 +1068,49 @@ func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlit
 	if len(subs) == 0 {
 		return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscriptions for %s", senderID)
 	}
-	// find returns the subscription for the model, preferring the system subscription.
-	// matchFn reports whether a subscription provides the model.
-	find := func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
-		for i := range subs {
-			sub := subs[i]
-			if !sub.Enabled {
-				continue // disabled subscription cannot own a selectable model
-			}
-			if !matchFn(sub) {
-				continue
-			}
-			return sub
+	// The SAME model name is commonly provided by several subscriptions (one
+	// upstream model mirrored in two accounts). Taking the FIRST match made the
+	// model's own per-model config invisible whenever the duplicate that won the
+	// scan had no config for it (max_context = 0): callers then fell back to the
+	// agent-global default (200k) although the model is configured with 1M on
+	// another subscription. Rank the providers instead: a subscription that
+	// CONFIGURES this model (enabled row with max_context > 0) wins over one that
+	// merely lists it.
+	// Real-world case (verified against the live DB): glm-5.3 exists under
+	// mint(1M)/mintcn(0)/openai mint(0); deepseek-flash under dpsk(0)/dpsk
+	// mint(1M) — the SubAgent path (bare model name) resolved the 0-rows and was
+	// capped at 200k while the session (tenants binding) correctly got 1M.
+	var anyProvider, configured *sqlite.LLMSubscription
+	for i := range subs {
+		sub := subs[i]
+		if !sub.Enabled {
+			continue
 		}
-		return nil
-	}
-	// Pass 1: enabled subscription_models rows.
-	if owner := find(func(sub *sqlite.LLMSubscription) bool {
 		models, gerr := f.subscriptionSvc.GetModels(sub.ID)
 		if gerr != nil || len(models) == 0 {
-			return false
+			continue
 		}
 		for _, sm := range models {
-			if sm.Model == model && sm.Enabled {
-				return true
+			if sm.Model != model || !sm.Enabled {
+				continue
 			}
+			if anyProvider == nil {
+				anyProvider = sub
+			}
+			if sm.MaxContext > 0 && configured == nil {
+				configured = sub
+			}
+			break
 		}
-		return false
-	}); owner != nil {
-		return owner, nil
+		if configured != nil {
+			break
+		}
+	}
+	if configured != nil {
+		return configured, nil
+	}
+	if anyProvider != nil {
+		return anyProvider, nil
 	}
 	return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscription provides model %q", model)
 }
