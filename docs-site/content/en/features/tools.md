@@ -37,8 +37,6 @@ sidebar" and the agent handles it.
 The agent receives a task ID and continues working. Use `task_status` to check
 progress — but don't poll repeatedly.
 
-![Background tasks](/img/cli/bg-tasks.gif)
-
 **Promote to background (Web UI):** while a foreground shell command is still
 running, click the "转后台" (promote) button below its terminal card — the
 command immediately moves to the background, the agent continues its iteration,
@@ -188,8 +186,6 @@ Tools available depend on the memory provider. See [Memory System](../memory/) f
 | `TodoList` | List current TODOs with status. |
 | `Logs` | List/read xbot log files with filtering. |
 | `oauth_authorize` | Send an OAuth authorization card to the user (Feishu). |
-
-![AskUser interactive dialog](/img/cli/askuser.png)
 
 ## Permission Control
 

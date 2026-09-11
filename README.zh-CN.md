@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img alt="xbot Web UI — 首次启动" src="docs-site/static/img/web/welcome.png" width="860">
+  <img alt="xbot Web UI — 一个真实会话：多轮对话、工具调用与逐迭代进度" src="docs-site/static/img/app/hero.png" width="860">
 </p>
 
 ---

@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img alt="xbot Web UI — first launch" src="docs-site/static/img/web/welcome.png" width="860">
+  <img alt="xbot Web UI — a live session with tool calls and per-iteration progress" src="docs-site/static/img/app/hero.png" width="860">
 </p>
 
 ---
