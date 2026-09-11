@@ -330,6 +330,23 @@ const ja: Translations = {
       promoteHint: '不阻塞本轮对话',
       bgTask: 'バックグラウンドタスク',
       bgSuccessTitle: 'コマンドをバックグラウンドへ移動しました',
+
+      // 注入型（synthetic）通知工具卡片：bg task / 子代理完成、cron、插话等。
+      // 后端把这些字段放进 toolHints（tools.SyntheticToolHints，模型不可见）。
+      syntheticBgTask: 'バックグラウンドタスク',
+      syntheticSubAgent: 'サブエージェント',
+      syntheticOriginalTask: '元のタスク',
+      syntheticDuration: '所要時間',
+      syntheticExitCode: '終了コード',
+      syntheticOutput: '出力',
+      syntheticResult: '結果',
+      syntheticCronFired: 'スケジュール実行が発火',
+      syntheticAsyncMessage: '非同期メッセージを受信',
+      syntheticDelivered: 'メッセージを配信しました',
+      syntheticCancelled: 'キャンセル済み',
+      syntheticNoOutput: '（出力なし）',
+      syntheticShowMore: 'すべて表示',
+      syntheticShowLess: '折りたたむ',
     },
     thinkingLive: '思考中 {{count}} 字',
     thoughtChars: '思考 {{count}} 字',

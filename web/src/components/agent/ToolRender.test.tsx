@@ -10,7 +10,7 @@ import { screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath } from '@/components/agent/ToolRender'
+import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints } from '@/components/agent/ToolRender'
 import { DiffView, extractDiffSource, parseUnifiedDiff } from '@/components/agent/DiffView'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -346,5 +346,87 @@ describe('DiffView', () => {
     // The card root carries the single shared overflow-auto.
     const root = pres[0].closest('.overflow-auto')
     expect(root).not.toBeNull()
+  })
+})
+
+// ── injected (synthetic) notification tools ─────────────────────────────
+//
+// The backend injects bg-task / sub-agent completion, cron fires, etc. as fake
+// tool-call pairs and ships a UI-only payload in toolHints
+// (tools.SyntheticToolHints). These cards must show the ORIGINAL task, status,
+// duration and a preview — and degrade to the summary text for history rows
+// written before the payload existed.
+
+describe('parseSyntheticHints', () => {
+  it('parses the backend payload', () => {
+    const h = parseSyntheticHints(
+      JSON.stringify({ kind: 'bg_task', task_id: '3f8f492a', task: 'make build', status: 'done', exit_code: 0, elapsed_ms: 1234 }),
+    )
+    expect(h?.kind).toBe('bg_task')
+    expect(h?.task).toBe('make build')
+    expect(h?.exit_code).toBe(0)
+  })
+
+  it('returns null for empty / non-JSON / malformed payloads (legacy rows)', () => {
+    expect(parseSyntheticHints('')).toBeNull()
+    expect(parseSyntheticHints('Background task 3f8f492a completed.')).toBeNull()
+    expect(parseSyntheticHints('{not json')).toBeNull()
+  })
+})
+
+describe('SyntheticToolCard', () => {
+  it('renders a background task card with the ORIGINAL command, status, exit code and duration', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      label: 'bg:3f8f492a',
+      status: 'done',
+      summary: '背景任务 3f8f492a · done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: '3f8f492a', task: 'make build -j8',
+        status: 'done', exit_code: 0, elapsed_ms: 1234, output: 'ok\nbuilt 3 targets',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/3f8f492a/)).toBeInTheDocument()
+    // the ORIGINAL task/command is the whole point of the card
+    expect(screen.getByText('make build -j8')).toBeInTheDocument()
+    // multi-line preview: match a substring (getByText normalizes whitespace)
+    expect(screen.getByText(/built 3 targets/)).toBeInTheDocument()
+    expect(screen.getByText('done')).toBeInTheDocument()
+    expect(screen.getByText(/(退出码|Exit code)\s*0/)).toBeInTheDocument()
+  })
+
+  it('renders a sub-agent card with role/instance and the ORIGINAL task', () => {
+    const tool = makeTool({
+      name: 'bg_subagent_completed',
+      label: 'bgsub:explore/mem-1',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'subagent', role: 'explore', instance: 'mem-1',
+        task: '找出登录流程的入口', status: 'done', elapsed_ms: 42_000,
+        output: '入口在 channel/web/web_auth.go',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/explore\/mem-1/)).toBeInTheDocument()
+    expect(screen.getByText('找出登录流程的入口')).toBeInTheDocument()
+    expect(screen.getByText('入口在 channel/web/web_auth.go')).toBeInTheDocument()
+  })
+
+  it('falls back to the summary text when toolHints is absent (legacy history)', () => {
+    const tool = makeTool({
+      name: 'cron_fired',
+      label: 'cron',
+      status: 'done',
+      summary: 'A scheduled cron job fired.\n\nMessage: nightly build',
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/nightly build/)).toBeInTheDocument()
+  })
+
+  it('renders a cancel marker card', () => {
+    const tool = makeTool({ name: 'user_cancelled', label: 'cancelled by user', status: 'done' })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/取消|Cancelled/)).toBeInTheDocument()
   })
 })

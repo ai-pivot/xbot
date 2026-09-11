@@ -151,6 +151,12 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 	toolID := ""
 	toolContent := ""
 	label := ""
+	// summary is the concise one-liner the web shows on the collapsed card;
+	// hints is the UI-only structured payload (original task/command, status,
+	// duration, output preview) the web expands into. Neither is sent to the
+	// model — it only sees toolContent.
+	summary := ""
+	hints := ""
 	var elapsedMS int64
 
 	switch n := notif.(type) {
@@ -159,6 +165,8 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 		toolID = "bg_" + n.ID
 		toolContent = tools.FormatBgTaskCompletion(n, "")
 		label = fmt.Sprintf("bg:%s", n.ID)
+		summary = fmt.Sprintf("背景任务 %s · %s", n.ID, n.Status)
+		hints = tools.EncodeSyntheticToolHints(tools.BgTaskHints(n))
 		if n.FinishedAt != nil {
 			elapsedMS = n.FinishedAt.Sub(n.StartedAt).Milliseconds()
 		}
@@ -170,16 +178,23 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 		toolID = fmt.Sprintf("bgsub_%s_%s_%d", n.Role, n.Instance, seq)
 		toolContent = tools.FormatSubAgentBgNotify(n)
 		label = fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance)
+		summary = fmt.Sprintf("子代理 %s/%s 已完成", n.Role, n.Instance)
+		hints = tools.EncodeSyntheticToolHints(tools.SubAgentHints(n))
+		elapsedMS = n.Elapsed.Milliseconds()
 	case *tools.CronFired:
 		toolName = "cron_fired"
 		toolID = fmt.Sprintf("cron_cancel_%d", seq)
 		toolContent = fmt.Sprintf("A scheduled cron job fired.\n\nMessage: %s", n.Message)
 		label = "cron"
+		summary = "定时任务已触发"
+		hints = tools.EncodeSyntheticToolHints(tools.MessageHints("cron", n.Message))
 	case *tools.AsyncMessageNotification:
 		toolName = "async_message"
 		toolID = fmt.Sprintf("async_cancel_%d", seq)
 		toolContent = n.Content
 		label = "async_message"
+		summary = "收到异步消息"
+		hints = tools.EncodeSyntheticToolHints(tools.MessageHints("async", n.Content))
 	default:
 		return llm.ChatMessage{}, llm.ChatMessage{}, IterationToolSnapshot{}, false
 	}
@@ -192,7 +207,8 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 		Label:     label,
 		Status:    string(ToolDone),
 		ElapsedMS: elapsedMS,
-		Summary:   toolContent,
+		Summary:   summary,
+		ToolHints: hints,
 	}
 	return assistantMsg, toolMsg, snapshot, true
 }
