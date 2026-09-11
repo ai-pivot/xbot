@@ -227,44 +227,48 @@ export const StagingTray = memo(function StagingTray({
 
   return (
     <div className="border-t border-border/50 bg-bg-primary px-3 py-1.5">
-      {/* Header 行 — 可折叠（默认折叠，只显示 count bar） */}
-      <button
-        type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        className="flex w-full items-center justify-between gap-2 text-left"
-      >
-        <div className="flex items-center gap-1.5 text-xs text-text-muted">
+      {/* Header 行 — 可折叠（默认折叠，只显示 count bar）
+          ⚠️ 外层必须是 <div>，不能是 <button>：折叠开关与「收起列表」是两个
+          不同动作，嵌套 <button> 是无效 HTML 且点击会双触发（同 AskUserPanel
+          的嵌套 checkbox 坑）。状态 chevron 只保留一个。 */}
+      <div className="flex w-full items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-expanded={!collapsed}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-xs text-text-muted"
+        >
           <Inbox className="size-3.5 shrink-0" />
-          <span className="font-medium">
-            📨 {t('agent.staging.title')}
+          <span className="truncate font-medium">
+            {t('agent.staging.title')}
             <span className="ml-1 rounded-full bg-bg-tertiary/80 px-1.5 py-px text-[10px] tabular-nums">
               {items.length}
             </span>
           </span>
           {items.length > 0 && (
-            <span className="text-[10px] text-text-muted/70">
+            <span className="shrink-0 text-[10px] text-text-muted/70">
               · {t('agent.staging.nextTurn', { turn: items[0].turn_id })}
             </span>
           )}
-        </div>
-        <div className="flex items-center gap-1">
-          {expanded ? (
-            <button
-              type="button"
-              aria-label={t('agent.staging.collapse')}
-              onClick={(e) => { e.stopPropagation(); setExpanded(false) }}
-              className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:bg-bg-tertiary hover:text-text-secondary"
-            >
-              <ChevronDown className="size-3" />
-            </button>
-          ) : null}
           {collapsed ? (
-            <ChevronRight className="size-3 text-text-muted/50" />
+            <ChevronRight className="size-3 shrink-0 text-text-muted/50" />
           ) : (
-            <ChevronDown className="size-3 text-text-muted/50" />
+            <ChevronDown className="size-3 shrink-0 text-text-muted/50" />
           )}
-        </div>
-      </button>
+        </button>
+        {expanded ? (
+          <button
+            type="button"
+            aria-label={t('agent.staging.collapse')}
+            title={t('agent.staging.collapse')}
+            onClick={() => setExpanded(false)}
+            className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:bg-bg-tertiary hover:text-text-secondary"
+          >
+            {t('agent.staging.collapse')}
+            <ChevronDown className="size-3" />
+          </button>
+        ) : null}
+      </div>
 
       {/* 队列卡片列表（折叠时不渲染） */}
       {collapsed ? null : (
