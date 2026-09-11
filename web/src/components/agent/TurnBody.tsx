@@ -17,7 +17,7 @@ import { IterationGroup } from './IterationHistory'
 import { LiveIteration } from './LiveIteration'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { continuousIterations } from './progressStore'
-import type { ProgressSnapshot, WebIteration } from '@/types/shared'
+import type { ProgressSnapshot, WebIteration, WebSubAgentProgress } from '@/types/shared'
 
 interface TurnBodyProps {
   iterations: WebIteration[]
@@ -25,6 +25,11 @@ interface TurnBodyProps {
   liveProgress?: ProgressSnapshot | null
   /** TurnID for data-attribute debugging (data-turn-id on each block). */
   turnID?: number
+}
+
+/** Stable identity of a SubAgent node across the committed / live views. */
+function subAgentKey(n: WebSubAgentProgress): string {
+  return `${n.role}:${n.instance ?? ''}`
 }
 
 export const TurnBody = memo(function TurnBody({
@@ -43,6 +48,16 @@ export const TurnBody = memo(function TurnBody({
   // but committed iterations only change when history grows.
   const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
 
+  // SubAgent nodes already rendered by the LIVE area. A node whose `iteration`
+  // is undefined is admitted by LiveIteration's filter (legacy / un-stamped
+  // data), so the same node could ALSO sit in a committed iteration's frozen
+  // `subAgents` — rendering it under both the iteration and the live area
+  // (duplicate card + doubled row height in the virtual list).
+  const liveSubAgentKeys = useMemo(
+    () => new Set((liveProgress?.subAgents ?? []).map(subAgentKey)),
+    [liveProgress],
+  )
+
   return (
     <div
       className="flex flex-col gap-1"
@@ -53,14 +68,17 @@ export const TurnBody = memo(function TurnBody({
       }
       data-iter-total={contiguous.length}
     >
-      {contiguous.map((iter, i) => (
-        <div key={iter.iteration ?? i} data-iter-id={iter.iteration} data-turn-id={turnID}>
-          <IterationGroup iteration={iter} />
-          {iter.subAgents && iter.subAgents.length > 0 && (
-            <SubAgentProgressTree nodes={iter.subAgents} />
-          )}
-        </div>
-      ))}
+      {contiguous.map((iter, i) => {
+        const frozenSubAgents = (iter.subAgents ?? []).filter(
+          (n) => !liveSubAgentKeys.has(subAgentKey(n)),
+        )
+        return (
+          <div key={iter.iteration ?? i} data-iter-id={iter.iteration} data-turn-id={turnID}>
+            <IterationGroup iteration={iter} />
+            {frozenSubAgents.length > 0 && <SubAgentProgressTree nodes={frozenSubAgents} />}
+          </div>
+        )
+      })}
       {liveProgress && (
         <div
           data-iter-id="live"

@@ -153,8 +153,10 @@ describe('ToolGroup', () => {
     // No fold arrow / no collapse container anywhere.
     expect(container.textContent).not.toContain('▸')
     expect(container.querySelector('.fold-container')).toBeNull()
-    // No tool pills (that model was removed).
-    expect(screen.queryAllByTestId('tool-pill')).toHaveLength(0)
+    // Structural assertion (the old `queryAllByTestId('tool-pill')` was
+    // vacuously true — nothing produces that testid anymore): exactly one
+    // card per tool.
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(2)
   })
 
   it('renders each of many tools individually (no "+N" overflow badge)', () => {
@@ -165,7 +167,8 @@ describe('ToolGroup', () => {
     for (let i = 0; i < 10; i++) {
       expect(screen.getByText(`detail ${i}`)).toBeInTheDocument()
     }
-    expect(screen.queryByTestId('tool-pill-more')).toBeNull()
+    // All ten cards render — no "+N" overflow badge collecting the tail.
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(10)
   })
 
   it('renders nothing for empty tools', () => {
@@ -193,23 +196,80 @@ describe('ToolGroup', () => {
     expect(container.textContent).toContain('CustomTool')
     expect(container.textContent).not.toContain('思考中…')
   })
+
+  // ── Sweep 语义矩阵（自旧的折叠实现移植，防止回归无人拦截） ──
+  it.each(['pending', 'running', 'generating'] as const)(
+    'in-progress status %s renders the header name with a sweep',
+    (status) => {
+      const { container } = renderWithProviders(
+        <ToolGroup tools={[makeTool({ name: 'CustomTool', label: 'CustomTool: x', status })]} />,
+      )
+      const sweep = container.querySelector<HTMLElement>('.sweep-text')
+      expect(sweep).not.toBeNull()
+      // 运行中的颜色 token 必须是 --status-running（与 statusVisual 同源）
+      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--status-running)')
+    },
+  )
+
+  it.each(['done', 'error'] as const)(
+    'settled status %s renders the header name WITHOUT a sweep',
+    (status) => {
+      const { container } = renderWithProviders(
+        <ToolGroup tools={[makeTool({ name: 'CustomTool', label: 'CustomTool: x', status })]} />,
+      )
+      expect(container.querySelector('.sweep-text')).toBeNull()
+    },
+  )
+
+  it('a running SubAgent does NOT sweep (the progress card owns that animation)', () => {
+    const { container } = renderWithProviders(
+      <ToolGroup
+        tools={[makeTool({ name: 'SubAgent', label: 'SubAgent: explore', status: 'running' })]}
+      />,
+    )
+    expect(container.querySelector('.sweep-text')).toBeNull()
+  })
+
+  it('renders the status icon BEFORE the tool name', () => {
+    const { container } = renderWithProviders(
+      <ToolGroup tools={[makeTool({ name: 'CustomTool', label: 'CustomTool: x' })]} />,
+    )
+    const icon = container.querySelector('svg.tool-icon-single')
+    expect(icon).not.toBeNull()
+    const header = icon!.parentElement!
+    const kids = Array.from(header.children)
+    // 图标在第一个子元素里，文本在其后 —— 顺序回归会在这里被拦下。
+    expect(kids[0].contains(icon!)).toBe(true)
+    expect(kids.length).toBeGreaterThan(1)
+    expect(kids[1].tagName.toLowerCase()).not.toBe('svg')
+  })
 })
 
 describe('IterationGroup', () => {
-  it('renders T (reasoning), C (tools), O (text) in order', () => {
+  it('renders T → O → C in order (reasoning, text output, then tools)', () => {
     const iter = makeIteration({
       iteration: 1,
       reasoning: 'planning the approach',
       content: 'Here is the output',
-      tools: [makeTool({ name: 'Read', label: 'Read' })],
+      tools: [makeTool({ name: 'CustomTool', label: 'CustomTool: run' })],
       toolCount: 1,
     })
-    renderWithProviders(<IterationGroup iteration={iter} />)
+    const { container } = renderWithProviders(<IterationGroup iteration={iter} />)
     // Reasoning is a folded line with character count as title
     expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
-    expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(1)
     // O text from MarkdownRenderer
     expect(screen.getByText('Here is the output')).toBeInTheDocument()
+
+    // 顺序断言（旧的用例名声称有顺序校验，实际只断言"三者都存在"）。
+    // textContent 的顺序即 DOM 顺序：T 的标题 → O 的正文 → C 的卡片头。
+    const text = container.textContent ?? ''
+    const tIdx = text.indexOf('Thought')
+    const oIdx = text.indexOf('Here is the output')
+    const cIdx = text.indexOf('CustomTool')
+    expect(tIdx).toBeGreaterThanOrEqual(0)
+    expect(oIdx).toBeGreaterThan(tIdx)
+    expect(cIdx).toBeGreaterThan(oIdx)
   })
 
   it('renders reasoning (T) as a folded line (collapsed by default)', () => {

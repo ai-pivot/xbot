@@ -18,7 +18,7 @@ LLM 生成 TSX
           → WS "genui" 消息
   → 前端：useProgressStream 'genui' case → store.setGenUIContent
           LiveIteration 渲染 streaming <SandboxedUI streaming>（GenUIBlock 已删除）
-          TurnBody/FoldedToolGroup/ToolRender 从 iterations 提取
+          TurnBody/ToolGroup/ToolRender 从 iterations 提取
           display_html 工具 → ToolRender → renderTool 派发 → 插件 renderer → SandboxedUI
   → 交互：⚠️ data-action 点击链路已断——前端 genui_action 调用点已随 GenUIBlock
           删除（web/src 中 0 处引用）；后端 genui_action handler 仍在
@@ -40,7 +40,7 @@ LLM 生成 TSX
 | RPC | `serverapp/rpc_table.go:515-557` | `web_ui_action` → channel plugin → native → agent loop |
 | 前端 | `web/src/plugins/SandboxedUI.tsx` | 泛化沙箱：sucrase 编译 TSX + 独立 React root（inline，非 iframe）+ 编译缓存 + UIErrorBoundary + data-action 委托（GenUIBlock 已删除，由它取代） |
 | 前端 | `web/src/components/agent/LiveIteration.tsx:261` | streaming GenUI 渲染（`<SandboxedUI code={genuiContent} streaming>`，无 onAction） |
-| 前端 | `web/src/components/agent/TurnBody.tsx` / `FoldedToolGroup.tsx` / `ToolRender.tsx:138` | 从工具列表提取 uiMode 工具 → `renderTool(tool, {chatID:''})` 派发（无 onAction，chatID 为空占位） |
+| 前端 | `web/src/components/agent/TurnBody.tsx` / `ToolGroup.tsx` / `ToolRender.tsx:138` | 从工具列表提取 uiMode 工具 → `renderTool(tool, {chatID:''})` 派发（无 onAction，chatID 为空占位） |
 | 前端 | `web/src/plugins/genui/index.tsx` | genui messageRenderer（matches uiMode='genui' + tool='display_html'）→ `SandboxedUI({code, streaming:false})`（无 onAction/onError） |
 | 安全 | `web/e2e/genui-escape.spec.ts` | 沙箱逃逸 E2E |
 | 样式 | `web/src/genui-safelist.html` | Tailwind v4 safelist（75242 字符，全色彩/间距/布局） |
@@ -181,7 +181,7 @@ if ui := a.toolUIDecl(progressKey, tc.Name); ui != nil && ui.Mode == "genui" {
 
 ### 3.4 前端硬编码特判消除（web）
 
-`AssistantMessage.tsx:180` / `FoldedToolGroup.tsx:211` / `ToolRender.tsx:82` / `LiveIteration.tsx` 中 `tool.name === 'display_html'`：
+`AssistantMessage.tsx:180` / `ToolGroup.tsx:211` / `ToolRender.tsx:82` / `LiveIteration.tsx` 中 `tool.name === 'display_html'`：
 - 改为检查工具元数据：`tool.ui_mode === 'genui'` 或参数含 `code` + `tool.libraries` 标记。
 - `protocol.ToolProgress` 增加 `UIMode string json:"ui_mode,omitempty"` + `UILibs []string json:"ui_libs,omitempty"`（由 engine_wire 从工具声明填充）。
 - 渲染仍走 `GenUIBlock`（升级版），只是判定条件从名字变元数据。
@@ -366,7 +366,7 @@ replace xbot => ../..
 ### 5.3 消息与渲染接线
 
 - `useProgressStream.ts` `'genui'` case + `genui_content`：保持 `store.setGenUIContent`（协议不变）。
-- `LiveIteration.tsx` / `AssistantMessage.tsx` / `FoldedToolGroup.tsx` / `ToolRender.tsx`：`display_html` 硬编码 → 检查 `tool.ui_mode === 'genui'`。
+- `LiveIteration.tsx` / `AssistantMessage.tsx` / `ToolGroup.tsx` / `ToolRender.tsx`：`display_html` 硬编码 → 检查 `tool.ui_mode === 'genui'`。
 - `genui_action` RPC 参数增加 `ui_session`（可选）：插件可据此识别归属（4.5 D7）。
 
 ### 5.4 E2E

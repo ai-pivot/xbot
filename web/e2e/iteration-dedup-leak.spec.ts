@@ -258,11 +258,16 @@ test.describe('Iteration dedup and cross-turn leak', () => {
     // Grep (turn 1's tools). Scope the count to the live iteration area: turn 1
     // is now a committed message whose tools legitimately render (every
     // iteration is rendered individually — no collapse hides them).
+    //
+    // Count via [data-tool-name] rather than text: the card header renders
+    // "name + param preview", so an exact text match would silently count 0
+    // once a tool carries a label — making the NEGATIVE assertions vacuous.
     const LIVE = '[data-iter-id="live"]'
-    const shellCount = await countToolLabels(page, 'Shell', LIVE)
-    const writeCount = await countToolLabels(page, 'Write', LIVE)
-    const readCount = await countToolLabels(page, 'Read', LIVE)
-    const grepCount = await countToolLabels(page, 'Grep', LIVE)
+    const liveTool = (name: string) => page.locator(`${LIVE} [data-tool-name="${name}"]`)
+    const shellCount = await liveTool('Shell').count()
+    const writeCount = await liveTool('Write').count()
+    const readCount = await liveTool('Read').count()
+    const grepCount = await liveTool('Grep').count()
 
     console.log('Turn 2 tool counts:', { Shell: shellCount, Write: writeCount, Read: readCount, Grep: grepCount })
     expect(shellCount).toBe(1)

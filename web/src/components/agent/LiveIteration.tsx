@@ -175,7 +175,13 @@ export const LiveIteration = memo(function LiveIteration({ progress }: LiveItera
     // （rows 最后是 user）不满足 → 两个指示器都不渲染 → 完全空白（用户报告：
     // "切换会话后新 agent turn 完全是空，不渲染思考中"）。busy placeholder 已
     // 收紧为 liveId===null（互斥），第一迭代窗口由本组件渲染。
-    if (progress.streaming) {
+    //
+    // ⚠️ 但 phase='tool_exec' 不在此列：后端在同一个函数里先置 Phase=tool_exec
+    // 再 initToolProgress 填充 ActiveTools，两者之间存在极短窗口 —— 此刻
+    // activeTools 仍为空（hasTools=false）而工具马上就到。若照常渲染"思考中…"，
+    // 它会立刻被工具卡片替换 → 闪一帧。tool_exec 本身就意味着"工具即将出现"，
+    // 这一格应当什么都不渲染（与旧 isThinkingPhase 守卫同义）。
+    if (progress.streaming && progress.phase !== 'tool_exec') {
       return <ShimmerThinking />
     }
     return null

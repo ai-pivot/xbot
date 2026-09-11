@@ -9,36 +9,32 @@
  *
  * Each iteration renders its own tools, in order, fully visible.
  */
-import { memo, type ComponentType, type CSSProperties } from 'react'
+import { createElement, memo } from 'react'
 
 import { SweepText } from './SweepText'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
+import { toolStatusKind } from '@/types/agent'
 
 import type { WebToolProgress } from '@/types/shared'
 
-/** Determine the tool status for color purposes. */
-type ToolStatusColor = 'normal' | 'all-failed' | 'running'
+/** 单个工具的显示态（三态）。 */
+type ToolVisualState = 'normal' | 'error' | 'running'
 
-/** Check if a tool's status indicates failure. */
-function isFailed(status: string): boolean {
-  return status === 'error'
-}
-
-/** CSS color for a status color. */
-function statusColorVar(status: ToolStatusColor): string {
-  switch (status) {
-    case 'all-failed':
-      return 'var(--destructive)'
+/** 状态对应的 CSS 变量（与 statusVisual.ts 共用同一组 --status-* token）。 */
+function statusColorVar(state: ToolVisualState): string {
+  switch (state) {
+    case 'error':
+      return 'var(--status-error)'
     case 'running':
-      return 'var(--accent)'
+      return 'var(--status-running)'
     default:
-      return 'var(--text-muted)' // gray = normal
+      return 'var(--status-idle)'
   }
 }
 
-/** Max param preview length in the tool card header. */
+/** Display name / param preview truncation（按字符，非按行）。 */
 const MAX_PARAM_LEN = 25
 
 /** Extract a short parameter hint from the tool label (text after ": "). */
@@ -48,8 +44,8 @@ function toolParam(tool: WebToolProgress): string {
   return idx >= 0 ? label.slice(idx + 2) : ''
 }
 
-/** Truncate to N chars with ellipsis. */
-function truncate(text: string, max: number): string {
+/** Truncate to N characters with an ellipsis. */
+function truncateChars(text: string, max: number): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '…'
 }
@@ -70,9 +66,10 @@ function isSubAgentToolName(name: string): boolean {
   return normalized === 'subagent'
 }
 
-/** Get single tool status color. */
-function singleStatus(tool: WebToolProgress): ToolStatusColor {
-  return isFailed(tool.status) ? 'all-failed' : isToolInProgress(tool.status) ? 'running' : 'normal'
+/** 单个工具的显示态（error 优先于 in-progress）。 */
+function toolVisualState(tool: WebToolProgress): ToolVisualState {
+  if (toolStatusKind(tool.status) === 'error') return 'error'
+  return isToolInProgress(tool.status) ? 'running' : 'normal'
 }
 
 /** 耗时格式化（卡片右上角）。 */
@@ -80,10 +77,15 @@ function formatElapsed(ms: number): string {
   return ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : `${Math.round(ms)}ms`
 }
 
-/** Render a single Lucide tool icon at 16px with status color. */
-function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
-  const Icon = getToolIcon(name) as ComponentType<{ className?: string; style?: CSSProperties }>
-  return <Icon className="tool-icon-single shrink-0" style={{ color: statusColorVar(status) }} />
+/** Render a single Lucide tool icon at 16px with status color.
+ *  Uses createElement rather than `<Icon/>`: picking a component TYPE during
+ *  render trips `react-hooks/static-components` (the compiler can't hoist a
+ *  component chosen at runtime). createElement is equivalent and rule-clean. */
+function ToolIcon({ name, state }: { name: string; state: ToolVisualState }) {
+  return createElement(getToolIcon(name), {
+    className: 'tool-icon-single shrink-0',
+    style: { color: statusColorVar(state) },
+  })
 }
 
 /** A single tool card: [icon] name [elapsed] + full render (args + output). */
@@ -93,19 +95,23 @@ export const ToolCard = memo(function ToolCard({ tool }: { tool: WebToolProgress
     return <ToolRender tool={tool} />
   }
 
-  const status = singleStatus(tool)
-  const color = statusColorVar(status)
+  const state = toolVisualState(tool)
+  const color = statusColorVar(state)
   const dn = displayName(tool)
   const param = toolParam(tool)
-  // Header shows the same information the old tool pill did: name + short param.
-  const headerLabel = param ? `${dn} ${truncate(param, MAX_PARAM_LEN)}` : dn
-  const showSweep = status === 'running' && !isSubAgentToolName(tool.name)
+  // Header: displayName + a short param preview.
+  const headerLabel = param ? `${dn} ${truncateChars(param, MAX_PARAM_LEN)}` : dn
+  const showSweep = state === 'running' && !isSubAgentToolName(tool.name)
 
   return (
-    <div data-testid="tool-card" className="rounded-md border border-border/50 bg-bg-tertiary/30 p-2">
+    <div
+      data-testid="tool-card"
+      data-tool-name={tool.name}
+      className="rounded-md border border-border/50 bg-bg-tertiary/30 p-2"
+    >
       {/* Card header: icon + name (+ param) + elapsed */}
       <div className="mb-1.5 flex items-center gap-1.5" style={{ color }}>
-        <ToolIcon name={tool.name || 'tool'} status={status} />
+        <ToolIcon name={tool.name || 'tool'} state={state} />
         {showSweep
           ? <SweepText text={headerLabel} color={color} className="font-mono text-xs font-medium" />
           : <span className="font-mono text-xs font-medium">{headerLabel}</span>}
@@ -127,7 +133,11 @@ export const ToolGroup = memo(function ToolGroup({ tools }: { tools: WebToolProg
   return (
     <div className="flex flex-col gap-1.5">
       {tools.map((tool, i) => (
-        <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
+        // Key is name+index: the tool list within one iteration is append-only,
+        // and tool.label CHANGES while streaming ("思考中…" → "Read: path").
+        // Including label would remount the card and restart its animations —
+        // exactly the name flicker this component avoids.
+        <ToolCard key={`${tool.name}-${i}`} tool={tool} />
       ))}
     </div>
   )

@@ -34,13 +34,13 @@ describe('SubAgentProgressTree', () => {
     expect(container.textContent).toContain('searching codebase')
   })
 
-  it('does not render top-level done nodes (shown in FoldedToolGroup instead)', () => {
+  it('does not render top-level done nodes (shown in ToolGroup instead)', () => {
     const nodes: WebSubAgentProgress[] = [
       { role: 'dev-node', instance: 'fix-1', status: 'done', desc: 'completed task' },
     ]
     const { container } = render(<SubAgentProgressTree nodes={nodes} />)
     // Top-level done/error nodes are filtered out — completed SubAgents are
-    // rendered by FoldedToolGroup as tool-call rows to avoid duplication.
+    // rendered by ToolGroup as tool-call rows to avoid duplication.
     expect(container.firstChild).toBeNull()
   })
 

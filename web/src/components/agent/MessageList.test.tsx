@@ -5,7 +5,6 @@
  *  - 100+ messages render without throwing
  *  - the virtualizer only mounts a window of rows (not all 150)
  *  - a live streaming message appends as the last row
- *  - collapse level is forwarded to rows
  */
 import { act, fireEvent, render } from '@testing-library/react'
 import { Virtualizer } from '@tanstack/react-virtual'
