@@ -113,7 +113,7 @@ ask_channel() {
         return
     fi
     # Non-interactive: default to stable
-    if ! [ -c /dev/tty ] 2>/dev/null || ! [ -r /dev/tty ] 2>/dev/null; then
+    if [ -n "${NONINTERACTIVE:-}" ] || ! [ -c /dev/tty ] 2>/dev/null || ! [ -r /dev/tty ] 2>/dev/null; then
         info "Non-interactive mode (no /dev/tty). Defaulting to stable channel."
         info "Set CHANNEL=nightly or CHANNEL=beta to use a different channel."
         CHANNEL=stable
@@ -147,7 +147,7 @@ ask_mode() {
         return
     fi
     # In piped mode, stdin is the curl pipe. We need /dev/tty to talk to the user.
-    if ! [ -c /dev/tty ] 2>/dev/null || ! [ -r /dev/tty ] 2>/dev/null; then
+    if [ -n "${NONINTERACTIVE:-}" ] || ! [ -c /dev/tty ] 2>/dev/null || ! [ -r /dev/tty ] 2>/dev/null; then
         info "Non-interactive mode (no /dev/tty). Defaulting to standalone."
         info "Set MODE=server-client to install server-client mode."
         MODE=standalone
@@ -533,6 +533,59 @@ enable_linger() {
     fi
 }
 
+# install_binary_from_release <version>
+# Downloads the release binary for <version>, verifies its checksum, stops any
+# running instance and installs it to ${INSTALL_PATH}/${BINARY}.
+# Extracted from main() so the installer can RETRY on a different channel when
+# the resolved release turns out to predate `xbot-cli setup`.
+install_binary_from_release() {
+    local version="$1"
+    local download_url="https://github.com/${REPO}/releases/download/${version}/xbot-cli-${PLATFORM}"
+
+    # Try new repo first; fall back to old repo during the CjiW → ai-pivot move.
+    if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$download_url")"; then
+        local fallback="https://github.com/${FALLBACK_REPO}/releases/download/${version}/xbot-cli-${PLATFORM}"
+        warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
+        download_url="$fallback"
+        if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$download_url")"; then
+            return 1
+        fi
+    fi
+
+    if command -v shasum >/dev/null 2>&1; then
+        info "Verifying checksum..."
+        curl -fsSL "$(gh_url "https://github.com/${REPO}/releases/download/${version}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
+            || curl -fsSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${version}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
+            || warn "Checksum file not found, skipping verification."
+        if [ -f "${TMPDIR}/checksums.txt" ]; then
+            local expected actual
+            expected=$(grep "xbot-cli-${PLATFORM}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
+            actual=$(shasum -a 256 "${TMPDIR}/${BINARY}" | awk '{print $1}')
+            if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
+                error "Checksum mismatch! Expected: ${expected}, Got: ${actual}"
+            fi
+            info "Checksum verified ✓"
+        fi
+    fi
+
+    # Stop running xbot-cli before overwriting the binary
+    if [ -x "${INSTALL_PATH}/${BINARY}" ]; then
+        info "Checking for running xbot-cli..."
+        if systemctl --user status "$SERVICE_NAME" >/dev/null 2>&1; then
+            systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
+        fi
+        pkill -f "${INSTALL_PATH}/${BINARY}" 2>/dev/null || true
+        for i in 1 2 3 4 5; do
+            pgrep -f "${INSTALL_PATH}/${BINARY}" >/dev/null 2>&1 || break
+            sleep 1
+        done
+    fi
+
+    chmod +x "${TMPDIR}/${BINARY}"
+    mkdir -p "$INSTALL_PATH"
+    mv "${TMPDIR}/${BINARY}" "${INSTALL_PATH}/${BINARY}"
+}
+
 main() {
     # Parse --channel argument from command line
     while [[ $# -gt 0 ]]; do
@@ -600,51 +653,9 @@ main() {
         fi
         info "Using pre-built local binary at ${INSTALL_PATH}/${BINARY} (INSTALL_LOCAL_BINARY=1)"
     else
-        # Try new repo first; fall back to old repo if release not found
-        # (during migration from CjiW/xbot → ai-pivot/xbot)
-        if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
-            FALLBACK_URL="https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
-            warn "Release not found on ${REPO}, trying fallback ${FALLBACK_REPO}..."
-            DOWNLOAD_URL="$FALLBACK_URL"
-            if ! curl -fSL -o "${TMPDIR}/${BINARY}" "$(gh_url "$DOWNLOAD_URL")"; then
-                error "Download failed from both repos. Check the version and platform."
-            fi
+        if ! install_binary_from_release "$VERSION"; then
+            error "Download failed from both repos. Check the version and platform."
         fi
-
-        if command -v shasum >/dev/null 2>&1; then
-            info "Verifying checksum..."
-            curl -fsSL "$(gh_url "https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
-                || curl -fsSL "$(gh_url "https://github.com/${FALLBACK_REPO}/releases/download/${VERSION}/checksums.txt")" -o "${TMPDIR}/checksums.txt" 2>/dev/null \
-                || warn "Checksum file not found, skipping verification."
-            if [ -f "${TMPDIR}/checksums.txt" ]; then
-                expected=$(grep "xbot-cli-${PLATFORM}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
-                actual=$(shasum -a 256 "${TMPDIR}/${BINARY}" | awk '{print $1}')
-                if [ -n "$expected" ] && [ "$expected" != "$actual" ]; then
-                    error "Checksum mismatch! Expected: ${expected}, Got: ${actual}"
-                fi
-                info "Checksum verified ✓"
-            fi
-        fi
-
-        # Stop running xbot-cli before overwriting the binary
-        if [ -x "${INSTALL_PATH}/${BINARY}" ]; then
-            info "Checking for running xbot-cli..."
-            if systemctl --user status "$SERVICE_NAME" >/dev/null 2>&1; then
-                systemctl --user stop "$SERVICE_NAME" 2>/dev/null || true
-            fi
-            # Kill any running instances
-            pkill -f "${INSTALL_PATH}/${BINARY}" 2>/dev/null || true
-            # Wait for process to fully exit
-            for i in 1 2 3 4 5; do
-                pgrep -f "${INSTALL_PATH}/${BINARY}" >/dev/null 2>&1 || break
-                sleep 1
-            done
-        fi
-
-        # Install binary to user-local directory (no sudo)
-        chmod +x "${TMPDIR}/${BINARY}"
-        mkdir -p "$INSTALL_PATH"
-        mv "${TMPDIR}/${BINARY}" "${INSTALL_PATH}/${BINARY}"
     fi
     info "Binary installed to ${INSTALL_PATH}/${BINARY}"
 
@@ -652,6 +663,30 @@ main() {
 
     backup_config
     write_config "$MODE" "$PORT" "$TOKEN"
+
+    # ── Channel capability probe ────────────────────────────────────────────
+    # Older stable releases ship a binary that PREDATES `xbot-cli setup`. On
+    # those, run_setup() would fall back to a web-only download and the
+    # built-in plugins would silently never appear — an agent following the
+    # published one-liner would end up with an incomplete install.
+    #
+    # Probe `setup -h` (both old and new binaries exit 0, but only a binary
+    # that HAS the subcommand prints its usage line — never invoke blindly) and,
+    # when it is missing, retry once on nightly: nightly always carries the
+    # newest build, so `setup` (and therefore the plugins) exists there.
+    if [ "${INSTALL_LOCAL_BINARY:-}" != "1" ] && [ "$CHANNEL" != "nightly" ] \
+        && ! "${INSTALL_PATH}/${BINARY}" setup -h 2>/dev/null | grep -q "Usage: xbot-cli setup"; then
+        warn "Channel '${CHANNEL}' resolved to ${VERSION}, which predates 'xbot-cli setup'."
+        warn "  Installing it would give you the Web UI WITHOUT the built-in plugins."
+        warn "Retrying with the nightly channel (latest builds include 'setup')..."
+        CHANNEL=nightly
+        if NEW_VERSION=$(resolve_version) && install_binary_from_release "$NEW_VERSION"; then
+            VERSION="$NEW_VERSION"
+            info "Switched to nightly ${VERSION} — Web UI + built-in plugins available"
+        else
+            warn "nightly retry failed; continuing with ${VERSION} (plugins unavailable)."
+        fi
+    fi
 
     # Web UI + built-in plugins + channel activation config (both modes —
     # standalone users can flip to `xbot-cli serve` at any time; the binary
