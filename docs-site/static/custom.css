@@ -318,7 +318,61 @@
   background: transparent !important;
 }
 
-/* ── 对比表：突出 xbot 列 ── */
+/* ── 对比表 ──
+   落地页不走 .gdoc-markdown（layouts/index.html 独立外壳），所以主题的
+   table 规则不生效 —— 裸 <table> 会 shrink-to-fit 成一坨。这里显式全宽 +
+   固定列宽（table-layout: fixed），窄屏横向滚动。 */
+.xb-compare {
+  margin: 1.3rem 0 2.2rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.xb-compare table {
+  width: 100%;
+  min-width: 620px;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.93rem;
+  border: 1px solid var(--xb-border);
+  border-radius: var(--xb-radius);
+  overflow: hidden;
+}
+
+.xb-compare th,
+.xb-compare td {
+  padding: 0.68rem 0.95rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--xb-border);
+  border-right: 1px solid var(--xb-border);
+  overflow-wrap: break-word;
+}
+
+.xb-compare th:last-child,
+.xb-compare td:last-child {
+  border-right: 0;
+}
+
+.xb-compare tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.xb-compare th:nth-child(1),
+.xb-compare td:nth-child(1) { width: 24%; }
+.xb-compare th:nth-child(2),
+.xb-compare td:nth-child(2) { width: 38%; }
+.xb-compare th:nth-child(3),
+.xb-compare td:nth-child(3) { width: 38%; }
+
+.xb-compare thead th {
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: rgba(148, 163, 184, 0.1);
+}
+
+/* 突出 xbot 列 */
 .xb-compare table th:nth-child(2),
 .xb-compare table td:nth-child(2) {
   background: rgba(79, 140, 255, 0.07);
@@ -327,6 +381,101 @@
 .xb-compare table th:nth-child(2) {
   color: var(--xb-accent);
   font-weight: 700;
+}
+
+.xb-compare tbody tr:hover td {
+  background: rgba(79, 140, 255, 0.05);
+}
+
+.xb-compare tbody tr:hover td:nth-child(2) {
+  background: rgba(79, 140, 255, 0.11);
+}
+
+/* ── 架构图 ──
+   CSS 绘制（不是 ASCII art）：CJK 字形在等宽字体里宽度不统一，box-drawing
+   画出来的框必然错位。用 flex + 箭头伪元素，字体怎么换都对齐。 */
+.xb-arch {
+  margin: 1.3rem 0 2rem;
+  padding: 1.4rem 1.25rem 1.2rem;
+  border: 1px solid var(--xb-border);
+  border-radius: var(--xb-radius);
+  background: var(--xb-card-bg);
+  box-shadow: var(--xb-shadow);
+}
+
+.xb-arch__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.xb-arch__node {
+  flex: 1 1 165px;
+  min-width: 148px;
+  padding: 0.7rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid var(--xb-border);
+  background: rgba(79, 140, 255, 0.06);
+  text-align: center;
+}
+
+.xb-arch__node--accent {
+  background: linear-gradient(135deg, rgba(79, 140, 255, 0.16), rgba(168, 85, 247, 0.14));
+  border-color: rgba(79, 140, 255, 0.35);
+}
+
+.xb-arch__node-title {
+  display: block;
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.xb-arch__node-sub {
+  display: block;
+  margin-top: 0.15rem;
+  font-family: var(--xb-font-mono);
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.xb-arch__link {
+  position: relative;
+  flex: 0 0 auto;
+  align-self: center;
+  width: 26px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--xb-accent), var(--xb-accent-2));
+}
+
+.xb-arch__link::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-left: 7px solid var(--xb-accent-2);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.xb-arch__leaves {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.55rem;
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--xb-border);
+  font-family: var(--xb-font-mono);
+  font-size: 0.8rem;
+}
+
+.xb-arch__leaves code {
+  background: rgba(148, 163, 184, 0.14);
+  border-radius: 5px;
+  padding: 0.12rem 0.5rem;
 }
 
 /* ── 社区链接卡片 ── */

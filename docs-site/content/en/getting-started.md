@@ -22,14 +22,29 @@ curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/instal
 irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
 
-The installer downloads the `xbot-cli` binary, generates a random admin
-token, and writes `~/.xbot/config.json`. For Server mode it also installs a
-system service and downloads the Web UI.
+The installer downloads the `xbot-cli` binary, generates a random admin token,
+writes `~/.xbot/config.json`, then runs `xbot-cli setup` to install the **Web UI
+and every built-in plugin and enable the web channel** — in both modes, so the
+browser works right away.
 
 {{< hint type=note >}}
 **Behind a firewall (China)?** Use the mirror-accelerated installer:
 ```bash
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
+```
+{{< /hint >}}
+
+{{< hint type=tip >}}
+**Rather not do it yourself?** Paste this into your AI agent — it installs and
+verifies on its own:
+
+```text
+Install and start xbot on this machine:
+1. curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. xbot-cli setup --check     # exit code 0 means a complete install
+3. nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # must print 200
+If anything fails, read https://ai-pivot.github.io/xbot/installation/ (Troubleshooting).
 ```
 {{< /hint >}}
 

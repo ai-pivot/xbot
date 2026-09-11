@@ -116,54 +116,69 @@ geekdocHidden: true
 </div>
 
 <h2 class="xb-section-title">一分钟安装</h2>
-<p class="xb-section-sub">一条命令装好，然后浏览器里三步就能聊起来。</p>
+<p class="xb-section-sub">一条命令：装好二进制 + Web UI + 全部内置插件，并自动开启 web 通道。</p>
 
-<div class="xb-term">
-  <div class="xb-term__bar">
-    <span class="xb-term__dot xb-term__dot--r"></span>
-    <span class="xb-term__dot xb-term__dot--y"></span>
-    <span class="xb-term__dot xb-term__dot--g"></span>
-    <span class="xb-term__label">bash</span>
-  </div>
-  <pre><code># 1) 安装（一条命令，自动装好 Web UI 与内置插件）
+{{< term label="bash" >}}
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
-
-# 2) 启动（安装脚本已开启 web 通道）
 xbot-cli serve
+{{< /term >}}
 
-# 3) 打开 http://localhost:8082
-#    → 创建账号（新装机首个注册免邀请码）
-#    → 右下角齿轮 → LLM → 填 Base URL / API Key / 选模型
-#    → 开始聊天</code></pre>
-</div>
+<p class="xb-section-sub">打开 <code>http://localhost:8082</code> → 注册账号 → 齿轮 → LLM → 填 Base URL / API Key / 选模型 → 开聊。</p>
+
+<h2 class="xb-section-title">让 Agent 帮你装</h2>
+<p class="xb-section-sub">把下面这段原样复制给你的 AI agent（Claude Code / Codex / Cursor …），它会自己装好并验证。</p>
+
+{{< term label="复制这段发给你的 agent" >}}
+帮我在这台机器上安装并启动 xbot：
+
+1. 安装：curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. 自检：xbot-cli setup --check        # 退出码 0 才算装好
+3. 启动：nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. 验证：curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # 必须输出 200
+
+任何一步失败，读 https://ai-pivot.github.io/xbot/zh-cn/installation/ 的排错章节，
+不要跳过自检直接告诉我装好了。
+{{< /term >}}
 
 <p class="xb-section-sub">
-网络受限（中国大陆）用镜像安装：<code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code><br>
 Windows：<code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code><br>
-无头 / CI：<code>MODE=standalone CHANNEL=stable PORT=8082 bash install.sh</code>
-</p>
-
-<p class="xb-section-sub">
-给 AI agent 的可执行安装说明（含断言与排错）见
-<a href="https://github.com/ai-pivot/xbot/blob/master/docs/agent/install.md">Agent 安装文档</a>；
-人工详解见 <a href="/zh-cn/getting-started/">快速开始</a> 与 <a href="/zh-cn/installation/">安装指南</a>。
+中国大陆走镜像：<code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code><br>
+可选参数（默认值通常就是你要的）与全部配置项 → <a href="/zh-cn/installation/">安装与配置</a>。
 </p>
 
 <h2 class="xb-section-title">架构</h2>
 <p class="xb-section-sub">Backend 是纯 RPC 客户端接口（零业务逻辑），Transport 负责实际执行。</p>
 
-```text
-┌──────────┐     ┌──────────────┐     ┌────────────┐     ┌──────────┐
-│  飞书    │────▶│  Dispatcher  │────▶│  Backend    │────▶│   LLM    │
-│  QQ      │◀────│  (channel/)  │◀────│  (RPC)      │◀────│ (llm/)   │
-│  Web     │     └──────────────┘     │             │     └──────────┘
-│  CLI     │                          │  Transport  │
-└──────────┘                          │  (local/    │────▶ 工具
-                                      │   remote)   │      (tools/)
-                                      │  Agent Loop │────▶ 记忆
-                                      │  (agent/)   │      (memory/)
-                                      └────────────┘
-```
+<div class="xb-arch" markdown="0">
+  <div class="xb-arch__row">
+    <div class="xb-arch__node">
+      <span class="xb-arch__node-title">飞书 · QQ · Web · CLI</span>
+      <span class="xb-arch__node-sub">channels</span>
+    </div>
+    <span class="xb-arch__link" aria-hidden="true"></span>
+    <div class="xb-arch__node">
+      <span class="xb-arch__node-title">Dispatcher</span>
+      <span class="xb-arch__node-sub">channel/</span>
+    </div>
+    <span class="xb-arch__link" aria-hidden="true"></span>
+    <div class="xb-arch__node xb-arch__node--accent">
+      <span class="xb-arch__node-title">Agent Loop</span>
+      <span class="xb-arch__node-sub">agent/ · Transport</span>
+    </div>
+    <span class="xb-arch__link" aria-hidden="true"></span>
+    <div class="xb-arch__node">
+      <span class="xb-arch__node-title">LLM</span>
+      <span class="xb-arch__node-sub">llm/</span>
+    </div>
+  </div>
+  <div class="xb-arch__leaves">
+    <span>Agent Loop 调用 →</span>
+    <code>tools/</code>
+    <code>memory/</code>
+    <code>skills/</code>
+    <code>plugins/</code>
+  </div>
+</div>
 
 阅读完整 [架构概览](/zh-cn/architecture/)。
 

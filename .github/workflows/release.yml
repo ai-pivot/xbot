@@ -80,9 +80,13 @@ jobs:
       - name: Package
         run: mkdir -p dist && tar czf dist/xbot-web-dist.tar.gz -C web/dist .
 
-      # Plugin web assets (git-fancy ESM views served at /plugins/<id>/web/*):
-      # esbuild bundles with --splitting so the shared chunk (rpc/ui singleton
-      # injected by activate(ctx)) is one instance across all view entries.
+      # Plugin web assets (ESM views served at /plugins/<id>/web/*):
+      # esbuild bundles per plugin dir, mirroring the plugin SOURCE layout
+      # (build/plugin-web/<plugin-id>/web/). --splitting keeps the shared
+      # chunk (rpc/ui singleton injected by activate(ctx)) one instance across
+      # that plugin's view entries. Every plugin whose plugin.json declares
+      # web.entry must be built here, or the tarball ships without its
+      # frontend module (package.sh fails the build in that case).
       - name: Build plugin web assets
         working-directory: web
         run: |
@@ -90,7 +94,11 @@ jobs:
           npx esbuild src/plugins/git-fancy/index.tsx src/plugins/git-fancy/commit.tsx \
             --bundle --splitting --format=esm --jsx=transform \
             --outdir=../build/plugin-web/xbot.git-fancy/web
-          ls -la ../build/plugin-web/xbot.git-fancy/web/
+          mkdir -p ../build/plugin-web/xbot.genui/web
+          npx esbuild src/plugins/genui/index.tsx \
+            --bundle --splitting --format=esm --jsx=transform \
+            --outdir=../build/plugin-web/xbot.genui/web
+          find ../build/plugin-web -type f | sort
 
       - uses: actions/upload-artifact@v4
         with:

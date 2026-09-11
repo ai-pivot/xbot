@@ -1,221 +1,134 @@
 ---
-title: "安装指南"
+title: "安装与配置"
 weight: 10
 ---
 
-# 安装指南
+# 安装与配置
 
-## 安装方式
-
-### 一键安装（推荐）
+## 一条命令
 
 ```bash
-# Linux / macOS (amd64, arm64)
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
 
-指定版本或安装路径：
+装完就位：**二进制 + Web UI + 全部内置插件（genui / git-fancy / ambience）+ web 通道已开启**。
+不需要再装别的东西，也不需要先编辑任何配置。
 
 ```bash
-VERSION=v0.0.48 curl -fsSL ... | bash          # 指定版本
-INSTALL_PATH=~/.local/bin curl -fsSL ... | bash  # 自定义安装路径
+xbot-cli serve          # 打开 http://localhost:8082
 ```
 
-### 从源码构建
+浏览器里：注册账号 → 右下角齿轮 → **LLM** → 填 Base URL / API Key / 选模型 → 开聊。
+
+{{< hint type=note >}}
+新装的第一个注册账号免邀请码，它同时是管理员。
+{{< /hint >}}
+
+## 让 Agent 帮你装
+
+把下面这段原样复制给你的 AI agent（Claude Code / Codex / Cursor …），它会自己装好并验证：
+
+```text
+帮我在这台机器上安装并启动 xbot：
+
+1. 安装：curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. 自检：xbot-cli setup --check          # 退出码 0 才算装好
+3. 启动：nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. 验证：curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # 必须输出 200
+
+任何一步失败，读下面「排错」一节，不要跳过自检直接说装好了。
+```
+
+Agent 侧要点：
+
+- `install.sh` **幂等**，重跑不会破坏已有配置（已有值一律保留）。
+- `setup --check` 是唯一的完整性判据，退出码 0 = 六项检查全过。
+- `serve` 是前台进程，agent 需自行后台化（`nohup` / `systemd` / `tmux`）。
+- 装完后 `~/.xbot/config.json` 已有 web + 插件配置；**不要再手改 `llm.*`** ——
+  LLM 配置存在数据库里，改配置文件不生效，用 Web 设置面板或 `xbot-cli` 命令改。
+
+## 可选参数（就这 5 个）
+
+环境变量前缀，写在命令前即可，例如
+`MODE=server-client PORT=9000 bash install.sh`：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `MODE` | `standalone` | `standalone` = `xbot-cli serve` 按需启动；`server-client` = 装成常驻服务（systemd --user / launchd），CLI 远程连接 |
+| `PORT` | `8082` | Web UI 与 WebSocket 端口 |
+| `XBOT_HOME` | `~/.xbot` | 数据目录（配置、数据库、插件、Web 产物） |
+| `INSTALL_PATH` | `~/.local/bin` | 二进制安装目录 |
+| `CHANNEL` | `stable` | `stable` / `beta` / `nightly`；`nightly` 是每次 master 推送覆盖的最新构建 |
+
+中国大陆网络走镜像（`GH_MIRROR` 由镜像脚本自动设置）：
 
 ```bash
-git clone https://github.com/ai-pivot/xbot.git && cd xbot
-make build          # 构建 xbot (server + runner)
-make run            # 构建并运行 server
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
 ```
 
-只构建 CLI：
-
-```bash
-go build -o xbot-cli ./cmd/xbot-cli
-```
-
-一条命令完成本地全套安装（构建 CLI + Web UI + 内置插件，装入 `~/.xbot`，
-激活 channel 插件——安装器在源码场景的等价物）：
-
-```bash
-make setup           # 需要 Node.js（web 构建）+ Go
-```
-
-环境要求：**Go 1.26+**（`make setup` 额外需要 Node.js）。Go 二进制构建本身
-不需要 Node.js（Web 产物已提交）。
-
-## 两种安装模式
-
-安装器会让你选择 **Standalone** 或 **Server** 模式。
-
-### Standalone（单机模式）
-
-CLI 直接在本地运行 Agent，不依赖后台服务。
-
-- ✅ 简单，安装即用
-- ✅ 无后台进程
-- ❌ 关终端就停
-- ❌ 仅 CLI 渠道，不支持飞书/QQ/Web
-- ❌ 不能团队共享 LLM
-
-**适合**：个人开发者快速体验。
-
-### Server（服务端模式）
-
-后台运行一个 Server 进程，CLI 通过 WebSocket 远程连接。同时启用飞书/QQ/Web 等渠道。
-
-- ✅ Agent 常驻运行，开机自启
-- ✅ 支持飞书/QQ/Web 多渠道同时接入
-- ✅ Web 浏览器聊天界面
-- ✅ 管理员配置 LLM Key，全团队共享使用
-- ✅ 多个 CLI 客户端可同时连接
-
-**适合**：团队使用、需要飞书/QQ 接入、需要 Web 界面的场景。
-
-> 💡 **大多数团队应选 Server 模式。**
-
-### Server 模式的服务管理
-
-安装器会自动配置系统服务（无需 sudo）：
-
-| 平台 | 服务方式 |
-|------|----------|
-| Linux | systemd --user（用户级服务） |
-| macOS | launchd（LaunchAgent） |
-| Windows | Startup 文件夹 / 计划任务 / nssm 服务 |
-
-Server 启动命令：`xbot-cli serve`
-
-### 安装器做了什么
-
-1. 下载 `xbot-cli` 二进制到 `~/.local/bin/`（或你指定的路径）
-2. 生成随机 admin token
-3. 写入/更新 `~/.xbot/config.json`
-4. 运行 `xbot-cli setup` —— **一条命令装齐本发行版的全部组件**：
-   - Web UI 前端 → `~/.xbot/web/dist`（与二进制同一 GitHub release，SHA-256 校验；
-     **standalone 和 server 模式都安装**）
-   - 内置插件（`xbot.genui`、`xbot.git-fancy`、`xbot.ambience`）→
-     `~/.xbot/plugins/builtin/`（版本对齐，含对应平台的插件二进制 +
-     git-fancy 前端资产）
-   - Channel 激活配置：为随发行的 channel 插件写入
-     `channels.<name>.enabled=true`（如 `channels.genui.enabled=true`），
-     GenUI（`display_html`）与 Git 面板开箱即用
-5. Server 模式额外：安装系统服务（Web UI 服务于 `http://localhost:8082`）
-
-若 release 资产下载失败（离线安装、或旧 release 没有插件 tarball），安装器
-只警告不中断——之后随时运行 `xbot-cli setup` 补齐。
-
-## 补齐 / 修复安装：`xbot-cli setup`
-
-`setup` 子命令幂等，可随时重跑：
-
-```bash
-xbot-cli setup            # 安装/刷新 Web UI + 插件 + 激活配置
-xbot-cli setup --check    # 仅诊断（缺件时 exit 1）
-xbot-cli setup --force    # 版本戳匹配也强制重新下载
-```
-
-它下载**与当前二进制版本严格对应**的资产（nightly 二进制拉 `nightly` tag，
-stable 二进制拉自身版本号），校验 SHA-256，并对已完成安装的版本跳过重复
-下载（版本戳：`~/.xbot/web/.dist-version` 与 `~/.xbot/plugins/.builtin-version`）。
-
-离线机器：从 [releases 页面](https://github.com/ai-pivot/xbot/releases)手动下载
-两个文件后本地安装：
-
-```bash
-xbot-cli setup --offline-web xbot-web-dist.tar.gz \
-               --offline-plugins xbot-plugins-$(go env GOOS)-$(go env GOARCH).tar.gz
-```
-
-升级（重新跑 `curl ... install.sh | bash`）后运行一次 `xbot-cli setup` ——
-新二进制版本号会自动刷新两个组件。
-
-## 首次配置
-
-安装完成后运行：
-
-```bash
-xbot-cli
-```
-
-### Setup 向导
-
-首次运行会自动弹出 Setup 向导，引导你配置：
-
-**LLM 订阅配置**
-1. 选择 LLM 提供商（OpenAI / Anthropic / 自定义兼容 API）
-2. 输入 API Key（**必填**）
-3. 输入 API 地址（默认 `https://api.openai.com/v1`，使用兼容服务时修改）
-4. 选择模型
-5. 配置模型层（Vanguard / Balance / Swift，可按不同场景选用不同模型）
-6. Tavily 搜索 Key（可选，不填则无法使用网页搜索）
-
-**环境配置**
-- 沙箱模式（默认 `none`，Docker 用户选 `docker`）
-- 记忆模式（默认 `flat`）
-
-**外观**
-- 配色方案（9 种可选）
-
-配置完成后即可开始对话。随时可用 `/setup` 命令或 `Ctrl+K → Setup` 重新配置。
-
-### 手动编辑配置
-
-配置文件位于 `~/.xbot/config.json`，也可以直接编辑。详见 [配置参考](/zh-cn/configuration/)。
-
-**最小配置（Standalone 模式）：**
-
-```json
-{
-  "subscriptions": [
-    {
-      "name": "default",
-      "provider": "openai",
-      "api_key": "sk-xxx",
-      "model": "gpt-4o"
-    }
-  ]
-}
-```
-
-**使用 DeepSeek 等兼容 API：**
-
-```json
-{
-  "subscriptions": [
-    {
-      "name": "DeepSeek",
-      "provider": "openai",
-      "api_key": "your-key",
-      "base_url": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat"
-    }
-  ]
-}
-```
+**其余全部配置项** —— LLM 订阅、渠道（飞书 / QQ / Web / CLI）、沙箱与 Runner、
+记忆、Hooks、日志、插件 —— 见 [配置参考](/zh-cn/configuration/)。
 
 ## 验证安装
 
 ```bash
-# 查看版本
-xbot-cli --version
-
-# Server 模式检查服务状态
-# Linux:
-systemctl --user status xbot-server
-# macOS:
-launchctl list | grep xbot
+xbot-cli --version        # 版本号
+xbot-cli setup --check    # 完整性自检，退出码 0 = OK
 ```
 
-{{< hint type=tip >}}
-**快速健康检查：** 运行 `xbot-cli` 并输入"你好"。如果 Agent 回复了，说明一切正常。
-{{< /hint >}}
+```bash
+# Web 起来了吗（本地 curl 若被代理拦截，加 --noproxy '*'）
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082     # 期望 200
+
+# server-client 模式看服务状态
+systemctl --user status xbot-server     # Linux
+launchctl list | grep xbot              # macOS
+```
+
+## 排错
+
+| 症状 | 处理 |
+|------|------|
+| `setup --check` 报某组件 MISSING | `xbot-cli setup` 重跑补齐；离线环境用 `--offline-web/--offline-plugins` 指定本地包 |
+| 能打开页面但发消息报 `unsupported protocol scheme ""` | LLM 没配。Web → 齿轮 → LLM 填 Base URL + API Key + 选模型（改 `config.json` 无效） |
+| 端口被占用 / 想换端口 | `PORT=9000 xbot-cli serve`，或改 `web.port` 后重启 |
+| 页面 404 或样式全丢 | Web 产物缺失：`xbot-cli setup` |
+| 插件面板空白 | 插件未激活：`xbot-cli setup --config-only` 或 `/plugin reload-all` |
+| 提示 `command not found: xbot-cli` | `~/.local/bin` 不在 PATH：`source ~/.bashrc` 或重开终端 |
+| 旧 release 装完没有插件 | `xbot-cli setup`；仍失败则用 `CHANNEL=nightly` 重装（nightly 一定带插件包） |
+
+## 升级
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+```
+
+重跑安装脚本即可：二进制覆盖，`config.json` 与数据库原样保留。
+
+## 卸载
+
+```bash
+systemctl --user disable --now xbot-server   # server-client 模式
+rm -f ~/.local/bin/xbot-cli
+rm -rf ~/.xbot                                # 数据目录（含数据库，谨慎）
+```
+
+## 从源码构建
+
+```bash
+git clone https://github.com/ai-pivot/xbot.git && cd xbot
+make setup      # 构建 CLI + Web UI + 内置插件，装进 ~/.xbot 并激活 channel 插件
+```
+
+需要 **Go 1.26+**；`make setup` 额外需要 Node.js（构建 Web 前端）。
 
 ## 参见
-- [快速开始](/zh-cn/getting-started/) — 5 分钟快速上手
-- [配置参考](/zh-cn/configuration/) — config.json 全字段
-- [渠道](/zh-cn/channels/) — 飞书、QQ、Web、CLI 配置
+
+- [配置参考](/zh-cn/configuration/) — `config.json` 全字段、LLM 订阅、模型 tier
+- [快速开始](/zh-cn/getting-started/) — 装完之后的第一次对话
+- [渠道](/zh-cn/channels/) — 飞书 / QQ / Web / CLI 接入
+- [插件](/zh-cn/plugins/) — 插件系统与内置插件

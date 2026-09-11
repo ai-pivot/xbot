@@ -72,17 +72,28 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/ma
 
 </details>
 
-安装脚本下载二进制后会自动执行 **`xbot-cli setup`** 完成安装：
+安装脚本一条命令装齐：**二进制 + Web UI + 全部内置插件，并自动打开 web 通道**。
 
-| 组件 | 安装位置 |
-|------|---------|
+| 组件 | 位置 |
+|------|------|
 | CLI + server 二进制 | `~/.local/bin/xbot-cli` |
-| **Web UI** | `$XBOT_HOME/web/dist` |
-| **内置插件** | `$XBOT_HOME/plugins/builtin` |
-| 通道激活配置 | `$XBOT_HOME/config.json` |
+| Web UI + 内置插件 + 通道激活 | `$XBOT_HOME`（`xbot-cli setup` 自动完成） |
 
-> 已经有二进制了？随时执行 `xbot-cli setup` 重新安装 Web UI 和内置插件，
-> 或 `xbot-cli setup --check` 诊断缺失的部分。
+> 已经是装好的状态？`xbot-cli setup` 重跑补齐，`xbot-cli setup --check` 自检。
+
+**或者：把这句话复制给你的 AI agent，让它帮你装**
+
+```text
+帮我在这台机器上安装并启动 xbot：
+1. curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. xbot-cli setup --check      # 退出码 0 才算装好
+3. nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # 必须输出 200
+失败就读 https://ai-pivot.github.io/xbot/zh-cn/installation/ 的排错章节。
+```
+
+可选参数只有 5 个（`MODE` / `PORT` / `XBOT_HOME` / `INSTALL_PATH` / `CHANNEL`），
+其余全部配置见 [安装与配置](https://ai-pivot.github.io/xbot/zh-cn/installation/)。
 
 ### 2. 启动服务
 
