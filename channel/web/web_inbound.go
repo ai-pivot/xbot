@@ -363,6 +363,16 @@ func (wc *WebChannel) appendUploadRef(content, key, displayName string, fileSize
 		// Single canonical markdown image reference (stable relative URL —
 		// never expires, renders in history, parses in the vision resolver).
 		ref := "/api/files/download?key=" + url.QueryEscape(key) + "&inline=1"
+		// The rich composer already inserts this exact reference inline as soon
+		// as the upload finishes (MessageInput.insertUploadedMedia), so the
+		// content normally carries it already. Appending it again rendered every
+		// pasted image TWICE — one inline, one trailing (user report
+		// 2026-09-11: "web 粘贴图片后发送，图片变成两张"). Only add a reference
+		// the content is genuinely missing (API callers, clients that don't
+		// inline, or a user who deleted the inline copy but kept the chip).
+		if uploadKeyReferenced(content, key) {
+			return content
+		}
 		return content + fmt.Sprintf("\n\n![%s](%s)", displayName, ref)
 	}
 	// Non-image attachment: absolute signed URL (DownloadFile fetches it
@@ -373,6 +383,16 @@ func (wc *WebChannel) appendUploadRef(content, key, displayName string, fileSize
 		return content + fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
 	}
 	return content + fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
+}
+
+// uploadKeyReferenced reports whether content already points at the given
+// upload key. Both escaping forms are checked because the frontend builds the
+// URL with JS encodeURIComponent (space → %20) while url.QueryEscape uses '+'.
+func uploadKeyReferenced(content, key string) bool {
+	escaped := url.QueryEscape(key)
+	const prefix = "/api/files/download?key="
+	return strings.Contains(content, prefix+escaped) ||
+		strings.Contains(content, prefix+strings.ReplaceAll(escaped, "+", "%20"))
 }
 
 func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdentity, channelName, chatID string) (SessionSelector, error) {
