@@ -811,23 +811,18 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// ensureSessionModel is idempotent — it checks GetSessionSubscription
 		// first and returns immediately if a binding already exists.
 		if model != "" {
-			// Explicit model override. Model-subscription integration: when the
-			// caller provides the (subscriptionID, model) pair (frontend
-			// inheritance passes both), bind directly — no reverse resolution.
-			// A bare model name (no subscriptionID) is resolved to its owning
-			// subscription exactly once (the single input resolver).
-			// Resolution/binding failures are non-fatal — the session is created
-			// regardless and falls back to the default binding (Balance tier).
+			// Explicit model override. Model-subscription integration: the caller
+			// passes the (subscriptionID, model) pair (frontend inheritance sends
+			// both). ⛔ A bare model name is NOT resolved — resolving by model name
+			// alone has to guess a provider when the same name exists under
+			// several subscriptions. Without a subscription id we refuse the
+			// override and fall back to the configured default binding.
 			llmFactory := ag.LLMFactory()
 			subID := subscriptionID
 			if subID == "" {
-				if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
-					subID = sub.ID
-				} else {
-					log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
-					llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
-					return chatID, nil
-				}
+				log.WithField("model", model).Error("ChatCreate: model override without a subscription id — refusing bare-name resolution (pass 'subID|model'); using the default binding")
+				llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
+				return chatID, nil
 			}
 			if serr := llmFactory.SelectModel(senderID, chatID, "web", subID, model); serr != nil {
 				log.WithError(serr).WithFields(log.Fields{"model": model, "sub_id": subID}).Warn("ChatCreate: failed to bind explicit model, falling back to default")

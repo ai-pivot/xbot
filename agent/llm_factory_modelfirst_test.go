@@ -341,109 +341,6 @@ func TestGetLLM_PicksSubModelNotPoisonedDefault(t *testing.T) {
 		t.Errorf("model = %q, want real-model-a (from user_default_model)", model)
 	}
 }
-
-// TestResolveSubscriptionForModel_PrefersOwnerOverDefault verifies that when a
-// model belongs to a non-default subscription, the resolver returns the owner
-// subscription rather than the default. This is the core fix for the
-// cross-subscription cycling 404 (model name from sub B paired with sub A's
-// credentials).
-func TestResolveSubscriptionForModel_PrefersOwnerOverDefault(t *testing.T) {
-	f, subSvc, _ := newModelFirstTestFactory(t)
-
-	gptSub := &sqlite.LLMSubscription{
-		ID: "sub-gpt", SenderID: "cli_user", Name: "gpt", Provider: "openai",
-		BaseURL: "https://api.gpt.example/v1", APIKey: "sk-gpt", Model: "gpt-4o",
-		IsDefault: true,
-	}
-	kimiSub := &sqlite.LLMSubscription{
-		ID: "sub-kimi", SenderID: "cli_user", Name: "kimi", Provider: "openai",
-		BaseURL: "https://api.kimi.com/coding/", APIKey: "sk-kimi", Model: "kimi-k2.7",
-	}
-	if err := subSvc.Add(gptSub); err != nil {
-		t.Fatalf("Add gpt: %v", err)
-	}
-	if err := subSvc.Add(kimiSub); err != nil {
-		t.Fatalf("Add kimi: %v", err)
-	}
-	if err := subSvc.UpsertModel(kimiSub.ID, "kimi-k2.7", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel kimi: %v", err)
-	}
-
-	owner, err := f.ResolveSubscriptionForModel("cli_user", "kimi-k2.7")
-	if err != nil {
-		t.Fatalf("ResolveSubscriptionForModel: %v", err)
-	}
-	if owner.ID != kimiSub.ID {
-		t.Errorf("owner = %q, want %q (the subscription that actually serves the model, not the default)",
-			owner.ID, kimiSub.ID)
-	}
-}
-
-// TestResolveSubscriptionForModel_SkipsDisabledModel verifies a disabled
-// subscription_models row is not selected as the owner (so SelectModel later
-// rejects the switch rather than pairing disabled creds).
-func TestResolveSubscriptionForModel_SkipsDisabledModel(t *testing.T) {
-	f, subSvc, _ := newModelFirstTestFactory(t)
-
-	sub := &sqlite.LLMSubscription{
-		ID: "sub-x", SenderID: "cli_user", Name: "x", Provider: "openai",
-		BaseURL: "https://api.x.example/v1", APIKey: "sk-x", Model: "m-on",
-		IsDefault: true,
-	}
-	if err := subSvc.Add(sub); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := subSvc.UpsertModel(sub.ID, "m-on", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel m-on: %v", err)
-	}
-	if err := subSvc.UpsertModel(sub.ID, "m-off", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel m-off: %v", err)
-	}
-	if err := subSvc.SetModelEnabled(sub.ID, "m-off", false); err != nil {
-		t.Fatalf("SetModelEnabled: %v", err)
-	}
-
-	if _, err := f.ResolveSubscriptionForModel("cli_user", "m-off"); err == nil {
-		t.Error("expected error for disabled model, got nil")
-	}
-
-	owner, err := f.ResolveSubscriptionForModel("cli_user", "m-on")
-	if err != nil {
-		t.Fatalf("ResolveSubscriptionForModel m-on: %v", err)
-	}
-	if owner.ID != sub.ID {
-		t.Errorf("owner = %q, want %q", owner.ID, sub.ID)
-	}
-}
-
-// TestResolveSubscriptionForModel_FallbackToCachedModels verifies that when a
-// model has no subscription_models row, the resolver falls back to CachedModels.
-func TestResolveSubscriptionForModel_FallbackToCachedModels(t *testing.T) {
-	f, subSvc, _ := newModelFirstTestFactory(t)
-
-	sub := &sqlite.LLMSubscription{
-		ID: "sub-c", SenderID: "cli_user", Name: "c", Provider: "openai",
-		BaseURL: "https://api.c.example/v1", APIKey: "sk-c",
-		IsDefault: true,
-	}
-	if err := subSvc.Add(sub); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := subSvc.UpsertModel(sub.ID, "cached-only-model", 0, 0, "", ""); err != nil {
-		t.Fatalf("UpsertModel: %v", err)
-	}
-	owner, err := f.ResolveSubscriptionForModel("cli_user", "cached-only-model")
-	if err != nil {
-		t.Fatalf("ResolveSubscriptionForModel: %v", err)
-	}
-	if owner.ID != sub.ID {
-		t.Errorf("owner = %q, want %q", owner.ID, sub.ID)
-	}
-}
-
-// TestListAllModelsForUser_ExcludesDisabled verifies that a model disabled via
-// subscription_models is excluded from the unified model list, while enabled
-// and loose (CachedModels) models are included.
 func TestListAllModelsForUser_ExcludesDisabled(t *testing.T) {
 	f, subSvc, _ := newModelFirstTestFactory(t)
 	sub := &sqlite.LLMSubscription{
@@ -512,9 +409,11 @@ func TestSetSubscriptionEnabled_SkipsEverywhere(t *testing.T) {
 	if !containsModel(models, "d-model") {
 		t.Fatalf("d-model should be visible before disable, got %v", models)
 	}
-	owner, err := f.ResolveSubscriptionForModel("cli_user", "d-model")
-	if err != nil || owner.ID != sub.ID {
-		t.Fatalf("owner before disable = %v, %v (want %s)", owner, err, sub.ID)
+	// Enabled by default: model visible and resolvable via its explicit pair
+	// (bare model names are never resolved — see model_pair_resolution_test.go).
+	_, pairSubID, _, _, _, _, pairOK := f.GetLLMForModel("cli_user", sub.ID+"|d-model")
+	if !pairOK || pairSubID != sub.ID {
+		t.Fatalf("pair resolution before disable = %s, %v (want %s)", pairSubID, pairOK, sub.ID)
 	}
 
 	// Disable the subscription.
@@ -532,9 +431,9 @@ func TestSetSubscriptionEnabled_SkipsEverywhere(t *testing.T) {
 			t.Errorf("d-model should not appear in entries after sub disable, got %+v", e)
 		}
 	}
-	// ResolveSubscriptionForModel no longer resolves the disabled subscription as owner.
-	if _, err := f.ResolveSubscriptionForModel("cli_user", "d-model"); err == nil {
-		t.Error("ResolveSubscriptionForModel should fail for disabled subscription's model")
+	// 禁用订阅的模型不可解析（裸名本就不解析；这里断言连解析成功都不该发生）。
+	if _, _, _, _, _, _, ok := f.GetLLMForModel("cli_user", "d-model"); ok {
+		t.Error("GetLLMForModel must not resolve a disabled subscription's model")
 	}
 	// SelectModel rejects the disabled subscription.
 	chatID := "/home/proj:Agent-2"
