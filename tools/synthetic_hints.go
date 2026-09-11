@@ -76,7 +76,7 @@ func BgTaskHints(t *BackgroundTask) SyntheticToolHints {
 	if t.FinishedAt != nil {
 		h.ElapsedMS = t.FinishedAt.Sub(t.StartedAt).Milliseconds()
 	}
-	h.Output = truncateHeadPreview(t.CurrentOutput(), maxSyntheticPreviewBytes)
+	h.Output = TruncateHeadPreview(t.CurrentOutput(), maxSyntheticPreviewBytes)
 	return h
 }
 
@@ -93,7 +93,7 @@ func SubAgentHints(n *SubAgentBgNotify) SyntheticToolHints {
 		Task:      n.Task,
 		Status:    "done",
 		ElapsedMS: n.Elapsed.Milliseconds(),
-		Output:    truncateHeadPreview(n.Content, maxSyntheticPreviewBytes),
+		Output:    TruncateHeadPreview(n.Content, maxSyntheticPreviewBytes),
 	}
 	return h
 }
@@ -104,6 +104,6 @@ func MessageHints(kind, message string) SyntheticToolHints {
 	return SyntheticToolHints{
 		Kind:    kind,
 		Message: message,
-		Output:  truncateHeadPreview(message, maxSyntheticPreviewBytes),
+		Output:  TruncateHeadPreview(message, maxSyntheticPreviewBytes),
 	}
 }
