@@ -140,6 +140,11 @@ type WebCallbacks struct {
 	BackgroundTasks func(senderID string, sel SessionSelector) (any, error)
 	// CronTasks returns scheduled tasks for a Web-accessible session.
 	CronTasks func(senderID string, sel SessionSelector) (any, error)
+	// CronRemove deletes a scheduled task owned by the given session. Session
+	// scoped: a job whose channel/chatID does not match is reported as not
+	// removed (same policy as the cron tool's removeJob) — never a cross-session
+	// delete. Returns (removed, error).
+	CronRemove func(channel, chatID, jobID string) (bool, error)
 	// CommandList returns slash-command completion metadata for the Web UI.
 	CommandList func(senderID string) ([]CommandInfo, error)
 	// SessionSubscription returns the model/subscription selected for a Web-accessible session.
@@ -874,6 +879,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	// the frequently-polled status endpoint doesn't bundle large payloads
 	// (e.g. completed bg task output ~1MB).
 	mux.HandleFunc("/api/cron/list", wc.authenticatedPOST(wc.handleCronListPOST))
+	mux.HandleFunc("/api/cron/remove", wc.authenticatedPOST(wc.handleCronRemovePOST))
 	mux.HandleFunc("/api/tasks/list", wc.authenticatedPOST(wc.handleTasksListPOST))
 
 	// App bundle API

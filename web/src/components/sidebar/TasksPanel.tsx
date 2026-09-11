@@ -6,12 +6,13 @@
  *
  * Icons: ⏰ cron task, ▶ running bg command, ✓ completed, ✗ failed.
  */
-import { useEffect, useMemo } from 'react'
-import { AlarmClock, Bot, Check, Loader2, Play, Square, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { AlarmClock, Bot, Check, Loader2, Play, Square, Trash2, X } from 'lucide-react'
 import { useI18n } from '@/providers/i18n'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTasks } from '@/hooks/useTasks'
+import { openMobileAgent } from '@/lib/mobileNav'
 import { flattenSubAgentTree } from '@/components/session/session-tree'
 import { parseAgentChatID } from '@/lib/session-grouping'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -30,7 +31,8 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
     () => sessionForTaskRPC(tabManager, session.activeSession),
     [tabManager?.activeTabId, tabManager?.tabs, session.activeSession],
   )
-  const { cronTasks, bgTasks, loading, killBgTask } = useTasks(ws, taskSession)
+  const { cronTasks, bgTasks, loading, killBgTask, removeCronTask } = useTasks(ws, taskSession)
+  const [expandedCronID, setExpandedCronID] = useState<string | null>(null)
   const subAgents = useMemo(() => {
     const activeNode = findSessionNode(session.sessions, sessionForFocusedAgent(tabManager, session.activeSession))
     if (activeNode?.children?.length) return flattenSubAgentTree([activeNode]).filter(isActiveSubAgent)
@@ -52,18 +54,23 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
   }, [hasRunningSubAgent, session])
 
   const openSubAgent = (agent: (typeof subAgents)[number]) => {
+    // Mobile first: there is no dockview on the phone, so openTab would be a
+    // no-op (user report: "手机端 task view 里 subagent 无法点开交互").
+    // openMobileAgent returns false when no mobile shell is registered.
+    const target = {
+      subAgentRole: agent.role,
+      subAgentInstance: agent.instance,
+      parentChatID: agent.parentChatID,
+      parentChannel: agent.parentChannel,
+      agentChatID: agent.fullKey || agent.agentChatID,
+    }
+    if (openMobileAgent(target)) return
     tabManager?.openTab({
       type: 'agent',
       title: subAgentTitle(agent),
       icon: 'bot',
       closable: true,
-      data: {
-        subAgentRole: agent.role,
-        subAgentInstance: agent.instance,
-        parentChatID: agent.parentChatID,
-        parentChannel: agent.parentChannel,
-        agentChatID: agent.fullKey || agent.agentChatID,
-      },
+      data: target,
     })
   }
 
@@ -98,31 +105,75 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
           </h3>
           {hasCron ? (
             <div className="flex flex-col gap-1.5">
-              {cronTasks.map((task) => (
-                <div
-                  key={task.id}
-                  className="flex items-start gap-2 rounded-md bg-bg-tertiary px-2 py-1.5"
-                >
-                  <AlarmClock className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs text-text-primary">{task.message}</p>
-                    <p className="mt-0.5 text-xs text-text-muted">
-                      {task.cronExpr
-                        ? task.cronExpr
-                        : task.everySeconds
-                          ? `every ${task.everySeconds}s`
-                          : task.at
-                            ? task.at
-                            : task.delaySeconds
-                              ? `delay ${task.delaySeconds}s`
-                              : ''}
-                    </p>
+              {cronTasks.map((task) => {
+                const expanded = expandedCronID === task.id
+                const schedule = task.cronExpr
+                  ? task.cronExpr
+                  : task.everySeconds
+                    ? `every ${task.everySeconds}s`
+                    : task.at
+                      ? task.at
+                      : task.delaySeconds
+                        ? `delay ${task.delaySeconds}s`
+                        : ''
+                return (
+                  <div key={task.id} className="rounded-md bg-bg-tertiary px-2 py-1.5">
+                    <div className="flex items-start gap-2">
+                      <AlarmClock className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
+                      {/* 可点开：没有这个交互时，cron 行既看不到详情也无法操作
+                          （用户报告："电脑 cron 也无法点开看详情"）。 */}
+                      <button
+                        type="button"
+                        data-testid="cron-row"
+                        aria-expanded={expanded}
+                        onClick={() => setExpandedCronID(expanded ? null : task.id)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <p className="truncate text-xs text-text-primary">{task.message}</p>
+                        <p className="mt-0.5 truncate text-xs text-text-muted">{schedule}</p>
+                      </button>
+                      {task.oneShot && (
+                        <span className="shrink-0 text-xs text-text-muted">1×</span>
+                      )}
+                      <button
+                        type="button"
+                        data-testid="cron-delete"
+                        aria-label={t('common.delete')}
+                        title={t('common.delete')}
+                        onClick={() => void removeCronTask(task.id)}
+                        className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </div>
+                    {expanded && (
+                      <dl
+                        data-testid="cron-details"
+                        className="mt-2 space-y-1 border-t border-border/60 pt-2 text-[11px] text-text-muted"
+                      >
+                        <div className="flex gap-2">
+                          <dt className="shrink-0">{t('sidebar.cronSchedule')}</dt>
+                          <dd className="min-w-0 break-words text-text-secondary">{schedule || '—'}</dd>
+                        </div>
+                        <div className="flex gap-2">
+                          <dt className="shrink-0">{t('sidebar.cronNext')}</dt>
+                          <dd className="min-w-0 break-words text-text-secondary">{task.nextRun || '—'}</dd>
+                        </div>
+                        <div className="flex gap-2">
+                          <dt className="shrink-0">{t('sidebar.cronTarget')}</dt>
+                          <dd className="min-w-0 break-words font-mono text-text-secondary">
+                            {[task.channel, task.chatID].filter(Boolean).join(':') || '—'}
+                          </dd>
+                        </div>
+                        <div className="flex gap-2">
+                          <dt className="shrink-0">ID</dt>
+                          <dd className="min-w-0 break-all font-mono text-text-secondary">{task.id}</dd>
+                        </div>
+                      </dl>
+                    )}
                   </div>
-                  {task.oneShot && (
-                    <span className="shrink-0 text-xs text-text-muted">1×</span>
-                  )}
-                </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <p className="text-xs text-text-muted">—</p>

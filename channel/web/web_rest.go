@@ -807,6 +807,51 @@ func (wc *WebChannel) handleSessionStatus(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// handleCronRemovePOST deletes a scheduled task owned by the session (Tasks
+// panel ✕). Session scoped: the callback refuses jobs whose channel/chatID do
+// not match, so a stale panel can never delete another session's schedule.
+func (wc *WebChannel) handleCronRemovePOST(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.CronRemove == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "cron remove not available")
+		return
+	}
+	var body struct {
+		Channel string `json:"channel,omitempty"`
+		ChatID  string `json:"chat_id,omitempty"`
+		JobID   string `json:"job_id"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.JobID == "" {
+		jsonErrorResponse(w, http.StatusBadRequest, "job_id is required")
+		return
+	}
+	identity := wc.inboundIdentityFromRequest(r)
+	if body.ChatID != "" && body.Channel == "" {
+		body.Channel = wc.inferAPISessionChannel(identity.SenderID, body.ChatID)
+	}
+	sel, err := wc.resolveInboundSession(r.Context(), identity, body.Channel, body.ChatID)
+	if err != nil {
+		writeInboundError(w, err)
+		return
+	}
+	removed, err := wc.callbacks.CronRemove(sel.Channel, sel.ChatID, body.JobID)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Not-owned / already-gone is NOT an error: the panel's intent (the job is
+	// gone from this session) is satisfied, and the response must not leak
+	// whether the id exists in another session.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id": sel.ChatID,
+		"channel": sel.Channel,
+		"removed": removed,
+	})
+}
+
 // handleCronListPOST returns cron jobs for the session's canonical user.
 func (wc *WebChannel) handleCronListPOST(w http.ResponseWriter, r *http.Request) {
 	var body sessionBody

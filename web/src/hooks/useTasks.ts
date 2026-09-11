@@ -4,7 +4,7 @@
  * Refreshes every 30 seconds and on session switch.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchCronTasks, fetchBackgroundTasks } from '@/components/agent/api'
+import { fetchCronTasks, fetchBackgroundTasks, removeCronTask as removeCronTaskAPI } from '@/components/agent/api'
 import type { WSConnection } from '@/types/ws'
 import type { SessionSelector } from '@/types/shared'
 
@@ -42,6 +42,8 @@ export interface TasksState {
   error: string | null
   refresh: () => void
   killBgTask: (taskID: string) => Promise<void>
+  /** Delete a scheduled task owned by this session (Tasks panel ✕). */
+  removeCronTask: (jobID: string) => Promise<void>
 }
 
 const REFRESH_INTERVAL_MS = 30_000
@@ -97,6 +99,15 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
     await refresh()
   }, [refresh, ws])
 
+  // Delete a scheduled task (Tasks panel ✕). Server is session-scoped: a job
+  // owned by another session reports removed=false and stays put.
+  const removeCronTask = useCallback(async (jobID: string) => {
+    const current = sessionRef.current
+    if (!jobID || !current) return
+    await removeCronTaskAPI(current, jobID)
+    await refresh()
+  }, [refresh])
+
   // Refresh on mount + session switch.
   useEffect(() => {
     void refresh()
@@ -121,7 +132,7 @@ export function useTasks(ws: WSConnection, session: SessionSelector | null): Tas
     return () => window.removeEventListener('bg-task-promoted', onPromoted)
   }, [refresh])
 
-  return { cronTasks, bgTasks, loading, error, refresh, killBgTask }
+  return { cronTasks, bgTasks, loading, error, refresh, killBgTask, removeCronTask }
 }
 
 export function isRunningBgTask(task: Pick<BgTask, 'status'>): boolean {

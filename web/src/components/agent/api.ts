@@ -131,8 +131,18 @@ export async function fetchCronTasks<T>(session: SessionSelector): Promise<T[]> 
   return data.tasks ?? []
 }
 
-export async function fetchBackgroundTasks<T>(session: SessionSelector): Promise<T[]> {
-  const data = await postAPI<{ background_tasks?: T[] }>('/api/tasks/list', sessionBody(session))
+/** Delete a scheduled task owned by this session (Tasks panel ✕).
+ *  Session-scoped server-side: a job belonging to another session reports
+ *  removed=false instead of being deleted. */
+export async function removeCronTask(session: SessionSelector, jobID: string): Promise<boolean> {
+  const data = await postAPI<{ removed?: boolean }>('/api/cron/remove', {
+    ...sessionBody(session),
+    job_id: jobID,
+  })
+  return data.removed === true
+}
+
+export async function fetchBackgroundTasks<T>(session: SessionSelector): Promise<T[]> {  const data = await postAPI<{ background_tasks?: T[] }>('/api/tasks/list', sessionBody(session))
   return data.background_tasks ?? []
 }
 

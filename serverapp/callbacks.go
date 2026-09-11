@@ -452,6 +452,37 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// Multi-user removal: one operator owns every session — no ownership check.
 		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
 	}
+	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
+		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+			return false, nil
+		}
+		if jobID == "" {
+			return false, nil
+		}
+		cronSvc := sqlite.NewCronService(ag.MultiSession().DB())
+		// Session-scoped ownership check (same policy as the cron tool's
+		// removeJob): only jobs belonging to THIS session may be removed, so a
+		// stale panel can never delete another session's schedule. Unknown /
+		// foreign ids report removed=false (no existence leak).
+		jobs, err := cronSvc.ListJobsByChannelChatID(channel, chatID)
+		if err != nil {
+			return false, fmt.Errorf("list cron jobs: %w", err)
+		}
+		owned := false
+		for i := range jobs {
+			if jobs[i].ID == jobID {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			return false, nil
+		}
+		if err := cronSvc.RemoveJob(jobID); err != nil {
+			return false, fmt.Errorf("remove cron job: %w", err)
+		}
+		return true, nil
+	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
 			return []any{}, nil
