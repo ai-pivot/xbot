@@ -55,16 +55,18 @@ async function setupMock(page: Page) {
 }
 
 /** Count how many times a tool name appears as a leaf text node. */
-async function countToolLabels(page: Page, toolName: string): Promise<number> {
-  return page.evaluate((name) => {
+async function countToolLabels(page: Page, toolName: string, within?: string): Promise<number> {
+  return page.evaluate(({ name, sel }) => {
+    const root = sel ? document.querySelector(sel) : document.body
+    if (!root) return 0
     let count = 0
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
     while (walker.nextNode()) {
       const text = walker.currentNode.textContent?.trim() || ''
       if (text === name) count++
     }
     return count
-  }, toolName)
+  }, { name: toolName, sel: within ?? null })
 }
 
 async function login(page: Page) {
@@ -252,11 +254,15 @@ test.describe('Iteration dedup and cross-turn leak', () => {
     })
     await page.waitForTimeout(300)
 
-    // Turn 2 should show Shell and Write — NOT Read and Grep (turn 1's tools)
-    const shellCount = await countToolLabels(page, 'Shell')
-    const writeCount = await countToolLabels(page, 'Write')
-    const readCount = await countToolLabels(page, 'Read')
-    const grepCount = await countToolLabels(page, 'Grep')
+    // Turn 2 should show Shell and Write in the LIVE message — NOT Read and
+    // Grep (turn 1's tools). Scope the count to the live iteration area: turn 1
+    // is now a committed message whose tools legitimately render (every
+    // iteration is rendered individually — no collapse hides them).
+    const LIVE = '[data-iter-id="live"]'
+    const shellCount = await countToolLabels(page, 'Shell', LIVE)
+    const writeCount = await countToolLabels(page, 'Write', LIVE)
+    const readCount = await countToolLabels(page, 'Read', LIVE)
+    const grepCount = await countToolLabels(page, 'Grep', LIVE)
 
     console.log('Turn 2 tool counts:', { Shell: shellCount, Write: writeCount, Read: readCount, Grep: grepCount })
     expect(shellCount).toBe(1)
