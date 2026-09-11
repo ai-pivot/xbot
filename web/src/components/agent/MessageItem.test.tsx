@@ -25,7 +25,6 @@ describe('MessageItem', () => {
       <MessageItem
         message={message}
         liveProgress={null}
-        collapseLevel="all"
         onRewind={onRewind}
         onStartEdit={onStartEdit}
       />,
@@ -52,7 +51,6 @@ describe('MessageItem', () => {
           turnID: 0,
         }}
         liveProgress={null}
-        collapseLevel="minimal"
       />,
     )
 
@@ -89,7 +87,6 @@ describe('MessageItem', () => {
               toolHints: '',
             }],
           }}
-          collapseLevel="minimal"
         />,
       )
 

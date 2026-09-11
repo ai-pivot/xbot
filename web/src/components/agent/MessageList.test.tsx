@@ -180,7 +180,6 @@ describe('MessageList virtualization', () => {
         <MessageList
           messages={messages}
           liveProgress={null}
-          collapseLevel="all"
           loading={false}
           error={null}
         />,
@@ -194,7 +193,6 @@ describe('MessageList virtualization', () => {
       <MessageList
         messages={messages}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -216,7 +214,6 @@ describe('MessageList virtualization', () => {
       <MessageList
         messages={makeMessages(60)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -234,7 +231,6 @@ describe('MessageList virtualization', () => {
         <MessageList
           messages={messages}
           liveProgress={{ ...EMPTY_LIVE_PROGRESS, streaming: true, streamContent: 'streaming…' }}
-          collapseLevel="all"
           loading={false}
           error={null}
         />,
@@ -248,7 +244,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -269,7 +264,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -288,7 +282,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(21)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -311,7 +304,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -337,7 +329,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -360,7 +351,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(21)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -377,7 +367,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -409,7 +398,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -426,7 +414,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(21)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -443,7 +430,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -472,7 +458,6 @@ describe('MessageList virtualization', () => {
         followResetToken={0}
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -493,7 +478,6 @@ describe('MessageList virtualization', () => {
         followResetToken={1}
         messages={makeMessages(21)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -512,7 +496,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(20)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -532,7 +515,6 @@ describe('MessageList virtualization', () => {
         chatKey="web:chat-1"
         messages={makeMessages(21)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -553,7 +535,6 @@ describe('MessageList virtualization', () => {
       <MessageList
         messages={[]}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -567,7 +548,6 @@ describe('MessageList virtualization', () => {
       <MessageList
         messages={[]}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error="history 500"
       />,
@@ -592,7 +572,6 @@ describe('MessageList virtualization', () => {
       <MessageList
         messages={messages}
         liveProgress={null}
-        collapseLevel="all"
         loading={true}
         error={null}
         busy={true}
@@ -612,7 +591,6 @@ describe('MessageList virtualization', () => {
       <MessageList
         messages={messages}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
         busy={true}
@@ -662,7 +640,6 @@ describe('MessageList user nav (hover/click turn list)', () => {
       <MessageList
         messages={messages}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -682,7 +659,6 @@ describe('MessageList user nav (hover/click turn list)', () => {
       <MessageList
         messages={[]}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -693,7 +669,6 @@ describe('MessageList user nav (hover/click turn list)', () => {
       <MessageList
         messages={makeMessages(1)} // 1 user turn, 0 assistant
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -708,7 +683,6 @@ describe('MessageList user nav (hover/click turn list)', () => {
         chatKey="web:chat-1"
         messages={messages}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -730,7 +704,6 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
         chatKey="web:chat-1"
         messages={messages}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -755,7 +728,6 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
         chatKey="web:chat-1"
         messages={[...messages, firstLive]}
         liveProgress={{ ...EMPTY_LIVE_PROGRESS, streaming: true, streamContent: 'a' }}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -772,7 +744,6 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
         chatKey="web:chat-1"
         messages={[...messages, { ...firstLive, content: 'streamed text' }]}
         liveProgress={{ ...EMPTY_LIVE_PROGRESS, streaming: true, streamContent: 'streamed text' }}
-        collapseLevel="all"
         loading={false}
         error={null}
       />,
@@ -794,7 +765,6 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
         chatKey="web:chat-1"
         messages={makeMessages(10)}
         liveProgress={null}
-        collapseLevel="all"
         loading={false}
         error={null}
         footer={<div data-testid="ask-footer">Question</div>}

@@ -10,18 +10,13 @@
 import { memo } from 'react'
 
 import { TurnBody } from './TurnBody'
-import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 
 interface ProgressPanelProps {
   progress: ProgressSnapshot
-  level?: CollapseLevel
 }
 
-export const ProgressPanel = memo(function ProgressPanel({
-  progress,
-  level = 'minimal',
-}: ProgressPanelProps) {
+export const ProgressPanel = memo(function ProgressPanel({ progress }: ProgressPanelProps) {
   const hasHistory = progress.iterationHistory.length > 0
   const hasLive =
     progress.streaming ||
@@ -36,7 +31,6 @@ export const ProgressPanel = memo(function ProgressPanel({
     <TurnBody
       iterations={progress.iterationHistory}
       liveProgress={progress}
-      level={level}
     />
   )
 })

@@ -19,7 +19,6 @@ import { toast } from 'sonner'
 import { useAskUser } from '@/hooks/useAskUser'
 import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { sameSession } from "@/lib/session-grouping"
-import { useCollapseLevel, useMergeTools } from '@/hooks/useCollapseLevel'
 import { useAgentChatState } from '@/chat/useAgentChatState'
 import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
@@ -63,8 +62,6 @@ export function AgentPanel({ params, api }: PanelProps) {
   const store = ctx.sessionStore
   const rightSidebar = ctx.rightSidebar
   const { t } = useI18n()
-  const { level } = useCollapseLevel()
-  const { mergeTools } = useMergeTools()
   const { enabled: devMode } = useDeveloperMode()
   const [draft, setDraft] = useState<string | undefined>(undefined)
   const [followResetToken, setFollowResetToken] = useState(0)
@@ -661,8 +658,6 @@ export function AgentPanel({ params, api }: PanelProps) {
         messages={agentChat.messages}
         liveProgress={progressSnapshot}
         busy={busy}
-        collapseLevel={level}
-        mergeTools={mergeTools}
         loading={chat.loading}
         loadingMore={chat.loadingMore}
         hasMore={chat.hasMore}

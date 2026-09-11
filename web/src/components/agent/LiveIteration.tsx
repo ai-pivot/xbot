@@ -4,15 +4,15 @@
  * Streaming T (reasoning): FoldedLine wrapping ReasoningBlock with streaming
  *   indicator. Falls back to lastReasoning when streamContent is empty.
  * Streaming O (text): MarkdownRenderer with a streaming cursor indicator.
- * Streaming C (tools): FoldedToolGroup with merged streaming/active/completed
- *   tools from the snapshot.
+ * Streaming C (tools): ToolGroup — every tool from the snapshot rendered as its
+ *   own expanded card.
  *
  * Render order: T → O → C (Spec A §2).
  */
 import { memo, useEffect, useMemo } from 'react'
 
 import { ThinkingLine } from './ThinkingLine'
-import { FoldedToolGroup } from './FoldedToolGroup'
+import { ToolGroup } from './ToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -25,21 +25,14 @@ import { useTypewriter } from '@/hooks/useTypewriter'
 import { useI18n } from '@/providers/i18n'
 import { dedupTools } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
-import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 import type { LiveStreamStats } from '@/plugin-api'
 
 interface LiveIterationProps {
   progress: ProgressSnapshot
-  level: CollapseLevel
-  mergeTools?: boolean
 }
 
-export const LiveIteration = memo(function LiveIteration({
-  progress,
-  level,
-  mergeTools = true,
-}: LiveIterationProps) {
+export const LiveIteration = memo(function LiveIteration({ progress }: LiveIterationProps) {
   const { t } = useI18n()
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
@@ -156,7 +149,7 @@ export const LiveIteration = memo(function LiveIteration({
       ...currentActive,
       ...filteredCompleted,
       // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
-      // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
+      // 不排除会导致同一 genui 双渲染（hasGenUI + ToolGroup→ToolRender 各一个
       // GenUIPanel）→ 高度双倍 + DOM 反复出现/消失 + 虚拟列表高度跳变（busy 时最严重）。
     ]).filter((t) => !t.uiMode)
     const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
@@ -247,8 +240,8 @@ export const LiveIteration = memo(function LiveIteration({
         <GenUICollapsiblePanel code={progress.genuiContent} streaming={isLive} />
       )}
 
-      {/* Streaming C */}
-      {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}
+      {/* Streaming C — each tool its own expanded card */}
+      {hasTools && <ToolGroup tools={allTools} />}
     </div>
   )
 })
