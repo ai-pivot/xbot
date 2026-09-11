@@ -342,11 +342,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
 		}
-		if db := ag.MultiSession().DB(); db != nil {
-			if err := sqlite.NewTenantService(db).TouchTenantID(sel.Channel, sel.ChatID); err != nil {
-				log.WithError(err).Warn("Web history: failed to update last_active_at")
-			}
-		}
+		// NOTE: reading history MUST NOT touch the tenant. This used to call
+		// TouchTenantID here, which meant that merely opening/refreshing the web
+		// UI re-stamped last_active_at for every session it loaded — after a
+		// laptop slept overnight, every one of yesterday's sessions showed up as
+		// "active today" in the sidebar (TODAY/YESTERDAY grouping is derived
+		// from last_active_at). last_active_at is now bumped only by real user
+		// activity (a user message reaching processMessage), see the eager-save
+		// in agent.processMessage.
 		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
 		if err != nil {
 			return web.HistorySnapshot{}, err

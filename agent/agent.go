@@ -3599,6 +3599,22 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages[len(messages)-1].ID = historyID
 		}
+		// The user actually sent something → this is the ONE place that moves a
+		// session's last_active_at.
+		//
+		// It must NOT happen on reads. Regression (2026-09-11): the web
+		// /api/history endpoint and the get_history RPC both called
+		// TouchTenantID, so merely opening/refreshing the web UI re-stamped
+		// every session it displayed. After a laptop slept overnight, all of
+		// yesterday's sessions showed up as "active today" (the sidebar groups
+		// sessions into TODAY/YESTERDAY from this column).
+		if ms := a.MultiSession(); ms != nil {
+			if db := ms.DB(); db != nil {
+				if terr := sqlite.NewTenantService(db).TouchTenantID(msg.Channel, msg.ChatID); terr != nil {
+					log.WithError(terr).Warn("failed to update tenant last_active_at on user message")
+				}
+			}
+		}
 	}
 
 	cfg := a.buildMainRunConfig(ctx, msg, messages, tenantSession, preReplyNotify)
