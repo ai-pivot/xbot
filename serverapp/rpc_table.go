@@ -1253,12 +1253,13 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			return nil, err
 		}
 		p.Channel, p.ChatID = channelName, chatID
-		// Update last_active_at so we can restore the most recent session on restart.
-		if db := h.Ag.MultiSession().DB(); db != nil {
-			if err := sqlite.NewTenantService(db).TouchTenantID(p.Channel, p.ChatID); err != nil {
-				log.WithError(err).Warn("RPC get_history: failed to update last_active_at")
-			}
-		}
+		// NOTE: this is a READ RPC — it must not touch the tenant. It used to
+		// call TouchTenantID "so we can restore the most recent session on
+		// restart", which made any history read move the session's
+		// last_active_at to now (the web UI loads history for every session it
+		// displays, so a page refresh re-stamped them all as "active today").
+		// last_active_at is bumped only by real user activity — see the
+		// eager-save in agent.processMessage.
 		history, err := func() ([]channel.HistoryMessage, error) {
 			ms := h.Ag.MultiSession()
 			if ms == nil {
