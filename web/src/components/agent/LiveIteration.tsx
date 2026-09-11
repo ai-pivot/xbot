@@ -176,12 +176,13 @@ export const LiveIteration = memo(function LiveIteration({ progress }: LiveItera
     // "切换会话后新 agent turn 完全是空，不渲染思考中"）。busy placeholder 已
     // 收紧为 liveId===null（互斥），第一迭代窗口由本组件渲染。
     //
-    // ⚠️ 但 phase='tool_exec' 不在此列：后端在同一个函数里先置 Phase=tool_exec
-    // 再 initToolProgress 填充 ActiveTools，两者之间存在极短窗口 —— 此刻
-    // activeTools 仍为空（hasTools=false）而工具马上就到。若照常渲染"思考中…"，
-    // 它会立刻被工具卡片替换 → 闪一帧。tool_exec 本身就意味着"工具即将出现"，
-    // 这一格应当什么都不渲染（与旧 isThinkingPhase 守卫同义）。
-    if (progress.streaming && progress.phase !== 'tool_exec') {
+    // ⚠️ 即使 phase='tool_exec'（工具马上到达）这里也**照常渲染** ShimmerThinking。
+    // 曾试图在此加 phase 守卫来消除"工具到达前一帧的思考中"（CR 建议），但它会让
+    // live 行高度先掉到 0、再跳到工具卡片高度 —— `iteration-commit-flicker` E2E
+    // 的 spikes() 判据（h[i] >= min(相邻帧) + 12）会判定为 double-render spike 并
+    // 失败（CI 实测 frame 10: 178 vs plateau 150）。**行高稳定优先于消除这一帧**，
+    // 该 E2E 正是为防此类抖动而存在的。
+    if (progress.streaming) {
       return <ShimmerThinking />
     }
     return null
