@@ -395,7 +395,10 @@ run_setup() {
     # exactly that with the v0.0.23 binary). Probe with `setup -h`: both old
     # and new binaries print help text and exit 0, but only the new one prints
     # the setup-specific usage line. Never invoke a subcommand blindly.
+    # DEBUG: verify what binary is actually at the probe point
+    info "[debug] run_setup probing: ${INSTALL_PATH}/${BINARY} (version: $("${INSTALL_PATH}/${BINARY}" --version 2>&1 | head -1))"
     if ! "${INSTALL_PATH}/${BINARY}" setup -h 2>/dev/null | grep -q "Usage: xbot-cli setup"; then
+        warn "[debug] probe output was: $("${INSTALL_PATH}/${BINARY}" setup -h 2>&1 | head -3)"
         warn "Installed binary does not support the setup subcommand (pre-setup release)."
         warn "Falling back to legacy Web UI download; built-in plugins are not available for this release."
         download_web_dist "$version" "${XBOT_HOME}/web/dist"
