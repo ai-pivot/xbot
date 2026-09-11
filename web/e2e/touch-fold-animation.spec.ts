@@ -37,7 +37,7 @@ const probe = () => {
     return r
   }
   return {
-    // AnimatedCollapse wrapper (TodoPullOut / FoldedLine / ToolGroup / ThinkingLine)
+    // AnimatedCollapse wrapper (TodoPullOut / FoldedLine / FoldedToolGroup / ThinkingLine)
     fold: mk('fold-container'),
     // Radix collapsible height keyframes (data-state=open plays collapsibleOpen)
     collapsible: mk('collapsible-motion', { 'data-state': 'open' }),

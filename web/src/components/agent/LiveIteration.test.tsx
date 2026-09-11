@@ -46,7 +46,7 @@ describe('LiveIteration — typewriter cursor', () => {
       streamContent: 'Hello world',
       streaming: true,
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     const streamingDiv = container.querySelector('.streaming-content')
     expect(streamingDiv).not.toBeNull()
     // Typewriter starts empty; content appears after the 50ms interval tick.
@@ -59,7 +59,7 @@ describe('LiveIteration — typewriter cursor', () => {
       streamContent: 'Final text',
       streaming: false,
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     const streamingDiv = container.querySelector('.streaming-content')
     expect(streamingDiv).toBeNull()
   })
@@ -70,7 +70,7 @@ describe('LiveIteration — typewriter cursor', () => {
       reasoningStreamContent: 'thinking about something',
       streaming: true,
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     const streamingDiv = container.querySelector('.streaming-content')
     expect(streamingDiv).toBeNull()
   })
@@ -83,7 +83,7 @@ describe('LiveIteration — typewriter cursor', () => {
         streaming: true,
         phase: 'thinking',
       })
-      const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+      const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
 
       const full = snapshot.reasoningStreamContent.length // 24
       const extractCount = () => {
@@ -128,7 +128,7 @@ describe('LiveIteration — typewriter cursor', () => {
           toolHints: '',
         }],
       })
-      const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+      const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
 
       expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
       expect(container.querySelector('.sweep-text')).toHaveTextContent('Read')
@@ -143,7 +143,7 @@ describe('LiveIteration — typewriter cursor', () => {
         { role: 'explore', instance: 'sub-1', status: 'running', desc: 'searching' },
       ],
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     expect(container.textContent).toContain('explore:sub-1')
     expect(container.textContent).toContain('searching')
   })
@@ -155,7 +155,7 @@ describe('LiveIteration — typewriter cursor', () => {
       streaming: true,
       phase: '',
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     // Should render nothing meaningful (empty)
     expect(container.querySelector('.streaming-content')).toBeNull()
   })
@@ -199,7 +199,7 @@ describe('LiveIteration — typewriter cursor', () => {
         iteration: 2,
       }],
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     // The running Shell must NOT be filtered out — it renders with a SweepText
     // (the animated "running" indicator). Check for the tool name + sweep.
     expect(container.textContent).toContain('Shell')
@@ -249,7 +249,7 @@ describe('LiveIteration — typewriter cursor', () => {
         iteration: 1,
       }],
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     // The stale generating tool from a completed iteration must NOT render
     expect(container.textContent).not.toContain('Bash')
   })
@@ -290,7 +290,7 @@ describe('LiveIteration — typewriter cursor', () => {
         iteration: 2,
       }],
     })
-    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} level="minimal" />)
     expect(container.textContent).toContain('Read')
   })
 })
@@ -308,6 +308,7 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
           lastIter: 2,
           iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
         })}
+        level="all"
       />,
     )
     expect(container.textContent).toMatch(/思考中|thinking/)
@@ -322,7 +323,7 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     // return null（第一迭代 iterationHistory 空）→ 两个指示器都不渲染 →
     // 完全空白。修复：第一迭代空内容 + streaming → 渲染 ShimmerThinking。
     const { container } = renderWithProviders(
-      <LiveIteration progress={makeSnapshot({ lastIter: 1 })} />,
+      <LiveIteration progress={makeSnapshot({ lastIter: 1 })} level="all" />,
     )
     expect(container.textContent).toMatch(/思考中|thinking/)
   })
@@ -332,7 +333,7 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     // （lastIter=0，无任何内容）。live 行已存在 → busy placeholder 不渲染
     // （条件 3 失败）→ 此处必须渲染思考中，否则空白。
     const { container } = renderWithProviders(
-      <LiveIteration progress={makeSnapshot({ lastIter: 0 })} />,
+      <LiveIteration progress={makeSnapshot({ lastIter: 0 })} level="all" />,
     )
     expect(container.textContent).toMatch(/思考中|thinking/)
   })
@@ -345,6 +346,7 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
           streaming: false,
           iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
         })}
+        level="all"
       />,
     )
     expect(container.textContent).not.toMatch(/思考中|thinking/)

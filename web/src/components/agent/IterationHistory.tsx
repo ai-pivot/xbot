@@ -1,29 +1,36 @@
 /**
- * IterationGroup — renders a single iteration: T → O → C order.
+ * IterationGroup — renders a single iteration: T → O → C order (Spec A §2).
  *
  * Each iteration renders:
- *   - T (reasoning): FoldedLine, folded by default (click to expand)
+ *   - T (reasoning): FoldedLine, always folded by default
  *   - O (text output): MarkdownRenderer, always shown
- *   - C (tools): every tool as its own expanded card (ToolGroup)
+ *   - C (tools): FoldedToolGroup (handles both single and merged tool display)
  *
- * An iteration NEVER merges its tools with another iteration's, and is never
- * collapsed into a summary row.
+ * The component is used by TurnBody for committed iterations, and by
+ * AssistantMessage for the "all" level summary expansion.
  */
 import { memo } from 'react'
 
+import { FoldedToolGroup } from './FoldedToolGroup'
 import { FoldedLine } from './FoldedLine'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
-import { ToolGroup } from './ToolGroup'
 import { useI18n } from '@/providers/i18n'
 import { IterationSlot } from '@/plugin-runtime/iteration-render'
+import type { CollapseLevel } from '@/types/agent'
 import type { WebIteration } from '@/types/shared'
 
 interface IterationGroupProps {
   iteration: WebIteration
+  level: CollapseLevel
+  mergeTools?: boolean
 }
 
-export const IterationGroup = memo(function IterationGroup({ iteration }: IterationGroupProps) {
+export const IterationGroup = memo(function IterationGroup({
+  iteration,
+  level,
+  mergeTools = true,
+}: IterationGroupProps) {
   const { t } = useI18n()
 
   return (
@@ -41,7 +48,7 @@ export const IterationGroup = memo(function IterationGroup({ iteration }: Iterat
         }}
       />
 
-      {/* T: reasoning (folded by default) — show character count, not T0/T1 */}
+      {/* T: reasoning (always folded by default) — show character count, not T0/T1 */}
       {iteration.reasoning && (
         <FoldedLine
           title={t('agent.thinkingChars', { count: iteration.reasoning.length })}
@@ -59,8 +66,10 @@ export const IterationGroup = memo(function IterationGroup({ iteration }: Iterat
         />
       )}
 
-      {/* C: tool calls — each tool its own expanded card */}
-      {iteration.tools.length > 0 && <ToolGroup tools={iteration.tools} />}
+      {/* C: tool calls (FoldedToolGroup handles both single and merged display) */}
+      {iteration.tools.length > 0 && (
+        <FoldedToolGroup tools={iteration.tools} level={level} mergeTools={mergeTools} />
+      )}
 
       {/* Fallback: if nothing in this iteration, show a subtle hint */}
       {!iteration.reasoning && iteration.tools.length === 0 && !iteration.content && (

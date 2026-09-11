@@ -42,7 +42,7 @@ describe('AssistantMessage copy button (showActions)', () => {
       content: 'final reply',
       iterations: [iter('final reply')], // thinking === content
     })
-    renderMsg(<AssistantMessage message={m} />)
+    renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(copyButton()).not.toBeNull()
   })
 
@@ -51,7 +51,7 @@ describe('AssistantMessage copy button (showActions)', () => {
       content: 'final reply',
       iterations: [iter('reasoning text')],
     })
-    renderMsg(<AssistantMessage message={m} />)
+    renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(copyButton()).not.toBeNull()
   })
 
@@ -91,7 +91,7 @@ describe('AssistantMessage copy button (showActions)', () => {
       todos: [],
       goal: null,
     }
-    const { container } = renderMsg(<AssistantMessage message={m} progress={liveProgress} />)
+    const { container } = renderMsg(<AssistantMessage message={m} progress={liveProgress} collapseLevel="none" />)
     // "继续优化。" 只出现一次（LiveIteration 在迭代内渲染），迭代块外不重复
     expect(container.textContent.match(/继续优化。/g) ?? []).toHaveLength(1)
   })
@@ -111,20 +111,20 @@ describe('AssistantMessage copy button (showActions)', () => {
         { iteration: 2, content: '最终回复', reasoning: '', tools: [], toolCount: 0 },
       ],
     })
-    const { container } = renderMsg(<AssistantMessage message={m} />)
+    const { container } = renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     // "最终回复" 只出现一次（最后迭代在 TurnBody 内渲染），迭代块外不重复
     expect(container.textContent.match(/最终回复/g) ?? []).toHaveLength(1)
   })
 
   it('hides the copy button for an empty message', () => {
     const m = msg({ content: '', iterations: [] })
-    renderMsg(<AssistantMessage message={m} />)
+    renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(copyButton()).toBeNull()
   })
 
   it('hides the copy button for a display-only message (cancel marker)', () => {
     const m = msg({ content: 'partial', iterations: [], displayOnly: true })
-    renderMsg(<AssistantMessage message={m} />)
+    renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(copyButton()).toBeNull()
   })
 })
@@ -187,7 +187,7 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
       ],
     })
     const { container } = renderMsg(
-      <AssistantMessage message={m} progress={progress()} />,
+      <AssistantMessage message={m} collapseLevel="none" progress={progress()} />,
     )
     expect(container.querySelectorAll('.sweep-text').length).toBe(1)
     // The single indicator is the LiveIteration one (inside data-iter-id="live"),
@@ -204,7 +204,7 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
     // 行级 indicator 已删除（与 LiveIteration 双渲染根治）。
     const m = msg({ isPartial: true, iterations: [] })
     const { container } = renderMsg(
-      <AssistantMessage message={m} progress={progress({ iterationHistory: [], lastIter: 0 })} />,
+      <AssistantMessage message={m} collapseLevel="none" progress={progress({ iterationHistory: [], lastIter: 0 })} />,
     )
     expect(container.querySelectorAll('.sweep-text').length).toBe(1)
     // 唯一的 indicator 来自 LiveIteration（data-iter-id="live" 内部），
@@ -214,7 +214,7 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
 
   it('does NOT render the thinking indicator when the turn has no live progress', () => {
     const m = msg({ content: 'final', iterations: [iter('done')] })
-    const { container } = renderMsg(<AssistantMessage message={m} />)
+    const { container } = renderMsg(<AssistantMessage message={m} collapseLevel="none" />)
     expect(container.querySelectorAll('.sweep-text').length).toBe(0)
   })
 
@@ -230,6 +230,7 @@ describe('AssistantMessage thinking indicator (mutual exclusion with LiveIterati
     const { container } = renderMsg(
       <AssistantMessage
         message={m}
+        collapseLevel="none"
         progress={progress({ phase: '', streaming: false, iterationHistory: [], lastIter: 0 })}
       />,
     )
@@ -267,7 +268,7 @@ describe('AssistantMessage compressing indicator position', () => {
   it('renders the compressing indicator AFTER turn content (tail), not at the top', () => {
     const m = msg({ isPartial: true, iterations: [] })
     const { container } = renderMsg(
-      <AssistantMessage message={m} progress={compressing()} />,
+      <AssistantMessage message={m} collapseLevel="none" progress={compressing()} />,
     )
     // The compressing indicator (Loader2 + "compressing") must come after the
     // turn body content. Its container is a sibling placed at the tail of

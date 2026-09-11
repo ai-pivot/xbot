@@ -37,6 +37,9 @@ interface MessageListProps {
   /** Whether the agent is busy (thinking/processing) — shows placeholder when
    *  no live row yet (e.g. session just started, no iterations arrived). */
   busy?: boolean
+  collapseLevel: 'all' | 'minimal' | 'none'
+  /** Whether to merge consecutive tools. Default true. */
+  mergeTools?: boolean
   loading: boolean
   /** True while loading older messages (scroll-up pagination). */
   loadingMore?: boolean
@@ -182,6 +185,8 @@ export const MessageList = memo(function MessageList({
   messages,
   liveProgress,
   busy = false,
+  collapseLevel,
+  mergeTools = true,
   loading,
   loadingMore = false,
   hasMore = false,
@@ -294,6 +299,7 @@ export const MessageList = memo(function MessageList({
 
   // TanStack Virtual —— API 返回函数，React Compiler 无法安全 memo；
   // virtualizer 按设计每次渲染重建内部映射。
+  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -965,6 +971,8 @@ export const MessageList = memo(function MessageList({
                     <MessageItem
                       message={row}
                       liveProgress={row.id === liveId ? liveProgress : null}
+                      collapseLevel={collapseLevel}
+                      mergeTools={mergeTools}
                       onRewind={onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
                       isEditing={isEditing}
                       onStartEdit={onStartEdit ? () => onStartEdit(row.id) : undefined}

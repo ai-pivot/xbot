@@ -18,6 +18,10 @@ interface MessageItemProps {
   message: ChatMessage
   /** Live progress snapshot for the streaming assistant message, else null. */
   liveProgress?: LiveProgress | null
+  /** Active collapse-level preference. */
+  collapseLevel: 'all' | 'minimal' | 'none'
+  /** Whether to merge consecutive tools. Default true. */
+  mergeTools?: boolean
   /** Rewind callback — now receives the edited content string. */
   onRewind?: (editedContent: string) => void
   /** Whether this specific message is currently being edited. */
@@ -33,6 +37,8 @@ interface MessageItemProps {
 export const MessageItem = memo(function MessageItem({
   message,
   liveProgress,
+  collapseLevel,
+  mergeTools = true,
   onRewind,
   isEditing = false,
   onStartEdit,
@@ -58,6 +64,8 @@ export const MessageItem = memo(function MessageItem({
     <AssistantMessage
       message={message}
       progress={liveProgress}
+      collapseLevel={collapseLevel}
+      mergeTools={mergeTools}
     />
   )
 })

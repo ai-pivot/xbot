@@ -8,7 +8,7 @@
  * 宽度（w-fit），点行内空白不触发。
  *
  * 展开/收起动画复用 AnimatedCollapse（CSS grid 0fr→1fr 180ms 过渡，
- * 与 ToolGroup 的展开动画同一形态）；lazy + unmountOnClose 保持
+ * 与 FoldedToolGroup 的折叠动画同一形态）；lazy + unmountOnClose 保持
  * 轻量 —— 折叠时 reasoning markdown 不参与渲染。
  */
 import { useState, type ReactNode } from 'react'

@@ -764,7 +764,7 @@
 /* ── Touch devices (mobile web): NO layout-attribute animations ────────────────
  * grid-template-rows (0fr→1fr) and the collapsible height keyframes are LAYOUT
  * animations — every frame reflows the composer region, and anything mounted
- * around the message list (TodoPullOut above MessageInput, ToolGroup,
+ * around the message list (TodoPullOut above MessageInput, FoldedToolGroup,
  * ThinkingLine) makes the TanStack Virtual viewport resize + remeasure EVERY
  * frame of the 180ms transition. On phones this janks badly (the todo panel
  * expand was the reported case). Desktop hover devices are fast enough to hide

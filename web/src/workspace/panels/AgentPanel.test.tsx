@@ -36,6 +36,10 @@ const mocks = vi.hoisted(() => {
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/hooks/useAskUser', () => ({ useAskUser: () => ({ prompt: null, respond: vi.fn(), cancel: vi.fn() }) }))
 vi.mock('@/hooks/useChatMessages', () => ({ useChatMessages: () => mocks.chat }))
+vi.mock('@/hooks/useCollapseLevel', () => ({
+  useCollapseLevel: () => ({ level: 'all' }),
+  useMergeTools: () => ({ mergeTools: false }),
+}))
 vi.mock('@/chat/useAgentChatState', () => ({
   // M4：新状态机 hook 的测试替身 —— messages/liveProgress 直通 mocks
   //（与旧 useProgressStream mock 同语义：busy 测试改 progressSnapshot，

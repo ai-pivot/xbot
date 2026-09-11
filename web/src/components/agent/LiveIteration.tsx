@@ -4,15 +4,15 @@
  * Streaming T (reasoning): FoldedLine wrapping ReasoningBlock with streaming
  *   indicator. Falls back to lastReasoning when streamContent is empty.
  * Streaming O (text): MarkdownRenderer with a streaming cursor indicator.
- * Streaming C (tools): ToolGroup — every tool from the snapshot rendered as its
- *   own expanded card.
+ * Streaming C (tools): FoldedToolGroup with merged streaming/active/completed
+ *   tools from the snapshot.
  *
  * Render order: T → O → C (Spec A §2).
  */
 import { memo, useEffect, useMemo } from 'react'
 
 import { ThinkingLine } from './ThinkingLine'
-import { ToolGroup } from './ToolGroup'
+import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -25,14 +25,21 @@ import { useTypewriter } from '@/hooks/useTypewriter'
 import { useI18n } from '@/providers/i18n'
 import { dedupTools } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
+import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 import type { LiveStreamStats } from '@/plugin-api'
 
 interface LiveIterationProps {
   progress: ProgressSnapshot
+  level: CollapseLevel
+  mergeTools?: boolean
 }
 
-export const LiveIteration = memo(function LiveIteration({ progress }: LiveIterationProps) {
+export const LiveIteration = memo(function LiveIteration({
+  progress,
+  level,
+  mergeTools = true,
+}: LiveIterationProps) {
   const { t } = useI18n()
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
@@ -149,7 +156,7 @@ export const LiveIteration = memo(function LiveIteration({ progress }: LiveItera
       ...currentActive,
       ...filteredCompleted,
       // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
-      // 不排除会导致同一 genui 双渲染（hasGenUI + ToolGroup→ToolRender 各一个
+      // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
       // GenUIPanel）→ 高度双倍 + DOM 反复出现/消失 + 虚拟列表高度跳变（busy 时最严重）。
     ]).filter((t) => !t.uiMode)
     const hasToolInProgress = allTools.some((tool) => isToolInProgress(tool.status))
@@ -175,13 +182,6 @@ export const LiveIteration = memo(function LiveIteration({ progress }: LiveItera
     // （rows 最后是 user）不满足 → 两个指示器都不渲染 → 完全空白（用户报告：
     // "切换会话后新 agent turn 完全是空，不渲染思考中"）。busy placeholder 已
     // 收紧为 liveId===null（互斥），第一迭代窗口由本组件渲染。
-    //
-    // ⚠️ 即使 phase='tool_exec'（工具马上到达）这里也**照常渲染** ShimmerThinking。
-    // 曾试图在此加 phase 守卫来消除"工具到达前一帧的思考中"（CR 建议），但它会让
-    // live 行高度先掉到 0、再跳到工具卡片高度 —— `iteration-commit-flicker` E2E
-    // 的 spikes() 判据（h[i] >= min(相邻帧) + 12）会判定为 double-render spike 并
-    // 失败（CI 实测 frame 10: 178 vs plateau 150）。**行高稳定优先于消除这一帧**，
-    // 该 E2E 正是为防此类抖动而存在的。
     if (progress.streaming) {
       return <ShimmerThinking />
     }
@@ -247,8 +247,8 @@ export const LiveIteration = memo(function LiveIteration({ progress }: LiveItera
         <GenUICollapsiblePanel code={progress.genuiContent} streaming={isLive} />
       )}
 
-      {/* Streaming C — each tool its own expanded card */}
-      {hasTools && <ToolGroup tools={allTools} />}
+      {/* Streaming C */}
+      {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}
     </div>
   )
 })

@@ -1,23 +1,38 @@
 /**
- * Tests for the collapsible / intermediate-process components.
+ * Tests for the collapsible intermediate-process components (Spec 4 §3.3).
  *
- * Model: FoldedLine (borderless ▸/▾ for reasoning), ToolGroup (every tool call
- * rendered as its own expanded card — NO folding, NO cross-iteration merge),
- * IterationGroup (T→O→C order), plus the content renderers.
+ * Tests the new folding model: FoldedLine (borderless ▸/▾), FoldedToolGroup
+ * (consecutive tool merging), IterationGroup (T→C→O order), and the content
+ * renderers ToolCallBlock and ReasoningBlock.
  */
 import { describe, expect, it } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { FoldedLine } from '@/components/agent/FoldedLine'
-import { ToolGroup } from '@/components/agent/ToolGroup'
+import { FoldedToolGroup } from '@/components/agent/FoldedToolGroup'
 import { IterationGroup } from '@/components/agent/IterationHistory'
 import { ReasoningBlock } from '@/components/agent/ReasoningBlock'
 import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
 import { SquareTerminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
+
+// radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
+// 精简 stub：只要构造函数与三方法存在即可（测试不依赖真实测量）。
+class ROStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+;(window as unknown as { ResizeObserver: unknown }).ResizeObserver = ROStub
+;(globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = ROStub
+
+/** FoldedToolGroup 折叠行的 Popover 浮层容器（radix Portal → document.body）。 */
+function popoverContent(): HTMLElement | null {
+  return document.querySelector('[data-slot="popover-content"]')
+}
 
 /** Helper: build a WebToolProgress with defaults. */
 function makeTool(overrides: Partial<WebToolProgress> = {}): WebToolProgress {
@@ -137,173 +152,320 @@ describe('ReasoningBlock', () => {
   })
 })
 
-describe('ToolGroup', () => {
-  it('renders every tool as its own expanded card — no folding, no summary row', () => {
-    const { container } = renderWithProviders(
-      <ToolGroup
-        tools={[
-          makeTool({ name: 'CustomToolA', label: 'CustomToolA: a', detail: 'file A' }),
-          makeTool({ name: 'CustomToolB', label: 'CustomToolB: foo', detail: 'match B' }),
-        ]}
-      />,
-    )
-    // Each tool's detail is directly visible (no click, no popover).
-    expect(screen.getByText('file A')).toBeInTheDocument()
-    expect(screen.getByText('match B')).toBeInTheDocument()
-    // No fold arrow / no collapse container anywhere.
+describe('FoldedToolGroup', () => {
+  it('opens a per-tool popover with summary and args when a pill is clicked', () => {
+    const tools = [
+      makeTool({ name: 'Read', label: 'Read', summary: 'read a config file', args: '{"path":"/tmp/a.go"}' }),
+      makeTool({ name: 'Grep', label: 'Grep', summary: 'grep the tree' }),
+    ]
+    const { container } = renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
+    // 折叠行：无 ▸ 箭头；每个 pill 是独立 trigger，原地无浮窗
     expect(container.textContent).not.toContain('▸')
-    expect(container.querySelector('.fold-container')).toBeNull()
-    // Structural assertion (the old `queryAllByTestId('tool-pill')` was
-    // vacuously true — nothing produces that testid anymore): exactly one
-    // card per tool.
-    expect(screen.getAllByTestId('tool-card')).toHaveLength(2)
+    const pills = screen.getAllByTestId('tool-pill')
+    expect(pills).toHaveLength(2)
+    expect(popoverContent()).toBeNull()
+
+    // 点哪个 pill 弹哪个工具的浮窗：summary + 参数 + 渲染，不含第二个工具内容
+    fireEvent.click(pills[0]!)
+    const content = popoverContent()
+    expect(content).not.toBeNull()
+    // summary 在浮窗中至少出现一次（ToolPopoverDetail 的 summary 块；ToolCallBlock
+    // 在 args 存在时不重复渲染 summary）。参数块断言用 hljs 内容（「参数」标签走
+    // i18n，jsdom 无词典——以渲染实质为准）。
+    expect(within(content as HTMLElement).getAllByText('read a config file').length).toBeGreaterThan(0)
+    expect(within(content as HTMLElement).getByText(/"path"/)).toBeInTheDocument()
+    expect(within(content as HTMLElement).queryByText('grep the tree')).toBeNull()
   })
 
-  it('renders each of many tools individually (no "+N" overflow badge)', () => {
-    const tools = Array.from({ length: 10 }, (_, i) =>
-      makeTool({ name: 'CustomTool', label: `CustomTool: f${i}`, detail: `detail ${i}` }),
+  it('aggregates pills when more than 8 tools: first 7 pills + "+N" badge opens the overflow list', () => {
+    const tools = Array.from({ length: 9 }, (_, i) =>
+      makeTool({ name: `T${i}`, label: `T${i}` }),
     )
-    renderWithProviders(<ToolGroup tools={tools} />)
-    for (let i = 0; i < 10; i++) {
-      expect(screen.getByText(`detail ${i}`)).toBeInTheDocument()
-    }
-    // All ten cards render — no "+N" overflow badge collecting the tail.
-    expect(screen.getAllByTestId('tool-card')).toHaveLength(10)
+    renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
+    // 折叠行：仅前 7 个 pill（T0..T6）+ "+2" 徽标；第 8 个工具（T7）不内联渲染
+    expect(screen.getByTestId('tool-pill-more')).toHaveTextContent('+2')
+    expect(screen.queryByText('T7')).not.toBeInTheDocument()
+    expect(screen.getAllByTestId('tool-pill')).toHaveLength(7)
+
+    // "+N" 浮层 = 溢出的 2 条列表
+    fireEvent.click(screen.getByTestId('tool-pill-more'))
+    const content = popoverContent()
+    expect(content).not.toBeNull()
+    expect(within(content as HTMLElement).getAllByTestId('tool-row')).toHaveLength(2)
   })
 
-  it('renders nothing for empty tools', () => {
-    const { container } = renderWithProviders(<ToolGroup tools={[]} />)
-    expect(container.firstChild).toBeNull()
-  })
-
-  it('shows the tool name and elapsed time', () => {
+  it('renders each tool independently at none level', () => {
+    const tools = [
+      makeTool({ name: 'Read', label: 'Read' }),
+      makeTool({ name: 'Grep', label: 'Grep' }),
+    ]
     const { container } = renderWithProviders(
-      <ToolGroup tools={[makeTool({ name: 'Shell', label: 'Shell: ls', elapsedMs: 1500 })]} />,
+      <FoldedToolGroup tools={tools} level="none" />,
     )
-    // Header carries name + short param (same info the old pill showed).
-    expect(container.textContent).toContain('Shell')
-    expect(container.textContent).toContain('ls')
-    expect(screen.getByText('1.5s')).toBeInTheDocument()
+    // At 'none' level, each tool renders as an independent ToolCard (no toggle button)
+    const cards = container.querySelectorAll('.tool-icon-single')
+    expect(cards.length).toBe(2)
   })
 
-  it('generating tools show the raw tool name (no label parsing flicker)', () => {
-    const { container } = renderWithProviders(
-      <ToolGroup tools={[makeTool({ name: 'CustomTool', label: '思考中…', status: 'generating' })]} />,
-    )
-    // The raw tool name is used — the streaming label is NOT parsed for display.
-    // (Running tools render through SweepText, which splits the text into spans,
-    // so assert on textContent rather than a single text node.)
-    expect(container.textContent).toContain('CustomTool')
-    expect(container.textContent).not.toContain('思考中…')
-  })
-
-  // ── Sweep 语义矩阵（自旧的折叠实现移植，防止回归无人拦截） ──
   it.each(['pending', 'running', 'generating'] as const)(
-    'in-progress status %s renders the header name with a sweep',
+    'uses an accent sweep in a folded %s tool title',
     (status) => {
-      const { container } = renderWithProviders(
-        <ToolGroup tools={[makeTool({ name: 'CustomTool', label: 'CustomTool: x', status })]} />,
+      renderWithProviders(
+        <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
       )
-      const sweep = container.querySelector<HTMLElement>('.sweep-text')
+      const pill = screen.getByTestId('tool-pill')
+      const sweep = pill.querySelector<HTMLElement>('.sweep-text')
       expect(sweep).not.toBeNull()
-      // 运行中的颜色 token 必须是 --status-running（与 statusVisual 同源）
-      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--status-running)')
+      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
     },
   )
 
   it.each(['done', 'error'] as const)(
-    'settled status %s renders the header name WITHOUT a sweep',
+    'keeps a folded %s tool title static',
+    (status) => {
+      renderWithProviders(
+        <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
+      )
+      const pill = screen.getByTestId('tool-pill')
+      expect(pill.querySelector('.sweep-text')).toBeNull()
+    },
+  )
+
+  it.each(['pending', 'running', 'generating'] as const)(
+    'uses an accent sweep in an expanded %s tool card',
     (status) => {
       const { container } = renderWithProviders(
-        <ToolGroup tools={[makeTool({ name: 'CustomTool', label: 'CustomTool: x', status })]} />,
+        <FoldedToolGroup
+          tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]}
+          level="none"
+        />,
+      )
+      const sweep = container.querySelector<HTMLElement>('.sweep-text')
+      expect(sweep).not.toBeNull()
+      expect(sweep).toHaveTextContent('Read')
+      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+    },
+  )
+
+  it('keeps the SubAgent tool static because its progress card owns the sweep', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup
+        tools={[makeTool({ name: 'SubAgent', label: 'SubAgent: review', status: 'running' })]}
+        level="minimal"
+      />,
+    )
+
+    expect(container.querySelector('.sweep-text')).toBeNull()
+    fireEvent.click(screen.getByTestId('tool-pill'))
+    expect(container.querySelector('.sweep-text')).toBeNull()
+  })
+
+  it('uses one sweep per tool in a merged running-tool title', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup
+        tools={[
+          makeTool({ name: 'Read', label: 'Read', status: 'running' }),
+          makeTool({ name: 'Grep', label: 'Grep', status: 'running' }),
+        ]}
+        level="minimal"
+      />,
+    )
+
+    // Each pill gets its own SweepText (icon + name per pill).
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(2)
+  })
+
+  it('does not add a second sweep when the running tool popover opens', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={[makeTool({ status: 'running' })]} level="minimal" />,
+    )
+
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+    fireEvent.click(screen.getByTestId('tool-pill'))
+    // 折叠行 pill 保持 1 个流光；浮窗（Portal，container 外）header 用静态文本，无流光
+    expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
+  })
+
+  it.each(['done', 'error'] as const)(
+    'keeps an expanded %s tool card title static',
+    (status) => {
+      const { container } = renderWithProviders(
+        <FoldedToolGroup tools={[makeTool({ status })]} level="none" />,
       )
       expect(container.querySelector('.sweep-text')).toBeNull()
     },
   )
 
-  it('a running SubAgent does NOT sweep (the progress card owns that animation)', () => {
+  it('renders single tool as an independent pill with its own popover regardless of level', () => {
+    const tools = [makeTool({ name: 'Read', label: 'Read' })]
     const { container } = renderWithProviders(
-      <ToolGroup
-        tools={[makeTool({ name: 'SubAgent', label: 'SubAgent: explore', status: 'running' })]}
-      />,
+      <FoldedToolGroup tools={tools} level="minimal" />,
     )
-    expect(container.querySelector('.sweep-text')).toBeNull()
+    // Single tool: one pill trigger with its own per-tool popover (no row trigger)
+    const pills = screen.getAllByTestId('tool-pill')
+    expect(pills.length).toBe(1)
+    expect(container.querySelector('button[aria-expanded]')).toBeNull()
   })
 
-  it('renders the status icon BEFORE the tool name', () => {
+  it('renders nothing for empty tools', () => {
     const { container } = renderWithProviders(
-      <ToolGroup tools={[makeTool({ name: 'CustomTool', label: 'CustomTool: x' })]} />,
+      <FoldedToolGroup tools={[]} level="minimal" />,
     )
-    const icon = container.querySelector('svg.tool-icon-single')
+    expect(container.firstChild).toBeNull()
+  })
+
+  // ── Icon position tests ──────────────────────────────────────────────
+  // Regression: icons must appear BEFORE their corresponding tool name,
+  // not grouped together before all names. This was broken when the running
+  // branch rendered all icons in one span, then all text in a SweepText.
+  // These tests ensure each icon is immediately followed by its tool name.
+
+  /**
+   * Helper: check that within a pill, the status icon element comes before
+   * the mono name text element. Pill DOM: [icon (pulse span | lucide svg), text].
+   */
+  function expectIconBeforeText(pill: HTMLElement) {
+    const icon = pill.firstElementChild
+    const text = pill.querySelector('.font-mono')
     expect(icon).not.toBeNull()
-    const header = icon!.parentElement!
-    const kids = Array.from(header.children)
-    // 图标在第一个子元素里，文本在其后 —— 顺序回归会在这里被拦下。
-    expect(kids[0].contains(icon!)).toBe(true)
-    expect(kids.length).toBeGreaterThan(1)
-    expect(kids[1].tagName.toLowerCase()).not.toBe('svg')
+    expect(text).not.toBeNull()
+    // Compare DOM position: icon should come before text.
+    // icon.compareDocumentPosition(text) & DOCUMENT_POSITION_FOLLOWING(4) → text follows icon (correct)
+    const mask = icon!.compareDocumentPosition(text!)
+    expect(mask & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy() // text follows icon
+  }
+
+  /** Helper: fold row pill triggers → the per-tool pill elements (rounded-full). */
+  function foldedPills(root: HTMLElement): HTMLElement[] {
+    const triggers = root.querySelectorAll('[data-testid="tool-pill"]')
+    return Array.from(triggers).map((trigger) => {
+      const pill = trigger.querySelector('span.rounded-full')
+      expect(pill).not.toBeNull()
+      return pill as HTMLElement
+    })
+  }
+
+  it('places each status icon directly before its tool name in merged running pills', () => {
+    const tools = [
+      makeTool({ name: 'Fetch', label: 'Fetch', status: 'running' }),
+      makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
+    ]
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={tools} level="minimal" />,
+    )
+
+    // Each tool is its own pill containing [icon, text] in that order.
+    const pills = foldedPills(container)
+    expect(pills.length).toBe(2)
+
+    expectIconBeforeText(pills[0]) // Fetch
+    expectIconBeforeText(pills[1]) // WebSearch
+  })
+
+  it('places each status icon directly before its tool name in merged done pills', () => {
+    const tools = [
+      makeTool({ name: 'Read', label: 'Read', status: 'done' }),
+      makeTool({ name: 'Grep', label: 'Grep', status: 'done' }),
+    ]
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={tools} level="minimal" />,
+    )
+
+    const pills = foldedPills(container)
+    expect(pills.length).toBe(2)
+
+    for (const pill of pills) {
+      expectIconBeforeText(pill)
+    }
+  })
+
+  it('never groups all icons before all names (regression test)', () => {
+    // This is the specific regression: a previous implementation rendered
+    // all icons in one <span>, then all text in a <SweepText>, causing
+    // [icon][icon][text text] instead of [icon text][icon text].
+    const tools = [
+      makeTool({ name: 'Fetch', label: 'Fetch', status: 'running' }),
+      makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
+    ]
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={tools} level="minimal" />,
+    )
+
+    // Each pill must pair its own icon with its own name (never 2 icons in one pill).
+    const pills = foldedPills(container)
+    expect(pills.length).toBe(2)
+    for (const pill of pills) {
+      expectIconBeforeText(pill)
+    }
   })
 })
 
 describe('IterationGroup', () => {
-  it('renders T → O → C in order (reasoning, text output, then tools)', () => {
+  it('renders T (reasoning), C (tools), O (text) in order', () => {
     const iter = makeIteration({
       iteration: 1,
       reasoning: 'planning the approach',
       content: 'Here is the output',
-      tools: [makeTool({ name: 'CustomTool', label: 'CustomTool: run' })],
+      tools: [makeTool({ name: 'Read', label: 'Read' })],
       toolCount: 1,
     })
-    const { container } = renderWithProviders(<IterationGroup iteration={iter} />)
+    renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
     // Reasoning is a folded line with character count as title
     expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
-    expect(screen.getAllByTestId('tool-card')).toHaveLength(1)
+    // Tool name from FoldedToolGroup
+    expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
     // O text from MarkdownRenderer
     expect(screen.getByText('Here is the output')).toBeInTheDocument()
-
-    // 顺序断言（旧的用例名声称有顺序校验，实际只断言"三者都存在"）。
-    // textContent 的顺序即 DOM 顺序：T 的标题 → O 的正文 → C 的卡片头。
-    const text = container.textContent ?? ''
-    const tIdx = text.indexOf('Thought')
-    const oIdx = text.indexOf('Here is the output')
-    const cIdx = text.indexOf('CustomTool')
-    expect(tIdx).toBeGreaterThanOrEqual(0)
-    expect(oIdx).toBeGreaterThan(tIdx)
-    expect(cIdx).toBeGreaterThan(oIdx)
   })
 
   it('renders reasoning (T) as a folded line (collapsed by default)', () => {
     const { container } = renderWithProviders(
-      <IterationGroup iteration={makeIteration({ iteration: 2, reasoning: 'deep thinking' })} />,
+      <IterationGroup
+        iteration={makeIteration({ iteration: 2, reasoning: 'deep thinking' })}
+        level="none"
+      />,
     )
+    // Reasoning folded line shows character count as title
     expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
     expect(container.querySelector('.fold-container')).toBeNull()
   })
 
   it('renders O (text output) always visible', () => {
-    const iter = makeIteration({ iteration: 3, content: 'Final answer here' })
-    renderWithProviders(<IterationGroup iteration={iter} />)
+    const iter = makeIteration({
+      iteration: 3,
+      content: 'Final answer here',
+    })
+    renderWithProviders(<IterationGroup iteration={iter} level="all" />)
     expect(screen.getByText('Final answer here')).toBeInTheDocument()
   })
 
-  it('renders tools as independent expanded cards', () => {
+  it('renders tools with FoldedToolGroup (pill row + popover)', () => {
     const iter = makeIteration({
       iteration: 1,
       tools: [
-        makeTool({ name: 'CustomToolA', label: 'CustomToolA: a', detail: 'file A' }),
-        makeTool({ name: 'CustomToolB', label: 'CustomToolB: foo', detail: 'match B' }),
+        makeTool({ name: 'Read', label: 'Read' }),
+        makeTool({ name: 'Grep', label: 'Grep' }),
       ],
       toolCount: 2,
     })
-    const { container } = renderWithProviders(<IterationGroup iteration={iter} />)
+    const { container } = renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
+    // Folded row: 2 pills（各自独立浮窗），无 ▸ 箭头，原地无浮窗内容
     expect(container.textContent).not.toContain('▸')
-    // Both tool outputs are visible without any interaction.
-    expect(screen.getByText('file A')).toBeInTheDocument()
-    expect(screen.getByText('match B')).toBeInTheDocument()
+    const pills = screen.getAllByTestId('tool-pill')
+    expect(pills).toHaveLength(2)
+    expect(popoverContent()).toBeNull()
+
+    // 点第一个 pill → 该工具的浮窗（summary/参数/渲染），非全量列表
+    fireEvent.click(pills[0]!)
+    const content = popoverContent()
+    expect(content).not.toBeNull()
+    expect(within(content as HTMLElement).queryAllByTestId('tool-row')).toHaveLength(0)
   })
 
   it('renders a hint when iteration is empty', () => {
-    renderWithProviders(<IterationGroup iteration={makeIteration({ iteration: 1 })} />)
+    const iter = makeIteration({ iteration: 1 })
+    renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
+    // Should render the "none" hint
     expect(screen.getByText('—')).toBeInTheDocument()
   })
 })

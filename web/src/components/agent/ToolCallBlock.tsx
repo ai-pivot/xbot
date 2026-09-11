@@ -4,7 +4,7 @@
  *
  * In the new folding model this component is used as the *content* inside a
  * FoldedLine — it does NOT manage its own collapse state. The folding arrow
- * and toggle are handled by the parent FoldedLine / ToolGroup.
+ * and toggle are handled by the parent FoldedLine / FoldedToolGroup.
  *
  * This is the DEFAULT renderer (tools without a dedicated view in ToolRender):
  * args are pretty-printed as syntax-highlighted JSON; detail/output renders in
