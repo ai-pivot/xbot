@@ -25,7 +25,7 @@ import { useTodos } from '@/hooks/useTodos'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal } from '@/components/agent/api'
+import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
 import type { QueueItemPayload } from '@/types/shared'
@@ -472,6 +472,21 @@ export function AgentPanel({ params, api }: PanelProps) {
     }
   }, [chatID, messageChannel, setGoalOverride])
 
+  // User edits the checklist (rename / toggle done / delete). The backend
+  // persists it and pushes the new list back over the progress stream, so we
+  // deliberately keep no local copy — one source of truth.
+  const handleUpdateTodos = useCallback(
+    async (todos: { text: string; status: string }[]) => {
+      if (!chatID || !messageChannel) return
+      try {
+        await updateTodos({ channel: messageChannel, chatID }, todos)
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Failed to update todos')
+      }
+    },
+    [chatID, messageChannel],
+  )
+
   const handleClearGoal = useCallback(async () => {
     if (!chatID || !messageChannel) return
     try {
@@ -708,6 +723,8 @@ export function AgentPanel({ params, api }: PanelProps) {
           goal={goal}
           onSetGoal={handleSetGoal}
           onClearGoal={handleClearGoal}
+          onUpdateTodos={handleUpdateTodos}
+          onSetGoalTodo={handleSetGoal}
           interruptMode={interruptMode}
           onInterruptModeChange={setInterruptMode}
           modelVision={currentModelVision}

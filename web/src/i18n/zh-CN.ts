@@ -301,6 +301,13 @@ const zhCN = {
     queueModeHint: '排队模式：当前 Turn 结束后依次发送',
     interjectSend: '插话',
     setAsGoal: '设为目标',
+    todoEdit: '编辑',
+    todoDelete: '删除',
+    todoSetGoal: '设为目标',
+    todoIsGoal: '当前目标',
+    todoClickToEdit: '点击可编辑',
+    todoMarkDone: '标记完成',
+    todoMarkPending: '标记未完成',
     scrollLoadMore: '滚动加载更多',
     visionEnabled: '视觉已启用',
     staging: {
