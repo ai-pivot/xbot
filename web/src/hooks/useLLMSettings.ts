@@ -10,7 +10,7 @@
  * All RPC calls go through WSConnection.rpc → POST /api/rpc.
  * The backend resolves sender_id from auth context.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWSConnection } from '@/hooks/useWSConnection'
 
 /**
@@ -71,11 +71,18 @@ export function useLLMSettings() {
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
+  // `connected` read via ref — NOT a useCallback dep. The old deps
+  // ([conn, connected]) meant every SSE disconnect/reconnect cycle rebuilt
+  // `load`, and the effect ([load]) re-ran it — 5 parallel RPCs per flap,
+  // escalating into the 479 req/s storm on a flapping connection.
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      if (!connected) {
+      if (!connectedRef.current) {
         setError('not_connected')
         setLoading(false)
         return
@@ -101,11 +108,22 @@ export function useLLMSettings() {
     } finally {
       setLoading(false)
     }
-  }, [conn, connected])
+  }, [conn])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  // Reconnect edge (false → true): reload once. This is the ONLY path where a
+  // connection-state change should trigger RPCs — not every flap of `connected`.
+  const prevConnectedRef = useRef(connected)
+  useEffect(() => {
+    const was = prevConnectedRef.current
+    prevConnectedRef.current = connected
+    if (!was && connected) {
+      void load()
+    }
+  }, [connected, load])
 
   // Sync thinking mode across all useLLMSettings instances (e.g. settings
   // dialog changes thinking mode → AgentPanel reflects it instantly).
