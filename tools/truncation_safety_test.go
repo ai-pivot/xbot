@@ -11,6 +11,35 @@ import (
 // descriptions), and the content is routinely CJK — a raw s[:n] slices a
 // 3-byte character in half and hands the LLM invalid UTF-8.
 
+// ── degenerate byte budgets must not panic ──
+// s[:maxBytes-4] / s[len-maxBytes+4:] blow up for maxBytes < 4 (negative index /
+// out-of-range slice). Found in review; the helpers are exported, so any caller
+// passing a small budget would take the process down.
+
+func TestTruncateHeadPreview_TinyBudgetDoesNotPanic(t *testing.T) {
+	for _, n := range []int{-1, 0, 1, 2, 3, 4, 5, 8} {
+		got := TruncateHeadPreview("中文字符串内容", n)
+		if !utf8.ValidString(got) {
+			t.Errorf("maxBytes=%d produced invalid UTF-8: %q", n, got)
+		}
+		if n >= 0 && len(got) > n {
+			t.Errorf("maxBytes=%d exceeded the budget: %d bytes (%q)", n, len(got), got)
+		}
+	}
+}
+
+func TestTruncateTailPreview_TinyBudgetDoesNotPanic(t *testing.T) {
+	for _, n := range []int{-1, 0, 1, 2, 3, 4, 5, 8} {
+		got := TruncateTailPreview("中文字符串内容", n)
+		if !utf8.ValidString(got) {
+			t.Errorf("maxBytes=%d produced invalid UTF-8: %q", n, got)
+		}
+		if n >= 0 && len(got) > n {
+			t.Errorf("maxBytes=%d exceeded the budget: %d bytes (%q)", n, len(got), got)
+		}
+	}
+}
+
 func TestTruncateMsg_CJKNeverSlicedMidRune(t *testing.T) {
 	msg := strings.Repeat("这是一个很长的中文消息内容。", 40) // > 200 bytes
 	got := truncateMsg(msg, 200)
