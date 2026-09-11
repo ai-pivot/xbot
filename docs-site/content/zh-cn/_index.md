@@ -140,6 +140,10 @@ Windows：<code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scrip
 装完打开 <code>http://localhost:8082</code> → 注册账号 → 齿轮 → LLM → 填 Base URL / API Key / 选模型 → 开聊。
 可选参数（默认值通常就是你要的）与全部配置项 → <a href="/zh-cn/installation/">安装与配置</a>。
 </p>
+<p class="xb-section-sub">
+给 AI agent 的可执行安装手册（每步有断言、含无头配 LLM 与排错表）→ <a href="/zh-cn/agent-install/">Agent 安装手册</a>。
+安装脚本跑完会把这份文档的地址打出来，所以把上面那段指令发给 agent 之后，它会自己知道下一步读什么。
+</p>
 
 <h2 class="xb-section-title">架构</h2>
 <p class="xb-section-sub">Backend 是纯 RPC 客户端接口（零业务逻辑），Transport 负责实际执行。</p>

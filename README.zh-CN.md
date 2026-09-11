@@ -102,7 +102,8 @@ xbot-cli serve
 ```
 
 就这一步 —— 安装脚本已经开启了 web 通道。想让它开机自启？
-`xbot-cli serve --install-service`（或见 [安装指南](https://ai-pivot.github.io/xbot/zh-cn/installation/)）。
+用服务模式重装：`MODE=server-client bash install.sh`
+（会写好并启动 systemd --user 服务 `xbot-server`，见 [安装指南](https://ai-pivot.github.io/xbot/zh-cn/installation/)）。
 
 ### 3. 打开 Web 界面并完成配置
 

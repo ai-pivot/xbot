@@ -107,8 +107,9 @@ xbot-cli serve
 ```
 
 That's it — the installer already enabled the web channel. Want it to survive
-reboots? Install the user service: `xbot-cli serve --install-service`
-(or see the [installation guide](https://ai-pivot.github.io/xbot/installation/)).
+reboots? Reinstall with the service mode: `MODE=server-client bash install.sh`
+(writes and starts the systemd --user unit `xbot-server`; see the
+[installation guide](https://ai-pivot.github.io/xbot/installation/)).
 
 ### 3. Open the Web UI and configure
 

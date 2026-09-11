@@ -30,6 +30,7 @@
 ## Knowledge Files
 
 - `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
+- `docs/agent/install.md` — **安装的 agent 入口（指针，不是完整文档）**：指向公开可执行手册 `https://ai-pivot.github.io/xbot/agent-install/`（zh: `/zh-cn/agent-install/`），并保留最小事实集（`setup --check` 是唯一完整性判据 / LLM 配置在数据库不在 config.json / systemd 服务名是 `xbot-server` 且 `serve` 没有 `--install-service` / 回复文本在 `iteration_history`）。**改安装流程时同步更新公开页 + `scripts/install.sh` 头部注释 + 运行结束打印**（三处）
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
 - `docs/agent/llm.md` — LLM clients, streaming pitfalls, retry behavior, model tiers (vanguard/balance/swift)
 - `docs/agent/subscription.md` — **subscription system 完整文档**: LLMFactory cache、GetLLM/GetLLMForChat/GetLLMForModel 解析链、max_context 优先级、所有切换场景（per-session/全局/settings/启动恢复）、会话隔离规则、Invalidate 速查表、TUI↔Backend 数据同步、**UserContext 统一解析（ResolveUserContext）**、**v63 多用户删除（单 operator + admin allowlist）**

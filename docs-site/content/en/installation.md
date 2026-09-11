@@ -47,6 +47,17 @@ If any step fails, read the Troubleshooting section below — do not skip the
 check and claim it worked.
 ```
 
+**For an agent that wants to read up front**, there is a dedicated executable
+guide (assertable steps, headless LLM setup, troubleshooting table):
+
+{{< hint type=tip >}}
+[**Agent install guide (executable)**](/agent-install/) — `https://ai-pivot.github.io/xbot/agent-install/`
+{{< /hint >}}
+
+`install.sh`'s header comments carry the same pointer, and the script prints the
+doc URL as its last output — so the "paste this into your agent" flow always
+tells the agent what to read next.
+
 Notes for the agent:
 
 - `install.sh` is **idempotent** — re-running it never clobbers existing settings
