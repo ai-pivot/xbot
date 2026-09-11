@@ -1,19 +1,408 @@
-/* xbot custom styles — extends GeekDoc theme */
+/* ==========================================================================
+   xbot docs — fancy layer
+   扩展 GeekDoc 主题：首页 hero、特性网格、渠道卡片、终端式代码块。
+   自带 design token（不依赖主题内部变量），明暗模式 + 响应式。
+   ========================================================================== */
 
-/* ── Landing page hero ── */
+:root {
+  --xb-accent: #4f8cff;
+  --xb-accent-2: #a855f7;
+  --xb-accent-3: #22d3ee;
+  --xb-radius: 14px;
+  --xb-border: rgba(15, 23, 42, 0.1);
+  --xb-card-bg: rgba(255, 255, 255, 0.72);
+  --xb-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  --xb-shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.14);
+  --xb-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --xb-border: rgba(148, 163, 184, 0.18);
+    --xb-card-bg: rgba(30, 41, 59, 0.55);
+    --xb-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+    --xb-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.5);
+  }
+}
+
+/* ── 首页容器：给 hero/网格一点呼吸空间 ── */
+.xb-landing {
+  margin-top: 0.5rem;
+}
+
+/* ── Hero ── */
+.xb-hero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--xb-border);
+  border-radius: calc(var(--xb-radius) + 6px);
+  padding: 3.25rem 2.5rem 2.75rem;
+  margin: 0 0 2.5rem;
+  background:
+    radial-gradient(1100px 420px at 8% -20%, rgba(79, 140, 255, 0.18), transparent 62%),
+    radial-gradient(900px 400px at 96% 6%, rgba(168, 85, 247, 0.16), transparent 60%),
+    var(--xb-card-bg);
+  box-shadow: var(--xb-shadow);
+  text-align: center;
+}
+
+.xb-hero::after {
+  content: "";
+  position: absolute;
+  inset: -40% -10% auto;
+  height: 320px;
+  background: radial-gradient(closest-side, rgba(34, 211, 238, 0.22), transparent);
+  filter: blur(40px);
+  pointer-events: none;
+}
+
+.xb-hero__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.3rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--xb-border);
+  background: rgba(79, 140, 255, 0.1);
+  color: var(--xb-accent);
+  margin-bottom: 1.1rem;
+}
+
+.xb-hero__title {
+  font-size: clamp(2rem, 5vw, 3.1rem);
+  line-height: 1.12;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.9rem;
+  background: linear-gradient(100deg, var(--xb-accent), var(--xb-accent-2) 55%, var(--xb-accent-3));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.xb-hero__sub {
+  max-width: 46rem;
+  margin: 0 auto 1.6rem;
+  font-size: 1.06rem;
+  line-height: 1.75;
+  opacity: 0.82;
+}
+
+.xb-hero__cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  justify-content: center;
+  margin-bottom: 2.4rem;
+}
+
+.xb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1.35rem;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  text-decoration: none !important;
+  border: 1px solid transparent;
+  transition: transform 0.14s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.xb-btn--primary {
+  background: linear-gradient(100deg, var(--xb-accent), var(--xb-accent-2));
+  color: #fff !important;
+  box-shadow: 0 8px 24px rgba(79, 140, 255, 0.35);
+}
+
+.xb-btn--primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 14px 34px rgba(79, 140, 255, 0.45);
+}
+
+.xb-btn--ghost {
+  border-color: var(--xb-border);
+  background: var(--xb-card-bg);
+  color: inherit !important;
+}
+
+.xb-btn--ghost:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--xb-shadow);
+}
+
+/* Hero 产品截图：带窗口感与光晕 */
+.xb-shot {
+  position: relative;
+  border-radius: var(--xb-radius);
+  overflow: hidden;
+  border: 1px solid var(--xb-border);
+  box-shadow: var(--xb-shadow-lg);
+  background: #0b1020;
+}
+
+.xb-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.xb-shot__caption {
+  font-size: 0.82rem;
+  opacity: 0.6;
+  margin-top: 0.6rem;
+  text-align: center;
+}
+
+/* ── 区块标题 ── */
+.xb-section-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 2.6rem 0 0.35rem;
+}
+
+.xb-section-sub {
+  opacity: 0.66;
+  margin: 0 0 1.5rem;
+  font-size: 0.95rem;
+}
+
+/* ── 特性网格 ── */
+.xb-grid {
+  display: grid;
+  gap: 1.05rem;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  margin: 1.2rem 0 2rem;
+}
+
+.xb-card {
+  position: relative;
+  padding: 1.25rem 1.3rem 1.3rem;
+  border-radius: var(--xb-radius);
+  border: 1px solid var(--xb-border);
+  background: var(--xb-card-bg);
+  box-shadow: var(--xb-shadow);
+  transition: transform 0.18s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  overflow: hidden;
+}
+
+.xb-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(90deg, var(--xb-accent), var(--xb-accent-2), var(--xb-accent-3));
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+
+.xb-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--xb-shadow-lg);
+  border-color: rgba(79, 140, 255, 0.4);
+}
+
+.xb-card:hover::before {
+  opacity: 1;
+}
+
+.xb-card__icon {
+  font-size: 1.5rem;
+  line-height: 1;
+  margin-bottom: 0.6rem;
+}
+
+.xb-card__title {
+  font-weight: 700;
+  font-size: 1rem;
+  margin-bottom: 0.35rem;
+}
+
+.xb-card__desc {
+  font-size: 0.9rem;
+  line-height: 1.65;
+  opacity: 0.75;
+  margin: 0;
+}
+
+/* ── 渠道卡片（横向） ── */
+.xb-channels {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(196px, 1fr));
+  margin: 1.2rem 0 2rem;
+}
+
+.xb-channel {
+  padding: 1rem 1.1rem;
+  border-radius: var(--xb-radius);
+  border: 1px solid var(--xb-border);
+  background: var(--xb-card-bg);
+  transition: transform 0.16s ease, border-color 0.2s ease;
+}
+
+.xb-channel:hover {
+  transform: translateY(-3px);
+  border-color: rgba(168, 85, 247, 0.45);
+}
+
+.xb-channel__name {
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+}
+
+.xb-channel__desc {
+  font-size: 0.86rem;
+  opacity: 0.7;
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ── 终端式代码块 ── */
+.xb-term {
+  position: relative;
+  border-radius: var(--xb-radius);
+  border: 1px solid var(--xb-border);
+  background: #0b1020;
+  box-shadow: var(--xb-shadow);
+  margin: 1.2rem 0 1.6rem;
+  overflow: hidden;
+}
+
+.xb-term__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.xb-term__dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.xb-term__dot--r { background: #ff5f57; }
+.xb-term__dot--y { background: #febc2e; }
+.xb-term__dot--g { background: #28c840; }
+
+.xb-term__label {
+  margin-left: 0.5rem;
+  font-family: var(--xb-font-mono);
+  font-size: 0.76rem;
+  color: rgba(226, 232, 240, 0.55);
+}
+
+.xb-term pre {
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 1rem 1.15rem !important;
+  overflow-x: auto;
+}
+
+.xb-term code {
+  font-family: var(--xb-font-mono);
+  font-size: 0.86rem;
+  color: #e2e8f0 !important;
+  background: transparent !important;
+}
+
+/* ── 对比表：突出 xbot 列 ── */
+.xb-compare table th:nth-child(2),
+.xb-compare table td:nth-child(2) {
+  background: rgba(79, 140, 255, 0.07);
+}
+
+.xb-compare table th:nth-child(2) {
+  color: var(--xb-accent);
+  font-weight: 700;
+}
+
+/* ── 社区链接卡片 ── */
+.xb-links {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(208px, 1fr));
+  margin: 1.1rem 0 2rem;
+}
+
+.xb-link {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--xb-radius);
+  border: 1px solid var(--xb-border);
+  background: var(--xb-card-bg);
+  text-decoration: none !important;
+  color: inherit !important;
+  transition: transform 0.16s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.xb-link:hover {
+  transform: translateX(3px);
+  border-color: rgba(34, 211, 238, 0.5);
+  box-shadow: var(--xb-shadow);
+}
+
+.xb-link__icon {
+  font-size: 1.15rem;
+}
+
+.xb-link__text {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.xb-link__desc {
+  font-size: 0.8rem;
+  opacity: 0.62;
+  display: block;
+  font-weight: 400;
+}
+
+/* ── 移动端 ── */
+@media (max-width: 640px) {
+  .xb-hero {
+    padding: 2.1rem 1.2rem 1.9rem;
+  }
+
+  .xb-hero__sub {
+    font-size: 0.98rem;
+  }
+
+  .xb-grid,
+  .xb-channels,
+  .xb-links {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 正文图片统一观感（含 e2e 截图） ── */
 .gdoc-markdown p img {
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.12);
   max-width: 100%;
   height: auto;
   transition: box-shadow 0.2s;
 }
 
 .gdoc-markdown p img:hover {
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.2);
 }
 
-/* ── Better table styling ── */
+/* ── 表格 / 代码块 / 引用 ── */
 .gdoc-markdown table {
   border-collapse: collapse;
   width: 100%;
@@ -25,104 +414,283 @@
 .gdoc-markdown table th,
 .gdoc-markdown table td {
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--color-gray-border, #e0e0e0);
+  border: 1px solid var(--xb-border);
 }
 
 .gdoc-markdown table th {
-  background: var(--color-gray-secondary, #f5f5f5);
   font-weight: 600;
 }
 
 .gdoc-markdown table tr:hover td {
-  background: var(--color-gray-surface, #f9f9f9);
+  background: rgba(79, 140, 255, 0.05);
 }
 
-/* ── Code block improvements ── */
 .gdoc-markdown pre {
-  border-radius: 6px;
-  border: 1px solid var(--color-gray-border, #e0e0e0);
+  border-radius: 10px;
+  border: 1px solid var(--xb-border);
 }
 
 .gdoc-markdown code {
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
-/* ── Hint/notice boxes ── */
-.gdoc-hint,
-.gdoc-include {
-  border-radius: 6px;
-}
-
-/* ── Comparison table emphasis ── */
-.gdoc-markdown table th:first-child {
-  white-space: nowrap;
-}
-
-/* ── Better link styling ── */
-.gdoc-markdown a {
-  text-decoration: none;
-  transition: color 0.15s;
-}
-
-.gdoc-markdown a:hover {
-  text-decoration: underline;
-}
-
-/* ── Smooth language switcher ── */
-.gdoc-language__selector {
-  cursor: pointer;
-}
-
-/* ── Dark mode adjustments ── */
-@media (prefers-color-scheme: dark) {
-  .gdoc-markdown table th {
-    background: var(--color-gray-secondary-dark, #2a2a2a);
-  }
-
-  .gdoc-markdown table tr:hover td {
-    background: var(--color-gray-surface-dark, #333);
-  }
-}
-
-/* ── Column layout spacing ── */
-.gdoc-columns {
-  gap: 1.5rem;
-}
-
-/* ── Button styling ── */
-.gdoc-markdown .gdoc-button {
-  display: inline-block;
-  padding: 0.4rem 1rem;
-  border-radius: 6px;
-  font-weight: 500;
-  transition: opacity 0.2s, transform 0.1s;
-}
-
-.gdoc-markdown .gdoc-button:hover {
+.gdoc-markdown blockquote {
+  border-left: 3px solid var(--xb-accent);
+  padding-left: 1rem;
+  margin-left: 0;
   opacity: 0.85;
 }
 
-.gdoc-markdown .gdoc-button:active {
-  transform: scale(0.97);
-}
-
-/* ── Heading anchor improvements ── */
 .gdoc-markdown h2,
 .gdoc-markdown h3 {
   scroll-margin-top: 4rem;
 }
 
-/* ── Blockquote styling ── */
-.gdoc-markdown blockquote {
-  border-left: 3px solid var(--color-accent, #4a9eff);
-  padding-left: 1rem;
-  margin-left: 0;
-  color: var(--color-gray-font, #666);
+/* ── SVG 图标（sprite: /icons.svg） ── */
+.xb-ico {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: inline-block;
+  vertical-align: middle;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* ── HR styling ── */
-.gdoc-markdown hr {
-  border: none;
-  border-top: 1px solid var(--color-gray-border, #e0e0e0);
-  margin: 2rem 0;
+.xb-card__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  margin-bottom: 0.75rem;
+  color: var(--xb-accent);
+  background: linear-gradient(135deg, rgba(79, 140, 255, 0.16), rgba(168, 85, 247, 0.14));
+  border: 1px solid var(--xb-border);
+}
+
+.xb-card__icon .xb-ico {
+  width: 21px;
+  height: 21px;
+}
+
+.xb-channel__name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.xb-channel__name .xb-ico {
+  color: var(--xb-accent-2);
+  width: 19px;
+  height: 19px;
+}
+
+.xb-hero__badge .xb-ico {
+  width: 15px;
+  height: 15px;
+}
+
+.xb-link__icon {
+  display: flex;
+  align-items: center;
+  color: var(--xb-accent);
+}
+
+.xb-link__icon .xb-ico {
+  width: 20px;
+  height: 20px;
+}
+
+.xb-ico--yes { color: #22c55e; width: 18px; height: 18px; }
+.xb-ico--no  { color: #ef4444; width: 18px; height: 18px; }
+
+/* ── 首页：隐藏自动渲染的页面标题（hero 里已有主标题） ── */
+h1:has(+ .xb-landing) {
+  display: none;
+}
+
+/* 对比表标记（基础 Unicode，不依赖 emoji 字体） */
+.xb-yes { color: #22c55e; font-weight: 700; }
+.xb-no  { opacity: 0.4; }
+
+
+/* ==========================================================================
+   Landing page (layouts/index.html)
+   首页不走 _default/baseof.html，因此没有 GeekDoc 的 .wrapper / site-header /
+   aside.gdoc-nav / .gdoc-page —— 这些样式只作用于首页，文档页完全不受影响。
+   仍然加载主题的 main.scss（排版、代码块、表格）与 custom.css。
+   ========================================================================== */
+
+.xb-page-landing {
+  margin: 0;
+  background: var(--xb-page-bg, transparent);
+}
+
+/* 全宽内容容器（对比文档页的 .gdoc-page 窄栏） */
+.xb-main {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+/* Skip link（无障碍） */
+.xb-skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 200;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  background: var(--xb-card-bg);
+  border: 1px solid var(--xb-border);
+}
+
+.xb-skip:focus {
+  left: 1rem;
+  top: 1rem;
+}
+
+/* ── 顶部导航（替代文档站的 site-header + 侧边栏） ── */
+.xb-nav {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  border-bottom: 1px solid var(--xb-border);
+  background: color-mix(in srgb, var(--xb-card-bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.xb-nav__inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0.7rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.xb-nav__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 1.02rem;
+  text-decoration: none !important;
+  color: inherit !important;
+}
+
+.xb-nav__logo {
+  width: 22px;
+  height: 22px;
+  fill: var(--xb-accent);
+}
+
+.xb-nav__links {
+  display: flex;
+  align-items: center;
+  gap: 1.15rem;
+  margin-left: auto;
+  font-size: 0.9rem;
+}
+
+.xb-nav__links a {
+  text-decoration: none !important;
+  color: inherit !important;
+  opacity: 0.78;
+  transition: opacity 0.15s ease;
+}
+
+.xb-nav__links a:hover {
+  opacity: 1;
+}
+
+.xb-nav__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.xb-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.15s ease;
+}
+
+.xb-theme-toggle:hover {
+  opacity: 1;
+}
+
+.xb-theme-toggle__icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── 页脚 ── */
+.xb-footer {
+  margin-top: 3.5rem;
+  border-top: 1px solid var(--xb-border);
+}
+
+.xb-footer__inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 1.6rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  opacity: 0.72;
+}
+
+.xb-footer__links {
+  display: flex;
+  gap: 1.1rem;
+}
+
+.xb-footer__links a {
+  text-decoration: none !important;
+  color: inherit !important;
+}
+
+/* 首页里的 hero 不再受文档页窄栏限制 */
+.xb-page-landing .xb-hero {
+  padding: 3.75rem 2.75rem 3rem;
+}
+
+@media (max-width: 640px) {
+  /* 窄屏收起文字导航，只留 brand + 语言/主题切换 */
+  .xb-nav__links {
+    display: none;
+  }
+
+  .xb-nav__inner {
+    padding: 0.6rem 1rem;
+  }
+
+  .xb-main {
+    padding: 0 1rem;
+  }
+
+  .xb-page-landing .xb-hero {
+    padding: 2.4rem 1.2rem 2rem;
+  }
+
+  .xb-footer__inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }

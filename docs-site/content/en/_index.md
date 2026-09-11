@@ -4,110 +4,194 @@ weight: 0
 geekdocHidden: true
 ---
 
-{{< columns >}}
+<div class="xb-landing">
 
-**xbot** is a self-hosted AI agent framework. Deploy it once on your own
-server, then talk to it through **Feishu, QQ, the terminal, or a web
-browser** — it uses tools to get real work done.
+<div class="xb-hero" markdown="0">
+  <span class="xb-hero__badge"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-plug-zap"></use></svg> Self-hosted · One agent, every channel</span>
+  <h1 class="xb-hero__title">Put your AI agent<br>on your own server</h1>
+  <p class="xb-hero__sub">
+    Configure it once and the whole team talks to the same agent through
+    <strong>Feishu / QQ / browser / terminal</strong>. It calls tools, reads and edits files,
+    runs commands and delegates sub-agents — your data never leaves your host.
+  </p>
+  <div class="xb-hero__cta">
+    <a class="xb-btn xb-btn--primary" href="/getting-started/">Get started →</a>
+    <a class="xb-btn xb-btn--ghost" href="/installation/">Installation</a>
+    <a class="xb-btn xb-btn--ghost" href="https://github.com/ai-pivot/xbot">GitHub</a>
+  </div>
 
-![xbot CLI streaming output](/img/cli/streaming.gif)
+  <div class="xb-shot">
+    <img src="/img/app/hero.png" alt="xbot web UI: multi-session sidebar with tool calls and iteration progress">
+  </div>
+  <p class="xb-shot__caption">
+    A real session: multi-turn chat · tool calls (Grep / FileReplace / Shell) · per-iteration reasoning · parallel sessions
+  </p>
+</div>
 
-<--->
+<h2 class="xb-section-title">Why xbot?</h2>
+<p class="xb-section-sub">Most AI coding agents live in a terminal. xbot doesn't — one agent, every channel.</p>
 
-{{< button relref="getting-started.md" >}}Quick Start{{< /button >}}
-&nbsp;
-{{< button relref="installation.md" >}}Installation{{< /button >}}
+<div class="xb-compare" markdown="1">
 
-{{< /columns >}}
-
-## Why xbot?
-
-Most AI coding agents live in a single terminal. **xbot is different**: one
-agent, every channel. Configure it once on your server, and your whole team
-reaches the same agent through the tools they already use.
-
-| | xbot | Codex / Claude Code / OpenCode |
+| | **xbot** | Codex / Claude Code / OpenCode |
 |--|------|-------------------------------|
 | **Multi-channel** | Feishu · QQ · Web · CLI | Terminal only |
-| **Team shared LLM** | Admin configures once, everyone uses | Each user brings their own key |
-| **Self-hosted** | Your data never leaves your server | ✅ (terminal) |
-| **Full-featured TUI** | Mouse, themes, command palette, sessions | ✅ |
-| **Feishu integration** | Docs, Bitable, Drive, cards | ❌ |
-| **SubAgents + Group Chat** | Delegate, parallelize, debate | SubAgents only |
-| **Plugin ecosystem** | Tools, hooks, widgets, channel plugins | Limited |
+| **Shared team LLM** | Admin configures once, everyone uses it | Everyone brings their own API key |
+| **Self-hosted** | <strong class="xb-yes">✓</strong> Data never leaves your server | <strong class="xb-yes">✓</strong> |
+| **Feishu integration** | Docs, Base, Drive, interactive cards | <span class="xb-no">—</span> |
+| **Sub-agents + group chat** | Delegate, parallelize, debate | Sub-agents only |
+| **Plugin system** | Tools, hooks, widgets, channel plugins | Limited |
+
+</div>
 
 {{< hint type=important >}}
-**The most common use case:** Deploy Server mode → connect a Feishu app →
-your whole team @-mentions the bot in group chats. No one configures their own
-API key.
+**The most common setup**: run in server mode → connect a Feishu app → the whole team chats with the bot in a group, no individual API keys required.
 {{< /hint >}}
 
-## Core Features
+<h2 class="xb-section-title">Core features</h2>
+<p class="xb-section-sub">Agent capabilities that work out of the box, plus the engineering details production deployments need.</p>
 
-- 🧠 **Multi-turn conversations + tool calling** — Shell, file I/O, web
-  search, scheduled tasks, sub-agent delegation
-- 📱 **Multi-channel access** — one agent, many entry points
-- 🔑 **Team-shared LLM subscriptions** — admin configures once, everyone uses;
-  switch between subscriptions anytime
-- 🖱️ **Full-featured TUI** — mouse interaction, command palette (Ctrl+K),
-  multi-session sidebar, theming
-- 🏠 **Fully self-hosted** — your data stays on your server
-- 🧩 **Extensible** — Skills, SubAgents, MCP protocol, Plugin system
-- 🤖 **AI-Native configuration** — the agent can adjust its own settings and
-  UI via the `config` and `tui_control` tools
+<div class="xb-grid">
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-brain-circuit"></use></svg></div>
+    <div class="xb-card__title">Multi-turn chat + tool calling</div>
+    <p class="xb-card__desc">Shell, file I/O, web search, cron jobs and sub-agent delegation — with per-iteration reasoning and tool results.</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-messages-square"></use></svg></div>
+    <div class="xb-card__title">Every channel</div>
+    <p class="xb-card__desc">The same agent over Feishu / QQ / terminal / browser, with per-session isolation.</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-key-round"></use></svg></div>
+    <div class="xb-card__title">Shared LLM subscriptions</div>
+    <p class="xb-card__desc">Configured once by an admin, used by the whole team — multiple subscriptions, per-model switching and context quotas.</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-mouse-pointer-2"></use></svg></div>
+    <div class="xb-card__title">Full-featured TUI</div>
+    <p class="xb-card__desc">Mouse support, command palette (Ctrl+K), multi-session sidebar and a theming system.</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-house"></use></svg></div>
+    <div class="xb-card__title">Truly self-hosted</div>
+    <p class="xb-card__desc">One command to install. SQLite single-file storage — a backup is a file copy.</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-puzzle"></use></svg></div>
+    <div class="xb-card__title">Extensible</div>
+    <p class="xb-card__desc">Skills, sub-agents, the MCP protocol and a plugin system (tools / hooks / widgets / channels).</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-bot"></use></svg></div>
+    <div class="xb-card__title">AI-native configuration</div>
+    <p class="xb-card__desc">The agent can reconfigure itself and its UI through the <code>config</code> and <code>tui_control</code> tools.</p>
+  </div>
+  <div class="xb-card">
+    <div class="xb-card__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-plug-zap"></use></svg></div>
+    <div class="xb-card__title">Shareable plugin panels</div>
+    <p class="xb-card__desc">Plugins can produce shareable panels and mint public links — only explicitly shared content gets a token.</p>
+  </div>
+</div>
 
-## Which channel should I use?
+<h2 class="xb-section-title">Which channel should I use?</h2>
+<p class="xb-section-sub">One agent core, four ways in — pick whatever fits your workflow.</p>
 
-| Channel | Best for | Highlights |
-|---------|----------|------------|
-| **CLI** | Developers, power users | Full TUI, streaming, tool calls, mouse support |
-| **Feishu** | Team collaboration | @mention in group chats, interactive cards |
-| **QQ / NapCat** | Individuals, small groups | Chat via QQ windows |
-| **Web** | Anyone with a browser | Web chat, registration/login, invite-only mode |
+<div class="xb-channels">
+  <div class="xb-channel">
+    <div class="xb-channel__name"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-terminal"></use></svg> CLI</div>
+    <p class="xb-channel__desc">For developers: full TUI, streaming output, tool calls.</p>
+  </div>
+  <div class="xb-channel">
+    <div class="xb-channel__name"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-feather"></use></svg> Feishu</div>
+    <p class="xb-channel__desc">For teams: chat in a group, interactive cards and doc integration.</p>
+  </div>
+  <div class="xb-channel">
+    <div class="xb-channel__name"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-globe"></use></svg> Web</div>
+    <p class="xb-channel__desc">For anyone with a browser: sign-up / login, invite-only, mobile-friendly.</p>
+  </div>
+  <div class="xb-channel">
+    <div class="xb-channel__name"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-message-circle"></use></svg> QQ</div>
+    <p class="xb-channel__desc">For individuals and small groups, via NapCat.</p>
+  </div>
+</div>
 
-## Quick Start
+<h2 class="xb-section-title">Install in a minute</h2>
+<p class="xb-section-sub">Copy, paste, done — the setup wizard walks you through LLM and channel configuration.</p>
 
-```bash
-# Linux / macOS
+<div class="xb-term">
+  <div class="xb-term__bar">
+    <span class="xb-term__dot xb-term__dot--r"></span>
+    <span class="xb-term__dot xb-term__dot--y"></span>
+    <span class="xb-term__dot xb-term__dot--g"></span>
+    <span class="xb-term__label">bash</span>
+  </div>
+  <pre><code># Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
-```
+# Then launch it (the setup wizard runs on first start)
+xbot-cli</code></pre>
+</div>
 
-After installation, run `xbot-cli`. The first run launches a Setup wizard
-that guides you through API key configuration.
+<div class="xb-term">
+  <div class="xb-term__bar">
+    <span class="xb-term__dot xb-term__dot--r"></span>
+    <span class="xb-term__dot xb-term__dot--y"></span>
+    <span class="xb-term__dot xb-term__dot--g"></span>
+    <span class="xb-term__label">powershell</span>
+  </div>
+  <pre><code># Windows (PowerShell)
+irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code></pre>
+</div>
 
-See the [Getting Started guide](/getting-started/) or
-[Installation guide](/installation/) for details.
+See [Getting started](/getting-started/) or the [Installation guide](/installation/).
 
-## Architecture
+<h2 class="xb-section-title">Architecture</h2>
+<p class="xb-section-sub">The backend is a pure RPC client interface (zero business logic); the transport layer does the real work.</p>
 
-```
+```text
 ┌──────────┐     ┌──────────────┐     ┌────────────┐     ┌──────────┐
 │  Feishu  │────▶│  Dispatcher  │────▶│  Backend    │────▶│   LLM    │
 │  QQ      │◀────│  (channel/)  │◀────│  (RPC)      │◀────│ (llm/)   │
 │  Web     │     └──────────────┘     │             │     └──────────┘
 │  CLI     │                          │  Transport  │
-└──────────┘                          │  (local/    │────▶ Tools
+└──────────┘                          │  (local/    │────▶ tools
                                       │   remote)   │      (tools/)
-                                      │             │
-                                      │  Agent Loop │────▶ Memory
+                                      │  Agent Loop │────▶ memory
                                       │  (agent/)   │      (memory/)
                                       └────────────┘
 ```
 
-Core design: **Backend** is a pure RPC client interface (zero business logic),
-**Transport** is the execution layer (`localTransport` calls the Agent
-directly, `remoteTransport` forwards over WebSocket).
+Read the full [architecture overview](/architecture/).
 
-Read the full [Architecture overview](/architecture/).
+<h2 class="xb-section-title">Community</h2>
+<p class="xb-section-sub">Questions, feature requests, or just want to chat.</p>
 
-## Community
+<div class="xb-links">
+  <a class="xb-link" href="/getting-started/">
+    <span class="xb-link__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-book-open"></use></svg></span>
+    <span class="xb-link__text">Documentation<span class="xb-link__desc">Guides and reference</span></span>
+  </a>
+  <a class="xb-link" href="https://github.com/ai-pivot/xbot/issues">
+    <span class="xb-link__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-bug"></use></svg></span>
+    <span class="xb-link__text">GitHub Issues<span class="xb-link__desc">Report bugs or request features</span></span>
+  </a>
+  <a class="xb-link" href="https://github.com/ai-pivot/xbot/discussions">
+    <span class="xb-link__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-message-circle"></use></svg></span>
+    <span class="xb-link__text">Discussions<span class="xb-link__desc">Ask questions and share ideas</span></span>
+  </a>
+  <a class="xb-link" href="https://github.com/ai-pivot/xbot/releases">
+    <span class="xb-link__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-package"></use></svg></span>
+    <span class="xb-link__text">Releases<span class="xb-link__desc">Download the latest version</span></span>
+  </a>
+  <a class="xb-link" href="https://github.com/ai-pivot/xbot/blob/master/CHANGELOG.md">
+    <span class="xb-link__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-file-text"></use></svg></span>
+    <span class="xb-link__text">Changelog<span class="xb-link__desc">What's new</span></span>
+  </a>
+  <a class="xb-link" href="/development/">
+    <span class="xb-link__icon"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-git-pull-request"></use></svg></span>
+    <span class="xb-link__text">Contributing<span class="xb-link__desc">How to get involved</span></span>
+  </a>
+</div>
 
-- 📖 [Documentation](/getting-started/) — full guides and references
-- 🐛 [GitHub Issues](https://github.com/ai-pivot/xbot/issues) — report bugs or request features
-- 💬 [GitHub Discussions](https://github.com/ai-pivot/xbot/discussions) — ask questions and share ideas
-- 📦 [Releases](https://github.com/ai-pivot/xbot/releases) — download the latest version
-- 📄 [Changelog](https://github.com/ai-pivot/xbot/blob/master/CHANGELOG.md) — what's new
-- 🤝 [Contributing](/development/) — how to contribute
+</div>

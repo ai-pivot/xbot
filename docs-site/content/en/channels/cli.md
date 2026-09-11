@@ -9,8 +9,6 @@ The CLI is xbot's default channel — a full-featured terminal user interface
 (TUI) built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 It's the most powerful way to interact with the agent.
 
-![Quick Switch Panel](/img/cli/quick-switch.png)
-
 ## Two modes
 
 ### Standalone mode (local)
@@ -82,8 +80,6 @@ The CLI supports 9 built-in color schemes. Switch via the Setup wizard or
 
 The TUI renders markdown, syntax-highlighted code blocks, and Mermaid
 diagrams inline:
-
-![Mermaid diagram rendering](/img/cli/mermaid.png)
 
 ## Keyboard shortcuts
 
