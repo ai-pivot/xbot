@@ -64,7 +64,7 @@ func (t *CreateChatTool) Parameters() []llm.ToolParam {
 		{Name: "instance", Type: "string", Description: "Unique instance ID (for agent type)"},
 		{Name: "task", Type: "string", Description: "Initial task message (for agent type, optional)"},
 		{Name: "model_tier", Type: "string", Description: "Model tier: vanguard/swift/balance (for agent type)"},
-		{Name: "model", Type: "string", Description: "Explicit model name for the new session (optional). Takes priority over model_tier; defaults to balance tier."},
+		{Name: "model", Type: "string", Description: `Explicit model for the new session, as "<subscriptionID>|<modelName>" (optional). The subscription id is REQUIRED — a bare model name is not resolvable (the same model name may exist under several subscriptions) and will be refused. Takes priority over model_tier; defaults to balance tier.`},
 		{Name: "members", Type: "array", Description: "Member addresses for group", Items: &llm.ToolParamItems{Type: "string"}},
 		{Name: "max_rounds", Type: "integer", Description: "Max conversation rounds for group (default 10)"},
 	}
