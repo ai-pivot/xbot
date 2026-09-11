@@ -269,6 +269,26 @@ export function AgentPanel({ params, api }: PanelProps) {
     return () => { cancelled = true }
   }, [chatID, messageChannel, isSubAgent, shouldSubscribe])
 
+  // ── 拖动调序（Staging Tray）──
+  // 后端把新顺序投影到真实投递通道（msgCh）后回传权威快照：拖动期间被
+  // dequeue 的消息已不在里面，客户端没列出的项保持服务端顺序 —— 因此用响应
+  // 覆盖本地顺序（本地提交顺序可能落后于并发 dequeue）。
+  const handleReorderQueue = useCallback((msgIDs: string[]) => {
+    if (!chatID || !messageChannel) return
+    void postAPI<{ items?: QueueItemPayload[] }>('/api/queue/reorder', {
+      channel: messageChannel,
+      chat_id: chatID,
+      msg_ids: msgIDs,
+    })
+      .then((resp) => {
+        hydrateQueueRef.current(Array.isArray(resp?.items) ? resp.items : [])
+      })
+      .catch(() => {
+        // 队列以后端为权威 —— 下次 queue_state / 对账快照会纠正显示顺序
+        toast.error(t('agent.staging.reorderFailed'))
+      })
+  }, [chatID, messageChannel, t])
+
   // ── 渲染暂停（面板不可见时挂起 React 通知）──
   // MobileAppShell 用 display:none 切换视图（AgentPanel 保持挂载——store
   // 不可销毁，见 MobileAppShell 文件头不变量）。IntersectionObserver 检测
@@ -707,6 +727,7 @@ export function AgentPanel({ params, api }: PanelProps) {
           onClear={() => {
             agentChat.queue.forEach((q) => chat.cancelQueued(q.msg_id))
           }}
+          onReorder={handleReorderQueue}
         />
       )}
       {!isSubAgent && (

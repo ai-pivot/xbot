@@ -321,6 +321,8 @@ const zhCN = {
       clear: '清空',
       nextTurn: '下一条 Turn',
       more: '还有 {{count}} 条',
+      dragToReorder: '拖动调整顺序',
+      reorderFailed: '调整队列顺序失败',
     },
     tool: {
       promotedBadge: '已转后台',

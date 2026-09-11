@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -183,6 +184,156 @@ func (a *Agent) QueueSnapshotFor(channelName, chatID string) []protocol.QueueIte
 		})
 	}
 	return items
+}
+
+// ---------------------------------------------------------------------------
+// Reorder (Staging Tray drag-and-drop)
+// ---------------------------------------------------------------------------
+
+// queueReorder reorders the shadow queue to match msgIDs — the order the user
+// sees in the Staging Tray. IDs that are not queued are ignored, and queued
+// entries missing from msgIDs keep their relative order after the listed ones:
+// a reorder must never drop or duplicate an entry. Empty ids (notifications
+// without a request id) are never ranked, so those entries stay in their
+// arrival order relative to each other.
+//
+// Returns the resulting id order (every pending entry, listed ones first) so
+// the caller can project it onto the delivery channel.
+func (ss *bgSessionState) queueReorder(msgIDs []string) []string {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+
+	rank := make(map[string]int, len(msgIDs))
+	for i, id := range msgIDs {
+		if id == "" {
+			continue // unaddressable entry — keep arrival order
+		}
+		if _, dup := rank[id]; !dup {
+			rank[id] = i
+		}
+	}
+
+	listed := make([]queuedEntry, 0, len(ss.queue))
+	rest := make([]queuedEntry, 0, len(ss.queue))
+	for _, e := range ss.queue {
+		if _, ok := rank[e.MsgID]; ok {
+			listed = append(listed, e)
+			continue
+		}
+		rest = append(rest, e)
+	}
+	sort.SliceStable(listed, func(i, j int) bool { return rank[listed[i].MsgID] < rank[listed[j].MsgID] })
+
+	ss.queue = append(listed, rest...)
+
+	order := make([]string, 0, len(ss.queue))
+	for _, e := range ss.queue {
+		order = append(order, e.MsgID)
+	}
+	return order
+}
+
+// reorderChannel re-emits the messages buffered in ch so their delivery order
+// matches order (the shadow queue order, id per entry).
+//
+// Go channels are FIFO and cannot be reordered in place, so the buffered
+// messages are drained, stably sorted by their position in order, and pushed
+// back. This is safe because the consumer is either blocked on a receive (it
+// then takes the NEW head) or busy processing (it takes the new head when it
+// returns); nothing can be stolen mid-drain. Messages whose id is not ranked
+// (already dequeued and being processed, or an id the client did not send) keep
+// their relative channel order. Pushing back cannot overflow: the pushed count
+// equals the drained count, and the channel never held more than its capacity.
+func reorderChannel(ch chan bus.InboundMessage, order []string) int {
+	rank := make(map[string]int, len(order))
+	for i, id := range order {
+		if id == "" {
+			continue
+		}
+		if _, dup := rank[id]; !dup {
+			rank[id] = i
+		}
+	}
+
+	var drained []bus.InboundMessage
+drain:
+	for {
+		select {
+		case m := <-ch:
+			drained = append(drained, m)
+		default:
+			break drain
+		}
+	}
+	sort.SliceStable(drained, func(i, j int) bool {
+		ri, oki := rank[drained[i].RequestID]
+		rj, okj := rank[drained[j].RequestID]
+		switch {
+		case oki && okj:
+			return ri < rj
+		case oki:
+			return true // ranked entries first
+		case okj:
+			return false
+		default:
+			return false // stable: unranked entries keep drained order
+		}
+	})
+	for _, m := range drained {
+		ch <- m
+	}
+	return len(drained)
+}
+
+// ReorderQueue reorders a session's pending (queued, not yet started) messages.
+// msgIDs is the desired order as rendered by the client (Staging Tray
+// drag-and-drop); unknown ids and unlisted entries are handled by queueReorder.
+// Returns false when the session has no worker, nothing is queued, or the
+// requested order is already in effect (no snapshot broadcast then — a no-op
+// drag must not spam every subscriber).
+func (a *Agent) ReorderQueue(channelName, chatID string, msgIDs []string) bool {
+	key := qualifyChatID(channelName, chatID)
+	state, ok := a.bgSessionStates.Load(key)
+	if !ok {
+		return false
+	}
+	ss := state.(*bgSessionState)
+
+	before := ss.queueSnapshot()
+	order := ss.queueReorder(msgIDs)
+	if len(order) == 0 {
+		return false
+	}
+	after := ss.queueSnapshot()
+	if queueSameOrder(before, after) {
+		return false // already in this order
+	}
+	if ss.msgCh != nil {
+		reorderChannel(ss.msgCh, order)
+	}
+
+	log.WithFields(log.Fields{
+		"session_key": key,
+		"count":       len(order),
+		"order":       strings.Join(order, ","),
+	}).Info("Queued messages reordered via REST queue API")
+
+	a.emitQueueState(channelName, chatID, ss)
+	return true
+}
+
+// queueSameOrder reports whether two snapshots list the same ids in the same
+// order (both are the non-cancelled projection of the same queue).
+func queueSameOrder(a, b []queuedEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].MsgID != b[i].MsgID {
+			return false
+		}
+	}
+	return true
 }
 
 // CancelQueuedMessage cancels a queued-but-unstarted message. The message is
