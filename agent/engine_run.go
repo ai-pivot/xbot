@@ -872,6 +872,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
 		OffloadSessionKey: s.offloadSessionKey,
+		OffloadOwnerKey:   s.sessionKey,
 		MaskStore:         s.cfg.MaskStore,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
@@ -1635,6 +1636,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
 		OffloadSessionKey: s.offloadSessionKey,
+		OffloadOwnerKey:   s.sessionKey,
 		MaskStore:         s.cfg.MaskStore,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
@@ -2134,7 +2136,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			if r.result != nil && r.result.Summary != "" {
 				offloadContent = r.result.Summary
 			}
-			offloaded, wasOffloaded := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, tc.Name, tc.Arguments, offloadContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID)
+			offloaded, wasOffloaded := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, s.sessionKey, tc.Name, tc.Arguments, offloadContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID)
 			if wasOffloaded {
 				content = offloaded.Summary
 				GlobalMetrics.OffloadEvents.Add(1)
@@ -2514,7 +2516,7 @@ func (s *runState) injectSyntheticToolPair(
 
 	content := toolContent
 	if s.cfg.OffloadStore != nil {
-		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", content, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
+		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, s.sessionKey, toolName, "", content, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
 			content = offloaded.Summary
 			GlobalMetrics.OffloadEvents.Add(1)
 			GlobalMetrics.OffloadedItems.Add(1)

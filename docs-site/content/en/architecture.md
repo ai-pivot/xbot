@@ -298,7 +298,8 @@ Layer 4: ContextEdit → precise delete/truncate/replace
 - **Recall**: `offload_recall` tool, supports pagination (offset/limit, max 16000 runes)
 - **Anti-recursion**: results from offload_recall and recall_masked are not offloaded again
 - **Read offset protection**: Read results with offset/limit are not offloaded
-- **SubAgent path**: SubAgent offload data stored under parent session directory (RootSessionKey)
+- **SubAgent path**: the store is **shared between a main agent and its SubAgents** — both write and read under the canonical root session key (`RootSessionKey`), so either side can recall what the other offloaded (`buildParentToolContext` fills `RootSessionKey` explicitly; the SubAgent's own `SessionKey` stays isolated for tool gating / masking, only offload uses the root)
+- **Ownership-scoped cleanup**: each entry records `OwnerKey` (main agent = root key, SubAgent = its own session key); post-compression `CleanUnreferencedEntries(sessionKey, ownerKey, referencedIDs)` only deletes entries this run produced — without it a SubAgent's compression would delete the main agent's still-referenced offloads (silent data loss)
 
 #### Layer 2: Observation Masking
 

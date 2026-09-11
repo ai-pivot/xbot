@@ -32,6 +32,11 @@ type CompressPipelineParams struct {
 	OffloadStore *OffloadStore
 	// OffloadSessionKey is the key for offload store cleaning.
 	OffloadSessionKey string
+	// OffloadOwnerKey is the RUN that owns the offload entries being cleaned
+	// (main agent = canonical root key, SubAgent = its own session key). The
+	// store directory is shared between a main agent and its SubAgents, so the
+	// post-compression cleanup must only remove entries this run produced.
+	OffloadOwnerKey string
 	// MaskStore is cleaned after compression (nil = skip).
 	MaskStore *ObservationMaskStore
 	// AccumulateUsage is called with the compress result to add to local metrics.
@@ -132,7 +137,7 @@ func ApplyCompress(ctx context.Context, params CompressPipelineParams) (*Compres
 	}
 	referencedIDs := extractMaskOffloadIDs(newMessages)
 	if params.OffloadStore != nil {
-		params.OffloadStore.CleanUnreferencedEntries(params.OffloadSessionKey, referencedIDs)
+		params.OffloadStore.CleanUnreferencedEntries(params.OffloadSessionKey, params.OffloadOwnerKey, referencedIDs)
 	}
 	if params.MaskStore != nil {
 		params.MaskStore.CleanUnreferencedEntries(referencedIDs)

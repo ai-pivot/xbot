@@ -2596,6 +2596,11 @@ func (a *Agent) buildParentToolContext(ctx context.Context, channel, chatID, sen
 		SenderID:            msg.ParentAgentID, // SubAgent 的父上下文：SenderID = 父 Agent ID
 		OriginUserID:        senderID,          // 原始用户 ID
 		SenderName:          msg.SenderName,
+		// RootSessionKey：canonical 根会话 key。主 agent 与它的 SubAgent 共享同一
+		// 个 offload store 目录（都写 root key → 互相可见），这里显式给出，避免
+		// 依赖 buildSubAgentRunConfig 里 "parentCtx.Channel+":"+ChatID" 的回落
+		// （嵌套 SubAgent 的 channel/chatID 一旦不是 root，回落就会指向错误目录）。
+		RootSessionKey: qualifyChatID(channel, chatID),
 	}
 	// Restore parent's CWD for SubAgent directory inheritance
 	if msg.Metadata != nil {

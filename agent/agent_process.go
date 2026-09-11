@@ -313,7 +313,7 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 			outputOverride := ""
 			if a.offloadStore != nil && n.Output != "" {
 				offloadCtx := context.Background()
-				if offloaded, ok := a.offloadStore.MaybeOffload(offloadCtx, sessionKey,
+				if offloaded, ok := a.offloadStore.MaybeOffload(offloadCtx, sessionKey, sessionKey,
 					"background_task_result", n.Command, n.Output,
 					"", "", ""); ok {
 					outputOverride = offloaded.Summary
