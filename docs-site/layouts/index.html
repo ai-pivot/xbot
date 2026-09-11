@@ -83,6 +83,46 @@
       </div>
     </footer>
 
+    {{/* Copy-to-clipboard for the hero install card. ~15 lines of vanilla JS
+         instead of pulling in a dependency; the fallback covers contexts where
+         navigator.clipboard is unavailable (non-secure origin). */}}
+    <script>
+      (function () {
+        document.querySelectorAll('.xb-install__copy').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var card = btn.closest('.xb-install')
+            var cmd = card && card.querySelector('.xb-install__cmd')
+            if (!cmd) return
+            var text = cmd.textContent.trim()
+            var done = function () {
+              var label = btn.getAttribute('data-copied') || 'Copied'
+              if (btn.dataset.original === undefined) btn.dataset.original = btn.textContent
+              btn.textContent = label
+              btn.classList.add('is-copied')
+              setTimeout(function () {
+                btn.textContent = btn.dataset.original
+                btn.classList.remove('is-copied')
+              }, 1800)
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(done, done)
+            } else {
+              var ta = document.createElement('textarea')
+              ta.value = text
+              ta.setAttribute('readonly', '')
+              ta.style.position = 'fixed'
+              ta.style.opacity = '0'
+              document.body.appendChild(ta)
+              ta.select()
+              try { document.execCommand('copy') } catch (e) {}
+              document.body.removeChild(ta)
+              done()
+            }
+          })
+        })
+      })()
+    </script>
+
     {{ partial "foot" . }}
   </body>
 </html>
