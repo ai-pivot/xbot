@@ -517,3 +517,180 @@ h1:has(+ .xb-landing) {
 /* 对比表标记（基础 Unicode，不依赖 emoji 字体） */
 .xb-yes { color: #22c55e; font-weight: 700; }
 .xb-no  { opacity: 0.4; }
+
+
+/* ==========================================================================
+   Landing page (layouts/index.html)
+   首页不走 _default/baseof.html，因此没有 GeekDoc 的 .wrapper / site-header /
+   aside.gdoc-nav / .gdoc-page —— 这些样式只作用于首页，文档页完全不受影响。
+   仍然加载主题的 main.scss（排版、代码块、表格）与 custom.css。
+   ========================================================================== */
+
+.xb-page-landing {
+  margin: 0;
+  background: var(--xb-page-bg, transparent);
+}
+
+/* 全宽内容容器（对比文档页的 .gdoc-page 窄栏） */
+.xb-main {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+/* Skip link（无障碍） */
+.xb-skip {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 200;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  background: var(--xb-card-bg);
+  border: 1px solid var(--xb-border);
+}
+
+.xb-skip:focus {
+  left: 1rem;
+  top: 1rem;
+}
+
+/* ── 顶部导航（替代文档站的 site-header + 侧边栏） ── */
+.xb-nav {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  border-bottom: 1px solid var(--xb-border);
+  background: color-mix(in srgb, var(--xb-card-bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+}
+
+.xb-nav__inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 0.7rem 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.xb-nav__brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 1.02rem;
+  text-decoration: none !important;
+  color: inherit !important;
+}
+
+.xb-nav__logo {
+  width: 22px;
+  height: 22px;
+  fill: var(--xb-accent);
+}
+
+.xb-nav__links {
+  display: flex;
+  align-items: center;
+  gap: 1.15rem;
+  margin-left: auto;
+  font-size: 0.9rem;
+}
+
+.xb-nav__links a {
+  text-decoration: none !important;
+  color: inherit !important;
+  opacity: 0.78;
+  transition: opacity 0.15s ease;
+}
+
+.xb-nav__links a:hover {
+  opacity: 1;
+}
+
+.xb-nav__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.xb-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.78;
+  transition: opacity 0.15s ease;
+}
+
+.xb-theme-toggle:hover {
+  opacity: 1;
+}
+
+.xb-theme-toggle__icon {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ── 页脚 ── */
+.xb-footer {
+  margin-top: 3.5rem;
+  border-top: 1px solid var(--xb-border);
+}
+
+.xb-footer__inner {
+  max-width: 1160px;
+  margin: 0 auto;
+  padding: 1.6rem 1.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  opacity: 0.72;
+}
+
+.xb-footer__links {
+  display: flex;
+  gap: 1.1rem;
+}
+
+.xb-footer__links a {
+  text-decoration: none !important;
+  color: inherit !important;
+}
+
+/* 首页里的 hero 不再受文档页窄栏限制 */
+.xb-page-landing .xb-hero {
+  padding: 3.75rem 2.75rem 3rem;
+}
+
+@media (max-width: 640px) {
+  /* 窄屏收起文字导航，只留 brand + 语言/主题切换 */
+  .xb-nav__links {
+    display: none;
+  }
+
+  .xb-nav__inner {
+    padding: 0.6rem 1rem;
+  }
+
+  .xb-main {
+    padding: 0 1rem;
+  }
+
+  .xb-page-landing .xb-hero {
+    padding: 2.4rem 1.2rem 2rem;
+  }
+
+  .xb-footer__inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
