@@ -933,6 +933,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	callbacks.CancelQueued = func(channel, chatID, msgID string) bool {
 		return ag.CancelQueuedMessage(channel, chatID, msgID)
 	}
+	callbacks.ReorderQueued = func(channel, chatID string, msgIDs []string) bool {
+		return ag.ReorderQueue(channel, chatID, msgIDs)
+	}
 
 	return callbacks
 }

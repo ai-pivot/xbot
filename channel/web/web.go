@@ -224,6 +224,10 @@ type WebCallbacks struct {
 	// CancelQueued cancels a queued-but-unstarted message (skipped at dequeue).
 	// Returns false when the message is not queued (already processing/unknown).
 	CancelQueued func(channel, chatID, msgID string) bool
+	// ReorderQueued reorders a session's pending queue to match msgIDs (Staging
+	// Tray drag-and-drop). Returns false when nothing is queued or the order is
+	// unchanged (no broadcast then).
+	ReorderQueued func(channel, chatID string, msgIDs []string) bool
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -806,6 +810,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
 	mux.HandleFunc("/api/queue/list", wc.authenticatedPOST(wc.handleQueueList))
 	mux.HandleFunc("/api/queue/cancel", wc.authenticatedPOST(wc.handleQueueCancel))
+	mux.HandleFunc("/api/queue/reorder", wc.authenticatedPOST(wc.handleQueueReorder))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。

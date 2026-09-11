@@ -207,6 +207,54 @@ func (wc *WebChannel) handleQueueCancel(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// handleQueueReorder reorders the pending queue (Staging Tray drag-and-drop).
+// msg_ids is the full desired order of the messages the client renders; ids
+// that are no longer queued (already dequeued) are ignored server-side.
+func (wc *WebChannel) handleQueueReorder(w http.ResponseWriter, r *http.Request) {
+	if wc.callbacks.ReorderQueued == nil {
+		jsonErrorResponse(w, http.StatusServiceUnavailable, "queue reorder not available")
+		return
+	}
+	var body struct {
+		Channel string   `json:"channel,omitempty"`
+		ChatID  string   `json:"chat_id,omitempty"`
+		MsgIDs  []string `json:"msg_ids"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.MsgIDs) == 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "msg_ids is required")
+		return
+	}
+	identity := wc.inboundIdentityFromRequest(r)
+	if body.ChatID != "" && body.Channel == "" {
+		body.Channel = wc.inferAPISessionChannel(identity.SenderID, body.ChatID)
+	}
+	sel, err := wc.resolveInboundSession(r.Context(), identity, body.Channel, body.ChatID)
+	if err != nil {
+		writeInboundError(w, err)
+		return
+	}
+	ok := wc.callbacks.ReorderQueued(sel.Channel, sel.ChatID, body.MsgIDs)
+	// A no-op reorder (order unchanged / nothing queued) is NOT an error — the
+	// drag either landed where it started or the messages were dequeued while
+	// the user dragged. Return the authoritative snapshot either way.
+	items := []protocol.QueueItemPayload{}
+	if wc.callbacks.GetQueueState != nil {
+		if got := wc.callbacks.GetQueueState(sel.Channel, sel.ChatID); got != nil {
+			items = got
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chat_id":   sel.ChatID,
+		"channel":   sel.Channel,
+		"reordered": ok,
+		"items":     items,
+	})
+}
+
 // isSlashCommand reports whether a message content is a slash command (e.g.
 // /help, /new). Command messages are handled by the chatWorker's command
 // branch — they have no user-message turn semantics, so their turn_id may

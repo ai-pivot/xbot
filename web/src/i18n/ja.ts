@@ -317,6 +317,8 @@ const ja: Translations = {
       clear: 'クリア',
       nextTurn: '下一条 Turn',
       more: '还有 {{count}} 条',
+      dragToReorder: 'ドラッグで並べ替え',
+      reorderFailed: 'キューの並べ替えに失敗しました',
     },
     tool: {
       promotedBadge: 'バックグラウンドへ移動',

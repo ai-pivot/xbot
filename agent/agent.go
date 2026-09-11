@@ -289,8 +289,18 @@ type bgSessionState struct {
 	// queue list/cancel REST). Lifecycle: append on admit, shift on dequeue,
 	// mark-cancelled from the REST queue API (dequeue then skips processing).
 	// See session_queue.go for the invariant (seq = turn_id = dequeue order).
+	//
+	// ORDER IS AUTHORITATIVE HERE, not in msgCh: the Staging Tray lets the user
+	// drag pending messages into a new order (Agent.ReorderQueue), and the
+	// reorder is projected onto the channel by draining + re-emitting the
+	// buffered messages in this list's order (see reorderChannelLocked).
 	queueMu sync.Mutex
 	queue   []queuedEntry
+
+	// msgCh is the delivery channel this session's chatProcessLoop drains.
+	// Stored so the reorder path can re-project the queue order onto it.
+	// Nil for states created without a chatWorker (tests).
+	msgCh chan bus.InboundMessage
 }
 
 // sessionOperationGate serializes a chat turn with destructive session
@@ -2759,6 +2769,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 
 	// Register per-session bg notification state
 	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.msgCh = msgCh // reorder path re-projects the queue order onto this channel
 	a.bgSessionStates.Store(chatKey, ss)
 	defer a.bgSessionStates.Delete(chatKey)
 

@@ -325,3 +325,101 @@ func TestDrainAndInjectBgNotifications_AsyncMessageNotDropped(t *testing.T) {
 		t.Fatalf("async_message tool result missing (message was dropped!), messages=%+v", state.messages)
 	}
 }
+
+// ─── Reorder (Staging Tray drag-and-drop) ───
+
+func TestQueueShadow_Reorder(t *testing.T) {
+	ss := &bgSessionState{}
+	for _, id := range []string{"m1", "m2", "m3", "m4"} {
+		ss.queueAppend(queuedEntry{MsgID: id})
+	}
+
+	// Listed ids are ordered exactly as given; unlisted ids keep their relative
+	// order after them (never dropped, never duplicated).
+	order := ss.queueReorder([]string{"m3", "m1"})
+	want := []string{"m3", "m1", "m2", "m4"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("queueReorder order=%v, want %v", order, want)
+	}
+
+	snap := ss.queueSnapshot()
+	if len(snap) != 4 {
+		t.Fatalf("snapshot len=%d, want 4 (reorder must not drop entries)", len(snap))
+	}
+	for i, w := range want {
+		if snap[i].MsgID != w {
+			t.Fatalf("snapshot[%d]=%s, want %s", i, snap[i].MsgID, w)
+		}
+	}
+
+	// Unknown ids are ignored; an empty id list is a no-op.
+	if got := ss.queueReorder([]string{"nope"}); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("reorder with unknown id changed order: %v", got)
+	}
+	// Empty ids (notifications without a request id) are never ranked.
+	ss.queueAppend(queuedEntry{MsgID: ""})
+	if got := ss.queueReorder([]string{"m2", ""}); strings.Join(got, ",") != "m2,m3,m1,m4," {
+		t.Fatalf("empty-id entry must keep arrival order, got %v", got)
+	}
+}
+
+func TestReorderChannel_MirrorsOrder(t *testing.T) {
+	ch := make(chan bus.InboundMessage, 8)
+	for _, id := range []string{"m1", "m2", "m3"} {
+		ch <- bus.InboundMessage{RequestID: id, Content: "c-" + id}
+	}
+
+	if n := reorderChannel(ch, []string{"m3", "m1", "m2"}); n != 3 {
+		t.Fatalf("reorderChannel drained %d, want 3", n)
+	}
+	// The channel now yields the requested order — this is the real delivery
+	// order chatProcessLoop consumes.
+	for _, want := range []string{"m3", "m1", "m2"} {
+		got := <-ch
+		if got.RequestID != want {
+			t.Fatalf("channel head=%s, want %s", got.RequestID, want)
+		}
+	}
+	if len(ch) != 0 {
+		t.Fatalf("channel should be empty, len=%d", len(ch))
+	}
+}
+
+func TestReorderQueue_Agent(t *testing.T) {
+	chatKey := "cli:queue-reorder"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.msgCh = make(chan bus.InboundMessage, 8)
+	a := &Agent{}
+	a.bgSessionStates.Store(chatKey, ss)
+	defer a.bgSessionStates.Delete(chatKey)
+
+	for _, id := range []string{"r1", "r2", "r3"} {
+		ss.queueAppend(queuedEntry{MsgID: id})
+		ss.msgCh <- bus.InboundMessage{RequestID: id}
+	}
+
+	if !a.ReorderQueue("cli", "queue-reorder", []string{"r3", "r1", "r2"}) {
+		t.Fatal("ReorderQueue returned false, want true")
+	}
+	items := a.QueueSnapshotFor("cli", "queue-reorder")
+	for i, want := range []string{"r3", "r1", "r2"} {
+		if items[i].MsgID != want {
+			t.Fatalf("snapshot[%d]=%s, want %s", i, items[i].MsgID, want)
+		}
+	}
+	for _, want := range []string{"r3", "r1", "r2"} {
+		got := <-ss.msgCh
+		if got.RequestID != want {
+			t.Fatalf("delivery head=%s, want %s (queue order must reach msgCh)", got.RequestID, want)
+		}
+	}
+
+	// A no-op reorder (same order) reports false and does not broadcast.
+	if a.ReorderQueue("cli", "queue-reorder", []string{"r3", "r1", "r2"}) {
+		t.Fatal("ReorderQueue on unchanged order = true, want false")
+	}
+	// Unknown session / empty queue → false, no panic.
+	if a.ReorderQueue("cli", "no-such-chat", []string{"r1"}) {
+		t.Fatal("ReorderQueue(unknown session) = true, want false")
+	}
+}

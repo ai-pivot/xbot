@@ -317,6 +317,8 @@ const en: Translations = {
       clear: 'Clear',
       nextTurn: 'Next turn',
       more: '{{count}} more',
+      dragToReorder: 'Drag to reorder',
+      reorderFailed: 'Failed to reorder the queue',
     },
     tool: {
       promotedBadge: 'Moved to background',

@@ -12,10 +12,11 @@
  *
  * 动画：CSS keyframes（fadeUp 入场、左滑淡出取消、队首呼吸进度条）
  */
-import { memo, useState, useCallback } from 'react'
-import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox, User } from 'lucide-react'
+import { memo, useState, useCallback, useRef } from 'react'
+import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox, User, GripVertical } from 'lucide-react'
 import type { QueueItemPayload } from '@/types/shared'
 import { cn } from '@/lib/utils'
+import { computeReorder } from '@/lib/reorder'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
 
@@ -42,10 +43,31 @@ const STAGING_TRAY_STYLES = `
 .staging-shimmer-bar { animation: stagingShimmer 1.8s ease-in-out infinite; }
 .staging-glow-num { animation: stagingGlow 2s ease-in-out infinite; }
 
+/* Drag-to-reorder: lifted card + sliding drop indicator (transform/opacity only
+   — compositor-friendly, no layout animation) */
+.staging-card-dragging {
+  opacity: 0.45;
+  transform: scale(0.985);
+  box-shadow: 0 8px 24px -8px rgba(99,102,241,0.55);
+  border-color: rgba(129,140,248,0.75) !important;
+}
+.staging-drop-line {
+  height: 2px;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, rgba(99,102,241,0.25), rgba(129,140,248,1), rgba(99,102,241,0.25));
+  animation: stagingDropIn 0.14s ease-out;
+}
+@keyframes stagingDropIn {
+  from { opacity: 0; transform: scaleX(0.4); }
+  to   { opacity: 1; transform: scaleX(1); }
+}
+.staging-drag-handle { touch-action: none; }
+
 /* Touch devices (no hover): always show action buttons + enlarge tap targets */
 @media (hover: none) {
   .staging-card .staging-card-actions { opacity: 1 !important; }
   .staging-card .staging-card-actions button { min-width: 32px; min-height: 32px; }
+  .staging-card .staging-drag-handle { opacity: 1 !important; }
 }
 `
 
@@ -67,6 +89,9 @@ export interface StagingTrayProps {
   onCancel: (msgID: string) => void
   onInterject: (msgID: string) => void
   onClear: () => void
+  /** Commit a new queue order (msg ids, head first) after a drag. Omit to
+   *  disable dragging entirely (read-only tray). */
+  onReorder?: (msgIDs: string[]) => void
 }
 
 // ─── 子组件 ─────────────────────────────────────────────────────────
@@ -79,6 +104,10 @@ function QueueCard({
   onCancel,
   onInterject,
   leaving,
+  dragEnabled,
+  dragging,
+  dropEdge,
+  handleProps,
 }: {
   item: QueueItemPayload
   index: number
@@ -87,6 +116,16 @@ function QueueCard({
   onCancel: (msgID: string) => void
   onInterject: (msgID: string) => void
   leaving: boolean
+  dragEnabled: boolean
+  dragging: boolean
+  dropEdge: 'before' | 'after' | null
+  /** Pointer handlers for the drag handle. The handle captures the pointer on
+   *  pointerdown, so move/up/cancel are all retargeted to this element — no
+   *  global window listeners are needed. */
+  handleProps?: Pick<
+    React.ComponentProps<'button'>,
+    'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerCancel'
+  >
 }) {
   const isTouch = useIsTouch()
   const { t } = useI18n()
@@ -94,14 +133,29 @@ function QueueCard({
 
   return (
     <div
+      data-queue-id={item.msg_id || undefined}
       className={cn(
         'staging-card group relative rounded-lg border px-3 py-2 transition-colors',
         leaving ? 'staging-card-leave' : 'staging-card-enter',
+        dragging && 'staging-card-dragging',
         isHead
           ? 'border-indigo-400/60 bg-indigo-500/[0.07] dark:border-indigo-500/50'
           : 'border-border bg-bg-tertiary/40',
       )}
     >
+      {/* 拖拽落点插入线（上半 = before，下半 = after） */}
+      {dropEdge && (
+        <div
+          data-testid="staging-drop-line"
+          className={cn(
+            'staging-drop-line pointer-events-none absolute -left-1 -right-1',
+            dropEdge === 'before' ? '-top-[3px]' : '-bottom-[3px]',
+          )}
+        >
+          <span className="absolute -left-1 top-1/2 size-1.5 -translate-y-1/2 rounded-full bg-indigo-500" />
+        </div>
+      )}
+
       {/* 队首呼吸进度条 */}
       {isHead && busy && (
         <div className="absolute bottom-0 left-2 right-2 h-0.5 overflow-hidden rounded-full bg-indigo-500/10">
@@ -110,6 +164,23 @@ function QueueCard({
       )}
 
       <div className="flex items-center gap-2.5">
+        {/* 拖拽柄（可拖动时显示；触屏常显，桌面 hover 显示） */}
+        {dragEnabled ? (
+          <button
+            type="button"
+            data-testid="staging-drag-handle"
+            aria-label={t('agent.staging.dragToReorder')}
+            title={t('agent.staging.dragToReorder')}
+            {...handleProps}
+            className={cn(
+              'staging-drag-handle -ml-1 flex size-5 shrink-0 cursor-grab touch-none items-center justify-center rounded text-text-muted/60 active:cursor-grabbing hover:bg-bg-tertiary hover:text-text-secondary',
+              isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+            )}
+          >
+            <GripVertical className="size-3.5" />
+          </button>
+        ) : null}
+
         {/* 序号 */}
         <div
           className={cn(
@@ -186,6 +257,7 @@ export const StagingTray = memo(function StagingTray({
   onCancel,
   onInterject,
   onClear,
+  onReorder,
 }: StagingTrayProps) {
   const { t } = useI18n()
   injectStyles()
@@ -217,6 +289,64 @@ export const StagingTray = memo(function StagingTray({
     }, 200)
   }, [items, onClear])
 
+  // ── 拖动调序（pointer 事件：鼠标 / 触屏 / 触控笔通用）──
+  // dragID 只驱动重渲染（抬升态）；落点存在 ref 里（pointermove 不触发
+  // state 之外的副作用）。pointerdown 时对拖拽柄 setPointerCapture —— 之后
+  // 该指针的 move/up/cancel 全部重定向到柄上（React 合成事件照收），因此
+  // **不需要 window 监听器**（ESLint 禁止 per-session 代码监听全局 window 事件）。
+  const [dragID, setDragID] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{ id: string; before: boolean } | null>(null)
+  const dropRef = useRef<{ id: string; before: boolean } | null>(null)
+  const dragIDRef = useRef<string | null>(null)
+
+  const handleHandleDown = useCallback((e: React.PointerEvent, msgID: string) => {
+    if (!onReorder || !msgID) return
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      // capture 不可用（合成事件/老浏览器）—— 拖拽降级为"仅按下即取消"
+    }
+    dragIDRef.current = msgID
+    dropRef.current = null
+    setDropTarget(null)
+    setDragID(msgID)
+  }, [onReorder])
+
+  const handleDragMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragIDRef.current
+    if (!drag) return
+    const el = document.elementFromPoint(e.clientX, e.clientY)
+    const card = (el as HTMLElement | null)?.closest?.('[data-queue-id]') as HTMLElement | null
+    if (!card) return
+    const id = card.getAttribute('data-queue-id')
+    if (!id || id === drag) {
+      if (dropRef.current) { dropRef.current = null; setDropTarget(null) }
+      return
+    }
+    const rect = card.getBoundingClientRect()
+    const before = e.clientY < rect.top + rect.height / 2
+    const cur = dropRef.current
+    if (cur && cur.id === id && cur.before === before) return
+    dropRef.current = { id, before }
+    setDropTarget({ id, before })
+  }, [])
+
+  const handleDragEnd = useCallback((commit: boolean) => {
+    const drag = dragIDRef.current
+    const target = dropRef.current
+    dragIDRef.current = null
+    dropRef.current = null
+    setDragID(null)
+    setDropTarget(null)
+    if (!drag || !commit || !target || !onReorder) return
+    // computeReorder returns null when the drag is a no-op (dropped back in
+    // place) — skip the RPC entirely then.
+    const next = computeReorder(items.map((i) => i.msg_id), drag, target.id, target.before)
+    if (next) onReorder(next)
+  }, [items, onReorder])
+
   // 队列为空时不渲染任何 DOM（hooks must be called before early return — React rules-of-hooks）
   if (items.length === 0) return null
 
@@ -226,10 +356,11 @@ export const StagingTray = memo(function StagingTray({
   const hiddenCount = items.length - visibleItems.length
 
   return (
-    <div className="border-t border-border/50 bg-bg-primary px-3 py-1.5">
+    <div data-testid="staging-tray" className="border-t border-border/50 bg-bg-primary px-3 py-1.5">
       {/* Header 行 — 可折叠（默认折叠，只显示 count bar） */}
       <button
         type="button"
+        data-testid="staging-toggle"
         onClick={() => setCollapsed((v) => !v)}
         className="flex w-full items-center justify-between gap-2 text-left"
       >
@@ -280,6 +411,15 @@ export const StagingTray = memo(function StagingTray({
                 onCancel={handleCancel}
                 onInterject={onInterject}
                 leaving={leavingIDs.has(item.msg_id)}
+                dragEnabled={Boolean(onReorder) && Boolean(item.msg_id)}
+                dragging={dragID === item.msg_id}
+                dropEdge={dropTarget?.id === item.msg_id ? (dropTarget.before ? 'before' : 'after') : null}
+                handleProps={{
+                  onPointerDown: (e) => handleHandleDown(e, item.msg_id),
+                  onPointerMove: handleDragMove,
+                  onPointerUp: () => handleDragEnd(true),
+                  onPointerCancel: () => handleDragEnd(false),
+                }}
               />
             ))}
           </div>
