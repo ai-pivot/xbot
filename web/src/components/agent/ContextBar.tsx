@@ -45,16 +45,12 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
 
   return (
     <div className="mx-1.5 mb-1.5 overflow-visible">
-      {/* Collapsed summary — click to expand/collapse TODO list */}
-      <button
-        type="button"
-        onClick={() => canExpand && setExpanded((v) => !v)}
-        className={cn(
-          'relative flex h-6 w-full items-center overflow-hidden rounded-md bg-bg-secondary/50',
-          canExpand && 'cursor-pointer hover:bg-bg-secondary/80',
-        )}
-        title={canExpand ? (expanded ? t('agent.collapseTodos') : t('agent.expandTodos')) : undefined}
-      >
+      {/* Collapsed summary — the left area toggles the TODO list.
+          ⚠️ 展开/折叠的 <button> 绝不能内嵌 token 计数的 Popover 触发
+          <button>：<button> 嵌套 <button> 是无效 HTML，点击会同时触发两个动作
+          （与 StagingTray 表头、AskUserPanel 嵌套 checkbox 属同一类坑）。
+          结构：容器 <div> = 进度填充 + 左侧开关 <button>(flex-1) + 右侧控件(兄弟)。 */}
+      <div className="relative flex h-6 w-full items-center overflow-hidden rounded-md bg-bg-secondary/50">
         {/* TODO progress fill (top half, accent/20) */}
         {hasTodos && todoPct > 0 && (
           <div
@@ -74,8 +70,17 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
           />
         )}
 
-        {/* Left side: TODO text (if todos) */}
-        <div className="relative z-10 flex items-center gap-1.5 pl-2">
+        {/* Left side: TODO text + the expand/collapse toggle */}
+        <button
+          type="button"
+          onClick={() => canExpand && setExpanded((v) => !v)}
+          disabled={!canExpand}
+          className={cn(
+            'relative z-10 flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2 text-left',
+            canExpand && 'cursor-pointer hover:bg-bg-secondary/80',
+          )}
+          title={canExpand ? (expanded ? t('agent.collapseTodos') : t('agent.expandTodos')) : undefined}
+        >
           {canExpand && (
             <ChevronDown
               className={cn(
@@ -89,10 +94,10 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
               {todoState!.doneCount}/{todoState!.total} {t('agent.todoCompleted')}
             </span>
           ) : null}
-        </div>
+        </button>
 
-        {/* Right side: model + context info */}
-        <div className="relative z-10 ml-auto flex max-w-[200px] items-center gap-1 pr-2">
+        {/* Right side: model + context info (sibling — never inside the toggle) */}
+        <div className="relative z-10 flex max-w-[200px] shrink-0 items-center gap-1 pr-2">
           <span className="max-w-[120px] truncate text-[10px] font-mono text-muted-foreground">
             {model || '—'}
           </span>
@@ -135,7 +140,7 @@ export function ContextBar({ todoState, model, maxContext, promptTokens }: Conte
             </Popover>
           )}
         </div>
-      </button>
+      </div>
 
       {/* Expanded TODO list */}
       <AnimatePresence initial={false}>
