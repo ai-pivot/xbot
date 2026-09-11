@@ -1,4 +1,30 @@
 #!/usr/bin/env bash
+#
+# xbot one-line installer.
+#
+#   curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+#
+# Does everything in one pass: downloads the binary, writes config.json, and
+# runs `xbot-cli setup` (Web UI + all built-in plugins + channel activation),
+# with the web channel enabled. Idempotent — re-running preserves existing
+# settings.
+#
+# Optional environment variables — there are exactly five. Everything else
+# (LLM subscriptions, channels, sandbox, memory, hooks, logging) is runtime
+# configuration, documented at https://ai-pivot.github.io/xbot/installation/ :
+#
+#   MODE         standalone (default) | server-client
+#   PORT         web UI + websocket port            (default: 8082)
+#   XBOT_HOME    data directory                     (default: ~/.xbot)
+#   INSTALL_PATH binary directory                   (default: ~/.local/bin)
+#   CHANNEL      stable (default) | beta | nightly
+#
+# Internal / CI-only variables (not part of the public surface):
+#   GH_MIRROR            GitHub CDN proxy for restricted networks
+#   NONINTERACTIVE       skip all prompts (use MODE/CHANNEL defaults)
+#   INSTALL_LOCAL_BINARY use the pre-built binary at $INSTALL_PATH/$BINARY
+#   CONFIG_PATH          override config.json location
+#
 set -euo pipefail
 
 REPO="ai-pivot/xbot"
@@ -297,12 +323,7 @@ write_config_jq() {
         _set_if_missing cli token "${admin_token:-$token}"
     fi
 
-    for item in "${changes[@]+"${changes[@]}"}"; do
-        [ -n "$item" ] && info "Config set: $item"
-    done
-    for item in "${preserved[@]+"${preserved[@]}"}"; do
-        [ -n "$item" ] && warn "Config preserved: $item"
-    done
+    info "Config written: ${CONFIG_PATH} (${#changes[@]} set, ${#preserved[@]} kept)"
 }
 
 write_config_python3() {
@@ -353,8 +374,7 @@ else:
     set_if_missing('cli', 'token', cfg['admin'].get('token') or token)
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
-for c in changes: print(f'[INFO] Config set: {c}')
-for p in preserved: print(f'[WARN] Config preserved: {p}', file=sys.stderr)
+print(f'[INFO] Config written: {path} ({len(changes)} set, {len(preserved)} kept)')
 PY
 }
 
@@ -613,9 +633,7 @@ main() {
     done
 
     echo ""
-    echo "  ╔══════════════════════════════════════╗"
-    echo "  ║         xbot-cli Installer           ║"
-    echo "  ╚══════════════════════════════════════╝"
+    echo "  xbot-cli installer"
     echo ""
 
     require_cmd curl
@@ -627,16 +645,10 @@ main() {
     VERSION=$(resolve_version)
     DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/xbot-cli-${PLATFORM}"
 
-    info "Platform:  ${PLATFORM}"
-    info "Channel:   ${CHANNEL}"
-    info "Version:   ${VERSION}"
-    info "URL:       ${DOWNLOAD_URL}"
-    info "Install:   ${INSTALL_PATH}/${BINARY}"
-    info "Config:    ${CONFIG_PATH}"
+    info "${PLATFORM} · ${CHANNEL} · ${VERSION} → ${INSTALL_PATH}/${BINARY}"
     if [ -n "$GH_MIRROR" ]; then
-        info "Mirror:    ${GH_MIRROR} (GitHub CDN proxy)"
+        info "Mirror: ${GH_MIRROR}"
     fi
-    echo ""
 
     ask_mode
     TOKEN=$(random_token)
@@ -718,35 +730,15 @@ main() {
     fi
 
     echo ""
-    info "✅ xbot-cli ${VERSION} installed to ${INSTALL_PATH}/${BINARY}"
-    info "Mode: ${MODE}"
-    info "Config: ${CONFIG_PATH}"
+    info "✅ xbot-cli ${VERSION} → ${INSTALL_PATH}/${BINARY}"
     if [ "$MODE" = "server-client" ]; then
-        info "Web UI: http://localhost:${PORT}"
-        info "CLI will connect to the configured local server (see ${CONFIG_PATH})"
-        case "$(uname -s)" in
-            Linux)
-                info "Service: systemd --user (${SERVICE_NAME})"
-                info "  Logs:  journalctl --user -u ${SERVICE_NAME} -f"
-                info "  Stop:  systemctl --user stop ${SERVICE_NAME}"
-                info "  Start: systemctl --user start ${SERVICE_NAME}"
-                ;;
-            Darwin)
-                info "Service: launchd (com.xbot.server)"
-                info "  Logs:  ${XBOT_HOME}/logs/xbot-server.log"
-                info "  Stop:  launchctl unload -w ~/Library/LaunchAgents/com.xbot.server.plist"
-                ;;
-        esac
+        info "   Web UI  http://localhost:${PORT}   (服务: systemctl --user status ${SERVICE_NAME})"
     else
-        info "Run '${BINARY}' to start."
-        info "Web UI + built-in plugins were installed by 'xbot-cli setup' (see ${XBOT_HOME})."
-        info "Want the local web server too? Run: ${BINARY} serve  (then open http://localhost:8082)"
+        info "   Web UI  http://localhost:${PORT}   (启动: ${BINARY} serve)"
     fi
+    info "   配置    ${CONFIG_PATH}"
     if ! command -v "$BINARY" >/dev/null 2>&1; then
-        echo ""
-        warn "Note: ${INSTALL_PATH} is not yet in your shell PATH."
-        warn "  Run: source ~/.bashrc"
-        warn "  Or restart your shell."
+        warn "${INSTALL_PATH} 还未在 PATH 里 —— 执行 source ~/.bashrc 或重开终端"
     fi
     echo ""
 }

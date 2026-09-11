@@ -45,8 +45,9 @@ done
 
 command -v go >/dev/null 2>&1 || { echo "package.sh: go is required" >&2; exit 1; }
 
-# json_get FILE KEY DEFAULT — read a top-level string field from a JSON file.
-# Uses jq when available, falls back to python3 (CI has jq; dev machines may not).
+# json_get FILE KEY DEFAULT — read a string field from a JSON file. KEY may be
+# a dotted path (e.g. "web.entry"). Uses jq when available, falls back to
+# python3 (CI has jq; dev machines may not).
 json_get() {
     local f="$1" key="$2" def="$3"
     if command -v jq >/dev/null 2>&1; then
@@ -54,8 +55,9 @@ json_get() {
     else
         python3 -c 'import json,sys
 try:
-    d = json.load(open(sys.argv[1]))
-    v = d.get(sys.argv[2])
+    v = json.load(open(sys.argv[1]))
+    for part in sys.argv[2].split("."):
+        v = v[part]
     print(v if isinstance(v, str) else sys.argv[3])
 except Exception:
     print(sys.argv[3])' "$f" "$key" "$def"
@@ -138,11 +140,26 @@ for platform in $PLATFORMS; do
         fi
 
         # Extra web assets from --web-dist-dir (esbuild bundles built from
-        # web/src/plugins/*, e.g. git-fancy panel/commit views).
-        if [[ -n "$WEB_DIST_DIR" && -d "$WEB_DIST_DIR/$id" ]]; then
+        # web/src/plugins/*, e.g. git-fancy panel/commit views). The dist dir
+        # mirrors the plugin SOURCE layout — <web-dist-dir>/<id>/web/ holds the
+        # bundles, exactly like <plugin-src>/web/ does. Copy the CONTENTS of
+        # that web/ dir, never the dir itself (doing the latter nests
+        # <plugin>/web/web/index.js and breaks the web.entry contract).
+        if [[ -n "$WEB_DIST_DIR" && -d "$WEB_DIST_DIR/$id/web" ]]; then
             mkdir -p "$dest/web"
-            cp -R "$WEB_DIST_DIR/$id/." "$dest/web/"
-            echo "  web assets merged: $id ← $WEB_DIST_DIR/$id"
+            cp -R "$WEB_DIST_DIR/$id/web/." "$dest/web/"
+            echo "  web assets merged: $id ← $WEB_DIST_DIR/$id/web"
+        fi
+
+        # Guard: any plugin declaring a web entry must ship that exact file at
+        # <plugin>/web/<entry> — that is what the web layer serves as
+        # /plugins/<id>/web/<entry> (WebChannel.pluginModuleURL) and what
+        # install-test asserts. Fail the build here instead of shipping a
+        # broken tarball that only trips CI later.
+        web_entry="$(json_get "$dest/plugin.json" web.entry "" || true)"
+        if [[ -n "$web_entry" && ! -f "$dest/web/$web_entry" ]]; then
+            echo "package.sh: $id declares web.entry '$web_entry' but $dest/web/$web_entry is missing" >&2
+            exit 1
         fi
     done
 

@@ -3,234 +3,141 @@ title: "Installation"
 weight: 10
 ---
 
-# Installation
+# Install & configure
 
-## One-line installer (recommended)
+## One command
 
 ```bash
-# Linux / macOS (amd64, arm64)
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 
 # Windows (PowerShell)
 irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex
 ```
 
-Pin a version or choose an install path:
+That is the whole install: **binary + Web UI + every built-in plugin (genui / git-fancy /
+ambience), with the web channel already enabled.** Nothing else to install, and no config
+file to edit first.
 
 ```bash
-VERSION=v0.0.48 curl -fsSL ... | bash            # specific version
-INSTALL_PATH=~/.local/bin curl -fsSL ... | bash  # custom path
+xbot-cli serve          # then open http://localhost:8082
 ```
 
+In the browser: create an account → gear icon → **LLM** → base URL / API key / pick a
+model → start chatting.
+
 {{< hint type=note >}}
-**Behind a firewall (China)?** Use the mirror-accelerated installer — it
-auto-detects a working CDN mirror and proxies all GitHub downloads:
+The first account on a fresh install needs no invite code and becomes the admin.
+{{< /hint >}}
+
+## Let your agent install it
+
+Paste this into your AI agent (Claude Code / Codex / Cursor …) — it installs and
+verifies on its own:
+
+```text
+Install and start xbot on this machine:
+
+1. Install: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. Verify:  xbot-cli setup --check        # exit code 0 means the install is complete
+3. Start:   nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. Confirm: curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # must print 200
+
+If any step fails, read the Troubleshooting section below — do not skip the
+check and claim it worked.
+```
+
+Notes for the agent:
+
+- `install.sh` is **idempotent** — re-running it never clobbers existing settings
+  (existing values always win).
+- `setup --check` is the single source of truth for a complete install: exit code 0
+  means all checks passed.
+- `serve` runs in the foreground; background it yourself (`nohup` / `systemd` / `tmux`).
+- After install `~/.xbot/config.json` already has the web + plugin settings. **Do not
+  hand-edit `llm.*`** — LLM settings live in the database; use the web settings panel
+  or the `xbot-cli` commands instead.
+
+## Optional flags (all 5 of them)
+
+Environment-variable prefixes — put them before the command, e.g.
+`MODE=server-client PORT=9000 bash install.sh`:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `MODE` | `standalone` | `standalone` = `xbot-cli serve` on demand; `server-client` = install a persistent service (systemd --user / launchd) that the CLI connects to |
+| `PORT` | `8082` | Web UI + WebSocket port |
+| `XBOT_HOME` | `~/.xbot` | Data directory (config, database, plugins, web assets) |
+| `INSTALL_PATH` | `~/.local/bin` | Where the binary is installed |
+| `CHANNEL` | `stable` | `stable` / `beta` / `nightly`; `nightly` is the latest build, overwritten on every master push |
+
+Behind the GFW, use the mirror (`GH_MIRROR` is set automatically by the mirror script):
+
 ```bash
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
 ```
-{{< /hint >}}
+
+**Everything else** — LLM subscriptions, channels (Feishu / QQ / Web / CLI), sandbox and
+runners, memory, hooks, logging, plugins — lives in
+[Configuration](/configuration/).
+
+## Verify
+
+```bash
+xbot-cli --version        # version
+xbot-cli setup --check    # completeness check: exit code 0 = OK
+```
+
+```bash
+# Is the web server up? (add --noproxy '*' if a local proxy intercepts curl)
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082     # expect 200
+
+# server-client mode service status
+systemctl --user status xbot-server     # Linux
+launchctl list | grep xbot              # macOS
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `setup --check` reports a component MISSING | Re-run `xbot-cli setup`; offline: pass `--offline-web/--offline-plugins` with local packages |
+| Page loads but sending fails with `unsupported protocol scheme ""` | LLM not configured. Web → gear → LLM, enter base URL + API key + pick a model (editing `config.json` does nothing) |
+| Port already in use / want another port | `PORT=9000 xbot-cli serve`, or change `web.port` and restart |
+| Page 404s or renders unstyled | Web assets missing: `xbot-cli setup` |
+| Plugin panels are blank | Plugins not activated: `xbot-cli setup --config-only` or `/plugin reload-all` |
+| `command not found: xbot-cli` | `~/.local/bin` is not on PATH: `source ~/.bashrc` or reopen the terminal |
+| An old release installed without plugins | `xbot-cli setup`; if that fails, reinstall with `CHANNEL=nightly` (nightly always ships the plugin tarball) |
+
+## Upgrade
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+```
+
+Re-running the installer is the upgrade path: the binary is replaced, `config.json`
+and the database are left untouched.
+
+## Uninstall
+
+```bash
+systemctl --user disable --now xbot-server   # server-client mode
+rm -f ~/.local/bin/xbot-cli
+rm -rf ~/.xbot                                # data dir — includes the database
+```
 
 ## Build from source
 
 ```bash
 git clone https://github.com/ai-pivot/xbot.git && cd xbot
-make build          # build xbot (server + runner)
-make run            # build and run the server
+make setup      # build CLI + Web UI + built-in plugins, install into ~/.xbot, activate channels
 ```
 
-Build only the CLI:
-
-```bash
-go build -o xbot-cli ./cmd/xbot-cli
-```
-
-One-command local setup — the source-checkout equivalent of the installer
-(build CLI + Web UI + built-in plugins, install to `~/.xbot`, activate
-channel plugins):
-
-```bash
-make setup           # needs Node.js (web build) + Go
-```
-
-Requirements: **Go 1.26+** (plus Node.js for `make setup`'s web build). The
-Web UI bundles are committed, so no Node.js is needed to build the Go binaries
-alone.
-
-## Two installation modes
-
-The installer lets you choose **Standalone** or **Server**.
-
-### Standalone (single machine)
-
-The CLI runs the agent locally with no background service.
-
-- ✅ Simple, install-and-go
-- ✅ No background process
-- ❌ Stops when you close the terminal
-- ❌ CLI channel only — no Feishu / QQ / Web
-- ❌ No team-shared LLM
-
-**Best for:** solo developers who want a quick test drive.
-
-### Server (team / multi-channel)
-
-A background server process runs continuously. CLIs connect over WebSocket,
-and Feishu / QQ / Web channels are enabled simultaneously.
-
-- ✅ Agent runs 24/7, auto-starts on boot
-- ✅ Feishu / QQ / Web channels all active
-- ✅ Web browser chat UI
-- ✅ Admin configures the LLM key once — the whole team uses it
-- ✅ Multiple CLI clients connect at once
-
-**Best for:** teams, anyone who needs Feishu / QQ / Web, or wants a Web UI.
-
-{{< hint type=important >}}
-**Most teams should choose Server mode.**
-{{< /hint >}}
-
-### Service management (Server mode)
-
-The installer configures a user-level system service (no `sudo` needed):
-
-| Platform | Service |
-|----------|---------|
-| Linux | `systemd --user` (user-level service) |
-| macOS | `launchd` (LaunchAgent) |
-| Windows | Startup folder / Task Scheduler / nssm |
-
-Start the server with: `xbot-cli serve`
-
-### What the installer does
-
-1. Downloads `xbot-cli` to `~/.local/bin/` (or your custom path)
-2. Generates a random admin token
-3. Writes / updates `~/.xbot/config.json`
-4. Runs `xbot-cli setup` — installs **everything for this release in one go**:
-   - Web UI dist → `~/.xbot/web/dist` (checksum-verified from the same
-     GitHub release, in **both** standalone and server modes)
-   - Built-in plugins (`xbot.genui`, `xbot.git-fancy`, `xbot.ambience`) →
-     `~/.xbot/plugins/builtin/` (version-pinned, plugin binaries for your
-     platform + git-fancy web assets)
-   - Channel activation: writes `channels.<name>.enabled=true` for shipped
-     channel plugins (e.g. `channels.genui.enabled=true`) so the GenUI
-     (`display_html`) and Git panels work out of the box
-5. Server mode: installs a system service (the Web UI is served at
-   `http://localhost:8082`)
-
-If the release-artifact download fails (offline install, or a very old
-release without plugin tarballs), the installer warns but keeps the binary
-install usable — re-run `xbot-cli setup` later to complete it.
-
-## Completing or repairing an installation: `xbot-cli setup`
-
-The `setup` subcommand is idempotent — safe to re-run any time:
-
-```bash
-xbot-cli setup            # install/refresh Web UI + plugins + activation config
-xbot-cli setup --check    # diagnose only (exit 1 when pieces are missing)
-xbot-cli setup --force    # re-download even if the version stamp matches
-```
-
-It downloads artifacts **matching your binary's release** (nightly binaries
-pull the `nightly` tag, stable binaries pull their own version), verifies
-SHA-256 checksums, and skips work already done for this version (version
-stamps in `~/.xbot/web/.dist-version` and `~/.xbot/plugins/.builtin-version`).
-
-Air-gapped machines: download these two files from the
-[releases page](https://github.com/ai-pivot/xbot/releases) and install
-locally:
-
-```bash
-xbot-cli setup --offline-web xbot-web-dist.tar.gz \
-               --offline-plugins xbot-plugins-$(go env GOOS)-$(go env GOARCH).tar.gz
-```
-
-After upgrading (`curl ... install.sh | bash` again), just run
-`xbot-cli setup` once — the new binary version refreshes both components.
-
-## First-run configuration
-
-After installing, run:
-
-```bash
-xbot-cli
-```
-
-### Setup wizard
-
-The first run auto-launches the **Setup wizard**, which guides you through:
-
-**LLM subscription**
-1. Choose a provider (OpenAI / Anthropic / OpenAI-compatible API)
-2. Enter your API key (**required**)
-3. Set the API base URL (default `https://api.openai.com/v1`; change for
-   compatible services)
-4. Choose a model
-5. Configure model tiers (Vanguard / Balance / Swift)
-6. Tavily search key (optional — enables web search)
-
-**Environment**
-- Sandbox mode (default `none`; Docker users choose `docker`)
-- Memory provider (default `flat`)
-
-**Appearance**
-- Color scheme (9 built-in themes)
-
-Re-run anytime via `/setup` or `Ctrl+K → Setup`.
-
-### Minimal config (Standalone)
-
-You can also edit `~/.xbot/config.json` directly. See
-[Configuration reference](/configuration/) for all fields.
-
-```json
-{
-  "subscriptions": [
-    {
-      "name": "default",
-      "provider": "openai",
-      "api_key": "sk-xxx",
-      "model": "gpt-4o"
-    }
-  ]
-}
-```
-
-### Using DeepSeek or other compatible APIs
-
-```json
-{
-  "subscriptions": [
-    {
-      "name": "DeepSeek",
-      "provider": "openai",
-      "api_key": "your-key",
-      "base_url": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat"
-    }
-  ]
-}
-```
-
-## Verify the installation
-
-```bash
-xbot-cli --version
-
-# Server mode — check service status
-# Linux:
-systemctl --user status xbot-server
-# macOS:
-launchctl list | grep xbot
-```
-
-{{< hint type=tip >}}
-**Quick health check:** Run `xbot-cli` and type "hello". If the agent
-responds, everything is working correctly.
-{{< /hint >}}
+Requires **Go 1.26+**; `make setup` additionally needs Node.js (web frontend build).
 
 ## See also
-- [Getting Started](/getting-started/) — 5-minute quick start
-- [Configuration](/configuration/) — all config.json fields
-- [Channels](/channels/) — Feishu, QQ, Web, CLI setup
+
+- [Configuration](/configuration/) — full `config.json`, LLM subscriptions, model tiers
+- [Getting started](/getting-started/) — your first conversation after install
+- [Channels](/channels/) — Feishu / QQ / Web / CLI setup
+- [Plugins](/plugins/) — plugin system and built-in plugins

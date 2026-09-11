@@ -1,0 +1,29 @@
+{{- /*
+  Terminal-style code block.
+
+  Why a shortcode instead of a raw `<div class="xb-term"><pre><code>` in the
+  page: CommonMark ENDS a raw HTML block at the first blank line. Any blank
+  line inside the block therefore splits it, and everything after it is parsed
+  as markdown — `# 2) start` became an <h1>, URLs became links, numbered lines
+  became <ol>. `markdown="0"` does not prevent this.
+
+  A shortcode sidesteps the problem entirely: `{{< term >}}` inner content is
+  passed through raw (never markdown-rendered), so blank lines and `#` are
+  literal characters.
+
+  Usage:
+    {{< term label="bash" >}}
+    curl -fsSL ... | bash
+
+    xbot-cli serve
+    {{< /term >}}
+*/ -}}
+<div class="xb-term">
+  <div class="xb-term__bar">
+    <span class="xb-term__dot xb-term__dot--r"></span>
+    <span class="xb-term__dot xb-term__dot--y"></span>
+    <span class="xb-term__dot xb-term__dot--g"></span>
+    <span class="xb-term__label">{{ .Get "label" | default "bash" }}</span>
+  </div>
+  <pre><code>{{ .Inner | strings.TrimSpace }}</code></pre>
+</div>

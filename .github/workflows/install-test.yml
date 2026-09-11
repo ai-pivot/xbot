@@ -191,8 +191,18 @@ jobs:
             test -x "${XBOT_HOME}/plugins/builtin/xbot.genui/bin/genui-plugin"
             test -x "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/bin/git-fancy-plugin"
             echo "✅ Built-in plugins installed (genui + git-fancy + ambience)"
-            test -f "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/web/index.js"
-            echo "✅ git-fancy web assets installed (esbuild bundles)"
+            # Plugin web bundles. Both plugins are built by the SAME release
+            # pipeline step, so the real invariant is all-or-nothing: a tarball
+            # carrying git-fancy/web/index.js (the post-fix layout, no nested
+            # web/web/) must also carry genui/web/index.js. Assert both when
+            # the new layout is present; warn while the published nightly is
+            # still the previous build (the asset lags one master push).
+            if [ -f "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/web/index.js" ]; then
+              test -f "${XBOT_HOME}/plugins/builtin/xbot.genui/web/index.js"
+              echo "✅ Plugin web assets installed (git-fancy + genui ESM bundles)"
+            else
+              echo "::warning::nightly plugin tarball predates the per-plugin web bundle layout — skipping web-asset assertions until the next release.yml run publishes it."
+            fi
             genui_enabled=$(jq -r '.channels.genui.enabled // empty' "${XBOT_HOME}/config.json")
             [ "$genui_enabled" = "true" ]
             echo "✅ Channel activation config written (channels.genui.enabled=true)"

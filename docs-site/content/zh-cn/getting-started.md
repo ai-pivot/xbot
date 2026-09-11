@@ -22,12 +22,26 @@ irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 |
 ```
 
 安装器会下载 `xbot-cli` 二进制、生成随机 admin token、写入
-`~/.xbot/config.json`。Server 模式还会安装系统服务并下载 Web UI。
+`~/.xbot/config.json`，并运行 `xbot-cli setup` 装齐 **Web UI + 全部内置插件，
+同时打开 web 通道** —— 两种模式都会装，装完浏览器就能用。
 
 {{< hint type=note >}}
 **国内网络？** 使用镜像加速安装器：
 ```bash
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash
+```
+{{< /hint >}}
+
+{{< hint type=tip >}}
+**不想自己动手？** 把下面这段复制给你的 AI agent，它会自己装好并验证：
+
+```text
+帮我在这台机器上安装并启动 xbot：
+1. curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. xbot-cli setup --check      # 退出码 0 才算装好
+3. nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # 必须输出 200
+失败就读 https://ai-pivot.github.io/xbot/zh-cn/installation/ 的排错章节。
 ```
 {{< /hint >}}
 

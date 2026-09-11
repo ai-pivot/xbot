@@ -67,13 +67,25 @@ install-cli:
 # release-installed copies) — discovery dedups by plugin ID, user dir first.
 XBOT_HOME ?= $(HOME)/.xbot
 
-# Build plugin web assets (git-fancy ESM views) with esbuild from the main
-# web source tree. Requires web/node_modules (npm ci in web/). Same command
-# the release CI uses; output goes to the plugin's source web/ dir (gitignored).
+# Build plugin web assets (ESM frontend modules for the release-installed
+# plugins) with esbuild from the main web source tree. Requires
+# web/node_modules (npm ci in web/). Mirrors the release CI exactly; output
+# goes to each plugin's source web/ dir (gitignored).
 plugins-web:
 	cd web && npx esbuild src/plugins/git-fancy/index.tsx src/plugins/git-fancy/commit.tsx \
 		--bundle --splitting --format=esm --jsx=transform \
 		--outdir=../plugins/xbot-git-fancy/web
+	cd web && npx esbuild src/plugins/genui/index.tsx \
+		--bundle --splitting --format=esm --jsx=transform \
+		--outdir=../plugins/xbot-genui/web
+
+# Copy a plugin's built web assets into its installed dir. Every plugin whose
+# plugin.json declares web.entry must get this, or its frontend module 404s at
+# /plugins/<id>/web/<entry> (the renderer silently never loads).
+define install_plugin_web
+	mkdir -p $(1)/$(2)/web
+	cp -R plugins/$(3)/web/. $(1)/$(2)/web/
+endef
 
 plugins-build:
 	$(MAKE) -C plugins/xbot-genui build
@@ -82,11 +94,11 @@ plugins-build:
 plugins-install: plugins-build plugins-web
 	$(MAKE) -C plugins/xbot-genui install
 	$(MAKE) -C plugins/xbot-git-fancy install
-	# git-fancy web assets (esbuild bundles built by plugins-web — Makefile
-	# plugins/ dirs are the ONLY consumers; the release pipeline ships them
-	# via plugins/package.sh --web-dist-dir instead)
-	mkdir -p $(XBOT_HOME)/plugins/xbot.git-fancy/web
-	cp -R plugins/xbot-git-fancy/web/. $(XBOT_HOME)/plugins/xbot.git-fancy/web/
+	# web assets (esbuild bundles built by plugins-web — the plugins/ dirs are
+	# the ONLY consumers; the release pipeline ships them via
+	# plugins/package.sh --web-dist-dir instead)
+	$(call install_plugin_web,$(XBOT_HOME)/plugins,xbot.git-fancy,xbot-git-fancy)
+	$(call install_plugin_web,$(XBOT_HOME)/plugins,xbot.genui,xbot-genui)
 	# ambience: script-runtime plugin, manifest only (frontend builtin handles the rest)
 	mkdir -p $(XBOT_HOME)/plugins/xbot.ambience
 	cp plugins/xbot-ambience/plugin.json $(XBOT_HOME)/plugins/xbot.ambience/
@@ -101,8 +113,8 @@ plugins-install: plugins-build plugins-web
 plugins-install-builtin: plugins-build plugins-web
 	$(MAKE) -C plugins/xbot-genui install PLUGIN_DIR='$(XBOT_HOME)/plugins/builtin/xbot.genui'
 	$(MAKE) -C plugins/xbot-git-fancy install PLUGIN_DIR='$(XBOT_HOME)/plugins/builtin/xbot.git-fancy'
-	mkdir -p $(XBOT_HOME)/plugins/builtin/xbot.git-fancy/web
-	cp -R plugins/xbot-git-fancy/web/. $(XBOT_HOME)/plugins/builtin/xbot.git-fancy/web/
+	$(call install_plugin_web,$(XBOT_HOME)/plugins/builtin,xbot.git-fancy,xbot-git-fancy)
+	$(call install_plugin_web,$(XBOT_HOME)/plugins/builtin,xbot.genui,xbot-genui)
 	mkdir -p $(XBOT_HOME)/plugins/builtin/xbot.ambience
 	cp plugins/xbot-ambience/plugin.json $(XBOT_HOME)/plugins/builtin/xbot.ambience/
 	@echo "Built-in plugins installed to $(XBOT_HOME)/plugins/builtin/ (release-managed dir)."

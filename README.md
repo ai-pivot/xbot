@@ -74,19 +74,31 @@ You can also set `GH_MIRROR=ghfast.top` manually.
 
 </details>
 
-The installer downloads the binary and then runs **`xbot-cli setup`**, which
-completes the installation:
+One command installs everything: **binary + Web UI + every built-in plugin, with the
+web channel already enabled.**
 
-| Component | Installed to |
-|-----------|--------------|
+| Component | Where |
+|-----------|-------|
 | CLI + server binary | `~/.local/bin/xbot-cli` |
-| **Web UI** | `$XBOT_HOME/web/dist` |
-| **Built-in plugins** | `$XBOT_HOME/plugins/builtin` |
-| Channel activation | `$XBOT_HOME/config.json` |
+| Web UI + built-in plugins + channel activation | `$XBOT_HOME` (done by `xbot-cli setup`) |
 
-> Already have the binary? Run `xbot-cli setup` any time to (re)install the web
-> UI and built-in plugins, or `xbot-cli setup --check` to diagnose a partial
-> install.
+> Already installed? Re-run `xbot-cli setup` to repair, or `xbot-cli setup --check`
+> to diagnose.
+
+**Or: paste this into your AI agent and let it do the install**
+
+```text
+Install and start xbot on this machine:
+1. curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
+2. xbot-cli setup --check        # exit code 0 means a complete install
+3. nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
+4. curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # must print 200
+If anything fails, read https://ai-pivot.github.io/xbot/installation/ (Troubleshooting).
+```
+
+There are exactly 5 optional flags (`MODE` / `PORT` / `XBOT_HOME` / `INSTALL_PATH` /
+`CHANNEL`); everything else lives in
+[Install & configure](https://ai-pivot.github.io/xbot/installation/).
 
 ### 2. Start the server
 
