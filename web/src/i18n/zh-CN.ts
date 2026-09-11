@@ -334,6 +334,23 @@ const zhCN = {
       promoteHint: '不阻塞本轮对话',
       bgTask: '后台任务',
       bgSuccessTitle: '命令在后台继续执行，输出完成后自动注入对话',
+
+      // 注入型（synthetic）通知工具卡片：bg task / 子代理完成、cron、插话等。
+      // 后端把这些字段放进 toolHints（tools.SyntheticToolHints，模型不可见）。
+      syntheticBgTask: '后台任务',
+      syntheticSubAgent: '子代理',
+      syntheticOriginalTask: '原任务',
+      syntheticDuration: '耗时',
+      syntheticExitCode: '退出码',
+      syntheticOutput: '输出',
+      syntheticResult: '结果',
+      syntheticCronFired: '定时任务已触发',
+      syntheticAsyncMessage: '收到异步消息',
+      syntheticDelivered: '消息已送达',
+      syntheticCancelled: '已取消',
+      syntheticNoOutput: '（无输出）',
+      syntheticShowMore: '展开全部',
+      syntheticShowLess: '收起',
     },
     thinkingLive: '思考中 {{count}} 字',
     thoughtChars: '思考 {{count}} 字',

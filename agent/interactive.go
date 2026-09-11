@@ -1152,6 +1152,7 @@ func (a *Agent) SpawnInteractiveSession(
 							Content:  fmt.Sprintf("Panic: %v", r),
 							Elapsed:  time.Since(startTime),
 							Sid:      originSender,
+							Task:     msg.Content,
 						})
 					}
 					// subagent_stopped(removed=true) is emitted by
@@ -1207,6 +1208,7 @@ func (a *Agent) SpawnInteractiveSession(
 					Content:  content,
 					Elapsed:  time.Since(startTime),
 					Sid:      originSender,
+					Task:     msg.Content,
 				})
 			}
 
@@ -1266,6 +1268,7 @@ func (a *Agent) SpawnInteractiveSession(
 							Content:  content,
 							Elapsed:  time.Since(startTime),
 							Sid:      originSender,
+							Task:     msg.Content,
 						})
 					}
 					log.WithFields(log.Fields{

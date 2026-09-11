@@ -908,6 +908,11 @@ type SubAgentBgNotify struct {
 	Content  string               // formatted notification content for the LLM
 	Elapsed  time.Duration        // total elapsed time (for completed notifications)
 	Sid      string               // original user ID that triggered the subagent
+	// Task is the ORIGINAL task the sub-agent was spawned with. It is not sent
+	// to the model (the notification body already carries the result) — it
+	// exists so the web completion card can show what was asked for, see
+	// tools.SyntheticToolHints.
+	Task string
 }
 
 // SessionKey implements BgNotification.

@@ -337,6 +337,23 @@ const en: Translations = {
       promoteHint: 'Run in background without blocking this turn',
       bgTask: 'Background task',
       bgSuccessTitle: 'Command moved to background',
+
+      // 注入型（synthetic）通知工具卡片：bg task / 子代理完成、cron、插话等。
+      // 后端把这些字段放进 toolHints（tools.SyntheticToolHints，模型不可见）。
+      syntheticBgTask: 'Background task',
+      syntheticSubAgent: 'Sub-agent',
+      syntheticOriginalTask: 'Original task',
+      syntheticDuration: 'Duration',
+      syntheticExitCode: 'Exit code',
+      syntheticOutput: 'Output',
+      syntheticResult: 'Result',
+      syntheticCronFired: 'Scheduled job fired',
+      syntheticAsyncMessage: 'Async message',
+      syntheticDelivered: 'Message delivered',
+      syntheticCancelled: 'Cancelled',
+      syntheticNoOutput: '(no output)',
+      syntheticShowMore: 'Show all',
+      syntheticShowLess: 'Collapse',
     },
     thinkingLive: 'Thinking · {{count}} chars',
     thoughtChars: 'Thought {{count}} chars',
