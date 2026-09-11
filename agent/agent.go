@@ -301,6 +301,17 @@ type bgSessionState struct {
 	// Stored so the reorder path can re-project the queue order onto it.
 	// Nil for states created without a chatWorker (tests).
 	msgCh chan bus.InboundMessage
+
+	// inflightAdmits counts admits currently between queueAppend and the
+	// completion of their channel send. While it is > 0 the message is already
+	// visible in the shadow queue (and in the emitted queue_state snapshot) but
+	// NOT yet in msgCh — draining the channel then would miss it, so a reorder
+	// projection would silently disagree with the displayed order. Reachable
+	// only when the channel is saturated (the producer blocks until the consumer
+	// frees a slot): with room, the send completes in the append critical
+	// window. ReorderQueue waits briefly for it to drain, then refuses (no-op)
+	// rather than projecting a partial order.
+	inflightAdmits atomic.Int64
 }
 
 // sessionOperationGate serializes a chat turn with destructive session
@@ -2928,6 +2939,7 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 		ss.queueAppend(newQueuedEntry(msg, turnID))
 		a.emitQueueState(msg.Channel, msg.ChatID, ss)
 	}
+	ss.inflightAdmits.Add(1)
 	select {
 	case msgCh <- msg:
 		// Message entered the channel. For queued messages, chatProcessLoop's
@@ -2942,6 +2954,7 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 			a.emitQueueState(msg.Channel, msg.ChatID, ss)
 		}
 	}
+	ss.inflightAdmits.Add(-1)
 }
 
 // resolveResumeTurnID returns the turn id a restart-resumed Run

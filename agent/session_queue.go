@@ -285,12 +285,46 @@ drain:
 	return len(drained)
 }
 
+// queueReorderAdmitWait bounds how long a reorder waits for in-flight admits
+// (a producer between queueAppend and the completion of its channel send) to
+// land before giving up. With room in the channel the send completes in
+// microseconds; a saturated channel only clears when the consumer dequeues.
+const queueReorderAdmitWait = 20 * time.Millisecond
+
+// waitForInflightAdmits waits (bounded) until no admit sits between queueAppend
+// and its completed channel send. Returns false when one is still in flight
+// after the wait: its message is in the shadow queue (already broadcast to
+// clients) but not yet in msgCh, so a drain-based projection would miss it and
+// silently deliver a different order than the one displayed.
+func (ss *bgSessionState) waitForInflightAdmits() bool {
+	deadline := time.Now().Add(queueReorderAdmitWait)
+	for {
+		if ss.inflightAdmits.Load() == 0 {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // ReorderQueue reorders a session's pending (queued, not yet started) messages.
 // msgIDs is the desired order as rendered by the client (Staging Tray
 // drag-and-drop); unknown ids and unlisted entries are handled by queueReorder.
-// Returns false when the session has no worker, nothing is queued, or the
-// requested order is already in effect (no snapshot broadcast then — a no-op
-// drag must not spam every subscriber).
+// Returns false when the session has no worker, nothing is queued, the requested
+// order is already in effect, or a message was still being admitted (see below)
+// — no snapshot broadcast then (a no-op drag must not spam every subscriber).
+//
+// ORDER CONSISTENCY: the projection (reorderChannel) drains msgCh, sorts the
+// buffered messages by the shadow queue order and pushes them back. That is
+// exact only while every queued entry is actually IN the channel. A producer
+// that has already appended its shadow entry but has not completed its channel
+// send (inflightAdmits > 0) would be missed by the drain — reachable when the
+// channel is saturated, because then the producer blocks until the consumer
+// frees a slot. We wait briefly for such admits to land, and if one is still in
+// flight we refuse the reorder (no projection, no broadcast) instead of
+// reporting an order we cannot deliver.
 func (a *Agent) ReorderQueue(channelName, chatID string, msgIDs []string) bool {
 	key := qualifyChatID(channelName, chatID)
 	state, ok := a.bgSessionStates.Load(key)
@@ -298,6 +332,11 @@ func (a *Agent) ReorderQueue(channelName, chatID string, msgIDs []string) bool {
 		return false
 	}
 	ss := state.(*bgSessionState)
+
+	if ss.msgCh != nil && !ss.waitForInflightAdmits() {
+		log.WithField("session_key", key).Warn("Queued messages reorder skipped: an admit is still in flight (saturated msgCh)")
+		return false
+	}
 
 	before := ss.queueSnapshot()
 	order := ss.queueReorder(msgIDs)
