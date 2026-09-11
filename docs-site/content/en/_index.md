@@ -117,7 +117,7 @@ geekdocHidden: true
 </div>
 
 <h2 class="xb-section-title">Install in a minute</h2>
-<p class="xb-section-sub">Copy, paste, done — the setup wizard walks you through LLM and channel configuration.</p>
+<p class="xb-section-sub">One command to install, then three steps in the browser.</p>
 
 <div class="xb-term">
   <div class="xb-term__bar">
@@ -126,25 +126,29 @@ geekdocHidden: true
     <span class="xb-term__dot xb-term__dot--g"></span>
     <span class="xb-term__label">bash</span>
   </div>
-  <pre><code># Linux / macOS
+  <pre><code># 1) Install (one command — pulls the binary, Web UI and built-in plugins)
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 
-# Then launch it (the setup wizard runs on first start)
-xbot-cli</code></pre>
+# 2) Start (the installer already enabled the web channel)
+xbot-cli serve
+
+# 3) Open http://localhost:8082
+#    -> Create account (first signup on a fresh install needs no invite)
+#    -> gear icon -> LLM -> base URL / API key / pick a model
+#    -> start chatting</code></pre>
 </div>
 
-<div class="xb-term">
-  <div class="xb-term__bar">
-    <span class="xb-term__dot xb-term__dot--r"></span>
-    <span class="xb-term__dot xb-term__dot--y"></span>
-    <span class="xb-term__dot xb-term__dot--g"></span>
-    <span class="xb-term__label">powershell</span>
-  </div>
-  <pre><code># Windows (PowerShell)
-irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code></pre>
-</div>
+<p class="xb-section-sub">
+Behind the GFW? Use the mirror: <code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code><br>
+Windows: <code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code><br>
+Headless / CI: <code>MODE=standalone CHANNEL=stable PORT=8082 bash install.sh</code>
+</p>
 
-See [Getting started](/getting-started/) or the [Installation guide](/installation/).
+<p class="xb-section-sub">
+Executable install notes for AI agents (assertions + troubleshooting) live in the
+<a href="https://github.com/ai-pivot/xbot/blob/master/docs/agent/install.md">agent install doc</a>; human walkthrough in
+<a href="/getting-started/">Getting started</a> and <a href="/installation/">Installation</a>.
+</p>
 
 <h2 class="xb-section-title">Architecture</h2>
 <p class="xb-section-sub">The backend is a pure RPC client interface (zero business logic); the transport layer does the real work.</p>

@@ -116,7 +116,7 @@ geekdocHidden: true
 </div>
 
 <h2 class="xb-section-title">一分钟安装</h2>
-<p class="xb-section-sub">复制粘贴即可，向导会引导你完成 LLM 与渠道配置。</p>
+<p class="xb-section-sub">一条命令装好，然后浏览器里三步就能聊起来。</p>
 
 <div class="xb-term">
   <div class="xb-term__bar">
@@ -125,25 +125,29 @@ geekdocHidden: true
     <span class="xb-term__dot xb-term__dot--g"></span>
     <span class="xb-term__label">bash</span>
   </div>
-  <pre><code># Linux / macOS
+  <pre><code># 1) 安装（一条命令，自动装好 Web UI 与内置插件）
 curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 
-# 安装完成后启动（首次会弹出 Setup 向导）
-xbot-cli</code></pre>
+# 2) 启动（安装脚本已开启 web 通道）
+xbot-cli serve
+
+# 3) 打开 http://localhost:8082
+#    → 创建账号（新装机首个注册免邀请码）
+#    → 右下角齿轮 → LLM → 填 Base URL / API Key / 选模型
+#    → 开始聊天</code></pre>
 </div>
 
-<div class="xb-term">
-  <div class="xb-term__bar">
-    <span class="xb-term__dot xb-term__dot--r"></span>
-    <span class="xb-term__dot xb-term__dot--y"></span>
-    <span class="xb-term__dot xb-term__dot--g"></span>
-    <span class="xb-term__label">powershell</span>
-  </div>
-  <pre><code># Windows (PowerShell)
-irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code></pre>
-</div>
+<p class="xb-section-sub">
+网络受限（中国大陆）用镜像安装：<code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code><br>
+Windows：<code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code><br>
+无头 / CI：<code>MODE=standalone CHANNEL=stable PORT=8082 bash install.sh</code>
+</p>
 
-详见 [快速开始](/zh-cn/getting-started/) 或 [安装指南](/zh-cn/installation/)。
+<p class="xb-section-sub">
+给 AI agent 的可执行安装说明（含断言与排错）见
+<a href="https://github.com/ai-pivot/xbot/blob/master/docs/agent/install.md">Agent 安装文档</a>；
+人工详解见 <a href="/zh-cn/getting-started/">快速开始</a> 与 <a href="/zh-cn/installation/">安装指南</a>。
+</p>
 
 <h2 class="xb-section-title">架构</h2>
 <p class="xb-section-sub">Backend 是纯 RPC 客户端接口（零业务逻辑），Transport 负责实际执行。</p>

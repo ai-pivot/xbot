@@ -287,6 +287,11 @@ write_config_jq() {
         admin_token=$(jq -r '.admin.token // empty' "$CONFIG_PATH")
         _set_always cli token "${admin_token:-$token}"
     else
+        # standalone: the box should still be reachable in a browser right
+        # after install — enable the web channel and pin its port.
+        _set_if_missing web enable true
+        _set_if_missing web host "0.0.0.0"
+        _set_always web port "$PORT"
         local admin_token
         admin_token=$(jq -r '.admin.token // empty' "$CONFIG_PATH")
         _set_if_missing cli token "${admin_token:-$token}"
@@ -341,6 +346,10 @@ if mode == 'server-client':
     set_always('cli', 'server_url', f'ws://127.0.0.1:{port}')
     set_always('cli', 'token', cfg['admin'].get('token') or token)
 else:
+    # standalone: web reachable in a browser right after install.
+    set_if_missing('web', 'enable', True)
+    set_if_missing('web', 'host', '0.0.0.0')
+    set_always('web', 'port', port)
     set_if_missing('cli', 'token', cfg['admin'].get('token') or token)
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -570,8 +579,8 @@ main() {
 
     ask_mode
     TOKEN=$(random_token)
-    PORT="$DEFAULT_PORT"
-    if [ "$MODE" = "server-client" ] && [ -z "${NONINTERACTIVE:-}" ] && [ -e /dev/tty ]; then
+    PORT="${PORT:-$DEFAULT_PORT}"
+    if [ -z "${PORT:-}" ] && [ "$MODE" = "server-client" ] && [ -z "${NONINTERACTIVE:-}" ] && [ -e /dev/tty ]; then
         printf "Server port (HTTP + WebSocket + Web UI) [${DEFAULT_PORT}]: "
         read -r input_port </dev/tty
         PORT="${input_port:-$DEFAULT_PORT}"
