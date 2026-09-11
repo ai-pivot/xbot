@@ -680,9 +680,13 @@ main() {
         warn "  Installing it would give you the Web UI WITHOUT the built-in plugins."
         warn "Retrying with the nightly channel (latest builds include 'setup')..."
         CHANNEL=nightly
-        if NEW_VERSION=$(resolve_version) && install_binary_from_release "$NEW_VERSION"; then
-            VERSION="$NEW_VERSION"
-            info "Switched to nightly ${VERSION} — Web UI + built-in plugins available"
+        # nightly is a FIXED tag (overwritten on every master push) — no
+        # resolve_version() call needed (and calling it would short-circuit:
+        # VERSION is already set to the old stable tag, so it would echo the
+        # stale value instead of resolving the new channel).
+        if install_binary_from_release "nightly"; then
+            VERSION="nightly"
+            info "Switched to nightly — Web UI + built-in plugins available"
         else
             warn "nightly retry failed; continuing with ${VERSION} (plugins unavailable)."
         fi
