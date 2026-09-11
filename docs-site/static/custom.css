@@ -318,6 +318,120 @@
   background: transparent !important;
 }
 
+/* ── 首屏安装卡 ──
+   安装是首页第一优先级的信息，直接放在 hero 里（不是链接到文档页），
+   内容只有一行指令 + 一个复制按钮（对标 opencode / bun / uv 的首屏安装样式）。 */
+.xb-install {
+  max-width: 620px;
+  margin: 0.2rem auto 2.2rem;
+  text-align: left;
+  border: 1px solid var(--xb-border);
+  border-radius: var(--xb-radius);
+  background: color-mix(in srgb, var(--xb-card-bg) 92%, transparent);
+  box-shadow: var(--xb-shadow);
+  overflow: hidden;
+}
+
+.xb-install__head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.7rem;
+  padding: 0.75rem 1rem 0.5rem;
+}
+
+.xb-install__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+
+.xb-install__badge .xb-ico {
+  width: 17px;
+  height: 17px;
+  color: var(--xb-accent);
+}
+
+.xb-install__hint {
+  font-size: 0.76rem;
+  opacity: 0.55;
+}
+
+.xb-install__cmd {
+  margin: 0;
+  padding: 0 1rem 0.9rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: var(--xb-font-mono);
+  font-size: 0.86rem;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  /* `break-word` (NOT `anywhere`): the browser breaks at our explicit <wbr>
+     points first and only falls back to an arbitrary break when a single
+     unbreakable run cannot fit at all. `anywhere` instead takes the last
+     fitting character, which split the URL mid-word. */
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+@media (max-width: 640px) {
+  .xb-install__cmd {
+    font-size: 0.76rem;
+  }
+}
+
+.xb-install__cmd code {
+  padding: 0 !important;
+  background: transparent !important;
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit !important;
+}
+
+.xb-install__foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--xb-border);
+  font-size: 0.78rem;
+}
+
+.xb-install__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+  padding: 0.4rem 0.95rem;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(100deg, var(--xb-accent), var(--xb-accent-2));
+  box-shadow: 0 6px 18px rgba(79, 140, 255, 0.32);
+  transition: transform 0.14s ease, box-shadow 0.2s ease;
+}
+
+.xb-install__copy:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(79, 140, 255, 0.42);
+}
+
+.xb-install__copy.is-copied {
+  background: linear-gradient(100deg, #16a34a, #22c55e);
+  box-shadow: 0 6px 18px rgba(34, 197, 94, 0.32);
+}
+
+.xb-install__note {
+  opacity: 0.62;
+}
+
 /* ── 对比表 ──
    落地页不走 .gdoc-markdown（layouts/index.html 独立外壳），所以主题的
    table 规则不生效 —— 裸 <table> 会 shrink-to-fit 成一坨。这里显式全宽 +

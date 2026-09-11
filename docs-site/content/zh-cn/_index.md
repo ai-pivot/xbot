@@ -15,8 +15,23 @@ geekdocHidden: true
   </p>
   <div class="xb-hero__cta">
     <a class="xb-btn xb-btn--primary" href="/zh-cn/getting-started/">快速开始 →</a>
-    <a class="xb-btn xb-btn--ghost" href="/zh-cn/installation/">安装指南</a>
     <a class="xb-btn xb-btn--ghost" href="https://github.com/ai-pivot/xbot">GitHub</a>
+  </div>
+
+  <div class="xb-install">
+    <div class="xb-install__head">
+      <span class="xb-install__badge"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-clipboard-copy"></use></svg> 把以下指令发给你的 Agent</span>
+      <span class="xb-install__hint">Claude Code · Codex · Cursor …</span>
+    </div>
+    <pre class="xb-install__cmd"><code>帮我在这台机器上安装并启动 xbot：
+curl -fsSL https://raw.githubusercontent.com/<wbr>ai-pivot/<wbr>xbot/<wbr>master/<wbr>scripts/install.sh | bash</code></pre>
+    <div class="xb-install__foot">
+      <button type="button" class="xb-install__copy" data-copied="已复制 ✓">复制指令</button>
+      <span class="xb-install__note">
+        一条命令装好 Web UI + 全部内置插件 ·
+        <a href="/zh-cn/installation/">其他安装方式</a>
+      </span>
+    </div>
   </div>
 
   <div class="xb-shot">
@@ -115,34 +130,14 @@ geekdocHidden: true
   </div>
 </div>
 
-<h2 class="xb-section-title">一分钟安装</h2>
-<p class="xb-section-sub">一条命令：装好二进制 + Web UI + 全部内置插件，并自动开启 web 通道。</p>
-
-{{< term label="bash" >}}
-curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
-xbot-cli serve
-{{< /term >}}
-
-<p class="xb-section-sub">打开 <code>http://localhost:8082</code> → 注册账号 → 齿轮 → LLM → 填 Base URL / API Key / 选模型 → 开聊。</p>
-
-<h2 class="xb-section-title">让 Agent 帮你装</h2>
-<p class="xb-section-sub">把下面这段原样复制给你的 AI agent（Claude Code / Codex / Cursor …），它会自己装好并验证。</p>
-
-{{< term label="复制这段发给你的 agent" >}}
-帮我在这台机器上安装并启动 xbot：
-
-1. 安装：curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
-2. 自检：xbot-cli setup --check        # 退出码 0 才算装好
-3. 启动：nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
-4. 验证：curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # 必须输出 200
-
-任何一步失败，读 https://ai-pivot.github.io/xbot/zh-cn/installation/ 的排错章节，
-不要跳过自检直接告诉我装好了。
-{{< /term >}}
-
+<h2 class="xb-section-title">其他安装方式</h2>
 <p class="xb-section-sub">
-Windows：<code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code><br>
-中国大陆走镜像：<code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code><br>
+Windows：<code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code>
+&nbsp;·&nbsp;
+中国大陆走镜像：<code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code>
+</p>
+<p class="xb-section-sub">
+装完打开 <code>http://localhost:8082</code> → 注册账号 → 齿轮 → LLM → 填 Base URL / API Key / 选模型 → 开聊。
 可选参数（默认值通常就是你要的）与全部配置项 → <a href="/zh-cn/installation/">安装与配置</a>。
 </p>
 

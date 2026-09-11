@@ -16,8 +16,23 @@ geekdocHidden: true
   </p>
   <div class="xb-hero__cta">
     <a class="xb-btn xb-btn--primary" href="/getting-started/">Get started →</a>
-    <a class="xb-btn xb-btn--ghost" href="/installation/">Installation</a>
     <a class="xb-btn xb-btn--ghost" href="https://github.com/ai-pivot/xbot">GitHub</a>
+  </div>
+
+  <div class="xb-install">
+    <div class="xb-install__head">
+      <span class="xb-install__badge"><svg class="xb-ico" aria-hidden="true"><use href="/icons.svg#i-clipboard-copy"></use></svg> Paste this prompt into your agent</span>
+      <span class="xb-install__hint">Claude Code · Codex · Cursor …</span>
+    </div>
+    <pre class="xb-install__cmd"><code>Install and start xbot on this machine:
+curl -fsSL https://raw.githubusercontent.com/<wbr>ai-pivot/<wbr>xbot/<wbr>master/<wbr>scripts/install.sh | bash</code></pre>
+    <div class="xb-install__foot">
+      <button type="button" class="xb-install__copy" data-copied="Copied ✓">Copy prompt</button>
+      <span class="xb-install__note">
+        One command: Web UI + every built-in plugin ·
+        <a href="/installation/">Other ways to install</a>
+      </span>
+    </div>
   </div>
 
   <div class="xb-shot">
@@ -116,35 +131,14 @@ geekdocHidden: true
   </div>
 </div>
 
-<h2 class="xb-section-title">Install in a minute</h2>
-<p class="xb-section-sub">One command installs the binary, the Web UI and every built-in plugin — with the web channel already enabled.</p>
-
-{{< term label="bash" >}}
-curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
-xbot-cli serve
-{{< /term >}}
-
-<p class="xb-section-sub">Open <code>http://localhost:8082</code> → create an account → gear icon → LLM → base URL / API key / pick a model → chat.</p>
-
-<h2 class="xb-section-title">Let your agent install it</h2>
-<p class="xb-section-sub">Paste this into your AI agent (Claude Code / Codex / Cursor …) — it installs and verifies on its own.</p>
-
-{{< term label="copy this into your agent" >}}
-Install and start xbot on this machine:
-
-1. Install: curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
-2. Verify:  xbot-cli setup --check        # exit code 0 means the install is complete
-3. Start:   nohup xbot-cli serve >/tmp/xbot.log 2>&1 &
-4. Confirm: curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8082   # must print 200
-
-If any step fails, read the troubleshooting section of
-https://ai-pivot.github.io/xbot/installation/ — do not skip the check and
-claim it worked.
-{{< /term >}}
-
+<h2 class="xb-section-title">Other ways to install</h2>
 <p class="xb-section-sub">
-Windows: <code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code><br>
-Behind the GFW, use the mirror: <code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code><br>
+Windows: <code>irm https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.ps1 | iex</code>
+&nbsp;·&nbsp;
+Behind the GFW: <code>curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install-cn.sh | bash</code>
+</p>
+<p class="xb-section-sub">
+Then open <code>http://localhost:8082</code> → create an account → gear icon → LLM → base URL / API key / pick a model → chat.
 Optional flags (the defaults are usually what you want) and every config key → <a href="/installation/">Install &amp; configure</a>.
 </p>
 
