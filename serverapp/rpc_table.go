@@ -1610,6 +1610,37 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		return h.Ag.GetTodos(channelName, chatID), nil
 	})
 
+	t["set_todos"] = rpc1(func(ctx context.Context, p struct {
+		Channel string              `json:"channel"`
+		ChatID  string              `json:"chat_id"`
+		Todos   []protocol.TodoItem `json:"todos"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		// Normalize + bound the user edit before it reaches the store: empty
+		// text is meaningless in a checklist, and the status vocabulary is
+		// fixed (the UI renders exactly these three).
+		cleaned := make([]protocol.TodoItem, 0, len(p.Todos))
+		for _, it := range p.Todos {
+			text := strings.TrimSpace(it.Text)
+			if text == "" {
+				continue
+			}
+			if len([]rune(text)) > 500 {
+				text = string([]rune(text)[:500])
+			}
+			status := it.Status
+			if status != "pending" && status != "doing" && status != "done" {
+				status = "pending"
+			}
+			cleaned = append(cleaned, protocol.TodoItem{Text: text, Status: status})
+		}
+		h.Ag.SetTodos(channelName, chatID, cleaned)
+		return map[string]any{"ok": true, "todos": cleaned}, nil
+	})
+
 	t["get_goal"] = rpc1(func(ctx context.Context, p struct {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`

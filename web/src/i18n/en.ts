@@ -304,6 +304,13 @@ const en: Translations = {
     queueModeHint: 'Queue mode: sends after the current turn finishes',
     interjectSend: 'Interject',
     setAsGoal: 'Set as goal',
+    todoEdit: 'Edit',
+    todoDelete: 'Delete',
+    todoSetGoal: 'Set as goal',
+    todoIsGoal: 'Goal',
+    todoClickToEdit: 'Click to edit',
+    todoMarkDone: 'Mark done',
+    todoMarkPending: 'Mark pending',
     scrollLoadMore: 'Scroll to load more',
     visionEnabled: 'Vision input enabled',
     staging: {

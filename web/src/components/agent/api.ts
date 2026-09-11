@@ -97,6 +97,19 @@ export async function setGoal(session: SessionSelector, objective: string): Prom
   })
 }
 
+/** Replace the TODO list for the session (user edit: rename / toggle / delete).
+ *  Direct RPC — does not trigger a Run. The backend persists the list and emits
+ *  a progress event carrying it, so every client refreshes from one source. */
+export async function updateTodos(
+  session: SessionSelector,
+  todos: { text: string; status: string }[],
+): Promise<void> {
+  await postAPI('/api/rpc', {
+    method: 'set_todos',
+    params: { channel: session.channel, chat_id: session.chatID, todos },
+  })
+}
+
 /** Get the current goal for the session. */
 export async function getGoal(session: SessionSelector): Promise<{ objective: string; status: string; summary?: string } | null> {
   return postAPI('/api/rpc', {

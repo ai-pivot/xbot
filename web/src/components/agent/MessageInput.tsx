@@ -36,7 +36,7 @@ import { CompletionPopup } from './CompletionPopup'
 import { SelectionToolbar } from './SelectionToolbar'
 import { useCompletion, type CompletionKeyEvent } from '@/hooks/useCompletion'
 import type { TodoState } from '@/hooks/useTodos'
-import type { GoalInfo } from '@/types/shared'
+import type { GoalInfo, TodoItem } from '@/types/shared'
 
 interface MessageInputProps {
   /** True while the agent is producing output; shows the cancel button. */
@@ -65,6 +65,11 @@ interface MessageInputProps {
   goal?: GoalInfo | null
   /** Edit the goal objective (direct RPC, does not trigger a Run). */
   onSetGoal?: (objective: string) => void
+  /** Replace the TODO list (rename / toggle done / delete). Direct RPC; the
+   *  backend persists it and pushes the new list back over the progress stream. */
+  onUpdateTodos?: (todos: TodoItem[]) => void
+  /** Set one TODO's text as the session goal (one click). */
+  onSetGoalTodo?: (text: string) => void
   /** Clear the active goal. */
   onClearGoal?: () => void
   /** Controls rendered immediately before the send/cancel button. */
@@ -154,7 +159,7 @@ function selectWordAtCursor(editor: Editor): boolean {
   return editor.commands.setTextSelection({ from: base + start, to: base + end })
 }
 
-export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange, modelVision }: MessageInputProps) {
+export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRewindLatest, onOpenTasks, onUpload, todoState, goal, onSetGoal, onClearGoal, onUpdateTodos, onSetGoalTodo, trailingControls, draft, onDraftConsumed, sessionKey, interruptMode = false, onInterruptModeChange, modelVision }: MessageInputProps) {
   const { t } = useI18n()
   const ws = useWSConnection()
   const { cwd } = useCwd()
@@ -617,9 +622,22 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
           <span className="shrink-0 text-[10px] text-text-muted">{t('agent.goal.enterSaveHint')}</span>
         </div>
       )}
-      {todoState ? <TodoPullOut todoState={todoState} hasGoal={!!goal || addingGoal} onSetGoal={onSetGoal ? () => {
-        setAddingGoal(true)
-      } : undefined} /> : null}
+      {todoState ? (
+        <TodoPullOut
+          todoState={todoState}
+          hasGoal={!!goal || addingGoal}
+          goalText={goal?.objective ?? null}
+          onSetGoal={
+            onSetGoal
+              ? () => {
+                  setAddingGoal(true)
+                }
+              : undefined
+          }
+          onUpdateTodos={onUpdateTodos}
+          onSetGoalTodo={onSetGoalTodo}
+        />
+      ) : null}
 
       {/* Input container — single rounded box with chips, editor, and inline buttons */}
       <div

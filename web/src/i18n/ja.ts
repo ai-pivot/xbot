@@ -304,6 +304,13 @@ const ja: Translations = {
     queueModeHint: 'キューモード：現在のターンが終わってから送信されます',
     interjectSend: '插话',
     setAsGoal: '目標に設定',
+    todoEdit: '編集',
+    todoDelete: '削除',
+    todoSetGoal: '目標に設定',
+    todoIsGoal: '現在の目標',
+    todoClickToEdit: 'クリックして編集',
+    todoMarkDone: '完了にする',
+    todoMarkPending: '未完了にする',
     scrollLoadMore: 'スクロールでさらに読み込む',
     visionEnabled: 'ビジョン入力が有効',
     staging: {
