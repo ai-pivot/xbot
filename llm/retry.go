@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
@@ -123,87 +122,35 @@ func IsInputTooLongError(err error) bool {
 	return false
 }
 
-// isRetryableError 判断错误是否可重试。
-// 可重试：429、5xx、网络错误、context 超时
-// 不可重试：context 取消（用户主动 /cancel）、其他 4xx
+// IsRetryableError 判断错误是否可重试。
 //
-// 注意：由于 retryOptions 不再传 retry.Context(ctx)，超时重试现在可以正常工作。
-// 每次重试通过 perAttemptCtx 创建全新的超时上下文。
-func isRetryableError(err error) bool {
+// 策略（2026-09-11 用户要求「所有失败都要触发指数退避」）：**默认重试**。
+// 之前是白名单——只有 429/5xx/网络错误被识别，其它任何失败都直接冒泡、不重试。
+// 白名单的先天缺陷：无法穷举 provider/网关/SDK 的错误形态（自定义错误串、
+// 代理改写过的响应、新的状态码描述……），漏一个就退化成「一次失败即失败」。
+//
+// 只有两类例外：
+//  1. context.Canceled —— 用户主动取消（/cancel），这不是失败；重试等于对抗
+//     用户意图。
+//  2. 输入超长（IsInputTooLongError）—— 确定性失败：同样的 payload 重发必然
+//     同样失败。调用方（agent.handleInputTooLong）有专门的「压缩上下文 + 重试」
+//     恢复路径；在这里空转 Attempts 次只会推迟真正的修复并多烧几次调用。
+//
+// 其余一切（含 4xx、未知错误、纯字符串错误）都重试：由 retryOptions 的
+// 指数退避 + 抖动处理瞬时故障，最终仍失败时错误照常返回。
+func IsRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// context.Canceled：用户主动取消（/cancel 等），不重试
+	// 用户主动取消：不是失败，不重试。
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	// context.DeadlineExceeded：超时是瞬态错误，允许重试
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
+	// 确定性失败：重试无意义，且有专门的恢复路径。
+	if IsInputTooLongError(err) {
+		return false
 	}
-	msg := err.Error()
-	// 网络层错误可重试
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		return true
-	}
-	// 网络层错误字符串匹配（stream error 中丢失了原始 net.Error 类型）。
-	// CollectStreamWithCallback 的 EventError 分支使用 ev.Error (string) 而非原始 error，
-	// 导致 errors.As 无法匹配。通过常见网络错误关键词补充检测。
-	for _, kw := range []string{
-		"connection reset",
-		"connection refused",
-		"broken pipe",
-		"use of closed network connection",
-		"no such host",
-		"i/o timeout",
-		"tls: handshake",
-		// Stream truncation: provider/proxy closed SSE before finish_reason.
-		// Not a net.Error type (string-only from CollectStreamWithCallback),
-		// so string matching is the only way to catch it.
-		"stream ended without finish_reason",
-		"unexpected EOF",
-	} {
-		if strings.Contains(msg, kw) {
-			return true
-		}
-	}
-	// OpenAI SDK 错误格式: `POST "URL": NNN StatusText ...`
-	for _, code := range []string{"429", "500", "502", "503", "504"} {
-		if strings.Contains(msg, ": "+code+" ") { // OpenAI
-			return true
-		}
-	}
-	// B-05 修复：Anthropic SDK 错误格式: `anthropic API error: status=NNN, body=...`
-	// 原有 OpenAI 格式匹配无法匹配此格式，需单独处理
-	if strings.Contains(msg, "anthropic API error: status=") {
-		if idx := strings.Index(msg, "status="); idx != -1 {
-			codeStr := msg[idx+7:]
-			// 找到 status 值的结束位置（逗号、空格或字符串结尾）
-			for i, c := range codeStr {
-				if c == ',' || c == ' ' || c == ')' {
-					codeStr = codeStr[:i]
-					break
-				}
-			}
-			// 429 和 5xx 可重试
-			if codeStr == "429" || strings.HasPrefix(codeStr, "5") {
-				return true
-			}
-		}
-	}
-	// Stream error 格式: `stream error: ...` (CollectStreamWithCallback)
-	// 底层可能是 provider SDK 的各种错误格式，检查 "status code: NNN" 模式
-	if idx := strings.Index(msg, "status code: "); idx != -1 {
-		rest := msg[idx+len("status code: "):]
-		if len(rest) >= 3 {
-			code := rest[:3]
-			if code == "429" || strings.HasPrefix(code, "5") {
-				return true
-			}
-		}
-	}
-	return false
+	return true
 }
 
 // isRateLimitError 判断错误是否为 429 Rate Limit 错误
@@ -231,8 +178,8 @@ func (r *RetryLLM) retryOptions(ctx context.Context, label string) []retry.Optio
 		retry.MaxDelay(r.config.MaxDelay),
 		retry.DelayType(retry.CombineDelay(retry.BackOffDelay, retry.RandomDelay)),
 		// 不传 retry.Context(ctx) —— 超时后 ctx 已取消会导致 retry 框架跳过重试
-		// context.Canceled 由 isRetryableError 处理（返回 false → 不重试）
-		retry.RetryIf(isRetryableError),
+		// context.Canceled 由 IsRetryableError 处理（返回 false → 不重试）
+		retry.RetryIf(IsRetryableError),
 		retry.OnRetry(func(n uint, err error) {
 			log.Ctx(ctx).WithFields(log.Fields{
 				"attempt": n + 1,
