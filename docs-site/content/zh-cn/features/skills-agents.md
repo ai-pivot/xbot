@@ -17,8 +17,6 @@ xbot 有两种扩展方式：**Skills** 和 **Agents**。两者都是 Markdown �
 
 AI 会帮你完成从创建到生效的全部过程。
 
-![子 Agent 与群聊](/img/cli/subagents.gif)
-
 ## Skills（技能包）
 
 Skill 就是一份「指导文档」，告诉 AI 在特定任务上应该怎么做。比如「调试时按这个流程走」「提交代码前按这个检查清单来」。
@@ -105,8 +103,6 @@ Agent 是一个「有独立能力的助手」。你可以把任务委派给它�
 AI 会自动选择合适的 agent 并委派任务。
 
 ## Group Chat（会议模式）
-
-![SubAgents 与群聊](/img/cli/subagents.gif)
 
 Group Chat 是一种**主持式多 Agent 讨论**。你创建一个群组，邀请 Agent，通过 @提及来控制谁发言。
 

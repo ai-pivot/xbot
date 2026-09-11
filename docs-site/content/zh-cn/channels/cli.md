@@ -5,9 +5,6 @@ weight: 30
 
 # CLI 渠道
 
-
-![快速切换面板](/img/cli/quick-switch.png)
-
 CLI 是 xbot 的默认渠道，一个功能完整的终端 UI（TUI），基于 [Bubble Tea](https://github.com/charmbracelet/bubbletea) 构建。
 
 ## 两种模式
@@ -69,8 +66,6 @@ CLI 支持 9 种配色方案，在 Setup 向导或 `/settings` 中切换：
 ## 富渲染
 
 TUI 内联渲染 Markdown、语法高亮代码块和 Mermaid 图表：
-
-![Mermaid 图表渲染](/img/cli/mermaid.png)
 
 ## 键盘快捷键
 

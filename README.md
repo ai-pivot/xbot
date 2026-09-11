@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img alt="xbot Web UI — first launch" src="docs-site/static/img/web/welcome.png" width="860">
+  <img alt="xbot Web UI — a live session: multi-turn chat, tool calls, per-iteration progress" src="docs-site/static/img/app/hero.png" width="860">
 </p>
 
 ---
@@ -94,45 +94,20 @@ completes the installation:
 xbot-cli serve
 ```
 
-Enable the web channel in `~/.xbot/config.json` (the installer can do this for
-you):
+That's it — the installer already enabled the web channel. Want it to survive
+reboots? Install the user service: `xbot-cli serve --install-service`
+(or see the [installation guide](https://ai-pivot.github.io/xbot/installation/)).
 
-```json
-{
-  "web": { "enable": true, "port": 8082 }
-}
-```
+### 3. Open the Web UI and configure
 
-### 3. Open the Web UI
+Browse to **http://localhost:8082**:
 
-Browse to **http://localhost:8082**, then **Create account** — the first
-registration becomes the operator account.
+1. **Create account** — the first registration becomes the operator account
+   (no invite code needed on a fresh install).
+2. **Add your LLM** — gear icon (bottom-right) → **LLM** → add a subscription:
+   provider, **base URL** (`https://…/v1`), API key, then pick a model.
+3. **Start chatting** — create a session in the left sidebar and type below.
 
-<p align="center">
-  <img alt="First launch — new user guide" src="docs-site/static/img/web/welcome.png" width="860">
-</p>
-
-The empty workspace shows a three-step guide:
-
-1. **Configure a model** — gear icon (bottom-right) → LLM → add your API key
-2. **Create a session** — “+ New Session” in the left sidebar
-3. **Start chatting** — type below, press <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
-
-### 4. Configure your LLM
-
-Open **Settings → LLM** and add a subscription:
-
-| Field | Example |
-|-------|---------|
-| Provider | `openai` (or `anthropic`, any OpenAI-compatible endpoint) |
-| Base URL | `https://api.deepseek.com/v1` (DeepSeek / Qwen / Ollama / vLLM …) |
-| API key | `sk-…` |
-| Model | `deepseek-chat`, `glm-5.3`, `gpt-5`, … |
-
-xbot uses a **subscription system** — create several (work Claude, personal
-DeepSeek) and switch per session from the model picker in the composer. Model
-tiers (**vanguard / balance / swift**) let SubAgents pick a cheaper model
-automatically.
 
 ## Web UI at a glance
 

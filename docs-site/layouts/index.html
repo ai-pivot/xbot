@@ -1,0 +1,88 @@
+{{/*
+  Landing page template — deliberately does NOT go through _default/baseof.html.
+
+  baseof wraps every page in GeekDoc's shell: `.wrapper` → `site-header`
+  (brand + search + theme toggle) → `<aside class="gdoc-nav">` (the docs
+  sidebar) → `.gdoc-page`. For a landing page that shell is pure chrome: the
+  hero ends up boxed inside a docs column with a navigation tree beside it.
+
+  Hugo renders the home page with `layouts/index.html` if present, and that
+  template is standalone — it only participates in the "baseof" chain when it
+  defines one. So we restate the <head> (reusing the theme's head partials, so
+  the compiled main.scss / main.js and our custom.css still load) and provide
+  a minimal, self-contained nav + footer.
+
+  Docs pages are untouched: they keep baseof, the header and the sidebar.
+*/}}
+<!DOCTYPE html>
+<html
+  lang="{{ .Site.Language.Lang }}"
+  class="color-toggle-hidden"
+  {{ if default false .Site.Params.geekdocDarkModeCode }}code-theme="dark"{{ end }}
+>
+  <head>
+    {{ partial "head/meta" . }}
+    <title>{{ .Site.Title }}{{ with .Site.Params.geekdocSubtitle }} — {{ . }}{{ end }}</title>
+    {{ partial "head/favicons" . }}
+    {{ partial "head/rel-me" . }}
+    {{ partial "head/microformats" . }}
+    {{ partial "head/others" . }}
+    {{ partial "head/custom" . }}
+  </head>
+
+  <body class="xb-page-landing" itemscope itemtype="https://schema.org/WebPage">
+    <a href="#xb-main" class="xb-skip">Skip to main content</a>
+
+    <header class="xb-nav">
+      <div class="xb-nav__inner">
+        <a class="xb-nav__brand" href="{{ .Site.Home.RelPermalink }}">
+          <svg class="xb-nav__logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z" />
+          </svg>
+          <span class="xb-nav__name">{{ .Site.Title }}</span>
+        </a>
+
+        <nav class="xb-nav__links" aria-label="Primary">
+          <a href="{{ "getting-started/" | relLangURL }}">{{ if eq .Site.Language.Lang "zh-cn" }}快速开始{{ else }}Get started{{ end }}</a>
+          <a href="{{ "installation/" | relLangURL }}">{{ if eq .Site.Language.Lang "zh-cn" }}安装{{ else }}Install{{ end }}</a>
+          <a href="https://github.com/ai-pivot/xbot" rel="noopener">GitHub</a>
+        </nav>
+
+        <div class="xb-nav__actions">
+          {{ partial "language" . }}
+          {{/* Keeps GeekDoc's id + colortheme.js wiring, but uses our own glyph so
+               the landing nav does not depend on the theme's icon sprite. */}}
+          <span
+            id="gdoc-color-theme"
+            class="xb-theme-toggle"
+            tabindex="0"
+            role="button"
+            aria-pressed="false"
+            title="{{ i18n "button_toggle_dark" }}"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="xb-theme-toggle__icon">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
+            </svg>
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <main id="xb-main" class="xb-main">
+      {{ .Content }}
+    </main>
+
+    <footer class="xb-footer">
+      <div class="xb-footer__inner">
+        <span>© {{ now.Year }} xbot</span>
+        <span class="xb-footer__links">
+          <a href="{{ "getting-started/" | relLangURL }}">{{ if eq .Site.Language.Lang "zh-cn" }}文档{{ else }}Docs{{ end }}</a>
+          <a href="https://github.com/ai-pivot/xbot" rel="noopener">GitHub</a>
+          <a href="https://github.com/ai-pivot/xbot/blob/master/LICENSE" rel="noopener">License</a>
+        </span>
+      </div>
+    </footer>
+
+    {{ partial "foot" . }}
+  </body>
+</html>

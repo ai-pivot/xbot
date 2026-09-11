@@ -22,7 +22,7 @@
 </p>
 
 <p align="center">
-  <img alt="xbot Web UI — 首次启动" src="docs-site/static/img/web/welcome.png" width="860">
+  <img alt="xbot Web UI — 真实会话：多轮对话、工具调用、逐迭代进度" src="docs-site/static/img/app/hero.png" width="860">
 </p>
 
 ---
@@ -90,30 +90,19 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ai-pivot/xbot/ma
 xbot-cli serve
 ```
 
-在 `~/.xbot/config.json` 中启用 Web 通道（安装脚本可以帮你做）：
+就这一步 —— 安装脚本已经开启了 web 通道。想让它开机自启？
+`xbot-cli serve --install-service`（或见 [安装指南](https://ai-pivot.github.io/xbot/zh-cn/installation/)）。
 
-```json
-{
-  "web": { "enable": true, "port": 8082 }
-}
-```
+### 3. 打开 Web 界面并完成配置
 
-### 3. 打开 Web UI
+浏览器访问 **http://localhost:8082**：
 
-浏览器访问 **http://localhost:8082**，点击 **Create account** ——
-第一个注册的账号即为操作员账号。
+1. **创建账号** —— 新装机的**第一个注册无需邀请码**，它就是管理员账号。
+2. **配置 LLM** —— 右下角齿轮 → **LLM** → 添加订阅：供应商、**Base URL**
+   （形如 `https://…/v1`）、API Key，然后刷新并选择模型。
+3. **开始聊天** —— 左侧「+ New Session」建会话，在下方输入框说话。
 
-<p align="center">
-  <img alt="首次启动 —— 新用户引导" src="docs-site/static/img/web/welcome.png" width="860">
-</p>
-
-空工作区会显示三步引导：
-
-1. **配置模型** —— 点击右下角齿轮 → LLM，填入 API Key
-2. **新建会话** —— 点击左侧「+ New Session」
-3. **开始对话** —— 在下方输入并按下 <kbd>Ctrl</kbd>+<kbd>Enter</kbd>
-
-### 4. 配置模型
+配置模型
 
 打开 **设置 → LLM**，添加一个订阅：
 

@@ -50,13 +50,19 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
   const [info, setInfo] = useState<SessionContextState>(() => emptyInfo(key, Boolean(chatID)))
   const loadSeq = useRef(0)
 
+  // `connected` read via ref — NOT a useCallback dep (same fix as
+  // useLLMSettings: a flapping SSE connection rebuilt `load` → the effect
+  // re-ran → 1 RPC per flap, escalating into the observed storm).
+  const connectedRef = useRef(connected)
+  connectedRef.current = connected
+
   const load = useCallback(async () => {
     const seq = ++loadSeq.current
     if (!chatID) {
       setInfo(emptyInfo('', false))
       return
     }
-    if (!connected) {
+    if (!connectedRef.current) {
       setInfo((previous) => previous.key === key
         ? { ...previous, loading: false }
         : emptyInfo(key, false))
@@ -100,7 +106,7 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
         error: error instanceof Error ? error.message : String(error),
       }))
     }
-  }, [ws, channel, chatID, key, connected])
+  }, [ws, channel, chatID, key])
 
   useEffect(() => {
     void load()
@@ -108,6 +114,16 @@ export function useSessionContext(channel: string, chatID: string | null): Sessi
       loadSeq.current += 1
     }
   }, [load])
+
+  // Reconnect edge (false → true): reload once.
+  const prevConnectedRef = useRef(connected)
+  useEffect(() => {
+    const was = prevConnectedRef.current
+    prevConnectedRef.current = connected
+    if (!was && connected) {
+      void load()
+    }
+  }, [connected, load])
 
   const visibleInfo = info.key === key ? info : emptyInfo(key, Boolean(chatID && ws.connected))
   const { key: _key, ...result } = visibleInfo
