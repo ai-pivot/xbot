@@ -24,6 +24,18 @@
     .\install.ps1 -Channel nightly
 .EXAMPLE
     .\install.ps1 -Mode server-client -Port 9090
+.NOTES
+    AI AGENTS — canonical executable install guide (prerequisites, exact
+    assertions for every step, headless LLM configuration, troubleshooting):
+      https://ai-pivot.github.io/xbot/agent-install/
+      https://github.com/ai-pivot/xbot/blob/master/docs/agent/install.md
+
+    The three facts that trip agents up most:
+      1. `xbot-cli setup --check` is the ONLY completeness criterion (exit 0 =
+         complete, exit 1 = pieces missing -> re-run `xbot-cli setup`).
+      2. LLM settings live in the DATABASE (user_llm_subscriptions), not in
+         config.json — editing config.json after install does nothing.
+      3. This script is idempotent: re-running preserves existing config values.
 #>
 
 param(
@@ -753,6 +765,15 @@ if ($selectedMode -eq "server-client") {
 Write-Host ""
 Write-Host "  Project:  https://github.com/$REPO" -ForegroundColor DarkGray
 Write-Host "  License:  MIT" -ForegroundColor DarkGray
+Write-Host ""
+# Next steps + agent hand-off (printed so it also reaches callers that piped
+# the script straight into iex — they never see the header comments).
+Write-Host "  Next steps" -ForegroundColor Cyan
+Write-Host "    xbot-cli setup --check             # completeness check: exit 0 = OK (the only criterion)" -ForegroundColor DarkGray
+Write-Host "    xbot-cli serve                     # start the web UI -> http://localhost:$selectedPort" -ForegroundColor DarkGray
+Write-Host "    LLM settings live in the DATABASE (not config.json): web UI -> gear -> LLM" -ForegroundColor DarkGray
+Write-Host "    Full executable guide (assertions + troubleshooting):" -ForegroundColor DarkGray
+Write-Host "      https://ai-pivot.github.io/xbot/agent-install/" -ForegroundColor DarkGray
 Write-Host ""
 
 } catch {

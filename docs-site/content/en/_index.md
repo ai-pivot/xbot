@@ -141,6 +141,10 @@ Behind the GFW: <code>curl -fsSL https://ghfast.top/https://raw.githubuserconten
 Then open <code>http://localhost:8082</code> → create an account → gear icon → LLM → base URL / API key / pick a model → chat.
 Optional flags (the defaults are usually what you want) and every config key → <a href="/installation/">Install &amp; configure</a>.
 </p>
+<p class="xb-section-sub">
+Executable install guide for AI agents (assertable steps, headless LLM setup, troubleshooting) → <a href="/agent-install/">Agent install guide</a>.
+The installer prints that URL as its final output, so an agent given the prompt above knows what to read next.
+</p>
 
 <h2 class="xb-section-title">Architecture</h2>
 <p class="xb-section-sub">The backend is a pure RPC client interface (zero business logic); the transport layer does the real work.</p>

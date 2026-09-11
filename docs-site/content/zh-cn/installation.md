@@ -43,6 +43,15 @@ xbot-cli serve          # 打开 http://localhost:8082
 任何一步失败，读下面「排错」一节，不要跳过自检直接说装好了。
 ```
 
+**Agent 自己来读的话**，有一份专门给 agent 的可执行手册（每步都能断言、含无头配 LLM 与排错表）：
+
+{{< hint type=tip >}}
+[**Agent 安装手册（可执行版）**](/zh-cn/agent-install/) —— `https://ai-pivot.github.io/xbot/zh-cn/agent-install/`
+{{< /hint >}}
+
+`install.sh` 的头部注释里也有同样的指引；脚本跑完会在最后打印这份文档的地址，
+所以「把上面那段发给 agent」的流程里，agent 自然能看到下一步该读什么。
+
 Agent 侧要点：
 
 - `install.sh` **幂等**，重跑不会破坏已有配置（已有值一律保留）。

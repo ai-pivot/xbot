@@ -4,10 +4,34 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/install.sh | bash
 #
+# ═══════════════════════════════════════════════════════════════════════════
+# AI AGENTS — READ THIS
+# ═══════════════════════════════════════════════════════════════════════════
+# Canonical executable install guide (prerequisites, exact assertions for every
+# step, headless LLM configuration, troubleshooting table):
+#
+#   https://ai-pivot.github.io/xbot/installation/     (human)
+#   https://ai-pivot.github.io/xbot/agent-install/    (agent, executable)
+#   https://github.com/ai-pivot/xbot/blob/master/docs/agent/install.md
+#
+# The three facts that trip agents up most:
+#
+#   1. `xbot-cli setup --check` is the ONLY completeness criterion. Exit 0 =
+#      complete (prints "all good"); exit 1 = pieces missing -> re-run
+#      `xbot-cli setup`. Do not report success without it.
+#   2. LLM settings live in the DATABASE (user_llm_subscriptions), not in
+#      config.json. The `llm` block in config.json is only the first-boot seed,
+#      so editing config.json after install does NOT change runtime behaviour.
+#      Configure via the web UI (gear -> LLM) or see the guide's "4b" section.
+#   3. The systemd unit installed by MODE=server-client is `xbot-server`
+#      (NOT `xbot`): `systemctl --user status xbot-server`.
+#
+# This script is idempotent: re-running preserves existing config values.
+# ═══════════════════════════════════════════════════════════════════════════
+#
 # Does everything in one pass: downloads the binary, writes config.json, and
 # runs `xbot-cli setup` (Web UI + all built-in plugins + channel activation),
-# with the web channel enabled. Idempotent — re-running preserves existing
-# settings.
+# with the web channel enabled.
 #
 # Optional environment variables — there are exactly five. Everything else
 # (LLM subscriptions, channels, sandbox, memory, hooks, logging) is runtime
@@ -740,6 +764,19 @@ main() {
     if ! command -v "$BINARY" >/dev/null 2>&1; then
         warn "${INSTALL_PATH} 还未在 PATH 里 —— 执行 source ~/.bashrc 或重开终端"
     fi
+
+    # Next steps + agent hand-off. Printed AFTER the run so it also reaches
+    # callers that piped the script straight into bash (they never see the
+    # header comments). An agent following the one-liner on the landing page
+    # needs: the completeness check, where LLM settings actually live, and the
+    # executable guide.
+    echo ""
+    echo "  下一步 / next steps"
+    echo "    ${BINARY} setup --check          # 完整性自检，退出码 0 = OK（唯一判据）"
+    echo "    ${BINARY} serve                  # 启动 Web UI → http://localhost:${PORT}"
+    echo "    LLM 配置存在数据库里（不是 config.json）：Web → 齿轮 → LLM"
+    echo "    完整可执行指南（含每步断言与排错）:"
+    echo "      https://ai-pivot.github.io/xbot/agent-install/"
     echo ""
 }
 
