@@ -1393,11 +1393,13 @@ func truncateErrMsg(msg string) string {
 //
 // Input resolution happens exactly once, here:
 //   - tier name → resolveTierModel (tier values are always "subID|model")
-//   - bare model name → ResolveSubscriptionForModel (the single input resolver)
+//   - explicit pair "subID|model" → used directly
+//   - ⛔ bare model name → NOT resolvable (logged as an error; the caller must
+//     pass the subscription id with the model — see the hard rule in AGENTS.md)
 //
-// There are NO "any subscription + arbitrary model name" hard-tries: a model
-// without an owning subscription falls back to the deployment default with a
-// warning (usedCustom=false).
+// There are NO "any subscription + arbitrary model name" hard-tries and no
+// name-based owner lookup: a model without an explicit subscription falls back
+// to the session/deployment default (usedCustom=false).
 func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, string, int, string, int, bool) {
 	subID, resolvedModel, fromTier := f.resolveTierModel(senderID, targetModel)
 
