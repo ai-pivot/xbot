@@ -78,6 +78,24 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || error "Missing required command: $1"
 }
 
+# binary_has_setup — true when the installed binary supports `xbot-cli setup`.
+#
+# Single source of truth for the capability probe; it used to be duplicated
+# (main()'s nightly-retry + run_setup()) and only one copy got the here-string
+# fix, which left `install.sh` on the default stable channel silently retrying
+# into nightly for a release that DID have setup.
+#
+# Two traps, both already hit:
+#   1. `setup -h` exits non-zero on some paths — `|| true` guards `set -e`.
+#   2. NEVER pipe into grep: the script runs with `set -o pipefail`, so
+#      `setup -h | grep -q …` inherits setup's exit status and reports failure
+#      even when grep matched. A here-string has no pipeline to poison.
+binary_has_setup() {
+    local out
+    out="$("${INSTALL_PATH}/${BINARY}" setup -h 2>/dev/null)" || true
+    grep -q "Usage: xbot-cli setup" <<< "$out"
+}
+
 # Proxy a GitHub URL through the configured CDN mirror (if any).
 # Usage: gh_url "https://github.com/ai-pivot/xbot/releases/download/v1.0/file"
 # If GH_MIRROR is set, returns "https://${GH_MIRROR}/https://github.com/..."
@@ -433,21 +451,12 @@ download_web_dist() {
 # does NOT abort the install (old releases lack plugin tarballs → exit 3).
 run_setup() {
     local version="$1"
-    # Capability probe: the `setup` subcommand only exists in releases that
-    # ship it. On an older binary, `setup ...` would be parsed as a PROMPT and
-    # run the agent non-interactively (panic in the worst case — CI caught
-    # exactly that with the v0.0.23 binary). Probe with `setup -h`: both old
-    # and new binaries print help text and exit 0, but only the new one prints
-    # the setup-specific usage line. Never invoke a subcommand blindly.
-    # Probe with `setup -h`. IMPORTANT: use a here-string, NOT a pipe.
-    # The script runs with `set -o pipefail`, and `setup -h` exits with code 1
-    # (Go cobra's help-flag convention). With pipefail, the pipeline
-    # `setup -h | grep -q` inherits setup's exit code (1) even when grep
-    # matches — the probe would ALWAYS fail regardless of binary version.
-    # A here-string avoids the pipe entirely; `|| true` guards `set -e`.
-    local setup_probe
-    setup_probe="$("${INSTALL_PATH}/${BINARY}" setup -h 2>/dev/null)" || true
-    if ! grep -q "Usage: xbot-cli setup" <<< "$setup_probe"; then
+    # Capability probe (binary_has_setup): the `setup` subcommand only exists
+    # in releases that ship it. On an older binary, `setup ...` would be parsed
+    # as a PROMPT and run the agent non-interactively (panic in the worst case
+    # — CI caught exactly that with the v0.0.23 binary). Never invoke a
+    # subcommand blindly.
+    if ! binary_has_setup; then
         warn "Installed binary does not support the setup subcommand (pre-setup release)."
         warn "Falling back to legacy Web UI download; built-in plugins are not available for this release."
         download_web_dist "$version" "${XBOT_HOME}/web/dist"
@@ -714,12 +723,11 @@ main() {
     # built-in plugins would silently never appear — an agent following the
     # published one-liner would end up with an incomplete install.
     #
-    # Probe `setup -h` (both old and new binaries exit 0, but only a binary
-    # that HAS the subcommand prints its usage line — never invoke blindly) and,
-    # when it is missing, retry once on nightly: nightly always carries the
-    # newest build, so `setup` (and therefore the plugins) exists there.
+    # When the subcommand is missing, retry once on nightly: nightly always
+    # carries the newest build, so `setup` (and therefore the plugins) exists
+    # there. The probe lives in binary_has_setup().
     if [ "${INSTALL_LOCAL_BINARY:-}" != "1" ] && [ "$CHANNEL" != "nightly" ] \
-        && ! "${INSTALL_PATH}/${BINARY}" setup -h 2>/dev/null | grep -q "Usage: xbot-cli setup"; then
+        && ! binary_has_setup; then
         warn "Channel '${CHANNEL}' resolved to ${VERSION}, which predates 'xbot-cli setup'."
         warn "  Installing it would give you the Web UI WITHOUT the built-in plugins."
         warn "Retrying with the nightly channel (latest builds include 'setup')..."
