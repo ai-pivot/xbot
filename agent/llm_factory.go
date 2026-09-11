@@ -1395,12 +1395,32 @@ func (f *LLMFactory) refreshModelEntriesCore(subs []*sqlite.LLMSubscription) []R
 				r.Status = "noloader"
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer cancel()
-			if err := loader.LoadModelsFromAPI(ctx); err != nil {
+			// Retry the /models fetch with the SAME policy as every other LLM
+			// request: llm.IsRetryableError + exponential backoff. Without it a
+			// transient blip (gateway hiccup, brief 5xx) silently left the model
+			// list unrefreshed, with no recourse but to hit refresh again.
+			// Bounded to 3 attempts with short delays because the UI panel is
+			// waiting on this.
+			const modelsFetchAttempts = 3
+			var fetchErr error
+			for attempt := 0; attempt < modelsFetchAttempts; attempt++ {
+				if attempt > 0 {
+					time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second) // 1s, 2s
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				fetchErr = loader.LoadModelsFromAPI(ctx)
+				cancel()
+				if fetchErr == nil {
+					break
+				}
+				if !llm.IsRetryableError(fetchErr) {
+					break // 用户取消 / 输入超长等确定性失败，重试无意义
+				}
+			}
+			if fetchErr != nil {
 				r.Status = "fail"
-				r.Error = truncateErrMsg(err.Error())
-				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
+				r.Error = truncateErrMsg(fetchErr.Error())
+				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": fetchErr.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
 				return
 			}
 			r.Status = "ok"
