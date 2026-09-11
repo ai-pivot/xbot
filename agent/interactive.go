@@ -1182,9 +1182,14 @@ func (a *Agent) SpawnInteractiveSession(
 				if out.Error != nil {
 					content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
 				}
-				if len(content) > 2000 {
-					content = content[:2000] + "... [truncated, use inspect for details]"
-				}
+				// Do NOT truncate here. This content is stored on the task AND
+				// sent as the completion notification, and the notification path
+				// runs it through OffloadStore.MaybeOffload — which swaps an
+				// oversized payload for an `📂 [offload:id] … Use
+				// offload_recall(id=…) to retrieve the full content.` marker.
+				// Pre-truncating (it used to cut at 2000 bytes with a vague
+				// "use inspect for details") meant the tail never reached disk,
+				// so offload_recall could not recover it at all.
 				// Close the waitable task so task_wait unblocks with the result.
 				if bgTask != nil {
 					status := tools.BgTaskDone

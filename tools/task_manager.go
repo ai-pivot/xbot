@@ -703,7 +703,13 @@ func (m *BackgroundTaskManager) CloseSubAgentTask(id string, status BgTaskStatus
 	task.Status = status
 	task.FinishedAt = &now
 	if content != "" {
-		task.Content = truncateSubAgentOutput(content)
+		// Store the FULL completion content. It used to be capped at 2000 bytes
+		// here, which (a) silently discarded the tail — nothing else kept it, so
+		// the result was unrecoverable — and (b) made the 500-char preview in
+		// formatSubAgentTask show the tail of a truncated prefix rather than the
+		// tail of the actual reply. Display-side truncation (with an explicit
+		// "here is how to get the rest" hint) is the right place to bound size.
+		task.Content = content
 	}
 	close(task.done)
 }
@@ -756,15 +762,6 @@ func (m *BackgroundTaskManager) ListSubAgentTasks() []*SubAgentTask {
 		}
 	}
 	return out
-}
-
-// truncateSubAgentOutput caps the stored sub-agent completion content.
-func truncateSubAgentOutput(s string) string {
-	const maxSubAgentOutput = 2000
-	if len(s) <= maxSubAgentOutput {
-		return s
-	}
-	return s[:maxSubAgentOutput] + "\n… (truncated)"
 }
 
 // List returns all tasks for a session.
