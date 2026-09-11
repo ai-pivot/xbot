@@ -267,7 +267,7 @@ func formatTask(task *BackgroundTask) string {
 	// cut mid-rune for CJK/multibyte content, producing invalid UTF-8).
 	preview := task.CurrentOutput()
 	if len(preview) > 500 {
-		preview = truncateTailPreview(preview, 500)
+		preview = TruncateTailPreview(preview, 500)
 	}
 	if preview != "" {
 		fmt.Fprintf(&sb, "Output Preview:\n%s\n", preview)
@@ -305,7 +305,7 @@ func formatSubAgentTask(task *SubAgentTask) string {
 	if task.Content != "" {
 		preview := task.Content
 		if len(preview) > 500 {
-			preview = truncateTailPreview(preview, 500)
+			preview = TruncateTailPreview(preview, 500)
 			// The model only sees this preview. Point it at the places that
 			// actually hold the full text: the completion notification (which
 			// offloads oversized payloads and then carries an
@@ -321,11 +321,11 @@ func formatSubAgentTask(task *SubAgentTask) string {
 	return sb.String()
 }
 
-// truncateTailPreview keeps the TAIL of s (up to maxBytes bytes) with a
+// TruncateTailPreview keeps the TAIL of s (up to maxBytes bytes) with a
 // "... " prefix, adjusting the cut to a UTF-8 rune boundary so CJK/multibyte
 // characters are never sliced mid-rune (invalid UTF-8). Inputs shorter than
 // maxBytes are returned unchanged.
-func truncateTailPreview(s string, maxBytes int) string {
+func TruncateTailPreview(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
@@ -337,7 +337,7 @@ func truncateTailPreview(s string, maxBytes int) string {
 	return "... " + tail
 }
 
-// truncateHeadPreview keeps the HEAD of s (up to maxBytes bytes) with a " ..."
+// TruncateHeadPreview keeps the HEAD of s (up to maxBytes bytes) with a " ..."
 // suffix, adjusting the cut to a UTF-8 rune boundary so CJK/multibyte content
 // is never sliced mid-rune. Inputs shorter than maxBytes are returned
 // unchanged.
@@ -345,7 +345,7 @@ func truncateTailPreview(s string, maxBytes int) string {
 // Use this (not a bare `s[:n]`) whenever a truncated string reaches the model:
 // a raw byte slice can hand the LLM invalid UTF-8, and it silently drops the
 // tail with no way to recover it.
-func truncateHeadPreview(s string, maxBytes int) string {
+func TruncateHeadPreview(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
@@ -397,9 +397,9 @@ func FormatBgTaskCompletion(task *BackgroundTask, outputOverride string) string 
 			// Truncate large output to avoid bloating context.
 			const maxOutputLen = 2000
 			if len(output) > maxOutputLen {
-				// truncateHeadPreview is rune-safe (a raw output[:n] can slice
+				// TruncateHeadPreview is rune-safe (a raw output[:n] can slice
 				// CJK mid-rune and hand the model invalid UTF-8).
-				fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), truncateHeadPreview(output, maxOutputLen), task.ID)
+				fmt.Fprintf(&sb, "\nOutput (truncated, %d/%d chars):\n%s\n... [use task_read with task_id=%q for full output]", maxOutputLen, len(output), TruncateHeadPreview(output, maxOutputLen), task.ID)
 			} else {
 				fmt.Fprintf(&sb, "\nOutput:\n%s", output)
 			}

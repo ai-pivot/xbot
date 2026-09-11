@@ -13,6 +13,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // LLMFactory 管理用户自定义 LLM 客户端的创建和缓存。
@@ -1414,12 +1415,13 @@ func (f *LLMFactory) refreshModelEntriesCore(subs []*sqlite.LLMSubscription) []R
 
 // truncateErrMsg shortens an error message for user-facing display. Long SDK
 // errors (HTTP body dumps, stack traces) would flood the chat output.
+// Rune-safe: error bodies routinely contain CJK/UTF-8 text.
 func truncateErrMsg(msg string) string {
 	const max = 120
 	if len(msg) <= max {
 		return msg
 	}
-	return msg[:max] + "..."
+	return tools.TruncateHeadPreview(msg, max)
 }
 
 // GetLLMForModel returns (client, subID, model, maxContext, thinkingMode,

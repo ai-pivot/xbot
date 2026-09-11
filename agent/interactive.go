@@ -1079,7 +1079,8 @@ func (a *Agent) SpawnInteractiveSession(
 				if snap.Content != "" {
 					thinking := snap.Content
 					if len(thinking) > 200 {
-						thinking = thinking[len(thinking)-200:]
+						// Rune-safe tail (CJK content is 3 bytes/char).
+						thinking = "..." + tools.TruncateTailPreview(thinking, 197)
 					}
 					fmt.Fprintf(&sb, "Content: %s\n", thinking)
 				}
@@ -1247,9 +1248,12 @@ func (a *Agent) SpawnInteractiveSession(
 							content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
 						}
 						content = "[interrupted] " + content
-						if len(content) > 2000 {
-							content = content[:2000] + "... [truncated, use inspect for details]"
-						}
+						// No pre-truncation: this becomes the sub-agent
+						// completion notification, which flows through
+						// OffloadStore.MaybeOffload and gets a working
+						// `offload_recall(id=…)` marker when oversized. Cutting
+						// here (byte slice, vague hint) destroyed the tail before
+						// it could ever reach disk.
 						// Close the waitable task (interrupt = done with error content).
 						if bgTask != nil {
 							notifyMgr.CloseSubAgentTask(bgTask.ID, tools.BgTaskDone, content)
@@ -2046,9 +2050,9 @@ func (a *Agent) SendToInteractiveSession(
 					} else {
 						content += "Agent was interrupted."
 					}
-					if len(content) > 2000 {
-						content = content[:2000] + "... [truncated, use inspect for details]"
-					}
+					// No pre-truncation — see the SpawnInteractiveSession note:
+					// the notification path offloads oversized payloads and
+					// attaches a working offload_recall(id=…) marker.
 					sessionKey := originChannel + ":" + originChatID
 					a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
 						Key:      sessionKey,
@@ -2093,9 +2097,8 @@ func (a *Agent) SendToInteractiveSession(
 			if out.Error != nil {
 				content = fmt.Sprintf("Error: %v\n%s", out.Error, out.Content)
 			}
-			if len(content) > 2000 {
-				content = content[:2000] + "... [truncated, use inspect for details]"
-			}
+			// No pre-truncation: oversized payloads are offloaded downstream
+			// (with an offload_recall marker) instead of losing their tail here.
 			sessionKey := originChannel + ":" + originChatID
 			a.bgTaskMgr.Load().SendSubAgentNotify(&tools.SubAgentBgNotify{
 				Key:      sessionKey,
@@ -2313,8 +2316,10 @@ func (a *Agent) InspectInteractiveSession(
 	}
 
 	var sb strings.Builder
-
-	// ── 1. Header ──
+	// Tracks whether any section had to be shortened, so the dump can end with
+	// one actionable "here is how to see more" line instead of leaving the
+	// model with a silently clipped view.
+	truncated := false
 	status := "idle"
 	if ia.running {
 		status = "running"
@@ -2359,9 +2364,12 @@ func (a *Agent) InspectInteractiveSession(
 		for _, msg := range ia.messages[msgStart:] {
 			role := msg.Role
 			content := msg.Content
-			// Truncate very long individual messages but keep enough context
+			// Truncate very long individual messages but keep enough context.
+			// Rune-safe: a raw content[:2000] can slice CJK mid-character and
+			// hand the model invalid UTF-8.
 			if len(content) > 2000 {
-				content = content[:2000] + "... (truncated)"
+				content = tools.TruncateHeadPreview(content, 2000)
+				truncated = true
 			}
 			// Skip empty content (e.g. assistant messages with only tool_calls)
 			if strings.TrimSpace(content) == "" {
@@ -2390,27 +2398,28 @@ func (a *Agent) InspectInteractiveSession(
 			if snap.Content != "" {
 				thinking := snap.Content
 				if len(thinking) > 300 {
-					thinking = thinking[len(thinking)-300:]
-					thinking = "..." + thinking
+					thinking = "..." + tools.TruncateTailPreview(thinking, 297)
+					truncated = true
 				}
 				fmt.Fprintf(&sb, "Content: %s\n", thinking)
 			}
 			if snap.Reasoning != "" {
 				reasoning := snap.Reasoning
 				if len(reasoning) > 300 {
-					reasoning = reasoning[len(reasoning)-300:]
-					reasoning = "..." + reasoning
+					reasoning = "..." + tools.TruncateTailPreview(reasoning, 297)
+					truncated = true
 				}
 				fmt.Fprintf(&sb, "Reasoning: %s\n", reasoning)
 			}
 			for _, t := range snap.Tools {
 				summary := t.Summary
 				if len(summary) > 200 {
-					summary = summary[:200] + "..."
+					summary = tools.TruncateHeadPreview(summary, 200)
+					truncated = true
 				}
 				label := t.Label
 				if len(label) > 60 {
-					label = label[:57] + "..."
+					label = tools.TruncateHeadPreview(label, 60)
 				}
 				fmt.Fprintf(&sb, "- Tool: %s", t.Name)
 				if label != "" {
@@ -2428,6 +2437,19 @@ func (a *Agent) InspectInteractiveSession(
 	// ── 5. Last Error ──
 	if ia.lastError != "" {
 		fmt.Fprintf(&sb, "\n### Last Error:\n%s\n", ia.lastError)
+	}
+
+	// ── 6. Truncation notice ──
+	// The dump is a bounded view; if anything above was shortened, say so and
+	// give the concrete way to see more. Without this the model treats the
+	// clipped text as the complete session (the sub-agent result it was asked
+	// to inspect).
+	if truncated {
+		fmt.Fprintf(&sb,
+			"\n---\n⚠️ This view is truncated (individual messages capped at 2000 bytes, iterations at 300, tool summaries at 200). "+
+				"For more: re-run SubAgent(action=\"inspect\", role=%q, instance=%q, tail=%d) with a larger tail, "+
+				"or call offload_recall(id=…) if the completion notification carried an 📂 [offload:…] marker.\n",
+			roleName, instance, tailCount*4)
 	}
 
 	return sb.String(), nil

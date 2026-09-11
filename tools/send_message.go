@@ -424,12 +424,14 @@ func parseAddress(addr string) (channelName, chatID string) {
 	return addr, ""
 }
 
-// truncateMsg limits a string to n chars with "..." suffix.
+// truncateMsg limits a string to n bytes with a " ..." suffix, cutting on a
+// UTF-8 rune boundary (message content is routinely CJK — a raw s[:n] would
+// hand the model invalid UTF-8).
 func truncateMsg(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return TruncateHeadPreview(s, n)
 }
 
 // sendMessageWithCtx sends a message via MessageSender, using MessageSenderCtx
