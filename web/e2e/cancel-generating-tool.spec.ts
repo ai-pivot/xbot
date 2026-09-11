@@ -161,12 +161,7 @@ test.describe('Cancel clears generating tool', () => {
     await page.waitForTimeout(500)
 
     // ── Verify: generating tool should disappear (not real content) ──
-    // committed 行按偏好折叠（unmountOnClose）—— 强制展开后验证内容保留。
-    const foldBtn = page.locator('[data-role="assistant"] button:has-text("Processed")').first()
-    if (await foldBtn.count() > 0) {
-      await foldBtn.click({ force: true })
-      await page.waitForTimeout(500)
-    }
+    // 每个 iteration 独立渲染（无折叠）—— 内容直接可见。
     const result = await page.evaluate(() => {
       const body = document.body.textContent || ''
       return {

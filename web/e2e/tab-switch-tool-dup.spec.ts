@@ -151,18 +151,18 @@ test.describe('Tab switch: same tool must not render generating + running', () =
     await page.waitForTimeout(1000)
 
     // ── Verify: task_wait 只渲染一次 ──
-    // DOM 断言：tool-pill 里 aria-label 含 task_wait 的元素数（修复前 = 2：
+    // DOM 断言：工具卡片里文本含 task_wait 的元素数（修复前 = 2：
     // 一个裸名 generating + 一个带参数 running；修复后 = 1）。
-    const pillCount = await page.evaluate(() => {
-      const pills = Array.from(document.querySelectorAll('[data-testid="tool-pill"]'))
-      return pills.filter((p) => (p.textContent ?? '').includes('task_wait')).length
+    const cardCount = await page.evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('[data-testid="tool-card"]'))
+      return cards.filter((p) => (p.textContent ?? '').includes('task_wait')).length
     })
-    expect(pillCount).toBe(1)
+    expect(cardCount).toBe(1)
 
     // 且该 pill 是 running（带参数 label）而非裸名 generating。
     const runningVisible = await page.evaluate(() => {
-      const pills = Array.from(document.querySelectorAll('[data-testid="tool-pill"]'))
-      const tw = pills.find((p) => (p.textContent ?? '').includes('task_wait'))
+      const cards = Array.from(document.querySelectorAll('[data-testid="tool-card"]'))
+      const tw = cards.find((p) => (p.textContent ?? '').includes('task_wait'))
       return tw ? (tw.textContent ?? '').includes('5352cf55') : false
     })
     expect(runningVisible).toBe(true)

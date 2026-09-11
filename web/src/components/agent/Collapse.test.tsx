@@ -174,10 +174,12 @@ describe('ToolGroup', () => {
   })
 
   it('shows the tool name and elapsed time', () => {
-    renderWithProviders(
+    const { container } = renderWithProviders(
       <ToolGroup tools={[makeTool({ name: 'Shell', label: 'Shell: ls', elapsedMs: 1500 })]} />,
     )
-    expect(screen.getAllByText('Shell').length).toBeGreaterThan(0)
+    // Header carries name + short param (same info the old pill showed).
+    expect(container.textContent).toContain('Shell')
+    expect(container.textContent).toContain('ls')
     expect(screen.getByText('1.5s')).toBeInTheDocument()
   })
 
