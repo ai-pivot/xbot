@@ -16,28 +16,50 @@ import { Brain } from 'lucide-react'
 
 
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
+import { getReasoningOpen, reasoningKey, setReasoningOpen } from './reasoningOpenState'
 
 interface ThinkingLineProps {
   /** brain 图标后的文本（耗时秒数 / 字数 / SweepText 流式态）。 */
   label: ReactNode
   children: ReactNode
   defaultOpen?: boolean
+  /**
+   * 展开态共享键（`turnID:iteration`，用 `reasoningKey()` 构造）—— live 与
+   * committed 两种形态读写同一份状态：形态切换必然 remount（LiveIteration →
+   * IterationGroup），共享键让新实例恢复用户此前的展开选择，不再"commit 时自动
+   * 收起"（2026-09-12 用户报告）。
+   */
+  stateKey?: string
 }
 
 /**
  * ⚠️ memo：TurnBody/LiveIteration 每帧都会重渲染（liveProgress 引用每帧变化），
  * 每个迭代一个 ThinkingLine —— 没有 memo 时每个流式帧都会重渲染全部迭代的
  * Brain 图标 + <button>（trace 实测 lucide 4.0% + button/Slot 4.5%）。
- * props = {label, children, defaultOpen}，label 是字符串/元素（引用稳定即可命中）。
+ * props = {label, children, defaultOpen, stateKey}，label 是字符串/元素
+ *（引用稳定即可命中），stateKey 是稳定字符串。
  */
-export const ThinkingLine = memo(function ThinkingLine({ label, children, defaultOpen = false }: ThinkingLineProps) {
-  const [open, setOpen] = useState(defaultOpen)
+export const ThinkingLine = memo(function ThinkingLine({
+  label,
+  children,
+  defaultOpen = false,
+  stateKey,
+}: ThinkingLineProps) {
+  // remount（live → committed）时从共享存储恢复展开态：用户展开的思考块不自动收起。
+  const [open, setOpen] = useState(() =>
+    stateKey ? (getReasoningOpen(stateKey) ?? defaultOpen) : defaultOpen,
+  )
   return (
     <div>
       {/* 点击热区仅收缩到图标+文字内容宽度（w-fit）——不占满整行，点行内空白不触发展开 */}
       <button
         type="button"
-        onClick={() => setOpen(!open)}
+        data-testid="thinking-line"
+        onClick={() => {
+          const next = !open
+          setOpen(next)
+          if (stateKey) setReasoningOpen(stateKey, next)
+        }}
         className="flex w-fit max-w-full items-center gap-1 rounded-lg px-1 py-0.5 text-left text-[10px]"
         style={{ color: 'var(--text-muted)' }}
       >
@@ -56,3 +78,8 @@ export const ThinkingLine = memo(function ThinkingLine({ label, children, defaul
     </div>
   )
 })
+
+/** committed 迭代的思考块 stateKey（IterationGroup 用；与 live 侧同构）。 */
+export function iterationReasoningKey(turnID: number | undefined, iteration: number | undefined): string {
+  return reasoningKey(turnID, iteration ?? 0)
+}

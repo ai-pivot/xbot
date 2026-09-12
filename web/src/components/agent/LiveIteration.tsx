@@ -1,7 +1,7 @@
 /**
  * LiveIteration — renders the in-flight iteration from a ProgressSnapshot.
  *
- * Streaming T (reasoning): FoldedLine wrapping ReasoningBlock with streaming
+ * Streaming T (reasoning): ThinkingLine wrapping ReasoningBlock with streaming
  *   indicator. Falls back to lastReasoning when streamContent is empty.
  * Streaming O (text): MarkdownRenderer with a streaming cursor indicator.
  * Streaming C (tools): FoldedToolGroup with merged streaming/active/completed
@@ -12,6 +12,7 @@
 import { memo, useEffect, useMemo } from 'react'
 
 import { ThinkingLine } from './ThinkingLine'
+import { reasoningKey } from './reasoningOpenState'
 import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
@@ -199,6 +200,7 @@ export const LiveIteration = memo(function LiveIteration({
       {/* Streaming T — typewriter reveal + character count */}
       {hasReasoning && (
         <ThinkingLine
+          stateKey={reasoningKey(progress.turnID, progress.iteration)}
           label={reasoningInProgress
             ? <SweepText
                 text={t('agent.thinkingLive', { count: reasoningCount })}

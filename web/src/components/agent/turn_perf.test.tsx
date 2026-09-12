@@ -132,9 +132,11 @@ describe('REPRO Trace-20260912T100816 — 流式帧不得重渲染已提交迭�
     const small = measure(20)
     const big = measure(200)
 
-    // 首帧必须渲染全部已提交迭代（每个迭代一个 IterationGroup → 其工具组一次）
-    expect(small.initial).toBe(20)
-    expect(big.initial).toBe(200)
+    // 首帧必须渲染全部已提交迭代（每个迭代：思考块 ThinkingLine + 工具组
+    // FoldedToolGroup 各一次 → 计数 2n）。思考块自 2026-09-12 起与流式态同组件
+    // （brain 图标 ThinkingLine），故计数回到 2n。
+    expect(small.initial).toBe(20 * 2)
+    expect(big.initial).toBe(200 * 2)
 
     // 流式帧：不重渲染已提交迭代（修复前 = 每帧 n 次 → 代价 ∝ turn 长度）
     expect(small.perFrame).toBe(0)

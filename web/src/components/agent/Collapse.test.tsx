@@ -1,16 +1,16 @@
 /**
  * Tests for the collapsible intermediate-process components (Spec 4 §3.3).
  *
- * Tests the new folding model: FoldedLine (borderless ▸/▾), FoldedToolGroup
+ * Tests the tool-group model: FoldedToolGroup（pill 行）与 IterationGroup 的逐迭代渲染
+ *（旧 FoldedLine ▸/▾ 折叠行已删除；思考块统一走 ThinkingLine —— 见 ThinkingLine.test.tsx）
  * (consecutive tool merging), IterationGroup (T→C→O order), and the content
  * renderers ToolCallBlock and ReasoningBlock.
  */
 import { describe, expect, it } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import {screen, fireEvent, within} from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { FoldedLine } from '@/components/agent/FoldedLine'
 import { FoldedToolGroup } from '@/components/agent/FoldedToolGroup'
 import { IterationGroup } from '@/components/agent/IterationHistory'
 import { ReasoningBlock } from '@/components/agent/ReasoningBlock'
@@ -61,53 +61,6 @@ function makeIteration(overrides: Partial<WebIteration> = {}): WebIteration {
   }
 }
 
-describe('FoldedLine', () => {
-  it('renders the title with ▸ and toggles open class on click', async () => {
-    const { container } = renderWithProviders(
-      <FoldedLine title="T1">
-        <span>content</span>
-      </FoldedLine>,
-    )
-    // Collapsed lazy content is mounted only after first expansion.
-    expect(screen.getByText('▸')).toBeInTheDocument()
-    expect(screen.queryByText('content')).not.toBeInTheDocument()
-    expect(container.querySelector('.fold-container')).toBeNull()
-
-    // Click to expand
-    fireEvent.click(screen.getByRole('button'))
-    expect(screen.getByText('content')).toBeInTheDocument()
-    await waitFor(() => expect(container.querySelector('.fold-container')).toHaveClass('open'))
-    expect(container.querySelector('.fold-arrow')).toHaveClass('open')
-
-    // Collapse again: content UNMOUNTS after the collapse animation (perf fix —
-    // folded heavy content no longer participates in streaming re-renders).
-    fireEvent.click(screen.getByRole('button'))
-    await waitFor(() => expect(container.querySelector('.fold-container')).not.toHaveClass('open'))
-    await waitFor(() => expect(screen.queryByText('content')).not.toBeInTheDocument())
-  })
-
-  it('starts open when defaultOpen=true', () => {
-    const { container } = renderWithProviders(
-      <FoldedLine title="test" defaultOpen>
-        <span>visible</span>
-      </FoldedLine>,
-    )
-    expect(container.querySelector('.fold-container')).toHaveClass('open')
-    expect(screen.getByText('visible')).toBeInTheDocument()
-  })
-
-  it('calls onToggle callback', () => {
-    let toggled = false
-    renderWithProviders(
-      <FoldedLine title="test" onToggle={() => { toggled = true }}>
-        <span>content</span>
-      </FoldedLine>,
-    )
-    fireEvent.click(screen.getByRole('button'))
-    expect(toggled).toBe(true)
-  })
-})
-
 describe('ToolCallBlock', () => {
   it('renders args and output content directly (no collapsible wrapper)', () => {
     const tool = makeTool({
@@ -116,7 +69,7 @@ describe('ToolCallBlock', () => {
       detail: 'file contents',
     })
     renderWithProviders(<ToolCallBlock tool={tool} />)
-    // Content is immediately visible (folding handled by parent FoldedLine)
+    // Content is immediately visible (折叠由父组件 FoldedToolGroup 的 pill 浮层负责)
     expect(screen.getByText('file contents')).toBeInTheDocument()
     // Args are pretty-printed JSON (multi-line) — assert on the key content
     expect(screen.getByText(/"a\.go"/)).toBeInTheDocument()
@@ -393,23 +346,27 @@ describe('IterationGroup', () => {
       tools: [makeTool({ name: 'Read', label: 'Read' })],
       toolCount: 1,
     })
-    renderWithProviders(<IterationGroup iteration={iter} />)
-    // Reasoning is a folded line with character count as title
-    expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
+    const { container } = renderWithProviders(<IterationGroup iteration={iter} />)
+    // Reasoning 与流式态**同一形态**：brain 图标 ThinkingLine（无 ▸ 折叠行）
+    expect(container.querySelector('[data-testid="thinking-line"]')).toBeInTheDocument()
+    expect(screen.getByText(/Thought.*chars/)).toBeInTheDocument()
     // Tool name from FoldedToolGroup
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0)
     // O text from MarkdownRenderer
     expect(screen.getByText('Here is the output')).toBeInTheDocument()
   })
 
-  it('renders reasoning (T) as a folded line (collapsed by default)', () => {
+  it('renders reasoning (T) as a ThinkingLine (brain icon, collapsed by default)', () => {
     const { container } = renderWithProviders(
       <IterationGroup
         iteration={makeIteration({ iteration: 2, reasoning: 'deep thinking' })}
       />,
     )
-    // Reasoning folded line shows character count as title
-    expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
+    // 唯一形态：brain 图标 + 字数 label；默认收起（无 ▸ 折叠行 / fold-container）
+    expect(screen.getByText(/Thought.*chars/)).toBeInTheDocument()
+    expect(container.querySelector('[data-testid="thinking-line"]')).toBeInTheDocument()
+    expect(container.querySelector('.lucide-brain')).toBeInTheDocument()
+    expect(container.querySelector('.fold-arrow')).toBeNull()
     expect(container.querySelector('.fold-container')).toBeNull()
   })
 

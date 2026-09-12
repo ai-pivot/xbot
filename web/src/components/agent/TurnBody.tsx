@@ -22,6 +22,7 @@ import { memo, useMemo } from 'react'
 import { IterationGroup } from './IterationHistory'
 import { LiveIteration } from './LiveIteration'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
+import { reasoningKey } from './reasoningOpenState'
 import { continuousIterations } from './progressStore'
 import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
@@ -52,7 +53,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     <>
       {contiguous.map((iter, i) => (
         <div key={iter.iteration ?? i} data-iter-id={iter.iteration} data-turn-id={turnID}>
-          <IterationGroup iteration={iter} />
+          <IterationGroup
+            iteration={iter}
+            reasoningStateKey={reasoningKey(turnID, iter.iteration ?? 0)}
+          />
           {iter.subAgents && iter.subAgents.length > 0 && (
             <SubAgentProgressTree nodes={iter.subAgents} />
           )}

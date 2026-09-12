@@ -3,8 +3,7 @@
  * (Spec 4 §3.3, §3.5).
  *
  * In the new folding model this component is used as the *content* inside a
- * FoldedLine — it does NOT manage its own collapse state. The folding arrow
- * and toggle are handled by the parent FoldedLine / FoldedToolGroup.
+ * ThinkingLine / FoldedToolGroup — 自身不管理折叠状态：展开热区由父组件提供。
  *
  * This is the DEFAULT renderer (tools without a dedicated view in ToolRender):
  * args are pretty-printed as syntax-highlighted JSON; detail/output renders in
