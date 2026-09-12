@@ -198,7 +198,7 @@ Parameters (JSON):
 func (t *TaskReadTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "task_id", Type: "string", Description: "The background task ID to read", Required: true},
-		{Name: "tail", Type: "number", Description: "Only return the last N characters of output (default: all)", Required: false},
+		{Name: "tail", Type: "number", Description: "Shell tasks: only return the last N characters of output (default: all). Sub-agents: how many recent iterations to show (default: 5).", Required: false},
 	}
 }
 

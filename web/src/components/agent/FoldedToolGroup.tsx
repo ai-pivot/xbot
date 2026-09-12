@@ -63,7 +63,7 @@ function truncate(text: string, max: number): string {
 }
 
 /** Determine the tool status for color purposes. */
-type ToolStatusColor = 'normal' | 'all-failed' | 'partial-fail' | 'running'
+type ToolStatusColor = 'normal' | 'all-failed' | 'running'
 
 /** Check if a tool's status indicates failure. */
 function isFailed(status: string): boolean {
@@ -75,8 +75,6 @@ function statusColorVar(status: ToolStatusColor): string {
   switch (status) {
     case 'all-failed':
       return 'var(--destructive)'
-    case 'partial-fail':
-      return '#e6a700' // light amber/yellow
     case 'running':
       return 'var(--accent)'
     default:
@@ -123,7 +121,7 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
 }
 
 /** 工具 pill 三态（设计稿 1:1）：running=accent 椭圆+pulse 圆点+流光 / error=红椭圆+✗ / done=绿椭圆+✓。 */
-function toolPill(tool: WebToolProgress, sweepRunning = true, t?: T): ReactNode {
+function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const status = singleStatus(tool)
   const running = status === 'running'
   const failed = status === 'all-failed'
@@ -142,7 +140,7 @@ function toolPill(tool: WebToolProgress, sweepRunning = true, t?: T): ReactNode 
   // 去重：subject 与显示名相同（user_interrupt 的 label 就是「💬 插话」）时不再重复
   const param = rawParam && rawParam.toLowerCase() !== name.toLowerCase() ? rawParam : ''
   const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
-  const showSweep = running && sweepRunning && !isSubAgentTool(tool)
+  const showSweep = running && !isSubAgentTool(tool)
   return (
     <span
       data-tool-name={tool.name}
@@ -291,7 +289,7 @@ function LazyPillPopover({
 /** 折叠行 pill 列表：≤8 全量；>8 显示前 7 pill + "+N" 徽标。
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
  *  "+N" 弹溢出工具的全量列表。 */
-const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { tools: WebToolProgress[]; sweepRunning?: boolean }) {
+const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgress[] }) {
   const { t } = useI18n()
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
@@ -299,7 +297,7 @@ const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { 
     <span className="flex flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
         <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" toolName={tool.name} content={<ToolPopoverDetail tool={tool} />}>
-          {toolPill(tool, sweepRunning, t)}
+          {toolPill(tool, t)}
         </LazyPillPopover>
       ))}
       {overflow && <OverflowPillsMenu tools={tools} />}

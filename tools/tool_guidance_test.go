@@ -127,6 +127,16 @@ func TestTaskWaitDescription_DiscouragesBlocking(t *testing.T) {
 			t.Errorf("task_wait description must contain %q (got: %s)", want, desc)
 		}
 	}
+	// 反向断言：不能残留旧的鼓励阻塞文案（同一段里既禁止又鼓励 = 行为契约自相矛盾）。
+	for _, forbidden := range []string{
+		"Use this instead of running",
+		"no wasted iterations on sleep polling",
+		"The current iteration blocks until the task(s) are done",
+	} {
+		if strings.Contains(desc, forbidden) {
+			t.Errorf("task_wait description must NOT contain the legacy encouraging wording %q (got: %s)", forbidden, desc)
+		}
+	}
 	params := (&TaskWaitTool{}).Parameters()
 	var timeoutDesc string
 	for _, p := range params {

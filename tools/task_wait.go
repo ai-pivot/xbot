@@ -45,11 +45,10 @@ func (t *TaskWaitTool) Description() string {
 	e.g. "3f8f492a" for Shell background tasks (raw hex), "sub-1eefac7a" for
 	sub-agents. Never add a "bg:" or "bg-" prefix.
 
-Use this instead of running "sleep N" in a foreground Shell to wait for a
-background task. The current iteration blocks until the task(s) are done — no
-wasted iterations on sleep polling.
-
-If the task is already completed, returns immediately.
+	If the task is already completed, returns immediately (no blocking).
+	Waiting is a LAST RESORT, not a way to poll: never use it in a loop and never
+	run "sleep N" in a foreground Shell instead — start the work in the background
+	and keep doing something useful.
 
 Parameters (JSON):
   - task_id: array of strings — the background task ID(s) to wait for

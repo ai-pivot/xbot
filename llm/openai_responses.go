@@ -397,17 +397,21 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 		case "reasoning":
 			// Reasoning text (type `reasoning_text`) is the authoritative full
 			// reasoning; `summary` (type `summary_text`) is a condensed form.
-			// Prefer content when the provider returns it, otherwise fall back
-			// to the summary — reading both would duplicate the text.
-			if len(item.Content) > 0 {
-				for _, part := range item.Content {
-					result.ReasoningContent += part.Text
-				}
-			} else {
-				for _, summary := range item.Summary {
-					result.ReasoningContent += summary.Text
+			// Prefer content, but only when it actually yields text — a content
+			// array with empty/placeholder parts must NOT shadow a usable summary
+			// (that would silently drop the reasoning).
+			text := ""
+			for _, part := range item.Content {
+				if part.Type == "reasoning_text" {
+					text += part.Text
 				}
 			}
+			if text == "" {
+				for _, summary := range item.Summary {
+					text += summary.Text
+				}
+			}
+			result.ReasoningContent = text
 		}
 	}
 
@@ -560,6 +564,12 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	}
 	toolCallsByID := make(map[string]*toolCallState)
 	toolCallList := make([]*toolCallState, 0)
+	// Reasoning dedup: `reasoning_text.delta` carries the FULL reasoning text and
+	// `reasoning_summary_text.delta` a condensed summary. Both map to
+	// EventReasoningContent, so a provider that emits BOTH would double the
+	// reasoning text. Prefer the full text per reasoning item: once an item has
+	// delivered text deltas, its summary deltas are ignored.
+	reasoningItemHasText := make(map[string]bool)
 
 	for stream.Next() {
 		select {
@@ -598,8 +608,9 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.reasoning_text.delta":
-			// Full reasoning text delta
+			// Full reasoning text delta — authoritative for this item.
 			if event.Delta != "" {
+				reasoningItemHasText[event.ItemID] = true
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: event.Delta,
@@ -607,8 +618,9 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.reasoning_summary_text.delta":
-			// Reasoning summary delta
-			if event.Delta != "" {
+			// Reasoning summary delta — skipped when this item already delivered
+			// its full reasoning text (prevents duplicated reasoning).
+			if event.Delta != "" && !reasoningItemHasText[event.ItemID] {
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: event.Delta,

@@ -47,6 +47,15 @@ const FORBIDDEN_CODE = [
   'mergeTools:',
   'mergeTools?:',
   'agent.processed',
+  // 折叠机制的其余 i18n key（settings.* 命名空间）—— 断言词表必须覆盖全部，
+  // 否则"删了 collapseLevel 但留下 collapseAll"这类回归永远绿。
+  'collapseProcess:',
+  'collapseAll:',
+  'collapseAllDesc:',
+  'collapseMinimal:',
+  'collapseMinimalDesc:',
+  'collapseNone:',
+  'collapseNoneDesc:',
 ]
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -73,10 +82,21 @@ describe('旧折叠/合并格式必须彻底不存在（防回归）', () => {
     expect(hits, `${needle} 残留于: ${hits.join(', ')}`).toEqual([])
   })
 
-  it('i18n 三个语言包都没有 collapse/merge 相关 key', () => {
+  it('i18n 三个语言包都没有 collapse/merge/processed 相关 key', () => {
+    // 精确词表（不是宽 `collapse\w*`）：`collapseTodos` / `common.collapse`（diff 面板
+    // 的折叠按钮）是合法 key，宽匹配会误报。
+    const DEAD_KEYS = [
+      'collapseLevel', 'collapseLevelDesc',
+      'collapseProcess', 'collapseAll', 'collapseAllDesc',
+      'collapseMinimal', 'collapseMinimalDesc',
+      'collapseNone', 'collapseNoneDesc',
+      'mergeTools', 'mergeToolsDesc', 'mergeToolsOn', 'mergeToolsOff',
+      'processed',
+    ]
     for (const lang of ['zh-CN', 'en', 'ja']) {
       const text = readFileSync(join(SRC, `i18n/${lang}.ts`), 'utf8')
-      expect(text).not.toMatch(/\b(collapseLevel|mergeTools|processed)\s*:/)
+      const hits = DEAD_KEYS.filter((k) => new RegExp(`\\b${k}\\s*:`).test(text))
+      expect(hits, `${lang}.ts 残留折叠/合并 key: ${hits.join(', ')}`).toEqual([])
     }
   })
 })
@@ -116,5 +136,29 @@ describe('渲染层：只有"逐迭代 + 每工具一 pill"这一种形态', () 
 
     // 每个工具一个 pill（每迭代 1 个）
     expect(container.querySelectorAll('[data-testid="tool-pill"]').length).toBe(2)
+  })
+
+  it('最终回复仍渲染（最后一个迭代的 content 必须可见）', () => {
+    // 不变量：v55 起回复文本存 iteration_history 的最后迭代；折叠分支删除后
+    // 顶层 message.content 在"有迭代"时不渲染，回复可见性完全依赖迭代内渲染。
+    // 若最后迭代 content 丢失（回归），用户会看到"回复整段消失"。
+    const reply = '已修复：请求体现在会带上 reasoning_text。'
+    const iters: WebIteration[] = [
+      { iteration: 1, content: '', reasoning: 'r1', tools: [], toolCount: 0 },
+      { iteration: 2, content: reply, reasoning: 'r2', tools: [], toolCount: 0 },
+    ] as unknown as WebIteration[]
+    const m: ChatMessage = {
+      id: 'a2',
+      role: 'assistant',
+      content: '',
+      iterations: iters,
+      timestamp: '2026-09-12T00:00:00Z',
+      isPartial: false,
+      turnID: 1,
+    }
+    const { container } = render(<AssistantMessage message={m} />, {
+      wrapper: ({ children }) => <I18nProvider>{children}</I18nProvider>,
+    })
+    expect(container.textContent ?? '').toContain(reply)
   })
 })
