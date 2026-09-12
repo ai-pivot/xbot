@@ -137,7 +137,7 @@ export function SkillManagerPanel() {
   const handleUninstall = useCallback(
     async (skill: SkillDetail) => {
       if (!skill.can_uninstall) return
-      if (!window.confirm(t('skills.confirmUninstall').replace('{name}', skill.name))) return
+      if (!window.confirm(t('skills.confirmUninstall', { name: skill.name }))) return
       try {
         await postAPI('/api/app/uninstall', { type: 'skill', name: skill.name })
         await load()

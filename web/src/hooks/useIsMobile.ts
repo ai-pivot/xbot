@@ -1,25 +1,23 @@
+/**
+ * UI 外壳/设备能力谓词。
+ *
+ * useIsMobile —— 手机外壳/布局是否生效。单一权威源是 useUIMode（设置 →
+ * 外观 → UI 模式）：'auto' 跟随视口断点，'desktop' / 'mobile' 为用户强制。
+ * 本 hook 只是它的布局语义派生（AppShell 外壳切换、TerminalPanel /
+ * LLM 控制台的布局分支共用）。
+ *
+ * useIsTouch —— 设备是否无 hover 能力（触屏）。这是【设备能力】而非布局
+ * 模式，不受 UI 模式偏好影响：强制手机外壳的桌面上 hover 依然可用。
+ */
 import { useEffect, useState } from 'react'
 
-const MOBILE_QUERY = '(max-width: 767px)'
+import { useUIMode } from './useUIMode'
 
 /** Detects touch-only devices (no hover capability) via pointer media queries. */
 const TOUCH_QUERY = '(hover: none) and (pointer: coarse)'
 
 export function useIsMobile(): boolean {
-  const [mobile, setMobile] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return window.matchMedia(MOBILE_QUERY).matches
-  })
-
-  useEffect(() => {
-    const media = window.matchMedia(MOBILE_QUERY)
-    const onChange = () => setMobile(media.matches)
-    onChange()
-    media.addEventListener('change', onChange)
-    return () => media.removeEventListener('change', onChange)
-  }, [])
-
-  return mobile
+  return useUIMode().effective === 'mobile'
 }
 
 /**

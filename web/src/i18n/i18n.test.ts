@@ -53,3 +53,33 @@ describe('i18n 一致性守卫', () => {
     expect(at(zhCN, 'agent.goal.completed')).toBe('已完成')
   })
 })
+
+/**
+ * 插值语法守卫：i18next 26 的默认插值是 `{{ }}`（双括号），单括号 `{name}`
+ * **不会**被替换 —— 会原样渲染给用户（用户报告："当前生效：{mode} 这个显示的
+ * 模板参数没有生效"）。zh-CN 里曾有 4 处存量单括号、新增 1 处，全部统一为
+ * 双括号；此测试确保不再回流。
+ */
+const SINGLE_BRACE = /(^|[^{])\{[a-zA-Z_][a-zA-Z0-9_.]*\}([^}]|$)/
+
+function collectStrings(node: unknown, prefix = ''): Array<[string, string]> {
+  if (typeof node === 'string') return [[prefix, node]]
+  if (node && typeof node === 'object') {
+    return Object.entries(node as Record<string, unknown>).flatMap(([k, v]) =>
+      collectStrings(v, prefix ? `${prefix}.${k}` : k),
+    )
+  }
+  return []
+}
+
+describe('i18n 插值语法守卫', () => {
+  for (const [locale, dict] of DICTS) {
+    it(`${locale}: 不得使用单括号占位符（i18next 默认 {{ }}，单括号原样渲染）`, () => {
+      const offenders = collectStrings(dict).filter(([, value]) => SINGLE_BRACE.test(value))
+      expect(
+        offenders,
+        `以下键使用单括号插值，不会生效：${JSON.stringify(offenders)}`,
+      ).toEqual([])
+    })
+  }
+})
