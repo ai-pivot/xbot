@@ -84,6 +84,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
         {editing ? (
           <input
             ref={inputRef}
+            data-testid="goal-edit-input"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -105,6 +106,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
         ) : (
           <button
             type="button"
+            data-testid="goal-text"
             onClick={() => !completed && setEditing(true)}
             className={cn(
               'min-w-0 flex-1 truncate text-left text-xs',
@@ -145,6 +147,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
         {!editing && (
           <button
             type="button"
+            data-testid="goal-clear"
             onClick={onClear}
             className="shrink-0 text-text-muted hover:text-destructive"
             title={t('agent.goal.clear')}

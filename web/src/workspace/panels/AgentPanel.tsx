@@ -21,6 +21,7 @@ import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { sameSession } from "@/lib/session-grouping"
 import { useAgentChatState } from '@/chat/useAgentChatState'
 import { useTodos } from '@/hooks/useTodos'
+import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdit'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
@@ -41,7 +42,7 @@ import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
-import type { ChatMessage, GoalInfo } from '@/types/shared'
+import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
 // import { useOptionalPluginRuntime } from '@/plugin-runtime'
 
@@ -137,10 +138,20 @@ export function AgentPanel({ params, api }: PanelProps) {
       }
       // REST 成功 ack 状态机乐观行：清 sending（成功即非发送中），
       // 回填服务端 turn_id/queued。
-      if (info?.requestID) ackUserRef.current(info.requestID, info.turnID, info.queued)
+      if (info?.requestID) {
+        ackUserRef.current(info.requestID, info.turnID, info.queued)
+        // /goal 已投递成功 —— 乐观目标不再需要失败回滚。
+        if (optimisticGoalRidRef.current === info.requestID) optimisticGoalRidRef.current = null
+      }
     },
     onSendFail: (requestID) => {
       failUserRef.current(requestID)
+      // /goal 命令发送失败 → 回滚乐观目标（CR：否则 banner 永久显示一个服务端
+      // 并不存在的目标 —— store 的 goal 始终是旧值，覆盖永不清除）。
+      if (optimisticGoalRidRef.current === requestID) {
+        optimisticGoalRidRef.current = null
+        goalEditRef.current.discard()
+      }
     },
     onCancelSuccess: () => {
       // Optimistically mark the session as idle so the UI exits busy
@@ -178,20 +189,26 @@ export function AgentPanel({ params, api }: PanelProps) {
     w.__xbot_session__ = { channel: messageChannel, chatID: progressChatID }
   }, [messageChannel, progressChatID])
 
+  // get_goal 兜底水合的稳定入口（在 effect 里用 ref，避免 render 期读 agentChat；
+  // 赋值见下方 resetAgentChatRef 附近）。
+  const hydrateSessionFieldsRef = useRef<(f: { goal?: GoalInfo | null }) => void>(() => {})
+
   // Fetch goal on session load/switch — handles the case where progress events
   // don't carry the goal (emitGoalProgress Phase:"" may be skipped by frontend).
   // Also handles page refresh: GetActiveProgress may not return goal if the
   // snapshot doesn't have it, so we fetch it directly via get_goal RPC.
+  // 水合走状态机（hydrateSessionFields —— 会话级字段单一数据源）。
   useEffect(() => {
     if (!chatID || !messageChannel) return
     let cancelled = false
     getGoal({ channel: messageChannel, chatID })
       .then((g) => {
         if (cancelled) return
+        // 只写**非空**值：`goal: null` 是"显式清除"语义，而 get_goal 返回空可能
+        // 只是读取窗口/落库延迟（CR：会把用户刚提交的 goal 抹掉）。清除由后端 push
+        // 的 cleared 标记驱动。
         if (g && g.objective) {
-          setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
-        } else {
-          setGoalOverride(null)
+          hydrateSessionFieldsRef.current({ goal: { objective: g.objective, status: g.status || 'active', summary: g.summary } })
         }
       })
       .catch(() => {})
@@ -239,6 +256,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   // SubAgent idle/done 时重置（SubAgent 面板收不到 text/session(idle)）。
   const resetAgentChatRef = useRef(agentChat.reset)
   resetAgentChatRef.current = agentChat.reset
+  hydrateSessionFieldsRef.current = agentChat.hydrateSessionFields
   const progressSnapshot = agentChat.liveProgress
 
   // ── Queue state hydration（refresh / session switch / tab 可见性恢复）──
@@ -337,22 +355,31 @@ export function AgentPanel({ params, api }: PanelProps) {
   // 方案 A：live 行由 store.toRows() 输出（liveMessage=null），渲染永不 gate。
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
-  const todoState = useTodos(progressSnapshot.todos)
-  // goalOverride: optimistic local goal state. Set immediately after set_goal RPC
-  // succeeds (before any progress event arrives). Cleared when progressSnapshot.goal
-  // catches up (from SSE progress event or GetActiveProgress on refresh).
-  // This avoids waiting for emitGoalProgress (which may not reach the frontend
-  // reliably with Phase: "").
-  const [goalOverride, setGoalOverride] = useState<GoalInfo | null | undefined>(undefined)
-  const goal = progressSnapshot.goal ?? goalOverride
-  // Clear override when progress snapshot catches up with a REAL goal value
-  // (not null — null means "no goal in progress event", which should NOT clear
-  // the override set by set_goal RPC / /goal command / getGoal RPC).
-  useEffect(() => {
-    if (progressSnapshot.goal) {
-      setGoalOverride(undefined)
-    }
-  }, [progressSnapshot.goal])
+  // 会话级字段（goal / todos）的**用户编辑乐观覆盖**：RPC 成功后立刻显示用户提交的
+  // 值；服务端快照相对"提交前的值"发生变化（push 收敛 / agent 第三方改动）时让位 —
+  // 服务端始终是权威。修复"编辑后恢复旧内容、刷新才生效"（2026-09-12 用户报告，
+  // goal 与 todos 同类：显示优先级写反 + 过度清除覆盖 + todos 没有乐观副本）。
+  //
+  // 单一数据源：goal 的兜底水合（get_goal RPC，见下方两个 effect）经
+  // `agentChat.hydrateSessionFields` 写进状态机 —— 组件不再保留 shadow state
+  //（旧 `fallbackGoal` 的 `snapshot.goal ?? fallback` 会在快照显式清除（null）时
+  // 静默回退到过期值，banner 显示已删除的目标）。
+  //
+  // 会话身份：覆盖不得跨会话存活（CR：A 的覆盖会在 B 的快照恰好等于 A 的 before 时
+  // 继续渲染 —— 最典型"两会话都没 goal"，`null == null` → 永不自愈）。
+  const editKey = `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}`
+  const [goal, goalEdit] = usePendingEdit(progressSnapshot.goal, goalEqual, editKey)
+  const [todos, todosEdit] = usePendingEdit(progressSnapshot.todos, todosListEqual, editKey)
+  const todoState = useTodos(todos)
+  // 编辑句柄 ref 化：handle* 的 deps 保持低频（chatID/messageChannel），
+  // 不让 goal/todos 快照每帧都换回调引用（MessageInput 依赖 onSend 等回调）。
+  const goalEditRef = useRef(goalEdit)
+  goalEditRef.current = goalEdit
+  const todosEditRef = useRef(todosEdit)
+  todosEditRef.current = todosEdit
+  // /goal 命令的乐观目标对应的 requestID —— 发送失败时回滚（CR：否则 banner 会
+  // 永久显示一个服务端并不存在的目标）。
+  const optimisticGoalRidRef = useRef<string | null>(null)
   // Busy state: sessionStore.running is the primary source (same source the
   // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
   // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
@@ -395,10 +422,9 @@ export function AgentPanel({ params, api }: PanelProps) {
       getGoal({ channel: messageChannel, chatID })
         .then((g) => {
           if (cancelled) return
+          // 只写非空（同上：空返回不等于"用户删除目标"）。
           if (g && g.objective) {
-            setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
-          } else {
-            setGoalOverride(null)
+            hydrateSessionFieldsRef.current({ goal: { objective: g.objective, status: g.status || 'active', summary: g.summary } })
           }
         })
         .catch(() => {})
@@ -459,45 +485,55 @@ export function AgentPanel({ params, api }: PanelProps) {
 
   const sendMessage = useCallback((content: string, attachments?: Attachments, interrupt?: boolean) => {
     setFollowResetToken((v) => v + 1)
-    // Detect /goal command and optimistically set goalOverride (frontend-only,
-    // no backend needed — progress event may not carry goal reliably).
-    if (content.startsWith('/goal ') && !content.startsWith('/goal status') && !content.startsWith('/goal clear')) {
-      const objective = content.slice(6).trim()
-      if (objective) {
-        setGoalOverride({ objective, status: 'active' })
-      }
-    }
     // ⚡ Interject mode: skip optimistic rendering (no user row — the message
     // appears inside the active turn as a user_interrupt tool via SSE).
     const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    // Detect /goal command and optimistically show the new goal (frontend-only;
+    // 后端 push 到达即收敛让位 —— 见 usePendingEdit)。发送失败由 onSendFail 回滚。
+    if (content.startsWith('/goal ') && !content.startsWith('/goal status') && !content.startsWith('/goal clear')) {
+      const objective = content.slice(6).trim()
+      if (objective) {
+        const seq = goalEditRef.current.begin()
+        goalEditRef.current.commit({ objective, status: 'active' }, seq)
+        optimisticGoalRidRef.current = rid
+      }
+    }
     if (!interrupt) {
       sendUserRef.current(content, rid)
     }
     sendMessageRef.current(content, attachments, rid, interrupt)
-  }, [setGoalOverride])
+  }, [])
 
   // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
+  // 并发编辑用 begin() 的单调序号：RPC 乱序返回时落后的提交不得回写（CR 缺陷 2）。
   const handleSetGoal = useCallback(async (objective: string) => {
     if (!chatID || !messageChannel) return
+    const seq = goalEditRef.current.begin()
     try {
       await setGoal({ channel: messageChannel, chatID }, objective)
-      // Optimistic update: set goal locally so UI updates immediately without
-      // waiting for a progress event (emitGoalProgress may not reach frontend reliably).
-      setGoalOverride({ objective, status: 'active' })
+      // 乐观覆盖：RPC 成功后立刻显示新目标，不等后端 push（push 到达即收敛让位）。
+      goalEditRef.current.commit({ objective, status: 'active' }, seq)
     } catch (e) {
+      goalEditRef.current.discard()
       toast.error(e instanceof Error ? e.message : 'Failed to set goal')
     }
-  }, [chatID, messageChannel, setGoalOverride])
+  }, [chatID, messageChannel])
 
-  // User edits the checklist (rename / toggle done / delete). The backend
-  // persists it and pushes the new list back over the progress stream, so we
-  // deliberately keep no local copy — one source of truth.
+  // User edits the checklist (rename / toggle done / delete). 服务端持久化后会把新
+  // 列表 push 回进度流；在 push 到达前用乐观覆盖显示用户提交的列表（push 收敛即
+  // 让位，丢失也不回退 —— 2026-09-12 用户报告"编辑后回退、刷新才生效"）。
   const handleUpdateTodos = useCallback(
-    async (todos: { text: string; status: string }[]) => {
+    async (todos: TodoItem[]) => {
       if (!chatID || !messageChannel) return
+      const seq = todosEditRef.current.begin()
       try {
-        await updateTodos({ channel: messageChannel, chatID }, todos)
+        await updateTodos(
+          { channel: messageChannel, chatID },
+          todos.map((it) => ({ text: it.text, status: it.status })),
+        )
+        todosEditRef.current.commit(todos, seq)
       } catch (e) {
+        todosEditRef.current.discard()
         toast.error(e instanceof Error ? e.message : 'Failed to update todos')
       }
     },
@@ -506,14 +542,16 @@ export function AgentPanel({ params, api }: PanelProps) {
 
   const handleClearGoal = useCallback(async () => {
     if (!chatID || !messageChannel) return
+    const seq = goalEditRef.current.begin()
     try {
       await clearGoal({ channel: messageChannel, chatID })
-      // Optimistic update: clear goal locally.
-      setGoalOverride(null)
+      // 乐观覆盖：立刻移除 banner（服务端 push 为显式 cleared 标记，到达即收敛）。
+      goalEditRef.current.commit(null, seq)
     } catch (e) {
+      goalEditRef.current.discard()
       toast.error(e instanceof Error ? e.message : 'Failed to clear goal')
     }
-  }, [chatID, messageChannel, setGoalOverride])
+  }, [chatID, messageChannel])
 
   // chatRef：rewindTo/footer 的稳定闭包读取（useChatMessages 每帧返回新对象，
   // 若 rewindTo deps 含 chat 则每帧重建 → 传给 MessageList 的 onRewind 引用

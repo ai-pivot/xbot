@@ -598,6 +598,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       return { ...s, turns, activeTurn }
     }
 
+    // ── session_fields：会话级字段的本地水合（get_goal RPC 兜底） ──
+    // 只走 applySessionFields（与 iteration/phase_done 同一 helper）—— 不碰 turn
+    // 状态，不推进 I5 基准。三态与 structured 事件一致（undefined = 不改）。
+    case 'session_fields':
+      return applySessionFields(s, ev.todos, ev.goal)
+
     // ── session：busy/idle —— idle 是 live 的收尾兜底（幽灵行灭绝） ──
     case 'session': {
       if (ev.busy) return s.busy ? s : { ...s, busy: true }
