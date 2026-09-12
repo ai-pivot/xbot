@@ -557,3 +557,12 @@ v45 之后所有 user 级数据（`user_llm_subscriptions.user_id`、`user_setti
 - **订阅 select**（`subscription_select`，action `settings_select_subscription`）：canonical 用户的所有订阅（≤16 个），当前查看订阅高亮（per-sender 记忆 `settingsSubFilter`，默认当前使用模型的订阅）。
 - **模型 select**（`model_select`，action `settings_set_model`）：**只显示当前查看订阅的模型**（≤40），每个订阅都可达，不超飞书 options 上限。
 - `maxModels`/`maxTierModels` 均回到 40（单订阅模型数安全值）。v62 起 system 订阅已删除，`listModelEntriesCore` 系列按 `created_at` 单序输出（无 system 排序特例，`TestListAllModelEntries_UserModelsBeforeSystem` 已随之删除）。
+
+### 20. LLM 导出/导入 = 同一份契约（导出带真实 api_key）
+
+`export_subscriptions` / `import_subscriptions`（`serverapp/rpc_table.go`）是"换机快速配置"的唯一链路，契约必须一致：
+
+- **导出文档 = 导入入参**：`{"version":1,"subs":[{name,provider,base_url,api_key,model,max_output_tokens,thinking_mode,per_model_configs}]}`。顶层键就是 `subs`（与导入参数同名）——旧版导出用 `subscriptions` 键而导入读 `subs`，形状不匹配 → 把导出文件喂回导入必然 `json: cannot unmarshal object into ... []struct` 失败。
+- **导出带真实 api_key**（不 mask）：导出是一次需登录的显式 owner 操作（`subOwnedByUser` 限定本人订阅），唯一用途就是在别处配置；mask 会让导入端拿到 `****`（它把 `****` 视为"待填占位"清空）→ 导出失去意义。需要遮蔽的场景走读路径（`list_subscriptions` / `get_llm` / `maskAPIKey`），那里仍然 mask。
+- 导入端保留 `****` 占位守卫（老文件/手改文件不得把占位符落库成真 key）。前端 `SettingsLLM.tsx` 按同一契约取 `parsed.subs`，格式不符报 `importBadFormat`。
+- 回归测试：`serverapp/rpc_export_subs_test.go`（导出含真 key 且无 `****` + 导出文档原样导入落库为真值 + 占位守卫）。
