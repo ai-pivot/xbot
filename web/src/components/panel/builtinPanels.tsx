@@ -134,14 +134,23 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           onClick={() => setNewOpen(true)}
           title={t('session.newSession')}
           className={cn(
-            'flex min-w-8 items-center justify-center gap-1.5 overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
+            'flex min-w-10 items-center justify-center overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
             searchOpen ? 'grow-0' : 'grow',
           )}
           style={{ background: 'var(--accent)', flexBasis: 0 }}
         >
           <svg className="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-          <span className={cn('min-w-0 truncate transition-opacity duration-200', searchOpen ? 'opacity-0' : 'opacity-100')}>
-            {t('session.newSession')}
+          {/* 标签用 max-width 收到 0（不是 flex-shrink——那只会缩到"刚好填满"，
+              图标被挤到左边缘不居中）；间距放在被裁切的内层 margin 上，随收起
+              一起消失，图标才真正居中。 */}
+          <span
+            aria-hidden={searchOpen}
+            className={cn(
+              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-out',
+              searchOpen ? 'max-w-0 opacity-0' : 'max-w-40 opacity-100',
+            )}
+          >
+            <span className="ml-1.5">{t('session.newSession')}</span>
           </span>
         </button>
         <div

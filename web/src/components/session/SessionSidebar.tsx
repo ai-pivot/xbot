@@ -363,14 +363,22 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           onClick={() => setNewOpen(true)}
           title={t('session.newSession')}
           className={cn(
-            'flex min-w-8 items-center justify-center gap-1.5 overflow-hidden rounded-xl py-2 text-[12px] font-semibold text-white transition-[flex-grow] duration-200 ease-out hover:opacity-90',
+            'flex min-w-10 items-center justify-center overflow-hidden rounded-xl py-2 text-[12px] font-semibold text-white transition-[flex-grow] duration-200 ease-out hover:opacity-90',
             searchOpen ? 'grow-0' : 'grow',
           )}
           style={{ background: 'var(--accent)', flexBasis: 0 }}
         >
           <Plus className="size-3.5 shrink-0" />
-          <span className={cn('min-w-0 truncate transition-opacity duration-200', searchOpen ? 'opacity-0' : 'opacity-100')}>
-            {t('session.newSession')}
+          {/* 标签用 max-width 收到 0（不是 flex-shrink——那只会缩到"刚好填满"，
+              图标被挤到左边缘不居中）；间距放在被裁切的内层 margin 上。 */}
+          <span
+            aria-hidden={searchOpen}
+            className={cn(
+              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-out',
+              searchOpen ? 'max-w-0 opacity-0' : 'max-w-40 opacity-100',
+            )}
+          >
+            <span className="ml-1.5">{t('session.newSession')}</span>
           </span>
         </button>
         <div
