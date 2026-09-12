@@ -87,9 +87,7 @@ test.describe('Cancel + reconnect iteration bugs', () => {
       return text.includes('Read') && text.includes('Shell')
     })
     console.log('After cancel - frozen content (folded):', hasCommitted)
-    // committed 行按用户偏好折叠（'all'，unmountOnClose）—— 展开折叠验证
-    // 迭代内容（Read + Shell 工具）保留不消失。
-    await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
+    // 折叠格式已彻底删除：committed 行直接渲染迭代内容（Read + Shell 工具）。
     await expect(page.locator('[data-role="assistant"]')).toContainText('Read', { timeout: 5000 })
     await expect(page.locator('[data-role="assistant"]')).toContainText('Shell', { timeout: 5000 })
 
@@ -130,11 +128,8 @@ test.describe('Cancel + reconnect iteration bugs', () => {
     await emitSSE(page, 'session', { type: 'session', session: { action: 'busy', chat_id: 'chat-1', channel: 'web' } })
     await page.waitForTimeout(500)
 
-    // Iteration 0 (Read) should be visible from restored snapshot
-    // 折叠面板（unmountOnClose）下工具在折叠内 —— 展开后验证。
-    if (await page.locator('[data-role="assistant"] button:has-text("Processed")').count() > 0) {
-      await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
-    }
+    // Iteration 0 (Read) should be visible from restored snapshot.
+    // 折叠格式已彻底删除：工具直接可见，无需展开。
     const readVisible = await page.evaluate(() => (document.body.textContent || '').includes('Read'))
     const shellVisible = await page.evaluate(() => (document.body.textContent || '').includes('Shell'))
     console.log('After reconnect - Read:', readVisible, 'Shell:', shellVisible)

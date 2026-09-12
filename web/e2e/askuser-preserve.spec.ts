@@ -163,12 +163,7 @@ test.describe('AskUser answer preserves iterations', () => {
     await page.waitForTimeout(500)
 
     // ── Verify: "Read" tool should STILL be visible ──
-    // turn 2 started 收尸 turn 1 → committed 按偏好折叠（unmountOnClose）——
-    // 展开折叠验证迭代（Read）保留不消失。
-    if (await page.locator('[data-role="assistant"] button:has-text("Processed")').count() > 0) {
-      await page.locator('[data-role="assistant"] button:has-text("Processed")').first().click()
-      await page.waitForTimeout(500)
-    }
+    // 每个迭代独立渲染 + 每工具一个 pill（折叠/合并格式已彻底删除）—— 内容直接可见。
     const hasReadAfter = await page.evaluate(() =>
       document.body.textContent?.includes('Read') ?? false)
     console.log('After answer - Read visible:', hasReadAfter)
