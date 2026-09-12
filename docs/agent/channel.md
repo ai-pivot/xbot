@@ -324,6 +324,14 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **重放基础设施**：`src/test-utils/sseReplay.ts` 的 `parseSSEDump()` 解析录制文件为 `WSMessage[]`，`seq` 解析与 `handleEvent` 同构（`msg.seq ?? lastEventId`）——**录制文件可 1:1 重放进 `useProgressStream` 测试**。复现 bug → 下载 .ev → 用 `parseSSEDump` 重放写回归测试固定。
 - **turn 消失回归测试**：`useProgressStream.test.ts` 的 "SSE dump replay" describe——重放"迭代边界清 streamContent → PhaseDone 无 text 事件"的流，断言 liveMessage 不消失 + `onIterationGap` 触发（reload 从 DB 恢复权威完整回复）。
 
+### Web Frontend UI Mode（外壳模式：自动 / 桌面 / 移动端）
+
+- **单一权威源 `web/src/hooks/useUIMode.ts`**：`UIMode = 'auto' | 'desktop' | 'mobile'`（命名对齐现有 `desktop.*` / `mobile.*` layout slot）。localStorage `xbot-ui-mode` 是读路径（首帧即生效，无异步闪烁），服务端 `user_settings` 的 `web:ui:ui-mode`（SETTING_MAP）负责跨设备同步；`useSyncExternalStore`（+ `storage` / `SETTINGS_SYNCED_EVENT` 监听）让同窗口多实例在设置面板切换后立即重渲染。`auto` 模式下视口跨断点由 `matchMedia(MOBILE_QUERY = '(max-width: 767px)')` 的 change 事件重解析。
+- **`useIsMobile()` 派生自 `useUIMode().effective === 'mobile'`**（原实现自带 matchMedia，已删除）——外壳切换（`AppShell` 的 `if (isMobile) return <MobileAppShell />`）、`TerminalPanel`、LLM 控制台等所有布局分支共享同一判定，**不允许任何地方再各自 matchMedia**（否则强制模式只有外壳生效、布局分支仍按视口走）。
+- **`useIsTouch()` 不受影响**：它是【设备能力】（`(hover: none) and (pointer: coarse)`）而非布局模式——强制手机外壳的桌面上 hover 依然可用，触屏上的 tooltip/popover 分流照常。
+- **设置入口**：设置 → 外观 → UI 模式（`SettingsAppearance.tsx`，三个 `aria-pressed` 按钮 + 当前生效提示）。手机外壳里同样能打开该设置（`MobileAppShell` 的 `SettingsDialog`），因此强制 mobile 后不会被困住。
+- **范围**：只切换外壳，不改 CSS 断点——窄屏强制桌面外壳会得到压缩的桌面布局（有意为之）。
+
 ### Web Frontend Message Composer (tiptap)
 
 - **Stack**: `MessageInput.tsx` — tiptap v3（StarterKit + 定制 Link + Placeholder + tiptap-markdown）。编辑器输出 markdown（`getMarkdown()`），下游 onSend 接口零变化。富文本状态（mark 结构）与 markdown 文本互转由 tiptap-markdown 承担。
