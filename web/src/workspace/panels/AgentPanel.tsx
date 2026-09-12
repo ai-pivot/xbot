@@ -21,6 +21,7 @@ import { useChatMessages, type Attachments } from '@/hooks/useChatMessages'
 import { sameSession } from "@/lib/session-grouping"
 import { useAgentChatState } from '@/chat/useAgentChatState'
 import { useTodos } from '@/hooks/useTodos'
+import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdit'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
@@ -41,7 +42,7 @@ import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
-import type { ChatMessage, GoalInfo } from '@/types/shared'
+import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
 // import { useOptionalPluginRuntime } from '@/plugin-runtime'
 
@@ -182,6 +183,7 @@ export function AgentPanel({ params, api }: PanelProps) {
   // don't carry the goal (emitGoalProgress Phase:"" may be skipped by frontend).
   // Also handles page refresh: GetActiveProgress may not return goal if the
   // snapshot doesn't have it, so we fetch it directly via get_goal RPC.
+  // 该值为**兜底水合**（fallbackGoal），用户编辑的乐观覆盖由 usePendingEdit 负责。
   useEffect(() => {
     if (!chatID || !messageChannel) return
     let cancelled = false
@@ -189,9 +191,9 @@ export function AgentPanel({ params, api }: PanelProps) {
       .then((g) => {
         if (cancelled) return
         if (g && g.objective) {
-          setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
+          setFallbackGoal({ objective: g.objective, status: g.status || 'active', summary: g.summary })
         } else {
-          setGoalOverride(null)
+          setFallbackGoal(null)
         }
       })
       .catch(() => {})
@@ -337,22 +339,18 @@ export function AgentPanel({ params, api }: PanelProps) {
   // 方案 A：live 行由 store.toRows() 输出（liveMessage=null），渲染永不 gate。
   const askUser = useAskUser({ chatID, channel: messageChannel })
 
-  const todoState = useTodos(progressSnapshot.todos)
-  // goalOverride: optimistic local goal state. Set immediately after set_goal RPC
-  // succeeds (before any progress event arrives). Cleared when progressSnapshot.goal
-  // catches up (from SSE progress event or GetActiveProgress on refresh).
-  // This avoids waiting for emitGoalProgress (which may not reach the frontend
-  // reliably with Phase: "").
-  const [goalOverride, setGoalOverride] = useState<GoalInfo | null | undefined>(undefined)
-  const goal = progressSnapshot.goal ?? goalOverride
-  // Clear override when progress snapshot catches up with a REAL goal value
-  // (not null — null means "no goal in progress event", which should NOT clear
-  // the override set by set_goal RPC / /goal command / getGoal RPC).
-  useEffect(() => {
-    if (progressSnapshot.goal) {
-      setGoalOverride(undefined)
-    }
-  }, [progressSnapshot.goal])
+  // 会话级字段（goal / todos）的**用户编辑乐观覆盖**：RPC 成功后立刻显示用户提交的
+  // 值；服务端快照相对"提交前的值"发生变化（push 收敛 / agent 第三方改动）时让位 —
+  // 服务端始终是权威。修复"编辑后恢复旧内容、刷新才生效"（2026-09-12 用户报告，
+  // goal 与 todos 同类：显示优先级写反 + 过度清除覆盖 + todos 没有乐观副本）。
+  //
+  // fallbackGoal：get_goal RPC 的兜底水合（会话切换 / 重启后 lastProgressSnapshot
+  // 为空时，快照里没有 goal）。它只补"快照缺失"，不参与覆盖语义。
+  const [fallbackGoal, setFallbackGoal] = useState<GoalInfo | null>(null)
+  const goalSnapshot = progressSnapshot.goal ?? fallbackGoal
+  const [goal, commitGoal] = usePendingEdit(goalSnapshot, goalEqual)
+  const [todos, commitTodos] = usePendingEdit(progressSnapshot.todos, todosListEqual)
+  const todoState = useTodos(todos)
   // Busy state: sessionStore.running is the primary source (same source the
   // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
   // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
@@ -396,9 +394,9 @@ export function AgentPanel({ params, api }: PanelProps) {
         .then((g) => {
           if (cancelled) return
           if (g && g.objective) {
-            setGoalOverride({ objective: g.objective, status: g.status || 'active', summary: g.summary })
+            setFallbackGoal({ objective: g.objective, status: g.status || 'active', summary: g.summary })
           } else {
-            setGoalOverride(null)
+            setFallbackGoal(null)
           }
         })
         .catch(() => {})
@@ -459,12 +457,12 @@ export function AgentPanel({ params, api }: PanelProps) {
 
   const sendMessage = useCallback((content: string, attachments?: Attachments, interrupt?: boolean) => {
     setFollowResetToken((v) => v + 1)
-    // Detect /goal command and optimistically set goalOverride (frontend-only,
-    // no backend needed — progress event may not carry goal reliably).
+    // Detect /goal command and optimistically show the new goal (frontend-only;
+    // 后端 push 到达即收敛让位 —— 见 usePendingEdit)。
     if (content.startsWith('/goal ') && !content.startsWith('/goal status') && !content.startsWith('/goal clear')) {
       const objective = content.slice(6).trim()
       if (objective) {
-        setGoalOverride({ objective, status: 'active' })
+        commitGoal({ objective, status: 'active' })
       }
     }
     // ⚡ Interject mode: skip optimistic rendering (no user row — the message
@@ -474,46 +472,49 @@ export function AgentPanel({ params, api }: PanelProps) {
       sendUserRef.current(content, rid)
     }
     sendMessageRef.current(content, attachments, rid, interrupt)
-  }, [setGoalOverride])
+  }, [commitGoal])
 
   // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
   const handleSetGoal = useCallback(async (objective: string) => {
     if (!chatID || !messageChannel) return
     try {
       await setGoal({ channel: messageChannel, chatID }, objective)
-      // Optimistic update: set goal locally so UI updates immediately without
-      // waiting for a progress event (emitGoalProgress may not reach frontend reliably).
-      setGoalOverride({ objective, status: 'active' })
+      // 乐观覆盖：RPC 成功后立刻显示新目标，不等后端 push（push 到达即收敛让位）。
+      commitGoal({ objective, status: 'active' })
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to set goal')
     }
-  }, [chatID, messageChannel, setGoalOverride])
+  }, [chatID, messageChannel, commitGoal])
 
-  // User edits the checklist (rename / toggle done / delete). The backend
-  // persists it and pushes the new list back over the progress stream, so we
-  // deliberately keep no local copy — one source of truth.
+  // User edits the checklist (rename / toggle done / delete). 服务端持久化后会把新
+  // 列表 push 回进度流；在 push 到达前用乐观覆盖显示用户提交的列表（push 收敛即
+  // 让位，丢失也不回退 —— 2026-09-12 用户报告"编辑后回退、刷新才生效"）。
   const handleUpdateTodos = useCallback(
-    async (todos: { text: string; status: string }[]) => {
+    async (todos: TodoItem[]) => {
       if (!chatID || !messageChannel) return
       try {
-        await updateTodos({ channel: messageChannel, chatID }, todos)
+        await updateTodos(
+          { channel: messageChannel, chatID },
+          todos.map((it) => ({ text: it.text, status: it.status })),
+        )
+        commitTodos(todos)
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Failed to update todos')
       }
     },
-    [chatID, messageChannel],
+    [chatID, messageChannel, commitTodos],
   )
 
   const handleClearGoal = useCallback(async () => {
     if (!chatID || !messageChannel) return
     try {
       await clearGoal({ channel: messageChannel, chatID })
-      // Optimistic update: clear goal locally.
-      setGoalOverride(null)
+      // 乐观覆盖：立刻移除 banner（服务端 push 为显式 cleared 标记，到达即收敛）。
+      commitGoal(null)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to clear goal')
     }
-  }, [chatID, messageChannel, setGoalOverride])
+  }, [chatID, messageChannel, commitGoal])
 
   // chatRef：rewindTo/footer 的稳定闭包读取（useChatMessages 每帧返回新对象，
   // 若 rewindTo deps 含 chat 则每帧重建 → 传给 MessageList 的 onRewind 引用
