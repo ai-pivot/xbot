@@ -11,6 +11,7 @@ import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints } from '@/components/agent/ToolRender'
+import { syntheticShortName } from '@/components/agent/SyntheticToolCard'
 import { DiffView, extractDiffSource, parseUnifiedDiff } from '@/components/agent/DiffView'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -374,8 +375,8 @@ describe('parseSyntheticHints', () => {
   })
 })
 
-describe('SyntheticToolCard', () => {
-  it('renders a background task card with the ORIGINAL command, status, exit code and duration', () => {
+describe('SyntheticToolCard (fancy built-in notification cards)', () => {
+  it('background task: original command, status, exit code, duration, output + section captions', () => {
     const tool = makeTool({
       name: 'background_task_result',
       label: 'bg:3f8f492a',
@@ -387,16 +388,23 @@ describe('SyntheticToolCard', () => {
       }),
     })
     renderWithProviders(<ToolRender tool={tool} />)
-    expect(screen.getByText(/3f8f492a/)).toBeInTheDocument()
+    // subject (task id) appears on the header chip AND in the meta footer
+    expect(screen.getAllByText(/3f8f492a/).length).toBeGreaterThan(0)
     // the ORIGINAL task/command is the whole point of the card
     expect(screen.getByText('make build -j8')).toBeInTheDocument()
     // multi-line preview: match a substring (getByText normalizes whitespace)
     expect(screen.getByText(/built 3 targets/)).toBeInTheDocument()
-    expect(screen.getByText('done')).toBeInTheDocument()
+    expect(screen.getByText(/done|完成/)).toBeInTheDocument()
     expect(screen.getByText(/(退出码|Exit code)\s*0/)).toBeInTheDocument()
+    // rich card: section captions + duration chip + output stats + meta footer
+    expect(screen.getByText(/Command|命令/)).toBeInTheDocument()
+    expect(screen.getByText(/Output|输出/)).toBeInTheDocument()
+    expect(screen.getByText('1.2s')).toBeInTheDocument()
+    expect(screen.getByText(/2 (lines|行)/)).toBeInTheDocument()
+    expect(screen.getByText(/Task ID|任务 ID/)).toBeInTheDocument()
   })
 
-  it('renders a sub-agent card with role/instance and the ORIGINAL task', () => {
+  it('sub-agent: role/instance, ORIGINAL task and result preview — never the internal name', () => {
     const tool = makeTool({
       name: 'bg_subagent_completed',
       label: 'bgsub:explore/mem-1',
@@ -411,9 +419,12 @@ describe('SyntheticToolCard', () => {
     expect(screen.getByText(/explore\/mem-1/)).toBeInTheDocument()
     expect(screen.getByText('找出登录流程的入口')).toBeInTheDocument()
     expect(screen.getByText('入口在 channel/web/web_auth.go')).toBeInTheDocument()
+    expect(screen.getByText('42s')).toBeInTheDocument()
+    // the raw snake_case tool name is never shown to users
+    expect(screen.queryByText(/bg_subagent_completed/)).toBeNull()
   })
 
-  it('falls back to the summary text when toolHints is absent (legacy history)', () => {
+  it('falls back to summary/detail text when toolHints is absent (legacy history rows)', () => {
     const tool = makeTool({
       name: 'cron_fired',
       label: 'cron',
@@ -424,9 +435,64 @@ describe('SyntheticToolCard', () => {
     expect(screen.getByText(/nightly build/)).toBeInTheDocument()
   })
 
+  it('error cards surface the failure reason', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'error',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task: 'npm run build', status: 'error', exit_code: 1,
+        elapsed_ms: 900, error: 'tsc: 3 errors',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/error|失败/)).toBeInTheDocument()
+    expect(screen.getByText('tsc: 3 errors')).toBeInTheDocument()
+    expect(screen.getByText(/(退出码|Exit code)\s*1/)).toBeInTheDocument()
+  })
+
   it('renders a cancel marker card', () => {
     const tool = makeTool({ name: 'user_cancelled', label: 'cancelled by user', status: 'done' })
     renderWithProviders(<ToolRender tool={tool} />)
-    expect(screen.getByText(/取消|Cancelled/)).toBeInTheDocument()
+    // title + status chip both carry the cancelled wording
+    expect(screen.getAllByText(/取消|cancelled/i).length).toBeGreaterThan(0)
+  })
+
+  it('user_interrupt renders a fancy interjection card with the message body', () => {
+    const tool = makeTool({
+      name: 'user_interrupt',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'interrupt', message: '先别改前端，先把后端接口定下来' }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByTestId('interrupt-card')).toBeInTheDocument()
+    expect(screen.getByText('先别改前端，先把后端接口定下来')).toBeInTheDocument()
+    expect(screen.queryByText('user_interrupt')).toBeNull()
+  })
+
+  it('icons are lucide SVG — the cards contain no emoji glyphs', () => {
+    const tool = makeTool({
+      name: 'cron_fired',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'cron', message: 'nightly build' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u
+    expect(emoji.test(container.textContent ?? '')).toBe(false)
+  })
+})
+
+describe('syntheticShortName — friendly names for injected tools', () => {
+  it('maps internal tool names to human labels (never snake_case), null for real tools', () => {
+    expect(syntheticShortName(makeTool({ name: 'bg_subagent_completed' }))).toBe('Sub-agent')
+    expect(syntheticShortName(makeTool({ name: 'background_task_result' }))).toBe('Background task')
+    expect(syntheticShortName(makeTool({ name: 'user_cancelled' }))).toBe('Cancelled')
+    expect(syntheticShortName(makeTool({ name: 'user_interrupt' }))).toBe('Interjection')
+    expect(syntheticShortName(makeTool({ name: 'Shell' }))).toBeNull()
+    // payload kind wins over the tool name (e.g. bg_subagent_failed → subagent)
+    const failed = makeTool({
+      name: 'bg_subagent_failed',
+      toolHints: JSON.stringify({ kind: 'subagent', status: 'error' }),
+    })
+    expect(syntheticShortName(failed)).toBe('Sub-agent')
   })
 })

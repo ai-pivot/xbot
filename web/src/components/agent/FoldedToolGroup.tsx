@@ -24,6 +24,7 @@ import { SweepText } from './SweepText'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
+import { syntheticShortName } from './SyntheticToolCard'
 import { useI18n } from '@/providers/i18n'
 
 import type { CollapseLevel } from '@/types/agent'
@@ -91,11 +92,18 @@ function statusColorVar(status: ToolStatusColor): string {
   }
 }
 
+/** i18n translate signature (subset of I18nContextValue['t']). */
+type T = (key: string, params?: Record<string, string | number>) => string
+
 /** Get display name from tool label.
  *  For generating tools, always use tool.name — the label is still streaming
- *  (e.g. "思考中…" placeholder) and parsing it would cause name flicker. */
-function displayName(tool: WebToolProgress): string {
+ *  (e.g. "思考中…" placeholder) and parsing it would cause name flicker.
+ *  Injected (synthetic) notification tools NEVER show their internal snake_case
+ *  name (`bg_subagent_completed`) — a localized short name is used instead. */
+function displayName(tool: WebToolProgress, t?: T): string {
   const name = tool.name || 'tool'
+  const synthetic = syntheticShortName(tool, t)
+  if (synthetic) return synthetic
   if (tool.status === 'generating') return name
   const label = tool.label || name
   return label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
@@ -123,7 +131,7 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
 }
 
 /** 工具 pill 三态（设计稿 1:1）：running=accent 椭圆+pulse 圆点+流光 / error=红椭圆+✗ / done=绿椭圆+✓。 */
-function toolPill(tool: WebToolProgress, sweepRunning = true): ReactNode {
+function toolPill(tool: WebToolProgress, sweepRunning = true, t?: T): ReactNode {
   const status = singleStatus(tool)
   const running = status === 'running'
   const failed = status === 'all-failed'
@@ -134,7 +142,7 @@ function toolPill(tool: WebToolProgress, sweepRunning = true): ReactNode {
     : failed
       ? 'color-mix(in srgb, var(--destructive) 12%, transparent)'
       : 'color-mix(in srgb, var(--status-success, #22c55e) 12%, transparent)'
-  const name = displayName(tool)
+  const name = displayName(tool, t)
   const param = toolParam(tool)
   const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
   const showSweep = running && sweepRunning && !isSubAgentTool(tool)
@@ -179,7 +187,7 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
           : failed
             ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color }} />
             : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
-        <span className="font-mono text-[11px] font-medium" style={{ color }}>{displayName(tool)}</span>
+        <span className="font-mono text-[11px] font-medium" style={{ color }}>{displayName(tool, t)}</span>
         {tool.elapsedMs > 0 && (
           <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
         )}
@@ -255,13 +263,14 @@ function LazyPillPopover({
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
  *  "+N" 弹溢出工具的全量列表。 */
 const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { tools: WebToolProgress[]; sweepRunning?: boolean }) {
+  const { t } = useI18n()
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
     <span className="flex flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
         <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" content={<ToolPopoverDetail tool={tool} />}>
-          {toolPill(tool, sweepRunning)}
+          {toolPill(tool, sweepRunning, t)}
         </LazyPillPopover>
       ))}
       {overflow && <OverflowPillsMenu tools={tools} />}
@@ -290,6 +299,7 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
  * 浮层在 Portal 内，内部展开的行高变化不进入虚拟列表布局树（零 relayout）。
  */
 function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
+  const { t } = useI18n()
   const [sel, setSel] = useState<number | null>(null)
   return (
     <div className="flex flex-col">
@@ -317,7 +327,7 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
                 : failed
                   ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color: c }} />
                   : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color: c }} />}
-              <span className="shrink-0 font-mono text-[11px] font-medium" style={{ color: c }}>{displayName(tool)}</span>
+              <span className="shrink-0 font-mono text-[11px] font-medium" style={{ color: c }}>{displayName(tool, t)}</span>
               <span className="min-w-0 flex-1 truncate text-[11px] text-text-muted">{tool.label}</span>
               {tool.elapsedMs > 0 && (
                 <span className="shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
@@ -337,6 +347,7 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
 
 /** Expanded tool card: [icon] name + input + output */
 function ToolCard({ tool }: { tool: WebToolProgress }) {
+  const { t } = useI18n()
   const name = tool.name || 'tool'
 
   // GenUI tool: no card chrome, just render the GenUI directly.
@@ -346,7 +357,7 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
 
   const status = singleStatus(tool)
   const color = statusColorVar(status)
-  const dn = displayName(tool)
+  const dn = displayName(tool, t)
   const showSweep = status === 'running' && !isSubAgentTool(tool)
 
   return (

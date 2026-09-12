@@ -20,7 +20,6 @@
 import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
 import {
   FileText, ChevronRight, CheckCircle2, Circle, FastForward, Loader2,
-  Terminal, Bot, Clock, Mail, Send, Ban, RotateCcw, CornerUpLeft, Zap,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { WebToolProgress } from '@/types/shared'
@@ -34,6 +33,10 @@ import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { GenUIPanel } from './GenUIPanel'
 import { useToolSession } from './ToolSessionContext'
 import { useI18n } from '@/providers/i18n'
+import { InterruptCard, SyntheticToolCard, isSyntheticToolName } from './SyntheticToolCard'
+
+// Back-compat: history/UI callers imported these from ToolRender.
+export { SyntheticToolCard, parseSyntheticHints, isSyntheticToolName } from './SyntheticToolCard'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -128,7 +131,7 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     case 'Shell':
       return <ShellRender tool={tool} summary={summary} detail={detail} />
     case 'user_interrupt':
-      return <UserInterruptRender tool={tool} />
+      return <InterruptCard tool={tool} />
     case 'FileCreate':
       return <FileCreateRender tool={tool} summary={summary} />
     case 'FileReplace':
@@ -172,200 +175,6 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     }
   }
 })
-
-// ── user_interrupt ────────────────────────────────────────────────────
-
-/** user_interrupt synthetic tool — rendered as a violet interjection card. */
-function UserInterruptRender({ tool }: { tool: WebToolProgress }) {
-  // The backend ships the interjection body in the UI-only hints payload and
-  // keeps `summary` as a short card label — prefer the payload, and fall back
-  // to summary/args for history rows written before it existed.
-  const hints = parseSyntheticHints(tool.toolHints)
-  const text = hints?.message || hints?.output || tool.summary || tool.args || ''
-  return (
-    <div className="border-l-2 border-violet-400/70 bg-violet-500/[0.07] py-1.5 pl-3 pr-2 text-xs dark:border-violet-500/60 dark:bg-violet-500/[0.10]">
-      <div className="flex items-center gap-1.5">
-        <Zap size={12} className="shrink-0 text-violet-500 dark:text-violet-400" aria-hidden="true" />
-        <span className="min-w-0 flex-1 break-words text-text-primary">{text || '(interjection)'}</span>
-      </div>
-      <div className="mt-1 text-[10px] font-mono text-text-muted">
-        user_interrupt · synthetic tool
-      </div>
-    </div>
-  )
-}
-
-
-// ── injected (synthetic) notification tools ───────────────────────────
-//
-// The backend injects system notifications as fake tool-call pairs so the
-// model sees them mid-Run: background task completion, sub-agent completion,
-// cron fires, interjections, cancel markers… They are not real tools, so the
-// raw card used to be nothing but the notification text. The backend now also
-// ships a UI-only structured payload in toolHints (tools.SyntheticToolHints —
-// never sent to the model, so it can carry rich presentation data). These
-// cards render it: the ORIGINAL task/command, status, duration and an
-// output/result preview.
-//
-// History rows written before that payload existed carry no toolHints; the
-// cards then degrade to the summary text.
-
-interface SyntheticHints {
-  kind?: string
-  task_id?: string
-  /** The ORIGINAL thing that was asked for: shell command, or sub-agent task. */
-  task?: string
-  role?: string
-  instance?: string
-  status?: string
-  exit_code?: number
-  elapsed_ms?: number
-  message?: string
-  output?: string
-  error?: string
-}
-
-/** Parse the UI-only payload the backend puts in toolHints for injected
- *  notification tools. Returns null when absent (legacy rows / real tools). */
-export function parseSyntheticHints(raw: string): SyntheticHints | null {
-  const s = (raw || '').trim()
-  if (!s.startsWith('{')) return null
-  try {
-    const v = JSON.parse(s) as SyntheticHints
-    return v && typeof v === 'object' ? v : null
-  } catch {
-    return null
-  }
-}
-
-/** Tool names injected by the backend as fake notification tool-calls. */
-const SYNTHETIC_TOOL_NAMES = new Set([
-  'background_task_result',
-  'cron_fired',
-  'async_message',
-  'user_cancelled',
-  'delivered_message',
-  'loop_detected',
-  'pre_turn_end',
-])
-
-export function isSyntheticToolName(name: string): boolean {
-  return name.startsWith('bg_subagent_') || SYNTHETIC_TOOL_NAMES.has(name)
-}
-
-/** Kind is normally carried by the payload; derive it from the tool name for
- *  history rows written before the payload existed. */
-function inferSyntheticKind(name: string): string {
-  if (name.startsWith('bg_subagent_')) return 'subagent'
-  switch (name) {
-    case 'background_task_result': return 'bg_task'
-    case 'cron_fired': return 'cron'
-    case 'async_message': return 'async'
-    case 'delivered_message': return 'delivered'
-    case 'user_cancelled': return 'cancel'
-    case 'loop_detected': return 'loop'
-    default: return 'pre_turn_end'
-  }
-}
-
-// Icons are lucide SVG components, never emoji: emoji glyphs render as tofu
-// boxes wherever the environment lacks an emoji font (caught by the E2E
-// screenshot — the card header showed "□ Scheduled job fired").
-const SYNTHETIC_LOOK: Record<string, { Icon: typeof Terminal; accent: string }> = {
-  bg_task: { Icon: Terminal, accent: 'border-sky-400/60 bg-sky-500/[0.06] dark:border-sky-500/50 dark:bg-sky-500/[0.09]' },
-  subagent: { Icon: Bot, accent: 'border-violet-400/60 bg-violet-500/[0.06] dark:border-violet-500/50 dark:bg-violet-500/[0.09]' },
-  cron: { Icon: Clock, accent: 'border-amber-400/60 bg-amber-500/[0.06] dark:border-amber-500/50 dark:bg-amber-500/[0.09]' },
-  async: { Icon: Mail, accent: 'border-teal-400/60 bg-teal-500/[0.06] dark:border-teal-500/50 dark:bg-teal-500/[0.09]' },
-  delivered: { Icon: Send, accent: 'border-teal-400/60 bg-teal-500/[0.06] dark:border-teal-500/50 dark:bg-teal-500/[0.09]' },
-  cancel: { Icon: Ban, accent: 'border-border bg-bg-tertiary/40' },
-  loop: { Icon: RotateCcw, accent: 'border-amber-400/60 bg-amber-500/[0.06] dark:border-amber-500/50 dark:bg-amber-500/[0.09]' },
-  pre_turn_end: { Icon: CornerUpLeft, accent: 'border-border bg-bg-tertiary/40' },
-}
-
-/** Card for an injected notification tool. Fancy when the payload is present
- *  (original task + status + duration + preview), plain text otherwise. */
-export function SyntheticToolCard({ tool }: { tool: WebToolProgress }) {
-  const { t } = useI18n()
-  const hints = useMemo(() => parseSyntheticHints(tool.toolHints), [tool.toolHints])
-  const [open, setOpen] = useState(false)
-
-  const kind = hints?.kind || inferSyntheticKind(tool.name)
-  const look = SYNTHETIC_LOOK[kind] || SYNTHETIC_LOOK.bg_task
-  const KindIcon = look.Icon
-  const status = (hints?.status || '').toLowerCase()
-  const failed = status === 'error' || status === 'killed'
-  const tone: 'green' | 'red' | 'muted' = status === 'done' ? 'green' : failed ? 'red' : 'muted'
-
-  const target = hints?.role
-    ? `${hints.role}${hints.instance ? '/' + hints.instance : ''}`
-    : hints?.task_id || ''
-  const title =
-    kind === 'bg_task' ? `${t('agent.tool.syntheticBgTask')}${target ? ' ' + target : ''}`
-    : kind === 'subagent' ? `${t('agent.tool.syntheticSubAgent')}${target ? ' ' + target : ''}`
-    : kind === 'cron' ? t('agent.tool.syntheticCronFired')
-    : kind === 'async' ? t('agent.tool.syntheticAsyncMessage')
-    : kind === 'delivered' ? t('agent.tool.syntheticDelivered')
-    : kind === 'cancel' ? t('agent.tool.syntheticCancelled')
-    : tool.label || tool.name
-
-  const elapsed = elapsedBadge(hints?.elapsed_ms || tool.elapsedMs)
-  const body = hints?.output || hints?.message || tool.summary || ''
-  const clipped = body.length > 600
-
-  return (
-    <div className={`border-l-2 py-1.5 pl-3 pr-2 text-xs ${look.accent}`}>
-      <div className="flex flex-wrap items-center gap-1.5">
-        <KindIcon size={13} className="shrink-0 text-text-secondary" aria-hidden="true" />
-        <span className="min-w-0 break-words font-medium text-text-primary">{title}</span>
-        {status && <Badge tone={tone}>{status}</Badge>}
-        {typeof hints?.exit_code === 'number' && (
-          <Badge tone={failed ? 'red' : 'muted'}>{t('agent.tool.syntheticExitCode')} {hints.exit_code}</Badge>
-        )}
-        {elapsed && <Badge>{elapsed}</Badge>}
-      </div>
-
-      {hints?.task && (
-        <div className="mt-1 flex items-start gap-1.5">
-          <span className="shrink-0 text-[10px] leading-5 text-text-muted">
-            {t('agent.tool.syntheticOriginalTask')}
-          </span>
-          <code className="min-w-0 flex-1 break-words font-mono text-[11px] leading-5 text-text-secondary">
-            {hints.task}
-          </code>
-        </div>
-      )}
-
-      {body ? (
-        <div className="mt-1">
-          <pre
-            className={`overflow-x-hidden whitespace-pre-wrap break-words rounded bg-bg-tertiary/40 p-1.5 font-mono text-[11px] text-text-secondary ${
-              clipped && !open ? 'max-h-24 overflow-y-hidden' : ''
-            }`}
-          >
-            {body}
-          </pre>
-          {clipped && (
-            <button
-              type="button"
-              onClick={() => setOpen((v) => !v)}
-              className="mt-0.5 text-[10px] text-accent hover:underline"
-            >
-              {open ? t('agent.tool.syntheticShowLess') : t('agent.tool.syntheticShowMore')}
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="mt-1 text-[10px] text-text-muted">{t('agent.tool.syntheticNoOutput')}</div>
-      )}
-
-      {hints?.error && (
-        <div className="mt-1 break-words font-mono text-[11px] text-red-700 dark:text-red-400">
-          {hints.error}
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ── Shell ──────────────────────────────────────────────────────────────
 
