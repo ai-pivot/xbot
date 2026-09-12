@@ -97,6 +97,9 @@ Include the discovered tool names in the skill body so the LLM knows which tools
 
 ### 2. Write SKILL.md
 
+> ⚠️ **`description` 是唯一的激活依据 —— 必须写全「所有」激活条件，而不是笼统介绍。**
+> 详见下面的《Description: enumerate EVERY activation condition》。
+
 ```markdown
 ---
 name: my-skill
@@ -115,6 +118,46 @@ Step-by-step instructions for the LLM...
 ```
 
 **Note**: Every skill SHOULD include a "Required Tools" section listing which tools the skill expects to use. All tools are always available to the agent — this section is documentation, not a load trigger.
+
+### Description: enumerate EVERY activation condition
+
+The `description` is the **sole** activation trigger: the agent sees only
+`name` + `description` in its system prompt and decides from those whether to load
+the skill. A vague description means the skill is never activated — or activated at
+the wrong time.
+
+**Requirements:**
+
+1. **List every trigger situation**, not a summary of the topic. Cover all of:
+   - the **task types** that should load it ("配环境 / 部署 / 排查 CI 失败 / 写迁移脚本…"),
+   - the **user phrasings & keywords** a user might actually say (synonyms, Chinese *and*
+     English terms, tool/product names, error strings),
+   - the **artifacts** involved (file names/extensions, config keys, CLI commands,
+     dashboard names),
+   - **explicit triggers** if any (`/my-skill`).
+2. **Say what it does in one clause, then spend the rest on when** — "做什么" 一句话，
+   其余全部用来列触发条件。
+3. **Be specific, not generic.** ❌「帮助处理数据库相关任务」 ✅「Go 项目 SQLite schema
+   迁移：新增/删除列、写 migration、排查 `no such column` 报错、回滚方案」。
+4. **Include negative scope when it matters** ("不要用于 X，X 用另一个 skill")。
+5. **Don't be shy about length**: 3–6 行、覆盖 5–10 个具体触发条件，比一句笼统介绍有用得多。
+
+**Example — bad (never activates reliably):**
+
+```yaml
+description: A skill for database work.
+```
+
+**Example — good:**
+
+```yaml
+description: "SQLite/Postgres schema 迁移与排错。触发：新增/删除/改名表列、写 migration
+  文件、`no such column`/`table ... has no column named` 报错、回滚迁移、schema 版本
+  冲突、sqlite3 CLI 操作、批量数据修复脚本。和 /migrate 命令配合使用。不适用于查询性能
+  优化（用 perf 相关 skill）。"
+```
+
+写完后自检：**"一个没读过这个 skill 的人，只看 description，能不能判断出所有该激活它的情形？"** 不能 → 继续补。
 
 ### 3. Add scripts (optional)
 
@@ -154,7 +197,10 @@ Skill(name=my-skill, action=load, file=references/api-spec.md)
 
 **Frontmatter:**
 - `name`: lowercase with hyphens (e.g. `pdf-editor`)
-- `description`: WHAT it does + WHEN to use it — this is the sole activation trigger
+- `description`: WHAT it does (one clause) + **EVERY activation condition** — this is the
+  sole activation trigger. Enumerate all task types, user phrasings/keywords (中英都要),
+  artifact/command/error names, and explicit triggers; add negative scope when relevant.
+  A generic one-liner is a bug (see《Description: enumerate EVERY activation condition》)  ← 必须写全，不能笼统
 
 **Body:**
 - Keep under 300 lines (auto-truncated beyond this)

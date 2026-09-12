@@ -24,7 +24,18 @@ type TaskWaitTool struct{}
 func (t *TaskWaitTool) Name() string   { return "task_wait" }
 func (t *TaskWaitTool) Required() bool { return false }
 func (t *TaskWaitTool) Description() string {
-	return `Block until background task(s) finish, or the timeout expires. Returns the final status and output preview for each task.
+	return `⚠️ AVOID THIS TOOL. Background work reports its result to you AUTOMATICALLY as a
+	notification — you do NOT need to wait for it, and blocking here burns a whole
+	iteration doing nothing.
+
+	Call task_wait ONLY when:
+  - you have nothing else useful to do (no other tool work, no reply to compose), OR
+  - the user explicitly asks you to wait for a task to finish.
+
+	Do NOT call it right after starting a task ("to see how it goes"), and do NOT use it
+	as a status poll — that is task_status, which returns immediately.
+
+	Block until background task(s) finish, or the timeout expires. Returns the final status and output preview for each task.
 
 	task_id is an ARRAY of task ID strings — pass all IDs you are waiting on in ONE call:
   - Single task:  task_id: ["bg-abc123"]
@@ -43,7 +54,7 @@ If the task is already completed, returns immediately.
 Parameters (JSON):
   - task_id: array of strings — the background task ID(s) to wait for
   - mode: string (optional) — "all" (default, wait for all) or "any" (return on first completion; for multiple IDs)
-  - timeout: number (optional), max seconds to wait (default: 60, max: 300)`
+  - timeout: number (optional), max seconds to wait (default: 60 = 1 min, max: 300)`
 }
 
 func (t *TaskWaitTool) Parameters() []llm.ToolParam {

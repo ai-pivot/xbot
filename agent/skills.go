@@ -226,6 +226,7 @@ func (s *SkillStore) GetSkillsCatalog(ctx context.Context, senderID string, proj
 	var sb strings.Builder
 	sb.WriteString("## Available Skills\n\n")
 	sb.WriteString("Skills are specialized guidance documents that capture hard-won domain knowledge, conventions, and pitfalls for specific tasks. ALWAYS scan this list BEFORE starting any task — if a skill's description matches your task (by intent or keywords, not just exact wording), activate it FIRST via the `Skill` tool (action=load) to read its SKILL.md. Loading a skill is one cheap, idempotent tool call that saves you from re-discovering known pitfalls; when in doubt, load it.\n")
+	sb.WriteString("Be PROACTIVE about skills: whenever ANY skill could apply to what you are about to do — even partially, even if you believe you already know how to do it — activate it BEFORE acting (before reading code, before running commands, before writing files). Do not wait for the user to ask for a skill; the user is not expected to know which skills exist. Erring towards activating too many skills is cheap and correct; missing a relevant skill's pitfalls is expensive. Treat \"does a skill apply here?\" as a question you answer on every task, not an optional extra.\n")
 	sb.WriteString("A user message starting with `/xxxx` is an explicit skill trigger: find the matching skill name and activate it before processing anything else.\n\n")
 
 	// 注入目录路径，供 skill-creator 参考新建位置

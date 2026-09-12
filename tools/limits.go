@@ -16,7 +16,12 @@ const (
 	MaxBgTaskLifetime = 24 * time.Hour
 
 	// Shell limits
-	DefaultShellTimeout = 120 * time.Second
+	// DefaultShellTimeout is the default foreground wait before a running shell is
+	// AUTO-PROMOTED to a background task (1 min). The process is NOT killed — it
+	// keeps running and reports completion as a notification, so a short default
+	// keeps the agent loop responsive (the model should never block on a long
+	// command; pass an explicit timeout for genuinely long runs).
+	DefaultShellTimeout = 60 * time.Second
 	MaxShellTimeout     = 600 * time.Second
 
 	// Grep limits

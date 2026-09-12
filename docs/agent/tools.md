@@ -238,6 +238,40 @@ Users can move a RUNNING foreground shell to the background from the web UI so t
 - **Tool call identity**: `protocol.ToolProgress.CallID` / `agent.ToolProgress.CallID` / `tools.ToolContext.ToolCallID` carry the LLM `tool_call_id` end-to-end so the web promote button targets the exact running tool card (`promote_shell` RPC: `{session_key, tool_call_id}`).
 - **Web frontend**: `ToolRender.tsx` `ShellPromoteBar` (running Shell cards below the terminal card) → `promote_shell` REST RPC → success shows a done bar + task id + sonner toast. `parseShell` recognizes `[PROMOTED to background...]` + `[task_id: "xxx"]` (extraction MUST run BEFORE stripping the headline — the task id shares the first line). Task panels refresh immediately via the `bg-task-promoted` window event (dispatched through `sessionEvents.ts` — direct `window.dispatchEvent` is ESLint-banned in `components/agent/**`).
 
+## Tool guidance — what the model is told to prefer (2026-09-12)
+
+Prompt-level steering IS tool behaviour: if the descriptions tell the model to block or poll,
+it will. These are guarded by tests (`tools/tool_guidance_test.go`, `agent/skills_test.go`).
+
+- **`task_read` accepts sub-agent IDs and reads them exactly like `SubAgent(action="inspect")`.**
+  Sub-agent runs have no output buffer — their progress lives in the interactive session.
+  `task_read("sub-xxx")` resolves the task → `(role, instance)` → calls the SAME
+  `InteractiveSubAgentManager.InspectInteractive(role, instance, tail)` the inspect action uses
+  (`tail` = recent iterations, default 5). A dead/unloaded session reports what the ID referred
+  to (role/instance/status) plus the `task_status` fallback — never a bare error. With no
+  interactive manager wired, the message points at `SubAgent(action="inspect")`.
+- **`task_wait` is de-emphasised.** Its description opens with `⚠️ AVOID THIS TOOL`: background
+  work reports its result AUTOMATICALLY as a notification, so blocking burns an iteration for
+  nothing — call it only when there is nothing else useful to do, or the user explicitly asks.
+  Default timeout 1 minute (60s, max 300). Every other prompt that used to say "use task_wait to
+  wait for it" (shell background/promote tips, sub-agent spawn text, `task_status` footer) now
+  says the completion is delivered automatically.
+- **`Shell`**: the description forbids `sleep`-based waiting — start long work with
+  `"background": true` and keep working (`sleep` polling is only OK *inside* a background loop).
+  The default timeout, which is also the auto-promote-to-background threshold, is **1 minute**
+  (`tools/limits.go: DefaultShellTimeout = 60 * time.Second`, was 120s).
+- **Skills are activated proactively** (`agent/skills.go` catalog): activate any applicable skill
+  BEFORE acting (before reading code / running commands / writing files), never wait to be asked,
+  loading is cheap and idempotent, and erring towards too many activations is correct.
+- **`skill-creator`** SKILL.md carries a hard requirement: `description` must enumerate EVERY
+  activation condition (task types, user phrasings/keywords 中英, artifact/command/error names,
+  explicit triggers, negative scope) with bad/good examples and a self-check — a generic
+  one-liner is a bug.
+- **Built-in `explore` agent is read-only**: its description forbids delegating
+  implementing/fixing/refactoring/modifying work to it, and its Rules section adds
+  "⛔ 禁止编辑/修改代码 — 只报告 `file:line` + 建议，改动交给有写权限的 agent"（唯一例外：维护
+  `docs/agent/` 知识文档）。
+
 ## GrpcPluginTransport (`agent/transport_grpc.go`)
 
 Bidirectional JSON-RPC over stdin/stdout for gRPC plugin channel providers. Replaces the old `serverapp/channel_bridge_grpc.go` approach where the plugin's activation process was reused for channel communication.
