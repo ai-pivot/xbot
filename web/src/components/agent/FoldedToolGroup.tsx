@@ -146,7 +146,9 @@ function toolPill(tool: WebToolProgress, sweepRunning = true, t?: T): ReactNode 
   const name = synName ?? displayName(tool, t)
   // 注入型工具没有 args；用 subject（role/instance 或 task id）当参数位，
   // 让 pill 读起来像 `子代理 explore/mem-1`（与 `Shell: cmd` 同构）。
-  const param = synName ? syntheticSubject(tool) : toolParam(tool)
+  const rawParam = synName ? syntheticSubject(tool) : toolParam(tool)
+  // 去重：subject 与显示名相同（user_interrupt 的 label 就是「💬 插话」）时不再重复
+  const param = rawParam && rawParam.toLowerCase() !== name.toLowerCase() ? rawParam : ''
   const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
   const showSweep = running && sweepRunning && !isSubAgentTool(tool)
   return (
@@ -192,38 +194,50 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
   const running = status === 'running'
   const failed = status === 'all-failed'
   // 注入型工具：本地化名字（正文字体，等宽渲染 CJK 很怪）+ subject chip
-  const subject = syntheticShortName(tool, t) ? syntheticSubject(tool) : ''
+  const shownName = displayName(tool, t)
+  const rawSubject = syntheticShortName(tool, t) ? syntheticSubject(tool) : ''
+  // 不给与标题重复的 subject（否则标题行出现「插话 💬 插话」这种看起来像 bug 的重复）
+  const subject = rawSubject && rawSubject.toLowerCase() !== shownName.toLowerCase() ? rawSubject : ''
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2 text-xs">
-        {running
-          ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: color, animation: 'pulse-blue 1.2s infinite' }} />
-          : failed
-            ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color }} />
-            : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
-        <span data-tool-name={tool.name} className="shrink-0 text-[11.5px] font-medium" style={{ color }}>{displayName(tool, t)}</span>
-        {subject && (
-          <code className="truncate rounded bg-bg-tertiary/60 px-1 py-0.5 font-mono text-[10px] text-text-muted">
-            {subject}
-          </code>
-        )}
-        {tool.elapsedMs > 0 && (
-          <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
-        )}
-      </div>
-      {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本）。
-          ANSI 渲染：Shell 等工具的 summary 取自命令输出首行，携带 SGR 颜色码
-          （vitest/ls 等）——用 AnsiText 渲染成彩色，而非 raw 转义序列泄漏。 */}
-      {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary"><AnsiText text={tool.summary} /></p> : null}
-      {tool.args ? (
-        <div>
-          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">{t('agent.args')}</div>
-          <div className="max-h-[150px] overflow-y-auto rounded-md border border-border">
-            <ArgsView args={tool.args} />
+      {/* 注入型工具（bg task / 子代理 / 插话…）：卡片自带标题、状态、退出码、耗时、
+          承接说明与全部内容 —— 弹层的通用头部与 summary 行只会把同样的信息再重复两遍
+          （很吵），所以这里只渲染卡片本身。 */}
+      {syntheticShortName(tool, t) !== null ? (
+        <ToolRender tool={tool} hideArgs />
+      ) : (
+        <>
+          <div className="flex items-center gap-2 text-xs">
+            {running
+              ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: color, animation: 'pulse-blue 1.2s infinite' }} />
+              : failed
+                ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color }} />
+                : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
+            <span data-tool-name={tool.name} className="shrink-0 text-[11.5px] font-medium" style={{ color }}>{shownName}</span>
+            {subject && (
+              <code className="truncate rounded bg-bg-tertiary/60 px-1 py-0.5 font-mono text-[10px] text-text-muted">
+                {subject}
+              </code>
+            )}
+            {tool.elapsedMs > 0 && (
+              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
+            )}
           </div>
-        </div>
-      ) : null}
-      <ToolRender tool={tool} hideArgs />
+          {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本）。
+              ANSI 渲染：Shell 等工具的 summary 取自命令输出首行，携带 SGR 颜色码
+              （vitest/ls 等）——用 AnsiText 渲染成彩色，而非 raw 转义序列泄漏。 */}
+          {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary"><AnsiText text={tool.summary} /></p> : null}
+          {tool.args ? (
+            <div>
+              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">{t('agent.args')}</div>
+              <div className="max-h-[150px] overflow-y-auto rounded-md border border-border">
+                <ArgsView args={tool.args} />
+              </div>
+            </div>
+          ) : null}
+          <ToolRender tool={tool} hideArgs />
+        </>
+      )}
     </div>
   )
 }
