@@ -88,6 +88,11 @@ const en: Translations = {
     maxContext: 'Max context length',
     maxOutput: 'Max output tokens',
     thinkingMode: 'Thinking mode',
+    thinkingStepOff: 'Off',
+    thinkingStepOn: 'Think',
+    thinkingStepPlus: 'Think+',
+    thinkingStepMax: 'Think++',
+
     configSaveFailed: 'Failed to save config',
     disconnectedHint: 'Live updates are disconnected and may be delayed',
     cwdUpdated: 'Working directory updated',

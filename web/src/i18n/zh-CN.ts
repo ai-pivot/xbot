@@ -85,6 +85,11 @@ const zhCN = {
     maxContext: '最大上下文长度',
     maxOutput: '最大输出 Token',
     thinkingMode: '思考模式',
+    thinkingStepOff: '关',
+    thinkingStepOn: '思考',
+    thinkingStepPlus: '思考+',
+    thinkingStepMax: '思考++',
+
     configSaveFailed: '配置保存失败',
     disconnectedHint: '实时连接已断开，状态可能延迟',
     cwdUpdated: '工作路径已更新',

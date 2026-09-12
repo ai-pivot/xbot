@@ -8,7 +8,7 @@ import { selectModel } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
 import type { ModelEntry, Subscription } from '@/types/shared'
-import { ThinkingModeControl, thinkingModeLabel, type ThinkingModeValue } from './ThinkingModeControl'
+import { ThinkingModeControl, thinkingModeLabelI18n, type ThinkingModeValue } from './ThinkingModeControl'
 
 interface ModelSelectorProps {
   channel: string
@@ -90,7 +90,7 @@ export function ModelSelector({
           className="flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-md px-2 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           <span className="min-w-0 truncate font-mono">{currentModel || '—'}</span>
-          <span className="shrink-0 font-mono text-xs text-text-muted md:text-[10px]">{thinkingModeLabel(thinkingMode)}</span>
+          <span className="shrink-0 font-mono text-xs text-text-muted md:text-[10px]">{thinkingModeLabelI18n(t, thinkingMode)}</span>
           <ChevronDown className="size-3 shrink-0 text-text-muted" />
         </button>
       </PopoverTrigger>

@@ -88,6 +88,11 @@ const ja: Translations = {
     maxContext: '最大コンテキスト長',
     maxOutput: '最大出力 Token',
     thinkingMode: '思考モード',
+    thinkingStepOff: 'オフ',
+    thinkingStepOn: '思考',
+    thinkingStepPlus: '思考+',
+    thinkingStepMax: '思考++',
+
     configSaveFailed: '設定の保存に失敗しました',
     disconnectedHint: 'リアルタイム接続が切断されました。状態が遅延する可能性があります',
     cwdUpdated: '作業ディレクトリを更新しました',
@@ -413,8 +418,8 @@ const ja: Translations = {
       copy: 'コピー',
       copied: 'コピーしました',
     },
-    thinkingLive: '思考中 {{count}} 字',
-    thoughtChars: '思考 {{count}} 字',
+    thinkingLive: '{{count}} 文字思考中',
+    thoughtChars: '{{count}} 文字思考',
   },
   skills: {
     install: 'インストール',
