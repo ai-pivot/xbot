@@ -54,8 +54,10 @@ const TIER_META: Record<string, { label: string; icon: string; color: string }> 
 function exportSubscriptions(conn: ReturnType<typeof useWSConnection>, t: TFn) {
   conn.rpc('export_subscriptions', { ids: [] })
     .then((resp: unknown) => {
-      const r = resp as { subscriptions?: Array<Record<string, unknown>> }
-      const subs = r?.subscriptions ?? []
+      // 导出文档 = import_subscriptions 入参的同一份契约（顶层 `subs` + version）
+      // —— 导出的文件可以直接拿去导入，这是"快速配置"闭环。
+      const r = resp as { subs?: Array<Record<string, unknown>> }
+      const subs = r?.subs ?? []
       if (subs.length === 0) {
         toast.info(t('settings.llmConsole.exportEmpty'))
         return
@@ -178,15 +180,20 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
     setImporting(true)
     const reader = new FileReader()
     reader.onload = () => {
-      // JSON.parse throws synchronously on malformed files — BEFORE conn.rpc()
-      // is even called, so the .catch() chain below never runs and
-      // setImporting(false) never executes → UI stuck on "导入中…" forever.
-      // Parse first, fail fast.
+      // Parse first, fail fast: JSON.parse throws synchronously BEFORE conn.rpc()
+      // is called, so the .catch() chain never runs and setImporting(false) would
+      // never execute → UI stuck on "导入中…" forever.
+      // 文件契约 = 导出文档本身：{ version, subs: [...] }。
       let subs: unknown
       try {
-        subs = JSON.parse(String(reader.result))
+        subs = (JSON.parse(String(reader.result)) as { subs?: unknown }).subs
       } catch (e) {
         fail(t('settings.llmConsole.importFailed', { msg: e instanceof Error ? e.message : String(e) }))
+        setImporting(false)
+        return
+      }
+      if (!Array.isArray(subs)) {
+        fail(t('settings.llmConsole.importBadFormat'))
         setImporting(false)
         return
       }
@@ -250,7 +257,7 @@ export function SettingsLLM({ settings }: { settings: Settings }) {
             className="flex h-8 items-center gap-1 rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-50">
             <LlmIcon n="refresh" s={12} c={refreshing ? 'var(--accent)' : undefined} />{refreshing ? t('settings.refreshing') : t('settings.llmConsole.refreshBtn')}
           </button>
-          <button onClick={function() { exportSubscriptions(conn, t) }}
+          <button onClick={function() { exportSubscriptions(conn, t) }} title={t('settings.llmConsole.exportHint')}
             className="flex h-8 items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">{t('settings.llmConsole.export')}</button>
           <label className="flex h-8 cursor-pointer items-center rounded-lg border border-border bg-bg-tertiary px-2.5 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover">
             {importing ? t('settings.llmConsole.importing') : t('settings.llmConsole.import')}

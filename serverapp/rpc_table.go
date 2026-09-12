@@ -959,7 +959,10 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			}
 			subs = all
 		}
-		// Mask API keys: keep first 4 chars + ****
+		// 导出【真实】API Key：导出是一次需登录的显式 owner 操作，唯一用途就是在
+		// 另一台机器/实例上快速配置——mask 之后 import_subscriptions 拿到 "****"
+		// 只会当作待填占位清空，导出即失去意义。需要遮蔽的场景走 list_subscriptions
+		// / get_llm 等读路径（那里仍然 mask）。
 		type exportSub struct {
 			ID              string                             `json:"id"`
 			Name            string                             `json:"name"`
@@ -973,12 +976,6 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 		}
 		result := make([]exportSub, 0, len(subs))
 		for _, s := range subs {
-			maskedKey := s.APIKey
-			if len(maskedKey) > 4 {
-				maskedKey = maskedKey[:4] + "****"
-			} else if maskedKey != "" {
-				maskedKey = "****"
-			}
 			pmc := make(map[string]protocol.PerModelConfig, len(s.PerModelConfigs))
 			for model, cfg := range s.PerModelConfigs {
 				pmc[model] = protocol.PerModelConfig(cfg)
@@ -988,14 +985,18 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 				Name:            s.Name,
 				Provider:        s.Provider,
 				BaseURL:         s.BaseURL,
-				APIKey:          maskedKey,
+				APIKey:          s.APIKey,
 				Model:           s.Model,
 				MaxOutputTokens: s.MaxOutputTokens,
 				ThinkingMode:    s.ThinkingMode,
 				PerModelConfigs: pmc,
 			})
 		}
-		return map[string]any{"subscriptions": result, "version": 1}, nil
+		// 导出文档与 import_subscriptions 的入参是【同一份契约】：顶层 `subs`
+		// （+ version）。直接把导出的文件喂回导入端即可原样落库——这是"快速
+		// 配置"闭环的前提（旧版导出用 `subscriptions` 键，导入端读 `subs`，
+		// 形状不匹配必然 unmarshal 失败）。
+		return map[string]any{"subs": result, "version": 1}, nil
 	})
 	t["import_subscriptions"] = rpc1(func(ctx context.Context, p struct {
 		Subs []struct {
@@ -1029,7 +1030,8 @@ func registerSubscriptionHandlers(t RPCTable, h *RPCContext) {
 			}
 		}
 		for _, imp := range p.Subs {
-			// Skip masked keys (****) — user must fill in real key
+			// 占位符 "****" 永不落库：老版本导出的文件 / 手改文件里可能残留 mask 值，
+			// 存进去会变成一个到调用时才报错的坏订阅。清空 = 待用户补填真 key。
 			if strings.Contains(imp.APIKey, "****") {
 				imp.APIKey = ""
 			}
