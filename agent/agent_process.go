@@ -463,7 +463,7 @@ func (a *Agent) handleCancelledRun(ctx context.Context, msg bus.InboundMessage, 
 	// 前端 cancel 后进行中迭代（tool executing 中断）通过现有 SSE gap 恢复机制
 	// 获取：前端 detect 迭代 gap → get_active_progress RPC 请求增量迭代数据
 	// （后端 lastProgressSnapshot 保留进行中迭代的 ActiveTools）。
-	meta := map[string]string{"cancelled": "true"}
+	meta := map[string]string{"cancelled": "true", channel.MetaFinalReply: "true"}
 	return &channel.OutboundMsg{
 		Channel:  msg.Channel,
 		ChatID:   msg.ChatID,
@@ -545,7 +545,9 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// Empty content without waiting for user and not optional reply
 	if finalContent == "" && replyPolicy != bus.ReplyPolicyOptional {
 		log.Ctx(ctx).Warn("Run produced empty content without waiting for user input")
-		if err := a.sendMessage(msg.Channel, msg.ChatID, "⚠️ 处理完成，但未生成回复内容。请尝试重新描述您的需求。"); err != nil {
+		if err := a.sendMessage(msg.Channel, msg.ChatID,
+			"⚠️ 处理完成，但未生成回复内容。请尝试重新描述您的需求。",
+			map[string]string{channel.MetaFinalReply: "true"}); err != nil {
 			log.Ctx(ctx).WithError(err).Warn("Failed to send empty content notification")
 		}
 		return nil, nil
@@ -605,7 +607,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// sendMessage falls back to getActiveTurnID which can return 0 (the reply
 	// would be committed to turn 0 while the live progress was written to the
 	// real turn — leaving an empty live shell + a turn-0 assistant row).
-	sendMeta := map[string]string{}
+	sendMeta := map[string]string{channel.MetaFinalReply: "true"}
 	if tid := msg.Metadata["turn_id"]; tid != "" {
 		sendMeta["turn_id"] = tid
 	}

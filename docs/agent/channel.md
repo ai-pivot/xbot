@@ -19,8 +19,8 @@ IDs and are independent from the semantic progress watermark.
 
 ### Text-based progress (PreReplyNotifier channels)
 
-Channels without structured display (Feishu patches the sent message with
-progress text, QQ sends progress as separate messages) implement
+Channels without structured display (Feishu streams the turn into a CardKit
+card, QQ sends progress as separate messages) implement
 `channel.PreReplyNotifier` and receive per-iteration progress as **text lines**
 via `RunConfig.ProgressNotifier` → `a.sendMessage`. This must be keyed by
 **channel capability** (`wantsPreReplyNotify`, i.e. `autoNotify` passed into
@@ -29,6 +29,108 @@ channel now has a ProgressEventHandler (needed for `/su` viewing + PhaseDone),
 so that old gate silently disabled text progress for ALL channels. CLI/Web
 (ProgressSender, structured) have `autoNotify=false` → notifier is a no-op,
 keeping their message stream free of progress text artifacts.
+
+#### Feishu CardKit streaming card
+
+The agent marks the outbound lifecycle with two metadata keys
+(`channel.MetaProgressCard` / `channel.MetaFinalReply`, see
+`channel/interfaces.go`): ack (`sendAck`) and every `ProgressNotifier` tick carry
+`progress_card=true`; the authoritative end of the turn (`handleRunOutput`'s final
+send, the empty-content warning, `handleCancelledRun`'s cancel outbound) carries
+`final_reply=true`. Channels ignore the keys unless they render a native
+streaming card.
+
+`channel/feishu/feishu_stream_card.go` renders that lifecycle as ONE CardKit card
+entity per turn. The card layout mirrors the **official** agent card from
+`larksuite/openclaw-lark` (`src/card/builder.ts`):
+
+```
+header   彩色标题栏 (title + subtitle 阶段)
+panel    collapsible_panel 「🛠️ 执行过程 · N 步」 — 每个工具一步
+content  markdown element_id="content" — 流式正文（打字机）
+status   小灰字 footer
+```
+
+Lifecycle: create entity (`streaming_mode=true`) → send
+`{type:card,data:{card_id}}` → `cardElement.Content` with the **accumulated**
+answer text → full-card `Card.Update` to sync the timeline panel and to finalize
+(`streaming_mode=false`). Feishu animates the delta as a typewriter while the old
+text is a prefix of the new one.
+
+The timeline steps come from the engine's **progress trace lines** — the existing
+contract `> ⏳ <label> ...` (running) / `> ✅ … (12ms)` / `> ❌ …` / `> ⚠️ …` /
+`> 📦 …` / `> 🎭 …` produced by `engine_run_tools.go` / `engine_run.go`.
+`splitStreamCardText` separates them from the answer text, and
+`parseTimelineStep` maps the emoji to a state + colour. A line is only a step
+when it starts with `> ` **and** carries one of the known markers — a model
+quoting markdown (`> something`) must not be mistaken for a tool call.
+
+Gotchas:
+
+- `finalize()` MUST always run (and runs even when the full-card update fails):
+  an open stream leaves the card stuck on "生成中" until Feishu force-closes it
+  after 10 minutes.
+- The final reply text is the model's **answer**, not the accumulated progress
+  log → it carries no trace lines. `finalize` therefore KEEPS the timeline
+  collected during the turn instead of overwriting it with an empty one.
+- `update_multi` MUST stay `true` — the content API rejects exclusive cards.
+- Only the `content` element can be streamed; the collapsible panel is synced
+  with full-card updates on its own throttle (`streamCardPanelMinInterval`).
+- A card entity can be sent exactly once and only by the app that created it →
+  the app needs `cardkit:card:write`. On create failure the channel latches
+  `streamCardBroken` (one warning, then the legacy static-card path) instead of
+  retrying every tick.
+- The first send of a turn has no `update_message_id`; a card still open at that
+  point belongs to a previous (e.g. cancelled) turn and is finalized first.
+- A fully-built card (`__FEISHU_CARD__:`) or a WaitingUser AskUser card
+  supersedes the streaming card → finalize + delete before sending it.
+
+#### Provisioning the permission: `xbot-cli feishu-bind` / 设置 → 渠道
+
+`cardkit:card:write` (创建与更新卡片) is part of the Feishu **agent app** preset.
+An app created before that preset existed will NOT have it, and the streaming
+card then silently degrades to the legacy static card (one WARN in the log).
+
+Two entry points share `internal/feishuapp` (the device authorization flow
+`registration.RegisterApp`, RFC 8628 — the same flow as the official "create a
+Feishu agent app in one click" docs), so the scope/event/callback preset lives in
+exactly one place:
+
+**CLI** (`cmd/xbot-cli/feishu_bind.go`):
+
+```
+xbot-cli feishu-bind                    # create a NEW agent app
+xbot-cli feishu-bind --app-id cli_xxx   # bind/upgrade an EXISTING app (增量叠加)
+xbot-cli feishu-bind --create-only      # only allow creating
+xbot-cli feishu-bind --no-save          # print credentials without writing config
+```
+
+**Web** — 设置 → 渠道 (`SettingsChannels.tsx`) → the Feishu card's
+「一键绑定飞书智能体应用」 button:
+
+- `feishu_bind_start` (serverapp/feishu_bind.go) runs the flow and returns the
+  launcher link synchronously; `feishu_bind_status` is polled until
+  `done`/`error`.
+- The server owns ONE attempt at a time (`feishuBinder`): the link is single-use,
+  so a new `Start` cancels the previous attempt.
+
+Either way the returned credentials are written to `channels.feishu` in
+config.json (`enabled=true`); **the server must be restarted** for the channel to
+pick them up. `--app-id` / the panel's `app_id` field are pre-filled from
+`channels.feishu.app_id` when empty.
+
+#### Web 渠道面板（内置 + 插件渠道）
+
+设置 → 渠道 renders EVERY channel from `get_channel_config`:
+
+- built-ins (web/feishu/qq/napcat) — schema from
+  `channel.BuiltinChannelSchema` (`channel/channel_defs.go`, the single source of
+  truth shared with the CLI settings panel),
+- user-registered plugin channels — schema from `ChannelProvider.ConfigSchema()`.
+
+Both arrive in the same shape (`_schema` JSON + `_builtin` flag), so one renderer
+covers them; saving goes through `set_channel_config`, which writes config.json
+and hot-starts/stops the channel through the dispatcher.
 
 - **`AskUser` 事件必须送达**（web 端曾因 request-ID 校验静默吞掉事件 → 面板不渲染，用户手动回答污染历史）。规则：同一 (channel, chatID) **只有一个 pending AskUser**，所以 `Send`/SSE 写循环**只按 pending 存在性**判断（存在→发布/发送，清除→跳过/consumed），**绝不做 request-ID 相等校验**；`WithPendingAskUser` 仅用于补全 pending 快照，返回值不 veto 发送。已回答/取消的 prompt 由生产者跳过（Send 不重发）+ SSE consumed（reconnect 不重放）。回归测试：`TestSSEAskUser_PendingExistsSends` / `TestSSEAskUser_PendingMissingConsumed`。
 - **`AskUser` 历史记录**：`ask_question`/`ask_answer` 以 control record（role=control, display_only=1）追加（`AppendAskAnswer`），不参与 LLM 上下文与正常消息渲染；回答（`ask_user_answered`）**两条路径**：(a) **替换 AskUser tool 消息内容为回答**（让本轮 LLM 上下文包含回答——否则模型只看到 "Asked N question(s)" 以为用户没答）；(b) **持久化为正常 user 消息**（绑定本 turn 的 turn_id，非 display_only——Replay 排除 display_only 行，前端拿不到会导致顺序破坏）。**回答 user 消息是回答后迭代的 turn 锚点**——没有它，appendAssistant 的 insertBeforeLastUser 回退到原始 user 消息，把回答后的新迭代渲染到旧迭代上方（顺序破坏）。
