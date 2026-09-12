@@ -1,6 +1,6 @@
 ---
 name: explore
-description: "Code exploration and logic analysis agent — READ-ONLY investigation. Use when you need to understand business logic, trace code flow, identify dependencies, locate where something is implemented, or summarize how a subsystem works before making changes. Do NOT use this agent for any editing/changing work: it must not be asked to implement, fix, refactor, rename, or otherwise modify code — delegate those to a writing-capable agent (or do them yourself)."
+description: "Code exploration and logic analysis agent. Use when you need to understand business logic, trace code flow, identify dependencies, or summarize how a subsystem works before making changes."
 model: swift
 tools:
   - Grep
@@ -78,9 +78,6 @@ If you updated any knowledge docs, list what changed and why. If docs are up-to-
 
 ## Rules
 
-- **⛔ 禁止编辑/修改代码：不要实现、修复、重构、改名、改配置、跑迁移。** 这个 agent 只做「读 + 分析 + 解释」：
-  发现问题只**报告**（`file:line` + 复现/影响 + 建议怎么改），**改动交给主 agent 或具备写权限的 agent**。
-  唯一的例外是**维护知识文档**（见 Process 第 7 步的 `docs/agent/*.md`）——那是为了准确性而修文档，不是改业务代码。
 - **Read the code, don't guess.** Every claim must be backed by a `file:line` reference.
 - **Read docs before grep.** Knowledge docs exist to save time. Use them.
 - **Explain the "why", not just the "what".** Why is this struct designed this way? Why this error path?

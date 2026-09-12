@@ -175,21 +175,25 @@ func TestTaskReadDescription_MentionsSubAgent(t *testing.T) {
 // TestEmbeddedToolGuidanceArtifacts — the packaged explore agent / skill-creator
 // skill carry the new guidance (they ship to every install, so guard them).
 func TestEmbeddedToolGuidanceArtifacts(t *testing.T) {
-	explore, err := ReadEmbeddedAgentFile("explore")
-	if err != nil {
-		t.Fatalf("read embedded explore agent: %v", err)
-	}
-	if !strings.Contains(string(explore), "Do NOT use this agent for any editing") {
-		t.Error("explore agent description must forbid editing work")
-	}
-	if !strings.Contains(string(explore), "禁止编辑") {
-		t.Error("explore agent rules must forbid code editing")
-	}
-
 	creator, err := ReadEmbeddedSkillFile("skill-creator", "SKILL.md")
 	if err != nil {
 		t.Fatalf("read embedded skill-creator: %v", err)
 	}
+	// explore 是可写的内置 agent（用户明确：唯一的内置 agent，不让它写不太好）——
+	// 撤回只读约束后，description/rules 不得再出现禁止编辑的表述。
+	explore, err := ReadEmbeddedAgentFile("explore")
+	if err != nil {
+		t.Fatalf("read embedded explore agent: %v", err)
+	}
+	for _, banned := range []string{"Do NOT use this agent for any editing", "禁止编辑"} {
+		if strings.Contains(string(explore), banned) {
+			t.Errorf("explore agent must stay writable; unexpected %q", banned)
+		}
+	}
+	if !strings.Contains(string(explore), "FileReplace") {
+		t.Error("explore agent keeps its write tools (FileCreate/FileReplace)")
+	}
+
 	for _, want := range []string{"enumerate EVERY activation condition", "sole"} {
 		if !strings.Contains(string(creator), want) {
 			t.Errorf("skill-creator must require enumerating activation conditions (%q)", want)

@@ -374,7 +374,9 @@ function CodeBlock({
           type="button"
           data-testid="synthetic-command-toggle"
           onClick={() => setOpen((v) => !v)}
-          className="flex w-full items-center justify-center gap-0.5 rounded-b-lg border-t border-border/40 bg-bg-tertiary/30 py-0.5 text-[10px] text-accent hover:underline"
+          /* 与「输出」的展开按钮保持完全一致的样式/对齐（曾一个 w-full 居中带边框、
+             一个左对齐 → 两个按钮上下错位，看起来像 bug） */
+          className="inline-flex w-fit items-center gap-0.5 text-[10px] text-accent hover:underline"
         >
           <ChevronDown size={10} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
           {open ? lessLabel : moreLabel}

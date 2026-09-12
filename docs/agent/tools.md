@@ -250,6 +250,9 @@ it will. These are guarded by tests (`tools/tool_guidance_test.go`, `agent/skill
   (`tail` = recent iterations, default 5). A dead/unloaded session reports what the ID referred
   to (role/instance/status) plus the `task_status` fallback — never a bare error. With no
   interactive manager wired, the message points at `SubAgent(action="inspect")`.
+- **`TodoWrite` is always available to every agent** (`agent/engine_wire.go: filterSubAgentTools`
+  permanent list): the todo list is universal working memory, so a role definition never has to
+  declare it in `tools:`. Guard: `agent/subagent_tools_test.go`.
 - **`task_wait` is de-emphasised.** Its description opens with `⚠️ AVOID THIS TOOL`: background
   work reports its result AUTOMATICALLY as a notification, so blocking burns an iteration for
   nothing — call it only when there is nothing else useful to do, or the user explicitly asks.
@@ -267,10 +270,11 @@ it will. These are guarded by tests (`tools/tool_guidance_test.go`, `agent/skill
   activation condition (task types, user phrasings/keywords 中英, artifact/command/error names,
   explicit triggers, negative scope) with bad/good examples and a self-check — a generic
   one-liner is a bug.
-- **Built-in `explore` agent is read-only**: its description forbids delegating
-  implementing/fixing/refactoring/modifying work to it, and its Rules section adds
-  "⛔ 禁止编辑/修改代码 — 只报告 `file:line` + 建议，改动交给有写权限的 agent"（唯一例外：维护
-  `docs/agent/` 知识文档）。
+- **Built-in `explore` agent stays writable**: an earlier iteration marked it read-only (no
+  editing), but it is the only built-in agent — forbidding it to write made it less useful, so the
+  constraint was reverted (it keeps `FileCreate`/`FileReplace`). Use it for investigation *and*
+  small, well-scoped edits when that is the simplest path; guard test asserts the read-only
+  wording never comes back.
 
 ## GrpcPluginTransport (`agent/transport_grpc.go`)
 

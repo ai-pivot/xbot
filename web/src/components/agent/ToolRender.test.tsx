@@ -636,3 +636,24 @@ describe('synthetic card 呈现优先级 + 去重（用户插话反馈）', () =
     expect(screen.getByTestId('synthetic-output-toggle')).toBeInTheDocument()
   })
 })
+
+describe('合成卡片：两个「展开全部」按钮必须同款（曾上下错位 = 严重 bug）', () => {
+  it('命令与输出的折叠按钮使用完全相同的样式/对齐', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: 'z1', task: 'x'.repeat(300),
+        status: 'done', output: 'y'.repeat(2000),
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    const cmd = screen.getByTestId('synthetic-command-toggle')
+    const out = screen.getByTestId('synthetic-output-toggle')
+    // 同一套 class ⇒ 天然同宽同对齐（此前命令的是 w-full 居中带边框、输出的是左对齐 inline）
+    expect(cmd.className).toBe(out.className)
+    expect(cmd.className).toContain('inline-flex')
+    expect(cmd.className).not.toContain('w-full')
+    expect(cmd.className).not.toContain('justify-center')
+  })
+})

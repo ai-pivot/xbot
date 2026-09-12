@@ -547,6 +547,8 @@ func (a *Agent) buildMainRunConfig(
 
 // filterSubAgentTools 根据白名单过滤子 Agent 工具集。
 // 以下工具永久可用，不受白名单限制：
+//   - TodoWrite（todo 列表是所有 agent 的通用工作记忆：任何 role 都应能记录/更新待办，
+//     不该要求每个 agent 定义都在 tools 里声明它）
 //   - SubAgent（如果 caps.SpawnAgent=true）
 //   - offload_recall、recall_masked（SubAgent 需要访问父 Agent 的 offload/mask 数据）
 //   - SendMessage、CreateChat（interactive SubAgent 群聊/agent 间通信必需）
@@ -560,6 +562,10 @@ func filterSubAgentTools(subTools *tools.Registry, allowedTools []string, caps t
 	}
 	for _, tool := range subTools.List() {
 		toolName := tool.Name()
+		// TodoWrite：所有 agent 默认可用（通用 todo 工具）
+		if toolName == "TodoWrite" {
+			continue
+		}
 		// SubAgent 工具：如果 SpawnAgent=true，始终保留
 		if toolName == "SubAgent" && caps.SpawnAgent {
 			continue
