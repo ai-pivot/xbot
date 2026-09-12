@@ -95,7 +95,12 @@ test.describe('打字机全链路', () => {
       progress: { turn_id: 1, iteration: 1, stream_content: '打字机帧一' },
     })
     await page.waitForTimeout(600)
-    const frame1 = await page.evaluate(() => document.body.innerText.includes('打字机帧一'))
+    // 逐帧渲染断言用轮询（固定 600ms 在 CI 慢机器上会假失败——断言本身不变：
+    // 该帧必须出现在 DOM 里；poll 只去掉"赌 600ms"的 flake）。
+    await expect
+      .poll(() => page.evaluate(() => document.body.innerText.includes('打字机帧一')), { timeout: 5000 })
+      .toBe(true)
+    const frame1 = true
     const diag1 = await page.evaluate(() => (window as unknown as { __xbotChatDiag?: { counts(): Record<string, number> } }).__xbotChatDiag?.counts())
 
     await emitSSE(page, 'stream_content', {
@@ -103,8 +108,10 @@ test.describe('打字机全链路', () => {
       chat_id: 'chat-1',
       progress: { turn_id: 1, iteration: 1, stream_content: '打字机帧一打字机帧二' },
     })
-    await page.waitForTimeout(600)
-    const frame2 = await page.evaluate(() => document.body.innerText.includes('打字机帧一打字机帧二'))
+    await expect
+      .poll(() => page.evaluate(() => document.body.innerText.includes('打字机帧一打字机帧二')), { timeout: 5000 })
+      .toBe(true)
+    const frame2 = true
     const diag2 = await page.evaluate(() => (window as unknown as { __xbotChatDiag?: { counts(): Record<string, number> } }).__xbotChatDiag?.counts())
 
     console.log('FRAME1 visible:', frame1, 'FRAME2 visible:', frame2)
