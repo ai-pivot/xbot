@@ -792,9 +792,31 @@ func (a *Agent) buildSubAgentRunConfig(
 		// SubAgent inherits the parent's precomputed admin decision — spawned
 		// tools run with the same admin rights as the parent run.
 		OriginUserIsAdmin: parentCtx.OriginUserIsAdmin,
+		// 身份三件套必须继承：SubAgent 就是同一个用户在执行任务。
+		// 不继承会让用户作用域的工具行为（canonical UserID / admin Role /
+		// 展示用 SenderName）在 SubAgent 里退化成空值。
+		UserID:     parentCtx.UserID,
+		Role:       parentCtx.Role,
+		SenderName: parentCtx.SenderName,
 		// Iteration-loop breaker: experimental, default off — inherited from
 		// the agent-level config.Agent.Experimental.IterationLoopDetection.
 		IterationLoopDetection: a.iterationLoopDetection,
+		// ⚠️ BgTaskManager 必须接：buildToolContext 只从 cfg.BgTaskManager 取
+		// tc.BgTaskManager，缺它 → SubAgent 的 Shell 一旦超时/显式后台运行就报
+		// "background tasks not supported (BgTaskManager not configured)"
+		// （用户实测：SubAgent 里跑 cargo check 被 auto-promote 后直接失败）。
+		// buildToolContext 已按 AgentID 含 "/" 判定 SubAgent → BgSessionKey 用
+		// SubAgent 自己的 sessionKey（隔离，不污染主会话的后台任务归属）。
+		BgTaskManager: a.bgTaskMgr.Load(),
+		// 明确不接的（有意为之，勿"顺手补上"）：
+		//   - InjectInbound：只有主 Agent 注入入站消息（channel plugin / agent loop
+		//     入口）；SubAgent 没有这个能力，跨 agent 通信走 SendMessage/PeerMessageFn。
+		//   - RefreshPluginWorkDir：按 (channel, chatID) 刷新插件 workdir —— SubAgent
+		//     的 CWD 与父会话不同，接上会把父会话的插件窗口刷成 SubAgent 的目录
+		//     （跨会话污染，AGENTS.md 的 workdir race 同类问题）。
+		//   - AutoWorktreeEnabled：只被主 Agent 的 buildPrompt 使用，SubAgent 不走。
+		//   - FeishuUserID：仅用于 buildToolContext 里的 sandbox 解析，而 SubAgent
+		//     继承的是已经解析好的 parentCtx.Sandbox。
 
 		// 从父 Agent 继承工作区 & 沙箱配置
 		WorkingDir:       parentCtx.WorkingDir,
