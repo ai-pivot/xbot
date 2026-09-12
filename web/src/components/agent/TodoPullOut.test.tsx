@@ -6,7 +6,7 @@
  * Without `onUpdateTodos` the list must stay read-only (a surface that has no
  * session to write back to).
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
@@ -125,5 +125,71 @@ describe('TodoPullOut — set a TODO as the goal', () => {
     expect(within(row).getByTestId('todo-goal-badge')).toBeInTheDocument()
     // …and only that row
     expect(screen.getAllByTestId('todo-goal-badge')).toHaveLength(1)
+  })
+})
+
+describe('TodoPullOut — 触屏（无 hover）交互', () => {
+  const orig = window.matchMedia
+  /** jsdom 无 CSS 引擎 → 断言「类契约」：触屏必须常显 + 触控目标 ≥32px。 */
+  function mockTouch(isTouch: boolean) {
+    window.matchMedia = ((query: string) => ({
+      matches: isTouch && query.includes('(hover: none)'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+  }
+  afterEach(() => {
+    window.matchMedia = orig
+  })
+
+  it('触屏：操作按钮常显（不能依赖 hover），且为 32px 触控目标', () => {
+    mockTouch(true)
+    renderTray(baseItems, { onUpdateTodos: vi.fn(), onSetGoalTodo: vi.fn() })
+
+    const actions = screen.getAllByTestId('todo-actions')[0]   // 每行一个
+    expect(actions.className).toContain('opacity-100')
+    expect(actions.className).not.toContain('opacity-0')
+    expect(actions.className).not.toContain('group-hover:opacity-100')
+
+    for (const id of ['todo-set-goal', 'todo-edit', 'todo-delete']) {
+      const btn = screen.getAllByTestId(id)[0]
+      expect(btn.className).toContain('size-8')
+      expect(btn.className).not.toContain('size-5')
+    }
+    // 状态切换同样要有足够命中区（图标 12px → 触屏 16px + p-2 外扩）
+    const toggle = screen.getAllByTestId('todo-status')[0]
+    expect(toggle.className).toContain('p-2')
+  })
+
+  it('桌面：仍保持 hover 才显示（避免每行堆三个图标），图标尺寸 20px', () => {
+    mockTouch(false)
+    renderTray(baseItems, { onUpdateTodos: vi.fn(), onSetGoalTodo: vi.fn() })
+
+    const actions = screen.getAllByTestId('todo-actions')[0]
+    expect(actions.className).toContain('opacity-0')
+    expect(actions.className).toContain('group-hover:opacity-100')
+    expect(screen.getAllByTestId('todo-edit')[0].className).toContain('size-5')
+    expect(screen.getAllByTestId('todo-edit')[0].className).not.toContain('size-8')
+    expect(screen.getAllByTestId('todo-status')[0].className).not.toContain('p-2')
+  })
+
+  it('触屏：点操作按钮真的生效（编辑入口与删除）', () => {
+    mockTouch(true)
+    const onUpdateTodos = vi.fn()
+    renderTray(baseItems, { onUpdateTodos, onSetGoalTodo: vi.fn() })
+
+    fireEvent.click(screen.getAllByTestId('todo-edit')[0])    // 进编辑态
+    expect(screen.getByTestId('todo-edit-input')).toBeInTheDocument()
+    fireEvent.keyDown(screen.getByTestId('todo-edit-input'), { key: 'Escape' })
+
+    fireEvent.click(screen.getAllByTestId('todo-delete')[2])  // 删掉「更新文档」
+    expect(onUpdateTodos).toHaveBeenCalledTimes(1)
+    const next = onUpdateTodos.mock.calls[0][0] as TodoItem[]
+    expect(next.map((t) => t.text)).toEqual(['修复登录超时', '补齐单测'])
   })
 })

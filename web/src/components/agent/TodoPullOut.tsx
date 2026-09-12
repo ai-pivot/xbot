@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { CheckCircle2, ChevronRight, Circle, Loader2, Pencil, Target, Trash2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
+import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
 import type { TodoState } from '@/hooks/useTodos'
 import type { TodoItem } from '@/types/shared'
@@ -31,6 +32,7 @@ export function TodoPullOut({
   goalText,
 }: TodoPullOutProps) {
   const { t } = useI18n()
+  const isTouch = useIsTouch()
   const [expanded, setExpanded] = useState(false)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [draft, setDraft] = useState('')
@@ -160,14 +162,19 @@ export function TodoPullOut({
                   disabled={!editable}
                   aria-label={todo.status === 'done' ? t('agent.todoMarkPending') : t('agent.todoMarkDone')}
                   onClick={() => toggleDone(i)}
-                  className={cn('mt-0.5 shrink-0 rounded-full transition-transform', editable && 'cursor-pointer hover:scale-110')}
+                  className={cn(
+                    'mt-0.5 shrink-0 rounded-full transition-transform',
+                    // 触屏：把 12px 的图标包进 ≥32px 的命中区（不改变视觉位置）
+                    isTouch && '-m-2 p-2',
+                    editable && 'cursor-pointer hover:scale-110',
+                  )}
                 >
                   {todo.status === 'done' ? (
-                    <CheckCircle2 className="h-3 w-3" style={{ color: 'var(--status-success)' }} />
+                    <CheckCircle2 className={isTouch ? 'h-4 w-4' : 'h-3 w-3'} style={{ color: 'var(--status-success)' }} />
                   ) : todo.status === 'doing' ? (
-                    <Loader2 className="h-3 w-3 animate-spin" style={{ color: 'var(--accent)' }} />
+                    <Loader2 className={cn(isTouch ? 'h-4 w-4' : 'h-3 w-3', 'animate-spin')} style={{ color: 'var(--accent)' }} />
                   ) : (
-                    <Circle className="h-3 w-3 text-text-muted" />
+                    <Circle className={cn(isTouch ? 'h-4 w-4' : 'h-3 w-3', 'text-text-muted')} />
                   )}
                 </button>
 
@@ -197,7 +204,15 @@ export function TodoPullOut({
                 )}
 
                 {editable && (
-                  <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                  <div
+                    data-testid="todo-actions"
+                    className={cn(
+                      'flex shrink-0 items-center transition-opacity',
+                      // 触屏没有 hover：动作按钮必须常显，否则手机用户永远点不到
+                      // （电脑端仍是 hover 才出现，避免每行都堆三个图标）
+                      isTouch ? 'gap-1 opacity-100' : 'gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
+                    )}
+                  >
                     {onSetGoalTodo && (
                       <button
                         type="button"
@@ -205,9 +220,12 @@ export function TodoPullOut({
                         aria-label={t('agent.todoSetGoal')}
                         title={t('agent.todoSetGoal')}
                         onClick={() => onSetGoalTodo(todo.text)}
-                        className="flex size-5 items-center justify-center rounded text-accent transition-colors hover:bg-accent/15"
+                        className={cn(
+                          'flex items-center justify-center rounded text-accent transition-colors hover:bg-accent/15',
+                          isTouch ? 'size-8' : 'size-5',
+                        )}
                       >
-                        <Target className="size-3" />
+                        <Target className={isTouch ? 'size-4' : 'size-3'} />
                       </button>
                     )}
                     <button
@@ -216,9 +234,12 @@ export function TodoPullOut({
                       aria-label={t('agent.todoEdit')}
                       title={t('agent.todoEdit')}
                       onClick={() => startEdit(i)}
-                      className="flex size-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      className={cn(
+                        'flex items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary',
+                        isTouch ? 'size-8' : 'size-5',
+                      )}
                     >
-                      <Pencil className="size-3" />
+                      <Pencil className={isTouch ? 'size-4' : 'size-3'} />
                     </button>
                     <button
                       type="button"
@@ -226,9 +247,12 @@ export function TodoPullOut({
                       aria-label={t('agent.todoDelete')}
                       title={t('agent.todoDelete')}
                       onClick={() => removeTodo(i)}
-                      className="flex size-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      className={cn(
+                        'flex items-center justify-center rounded text-text-muted transition-colors hover:bg-destructive/10 hover:text-destructive',
+                        isTouch ? 'size-8' : 'size-5',
+                      )}
                     >
-                      <Trash2 className="size-3" />
+                      <Trash2 className={isTouch ? 'size-4' : 'size-3'} />
                     </button>
                   </div>
                 )}
