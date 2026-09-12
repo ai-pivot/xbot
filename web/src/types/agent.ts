@@ -2,8 +2,8 @@
  * Agent rendering domain types (Spec 4).
  *
  * Pure data types for the Agent workspace: chat messages, iteration history,
- * tool/reasoning snapshots, ask-user interactions, and the collapse-level
- * preference. These mirror the Go shapes consumed over the HTTP history API
+ * tool/reasoning snapshots and ask-user interactions. These mirror the Go
+ * shapes consumed over the HTTP history API
  * and the WS progress stream (see protocol/events.go, agent/engine.go,
  * channel/web/web_api.go). Keeping them in one module avoids circular imports
  * between the hooks and components.
