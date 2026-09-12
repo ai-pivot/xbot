@@ -6,6 +6,16 @@
  * FoldedToolGroup so that "连续的工具调用都合并" (cross-iteration merge).
  * When a live progress snapshot is present (streaming), appends a
  * LiveIteration at the end for the in-flight iteration.
+ *
+ * PERF（Trace-20260912T100816，用户要求"前端性能与 turn 长度完全无关"）：
+ * 已提交迭代的渲染被抽进 <CommittedTurn>（memo 边界）。TurnBody 每个流式帧
+ * 都会被重渲染（liveProgress 引用每帧变化），但 CommittedTurn 的 props
+ * （contiguous/blocks/level/mergeTools/turnID）在流式帧之间引用稳定 →
+ * React 直接跳过整个已提交子树。流式帧的代价因此与 turn 迭代数无关
+ * （只渲染 LiveIteration）。
+ *
+ * 不变量：`iterations` 引用不变 ⇒ 流式帧不得重渲染任何已提交迭代。
+ * 守护测试：turn_perf.test.tsx。
  */
 import { memo, useMemo } from 'react'
 
@@ -72,34 +82,37 @@ function flattenIterations(iterations: WebIteration[]): ContentBlock[] {
   return blocks
 }
 
-/** 卡片顶部状态条（设计稿 v2 B2）：live turn 进行中=accent 渐变，committed 完成=ok 低透明度。 */
+interface CommittedTurnProps {
+  /** 连续前缀迭代（useMemo 于 iterations —— 流式帧引用稳定）。 */
+  contiguous: WebIteration[]
+  /** contiguous 展平后的内容块（同上，流式帧引用稳定）。 */
+  blocks: ContentBlock[]
+  level: CollapseLevel
+  mergeTools: boolean
+  turnID?: number
+}
 
-export const TurnBody = memo(function TurnBody({
-  iterations,
-  liveProgress,
+/**
+ * CommittedTurn — 已提交迭代的唯一渲染点（memo 边界）。
+ *
+ * ⚠️ 性能不变量：本组件的 props 在**流式帧之间必须引用稳定**，否则
+ * 每个流式帧会重渲染全部已提交迭代（trace 实测：6.2 万 DOM 节点、
+ * 每帧 ~88ms、lucide/button/i18n 各占数个百分点）。
+ * 调用方（TurnBody）负责用 useMemo 保持 contiguous/blocks 的引用。
+ */
+const CommittedTurn = memo(function CommittedTurn({
+  contiguous,
+  blocks,
   level,
-  mergeTools = true,
+  mergeTools,
   turnID,
-}: TurnBodyProps) {
-  // Linear-consistency guard: only render the CONTIGUOUS prefix of iterations.
-  // On a weak network a middle iteration's delta may be dropped before
-  // restoreActiveProgress backfills it — rendering iteration 3 while 2 is
-  // missing would show a non-contiguous sequence (1, 3). Rendering the
-  // contiguous prefix keeps the visible history linear.
-  //
-  // PERF: both derivations memoized on `iterations` — TurnBody re-renders every
-  // streaming frame (its liveProgress prop changes identity per frame, memo
-  // can't block it), but committed iterations only change when history grows.
-  // useMemo lets those frames skip the O(N) contiguous-prefix scan and the
-  // O(N×blocks) flatten. Pure computation, same inputs → same output.
-  const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
-  const blocks = useMemo(() => flattenIterations(contiguous), [contiguous])
+}: CommittedTurnProps) {
   const { t } = useI18n()
 
   // Fast path: if mergeTools is off, use the original per-iteration rendering.
   if (!mergeTools) {
     return (
-      <div className="flex flex-col gap-1" data-iter-range={contiguous.length > 0 ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}` : undefined} data-iter-total={contiguous.length}>
+      <>
         {contiguous.map((iter, i) => (
           <div key={iter.iteration ?? i} data-iter-id={iter.iteration} data-turn-id={turnID}>
             <IterationGroup
@@ -112,18 +125,12 @@ export const TurnBody = memo(function TurnBody({
             )}
           </div>
         ))}
-        {liveProgress && (
-          <div data-iter-id="live" data-iter-num={liveProgress.iteration || undefined} data-turn-id={liveProgress.turnID || turnID}>
-            <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />
-          </div>
-        )}
-      </div>
+      </>
     )
   }
 
   return (
-    <div className="flex flex-col gap-1" data-iter-range={contiguous.length > 0 ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}` : undefined} data-iter-total={contiguous.length}>
-      <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1">
       {blocks.map((block, i) => {
         if (block.kind === 'reasoning') {
           return (
@@ -170,7 +177,49 @@ export const TurnBody = memo(function TurnBody({
           </div>
         )
       })}
-      </div>
+    </div>
+  )
+})
+
+export const TurnBody = memo(function TurnBody({
+  iterations,
+  liveProgress,
+  level,
+  mergeTools = true,
+  turnID,
+}: TurnBodyProps) {
+  // Linear-consistency guard: only render the CONTIGUOUS prefix of iterations.
+  // On a weak network a middle iteration's delta may be dropped before
+  // restoreActiveProgress backfills it — rendering iteration 3 while 2 is
+  // missing would show a non-contiguous sequence (1, 3). Rendering the
+  // contiguous prefix keeps the visible history linear.
+  //
+  // PERF: both derivations memoized on `iterations` — TurnBody re-renders every
+  // streaming frame (its liveProgress prop changes identity per frame, memo
+  // can't block it), but committed iterations only change when history grows.
+  // useMemo lets those frames skip the O(N) contiguous-prefix scan and the
+  // O(N×blocks) flatten, and keeps CommittedTurn's props reference-stable so
+  // React skips the entire committed subtree (turn_perf.test.tsx 守护）。
+  const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
+  const blocks = useMemo(() => flattenIterations(contiguous), [contiguous])
+
+  return (
+    <div
+      className="flex flex-col gap-1"
+      data-iter-range={
+        contiguous.length > 0
+          ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}`
+          : undefined
+      }
+      data-iter-total={contiguous.length}
+    >
+      <CommittedTurn
+        contiguous={contiguous}
+        blocks={blocks}
+        level={level}
+        mergeTools={mergeTools}
+        turnID={turnID}
+      />
       {liveProgress && (
         <div data-iter-id="live" data-iter-num={liveProgress.iteration || undefined} data-turn-id={liveProgress.turnID || turnID}>
           <LiveIteration progress={liveProgress} level={level} mergeTools={mergeTools} />

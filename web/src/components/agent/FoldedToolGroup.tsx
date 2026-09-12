@@ -201,6 +201,56 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
   )
 }
 
+/** 懒挂 Popover 的 pill：未点击前只是 <span>（零 Radix 实例）。
+ *
+ *  PERF（Trace-20260912T100816）：每个工具 pill 都挂一个 Radix `Popover`
+ *  （Presence/useControllableState/useId + PopoverTrigger asChild → Slot →
+ *  cloneElement），长 turn 里成百上千个实例的创建/reconcile 占了可观 CPU
+ *  （radix 机制 ~6.6% + Slot/cloneElement 4.5%），而浮层只在**点击时**才需要。
+ *  懒挂后：关闭态零 radix 成本，点击才创建（行为等价：点 pill 弹详情）。 */
+function LazyPillPopover({
+  children,
+  content,
+  testId,
+}: {
+  children: ReactNode
+  content: ReactNode
+  testId: string
+}) {
+  const [open, setOpen] = useState(false)
+  if (!open) {
+    return (
+      <span
+        data-testid={testId}
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setOpen(true)
+          }
+        }}
+        className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85"
+      >
+        {children}
+      </span>
+    )
+  }
+  return (
+    <Popover open onOpenChange={(o) => { if (!o) setOpen(false) }}>
+      <PopoverTrigger asChild>
+        <span data-testid={testId} className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85">
+          {children}
+        </span>
+      </PopoverTrigger>
+      <PopoverContent align="start" className={POPOVER_CLASS}>
+        {content}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 /** 折叠行 pill 列表：≤8 全量；>8 显示前 7 pill + "+N" 徽标。
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
  *  "+N" 弹溢出工具的全量列表。 */
@@ -210,14 +260,9 @@ const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { 
   return (
     <span className="flex flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
-        <Popover key={`${tool.name}-${i}`}>
-          <PopoverTrigger asChild>
-            <span data-testid="tool-pill" className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85">{toolPill(tool, sweepRunning)}</span>
-          </PopoverTrigger>
-          <PopoverContent align="start" className={POPOVER_CLASS}>
-            <ToolPopoverDetail tool={tool} />
-          </PopoverContent>
-        </Popover>
+        <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" content={<ToolPopoverDetail tool={tool} />}>
+          {toolPill(tool, sweepRunning)}
+        </LazyPillPopover>
       ))}
       {overflow && <OverflowPillsMenu tools={tools} />}
     </span>
@@ -228,16 +273,14 @@ const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { 
 function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
   const hidden = tools.slice(PILL_INLINE_HEAD)
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <span data-testid="tool-pill-more" className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
-          +{hidden.length}
-        </span>
-      </PopoverTrigger>
-      <PopoverContent align="start" className={POPOVER_CLASS}>
-        <ToolPopoverContent tools={hidden} />
-      </PopoverContent>
-    </Popover>
+    <LazyPillPopover
+      testId="tool-pill-more"
+      content={<ToolPopoverContent tools={hidden} />}
+    >
+      <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
+        +{hidden.length}
+      </span>
+    </LazyPillPopover>
   )
 }
 
