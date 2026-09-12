@@ -139,7 +139,9 @@ test.describe('Injected (synthetic) tool cards', () => {
     // ── assertions ──
     // Iteration tools render as compact pills; the fancy card is the pill's
     // click-through detail (the design's pill → detail interaction).
-    const bgPill = page.locator('[data-testid="tool-pill"]', { hasText: 'background_task_result' }).first()
+    // Locate by the stable data-tool-name attribute (the visible pill copy is
+    // localized — never assert on it, or a translation change breaks E2E).
+    const bgPill = page.locator('[data-testid="tool-pill"][data-tool-name="background_task_result"]').first()
     await expect(bgPill).toBeVisible()
     await bgPill.click()
     await page.waitForTimeout(400)
@@ -150,14 +152,14 @@ test.describe('Injected (synthetic) tool cards', () => {
     await page.screenshot({ path: 'test-results/synthetic-bgtask-card.png', fullPage: false })
 
     // Sub-agent card: role/instance + the ORIGINAL task it was spawned with.
-    const subPill = page.locator('[data-testid="tool-pill"]', { hasText: 'bg_subagent_completed' }).first()
+    const subPill = page.locator('[data-testid="tool-pill"][data-tool-name="bg_subagent_completed"]').first()
     await subPill.click()
     await page.waitForTimeout(400)
     await expect(page.getByText('找出登录流程的入口并在文档里标注')).toBeVisible()
     await expect(page.getByText(/explore\/mem-1/).first()).toBeVisible()
 
     // Cron card: the fired message.
-    const cronPill = page.locator('[data-testid="tool-pill"]', { hasText: 'cron_fired' }).first()
+    const cronPill = page.locator('[data-testid="tool-pill"][data-tool-name="cron_fired"]').first()
     await cronPill.click()
     await page.waitForTimeout(400)
     await expect(page.getByText('nightly build 检查')).toBeVisible()

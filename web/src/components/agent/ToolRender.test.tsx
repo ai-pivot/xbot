@@ -541,3 +541,46 @@ describe('synthetic tools render their output as MARKDOWN from the unified field
     expect(pres.some((t) => (t ?? '').includes('build ok'))).toBe(true)
   })
 })
+
+describe('synthetic card: the event and its continuity must be obvious at a glance', () => {
+  it('bg-task card states the event ("finished") and that it came from the background', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: '3f8f492a', task: 'npm run build', status: 'done',
+        exit_code: 0, elapsed_ms: 1200, output: 'ok',
+      }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    // 事件标题（完成态，而不是一个光秃秃的名词）
+    expect(container.textContent).toMatch(/Background task finished|后台任务已完成/)
+    // 承接说明：这是"此前转后台、现在结束"的东西
+    expect(container.textContent).toMatch(/moved to the background|此前转入了后台运行/)
+    // 完成徽标（头像角上的 ✓）——"结束了"一眼可见
+    expect(screen.getByTestId('synthetic-done-badge')).toBeInTheDocument()
+  })
+
+  it('sub-agent card says a previously dispatched sub-agent finished', () => {
+    const tool = makeTool({
+      name: 'bg_subagent_completed',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'subagent', role: 'explore', instance: 'mem-1', status: 'done', task: '查入口' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.textContent).toMatch(/Sub-agent finished|子代理已完成/)
+    expect(container.textContent).toMatch(/dispatched earlier|此前派发出去的子代理/)
+  })
+
+  it('user_interrupt says it is an interjection that did NOT stop the task', () => {
+    const tool = makeTool({
+      name: 'user_interrupt',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'interrupt', message: '顺便把文档也更新了' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.textContent).toMatch(/User interjection received|收到用户插话/)
+    expect(container.textContent).toMatch(/without stopping the task|未打断当前任务/)
+    expect(container.textContent).toContain('顺便把文档也更新了')
+  })
+})

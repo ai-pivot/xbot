@@ -361,24 +361,42 @@ const ja: Translations = {
       syntheticShowLess: '折りたたむ',
 
       // ── fancy 組み込みツールカード v2（bg task / サブエージェント / cron / 非同期 / 割り込み / キャンセル…）──
-      syntheticTitleBgTask: 'バックグラウンドタスク完了',
-      syntheticTitleSubAgent: 'サブエージェント完了',
+      syntheticTitleBgTask: 'バックグラウンドタスクが完了',
+      syntheticTitleSubAgent: 'サブエージェントが完了',
       syntheticTitleCron: '定期ジョブが発火',
       syntheticTitleAsync: '非同期メッセージを受信',
-      syntheticTitleDelivered: 'メッセージを配信',
-      syntheticTitleCancel: '実行をキャンセル',
-      syntheticTitleLoop: '繰り返しループを検出',
-      syntheticTitlePreTurnEnd: 'ターン前リマインダー',
-      syntheticTitleInterrupt: 'ユーザー割り込み',
-      syntheticShortBgTask: 'バックグラウンド',
-      syntheticShortSubAgent: 'サブエージェント',
-      syntheticShortCron: '定期ジョブ',
+      syntheticTitleDelivered: '待機メッセージを配信',
+      syntheticTitleCancel: 'この実行はキャンセル',
+      syntheticTitleLoop: '繰り返しループを遮断',
+      syntheticTitlePreTurnEnd: 'ターン終了前の通知',
+      syntheticTitleInterrupt: 'ユーザー割り込みを受信',
+      syntheticShortBgTask: 'BG タスク完了',
+      syntheticShortSubAgent: 'サブエージェント完了',
+      syntheticShortCron: '定期ジョブ発火',
       syntheticShortAsync: '非同期メッセージ',
-      syntheticShortDelivered: '配信',
+      syntheticShortDelivered: '配信済み',
       syntheticShortCancel: 'キャンセル',
       syntheticShortLoop: 'ループ遮断',
       syntheticShortPreTurnEnd: 'ターン通知',
       syntheticShortInterrupt: '割り込み',
+
+      syntheticContinuityInterrupt: 'タスク実行中にあなたが割り込みました（タスクは中断していません）',
+
+      syntheticContinuityPreTurnEnd: 'ターン終了直前に発火した通知です',
+
+      syntheticContinuityLoop: '同一ツール呼び出しの繰り返しを検出し遮断しました',
+
+      syntheticContinuityCancel: 'あなたがこの実行を中止しました（完了済みの内容は下に残します）',
+
+      syntheticContinuityDelivered: '以前キューに入っていたメッセージを配信しました',
+
+      syntheticContinuityAsync: '他セッション / 外部サービスからのメッセージをこのターンに挿入',
+
+      syntheticContinuityCron: 'スケジューラによる自動発火です',
+
+      syntheticContinuitySubAgent: '以前に派遣したサブエージェントが完了しました',
+
+      syntheticContinuityBgTask: 'このコマンドは以前バックグラウンドに移され、いま完了しました',
       syntheticStatusDone: '完了',
       syntheticStatusError: '失敗',
       syntheticStatusKilled: '強制終了',

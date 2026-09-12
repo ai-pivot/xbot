@@ -180,6 +180,25 @@ const TITLE_KEYS: Record<string, string> = {
   interrupt: 'agent.tool.syntheticTitleInterrupt',
 }
 
+/**
+ * Continuity line — the sentence that tells the user WHY this card is here and
+ * that it refers to something started EARLIER ("this command had been moved to
+ * the background and has now finished"). Without it a card reads like a tool the
+ * agent just called out of nowhere; with it the "background → finished" relation
+ * is impossible to miss.
+ */
+const CONTINUITY_KEYS: Record<string, string> = {
+  bg_task: 'agent.tool.syntheticContinuityBgTask',
+  subagent: 'agent.tool.syntheticContinuitySubAgent',
+  cron: 'agent.tool.syntheticContinuityCron',
+  async: 'agent.tool.syntheticContinuityAsync',
+  delivered: 'agent.tool.syntheticContinuityDelivered',
+  cancel: 'agent.tool.syntheticContinuityCancel',
+  loop: 'agent.tool.syntheticContinuityLoop',
+  pre_turn_end: 'agent.tool.syntheticContinuityPreTurnEnd',
+  interrupt: 'agent.tool.syntheticContinuityInterrupt',
+}
+
 const SHORT_KEYS: Record<string, string> = {
   bg_task: 'agent.tool.syntheticShortBgTask',
   subagent: 'agent.tool.syntheticShortSubAgent',
@@ -220,6 +239,26 @@ export function syntheticShortName(
   const kind = syntheticKindOf(tool)
   const key = SHORT_KEYS[kind] || SHORT_KEYS.pre_turn_end
   return t ? t(key) : SHORT_FALLBACK[kind] || SHORT_FALLBACK.pre_turn_end
+}
+
+/**
+ * Subject of a synthetic tool — the thing it acted on, shown next to the name so
+ * the row reads like `Sub-agent · explore/mem-1` (mirrors `Shell: cmd`).
+ * Prefers the structured payload, then the tool label (`bgsub:explore/mem-1`).
+ */
+export function syntheticSubject(tool: WebToolProgress): string {
+  const hints = parseSyntheticHints(tool.toolHints)
+  if (hints?.role) return `${hints.role}${hints.instance ? '/' + hints.instance : ''}`
+  if (hints?.task_id) return hints.task_id
+  const label = (tool.label || '').trim()
+  const idx = label.indexOf(':')
+  if (idx >= 0) {
+    const rest = label.slice(idx + 1).trim()
+    // `bgsub:explore/mem-1` → `explore/mem-1`; `bg:3f8f492a` → `3f8f492a`
+    if (rest && rest !== '{}') return rest
+  }
+  // fall back to whatever was recorded as the label (skip a bare internal name)
+  return label && !isSyntheticToolName(label) ? label : ''
 }
 
 // ── formatting helpers ────────────────────────────────────────────────
@@ -368,10 +407,19 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
       data-testid="synthetic-tool-card"
       className={`overflow-hidden rounded-xl border shadow-sm ${look.card}`}
     >
-      {/* header: kind avatar + localized title + subject + status/exit/duration chips */}
+      {/* header: 完成徽标 + kind avatar + 事件标题 + subject + 状态/退出码/耗时 chips
+          —— 让"此前转后台 / 派发出去的任务现在结束了"一眼可见 */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-        <span className={`flex size-6 shrink-0 items-center justify-center rounded-full ${look.avatar}`}>
+        <span className={`relative flex size-6 shrink-0 items-center justify-center rounded-full ${look.avatar}`}>
           <KindIcon size={13} aria-hidden="true" />
+          {(status === 'done' || kind === 'cancel') && (
+            <span
+              data-testid="synthetic-done-badge"
+              className="absolute -bottom-0.5 -right-0.5 flex size-3 items-center justify-center rounded-full bg-emerald-500 text-white ring-2 ring-bg-secondary"
+            >
+              <Check size={7} strokeWidth={4} />
+            </span>
+          )}
         </span>
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-text-primary">{title}</span>
         {subject && (
@@ -386,6 +434,11 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
           </Chip>
         )}
         {elapsed && <Chip>{elapsed}</Chip>}
+      </div>
+
+      {/* 承接说明：明确这是"之前就在跑的东西，现在结束了"（而不是凭空出现的工具调用） */}
+      <div className="border-t border-border/40 px-3 py-1.5 text-[10.5px] leading-relaxed text-text-muted">
+        {t(CONTINUITY_KEYS[kind] || CONTINUITY_KEYS.pre_turn_end)}
       </div>
 
       {/* body: original task / output / error + meta footer */}
@@ -482,6 +535,11 @@ export const InterruptCard = memo(function InterruptCard({ tool }: { tool: WebTo
       <div className="border-t border-border/40 px-3 py-2">
         {/* 插话正文是用户/通知的 markdown 文本 → 直接渲染 markdown（统一字段：
             hints.message（干净原文）> hints.output > tool.detail > summary）。 */}
+        {t('agent.tool.syntheticContinuityInterrupt') && (
+          <div className="mb-1.5 text-[10.5px] leading-relaxed text-text-muted">
+            {t('agent.tool.syntheticContinuityInterrupt')}
+          </div>
+        )}
         {text ? (
           <div className="text-[12.5px] leading-relaxed text-text-primary">
             <MarkdownRenderer content={text} noDebounce />

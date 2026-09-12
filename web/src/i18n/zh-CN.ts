@@ -358,24 +358,42 @@ const zhCN = {
       syntheticShowLess: '收起',
 
       // ── fancy 内置工具卡片 v2（bg task / 子代理 / cron / 异步 / 插话 / 取消…）──
-      syntheticTitleBgTask: '后台任务完成',
-      syntheticTitleSubAgent: '子代理完成',
+      syntheticTitleBgTask: '后台任务已完成',
+      syntheticTitleSubAgent: '子代理已完成',
       syntheticTitleCron: '定时任务已触发',
       syntheticTitleAsync: '收到异步消息',
-      syntheticTitleDelivered: '消息已投递',
-      syntheticTitleCancel: '运行已取消',
-      syntheticTitleLoop: '检测到重复循环',
-      syntheticTitlePreTurnEnd: '回合提醒',
-      syntheticTitleInterrupt: '用户实时插话',
-      syntheticShortBgTask: '后台任务',
-      syntheticShortSubAgent: '子代理',
-      syntheticShortCron: '定时任务',
+      syntheticTitleDelivered: '排队消息已投递',
+      syntheticTitleCancel: '本轮运行已取消',
+      syntheticTitleLoop: '已拦截重复循环',
+      syntheticTitlePreTurnEnd: '回合结束提醒',
+      syntheticTitleInterrupt: '收到用户插话',
+      syntheticShortBgTask: '后台任务完成',
+      syntheticShortSubAgent: '子代理完成',
+      syntheticShortCron: '定时任务触发',
       syntheticShortAsync: '异步消息',
       syntheticShortDelivered: '消息投递',
       syntheticShortCancel: '已取消',
       syntheticShortLoop: '循环拦截',
       syntheticShortPreTurnEnd: '回合提醒',
       syntheticShortInterrupt: '插话',
+
+      syntheticContinuityInterrupt: '你在任务执行中插话，未打断当前任务',
+
+      syntheticContinuityPreTurnEnd: '回合即将结束时的提醒',
+
+      syntheticContinuityLoop: '检测到重复的工具调用，已自动拦截',
+
+      syntheticContinuityCancel: '这一轮运行被你中止，下面保留已完成的部分',
+
+      syntheticContinuityDelivered: '此前排队等待发送的消息已送达',
+
+      syntheticContinuityAsync: '来自其他会话 / 外部服务的消息，插入当前回合',
+
+      syntheticContinuityCron: '到点自动触发，无需人工发起',
+
+      syntheticContinuitySubAgent: '这是此前派发出去的子代理，现在已经结束',
+
+      syntheticContinuityBgTask: '这条命令此前转入了后台运行，现在已经结束',
       syntheticStatusDone: '完成',
       syntheticStatusError: '失败',
       syntheticStatusKilled: '已终止',

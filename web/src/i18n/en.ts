@@ -365,20 +365,38 @@ const en: Translations = {
       syntheticTitleSubAgent: 'Sub-agent finished',
       syntheticTitleCron: 'Scheduled job fired',
       syntheticTitleAsync: 'Async message received',
-      syntheticTitleDelivered: 'Message delivered',
+      syntheticTitleDelivered: 'Queued message delivered',
       syntheticTitleCancel: 'Run cancelled',
-      syntheticTitleLoop: 'Repeated loop detected',
+      syntheticTitleLoop: 'Repeated loop blocked',
       syntheticTitlePreTurnEnd: 'Pre-turn reminder',
-      syntheticTitleInterrupt: 'User interjection',
-      syntheticShortBgTask: 'Background task',
-      syntheticShortSubAgent: 'Sub-agent',
-      syntheticShortCron: 'Scheduled job',
+      syntheticTitleInterrupt: 'User interjection received',
+      syntheticShortBgTask: 'BG task done',
+      syntheticShortSubAgent: 'Sub-agent done',
+      syntheticShortCron: 'Cron fired',
       syntheticShortAsync: 'Async message',
-      syntheticShortDelivered: 'Delivery',
+      syntheticShortDelivered: 'Delivered',
       syntheticShortCancel: 'Cancelled',
       syntheticShortLoop: 'Loop blocked',
       syntheticShortPreTurnEnd: 'Turn reminder',
       syntheticShortInterrupt: 'Interjection',
+
+      syntheticContinuityInterrupt: 'You interjected mid-run without stopping the task',
+
+      syntheticContinuityPreTurnEnd: 'A reminder fired just before the turn ended',
+
+      syntheticContinuityLoop: 'Repeated tool calls were detected and blocked automatically',
+
+      syntheticContinuityCancel: 'You stopped this run; what completed so far is kept below',
+
+      syntheticContinuityDelivered: 'A previously queued message has been delivered',
+
+      syntheticContinuityAsync: 'A message from another session or service, injected into this turn',
+
+      syntheticContinuityCron: 'Fired by the scheduler — nobody triggered it',
+
+      syntheticContinuitySubAgent: 'A sub-agent dispatched earlier has now finished',
+
+      syntheticContinuityBgTask: 'This command was moved to the background and has now finished',
       syntheticStatusDone: 'done',
       syntheticStatusError: 'failed',
       syntheticStatusKilled: 'killed',
