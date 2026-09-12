@@ -245,7 +245,6 @@ const ja: Translations = {
     toolGroup: '{{count}} 回の呼び出し',
     toolGenerating: '引数を生成中…',
     reasoningStreaming: '思考中…',
-    thinkingChars: '{{count}} 文字を思考',
     todoAllDone: 'すべて完了',
     todoCompleted: '完了済み',
     expandTodos: 'タスクリストを展開',

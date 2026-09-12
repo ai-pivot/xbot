@@ -245,7 +245,6 @@ const en: Translations = {
     toolGroup: '{{count}} calls',
     toolGenerating: 'generating args…',
     reasoningStreaming: 'thinking…',
-    thinkingChars: 'Thought {{count}} characters',
     todoAllDone: 'All done',
     todoCompleted: 'done',
     expandTodos: 'Expand todo list',

@@ -242,7 +242,6 @@ const zhCN = {
     toolGroup: '{{count}} 次调用',
     toolGenerating: '正在生成参数…',
     reasoningStreaming: '思考中…',
-    thinkingChars: '思考了 {{count}} 字符',
     todoAllDone: '全部完成',
     todoCompleted: '已完成',
     expandTodos: '展开任务列表',

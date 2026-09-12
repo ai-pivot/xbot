@@ -1,7 +1,7 @@
 /**
  * ReasoningBlock — renders the agent's reasoning/thinking text.
  *
- * Used as the content inside a FoldedLine. Renders only the Markdown body.
+ * Used as the content inside a ThinkingLine. Renders only the Markdown body.
  * The "thinking…" placeholder is handled by ShimmerThinking at the
  * AssistantMessage level (shown when NO content/tools exist yet), NOT here.
  */
