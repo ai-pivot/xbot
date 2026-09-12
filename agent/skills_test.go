@@ -218,3 +218,21 @@ func TestSkillStore_IsKnownSkillPathFor_SenderScoped(t *testing.T) {
 		t.Fatalf("GetSkillContentFor must reject arbitrary paths")
 	}
 }
+
+// TestSkillStore_ProactiveActivationGuidance — the skills prompt must push the
+// agent to activate skills PROACTIVELY (user feedback: "agent 使用 skill 不够主动：
+// 任何时候可以用 skill 的情况都要尽可能激活").
+func TestSkillStore_ProactiveActivationGuidance(t *testing.T) {
+	store := NewSkillStore(t.TempDir(), nil, nil)
+	catalog := store.GetSkillsCatalog(context.Background(), "user-1")
+	for _, want := range []string{
+		"Be PROACTIVE about skills",
+		"BEFORE acting",
+		"Do not wait for the user to ask",
+		"Erring towards activating too many skills",
+	} {
+		if !strings.Contains(catalog, want) {
+			t.Errorf("skills catalog must contain %q", want)
+		}
+	}
+}

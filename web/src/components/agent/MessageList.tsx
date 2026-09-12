@@ -37,9 +37,6 @@ interface MessageListProps {
   /** Whether the agent is busy (thinking/processing) — shows placeholder when
    *  no live row yet (e.g. session just started, no iterations arrived). */
   busy?: boolean
-  collapseLevel: 'all' | 'minimal' | 'none'
-  /** Whether to merge consecutive tools. Default true. */
-  mergeTools?: boolean
   loading: boolean
   /** True while loading older messages (scroll-up pagination). */
   loadingMore?: boolean
@@ -185,8 +182,6 @@ export const MessageList = memo(function MessageList({
   messages,
   liveProgress,
   busy = false,
-  collapseLevel,
-  mergeTools = true,
   loading,
   loadingMore = false,
   hasMore = false,
@@ -982,8 +977,6 @@ export const MessageList = memo(function MessageList({
                     <MessageItem
                       message={row}
                       liveProgress={row.id === liveId ? liveProgress : null}
-                      collapseLevel={collapseLevel}
-                      mergeTools={mergeTools}
                       onRewind={onRewind ? handleRewindRow : undefined}
                       isEditing={isEditing}
                       onStartEdit={onStartEdit ? handleStartEditRow : undefined}

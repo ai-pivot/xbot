@@ -54,7 +54,7 @@ model_tier parameter takes priority over the role's model setting. If neither is
 
 Sub-agents run in BACKGROUND by default: spawn returns immediately with a task ID,
 the sub-agent works asynchronously, and the result is injected into your conversation
-when it finishes. Use task_wait(task_id=["sub-xxx"]) to block until it completes,
+when it finishes — no need to wait. Use task_status(task_id=["sub-xxx"]) for a quick state check;
 task_status(task_id=["sub-xxx"]) to check progress, or action="inspect" to see its
 latest activity (task_id is ALWAYS an array of ID strings). For multiple sub-agents,
 pass all IDs in one array: task_wait(task_id=["sub-a","sub-b"], mode="any").
@@ -76,7 +76,7 @@ Persistent multi-turn session. Create once, send multiple messages, unload when 
 
 ## Background rule
 Background sub-agents report progress automatically; when one finishes, the result is injected into your
-conversation and you can also await it with task_wait(task_id=["sub-xxx"]). Use action="inspect"
+conversation — no need to wait. Use action="inspect"
 to check progress, action="send" to send messages, action="interrupt" to stop,
 action="unload" to terminate. For multiple background sub-agents, pass all IDs in one array:
 task_wait(task_id=["sub-a","sub-b"], mode="all" or "any").
@@ -86,7 +86,7 @@ Parameters (JSON):
   - role: string (required), predefined role name
   - instance: string (REQUIRED on every call), unique instance ID used to identify the session/run
   - interactive: boolean (optional), create or reuse an interactive session
-  - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (await with task_wait). Set false to block for the final reply synchronously.
+  - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (no need to wait; task_wait only if you have nothing else to do). Set false to block for the final reply synchronously.
   - action: string (optional), one of "send", "unload", "inspect", "interrupt"
   - model_tier: string (optional), model tier for this call: "vanguard", "swift", or "balance" (default). Overrides the role's model setting.
   - fork: string (optional), fork (inherit) the conversation context of an existing session into this NEW sub-agent.
@@ -110,7 +110,7 @@ func (t *SubAgentTool) Parameters() []llm.ToolParam {
 		{Name: "role", Type: "string", Description: "Predefined role name (for example: code-reviewer)", Required: true},
 		{Name: "instance", Type: "string", Description: `REQUIRED on every call. Stable unique ID for this sub-agent run/session. Never omit it. Examples: "review-1", "planner-main", "bugfix-login".`, Required: true},
 		{Name: "interactive", Type: "boolean", Description: "Create or reuse an interactive session for multi-turn conversation"},
-		{Name: "background", Type: "boolean", Description: "Run the sub-agent in background mode (default: true — spawn returns immediately, completion is injected as a notification; await with task_wait). Set false to block synchronously for the final reply."},
+		{Name: "background", Type: "boolean", Description: "Run the sub-agent in background mode (default: true — spawn returns immediately and the completion is injected as a notification; no need to wait). Set false to block synchronously for the final reply."},
 		{Name: "action", Type: "string", Description: `Optional control action: "send", "unload", "inspect", or "interrupt".`},
 		{Name: "tail", Type: "integer", Description: "For action=\"inspect\": number of recent iterations to show (default: 5)."},
 		{Name: "model_tier", Type: "string", Description: `Model tier for this call: "vanguard" (strongest), "swift" (fastest), or "balance" (default). Overrides the role's model setting. Use when you need a different model than the role's default for a specific task.`},

@@ -158,7 +158,7 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'Read', label: 'Read', summary: 'read a config file', args: '{"path":"/tmp/a.go"}' }),
       makeTool({ name: 'Grep', label: 'Grep', summary: 'grep the tree' }),
     ]
-    const { container } = renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
+    const { container } = renderWithProviders(<FoldedToolGroup tools={tools} />)
     // 折叠行：无 ▸ 箭头；每个 pill 是独立 trigger，原地无浮窗
     expect(container.textContent).not.toContain('▸')
     const pills = screen.getAllByTestId('tool-pill')
@@ -181,7 +181,7 @@ describe('FoldedToolGroup', () => {
     const tools = Array.from({ length: 9 }, (_, i) =>
       makeTool({ name: `T${i}`, label: `T${i}` }),
     )
-    renderWithProviders(<FoldedToolGroup tools={tools} level="minimal" />)
+    renderWithProviders(<FoldedToolGroup tools={tools} />)
     // 折叠行：仅前 7 个 pill（T0..T6）+ "+2" 徽标；第 8 个工具（T7）不内联渲染
     expect(screen.getByTestId('tool-pill-more')).toHaveTextContent('+2')
     expect(screen.queryByText('T7')).not.toBeInTheDocument()
@@ -194,24 +194,11 @@ describe('FoldedToolGroup', () => {
     expect(within(content as HTMLElement).getAllByTestId('tool-row')).toHaveLength(2)
   })
 
-  it('renders each tool independently at none level', () => {
-    const tools = [
-      makeTool({ name: 'Read', label: 'Read' }),
-      makeTool({ name: 'Grep', label: 'Grep' }),
-    ]
-    const { container } = renderWithProviders(
-      <FoldedToolGroup tools={tools} level="none" />,
-    )
-    // At 'none' level, each tool renders as an independent ToolCard (no toggle button)
-    const cards = container.querySelectorAll('.tool-icon-single')
-    expect(cards.length).toBe(2)
-  })
-
   it.each(['pending', 'running', 'generating'] as const)(
     'uses an accent sweep in a folded %s tool title',
     (status) => {
       renderWithProviders(
-        <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
+        <FoldedToolGroup tools={[makeTool({ status })]} />,
       )
       const pill = screen.getByTestId('tool-pill')
       const sweep = pill.querySelector<HTMLElement>('.sweep-text')
@@ -224,7 +211,7 @@ describe('FoldedToolGroup', () => {
     'keeps a folded %s tool title static',
     (status) => {
       renderWithProviders(
-        <FoldedToolGroup tools={[makeTool({ status })]} level="minimal" />,
+        <FoldedToolGroup tools={[makeTool({ status })]} />,
       )
       const pill = screen.getByTestId('tool-pill')
       expect(pill.querySelector('.sweep-text')).toBeNull()
@@ -237,7 +224,6 @@ describe('FoldedToolGroup', () => {
       const { container } = renderWithProviders(
         <FoldedToolGroup
           tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]}
-          level="none"
         />,
       )
       const sweep = container.querySelector<HTMLElement>('.sweep-text')
@@ -251,7 +237,6 @@ describe('FoldedToolGroup', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup
         tools={[makeTool({ name: 'SubAgent', label: 'SubAgent: review', status: 'running' })]}
-        level="minimal"
       />,
     )
 
@@ -267,7 +252,6 @@ describe('FoldedToolGroup', () => {
           makeTool({ name: 'Read', label: 'Read', status: 'running' }),
           makeTool({ name: 'Grep', label: 'Grep', status: 'running' }),
         ]}
-        level="minimal"
       />,
     )
 
@@ -277,7 +261,7 @@ describe('FoldedToolGroup', () => {
 
   it('does not add a second sweep when the running tool popover opens', () => {
     const { container } = renderWithProviders(
-      <FoldedToolGroup tools={[makeTool({ status: 'running' })]} level="minimal" />,
+      <FoldedToolGroup tools={[makeTool({ status: 'running' })]} />,
     )
 
     expect(container.querySelectorAll('.sweep-text')).toHaveLength(1)
@@ -290,7 +274,7 @@ describe('FoldedToolGroup', () => {
     'keeps an expanded %s tool card title static',
     (status) => {
       const { container } = renderWithProviders(
-        <FoldedToolGroup tools={[makeTool({ status })]} level="none" />,
+        <FoldedToolGroup tools={[makeTool({ status })]} />,
       )
       expect(container.querySelector('.sweep-text')).toBeNull()
     },
@@ -299,7 +283,7 @@ describe('FoldedToolGroup', () => {
   it('renders single tool as an independent pill with its own popover regardless of level', () => {
     const tools = [makeTool({ name: 'Read', label: 'Read' })]
     const { container } = renderWithProviders(
-      <FoldedToolGroup tools={tools} level="minimal" />,
+      <FoldedToolGroup tools={tools} />,
     )
     // Single tool: one pill trigger with its own per-tool popover (no row trigger)
     const pills = screen.getAllByTestId('tool-pill')
@@ -309,7 +293,7 @@ describe('FoldedToolGroup', () => {
 
   it('renders nothing for empty tools', () => {
     const { container } = renderWithProviders(
-      <FoldedToolGroup tools={[]} level="minimal" />,
+      <FoldedToolGroup tools={[]} />,
     )
     expect(container.firstChild).toBeNull()
   })
@@ -351,7 +335,7 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
     ]
     const { container } = renderWithProviders(
-      <FoldedToolGroup tools={tools} level="minimal" />,
+      <FoldedToolGroup tools={tools} />,
     )
 
     // Each tool is its own pill containing [icon, text] in that order.
@@ -368,7 +352,7 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'Grep', label: 'Grep', status: 'done' }),
     ]
     const { container } = renderWithProviders(
-      <FoldedToolGroup tools={tools} level="minimal" />,
+      <FoldedToolGroup tools={tools} />,
     )
 
     const pills = foldedPills(container)
@@ -388,7 +372,7 @@ describe('FoldedToolGroup', () => {
       makeTool({ name: 'WebSearch', label: 'WebSearch', status: 'running' }),
     ]
     const { container } = renderWithProviders(
-      <FoldedToolGroup tools={tools} level="minimal" />,
+      <FoldedToolGroup tools={tools} />,
     )
 
     // Each pill must pair its own icon with its own name (never 2 icons in one pill).
@@ -409,7 +393,7 @@ describe('IterationGroup', () => {
       tools: [makeTool({ name: 'Read', label: 'Read' })],
       toolCount: 1,
     })
-    renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
+    renderWithProviders(<IterationGroup iteration={iter} />)
     // Reasoning is a folded line with character count as title
     expect(screen.getByText(/Thought.*characters/)).toBeInTheDocument()
     // Tool name from FoldedToolGroup
@@ -422,7 +406,6 @@ describe('IterationGroup', () => {
     const { container } = renderWithProviders(
       <IterationGroup
         iteration={makeIteration({ iteration: 2, reasoning: 'deep thinking' })}
-        level="none"
       />,
     )
     // Reasoning folded line shows character count as title
@@ -435,7 +418,7 @@ describe('IterationGroup', () => {
       iteration: 3,
       content: 'Final answer here',
     })
-    renderWithProviders(<IterationGroup iteration={iter} level="all" />)
+    renderWithProviders(<IterationGroup iteration={iter} />)
     expect(screen.getByText('Final answer here')).toBeInTheDocument()
   })
 
@@ -448,7 +431,7 @@ describe('IterationGroup', () => {
       ],
       toolCount: 2,
     })
-    const { container } = renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
+    const { container } = renderWithProviders(<IterationGroup iteration={iter} />)
     // Folded row: 2 pills（各自独立浮窗），无 ▸ 箭头，原地无浮窗内容
     expect(container.textContent).not.toContain('▸')
     const pills = screen.getAllByTestId('tool-pill')
@@ -464,7 +447,7 @@ describe('IterationGroup', () => {
 
   it('renders a hint when iteration is empty', () => {
     const iter = makeIteration({ iteration: 1 })
-    renderWithProviders(<IterationGroup iteration={iter} level="minimal" />)
+    renderWithProviders(<IterationGroup iteration={iter} />)
     // Should render the "none" hint
     expect(screen.getByText('—')).toBeInTheDocument()
   })

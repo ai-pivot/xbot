@@ -4,10 +4,9 @@
  * Each iteration renders:
  *   - T (reasoning): FoldedLine, always folded by default
  *   - O (text output): MarkdownRenderer, always shown
- *   - C (tools): FoldedToolGroup (handles both single and merged tool display)
+ *   - C (tools): FoldedToolGroup (每个工具一个独立 pill)
  *
- * The component is used by TurnBody for committed iterations, and by
- * AssistantMessage for the "all" level summary expansion.
+ * The component is used by TurnBody for committed iterations.
  */
 import { memo } from 'react'
 
@@ -17,19 +16,14 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { useI18n } from '@/providers/i18n'
 import { IterationSlot } from '@/plugin-runtime/iteration-render'
-import type { CollapseLevel } from '@/types/agent'
 import type { WebIteration } from '@/types/shared'
 
 interface IterationGroupProps {
   iteration: WebIteration
-  level: CollapseLevel
-  mergeTools?: boolean
 }
 
 export const IterationGroup = memo(function IterationGroup({
   iteration,
-  level,
-  mergeTools = true,
 }: IterationGroupProps) {
   const { t } = useI18n()
 
@@ -66,9 +60,9 @@ export const IterationGroup = memo(function IterationGroup({
         />
       )}
 
-      {/* C: tool calls (FoldedToolGroup handles both single and merged display) */}
+      {/* C: tool calls (每个工具一个 pill) */}
       {iteration.tools.length > 0 && (
-        <FoldedToolGroup tools={iteration.tools} level={level} mergeTools={mergeTools} />
+        <FoldedToolGroup tools={iteration.tools} />
       )}
 
       {/* Fallback: if nothing in this iteration, show a subtle hint */}

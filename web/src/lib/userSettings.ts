@@ -24,8 +24,6 @@ const SETTING_MAP: Record<string, string> = {
   'xbot-md-theme': 'web:ui:md-theme',
   'xbot-accent': 'web:ui:accent',
   'xbot-locale': 'web:ui:locale',
-  'xbot-collapse-level': 'web:ui:collapse-level',
-  'xbot-merge-tools': 'web:ui:merge-tools',
   'xbot-send-key-mode': 'web:ui:send-key-mode',
   'xbot-code-word-wrap': 'web:ui:code-word-wrap',
   'xbot:leftSidebarWidth': 'web:ui:left-sidebar-width',

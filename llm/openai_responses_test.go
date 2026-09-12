@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/openai/openai-go/v3/responses"
@@ -247,6 +249,61 @@ func TestToResponsesParams_AssistantWithReasoningContent(t *testing.T) {
 	}
 	if r.Summary[0].Text != "thinking about the question" {
 		t.Errorf("summary text = %q, want %q", r.Summary[0].Text, "thinking about the question")
+	}
+}
+
+// TestToResponsesParams_AssistantReasoningCarriesReasoningText 复现用户报告的 400：
+//
+//	LLM generate failed: ... POST /gateway/v1/responses: 400 Bad Request
+//	{"message":"The reasoning_text in the thinking mode must be passed back to
+//	 the API.","type":"invalid_request_error"}
+//
+// 根因：请求体里 reasoning item 只带了 `summary`（parts of type summary_text），
+// 没有 `content`（parts of type reasoning_text）—— thinking mode 网关校验
+// "reasoning_text 必须回传"，于是整个请求被拒。
+//
+// 契约：assistant 消息带 ReasoningContent 时，序列化后的请求体必须包含
+// type=reasoning_text 的 content part（并且文本一字不差）。
+func TestToResponsesParams_AssistantReasoningCarriesReasoningText(t *testing.T) {
+	msgs := []ChatMessage{
+		{Role: "user", Content: "hi"},
+		{
+			Role:             "assistant",
+			ReasoningContent: "step by step reasoning",
+			ToolCalls:        []ToolCall{{ID: "call_1", Name: "Read", Arguments: `{"file":"a.go"}`}},
+		},
+		{Role: "tool", Content: "ok", ToolCallID: "call_1"},
+	}
+
+	body, err := json.Marshal(toResponsesParams("m", msgs, 0, &mcVisionOn))
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	payload := string(body)
+
+	if !strings.Contains(payload, `"type":"reasoning_text"`) {
+		t.Fatalf("reasoning item must carry a reasoning_text content part (gateway 400 otherwise); payload=%s", payload)
+	}
+	if !strings.Contains(payload, `"text":"step by step reasoning"`) {
+		t.Fatalf("reasoning text must be passed back verbatim; payload=%s", payload)
+	}
+
+	// 结构层：同一 item 同时带 summary 与 content，两者文本一致。
+	items := toResponsesParams("m", msgs, 0, &mcVisionOn).Input.OfInputItemList
+	var reasoning *responses.ResponseReasoningItemParam
+	for i := range items {
+		if items[i].OfReasoning != nil {
+			reasoning = items[i].OfReasoning
+		}
+	}
+	if reasoning == nil {
+		t.Fatal("expected a reasoning item for the assistant turn")
+	}
+	if len(reasoning.Content) != 1 || reasoning.Content[0].Text != "step by step reasoning" {
+		t.Fatalf("reasoning content = %+v, want one part with the reasoning text", reasoning.Content)
+	}
+	if len(reasoning.Summary) != 1 || reasoning.Summary[0].Text != "step by step reasoning" {
+		t.Fatalf("reasoning summary = %+v, want one part with the reasoning text", reasoning.Summary)
 	}
 }
 

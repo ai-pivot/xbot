@@ -111,12 +111,26 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int, mc *
 			}
 
 		case "assistant":
-			// If there's reasoning_content, add a reasoning item first
+			// Reasoning content MUST be passed back to the API in thinking mode.
+			// A reasoning item carries two shapes:
+			//   - `summary`  → parts of type `summary_text` (a summary)
+			//   - `content`  → parts of type `reasoning_text` (the reasoning text)
+			// We previously emitted ONLY `summary`, so thinking-mode gateways
+			// rejected the request with 400:
+			//   {"message":"The reasoning_text in the thinking mode must be
+			//    passed back to the API.","type":"invalid_request_error"}
+			// (tokendance / OpenAI-compatible gateways validate that an
+			// assistant turn carries its `reasoning_text` back.) Emit the text
+			// in BOTH shapes: `content` is what the gateway requires, `summary`
+			// keeps providers that only read the summary working.
 			if msg.ReasoningContent != "" {
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfReasoning: &responses.ResponseReasoningItemParam{
 						ID: fmt.Sprintf("rs_%s_%d", sanitizeID(msg.ToolCallID), len(inputItems)),
 						Summary: []responses.ResponseReasoningItemSummaryParam{
+							{Text: msg.ReasoningContent},
+						},
+						Content: []responses.ResponseReasoningItemContentParam{
 							{Text: msg.ReasoningContent},
 						},
 					},
@@ -381,13 +395,23 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 			})
 
 		case "reasoning":
-			// Extract reasoning summary content.
-			// Note: item.Content (full reasoning text) requires the "reasoning.encrypted_content"
-			// include parameter and is not available by default. We only use Summary,
-			// which is always returned when reasoning is enabled.
-			for _, summary := range item.Summary {
-				result.ReasoningContent += summary.Text
+			// Reasoning text (type `reasoning_text`) is the authoritative full
+			// reasoning; `summary` (type `summary_text`) is a condensed form.
+			// Prefer content, but only when it actually yields text — a content
+			// array with empty/placeholder parts must NOT shadow a usable summary
+			// (that would silently drop the reasoning).
+			text := ""
+			for _, part := range item.Content {
+				if part.Type == "reasoning_text" {
+					text += part.Text
+				}
 			}
+			if text == "" {
+				for _, summary := range item.Summary {
+					text += summary.Text
+				}
+			}
+			result.ReasoningContent = text
 		}
 	}
 
@@ -540,6 +564,12 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	}
 	toolCallsByID := make(map[string]*toolCallState)
 	toolCallList := make([]*toolCallState, 0)
+	// Reasoning dedup: `reasoning_text.delta` carries the FULL reasoning text and
+	// `reasoning_summary_text.delta` a condensed summary. Both map to
+	// EventReasoningContent, so a provider that emits BOTH would double the
+	// reasoning text. Prefer the full text per reasoning item: once an item has
+	// delivered text deltas, its summary deltas are ignored.
+	reasoningItemHasText := make(map[string]bool)
 
 	for stream.Next() {
 		select {
@@ -578,8 +608,9 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.reasoning_text.delta":
-			// Full reasoning text delta
+			// Full reasoning text delta — authoritative for this item.
 			if event.Delta != "" {
+				reasoningItemHasText[event.ItemID] = true
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: event.Delta,
@@ -587,8 +618,9 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 			}
 
 		case "response.reasoning_summary_text.delta":
-			// Reasoning summary delta
-			if event.Delta != "" {
+			// Reasoning summary delta — skipped when this item already delivered
+			// its full reasoning text (prevents duplicated reasoning).
+			if event.Delta != "" && !reasoningItemHasText[event.ItemID] {
 				eventChan <- StreamEvent{
 					Type:             EventReasoningContent,
 					ReasoningContent: event.Delta,

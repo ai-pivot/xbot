@@ -24,7 +24,7 @@ task_id is an ARRAY of task ID strings — check multiple tasks in ONE call:
   - Multiple:     task_id: ["bg-abc123", "sub-def456"]
   - Each ID's status is reported independently; unknown IDs are listed as errors without aborting the rest.
 
-If status is "running", use task_wait to block until completion, or continue with other work — the result will be injected automatically when the task finishes.
+If status is "running", KEEP WORKING — the result is injected automatically when the task finishes. Do not block on task_wait unless you have nothing else to do.
 
 Parameters (JSON):
   - task_id: array of strings — the task ID(s) to check`
@@ -183,17 +183,22 @@ type TaskReadTool struct{}
 func (t *TaskReadTool) Name() string   { return "task_read" }
 func (t *TaskReadTool) Required() bool { return false }
 func (t *TaskReadTool) Description() string {
-	return `Read the full output of a background task. Useful for reviewing the complete output of a completed task.
+	return `Read the full output of a background task, or the recent progress of a background sub-agent.
+
+  - Shell/background task ID (raw hex, e.g. "3f8f492a") → full output buffer.
+  - Sub-agent ID (e.g. "sub-1eefac7a") → the same recent-progress dump as
+    SubAgent(action="inspect"): status, task, last reply, recent iterations.
 
 Parameters (JSON):
-  - task_id: string, the task ID to read
-  - tail: number (optional), only return the last N characters (default: all)`
+  - task_id: string, the task (or sub-agent) ID to read
+  - tail: number (optional), last N output characters (Shell tasks) / number of
+    recent iterations to show (sub-agents, default 5)`
 }
 
 func (t *TaskReadTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "task_id", Type: "string", Description: "The background task ID to read", Required: true},
-		{Name: "tail", Type: "number", Description: "Only return the last N characters of output (default: all)", Required: false},
+		{Name: "tail", Type: "number", Description: "Shell tasks: only return the last N characters of output (default: all). Sub-agents: how many recent iterations to show (default: 5).", Required: false},
 	}
 }
 
@@ -212,14 +217,28 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 
 	task, err := toolCtx.BgTaskManager.Status(params.TaskID)
 	if err != nil {
-		// Sub-agent tasks exist but have no streaming output — distinguish
-		// "wrong kind of task" from "not found" (task_wait/task_status/
-		// task_kill all resolve sub-agent IDs; task_read must too, or a
-		// valid sub-xxx ID misleadingly reports "task not found").
+		// Sub-agent task: sub-agent runs have no streaming output buffer — their
+		// progress lives in the interactive session. Read it with EXACTLY the same
+		// logic as SubAgent(action="inspect") so both entry points agree.
 		if subTask, serr := toolCtx.BgTaskManager.SubAgentStatus(params.TaskID); serr == nil {
+			tailCount := params.Tail
+			if tailCount <= 0 {
+				tailCount = 5
+			}
+			if im, ok := toolCtx.Manager.(InteractiveSubAgentManager); ok && im != nil {
+				out, ierr := im.InspectInteractive(toolCtx, subTask.Role, subTask.Instance, tailCount)
+				if ierr == nil {
+					return NewResult(out), nil
+				}
+				// Session gone (unloaded / already consolidated) — say what the ID
+				// refers to instead of a bare error.
+				return NewResult(fmt.Sprintf(
+					"Sub-agent %s (role %q, instance %q, status: %s) has no readable session: %v\nUse task_status %q for its last known state.",
+					params.TaskID, subTask.Role, subTask.Instance, subTask.Status, ierr, params.TaskID)), nil
+			}
 			return NewResult(fmt.Sprintf(
-				"Sub-agent task %s: no streaming output — sub-agent results are delivered via the completion notification, not an output buffer.\nUse task_status %q for its current status (role %q, status: %s).",
-				params.TaskID, params.TaskID, subTask.Role, subTask.Status)), nil
+				"Sub-agent task %s: no streaming output — sub-agent progress is read from its interactive session.\nUse task_status %q for status (role %q, status: %s), or SubAgent(action=\"inspect\", role=%q, instance=%q).",
+				params.TaskID, params.TaskID, subTask.Role, subTask.Status, subTask.Role, subTask.Instance)), nil
 		}
 		return nil, err
 	}

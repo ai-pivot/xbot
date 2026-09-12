@@ -18,10 +18,6 @@ interface MessageItemProps {
   message: ChatMessage
   /** Live progress snapshot for the streaming assistant message, else null. */
   liveProgress?: LiveProgress | null
-  /** Active collapse-level preference. */
-  collapseLevel: 'all' | 'minimal' | 'none'
-  /** Whether to merge consecutive tools. Default true. */
-  mergeTools?: boolean
   /** Rewind callback — receives the edited content + the row it belongs to.
    *  ⚠️ 必须由调用方以稳定引用传入（row 由本组件回填）：inline 箭头会让
    *  memo 在**每个流式帧**失效 → 整个虚拟列表可见行全部重渲染
@@ -40,8 +36,6 @@ interface MessageItemProps {
 export const MessageItem = memo(function MessageItem({
   message,
   liveProgress,
-  collapseLevel,
-  mergeTools = true,
   onRewind,
   isEditing = false,
   onStartEdit,
@@ -67,8 +61,6 @@ export const MessageItem = memo(function MessageItem({
     <AssistantMessage
       message={message}
       progress={liveProgress}
-      collapseLevel={collapseLevel}
-      mergeTools={mergeTools}
     />
   )
 })

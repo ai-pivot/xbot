@@ -96,8 +96,6 @@ const FrameDriver = forwardRef<{ push: (f: number) => void }, { iterations: WebI
       <TurnBody
         iterations={iterations}
         liveProgress={makeSnapshot(iterations, frame)}
-        level="minimal"
-        mergeTools={true}
         turnID={1}
       />
     )
@@ -134,9 +132,9 @@ describe('REPRO Trace-20260912T100816 — 流式帧不得重渲染已提交迭�
     const small = measure(20)
     const big = measure(200)
 
-    // 首帧必须渲染全部已提交迭代（每个迭代：thinking + tools 各一次）
-    expect(small.initial).toBe(20 * 2)
-    expect(big.initial).toBe(200 * 2)
+    // 首帧必须渲染全部已提交迭代（每个迭代一个 IterationGroup → 其工具组一次）
+    expect(small.initial).toBe(20)
+    expect(big.initial).toBe(200)
 
     // 流式帧：不重渲染已提交迭代（修复前 = 每帧 n 次 → 代价 ∝ turn 长度）
     expect(small.perFrame).toBe(0)

@@ -6,12 +6,12 @@
  * plus render smoke tests for the dedicated views.
  */
 import { describe, expect, it } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints } from '@/components/agent/ToolRender'
-import { syntheticShortName } from '@/components/agent/SyntheticToolCard'
+import { syntheticShortName, syntheticSubject } from '@/components/agent/SyntheticToolCard'
 import { DiffView, extractDiffSource, parseUnifiedDiff } from '@/components/agent/DiffView'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -582,5 +582,78 @@ describe('synthetic card: the event and its continuity must be obvious at a glan
     expect(container.textContent).toMatch(/User interjection received|收到用户插话/)
     expect(container.textContent).toMatch(/without stopping the task|未打断当前任务/)
     expect(container.textContent).toContain('顺便把文档也更新了')
+  })
+})
+
+describe('synthetic card 呈现优先级 + 去重（用户插话反馈）', () => {
+  it('user_interrupt：不再把「💬 插话」当 subject 重复渲染', () => {
+    // label 就是显示名本身 → subject 必须为空，否则 pill/标题出现「插话 💬 插话」
+    expect(syntheticSubject(makeTool({ name: 'user_interrupt', label: '💬 插话' }))).toBe('')
+    expect(syntheticSubject(makeTool({ name: 'user_interrupt', label: '' }))).toBe('')
+    // 有角色信息时仍然正常给 subject
+    expect(
+      syntheticSubject(
+        makeTool({ name: 'bg_subagent_completed', toolHints: JSON.stringify({ kind: 'subagent', role: 'explore', instance: 'mem-1' }) }),
+      ),
+    ).toBe('explore/mem-1')
+    // 去掉 emoji 前缀后的普通 label 仍可用
+    expect(syntheticSubject(makeTool({ name: 'background_task_result', label: '💬 build now' }))).toBe('build now')
+  })
+
+  it('长命令默认折叠（带展开按钮），输出才是重点（800 字符不折叠）', () => {
+    const longCmd = "ssh -o BatchMode=yes ubuntu@1.2.3.4 'pkill -9 -x serve; sleep 5; cd ~/ferrite && git fetch && git reset --hard origin/main && cd kernels/cuda && bash build.sh 103a 2>&1 | tail -1 && cd ~/ferrite && cargo build --release 2>&1 | tail -1 && ./target/release/ferrite-serve --serve --tp 8'"
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: '5c4e1bfe', task: longCmd, status: 'done', exit_code: 0, elapsed_ms: 166200,
+        output: 'x'.repeat(800),
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+
+    // 命令：折叠 + 有展开按钮
+    const cmd = screen.getByTestId('synthetic-command')
+    expect(cmd.className).toContain('max-h-[3.75rem]')
+    expect(screen.getByTestId('synthetic-command-toggle')).toBeInTheDocument()
+    // 展开后命令不再被限高
+    fireEvent.click(screen.getByTestId('synthetic-command-toggle'))
+    expect(screen.getByTestId('synthetic-command').className).not.toContain('max-h-[3.75rem]')
+
+    // 输出：800 字符属于重点内容，不应被折叠（旧阈值 600 会折叠它）
+    expect(screen.queryByTestId('synthetic-output-toggle')).toBeNull()
+  })
+
+  it('超长输出（>1500 字符）才折叠，且给出行数统计', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: 'x1', task: 'make', status: 'done', output: 'y'.repeat(2000) + '\nline2',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByTestId('synthetic-output-toggle')).toBeInTheDocument()
+  })
+})
+
+describe('合成卡片：两个「展开全部」按钮必须同款（曾上下错位 = 严重 bug）', () => {
+  it('命令与输出的折叠按钮使用完全相同的样式/对齐', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: 'z1', task: 'x'.repeat(300),
+        status: 'done', output: 'y'.repeat(2000),
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    const cmd = screen.getByTestId('synthetic-command-toggle')
+    const out = screen.getByTestId('synthetic-output-toggle')
+    // 同一套 class ⇒ 天然同宽同对齐（此前命令的是 w-full 居中带边框、输出的是左对齐 inline）
+    expect(cmd.className).toBe(out.className)
+    expect(cmd.className).toContain('inline-flex')
+    expect(cmd.className).not.toContain('w-full')
+    expect(cmd.className).not.toContain('justify-center')
   })
 })

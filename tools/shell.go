@@ -26,17 +26,22 @@ IMPORTANT: Commands are executed non-interactively with a timeout. Do NOT run in
 
 PROCESS CLEANUP: Non-background commands are killed (including all child processes) when they return. Do NOT use nohup, disown, or trailing & — they create orphaned processes that waste resources and cause confusion. If a command needs to outlive the tool call, use "background": true instead.
 
-BACKGROUND MODE: Set "background": true to run long-running commands (dev servers, build processes) without blocking. Returns a task ID immediately. The agent continues working while the command runs in the background. When the command finishes, its output is automatically injected into the conversation. To check progress, use task_status. If status is "running", use task_wait to block until completion, or continue with other work.
+⛔ DO NOT SLEEP. Never run "sleep N" (in a command, a poll loop, or a foreground wait) just to wait for something to become ready — nothing useful happens while the agent is blocked, and the user sees nothing. Instead:
+  - start the long work with "background": true and continue with OTHER useful work (build, tests, reading code) — its completion is delivered to you automatically as a notification;
+  - or pass a realistic "timeout" and let the command finish (a timeout auto-promotes it to a background task; nothing is lost).
+Polling with sleep inside a loop is only acceptable when the loop itself is the background task (see the example below).
 
-AUTO-BACKGROUND: If a command times out, it is automatically converted to a background task so no work is lost. The agent receives the task ID and can continue. Use task_wait to wait for completion, or continue with other work.
+BACKGROUND MODE: Set "background": true to run long-running commands (dev servers, build processes) without blocking. Returns a task ID immediately. The agent continues working while the command runs in the background. When the command finishes, its output is automatically injected into the conversation — no waiting required. Use task_status only if you briefly need its current state; do NOT block on task_wait unless you truly have nothing else to do.
 
-Example — poll a health endpoint until ready:
+AUTO-BACKGROUND: If a command times out (default 1 min), it is automatically converted to a background task so no work is lost. The agent receives the task ID and can continue. Its completion arrives as a notification.
+
+Example — poll a health endpoint until ready (the loop itself is the background task):
   {"command": "for i in $(seq 1 60); do curl -sf http://localhost:8080/health && exit 0; sleep 2; done; exit 1", "background": true}
-Then use task_wait to block until the endpoint is up.
+Then keep doing other work — the result is delivered to you when it finishes.
 
 Parameters (JSON):
   - command: string, the command to execute
-  - timeout: number (optional), timeout in seconds (default: 120, max: 600)
+  - timeout: number (optional), timeout in seconds (default: 60 = 1 min, max: 600)
   - background: boolean (optional), run in background mode
 
 Environment Variables:
@@ -46,7 +51,7 @@ Environment Variables:
 func (t *ShellTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "command", Type: "string", Description: "The command to execute", Required: true},
-		{Name: "timeout", Type: "number", Description: "Timeout in seconds (default: 120, max: 600)", Required: false},
+		{Name: "timeout", Type: "number", Description: "Timeout in seconds (default: 60 = 1 min, max: 600). On timeout the command is auto-promoted to a background task (it keeps running; you get a notification when it finishes).", Required: false},
 		{Name: "background", Type: "boolean", Description: "Run command in background (for long-running tasks like dev servers). Returns task ID immediately.", Required: false},
 		{Name: "run_as", Type: "string", Description: "OS username to execute as. Requires permission control to be enabled. Only effective in none sandbox mode.", Required: false},
 		{Name: "reason", Type: "string", Description: "Optional human-readable reason shown in approval requests when approval is required.", Required: false},
@@ -239,13 +244,14 @@ func (t *ShellTool) executeBackground(
 		"Background task started [task_id: %q]\nCommand: %s\n\n"+
 			"The task is running in the background. You can continue working.\n"+
 			"When it completes, the output will be automatically injected into the conversation.\n"+
-			"- Use task_wait (task_id=[%q]) to block until completion, or task_status (task_id=[%q]) to check progress\n"+
+			"- Do NOT block on it — keep doing other useful work; its completion is delivered to you automatically as a notification\n"+
+			"- Only if you truly have nothing else to do: task_wait (task_id=[%q]); quick state check: task_status (task_id=[%q])\n"+
 			"- Use task_kill (task_id=[%q]) to terminate the task\n"+
 			"Note: for multiple tasks, pass all IDs in one array — task_wait(task_id=[\"id1\",\"id2\"], mode=\"any\")",
 		task.ID, task.Command, task.ID, task.ID, task.ID,
 	)
 
-	return NewResultWithTips(result, fmt.Sprintf("Background task running, use task_wait (task_id=[%q]) to wait for it", task.ID)), nil
+	return NewResultWithTips(result, fmt.Sprintf("Background task running (task_id=%q) — its result will be injected automatically when it finishes; keep working, no need to wait.", task.ID)), nil
 }
 
 // executeForeground runs a command synchronously with promote-to-background
@@ -396,10 +402,11 @@ func (t *ShellTool) executeForeground(
 					"Partial output before timeout:\n%s",
 				timeout, task.ID, output)
 		}
-		tips = fmt.Sprintf("Promoted to background task, use task_wait (task_id=[%q]) to wait for it", task.ID)
+		tips = fmt.Sprintf("Promoted to background task (task_id=%q) — its result will be injected automatically when it finishes; keep working, no need to wait.", task.ID)
 		body := fmt.Sprintf(
 			"%s\n\nThe command continues running in the background. Its output will be injected when done.\n"+
-				"- Use task_wait (task_id=[%q]) to block until completion, or task_status (task_id=[%q]) to check progress\n"+
+				"- Do NOT block on it — keep doing other useful work; its completion is delivered to you automatically as a notification\n"+
+				"- Only if you truly have nothing else to do: task_wait (task_id=[%q]); quick state check: task_status (task_id=[%q])\n"+
 				"- Use task_kill (task_id=[%q]) to terminate\n"+
 				"Note: for multiple tasks, pass all IDs in one array — task_wait(task_id=[\"id1\",\"id2\"], mode=\"any\")",
 			headline, task.ID, task.ID, task.ID)

@@ -33,7 +33,6 @@ src/
 │   ├── ConfirmDialog.tsx    # Reusable confirmation dialog
 │   ├── CodeBlock.tsx        # Syntax-highlighted code with collapse + line numbers
 │   ├── MermaidBlock.tsx     # Mermaid diagram renderer with DOMPurify
-│   ├── ProgressPanel.tsx    # Tool execution progress with drag support
 │   ├── AssistantTurn.tsx    # AI response rendering (thinking/iterations/collapsible)
 │   ├── RunnerPanel.tsx      # Remote runner management
 │   ├── SettingsPanel.tsx    # Settings drawer with tabs

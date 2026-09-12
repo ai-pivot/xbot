@@ -245,20 +245,23 @@ export function syntheticShortName(
  * Subject of a synthetic tool — the thing it acted on, shown next to the name so
  * the row reads like `Sub-agent · explore/mem-1` (mirrors `Shell: cmd`).
  * Prefers the structured payload, then the tool label (`bgsub:explore/mem-1`).
+ *
+ * Returns "" when there is nothing meaningful to show — notably for
+ * `user_interrupt`, whose label IS the display name ("💬 插话"): rendering it as
+ * a subject duplicated the pill's text (`插话` + `💬 插话`).
  */
 export function syntheticSubject(tool: WebToolProgress): string {
   const hints = parseSyntheticHints(tool.toolHints)
   if (hints?.role) return `${hints.role}${hints.instance ? '/' + hints.instance : ''}`
   if (hints?.task_id) return hints.task_id
+  if (syntheticKindOf(tool) === 'interrupt') return ''
   const label = (tool.label || '').trim()
   const idx = label.indexOf(':')
-  if (idx >= 0) {
-    const rest = label.slice(idx + 1).trim()
-    // `bgsub:explore/mem-1` → `explore/mem-1`; `bg:3f8f492a` → `3f8f492a`
-    if (rest && rest !== '{}') return rest
-  }
-  // fall back to whatever was recorded as the label (skip a bare internal name)
-  return label && !isSyntheticToolName(label) ? label : ''
+  const rest = (idx >= 0 ? label.slice(idx + 1) : label).trim()
+  // Drop leading emoji/symbols — a label like "💬 插话" must not become a subject.
+  const cleaned = rest.replace(/^[^\p{L}\p{N}/_.:-]+/u, '').trim()
+  if (!cleaned || cleaned === '{}' || isSyntheticToolName(cleaned)) return ''
+  return cleaned
 }
 
 // ── formatting helpers ────────────────────────────────────────────────
@@ -318,12 +321,37 @@ function Field({
   )
 }
 
-/** Mono code block with a copy affordance — the original command / task. */
-function CodeBlock({ text, copyLabel, copiedLabel }: { text: string; copyLabel: string; copiedLabel: string }) {
+/**
+ * Mono code block with a copy affordance — the original command / task.
+ *
+ * Collapsed by default (3 lines + 展开): the command is CONTEXT, the output is the
+ * point. A long one-liner command (e.g. a giant ssh invocation) used to push the
+ * whole card apart while the useful output sat clipped below it.
+ */
+function CodeBlock({
+  text,
+  copyLabel,
+  copiedLabel,
+  moreLabel,
+  lessLabel,
+}: {
+  text: string
+  copyLabel: string
+  copiedLabel: string
+  moreLabel: string
+  lessLabel: string
+}) {
   const [copied, setCopied] = useState(false)
+  const [open, setOpen] = useState(false)
+  const collapsible = text.split('\n').length > 3 || text.length > 220
   return (
     <div className="group/code relative rounded-lg border border-border/60 bg-bg-tertiary/40">
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words px-2 py-1.5 pr-8 font-mono text-[11px] leading-5 text-text-secondary">
+      <pre
+        data-testid="synthetic-command"
+        className={`overflow-x-auto whitespace-pre-wrap break-words px-2 py-1.5 pr-8 font-mono text-[11px] leading-5 text-text-secondary ${
+          collapsible && !open ? 'max-h-[3.75rem] overflow-y-hidden' : 'max-h-[420px] overflow-y-auto'
+        }`}
+      >
         {text}
       </pre>
       <button
@@ -341,6 +369,19 @@ function CodeBlock({ text, copyLabel, copiedLabel }: { text: string; copyLabel: 
         {copied ? <Check size={11} /> : <Copy size={11} />}
         <span className="sr-only">{copied ? copiedLabel : copyLabel}</span>
       </button>
+      {collapsible && (
+        <button
+          type="button"
+          data-testid="synthetic-command-toggle"
+          onClick={() => setOpen((v) => !v)}
+          /* 与「输出」的展开按钮保持完全一致的样式/对齐（曾一个 w-full 居中带边框、
+             一个左对齐 → 两个按钮上下错位，看起来像 bug） */
+          className="inline-flex w-fit items-center gap-0.5 text-[10px] text-accent hover:underline"
+        >
+          <ChevronDown size={10} className={open ? 'rotate-180 transition-transform' : 'transition-transform'} />
+          {open ? lessLabel : moreLabel}
+        </button>
+      )}
     </div>
   )
 }
@@ -380,7 +421,9 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
   // Prefer the structured output; fall back to detail/summary so legacy rows
   // still say something (the previous card showed "（无输出）" and nothing else).
   const body = hints?.output || hints?.message || tool.detail || tool.summary || ''
-  const clipped = body.length > 600
+  // 输出是重点：只有当它确实很长时才折叠（旧阈值 600 字符 + max-h-24 太激进，
+  // 结果「命令」铺满整卡、真正有用的输出反而被折叠成一个 96px 的小窗口）。
+  const clipped = body.length > 1500
   const lines = body ? body.split('\n').length : 0
 
   const elapsed = formatDuration(hints?.elapsed_ms || tool.elapsedMs || 0)
@@ -407,10 +450,9 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
       data-testid="synthetic-tool-card"
       className={`overflow-hidden rounded-xl border shadow-sm ${look.card}`}
     >
-      {/* header: 完成徽标 + kind avatar + 事件标题 + subject + 状态/退出码/耗时 chips
-          —— 让"此前转后台 / 派发出去的任务现在结束了"一眼可见 */}
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-        <span className={`relative flex size-6 shrink-0 items-center justify-center rounded-full ${look.avatar}`}>
+      {/* header: 完成徽标 + avatar + 标题（独占一行，永不截断）+ chips（第二行自动换行） */}
+      <div className="flex items-start gap-2.5 px-3 py-2">
+        <span className={`relative mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${look.avatar}`}>
           <KindIcon size={13} aria-hidden="true" />
           {(status === 'done' || kind === 'cancel') && (
             <span
@@ -421,19 +463,23 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
             </span>
           )}
         </span>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-text-primary">{title}</span>
-        {subject && (
-          <code className="shrink-0 rounded bg-bg-tertiary/60 px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
-            {subject}
-          </code>
-        )}
-        {statusKey && <Chip tone={tone}>{t(statusKey)}</Chip>}
-        {typeof hints?.exit_code === 'number' && (
-          <Chip tone={hints.exit_code === 0 ? 'green' : 'red'}>
-            {t('agent.tool.syntheticExitCode')} {hints.exit_code}
-          </Chip>
-        )}
-        {elapsed && <Chip>{elapsed}</Chip>}
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <span className="text-[12.5px] font-semibold leading-snug text-text-primary">{title}</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {subject && (
+              <code className="shrink-0 rounded bg-bg-tertiary/60 px-1.5 py-0.5 font-mono text-[10px] text-text-secondary">
+                {subject}
+              </code>
+            )}
+            {statusKey && <Chip tone={tone}>{t(statusKey)}</Chip>}
+            {typeof hints?.exit_code === 'number' && (
+              <Chip tone={hints.exit_code === 0 ? 'green' : 'red'}>
+                {t('agent.tool.syntheticExitCode')} {hints.exit_code}
+              </Chip>
+            )}
+            {elapsed && <Chip>{elapsed}</Chip>}
+          </div>
+        </div>
       </div>
 
       {/* 承接说明：明确这是"之前就在跑的东西，现在结束了"（而不是凭空出现的工具调用） */}
@@ -443,7 +489,17 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
 
       {/* body: original task / output / error + meta footer */}
       <div className="flex flex-col gap-2 border-t border-border/40 px-3 py-2">
-        {task && <Field label={taskLabel}><CodeBlock text={task} copyLabel={t('agent.tool.copy')} copiedLabel={t('agent.tool.copied')} /></Field>}
+        {task && (
+          <Field label={taskLabel}>
+            <CodeBlock
+              text={task}
+              copyLabel={t('agent.tool.copy')}
+              copiedLabel={t('agent.tool.copied')}
+              moreLabel={t('agent.tool.syntheticShowMore')}
+              lessLabel={t('agent.tool.syntheticShowLess')}
+            />
+          </Field>
+        )}
 
         {body ? (
           <Field
@@ -473,6 +529,7 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
             {clipped && (
               <button
                 type="button"
+                data-testid="synthetic-output-toggle"
                 onClick={() => setOpen((v) => !v)}
                 className="inline-flex w-fit items-center gap-0.5 text-[10px] text-accent hover:underline"
               >
