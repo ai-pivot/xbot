@@ -63,4 +63,19 @@ describe('SettingsAppearance — UI 模式切换', () => {
     expect(screen.getByTestId('ui-mode-desktop')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('ui-mode-auto')).toHaveAttribute('aria-pressed', 'false')
   })
+
+  it('「当前生效」行渲染插值后的模式名（不得显示原始 {mode} 模板）', () => {
+    renderWithProviders(<SettingsAppearance />)
+    const line = screen.getByText(/当前生效：|Currently active:/)
+    expect(line.textContent).not.toContain('{mode}')
+    expect(line.textContent).toMatch(/桌面|Desktop/)
+  })
+
+  it('切换模式后「当前生效」行同步更新', () => {
+    renderWithProviders(<SettingsAppearance />)
+    fireEvent.click(screen.getByTestId('ui-mode-mobile'))
+    const line = screen.getByText(/当前生效：|Currently active:/)
+    expect(line.textContent).not.toContain('{mode}')
+    expect(line.textContent).toMatch(/移动端|Mobile/)
+  })
 })
