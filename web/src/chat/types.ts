@@ -310,6 +310,21 @@ export type DomainEvent =
       readonly cancelled: boolean
     }
   | {
+      /** 会话级字段的**本地水合**（非 SSE）：AgentPanel 用 get_goal RPC 兜底读取
+       *  目标（会话切换 / 重启后 lastProgressSnapshot 为空、快照不携带 goal 的场景）。
+       *
+       *  走状态机（而非组件内 shadow state）—— 会话级状态单一数据源：goal 的
+       *  显示、收敛判断（usePendingEdit 的 before 比较）都只读 progressSnapshot。
+       *  旧实现把 RPC 结果写进组件 `goalOverride`，形成"快照 + shadow"双源：
+       *  快照显式清除（null）时 `snapshot.goal ?? shadow` 会静默回退到过期的
+       *  shadow 值（banner 显示已删除的目标）。
+       *
+       *  三态与 iteration/phase_done 一致：undefined = 不改（本事件不携带该字段）。 */
+      readonly type: 'session_fields'
+      readonly todos?: readonly TodoItem[]
+      readonly goal?: GoalInfo | null
+    }
+  | {
       readonly type: 'session'
       readonly busy: boolean
     }

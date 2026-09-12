@@ -147,6 +147,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
         {!editing && (
           <button
             type="button"
+            data-testid="goal-clear"
             onClick={onClear}
             className="shrink-0 text-text-muted hover:text-destructive"
             title={t('agent.goal.clear')}

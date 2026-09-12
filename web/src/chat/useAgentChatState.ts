@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
-import type { ChatMessage, ProgressSnapshot, QueueItemPayload } from '@/types/shared'
+import type { ChatMessage, GoalInfo, ProgressSnapshot, QueueItemPayload, TodoItem } from '@/types/shared'
 import type { WSConnection } from '@/hooks/useWSConnection'
 import { deriveRows } from './derive'
 import { historyToReplaced, liveProgressFromState, rowsToChatMessages } from './integrate'
@@ -46,6 +46,12 @@ export interface AgentChatState {
   readonly queue: readonly QueueItemPayload[]
   /** 全量替换排队快照（queue_state 事件 / 恢复时重建 Staging Tray）。 */
   readonly hydrateQueue: (items: readonly QueueItemPayload[]) => void
+  /** 会话级字段（goal / todos）的本地水合 —— get_goal 等 RPC 的兜底结果写进状态机
+   *（单一数据源），组件不保留 shadow state。undefined = 不改该字段。 */
+  readonly hydrateSessionFields: (fields: {
+    todos?: readonly TodoItem[]
+    goal?: GoalInfo | null
+  }) => void
   readonly reset: () => void
   /** 乐观发送：立即 dispatch user_sent（pendingUsers 渲染 sending 行，
    *  零等待 —— 不等 REST/echo）。返回 requestID 供调用方注入 REST 请求，
@@ -190,6 +196,16 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     [store],
   )
 
+  // hydrateSessionFields：get_goal 等 RPC 的**本地水合**通道 —— 会话级字段
+  // （goal/todos）只走状态机（单一数据源），组件不再保留 shadow state。
+  const hydrateSessionFields = useMemo(
+    () =>
+      (fields: { todos?: readonly TodoItem[]; goal?: GoalInfo | null }) => {
+        store.dispatch({ type: 'session_fields', todos: fields.todos, goal: fields.goal })
+      },
+    [store],
+  )
+
   return {
     messages,
     liveProgress,
@@ -205,6 +221,7 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     ackUser,
     failUser,
     hydrateQueue,
+    hydrateSessionFields,
     pauseRender,
     resumeRender,
   }
