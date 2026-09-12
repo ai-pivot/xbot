@@ -92,6 +92,25 @@ closes automatically afterwards, so a visitor never has to guess whether the
 endpoint is open to everyone. Once the account exists, `/register` shows an
 invite-only notice and the login page hides the register entry entirely.
 
+## UI mode (Auto / Desktop / Mobile)
+
+The web UI ships two shells — desktop and mobile — and picks one automatically
+from the viewport width (≤767px → mobile shell). Narrow tablets, landscape
+phones and small desktop windows sit right on that boundary, so you can pin the
+shell manually under **Settings → Appearance → UI mode**:
+
+| Mode | Behavior |
+|------|----------|
+| Auto (default) | Follows the viewport breakpoint (≤767px = mobile shell) |
+| Desktop | Always use the desktop shell (multi-panel / Dockview layout) |
+| Mobile | Always use the mobile shell (drawer sessions + bottom nav) |
+
+The preference is stored locally (`localStorage`) and takes effect immediately;
+it also syncs to the server (`web:ui:ui-mode`) so other browsers/devices keep
+the same choice. It only switches the **shell** — CSS breakpoints are
+unchanged, so forcing the desktop shell on a narrow screen yields a compressed
+desktop layout.
+
 ## Persona isolation
 
 When `persona_isolation` is `true`:
