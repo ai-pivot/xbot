@@ -5,11 +5,19 @@ import (
 	"fmt"
 	"strconv"
 
+	"xbot/channel"
 	"xbot/config"
 )
 
 // getChannelConfigs reads channel configurations from the config file.
 // Extracted from DirectBackend.GetChannelConfigs for direct use by RPCTable.
+//
+// Every entry also carries two meta keys so one generic UI can render all
+// channels (the CLI settings panel and the Web channels panel share them):
+//
+//	_schema  JSON []SettingDefinition — the channel's config fields
+//	_builtin "true" for the built-in channels (web/feishu/qq/napcat),
+//	         "false" for user-registered plugin channel providers
 func getChannelConfigs() (map[string]map[string]string, error) {
 	cfg := config.LoadFromFile(config.ConfigFilePath())
 	if cfg == nil {
@@ -39,6 +47,11 @@ func getChannelConfigs() (map[string]map[string]string, error) {
 		"ws_url":  cfg.NapCat.WSUrl,
 		"token":   cfg.NapCat.Token,
 	}
+	for _, name := range channel.BuiltinChannelNames {
+		if entry, ok := result[name]; ok {
+			attachChannelSchema(entry, channel.BuiltinChannelSchema(name), true)
+		}
+	}
 
 	// 插件 channel：从 ChannelProviderRegistry 读取 ConfigSchema 并提取配置
 	reg := GetChannelProviderRegistry()
@@ -56,15 +69,20 @@ func getChannelConfigs() (map[string]map[string]string, error) {
 					pluginCfg[def.Key] = def.DefaultValue
 				}
 			}
-			// Attach schema as JSON string so CLI can render settings panel
-			if schemaJSON, err := json.Marshal(provider.ConfigSchema()); err == nil {
-				pluginCfg["_schema"] = string(schemaJSON)
-			}
+			attachChannelSchema(pluginCfg, provider.ConfigSchema(), false)
 			result[name] = pluginCfg
 		}
 	}
 
 	return result, nil
+}
+
+// attachChannelSchema adds the _schema / _builtin meta keys to a channel entry.
+func attachChannelSchema(entry map[string]string, schema []channel.SettingDefinition, builtin bool) {
+	if schemaJSON, err := json.Marshal(schema); err == nil && len(schema) > 0 {
+		entry["_schema"] = string(schemaJSON)
+	}
+	entry["_builtin"] = strconv.FormatBool(builtin)
 }
 
 // setChannelConfig writes a channel's configuration values to the config file.

@@ -85,15 +85,18 @@ Gotchas:
 - A fully-built card (`__FEISHU_CARD__:`) or a WaitingUser AskUser card
   supersedes the streaming card → finalize + delete before sending it.
 
-#### Provisioning the permission: `xbot-cli feishu-bind`
+#### Provisioning the permission: `xbot-cli feishu-bind` / 设置 → 渠道
 
 `cardkit:card:write` (创建与更新卡片) is part of the Feishu **agent app** preset.
 An app created before that preset existed will NOT have it, and the streaming
 card then silently degrades to the legacy static card (one WARN in the log).
 
-`cmd/xbot-cli/feishu_bind.go` provisions it through the Lark SDK's device
-authorization flow (`registration.RegisterApp`, RFC 8628) — the same flow as the
-official "create a Feishu agent app in one click" docs:
+Two entry points share `internal/feishuapp` (the device authorization flow
+`registration.RegisterApp`, RFC 8628 — the same flow as the official "create a
+Feishu agent app in one click" docs), so the scope/event/callback preset lives in
+exactly one place:
+
+**CLI** (`cmd/xbot-cli/feishu_bind.go`):
 
 ```
 xbot-cli feishu-bind                    # create a NEW agent app
@@ -102,12 +105,32 @@ xbot-cli feishu-bind --create-only      # only allow creating
 xbot-cli feishu-bind --no-save          # print credentials without writing config
 ```
 
-It prints `URL: https://open.feishu.cn/page/launcher?...&user_code=XXXX-XXXX`
-(valid ~10 min, single use). The user opens it — or scans it as a QR code —
-confirms, and the app gains the agent permission/event/callback preset. The
-returned credentials are written to `channels.feishu` in config.json
-(`enabled=true`); **the server must be restarted** for the channel to pick them
-up. `--app-id` is pre-filled from `channels.feishu.app_id` when omitted.
+**Web** — 设置 → 渠道 (`SettingsChannels.tsx`) → the Feishu card's
+「一键绑定飞书智能体应用」 button:
+
+- `feishu_bind_start` (serverapp/feishu_bind.go) runs the flow and returns the
+  launcher link synchronously; `feishu_bind_status` is polled until
+  `done`/`error`.
+- The server owns ONE attempt at a time (`feishuBinder`): the link is single-use,
+  so a new `Start` cancels the previous attempt.
+
+Either way the returned credentials are written to `channels.feishu` in
+config.json (`enabled=true`); **the server must be restarted** for the channel to
+pick them up. `--app-id` / the panel's `app_id` field are pre-filled from
+`channels.feishu.app_id` when empty.
+
+#### Web 渠道面板（内置 + 插件渠道）
+
+设置 → 渠道 renders EVERY channel from `get_channel_config`:
+
+- built-ins (web/feishu/qq/napcat) — schema from
+  `channel.BuiltinChannelSchema` (`channel/channel_defs.go`, the single source of
+  truth shared with the CLI settings panel),
+- user-registered plugin channels — schema from `ChannelProvider.ConfigSchema()`.
+
+Both arrive in the same shape (`_schema` JSON + `_builtin` flag), so one renderer
+covers them; saving goes through `set_channel_config`, which writes config.json
+and hot-starts/stops the channel through the dispatcher.
 
 - **`AskUser` 事件必须送达**（web 端曾因 request-ID 校验静默吞掉事件 → 面板不渲染，用户手动回答污染历史）。规则：同一 (channel, chatID) **只有一个 pending AskUser**，所以 `Send`/SSE 写循环**只按 pending 存在性**判断（存在→发布/发送，清除→跳过/consumed），**绝不做 request-ID 相等校验**；`WithPendingAskUser` 仅用于补全 pending 快照，返回值不 veto 发送。已回答/取消的 prompt 由生产者跳过（Send 不重发）+ SSE consumed（reconnect 不重放）。回归测试：`TestSSEAskUser_PendingExistsSends` / `TestSSEAskUser_PendingMissingConsumed`。
 - **`AskUser` 历史记录**：`ask_question`/`ask_answer` 以 control record（role=control, display_only=1）追加（`AppendAskAnswer`），不参与 LLM 上下文与正常消息渲染；回答（`ask_user_answered`）**两条路径**：(a) **替换 AskUser tool 消息内容为回答**（让本轮 LLM 上下文包含回答——否则模型只看到 "Asked N question(s)" 以为用户没答）；(b) **持久化为正常 user 消息**（绑定本 turn 的 turn_id，非 display_only——Replay 排除 display_only 行，前端拿不到会导致顺序破坏）。**回答 user 消息是回答后迭代的 turn 锚点**——没有它，appendAssistant 的 insertBeforeLastUser 回退到原始 user 消息，把回答后的新迭代渲染到旧迭代上方（顺序破坏）。

@@ -183,39 +183,11 @@ func (m *cliModel) pluginChannelSchema(channel string) []ch.SettingDefinition {
 }
 
 // channelSettingsSchema returns the settings schema for a specific ch.
+// Built-in channels come from the shared channel package (single source of
+// truth, also used by the Web channels panel); plugin channels are handled by
+// pluginChannelSchema.
 func channelSettingsSchema(channel string) []ch.SettingDefinition {
-	switch channel {
-	case "web":
-		return []ch.SettingDefinition{
-			{Key: "enabled", Label: "Enabled", Description: "Enable Web channel", Type: ch.SettingTypeToggle, Category: "Web channel", DefaultValue: "false"},
-			{Key: "host", Label: "Host", Description: "Listen host (e.g. 0.0.0.0)", Type: ch.SettingTypeText, Category: "Web channel", DefaultValue: "0.0.0.0"},
-			{Key: "port", Label: "Port", Description: "Listen port (e.g. 8080)", Type: ch.SettingTypeText, Category: "Web channel", DefaultValue: "8080"},
-		}
-	case "feishu":
-		return []ch.SettingDefinition{
-			{Key: "enabled", Label: "Enabled", Description: "Enable Feishu channel", Type: ch.SettingTypeToggle, Category: "Feishu (飞书)", DefaultValue: "false"},
-			{Key: "app_id", Label: "App ID", Description: "Feishu app ID", Type: ch.SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
-			{Key: "app_secret", Label: "App Secret", Description: "Feishu app secret", Type: ch.SettingTypePassword, Category: "Feishu (飞书)", DefaultValue: ""},
-			{Key: "encrypt_key", Label: "Encrypt Key", Description: "Feishu event encrypt key", Type: ch.SettingTypePassword, Category: "Feishu (飞书)", DefaultValue: ""},
-			{Key: "verification_token", Label: "Verification Token", Description: "Feishu event verification token", Type: ch.SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
-			{Key: "domain", Label: "Domain", Description: "Custom Feishu API domain (optional)", Type: ch.SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
-		}
-	case "qq":
-		return []ch.SettingDefinition{
-			{Key: "enabled", Label: "Enabled", Description: "Enable QQ channel", Type: ch.SettingTypeToggle, Category: "QQ", DefaultValue: "false"},
-			{Key: "app_id", Label: "App ID", Description: "QQ Bot AppID", Type: ch.SettingTypeText, Category: "QQ", DefaultValue: ""},
-			{Key: "client_secret", Label: "Client Secret", Description: "QQ Bot client secret", Type: ch.SettingTypePassword, Category: "QQ", DefaultValue: ""},
-		}
-	case "napcat":
-		return []ch.SettingDefinition{
-			{Key: "enabled", Label: "Enabled", Description: "Enable NapCat channel", Type: ch.SettingTypeToggle, Category: "NapCat", DefaultValue: "false"},
-			{Key: "ws_url", Label: "WebSocket URL", Description: "NapCat WebSocket URL", Type: ch.SettingTypeText, Category: "NapCat", DefaultValue: ""},
-			{Key: "token", Label: "Token", Description: "NapCat access token", Type: ch.SettingTypePassword, Category: "NapCat", DefaultValue: ""},
-		}
-	default:
-		// Plugin channel: try to parse _schema from channel config
-		return nil
-	}
+	return ch.BuiltinChannelSchema(channel)
 }
 
 // openChannelSettingsPanel opens the settings panel for a specific ch.
