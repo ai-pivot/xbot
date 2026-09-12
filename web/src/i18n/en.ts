@@ -113,6 +113,7 @@ const en: Translations = {
     recentWorkPaths: 'Recent work paths',
     removeRecentPath: 'Remove {{path}} from recent paths',
     searchPlaceholder: 'Search sessions...',
+    searchToggle: 'Search sessions',
     starred: 'Starred',
     star: 'Star',
     unstar: 'Unstar',

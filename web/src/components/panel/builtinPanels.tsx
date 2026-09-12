@@ -12,6 +12,7 @@
  */
 import { useCallback, useMemo, useState } from 'react'
 
+import { cn } from '@/lib/utils'
 import { panelRegistry, type PanelDefinition, type PanelRenderContext } from '@/plugin-runtime/panelRegistry'
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
@@ -21,7 +22,7 @@ import { TerminalList } from '@/components/sidebar/TerminalList'
 import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
-import { SessionSearch } from '@/components/session/SessionSearch'
+import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import {
   groupSessions,
@@ -41,7 +42,19 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const store = useSessionStore()
   const tabManager = ctx.tabManager
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+
+  // 会话搜索默认隐藏（低频操作，常驻输入框白占一行）；收起时一并清空查询——
+  // 隐藏着的过滤条件会让列表"莫名其妙变短"。按钮与「新建会话」同排。
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearch('')
+  }, [])
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) closeSearch()
+    else setSearchOpen(true)
+  }, [searchOpen, closeSearch])
 
   const filteredSessions = useMemo(() => {
     if (!store.activeChannel) return store.sessions
@@ -110,18 +123,47 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <SessionSearch value={search} onChange={setSearch} />
-      {/* 新建会话按钮（全宽 accent，v5.2 加回——桌面端面板版漏掉了） */}
-      <div className="shrink-0 px-2.5 pt-1.5 pb-1">
+      {/* 「新建会话」+ 搜索：同一行。展开搜索时【横向挤压】新建会话按钮
+          （收缩到图标大小），搜索框在同一行内展开——不纵向撑开列表。 */}
+      <div
+        className="flex shrink-0 items-stretch px-2.5 pt-1.5 pb-1"
+        data-testid="session-list-toolbar"
+      >
         <button
           type="button"
           onClick={() => setNewOpen(true)}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-opacity hover:opacity-90"
-          style={{ background: 'var(--accent)' }}
+          title={t('session.newSession')}
+          className={cn(
+            'flex min-w-10 items-center justify-center overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
+            searchOpen ? 'grow-0' : 'grow',
+          )}
+          style={{ background: 'var(--accent)', flexBasis: 0 }}
         >
-          <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-          {t('session.newSession')}
+          <svg className="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+          {/* 标签用 max-width 收到 0（不是 flex-shrink——那只会缩到"刚好填满"，
+              图标被挤到左边缘不居中）；间距放在被裁切的内层 margin 上，随收起
+              一起消失，图标才真正居中。 */}
+          <span
+            aria-hidden={searchOpen}
+            className={cn(
+              'overflow-hidden whitespace-nowrap transition-[max-width,opacity] duration-200 ease-out',
+              searchOpen ? 'max-w-0 opacity-0' : 'max-w-40 opacity-100',
+            )}
+          >
+            <span className="ml-1.5">{t('session.newSession')}</span>
+          </span>
         </button>
+        <div
+          aria-hidden={!searchOpen}
+          className={cn(
+            'flex min-w-0 overflow-hidden transition-[flex-grow,opacity] duration-200 ease-out',
+            searchOpen ? 'grow opacity-100' : 'grow-0 opacity-0',
+          )}
+          style={{ flexBasis: 0 }}
+        >
+          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} className="ml-1.5" />
+        </div>
+        <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
       <div className="min-h-0 flex-1">
         {store.loading ? (
