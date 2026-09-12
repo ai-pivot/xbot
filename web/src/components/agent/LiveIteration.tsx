@@ -25,20 +25,15 @@ import { useTypewriter } from '@/hooks/useTypewriter'
 import { useI18n } from '@/providers/i18n'
 import { dedupTools } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
-import type { CollapseLevel } from '@/types/agent'
 import type { ProgressSnapshot } from '@/types/shared'
 import type { LiveStreamStats } from '@/plugin-api'
 
 interface LiveIterationProps {
   progress: ProgressSnapshot
-  level: CollapseLevel
-  mergeTools?: boolean
 }
 
 export const LiveIteration = memo(function LiveIteration({
   progress,
-  level,
-  mergeTools = true,
 }: LiveIterationProps) {
   const { t } = useI18n()
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
@@ -248,7 +243,7 @@ export const LiveIteration = memo(function LiveIteration({
       )}
 
       {/* Streaming C */}
-      {hasTools && <FoldedToolGroup tools={allTools} level={level} mergeTools={mergeTools} />}
+      {hasTools && <FoldedToolGroup tools={allTools} />}
     </div>
   )
 })

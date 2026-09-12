@@ -7,12 +7,12 @@
  * 改为 Popover 后：折叠行高度恒定（虚拟列表零 relayout），浮层经 Portal
  * 渲染在 document.body（脱离虚拟列表布局树），且浮层内容仅 open 时挂载。
  *
- * Folded row:  ▸ [pill] [pill] …（>8 工具时前 7 pill + "+N" 徽标）
- * Popover:     全量工具列表（状态图标 + name + label 单行 + 耗时），
- *              点击一条展开该工具完整 fancy 渲染（ToolCard，与原 AnimatedCollapse
- *              内渲染的同一组件）。
+ * Folded row:  [pill] [pill] …（>8 工具时前 7 pill + "+N" 徽标；每个 pill 独立
+ *              浮窗 = 该工具详情）。行本身不是 trigger（无 ▸ 箭头）。
+ * Popover:     单工具详情（summary + 参数 + fancy 渲染 ToolCard）。
  *
- * 'none' collapse level 仍为独立展开 ToolCard（不折叠，语义不变）。
+ * 唯一形态（2026-09-12）：每个工具一个 pill。折叠级别 / 合并工具 / 独立展开行
+ * 等"气泡之外"的形态已彻底删除。
  * GenUI 工具（uiMode）永不折叠，直接渲染为顶层卡片。
  */
 import { memo, useMemo, useState, type ReactNode } from 'react'
@@ -27,7 +27,6 @@ import { isToolInProgress } from './statusVisual'
 import { syntheticShortName, syntheticSubject } from './SyntheticToolCard'
 import { useI18n } from '@/providers/i18n'
 
-import type { CollapseLevel } from '@/types/agent'
 import { Check, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -37,10 +36,6 @@ const MAX_PARAM_LEN = 25
 /** Inline pill cap: more than 8 tools → first 7 pills + "+N" badge. */
 const PILL_INLINE_MAX = 8
 const PILL_INLINE_HEAD = 7
-
-/** 折叠行按钮样式（pill 行容器）。 */
-const ROW_BUTTON_CLASS =
-  'flex w-full flex-wrap items-center gap-2 px-0.5 py-1 text-left text-xs cursor-pointer text-text-secondary transition-colors hover:opacity-80'
 
 /** 合并组 pill 行容器（div——行本身不是 trigger，pill 各自独立 Popover）。 */
 const ROW_ROW_CLASS = 'flex w-full flex-wrap items-center gap-2 px-0.5 py-1 text-xs'
@@ -52,9 +47,6 @@ const POPOVER_CLASS =
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
-  level: CollapseLevel
-  /** Merge consecutive tools into one row. Ignored at 'none' level. */
-  mergeTools?: boolean
 }
 
 /** Extract a short parameter hint from the tool label (text after ": "). */
@@ -415,10 +407,8 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
 
 export const FoldedToolGroup = memo(function FoldedToolGroup({
   tools,
-  level,
-  mergeTools = true,
 }: FoldedToolGroupProps) {
-  // GenUI 工具永不折叠（metadata 驱动）；non-GenUI 才进入折叠行/浮层。
+  // GenUI 工具永不折叠（metadata 驱动）；non-GenUI 才进入 pill 行/浮层。
   // useMemo 必须在 early return 之前（hooks 规则）；tools 为空时结果为空数组，
   // 随后 return null。
   const { genuiTools, otherTools } = useMemo(
@@ -426,7 +416,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
     [tools],
   )
   // pill 行 JSX：依赖 tools 引用（otherTools 由上方 useMemo 派生，引用稳定）——
-  // tools 不变时折叠行 re-render 零重建（pill 浮窗开合由 radix 内部管理）。
+  // tools 不变时 pill 行 re-render 零重建（pill 浮窗开合由 radix/懒挂管理）。
   const pillsRow = useMemo(() => <MergedPills tools={otherTools} />, [otherTools])
 
   if (!tools.length) return null
@@ -444,55 +434,12 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
     )
   }
 
-  // 'none' level: always expanded, each tool as independent card (no folding)
-  if (level === 'none') {
-    return (
-      <div className="flex flex-col gap-1.5">
-        {genuiElements}
-        {otherTools.map((tool, i) => (
-          <ToolCard key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
-        ))}
-      </div>
-    )
-  }
-
-  // 多行非合并：每个工具独立折叠行 → 各自 Popover（浮层 = 单工具卡片）
-  if (!mergeTools && tools.length > 1) {
-    return (
-      <div className="flex flex-col gap-1.5">
-        {genuiElements}
-        <div className="flex flex-col">
-          {otherTools.map((tool, i) => (
-            <SingleToolFold key={`${tool.name}-${tool.label}-${i}`} tool={tool} />
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  // 单工具 / 合并组：pill 行——每个 pill 独立浮窗（该工具 summary+参数+渲染），
-  // +N 徽标弹溢出列表。行本身不再是 trigger（无 ▸ 箭头，用户要求）。
+  // 唯一形态：pill 行——每个 pill 独立浮窗（该工具 summary+参数+fancy 渲染），
+  // +N 徽标弹溢出列表。行本身不是 trigger（无 ▸ 箭头，用户要求）。
   return (
     <div className="flex flex-col gap-1.5">
       {genuiElements}
       <div className={ROW_ROW_CLASS}>{pillsRow}</div>
     </div>
-  )
-})
-
-/** 多行非合并模式：单工具独立折叠行 → Popover 浮层（该工具 summary+参数+渲染）。 */
-const SingleToolFold = memo(function SingleToolFold({ tool }: { tool: WebToolProgress }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" aria-expanded={open} className={ROW_BUTTON_CLASS}>
-          <span className="inline-flex items-center">{toolPill(tool)}</span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className={POPOVER_CLASS}>
-        <ToolPopoverDetail tool={tool} />
-      </PopoverContent>
-    </Popover>
   )
 })

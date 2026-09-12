@@ -23,7 +23,7 @@ describe('TurnBody thinking char count (merged blocks — real char count, not /
       { iteration: 1, content: '', reasoning, tools: [], toolCount: 0 },
     ]
     const { container } = renderWithProviders(
-      <TurnBody iterations={iterations} level="all" mergeTools={true} turnID={3159} />,
+      <TurnBody iterations={iterations} turnID={3159} />,
     )
     const text = container.textContent ?? ''
     // 真实字符数 670 必须出现（i18n zh-CN: '思考了 {{count}} 字符'）
@@ -37,7 +37,7 @@ describe('TurnBody thinking char count (merged blocks — real char count, not /
       { iteration: 1, content: '', reasoning: 'ab', tools: [], toolCount: 0 },
     ]
     const { container } = renderWithProviders(
-      <TurnBody iterations={iterations} level="all" mergeTools={true} turnID={1} />,
+      <TurnBody iterations={iterations} turnID={1} />,
     )
     // 真实 2 字符（旧 /4 估算 Math.ceil(2/4)=1）
     expect(container.textContent).toMatch(/2/)

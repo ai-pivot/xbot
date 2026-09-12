@@ -35,19 +35,6 @@ export {
 // Local import for type aliasing below.
 import type { ProgressSnapshot } from './shared'
 
-/** Collapse preference persisted at localStorage key `xbot-collapse-level`. */
-export type CollapseLevel = 'all' | 'minimal' | 'none'
-
-export const COLLAPSE_LEVEL_STORAGE_KEY = 'xbot-collapse-level'
-export const DEFAULT_COLLAPSE_LEVEL: CollapseLevel = 'all'
-export const COLLAPSE_LEVELS: CollapseLevel[] = ['all', 'minimal', 'none']
-
-/** Merge-tools toggle persisted at localStorage key `xbot-merge-tools`.
- *  Orthogonal to CollapseLevel — controls whether consecutive tool calls
- *  are merged into a compact row. Default: true. */
-export const MERGE_TOOLS_STORAGE_KEY = 'xbot-merge-tools'
-export const DEFAULT_MERGE_TOOLS = true
-
 /** Send-key mode persisted at localStorage key `xbot-send-key-mode`.
  *  - 'ctrl-enter' (default): Ctrl/Cmd+Enter sends, Enter inserts a newline.
  *  - 'enter': Enter sends, Shift/Ctrl+Enter inserts a newline. */

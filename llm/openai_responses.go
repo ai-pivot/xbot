@@ -111,12 +111,26 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int, mc *
 			}
 
 		case "assistant":
-			// If there's reasoning_content, add a reasoning item first
+			// Reasoning content MUST be passed back to the API in thinking mode.
+			// A reasoning item carries two shapes:
+			//   - `summary`  → parts of type `summary_text` (a summary)
+			//   - `content`  → parts of type `reasoning_text` (the reasoning text)
+			// We previously emitted ONLY `summary`, so thinking-mode gateways
+			// rejected the request with 400:
+			//   {"message":"The reasoning_text in the thinking mode must be
+			//    passed back to the API.","type":"invalid_request_error"}
+			// (tokendance / OpenAI-compatible gateways validate that an
+			// assistant turn carries its `reasoning_text` back.) Emit the text
+			// in BOTH shapes: `content` is what the gateway requires, `summary`
+			// keeps providers that only read the summary working.
 			if msg.ReasoningContent != "" {
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfReasoning: &responses.ResponseReasoningItemParam{
 						ID: fmt.Sprintf("rs_%s_%d", sanitizeID(msg.ToolCallID), len(inputItems)),
 						Summary: []responses.ResponseReasoningItemSummaryParam{
+							{Text: msg.ReasoningContent},
+						},
+						Content: []responses.ResponseReasoningItemContentParam{
 							{Text: msg.ReasoningContent},
 						},
 					},
@@ -381,12 +395,18 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 			})
 
 		case "reasoning":
-			// Extract reasoning summary content.
-			// Note: item.Content (full reasoning text) requires the "reasoning.encrypted_content"
-			// include parameter and is not available by default. We only use Summary,
-			// which is always returned when reasoning is enabled.
-			for _, summary := range item.Summary {
-				result.ReasoningContent += summary.Text
+			// Reasoning text (type `reasoning_text`) is the authoritative full
+			// reasoning; `summary` (type `summary_text`) is a condensed form.
+			// Prefer content when the provider returns it, otherwise fall back
+			// to the summary — reading both would duplicate the text.
+			if len(item.Content) > 0 {
+				for _, part := range item.Content {
+					result.ReasoningContent += part.Text
+				}
+			} else {
+				for _, summary := range item.Summary {
+					result.ReasoningContent += summary.Text
+				}
 			}
 		}
 	}
