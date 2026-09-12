@@ -83,3 +83,52 @@ describe('i18n 插值语法守卫', () => {
     })
   }
 })
+
+/**
+ * 「按钮文案 = 状态文案」守卫（2026-09-12 用户报告："设置 → 开发者，所有按钮都
+ * 显示为导出中，即使我还没点击"）。
+ *
+ * 根因：zh-CN / ja 的 4 个导出按钮文案（exportMulticaBtn / exportBenchmarkBtn /
+ * exportOpenAIBtn / exportCodexBtn）被复制成了 `exporting` 的值 —— 未点击时按钮
+ * 渲染的正是它自己的文案，于是永远显示「导出中…」（en 是对的）。
+ *
+ * 这类"复制粘贴串味"在 i18n 里没有编译期保护，只能靠守卫测试拦住。
+ */
+describe('i18n 守卫：按钮文案不得等于状态文案', () => {
+  const EXPORT_BTNS = [
+    'settings.developer.exportTurnIterBtn',
+    'settings.developer.exportMulticaBtn',
+    'settings.developer.exportBenchmarkBtn',
+    'settings.developer.exportOpenAIBtn',
+    'settings.developer.exportCodexBtn',
+  ]
+
+  for (const [locale, dict] of DICTS) {
+    it(`${locale}: 导出按钮文案必须存在且不等于 exporting`, () => {
+      const exporting = at(dict, 'settings.developer.exporting')
+      expect(typeof exporting, `${locale}: 缺少 settings.developer.exporting`).toBe('string')
+      for (const key of EXPORT_BTNS) {
+        const label = at(dict, key)
+        expect(typeof label, `${locale}: 缺少 ${key}`).toBe('string')
+        expect((label as string).trim(), `${locale}: ${key} 不能为空`).not.toBe('')
+        expect(
+          label,
+          `${locale}: ${key} 与 exporting 同值 → 未点击就显示「导出中…」`,
+        ).not.toBe(exporting)
+      }
+    })
+  }
+
+  it('ja: 不得残留简体中文（导出 / 无 / 败 等专用字形）', () => {
+    const SIMPLIFIED_ONLY = /[导无败]/
+    for (const key of [
+      'settings.developer.exporting',
+      'settings.developer.noActiveSession',
+      'settings.developer.exportFailed',
+      'settings.developer.exportSection',
+    ]) {
+      const v = at(ja, key) as string
+      expect(SIMPLIFIED_ONLY.test(v), `ja: ${key} 残留简体中文: ${v}`).toBe(false)
+    }
+  })
+})
