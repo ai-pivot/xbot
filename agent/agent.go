@@ -2435,9 +2435,12 @@ var ackMessages = []string{
 	"OK，马上看看",
 }
 
-func (a *Agent) sendAck(channel, chatID string) {
+func (a *Agent) sendAck(chName, chatID string) {
 	msg := ackMessages[rand.Intn(len(ackMessages))]
-	if err := a.sendMessage(channel, chatID, msg); err != nil {
+	// Mark the ack as part of the turn's reply card: a channel with a native
+	// streaming card (Feishu CardKit) opens the card here and streams the later
+	// progress/answer text into it. Other channels ignore the metadata.
+	if err := a.sendMessage(chName, chatID, msg, map[string]string{channel.MetaProgressCard: "true"}); err != nil {
 		log.WithError(err).Warn("Failed to send ack")
 	}
 }

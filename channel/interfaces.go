@@ -5,6 +5,20 @@ import (
 	"xbot/protocol"
 )
 
+// Metadata keys the agent stamps on outbound messages to describe the
+// reply-card lifecycle. Only a channel that renders a platform-native streaming
+// card consumes them (Feishu CardKit, see channel/feishu/feishu_stream_card.go);
+// every other channel ignores them.
+const (
+	// MetaProgressCard marks a pre-reply ack/progress message that belongs to
+	// the session's single reply card.
+	MetaProgressCard = "progress_card"
+	// MetaFinalReply marks the authoritative final reply of a turn. A channel
+	// holding an open streaming card must close it when this arrives (even when
+	// the content is empty, as on cancellation).
+	MetaFinalReply = "final_reply"
+)
+
 // ProgressSender is implemented by channels that transport the shared
 // protocol.ProgressEvent to remote or in-process clients. The agent's single
 // progress producer broadcasts the same immutable snapshot/log event to each

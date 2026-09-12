@@ -203,6 +203,16 @@ type FeishuChannel struct {
 	// LinkAccountFn consumes a link code for the given channel identity.
 	// Returns a human-readable result message.
 	linkAccountFn func(code, channel, channelUserID string) (string, error)
+
+	// CardKit streaming progress cards, keyed by chatID. The agent routes a
+	// turn's ack/progress/final sends through ONE message; rendering that
+	// message as a streaming card entity (feishu_stream_card.go) gives the
+	// typewriter UX instead of rebuilding + patching a whole card per tick.
+	streamCardsMu sync.Mutex
+	streamCards   map[string]*feishuStreamCard
+	// streamCardBroken latches when card entity creation fails (typically the
+	// app lacks cardkit:card:write) so we stop retrying and use the legacy card.
+	streamCardBroken bool
 }
 
 type feishuPendingApproval struct {
@@ -239,6 +249,7 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		mentions:      newMentionRegistry(),
 		approvals:     make(map[string]*feishuPendingApproval),
 		askUsers:      make(map[string]*feishuPendingAskUser),
+		streamCards:   make(map[string]*feishuStreamCard),
 	}
 }
 
@@ -419,11 +430,8 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 
 	// AskUser: build and send an interactive card with buttons/options, then register pending state.
 	if msg.WaitingUser {
+		f.closeStreamCard(msg.ChatID)
 		return f.sendAskUserCard(msg)
-	}
-
-	if msg.Content == "" {
-		return "", nil
 	}
 
 	// card builder 生成的完整卡片 JSON，走正常 patch/reply/send 流程
@@ -443,6 +451,18 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 		if msg.Metadata != nil {
 			updateMsgID = msg.Metadata["update_message_id"]
 			replyTo = msg.Metadata["message_id"]
+		}
+		// 这张完整卡片会取代正在流式的进度卡片：先收尾（关闭流式）再发送，
+		// 否则卡片实体会一直停在「生成中」。旧的流式消息随后走既有
+		// 「新建 + 删除旧进度消息」路径清理掉。
+		if card := f.takeStreamCard(msg.ChatID); card != nil {
+			if err := card.finalize(""); err != nil {
+				log.WithError(err).WithField("card_id", card.cardID).
+					Warn("Feishu: stream card finalize before card send failed")
+			}
+			if updateMsgID == "" {
+				updateMsgID = card.messageID
+			}
 		}
 
 		var msgID string
@@ -495,6 +515,20 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	// @提及：LLM 直接输出飞书原生 <at id=open_id>名字</at> 标签（open_id 由
 	// 群成员名单注入提供，prompt 教学见 prompt/channels/feishu.md）——不做事后
 	// 转换（@名字 自动匹配已按用户决策移除：误判 + bug 多）。
+
+	// 3) CardKit 流式卡片（feishu_stream_card.go）：一个 turn 的 ack / 进度 /
+	// 最终回复都指向同一条消息，以卡片实体流式渲染（打字机）取代「每次 tick
+	// 重建并 patch 整张卡片」。放在空内容判断之前 —— 取消的 turn 会用空内容
+	// 收尾已打开的卡片。
+	if msg.Metadata != nil &&
+		(msg.Metadata[ch.MetaProgressCard] == "true" || msg.Metadata[ch.MetaFinalReply] == "true") {
+		final := msg.Metadata[ch.MetaFinalReply] == "true"
+		if id, ok := f.streamCardSend(msg, content, final); ok {
+			return id, nil
+		}
+		// 流式卡片不可用（如应用缺少 cardkit:card:write）→ 继续走下面的静态
+		// 卡片路径；content 已处理完，不会重复上传本地文件。
+	}
 
 	if strings.TrimSpace(content) == "" {
 		return "", nil
