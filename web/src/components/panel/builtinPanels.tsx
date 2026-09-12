@@ -12,6 +12,7 @@
  */
 import { useCallback, useMemo, useState } from 'react'
 
+import { cn } from '@/lib/utils'
 import { panelRegistry, type PanelDefinition, type PanelRenderContext } from '@/plugin-runtime/panelRegistry'
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
 import { FileSearch } from '@/components/sidebar/FileSearch'
@@ -122,27 +123,39 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* 「新建会话」+ 搜索开关同一行：搜索框默认隐藏，点按钮才展开。 */}
-      <div className="flex shrink-0 items-stretch gap-1.5 px-2.5 pt-1.5 pb-1">
+      {/* 「新建会话」+ 搜索：同一行。展开搜索时【横向挤压】新建会话按钮
+          （收缩到图标大小），搜索框在同一行内展开——不纵向撑开列表。 */}
+      <div
+        className="flex shrink-0 items-stretch px-2.5 pt-1.5 pb-1"
+        data-testid="session-list-toolbar"
+      >
         <button
           type="button"
           onClick={() => setNewOpen(true)}
-          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-opacity hover:opacity-90"
-          style={{ background: 'var(--accent)' }}
+          title={t('session.newSession')}
+          className={cn(
+            'flex min-w-8 items-center justify-center gap-1.5 overflow-hidden rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-[flex-grow] duration-200 ease-out hover:opacity-90',
+            searchOpen ? 'grow-0' : 'grow',
+          )}
+          style={{ background: 'var(--accent)', flexBasis: 0 }}
         >
-          <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-          {t('session.newSession')}
+          <svg className="size-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+          <span className={cn('min-w-0 truncate transition-opacity duration-200', searchOpen ? 'opacity-0' : 'opacity-100')}>
+            {t('session.newSession')}
+          </span>
         </button>
-        <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} />
+        <div
+          aria-hidden={!searchOpen}
+          className={cn(
+            'flex min-w-0 overflow-hidden transition-[flex-grow,opacity] duration-200 ease-out',
+            searchOpen ? 'grow opacity-100' : 'grow-0 opacity-0',
+          )}
+          style={{ flexBasis: 0 }}
+        >
+          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} className="ml-1.5" />
+        </div>
+        <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
-      {searchOpen && (
-        <SessionSearch
-          value={search}
-          onChange={setSearch}
-          onClose={closeSearch}
-          autoFocus
-        />
-      )}
       <div className="min-h-0 flex-1">
         {store.loading ? (
           <div className="flex h-full items-center justify-center px-4 text-xs text-text-muted">{t('common.loading')}</div>

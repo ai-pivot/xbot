@@ -7,8 +7,9 @@ import { CoreSessionsPanel } from './builtinPanels'
 import type { SessionStore } from '@/hooks/useSessionStore'
 import type { SessionInfo } from '@/types/shared'
 
-// 需求（用户）：会话搜索是低频操作——输入框默认隐藏，点击按钮才出现，
-// 且该按钮与「新建会话」同一行。
+// 需求（用户）：会话搜索是低频操作——搜索框默认收起，点击按钮才展开；
+// 输入框与「新建会话」在**同一行**内（展开时横向挤压新建会话按钮），
+// **不纵向撑开列表**。
 
 function session(overrides: Partial<SessionInfo> & { chatID: string; channel: string; label: string }): SessionInfo {
   return {
@@ -80,20 +81,22 @@ vi.mock('@/components/ui/scroll-area', () => ({
 const tabManagerMock = { openTab: vi.fn(), closeTab: vi.fn(), setActiveTab: vi.fn() }
 const ctx = { tabManager: tabManagerMock } as never
 
-describe('CoreSessionsPanel — 会话搜索默认隐藏（点击按钮展开）', () => {
-  it('默认不渲染输入框；按钮与「新建会话」同一行', () => {
+describe('CoreSessionsPanel — 会话搜索收起/展开（同行横向挤压）', () => {
+  it('默认收起：输入框不在可达性树中；新建会话按钮与开关在同一行工具栏内', () => {
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
 
-    // 默认隐藏：没有 textbox。
+    // 收起：输入框不在可达性树（aria-hidden + tabIndex=-1，实际是被 0 宽裁切）。
     expect(screen.queryByRole('textbox')).toBeNull()
 
-    // 搜索开关按钮存在且收起态（aria-expanded=false）。
+    const toolbar = screen.getByTestId('session-list-toolbar')
     const toggle = screen.getByRole('button', { expanded: false })
-    expect(toggle).toBeInTheDocument()
-
-    // 同一行：新建会话按钮（全宽 accent）与搜索按钮共享父容器。
     const newBtn = screen.getByRole('button', { name: /新建会话|New Session|新しいセッション/ })
-    expect(newBtn.parentElement).toBe(toggle.parentElement)
+
+    // 同一行：新建会话按钮 / 搜索框槽位 / 开关都在工具栏容器内。
+    // 输入框若被移到工具栏【之外】（纵向展开成独立一行）此断言即失败。
+    expect(toolbar).toContainElement(newBtn)
+    expect(toolbar).toContainElement(toggle)
+    expect(toolbar).toContainElement(screen.getByLabelText(/^搜索$|^Search$/i, { selector: 'input' }))
   })
 
   it('点击按钮展开输入框并自动聚焦；再次点击收起', () => {
