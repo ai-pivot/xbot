@@ -305,6 +305,7 @@ const zhCN = {
     queueModeHint: '排队模式：当前 Turn 结束后依次发送',
     interjectSend: '插话',
     setAsGoal: '设为目标',
+    todoMoreActions: '更多操作',
     todoEdit: '编辑',
     todoDelete: '删除',
     todoSetGoal: '设为目标',

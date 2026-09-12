@@ -130,7 +130,7 @@ describe('TodoPullOut — set a TODO as the goal', () => {
 
 describe('TodoPullOut — 触屏（无 hover）交互', () => {
   const orig = window.matchMedia
-  /** jsdom 无 CSS 引擎 → 断言「类契约」：触屏必须常显 + 触控目标 ≥32px。 */
+  /** jsdom 无 CSS 引擎 → 断言「类契约」+ DOM 结构。 */
   function mockTouch(isTouch: boolean) {
     window.matchMedia = ((query: string) => ({
       matches: isTouch && query.includes('(hover: none)'),
@@ -147,26 +147,27 @@ describe('TodoPullOut — 触屏（无 hover）交互', () => {
     window.matchMedia = orig
   })
 
-  it('触屏：操作按钮常显（不能依赖 hover），且为 32px 触控目标', () => {
+  it('触屏：只留一个 ⋯ 按钮（32px），三个操作收进菜单 —— 不再并排占宽', () => {
     mockTouch(true)
     renderTray(baseItems, { onUpdateTodos: vi.fn(), onSetGoalTodo: vi.fn() })
 
-    const actions = screen.getAllByTestId('todo-actions')[0]   // 每行一个
-    expect(actions.className).toContain('opacity-100')
-    expect(actions.className).not.toContain('opacity-0')
-    expect(actions.className).not.toContain('group-hover:opacity-100')
+    // 唯一常驻操作：⋯（32px 触控目标）
+    const more = screen.getAllByTestId('todo-more')
+    expect(more).toHaveLength(baseItems.length)
+    expect(more[0].className).toContain('size-8')
 
-    for (const id of ['todo-set-goal', 'todo-edit', 'todo-delete']) {
-      const btn = screen.getAllByTestId(id)[0]
-      expect(btn.className).toContain('size-8')
-      expect(btn.className).not.toContain('size-5')
-    }
-    // 状态切换同样要有足够命中区（图标 12px → 触屏 16px + p-2 外扩）
-    const toggle = screen.getAllByTestId('todo-status')[0]
-    expect(toggle.className).toContain('p-2')
+    // 三个操作不再内联渲染（否则并排 ≈104px，把正文挤没）
+    expect(screen.queryAllByTestId('todo-edit')).toHaveLength(0)
+    expect(screen.queryAllByTestId('todo-delete')).toHaveLength(0)
+    expect(screen.queryAllByTestId('todo-set-goal')).toHaveLength(0)
+    expect(screen.queryByTestId('todo-actions')).toBeNull()
+    expect(screen.queryByTestId('todo-actions-menu')).toBeNull() // 未点击不渲染菜单
+
+    // 状态切换仍有足够命中区（外扩，不改视觉位置）
+    expect(screen.getAllByTestId('todo-status')[0].className).toContain('p-2.5')
   })
 
-  it('桌面：仍保持 hover 才显示（避免每行堆三个图标），图标尺寸 20px', () => {
+  it('桌面：仍是 hover 内联三个图标（20px），无 ⋯', () => {
     mockTouch(false)
     renderTray(baseItems, { onUpdateTodos: vi.fn(), onSetGoalTodo: vi.fn() })
 
@@ -174,22 +175,48 @@ describe('TodoPullOut — 触屏（无 hover）交互', () => {
     expect(actions.className).toContain('opacity-0')
     expect(actions.className).toContain('group-hover:opacity-100')
     expect(screen.getAllByTestId('todo-edit')[0].className).toContain('size-5')
-    expect(screen.getAllByTestId('todo-edit')[0].className).not.toContain('size-8')
     expect(screen.getAllByTestId('todo-status')[0].className).not.toContain('p-2')
+    expect(screen.queryAllByTestId('todo-more')).toHaveLength(0)
   })
 
-  it('触屏：点操作按钮真的生效（编辑入口与删除）', () => {
+  it('触屏：点 ⋯ → 菜单出现（三个操作带文字标签），点菜单项真实生效', () => {
     mockTouch(true)
     const onUpdateTodos = vi.fn()
-    renderTray(baseItems, { onUpdateTodos, onSetGoalTodo: vi.fn() })
+    const onSetGoalTodo = vi.fn()
+    renderTray(baseItems, { onUpdateTodos, onSetGoalTodo })
 
-    fireEvent.click(screen.getAllByTestId('todo-edit')[0])    // 进编辑态
+    fireEvent.click(screen.getAllByTestId('todo-more')[0])
+    const menu = screen.getByTestId('todo-actions-menu')
+    expect(menu).toBeInTheDocument()
+    // 菜单项 ≥40px（h-10）且带文字标签，不是只有图标
+    for (const id of ['todo-set-goal', 'todo-edit', 'todo-delete']) {
+      const item = within(menu).getByTestId(id)
+      expect(item.className).toContain('h-10')
+      expect(item.textContent?.trim().length ?? 0).toBeGreaterThan(1)
+    }
+
+    // 删除真实生效
+    fireEvent.click(within(menu).getByTestId('todo-delete'))
+    expect(onUpdateTodos).toHaveBeenCalledTimes(1)
+    // 点的是第 0 行（修复登录超时）的 ⋯ → 删除后剩后两条
+    expect((onUpdateTodos.mock.calls[0][0] as TodoItem[]).map((x) => x.text)).toEqual([
+      '补齐单测',
+      '更新文档',
+    ])
+  })
+
+  it('触屏：菜单里的「编辑」进入编辑态，设为目标调用回调', () => {
+    mockTouch(true)
+    const onSetGoalTodo = vi.fn()
+    renderTray(baseItems, { onUpdateTodos: vi.fn(), onSetGoalTodo })
+
+    fireEvent.click(screen.getAllByTestId('todo-more')[1])
+    fireEvent.click(screen.getByTestId('todo-edit'))
     expect(screen.getByTestId('todo-edit-input')).toBeInTheDocument()
     fireEvent.keyDown(screen.getByTestId('todo-edit-input'), { key: 'Escape' })
 
-    fireEvent.click(screen.getAllByTestId('todo-delete')[2])  // 删掉「更新文档」
-    expect(onUpdateTodos).toHaveBeenCalledTimes(1)
-    const next = onUpdateTodos.mock.calls[0][0] as TodoItem[]
-    expect(next.map((t) => t.text)).toEqual(['修复登录超时', '补齐单测'])
+    fireEvent.click(screen.getAllByTestId('todo-more')[1])
+    fireEvent.click(screen.getByTestId('todo-set-goal'))
+    expect(onSetGoalTodo).toHaveBeenCalledWith('补齐单测')
   })
 })

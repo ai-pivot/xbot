@@ -3,17 +3,18 @@ import { test, expect, type Page } from '@playwright/test'
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 
 /**
- * E2E（手机 / 触屏）：TODO 工具条的行操作**不能依赖 hover**。
+ * E2E（手机 / 触屏）：TODO 行操作在手机上必须**不挤占正文**。
  *
- * 问题：操作按钮（设为 goal / 编辑 / 删除）原本是 `opacity-0 group-hover:opacity-100`
- * —— 桌面鼠标可用，但触屏没有 hover 态，手机用户永远看不到、点不到这三个按钮。
- * 修复：`useIsTouch()` 为真时常显，并把命中区从 20px 放大到 32px。
+ * 迭代 1（被用户否掉）：把三个操作做成 32px 常显按钮 → 3×32+gaps ≈104px，
+ *   手机行宽仅 ~390px，正文几乎被挤没（"按钮加一起占的位置快比文本还宽了"）。
+ * 迭代 2（当前）：只留一个 ⋯（32px），三个操作收进弹出菜单（h-10 + 文字标签）。
  *
- * 断言（真实浏览器 + 触摸设备上下文）：
- *   - `matchMedia('(hover: none) and (pointer: coarse)')` 为真（确实在模拟触屏）
- *   - `todo-actions` 的 computed opacity === 1（未做任何 hover）
- *   - 三个操作按钮 boundingBox ≥ 32px
- *   - 直接 tap 编辑 → 输入框出现并可保存（无 hover 步骤）
+ * 断言：
+ *   - 触屏环境：matchMedia('(hover: none) and (pointer: coarse)') === true
+ *   - 行内**只有一个**操作按钮（⋯），≥32px，且其右侧不留其他按钮
+ *   - **正文宽度占该行 ≥60%**（核心诉求：操作区不许比文本还宽）
+ *   - 未点击不渲染菜单；tap ⋯ → 菜单出现，菜单项 ≥40px 且带文字
+ *   - 无 hover 步骤直接 tap「编辑」→ 输入框出现并可保存
  */
 
 interface SSEMockState {
@@ -75,14 +76,13 @@ async function setupMock(page: Page) {
 }
 
 test.describe('TODO toolbar on touch devices (no hover)', () => {
-  // 触摸设备上下文：没有 hover 能力（iPhone 尺寸）
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
 
   test.beforeEach(() => {
     seqCounter = 0
   })
 
-  test('row actions are visible without hover, are touch-sized, and are tappable', async ({ browser }) => {
+  test('row actions collapse into one ⋯ and never crowd out the text', async ({ browser }) => {
     const page = await browser.newPage({
       viewport: { width: 390, height: 844 },
       hasTouch: true,
@@ -116,10 +116,8 @@ test.describe('TODO toolbar on touch devices (no hover)', () => {
     await page.locator('button[type="submit"]').click()
     await page.waitForTimeout(2000)
 
-    // 先确认我们确实处于「无 hover」的触屏环境（否则本用例没有意义）
-    const hoverNone = await page.evaluate(
-      () => window.matchMedia('(hover: none) and (pointer: coarse)').matches,
-    )
+    // 确认处于「无 hover」的触屏环境（否则本用例无意义）
+    const hoverNone = await page.evaluate(() => window.matchMedia('(hover: none) and (pointer: coarse)').matches)
     expect(hoverNone, 'touch context must report (hover: none) and (pointer: coarse)').toBe(true)
 
     const structured = (p: Record<string, unknown>) =>
@@ -142,23 +140,48 @@ test.describe('TODO toolbar on touch devices (no hover)', () => {
     await page.getByTestId('todo-toggle').click()
     await page.waitForTimeout(400)
 
-    // ① 未 hover：操作区必须已可见（opacity 1）
-    const opacity = await page
-      .getByTestId('todo-actions')
-      .first()
-      .evaluate((el) => getComputedStyle(el).opacity)
-    expect(opacity, 'touch: row actions must not be hover-gated (opacity:0)').toBe('1')
+    const row = page.getByTestId('todo-item').first()
+    const text = page.getByTestId('todo-text').first()
+    const more = page.getByTestId('todo-more').first()
 
-    // ② 触控目标 ≥ 32px（原来是 20px，手指点不准）
+    // ① 行内只有「一个」操作按钮（⋯），且是 32px 触控目标
+    await expect(page.getByTestId('todo-more')).toHaveCount(3) // 每行一个
+    await expect(page.getByTestId('todo-actions')).toHaveCount(0) // 桌面 hover 容器不渲染
+    await expect(page.getByTestId('todo-edit')).toHaveCount(0) // 未点击不内联
+    await expect(page.getByTestId('todo-delete')).toHaveCount(0)
+    const moreBox = await more.boundingBox()
+    expect(moreBox).not.toBeNull()
+    expect(Math.min(moreBox!.width, moreBox!.height)).toBeGreaterThanOrEqual(32)
+    expect(moreBox!.width).toBeLessThanOrEqual(44) // 不能是一个宽按钮
+
+    // ② 正文必须占行宽主导（核心诉求：操作区不许比文本还宽）
+    const rowBox = await row.boundingBox()
+    const textBox = await text.boundingBox()
+    expect(rowBox).not.toBeNull()
+    expect(textBox).not.toBeNull()
+    const textRatio = textBox!.width / rowBox!.width
+    expect(textRatio, `text must dominate the row (got ${(textRatio * 100).toFixed(1)}%)`).toBeGreaterThanOrEqual(0.6)
+    await page.screenshot({ path: 'test-results/todo-mobile-row.png' })
+
+    // ③ 未点击不渲染菜单
+    await expect(page.getByTestId('todo-actions-menu')).toHaveCount(0)
+
+    // ④ tap ⋯ → 菜单出现：菜单项 ≥40px 且带文字标签（不是光秃秃的图标）
+    await more.tap()
+    const menu = page.getByTestId('todo-actions-menu')
+    await expect(menu).toBeVisible()
+    await page.waitForTimeout(250)
+    await page.screenshot({ path: 'test-results/todo-mobile-menu.png' })
     for (const id of ['todo-set-goal', 'todo-edit', 'todo-delete']) {
-      const box = await page.getByTestId(id).first().boundingBox()
-      expect(box, `${id} must be rendered`).not.toBeNull()
-      expect(Math.min(box!.width, box!.height), `${id} touch target too small`).toBeGreaterThanOrEqual(32)
+      const item = page.getByTestId(id)
+      await expect(item).toBeVisible()
+      const box = await item.boundingBox()
+      expect(box!.height, `${id} menu row too short`).toBeGreaterThanOrEqual(40)
+      expect(((await item.textContent()) ?? '').trim().length).toBeGreaterThan(1)
     }
-    await page.screenshot({ path: 'test-results/todo-mobile-actions.png', fullPage: false })
 
-    // ③ 直接 tap 编辑（没有任何 hover 步骤）→ 输入框出现 → 保存生效
-    await page.getByTestId('todo-edit').first().tap()
+    // ⑤ 无 hover 步骤直接 tap「编辑」→ 输入框出现 → 保存生效
+    await page.getByTestId('todo-edit').tap()
     const input = page.getByTestId('todo-edit-input')
     await expect(input).toBeVisible()
     await expect(input).toHaveValue('修复 PD 分离下的 prefill 超时')
@@ -166,11 +189,6 @@ test.describe('TODO toolbar on touch devices (no hover)', () => {
     await input.press('Enter')
     await expect(page.getByTestId('todo-edit-input')).toHaveCount(0)
     await expect(page.getByTestId('todo-text').first()).toHaveText('修复 PD 分离下的 prefill 超时（手机端编辑）')
-    await page.screenshot({ path: 'test-results/todo-mobile-edited.png', fullPage: false })
-
-    // ④ tap 状态切换（命中区放大后依然可用）
-    await page.getByTestId('todo-status').nth(1).tap()
-    await page.waitForTimeout(300)
-    await expect(page.getByTestId('todo-item').nth(1)).toBeVisible()
+    await page.screenshot({ path: 'test-results/todo-mobile-edited.png' })
   })
 })

@@ -308,6 +308,7 @@ const en: Translations = {
     queueModeHint: 'Queue mode: sends after the current turn finishes',
     interjectSend: 'Interject',
     setAsGoal: 'Set as goal',
+    todoMoreActions: 'More actions',
     todoEdit: 'Edit',
     todoDelete: 'Delete',
     todoSetGoal: 'Set as goal',

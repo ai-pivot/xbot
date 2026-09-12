@@ -308,6 +308,7 @@ const ja: Translations = {
     queueModeHint: 'キューモード：現在のターンが終わってから送信されます',
     interjectSend: '插话',
     setAsGoal: '目標に設定',
+    todoMoreActions: 'その他の操作',
     todoEdit: '編集',
     todoDelete: '削除',
     todoSetGoal: '目標に設定',

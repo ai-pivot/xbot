@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { CheckCircle2, ChevronRight, Circle, Loader2, Pencil, Target, Trash2 } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Circle, Loader2, MoreHorizontal, Pencil, Target, Trash2 } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { TodoState } from '@/hooks/useTodos'
 import type { TodoItem } from '@/types/shared'
 import { AnimatedCollapse } from '@/components/ui/animated-collapse'
@@ -35,6 +36,8 @@ export function TodoPullOut({
   const isTouch = useIsTouch()
   const [expanded, setExpanded] = useState(false)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  /** 触屏：哪一行的操作菜单（⋯）是打开的。 */
+  const [menuIndex, setMenuIndex] = useState<number | null>(null)
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -165,7 +168,7 @@ export function TodoPullOut({
                   className={cn(
                     'mt-0.5 shrink-0 rounded-full transition-transform',
                     // 触屏：把 12px 的图标包进 ≥32px 的命中区（不改变视觉位置）
-                    isTouch && '-m-2 p-2',
+                    isTouch && '-m-2.5 p-2.5',
                     editable && 'cursor-pointer hover:scale-110',
                   )}
                 >
@@ -204,57 +207,108 @@ export function TodoPullOut({
                 )}
 
                 {editable && (
-                  <div
-                    data-testid="todo-actions"
-                    className={cn(
-                      'flex shrink-0 items-center transition-opacity',
-                      // 触屏没有 hover：动作按钮必须常显，否则手机用户永远点不到
-                      // （电脑端仍是 hover 才出现，避免每行都堆三个图标）
-                      isTouch ? 'gap-1 opacity-100' : 'gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100',
-                    )}
-                  >
-                    {onSetGoalTodo && (
+                  isTouch ? (
+                    /* 触屏：只留一个 ⋯（32px）—— 三个操作收进菜单。
+                       并排三个按钮 ≈104px，几乎和文本一样宽（手机上行宽仅 ~390px），
+                       视觉上把待办正文挤没了。 */
+                    <Popover
+                      open={menuIndex === i}
+                      onOpenChange={(o) => { if (!o) setMenuIndex(null) }}
+                    >
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          data-testid="todo-more"
+                          aria-label={t('agent.todoMoreActions')}
+                          aria-haspopup="menu"
+                          onClick={() => setMenuIndex((cur) => (cur === i ? null : i))}
+                          className="flex size-8 shrink-0 items-center justify-center rounded-full text-text-secondary transition-colors active:bg-bg-tertiary"
+                        >
+                          <MoreHorizontal className="size-4" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="end"
+                        side="top"
+                        sideOffset={6}
+                        className="w-44 rounded-xl border-border bg-bg-secondary p-1 shadow-xl"
+                      >
+                        <div role="menu" data-testid="todo-actions-menu" className="flex flex-col">
+                          {onSetGoalTodo && (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              data-testid="todo-set-goal"
+                              onClick={() => { setMenuIndex(null); onSetGoalTodo(todo.text) }}
+                              className="flex h-10 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-text-primary transition-colors active:bg-bg-tertiary hover:bg-bg-tertiary"
+                            >
+                              <Target className="size-4 shrink-0 text-accent" />
+                              {t('agent.todoSetGoal')}
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            data-testid="todo-edit"
+                            onClick={() => { setMenuIndex(null); startEdit(i) }}
+                            className="flex h-10 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-text-primary transition-colors active:bg-bg-tertiary hover:bg-bg-tertiary"
+                          >
+                            <Pencil className="size-4 shrink-0 text-text-muted" />
+                            {t('agent.todoEdit')}
+                          </button>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            data-testid="todo-delete"
+                            onClick={() => { setMenuIndex(null); removeTodo(i) }}
+                            className="flex h-10 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] text-destructive transition-colors active:bg-destructive/10 hover:bg-destructive/10"
+                          >
+                            <Trash2 className="size-4 shrink-0" />
+                            {t('agent.todoDelete')}
+                          </button>
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  ) : (
+                    /* 桌面：hover 才出现的内联图标（不占常驻宽度） */
+                    <div
+                      data-testid="todo-actions"
+                      className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                    >
+                      {onSetGoalTodo && (
+                        <button
+                          type="button"
+                          data-testid="todo-set-goal"
+                          aria-label={t('agent.todoSetGoal')}
+                          title={t('agent.todoSetGoal')}
+                          onClick={() => onSetGoalTodo(todo.text)}
+                          className="flex size-5 items-center justify-center rounded text-accent transition-colors hover:bg-accent/15"
+                        >
+                          <Target className="size-3" />
+                        </button>
+                      )}
                       <button
                         type="button"
-                        data-testid="todo-set-goal"
-                        aria-label={t('agent.todoSetGoal')}
-                        title={t('agent.todoSetGoal')}
-                        onClick={() => onSetGoalTodo(todo.text)}
-                        className={cn(
-                          'flex items-center justify-center rounded text-accent transition-colors hover:bg-accent/15',
-                          isTouch ? 'size-8' : 'size-5',
-                        )}
+                        data-testid="todo-edit"
+                        aria-label={t('agent.todoEdit')}
+                        title={t('agent.todoEdit')}
+                        onClick={() => startEdit(i)}
+                        className="flex size-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary"
                       >
-                        <Target className={isTouch ? 'size-4' : 'size-3'} />
+                        <Pencil className="size-3" />
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      data-testid="todo-edit"
-                      aria-label={t('agent.todoEdit')}
-                      title={t('agent.todoEdit')}
-                      onClick={() => startEdit(i)}
-                      className={cn(
-                        'flex items-center justify-center rounded text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary',
-                        isTouch ? 'size-8' : 'size-5',
-                      )}
-                    >
-                      <Pencil className={isTouch ? 'size-4' : 'size-3'} />
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="todo-delete"
-                      aria-label={t('agent.todoDelete')}
-                      title={t('agent.todoDelete')}
-                      onClick={() => removeTodo(i)}
-                      className={cn(
-                        'flex items-center justify-center rounded text-text-muted transition-colors hover:bg-destructive/10 hover:text-destructive',
-                        isTouch ? 'size-8' : 'size-5',
-                      )}
-                    >
-                      <Trash2 className={isTouch ? 'size-4' : 'size-3'} />
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        data-testid="todo-delete"
+                        aria-label={t('agent.todoDelete')}
+                        title={t('agent.todoDelete')}
+                        onClick={() => removeTodo(i)}
+                        className="flex size-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="size-3" />
+                      </button>
+                    </div>
+                  )
                 )}
               </div>
             )
