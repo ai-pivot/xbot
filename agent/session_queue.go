@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -183,6 +184,195 @@ func (a *Agent) QueueSnapshotFor(channelName, chatID string) []protocol.QueueIte
 		})
 	}
 	return items
+}
+
+// ---------------------------------------------------------------------------
+// Reorder (Staging Tray drag-and-drop)
+// ---------------------------------------------------------------------------
+
+// queueReorder reorders the shadow queue to match msgIDs — the order the user
+// sees in the Staging Tray. IDs that are not queued are ignored, and queued
+// entries missing from msgIDs keep their relative order after the listed ones:
+// a reorder must never drop or duplicate an entry. Empty ids (notifications
+// without a request id) are never ranked, so those entries stay in their
+// arrival order relative to each other.
+//
+// Returns the resulting id order (every pending entry, listed ones first) so
+// the caller can project it onto the delivery channel.
+func (ss *bgSessionState) queueReorder(msgIDs []string) []string {
+	ss.queueMu.Lock()
+	defer ss.queueMu.Unlock()
+
+	rank := make(map[string]int, len(msgIDs))
+	for i, id := range msgIDs {
+		if id == "" {
+			continue // unaddressable entry — keep arrival order
+		}
+		if _, dup := rank[id]; !dup {
+			rank[id] = i
+		}
+	}
+
+	listed := make([]queuedEntry, 0, len(ss.queue))
+	rest := make([]queuedEntry, 0, len(ss.queue))
+	for _, e := range ss.queue {
+		if _, ok := rank[e.MsgID]; ok {
+			listed = append(listed, e)
+			continue
+		}
+		rest = append(rest, e)
+	}
+	sort.SliceStable(listed, func(i, j int) bool { return rank[listed[i].MsgID] < rank[listed[j].MsgID] })
+
+	ss.queue = append(listed, rest...)
+
+	order := make([]string, 0, len(ss.queue))
+	for _, e := range ss.queue {
+		order = append(order, e.MsgID)
+	}
+	return order
+}
+
+// reorderChannel re-emits the messages buffered in ch so their delivery order
+// matches order (the shadow queue order, id per entry).
+//
+// Go channels are FIFO and cannot be reordered in place, so the buffered
+// messages are drained, stably sorted by their position in order, and pushed
+// back. This is safe because the consumer is either blocked on a receive (it
+// then takes the NEW head) or busy processing (it takes the new head when it
+// returns); nothing can be stolen mid-drain. Messages whose id is not ranked
+// (already dequeued and being processed, or an id the client did not send) keep
+// their relative channel order. Pushing back cannot overflow: the pushed count
+// equals the drained count, and the channel never held more than its capacity.
+func reorderChannel(ch chan bus.InboundMessage, order []string) int {
+	rank := make(map[string]int, len(order))
+	for i, id := range order {
+		if id == "" {
+			continue
+		}
+		if _, dup := rank[id]; !dup {
+			rank[id] = i
+		}
+	}
+
+	var drained []bus.InboundMessage
+drain:
+	for {
+		select {
+		case m := <-ch:
+			drained = append(drained, m)
+		default:
+			break drain
+		}
+	}
+	sort.SliceStable(drained, func(i, j int) bool {
+		ri, oki := rank[drained[i].RequestID]
+		rj, okj := rank[drained[j].RequestID]
+		switch {
+		case oki && okj:
+			return ri < rj
+		case oki:
+			return true // ranked entries first
+		case okj:
+			return false
+		default:
+			return false // stable: unranked entries keep drained order
+		}
+	})
+	for _, m := range drained {
+		ch <- m
+	}
+	return len(drained)
+}
+
+// queueReorderAdmitWait bounds how long a reorder waits for in-flight admits
+// (a producer between queueAppend and the completion of its channel send) to
+// land before giving up. With room in the channel the send completes in
+// microseconds; a saturated channel only clears when the consumer dequeues.
+const queueReorderAdmitWait = 20 * time.Millisecond
+
+// waitForInflightAdmits waits (bounded) until no admit sits between queueAppend
+// and its completed channel send. Returns false when one is still in flight
+// after the wait: its message is in the shadow queue (already broadcast to
+// clients) but not yet in msgCh, so a drain-based projection would miss it and
+// silently deliver a different order than the one displayed.
+func (ss *bgSessionState) waitForInflightAdmits() bool {
+	deadline := time.Now().Add(queueReorderAdmitWait)
+	for {
+		if ss.inflightAdmits.Load() == 0 {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// ReorderQueue reorders a session's pending (queued, not yet started) messages.
+// msgIDs is the desired order as rendered by the client (Staging Tray
+// drag-and-drop); unknown ids and unlisted entries are handled by queueReorder.
+// Returns false when the session has no worker, nothing is queued, the requested
+// order is already in effect, or a message was still being admitted (see below)
+// — no snapshot broadcast then (a no-op drag must not spam every subscriber).
+//
+// ORDER CONSISTENCY: the projection (reorderChannel) drains msgCh, sorts the
+// buffered messages by the shadow queue order and pushes them back. That is
+// exact only while every queued entry is actually IN the channel. A producer
+// that has already appended its shadow entry but has not completed its channel
+// send (inflightAdmits > 0) would be missed by the drain — reachable when the
+// channel is saturated, because then the producer blocks until the consumer
+// frees a slot. We wait briefly for such admits to land, and if one is still in
+// flight we refuse the reorder (no projection, no broadcast) instead of
+// reporting an order we cannot deliver.
+func (a *Agent) ReorderQueue(channelName, chatID string, msgIDs []string) bool {
+	key := qualifyChatID(channelName, chatID)
+	state, ok := a.bgSessionStates.Load(key)
+	if !ok {
+		return false
+	}
+	ss := state.(*bgSessionState)
+
+	if ss.msgCh != nil && !ss.waitForInflightAdmits() {
+		log.WithField("session_key", key).Warn("Queued messages reorder skipped: an admit is still in flight (saturated msgCh)")
+		return false
+	}
+
+	before := ss.queueSnapshot()
+	order := ss.queueReorder(msgIDs)
+	if len(order) == 0 {
+		return false
+	}
+	after := ss.queueSnapshot()
+	if queueSameOrder(before, after) {
+		return false // already in this order
+	}
+	if ss.msgCh != nil {
+		reorderChannel(ss.msgCh, order)
+	}
+
+	log.WithFields(log.Fields{
+		"session_key": key,
+		"count":       len(order),
+		"order":       strings.Join(order, ","),
+	}).Info("Queued messages reordered via REST queue API")
+
+	a.emitQueueState(channelName, chatID, ss)
+	return true
+}
+
+// queueSameOrder reports whether two snapshots list the same ids in the same
+// order (both are the non-cancelled projection of the same queue).
+func queueSameOrder(a, b []queuedEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].MsgID != b[i].MsgID {
+			return false
+		}
+	}
+	return true
 }
 
 // CancelQueuedMessage cancels a queued-but-unstarted message. The message is

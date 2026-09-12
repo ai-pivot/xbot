@@ -198,6 +198,17 @@ export const MessageList = memo(function MessageList({
   onEndEdit,
   footer,
 }: MessageListProps) {
+  // PERF（Trace-20260912T100816）：行级回调必须引用稳定。inline 箭头
+  // （`(c) => onRewind(c, row)`）在每个流式帧都换引用 → MessageItem 的 memo
+  // 被击穿 → 可见行全部重渲染。改为稳定 handler + 由 MessageItem 回填 row。
+  const handleRewindRow = useCallback(
+    (editedContent: string, row: ChatMessage) => onRewind?.(editedContent, row),
+    [onRewind],
+  )
+  const handleStartEditRow = useCallback(
+    (rowId: string) => onStartEdit?.(rowId),
+    [onStartEdit],
+  )
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
@@ -973,9 +984,9 @@ export const MessageList = memo(function MessageList({
                       liveProgress={row.id === liveId ? liveProgress : null}
                       collapseLevel={collapseLevel}
                       mergeTools={mergeTools}
-                      onRewind={onRewind ? (editedContent: string) => onRewind(editedContent, row) : undefined}
+                      onRewind={onRewind ? handleRewindRow : undefined}
                       isEditing={isEditing}
-                      onStartEdit={onStartEdit ? () => onStartEdit(row.id) : undefined}
+                      onStartEdit={onStartEdit ? handleStartEditRow : undefined}
                       onEndEdit={onEndEdit}
                       editDisabled={editDisabled || !canRewind || busy}
                     />

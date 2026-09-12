@@ -872,6 +872,7 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
 		OffloadSessionKey: s.offloadSessionKey,
+		OffloadOwnerKey:   s.sessionKey,
 		MaskStore:         s.cfg.MaskStore,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
@@ -1635,6 +1636,7 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		Persistence:       s.persistence,
 		OffloadStore:      s.cfg.OffloadStore,
 		OffloadSessionKey: s.offloadSessionKey,
+		OffloadOwnerKey:   s.sessionKey,
 		MaskStore:         s.cfg.MaskStore,
 		AccumulateUsage:   s.accumulateCompressUsage,
 		SyncMessages:      s.syncMessages,
@@ -2134,7 +2136,7 @@ func (s *runState) processToolResults(ctx context.Context, response *llm.LLMResp
 			if r.result != nil && r.result.Summary != "" {
 				offloadContent = r.result.Summary
 			}
-			offloaded, wasOffloaded := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, tc.Name, tc.Arguments, offloadContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID)
+			offloaded, wasOffloaded := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, s.sessionKey, tc.Name, tc.Arguments, offloadContent, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID)
 			if wasOffloaded {
 				content = offloaded.Summary
 				GlobalMetrics.OffloadEvents.Add(1)
@@ -2461,7 +2463,10 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 			s.recordAssistantMsg(ctx, response)
 			_ = s.injectSyntheticToolPair(ctx, iteration,
 				"pre_turn_end", fmt.Sprintf("pre_turn_end_%d", iteration),
-				event.Reason, "pre_turn_end", 0,
+				event.Reason, "pre_turn_end",
+				"PreTurnEnd hook requested another turn",
+				tools.EncodeSyntheticToolHints(tools.MessageHints("pre_turn_end", event.Reason)),
+				0,
 			)
 			return true
 		}
@@ -2502,6 +2507,7 @@ func (s *runState) injectSyntheticToolPair(
 	ctx context.Context,
 	iteration int,
 	toolName, toolID, toolContent, progressLabel string,
+	progressSummary, progressHints string,
 	progressElapsed time.Duration,
 ) error {
 	if s.persistenceErr != nil {
@@ -2510,7 +2516,7 @@ func (s *runState) injectSyntheticToolPair(
 
 	content := toolContent
 	if s.cfg.OffloadStore != nil {
-		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, toolName, "", content, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
+		if offloaded, ok := s.cfg.OffloadStore.MaybeOffload(ctx, s.offloadSessionKey, s.sessionKey, toolName, "", content, s.cfg.WorkspaceRoot, "", s.cfg.OriginUserID); ok {
 			content = offloaded.Summary
 			GlobalMetrics.OffloadEvents.Add(1)
 			GlobalMetrics.OffloadedItems.Add(1)
@@ -2542,6 +2548,9 @@ func (s *runState) injectSyntheticToolPair(
 			Name:      toolName,
 			Label:     progressLabel,
 			Status:    ToolDone,
+			Summary:   progressSummary,
+			Detail:    content,
+			ToolHints: progressHints,
 			Elapsed:   progressElapsed,
 			Iteration: iteration,
 		})
@@ -2562,7 +2571,10 @@ func (s *runState) injectBgTaskNotification(ctx context.Context, iteration int, 
 	}
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		"background_task_result", "bg_"+bgTask.ID,
-		content, fmt.Sprintf("bg:%s", bgTask.ID), elapsed,
+		content, fmt.Sprintf("bg:%s", bgTask.ID),
+		fmt.Sprintf("背景任务 %s · %s", bgTask.ID, bgTask.Status),
+		tools.EncodeSyntheticToolHints(tools.BgTaskHints(bgTask)),
+		elapsed,
 	)
 	if err == nil {
 		log.Ctx(ctx).WithField("task_id", bgTask.ID).Info("Injected bg task completion into Run loop")
@@ -2586,7 +2598,10 @@ func (s *runState) injectSubAgentBgNotification(ctx context.Context, iteration i
 	content := tools.FormatSubAgentBgNotify(n)
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
-		content, fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance), 0,
+		content, fmt.Sprintf("bgsub:%s/%s", n.Role, n.Instance),
+		fmt.Sprintf("子代理 %s/%s 已完成", n.Role, n.Instance),
+		tools.EncodeSyntheticToolHints(tools.SubAgentHints(n)),
+		n.Elapsed,
 	)
 	if err == nil {
 		log.Ctx(ctx).WithFields(log.Fields{
@@ -2605,7 +2620,10 @@ func (s *runState) injectCronFiredNotification(ctx context.Context, iteration in
 	toolID := "cron_" + c.SessionKey()
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		"cron_fired", toolID,
-		content, "cron", 0,
+		content, "cron",
+		"定时任务已触发",
+		tools.EncodeSyntheticToolHints(tools.MessageHints("cron", c.Message)),
+		0,
 	)
 	if err == nil {
 		log.Ctx(ctx).WithField("session_key", c.SessionKey()).Info("Injected cron fired notification into Run loop")
@@ -2631,7 +2649,10 @@ func (s *runState) injectUserInterruptNotification(ctx context.Context, iteratio
 	}).Info("injectUserInterruptNotification: about to inject interject")
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		"user_interrupt", toolID,
-		content, "💬 插话", 0,
+		content, "💬 插话",
+		"用户插话（未打断当前任务）",
+		tools.EncodeSyntheticToolHints(tools.MessageHints("interrupt", n.Content)),
+		0,
 	)
 	if err == nil {
 		log.Ctx(ctx).WithFields(log.Fields{
@@ -2651,7 +2672,10 @@ func (s *runState) injectAsyncMessageNotification(ctx context.Context, iteration
 	toolID := fmt.Sprintf("async_%d", time.Now().UnixNano())
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		"async_message", toolID,
-		n.Content, "async:"+n.Source, 0,
+		n.Content, "async:"+n.Source,
+		"收到异步消息："+n.Source,
+		tools.EncodeSyntheticToolHints(tools.MessageHints("async", n.Content)),
+		0,
 	)
 	if err == nil {
 		log.Ctx(ctx).WithFields(log.Fields{
@@ -2675,7 +2699,10 @@ func (s *runState) injectQueuedUserMessage(ctx context.Context, iteration int, m
 
 	err := s.injectSyntheticToolPair(ctx, iteration,
 		toolName, toolID,
-		content, "delivered_message", 0,
+		content, "delivered_message",
+		"已向子代理送达消息",
+		tools.EncodeSyntheticToolHints(tools.MessageHints("delivered", m.Content)),
+		0,
 	)
 
 	if err == nil {

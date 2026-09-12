@@ -24,6 +24,7 @@ import { SweepText } from './SweepText'
 import { ToolRender } from './ToolRender'
 import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
+import { syntheticShortName, syntheticSubject } from './SyntheticToolCard'
 import { useI18n } from '@/providers/i18n'
 
 import type { CollapseLevel } from '@/types/agent'
@@ -91,11 +92,18 @@ function statusColorVar(status: ToolStatusColor): string {
   }
 }
 
+/** i18n translate signature (subset of I18nContextValue['t']). */
+type T = (key: string, params?: Record<string, string | number>) => string
+
 /** Get display name from tool label.
  *  For generating tools, always use tool.name — the label is still streaming
- *  (e.g. "思考中…" placeholder) and parsing it would cause name flicker. */
-function displayName(tool: WebToolProgress): string {
+ *  (e.g. "思考中…" placeholder) and parsing it would cause name flicker.
+ *  Injected (synthetic) notification tools NEVER show their internal snake_case
+ *  name (`bg_subagent_completed`) — a localized short name is used instead. */
+function displayName(tool: WebToolProgress, t?: T): string {
   const name = tool.name || 'tool'
+  const synthetic = syntheticShortName(tool, t)
+  if (synthetic) return synthetic
   if (tool.status === 'generating') return name
   const label = tool.label || name
   return label.includes(': ') ? label.slice(0, label.indexOf(': ')) : name
@@ -123,7 +131,7 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
 }
 
 /** 工具 pill 三态（设计稿 1:1）：running=accent 椭圆+pulse 圆点+流光 / error=红椭圆+✗ / done=绿椭圆+✓。 */
-function toolPill(tool: WebToolProgress, sweepRunning = true): ReactNode {
+function toolPill(tool: WebToolProgress, sweepRunning = true, t?: T): ReactNode {
   const status = singleStatus(tool)
   const running = status === 'running'
   const failed = status === 'all-failed'
@@ -134,12 +142,16 @@ function toolPill(tool: WebToolProgress, sweepRunning = true): ReactNode {
     : failed
       ? 'color-mix(in srgb, var(--destructive) 12%, transparent)'
       : 'color-mix(in srgb, var(--status-success, #22c55e) 12%, transparent)'
-  const name = displayName(tool)
-  const param = toolParam(tool)
+  const synName = syntheticShortName(tool, t)
+  const name = synName ?? displayName(tool, t)
+  // 注入型工具没有 args；用 subject（role/instance 或 task id）当参数位，
+  // 让 pill 读起来像 `子代理 explore/mem-1`（与 `Shell: cmd` 同构）。
+  const param = synName ? syntheticSubject(tool) : toolParam(tool)
   const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
   const showSweep = running && sweepRunning && !isSubAgentTool(tool)
   return (
     <span
+      data-tool-name={tool.name}
       className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
       style={{ color: c, background: bg }}
     >
@@ -149,8 +161,16 @@ function toolPill(tool: WebToolProgress, sweepRunning = true): ReactNode {
           ? <X className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />
           : <Check className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />}
       {showSweep
-        ? <SweepText text={label} color={c} className="truncate font-mono" />
-        : <span className="truncate font-mono">{label}</span>}
+        ? <SweepText text={label} color={c} className={`truncate ${synName ? '' : 'font-mono'}`} />
+        : synName
+          ? (
+            <>
+              {/* 本地化名字用正文字体（等宽渲染 CJK 会显得很怪），subject/参数保持等宽 */}
+              <span className="truncate">{name}</span>
+              {param && <span className="truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
+            </>
+          )
+          : <span className="truncate font-mono">{label}</span>}
     </span>
   )
 }
@@ -171,6 +191,8 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
   const color = statusColorVar(status)
   const running = status === 'running'
   const failed = status === 'all-failed'
+  // 注入型工具：本地化名字（正文字体，等宽渲染 CJK 很怪）+ subject chip
+  const subject = syntheticShortName(tool, t) ? syntheticSubject(tool) : ''
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2 text-xs">
@@ -179,7 +201,12 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
           : failed
             ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color }} />
             : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
-        <span className="font-mono text-[11px] font-medium" style={{ color }}>{displayName(tool)}</span>
+        <span data-tool-name={tool.name} className="shrink-0 text-[11.5px] font-medium" style={{ color }}>{displayName(tool, t)}</span>
+        {subject && (
+          <code className="truncate rounded bg-bg-tertiary/60 px-1 py-0.5 font-mono text-[10px] text-text-muted">
+            {subject}
+          </code>
+        )}
         {tool.elapsedMs > 0 && (
           <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
         )}
@@ -201,23 +228,73 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
   )
 }
 
+/** 懒挂 Popover 的 pill：未点击前只是 <span>（零 Radix 实例）。
+ *
+ *  PERF（Trace-20260912T100816）：每个工具 pill 都挂一个 Radix `Popover`
+ *  （Presence/useControllableState/useId + PopoverTrigger asChild → Slot →
+ *  cloneElement），长 turn 里成百上千个实例的创建/reconcile 占了可观 CPU
+ *  （radix 机制 ~6.6% + Slot/cloneElement 4.5%），而浮层只在**点击时**才需要。
+ *  懒挂后：关闭态零 radix 成本，点击才创建（行为等价：点 pill 弹详情）。 */
+function LazyPillPopover({
+  children,
+  content,
+  testId,
+  toolName,
+}: {
+  children: ReactNode
+  content: ReactNode
+  testId: string
+  /** 内部工具名（稳定标识）：E2E/测试按它定位，绝不依赖可见文案（会随 i18n 变化）。 */
+  toolName?: string
+}) {
+  const [open, setOpen] = useState(false)
+  if (!open) {
+    return (
+      <span
+        data-testid={testId}
+        data-tool-name={toolName}
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            setOpen(true)
+          }
+        }}
+        className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85"
+      >
+        {children}
+      </span>
+    )
+  }
+  return (
+    <Popover open onOpenChange={(o) => { if (!o) setOpen(false) }}>
+      <PopoverTrigger asChild>
+        <span data-testid={testId} data-tool-name={toolName} className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85">
+          {children}
+        </span>
+      </PopoverTrigger>
+      <PopoverContent align="start" className={POPOVER_CLASS}>
+        {content}
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 /** 折叠行 pill 列表：≤8 全量；>8 显示前 7 pill + "+N" 徽标。
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
  *  "+N" 弹溢出工具的全量列表。 */
 const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { tools: WebToolProgress[]; sweepRunning?: boolean }) {
+  const { t } = useI18n()
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
     <span className="flex flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
-        <Popover key={`${tool.name}-${i}`}>
-          <PopoverTrigger asChild>
-            <span data-testid="tool-pill" className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85">{toolPill(tool, sweepRunning)}</span>
-          </PopoverTrigger>
-          <PopoverContent align="start" className={POPOVER_CLASS}>
-            <ToolPopoverDetail tool={tool} />
-          </PopoverContent>
-        </Popover>
+        <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" toolName={tool.name} content={<ToolPopoverDetail tool={tool} />}>
+          {toolPill(tool, sweepRunning, t)}
+        </LazyPillPopover>
       ))}
       {overflow && <OverflowPillsMenu tools={tools} />}
     </span>
@@ -228,16 +305,15 @@ const MergedPills = memo(function MergedPills({ tools, sweepRunning = true }: { 
 function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
   const hidden = tools.slice(PILL_INLINE_HEAD)
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <span data-testid="tool-pill-more" className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
-          +{hidden.length}
-        </span>
-      </PopoverTrigger>
-      <PopoverContent align="start" className={POPOVER_CLASS}>
-        <ToolPopoverContent tools={hidden} />
-      </PopoverContent>
-    </Popover>
+    <LazyPillPopover
+      testId="tool-pill-more"
+      toolName="__overflow__"
+      content={<ToolPopoverContent tools={hidden} />}
+    >
+      <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
+        +{hidden.length}
+      </span>
+    </LazyPillPopover>
   )
 }
 
@@ -247,6 +323,7 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
  * 浮层在 Portal 内，内部展开的行高变化不进入虚拟列表布局树（零 relayout）。
  */
 function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
+  const { t } = useI18n()
   const [sel, setSel] = useState<number | null>(null)
   return (
     <div className="flex flex-col">
@@ -274,7 +351,7 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
                 : failed
                   ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color: c }} />
                   : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color: c }} />}
-              <span className="shrink-0 font-mono text-[11px] font-medium" style={{ color: c }}>{displayName(tool)}</span>
+              <span className="shrink-0 font-mono text-[11px] font-medium" style={{ color: c }}>{displayName(tool, t)}</span>
               <span className="min-w-0 flex-1 truncate text-[11px] text-text-muted">{tool.label}</span>
               {tool.elapsedMs > 0 && (
                 <span className="shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
@@ -294,6 +371,7 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
 
 /** Expanded tool card: [icon] name + input + output */
 function ToolCard({ tool }: { tool: WebToolProgress }) {
+  const { t } = useI18n()
   const name = tool.name || 'tool'
 
   // GenUI tool: no card chrome, just render the GenUI directly.
@@ -303,7 +381,7 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
 
   const status = singleStatus(tool)
   const color = statusColorVar(status)
-  const dn = displayName(tool)
+  const dn = displayName(tool, t)
   const showSweep = status === 'running' && !isSubAgentTool(tool)
 
   return (

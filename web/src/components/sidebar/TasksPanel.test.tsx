@@ -4,6 +4,7 @@ import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { TasksPanel } from './TasksPanel'
+import { registerMobileAgentOpener } from '@/lib/mobileNav'
 import type { TabManager } from '@/hooks/useTabManager'
 
 const mocks = vi.hoisted(() => ({
@@ -12,11 +13,13 @@ const mocks = vi.hoisted(() => ({
     bgTasks: unknown[]
     loading: boolean
     killBgTask: ReturnType<typeof vi.fn>
+    removeCronTask: ReturnType<typeof vi.fn>
   } => ({
     cronTasks: [],
     bgTasks: [],
     loading: false,
     killBgTask: vi.fn(),
+    removeCronTask: vi.fn(),
   })),
   sessionStore: {
     activeSession: { channel: 'cli', chatID: '/repo:Agent-main' },
@@ -90,6 +93,7 @@ describe('TasksPanel', () => {
       bgTasks: [],
       loading: false,
       killBgTask: vi.fn(),
+      removeCronTask: vi.fn(),
     })
   })
 
@@ -172,6 +176,7 @@ describe('TasksPanel', () => {
       }],
       loading: false,
       killBgTask: vi.fn(),
+    removeCronTask: vi.fn(),
     })
 
     renderWithProviders(<TasksPanel tabManager={tabManager} />)
@@ -187,5 +192,63 @@ describe('TasksPanel', () => {
         taskChatID: '/repo:Agent-main',
       }),
     }))
+  })
+})
+
+describe('TasksPanel cron + mobile subagent interaction (regression)', () => {
+  const cronTask = {
+    id: 'cron-1',
+    message: '每天早上检查集群状态',
+    channel: 'web',
+    chatID: 'chat-a',
+    cronExpr: '0 9 * * *',
+    nextRun: '2026-09-12T09:00:00Z',
+    oneShot: true,
+  }
+
+  it('expands cron details on tap and deletes via the session-scoped API', () => {
+    const removeCronTask = vi.fn()
+    mocks.useTasks.mockReturnValue({
+      cronTasks: [cronTask],
+      bgTasks: [],
+      loading: false,
+      killBgTask: vi.fn(),
+      removeCronTask,
+    })
+    renderWithProviders(<TasksPanel />)
+
+    // 详情默认收起（回归：cron 行曾是纯 div，点不开也删不掉）
+    expect(screen.queryByTestId('cron-details')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('cron-row'))
+    const details = screen.getByTestId('cron-details')
+    expect(details).toBeInTheDocument()
+    expect(details.textContent).toContain('0 9 * * *')
+    expect(details.textContent).toContain('2026-09-12T09:00:00Z')
+    expect(details.textContent).toContain('web:chat-a')
+    expect(details.textContent).toContain('cron-1')
+
+    fireEvent.click(screen.getByTestId('cron-delete'))
+    expect(removeCronTask).toHaveBeenCalledWith('cron-1')
+  })
+
+  it('opens a SubAgent through the mobile bridge when a shell is registered (no dockview on phones)', () => {
+    const opener = vi.fn()
+    registerMobileAgentOpener(opener)
+    const openTab = vi.fn()
+    const tabManager = { openTab, activeTabId: 'x', tabs: [] } as unknown as TabManager
+    renderWithProviders(<TasksPanel tabManager={tabManager} />)
+
+    const row = screen
+      .getAllByRole('button')
+      .find((b) => /review/i.test(b.textContent ?? ''))
+    expect(row).toBeDefined()
+    fireEvent.click(row as HTMLElement)
+
+    // 手机壳注册后走宿主桥（切 agent 视图 + 选中该子代理），不再开 dockview tab
+    expect(opener).toHaveBeenCalledTimes(1)
+    expect(opener.mock.calls[0][0]).toMatchObject({ subAgentRole: 'review' })
+    expect(openTab).not.toHaveBeenCalled()
+    registerMobileAgentOpener(null)
   })
 })

@@ -65,6 +65,47 @@ func TestExpandUploadKeys_ImageSingleMarkdownReference(t *testing.T) {
 	}
 }
 
+// Regression (2026-09-11 — user report "web 粘贴图片后发送，图片变成两张"):
+// the rich composer inserts the image markdown INLINE as soon as the upload
+// finishes (MessageInput.insertUploadedMedia), so the message content ALREADY
+// carries the reference. expandUploadKeys appended it a second time, so every
+// pasted image rendered twice (two <img> for one upload).
+func TestExpandUploadKeys_DoesNotDuplicateReferenceAlreadyInContent(t *testing.T) {
+	wc := newExpandUploadKeysChannel(t)
+	inline := "![IMG_4953.PNG](/api/files/download?key=uploads%2F4%2Faaaa-bbbb.png&inline=1)"
+	content := inline + "\n评价一下我的跳绳"
+	msg := protocol.WSClientMessage{
+		Content:    content,
+		UploadKeys: []string{"uploads/4/aaaa-bbbb.png"},
+		FileNames:  []string{"IMG_4953.PNG"},
+		FileSizes:  []int64{12345},
+	}
+	out := wc.expandUploadKeys(msg)
+
+	if got := strings.Count(out, "![IMG_4953.PNG]("); got != 1 {
+		t.Fatalf("image reference must appear exactly once, got %d:\n%q", got, out)
+	}
+	if out != content {
+		t.Fatalf("content already carrying the reference must be left untouched:\n got: %q\nwant: %q", out, content)
+	}
+}
+
+// The dedup must not suppress a reference that is genuinely missing (client
+// that did not inline the upload, e.g. older bundles / API callers).
+func TestExpandUploadKeys_StillAppendsWhenContentLacksReference(t *testing.T) {
+	wc := newExpandUploadKeysChannel(t)
+	msg := protocol.WSClientMessage{
+		Content:    "just text",
+		UploadKeys: []string{"uploads/4/cccc.png"},
+		FileNames:  []string{"pic.png"},
+		FileSizes:  []int64{7},
+	}
+	out := wc.expandUploadKeys(msg)
+	if !strings.Contains(out, "![pic.png](/api/files/download?key=uploads%2F4%2Fcccc.png&inline=1)") {
+		t.Fatalf("missing reference must still be appended, got: %q", out)
+	}
+}
+
 func TestExpandUploadKeys_NonImageAttachmentKeepsSignedURL(t *testing.T) {
 	wc := newExpandUploadKeysChannel(t)
 	msg := protocol.WSClientMessage{

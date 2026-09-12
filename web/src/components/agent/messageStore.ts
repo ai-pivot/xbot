@@ -39,6 +39,24 @@ export interface TurnSlot {
   assistant?: ChatMessage
   /** streaming 进行中（commitAssistant 时清空）。 */
   live?: LiveState
+  /** toRows() 的合并迭代 memo：输入引用未变 ⇒ 输出引用不变。
+   *  保证流式帧之间 live 行的 iterations 引用稳定 → TurnBody 的 CommittedTurn
+   *  memo 命中（代价与 turn 长度无关，见 turn_perf.test.tsx）。 */
+  liveMerge?: { a: WebIteration[]; b: WebIteration[]; order: 'al' | 'la'; out: WebIteration[] }
+}
+
+/** 合并迭代（按引用 memo）—— 只为引用稳定性，语义与 mergeIterations 完全一致。 */
+function mergeIterationsCached(
+  slot: TurnSlot,
+  a: WebIteration[],
+  b: WebIteration[],
+  order: 'al' | 'la',
+): WebIteration[] {
+  const c = slot.liveMerge
+  if (c && c.a === a && c.b === b && c.order === order) return c.out
+  const out = mergeIterations(a, b)
+  slot.liveMerge = { a, b, order, out }
+  return out
 }
 
 const EMPTY_LIVE: LiveState = {
@@ -57,6 +75,9 @@ const EMPTY_LIVE: LiveState = {
 
 /** Merge two WebIteration arrays by iteration number (union, prefer non-empty). */
 export function mergeIterations(a: WebIteration[], b: WebIteration[]): WebIteration[] {
+  // 引用相同 → 直接返回（纯函数 memo）。流式帧上调用方可能传同一个数组
+  // （如 patch.iterations === prev.iterations），避免每帧 Map+sort 的 O(N) 抖动。
+  if (a === b) return a
   if (a.length === 0) return b
   if (b.length === 0) return a
   const map = new Map<number, WebIteration>()
@@ -215,7 +236,15 @@ export class MessageStore {
       // 语义会清空进行中 turn 的已完成迭代，用户报告"迭代到一半 history 突然只剩
       // live iter，高度变低触发 load more"。union 保证已完成迭代永不消失；
       // turnID 是 slot key，跨 turn 不会污染。
-      iterations: mergeIterations(prev.iterations, patch.iterations ?? []),
+      //
+      // PERF（Trace-20260912T100816）：patch 未携带 iterations（或携带同一引用）时
+      // **保留 prev.iterations 引用** —— 否则每个流式帧都重建数组 → toRows() 的 live
+      // 行 iterations 换引用 → TurnBody 的 CommittedTurn memo 每帧失效（代价 ∝
+      // turn 迭代数）。合并本身也按引用 memo（mergeIterations 的 a===b 早退）。
+      iterations:
+        patch.iterations === undefined || patch.iterations === prev.iterations
+          ? prev.iterations
+          : mergeIterations(prev.iterations, patch.iterations),
     }
     this.invalidate()
   }
@@ -548,7 +577,7 @@ export class MessageStore {
           rows.push({
             ...slot.assistant,
             content: slot.live.content || slot.assistant.content,
-            iterations: mergeIterations(slot.live.iterations, slot.assistant.iterations),
+            iterations: mergeIterationsCached(slot, slot.live.iterations, slot.assistant.iterations, 'la'),
             isPartial: true,
           })
         } else if (slot.live) {
@@ -560,7 +589,7 @@ export class MessageStore {
           rows.push({
             ...slot.assistant,
             content: slot.live.content || slot.assistant.content || '',
-            iterations: mergeIterations(slot.assistant.iterations ?? [], slot.live.iterations),
+            iterations: mergeIterationsCached(slot, slot.assistant.iterations ?? [], slot.live.iterations, 'al'),
             isPartial: true,
             id: `turn-${tid}-live`,
           })

@@ -10,7 +10,8 @@ import { screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath } from '@/components/agent/ToolRender'
+import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints } from '@/components/agent/ToolRender'
+import { syntheticShortName } from '@/components/agent/SyntheticToolCard'
 import { DiffView, extractDiffSource, parseUnifiedDiff } from '@/components/agent/DiffView'
 import type { WebToolProgress } from '@/types/shared'
 
@@ -346,5 +347,240 @@ describe('DiffView', () => {
     // The card root carries the single shared overflow-auto.
     const root = pres[0].closest('.overflow-auto')
     expect(root).not.toBeNull()
+  })
+})
+
+// ── injected (synthetic) notification tools ─────────────────────────────
+//
+// The backend injects bg-task / sub-agent completion, cron fires, etc. as fake
+// tool-call pairs and ships a UI-only payload in toolHints
+// (tools.SyntheticToolHints). These cards must show the ORIGINAL task, status,
+// duration and a preview — and degrade to the summary text for history rows
+// written before the payload existed.
+
+describe('parseSyntheticHints', () => {
+  it('parses the backend payload', () => {
+    const h = parseSyntheticHints(
+      JSON.stringify({ kind: 'bg_task', task_id: '3f8f492a', task: 'make build', status: 'done', exit_code: 0, elapsed_ms: 1234 }),
+    )
+    expect(h?.kind).toBe('bg_task')
+    expect(h?.task).toBe('make build')
+    expect(h?.exit_code).toBe(0)
+  })
+
+  it('returns null for empty / non-JSON / malformed payloads (legacy rows)', () => {
+    expect(parseSyntheticHints('')).toBeNull()
+    expect(parseSyntheticHints('Background task 3f8f492a completed.')).toBeNull()
+    expect(parseSyntheticHints('{not json')).toBeNull()
+  })
+})
+
+describe('SyntheticToolCard (fancy built-in notification cards)', () => {
+  it('background task: original command, status, exit code, duration, output + section captions', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      label: 'bg:3f8f492a',
+      status: 'done',
+      summary: '背景任务 3f8f492a · done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: '3f8f492a', task: 'make build -j8',
+        status: 'done', exit_code: 0, elapsed_ms: 1234, output: 'ok\nbuilt 3 targets',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    // subject (task id) appears on the header chip AND in the meta footer
+    expect(screen.getAllByText(/3f8f492a/).length).toBeGreaterThan(0)
+    // the ORIGINAL task/command is the whole point of the card
+    expect(screen.getByText('make build -j8')).toBeInTheDocument()
+    // multi-line preview: match a substring (getByText normalizes whitespace)
+    expect(screen.getByText(/built 3 targets/)).toBeInTheDocument()
+    expect(screen.getByText(/done|完成/)).toBeInTheDocument()
+    expect(screen.getByText(/(退出码|Exit code)\s*0/)).toBeInTheDocument()
+    // rich card: section captions + duration chip + output stats + meta footer
+    expect(screen.getByText(/Command|命令/)).toBeInTheDocument()
+    expect(screen.getByText(/Output|输出/)).toBeInTheDocument()
+    expect(screen.getByText('1.2s')).toBeInTheDocument()
+    expect(screen.getByText(/2 (lines|行)/)).toBeInTheDocument()
+    expect(screen.getByText(/Task ID|任务 ID/)).toBeInTheDocument()
+  })
+
+  it('sub-agent: role/instance, ORIGINAL task and result preview — never the internal name', () => {
+    const tool = makeTool({
+      name: 'bg_subagent_completed',
+      label: 'bgsub:explore/mem-1',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'subagent', role: 'explore', instance: 'mem-1',
+        task: '找出登录流程的入口', status: 'done', elapsed_ms: 42_000,
+        output: '入口在 channel/web/web_auth.go',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/explore\/mem-1/)).toBeInTheDocument()
+    expect(screen.getByText('找出登录流程的入口')).toBeInTheDocument()
+    expect(screen.getByText('入口在 channel/web/web_auth.go')).toBeInTheDocument()
+    expect(screen.getByText('42s')).toBeInTheDocument()
+    // the raw snake_case tool name is never shown to users
+    expect(screen.queryByText(/bg_subagent_completed/)).toBeNull()
+  })
+
+  it('falls back to summary/detail text when toolHints is absent (legacy history rows)', () => {
+    const tool = makeTool({
+      name: 'cron_fired',
+      label: 'cron',
+      status: 'done',
+      summary: 'A scheduled cron job fired.\n\nMessage: nightly build',
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/nightly build/)).toBeInTheDocument()
+  })
+
+  it('error cards surface the failure reason', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'error',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task: 'npm run build', status: 'error', exit_code: 1,
+        elapsed_ms: 900, error: 'tsc: 3 errors',
+      }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByText(/error|失败/)).toBeInTheDocument()
+    expect(screen.getByText('tsc: 3 errors')).toBeInTheDocument()
+    expect(screen.getByText(/(退出码|Exit code)\s*1/)).toBeInTheDocument()
+  })
+
+  it('renders a cancel marker card', () => {
+    const tool = makeTool({ name: 'user_cancelled', label: 'cancelled by user', status: 'done' })
+    renderWithProviders(<ToolRender tool={tool} />)
+    // title + status chip both carry the cancelled wording
+    expect(screen.getAllByText(/取消|cancelled/i).length).toBeGreaterThan(0)
+  })
+
+  it('user_interrupt renders a fancy interjection card with the message body', () => {
+    const tool = makeTool({
+      name: 'user_interrupt',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'interrupt', message: '先别改前端，先把后端接口定下来' }),
+    })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByTestId('interrupt-card')).toBeInTheDocument()
+    expect(screen.getByText('先别改前端，先把后端接口定下来')).toBeInTheDocument()
+    expect(screen.queryByText('user_interrupt')).toBeNull()
+  })
+
+  it('icons are lucide SVG — the cards contain no emoji glyphs', () => {
+    const tool = makeTool({
+      name: 'cron_fired',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'cron', message: 'nightly build' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    const emoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u
+    expect(emoji.test(container.textContent ?? '')).toBe(false)
+  })
+})
+
+describe('syntheticShortName — friendly names for injected tools', () => {
+  it('maps internal tool names to human labels (never snake_case), null for real tools', () => {
+    expect(syntheticShortName(makeTool({ name: 'bg_subagent_completed' }))).toBe('Sub-agent')
+    expect(syntheticShortName(makeTool({ name: 'background_task_result' }))).toBe('Background task')
+    expect(syntheticShortName(makeTool({ name: 'user_cancelled' }))).toBe('Cancelled')
+    expect(syntheticShortName(makeTool({ name: 'user_interrupt' }))).toBe('Interjection')
+    expect(syntheticShortName(makeTool({ name: 'Shell' }))).toBeNull()
+    // payload kind wins over the tool name (e.g. bg_subagent_failed → subagent)
+    const failed = makeTool({
+      name: 'bg_subagent_failed',
+      toolHints: JSON.stringify({ kind: 'subagent', status: 'error' }),
+    })
+    expect(syntheticShortName(failed)).toBe('Sub-agent')
+  })
+})
+
+describe('synthetic tools render their output as MARKDOWN from the unified fields', () => {
+  it('sub-agent output is rendered as markdown (not raw asterisks / plain text)', () => {
+    const tool = makeTool({
+      name: 'bg_subagent_completed',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'subagent', role: 'explore', instance: 'mem-1',
+        task: '查入口', output: '**入口**是 `channel/web/web_auth.go`\n\n- 步骤一\n- 步骤二',
+      }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.querySelector('strong')?.textContent).toBe('入口')
+    // inline code lives inside the rendered markdown output (the header also has
+    // a <code> subject chip, so match by text)
+    const codes = Array.from(container.querySelectorAll('code')).map((el) => el.textContent)
+    expect(codes).toContain('channel/web/web_auth.go')
+    expect(container.querySelectorAll('li')).toHaveLength(2)
+    // raw markdown markers must NOT leak as text
+    expect(container.textContent).not.toContain('**入口**')
+  })
+
+  it('falls back to the unified `detail` field when the payload is absent (legacy rows)', () => {
+    const tool = makeTool({
+      name: 'user_interrupt',
+      status: 'done',
+      detail: '## 插话\n\n性能必须好——**然后必须正确**',
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.querySelector('h2')?.textContent).toContain('插话')
+    expect(container.querySelector('strong')?.textContent).toBe('然后必须正确')
+  })
+
+  it('bg_task keeps the terminal transcript style (raw stdout is not markdown)', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'bg_task', task: 'npm run build', status: 'done', output: 'build ok\n3 targets' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    // the task block is also a <pre> — assert the transcript text is present in one of them
+    const pres = Array.from(container.querySelectorAll('pre')).map((el) => el.textContent)
+    expect(pres.some((t) => (t ?? '').includes('build ok'))).toBe(true)
+  })
+})
+
+describe('synthetic card: the event and its continuity must be obvious at a glance', () => {
+  it('bg-task card states the event ("finished") and that it came from the background', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'bg_task', task_id: '3f8f492a', task: 'npm run build', status: 'done',
+        exit_code: 0, elapsed_ms: 1200, output: 'ok',
+      }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    // 事件标题（完成态，而不是一个光秃秃的名词）
+    expect(container.textContent).toMatch(/Background task finished|后台任务已完成/)
+    // 承接说明：这是"此前转后台、现在结束"的东西
+    expect(container.textContent).toMatch(/moved to the background|此前转入了后台运行/)
+    // 完成徽标（头像角上的 ✓）——"结束了"一眼可见
+    expect(screen.getByTestId('synthetic-done-badge')).toBeInTheDocument()
+  })
+
+  it('sub-agent card says a previously dispatched sub-agent finished', () => {
+    const tool = makeTool({
+      name: 'bg_subagent_completed',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'subagent', role: 'explore', instance: 'mem-1', status: 'done', task: '查入口' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.textContent).toMatch(/Sub-agent finished|子代理已完成/)
+    expect(container.textContent).toMatch(/dispatched earlier|此前派发出去的子代理/)
+  })
+
+  it('user_interrupt says it is an interjection that did NOT stop the task', () => {
+    const tool = makeTool({
+      name: 'user_interrupt',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'interrupt', message: '顺便把文档也更新了' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.textContent).toMatch(/User interjection received|收到用户插话/)
+    expect(container.textContent).toMatch(/without stopping the task|未打断当前任务/)
+    expect(container.textContent).toContain('顺便把文档也更新了')
   })
 })

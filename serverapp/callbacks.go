@@ -342,11 +342,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
 		}
-		if db := ag.MultiSession().DB(); db != nil {
-			if err := sqlite.NewTenantService(db).TouchTenantID(sel.Channel, sel.ChatID); err != nil {
-				log.WithError(err).Warn("Web history: failed to update last_active_at")
-			}
-		}
+		// NOTE: reading history MUST NOT touch the tenant. This used to call
+		// TouchTenantID here, which meant that merely opening/refreshing the web
+		// UI re-stamped last_active_at for every session it loaded — after a
+		// laptop slept overnight, every one of yesterday's sessions showed up as
+		// "active today" in the sidebar (TODAY/YESTERDAY grouping is derived
+		// from last_active_at). last_active_at is now bumped only by real user
+		// activity (a user message reaching processMessage), see the eager-save
+		// in agent.processMessage.
 		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
 		if err != nil {
 			return web.HistorySnapshot{}, err
@@ -448,6 +451,37 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// Admin sees the CURRENT session's tasks too — not a cross-session dump.
 		// Multi-user removal: one operator owns every session — no ownership check.
 		return marshalWebBgTasks(ag.BgTaskManager().ListAllForSession(sel.Channel + ":" + sel.ChatID)), nil
+	}
+	callbacks.CronRemove = func(channel, chatID, jobID string) (bool, error) {
+		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
+			return false, nil
+		}
+		if jobID == "" {
+			return false, nil
+		}
+		cronSvc := sqlite.NewCronService(ag.MultiSession().DB())
+		// Session-scoped ownership check (same policy as the cron tool's
+		// removeJob): only jobs belonging to THIS session may be removed, so a
+		// stale panel can never delete another session's schedule. Unknown /
+		// foreign ids report removed=false (no existence leak).
+		jobs, err := cronSvc.ListJobsByChannelChatID(channel, chatID)
+		if err != nil {
+			return false, fmt.Errorf("list cron jobs: %w", err)
+		}
+		owned := false
+		for i := range jobs {
+			if jobs[i].ID == jobID {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			return false, nil
+		}
+		if err := cronSvc.RemoveJob(jobID); err != nil {
+			return false, fmt.Errorf("remove cron job: %w", err)
+		}
+		return true, nil
 	}
 	callbacks.CronTasks = func(senderID string, sel web.SessionSelector) (any, error) {
 		if ag.MultiSession() == nil || ag.MultiSession().DB() == nil {
@@ -777,23 +811,18 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// ensureSessionModel is idempotent — it checks GetSessionSubscription
 		// first and returns immediately if a binding already exists.
 		if model != "" {
-			// Explicit model override. Model-subscription integration: when the
-			// caller provides the (subscriptionID, model) pair (frontend
-			// inheritance passes both), bind directly — no reverse resolution.
-			// A bare model name (no subscriptionID) is resolved to its owning
-			// subscription exactly once (the single input resolver).
-			// Resolution/binding failures are non-fatal — the session is created
-			// regardless and falls back to the default binding (Balance tier).
+			// Explicit model override. Model-subscription integration: the caller
+			// passes the (subscriptionID, model) pair (frontend inheritance sends
+			// both). ⛔ A bare model name is NOT resolved — resolving by model name
+			// alone has to guess a provider when the same name exists under
+			// several subscriptions. Without a subscription id we refuse the
+			// override and fall back to the configured default binding.
 			llmFactory := ag.LLMFactory()
 			subID := subscriptionID
 			if subID == "" {
-				if sub, rerr := llmFactory.ResolveSubscriptionForModel(senderID, model); rerr == nil && sub != nil {
-					subID = sub.ID
-				} else {
-					log.WithError(rerr).WithField("model", model).Warn("ChatCreate: failed to resolve model, falling back to default")
-					llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
-					return chatID, nil
-				}
+				log.WithField("model", model).Error("ChatCreate: model override without a subscription id — refusing bare-name resolution (pass 'subID|model'); using the default binding")
+				llmFactory.EnsureSessionModelBinding(senderID, chatID, "web")
+				return chatID, nil
 			}
 			if serr := llmFactory.SelectModel(senderID, chatID, "web", subID, model); serr != nil {
 				log.WithError(serr).WithFields(log.Fields{"model": model, "sub_id": subID}).Warn("ChatCreate: failed to bind explicit model, falling back to default")
@@ -932,6 +961,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	callbacks.CancelQueued = func(channel, chatID, msgID string) bool {
 		return ag.CancelQueuedMessage(channel, chatID, msgID)
+	}
+	callbacks.ReorderQueued = func(channel, chatID string, msgIDs []string) bool {
+		return ag.ReorderQueue(channel, chatID, msgIDs)
 	}
 
 	return callbacks

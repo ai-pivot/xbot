@@ -53,6 +53,13 @@ type OffloadedResult struct {
 	ContentHash string    `json:"content_hash"` // SHA256 of content at offload time (Read only)
 	ReadPath    string    `json:"read_path"`    // Resolved file path from Read tool args
 	Stale       bool      `json:"stale"`        // Whether this offload is stale
+	// OwnerKey is the session key of the RUN that produced this offload (the
+	// main agent's canonical root key, or a SubAgent's own session key). The
+	// store directory is SHARED between a main agent and its SubAgents (both
+	// write under the root key so they can recall each other's results), so
+	// ownership is what keeps post-compression cleanup from deleting another
+	// participant's still-referenced entries.
+	OwnerKey string `json:"owner_key"`
 }
 
 // offloadIndex 单个 session 的 offload 索引。
@@ -68,6 +75,8 @@ type offloadFile struct {
 	Args      string    `json:"args"`
 	Content   string    `json:"content"`
 	Timestamp time.Time `json:"timestamp"`
+	// OwnerKey mirrors OffloadedResult.OwnerKey for on-disk forensics.
+	OwnerKey string `json:"owner_key"`
 }
 
 // OffloadStore 管理大 tool result 的 offload 和召回。
@@ -149,10 +158,16 @@ func estimateTokenSize(text string, model string) int {
 // MaybeOffload 检测 tool result 是否超过阈值，超过则 offload 到磁盘。
 // 返回 (OffloadedResult, true) 表示已 offload，content 应替换为 result.Summary。
 // 返回 (zero, false) 表示无需 offload。
+//
+// sessionKey 是存储位置（主 agent 与其 SubAgent 都传 canonical root key → 共享
+// 同一目录，可互相 recall）；ownerKey 是产生方身份（主 agent = root key，
+// SubAgent = 自己的 session key），用于压缩后的按归属清理，避免误删对方
+// 仍在使用的条目。
+//
 // workspaceRoot/sandboxWorkDir 用于 Read 工具：将 ReadPath 解析为宿主机路径后
 // 读取原始文件内容计算 ContentHash，确保与 InvalidateStaleReads 的比较一致。
 // sandbox 用于 remote 模式下穿越沙箱读取文件计算哈希。
-func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, args, result, workspaceRoot, sandboxWorkDir string, userID string) (OffloadedResult, bool) {
+func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, ownerKey, toolName, args, result, workspaceRoot, sandboxWorkDir string, userID string) (OffloadedResult, bool) {
 	if result == "" {
 		return OffloadedResult{}, false
 	}
@@ -197,6 +212,7 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 		Args:      args,
 		Content:   result,
 		Timestamp: time.Now(),
+		OwnerKey:  ownerKey,
 	}
 	data, err := json.MarshalIndent(of, "", "  ")
 	if err != nil {
@@ -221,6 +237,7 @@ func (s *OffloadStore) MaybeOffload(ctx context.Context, sessionKey, toolName, a
 		TokenSize: tokenSize,
 		Timestamp: time.Now(),
 		Summary:   summaryContent,
+		OwnerKey:  ownerKey,
 	}
 
 	// For Read tool: resolve path and hash the raw file content.
@@ -328,7 +345,16 @@ func (s *OffloadStore) CleanOldEntries(sessionKey string, cutoff time.Time) int 
 // referencedIDs set. This is the smart cleanup used by the V2 compression
 // pipeline — it ensures that offload references in compressed messages (both
 // in the compaction summary and in tail messages) remain loadable.
-func (s *OffloadStore) CleanUnreferencedEntries(sessionKey string, referencedIDs map[string]bool) int {
+// CleanUnreferencedEntries 在压缩后清理 offload 条目。
+//
+// ⚠️ 共享 store（主 agent 与 SubAgent 同写 root key）下，清理必须按归属隔离：
+// 只删【本次压缩方自己产生的】（entry.OwnerKey == ownerKey）且当前消息不再引用
+// 的条目。否则 SubAgent 压缩时会用它自己的 referencedIDs 把主 agent 仍在使用的
+// 条目一并删掉（反之亦然）—— 共享带来的数据丢失 bug。
+//
+// ownerKey 为空时退化为旧语义（清理该 session 下所有未引用条目，供启动清理等
+// 无归属上下文的场景使用）。
+func (s *OffloadStore) CleanUnreferencedEntries(sessionKey, ownerKey string, referencedIDs map[string]bool) int {
 	idx := s.getOrCreateIndex(sessionKey)
 	sessionDir := s.getSessionDir(sessionKey)
 
@@ -336,7 +362,8 @@ func (s *OffloadStore) CleanUnreferencedEntries(sessionKey string, referencedIDs
 	var kept []OffloadedResult
 	removedCount := 0
 	for _, entry := range idx.entries {
-		if !referencedIDs[entry.ID] {
+		ownedByCaller := ownerKey == "" || entry.OwnerKey == ownerKey
+		if ownedByCaller && !referencedIDs[entry.ID] {
 			// Not referenced by any message — safe to clean
 			fp := s.offloadFilePath(sessionDir, entry.ID)
 			if err := os.Remove(fp); err != nil && !os.IsNotExist(err) {
@@ -359,6 +386,7 @@ func (s *OffloadStore) CleanUnreferencedEntries(sessionKey string, referencedIDs
 		s.persistIndex(sessionDir, idx)
 		log.WithFields(log.Fields{
 			"session":    sessionKey,
+			"owner":      ownerKey,
 			"removed":    removedCount,
 			"kept":       len(kept),
 			"referenced": len(referencedIDs),

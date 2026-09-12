@@ -140,6 +140,11 @@ type WebCallbacks struct {
 	BackgroundTasks func(senderID string, sel SessionSelector) (any, error)
 	// CronTasks returns scheduled tasks for a Web-accessible session.
 	CronTasks func(senderID string, sel SessionSelector) (any, error)
+	// CronRemove deletes a scheduled task owned by the given session. Session
+	// scoped: a job whose channel/chatID does not match is reported as not
+	// removed (same policy as the cron tool's removeJob) — never a cross-session
+	// delete. Returns (removed, error).
+	CronRemove func(channel, chatID, jobID string) (bool, error)
 	// CommandList returns slash-command completion metadata for the Web UI.
 	CommandList func(senderID string) ([]CommandInfo, error)
 	// SessionSubscription returns the model/subscription selected for a Web-accessible session.
@@ -224,6 +229,10 @@ type WebCallbacks struct {
 	// CancelQueued cancels a queued-but-unstarted message (skipped at dequeue).
 	// Returns false when the message is not queued (already processing/unknown).
 	CancelQueued func(channel, chatID, msgID string) bool
+	// ReorderQueued reorders a session's pending queue to match msgIDs (Staging
+	// Tray drag-and-drop). Returns false when nothing is queued or the order is
+	// unchanged (no broadcast then).
+	ReorderQueued func(channel, chatID string, msgIDs []string) bool
 }
 
 // UserChatWithPreview is a chatroom with metadata for API responses.
@@ -806,6 +815,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/cancel", wc.authenticatedPOST(wc.handleCancel))
 	mux.HandleFunc("/api/queue/list", wc.authenticatedPOST(wc.handleQueueList))
 	mux.HandleFunc("/api/queue/cancel", wc.authenticatedPOST(wc.handleQueueCancel))
+	mux.HandleFunc("/api/queue/reorder", wc.authenticatedPOST(wc.handleQueueReorder))
 	mux.HandleFunc("/api/ask_user/respond", wc.authenticatedPOST(wc.handleAskUserRespond))
 	mux.HandleFunc("/api/rpc", wc.authenticatedPOST(wc.handleRPC))
 	// Plugin file storage — 鉴权 serve（上传/列表/删除/下载，通用协议）。
@@ -869,6 +879,7 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 	// the frequently-polled status endpoint doesn't bundle large payloads
 	// (e.g. completed bg task output ~1MB).
 	mux.HandleFunc("/api/cron/list", wc.authenticatedPOST(wc.handleCronListPOST))
+	mux.HandleFunc("/api/cron/remove", wc.authenticatedPOST(wc.handleCronRemovePOST))
 	mux.HandleFunc("/api/tasks/list", wc.authenticatedPOST(wc.handleTasksListPOST))
 
 	// App bundle API

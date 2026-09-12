@@ -11,7 +11,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// isRetryableError 测试
+// IsRetryableError 测试
 // ---------------------------------------------------------------------------
 
 func TestIsRetryableError(t *testing.T) {
@@ -23,15 +23,22 @@ func TestIsRetryableError(t *testing.T) {
 		// nil
 		{"nil error", nil, false},
 
-		// context 错误
+		// 唯一例外的 context 错误：用户主动取消不是失败
 		{"context.Canceled", context.Canceled, false},
-		{"context.DeadlineExceeded", context.DeadlineExceeded, true}, // 超时允许重试
 		{"wrapped context.Canceled", fmt.Errorf("call failed: %w", context.Canceled), false},
-		{"wrapped context.DeadlineExceeded", fmt.Errorf("timeout: %w", context.DeadlineExceeded), true}, // 超时允许重试
-		{"string context canceled", errors.New("something context canceled here"), false},
-		{"string context deadline exceeded", errors.New("context deadline exceeded"), false}, // 纯字符串不匹配 sentinel
 
-		// 网络错误 — 重试
+		// 输入超长：确定性失败 + 上层有专门恢复路径（压缩后重试）
+		{"input too long (dashscope)", errors.New("Range of input length should be [1, 202752]"), false},
+		{"input too long (openai)", errors.New("maximum context length exceeded"), false},
+		{"input too long (anthropic)", errors.New("prompt is too long: 210000 tokens"), false},
+
+		// 以下全部可重试（默认策略）
+		{"context.DeadlineExceeded", context.DeadlineExceeded, true},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("timeout: %w", context.DeadlineExceeded), true},
+		{"string context canceled", errors.New("something context canceled here"), true},
+		{"string context deadline exceeded", errors.New("context deadline exceeded"), true},
+
+		// 网络错误
 		{"net.DNSError timeout", &net.DNSError{Err: "timeout", IsTimeout: true}, true},
 		{"net.OpError", &net.OpError{Op: "dial", Err: errors.New("connection refused")}, true},
 
@@ -42,30 +49,32 @@ func TestIsRetryableError(t *testing.T) {
 		{"503 OpenAI", errors.New(`POST "https://api.openai.com/v1/chat": 503 Service Unavailable`), true},
 		{"504 OpenAI", errors.New(`POST "https://api.openai.com/v1/chat": 504 Gateway Timeout`), true},
 
-		// 不可重试的 4xx
-		{"400 OpenAI", errors.New(`POST "url": 400 Bad Request`), false},
-		{"401 OpenAI", errors.New(`POST "url": 401 Unauthorized`), false},
-		{"403 OpenAI", errors.New(`POST "url": 403 Forbidden`), false},
-		{"404 OpenAI", errors.New(`POST "url": 404 Not Found`), false},
+		// 4xx 现在也重试：无法预先区分「客户端错误」与网关/代理改写的瞬时故障，
+		// 且重试被拒绝的请求不消耗配额，退避成本可接受。
+		{"400 OpenAI", errors.New(`POST "url": 400 Bad Request`), true},
+		{"401 OpenAI", errors.New(`POST "url": 401 Unauthorized`), true},
+		{"403 OpenAI", errors.New(`POST "url": 403 Forbidden`), true},
+		{"404 OpenAI", errors.New(`POST "url": 404 Not Found`), true},
 
-		// 普通错误 — 不重试
-		{"generic error", errors.New("something went wrong"), false},
-		{"EOF", errors.New("unexpected EOF"), true}, // unexpected EOF = network truncation, retryable
+		// 普通/未知错误 —— 白名单时代它们直接失败，正是用户报告的问题
+		{"generic error", errors.New("something went wrong"), true},
+		{"unknown provider error", errors.New("upstream returned garbage (xyz-123)"), true},
+		{"EOF", errors.New("unexpected EOF"), true},
 
-		// B-05 修复：Anthropic SDK 错误格式: `anthropic API error: status=NNN, body=...`
+		// Anthropic SDK 错误格式: `anthropic API error: status=NNN, body=...`
 		{"429 Anthropic", errors.New("anthropic API error: status=429, body={\"type\":\"error\"}"), true},
 		{"500 Anthropic", errors.New("anthropic API error: status=500, body=internal error"), true},
 		{"502 Anthropic", errors.New("anthropic API error: status=502, body=bad gateway"), true},
 		{"503 Anthropic", errors.New("anthropic API error: status=503, body=overloaded"), true},
-		{"400 Anthropic", errors.New("anthropic API error: status=400, body=bad request"), false},
-		{"401 Anthropic", errors.New("anthropic API error: status=401, body=unauthorized"), false},
+		{"400 Anthropic", errors.New("anthropic API error: status=400, body=bad request"), true},
+		{"401 Anthropic", errors.New("anthropic API error: status=401, body=unauthorized"), true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isRetryableError(tt.err)
+			got := IsRetryableError(tt.err)
 			if got != tt.want {
-				t.Errorf("isRetryableError(%v) = %v, want %v", tt.err, got, tt.want)
+				t.Errorf("IsRetryableError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -176,8 +185,10 @@ func TestRetryLLM_Generate_ExhaustedRetries(t *testing.T) {
 }
 
 func TestRetryLLM_Generate_NonRetryableError(t *testing.T) {
-	// 401 不可重试，应该只调用 1 次
-	nonRetryableErr := errors.New(`POST "url": 401 Unauthorized`)
+	// 输入超长是确定性失败 → 不重试，只调用 1 次（由上层压缩上下文后重试）。
+	// 注意：401 之类的 4xx 现在**会**重试（见 TestIsRetryableError），
+	// 所以这里不能再拿它当「不可重试」的例子。
+	nonRetryableErr := errors.New("maximum context length exceeded")
 	inner := newFailNLLM(100, nonRetryableErr)
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
@@ -188,12 +199,54 @@ func TestRetryLLM_Generate_NonRetryableError(t *testing.T) {
 		return
 	}
 	if inner.calls.Load() != 1 {
-		t.Errorf("calls = %d, want 1 (non-retryable should not retry)", inner.calls.Load())
+		t.Errorf("calls = %d, want 1 (input-too-long is deterministic, must not retry)", inner.calls.Load())
+	}
+}
+
+// TestRetryLLM_Generate_RetriesUnknownError 是用户报告问题的回归测试：
+// 以前只有白名单里的错误（429/5xx/网络错误）才会重试，任何未被识别的失败
+// （这里是一个 provider 自定义错误串）都会在第一次失败时直接冒泡，不触发
+// 指数退避。现在所有失败都要走退避重试。
+func TestRetryLLM_Generate_RetriesUnknownError(t *testing.T) {
+	unknown := errors.New("upstream returned garbage (xyz-123)")
+	inner := newFailNLLM(2, unknown) // 前两次失败，第三次成功
+	cfg := RetryConfig{Attempts: 5, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.Generate(context.Background(), "test", nil, nil, "")
+	if err != nil {
+		t.Fatalf("unknown error must be retried and eventually succeed, got: %v", err)
+	}
+	if resp == nil || resp.Content != "ok" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if got := inner.calls.Load(); got != 3 {
+		t.Errorf("calls = %d, want 3 (2 failures + 1 success)", got)
+	}
+}
+
+// TestRetryLLM_GenerateStreamAndCollect_RetriesUnknownStreamError 覆盖流式路径：
+// 流中途的未识别错误同样必须重试。
+func TestRetryLLM_GenerateStreamAndCollect_RetriesUnknownStreamError(t *testing.T) {
+	unknown := errors.New("stream error: upstream glitch (code 7)")
+	inner := newFailNLLM(1, unknown) // 第一次失败，第二次成功
+	cfg := RetryConfig{Attempts: 5, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unknown stream error must be retried, got: %v", err)
+	}
+	if resp == nil || resp.Content != "ok" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if got := inner.calls.Load(); got != 2 {
+		t.Errorf("calls = %d, want 2 (1 failure + 1 success)", got)
 	}
 }
 
 func TestRetryLLM_Generate_ContextCanceled(t *testing.T) {
-	// context.Canceled 应停止重试（isRetryableError 返回 false）
+	// context.Canceled 应停止重试（IsRetryableError 返回 false）
 	inner := newFailNLLM(100, context.Canceled)
 	cfg := RetryConfig{Attempts: 5, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 
@@ -661,8 +714,9 @@ func TestRetryLLM_GenerateStreamAndCollect_Exhausted(t *testing.T) {
 }
 
 func TestRetryLLM_GenerateStreamAndCollect_NonRetryableStreamError(t *testing.T) {
-	// 401 不可重试
-	inner := newFailMidStreamLLM(100, "status code: 401 Unauthorized")
+	// 确定性失败才不重试：输入超长（由上层压缩后重试）。
+	// 注意 401 之类的 4xx 现在也会重试，不能再当反例。
+	inner := newFailMidStreamLLM(100, "maximum context length exceeded")
 	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
 	r := NewRetryLLM(inner, cfg)
 
@@ -670,9 +724,9 @@ func TestRetryLLM_GenerateStreamAndCollect_NonRetryableStreamError(t *testing.T)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	// 不可重试，只应该调用 1 次
+	// 确定性失败，只应该调用 1 次
 	if inner.streamAttempts.Load() != 1 {
-		t.Errorf("streamAttempts = %d, want 1 (non-retryable)", inner.streamAttempts.Load())
+		t.Errorf("streamAttempts = %d, want 1 (deterministic failure must not retry)", inner.streamAttempts.Load())
 	}
 }
 

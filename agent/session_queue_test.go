@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -323,5 +324,156 @@ func TestDrainAndInjectBgNotifications_AsyncMessageNotDropped(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("async_message tool result missing (message was dropped!), messages=%+v", state.messages)
+	}
+}
+
+// ─── Reorder (Staging Tray drag-and-drop) ───
+
+func TestQueueShadow_Reorder(t *testing.T) {
+	ss := &bgSessionState{}
+	for _, id := range []string{"m1", "m2", "m3", "m4"} {
+		ss.queueAppend(queuedEntry{MsgID: id})
+	}
+
+	// Listed ids are ordered exactly as given; unlisted ids keep their relative
+	// order after them (never dropped, never duplicated).
+	order := ss.queueReorder([]string{"m3", "m1"})
+	want := []string{"m3", "m1", "m2", "m4"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("queueReorder order=%v, want %v", order, want)
+	}
+
+	snap := ss.queueSnapshot()
+	if len(snap) != 4 {
+		t.Fatalf("snapshot len=%d, want 4 (reorder must not drop entries)", len(snap))
+	}
+	for i, w := range want {
+		if snap[i].MsgID != w {
+			t.Fatalf("snapshot[%d]=%s, want %s", i, snap[i].MsgID, w)
+		}
+	}
+
+	// Unknown ids are ignored; an empty id list is a no-op.
+	if got := ss.queueReorder([]string{"nope"}); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("reorder with unknown id changed order: %v", got)
+	}
+	// Empty ids (notifications without a request id) are never ranked.
+	ss.queueAppend(queuedEntry{MsgID: ""})
+	if got := ss.queueReorder([]string{"m2", ""}); strings.Join(got, ",") != "m2,m3,m1,m4," {
+		t.Fatalf("empty-id entry must keep arrival order, got %v", got)
+	}
+}
+
+func TestReorderChannel_MirrorsOrder(t *testing.T) {
+	ch := make(chan bus.InboundMessage, 8)
+	for _, id := range []string{"m1", "m2", "m3"} {
+		ch <- bus.InboundMessage{RequestID: id, Content: "c-" + id}
+	}
+
+	if n := reorderChannel(ch, []string{"m3", "m1", "m2"}); n != 3 {
+		t.Fatalf("reorderChannel drained %d, want 3", n)
+	}
+	// The channel now yields the requested order — this is the real delivery
+	// order chatProcessLoop consumes.
+	for _, want := range []string{"m3", "m1", "m2"} {
+		got := <-ch
+		if got.RequestID != want {
+			t.Fatalf("channel head=%s, want %s", got.RequestID, want)
+		}
+	}
+	if len(ch) != 0 {
+		t.Fatalf("channel should be empty, len=%d", len(ch))
+	}
+}
+
+func TestReorderQueue_Agent(t *testing.T) {
+	chatKey := "cli:queue-reorder"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.msgCh = make(chan bus.InboundMessage, 8)
+	a := &Agent{}
+	a.bgSessionStates.Store(chatKey, ss)
+	defer a.bgSessionStates.Delete(chatKey)
+
+	for _, id := range []string{"r1", "r2", "r3"} {
+		ss.queueAppend(queuedEntry{MsgID: id})
+		ss.msgCh <- bus.InboundMessage{RequestID: id}
+	}
+
+	if !a.ReorderQueue("cli", "queue-reorder", []string{"r3", "r1", "r2"}) {
+		t.Fatal("ReorderQueue returned false, want true")
+	}
+	items := a.QueueSnapshotFor("cli", "queue-reorder")
+	for i, want := range []string{"r3", "r1", "r2"} {
+		if items[i].MsgID != want {
+			t.Fatalf("snapshot[%d]=%s, want %s", i, items[i].MsgID, want)
+		}
+	}
+	for _, want := range []string{"r3", "r1", "r2"} {
+		got := <-ss.msgCh
+		if got.RequestID != want {
+			t.Fatalf("delivery head=%s, want %s (queue order must reach msgCh)", got.RequestID, want)
+		}
+	}
+
+	// A no-op reorder (same order) reports false and does not broadcast.
+	if a.ReorderQueue("cli", "queue-reorder", []string{"r3", "r1", "r2"}) {
+		t.Fatal("ReorderQueue on unchanged order = true, want false")
+	}
+	// Unknown session / empty queue → false, no panic.
+	if a.ReorderQueue("cli", "no-such-chat", []string{"r1"}) {
+		t.Fatal("ReorderQueue(unknown session) = true, want false")
+	}
+}
+
+// 投递在途（producer 处于 queueAppend 与 channel send 完成之间）时，条目已在
+// shadow queue（客户端已看到）但不在 msgCh —— 此时排空投影会漏掉它，投影出的
+// 执行顺序与显示顺序不一致。守卫：等待有界时间，仍在途则拒绝（不投影、不广播、
+// 不动顺序），宁可不做也不谎报。
+func TestReorderQueue_RefusesWhileAdmitInFlight(t *testing.T) {
+	chatKey := "cli:queue-inflight"
+	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.msgCh = make(chan bus.InboundMessage, 8)
+	a := &Agent{}
+	a.bgSessionStates.Store(chatKey, ss)
+	defer a.bgSessionStates.Delete(chatKey)
+
+	for _, id := range []string{"r1", "r2"} {
+		ss.queueAppend(queuedEntry{MsgID: id})
+		ss.msgCh <- bus.InboundMessage{RequestID: id}
+	}
+	// Producer sits between queueAppend and its send: shadow shows r3, channel
+	// does not hold it yet (the saturated-channel case).
+	ss.queueAppend(queuedEntry{MsgID: "r3"})
+	ss.inflightAdmits.Add(1)
+
+	start := time.Now()
+	if a.ReorderQueue("cli", "queue-inflight", []string{"r3", "r1", "r2"}) {
+		t.Fatal("ReorderQueue = true while an admit is in flight, want false")
+	}
+	if elapsed := time.Since(start); elapsed < queueReorderAdmitWait {
+		t.Fatalf("waited %v, want >= bounded admit wait %v", elapsed, queueReorderAdmitWait)
+	}
+
+	// A refused reorder must not mutate the shadow order nor touch msgCh.
+	items := a.QueueSnapshotFor("cli", "queue-inflight")
+	for i, want := range []string{"r1", "r2", "r3"} {
+		if items[i].MsgID != want {
+			t.Fatalf("snapshot[%d]=%s, want %s（拒绝时不得改顺序）", i, items[i].MsgID, want)
+		}
+	}
+	if got := len(ss.msgCh); got != 2 {
+		t.Fatalf("msgCh len=%d, want 2（拒绝时不得动投递通道）", got)
+	}
+
+	// Once the admit lands the same reorder succeeds and is projected.
+	ss.inflightAdmits.Add(-1)
+	ss.msgCh <- bus.InboundMessage{RequestID: "r3"}
+	if !a.ReorderQueue("cli", "queue-inflight", []string{"r3", "r1", "r2"}) {
+		t.Fatal("ReorderQueue = false after the admit landed, want true")
+	}
+	for _, want := range []string{"r3", "r1", "r2"} {
+		if got := <-ss.msgCh; got.RequestID != want {
+			t.Fatalf("delivery head=%s, want %s", got.RequestID, want)
+		}
 	}
 }

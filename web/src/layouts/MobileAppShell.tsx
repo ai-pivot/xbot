@@ -36,6 +36,7 @@ import { InfoBar } from '@/plugins/InfoBar'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
 import { AmbienceBackground } from '@/ambience/AmbienceRoot'
 import { PluginView } from '@/plugin-runtime/PluginView'
+import { registerMobileAgentOpener } from '@/lib/mobileNav'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
@@ -306,6 +307,25 @@ export function MobileAppShell() {
     setDrawerOpen(false)
     setView('agent')
   }
+
+  // 面板（如 TasksPanel 的 SubAgent 行）在手机端没有 dockview tab 可开 —— 注册
+  // opener 让它们请求宿主切到 agent 视图并选中该子代理（用户报告："手机端 task
+  // view 里 subagent 无法点开交互"）。卸载时注销，桌面端 openMobileAgent 返回
+  // false → 面板回退到 tabManager.openTab。
+  useEffect(() => {
+    registerMobileAgentOpener((target) => {
+      setSubAgentView({
+        subAgentRole: target.subAgentRole,
+        subAgentInstance: target.subAgentInstance,
+        parentChatID: target.parentChatID,
+        parentChannel: target.parentChannel,
+        agentChatID: target.agentChatID,
+      })
+      setDrawerOpen(false)
+      setView('agent')
+    })
+    return () => registerMobileAgentOpener(null)
+  }, [])
 
   // 顶栏左侧按钮：非 agent 视图 → 返回上一级；SubAgent 视图 → 返回主会话；
   // agent 视图 → ☰ 打开会话抽屉。

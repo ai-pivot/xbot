@@ -278,15 +278,15 @@ func TestTaskWaitSubAgentUnloadedUnblocks(t *testing.T) {
 // must always land on a rune boundary.
 func TestTruncateTailPreviewUTF8(t *testing.T) {
 	// Short content: unchanged.
-	if got := truncateTailPreview("short", 500); got != "short" {
+	if got := TruncateTailPreview("short", 500); got != "short" {
 		t.Errorf("short content changed: %q", got)
 	}
 	// Long CJK content: the result must be valid UTF-8 (no replacement runes)
 	// and end with the tail of the original.
 	long := strings.Repeat("中文内容测试", 100) // 600 bytes > 500
-	got := truncateTailPreview(long, 500)
+	got := TruncateTailPreview(long, 500)
 	if !utf8.ValidString(got) {
-		t.Errorf("truncateTailPreview produced invalid UTF-8: %q", got)
+		t.Errorf("TruncateTailPreview produced invalid UTF-8: %q", got)
 	}
 	if !strings.HasPrefix(got, "... ") {
 		t.Errorf("expected '... ' prefix, got %q", got)
@@ -298,7 +298,7 @@ func TestTruncateTailPreviewUTF8(t *testing.T) {
 	}
 	// Mixed ASCII + CJK cut exactly at the boundary.
 	mixed := strings.Repeat("a", 490) + "中文"
-	if got := truncateTailPreview(mixed, 500); !utf8.ValidString(got) {
+	if got := TruncateTailPreview(mixed, 500); !utf8.ValidString(got) {
 		t.Errorf("mixed content produced invalid UTF-8: %q", got)
 	}
 }

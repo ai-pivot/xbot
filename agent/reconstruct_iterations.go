@@ -4,7 +4,14 @@ import (
 	"strings"
 
 	"xbot/llm"
+	"xbot/tools"
 )
+
+// maxReconstructedToolPreview bounds the tool-result text carried into a
+// reconstructed iteration snapshot for INJECTED notification tools (their
+// result IS user-facing content: the notification/interjection text). Rune-safe
+// truncation via tools.TruncateHeadPreview.
+const maxReconstructedToolPreview = 2000
 
 // reconstructIterationsFromMessages rebuilds IterationSnapshot[] from DB messages.
 // Used by handleCancelledRun when out.IterationHistory is empty (e.g., after a
@@ -82,15 +89,26 @@ func reconstructIterationsFromMessages(msgs []llm.ChatMessage) []IterationSnapsh
 				curReasoning = m.ReasoningContent
 				for _, tc := range m.ToolCalls {
 					status := "done"
-					if content, ok := toolResults[tc.ID]; ok && strings.HasPrefix(content, "Error:") {
+					result, hasResult := toolResults[tc.ID]
+					if hasResult && strings.HasPrefix(result, "Error:") {
 						status = "error"
 					}
-					curTools = append(curTools, IterationToolSnapshot{
+					snap := IterationToolSnapshot{
 						Name:   tc.Name,
 						Label:  formatToolProgress(tc.Name, tc.Arguments),
 						Status: status,
 						Args:   tc.Arguments,
-					})
+					}
+					// Injected notification tools: their tool RESULT is USER-FACING
+					// content (the notification/interjection text, markdown). Other
+					// tools carry their output in the unified `Detail` field; do the
+					// same here so the web card can render it (as markdown) instead of
+					// showing "no structured data". Without it the text sat in
+					// session_messages but never reached the UI.
+					if hasResult && tools.IsSyntheticToolName(tc.Name) {
+						snap.Detail = tools.TruncateHeadPreview(result, maxReconstructedToolPreview)
+					}
+					curTools = append(curTools, snap)
 				}
 			} else if m.Content != "" {
 				// Final reply (no tool_calls) — flush previous iteration, skip this message.

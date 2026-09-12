@@ -12,6 +12,7 @@ import (
 	"xbot/memory"
 
 	log "xbot/logger"
+	"xbot/tools"
 )
 
 // --- Priority 0-99: 基础设施 ---
@@ -241,7 +242,10 @@ func formatGlobalContext(content string, filePath string) string {
 	sb.WriteString("`.\n\n")
 
 	if len(content) > maxProjectContextChars {
-		sb.WriteString(content[:maxProjectContextChars])
+		// Rune-safe: this is prompt content and is routinely CJK (a raw
+		// content[:n] would slice a character in half and put invalid UTF-8
+		// into the system prompt).
+		sb.WriteString(tools.TruncateHeadPreview(content, maxProjectContextChars))
 		fmt.Fprintf(&sb, "\n\n... (truncated, use Read tool to view full `%s`)\n", filePath)
 	} else {
 		sb.WriteString(content)

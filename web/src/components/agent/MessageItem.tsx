@@ -22,12 +22,15 @@ interface MessageItemProps {
   collapseLevel: 'all' | 'minimal' | 'none'
   /** Whether to merge consecutive tools. Default true. */
   mergeTools?: boolean
-  /** Rewind callback — now receives the edited content string. */
-  onRewind?: (editedContent: string) => void
+  /** Rewind callback — receives the edited content + the row it belongs to.
+   *  ⚠️ 必须由调用方以稳定引用传入（row 由本组件回填）：inline 箭头会让
+   *  memo 在**每个流式帧**失效 → 整个虚拟列表可见行全部重渲染
+   *  （Trace-20260912T100816：每帧 O(可见行) 的 MessageItem/TurnBody 重入）。 */
+  onRewind?: (editedContent: string, row: ChatMessage) => void
   /** Whether this specific message is currently being edited. */
   isEditing?: boolean
-  /** Callback to start editing this message. */
-  onStartEdit?: () => void
+  /** Callback to start editing this message (receives the row id). */
+  onStartEdit?: (rowId: string) => void
   /** Callback to end editing this message. */
   onEndEdit?: () => void
   /** Whether editing is disabled (another message is being edited). */
@@ -49,9 +52,9 @@ export const MessageItem = memo(function MessageItem({
     return (
       <UserMessage
         content={message.content}
-        onRewind={onRewind}
+        onRewind={onRewind ? (editedContent: string) => onRewind(editedContent, message) : undefined}
         isEditing={isEditing}
-        onStartEdit={onStartEdit}
+        onStartEdit={onStartEdit ? () => onStartEdit(message.id) : undefined}
         onEndEdit={onEndEdit}
         editDisabled={editDisabled}
         sending={message.sending}

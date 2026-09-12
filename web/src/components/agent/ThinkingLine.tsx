@@ -11,7 +11,7 @@
  * 与 FoldedToolGroup 的折叠动画同一形态）；lazy + unmountOnClose 保持
  * 轻量 —— 折叠时 reasoning markdown 不参与渲染。
  */
-import { useState, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import { Brain } from 'lucide-react'
 
 
@@ -24,7 +24,13 @@ interface ThinkingLineProps {
   defaultOpen?: boolean
 }
 
-export function ThinkingLine({ label, children, defaultOpen = false }: ThinkingLineProps) {
+/**
+ * ⚠️ memo：TurnBody/LiveIteration 每帧都会重渲染（liveProgress 引用每帧变化），
+ * 每个迭代一个 ThinkingLine —— 没有 memo 时每个流式帧都会重渲染全部迭代的
+ * Brain 图标 + <button>（trace 实测 lucide 4.0% + button/Slot 4.5%）。
+ * props = {label, children, defaultOpen}，label 是字符串/元素（引用稳定即可命中）。
+ */
+export const ThinkingLine = memo(function ThinkingLine({ label, children, defaultOpen = false }: ThinkingLineProps) {
   const [open, setOpen] = useState(defaultOpen)
   return (
     <div>
@@ -49,4 +55,4 @@ export function ThinkingLine({ label, children, defaultOpen = false }: ThinkingL
       </AnimatedCollapse>
     </div>
   )
-}
+})

@@ -118,16 +118,16 @@ func TestCleanUnreferencedEntries_OffloadStore(t *testing.T) {
 
 	// Store entries using MaybeOffload (with large content to trigger offloading)
 	largeContent := strings.Repeat("important file content ", 100)
-	store.MaybeOffload(context.Background(), "test:session", "Read", `{"path":"auth.go"}`, largeContent, "", "", "")
+	store.MaybeOffload(context.Background(), "test:session", "test:session", "Read", `{"path":"auth.go"}`, largeContent, "", "", "")
 
 	largeContent2 := strings.Repeat("another important file ", 100)
-	store.MaybeOffload(context.Background(), "test:session", "Read", `{"path":"config.go"}`, largeContent2, "", "", "")
+	store.MaybeOffload(context.Background(), "test:session", "test:session", "Read", `{"path":"config.go"}`, largeContent2, "", "", "")
 
 	oldContent := strings.Repeat("old data not needed ", 100)
-	store.MaybeOffload(context.Background(), "test:session", "Shell", `{"command":"ls"}`, oldContent, "", "", "")
+	store.MaybeOffload(context.Background(), "test:session", "test:session", "Shell", `{"command":"ls"}`, oldContent, "", "", "")
 
 	oldContent2 := strings.Repeat("more old data ", 100)
-	store.MaybeOffload(context.Background(), "test:session", "Grep", `{"pattern":"todo"}`, oldContent2, "", "", "")
+	store.MaybeOffload(context.Background(), "test:session", "test:session", "Grep", `{"pattern":"todo"}`, oldContent2, "", "", "")
 
 	// Get all stored IDs
 	idx := store.getOrCreateIndex("test:session")
@@ -147,7 +147,7 @@ func TestCleanUnreferencedEntries_OffloadStore(t *testing.T) {
 		allIDs[0]: true,
 		allIDs[1]: true,
 	}
-	removed := store.CleanUnreferencedEntries("test:session", referenced)
+	removed := store.CleanUnreferencedEntries("test:session", "test:session", referenced)
 
 	if removed != 2 {
 		t.Fatalf("expected 2 removed, got %d", removed)

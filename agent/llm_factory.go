@@ -13,6 +13,7 @@ import (
 	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // LLMFactory 管理用户自定义 LLM 客户端的创建和缓存。
@@ -175,15 +176,15 @@ func (f *LLMFactory) lookupSub(subID string) *sqlite.LLMSubscription {
 	return sub
 }
 
-// resolveEffectiveContext resolves max context for (model, subID):
-// per-model subscription config → global model_contexts → 0
+// resolveEffectiveContext resolves max context for (model, subID). It delegates to
+// resolveSubContextFor (the (subID, model) variant) so the SubAgent path
+// (GetLLMForModel) and the session path (GetLLM/GetLLMForChat) share ONE
+// priority chain — subscription_models table → sub.PerModelConfigs projection →
+// global model_contexts. The earlier projection-only lookup returned 0 whenever
+// the projection was empty/stale, silently capping a SubAgent at the
+// agent-global default (200k) while the session resolved the model's real 1M.
 func (f *LLMFactory) resolveEffectiveContext(model string, subID string) int {
-	if sub := f.lookupSub(subID); sub != nil {
-		if v := sub.GetPerModelMaxContext(model); v > 0 {
-			return v
-		}
-	}
-	return f.resolveModelContext(model)
+	return f.resolveSubContextFor(subID, model)
 }
 
 // GetEffectiveMaxContext is the single source of truth for "what max context should the UI show?".
@@ -1039,67 +1040,6 @@ func (f *LLMFactory) EnsureSessionModelBinding(senderID, chatID, channel string)
 	f.ensureSessionModel(senderID, chatID, channel)
 }
 
-// ResolveSubscriptionForModel finds the subscription that provides the given
-// model for a user. This is the model-first inverse of "which models does this
-// subscription serve": given a model name picked from the unified model list,
-// return the subscription whose endpoint actually serves it, so the agent pairs
-// the right credentials with the model name.
-//
-// Search order (first match wins, system subscription preferred when tied):
-//  1. subscription_models rows with Enabled=true for each subscription.
-//  2. Each subscription's CachedModels (API-discovered list) and sub.Model.
-//
-// Disabled subscription_models rows are skipped in pass 1. Pass 2 does not
-// consult subscription_models because CachedModels/sub.Model predate the
-// enable flag and are only a fallback for models not yet registered as rows.
-// Returns an error if no subscription provides the model.
-func (f *LLMFactory) ResolveSubscriptionForModel(senderID, model string) (*sqlite.LLMSubscription, error) {
-	if f.subscriptionSvc == nil {
-		return nil, fmt.Errorf("ResolveSubscriptionForModel: subscription service unavailable")
-	}
-	if model == "" {
-		return nil, fmt.Errorf("ResolveSubscriptionForModel: model is required")
-	}
-	subs, err := f.subscriptionSvc.List(senderID)
-	if err != nil {
-		return nil, fmt.Errorf("ResolveSubscriptionForModel: list: %w", err)
-	}
-	if len(subs) == 0 {
-		return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscriptions for %s", senderID)
-	}
-	// find returns the subscription for the model, preferring the system subscription.
-	// matchFn reports whether a subscription provides the model.
-	find := func(matchFn func(*sqlite.LLMSubscription) bool) *sqlite.LLMSubscription {
-		for i := range subs {
-			sub := subs[i]
-			if !sub.Enabled {
-				continue // disabled subscription cannot own a selectable model
-			}
-			if !matchFn(sub) {
-				continue
-			}
-			return sub
-		}
-		return nil
-	}
-	// Pass 1: enabled subscription_models rows.
-	if owner := find(func(sub *sqlite.LLMSubscription) bool {
-		models, gerr := f.subscriptionSvc.GetModels(sub.ID)
-		if gerr != nil || len(models) == 0 {
-			return false
-		}
-		for _, sm := range models {
-			if sm.Model == model && sm.Enabled {
-				return true
-			}
-		}
-		return false
-	}); owner != nil {
-		return owner, nil
-	}
-	return nil, fmt.Errorf("ResolveSubscriptionForModel: no subscription provides model %q", model)
-}
-
 // SetUserDefaultModel sets the user-level default (subscription, model) used for
 // new sessions. Persists to user_default_model.
 func (f *LLMFactory) SetUserDefaultModel(senderID, subID, model string) error {
@@ -1394,12 +1334,32 @@ func (f *LLMFactory) refreshModelEntriesCore(subs []*sqlite.LLMSubscription) []R
 				r.Status = "noloader"
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer cancel()
-			if err := loader.LoadModelsFromAPI(ctx); err != nil {
+			// Retry the /models fetch with the SAME policy as every other LLM
+			// request: llm.IsRetryableError + exponential backoff. Without it a
+			// transient blip (gateway hiccup, brief 5xx) silently left the model
+			// list unrefreshed, with no recourse but to hit refresh again.
+			// Bounded to 3 attempts with short delays because the UI panel is
+			// waiting on this.
+			const modelsFetchAttempts = 3
+			var fetchErr error
+			for attempt := 0; attempt < modelsFetchAttempts; attempt++ {
+				if attempt > 0 {
+					time.Sleep(time.Duration(1<<uint(attempt-1)) * time.Second) // 1s, 2s
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+				fetchErr = loader.LoadModelsFromAPI(ctx)
+				cancel()
+				if fetchErr == nil {
+					break
+				}
+				if !llm.IsRetryableError(fetchErr) {
+					break // 用户取消 / 输入超长等确定性失败，重试无意义
+				}
+			}
+			if fetchErr != nil {
 				r.Status = "fail"
-				r.Error = truncateErrMsg(err.Error())
-				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": err.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
+				r.Error = truncateErrMsg(fetchErr.Error())
+				log.WithFields(log.Fields{"sub": s.Name, "base_url": s.BaseURL, "has_apikey": s.APIKey != "", "err": fetchErr.Error()}).Warn("[LLM] RefreshModelEntries: /models fetch failed")
 				return
 			}
 			r.Status = "ok"
@@ -1414,12 +1374,13 @@ func (f *LLMFactory) refreshModelEntriesCore(subs []*sqlite.LLMSubscription) []R
 
 // truncateErrMsg shortens an error message for user-facing display. Long SDK
 // errors (HTTP body dumps, stack traces) would flood the chat output.
+// Rune-safe: error bodies routinely contain CJK/UTF-8 text.
 func truncateErrMsg(msg string) string {
 	const max = 120
 	if len(msg) <= max {
 		return msg
 	}
-	return msg[:max] + "..."
+	return tools.TruncateHeadPreview(msg, max)
 }
 
 // GetLLMForModel returns (client, subID, model, maxContext, thinkingMode,
@@ -1432,11 +1393,13 @@ func truncateErrMsg(msg string) string {
 //
 // Input resolution happens exactly once, here:
 //   - tier name → resolveTierModel (tier values are always "subID|model")
-//   - bare model name → ResolveSubscriptionForModel (the single input resolver)
+//   - explicit pair "subID|model" → used directly
+//   - ⛔ bare model name → NOT resolvable (logged as an error; the caller must
+//     pass the subscription id with the model — see the hard rule in AGENTS.md)
 //
-// There are NO "any subscription + arbitrary model name" hard-tries: a model
-// without an owning subscription falls back to the deployment default with a
-// warning (usedCustom=false).
+// There are NO "any subscription + arbitrary model name" hard-tries and no
+// name-based owner lookup: a model without an explicit subscription falls back
+// to the session/deployment default (usedCustom=false).
 func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, string, string, int, string, int, bool) {
 	subID, resolvedModel, fromTier := f.resolveTierModel(senderID, targetModel)
 
@@ -1465,16 +1428,23 @@ func (f *LLMFactory) GetLLMForModel(senderID, targetModel string) (llm.LLM, stri
 		log.WithFields(log.Fields{"subID": subID, "model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: subscription for (subID, model) pair not found; falling back to default")
 
 	default:
-		// Bare model name (a legacy bare tier value, or a concrete model name
-		// from the SubAgent model parameter): resolve the owning subscription
-		// ONCE via ResolveSubscriptionForModel — the single input resolver.
-		if sub, err := f.ResolveSubscriptionForModel(senderID, resolvedModel); err == nil && sub != nil {
-			if client := f.createClientFromSub(sub, resolvedModel); client != nil {
-				log.WithFields(log.Fields{"model": resolvedModel, "sub": sub.Name}).Info("[LLM] GetLLMForModel: resolved bare model name to owning subscription")
-				return client, sub.ID, resolvedModel, f.resolveEffectiveContext(resolvedModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
+		// ⛔ 严禁用模型名单独解析模型。具体模型只能和它的订阅一起寻址：
+		// "<subID>|<model>"（与 tier 配置值同一形式）。曾按模型名找"提供该模型
+		// 的订阅"——同名模型挂多个订阅时必须猜（真实数据：glm-5.3 在
+		// mint(1M)/mintcn(0)/openai mint(0) 下都有行），猜错就把别的订阅的
+		// per-model 配置（max_context=0）当成了这个模型的配置。调用方必须传
+		// pair；传裸名不解析，直接回落到会话/部署默认。
+		if pairID, pairModel := parseTierValue(resolvedModel); pairID != "" && pairModel != "" {
+			if sub, err := f.subscriptionSvc.Get(pairID); err == nil && sub != nil && sub.Enabled {
+				if client := f.createClientFromSub(sub, pairModel); client != nil {
+					log.WithFields(log.Fields{"model": pairModel, "sub": sub.Name}).Info("[LLM] GetLLMForModel: matched explicit (subID, model) pair")
+					return client, sub.ID, pairModel, f.resolveEffectiveContext(pairModel, sub.ID), sub.ThinkingMode, sub.MaxOutputTokens, true
+				}
 			}
+			log.WithFields(log.Fields{"sub_id": pairID, "model": pairModel}).Warn("[LLM] GetLLMForModel: explicit (subID, model) pair unusable; falling back to default")
+			break
 		}
-		log.WithFields(log.Fields{"model": resolvedModel, "tier": fromTier}).Warn("[LLM] GetLLMForModel: no subscription provides the model; falling back to default")
+		log.WithField("model", resolvedModel).Error("[LLM] GetLLMForModel: bare model name is not resolvable — pass '<subID>|<model>'(or a tier name); using the session/deployment default")
 	}
 
 	// Fallback: deployment-level defaultLLM (cfg.LLM). No subscription behind

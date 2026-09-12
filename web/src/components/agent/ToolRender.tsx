@@ -33,6 +33,10 @@ import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { GenUIPanel } from './GenUIPanel'
 import { useToolSession } from './ToolSessionContext'
 import { useI18n } from '@/providers/i18n'
+import { InterruptCard, SyntheticToolCard, isSyntheticToolName } from './SyntheticToolCard'
+
+// Back-compat: history/UI callers imported these from ToolRender.
+export { SyntheticToolCard, parseSyntheticHints, isSyntheticToolName } from './SyntheticToolCard'
 
 interface ToolRenderProps {
   tool: WebToolProgress
@@ -127,7 +131,7 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     case 'Shell':
       return <ShellRender tool={tool} summary={summary} detail={detail} />
     case 'user_interrupt':
-      return <UserInterruptRender tool={tool} />
+      return <InterruptCard tool={tool} />
     case 'FileCreate':
       return <FileCreateRender tool={tool} summary={summary} />
     case 'FileReplace':
@@ -141,6 +145,11 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     case 'TodoWrite':
       return <TodoWriteRender tool={tool} summary={summary} />
     default: {
+      // Injected system notifications (bg task / sub-agent completion, cron,
+      // interjection, cancel…) render as structured cards instead of raw text.
+      if (isSyntheticToolName(name)) {
+        return <SyntheticToolCard tool={tool} />
+      }
       // messageRenderer 调度器：内置 GenUI renderer（matches uiMode='genui'）
       // 或插件声明的渲染器决定此工具的渲染，替代宿主硬编码的 display_html 特判。
       // 无匹配（或渲染器返回 null）→ 默认 ToolCallBlock。
@@ -166,24 +175,6 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     }
   }
 })
-
-// ── user_interrupt ────────────────────────────────────────────────────
-
-/** user_interrupt synthetic tool — rendered as a violet interjection card. */
-function UserInterruptRender({ tool }: { tool: WebToolProgress }) {
-  const text = tool.summary || tool.args || ''
-  return (
-    <div className="border-l-2 border-violet-400/70 bg-violet-500/[0.07] py-1.5 pl-3 pr-2 text-xs dark:border-violet-500/60 dark:bg-violet-500/[0.10]">
-      <div className="flex items-center gap-1.5">
-        <span className="text-violet-500 dark:text-violet-400">⚡</span>
-        <span className="min-w-0 flex-1 break-words text-text-primary">{text || '(interjection)'}</span>
-      </div>
-      <div className="mt-1 text-[10px] font-mono text-text-muted">
-        user_interrupt · synthetic tool
-      </div>
-    </div>
-  )
-}
 
 // ── Shell ──────────────────────────────────────────────────────────────
 

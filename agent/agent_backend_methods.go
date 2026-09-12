@@ -8,6 +8,7 @@ import (
 	"xbot/channel"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // maxIncrementalIterations caps how many iteration-history entries
@@ -243,6 +244,53 @@ func (a *Agent) GetTodos(ch, chatID string) []protocol.TodoItem {
 		result[i] = protocol.TodoItem{Text: t.Text, Status: t.Status}
 	}
 	return result
+}
+
+// SetTodos replaces the persisted TODO list for a session (user edit from the
+// web UI: rename an item, toggle status, or drop one). Emits a progress event
+// carrying the new list so every client — and the active-progress snapshot
+// used on session switch — sees the edit immediately instead of waiting for
+// the next agent iteration.
+func (a *Agent) SetTodos(ch, chatID string, items []protocol.TodoItem) {
+	if a.todoManager == nil {
+		return
+	}
+	key := ch + ":" + chatID
+	todos := make([]tools.TodoItem, len(items))
+	for i, it := range items {
+		todos[i] = tools.TodoItem{Text: it.Text, Status: it.Status}
+	}
+	a.todoManager.SetTodos(key, todos)
+	a.emitTodosProgress(ch, chatID)
+}
+
+// emitTodosProgress pushes a lightweight progress event carrying the current
+// TODO list (plus the goal when one is active). Mirrors emitGoalProgress, but
+// does not require a goal to exist — an edit to the todo list must reach the UI
+// even in a session with no goal.
+func (a *Agent) emitTodosProgress(chName, chatID string) {
+	progressKey := qualifyChatID(chName, chatID)
+	seqPtr, _ := a.builtinProgressSeq.LoadOrStore(progressKey, &atomic.Uint64{})
+	seq := seqPtr.(*atomic.Uint64).Add(1)
+	payload := &protocol.ProgressEvent{
+		ChatID:    progressKey,
+		Phase:     "",
+		Seq:       seq,
+		TurnID:    a.getActiveTurnID(progressKey),
+		Iteration: 0,
+		Todos:     a.GetTodos(chName, chatID),
+		Goal:      a.GetGoal(chName, chatID),
+	}
+	if a.channelRange != nil {
+		a.channelRange(func(_ string, ch channel.Channel) bool {
+			if sender, ok := ch.(channel.ProgressSender); ok {
+				sender.SendProgress(chatID, cloneProgressEvent(payload))
+			}
+			return true
+		})
+	}
+	// Keep the snapshot fresh so GetActiveProgress returns the edited list.
+	a.lastProgressSnapshot.Store(progressKey, progressSnapshotWithoutHistory(payload))
 }
 
 // GetGoal returns the goal state for the given channel:chatID session.

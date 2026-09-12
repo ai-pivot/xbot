@@ -14,11 +14,11 @@ import (
 // never reached the offload store — so `offload_recall` could not recover it
 // even if the model had thought to call it.
 
-// ==================== truncateHeadPreview ====================
+// ==================== TruncateHeadPreview ====================
 
 func TestTruncateHeadPreview_ShortInputUnchanged(t *testing.T) {
 	in := "hello world"
-	if got := truncateHeadPreview(in, 100); got != in {
+	if got := TruncateHeadPreview(in, 100); got != in {
 		t.Errorf("short input must be returned unchanged, got %q", got)
 	}
 }
@@ -27,7 +27,7 @@ func TestTruncateHeadPreview_CJKNeverSlicedMidRune(t *testing.T) {
 	// 200 CJK runes = 600 bytes; cut at 100 bytes lands mid-rune without the
 	// rune-boundary fixup.
 	in := strings.Repeat("中文测试内容", 40)
-	got := truncateHeadPreview(in, 100)
+	got := TruncateHeadPreview(in, 100)
 	if !utf8.ValidString(got) {
 		t.Fatalf("truncated string is invalid UTF-8: %q", got)
 	}

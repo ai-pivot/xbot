@@ -328,7 +328,7 @@ func (t *ShellTool) executeForeground(
 			// multi-byte character and emit invalid UTF-8 into task.Output /
 			// task_read / the web xterm (CR: 截断按字节切片会把多字节 UTF-8
 			// 字符切开).
-			trimmed := truncateTailPreview(outBuf.String(), maxBgOutputSize)
+			trimmed := TruncateTailPreview(outBuf.String(), maxBgOutputSize)
 			outBuf.Reset()
 			outBuf.WriteString(trimmed)
 		}

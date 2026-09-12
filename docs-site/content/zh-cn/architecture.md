@@ -295,7 +295,8 @@ Layer 4: ContextEdit → 精确删除/裁剪/替换
 - **恢复**: `offload_recall` 工具，支持分页（offset/limit，max 16000 runes）
 - **防递归**: offload_recall 和 recall_masked 的结果不会被再次 offload
 - **Read 偏移保护**: 带 offset/limit 的 Read 结果不 offload
-- **SubAgent 路径**: SubAgent 的 offload 存储在父 session 目录下（RootSessionKey）
+- **SubAgent 路径**: offload store **由主 Agent 与其 SubAgent 共享** —— 双方都按 canonical root session key（`RootSessionKey`）读/写，因此任意一方都能召回另一方 offload 的内容（`buildParentToolContext` 显式填充 `RootSessionKey`；SubAgent 自己的 `SessionKey` 仍保持隔离，仅用于工具门控/mask，**只有 offload 走 root**）
+- **按归属清理**: 每个条目记录 `OwnerKey`（主 Agent = root key，SubAgent = 自己的 session key）；压缩后的 `CleanUnreferencedEntries(sessionKey, ownerKey, referencedIDs)` 只删本次运行产生的条目 —— 没有这层隔离，SubAgent 压缩会把主 Agent 仍在引用的 offload 删掉（静默数据丢失）
 
 #### Layer 2: Observation Masking（旧结果遮蔽）
 

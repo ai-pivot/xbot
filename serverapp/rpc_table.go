@@ -1253,12 +1253,13 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			return nil, err
 		}
 		p.Channel, p.ChatID = channelName, chatID
-		// Update last_active_at so we can restore the most recent session on restart.
-		if db := h.Ag.MultiSession().DB(); db != nil {
-			if err := sqlite.NewTenantService(db).TouchTenantID(p.Channel, p.ChatID); err != nil {
-				log.WithError(err).Warn("RPC get_history: failed to update last_active_at")
-			}
-		}
+		// NOTE: this is a READ RPC — it must not touch the tenant. It used to
+		// call TouchTenantID "so we can restore the most recent session on
+		// restart", which made any history read move the session's
+		// last_active_at to now (the web UI loads history for every session it
+		// displays, so a page refresh re-stamped them all as "active today").
+		// last_active_at is bumped only by real user activity — see the
+		// eager-save in agent.processMessage.
 		history, err := func() ([]channel.HistoryMessage, error) {
 			ms := h.Ag.MultiSession()
 			if ms == nil {
@@ -1608,6 +1609,37 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 			return nil, err
 		}
 		return h.Ag.GetTodos(channelName, chatID), nil
+	})
+
+	t["set_todos"] = rpc1(func(ctx context.Context, p struct {
+		Channel string              `json:"channel"`
+		ChatID  string              `json:"chat_id"`
+		Todos   []protocol.TodoItem `json:"todos"`
+	}) (any, error) {
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		// Normalize + bound the user edit before it reaches the store: empty
+		// text is meaningless in a checklist, and the status vocabulary is
+		// fixed (the UI renders exactly these three).
+		cleaned := make([]protocol.TodoItem, 0, len(p.Todos))
+		for _, it := range p.Todos {
+			text := strings.TrimSpace(it.Text)
+			if text == "" {
+				continue
+			}
+			if len([]rune(text)) > 500 {
+				text = string([]rune(text)[:500])
+			}
+			status := it.Status
+			if status != "pending" && status != "doing" && status != "done" {
+				status = "pending"
+			}
+			cleaned = append(cleaned, protocol.TodoItem{Text: text, Status: status})
+		}
+		h.Ag.SetTodos(channelName, chatID, cleaned)
+		return map[string]any{"ok": true, "todos": cleaned}, nil
 	})
 
 	t["get_goal"] = rpc1(func(ctx context.Context, p struct {

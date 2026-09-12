@@ -97,6 +97,19 @@ export async function setGoal(session: SessionSelector, objective: string): Prom
   })
 }
 
+/** Replace the TODO list for the session (user edit: rename / toggle / delete).
+ *  Direct RPC — does not trigger a Run. The backend persists the list and emits
+ *  a progress event carrying it, so every client refreshes from one source. */
+export async function updateTodos(
+  session: SessionSelector,
+  todos: { text: string; status: string }[],
+): Promise<void> {
+  await postAPI('/api/rpc', {
+    method: 'set_todos',
+    params: { channel: session.channel, chat_id: session.chatID, todos },
+  })
+}
+
 /** Get the current goal for the session. */
 export async function getGoal(session: SessionSelector): Promise<{ objective: string; status: string; summary?: string } | null> {
   return postAPI('/api/rpc', {
@@ -118,8 +131,18 @@ export async function fetchCronTasks<T>(session: SessionSelector): Promise<T[]> 
   return data.tasks ?? []
 }
 
-export async function fetchBackgroundTasks<T>(session: SessionSelector): Promise<T[]> {
-  const data = await postAPI<{ background_tasks?: T[] }>('/api/tasks/list', sessionBody(session))
+/** Delete a scheduled task owned by this session (Tasks panel ✕).
+ *  Session-scoped server-side: a job belonging to another session reports
+ *  removed=false instead of being deleted. */
+export async function removeCronTask(session: SessionSelector, jobID: string): Promise<boolean> {
+  const data = await postAPI<{ removed?: boolean }>('/api/cron/remove', {
+    ...sessionBody(session),
+    job_id: jobID,
+  })
+  return data.removed === true
+}
+
+export async function fetchBackgroundTasks<T>(session: SessionSelector): Promise<T[]> {  const data = await postAPI<{ background_tasks?: T[] }>('/api/tasks/list', sessionBody(session))
   return data.background_tasks ?? []
 }
 

@@ -540,14 +540,14 @@ func describeElement(sb *strings.Builder, e *CardElement, depth int) {
 	case "markdown":
 		content, _ := e.Properties["content"].(string)
 		if len(content) > 80 {
-			content = content[:80] + "..."
+			content = TruncateHeadPreview(content, 80)
 		}
 		fmt.Fprintf(sb, "%s- Text: %s\n", indent, content)
 	case "div":
 		if t, ok := e.Properties["text"].(map[string]any); ok {
 			content, _ := t["content"].(string)
 			if len(content) > 80 {
-				content = content[:80] + "..."
+				content = TruncateHeadPreview(content, 80)
 			}
 			fmt.Fprintf(sb, "%s- Text: %s\n", indent, content)
 		}

@@ -10,6 +10,7 @@ import (
 	"xbot/llm"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
+	"xbot/tools"
 )
 
 // Subscription represents a LLM subscription for display/selection.
@@ -887,16 +888,24 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 					// Tool errors are stored as content starting with "Error:" (see
 					// engine_run_tools.go: updateToolResultLine sets llmContent prefix).
 					status := "done"
-					if content, ok := toolResults[tc.ID]; ok && strings.HasPrefix(content, "Error:") {
+					result, hasResult := toolResults[tc.ID]
+					if hasResult && strings.HasPrefix(result, "Error:") {
 						status = "error"
 					}
-					curIterTools = append(curIterTools, protocol.ToolProgress{
+					tp := protocol.ToolProgress{
 						Name:      tc.Name,
 						Label:     formatToolLabel(tc.Name, tc.Arguments),
 						Status:    status,
 						Elapsed:   0,
 						Iteration: curIterIdx,
-					})
+					}
+					// Injected notification tools: their result IS user-facing content
+					// (notification/interjection text, markdown). Carry it in the unified
+					// Detail field (like Shell/Read do) so the web renderer can show it.
+					if hasResult && tools.IsSyntheticToolName(tc.Name) {
+						tp.Detail = tools.TruncateHeadPreview(result, maxHistoryToolPreview)
+					}
+					curIterTools = append(curIterTools, tp)
 				}
 			} else if m.Content != "" {
 				flushPending()
@@ -1068,6 +1077,11 @@ func ConvertHistoryRecords(records []sqlite.HistoryRecord) []HistoryMessage {
 	return history
 }
 
+// maxHistoryToolPreview bounds the tool-result text a reconstructed history row
+// carries in the unified Detail field (injected notification tools only — their
+// result IS user-facing content). Rune-safe truncation via tools.TruncateHeadPreview.
+const maxHistoryToolPreview = 2000
+
 func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string) []HistoryIteration {
 	if message.Detail != "" {
 		var snapshots []iterSnapshot
@@ -1098,20 +1112,28 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 	if message.Role != "assistant" || (len(message.ToolCalls) == 0 && message.ReasoningContent == "") {
 		return nil
 	}
-	tools := make([]protocol.ToolProgress, len(message.ToolCalls))
+	toolEntries := make([]protocol.ToolProgress, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
 		status := "done"
-		if content, ok := toolResults[call.ID]; ok && strings.HasPrefix(content, "Error:") {
+		result, hasResult := toolResults[call.ID]
+		if hasResult && strings.HasPrefix(result, "Error:") {
 			status = "error"
 		}
-		tools[i] = protocol.ToolProgress{
+		// Injected notification tools carry their (user-facing) result text in the
+		// unified Detail field — same field Shell/Read use for their output — so the
+		// web renderer can show it (as markdown) instead of "no structured data".
+		detail := ""
+		if hasResult && tools.IsSyntheticToolName(call.Name) {
+			detail = tools.TruncateHeadPreview(result, maxHistoryToolPreview)
+		}
+		toolEntries[i] = protocol.ToolProgress{
 			Name: call.Name, Label: formatToolLabel(call.Name, call.Arguments),
-			Status: status, Iteration: 1,
+			Status: status, Iteration: 1, Detail: detail,
 		}
 	}
 	// The intermediate assistant's Content is the LLM's narration ("两端就绪 ✅..."),
 	// NOT the final reply. Put it in the iteration's Content (frontend maps to
 	// thinking) so it renders inside the iteration fold, not as message.content
 	// (which would get a copy button via shouldRenderFinalContent).
-	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: tools}}
+	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: toolEntries}}
 }

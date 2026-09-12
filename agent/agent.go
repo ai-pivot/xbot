@@ -289,8 +289,29 @@ type bgSessionState struct {
 	// queue list/cancel REST). Lifecycle: append on admit, shift on dequeue,
 	// mark-cancelled from the REST queue API (dequeue then skips processing).
 	// See session_queue.go for the invariant (seq = turn_id = dequeue order).
+	//
+	// ORDER IS AUTHORITATIVE HERE, not in msgCh: the Staging Tray lets the user
+	// drag pending messages into a new order (Agent.ReorderQueue), and the
+	// reorder is projected onto the channel by draining + re-emitting the
+	// buffered messages in this list's order (see reorderChannelLocked).
 	queueMu sync.Mutex
 	queue   []queuedEntry
+
+	// msgCh is the delivery channel this session's chatProcessLoop drains.
+	// Stored so the reorder path can re-project the queue order onto it.
+	// Nil for states created without a chatWorker (tests).
+	msgCh chan bus.InboundMessage
+
+	// inflightAdmits counts admits currently between queueAppend and the
+	// completion of their channel send. While it is > 0 the message is already
+	// visible in the shadow queue (and in the emitted queue_state snapshot) but
+	// NOT yet in msgCh — draining the channel then would miss it, so a reorder
+	// projection would silently disagree with the displayed order. Reachable
+	// only when the channel is saturated (the producer blocks until the consumer
+	// frees a slot): with room, the send completes in the append critical
+	// window. ReorderQueue waits briefly for it to drain, then refuses (no-op)
+	// rather than projecting a partial order.
+	inflightAdmits atomic.Int64
 }
 
 // sessionOperationGate serializes a chat turn with destructive session
@@ -2759,6 +2780,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 
 	// Register per-session bg notification state
 	ss := &bgSessionState{notifyCh: make(chan struct{}, 1)}
+	ss.msgCh = msgCh // reorder path re-projects the queue order onto this channel
 	a.bgSessionStates.Store(chatKey, ss)
 	defer a.bgSessionStates.Delete(chatKey)
 
@@ -2917,6 +2939,7 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 		ss.queueAppend(newQueuedEntry(msg, turnID))
 		a.emitQueueState(msg.Channel, msg.ChatID, ss)
 	}
+	ss.inflightAdmits.Add(1)
 	select {
 	case msgCh <- msg:
 		// Message entered the channel. For queued messages, chatProcessLoop's
@@ -2931,6 +2954,7 @@ func (a *Agent) admitToMsgCh(ctx context.Context, chatKey string, msg bus.Inboun
 			a.emitQueueState(msg.Channel, msg.ChatID, ss)
 		}
 	}
+	ss.inflightAdmits.Add(-1)
 }
 
 // resolveResumeTurnID returns the turn id a restart-resumed Run
@@ -3598,6 +3622,22 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 		}
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages[len(messages)-1].ID = historyID
+		}
+		// The user actually sent something → this is the ONE place that moves a
+		// session's last_active_at.
+		//
+		// It must NOT happen on reads. Regression (2026-09-11): the web
+		// /api/history endpoint and the get_history RPC both called
+		// TouchTenantID, so merely opening/refreshing the web UI re-stamped
+		// every session it displayed. After a laptop slept overnight, all of
+		// yesterday's sessions showed up as "active today" (the sidebar groups
+		// sessions into TODAY/YESTERDAY from this column).
+		if ms := a.MultiSession(); ms != nil {
+			if db := ms.DB(); db != nil {
+				if terr := sqlite.NewTenantService(db).TouchTenantID(msg.Channel, msg.ChatID); terr != nil {
+					log.WithError(terr).Warn("failed to update tenant last_active_at on user message")
+				}
+			}
 		}
 	}
 
