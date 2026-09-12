@@ -112,6 +112,7 @@ const ja: Translations = {
     recentWorkPaths: '最近使用した作業ディレクトリ',
     removeRecentPath: '最近のパスから {{path}} を削除',
     searchPlaceholder: 'セッションを検索...',
+    searchToggle: 'セッションを検索',
     starred: 'スター付き',
     star: 'スターを付ける',
     unstar: 'スターを外す',

@@ -38,7 +38,7 @@ import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shar
 import type { ExportFormat } from '@/components/agent/api'
 import { downloadSession } from '@/components/agent/api'
 import type { TabManager } from '@/hooks/useTabManager'
-import { SessionSearch } from './SessionSearch'
+import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { NewSessionDialog } from './NewSessionDialog'
 
@@ -74,7 +74,19 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   const { t } = useI18n()
   const store = useSessionStore()
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+
+  // 会话搜索默认隐藏（低频操作）；收起时一并清空查询，避免隐藏的过滤条件让
+  // 列表"莫名其妙变短"。开关按钮与「+ 新会话」主按钮同排。
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearch('')
+  }, [])
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) closeSearch()
+    else setSearchOpen(true)
+  }, [searchOpen, closeSearch])
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
 
   // Multi-select state
@@ -339,18 +351,30 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       </header>
 
       {/* 布局 v2：全宽「+ 新会话」主按钮（设计稿 1:1）——原 header 的 ghost
-          新会话图标保留为次入口。 */}
-      <div className="shrink-0 px-2.5 pt-2.5">
+          新会话图标保留为次入口。搜索开关按钮同排（搜索框默认隐藏）。 */}
+      <div className="flex shrink-0 items-stretch gap-1.5 px-2.5 pt-2.5">
         <button
           type="button"
           onClick={() => setNewOpen(true)}
-          className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-[12px] font-semibold text-white transition-opacity hover:opacity-90"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-2 text-[12px] font-semibold text-white transition-opacity hover:opacity-90"
           style={{ background: 'var(--accent)' }}
         >
           <Plus className="size-3.5" />
           {t('session.newSession')}
         </button>
+        <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} />
       </div>
+
+      {searchOpen && (
+        <div className="shrink-0">
+          <SessionSearch
+            value={search}
+            onChange={setSearch}
+            onClose={closeSearch}
+            autoFocus
+          />
+        </div>
+      )}
 
       {/* Category switcher */}
       <div
@@ -376,11 +400,6 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
             </button>
           )
         })}
-      </div>
-
-      {/* Search */}
-      <div className="shrink-0">
-        <SessionSearch value={search} onChange={setSearch} />
       </div>
 
       {/* List */}

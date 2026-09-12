@@ -109,6 +109,7 @@ const zhCN = {
     recentWorkPaths: '最近使用的工作路径',
     removeRecentPath: '从最近路径中移除 {{path}}',
     searchPlaceholder: '搜索会话...',
+    searchToggle: '搜索会话',
     starred: '已标星',
     star: '标星',
     unstar: '取消标星',

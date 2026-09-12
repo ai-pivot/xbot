@@ -21,7 +21,7 @@ import { TerminalList } from '@/components/sidebar/TerminalList'
 import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
-import { SessionSearch } from '@/components/session/SessionSearch'
+import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import {
   groupSessions,
@@ -41,7 +41,19 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const store = useSessionStore()
   const tabManager = ctx.tabManager
   const [search, setSearch] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+
+  // 会话搜索默认隐藏（低频操作，常驻输入框白占一行）；收起时一并清空查询——
+  // 隐藏着的过滤条件会让列表"莫名其妙变短"。按钮与「新建会话」同排。
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    setSearch('')
+  }, [])
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) closeSearch()
+    else setSearchOpen(true)
+  }, [searchOpen, closeSearch])
 
   const filteredSessions = useMemo(() => {
     if (!store.activeChannel) return store.sessions
@@ -110,19 +122,27 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <SessionSearch value={search} onChange={setSearch} />
-      {/* 新建会话按钮（全宽 accent，v5.2 加回——桌面端面板版漏掉了） */}
-      <div className="shrink-0 px-2.5 pt-1.5 pb-1">
+      {/* 「新建会话」+ 搜索开关同一行：搜索框默认隐藏，点按钮才展开。 */}
+      <div className="flex shrink-0 items-stretch gap-1.5 px-2.5 pt-1.5 pb-1">
         <button
           type="button"
           onClick={() => setNewOpen(true)}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-opacity hover:opacity-90"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11.5px] font-medium text-text-primary transition-opacity hover:opacity-90"
           style={{ background: 'var(--accent)' }}
         >
           <svg className="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
           {t('session.newSession')}
         </button>
+        <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} />
       </div>
+      {searchOpen && (
+        <SessionSearch
+          value={search}
+          onChange={setSearch}
+          onClose={closeSearch}
+          autoFocus
+        />
+      )}
       <div className="min-h-0 flex-1">
         {store.loading ? (
           <div className="flex h-full items-center justify-center px-4 text-xs text-text-muted">{t('common.loading')}</div>
