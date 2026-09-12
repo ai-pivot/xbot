@@ -67,6 +67,29 @@ async function countToolLabels(page: Page, toolName: string): Promise<number> {
   }, toolName)
 }
 
+/**
+ * 只在**最后一条 assistant 行**（新 turn 的 live 消息）内计数工具标签。
+ *
+ * 跨 turn 泄漏的判据是"新 turn 的消息里不得出现旧 turn 的工具"；而旧 turn 的
+ * committed 行**应当**保留自己的工具（"已渲染内容永不消失"；折叠/合并格式已
+ * 彻底删除后取消的 turn 也直接渲染迭代 + pills）。全文计数会把旧 turn 自己的
+ * 工具算进来 → 假失败。
+ */
+async function countToolLabelsInLastAssistant(page: Page, toolName: string): Promise<number> {
+  return page.evaluate((name) => {
+    const rows = document.querySelectorAll('[data-role="assistant"]')
+    const last = rows[rows.length - 1]
+    if (!last) return -1
+    let count = 0
+    const walker = document.createTreeWalker(last, NodeFilter.SHOW_TEXT)
+    while (walker.nextNode()) {
+      const text = walker.currentNode.textContent?.trim() || ''
+      if (text === name) count++
+    }
+    return count
+  }, toolName)
+}
+
 async function login(page: Page) {
   await page.addInitScript(() => {
     const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
@@ -252,16 +275,27 @@ test.describe('Iteration dedup and cross-turn leak', () => {
     })
     await page.waitForTimeout(300)
 
-    // Turn 2 should show Shell and Write — NOT Read and Grep (turn 1's tools)
+    // Turn 2 should show Shell and Write — NOT Read and Grep (turn 1's tools).
+    // 旧 turn 的 committed 行仍显示它自己的 Read/Grep（已渲染内容永不消失），
+    // 因此"泄漏"判据只能限定在新 turn 的**最后一条 assistant 行**内计数。
     const shellCount = await countToolLabels(page, 'Shell')
     const writeCount = await countToolLabels(page, 'Write')
-    const readCount = await countToolLabels(page, 'Read')
-    const grepCount = await countToolLabels(page, 'Grep')
+    const readCount = await countToolLabelsInLastAssistant(page, 'Read')
+    const grepCount = await countToolLabelsInLastAssistant(page, 'Grep')
+    const lastShell = await countToolLabelsInLastAssistant(page, 'Shell')
+    const lastWrite = await countToolLabelsInLastAssistant(page, 'Write')
+    const lastRowText = await page.evaluate(() => {
+      const rows = document.querySelectorAll('[data-role="assistant"]')
+      return rows[rows.length - 1]?.textContent ?? ''
+    })
 
     console.log('Turn 2 tool counts:', { Shell: shellCount, Write: writeCount, Read: readCount, Grep: grepCount })
+    console.log('Last (new turn) row:', JSON.stringify({ lastShell, lastWrite, text: lastRowText.slice(0, 200) }))
     expect(shellCount).toBe(1)
     expect(writeCount).toBe(1)
-    // Old turn's tools should NOT appear in the live message
+    // 新 turn 的 live 消息里不得出现旧 turn 的工具（跨 turn 泄漏）
+    expect(lastShell).toBe(1)
+    expect(lastWrite).toBe(1)
     expect(readCount).toBe(0)
     expect(grepCount).toBe(0)
   })
