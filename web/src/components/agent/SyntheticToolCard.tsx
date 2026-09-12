@@ -31,6 +31,7 @@ import {
 } from 'lucide-react'
 
 import { useI18n } from '@/providers/i18n'
+import { MarkdownRenderer } from './MarkdownRenderer'
 import type { WebToolProgress } from '@/types/shared'
 
 // ── payload ───────────────────────────────────────────────────────────
@@ -396,13 +397,26 @@ export const SyntheticToolCard = memo(function SyntheticToolCard({ tool }: { too
             label={t('agent.tool.syntheticOutput')}
             extra={<span className="text-[9px] text-text-muted">{t('agent.tool.syntheticOutputStats', { lines, size: formatBytes(body.length) })}</span>}
           >
-            <pre
-              className={`overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-bg-tertiary/40 px-2 py-1.5 font-mono text-[11px] leading-5 text-text-secondary ${
-                clipped && !open ? 'max-h-24 overflow-y-hidden' : 'max-h-[420px] overflow-y-auto'
-              }`}
-            >
-              {body}
-            </pre>
+            {/* 统一渲染：注入型工具的 result 是给模型看的 markdown（模型回复/通知正文），
+                直接用 MarkdownRenderer 渲染 —— 不再 dump 成纯文本/等宽块。
+                例外：bg_task 的 stdout 是命令日志（不是 markdown），保持终端样式。 */}
+            {kind === 'bg_task' ? (
+              <pre
+                className={`overflow-x-hidden whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-bg-tertiary/40 px-2 py-1.5 font-mono text-[11px] leading-5 text-text-secondary ${
+                  clipped && !open ? 'max-h-24 overflow-y-hidden' : 'max-h-[420px] overflow-y-auto'
+                }`}
+              >
+                {body}
+              </pre>
+            ) : (
+              <div
+                className={`rounded-lg border border-border/60 bg-bg-tertiary/25 px-2.5 py-2 text-[12.5px] leading-relaxed text-text-primary ${
+                  clipped && !open ? 'max-h-24 overflow-hidden' : 'max-h-[420px] overflow-y-auto'
+                }`}
+              >
+                <MarkdownRenderer content={body} noDebounce />
+              </div>
+            )}
             {clipped && (
               <button
                 type="button"
@@ -466,9 +480,15 @@ export const InterruptCard = memo(function InterruptCard({ tool }: { tool: WebTo
         )}
       </div>
       <div className="border-t border-border/40 px-3 py-2">
-        <p className="whitespace-pre-wrap break-words text-[12.5px] leading-relaxed text-text-primary">
-          {text || t('agent.tool.syntheticNoDetails')}
-        </p>
+        {/* 插话正文是用户/通知的 markdown 文本 → 直接渲染 markdown（统一字段：
+            hints.message（干净原文）> hints.output > tool.detail > summary）。 */}
+        {text ? (
+          <div className="text-[12.5px] leading-relaxed text-text-primary">
+            <MarkdownRenderer content={text} noDebounce />
+          </div>
+        ) : (
+          <p className="text-[12px] text-text-muted">{t('agent.tool.syntheticNoDetails')}</p>
+        )}
       </div>
     </div>
   )

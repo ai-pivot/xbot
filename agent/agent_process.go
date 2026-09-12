@@ -208,6 +208,10 @@ func backgroundNotificationSyntheticTool(notif tools.BgNotification, seq int) (l
 		Status:    string(ToolDone),
 		ElapsedMS: elapsedMS,
 		Summary:   summary,
+		// Unified field: injected tools carry their (user-facing) result text in
+		// Detail, exactly like Shell/Read carry their output — the web renderer
+		// shows it as markdown.
+		Detail:    toolContent,
 		ToolHints: hints,
 	}
 	return assistantMsg, toolMsg, snapshot, true

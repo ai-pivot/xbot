@@ -1,6 +1,9 @@
 package tools
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // SyntheticToolHints is the UI-only payload attached to injected (synthetic)
 // system notifications: background task completion, sub-agent completion, cron
@@ -46,6 +49,37 @@ type SyntheticToolHints struct {
 // collapses it; the full text stays available through task_read /
 // offload_recall / the sub-agent session.
 const maxSyntheticPreviewBytes = 4000
+
+// SyntheticToolPrefixes are the tool names the system injects as fake
+// notification tool-call pairs (notifications injected INTO the LLM context).
+// SINGLE SOURCE OF TRUTH for "is this an injected/built-in notification tool?":
+//   - agent.isSyntheticToolName (LLM mimicry guard) delegates here;
+//   - the web renderers' name list mirrors it;
+//   - history reconstruction uses it to decide whether a tool's result text is
+//     user-facing content worth carrying into the snapshot (synthetic tools are
+//     the ONLY tools whose "result" is a user-facing notification/message).
+var SyntheticToolPrefixes = []string{
+	"background_task_result", // bg task completion notification
+	"bg_subagent_",           // subagent notification (bg_subagent_completed etc.)
+	"cron_fired",             // cron trigger notification
+	"delivered_message",      // queued user message delivery confirmation
+	"pre_turn_end",           // PreTurnEnd hook injection
+	"user_cancelled",         // cancel marker
+	"loop_detected",          // loop breaker fake tool result
+	"ask_user",               // AskUser fake tool result
+	"user_interrupt",         // ⚡ interject injected into the active turn
+	"async_message",          // peer/webhook/UI-action async message injection
+}
+
+// IsSyntheticToolName reports whether name is an injected notification tool.
+func IsSyntheticToolName(name string) bool {
+	for _, p := range SyntheticToolPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // EncodeSyntheticToolHints marshals hints for the UI channel. Returns "" on
 // failure so callers can leave ToolHints empty (the web then falls back to

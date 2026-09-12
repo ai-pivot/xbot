@@ -2549,6 +2549,7 @@ func (s *runState) injectSyntheticToolPair(
 			Label:     progressLabel,
 			Status:    ToolDone,
 			Summary:   progressSummary,
+			Detail:    content,
 			ToolHints: progressHints,
 			Elapsed:   progressElapsed,
 			Iteration: iteration,

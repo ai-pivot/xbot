@@ -496,3 +496,48 @@ describe('syntheticShortName — friendly names for injected tools', () => {
     expect(syntheticShortName(failed)).toBe('Sub-agent')
   })
 })
+
+describe('synthetic tools render their output as MARKDOWN from the unified fields', () => {
+  it('sub-agent output is rendered as markdown (not raw asterisks / plain text)', () => {
+    const tool = makeTool({
+      name: 'bg_subagent_completed',
+      status: 'done',
+      toolHints: JSON.stringify({
+        kind: 'subagent', role: 'explore', instance: 'mem-1',
+        task: '查入口', output: '**入口**是 `channel/web/web_auth.go`\n\n- 步骤一\n- 步骤二',
+      }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.querySelector('strong')?.textContent).toBe('入口')
+    // inline code lives inside the rendered markdown output (the header also has
+    // a <code> subject chip, so match by text)
+    const codes = Array.from(container.querySelectorAll('code')).map((el) => el.textContent)
+    expect(codes).toContain('channel/web/web_auth.go')
+    expect(container.querySelectorAll('li')).toHaveLength(2)
+    // raw markdown markers must NOT leak as text
+    expect(container.textContent).not.toContain('**入口**')
+  })
+
+  it('falls back to the unified `detail` field when the payload is absent (legacy rows)', () => {
+    const tool = makeTool({
+      name: 'user_interrupt',
+      status: 'done',
+      detail: '## 插话\n\n性能必须好——**然后必须正确**',
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(container.querySelector('h2')?.textContent).toContain('插话')
+    expect(container.querySelector('strong')?.textContent).toBe('然后必须正确')
+  })
+
+  it('bg_task keeps the terminal transcript style (raw stdout is not markdown)', () => {
+    const tool = makeTool({
+      name: 'background_task_result',
+      status: 'done',
+      toolHints: JSON.stringify({ kind: 'bg_task', task: 'npm run build', status: 'done', output: 'build ok\n3 targets' }),
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    // the task block is also a <pre> — assert the transcript text is present in one of them
+    const pres = Array.from(container.querySelectorAll('pre')).map((el) => el.textContent)
+    expect(pres.some((t) => (t ?? '').includes('build ok'))).toBe(true)
+  })
+})
