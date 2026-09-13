@@ -108,3 +108,28 @@ store.hasLive(turnID)          // 渲染层判断 streaming
 - **cancel 双提交**：commitLiveProgressAndReset 删除，text 事件是唯一提交入口；
   迟到 text 按 turnID 路由不重复。
 - **性能回归**：toRows 缓存 + 增量，基准对比现有 buildMessageRows（O(N) scan + copy）。
+
+## 渲染代价与 turn 内迭代数解耦（迭代块 containment，2026-09-13）
+
+trace 归因（12.4s 主线程，构建 `index-B1MrMIM6.js`）显示 **App JS 不随时间增长**
+（index bundle 554ms），增长的是**浏览器渲染侧**：Layout ×1.70 / Paint ×1.69 /
+RasterTask ×3.26 / GPUTask ×1.82，`Layout.dirtyObjects` 每 1/10 桶 16→64（×4），
+以及 7 次 `UpdateLayoutTree` 单次重算 ~4,700–4,800 个元素（≈ 整个 turn 子树）
+落在 70–84ms 的 React 提交里。根因是**迭代块之间没有渲染隔离**。
+
+修复（CSS-only，`index.css` + `TurnBody`）：
+
+| 选择器 | 声明 | 作用 |
+|---|---|---|
+| `.iter-block` | `contain: layout paint; content-visibility: auto; contain-intrinsic-size: auto 320px` | 失效范围限定在块内；离屏块跳过 style/layout/paint |
+| `.iter-block-live` | `content-visibility: visible` | 进行中迭代每帧被改，跳过无收益且抖 |
+| `.iter-blocks` | `display: block` | **必须**：Chrome 不对 flex 子项应用离屏跳过 |
+| `.iter-block + .iter-block` | `margin-top: .25rem` | 复现原 `gap-1` 间距 |
+| `.virt-row` | `contain: layout` | live 行长高不触发列表整体重算 |
+
+不变量：**追加第 N+1 个迭代块的代价 = O(1)**；参与渲染的块数由视口决定
+（E2E 实测：15 迭代 → 3 块，45 迭代 → 仍 3 块）。
+
+守护：`TurnBody.test.tsx`（类名）、`index.test.ts`（CSS 声明）、
+`e2e/turn-iter-perf.spec.ts`（真实 Chromium，`checkVisibility({contentVisibilityAuto:true})` 判据）。
+
