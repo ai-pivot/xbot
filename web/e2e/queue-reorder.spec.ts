@@ -38,6 +38,71 @@ const longQueueItems = Array.from({ length: 12 }, (_, i) => ({
   enqueued_at: i + 1,
 }))
 
+/**
+ * 60 条队列 —— 验证「长队列下拖到容器边缘会自动滚动，从而能把条目拖到
+ * 初始可见窗口之外」。实测几何：clientHeight≈352 / scrollHeight≈2760。
+ */
+const hugeQueueItems = Array.from({ length: 60 }, (_, i) => ({
+  msg_id: `q${i + 1}`,
+  turn_id: 200 + i,
+  content: `/goal 继续迭代 ${i + 1}`,
+  preview: `/goal 继续迭代 ${i + 1} —— 一条足够长的预览文本用于截断与滚动验证`,
+  source: 'user',
+  enqueued_at: i + 1,
+}))
+
+/** 列表容器当前的 scrollTop（自动滚动的观测量）。 */
+async function listScrollTop(page: Page): Promise<number> {
+  return page.getByTestId('staging-list').evaluate((el) => (el as HTMLElement).scrollTop)
+}
+
+/** 当前**完整**落在列表可视窗口内的卡片 msg_id（按 DOM 顺序）。 */
+async function visibleCardIDs(page: Page): Promise<string[]> {
+  return page.getByTestId('staging-list').evaluate((node) => {
+    const list = node as HTMLElement
+    const lb = list.getBoundingClientRect()
+    return Array.from(list.querySelectorAll('[data-queue-id]'))
+      .filter((c) => {
+        const r = c.getBoundingClientRect()
+        return r.top >= lb.top - 1 && r.bottom <= lb.bottom + 1
+      })
+      .map((c) => c.getAttribute('data-queue-id') ?? '')
+  })
+}
+
+/** 在拖拽柄上按下（指针停在卡片处，**尚未进入**边缘热区）。 */
+async function pressHandle(page: Page, srcID: string) {
+  const list = page.getByTestId('staging-list')
+  const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
+  const hb = await handle.boundingBox()
+  const lb = await list.boundingBox()
+  if (!hb || !lb) throw new Error('missing bounding box for the drag')
+  // 注意：不要用 locator.hover() —— 它内部做 scrollIntoViewIfNeeded，会先给列表
+  // 制造一段 ~11px 的杂散滚动，污染「拖拽期间 scrollTop 是否增长」的判据。
+  await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2)
+  await page.mouse.down()
+  return { lb }
+}
+
+/** 把指针移到容器的上沿/下沿热区（距内沿 8px ≤ 组件 EDGE_ZONE_PX=24）并保持。 */
+async function moveToEdge(page: Page, lb: { x: number; y: number; width: number; height: number }, edge: 'top' | 'bottom') {
+  const edgeY = edge === 'bottom' ? lb.y + lb.height - 8 : lb.y + 8
+  await page.mouse.move(lb.x + lb.width / 2, edgeY, { steps: 8 })
+}
+
+/** 连续采样 scrollTop，直到满足 stop 或超时；用于观察自动滚动的单调性。 */
+async function sampleScroll(page: Page, stop: (v: number) => boolean, ms = 6000): Promise<number[]> {
+  const samples: number[] = []
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    const cur = await listScrollTop(page)
+    samples.push(cur)
+    if (stop(cur)) break
+    await page.waitForTimeout(60)
+  }
+  return samples
+}
+
 let seqCounter = 0
 
 /** Inject an SSE frame into the app's mocked EventSource listeners. */
@@ -276,5 +341,141 @@ test.describe('staging tray drag-to-reorder', () => {
 
     // Order unchanged.
     await expect(page.locator('[data-queue-id]').first()).toHaveAttribute('data-queue-id', 'm1')
+  })
+})
+
+/**
+ * 长队列（60 条）下的**边缘自动滚动**。
+ *
+ * 缺口：拖拽走 pointer 事件 + setPointerCapture（不是原生滚动），浏览器不会替我们滚
+ * ⇒ 指针停在容器下沿而 scrollTop 恒为 0，条目永远拖不出可见窗口。
+ * 本组用真实鼠标事件复现：按住拖拽柄 → 指针停在下/上沿热区并保持 → 观察 scrollTop。
+ */
+test.describe('staging tray drag-to-reorder — long queue edge auto-scroll', () => {
+  test.beforeEach(() => {
+    seqCounter = 0
+  })
+
+  test('holding at the list bottom edge auto-scrolls and drops the card outside the initial window', async ({ page }) => {
+    const calls: ReorderCall[] = []
+    await setupMock(page, calls, hugeQueueItems)
+    await login(page)
+    await expect(page.getByTestId('staging-tray')).toBeVisible()
+    await page.getByTestId('staging-toggle').click()
+
+    const list = page.getByTestId('staging-list')
+    await expect(list).toBeVisible()
+    await expect(page.locator('[data-queue-id]')).toHaveCount(60)
+
+    const geo = await list.evaluate((node) => {
+      const l = node as HTMLElement
+      return { clientHeight: l.clientHeight, scrollHeight: l.scrollHeight, scrollTop: l.scrollTop }
+    })
+    expect(geo.scrollHeight).toBeGreaterThan(geo.clientHeight) // 长队列 ⇒ 必然内部滚动
+    expect(geo.scrollTop).toBe(0)
+
+    const initiallyVisible = await visibleCardIDs(page)
+    expect(initiallyVisible.length).toBeGreaterThan(2)
+
+    // 按下第 1 张卡（指针仍在列表内、未进热区）——此时不应有任何滚动
+    const { lb } = await pressHandle(page, 'q1')
+    expect(await listScrollTop(page)).toBe(0)
+    // 把指针移到容器下沿热区（距内沿 8px ≤ 24px）并保持
+    await moveToEdge(page, lb, 'bottom')
+
+    // 指针一动不动 —— rAF 自动滚动必须启动：scrollTop 单调不减，且最终滚过一整屏
+    const samples = await sampleScroll(page, (v) => v > geo.clientHeight)
+    expect(samples.length).toBeGreaterThan(2)
+    for (let i = 1; i < samples.length; i++) expect(samples[i]).toBeGreaterThanOrEqual(samples[i - 1])
+    expect(samples[samples.length - 1]).toBeGreaterThan(0) // ← 未修复时这里恒为 0（红灯）
+    expect(samples[samples.length - 1]).toBeGreaterThan(geo.clientHeight)
+
+    // 松手：落到「此刻可见的最后一张卡」的下半 ⇒ 落点在**初始可见窗口之外**
+    const visibleNow = await visibleCardIDs(page)
+    const lastVisible = visibleNow[visibleNow.length - 1]
+    expect(lastVisible).toBeTruthy()
+    const tb = await page.locator(`[data-queue-id="${lastVisible}"]`).boundingBox()
+    if (!tb) throw new Error('missing bounding box for the last visible card')
+    await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height - 4)
+    await page.mouse.up()
+
+    await expect.poll(() => calls.length).toBe(1)
+    expect(calls[0].msg_ids).toHaveLength(60)
+    const movedIndex = calls[0].msg_ids.indexOf('q1')
+    expect(movedIndex).toBeGreaterThan(initiallyVisible.length) // 真的拖到了屏幕外
+
+    // 拖拽结束后不再继续滚动（防 rAF 泄漏）：先让落定后的重渲染稳定，再连续观测两窗
+    await page.waitForTimeout(300)
+    const settled = await listScrollTop(page)
+    await page.waitForTimeout(300)
+    expect(await listScrollTop(page)).toBe(settled)
+  })
+
+  test('holding at the list top edge scrolls back up (reverse direction)', async ({ page }) => {
+    const calls: ReorderCall[] = []
+    await setupMock(page, calls, hugeQueueItems)
+    await login(page)
+    await expect(page.getByTestId('staging-tray')).toBeVisible()
+    await page.getByTestId('staging-toggle').click()
+    await expect(page.locator('[data-queue-id]')).toHaveCount(60)
+
+    // 先制造一段可回滚的滚动量（同时让想拖的卡进入窗口）
+    const list = page.getByTestId('staging-list')
+    await list.evaluate((node) => {
+      ;(node as HTMLElement).scrollTop = 300
+    })
+    const before = await listScrollTop(page)
+    expect(before).toBeGreaterThan(0)
+
+    const visible = await visibleCardIDs(page)
+    const dragged = visible[visible.length - 1]
+    expect(dragged).toBeTruthy()
+
+    await pressHandle(page, dragged).then(({ lb }) => moveToEdge(page, lb, 'top'))
+
+    const samples = await sampleScroll(page, (v) => v === 0)
+    expect(samples.length).toBeGreaterThan(0)
+    for (let i = 1; i < samples.length; i++) expect(samples[i]).toBeLessThanOrEqual(samples[i - 1])
+    expect(samples[samples.length - 1]).toBeLessThan(before) // ← 未修复时恒等于 before（红灯）
+    expect(samples[samples.length - 1]).toBe(0) // 一路滚到顶
+
+    // 落到此刻第一张可见卡的上半 ⇒ 被拖的卡挪到窗口顶部
+    const visibleNow = await visibleCardIDs(page)
+    const firstVisible = visibleNow[0]
+    const fb = await page.locator(`[data-queue-id="${firstVisible}"]`).boundingBox()
+    if (!fb) throw new Error('missing bounding box for the first visible card')
+    await page.mouse.move(fb.x + fb.width / 2, fb.y + 8)
+    await page.mouse.up()
+
+    await expect.poll(() => calls.length).toBe(1)
+    const movedIndex = calls[0].msg_ids.indexOf(dragged)
+    const originalIndex = hugeQueueItems.findIndex((i) => i.msg_id === dragged)
+    expect(movedIndex).toBeLessThan(originalIndex)
+  })
+
+  test('pointerup while still inside the edge hot zone stops the loop (no rAF leak)', async ({ page }) => {
+    const calls: ReorderCall[] = []
+    await setupMock(page, calls, hugeQueueItems)
+    await login(page)
+    await expect(page.getByTestId('staging-tray')).toBeVisible()
+    await page.getByTestId('staging-toggle').click()
+    await expect(page.locator('[data-queue-id]')).toHaveCount(60)
+
+    const { lb } = await pressHandle(page, 'q1')
+    await moveToEdge(page, lb, 'bottom')
+    // 自动滚动确实起来了
+    await expect.poll(() => listScrollTop(page), { timeout: 5000 }).toBeGreaterThan(100)
+
+    // 指针**仍停在热区内**直接松手 —— 循环必须停
+    await page.mouse.up()
+    // 先让「落定后按新顺序重渲染」的那次重排稳定下来（它自己会让 scrollTop 小幅
+    // 移动，与 rAF 泄漏无关），再按判据要求观测「pointerup 后 300ms 不再变化」。
+    await page.waitForTimeout(300)
+    const settled = await listScrollTop(page)
+    expect(settled).toBeGreaterThan(0)
+    await page.waitForTimeout(300)
+    expect(await listScrollTop(page)).toBe(settled)
+    await page.waitForTimeout(300)
+    expect(await listScrollTop(page)).toBe(settled)
   })
 })

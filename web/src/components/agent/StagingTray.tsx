@@ -21,7 +21,7 @@
  *
  * 动画：CSS keyframes（fadeUp 入场、左滑淡出取消、队首呼吸进度条）
  */
-import { memo, useState, useCallback, useRef } from 'react'
+import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox, User, GripVertical } from 'lucide-react'
 import type { QueueItemPayload } from '@/types/shared'
 import { cn } from '@/lib/utils'
@@ -89,6 +89,20 @@ function injectStyles() {
   el.textContent = STAGING_TRAY_STYLES
   document.head.appendChild(el)
 }
+
+// ─── 拖拽边缘自动滚动参数（长队列拖拽的根因修复）─────────────────────
+//
+// 拖拽用 pointer 事件实现（不是 HTML5 DnD、也不是原生滚动），**浏览器不会替我们
+// 滚动容器** ⇒ 指针停在容器上/下沿时，条目永远到不了可见窗口之外。
+// 因此必须自己按指针位置驱动滚动：
+//   · 指针进入距容器内沿 EDGE_ZONE_PX 的热区 → 开始 rAF 滚动，指针离开热区立即停；
+//   · 速度随「到边缘的距离」线性渐变：热区外沿 SCROLL_MIN，贴到边缘 SCROLL_MAX；
+//   · pointerup / pointercancel / 组件卸载都必须取消 rAF（不留循环泄漏）。
+const EDGE_ZONE_PX = 24
+const SCROLL_MIN_PX_PER_FRAME = 6
+const SCROLL_MAX_PX_PER_FRAME = 20
+/** 60Hz 一帧的毫秒数 —— 把「px/帧」标定到真实帧间隔（120Hz 屏不会滚成两倍速）。 */
+const FRAME_MS = 16.7
 
 // ─── 类型 ────────────────────────────────────────────────────────────
 
@@ -312,6 +326,87 @@ export const StagingTray = memo(function StagingTray({
   const [dropTarget, setDropTarget] = useState<{ id: string; before: boolean } | null>(null)
   const dropRef = useRef<{ id: string; before: boolean } | null>(null)
   const dragIDRef = useRef<string | null>(null)
+  /** 列表滚动容器 —— 拖拽期间由 rAF 循环按指针位置滚动它。 */
+  const listRef = useRef<HTMLDivElement | null>(null)
+  /** 当前在跑的自动滚动 rAF 句柄（null = 没有循环在跑）。 */
+  const rafRef = useRef<number | null>(null)
+  /** 指针最后位置：容器滚动时指针可能一动没动，rAF tick 仍要知道它在哪。 */
+  const pointerRef = useRef<{ x: number; y: number } | null>(null)
+
+  /** 指针位置 → 落点（`elementFromPoint` + 卡片上下半判定）。
+   *  pointermove **与**自动滚动 rAF tick 共用：容器滚动会让「指针下方是哪张卡」
+   *  变化，指针没动也必须重算，否则落点停在滚动前的旧位置。 */
+  const resolveDropTargetAt = useCallback((x: number, y: number) => {
+    const drag = dragIDRef.current
+    if (!drag) return
+    const el = document.elementFromPoint(x, y)
+    const card = (el as HTMLElement | null)?.closest?.('[data-queue-id]') as HTMLElement | null
+    if (!card) return
+    const id = card.getAttribute('data-queue-id')
+    if (!id || id === drag) {
+      if (dropRef.current) { dropRef.current = null; setDropTarget(null) }
+      return
+    }
+    const rect = card.getBoundingClientRect()
+    const before = y < rect.top + rect.height / 2
+    const cur = dropRef.current
+    if (cur && cur.id === id && cur.before === before) return
+    dropRef.current = { id, before }
+    setDropTarget({ id, before })
+  }, [])
+
+  /** 取消自动滚动循环（幂等）。pointerup / pointercancel / 离开热区 / 卸载都走这里。 */
+  const stopAutoScroll = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+  }, [])
+
+  /** y 在哪个热区 + 该处速度：速度随「离内沿的距离」线性渐变（6→20px/帧）。 */
+  const edgeScrollFor = useCallback((y: number): { dir: -1 | 0 | 1; speed: number } => {
+    const list = listRef.current
+    if (!list) return { dir: 0, speed: 0 }
+    const rect = list.getBoundingClientRect()
+    const ramp = (distFromEdge: number) =>
+      SCROLL_MIN_PX_PER_FRAME +
+      (SCROLL_MAX_PX_PER_FRAME - SCROLL_MIN_PX_PER_FRAME) *
+        (1 - Math.min(Math.max(distFromEdge, 0), EDGE_ZONE_PX) / EDGE_ZONE_PX)
+    if (y < rect.top + EDGE_ZONE_PX) return { dir: -1, speed: ramp(y - rect.top) }
+    if (y > rect.bottom - EDGE_ZONE_PX) return { dir: 1, speed: ramp(rect.bottom - y) }
+    return { dir: 0, speed: 0 }
+  }, [])
+
+  /** 启动自动滚动循环（已在跑则不重复启动）。 */
+  const startAutoScroll = useCallback(() => {
+    if (rafRef.current !== null) return
+    let last = performance.now()
+    const tick = (now: number) => {
+      rafRef.current = null
+      const list = listRef.current
+      const p = pointerRef.current
+      // 拖拽已结束 / 组件已卸载 / 没有指针位置 → 彻底停（不再排下一帧，无泄漏）
+      if (!dragIDRef.current || !p || !list) return
+      const { dir, speed } = edgeScrollFor(p.y)
+      if (dir === 0) return
+      const dt = Math.min(now - last, 50)
+      const step = Math.max(1, Math.round(speed * (dt / FRAME_MS)))
+      const prev = list.scrollTop
+      list.scrollTop = prev + dir * step
+      if (list.scrollTop !== prev) {
+        // 几何变了 → 用**未移动的指针**重新解析落点（滚完后指针下方的卡已不同）
+        resolveDropTargetAt(p.x, p.y)
+      }
+      // 只在「热区内 + 还能滚」时续帧：到顶/到底就自然停，不空转 rAF
+      const max = list.scrollHeight - list.clientHeight
+      const canScroll = dir === 1 ? list.scrollTop < max : list.scrollTop > 0
+      if (canScroll) {
+        last = now
+        rafRef.current = requestAnimationFrame(tick)
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick)
+  }, [edgeScrollFor, resolveDropTargetAt])
 
   const handleHandleDown = useCallback((e: React.PointerEvent, msgID: string) => {
     if (!onReorder || !msgID) return
@@ -322,34 +417,29 @@ export const StagingTray = memo(function StagingTray({
     } catch {
       // capture 不可用（合成事件/老浏览器）—— 拖拽降级为"仅按下即取消"
     }
+    stopAutoScroll()
     dragIDRef.current = msgID
+    pointerRef.current = { x: e.clientX, y: e.clientY }
     dropRef.current = null
     setDropTarget(null)
     setDragID(msgID)
-  }, [onReorder])
+  }, [onReorder, stopAutoScroll])
 
   const handleDragMove = useCallback((e: React.PointerEvent) => {
-    const drag = dragIDRef.current
-    if (!drag) return
-    const el = document.elementFromPoint(e.clientX, e.clientY)
-    const card = (el as HTMLElement | null)?.closest?.('[data-queue-id]') as HTMLElement | null
-    if (!card) return
-    const id = card.getAttribute('data-queue-id')
-    if (!id || id === drag) {
-      if (dropRef.current) { dropRef.current = null; setDropTarget(null) }
-      return
-    }
-    const rect = card.getBoundingClientRect()
-    const before = e.clientY < rect.top + rect.height / 2
-    const cur = dropRef.current
-    if (cur && cur.id === id && cur.before === before) return
-    dropRef.current = { id, before }
-    setDropTarget({ id, before })
-  }, [])
+    if (!dragIDRef.current) return
+    pointerRef.current = { x: e.clientX, y: e.clientY }
+    resolveDropTargetAt(e.clientX, e.clientY)
+    // 进入上/下沿热区 → 持续滚动；离开热区 → 立即停（不残留 rAF）
+    if (edgeScrollFor(e.clientY).dir === 0) stopAutoScroll()
+    else startAutoScroll()
+  }, [resolveDropTargetAt, edgeScrollFor, startAutoScroll, stopAutoScroll])
 
   const handleDragEnd = useCallback((commit: boolean) => {
     const drag = dragIDRef.current
     const target = dropRef.current
+    // 任何一次结束（pointerup / pointercancel）都必须停掉自动滚动循环
+    stopAutoScroll()
+    pointerRef.current = null
     dragIDRef.current = null
     dropRef.current = null
     setDragID(null)
@@ -359,7 +449,10 @@ export const StagingTray = memo(function StagingTray({
     // place) — skip the RPC entirely then.
     const next = computeReorder(items.map((i) => i.msg_id), drag, target.id, target.before)
     if (next) onReorder(next)
-  }, [items, onReorder])
+  }, [items, onReorder, stopAutoScroll])
+
+  // 防御性：拖拽途中面板被卸载（收起/切会话）也要取消 rAF，不留回调
+  useEffect(() => stopAutoScroll, [stopAutoScroll])
 
   // 队列为空时不渲染任何 DOM（hooks must be called before early return — React rules-of-hooks）
   if (items.length === 0) return null
@@ -414,6 +507,7 @@ export const StagingTray = memo(function StagingTray({
       {collapsed ? null : (
         <div
           data-testid="staging-list"
+          ref={listRef}
           className="mt-1 flex max-h-[min(50vh,22rem)] flex-col gap-1 overflow-y-auto overscroll-contain"
         >
           {items.map((item, i) => (
