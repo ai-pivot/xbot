@@ -14,21 +14,49 @@
  * 窗口化**：远离视口的块只留外壳 + 固定高度，内容卸载；每屏真实挂载的迭代内容由
  * **视口**决定，与 N 无关（实测 N=15 → 2 块；N=60 → 5 块；节点 2348→~350）。
  *
+ * PERF-3（2026-09-13「busy 且 turn 特别长（几千 iter）时手机端必卡，切会话/刷新都没用」）：
+ * PERF-1 只挡住了"**子组件重渲染**"，没挡住 **CommittedTurn 自己每帧创建 N 个元素**：
+ * 每个渲染帧 `contiguous.map(...)` → N 个 <IterationBlock> 元素 + React reconcile
+ * 克隆 N 个 fiber + GC。busy 时每秒几十帧、N=3000 ≈ **9 万元素/秒** → 主线程饱和，
+ * 于是 busy 必卡、turn 越长越卡、刷新无效（流还在继续）。**几何/高度模型保持不变**
+ * （每块一个外壳；离屏且已结算的块卸载内容、用实测高度占位），只把每帧分配量从
+ * O(N) 降到 O(新增/变化)：
+ *   1. **分块冻结**：迭代按 `COMMITTED_CHUNK_SIZE` 塞进 memo 的 <CommittedChunk>；
+ *      已冻结 chunk 的元素对象与 props（items/mutedHeights 数组）逐帧**原样复用** →
+ *      React 在该子树直接 bail（连 fiber 都不重建）。父层每帧只处理 N/64 个 chunk 元素。
+ *   2. **决策脏标记**：窗口化决策（muted / 占位高度）只在"决策输入变化"的帧
+ *      （IO / RO / settle / 复核 / verifying）重算；其余帧只做一次 O(N) **指针比较**
+ *      （零分配、零对象创建）。
+ *   3. **hKey 缓存**：`turnID:iteration` 字符串按迭代对象身份（WeakMap）缓存，
+ *      不再每帧为每个迭代重建。
+ *   4. **连续前缀增量扫描**：`continuousIterations` 的增量版，只扫"新增的尾部"
+ *      （锚点校验已确认前缀；不符即退化为全量扫描，语义与 canonical 实现一致）。
+ *
  * ⚠️ 正确性铁律（两条都是真实事故的教训）：
  *   1. **高度缓存必须实例作用域**（2026-09-13「切换 session 后出现空 tool iter」）：
  *      key 只能是 `turnID:iteration`，而 turnID 每会话独立 → 模块级缓存会让
  *      会话 A 的 `1084:810` 与会话 B 的同一 key 撞车 → 切到 B 后 B 的块读到 A 的
  *      "已结算高度" → 立刻被判定可冻结 → 内容卸载 → **空块**。⇒ 每个
- *      CommittedTurn 实例各持一份 `createIterationHeightTracker()`。
+ *      CommittedTurn 实例各持一份 `createIterationHeightTracker()`（分块元素缓存同理，
+ *      也是实例作用域）。
  *   2. **只有 settled 的高度才允许冻结** + **冻结后一次性复核**（首版把瞬态测量
  *      当成可信高度 → 卸载后内容永久消失）。`iterationHeight.ts` 里 settle 语义
  *      要求同值连续两次测量（间隔 ≥200ms）；`scheduleSettleSample` 负责补第二次
  *      采样（ResizeObserver 只在尺寸变化时回调，不会自己再报一次）；冻结后
  *      `VERIFY_DELAY_MS` 再挂一帧实测，不符即解冻重稳。
  *   3. 只对迭代号可解析（Number.isFinite）的块窗口化；从未渲染过的块必须挂载
- *      （否则永远量不到高度）；jsdom / 无 IO+RO 环境退化为全量渲染。
+ *      （否则永远量不到高度）；jsdom / 无 IO+RO 环境退化为全量渲染（分块/复用
+ *      逻辑照常生效，只是永不 muted）。
  */
-import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type ReactElement,
+} from 'react'
 
 import { IterationGroup } from './IterationHistory'
 import { LiveIteration } from './LiveIteration'
@@ -52,7 +80,7 @@ interface TurnBodyProps {
 }
 
 interface CommittedTurnProps {
-  /** 连续前缀迭代（useMemo 于 iterations —— 流式帧引用稳定）。 */
+  /** 连续前缀迭代（增量扫描于 iterations —— 无变化时引用稳定）。 */
   contiguous: WebIteration[]
   turnID?: number
 }
@@ -63,6 +91,17 @@ const canWindow = (): boolean =>
 
 /** 冻结后的复核延迟：足够覆盖字体/异步 markdown 的定形时间。 */
 const VERIFY_DELAY_MS = 400
+
+/**
+ * 分块冻结单元大小（PERF-3）：每 64 个迭代一个 chunk。
+ *
+ * 为什么必须分块（只"复用迭代元素对象"还不够）：即使每个 <IterationBlock> 元素
+ * 对象被复用，父层每帧仍要把 N 个子元素交给 React reconcile（N 次 fiber 克隆 +
+ * key 比较 = O(N) 分配）。把 64 个迭代塞进一个 memo 的 <CommittedChunk> 后，父层
+ * 每帧只面对 N/64 个 chunk 元素；已冻结 chunk 连 props 都不变 → memo 直接 bail，
+ * 其内部 64 个迭代连 fiber 都不重建。⇒ 每帧代价 = 尾部 chunk（≤64）+ O(N/64)。
+ */
+const COMMITTED_CHUNK_SIZE = 64
 
 interface IterationBlockProps {
   iter: WebIteration
@@ -77,7 +116,7 @@ interface IterationBlockProps {
 /**
  * IterationBlock — 单个迭代块（外壳 + 内容/占位）。
  *
- * memo 的 props 只有 `iter`（contiguous 内引用稳定）、`turnID`、`muted`/`mutedHeight`
+ * memo 的 props 只有 `iter`（chunk 内引用稳定）、`turnID`、`muted`/`mutedHeight`
  * （窗口化决策，仅跨越视口边界时翻转）与稳定的 `register` —— 流式帧不会重渲染已提交
  * 迭代的内容（turn_perf.test.tsx 守护）。
  */
@@ -123,8 +162,159 @@ const IterationBlock = memo(function IterationBlock({
   )
 })
 
+interface CommittedChunkProps {
+  /** 冻结后的迭代切片：**一旦冻结，数组引用不再变化**（尾部 chunk 除外）。 */
+  items: WebIteration[]
+  turnID?: number
+  /** 与 items 一一对应：undefined = 渲染内容；number = 窗口化卸载并以此高度占位。 */
+  mutedHeights: (number | undefined)[]
+  register: (hKey: string, el: HTMLDivElement | null) => void
+}
+
 /**
- * CommittedTurn — 已提交迭代的唯一渲染点（memo 边界 + 迭代级窗口化 + 冻结复核）。
+ * CommittedChunk — 64 个迭代的冻结单元（PERF-3 的 memo 边界）。
+ *
+ * props 全引用比较：`items`/`mutedHeights` 数组一旦冻结就不再变化，`turnID`/
+ * `register` 恒定 ⇒ 流式帧、以及窗口化决策未变的脏帧，本子树整体 bail（不重建
+ * 内部 64 个 <IterationBlock>）。
+ */
+const CommittedChunk = memo(function CommittedChunk({
+  items,
+  turnID,
+  mutedHeights,
+  register,
+}: CommittedChunkProps) {
+  return (
+    <>
+      {items.map((iter, i) => (
+        <IterationBlock
+          key={iter.iteration ?? i}
+          iter={iter}
+          turnID={turnID}
+          muted={mutedHeights[i] !== undefined}
+          mutedHeight={mutedHeights[i]}
+          register={register}
+        />
+      ))}
+    </>
+  )
+})
+
+/** 一个已冻结/正在流式的 chunk 的缓存条目（实例作用域）。 */
+interface ChunkEntry {
+  /** 该 chunk 的迭代切片（引用稳定 = 可复用）。 */
+  items: WebIteration[]
+  /** 与 items 一一对应的占位高度（undefined = 渲染内容）。 */
+  mutedHeights: (number | undefined)[]
+  /** 上一帧创建的元素对象（props 未变时原样复用 → React bail）。 */
+  element: ReactElement
+}
+
+// ── 连续前缀的增量扫描（PERF-3 #4） ─────────────────────────────────────────
+
+/** 锚点步长：每 32 项记一个元素引用，用于廉价校验"已确认前缀没被换掉"。 */
+const CONTIGUOUS_ANCHOR_STRIDE = 32
+
+interface ContiguousScan {
+  /** 本次扫描对应的输入数组。 */
+  input: WebIteration[]
+  /** 连续前缀（= 渲染输入）。 */
+  out: WebIteration[]
+  /** out 内每 ANCHOR_STRIDE 项记一个引用（校验前缀未变）。 */
+  anchors: WebIteration[]
+  /** 已确认的前缀长度（恒等于 out.length）。 */
+  scanned: number
+  /** 是否已遇到断点（此后新增元素不再影响结果）。 */
+  stopped: boolean
+}
+
+/** 记录锚点：out 内每 ANCHOR_STRIDE 项的第一个元素引用（anchors[0] = input[0]）。 */
+function buildAnchors(iters: WebIteration[], upto: number): WebIteration[] {
+  const anchors: WebIteration[] = []
+  for (let i = 0; i < upto; i += CONTIGUOUS_ANCHOR_STRIDE) anchors.push(iters[i])
+  return anchors
+}
+
+/**
+ * 全量扫描 = 直接复用 canonical 实现（`progressStore.continuousIterations`），
+ * 保证回退路径的语义与既有实现/测试单一来源。
+ */
+function fullScan(iters: WebIteration[]): ContiguousScan {
+  const out = continuousIterations(iters)
+  return {
+    input: iters,
+    out,
+    anchors: buildAnchors(iters, out.length),
+    scanned: out.length,
+    stopped: out.length < iters.length,
+  }
+}
+
+/**
+ * 从已有前缀继续扫描（逻辑与 `progressStore.continuousIterations` 的循环逐行同构：
+ * 同号记录跳过、遇到断点即停）。只在"已确认前缀未变 + 输入变长"时调用。
+ */
+function scanTail(iters: WebIteration[], out: WebIteration[]): ContiguousScan {
+  let stopped = false
+  for (let i = out.length; i < iters.length; i++) {
+    const prev = out[out.length - 1]
+    const curr = iters[i]
+    if (curr.iteration === prev.iteration) continue
+    if (curr.iteration !== prev.iteration + 1) {
+      stopped = true
+      break
+    }
+    out.push(curr)
+  }
+  return {
+    input: iters,
+    out,
+    anchors: buildAnchors(iters, out.length),
+    scanned: out.length,
+    stopped,
+  }
+}
+
+/** 已确认前缀 [0, scanned) 是否仍是同一批元素（锚点 + 首项 + 断点前一项）。 */
+function prefixUnchanged(prev: ContiguousScan, iters: WebIteration[]): boolean {
+  if (prev.scanned === 0) return false // 无缓存前缀可用 → 交给全量扫描
+  if (prev.scanned > iters.length) return false
+  if (iters[0] !== prev.anchors[0]) return false
+  if (iters[prev.scanned - 1] !== prev.input[prev.scanned - 1]) return false
+  for (let k = 1; k < prev.anchors.length; k++) {
+    if (iters[k * CONTIGUOUS_ANCHOR_STRIDE] !== prev.anchors[k]) return false
+  }
+  return true
+}
+
+/**
+ * 增量版 `continuousIterations`：输入在实践中**只追加**（appendIterations /
+ * mergeIterations 的 union 只增语义，见 reduce.ts 的 I4；同号快照是"权威覆盖"，
+ * 不会换成别号），因此只需扫新增的尾部。已确认前缀用锚点引用廉价校验，任何一项
+ * 不符（数组变短 / 前缀被换）即退化为全量扫描 —— 语义与 canonical 实现一致。
+ */
+function extendContiguous(prev: ContiguousScan | null, iters: WebIteration[]): ContiguousScan {
+  if (prev === null) return fullScan(iters)
+  if (iters === prev.input) return prev
+  if (iters.length >= prev.scanned && prefixUnchanged(prev, iters)) {
+    if (prev.stopped || iters.length === prev.scanned) {
+      // 已断（尾部进不了前缀）或没有新增 → 结果不变，只更新 input 引用
+      return {
+        input: iters,
+        out: prev.out,
+        anchors: prev.anchors,
+        scanned: prev.scanned,
+        stopped: prev.stopped,
+      }
+    }
+    return scanTail(iters, prev.out.slice())
+  }
+  return fullScan(iters)
+}
+
+/**
+ * CommittedTurn — 已提交迭代的唯一渲染点（memo 边界 + 迭代级窗口化 + 冻结复核 +
+ * 分块冻结/元素复用）。
  */
 const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: CommittedTurnProps) {
   const [, bumpTick] = useReducer((n: number) => n + 1, 0)
@@ -143,6 +333,54 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
   const [verifying, setVerifying] = useState<ReadonlySet<string>>(() => new Set())
   /** 待补充的"第二次一致采样"定时器（RO 仅在尺寸变化时回调，需主动补一次）。 */
   const settleTimers = useRef<Map<string, number>>(new Map())
+  /** 分块元素缓存：**实例作用域**（与 tracker 同理，绝不跨会话串味）。 */
+  const chunkCache = useRef<Map<number, ChunkEntry>>(new Map())
+  /**
+   * 决策脏标记（PERF-3）：窗口化决策的**任何一个输入**变化都要置位 ——
+   * IO（near）/ RO（高度）/ settle 采样 / 冻结复核 / verifying。脏帧才重算
+   * heights；干净帧只做 O(N) 指针比较并复用冻结 chunk（零分配）。
+   */
+  const dirty = useRef(true)
+  /** `turnID:iteration` 字符串按迭代对象身份缓存（免掉每帧 N 次字符串拼接）。 */
+  const hKeyCache = useRef(new WeakMap<WebIteration, { turnID: number | undefined; key: string }>())
+  const turnIDRef = useRef<number | undefined>(turnID)
+  /** 本帧新冻结、待复核的 key（渲染期收集，effect 里建定时器）。 */
+  const pendingVerify = useRef<string[]>([])
+
+  /** 任何"决策输入"变化 → 置脏 + 触发一次重渲染。 */
+  const invalidate = useCallback(() => {
+    dirty.current = true
+    bumpTick()
+  }, [])
+
+  /** `turnID:iteration` —— 按迭代对象身份缓存（对象不可变，iteration 不会变）。 */
+  const hKeyFor = (iter: WebIteration): string => {
+    const cached = hKeyCache.current.get(iter)
+    if (cached !== undefined && cached.turnID === turnID) return cached.key
+    const key = iterationHeightKey(turnID, iter.iteration)
+    hKeyCache.current.set(iter, { turnID, key })
+    return key
+  }
+
+  /**
+   * 本帧该迭代的占位高度：undefined = 渲染内容；number = 窗口化卸载（实测高度）。
+   * 与既有决策完全同构：canWindow && 高度已测 && settled && 不在视口附近 &&
+   * 不在复核中。
+   */
+  const mutedHeightFor = (
+    iter: WebIteration,
+    win: boolean,
+    near: Set<number>,
+    verifyingSet: ReadonlySet<string>,
+  ): number | undefined => {
+    if (!win || !Number.isFinite(iter.iteration)) return undefined
+    const hKey = hKeyFor(iter)
+    const height = tracker.get(hKey)
+    if (height === undefined || !tracker.isSettled(hKey)) return undefined
+    if (near.has(iter.iteration as number)) return undefined
+    if (verifyingSet.has(hKey)) return undefined
+    return height
+  }
 
   /**
    * 安排一次 settle 复核采样：`ITERATION_HEIGHT_SETTLE_MS` 后重新量一次。
@@ -157,11 +395,11 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         const el = elements.current.get(hKey)
         if (!el) return
         const res = tracker.record(hKey, el.getBoundingClientRect().height, performance.now())
-        if (res.settled || res.changed) bumpTick()
+        if (res.settled || res.changed) invalidate()
       }, ITERATION_HEIGHT_SETTLE_MS + 50)
       settleTimers.current.set(hKey, timer)
     },
-    [tracker],
+    [tracker, invalidate],
   )
 
   // 观察器只建一次（整组块共用一个 RO / 一个 IO）。
@@ -182,7 +420,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
             changed = true
           }
         }
-        if (changed) bumpTick()
+        if (changed) invalidate()
       },
       // 视口上下各扩 1.2 屏 —— 滚动时下一批块已挂载好，避免"滚到才渲染"的白屏。
       { rootMargin: '120% 0px 120% 0px' },
@@ -203,7 +441,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
           changed = true // 刚结算 → 允许冻结（需要一次渲染把 muted 决策落下）
         }
       }
-      if (changed) bumpTick()
+      if (changed) invalidate()
     })
     ioRef.current = io
     roRef.current = ro
@@ -217,7 +455,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       for (const t of settleTimers.current.values()) window.clearTimeout(t)
       settleTimers.current.clear()
     }
-  }, [scheduleSettleSample, tracker])
+  }, [scheduleSettleSample, tracker, invalidate])
 
   const register = useCallback((hKey: string, el: HTMLDivElement | null) => {
     const prev = elements.current.get(hKey)
@@ -232,26 +470,113 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       ioRef.current?.observe(el)
     }
   }, [])
+  const registerStable = register
 
-  // 本帧的窗口化决策（muted = 已稳定 + 不在视口附近 + 迭代号可解析）。
-  const decisions = contiguous.map((iter, i) => {
-    const hKey = iterationHeightKey(turnID, iter.iteration)
-    const height = tracker.get(hKey)
-    const settled = tracker.isSettled(hKey)
-    const near = iter.iteration !== undefined && nearRef.current.has(iter.iteration)
-    const finite = Number.isFinite(iter.iteration)
-    const wantsMute = canWindow() && height !== undefined && settled && !near && finite
-    const muted = wantsMute && !verifying.has(hKey)
-    return { iter, i, hKey, muted, wantsMute, height }
-  })
+  // ── 分块渲染（几何模型不变：每块一个外壳；只重建"变化"的 chunk） ──
+  const total = contiguous.length
+  const chunkCount = Math.ceil(total / COMMITTED_CHUNK_SIZE)
+  const cache = chunkCache.current
+  if (turnIDRef.current !== turnID) {
+    // turnID 变了 ⇒ 所有 hKey / 决策失效
+    turnIDRef.current = turnID
+    dirty.current = true
+    cache.clear()
+    pendingVerify.current.length = 0
+  }
+  const win = canWindow()
+  const near = nearRef.current
+  const recompute = dirty.current
+  dirty.current = false
+
+  /** 收集本帧刚被冻结、尚未复核的 key（effect 里为它们建复核定时器）。 */
+  const collectPending = (items: WebIteration[], heights: (number | undefined)[]): void => {
+    for (let i = 0; i < items.length; i++) {
+      if (heights[i] === undefined) continue
+      const hKey = hKeyFor(items[i])
+      if (verified.current.has(hKey) || verifyTimers.current.has(hKey)) continue
+      pendingVerify.current.push(hKey)
+    }
+  }
+
+  const chunks: ReactElement[] = []
+  for (let c = 0; c < chunkCount; c++) {
+    const start = c * COMMITTED_CHUNK_SIZE
+    const len = Math.min(COMMITTED_CHUNK_SIZE, total - start)
+    const prev = cache.get(c)
+    if (prev !== undefined && prev.items.length === len) {
+      // 1) items 只做指针比较（零分配）—— 同号覆盖/前缀被换也能立刻发现。
+      let itemsSame = true
+      for (let i = 0; i < len; i++) {
+        if (prev.items[i] !== contiguous[start + i]) {
+          itemsSame = false
+          break
+        }
+      }
+      if (itemsSame) {
+        // 干净帧 → 元素对象原样复用（React 在该 chunk 子树直接 bail）
+        if (!recompute) {
+          chunks.push(prev.element)
+          continue
+        }
+        // 脏帧 → 重算决策；值没变仍复用（不给 React 造无谓的 props 变更）
+        const heights = new Array<number | undefined>(len)
+        let heightsSame = prev.mutedHeights.length === len
+        for (let i = 0; i < len; i++) {
+          const h = win ? mutedHeightFor(prev.items[i], win, near, verifying) : undefined
+          heights[i] = h
+          if (heightsSame && prev.mutedHeights[i] !== h) heightsSame = false
+        }
+        if (heightsSame) {
+          chunks.push(prev.element)
+          continue
+        }
+        const element = (
+          <CommittedChunk
+            key={c}
+            items={prev.items}
+            turnID={turnID}
+            mutedHeights={heights}
+            register={registerStable}
+          />
+        )
+        cache.set(c, { items: prev.items, mutedHeights: heights, element })
+        collectPending(prev.items, heights)
+        chunks.push(element)
+        continue
+      }
+    }
+    // 2) 新 chunk / items 变了 → 重建该 chunk（尾部 chunk 随流式重渲染）
+    const items = contiguous.slice(start, start + len)
+    const heights = new Array<number | undefined>(len)
+    for (let i = 0; i < len; i++) {
+      heights[i] = win ? mutedHeightFor(items[i], win, near, verifying) : undefined
+    }
+    const element = (
+      <CommittedChunk
+        key={c}
+        items={items}
+        turnID={turnID}
+        mutedHeights={heights}
+        register={registerStable}
+      />
+    )
+    cache.set(c, { items, mutedHeights: heights, element })
+    collectPending(items, heights)
+    chunks.push(element)
+  }
+  if (cache.size > chunkCount) {
+    // 前缀被截断（弱网丢包）→ 清掉越界 chunk，避免缓存泄漏
+    for (const k of Array.from(cache.keys())) if (k >= chunkCount) cache.delete(k)
+  }
 
   // 冻结复核：刚被冻结的块，延迟一帧重新挂载内容实测；不符则解冻（record 会清除
   // settled），相符则标记 verified（不再重复复核）。
   useEffect(() => {
     if (!canWindow()) return
-    for (const d of decisions) {
-      const { hKey, muted, wantsMute } = d
-      if (!wantsMute || !muted) continue
+    const keys = pendingVerify.current
+    if (keys.length === 0) return
+    pendingVerify.current = []
+    for (const hKey of keys) {
       if (verified.current.has(hKey) || verifyTimers.current.has(hKey)) continue
       const timer = window.setTimeout(() => {
         verifyTimers.current.delete(hKey)
@@ -262,6 +587,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
           next.add(hKey)
           return next
         })
+        invalidate()
         requestAnimationFrame(() => {
           const measured = el.getBoundingClientRect().height
           const res = tracker.record(hKey, measured, performance.now())
@@ -271,28 +597,14 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
             next.delete(hKey)
             return next
           })
-          bumpTick()
+          invalidate()
         })
       }, VERIFY_DELAY_MS)
       verifyTimers.current.set(hKey, timer)
     }
   })
 
-  const registerStable = register
-  return (
-    <>
-      {decisions.map(({ iter, i, muted, height }) => (
-        <IterationBlock
-          key={iter.iteration ?? i}
-          iter={iter}
-          turnID={turnID}
-          muted={muted}
-          mutedHeight={height}
-          register={registerStable}
-        />
-      ))}
-    </>
-  )
+  return <>{chunks}</>
 })
 
 export const TurnBody = memo(function TurnBody({
@@ -301,9 +613,12 @@ export const TurnBody = memo(function TurnBody({
   turnID,
 }: TurnBodyProps) {
   // Linear-consistency guard: 只渲染**连续前缀**（弱网丢中间迭代时不能出现 1,3）。
-  // PERF: memoized on `iterations`，让流式帧保持 CommittedTurn 的 props 引用稳定
-  // （turn_perf.test.tsx 守护：每帧已提交迭代渲染数 = 0）。
-  const contiguous = useMemo(() => continuousIterations(iterations), [iterations])
+  // PERF（#4）：增量扫描 —— 只扫新增的尾部（锚点校验前缀；不符即全量扫描）。
+  // 无变化时 `out` 引用稳定 → 保住 CommittedTurn 的 memo。
+  const scanRef = useRef<ContiguousScan | null>(null)
+  const scan = extendContiguous(scanRef.current, iterations)
+  scanRef.current = scan
+  const contiguous = scan.out
 
   return (
     <div

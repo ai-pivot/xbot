@@ -1364,13 +1364,23 @@
 /* ⚠️ 迭代块容器必须是 **block 布局** —— Chrome 不对 **flex 子项**应用
  * `content-visibility` 跳过（实测：block 容器 + block 子项 skipped 13/20；
  * flex 容器 + flex 子项 skipped 0/20）。旧实现是 `flex flex-col gap-1`。
- * 原有 4px 间距（`gap-1` = 0.25rem）由相邻块 margin 复现。
+ * 原有 4px 间距（`gap-1` = 0.25rem）改由**块自身 padding**复现。
  * `contain: layout paint` 阻止 margin 折叠穿透块边界，间距不会跑到块外。 */
 .iter-blocks {
   display: block;
 }
 
-.iter-block + .iter-block {
+/* ⛔ 间距**绝不能用兄弟选择器**（`.iter-block + .iter-block { margin-top }` /
+ * `~` / `:last-child`）：2026-09-13 定位（CDP trace N=2000）——
+ * trace 的失效归因是 `x2002 Related style rule | DIV class='iter-block'` +
+ * `UpdateLayoutTree` 单次 **1603ms**：兄弟组合符让每个块与"前一个兄弟"的
+ * 存在性相关，追加/改内联样式时 Blink 要对**全部 N 个兄弟**重算样式 ⇒
+ * 每帧代价 ∝ 已渲染块数（turn 越长越卡、长历史同样卡）。
+ * 间距改由**块自身的 margin** 复现（margin 不属于盒子尺寸 ⇒ RO 的
+ * contentRect 与复核用的 getBoundingClientRect 依然同值，settle 契约不变；
+ * 用 padding 会破坏它：两者恒差 padding，块永远无法 settled → 窗口化失效）。
+ * ⛔ 也不得用 padding：contentRect 不含 padding，复核含 padding → 永不结算。 */
+.iter-block {
   margin-top: 0.25rem;
 }
 

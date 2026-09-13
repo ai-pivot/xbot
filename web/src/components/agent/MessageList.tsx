@@ -171,8 +171,18 @@ export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'con
   return idx
 }
 
+/** isCompactMarker 的按行缓存（行对象在流式帧之间引用稳定）。
+ *  ⛔ 不能每帧对全表做 `content.trimStart()`（每行一个新字符串）—— 代价 ∝
+ *  已加载历史总量，正是「长历史 + 极小新 turn 也卡」的一部分（2026-09-13）。 */
+const compactMarkerByMsg = new WeakMap<object, boolean>()
+
 export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boolean {
-  return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
+  if (row.role !== 'user') return false
+  const cached = compactMarkerByMsg.get(row as object)
+  if (cached !== undefined) return cached
+  const v = row.content.trimStart().startsWith('[Compacted context]')
+  compactMarkerByMsg.set(row as object, v)
+  return v
 }
 
 
@@ -297,11 +307,15 @@ export const MessageList = memo(function MessageList({
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
-  // User message indices for navigation
-  const userMessageIndices = useMemo(
-    () => rows.map((r, i) => (r.role === 'user' ? i : -1)).filter((i) => i >= 0),
-    [rows],
-  )
+  // User message indices for navigation（单趟构建 —— 原实现 map+filter 每帧
+  // 对全表产出两个中间数组；代价 ∝ 已加载历史总量）
+  const userMessageIndices = useMemo(() => {
+    const out: number[] = []
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].role === 'user') out.push(i)
+    }
+    return out
+  }, [rows])
 
   // TanStack Virtual —— API 返回函数，React Compiler 无法安全 memo；
   // virtualizer 按设计每次渲染重建内部映射。
@@ -440,7 +454,9 @@ export const MessageList = memo(function MessageList({
     }
     if (!prev || prev.chatKey !== chatKey) return // session switch → rows replaced legitimately
     // 1) ROWS-LEVEL: live tail row vanished without committed replacement.
-    const liveVanished = prev.isPartial && prev.id !== null && !rows.some((r) => r.id === prev.id)
+    // 快路径：绝大多数帧 tail 就是 prev 行（O(1)），只有真消失时才做 O(N) 扫描。
+    const liveVanished =
+      prev.isPartial && prev.id !== null && tail?.id !== prev.id && !rows.some((r) => r.id === prev.id)
     if (liveVanished && busy) {
       // Legal replacement paths: (a) normal text-event finalize — a committed
       // assistant with the same turnID appears; (b) commitLiveProgressAndReset
