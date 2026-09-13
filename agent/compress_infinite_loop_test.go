@@ -116,9 +116,10 @@ func TestRunCompression_PostCompressCheckUsesFullEstimate_NotSummaryOnly(t *test
 }
 
 // Test 2: 压缩后全量估算仍超限且【无可收缩部分】（system prompt 本身巨大 /
-// 消息太少 aggressiveTruncate 无能为力）→ 必须熔断（本轮 Run 不再自动压缩），
-// 绝不能无限重试。场景：200k chars 的 system prompt（≈133k tokens）单独就
-// 超过 91.8k 触发线 —— 压缩/截断对它都无效。
+// 消息太少 aggressiveTruncate 无能为力）→ 熔断已于 2026-09-13 删除，本轮 Run
+// 【不再】停止压缩；防无限循环改为：5 次迭代冷却限流 + 保留可见告警（截断安全网
+// 与错误驱动的强行压缩仍然兜底，上下文不可能溢出）。场景：200k chars 的 system
+// prompt（≈133k tokens）单独就超过 91.8k 触发线。
 func TestRunCompression_GivesUpWhenUnshrinkable_NoInfiniteRetry(t *testing.T) {
 	compressCalls := 0
 	cm := &mockContextManager{
@@ -146,24 +147,26 @@ func TestRunCompression_GivesUpWhenUnshrinkable_NoInfiniteRetry(t *testing.T) {
 	// 压缩后真实 prompt_tokens 依然超线（模拟下一次 API 调用的返回值）。
 	state.tokenTracker.RecordLLMCall(190000, 100)
 
-	// 模拟后续 12 次迭代（每 5 次冷却到期可再触发）。压缩对不可收缩部分
-	// 无效 → 现状会继续白跑压缩（无限循环）；修复后必须熔断。
+	// 模拟后续 12 次迭代（每 5 次冷却到期可再触发）。压缩对不可收缩部分无效，
+	// 但熔断删除后不再"停止压缩"——只有 5 次迭代冷却在限流：12 次迭代最多
+	// 触发 2 次（第 5、10 次）→ 总调用 1+2=3，不可能每迭代都压。
 	for i := 0; i < 12; i++ {
 		if err := state.maybeCompress(context.Background()); err != nil {
 			t.Fatalf("maybeCompress: %v", err)
 		}
 	}
 
-	if compressCalls != 1 {
-		t.Errorf("BUG REPRODUCED: compression re-triggered %d times on an unshrinkable context (system prompt alone exceeds the trigger line). "+
-			"Every retry burns a full-context compaction LLM call and can never get below the line — this is the infinite loop. Want exactly 1 call.", compressCalls)
+	if compressCalls < 2 || compressCalls > 4 {
+		t.Errorf("on an unshrinkable context compression must stay ENABLED (no permanent fuse) but be throttled by the 5-iteration cooldown: "+
+			"want 2-4 calls over 13 iterations (never one compaction per iteration), got %d. "+
+			"The safety net is the cooldown + error-driven forcible compression, not a fuse.", compressCalls)
 	}
 }
 
-// Test 3: 达标检查（估算口径）通过但【真实 API 值不降】→ 连续无效压缩必须
-// 熔断。场景：估算低估（中文/密集 token），压缩产出估算 22k < 91.8k（达标
-// 检查放行），但下次 API 真实返回 185k（依然超线）→ 又触发 → 又"达标" →
-// 循环。熔断条件：连续 2 次触发时的真实值相对上次触发降幅 < 5%。
+// Test 3: 达标检查（估算口径）通过但【真实 API 值不降】→ 熔断已于 2026-09-13
+// 删除：此时不再"放弃自动压缩"，而是按 5 次迭代冷却继续重试（强制压缩兜底）。
+// 场景：估算低估（中文/密集 token），压缩产出估算 22k < 91.8k（达标检查放行），
+// 但下次 API 真实返回 185k（依然超线）→ 又触发 → 又"达标"。
 func TestMaybeCompress_ConsecutiveIneffectiveCompressionGivesUp(t *testing.T) {
 	compressCalls := 0
 	cm := &mockContextManager{
@@ -213,21 +216,20 @@ func TestMaybeCompress_ConsecutiveIneffectiveCompressionGivesUp(t *testing.T) {
 			t.Fatalf("maybeCompress round 3: %v", err)
 		}
 	}
-	// 第 3 次触发点：连续 2 次无效 → 熔断，本轮 Run 不再压缩。
-	if compressCalls != 2 {
-		t.Errorf("BUG REPRODUCED: compression kept re-triggering (calls=%d) even though real prompt_tokens never dropped ≥5%% across triggers. "+
-			"The estimate-based post-compress check passes (under-estimation) while the real value stays above the line — infinite loop. Want 2.", compressCalls)
+	// 第 3 次触发点：熔断已删除 → 照常压缩（冷却到期即触发）。
+	if compressCalls != 3 {
+		t.Errorf("compression must keep running after repeated ineffective triggers (the fuse is gone): want 3 calls at the third trigger, got %d", compressCalls)
 	}
 
-	// 继续跑很多迭代也必须保持熔断。
-	state.tokenTracker.RecordLLMCall(183000, 100)
+	// 继续跑 10 次迭代：仍然只受 5 次迭代冷却限流（第 5、10 次各触发一次）。
 	for i := 0; i < 10; i++ {
 		if err := state.maybeCompress(context.Background()); err != nil {
-			t.Fatalf("maybeCompress post-abandon: %v", err)
+			t.Fatalf("maybeCompress post-third-trigger: %v", err)
 		}
 	}
-	if compressCalls != 2 {
-		t.Errorf("after abandoning, compression must not re-trigger, got %d calls", compressCalls)
+	if compressCalls < 3 || compressCalls > 5 {
+		t.Errorf("after three ineffective triggers compression must keep running (fuse deleted) yet stay rate-limited: "+
+			"want 3-5 calls, got %d — no permanent fuse, but never one compaction per iteration", compressCalls)
 	}
 }
 
