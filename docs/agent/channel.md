@@ -32,38 +32,55 @@ keeping their message stream free of progress text artifacts.
 
 #### Feishu CardKit streaming card
 
-The agent marks the outbound lifecycle with two metadata keys
-(`channel.MetaProgressCard` / `channel.MetaFinalReply`, see
-`channel/interfaces.go`): ack (`sendAck`) and every `ProgressNotifier` tick carry
-`progress_card=true`; the authoritative end of the turn (`handleRunOutput`'s final
-send, the empty-content warning, `handleCancelledRun`'s cancel outbound) carries
-`final_reply=true`. Channels ignore the keys unless they render a native
-streaming card.
+The card is driven by the **structured** progress stream: the Feishu channel
+implements `channel.ProgressSender` (`SendProgress` / `SendStreamContent`), the
+same broadcast web and CLI consume. Flat progress text is NOT parsed any more —
+it carries neither the thinking text nor iteration boundaries. Consequently
+`PreReplyNotify()` returns **false** (no ack, no text progress; those would
+double-render).
 
-`channel/feishu/feishu_stream_card.go` renders that lifecycle as ONE CardKit card
-entity per turn. The card layout mirrors the **official** agent card from
-`larksuite/openclaw-lark` (`src/card/builder.ts`):
+`channel/feishu/feishu_stream_card.go` renders ONE CardKit card entity per turn,
+laid out like the Web UI's `IterationGroup` — **per iteration: thinking → answer
+→ tools**, with **no header** (explicit user request 2026-09-13):
 
 ```
-header   彩色标题栏 (title + subtitle 阶段)
-panel    collapsible_panel 「🛠️ 执行过程 · N 步」 — 每个工具一步
-content  markdown element_id="content" — 流式正文（打字机）
-status   小灰字 footer
+iteration N   💭 思考 N 字        collapsible_panel (collapsed; chevron icon)
+              answer text        markdown (the CURRENT iteration owns the
+                                 streamable element_id="content")
+              ✅ Shell · ls -la · 12ms · 完成    one row per tool
+iteration N+1 …
 ```
 
-Lifecycle: create entity (`streaming_mode=true`) → send
-`{type:card,data:{card_id}}` → `cardElement.Content` with the **accumulated**
-answer text → full-card `Card.Update` to sync the timeline panel and to finalize
-(`streaming_mode=false`). Feishu animates the delta as a typewriter while the old
-text is a prefix of the new one.
+- Only the `content` element can be streamed (typewriter); finished iterations
+  are re-laid-out by a throttled full-card `Card.Update`.
+- Tool rows read `✅ **Shell** · ls -la · 12ms · <font color='green'>完成</font>`:
+  the detail is the first line of `Summary` when finished, otherwise the most
+  telling field of the raw `Args` JSON (`command`/`path`/`pattern`/`query`/…,
+  see `streamCardArgKeys`) — rune-safe truncated.
+- Lifecycle: create entity (`streaming_mode=true`) → send
+  `{type:card,data:{card_id}}` → `cardElement.Content` → full-card `Card.Update`
+  on structural change → finalize on `channel.MetaFinalReply`
+  (`handleRunOutput` / empty-content warning / `handleCancelledRun`).
 
-The timeline steps come from the engine's **progress trace lines** — the existing
-contract `> ⏳ <label> ...` (running) / `> ✅ … (12ms)` / `> ❌ …` / `> ⚠️ …` /
-`> 📦 …` / `> 🎭 …` produced by `engine_run_tools.go` / `engine_run.go`.
-`splitStreamCardText` separates them from the answer text, and
-`parseTimelineStep` maps the emoji to a state + colour. A line is only a step
-when it starts with `> ` **and** carries one of the known markers — a model
-quoting markdown (`> something`) must not be mistaken for a tool call.
+Gotchas:
+
+- `finalize()` MUST always run (and runs even when the full-card update fails):
+  an open stream leaves the card stuck on "生成中" until Feishu force-closes it
+  after 10 minutes.
+- `update_multi` MUST stay `true` — the content API rejects exclusive cards.
+- A card entity can be sent exactly once and only by the app that created it →
+  the app needs `cardkit:card:write`. On create failure the channel latches
+  `streamCardBroken` (one warning, then the legacy static-card path) instead of
+  retrying every tick.
+- A fully-built card (`__FEISHU_CARD__:`) or a WaitingUser AskUser card
+  supersedes the streaming card → finalize + delete before sending it.
+
+**Removed legacy (do not resurrect):** `channel/capability.go`'s
+`ProgressUI.BuildProgressUI` (and the Feishu implementation) — dead code, nobody
+called it; the `channel.MetaProgressCard` metadata key (and its stamping in
+`sendAck` / `ProgressNotifier` / the SubAgent notifier); the
+`> ⏳/✅/❌/⚠️/📦/🎭` timeline text parsing (`splitStreamCardText` /
+`parseTimelineStep`).
 
 Gotchas:
 

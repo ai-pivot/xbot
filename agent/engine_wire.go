@@ -447,9 +447,7 @@ func (a *Agent) buildMainRunConfig(
 	if autoNotify {
 		cfg.ProgressNotifier = func(lines []string, _ string) {
 			if len(lines) > 0 {
-				// MetaProgressCard: route this tick into the turn's reply card
-				// (Feishu streams it; other channels ignore the flag).
-				if err := a.sendMessage(channel, chatID, lines[0], map[string]string{channelpkg.MetaProgressCard: "true"}); err != nil {
+				if err := a.sendMessage(channel, chatID, lines[0]); err != nil {
 					log.Warn("Failed to send progress: ", err)
 				}
 			}
@@ -1582,11 +1580,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 					last = last[idx+1:]
 				}
 				prefixed := "📋 subagent: [" + rn + "] " + last + "\n"
-				// Route subagent progress into the turn's reply card as well —
-				// otherwise it would fall through to the static-card path and
-				// overwrite/delete the streaming card message.
-				if err := a.sendMessage(originChannel, originChatID, prefixed,
-					map[string]string{channelpkg.MetaProgressCard: "true"}); err != nil {
+				if err := a.sendMessage(originChannel, originChatID, prefixed); err != nil {
 					log.Warn("Failed to send prefixed output: ", err)
 				}
 			}

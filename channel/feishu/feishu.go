@@ -255,11 +255,11 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 
 func (f *FeishuChannel) Name() string { return "feishu" }
 
-// PreReplyNotify implements channel.PreReplyNotifier. Feishu has no streaming
-// and patches the existing message with progress content, so it needs text-based
-// ack and progress messages. Individual messages can opt out via ReplyPolicyOptional
-// (e.g. @all mentions).
-func (f *FeishuChannel) PreReplyNotify() bool { return true }
+// PreReplyNotify implements channel.PreReplyNotifier. Feishu renders progress
+// through the STRUCTURED progress stream (channel.ProgressSender — the same
+// broadcast web/cli consume), so it does NOT need text-based acks or progress
+// messages: those would double-render. Returning false also disables the ack.
+func (f *FeishuChannel) PreReplyNotify() bool { return false }
 
 // ChannelSystemParts 返回飞书渠道的特化 prompt。
 // 由 main.go 中的适配器调用，注入到 agent 中间件 pipeline。
@@ -516,18 +516,15 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	// 群成员名单注入提供，prompt 教学见 prompt/channels/feishu.md）——不做事后
 	// 转换（@名字 自动匹配已按用户决策移除：误判 + bug 多）。
 
-	// 3) CardKit 流式卡片（feishu_stream_card.go）：一个 turn 的 ack / 进度 /
-	// 最终回复都指向同一条消息，以卡片实体流式渲染（打字机）取代「每次 tick
-	// 重建并 patch 整张卡片」。放在空内容判断之前 —— 取消的 turn 会用空内容
-	// 收尾已打开的卡片。
-	if msg.Metadata != nil &&
-		(msg.Metadata[ch.MetaProgressCard] == "true" || msg.Metadata[ch.MetaFinalReply] == "true") {
-		final := msg.Metadata[ch.MetaFinalReply] == "true"
-		if id, ok := f.streamCardSend(msg, content, final); ok {
+	// 3) CardKit 流式卡片收尾（feishu_stream_card.go）：进度由**结构化**进度流
+	// （SendProgress / SendStreamContent）驱动，这里只处理 turn 的最终回复 ——
+	// 把已打开的卡片收尾（写最终文本 + 关流式），不新建消息。放在空内容判断
+	// 之前 —— 取消的 turn 会用空内容收尾已打开的卡片。
+	if msg.Metadata != nil && msg.Metadata[ch.MetaFinalReply] == "true" {
+		if id, ok := f.streamCardSend(msg, content, true); ok {
 			return id, nil
 		}
-		// 流式卡片不可用（如应用缺少 cardkit:card:write）→ 继续走下面的静态
-		// 卡片路径；content 已处理完，不会重复上传本地文件。
+		// 没有打开的卡片（本轮没有任何进度事件）→ 继续走下面的静态卡片路径。
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -3585,34 +3582,6 @@ func (f *FeishuChannel) BuildSettingsUI(ctx context.Context, schema []ch.Setting
 	}
 
 	sb.WriteString("---\n使用 `/settings set <key> <value>` 修改设置\n")
-	return sb.String()
-}
-
-// BuildProgressUI builds a Feishu card for progress display.
-func (f *FeishuChannel) BuildProgressUI(ctx context.Context, progress any) string {
-	// Use text-based progress for now
-	var sb strings.Builder
-	sb.WriteString("## 📊 进度\n\n")
-
-	switch p := progress.(type) {
-	case map[string]any:
-		if phase, ok := p["phase"].(string); ok {
-			fmt.Fprintf(&sb, "**阶段**：%s\n", phase)
-		}
-		if detail, ok := p["detail"].(string); ok {
-			fmt.Fprintf(&sb, "%s\n", detail)
-		}
-		if pct, ok := p["percent"].(float64); ok {
-			bars := int(pct / 5)
-			fmt.Fprintf(&sb, "`%s%s` %.0f%%\n",
-				strings.Repeat("█", bars),
-				strings.Repeat("░", 20-bars),
-				pct)
-		}
-	default:
-		fmt.Fprintf(&sb, "%v\n", p)
-	}
-
 	return sb.String()
 }
 
