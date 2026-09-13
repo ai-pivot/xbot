@@ -32,18 +32,22 @@
  *   4. **连续前缀增量扫描**：`continuousIterations` 的增量版，只扫"新增的尾部"
  *      （锚点校验已确认前缀；不符即退化为全量扫描，语义与 canonical 实现一致）。
  *
- * ⚠️ 正确性铁律（两条都是真实事故的教训）：
- *   1. **高度缓存必须实例作用域**（2026-09-13「切换 session 后出现空 tool iter」）：
- *      key 只能是 `turnID:iteration`，而 turnID 每会话独立 → 模块级缓存会让
- *      会话 A 的 `1084:810` 与会话 B 的同一 key 撞车 → 切到 B 后 B 的块读到 A 的
- *      "已结算高度" → 立刻被判定可冻结 → 内容卸载 → **空块**。⇒ 每个
- *      CommittedTurn 实例各持一份 `createIterationHeightTracker()`（分块元素缓存同理，
- *      也是实例作用域）。
+ * ⚠️ 正确性铁律（三条都是真实事故的教训）：
+ *   1. **高度缓存/复核裁决的身份必须是"内容"**（`(会话, turnID, iteration, 布局宽度)`，
+ *      见下），**不是**"组件实例"，也**不是**裸 `turnID:iteration`：
+ *      - 裸 key 的模块级缓存 → 跨会话撞车 → 空块（`76b731de`）；
+ *      - 纯实例作用域 → 任何**扰动布局**的交互（手机端开工具页会把 AgentPanel 外壳
+ *        `display:none`）让消息行整体卸载/重挂（实例销毁）→ 返回时无实测高度 ⇒
+ *        每个迭代块的内容全部重新挂载 + markdown 全量重解析（2026-09-13 实测
+ *        nodes 528→3708、muted 318→0、一次交互 320 个 `.iter-block` 卸了又重挂）。
+ *      ⇒ `heightScope = 会话身份 + 布局宽度`，经 `sharedIterationHeightTracker` 跨
+ *      重挂载复用（`MessageList` 负责构造并透传）。
  *   2. **只有 settled 的高度才允许冻结** + **冻结后一次性复核**（首版把瞬态测量
  *      当成可信高度 → 卸载后内容永久消失）。`iterationHeight.ts` 里 settle 语义
  *      要求同值连续两次测量（间隔 ≥200ms）；`scheduleSettleSample` 负责补第二次
  *      采样（ResizeObserver 只在尺寸变化时回调，不会自己再报一次）；冻结后
- *      `VERIFY_DELAY_MS` 再挂一帧实测，不符即解冻重稳。
+ *      `VERIFY_DELAY_MS` 再挂一帧实测，不符即解冻重稳。复核裁决也在 tracker 里
+ *      （内容身份作用域）—— 否则重挂载后裁决为空 ⇒ 谁都不能冻结 ⇒ 白重挂一次。
  *   3. 只对迭代号可解析（Number.isFinite）的块窗口化；从未渲染过的块必须挂载
  *      （否则永远量不到高度）；jsdom / 无 IO+RO 环境退化为全量渲染（分块/复用
  *      逻辑照常生效，只是永不 muted）。
@@ -67,7 +71,9 @@ import { continuousIterations } from './progressStore'
 import {
   ITERATION_HEIGHT_SETTLE_MS,
   createIterationHeightTracker,
+  hasStableTurnKey,
   iterationHeightKey,
+  sharedIterationHeightTracker,
   type IterationHeightTracker,
 } from './iterationHeight'
 import type { ProgressSnapshot, WebIteration } from '@/types/shared'
@@ -78,12 +84,18 @@ interface TurnBodyProps {
   liveProgress?: ProgressSnapshot | null
   /** TurnID for data-attribute debugging (data-turn-id on each block). */
   turnID?: number
+  /**
+   * 高度/复核裁决的作用域 = 「会话身份 + 布局宽度」（由 `MessageList` 构造）。
+   * 省略时退化为实例作用域（独立渲染 / 单测路径）。
+   */
+  heightScope?: string
 }
 
 interface CommittedTurnProps {
   /** 连续前缀迭代（增量扫描于 iterations —— 无变化时引用稳定）。 */
   contiguous: WebIteration[]
   turnID?: number
+  heightScope?: string
 }
 
 /** 窗口化可用环境判定（jsdom / 老浏览器没有 IO/RO → 退化为全量渲染）。 */
@@ -329,24 +341,39 @@ function extendContiguous(prev: ContiguousScan | null, iters: WebIteration[]): C
  * CommittedTurn — 已提交迭代的唯一渲染点（memo 边界 + 迭代级窗口化 + 冻结复核 +
  * 分块冻结/元素复用）。
  */
-const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: CommittedTurnProps) {
+const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightScope }: CommittedTurnProps) {
   const [, bumpTick] = useReducer((n: number) => n + 1, 0)
   const nearRef = useRef<Set<number>>(new Set())
   const elements = useRef<Map<string, HTMLDivElement>>(new Map())
   const roRef = useRef<ResizeObserver | null>(null)
   const ioRef = useRef<IntersectionObserver | null>(null)
-  /** 高度/结算状态：**实例作用域**（跨会话 key 撞车会造出空块，见文件头）。 */
-  const trackerRef = useRef<IterationHeightTracker | null>(null)
-  if (trackerRef.current === null) trackerRef.current = createIterationHeightTracker()
-  const tracker = trackerRef.current
-  /** 已复核过的 key（复核通过后才允许继续冻结；高度变化时清除）。 */
-  const verified = useRef<Set<string>>(new Set())
+  /**
+   * 高度/结算/复核裁决：**内容身份作用域**（`heightScope` = 会话身份 + 布局宽度）。
+   *
+   * 身份必须是"内容"而不是"组件实例"：实例态在行重挂载时全部丢失 → 返回时无实测
+   * 高度 ⇒ 每个迭代块的内容重新挂载 + markdown 全量重解析（见文件头铁律 1）。
+   *
+   * ⛔ 但"内容身份"的前提是 `turnID:iteration` 在该作用域内**唯一**（同一 turn 的同一
+   * 迭代号只对应一块内容）。`turnID` 是每会话独立编号，而 **legacy 行（turnID 缺失/0）
+   * 不满足这个前提** —— 同一会话里多条 legacy 行的块会共用 `0:iteration` → 互相读到
+   * 对方的高度（冻结成错块）。判据与 `MessageList.getItemKey` 的"稳定 turn 键"一致：
+   * `0 < turnID < MAX_SAFE_INTEGER`；不满足就退化为**实例作用域**（= 本行自己，
+   * 绝不与别的行共享 key —— 这正是这次改动之前的行为，不会更糟）。
+   */
+  const scoped = heightScope !== undefined && hasStableTurnKey(turnID)
+  const localTracker = useRef<IterationHeightTracker | null>(null)
+  if (!scoped && localTracker.current === null) {
+    localTracker.current = createIterationHeightTracker()
+  }
+  const tracker: IterationHeightTracker = scoped
+    ? sharedIterationHeightTracker(heightScope as string)
+    : (localTracker.current as IterationHeightTracker)
   const verifyTimers = useRef<Map<string, number>>(new Map())
   /** 正在复核（临时重新挂载内容）的 key。 */
   const [verifying, setVerifying] = useState<ReadonlySet<string>>(() => new Set())
   /** 待补充的"第二次一致采样"定时器（RO 仅在尺寸变化时回调，需主动补一次）。 */
   const settleTimers = useRef<Map<string, number>>(new Map())
-  /** 分块元素缓存：**实例作用域**（与 tracker 同理，绝不跨会话串味）。 */
+  /** 分块元素缓存：**实例作用域**（元素对象天然绑定这一次挂载，不跨挂载复用）。 */
   const chunkCache = useRef<Map<number, ChunkEntry>>(new Map())
   /**
    * 决策脏标记（PERF-3）：窗口化决策的**任何一个输入**变化都要置位 ——
@@ -357,6 +384,8 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
   /** `turnID:iteration` 字符串按迭代对象身份缓存（免掉每帧 N 次字符串拼接）。 */
   const hKeyCache = useRef(new WeakMap<WebIteration, { turnID: number | undefined; key: string }>())
   const turnIDRef = useRef<number | undefined>(turnID)
+  /** 上一帧的作用域（作用域变化 ⇒ 高度/裁决来源整体换人，分块决策必须重算）。 */
+  const scopeRef = useRef(heightScope)
   /** 本帧新冻结、待复核的 key（渲染期收集，effect 里建定时器）。 */
   const pendingVerify = useRef<string[]>([])
 
@@ -384,20 +413,20 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
    * 而**首帧的瞬态/压扁高度同样能连续两次一致**（手机端切换会话时内容尚未定形：
    * 字体/异步 markdown/图片）。那时冻结 → 内容卸载 → 盒子被钉在压扁高度 → RO 再也
    * 报不出变化 → 400ms 复核是唯一纠错通路。所以冻结必须再要求一次**内容真的挂回来
-   * 后的实测确认**（`verified`，见下面的复核 effect）。
+   * 后的实测确认**（`tracker.isVerified`，见下面的复核 effect）—— 裁决同样存在
+   * tracker（内容作用域）里，否则重挂载后裁决为空 ⇒ 谁都不能冻结 ⇒ 白重挂一次。
    */
   const mutedHeightFor = (
     iter: WebIteration,
     win: boolean,
     near: Set<number>,
     verifyingSet: ReadonlySet<string>,
-    verifiedSet: ReadonlySet<string>,
   ): number | undefined => {
     if (!win || !Number.isFinite(iter.iteration)) return undefined
     const hKey = hKeyFor(iter)
     const height = tracker.get(hKey)
     if (height === undefined || !tracker.isSettled(hKey)) return undefined
-    if (!verifiedSet.has(hKey)) return undefined
+    if (!tracker.isVerified(hKey)) return undefined
     if (near.has(iter.iteration as number)) return undefined
     if (verifyingSet.has(hKey)) return undefined
     return height
@@ -441,8 +470,16 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       (entries) => {
         let changed = false
         for (const e of entries) {
-          const n = Number((e.target as HTMLElement).dataset.iterId)
+          const target = e.target as HTMLElement
+          const n = Number(target.dataset.iterId)
           if (!Number.isFinite(n)) continue
+          // ⛔ 「没有布局的观测」不是观测：容器被隐藏（手机端开工具页把 AgentPanel 外壳
+          // 置 display:none）时，所有目标都报"不可见"，而这条判定**只说明容器被藏了**，
+          // 不说明块真的离开了视口。若照单全收，near 集合会被瞬时清空 → 重新可见时
+          // 每个块都要等 IO 再报一次才能挂回内容（闪一帧空白）。
+          // ⇒ 只在目标**真的渲染着**（有渲染盒、宽高非 0）时才采信 intersecting 判定。
+          // 用 IO 自带的 boundingClientRect（不强制布局）。
+          if (!isLayoutable(target, e.boundingClientRect)) continue
           const was = nearRef.current.has(n)
           if (e.isIntersecting && !was) {
             nearRef.current.add(n)
@@ -467,10 +504,9 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         // 脱离文档、宽高为 0 —— 一律忽略（不写缓存、不结算、不放行冻结）。已有的
         // 高度来自上一次真实测量，仍然可信；元素可见后 RO 会重新报告并按需 unsettle。
         if (!isLayoutable(el, e.contentRect)) continue
+        // 高度变了 → 复核裁决一并作废（`record` 内部已经清），必须重新稳定 + 重新复核。
         const res = tracker.record(key, e.contentRect.height, performance.now(), true)
         if (res.changed) {
-          // 高度变了 → 之前的复核作废，必须重新稳定 + 重新复核
-          verified.current.delete(key)
           changed = true
           scheduleSettleSample(key)
         } else if (res.settled) {
@@ -532,6 +568,14 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     cache.clear()
     pendingVerify.current.length = 0
   }
+  if (scopeRef.current !== heightScope) {
+    // 作用域变了（会话或布局宽度变了）⇒ 高度/复核裁决整体换人：分块里缓存的
+    // mutedHeights 是旧作用域的决策，必须丢弃重算（新作用域自己的缓存在 tracker 里）。
+    scopeRef.current = heightScope
+    dirty.current = true
+    cache.clear()
+    pendingVerify.current.length = 0
+  }
   const win = canWindow()
   const near = nearRef.current
   const recompute = dirty.current
@@ -547,7 +591,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     for (let i = 0; i < items.length; i++) {
       const hKey = hKeyFor(items[i])
       if (!tracker.isSettled(hKey)) continue
-      if (verified.current.has(hKey) || verifyTimers.current.has(hKey)) continue
+      if (tracker.isVerified(hKey) || verifyTimers.current.has(hKey)) continue
       pendingVerify.current.push(hKey)
     }
   }
@@ -576,7 +620,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         const heights = new Array<number | undefined>(len)
         let heightsSame = prev.mutedHeights.length === len
         for (let i = 0; i < len; i++) {
-          const h = win ? mutedHeightFor(prev.items[i], win, near, verifying, verified.current) : undefined
+          const h = win ? mutedHeightFor(prev.items[i], win, near, verifying) : undefined
           heights[i] = h
           if (heightsSame && prev.mutedHeights[i] !== h) heightsSame = false
         }
@@ -607,7 +651,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     const items = contiguous.slice(start, start + len)
     const heights = new Array<number | undefined>(len)
     for (let i = 0; i < len; i++) {
-      heights[i] = win ? mutedHeightFor(items[i], win, near, verifying, verified.current) : undefined
+      heights[i] = win ? mutedHeightFor(items[i], win, near, verifying) : undefined
     }
     const element = (
       <CommittedChunk
@@ -642,7 +686,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     if (keys.length === 0) return
     pendingVerify.current = []
     for (const hKey of keys) {
-      if (verified.current.has(hKey) || verifyTimers.current.has(hKey)) continue
+      if (tracker.isVerified(hKey) || verifyTimers.current.has(hKey)) continue
       const timer = window.setTimeout(() => {
         verifyTimers.current.delete(hKey)
         if (!elements.current.get(hKey)) return
@@ -677,8 +721,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       const rect = el?.getBoundingClientRect()
       if (!el || !contentMounted || !rect || !isLayoutable(el, rect)) {
         // 复核失败（元素没了 / 内容没挂回 / 没有布局）：解冻并保持挂载，等真实测量
-        tracker.unsettle(hKey, performance.now())
-        verified.current.delete(hKey)
+        tracker.unverify(hKey, performance.now())
         finish()
         changed = true
         continue
@@ -690,7 +733,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         // 重新 settle → 永远无法冻结（窗口化收益整段丢失）。
         scheduleSettleSample(hKey)
       } else {
-        verified.current.add(hKey) // 内容实测高度 == 缓存高度 → 复核通过
+        tracker.markVerified(hKey) // 内容实测高度 == 缓存高度 → 复核通过
       }
       finish()
       changed = true
@@ -705,6 +748,7 @@ export const TurnBody = memo(function TurnBody({
   iterations,
   liveProgress,
   turnID,
+  heightScope,
 }: TurnBodyProps) {
   // Linear-consistency guard: 只渲染**连续前缀**（弱网丢中间迭代时不能出现 1,3）。
   // PERF（#4）：增量扫描 —— 只扫新增的尾部（锚点校验前缀；不符即全量扫描）。
@@ -724,7 +768,7 @@ export const TurnBody = memo(function TurnBody({
       }
       data-iter-total={contiguous.length}
     >
-      <CommittedTurn contiguous={contiguous} turnID={turnID} />
+      <CommittedTurn contiguous={contiguous} turnID={turnID} heightScope={heightScope} />
       {liveProgress && (
         <div
           className="iter-block"

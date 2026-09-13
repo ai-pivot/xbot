@@ -1,23 +1,30 @@
 /**
  * iterationHeight 单元守护（迭代级窗口化的地基）。
  *
- * 契约（两次真实事故后确立）：
- *   1. **实例作用域**（2026-09-13「切换 session 后出现空 tool iter」）：key 只能是
- *      `turnID:iteration`，而 turnID 每会话独立 —— 模块级缓存会让两个会话的同一 key
- *      撞车 → 新会话的块读到旧会话的"已结算高度" → 立刻冻结 → **空块**。
- *      ⇒ 每个 tracker 实例互相隔离，生存期 = 该行这次挂载。
+ * 契约（三次真实事故后确立）：
+ *   1. **作用域 = 内容身份（会话 + 布局宽度），不是组件实例、也不是裸 key**
+ *      （2026-09-13 两次事故各占一边）：
+ *      - 裸 `turnID:iteration` 的模块级缓存 → 两个会话同 key 撞车 → 新会话读到旧会话的
+ *        "已结算高度" → 立刻冻结 → **空块**（76b731de）；
+ *      - 纯**实例**作用域 → 行重挂载（任何扰动布局的交互）即丢态 → 无实测高度 ⇒
+ *        每个迭代块内容全部重新挂载 + markdown 全量重解析（开侧边栏 5-6 倍）。
+ *      ⇒ `sharedIterationHeightTracker(scope)`：scope 含会话 ⇒ 会话间绝不串味；
+ *        scope 是内容级 ⇒ 同一内容跨重挂载复用。本文件的三个隔离用例守护这条。
  *   2. **瞬态测量不得结算**：单次测量（哪怕 26.66px）永不 settled；同值连续两次、
  *      间隔 ≥ SETTLE_MS 才算；只有 settled 才允许冻结内容。
- *   3. **高度变化立即解冻**（值变了必须重新稳定）。
+ *   3. **高度变化立即解冻**（值变了必须重新稳定），且**复核裁决一并作废**。
  *   4. 估算只用于「从未渲染过」的块显示占位，且随内容单调增长；非法值忽略。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   ITERATION_HEIGHT_SETTLE_MS,
+  __resetSharedIterationHeightTrackers,
   createIterationHeightTracker,
   estimateIterationHeight,
+  hasStableTurnKey,
   iterationHeightKey,
+  sharedIterationHeightTracker,
   type IterationHeightTracker,
 } from '@/components/agent/iterationHeight'
 import type { WebIteration } from '@/types/shared'
@@ -164,5 +171,91 @@ describe('IterationHeightTracker（实例作用域 + settle 语义）', () => {
     t.record(iterationHeightKey(2, 1), 200, 0)
     expect(t.get(iterationHeightKey(1, 1))).toBe(100)
     expect(t.get(iterationHeightKey(2, 1))).toBe(200)
+  })
+
+  it('⛔ 内容身份的前提：只有"稳定 turn 键"才允许共享作用域（legacy 行必须退化）', () => {
+    // legacy 行（turnID 缺失/0）与 pending 行（MAX_SAFE_INTEGER）不唯一 ⇒ 不得共享
+    for (const bad of [undefined, 0, -1, Number.NaN, Number.MAX_SAFE_INTEGER]) {
+      expect(hasStableTurnKey(bad)).toBe(false)
+    }
+    expect(hasStableTurnKey(1)).toBe(true)
+    expect(hasStableTurnKey(1084)).toBe(true)
+    // 判据与 MessageList.getItemKey 的"稳定 turn 键"一致（同一常量语义）
+    expect(hasStableTurnKey(Number.MAX_SAFE_INTEGER - 1)).toBe(true)
+  })
+
+  it('复核裁决：未复核不得冻结；通过后保持；高度一变裁决作废', () => {
+    expect(t.isVerified(key)).toBe(false)
+    t.markVerified(key)
+    expect(t.isVerified(key)).toBe(true)
+    // 高度变了 → 裁决一并作废（TurnBody 的冻结门槛要求"settled + verified"）
+    t.record(key, 812, 0)
+    expect(t.isVerified(key)).toBe(false)
+  })
+
+  it('复核失败 = 撤销裁决 + 解冻（必须重新稳定 + 重新复核）', () => {
+    t.record(key, 812, 0)
+    t.record(key, 812, ITERATION_HEIGHT_SETTLE_MS)
+    t.markVerified(key)
+    t.unverify(key, 5000)
+    expect(t.isVerified(key)).toBe(false)
+    expect(t.isSettled(key)).toBe(false)
+    expect(t.get(key)).toBe(812) // 高度本身保留（复核失败不解冻高度值）
+  })
+})
+
+describe('sharedIterationHeightTracker（内容身份作用域，跨重挂载复用）', () => {
+  const key = iterationHeightKey(1084, 810)
+
+  beforeEach(() => {
+    __resetSharedIterationHeightTrackers()
+  })
+
+  it('⛔ 重挂载（同一 scope）必须复用先前实测高度 + 复核裁决 —— 这是"开侧栏不再全量重解析"的地基', () => {
+    const first = sharedIterationHeightTracker('chat-1|390')
+    first.record(key, 1434, 0)
+    first.record(key, 1434, ITERATION_HEIGHT_SETTLE_MS)
+    first.markVerified(key)
+
+    // 组件卸载又重挂（实例没了，scope 没变）→ 同一个 tracker，状态在
+    const remounted = sharedIterationHeightTracker('chat-1|390')
+    expect(remounted).toBe(first)
+    expect(remounted.get(key)).toBe(1434)
+    expect(remounted.isSettled(key)).toBe(true)
+    expect(remounted.isVerified(key)).toBe(true)
+  })
+
+  it('⛔ 会话不同 = 作用域不同 → 绝不复用（76b731de 空块事故的回归守卫）', () => {
+    const a = sharedIterationHeightTracker('chat-A|390')
+    a.record(key, 1434, 0)
+    a.record(key, 1434, ITERATION_HEIGHT_SETTLE_MS)
+    a.markVerified(key)
+
+    // 会话 B 的同名 key（turnID/iteration 相同但完全无关）必须"从未测量"
+    const b = sharedIterationHeightTracker('chat-B|390')
+    expect(b).not.toBe(a)
+    expect(b.get(key)).toBeUndefined()
+    expect(b.isSettled(key)).toBe(false)
+    expect(b.isVerified(key)).toBe(false)
+  })
+
+  it('⛔ 布局宽度不同 = 作用域不同（高度不变性的前提被破坏 ⇒ 旧高度作废）', () => {
+    const wide = sharedIterationHeightTracker('chat-1|390')
+    wide.record(key, 1434, 0)
+    wide.record(key, 1434, ITERATION_HEIGHT_SETTLE_MS)
+
+    const narrow = sharedIterationHeightTracker('chat-1|230')
+    expect(narrow).not.toBe(wide)
+    expect(narrow.get(key)).toBeUndefined()
+  })
+
+  it('有界：scope 数量超过上限时淘汰最久未使用的（防无限增长）', () => {
+    for (let i = 0; i < 12; i++) sharedIterationHeightTracker(`scope-${i}|390`)
+    // 最早创建的已被淘汰 → 重新取到的是新实例（无缓存）
+    const evicted = sharedIterationHeightTracker('scope-0|390')
+    evicted.record(key, 500, 0)
+    expect(evicted.get(key)).toBe(500)
+    // 最近使用的仍在
+    expect(sharedIterationHeightTracker('scope-11|390')).toBe(sharedIterationHeightTracker('scope-11|390'))
   })
 })

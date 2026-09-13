@@ -983,3 +983,172 @@ test.describe('switching to a streaming session must not freeze a transient heig
     await context.close()
   })
 })
+
+/** mock 历史：turns 个 turn，每个 turn 一条 user + 一条含 iters 个迭代的 assistant。 */
+function multiTurnHistory(turns: number, iters: number): unknown[] {
+  const ts = new Date().toISOString()
+  const out: unknown[] = []
+  let id = 1
+  for (let turn = 1; turn <= turns; turn++) {
+    out.push({ id: id++, role: 'user', content: `user turn ${turn}`, turn_id: turn, timestamp: ts, iterations: [] })
+    out.push({
+      id: id++,
+      role: 'assistant',
+      content: '',
+      turn_id: turn,
+      timestamp: ts,
+      iterations: Array.from({ length: iters }, (_, k) => ({
+        iteration: k + 1,
+        thinking: `thinking ${k + 1} t${turn}`,
+        content: Array.from(
+          { length: 8 },
+          (_, j) => `line ${j} of answer ${k + 1} turn ${turn} — lorem ipsum dolor sit amet, consectetur adipiscing elit sed do eiusmod.`,
+        ).join('\n\n'),
+        completed_tools: [],
+      })),
+    })
+  }
+  return out
+}
+
+/**
+ * ⛔ 守护（2026-09-13「手机上 iter 多了就卡 / 开侧边栏慢 5-6 倍」的**根因**）：
+ * **扰动布局的交互不得让已提交迭代的内容整体重挂载**。
+ *
+ * 实测根因链（真实 Chromium 390×844 + CDP CPU 4×，mock 40 turn × 40 迭代）：
+ *   1. 手机端打开工具页 ⇒ `MobileAppShell` 把 AgentPanel 外壳置 `display:none`
+ *      （MobileAppShell.tsx:384）；
+ *   2. 消息滚动容器随之变成 0×0（实测 `scrollerH/W = 0`），TanStack virtual-core 的
+ *      `observeElementRect` 把这个「没有布局的测量」当成真实几何 → `getVirtualItems()`
+ *      塌成空 → **所有 virt-row 卸载**（实测一次交互 320 个 `.iter-block` 全部移除、
+ *      DOM 节点 528→173）；
+ *   3. 行卸载 ⇒ `CommittedTurn` 实例销毁 ⇒ **实例作用域**的实测高度缓存 / 复核裁决
+ *      （TurnBody.tsx 的 `trackerRef` / `verified`）整体丢失；
+ *   4. 返回时整行重挂载：没有实测高度 ⇒ 无块可冻结 ⇒ **每个迭代块的内容全部重新
+ *      挂载** + markdown 全量重解析（上一轮实测 nodes 313→**5303**、muted 138→**0**、
+ *      mounted 301；CDP self time：`measureElement` 875ms / react-markdown ~618ms）。
+ *
+ * 断言（修复前红 / 修复后绿）：
+ *   1. 打开工具页后 `.iter-block` 不得归 0（行不得卸载）、muted 不得归 0；
+ *   2. 关掉工具页的**瞬态**（返回后立刻，早于 250ms 结算 + 400ms 复核）muted 仍 > 0
+ *      —— 证明复用缓存，而不是靠重新测量"救回来"；
+ *   3. 整个交互里 `.iter-block` 的 mount/unmount 计数 ≈ 0；
+ *   4. DOM 规模不得成倍爆炸。
+ */
+test.describe('layout-perturbing interaction must not remount committed iteration content', () => {
+  test('opening/closing the mobile tools panel keeps windowing, content mounts and nodes bounded', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class MockEventSource {
+        readyState = 1
+        onopen: ((ev: Event) => void) | null = null
+        onerror: ((ev: Event) => void) | null = null
+        constructor(public url: string) {
+          setTimeout(() => this.onopen?.(new Event('open')), 0)
+        }
+        addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          if (!listeners[type]) listeners[type] = new Set()
+          listeners[type].add(handler)
+        }
+        removeEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          listeners[type]?.delete(handler)
+        }
+        close() {
+          for (const k of Object.keys(listeners)) listeners[k].clear()
+        }
+      }
+      ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+    })
+
+    await setupMock(page, multiTurnHistory(40, 40))
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(3000)
+
+    // 到底部（历史首屏 + 高度稳定：settle 需两次同值测量 ≥200ms，复核再 +400ms）
+    await page.evaluate(() => {
+      const anchor = document.querySelector('[data-message-list-content]') as HTMLElement | null
+      let sc = anchor?.parentElement as HTMLElement | null
+      while (sc) {
+        const oy = getComputedStyle(sc).overflowY
+        if (oy === 'auto' || oy === 'scroll') break
+        sc = sc.parentElement
+      }
+      if (sc) sc.scrollTop = sc.scrollHeight
+    })
+    await page.waitForTimeout(4000)
+
+    const before = await windowStats(page)
+    console.log('LAYOUT-PERTURB-BEFORE', JSON.stringify(before))
+    expect(before.muted, '前置：窗口化必须先成立').toBeGreaterThan(0)
+
+    // 交互期间统计 `.iter-block` 的挂载/卸载次数（任何子树里被增删的都算）。
+    await page.evaluate(() => {
+      const w = window as unknown as { __iterChurn: { added: number; removed: number } }
+      w.__iterChurn = { added: 0, removed: 0 }
+      const count = (n: Node): number => {
+        if (n.nodeType !== 1) return 0
+        const el = n as HTMLElement
+        let c = el.classList?.contains('iter-block') ? 1 : 0
+        c += el.querySelectorAll?.('.iter-block').length ?? 0
+        return c
+      }
+      new MutationObserver((records) => {
+        for (const r of records) {
+          for (const n of r.addedNodes) w.__iterChurn.added += count(n)
+          for (const n of r.removedNodes) w.__iterChurn.removed += count(n)
+        }
+      }).observe(document.body, { subtree: true, childList: true })
+    })
+
+    // ── 开（手机端「工具」页 = 右侧栏的等价物） ──
+    await page.getByRole('button', { name: /^tools$|工具/i }).first().click()
+    await page.waitForFunction(() => !!document.querySelector('[role="tablist"]'), undefined, { timeout: 20000 })
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
+    await page.waitForTimeout(300)
+    const openStats = await windowStats(page)
+    console.log('LAYOUT-PERTURB-OPEN', JSON.stringify(openStats))
+
+    // ── 关（返回 agent 视图） ──
+    await page.locator('header button').first().click()
+    await page.waitForFunction(() => document.querySelectorAll('.iter-block').length > 0, undefined, {
+      timeout: 20000,
+    })
+    // 瞬态读数：必须早于「250ms 结算 + 400ms 复核」，否则只证明"重新测回来了"
+    const backTransient = await windowStats(page)
+    console.log('LAYOUT-PERTURB-BACK-TRANSIENT', JSON.stringify(backTransient))
+    await page.waitForTimeout(2500)
+    const after = await windowStats(page)
+    const churn = await page.evaluate(
+      () => (window as unknown as { __iterChurn: { added: number; removed: number } }).__iterChurn,
+    )
+    console.log('LAYOUT-PERTURB-AFTER', JSON.stringify(after), 'CHURN', JSON.stringify(churn))
+
+    // 1) 打开工具页时行不得卸载（修复前这里是 blocks=0 / muted=0）
+    expect(openStats.blocks, '开工具页后迭代块外壳必须仍在（行不得卸载）').toBeGreaterThan(0)
+    expect(openStats.muted, '开工具页后窗口化判定不得归 0').toBeGreaterThan(0)
+    // 2) 返回后的瞬态：内容不得整体重挂载（修复前 muted = 0）
+    expect(backTransient.muted, '返回瞬态里窗口化必须仍然成立（缓存复用，不是重新测回来）').toBeGreaterThan(0)
+    // 3) 整个交互的迭代块增删 ≈ 0（修复前 added+removed = 640：320 卸载 + 320 重挂）
+    expect(churn.added + churn.removed, `.iter-block 不得因交互重挂载：${JSON.stringify(churn)}`).toBeLessThanOrEqual(10)
+    // 4) DOM 规模不得成倍爆炸（修复后现场实测 5303 → 与 before 同量级）
+    expect(after.nodes, `DOM 不得因交互膨胀：before=${before.nodes} after=${after.nodes}`).toBeLessThan(before.nodes * 2)
+    expect(after.muted, '交互后窗口化仍成立').toBeGreaterThan(0)
+
+    await context.close()
+  })
+})

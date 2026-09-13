@@ -13,7 +13,12 @@
  * the last row when present.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
+import {
+  useVirtualizer,
+  observeElementOffset as defaultObserveElementOffset,
+  observeElementRect as defaultObserveElementRect,
+  measureElement as defaultMeasureElement,
+} from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Loader2, Sparkles } from 'lucide-react'
 
@@ -183,6 +188,59 @@ const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (in
     }
     cleanup?.()
   }
+}
+
+/**
+ * ── 滚动容器几何：忽略「没有布局的测量」（2026-09-13 交互卡顿的根因）────────────
+ *
+ * 与 `rafCoalescedObserveElementOffset` 同源的包装，防的是另一类事件：**容器被隐藏**
+ * 时的 0×0 矩形。
+ *
+ * ⛔ 为什么必须忽略（实测根因，不是防御性编程）：手机端打开工具页会把 AgentPanel
+ * 外壳置 `display:none`（`MobileAppShell` 的视图切换），消息滚动容器随之变成 0×0。
+ * virtual-core 的 `observeElementRect` 把这次「没有布局的测量」当成真实几何
+ * （`this.scrollRect = rect` → `getSize() === 0`）→ `getVirtualItems()` 塌成空 →
+ * **所有 virt-row 卸载** → `CommittedTurn` 实例销毁 → 实测高度缓存/复核裁决整体丢失
+ * → 返回时每个迭代块的内容全部重新挂载 + markdown 全量重解析。
+ * 实测（390×844 / mock 40 turn × 40 迭代）：一次交互 320 个 `.iter-block` 卸载再重挂、
+ * DOM 节点 528→3708、muted 318→0。
+ *
+ * 与 `TurnBody` / `iterationHeight` 里同一条铁律一致：**没有布局的测量不是测量**
+ * （元素无渲染盒 / 宽高为 0）。容器重新可见时 ResizeObserver 照常上报真实几何，
+ * 因此这里只丢弃退化读数，不丢任何真实的尺寸变化。
+ */
+const nonDegenerateObserveElementRect: typeof defaultObserveElementRect = (instance, cb) =>
+  defaultObserveElementRect(instance, (rect) => {
+    if (rect.width === 0 && rect.height === 0) return
+    cb(rect)
+  })
+
+/**
+ * ── 行尺寸：同样忽略「没有布局的测量」（同一条铁律的第二个入口）──────────────
+ *
+ * TanStack 对**每一行**都挂了 ResizeObserver（`_measureElement` → `options.measureElement`）。
+ * 容器被隐藏（手机端开工具页 `display:none`）时它给每行报 0×0 → `resizeItem(index, 0)`
+ * → 所有已挂载行的尺寸塌成 0 → 总高塌陷 → **可见窗口按 0 高度铺开**。实测：返回 agent
+ * 视图的那一帧会多挂 **14 行 = 280 个迭代块**（DOM 320→600）再被修正回来 —— 一次交互
+ * 白白重挂 280 个块（每个块的 markdown 都要重新解析一次）。
+ *
+ * 修法同 `nonDegenerateObserveElementRect`：元素**没有渲染盒**时量到的 0 不是尺寸，
+ * 返回"上次已知尺寸"（`resizeItem` 里 delta === 0 ⇒ 完全无副作用）；元素可见时的 0
+ * 照实返回（那才是真实的 0 尺寸）。
+ */
+const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
+  const size = defaultMeasureElement(element, entry, instance)
+  if (size > 0) return size
+  const el = element as unknown as HTMLElement
+  if (el.isConnected && el.offsetParent !== null) return size
+  const index = Number(el.dataset?.index ?? -1)
+  const v = instance as unknown as {
+    measurementsCache?: { key: unknown; size: number }[]
+    itemSizeCache?: Map<unknown, number>
+  }
+  const item = index >= 0 ? v.measurementsCache?.[index] : undefined
+  if (!item) return size
+  return v.itemSizeCache?.get(item.key) ?? item.size
 }
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -361,6 +419,12 @@ export const MessageList = memo(function MessageList({
     // scroll → rAF 合帧（模块级 rafCoalescedObserveElementOffset，见上方注释）：
     // 滚动中每帧最多一次 offset 通知（isScrolling=false 停止通知保持同步直达）。
     observeElementOffset: rafCoalescedObserveElementOffset,
+    // 容器几何：忽略「没有布局的测量」（0×0）——否则容器被隐藏（手机端开工具页）
+    // 会让可见窗口塌成空、所有行卸载（见模块级 nonDegenerateObserveElementRect）。
+    observeElementRect: nonDegenerateObserveElementRect,
+    // 行尺寸：同一个退化读数从**行**这一侧进来时同样必须忽略（见上面的
+    // noDegenerateMeasureElement）——否则隐藏期间所有行塌成 0 高，返回时多挂 14 行。
+    measureElement: noDegenerateMeasureElement,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return `row-${index}`
@@ -395,6 +459,28 @@ export const MessageList = memo(function MessageList({
       return item.end < (instance.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  /**
+   * 迭代块「高度 / 冻结裁决」的作用域 = **会话身份 + 布局宽度**。
+   *
+   * 为什么是内容身份而不是组件实例（2026-09-13「开侧边栏慢 5-6 倍」根因）：行会因
+   * 任何扰动布局的交互（手机端开工具页把 AgentPanel 外壳 `display:none`）整体卸载
+   * 再重挂 —— 实例态作用域随卸载销毁 ⇒ 返回时无实测高度 ⇒ 每个迭代块的内容全部
+   * 重新挂载 + markdown 全量重解析。同一 turn 的同一迭代块内容是**不变**的
+   * （宽度不变 ⇒ 高度不变），所以同一 scope 必须能跨重挂载复用先前的实测高度与
+   * 复核裁决（`sharedIterationHeightTracker`）。
+   *
+   * 两个成分都是硬要求：
+   *   - **会话**：turnID 是每会话独立编号，不含会话会让两个会话的同 key 撞车
+   *     （76b731de：新会话读到旧会话"已结算高度" → 立刻冻结成空块）；
+   *   - **布局宽度**：高度不变性的前提；宽度一变旧高度一律作废（否则拿旧宽度的
+   *     占位高度去定新宽度的行高）。
+   *
+   * 宽度取 `virtualizer.scrollRect`（已被 `nonDegenerateObserveElementRect` 保住
+   * 最后一次真实宽度：容器被隐藏时不塌成 0）。首帧尚未量到 → 0，属于一个独立的
+   * 初始作用域：量到真实宽度后自然切换，切换时 `CommittedTurn` 会丢弃分块决策重算。
+   */
+  const heightScope = `${chatKey ?? 'none'}|${Math.round(virtualizer.scrollRect?.width ?? 0)}`
 
   // Row measurement: wrap the official measureElement (it prunes disconnected
   // nodes on ref(null) — do NOT early-return on null, that leaked stale nodes).
@@ -1016,6 +1102,7 @@ export const MessageList = memo(function MessageList({
                     <MessageItem
                       message={row}
                       liveProgress={row.id === liveId ? liveProgress : null}
+                      heightScope={heightScope}
                       onRewind={onRewind ? handleRewindRow : undefined}
                       isEditing={isEditing}
                       onStartEdit={onStartEdit ? handleStartEditRow : undefined}
