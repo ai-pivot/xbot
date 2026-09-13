@@ -318,8 +318,9 @@ function cardFor(msgID: string): HTMLElement {
 }
 
 /** Drag `srcID`'s handle onto `targetID`, landing on its top (before) or bottom (after).
- *  Pointer events go to the HANDLE — it captures the pointer on pointerdown, so
- *  move/up are retargeted there (no global window listeners by design). */
+ *  pointerdown goes to the HANDLE; the LIST container captures that pointer, so
+ *  move/up are retargeted to the container (they also bubble there from the handle
+ *  in jsdom) — no global window listeners by design. */
 function dragOnto(srcID: string, targetID: string, edge: 'before' | 'after') {
   const handle = within(cardFor(srcID)).getByTestId('staging-drag-handle')
   fireEvent.pointerDown(handle)
@@ -329,6 +330,30 @@ function dragOnto(srcID: string, targetID: string, edge: 'before' | 'after') {
   document.elementFromPoint = () => target
   fireEvent.pointerMove(handle, { clientX: 10, clientY: y })
   fireEvent.pointerUp(handle)
+}
+
+/** 列表里 `[data-queue-id]` 的 DOM 顺序（拖拽中 = 预览顺序）。 */
+function domOrder(): string[] {
+  const list = screen.getByTestId('staging-list')
+  return Array.from(list.querySelectorAll('[data-queue-id]')).map(
+    (c) => c.getAttribute('data-queue-id') ?? '',
+  )
+}
+
+/** 按下某张卡的拖拽柄（不松手）——返回该柄（后续 move/up 都派发在它身上，
+ *  事件冒泡到列表容器，与真实 pointer capture 的路径一致）。 */
+function liftCard(srcID: string): HTMLElement {
+  const handle = within(cardFor(srcID)).getByTestId('staging-drag-handle')
+  fireEvent.pointerDown(handle)
+  return handle
+}
+
+/** 把指针移到某张卡的 before/after 半区（同真实几何判定：中点上下）。 */
+function movePointerOver(handle: HTMLElement, targetID: string, edge: 'before' | 'after') {
+  const target = cardFor(targetID)
+  stubRect(target, 100)
+  document.elementFromPoint = () => target
+  fireEvent.pointerMove(handle, { clientX: 10, clientY: edge === 'before' ? 105 : 135 })
 }
 
 function setup(items: QueueItemPayload[], onReorder?: (ids: string[]) => void) {
@@ -377,18 +402,83 @@ describe('StagingTray drag-to-reorder', () => {
     expect(onReorder).not.toHaveBeenCalled()
   })
 
-  it('renders a drop indicator while dragging, cleared on drop', () => {
+  it('lifts the card into a pointer-events:none ghost + a same-height dashed slot, and clears both on drop', () => {
     const onReorder = vi.fn()
     setup([makeItem('a'), makeItem('b')], onReorder)
-    const handle = within(cardFor('a')).getByTestId('staging-drag-handle')
-    fireEvent.pointerDown(handle)
-    const target = cardFor('b')
-    stubRect(target, 100)
-    document.elementFromPoint = () => target
-    fireEvent.pointerMove(handle, { clientX: 10, clientY: 135 })
-    expect(screen.getAllByTestId('staging-drop-line')).toHaveLength(1)
+    const handle = liftCard('a')
+
+    // ① 占位槽：**就是被拖的那张卡**（仍在列表里、仍带 data-queue-id ⇒ 列表总高不变），
+    //    虚线框 + 内容 visibility:hidden（保布局）。
+    const slot = screen.getByTestId('staging-placeholder')
+    expect(slot).toHaveAttribute('data-queue-id', 'a')
+    expect(slot.getAttribute('class') ?? '').toMatch(/border-dashed/)
+    expect(within(slot).getByTestId('staging-card-row').getAttribute('class') ?? '').toMatch(/invisible/)
+    // 槽仍占着它原来的位置（DOM 顺序未变）：没有把卡片从流里摘掉 ⇒ 不会"跳一下"。
+    expect(domOrder()).toEqual(['a', 'b'])
+
+    // ② 幽灵：fixed + 不吃指针事件 + 内容 = 按下时的卡片快照（副本不参与选择器）。
+    const ghost = screen.getByTestId('staging-drag-ghost')
+    expect(ghost.style.position).toBe('fixed')
+    expect(ghost.style.pointerEvents).toBe('none')
+    expect(ghost.querySelectorAll('[data-queue-id]')).toHaveLength(0)
+    expect(ghost.querySelectorAll('[data-testid]')).toHaveLength(0)
+    expect(ghost.textContent).toContain('a') // 预览文本随快照一起搬过来
+
     fireEvent.pointerUp(handle)
-    expect(screen.queryAllByTestId('staging-drop-line')).toHaveLength(0)
+    expect(screen.queryByTestId('staging-placeholder')).toBeNull()
+    expect(screen.queryByTestId('staging-drag-ghost')).toBeNull()
+  })
+
+  it('reorders the DOM live while dragging — before pointerup, without committing early', () => {
+    const onReorder = vi.fn()
+    setup([makeItem('a'), makeItem('b'), makeItem('c')], onReorder)
+    const handle = liftCard('a')
+    movePointerOver(handle, 'c', 'after')
+
+    // 松手**之前**：DOM 顺序已经是预览顺序，其它卡片已经让位。
+    expect(domOrder()).toEqual(['b', 'c', 'a'])
+    // …但还没有提交（一次手势 = 一次请求）。
+    expect(onReorder).not.toHaveBeenCalled()
+
+    fireEvent.pointerUp(handle)
+    // 提交的就是那份预览顺序（不是重新算一遍）。
+    expect(onReorder).toHaveBeenCalledTimes(1)
+    expect(onReorder).toHaveBeenCalledWith(['b', 'c', 'a'])
+    expect(domOrder()).toEqual(['b', 'c', 'a'])
+  })
+
+  it('keeps the preview stable while the pointer stays on the dropped card slot (no oscillation)', () => {
+    const onReorder = vi.fn()
+    setup([makeItem('a'), makeItem('b'), makeItem('c')], onReorder)
+    const handle = liftCard('a')
+    movePointerOver(handle, 'c', 'after')
+    expect(domOrder()).toEqual(['b', 'c', 'a'])
+
+    // 指针压在被拖项自己的占位槽上（真实场景：卡片挪到指针下面）→ 预览保持不变，
+    // 不会来回翻（旧实现的插入线此时会消失/抖动）。
+    const slot = screen.getByTestId('staging-placeholder')
+    document.elementFromPoint = () => slot
+    fireEvent.pointerMove(handle, { clientX: 10, clientY: 135 })
+    expect(domOrder()).toEqual(['b', 'c', 'a'])
+
+    // 指针落在卡片之间的间隙（命中不到卡片）同样保持预览。
+    document.elementFromPoint = () => screen.getByTestId('staging-list')
+    fireEvent.pointerMove(handle, { clientX: 10, clientY: 120 })
+    expect(domOrder()).toEqual(['b', 'c', 'a'])
+
+    fireEvent.pointerUp(handle)
+    expect(onReorder).toHaveBeenCalledWith(['b', 'c', 'a'])
+  })
+
+  it('keeps the list without a removed slot when the drop is a no-op (drag back into place)', () => {
+    const onReorder = vi.fn()
+    setup([makeItem('a'), makeItem('b')], onReorder)
+    const handle = liftCard('a')
+    // 指针始终只在被拖项自己的槽上 → 顺序不变，松手不发请求。
+    movePointerOver(handle, 'a', 'after')
+    expect(domOrder()).toEqual(['a', 'b'])
+    fireEvent.pointerUp(handle)
+    expect(onReorder).not.toHaveBeenCalled()
   })
 
   it('skips entries without a msg_id (unaddressable notification rows)', () => {
