@@ -127,14 +127,22 @@ export function TodoPullOut({
             if (editingIndex === i) {
               return (
                 <div key={i} data-testid="todo-item" data-todo-text={todo.text} className="flex items-center gap-2 py-0.5">
-                  <input
-                    ref={inputRef}
+                  {/* 与 goal 编辑同一套契约（用户 2026-09-13）：自适应高度 textarea ——
+                      长 todo 不再被单行截断；Enter 保存 / Shift+Enter 换行 / Esc 取消 /
+                      IME 组合态不提交（中文选词）；失焦保存（短文本改起来更顺手）。 */}
+                  <textarea
+                    ref={inputRef as never}
                     data-testid="todo-edit-input"
+                    rows={1}
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => {
+                      setDraft(e.target.value)
+                      e.target.style.height = 'auto'
+                      e.target.style.height = `${Math.min(e.target.scrollHeight, 72)}px`
+                    }}
                     onBlur={commitEdit}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                         e.preventDefault()
                         commitEdit()
                       } else if (e.key === 'Escape') {
@@ -143,7 +151,7 @@ export function TodoPullOut({
                       }
                     }}
                     aria-label={t('agent.todoEdit')}
-                    className="min-w-0 flex-1 rounded border border-accent/60 bg-bg-primary px-1.5 py-0.5 text-xs text-text-primary outline-none ring-2 ring-accent/25"
+                    className="min-w-0 flex-1 resize-none rounded border border-accent/60 bg-bg-primary px-1.5 py-0.5 text-xs leading-relaxed text-text-primary outline-none ring-2 ring-accent/25"
                   />
                 </div>
               )
