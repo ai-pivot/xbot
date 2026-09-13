@@ -28,17 +28,24 @@
 
 import type { ChatMessage } from '@/types/shared'
 
-/** Stable sort comparator key: (turnID, roleRank). */
-function sortKey(m: ChatMessage): [number, number] {
-  const roleRank = m.role === 'user' ? 0 : 1
-  if (m.turnID > 0) return [m.turnID, roleRank]
+/** 排序主键（turnID 维度）—— **不分配数组**。
+ *  原实现每行返回 `[turnID, roleRank]` 元组，而 orderMessageRows 每个流式帧都
+ *  对**全表**调用 ⇒ 每帧 N 个数组分配（代价 ∝ 已加载历史总量，2026-09-13
+ *  「长历史也会卡」）。改成两个标量取值。 */
+function sortTurnKey(m: ChatMessage): number {
+  if (m.turnID > 0) return m.turnID
   // turnID=0 residue (undeducible):
   //  - isPartial (live streaming) or persisted=false (optimistic send): the
   //    newest content — must render at the BOTTOM (below all committed rows).
   //  - persisted=true with no derivable turn (early legacy rows): the oldest
   //    content — renders at the TOP.
   const bottom = m.isPartial || m.persisted === false
-  return [bottom ? Number.MAX_SAFE_INTEGER : -1, roleRank]
+  return bottom ? Number.MAX_SAFE_INTEGER : -1
+}
+
+/** 角色次序：同 turn 内 user(0) 先于 assistant(1)。 */
+function sortRoleRank(m: ChatMessage): number {
+  return m.role === 'user' ? 0 : 1
 }
 
 /**
@@ -77,7 +84,10 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
     }
   }
   if (!needsBinding) return messages
-  const result = messages.map((m) => ({ ...m }))
+  // 只做数组浅拷贝（O(N) 指针），**只在真正需要绑定的行上再浅拷贝行对象**。
+  // 原实现 `messages.map(m => ({...m}))` 每个流式帧对**全表**分配 N 个新对象 ——
+  // 代价 ∝ 已加载历史总量（2026-09-13「长历史也会卡，哪怕新 turn 很小」）。
+  const result = messages.slice()
   const n = result.length
   // prevTurn[i] = nearest turn_id>0 at or before i (assistant anchor).
   const prevTurn = new Array<number>(n).fill(0)
@@ -96,8 +106,9 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
   for (let i = 0; i < n; i++) {
     const m = result[i]
     if (m.turnID > 0 || m.isPartial) continue // live rows: snapshot turnID wins
+    let bound = 0
     if (m.role === 'assistant' && prevTurn[i] > 0) {
-      m.turnID = prevTurn[i]
+      bound = prevTurn[i]
     } else if (m.role === 'user') {
       // Users bind to the nearest FOLLOWING turn (the turn they triggered).
       // This applies to optimistic rows too: buildMessageRows runs binding on
@@ -105,16 +116,17 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
       // streaming (live, turnID=2) binds to 2 and sorts user-before-assistant
       // — "reply below my user msg" (linear consistency).
       if (nextTurn[i] > 0) {
-        m.turnID = nextTurn[i]
+        bound = nextTurn[i]
       } else if (m.persisted !== false && prevTurn[i] > 0) {
         // Persisted user_echo with NO following turn (its turn_started was
         // lost / AskUser answer): bind to the nearest PRECEDING turn — keeps
         // it in turn order instead of pinning at the top. Optimistic rows
         // (persisted=false) stay 0 → sorted to the bottom (awaiting their own
         // turn_started).
-        m.turnID = prevTurn[i]
+        bound = prevTurn[i]
       }
     }
+    if (bound > 0) result[i] = { ...m, turnID: bound }
   }
   return result
 }
@@ -131,21 +143,26 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
  */
 export function orderMessageRows(messages: ChatMessage[]): ChatMessage[] {
   if (messages.length < 2) return messages
-  // Detect order violations in O(N); a single inversion triggers the sort.
-  let prevKey = sortKey(messages[0])
+  // Detect order violations in O(N)（只做标量比较，零分配）；一处逆序才排序。
+  let prevTurn = sortTurnKey(messages[0])
+  let prevRank = sortRoleRank(messages[0])
   for (let i = 1; i < messages.length; i++) {
-    const key = sortKey(messages[i])
-    if (key[0] < prevKey[0] || (key[0] === prevKey[0] && key[1] < prevKey[1])) {
+    const turn = sortTurnKey(messages[i])
+    const rank = sortRoleRank(messages[i])
+    if (turn < prevTurn || (turn === prevTurn && rank < prevRank)) {
       // Out of order — do the stable sort.
       return [...messages].sort((a, b) => {
-        const ak = sortKey(a)
-        const bk = sortKey(b)
-        if (ak[0] !== bk[0]) return ak[0] - bk[0]
-        if (ak[1] !== bk[1]) return ak[1] - bk[1]
+        const at = sortTurnKey(a)
+        const bt = sortTurnKey(b)
+        if (at !== bt) return at - bt
+        const ar = sortRoleRank(a)
+        const br = sortRoleRank(b)
+        if (ar !== br) return ar - br
         return 0 // stable — keep input order for identical keys
       })
     }
-    prevKey = key
+    prevTurn = turn
+    prevRank = rank
   }
   return messages // already ordered — zero copy
 }

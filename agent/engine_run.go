@@ -90,35 +90,21 @@ type runState struct {
 	compressAttempts   int
 	lastCompressIter   int
 
-	// --- Infinite-compression loop protection (200k-context incident) ---
-	// The trigger compares REAL API prompt_tokens against 0.9×(maxContext−maxOutput),
-	// but compression targets maxContext in full, and the post-compress "does it
-	// fit" check used the summary-only estimate. When the un-shrinkable part
-	// (system prompt + tools + tail) exceeds the trigger line, compression can
-	// NEVER get below it — without the counters below the engine re-compresses
-	// every 5 iterations forever, each round burning a full-context compaction
-	// LLM call. See maybeCompress / runCompression post-compress check.
-	//
-	// compressAbandoned: set when post-compress (post-truncation) context still
-	// exceeds the trigger line, or after consecutiveIneffectiveCompress
-	// consecutive no-progress compressions. Auto-compression is disabled for the
-	// REST OF THIS RUN (runState is per-Run; the next turn retries once).
-	compressAbandoned bool
 	// selfCompactRequested: set by the compact_context tool result (agent-
 	// initiated compaction — config agent.allow_self_compact, default off).
 	// maybeCompress ORs it into needCompress so the compression runs before the
-	// next LLM call (same runCompression path as the threshold trigger). It
-	// still respects compressAbandoned — a fused Run must not re-enter the
-	// compression loop because the agent asked nicely.
+	// next LLM call (same runCompression path as the threshold trigger). An
+	// explicit request is never vetoed by engine state.
 	selfCompactRequested bool
-	// lastCompressTriggerTokens is the REAL API prompt_tokens at the moment the
-	// previous compression was triggered (same measurement on both sides of the
-	// comparison — no estimate/API mixing).
-	lastCompressTriggerTokens int64
-	// consecutiveIneffectiveCompress counts consecutive compressions whose trigger
-	// tokens dropped less than 5% from the previous trigger (compression is
-	// having no real effect — e.g. estimate passes but real value stays).
-	consecutiveIneffectiveCompress int
+	// NOTE (2026-09-13): the infinite-compression circuit breaker was DELETED
+	// (compressAbandoned / consecutiveIneffectiveCompress / lastCompressTriggerTokens).
+	// It disabled compression for the rest of a Run whenever the post-compress
+	// context stayed above the trigger line — including for model-requested
+	// compactions, which then did nothing at all. Compression is instead bounded
+	// by (a) the 5-iteration cooldown below and (b) the error-driven forcible
+	// compression path (handleInputTooLong / context_window_exceeded), which
+	// makes overflow impossible in practice — so a fuse that stops compressing
+	// was strictly worse than the loop it prevented.
 
 	// Metrics (local counters for this Run)
 	localIterCount    int
@@ -1367,6 +1353,19 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	s.compressAttempts++
 	cm := s.cfg.ContextManager
 	if cm == nil || len(s.messages) <= 3 {
+		// An explicit request (compact_context) that cannot be honored here must
+		// NOT be dropped silently: the model believes the compaction will run
+		// before its next call (the tool result says so). 2026-09-13 incident:
+		// compact_context was called 34 times, only 10 ran, the rest vanished
+		// with no log and no feedback ("compact context 完全没用").
+		if s.selfCompactRequested {
+			s.selfCompactRequested = false
+			if cm == nil {
+				s.refuseSelfCompact(ctx, "未配置 ContextManager")
+			} else {
+				s.refuseSelfCompact(ctx, fmt.Sprintf("消息太少（%d 条），没有可压缩的内容", len(s.messages)))
+			}
+		}
 		return nil
 	}
 
@@ -1379,6 +1378,10 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 			"last_prompt_tokens": s.tokenTracker.PromptTokens(),
 			"msg_count":          len(s.messages),
 		}).Info("maybeCompress skipped: maxTokens=0")
+		if s.selfCompactRequested {
+			s.selfCompactRequested = false
+			s.refuseSelfCompact(ctx, "会话未配置 max_context_tokens（maxTokens=0）")
+		}
 		return nil
 	}
 
@@ -1402,6 +1405,10 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	if tokenSource == "no_data" {
 		// No API token data means we do not know the actual context pressure.
 		// Do not compact or mask based on local guesses.
+		if s.selfCompactRequested {
+			s.selfCompactRequested = false
+			s.refuseSelfCompact(ctx, "缺少真实 token 数据（尚无 API prompt_tokens），无法确定压缩基线")
+		}
 		return nil
 	}
 
@@ -1409,38 +1416,50 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 	if s.cfg.ContextManagerConfig != nil && s.cfg.ContextManagerConfig.CompressionThreshold > 0 {
 		compressThreshold = s.cfg.ContextManagerConfig.CompressionThreshold
 	}
-	needCompress := !s.compressAbandoned && len(s.messages) > 3 &&
-		(shouldCompact(int(totalTokens), promptBudget, compressThreshold) || s.selfCompactRequested) &&
-		(s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5 || s.selfCompactRequested)
+	// --- Trigger sources are tracked SEPARATELY (2026-09-13 incident) ---
+	// Two independent reasons can ask for compression, and they must not be
+	// conflated (the old code ORed them into one boolean and let them share the
+	// state — that is the bug):
+	//
+	//   auto     — the token threshold fired (shouldCompact). It respects the
+	//              5-iteration cooldown so an over-threshold context cannot burn
+	//              a full-context compaction LLM call every single iteration.
+	//   explicit — the model called compact_context (selfCompactRequested). The
+	//              model asked NOW, so it is honored regardless of the cooldown
+	//              and of any other engine state.
+	autoTrigger := shouldCompact(int(totalTokens), promptBudget, compressThreshold) &&
+		(s.lastCompressIter == 0 || s.compressAttempts-s.lastCompressIter >= 5)
+	explicitCompress := s.selfCompactRequested
+	// When both fire in the same check the request is treated as explicit — the
+	// model asked NOW.
+	autoCompress := autoTrigger && !explicitCompress
+	needCompress := len(s.messages) > 3 && (autoCompress || explicitCompress)
 
-	// Agent-initiated (compact_context tool): consume the request flag when the
-	// compression actually runs — a fused Run (compressAbandoned) or an
-	// otherwise-skipped iteration must not re-fire it on every subsequent
-	// maybeCompress check. The 5-iteration cooldown is bypassed for an explicit
-	// agent request (the model asked NOW), but the abandoned guard above still
-	// applies (a fused Run never re-enters the loop).
-	// Turn-end semantics (Codex new_context parity: `should_roll_over =
-	// needs_follow_up && take_request() || token_limit` — a request on the
-	// FINAL iteration is dropped when the turn ends): selfCompactRequested
-	// lives on runState (per-Run). A request made on the last iteration (no
-	// further LLM call → maybeCompress never runs again) dies with the Run —
-	// the flag does NOT leak into the next turn. Same discard behavior.
-	if s.selfCompactRequested && needCompress {
-		s.selfCompactRequested = false
-	} else if s.selfCompactRequested {
-		// The request cannot be honored (abandoned / mode=none / too few
-		// messages) — clear the flag so it does not fire later unexpectedly.
+	// Agent-initiated (compact_context tool): the request is consumed by THIS
+	// check — it is either honored below (compression runs) or explicitly
+	// refused with a Warn + visible feedback (see refuseSelfCompact), never
+	// silently dropped. Turn-end semantics (Codex new_context parity:
+	// `should_roll_over = needs_follow_up && take_request() || token_limit` — a
+	// request on the FINAL iteration is dropped when the turn ends):
+	// selfCompactRequested lives on runState (per-Run). A request made on the
+	// last iteration (no further LLM call → maybeCompress never runs again)
+	// dies with the Run — the flag does NOT leak into the next turn.
+	if explicitCompress {
 		s.selfCompactRequested = false
 	}
 
 	log.Ctx(ctx).WithFields(log.Fields{
-		"total_tokens":       totalTokens,
-		"max_context":        maxTokens,
-		"max_output_tokens":  maxOutputTokens,
-		"prompt_budget":      promptBudget,
-		"threshold":          int(float64(promptBudget) * compressThreshold),
-		"msg_count":          len(s.messages),
-		"need":               needCompress,
+		"total_tokens":      totalTokens,
+		"max_context":       maxTokens,
+		"max_output_tokens": maxOutputTokens,
+		"prompt_budget":     promptBudget,
+		"threshold":         int(float64(promptBudget) * compressThreshold),
+		"msg_count":         len(s.messages),
+		"need":              needCompress,
+		// Trigger provenance, so the next incident is a grep instead of a guess:
+		// a need=false line on an over-threshold context means the 5-iteration
+		// cooldown is still active (self_compact=false).
+		"self_compact":       explicitCompress,
 		"base_prompt_tokens": s.tokenTracker.PromptTokens(),
 		"completion_tokens":  s.tokenTracker.CompletionTokens(),
 		"source":             tokenSource,
@@ -1452,48 +1471,53 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 		// compression even when the ContextManager is a noopManager, which returns
 		// "auto compression is disabled (mode=none)" error.
 		if cm.Mode() == ContextModeNone {
-			log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
+			if explicitCompress {
+				// mode=none disables the ContextManager for everyone — an
+				// explicit request cannot be honored either, but it must not
+				// disappear without a word.
+				s.refuseSelfCompact(ctx, "当前 ContextManager 为 mode=none（压缩功能被禁用）")
+			} else {
+				log.Ctx(ctx).Debug("maybeCompress: auto-compression skipped (mode=none)")
+			}
 			return nil
 		}
-		// No-progress circuit breaker (same-measurement comparison: BOTH sides are
-		// real API prompt_tokens at trigger time — no estimate mixing). If the
-		// current trigger tokens dropped less than 5% from the previous trigger,
-		// compression had no real effect (the estimate-based post-compress check
-		// can pass while the real value stays above the line — e.g. CJK content
-		// under the chars×2/3 heuristic). Two consecutive no-progress triggers
-		// mean compression cannot fix this context (un-shrinkable base) — abandon
-		// auto-compression for the rest of this Run instead of burning a
-		// full-context compaction LLM call every 5 iterations.
-		if s.lastCompressTriggerTokens > 0 && totalTokens >= s.lastCompressTriggerTokens*95/100 {
-			s.consecutiveIneffectiveCompress++
-		} else {
-			s.consecutiveIneffectiveCompress = 0
-		}
-		if s.consecutiveIneffectiveCompress >= 2 {
-			s.compressAbandoned = true
-			log.Ctx(ctx).WithFields(log.Fields{
-				"chat_id":                 s.cfg.ChatID,
-				"turn_id":                 s.cfg.TurnID,
-				"total_tokens":            totalTokens,
-				"last_trigger_tokens":     s.lastCompressTriggerTokens,
-				"trigger_threshold":       int(float64(promptBudget) * compressThreshold),
-				"consecutive_ineffective": s.consecutiveIneffectiveCompress,
-			}).Error("COMPRESSION ABANDONED: real prompt_tokens did not drop ≥5% across consecutive compression triggers — " +
-				"the un-shrinkable part (system prompt + tools + tail) exceeds the trigger line. " +
-				"Auto-compression is disabled for the rest of this Run to stop the infinite loop. " +
-				"Consider raising max_context_tokens, lowering max_output_tokens, or shrinking the system prompt.")
-			s.compressWarning = "⚠️ 自动压缩已停止：上下文不可压缩部分（system prompt + 工具定义 + 近期消息）已超过触发线，继续压缩只会无限循环。" +
-				"建议增大 max_context、调小 max_output_tokens 或精简系统提示词。"
-			s.notifyProgress("")
-			return nil
-		}
-		s.lastCompressTriggerTokens = totalTokens
+		// Threshold-driven and explicit (compact_context) compression share the
+		// same runCompression path. No engine state vetoes either one: if the
+		// context is still over the line after a compaction, the next auto
+		// trigger fires after the cooldown (or immediately, if the model asks).
 		return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
 	}
 
 	// Observation masking (lightweight, no LLM call).
 	s.maybeMaskObservations(ctx, totalTokens, maxTokens)
 	return nil
+}
+
+// refuseSelfCompact reports an explicit compaction request (compact_context)
+// that cannot be honored, instead of silently dropping it (2026-09-13
+// incident). Before this, the request flag was cleared in a bare else-branch:
+// no log, no warning, no feedback — the model had been told "the compression
+// runs before your next model call" and saw nothing happen, 24 of 34 calls.
+//
+// Two existing channels are used (no new mechanism): a Warn log carrying the
+// reason + fuse state, and the one-shot compressWarning — the same progress
+// path the abandonment warnings already use, which renders as a "> ..." line
+// to the user on the next progress flush.
+func (s *runState) refuseSelfCompact(ctx context.Context, reason string) {
+	mode := ""
+	if s.cfg.ContextManager != nil {
+		mode = string(s.cfg.ContextManager.Mode())
+	}
+	log.Ctx(ctx).WithFields(log.Fields{
+		"chat_id":   s.cfg.ChatID,
+		"turn_id":   s.cfg.TurnID,
+		"reason":    reason,
+		"msg_count": len(s.messages),
+		"mode":      mode,
+	}).Warn("compact_context request could not be honored: " + reason +
+		" (request discarded, not silently: the model/user is told why)")
+	s.compressWarning = "⚠️ 模型请求压缩上下文（compact_context）未执行：" + reason + "。"
+	s.notifyProgress("")
 }
 
 // spawnBackground runs fn as a task that must OUTLIVE the current Run's ctx
@@ -1852,11 +1876,11 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 		}
 		// Truncation did not get us below the line (or there was nothing left to
 		// truncate — few messages, giant system prompt / giant single messages).
-		// Compression can never fix this context in this Run: every retry burns a
-		// full-context compaction LLM call and the un-shrinkable part (system
-		// prompt + tools + recent tail) stays above the trigger line. Abandon
-		// auto-compression for the rest of this Run.
-		s.compressAbandoned = true
+		// This no longer DISABLES compression for the rest of the Run (2026-09-13:
+		// the fuse is gone — it also blocked model-requested compactions). The
+		// remaining safety is the 5-iteration auto cooldown plus the error-driven
+		// forcible compression path (handleInputTooLong / context_window_exceeded);
+		// a genuinely overflowing request is still compressed/truncated on demand.
 		log.Ctx(ctx).WithFields(log.Fields{
 			"chat_id":              s.cfg.ChatID,
 			"turn_id":              s.cfg.TurnID,
@@ -1865,11 +1889,11 @@ func (s *runState) runCompression(ctx context.Context, cm ContextManager, totalT
 			"truncated":            truncated,
 			"threshold_limit":      int64(postCompressLimit),
 			"msg_count":            len(s.messages),
-		}).Error("COMPRESSION ABANDONED: post-compression (post-truncation) context still exceeds the trigger line — " +
-			"the un-shrinkable part (system prompt + tools + recent tail) is too large for this model's context budget. " +
-			"Auto-compression is disabled for the rest of this Run to stop the infinite loop. " +
+		}).Warn("post-compression (post-truncation) context still exceeds the trigger line — " +
+			"the un-shrinkable part (system prompt + tools + recent tail) is large for this model's context budget. " +
+			"Compression stays enabled (auto retry after the cooldown, plus error-driven forcible compression). " +
 			"Consider raising max_context_tokens, lowering max_output_tokens, or shrinking the system prompt.")
-		s.compressWarning = "⚠️ 自动压缩已停止：压缩并截断后上下文仍超过触发线（不可压缩部分过大），继续压缩只会无限循环。" +
+		s.compressWarning = "⚠️ 压缩并截断后上下文仍超过触发线（不可压缩部分过大）。" +
 			"建议增大 max_context、调小 max_output_tokens 或精简系统提示词。"
 		s.notifyProgress("")
 	}

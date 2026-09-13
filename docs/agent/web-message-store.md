@@ -1,5 +1,14 @@
 # Web MessageStore — 单一消息状态机（方案 A）
 
+> ⚠️ **2026-09-13 现状（先读这段再看下文）**：**渲染数据源已迁移到新状态机** ——
+> `AgentPanel` → `MessageList` 读 `useAgentChatState`（`chat/reduce.ts` → `derive.ts`
+> → `integrate.ts`）；本文件描述的 `MessageStore.toRows()` 现在只喂
+> `chat.messages`（history 映射 / 插件上下文 / debug toolbar），**不再渲染**。
+> 因此性能修复必须打在新管线的 `derive/integrate` 边界上（引用稳定性 ——
+> 见 AGENTS.md「2026-09-13 回归」条目与 `chat/integrate.test.ts` /
+> `components/agent/turn_perf_pipeline.test.tsx`）；打在 MessageStore 上的
+> memo/引用保持修复对线上渲染**无效**（这正是 2026-09-13 长 turn 卡顿复发的根因模式）。
+
 > 目标：从结构上消除 "turn 消失/重复" 整类 bug。当前渲染层靠启发式去重（sameTurnIdx /
 > exactDup / content 匹配 / eventSeq 匹配）弥合 "两套独立数据"（committed messages +
 > live progress），每个启发式都有边界情况——已产生 6+ 个补丁（iter 回退拒收、eventSeq
@@ -99,3 +108,48 @@ store.hasLive(turnID)          // 渲染层判断 streaming
 - **cancel 双提交**：commitLiveProgressAndReset 删除，text 事件是唯一提交入口；
   迟到 text 按 turnID 路由不重复。
 - **性能回归**：toRows 缓存 + 增量，基准对比现有 buildMessageRows（O(N) scan + copy）。
+
+## 渲染代价与 turn 内迭代数解耦（迭代块 containment，2026-09-13）
+
+trace 归因（12.4s 主线程，构建 `index-B1MrMIM6.js`）显示 **App JS 不随时间增长**
+（index bundle 554ms），增长的是**浏览器渲染侧**：Layout ×1.70 / Paint ×1.69 /
+RasterTask ×3.26 / GPUTask ×1.82，`Layout.dirtyObjects` 每 1/10 桶 16→64（×4），
+以及 7 次 `UpdateLayoutTree` 单次重算 ~4,700–4,800 个元素（≈ 整个 turn 子树）
+落在 70–84ms 的 React 提交里。根因是**迭代块之间没有渲染隔离**。
+
+修复（CSS-only，`index.css` + `TurnBody`）：
+
+| 选择器 | 声明 | 作用 |
+|---|---|---|
+| `.iter-block` | `contain: layout paint; content-visibility: auto; contain-intrinsic-size: auto 320px` | 失效范围限定在块内；离屏块跳过 style/layout/paint |
+| `.iter-block-live` | `content-visibility: visible` | 进行中迭代每帧被改，跳过无收益且抖 |
+| `.iter-blocks` | `display: block` | **必须**：Chrome 不对 flex 子项应用离屏跳过 |
+| `.iter-block + .iter-block` | `margin-top: .25rem` | 复现原 `gap-1` 间距 |
+| `.virt-row` | `contain: layout` | live 行长高不触发列表整体重算 |
+
+不变量：**追加第 N+1 个迭代块的代价 = O(1)**；参与渲染的块数由视口决定
+（E2E 实测：15 迭代 → 3 块，45 迭代 → 仍 3 块）。
+
+守护：`TurnBody.test.tsx`（类名）、`index.test.ts`（CSS 声明）、
+`e2e/turn-iter-perf.spec.ts`（真实 Chromium，`checkVisibility({contentVisibilityAuto:true})` 判据）。
+
+## 迭代级窗口化：交互成本与迭代数解耦（2026-09-13）
+
+移动端（390×844 + CPU 4×）实测：交互成本 ∝ **DOM 规模**，`contain: layout|paint`
+三变体几乎无差别（274/267/265ms）——首屏 N=60 时 2348 节点，任何触碰样式的交互
+（Radix 面板给 body 加 pointer-events、主题切 CSS 变量）都要横扫全部节点：
+样式失效 262ms、打开设置面板 655ms（真机更慢 → 「点什么交互都要等几秒」）。
+
+修复（`TurnBody` 的 `CommittedTurn` + `iterationHeight.ts`）：
+
+- 每块的**外壳**保留（`data-iter-id` / 总高度不变）；
+- 远离视口（IO rootMargin 120%）**且已量到高度**的块 → 卸载内容、固定高度占位
+  （`data-window-muted="true"`）；
+- 从未渲染过的块保持挂载以便 `ResizeObserver` 量高，量到后即可卸载；
+- 高度只允许来自 `iterationHeightCache`（实测）或 `estimateIterationHeight`（内容估算）
+  —— **禁止常数占位**（`contain-intrinsic-size: auto 320px` 曾导致「鬼打墙」滚动 bug）。
+
+实测收益：节点 2348 → **228**、样式失效 262 → **36ms**、打开设置 655 → **205ms**，
+N=15 与 N=60 基本持平（挂载内容恒为 2 个块）。
+
+

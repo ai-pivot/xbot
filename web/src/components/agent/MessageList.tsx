@@ -13,7 +13,12 @@
  * the last row when present.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useVirtualizer, observeElementOffset as defaultObserveElementOffset } from '@tanstack/react-virtual'
+import {
+  useVirtualizer,
+  observeElementOffset as defaultObserveElementOffset,
+  observeElementRect as defaultObserveElementRect,
+  measureElement as defaultMeasureElement,
+} from '@tanstack/react-virtual'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Loader2, Sparkles } from 'lucide-react'
 
@@ -86,24 +91,47 @@ function rowMemoryKey(row: ChatMessage, index: number): string {
 }
 
 /** 首次访问（无记忆）时的内容感知估算：量级正确即可，精度由实测修正。 */
-function estimateRowByContent(row: ChatMessage): number {
+/**
+ * 行高估算 —— **按 row 对象记忆化**（WeakMap）。
+ *
+ * ⚠️ 为什么必须记忆化（2026-09-13「加载的历史消息长了就卡」根治）：
+ * TanStack 每次重算 offsets 都会为**尚未实测的每一行**调用 `estimateSize` →
+ * `estimateRowByContent`。函数体对 assistant row **两次遍历该行所有迭代**
+ * （tools + iterLen）→ 每帧总代价 = **O(已加载的全部迭代数)**，与用户两条观察
+ * 完全吻合（busy 长 turn 卡；loadMore 拉长历史后同样卡；新 turn 很小也卡）。
+ * 未变化的 row 对象身份稳定（integrate/derive 的恒等复用），WeakMap 命中即 O(1)。
+ */
+const estimateCache = new WeakMap<ChatMessage, number>()
+/** 测试钩子：统计真正的计算次数（记忆化命中不计）。 */
+export const __estimateRowByContentComputeCount = { value: 0 }
+
+export function estimateRowByContent(row: ChatMessage): number {
+  const cached = estimateCache.get(row)
+  if (cached !== undefined) return cached
+  __estimateRowByContentComputeCount.value++
+  let result: number
   if (row.role === 'user') {
     const len = (row.content || '').length
-    return Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
+    result = Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
+  } else {
+    const iters = row.iterations ?? []
+    // 单趟遍历同时累加 tools / iterLen（旧实现两趟 reduce + 每趟遍历全迭代）。
+    let tools = 0
+    let iterLen = 0
+    for (const it of iters) {
+      tools += it.tools?.length ?? 0
+      iterLen += (it.content?.length ?? 0) + (it.reasoning?.length ?? 0)
+    }
+    // 高度估算必须计入 iteration 的 content/reasoning（展开思考后巨块的主体，
+    // iteration_count × thinking 字段不在 row.content 里）。宁可高估：overscan
+    // 覆盖的像素提前量随 estimate 增大，大行在滚到视口前就完成 mount；
+    // 实测后 heightMemory 覆盖估算。
+    const len = (row.content || '').length + iterLen
+    const lines = Math.ceil(len / 90) || 1
+    result = Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
   }
-  const iters = row.iterations ?? []
-  const tools = iters.reduce((a, it) => a + (it.tools?.length ?? 0), 0)
-  // 高度估算必须计入 iteration 的 content/reasoning（展开思考后巨块的主体，
-  // iteration_count × thinking 字段不在 row.content 里）。旧实现只算
-  // row.content + cap 1200 —— reasoning 巨块实际 2000-5000px，低估 3-5×
-  // → TanStack range 按低估高度计算 → overscan 前瞻量不足 → 大行首 mount
-  // 落在滚动临界帧（Trace-20260829T181624 的 100ms mount commit 直接掉帧）。
-  // 宁可高估：overscan（items 数固定）覆盖的像素提前量随 estimate 增大，
-  // 大行在滚到视口前就完成 mount；实测后 heightMemory 覆盖估算。
-  const iterLen = iters.reduce((a, it) => a + (it.content?.length ?? 0) + (it.reasoning?.length ?? 0), 0)
-  const len = (row.content || '').length + iterLen
-  const lines = Math.ceil(len / 90) || 1
-  return Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
+  estimateCache.set(row, result)
+  return result
 }
 
 // ── scroll → rAF 合帧（2026-08-29 滚动掉帧根治，Trace-20260829T181624）──────
@@ -162,6 +190,59 @@ const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (in
   }
 }
 
+/**
+ * ── 滚动容器几何：忽略「没有布局的测量」（2026-09-13 交互卡顿的根因）────────────
+ *
+ * 与 `rafCoalescedObserveElementOffset` 同源的包装，防的是另一类事件：**容器被隐藏**
+ * 时的 0×0 矩形。
+ *
+ * ⛔ 为什么必须忽略（实测根因，不是防御性编程）：手机端打开工具页会把 AgentPanel
+ * 外壳置 `display:none`（`MobileAppShell` 的视图切换），消息滚动容器随之变成 0×0。
+ * virtual-core 的 `observeElementRect` 把这次「没有布局的测量」当成真实几何
+ * （`this.scrollRect = rect` → `getSize() === 0`）→ `getVirtualItems()` 塌成空 →
+ * **所有 virt-row 卸载** → `CommittedTurn` 实例销毁 → 实测高度缓存/复核裁决整体丢失
+ * → 返回时每个迭代块的内容全部重新挂载 + markdown 全量重解析。
+ * 实测（390×844 / mock 40 turn × 40 迭代）：一次交互 320 个 `.iter-block` 卸载再重挂、
+ * DOM 节点 528→3708、muted 318→0。
+ *
+ * 与 `TurnBody` / `iterationHeight` 里同一条铁律一致：**没有布局的测量不是测量**
+ * （元素无渲染盒 / 宽高为 0）。容器重新可见时 ResizeObserver 照常上报真实几何，
+ * 因此这里只丢弃退化读数，不丢任何真实的尺寸变化。
+ */
+const nonDegenerateObserveElementRect: typeof defaultObserveElementRect = (instance, cb) =>
+  defaultObserveElementRect(instance, (rect) => {
+    if (rect.width === 0 && rect.height === 0) return
+    cb(rect)
+  })
+
+/**
+ * ── 行尺寸：同样忽略「没有布局的测量」（同一条铁律的第二个入口）──────────────
+ *
+ * TanStack 对**每一行**都挂了 ResizeObserver（`_measureElement` → `options.measureElement`）。
+ * 容器被隐藏（手机端开工具页 `display:none`）时它给每行报 0×0 → `resizeItem(index, 0)`
+ * → 所有已挂载行的尺寸塌成 0 → 总高塌陷 → **可见窗口按 0 高度铺开**。实测：返回 agent
+ * 视图的那一帧会多挂 **14 行 = 280 个迭代块**（DOM 320→600）再被修正回来 —— 一次交互
+ * 白白重挂 280 个块（每个块的 markdown 都要重新解析一次）。
+ *
+ * 修法同 `nonDegenerateObserveElementRect`：元素**没有渲染盒**时量到的 0 不是尺寸，
+ * 返回"上次已知尺寸"（`resizeItem` 里 delta === 0 ⇒ 完全无副作用）；元素可见时的 0
+ * 照实返回（那才是真实的 0 尺寸）。
+ */
+const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
+  const size = defaultMeasureElement(element, entry, instance)
+  if (size > 0) return size
+  const el = element as unknown as HTMLElement
+  if (el.isConnected && el.offsetParent !== null) return size
+  const index = Number(el.dataset?.index ?? -1)
+  const v = instance as unknown as {
+    measurementsCache?: { key: unknown; size: number }[]
+    itemSizeCache?: Map<unknown, number>
+  }
+  const item = index >= 0 ? v.measurementsCache?.[index] : undefined
+  if (!item) return size
+  return v.itemSizeCache?.get(item.key) ?? item.size
+}
+
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
   let idx = -1
   for (let i = 0; i < rows.length; i++) {
@@ -171,8 +252,18 @@ export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'con
   return idx
 }
 
+/** isCompactMarker 的按行缓存（行对象在流式帧之间引用稳定）。
+ *  ⛔ 不能每帧对全表做 `content.trimStart()`（每行一个新字符串）—— 代价 ∝
+ *  已加载历史总量，正是「长历史 + 极小新 turn 也卡」的一部分（2026-09-13）。 */
+const compactMarkerByMsg = new WeakMap<object, boolean>()
+
 export function isCompactMarker(row: Pick<ChatMessage, 'role' | 'content'>): boolean {
-  return row.role === 'user' && row.content.trimStart().startsWith('[Compacted context]')
+  if (row.role !== 'user') return false
+  const cached = compactMarkerByMsg.get(row as object)
+  if (cached !== undefined) return cached
+  const v = row.content.trimStart().startsWith('[Compacted context]')
+  compactMarkerByMsg.set(row as object, v)
+  return v
 }
 
 
@@ -261,16 +352,33 @@ export const MessageList = memo(function MessageList({
   // the pre-prepend array, so findIndex would miss the anchor.
   const rowsRef = useRef(rows)
   rowsRef.current = rows
-  // loadMore scroll-anchor: id of the first VISIBLE row captured BEFORE older
-  // rows prepend. After the prepend lands we scrollToIndex it back to 'start'
-  // so the user's visible region stays put — new older rows appear above it,
-  // which pushes the scrollbar toward the middle (not the top).
-  const loadMoreAnchorIdRef = useRef<string | null>(null)
-  // loadMore prepend 前的 scrollTop 与 totalSize 快照：prepend 后 scrollTop
-  // 增量补偿（ΔscrollTop == ΔtotalSize），让视口内容在 paint 前就保持不变——
-  // 新旧行只出现在视口上方，加载只是「数据多了」，不闪到顶部再跳回底部。
-  const loadMorePrevScrollTopRef = useRef<number>(0)
-  const loadMorePrevTotalSizeRef = useRef<number>(0)
+  // ── loadMore 触发状态机（2026-09-13「一次手势 11 次请求」请求风暴根治）─────
+  // 触发权：`loadMoreArmedRef` = 本轮「哨兵可见回合」的触发权是否还没用掉。
+  //   arm  ← 哨兵**离开视口**（IO !isIntersecting：用户滚离顶部，或 prepend 补偿
+  //          把哨兵推出视口）／哨兵**由不可见变为可见**（一次真实"滑到顶"手势）
+  //   disarm ← 触发 loadMore 的那一瞬间
+  // 只有 arm 状态下才允许触发。不用 setTimeout、不用重试计数 —— 触发权完全由
+  // IO 的 intersection 状态驱动。
+  const loadMoreArmedRef = useRef(false)
+  // 哨兵上一次的可见性（null = 本 observer 尚未收到回调），用于识别"变得可见"。
+  const sentinelVisibleRef = useRef<boolean | null>(null)
+  // **待补偿**的锚定快照（prepend 前的 scrollTop + totalSize）。与触发权**解耦**：
+  // 它记的是"还欠用户一次视口补偿"，只有补偿成功（或视口已被别处移动）才销账。
+  // 绝不能在补偿成功前清掉（旧实现先清后判 delta<=0，等于白清），也绝不能拿它
+  // 当触发守卫（长 turn 的页 delta 恒为 0 → 会把分页永久锁死）。
+  const loadMoreRestoreRef = useRef<{ scrollTop: number; totalSize: number } | null>(null)
+  // observer 回调必须读到**最新**的 loading/hasMore/onLoadMore/virtualizer，但这些
+  // 值每次渲染都变（onLoadMore 的 useCallback deps 含 loadingMore/hasMore，身份每
+  // 次 loading 翻转都变）—— 一旦进 effect deps，observer 就会反复重建，而**新建
+  // observer 会立刻投递一次初始回调**（哨兵仍可见 ⇒ isIntersecting=true）⇒ 立刻又
+  // 触发一次 loadMore ⇒ 请求风暴。故全部走 ref 现读，observer 只在 hasMore 变化时
+  // 建/拆一次。
+  const hasMoreRef = useRef(false)
+  hasMoreRef.current = hasMore ?? false
+  const loadingMoreRef = useRef(false)
+  loadingMoreRef.current = loadingMore ?? false
+  const onLoadMoreRef = useRef<MessageListProps['onLoadMore']>(undefined)
+  onLoadMoreRef.current = onLoadMore
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -297,11 +405,15 @@ export const MessageList = memo(function MessageList({
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
-  // User message indices for navigation
-  const userMessageIndices = useMemo(
-    () => rows.map((r, i) => (r.role === 'user' ? i : -1)).filter((i) => i >= 0),
-    [rows],
-  )
+  // User message indices for navigation（单趟构建 —— 原实现 map+filter 每帧
+  // 对全表产出两个中间数组；代价 ∝ 已加载历史总量）
+  const userMessageIndices = useMemo(() => {
+    const out: number[] = []
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i].role === 'user') out.push(i)
+    }
+    return out
+  }, [rows])
 
   // TanStack Virtual —— API 返回函数，React Compiler 无法安全 memo；
   // virtualizer 按设计每次渲染重建内部映射。
@@ -324,6 +436,12 @@ export const MessageList = memo(function MessageList({
     // scroll → rAF 合帧（模块级 rafCoalescedObserveElementOffset，见上方注释）：
     // 滚动中每帧最多一次 offset 通知（isScrolling=false 停止通知保持同步直达）。
     observeElementOffset: rafCoalescedObserveElementOffset,
+    // 容器几何：忽略「没有布局的测量」（0×0）——否则容器被隐藏（手机端开工具页）
+    // 会让可见窗口塌成空、所有行卸载（见模块级 nonDegenerateObserveElementRect）。
+    observeElementRect: nonDegenerateObserveElementRect,
+    // 行尺寸：同一个退化读数从**行**这一侧进来时同样必须忽略（见上面的
+    // noDegenerateMeasureElement）——否则隐藏期间所有行塌成 0 高，返回时多挂 14 行。
+    measureElement: noDegenerateMeasureElement,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return `row-${index}`
@@ -339,6 +457,11 @@ export const MessageList = memo(function MessageList({
       return r.id ?? `row-${index}`
     },
   })
+
+  // virtualizer 实例是稳定的（useVirtualizer 只更新 options），但 observer 回调
+  // 必须读**当前**实例 —— 经 ref 现读，避免把 virtualizer 放进 effect deps。
+  const virtualizerRef = useRef(virtualizer)
+  virtualizerRef.current = virtualizer
 
   // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
   // (direct instance property) in resizeItem, but setOptions only stores it in
@@ -358,6 +481,28 @@ export const MessageList = memo(function MessageList({
       return item.end < (instance.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  /**
+   * 迭代块「高度 / 冻结裁决」的作用域 = **会话身份 + 布局宽度**。
+   *
+   * 为什么是内容身份而不是组件实例（2026-09-13「开侧边栏慢 5-6 倍」根因）：行会因
+   * 任何扰动布局的交互（手机端开工具页把 AgentPanel 外壳 `display:none`）整体卸载
+   * 再重挂 —— 实例态作用域随卸载销毁 ⇒ 返回时无实测高度 ⇒ 每个迭代块的内容全部
+   * 重新挂载 + markdown 全量重解析。同一 turn 的同一迭代块内容是**不变**的
+   * （宽度不变 ⇒ 高度不变），所以同一 scope 必须能跨重挂载复用先前的实测高度与
+   * 复核裁决（`sharedIterationHeightTracker`）。
+   *
+   * 两个成分都是硬要求：
+   *   - **会话**：turnID 是每会话独立编号，不含会话会让两个会话的同 key 撞车
+   *     （76b731de：新会话读到旧会话"已结算高度" → 立刻冻结成空块）；
+   *   - **布局宽度**：高度不变性的前提；宽度一变旧高度一律作废（否则拿旧宽度的
+   *     占位高度去定新宽度的行高）。
+   *
+   * 宽度取 `virtualizer.scrollRect`（已被 `nonDegenerateObserveElementRect` 保住
+   * 最后一次真实宽度：容器被隐藏时不塌成 0）。首帧尚未量到 → 0，属于一个独立的
+   * 初始作用域：量到真实宽度后自然切换，切换时 `CommittedTurn` 会丢弃分块决策重算。
+   */
+  const heightScope = `${chatKey ?? 'none'}|${Math.round(virtualizer.scrollRect?.width ?? 0)}`
 
   // Row measurement: wrap the official measureElement (it prunes disconnected
   // nodes on ref(null) — do NOT early-return on null, that leaked stale nodes).
@@ -440,7 +585,9 @@ export const MessageList = memo(function MessageList({
     }
     if (!prev || prev.chatKey !== chatKey) return // session switch → rows replaced legitimately
     // 1) ROWS-LEVEL: live tail row vanished without committed replacement.
-    const liveVanished = prev.isPartial && prev.id !== null && !rows.some((r) => r.id === prev.id)
+    // 快路径：绝大多数帧 tail 就是 prev 行（O(1)），只有真消失时才做 O(N) 扫描。
+    const liveVanished =
+      prev.isPartial && prev.id !== null && tail?.id !== prev.id && !rows.some((r) => r.id === prev.id)
     if (liveVanished && busy) {
       // Legal replacement paths: (a) normal text-event finalize — a committed
       // assistant with the same turnID appears; (b) commitLiveProgressAndReset
@@ -576,6 +723,12 @@ export const MessageList = memo(function MessageList({
       const target = velocity > 2 ? 14 : velocity > 0.5 ? 8 : 5
       pendingOverscanRef.current = target
     }
+    // loadMore 的锚定补偿记的是「还欠用户一次视口钉住」：视口一旦被**别的东西**
+    // 移动过（用户自己滚 / virtualizer 自己的尺寸修正），这次补偿就已经没有意义，
+    // 当场销账 —— 否则过期的 delta（可能很大）会在稍后把视口拽走。
+    if (el.scrollTop !== lastScrollTopRef.current && !programmaticScrollRef.current) {
+      loadMoreRestoreRef.current = null
+    }
     lastScrollTopRef.current = el.scrollTop
     lastScrollTimeRef.current = now
     // 导航的可见范围：必须【无条件】更新（master 修复：程序化滚动期间
@@ -610,72 +763,100 @@ export const MessageList = memo(function MessageList({
   // when the user scrolls to the top and trigger loadMore.
   const sentinelRef = useRef<HTMLDivElement | null>(null)
 
+  // ── 哨兵 IntersectionObserver：loadMore 的唯一触发源（arm/disarm 状态机）──
+  // 旧的 effect deps 含 `loadingMore`/`onLoadMore`/`virtualizer` —— 每次 loading
+  // 翻转（每次请求都有 true→false）都会 disconnect + observe 一个**新** observer，
+  // 而新建 observer 会立刻投递一次初始回调；此时哨兵仍在视口内（长 turn 的一页
+  // DB 行被服务端折叠进已存在的 turn slot ⇒ 渲染行数不变 ⇒ 视口不动 ⇒ 哨兵不动）
+  // ⇒ 回调立刻再触发一次 loadMore ⇒ 自激请求风暴（实测一次手势 11 次请求 /
+  // observe=2037）。触发端也没有"本轮已触发"的记忆，任何回调都当新手势。
+  //
+  // 现在：observer 只在 `hasMore` 变化时建/拆一次（其余状态经 ref 现读），触发权
+  // 由 loadMoreArmedRef 显式管理 —— **触发即 disarm**，只有
+  //   ① 哨兵离开视口（IO !isIntersecting：用户真的滚离顶部，或 prepend 补偿把哨兵
+  //      推出视口），或
+  //   ② 哨兵由不可见变为可见（一次真实"滑到顶"手势；含 observer 首次回调就看到
+  //      可见 —— 内容短到视口不可滚动时"离开视口"物理上不可达，留这条退路，
+  //      否则分页会永久锁死）
+  // 才重新 arm。
   useEffect(() => {
+    loadMoreArmedRef.current = false
+    sentinelVisibleRef.current = null
+    if (!hasMore) return
     const el = sentinelRef.current
-    if (!el || !hasMore || !onLoadMore) return
+    if (!el || typeof IntersectionObserver === 'undefined') return
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
-          // Guard: skip if anchor restore is in progress (double-rAF pending).
-          // During anchor restore the viewport briefly shows the top (sentinel
-          // visible) → without this guard, IntersectionObserver fires again
-          // → recursive loadMore (user report: "加载完后视角变到新内容最上方，
-          // 导致再次触发加载").
-          if (loadMoreAnchorIdRef.current !== null) return
-          // Capture a scroll-anchor snapshot BEFORE onLoadMore prepends older
-          // rows: current scrollTop + totalSize. After the prepend lands we
-          // restore via ΔscrollTop == ΔtotalSize (not absolute anchor-row
-          // lookup). That keeps the viewport pixel-stable on the same content —
-          // older rows appear ABOVE the viewport, so the user only sees "more
-          // data", never a jump-to-top then jump-back.
-          const scroller = scrollRef.current
-          if (scroller) {
-            loadMorePrevScrollTopRef.current = scroller.scrollTop
-            loadMorePrevTotalSizeRef.current = virtualizer.getTotalSize()
-            loadMoreAnchorIdRef.current = '__load-more__'
-          } else {
-            loadMoreAnchorIdRef.current = null
-          }
-          void onLoadMore()
+        const entry = entries[0]
+        if (!entry) return
+        const visible = entry.isIntersecting
+        const wasVisible = sentinelVisibleRef.current
+        sentinelVisibleRef.current = visible
+        if (!visible) {
+          // ① 哨兵离开视口 ⇒ 归还触发权（下次再回到顶部是一次新手势）
+          loadMoreArmedRef.current = true
+          return
         }
+        // ② 由不可见变为可见 ⇒ 一次真实"到达顶部"手势
+        if (wasVisible !== true) loadMoreArmedRef.current = true
+        if (!loadMoreArmedRef.current) return // 本轮「可见回合」已触发过 ⇒ 不再发请求
+        if (!hasMoreRef.current || loadingMoreRef.current) return
+        const cb = onLoadMoreRef.current
+        const scroller = scrollRef.current
+        if (!cb || !scroller) return
+        loadMoreArmedRef.current = false // 触发即 disarm
+        // 快照必须在 onLoadMore **之前**取：prepend 落地后要用
+        // ΔscrollTop == ΔtotalSize 把视口钉回原来那段内容（老行只出现在视口上方，
+        // 用户只看到"数据多了"，不闪到顶部再跳回来）。
+        loadMoreRestoreRef.current = {
+          scrollTop: scroller.scrollTop,
+          totalSize: virtualizerRef.current.getTotalSize(),
+        }
+        void cb()
       },
       { root: scrollRef.current, threshold: 0 },
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasMore, loadingMore, onLoadMore, virtualizer])
+  }, [hasMore])
 
-  // ── loadMore scroll-anchor: keep viewport pixel-stable via ΔscrollTop ────
-  // Older rows prepend ABOVE the captured anchor, growing totalSize. Instead of
-  // looking up an anchor row and scrollToIndex(它) (which required double-rAF +
-  // Retry for ResizeObserver to measure real heights — during which the
-  // viewport flashed to the top then jumped back), we do standard scroll
-  // anchoring: ΔscrollTop == ΔtotalSize. Use useLayoutEffect (runs synchronously
-  // BEFORE paint) so the compensation lands in the same frame as the prepend —
-  // the user sees the identical pixels, only "more data" above, never a jump.
-  //
-  // The prepend rows are estimated-height at this point (ResizeObserver hasn't
-  // measured them yet), so the ΔtotalSize here is estimated. The residual error
-  // is corrected later by TanStack's shouldAdjustScrollPositionOnItemSizeChange
-  // (configured below to only adjust items FULLY above the viewport), which
-  // fires as a scroll around and keeps visible content stable — no flash.
-  useLayoutEffect(() => {
-    const anchorId = loadMoreAnchorIdRef.current
-    if (anchorId !== '__load-more__') return
+  // ── loadMore 锚定补偿：ΔscrollTop == ΔtotalSize，视口在原内容上纹丝不动 ────
+  // 两处触发，缺一不可：
+  //   a) `rows` 的 useLayoutEffect —— prepend 落地那一帧（paint 前）就补偿，用户
+  //      看不到闪动；
+  //   b) content 的 ResizeObserver —— "渲染行数不变、只有已存在的 slot 长高"的那
+  //      一页（服务端把新 DB 行并进已有 turn slot；或新行从估算高度被实测修正）
+  //      在 a) 那一刻 totalSize 还没变（delta<=0）⇒ **保留快照**，等 total 真的
+  //      长起来再补。旧实现在 delta<=0 时先清快照再放弃 —— 既不补偿也不重试，
+  //      视口不动 ⇒ 哨兵不离开视口 ⇒ 永不 re-arm 的死循环。
+  const restoreLoadMoreAnchor = useCallback(() => {
+    const snap = loadMoreRestoreRef.current
+    if (!snap) return
     const el = scrollRef.current
-    loadMoreAnchorIdRef.current = null
-    if (!el) return
-    const newTotal = virtualizer.getTotalSize()
-    const delta = newTotal - loadMorePrevTotalSizeRef.current
-    if (delta <= 0) return
+    if (!el) {
+      loadMoreRestoreRef.current = null
+      return
+    }
+    const delta = virtualizerRef.current.getTotalSize() - snap.totalSize
+    if (delta <= 0) return // 上方还没长出来：欠着，等下一次（不放弃，也不销账）
+    loadMoreRestoreRef.current = null
     programmaticScrollRef.current = true
-    // Restore: old scrollTop + the prepended height. Content that was visible
-    // before loadMore stays at the same viewport position; the new older rows
-    // sit above (scrollbar moves toward the middle), exactly "data got more".
-    el.scrollTop = loadMorePrevScrollTopRef.current + delta
+    el.scrollTop = snap.scrollTop + delta
     queueMicrotask(() => { programmaticScrollRef.current = false })
-  }, [rows, virtualizer])
+  }, [])
+
+  useLayoutEffect(() => {
+    restoreLoadMoreAnchor()
+  }, [rows, restoreLoadMoreAnchor])
+
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => restoreLoadMoreAnchor())
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [restoreLoadMoreAnchor])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -925,7 +1106,7 @@ export const MessageList = memo(function MessageList({
         <div ref={contentRef} data-message-list-content className="w-full">
           {/* Scroll-to-top sentinel: triggers loadMore via IntersectionObserver */}
           {hasMore && (
-            <div ref={sentinelRef} className="flex justify-center py-2">
+            <div ref={sentinelRef} data-loadmore-sentinel className="flex justify-center py-2">
               {loadingMore ? (
                 <Loader2 className="size-4 animate-spin text-text-muted" />
               ) : (
@@ -968,7 +1149,7 @@ export const MessageList = memo(function MessageList({
                       width: '100%',
                       transform: `translateY(${item.start}px)`,
                     }}
-                    className={`py-1.5${row.id === liveId ? ' animate-msg-in' : ''}`}
+                    className={`virt-row py-1.5${row.id === liveId ? ' animate-msg-in' : ''}`}
                     data-turn-id={row.turnID || undefined}
                     data-message-id={row.id}
                     data-role={row.role}
@@ -977,6 +1158,7 @@ export const MessageList = memo(function MessageList({
                     <MessageItem
                       message={row}
                       liveProgress={row.id === liveId ? liveProgress : null}
+                      heightScope={heightScope}
                       onRewind={onRewind ? handleRewindRow : undefined}
                       isEditing={isEditing}
                       onStartEdit={onStartEdit ? handleStartEditRow : undefined}

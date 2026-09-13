@@ -1434,7 +1434,7 @@ func (a *Agent) SpawnInteractiveSession(
 
 		msgText := fmt.Sprintf("Interactive sub-agent %q (instance=%q) started in background. Use action=\"inspect\" to check progress, action=\"send\" to send messages, action=\"interrupt\" to interrupt, or action=\"unload\" to terminate.", roleName, instance)
 		if bgTask != nil {
-			msgText += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=[%q]) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+			msgText += bgSpawnMessage(bgTask.ID)
 		}
 		return &channelpkg.OutboundMsg{
 			Content: msgText,

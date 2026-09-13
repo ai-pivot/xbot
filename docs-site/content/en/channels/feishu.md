@@ -150,6 +150,29 @@ ignored.
 The agent can send interactive message cards (settings panels, confirmation
 dialogs, etc.). Users click buttons on the card to interact.
 
+### Streaming progress card
+
+While the agent works, its progress renders into a single Feishu **CardKit
+streaming card** — one card per turn, laid out like the Web UI: **per iteration,
+thinking → answer → tools** (the thinking block is collapsed), with no header
+chrome.
+
+- the current iteration's answer streams in with a typewriter animation;
+- each tool gets its own row (`✅ Shell · ls -la · 12ms`) with the command/path it
+  ran on;
+- finished iterations keep their thinking/answer/tool rows in place.
+
+Requirements:
+
+- The app needs the **Create and update cards** permission
+  (`cardkit:card:write`). Without it the channel logs one warning and falls back
+  to the plain static card.
+- Progress pushes are throttled (~4/s for the answer text, ~1/s for the layout);
+  the final reply always writes the final text and closes the streaming mode.
+
+A card entity can be sent only once, and only by the app that created it — so the
+same app that runs the bot must hold `cardkit:card:write`.
+
 ## Network requirements
 
 xbot connects to Feishu servers via **WebSocket** (not HTTP callbacks), so:

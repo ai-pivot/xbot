@@ -990,6 +990,16 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "feishu-bind":
+			// One-click Feishu agent-app registration / rebinding: prints a
+			// launcher link (open it or scan it as a QR code) that provisions
+			// the agent permission/event/callback preset and returns the
+			// credentials.
+			if err := runFeishuBind(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "feishu-bind: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "serve":
 			if err := serverapp.Run(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)

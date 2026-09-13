@@ -18,6 +18,10 @@ Client state `S = (M, P, L, W)`:
 - `W` — watermark pair `(w_sse, w_prog)`: `w_sse = lastSeqCache[route]` (SSE
   envelope seq, per-route), `w_prog = progressStore.eventSeq` (`ProgressEvent.Seq`,
   per-Run). Two INDEPENDENT monotonic sequences — must never be cross-compared.
+  Both the `w_sse` cache (`lastSeqCache`) and the reconnect snapshot cache are
+  LRU-bounded to 8 sessions (`webCache.ts`, `MAX_CACHED_SESSIONS`); evicting an
+  idle route only costs a cold re-connect (no `last_event_id` → one
+  `restoreActiveProgress`), never the ACTIVE route (touched by every event).
 
 Server authoritative state:
 

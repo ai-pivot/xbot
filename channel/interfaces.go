@@ -5,6 +5,14 @@ import (
 	"xbot/protocol"
 )
 
+// MetaFinalReply marks the authoritative final reply of a turn. A channel
+// holding an open streaming card must close it when this arrives (even when the
+// content is empty, as on cancellation).
+//
+// Feishu consumes it (channel/feishu/feishu_stream_card.go); other channels
+// ignore it.
+const MetaFinalReply = "final_reply"
+
 // ProgressSender is implemented by channels that transport the shared
 // protocol.ProgressEvent to remote or in-process clients. The agent's single
 // progress producer broadcasts the same immutable snapshot/log event to each

@@ -203,6 +203,32 @@ type FeishuChannel struct {
 	// LinkAccountFn consumes a link code for the given channel identity.
 	// Returns a human-readable result message.
 	linkAccountFn func(code, channel, channelUserID string) (string, error)
+
+	// CardKit streaming progress cards, keyed by chatID. The card is posted as a
+	// REPLY to the user's inbound message: `im.message.reply` needs only the
+	// parent message_id, while `im.message.create` needs a correct
+	// receive_id_type that cannot be derived from our synthetic chat ids
+	// (e.g. "chat_…" — Feishu rejects it as neither open_id nor chat_id).
+	streamCardsMu sync.Mutex
+	streamCards   map[string]*feishuStreamCard
+	// streamCardsBroken marks chats whose progress card could not be created, so
+	// we stop retrying FOR THAT CHAT ONLY.
+	//
+	// ⚠️ Per-chat by design (regression fix 2026-09-13): this used to be a single
+	// global bool, so ONE chat's failure (e.g. a group chat with no reply target,
+	// Feishu code 99992351) silenced progress for EVERY chat in the process —
+	// the user saw nothing until the final reply. It is cleared when a new
+	// inbound message arrives for that chat (new turn → reply target is known).
+	streamCardsBroken map[string]struct{}
+	// streamCardAcked records chats that already received the one-shot fallback
+	// ack for the current turn (progress card unavailable) — cleared on the next
+	// inbound message. Prevents both silence AND per-event spam.
+	streamCardAcked map[string]struct{}
+
+	// inboundMsgIDs remembers the latest inbound message id per chat so the
+	// progress card can be posted as a reply to it.
+	inboundMsgIDsMu sync.Mutex
+	inboundMsgIDs   map[string]string
 }
 
 type feishuPendingApproval struct {
@@ -231,24 +257,35 @@ type feishuPendingAskUser struct {
 // NewFeishuChannel 创建飞书渠道
 func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 	return &FeishuChannel{
-		config:        cfg,
-		msgBus:        msgBus,
-		processedIDs:  make(map[string]struct{}),
-		maxProcessed:  1000,
-		userNameCache: make(map[string]string),
-		mentions:      newMentionRegistry(),
-		approvals:     make(map[string]*feishuPendingApproval),
-		askUsers:      make(map[string]*feishuPendingAskUser),
+		config:            cfg,
+		msgBus:            msgBus,
+		processedIDs:      make(map[string]struct{}),
+		maxProcessed:      1000,
+		userNameCache:     make(map[string]string),
+		mentions:          newMentionRegistry(),
+		approvals:         make(map[string]*feishuPendingApproval),
+		askUsers:          make(map[string]*feishuPendingAskUser),
+		streamCards:       make(map[string]*feishuStreamCard),
+		streamCardsBroken: make(map[string]struct{}),
+		streamCardAcked:   make(map[string]struct{}),
+		inboundMsgIDs:     make(map[string]string),
 	}
 }
 
 func (f *FeishuChannel) Name() string { return "feishu" }
 
-// PreReplyNotify implements channel.PreReplyNotifier. Feishu has no streaming
-// and patches the existing message with progress content, so it needs text-based
-// ack and progress messages. Individual messages can opt out via ReplyPolicyOptional
-// (e.g. @all mentions).
-func (f *FeishuChannel) PreReplyNotify() bool { return true }
+// PreReplyNotify implements channel.PreReplyNotifier — FALSE: progress renders
+// ONLY through the CardKit streaming card.
+//
+// ⚠️ Two-sided contract (both lessons are from 2026-09-13):
+//   - true  → the agent also sends its ack card, so the user sees TWO cards
+//     (old ack card + streaming card) = double render. That is why
+//     master's ack must NOT be re-enabled for progress.
+//   - false → the card is the only progress channel, so the card path MUST be
+//     reliable: per-chat failure marking, reply-target-only posting, and
+//     a one-shot text fallback when a real chat's card is unavailable
+//     (see ensureStreamCard / streamCardFallbackAck).
+func (f *FeishuChannel) PreReplyNotify() bool { return false }
 
 // ChannelSystemParts 返回飞书渠道的特化 prompt。
 // 由 main.go 中的适配器调用，注入到 agent 中间件 pipeline。
@@ -419,11 +456,8 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 
 	// AskUser: build and send an interactive card with buttons/options, then register pending state.
 	if msg.WaitingUser {
+		f.closeStreamCard(msg.ChatID)
 		return f.sendAskUserCard(msg)
-	}
-
-	if msg.Content == "" {
-		return "", nil
 	}
 
 	// card builder 生成的完整卡片 JSON，走正常 patch/reply/send 流程
@@ -443,6 +477,18 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 		if msg.Metadata != nil {
 			updateMsgID = msg.Metadata["update_message_id"]
 			replyTo = msg.Metadata["message_id"]
+		}
+		// 这张完整卡片会取代正在流式的进度卡片：先收尾（关闭流式）再发送，
+		// 否则卡片实体会一直停在「生成中」。旧的流式消息随后走既有
+		// 「新建 + 删除旧进度消息」路径清理掉。
+		if card := f.takeStreamCard(msg.ChatID); card != nil {
+			if err := card.finalize(""); err != nil {
+				log.WithError(err).WithField("card_id", card.cardID).
+					Warn("Feishu: stream card finalize before card send failed")
+			}
+			if updateMsgID == "" {
+				updateMsgID = card.messageID
+			}
 		}
 
 		var msgID string
@@ -495,6 +541,17 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	// @提及：LLM 直接输出飞书原生 <at id=open_id>名字</at> 标签（open_id 由
 	// 群成员名单注入提供，prompt 教学见 prompt/channels/feishu.md）——不做事后
 	// 转换（@名字 自动匹配已按用户决策移除：误判 + bug 多）。
+
+	// 3) CardKit 流式卡片收尾（feishu_stream_card.go）：进度由**结构化**进度流
+	// （SendProgress / SendStreamContent）驱动，这里只处理 turn 的最终回复 ——
+	// 把已打开的卡片收尾（写最终文本 + 关流式），不新建消息。放在空内容判断
+	// 之前 —— 取消的 turn 会用空内容收尾已打开的卡片。
+	if msg.Metadata != nil && msg.Metadata[ch.MetaFinalReply] == "true" {
+		if id, ok := f.streamCardSend(msg, content, true); ok {
+			return id, nil
+		}
+		// 没有打开的卡片（本轮没有任何进度事件）→ 继续走下面的静态卡片路径。
+	}
 
 	if strings.TrimSpace(content) == "" {
 		return "", nil
@@ -1140,6 +1197,29 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		"chat_type":  chatType,
 		"msg_type":   msgType,
 	}
+	// Remember the inbound message so the CardKit progress card can be posted as
+	// a REPLY to it (reply only needs the parent id — no receive_id_type guess).
+	//
+	// ⚠️ Record under BOTH keys (regression fix 2026-09-13): the progress path
+	// looks the reply target up by **chatID** (`ensureStreamCard` →
+	// `lastInboundMessageID(chatID)`), while older call sites use `replyTo`.
+	// Recording only `replyTo` left the lookup empty for group chats → the card
+	// fell back to the (provably invalid) `im.message.create` path and Feishu
+	// rejected the synthetic chat id with code 99992351.
+	f.inboundMsgIDsMu.Lock()
+	if f.inboundMsgIDs == nil {
+		f.inboundMsgIDs = map[string]string{}
+	}
+	f.inboundMsgIDs[chatID] = messageID
+	if replyTo != "" && replyTo != chatID {
+		f.inboundMsgIDs[replyTo] = messageID
+	}
+	f.inboundMsgIDsMu.Unlock()
+	// New inbound message = new turn: the reply target is now known, so give the
+	// progress card a fresh attempt for this chat (and re-arm the one-shot
+	// fallback ack).
+	f.clearStreamCardsBroken(chatID)
+	f.clearStreamCardAcked(chatID)
 	if mentionScope == "at_all_optional" {
 		metadata[bus.MetadataReplyPolicy] = bus.ReplyPolicyOptional
 	}
@@ -3551,34 +3631,6 @@ func (f *FeishuChannel) BuildSettingsUI(ctx context.Context, schema []ch.Setting
 	}
 
 	sb.WriteString("---\n使用 `/settings set <key> <value>` 修改设置\n")
-	return sb.String()
-}
-
-// BuildProgressUI builds a Feishu card for progress display.
-func (f *FeishuChannel) BuildProgressUI(ctx context.Context, progress any) string {
-	// Use text-based progress for now
-	var sb strings.Builder
-	sb.WriteString("## 📊 进度\n\n")
-
-	switch p := progress.(type) {
-	case map[string]any:
-		if phase, ok := p["phase"].(string); ok {
-			fmt.Fprintf(&sb, "**阶段**：%s\n", phase)
-		}
-		if detail, ok := p["detail"].(string); ok {
-			fmt.Fprintf(&sb, "%s\n", detail)
-		}
-		if pct, ok := p["percent"].(float64); ok {
-			bars := int(pct / 5)
-			fmt.Fprintf(&sb, "`%s%s` %.0f%%\n",
-				strings.Repeat("█", bars),
-				strings.Repeat("░", 20-bars),
-				pct)
-		}
-	default:
-		fmt.Fprintf(&sb, "%v\n", p)
-	}
-
 	return sb.String()
 }
 

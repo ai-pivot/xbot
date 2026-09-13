@@ -31,6 +31,11 @@ interface MessageItemProps {
   onEndEdit?: () => void
   /** Whether editing is disabled (another message is being edited). */
   editDisabled?: boolean
+  /**
+   * 迭代块高度/冻结裁决的作用域（会话身份 + 布局宽度，见 TurnBody）。
+   * 必须由调用方传入：它决定"同一内容重挂载时能否复用先前实测高度"。
+   */
+  heightScope?: string
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -41,6 +46,7 @@ export const MessageItem = memo(function MessageItem({
   onStartEdit,
   onEndEdit,
   editDisabled = false,
+  heightScope,
 }: MessageItemProps) {
   if (message.role === 'user') {
     return (
@@ -61,6 +67,7 @@ export const MessageItem = memo(function MessageItem({
     <AssistantMessage
       message={message}
       progress={liveProgress}
+      heightScope={heightScope}
     />
   )
 })

@@ -219,7 +219,6 @@ type SettingOption struct {
 // UIBuilder is implemented by channels that can render interactive UI.
 type UIBuilder interface {
 	BuildSettingsUI(ctx context.Context, schema []SettingDefinition, currentValues map[string]string) string
-	BuildProgressUI(ctx context.Context, progress any) string
 }
 
 // StreamRenderer is implemented by channels that support real-time stream rendering.

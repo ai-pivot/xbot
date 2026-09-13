@@ -2435,9 +2435,9 @@ var ackMessages = []string{
 	"OK，马上看看",
 }
 
-func (a *Agent) sendAck(channel, chatID string) {
+func (a *Agent) sendAck(chName, chatID string) {
 	msg := ackMessages[rand.Intn(len(ackMessages))]
-	if err := a.sendMessage(channel, chatID, msg); err != nil {
+	if err := a.sendMessage(chName, chatID, msg); err != nil {
 		log.WithError(err).Warn("Failed to send ack")
 	}
 }

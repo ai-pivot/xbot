@@ -12,7 +12,7 @@ import '@testing-library/jest-dom'
 
 import { TurnBody } from '@/components/agent/TurnBody'
 import { renderWithProviders } from '@/test-utils'
-import type { WebIteration } from '@/types/shared'
+import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
 describe('TurnBody thinking char count (真实 char 数，不是 /4 估算)', () => {
   it('REPRO: committed reasoning label shows REAL char count（reasoning.length），不是 Math.ceil(len/4) 估算', () => {
@@ -43,5 +43,74 @@ describe('TurnBody thinking char count (真实 char 数，不是 /4 估算)', ()
     // 真实 2 字符（旧 /4 估算 Math.ceil(2/4)=1）—— 必须断言完整文案，
     // `toMatch(/2/)` 这种弱断言任何含 "2" 的文本都会通过（假绿）。
     expect(container.textContent).toContain('Thought 2 chars')
+  })
+})
+
+/**
+ * 渲染隔离（**性能与 turn 内迭代数解耦**，2026-09-13 trace 归因）：
+ * trace 显示 App JS 不随时间增长，但浏览器侧 Layout/Paint/Raster 涨 1.7–3.3×、
+ * `Layout.dirtyObjects` 16→64（×4）、7 次 `UpdateLayoutTree` 单次重算 ~4800 个元素
+ * （整个 turn 子树）—— 迭代块之间没有 containment，失效范围随迭代数膨胀。
+ * 修复：每个迭代块 `iter-block`（contain + content-visibility:auto 离屏跳过），
+ * 进行中迭代 `iter-block-live`（恒渲染，不吃跳过机制）。
+ * 规则本体在 index.css，选择器断言在 index.test.ts。
+ */
+function makeSnapshot(history: WebIteration[], iteration: number): ProgressSnapshot {
+  return {
+    eventSeq: 1,
+    phase: 'content',
+    iteration,
+    streamContent: '',
+    reasoningStreamContent: '',
+    content: '',
+    streaming: true,
+    activeTools: [],
+    completedTools: [],
+    iterationHistory: history,
+    streamingTools: [],
+    genuiContent: '',
+    lastIter: history.length,
+    lastReasoning: '',
+    todos: [],
+    goal: null,
+    subAgents: [],
+    tokenUsage: null,
+    turnID: 7,
+  } as ProgressSnapshot
+}
+
+describe('迭代块渲染隔离（perf：代价与 turn 内迭代数无关）', () => {
+  it('每个已提交迭代块都带 iter-block（独立 containment 上下文）', () => {
+    const iterations: WebIteration[] = [1, 2, 3].map((n) => ({
+      iteration: n,
+      content: `c${n}`,
+      reasoning: '',
+      tools: [],
+      toolCount: 0,
+    }))
+    const { container } = renderWithProviders(
+      <TurnBody iterations={iterations} turnID={7} />,
+    )
+    const blocks = Array.from(container.querySelectorAll('[data-iter-id]'))
+    expect(blocks.length).toBe(3)
+    for (const b of blocks) {
+      expect(b.classList.contains('iter-block')).toBe(true)
+    }
+  })
+
+  it('进行中迭代块也是 iter-block（渲染隔离同样作用于它）', () => {
+    const iterations: WebIteration[] = [
+      { iteration: 1, content: 'c1', reasoning: '', tools: [], toolCount: 0 },
+    ]
+    const { container } = renderWithProviders(
+      <TurnBody
+        iterations={iterations}
+        liveProgress={makeSnapshot(iterations, 2)}
+        turnID={7}
+      />,
+    )
+    const live = container.querySelector('[data-iter-id="live"]')
+    expect(live).not.toBeNull()
+    expect(live!.classList.contains('iter-block')).toBe(true)
   })
 })

@@ -53,11 +53,12 @@ model_tier parameter takes priority over the role's model setting. If neither is
 ## Background by default
 
 Sub-agents run in BACKGROUND by default: spawn returns immediately with a task ID,
-the sub-agent works asynchronously, and the result is injected into your conversation
-when it finishes — no need to wait. Use task_status(task_id=["sub-xxx"]) for a quick state check;
-task_status(task_id=["sub-xxx"]) to check progress, or action="inspect" to see its
-latest activity (task_id is ALWAYS an array of ID strings). For multiple sub-agents,
-pass all IDs in one array: task_wait(task_id=["sub-a","sub-b"], mode="any").
+the sub-agent works asynchronously, and the result is delivered to your conversation
+automatically as a notification when it finishes — no need to wait, and never sleep
+to poll it. For a quick state check use task_status(task_id=["sub-xxx"]) (task_id is
+ALWAYS an array of ID strings), or action="inspect" to see its latest activity.
+For multiple sub-agents, pass all IDs in one array: task_status(task_id=["sub-a","sub-b"]).
+Avoid task_wait — it blocks a whole turn doing nothing.
 Set background=false only when you must block synchronously and get the final reply directly.
 
 ## One-shot mode (default)
@@ -75,11 +76,11 @@ Persistent multi-turn session. Create once, send multiple messages, unload when 
 | SubAgent(task, role, instance="...", action="interrupt") | Interrupt the current iteration of an interactive sub-agent |
 
 ## Background rule
-Background sub-agents report progress automatically; when one finishes, the result is injected into your
-conversation — no need to wait. Use action="inspect"
+Background sub-agents report progress automatically; when one finishes, the result is delivered to your
+conversation as a notification — no need to wait. Use action="inspect"
 to check progress, action="send" to send messages, action="interrupt" to stop,
 action="unload" to terminate. For multiple background sub-agents, pass all IDs in one array:
-task_wait(task_id=["sub-a","sub-b"], mode="all" or "any").
+task_status(task_id=["sub-a","sub-b"]) (non-blocking; prefer it over task_wait).
 
 Parameters (JSON):
   - task: string (required except some control actions), the task or message for the sub-agent

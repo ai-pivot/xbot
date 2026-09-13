@@ -41,6 +41,7 @@ Skill 是按需加载的——当你的任务匹配某个 skill 的场景时，A
 | `hook-creator` | 创建生命周期钩子 |
 | `ai-config` | 配置主题、订阅、TUI 布局 |
 | `worktree` | 多 Agent 并行工作 |
+| `orchestrator` | 主 Agent 指挥模式：定方向 + ~3 个 subagent 并行调研，重资源操作独占串行 |
 
 ### Skill 放哪里
 

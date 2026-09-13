@@ -1904,7 +1904,7 @@ func (a *Agent) spawnSubAgent(ctx context.Context, msg bus.InboundMessage) (*cha
 
 		startedMsg := fmt.Sprintf("Sub-agent %q (instance=%s) started in background.", roleName, oneshotInstance)
 		if bgTask != nil {
-			startedMsg += fmt.Sprintf("\n\nBackground task ID: %s. Use task_wait (task_id=[%q]) to wait for completion, or task_status to check progress.", bgTask.ID, bgTask.ID)
+			startedMsg += bgSpawnMessage(bgTask.ID)
 		}
 		return &channelpkg.OutboundMsg{Content: startedMsg}, nil
 	}

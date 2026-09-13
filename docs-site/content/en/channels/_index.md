@@ -30,6 +30,15 @@ settings panel. You can toggle channels on/off and edit their parameters
 graphically — changes are written directly to `config.json`. This is especially
 useful in Remote mode, since you don't need to SSH into the server to edit
 config files.
+
+**Visual configuration in the Web UI:** Settings → Channels lists every channel —
+built-ins (web/feishu/qq/napcat) and **channels registered by plugins** are
+managed in one place (enable toggle + field editing, hot-restarted on save). The
+Feishu card also offers a **one-click "bind Feishu agent app"** button: it returns
+the official Feishu authorization link, and confirming it in Feishu grants the
+current app the agent permissions, event subscriptions and card callback
+(including "Create and update cards", required by the streaming progress card);
+the credentials are written back to `config.json` automatically.
 {{< /hint >}}
 
 {{< hint type=important >}}

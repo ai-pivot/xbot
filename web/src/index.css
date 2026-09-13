@@ -1320,6 +1320,75 @@
   0% { opacity: 0.9; transform: scale(1); }
   100% { opacity: 0; transform: scale(1.15); }
 }
+
+/* ── 迭代块渲染隔离（性能与 turn 内迭代数解耦，2026-09-13 trace 归因）────────
+ *
+ * Trace 证据（12.4s 主线程，构建 index-B1MrMIM6.js）：
+ *   - App JS 不随时间增长（index bundle 554ms，`Zi` x0.46）；
+ *   - 浏览器侧却在涨：Layout x1.70 / Paint x1.69 / RasterTask x3.26 /
+ *     GPUTask x1.82，且 `Layout.dirtyObjects` 每 1/10 桶为 16→64（x4）；
+ *   - 7 次 `UpdateLayoutTree` 单次重算 ~4,700–4,800 个元素（≈ 整个 turn 子树），
+ *     每次都落在一个 70–84ms 的 React 提交里。
+ * ⇒ 迭代块之间没有渲染隔离：turn 内迭代越多，任一次样式/布局失效横扫的面越大。
+ *
+ * 修复 = 每个迭代块自成一个 containment 上下文：
+ *   contain: layout paint —— 块内变化不波及块外（失效范围 = 块本身），
+ *                            父级布局不因块内容变化而整树重算。
+ *   content-visibility: auto —— 离屏块跳过 style/layout/paint，代价 ∝ 视口内块数，
+ *                            与 turn 迭代总数无关（Chrome/Edge；不支持则退化为仅 containment）。
+ *   contain-intrinsic-size: auto —— 记住块实测高度；未渲染过时用估算占位，
+ *                            避免行高抖动（TanStack 的 ResizeObserver 实测仍会校准）。
+ *
+ * 不变量：追加第 N+1 个迭代块的代价 = O(1)（只算新块 + 有界的祖先布局），与 N 无关。
+ * 守护：components/agent/turn_perf.test.tsx、turn_perf_pipeline.test.tsx、
+ *       index.test.ts 的选择器断言、e2e/turn-iter-perf.spec.ts。
+ */
+/* 渲染隔离（perf）：块内变化不波及块外（失效范围 = 块本身），追加第 N+1 个迭代块
+ * 只算新块 + 有界祖先布局（代价 O(1)，与 turn 迭代总数无关）。
+ *
+ * ⛔ 这里**绝不能再加 content-visibility / contain-intrinsic-size**
+ * （2026-09-13 用户报告「向上快速滚动鬼打墙：一直在滚却几乎不动、永远到不了顶」）：
+ * 离屏块被跳过时只能拿占位高度，而真实块高得多 → 向上滚动时块逐个兑现真实高度 →
+ * 滚动容器总高持续变化 → 浏览器滚动锚定把正在看的内容往下推，每滚一格又被推回一格
+ * → 视觉上原地打转。滚动容器的总高必须在滚动过程中恒定。
+ * 守护：src/index.test.ts + e2e/turn-iter-perf.spec.ts。 */
+.iter-block {
+  contain: layout paint;
+}
+
+/* 虚拟行：live 行持续长高，行内变化不得触发行外整体重算。 */
+.virt-row {
+  contain: layout;
+}
+
+/* ⚠️ 迭代块容器必须是 **block 布局** —— Chrome 不对 **flex 子项**应用
+ * `content-visibility` 跳过（实测：block 容器 + block 子项 skipped 13/20；
+ * flex 容器 + flex 子项 skipped 0/20）。旧实现是 `flex flex-col gap-1`。
+ * 原有 4px 间距（`gap-1` = 0.25rem）改由**块自身 padding**复现。
+ * `contain: layout paint` 阻止 margin 折叠穿透块边界，间距不会跑到块外。 */
+.iter-blocks {
+  display: block;
+}
+
+/* ⛔ 间距**绝不能用兄弟选择器**（`.iter-block + .iter-block { margin-top }` /
+ * `~` / `:last-child`）：2026-09-13 定位（CDP trace N=2000）——
+ * trace 的失效归因是 `x2002 Related style rule | DIV class='iter-block'` +
+ * `UpdateLayoutTree` 单次 **1603ms**：兄弟组合符让每个块与"前一个兄弟"的
+ * 存在性相关，追加/改内联样式时 Blink 要对**全部 N 个兄弟**重算样式 ⇒
+ * 每帧代价 ∝ 已渲染块数（turn 越长越卡、长历史同样卡）。
+ * 间距改由**块自身的 margin** 复现（margin 不属于盒子尺寸 ⇒ RO 的
+ * contentRect 与复核用的 getBoundingClientRect 依然同值，settle 契约不变；
+ * 用 padding 会破坏它：两者恒差 padding，块永远无法 settled → 窗口化失效）。
+ * ⛔ 也不得用 padding：contentRect 不含 padding，复核含 padding → 永不结算。 */
+.iter-block {
+  margin-top: 0.25rem;
+}
+
+/* 虚拟行：live 行持续长高，行内变化不得触发行外整体重算。 */
+.virt-row {
+  contain: layout;
+}
+
 .shell-promote-done-glow {
   position: absolute;
   inset: 0;

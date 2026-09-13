@@ -988,31 +988,63 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 	return result, nil
 }
 
-// replayForDisplayWindow returns the display messages for the LAST `limit`
-// render rows before beforeID (0 = unbounded), plus the total render row
-// count before beforeID — a windowed, behavior-identical equivalent of
-// ReplayForDisplay + in-memory tail slicing (GetHistoryBeforeForDisplay).
+// replayForDisplayWindow returns the display messages for the last window of
+// render rows before beforeID (0 = unbounded) — at least `limit` message rows,
+// extended down to the first row of the turn that owns the limit-th row from
+// the tail — plus the total render row count before beforeID.
 //
 // The old path loaded the FULL append-only history on every loadMore page
 // (O(entire table) per call + shared historyLock). This walks three bounded
 // queries instead: (1) the id of the limit-th message from the tail
-// (descending, index-backed), (2) records in [minID, beforeID) — the window
-// includes compress records so [Compacted context] markers land at their
-// stream position, (3) two counts for the total (message rows + markers from
-// compress/prune records).
+// (descending, index-backed) plus the turn-boundary anchor below it,
+// (2) records in [minID, beforeID) — the window includes compress records so
+// [Compacted context] markers land at their stream position, (3) two counts for
+// the total (message rows + markers from compress/prune records).
+//
+// TURN-BOUNDARY ALIGNMENT (why the window is not exactly `limit` rows): the
+// display fold collapses a whole turn into ONE render row that carries the
+// turn's COMPLETE structured iteration list (ConvertMessagesToHistoryWithIterations).
+// A window that starts mid-turn therefore re-emits a turn the client already
+// received: the response is non-empty, but merging it back by turn_id changes
+// nothing on screen while has_more stays true — the user scrolls and sees no
+// new content ("前几次翻页 api 请求没有实际加载更多信息"). Measured on the
+// production DB: 10 consecutive such pages in one session (turn spanning 1243
+// rows = 13 pages of 100). Aligning the lower bound to the turn's first row
+// makes every page deliver WHOLE, strictly older turns, so each page adds
+// content and the returned cursor (always a turn's first row) advances
+// strictly. Cost is bounded by one turn (the fold's records), and the response
+// carries each touched turn's iteration list at most as often as before.
 //
 // Equivalence with the full scan: the display fold is order-deterministic and
-// prefix-independent, so the tail `limit` rows of the window fold equal the
-// tail `limit` rows of the full fold; markers carry their compress record's
-// id so the id < beforeID bound matches the old in-memory m.ID >= beforeID
-// cut; total counts non-display-only message rows plus markers — exactly the
-// rows the full fold emits before beforeID.
+// prefix-independent, so the window fold equals the corresponding slice of the
+// full fold; markers carry their compress record's id so the id < beforeID
+// bound matches the old in-memory m.ID >= beforeID cut; total counts
+// non-display-only message rows plus markers — exactly the rows the full fold
+// emits before beforeID.
+//
 // Display-window queries. beforeID is normalized to math.MaxInt64 by the
 // caller (replayForDisplayWindow) so a single `id < ?` predicate covers the
 // unbounded case without dynamic WHERE construction.
-const displayTailBoundQuery = `SELECT id FROM session_messages
+const displayTailBoundQuery = `SELECT id, COALESCE(turn_id, 0) FROM session_messages
 	WHERE tenant_id = ? AND record_type = 'message' AND display_only = 0 AND id < ?
 	ORDER BY id DESC LIMIT ?`
+
+// displayTurnStartByTurnQuery returns the id of the FIRST user message of the
+// given turn: the turn boundary the display fold derives turn ids from. A turn
+// can carry more than one user message (queued / injected user input shares the
+// turn), so "the nearest user message below the bound" is NOT a turn boundary
+// for those turns — it lands inside the turn and the window still splits it.
+// Index-backed by idx_sm_tenant_role_id. Returns 0 when the turn has no user
+// row of its own (malformed / legacy-derived).
+const displayTurnStartByTurnQuery = `SELECT COALESCE(MIN(id), 0) FROM session_messages
+	WHERE tenant_id = ? AND record_type = 'message' AND display_only = 0 AND role = 'user' AND turn_id = ? AND id <= ?`
+
+// displayTurnStartQuery is the legacy fallback (turn_id = 0 rows have no
+// structured turn): the nearest user message at or below `id` opens the turn.
+// Returns 0 when no user row exists at or below `id` (corrupt/partial history)
+// — callers then keep the unaligned bound.
+const displayTurnStartQuery = `SELECT COALESCE(MAX(id), 0) FROM session_messages
+	WHERE tenant_id = ? AND record_type = 'message' AND display_only = 0 AND role = 'user' AND id <= ?`
 
 const displayMessageCountQuery = `SELECT COUNT(*) FROM session_messages
 	WHERE tenant_id = ? AND record_type = 'message' AND display_only = 0 AND id < ?`
@@ -1027,8 +1059,11 @@ func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit in
 	}
 	// 1. Find the window's lower bound: the id of the limit-th message row
 	// counting from the tail (before beforeID). Fewer rows than limit means
-	// the window covers the whole history.
+	// the window covers the whole history. minTurnID is that row's structured
+	// turn id (0 for legacy rows) — the alignment below uses it instead of a
+	// second round trip.
 	minID := int64(0)
+	minTurnID := uint64(0)
 	if limit > 0 {
 		rows, err := queryer.Query(displayTailBoundQuery, tenantID, beforeID, limit)
 		if err != nil {
@@ -1037,7 +1072,7 @@ func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit in
 		count := 0
 		for rows.Next() {
 			count++
-			if err := rows.Scan(&minID); err != nil {
+			if err := rows.Scan(&minID, &minTurnID); err != nil {
 				rows.Close()
 				return nil, 0, fmt.Errorf("scan display tail bound: %w", err)
 			}
@@ -1049,6 +1084,30 @@ func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit in
 		rows.Close()
 		if count < int(limit) {
 			minID = 0 // fewer messages than limit — cover everything
+			minTurnID = 0
+		}
+	}
+
+	// 1b. Turn-boundary alignment: never split a turn (see the doc comment).
+	// Without this, a window that starts mid-turn folds a turn the client
+	// already has — a page that adds no visible content while has_more is true.
+	if minID > 0 {
+		anchor := int64(0)
+		if minTurnID > 0 {
+			// Structured turn: the turn's own first user message is its boundary.
+			if err := queryer.QueryRow(displayTurnStartByTurnQuery, tenantID, minTurnID, minID).Scan(&anchor); err != nil {
+				return nil, 0, fmt.Errorf("query display turn start by turn: %w", err)
+			}
+		}
+		if anchor == 0 {
+			// Legacy rows (turn_id = 0) or a turn without its own user row: the
+			// nearest user message at or below the bound opens the turn.
+			if err := queryer.QueryRow(displayTurnStartQuery, tenantID, minID).Scan(&anchor); err != nil {
+				return nil, 0, fmt.Errorf("query display turn start: %w", err)
+			}
+		}
+		if anchor > 0 && anchor < minID {
+			minID = anchor
 		}
 	}
 
@@ -1069,18 +1128,13 @@ func replayForDisplayWindow(queryer historyQueryer, tenantID, beforeID, limit in
 		return nil, 0, err
 	}
 
-	// 4. Tail-slice to exactly `limit` rows (the fold may emit more than
-	// limit because markers are not counted against the SQL bound).
-	msgs := result.Messages
-	if limit > 0 && int64(len(msgs)) > limit {
-		msgs = msgs[int64(len(msgs))-limit:]
-	}
-	result.Messages = msgs
+	// NO tail-slice: the window now ends on a turn boundary, and truncating the
+	// oldest rows would (a) re-split the turn (reintroducing the no-op page)
+	// and (b) advance the cursor past rows that were never returned, losing
+	// them. The window's size is whatever the whole turns in it need
+	// (>= `limit` message rows, + marker rows from compress/prune records).
 	return result, total, nil
 }
-
-// displayTailBoundQuery / displayMessageCountQuery / displayMarkerRecordsQuery
-// are declared above replayForDisplayWindow.
 
 // countDisplayRowsBefore counts the render rows the display fold emits for
 // records with id < beforeID: non-display-only message rows plus the

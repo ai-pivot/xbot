@@ -124,17 +124,24 @@ export function TodoPullOut({
         <div className="max-h-[240px] overflow-y-auto border-t border-border px-2 py-1.5">
           {todos.map((todo, i) => {
             const isGoal = !!goalText && goalText.trim() === todo.text.trim()
-            if (editingIndex === i) {
+            // 移动端：编辑必须走底部 Sheet —— 行内单行在手机上根本用不了（用户 2026-09-13）。
+            if (editingIndex === i && isTouch) {
               return (
-                <div key={i} data-testid="todo-item" data-todo-text={todo.text} className="flex items-center gap-2 py-0.5">
-                  <input
-                    ref={inputRef}
+                <div
+                  key={i}
+                  data-testid="todo-edit-sheet"
+                  className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-bg-primary p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-lg"
+                >
+                  <div className="mb-2 text-xs font-medium text-text-secondary">{t('agent.todoEdit')}</div>
+                  <textarea
+                    autoFocus
                     data-testid="todo-edit-input"
+                    rows={3}
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
-                    onBlur={commitEdit}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      if (e.key === 'Enter' && e.shiftKey) return
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                         e.preventDefault()
                         commitEdit()
                       } else if (e.key === 'Escape') {
@@ -143,7 +150,58 @@ export function TodoPullOut({
                       }
                     }}
                     aria-label={t('agent.todoEdit')}
-                    className="min-w-0 flex-1 rounded border border-accent/60 bg-bg-primary px-1.5 py-0.5 text-xs text-text-primary outline-none ring-2 ring-accent/25"
+                    className="max-h-[40dvh] w-full resize-none rounded border border-accent/60 bg-bg-primary px-2 py-1.5 text-base leading-relaxed text-text-primary outline-none ring-2 ring-accent/25"
+                  />
+                  <div className="mt-2 flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="todo-edit-cancel"
+                      onClick={() => setEditingIndex(null)}
+                      className="rounded px-3 py-1.5 text-xs text-text-muted hover:bg-bg-secondary"
+                    >
+                      {t('agent.goal.cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="todo-edit-save"
+                      onClick={commitEdit}
+                      className="rounded bg-accent/15 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/25"
+                    >
+                      {t('agent.goal.save')}
+                    </button>
+                  </div>
+                </div>
+              )
+            }
+            // 桌面：就地编辑（自适应高度 textarea）。
+            if (editingIndex === i) {
+              return (
+                <div key={i} data-testid="todo-item" data-todo-text={todo.text} className="flex items-center gap-2 py-0.5">
+                  {/* 与 goal 编辑同一套契约（用户 2026-09-13）：自适应高度 textarea ——
+                      长 todo 不再被单行截断；Enter 保存 / Shift+Enter 换行 / Esc 取消 /
+                      IME 组合态不提交（中文选词）；失焦保存（短文本改起来更顺手）。 */}
+                  <textarea
+                    ref={inputRef as never}
+                    data-testid="todo-edit-input"
+                    rows={1}
+                    value={draft}
+                    onChange={(e) => {
+                      setDraft(e.target.value)
+                      e.target.style.height = 'auto'
+                      e.target.style.height = `${Math.min(e.target.scrollHeight, 72)}px`
+                    }}
+                    onBlur={commitEdit}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        e.preventDefault()
+                        commitEdit()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingIndex(null)
+                      }
+                    }}
+                    aria-label={t('agent.todoEdit')}
+                    className="min-w-0 flex-1 resize-none rounded border border-accent/60 bg-bg-primary px-1.5 py-0.5 text-xs leading-relaxed text-text-primary outline-none ring-2 ring-accent/25"
                   />
                 </div>
               )

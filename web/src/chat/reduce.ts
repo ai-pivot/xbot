@@ -14,7 +14,7 @@
  *   I6 无 null   — normalize 已保证（reducer 零格式防御）
  */
 
-import type { GoalInfo, TodoItem, WebIteration, WebToolProgress } from '@/types/shared'
+import type { GoalInfo, TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 import {
   EMPTY_LIVE,
   commitViaFold,
@@ -63,10 +63,57 @@ function mergeIterations(
   authoritative: readonly WebIteration[],
 ): readonly WebIteration[] {
   if (authoritative.length === 0) return base
+  // 快路径：authoritative 与 base 逐元素同引用（幂等重放的最常见形态 —— 每帧
+  // history_replaced 把同一份 DB 迭代再喂一次）⇒ 直接返回 base，免掉 Map 构建 +
+  // 排序的分配（仍 O(N) 比较，但不分配）。
+  if (authoritative.length === base.length) {
+    let identical = true
+    for (let i = 0; i < base.length; i++) {
+      if (base[i] !== authoritative[i]) {
+        identical = false
+        break
+      }
+    }
+    if (identical) return base
+  }
   const byNum = new Map<number, WebIteration>()
   for (const it of base) byNum.set(it.iteration, it)
   for (const it of authoritative) byNum.set(it.iteration, it) // 权威覆盖同号
   return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
+}
+
+/** merged 与 existing 逐元素同引用（同长、同序、同对象）⇒ 返回 existing。
+ *
+ * 幂等重放（useChatMessages 的 store 每帧 notify → setMessages → historyMessages
+ * 换引用 → history_replaced）必须保住渲染层已持有的 iterations 引用 —— 否则
+ * TurnBody→CommittedTurn 的 memo 被逐帧击穿，流式帧代价重新变成 O(turn 迭代数)。
+ * union 只增（I4）："无新增且无同号覆盖"是重放的常见形态。 */
+function reuseIfSame<T>(merged: readonly T[], existing: readonly T[]): readonly T[] {
+  if (merged.length !== existing.length) return merged
+  for (let i = 0; i < merged.length; i++) if (merged[i] !== existing[i]) return merged
+  return existing
+}
+
+/** filter 结果与输入逐元素恒等（未剔除任何元素）⇒ 返回输入（保住引用）。 */
+function filterIfNeeded<T>(arr: readonly T[], pred: (x: T) => boolean): readonly T[] {
+  for (const x of arr) if (!pred(x)) return arr.filter(pred)
+  return arr
+}
+
+/** 两个数组逐元素同引用。 */
+function sameItems<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
+}
+
+/** Turn Map 逐项同引用（键集合 + 每个 Turn 对象恒等）。 */
+function sameTurnMap(a: ReadonlyMap<TurnID, Turn>, b: ReadonlyMap<TurnID, Turn>): boolean {
+  if (a === b) return true
+  if (a.size !== b.size) return false
+  for (const [k, v] of b) if (a.get(k) !== v) return false
+  return true
 }
 
 /** LiveSnapshot['streamStats'] 的字段级合并。
@@ -688,14 +735,25 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           if (incomingIts.length === 0) {
             turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
           } else {
-            turns.set(h.id, {
-              ...cur,
-              user: cur.user ?? h.user,
-              phase: {
-                kind: 'live',
-                data: { ...cur.phase.data, iterations: mergeIterations(incomingIts, cur.phase.data.iterations) },
-              },
-            })
+            // 幂等重放（每帧 history_replaced）：union 未产生新迭代且 user 已就位
+            // ⇒ 复用原 Turn 对象（零重建 —— 否则 derive 的行 memo + TurnBody 的
+            // iterations memo 被逐帧击穿，代价 O(turn 迭代数)）。
+            const mergedIts = reuseIfSame(
+              mergeIterations(incomingIts, cur.phase.data.iterations),
+              cur.phase.data.iterations,
+            )
+            if (mergedIts === cur.phase.data.iterations && (cur.user || !h.user)) {
+              turns.set(h.id, cur)
+            } else {
+              turns.set(h.id, {
+                ...cur,
+                user: cur.user ?? h.user,
+                phase: {
+                  kind: 'live',
+                  data: { ...cur.phase.data, iterations: mergedIts as WebIteration[] },
+                },
+              })
+            }
           }
         } else if (
           cur &&
@@ -778,27 +836,52 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           // generating 条目在 activeTools 声明 running 时即过期 —— 合并结果
           // 强制过滤；不同名条目各自独立（Read generating + Shell running 共存）。
           const mergedActiveTools = d.activeTools.length > 0 ? d.activeTools : snap.activeTools
-          const mergedStreamingTools = (d.streamingTools.length > 0 ? d.streamingTools : snap.streamingTools)
-            .filter((t2) => !mergedActiveTools.some((a) => a.name === t2.name))
-          turns.set(activeTurn, {
-            ...t,
-            phase: {
-              kind: 'live',
-              data: {
-                ...d,
-                iter: d.iter > snap.iter ? d.iter : snap.iter,
-                content: d.content !== '' ? d.content : snap.content,
-                reasoning: d.reasoning !== '' ? d.reasoning : snap.reasoning,
-                iterations: mergeIterations(d.iterations, snap.iterations),
-                activeTools: mergedActiveTools,
-                streamingTools: mergedStreamingTools,
-                genui: d.genui !== '' ? d.genui : snap.genui,
-                todos: d.todos.length > 0 ? d.todos : snap.todos,
-                subAgents: d.subAgents.length > 0 ? d.subAgents : snap.subAgents,
-                tokenUsage: d.tokenUsage ?? snap.tokenUsage,
+          const mergedStreamingTools = filterIfNeeded(
+            d.streamingTools.length > 0 ? d.streamingTools : snap.streamingTools,
+            (t2) => !mergedActiveTools.some((a) => a.name === t2.name),
+          )
+          // 幂等重放（每帧 history_replaced）：逐字段都无变化 ⇒ 不重建（保住
+          // Turn / iterations / 工具数组引用 —— 渲染层 memo 依赖它们）。
+          const mergedIterations = reuseIfSame(mergeIterations(d.iterations, snap.iterations), d.iterations)
+          const mergedIter = d.iter > snap.iter ? d.iter : snap.iter
+          const mergedContent = d.content !== '' ? d.content : snap.content
+          const mergedReasoning = d.reasoning !== '' ? d.reasoning : snap.reasoning
+          const mergedGenui = d.genui !== '' ? d.genui : snap.genui
+          const mergedTodos = d.todos.length > 0 ? d.todos : snap.todos
+          const mergedSubAgents = d.subAgents.length > 0 ? d.subAgents : snap.subAgents
+          const mergedTokenUsage = d.tokenUsage ?? snap.tokenUsage
+          const unchanged =
+            mergedIterations === d.iterations &&
+            mergedActiveTools === d.activeTools &&
+            mergedStreamingTools === d.streamingTools &&
+            mergedIter === d.iter &&
+            mergedContent === d.content &&
+            mergedReasoning === d.reasoning &&
+            mergedGenui === d.genui &&
+            mergedTodos === d.todos &&
+            mergedSubAgents === d.subAgents &&
+            mergedTokenUsage === d.tokenUsage
+          if (!unchanged) {
+            turns.set(activeTurn, {
+              ...t,
+              phase: {
+                kind: 'live',
+                data: {
+                  ...d,
+                  iter: mergedIter,
+                  content: mergedContent,
+                  reasoning: mergedReasoning,
+                  iterations: mergedIterations as WebIteration[],
+                  activeTools: mergedActiveTools as WebToolProgress[],
+                  streamingTools: mergedStreamingTools as WebToolProgress[],
+                  genui: mergedGenui,
+                  todos: mergedTodos as TodoItem[],
+                  subAgents: mergedSubAgents as WebSubAgentProgress[],
+                  tokenUsage: mergedTokenUsage,
+                },
               },
-            },
-          })
+            })
+          }
         }
       }
 
@@ -839,8 +922,27 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       }
       for (const l of ev.legacy) legacyById.set(l.id, l)
       const legacy = [...legacyById.values()].sort((a, b) => (a.dbID ?? 0) - (b.dbID ?? 0))
+      const todos = s.todos.length > 0 ? s.todos : ev.todos
 
-      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos: s.todos.length > 0 ? s.todos : ev.todos, goal: s.goal }
+      // 幂等回放短路：逐项恒等（turns 每个 Turn 对象 / legacy / pendingUsers 元素
+      // 引用 + activeTurn/lastSeq/todos）⇒ 返回原 state。
+      // 每帧 history_replaced（useChatMessages 的 store 每帧 notify → setMessages
+      // → historyMessages 换引用 → 本 case）在历史未变时必须是**零通知零渲染**的
+      // no-op —— 否则每次重放都重建全部 Turn，击穿 derive/MessageItem 的行 memo，
+      // 流式帧代价变成 O(全会话迭代数)。判定只用引用比较（不做语义比较 ——
+      // 漏判会吞掉真实更新）。
+      if (
+        sameTurnMap(turns, s.turns) &&
+        sameItems(legacy, s.legacy) &&
+        sameItems(pendingUsers, s.pendingUsers) &&
+        activeTurn === s.activeTurn &&
+        lastSeq === s.lastSeq &&
+        sameItems(todos, s.todos)
+      ) {
+        return s
+      }
+
+      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──
@@ -1020,13 +1122,24 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const incIts = h.phase.kind === 'committed' ? h.phase.payload.iterations : h.phase.data.iterations
   const curContent = cur.phase.kind === 'committed' ? cur.phase.payload.content : cur.phase.data.content
   const incContent = h.phase.kind === 'committed' ? h.phase.payload.content : h.phase.data.content
-  const iterations = mergeIterations(curIts, incIts)
+  const iterations = reuseIfSame(mergeIterations(curIts, incIts), curIts)
   const content = curContent !== '' ? curContent : incContent
+  // 幂等重放（每帧 history_replaced）：committed 侧逐项未变 ⇒ 复用原对象。
+  // （frozen→committed 是真实相变，不走此短路。）
+  if (
+    cur.phase.kind === 'committed' &&
+    iterations === curIts &&
+    content === curContent &&
+    (cur.user !== null || h.user === null) &&
+    (cur.requestID !== null || h.requestID === null)
+  ) {
+    return cur
+  }
   const text = nonEmptyStr(content)
   const its = nonEmptyArr(iterations)
   const phase: Turn['phase'] =
     text !== null
-      ? { kind: 'committed', payload: commitViaText(text, iterations) }
+      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[]) }
       : its !== null
         ? { kind: 'committed', payload: commitViaFold(its, content) }
         : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }

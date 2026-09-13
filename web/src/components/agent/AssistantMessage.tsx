@@ -21,9 +21,11 @@ interface AssistantMessageProps {
   message: ChatMessage
   /** Live progress for a streaming message; omitted for committed history. */
   progress?: LiveProgress | null
+  /** 迭代块高度/冻结裁决的作用域（会话身份 + 布局宽度）—— 透传给 TurnBody。 */
+  heightScope?: string
 }
 
-function AssistantMessageImpl({ message, progress }: AssistantMessageProps) {
+function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessageProps) {
   const { t } = useI18n()
   // ── Single source of truth ──────────────────────────────────────────
   // When a LIVE progress snapshot exists (phase != "done"), the snapshot is
@@ -110,6 +112,7 @@ function AssistantMessageImpl({ message, progress }: AssistantMessageProps) {
         iterations={iterations}
         liveProgress={liveProgress}
         turnID={message.turnID}
+        heightScope={heightScope}
       />
       {(!isStreaming || isFrozenLive) && finalContent && (
         <MarkdownRenderer content={finalContent} noDebounce />

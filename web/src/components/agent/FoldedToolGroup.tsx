@@ -144,7 +144,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   return (
     <span
       data-tool-name={tool.name}
-      className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium"
+      className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full px-2 py-0.5 text-[11px] font-medium"
       style={{ color: c, background: bg }}
     >
       {running
@@ -153,16 +153,16 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
           ? <X className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />
           : <Check className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />}
       {showSweep
-        ? <SweepText text={label} color={c} className={`truncate ${synName ? '' : 'font-mono'}`} />
+        ? <SweepText text={label} color={c} className={`min-w-0 truncate ${synName ? '' : 'font-mono'}`} />
         : synName
           ? (
             <>
               {/* 本地化名字用正文字体（等宽渲染 CJK 会显得很怪），subject/参数保持等宽 */}
-              <span className="truncate">{name}</span>
-              {param && <span className="truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
+              <span className="min-w-0 truncate">{name}</span>
+              {param && <span className="min-w-0 truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
             </>
           )
-          : <span className="truncate font-mono">{label}</span>}
+          : <span className="min-w-0 truncate font-mono">{label}</span>}
     </span>
   )
 }
@@ -266,7 +266,7 @@ function LazyPillPopover({
             setOpen(true)
           }
         }}
-        className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85"
+        className="inline-flex min-w-0 max-w-full cursor-pointer items-center transition-opacity hover:opacity-85"
       >
         {children}
       </span>
@@ -275,7 +275,7 @@ function LazyPillPopover({
   return (
     <Popover open onOpenChange={(o) => { if (!o) setOpen(false) }}>
       <PopoverTrigger asChild>
-        <span data-testid={testId} data-tool-name={toolName} className="inline-flex cursor-pointer items-center transition-opacity hover:opacity-85">
+        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 max-w-full cursor-pointer items-center transition-opacity hover:opacity-85">
           {children}
         </span>
       </PopoverTrigger>
@@ -294,7 +294,7 @@ const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgres
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
-    <span className="flex flex-wrap items-center gap-1.5">
+    <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
         <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" toolName={tool.name} content={<ToolPopoverDetail tool={tool} />}>
           {toolPill(tool, t)}
@@ -437,7 +437,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   return (
     <div className="flex flex-col gap-1.5">
       {genuiElements}
-      <div className={ROW_ROW_CLASS}>{pillsRow}</div>
+      <div data-testid="tool-pill-row" className={ROW_ROW_CLASS}>{pillsRow}</div>
     </div>
   )
 })

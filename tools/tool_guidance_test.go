@@ -210,3 +210,50 @@ func TestEmbeddedToolGuidanceArtifacts(t *testing.T) {
 		}
 	}
 }
+
+// TestBgTaskTips_NotifyNotWait — the guidance attached to every background task
+// (shell background start + timeout auto-promote) must tell the model that the
+// result arrives as a notification on completion, point at task_status for a
+// non-blocking check, and steer AWAY from task_wait.
+//
+// Regression guard (user report 2026-09-13): the tips used to advertise
+// `Use task_wait (task_id=...)`, which made the model block on a whole idle turn.
+func TestBgTaskTips_NotifyNotWait(t *testing.T) {
+	tips := bgTaskTips("3f8f492a")
+	for _, want := range []string{
+		"automatically delivered to you as a notification",
+		"Keep working",
+		`task_status (task_id=["3f8f492a"])`,
+		"Avoid task_wait",
+	} {
+		if !strings.Contains(tips, want) {
+			t.Errorf("bgTaskTips must contain %q (got: %s)", want, tips)
+		}
+	}
+	if strings.Contains(tips, "Use task_wait (task_id=") {
+		t.Errorf("bgTaskTips must not push the model towards task_wait (got: %s)", tips)
+	}
+}
+
+// TestRunningInspectionBegsOffPolling — task_status / task_read 读到"仍在运行"
+// 的目标时必须直接劝退轮询（用户 2026-09-13）：不要一直调这个工具、结束会自动
+// 通知、把时间用在别的事上。
+func TestRunningInspectionBegsOffPolling(t *testing.T) {
+	for _, want := range []string{
+		"Do NOT keep calling",
+		"AUTOMATICALLY as a notification",
+		"other useful work",
+	} {
+		if !strings.Contains(runningTaskGuidanceBody, want) {
+			t.Errorf("runningTaskGuidanceBody must contain %q (got: %s)", want, runningTaskGuidanceBody)
+		}
+	}
+	if !strings.Contains(runningTaskGuidanceBody, "task_status (task_id=[...])") {
+		t.Error("guidance must point at the non-blocking status check")
+	}
+	// task_status 的运行中输出必须带上它
+	out := formatTask(&BackgroundTask{ID: "3f8f492a", Command: "sleep 100", Status: BgTaskRunning, StartedAt: time.Now()})
+	if !strings.Contains(out, runningTaskGuidanceBody) {
+		t.Errorf("task_status output for a running task must carry the anti-poll guidance:\n%s", out)
+	}
+}
