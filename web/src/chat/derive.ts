@@ -11,7 +11,7 @@
  */
 
 import type { TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
-import type { ChatState, LiveSnapshot, Turn } from './types'
+import type { ChatState, LegacyRow, LiveSnapshot, Turn, TurnID } from './types'
 
 // [TURNDROP] 诊断去重（derive 每帧调用 —— 同一 turnID 的 hollow-frozen 跳过
 // 只报告一次；生产保留 console.warn 以便用户复现时捕获触发链）。
@@ -77,20 +77,52 @@ export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
 
 // ─── deriveRows：ρ（T5 顺序 = legacy ⊕ turnID 升序 ⊕ user<assistant） ──
 
-export function deriveRows(s: ChatState): readonly Row[] {
-  const turnRows: Row[] = []
-  const sorted = [...s.turns.values()].sort((a, b) => a.id - b.id)
-  for (const t of sorted) {
-    if (t.user) turnRows.push(userRowOf(t))
-    const ar = assistantRow(t)
-    if (ar !== null) turnRows.push(ar)
-  }
+/**
+ * 派生对象的**对象恒等 memo**（长 turn 卡顿回归的根因修复）：
+ * 源对象引用不变 ⇒ 派生 Row 引用必须不变。
+ *
+ * 每个流式帧 `state` 都是新引用（reduce 的 `withTurn` 只改 active turn），
+ * deriveRows 每帧执行；若每帧为**所有** turn 重建 Row，则下游
+ * rowsToChatMessages → MessageItem（memo）逐帧全部失效 —— 每个 assistant 行
+ * 内部是该 turn 的整棵迭代树，代价 ∝ 会话内全部已渲染迭代。
+ * WeakMap 以源对象为键：未变更的 turn 直接复用上一帧的 Row（零分配、零比较）。
+ *
+ * 纯函数证据：assistantRow 只读 `t.id` / `t.phase`（都封装在 Turn 内，不可变）；
+ * userRowOf 只读 `t.user`；legacy/pending 只读各自的消息对象。
+ */
+const assistantRowByTurn = new WeakMap<Turn, Row | null>()
+const userRowByMsg = new WeakMap<object, UserRowView>()
+const legacyRowByMsg = new WeakMap<LegacyRow, Row>()
 
-  // pendingUsers（未绑定的乐观行）：沉到底部（发送中/排队 —— 归属 turn 未知）。
-  const pending: Row[] = s.pendingUsers.map(userRowView)
+function cachedAssistantRow(t: Turn): Row | null {
+  const cached = assistantRowByTurn.get(t)
+  if (cached !== undefined) return cached
+  const row = assistantRow(t)
+  assistantRowByTurn.set(t, row)
+  return row
+}
 
-  // legacy 段保持 DB 顺序：user/assistant 交错（非 turn 模型 —— 直接按原序映射）。
-  const legacySorted: Row[] = s.legacy.map((l): Row =>
+function cachedUserRow(t: Turn): UserRowView {
+  const u = t.user!
+  const cached = userRowByMsg.get(u)
+  if (cached !== undefined) return cached
+  const row = userRowOf(t)
+  userRowByMsg.set(u, row)
+  return row
+}
+
+function cachedUserRowView(u: ChatState['pendingUsers'][number]): Row {
+  const cached = userRowByMsg.get(u)
+  if (cached !== undefined) return cached
+  const row = userRowView(u)
+  userRowByMsg.set(u, row)
+  return row
+}
+
+function cachedLegacyRow(l: LegacyRow): Row {
+  const cached = legacyRowByMsg.get(l)
+  if (cached !== undefined) return cached
+  const row: Row =
     l.role === 'user'
       ? {
           kind: 'user',
@@ -110,8 +142,38 @@ export function deriveRows(s: ChatState): readonly Row[] {
           isPartial: false,
           content: l.content,
           iterations: l.iterations,
-        },
-  )
+        }
+  legacyRowByMsg.set(l, row)
+  return row
+}
+
+/** turn 顺序（deriveRows 的 T5 前提）：Map 插入序在真实事件流里已按 turnID 单调
+ *  （withTurn 拷贝保持插入序、新 turn 追加），O(T) 检查通过即免去每帧 O(T log T) 排序。 */
+function sortedTurns(turns: ReadonlyMap<TurnID, Turn>): Turn[] {
+  const out: Turn[] = []
+  let last = -1
+  let ordered = true
+  for (const t of turns.values()) {
+    if (t.id < last) ordered = false
+    last = t.id
+    out.push(t)
+  }
+  return ordered ? out : out.sort((a, b) => a.id - b.id)
+}
+
+export function deriveRows(s: ChatState): readonly Row[] {
+  const turnRows: Row[] = []
+  for (const t of sortedTurns(s.turns)) {
+    if (t.user) turnRows.push(cachedUserRow(t))
+    const ar = cachedAssistantRow(t)
+    if (ar !== null) turnRows.push(ar)
+  }
+
+  // pendingUsers（未绑定的乐观行）：沉到底部（发送中/排队 —— 归属 turn 未知）。
+  const pending: Row[] = s.pendingUsers.map(cachedUserRowView)
+
+  // legacy 段保持 DB 顺序：user/assistant 交错（非 turn 模型 —— 直接按原序映射）。
+  const legacySorted: Row[] = s.legacy.map(cachedLegacyRow)
 
   return [...legacySorted, ...turnRows, ...pending]
 }
@@ -193,7 +255,7 @@ function assistantRow(t: Turn): Row | null {
   }
 }
 
-function userRowOf(t: Turn): Row {
+function userRowOf(t: Turn): UserRowView {
   const u = t.user!
   return {
     kind: 'user',
@@ -208,7 +270,7 @@ function userRowOf(t: Turn): Row {
   }
 }
 
-function userRowView(u: ChatState['pendingUsers'][number]): Row {
+function userRowView(u: ChatState['pendingUsers'][number]): UserRowView {
   return {
     kind: 'user',
     id: u.id,

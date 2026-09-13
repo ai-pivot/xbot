@@ -1,5 +1,14 @@
 # Web MessageStore — 单一消息状态机（方案 A）
 
+> ⚠️ **2026-09-13 现状（先读这段再看下文）**：**渲染数据源已迁移到新状态机** ——
+> `AgentPanel` → `MessageList` 读 `useAgentChatState`（`chat/reduce.ts` → `derive.ts`
+> → `integrate.ts`）；本文件描述的 `MessageStore.toRows()` 现在只喂
+> `chat.messages`（history 映射 / 插件上下文 / debug toolbar），**不再渲染**。
+> 因此性能修复必须打在新管线的 `derive/integrate` 边界上（引用稳定性 ——
+> 见 AGENTS.md「2026-09-13 回归」条目与 `chat/integrate.test.ts` /
+> `components/agent/turn_perf_pipeline.test.tsx`）；打在 MessageStore 上的
+> memo/引用保持修复对线上渲染**无效**（这正是 2026-09-13 长 turn 卡顿复发的根因模式）。
+
 > 目标：从结构上消除 "turn 消失/重复" 整类 bug。当前渲染层靠启发式去重（sameTurnIdx /
 > exactDup / content 匹配 / eventSeq 匹配）弥合 "两套独立数据"（committed messages +
 > live progress），每个启发式都有边界情况——已产生 6+ 个补丁（iter 回退拒收、eventSeq

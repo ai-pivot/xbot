@@ -15,7 +15,15 @@ import {
   historyProgressToLive,
   normalizeWebIteration,
 } from '@/components/agent/normalize'
-import { EMPTY_PROGRESS_SNAPSHOT, type ChatMessage, type ProgressSnapshot, type TodoItem } from '@/types/shared'
+import {
+  EMPTY_PROGRESS_SNAPSHOT,
+  type ChatMessage,
+  type ProgressSnapshot,
+  type TodoItem,
+  type WebIteration,
+  type WebSubAgentProgress,
+  type WebToolProgress,
+} from '@/types/shared'
 import { commitViaFold, commitViaText, iterNum, nonEmptyArr, nonEmptyStr, turnID as mkTurnID, type ChatState, type DomainEvent, type LegacyRow, type LiveSnapshot, type Turn } from './types'
 import type { Row } from './derive'
 
@@ -161,68 +169,89 @@ const EMPTY_SNAPSHOT: LiveSnapshot = {
 
 // ─── rows → ChatMessage[]（渲染数据源） ────────────────────────
 
+/**
+ * Row → ChatMessage 的**对象恒等 memo**（长 turn 卡顿回归的根因修复）。
+ *
+ * PERF 不变量：Row 引用不变 ⇒ 输出 ChatMessage 必须恒等。
+ * MessageList 的 `MessageItem`（memo）以 `message` 引用为边界；每帧新建对象会让
+ * **全部可见行**逐帧重渲染 —— 而每个 assistant 行内部又是该 turn 的整棵迭代树，
+ * 于是流式帧代价重新变成 O(turn 迭代数)。旧 MessageStore.toRows() 对未变更行
+ * 直接 `rows.push(slot.assistant)`（对象恒等），本 memo 是新状态机管线上的等价保证。
+ *
+ * ⚠️ 配套契约：派生出的 ChatMessage 视为**只读**（渲染层不得就地 mutate）——
+ * bindTurnIDs/orderMessageRows 需要改动时都先拷贝对象。
+ */
+const msgByRow = new WeakMap<Row, ChatMessage>()
+
 export function rowsToChatMessages(rows: readonly Row[]): ChatMessage[] {
   const out: ChatMessage[] = []
   for (const r of rows) {
-    switch (r.kind) {
-      case 'user':
-        out.push({
-          id: r.id,
-          role: 'user',
-          content: r.content,
-          iterations: [],
-          timestamp: r.timestamp,
-          isPartial: false,
-          // pendingUsers 行的 turnID 是 MAX_SAFE_INTEGER（deriveRows 排序用）——
-          // 保持原值不改为 0：MessageList 按 turnID 排序时大值在底部（发送中
-          // 行出现在最后，与 deriveRows 的排列一致）。改为 0 会让它排到所有
-          // turn 前面（0 最小）→ 发送中行出现在最上方，发送完毕绑定真实
-          // turnID 后"瞬移"回底部（用户报告的闪烁）。
-          turnID: r.turnID,
-          persisted: r.turnID !== Number.MAX_SAFE_INTEGER,
-          isNotification: r.isNotification,
-          queued: r.queued,
-          sending: r.sending,
-          dbID: r.dbID,
-        })
-        break
-      case 'live':
-        out.push({
-          id: r.id,
-          role: 'assistant',
-          content: r.content,
-          iterations: [...r.iterations],
-          timestamp: '',
-          isPartial: true,
-          turnID: r.turnID,
-        })
-        break
-      case 'frozen':
-        out.push({
-          id: r.id,
-          role: 'assistant',
-          content: r.content,
-          iterations: [...r.iterations],
-          timestamp: '',
-          isPartial: true,
-          turnID: r.turnID,
-        })
-        break
-      case 'committed':
-        out.push({
-          id: r.id,
-          role: 'assistant',
-          content: r.content,
-          iterations: [...r.iterations],
-          timestamp: '',
-          isPartial: false,
-          turnID: r.turnID,
-          persisted: true,
-        })
-        break
+    let msg = msgByRow.get(r)
+    if (msg === undefined) {
+      msg = rowToChatMessage(r)
+      msgByRow.set(r, msg)
     }
+    out.push(msg)
   }
   return out
+}
+
+function rowToChatMessage(r: Row): ChatMessage {
+  switch (r.kind) {
+    case 'user':
+      return {
+        id: r.id,
+        role: 'user',
+        content: r.content,
+        iterations: [],
+        timestamp: r.timestamp,
+        isPartial: false,
+        // pendingUsers 行的 turnID 是 MAX_SAFE_INTEGER（deriveRows 排序用）——
+        // 保持原值不改为 0：MessageList 按 turnID 排序时大值在底部（发送中
+        // 行出现在最后，与 deriveRows 的排列一致）。改为 0 会让它排到所有
+        // turn 前面（0 最小）→ 发送中行出现在最上方，发送完毕绑定真实
+        // turnID 后"瞬移"回底部（用户报告的闪烁）。
+        turnID: r.turnID,
+        persisted: r.turnID !== Number.MAX_SAFE_INTEGER,
+        isNotification: r.isNotification,
+        queued: r.queued,
+        sending: r.sending,
+        dbID: r.dbID,
+      }
+    case 'live':
+      return {
+        id: r.id,
+        role: 'assistant',
+        content: r.content,
+        // 透传引用（不拷贝）：iterations 的引用稳定性是 TurnBody→CommittedTurn
+        // memo 生效的前提（详见 rowsToChatMessages 的 memo 契约）。
+        iterations: r.iterations as WebIteration[],
+        timestamp: '',
+        isPartial: true,
+        turnID: r.turnID,
+      }
+    case 'frozen':
+      return {
+        id: r.id,
+        role: 'assistant',
+        content: r.content,
+        iterations: r.iterations as WebIteration[],
+        timestamp: '',
+        isPartial: true,
+        turnID: r.turnID,
+      }
+    case 'committed':
+      return {
+        id: r.id,
+        role: 'assistant',
+        content: r.content,
+        iterations: r.iterations as WebIteration[],
+        timestamp: '',
+        isPartial: false,
+        turnID: r.turnID,
+        persisted: true,
+      }
+  }
 }
 
 // ─── ChatState → liveProgress（ProgressSnapshot 兼容） ────────
@@ -240,7 +269,9 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
   // 会话级 todos：无 active turn（turn 已结束）时也返回 todos —— todos 在
   // turn 生命周期外存活（E2E："todos survive after turn completes / text
   // event / session switch"）。其余字段在无 live 时空。
-  const todos = [...s.todos]
+  // ⚠️ 不拷贝：todos 的引用稳定性是 TodoPullOut 等消费方 memo 的前提（同
+  // iterationHistory —— 见下方注释）。
+  const todos = s.todos as TodoItem[]
   // 会话级 goal：与 todos 同语义 —— turn 结束后仍存活（GoalBanner 读
   // liveProgress.goal；agent set_goal_complete 后 banner 实时切换到 completed
   // 样式，不依赖 get_goal RPC 的 session 切换重取）。
@@ -259,16 +290,23 @@ export function liveProgressFromState(s: ChatState): ProgressSnapshot {
     reasoningStreamContent: d.reasoning,
     content: d.iterations.length > 0 ? '' : d.content,
     streaming: d.streaming,
-    activeTools: [...d.activeTools],
+    // ⚠️ PERF 不变量（长 turn 卡顿回归的根因修复）：这里的数组必须**透传
+    // reduce 的引用**，绝不 `[...]` 拷贝。每个流式帧 state 都是新引用 → 本
+    // 函数每帧执行；拷贝会让 LiveIteration 的字段级 useMemo、TurnBody 的
+    // `useMemo([iterations])` → CommittedTurn（memo）逐帧全部失效，流式帧
+    // 代价变成 O(turn 迭代数)。reduce 的 stream case 对这些字段是 `...prev`
+    // 透传（引用天然稳定）—— 在渲染边界的最后一米把它拷坏正是回归本身。
+    // 只读契约：消费方（LiveIteration/AssistantMessage/TurnBody）不得 mutate。
+    activeTools: d.activeTools as WebToolProgress[],
     completedTools: [],
-    streamingTools: [...d.streamingTools],
-    iterationHistory: [...d.iterations],
+    streamingTools: d.streamingTools as WebToolProgress[],
+    iterationHistory: d.iterations as WebIteration[],
     genuiContent: d.genui,
     // todos 统一读会话级（iteration/phase_done 事件同步写入；live data 的
     // todos 仅作 hydration union 的中间态）。
     todos,
     goal,
-    subAgents: [...d.subAgents],
+    subAgents: d.subAgents as WebSubAgentProgress[],
     tokenUsage: d.tokenUsage,
     streamStats: d.streamStats,
     turnID: t.id,
