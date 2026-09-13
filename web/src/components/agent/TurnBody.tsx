@@ -52,7 +52,12 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
   return (
     <>
       {contiguous.map((iter, i) => (
-        <div key={iter.iteration ?? i} data-iter-id={iter.iteration} data-turn-id={turnID}>
+        <div
+          key={iter.iteration ?? i}
+          className="iter-block"
+          data-iter-id={iter.iteration}
+          data-turn-id={turnID}
+        >
           <IterationGroup
             iteration={iter}
             reasoningStateKey={reasoningKey(turnID, iter.iteration ?? 0)}
@@ -87,7 +92,7 @@ export const TurnBody = memo(function TurnBody({
 
   return (
     <div
-      className="flex flex-col gap-1"
+      className="iter-blocks"
       data-iter-range={
         contiguous.length > 0
           ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}`
@@ -97,7 +102,12 @@ export const TurnBody = memo(function TurnBody({
     >
       <CommittedTurn contiguous={contiguous} turnID={turnID} />
       {liveProgress && (
-        <div data-iter-id="live" data-iter-num={liveProgress.iteration || undefined} data-turn-id={liveProgress.turnID || turnID}>
+        <div
+          className="iter-block iter-block-live"
+          data-iter-id="live"
+          data-iter-num={liveProgress.iteration || undefined}
+          data-turn-id={liveProgress.turnID || turnID}
+        >
           <LiveIteration progress={liveProgress} />
         </div>
       )}

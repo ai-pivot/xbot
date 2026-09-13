@@ -1320,6 +1320,62 @@
   0% { opacity: 0.9; transform: scale(1); }
   100% { opacity: 0; transform: scale(1.15); }
 }
+
+/* ── 迭代块渲染隔离（性能与 turn 内迭代数解耦，2026-09-13 trace 归因）────────
+ *
+ * Trace 证据（12.4s 主线程，构建 index-B1MrMIM6.js）：
+ *   - App JS 不随时间增长（index bundle 554ms，`Zi` x0.46）；
+ *   - 浏览器侧却在涨：Layout x1.70 / Paint x1.69 / RasterTask x3.26 /
+ *     GPUTask x1.82，且 `Layout.dirtyObjects` 每 1/10 桶为 16→64（x4）；
+ *   - 7 次 `UpdateLayoutTree` 单次重算 ~4,700–4,800 个元素（≈ 整个 turn 子树），
+ *     每次都落在一个 70–84ms 的 React 提交里。
+ * ⇒ 迭代块之间没有渲染隔离：turn 内迭代越多，任一次样式/布局失效横扫的面越大。
+ *
+ * 修复 = 每个迭代块自成一个 containment 上下文：
+ *   contain: layout paint —— 块内变化不波及块外（失效范围 = 块本身），
+ *                            父级布局不因块内容变化而整树重算。
+ *   content-visibility: auto —— 离屏块跳过 style/layout/paint，代价 ∝ 视口内块数，
+ *                            与 turn 迭代总数无关（Chrome/Edge；不支持则退化为仅 containment）。
+ *   contain-intrinsic-size: auto —— 记住块实测高度；未渲染过时用估算占位，
+ *                            避免行高抖动（TanStack 的 ResizeObserver 实测仍会校准）。
+ *
+ * 不变量：追加第 N+1 个迭代块的代价 = O(1)（只算新块 + 有界的祖先布局），与 N 无关。
+ * 守护：components/agent/turn_perf.test.tsx、turn_perf_pipeline.test.tsx、
+ *       index.test.ts 的选择器断言、e2e/turn-iter-perf.spec.ts。
+ */
+.iter-block {
+  contain: layout paint;
+  content-visibility: auto;
+  /* 保守上限：宁可高估也不低估（低估会让行高先短后长，滚动抖动更明显）。 */
+  contain-intrinsic-size: 320px;
+  contain-intrinsic-size: auto 320px;
+}
+
+/* ⚠️ 迭代块容器必须是 **block 布局** —— Chrome 不对 **flex 子项**应用
+ * `content-visibility` 跳过（实测：block 容器 + block 子项 skipped 13/20；
+ * flex 容器 + flex 子项 skipped 0/20，加 `contain:paint` 也一样；绝对定位行
+ * 作为块级子项则正常跳过）。旧实现是 `flex flex-col gap-1` → 迭代块全是 flex
+ * 子项 → 离屏跳过完全失效（E2E `turn-iter-perf.spec.ts` 抓到 rendered=31/31）。
+ * 原有 4px 间距（`gap-1` = 0.25rem）由相邻块 margin 复现。
+ * `contain: layout paint` 阻止 margin 折叠穿透块边界，间距不会跑到块外。 */
+.iter-blocks {
+  display: block;
+}
+
+.iter-block + .iter-block {
+  margin-top: 0.25rem;
+}
+
+/* 进行中迭代恒渲染：打字机/思考动画每帧都在改它，跳过机制无收益且会引入抖动。 */
+.iter-block-live {
+  content-visibility: visible;
+}
+
+/* 虚拟行：live 行持续长高，行内变化不得触发行外整体重算。 */
+.virt-row {
+  contain: layout;
+}
+
 .shell-promote-done-glow {
   position: absolute;
   inset: 0;

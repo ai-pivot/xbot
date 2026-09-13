@@ -968,7 +968,7 @@ export const MessageList = memo(function MessageList({
                       width: '100%',
                       transform: `translateY(${item.start}px)`,
                     }}
-                    className={`py-1.5${row.id === liveId ? ' animate-msg-in' : ''}`}
+                    className={`virt-row py-1.5${row.id === liveId ? ' animate-msg-in' : ''}`}
                     data-turn-id={row.turnID || undefined}
                     data-message-id={row.id}
                     data-role={row.role}
