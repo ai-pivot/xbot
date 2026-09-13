@@ -177,6 +177,10 @@ func newStreamCardChannel(t *testing.T, f *fakeFeishu) *FeishuChannel {
 	t.Helper()
 	c := NewFeishuChannel(FeishuConfig{AppID: "cli_test", AppSecret: "secret"}, nil)
 	c.client = lark.NewClient("cli_test", "secret", lark.WithOpenBaseUrl(f.URL))
+	// The progress card is posted as a REPLY to the chat's latest inbound message
+	// (im.message.create cannot address our synthetic chat ids — Feishu 99992351).
+	// Tests therefore need a reply target, exactly like a real inbound message.
+	c.inboundMsgIDs["oc_chat"] = "om_inbound"
 	return c
 }
 
@@ -512,8 +516,10 @@ func TestSendProgress_CreatesCardAndStreams(t *testing.T) {
 	if len(creates) != 1 {
 		t.Fatalf("card entity creates: got %d, want 1", len(creates))
 	}
-	if sends := f.callsAt("/open-apis/im/v1/messages"); len(sends) != 1 {
-		t.Fatalf("card sends: got %d, want 1", len(sends))
+	// The card is posted as a REPLY to the chat's latest inbound message (create
+	// cannot address our synthetic chat ids — Feishu 99992351).
+	if sends := f.callsAt("/reply"); len(sends) != 1 {
+		t.Fatalf("card sends (reply): got %d, want 1", len(sends))
 	}
 	if len(f.cardUpdates()) == 0 {
 		t.Fatal("structure change should trigger a full-card update")
@@ -565,8 +571,8 @@ func TestFinalReply_FinalizesOpenCard(t *testing.T) {
 	if !ok {
 		t.Fatal("final reply should be handled by the open card")
 	}
-	if id != "om_1" {
-		t.Fatalf("final message id: got %q, want om_1", id)
+	if id != "om_reply_1" {
+		t.Fatalf("final message id: got %q, want om_reply_1", id)
 	}
 	if _, exists := c.streamCards["oc_chat"]; exists {
 		t.Error("finalized card must be released")
@@ -588,25 +594,53 @@ func TestFinalReply_WithoutOpenCardFallsBack(t *testing.T) {
 	}
 }
 
-func TestEnsureStreamCard_CreateFailureLatches(t *testing.T) {
+// TestEnsureStreamCard_CreateFailureIsPerChat — 回归守护（用户报告 2026-09-13：
+// "发消息后不回复也不显示中间迭代，只有整个 turn 完成才有回复"）。
+//
+// 旧实现用【全局】的 streamCardBroken：任一 chat 失败一次（例如群聊没有 reply
+// 目标 → Feishu 99992351）就静默关掉**所有** chat 的进度卡片 → 用户什么都看不到。
+// 现在失败只标记该 chat，且新入站消息会解除标记（新 turn 重新尝试）。
+func TestEnsureStreamCard_CreateFailureIsPerChat(t *testing.T) {
 	f := newFakeFeishu(t)
 	f.failCreate = true
 	c := newStreamCardChannel(t, f)
 
 	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1})
-	if !c.streamCardBroken {
-		t.Fatal("create failure must latch the static-card fallback")
+	if _, broken := c.streamCardsBroken["oc_chat"]; !broken {
+		t.Fatal("create failure must mark THIS chat broken")
+	}
+	if _, broken := c.streamCardsBroken["oc_other"]; broken {
+		t.Fatal("one chat's failure must NOT silence progress in another chat")
 	}
 	before := len(f.callsAt("/open-apis/cardkit/v1/cards"))
 	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Content: "again"})
 	if got := len(f.callsAt("/open-apis/cardkit/v1/cards")) - before; got != 0 {
-		t.Fatalf("latched fallback retried creation: %d", got)
+		t.Fatalf("broken chat retried creation: %d", got)
+	}
+	// 新入站消息（reply 目标已就绪）→ 允许重新尝试。
+	f.failCreate = false
+	c.clearStreamCardsBroken("oc_chat")
+	if _, ok := c.ensureStreamCard("oc_chat"); !ok {
+		t.Fatal("a fresh inbound message must allow a new card attempt")
 	}
 }
 
-func TestPreReplyNotify_DisabledForStructuredProgress(t *testing.T) {
+// TestEnsureStreamCard_NoReplyTargetSkipsCreate — 没有 reply 目标时绝不调用
+// im.message.create：合成 chat id 不是合法的 receive_id（Feishu 99992351），
+// 该调用必然失败（旧实现因此把全局 latch 打开）。
+func TestEnsureStreamCard_NoReplyTargetSkipsCreate(t *testing.T) {
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+	c.SendProgress("oc_unknown", &protocol.ProgressEvent{Iteration: 1})
+
+	if got := len(f.callsAt("/open-apis/im/v1/messages")); got != 0 {
+		t.Fatalf("must not attempt im.message.create without a reply target (%d calls)", got)
+	}
+}
+
+func TestPreReplyNotify_AcksSoProgressIsNeverSilent(t *testing.T) {
 	c := NewFeishuChannel(FeishuConfig{}, nil)
-	if c.PreReplyNotify() {
-		t.Error("feishu renders progress from the structured stream; text acks would double-render")
+	if !c.PreReplyNotify() {
+		t.Error("feishu must ack: without it, a broken progress card leaves the user with silence until the turn ends")
 	}
 }

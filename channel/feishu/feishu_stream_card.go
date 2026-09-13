@@ -234,44 +234,54 @@ func (c *feishuStreamCard) sendCardMessage(chatID, replyTo string) (string, erro
 		return "", fmt.Errorf("marshal card reference: %w", err)
 	}
 
+	if replyTo == "" {
+		// No reply target → the card cannot be posted at all: `im.message.create`
+		// needs a receive_id_type that our synthetic chat ids (e.g. "chat_…")
+		// cannot provide — Feishu rejects it with code 99992351. Attempting it
+		// would only issue a guaranteed-failing request (and it used to latch a
+		// GLOBAL failure that silenced progress in every chat). Skip the card for
+		// this turn; the next inbound message provides a reply target.
+		return "", fmt.Errorf("send stream card: no inbound message id for chat %s (reply target required)", chatID)
+	}
+	resp, err := c.client.Im.Message.Reply(context.Background(),
+		larkim.NewReplyMessageReqBuilder().
+			MessageId(replyTo).
+			Body(larkim.NewReplyMessageReqBodyBuilder().
+				MsgType("interactive").Content(string(content)).Build()).
+			Build())
+	if err != nil {
+		return "", fmt.Errorf("send stream card reply: %w", err)
+	}
+	if !resp.Success() {
+		return "", fmt.Errorf("send stream card reply: code=%d msg=%s", resp.Code, resp.Msg)
+	}
 	msgID := ""
-	if replyTo != "" {
-		resp, err := c.client.Im.Message.Reply(context.Background(),
-			larkim.NewReplyMessageReqBuilder().
-				MessageId(replyTo).
-				Body(larkim.NewReplyMessageReqBodyBuilder().
-					MsgType("interactive").Content(string(content)).Build()).
-				Build())
-		if err != nil {
-			return "", fmt.Errorf("send stream card reply: %w", err)
-		}
-		if !resp.Success() {
-			return "", fmt.Errorf("send stream card reply: code=%d msg=%s", resp.Code, resp.Msg)
-		}
-		if resp.Data != nil {
-			msgID = derefString(resp.Data.MessageId)
-		}
-	} else {
-		resp, err := c.client.Im.Message.Create(context.Background(),
-			larkim.NewCreateMessageReqBuilder().
-				ReceiveIdType(feishuReceiveIDType(chatID)).
-				Body(larkim.NewCreateMessageReqBodyBuilder().
-					ReceiveId(chatID).MsgType("interactive").Content(string(content)).Build()).
-				Build())
-		if err != nil {
-			return "", fmt.Errorf("send stream card: %w", err)
-		}
-		if !resp.Success() {
-			return "", fmt.Errorf("send stream card: code=%d msg=%s", resp.Code, resp.Msg)
-		}
-		if resp.Data != nil {
-			msgID = derefString(resp.Data.MessageId)
-		}
+	if resp.Data != nil {
+		msgID = derefString(resp.Data.MessageId)
 	}
 	if msgID == "" {
 		return "", fmt.Errorf("send stream card: empty message_id")
 	}
 	return msgID, nil
+}
+
+// markStreamCardsBroken records that the progress card is unavailable for ONE
+// chat, so its turns stop retrying until a new inbound message arrives.
+func (f *FeishuChannel) markStreamCardsBroken(chatID string) {
+	f.streamCardsMu.Lock()
+	if f.streamCardsBroken == nil {
+		f.streamCardsBroken = make(map[string]struct{})
+	}
+	f.streamCardsBroken[chatID] = struct{}{}
+	f.streamCardsMu.Unlock()
+}
+
+// clearStreamCardsBroken re-enables card attempts for ONE chat (called on a fresh
+// inbound message: the reply target is known again).
+func (f *FeishuChannel) clearStreamCardsBroken(chatID string) {
+	f.streamCardsMu.Lock()
+	delete(f.streamCardsBroken, chatID)
+	f.streamCardsMu.Unlock()
 }
 
 // iter returns (creating if needed) the state of one iteration.
@@ -810,7 +820,7 @@ func (f *FeishuChannel) ensureStreamCard(chatID string) (*feishuStreamCard, bool
 		return nil, false
 	}
 	f.streamCardsMu.Lock()
-	if f.streamCardBroken {
+	if _, broken := f.streamCardsBroken[chatID]; broken {
 		f.streamCardsMu.Unlock()
 		return nil, false
 	}
@@ -822,10 +832,10 @@ func (f *FeishuChannel) ensureStreamCard(chatID string) (*feishuStreamCard, bool
 
 	card, err := newFeishuStreamCard(f.client, f.streamCardTitle(), chatID, f.lastInboundMessageID(chatID))
 	if err != nil {
-		log.WithError(err).Warn("Feishu: stream card unavailable, using static card")
-		f.streamCardsMu.Lock()
-		f.streamCardBroken = true
-		f.streamCardsMu.Unlock()
+		// Per-chat only: never let one chat's failure silence progress elsewhere.
+		log.WithError(err).WithField("chat_id", chatID).
+			Warn("Feishu: progress card unavailable for this chat, falling back to plain replies")
+		f.markStreamCardsBroken(chatID)
 		return nil, false
 	}
 	f.streamCardsMu.Lock()
@@ -909,14 +919,4 @@ func derefString(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-// feishuReceiveIDType mirrors the receive_id_type inference used when sending
-// messages: group chats ("oc_…") are addressed by chat_id, single chats by
-// open_id.
-func feishuReceiveIDType(chatID string) string {
-	if strings.HasPrefix(chatID, "oc_") {
-		return "chat_id"
-	}
-	return "open_id"
 }

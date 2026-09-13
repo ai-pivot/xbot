@@ -211,10 +211,15 @@ type FeishuChannel struct {
 	// (e.g. "chat_…" — Feishu rejects it as neither open_id nor chat_id).
 	streamCardsMu sync.Mutex
 	streamCards   map[string]*feishuStreamCard
-	// streamCardBroken latches when card entity creation fails for a
-	// non-recoverable reason (typically the app lacks cardkit:card:write) so we
-	// stop retrying and use the legacy static card.
-	streamCardBroken bool
+	// streamCardsBroken marks chats whose progress card could not be created, so
+	// we stop retrying FOR THAT CHAT ONLY.
+	//
+	// ⚠️ Per-chat by design (regression fix 2026-09-13): this used to be a single
+	// global bool, so ONE chat's failure (e.g. a group chat with no reply target,
+	// Feishu code 99992351) silenced progress for EVERY chat in the process —
+	// the user saw nothing until the final reply. It is cleared when a new
+	// inbound message arrives for that chat (new turn → reply target is known).
+	streamCardsBroken map[string]struct{}
 
 	// inboundMsgIDs remembers the latest inbound message id per chat so the
 	// progress card can be posted as a reply to it.
@@ -248,26 +253,33 @@ type feishuPendingAskUser struct {
 // NewFeishuChannel 创建飞书渠道
 func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 	return &FeishuChannel{
-		config:        cfg,
-		msgBus:        msgBus,
-		processedIDs:  make(map[string]struct{}),
-		maxProcessed:  1000,
-		userNameCache: make(map[string]string),
-		mentions:      newMentionRegistry(),
-		approvals:     make(map[string]*feishuPendingApproval),
-		askUsers:      make(map[string]*feishuPendingAskUser),
-		streamCards:   make(map[string]*feishuStreamCard),
-		inboundMsgIDs: make(map[string]string),
+		config:            cfg,
+		msgBus:            msgBus,
+		processedIDs:      make(map[string]struct{}),
+		maxProcessed:      1000,
+		userNameCache:     make(map[string]string),
+		mentions:          newMentionRegistry(),
+		approvals:         make(map[string]*feishuPendingApproval),
+		askUsers:          make(map[string]*feishuPendingAskUser),
+		streamCards:       make(map[string]*feishuStreamCard),
+		streamCardsBroken: make(map[string]struct{}),
+		inboundMsgIDs:     make(map[string]string),
 	}
 }
 
 func (f *FeishuChannel) Name() string { return "feishu" }
 
-// PreReplyNotify implements channel.PreReplyNotifier. Feishu renders progress
-// through the STRUCTURED progress stream (channel.ProgressSender — the same
-// broadcast web/cli consume), so it does NOT need text-based acks or progress
-// messages: those would double-render. Returning false also disables the ack.
-func (f *FeishuChannel) PreReplyNotify() bool { return false }
+// PreReplyNotify implements channel.PreReplyNotifier — TRUE: Feishu must send an
+// immediate ack for every inbound message.
+//
+// ⚠️ Regression lesson (2026-09-13): returning false coupled the user's ONLY
+// feedback to the CardKit progress card. When card creation failed (no reply
+// target / missing scope → Feishu 99992351), the user saw NOTHING until the whole
+// turn finished ("发消息后不回复也不显示中间迭代"). Progress rendering is
+// additive: the structured progress card still streams per-iteration detail via
+// ProgressSender, while the ack guarantees immediate visible feedback even when
+// the card path is unavailable.
+func (f *FeishuChannel) PreReplyNotify() bool { return true }
 
 // ChannelSystemParts 返回飞书渠道的特化 prompt。
 // 由 main.go 中的适配器调用，注入到 agent 中间件 pipeline。
@@ -1181,12 +1193,25 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 	}
 	// Remember the inbound message so the CardKit progress card can be posted as
 	// a REPLY to it (reply only needs the parent id — no receive_id_type guess).
+	//
+	// ⚠️ Record under BOTH keys (regression fix 2026-09-13): the progress path
+	// looks the reply target up by **chatID** (`ensureStreamCard` →
+	// `lastInboundMessageID(chatID)`), while older call sites use `replyTo`.
+	// Recording only `replyTo` left the lookup empty for group chats → the card
+	// fell back to the (provably invalid) `im.message.create` path and Feishu
+	// rejected the synthetic chat id with code 99992351.
 	f.inboundMsgIDsMu.Lock()
 	if f.inboundMsgIDs == nil {
 		f.inboundMsgIDs = map[string]string{}
 	}
-	f.inboundMsgIDs[replyTo] = messageID
+	f.inboundMsgIDs[chatID] = messageID
+	if replyTo != "" && replyTo != chatID {
+		f.inboundMsgIDs[replyTo] = messageID
+	}
 	f.inboundMsgIDsMu.Unlock()
+	// New inbound message = new turn: the reply target is now known, so give the
+	// progress card a fresh attempt for this chat.
+	f.clearStreamCardsBroken(chatID)
 	if mentionScope == "at_all_optional" {
 		metadata[bus.MetadataReplyPolicy] = bus.ReplyPolicyOptional
 	}
