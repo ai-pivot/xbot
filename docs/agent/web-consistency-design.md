@@ -17,6 +17,8 @@
 - **SSE envelope seq**（`id:` 字段）：per-route 单调，由 `eventStream.nextSeq()` 分配。用于传输层去重 / gap 检测 / 重放游标（`setLastSeq`）。
 - **`ProgressEvent.Seq`**（`progress.seq`）：**per-Run**（`engine_wire.go:456` 每次 Run 新建 `atomic.Uint64`）。用于 `progressStore` 内部 stale-watermark（`setStructuredTools` 丢弃 `seq <= current.eventSeq` 的事件）。
 
+**客户端会话级缓存有界（`web/src/lib/webCache.ts`）：** 以 `sessionCacheKey(channel, chatID)` 为 key 的 4 个内存缓存（`lastSeqCache` / `lastIterationCache` / `progressSnapshotCache` / `progressGenerationCache`）共用 `BoundedSessionCache`（LRU，`MAX_CACHED_SESSIONS = 8`）—— 上限与 recency 记账在容器内，任何访问路径（含直接 `.set()`）都无法无界增长。`progressSnapshotCache` 入缓前经 `trimProgressSnapshot`：只留 `iteration` / `turn_id` / `phase` + `iteration_history` 末 `MAX_CACHED_ITERATION_HISTORY = 4` 条（仅 `{iteration}`）。淘汰只丢缓存：活跃会话被每个 SSE 事件 touch，永不成为牺牲者；被淘汰会话重连时退化为「无 `last_event_id` 的一次 `restoreActiveProgress`」（`crossedIteration` 需 `prevIter > 0`，故不会误触发 force_reload）。
+
 ## 2. 消息流
 
 ```
