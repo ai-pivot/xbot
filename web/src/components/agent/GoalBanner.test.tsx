@@ -85,7 +85,7 @@ describe('GoalBanner 编辑交互（唯一改动点）', () => {
     fireEvent.click(screen.getByTestId('goal-text'))
     const input = screen.getByTestId('goal-edit-input')
 
-    expect(input.tagName).toBe('INPUT')
+    expect(input.tagName).toBe('TEXTAREA')
     expect(input.className).toContain('text-xs')
 
     fireEvent.change(input, { target: { value: '新目标' } })
@@ -109,15 +109,15 @@ describe('GoalBanner 编辑交互（唯一改动点）', () => {
     expect(screen.getByTestId('goal-text')).toHaveTextContent('旧目标')
   })
 
-  it('失焦不保存：回退原值并退出编辑', () => {
+  it('失焦保存：写入草稿并退出编辑（与 todo 编辑同一契约）', () => {
     const { onEdit } = setup('旧目标')
     fireEvent.click(screen.getByTestId('goal-text'))
     const input = screen.getByTestId('goal-edit-input')
 
-    fireEvent.change(input, { target: { value: '误改内容' } })
+    fireEvent.change(input, { target: { value: '新的目标' } })
     fireEvent.blur(input)
 
-    expect(onEdit).not.toHaveBeenCalled()
+    expect(onEdit).toHaveBeenCalledWith('新的目标')
     expect(screen.queryByTestId('goal-edit-input')).toBeNull()
     expect(screen.getByTestId('goal-text')).toHaveTextContent('旧目标')
   })
@@ -154,17 +154,29 @@ describe('GoalBanner 编辑交互（唯一改动点）', () => {
     expect(screen.queryByTestId('goal-edit-input')).toBeNull()
   })
 
-  it('触屏：同样是就地单行 input，无底部 Sheet', () => {
+  it('触屏：底部弹出 textarea（与 todo-edit-sheet 同一形态），取消/保存按钮可用', () => {
     state.touch = true
     const { onEdit } = setup('手机上编辑目标')
 
     fireEvent.click(screen.getByTestId('goal-text'))
-    expect(screen.queryByTestId('goal-sheet')).toBeNull()
-    const input = screen.getByTestId('goal-edit-input')
-    expect(input.tagName).toBe('INPUT')
+    const sheet = screen.getByTestId('goal-edit-sheet')
+    expect(sheet.className).toContain('fixed')
+    expect(sheet.className).toContain('bottom-0')
 
-    fireEvent.change(input, { target: { value: '手机新目标' } })
-    fireEvent.keyDown(input, { key: 'Enter' })
+    const input = screen.getByTestId('goal-edit-input')
+    expect(input.tagName).toBe('TEXTAREA')
+
+    // 取消：不保存
+    fireEvent.change(input, { target: { value: '不要保存' } })
+    fireEvent.click(screen.getByTestId('goal-edit-cancel'))
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('goal-edit-sheet')).toBeNull()
+
+    // 保存：写入草稿
+    fireEvent.click(screen.getByTestId('goal-text'))
+    const input2 = screen.getByTestId('goal-edit-input')
+    fireEvent.change(input2, { target: { value: '手机新目标' } })
+    fireEvent.click(screen.getByTestId('goal-edit-save'))
     expect(onEdit).toHaveBeenCalledWith('手机新目标')
   })
 })

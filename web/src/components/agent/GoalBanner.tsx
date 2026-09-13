@@ -31,7 +31,7 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
   const { t } = useI18n()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(goal.objective)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const completed = goal.status === 'completed'
 
   // Focus input when entering edit mode
@@ -83,15 +83,23 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
           )}
         </div>
 
-        {/* Goal text (editable) */}
-        {editing ? (
-          <input
+        {/* Goal text (editable) —— 编辑交互与 todo 编辑同一套契约（用户 2026-09-13）：
+            手机端走**底部弹出 textarea**（与 TodoPullOut 的 todo-edit-sheet 完全一致），
+            桌面端就地自适应 textarea。 */}
+        {editing && !isTouch ? (
+          <textarea
             ref={inputRef}
             data-testid="goal-edit-input"
+            rows={1}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value)
+              e.target.style.height = 'auto'
+              e.target.style.height = `${Math.min(e.target.scrollHeight, 72)}px`
+            }}
+            onBlur={save}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 save()
               } else if (e.key === 'Escape') {
@@ -99,12 +107,9 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
                 cancel()
               }
             }}
-            onBlur={cancel}
-            className={cn(
-              'min-w-0 flex-1 bg-transparent px-1 text-xs outline-none',
-              'ring-1 ring-accent/40 rounded',
-            )}
             placeholder={t('agent.goal.inputPlaceholder')}
+            aria-label={t('agent.goal.edit')}
+            className="min-w-0 flex-1 resize-none rounded border border-accent/60 bg-bg-primary px-1.5 py-0.5 text-xs leading-relaxed text-text-primary outline-none ring-2 ring-accent/25"
           />
         ) : (
           <button
@@ -159,6 +164,54 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
           </button>
         )}
       </div>
+
+      {/* 移动端：编辑走**底部弹出 textarea**（与 TodoPullOut 的 todo-edit-sheet 同一形态，
+          用户 2026-09-13 要求「goal 编辑改成和 todo 编辑一样」）。fixed 定位，不影响卡片高度。 */}
+      {editing && isTouch && (
+        <div
+          data-testid="goal-edit-sheet"
+          className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-bg-primary p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-lg"
+        >
+          <div className="mb-2 text-xs font-medium text-text-secondary">{t('agent.goal.edit')}</div>
+          <textarea
+            autoFocus
+            data-testid="goal-edit-input"
+            rows={3}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && e.shiftKey) return
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                save()
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                cancel()
+              }
+            }}
+            aria-label={t('agent.goal.edit')}
+            className="max-h-[40dvh] w-full resize-none rounded border border-accent/60 bg-bg-primary px-2 py-1.5 text-base leading-relaxed text-text-primary outline-none ring-2 ring-accent/25"
+          />
+          <div className="mt-2 flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              data-testid="goal-edit-cancel"
+              onClick={cancel}
+              className="rounded px-3 py-1.5 text-xs text-text-muted hover:bg-bg-secondary"
+            >
+              {t('agent.goal.cancel')}
+            </button>
+            <button
+              type="button"
+              data-testid="goal-edit-save"
+              onClick={save}
+              className="rounded bg-accent/15 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/25"
+            >
+              {t('agent.goal.save')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
