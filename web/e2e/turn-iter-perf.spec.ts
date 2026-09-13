@@ -3,26 +3,24 @@ import { test, expect, type Page } from '@playwright/test'
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 
 /**
- * E2E guard：**渲染代价与 turn 内迭代数无关**（用户要求：随着 turn 里 iter 增加，
- * 性能没有任何下降）。trace 归因（111.gz，12.4s 主线程，构建 index-B1MrMIM6.js）：
+ * E2E guard：**长 turn 向上滚动不得出现"鬼打墙"** —— 滚动容器总高必须在
+ * 整个向上滚动过程中保持恒定，且真的到得了最上方。
  *
- *   - App JS 不随时间增长（index bundle 554ms，`Zi` x0.46）——React 渲染不是主因；
- *   - 浏览器侧在涨：Layout x1.70 / Paint x1.69 / RasterTask x3.26 / GPUTask x1.82；
- *   - `Layout.dirtyObjects` 每 1/10 桶 16→64（x4）——失效范围随迭代数膨胀；
- *   - 7 次 `UpdateLayoutTree` 单次重算 ~4,700–4,800 个元素（≈ 整个 turn 子树），
- *     每次都落在 70–84ms 的 React 提交里。
+ * REPRO（2026-09-13 用户报告）：「向上快速滚动出现鬼打墙，看起来一直在向上滚
+ * 其实几乎一点没动，永远到不了最上方」。触发条件是迭代块用了
+ * `content-visibility: auto` + `contain-intrinsic-size: auto 320px`：
+ * **从未渲染过的块**（长 turn 一次性提交/历史加载，视口外的那些）只能拿
+ * 320px 占位，而真实块高得多 → 向上滚时块逐个兑现真实高度 → 总高持续变大 →
+ * 滚动锚定把正在看的内容往下推，每滚一格又被推回一格 → 原地打转。
  *
- * 修复：迭代块 `iter-block` 自带 `contain: layout paint` + `content-visibility: auto`
- * （离屏块跳过 style/layout/paint），进行中迭代 `iter-block-live` 恒渲染。
- * ⇒ 参与渲染的块数由**视口**决定，与 turn 的迭代总数无关。
+ * ⚠️ 复现要点（写测试的人必读）：必须是**从未渲染过**的块。若像流式追加那样
+ * 边加边钉在底部，每个块都在视口里渲染过一次，`contain-intrinsic-size: auto`
+ * 会记住真实高度 → 滚动稳定 → 测试**抓不到**这个 bug。所以这里用**一次性提交**
+ * 40 个高迭代（`text` 事件携带 progress_history）——视口外的块从未渲染。
  *
- * 两个已踩过的坑（改这个测试前必读）：
- *   1. **块必须是真的高**。Chrome 的 "relevant to the user" 判定窗口涵盖视口
- *      及其上下若干千像素；块太矮时整个 turn 都落在窗口内，跳过数会合理地是 0
- *      （不是 bug）。所以每个迭代块给 ~40 段文本（≈ 1,000px）。
- *   2. **跳过判据必须用 `checkVisibility({ contentVisibilityAuto: true })`**。
- *      被跳过的子树在 Chrome 里**仍报告上次布局的几何** —— 用
- *      `getClientRects()` 判断会把跳过的块误判成"已渲染"。
+ * 修复：迭代块只保留 `contain: layout paint`（渲染隔离照旧，代价与迭代数无关），
+ * 不得再出现 content-visibility / contain-intrinsic-size（CSS 契约守护在
+ * src/index.test.ts）。
  */
 
 interface SSEMockState {
@@ -76,57 +74,63 @@ async function setupMock(page: Page) {
   await page.route('**/api/rpc', (r) => r.fulfill({ json: { ok: true, data: null } }))
 }
 
-/** 一个"已完成迭代"的结构化事件（与后端 push 协议同形：0-1 个迭代 delta）。
- *  内容给足体量（~40 段）——太矮的块会让整个 turn 落在浏览器 relevant 窗口内。 */
-async function emitIteration(page: Page, n: number) {
-  await emitSSE(page, 'progress_structured', {
-    type: 'progress_structured',
-    progress: {
-      phase: 'content',
-      iteration: n,
-      seq: n + 10,
-      turn_id: 1,
-      chat_id: 'web:chat-1',
-      content: `answer ${n}`,
-      iteration_history: [
-        {
-          iteration: n,
-          thinking: `thinking ${n}`,
-          content: Array.from(
-            { length: 40 },
-            (_, i) => `line ${i} of answer ${n} — lorem ipsum dolor sit amet, consectetur adipiscing elit.`,
-          ).join('\n\n'),
-          completed_tools: [],
-        },
-      ],
-    },
-  })
+/** 40 个高迭代，**一次性提交**（不是流式追加）——视口外的块从未渲染过。 */
+function longTurnHistory(): unknown[] {
+  return Array.from({ length: 40 }, (_, i) => ({
+    iteration: i + 1,
+    thinking: `thinking ${i + 1}`,
+    content: Array.from(
+      { length: 30 },
+      (_, k) => `line ${k} of answer ${i + 1} — lorem ipsum dolor sit amet, consectetur adipiscing elit.`,
+    ).join('\n\n'),
+    completed_tools: [],
+  }))
 }
 
-/** DOM 里的迭代块数 / 其中"真正参与渲染"的块数（跳过判据见文件头注释）。 */
-async function blockStats(page: Page): Promise<{ total: number; rendered: number }> {
-  return page.evaluate(() => {
-    const blocks = Array.from(document.querySelectorAll('.iter-block'))
-    let rendered = 0
-    for (const b of blocks) {
-      const inner = b.firstElementChild as HTMLElement | null
-      if (!inner) continue
-      if (
-        inner.checkVisibility({
-          contentVisibilityAuto: true,
-          opacityProperty: true,
-          visibilityProperty: true,
-        })
-      ) {
-        rendered++
-      }
+/** 从底到顶分步滚动，记录每一步的 scrollHeight（鬼打墙 = 总高持续变化）。 */
+async function scrollUpHeightSpread(page: Page) {
+  return page.evaluate(async () => {
+    const anchor = document.querySelector('[data-message-list-content]') as HTMLElement | null
+    let sc = anchor?.parentElement as HTMLElement | null
+    while (sc) {
+      const oy = getComputedStyle(sc).overflowY
+      if (oy === 'auto' || oy === 'scroll') break
+      sc = sc.parentElement
     }
-    return { total: blocks.length, rendered }
+    if (!sc) return null
+    const frame = () =>
+      new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
+
+    sc.scrollTop = sc.scrollHeight
+    await frame()
+    const heights: number[] = []
+    let offset = sc.scrollHeight
+    for (let step = 0; step < 25; step++) {
+      offset = Math.max(0, offset - sc.clientHeight * 2)
+      sc.scrollTop = offset
+      await frame()
+      heights.push(sc.scrollHeight)
+    }
+    sc.scrollTop = 0
+    await frame()
+    heights.push(sc.scrollHeight)
+
+    const first = document.querySelector('[data-iter-id="1"]') as HTMLElement | null
+    const firstBox = first?.getBoundingClientRect()
+    const scBox = sc.getBoundingClientRect()
+
+    return {
+      scrollTopAfter: sc.scrollTop,
+      minHeight: Math.min(...heights),
+      maxHeight: Math.max(...heights),
+      firstVisibleInScroller:
+        !!firstBox && firstBox.bottom > scBox.top && firstBox.top < scBox.bottom,
+    }
   })
 }
 
-test.describe('turn iteration rendering cost is independent of iteration count', () => {
-  test('off-screen iteration blocks are skipped; rendered count stays viewport-bounded', async ({
+test.describe('long turn scroll stability (鬼打墙 guard)', () => {
+  test('scrollHeight stays constant while scrolling up, and the top is reachable', async ({
     browser,
   }) => {
     const page = await browser.newPage({ viewport: { width: 900, height: 700 } })
@@ -176,30 +180,30 @@ test.describe('turn iteration rendering cost is independent of iteration count',
         chat_id: 'web:chat-1',
       },
     })
+    // 一次性提交 40 个高迭代 —— 视口外的块从未渲染过（复现用户场景的关键）。
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: 'done',
+      seq: 999,
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+      progress_history: JSON.stringify(longTurnHistory()),
+    })
+    await page.waitForTimeout(1200)
 
-    // 阶段 A：15 个真实体量迭代（≈ 15,000px ≫ 700px 视口）
-    for (let n = 1; n <= 15; n++) await emitIteration(page, n)
-    await page.waitForTimeout(500)
-    const at15 = await blockStats(page)
+    const m = await scrollUpHeightSpread(page)
+    expect(m, 'message scroller not found').not.toBeNull()
+    console.log(
+      `scroll: minHeight=${m!.minHeight} maxHeight=${m!.maxHeight} scrollTopAfter=${m!.scrollTopAfter} firstVisible=${m!.firstVisibleInScroller}`,
+    )
 
-    // 阶段 B：加到 45 个（3 倍迭代数）
-    for (let n = 16; n <= 45; n++) await emitIteration(page, n)
-    await page.waitForTimeout(500)
-    const at45 = await blockStats(page)
+    // 1) **总高在向上滚动过程中必须恒定（±1%）** —— 总高变化正是"鬼打墙"的成因。
+    const spread = m!.maxHeight - m!.minHeight
+    expect(spread).toBeLessThan(m!.minHeight * 0.01)
 
-    console.log('iter blocks @15:', at15, ' @45:', at45)
-
-    // 1) DOM 保留全部迭代（内容不丢、浏览器内搜索可用）
-    expect(at15.total).toBeGreaterThanOrEqual(15)
-    expect(at45.total).toBeGreaterThanOrEqual(45)
-
-    // 2) 离屏跳过生效：参与渲染的块数远小于迭代总数
-    expect(at15.rendered).toBeLessThan(at15.total / 2)
-    expect(at45.rendered).toBeLessThan(at45.total / 2)
-
-    // 3) **与 N 无关**：迭代数 3 倍，参与渲染的块数不随之增长（由视口决定）
-    expect(at45.rendered).toBeLessThanOrEqual(at15.rendered + 3)
-    expect(at45.rendered).toBeLessThan(10)
+    // 2) 真的到得了最上方：滚动归零 + 第一个迭代块落在滚动视口内。
+    expect(m!.scrollTopAfter).toBeLessThanOrEqual(1)
+    expect(m!.firstVisibleInScroller).toBe(true)
 
     await page.close()
   })

@@ -1343,19 +1343,27 @@
  * 守护：components/agent/turn_perf.test.tsx、turn_perf_pipeline.test.tsx、
  *       index.test.ts 的选择器断言、e2e/turn-iter-perf.spec.ts。
  */
+/* 渲染隔离（perf）：块内变化不波及块外（失效范围 = 块本身），追加第 N+1 个迭代块
+ * 只算新块 + 有界祖先布局（代价 O(1)，与 turn 迭代总数无关）。
+ *
+ * ⛔ 这里**绝不能再加 content-visibility / contain-intrinsic-size**
+ * （2026-09-13 用户报告「向上快速滚动鬼打墙：一直在滚却几乎不动、永远到不了顶」）：
+ * 离屏块被跳过时只能拿占位高度，而真实块高得多 → 向上滚动时块逐个兑现真实高度 →
+ * 滚动容器总高持续变化 → 浏览器滚动锚定把正在看的内容往下推，每滚一格又被推回一格
+ * → 视觉上原地打转。滚动容器的总高必须在滚动过程中恒定。
+ * 守护：src/index.test.ts + e2e/turn-iter-perf.spec.ts。 */
 .iter-block {
   contain: layout paint;
-  content-visibility: auto;
-  /* 保守上限：宁可高估也不低估（低估会让行高先短后长，滚动抖动更明显）。 */
-  contain-intrinsic-size: 320px;
-  contain-intrinsic-size: auto 320px;
+}
+
+/* 虚拟行：live 行持续长高，行内变化不得触发行外整体重算。 */
+.virt-row {
+  contain: layout;
 }
 
 /* ⚠️ 迭代块容器必须是 **block 布局** —— Chrome 不对 **flex 子项**应用
  * `content-visibility` 跳过（实测：block 容器 + block 子项 skipped 13/20；
- * flex 容器 + flex 子项 skipped 0/20，加 `contain:paint` 也一样；绝对定位行
- * 作为块级子项则正常跳过）。旧实现是 `flex flex-col gap-1` → 迭代块全是 flex
- * 子项 → 离屏跳过完全失效（E2E `turn-iter-perf.spec.ts` 抓到 rendered=31/31）。
+ * flex 容器 + flex 子项 skipped 0/20）。旧实现是 `flex flex-col gap-1`。
  * 原有 4px 间距（`gap-1` = 0.25rem）由相邻块 margin 复现。
  * `contain: layout paint` 阻止 margin 折叠穿透块边界，间距不会跑到块外。 */
 .iter-blocks {

@@ -60,7 +60,9 @@ describe('iteration block containment CSS (perf)', () => {
   const ruleBlock = (selector: string): string => {
     const idx = css.indexOf(selector)
     expect(idx, `${selector} rule missing from index.css`).toBeGreaterThan(-1)
-    return css.slice(idx, css.indexOf('}', idx) + 1)
+    const block = css.slice(idx, css.indexOf('}', idx) + 1)
+    // 断言只看声明，注释里提到被禁属性不算（说明性注释允许提到它们）。
+    return block.replace(/\/\*[\s\S]*?\*\//g, '')
   }
 
   it('.iter-block declares layout+paint containment so invalidation stays inside the block', () => {
@@ -68,16 +70,20 @@ describe('iteration block containment CSS (perf)', () => {
     expect(block).toContain('contain: layout paint')
   })
 
-  it('.iter-block skips off-screen rendering (content-visibility + intrinsic size)', () => {
+  it('⛔ .iter-block must NOT use content-visibility (鬼打墙 scroll bug guard)', () => {
+    // 2026-09-13 用户报告：加上 `content-visibility: auto` +
+    // `contain-intrinsic-size: auto 320px` 后，向上快速滚动出现"鬼打墙" ——
+    // 离屏块只能拿占位高度，向上滚时块逐个兑现真实高度 → 滚动容器总高持续变化 →
+    // 滚动锚定把正在看的内容往下推 → 看起来一直在滚却几乎不动。
+    // 渲染隔离用 contain 就够了；离屏跳过不得再加回来。
     const block = ruleBlock('.iter-block {')
-    expect(block).toContain('content-visibility: auto')
-    // Remembered size first, conservative fallback second: never underestimate.
-    expect(block).toContain('contain-intrinsic-size: auto 320px')
+    expect(block).not.toContain('content-visibility')
+    expect(block).not.toContain('contain-intrinsic-size')
   })
 
-  it('.iter-block-live stays always-rendered (typewriter/shimmer mutate it every frame)', () => {
-    const block = ruleBlock('.iter-block-live {')
-    expect(block).toContain('content-visibility: visible')
+  it('.iter-blocks is a block container (containment needs non-flex children)', () => {
+    const block = ruleBlock('.iter-blocks {')
+    expect(block).toContain('display: block')
   })
 
   it('.virt-row keeps live-row growth from relayouting the whole list', () => {

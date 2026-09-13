@@ -98,7 +98,7 @@ describe('迭代块渲染隔离（perf：代价与 turn 内迭代数无关）', 
     }
   })
 
-  it('进行中迭代块带 iter-block-live（恒渲染，离屏跳过不作用于它）', () => {
+  it('进行中迭代块也是 iter-block（渲染隔离同样作用于它）', () => {
     const iterations: WebIteration[] = [
       { iteration: 1, content: 'c1', reasoning: '', tools: [], toolCount: 0 },
     ]
@@ -112,6 +112,5 @@ describe('迭代块渲染隔离（perf：代价与 turn 内迭代数无关）', 
     const live = container.querySelector('[data-iter-id="live"]')
     expect(live).not.toBeNull()
     expect(live!.classList.contains('iter-block')).toBe(true)
-    expect(live!.classList.contains('iter-block-live')).toBe(true)
   })
 })

@@ -103,7 +103,7 @@ export const TurnBody = memo(function TurnBody({
       <CommittedTurn contiguous={contiguous} turnID={turnID} />
       {liveProgress && (
         <div
-          className="iter-block iter-block-live"
+          className="iter-block"
           data-iter-id="live"
           data-iter-num={liveProgress.iteration || undefined}
           data-turn-id={liveProgress.turnID || turnID}
