@@ -290,9 +290,6 @@ const ja: Translations = {
     goal: {
       save: '保存',
       cancel: 'キャンセル',
-      expand: '展開',
-      collapse: '折りたたむ',
-      editing: 'ゴールを編集',
       inputPlaceholder: '目標を入力',
       clickToEdit: 'クリックして目標を編集',
       completed: '完了',

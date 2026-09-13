@@ -1,11 +1,17 @@
 /**
- * GoalBanner 编辑交互守护（用户 2026-09-13：goal 常超过一行，单行 input 不方便）。
- * 契约：显示不截断（2 行 clamp + 展开/收起）；编辑 = 自适应 textarea；
- * Enter 保存 / Shift+Enter 换行 / Esc 取消 / IME 组合态不提交；失焦不自动保存；
- * 触屏走底部 Sheet。
+ * GoalBanner 显示/编辑守护（用户 2026-09-13 回退要求）。
+ *
+ * 契约：
+ * - **显示层 = master 单行样式**：truncate 截断、单行行容器、无展开/收起、
+ *   无手机端 Sheet、无保存/取消按钮（卡片永不换行完整渲染）；
+ *   只有 master 原有的「编辑铅笔 + 清除 ×」两个小按钮。
+ * - **编辑交互 = 点击文本就地编辑**（单行 input）：Enter 保存 / Esc 取消 /
+ *   **失焦回退不保存** / IME 组合态不提交。
+ *
+ * 任何"多行完整渲染 / 展开收起 / 底部 Sheet / 保存取消按钮"的重引入都会被本文件红。
  */
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 const state = vi.hoisted(() => ({ touch: false }))
@@ -13,85 +19,152 @@ vi.mock('@/hooks/useIsMobile', () => ({ useIsTouch: () => state.touch, useIsMobi
 
 import { GoalBanner } from '@/components/agent/GoalBanner'
 import { I18nProvider } from '@/providers/i18n'
-import '@/i18n'
+import i18n from '@/i18n'
 
-const goal = (objective: string) => ({ objective, status: 'in_progress' }) as never
+const goal = (objective: string, status = 'in_progress') => ({ objective, status }) as never
+/** 断言用的期望文案：跟随当前 locale（jsdom 下通常是 en），避免与语言耦合。 */
+const t = (key: string) => i18n.t(key)
 
-function setup(objective = '短目标', onEdit = vi.fn(), onClear = vi.fn()) {
-  render(
+function setup(objective = '短目标', status = 'in_progress') {
+  const onEdit = vi.fn()
+  const onClear = vi.fn()
+  const view = render(
     <I18nProvider>
-      <GoalBanner goal={goal(objective)} onEdit={onEdit} onClear={onClear} />
+      <GoalBanner goal={goal(objective, status)} onEdit={onEdit} onClear={onClear} />
     </I18nProvider>,
   )
-  return { onEdit, onClear }
+  return { onEdit, onClear, ...view }
 }
 
-describe('GoalBanner 编辑交互', () => {
-  it('显示不截断：文本可换行、2 行 clamp，超长给展开/收起', () => {
-    setup('这是一段很长的目标描述，用来验证它不会被省略号截断而是可以折行显示并且提供展开收起按钮，并且长度一定要超过折叠阈值以保证展开按钮出现')
+afterEach(() => {
+  state.touch = false
+})
+
+describe('GoalBanner 显示层 = master 单行样式', () => {
+  it('单行截断：truncate、行容器 items-center、无多行编辑器', () => {
+    const long =
+      '这是一段很长的目标描述，用来验证它保持 master 的单行截断样式，而不是折行完整渲染，长度足够超过一行'
+    const { container } = setup(long)
     const text = screen.getByTestId('goal-text')
-    expect(text.className).toContain('whitespace-pre-wrap')
-    expect(text.className).toContain('line-clamp-2')
-    expect(screen.getByTestId('goal-expand')).toBeInTheDocument()
+
+    expect(text).toHaveTextContent(long)
+    expect(text.className).toContain('truncate')
+    expect(text.className).not.toContain('whitespace-pre-wrap')
+    expect(text.className).not.toContain('line-clamp')
+
+    const row = text.parentElement as HTMLElement
+    expect(row.className).toContain('items-center')
+    expect(row.className).not.toContain('items-start')
+
+    expect(container.querySelector('textarea')).toBeNull()
   })
 
-  it('点击进入编辑：textarea 自适应（多行），Enter 保存、Shift+Enter 换行不保存、Esc 取消', () => {
+  it('不引入多余按钮：无展开/收起、无保存/取消、无手机端 Sheet', () => {
+    setup('目标')
+    for (const id of ['goal-expand', 'goal-save', 'goal-cancel', 'goal-sheet']) {
+      expect(screen.queryByTestId(id)).toBeNull()
+    }
+    // master 原有的两个小按钮仍在：行内总共只有「文本 + 编辑铅笔 + 清除 ×」三个按钮
+    const row = screen.getByTestId('goal-text').parentElement as HTMLElement
+    expect(row.querySelectorAll('button')).toHaveLength(3)
+    expect(screen.getByTitle(t('agent.goal.edit'))).toBeInTheDocument()
+    expect(screen.getByTestId('goal-clear')).toBeInTheDocument()
+  })
+
+  it('状态徽标与清除回调（master 结构保留）', () => {
+    const { onClear } = setup('目标')
+    expect(screen.getByText(t('agent.goal.inProgress'))).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('goal-clear'))
+    expect(onClear).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('GoalBanner 编辑交互（唯一改动点）', () => {
+  it('点击文本进入就地编辑（单行 input），Enter 保存并退出', () => {
     const { onEdit } = setup('旧目标')
     fireEvent.click(screen.getByTestId('goal-text'))
-    const ta = screen.getByTestId('goal-edit-input') as HTMLTextAreaElement
-    expect(ta.tagName).toBe('TEXTAREA')
+    const input = screen.getByTestId('goal-edit-input')
 
-    fireEvent.change(ta, { target: { value: '第一行' } })
-    fireEvent.keyDown(ta, { key: 'Enter', shiftKey: true })
-    expect(onEdit).not.toHaveBeenCalled()
+    expect(input.tagName).toBe('INPUT')
+    expect(input.className).toContain('text-xs')
 
-    fireEvent.change(ta, { target: { value: '新目标' } })
-    fireEvent.keyDown(ta, { key: 'Enter' })
+    fireEvent.change(input, { target: { value: '新目标' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
     expect(onEdit).toHaveBeenCalledWith('新目标')
+    expect(screen.queryByTestId('goal-edit-input')).toBeNull()
+    expect(screen.getByTestId('goal-text')).toBeInTheDocument()
+  })
 
+  it('Esc 取消：不保存、显示回原值、退出编辑', () => {
+    const { onEdit } = setup('旧目标')
     fireEvent.click(screen.getByTestId('goal-text'))
-    fireEvent.change(screen.getByTestId('goal-edit-input'), { target: { value: '不要保存' } })
-    fireEvent.keyDown(screen.getByTestId('goal-edit-input'), { key: 'Escape' })
-    expect(onEdit).toHaveBeenCalledTimes(1)
+    const input = screen.getByTestId('goal-edit-input')
+
+    fireEvent.change(input, { target: { value: '不要保存' } })
+    fireEvent.keyDown(input, { key: 'Escape' })
+
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('goal-edit-input')).toBeNull()
     expect(screen.getByTestId('goal-text')).toHaveTextContent('旧目标')
   })
 
-  it('IME 组合态下的 Enter 不提交（中文输入法选词）', () => {
+  it('失焦不保存：回退原值并退出编辑', () => {
     const { onEdit } = setup('旧目标')
     fireEvent.click(screen.getByTestId('goal-text'))
-    const ta = screen.getByTestId('goal-edit-input')
-    fireEvent.change(ta, { target: { value: '组合中' } })
-    fireEvent.keyDown(ta, { key: 'Enter', isComposing: true })
+    const input = screen.getByTestId('goal-edit-input')
+
+    fireEvent.change(input, { target: { value: '误改内容' } })
+    fireEvent.blur(input)
+
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('goal-edit-input')).toBeNull()
+    expect(screen.getByTestId('goal-text')).toHaveTextContent('旧目标')
+  })
+
+  it('IME 组合态下的 Enter 不提交（中日文输入法选词）', () => {
+    const { onEdit } = setup('旧目标')
+    fireEvent.click(screen.getByTestId('goal-text'))
+    const input = screen.getByTestId('goal-edit-input')
+
+    fireEvent.change(input, { target: { value: '组合中' } })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(screen.getByTestId('goal-edit-input')).toBeInTheDocument()
+  })
+
+  it('内容未变或为空时 Enter 只退出、不触发 onEdit', () => {
+    const { onEdit } = setup('旧目标')
+    fireEvent.click(screen.getByTestId('goal-text'))
+
+    fireEvent.keyDown(screen.getByTestId('goal-edit-input'), { key: 'Enter' })
+    expect(onEdit).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByTestId('goal-text'))
+    const input = screen.getByTestId('goal-edit-input')
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
     expect(onEdit).not.toHaveBeenCalled()
   })
 
-  it('显式保存按钮生效；失焦不自动保存（避免误改）', () => {
-    const { onEdit } = setup('旧目标')
-    fireEvent.click(screen.getByTestId('goal-text'))
-    fireEvent.change(screen.getByTestId('goal-edit-input'), { target: { value: '按钮保存' } })
-    fireEvent.blur(screen.getByTestId('goal-edit-input'))
-    expect(onEdit).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByTestId('goal-save'))
-    expect(onEdit).toHaveBeenCalledWith('按钮保存')
-  })
-
-  it('触屏：编辑器放在底部 Sheet 里（键盘不遮挡）', () => {
-    state.touch = true
-    setup('手机上编辑目标')
-    fireEvent.click(screen.getByTestId('goal-text'))
-    expect(screen.getByTestId('goal-sheet')).toBeInTheDocument()
-    expect(screen.getByTestId('goal-sheet').className).toContain('fixed')
-    expect(screen.getByTestId('goal-sheet').className).toContain('bottom-0')
-    state.touch = false
-  })
-
-  it('已完成目标不可编辑', () => {
-    render(
-      <I18nProvider>
-        <GoalBanner goal={{ objective: '已完成', status: 'completed' } as never} onEdit={vi.fn()} onClear={vi.fn()} />
-      </I18nProvider>,
-    )
+  it('已完成目标不可编辑（点击文本不进编辑）', () => {
+    setup('已完成的目标', 'completed')
     fireEvent.click(screen.getByTestId('goal-text'))
     expect(screen.queryByTestId('goal-edit-input')).toBeNull()
+  })
+
+  it('触屏：同样是就地单行 input，无底部 Sheet', () => {
+    state.touch = true
+    const { onEdit } = setup('手机上编辑目标')
+
+    fireEvent.click(screen.getByTestId('goal-text'))
+    expect(screen.queryByTestId('goal-sheet')).toBeNull()
+    const input = screen.getByTestId('goal-edit-input')
+    expect(input.tagName).toBe('INPUT')
+
+    fireEvent.change(input, { target: { value: '手机新目标' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onEdit).toHaveBeenCalledWith('手机新目标')
   })
 })

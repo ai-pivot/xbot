@@ -287,9 +287,6 @@ const zhCN = {
     goal: {
       save: '保存',
       cancel: '取消',
-      expand: '展开',
-      collapse: '收起',
-      editing: '编辑目标',
       inputPlaceholder: '输入目标',
       clickToEdit: '点击编辑目标',
       completed: '已完成',
