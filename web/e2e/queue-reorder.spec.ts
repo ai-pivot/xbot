@@ -51,6 +51,19 @@ const hugeQueueItems = Array.from({ length: 60 }, (_, i) => ({
   enqueued_at: i + 1,
 }))
 
+/**
+ * 6 条短队列 —— 全程可见（无内部滚动），用来断言「松手**之前** DOM 顺序就已经是
+ * 预览顺序」（拖动中布局真的动了，而不是只有一条插入线在跳）。
+ */
+const livePreviewItems = Array.from({ length: 6 }, (_, i) => ({
+  msg_id: `m${i + 1}`,
+  turn_id: 11 + i,
+  content: `message ${i + 1}`,
+  preview: `message ${i + 1}`,
+  source: 'user',
+  enqueued_at: i + 1,
+}))
+
 /** 列表容器当前的 scrollTop（自动滚动的观测量）。 */
 async function listScrollTop(page: Page): Promise<number> {
   return page.getByTestId('staging-list').evaluate((el) => (el as HTMLElement).scrollTop)
@@ -101,6 +114,56 @@ async function sampleScroll(page: Page, stop: (v: number) => boolean, ms = 6000)
     await page.waitForTimeout(60)
   }
   return samples
+}
+
+/** 列表里 `[data-queue-id]` 的 DOM 顺序（拖拽中 = **预览顺序**）。 */
+async function domOrder(page: Page): Promise<string[]> {
+  return page.getByTestId('staging-list').evaluate((node) =>
+    Array.from(node.querySelectorAll('[data-queue-id]')).map((c) => c.getAttribute('data-queue-id') ?? ''),
+  )
+}
+
+/** 被拖项在列表 DOM 里的序号（拖拽中 = 预览位置）。 */
+async function domIndexOf(page: Page, id: string): Promise<number> {
+  return (await domOrder(page)).indexOf(id)
+}
+
+/** 列表内容总高（拖动期间必须稳定 —— 变化 = "跳一下"）。 */
+async function listScrollHeight(page: Page): Promise<number> {
+  return page.getByTestId('staging-list').evaluate((el) => (el as HTMLElement).scrollHeight)
+}
+
+/** 连续采样 scrollTop + 被拖项的预览序号（滚动期间预览是否随指针推进）。 */
+async function sampleScrollAndIndex(page: Page, id: string, stop: (v: number) => boolean, ms = 6000) {
+  const scrolls: number[] = []
+  const positions: number[] = []
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    scrolls.push(await listScrollTop(page))
+    positions.push(await domIndexOf(page, id))
+    if (stop(scrolls[scrolls.length - 1])) break
+    await page.waitForTimeout(60)
+  }
+  return { scrolls, positions }
+}
+
+/** 按住 `srcID` 的拖拽柄，**分步**把指针移到 (toX,toY)，每一步后采样列表总高。
+ *  返回采样序列 —— 用来证明"拖动全程列表总高稳定（≤1px）"。 */
+async function pressAndDragInSteps(page: Page, srcID: string, toX: number, toY: number, steps = 12) {
+  const handle = page.locator(`[data-queue-id="${srcID}"] [data-testid="staging-drag-handle"]`)
+  const hb = await handle.boundingBox()
+  if (!hb) throw new Error('missing bounding box for the drag handle')
+  const fromX = hb.x + hb.width / 2
+  const fromY = hb.y + hb.height / 2
+  // 不要用 hover()：它内部的 scrollIntoViewIfNeeded 会制造一段杂散滚动。
+  await page.mouse.move(fromX, fromY)
+  await page.mouse.down()
+  const heights = [await listScrollHeight(page)]
+  for (let s = 1; s <= steps; s++) {
+    await page.mouse.move(fromX + ((toX - fromX) * s) / steps, fromY + ((toY - fromY) * s) / steps)
+    heights.push(await listScrollHeight(page))
+  }
+  return { heights }
 }
 
 let seqCounter = 0
@@ -345,6 +408,135 @@ test.describe('staging tray drag-to-reorder', () => {
 })
 
 /**
+ * **松手前就实时重排**（live preview）+ 拖起态（幽灵 / 占位槽）。
+ *
+ * 缺口（用户报的"显示 bug / 效果很差"）：旧实现拖拽期间布局完全不动，只渲染一条 2px
+ * 插入线；指针压到卡片之间的间隙或被拖卡片自己时，落点还会被清空（"线在抖"），用户
+ * 无法预判松手后会变成什么样。本组断言：**松手之前** DOM 顺序就已经是预览顺序。
+ *
+ * 红灯（未修复时）：拖动中 `[data-queue-id]` 顺序恒为初始顺序 —— 第一条断言即失败。
+ */
+test.describe('staging tray drag-to-reorder — live preview while still holding', () => {
+  test('dragging the 1st card below the 4th reorders the DOM before release (ghost + slot + stable height)', async ({ page }) => {
+    const calls: ReorderCall[] = []
+    await setupMock(page, calls, livePreviewItems)
+    await login(page)
+
+    await expect(page.getByTestId('staging-tray')).toBeVisible()
+    await page.getByTestId('staging-toggle').click()
+    await expect(page.locator('[data-queue-id]')).toHaveCount(6)
+    expect(await domOrder(page)).toEqual(['m1', 'm2', 'm3', 'm4', 'm5', 'm6'])
+
+    const cardBox = await page.locator('[data-queue-id="m1"]').boundingBox()
+    const targetBox = await page.locator('[data-queue-id="m4"]').boundingBox()
+    if (!cardBox || !targetBox) throw new Error('missing bounding box for the drag')
+    const cardH = cardBox.height
+    // 目标点 = 第 4 张卡的**下半**（按下那一刻的几何；松手前指针不再移动）
+    const toX = targetBox.x + targetBox.width / 2
+    const toY = targetBox.y + targetBox.height - 4
+
+    const { heights } = await pressAndDragInSteps(page, 'm1', toX, toY)
+
+    // ① **松手前** DOM 顺序 = 预览顺序：第 1 张已落到第 4 张之后（其它卡片让位）。
+    await expect.poll(() => domOrder(page)).toEqual(['m2', 'm3', 'm4', 'm1', 'm5', 'm6'])
+    const order = await domOrder(page)
+    expect(order.indexOf('m1')).toBeGreaterThan(order.indexOf('m4'))
+    expect(order.indexOf('m1')).toBe(3)
+    // 还没松手 ⇒ 还没发请求（一次手势一次请求）。
+    expect(calls).toHaveLength(0)
+
+    // ② 占位槽：可见、就地、高度 == 原卡片高度（≤1px）、虚线。
+    const slot = page.getByTestId('staging-placeholder')
+    await expect(slot).toBeVisible()
+    await expect(slot).toHaveAttribute('data-queue-id', 'm1')
+    const slotBox = await slot.boundingBox()
+    if (!slotBox) throw new Error('missing bounding box for the slot')
+    expect(Math.abs(slotBox.height - cardH)).toBeLessThanOrEqual(1)
+    expect(await slot.evaluate((el) => getComputedStyle(el).borderStyle)).toBe('dashed')
+
+    // ③ 幽灵：存在、fixed、pointer-events:none、与卡片等大、**跟手**（指针在幽灵盒内）。
+    const ghost = page.getByTestId('staging-drag-ghost')
+    await expect(ghost).toBeVisible()
+    expect(await ghost.evaluate((el) => getComputedStyle(el).position)).toBe('fixed')
+    expect(await ghost.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none')
+    const ghostBox = await ghost.boundingBox()
+    if (!ghostBox) throw new Error('missing bounding box for the ghost')
+    // 幽灵与卡片是**同一个盒子**：布局尺寸相等（offsetHeight 是布局量，不含 scale）。
+    const ghostLayoutH = await ghost.evaluate((el) => (el as HTMLElement).offsetHeight)
+    expect(Math.abs(ghostLayoutH - cardH)).toBeLessThanOrEqual(1)
+    // 视觉上略大（"被拿起"的轻微 scale，≤ +5%）——不是尺寸走样。
+    expect(ghostBox.height).toBeGreaterThan(cardH - 1)
+    expect(ghostBox.height).toBeLessThan(cardH * 1.05 + 1)
+    // 幽灵与占位槽**同一列**（横向不跟手）⇒ 不会和槽错开成两个并排的盒子。
+    // 宽度比布局量（offsetWidth 不含 scale）；水平位置比**视觉中心**（scale 绕中心
+    // 放大 ⇒ 中心不变，而 scale 后的 left/right 会各自外扩 ~5px，不能直接比）。
+    const ghostLayoutW = await ghost.evaluate((el) => (el as HTMLElement).offsetWidth)
+    expect(Math.abs(ghostLayoutW - slotBox.width)).toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(ghostBox.x + ghostBox.width / 2 - (slotBox.x + slotBox.width / 2)),
+    ).toBeLessThanOrEqual(1)
+    // 幽灵**跟着指针**：盒子中心 = 指针位置（按下时定死的抓手偏移全程不变）。
+    expect(Math.abs(ghostBox.y + ghostBox.height / 2 - toY)).toBeLessThanOrEqual(2)
+    expect(toX).toBeGreaterThanOrEqual(ghostBox.x - 1)
+    expect(toX).toBeLessThanOrEqual(ghostBox.x + ghostBox.width + 1)
+    expect(toY).toBeGreaterThanOrEqual(ghostBox.y - 1)
+    expect(toY).toBeLessThanOrEqual(ghostBox.y + ghostBox.height + 1)
+    // 幽灵在列表之外（portal 到 body）⇒ 不参与列表布局、不被滚动容器裁剪。
+    expect(await ghost.evaluate((el) => el.closest('[data-testid="staging-list"]'))).toBeNull()
+
+    // ④ 拖动全程列表总高稳定（≤1px）—— 没有"跳一下"的显示 bug。
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(1)
+
+    // ⑤ 松手：只发 1 次请求，请求体 == 松手前预览到的那份顺序（松手前就定好了）。
+    const previewedBeforeRelease = await domOrder(page)
+    await page.mouse.up()
+    await expect.poll(() => calls.length).toBe(1)
+    expect(calls[0].msg_ids).toEqual(previewedBeforeRelease)
+    expect(calls[0].msg_ids).toEqual(['m2', 'm3', 'm4', 'm1', 'm5', 'm6'])
+    // 拖起态收拾干净，顺序保持（提交顺序先留着渲染，服务端快照回来前不闪回旧序）。
+    await expect(page.getByTestId('staging-drag-ghost')).toHaveCount(0)
+    await expect(page.getByTestId('staging-placeholder')).toHaveCount(0)
+    await expect.poll(() => domOrder(page)).toEqual(['m2', 'm3', 'm4', 'm1', 'm5', 'm6'])
+  })
+
+  test('dragging the last card above the 1st reorders the DOM before release too (reverse direction)', async ({ page }) => {
+    const calls: ReorderCall[] = []
+    await setupMock(page, calls, livePreviewItems)
+    await login(page)
+
+    await expect(page.getByTestId('staging-tray')).toBeVisible()
+    await page.getByTestId('staging-toggle').click()
+    await expect(page.locator('[data-queue-id]')).toHaveCount(6)
+
+    const cardBox = await page.locator('[data-queue-id="m6"]').boundingBox()
+    const targetBox = await page.locator('[data-queue-id="m1"]').boundingBox()
+    if (!cardBox || !targetBox) throw new Error('missing bounding box for the drag')
+    const cardH = cardBox.height
+    const toX = targetBox.x + targetBox.width / 2
+    const toY = targetBox.y + 4 // 第 1 张卡的**上半** → 插到最前
+
+    const { heights } = await pressAndDragInSteps(page, 'm6', toX, toY)
+
+    await expect.poll(() => domOrder(page)).toEqual(['m6', 'm1', 'm2', 'm3', 'm4', 'm5'])
+    const order = await domOrder(page)
+    expect(order.indexOf('m6')).toBeLessThan(order.indexOf('m1'))
+    expect(order[0]).toBe('m6')
+    expect(calls).toHaveLength(0)
+
+    const slotBox = await page.getByTestId('staging-placeholder').boundingBox()
+    if (!slotBox) throw new Error('missing bounding box for the slot')
+    expect(Math.abs(slotBox.height - cardH)).toBeLessThanOrEqual(1)
+    expect(Math.max(...heights) - Math.min(...heights)).toBeLessThanOrEqual(1)
+
+    const previewedBeforeRelease = await domOrder(page)
+    await page.mouse.up()
+    await expect.poll(() => calls.length).toBe(1)
+    expect(calls[0].msg_ids).toEqual(previewedBeforeRelease)
+    expect(calls[0].msg_ids).toEqual(['m6', 'm1', 'm2', 'm3', 'm4', 'm5'])
+  })
+})
+
+/**
  * 长队列（60 条）下的**边缘自动滚动**。
  *
  * 缺口：拖拽走 pointer 事件 + setPointerCapture（不是原生滚动），浏览器不会替我们滚
@@ -383,12 +575,21 @@ test.describe('staging tray drag-to-reorder — long queue edge auto-scroll', ()
     // 把指针移到容器下沿热区（距内沿 8px ≤ 24px）并保持
     await moveToEdge(page, lb, 'bottom')
 
-    // 指针一动不动 —— rAF 自动滚动必须启动：scrollTop 单调不减，且最终滚过一整屏
-    const samples = await sampleScroll(page, (v) => v > geo.clientHeight)
-    expect(samples.length).toBeGreaterThan(2)
+    // 指针一动不动 —— rAF 自动滚动必须启动：scrollTop 单调不减，且最终滚过一整屏。
+    // 同时观察**预览顺序**：指针没动、但滚动让「指针下方的卡」一路往后 ⇒ 被拖项在
+    // 预览里的序号必须随滚动推进（不是停在初始位置 0）。
+    const { scrolls: samples, positions } = await sampleScrollAndIndex(page, 'q1', (v) => v > geo.clientHeight)
+    // ⚠️ 只断言**数值行为**（滚了多远 / 单调 / 落点），不断言"采样次数"：
+    // 采样是固定节奏循环（60ms/次），CI 更慢时会少收几个样本，甚至首个样本就满足
+    // stop 条件而立刻 break —— 那是采样节奏的副产物，不是不变量（曾因此在 CI 假红）。
+    expect(Math.max(...samples)).toBeGreaterThan(geo.clientHeight)
     for (let i = 1; i < samples.length; i++) expect(samples[i]).toBeGreaterThanOrEqual(samples[i - 1])
     expect(samples[samples.length - 1]).toBeGreaterThan(0) // ← 未修复时这里恒为 0（红灯）
     expect(samples[samples.length - 1]).toBeGreaterThan(geo.clientHeight)
+    // ← 未修复时预览顺序恒为 0（这一条是"松手前实时重排"在自动滚动场景的红灯）
+    for (let i = 1; i < positions.length; i++) expect(positions[i]).toBeGreaterThanOrEqual(positions[i - 1])
+    expect(positions[positions.length - 1]).toBeGreaterThan(positions[0])
+    expect(positions[positions.length - 1]).toBeGreaterThan(initiallyVisible.length)
 
     // 松手：落到「此刻可见的最后一张卡」的下半 ⇒ 落点在**初始可见窗口之外**
     const visibleNow = await visibleCardIDs(page)
@@ -434,7 +635,8 @@ test.describe('staging tray drag-to-reorder — long queue edge auto-scroll', ()
     await pressHandle(page, dragged).then(({ lb }) => moveToEdge(page, lb, 'top'))
 
     const samples = await sampleScroll(page, (v) => v === 0)
-    expect(samples.length).toBeGreaterThan(0)
+    // 同上：不断言"采样次数"（CI 更慢会少收样本、甚至首个样本即满足 stop），只断言数值行为。
+    expect(Math.min(...samples)).toBeLessThanOrEqual(before)
     for (let i = 1; i < samples.length; i++) expect(samples[i]).toBeLessThanOrEqual(samples[i - 1])
     expect(samples[samples.length - 1]).toBeLessThan(before) // ← 未修复时恒等于 before（红灯）
     expect(samples[samples.length - 1]).toBe(0) // 一路滚到顶

@@ -19,9 +19,22 @@
  *      `pill.left === previewContainer.left`（同一条布局链推导，零缩进魔数）；
  *      footer 已删除，`Clear` 是 header 里与 toggle **不同动作**的图标按钮。
  *
- * 动画：CSS keyframes（fadeUp 入场、左滑淡出取消、队首呼吸进度条）
+ * 拖动调序（2026-09-13 重做：从「只有一条插入线、布局不动」改成**松手前就实时重排**）：
+ *   · 按下 → 卡片就地"挖空"成**同高占位槽**（占位槽就是原卡片元素本身，内容
+ *     `visibility:hidden` 保住布局 ⇒ 列表总高不变），同时把卡片快照克隆成一张
+ *     `position: fixed` 的**幽灵**跟指针走（`translate3d`，合成层不触发布局）；
+ *   · 移动 → 命中的卡片（`elementFromPoint` + 中点判定，**同一份逻辑**同时决定预览
+ *     与最终落点）直接算出**预览顺序**，列表按预览顺序渲染 ⇒ 其它卡片立刻让位；
+ *   · 松手 → 提交预览顺序本身（不重算）；顺序没变则一个请求都不发（no-op 语义不变）。
+ *   命中不到卡片（卡片间隙 / 面板外 / 指针正压在被拖项自己身上）→ **保持当前预览**
+ *   而不是清空 ⇒ 不会出现"插入线一抖一抖"那种闪烁。
+ *
+ * 动画：CSS keyframes（fadeIn 入场、左滑淡出取消、队首呼吸进度条）。入场动画**只有
+ * opacity**（不带 transform）：transform 会撑大滚动容器的 scrollable overflow，拖动时
+ * 列表总高会被顶出 4~6px（详见 `<StagingTray>` 里 seenIDsRef 的注释）。
  */
-import { memo, useState, useCallback, useEffect, useRef } from 'react'
+import { memo, useState, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { Zap, X, Bell, ChevronDown, ChevronRight, Trash2, Inbox, User, GripVertical } from 'lucide-react'
 import type { QueueItemPayload } from '@/types/shared'
 import { cn } from '@/lib/utils'
@@ -31,9 +44,9 @@ import { useI18n } from '@/providers/i18n'
 
 // ─── CSS keyframes（注入一次，组件级 scope） ─────────────────────────
 const STAGING_TRAY_STYLES = `
-@keyframes stagingFadeUp {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+@keyframes stagingFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 @keyframes stagingSlideOut {
   from { opacity: 1; transform: translateX(0); max-height: 200px; }
@@ -47,29 +60,23 @@ const STAGING_TRAY_STYLES = `
   0%, 100% { box-shadow: 0 0 4px rgba(99,102,241,0.4); }
   50%      { box-shadow: 0 0 10px rgba(99,102,241,0.7); }
 }
-.staging-card-enter { animation: stagingFadeUp 0.2s ease-out forwards; }
+.staging-card-enter { animation: stagingFadeIn 0.2s ease-out forwards; }
 .staging-card-leave { animation: stagingSlideOut 0.2s ease-out forwards; overflow: hidden; }
 .staging-shimmer-bar { animation: stagingShimmer 1.8s ease-in-out infinite; }
 .staging-glow-num { animation: stagingGlow 2s ease-in-out infinite; }
 
-/* Drag-to-reorder: lifted card + sliding drop indicator (transform/opacity only
-   — compositor-friendly, no layout animation) */
-.staging-card-dragging {
-  opacity: 0.45;
-  transform: scale(0.985);
-  box-shadow: 0 8px 24px -8px rgba(99,102,241,0.55);
-  border-color: rgba(129,140,248,0.75) !important;
+/* Drag-to-reorder（2026-09-13 重做）：
+   · 幽灵 = 按下那一刻的卡片 DOM 快照，fixed + translate3d 跟指针（合成层，不触发
+     布局）；定位/宽高/pointer-events 走 inline style（见组件），这里只管观感。
+   · 占位槽 = 被拖卡片就地挖空后的样子（内容 visibility:hidden 保布局 ⇒ 列表总高不变），
+     虚线 + 极淡底色，一眼看出"会被放到这里"。*/
+.staging-drag-ghost {
+  z-index: 60;
+  will-change: transform;
+  border-radius: 0.5rem;
+  box-shadow: 0 16px 34px -12px rgba(15,23,42,0.55), 0 0 0 1px rgba(129,140,248,0.55);
 }
-.staging-drop-line {
-  height: 2px;
-  border-radius: 9999px;
-  background: linear-gradient(90deg, rgba(99,102,241,0.25), rgba(129,140,248,1), rgba(99,102,241,0.25));
-  animation: stagingDropIn 0.14s ease-out;
-}
-@keyframes stagingDropIn {
-  from { opacity: 0; transform: scaleX(0.4); }
-  to   { opacity: 1; transform: scaleX(1); }
-}
+.staging-drag-ghost-inner { height: 100%; }
 .staging-drag-handle { touch-action: none; }
 
 /* Touch devices (no hover): always show action buttons + enlarge tap targets */
@@ -117,6 +124,26 @@ export interface StagingTrayProps {
   onReorder?: (msgIDs: string[]) => void
 }
 
+/** 一次拖拽会话：被拖项的 id + 按下那一刻的指针/卡片几何（幽灵的定位基准）。 */
+interface DragSession {
+  id: string
+  originX: number
+  originY: number
+  rect: { left: number; top: number; width: number; height: number }
+}
+
+/** 卡片 DOM 快照 → 幽灵的内容：剥掉 `data-testid` / `data-queue-id`（否则幽灵里的
+ *  副本会和列表里的元素抢选择器），并去掉入场/退场动画类（否则幽灵会重播一次淡入，
+ *  看起来像"闪一下"）。 */
+function snapshotCard(cardEl: HTMLElement): string {
+  const holder = document.createElement('div')
+  holder.innerHTML = cardEl.outerHTML
+  holder.querySelectorAll('[data-testid]').forEach((el) => el.removeAttribute('data-testid'))
+  holder.querySelectorAll('[data-queue-id]').forEach((el) => el.removeAttribute('data-queue-id'))
+  holder.firstElementChild?.classList.remove('staging-card-enter', 'staging-card-leave')
+  return holder.innerHTML
+}
+
 // ─── 子组件 ─────────────────────────────────────────────────────────
 
 function QueueCard({
@@ -127,9 +154,9 @@ function QueueCard({
   onCancel,
   onInterject,
   leaving,
+  entering,
   dragEnabled,
-  dragging,
-  dropEdge,
+  slot,
   handleProps,
 }: {
   item: QueueItemPayload
@@ -139,16 +166,18 @@ function QueueCard({
   onCancel: (msgID: string) => void
   onInterject: (msgID: string) => void
   leaving: boolean
+  /** 这条目**首次出现**（入场动画只在那一刻播一次；重排移动 DOM 不重播，见组件里
+   *  `enteringIDs` 的注释）。 */
+  entering: boolean
   dragEnabled: boolean
-  dragging: boolean
-  dropEdge: 'before' | 'after' | null
-  /** Pointer handlers for the drag handle. The handle captures the pointer on
-   *  pointerdown, so move/up/cancel are all retargeted to this element — no
-   *  global window listeners are needed. */
-  handleProps?: Pick<
-    React.ComponentProps<'button'>,
-    'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerCancel'
-  >
+  /** 这张卡此刻正被拖起 —— 内容挖空（`visibility:hidden` 保住布局），就地留下一个
+   *  同高的虚线**占位槽**。卡片元素本身不卸载：卡片会被重排，而 DOM move 会让浏览器
+   *  释放指针捕获（捕获挂在列表容器上，见下）。 */
+  slot: boolean
+  /** 拖拽柄的按下处理。指针**捕获在列表容器**上（不是柄上）：柄所在的卡片会被重排
+   *  （DOM move 会释放捕获），而列表容器整个拖拽期间既不卸载也不移动 ⇒ 不需要任何
+   *  全局 window 监听器。 */
+  handleProps?: Pick<React.ComponentProps<'button'>, 'onPointerDown'>
 }) {
   const isTouch = useIsTouch()
   const { t } = useI18n()
@@ -157,36 +186,33 @@ function QueueCard({
   return (
     <div
       data-queue-id={item.msg_id || undefined}
+      data-testid={slot ? 'staging-placeholder' : undefined}
       className={cn(
         'staging-card group relative rounded-lg border px-3 py-2 transition-colors',
-        leaving ? 'staging-card-leave' : 'staging-card-enter',
-        dragging && 'staging-card-dragging',
-        isHead
-          ? 'border-indigo-400/60 border-l-2 border-l-indigo-500 bg-indigo-500/[0.07] dark:border-indigo-500/50 dark:border-l-indigo-400'
-          : 'border-border bg-bg-tertiary/40',
+        // 入场动画只在「首次出现」时挂（重排移动 DOM 不重播，见 seenIDsRef 注释）
+        leaving ? 'staging-card-leave' : entering ? 'staging-card-enter' : '',
+        // 占位槽：同一张卡就地挖空 —— 外框尺寸一字不改（总高不变，不跳），
+        // 只留虚线 + 极淡底色，一眼看出"这里会被放下"。
+        slot
+          ? 'border-dashed border-indigo-400/70 bg-indigo-500/[0.06] dark:border-indigo-400/60'
+          : isHead
+            ? 'border-indigo-400/60 border-l-2 border-l-indigo-500 bg-indigo-500/[0.07] dark:border-indigo-500/50 dark:border-l-indigo-400'
+            : 'border-border bg-bg-tertiary/40',
       )}
     >
-      {/* 拖拽落点插入线（上半 = before，下半 = after） */}
-      {dropEdge && (
-        <div
-          data-testid="staging-drop-line"
-          className={cn(
-            'staging-drop-line pointer-events-none absolute -left-1 -right-1',
-            dropEdge === 'before' ? '-top-[3px]' : '-bottom-[3px]',
-          )}
-        >
-          <span className="absolute -left-1 top-1/2 size-1.5 -translate-y-1/2 rounded-full bg-indigo-500" />
-        </div>
-      )}
-
-      {/* 队首呼吸进度条 */}
-      {isHead && busy && (
+      {/* 队首呼吸进度条（占位槽态不显示：槽里不该有进度条） */}
+      {isHead && busy && !slot && (
         <div className="absolute bottom-0 left-2 right-2 h-0.5 overflow-hidden rounded-full bg-indigo-500/10">
           <div className="staging-shimmer-bar h-full w-full rounded-full bg-gradient-to-r from-indigo-500/40 via-indigo-400 to-indigo-500/40" />
         </div>
       )}
 
-      <div data-testid="staging-card-row" className="flex items-center gap-2.5">
+      {/* 占位槽态：内容 `visibility:hidden` —— **保留布局**（卡片高度一字不变），
+          卡片元素仍留在列表里（顺序 = 预览顺序）⇒ 列表总高与滚动位置都不动。 */}
+      <div
+        data-testid="staging-card-row"
+        className={cn('flex items-center gap-2.5', slot && 'invisible')}
+      >
         {/* 拖拽柄（可拖动时显示；触屏常显，桌面 hover 显示） */}
         {dragEnabled ? (
           <button
@@ -293,6 +319,15 @@ export const StagingTray = memo(function StagingTray({
 
   const [leavingIDs, setLeavingIDs] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState(true)
+  /** 已经播过入场动画的 msg_id。
+   *
+   *  入场动画只在该条目**首次出现**时播一次 —— 这不是审美问题，是结构问题：
+   *  React 因重排移动 DOM 节点（insertBefore）时浏览器会**重播** CSS 动画，
+   *  于是拖动中"卡片闪一下"；更糟的是动画里的 transform 会把卡片盒子挪出容器，
+   *  而 scrollable overflow **包含后代已变换的盒子** ⇒ 滚动容器的 scrollHeight
+   *  被顶大 4~6px（实测 272 → 276），拖动时列表总高"跳一下"。
+   *  掐掉重播（+ 入场动画已改成纯 opacity），列表总高在拖动全程恒定。 */
+  const seenIDsRef = useRef<Set<string>>(new Set())
 
   const handleCancel = useCallback((msgID: string) => {
     setLeavingIDs((prev) => new Set(prev).add(msgID))
@@ -318,14 +353,31 @@ export const StagingTray = memo(function StagingTray({
   }, [items, onClear])
 
   // ── 拖动调序（pointer 事件：鼠标 / 触屏 / 触控笔通用）──
-  // dragID 只驱动重渲染（抬升态）；落点存在 ref 里（pointermove 不触发
-  // state 之外的副作用）。pointerdown 时对拖拽柄 setPointerCapture —— 之后
-  // 该指针的 move/up/cancel 全部重定向到柄上（React 合成事件照收），因此
-  // **不需要 window 监听器**（ESLint 禁止 per-session 代码监听全局 window 事件）。
-  const [dragID, setDragID] = useState<string | null>(null)
-  const [dropTarget, setDropTarget] = useState<{ id: string; before: boolean } | null>(null)
-  const dropRef = useRef<{ id: string; before: boolean } | null>(null)
-  const dragIDRef = useRef<string | null>(null)
+  //
+  // 2026-09-13 重做：从「只有一条插入线、布局不动」改成「松手前就按指针位置实时重排」。
+  //   · 按下 → 卡片就地挖空成同高占位槽 + 克隆一张 fixed 幽灵跟指针（跟手）；
+  //   · 移动 → 命中卡片（elementFromPoint + 中点判定）直接算出**预览顺序**，
+  //     列表按预览顺序渲染 ⇒ 其它卡片立刻让位（松手前就能预判结果）；
+  //   · 松手 → 提交预览顺序本身（不再重算一遍），顺序没变则一个请求都不发。
+  //
+  // 指针捕获挂在**列表容器**上，不是卡片里的柄：卡片会被重排，而 DOM move 会让浏览器
+  // 释放指针捕获 ⇒ 柄一旦被移动，move/up 就再也收不到（拖拽"中途失灵"）。列表容器
+  // 整个拖拽期间既不卸载也不移动，捕获稳定；move/up/cancel 全部重定向到它 ⇒
+  // **不需要任何全局 window 监听器**（ESLint 亦禁止 per-session 代码监听 window）。
+  const [session, setSession] = useState<DragSession | null>(null)
+  /** 列表渲染顺序（拖拽中 = 预览顺序；提交后**暂留**到权威快照回来，见 handleDragEnd）。 */
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
+  const sessionRef = useRef<DragSession | null>(null)
+  /** 当前渲染/拖拽顺序（`pendingOrder` 的 ref 镜像，事件回调里读它避免闭包过期）。 */
+  const orderRef = useRef<string[] | null>(null)
+  /** 本次拖拽的基准顺序（= 按下那一刻列表渲染的顺序）：用来判「是不是白拖了」，
+   *  也用来判「队列快照是否已经变了」（对账 effect）。提交后**继续保留**，直到 props
+   *  真的换了一份快照 —— 否则松手瞬间会闪回旧顺序（松手前后不一致 = 用户看到的"跳"）。 */
+  const initialOrderRef = useRef<string[] | null>(null)
+  /** 被拖卡片的 DOM 快照（已剥掉 testid / data-queue-id）—— 幽灵的内容。 */
+  const ghostHTMLRef = useRef('')
+  const ghostRef = useRef<HTMLDivElement | null>(null)
+  const ghostInnerRef = useRef<HTMLDivElement | null>(null)
   /** 列表滚动容器 —— 拖拽期间由 rAF 循环按指针位置滚动它。 */
   const listRef = useRef<HTMLDivElement | null>(null)
   /** 当前在跑的自动滚动 rAF 句柄（null = 没有循环在跑）。 */
@@ -333,26 +385,40 @@ export const StagingTray = memo(function StagingTray({
   /** 指针最后位置：容器滚动时指针可能一动没动，rAF tick 仍要知道它在哪。 */
   const pointerRef = useRef<{ x: number; y: number } | null>(null)
 
-  /** 指针位置 → 落点（`elementFromPoint` + 卡片上下半判定）。
-   *  pointermove **与**自动滚动 rAF tick 共用：容器滚动会让「指针下方是哪张卡」
-   *  变化，指针没动也必须重算，否则落点停在滚动前的旧位置。 */
-  const resolveDropTargetAt = useCallback((x: number, y: number) => {
-    const drag = dragIDRef.current
-    if (!drag) return
+  /** 指针位置 → **预览顺序**（`elementFromPoint` + 卡片上下半判定）。
+   *  pointermove **与**自动滚动 rAF tick 共用同一份命中逻辑：容器滚动会让「指针下方
+   *  是哪张卡」变化，指针没动也必须重算，否则预览停在滚动前的旧位置。
+   *  命中不到卡片（卡片之间的间隙 / 面板之外 / 指针正压在被拖项自己的占位槽上）→
+   *  **保持当前预览**而不是清空 —— 旧实现此时会清掉落点，插入线来回跳，用户看不懂。*/
+  const updatePreviewAt = useCallback((x: number, y: number) => {
+    const drag = sessionRef.current
+    const cur = orderRef.current
+    if (!drag || !cur) return
     const el = document.elementFromPoint(x, y)
     const card = (el as HTMLElement | null)?.closest?.('[data-queue-id]') as HTMLElement | null
-    if (!card) return
-    const id = card.getAttribute('data-queue-id')
-    if (!id || id === drag) {
-      if (dropRef.current) { dropRef.current = null; setDropTarget(null) }
-      return
-    }
+    const targetID = card?.getAttribute('data-queue-id') ?? null
+    if (!card || !targetID || targetID === drag.id) return
     const rect = card.getBoundingClientRect()
     const before = y < rect.top + rect.height / 2
-    const cur = dropRef.current
-    if (cur && cur.id === id && cur.before === before) return
-    dropRef.current = { id, before }
-    setDropTarget({ id, before })
+    // 预览顺序与最终落点用**同一个** computeReorder：松手提交的就是这里算出来的。
+    const next = computeReorder(cur, drag.id, targetID, before) ?? cur
+    if (next === cur) return
+    orderRef.current = next
+    setPendingOrder(next)
+  }, [])
+
+  /** 幽灵跟手：只写 transform（合成层，不触发布局、也不触发 React 重渲染）。
+   *  `left/top/width/height` 在按下那一刻定死，之后只做位移 ⇒ 与指针的相对位置
+   *  （抓手偏移）全程不变，不会"跳一下"。
+   *
+   *  **只跟纵向**（x 分量恒为 0）：这是一维纵向列表的重排，横向跟手会让幽灵被拖出
+   *  列表所在的那一列（手机上 390px 宽直接出屏被裁掉），而且会和占位槽错开成两个
+   *  并排的盒子 —— 用户就看不出"它会落在哪"。纵向跟手时幽灵与占位槽天然同一列。 */
+  const moveGhostTo = useCallback((_x: number, y: number) => {
+    const s = sessionRef.current
+    const el = ghostRef.current
+    if (!s || !el) return
+    el.style.transform = `translate3d(0, ${y - s.originY}px, 0) scale(1.03)`
   }, [])
 
   /** 取消自动滚动循环（幂等）。pointerup / pointercancel / 离开热区 / 卸载都走这里。 */
@@ -386,7 +452,7 @@ export const StagingTray = memo(function StagingTray({
       const list = listRef.current
       const p = pointerRef.current
       // 拖拽已结束 / 组件已卸载 / 没有指针位置 → 彻底停（不再排下一帧，无泄漏）
-      if (!dragIDRef.current || !p || !list) return
+      if (!sessionRef.current || !p || !list) return
       const { dir, speed } = edgeScrollFor(p.y)
       if (dir === 0) return
       const dt = Math.min(now - last, 50)
@@ -394,8 +460,8 @@ export const StagingTray = memo(function StagingTray({
       const prev = list.scrollTop
       list.scrollTop = prev + dir * step
       if (list.scrollTop !== prev) {
-        // 几何变了 → 用**未移动的指针**重新解析落点（滚完后指针下方的卡已不同）
-        resolveDropTargetAt(p.x, p.y)
+        // 几何变了 → 用**未移动的指针**重新解析落点/预览（滚完后指针下方的卡已不同）
+        updatePreviewAt(p.x, p.y)
       }
       // 只在「热区内 + 还能滚」时续帧：到顶/到底就自然停，不空转 rAF
       const max = list.scrollHeight - list.clientHeight
@@ -406,53 +472,107 @@ export const StagingTray = memo(function StagingTray({
       }
     }
     rafRef.current = requestAnimationFrame(tick)
-  }, [edgeScrollFor, resolveDropTargetAt])
+  }, [edgeScrollFor, updatePreviewAt])
 
   const handleHandleDown = useCallback((e: React.PointerEvent, msgID: string) => {
     if (!onReorder || !msgID) return
     e.preventDefault()
     e.stopPropagation()
+    const cardEl = e.currentTarget.closest('[data-queue-id]') as HTMLElement | null
+    const rect = cardEl?.getBoundingClientRect()
+    const list = listRef.current
+    if (!cardEl || !rect || !list) return
     try {
-      e.currentTarget.setPointerCapture(e.pointerId)
+      // 捕获在列表容器上（理由见上面的注释）——之后本指针的 move/up/cancel 全部
+      // 重定向到列表，卡片怎么重排都不影响拖拽。
+      list.setPointerCapture(e.pointerId)
     } catch {
-      // capture 不可用（合成事件/老浏览器）—— 拖拽降级为"仅按下即取消"
+      // capture 不可用（合成事件/老浏览器）——事件仍会冒泡到列表，拖拽照常降级工作
     }
     stopAutoScroll()
-    dragIDRef.current = msgID
+    // 基准 = **此刻列表渲染的顺序**（可能是上一次拖动提交、服务端快照还没回来的顺序）
+    const order = orderRef.current ?? items.map((i) => i.msg_id)
+    const next: DragSession = {
+      id: msgID,
+      originX: e.clientX,
+      originY: e.clientY,
+      rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+    }
+    sessionRef.current = next
+    orderRef.current = order
+    initialOrderRef.current = order
+    ghostHTMLRef.current = snapshotCard(cardEl)
     pointerRef.current = { x: e.clientX, y: e.clientY }
-    dropRef.current = null
-    setDropTarget(null)
-    setDragID(msgID)
-  }, [onReorder, stopAutoScroll])
+    setSession(next)
+    setPendingOrder(order)
+  }, [items, onReorder, stopAutoScroll])
 
   const handleDragMove = useCallback((e: React.PointerEvent) => {
-    if (!dragIDRef.current) return
+    if (!sessionRef.current) return
     pointerRef.current = { x: e.clientX, y: e.clientY }
-    resolveDropTargetAt(e.clientX, e.clientY)
+    moveGhostTo(e.clientX, e.clientY)
+    updatePreviewAt(e.clientX, e.clientY)
     // 进入上/下沿热区 → 持续滚动；离开热区 → 立即停（不残留 rAF）
     if (edgeScrollFor(e.clientY).dir === 0) stopAutoScroll()
     else startAutoScroll()
-  }, [resolveDropTargetAt, edgeScrollFor, startAutoScroll, stopAutoScroll])
+  }, [moveGhostTo, updatePreviewAt, edgeScrollFor, startAutoScroll, stopAutoScroll])
 
   const handleDragEnd = useCallback((commit: boolean) => {
-    const drag = dragIDRef.current
-    const target = dropRef.current
+    const s = sessionRef.current
+    const order = orderRef.current
+    const initial = initialOrderRef.current
     // 任何一次结束（pointerup / pointercancel）都必须停掉自动滚动循环
     stopAutoScroll()
+    sessionRef.current = null
+    ghostHTMLRef.current = ''
     pointerRef.current = null
-    dragIDRef.current = null
-    dropRef.current = null
-    setDragID(null)
-    setDropTarget(null)
-    if (!drag || !commit || !target || !onReorder) return
-    // computeReorder returns null when the drag is a no-op (dropped back in
-    // place) — skip the RPC entirely then.
-    const next = computeReorder(items.map((i) => i.msg_id), drag, target.id, target.before)
-    if (next) onReorder(next)
-  }, [items, onReorder, stopAutoScroll])
+    setSession(null)
+    const changed = Boolean(order && initial && order.join(' ') !== initial.join(' '))
+    if (!s || !commit || !changed || !order || !onReorder) {
+      // 没戏了（取消 / 白拖 / 只读面板）→ 渲染权立刻交还队列 props。
+      // 顺序与基准一致 ⇒ 渲染结果不变，不会闪。
+      orderRef.current = null
+      initialOrderRef.current = null
+      setPendingOrder(null)
+      return
+    }
+    // 真提交了变化：**先留着这份顺序继续渲染**，等服务端权威快照（props）回来再交还
+    // （见下面的对账 effect）。否则松手瞬间会闪回旧顺序 —— 那正是"松手后跳一下"的来源。
+    onReorder(order)
+  }, [onReorder, stopAutoScroll])
 
   // 防御性：拖拽途中面板被卸载（收起/切会话）也要取消 rAF，不留回调
   useEffect(() => stopAutoScroll, [stopAutoScroll])
+
+  // 队列快照（props）变化时的对账 —— 两种情形走同一条出路：
+  //   · 拖拽中：队列被外部改写（并发 dequeue / 对账快照）⇒ 作废本次拖拽，别提交脏顺序；
+  //   · 已松手：服务端权威顺序到位 ⇒ 把渲染权交还 props（提交顺序与之一致 ⇒ 不闪）。
+  // 只比**内容**（join）不比数组引用：拖拽途中父组件因流式渲染重建 items 是常态，
+  // 引用一变就交还会把预览打回原形。
+  useEffect(() => {
+    const baseline = initialOrderRef.current
+    if (!baseline) return
+    if (items.map((i) => i.msg_id).join(' ') === baseline.join(' ')) return
+    handleDragEnd(false)
+  }, [items, handleDragEnd])
+
+  // 幽灵内容 = 按下那一刻的卡片快照（layout effect：不留一帧空壳造成闪烁）
+  useLayoutEffect(() => {
+    if (!session || !ghostInnerRef.current) return
+    ghostInnerRef.current.innerHTML = ghostHTMLRef.current
+  }, [session])
+
+  // 记下已经出现过的条目（下一帧起不再是「首次出现」⇒ 不再挂入场动画类）
+  useEffect(() => {
+    for (const it of items) if (it.msg_id) seenIDsRef.current.add(it.msg_id)
+  }, [items])
+
+  // 列表渲染顺序：拖拽中 = 预览顺序（松手前就重排），提交后暂留到权威快照回来。
+  const renderOrder = pendingOrder ?? items.map((i) => i.msg_id)
+  const byID = new Map(items.map((i) => [i.msg_id, i]))
+  // 本帧「首次出现」的条目 → 才配入场动画（重排/让位不配，见 seenIDsRef 注释）。
+  const enteringIDs = new Set<string>()
+  for (const it of items) if (it.msg_id && !seenIDsRef.current.has(it.msg_id)) enteringIDs.add(it.msg_id)
 
   // 队列为空时不渲染任何 DOM（hooks must be called before early return — React rules-of-hooks）
   if (items.length === 0) return null
@@ -503,36 +623,69 @@ export const StagingTray = memo(function StagingTray({
 
       {/* 队列卡片列表 —— 唯一的「展开」就是全量渲染：长队列由容器**内部滚动**
           容纳（有界 max-h + overflow-y-auto + overscroll-contain），既不截断到
-          N 条、也没有第二层「显示全部」（footer 已删除）。 */}
+          N 条、也没有第二层「显示全部」（footer 已删除）。
+
+          拖拽期间按**预览顺序**渲染（松手前就重排）；move/up/cancel 挂在容器上，
+          因为指针捕获就挂在容器上（卡片会被重排，柄上捕获会丢）。 */}
       {collapsed ? null : (
         <div
           data-testid="staging-list"
           ref={listRef}
-          className="mt-1 flex max-h-[min(50vh,22rem)] flex-col gap-1 overflow-y-auto overscroll-contain"
+          onPointerMove={handleDragMove}
+          onPointerUp={() => handleDragEnd(true)}
+          onPointerCancel={() => handleDragEnd(false)}
+          className={cn(
+            'mt-1 flex max-h-[min(50vh,22rem)] flex-col gap-1 overflow-y-auto overscroll-contain',
+            session && 'cursor-grabbing',
+          )}
         >
-          {items.map((item, i) => (
-            <QueueCard
-              key={item.msg_id}
-              item={item}
-              index={i}
-              isHead={i === 0}
-              busy={busy}
-              onCancel={handleCancel}
-              onInterject={onInterject}
-              leaving={leavingIDs.has(item.msg_id)}
-              dragEnabled={Boolean(onReorder) && Boolean(item.msg_id)}
-              dragging={dragID === item.msg_id}
-              dropEdge={dropTarget?.id === item.msg_id ? (dropTarget.before ? 'before' : 'after') : null}
-              handleProps={{
-                onPointerDown: (e) => handleHandleDown(e, item.msg_id),
-                onPointerMove: handleDragMove,
-                onPointerUp: () => handleDragEnd(true),
-                onPointerCancel: () => handleDragEnd(false),
-              }}
-            />
-          ))}
+          {renderOrder.map((id, i) => {
+            const item = byID.get(id)
+            if (!item) return null
+            return (
+              <QueueCard
+                key={id}
+                item={item}
+                index={i}
+                isHead={i === 0}
+                busy={busy}
+                onCancel={handleCancel}
+                onInterject={onInterject}
+                leaving={leavingIDs.has(id)}
+                entering={enteringIDs.has(id)}
+                dragEnabled={Boolean(onReorder) && Boolean(id)}
+                slot={session?.id === id}
+                handleProps={{ onPointerDown: (e) => handleHandleDown(e, id) }}
+              />
+            )
+          })}
         </div>
       )}
+
+      {/* 幽灵：按下那一刻的卡片快照，fixed 跟指针（transform 走合成层，不触发布局）。
+          portal 到 body ⇒ 不被列表的滚动容器裁剪、不参与列表布局（列表总高不变）、
+          也不参与命中判定（pointer-events: none），与占位槽互不干扰。 */}
+      {session
+        ? createPortal(
+            <div
+              ref={ghostRef}
+              data-testid="staging-drag-ghost"
+              aria-hidden="true"
+              className="staging-drag-ghost staging-card"
+              style={{
+                position: 'fixed',
+                pointerEvents: 'none',
+                left: session.rect.left,
+                top: session.rect.top,
+                width: session.rect.width,
+                height: session.rect.height,
+              }}
+            >
+              <div ref={ghostInnerRef} className="staging-drag-ghost-inner" />
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   )
 })
