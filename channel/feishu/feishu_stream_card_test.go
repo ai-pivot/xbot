@@ -111,6 +111,56 @@ func (f *fakeFeishu) contentCalls() []cardCall {
 	return out
 }
 
+// callsToElement returns the content pushes targeting one element_id.
+func (f *fakeFeishu) callsToElement(elementID string) []cardCall {
+	var out []cardCall
+	suffix := "/elements/" + elementID + "/content"
+	for _, c := range f.snapshot() {
+		if strings.HasSuffix(c.Path, suffix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// decodeCardField unwraps the full-card update body:
+// {"card":{"type":"card_json","data":"<card json>"}, ...}.
+func decodeCardField(t *testing.T, body string) map[string]any {
+	t.Helper()
+	var outer map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &outer); err != nil {
+		t.Fatalf("decode update body: %v (%s)", err, body)
+	}
+	cardField, ok := outer["card"]
+	if !ok {
+		t.Fatalf("update body has no card field: %s", body)
+	}
+	var inner map[string]json.RawMessage
+	if err := json.Unmarshal(cardField, &inner); err != nil {
+		t.Fatalf("decode card field: %v", err)
+	}
+	var encoded string
+	if err := json.Unmarshal(inner["data"], &encoded); err != nil {
+		t.Fatalf("card.data is not an encoded string: %v", err)
+	}
+	var card map[string]any
+	if err := json.Unmarshal([]byte(encoded), &card); err != nil {
+		t.Fatalf("decode card json: %v (%s)", err, encoded)
+	}
+	return card
+}
+
+// rememberInboundMessageForTest seeds the reply target the card will be sent as
+// a reply to (normally written by onMessage).
+func (f *FeishuChannel) rememberInboundMessageForTest(chatID, msgID string) {
+	f.inboundMsgIDsMu.Lock()
+	defer f.inboundMsgIDsMu.Unlock()
+	if f.inboundMsgIDs == nil {
+		f.inboundMsgIDs = map[string]string{}
+	}
+	f.inboundMsgIDs[chatID] = msgID
+}
+
 // cardUpdates returns the full-card update calls (PUT /cards/:id).
 func (f *fakeFeishu) cardUpdates() []cardCall {
 	var out []cardCall
@@ -205,11 +255,26 @@ func TestRenderCard_PerIterationLayout(t *testing.T) {
 	if title := panelTitle(elems[0]); !strings.Contains(title, "思考") {
 		t.Errorf("thinking title: got %q", title)
 	}
+	// The thinking panel owns its own streamable element (thinking streams
+	// independently of the answer text).
+	thinkElems := mapElements(t, elems[0]["elements"])
+	if thinkElems[0]["element_id"] != reasoningElementID(1) {
+		t.Errorf("thinking element id: got %v, want %s", thinkElems[0]["element_id"], reasoningElementID(1))
+	}
 	if elems[1]["content"] != "answer one" {
 		t.Errorf("elem1 content: got %v", elems[1]["content"])
 	}
-	if !strings.Contains(elems[2]["content"].(string), "ls -la") {
-		t.Errorf("tool row should carry the command: %v", elems[2]["content"])
+	// Each tool is an EXPANDABLE panel whose header carries the command and
+	// whose body holds the arguments (Web parity: pills expand to details).
+	if elems[2]["tag"] != "collapsible_panel" {
+		t.Fatalf("tool row must be an expandable panel, got %v", elems[2]["tag"])
+	}
+	if title := panelTitle(elems[2]); !strings.Contains(title, "ls -la") {
+		t.Errorf("tool panel title should carry the command: %q", title)
+	}
+	toolBody := mapElements(t, elems[2]["elements"])
+	if len(toolBody) == 0 || !strings.Contains(toolBody[0]["content"].(string), "ls -la") {
+		t.Errorf("tool panel body should show the args: %v", toolBody)
 	}
 
 	// Iteration 2: thinking panel → the STREAMING content element.
@@ -286,13 +351,106 @@ func TestToolLine_PrefersSummaryThenArgs(t *testing.T) {
 	if !strings.Contains(withArgs, "/tmp/x.go") {
 		t.Errorf("args row should surface the path: %q", withArgs)
 	}
-	if !strings.Contains(withArgs, "运行中") {
-		t.Errorf("running row should be labelled 运行中: %q", withArgs)
+	if !strings.Contains(withArgs, "执行中") {
+		t.Errorf("running row should be labelled 执行中: %q", withArgs)
 	}
 
 	failed := toolLine(streamTool{name: "Shell", status: "error", args: `{"command":"boom"}`})
-	if !strings.Contains(failed, "失败") || !strings.Contains(failed, "red") {
+	if !strings.Contains(failed, "失败") {
 		t.Errorf("failed row: %q", failed)
+	}
+}
+
+func TestToolLine_ThreeStates(t *testing.T) {
+	// Web parity: generating (args still streaming) / executing / done, plus error.
+	cases := []struct {
+		status string
+		want   string
+	}{
+		{"generating", "生成参数中"},
+		{"running", "执行中"},
+		{"done", "完成"},
+		{"error", "失败"},
+	}
+	for _, c := range cases {
+		got := toolLine(streamTool{name: "Shell", status: c.status})
+		if !strings.Contains(got, c.want) {
+			t.Errorf("status %q → %q, want it to contain %q", c.status, got, c.want)
+		}
+	}
+	// The three states must be visually distinct.
+	seen := map[string]bool{}
+	for _, c := range cases {
+		line := toolLine(streamTool{name: "Shell", status: c.status})
+		if seen[line] {
+			t.Errorf("status %q renders identically to another state: %q", c.status, line)
+		}
+		seen[line] = true
+	}
+}
+
+func TestReasoningPanel_StreamableElement(t *testing.T) {
+	panel := reasoningPanel(3, "thinking")
+	if panel["tag"] != "collapsible_panel" {
+		t.Fatalf("panel tag: %v", panel["tag"])
+	}
+	if panel["expanded"] != false {
+		t.Error("thinking panel should start collapsed")
+	}
+	inner := mapElements(t, panel["elements"])
+	if inner[0]["element_id"] != reasoningElementID(3) {
+		t.Errorf("element id: got %v", inner[0]["element_id"])
+	}
+	if len(reasoningElementID(3)) > 20 {
+		t.Errorf("element id too long: %q", reasoningElementID(3))
+	}
+	if !strings.Contains(panelTitle(panel), "思考") {
+		t.Errorf("title: %q", panelTitle(panel))
+	}
+	// Every iteration gets its own id (independent streams).
+	if reasoningElementID(1) == reasoningElementID(2) {
+		t.Error("iterations must not share a thinking element id")
+	}
+}
+
+func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+	c.rememberInboundMessageForTest("oc_chat", "om_in")
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{
+		Iteration: 1, Reasoning: "thinking hard", Content: "answer so far",
+		ActiveTools: []protocol.ToolProgress{{
+			Name: "Shell", Label: "Shell", Status: "generating", Iteration: 1,
+			Args: `{"command":"ls -la"}`,
+		}},
+	})
+	// The answer text streams through SendStreamContent (the agent's stream
+	// callback), the thinking through the structured snapshot.
+	c.SendStreamContent("oc_chat", "answer so far", "thinking hard")
+
+	// Thinking streams into its own element.
+	thinkPushes := f.callsToElement(reasoningElementID(1))
+	if len(thinkPushes) == 0 {
+		t.Fatalf("thinking was not streamed; calls: %v", f.snapshot())
+	}
+	// The answer streams into the content element.
+	if len(f.callsToElement(streamCardElementID)) == 0 {
+		t.Error("answer text was not streamed")
+	}
+	// The rendered card carries a generating-state tool panel.
+	update := f.cardUpdates()[len(f.cardUpdates())-1]
+	card := decodeCardField(t, update.Body)
+	elems := cardElements(t, card)
+	found := false
+	for _, e := range elems {
+		if e["tag"] == "collapsible_panel" && strings.Contains(panelTitle(e), "生成参数中") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("card should render a generating tool panel: %v", elems)
 	}
 }
 
@@ -367,7 +525,7 @@ func TestSendProgress_CreatesCardAndStreams(t *testing.T) {
 
 	// Live text goes through the streaming element (typewriter), not a rebuild.
 	c.SendStreamContent("oc_chat", "hello world", "")
-	contents := f.contentCalls()
+	contents := f.callsToElement(streamCardElementID)
 	if len(contents) != 1 {
 		t.Fatalf("content pushes: got %d, want 1", len(contents))
 	}

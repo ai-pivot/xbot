@@ -65,6 +65,9 @@ const (
 	// streamCardToolSummaryRunes bounds a tool summary line so one long command
 	// cannot blow up the card.
 	streamCardToolSummaryRunes = 80
+
+	// streamCardToolDetailBytes bounds the expanded tool detail (args / result).
+	streamCardToolDetailBytes = 1200
 )
 
 // streamCardMinInterval throttles the streaming-text element pushes.
@@ -83,7 +86,26 @@ type streamTool struct {
 	status    string
 	summary   string
 	args      string
+	detail    string
 	elapsedMs int64
+}
+
+// toolStatusLabel maps the engine's tool status to the Web UI's three states
+// (generating = arguments still streaming, executing = running, done) plus the
+// error state.
+func toolStatusLabel(status string) (icon, color, label string) {
+	switch status {
+	case "generating":
+		return "✍️", "grey", "生成参数中"
+	case "pending":
+		return "⏸️", "grey", "等待执行"
+	case "running":
+		return "🔄", "turquoise", "执行中"
+	case "error", "failed":
+		return "❌", "red", "失败"
+	default:
+		return "✅", "green", "完成"
+	}
 }
 
 // streamCardArgKeys are the tool-argument fields surfaced in a tool row, in
@@ -150,6 +172,12 @@ type feishuStreamCard struct {
 	lastCardAt time.Time
 	lastText   string
 	finished   bool
+
+	// Per-iteration thinking stream state (each thinking panel owns its own
+	// streamable element id, so thinking and answer stream independently).
+	lastReasonIter int
+	lastReasoning  string
+	lastReasonAt   time.Time
 }
 
 // newFeishuStreamCard creates the card entity (streaming enabled) and posts it.
@@ -319,7 +347,7 @@ func (c *feishuStreamCard) mergeTool(t *protocol.ToolProgress) {
 	it := c.iter(n)
 	row := streamTool{
 		key: key, name: t.Name, label: t.Label, status: t.Status,
-		summary: t.Summary, args: t.Args, elapsedMs: t.Elapsed,
+		summary: t.Summary, args: t.Args, detail: t.Detail, elapsedMs: t.Elapsed,
 	}
 	if idx, ok := it.toolIndex[key]; ok {
 		it.tools[idx] = row
@@ -342,7 +370,7 @@ func (c *feishuStreamCard) pushText(n int, text string) {
 	it := c.iter(n)
 	it.content = text
 	c.seq++
-	if err := c.setContent(text, c.seq); err != nil {
+	if err := c.setElementContent(streamCardElementID, text, c.seq); err != nil {
 		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream text push failed")
 		return
 	}
@@ -406,7 +434,7 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 			continue
 		}
 		if it.reasoning != "" {
-			elements = append(elements, reasoningPanel(it.reasoning))
+			elements = append(elements, reasoningPanel(n, it.reasoning))
 		}
 		// 当前迭代的正文用可流式元素；已完结迭代用普通 markdown。
 		if n == c.current {
@@ -420,9 +448,7 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 			})
 		}
 		for _, t := range it.tools {
-			elements = append(elements, map[string]any{
-				"tag": "markdown", "content": toolLine(t), "text_size": "notation",
-			})
+			elements = append(elements, toolPanel(t))
 		}
 	}
 	if len(elements) == 0 {
@@ -466,7 +492,9 @@ func currentContent(iters map[int]*streamIteration, current int) string {
 }
 
 // reasoningPanel renders the folded thinking block (web parity: 💭 思考 N 字).
-func reasoningPanel(reasoning string) map[string]any {
+// The inner markdown element carries a per-iteration element id so the thinking
+// text streams independently of the answer text.
+func reasoningPanel(n int, reasoning string) map[string]any {
 	title := fmt.Sprintf("💭 思考 %d 字", len([]rune(reasoning)))
 	return map[string]any{
 		"tag":      "collapsible_panel",
@@ -488,40 +516,113 @@ func reasoningPanel(reasoning string) map[string]any {
 		"vertical_spacing": "4px",
 		"padding":          "8px 8px 8px 8px",
 		"elements": []map[string]any{
-			{"tag": "markdown", "content": reasoning, "text_size": "notation"},
+			{
+				"tag": "markdown", "element_id": reasoningElementID(n),
+				"content": reasoning, "text_size": "notation",
+			},
 		},
 	}
 }
 
-// toolLine renders one tool row: `✅ **Shell** · ls -la · 12ms`.
+// reasoningElementID is the streamable element id of iteration n's thinking.
+// Feishu element ids allow letters/digits/underscore, ≤20 chars.
+func reasoningElementID(n int) string {
+	return fmt.Sprintf("think_%d", n)
+}
+
+// toolLine renders the ONE-LINE header of a tool row:
+// `✅ Shell · ls -la · 12ms · 完成`.
 func toolLine(t streamTool) string {
-	icon, color, state := "✅", "green", "完成"
-	switch t.status {
-	case "running", "generating", "pending":
-		icon, color, state = "🔄", "turquoise", "运行中"
-	case "error", "failed":
-		icon, color, state = "❌", "red", "失败"
-	}
+	icon, _, state := toolStatusLabel(t.status)
 	label := t.label
 	if label == "" {
 		label = t.name
 	}
-	parts := []string{fmt.Sprintf("%s **%s**", icon, label)}
+	parts := []string{fmt.Sprintf("%s %s", icon, label)}
 	if detail := toolDetail(t); detail != "" {
 		parts = append(parts, detail)
 	}
 	if t.elapsedMs > 0 {
 		parts = append(parts, fmt.Sprintf("%dms", t.elapsedMs))
 	}
-	return fmt.Sprintf("%s · <font color='%s'>%s</font>", strings.Join(parts, " · "), color, state)
+	return fmt.Sprintf("%s · %s", strings.Join(parts, " · "), state)
 }
 
-// setContent pushes the full text into the streaming element.
+// toolPanel renders one tool as an EXPANDABLE row (Web parity: each tool pill
+// expands into its arguments + result). The header carries the one-line summary
+// as plain text (an emoji already encodes the state, so no colour markup is
+// needed inside a header title).
+func toolPanel(t streamTool) map[string]any {
+	body := make([]string, 0, 2)
+	if args := prettyToolArgs(t.args); args != "" {
+		body = append(body, "**参数**\n```json\n"+args+"\n```")
+	}
+	if out := toolOutput(t); out != "" {
+		body = append(body, "**结果**\n"+out)
+	}
+	if len(body) == 0 {
+		body = append(body, "（无详细输出）")
+	}
+
+	return map[string]any{
+		"tag":      "collapsible_panel",
+		"expanded": false,
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag": "plain_text", "content": toolLine(t),
+				"text_color": "grey", "text_size": "notation",
+			},
+			"vertical_align": "center",
+			"icon": map[string]any{
+				"tag": "standard_icon", "token": streamCardPanelIconToken,
+				"color": "grey", "size": "16px 16px",
+			},
+			"icon_position":       "right",
+			"icon_expanded_angle": -180,
+		},
+		"border":           map[string]any{"color": "grey", "corner_radius": "5px"},
+		"vertical_spacing": "4px",
+		"padding":          "8px 8px 8px 8px",
+		"elements": []map[string]any{
+			{"tag": "markdown", "content": strings.Join(body, "\n\n"), "text_size": "notation"},
+		},
+	}
+}
+
+// prettyToolArgs indents the raw tool arguments for the expanded view.
+func prettyToolArgs(args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err != nil {
+		return tools.TruncateHeadPreview(args, streamCardToolDetailBytes)
+	}
+	pretty, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return tools.TruncateHeadPreview(args, streamCardToolDetailBytes)
+	}
+	return tools.TruncateHeadPreview(string(pretty), streamCardToolDetailBytes)
+}
+
+// toolOutput returns the tool's result text for the expanded view.
+func toolOutput(t streamTool) string {
+	if t.detail != "" {
+		return tools.TruncateHeadPreview(t.detail, streamCardToolDetailBytes)
+	}
+	if t.summary != "" {
+		return tools.TruncateHeadPreview(t.summary, streamCardToolDetailBytes)
+	}
+	return ""
+}
+
+// setElementContent pushes the full text into one streamable element.
 // The caller must hold c.mu.
-func (c *feishuStreamCard) setContent(text string, seq int) error {
+func (c *feishuStreamCard) setElementContent(elementID, text string, seq int) error {
 	req := larkcardkit.NewContentCardElementReqBuilder().
 		CardId(c.cardID).
-		ElementId(streamCardElementID).
+		ElementId(elementID).
 		Body(larkcardkit.NewContentCardElementReqBodyBuilder().
 			Content(text).
 			Sequence(seq).
@@ -537,6 +638,44 @@ func (c *feishuStreamCard) setContent(text string, seq int) error {
 		return fmt.Errorf("stream card content: code=%d msg=%s", resp.Code, resp.Msg)
 	}
 	return nil
+}
+
+// pushReasoning streams iteration n's thinking into its own element — thinking
+// and the answer stream independently (Feishu's content API is per element).
+func (c *feishuStreamCard) pushReasoning(n int, text string) {
+	if n <= 0 || text == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.finished {
+		return
+	}
+	if n != c.lastReasonIter {
+		c.lastReasonIter, c.lastReasoning, c.lastReasonAt = n, "", time.Time{}
+	}
+	if text == c.lastReasoning || time.Since(c.lastReasonAt) < streamCardMinInterval {
+		return
+	}
+	c.seq++
+	if err := c.setElementContent(reasoningElementID(n), text, c.seq); err != nil {
+		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: thinking push failed")
+		return
+	}
+	c.lastReasoning = text
+	c.lastReasonAt = time.Now()
+}
+
+// pushCurrentReasoning streams the current iteration's thinking, if any.
+func (c *feishuStreamCard) pushCurrentReasoning() {
+	c.mu.Lock()
+	n := c.current
+	var text string
+	if it := c.iters[n]; it != nil {
+		text = it.reasoning
+	}
+	c.mu.Unlock()
+	c.pushReasoning(n, text)
 }
 
 // updateCard replaces the whole card.
@@ -622,31 +761,40 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 		return
 	}
 	card.applyProgress(payload)
+	// Layout first (creates the thinking panel + its element id on iteration
+	// change), then stream the thinking text into that element.
 	card.syncLayout(false)
+	card.pushCurrentReasoning()
 }
 
 // SendStreamContent implements channel.ProgressSender: the live answer text of
-// the current iteration, streamed into the card with a typewriter.
+// the current iteration, streamed into the card with a typewriter. The reasoning
+// argument (thinking text) streams into its own element.
 func (f *FeishuChannel) SendStreamContent(chatID, content, reasoning string) {
-	if content == "" {
+	if content == "" && reasoning == "" {
 		return
 	}
 	card, ok := f.ensureStreamCard(chatID)
 	if !ok {
 		return
 	}
+
 	iter := 1
 	card.mu.Lock()
 	if card.current > 0 {
 		iter = card.current
 	}
-	card.mu.Unlock()
 	if reasoning != "" {
-		card.mu.Lock()
 		card.iter(iter).reasoning = reasoning
-		card.mu.Unlock()
 	}
-	card.pushText(iter, content)
+	card.mu.Unlock()
+
+	if reasoning != "" {
+		card.pushReasoning(iter, reasoning)
+	}
+	if content != "" {
+		card.pushText(iter, content)
+	}
 }
 
 // ensureStreamCard returns the open card for chatID, creating (and posting) it on
