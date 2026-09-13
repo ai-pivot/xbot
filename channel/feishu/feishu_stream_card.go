@@ -617,7 +617,7 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 	if payload == nil {
 		return
 	}
-	card, ok := f.ensureStreamCard(chatID, "")
+	card, ok := f.ensureStreamCard(chatID)
 	if !ok {
 		return
 	}
@@ -631,7 +631,7 @@ func (f *FeishuChannel) SendStreamContent(chatID, content, reasoning string) {
 	if content == "" {
 		return
 	}
-	card, ok := f.ensureStreamCard(chatID, "")
+	card, ok := f.ensureStreamCard(chatID)
 	if !ok {
 		return
 	}
@@ -650,9 +650,14 @@ func (f *FeishuChannel) SendStreamContent(chatID, content, reasoning string) {
 }
 
 // ensureStreamCard returns the open card for chatID, creating (and posting) it on
-// first use. Returns ok=false when streaming is unavailable (the caller then
-// falls back to the legacy static card).
-func (f *FeishuChannel) ensureStreamCard(chatID, replyTo string) (*feishuStreamCard, bool) {
+// first use. The card is posted as a REPLY to the chat's latest inbound message —
+// `im.message.reply` only needs that parent id, whereas `im.message.create`
+// requires a receive_id_type that our synthetic chat ids cannot provide (Feishu
+// rejects e.g. "chat_…" as neither an open_id nor a chat_id).
+//
+// Returns ok=false when streaming is unavailable (the caller then falls back to
+// the legacy static card).
+func (f *FeishuChannel) ensureStreamCard(chatID string) (*feishuStreamCard, bool) {
 	if f.client == nil {
 		return nil, false
 	}
@@ -667,7 +672,7 @@ func (f *FeishuChannel) ensureStreamCard(chatID, replyTo string) (*feishuStreamC
 	}
 	f.streamCardsMu.Unlock()
 
-	card, err := newFeishuStreamCard(f.client, f.streamCardTitle(), chatID, replyTo)
+	card, err := newFeishuStreamCard(f.client, f.streamCardTitle(), chatID, f.lastInboundMessageID(chatID))
 	if err != nil {
 		log.WithError(err).Warn("Feishu: stream card unavailable, using static card")
 		f.streamCardsMu.Lock()
@@ -684,6 +689,13 @@ func (f *FeishuChannel) ensureStreamCard(chatID, replyTo string) (*feishuStreamC
 	f.streamCards[chatID] = card
 	f.streamCardsMu.Unlock()
 	return card, true
+}
+
+// lastInboundMessageID returns the reply target for a chat (empty when unknown).
+func (f *FeishuChannel) lastInboundMessageID(chatID string) string {
+	f.inboundMsgIDsMu.Lock()
+	defer f.inboundMsgIDsMu.Unlock()
+	return f.inboundMsgIDs[chatID]
 }
 
 // streamCardSend renders the turn's FINAL send through the open card (finalize).

@@ -204,15 +204,22 @@ type FeishuChannel struct {
 	// Returns a human-readable result message.
 	linkAccountFn func(code, channel, channelUserID string) (string, error)
 
-	// CardKit streaming progress cards, keyed by chatID. The agent routes a
-	// turn's ack/progress/final sends through ONE message; rendering that
-	// message as a streaming card entity (feishu_stream_card.go) gives the
-	// typewriter UX instead of rebuilding + patching a whole card per tick.
+	// CardKit streaming progress cards, keyed by chatID. The card is posted as a
+	// REPLY to the user's inbound message: `im.message.reply` needs only the
+	// parent message_id, while `im.message.create` needs a correct
+	// receive_id_type that cannot be derived from our synthetic chat ids
+	// (e.g. "chat_…" — Feishu rejects it as neither open_id nor chat_id).
 	streamCardsMu sync.Mutex
 	streamCards   map[string]*feishuStreamCard
-	// streamCardBroken latches when card entity creation fails (typically the
-	// app lacks cardkit:card:write) so we stop retrying and use the legacy card.
+	// streamCardBroken latches when card entity creation fails for a
+	// non-recoverable reason (typically the app lacks cardkit:card:write) so we
+	// stop retrying and use the legacy static card.
 	streamCardBroken bool
+
+	// inboundMsgIDs remembers the latest inbound message id per chat so the
+	// progress card can be posted as a reply to it.
+	inboundMsgIDsMu sync.Mutex
+	inboundMsgIDs   map[string]string
 }
 
 type feishuPendingApproval struct {
@@ -250,6 +257,7 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		approvals:     make(map[string]*feishuPendingApproval),
 		askUsers:      make(map[string]*feishuPendingAskUser),
 		streamCards:   make(map[string]*feishuStreamCard),
+		inboundMsgIDs: make(map[string]string),
 	}
 }
 
@@ -1171,6 +1179,14 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		"chat_type":  chatType,
 		"msg_type":   msgType,
 	}
+	// Remember the inbound message so the CardKit progress card can be posted as
+	// a REPLY to it (reply only needs the parent id — no receive_id_type guess).
+	f.inboundMsgIDsMu.Lock()
+	if f.inboundMsgIDs == nil {
+		f.inboundMsgIDs = map[string]string{}
+	}
+	f.inboundMsgIDs[replyTo] = messageID
+	f.inboundMsgIDsMu.Unlock()
 	if mentionScope == "at_all_optional" {
 		metadata[bus.MetadataReplyPolicy] = bus.ReplyPolicyOptional
 	}
