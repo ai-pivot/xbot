@@ -86,24 +86,47 @@ function rowMemoryKey(row: ChatMessage, index: number): string {
 }
 
 /** 首次访问（无记忆）时的内容感知估算：量级正确即可，精度由实测修正。 */
-function estimateRowByContent(row: ChatMessage): number {
+/**
+ * 行高估算 —— **按 row 对象记忆化**（WeakMap）。
+ *
+ * ⚠️ 为什么必须记忆化（2026-09-13「加载的历史消息长了就卡」根治）：
+ * TanStack 每次重算 offsets 都会为**尚未实测的每一行**调用 `estimateSize` →
+ * `estimateRowByContent`。函数体对 assistant row **两次遍历该行所有迭代**
+ * （tools + iterLen）→ 每帧总代价 = **O(已加载的全部迭代数)**，与用户两条观察
+ * 完全吻合（busy 长 turn 卡；loadMore 拉长历史后同样卡；新 turn 很小也卡）。
+ * 未变化的 row 对象身份稳定（integrate/derive 的恒等复用），WeakMap 命中即 O(1)。
+ */
+const estimateCache = new WeakMap<ChatMessage, number>()
+/** 测试钩子：统计真正的计算次数（记忆化命中不计）。 */
+export const __estimateRowByContentComputeCount = { value: 0 }
+
+export function estimateRowByContent(row: ChatMessage): number {
+  const cached = estimateCache.get(row)
+  if (cached !== undefined) return cached
+  __estimateRowByContentComputeCount.value++
+  let result: number
   if (row.role === 'user') {
     const len = (row.content || '').length
-    return Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
+    result = Math.min(Math.max(52 + Math.ceil(len / 60) * 19, 60), 400)
+  } else {
+    const iters = row.iterations ?? []
+    // 单趟遍历同时累加 tools / iterLen（旧实现两趟 reduce + 每趟遍历全迭代）。
+    let tools = 0
+    let iterLen = 0
+    for (const it of iters) {
+      tools += it.tools?.length ?? 0
+      iterLen += (it.content?.length ?? 0) + (it.reasoning?.length ?? 0)
+    }
+    // 高度估算必须计入 iteration 的 content/reasoning（展开思考后巨块的主体，
+    // iteration_count × thinking 字段不在 row.content 里）。宁可高估：overscan
+    // 覆盖的像素提前量随 estimate 增大，大行在滚到视口前就完成 mount；
+    // 实测后 heightMemory 覆盖估算。
+    const len = (row.content || '').length + iterLen
+    const lines = Math.ceil(len / 90) || 1
+    result = Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
   }
-  const iters = row.iterations ?? []
-  const tools = iters.reduce((a, it) => a + (it.tools?.length ?? 0), 0)
-  // 高度估算必须计入 iteration 的 content/reasoning（展开思考后巨块的主体，
-  // iteration_count × thinking 字段不在 row.content 里）。旧实现只算
-  // row.content + cap 1200 —— reasoning 巨块实际 2000-5000px，低估 3-5×
-  // → TanStack range 按低估高度计算 → overscan 前瞻量不足 → 大行首 mount
-  // 落在滚动临界帧（Trace-20260829T181624 的 100ms mount commit 直接掉帧）。
-  // 宁可高估：overscan（items 数固定）覆盖的像素提前量随 estimate 增大，
-  // 大行在滚到视口前就完成 mount；实测后 heightMemory 覆盖估算。
-  const iterLen = iters.reduce((a, it) => a + (it.content?.length ?? 0) + (it.reasoning?.length ?? 0), 0)
-  const len = (row.content || '').length + iterLen
-  const lines = Math.ceil(len / 90) || 1
-  return Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
+  estimateCache.set(row, result)
+  return result
 }
 
 // ── scroll → rAF 合帧（2026-08-29 滚动掉帧根治，Trace-20260829T181624）──────
