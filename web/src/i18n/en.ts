@@ -288,6 +288,11 @@ const en: Translations = {
       renderFailed: 'Render failed',
     },
     goal: {
+      save: 'Save',
+      cancel: 'Cancel',
+      expand: 'Expand',
+      collapse: 'Collapse',
+      editing: 'Edit goal',
       inputPlaceholder: 'Enter a goal',
       clickToEdit: 'Click to edit the goal',
       completed: 'Completed',
