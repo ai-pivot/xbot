@@ -1,21 +1,27 @@
 /**
  * iterationHeight 单元守护（迭代级窗口化的地基）。
  *
- * 关键契约（2026-09-13「手机上 iter 多了还是很卡」根治）：
- *   1. 高度只能来自「实测缓存」或「内容估算」——**绝不允许常数占位**
- *      （曾用 `contain-intrinsic-size: auto 320px` → 真实块远高于 320px →
- *       向上滚动鬼打墙：总高边滚边涨）；
- *   2. 估算必须随内容量单调增长（±20% 量级），不能退化成常数；
- *   3. 实测缓存跨挂载复用（卸载/重挂载后高度仍精确 → 滚动不漂）。
+ * 契约（2026-09-13 首版窗口化事故后确立）：
+ *   1. **瞬态测量不得结算**：单次测量（哪怕值是 26.66px）永远不 settled ——
+ *      只有同值连续两次、间隔 ≥ ITERATION_HEIGHT_SETTLE_MS 才 settled；
+ *      只有 settled 的高度才允许冻结内容（否则用户现场那种
+ *      `data-window-muted="true" style="height: 26.6562px"` 空块会出现：
+ *      内容被错误的过小高度卸载后再无测量机会 → 永久消失）；
+ *   2. **高度变化立即解冻**：变高/变矮 → settled 清除 → 必须重新稳定；
+ *   3. 估算只用于「从未渲染过」的块显示占位，且必须随内容单调增长；
+ *   4. 非法高度（0/负数/NaN）被忽略。
  */
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  ITERATION_HEIGHT_SETTLE_MS,
   clearIterationHeightCache,
   estimateIterationHeight,
   getCachedIterationHeight,
+  isIterationHeightSettled,
   iterationHeightKey,
-  setCachedIterationHeight,
+  recordIterationHeight,
+  unsettleIterationHeight,
 } from '@/components/agent/iterationHeight'
 import type { WebIteration } from '@/types/shared'
 
@@ -50,37 +56,69 @@ describe('estimateIterationHeight', () => {
   })
 })
 
-describe('iterationHeightCache', () => {
+describe('recordIterationHeight / settle 语义', () => {
   beforeEach(() => clearIterationHeightCache())
+  const key = iterationHeightKey(1084, 810)
 
-  it('实测高度可写可读，跨「卸载/重挂载」复用（key 只由 turnID+iteration 决定）', () => {
-    const key = iterationHeightKey(7, 3)
-    expect(getCachedIterationHeight(key)).toBeUndefined()
-    expect(setCachedIterationHeight(key, 812)).toBe(true)
+  it('⛔ 单次瞬态测量永远不结算（内容因此不会被错误高度冻结）', () => {
+    const first = recordIterationHeight(key, 26.6562, 1000)
+    expect(first.changed).toBe(true)
+    expect(first.settled).toBe(false)
+    expect(isIterationHeightSettled(key)).toBe(false)
+    // 时间过去了但只测过一次 → 仍不结算
+    expect(recordIterationHeight(key, 26.6562, 1000 + ITERATION_HEIGHT_SETTLE_MS * 5).settled).toBe(true)
+  })
+
+  it('同值两次且间隔 ≥ SETTLE_MS 才结算（这才是可信高度）', () => {
+    recordIterationHeight(key, 812, 1000)
+    expect(recordIterationHeight(key, 812, 1000 + ITERATION_HEIGHT_SETTLE_MS - 1).settled).toBe(false)
+    expect(recordIterationHeight(key, 812.5, 1000 + ITERATION_HEIGHT_SETTLE_MS).settled).toBe(true)
+    expect(isIterationHeightSettled(key)).toBe(true)
+  })
+
+  it('⚠️ 高度变化立即解冻（用户现场：先 26px 后变高）', () => {
+    recordIterationHeight(key, 26.6562, 1000)
+    recordIterationHeight(key, 26.6562, 1000 + ITERATION_HEIGHT_SETTLE_MS) // settled
+    expect(isIterationHeightSettled(key)).toBe(true)
+    const changed = recordIterationHeight(key, 812, 2000) // 内容定形后真实高度
+    expect(changed.changed).toBe(true)
+    expect(changed.settled).toBe(false)
+    expect(isIterationHeightSettled(key)).toBe(false)
     expect(getCachedIterationHeight(key)).toBe(812)
-    // 同 key 再报一次相同高度 → 不算变化（避免无意义重渲染）
-    expect(setCachedIterationHeight(key, 812.4)).toBe(false)
   })
 
-  it('±1px 内的抖动不触发更新，超过则更新（滚动时高度必须精确）', () => {
-    const key = iterationHeightKey(1, 1)
-    setCachedIterationHeight(key, 300)
-    expect(setCachedIterationHeight(key, 300.8)).toBe(false)
-    expect(setCachedIterationHeight(key, 345)).toBe(true)
-    expect(getCachedIterationHeight(key)).toBe(345)
+  it('解冻后必须重新稳定，不得立即再冻结', () => {
+    recordIterationHeight(key, 300, 0)
+    recordIterationHeight(key, 300, ITERATION_HEIGHT_SETTLE_MS)
+    unsettleIterationHeight(key, 400)
+    expect(isIterationHeightSettled(key)).toBe(false)
+    expect(recordIterationHeight(key, 300, 401).settled).toBe(false)
+    expect(recordIterationHeight(key, 300, 401 + ITERATION_HEIGHT_SETTLE_MS).settled).toBe(true)
   })
 
-  it('非法高度（0/负数/NaN）被忽略', () => {
-    const key = iterationHeightKey(1, 2)
-    expect(setCachedIterationHeight(key, 0)).toBe(false)
-    expect(setCachedIterationHeight(key, -5)).toBe(false)
-    expect(setCachedIterationHeight(key, Number.NaN)).toBe(false)
+  it('±2px 内视为同值（子像素抖动不阻止结算）', () => {
+    recordIterationHeight(key, 300, 0)
+    expect(recordIterationHeight(key, 301.5, ITERATION_HEIGHT_SETTLE_MS).settled).toBe(true)
+  })
+
+  it('超过 ±2px 视为变化（必须重新稳定）', () => {
+    recordIterationHeight(key, 300, 0)
+    expect(recordIterationHeight(key, 303, ITERATION_HEIGHT_SETTLE_MS).changed).toBe(true)
+    expect(isIterationHeightSettled(key)).toBe(false)
+  })
+
+  it('非法高度（0/负数/NaN/Infinity）被忽略', () => {
+    expect(recordIterationHeight(key, 0, 0).changed).toBe(false)
+    expect(recordIterationHeight(key, -5, 0).changed).toBe(false)
+    expect(recordIterationHeight(key, Number.NaN, 0).changed).toBe(false)
+    expect(recordIterationHeight(key, Number.POSITIVE_INFINITY, 0).changed).toBe(false)
     expect(getCachedIterationHeight(key)).toBeUndefined()
+    expect(isIterationHeightSettled(key)).toBe(false)
   })
 
   it('不同 turn / iteration 互不串味', () => {
-    setCachedIterationHeight(iterationHeightKey(1, 1), 100)
-    setCachedIterationHeight(iterationHeightKey(2, 1), 200)
+    recordIterationHeight(iterationHeightKey(1, 1), 100, 0)
+    recordIterationHeight(iterationHeightKey(2, 1), 200, 0)
     expect(getCachedIterationHeight(iterationHeightKey(1, 1))).toBe(100)
     expect(getCachedIterationHeight(iterationHeightKey(2, 1))).toBe(200)
   })

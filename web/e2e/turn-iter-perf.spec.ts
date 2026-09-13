@@ -246,8 +246,7 @@ function historyWith(n: number): unknown[] {
   }))
 }
 
-test.describe('iteration windowing keeps mounted DOM independent of iteration count', () => {
-  for (const n of [15, 60]) {
+test.describe('iteration windowing keeps mounted DOM independent of iteration count', () => {  for (const n of [15, 60]) {
     test(`N=${n}: bounded mounted contents on a mobile viewport`, async ({ browser }) => {
       const context = await browser.newContext({
         viewport: { width: 390, height: 844 },
@@ -325,4 +324,117 @@ test.describe('iteration windowing keeps mounted DOM independent of iteration co
       await context.close()
     })
   }
+})
+
+/**
+ * ⛔ 窗口化正确性守护（2026-09-13 用户现场：
+ * `<div class="iter-block" data-window-muted="true" style="height: 26.6562px">` ——
+ * 「部分 tool 渲染为空」）。
+ *
+ * 根因：首版窗口化把**瞬态测量**当成可信高度 —— 块刚挂载时 RO 可能先报出过小高度
+ * （字体/异步 markdown 未定形），据此卸载内容后再无测量机会 → 内容与高度双永久错误。
+ *
+ * 本测试复刻该时序：**先让内容被压成 26px，250ms 后放开**（模拟"先测小、后定形"），
+ * 断言被窗口化卸载的块不得停留在瞬态高度上（否则内容就是空的）。
+ */
+test.describe('windowing never freezes a transient (collapsed) height', () => {
+  test('blocks measure small first then grow: muted blocks must not stay collapsed', async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+
+    await page.addInitScript(() => {
+      const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+      const w = window as unknown as SSEMockState
+      w.__sseListeners = listeners
+      class MockEventSource {
+        readyState = 1
+        onopen: ((ev: Event) => void) | null = null
+        onerror: ((ev: Event) => void) | null = null
+        constructor(public url: string) {
+          setTimeout(() => this.onopen?.(new Event('open')), 0)
+        }
+        addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          if (!listeners[type]) listeners[type] = new Set()
+          listeners[type].add(handler)
+        }
+        removeEventListener(type: string, handler: (ev: MessageEvent) => void) {
+          listeners[type]?.delete(handler)
+        }
+        close() {
+          for (const k of Object.keys(listeners)) listeners[k].clear()
+        }
+      }
+      ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+    })
+
+    await setupMock(page)
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(2000)
+
+    await emitSSE(page, 'session', {
+      type: 'session',
+      session: { action: 'busy', chat_id: 'chat-1', channel: 'web' },
+    })
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'turn_started',
+        turn_id: 1,
+        turn_start: { trigger: 'user', request_id: 'r1' },
+        chat_id: 'web:chat-1',
+      },
+    })
+
+    // 先压扁：模拟"字体/异步 markdown 未定形"时的过小高度
+    await page.addStyleTag({ content: '.iter-block > * { max-height: 26px; overflow: hidden; }' })
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: 'done',
+      seq: 999,
+      turn_id: 1,
+      chat_id: 'web:chat-1',
+      progress_history: JSON.stringify(historyWith(40)),
+    })
+    await page.waitForTimeout(250)
+    // 放开（"定形"）
+    await page.addStyleTag({ content: '.iter-block > * { max-height: none; }' })
+    await page.waitForTimeout(2500)
+
+    const stats = await page.evaluate(() => {
+      const blocks = Array.from(document.querySelectorAll('.iter-block'))
+      const muted = blocks.filter((b) => (b as HTMLElement).dataset.windowMuted === 'true')
+      const mutedHeights = muted.map((b) => Math.round(b.getBoundingClientRect().height))
+      const mounted = blocks.filter((b) => (b as HTMLElement).dataset.windowMuted !== 'true')
+      const mountedHeights = mounted
+        .map((b) => Math.round(b.getBoundingClientRect().height))
+        .filter((h) => h > 0)
+      return {
+        blocks: blocks.length,
+        muted: muted.length,
+        mutedMin: mutedHeights.length ? Math.min(...mutedHeights) : -1,
+        mutedSample: mutedHeights.slice(0, 8),
+        mountedSample: mountedHeights.slice(0, 5),
+      }
+    })
+    console.log('COLLAPSE-GUARD', JSON.stringify(stats))
+
+    // 窗口化确实生效
+    expect(stats.muted).toBeGreaterThan(0)
+    // 被冻结的块不得停留在"瞬态/压扁"的高度上（内容否则就是空的）
+    expect(stats.mutedMin).toBeGreaterThan(100)
+    // 已挂载的块（真实内容）高度应远大于压扁值，佐证内容确实定形了
+    expect(Math.max(...stats.mountedSample)).toBeGreaterThan(200)
+
+    await context.close()
+  })
 })
