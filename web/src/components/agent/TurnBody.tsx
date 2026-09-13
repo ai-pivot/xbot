@@ -445,19 +445,6 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     })
     ioRef.current = io
     roRef.current = ro
-    // ⚠️ 首帧竞态（历史加载的整棵 turn 永不窗口化的根因）：
-    // ref 回调（register）在 commit 阶段执行，本 effect 在其**之后**运行 —— 首个
-    // commit 挂载的块注册时 roRef/ioRef 还是 null（observe 落空），而 setRef 是
-    // useCallback([hKey, register]) 恒定的 → React 不会二次调用它 → 这些块**永远
-    // 不被观测** → 永无高度 → 永不 settle → 永不 muted。于是「从 /api/history 加载
-    // 的长 turn」全量挂载（实测 40×400：3200 块，muted=0），每帧的样式/布局/绘制
-    // 代价 ∝ 迭代数；而 SSE 追加的 turn 因为在 effect 之后才挂载，窗口化正常
-    // （实测 400 迭代 → 395 muted）。修复：观测创建时补观测已注册元素（IO/RO 对
-    // 同一元素重复 observe 幂等，初始回调本就会带上当前尺寸）。
-    for (const el of elements.current.values()) {
-      ro.observe(el)
-      io.observe(el)
-    }
     return () => {
       io.disconnect()
       ro.disconnect()
