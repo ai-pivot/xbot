@@ -65,11 +65,24 @@ const (
 	// streamCardToolSummaryRunes bounds a tool summary line so one long command
 	// cannot blow up the card.
 	streamCardToolSummaryRunes = 80
+
+	// streamCardToolRowRunes bounds what a tool ROW shows: one tool per line must
+	// stay scannable, so the detail is cut (with an ellipsis) well before the
+	// full command fits — otherwise the row degenerates into a wall of text.
+	streamCardToolRowRunes = 40
 )
 
 // streamCardMinInterval throttles the streaming-text element pushes.
 // A var (not a const) so tests can disable/force the throttle.
 var streamCardMinInterval = 250 * time.Millisecond
+
+// streamCardReasonCountMinInterval throttles the thinking-panel HEADER refresh
+// ("💭 思考 N 字"). The thinking TEXT streams through the per-element content API
+// (typewriter), but a panel header can only change via a full-card update — so
+// the character count is refreshed on its own, slower throttle to keep it
+// visibly counting up without flooding the card API.
+// A var (not a const) so tests can force it.
+var streamCardReasonCountMinInterval = 400 * time.Millisecond
 
 // streamCardPanelMinInterval throttles the full-card updates that re-lay out the
 // iterations (thinking blocks / finished iterations / tool rows).
@@ -89,20 +102,20 @@ type streamTool struct {
 
 // toolStatusLabel maps the engine's tool status to the Web UI's three states
 // (generating = arguments still streaming, executing = running, done) plus the
-// error state. No emoji (user feedback 2026-09-13: the ✅ prefix is noise) — the
-// status is rendered as coloured text on the tool's single line.
-func toolStatusLabel(status string) (color, label string) {
+// error state. Emoji are intentional: they make the state scannable at a glance
+// (user 2026-09-13: "一行一个工具并且加回emoji").
+func toolStatusLabel(status string) (icon, color, label string) {
 	switch status {
 	case "generating":
-		return "grey", "生成参数中"
+		return "✍️", "grey", "生成参数中"
 	case "pending":
-		return "grey", "等待执行"
+		return "⏸️", "grey", "等待执行"
 	case "running":
-		return "turquoise", "执行中"
+		return "🔄", "turquoise", "执行中"
 	case "error", "failed":
-		return "red", "失败"
+		return "❌", "red", "失败"
 	default:
-		return "green", "完成"
+		return "✅", "green", "完成"
 	}
 }
 
@@ -176,6 +189,9 @@ type feishuStreamCard struct {
 	lastReasonIter int
 	lastReasoning  string
 	lastReasonAt   time.Time
+	// lastReasonCountAt throttles the thinking-panel HEADER refresh (the character
+	// count in "💭 思考 N 字" can only change via a full-card update).
+	lastReasonCountAt time.Time
 }
 
 // newFeishuStreamCard creates the card entity (streaming enabled) and posts it.
@@ -550,30 +566,47 @@ func reasoningElementID(n int) string {
 	return fmt.Sprintf("think_%d", n)
 }
 
-// toolRow renders ONE iteration's consecutive tools on a single compact line —
-// the Feishu equivalent of Web's pill group (consecutive tool pills sit together,
-// NOT one block per tool). Each chip is just the tool name (+ its key argument)
-// with a coloured status; no emoji, no per-tool fold.
+// toolRow renders the iteration's tools as ONE LINE PER TOOL (user 2026-09-13:
+// "一行一个工具并且加回emoji" — squeezing them onto one line made the command and
+// the output run together into an unreadable blob).
 func toolRow(ts []streamTool) string {
-	chips := make([]string, 0, len(ts))
+	lines := make([]string, 0, len(ts))
 	for _, t := range ts {
-		chips = append(chips, toolChip(t))
+		lines = append(lines, toolChip(t))
 	}
-	return strings.Join(chips, "   ")
+	return strings.Join(lines, "\n")
 }
 
-// toolChip renders one tool as `**Shell** `ls -la` <状态>`.
+// toolChip renders one tool as `<emoji> **Shell** · ls -la · <状态>`.
 func toolChip(t streamTool) string {
-	color, state := toolStatusLabel(t.status)
+	icon, color, state := toolStatusLabel(t.status)
 	label := t.label
 	if label == "" {
 		label = t.name
 	}
-	out := "**" + label + "**"
-	if detail := toolDetail(t); detail != "" {
-		out += " " + detail
+	parts := []string{icon + " **" + label + "**"}
+	if detail := toolDetailShort(t); detail != "" {
+		parts = append(parts, detail)
 	}
-	return fmt.Sprintf("%s <font color='%s'>%s</font>", out, color, state)
+	parts = append(parts, fmt.Sprintf("<font color='%s'>%s</font>", color, state))
+	return strings.Join(parts, " · ")
+}
+
+// toolDetailShort returns a SINGLE bounded line for a tool row.
+//
+// The row must stay readable: the engine's shell summary starts with the whole
+// command followed by its output, so taking the first line unbounded (80 runes,
+// cut mid-word) produced a wall of text ("Shell: cd … && for d in …
+// ════ ferrite ════ … 完成"). 40 runes + ellipsis keeps the row scannable.
+func toolDetailShort(t streamTool) string {
+	line := toolDetail(t)
+	if line == "" {
+		return ""
+	}
+	if r := []rune(line); len(r) > streamCardToolRowRunes {
+		return string(r[:streamCardToolRowRunes]) + "…"
+	}
+	return line
 }
 
 // setElementContent pushes the full text into one streamable element.
@@ -623,6 +656,18 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	}
 	c.lastReasoning = text
 	c.lastReasonAt = time.Now()
+
+	// The thinking TEXT just streamed (typewriter); the panel title still shows the
+	// old character count. A header can only change through a full-card update —
+	// refresh it on its own throttle so "💭 思考 N 字" counts up live.
+	if time.Since(c.lastReasonCountAt) >= streamCardReasonCountMinInterval {
+		if err := c.updateCard(true); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).
+				Debug("Feishu: thinking count refresh failed")
+			return
+		}
+		c.lastCardAt, c.lastReasonCountAt = time.Now(), time.Now()
+	}
 }
 
 // pushCurrentReasoning streams the current iteration's thinking, if any.

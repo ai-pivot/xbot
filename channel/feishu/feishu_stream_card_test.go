@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -186,9 +188,62 @@ func newStreamCardChannel(t *testing.T, f *fakeFeishu) *FeishuChannel {
 
 func fastStreamCard(t *testing.T) {
 	t.Helper()
-	oldText, oldPanel := streamCardMinInterval, streamCardPanelMinInterval
-	streamCardMinInterval, streamCardPanelMinInterval = 0, 0
-	t.Cleanup(func() { streamCardMinInterval, streamCardPanelMinInterval = oldText, oldPanel })
+	oldText, oldPanel, oldCount := streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval
+	streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval = 0, 0, 0
+	t.Cleanup(func() {
+		streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval = oldText, oldPanel, oldCount
+	})
+}
+
+// lastThinkingCount returns the N in the latest rendered "💭 思考 N 字" panel title.
+func lastThinkingCount(t *testing.T, f *fakeFeishu) int {
+	t.Helper()
+	updates := f.cardUpdates()
+	if len(updates) == 0 {
+		t.Fatal("no card update rendered")
+	}
+	card := decodeCardField(t, updates[len(updates)-1].Body)
+	for _, e := range cardElements(t, card) {
+		if e["tag"] != "collapsible_panel" {
+			continue
+		}
+		title := panelTitle(e)
+		if m := thinkingCountRe.FindStringSubmatch(title); m != nil {
+			n, err := strconv.Atoi(m[1])
+			if err != nil {
+				t.Fatalf("bad count in %q: %v", title, err)
+			}
+			return n
+		}
+	}
+	t.Fatalf("no 💭 思考 N 字 panel found in the card")
+	return 0
+}
+
+var thinkingCountRe = regexp.MustCompile(`思考 (\d+) 字`)
+
+// TestReasoningCount_UpdatesLive — 思考字数必须**实时递增**（用户 2026-09-13）。
+// 思考正文走元素级内容 API（打字机），但面板标题只能靠整卡更新刷新 —— 所以
+// 每次思考增长都要（节流地）重算标题里的字数。
+func TestReasoningCount_UpdatesLive(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendStreamContent("oc_chat", "", "第一段思考")
+	first := lastThinkingCount(t, f)
+	if first != len([]rune("第一段思考")) {
+		t.Fatalf("first count: got %d, want %d", first, len([]rune("第一段思考")))
+	}
+
+	c.SendStreamContent("oc_chat", "", "第一段思考，继续第二段思考")
+	second := lastThinkingCount(t, f)
+	if second != len([]rune("第一段思考，继续第二段思考")) {
+		t.Fatalf("second count: got %d, want %d", second, len([]rune("第一段思考，继续第二段思考")))
+	}
+	if second <= first {
+		t.Fatalf("thinking count must count UP live: first=%d second=%d", first, second)
+	}
 }
 
 // mapElements accepts both builder output ([]map[string]any) and decoded JSON
@@ -393,25 +448,41 @@ func TestToolChip_ThreeStates(t *testing.T) {
 	}
 }
 
-// TestToolRow_ConsecutiveToolsShareOneLine — 连续工具聚成一行（Web pill 组形态），
-// 且不含 emoji、不含折叠所需的 collapsible_panel。
-func TestToolRow_ConsecutiveToolsShareOneLine(t *testing.T) {
+// TestToolRow_OneToolPerLineWithEmoji — 形态契约（用户 2026-09-13 明确要求）：
+// **一行一个工具 + emoji**；detail 必须限长，否则长命令会把行糊成一坨
+// （现场："Shell: cd … && for d in … ════ ferrite ════ … 完成"）。
+func TestToolRow_OneToolPerLineWithEmoji(t *testing.T) {
 	row := toolRow([]streamTool{
 		{name: "Shell", status: "done", args: `{"command":"ls -la"}`},
 		{name: "Read", status: "running", args: `{"path":"a.go"}`},
 	})
-	if strings.Contains(row, "\n") {
-		t.Errorf("consecutive tools must share ONE line, got:\n%s", row)
+	lines := strings.Split(row, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("each tool must get its own line, got %d line(s):\n%s", len(lines), row)
 	}
-	for _, want := range []string{"Shell", "Read", "完成", "执行中"} {
+	for _, want := range []string{"Shell", "Read", "✅", "🔄", "完成", "执行中"} {
 		if !strings.Contains(row, want) {
 			t.Errorf("tool row must contain %q (got: %s)", want, row)
 		}
 	}
-	for _, emoji := range []string{"✅", "🔄", "✍️", "❌", "⏸️"} {
-		if strings.Contains(row, emoji) {
-			t.Errorf("tool row must not carry the %s emoji (got: %s)", emoji, row)
-		}
+
+	// 长命令：detail 必须被截断（限长），不能把整行糊满。
+	long := toolChip(streamTool{
+		name:   "Shell",
+		status: "done",
+		args:   `{"command":"cd /home/smith/src && for d in ferrite sglang-b300-glm52 xbot mint-infer; do echo ================ $d ================; done"}`,
+	})
+	if !strings.Contains(long, "…") {
+		t.Errorf("a long command must be truncated with an ellipsis: %s", long)
+	}
+	// detail 本身被限长（标题/状态/字色标记另算）：40 runes + 省略号。
+	detail := toolDetailShort(streamTool{
+		name:   "Shell",
+		status: "done",
+		args:   `{"command":"cd /home/smith/src && for d in ferrite sglang-b300-glm52 xbot mint-infer; do echo ================ $d ================; done"}`,
+	})
+	if r := []rune(detail); len(r) > streamCardToolRowRunes+1 {
+		t.Errorf("tool detail must be bounded to %d runes, got %d: %s", streamCardToolRowRunes+1, len(r), detail)
 	}
 }
 
