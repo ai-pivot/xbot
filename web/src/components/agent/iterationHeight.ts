@@ -1,88 +1,75 @@
 /**
- * iterationHeight.ts — 迭代块高度：实测缓存 + **结算(settle) 语义** + 内容估算。
+ * iterationHeight.ts — 迭代块高度：**实例作用域**的实测缓存 + settle 语义 + 内容估算。
  *
- * 背景（2026-09-13）：
- *   ①「手机上 iter 多了还是很卡，点什么交互都要等几秒」→ 交互成本 ∝ DOM 规模
- *     （移动端 + CPU 4× 实测：N=15 653 节点/样式失效 89ms/开设置 307ms；
- *      N=60 2348 节点/262ms/655ms；contain 三变体无差别）⇒ 必须迭代级窗口化：
- *      远离视口的块只留外壳 + 固定高度，内容卸载。
- *   ② 首版窗口化把**瞬态测量**当可信高度 → 内容被错误的过小高度冻结
- *     （现场：`data-window-muted="true" style="height: 26.6562px"` 的空块，
- *      内容永久消失）—— 因为卸载后再没有测量机会。
+ * 为什么必须"实例作用域"（2026-09-13 用户报告「切换 session 后出现空 tool iter」）：
+ * 高度 key 只能用 `turnID:iteration`，而 **turnID 是每会话独立编号** —— 会话 A 的
+ * `1084:810` 与会话 B 的 `1084:810` 完全无关却会撞车；若缓存是模块级（跨会话留存），
+ * 切到 B 后 B 的块会读到 A 的"已结算高度" → 立刻被判定可冻结 → 内容卸载 →
+ * **空块**（用户现场）。⇒ 每次挂载（每个 CommittedTurn 实例）各持一份 tracker，
+ * 缓存的生存期与"这一行的这次挂载"一致，绝不跨会话/跨行串味。
  *
- * 因此本模块的契约（**别再退化成"一次测量就冻结"**）：
- *   1. `recordIterationHeight` 只在**同一 key 连续两次测量一致**（差值 ≤ 2px）
- *      且间隔 ≥ `ITERATION_HEIGHT_SETTLE_MS` 时，才把该高度标记为 **settled**；
- *   2. **只有 settled 的高度才允许用来冻结内容**（窗口化卸载）；
- *   3. 高度一旦变化 → 立即 `unsettle`（必须重新稳定）；变高/变矮的块不得继续冻结；
- *   4. 估算（`estimateIterationHeight`）只用于「从未渲染过」的块的**占位/提示**，
- *      绝不作为冻结依据（也绝不作为滚动锚点，见下）；
- *   5. ⛔ 占位高度**绝不允许常数**（`contain-intrinsic-size: auto 320px` 曾导致
- *      「鬼打墙」：真实块远高于占位值 → 总高边滚边涨 → 滚动锚定把内容顶回去，
- *      实测总高 14,704 → 31,609）。
+ * settle 契约（首版窗口化事故后确立，别再退化成"一次测量就冻结"）：
+ *   1. `record` 只在**同值连续两次测量**（差 ≤ 2px）且间隔 ≥ `SETTLE_MS` 时标记 settled；
+ *   2. **只有 settled 的高度才允许冻结内容**（窗口化卸载）；
+ *   3. 高度一变 → 立即 unsettle（必须重新稳定）；
+ *   4. 估算只用于「从未渲染过」的块的显示占位，**绝不作为冻结依据**；
+ *   5. ⛔ 占位高度绝不允许常数（`contain-intrinsic-size: auto 320px` 曾导致"鬼打墙"）。
  */
 import type { WebIteration } from '@/types/shared'
 
-/** 两次一致测量之间的最小间隔（低于此间隔的重复测量不足以证明"稳定"）。 */
+/** 两次一致测量之间的最小间隔（短于此不足以证明"稳定"）。 */
 export const ITERATION_HEIGHT_SETTLE_MS = 200
 
-const heightCache = new Map<string, number>()
-/** 当前值首次被观测到的时间（用于判定"稳定满 SETTLE_MS"）。 */
-const valueObservedAt = new Map<string, number>()
-/** 已结算（稳定）的 key —— 只有它们允许被窗口化冻结。 */
-const settledKeys = new Set<string>()
+export interface IterationHeightTracker {
+  get(key: string): number | undefined
+  isSettled(key: string): boolean
+  /** @returns changed —— 缓存值是否变化（变化即原冻结不再可信）；settled —— 现在可否冻结。 */
+  record(key: string, height: number, now: number): { changed: boolean; settled: boolean }
+  unsettle(key: string, now: number): void
+  /** 调试/测试：清空。 */
+  clear(): void
+}
+
+/** 每次挂载一份（生存期 = 该行这次挂载），避免跨会话 key 撞车。 */
+export function createIterationHeightTracker(): IterationHeightTracker {
+  const heights = new Map<string, number>()
+  const observedAt = new Map<string, number>()
+  const settled = new Set<string>()
+  return {
+    get: (key) => heights.get(key),
+    isSettled: (key) => settled.has(key),
+    record(key, height, now) {
+      if (!(height > 0) || !Number.isFinite(height)) {
+        return { changed: false, settled: settled.has(key) }
+      }
+      const prev = heights.get(key)
+      const changed = prev === undefined || Math.abs(prev - height) > 2
+      if (changed) {
+        heights.set(key, height)
+        observedAt.set(key, now)
+        settled.delete(key) // 值变了 → 必须重新稳定
+        return { changed: true, settled: false }
+      }
+      if (!settled.has(key)) {
+        const at = observedAt.get(key)
+        if (at !== undefined && now - at >= ITERATION_HEIGHT_SETTLE_MS) settled.add(key)
+      }
+      return { changed: false, settled: settled.has(key) }
+    },
+    unsettle(key, now) {
+      settled.delete(key)
+      observedAt.set(key, now)
+    },
+    clear() {
+      heights.clear()
+      observedAt.clear()
+      settled.clear()
+    },
+  }
+}
 
 export function iterationHeightKey(turnID: number | undefined, iteration: number | undefined): string {
   return `${turnID ?? 0}:${iteration ?? 0}`
-}
-
-export function getCachedIterationHeight(key: string): number | undefined {
-  return heightCache.get(key)
-}
-
-export function isIterationHeightSettled(key: string): boolean {
-  return settledKeys.has(key)
-}
-
-/**
- * 记录一次实测高度。
- * @returns changed —— 缓存值是否变化（变化即意味着原来的冻结不再可信）；
- *          settled —— 该 key 现在是否处于"稳定"状态（可用于冻结）。
- */
-export function recordIterationHeight(
-  key: string,
-  height: number,
-  now: number,
-): { changed: boolean; settled: boolean } {
-  if (!(height > 0) || !Number.isFinite(height)) {
-    return { changed: false, settled: settledKeys.has(key) }
-  }
-  const prev = heightCache.get(key)
-  const changed = prev === undefined || Math.abs(prev - height) > 2
-  if (changed) {
-    heightCache.set(key, height)
-    valueObservedAt.set(key, now)
-    settledKeys.delete(key) // 值变了 → 必须重新稳定
-    return { changed: true, settled: false }
-  }
-  if (!settledKeys.has(key)) {
-    const at = valueObservedAt.get(key)
-    if (at !== undefined && now - at >= ITERATION_HEIGHT_SETTLE_MS) settledKeys.add(key)
-  }
-  return { changed: false, settled: settledKeys.has(key) }
-}
-
-/** 显式解冻（例如复核发现高度不符）。 */
-export function unsettleIterationHeight(key: string, now: number): void {
-  settledKeys.delete(key)
-  valueObservedAt.set(key, now)
-}
-
-/** 测试/调试用：清空全部状态。 */
-export function clearIterationHeightCache(): void {
-  heightCache.clear()
-  valueObservedAt.clear()
-  settledKeys.clear()
 }
 
 /**

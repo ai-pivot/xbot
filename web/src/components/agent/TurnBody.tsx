@@ -8,27 +8,25 @@
  * PERF-1（Trace-20260912T100816）：已提交迭代的渲染抽进 <CommittedTurn>（memo 边界），
  * 流式帧只重渲染 LiveIteration —— **React 侧**代价与迭代数无关。
  *
- * PERF-2（2026-09-13「手机上 iter 多了还是很卡，点什么交互都要等几秒」）：
- * 交互成本 ∝ **DOM 规模**（移动端 + CPU 4×：N=15 → 653 节点/样式失效 89ms/
- * 打开设置 307ms；N=60 → 2348 节点/262ms/655ms；`contain: layout|paint` 三变体
- * 无差别 —— containment 只限定失效范围，节点仍在 DOM 里，任何触碰样式的交互
- * （Radix 面板给 body 加 pointer-events、主题切 CSS 变量）都要横扫全部节点）。
- * ⇒ **迭代级窗口化**：远离视口的块只留外壳 + 固定高度，内容卸载；每屏真实挂载的
- * 迭代内容由**视口**决定，与 N 无关。
+ * PERF-2（2026-09-13「手机上 iter 多了还是很卡」）：交互成本 ∝ **DOM 规模**
+ * （移动端 + CPU 4×：N=15 → 653 节点/样式失效 89ms/打开设置 307ms；
+ * N=60 → 2348 节点/262ms/655ms；`contain: layout|paint` 三变体无差别）⇒ **迭代级
+ * 窗口化**：远离视口的块只留外壳 + 固定高度，内容卸载；每屏真实挂载的迭代内容由
+ * **视口**决定，与 N 无关（实测 N=15 → 2 块；N=60 → 5 块；节点 2348→~350）。
  *
- * ⚠️ 窗口化的正确性铁律（2026-09-13 首版踩坑，用户现场：
- * `data-window-muted="true" style="height: 26.6562px"` 的空块 = 内容永久消失）：
- *   1. **只有 settled 的高度才允许冻结**（`iterationHeight.ts`：同值连续两次测量、
- *      间隔 ≥200ms）—— 首版把"瞬态测量"当成可信高度：块刚挂载时 RO 可能报出过小
- *      高度（字体/异步 markdown 未定形），据此卸载内容后**再也没有测量机会**，
- *      内容与高度双双永久错误；
- *   2. **冻结后必须一次性复核**（`VERIFY_DELAY_MS` 后重新挂载一帧实测）：高度不符
- *      → 自动解冻（`recordIterationHeight` 检测到变化即清除 settled）→ 重新稳定后
- *      才会再次冻结。绝不会"冻结住错误高度不撒手"；
- *   3. **只对迭代号可解析（Number.isFinite）的块做窗口化**：IO 用
- *      `data-iter-id` 跟踪，无法解析则永远无法标记 near → 只挂载不卸载是唯一安全解；
- *   4. 从未渲染过的块必须保持挂载（否则永远量不到高度）；
- *   5. jsdom / 无 IO+RO 环境自动退化为全量渲染（老单测不受影响）。
+ * ⚠️ 正确性铁律（两条都是真实事故的教训）：
+ *   1. **高度缓存必须实例作用域**（2026-09-13「切换 session 后出现空 tool iter」）：
+ *      key 只能是 `turnID:iteration`，而 turnID 每会话独立 → 模块级缓存会让
+ *      会话 A 的 `1084:810` 与会话 B 的同一 key 撞车 → 切到 B 后 B 的块读到 A 的
+ *      "已结算高度" → 立刻被判定可冻结 → 内容卸载 → **空块**。⇒ 每个
+ *      CommittedTurn 实例各持一份 `createIterationHeightTracker()`。
+ *   2. **只有 settled 的高度才允许冻结** + **冻结后一次性复核**（首版把瞬态测量
+ *      当成可信高度 → 卸载后内容永久消失）。`iterationHeight.ts` 里 settle 语义
+ *      要求同值连续两次测量（间隔 ≥200ms）；`scheduleSettleSample` 负责补第二次
+ *      采样（ResizeObserver 只在尺寸变化时回调，不会自己再报一次）；冻结后
+ *      `VERIFY_DELAY_MS` 再挂一帧实测，不符即解冻重稳。
+ *   3. 只对迭代号可解析（Number.isFinite）的块窗口化；从未渲染过的块必须挂载
+ *      （否则永远量不到高度）；jsdom / 无 IO+RO 环境退化为全量渲染。
  */
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
@@ -39,10 +37,9 @@ import { reasoningKey } from './reasoningOpenState'
 import { continuousIterations } from './progressStore'
 import {
   ITERATION_HEIGHT_SETTLE_MS,
-  getCachedIterationHeight,
-  isIterationHeightSettled,
+  createIterationHeightTracker,
   iterationHeightKey,
-  recordIterationHeight,
+  type IterationHeightTracker,
 } from './iterationHeight'
 import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
@@ -70,22 +67,25 @@ const VERIFY_DELAY_MS = 400
 interface IterationBlockProps {
   iter: WebIteration
   turnID?: number
-  /** false = 内容挂载；true = 窗口化卸载（只留外壳 + 固定高度）。 */
+  /** true = 窗口化卸载（只留外壳 + `height` 固定高度）；false = 渲染内容。 */
   muted: boolean
+  /** muted 时的占位高度（**必须**是实测值，绝不允许常数）。 */
+  mutedHeight?: number
   register: (hKey: string, el: HTMLDivElement | null) => void
 }
 
 /**
  * IterationBlock — 单个迭代块（外壳 + 内容/占位）。
  *
- * memo 的 props 只有 `iter`（contiguous 内引用稳定）、`turnID`、`muted`
- * （窗口化决策，仅在跨越视口边界时翻转）与稳定的 `register` —— 因此流式帧
- * 不会重渲染已提交迭代的内容（turn_perf.test.tsx 守护）。
+ * memo 的 props 只有 `iter`（contiguous 内引用稳定）、`turnID`、`muted`/`mutedHeight`
+ * （窗口化决策，仅跨越视口边界时翻转）与稳定的 `register` —— 流式帧不会重渲染已提交
+ * 迭代的内容（turn_perf.test.tsx 守护）。
  */
 const IterationBlock = memo(function IterationBlock({
   iter,
   turnID,
   muted,
+  mutedHeight,
   register,
 }: IterationBlockProps) {
   const elRef = useRef<HTMLDivElement | null>(null)
@@ -97,7 +97,6 @@ const IterationBlock = memo(function IterationBlock({
     },
     [hKey, register],
   )
-  const height = getCachedIterationHeight(hKey)
 
   return (
     <div
@@ -107,7 +106,7 @@ const IterationBlock = memo(function IterationBlock({
       data-turn-id={turnID}
       data-height-key={hKey}
       data-window-muted={muted ? 'true' : undefined}
-      style={muted ? { height, overflow: 'hidden' } : undefined}
+      style={muted ? { height: mutedHeight, overflow: 'hidden' } : undefined}
     >
       {!muted && (
         <>
@@ -133,6 +132,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
   const elements = useRef<Map<string, HTMLDivElement>>(new Map())
   const roRef = useRef<ResizeObserver | null>(null)
   const ioRef = useRef<IntersectionObserver | null>(null)
+  /** 高度/结算状态：**实例作用域**（跨会话 key 撞车会造出空块，见文件头）。 */
+  const trackerRef = useRef<IterationHeightTracker | null>(null)
+  if (trackerRef.current === null) trackerRef.current = createIterationHeightTracker()
+  const tracker = trackerRef.current
   /** 已复核过的 key（复核通过后才允许继续冻结；高度变化时清除）。 */
   const verified = useRef<Set<string>>(new Set())
   const verifyTimers = useRef<Map<string, number>>(new Map())
@@ -146,17 +149,20 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
    * 这是"同值二次测量"的来源 —— 没有它，RO 只报一次尺寸，永远无法结算
    * （2026-09-13 实测：窗口化因此完全失效，mountedContents 15/15、60/60）。
    */
-  const scheduleSettleSample = useCallback((hKey: string) => {
-    if (settleTimers.current.has(hKey)) return
-    const timer = window.setTimeout(() => {
-      settleTimers.current.delete(hKey)
-      const el = elements.current.get(hKey)
-      if (!el) return
-      const res = recordIterationHeight(hKey, el.getBoundingClientRect().height, performance.now())
-      if (res.settled || res.changed) bumpTick()
-    }, ITERATION_HEIGHT_SETTLE_MS + 50)
-    settleTimers.current.set(hKey, timer)
-  }, [])
+  const scheduleSettleSample = useCallback(
+    (hKey: string) => {
+      if (settleTimers.current.has(hKey)) return
+      const timer = window.setTimeout(() => {
+        settleTimers.current.delete(hKey)
+        const el = elements.current.get(hKey)
+        if (!el) return
+        const res = tracker.record(hKey, el.getBoundingClientRect().height, performance.now())
+        if (res.settled || res.changed) bumpTick()
+      }, ITERATION_HEIGHT_SETTLE_MS + 50)
+      settleTimers.current.set(hKey, timer)
+    },
+    [tracker],
+  )
 
   // 观察器只建一次（整组块共用一个 RO / 一个 IO）。
   useEffect(() => {
@@ -187,7 +193,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         const el = e.target as HTMLElement
         const key = el.dataset.heightKey
         if (!key) continue
-        const res = recordIterationHeight(key, e.contentRect.height, performance.now())
+        const res = tracker.record(key, e.contentRect.height, performance.now())
         if (res.changed) {
           // 高度变了 → 之前的复核作废，必须重新稳定 + 重新复核
           verified.current.delete(key)
@@ -211,7 +217,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       for (const t of settleTimers.current.values()) window.clearTimeout(t)
       settleTimers.current.clear()
     }
-  }, [scheduleSettleSample])
+  }, [scheduleSettleSample, tracker])
 
   const register = useCallback((hKey: string, el: HTMLDivElement | null) => {
     const prev = elements.current.get(hKey)
@@ -227,17 +233,16 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     }
   }, [])
 
-  // 计算本帧的窗口化决策（muted = 已稳定 + 不在视口附近 + 迭代号可解析）。
+  // 本帧的窗口化决策（muted = 已稳定 + 不在视口附近 + 迭代号可解析）。
   const decisions = contiguous.map((iter, i) => {
     const hKey = iterationHeightKey(turnID, iter.iteration)
-    const known = getCachedIterationHeight(hKey) !== undefined
-    const settled = isIterationHeightSettled(hKey)
+    const height = tracker.get(hKey)
+    const settled = tracker.isSettled(hKey)
     const near = iter.iteration !== undefined && nearRef.current.has(iter.iteration)
     const finite = Number.isFinite(iter.iteration)
-    const wantsMute = canWindow() && known && settled && !near && finite
-    const isVerifying = verifying.has(hKey)
-    const muted = wantsMute && !isVerifying
-    return { iter, i, hKey, muted, wantsMute }
+    const wantsMute = canWindow() && height !== undefined && settled && !near && finite
+    const muted = wantsMute && !verifying.has(hKey)
+    return { iter, i, hKey, muted, wantsMute, height }
   })
 
   // 冻结复核：刚被冻结的块，延迟一帧重新挂载内容实测；不符则解冻（record 会清除
@@ -259,7 +264,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         })
         requestAnimationFrame(() => {
           const measured = el.getBoundingClientRect().height
-          const res = recordIterationHeight(hKey, measured, performance.now())
+          const res = tracker.record(hKey, measured, performance.now())
           if (!res.changed) verified.current.add(hKey) // 复核通过：高度可信
           setVerifying((prev) => {
             const next = new Set(prev)
@@ -276,12 +281,13 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
   const registerStable = register
   return (
     <>
-      {decisions.map(({ iter, i, muted }) => (
+      {decisions.map(({ iter, i, muted, height }) => (
         <IterationBlock
           key={iter.iteration ?? i}
           iter={iter}
           turnID={turnID}
           muted={muted}
+          mutedHeight={height}
           register={registerStable}
         />
       ))}
