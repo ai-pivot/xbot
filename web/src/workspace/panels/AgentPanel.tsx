@@ -591,6 +591,15 @@ export function AgentPanel({ params, api }: PanelProps) {
     // pendingUsers 沉底行 turnID=MAX_SAFE_INTEGER 不误判）
     const hasUserRow = msgs.some((m) => m.role === 'user' && m.turnID === turnID)
     if (hasUserRow) return
+    // 分页窗口把**这一个 turn 切开**时不要补拉（2026-09-13 同 cursor 重复请求根因）：
+    // 最老的那一行就是本 turn 的 assistant/tool 行 ⇒ 本 turn 的 user 行在更老的、
+    // 尚未加载的页里（DB 行 id 严格递增，user 行 id 必然小于窗口里本 turn 的任何
+    // 行）⇒ 再 reload 一次只会把**同一页**原样拉回来：既补不出 user 行（长 turn
+    // 首屏稳定出现 #2 before_id == #1 before_id 的重复 fetch），也白占一次请求。
+    // 反面：若最老一行属于**更早的 turn**，则本 turn 的 user 行落在已加载窗口内，
+    // 缺失只可能是 SSE 丢事件 ⇒ reload 确实能把它带回来，补拉必须保留。
+    const oldest = msgs[0]
+    if (oldest && oldest.role !== 'user' && oldest.turnID === turnID) return
     userMissingReloadedRef.current.add(dedupKey)
     void chatRef.current.reload()
   }, [agentChat.messages, isSubAgent, chatID])

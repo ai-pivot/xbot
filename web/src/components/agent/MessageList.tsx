@@ -352,16 +352,33 @@ export const MessageList = memo(function MessageList({
   // the pre-prepend array, so findIndex would miss the anchor.
   const rowsRef = useRef(rows)
   rowsRef.current = rows
-  // loadMore scroll-anchor: id of the first VISIBLE row captured BEFORE older
-  // rows prepend. After the prepend lands we scrollToIndex it back to 'start'
-  // so the user's visible region stays put — new older rows appear above it,
-  // which pushes the scrollbar toward the middle (not the top).
-  const loadMoreAnchorIdRef = useRef<string | null>(null)
-  // loadMore prepend 前的 scrollTop 与 totalSize 快照：prepend 后 scrollTop
-  // 增量补偿（ΔscrollTop == ΔtotalSize），让视口内容在 paint 前就保持不变——
-  // 新旧行只出现在视口上方，加载只是「数据多了」，不闪到顶部再跳回底部。
-  const loadMorePrevScrollTopRef = useRef<number>(0)
-  const loadMorePrevTotalSizeRef = useRef<number>(0)
+  // ── loadMore 触发状态机（2026-09-13「一次手势 11 次请求」请求风暴根治）─────
+  // 触发权：`loadMoreArmedRef` = 本轮「哨兵可见回合」的触发权是否还没用掉。
+  //   arm  ← 哨兵**离开视口**（IO !isIntersecting：用户滚离顶部，或 prepend 补偿
+  //          把哨兵推出视口）／哨兵**由不可见变为可见**（一次真实"滑到顶"手势）
+  //   disarm ← 触发 loadMore 的那一瞬间
+  // 只有 arm 状态下才允许触发。不用 setTimeout、不用重试计数 —— 触发权完全由
+  // IO 的 intersection 状态驱动。
+  const loadMoreArmedRef = useRef(false)
+  // 哨兵上一次的可见性（null = 本 observer 尚未收到回调），用于识别"变得可见"。
+  const sentinelVisibleRef = useRef<boolean | null>(null)
+  // **待补偿**的锚定快照（prepend 前的 scrollTop + totalSize）。与触发权**解耦**：
+  // 它记的是"还欠用户一次视口补偿"，只有补偿成功（或视口已被别处移动）才销账。
+  // 绝不能在补偿成功前清掉（旧实现先清后判 delta<=0，等于白清），也绝不能拿它
+  // 当触发守卫（长 turn 的页 delta 恒为 0 → 会把分页永久锁死）。
+  const loadMoreRestoreRef = useRef<{ scrollTop: number; totalSize: number } | null>(null)
+  // observer 回调必须读到**最新**的 loading/hasMore/onLoadMore/virtualizer，但这些
+  // 值每次渲染都变（onLoadMore 的 useCallback deps 含 loadingMore/hasMore，身份每
+  // 次 loading 翻转都变）—— 一旦进 effect deps，observer 就会反复重建，而**新建
+  // observer 会立刻投递一次初始回调**（哨兵仍可见 ⇒ isIntersecting=true）⇒ 立刻又
+  // 触发一次 loadMore ⇒ 请求风暴。故全部走 ref 现读，observer 只在 hasMore 变化时
+  // 建/拆一次。
+  const hasMoreRef = useRef(false)
+  hasMoreRef.current = hasMore ?? false
+  const loadingMoreRef = useRef(false)
+  loadingMoreRef.current = loadingMore ?? false
+  const onLoadMoreRef = useRef<MessageListProps['onLoadMore']>(undefined)
+  onLoadMoreRef.current = onLoadMore
   // Invariant guard: the "thinking…" busy placeholder must never render below
   // a FINISHED assistant (copy button shown — turn complete). A finished turn
   // followed by "thinking…" would imply the completed turn is still running.
@@ -440,6 +457,11 @@ export const MessageList = memo(function MessageList({
       return r.id ?? `row-${index}`
     },
   })
+
+  // virtualizer 实例是稳定的（useVirtualizer 只更新 options），但 observer 回调
+  // 必须读**当前**实例 —— 经 ref 现读，避免把 virtualizer 放进 effect deps。
+  const virtualizerRef = useRef(virtualizer)
+  virtualizerRef.current = virtualizer
 
   // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
   // (direct instance property) in resizeItem, but setOptions only stores it in
@@ -701,6 +723,12 @@ export const MessageList = memo(function MessageList({
       const target = velocity > 2 ? 14 : velocity > 0.5 ? 8 : 5
       pendingOverscanRef.current = target
     }
+    // loadMore 的锚定补偿记的是「还欠用户一次视口钉住」：视口一旦被**别的东西**
+    // 移动过（用户自己滚 / virtualizer 自己的尺寸修正），这次补偿就已经没有意义，
+    // 当场销账 —— 否则过期的 delta（可能很大）会在稍后把视口拽走。
+    if (el.scrollTop !== lastScrollTopRef.current && !programmaticScrollRef.current) {
+      loadMoreRestoreRef.current = null
+    }
     lastScrollTopRef.current = el.scrollTop
     lastScrollTimeRef.current = now
     // 导航的可见范围：必须【无条件】更新（master 修复：程序化滚动期间
@@ -735,72 +763,100 @@ export const MessageList = memo(function MessageList({
   // when the user scrolls to the top and trigger loadMore.
   const sentinelRef = useRef<HTMLDivElement | null>(null)
 
+  // ── 哨兵 IntersectionObserver：loadMore 的唯一触发源（arm/disarm 状态机）──
+  // 旧的 effect deps 含 `loadingMore`/`onLoadMore`/`virtualizer` —— 每次 loading
+  // 翻转（每次请求都有 true→false）都会 disconnect + observe 一个**新** observer，
+  // 而新建 observer 会立刻投递一次初始回调；此时哨兵仍在视口内（长 turn 的一页
+  // DB 行被服务端折叠进已存在的 turn slot ⇒ 渲染行数不变 ⇒ 视口不动 ⇒ 哨兵不动）
+  // ⇒ 回调立刻再触发一次 loadMore ⇒ 自激请求风暴（实测一次手势 11 次请求 /
+  // observe=2037）。触发端也没有"本轮已触发"的记忆，任何回调都当新手势。
+  //
+  // 现在：observer 只在 `hasMore` 变化时建/拆一次（其余状态经 ref 现读），触发权
+  // 由 loadMoreArmedRef 显式管理 —— **触发即 disarm**，只有
+  //   ① 哨兵离开视口（IO !isIntersecting：用户真的滚离顶部，或 prepend 补偿把哨兵
+  //      推出视口），或
+  //   ② 哨兵由不可见变为可见（一次真实"滑到顶"手势；含 observer 首次回调就看到
+  //      可见 —— 内容短到视口不可滚动时"离开视口"物理上不可达，留这条退路，
+  //      否则分页会永久锁死）
+  // 才重新 arm。
   useEffect(() => {
+    loadMoreArmedRef.current = false
+    sentinelVisibleRef.current = null
+    if (!hasMore) return
     const el = sentinelRef.current
-    if (!el || !hasMore || !onLoadMore) return
+    if (!el || typeof IntersectionObserver === 'undefined') return
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
-          // Guard: skip if anchor restore is in progress (double-rAF pending).
-          // During anchor restore the viewport briefly shows the top (sentinel
-          // visible) → without this guard, IntersectionObserver fires again
-          // → recursive loadMore (user report: "加载完后视角变到新内容最上方，
-          // 导致再次触发加载").
-          if (loadMoreAnchorIdRef.current !== null) return
-          // Capture a scroll-anchor snapshot BEFORE onLoadMore prepends older
-          // rows: current scrollTop + totalSize. After the prepend lands we
-          // restore via ΔscrollTop == ΔtotalSize (not absolute anchor-row
-          // lookup). That keeps the viewport pixel-stable on the same content —
-          // older rows appear ABOVE the viewport, so the user only sees "more
-          // data", never a jump-to-top then jump-back.
-          const scroller = scrollRef.current
-          if (scroller) {
-            loadMorePrevScrollTopRef.current = scroller.scrollTop
-            loadMorePrevTotalSizeRef.current = virtualizer.getTotalSize()
-            loadMoreAnchorIdRef.current = '__load-more__'
-          } else {
-            loadMoreAnchorIdRef.current = null
-          }
-          void onLoadMore()
+        const entry = entries[0]
+        if (!entry) return
+        const visible = entry.isIntersecting
+        const wasVisible = sentinelVisibleRef.current
+        sentinelVisibleRef.current = visible
+        if (!visible) {
+          // ① 哨兵离开视口 ⇒ 归还触发权（下次再回到顶部是一次新手势）
+          loadMoreArmedRef.current = true
+          return
         }
+        // ② 由不可见变为可见 ⇒ 一次真实"到达顶部"手势
+        if (wasVisible !== true) loadMoreArmedRef.current = true
+        if (!loadMoreArmedRef.current) return // 本轮「可见回合」已触发过 ⇒ 不再发请求
+        if (!hasMoreRef.current || loadingMoreRef.current) return
+        const cb = onLoadMoreRef.current
+        const scroller = scrollRef.current
+        if (!cb || !scroller) return
+        loadMoreArmedRef.current = false // 触发即 disarm
+        // 快照必须在 onLoadMore **之前**取：prepend 落地后要用
+        // ΔscrollTop == ΔtotalSize 把视口钉回原来那段内容（老行只出现在视口上方，
+        // 用户只看到"数据多了"，不闪到顶部再跳回来）。
+        loadMoreRestoreRef.current = {
+          scrollTop: scroller.scrollTop,
+          totalSize: virtualizerRef.current.getTotalSize(),
+        }
+        void cb()
       },
       { root: scrollRef.current, threshold: 0 },
     )
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasMore, loadingMore, onLoadMore, virtualizer])
+  }, [hasMore])
 
-  // ── loadMore scroll-anchor: keep viewport pixel-stable via ΔscrollTop ────
-  // Older rows prepend ABOVE the captured anchor, growing totalSize. Instead of
-  // looking up an anchor row and scrollToIndex(它) (which required double-rAF +
-  // Retry for ResizeObserver to measure real heights — during which the
-  // viewport flashed to the top then jumped back), we do standard scroll
-  // anchoring: ΔscrollTop == ΔtotalSize. Use useLayoutEffect (runs synchronously
-  // BEFORE paint) so the compensation lands in the same frame as the prepend —
-  // the user sees the identical pixels, only "more data" above, never a jump.
-  //
-  // The prepend rows are estimated-height at this point (ResizeObserver hasn't
-  // measured them yet), so the ΔtotalSize here is estimated. The residual error
-  // is corrected later by TanStack's shouldAdjustScrollPositionOnItemSizeChange
-  // (configured below to only adjust items FULLY above the viewport), which
-  // fires as a scroll around and keeps visible content stable — no flash.
-  useLayoutEffect(() => {
-    const anchorId = loadMoreAnchorIdRef.current
-    if (anchorId !== '__load-more__') return
+  // ── loadMore 锚定补偿：ΔscrollTop == ΔtotalSize，视口在原内容上纹丝不动 ────
+  // 两处触发，缺一不可：
+  //   a) `rows` 的 useLayoutEffect —— prepend 落地那一帧（paint 前）就补偿，用户
+  //      看不到闪动；
+  //   b) content 的 ResizeObserver —— "渲染行数不变、只有已存在的 slot 长高"的那
+  //      一页（服务端把新 DB 行并进已有 turn slot；或新行从估算高度被实测修正）
+  //      在 a) 那一刻 totalSize 还没变（delta<=0）⇒ **保留快照**，等 total 真的
+  //      长起来再补。旧实现在 delta<=0 时先清快照再放弃 —— 既不补偿也不重试，
+  //      视口不动 ⇒ 哨兵不离开视口 ⇒ 永不 re-arm 的死循环。
+  const restoreLoadMoreAnchor = useCallback(() => {
+    const snap = loadMoreRestoreRef.current
+    if (!snap) return
     const el = scrollRef.current
-    loadMoreAnchorIdRef.current = null
-    if (!el) return
-    const newTotal = virtualizer.getTotalSize()
-    const delta = newTotal - loadMorePrevTotalSizeRef.current
-    if (delta <= 0) return
+    if (!el) {
+      loadMoreRestoreRef.current = null
+      return
+    }
+    const delta = virtualizerRef.current.getTotalSize() - snap.totalSize
+    if (delta <= 0) return // 上方还没长出来：欠着，等下一次（不放弃，也不销账）
+    loadMoreRestoreRef.current = null
     programmaticScrollRef.current = true
-    // Restore: old scrollTop + the prepended height. Content that was visible
-    // before loadMore stays at the same viewport position; the new older rows
-    // sit above (scrollbar moves toward the middle), exactly "data got more".
-    el.scrollTop = loadMorePrevScrollTopRef.current + delta
+    el.scrollTop = snap.scrollTop + delta
     queueMicrotask(() => { programmaticScrollRef.current = false })
-  }, [rows, virtualizer])
+  }, [])
+
+  useLayoutEffect(() => {
+    restoreLoadMoreAnchor()
+  }, [rows, restoreLoadMoreAnchor])
+
+  useEffect(() => {
+    const content = contentRef.current
+    if (!content || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => restoreLoadMoreAnchor())
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [restoreLoadMoreAnchor])
 
   // Check if we're at the bottom after a RAF (post-scroll) and resume following.
   const checkBottomAndResume = useCallback(() => {
@@ -1050,7 +1106,7 @@ export const MessageList = memo(function MessageList({
         <div ref={contentRef} data-message-list-content className="w-full">
           {/* Scroll-to-top sentinel: triggers loadMore via IntersectionObserver */}
           {hasMore && (
-            <div ref={sentinelRef} className="flex justify-center py-2">
+            <div ref={sentinelRef} data-loadmore-sentinel className="flex justify-center py-2">
               {loadingMore ? (
                 <Loader2 className="size-4 animate-spin text-text-muted" />
               ) : (

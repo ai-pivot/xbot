@@ -5,10 +5,19 @@
  * 队列为空时不渲染任何 DOM（height 0）。
  *
  * 卡片设计：
- *   - 队首：indigo accent 边框 + 发光序号 + 底部呼吸进度条 + "下一个" 标签
+ *   - 队首：indigo accent 边框 + 发光序号 + 底部呼吸进度条 + 行内 "Next" 徽章
  *   - 非队首：muted 边框 + 普通序号
  *   - 🔔 通知项：只显示 ✕（不可转插话）
- *   - >3 条自动折叠
+ *
+ * 结构契约（重新设计，取代「两级展开 + 缩进凑对齐」的旧版）：
+ *   1. **只有一个展开概念** —— header 的 toggle（`collapsed`）。展开 = 全量渲染
+ *      队列项；长队列由列表容器的**内部滚动**（有界 max-h + overflow-y-auto）容纳，
+ *      不存在第二层「显示全部/收起列表」，也没有「只显示前 3 条」的截断常量。
+ *   2. **对齐由结构保证** —— 队首卡加左侧 accent 条（`border-l-2 border-l-indigo-500`）
+ *      + 预览行内的小 pill（`staging-next-mark`）。pill 是 `staging-card-preview`
+ *      容器的第一个 in-flow 子元素、该容器无 padding，因此
+ *      `pill.left === previewContainer.left`（同一条布局链推导，零缩进魔数）；
+ *      footer 已删除，`Clear` 是 header 里与 toggle **不同动作**的图标按钮。
  *
  * 动画：CSS keyframes（fadeUp 入场、左滑淡出取消、队首呼吸进度条）
  */
@@ -139,7 +148,7 @@ function QueueCard({
         leaving ? 'staging-card-leave' : 'staging-card-enter',
         dragging && 'staging-card-dragging',
         isHead
-          ? 'border-indigo-400/60 bg-indigo-500/[0.07] dark:border-indigo-500/50'
+          ? 'border-indigo-400/60 border-l-2 border-l-indigo-500 bg-indigo-500/[0.07] dark:border-indigo-500/50 dark:border-l-indigo-400'
           : 'border-border bg-bg-tertiary/40',
       )}
     >
@@ -163,7 +172,7 @@ function QueueCard({
         </div>
       )}
 
-      <div className="flex items-center gap-2.5">
+      <div data-testid="staging-card-row" className="flex items-center gap-2.5">
         {/* 拖拽柄（可拖动时显示；触屏常显，桌面 hover 显示） */}
         {dragEnabled ? (
           <button
@@ -198,10 +207,23 @@ function QueueCard({
           {isNotification ? <Bell className="size-3.5" /> : <User className="size-3.5" />}
         </span>
 
-        {/* preview 文本 */}
-        <span className="min-w-0 flex-1 truncate text-xs text-text-secondary">
-          {item.preview || '(empty)'}
-        </span>
+        {/* preview 列 —— 队首「Next」徽章与预览文本同处一条 `flex items-center gap-*`
+            行。徽章是容器的**第一个 in-flow 子元素**，容器自身无 padding，故
+            badge.getBoundingClientRect().left === container.getBoundingClientRect().left
+            完全由结构推导（不是 pl-* / 绝对定位凑出来的）。 */}
+        <div data-testid="staging-card-preview" className="flex min-w-0 flex-1 items-center gap-1.5">
+          {isHead && busy && (
+            <span
+              data-testid="staging-next-mark"
+              className="shrink-0 rounded-full bg-indigo-500/15 px-1.5 py-px text-[10px] font-medium text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-300"
+            >
+              {t('agent.staging.next')}
+            </span>
+          )}
+          <span className="min-w-0 truncate text-xs text-text-secondary">
+            {item.preview || '(empty)'}
+          </span>
+        </div>
 
         {/* Turn N 标签 */}
         <span className="shrink-0 rounded bg-bg-tertiary/60 px-1.5 py-px font-mono text-[10px] text-text-muted">
@@ -238,13 +260,6 @@ function QueueCard({
           </button>
         </div>
       </div>
-
-      {/* 队首 "下一个" 标签 */}
-      {isHead && busy && (
-        <div className="mt-1 pl-8.5 text-[10px] font-medium text-indigo-500/80 dark:text-indigo-400/80">
-          ▸ {t('agent.staging.next')}
-        </div>
-      )}
     </div>
   )
 }
@@ -262,7 +277,6 @@ export const StagingTray = memo(function StagingTray({
   const { t } = useI18n()
   injectStyles()
 
-  const [expanded, setExpanded] = useState(false)
   const [leavingIDs, setLeavingIDs] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState(true)
 
@@ -350,18 +364,15 @@ export const StagingTray = memo(function StagingTray({
   // 队列为空时不渲染任何 DOM（hooks must be called before early return — React rules-of-hooks）
   if (items.length === 0) return null
 
-  const MAX_VISIBLE = 3
-  const hasOverflow = items.length > MAX_VISIBLE
-  const visibleItems = expanded || !hasOverflow ? items : items.slice(0, MAX_VISIBLE)
-  const hiddenCount = items.length - visibleItems.length
-
   return (
     <div data-testid="staging-tray" className="border-t border-border/50 bg-bg-primary px-3 py-1.5">
-      {/* Header 行 — 可折叠（默认折叠，只显示 count bar）
-          ⚠️ 外层必须是 <div>，不能是 <button>：折叠开关与「收起列表」是两个
-          不同动作，嵌套 <button> 是无效 HTML 且点击会双触发（同 AskUserPanel
-          的嵌套 checkbox 坑）。状态 chevron 只保留一个。 */}
-      <div className="flex w-full items-center justify-between gap-2">
+      {/* Header 行 —— 一行两个控件，动作互不重叠：
+            · staging-toggle：**唯一**的展开/收起开关（Inbox + 标题 + 数量 +
+              · 下一条 Turn + 唯一一个 chevron）。外层是 <div> 不是 <button>：
+              嵌套 <button> 是无效 HTML 且会导致点击双触发（同 AskUserPanel 坑）。
+            · staging-clear：清空队列（独立动作，Trash2 图标按钮，无文字，
+              因此不会出现「收起」文案，也不与 chevron 的收起语义重复）。 */}
+      <div data-testid="staging-header" className="flex w-full items-center justify-between gap-2">
         <button
           type="button"
           data-testid="staging-toggle"
@@ -376,86 +387,57 @@ export const StagingTray = memo(function StagingTray({
               {items.length}
             </span>
           </span>
-          {items.length > 0 && (
-            <span className="shrink-0 text-[10px] text-text-muted/70">
-              · {t('agent.staging.nextTurn', { turn: items[0].turn_id })}
-            </span>
-          )}
+          <span className="shrink-0 text-[10px] text-text-muted/70">
+            · {t('agent.staging.nextTurn', { turn: items[0].turn_id })}
+          </span>
           {collapsed ? (
             <ChevronRight className="size-3 shrink-0 text-text-muted/50" />
           ) : (
             <ChevronDown className="size-3 shrink-0 text-text-muted/50" />
           )}
         </button>
-        {expanded ? (
-          <button
-            type="button"
-            aria-label={t('agent.staging.collapse')}
-            title={t('agent.staging.collapse')}
-            onClick={() => setExpanded(false)}
-            className="flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:bg-bg-tertiary hover:text-text-secondary"
-          >
-            {t('agent.staging.collapse')}
-            <ChevronDown className="size-3" />
-          </button>
-        ) : null}
+        <button
+          type="button"
+          data-testid="staging-clear"
+          aria-label={t('agent.staging.clearQueue')}
+          title={t('agent.staging.clearQueue')}
+          onClick={handleClear}
+          className="flex size-6 shrink-0 items-center justify-center rounded text-text-muted/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
       </div>
 
-      {/* 队列卡片列表（折叠时不渲染） */}
+      {/* 队列卡片列表 —— 唯一的「展开」就是全量渲染：长队列由容器**内部滚动**
+          容纳（有界 max-h + overflow-y-auto + overscroll-contain），既不截断到
+          N 条、也没有第二层「显示全部」（footer 已删除）。 */}
       {collapsed ? null : (
-        <>
-          <div className="mt-1 flex flex-col gap-1">
-            {visibleItems.map((item, i) => (
-              <QueueCard
-                key={item.msg_id}
-                item={item}
-                index={i}
-                isHead={i === 0}
-                busy={busy}
-                onCancel={handleCancel}
-                onInterject={onInterject}
-                leaving={leavingIDs.has(item.msg_id)}
-                dragEnabled={Boolean(onReorder) && Boolean(item.msg_id)}
-                dragging={dragID === item.msg_id}
-                dropEdge={dropTarget?.id === item.msg_id ? (dropTarget.before ? 'before' : 'after') : null}
-                handleProps={{
-                  onPointerDown: (e) => handleHandleDown(e, item.msg_id),
-                  onPointerMove: handleDragMove,
-                  onPointerUp: () => handleDragEnd(true),
-                  onPointerCancel: () => handleDragEnd(false),
-                }}
-              />
-            ))}
-          </div>
-
-          {/* 折叠展开按钮 */}
-          {hasOverflow && (
-            <button
-              type="button"
-              onClick={() => setExpanded((v) => !v)}
-              className="mt-1 flex items-center gap-1 text-[11px] text-text-muted/70 transition-colors hover:text-text-secondary"
-            >
-              {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-              {expanded
-                ? t('agent.staging.collapse')
-                : t('agent.staging.more', { count: hiddenCount })}
-            </button>
-          )}
-
-          {/* 清空按钮 */}
-          <div className="mt-1 flex justify-end">
-            <button
-              type="button"
-              aria-label={t('agent.staging.clearQueue')}
-              title={t('agent.staging.clearQueue')}
-              onClick={handleClear}
-              className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-text-muted/70 transition-colors hover:bg-destructive/10 hover:text-destructive"
-            >
-              <Trash2 className="size-3" />
-              {t('agent.staging.clear')}
-            </button>
-          </div>
-        </>
+        <div
+          data-testid="staging-list"
+          className="mt-1 flex max-h-[min(50vh,22rem)] flex-col gap-1 overflow-y-auto overscroll-contain"
+        >
+          {items.map((item, i) => (
+            <QueueCard
+              key={item.msg_id}
+              item={item}
+              index={i}
+              isHead={i === 0}
+              busy={busy}
+              onCancel={handleCancel}
+              onInterject={onInterject}
+              leaving={leavingIDs.has(item.msg_id)}
+              dragEnabled={Boolean(onReorder) && Boolean(item.msg_id)}
+              dragging={dragID === item.msg_id}
+              dropEdge={dropTarget?.id === item.msg_id ? (dropTarget.before ? 'before' : 'after') : null}
+              handleProps={{
+                onPointerDown: (e) => handleHandleDown(e, item.msg_id),
+                onPointerMove: handleDragMove,
+                onPointerUp: () => handleDragEnd(true),
+                onPointerCancel: () => handleDragEnd(false),
+              }}
+            />
+          ))}
+        </div>
       )}
     </div>
   )
