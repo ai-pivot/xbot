@@ -208,3 +208,121 @@ test.describe('long turn scroll stability (鬼打墙 guard)', () => {
     await page.close()
   })
 })
+
+/**
+ * 迭代级窗口化守护（2026-09-13「手机上 iter 多了还是很卡，点什么交互都要等几秒」）：
+ *
+ * 移动端实测（390×844 + CPU 4×）——交互成本 ∝ DOM 规模，且 `contain: layout paint`
+ * 三变体无差别（274/267/265ms）。根治 = 迭代级窗口化：远离视口的块只留外壳 +
+ * 固定高度（实测缓存，未测到则用内容估算），内容卸载。
+ *
+ *   N      节点(修前)   全局样式失效(修前)   打开设置(修前)  → 修后
+ *   15     653          89ms                 307ms
+ *   60     2348         262ms                655ms         → 节点 ~230、耗时与 N 无关
+ *
+ * 这里只断言**确定性**的因果量（节点数 / 挂载内容数 / 外壳数），不断言计时
+ * （CI 抖动会假红）；滚动稳定性另有上面那条守护。
+ */
+async function mountStats(page: Page) {
+  return page.evaluate(() => {
+    const blocks = Array.from(document.querySelectorAll('.iter-block'))
+    return {
+      nodes: document.querySelectorAll('*').length,
+      blocks: blocks.length,
+      mountedContents: blocks.filter((b) => (b as HTMLElement).dataset.windowMuted !== 'true').length,
+    }
+  })
+}
+
+function historyWith(n: number): unknown[] {
+  return Array.from({ length: n }, (_, i) => ({
+    iteration: i + 1,
+    thinking: `thinking ${i + 1}`,
+    content: Array.from(
+      { length: 30 },
+      (_, k) => `line ${k} of answer ${i + 1} — lorem ipsum dolor sit amet, consectetur adipiscing elit.`,
+    ).join('\n\n'),
+    completed_tools: [{ name: 'Shell', status: 'done', summary: `cmd ${i + 1}` }],
+  }))
+}
+
+test.describe('iteration windowing keeps mounted DOM independent of iteration count', () => {
+  for (const n of [15, 60]) {
+    test(`N=${n}: bounded mounted contents on a mobile viewport`, async ({ browser }) => {
+      const context = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+      })
+      const page = await context.newPage()
+
+      await page.addInitScript(() => {
+        const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+        const w = window as unknown as SSEMockState
+        w.__sseListeners = listeners
+        class MockEventSource {
+          readyState = 1
+          onopen: ((ev: Event) => void) | null = null
+          onerror: ((ev: Event) => void) | null = null
+          constructor(public url: string) {
+            setTimeout(() => this.onopen?.(new Event('open')), 0)
+          }
+          addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+            if (!listeners[type]) listeners[type] = new Set()
+            listeners[type].add(handler)
+          }
+          removeEventListener(type: string, handler: (ev: MessageEvent) => void) {
+            listeners[type]?.delete(handler)
+          }
+          close() {
+            for (const k of Object.keys(listeners)) listeners[k].clear()
+          }
+        }
+        ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+      })
+
+      await setupMock(page)
+      await page.goto(`${BASE}/login`)
+      await page.locator('input').first().fill('test')
+      await page.locator('input[type="password"]').fill('test')
+      await page.locator('button[type="submit"]').click()
+      await page.waitForTimeout(2000)
+
+      await emitSSE(page, 'session', {
+        type: 'session',
+        session: { action: 'busy', chat_id: 'chat-1', channel: 'web' },
+      })
+      await emitSSE(page, 'progress_structured', {
+        type: 'progress_structured',
+        progress: {
+          phase: 'turn_started',
+          turn_id: 1,
+          turn_start: { trigger: 'user', request_id: 'r1' },
+          chat_id: 'web:chat-1',
+        },
+      })
+      await emitSSE(page, 'text', {
+        type: 'text',
+        content: 'done',
+        seq: 999,
+        turn_id: 1,
+        chat_id: 'web:chat-1',
+        progress_history: JSON.stringify(historyWith(n)),
+      })
+      await page.waitForTimeout(1500)
+
+      const stats = await mountStats(page)
+      console.log(`WINDOW N=${n}`, JSON.stringify(stats))
+
+      // 1) 外壳全在（结构/滚动高度/调试属性不被窗口化破坏）
+      expect(stats.blocks).toBeGreaterThanOrEqual(n)
+      // 2) 真正挂载内容的块数由视口决定（远小于 N）
+      expect(stats.mountedContents).toBeLessThan(Math.max(12, n / 3))
+      // 3) DOM 规模有界（修前 N=60 是 2348）
+      expect(stats.nodes).toBeLessThan(900)
+
+      await context.close()
+    })
+  }
+})

@@ -133,3 +133,23 @@ RasterTask ×3.26 / GPUTask ×1.82，`Layout.dirtyObjects` 每 1/10 桶 16→64�
 守护：`TurnBody.test.tsx`（类名）、`index.test.ts`（CSS 声明）、
 `e2e/turn-iter-perf.spec.ts`（真实 Chromium，`checkVisibility({contentVisibilityAuto:true})` 判据）。
 
+## 迭代级窗口化：交互成本与迭代数解耦（2026-09-13）
+
+移动端（390×844 + CPU 4×）实测：交互成本 ∝ **DOM 规模**，`contain: layout|paint`
+三变体几乎无差别（274/267/265ms）——首屏 N=60 时 2348 节点，任何触碰样式的交互
+（Radix 面板给 body 加 pointer-events、主题切 CSS 变量）都要横扫全部节点：
+样式失效 262ms、打开设置面板 655ms（真机更慢 → 「点什么交互都要等几秒」）。
+
+修复（`TurnBody` 的 `CommittedTurn` + `iterationHeight.ts`）：
+
+- 每块的**外壳**保留（`data-iter-id` / 总高度不变）；
+- 远离视口（IO rootMargin 120%）**且已量到高度**的块 → 卸载内容、固定高度占位
+  （`data-window-muted="true"`）；
+- 从未渲染过的块保持挂载以便 `ResizeObserver` 量高，量到后即可卸载；
+- 高度只允许来自 `iterationHeightCache`（实测）或 `estimateIterationHeight`（内容估算）
+  —— **禁止常数占位**（`contain-intrinsic-size: auto 320px` 曾导致「鬼打墙」滚动 bug）。
+
+实测收益：节点 2348 → **228**、样式失效 262 → **36ms**、打开设置 655 → **205ms**，
+N=15 与 N=60 基本持平（挂载内容恒为 2 个块）。
+
+
