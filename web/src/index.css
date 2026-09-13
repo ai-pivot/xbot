@@ -1374,11 +1374,6 @@
   margin-top: 0.25rem;
 }
 
-/* 进行中迭代恒渲染：打字机/思考动画每帧都在改它，跳过机制无收益且会引入抖动。 */
-.iter-block-live {
-  content-visibility: visible;
-}
-
 /* 虚拟行：live 行持续长高，行内变化不得触发行外整体重算。 */
 .virt-row {
   contain: layout;

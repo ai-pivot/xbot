@@ -86,6 +86,15 @@ describe('iteration block containment CSS (perf)', () => {
     expect(block).toContain('display: block')
   })
 
+  it('⛔ index.css contains NO content-visibility declaration at all (鬼打墙 guard)', () => {
+    // 任何形式的 content-visibility 都会让离屏内容用占位高度（或零高度），
+    // 在"向上滚过一段长历史"这条路径上导致滚动容器总高变化 = 鬼打墙。
+    // 这里连死规则也不放过：类名删了但规则留在 CSS 里同样会被后人误用/复读。
+    const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(withoutComments).not.toContain('content-visibility')
+    expect(withoutComments).not.toContain('contain-intrinsic-size')
+  })
+
   it('.virt-row keeps live-row growth from relayouting the whole list', () => {
     const block = ruleBlock('.virt-row {')
     expect(block).toContain('contain: layout')
