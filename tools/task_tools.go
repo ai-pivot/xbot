@@ -254,9 +254,24 @@ func (t *TaskReadTool) Execute(toolCtx *ToolContext, input string) (*ToolResult,
 		return NewResult(fmt.Sprintf("Task %s has no output yet.", task.ID)), nil
 	}
 
-	return NewResult(fmt.Sprintf("[Task %s output (%s, %d bytes)]\n%s",
-		task.ID, task.Status, len(output), output)), nil
+	body := fmt.Sprintf("[Task %s output (%s, %d bytes)]\n%s", task.ID, task.Status, len(output), output)
+	if task.Status == BgTaskRunning {
+		// 读取目标还在跑 —— 直接劝退轮询（读几次也是白读，结束会自动通知）。
+		body += fmt.Sprintf("\n⏳ Task is still running.\n%s", runningTaskGuidanceBody)
+	}
+	return NewResult(body), nil
 }
+
+// runningTaskGuidanceBody is the SINGLE anti-poll guidance attached whenever the
+// agent inspects something that is STILL RUNNING (task_status / task_read).
+//
+// Contract (user 2026-09-13): do NOT keep calling these tools to poll — completion
+// is delivered automatically as a notification, and the agent should spend the
+// time on other work instead of burning turns on status checks.
+const runningTaskGuidanceBody = "⛔ Do NOT keep calling task_status/task_read to poll it — each call is a wasted turn.\n" +
+	"✅ The result is delivered to you AUTOMATICALLY as a notification when it finishes.\n" +
+	"→ Go do other useful work NOW (continue another step / investigate something else); only come back when you genuinely need the result.\n" +
+	"(Non-blocking status check: task_status (task_id=[...]); avoid task_wait.)\n"
 
 // formatTask formats a task for display.
 func formatTask(task *BackgroundTask) string {
@@ -272,7 +287,7 @@ func formatTask(task *BackgroundTask) string {
 	fmt.Fprintf(&sb, "Elapsed: %s\n", elapsed)
 
 	if task.Status == BgTaskRunning {
-		fmt.Fprintf(&sb, "\n⏳ Task is still running. Use task_wait to wait for completion, or continue with other work.\n")
+		fmt.Fprintf(&sb, "\n⏳ Task is still running.\n%s", runningTaskGuidanceBody)
 	}
 
 	if task.ExitCode >= 0 {
@@ -318,7 +333,7 @@ func formatSubAgentTask(task *SubAgentTask) string {
 	fmt.Fprintf(&sb, "Elapsed: %s\n", elapsed)
 
 	if task.Status == BgTaskRunning {
-		fmt.Fprintf(&sb, "\n⏳ Sub-agent is still running. Use task_wait to wait for completion, or continue with other work.\n")
+		fmt.Fprintf(&sb, "\n⏳ Sub-agent is still running.\n%s", runningTaskGuidanceBody)
 	}
 
 	if task.Content != "" {

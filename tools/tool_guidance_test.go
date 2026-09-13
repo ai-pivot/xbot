@@ -234,3 +234,26 @@ func TestBgTaskTips_NotifyNotWait(t *testing.T) {
 		t.Errorf("bgTaskTips must not push the model towards task_wait (got: %s)", tips)
 	}
 }
+
+// TestRunningInspectionBegsOffPolling — task_status / task_read 读到"仍在运行"
+// 的目标时必须直接劝退轮询（用户 2026-09-13）：不要一直调这个工具、结束会自动
+// 通知、把时间用在别的事上。
+func TestRunningInspectionBegsOffPolling(t *testing.T) {
+	for _, want := range []string{
+		"Do NOT keep calling",
+		"AUTOMATICALLY as a notification",
+		"other useful work",
+	} {
+		if !strings.Contains(runningTaskGuidanceBody, want) {
+			t.Errorf("runningTaskGuidanceBody must contain %q (got: %s)", want, runningTaskGuidanceBody)
+		}
+	}
+	if !strings.Contains(runningTaskGuidanceBody, "task_status (task_id=[...])") {
+		t.Error("guidance must point at the non-blocking status check")
+	}
+	// task_status 的运行中输出必须带上它
+	out := formatTask(&BackgroundTask{ID: "3f8f492a", Command: "sleep 100", Status: BgTaskRunning, StartedAt: time.Now()})
+	if !strings.Contains(out, runningTaskGuidanceBody) {
+		t.Errorf("task_status output for a running task must carry the anti-poll guidance:\n%s", out)
+	}
+}
