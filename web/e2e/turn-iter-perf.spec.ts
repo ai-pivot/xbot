@@ -439,6 +439,220 @@ test.describe('windowing never freezes a transient (collapsed) height', () => {
   })
 })
 
+/** 窗口化统计（含 muted 数）—— 本守护专用。 */
+async function windowStats(page: Page) {
+  return page.evaluate(() => {
+    const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+    return {
+      nodes: document.querySelectorAll('*').length,
+      blocks: blocks.length,
+      muted: blocks.filter((b) => b.dataset.windowMuted === 'true').length,
+      mountedContents: blocks.filter((b) => b.dataset.windowMuted !== 'true').length,
+    }
+  })
+}
+
+/**
+ * ⛔ 守护（2026-09-13「stream 的时候交互也不卡」「注意上下文 iter 数量真的特别多」）：
+ * **流式帧不得触碰已提交迭代的 DOM，且代价与当前 turn 的迭代数无关**。
+ *
+ * 实测背景（390×844 / isMobile / CPU 4×，真实 Chromium + CDP，纯测量）：
+ *   - 纯流式（20Hz，6s）稳态：帧间隔 p50=16.7ms / p95=16.8ms / max=33.4ms、
+ *     long task **0 次 0ms**，且 **N=20 与 N=200 完全相同**；把 live 迭代的
+ *     累积内容拉到 100KB（每 tick 推累积全文）仍是 0 long task —— 即稳态流式的
+ *     每帧代价与「迭代数」「内容长度」都无关。
+ *   - live turn 的迭代数从 20 拉到 200：DOM 节点 315→495、挂载内容的块数 3→3
+ *     （窗口化把代价钉在视口上）。
+ *   - 反过来，交互（开右侧栏 / 滚动到长 turn）的代价与流式**无关**（关流式对照
+ *     测得的耗时与流式期间相同）—— 那条路径不在本守护范围（见 e2e 报告）。
+ *
+ * 本测试断言的**因果量**（确定性，与机器速度无关）：流式期间
+ *   1. `.iter-block` 节点新增 0 / 删除 0（已提交迭代既不重挂也不卸载）；
+ *   2. `data-window-muted` 翻转 0（窗口化判定不被流式帧改写）；
+ *   3. 真正挂载内容的块数 before == after，且 < 12（代价 = 视口，不是 N）；
+ *   4. 上面三条对 N=20 与 N=200 **同一界**（代价与迭代数无关）。
+ */
+test.describe('streaming frames never touch committed iterations, cost independent of iteration count', () => {
+  test('N=20 and N=200 share the same bounded per-frame work while streaming', async ({
+    browser,
+  }) => {
+    const results: Array<{ n: number; muted: number; mountedBefore: number; mountedAfter: number; added: number; removed: number; mutedFlips: number }> = []
+
+    for (const n of [20, 200]) {
+      const context = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+        deviceScaleFactor: 2,
+      })
+      const page = await context.newPage()
+
+      await page.addInitScript(() => {
+        const listeners: Record<string, Set<(ev: MessageEvent) => void>> = {}
+        const w = window as unknown as SSEMockState
+        w.__sseListeners = listeners
+        class MockEventSource {
+          readyState = 1
+          onopen: ((ev: Event) => void) | null = null
+          onerror: ((ev: Event) => void) | null = null
+          constructor(public url: string) {
+            setTimeout(() => this.onopen?.(new Event('open')), 0)
+          }
+          addEventListener(type: string, handler: (ev: MessageEvent) => void) {
+            if (!listeners[type]) listeners[type] = new Set()
+            listeners[type].add(handler)
+          }
+          removeEventListener(type: string, handler: (ev: MessageEvent) => void) {
+            listeners[type]?.delete(handler)
+          }
+          close() {
+            this.onopen = null
+          }
+        }
+        ;(window as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource
+      })
+
+      await setupMock(page)
+      await page.goto(`${BASE}/login`)
+      await page.locator('input').first().fill('test')
+      await page.locator('input[type="password"]').fill('test')
+      await page.locator('button[type="submit"]').click()
+      await page.waitForTimeout(2500)
+
+      const cdp = await context.newCDPSession(page)
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 })
+
+      // live turn（turn 1）：把迭代历史撑到 n
+      await emitSSE(page, 'session', {
+        type: 'session',
+        session: { action: 'busy', chat_id: 'chat-1', channel: 'web' },
+      })
+      await emitSSE(page, 'progress_structured', {
+        type: 'progress_structured',
+        progress: {
+          phase: 'turn_started',
+          turn_id: 1,
+          turn_start: { trigger: 'user', request_id: 'r1' },
+          chat_id: 'web:chat-1',
+        },
+      })
+      for (let k = 10; k <= n; k += 10) {
+        await emitSSE(page, 'progress_structured', {
+          type: 'progress_structured',
+          progress: {
+            chat_id: 'web:chat-1',
+            phase: 'tool_exec',
+            turn_id: 1,
+            iteration: k,
+            iteration_history: historyWith(k),
+          },
+        })
+      }
+      // 等窗口化收敛（首屏块要量高度 → settle 两次采样 → 复核）
+      await page.waitForFunction(
+        () => document.querySelectorAll('.iter-block[data-window-muted="true"]').length > 0,
+        undefined,
+        { timeout: 20000 },
+      )
+      await page.waitForTimeout(2500)
+
+      const before = await windowStats(page)
+
+      // 观察器：流式窗口内 .iter-block 的增删 + 窗口化判定翻转
+      await page.evaluate(() => {
+        const w = window as unknown as {
+          __iterEvents: { added: number; removed: number; mutedFlips: number }
+        }
+        w.__iterEvents = { added: 0, removed: 0, mutedFlips: 0 }
+        const mo = new MutationObserver((recs) => {
+          for (const r of recs) {
+            for (const node of Array.from(r.addedNodes)) {
+              if (node.nodeType === 1 && (node as Element).classList.contains('iter-block')) {
+                w.__iterEvents.added++
+              }
+            }
+            for (const node of Array.from(r.removedNodes)) {
+              if (node.nodeType === 1 && (node as Element).classList.contains('iter-block')) {
+                w.__iterEvents.removed++
+              }
+            }
+          }
+        })
+        mo.observe(document.body, { childList: true, subtree: true })
+        const mo2 = new MutationObserver((recs) => {
+          for (const r of recs) {
+            if ((r.target as Element).classList?.contains('iter-block')) w.__iterEvents.mutedFlips++
+          }
+        })
+        mo2.observe(document.body, { subtree: true, attributeFilter: ['data-window-muted'] })
+      })
+
+      // 流式 2.5s（20Hz：reasoning 累积文本 + structured 心跳，与后端形态一致）
+      await page.evaluate(() => {
+        const w = window as unknown as { __n?: number }
+        w.__n = 0
+        window.setInterval(() => {
+          const k = (w.__n = (w.__n ?? 0) + 1)
+          const listeners = (window as unknown as SSEMockState).__sseListeners
+          const push = (type: string, data: Record<string, unknown>) => {
+            const handlers = listeners?.[type]
+            if (!handlers) return
+            const ev = new MessageEvent(type, { data: JSON.stringify({ ...data, seq: 9000 + k }) })
+            handlers.forEach((h) => h(ev))
+          }
+          push('stream_content', {
+            type: 'stream_content',
+            progress: {
+              chat_id: 'web:chat-1',
+              turn_id: 1,
+              iteration: 9999,
+              reasoning_stream_content: `thinking chunk #${k} about the next step, weighing options. `,
+            },
+          })
+          push('progress_structured', {
+            type: 'progress_structured',
+            progress: { chat_id: 'web:chat-1', phase: 'thinking', turn_id: 1, iteration: 9999 },
+          })
+        }, 50)
+      })
+      await page.waitForTimeout(2500)
+
+      const after = await windowStats(page)
+      const ev = await page.evaluate(
+        () => (window as unknown as { __iterEvents: { added: number; removed: number; mutedFlips: number } }).__iterEvents,
+      )
+      console.log(`STREAM-INVARIANT N=${n}`, JSON.stringify({ before, after, ev }))
+
+      results.push({
+        n,
+        muted: after.muted,
+        mountedBefore: before.mountedContents,
+        mountedAfter: after.mountedContents,
+        added: ev.added,
+        removed: ev.removed,
+        mutedFlips: ev.mutedFlips,
+      })
+
+      await context.close()
+    }
+
+    for (const r of results) {
+      // 1) 窗口化生效（结构完整 + 视口外卸载）
+      expect(r.muted, `N=${r.n}: 窗口化必须生效`).toBeGreaterThan(0)
+      // 2) 流式帧不得新增/卸载任何迭代块（已提交迭代零重挂、零重解析）
+      expect(r.added, `N=${r.n}: 流式期间不得新增迭代块`).toBe(0)
+      expect(r.removed, `N=${r.n}: 流式期间不得卸载迭代块`).toBe(0)
+      // 3) 窗口化判定不被流式帧改写
+      expect(r.mutedFlips, `N=${r.n}: 流式期间窗口化判定不得翻转`).toBe(0)
+      // 4) 挂载内容数 before == after 且有界（代价 = 视口，不是 N）
+      expect(r.mountedAfter, `N=${r.n}: 流式前后挂载内容数必须相同`).toBe(r.mountedBefore)
+      expect(r.mountedAfter, `N=${r.n}: 挂载内容数必须有界`).toBeLessThan(12)
+    }
+    // 5) 代价与迭代数无关：N=20 与 N=200 的界相同（同一量级，非 10×）
+    expect(Math.abs(results[1].mountedAfter - results[0].mountedAfter)).toBeLessThanOrEqual(2)
+  })
+})
+
 /**
  * 守护（2026-09-13「加载的历史消息长了就卡」）：`/api/history` 首屏加载的长 turn
  * 也必须被窗口化。
