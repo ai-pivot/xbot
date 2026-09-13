@@ -113,6 +113,36 @@ describe('IterationHeightTracker（实例作用域 + settle 语义）', () => {
     expect(t.isSettled(key)).toBe(false)
   })
 
+  it('⛔ 没有布局的测量（display:none 等）不得入账、不得结算、不得冒充结算', () => {
+    // 面板被移动端外壳 display:none 时 RO 报 0 → 不是测量
+    for (const bad of [0, 0.5, Number.NaN]) {
+      const res = t.record(key, bad, 0, false)
+      expect(res).toEqual({ changed: false, settled: false })
+    }
+    expect(t.get(key)).toBeUndefined()
+    expect(t.isSettled(key)).toBe(false)
+
+    // 已有可信高度时：无布局测量不得覆盖它，也不得把它当"刚结算"放行冻结
+    t.record(key, 812, 0)
+    t.record(key, 812, ITERATION_HEIGHT_SETTLE_MS)
+    expect(t.isSettled(key)).toBe(true)
+    expect(t.record(key, 0, 5000, false)).toEqual({ changed: false, settled: false })
+    expect(t.get(key)).toBe(812) // 可信值保持
+    // 可见后重新测量：新值才入账
+    expect(t.record(key, 900, 6000, true).changed).toBe(true)
+    expect(t.isSettled(key)).toBe(false)
+  })
+
+  it('⛔ 0 高度不得靠"同值两次"混进结算（首帧瞬态 0 不能成为冻结依据）', () => {
+    t.record(key, 0, 0)
+    t.record(key, 0, ITERATION_HEIGHT_SETTLE_MS * 3)
+    expect(t.isSettled(key)).toBe(false)
+    expect(t.get(key)).toBeUndefined()
+    // 真正有布局后才可能结算
+    t.record(key, 420, 10_000)
+    expect(t.record(key, 420, 10_000 + ITERATION_HEIGHT_SETTLE_MS).settled).toBe(true)
+  })
+
   it('⛔ 实例之间完全隔离（切换 session 的 key 撞车不会再冻结别人的高度）', () => {
     const sessionA = createIterationHeightTracker()
     sessionA.record(key, 1434, 0)

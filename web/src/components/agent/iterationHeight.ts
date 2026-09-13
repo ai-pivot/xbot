@@ -10,10 +10,16 @@
  *
  * settle 契约（首版窗口化事故后确立，别再退化成"一次测量就冻结"）：
  *   1. `record` 只在**同值连续两次测量**（差 ≤ 2px）且间隔 ≥ `SETTLE_MS` 时标记 settled；
- *   2. **只有 settled 的高度才允许冻结内容**（窗口化卸载）；
+ *   2. **只有 settled 的高度才允许冻结内容**（窗口化卸载），且还必须通过「内容已挂载
+ *      的复核确认」（见 `TurnBody` 的 `verified`）；
  *   3. 高度一变 → 立即 unsettle（必须重新稳定）；
  *   4. 估算只用于「从未渲染过」的块的显示占位，**绝不作为冻结依据**；
- *   5. ⛔ 占位高度绝不允许常数（`contain-intrinsic-size: auto 320px` 曾导致"鬼打墙"）。
+ *   5. ⛔ 占位高度绝不允许常数（`contain-intrinsic-size: auto 320px` 曾导致"鬼打墙"）；
+ *   6. ⛔ **「没有布局的测量」永远不是测量**（2026-09-13 手机端「切换会话时正在
+ *      stream 思考 → 思考之前的已提交内容整段不渲染」）：元素没有渲染盒
+ *      （`display:none` → `offsetParent === null`）、或宽/高为 0、或值非有限 ——
+ *      这类结果既不写缓存、也不置 settled，**更不能冒充"刚结算"去放行冻结**
+ *      （`record` 返回 `settled:false`）。它在可见后由 RO 重新报告（忽略 + 重测）。
  */
 import type { WebIteration } from '@/types/shared'
 
@@ -23,8 +29,10 @@ export const ITERATION_HEIGHT_SETTLE_MS = 200
 export interface IterationHeightTracker {
   get(key: string): number | undefined
   isSettled(key: string): boolean
-  /** @returns changed —— 缓存值是否变化（变化即原冻结不再可信）；settled —— 现在可否冻结。 */
-  record(key: string, height: number, now: number): { changed: boolean; settled: boolean }
+  /** @returns changed —— 缓存值是否变化（变化即原冻结不再可信）；settled —— 现在可否
+   *  进入复核（settle 只证明"测量稳定"，**不等于**高度可信 —— 首帧瞬态/压扁态同值
+   *  连续两次一致也会 settled；`layoutable === false` 时一律 `settled:false`）。 */
+  record(key: string, height: number, now: number, layoutable?: boolean): { changed: boolean; settled: boolean }
   unsettle(key: string, now: number): void
   /** 调试/测试：清空。 */
   clear(): void
@@ -38,9 +46,13 @@ export function createIterationHeightTracker(): IterationHeightTracker {
   return {
     get: (key) => heights.get(key),
     isSettled: (key) => settled.has(key),
-    record(key, height, now) {
-      if (!(height > 0) || !Number.isFinite(height)) {
-        return { changed: false, settled: settled.has(key) }
+    record(key, height, now, layoutable = true) {
+      // ⛔ 「没有布局的测量」不是测量：不写缓存、不结算、不冒充结算事件。
+      // 无渲染盒（display:none / 已脱离文档）、宽高为 0、值非有限 —— 一律当"这次
+      // 没测到"。已有的高度/结算状态保持不变（那份高度来自**上一次真实测量**，
+      // 仍然可信；可见后 RO 会重新报一个真实高度并按需 unsettle）。
+      if (!layoutable || !(height > 0) || !Number.isFinite(height)) {
+        return { changed: false, settled: false }
       }
       const prev = heights.get(key)
       const changed = prev === undefined || Math.abs(prev - height) > 2

@@ -52,6 +52,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useReducer,
   useRef,
   useState,
@@ -91,6 +92,18 @@ const canWindow = (): boolean =>
 
 /** 冻结后的复核延迟：足够覆盖字体/异步 markdown 的定形时间。 */
 const VERIFY_DELAY_MS = 400
+
+/**
+ * 「这次测量是不是一次真实测量」—— 元素必须在文档里、有渲染盒、且有正的宽高。
+ *
+ * ⛔ 没有布局的测量（面板被移动端外壳 `display:none`、元素已脱离文档、宽高为 0）
+ * 永远不能成为高度缓存 / 结算 / 冻结的依据：`display:none` 时报的是 0，混进
+ * "同值两次测量"就会把内容冻成空块（用户报告：「切换会话时正在 stream 思考 →
+ * 思考之前的已提交内容整段不渲染」）。这类结果一律忽略，等元素可见后由 RO 重报。
+ */
+function isLayoutable(el: HTMLElement, rect: { width: number; height: number }): boolean {
+  return el.isConnected && el.offsetParent !== null && rect.width > 0 && rect.height > 0
+}
 
 /**
  * 分块冻结单元大小（PERF-3）：每 64 个迭代一个 chunk。
@@ -364,37 +377,56 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
 
   /**
    * 本帧该迭代的占位高度：undefined = 渲染内容；number = 窗口化卸载（实测高度）。
-   * 与既有决策完全同构：canWindow && 高度已测 && settled && 不在视口附近 &&
-   * 不在复核中。
+   * 决策：canWindow && 高度已测 && settled && **已通过"内容已挂载"的复核确认** &&
+   * 不在视口附近 && 不在复核中。
+   *
+   * ⛔ 为什么 settled 还不够（2026-09-13 回归）：settle 只证明"连续两次测量一致"，
+   * 而**首帧的瞬态/压扁高度同样能连续两次一致**（手机端切换会话时内容尚未定形：
+   * 字体/异步 markdown/图片）。那时冻结 → 内容卸载 → 盒子被钉在压扁高度 → RO 再也
+   * 报不出变化 → 400ms 复核是唯一纠错通路。所以冻结必须再要求一次**内容真的挂回来
+   * 后的实测确认**（`verified`，见下面的复核 effect）。
    */
   const mutedHeightFor = (
     iter: WebIteration,
     win: boolean,
     near: Set<number>,
     verifyingSet: ReadonlySet<string>,
+    verifiedSet: ReadonlySet<string>,
   ): number | undefined => {
     if (!win || !Number.isFinite(iter.iteration)) return undefined
     const hKey = hKeyFor(iter)
     const height = tracker.get(hKey)
     if (height === undefined || !tracker.isSettled(hKey)) return undefined
+    if (!verifiedSet.has(hKey)) return undefined
     if (near.has(iter.iteration as number)) return undefined
     if (verifyingSet.has(hKey)) return undefined
     return height
   }
 
   /**
-   * 安排一次 settle 复核采样：`ITERATION_HEIGHT_SETTLE_MS` 后重新量一次。
+   * 安排一次 settle 采样：`ITERATION_HEIGHT_SETTLE_MS` 后重新量一次。
    * 这是"同值二次测量"的来源 —— 没有它，RO 只报一次尺寸，永远无法结算
    * （2026-09-13 实测：窗口化因此完全失效，mountedContents 15/15、60/60）。
+   *
+   * ⛔ 采样同样只认**有布局的测量**：无渲染盒（面板 display:none / 元素已脱离文档）
+   * 时直接放弃这次采样，等元素可见后由 RO 重新报告（而不是把 0 当成高度）。
    */
   const scheduleSettleSample = useCallback(
     (hKey: string) => {
-      if (settleTimers.current.has(hKey)) return
+      // ⚠️ debounce（不是 throttle）：尺寸"变化"可能落在上一次采样**待发期间** ——
+      // 那时 `record` 已把 observedAt 刷新到此刻，若这里因"已有定时器"直接返回，
+      // 采样就会在变化后 <200ms 触发 → 判不出 settled，且**此后再无触发**
+      // （高度已稳定、RO 不再报变化）→ 该块永不结算 → 永不复核 → 永不冻结
+      // （实测：窗口化整段失效，20 块全量挂载）。⇒ 每次变化都重排采样。
+      const pending = settleTimers.current.get(hKey)
+      if (pending !== undefined) window.clearTimeout(pending)
       const timer = window.setTimeout(() => {
         settleTimers.current.delete(hKey)
         const el = elements.current.get(hKey)
         if (!el) return
-        const res = tracker.record(hKey, el.getBoundingClientRect().height, performance.now())
+        const rect = el.getBoundingClientRect()
+        if (!isLayoutable(el, rect)) return
+        const res = tracker.record(hKey, rect.height, performance.now(), true)
         if (res.settled || res.changed) invalidate()
       }, ITERATION_HEIGHT_SETTLE_MS + 50)
       settleTimers.current.set(hKey, timer)
@@ -431,20 +463,37 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         const el = e.target as HTMLElement
         const key = el.dataset.heightKey
         if (!key) continue
-        const res = tracker.record(key, e.contentRect.height, performance.now())
+        // ⛔ 「没有布局的测量」不是测量：display:none（面板被移动端外壳隐藏）、元素
+        // 脱离文档、宽高为 0 —— 一律忽略（不写缓存、不结算、不放行冻结）。已有的
+        // 高度来自上一次真实测量，仍然可信；元素可见后 RO 会重新报告并按需 unsettle。
+        if (!isLayoutable(el, e.contentRect)) continue
+        const res = tracker.record(key, e.contentRect.height, performance.now(), true)
         if (res.changed) {
           // 高度变了 → 之前的复核作废，必须重新稳定 + 重新复核
           verified.current.delete(key)
           changed = true
           scheduleSettleSample(key)
         } else if (res.settled) {
-          changed = true // 刚结算 → 允许冻结（需要一次渲染把 muted 决策落下）
+          changed = true // 刚结算 → 可以进入复核（需要一次渲染把决策落下）
         }
       }
       if (changed) invalidate()
     })
     ioRef.current = io
     roRef.current = ro
+    // ⚠️ 首帧竞态（历史加载的整棵 turn 永不窗口化的根因）：
+    // ref 回调（register）在 commit 阶段执行，本 effect 在其**之后**运行 —— 首个
+    // commit 挂载的块注册时 roRef/ioRef 还是 null（observe 落空），而 setRef 是
+    // useCallback([hKey, register]) 恒定的 → React 不会二次调用它 → 这些块**永远
+    // 不被观测** → 永无高度 → 永不 settle → 永不 muted。于是「从 /api/history 加载
+    // 的长 turn」全量挂载（实测 40×400：3200 块，muted=0），每帧的样式/布局/绘制
+    // 代价 ∝ 迭代数；而 SSE 追加的 turn 因为在 effect 之后才挂载，窗口化正常
+    // （实测 400 迭代 → 395 muted）。修复：观测创建时补观测已注册元素（IO/RO 对
+    // 同一元素重复 observe 幂等，初始回调本就会带上当前尺寸）。
+    for (const el of elements.current.values()) {
+      ro.observe(el)
+      io.observe(el)
+    }
     return () => {
       io.disconnect()
       ro.disconnect()
@@ -488,11 +537,16 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
   const recompute = dirty.current
   dirty.current = false
 
-  /** 收集本帧刚被冻结、尚未复核的 key（effect 里为它们建复核定时器）。 */
-  const collectPending = (items: WebIteration[], heights: (number | undefined)[]): void => {
+  /**
+   * 收集本帧**候选复核**的 key（effect 里为它们建复核定时器）。
+   *
+   * 候选 = 「已 settle 但还没通过内容复核」的块 —— 冻结的门槛从"settle 过了"改成
+   * "settle 过 **且** 内容挂回来后实测确认过"，所以候选不再等同于"刚被冻结的块"。
+   */
+  const collectPending = (items: WebIteration[]): void => {
     for (let i = 0; i < items.length; i++) {
-      if (heights[i] === undefined) continue
       const hKey = hKeyFor(items[i])
+      if (!tracker.isSettled(hKey)) continue
       if (verified.current.has(hKey) || verifyTimers.current.has(hKey)) continue
       pendingVerify.current.push(hKey)
     }
@@ -522,10 +576,14 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
         const heights = new Array<number | undefined>(len)
         let heightsSame = prev.mutedHeights.length === len
         for (let i = 0; i < len; i++) {
-          const h = win ? mutedHeightFor(prev.items[i], win, near, verifying) : undefined
+          const h = win ? mutedHeightFor(prev.items[i], win, near, verifying, verified.current) : undefined
           heights[i] = h
           if (heightsSame && prev.mutedHeights[i] !== h) heightsSame = false
         }
+        // 候选复核必须在**每个脏帧**都收集：冻结门槛是「settle 过 + 内容实测确认过」，
+        // 决策因此会先保持"不变"（settled 但未确认 → 不冻结）—— 若只在决策变化时收集，
+        // 复核永远拿不到候选 → 永不确认 → 永不能冻结（死锁）。
+        collectPending(prev.items)
         if (heightsSame) {
           chunks.push(prev.element)
           continue
@@ -540,7 +598,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
           />
         )
         cache.set(c, { items: prev.items, mutedHeights: heights, element })
-        collectPending(prev.items, heights)
+        collectPending(prev.items)
         chunks.push(element)
         continue
       }
@@ -549,7 +607,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     const items = contiguous.slice(start, start + len)
     const heights = new Array<number | undefined>(len)
     for (let i = 0; i < len; i++) {
-      heights[i] = win ? mutedHeightFor(items[i], win, near, verifying) : undefined
+      heights[i] = win ? mutedHeightFor(items[i], win, near, verifying, verified.current) : undefined
     }
     const element = (
       <CommittedChunk
@@ -561,7 +619,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       />
     )
     cache.set(c, { items, mutedHeights: heights, element })
-    collectPending(items, heights)
+    collectPending(items)
     chunks.push(element)
   }
   if (cache.size > chunkCount) {
@@ -569,8 +627,15 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
     for (const k of Array.from(cache.keys())) if (k >= chunkCount) cache.delete(k)
   }
 
-  // 冻结复核：刚被冻结的块，延迟一帧重新挂载内容实测；不符则解冻（record 会清除
-  // settled），相符则标记 verified（不再重复复核）。
+  // 内容复核（冻结的前置条件）：candidate（已 settle 未复核）延迟 `VERIFY_DELAY_MS`
+  // 后把内容**挂回来**（verifying），并在**那次 commit 之后**（useLayoutEffect，
+  // 见下面）同步量一次 —— 只有"内容真的挂着、元素真的可布局、实测高度 == 高度缓存"
+  // 才算复核通过（verified），此后才允许冻结。
+  //
+  // ⛔ 为什么不能用 setTimeout + requestAnimationFrame 量（2026-09-13 回归根因）：
+  // rAF 可能赶在 React 把内容挂回来**之前**跑（CPU 降速的手机上尤其），于是量到的
+  // 就是**被冻结的占位本身**（实测 `stillMuted === true` 76/397 次），
+  // `record` 返回 `changed:false` → 被当成"复核通过" → 把错误高度永久固化。
   useEffect(() => {
     if (!canWindow()) return
     const keys = pendingVerify.current
@@ -580,28 +645,57 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID }: Commit
       if (verified.current.has(hKey) || verifyTimers.current.has(hKey)) continue
       const timer = window.setTimeout(() => {
         verifyTimers.current.delete(hKey)
-        const el = elements.current.get(hKey)
-        if (!el) return
+        if (!elements.current.get(hKey)) return
         setVerifying((prev) => {
           const next = new Set(prev)
           next.add(hKey)
           return next
         })
         invalidate()
-        requestAnimationFrame(() => {
-          const measured = el.getBoundingClientRect().height
-          const res = tracker.record(hKey, measured, performance.now())
-          if (!res.changed) verified.current.add(hKey) // 复核通过：高度可信
-          setVerifying((prev) => {
-            const next = new Set(prev)
-            next.delete(hKey)
-            return next
-          })
-          invalidate()
-        })
       }, VERIFY_DELAY_MS)
       verifyTimers.current.set(hKey, timer)
     }
+  })
+
+  // 复核测量：在「内容已挂回」的那次 commit 之后同步执行（layout effect 语义 ——
+  // 此刻 DOM 已更新，读 rect 会强制完成布局，量到的就是**内容**的高度）。
+  // 复核失败 / 无法测量时**必须解冻并保持挂载**（宁可不窗口化，也不能显示空块）。
+  useLayoutEffect(() => {
+    if (!canWindow()) return
+    if (verifying.size === 0) return
+    let changed = false
+    for (const hKey of Array.from(verifying)) {
+      const el = elements.current.get(hKey)
+      const finish = () =>
+        setVerifying((prev) => {
+          const next = new Set(prev)
+          next.delete(hKey)
+          return next
+        })
+      // 内容真的挂回来了吗？muted 的块内容不渲染 —— 量它等于量占位（无意义）。
+      const contentMounted = el !== undefined && el.dataset.windowMuted !== 'true'
+      const rect = el?.getBoundingClientRect()
+      if (!el || !contentMounted || !rect || !isLayoutable(el, rect)) {
+        // 复核失败（元素没了 / 内容没挂回 / 没有布局）：解冻并保持挂载，等真实测量
+        tracker.unsettle(hKey, performance.now())
+        verified.current.delete(hKey)
+        finish()
+        changed = true
+        continue
+      }
+      const res = tracker.record(hKey, rect.height, performance.now(), true)
+      if (res.changed) {
+        // 内容实测高度 ≠ 缓存高度（冻结依据是错的）→ 高度已更新且 unsettle；
+        // 必须补一次二次采样，否则内容已挂载、RO 不会再报变化 → 该块永远无法
+        // 重新 settle → 永远无法冻结（窗口化收益整段丢失）。
+        scheduleSettleSample(hKey)
+      } else {
+        verified.current.add(hKey) // 内容实测高度 == 缓存高度 → 复核通过
+      }
+      finish()
+      changed = true
+    }
+    if (changed) invalidate()
   })
 
   return <>{chunks}</>
