@@ -42,7 +42,7 @@ async function emitSSE(page: Page, type: string, data: Record<string, unknown>) 
   )
 }
 
-async function setupMock(page: Page) {
+async function setupMock(page: Page, historyMessages: unknown[] = []) {
   await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))
   await page.route('**/api/auth/config', (r) => r.fulfill({ json: { ok: true, data: { invite_only: false } } }))
   await page.route('**/api/auth/login', (r) => r.fulfill({ json: { ok: true, data: { user_id: 'test' } } }))
@@ -64,7 +64,7 @@ async function setupMock(page: Page) {
   )
   await page.route('**/api/history', (r) =>
     r.fulfill({
-      json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } },
+      json: { ok: true, data: { messages: historyMessages, chat_id: 'chat-1', last_seq: 0, active_progress: null } },
     }),
   )
   await page.route('**/api/session/status', (r) => r.fulfill({ json: { ok: true, data: { cwd: '/tmp' } } }))
@@ -434,6 +434,70 @@ test.describe('windowing never freezes a transient (collapsed) height', () => {
     expect(stats.mutedMin).toBeGreaterThan(100)
     // 已挂载的块（真实内容）高度应远大于压扁值，佐证内容确实定形了
     expect(Math.max(...stats.mountedSample)).toBeGreaterThan(200)
+
+    await context.close()
+  })
+})
+
+/**
+ * 守护（2026-09-13「加载的历史消息长了就卡」）：`/api/history` 首屏加载的长 turn
+ * 也必须被窗口化。
+ *
+ * 回归形态：`TurnBody` 的 ref 回调（register）在 **commit 阶段**执行，而 IO/RO 在
+ * 其**之后**的 useEffect 里创建 —— 首个 commit 挂载的块注册时 roRef/ioRef 还是
+ * null（observe 落空），且 setRef 是 useCallback([hKey, register]) 恒定的 → React
+ * 不会二次调用 → 这些块**永不被观测** → 永无高度 → 永不 settle → 永不 muted。
+ * 于是「历史加载（首屏挂载）的整棵 turn」全量挂载，DOM 与每帧代价 ∝ 迭代数
+ * （实测 40×400：3200 块、muted=0）；而 SSE 追加的 turn 因为在 effect 之后才挂载，
+ * 窗口化正常（上面 N=15/60 两条测试走的正是这条路径 —— 回归因此漏网）。
+ */
+test.describe('history-loaded long turn is windowed', () => {
+  test('initial /api/history render mutes off-viewport iterations', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+
+    await setupMock(page, [
+      { id: 1, role: 'user', content: 'u1', turn_id: 1, timestamp: new Date().toISOString(), iterations: [] },
+      {
+        id: 2,
+        role: 'assistant',
+        content: 'a1',
+        turn_id: 1,
+        timestamp: new Date().toISOString(),
+        iterations: historyWith(120),
+      },
+    ])
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    // 等渲染 + 高度稳定（settle 需两次同值测量，间隔 ≥200ms；复核再 +400ms）
+    await page.waitForTimeout(4000)
+
+    const stats = await page.evaluate(() => {
+      const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+      return {
+        nodes: document.querySelectorAll('*').length,
+        blocks: blocks.length,
+        muted: blocks.filter((b) => b.dataset.windowMuted === 'true').length,
+        mounted: blocks.filter((b) => b.dataset.windowMuted !== 'true').length,
+      }
+    })
+    console.log('HISTORY-WINDOW-GUARD', JSON.stringify(stats))
+
+    // 全部 120 个迭代块都在（结构/滚动高度不被窗口化破坏）
+    expect(stats.blocks).toBeGreaterThanOrEqual(120)
+    // 视口外的块必须被窗口化卸载 —— 回归时这里是 0
+    expect(stats.muted).toBeGreaterThan(0)
+    // 真正挂载内容的块数由视口决定（远小于 120）
+    expect(stats.mounted).toBeLessThan(60)
+    // DOM 规模有界（回归时 120 个全挂载 ≈ 3000+）
+    expect(stats.nodes).toBeLessThan(3000)
 
     await context.close()
   })
