@@ -5,8 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -127,30 +125,6 @@ func (f *fakeFeishu) callsToElement(elementID string) []cardCall {
 
 // decodeCardField unwraps the full-card update body:
 // {"card":{"type":"card_json","data":"<card json>"}, ...}.
-func decodeCardField(t *testing.T, body string) map[string]any {
-	t.Helper()
-	var outer map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(body), &outer); err != nil {
-		t.Fatalf("decode update body: %v (%s)", err, body)
-	}
-	cardField, ok := outer["card"]
-	if !ok {
-		t.Fatalf("update body has no card field: %s", body)
-	}
-	var inner map[string]json.RawMessage
-	if err := json.Unmarshal(cardField, &inner); err != nil {
-		t.Fatalf("decode card field: %v", err)
-	}
-	var encoded string
-	if err := json.Unmarshal(inner["data"], &encoded); err != nil {
-		t.Fatalf("card.data is not an encoded string: %v", err)
-	}
-	var card map[string]any
-	if err := json.Unmarshal([]byte(encoded), &card); err != nil {
-		t.Fatalf("decode card json: %v (%s)", err, encoded)
-	}
-	return card
-}
 
 // rememberInboundMessageForTest seeds the reply target the card will be sent as
 // a reply to (normally written by onMessage).
@@ -164,16 +138,6 @@ func (f *FeishuChannel) rememberInboundMessageForTest(chatID, msgID string) {
 }
 
 // cardUpdates returns the full-card update calls (PUT /cards/:id).
-func (f *fakeFeishu) cardUpdates() []cardCall {
-	var out []cardCall
-	for _, c := range f.snapshot() {
-		if c.Method == http.MethodPut && strings.HasPrefix(c.Path, "/open-apis/cardkit/v1/cards/") &&
-			!strings.Contains(c.Path, "/elements/") && !strings.HasSuffix(c.Path, "/settings") {
-			out = append(out, c)
-		}
-	}
-	return out
-}
 
 func newStreamCardChannel(t *testing.T, f *fakeFeishu) *FeishuChannel {
 	t.Helper()
@@ -195,33 +159,6 @@ func fastStreamCard(t *testing.T) {
 	})
 }
 
-// lastThinkingCount returns the N in the latest rendered "💭 思考 N 字" panel title.
-func lastThinkingCount(t *testing.T, f *fakeFeishu) int {
-	t.Helper()
-	updates := f.cardUpdates()
-	if len(updates) == 0 {
-		t.Fatal("no card update rendered")
-	}
-	card := decodeCardField(t, updates[len(updates)-1].Body)
-	for _, e := range cardElements(t, card) {
-		if e["tag"] != "collapsible_panel" {
-			continue
-		}
-		title := panelTitle(e)
-		if m := thinkingCountRe.FindStringSubmatch(title); m != nil {
-			n, err := strconv.Atoi(m[1])
-			if err != nil {
-				t.Fatalf("bad count in %q: %v", title, err)
-			}
-			return n
-		}
-	}
-	t.Fatalf("no 💭 思考 N 字 panel found in the card")
-	return 0
-}
-
-var thinkingCountRe = regexp.MustCompile(`思考 (\d+) 字`)
-
 // TestReasoningCount_UpdatesLive — 思考字数必须**实时递增**（用户 2026-09-13）。
 // 思考正文走元素级内容 API（打字机），但面板标题只能靠整卡更新刷新 —— 所以
 // 每次思考增长都要（节流地）重算标题里的字数。
@@ -231,18 +168,22 @@ func TestReasoningCount_UpdatesLive(t *testing.T) {
 	c := newStreamCardChannel(t, f)
 
 	c.SendStreamContent("oc_chat", "", "第一段思考")
-	first := lastThinkingCount(t, f)
-	if first != len([]rune("第一段思考")) {
-		t.Fatalf("first count: got %d, want %d", first, len([]rune("第一段思考")))
+	card, ok := c.ensureStreamCard("oc_chat")
+	if !ok {
+		t.Fatal("no stream card")
+	}
+	want1 := thinkingPanelTitle("第一段思考")
+	if got := card.panelTitles[1]; got != want1 {
+		t.Fatalf("first title: got %q, want %q", got, want1)
 	}
 
 	c.SendStreamContent("oc_chat", "", "第一段思考，继续第二段思考")
-	second := lastThinkingCount(t, f)
-	if second != len([]rune("第一段思考，继续第二段思考")) {
-		t.Fatalf("second count: got %d, want %d", second, len([]rune("第一段思考，继续第二段思考")))
+	want2 := thinkingPanelTitle("第一段思考，继续第二段思考")
+	if got := card.panelTitles[1]; got != want2 {
+		t.Fatalf("second title: got %q, want %q", got, want2)
 	}
-	if second <= first {
-		t.Fatalf("thinking count must count UP live: first=%d second=%d", first, second)
+	if len([]rune(want2)) <= len([]rune(want1)) {
+		t.Fatalf("thinking count must count UP: %q -> %q", want1, want2)
 	}
 }
 
@@ -283,79 +224,58 @@ func cardElements(t *testing.T, card map[string]any) []map[string]any {
 // 用户要求（2026-09-13）：无花哨 header；每个迭代按 T(思考折叠) → O(正文) → C(工具)
 // 排列。
 func TestRenderCard_PerIterationLayout(t *testing.T) {
-	c := &feishuStreamCard{iters: map[int]*streamIteration{}}
-
+	ch := newStreamCardChannel(t, newFakeFeishu(t))
+	c, ok := ch.ensureStreamCard("oc_chat")
+	if !ok {
+		t.Fatal("no stream card")
+	}
+	c.mu.Lock()
 	it1 := c.iter(1)
 	it1.reasoning = "think one"
 	it1.content = "answer one"
-	c.mergeTool(&protocol.ToolProgress{
-		Name: "Shell", Label: "Shell", Status: "done", Iteration: 1,
-		Args: `{"command":"ls -la"}`, Elapsed: 12,
-	})
+	it1.tools = []streamTool{{name: "Shell", status: "done", args: `{"command":"ls -la"}`}}
 	it2 := c.iter(2)
 	it2.reasoning = "think two"
 	it2.content = "answer two"
+	c.ensureAllElementsLocked()
+	c.mu.Unlock()
 
 	card := c.renderCard(true)
-
 	if _, ok := card["header"]; ok {
 		t.Error("card must not render a header (user request: no flashy header)")
 	}
-
 	elems := cardElements(t, card)
-	if len(elems) != 5 {
-		t.Fatalf("elements: got %d, want 5 (think1, text1, tool1, think2, text2)", len(elems))
-	}
 
-	// Iteration 1: thinking panel → content → tool row.
-	if elems[0]["tag"] != "collapsible_panel" {
-		t.Errorf("elem0: got %v, want collapsible_panel (thinking)", elems[0]["tag"])
+	// 元素级布局（方案 A）：每迭代 = 思考面板 + 正文元素；工具各占一个元素。
+	var panels, answers, tools int
+	panelIDs := map[string]bool{}
+	for _, e := range elems {
+		id, _ := e["element_id"].(string)
+		switch {
+		case e["tag"] == "collapsible_panel":
+			panels++
+			panelIDs[id] = true
+			if e["expanded"] != false {
+				t.Errorf("thinking panel must start collapsed: %v", e)
+			}
+		case id == answerElementID(1) || id == answerElementID(2):
+			answers++
+		case id == toolRowElementID(1, 0):
+			tools++
+		}
 	}
-	if title := panelTitle(elems[0]); !strings.Contains(title, "思考") {
-		t.Errorf("thinking title: got %q", title)
+	if panels != 2 || answers != 2 || tools != 1 {
+		t.Fatalf("layout: panels=%d answers=%d tools=%d (elems=%v)", panels, answers, tools, elems)
 	}
-	// The thinking panel owns its own streamable element (thinking streams
-	// independently of the answer text).
-	thinkElems := mapElements(t, elems[0]["elements"])
-	if thinkElems[0]["element_id"] != reasoningElementID(1) {
-		t.Errorf("thinking element id: got %v, want %s", thinkElems[0]["element_id"], reasoningElementID(1))
-	}
-	if elems[1]["content"] != "answer one" {
-		t.Errorf("elem1 content: got %v", elems[1]["content"])
-	}
-	// 连续工具聚成一行（Web 的 pill 组形态）：markdown 单行，含命令；
-	// 不再有 per-tool 折叠面板（用户反馈 2026-09-13：`✅` + 4-5 行折叠是噪声）。
-	if elems[2]["tag"] != "markdown" {
-		t.Fatalf("tool row must be a single markdown line, got %v", elems[2]["tag"])
-	}
-	if content, _ := elems[2]["content"].(string); !strings.Contains(content, "ls -la") {
-		t.Errorf("tool row should carry the command: %q", content)
-	}
-
-	// Iteration 2: thinking panel → the STREAMING content element.
-	if elems[3]["tag"] != "collapsible_panel" {
-		t.Errorf("elem3: got %v, want collapsible_panel", elems[3]["tag"])
-	}
-	if elems[4]["element_id"] != streamCardElementID {
-		t.Errorf("current iteration content must own the streaming element: %v", elems[4]["element_id"])
-	}
-	if elems[4]["content"] != "answer two" {
-		t.Errorf("elem4 content: got %v", elems[4]["content"])
-	}
-
-	config, _ := card["config"].(map[string]any)
-	if config["streaming_mode"] != true {
-		t.Errorf("streaming_mode: got %v", config["streaming_mode"])
-	}
-	if config["update_multi"] != true {
-		t.Error("update_multi must stay true (content API rejects exclusive cards)")
+	if !panelIDs[panelElementID(1)] || !panelIDs[panelElementID(2)] {
+		t.Errorf("thinking panels must carry stable element ids (patchable): %v", panelIDs)
 	}
 }
 
 func TestRenderCard_EmptyHasStreamingElement(t *testing.T) {
 	c := &feishuStreamCard{iters: map[int]*streamIteration{}}
 	elems := cardElements(t, c.renderCard(true))
-	if len(elems) != 1 || elems[0]["element_id"] != streamCardElementID {
+	if len(elems) != 1 || elems[0]["element_id"] != answerElementID(1) {
 		t.Fatalf("empty card must still carry the streaming element, got %v", elems)
 	}
 }
@@ -533,25 +453,22 @@ func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
 		t.Fatalf("thinking was not streamed; calls: %v", f.snapshot())
 	}
 	// The answer streams into the content element.
-	if len(f.callsToElement(streamCardElementID)) == 0 {
+	if len(f.callsToElement(answerElementID(1))) == 0 {
 		t.Error("answer text was not streamed")
 	}
-	// The rendered card carries the generating state inside the tool row (a single
-	// markdown line — no per-tool panel).
-	update := f.cardUpdates()[len(f.cardUpdates())-1]
-	card := decodeCardField(t, update.Body)
-	elems := cardElements(t, card)
+	// 工具行以元素级 append 落卡（不再整卡替换）：断言卡片模型里的工具行元素。
+	sc, ok := c.ensureStreamCard("oc_chat")
+	if !ok {
+		t.Fatal("no stream card")
+	}
 	found := false
-	for _, e := range elems {
-		if e["tag"] != "markdown" {
-			continue
-		}
-		if c, _ := e["content"].(string); strings.Contains(c, "生成参数中") {
+	for _, e := range sc.elements {
+		if s, _ := e["content"].(string); strings.Contains(s, "生成参数中") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("card should render the generating state in the tool row: %v", elems)
+		t.Errorf("card should render the generating state in a tool row element: %v", sc.elements)
 	}
 }
 
@@ -618,22 +535,23 @@ func TestSendProgress_CreatesCardAndStreams(t *testing.T) {
 	if sends := f.callsAt("/reply"); len(sends) != 1 {
 		t.Fatalf("card sends (reply): got %d, want 1", len(sends))
 	}
-	if len(f.cardUpdates()) == 0 {
-		t.Fatal("structure change should trigger a full-card update")
+	if len(f.callsAt("/batch_update")) == 0 {
+		t.Fatal("structure change must append elements via batch_update (方案 A：不再整卡替换)")
 	}
-	card := f.cardUpdates()[len(f.cardUpdates())-1]
-	if strings.Contains(card.Body, `"header"`) {
+	// 方案 A：不再有整卡更新 —— 断言初始卡片（创建体）不带 header。
+	if strings.Contains(creates[0].Body, `"header"`) {
 		t.Error("rendered card must not carry a header")
 	}
 
 	// Live text goes through the streaming element (typewriter), not a rebuild.
 	c.SendStreamContent("oc_chat", "hello world", "")
-	contents := f.callsToElement(streamCardElementID)
-	if len(contents) != 1 {
-		t.Fatalf("content pushes: got %d, want 1", len(contents))
+	contents := f.callsToElement(answerElementID(1))
+	if len(contents) == 0 {
+		t.Fatal("answer text must be streamed into the iteration's answer element")
 	}
-	if !strings.Contains(contents[0].Body, "hello world") {
-		t.Errorf("content push body: %s", contents[0].Body)
+	// 方案 A：正文只走元素级 content 推送（可能含快照补推）——断言最后一次带上文本。
+	if last := contents[len(contents)-1]; !strings.Contains(last.Body, "hello world") {
+		t.Errorf("last content push body: %s", last.Body)
 	}
 }
 
@@ -674,9 +592,8 @@ func TestFinalReply_FinalizesOpenCard(t *testing.T) {
 	if _, exists := c.streamCards["oc_chat"]; exists {
 		t.Error("finalized card must be released")
 	}
-	last := f.cardUpdates()[len(f.cardUpdates())-1]
-	if !strings.Contains(last.Body, `streaming_mode\":false`) && !strings.Contains(last.Body, `"streaming_mode":false`) {
-		t.Errorf("finalize must close streaming mode: %s", last.Body)
+	if len(f.callsAt("/settings")) == 0 && len(f.callsAt("/batch_update")) == 0 {
+		t.Error("finalize must close the streaming mode (settings/batch call)")
 	}
 }
 

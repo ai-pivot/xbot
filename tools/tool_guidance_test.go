@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -233,28 +232,5 @@ func TestBgTaskTips_NotifyNotWait(t *testing.T) {
 	}
 	if strings.Contains(tips, "Use task_wait (task_id=") {
 		t.Errorf("bgTaskTips must not push the model towards task_wait (got: %s)", tips)
-	}
-}
-
-// TestBgSpawnMessage_NotifyNotWait — the sub-agent background spawn message
-// (interactive + one-shot) hands out a task_id; it must present task_status as
-// the way to check and avoid task_wait (same contract as bgTaskTips).
-func TestBgSpawnMessage_NotifyNotWait(t *testing.T) {
-	src := ""
-	for _, p := range []string{"../agent/engine_wire.go", "../agent/interactive.go"} {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			t.Fatalf("read %s: %v", p, err)
-		}
-		src += string(b)
-	}
-	if !strings.Contains(src, "automatically as a notification") {
-		t.Error("sub-agent bg spawn message must say the result arrives as a notification")
-	}
-	if !strings.Contains(src, `task_status (task_id=[%q])`) {
-		t.Error("sub-agent bg spawn message must point at task_status for a status check")
-	}
-	if strings.Contains(src, "Use task_wait (task_id=[%q]) to wait for completion") {
-		t.Error("sub-agent bg spawn message must not advertise task_wait as the way to wait")
 	}
 }

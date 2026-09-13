@@ -31,7 +31,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
+
 	"strings"
 	"sync"
 	"time"
@@ -50,7 +50,6 @@ const (
 	// streamCardElementID identifies the markdown element that receives the
 	// streamed text of the CURRENT iteration. Feishu validates element_id:
 	// letters/digits/underscore, must start with a letter, ≤20 characters.
-	streamCardElementID = "content"
 
 	// streamCardSummary is the chat-list preview shown while streaming.
 	streamCardSummary = "🔄 生成中…"
@@ -190,8 +189,23 @@ type feishuStreamCard struct {
 	lastReasoning  string
 	lastReasonAt   time.Time
 	// lastReasonCountAt throttles the thinking-panel HEADER refresh (the character
-	// count in "💭 思考 N 字" can only change via a full-card update).
+	// count in "💭 思考 N 字" is refreshed via partial_update_element — never a full
+	// card replace; see feishu_stream_card_ops.go).
 	lastReasonCountAt time.Time
+
+	// ─── 元素级增量（方案 A，见 feishu_stream_card_ops.go）───
+	// ops 是待提交的元素级变更队列（合并成一次 BatchUpdateCard）。
+	ops []cardOp
+	// appendThink/appendAnswer/appendTool 记录**已经追加过**的元素，保证每个元素
+	// 只 append 一次（结构变化只增不改 → 不打断打字机、不重排整卡）。
+	appendThink  map[int]bool
+	appendAnswer map[int]bool
+	appendTool   map[string]bool
+	// elements 是卡片的**虚拟布局**：创建时的骨架 + 之后每一次 append 的元素，
+	// 顺序即飞书卡片里的顺序（用于 renderCard 与断言；真实卡片由元素级 API 增量维护）。
+	elements []map[string]any
+	// panelTitles 记录各思考面板标题的当前值（实时字数）。
+	panelTitles map[int]string
 }
 
 // newFeishuStreamCard creates the card entity (streaming enabled) and posts it.
@@ -199,15 +213,18 @@ type feishuStreamCard struct {
 // progress and the legacy final-reply fallback).
 func newFeishuStreamCard(client *lark.Client, title, chatID, replyTo string) (*feishuStreamCard, error) {
 	card := &feishuStreamCard{
-		client: client,
-		title:  title,
-		iters:  map[int]*streamIteration{},
+		client:       client,
+		title:        title,
+		iters:        map[int]*streamIteration{},
+		appendThink:  map[int]bool{},
+		appendAnswer: map[int]bool{},
+		appendTool:   map[string]bool{},
+		panelTitles:  map[int]string{},
 	}
 	data, err := json.Marshal(card.renderCard(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal stream card: %w", err)
 	}
-
 	req := larkcardkit.NewCreateCardReqBuilder().
 		Body(larkcardkit.NewCreateCardReqBodyBuilder().
 			Type("card_json").
@@ -398,10 +415,13 @@ func (c *feishuStreamCard) pushText(n int, text string) {
 	if time.Since(c.lastTextAt) < streamCardMinInterval {
 		return
 	}
+	// 该迭代的元素必须先存在（结构只 append 一次），内容才有地方写。
+	c.ensureElementsLocked(n)
+	c.submitOpsLocked()
 	it := c.iter(n)
 	it.content = text
 	c.seq++
-	if err := c.setElementContent(streamCardElementID, text, c.seq); err != nil {
+	if err := c.setElementContent(answerElementID(n), text, c.seq); err != nil {
 		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream text push failed")
 		return
 	}
@@ -420,11 +440,19 @@ func (c *feishuStreamCard) syncLayout(force bool) {
 	if !force && time.Since(c.lastCardAt) < streamCardPanelMinInterval {
 		return
 	}
-	if err := c.updateCard(true); err != nil {
-		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream card layout update failed")
-		return
+	// 结构变化只 append / patch（元素级）—— 不再整卡替换。
+	c.ensureAllElementsLocked()
+	c.flushOps(true)
+	// 快照里带的正文也要落到元素上（progress 事件可能先于流式文本到达）。
+	if it := c.iters[c.current]; it != nil && it.content != "" && it.content != c.lastText {
+		c.seq++
+		if err := c.setElementContent(answerElementID(c.current), it.content, c.seq); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).
+				Debug("Feishu: snapshot text push failed")
+		} else {
+			c.lastText, c.lastTextAt = it.content, time.Now()
+		}
 	}
-	c.lastCardAt = time.Now()
 }
 
 // finalize renders the finished card and closes the streaming mode. Closing is
@@ -441,58 +469,35 @@ func (c *feishuStreamCard) finalize(text string) error {
 		it := c.iter(c.current)
 		it.content = text
 	}
-	if err := c.updateCard(false); err != nil {
-		log.WithError(err).WithField("card_id", c.cardID).
-			Warn("Feishu: stream card final update failed, closing streaming mode")
-		return c.setStreamingMode(false)
+	// 最终文本走元素级内容更新；结构先落地（只 append，不整卡替换）。
+	c.ensureAllElementsLocked()
+	if text != "" {
+		c.seq++
+		if err := c.setElementContent(answerElementID(c.current), text, c.seq); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).
+				Debug("Feishu: final text push failed")
+		}
 	}
-	return nil
+	// 收尾：批量折叠各思考面板（一张卡片的"干净"形态 = 正文 + 工具行）。
+	for n := range c.iters {
+		c.queuePatch(panelElementID(n), map[string]any{"expanded": false})
+	}
+	c.submitOpsLocked()
+	// 关流式是强制项（开着的流会让卡片卡在"生成中"直到飞书 10 分钟后强关）。
+	return c.setStreamingMode(false)
 }
 
 // renderCard builds the Card JSON 2.0 for the current state.
 // The caller must hold c.mu (or hold exclusive ownership, e.g. at creation).
 func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
-	nums := make([]int, 0, len(c.iters))
-	for n := range c.iters {
-		nums = append(nums, n)
-	}
-	sort.Ints(nums)
-
-	elements := make([]map[string]any, 0, len(nums)*3)
-	for _, n := range nums {
-		it := c.iters[n]
-		if it == nil {
-			continue
-		}
-		if it.reasoning != "" {
-			elements = append(elements, reasoningPanel(n, it.reasoning))
-		}
-		// 当前迭代的正文用可流式元素；已完结迭代用普通 markdown。
-		if n == c.current {
-			elements = append(elements, map[string]any{
-				"tag": "markdown", "element_id": streamCardElementID,
-				"content": it.content, "text_size": "normal",
-			})
-		} else if it.content != "" {
-			elements = append(elements, map[string]any{
-				"tag": "markdown", "content": it.content, "text_size": "normal",
-			})
-		}
-		if len(it.tools) > 0 {
-			// 同一迭代的连续工具**聚成一行**（Web 的 pill 组形态：一组 pill 排在一行），
-			// 每项只显示工具名 + 状态，无 emoji、无 per-tool 折叠
-			// （用户反馈 2026-09-13：`✅` + 4-5 行折叠是纯噪声）。
-			elements = append(elements, map[string]any{
-				"tag": "markdown", "content": toolRow(it.tools), "text_size": "notation",
-			})
-		}
-	}
+	// 创建时消费掉排队中的 append（它们已经记进 c.elements 这个虚拟布局），
+	// 于是 renderCard 始终反映卡片的真实元素序列；此后结构变化只走元素级 append。
+	c.takeOpsElements()
+	elements := c.elements
 	if len(elements) == 0 {
-		// Keep the streaming element present from the very first frame so the
-		// typewriter has somewhere to land.
-		elements = append(elements, map[string]any{
-			"tag": "markdown", "element_id": streamCardElementID, "content": "",
-		})
+		elements = []map[string]any{
+			{"tag": "markdown", "element_id": answerElementID(1), "content": ""},
+		}
 	}
 
 	summary := streamCardSummary
@@ -527,17 +532,26 @@ func currentContent(iters map[int]*streamIteration, current int) string {
 	return ""
 }
 
-// reasoningPanel renders the folded thinking block (web parity: 💭 思考 N 字).
-// The inner markdown element carries a per-iteration element id so the thinking
-// text streams independently of the answer text.
+// thinkingPanelTitle renders the folded thinking panel's header title.
+// The count is refreshed live via partial_update_element (patchThinkingCountLocked).
+func thinkingPanelTitle(reasoning string) string {
+	return fmt.Sprintf("💭 思考 %d 字", len([]rune(reasoning)))
+}
+
+// reasoningPanel renders the folded thinking block (💭 思考 N 字).
+//
+// The PANEL carries element_id panelElementID(n) so its header title can be
+// patched in place (live character count), and the inner markdown element carries
+// reasoningElementID(n) so the thinking text streams independently of the answer
+// — both without ever re-rendering the whole card.
 func reasoningPanel(n int, reasoning string) map[string]any {
-	title := fmt.Sprintf("💭 思考 %d 字", len([]rune(reasoning)))
 	return map[string]any{
-		"tag":      "collapsible_panel",
-		"expanded": false,
+		"tag":        "collapsible_panel",
+		"element_id": panelElementID(n),
+		"expanded":   false,
 		"header": map[string]any{
 			"title": map[string]any{
-				"tag": "plain_text", "content": title,
+				"tag": "plain_text", "content": thinkingPanelTitle(reasoning),
 				"text_color": "grey", "text_size": "notation",
 			},
 			"vertical_align": "center",
@@ -649,6 +663,8 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	if text == c.lastReasoning || time.Since(c.lastReasonAt) < streamCardMinInterval {
 		return
 	}
+	c.ensureElementsLocked(n)
+	c.submitOpsLocked()
 	c.seq++
 	if err := c.setElementContent(reasoningElementID(n), text, c.seq); err != nil {
 		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: thinking push failed")
@@ -657,16 +673,12 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	c.lastReasoning = text
 	c.lastReasonAt = time.Now()
 
-	// The thinking TEXT just streamed (typewriter); the panel title still shows the
-	// old character count. A header can only change through a full-card update —
-	// refresh it on its own throttle so "💭 思考 N 字" counts up live.
+	// 思考正文刚打完字（元素级 content）；标题里的字数改用 partial_update_element
+	// 刷新 —— 只改这一个元素的 header，不重排整卡、不打断打字机。
 	if time.Since(c.lastReasonCountAt) >= streamCardReasonCountMinInterval {
-		if err := c.updateCard(true); err != nil {
-			log.WithError(err).WithField("card_id", c.cardID).
-				Debug("Feishu: thinking count refresh failed")
-			return
-		}
-		c.lastCardAt, c.lastReasonCountAt = time.Now(), time.Now()
+		c.patchThinkingCountLocked(n, text)
+		c.flushOps(true)
+		c.lastReasonCountAt = time.Now()
 	}
 }
 
@@ -680,36 +692,6 @@ func (c *feishuStreamCard) pushCurrentReasoning() {
 	}
 	c.mu.Unlock()
 	c.pushReasoning(n, text)
-}
-
-// updateCard replaces the whole card.
-// The caller must hold c.mu.
-func (c *feishuStreamCard) updateCard(streaming bool) error {
-	cardJSON, err := json.Marshal(c.renderCard(streaming))
-	if err != nil {
-		return fmt.Errorf("marshal card: %w", err)
-	}
-	c.seq++
-	req := larkcardkit.NewUpdateCardReqBuilder().
-		CardId(c.cardID).
-		Body(larkcardkit.NewUpdateCardReqBodyBuilder().
-			Card(larkcardkit.NewCardBuilder().
-				Type("card_json").
-				Data(string(cardJSON)).
-				Build()).
-			Sequence(c.seq).
-			Uuid(newStreamCardUUID()).
-			Build()).
-		Build()
-
-	resp, err := c.client.Cardkit.V1.Card.Update(context.Background(), req)
-	if err != nil {
-		return fmt.Errorf("stream card update: %w", err)
-	}
-	if !resp.Success() {
-		return fmt.Errorf("stream card update: code=%d msg=%s", resp.Code, resp.Msg)
-	}
-	return nil
 }
 
 // setStreamingMode toggles the card's streaming_mode via the settings API.
