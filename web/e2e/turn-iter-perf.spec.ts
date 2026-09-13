@@ -311,6 +311,19 @@ test.describe('iteration windowing keeps mounted DOM independent of iteration co
       })
       await page.waitForTimeout(1500)
 
+      // 窗口化收敛是**异步**的：RO 测量 → settle(≥200ms) → 复核(400ms)，且首个 commit
+      // 挂载的块要先被观测到才会 muted。CI（字体指标/时序与本地不同）上首帧会先看到
+      // 「全部挂载」的瞬态 —— 实测 CI：`WINDOW N=60 {"nodes":2525,"mountedContents":60}`
+      // 随后同一用例又打出 `{"nodes":220,"mountedContents":2}`（已收敛）。
+      // 断言口径**不变**（仍要求 mountedContents < max(12, n/3)），但必须**等收敛**：
+      // 有界等待；若永不收敛，这里会超时失败（守护不失灵，不是放宽断言）。
+      await expect
+        .poll(async () => (await mountStats(page)).mountedContents, {
+          message: `windowing must converge for N=${n} (mounted contents must drop below the viewport bound)`,
+          timeout: 20_000,
+        })
+        .toBeLessThan(Math.max(12, n / 3))
+
       const stats = await mountStats(page)
       console.log(`WINDOW N=${n}`, JSON.stringify(stats))
 
