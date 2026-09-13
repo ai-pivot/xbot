@@ -124,6 +124,56 @@ export function TodoPullOut({
         <div className="max-h-[240px] overflow-y-auto border-t border-border px-2 py-1.5">
           {todos.map((todo, i) => {
             const isGoal = !!goalText && goalText.trim() === todo.text.trim()
+            // 移动端：编辑必须走底部 Sheet —— 行内单行在手机上根本用不了（用户 2026-09-13）。
+            if (editingIndex === i && isTouch) {
+              return (
+                <div
+                  key={i}
+                  data-testid="todo-edit-sheet"
+                  className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-bg-primary p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-lg"
+                >
+                  <div className="mb-2 text-xs font-medium text-text-secondary">{t('agent.todoEdit')}</div>
+                  <textarea
+                    autoFocus
+                    data-testid="todo-edit-input"
+                    rows={3}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.shiftKey) return
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault()
+                        commitEdit()
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingIndex(null)
+                      }
+                    }}
+                    aria-label={t('agent.todoEdit')}
+                    className="max-h-[40dvh] w-full resize-none rounded border border-accent/60 bg-bg-primary px-2 py-1.5 text-base leading-relaxed text-text-primary outline-none ring-2 ring-accent/25"
+                  />
+                  <div className="mt-2 flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="todo-edit-cancel"
+                      onClick={() => setEditingIndex(null)}
+                      className="rounded px-3 py-1.5 text-xs text-text-muted hover:bg-bg-secondary"
+                    >
+                      {t('agent.goal.cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="todo-edit-save"
+                      onClick={commitEdit}
+                      className="rounded bg-accent/15 px-3 py-1.5 text-xs font-medium text-accent hover:bg-accent/25"
+                    >
+                      {t('agent.goal.save')}
+                    </button>
+                  </div>
+                </div>
+              )
+            }
+            // 桌面：就地编辑（自适应高度 textarea）。
             if (editingIndex === i) {
               return (
                 <div key={i} data-testid="todo-item" data-todo-text={todo.text} className="flex items-center gap-2 py-0.5">
