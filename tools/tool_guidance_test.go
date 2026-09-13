@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -208,5 +209,52 @@ func TestEmbeddedToolGuidanceArtifacts(t *testing.T) {
 		if !strings.Contains(string(creator), want) {
 			t.Errorf("skill-creator must require enumerating activation conditions (%q)", want)
 		}
+	}
+}
+
+// TestBgTaskTips_NotifyNotWait — the guidance attached to every background task
+// (shell background start + timeout auto-promote) must tell the model that the
+// result arrives as a notification on completion, point at task_status for a
+// non-blocking check, and steer AWAY from task_wait.
+//
+// Regression guard (user report 2026-09-13): the tips used to advertise
+// `Use task_wait (task_id=...)`, which made the model block on a whole idle turn.
+func TestBgTaskTips_NotifyNotWait(t *testing.T) {
+	tips := bgTaskTips("3f8f492a")
+	for _, want := range []string{
+		"automatically delivered to you as a notification",
+		"Keep working",
+		`task_status (task_id=["3f8f492a"])`,
+		"Avoid task_wait",
+	} {
+		if !strings.Contains(tips, want) {
+			t.Errorf("bgTaskTips must contain %q (got: %s)", want, tips)
+		}
+	}
+	if strings.Contains(tips, "Use task_wait (task_id=") {
+		t.Errorf("bgTaskTips must not push the model towards task_wait (got: %s)", tips)
+	}
+}
+
+// TestBgSpawnMessage_NotifyNotWait — the sub-agent background spawn message
+// (interactive + one-shot) hands out a task_id; it must present task_status as
+// the way to check and avoid task_wait (same contract as bgTaskTips).
+func TestBgSpawnMessage_NotifyNotWait(t *testing.T) {
+	src := ""
+	for _, p := range []string{"../agent/engine_wire.go", "../agent/interactive.go"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		src += string(b)
+	}
+	if !strings.Contains(src, "automatically as a notification") {
+		t.Error("sub-agent bg spawn message must say the result arrives as a notification")
+	}
+	if !strings.Contains(src, `task_status (task_id=[%q])`) {
+		t.Error("sub-agent bg spawn message must point at task_status for a status check")
+	}
+	if strings.Contains(src, "Use task_wait (task_id=[%q]) to wait for completion") {
+		t.Error("sub-agent bg spawn message must not advertise task_wait as the way to wait")
 	}
 }

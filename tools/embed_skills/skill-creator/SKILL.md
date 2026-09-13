@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: Create, update, delete, or install skills. Use when the user asks to create a new skill, modify an existing skill, install/import a skill from external sources (GitHub, URLs), package scripts/assets into a skill, or discusses skill design and structure. Skills are universal agent capabilities — install whatever the user wants.
+description: "Create, update, delete, or install skills (SKILL.md), and design/fix a skill's description & activation conditions. Activate when the task is to build a skill or improve how it triggers — 用户说『帮我设计/创建/写一个 skill』『优化/改一下这个 skill 的描述或触发条件』『这个 skill 老是不激活/乱激活』『安装/导入 skill』『把这个脚本打包成 skill』；also when installing/importing skills from GitHub or URLs, packaging scripts/assets into a skill, or discussing skill structure. Skills are universal agent capabilities — install whatever the user wants. 不适用于普通代码改动（除非改的就是 SKILL.md 本身）。"
 ---
 
 # Skill Creator
@@ -126,10 +126,23 @@ The `description` is the **sole** activation trigger: the agent sees only
 the skill. A vague description means the skill is never activated — or activated at
 the wrong time.
 
+**写法模板（照结构写，不要写成"介绍"；触发条件用「在需要 … 的时候激活」句式穷举）：**
+
+```yaml
+description: "<做什么（一句话）>。在需要 <场景A> / <场景B> / <场景C> 的时候激活：
+  <任务类型>、<任务复杂度/规模类条件>、<用户可能说的话与中英关键词>、<产物名/文件名/命令/
+  配置键>、<报错串>、<显式触发 /my-skill>。不适用于 <负向范围>（用 <另一个 skill>）。"
+```
+
 **Requirements:**
 
 1. **List every trigger situation**, not a summary of the topic. Cover all of:
    - the **task types** that should load it ("配环境 / 部署 / 排查 CI 失败 / 写迁移脚本…"),
+   - the **complexity / scale classes** whenever the skill targets them — 例如面向重度编排
+     的 skill 必须写出 **「在需要做复杂任务/大任务/高难度任务的时候激活」**，并把"复杂/大/难"
+     落成可判定的判据（多条互相独立的线索可并行、跨多文件/多服务、需要长时间实验、
+     容易踩坑/返工、用户明说"大任务/难/系统性做…"）。**只写主题不写复杂度，会让 skill 在
+     最该被激活的时候不激活** —— 这是最常见的失效模式。
    - the **user phrasings & keywords** a user might actually say (synonyms, Chinese *and*
      English terms, tool/product names, error strings),
    - the **artifacts** involved (file names/extensions, config keys, CLI commands,
@@ -157,7 +170,16 @@ description: "SQLite/Postgres schema 迁移与排错。触发：新增/删除/�
   优化（用 perf 相关 skill）。"
 ```
 
-写完后自检：**"一个没读过这个 skill 的人，只看 description，能不能判断出所有该激活它的情形？"** 不能 → 继续补。
+写完后自检（逐条过，不能只回答"能"）：
+
+1. 一个没读过这个 skill 的人，**只看 description**，能不能判断出**所有**该激活它的情形？
+2. **用户会不会用别的说法描述同一件事**（同义词、中英混说、口头语、报错原文）？都列了吗？
+3. **有没有「最该激活却不会激活」的场景**？—— 尤其是**任务规模/难度**这类抽象条件，必须落成
+   具体判据（例：`在需要做复杂任务/大任务/高难度任务的时候激活：多条独立线索、跨多服务、
+   需要并行调度、用户说"系统性排查/大改造"`）。
+4. **有没有过度宽泛导致乱激活**？→ 补负向范围与判据。
+
+任一条答不上来或答"否" → 继续补 description，直到四条全过。
 
 ### 3. Add scripts (optional)
 

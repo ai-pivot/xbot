@@ -215,6 +215,23 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 	return t.executeForeground(toolCtx, shellCmd, sandbox, parentCtx, timeout, buildSpec)
 }
 
+// bgTaskTips is the SINGLE source of the model-facing guidance attached to every
+// background task (shell background start + timeout auto-promote). Contract
+// (user requirement, 2026-09-13): tell the model the result arrives as a
+// notification on completion, that task_status is the non-blocking way to check,
+// and to avoid task_wait. Do NOT duplicate this text at call sites — a second
+// copy drifts (same failure mode as the duplicated capability probes).
+func bgTaskTips(taskID string) string {
+	return fmt.Sprintf(
+		"When it completes, its output is automatically delivered to you as a notification — no waiting needed.\n"+
+			"- Keep working on other useful work; do NOT block on it (never sleep to poll it)\n"+
+			"- Quick status check (non-blocking): task_status (task_id=[%q])\n"+
+			"- Avoid task_wait — it blocks a whole turn doing nothing (multi-ID: task_status (task_id=[\"id1\",\"id2\"]))\n"+
+			"- Use task_kill (task_id=[%q]) to terminate",
+		taskID, taskID,
+	)
+}
+
 // executeBackground launches a command as a background task.
 func (t *ShellTool) executeBackground(
 	toolCtx *ToolContext,
@@ -242,13 +259,8 @@ func (t *ShellTool) executeBackground(
 
 	result := fmt.Sprintf(
 		"Background task started [task_id: %q]\nCommand: %s\n\n"+
-			"The task is running in the background. You can continue working.\n"+
-			"When it completes, the output will be automatically injected into the conversation.\n"+
-			"- Do NOT block on it — keep doing other useful work; its completion is delivered to you automatically as a notification\n"+
-			"- Only if you truly have nothing else to do: task_wait (task_id=[%q]); quick state check: task_status (task_id=[%q])\n"+
-			"- Use task_kill (task_id=[%q]) to terminate the task\n"+
-			"Note: for multiple tasks, pass all IDs in one array — task_wait(task_id=[\"id1\",\"id2\"], mode=\"any\")",
-		task.ID, task.Command, task.ID, task.ID, task.ID,
+			"The task is running in the background. You can continue working.\n%s",
+		task.ID, task.Command, bgTaskTips(task.ID),
 	)
 
 	return NewResultWithTips(result, fmt.Sprintf("Background task running (task_id=%q) — its result will be injected automatically when it finishes; keep working, no need to wait.", task.ID)), nil
@@ -404,12 +416,8 @@ func (t *ShellTool) executeForeground(
 		}
 		tips = fmt.Sprintf("Promoted to background task (task_id=%q) — its result will be injected automatically when it finishes; keep working, no need to wait.", task.ID)
 		body := fmt.Sprintf(
-			"%s\n\nThe command continues running in the background. Its output will be injected when done.\n"+
-				"- Do NOT block on it — keep doing other useful work; its completion is delivered to you automatically as a notification\n"+
-				"- Only if you truly have nothing else to do: task_wait (task_id=[%q]); quick state check: task_status (task_id=[%q])\n"+
-				"- Use task_kill (task_id=[%q]) to terminate\n"+
-				"Note: for multiple tasks, pass all IDs in one array — task_wait(task_id=[\"id1\",\"id2\"], mode=\"any\")",
-			headline, task.ID, task.ID, task.ID)
+			"%s\n\nThe command continues running in the background.\n%s",
+			headline, bgTaskTips(task.ID))
 		return NewResultWithTips(body, tips), nil
 	}
 
