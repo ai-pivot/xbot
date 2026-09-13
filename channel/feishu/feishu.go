@@ -220,6 +220,10 @@ type FeishuChannel struct {
 	// the user saw nothing until the final reply. It is cleared when a new
 	// inbound message arrives for that chat (new turn → reply target is known).
 	streamCardsBroken map[string]struct{}
+	// streamCardAcked records chats that already received the one-shot fallback
+	// ack for the current turn (progress card unavailable) — cleared on the next
+	// inbound message. Prevents both silence AND per-event spam.
+	streamCardAcked map[string]struct{}
 
 	// inboundMsgIDs remembers the latest inbound message id per chat so the
 	// progress card can be posted as a reply to it.
@@ -263,23 +267,25 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		askUsers:          make(map[string]*feishuPendingAskUser),
 		streamCards:       make(map[string]*feishuStreamCard),
 		streamCardsBroken: make(map[string]struct{}),
+		streamCardAcked:   make(map[string]struct{}),
 		inboundMsgIDs:     make(map[string]string),
 	}
 }
 
 func (f *FeishuChannel) Name() string { return "feishu" }
 
-// PreReplyNotify implements channel.PreReplyNotifier — TRUE: Feishu must send an
-// immediate ack for every inbound message.
+// PreReplyNotify implements channel.PreReplyNotifier — FALSE: progress renders
+// ONLY through the CardKit streaming card.
 //
-// ⚠️ Regression lesson (2026-09-13): returning false coupled the user's ONLY
-// feedback to the CardKit progress card. When card creation failed (no reply
-// target / missing scope → Feishu 99992351), the user saw NOTHING until the whole
-// turn finished ("发消息后不回复也不显示中间迭代"). Progress rendering is
-// additive: the structured progress card still streams per-iteration detail via
-// ProgressSender, while the ack guarantees immediate visible feedback even when
-// the card path is unavailable.
-func (f *FeishuChannel) PreReplyNotify() bool { return true }
+// ⚠️ Two-sided contract (both lessons are from 2026-09-13):
+//   - true  → the agent also sends its ack card, so the user sees TWO cards
+//     (old ack card + streaming card) = double render. That is why
+//     master's ack must NOT be re-enabled for progress.
+//   - false → the card is the only progress channel, so the card path MUST be
+//     reliable: per-chat failure marking, reply-target-only posting, and
+//     a one-shot text fallback when a real chat's card is unavailable
+//     (see ensureStreamCard / streamCardFallbackAck).
+func (f *FeishuChannel) PreReplyNotify() bool { return false }
 
 // ChannelSystemParts 返回飞书渠道的特化 prompt。
 // 由 main.go 中的适配器调用，注入到 agent 中间件 pipeline。
@@ -1210,8 +1216,10 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 	}
 	f.inboundMsgIDsMu.Unlock()
 	// New inbound message = new turn: the reply target is now known, so give the
-	// progress card a fresh attempt for this chat.
+	// progress card a fresh attempt for this chat (and re-arm the one-shot
+	// fallback ack).
 	f.clearStreamCardsBroken(chatID)
+	f.clearStreamCardAcked(chatID)
 	if mentionScope == "at_all_optional" {
 		metadata[bus.MetadataReplyPolicy] = bus.ReplyPolicyOptional
 	}

@@ -268,17 +268,13 @@ func TestRenderCard_PerIterationLayout(t *testing.T) {
 	if elems[1]["content"] != "answer one" {
 		t.Errorf("elem1 content: got %v", elems[1]["content"])
 	}
-	// Each tool is an EXPANDABLE panel whose header carries the command and
-	// whose body holds the arguments (Web parity: pills expand to details).
-	if elems[2]["tag"] != "collapsible_panel" {
-		t.Fatalf("tool row must be an expandable panel, got %v", elems[2]["tag"])
+	// 连续工具聚成一行（Web 的 pill 组形态）：markdown 单行，含命令；
+	// 不再有 per-tool 折叠面板（用户反馈 2026-09-13：`✅` + 4-5 行折叠是噪声）。
+	if elems[2]["tag"] != "markdown" {
+		t.Fatalf("tool row must be a single markdown line, got %v", elems[2]["tag"])
 	}
-	if title := panelTitle(elems[2]); !strings.Contains(title, "ls -la") {
-		t.Errorf("tool panel title should carry the command: %q", title)
-	}
-	toolBody := mapElements(t, elems[2]["elements"])
-	if len(toolBody) == 0 || !strings.Contains(toolBody[0]["content"].(string), "ls -la") {
-		t.Errorf("tool panel body should show the args: %v", toolBody)
+	if content, _ := elems[2]["content"].(string); !strings.Contains(content, "ls -la") {
+		t.Errorf("tool row should carry the command: %q", content)
 	}
 
 	// Iteration 2: thinking panel → the STREAMING content element.
@@ -344,28 +340,32 @@ func panelTitle(panel map[string]any) string {
 }
 
 // --- tool rows ---------------------------------------------------------------
+//
+// 形态（用户 2026-09-13 要求，对齐 Web）：同一迭代的连续工具**聚成一行**
+// （toolRow），每个工具只占一个 chip：`**名字** 关键参数 <状态色字>` ——
+// 无 emoji、无 per-tool 折叠面板。
 
-func TestToolLine_PrefersSummaryThenArgs(t *testing.T) {
-	withSummary := toolLine(streamTool{name: "Shell", status: "done", summary: "total 12\nfile a"})
+func TestToolChip_PrefersSummaryThenArgs(t *testing.T) {
+	withSummary := toolChip(streamTool{name: "Shell", status: "done", summary: "total 12\nfile a"})
 	if !strings.Contains(withSummary, "total 12") || strings.Contains(withSummary, "file a") {
-		t.Errorf("summary row should use the first line: %q", withSummary)
+		t.Errorf("summary chip should use the first line: %q", withSummary)
 	}
 
-	withArgs := toolLine(streamTool{name: "Read", status: "running", args: `{"path":"/tmp/x.go","offset":1}`})
+	withArgs := toolChip(streamTool{name: "Read", status: "running", args: `{"path":"/tmp/x.go","offset":1}`})
 	if !strings.Contains(withArgs, "/tmp/x.go") {
-		t.Errorf("args row should surface the path: %q", withArgs)
+		t.Errorf("args chip should surface the path: %q", withArgs)
 	}
 	if !strings.Contains(withArgs, "执行中") {
-		t.Errorf("running row should be labelled 执行中: %q", withArgs)
+		t.Errorf("running chip should be labelled 执行中: %q", withArgs)
 	}
 
-	failed := toolLine(streamTool{name: "Shell", status: "error", args: `{"command":"boom"}`})
+	failed := toolChip(streamTool{name: "Shell", status: "error", args: `{"command":"boom"}`})
 	if !strings.Contains(failed, "失败") {
-		t.Errorf("failed row: %q", failed)
+		t.Errorf("failed chip: %q", failed)
 	}
 }
 
-func TestToolLine_ThreeStates(t *testing.T) {
+func TestToolChip_ThreeStates(t *testing.T) {
 	// Web parity: generating (args still streaming) / executing / done, plus error.
 	cases := []struct {
 		status string
@@ -377,7 +377,7 @@ func TestToolLine_ThreeStates(t *testing.T) {
 		{"error", "失败"},
 	}
 	for _, c := range cases {
-		got := toolLine(streamTool{name: "Shell", status: c.status})
+		got := toolChip(streamTool{name: "Shell", status: c.status})
 		if !strings.Contains(got, c.want) {
 			t.Errorf("status %q → %q, want it to contain %q", c.status, got, c.want)
 		}
@@ -385,11 +385,33 @@ func TestToolLine_ThreeStates(t *testing.T) {
 	// The three states must be visually distinct.
 	seen := map[string]bool{}
 	for _, c := range cases {
-		line := toolLine(streamTool{name: "Shell", status: c.status})
+		line := toolChip(streamTool{name: "Shell", status: c.status})
 		if seen[line] {
 			t.Errorf("status %q renders identically to another state: %q", c.status, line)
 		}
 		seen[line] = true
+	}
+}
+
+// TestToolRow_ConsecutiveToolsShareOneLine — 连续工具聚成一行（Web pill 组形态），
+// 且不含 emoji、不含折叠所需的 collapsible_panel。
+func TestToolRow_ConsecutiveToolsShareOneLine(t *testing.T) {
+	row := toolRow([]streamTool{
+		{name: "Shell", status: "done", args: `{"command":"ls -la"}`},
+		{name: "Read", status: "running", args: `{"path":"a.go"}`},
+	})
+	if strings.Contains(row, "\n") {
+		t.Errorf("consecutive tools must share ONE line, got:\n%s", row)
+	}
+	for _, want := range []string{"Shell", "Read", "完成", "执行中"} {
+		if !strings.Contains(row, want) {
+			t.Errorf("tool row must contain %q (got: %s)", want, row)
+		}
+	}
+	for _, emoji := range []string{"✅", "🔄", "✍️", "❌", "⏸️"} {
+		if strings.Contains(row, emoji) {
+			t.Errorf("tool row must not carry the %s emoji (got: %s)", emoji, row)
+		}
 	}
 }
 
@@ -443,18 +465,22 @@ func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
 	if len(f.callsToElement(streamCardElementID)) == 0 {
 		t.Error("answer text was not streamed")
 	}
-	// The rendered card carries a generating-state tool panel.
+	// The rendered card carries the generating state inside the tool row (a single
+	// markdown line — no per-tool panel).
 	update := f.cardUpdates()[len(f.cardUpdates())-1]
 	card := decodeCardField(t, update.Body)
 	elems := cardElements(t, card)
 	found := false
 	for _, e := range elems {
-		if e["tag"] == "collapsible_panel" && strings.Contains(panelTitle(e), "生成参数中") {
+		if e["tag"] != "markdown" {
+			continue
+		}
+		if c, _ := e["content"].(string); strings.Contains(c, "生成参数中") {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("card should render a generating tool panel: %v", elems)
+		t.Errorf("card should render the generating state in the tool row: %v", elems)
 	}
 }
 
@@ -638,9 +664,14 @@ func TestEnsureStreamCard_NoReplyTargetSkipsCreate(t *testing.T) {
 	}
 }
 
-func TestPreReplyNotify_AcksSoProgressIsNeverSilent(t *testing.T) {
+// TestPreReplyNotify_CardOnlyNoDoubleAck — feishu must NOT enable the agent's
+// ack: progress renders ONLY through the CardKit streaming card, otherwise the
+// user sees TWO cards (old ack card + streaming card) — reported 2026-09-13.
+// Silence is prevented on the channel side instead (streamCardFallbackAck sends
+// one short line per turn when the card is unavailable).
+func TestPreReplyNotify_CardOnlyNoDoubleAck(t *testing.T) {
 	c := NewFeishuChannel(FeishuConfig{}, nil)
-	if !c.PreReplyNotify() {
-		t.Error("feishu must ack: without it, a broken progress card leaves the user with silence until the turn ends")
+	if c.PreReplyNotify() {
+		t.Error("feishu must not send an ack card: it would double-render alongside the streaming card")
 	}
 }

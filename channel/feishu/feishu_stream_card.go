@@ -65,9 +65,6 @@ const (
 	// streamCardToolSummaryRunes bounds a tool summary line so one long command
 	// cannot blow up the card.
 	streamCardToolSummaryRunes = 80
-
-	// streamCardToolDetailBytes bounds the expanded tool detail (args / result).
-	streamCardToolDetailBytes = 1200
 )
 
 // streamCardMinInterval throttles the streaming-text element pushes.
@@ -92,19 +89,20 @@ type streamTool struct {
 
 // toolStatusLabel maps the engine's tool status to the Web UI's three states
 // (generating = arguments still streaming, executing = running, done) plus the
-// error state.
-func toolStatusLabel(status string) (icon, color, label string) {
+// error state. No emoji (user feedback 2026-09-13: the ✅ prefix is noise) — the
+// status is rendered as coloured text on the tool's single line.
+func toolStatusLabel(status string) (color, label string) {
 	switch status {
 	case "generating":
-		return "✍️", "grey", "生成参数中"
+		return "grey", "生成参数中"
 	case "pending":
-		return "⏸️", "grey", "等待执行"
+		return "grey", "等待执行"
 	case "running":
-		return "🔄", "turquoise", "执行中"
+		return "turquoise", "执行中"
 	case "error", "failed":
-		return "❌", "red", "失败"
+		return "red", "失败"
 	default:
-		return "✅", "green", "完成"
+		return "green", "完成"
 	}
 }
 
@@ -284,6 +282,13 @@ func (f *FeishuChannel) clearStreamCardsBroken(chatID string) {
 	f.streamCardsMu.Unlock()
 }
 
+// clearStreamCardAcked re-arms the one-shot fallback ack for ONE chat (new turn).
+func (f *FeishuChannel) clearStreamCardAcked(chatID string) {
+	f.streamCardsMu.Lock()
+	delete(f.streamCardAcked, chatID)
+	f.streamCardsMu.Unlock()
+}
+
 // iter returns (creating if needed) the state of one iteration.
 // The caller must hold c.mu.
 func (c *feishuStreamCard) iter(n int) *streamIteration {
@@ -457,8 +462,13 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 				"tag": "markdown", "content": it.content, "text_size": "normal",
 			})
 		}
-		for _, t := range it.tools {
-			elements = append(elements, toolPanel(t))
+		if len(it.tools) > 0 {
+			// 同一迭代的连续工具**聚成一行**（Web 的 pill 组形态：一组 pill 排在一行），
+			// 每项只显示工具名 + 状态，无 emoji、无 per-tool 折叠
+			// （用户反馈 2026-09-13：`✅` + 4-5 行折叠是纯噪声）。
+			elements = append(elements, map[string]any{
+				"tag": "markdown", "content": toolRow(it.tools), "text_size": "notation",
+			})
 		}
 	}
 	if len(elements) == 0 {
@@ -540,91 +550,30 @@ func reasoningElementID(n int) string {
 	return fmt.Sprintf("think_%d", n)
 }
 
-// toolLine renders the ONE-LINE header of a tool row:
-// `✅ Shell · ls -la · 12ms · 完成`.
-func toolLine(t streamTool) string {
-	icon, _, state := toolStatusLabel(t.status)
+// toolRow renders ONE iteration's consecutive tools on a single compact line —
+// the Feishu equivalent of Web's pill group (consecutive tool pills sit together,
+// NOT one block per tool). Each chip is just the tool name (+ its key argument)
+// with a coloured status; no emoji, no per-tool fold.
+func toolRow(ts []streamTool) string {
+	chips := make([]string, 0, len(ts))
+	for _, t := range ts {
+		chips = append(chips, toolChip(t))
+	}
+	return strings.Join(chips, "   ")
+}
+
+// toolChip renders one tool as `**Shell** `ls -la` <状态>`.
+func toolChip(t streamTool) string {
+	color, state := toolStatusLabel(t.status)
 	label := t.label
 	if label == "" {
 		label = t.name
 	}
-	parts := []string{fmt.Sprintf("%s %s", icon, label)}
+	out := "**" + label + "**"
 	if detail := toolDetail(t); detail != "" {
-		parts = append(parts, detail)
+		out += " " + detail
 	}
-	if t.elapsedMs > 0 {
-		parts = append(parts, fmt.Sprintf("%dms", t.elapsedMs))
-	}
-	return fmt.Sprintf("%s · %s", strings.Join(parts, " · "), state)
-}
-
-// toolPanel renders one tool as an EXPANDABLE row (Web parity: each tool pill
-// expands into its arguments + result). The header carries the one-line summary
-// as plain text (an emoji already encodes the state, so no colour markup is
-// needed inside a header title).
-func toolPanel(t streamTool) map[string]any {
-	body := make([]string, 0, 2)
-	if args := prettyToolArgs(t.args); args != "" {
-		body = append(body, "**参数**\n```json\n"+args+"\n```")
-	}
-	if out := toolOutput(t); out != "" {
-		body = append(body, "**结果**\n"+out)
-	}
-	if len(body) == 0 {
-		body = append(body, "（无详细输出）")
-	}
-
-	return map[string]any{
-		"tag":      "collapsible_panel",
-		"expanded": false,
-		"header": map[string]any{
-			"title": map[string]any{
-				"tag": "plain_text", "content": toolLine(t),
-				"text_color": "grey", "text_size": "notation",
-			},
-			"vertical_align": "center",
-			"icon": map[string]any{
-				"tag": "standard_icon", "token": streamCardPanelIconToken,
-				"color": "grey", "size": "16px 16px",
-			},
-			"icon_position":       "right",
-			"icon_expanded_angle": -180,
-		},
-		"border":           map[string]any{"color": "grey", "corner_radius": "5px"},
-		"vertical_spacing": "4px",
-		"padding":          "8px 8px 8px 8px",
-		"elements": []map[string]any{
-			{"tag": "markdown", "content": strings.Join(body, "\n\n"), "text_size": "notation"},
-		},
-	}
-}
-
-// prettyToolArgs indents the raw tool arguments for the expanded view.
-func prettyToolArgs(args string) string {
-	args = strings.TrimSpace(args)
-	if args == "" {
-		return ""
-	}
-	var v any
-	if err := json.Unmarshal([]byte(args), &v); err != nil {
-		return tools.TruncateHeadPreview(args, streamCardToolDetailBytes)
-	}
-	pretty, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return tools.TruncateHeadPreview(args, streamCardToolDetailBytes)
-	}
-	return tools.TruncateHeadPreview(string(pretty), streamCardToolDetailBytes)
-}
-
-// toolOutput returns the tool's result text for the expanded view.
-func toolOutput(t streamTool) string {
-	if t.detail != "" {
-		return tools.TruncateHeadPreview(t.detail, streamCardToolDetailBytes)
-	}
-	if t.summary != "" {
-		return tools.TruncateHeadPreview(t.summary, streamCardToolDetailBytes)
-	}
-	return ""
+	return fmt.Sprintf("%s <font color='%s'>%s</font>", out, color, state)
 }
 
 // setElementContent pushes the full text into one streamable element.
@@ -763,11 +712,12 @@ func cardPreview(text string) string {
 // SendProgress implements channel.ProgressSender: the structured snapshot is the
 // sole source for the card layout (iterations / thinking / tools).
 func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEvent) {
-	if payload == nil {
+	if payload == nil || !f.isFeishuChat(chatID) {
 		return
 	}
 	card, ok := f.ensureStreamCard(chatID)
 	if !ok {
+		f.streamCardFallbackAck(chatID)
 		return
 	}
 	card.applyProgress(payload)
@@ -781,7 +731,7 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 // the current iteration, streamed into the card with a typewriter. The reasoning
 // argument (thinking text) streams into its own element.
 func (f *FeishuChannel) SendStreamContent(chatID, content, reasoning string) {
-	if content == "" && reasoning == "" {
+	if (content == "" && reasoning == "") || !f.isFeishuChat(chatID) {
 		return
 	}
 	card, ok := f.ensureStreamCard(chatID)
@@ -854,6 +804,35 @@ func (f *FeishuChannel) lastInboundMessageID(chatID string) string {
 	f.inboundMsgIDsMu.Lock()
 	defer f.inboundMsgIDsMu.Unlock()
 	return f.inboundMsgIDs[chatID]
+}
+
+// isFeishuChat reports whether chatID is a chat this channel can post to.
+// The structured progress broadcast reaches EVERY channel with EVERY session's
+// chatID (web/cli included) — those must be skipped silently. Creating cards for
+// a web session's chat id (e.g. chat_XXXX: neither an open_id nor a chat_id)
+// failed with Feishu 99992351 and used to latch the whole channel.
+func (f *FeishuChannel) isFeishuChat(chatID string) bool {
+	return f.lastInboundMessageID(chatID) != ""
+}
+
+// streamCardFallbackAck sends ONE short line per turn when the progress card is
+// unavailable for a real chat. PreReplyNotify is false (the card is the only
+// progress channel — an ack card would double-render), so without this fallback
+// a broken card would leave the user with total silence until the turn ends.
+func (f *FeishuChannel) streamCardFallbackAck(chatID string) {
+	f.streamCardsMu.Lock()
+	if f.streamCardAcked == nil {
+		f.streamCardAcked = map[string]struct{}{}
+	}
+	if _, done := f.streamCardAcked[chatID]; done {
+		f.streamCardsMu.Unlock()
+		return
+	}
+	f.streamCardAcked[chatID] = struct{}{}
+	f.streamCardsMu.Unlock()
+	if id := f.lastInboundMessageID(chatID); id != "" {
+		f.sendTextReply(chatID, id, "收到，正在处理…")
+	}
 }
 
 // streamCardSend renders the turn's FINAL send through the open card (finalize).
