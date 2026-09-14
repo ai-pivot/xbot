@@ -323,13 +323,23 @@ func TestRenderCard_PerIterationLayout(t *testing.T) {
 	if elems[1]["content"] != "answer one" {
 		t.Errorf("elem1 content: got %v", elems[1]["content"])
 	}
-	// 连续工具聚成一行（Web 的 pill 组形态）：markdown 单行，含命令；
-	// 不再有 per-tool 折叠面板（用户反馈 2026-09-13：`✅` + 4-5 行折叠是噪声）。
-	if elems[2]["tag"] != "markdown" {
-		t.Fatalf("tool row must be a single markdown line, got %v", elems[2]["tag"])
+	// 工具与思考**同款**：每个工具一个可折叠面板（用户 2026-09-14：
+	// 「注意工具要类似思考的样式可用展开」）。
+	if elems[2]["tag"] != "collapsible_panel" {
+		t.Fatalf("tool must render as a collapsible panel, got %v", elems[2]["tag"])
 	}
-	if content, _ := elems[2]["content"].(string); !strings.Contains(content, "ls -la") {
-		t.Errorf("tool row should carry the command: %q", content)
+	hdr, _ := elems[2]["header"].(map[string]any)
+	title, _ := hdr["title"].(map[string]any)
+	titleText, _ := title["content"].(string)
+	if !strings.Contains(titleText, "ls -la") {
+		t.Errorf("tool panel header title should carry the command: %q", titleText)
+	}
+	body := ""
+	if els, _ := elems[2]["elements"].([]map[string]any); len(els) > 0 {
+		body, _ = els[0]["content"].(string)
+	}
+	if !strings.Contains(body, "ls -la") {
+		t.Errorf("tool panel body should carry the detail: %q", body)
 	}
 
 	// Iteration 2: thinking panel → the STREAMING content element.
@@ -543,6 +553,14 @@ func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
 	elems := cardElements(t, card)
 	found := false
 	for _, e := range elems {
+		if e["tag"] == "collapsible_panel" {
+			hdr, _ := e["header"].(map[string]any)
+			title, _ := hdr["title"].(map[string]any)
+			if c, _ := title["content"].(string); strings.Contains(c, "生成参数中") {
+				found = true
+			}
+			continue
+		}
 		if e["tag"] != "markdown" {
 			continue
 		}

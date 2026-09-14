@@ -479,12 +479,13 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 			})
 		}
 		if len(it.tools) > 0 {
-			// 同一迭代的连续工具**聚成一行**（Web 的 pill 组形态：一组 pill 排在一行），
-			// 每项只显示工具名 + 状态，无 emoji、无 per-tool 折叠
-			// （用户反馈 2026-09-13：`✅` + 4-5 行折叠是纯噪声）。
-			elements = append(elements, map[string]any{
-				"tag": "markdown", "content": toolRow(it.tools), "text_size": "notation",
-			})
+			// 工具与思考**同款**：每个工具一个可折叠面板（用户 2026-09-14：
+			// 「注意工具要类似思考的样式可用展开」）。标题 = 工具 + 参数 + 耗时 + 状态，
+			// 展开后是命令/输出/错误详情。结构变化靠整卡 Card.Update 重排
+			// （元素级 append/patch 线上返回 0 但无渲染效果，已弃用）。
+			for i := range it.tools {
+				elements = append(elements, toolPanel(it.tools[i]))
+			}
 		}
 	}
 	if len(elements) == 0 {
@@ -590,6 +591,59 @@ func toolChip(t streamTool) string {
 	}
 	parts = append(parts, fmt.Sprintf("<font color='%s'>%s</font>", color, state))
 	return strings.Join(parts, " · ")
+}
+
+// toolChipPlain is toolChip's plain-text twin for panel HEADERS: a header title
+// is plain_text (markdown/HTML tags would render literally), so the status colour
+// must be dropped instead of wrapped in <font>.
+func toolChipPlain(t streamTool) string {
+	icon, _, state := toolStatusLabel(t.status)
+	label := t.label
+	if label == "" {
+		label = t.name
+	}
+	parts := []string{icon + " " + label}
+	if detail := toolDetailShort(t); detail != "" {
+		parts = append(parts, detail)
+	}
+	parts = append(parts, state)
+	return strings.Join(parts, " · ")
+}
+
+// toolPanel renders ONE tool as a collapsible panel in the SAME visual language as
+// the thinking panel (user 2026-09-14: 「注意工具要类似思考的样式可用展开」).
+// Header = icon + label + arg + elapsed + status; body = the tool's bounded detail.
+// Structural changes go through the whole-card Card.Update — element-level
+// add_elements/partial_update_element return code=0 but have NO rendering effect
+// (measured 2026-09-14), so they are not used for visible content.
+func toolPanel(t streamTool) map[string]any {
+	body := toolDetailShort(t)
+	if body == "" {
+		body = "_（无详情）_"
+	}
+	return map[string]any{
+		"tag":      "collapsible_panel",
+		"expanded": false,
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag": "plain_text", "content": toolChipPlain(t),
+				"text_color": "grey", "text_size": "notation",
+			},
+			"vertical_align": "center",
+			"icon": map[string]any{
+				"tag": "standard_icon", "token": streamCardPanelIconToken,
+				"color": "grey", "size": "16px 16px",
+			},
+			"icon_position":       "right",
+			"icon_expanded_angle": -180,
+		},
+		"border":           map[string]any{"color": "grey", "corner_radius": "5px"},
+		"vertical_spacing": "4px",
+		"padding":          "8px 8px 8px 8px",
+		"elements": []map[string]any{
+			{"tag": "markdown", "content": body, "text_size": "notation"},
+		},
+	}
 }
 
 // toolDetailShort returns a SINGLE bounded line for a tool row.
