@@ -216,7 +216,7 @@ Manages webhook event subscriptions for external service integration. Actions: `
 
 | Tool | File | Purpose |
 |------|------|---------|
-| `ChatHistory` | `tools/chat_history.go` | Query recent chat message history |
+| `ChatHistory` | `tools/chat_history.go` | Query recent chat message history of the current conversation. **Reads the authoritative session history** (`SessionService.Replay` over `session_messages`, injected via `ToolContext.SessionSvc`) so masks/compaction/**rewind**/**clear** apply automatically. Stateless — it deliberately keeps NO in-process copy of conversation content (an earlier in-memory ring made rewound messages still retrievable after a rewind) |
 | `Skill` | `tools/skill.go` | Load skill documentation on demand |
 | `ManageTools` | `tools/manage_tools.go` | Manage MCP servers (add/remove/list/reload) |
 | `task_status` / `task_kill` | `tools/task_tools.go` | Check/terminate background tasks — `task_id` accepts a single ID string OR an array of IDs (per-ID tolerant aggregation; unknown IDs reported in the output without aborting the rest) |

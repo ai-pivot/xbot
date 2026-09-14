@@ -3,138 +3,26 @@ package tools
 import (
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"xbot/llm"
-	log "xbot/logger"
 )
 
-// ChatHistoryStore 存储各个群组/会话的最近消息历史
-type ChatHistoryStore struct {
-	mu      sync.RWMutex
-	history map[string]*ChatHistory // key: channel:chatID
-	maxSize int                     // 每个群组保留的最大消息数
-}
+// ---- ChatHistoryTool: 让 LLM 回看当前会话的近期消息 ----
+//
+// 数据源 = session_messages（DB，会话历史的**唯一权威**），经 SessionService.Replay
+// 读出"当前视图"（mask/压缩/回溯都已生效）。本工具**不持有任何副本**：回溯
+// （RewindToHistoryID）或清空（Clear）截断 DB 之后，这里立刻读不到被截断的消息。
+//
+// ⚠️ 曾经的实现维护了一份进程内 ring（每条入站消息 Add 一份），回溯/清空都不清它 ——
+// 用户回溯后模型仍能用本工具读到回溯前的消息（用户实测复现）。会话内容的第二份
+// 副本 = 必漏，故删除，改由 DB 单一权威承担。
 
-// ChatHistory 单个群组的消息历史
-type ChatHistory struct {
-	messages   []ChatMessage
-	maxSize    int
-	lastUpdate time.Time
-}
+// ChatHistoryTool 会话历史查询工具（无状态）。
+type ChatHistoryTool struct{}
 
-// ChatMessage 单条消息记录
-type ChatMessage struct {
-	Content   string    `json:"content"`
-	SenderID  string    `json:"sender_id"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// NewChatHistoryStore 创建聊天历史存储
-// maxSize 每个群组保留的最大消息数（<=0 时默认 200）
-func NewChatHistoryStore(maxSize int) *ChatHistoryStore {
-	if maxSize <= 0 {
-		maxSize = 200 // 默认保留最近 200 条，防止长期运行 OOM
-	}
-	return &ChatHistoryStore{
-		history: make(map[string]*ChatHistory),
-		maxSize: maxSize,
-	}
-}
-
-// defaultMaxChannels 全局最大 channel 数，防止 history map 无限增长
-const defaultMaxChannels = 10000
-
-// Add 添加一条消息到历史
-func (s *ChatHistoryStore) Add(channel, chatID, senderID, content string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	key := s.makeKey(channel, chatID)
-	hist, exists := s.history[key]
-	if !exists {
-		// 防止 map 无限增长：超过上限时清理最旧的 channel
-		if len(s.history) >= defaultMaxChannels {
-			s.evictOldestLocked()
-		}
-		hist = &ChatHistory{
-			messages:   make([]ChatMessage, 0, s.maxSize),
-			maxSize:    s.maxSize,
-			lastUpdate: time.Now(),
-		}
-		s.history[key] = hist
-	}
-
-	// 添加新消息
-	msg := ChatMessage{
-		Content:   content,
-		SenderID:  senderID,
-		Timestamp: time.Now(),
-	}
-	hist.messages = append(hist.messages, msg)
-	hist.lastUpdate = time.Now()
-
-	// 限制大小
-	if len(hist.messages) > hist.maxSize {
-		// 保留最新的 maxSize 条消息
-		hist.messages = hist.messages[len(hist.messages)-hist.maxSize:]
-	}
-}
-
-// evictOldestLocked 清理最旧的 channel（调用方需持有写锁）
-func (s *ChatHistoryStore) evictOldestLocked() {
-	var oldestKey string
-	var oldestTime time.Time
-	for k, h := range s.history {
-		if oldestKey == "" || h.lastUpdate.Before(oldestTime) {
-			oldestKey = k
-			oldestTime = h.lastUpdate
-		}
-	}
-	if oldestKey != "" {
-		delete(s.history, oldestKey)
-	}
-}
-
-// Get 获取指定群组的最近消息历史
-func (s *ChatHistoryStore) Get(channel, chatID string, limit int) []ChatMessage {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	key := s.makeKey(channel, chatID)
-	hist, exists := s.history[key]
-	if !exists {
-		return nil
-	}
-
-	messages := hist.messages
-	if limit > 0 && limit < len(messages) {
-		// 返回最近的 limit 条消息
-		messages = messages[len(messages)-limit:]
-	}
-
-	// 返回副本，避免外部修改
-	result := make([]ChatMessage, len(messages))
-	copy(result, messages)
-	return result
-}
-
-// makeKey 生成存储 key
-func (s *ChatHistoryStore) makeKey(channel, chatID string) string {
-	return fmt.Sprintf("%s:%s", channel, chatID)
-}
-
-// ---- ChatHistoryTool: 让 LLM 可以查询聊天历史 ----
-
-// ChatHistoryTool 聊天历史查询工具
-type ChatHistoryTool struct {
-	store *ChatHistoryStore
-}
-
-// NewChatHistoryTool 创建聊天历史工具
-func NewChatHistoryTool(store *ChatHistoryStore) *ChatHistoryTool {
-	return &ChatHistoryTool{store: store}
+func NewChatHistoryTool() *ChatHistoryTool {
+	return &ChatHistoryTool{}
 }
 
 func (t *ChatHistoryTool) Name() string {
@@ -142,9 +30,9 @@ func (t *ChatHistoryTool) Name() string {
 }
 
 func (t *ChatHistoryTool) Description() string {
-	return `Query recent chat message history in the current group/conversation.
+	return `Query the recent message history of the current conversation.
 
-Use this tool SPARINGLY — only when you genuinely cannot recall what was recently discussed and it is NOT available in the conversation context (e.g., after a page refresh with no compacted summary). Do NOT use this tool after /compress — the compacted context summary already contains the relevant history. Do NOT use this tool as a routine first step before responding.
+Use this tool SPARINGLY — only when you genuinely cannot recall what was recently discussed and it is NOT available in the conversation context (e.g., after a page refresh with no compacted summary). It reads the same authoritative session history the conversation itself uses, so anything already rewound or cleared is likewise gone here. Do NOT use this tool after /compress — the compacted context summary already contains the relevant history. Do NOT use this tool as a routine first step before responding.
 
 Parameters (JSON):
   - limit: integer, optional, number of recent messages to retrieve (defaults to 10, max 50)
@@ -162,8 +50,6 @@ type chatHistoryParams struct {
 }
 
 func (t *ChatHistoryTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
-	log.WithField("ctx", fmt.Sprintf("%+v", ctx)).Debug("ChatHistory tool called")
-
 	params, err := parseToolArgs[chatHistoryParams](input)
 	if err != nil {
 		return nil, err
@@ -177,38 +63,53 @@ func (t *ChatHistoryTool) Execute(ctx *ToolContext, input string) (*ToolResult, 
 		limit = 50
 	}
 
-	// 从 ToolContext 获取当前 channel 和 chatID
-	channel := ctx.Channel
-	chatID := ctx.ChatID
-
-	log.WithFields(log.Fields{
-		"channel": channel,
-		"chat_id": chatID,
-		"limit":   limit,
-	}).Debug("ChatHistory retrieving messages")
-
-	if channel == "" || chatID == "" {
+	if ctx.SessionSvc == nil || ctx.TenantID == 0 {
 		return NewResult("No active conversation context."), nil
 	}
 
-	messages := t.store.Get(channel, chatID, limit)
-	if len(messages) == 0 {
+	// Replay 读出当前权威视图（mask/压缩/回溯已生效）——与前端/引擎看到的是同一份。
+	replay, err := ctx.SessionSvc.Replay(ctx.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("read session history: %w", err)
+	}
+
+	lines := make([]string, 0, limit)
+	for _, m := range replay.Messages {
+		// 只回对话消息：tool/system 行是过程噪声，模型的上下文里本来也有。
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		if strings.TrimSpace(m.Content) == "" {
+			continue
+		}
+		lines = append(lines, formatChatHistoryLine(m))
+	}
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	if len(lines) == 0 {
 		return NewResult("No recent message history found."), nil
 	}
 
-	// 格式化输出
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Recent %d messages in this conversation:\n\n", len(messages))
-
-	for i, msg := range messages {
-		// 格式化时间
-		timeStr := msg.Timestamp.Format("15:04")
-		if time.Since(msg.Timestamp) > 24*time.Hour {
-			timeStr = msg.Timestamp.Format("01/02 15:04")
-		}
-
-		fmt.Fprintf(&sb, "[%d] %s <%s>: %s\n", i+1, timeStr, msg.SenderID, msg.Content)
+	fmt.Fprintf(&sb, "Recent %d messages in this conversation:\n\n", len(lines))
+	for i, line := range lines {
+		fmt.Fprintf(&sb, "[%d] %s\n", i+1, line)
 	}
-
 	return NewResult(sb.String()), nil
+}
+
+// formatChatHistoryLine 渲染一行 `HH:MM <role>: content`（超过 24h 带日期）。
+func formatChatHistoryLine(m llm.ChatMessage) string {
+	timeStr := ""
+	if !m.Timestamp.IsZero() {
+		timeStr = m.Timestamp.Format("15:04")
+		if time.Since(m.Timestamp) > 24*time.Hour {
+			timeStr = m.Timestamp.Format("01/02 15:04")
+		}
+	}
+	if timeStr == "" {
+		return fmt.Sprintf("<%s>: %s", m.Role, m.Content)
+	}
+	return fmt.Sprintf("%s <%s>: %s", timeStr, m.Role, m.Content)
 }
