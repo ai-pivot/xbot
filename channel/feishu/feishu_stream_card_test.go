@@ -5,8 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -188,47 +186,13 @@ func newStreamCardChannel(t *testing.T, f *fakeFeishu) *FeishuChannel {
 
 func fastStreamCard(t *testing.T) {
 	t.Helper()
+	prevMin, prevPanel := streamCardMinInterval, streamCardPanelMinInterval
+	streamCardMinInterval, streamCardPanelMinInterval = 0, 0
 	t.Cleanup(func() {
+		streamCardMinInterval, streamCardPanelMinInterval = prevMin, prevPanel
 	})
 }
 
-// lastThinkingCount returns the N in the latest rendered "💭 思考 N 字" panel title.
-func lastThinkingCount(t *testing.T, f *fakeFeishu) int {
-	t.Helper()
-	updates := f.cardUpdates()
-	if len(updates) == 0 {
-		t.Fatal("no card update rendered")
-	}
-	card := decodeCardField(t, updates[len(updates)-1].Body)
-	for _, e := range cardElements(t, card) {
-		if e["tag"] != "collapsible_panel" {
-			continue
-		}
-		title := panelTitle(e)
-		if m := thinkingCountRe.FindStringSubmatch(title); m != nil {
-			n, err := strconv.Atoi(m[1])
-			if err != nil {
-				t.Fatalf("bad count in %q: %v", title, err)
-			}
-			return n
-		}
-	}
-	t.Fatalf("no 💭 思考 N 字 panel found in the card")
-	return 0
-}
-
-var thinkingCountRe = regexp.MustCompile(`思考 (\d+) 字`)
-
-// TestReasoningCount_UpdatesLive — 思考字数必须**实时递增**（用户 2026-09-13）。
-// 思考正文走元素级内容 API（打字机），但面板标题只能靠整卡更新刷新 —— 所以
-// 每次思考增长都要（节流地）重算标题里的字数。
-// TestReasoningStreaming_KeepsTypewriter pins the contract the user demanded
-// (2026-09-14「没有 stream 特效」): the thinking TEXT streams through the element
-// Content API (typewriter) and NO full-card update may run while text is
-// streaming — a full-card update writes that element's text in ONE shot and
-// cancels the typewriter. The panel title's character count therefore refreshes
-// only on structural updates (new iteration / tool status / finalize); the
-// structural path itself is covered by TestSendProgress_StreamsReasoningAndTools.
 func TestReasoningStreaming_KeepsTypewriter(t *testing.T) {
 	fastStreamCard(t)
 	f := newFakeFeishu(t)

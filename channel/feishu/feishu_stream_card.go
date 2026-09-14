@@ -186,7 +186,6 @@ type feishuStreamCard struct {
 	lastReasonIter int
 	lastReasoning  string
 	lastReasonAt   time.Time
-	// lastReasonCountAt throttles the thinking-panel HEADER refresh (the character
 }
 
 // newFeishuStreamCard creates the card entity (streaming enabled) and posts it.
