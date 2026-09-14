@@ -433,7 +433,7 @@ type Agent struct {
 
 	skills             *SkillStore
 	agents             *AgentStore
-	cardBuilder        *tools.CardBuilder      // Card Builder MCP
+	cardBuilder        *tools.CardBuilder // Card Builder MCP
 	workDir            string
 	promptLoader       *PromptLoader
 	pipeline           *MessagePipeline // 消息构建管道（持有实例，支持运行时动态增删中间件）
