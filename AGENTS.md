@@ -664,6 +664,8 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 - **`send_message`（agent 目标）与 `SubAgent(action="send")`（run 中排队）必须立刻成功**（用户 2026-09-14：「这两个工具都必须立刻成功」）。两者都只在**短窗口**内顺手拿 ack：`tools/limits.go` 的 `SendMessageAwaitReply`(2s) 与 `agent/interactive.go` 的 `subAgentSendAckWait`(3s)；超时即返回"已投递/已入队"，**投递在后台继续** —— 用 `context.WithoutCancel(baseCtx)` + 上限 ctx，**绝不用工具 ctx**（工具返回后它会被取消），SubAgent 的消息**留在 `pendingMessages`**（下次迭代间隙照旧投递）。旧行为：agent 目标等满 `AgentRPCTimeout`=30s（目标忙即卡死）；SubAgent 排队**无限**等 drain ack（子代理长跑工具时调用方永不返回）。守护用例：`tools/send_message_test.go` 的 `TestSendToAgent_DoesNotBlockOnUnresponsiveTarget`（目标 `SendMessageCtx` 永久阻塞 ⇒ 工具 3s 内必须成功返回）。
 
+- **转后台（promote_shell）必须对【所有会话】可用**（用户 2026-09-14：「所有会话都要支持转移到 background」）。`ForegroundShellHandle` 注册时用的是 **shell 自己的 `ctx.SessionKey`**，而前端发来的 `session_key` 是面板所见会话（`channel:chatID`）—— 两者在 physicalChannel override（CLI 会话在 web 里看是 `web:chatID`）、SubAgent（`agent:role/instance`）等场景下**并不一致**，只按会话键查会落空并报 `no running foreground shell in this session`。修复：registry 维护**全局 callID 索引**（callID = LLM tool_call id，**全局唯一**），会话键查不到时按 callID 兜底 ⇒ 任意会话视图都能转后台，且仍以 callID 精确定位、不会误伤并行的另一个 shell。守护用例：`tools/shell_promote_test.go` 的 `TestPromoteForegroundShell_AcrossSessionKeys`（注册在 `cli:/repo`，以 `web:/repo` + 同 callID 转后台必须成功）。
+
 - **工具去重必须"终态优先"**（`web/src/components/agent/progressStore.ts` 的 `dedupTools`）：同一个 `name\x00label` 同时出现在 `activeTools`（**陈旧快照**，仍是 running）与 `completedTools`（done/error）时，旧的"先到先得"让 running 赢 ⇒ 工具**永远不转绿**（用户 2026-09-14：「一个 iter 两个 tool，已完成还是渲染成进行中」）。现按状态优先级取优：`done/error > running > pending > generating`，与数组顺序无关。**推论：任何"运行中"的判据必须与卡片观感同源** —— 转后台按钮曾用严格 `tool.status === 'running'`，而卡片运行态来自 `isToolInProgress`（pending|generating|running），两者不一致就会出现"看着在跑却没有按钮"（2026-09-14 用户报告）。
 
 ## Development Principles

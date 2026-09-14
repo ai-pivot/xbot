@@ -375,3 +375,23 @@ func TestAdoptRunningOutputPush(t *testing.T) {
 		t.Fatalf("task output = %q, want %q", task.CurrentOutput(), "part1 part2")
 	}
 }
+
+// TestPromoteForegroundShell_AcrossSessionKeys — 用户 2026-09-14：
+// 「所有会话都要支持转移到 background」+ 现场报错 "no running foreground shell in this session"。
+// 会话键在不同会话类型下不一致（canonical vs physicalChannel override / SubAgent key），
+// 但 callID 全局唯一 ⇒ 跨会话键也必须命中。
+func TestPromoteForegroundShell_AcrossSessionKeys(t *testing.T) {
+	h := registerForegroundShell("cli:/repo", "call-cross", "sleep 100")
+	defer unregisterForegroundShell(h)
+	go func() {
+		<-h.promoteCh
+		notifyPromoteResult(h, "task-cross", nil)
+	}()
+	got, err := PromoteForegroundShell("web:/repo", "call-cross")
+	if err != nil {
+		t.Fatalf("cross-session promote must work, got error: %v", err)
+	}
+	if got != "task-cross" {
+		t.Fatalf("taskID = %q, want task-cross", got)
+	}
+}
