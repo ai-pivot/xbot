@@ -68,7 +68,13 @@ const (
 	streamCardToolRowRunes = 40
 	// streamCardToolHeaderRunes bounds the collapsed tool-panel header to ONE
 	// short line (the full text goes to the expanded body).
-	streamCardToolHeaderRunes = 24
+	streamCardToolHeaderRunes = 16
+	// streamCardMaxIterations bounds how many iterations the card renders. Feishu
+	// cards cap at ~50 elements (11310 "element exceeds the limit") and each
+	// iteration costs 2-3 panels => an unbounded card FREEZES mid-turn once the
+	// limit is hit (user report 2026-09-14: "更新到一定迭代之后不继续更新卡片了").
+	// Older iterations collapse into a single summary line.
+	streamCardMaxIterations = 2
 	// streamCardToolBodyBytes bounds the expanded tool body.
 	streamCardToolBodyBytes = 1200
 )
@@ -459,20 +465,40 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 	sort.Ints(nums)
 
 	elements := make([]map[string]any, 0, len(nums)*3)
+	// 元素预算：只渲染最近 streamCardMaxIterations 个迭代（卡片有 ~50 元素上限，
+	// 超限后整卡更新会被拒 → 卡片冻结）。更早的迭代压成一行汇总。
+	if len(nums) > streamCardMaxIterations {
+		older := len(nums) - streamCardMaxIterations
+		nums = nums[len(nums)-streamCardMaxIterations:]
+		elements = append(elements, map[string]any{
+			"tag": "markdown", "text_size": "notation",
+			"content": fmt.Sprintf("… 更早的 %d 个迭代（飞书卡片元素有上限，仅展示最近 %d 个）",
+				older, streamCardMaxIterations),
+		})
+	}
 	for _, n := range nums {
 		it := c.iters[n]
 		if it == nil {
 			continue
 		}
-		if n == c.current {
+		if n == c.current && streaming {
 			// 正在流式的迭代：面板/正文元素声明为空，文本只由 CardElement.Content 逐段写
-			//（整卡更新会把文本一次性写满 → 打字机消失）。
-			elements = append(elements, reasoningPanelStreaming(n))
+			//（整卡更新会把文本一次性写满 → 打字机消失）。还没有思考正文时不渲染
+			//「思考 0 字」空面板，直接给一行「思考中…」（用户 2026-09-14）。
+			if it.reasoning != "" {
+				elements = append(elements, reasoningPanelStreaming(n))
+			} else {
+				elements = append(elements, map[string]any{
+					"tag": "markdown", "text_size": "notation", "content": "💭 思考中…",
+				})
+			}
 		} else if it.reasoning != "" {
 			elements = append(elements, reasoningPanel(n, it.reasoning))
 		}
 		// 当前迭代的正文用可流式元素；已完结迭代用普通 markdown。
-		if n == c.current {
+		// ⚠️ 收尾（streaming=false）时必须把文本写进卡片 —— 否则最终答复只存在于
+		// Content 推送里，整卡更新会把它清空（content stream 丢失）。
+		if n == c.current && streaming {
 			elements = append(elements, map[string]any{
 				"tag": "markdown", "element_id": contentElementID(n),
 				"content": "", "text_size": "normal",
@@ -640,6 +666,11 @@ func toolChipPlain(t streamTool) string {
 // Newlines/tabs collapse to spaces (a header is a single line) and the result is
 // rune-safe truncated — the FULL argument text lives in the panel body instead.
 func toolHeaderArg(t streamTool) string {
+	// 参数还在生成（args 只是半截 JSON）/ 还没开始执行 → 标题不展示参数，只留状态
+	//（用户 2026-09-14：「处理一下 tool generating 和 executing」）。执行中/完成才显示参数。
+	if t.status == "generating" || t.status == "pending" {
+		return ""
+	}
 	raw := toolDetail(t)
 	if raw == "" {
 		return ""
@@ -655,6 +686,9 @@ func toolHeaderArg(t streamTool) string {
 // collapsed header deliberately truncates) plus its output when available.
 // Rune-safe capped so one tool cannot blow up the card.
 func toolDetailFull(t streamTool) string {
+	if t.status == "generating" {
+		return "_参数生成中…_"
+	}
 	parts := make([]string, 0, 2)
 	if t.summary != "" {
 		parts = append(parts, strings.TrimSpace(t.summary))
