@@ -54,6 +54,10 @@ const (
 	// streamCardSummary is the chat-list preview shown while streaming.
 	streamCardSummary = "🔄 生成中…"
 
+	// streamCardMaxConsecutiveFailures 是卡片连续写失败多少次后熔断本会话的进度卡片。
+	// 反复失败的卡片（例如每次 batch_update 都被拒）只会冻住进度 —— 熔断比死吊更好。
+	streamCardMaxConsecutiveFailures = 3
+
 	// streamCardPanelIconToken is the chevron of the collapsible thinking panel
 	// (rotated 180° when expanded). Token taken from the official card builder.
 	streamCardPanelIconToken = "down-small-ccm_outlined"
@@ -171,6 +175,14 @@ type feishuStreamCard struct {
 	cardID    string
 	messageID string
 
+	// channel/chatID 让卡片能在"反复更新失败"时上报（熔断该 chat 的进度卡片）。
+	channel *FeishuChannel
+	chatID  string
+
+	// consecutiveCardFailures 连续失败的卡片写请求数（成功即清零）。
+	// 达到 streamCardMaxConsecutiveFailures 即熔断（回落普通消息）。
+	consecutiveCardFailures int
+
 	title string
 
 	mu      sync.Mutex
@@ -197,12 +209,12 @@ type feishuStreamCard struct {
 	// ops 是待提交的元素级变更队列（合并成一次 BatchUpdateCard）。
 	ops []cardOp
 	// appendThink/appendAnswer/appendTool 记录**已经追加过**的元素，保证每个元素
-	// 只 append 一次（结构变化只增不改 → 不打断打字机、不重排整卡）。
+	// 只 append 一次（结构变化只增不改 → 不重排整卡）。
 	appendThink  map[int]bool
 	appendAnswer map[int]bool
 	appendTool   map[string]bool
-	// elements 是卡片的**虚拟布局**：创建时的骨架 + 之后每一次 append 的元素，
-	// 顺序即飞书卡片里的顺序（用于 renderCard 与断言；真实卡片由元素级 API 增量维护）。
+	// elements 是卡片的**虚拟布局**：创建时的骨架 + 之后每一次**成功** append 的元素，
+	// 顺序即飞书卡片里的顺序（commit-on-success：失败的批次不会记进来）。
 	elements []map[string]any
 	// panelTitles 记录各思考面板标题的当前值（实时字数）。
 	panelTitles map[int]string
@@ -405,28 +417,27 @@ func (c *feishuStreamCard) mergeTool(t *protocol.ToolProgress) {
 	it.tools = append(it.tools, row)
 }
 
-// pushText streams the current iteration's answer text (typewriter).
+// pushText updates the current iteration's answer element with the live text.
+//
+// 走 partial_update_element 补丁（全量替换该元素 content），不走 CardElement.Content
+// —— 后者只认建卡模板声明过的元素，而本实现除 ans_1 外都是 append 出来的（300313）。
 func (c *feishuStreamCard) pushText(n int, text string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.finished || text == c.lastText {
+	if c.finished || text == "" || text == c.lastText {
 		return
 	}
 	if time.Since(c.lastTextAt) < streamCardMinInterval {
 		return
 	}
-	// 该迭代的元素必须先存在（结构只 append 一次），内容才有地方写。
+	// 该迭代的元素必须先存在（结构只 append 一次），文本补丁才有地方落；
+	// submitOpsLocked 会把 add_elements 排在补丁之前（同一批里元素先出现）。
 	c.ensureElementsLocked(n)
-	c.submitOpsLocked()
-	it := c.iter(n)
-	it.content = text
-	c.seq++
-	if err := c.setElementContent(answerElementID(n), text, c.seq); err != nil {
-		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream text push failed")
-		return
-	}
+	c.iter(n).content = text
+	c.queueElementContentLocked(answerElementID(n), text)
 	c.lastText = text
 	c.lastTextAt = time.Now()
+	c.submitOpsLocked()
 }
 
 // syncLayout re-lays out the whole card (thinking blocks, finished iterations,
@@ -442,22 +453,20 @@ func (c *feishuStreamCard) syncLayout(force bool) {
 	}
 	// 结构变化只 append / patch（元素级）—— 不再整卡替换。
 	c.ensureAllElementsLocked()
-	c.flushOps(true)
 	// 快照里带的正文也要落到元素上（progress 事件可能先于流式文本到达）。
 	if it := c.iters[c.current]; it != nil && it.content != "" && it.content != c.lastText {
-		c.seq++
-		if err := c.setElementContent(answerElementID(c.current), it.content, c.seq); err != nil {
-			log.WithError(err).WithField("card_id", c.cardID).
-				Debug("Feishu: snapshot text push failed")
-		} else {
-			c.lastText, c.lastTextAt = it.content, time.Now()
-		}
+		c.queueElementContentLocked(answerElementID(c.current), it.content)
+		c.lastText, c.lastTextAt = it.content, time.Now()
 	}
+	c.flushOps(true)
 }
 
 // finalize renders the finished card and closes the streaming mode. Closing is
-// mandatory and runs even when the full-card update fails: an open stream leaves
-// the card showing "生成中" for up to 10 minutes.
+// mandatory and runs even when the text update fails: an open stream leaves the
+// card showing "生成中" for up to 10 minutes.
+//
+// 返回值语义（Bug B）：非 nil 表示**最终文本没能落到卡上**（元素缺失 / API 拒绝）。
+// 调用方据此回落到普通消息 —— 最终答复绝不丢。
 func (c *feishuStreamCard) finalize(text string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -469,35 +478,76 @@ func (c *feishuStreamCard) finalize(text string) error {
 		it := c.iter(c.current)
 		it.content = text
 	}
-	// 最终文本走元素级内容更新；结构先落地（只 append，不整卡替换）。
+	// 结构先落地（只 append，不整卡替换），最终文本的补丁才有元素可落。
 	c.ensureAllElementsLocked()
+	var structErr error
+	if err := c.submitOpsLocked(); err != nil {
+		structErr = err
+	}
+	// 最终文本：partial_update_element 补丁（全量替换 content）。
+	// 只有当 ops 队列非空、且提交失败时才算"没落卡"——提交成功即已落卡。
+	var textErr error
 	if text != "" {
-		c.seq++
-		if err := c.setElementContent(answerElementID(c.current), text, c.seq); err != nil {
+		c.queueElementContentLocked(answerElementID(c.current), text)
+		if err := c.submitOpsLocked(); err != nil {
 			log.WithError(err).WithField("card_id", c.cardID).
-				Debug("Feishu: final text push failed")
+				Warn("Feishu: final text push failed")
+			textErr = err
+		} else {
+			c.lastText, c.lastTextAt = text, time.Now()
 		}
 	}
-	// 收尾：批量折叠各思考面板（一张卡片的"干净"形态 = 正文 + 工具行）。
+	// 收尾：折叠各思考面板（一张卡片的"干净"形态 = 思考 + 正文 + 工具行）。
 	for n := range c.iters {
 		c.queuePatch(panelElementID(n), map[string]any{"expanded": false})
 	}
-	c.submitOpsLocked()
+	if err := c.submitOpsLocked(); err != nil && structErr == nil {
+		structErr = err
+	}
 	// 关流式是强制项（开着的流会让卡片卡在"生成中"直到飞书 10 分钟后强关）。
-	return c.setStreamingMode(false)
+	// 它失败同样意味着"最终答复没能可靠呈现" → 一并回落普通消息（宁可重复，不丢答复）。
+	if err := c.setStreamingMode(false); err != nil {
+		log.WithError(err).WithField("card_id", c.cardID).
+			Warn("Feishu: close streaming mode failed")
+		if textErr == nil {
+			textErr = err
+		}
+	}
+	if textErr != nil {
+		return textErr
+	}
+	_ = structErr // 结构性问题已 Warn + 熔断兜底；最终文本已落卡就不必再发一条普通消息
+	return nil
 }
 
 // renderCard builds the Card JSON 2.0 for the current state.
 // The caller must hold c.mu (or hold exclusive ownership, e.g. at creation).
 func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
-	// 创建时消费掉排队中的 append（它们已经记进 c.elements 这个虚拟布局），
-	// 于是 renderCard 始终反映卡片的真实元素序列；此后结构变化只走元素级 append。
-	c.takeOpsElements()
-	elements := c.elements
-	if len(elements) == 0 {
-		elements = []map[string]any{
+	// 卡片正文 = 已经在卡片上的元素（commit-on-success 记进 c.elements）+ 尚未提交的
+	// 新增元素。建卡模板至少要有一个元素：`ans_1` 在创建请求体里就已经"在卡片上"了，
+	// 若不连带把 appendAnswer[1] 置位，第一次 flush 会再 append 一个同名元素
+	// （真实 API 接受重复 id，但会多出一个重复元素）。
+	pending := func() []map[string]any {
+		var out []map[string]any
+		for _, op := range c.ops {
+			if op.kind == opAdd {
+				out = append(out, op.elements...)
+			}
+		}
+		return out
+	}
+	if len(c.elements) == 0 && len(pending()) == 0 {
+		c.elements = []map[string]any{
 			{"tag": "markdown", "element_id": answerElementID(1), "content": ""},
 		}
+		if c.appendAnswer == nil {
+			c.appendAnswer = map[int]bool{}
+		}
+		c.appendAnswer[1] = true
+	}
+	elements := c.elements
+	if p := pending(); len(p) > 0 {
+		elements = append(append([]map[string]any{}, elements...), p...)
 	}
 
 	summary := streamCardSummary
@@ -623,31 +673,11 @@ func toolDetailShort(t streamTool) string {
 	return line
 }
 
-// setElementContent pushes the full text into one streamable element.
-// The caller must hold c.mu.
-func (c *feishuStreamCard) setElementContent(elementID, text string, seq int) error {
-	req := larkcardkit.NewContentCardElementReqBuilder().
-		CardId(c.cardID).
-		ElementId(elementID).
-		Body(larkcardkit.NewContentCardElementReqBodyBuilder().
-			Content(text).
-			Sequence(seq).
-			Uuid(newStreamCardUUID()).
-			Build()).
-		Build()
-
-	resp, err := c.client.Cardkit.V1.CardElement.Content(context.Background(), req)
-	if err != nil {
-		return fmt.Errorf("stream card content: %w", err)
-	}
-	if !resp.Success() {
-		return fmt.Errorf("stream card content: code=%d msg=%s", resp.Code, resp.Msg)
-	}
-	return nil
-}
-
-// pushReasoning streams iteration n's thinking into its own element — thinking
-// and the answer stream independently (Feishu's content API is per element).
+// pushReasoning updates iteration n's thinking element with the live text.
+//
+// 与正文同样走 partial_update_element 补丁：thinking 元素（think_n）是 append 出来
+// 的，用 CardElement.Content 会被 300313 拒绝（真实 API 探针实测）—— 这正是
+// "迭代 2+ 的思考完全不更新"的根因。
 func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	if n <= 0 || text == "" {
 		return
@@ -663,23 +693,19 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	if text == c.lastReasoning || time.Since(c.lastReasonAt) < streamCardMinInterval {
 		return
 	}
+	c.iter(n).reasoning = text
 	c.ensureElementsLocked(n)
-	c.submitOpsLocked()
-	c.seq++
-	if err := c.setElementContent(reasoningElementID(n), text, c.seq); err != nil {
-		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: thinking push failed")
-		return
-	}
+	c.queueElementContentLocked(reasoningElementID(n), text)
 	c.lastReasoning = text
 	c.lastReasonAt = time.Now()
 
-	// 思考正文刚打完字（元素级 content）；标题里的字数改用 partial_update_element
-	// 刷新 —— 只改这一个元素的 header，不重排整卡、不打断打字机。
+	// 标题里的字数改用 partial_update_element 刷新 —— 只改这一个元素的 header，
+	// 不重排整卡。
 	if time.Since(c.lastReasonCountAt) >= streamCardReasonCountMinInterval {
 		c.patchThinkingCountLocked(n, text)
-		c.flushOps(true)
 		c.lastReasonCountAt = time.Now()
 	}
+	c.submitOpsLocked()
 }
 
 // pushCurrentReasoning streams the current iteration's thinking, if any.
@@ -817,6 +843,9 @@ func (f *FeishuChannel) ensureStreamCard(chatID string) (*feishuStreamCard, bool
 	}
 	f.streamCardsMu.Lock()
 	// Another goroutine may have created one meanwhile — keep the first.
+	// 让卡片能在"反复更新失败"时熔断**本会话**（见 recordCardFailureLocked）。
+	card.channel = f
+	card.chatID = chatID
 	if existing, ok := f.streamCards[chatID]; ok {
 		f.streamCardsMu.Unlock()
 		return existing, true
@@ -865,6 +894,10 @@ func (f *FeishuChannel) streamCardFallbackAck(chatID string) {
 // streamCardSend renders the turn's FINAL send through the open card (finalize).
 // It returns (messageID, true) when handled, or ("", false) when there is no open
 // card — the caller then sends the reply as a regular message.
+//
+// finalize 返回 error 说明**最终文本没落到卡上**（元素缺失 / API 拒绝 / 关流式失败）
+// —— 此时必须返回 ok=false，让调用方走普通消息把回复发出去（Bug B：旧实现忽略
+// finalize 的 error 一律返回 true ⇒ 卡不更新、最终答复也丢了，用户彻底收不到回复）。
 func (f *FeishuChannel) streamCardSend(msg ch.OutboundMsg, content string, final bool) (string, bool) {
 	if !final || f.client == nil {
 		return "", false
@@ -874,8 +907,9 @@ func (f *FeishuChannel) streamCardSend(msg ch.OutboundMsg, content string, final
 		return "", false
 	}
 	if err := card.finalize(content); err != nil {
-		log.WithError(err).WithField("card_id", card.cardID).
-			Warn("Feishu: stream card finalize failed")
+		log.WithError(err).WithField("card_id", card.cardID).WithField("chat_id", msg.ChatID).
+			Warn("Feishu: stream card finalize failed; sending the reply as a plain message")
+		return "", false
 	}
 	return card.messageID, true
 }

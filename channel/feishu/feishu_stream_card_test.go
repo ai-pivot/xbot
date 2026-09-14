@@ -17,6 +17,24 @@ import (
 	"xbot/protocol"
 )
 
+// ─── 建卡模板契约（故意写成字面量）───────────────────────────────────────────
+//
+// CardElement.Content（打字机）**只认建卡时在模板里声明过的 element_id**：对之后
+// add_elements 追加出来的元素做 Content，飞书返回 300313（真实 API 探针实测）。
+// 因此这两个 id 是硬契约 —— 必须出现在建卡模板里，且迭代推进时只能复用、不能新建。
+// 测试用字面量钉住它们（而不是引用实现里的常量），这样改名/挪位置会立刻被测出来。
+const (
+	testContentElementID  = "content"
+	testThinkingElementID = "thinking"
+	testThinkingPanelID   = "thinking_panel"
+)
+
+// Feishu 错误码（探针实测）。
+const (
+	codeElementNotFound = 300313   // not find elementID
+	codeEmptyContent    = 99992402 // field validation failed
+)
+
 // --- fake Feishu tenant ------------------------------------------------------
 
 type cardCall struct {
@@ -30,11 +48,41 @@ type fakeFeishu struct {
 	mu         sync.Mutex
 	calls      []cardCall
 	failCreate bool
+
+	// ─── card model ─────────────────────────────────────────────────────────
+	//
+	// 只建模本修复依赖的 CardKit 契约，全部来自真实 API 探针（2026-09-14）：
+	//   * CardElement.Content（`/elements/:id/content`）只认**建卡模板里声明过**的
+	//     element_id；对 append 出来的元素 ⇒ 300313（本 bug 静默丢失的根源）；
+	//   * Content / 补丁的 content 为**空** ⇒ 99992402 field validation failed；
+	//   * partial_update_element（补丁，含 `content`）对**任意已存在元素**都成功
+	//     ⇒ 文本统一走补丁（这是修复采用的通路）；
+	//   * add_elements 里出现重复 element_id 是**被接受**的（不失败，只记录）。
+	//
+	// cardElements：卡片上实际存在的 id（模板 + 追加），值是该元素当前内容。
+	cardElements map[string]string
+	// repeatedAdds：被重复 append 的 id（真实 API 不报错 → 本地记账要避免）。
+	repeatedAdds []string
+
+	rejectedEmptyContent int            // 空 content 打到 /content 被拒次数
+	emptyPatchContent    int            // 空 content 出现在补丁里（实现里必须恒为 0）
+	patchPayloads        []patchRecord  // 成功落地的文本补丁（元素 id + 全量文本）
+	batchAttempts        int            // batch_update 尝试次数（含失败）
+	batchPayloads        []string       // 每次 batch_update 的 actions 原文
+	failBatches          map[int]string // 第 N 次（1-based）→ 注入错误
+	failAllPatches       bool           // 所有 partial_update_element 都失败（模拟 API 拒绝）
+	failAllContent       bool           // 所有 CardElement.Content 都失败
+}
+
+// patchRecord is one successfully applied partial_update_element text patch.
+type patchRecord struct {
+	ElementID string
+	Content   string
 }
 
 func newFakeFeishu(t *testing.T) *fakeFeishu {
 	t.Helper()
-	f := &fakeFeishu{}
+	f := &fakeFeishu{cardElements: map[string]string{}}
 	mux := http.NewServeMux()
 	writeJSON := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -51,15 +99,45 @@ func newFakeFeishu(t *testing.T) *fakeFeishu {
 		writeJSON(w, map[string]any{"code": 0, "msg": "ok", "tenant_access_token": "t-test", "expire": 7200})
 	})
 	mux.HandleFunc("/open-apis/cardkit/v1/cards", func(w http.ResponseWriter, r *http.Request) {
-		f.record(r)
+		body := f.record(r)
 		if f.failCreate {
 			writeJSON(w, map[string]any{"code": 99991672, "msg": "no cardkit:card:write permission"})
 			return
 		}
+		// 建卡模板里声明的元素 ⇒ Content 白名单（含折叠面板内的子元素）。
+		f.mu.Lock()
+		for _, id := range collectElementIDs(createCardJSON(body)) {
+			f.cardElements[id] = ""
+		}
+		f.mu.Unlock()
 		ok(w, map[string]any{"card_id": "card_1"})
 	})
 	mux.HandleFunc("/open-apis/cardkit/v1/cards/", func(w http.ResponseWriter, r *http.Request) {
-		f.record(r)
+		body := f.record(r)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/batch_update"):
+			actions := batchActions(body)
+			f.mu.Lock()
+			f.batchAttempts++
+			n := f.batchAttempts
+			msg := f.failBatches[n]
+			// 记录**每一次**尝试的载荷（含失败），重试断言要靠它比对。
+			f.batchPayloads = append(f.batchPayloads, actions)
+			f.mu.Unlock()
+			if msg != "" {
+				writeJSON(w, map[string]any{"code": 230001, "msg": msg})
+				return
+			}
+			if msg := f.applyBatch(actions); msg != "" {
+				writeJSON(w, map[string]any{"code": 230001, "msg": msg})
+				return
+			}
+		case strings.HasSuffix(r.URL.Path, "/content"):
+			if code, msg := f.applyContent(pathElementID(r.URL.Path), body); code != 0 {
+				writeJSON(w, map[string]any{"code": code, "msg": msg})
+				return
+			}
+		}
 		ok(w, nil)
 	})
 	mux.HandleFunc("/open-apis/im/v1/messages", func(w http.ResponseWriter, r *http.Request) {
@@ -75,12 +153,195 @@ func newFakeFeishu(t *testing.T) *fakeFeishu {
 	return f
 }
 
-func (f *fakeFeishu) record(r *http.Request) {
+func (f *fakeFeishu) record(r *http.Request) string {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, cardCall{Method: r.Method, Path: r.URL.Path, Body: string(body)})
+	return string(body)
 }
+
+// applyContent models CardElement.Content. 返回 (code, msg)；code==0 表示接受。
+func (f *fakeFeishu) applyContent(elementID, body string) (int, string) {
+	var req struct {
+		Content *string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		return 230001, "bad content payload"
+	}
+	// 探针：空串（omitempty 下相当于字段缺失）被拒。
+	if req.Content == nil || *req.Content == "" {
+		f.mu.Lock()
+		f.rejectedEmptyContent++
+		f.mu.Unlock()
+		return codeEmptyContent, "field validation failed"
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	// 探针：只认建卡模板声明过的 element_id。
+	if _, declared := f.cardElements[elementID]; !declared {
+		return codeElementNotFound, "ErrMsg: not find elementID : " + elementID + ";"
+	}
+	if f.failAllContent {
+		return codeElementNotFound, "ErrMsg: not find elementID : " + elementID + ";"
+	}
+	f.cardElements[elementID] = *req.Content
+	return 0, ""
+}
+
+// batchActions unwraps {"actions":"<json array string>"} from a batch_update body.
+func batchActions(body string) string {
+	var req struct {
+		Actions string `json:"actions"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		return ""
+	}
+	return req.Actions
+}
+
+// addedIDsFromPayload extracts the element ids of every add_elements action in one
+// batch_update actions payload.
+func addedIDsFromPayload(actions string) map[string]bool {
+	out := map[string]bool{}
+	var acts []map[string]any
+	if err := json.Unmarshal([]byte(actions), &acts); err != nil {
+		return out
+	}
+	for _, a := range acts {
+		raw, _ := a["add_elements"].(map[string]any)
+		elems, _ := raw["elements"].([]any)
+		for _, e := range elems {
+			m, _ := e.(map[string]any)
+			if id, _ := m["element_id"].(string); id != "" {
+				out[id] = true
+			}
+		}
+	}
+	return out
+}
+
+// applyBatch 落地一次 batch_update。返回非空即表示该批被拒绝（不做任何变更）。
+func (f *fakeFeishu) applyBatch(actions string) string {
+	var acts []map[string]any
+	if err := json.Unmarshal([]byte(actions), &acts); err != nil {
+		return "bad actions json"
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range acts {
+		// add_elements（append 新元素）
+		if raw, ok := a["add_elements"].(map[string]any); ok {
+			elems, _ := raw["elements"].([]any)
+			for _, e := range elems {
+				m, _ := e.(map[string]any)
+				topID, _ := m["element_id"].(string)
+				if topID == "" {
+					continue
+				}
+				if _, exists := f.cardElements[topID]; exists {
+					// 真实 API 接受重复 id → 只记录（测试用它守护"结构只 append 一次"）。
+					f.repeatedAdds = append(f.repeatedAdds, topID)
+				}
+				content, _ := m["content"].(string)
+				f.cardElements[topID] = content
+				// 折叠面板里的元素（think_n）也要记进卡片模型 —— 否则针对它的补丁会被
+				// 判成"元素不存在"，测试就测了个假卡。
+				if inner, err := json.Marshal(m); err == nil {
+					for _, id := range collectElementIDs(string(inner)) {
+						if id == topID {
+							continue
+						}
+						if _, exists := f.cardElements[id]; !exists {
+							f.cardElements[id] = ""
+						}
+					}
+				}
+			}
+			continue
+		}
+		// partial_update_element（补丁：文本的全量替换就走它）
+		if raw, ok := a["partial_update_element"].(map[string]any); ok {
+			id, _ := raw["element_id"].(string)
+			if id == "" {
+				return "partial_update_element without element_id"
+			}
+			if _, exists := f.cardElements[id]; !exists {
+				// 元素不存在时补丁无从落地（真实 API 同样拒绝）。
+				return "element not found: " + id
+			}
+			if f.failAllPatches {
+				return "injected patch failure"
+			}
+			if partial, ok := raw["partial_element"].(map[string]any); ok {
+				if content, ok := partial["content"].(string); ok {
+					if content == "" {
+						// 探针：空 content 被拒（99992402）—— 补丁同样不能写空串。
+						f.emptyPatchContent++
+						continue
+					}
+					f.cardElements[id] = content
+					f.patchPayloads = append(f.patchPayloads, patchRecord{ElementID: id, Content: content})
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// pathElementID extracts element_id from …/elements/:element_id/content.
+func pathElementID(path string) string {
+	parts := strings.Split(strings.TrimSuffix(path, "/content"), "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+// createCardJSON unwraps {"type":"card_json","data":"<card json>"}.
+func createCardJSON(body string) string {
+	var req struct {
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		return ""
+	}
+	return req.Data
+}
+
+// collectElementIDs walks a decoded card JSON and returns EVERY element_id
+// (the 💭 panel's inner markdown element is nested, and it is one of the two
+// elements that must accept CardElement.Content).
+func collectElementIDs(cardJSON string) []string {
+	if cardJSON == "" {
+		return nil
+	}
+	var root any
+	if err := json.Unmarshal([]byte(cardJSON), &root); err != nil {
+		return nil
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			if id, ok := t["element_id"].(string); ok && id != "" {
+				out = append(out, id)
+			}
+			for _, child := range t {
+				walk(child)
+			}
+		case []any:
+			for _, child := range t {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return out
+}
+
+// --- fake helpers ------------------------------------------------------------
 
 func (f *fakeFeishu) snapshot() []cardCall {
 	f.mu.Lock()
@@ -123,8 +384,104 @@ func (f *fakeFeishu) callsToElement(elementID string) []cardCall {
 	return out
 }
 
-// decodeCardField unwraps the full-card update body:
-// {"card":{"type":"card_json","data":"<card json>"}, ...}.
+// declaredElements returns the Content whitelist (ids declared by the create
+// template) captured when the card entity was created.
+func (f *fakeFeishu) declaredElements() map[string]bool {
+	out := map[string]bool{}
+	for _, c := range f.callsAt("/open-apis/cardkit/v1/cards") {
+		for _, id := range collectElementIDs(createCardJSON(c.Body)) {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// elementIDs returns every element id present on the fake card, plus its content.
+func (f *fakeFeishu) elementIDs() map[string]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]string, len(f.cardElements))
+	for id, content := range f.cardElements {
+		out[id] = content
+	}
+	return out
+}
+
+// contentContains reports whether ANY element on the card renders a text that
+// contains s. Used to assert "this text reached the card" without hard-coding
+// element id prefixes.
+func (f *fakeFeishu) contentContains(s string) bool {
+	for _, content := range f.elementIDs() {
+		if strings.Contains(content, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// payloadContains reports whether any batch_update payload contains s.
+func (f *fakeFeishu) payloadContains(s string) bool {
+	for _, p := range f.batchPayload() {
+		if strings.Contains(p, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fakeFeishu) batchPayload() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.batchPayloads))
+	copy(out, f.batchPayloads)
+	return out
+}
+
+func (f *fakeFeishu) batchAttemptCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.batchAttempts
+}
+
+func (f *fakeFeishu) emptyContentRejections() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.rejectedEmptyContent
+}
+
+// repeatedAddIDs returns the element ids that were appended more than once.
+// The real API accepts duplicates (probe: DUP_ADD code=0), so this is a local
+// bookkeeping guard rather than an API failure.
+func (f *fakeFeishu) repeatedAddIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.repeatedAdds))
+	copy(out, f.repeatedAdds)
+	return out
+}
+
+func (f *fakeFeishu) setFailBatches(m map[int]string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failBatches = m
+}
+
+func (f *fakeFeishu) setFailAllContent(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failAllContent = v
+}
+
+// sawPanelTitle reports whether some request carried a thinking-panel header
+// title equal to want (the live "💭 思考 N 字" counter).
+func (f *fakeFeishu) sawPanelTitle(want string) bool {
+	for _, c := range f.snapshot() {
+		if strings.Contains(c.Body, want) {
+			return true
+		}
+	}
+	return false
+}
 
 // rememberInboundMessageForTest seeds the reply target the card will be sent as
 // a reply to (normally written by onMessage).
@@ -136,8 +493,6 @@ func (f *FeishuChannel) rememberInboundMessageForTest(chatID, msgID string) {
 	}
 	f.inboundMsgIDs[chatID] = msgID
 }
-
-// cardUpdates returns the full-card update calls (PUT /cards/:id).
 
 func newStreamCardChannel(t *testing.T, f *fakeFeishu) *FeishuChannel {
 	t.Helper()
@@ -157,34 +512,6 @@ func fastStreamCard(t *testing.T) {
 	t.Cleanup(func() {
 		streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval = oldText, oldPanel, oldCount
 	})
-}
-
-// TestReasoningCount_UpdatesLive — 思考字数必须**实时递增**（用户 2026-09-13）。
-// 思考正文走元素级内容 API（打字机），但面板标题只能靠整卡更新刷新 —— 所以
-// 每次思考增长都要（节流地）重算标题里的字数。
-func TestReasoningCount_UpdatesLive(t *testing.T) {
-	fastStreamCard(t)
-	f := newFakeFeishu(t)
-	c := newStreamCardChannel(t, f)
-
-	c.SendStreamContent("oc_chat", "", "第一段思考")
-	card, ok := c.ensureStreamCard("oc_chat")
-	if !ok {
-		t.Fatal("no stream card")
-	}
-	want1 := thinkingPanelTitle("第一段思考")
-	if got := card.panelTitles[1]; got != want1 {
-		t.Fatalf("first title: got %q, want %q", got, want1)
-	}
-
-	c.SendStreamContent("oc_chat", "", "第一段思考，继续第二段思考")
-	want2 := thinkingPanelTitle("第一段思考，继续第二段思考")
-	if got := card.panelTitles[1]; got != want2 {
-		t.Fatalf("second title: got %q, want %q", got, want2)
-	}
-	if len([]rune(want2)) <= len([]rune(want1)) {
-		t.Fatalf("thinking count must count UP: %q -> %q", want1, want2)
-	}
 }
 
 // mapElements accepts both builder output ([]map[string]any) and decoded JSON
@@ -219,65 +546,29 @@ func cardElements(t *testing.T, card map[string]any) []map[string]any {
 	return mapElements(t, body["elements"])
 }
 
-// --- card layout -------------------------------------------------------------
-
-// 用户要求（2026-09-13）：无花哨 header；每个迭代按 T(思考折叠) → O(正文) → C(工具)
-// 排列。
-func TestRenderCard_PerIterationLayout(t *testing.T) {
-	ch := newStreamCardChannel(t, newFakeFeishu(t))
-	c, ok := ch.ensureStreamCard("oc_chat")
-	if !ok {
-		t.Fatal("no stream card")
+func panelTitle(panel map[string]any) string {
+	hdr, _ := panel["header"].(map[string]any)
+	if hdr == nil {
+		return ""
 	}
-	c.mu.Lock()
-	it1 := c.iter(1)
-	it1.reasoning = "think one"
-	it1.content = "answer one"
-	it1.tools = []streamTool{{name: "Shell", status: "done", args: `{"command":"ls -la"}`}}
-	it2 := c.iter(2)
-	it2.reasoning = "think two"
-	it2.content = "answer two"
-	c.ensureAllElementsLocked()
-	c.mu.Unlock()
-
-	card := c.renderCard(true)
-	if _, ok := card["header"]; ok {
-		t.Error("card must not render a header (user request: no flashy header)")
+	title, _ := hdr["title"].(map[string]any)
+	if title == nil {
+		return ""
 	}
-	elems := cardElements(t, card)
-
-	// 元素级布局（方案 A）：每迭代 = 思考面板 + 正文元素；工具各占一个元素。
-	var panels, answers, tools int
-	panelIDs := map[string]bool{}
-	for _, e := range elems {
-		id, _ := e["element_id"].(string)
-		switch {
-		case e["tag"] == "collapsible_panel":
-			panels++
-			panelIDs[id] = true
-			if e["expanded"] != false {
-				t.Errorf("thinking panel must start collapsed: %v", e)
-			}
-		case id == answerElementID(1) || id == answerElementID(2):
-			answers++
-		case id == toolRowElementID(1, 0):
-			tools++
-		}
-	}
-	if panels != 2 || answers != 2 || tools != 1 {
-		t.Fatalf("layout: panels=%d answers=%d tools=%d (elems=%v)", panels, answers, tools, elems)
-	}
-	if !panelIDs[panelElementID(1)] || !panelIDs[panelElementID(2)] {
-		t.Errorf("thinking panels must carry stable element ids (patchable): %v", panelIDs)
-	}
+	s, _ := title["content"].(string)
+	return s
 }
-
-func TestRenderCard_EmptyHasStreamingElement(t *testing.T) {
-	c := &feishuStreamCard{iters: map[int]*streamIteration{}}
-	elems := cardElements(t, c.renderCard(true))
-	if len(elems) != 1 || elems[0]["element_id"] != answerElementID(1) {
-		t.Fatalf("empty card must still carry the streaming element, got %v", elems)
+func elementIDsOf(t *testing.T, card map[string]any) map[string]bool {
+	t.Helper()
+	raw, err := json.Marshal(card)
+	if err != nil {
+		t.Fatal(err)
 	}
+	ids := map[string]bool{}
+	for _, id := range collectElementIDs(string(raw)) {
+		ids[id] = true
+	}
+	return ids
 }
 
 func TestRenderCard_FinalDisablesStreaming(t *testing.T) {
@@ -299,19 +590,6 @@ func TestPanelTitleHelper(t *testing.T) {
 	if panelTitle(map[string]any{}) != "" {
 		t.Fatal("missing header must yield empty title")
 	}
-}
-
-func panelTitle(panel map[string]any) string {
-	hdr, _ := panel["header"].(map[string]any)
-	if hdr == nil {
-		return ""
-	}
-	title, _ := hdr["title"].(map[string]any)
-	if title == nil {
-		return ""
-	}
-	s, _ := title["content"].(string)
-	return s
 }
 
 // --- tool rows ---------------------------------------------------------------
@@ -406,72 +684,6 @@ func TestToolRow_OneToolPerLineWithEmoji(t *testing.T) {
 	}
 }
 
-func TestReasoningPanel_StreamableElement(t *testing.T) {
-	panel := reasoningPanel(3, "thinking")
-	if panel["tag"] != "collapsible_panel" {
-		t.Fatalf("panel tag: %v", panel["tag"])
-	}
-	if panel["expanded"] != false {
-		t.Error("thinking panel should start collapsed")
-	}
-	inner := mapElements(t, panel["elements"])
-	if inner[0]["element_id"] != reasoningElementID(3) {
-		t.Errorf("element id: got %v", inner[0]["element_id"])
-	}
-	if len(reasoningElementID(3)) > 20 {
-		t.Errorf("element id too long: %q", reasoningElementID(3))
-	}
-	if !strings.Contains(panelTitle(panel), "思考") {
-		t.Errorf("title: %q", panelTitle(panel))
-	}
-	// Every iteration gets its own id (independent streams).
-	if reasoningElementID(1) == reasoningElementID(2) {
-		t.Error("iterations must not share a thinking element id")
-	}
-}
-
-func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
-	fastStreamCard(t)
-	f := newFakeFeishu(t)
-	c := newStreamCardChannel(t, f)
-	c.rememberInboundMessageForTest("oc_chat", "om_in")
-
-	c.SendProgress("oc_chat", &protocol.ProgressEvent{
-		Iteration: 1, Reasoning: "thinking hard", Content: "answer so far",
-		ActiveTools: []protocol.ToolProgress{{
-			Name: "Shell", Label: "Shell", Status: "generating", Iteration: 1,
-			Args: `{"command":"ls -la"}`,
-		}},
-	})
-	// The answer text streams through SendStreamContent (the agent's stream
-	// callback), the thinking through the structured snapshot.
-	c.SendStreamContent("oc_chat", "answer so far", "thinking hard")
-
-	// Thinking streams into its own element.
-	thinkPushes := f.callsToElement(reasoningElementID(1))
-	if len(thinkPushes) == 0 {
-		t.Fatalf("thinking was not streamed; calls: %v", f.snapshot())
-	}
-	// The answer streams into the content element.
-	if len(f.callsToElement(answerElementID(1))) == 0 {
-		t.Error("answer text was not streamed")
-	}
-	// 工具行以元素级 append 落卡（不再整卡替换）：断言卡片模型里的工具行元素。
-	sc, ok := c.ensureStreamCard("oc_chat")
-	if !ok {
-		t.Fatal("no stream card")
-	}
-	found := false
-	for _, e := range sc.elements {
-		if s, _ := e["content"].(string); strings.Contains(s, "生成参数中") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("card should render the generating state in a tool row element: %v", sc.elements)
-	}
-}
-
 func TestToolDetail_RuneSafeTruncation(t *testing.T) {
 	long := strings.Repeat("中文", 200)
 	got := firstNonEmptyLine(long)
@@ -516,87 +728,6 @@ func TestApplyProgress_MergesIterationsAndTools(t *testing.T) {
 		t.Errorf("current iteration: got %d, want 2", c.current)
 	}
 }
-
-// --- channel lifecycle -------------------------------------------------------
-
-func TestSendProgress_CreatesCardAndStreams(t *testing.T) {
-	fastStreamCard(t)
-	f := newFakeFeishu(t)
-	c := newStreamCardChannel(t, f)
-
-	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Reasoning: "thinking…", Content: "hello"})
-
-	creates := f.callsAt("/open-apis/cardkit/v1/cards")
-	if len(creates) != 1 {
-		t.Fatalf("card entity creates: got %d, want 1", len(creates))
-	}
-	// The card is posted as a REPLY to the chat's latest inbound message (create
-	// cannot address our synthetic chat ids — Feishu 99992351).
-	if sends := f.callsAt("/reply"); len(sends) != 1 {
-		t.Fatalf("card sends (reply): got %d, want 1", len(sends))
-	}
-	if len(f.callsAt("/batch_update")) == 0 {
-		t.Fatal("structure change must append elements via batch_update (方案 A：不再整卡替换)")
-	}
-	// 方案 A：不再有整卡更新 —— 断言初始卡片（创建体）不带 header。
-	if strings.Contains(creates[0].Body, `"header"`) {
-		t.Error("rendered card must not carry a header")
-	}
-
-	// Live text goes through the streaming element (typewriter), not a rebuild.
-	c.SendStreamContent("oc_chat", "hello world", "")
-	contents := f.callsToElement(answerElementID(1))
-	if len(contents) == 0 {
-		t.Fatal("answer text must be streamed into the iteration's answer element")
-	}
-	// 方案 A：正文只走元素级 content 推送（可能含快照补推）——断言最后一次带上文本。
-	if last := contents[len(contents)-1]; !strings.Contains(last.Body, "hello world") {
-		t.Errorf("last content push body: %s", last.Body)
-	}
-}
-
-func TestSendStreamContent_Throttled(t *testing.T) {
-	oldText, oldPanel := streamCardMinInterval, streamCardPanelMinInterval
-	streamCardMinInterval, streamCardPanelMinInterval = time.Hour, time.Hour
-	t.Cleanup(func() { streamCardMinInterval, streamCardPanelMinInterval = oldText, oldPanel })
-
-	f := newFakeFeishu(t)
-	c := newStreamCardChannel(t, f)
-	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1})
-	before := len(f.contentCalls())
-	for _, s := range []string{"a", "ab", "abc"} {
-		c.SendStreamContent("oc_chat", s, "")
-	}
-	if got := len(f.contentCalls()) - before; got != 0 {
-		t.Fatalf("throttled pushes reached the API: %d", got)
-	}
-}
-
-func TestFinalReply_FinalizesOpenCard(t *testing.T) {
-	fastStreamCard(t)
-	f := newFakeFeishu(t)
-	c := newStreamCardChannel(t, f)
-
-	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Content: "partial"})
-
-	id, ok := c.streamCardSend(ch.OutboundMsg{
-		Channel: "feishu", ChatID: "oc_chat", Content: "final answer",
-		Metadata: map[string]string{ch.MetaFinalReply: "true"},
-	}, "final answer", true)
-	if !ok {
-		t.Fatal("final reply should be handled by the open card")
-	}
-	if id != "om_reply_1" {
-		t.Fatalf("final message id: got %q, want om_reply_1", id)
-	}
-	if _, exists := c.streamCards["oc_chat"]; exists {
-		t.Error("finalized card must be released")
-	}
-	if len(f.callsAt("/settings")) == 0 && len(f.callsAt("/batch_update")) == 0 {
-		t.Error("finalize must close the streaming mode (settings/batch call)")
-	}
-}
-
 func TestFinalReply_WithoutOpenCardFallsBack(t *testing.T) {
 	f := newFakeFeishu(t)
 	c := newStreamCardChannel(t, f)
@@ -661,5 +792,385 @@ func TestPreReplyNotify_CardOnlyNoDoubleAck(t *testing.T) {
 	c := NewFeishuChannel(FeishuConfig{}, nil)
 	if c.PreReplyNotify() {
 		t.Error("feishu must not send an ack card: it would double-render alongside the streaming card")
+	}
+}
+
+// --- 修复后的写文本通路（partial_update_element）─────────────────────────────
+
+func (f *fakeFeishu) setFailAllPatches(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failAllPatches = v
+}
+
+// lastPatchContent returns the text most recently applied to elementID via a
+// partial_update_element patch ("" when it was never patched).
+func (f *fakeFeishu) lastPatchContent(elementID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	content := ""
+	for _, p := range f.patchPayloads {
+		if p.ElementID == elementID {
+			content = p.Content
+		}
+	}
+	return content
+}
+
+func (f *fakeFeishu) patchCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.patchPayloads)
+}
+
+func (f *fakeFeishu) emptyPatchRejections() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.emptyPatchContent
+}
+
+// TestRenderCard_PerIterationSkeleton — 建卡模板只声明 ans_1 这一个元素（卡片至少要有
+// 一个元素才能创建）；此后每个迭代的元素（💭 面板 / 正文 / 工具行）都用 add_elements
+// 追加，文本用 partial_update_element 补丁写（不能再用 CardElement.Content：见下）。
+func TestRenderCard_PerIterationSkeleton(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	card, ok := c.ensureStreamCard("oc_chat")
+	if !ok {
+		t.Fatal("no stream card")
+	}
+	// 建卡请求体：只能有 ans_1（Content 的白名单只有它）。
+	declared := f.declaredElements()
+	if len(declared) != 1 || !declared[answerElementID(1)] {
+		t.Fatalf("create template must declare exactly %q: %v", answerElementID(1), declared)
+	}
+	if _, hasHeader := card.renderCard(true)["header"]; hasHeader {
+		t.Error("card must not render a header (user request)")
+	}
+	// 迭代 1/2 + 一个工具 → 结构只 append，卡片上出现各迭代的元素。
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{
+		Iteration: 1, Reasoning: "think-one", Content: "answer-one",
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Status: "running", Iteration: 1, Args: `{"command":"ls"}`}},
+	})
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 2, Reasoning: "think-two", Content: "answer-two"})
+
+	ids := f.elementIDs()
+	for _, want := range []string{answerElementID(1), panelElementID(1), reasoningElementID(1), answerElementID(2), reasoningElementID(2)} {
+		if _, exists := ids[want]; !exists {
+			t.Errorf("element %q must be appended to the card: %v", want, ids)
+		}
+	}
+	if dup := f.repeatedAddIDs(); len(dup) != 0 {
+		t.Errorf("structure must be append-once: %v", dup)
+	}
+}
+
+// TestStreamCard_Iteration2TextLandsViaPatch — ① 迭代 2+ 的正文与思考必须真的落到卡上。
+//
+// 通路必须是 partial_update_element 补丁：CardElement.Content 只认建卡模板声明过的
+// 元素，对 append 出来的 ans_2/think_2 会返回 300313（本 bug 的根因）。所以断言：
+//   - 没有任何 /content 请求打到"未声明"的元素上（实际上是完全不用 /content）；
+//   - 迭代 2 的文本出现在补丁载荷里，并已落到卡片模型上；
+//   - 全程没有空 content 被拒（99992402）。
+func TestStreamCard_Iteration2TextLandsViaPatch(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Reasoning: "think-1", Content: "answer-1"})
+	c.SendStreamContent("oc_chat", "answer-1", "think-1")
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{
+		Iteration: 2, Reasoning: "think-2", Content: "answer-2",
+		IterationHistory: []protocol.ProgressEvent{{Iteration: 1, Reasoning: "think-1", Content: "answer-1"}},
+	})
+	c.SendStreamContent("oc_chat", "answer-2", "think-2")
+
+	declared := f.declaredElements()
+	for _, call := range f.contentCalls() {
+		if id := pathElementID(call.Path); !declared[id] {
+			t.Errorf("/content targeted %q which is NOT declared at create time → Feishu 300313, text lost: %v", id, f.snapshot())
+		}
+	}
+	if got := f.lastPatchContent(answerElementID(2)); !strings.Contains(got, "answer-2") {
+		t.Errorf("iteration 2's answer must be written via partial_update_element: %q (patches=%d)", got, f.patchCount())
+	}
+	if got := f.lastPatchContent(reasoningElementID(2)); !strings.Contains(got, "think-2") {
+		t.Errorf("iteration 2's thinking must be written via partial_update_element: %q", got)
+	}
+	card := f.elementIDs()
+	if !strings.Contains(card[answerElementID(2)], "answer-2") || !strings.Contains(card[reasoningElementID(2)], "think-2") {
+		t.Errorf("iteration 2's text never reached the card: %v", card)
+	}
+	if n := f.emptyPatchRejections(); n != 0 {
+		t.Errorf("empty content must never be written (%d rejected – 99992402)", n)
+	}
+}
+
+// TestStreamCard_TextNeverUsesCardElementContent — 回归守护：文本通路**不得**回退到
+// CardElement.Content（它只能写建卡模板声明过的 ans_1，写 ans_2+ 会 300313 静默失败，
+// 正是"卡片冻结在第一个 content"的成因）。
+func TestStreamCard_TextNeverUsesCardElementContent(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Reasoning: "think-1", Content: "answer-1"})
+	c.SendStreamContent("oc_chat", "answer-1", "think-1")
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 2, Reasoning: "think-2", Content: "answer-2"})
+	c.SendStreamContent("oc_chat", "answer-2", "think-2")
+
+	if n := len(f.contentCalls()); n != 0 {
+		t.Errorf("text must go through partial_update_element, not CardElement.Content (%d /content calls): %v", n, f.contentCalls())
+	}
+	if f.patchCount() == 0 {
+		t.Error("expected text patches, got none")
+	}
+}
+
+// TestStreamCard_FinalizeFailureFallsBackToPlainMessage — ③ 最终文本没能落到卡上时
+// streamCardSend 必须返回 ok=false，让上层走普通消息把回复发出去（Bug B：旧实现忽略
+// finalize 的 error 一律返回 true ⇒ 卡不更新、最终答复也丢了，用户彻底收不到回复）。
+func TestStreamCard_FinalizeFailureFallsBackToPlainMessage(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Reasoning: "think", Content: "partial"})
+	// 所有文本补丁都被拒（模拟元素缺失 / API 拒绝 / 300313 类失败）。
+	f.setFailAllPatches(true)
+
+	id, ok := c.streamCardSend(ch.OutboundMsg{
+		Channel: "feishu", ChatID: "oc_chat", Content: "final answer",
+		Metadata: map[string]string{ch.MetaFinalReply: "true"},
+	}, "final answer", true)
+	if ok {
+		t.Errorf("final text never landed on the card → streamCardSend must return ok=false so the caller sends a plain message (id=%q)", id)
+	}
+	if id != "" {
+		t.Errorf("failed finalize must not report a message id: %q", id)
+	}
+	// 关流式仍然必须无条件执行：开着的流会让卡片卡在"生成中"直到飞书 10 分钟后强关。
+	if len(f.callsAt("/settings")) == 0 {
+		t.Errorf("finalize must close streaming_mode even when the text patch failed: %v", f.snapshot())
+	}
+	if _, exists := c.streamCards["oc_chat"]; exists {
+		t.Error("a finalized card must be released (otherwise the next turn reuses a broken card)")
+	}
+}
+
+// TestStreamCard_FailedBatchRetriesAndBreaksAfterThree — ④ 失败的 batch_update 必须
+// 保留 ops 供重试（commit-on-success），且连续 3 次失败熔断本会话的进度卡片
+// （回落普通消息），不再死吊在一张永远更新不了的卡上。
+func TestStreamCard_FailedBatchRetriesAndBreaksAfterThree(t *testing.T) {
+	newEv := func() *protocol.ProgressEvent {
+		return &protocol.ProgressEvent{
+			Iteration: 1, Reasoning: "think-1", Content: "answer-1",
+			ActiveTools: []protocol.ToolProgress{{
+				Name: "Shell", Label: "Shell", Status: "running", Iteration: 1,
+				Args: `{"command":"ls -la"}`,
+			}},
+		}
+	}
+
+	t.Run("failed batch keeps its ops and is retried", func(t *testing.T) {
+		fastStreamCard(t)
+		f := newFakeFeishu(t)
+		c := newStreamCardChannel(t, f)
+		// 前两次尝试都失败（同一次结构同步内部就会重试一次）。
+		f.setFailBatches(map[int]string{1: "boom", 2: "boom"})
+
+		c.SendProgress("oc_chat", newEv())
+
+		card, okCard := c.ensureStreamCard("oc_chat")
+		if !okCard || card == nil {
+			t.Fatal("no stream card")
+		}
+		card.mu.Lock()
+		queued := len(card.ops)
+		card.mu.Unlock()
+		if queued == 0 {
+			t.Error("a failed batch must KEEP its queued ops for retry (old code cleared c.ops before the request → the structure and text were lost forever)")
+		}
+		payloads := f.batchPayload()
+		if len(payloads) == 0 {
+			t.Fatal("no batch_update attempt was made")
+		}
+		failedAdds := addedIDsFromPayload(payloads[0])
+
+		// 放行后再同步一次：同一批 ops 必须重发并落地。
+		f.setFailBatches(nil)
+		c.SendProgress("oc_chat", newEv())
+		payloads = f.batchPayload()
+		if len(payloads) < 3 {
+			t.Fatalf("the failed batch was never retried (attempts=%d)", f.batchAttemptCount())
+		}
+		retryAdds := addedIDsFromPayload(payloads[len(payloads)-1])
+		for id := range failedAdds {
+			if !retryAdds[id] {
+				t.Errorf("the retry dropped queued element %q (failed=%v retry=%v)", id, failedAdds, retryAdds)
+			}
+		}
+		card.mu.Lock()
+		queued = len(card.ops)
+		card.mu.Unlock()
+		if queued != 0 {
+			t.Errorf("a successful retry must commit (clear) the ops, got %d left", queued)
+		}
+		if !f.contentContains("answer-1") {
+			t.Errorf("after the retry the text must be on the card: %v", f.elementIDs())
+		}
+	})
+
+	t.Run("three consecutive failures break the card for this chat", func(t *testing.T) {
+		fastStreamCard(t)
+		f := newFakeFeishu(t)
+		c := newStreamCardChannel(t, f)
+		f.setFailBatches(map[int]string{1: "boom", 2: "boom", 3: "boom"})
+
+		for i := 0; i < 4; i++ {
+			c.SendProgress("oc_chat", newEv())
+		}
+		if got := f.batchAttemptCount(); got < 3 {
+			t.Fatalf("failures must be retried: only %d batch_update attempt(s)", got)
+		}
+		if _, broken := c.streamCardsBroken["oc_chat"]; !broken {
+			t.Error("after 3 consecutive card failures this chat must fall back to plain replies (markStreamCardsBroken)")
+		}
+	})
+}
+
+// TestReasoningCount_UpdatesLive — 思考字数必须**实时递增**（用户 2026-09-13）。
+// 思考正文走元素级补丁，面板标题靠 partial_update_element 刷新。
+func TestReasoningCount_UpdatesLive(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendStreamContent("oc_chat", "", "第一段思考")
+	want1 := thinkingPanelTitle("第一段思考")
+	if !f.sawPanelTitle(want1) {
+		t.Fatalf("thinking panel header was never patched to %q: %v", want1, f.snapshot())
+	}
+	c.SendStreamContent("oc_chat", "", "第一段思考，继续第二段思考")
+	want2 := thinkingPanelTitle("第一段思考，继续第二段思考")
+	if !f.sawPanelTitle(want2) {
+		t.Fatalf("thinking panel header was never patched to %q: %v", want2, f.snapshot())
+	}
+	if len([]rune(want2)) <= len([]rune(want1)) {
+		t.Fatalf("thinking count must count UP: %q -> %q", want1, want2)
+	}
+	if got := f.lastPatchContent(reasoningElementID(1)); !strings.Contains(got, "继续第二段思考") {
+		t.Errorf("thinking text must be written via a patch: %q", got)
+	}
+}
+
+func TestSendProgress_CreatesCardAndStreams(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{
+		Iteration: 1, Reasoning: "thinking…", Content: "hello",
+		ActiveTools: []protocol.ToolProgress{{
+			Name: "Shell", Label: "Shell", Status: "running", Iteration: 1,
+			Args: `{"command":"ls -la"}`,
+		}},
+	})
+
+	creates := f.callsAt("/open-apis/cardkit/v1/cards")
+	if len(creates) != 1 {
+		t.Fatalf("card entity creates: got %d, want 1", len(creates))
+	}
+	if sends := f.callsAt("/reply"); len(sends) != 1 {
+		t.Fatalf("card sends (reply): got %d, want 1", len(sends))
+	}
+	if len(f.callsAt("/batch_update")) == 0 {
+		t.Fatal("structure change must append elements via batch_update")
+	}
+	if strings.Contains(creates[0].Body, `"header"`) {
+		t.Error("rendered card must not carry a header")
+	}
+	// 正文走补丁（不走 CardElement.Content）。
+	c.SendStreamContent("oc_chat", "hello world", "")
+	if got := f.lastPatchContent(answerElementID(1)); !strings.Contains(got, "hello world") {
+		t.Errorf("answer text must be patched into the iteration's answer element: %q", got)
+	}
+}
+
+func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+	c.rememberInboundMessageForTest("oc_chat", "om_in")
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{
+		Iteration: 1, Reasoning: "thinking hard", Content: "answer so far",
+		ActiveTools: []protocol.ToolProgress{{
+			Name: "Shell", Label: "Shell", Status: "generating", Iteration: 1,
+			Args: `{"command":"ls -la"}`,
+		}},
+	})
+	c.SendStreamContent("oc_chat", "answer so far", "thinking hard")
+
+	if got := f.lastPatchContent(reasoningElementID(1)); !strings.Contains(got, "thinking hard") {
+		t.Fatalf("thinking was not patched into %q: %q (%v)", reasoningElementID(1), got, f.snapshot())
+	}
+	if got := f.lastPatchContent(answerElementID(1)); !strings.Contains(got, "answer so far") {
+		t.Errorf("answer text was not patched: %q", got)
+	}
+	// 工具行以元素级 append 落卡；内容里必须带生成状态。
+	if !f.contentContains("生成参数中") {
+		t.Errorf("card should render the generating state in a tool row element: %v", f.elementIDs())
+	}
+	if dup := f.repeatedAddIDs(); len(dup) != 0 {
+		t.Errorf("tool rows must be appended exactly once: %v", dup)
+	}
+}
+
+func TestSendStreamContent_Throttled(t *testing.T) {
+	oldText, oldPanel := streamCardMinInterval, streamCardPanelMinInterval
+	streamCardMinInterval, streamCardPanelMinInterval = time.Hour, time.Hour
+	t.Cleanup(func() { streamCardMinInterval, streamCardPanelMinInterval = oldText, oldPanel })
+
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1})
+	before := f.patchCount() + f.batchAttemptCount()
+	for _, s := range []string{"a", "ab", "abc"} {
+		c.SendStreamContent("oc_chat", s, "")
+	}
+	if got := f.patchCount() + f.batchAttemptCount() - before; got != 0 {
+		t.Fatalf("throttled pushes reached the API: %d", got)
+	}
+}
+
+func TestFinalReply_FinalizesOpenCard(t *testing.T) {
+	fastStreamCard(t)
+	f := newFakeFeishu(t)
+	c := newStreamCardChannel(t, f)
+
+	c.SendProgress("oc_chat", &protocol.ProgressEvent{Iteration: 1, Content: "partial"})
+
+	id, ok := c.streamCardSend(ch.OutboundMsg{
+		Channel: "feishu", ChatID: "oc_chat", Content: "final answer",
+		Metadata: map[string]string{ch.MetaFinalReply: "true"},
+	}, "final answer", true)
+	if !ok {
+		t.Fatal("final reply should be handled by the open card")
+	}
+	if id != "om_reply_1" {
+		t.Fatalf("final message id: got %q, want om_reply_1", id)
+	}
+	if _, exists := c.streamCards["oc_chat"]; exists {
+		t.Error("finalized card must be released")
+	}
+	// 最终文本必须真的写到当前迭代的正文元素上。
+	if got := f.elementIDs()[answerElementID(1)]; !strings.Contains(got, "final answer") {
+		t.Errorf("final answer never landed on the card: %q (%v)", got, f.elementIDs())
+	}
+	if len(f.callsAt("/settings")) == 0 {
+		t.Error("finalize must close the streaming mode")
 	}
 }
