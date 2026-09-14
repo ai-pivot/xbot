@@ -81,14 +81,6 @@ const (
 // A var (not a const) so tests can disable/force the throttle.
 var streamCardMinInterval = 250 * time.Millisecond
 
-// streamCardReasonCountMinInterval throttles the thinking-panel HEADER refresh
-// ("💭 思考 N 字"). The thinking TEXT streams through the per-element content API
-// (typewriter), but a panel header can only change via a full-card update — so
-// the character count is refreshed on its own, slower throttle to keep it
-// visibly counting up without flooding the card API.
-// A var (not a const) so tests can force it.
-var streamCardReasonCountMinInterval = 400 * time.Millisecond
-
 // streamCardPanelMinInterval throttles the full-card updates that re-lay out the
 // iterations (thinking blocks / finished iterations / tool rows).
 var streamCardPanelMinInterval = 600 * time.Millisecond
@@ -195,8 +187,6 @@ type feishuStreamCard struct {
 	lastReasoning  string
 	lastReasonAt   time.Time
 	// lastReasonCountAt throttles the thinking-panel HEADER refresh (the character
-	// count in "💭 思考 N 字" can only change via a full-card update).
-	lastReasonCountAt time.Time
 }
 
 // newFeishuStreamCard creates the card entity (streaming enabled) and posts it.
@@ -761,7 +751,6 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	// character anymore — it is refreshed by the structural updates (new iteration /
 	// tool status change / finalize), which are the only moments a full-card update
 	// is allowed to run while text is streaming.
-	c.lastReasonCountAt = time.Now()
 }
 
 // pushCurrentReasoning streams the current iteration's thinking, if any.

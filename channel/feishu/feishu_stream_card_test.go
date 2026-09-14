@@ -188,10 +188,7 @@ func newStreamCardChannel(t *testing.T, f *fakeFeishu) *FeishuChannel {
 
 func fastStreamCard(t *testing.T) {
 	t.Helper()
-	oldText, oldPanel, oldCount := streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval
-	streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval = 0, 0, 0
 	t.Cleanup(func() {
-		streamCardMinInterval, streamCardPanelMinInterval, streamCardReasonCountMinInterval = oldText, oldPanel, oldCount
 	})
 }
 
