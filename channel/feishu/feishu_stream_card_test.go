@@ -225,24 +225,29 @@ var thinkingCountRe = regexp.MustCompile(`思考 (\d+) 字`)
 // TestReasoningCount_UpdatesLive — 思考字数必须**实时递增**（用户 2026-09-13）。
 // 思考正文走元素级内容 API（打字机），但面板标题只能靠整卡更新刷新 —— 所以
 // 每次思考增长都要（节流地）重算标题里的字数。
-func TestReasoningCount_UpdatesLive(t *testing.T) {
+// TestReasoningStreaming_KeepsTypewriter pins the contract the user demanded
+// (2026-09-14「没有 stream 特效」): the thinking TEXT streams through the element
+// Content API (typewriter) and NO full-card update may run while text is
+// streaming — a full-card update writes that element's text in ONE shot and
+// cancels the typewriter. The panel title's character count therefore refreshes
+// only on structural updates (new iteration / tool status / finalize); the
+// structural path itself is covered by TestSendProgress_StreamsReasoningAndTools.
+func TestReasoningStreaming_KeepsTypewriter(t *testing.T) {
 	fastStreamCard(t)
 	f := newFakeFeishu(t)
 	c := newStreamCardChannel(t, f)
 
 	c.SendStreamContent("oc_chat", "", "第一段思考")
-	first := lastThinkingCount(t, f)
-	if first != len([]rune("第一段思考")) {
-		t.Fatalf("first count: got %d, want %d", first, len([]rune("第一段思考")))
+	if pushes := f.callsToElement(reasoningElementID(1)); len(pushes) == 0 {
+		t.Fatalf("thinking text must stream through the element Content API")
 	}
 
 	c.SendStreamContent("oc_chat", "", "第一段思考，继续第二段思考")
-	second := lastThinkingCount(t, f)
-	if second != len([]rune("第一段思考，继续第二段思考")) {
-		t.Fatalf("second count: got %d, want %d", second, len([]rune("第一段思考，继续第二段思考")))
+	if pushes := f.callsToElement(reasoningElementID(1)); len(pushes) < 2 {
+		t.Fatalf("thinking text must keep streaming through the Content API, got %d pushes", len(pushes))
 	}
-	if second <= first {
-		t.Fatalf("thinking count must count UP live: first=%d second=%d", first, second)
+	if ups := f.cardUpdates(); len(ups) != 0 {
+		t.Fatalf("no full-card update may run while text is streaming (it cancels the typewriter), got %d", len(ups))
 	}
 }
 

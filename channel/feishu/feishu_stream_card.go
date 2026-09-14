@@ -70,6 +70,11 @@ const (
 	// stay scannable, so the detail is cut (with an ellipsis) well before the
 	// full command fits — otherwise the row degenerates into a wall of text.
 	streamCardToolRowRunes = 40
+	// streamCardToolHeaderRunes bounds the collapsed tool-panel header to ONE
+	// short line (the full text goes to the expanded body).
+	streamCardToolHeaderRunes = 24
+	// streamCardToolBodyBytes bounds the expanded tool body.
+	streamCardToolBodyBytes = 1200
 )
 
 // streamCardMinInterval throttles the streaming-text element pushes.
@@ -603,11 +608,50 @@ func toolChipPlain(t streamTool) string {
 		label = t.name
 	}
 	parts := []string{icon + " " + label}
-	if detail := toolDetailShort(t); detail != "" {
+	if detail := toolHeaderArg(t); detail != "" {
 		parts = append(parts, detail)
 	}
 	parts = append(parts, state)
 	return strings.Join(parts, " · ")
+}
+
+// toolHeaderArg is the ONE-LINE argument summary shown in a collapsed tool panel
+// (user 2026-09-14: 「tool 参数总是完整渲染可能有很多行，应该控制在展开前一行」).
+// Newlines/tabs collapse to spaces (a header is a single line) and the result is
+// rune-safe truncated — the FULL argument text lives in the panel body instead.
+func toolHeaderArg(t streamTool) string {
+	raw := toolDetail(t)
+	if raw == "" {
+		return ""
+	}
+	one := strings.Join(strings.Fields(strings.ReplaceAll(strings.ReplaceAll(raw, "\r", " "), "\n", " ")), " ")
+	if r := []rune(one); len(r) > streamCardToolHeaderRunes {
+		return string(r[:streamCardToolHeaderRunes]) + "…"
+	}
+	return one
+}
+
+// toolDetailFull is the panel BODY: the tool's full argument text (what the
+// collapsed header deliberately truncates) plus its output when available.
+// Rune-safe capped so one tool cannot blow up the card.
+func toolDetailFull(t streamTool) string {
+	parts := make([]string, 0, 2)
+	if t.summary != "" {
+		parts = append(parts, strings.TrimSpace(t.summary))
+	}
+	if t.args != "" {
+		args := strings.TrimSpace(t.args)
+		if len(parts) == 0 || !strings.Contains(parts[0], args) {
+			var m map[string]any
+			if json.Unmarshal([]byte(args), &m) == nil {
+				if pretty, err := json.MarshalIndent(m, "", "  "); err == nil {
+					args = string(pretty)
+				}
+			}
+			parts = append(parts, "```\n"+args+"\n```")
+		}
+	}
+	return strings.TrimSpace(tools.TruncateHeadPreview(strings.Join(parts, "\n\n"), streamCardToolBodyBytes))
 }
 
 // toolPanel renders ONE tool as a collapsible panel in the SAME visual language as
@@ -617,7 +661,7 @@ func toolChipPlain(t streamTool) string {
 // add_elements/partial_update_element return code=0 but have NO rendering effect
 // (measured 2026-09-14), so they are not used for visible content.
 func toolPanel(t streamTool) map[string]any {
-	body := toolDetailShort(t)
+	body := toolDetailFull(t)
 	if body == "" {
 		body = "_（无详情）_"
 	}
@@ -711,17 +755,13 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	c.lastReasoning = text
 	c.lastReasonAt = time.Now()
 
-	// The thinking TEXT just streamed (typewriter); the panel title still shows the
-	// old character count. A header can only change through a full-card update —
-	// refresh it on its own throttle so "💭 思考 N 字" counts up live.
-	if time.Since(c.lastReasonCountAt) >= streamCardReasonCountMinInterval {
-		if err := c.updateCard(true); err != nil {
-			log.WithError(err).WithField("card_id", c.cardID).
-				Debug("Feishu: thinking count refresh failed")
-			return
-		}
-		c.lastCardAt, c.lastReasonCountAt = time.Now(), time.Now()
-	}
+	// NOTE (2026-09-14, user: 「没有 stream 特效」): a whole-card update writes the
+	// element text in ONE shot, which cancels the typewriter from the Content push
+	// above. So the panel title ("💭 思考 N 字") is intentionally NOT refreshed per
+	// character anymore — it is refreshed by the structural updates (new iteration /
+	// tool status change / finalize), which are the only moments a full-card update
+	// is allowed to run while text is streaming.
+	c.lastReasonCountAt = time.Now()
 }
 
 // pushCurrentReasoning streams the current iteration's thinking, if any.
