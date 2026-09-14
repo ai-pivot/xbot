@@ -433,7 +433,6 @@ type Agent struct {
 
 	skills             *SkillStore
 	agents             *AgentStore
-	chatHistory        *tools.ChatHistoryStore // 聊天历史缓存
 	cardBuilder        *tools.CardBuilder      // Card Builder MCP
 	workDir            string
 	promptLoader       *PromptLoader
@@ -1586,9 +1585,9 @@ type Config struct {
 	Admins []string
 }
 
-// initStores 初始化各类存储和注册表，返回 skillStore, agentStore, chatHistory, registry, cardBuilder。
+// initStores 初始化各类存储和注册表，返回 skillStore, agentStore, registry, cardBuilder。
 
-func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, *tools.Registry, *tools.CardBuilder) {
+func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.Registry, *tools.CardBuilder) {
 	globalSkillDirs := resolveGlobalSkillsDirs(cfg.SkillsDir)
 
 	skillStore := NewSkillStore(cfg.WorkDir, globalSkillDirs, cfg.Sandbox)
@@ -1606,9 +1605,8 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 	// 确定记忆模式
 	registry := tools.DefaultRegistry(resolveMemoryProvider(cfg.MemoryProvider))
 
-	// 创建聊天历史存储
-	chatHistory := tools.NewChatHistoryStore(200) // 每个群组保留最近 200 条
-	registry.Register(tools.NewChatHistoryTool(chatHistory))
+	// 创建聊天历史工具（无状态：直接读 session_messages 权威历史）
+	registry.Register(tools.NewChatHistoryTool())
 
 	// MCP global config: use xbotHome directly (~/.xbot/mcp.json).
 	// resolveDataPath would double-nest to ~/.xbot/.xbot/mcp.json.
@@ -1646,7 +1644,7 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 		}
 	}
 
-	return skillStore, agentStore, chatHistory, registry, cardBuilder
+	return skillStore, agentStore, registry, cardBuilder
 }
 
 // initSession 初始化多租户会话管理器。
@@ -1867,7 +1865,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	// 2. 初始化存储和注册表
-	skillStore, agentStore, chatHistory, registry, cardBuilder := initStores(cfg)
+	skillStore, agentStore, registry, cardBuilder := initStores(cfg)
 
 	// 3. 初始化会话管理器
 	multiSession, err := initSession(cfg)
@@ -1893,7 +1891,6 @@ func New(cfg Config) (*Agent, error) {
 
 		skills:             skillStore,
 		agents:             agentStore,
-		chatHistory:        chatHistory,
 		cardBuilder:        cardBuilder,
 		workDir:            cfg.WorkDir,
 		promptLoader:       NewPromptLoader(cfg.PromptFile),
@@ -3465,14 +3462,6 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	// File snapshots are persisted to ~/.xbot/checkpoints/{sessionKey}/changes.jsonl
 	// and used by /rewind to restore files to their pre-edit state.
 	a.ensureCheckpointStore(ctx, key, msg.Channel, msg.ChatID)
-
-	// 缓存消息到聊天历史（用于 ChatHistory 工具查询）
-	a.chatHistory.Add(msg.Channel, msg.ChatID, msg.SenderID, msg.Content)
-	log.Ctx(ctx).WithFields(log.Fields{
-		"channel": msg.Channel,
-		"chat_id": msg.ChatID,
-		"sender":  msg.SenderID,
-	}).Debug("Message cached to chat history")
 
 	// 指令匹配：通过 CommandRegistry 统一分发
 	if cmd := a.commands.Match(msg.Content); cmd != nil {

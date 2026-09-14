@@ -24,6 +24,7 @@ import (
 	"xbot/oauth"
 	"xbot/protocol"
 	"xbot/session"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -1295,6 +1296,9 @@ func (a *Agent) buildToolContextExtras(channel, chatID string) *ToolContextExtra
 		// Tenant-level fields: work for all memory provider types
 		extras.TenantID = ts.TenantID()
 		extras.MemorySvc = ts.MemoryService()
+		// 会话历史的权威读取路径（session_messages + Replay）。工具只读它，
+		// 不另存副本 —— 回溯/清空截断 DB 后天然生效。
+		extras.SessionSvc = sqlite.NewSessionService(a.multiSession.DB())
 		extras.RecallTimeRange = a.multiSession.RecallTimeRangeFunc()
 		// Generic: store the MemoryProvider instance. Tools type-assert to get
 		// provider-specific methods (e.g. *xbotmemory.XbotMemory).

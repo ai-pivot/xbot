@@ -420,6 +420,9 @@ type ToolContextExtras struct {
 	MemorySvc       *sqlite.MemoryService
 	RecallTimeRange vectordb.RecallTimeRangeFunc
 	ToolIndexer     memory.ToolIndexer
+	// SessionSvc 会话历史服务（session_messages 的权威读取路径）。工具只读它，
+	// 不另存副本 —— 回溯/清空截断 DB 后必须天然生效。
+	SessionSvc *sqlite.SessionService
 	// MemoryProvider is the generic memory provider instance.
 	// Tools access provider-specific methods via type assertion:
 	//   xm, ok := ctx.MemoryProvider.(*xbotmemory.XbotMemory)
@@ -1287,6 +1290,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 		tc.CoreMemory = ext.CoreMemory
 		tc.ArchivalMemory = ext.ArchivalMemory
 		tc.MemorySvc = ext.MemorySvc
+		tc.SessionSvc = ext.SessionSvc
 		tc.RecallTimeRange = ext.RecallTimeRange
 		tc.ToolIndexer = ext.ToolIndexer
 		// Generic: store the MemoryProvider instance. Tools type-assert
