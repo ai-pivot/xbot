@@ -21,33 +21,14 @@ import (
 //     JSON —— 卡片越大越慢（工具一多就退化）；
 //   - 无法局部更新：改一个字也重排全卡。
 //
-// CardKit 给了完整的元素级原子操作（真实 API 探针实测），本文件把它们组合成一条
-// 低噪音路径：
+// CardKit 给了完整的元素级原子操作（SDK 实测），本文件把它们组合成一条低噪音路径：
 //   - 结构变化 → add_elements（append 一个元素，一次/元素）
-//   - 文本更新 → partial_update_element（补丁 `content`；见 pushText / pushReasoning）
+//   - 文本流式 → ContentCardElement（打字机；见 pushText / pushReasoning）
 //   - 属性变化 → partial_update_element（例如折叠面板标题里的实时字数）
-//   - 收尾    → partial_update_setting（关 streaming_mode）+ 折叠思考面板
-//
-// ⛔ 为什么文本**不能**用 CardElement.Content（打字机）—— 真实 API 探针实测：
-//
-//	CardElement.Content 只认**建卡模板里声明过的 element_id**；对 add_elements
-//	追加出来的元素做 Content 一律 `300313 ErrMsg: not find elementID : X;`。
-//	本实现的模型是"每迭代一个元素（ans_n / think_n）+ 只 append"，所以除迭代 1 的
-//	ans_1 之外，其它元素都是 append 的 —— 早期实现用 Content 推文本 ⇒ 迭代 2+ 的
-//	正文/思考全部 300313 静默失败，卡片冻结在迭代 1（本 bug 的根因）。
-//	partial_update_element（补丁，含 `content`）对**任意已存在元素**（含 append 的）
-//	都成功（实测），因此文本统一走补丁。
-//
-// 另外一个探针事实：Content 传**空串**会被拒（`99992402 field validation failed`），
-// 所以任何写文本的路径都必须保证非空（本实现只推非空文本；清空/占位用 "\u200b"）。
+//   - 收尾    → partial_update_setting（关 streaming_mode）+ 批量折叠各思考面板
 //
 // 所有排队 op 合并成**一次** BatchUpdateCard 请求（同元素 last-writer-wins），
 // 因此「迭代边界 + 新工具 + 关上一个工具」这类同 tick 的多改动只花一次调用。
-//
-// ⛔ 提交语义：**commit-on-success** —— 请求成功才清空 ops / 记账；失败保留 ops
-// 供下次 flush 重试，日志 Warn（带 card_id/code/msg），连续失败到阈值就熔断本会话
-// 的进度卡片（回落普通消息）。旧实现"先 c.ops=nil 再发请求、失败只打 Debug"使
-// 结构变化和文本永久丢失且无人知晓 —— 这正是本 bug 迟迟没被发现的原因。
 
 const (
 	// panelIDPrefix/answerIDPrefix/toolIDPrefix：元素 id 前缀。Feishu 元素 id 允许
@@ -141,35 +122,13 @@ func (c *feishuStreamCard) ensureAllElementsLocked() {
 	}
 }
 
-// queueAdd appends element(s) to the card body.
-//
-// 只入队，**不**动 c.elements：c.elements 表示"已经在卡片上的元素"，
-// 由 submitOpsLocked 在 batch_update **成功之后**才提交（commit-on-success）。
-// The caller must hold c.mu.
+// queueAdd appends element(s) to the card body (idempotent per batch).
 func (c *feishuStreamCard) queueAdd(elements ...map[string]any) {
 	if len(elements) == 0 {
 		return
 	}
 	c.ops = append(c.ops, cardOp{kind: opAdd, elements: elements})
-}
-
-// queueElementContentLocked replaces the FULL text of one element via
-// partial_update_element.
-//
-// 这是文本唯一的写入通道（当前迭代正文/思考 + 已完结迭代的文本都走它）：
-//   - CardElement.Content 只认建卡模板声明过的元素，append 出来的元素会被 300313
-//     拒绝（真实 API 探针实测）—— 本实现除 ans_1 外全是 append 的，所以不能用它；
-//   - partial_update_element 对任意已存在元素都成功（实测），且它天然享受本文件的
-//     commit-on-success / 重试 / 熔断；同一元素多次入队只保留最后一次（全量替换语义）。
-//
-// 空串一律不写：Content/补丁里的空 content 会被飞书拒（Content 实测 99992402），
-// 需要"清空"时由调用方给非空占位符。
-// The caller must hold c.mu.
-func (c *feishuStreamCard) queueElementContentLocked(elementID, text string) {
-	if elementID == "" || text == "" {
-		return
-	}
-	c.queuePatch(elementID, map[string]any{"content": text})
+	c.elements = append(c.elements, elements...)
 }
 
 // queuePatch updates some fields of ONE element (e.g. a panel header title).
@@ -193,13 +152,10 @@ func (c *feishuStreamCard) queuePatch(elementID string, partial map[string]any) 
 // The caller must hold c.mu.
 // submitOpsLocked submits the queued ops NOW (no throttle, ignores the finished
 // gate — finalize must be able to flush its closing ops).
-//
-// commit-on-success：请求成功才提交（清空 ops、把新增元素写进 c.elements、清零连续
-// 失败计数）；**失败则原样保留 ops**，下一次 flush 重试 —— 绝不静默丢弃。
 // The caller must hold c.mu.
-func (c *feishuStreamCard) submitOpsLocked() error {
+func (c *feishuStreamCard) submitOpsLocked() {
 	if len(c.ops) == 0 {
-		return nil
+		return
 	}
 	actions := make([]map[string]any, 0, len(c.ops))
 	adds := make([]map[string]any, 0, len(c.ops))
@@ -221,20 +177,17 @@ func (c *feishuStreamCard) submitOpsLocked() error {
 		}
 	}
 	if len(adds) > 0 {
-		// 所有新增合成一个 action（一次请求里追加多个元素），且**排在补丁/配置更新之前**
-		// —— 同一批里可能有针对这些新元素的 partial_update_element（文本补丁），
-		// 元素必须先存在。
-		actions = append([]map[string]any{{
+		// 所有新增合成一个 action（一次请求里追加多个元素）。
+		actions = append(actions, map[string]any{
 			"add_elements": map[string]any{"type": "append", "elements": adds},
-		}}, actions...)
+		})
 	}
 	payload, err := json.Marshal(actions)
 	if err != nil {
-		// 本地序列化失败：重试同一批没有意义，但同样不静默丢弃（由熔断兜底）。
-		log.WithError(err).WithField("card_id", c.cardID).
-			Warn("Feishu: marshal card ops failed")
-		return c.recordCardFailureLocked("marshal", err, 0, "")
+		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: marshal card ops failed")
+		return
 	}
+	c.ops = nil
 	c.seq++
 	req := larkcardkit.NewBatchUpdateCardReqBuilder().
 		CardId(c.cardID).
@@ -246,59 +199,15 @@ func (c *feishuStreamCard) submitOpsLocked() error {
 		Build()
 	resp, err := c.client.Cardkit.V1.Card.BatchUpdate(context.Background(), req)
 	if err != nil {
-		return c.recordCardFailureLocked("request", err, 0, "")
-	}
-	if !resp.Success() {
-		return c.recordCardFailureLocked("rejected", nil, resp.Code, resp.Msg)
-	}
-	// 成功 → 提交：清掉这批 ops，并把新增元素记进"卡片上已存在的元素"。
-	c.ops = nil
-	c.elements = append(c.elements, adds...)
-	c.lastCardAt = time.Now()
-	c.consecutiveCardFailures = 0
-	return nil
-}
-
-// recordCardFailureLocked keeps the queued ops for the next flush, logs the failure
-// at Warn (with card_id + stage + code + msg + the consecutive failure count) and
-// trips the per-chat card breaker once the consecutive-failure threshold is reached.
-// The caller must hold c.mu.
-func (c *feishuStreamCard) recordCardFailureLocked(stage string, apiErr error, code int, msg string) error {
-	c.consecutiveCardFailures++
-	fields := map[string]any{
-		"card_id":              c.cardID,
-		"stage":                stage,
-		"consecutive_failures": c.consecutiveCardFailures,
-	}
-	if code != 0 || msg != "" {
-		fields["code"] = code
-		fields["msg"] = msg
-	}
-	if apiErr != nil {
-		log.WithError(apiErr).WithFields(fields).
-			Warn("Feishu: stream card write failed; ops kept for retry")
-	} else {
-		log.WithFields(fields).
-			Warn("Feishu: stream card write rejected; ops kept for retry")
-	}
-	if c.consecutiveCardFailures >= streamCardMaxConsecutiveFailures {
-		log.WithFields(fields).
-			Warn("Feishu: stream card broken after repeated failures; falling back to plain replies for this chat")
-		c.markCardBrokenLocked()
-	}
-	if apiErr != nil {
-		return apiErr
-	}
-	return fmt.Errorf("feishu stream card update rejected: code=%d msg=%s stage=%s", code, msg, stage)
-}
-
-// markCardBrokenLocked tells the channel to stop using progress cards for this chat.
-// The caller must hold c.mu.
-func (c *feishuStreamCard) markCardBrokenLocked() {
-	if c.channel == nil || c.chatID == "" {
+		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: batch update failed")
 		return
 	}
-	c.channel.markStreamCardsBroken(c.chatID)
+	if !resp.Success() {
+		log.WithFields(map[string]any{"card_id": c.cardID, "code": resp.Code, "msg": resp.Msg}).
+			Debug("Feishu: batch update rejected")
+		return
+	}
+	c.lastCardAt = time.Now()
 }
 
 // flushOps is the throttled entry point used by the streaming paths.
@@ -311,6 +220,20 @@ func (c *feishuStreamCard) flushOps(force bool) {
 		return
 	}
 	c.submitOpsLocked()
+}
+
+// takeOpsElements consumes the queued ADD elements (used to render the card's
+// initial skeleton; afterwards structure changes are appended, never re-rendered).
+// The caller must hold c.mu.
+func (c *feishuStreamCard) takeOpsElements() []map[string]any {
+	var out []map[string]any
+	for _, op := range c.ops {
+		if op.kind == opAdd {
+			out = append(out, op.elements...)
+		}
+	}
+	c.ops = nil
+	return out
 }
 
 // patchThinkingCountLocked refreshes the thinking-panel HEADER ("💭 思考 N 字").
