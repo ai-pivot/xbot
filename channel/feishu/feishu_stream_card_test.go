@@ -312,11 +312,14 @@ func TestRenderCard_PerIterationLayout(t *testing.T) {
 	if elems[3]["tag"] != "collapsible_panel" {
 		t.Errorf("elem3: got %v, want collapsible_panel", elems[3]["tag"])
 	}
-	if elems[4]["element_id"] != streamCardElementID {
-		t.Errorf("current iteration content must own the streaming element: %v", elems[4]["element_id"])
+	// 每个迭代拥有**自己的**流式元素（实测 2026-09-14：整卡 Update 新增的元素 Content 可写
+	// ⇒ 无需槽位池、无迭代上限）。进行中的迭代在整卡里声明为空 —— 文本只由
+	// CardElement.Content 逐段写，整卡更新一次写满会让打字机消失。
+	if elems[4]["element_id"] != contentElementID(2) {
+		t.Errorf("current iteration must own its streaming element: %v", elems[4]["element_id"])
 	}
-	if elems[4]["content"] != "answer two" {
-		t.Errorf("elem4 content: got %v", elems[4]["content"])
+	if elems[4]["content"] != "" {
+		t.Errorf("in-flight element must be declared empty (Content owns the text): %q", elems[4]["content"])
 	}
 
 	config, _ := card["config"].(map[string]any)
@@ -331,7 +334,7 @@ func TestRenderCard_PerIterationLayout(t *testing.T) {
 func TestRenderCard_EmptyHasStreamingElement(t *testing.T) {
 	c := &feishuStreamCard{iters: map[int]*streamIteration{}}
 	elems := cardElements(t, c.renderCard(true))
-	if len(elems) != 1 || elems[0]["element_id"] != streamCardElementID {
+	if len(elems) != 1 || elems[0]["element_id"] != contentElementID(1) {
 		t.Fatalf("empty card must still carry the streaming element, got %v", elems)
 	}
 }
@@ -508,8 +511,8 @@ func TestSendProgress_StreamsReasoningAndTools(t *testing.T) {
 	if len(thinkPushes) == 0 {
 		t.Fatalf("thinking was not streamed; calls: %v", f.snapshot())
 	}
-	// The answer streams into the content element.
-	if len(f.callsToElement(streamCardElementID)) == 0 {
+	// The answer streams into THIS iteration's own element.
+	if len(f.callsToElement(contentElementID(1))) == 0 {
 		t.Error("answer text was not streamed")
 	}
 	// The rendered card carries the generating state inside the tool row (a single
@@ -612,7 +615,7 @@ func TestSendProgress_CreatesCardAndStreams(t *testing.T) {
 
 	// Live text goes through the streaming element (typewriter), not a rebuild.
 	c.SendStreamContent("oc_chat", "hello world", "")
-	contents := f.callsToElement(streamCardElementID)
+	contents := f.callsToElement(contentElementID(1))
 	if len(contents) != 1 {
 		t.Fatalf("content pushes: got %d, want 1", len(contents))
 	}

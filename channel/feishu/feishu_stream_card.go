@@ -47,10 +47,6 @@ import (
 )
 
 const (
-	// streamCardElementID identifies the markdown element that receives the
-	// streamed text of the CURRENT iteration. Feishu validates element_id:
-	// letters/digits/underscore, must start with a letter, ≤20 characters.
-	streamCardElementID = "content"
 
 	// streamCardSummary is the chat-list preview shown while streaming.
 	streamCardSummary = "🔄 生成中…"
@@ -393,9 +389,19 @@ func (c *feishuStreamCard) pushText(n int, text string) {
 		return
 	}
 	it := c.iter(n)
+	firstText := it.content == ""
 	it.content = text
+	if firstText {
+		// 该迭代的正文元素还没进卡片（只有整卡更新会创建元素）→ 先建再写，
+		// 否则这第一段文本会因为没有元素而静默丢失（用户报告：正文/思考"执行完毕才出现"）。
+		if err := c.updateCard(true); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: layout before text failed")
+			return
+		}
+		c.lastCardAt = time.Now()
+	}
 	c.seq++
-	if err := c.setElementContent(streamCardElementID, text, c.seq); err != nil {
+	if err := c.setElementContent(contentElementID(n), text, c.seq); err != nil {
 		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream text push failed")
 		return
 	}
@@ -458,14 +464,18 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 		if it == nil {
 			continue
 		}
-		if it.reasoning != "" {
+		if n == c.current {
+			// 正在流式的迭代：面板/正文元素声明为空，文本只由 CardElement.Content 逐段写
+			//（整卡更新会把文本一次性写满 → 打字机消失）。
+			elements = append(elements, reasoningPanelStreaming(n))
+		} else if it.reasoning != "" {
 			elements = append(elements, reasoningPanel(n, it.reasoning))
 		}
 		// 当前迭代的正文用可流式元素；已完结迭代用普通 markdown。
 		if n == c.current {
 			elements = append(elements, map[string]any{
-				"tag": "markdown", "element_id": streamCardElementID,
-				"content": it.content, "text_size": "normal",
+				"tag": "markdown", "element_id": contentElementID(n),
+				"content": "", "text_size": "normal",
 			})
 		} else if it.content != "" {
 			elements = append(elements, map[string]any{
@@ -486,7 +496,7 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 		// Keep the streaming element present from the very first frame so the
 		// typewriter has somewhere to land.
 		elements = append(elements, map[string]any{
-			"tag": "markdown", "element_id": streamCardElementID, "content": "",
+			"tag": "markdown", "element_id": contentElementID(1), "content": "",
 		})
 	}
 
@@ -553,6 +563,27 @@ func reasoningPanel(n int, reasoning string) map[string]any {
 			},
 		},
 	}
+}
+
+// contentElementID is the streamable element id of iteration n's ANSWER text.
+// Measured 2026-09-14 (SDK path, live API): an element introduced by a whole-card
+// Card.Update IS writable through CardElement.Content (code=0) — so every
+// iteration gets its OWN element and streams independently; no slot pool, no
+// iteration cap is needed.
+func contentElementID(n int) string {
+	return fmt.Sprintf("content_%d", n)
+}
+
+// reasoningPanelStreaming is the streaming twin of reasoningPanel: identical
+// shell, but the inner markdown element is declared EMPTY because while the
+// iteration is in flight its text is owned by CardElement.Content (a full-card
+// update writes text in one shot and would cancel the typewriter).
+func reasoningPanelStreaming(n int) map[string]any {
+	p := reasoningPanel(n, "")
+	p["elements"] = []map[string]any{
+		{"tag": "markdown", "element_id": reasoningElementID(n), "content": "", "text_size": "notation"},
+	}
+	return p
 }
 
 // reasoningElementID is the streamable element id of iteration n's thinking.
@@ -735,6 +766,15 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	}
 	if text == c.lastReasoning || time.Since(c.lastReasonAt) < streamCardMinInterval {
 		return
+	}
+	if n != c.lastReasonIter {
+		// 该迭代的思考面板还没进卡片 → 先整卡更新创建元素，否则这第一段思考写不进去
+		//（元素不存在），面板要等到下一次结构化事件才出现（用户报告："思考执行完毕才出现"）。
+		if err := c.updateCard(true); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: layout before reasoning failed")
+			return
+		}
+		c.lastCardAt = time.Now()
 	}
 	c.seq++
 	if err := c.setElementContent(reasoningElementID(n), text, c.seq); err != nil {
