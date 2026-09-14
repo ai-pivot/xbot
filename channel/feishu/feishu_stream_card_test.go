@@ -23,11 +23,7 @@ import (
 // add_elements 追加出来的元素做 Content，飞书返回 300313（真实 API 探针实测）。
 // 因此这两个 id 是硬契约 —— 必须出现在建卡模板里，且迭代推进时只能复用、不能新建。
 // 测试用字面量钉住它们（而不是引用实现里的常量），这样改名/挪位置会立刻被测出来。
-const (
-	testContentElementID  = "content"
-	testThinkingElementID = "thinking"
-	testThinkingPanelID   = "thinking_panel"
-)
+const ()
 
 // Feishu 错误码（探针实测）。
 const (
@@ -372,18 +368,6 @@ func (f *fakeFeishu) contentCalls() []cardCall {
 	return out
 }
 
-// callsToElement returns the content pushes targeting one element_id.
-func (f *fakeFeishu) callsToElement(elementID string) []cardCall {
-	var out []cardCall
-	suffix := "/elements/" + elementID + "/content"
-	for _, c := range f.snapshot() {
-		if strings.HasSuffix(c.Path, suffix) {
-			out = append(out, c)
-		}
-	}
-	return out
-}
-
 // declaredElements returns the Content whitelist (ids declared by the create
 // template) captured when the card entity was created.
 func (f *fakeFeishu) declaredElements() map[string]bool {
@@ -419,16 +403,6 @@ func (f *fakeFeishu) contentContains(s string) bool {
 	return false
 }
 
-// payloadContains reports whether any batch_update payload contains s.
-func (f *fakeFeishu) payloadContains(s string) bool {
-	for _, p := range f.batchPayload() {
-		if strings.Contains(p, s) {
-			return true
-		}
-	}
-	return false
-}
-
 func (f *fakeFeishu) batchPayload() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -441,12 +415,6 @@ func (f *fakeFeishu) batchAttemptCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.batchAttempts
-}
-
-func (f *fakeFeishu) emptyContentRejections() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.rejectedEmptyContent
 }
 
 // repeatedAddIDs returns the element ids that were appended more than once.
@@ -464,12 +432,6 @@ func (f *fakeFeishu) setFailBatches(m map[int]string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failBatches = m
-}
-
-func (f *fakeFeishu) setFailAllContent(v bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failAllContent = v
 }
 
 // sawPanelTitle reports whether some request carried a thinking-panel header
@@ -514,38 +476,6 @@ func fastStreamCard(t *testing.T) {
 	})
 }
 
-// mapElements accepts both builder output ([]map[string]any) and decoded JSON
-// ([]any).
-func mapElements(t *testing.T, v any) []map[string]any {
-	t.Helper()
-	switch raw := v.(type) {
-	case []map[string]any:
-		return raw
-	case []any:
-		out := make([]map[string]any, 0, len(raw))
-		for _, e := range raw {
-			m, ok := e.(map[string]any)
-			if !ok {
-				t.Fatalf("element is not an object: %T", e)
-			}
-			out = append(out, m)
-		}
-		return out
-	default:
-		t.Fatalf("not an element array: %T", v)
-		return nil
-	}
-}
-
-func cardElements(t *testing.T, card map[string]any) []map[string]any {
-	t.Helper()
-	body, _ := card["body"].(map[string]any)
-	if body == nil {
-		t.Fatal("card has no body")
-	}
-	return mapElements(t, body["elements"])
-}
-
 func panelTitle(panel map[string]any) string {
 	hdr, _ := panel["header"].(map[string]any)
 	if hdr == nil {
@@ -557,18 +487,6 @@ func panelTitle(panel map[string]any) string {
 	}
 	s, _ := title["content"].(string)
 	return s
-}
-func elementIDsOf(t *testing.T, card map[string]any) map[string]bool {
-	t.Helper()
-	raw, err := json.Marshal(card)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := map[string]bool{}
-	for _, id := range collectElementIDs(string(raw)) {
-		ids[id] = true
-	}
-	return ids
 }
 
 func TestRenderCard_FinalDisablesStreaming(t *testing.T) {
