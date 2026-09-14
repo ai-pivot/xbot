@@ -69,12 +69,6 @@ const (
 	// streamCardToolHeaderRunes bounds the collapsed tool-panel header to ONE
 	// short line (the full text goes to the expanded body).
 	streamCardToolHeaderRunes = 16
-	// streamCardMaxIterations bounds how many iterations the card renders. Feishu
-	// cards cap at ~50 elements (11310 "element exceeds the limit") and each
-	// iteration costs 2-3 panels => an unbounded card FREEZES mid-turn once the
-	// limit is hit (user report 2026-09-14: "更新到一定迭代之后不继续更新卡片了").
-	// Older iterations collapse into a single summary line.
-	streamCardMaxIterations = 2
 	// streamCardToolBodyBytes bounds the expanded tool body.
 	streamCardToolBodyBytes = 1200
 )
@@ -465,16 +459,11 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 	sort.Ints(nums)
 
 	elements := make([]map[string]any, 0, len(nums)*3)
-	// 元素预算：只渲染最近 streamCardMaxIterations 个迭代（卡片有 ~50 元素上限，
-	// 超限后整卡更新会被拒 → 卡片冻结）。更早的迭代压成一行汇总。
-	if len(nums) > streamCardMaxIterations {
-		older := len(nums) - streamCardMaxIterations
-		nums = nums[len(nums)-streamCardMaxIterations:]
-		elements = append(elements, map[string]any{
-			"tag": "markdown", "text_size": "notation",
-			"content": fmt.Sprintf("… 更早的 %d 个迭代（飞书卡片元素有上限，仅展示最近 %d 个）",
-				older, streamCardMaxIterations),
-		})
+	// 卡片**只渲染当前迭代**（用户 2026-09-14：「每次都只渲染最后一个迭代」「一旦到下一个迭代
+	// 就不展示上一个迭代了」）。上一迭代的内容随新迭代的整卡更新一起消失；元素数因此恒定
+	// （≈ 思考面板 + 工具面板 + 正文），与 turn 长度无关 —— 飞书卡片元素上限（~50 / 11310）撞不到。
+	if c.current > 0 {
+		nums = []int{c.current}
 	}
 	for _, n := range nums {
 		it := c.iters[n]
@@ -482,16 +471,9 @@ func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
 			continue
 		}
 		if n == c.current && streaming {
-			// 正在流式的迭代：面板/正文元素声明为空，文本只由 CardElement.Content 逐段写
-			//（整卡更新会把文本一次性写满 → 打字机消失）。还没有思考正文时不渲染
-			//「思考 0 字」空面板，直接给一行「思考中…」（用户 2026-09-14）。
-			if it.reasoning != "" {
-				elements = append(elements, reasoningPanelStreaming(n))
-			} else {
-				elements = append(elements, map[string]any{
-					"tag": "markdown", "text_size": "notation", "content": "💭 思考中…",
-				})
-			}
+			// 流式期间：内层元素为空（思考文本由 CardElement.Content 逐段写 = 打字机），
+			// 折叠态标题固定「💭 思考中」而不是「思考 N 字」（用户 2026-09-14）。
+			elements = append(elements, reasoningPanelStreaming(n))
 		} else if it.reasoning != "" {
 			elements = append(elements, reasoningPanel(n, it.reasoning))
 		}
@@ -606,6 +588,13 @@ func contentElementID(n int) string {
 // update writes text in one shot and would cancel the typewriter).
 func reasoningPanelStreaming(n int) map[string]any {
 	p := reasoningPanel(n, "")
+	// 折叠态标题固定显示「思考中」（用户 2026-09-14：「stream 的时候展开前显示思考中」）。
+	if hdr, ok := p["header"].(map[string]any); ok {
+		hdr["title"] = map[string]any{
+			"tag": "plain_text", "content": "💭 思考中",
+			"text_color": "grey", "text_size": "notation",
+		}
+	}
 	p["elements"] = []map[string]any{
 		{"tag": "markdown", "element_id": reasoningElementID(n), "content": "", "text_size": "notation"},
 	}

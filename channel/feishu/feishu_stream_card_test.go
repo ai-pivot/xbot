@@ -248,6 +248,9 @@ func cardElements(t *testing.T, card map[string]any) []map[string]any {
 
 // 用户要求（2026-09-13）：无花哨 header；每个迭代按 T(思考折叠) → O(正文) → C(工具)
 // 排列。
+// TestRenderCard_PerIterationLayout — 卡片**只渲染当前迭代**（用户 2026-09-14：
+// 「每次都只渲染最后一个迭代」「一旦到下一个迭代就不展示上一个迭代了」）。这也让卡片元素数
+// 恒定，永不撞飞书卡片元素上限（~50 / 11310 —— 撞线后整卡更新被拒 = 卡片冻结）。
 func TestRenderCard_PerIterationLayout(t *testing.T) {
 	c := &feishuStreamCard{iters: map[int]*streamIteration{}}
 
@@ -269,65 +272,40 @@ func TestRenderCard_PerIterationLayout(t *testing.T) {
 	}
 
 	elems := cardElements(t, card)
-	if len(elems) != 5 {
-		t.Fatalf("elements: got %d, want 5 (think1, text1, tool1, think2, text2)", len(elems))
+	if len(elems) != 2 {
+		t.Fatalf("card must render ONLY the current iteration; got %d elements: %v", len(elems), elems)
 	}
-
-	// Iteration 1: thinking panel → content → tool row.
+	// 上一个迭代的任何内容都不得出现（思考/正文/工具都不再渲染）。
+	for _, e := range elems {
+		if c, _ := e["content"].(string); strings.Contains(c, "answer one") || strings.Contains(c, "think one") {
+			t.Fatalf("previous iteration must not be rendered: %v", e)
+		}
+	}
+	// 当前迭代的思考面板：流式中标题为「思考中」，内层元素空、id = think_2（Content 逐段写）。
 	if elems[0]["tag"] != "collapsible_panel" {
-		t.Errorf("elem0: got %v, want collapsible_panel (thinking)", elems[0]["tag"])
+		t.Fatalf("elem0 must be the thinking panel, got %v", elems[0]["tag"])
 	}
-	if title := panelTitle(elems[0]); !strings.Contains(title, "思考") {
-		t.Errorf("thinking title: got %q", title)
+	if title := panelTitle(elems[0]); !strings.Contains(title, "思考中") {
+		t.Errorf("streaming thinking title must read 思考中: %q", title)
 	}
-	// The thinking panel owns its own streamable element (thinking streams
-	// independently of the answer text).
 	thinkElems := mapElements(t, elems[0]["elements"])
-	if thinkElems[0]["element_id"] != reasoningElementID(1) {
-		t.Errorf("thinking element id: got %v, want %s", thinkElems[0]["element_id"], reasoningElementID(1))
+	if thinkElems[0]["element_id"] != reasoningElementID(2) {
+		t.Errorf("thinking element id: got %v, want %s", thinkElems[0]["element_id"], reasoningElementID(2))
 	}
-	if elems[1]["content"] != "answer one" {
-		t.Errorf("elem1 content: got %v", elems[1]["content"])
+	if thinkElems[0]["content"] != "" {
+		t.Errorf("in-flight thinking element must be declared empty: %q", thinkElems[0]["content"])
 	}
-	// 工具与思考**同款**：每个工具一个可折叠面板（用户 2026-09-14：
-	// 「注意工具要类似思考的样式可用展开」）。
-	if elems[2]["tag"] != "collapsible_panel" {
-		t.Fatalf("tool must render as a collapsible panel, got %v", elems[2]["tag"])
+	// 当前迭代的正文流式元素：声明为空（文本由 Content 写，整卡写满会取消打字机）。
+	if elems[1]["element_id"] != contentElementID(2) {
+		t.Errorf("current iteration must own its streaming element: %v", elems[1]["element_id"])
 	}
-	hdr, _ := elems[2]["header"].(map[string]any)
-	title, _ := hdr["title"].(map[string]any)
-	titleText, _ := title["content"].(string)
-	if !strings.Contains(titleText, "ls -la") {
-		t.Errorf("tool panel header title should carry the command: %q", titleText)
-	}
-	body := ""
-	if els, _ := elems[2]["elements"].([]map[string]any); len(els) > 0 {
-		body, _ = els[0]["content"].(string)
-	}
-	if !strings.Contains(body, "ls -la") {
-		t.Errorf("tool panel body should carry the detail: %q", body)
-	}
-
-	// Iteration 2: thinking panel → the STREAMING content element.
-	if elems[3]["tag"] != "collapsible_panel" {
-		t.Errorf("elem3: got %v, want collapsible_panel", elems[3]["tag"])
-	}
-	// 每个迭代拥有**自己的**流式元素（实测 2026-09-14：整卡 Update 新增的元素 Content 可写
-	// ⇒ 无需槽位池、无迭代上限）。进行中的迭代在整卡里声明为空 —— 文本只由
-	// CardElement.Content 逐段写，整卡更新一次写满会让打字机消失。
-	if elems[4]["element_id"] != contentElementID(2) {
-		t.Errorf("current iteration must own its streaming element: %v", elems[4]["element_id"])
-	}
-	if elems[4]["content"] != "" {
-		t.Errorf("in-flight element must be declared empty (Content owns the text): %q", elems[4]["content"])
+	if elems[1]["content"] != "" {
+		t.Errorf("in-flight content element must be declared empty: %q", elems[1]["content"])
 	}
 
 	config, _ := card["config"].(map[string]any)
 	if config["streaming_mode"] != true {
 		t.Errorf("streaming_mode: got %v", config["streaming_mode"])
-	}
-	if config["update_multi"] != true {
-		t.Error("update_multi must stay true (content API rejects exclusive cards)")
 	}
 }
 
