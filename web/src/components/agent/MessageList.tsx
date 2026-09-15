@@ -366,7 +366,7 @@ export const MessageList = memo(function MessageList({
   // 它记的是"还欠用户一次视口补偿"，只有补偿成功（或视口已被别处移动）才销账。
   // 绝不能在补偿成功前清掉（旧实现先清后判 delta<=0，等于白清），也绝不能拿它
   // 当触发守卫（长 turn 的页 delta 恒为 0 → 会把分页永久锁死）。
-  const loadMoreRestoreRef = useRef<{ scrollTop: number; totalSize: number } | null>(null)
+  const loadMoreRestoreRef = useRef<{ scrollTop: number; totalSize: number; deadline: number } | null>(null)
   // observer 回调必须读到**最新**的 loading/hasMore/onLoadMore/virtualizer，但这些
   // 值每次渲染都变（onLoadMore 的 useCallback deps 含 loadingMore/hasMore，身份每
   // 次 loading 翻转都变）—— 一旦进 effect deps，observer 就会反复重建，而**新建
@@ -812,6 +812,8 @@ export const MessageList = memo(function MessageList({
         loadMoreRestoreRef.current = {
           scrollTop: scroller.scrollTop,
           totalSize: virtualizerRef.current.getTotalSize(),
+          // 补偿窗口：覆盖"前置行从估算被实测"的那几次长高（约几百 ms）
+          deadline: performance.now() + 800,
         }
         void cb()
       },
@@ -838,12 +840,17 @@ export const MessageList = memo(function MessageList({
       loadMoreRestoreRef.current = null
       return
     }
-    const delta = virtualizerRef.current.getTotalSize() - snap.totalSize
+    const total = virtualizerRef.current.getTotalSize()
+    const delta = total - snap.totalSize
     if (delta <= 0) return // 上方还没长出来：欠着，等下一次（不放弃，也不销账）
-    loadMoreRestoreRef.current = null
     programmaticScrollRef.current = true
     el.scrollTop = snap.scrollTop + delta
     queueMicrotask(() => { programmaticScrollRef.current = false })
+    // ⚠️ **补偿后继续欠着**（2026-09-15「翻页时已渲染内容抖动」根治）：
+    // prepend 落地那一刻前置行还是**估算**高度，随后被实测 ⇒ 总高**再次**变化 ⇒ 只补一次的
+    // 旧实现会把这段二次长高留给浏览器 ⇒ 位置二次跳。改为把快照**平移到新基准**并保留，
+    // 让后续每一次长高都继续补偿；只在「用户自己滚动」（非程序滚动）或超时后才销账。
+    loadMoreRestoreRef.current = { scrollTop: el.scrollTop, totalSize: total, deadline: snap.deadline }
   }, [])
 
   useLayoutEffect(() => {
