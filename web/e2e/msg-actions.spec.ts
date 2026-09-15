@@ -125,6 +125,15 @@ test.describe('复制入口（右键 / 长按）', () => {
     await expect(sheet).toContainText('复制：WebSearch 今日重要新闻')
     const box = await sheet.locator('button').first().boundingBox()
     expect(box && box.height >= 44).toBeTruthy()
+    // ⚠️ 回归守护（2026-09-15 我自己截图发现的缺陷）：面板必须**贴在视口底部**，
+    // 而不是渲染在对话流中间（根因：虚拟行带 transform ⇒ fixed 相对该行定位，
+    // 且 .virt-row{contain:layout} 会裁剪）。修法是 portal 到 document.body。
+    const sheetBox = await sheet.boundingBox()
+    const vh = page.viewportSize()?.height ?? 844
+    expect(sheetBox, 'sheet must have a box').toBeTruthy()
+    expect(sheetBox!.y + sheetBox!.height, 'sheet 必须贴住视口底部').toBeGreaterThan(vh - 24)
+    // 面板要列出**全部**候选（2 个工具 + 全部输出），不能被裁剪成一行
+    expect(await sheet.locator('button').count()).toBe(3)
     await page.screenshot({ path: `${SHOTS}/mobile-sheet.png`, fullPage: true })
     await ctx.close()
   })

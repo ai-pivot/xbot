@@ -8,6 +8,7 @@
  * 保证"只要这条消息/迭代/工具可渲染就一定复制得到内容"（iterations-only 的回复也能复制）。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { ChatMessage, WebIteration, WebToolProgress } from '@/types/shared'
 
 export type CopyVariant = 'reply' | 'thinking' | 'tools' | 'raw'
@@ -209,14 +210,17 @@ export function CopyTarget({
       >
         {children}
       </div>
-      {open && items.length > 0 && (
-        <CopyMenu
-          x={open.x}
-          y={open.y}
-          items={items}
-          onPick={(text) => void copy(text)}
-        />
-      )}
+      {open &&
+        items.length > 0 &&
+        typeof document !== 'undefined' &&
+        // ⚠️ 必须 portal 到 body：虚拟行带 `transform: translateY(...)`，会把它内部的
+        // `position: fixed` 变成**相对该行**定位；再叠加 `.virt-row{contain:layout}` /
+        // `.iter-block{contain:layout paint}` 的裁剪 ⇒ 面板跑到对话中间且只露出一行
+        //（2026-09-15 我自己截图发现的缺陷）。
+        createPortal(
+          <CopyMenu x={open.x} y={open.y} items={items} onPick={(text) => void copy(text)} />,
+          document.body,
+        )}
     </>
   )
 }
