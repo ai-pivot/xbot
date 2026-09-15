@@ -604,4 +604,17 @@ describe('MessageStore — mergeHistory 幂等（切会话闪烁根治）', () =
     s.mergeHistory([assistantRow(7, 'partial + more')], { replace: true, watermark: 0 })
     expect(notified, '内容变化必须通知').toBeGreaterThan(0)
   })
+
+  it('【严重回归】committed 内容相同但 **user 行回填** 必须通知（否则 user msg 不渲染）', () => {
+    const s = new MessageStore()
+    // 第一次：DB 快照只有 assistant 行（user 行缺失/尚未回填的现场）
+    s.mergeHistory([assistantRow(7, 'reply')], { replace: true, watermark: 0 })
+    let notified = 0
+    s.subscribe(() => { notified++ })
+    // 第二次：同一 turn 的 **user 行** 到达（assistant 内容逐字节相同）——
+    // 渲染行集变了 ⇒ 必须通知（内部结构指纹曾漏掉这一点 ⇒ user msg 不渲染）
+    s.mergeHistory([user('u1', 'hi', 7), assistantRow(7, 'reply')], { replace: true, watermark: 0 })
+    expect(notified, 'user 行回填必须通知（渲染行集变化）').toBeGreaterThan(0)
+    expect(s.toRows().some((r) => r.role === 'user'), 'user 行必须在渲染行里').toBe(true)
+  })
 })
