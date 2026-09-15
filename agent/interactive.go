@@ -2358,6 +2358,7 @@ func (a *Agent) InspectInteractiveSession(
 		if ia.running {
 			fmt.Fprintf(&sb, "\n_One-shot subagent is executing..._\n")
 		}
+		sb.WriteString(tools.PollingHint)
 		return sb.String(), nil
 	}
 
