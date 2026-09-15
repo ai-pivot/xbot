@@ -55,6 +55,8 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
   // ③ 行级失败告警
   await expect(page.locator('[data-testid="tool-group-failed"]').first()).toContainText('失败')
 
+  // 截图仅供人工/多模态复核；注意 mock 流程下 `historyReady` 不会翻转，面板仍显示 loading 遮罩
+  //（移除 DOM 节点无效 —— React 会重渲染）。视觉契约以**上面的断言**为准；真会话截图待服务端重启后补。
   await page.screenshot({ path: '/tmp/pillvis/desktop.png', fullPage: true })
   await ctx.close()
 })
