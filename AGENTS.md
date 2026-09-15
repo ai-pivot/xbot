@@ -670,6 +670,10 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 - **长时后台/锁屏恢复必须强制整屏重载（带 loading），不能只靠 SSE 增量追赶**（用户 2026-09-15：「手机锁屏半天再打开不会触发会话重新加载，SSE 追到最新但过程剧烈抖动 —— 不如展示 loading 屏幕」）。聊天 hook 里**原本没有任何 visibility/resume 触发器**（`visibilitychange` 只在 git-fancy 插件与 `useSessionStore` 的 HTTP 对账里）⇒ 恢复可见后只有 SSE 环缓冲重放 + live 反复改写 = 抖动。修法（`AgentPanel`）：`visibilitychange` 记录隐藏时刻，**隐藏 > 60s** 恢复可见时 `setResumeLoading(true)` + `reloadChat()`（DB 权威历史整屏重载），重载完成且已有消息后收起 loading；**< 60s 的短暂切走不重载**（避免打断正常使用）。守护：`src/workspace/panels/AgentPanel.test.tsx` + `src/components/agent/MessageList.test.tsx`（39 用例）。
 
+## `view_image` 任意路径可读（可读根目录白名单已删）
+
+- **2026-09-15 用户指令**：「把这个删了，哪里的都允许读」（现场报错 `path .shots/desktop.png is outside the readable roots (workspace, working dir, view_images)`）。`tools/view_image.go` 的 `readLocal` 原先只允许 **workspace root / working dir / view_images / `ctx.ReadOnlyRoots`** 下的路径，其余一律拒绝 —— 结果 agent **看不到自己刚截的图**（/tmp、别的仓库、别的会话目录全被挡）。现已删除该白名单：相对路径仍按 `ctx.WorkingDir` 解析，**任意绝对路径可读**；**非图片仍必须被拒**（与路径无关，由图片解码/类型判定保证）。连带删除失去消费者的 `isSubPath`。守护用例：`tools/view_image_test.go` 的 `TestViewImage_OutsidePathReadable`（workspace 外绝对路径必须可读 + `../../etc/passwd` 仍被拒）。
+
 ## 工具必须立刻返回（禁止无界等待）
 
 - **`send_message`（agent 目标）与 `SubAgent(action="send")`（run 中排队）必须立刻成功**（用户 2026-09-14：「这两个工具都必须立刻成功」）。两者都只在**短窗口**内顺手拿 ack：`tools/limits.go` 的 `SendMessageAwaitReply`(2s) 与 `agent/interactive.go` 的 `subAgentSendAckWait`(3s)；超时即返回"已投递/已入队"，**投递在后台继续** —— 用 `context.WithoutCancel(baseCtx)` + 上限 ctx，**绝不用工具 ctx**（工具返回后它会被取消），SubAgent 的消息**留在 `pendingMessages`**（下次迭代间隙照旧投递）。旧行为：agent 目标等满 `AgentRPCTimeout`=30s（目标忙即卡死）；SubAgent 排队**无限**等 drain ack（子代理长跑工具时调用方永不返回）。守护用例：`tools/send_message_test.go` 的 `TestSendToAgent_DoesNotBlockOnUnresponsiveTarget`（目标 `SendMessageCtx` 永久阻塞 ⇒ 工具 3s 内必须成功返回）。
