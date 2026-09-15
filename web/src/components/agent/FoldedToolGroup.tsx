@@ -40,7 +40,10 @@ const PILL_INLINE_MAX = 8
 const PILL_INLINE_HEAD = 7
 
 /** 合并组 pill 行容器（div——行本身不是 trigger，pill 各自独立 Popover）。 */
-const ROW_ROW_CLASS = 'flex w-full flex-wrap items-center gap-2 px-0.5 py-1 text-xs'
+// ⚠️ 不能带 `w-full`：pill 行是 `flex-col` 里的**兄弟**，`w-full` 会让它另起一行，
+// 于是 `N 失败` chip 孤零零占一行（用户 2026-09-15：「失败单独一行也很丑」）。
+// `min-w-0 flex-1` 让它占据剩余宽度（pills 才能在其中 wrap），chip 与它同行。
+const ROW_ROW_CLASS = 'flex min-w-0 flex-1 flex-wrap items-center gap-2 px-0.5 py-1 text-xs'
 
 /** 浮层样式（设计稿 1:1）：固定深色玻璃底 + 大阴影；宽 430px、内部滚动。
  *  覆盖 ui/popover 默认的 w-72/rounded-md/bg-popover/p-4/shadow-md。 */

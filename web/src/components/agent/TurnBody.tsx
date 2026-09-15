@@ -52,16 +52,7 @@
  *      （否则永远量不到高度）；jsdom / 无 IO+RO 环境退化为全量渲染（分块/复用
  *      逻辑照常生效，只是永不 muted）。
  */
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useReducer,
-  useRef,
-  useState,
-  type ReactElement,
-} from 'react'
+import { memo, type ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 import { IterationGroup } from './IterationHistory'
 import { LiveIteration } from './LiveIteration'
@@ -744,6 +735,27 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   return <>{chunks}</>
 })
 
+
+/** 连续「只有工具」的迭代合并成一个渲染块。
+ *  用户 2026-09-15：「连续 tool 可能跨越迭代边界，这种也要折叠，不能一个一行」——
+ *  每个迭代各渲染一个 pill 行 ⇒ 连续 N 个 tool-only 迭代 = N 行（这正是"一行一个"的真根因，
+ *  与 CSS 宽度无关）。合并后它们共享**同一个 wrap 行**，pill 照旧各自独立（点击展开各自详情）。 */
+function mergeToolOnlyRuns(iters: WebIteration[]): WebIteration[] {
+  const toolOnly = (it: WebIteration) => it.tools.length > 0 && !it.content && !it.reasoning
+  const out: WebIteration[] = []
+  for (let i = 0; i < iters.length; i++) {
+    const it = iters[i]
+    if (!toolOnly(it)) { out.push(it); continue }
+    let j = i
+    const tools = [...it.tools]
+    while (j + 1 < iters.length && toolOnly(iters[j + 1])) { j++; tools.push(...iters[j].tools) }
+    // 保留**首个**迭代号（高度缓存/窗口 key 稳定）；连续区间内其余迭代号不再单独成块。
+    out.push(j === i ? it : { ...it, tools })
+    i = j
+  }
+  return out
+}
+
 export const TurnBody = memo(function TurnBody({
   iterations,
   liveProgress,
@@ -757,6 +769,9 @@ export const TurnBody = memo(function TurnBody({
   const scan = extendContiguous(scanRef.current, iterations)
   scanRef.current = scan
   const contiguous = scan.out
+  // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
+  // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
+  const merged = useMemo(() => mergeToolOnlyRuns(contiguous), [contiguous])
 
   return (
     <div
@@ -768,7 +783,7 @@ export const TurnBody = memo(function TurnBody({
       }
       data-iter-total={contiguous.length}
     >
-      <CommittedTurn contiguous={contiguous} turnID={turnID} heightScope={heightScope} />
+      <CommittedTurn contiguous={merged} turnID={turnID} heightScope={heightScope} />
       {liveProgress && (
         <div
           className="iter-block"

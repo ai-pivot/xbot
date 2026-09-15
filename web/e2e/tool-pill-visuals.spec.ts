@@ -39,7 +39,12 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   const page = await ctx.newPage()
   await setupMock(page, [{ id: 1, role: 'user', content: 'run check', timestamp: new Date().toISOString(), turn_id: 1 }, ASSISTANT])
-  await page.goto('/')
+  // 与同文件其它用例统一：**真登录**后才落进 agent 视图（`goto('/')` 在 mock 下不一定渲染）
+  await page.goto(`${BASE}/login`)
+  await page.locator('input').first().fill('test')
+  await page.locator('input[type="password"]').fill('test')
+  await page.locator('button[type="submit"]').click()
+  await page.waitForSelector('[data-testid="tool-pill"]', { timeout: 30000 })
 
   // ① 失败 pill：data-tool-status=error 且带「失败」标签
   const errPill = page.locator('[data-tool-status="error"]').first()
@@ -134,5 +139,72 @@ test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ b
     expect(Math.max(...vals) - Math.min(...vals), `${key} 列偏移必须一致（实测 ${JSON.stringify(vals)}）`).toBeLessThanOrEqual(1)
   }
   await page.screenshot({ path: '/tmp/pillvis/mobile-row.png', fullPage: true })
+  await ctx.close()
+})
+
+/**
+ * 用户 2026-09-15：「现在还是一个工具一行」+「连续 tool 可能跨越迭代边界，这种也要折叠」。
+ * 真根因：`IterationGroup` **逐迭代**渲染 pill 行 ⇒ 连续 N 个 tool-only 迭代 = N 行。
+ * 本用例 = 该现场（7 个连续 tool-only 迭代、每个 1 个工具、1 个失败）：
+ *   A. **行数必须远小于工具数**（跨迭代折叠生效）——修复前 rows === 7（红）。
+ *   B. **失败 chip 与 pill 同一行**（`N 失败` 不能独占一行）。
+ */
+test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const page = await ctx.newPage()
+  const ts = new Date().toISOString()
+  const T = (name: string, label: string, status = 'done') => ({ name, label, status, summary: 'ok', detail: 'ok' })
+  await setupMock(page, [
+    { id: 1, role: 'user', content: 'run', timestamp: ts, turn_id: 1 },
+    { id: 2, role: 'assistant', content: '', timestamp: ts, turn_id: 1, iterations: [
+      { iteration: 1, content: '', thinking: '', tools: [T('Shell', 'cd /home/smith/src/xbot && cargo check --workspace')] },
+      { iteration: 2, content: '', thinking: '', tools: [T('Shell', 'cd /home/smith/src/xbot && cargo test --workspace')] },
+      { iteration: 3, content: '', thinking: '', tools: [T('task_status', '{"task_id": ["3f8f492a"]}')] },
+      { iteration: 4, content: '', thinking: '', tools: [T('task_status', '{"task_id": ["aaaaaaaa"]}')] },
+      { iteration: 5, content: '', thinking: '', tools: [T('task_read', '{"task_id": ["3f8f492a"]}', 'error')] },
+      { iteration: 6, content: '', thinking: '', tools: [T('Shell', 'ls -la')] },
+      { iteration: 7, content: '', thinking: '', tools: [T('Shell', 'pwd')] },
+    ] },
+  ])
+  await page.goto(`${BASE}/login`)
+  await page.locator('input').first().fill('test')
+  await page.locator('input[type="password"]').fill('test')
+  await page.locator('button[type="submit"]').click()
+  await page.waitForSelector('[data-testid="tool-pill"]', { timeout: 30000 })
+  await page.waitForTimeout(800)
+
+  const geo = await page.evaluate(() => {
+    const R = (n: number) => Math.round(n)
+    const pills = Array.from(document.querySelectorAll('[data-testid="tool-pill"]'))
+    const rows = Array.from(document.querySelectorAll('[data-testid="tool-pill-row"]'))
+    const fail = document.querySelector('[data-testid="tool-group-failed"]')
+    const pillRow = rows[0] as HTMLElement | undefined
+    return {
+      pills: pills.length,
+      rows: rows.length,
+      distinctPillY: new Set(pills.map((p) => R(p.getBoundingClientRect().y))).size,
+      // 用**上下边界**判"同行"：flex `items-center` 下不同高度的元素顶端不同（截图实测
+      // chip top=192 / 同行 pill top=202），"top 相等"是错的判据 —— 必须是**垂直重叠**。
+      pillBands: pills.map((p) => { const b = p.getBoundingClientRect(); return [R(b.top), R(b.bottom)] }),
+      chipBand: (() => { const b = fail?.getBoundingClientRect(); return b ? [R(b.top), R(b.bottom)] : null })(),
+      failChipY: fail ? R(fail.getBoundingClientRect().y) : null,
+      rowY: pillRow ? R(pillRow.getBoundingClientRect().y) : null,
+    }
+  })
+  console.log('CROSS_GEO=' + JSON.stringify(geo))
+  await page.screenshot({ path: '/tmp/cross-iter.png', fullPage: true })
+
+  expect(geo.pills, '7 个工具都要有 pill').toBeGreaterThanOrEqual(7)
+  // A. 跨迭代折叠：行数必须远小于工具数（修复前 = 7 行）
+  expect(geo.rows, `pill 行数必须折叠（rows=${geo.rows}）`).toBeLessThanOrEqual(2)
+  expect(geo.distinctPillY, `pill 的 y 值必须收敛（y 数=${geo.distinctPillY}）`).toBeLessThanOrEqual(3)
+  // B. 失败 chip 与 pill 同一行（且不能独占一行）
+  expect(geo.failChipY, '失败 chip 必须渲染').not.toBeNull()
+  // ⚠️ 判据是「chip 与**某个 pill** 同行」而不是「chip 与行容器 y 相同」：chip 是 flex 行里
+  // 换行后那一行的**首项**，其 y 与容器顶部天然相差行高（截图实测 chip=192 / row=170）。
+  // 修复前 chip 在**自己的 flex 容器**里（独占一行，与任何 pill 都不同 y）。
+  const chip = geo.chipBand as [number, number] | null
+  const sharesRow = !!chip && (geo.pillBands as [number, number][]).some(([t, b]) => chip[0] < b - 2 && chip[1] > t + 2)
+  expect(sharesRow, `失败 chip 必须与某个 pill **同一视觉行**（垂直重叠；chip=${JSON.stringify(chip)} pillBands=${JSON.stringify(geo.pillBands)}）`).toBe(true)
   await ctx.close()
 })
