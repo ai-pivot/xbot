@@ -677,6 +677,8 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 - **切会话窗口期：history 未就绪 ⇒ 渲染 loading 屏幕，不要先给"只有 live"的画面**（用户 2026-09-15：「切换一个 busy session，会有几秒只能看到 live iter，过了很久历史才出来，这是不对的」）。新渲染管线（`web/src/chat/useAgentChatState.ts`）**只 gate 了历史派发**（`if (!historyReady) return`），live 事件仍即时归约进 store ⇒ 若渲染层不加闸门，切到 busy 会话的瞬间 rows 就只有 in-flight 的 live turn，要等 `fetchHistory` 落地才补齐。修法（`AgentPanel`）：`chat.historyReady === false` 时渲染 loading 屏幕（spinner，`data-testid="session-loading-screen"`）代替 `MessageList`；**严格 `=== false`**（undefined/测试 mock 视为就绪，避免 loading 常驻）。注意与既有约定区分：**不得**用 `chat.loading` 做这个闸门（reload 也会置 loading，而 live 在 reload 期间必须继续可见）。
 
+- **⚠️ loading 屏幕只在「确实有会话、历史尚未到达」时遮挡面板 —— 无会话时必须交出输入区**（2026-09-15 CI 事故）：`AgentPanel` 的闸门必须是 `(chat.historyReady === false && !!chatID) || resumeLoading`，**不能**只判 `historyReady`。原因：全新环境（E2E 的 fresh XBOT_HOME / 新用户）里会话树为空、`chatID` 为空，`historyReady` 恒为 false ⇒ 若只判 `historyReady`，面板会被 `Loading…` **永久盖住**，用户既看不到 "No sessions yet" 空状态、也无法输入/发送 ⇒ CI 的 `chat.spec` "should show user message after sending" 必红（Playwright 快照里侧栏是 `No sessions yet — create one from the top-right`、面板只有 `Loading…`）。
+
 - **长时后台/锁屏恢复必须强制整屏重载（带 loading），不能只靠 SSE 增量追赶**（用户 2026-09-15：「手机锁屏半天再打开不会触发会话重新加载，SSE 追到最新但过程剧烈抖动 —— 不如展示 loading 屏幕」）。聊天 hook 里**原本没有任何 visibility/resume 触发器**（`visibilitychange` 只在 git-fancy 插件与 `useSessionStore` 的 HTTP 对账里）⇒ 恢复可见后只有 SSE 环缓冲重放 + live 反复改写 = 抖动。修法（`AgentPanel`）：`visibilitychange` 记录隐藏时刻，**隐藏 > 60s** 恢复可见时 `setResumeLoading(true)` + `reloadChat()`（DB 权威历史整屏重载），重载完成且已有消息后收起 loading；**< 60s 的短暂切走不重载**（避免打断正常使用）。守护：`src/workspace/panels/AgentPanel.test.tsx` + `src/components/agent/MessageList.test.tsx`（39 用例）。
 
 ## `view_image` 任意路径可读（可读根目录白名单已删）
