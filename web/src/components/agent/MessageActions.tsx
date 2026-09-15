@@ -140,22 +140,9 @@ export function CopyTarget({
   )
   const press = useLongPress(openAt)
 
-  useEffect(() => {
-    if (!open) return
-    const close = () => setOpen(null)
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close()
-    }
-    window.addEventListener('click', close)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
+  // ⚠️ 不使用任何全局 window 监听（仓库规则：per-session 代码禁止全局监听，防跨会话污染）。
+  // 关闭方式改为纯 React：① 菜单底下铺一层**透明遮罩**，点它即关闭；
+  // ② 菜单自身 onKeyDown 处理 Esc（菜单挂载时自动聚焦）。
   const copy = useCallback(async (text: string) => {
     if (!text) return
     try {
@@ -218,7 +205,20 @@ export function CopyTarget({
         // `.iter-block{contain:layout paint}` 的裁剪 ⇒ 面板跑到对话中间且只露出一行
         //（2026-09-15 我自己截图发现的缺陷）。
         createPortal(
-          <CopyMenu x={open.x} y={open.y} items={items} onPick={(text) => void copy(text)} />,
+          <>
+            {/* 透明遮罩：点任意处关闭（替代 window click 监听）。 */}
+            <div
+              data-testid="copy-backdrop"
+              className="fixed inset-0 z-40"
+              onMouseDown={() => setOpen(null)}
+              onWheel={() => setOpen(null)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                setOpen(null)
+              }}
+            />
+            <CopyMenu x={open.x} y={open.y} items={items} onPick={(text) => void copy(text)} onClose={() => setOpen(null)} />
+          </>,
           document.body,
         )}
     </>
@@ -231,12 +231,21 @@ function CopyMenu({
   y,
   items,
   onPick,
+  onClose,
 }: {
   x: number
   y: number
   items: Array<{ label: string; text: string }>
   onPick: (text: string) => void
+  onClose?: () => void
 }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    ref.current?.focus()
+  }, [])
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') onClose?.()
+  }
   const [sheet] = useState(() => {
     try {
       return window.matchMedia('(max-width: 640px), (hover: none)').matches
@@ -247,8 +256,11 @@ function CopyMenu({
   if (sheet) {
     return (
       <div
+        ref={ref}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
         data-testid="copy-sheet"
-        className="fixed inset-x-0 bottom-0 z-50 rounded-t-xl border-t border-border bg-bg-secondary p-2 pb-3 shadow-2xl"
+        className="fixed inset-x-0 bottom-0 z-50 rounded-t-xl border-t border-border bg-bg-secondary p-2 pb-3 shadow-2xl focus:outline-none"
       >
         {items.map((it) => (
           <button
@@ -270,9 +282,12 @@ function CopyMenu({
   const top = Math.min(y, Math.max(8, window.innerHeight - (items.length * 34 + 16)))
   return (
     <div
+      ref={ref}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
       data-testid="copy-menu"
       style={{ left, top }}
-      className="fixed z-50 w-52 overflow-hidden rounded-lg border border-border bg-bg-secondary py-1 shadow-xl"
+      className="fixed z-50 w-52 overflow-hidden rounded-lg border border-border bg-bg-secondary py-1 shadow-xl focus:outline-none"
     >
       {items.map((it) => (
         <button
