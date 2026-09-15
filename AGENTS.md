@@ -664,6 +664,15 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 - **历史加载时间曾随 turn 的迭代数线性增长**（用户 2026-09-15：「加载时间这么久，能优化吗？是不是如果 busy turn 的 iter 数量非常多就会卡非常久啊」）。实测（生产 DB）：`iteration_history` 15.6 万行、**单 turn 最多 1,661 个迭代**（该 turn content+reasoning ≈ **3.6 MB**）、`session_messages` 54.2 万行 / 316 MB；而 `ConvertMessagesToHistoryWithIterations` 对窗口内每个 turn 的**全部迭代无上限、无字节预算**。修法：`channel.BoundHistoryIterations`（`maxHistoryIterationsPerTurn = 60`）只保留**尾部 N 个迭代**，在 `serverapp/rpc_table.go`（get_history）与 `serverapp/callbacks.go`（web history snapshot）两个出口统一接入；丢弃数量写进 `protocol.HistoryMessage.IterationsTruncated`（json `iterations_truncated`）。**绝不静默缺块**：前端必须显示它 —— `AssistantMessage` 渲染 `data-testid="iterations-truncated"`（「更早的 N 个迭代未加载（仅显示最近 M 个）」）。更早的迭代仍完整保存在 DB `iteration_history`，后续按 `(turn_id, before_iteration)` 懒加载（尚未实现）。守护用例：`channel/history_iterations_cap_test.go` 的 `TestBoundHistoryIterations_TailOnly` + `web/src/components/agent/AssistantMessage.test.tsx` 的 truncated notice 两例。
 
+## Web 复制入口 = 电脑右键 / 手机长按（三层粒度；无悬浮条）
+
+- **交互（用户 2026-09-15 二次定稿）**：不放任何常驻/hover 悬浮工具条（用户：「这个悬浮太丑了还挡着」）——
+  改为 **桌面右键 / 触屏长按（480ms）→ 复制菜单**，常态**零占位零遮挡**。实现：`web/src/components/agent/MessageActions.tsx` 的 `CopyTarget`（`data-copy-target`）包住内容即挂上交互；`CopyMenu` 是唯一 UI（桌面光标处弹出、窄屏/触屏落底部面板 ≥44px 带文字标签）。
+- **三层粒度**：`kind=message`（复制回复 / 含思考 / 含工具调用 / 查看原始 Markdown）、`kind=iteration`（**每个迭代都有**：复制这段思考 / 复制该迭代正文 / 复制该迭代含工具 —— **空项按设计过滤**，不给无内容的复制项）、`kind=tools`（该迭代**每个工具各一项** + 全部输出）。判定收敛在 `resolveCopyText` / `buildCopyVariant` / `iterationCopyText` / `toolCopyText`，**assistant 顶层 content 为空时回退到最后一迭代正文**（旧实现用 `!isStreaming && !!message.content` 条件挂载 ⇒ iterations-only 时"复制按钮没了"，且流式结束才凭空冒出 ⇒ 行高跳变；老 `AssistantActions`/`showActions` 已删除）。
+- **嵌套目标必须最内层优先**：`onContextMenu` / `onPointerDown` 里 `stopPropagation()` —— 否则 tools ⊂ iteration ⊂ message 会同时弹出 3 个菜单。
+- **⚠️ 菜单/面板必须 `createPortal(..., document.body)`**（React 19 从 `react-dom` 导入）：虚拟行用 `transform: translateY(...)` 定位（`MessageList.tsx`），CSS 下 `position: fixed` 的包含块会变成**最近的被 transform 的祖先**，再叠加 `.virt-row{contain:layout}` / `.iter-block{contain:layout paint}` 的裁剪 ⇒ 面板渲染到对话流中间且只露一行（2026-09-15 我自己截 E2E 图发现的缺陷；修完加了"贴住视口底部 + 项数完整"的守护断言）。
+- 守护：`web/e2e/msg-actions.spec.ts`（**迭代目标数 == 迭代数**、右键某迭代只复制该迭代、工具级逐项复制、触屏长按面板贴视口底部且项数 == 工具数+1、`[data-testid="msg-actions"]` 必须为 0 —— 即"不再有悬浮条"）+ `AssistantMessage.test.tsx` 同名契约用例。
+
 ## Web 一致性暂态（切换/恢复）必须显示 loading，不得给不一致画面
 
 - **切会话窗口期：history 未就绪 ⇒ 渲染 loading 屏幕，不要先给"只有 live"的画面**（用户 2026-09-15：「切换一个 busy session，会有几秒只能看到 live iter，过了很久历史才出来，这是不对的」）。新渲染管线（`web/src/chat/useAgentChatState.ts`）**只 gate 了历史派发**（`if (!historyReady) return`），live 事件仍即时归约进 store ⇒ 若渲染层不加闸门，切到 busy 会话的瞬间 rows 就只有 in-flight 的 live turn，要等 `fetchHistory` 落地才补齐。修法（`AgentPanel`）：`chat.historyReady === false` 时渲染 loading 屏幕（spinner，`data-testid="session-loading-screen"`）代替 `MessageList`；**严格 `=== false`**（undefined/测试 mock 视为就绪，避免 loading 常驻）。注意与既有约定区分：**不得**用 `chat.loading` 做这个闸门（reload 也会置 loading，而 live 在 reload 期间必须继续可见）。
