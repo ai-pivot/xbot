@@ -461,6 +461,9 @@ type RunOutput struct {
 	// Required for DeepSeek thinking mode — must be persisted so it can be
 	// passed back to the API in subsequent turns.
 	ReasoningContent string
+	// ReasoningItems are the Responses API reasoning items (id + encrypted_content
+	// + summary/content). They must be replayed verbatim on later turns.
+	ReasoningItems []llm.ReasoningItem
 }
 
 // IterationSnapshot captures the tool summary of a completed iteration.

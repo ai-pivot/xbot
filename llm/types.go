@@ -19,24 +19,47 @@ var (
 
 // ChatMessage 业务层定义的消息类型，与具体 LLM 实现解耦
 type ChatMessage struct {
-	ID               int64      `json:"-"`    // DB auto-increment id (0 for in-memory messages); stable append-only history node used for rewind/trim/dedup; never sent to the LLM
-	Role             string     `json:"role"` // "system", "user", "assistant", "tool"
-	Content          string     `json:"content"`
-	ReasoningContent string     `json:"reasoning_content,omitempty"` // DeepSeek/OpenAI reasoning 模型的思维链内容
-	ToolCallID       string     `json:"tool_call_id,omitempty"`      // 如果是 tool 消息，记录工具调用 ID
-	ToolName         string     `json:"tool_name,omitempty"`         // 如果是 tool 消息，记录工具名称
-	ToolArguments    string     `json:"tool_arguments,omitempty"`    // 如果是 tool 消息，记录工具调用参数
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // 如果是 assistant 消息且有工具调用
-	Detail           string     `json:"-"`                           // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
-	Timestamp        time.Time  `json:"-"`                           // 消息时间戳，不参与 LLM 上下文
-	DisplayOnly      bool       `json:"-"`                           // 仅展示消息（如 cron 结果），不参与 LLM 上下文
-	TurnID           uint64     `json:"-"`                           // Agent turn that produced this message (for dedup)
-	Interrupted      bool       `json:"-"`                           // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
+	ID               int64  `json:"-"`    // DB auto-increment id (0 for in-memory messages); stable append-only history node used for rewind/trim/dedup; never sent to the LLM
+	Role             string `json:"role"` // "system", "user", "assistant", "tool"
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"` // DeepSeek/OpenAI reasoning 模型的思维链内容
+	// ReasoningItems 是 Responses API 的 reasoning items（OpenAI 原生思维链条目）。
+	// ⚠️ 必须**原样回传**给后续请求（id + encrypted_content + summary/content），
+	// 否则 store=false 的多轮工具调用会被 OpenAI 拒绝：
+	//   "Item 'fc_...' of type 'function_call' was provided without its required
+	//    'reasoning' item: 'rs_...'"
+	// 见 llm/openai_responses.go。Chat Completions 路径不使用该字段。
+	ReasoningItems []ReasoningItem `json:"reasoning_items,omitempty"`
+	ToolCallID     string          `json:"tool_call_id,omitempty"`   // 如果是 tool 消息，记录工具调用 ID
+	ToolName       string          `json:"tool_name,omitempty"`      // 如果是 tool 消息，记录工具名称
+	ToolArguments  string          `json:"tool_arguments,omitempty"` // 如果是 tool 消息，记录工具调用参数
+	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`     // 如果是 assistant 消息且有工具调用
+	Detail         string          `json:"-"`                        // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
+	Timestamp      time.Time       `json:"-"`                        // 消息时间戳，不参与 LLM 上下文
+	DisplayOnly    bool            `json:"-"`                        // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	TurnID         uint64          `json:"-"`                        // Agent turn that produced this message (for dedup)
+	Interrupted    bool            `json:"-"`                        // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
 
 	// CacheHint 提示 LLM 层此消息的缓存特性。
 	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）
 	// "" (默认) — 动态内容，不标注缓存
 	CacheHint string `json:"cache_hint,omitempty"`
+}
+
+// ReasoningItem 是 Responses API 的一个 reasoning item。
+//
+// OpenAI 要求把它（连同其中的 encrypted_content）**逐字段原样**放回 input，
+// 因此这里保存的是服务端返回的原始值，不做任何改写：
+//   - ID：服务端 item id（`rs_…`）。回传时必须是**原 id**（伪造 id 会被校验拒绝）。
+//   - EncryptedContent：`include:["reasoning.encrypted_content"]` 时返回的加密思维链。
+//     `store:false`（xbot 是无状态的）下它是跨轮次保留思维链的**唯一**载体。
+//   - Summary / Content：可读形态（summary_text / reasoning_text）。部分
+//     兼容网关只校验并要求回传 reasoning_text，故一并带上。
+type ReasoningItem struct {
+	ID               string `json:"id,omitempty"`
+	EncryptedContent string `json:"encrypted_content,omitempty"`
+	Summary          string `json:"summary,omitempty"`
+	Content          string `json:"content,omitempty"`
 }
 
 // NewSystemMessage 创建系统消息
@@ -306,12 +329,15 @@ type StreamStats struct {
 }
 
 type LLMResponse struct {
-	Content          string       `json:"content"`                     // 文本内容
-	ReasoningContent string       `json:"reasoning_content,omitempty"` // 思维链内容（DeepSeek/OpenAI reasoning 模型）
-	ToolCalls        []ToolCall   `json:"tool_calls,omitempty"`        // 工具调用列表（可能为空）
-	FinishReason     FinishReason `json:"finish_reason"`               // 结束原因
-	Usage            TokenUsage   `json:"usage"`                       // token 使用统计
-	StreamStats      *StreamStats `json:"stream_stats,omitempty"`      // 流式时间统计
+	Content          string `json:"content"`                     // 文本内容
+	ReasoningContent string `json:"reasoning_content,omitempty"` // 思维链内容（DeepSeek/OpenAI reasoning 模型）
+	// ReasoningItems 是 Responses API 的 reasoning items（含 encrypted_content）。
+	// 上层必须把它们挂到 assistant 消息上（ChatMessage.ReasoningItems）以便回传。
+	ReasoningItems []ReasoningItem `json:"reasoning_items,omitempty"`
+	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`   // 工具调用列表（可能为空）
+	FinishReason   FinishReason    `json:"finish_reason"`          // 结束原因
+	Usage          TokenUsage      `json:"usage"`                  // token 使用统计
+	StreamStats    *StreamStats    `json:"stream_stats,omitempty"` // 流式时间统计
 }
 
 // HasToolCalls 检查是否有工具调用。
@@ -328,10 +354,13 @@ type StreamEventType string
 const (
 	EventContent          StreamEventType = "content"           // 文本内容增量
 	EventReasoningContent StreamEventType = "reasoning_content" // 思维链内容增量（DeepSeek/OpenAI reasoning 模型）
-	EventToolCall         StreamEventType = "tool_call"         // 工具调用增量
-	EventUsage            StreamEventType = "usage"             // Token 统计
-	EventDone             StreamEventType = "done"              // 完成
-	EventError            StreamEventType = "error"             // 错误
+	// EventReasoningItem：Responses API 的 reasoning item 完成（携带 id/encrypted_content/
+	// summary/content。不是增量，一次性给出；上层需原样回传）。
+	EventReasoningItem StreamEventType = "reasoning_item"
+	EventToolCall      StreamEventType = "tool_call" // 工具调用增量
+	EventUsage         StreamEventType = "usage"     // Token 统计
+	EventDone          StreamEventType = "done"      // 完成
+	EventError         StreamEventType = "error"     // 错误
 )
 
 // ToolCallDelta 工具调用增量
@@ -347,10 +376,13 @@ type StreamEvent struct {
 	Type             StreamEventType `json:"type"`
 	Content          string          `json:"content,omitempty"`           // 文本增量
 	ReasoningContent string          `json:"reasoning_content,omitempty"` // 思维链增量（DeepSeek/OpenAI reasoning 模型）
-	ToolCall         *ToolCallDelta  `json:"tool_call,omitempty"`         // 工具调用增量
-	Usage            *TokenUsage     `json:"usage,omitempty"`             // Token 统计
-	FinishReason     FinishReason    `json:"finish_reason,omitempty"`     // 结束原因
-	Error            string          `json:"error,omitempty"`             // 错误信息
+	// ReasoningItem 在 Responses API 的 reasoning item 完成时一次性给出（不是增量）：
+	// 携带 id / encrypted_content / summary / content，必须原样回传。
+	ReasoningItem *ReasoningItem `json:"reasoning_item,omitempty"`
+	ToolCall      *ToolCallDelta `json:"tool_call,omitempty"`     // 工具调用增量
+	Usage         *TokenUsage    `json:"usage,omitempty"`         // Token 统计
+	FinishReason  FinishReason   `json:"finish_reason,omitempty"` // 结束原因
+	Error         string         `json:"error,omitempty"`         // 错误信息
 }
 
 // ToolParam 工具参数定义

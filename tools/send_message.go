@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"xbot/bus"
 	"xbot/llm"
@@ -128,23 +129,41 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 	if ctx.MessageSender == nil {
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
-	// Timeout protection to prevent indefinite blocking on agent RPC.
+	// **立刻成功**（用户 2026-09-14：「sendmessage 工具有可能卡死，必须立刻成功」）：
+	// 旧实现整段等目标 agent 的回复（最多 AgentRPCTimeout=30s），目标忙/卡住时工具就卡死。
+	// 现在只在 SendMessageAwaitReply（2s）窗口内顺手拿回复；拿不到就立即回"已投递"，
+	// 投递在后台继续（独立 ctx，绝不用工具 ctx —— 工具返回后它会被取消）。
 	baseCtx := ctx.Ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeoutCtx, cancel := context.WithTimeout(baseCtx, AgentRPCTimeout)
-	defer cancel()
-	timeoutToolCtx := *ctx
-	timeoutToolCtx.Ctx = timeoutCtx
-	result, err := sendMessageWithCtx(&timeoutToolCtx, addr, "", message)
-	if err != nil {
-		return nil, fmt.Errorf("agent send failed: %w", err)
+	type sendOutcome struct {
+		reply string
+		err   error
 	}
-	if result == "" {
-		return nil, fmt.Errorf("agent %s returned empty response (session may have ended)", addr)
+	outcomeCh := make(chan sendOutcome, 1)
+	go func() {
+		detached := *ctx
+		rCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), AgentRPCTimeout)
+		defer cancel()
+		detached.Ctx = rCtx
+		reply, err := sendMessageWithCtx(&detached, addr, "", message)
+		outcomeCh <- sendOutcome{reply: reply, err: err}
+	}()
+	select {
+	case out := <-outcomeCh:
+		if out.err != nil {
+			return nil, fmt.Errorf("agent send failed: %w", out.err)
+		}
+		if out.reply == "" {
+			return nil, fmt.Errorf("agent %s returned empty response (session may have ended)", addr)
+		}
+		return NewResult(out.reply), nil
+	case <-time.After(SendMessageAwaitReply):
+		return NewResult(fmt.Sprintf(
+			"Message delivered to %s. It is still working, so no reply yet — keep going; any reply arrives asynchronously.",
+			addr)), nil
 	}
-	return NewResult(result), nil
 }
 
 // isInGroup checks if addr is a member of the caller's group.

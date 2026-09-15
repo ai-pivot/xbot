@@ -63,6 +63,7 @@ func (a *Agent) handleCardResponse(ctx context.Context, msg bus.InboundMessage, 
 
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = cardOut.ReasoningContent
+	assistantMsg.ReasoningItems = cardOut.ReasoningItems
 	if err := tenantSession.AddMessage(assistantMsg); err != nil {
 		return nil, err
 	}

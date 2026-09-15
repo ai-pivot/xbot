@@ -337,6 +337,18 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     expect(container.textContent).toMatch(/思考中|thinking/)
   })
 
+  it('does NOT render the thinking placeholder while compressing (single status indicator)', () => {
+    // REPRO（用户报告截图：`thinking…` 与 `Compressing context…` 同时渲染）：
+    // phase='compressing' 的压缩指示器由 AssistantMessage / MessageList 渲染；
+    // 而压缩期间 streaming=true 且无内容 → LiveIteration 的空内容分支同样渲染
+    // ShimmerThinking（"思考中…"）→ 两个状态指示器上下堆叠，看起来像 bug。
+    // 不变量：每个状态下有且只有一个状态指示器 —— 压缩期间归压缩指示器。
+    const { container } = renderWithProviders(
+      <LiveIteration progress={makeSnapshot({ phase: 'compressing', streaming: true })} />,
+    )
+    expect(container.textContent).not.toMatch(/思考中|thinking/)
+  })
+
   it('returns null when the turn is not streaming (ended — committed reply replaces the row)', () => {
     const { container } = renderWithProviders(
       <LiveIteration

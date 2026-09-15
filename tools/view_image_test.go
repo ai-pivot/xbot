@@ -103,26 +103,29 @@ func TestViewImage_LocalPath_StoresAndReturnsInjection(t *testing.T) {
 	}
 }
 
-func TestViewImage_PathWhitelist_RejectsOutside(t *testing.T) {
+func TestViewImage_OutsidePathReadable(t *testing.T) {
+	// 契约反转（用户 2026-09-15：「把这个删了，哪里的都允许读」）：
+	// 原白名单（workspace root / working dir / view_images / ReadOnlyRoots）会把 /tmp、
+	// 别的仓库、别的会话目录下的截图全部挡掉（报 "outside the readable roots"），
+	// 导致 agent 看不到自己刚截的图。现在任意绝对路径都必须可读。
 	ws := t.TempDir()
-	// Write a PNG OUTSIDE the workspace (e.g. /tmp/evil.png).
-	outside := filepath.Join(t.TempDir(), "evil.png")
+	outside := filepath.Join(t.TempDir(), "outside.png")
 	if err := os.WriteFile(outside, makeTinyPNG(t), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	tool := NewViewImageTool()
 	// json.Marshal avoids hand-escaping Windows paths (C:\... breaks JSON).
 	outsideArgs, _ := json.Marshal(map[string]string{"path": outside})
-	_, err := tool.Execute(viewImageToolCtx(ws), string(outsideArgs))
-	if err == nil {
-		t.Fatal("absolute path outside workspace must be rejected")
+	res, err := tool.Execute(viewImageToolCtx(ws), string(outsideArgs))
+	if err != nil {
+		t.Fatalf("outside-workspace absolute path must be readable now, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "outside the readable roots") {
-		t.Fatalf("unexpected error: %v", err)
+	if !strings.Contains(res.Summary, "4×4") {
+		t.Fatalf("summary should carry dimensions for the outside image: %q", res.Summary)
 	}
-	// Traversal from inside the workspace must also be rejected.
+	// 非图片仍然必须被拒（与路径无关）——traversal 到 /etc/passwd 不是图片。
 	if _, err := tool.Execute(viewImageToolCtx(ws), `{"path": "../../etc/passwd"}`); err == nil {
-		t.Fatal("traversal path must be rejected")
+		t.Fatal("non-image path must still be rejected")
 	}
 }
 

@@ -387,6 +387,30 @@ export class MessageStore {
    * 等价原 reconcile 的 watermark 规则）。进行中 turn（有 live）保留。
    * loadMore（无 replace）是增量合并（迭代 union）。
    */
+  /**
+   * **渲染投影指纹**（幂等 reload 判定）——与 `toRows()` 的输出**逐行一致**（含 live 行）。
+   *
+   * ⚠️ 为什么必须是"渲染投影"而非内部结构（2026-09-15 严重回归教训）：
+   * 我最初用内部结构（slots.user/assistant + legacy + pendingUsers）做指纹，**漏了 live 行**，
+   * 与 `toRows()` 的行集并非一一对应 ⇒ 出现"committed 看似未变、但**渲染行集变了**"（典型：
+   * **user 行回填**）时指纹相同 ⇒ **跳过通知** ⇒ `syncMessages()` 不执行 ⇒ React 的 `messages`
+   * 不更新 ⇒ **user msg 不渲染**（用户报告："切换 session 后中间 user msg 不渲染"）。
+   *
+   * 判据：**渲染层看得见的任何变化都必须通知**；只有逐行完全一致（同一份 DB 快照的第二次
+   * reload）才跳过 —— 那正是"切会话 0.5s 闪烁"的根因。
+   */
+  private renderedKey(): string {
+    this.cache = null // 强制重算，不受上一帧缓存影响
+    return this.toRows()
+      .map((r) => {
+        const iters = (r.iterations ?? [])
+          .map((i) => `${i.iteration}:${i.content ?? ''}:${(i.tools ?? []).length}`)
+          .join(',')
+        return `${r.id ?? ''}|${r.role}|${r.isPartial ? 1 : 0}|${r.turnID}|${r.content ?? ''}|[${iters}]`
+      })
+      .join('\u00a7')
+  }
+
   mergeHistory(rows: ChatMessage[], opts?: { replace?: boolean; watermark?: number }): void {
     if (opts?.replace) {
       const rowTurns = new Set<number>()
@@ -422,6 +446,7 @@ export class MessageStore {
         this.pendingUsers = []
       }
     }
+    const beforeKey = this.renderedKey()
     for (const row of rows) {
       if (row.turnID > 0) {
         let slot = this.slots.get(row.turnID)
@@ -460,6 +485,9 @@ export class MessageStore {
         this.addLegacy(row)
       }
     }
+    // ⚠️ 幂等：内容未变（同一份 DB 快照的第二次 reload）⇒ **不通知**。
+    // 否则每次切会话都会在 0.5s 后多一次整表重渲染（用户报告的"闪烁一下"）。
+    if (this.renderedKey() === beforeKey) return
     this.bumpCommitted()
     this.invalidate()
   }

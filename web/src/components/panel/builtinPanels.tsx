@@ -10,7 +10,7 @@
  * 需要 hooks 的 render 主体在模块级组件里实现（render 回调只返回元素，
  * 不在回调里调 hooks——组件身份稳定，状态不随重渲染丢失）。
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { panelRegistry, type PanelDefinition, type PanelRenderContext } from '@/plugin-runtime/panelRegistry'
@@ -22,6 +22,7 @@ import { TerminalList } from '@/components/sidebar/TerminalList'
 import { useTerminal } from '@/hooks/useTerminal'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
+import { ChannelPicker } from '@/components/session/ChannelPicker'
 import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import {
@@ -44,6 +45,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  /** 搜索输入框 ref：开关按钮点击手势内同步 focus（手机软键盘要手势同任务）。 */
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
 
   // 会话搜索默认隐藏（低频操作，常驻输入框白占一行）；收起时一并清空查询——
   // 隐藏着的过滤条件会让列表"莫名其妙变短"。按钮与「新建会话」同排。
@@ -52,8 +55,14 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
     setSearch('')
   }, [])
   const toggleSearch = useCallback(() => {
-    if (searchOpen) closeSearch()
-    else setSearchOpen(true)
+    if (searchOpen) {
+      closeSearch()
+      return
+    }
+    // ⚠️ 必须在手势内同步 focus：手机浏览器只在用户手势的同一次任务里打开软键盘，
+    // SessionSearch 的 useEffect 异步 focus 只会拿到光标、拿不到键盘。
+    searchInputRef.current?.focus()
+    setSearchOpen(true)
   }, [searchOpen, closeSearch])
 
   const filteredSessions = useMemo(() => {
@@ -161,7 +170,7 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           )}
           style={{ flexBasis: 0 }}
         >
-          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} className="ml-1.5" />
+          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} inputRef={searchInputRef} className="ml-1.5" />
         </div>
         <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
@@ -239,6 +248,9 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     defaultSlot: 'left',
     defaultMode: 'docked',
     render: (ctx) => <CoreSessionsPanel ctx={ctx} />,
+    // 渠道下拉放**标题行**（用户 2026-09-15：「要放 sessions 那一行，你放下面太挤了」）——
+    // 面板主体工具条只留「新建会话 + 搜索」。
+    headerExtra: () => <ChannelPicker className="max-w-[6.5rem]" />,
     source: 'core',
   },
   {

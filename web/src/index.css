@@ -612,9 +612,12 @@
   border-bottom: none !important;
   background-color: transparent !important;
   box-sizing: border-box;
-  flex: 0 1 180px !important;
-  max-width: 180px !important;
-  min-width: 48px !important;
+  /* 用户 2026-09-15：「14 个 tab 全被压成只剩图标」——原因是这里 min-width:48px（≈只有图标）
+     且 flex 允许无限等分压缩。改为：**标题永远可读**（≥104px）+ 不参与压缩（0 0 auto）
+     + 放不下时**横向滚动**（见 .dv-tabs-container 规则）。 */
+  flex: 0 0 auto !important;
+  max-width: 220px !important;
+  min-width: 104px !important;
   padding: 0 !important;
 }
 
@@ -1399,4 +1402,51 @@
     transparent 70%
   );
   animation: shellDoneGlow 1.2s ease-out 1 forwards;
+}
+
+/* ── tool pill 的分类色：静态**极淡**（不抢注意力），hover / 展开时才升到满饱和 ──
+   依据业界 color-system 指南：categorical 色必须低彩度、不得与 semantic（状态）色争抢注意力。
+   用户 2026-09-15：「分类色不应该直接抓人眼球导致像是警报」+「要有别的表现方案」。 */
+.tool-pill-bar {
+  background: color-mix(in srgb, var(--pill-hue) 34%, transparent);
+  transition: background-color 120ms ease;
+}
+.tool-pill:hover .tool-pill-bar,
+.tool-pill:focus-visible .tool-pill-bar {
+  background: var(--pill-hue);
+}
+
+/* ── tab 可读性（用户 2026-09-15：「14 个 tab 全被压成只剩图标，完全用不了」）────────────
+ * 根因：`.dv-tab` 没有最小宽度 ⇒ 开的 tab 一多就被等分压扁 ⇒ TabHeader 里的标题
+ * （`min-w-0 flex-1 truncate`）被 truncate 成 0 宽，只剩图标。VSCode 语义：
+ *   ① 每个 tab 有**最小宽度**（标题永远可读）与最大宽度（不浪费空间）；
+ *   ② 放不下时**横向滚动**（而不是无限压缩）；
+ *   ③ 悬停显示完整标题（TabHeader 已设 title 属性）。 */
+/* ⚠️ 不要给 .dv-tabs-container 加 overflow —— dockview 自带溢出下拉（⌄ N，VSCode 语义）；
+   再加横向滚动会两套机制并存（下拉计数与滚动位置不同步）＝用户说的「下拉栏交互冲突」。 */
+.dockview-theme-vs .dv-tab {
+  min-width: 104px;
+  max-width: 220px;
+  flex: 0 0 auto;
+}
+.dockview-theme-vs .dv-tab .dv-default-tab-content,
+.dockview-theme-vs .dv-tab > * {
+  min-width: 0;
+}
+
+/* ── tab 溢出：**横向滚动**（用户 2026-09-15 明确：「我要滚动不要下拉」）────────────────────
+ * 关键：**必须同时关掉 dockview 自带的下拉**，否则又是两套机制并存（上次用户报的
+ * 「下拉栏交互冲突」）。通配选择器覆盖 dockview 的溢出控件类名，不必依赖确切类名。 */
+.dockview-theme-vs /* ⚠️ **只让容器滚**：给子元素也加 overflow-x 会造成**嵌套滚动容器** ⇒ 双滚动条（用户 2026-09-15）。 */
+.dockview-theme-vs .dv-tabs-container {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin;
+}
+.dockview-theme-vs .dv-tabs-container > * {
+  overflow: visible !important;
+}
+[class*='dv-tabs-overflow'],
+[class*='tabs-overflow'] {
+  display: none !important;
 }

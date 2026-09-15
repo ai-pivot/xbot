@@ -52,16 +52,7 @@
  *      （否则永远量不到高度）；jsdom / 无 IO+RO 环境退化为全量渲染（分块/复用
  *      逻辑照常生效，只是永不 muted）。
  */
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useReducer,
-  useRef,
-  useState,
-  type ReactElement,
-} from 'react'
+import { memo, type ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 import { IterationGroup } from './IterationHistory'
 import { LiveIteration } from './LiveIteration'
@@ -744,6 +735,31 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   return <>{chunks}</>
 })
 
+
+/** 连续「带工具」的迭代折叠成**一个** pill 行（用户 2026-09-15 定的规则）。
+ *
+ *  ⚠️ 关键修正（用户指出）：折叠的**头部迭代可以带 reasoning/content**（工具行与文本块同属该迭代）。
+ *  只有**后续成员**才要求"只有工具"（`!content && !reasoning`）——
+ *  否则头部被排除 ⇒ 它的工具单独成行（截图里"失败 chip + 失败 pill 在上、其余 pill 在下"的真因，
+ *  **不是**什么置顶逻辑）。每个带文本的迭代仍是**独立块**（文本不合并、不丢）。
+ */
+function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
+  const hasTools = (it: WebIteration) => it.tools.length > 0
+  const absorbs = (it: WebIteration) => hasTools(it) && !it.content && !it.reasoning
+  const out: WebIteration[] = []
+  for (let i = 0; i < iters.length; i++) {
+    const head = iters[i]
+    if (!hasTools(head)) { out.push(head); continue }
+    let j = i
+    const tools = [...head.tools]
+    while (j + 1 < iters.length && absorbs(iters[j + 1])) { j++; tools.push(...iters[j].tools) }
+    // 保留**头部**迭代号（高度缓存 / 窗口 key 稳定；文本与工具都取头部那一份 + 后续成员的工具）
+    out.push(j === i ? head : { ...head, tools })
+    i = j
+  }
+  return out
+}
+
 export const TurnBody = memo(function TurnBody({
   iterations,
   liveProgress,
@@ -757,6 +773,9 @@ export const TurnBody = memo(function TurnBody({
   const scan = extendContiguous(scanRef.current, iterations)
   scanRef.current = scan
   const contiguous = scan.out
+  // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
+  // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
+  const merged = useMemo(() => mergeToolRuns(contiguous), [contiguous])
 
   return (
     <div
@@ -768,7 +787,7 @@ export const TurnBody = memo(function TurnBody({
       }
       data-iter-total={contiguous.length}
     >
-      <CommittedTurn contiguous={contiguous} turnID={turnID} heightScope={heightScope} />
+      <CommittedTurn contiguous={merged} turnID={turnID} heightScope={heightScope} />
       {liveProgress && (
         <div
           className="iter-block"

@@ -15,6 +15,8 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, Check, ChevronRight, Clock, Loader2, Pencil, X } from 'lucide-react'
 
+import { CopyTarget } from './MessageActions'
+import type { ChatMessage } from '@/types/shared'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
@@ -209,16 +211,17 @@ export const UserMessage = memo(function UserMessage({
 
   return (
     <div className="flex justify-end px-1">
-      <div className="flex max-w-[85%] flex-col items-end gap-1">
+      <div className="group flex max-w-[85%] flex-col items-end gap-1">
         {isNotification && (
           <span className="text-xs text-text-muted">🔔 Notification</span>
         )}
+        <CopyTarget kind="message" message={{ role: 'user', content } as unknown as ChatMessage}>
         <div
           ref={displayRef}
           className={
             isNotification
-              ? 'rounded-2xl rounded-br-sm border border-border bg-bg-secondary px-3.5 py-2 text-text-muted'
-              : 'rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary'
+              ? 'relative rounded-2xl rounded-br-sm border border-border bg-bg-secondary px-3.5 py-2 text-text-muted'
+              : 'relative rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary'
           }
         >
           <MarkdownRenderer content={content || ' '} />
@@ -235,6 +238,7 @@ export const UserMessage = memo(function UserMessage({
             </div>
           )}
         </div>
+        </CopyTarget>
         {onRewind && onStartEdit && (
           <Button
             type="button"

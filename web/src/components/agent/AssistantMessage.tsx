@@ -8,11 +8,11 @@
  *
  * Streaming state: 流式时 TurnBody 追加 LiveIteration 渲染进行中迭代。
  */
-import { memo, useCallback } from 'react'
-import { Copy, Loader2 } from 'lucide-react'
-import { toast } from 'sonner'
+import { memo } from 'react'
+import { Loader2 } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { CopyTarget } from './MessageActions'
 import { TurnBody } from './TurnBody'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
@@ -89,25 +89,19 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
-  // Copy markdown content to clipboard
-  const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(message.content).then(() => {
-      toast.success(t('agent.copyMarkdownDone'))
-    })
-  }, [message.content, t])
 
   // Action bar shown for completed (non-streaming) messages with content.
-  // Use `message.content` (the authoritative final reply), NOT `finalContent`:
-  // finalContent is empty when the content duplicates an iteration's thinking
-  // (render dedup — same text on both paths). In that case the final reply is
-  // still the user's content and MUST be copyable — a copy button that
-  // "appears then disappears" when an iteration's thinking catches up to the
-  // reply (user report) is a regression. `message.content` non-empty is the
-  // correct condition.
-  const showActions = !isStreaming && !!message.content && !message.displayOnly
 
   return (
-    <div className="group/msg px-1">
+    <CopyTarget kind="message" message={message} className="group/msg px-1">
+      {(message.iterationsTruncated ?? 0) > 0 && (
+        <div
+          data-testid="iterations-truncated"
+          className="mb-1 px-1 text-[11.5px] text-text-muted"
+        >
+          {`更早的 ${message.iterationsTruncated} 个迭代未加载（仅显示最近 ${iterations.length} 个）`}
+        </div>
+      )}
       <TurnBody
         iterations={iterations}
         liveProgress={liveProgress}
@@ -135,8 +129,7 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
         </div>
       )}
 
-      {showActions && <AssistantActions onCopy={handleCopy} t={t} />}
-    </div>
+    </CopyTarget>
   )
 }
 
@@ -165,23 +158,5 @@ function showProgress(progress?: LiveProgress | null): boolean {
   )
 }
 
-/** Copy-MD action bar shown at the bottom-left of assistant messages. */
-function AssistantActions({ onCopy, t }: {
-  onCopy: () => void
-  t: (key: string) => string
-}) {
-  return (
-    <div className="mt-1 flex items-center gap-0.5">
-      <button
-        type="button"
-        onClick={onCopy}
-        title={t('agent.copyMarkdown')}
-        className="flex h-6 items-center gap-1 rounded px-1.5 text-text-muted transition-opacity hover:text-text-primary hover:bg-muted"
-      >
-        <Copy className="size-3.5" />
-      </button>
-    </div>
-  )
-}
 
 export const AssistantMessage = memo(AssistantMessageImpl)

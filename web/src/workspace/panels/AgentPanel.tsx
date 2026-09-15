@@ -163,6 +163,42 @@ export function AgentPanel({ params, api }: PanelProps) {
     },
   })
   const reloadChat = chat.reload
+  // ── 一致性暂态修复（用户 2026-09-15）──
+  // ① 切到 busy 会话时「几秒只看得到 live iter，历史很久才出来」：live 由状态机即时归约，
+  //    而历史要等 fetchHistory —— 渲染层在 history 未就绪时必须显示 loading，
+  //    而不是先给一个"只有 live"的不一致画面。
+  // ② 手机锁屏半天再打开「不触发重新加载、SSE 追赶期间画面剧烈抖动」：隐藏超过阈值 ⇒
+  //    恢复可见时强制整屏重载（DB 权威历史），重载期间同样显示 loading 屏幕
+  //    （用户明确偏好：「不如展示 loading 屏幕」）。
+  const [resumeLoading, setResumeLoading] = useState(false)
+  const hiddenAtRef = useRef<number | null>(null)
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenAtRef.current = Date.now()
+        return
+      }
+      const hiddenAt = hiddenAtRef.current
+      hiddenAtRef.current = null
+      if (hiddenAt === null || Date.now() - hiddenAt < 60_000) return
+      setResumeLoading(true)
+      void reloadChat()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [reloadChat])
+  // 历史落地（重载完成且已有消息）后收起 loading 屏幕。
+  useEffect(() => {
+    if (resumeLoading && !chat.loading && chat.messages.length > 0) setResumeLoading(false)
+  }, [resumeLoading, chat.loading, chat.messages.length])
+  // 注意：只看 `=== false`（历史确实未就绪）；undefined（测试/旧调用方）视为就绪，
+  // 避免把 loading 屏幕变成常驻。
+  // ⚠️ 只在"确实有会话、但它的历史还没到"时才用 loading 屏幕遮挡面板。
+  // 无会话（chatID 为空 / 会话树为空，如全新安装的 E2E 环境）时**绝不能**挡：
+  // 那会把输入区一起盖住，用户既看不到空状态也无法创建/发送（CI 的
+  // chat.spec"should show user message after sending" 就是这样红的 —— 快照里侧栏是
+  // "No sessions yet — create one from the top-right"、面板只有 Loading…）。
+  const showLoadingScreen = (chat.historyReady === false && !!chatID) || resumeLoading
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: The old wasSubscribed effect (reloadChat when shouldSubscribe
@@ -734,6 +770,15 @@ export function AgentPanel({ params, api }: PanelProps) {
           })}
         />
       )}
+      {showLoadingScreen ? (
+        <div
+          data-testid="session-loading-screen"
+          className="flex h-full w-full flex-1 items-center justify-center gap-2 text-text-muted"
+        >
+          <Loader2 className="size-5 animate-spin" />
+          <span className="text-xs">Loading…</span>
+        </div>
+      ) : (
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -751,6 +796,7 @@ export function AgentPanel({ params, api }: PanelProps) {
         onEndEdit={handleEndEdit}
         footer={askUserFooter}
       />
+      )}
       {!isSubAgent && (
         <StagingTray
           items={agentChat.queue}

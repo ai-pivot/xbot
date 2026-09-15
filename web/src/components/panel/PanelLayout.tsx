@@ -260,6 +260,33 @@ export function defaultPanelLayout(defsInDefOrder: readonly PanelDefinition[]): 
 }
 
 /**
+ * PINNED_DEFAULTS 面板（core.sessions）的**不变量**：永远 `{zone:'side', collapsed:false}`。
+ *
+ * 这些面板是左栏的常驻内容（`unpinPanel` 早已拒绝"取消钉选"）：一旦被折叠/浮窗/
+ * 收进 chips，左栏就只剩空态提示 —— 用户看到的是"点一下会话面板没了"。状态层统一
+ * 收敛（而不是各入口各写一遍 guard），持久化/跨设备同步过来的旧状态也会自愈。
+ */
+export function enforcePinnedState(state: PanelLayoutState): PanelLayoutState {
+  let changed = false
+  const next: PanelLayoutState = { ...state }
+  for (const [id, e] of Object.entries(state)) {
+    const pinned = PINNED_DEFAULTS[id]
+    if (!pinned) continue
+    if (e.loc.zone === 'side' && !e.collapsed) continue
+    next[id] = {
+      collapsed: false,
+      loc: {
+        zone: 'side',
+        order: e.loc.order,
+        h: Math.max(DOCK_H_MIN, Math.min(DOCK_H_MAX, e.loc.h ?? pinned.h)),
+      },
+    }
+    changed = true
+  }
+  return changed ? next : state
+}
+
+/**
  * v2 → v5.1 迁移（纯函数，幂等）：v5 无钉选概念——持久化中 zone 'side' 的
  * 非 sessions 面板全部 → 'chip'（用户可再钉选）；side 的 h 规范化到拖拽 clamp
  * 边界；chip 清掉无意义的高度/分段/浮层字段。重复执行结果一致。
@@ -398,7 +425,6 @@ interface PanelDockContextValue {
   focusPanel: (id: string) => void
   /** 取消钉选（side 面板 ✕）：→ 'chip'。PINNED_DEFAULTS 面板不可取消（无 ✕ 入口）。 */
   unpinPanel: (id: string) => void
-  onGripPointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   onTitlePointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   /** floating 全方向 resize（pointerdown 起始；四角+四边手柄，dir 见 ResizeDir）。 */
   onResizePointerDown: (id: string) => (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => void
@@ -453,7 +479,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     const list = panelRegistry.listPanels()
     const known = new Set(list.map((d) => d.id))
     const loaded = parsePanelLayoutV2(safeGet(LS_KEY_V2), known) ?? migrateV1Layout(safeGet(LS_KEY_V1), known)
-    return loaded ? migrateV2Layout(loaded) : defaultPanelLayout(list)
+    return enforcePinnedState(loaded ? migrateV2Layout(loaded) : defaultPanelLayout(list))
   })
   const stateRef = useRef(state)
   stateRef.current = state
@@ -469,7 +495,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     const handler = () => {
       const known = new Set(panelRegistry.listPanels().map((d) => d.id))
       const loaded = parsePanelLayoutV2(safeGet(LS_KEY_V2), known)
-      if (loaded) setState(migrateV2Layout(loaded))
+      if (loaded) setState(enforcePinnedState(migrateV2Layout(loaded)))
     }
     window.addEventListener(SETTINGS_SYNCED_EVENT, handler)
     return () => window.removeEventListener(SETTINGS_SYNCED_EVENT, handler)
@@ -512,6 +538,11 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
 
   const toggleCollapse = useCallback(
     (id: string) => {
+      // ⛔ PINNED_DEFAULTS（core.sessions）不可折叠：它是左栏的常驻内容，收起后
+      // 整个面板（含自己的 header）从堆叠里消失、左栏只剩空态提示 —— 用户看到
+      // 的就是"点一下会话面板没了"（2026-09-15：「sessions 这一行还有一个有完全
+      // 一样的 bug 的按钮」）。整栏收起请用左侧图标栏点激活项 / 边缘把手。
+      if (PINNED_DEFAULTS[id]) return
       update((prev) => {
         const cur = prev[id] ?? entryOf(id)
         return { ...prev, [id]: { ...cur, collapsed: !cur.collapsed } }
@@ -602,9 +633,13 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [update, entryOf],
   )
 
-  /** 升浮窗：主区中上部落位（layer 宽 40% × 高 22%，阶梯 offset 防重叠）。 */
+  /** 升浮窗：主区中上部落位（layer 宽 40% × 高 22%，阶梯 offset 防重叠）。
+   *  ⛔ PINNED_DEFAULTS（core.sessions）不可升浮窗——它是左栏的常驻内容，浮走
+   *  等于左栏空掉（用户 2026-09-15：「就 sessions 这一行还有一个有完全一样的
+   *  bug 的按钮」；与 `unpinPanel` 拒绝「取消钉选」同一语义）。 */
   const floatPanel = useCallback(
     (id: string) => {
+      if (PINNED_DEFAULTS[id]) return
       const c = layerRectOf(layerElRef.current)
       const def = defMap.get(id)
       const w = def?.defaultSize?.w ?? Math.round(c.width * 0.4)
@@ -663,6 +698,9 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     (id: string, ev: { clientX: number; clientY: number }) => {
       const zone = zoneAtPoint(ev.clientX, ev.clientY)
       if (!zone) return // 取消：零状态变更
+      // ⛔ 常驻面板（PINNED_DEFAULTS/core.sessions）只能在左栏内重排：拖到
+      // floating / chip / 其他 zone 一律拒绝（否则同样会让左栏空掉）。
+      if (PINNED_DEFAULTS[id] && zone !== 'side') return
       const cur = stateRef.current[id] ?? entryOf(id)
       const d = dragRef.current
       if (zone === 'floating') {
@@ -817,10 +855,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [entryOf, endDrag, placeDropped, sideHintAtPoint, zoneAtPoint],
   )
 
-  const onGripPointerDown = useCallback(
-    (id: string) => (e: ReactPointerEvent<HTMLElement>) => startPanelDrag(id, e),
-    [startPanelDrag],
-  )
 
   const onTitlePointerDown = useCallback(
     (id: string) => (e: ReactPointerEvent<HTMLElement>) => startPanelDrag(id, e),
@@ -1034,7 +1068,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       pinPanel,
       focusPanel,
       unpinPanel,
-      onGripPointerDown,
       onTitlePointerDown,
       onResizePointerDown,
       onHeightPointerDown,
@@ -1044,7 +1077,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     // ⚠️ deps 必须含 state：entryOf 读 stateRef 引用稳定——collapse/拖拽落盘只改
     // state，若缺则 context value 永不重建（v4 已修，保持）。v5 另需 drag +
     // activeZone + dropHint（拖拽本地跟随渲染全靠 context 重建）。
-    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, focusPanel, unpinPanel, onGripPointerDown, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
+    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, focusPanel, unpinPanel, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
   )
 
   return <PanelDockContext.Provider value={value}>{children}</PanelDockContext.Provider>
@@ -1076,6 +1109,11 @@ export function PanelDock(): ReactNode {
   // section 下方也没有分隔条）；要调它就拖它上面那个面板的 handle（成对分配会
   // 让它自动补偿）。
   const lastExpandedId = [...sideIds].reverse().find((pid) => !dock.entryOf(pid).collapsed)
+  // 可见（展开）面板。⚠️ 空态判定必须用【可见】而非【存在】：折叠掉最后一个展开
+  // 面板（或把它升为浮窗）时，旧条件 sideIds.length === 0 为假 ⇒ 既没有面板也没有
+  // 提示 ⇒ 左栏变成一片黑的"坏掉"观感（2026-09-15 用户：「点 Sessions 这个词有bug，
+  // 点完这样」）。空态提示必须给出，让用户知道面板去哪了、从哪拿回来。
+  const visibleSideIds = sideIds.filter((pid) => !dock.entryOf(pid).collapsed)
   return (
     <div
       ref={setDockEl}
@@ -1088,7 +1126,7 @@ export function PanelDock(): ReactNode {
           旧模型把折叠面板的 header 也堆在侧栏底部（"统计/插件/技能/Git" 四行），
           与新 ActivityBar 的图标功能重复、视觉杂乱（VSCode 的侧栏只显示当前 view）。 */}
       <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
-        {sideIds.filter((id) => !dock.entryOf(id).collapsed).map((id) => {
+        {visibleSideIds.map((id) => {
           const def = dock.defs.find((d) => d.id === id)
           if (!def) return null
           const entry = dock.entryOf(id)
@@ -1103,7 +1141,6 @@ export function PanelDock(): ReactNode {
                 : entry.loc.h != null
                   ? entry.loc.h
                   : (PINNED_DEFAULTS[id]?.h ?? PIN_DEFAULT_H)
-          const isDropTarget = dock.dropHint?.targetId === id
           // flex 比例分配：面板按 flex-basis(h) 比例撑满堆叠区，无空白
           const flexBasis = entry.collapsed ? 'auto' : `${h}px`
           return (
@@ -1115,13 +1152,12 @@ export function PanelDock(): ReactNode {
               badge={def.badges?.() ?? null}
               mode="docked"
               collapsed={entry.collapsed}
+              pinned={PINNED_DEFAULTS[id] !== undefined}
               onToggleCollapse={() => dock.toggleCollapse(id)}
               onToggleMode={() => dock.floatPanel(id)}
               onUnpin={PINNED_DEFAULTS[id] ? undefined : () => dock.unpinPanel(id)}
-              onGripPointerDown={dock.onGripPointerDown(id)}
-              isDragSource={dock.dragSrcId === id}
-              dropIndicator={isDropTarget ? (dock.dropHint!.before ? 'before' : 'after') : null}
               emptyHint={def.emptyHint}
+              headerExtra={def.headerExtra ? def.headerExtra({ tabManager: dock.tabManager }) : undefined}
               onResizeHeightPointerDown={id === lastExpandedId ? undefined : dock.onHeightPointerDown(id)}
               style={{
                 // ⚠️ 空间分配模型（VSCode 式）：
@@ -1142,7 +1178,7 @@ export function PanelDock(): ReactNode {
             </PanelChrome>
           )
         })}
-        {sideIds.length === 0 ? (
+        {visibleSideIds.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-text-muted">
             {t('panel.noPinned')}
           </div>
