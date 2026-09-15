@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 
 import { AssistantMessage } from '@/components/agent/AssistantMessage'
@@ -32,100 +32,39 @@ function iter(content: string, iteration = 1): WebIteration {
   return { iteration, content, reasoning: '', tools: [], toolCount: 0 }
 }
 
-describe('AssistantMessage copy button (showActions)', () => {
-  it('shows the copy button when content duplicates an iteration thinking (render-dedup case)', () => {
-    // User report: "最终消息没有复制按钮（一开始有，然后消失）" — the copy button
-    // used `!!finalContent`, and finalContent becomes '' when the final reply
-    // duplicates an iteration's thinking (dedup: same text on both paths).
-    // The final reply is still the user's content and MUST be copyable.
-    const m = msg({
-      content: 'final reply',
-      iterations: [iter('final reply')], // thinking === content
-    })
+describe('AssistantMessage copy affordance (MessageActions)', () => {
+  it('always mounts the copy button — 不再条件挂载（"突然冒出来/没了"的根因）', () => {
+    // 用户 2026-09-15 报告：复制按钮"总是突然冒出来"、且某些消息下"没了"。
+    // 根因是条件挂载 + 判据用错字段（`!isStreaming && !!content`）。新契约：按钮恒在 DOM 里，
+    // 只是 hover 时才可见（absolute ⇒ 零占高），没有内容时 disabled。
+    renderMsg(<AssistantMessage message={msg({ content: '' })} />)
+    expect(screen.getByTestId('msg-copy')).toBeTruthy()
+    expect(screen.getByTestId('msg-actions')).toBeTruthy()
+  })
+
+  it('copies the reply even when it only lives inside iterations（顶层 content 为空）', async () => {
+    // v55 架构下回复常只存在于 iterations ⇒ 旧判据 `!!message.content` 为假、按钮不渲染
+    //（用户："复制按钮怎么没了"）。新判定 resolveCopyText 回退到最后一迭代正文。
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const m = msg({ content: '', iterations: [iter('先看一眼', 1), iter('## 今日要点\n1. 扩容完成', 2)] })
     renderMsg(<AssistantMessage message={m} />)
-    expect(copyButton()).not.toBeNull()
+    fireEvent.click(screen.getByTestId('msg-copy'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('## 今日要点\n1. 扩容完成'))
   })
 
-  it('shows the copy button for a normal final reply', () => {
-    const m = msg({
-      content: 'final reply',
-      iterations: [iter('reasoning text')],
-    })
-    renderMsg(<AssistantMessage message={m} />)
-    expect(copyButton()).not.toBeNull()
+  it('disables copy when there is nothing to copy（display-only / 空消息）', () => {
+    renderMsg(<AssistantMessage message={msg({ content: '', iterations: [], displayOnly: true })} />)
+    expect((screen.getByTestId('msg-copy') as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('turn-live（isPartial）行：LiveIteration 渲染 progress content，迭代块外不重复 message.content', () => {
-    // 用户报告：cancel 后迭代重复渲染 —— turn-38-live 的迭代 1 内容在迭代块外
-    // markdown-body 又渲染一次。设计原则："一个 iter 的内容只能渲染在 iter 内"：
-    // LiveIteration 在迭代内渲染 progress.streamContent，message.content 是流式
-    // 冗余副本，不得在迭代块外重复渲染。禁止串操作去重（比较 message.content
-    // 与迭代内容相等再隐藏）—— 用结构判断：live 行 + progress 有内容（LiveIteration
-    // 已渲染）→ message.content 不渲染。
-    const m = msg({
-      content: '继续优化。',
-      isPartial: true, // turn-live 行
-      iterations: [],
-    })
-    const liveProgress = {
-      eventSeq: 1,
-      phase: 'frozen',
-      iteration: 1,
-      lastIter: 1,
-      streaming: false,
-      streamContent: '继续优化。', // LiveIteration 在迭代内渲染
-      content: '',
-      reasoningStreamContent: '',
-      genuiContent: '',
-      lastReasoning: '',
-      streamTokens: 0,
-      tokenUsage: null,
-      turnID: 38,
-      activeTools: [] as WebToolProgress[],
-      completedTools: [] as WebToolProgress[],
-      streamingTools: [] as WebToolProgress[],
-      iterationHistory: [{
-        iteration: 1, content: '思考了 1628 字符', reasoning: '', tools: [], toolCount: 0,
-      }],
-      subAgents: [],
-      todos: [],
-      goal: null,
-    }
-    const { container } = renderMsg(<AssistantMessage message={m} progress={liveProgress} />)
-    // "继续优化。" 只出现一次（LiveIteration 在迭代内渲染），迭代块外不重复
-    expect(container.textContent.match(/继续优化。/g) ?? []).toHaveLength(1)
-  })
-
-  it('committed 行有迭代：迭代外不重复渲染 message.content（内容只在迭代内）', () => {
-    // 用户报告：committed 行最后迭代的 content（== 最终回复）在 TurnBody 迭代内
-    // 渲染（markdown-body），finalContent 又在迭代外重复。设计原则："一个 iter
-    // 的内容只能渲染在 iter 内" —— 行有迭代（iterations 非空，结构判断）时内容
-    // 由 TurnBody 在迭代内渲染，message.content 不重复渲染。禁止任何字符串
-    // 比较/内容判断（不能靠"最后迭代 content 非空"判断 —— 万一 content 真的写
-    // 两遍且各自有效会错误隐藏）。
-    const m = msg({
-      content: '最终回复',
-      iterations: [
-        { iteration: 1, content: '推理1', reasoning: '', tools: [], toolCount: 0 },
-        // 最后迭代 thinking（后端 IterationRecord.Content 映射）== message.content
-        { iteration: 2, content: '最终回复', reasoning: '', tools: [], toolCount: 0 },
-      ],
-    })
-    const { container } = renderMsg(<AssistantMessage message={m} />)
-    // "最终回复" 只出现一次（最后迭代在 TurnBody 内渲染），迭代块外不重复
-    expect(container.textContent.match(/最终回复/g) ?? []).toHaveLength(1)
-  })
-
-  it('hides the copy button for an empty message', () => {
-    const m = msg({ content: '', iterations: [] })
-    renderMsg(<AssistantMessage message={m} />)
-    expect(copyButton()).toBeNull()
-  })
-
-  it('hides the copy button for a display-only message (cancel marker)', () => {
-    const m = msg({ content: 'partial', iterations: [], displayOnly: true })
-    renderMsg(<AssistantMessage message={m} />)
-    expect(copyButton()).toBeNull()
+  it('exposes 含思考/含工具/原始 Markdown 变体菜单', () => {
+    renderMsg(<AssistantMessage message={msg({ content: 'reply', iterations: [iter('reply')] })} />)
+    fireEvent.click(screen.getByTestId('msg-more'))
+    const menu = screen.getByTestId('msg-menu')
+    expect(menu.textContent).toContain('复制含思考')
+    expect(menu.textContent).toContain('复制含工具调用')
+    expect(menu.textContent).toContain('查看原始 Markdown')
   })
 })
 
