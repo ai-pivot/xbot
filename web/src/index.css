@@ -612,9 +612,12 @@
   border-bottom: none !important;
   background-color: transparent !important;
   box-sizing: border-box;
-  flex: 0 1 180px !important;
-  max-width: 180px !important;
-  min-width: 48px !important;
+  /* 用户 2026-09-15：「14 个 tab 全被压成只剩图标」——原因是这里 min-width:48px（≈只有图标）
+     且 flex 允许无限等分压缩。改为：**标题永远可读**（≥104px）+ 不参与压缩（0 0 auto）
+     + 放不下时**横向滚动**（见 .dv-tabs-container 规则）。 */
+  flex: 0 0 auto !important;
+  max-width: 220px !important;
+  min-width: 104px !important;
   padding: 0 !important;
 }
 
@@ -1411,4 +1414,25 @@
 .tool-pill:hover .tool-pill-bar,
 .tool-pill:focus-visible .tool-pill-bar {
   background: var(--pill-hue);
+}
+
+/* ── tab 可读性（用户 2026-09-15：「14 个 tab 全被压成只剩图标，完全用不了」）────────────
+ * 根因：`.dv-tab` 没有最小宽度 ⇒ 开的 tab 一多就被等分压扁 ⇒ TabHeader 里的标题
+ * （`min-w-0 flex-1 truncate`）被 truncate 成 0 宽，只剩图标。VSCode 语义：
+ *   ① 每个 tab 有**最小宽度**（标题永远可读）与最大宽度（不浪费空间）；
+ *   ② 放不下时**横向滚动**（而不是无限压缩）；
+ *   ③ 悬停显示完整标题（TabHeader 已设 title 属性）。 */
+.dockview-theme-vs .dv-tabs-container {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.dockview-theme-vs .dv-tab {
+  min-width: 104px;
+  max-width: 220px;
+  flex: 0 0 auto;
+}
+.dockview-theme-vs .dv-tab .dv-default-tab-content,
+.dockview-theme-vs .dv-tab > * {
+  min-width: 0;
 }
