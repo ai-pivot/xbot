@@ -65,14 +65,17 @@ test('点面板标题文字不折叠面板；常驻会话面板不渲染浮窗/�
 
   // ③ 常驻面板（PINNED_DEFAULTS）不渲染「升为浮窗」/「折叠」按钮 —— 它们都会让
   //    会话面板离开左栏（用户 2026-09-15：「sessions 这一行还有一个有完全一样的
-  //    bug 的按钮」）。拖拽把手仍在。
+  //    bug 的按钮」）。隐藏的拖拽把手（`panel-grip`：opacity-0 仍占位，把右端控件
+  //    顶偏）也一并删除 —— 标题行只剩标题本身与显式控件。
   const hdr = panel.locator('header')
   await expect(hdr.locator('svg.lucide-picture-in-picture-2')).toHaveCount(0)
   await expect(hdr.locator('svg.lucide-chevron-right')).toHaveCount(0)
-  await expect(hdr.locator('[data-testid="panel-grip"]')).toHaveCount(1)
+  await expect(hdr.locator('[data-testid="panel-grip"]')).toHaveCount(0)
   // 鼠标划过（按钮本该在 hover 时显现）也不该冒出来。
   await hdr.hover()
   await expect(hdr.locator('svg.lucide-picture-in-picture-2')).toHaveCount(0)
+  await expect(hdr.locator('svg.lucide-chevron-right')).toHaveCount(0)
+  await expect(hdr.locator('[data-testid="panel-grip"]')).toHaveCount(0)
 
   await ctx.close()
 })

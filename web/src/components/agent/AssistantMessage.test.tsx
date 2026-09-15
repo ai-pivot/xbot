@@ -244,6 +244,20 @@ describe('AssistantMessage compressing indicator position', () => {
     // The indicator must NOT be the FIRST child (that would be the "turn top").
     expect(compressingIdx).not.toBe(0)
   })
+
+  it('renders ONLY the compressing indicator (no "thinking…" stacked above it)', () => {
+    // REPRO（用户报告截图：`thinking…` 叠在 `Compressing context…` 上方）：
+    // 压缩期间 streaming=true 且无内容 → LiveIteration 的空内容分支渲染
+    // ShimmerThinking（.sweep-text），与本组件的压缩指示器同时出现。
+    // 不变量：每个状态下有且只有一个状态指示器 —— 压缩期间归压缩指示器。
+    const m = msg({ isPartial: true, iterations: [] })
+    const { container } = renderMsg(
+      <AssistantMessage message={m} progress={compressing()} />,
+    )
+    expect(container.querySelectorAll('.sweep-text').length).toBe(0)
+    expect(container.textContent).not.toMatch(/思考中|thinking/)
+    expect(container.querySelector('.animate-spin')).not.toBeNull()
+  })
 })
 
 describe('AssistantMessage truncated iterations notice', () => {
