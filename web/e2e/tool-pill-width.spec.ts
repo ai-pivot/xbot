@@ -170,6 +170,9 @@ function collectGeo(): GeoDump {
     const texts: PillTextGeo[] = []
     pillBox.querySelectorAll('*').forEach((el) => {
       const h = el as HTMLElement
+      // ⚠️ `aria-hidden` = **装饰**（定宽的状态槽/图标槽/kind 头像，如 16px 圆里的 "SA"）——
+      // 它们不是可截断内容，不该受"嵌套文本必须被裁剪"约束（该断言本意是文本不能溢出 pill）。
+      if (h.closest('[aria-hidden="true"]')) return
       const hasDirectText = Array.from(h.childNodes).some(
         (n) => n.nodeType === Node.TEXT_NODE && (n.textContent || '').trim().length > 0,
       )
