@@ -207,9 +207,11 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
     : (isSyn || killed)
       ? `1px dashed color-mix(in srgb, ${isSyn ? hue : 'var(--text-muted)'} 38%, transparent)`
       : '1px solid var(--border)'
+  // ⚠️ 底色一律**不透明**：此前失败/假工具把颜色 mix 到 `transparent` ⇒ 真的半透明（能看到背景），
+  // 与成功态（`--bg-secondary` 不透明）在同一排里**透明度不一致**（用户 2026-09-15 指出：失败像半透明）。
   const bg = failed
-    ? `color-mix(in srgb, ${errColor} 8%, transparent)`
-    : isSyn ? `color-mix(in srgb, ${hue} 5%, transparent)` : 'var(--bg-secondary)'
+    ? `color-mix(in srgb, ${errColor} 10%, var(--bg-secondary))`
+    : isSyn ? `color-mix(in srgb, ${hue} 6%, var(--bg-secondary))` : 'var(--bg-secondary)'
   // 设计原则「色彩只表达状态，成功要安静」：名称一律**中性前景色**，分类色只留在左侧 3px 条 + 图标槽。
   // 原因（用户 2026-09-15）：写入类的琥珀黄名字看着像 warn —— 黄/橙/红必须只属于失败与终止。
   // 设计原则「色彩只表达状态」的精确边界（用户 2026-09-15）：
@@ -276,7 +278,9 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
         : isSyn
           ? (
             <>
-              <span data-testid="tool-pill-name" className="shrink-0" style={{ color: nameColor }}>{name}</span>
+              {/* 假工具名字是句子（"BG task done"）⇒ 允许截断；「系统」徽标 shrink-0 ⇒ **永不被裁**
+                  （此前名字 shrink-0 + pill overflow-hidden ⇒ 窄视口下徽标被裁成 "Sys…"，我自己看 mobile 样张发现的）。 */}
+              <span data-testid="tool-pill-name" className="min-w-0 shrink truncate" style={{ color: nameColor }}>{name}</span>
               {param && (
                 <span className="min-w-0 shrink truncate font-mono text-text-secondary">
                   {truncate(formatParam(param), MAX_PARAM_LEN)}
@@ -439,7 +443,7 @@ const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgres
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
-    <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+    <span data-testid="merged-pills" className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
         <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" toolName={tool.name} content={<ToolPopoverDetail tool={tool} />}>
           {toolPill(tool, t)}
@@ -583,26 +587,29 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   // 唯一形态：pill 行——每个 pill 独立浮窗（该工具 summary+参数+fancy 渲染），
   // +N 徽标弹溢出列表。行本身不是 trigger（无 ▸ 箭头，用户要求）。
   return (
-    <div className="flex flex-col gap-1.5">
+    <div
+      className="flex flex-col gap-1.5"
+      data-testid={failedCount > 0 ? 'tool-group-failed' : undefined}
+      data-failed-count={failedCount > 0 ? failedCount : undefined}
+      title={failedCount > 0 ? (i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string) : undefined}
+      aria-label={failedCount > 0 ? (i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string) : undefined}
+      style={
+        failedCount > 0
+          ? {
+              // 「工具组失败」新机制（用户 2026-09-15 要求换机制）：整组左侧 2px 红导轨 + 极淡红渐变。
+              // 导轨**不参与 pill wrap** ⇒ 与 pill 行天然对齐（浮动 chip 是所有对齐问题的根源，已删除）；
+              // 计数通过 title / aria-label 暴露（信息不丢、不占位）。
+              borderLeft: '2px solid color-mix(in srgb, var(--destructive) 62%, transparent)',
+              paddingLeft: '8px',
+              borderRadius: '6px',
+              backgroundImage:
+                'linear-gradient(90deg, color-mix(in srgb, var(--destructive) 7%, transparent), transparent 45%)',
+            }
+          : undefined
+      }
+    >
       {genuiElements}
       <div className="flex min-w-0 flex-wrap items-start gap-1.5">
-        {failedCount > 0 && (
-          <>
-            {/* 1) 度量与 pill 一致（leading-4 / py 0.5）⇒ 不再把整行顶高；
-                2) 安静的红（14% 底 + 38% 边 + 红字），响亮留给失败 pill 自身（状态只表达一次）。 */}
-            <span
-              data-testid="tool-group-failed"
-              className="h-[18px] shrink-0 rounded-full px-1.5 text-[10px] font-semibold leading-[18px]"
-              style={{
-                color: 'var(--destructive)',
-                background: 'color-mix(in srgb, var(--destructive) 14%, transparent)',
-                border: '1px solid color-mix(in srgb, var(--destructive) 38%, transparent)',
-              }}
-            >
-              {i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string}
-            </span>
-          </>
-        )}
         <div data-testid="tool-pill-row" className={ROW_ROW_CLASS}>{pillsRow}</div>
       </div>
     </div>
