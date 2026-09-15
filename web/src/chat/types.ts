@@ -129,7 +129,7 @@ export type TurnPhase =
  * 不存在 { content:"", iterations:[] } 的组合 —— 构造函数签名不接受。
  */
 export type CommittedPayload =
-  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[] }
+  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number }
   | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number }
 
 /** 唯一合法的 committed 构造入口（reducer 内使用）。 */
@@ -176,6 +176,8 @@ export interface Turn {
 
 /** legacy 历史（无 turn_id，前缀段，只读 —— reload 全量替换）。 */
 export interface LegacyRow {
+  /** 后端按 turn 尾部截断迭代上报的丢弃数量（传入渲染层显示"更早的 N 个迭代"）。 */
+  readonly iterationsTruncated?: number
   readonly id: string
   readonly role: 'user' | 'assistant'
   readonly content: string
