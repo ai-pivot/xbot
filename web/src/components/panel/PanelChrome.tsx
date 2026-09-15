@@ -15,7 +15,7 @@
  *    （glass 模式下 --bg-primary 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
  */
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
-import { ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
+import { ChevronRight, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import type { PanelBadge, PanelMode } from '@/plugin-api'
@@ -69,8 +69,6 @@ export interface PanelChromeProps {
   onUnpin?: () => void
   /** floating 专属：关闭浮窗（收回 chips）。 */
   onClose?: () => void
-  /** docked grip 拖拽重排（pointerdown 起始）。 */
-  onGripPointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** floating 标题栏拖动（pointerdown 起始；按钮区自动豁免）。 */
   onTitlePointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** 双击标题回启动器（floating 语义）。 */
@@ -80,9 +78,11 @@ export interface PanelChromeProps {
   /** v5.1 docked 展开态底边调高 handle（pointerdown 起始；拖拽协议 v5）。 */
   onResizeHeightPointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** docked 拖拽重排的插入线位置（PanelLayout 计算）。 */
-  dropIndicator?: 'before' | 'after' | null
-  /** docked 拖拽中的源面板半透明。 */
-  isDragSource?: boolean
+  /**
+   * 标题行扩展节点（渲染在标题右侧、面板按钮左侧）。
+   * 面板定义 `headerExtra(ctx)` 的产物经 PanelLayout 传入（见 plugin-api/panels.ts）。
+   */
+  headerExtra?: ReactNode
   /** floating 绝对定位（left/top/width/height 由 PanelLayout 传）。 */
   style?: CSSProperties
   /** 空态协议：render(ctx) 返回 null 时 body 显示统一空态（此文案可自定义，默认「暂无内容」）。 */
@@ -114,17 +114,15 @@ export function PanelChrome({
   mode,
   collapsed,
   pinned = false,
+  headerExtra,
   onToggleCollapse,
   onToggleMode,
   onUnpin,
   onClose,
-  onGripPointerDown,
   onTitlePointerDown,
   onTitleDoubleClick,
   onResizePointerDown,
   onResizeHeightPointerDown,
-  dropIndicator = null,
-  isDragSource = false,
   style,
   emptyHint,
   children,
@@ -152,10 +150,7 @@ export function PanelChrome({
     : {
         background: 'var(--bg-secondary)',
         boxShadow: 'inset 0 0 0 1px var(--border)',
-        opacity: isDragSource ? 0.4 : undefined,
         // 拖拽物理感：源元素轻微缩小（被"提起"的错觉）
-        transform: isDragSource ? 'scale(0.98)' : undefined,
-        pointerEvents: isDragSource ? 'none' : undefined,
         ...style,
       }
 
@@ -173,8 +168,6 @@ export function PanelChrome({
       }
       style={shellStyle}
     >
-      {dropIndicator === 'before' && <div data-drop-indicator="before" className="absolute inset-x-1 top-0 h-0.5 shrink-0 rounded bg-app-accent" />}
-      {dropIndicator === 'after' && <div data-drop-indicator="after" className="absolute inset-x-1 bottom-0 h-0.5 shrink-0 rounded bg-app-accent" />}
       {/* 标题栏 h-8。floating：整体可拖动（按钮豁免）；docked：grip 拖动。
           v5 规格 7：拖拽把手 touch-action:none（touch-none）防触摸滚动干扰。 */}
       {/* ⛔ 标题栏【不再是隐藏的折叠点击区】：点击标题文字/图标/空白处一律不折叠
@@ -194,6 +187,7 @@ export function PanelChrome({
         </span>
         {sub ? <span className="shrink-0 font-mono text-[9.5px] text-text-muted">{sub}</span> : null}
         <span className="min-w-2 flex-1" />
+        {headerExtra}
         {badge ? (
           <span
             className="shrink-0 rounded-full px-1.5 py-px text-[9px] font-semibold leading-4"
@@ -249,18 +243,6 @@ export function PanelChrome({
               className={`size-3.5 shrink-0 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
             />
           </button>
-        ) : null}
-        {!floating && onGripPointerDown ? (
-          <span
-            role="button"
-            data-testid="panel-grip"
-            aria-label={t('panel.dragReorder')}
-            title={t('panel.dragReorderHint')}
-            onPointerDown={onGripPointerDown}
-            className={`ml-0.5 flex shrink-0 cursor-grab touch-none items-center rounded-md p-2 text-text-muted transition-spring active:cursor-grabbing hover:bg-bg-tertiary/60 hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-          >
-            <GripVertical className="size-3.5" />
-          </span>
         ) : null}
       </header>
       {/* 折叠时用 display:none 而非条件渲染——保留 children 的 React state

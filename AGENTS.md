@@ -684,6 +684,12 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **类别色静态必须极淡、hover 才升饱和**：左条由 `--pill-hue` + `index.css` 的 `.tool-pill-bar` 驱动（静态 `34%`、`hover/focus-visible` 才满饱和）；名称颜色与 done 完全一致（**"进行中"靠 sweep 动画 + 脉动环 + `执行中` chip 表达，不靠改字色**，用户 2026-09-15）。
 - **溢出/分组**：>6 个 ⇒ 前 5 + `+N`（原地展开）；推荐按类别聚色（左侧 3px 色条 + 类别名），扫描成本更低。
 
+## 渠道下拉放【标题行】（`PanelDefinition.headerExtra`），不是面板主体工具条
+
+- **用户 2026-09-15：「放错位置了，要放 sessions 那一行，你放下面太挤了」** —— 面板自己的筛选/操作走**标题行扩展槽**：`PanelDefinition.headerExtra?: (ctx) => ReactNode`（`plugin-api/panels.ts`）→ `PanelLayout` 透传给 `PanelChrome` 的 `headerExtra`（渲染在标题右侧、面板按钮左侧，`badge` 之前）。
+- **`ChannelPicker`（`web/src/components/session/ChannelPicker.tsx`）是渠道筛选下拉的唯一实现**：桌面会话面板（`core.sessions` 的 `headerExtra`）与手机抽屉（`SessionSidebar`）**共用同一组件**。历史事故：`9d7e99fe`(#326) 把 `SessionSidebar` 从 `AppShell` 移出、桌面左栏换成 `PanelDock` → `CoreSessionsPanel` 后，渠道下拉只留在 `SessionSidebar` 里（而它随后只被 `MobileAppShell` 渲染）⇒ **桌面会话面板再也切不了渠道**（面板只剩「按 `store.activeChannel` 过滤」，却没有任何入口去设置它）。渠道集合由会话列表推导（`channel` + `parentChannel`，排除内部 `agent`），按 `ALL_CHANNEL_ORDER` 排序。
+- 守护：`ChannelPicker.test.tsx`（渠道集合/排序/点击 `setActiveChannel(null|ch)`）+ `PanelLayout.test.tsx` 的「headerExtra 渲染在 header 内」断言 + `builtinPanels.search.test.tsx` 的「主体工具条**不含**下拉」位置契约。**新增面板级控件时先问「放标题行还是主体」**——主体工具条只放该面板的主操作（会话面板 = 新建会话 + 搜索）。
+
 ## Responses API（`api_type=responses`）：加密思维链必须原样回传
 
 - **`include: ["reasoning.encrypted_content"]` 是无状态重放（`store:false` + 每轮发全量历史 + 从不用 `previous_response_id`）的必需参数**（`llm/openai_responses.go` 的 `responsesInclude`）：不请求它 → 服务端不返回加密思维链 → 后续轮次无法回传 → OpenAI 校验带 `function_call` 历史的重放时 400（`Item 'fc_…' of type 'function_call' was provided without its required 'reasoning' item: 'rs_…'`）。触发条件：本轮带 reasoning effort/summary，**或**历史里已有加密 reasoning（`hasEncryptedReasoning`）——非 reasoning 模型上服务端忽略该参数（openai/codex 亦无条件发送，见 `codex-rs/core/src/client.rs`）。

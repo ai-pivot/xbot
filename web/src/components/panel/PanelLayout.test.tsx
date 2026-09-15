@@ -112,13 +112,6 @@ function renderShell(): ReturnType<typeof renderWithProviders> {
   )
 }
 
-function gripOf(id: string): HTMLElement {
-  // 用 data-testid 而非 aria-label：文案已 i18n 化（t('panel.dragReorder')），
-  // 硬编码中文选择器在英文环境下必然失配。
-  const el = document.querySelector<HTMLElement>(`[data-panel-id="${id}"] [data-testid="panel-grip"]`)
-  if (!el) throw new Error(`grip of ${id} not found`)
-  return el
-}
 
 /** side 钉选堆叠当前渲染顺序（渲染序 = 重排基准的观察窗口）。 */
 function sideRenderOrder(): string[] {
@@ -399,22 +392,6 @@ describe('v5.1 Focus + Drawer', () => {
     expect(panel.style.flex).toContain('360')
   })
 
-  it('拖 side 面板到底部 chips 条 → zone chip（跨 zone 放置）', () => {
-    renderShell()
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    fireEvent.click(screen.getByLabelText('钉选 B'))
-    expect(sideRenderOrder()).toEqual(['p.a', 'p.b'])
-    const chipsHost = document.querySelector<HTMLElement>('[data-testid="panel-chip-dock"]')!
-    elementFromPointImpl = (x, y) => (x === 100 && y === 700 ? chipsHost : null)
-    const grip = gripOf('p.a')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 100, clientY: 700 })
-    fireEvent.pointerUp(grip, { clientX: 100, clientY: 700 })
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('chip')
-    expect(sideRenderOrder()).toEqual(['p.b'])
-  })
-
   it('openPanel request：chip 面板 → pin 到 side（v5.2：不再升浮窗，chip 点击 = 原地 pin 展开到侧栏）', () => {
     renderShell()
     fireEvent(window, new CustomEvent('xbot:panel-request', { detail: { id: 'p.a' } }))
@@ -465,6 +442,27 @@ describe('标题栏点击语义（标题文字/图标/空白一律不折叠）',
 
 // ── 常驻面板不变量（v5.3：core.sessions 不可浮窗/不可折叠/不可收 chips）──────
 
+
+// ── 标题行扩展槽（headerExtra）：面板自己的控件放标题那一行 ────────────────
+
+describe('标题行扩展槽 headerExtra', () => {
+  it('面板定义里的 headerExtra 渲染在【标题行内】（不在主体里）', () => {
+    registerPanel(
+      makeDef('core.sessions', '会话', {
+        source: 'core',
+        headerExtra: () => <span data-testid="hdr-extra">渠道</span>,
+        render: () => <div data-testid="body-sessions">body</div>,
+      }),
+    )
+    renderShell()
+    const panel = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')!
+    const header = panel.querySelector('header')!
+    expect(header.querySelector('[data-testid="hdr-extra"]')).not.toBeNull()
+    // 与标题同排（header 的直接子节点），且不在主体里
+    expect(panel.querySelector('[data-testid="body-sessions"] [data-testid="hdr-extra"]')).toBeNull()
+  })
+})
+
 describe('常驻面板（PINNED_DEFAULTS）不变量', () => {
   beforeEach(() => {
     registerPanel(makeDef('core.sessions', '会话', { source: 'core', icon: 'message' }))
@@ -477,12 +475,13 @@ describe('常驻面板（PINNED_DEFAULTS）不变量', () => {
     return el
   }
 
-  it('header 不渲染浮窗/折叠按钮（只剩下拖拽把手）—— 用户报"另一个有同样 bug 的按钮"', () => {
+  it('header 不渲染浮窗/折叠/拖拽把手 —— 用户报"另一个有同样 bug 的按钮" + "拖拽不需要了"', () => {
     renderShell()
     const hdr = panel().querySelector('header')!
     expect(hdr.querySelector('svg.lucide-picture-in-picture-2')).toBeNull()
     expect(hdr.querySelector('svg.lucide-chevron-right')).toBeNull()
-    expect(hdr.querySelector('[data-testid="panel-grip"]')).not.toBeNull()
+    // 隐藏的拖拽把手（opacity-0 仍占位）会让标题行右侧控件**对不齐**，且拖拽已不需要。
+    expect(hdr.querySelector('[data-testid="panel-grip"]')).toBeNull()
   })
 
   it('floatPanel / toggleCollapse 对常驻面板是 no-op（状态层兜底，防拖拽等其它入口）', () => {
@@ -523,123 +522,6 @@ describe('常驻面板（PINNED_DEFAULTS）不变量', () => {
     // 已经是合法状态时返回原引用（不制造无谓的状态变更）。
     const fine = { 'core.sessions': { loc: { zone: 'side' as const, order: 0, h: 420 }, collapsed: false } }
     expect(enforcePinnedState(fine)).toBe(fine)
-  })
-})
-
-// ── 拖拽协议 v5 ─────────────────────────────────────────────────────────────
-
-describe('拖拽协议 v5', () => {
-  beforeEach(() => {
-    registerPanel(makeDef('p.a', 'A'))
-    registerPanel(makeDef('p.b', 'B'))
-  })
-
-  it('修 bug 3：重排基于渲染序 sideIds——钉选起点拖 B 到 A 上半部 → 完整 order 落盘', () => {
-    renderShell()
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    fireEvent.click(screen.getByLabelText('钉选 B'))
-    expect(sideRenderOrder()).toEqual(['p.a', 'p.b'])
-    const elA = document.querySelector<HTMLElement>('[data-dock-item="p.a"]')!
-    vi.spyOn(elA, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 100, left: 0, width: 200 } as DOMRect)
-    elementFromPointImpl = (x, y) => (x === 100 && y === 40 ? elA : null)
-    const grip = gripOf('p.b')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 100, clientY: 40 })
-    fireEvent.pointerUp(grip, { clientX: 100, clientY: 40 })
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.b'].loc).toMatchObject({ zone: 'side', order: 0 })
-    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 1 })
-    expect(sideRenderOrder()).toEqual(['p.b', 'p.a'])
-  })
-
-  it('修 bug 1：move 中零持久化（拖动 + resize 均只改本地），up 后一次写入', () => {
-    localStorage.setItem(V2_KEY, JSON.stringify({
-      'p.a': { loc: { zone: 'floating', order: 0, x: 100, y: 100, w: 320, h: 280 }, collapsed: false },
-      'p.b': { loc: { zone: 'chip', order: 0 }, collapsed: true },
-    }))
-    renderShell()
-    const layer = document.querySelector<HTMLElement>('[data-panel-zone="floating"]')!
-    vi.spyOn(layer, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 1000, height: 800 } as DOMRect)
-    const before = localStorage.getItem(V2_KEY)
-    // resize：move 中尺寸跟随（width 370px）但 localStorage 不写。
-    const handle = document.querySelector<HTMLElement>('[data-panel-id="p.a"] [data-resize-dir="se"]')!
-    fireEvent.pointerDown(handle, { button: 0, clientX: 420, clientY: 380 })
-    fireEvent.pointerMove(handle, { clientX: 470, clientY: 430 })
-    const panel = document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!
-    expect(panel.style.width).toBe('370px')
-    expect(localStorage.getItem(V2_KEY)).toBe(before)
-    fireEvent.pointerUp(handle)
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc).toMatchObject({ w: 370, h: 330 })
-  })
-
-  it('修 bug 2：dropHint 真实写入——move 中插入线渲染，up 后清空', () => {
-    renderShell()
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    fireEvent.click(screen.getByLabelText('钉选 B'))
-    const elA = document.querySelector<HTMLElement>('[data-dock-item="p.a"]')!
-    vi.spyOn(elA, 'getBoundingClientRect').mockReturnValue({ top: 0, height: 100, left: 0, width: 200 } as DOMRect)
-    elementFromPointImpl = (x, y) => (x === 100 && y === 40 ? elA : null)
-    const grip = gripOf('p.b')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 100, clientY: 40 })
-    expect(document.querySelector('[data-panel-id="p.a"] [data-drop-indicator="before"]')).toBeInTheDocument()
-    fireEvent.pointerUp(grip, { clientX: 100, clientY: 40 })
-    expect(document.querySelector('[data-drop-indicator]')).toBeNull()
-  })
-
-  it('zone 判定：拖到 top rail → 宿主 ring 高亮 + ghost 徽章形态；up 落 top segment 按落点左右半', () => {
-    registerPanel(makeDef('p.t', 'T'))
-    localStorage.setItem(V2_KEY, JSON.stringify({
-      'p.t': { loc: { zone: 'top', order: 0 }, collapsed: true },
-    }))
-    renderShell()
-    // p.a 无持久化 → chips；钉选后进 side（拖拽源需要 grip）。
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    const rail = document.querySelector<HTMLElement>('[data-panel-zone="top"]')!
-    vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 400, height: 32 } as DOMRect)
-    elementFromPointImpl = (x, y) => (x === 100 && y === 20 ? rail : null)
-    const grip = gripOf('p.a')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 100, clientY: 20 })
-    // zone 高亮（宿主根元素）+ ghost 形态预告（非 floating → 徽章）。
-    expect(rail.getAttribute('data-zone-active')).toBe('true')
-    expect(document.querySelector('[data-testid="panel-drag-ghost"]')).toHaveAttribute('data-ghost-mode', 'badge')
-    fireEvent.pointerUp(grip, { clientX: 100, clientY: 20 })
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    // 落点 x=100 < rail 中线 200 → left 半区。
-    expect(saved['p.a'].loc).toMatchObject({ zone: 'top', segment: 'left' })
-    expect(rail.getAttribute('data-zone-active')).toBeNull()
-    expect(document.querySelector('[data-testid="panel-drag-ghost"]')).toBeNull()
-  })
-
-  it('取消路径：落点无 zone / Esc / 4px 阈值内松手 → 零状态变更', () => {
-    renderShell()
-    fireEvent.click(screen.getByLabelText('钉选 B'))
-    const pinned = localStorage.getItem(V2_KEY)
-    // 落点无 zone：up 在任何 [data-panel-zone] 之外 → 不写。
-    elementFromPointImpl = () => null
-    let grip = gripOf('p.b')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 100, clientY: 40 })
-    fireEvent.pointerUp(grip, { clientX: 100, clientY: 40 })
-    expect(localStorage.getItem(V2_KEY)).toBe(pinned)
-    // Esc：move 中按 Esc → 零变更 + 拖拽态清空。
-    elementFromPointImpl = () => document.querySelector<HTMLElement>('[data-panel-zone="side"]')
-    grip = gripOf('p.b')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 200, clientY: 40 })
-    expect(document.querySelector('[data-zone-active]')).not.toBeNull()
-    fireEvent.keyDown(window, { key: 'Escape' })
-    expect(localStorage.getItem(V2_KEY)).toBe(pinned)
-    expect(document.querySelector('[data-zone-active]')).toBeNull()
-    expect(document.querySelector('[data-testid="panel-drag-ghost"]')).toBeNull()
-    // 4px 阈值：位移 ≤ 4px 松手 = 点击误触，零变更。
-    grip = gripOf('p.b')
-    fireEvent.pointerDown(grip, { button: 0, clientX: 100, clientY: 100 })
-    fireEvent.pointerMove(grip, { clientX: 102, clientY: 100 })
-    fireEvent.pointerUp(grip, { clientX: 102, clientY: 100 })
-    expect(localStorage.getItem(V2_KEY)).toBe(pinned)
   })
 })
 

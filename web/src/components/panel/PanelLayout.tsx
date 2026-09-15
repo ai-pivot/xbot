@@ -425,7 +425,6 @@ interface PanelDockContextValue {
   focusPanel: (id: string) => void
   /** 取消钉选（side 面板 ✕）：→ 'chip'。PINNED_DEFAULTS 面板不可取消（无 ✕ 入口）。 */
   unpinPanel: (id: string) => void
-  onGripPointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   onTitlePointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   /** floating 全方向 resize（pointerdown 起始；四角+四边手柄，dir 见 ResizeDir）。 */
   onResizePointerDown: (id: string) => (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => void
@@ -856,10 +855,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [entryOf, endDrag, placeDropped, sideHintAtPoint, zoneAtPoint],
   )
 
-  const onGripPointerDown = useCallback(
-    (id: string) => (e: ReactPointerEvent<HTMLElement>) => startPanelDrag(id, e),
-    [startPanelDrag],
-  )
 
   const onTitlePointerDown = useCallback(
     (id: string) => (e: ReactPointerEvent<HTMLElement>) => startPanelDrag(id, e),
@@ -1073,7 +1068,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       pinPanel,
       focusPanel,
       unpinPanel,
-      onGripPointerDown,
       onTitlePointerDown,
       onResizePointerDown,
       onHeightPointerDown,
@@ -1083,7 +1077,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     // ⚠️ deps 必须含 state：entryOf 读 stateRef 引用稳定——collapse/拖拽落盘只改
     // state，若缺则 context value 永不重建（v4 已修，保持）。v5 另需 drag +
     // activeZone + dropHint（拖拽本地跟随渲染全靠 context 重建）。
-    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, focusPanel, unpinPanel, onGripPointerDown, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
+    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, focusPanel, unpinPanel, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
   )
 
   return <PanelDockContext.Provider value={value}>{children}</PanelDockContext.Provider>
@@ -1147,7 +1141,6 @@ export function PanelDock(): ReactNode {
                 : entry.loc.h != null
                   ? entry.loc.h
                   : (PINNED_DEFAULTS[id]?.h ?? PIN_DEFAULT_H)
-          const isDropTarget = dock.dropHint?.targetId === id
           // flex 比例分配：面板按 flex-basis(h) 比例撑满堆叠区，无空白
           const flexBasis = entry.collapsed ? 'auto' : `${h}px`
           return (
@@ -1163,10 +1156,8 @@ export function PanelDock(): ReactNode {
               onToggleCollapse={() => dock.toggleCollapse(id)}
               onToggleMode={() => dock.floatPanel(id)}
               onUnpin={PINNED_DEFAULTS[id] ? undefined : () => dock.unpinPanel(id)}
-              onGripPointerDown={dock.onGripPointerDown(id)}
-              isDragSource={dock.dragSrcId === id}
-              dropIndicator={isDropTarget ? (dock.dropHint!.before ? 'before' : 'after') : null}
               emptyHint={def.emptyHint}
+              headerExtra={def.headerExtra ? def.headerExtra({ tabManager: dock.tabManager }) : undefined}
               onResizeHeightPointerDown={id === lastExpandedId ? undefined : dock.onHeightPointerDown(id)}
               style={{
                 // ⚠️ 空间分配模型（VSCode 式）：
