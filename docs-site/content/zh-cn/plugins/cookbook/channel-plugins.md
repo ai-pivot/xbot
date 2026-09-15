@@ -3,7 +3,7 @@ title: "Channel 插件"
 weight: 9
 ---
 
-Channel 插件是贡献**完整渠道适配器**的 stdio 插件——一种新的消息传输通道（类似飞书、QQ），拥有自己的工具、系统提示词片段与 Web UI。示例：`plugin/examples/echo-channel/`（HTTP echo 渠道）、`plugin/examples/web-ui-demo/`（声明式 Web 组件），以及生产级的 `plugins/xbot-genui/`（`display_html` 工具作为渠道插件实现）。
+Channel 插件是贡献**完整渠道适配器**的 stdio 插件——一种新的消息传输通道（类似飞书），拥有自己的工具、系统提示词片段与 Web UI。示例：`plugin/examples/echo-channel/`（HTTP echo 渠道）、`plugin/examples/web-ui-demo/`（声明式 Web 组件），以及生产级的 `plugins/xbot-genui/`（`display_html` 工具作为渠道插件实现）。
 
 ## 两层协议
 

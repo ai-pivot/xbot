@@ -16,8 +16,6 @@ import (
 	"xbot/bus"
 	"xbot/channel"
 	"xbot/channel/feishu"
-	"xbot/channel/napcat"
-	"xbot/channel/qq"
 	"xbot/channel/web"
 	"xbot/config"
 	"xbot/event"
@@ -177,18 +175,6 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 			VerificationToken: cfg.Feishu.VerificationToken,
 			AllowFrom:         cfg.Feishu.AllowFrom,
 		}, msgBus)
-	case "qq":
-		return qq.NewQQChannel(qq.QQConfig{
-			AppID:        cfg.QQ.AppID,
-			ClientSecret: cfg.QQ.ClientSecret,
-			AllowFrom:    cfg.QQ.AllowFrom,
-		}, msgBus)
-	case "napcat":
-		return napcat.NewNapCatChannel(napcat.NapCatConfig{
-			WSUrl:     cfg.NapCat.WSUrl,
-			Token:     cfg.NapCat.Token,
-			AllowFrom: cfg.NapCat.AllowFrom,
-		}, msgBus)
 	default:
 		// 插件 channel：从 ChannelProviderRegistry 查找
 		reg := GetChannelProviderRegistry()
@@ -215,10 +201,6 @@ func channelShouldRun(cfg *config.Config, name string) bool {
 	switch name {
 	case "feishu":
 		return cfg.Feishu.Enabled
-	case "qq":
-		return cfg.QQ.Enabled
-	case "napcat":
-		return cfg.NapCat.Enabled
 	default:
 		// 插件 channel：从 ChannelProviderRegistry 查找并委托 IsEnabled
 		reg := GetChannelProviderRegistry()
@@ -257,26 +239,6 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 		}, msgBus)
 		disp.Register(feishuCh)
 
-	}
-
-	// 注册 QQ 渠道
-	if cfg.QQ.Enabled {
-		qqCh := qq.NewQQChannel(qq.QQConfig{
-			AppID:        cfg.QQ.AppID,
-			ClientSecret: cfg.QQ.ClientSecret,
-			AllowFrom:    cfg.QQ.AllowFrom,
-		}, msgBus)
-		disp.Register(qqCh)
-	}
-
-	// 注册 NapCat (OneBot 11) 渠道
-	if cfg.NapCat.Enabled {
-		napcatCh := napcat.NewNapCatChannel(napcat.NapCatConfig{
-			WSUrl:     cfg.NapCat.WSUrl,
-			Token:     cfg.NapCat.Token,
-			AllowFrom: cfg.NapCat.AllowFrom,
-		}, msgBus)
-		disp.Register(napcatCh)
 	}
 
 	// Multimodal image resolver is deployment-wide, NOT web-only: view_image and

@@ -5,7 +5,7 @@
  *   { enabled, ...values, _schema: "<json []SettingDefinition>", _builtin: "true"|"false" }
  * 保存走 `set_channel_config`（服务端写 config.json 并按需热启停渠道）。
  *
- * 「内置渠道」（web/feishu/qq/napcat）与「用户注册的插件渠道」共用同一套渲染：
+ * 「内置渠道」（web/feishu）与「用户注册的插件渠道」共用同一套渲染：
  * 插件渠道由 ChannelProvider.ConfigSchema() 提供 `_schema`，内置渠道由
  * channel.BuiltinChannelSchema 提供，两者形状一致。
  *

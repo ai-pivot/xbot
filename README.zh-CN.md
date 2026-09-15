@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  浏览器 · 飞书 · QQ · 终端 —— 一个 Agent，一份配置，跑在你自己的服务器上
+  浏览器 · 飞书 · 终端 —— 一个 Agent，一份配置，跑在你自己的服务器上
 </p>
 
 <p align="center">
@@ -34,12 +34,12 @@
 所有数据都留在你自己的服务器上。
 
 **Web UI 是主界面**：会话与实时流式输出、文件预览、Git diff、内置终端、
-插件面板、模型选择器，全都在浏览器里。飞书 / QQ / 终端通道把**同一个**
+插件面板、模型选择器，全都在浏览器里。飞书 / 终端通道把**同一个**
 Agent 接到团队日常使用的工具上，共用同一份 LLM 配置。
 
 | | xbot | 纯终端 Agent |
 |--|------|-------------|
-| **主界面** | **浏览器 Web UI**（+ 飞书 · QQ · CLI） | 仅终端 |
+| **主界面** | **浏览器 Web UI**（+ 飞书 · CLI） | 仅终端 |
 | **团队 LLM** | 管理员配置一次，所有人共用 | 每人自带 key |
 | **自托管** | ✅ 数据不出你的服务器 | ✅ |
 | **插件系统** | Web 视图、面板、工具、Hook、通道插件 | 有限 |
@@ -188,7 +188,7 @@ xbot 使用**订阅系统** —— 可以创建多个订阅（工作用 Claude�
 所需权限：`im:message`、`im:message.receive_v1`、
 `im:message:send_as_bot`、`contact:user.base:readonly`
 
-### QQ / NapCat / CLI
+### 其他通道
 
 见[通道文档](https://ai-pivot.github.io/xbot/zh-cn/channels/)。
 
@@ -226,7 +226,7 @@ Agent 可以在对话中调用这些工具：
 | [安装](https://ai-pivot.github.io/xbot/zh-cn/installation/) | 所有安装方式、离线与镜像 |
 | [配置](https://ai-pivot.github.io/xbot/zh-cn/configuration/) | `config.json` 参考 |
 | [插件](https://ai-pivot.github.io/xbot/zh-cn/plugins/) | Manifest、权限、Web 视图 |
-| [通道](https://ai-pivot.github.io/xbot/zh-cn/channels/) | Web · 飞书 · QQ · CLI |
+| [通道](https://ai-pivot.github.io/xbot/zh-cn/channels/) | Web · 飞书 · CLI |
 | [常见问题](https://ai-pivot.github.io/xbot/zh-cn/faq/) | FAQ |
 
 ## 许可证

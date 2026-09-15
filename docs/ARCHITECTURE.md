@@ -5,7 +5,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                           用户消息入口                               │
-│  Feishu / QQ / NapCat / Web / CLI / Cron / !bang_command          │
+│  Feishu / Web / CLI / Cron / !bang_command                        │
 └─────────────┬───────────────────────────────────────────────────────┘
               │ InboundMessage (cap=64)
               ▼
@@ -93,7 +93,7 @@ xbot/
 用户消息
   │
   ▼
-Channel 实现（feishu / qq / napcat / web / cli）
+Channel 实现（feishu / web / cli）
   │ 解析平台消息 → 构造 bus.InboundMessage
   │ 注入 bus.Inbound（cap=64 缓冲区）
   ▼
@@ -133,8 +133,6 @@ type Channel interface {
 | Channel | 协议 | 重连策略 |
 |---------|------|---------|
 | Feishu | Lark SDK (WebSocket) | SDK 内部处理 |
-| QQ | QQ Bot WebSocket | 指数退避（1s→60s），快速断连检测（5s 内 3 次 → 60s 冷却），Intent 降级，Resume 支持 |
-| NapCat | OneBot 11 WebSocket | 指数退避（同 QQ），30s 长连接重置计数 |
 | Web | HTTP + WebSocket | 客户端负责重连；服务端 WS Ping 30s，ReadDeadline 60s，离线 ringBuffer(50) |
 | CLI | 终端 | N/A |
 

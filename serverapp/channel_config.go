@@ -16,7 +16,7 @@ import (
 // channels (the CLI settings panel and the Web channels panel share them):
 //
 //	_schema  JSON []SettingDefinition — the channel's config fields
-//	_builtin "true" for the built-in channels (web/feishu/qq/napcat),
+//	_builtin "true" for the built-in channels (web/feishu),
 //	         "false" for user-registered plugin channel providers
 func getChannelConfigs() (map[string]map[string]string, error) {
 	cfg := config.LoadFromFile(config.ConfigFilePath())
@@ -36,16 +36,6 @@ func getChannelConfigs() (map[string]map[string]string, error) {
 		"encrypt_key":        cfg.Feishu.EncryptKey,
 		"verification_token": cfg.Feishu.VerificationToken,
 		"domain":             cfg.Feishu.Domain,
-	}
-	result["qq"] = map[string]string{
-		"enabled":       strconv.FormatBool(cfg.QQ.Enabled),
-		"app_id":        cfg.QQ.AppID,
-		"client_secret": cfg.QQ.ClientSecret,
-	}
-	result["napcat"] = map[string]string{
-		"enabled": strconv.FormatBool(cfg.NapCat.Enabled),
-		"ws_url":  cfg.NapCat.WSUrl,
-		"token":   cfg.NapCat.Token,
 	}
 	for _, name := range channel.BuiltinChannelNames {
 		if entry, ok := result[name]; ok {
@@ -126,26 +116,6 @@ func setChannelConfig(ch string, values map[string]string, reconfigureFn func(st
 		}
 		if v, ok := values["domain"]; ok {
 			cfg.Feishu.Domain = v
-		}
-	case "qq":
-		if v, ok := values["enabled"]; ok {
-			cfg.QQ.Enabled, _ = strconv.ParseBool(v)
-		}
-		if v, ok := values["app_id"]; ok {
-			cfg.QQ.AppID = v
-		}
-		if v, ok := values["client_secret"]; ok {
-			cfg.QQ.ClientSecret = v
-		}
-	case "napcat":
-		if v, ok := values["enabled"]; ok {
-			cfg.NapCat.Enabled, _ = strconv.ParseBool(v)
-		}
-		if v, ok := values["ws_url"]; ok {
-			cfg.NapCat.WSUrl = v
-		}
-		if v, ok := values["token"]; ok {
-			cfg.NapCat.Token = v
 		}
 	default:
 		// 插件 channel：写入 config.Channels[name]

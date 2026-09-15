@@ -3,7 +3,7 @@ title: "Channel Plugins"
 weight: 9
 ---
 
-Channel plugins are stdio plugins that contribute a **full channel adapter** — a new message transport (like Feishu or QQ) with its own tools, system prompt parts, and web UI. Examples: `plugin/examples/echo-channel/` (HTTP echo channel), `plugin/examples/web-ui-demo/` (declarative web components), and the production `plugins/xbot-genui/` (the `display_html` tool as a channel plugin).
+Channel plugins are stdio plugins that contribute a **full channel adapter** — a new message transport (like Feishu) with its own tools, system prompt parts, and web UI. Examples: `plugin/examples/echo-channel/` (HTTP echo channel), `plugin/examples/web-ui-demo/` (declarative web components), and the production `plugins/xbot-genui/` (the `display_html` tool as a channel plugin).
 
 ## Two protocol layers
 

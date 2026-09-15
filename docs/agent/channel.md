@@ -20,7 +20,7 @@ IDs and are independent from the semantic progress watermark.
 ### Text-based progress (PreReplyNotifier channels)
 
 Channels without structured display (Feishu streams the turn into a CardKit
-card, QQ sends progress as separate messages) implement
+card) implement
 `channel.PreReplyNotifier` and receive per-iteration progress as **text lines**
 via `RunConfig.ProgressNotifier` → `a.sendMessage`. This must be keyed by
 **channel capability** (`wantsPreReplyNotify`, i.e. `autoNotify` passed into
@@ -140,7 +140,7 @@ pick them up. `--app-id` / the panel's `app_id` field are pre-filled from
 
 设置 → 渠道 renders EVERY channel from `get_channel_config`:
 
-- built-ins (web/feishu/qq/napcat) — schema from
+- built-ins (web/feishu) — schema from
   `channel.BuiltinChannelSchema` (`channel/channel_defs.go`, the single source of
   truth shared with the CLI settings panel),
 - user-registered plugin channels — schema from `ChannelProvider.ConfigSchema()`.
@@ -186,7 +186,6 @@ channel/              # Root package — shared core types, interfaces, infrastr
 ├── setting_helpers.go
 ├── card_converter.go # ConvertFeishuCard (shared by CLI + Web)
 ├── mock.go           # MockChannel for testing
-├── ws_base.go        # WSChannelBase (shared by QQ + NapCat)
 ├── i18n.go           # Internationalization: zh/en UI strings (~1390 lines)
 ├── channel_cli.go    # ChannelCliChannel: WS bridge for remote CLI
 ├── cli_msg_builder.go # CliMsg: message builder (shared by CLI + Web)
@@ -194,8 +193,6 @@ channel/              # Root package — shared core types, interfaces, infrastr
 channel/cli/          # CLI BubbleTea TUI (~44k lines)
 channel/feishu/       # Feishu webhook + settings UI
 channel/web/          # REST + SSE Web server, WebSocket RemoteCLIChannel, auth
-channel/qq/           # QQ bot (WebSocket)
-channel/napcat/       # NapCat HTTP API
 ```
 
 ## Files
@@ -229,8 +226,6 @@ channel/napcat/       # NapCat HTTP API
 | `web_api.go` | REST API endpoints (~1901 lines) |
 | `web_auth.go` | OAuth/token auth (~670 lines) |
 | `web_fs.go` | Filesystem REST API (`/api/fs/list`, `/read`, `/search`, `/stat`); single-level `os.ReadDir`, path-traversal guard, 2MB read cap, language-from-extension map (~511 lines) |
-| `qq.go` | QQ bot API (~1736 lines) |
-| `napcat.go` | NapCat HTTP API (~821 lines) |
 | `i18n.go` | Internationalization: zh/en UI strings (~1390 lines) |
 | `mermaid.go` | Mermaid → ASCII chart rendering |
 

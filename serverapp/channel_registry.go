@@ -8,7 +8,7 @@ import (
 )
 
 // ChannelProviderRegistry 管理 ChannelProvider 的注册与查找。
-// 内置 channel（feishu/qq/napcat/web）不经过此 registry，
+// 内置 channel（web/feishu）不经过此 registry，
 // 只有插件注册的 ChannelProvider 才存储在这里。
 // 全局单例，通过 SetChannelProviderRegistry / GetChannelProviderRegistry 访问。
 type ChannelProviderRegistry struct {

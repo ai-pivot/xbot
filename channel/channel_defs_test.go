@@ -36,7 +36,7 @@ func TestBuiltinChannelSchema_UnknownIsNil(t *testing.T) {
 }
 
 func TestBuiltinChannelNames_MatchesKnownChannels(t *testing.T) {
-	want := []string{"web", "feishu", "qq", "napcat"}
+	want := []string{"web", "feishu"}
 	if len(BuiltinChannelNames) != len(want) {
 		t.Fatalf("BuiltinChannelNames: got %v, want %v", BuiltinChannelNames, want)
 	}
