@@ -60,3 +60,61 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
   await page.screenshot({ path: '/tmp/pillvis/desktop.png', fullPage: true })
   await ctx.close()
 })
+
+/**
+ * 用户 2026-09-15 追加的两条硬要求（必须先有几何断言，否则"一行一个"永远抓不到）：
+ *   A. **同行合并**：390px 宽手机下必须**至少有两个 pill 共享同一行**（旧实现 max-w-full 是容器百分比
+ *      ⇒ 长参数时每个 pill 独占一行；修复=恒定 `max-width: min(46vw, 15rem)`）。
+ *   B. **左对齐**：所有 pill 的 icon 槽与名字首字符必须**同一 x**（恒定 16px 图标槽 + 恒定 3px 左色条
+ *      + 「系统」角标移到名字之后）。
+ * 旧断言只查"pill ≤ 行宽"，一行一个时同样成立 —— 所以那两个断言漏掉了这个 bug。
+ */
+test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ browser }) => {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const page = await ctx.newPage()
+  const LONG = { name: 'Shell', label: 'Shell: cargo check --workspace --all-targets --profile release',
+    status: 'done', summary: 'ok', detail: 'ok' }
+  const msgs = [
+    { id: 1, role: 'user', content: 'run', timestamp: new Date().toISOString(), turn_id: 1 },
+    { id: 2, role: 'assistant', content: 'ok', timestamp: new Date().toISOString(), turn_id: 1, iterations: [
+      { iteration: 1, content: 'ok', reasoning: '', tools: [
+        LONG,
+        { name: 'Grep', label: 'Grep: shared_experts.*scale', status: 'done', summary: 'ok', detail: 'ok' },
+        { name: 'Read', label: 'Read: /home/smith/src/xbot/AGENTS.md', status: 'done', summary: 'ok', detail: 'ok' },
+        { name: 'background_task_result', label: '后台任务已完成', status: 'done', detail: 'ok',
+          toolHints: JSON.stringify({ kind: 'bg_task', task_id: '3f8f492a', status: 'done' }) },
+      ] },
+    ] },
+  ]
+  await setupMock(page, msgs)
+  await page.goto('/')
+
+  const pills = page.locator('[data-testid="tool-pill"]')
+  const n = await pills.count()
+  expect(n).toBeGreaterThanOrEqual(3)
+
+  // A. 同行合并：offsetTop 必须出现重复（即不止一个 pill 在同一行）
+  const tops: number[] = []
+  for (let i = 0; i < n; i++) {
+    const box = await pills.nth(i).boundingBox()
+    if (box) tops.push(Math.round(box.y))
+  }
+  const uniqueTops = new Set(tops).size
+  expect(uniqueTops, `pill 必须同行合并（390px 下 ${n} 个 pill 占了 ${uniqueTops} 行）`).toBeLessThan(tops.length)
+
+  // B. 左对齐：所有 icon 槽 / 名字首字符同一 x（±1px）
+  for (const sel of ['[data-testid="tool-pill-icon"]', '[data-testid="tool-pill-name"]']) {
+    const nodes = page.locator(sel)
+    const m = await nodes.count()
+    const xs: number[] = []
+    for (let i = 0; i < m; i++) {
+      const box = await nodes.nth(i).boundingBox()
+      if (box) xs.push(box.x)
+    }
+    expect(m, `${sel} 至少要有 3 个样本`).toBeGreaterThanOrEqual(3)
+    expect(Math.max(...xs) - Math.min(...xs), `${sel} 必须左对齐（x 差值 ${(Math.max(...xs) - Math.min(...xs)).toFixed(1)}px）`).toBeLessThanOrEqual(1)
+  }
+
+  await page.screenshot({ path: '/tmp/pillvis/mobile-row.png', fullPage: true })
+  await ctx.close()
+})

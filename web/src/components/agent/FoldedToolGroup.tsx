@@ -171,9 +171,17 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       data-tool-name={tool.name}
       data-tool-status={failed ? 'error' : killed ? 'killed' : pending ? 'pending' : executing || generating ? 'running' : 'done'}
       className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full py-0.5 pl-1 pr-2 text-[11px] font-medium"
-      style={{ border, background: bg }}
+      // ⚠️ `max-w-full` 是**容器百分比**（对 nowrap 文本等价"最多整行"）⇒ 长参数时每个 pill 独占一行。
+      // 必须给**确定**的 max-width，才是设计稿的一行 2–3 个。
+      style={{ border, background: bg, maxWidth: 'min(46vw, 15rem)' }}
     >
-      {failed && <span aria-hidden className="h-3.5 w-[3px] shrink-0 rounded-full" style={{ background: errColor }} />}
+      {/* 左 3px 色条：**每个** pill 都有（失败=红实条 / 终止=灰虚线 / 其余=分类色）——
+          恒定槽位是"所有 pill 的 icon 与首字符左对齐"的前提（用户 2026-09-15 明确要求）。 */}
+      <span
+        aria-hidden
+        className="h-3.5 w-[3px] shrink-0 rounded-full"
+        style={{ background: killed ? 'transparent' : failed ? errColor : hue, borderRight: killed ? '3px dotted var(--text-muted)' : undefined }}
+      />
       {failed ? (
         <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-extrabold leading-none text-white" style={{ background: errColor }}>✕</span>
       ) : killed ? (
@@ -185,27 +193,29 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       ) : (
         <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-extrabold leading-none" style={{ color: okColor, border: `1.5px solid ${okColor}` }}>✓</span>
       )}
-      {isSyn ? (
-        <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full text-[8px] font-extrabold leading-none text-black/80" style={{ background: hue }}>{syntheticKindBadge(kind)}</span>
-      ) : (
-        (() => {
-          const Icon = getToolIcon(tool.name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
-          return <Icon className="size-3 shrink-0" style={{ color: hue }} />
-        })()
-      )}
-      {isSyn && (
-        <span aria-hidden className="shrink-0 rounded-[4px] border px-1 text-[9px] font-extrabold leading-4" style={{ color: hue, borderColor: `color-mix(in srgb, ${hue} 50%, transparent)` }}>系统</span>
-      )}
+      {/* 图标槽位：真工具（12px glyph）与假工具（16px 字母头像）都塞进**同一个 16px 方槽** ——
+          槽位宽度恒定是"所有 pill 的 icon 列与名字首字符左对齐"的前提（用户 2026-09-15 要求）。 */}
+      <span aria-hidden data-testid="tool-pill-icon" className="flex size-4 shrink-0 items-center justify-center">
+        {isSyn
+          ? <span className="flex size-4 items-center justify-center rounded-full text-[8px] font-extrabold leading-none text-black/80" style={{ background: hue }}>{syntheticKindBadge(kind)}</span>
+          : (() => {
+              const Icon = getToolIcon(tool.name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+              return <Icon className="size-3" style={{ color: hue }} />
+            })()}
+      </span>
       {executing && !isSubAgentTool(tool)
         ? <SweepText text={label} color={nameColor} className={`min-w-0 truncate ${isSyn ? '' : 'font-mono'}`} />
         : isSyn
           ? (
             <>
-              <span className="min-w-0 truncate" style={{ color: nameColor }}>{name}</span>
+              <span data-testid="tool-pill-name" className="min-w-0 truncate" style={{ color: nameColor }}>{name}</span>
               {param && <span className="min-w-0 truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
             </>
           )
-          : <span className="min-w-0 truncate font-mono" style={{ color: nameColor }}>{label}</span>}
+          : <span data-testid="tool-pill-name" className="min-w-0 truncate font-mono" style={{ color: nameColor }}>{label}</span>}
+      {isSyn && (
+        <span aria-hidden className="shrink-0 rounded-[4px] border px-1 text-[9px] font-extrabold leading-4" style={{ color: hue, borderColor: `color-mix(in srgb, ${hue} 50%, transparent)` }}>系统</span>
+      )}
       {statusText && (
         <span aria-hidden className="shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-bold leading-4" style={{ color: statusFg, background: statusBg }}>{statusText}</span>
       )}
