@@ -1422,11 +1422,8 @@
  *   ① 每个 tab 有**最小宽度**（标题永远可读）与最大宽度（不浪费空间）；
  *   ② 放不下时**横向滚动**（而不是无限压缩）；
  *   ③ 悬停显示完整标题（TabHeader 已设 title 属性）。 */
-.dockview-theme-vs .dv-tabs-container {
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-}
+/* ⚠️ 不要给 .dv-tabs-container 加 overflow —— dockview 自带溢出下拉（⌄ N，VSCode 语义）；
+   再加横向滚动会两套机制并存（下拉计数与滚动位置不同步）＝用户说的「下拉栏交互冲突」。 */
 .dockview-theme-vs .dv-tab {
   min-width: 104px;
   max-width: 220px;
