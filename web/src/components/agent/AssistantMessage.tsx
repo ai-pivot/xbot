@@ -8,7 +8,7 @@
  *
  * Streaming state: 流式时 TurnBody 追加 LiveIteration 渲染进行中迭代。
  */
-import { memo, useCallback } from 'react'
+import { memo } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
