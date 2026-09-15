@@ -148,8 +148,9 @@ export const LiveIteration = memo(function LiveIteration({
       (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
     )
     const allTools = dedupTools([
-      ...currentStreaming,
-      ...currentActive,
+      // streaming（未提交）工具标记：pill 据此渲染 sweep 标签
+      ...currentStreaming.map((t) => ({ ...t, streaming: true })),
+      ...currentActive.map((t) => ({ ...t, streaming: true })),
       ...filteredCompleted,
       // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
       // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个

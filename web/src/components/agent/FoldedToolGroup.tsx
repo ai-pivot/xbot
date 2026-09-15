@@ -273,7 +273,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
               return <Icon className="size-3" style={{ color: executing || generating ? hue : failed ? errColor : hueQuiet }} />
             })()}
       </span>
-      {executing && !isSubAgentTool(tool)
+      {((executing || (tool as { streaming?: boolean }).streaming === true) && !isSubAgentTool(tool))
         ? <SweepText text={label} color={nameColor} className={`min-w-0 truncate ${isSyn ? '' : 'font-mono'}`} />
         : isSyn
           ? (
