@@ -185,7 +185,10 @@ export function CopyTarget({
     <>
       <div
         data-copy-target={kind}
-        className={className}
+        // ⚠️ 包裹层自身必须 `min-w-0`：它常被插进 flex 行里（如 tools ⊂ iteration ⊂ message），
+        // flex 子项默认 `min-width: auto` ⇒ 拒绝收缩到内容宽度以下 ⇒ 长参数把整行撑满，
+        // 手机端 pill 退化成"一行一个"（2026-09-15 用户报告；根因就是我这一层漏了 min-w-0）。
+        className={className ? `min-w-0 ${className}` : 'min-w-0'}
         onContextMenu={(e) => {
           // 右键会冒泡：嵌套目标（tools ⊂ iteration ⊂ message）里只让**最内层**开菜单，
           // 否则会同时弹出 3 个菜单（用户右键工具时显然只要工具那一份）。
