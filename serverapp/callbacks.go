@@ -421,7 +421,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap),
+			Messages:       channel.BoundHistoryIterations(channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,

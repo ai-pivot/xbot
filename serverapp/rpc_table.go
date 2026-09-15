@@ -1304,7 +1304,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 					}
 				}
 			}
-			return channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap), nil
+			return channel.BoundHistoryIterations(channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)), nil
 		}()
 		if err != nil {
 			return nil, err
