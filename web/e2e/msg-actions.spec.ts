@@ -77,7 +77,9 @@ test.describe('复制入口（右键 / 长按）', () => {
     expect(await iterTargets.count(), 'iterations 数量 == 复制目标数量').toBe(ITERATIONS.length)
 
     // ③ 右键**有思考**的迭代 → 菜单含「复制这段思考」；空项按设计被过滤（不给无内容的复制项）
-    await iterTargets.nth(0).click({ button: 'right' })
+    // 右键要点在**迭代块自身**（左上角的思考/留白区），而不是内层 tools 目标上 ——
+    // 否则按"嵌套最内层优先"设计会开工具菜单（这是正确行为，不是 bug）。
+    await iterTargets.nth(0).click({ button: 'right', position: { x: 6, y: 6 } })
     const menu0 = page.locator('[data-testid="copy-menu"]')
     await expect(menu0).toBeVisible()
     await expect(menu0).toContainText('复制这段思考')
@@ -86,7 +88,7 @@ test.describe('复制入口（右键 / 长按）', () => {
     await page.keyboard.press('Escape')
 
     // ④ 右键**只有正文**的迭代 → 「复制该迭代正文」只复制该迭代（不串到别的迭代）
-    await iterTargets.nth(1).click({ button: 'right' })
+    await iterTargets.nth(1).click({ button: 'right', position: { x: 6, y: 6 } })
     const menu1 = page.locator('[data-testid="copy-menu"]')
     await expect(menu1).toContainText('复制该迭代正文')
     await menu1.getByText('复制该迭代正文').click()
