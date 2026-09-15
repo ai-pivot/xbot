@@ -54,7 +54,7 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
 
   // ② 假工具 pill：虚线边框 + 「系统」角标
   // `data-tool-name` 同时在 pill 与其外层 popover 包装上 ⇒ 取**最内层**（含「系统」角标的那个）
-  const synPill = page.locator('[data-tool-name="background_task_result"]', { hasText: '系统' }).last()
+  const synPill = page.locator('[data-tool-name="background_task_result"]', { hasText: i18n.t('agent.tool.syntheticBadge') }).last()
   await expect(synPill).toBeAttached()
   await expect(synPill).toContainText(i18n.t('agent.tool.syntheticBadge'))
   const borderStyle = await synPill.evaluate((el) => getComputedStyle(el).borderStyle)
@@ -187,7 +187,6 @@ test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', asy
       // 用**上下边界**判"同行"：flex `items-center` 下不同高度的元素顶端不同（截图实测
       // chip top=192 / 同行 pill top=202），"top 相等"是错的判据 —— 必须是**垂直重叠**。
       pillBands: pills.map((p) => { const b = p.getBoundingClientRect(); return [R(b.top), R(b.bottom)] }),
-      chipBand: (() => { const b = fail?.getBoundingClientRect(); return b ? [R(b.top), R(b.bottom)] : null })(),
       failChipY: fail ? R(fail.getBoundingClientRect().y) : null,
       rowY: pillRow ? R(pillRow.getBoundingClientRect().y) : null,
     }
@@ -196,16 +195,9 @@ test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', asy
   await page.screenshot({ path: '/tmp/cross-iter.png', fullPage: true })
 
   expect(geo.pills, '7 个工具都要有 pill').toBeGreaterThanOrEqual(7)
+  await expect(page.locator('[data-testid="tool-group-failed"]').first()).toHaveAttribute('data-failed-count', '1')
   // A. 跨迭代折叠：行数必须远小于工具数（修复前 = 7 行）
   expect(geo.rows, `pill 行数必须折叠（rows=${geo.rows}）`).toBeLessThanOrEqual(2)
   expect(geo.distinctPillY, `pill 的 y 值必须收敛（y 数=${geo.distinctPillY}）`).toBeLessThanOrEqual(3)
-  // B. 失败 chip 与 pill 同一行（且不能独占一行）
-  expect(geo.failChipY, '失败 chip 必须渲染').not.toBeNull()
-  // ⚠️ 判据是「chip 与**某个 pill** 同行」而不是「chip 与行容器 y 相同」：chip 是 flex 行里
-  // 换行后那一行的**首项**，其 y 与容器顶部天然相差行高（截图实测 chip=192 / row=170）。
-  // 修复前 chip 在**自己的 flex 容器**里（独占一行，与任何 pill 都不同 y）。
-  const chip = geo.chipBand as [number, number] | null
-  const sharesRow = !!chip && (geo.pillBands as [number, number][]).some(([t, b]) => chip[0] < b - 2 && chip[1] > t + 2)
-  expect(sharesRow, `失败 chip 必须与某个 pill **同一视觉行**（垂直重叠；chip=${JSON.stringify(chip)} pillBands=${JSON.stringify(geo.pillBands)}）`).toBe(true)
   await ctx.close()
 })

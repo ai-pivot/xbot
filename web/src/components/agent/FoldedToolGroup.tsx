@@ -282,7 +282,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
                   （此前名字 shrink-0 + pill overflow-hidden ⇒ 窄视口下徽标被裁成 "Sys…"，我自己看 mobile 样张发现的）。 */}
               <span data-testid="tool-pill-name" className="min-w-0 shrink truncate" style={{ color: nameColor }}>{name}</span>
               {param && (
-                <span className="min-w-0 shrink truncate font-mono text-text-secondary">
+                <span className="min-w-0 truncate font-mono text-text-secondary" style={{ flexShrink: 1000 }}>
                   {truncate(formatParam(param), MAX_PARAM_LEN)}
                 </span>
               )}
@@ -291,9 +291,9 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
           : (
             <>
               {/* 名字优先：**不截断**（用户 2026-09-15：「工具名尽可能显示全」）——先截参数 */}
-              <span data-testid="tool-pill-name" className="shrink-0 font-mono" style={{ color: nameColor }}>{name}</span>
+              <span data-testid="tool-pill-name" className="min-w-0 truncate font-mono" style={{ color: nameColor, flexShrink: 1 }}>{name}</span>
               {param && (
-                <span className="min-w-0 shrink truncate font-mono text-text-secondary">
+                <span className="min-w-0 truncate font-mono text-text-secondary" style={{ flexShrink: 1000 }}>
                   {truncate(formatParam(param), MAX_PARAM_LEN)}
                 </span>
               )}
