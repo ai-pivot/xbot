@@ -10,7 +10,6 @@
  */
 import { memo, useCallback } from 'react'
 import { Loader2 } from 'lucide-react'
-import { toast } from 'sonner'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { MessageActions } from './MessageActions'
@@ -90,12 +89,6 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
-  // Copy markdown content to clipboard
-  const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(message.content).then(() => {
-      toast.success(t('agent.copyMarkdownDone'))
-    })
-  }, [message.content, t])
 
   // Action bar shown for completed (non-streaming) messages with content.
 

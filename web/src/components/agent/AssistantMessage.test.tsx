@@ -23,11 +23,6 @@ function msg(over: Partial<ChatMessage>): ChatMessage {
   }
 }
 
-// The copy button's title is localized (en: 'Copy Markdown', zh-CN: '复制 Markdown').
-function copyButton() {
-  return screen.queryByTitle(/Copy Markdown|复制 Markdown/)
-}
-
 function iter(content: string, iteration = 1): WebIteration {
   return { iteration, content, reasoning: '', tools: [], toolCount: 0 }
 }
