@@ -74,8 +74,13 @@ function formatParam(raw: string): string {
     const obj = JSON.parse(text) as Record<string, unknown>
     const parts: string[] = []
     for (const [k, v] of Object.entries(obj)) {
-      if (v === null || typeof v === 'object') continue
-      parts.push(`${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
+      if (Array.isArray(v)) {
+        parts.push(`${k}: ${v.join(', ')}`)
+      } else if (v === null || typeof v === 'object') {
+        continue // 嵌套对象不做花哨展开（不猜、不丢信息）
+      } else {
+        parts.push(`${k}: ${String(v)}`)
+      }
       if (parts.length >= 2) break
     }
     return parts.length > 0 ? parts.join(' · ') : raw
@@ -271,7 +276,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
         : isSyn
           ? (
             <>
-              <span data-testid="tool-pill-name" className="min-w-0 truncate" style={{ color: nameColor }}>{name}</span>
+              <span data-testid="tool-pill-name" className="shrink-0" style={{ color: nameColor }}>{name}</span>
               {param && (
                 <span className="min-w-0 shrink truncate font-mono text-text-secondary">
                   {truncate(formatParam(param), MAX_PARAM_LEN)}
@@ -281,7 +286,8 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
           )
           : (
             <>
-              <span data-testid="tool-pill-name" className="min-w-0 shrink truncate font-mono" style={{ color: nameColor }}>{name}</span>
+              {/* 名字优先：**不截断**（用户 2026-09-15：「工具名尽可能显示全」）——先截参数 */}
+              <span data-testid="tool-pill-name" className="shrink-0 font-mono" style={{ color: nameColor }}>{name}</span>
               {param && (
                 <span className="min-w-0 shrink truncate font-mono text-text-secondary">
                   {truncate(formatParam(param), MAX_PARAM_LEN)}
