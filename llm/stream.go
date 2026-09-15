@@ -108,6 +108,9 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 	var resp LLMResponse
 	var content strings.Builder
 	var reasoningContent strings.Builder
+	// Responses API 的 reasoning items（含 encrypted_content）——必须原样回传，
+	// 跨流式事件累积（见 llm/openai_responses.go）。
+	var reasoningItems []ReasoningItem
 	toolCalls := make(map[int]*ToolCallDelta) // index → accumulated delta
 	var gotDone bool                          // tracks whether EventDone was explicitly received
 
@@ -169,6 +172,7 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 			resp.Content = content.String()
 			resp.ReasoningContent = reasoningContent.String()
 			resp.ToolCalls = orderedToolCalls(toolCalls)
+			resp.ReasoningItems = reasoningItems
 			finalizeStats()
 			return &resp, err
 		}
@@ -179,6 +183,7 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 			resp.Content = content.String()
 			resp.ReasoningContent = reasoningContent.String()
 			resp.ToolCalls = orderedToolCalls(toolCalls)
+			resp.ReasoningItems = reasoningItems
 			finalizeStats()
 			return &resp, ctx.Err()
 
@@ -187,6 +192,7 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 			resp.Content = content.String()
 			resp.ReasoningContent = reasoningContent.String()
 			resp.ToolCalls = orderedToolCalls(toolCalls)
+			resp.ReasoningItems = reasoningItems
 			finalizeStats()
 			return &resp, fmt.Errorf("stream idle timeout after %v: %w", streamIdleTimeout, context.DeadlineExceeded)
 
@@ -196,6 +202,7 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 					resp.Content = content.String()
 					resp.ReasoningContent = reasoningContent.String()
 					resp.ToolCalls = orderedToolCalls(toolCalls)
+					resp.ReasoningItems = reasoningItems
 					finalizeStats()
 					return &resp, fmt.Errorf("stream ended without EventDone (possible truncation)")
 				}
@@ -203,6 +210,7 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 				resp.Content = content.String()
 				resp.ReasoningContent = reasoningContent.String()
 				resp.ToolCalls = orderedToolCalls(toolCalls)
+				resp.ReasoningItems = reasoningItems
 				finalizeStats()
 
 				// Infer finish_reason from actual response data.
@@ -237,6 +245,33 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 			case EventReasoningContent:
 				reasoningContent.WriteString(ev.ReasoningContent)
 				safeCallback(ctx, onReasoning, reasoningContent.String())
+			case EventReasoningItem:
+				// Responses API：reasoning item（id/encrypted_content/summary）。
+				// 同一 id 可能来两次（output_item.done 与 response.completed），
+				// 后者补齐 encrypted_content ⇒ 按 id 合并而不是重复追加。
+				if ev.ReasoningItem == nil {
+					continue
+				}
+				merged := false
+				for i := range reasoningItems {
+					if reasoningItems[i].ID != ev.ReasoningItem.ID {
+						continue
+					}
+					if ev.ReasoningItem.EncryptedContent != "" {
+						reasoningItems[i].EncryptedContent = ev.ReasoningItem.EncryptedContent
+					}
+					if ev.ReasoningItem.Summary != "" {
+						reasoningItems[i].Summary = ev.ReasoningItem.Summary
+					}
+					if ev.ReasoningItem.Content != "" {
+						reasoningItems[i].Content = ev.ReasoningItem.Content
+					}
+					merged = true
+					break
+				}
+				if !merged {
+					reasoningItems = append(reasoningItems, *ev.ReasoningItem)
+				}
 			case EventToolCall:
 				if ev.ToolCall == nil {
 					continue
@@ -298,6 +333,7 @@ func CollectStreamWithCallbackFrom(ctx context.Context, eventCh <-chan StreamEve
 					resp.Content = content.String()
 					resp.ReasoningContent = reasoningContent.String()
 					resp.ToolCalls = orderedToolCalls(toolCalls)
+					resp.ReasoningItems = reasoningItems
 					finalizeStats()
 					return &resp, fmt.Errorf("stream error: %s", ev.Error)
 				}

@@ -183,13 +183,20 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	if msg.DisplayOnly {
 		displayOnly = 1
 	}
+	// Responses API reasoning items（含 encrypted_content）——必须原样回传，
+	// 因此随消息一起持久化（见 llm/openai_responses.go 与 v66 迁移）。
+	reasoningItemsJSON, err := marshalReasoningItems(msg.ReasoningItems)
+	if err != nil {
+		return 0, err
+	}
 	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		 detail, display_only, reasoning_content, record_type, created_at, turn_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?)
+		 detail, display_only, reasoning_content, reasoning_items, record_type, created_at, turn_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
-		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent, ts.Format(time.RFC3339), msg.TurnID)
+		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent, reasoningItemsJSON,
+		ts.Format(time.RFC3339), msg.TurnID)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)
 	}
@@ -695,7 +702,7 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 	query := `
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
-		       reasoning_content, display_only, created_at, turn_id
+		       reasoning_content, reasoning_items, display_only, created_at, turn_id
 		FROM session_messages WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if fromHistoryID > 0 {
@@ -716,12 +723,12 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 	for rows.Next() {
 		var record HistoryRecord
 		var rawData, role, content, createdAt string
-		var toolCallID, toolName, toolArguments, toolCallsJSON, detail, reasoning sql.NullString
+		var toolCallID, toolName, toolArguments, toolCallsJSON, detail, reasoning, reasoningItems sql.NullString
 		var displayOnly int
 		var turnID sql.NullInt64
 		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
 			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
-			&reasoning, &displayOnly, &createdAt, &turnID); err != nil {
+			&reasoning, &reasoningItems, &displayOnly, &createdAt, &turnID); err != nil {
 			return nil, fmt.Errorf("scan history record: %w", err)
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
@@ -747,6 +754,11 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 			if reasoning.Valid {
 				record.Message.ReasoningContent = reasoning.String
 			}
+			if reasoningItems.Valid && reasoningItems.String != "" {
+				if err := json.Unmarshal([]byte(reasoningItems.String), &record.Message.ReasoningItems); err != nil {
+					return nil, fmt.Errorf("history_id %d: decode reasoning_items: %w", record.HistoryID, err)
+				}
+			}
 			if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 				if err := json.Unmarshal([]byte(toolCallsJSON.String), &record.Message.ToolCalls); err != nil {
 					return nil, fmt.Errorf("history_id %d: decode tool_calls: %w", record.HistoryID, err)
@@ -762,6 +774,19 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		decorateCompressionRanges(records)
 	}
 	return records, nil
+}
+
+// marshalReasoningItems 序列化 Responses API 的 reasoning items（空列表 ⇒ ""）。
+// 它们必须**原样**回传给后续请求（见 llm/openai_responses.go），故随消息持久化。
+func marshalReasoningItems(items []llm.ReasoningItem) (string, error) {
+	if len(items) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return "", fmt.Errorf("marshal reasoning_items: %w", err)
+	}
+	return string(b), nil
 }
 
 func decorateCompressionRanges(records []HistoryRecord) {

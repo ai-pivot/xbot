@@ -684,6 +684,13 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **类别色静态必须极淡、hover 才升饱和**：左条由 `--pill-hue` + `index.css` 的 `.tool-pill-bar` 驱动（静态 `34%`、`hover/focus-visible` 才满饱和）；名称颜色与 done 完全一致（**"进行中"靠 sweep 动画 + 脉动环 + `执行中` chip 表达，不靠改字色**，用户 2026-09-15）。
 - **溢出/分组**：>6 个 ⇒ 前 5 + `+N`（原地展开）；推荐按类别聚色（左侧 3px 色条 + 类别名），扫描成本更低。
 
+## Responses API（`api_type=responses`）：加密思维链必须原样回传
+
+- **`include: ["reasoning.encrypted_content"]` 是无状态重放（`store:false` + 每轮发全量历史 + 从不用 `previous_response_id`）的必需参数**（`llm/openai_responses.go` 的 `responsesInclude`）：不请求它 → 服务端不返回加密思维链 → 后续轮次无法回传 → OpenAI 校验带 `function_call` 历史的重放时 400（`Item 'fc_…' of type 'function_call' was provided without its required 'reasoning' item: 'rs_…'`）。触发条件：本轮带 reasoning effort/summary，**或**历史里已有加密 reasoning（`hasEncryptedReasoning`）——非 reasoning 模型上服务端忽略该参数（openai/codex 亦无条件发送，见 `codex-rs/core/src/client.rs`）。
+- **reasoning item 必须逐字段原样回传**（原 `id` + `encrypted_content` + `summary`/`content`）：`ChatMessage.ReasoningItems`（`llm/types.go` 的 `ReasoningItem`）保存服务端原值，`toResponsesParams` **优先用它**；**绝不要**伪造 `rs_<id>_<n>` 当回传 id（明文兜底只留给老数据 / 只给文本的兼容网关）。捕获点：非流式 `resp.Output` 里 `type=="reasoning"`；流式 `response.output_item.done` + `response.completed.response.output`（**后者才带 encrypted_content** ⇒ `llm/stream.go` 按 id 合并去重，`EventReasoningItem`）。
+- **跨轮次持久化**：`session_messages.reasoning_items`（schema **v66** + `migrateV65ToV66`，`tableExists`+`columnExists` 双守卫幂等）+ `appendMessageWith` 写入 / `getHistoryFromWith` 读回。agent 侧接线：`engine_run.go` 主 assistant 消息与 `out.ReasoningItems`、`agent_process.go` 最终回复、`card_handler.go` 卡片路径（`agent.RunOutput.ReasoningItems`）。⚠️ **加列必须同时改 `storage/sqlite/db.go` 的 `schemaVersion` 常量与 `schema.go` 的 `INSERT INTO schema_version`**（测试用常量断言版本，漏改 → storage 测试红）。
+- 其它 message 转换加固（`message 也要检查`）：assistant **空文本消息不再发出**（OpenAI 拒 "content or tool_calls must be set"）；`max_output_tokens` **只在 >0 时带上**（0 会被 API 拒）；reasoning item 紧邻其后必须跟着它的 `function_call`/`output`（顺序由 `toResponsesParams` 保证）。Tests: `llm/openai_responses_test.go` 的 `TestToResponsesParams_EchoesEncryptedReasoningVerbatim` / `TestResponsesInclude_ReasoningEncryptedContent` / `TestCollectStream_MergesReasoningItemsByID` / `TestGenerateResponses_CapturesEncryptedReasoning`。
+
 ## 侧栏面板标题栏：只有显式控件可折叠（不留"隐藏点击区"）
 
 - **⛔ docked 面板标题栏【不再】把点击当折叠**（2026-09-15 用户：「点 `Sessions` 这个词有bug，别的位置没有」）。旧实现给 `<header>` 挂了 `onClick`（"按钮/grip 以外区域 = 切换折叠"），于是**点标题文字/图标/空白都会收面板**；而左栏唯一的展开面板被收掉后，`panel-dock-stack` 的渲染过滤（`visibleSideIds`）让侧栏**什么都不剩**，用户看到一整片黑 = "侧栏坏了"。**折叠只有一个显式控件：`⌄` 按钮**（`t('panel.collapse')`；左侧图标栏点激活项 = 收起整栏，另一条独立语义）。floating 面板的标题拖动/双击语义不变。

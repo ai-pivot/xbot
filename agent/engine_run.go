@@ -1111,6 +1111,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				ToolsUsed: s.toolsUsed,
 			})
 			out.ReasoningContent = response.ReasoningContent
+			out.ReasoningItems = response.ReasoningItems
 			return out, false
 		}
 
@@ -1196,6 +1197,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			WaitingUser: s.waitingUser,
 		})
 		out.ReasoningContent = response.ReasoningContent
+		out.ReasoningItems = response.ReasoningItems
 		return out, false
 	}
 	return nil, false
@@ -1246,8 +1248,11 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		Role:             "assistant",
 		Content:          strings.TrimRight(response.Content, " \t"),
 		ReasoningContent: response.ReasoningContent,
-		ToolCalls:        response.ToolCalls,
-		TurnID:           s.cfg.TurnID,
+		// Responses API：reasoning items（含 encrypted_content）必须随该 assistant
+		// 消息一起回传（下一迭代 / 下一轮都要原样重放）。
+		ReasoningItems: response.ReasoningItems,
+		ToolCalls:      response.ToolCalls,
+		TurnID:         s.cfg.TurnID,
 	}
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
 
