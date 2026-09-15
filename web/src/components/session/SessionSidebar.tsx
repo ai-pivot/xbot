@@ -77,6 +77,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
+  /** 搜索输入框 ref：开关按钮点击手势内同步 focus（手机软键盘要手势同任务）。 */
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
 
   // 会话搜索默认隐藏（低频操作）；收起时一并清空查询，避免隐藏的过滤条件让
   // 列表"莫名其妙变短"。开关按钮与「+ 新会话」主按钮同排。
@@ -85,8 +87,13 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
     setSearch('')
   }, [])
   const toggleSearch = useCallback(() => {
-    if (searchOpen) closeSearch()
-    else setSearchOpen(true)
+    if (searchOpen) {
+      closeSearch()
+      return
+    }
+    // ⚠️ 手势内同步 focus（手机软键盘只在手势同任务里打开）。
+    searchInputRef.current?.focus()
+    setSearchOpen(true)
   }, [searchOpen, closeSearch])
   const [channelPickerOpen, setChannelPickerOpen] = useState(false)
 
@@ -389,7 +396,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           )}
           style={{ flexBasis: 0 }}
         >
-          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} className="ml-1.5" />
+          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} inputRef={searchInputRef} className="ml-1.5" />
         </div>
         <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>

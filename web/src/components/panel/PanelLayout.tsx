@@ -260,6 +260,33 @@ export function defaultPanelLayout(defsInDefOrder: readonly PanelDefinition[]): 
 }
 
 /**
+ * PINNED_DEFAULTS 面板（core.sessions）的**不变量**：永远 `{zone:'side', collapsed:false}`。
+ *
+ * 这些面板是左栏的常驻内容（`unpinPanel` 早已拒绝"取消钉选"）：一旦被折叠/浮窗/
+ * 收进 chips，左栏就只剩空态提示 —— 用户看到的是"点一下会话面板没了"。状态层统一
+ * 收敛（而不是各入口各写一遍 guard），持久化/跨设备同步过来的旧状态也会自愈。
+ */
+export function enforcePinnedState(state: PanelLayoutState): PanelLayoutState {
+  let changed = false
+  const next: PanelLayoutState = { ...state }
+  for (const [id, e] of Object.entries(state)) {
+    const pinned = PINNED_DEFAULTS[id]
+    if (!pinned) continue
+    if (e.loc.zone === 'side' && !e.collapsed) continue
+    next[id] = {
+      collapsed: false,
+      loc: {
+        zone: 'side',
+        order: e.loc.order,
+        h: Math.max(DOCK_H_MIN, Math.min(DOCK_H_MAX, e.loc.h ?? pinned.h)),
+      },
+    }
+    changed = true
+  }
+  return changed ? next : state
+}
+
+/**
  * v2 → v5.1 迁移（纯函数，幂等）：v5 无钉选概念——持久化中 zone 'side' 的
  * 非 sessions 面板全部 → 'chip'（用户可再钉选）；side 的 h 规范化到拖拽 clamp
  * 边界；chip 清掉无意义的高度/分段/浮层字段。重复执行结果一致。
@@ -453,7 +480,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     const list = panelRegistry.listPanels()
     const known = new Set(list.map((d) => d.id))
     const loaded = parsePanelLayoutV2(safeGet(LS_KEY_V2), known) ?? migrateV1Layout(safeGet(LS_KEY_V1), known)
-    return loaded ? migrateV2Layout(loaded) : defaultPanelLayout(list)
+    return enforcePinnedState(loaded ? migrateV2Layout(loaded) : defaultPanelLayout(list))
   })
   const stateRef = useRef(state)
   stateRef.current = state
@@ -469,7 +496,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     const handler = () => {
       const known = new Set(panelRegistry.listPanels().map((d) => d.id))
       const loaded = parsePanelLayoutV2(safeGet(LS_KEY_V2), known)
-      if (loaded) setState(migrateV2Layout(loaded))
+      if (loaded) setState(enforcePinnedState(migrateV2Layout(loaded)))
     }
     window.addEventListener(SETTINGS_SYNCED_EVENT, handler)
     return () => window.removeEventListener(SETTINGS_SYNCED_EVENT, handler)
@@ -512,6 +539,11 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
 
   const toggleCollapse = useCallback(
     (id: string) => {
+      // ⛔ PINNED_DEFAULTS（core.sessions）不可折叠：它是左栏的常驻内容，收起后
+      // 整个面板（含自己的 header）从堆叠里消失、左栏只剩空态提示 —— 用户看到
+      // 的就是"点一下会话面板没了"（2026-09-15：「sessions 这一行还有一个有完全
+      // 一样的 bug 的按钮」）。整栏收起请用左侧图标栏点激活项 / 边缘把手。
+      if (PINNED_DEFAULTS[id]) return
       update((prev) => {
         const cur = prev[id] ?? entryOf(id)
         return { ...prev, [id]: { ...cur, collapsed: !cur.collapsed } }
@@ -602,9 +634,13 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [update, entryOf],
   )
 
-  /** 升浮窗：主区中上部落位（layer 宽 40% × 高 22%，阶梯 offset 防重叠）。 */
+  /** 升浮窗：主区中上部落位（layer 宽 40% × 高 22%，阶梯 offset 防重叠）。
+   *  ⛔ PINNED_DEFAULTS（core.sessions）不可升浮窗——它是左栏的常驻内容，浮走
+   *  等于左栏空掉（用户 2026-09-15：「就 sessions 这一行还有一个有完全一样的
+   *  bug 的按钮」；与 `unpinPanel` 拒绝「取消钉选」同一语义）。 */
   const floatPanel = useCallback(
     (id: string) => {
+      if (PINNED_DEFAULTS[id]) return
       const c = layerRectOf(layerElRef.current)
       const def = defMap.get(id)
       const w = def?.defaultSize?.w ?? Math.round(c.width * 0.4)
@@ -663,6 +699,9 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     (id: string, ev: { clientX: number; clientY: number }) => {
       const zone = zoneAtPoint(ev.clientX, ev.clientY)
       if (!zone) return // 取消：零状态变更
+      // ⛔ 常驻面板（PINNED_DEFAULTS/core.sessions）只能在左栏内重排：拖到
+      // floating / chip / 其他 zone 一律拒绝（否则同样会让左栏空掉）。
+      if (PINNED_DEFAULTS[id] && zone !== 'side') return
       const cur = stateRef.current[id] ?? entryOf(id)
       const d = dragRef.current
       if (zone === 'floating') {
@@ -1120,6 +1159,7 @@ export function PanelDock(): ReactNode {
               badge={def.badges?.() ?? null}
               mode="docked"
               collapsed={entry.collapsed}
+              pinned={PINNED_DEFAULTS[id] !== undefined}
               onToggleCollapse={() => dock.toggleCollapse(id)}
               onToggleMode={() => dock.floatPanel(id)}
               onUnpin={PINNED_DEFAULTS[id] ? undefined : () => dock.unpinPanel(id)}

@@ -55,6 +55,13 @@ export interface PanelChromeProps {
   badge?: PanelBadge | null
   mode: PanelMode
   collapsed: boolean
+  /**
+   * v5.3 常驻面板（PINNED_DEFAULTS/core.sessions）：**不可折叠、不可浮窗**——它是
+   * 左栏的常驻内容，任何"离开左栏/从堆叠消失"的动作都只留下一个空左栏，用户看到
+   * 的是"点一下会话面板没了"（2026-09-15：「sessions 这一行还有一个有完全一样的 bug
+   * 的按钮」）。这两颗按钮因此不渲染（状态层 `enforcePinnedState` 同时兜底不变量）。
+   */
+  pinned?: boolean
   onToggleCollapse: () => void
   /** 停靠⇄浮动切换。 */
   onToggleMode: () => void
@@ -106,6 +113,7 @@ export function PanelChrome({
   badge,
   mode,
   collapsed,
+  pinned = false,
   onToggleCollapse,
   onToggleMode,
   onUnpin,
@@ -197,14 +205,17 @@ export function PanelChrome({
             {badge.text}
           </span>
         ) : null}
-        <button
-          {...iconButtonProps(floating ? t('panel.recall') : t('panel.float'))}
-          onPointerDown={stop}
-          onClick={onToggleMode}
-          className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-        >
-          {floating ? <PanelLeft className="size-3.5" /> : <PictureInPicture2 className="size-3.5" />}
-        </button>
+        {/* 停靠⇄浮动：常驻面板（pinned）不渲染——浮走等于左栏空掉。 */}
+        {floating || !pinned ? (
+          <button
+            {...iconButtonProps(floating ? t('panel.recall') : t('panel.floatAction'))}
+            onPointerDown={stop}
+            onClick={onToggleMode}
+            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
+          >
+            {floating ? <PanelLeft className="size-3.5" /> : <PictureInPicture2 className="size-3.5" />}
+          </button>
+        ) : null}
         {!floating && onUnpin ? (
           <button
             {...iconButtonProps(t('panel.unpin'))}
@@ -225,16 +236,20 @@ export function PanelChrome({
             <X className="size-3.5" />
           </button>
         ) : null}
-        <button
-          {...iconButtonProps(collapsed ? t('panel.expand') : t('panel.collapse'))}
-          onPointerDown={stop}
-          onClick={onToggleCollapse}
-          className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-        >
-          <ChevronRight
-            className={`size-3.5 shrink-0 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
-          />
-        </button>
+        {/* 折叠：常驻面板（pinned）不渲染——收起后它连同自己的 header 一起从堆叠
+            消失，左栏只剩空态提示（用户报的"点一下会话面板没了"）。 */}
+        {floating || !pinned ? (
+          <button
+            {...iconButtonProps(collapsed ? t('panel.expand') : t('panel.collapse'))}
+            onPointerDown={stop}
+            onClick={onToggleCollapse}
+            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
+          >
+            <ChevronRight
+              className={`size-3.5 shrink-0 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
+            />
+          </button>
+        ) : null}
         {!floating && onGripPointerDown ? (
           <span
             role="button"

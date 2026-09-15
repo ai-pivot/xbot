@@ -39,6 +39,7 @@ import {
   PanelDock,
   PanelDockProvider,
   defaultPanelLayout,
+  enforcePinnedState,
   migrateV1Layout,
   migrateV2Layout,
   parsePanelLayoutV2,
@@ -452,11 +453,76 @@ describe('标题栏点击语义（标题文字/图标/空白一律不折叠）',
     expect(localStorage.getItem(V2_KEY)).toBeNull()
   })
 
-  it('⌄ 折叠按钮仍可折叠；折叠后左栏给空态提示（不再是一整片黑）', () => {
+  it('⌄ 折叠按钮仍可折叠普通面板；折叠后左栏给空态提示（不再是一整片黑）', () => {
+    registerPanel(makeDef('p.a', 'A'))
     renderShell()
-    fireEvent.click(within(sessionsPanel()).getByLabelText('折叠'))
-    expect(sideRenderOrder()).toEqual([])
-    expect(screen.getByText('暂无钉选面板')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('钉选 A'))
+    expect(sideRenderOrder()).toEqual(['core.sessions', 'p.a'])
+    fireEvent.click(within(document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!).getByLabelText('折叠'))
+    expect(sideRenderOrder()).toEqual(['core.sessions'])
+  })
+})
+
+// ── 常驻面板不变量（v5.3：core.sessions 不可浮窗/不可折叠/不可收 chips）──────
+
+describe('常驻面板（PINNED_DEFAULTS）不变量', () => {
+  beforeEach(() => {
+    registerPanel(makeDef('core.sessions', '会话', { source: 'core', icon: 'message' }))
+    registerPanel(makeDef('p.a', 'A'))
+  })
+
+  function panel(): HTMLElement {
+    const el = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')
+    if (!el) throw new Error('core.sessions not rendered')
+    return el
+  }
+
+  it('header 不渲染浮窗/折叠按钮（只剩下拖拽把手）—— 用户报"另一个有同样 bug 的按钮"', () => {
+    renderShell()
+    const hdr = panel().querySelector('header')!
+    expect(hdr.querySelector('svg.lucide-picture-in-picture-2')).toBeNull()
+    expect(hdr.querySelector('svg.lucide-chevron-right')).toBeNull()
+    expect(hdr.querySelector('[data-testid="panel-grip"]')).not.toBeNull()
+  })
+
+  it('floatPanel / toggleCollapse 对常驻面板是 no-op（状态层兜底，防拖拽等其它入口）', () => {
+    renderShell()
+    expect(panel().style.flex).toContain('420')
+    // 拖到主区（floating）+ 点折叠按钮两条路径都不该改变常驻面板状态。
+    fireEvent(window, new CustomEvent('xbot:panel-request', { detail: { id: 'core.sessions' } }))
+    expect(sideRenderOrder()).toContain('core.sessions')
+    const saved = localStorage.getItem(V2_KEY)
+    if (saved) {
+      expect(JSON.parse(saved)['core.sessions'].loc.zone).toBe('side')
+      expect(JSON.parse(saved)['core.sessions'].collapsed).toBe(false)
+    }
+  })
+
+  it('持久化里的旧状态（被折叠/浮窗/chip）在加载时自愈回 side+展开', () => {
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'core.sessions': { loc: { zone: 'floating', order: 0, x: 40, y: 40, w: 300, h: 200 }, collapsed: true },
+      'p.a': { loc: { zone: 'side', order: 1, h: 360 }, collapsed: false },
+    }))
+    renderShell()
+    // 面板回到左栏堆叠（而不是浮层/chip）且展开可见。
+    expect(sideRenderOrder()).toContain('core.sessions')
+    expect(document.querySelector('[data-panel-zone="floating"] [data-panel-id="core.sessions"]')).toBeNull()
+    expect(panel().querySelector('header')).not.toBeNull()
+  })
+
+  it('enforcePinnedState（纯函数）：浮窗/chip/折叠的旧状态 → side + 展开 + h clamp', () => {
+    const healed = enforcePinnedState({
+      'core.sessions': { loc: { zone: 'floating', order: 0, x: 10, y: 10, w: 300, h: 900 }, collapsed: true },
+      'p.a': { loc: { zone: 'chip', order: 1 }, collapsed: true },
+    })
+    expect(healed['core.sessions'].loc.zone).toBe('side')
+    expect(healed['core.sessions'].collapsed).toBe(false)
+    expect(healed['core.sessions'].loc.h).toBe(640) // clamp 到 DOCK_H_MAX
+    // 非常驻面板不受影响。
+    expect(healed['p.a'].loc.zone).toBe('chip')
+    // 已经是合法状态时返回原引用（不制造无谓的状态变更）。
+    const fine = { 'core.sessions': { loc: { zone: 'side' as const, order: 0, h: 420 }, collapsed: false } }
+    expect(enforcePinnedState(fine)).toBe(fine)
   })
 })
 
@@ -635,6 +701,7 @@ describe('皮肤 theme token 化', () => {
     // side entry 会被 migrateV2Layout 迁到 chip。floating entry 必须带 order
     // （isValidPanelEntry：order 缺失 → 整个 entry 丢弃）。
     registerPanel(makeDef('core.sessions', '会话'))
+    registerPanel(makeDef('p.a', 'A'))
     localStorage.setItem(V2_KEY, JSON.stringify({
       'p.float': { loc: { zone: 'floating', order: 0, x: 10, y: 20, w: 300, h: 200 }, collapsed: false },
     }))
@@ -653,8 +720,13 @@ describe('皮肤 theme token 化', () => {
     expect(side.style.boxShadow).toContain('var(--border)')
     expect(side.style.boxShadow).not.toContain('255,255,255')
     // hover 反馈走语义类（曾硬编码 hover:bg-white/5，light 主题下 hover 不可见）。
-    expect(side.querySelector('button')!.className).toContain('hover:bg-bg-tertiary/60')
-    expect(side.querySelector('button')!.className).not.toContain('hover:bg-white/5')
+    // ⚠️ core.sessions 是常驻面板（v5.3）——它不渲染浮窗/折叠按钮，header 只剩
+    // 拖拽把手；所以钉选一个普通面板（p.a）来断言按钮皮肤。
+    fireEvent.click(screen.getByLabelText('钉选 A'))
+    const btn = document.querySelector<HTMLElement>('[data-panel-id="p.a"] header button')!
+    expect(btn).not.toBeNull()
+    expect(btn.className).toContain('hover:bg-bg-tertiary/60')
+    expect(btn.className).not.toContain('hover:bg-white/5')
   })
 })
 
