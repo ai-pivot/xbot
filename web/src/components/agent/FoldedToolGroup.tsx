@@ -226,7 +226,6 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
     <span
       data-tool-name={tool.name}
       data-tool-status={failed ? 'error' : killed ? 'killed' : pending ? 'pending' : executing || generating ? 'running' : 'done'}
-      className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full py-0.5 pl-1 pr-2 text-[11px] font-medium"
       // ⚠️ 上限**不能**写在这里：pill 的包含块是外层 `LazyPillPopover` wrapper（内容定宽 = indefinite），
       // 规范规定百分比 max-width 对 indefinite 包含块**按 none 处理** ⇒ `calc(50% - 8px)` 完全失效，
       // 只剩 15rem=240px 生效 ⇒ 手机 362px 行宽下 240×2+gap > 362 ⇒ **每个 pill 独占一行**
