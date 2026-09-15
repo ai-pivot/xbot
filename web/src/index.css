@@ -1433,3 +1433,17 @@
 .dockview-theme-vs .dv-tab > * {
   min-width: 0;
 }
+
+/* ── tab 溢出：**横向滚动**（用户 2026-09-15 明确：「我要滚动不要下拉」）────────────────────
+ * 关键：**必须同时关掉 dockview 自带的下拉**，否则又是两套机制并存（上次用户报的
+ * 「下拉栏交互冲突」）。通配选择器覆盖 dockview 的溢出控件类名，不必依赖确切类名。 */
+.dockview-theme-vs .dv-tabs-container,
+.dockview-theme-vs .dv-tabs-container > * {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin;
+}
+[class*='dv-tabs-overflow'],
+[class*='tabs-overflow'] {
+  display: none !important;
+}
