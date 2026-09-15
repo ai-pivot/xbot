@@ -387,6 +387,40 @@ export class MessageStore {
    * 等价原 reconcile 的 watermark 规则）。进行中 turn（有 live）保留。
    * loadMore（无 replace）是增量合并（迭代 union）。
    */
+  /**
+   * 状态指纹（幂等 reload 判定）：内容按**值**比较。
+   *
+   * 存在的理由（用户 2026-09-15：「切换 session 后什么也不做，过 0.5s 内容会突然闪烁一下」）：
+   * 切会话 = 两次数据到达 —— ① `reload()` 的首拉；② SSE 连上后 `restoreActiveProgress` 的
+   * done/null 分支**按契约无条件再 reload 一次**。第二次写入的是**同一份 DB 快照**，但
+   * `mergeHistory` 原先**无条件** `bumpCommitted()+invalidate()` ⇒ `syncMessages()` 换掉
+   * `messages` 数组 ⇒ 整表重渲染 + 滚动重锚 = 可见闪烁。
+   * 幂等：指纹未变 ⇒ 不通知（渲染层零重渲染，与 reducer 的 `sameTurnMap` 快路径同一原则）。
+   */
+  private stateKey(): string {
+    const slotPart = this.turnIDs.map((tid) => {
+      const s = this.slots.get(tid)
+      if (!s) return `${tid}:`
+      const u = s.user
+        ? `${s.user.id ?? ''}/${(s.user as { dbID?: number }).dbID ?? ''}/${s.user.content ?? ''}`
+        : ''
+      const iters = (s.assistant?.iterations ?? [])
+        .map((i) => `${i.iteration}:${i.content ?? ''}:${i.reasoning ?? ''}:${(i.tools ?? []).map((t) => t.name).join('+')}`)
+        .join('|')
+      const a = s.assistant
+        ? `${(s.assistant as { dbID?: number }).dbID ?? ''}/${s.assistant.content ?? ''}/[${iters}]`
+        : ''
+      return `${tid}:${u}|${a}`
+    }).join(';')
+    const legacyPart = this.legacy
+      .map((r) => `${r.id ?? ''}/${(r as { dbID?: number }).dbID ?? ''}/${r.role}/${r.content ?? ''}`)
+      .join(';')
+    const pendPart = this.pendingUsers
+      .map((r) => `${r.id ?? ''}/${r.content ?? ''}/${r.turnID}`)
+      .join(';')
+    return `${slotPart};;${legacyPart};;${pendPart}`
+  }
+
   mergeHistory(rows: ChatMessage[], opts?: { replace?: boolean; watermark?: number }): void {
     if (opts?.replace) {
       const rowTurns = new Set<number>()
@@ -422,6 +456,7 @@ export class MessageStore {
         this.pendingUsers = []
       }
     }
+    const beforeKey = this.stateKey()
     for (const row of rows) {
       if (row.turnID > 0) {
         let slot = this.slots.get(row.turnID)
@@ -460,6 +495,9 @@ export class MessageStore {
         this.addLegacy(row)
       }
     }
+    // ⚠️ 幂等：内容未变（同一份 DB 快照的第二次 reload）⇒ **不通知**。
+    // 否则每次切会话都会在 0.5s 后多一次整表重渲染（用户报告的"闪烁一下"）。
+    if (this.stateKey() === beforeKey) return
     this.bumpCommitted()
     this.invalidate()
   }
