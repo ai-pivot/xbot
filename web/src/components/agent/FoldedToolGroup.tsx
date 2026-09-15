@@ -131,8 +131,7 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
  */
 function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const status = singleStatus(tool)
-  const running = status === 'running'
-  const failed = status === 'all-failed'
+    const failed = status === 'all-failed'
   const raw = (tool.status || '').toLowerCase()
   const killed = raw === 'killed' || raw === 'aborted' || raw === 'cancelled'
   const pending = raw === 'pending'
