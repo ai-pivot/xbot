@@ -29,7 +29,7 @@ import { useI18n } from '@/providers/i18n'
 import { syntheticKindOf } from './SyntheticToolCard'
 import { CATEGORY_COLOR, syntheticKindBadge, syntheticKindColor, toolCategory } from './toolVisuals'
 
-import { Check, X } from 'lucide-react'
+import { Check, Minus, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 
 /** Max param preview length in folded row. */
@@ -171,9 +171,11 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       data-tool-name={tool.name}
       data-tool-status={failed ? 'error' : killed ? 'killed' : pending ? 'pending' : executing || generating ? 'running' : 'done'}
       className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full py-0.5 pl-1 pr-2 text-[11px] font-medium"
-      // ⚠️ `max-w-full` 是**容器百分比**（对 nowrap 文本等价"最多整行"）⇒ 长参数时每个 pill 独占一行。
-      // 必须给**确定**的 max-width，才是设计稿的一行 2–3 个。
-      style={{ border, background: bg, maxWidth: 'min(46vw, 15rem)' }}
+      // ⚠️ 上限**不能**写在这里：pill 的包含块是外层 `LazyPillPopover` wrapper（内容定宽 = indefinite），
+      // 规范规定百分比 max-width 对 indefinite 包含块**按 none 处理** ⇒ `calc(50% - 8px)` 完全失效，
+      // 只剩 15rem=240px 生效 ⇒ 手机 362px 行宽下 240×2+gap > 362 ⇒ **每个 pill 独占一行**
+      // （2026-09-15 用户真机截图 + E2E 实测：4 个 pill 占 4 行）。上限见 wrapper（那里包含块=行宽，definite）。
+      style={{ border, background: bg }}
     >
       {/* 左 3px 色条：**每个** pill 都有（失败=红实条 / 终止=灰虚线 / 其余=分类色）——
           恒定槽位是"所有 pill 的 icon 与首字符左对齐"的前提（用户 2026-09-15 明确要求）。 */}
@@ -182,17 +184,22 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
         className="h-3.5 w-[3px] shrink-0 rounded-full"
         style={{ background: killed ? 'transparent' : failed ? errColor : hue, borderRight: killed ? '3px dotted var(--text-muted)' : undefined }}
       />
-      {failed ? (
-        <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-extrabold leading-none text-white" style={{ background: errColor }}>✕</span>
-      ) : killed ? (
-        <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold leading-none" style={{ color: 'var(--text-muted)', border: '1.5px dashed var(--border)' }}>–</span>
-      ) : executing || generating ? (
-        <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: hue, animation: 'pulse-blue 1.2s infinite' }} />
-      ) : pending ? (
-        <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ border: '1.5px solid var(--text-muted)' }} />
-      ) : (
-        <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-extrabold leading-none" style={{ color: okColor, border: `1.5px solid ${okColor}` }}>✓</span>
-      )}
+      {/* 状态标记：**恒定 14px 槽**，所有状态都塞进同一个 `size-3.5` 盒子 —— running 的点（6px）比
+          done 的勾（14px）小 8px，槽位不定宽会让 icon 与名字整体左移（用户 2026-09-15 实测
+          「执行中的工具和执行完毕的 align 有问题」）。 */}
+      <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center">
+        {failed ? (
+          <span className="flex size-3.5 items-center justify-center rounded-full text-white" style={{ background: errColor }}><X className="size-2.5" strokeWidth={3.5} /></span>
+        ) : killed ? (
+          <span className="flex size-3.5 items-center justify-center rounded-full" style={{ color: 'var(--text-muted)', border: '1.5px dashed var(--border)' }}><Minus className="size-2.5" strokeWidth={3} /></span>
+        ) : executing || generating ? (
+          <span className="size-1.5 rounded-full" style={{ background: hue, animation: 'pulse-blue 1.2s infinite' }} />
+        ) : pending ? (
+          <span className="size-1.5 rounded-full" style={{ border: '1.5px solid var(--text-muted)' }} />
+        ) : (
+          <span className="flex size-3.5 items-center justify-center rounded-full" style={{ color: okColor, border: `1.5px solid ${okColor}` }}><Check className="size-2.5" strokeWidth={3.5} /></span>
+        )}
+      </span>
       {/* 图标槽位：真工具（12px glyph）与假工具（16px 字母头像）都塞进**同一个 16px 方槽** ——
           槽位宽度恒定是"所有 pill 的 icon 列与名字首字符左对齐"的前提（用户 2026-09-15 要求）。 */}
       <span aria-hidden data-testid="tool-pill-icon" className="flex size-4 shrink-0 items-center justify-center">
@@ -325,7 +332,11 @@ function LazyPillPopover({
             setOpen(true)
           }
         }}
-        className="inline-flex min-w-0 max-w-full cursor-pointer items-center transition-opacity hover:opacity-85"
+        className="inline-flex min-w-0 cursor-pointer items-center transition-opacity hover:opacity-85"
+        // ⚠️ 上限**必须是不含百分比**的确定值：wrapper 的包含块是 flex item（内容尺寸 = indefinite），
+        // 百分比（`50%`）在里面无法解析 ⇒ Chrome 把整个 `min()` 当作 `none` ⇒ **上限等于没有**
+        // （2026-09-15 真机仍一行一个的根因；`50vw` 是视口单位，永远可解析）。
+        style={{ maxWidth: 'min(calc(50vw - 32px), 15rem)' }}
       >
         {children}
       </span>
@@ -334,7 +345,7 @@ function LazyPillPopover({
   return (
     <Popover open onOpenChange={(o) => { if (!o) setOpen(false) }}>
       <PopoverTrigger asChild>
-        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 max-w-full cursor-pointer items-center transition-opacity hover:opacity-85">
+        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 cursor-pointer items-center transition-opacity hover:opacity-85" style={{ maxWidth: 'min(calc(50vw - 32px), 15rem)' }}>
           {children}
         </span>
       </PopoverTrigger>

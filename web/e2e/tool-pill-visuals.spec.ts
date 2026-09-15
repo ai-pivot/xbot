@@ -74,16 +74,17 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
 test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ browser }) => {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } })
   const page = await ctx.newPage()
-  const LONG = { name: 'Shell', label: 'Shell: cargo check --workspace --all-targets --profile release',
-    status: 'done', summary: 'ok', detail: 'ok' }
+  // ⚠️ 全部用**真实长参数**：短参数下"没有上限也能挤在一行" ⇒ 断言会假绿（2026-09-15 踩过：
+  // 4 个 short label 的 pill 恰好同行合并，掩盖了真机长参数一行一个的 bug）。
   const msgs = [
     { id: 1, role: 'user', content: 'run', timestamp: new Date().toISOString(), turn_id: 1 },
     { id: 2, role: 'assistant', content: 'ok', timestamp: new Date().toISOString(), turn_id: 1, iterations: [
       { iteration: 1, content: 'ok', reasoning: '', tools: [
-        LONG,
-        { name: 'Grep', label: 'Grep: shared_experts.*scale', status: 'done', summary: 'ok', detail: 'ok' },
-        { name: 'Read', label: 'Read: /home/smith/src/xbot/AGENTS.md', status: 'done', summary: 'ok', detail: 'ok' },
-        { name: 'background_task_result', label: '后台任务已完成', status: 'done', detail: 'ok',
+        { name: 'Shell', label: 'cd /home/smith/src/xbot && cargo check --workspace --all-targets', status: 'done', summary: 'ok', detail: 'ok' },
+        { name: 'Shell', label: 'cd /home/smith/src/xbot && cargo test --workspace --release', status: 'done', summary: 'ok', detail: 'ok' },
+        { name: 'Grep', label: 'Grep: shared_experts.*gate|expert_gate.*shared', status: 'done', summary: 'ok', detail: 'ok' },
+        { name: 'Read', label: 'Read: /home/smith/src/xbot/docs/agent/architecture.md', status: 'done', summary: 'ok', detail: 'ok' },
+        { name: 'background_task_result', label: '后台任务已完成: cargo build --release', status: 'done', detail: 'ok',
           toolHints: JSON.stringify({ kind: 'bg_task', task_id: '3f8f492a', status: 'done' }) },
       ] },
     ] },
@@ -110,19 +111,28 @@ test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ b
   const uniqueTops = new Set(tops).size
   expect(uniqueTops, `pill 必须同行合并（390px 下 ${n} 个 pill 占了 ${uniqueTops} 行）`).toBeLessThan(tops.length)
 
-  // B. 左对齐：所有 icon 槽 / 名字首字符同一 x（±1px）
-  for (const sel of ['[data-testid="tool-pill-icon"]', '[data-testid="tool-pill-name"]']) {
-    const nodes = page.locator(sel)
-    const m = await nodes.count()
-    const xs: number[] = []
-    for (let i = 0; i < m; i++) {
-      const box = await nodes.nth(i).boundingBox()
-      if (box) xs.push(box.x)
-    }
-    expect(m, `${sel} 至少要有 3 个样本`).toBeGreaterThanOrEqual(3)
-    expect(Math.max(...xs) - Math.min(...xs), `${sel} 必须左对齐（x 差值 ${(Math.max(...xs) - Math.min(...xs)).toFixed(1)}px）`).toBeLessThanOrEqual(1)
+  // B. **列对齐**（用户原话「所有工具开头第一个字符以及 icon 都必须对齐」）：
+  //    判据是**每个 pill 内部的相对偏移** —— `icon.x − pill.x` 与 `name.x − pill.x` 必须逐个一致。
+  //    （不能比较绝对 x：同一 pill 行第 2/3 列的 pill 天然在 x+171；这正是我上一版断言的错误。）
+  //    错位根因曾是状态槽不定宽：running 的点 6px vs done 的勾 14px ⇒ 内部偏移差 8px（截图②）。
+  const offsets = await page.evaluate(() => {
+    const round = (n: number) => Math.round(n)
+    return Array.from(document.querySelectorAll('[data-testid="tool-pill"]')).map((pill) => {
+      const px = pill.getBoundingClientRect().x
+      const icon = pill.querySelector('[data-testid="tool-pill-icon"]')
+      const name = pill.querySelector('[data-testid="tool-pill-name"]')
+      return {
+        icon: icon ? round(icon.getBoundingClientRect().x - px) : null,
+        name: name ? round(name.getBoundingClientRect().x - px) : null,
+      }
+    })
+  })
+  expect(offsets.length).toBeGreaterThanOrEqual(3)
+  for (const key of ['icon', 'name'] as const) {
+    const vals = offsets.map((o) => o[key]).filter((v): v is number => v !== null)
+    expect(vals.length, `${key} 样本不足`).toBeGreaterThanOrEqual(3)
+    expect(Math.max(...vals) - Math.min(...vals), `${key} 列偏移必须一致（实测 ${JSON.stringify(vals)}）`).toBeLessThanOrEqual(1)
   }
-
   await page.screenshot({ path: '/tmp/pillvis/mobile-row.png', fullPage: true })
   await ctx.close()
 })
