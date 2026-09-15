@@ -666,6 +666,14 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 - **历史加载时间曾随 turn 的迭代数线性增长**（用户 2026-09-15：「加载时间这么久，能优化吗？是不是如果 busy turn 的 iter 数量非常多就会卡非常久啊」）。实测（生产 DB）：`iteration_history` 15.6 万行、**单 turn 最多 1,661 个迭代**（该 turn content+reasoning ≈ **3.6 MB**）、`session_messages` 54.2 万行 / 316 MB；而 `ConvertMessagesToHistoryWithIterations` 对窗口内每个 turn 的**全部迭代无上限、无字节预算**。修法：`channel.BoundHistoryIterations`（`maxHistoryIterationsPerTurn = 60`）只保留**尾部 N 个迭代**，在 `serverapp/rpc_table.go`（get_history）与 `serverapp/callbacks.go`（web history snapshot）两个出口统一接入；丢弃数量写进 `protocol.HistoryMessage.IterationsTruncated`（json `iterations_truncated`）。**绝不静默缺块**：前端必须显示它 —— `AssistantMessage` 渲染 `data-testid="iterations-truncated"`（「更早的 N 个迭代未加载（仅显示最近 M 个）」）。更早的迭代仍完整保存在 DB `iteration_history`，后续按 `(turn_id, before_iteration)` 懒加载（尚未实现）。守护用例：`channel/history_iterations_cap_test.go` 的 `TestBoundHistoryIterations_TailOnly` + `web/src/components/agent/AssistantMessage.test.tsx` 的 truncated notice 两例。
 
+## Tool pill 视觉语言（真工具 / 假工具 / 状态 / 手机限宽）—— 设计契约
+
+- **真工具 pill = icon + 名字 + 参数 + 状态**：分类色 9 套（执行 sky `#38bdf8` · 读取 indigo `#818cf8` · 写入 amber `#fbbf24` · 检索 violet `#c084fc` · 代理 emerald `#34d399` · 任务 rose `#fb7185` · 记忆 fuchsia `#e879f9` · UI orange `#fb923c` · 系统 slate `#94a3b8`）；每个内置工具配自己的 SVG glyph（**禁 emoji**，缺字体会成方框）。**状态色与分类色解耦**。
+- **成功安静、失败吵闹**（用户 2026-09-15：「成功失败差别不明显」）：`done` = 1.5px 描边绿勾（**pill 本体不变色**，绿才有信号意义）；`error` = **三重放大** —— pill 红底(12%) + 红边(55%) + **左侧 3px 实红条** + **实心红圆白叉** + `失败` 标签 + `exit N` chip；`killed` = 灰虚线 + `–`（**终止 ≠ 失败**）；`running`/`generating` = 分类色脉动环；`pending` = 空心灰点。**不依赖颜色**：勾/叉/横线/空心点/脉动环形状各异 + 非成功态都带文字标签（色盲可用）。**行级传染**：组内有失败 ⇒ 整行左侧红条 + `N 失败` chip。
+- **假工具（注入型）必须与真工具可区分**（用户 2026-09-15：「bg notification 之类的假工具也要考虑」）：`isSyntheticToolName()`（`bg_subagent_*` 前缀 + 名单）走**假工具 pill 分支**，永不渲染成真工具。四维区分：**虚线边框**（真=实线）· **kind 头像**（真=分类色左条）· **「系统」角标** · 第二段是**主语**（`task_id` / `role·instance`，真=命令行参数）。kind→色与 `SyntheticToolCard` **保持一致**（避免两套色）：`bg_task`#38bdf8 · `subagent`/`interrupt`#a78bfa · `cron`#fbbf24 · `async`/`delivered`#2dd4bf · `cancel`/`pre_turn_end`#94a3b8 · `loop`#f59e0b。**语义**：插话=`进行中`（**输入**，不是完成）· 取消=`已取消`（终止≠失败）· 循环检测=琥珀 + 失败级强调。同迭代按「真工具 → 系统通知」两段排列，后者可整体折叠。
+- **手机限宽（否则一行一个）**：pill `max-width: min(46vw, 15rem)` + `overflow:hidden`；参数 `min-width:0 + text-overflow:ellipsis + white-space:nowrap`；行容器 `flex-wrap:wrap + gap:6px`；工具名 `flex:0 0 auto`；元信息 ≤420px 隐藏；**链上每一层 flex 子项都要 `min-w-0`**（2026-09-15 那个回归就是新包裹层漏了它）。守护：`web/e2e/tool-pill-width.spec.ts`（390/320 双视口：pill ≤ 行宽 · 无横向溢出 · 长参数确有省略号）。
+- **溢出/分组**：>6 个 ⇒ 前 5 + `+N`（原地展开）；推荐按类别聚色（左侧 3px 色条 + 类别名），扫描成本更低。
+
 ## Web 复制入口 = 电脑右键 / 手机长按（三层粒度；无悬浮条）
 
 - **交互（用户 2026-09-15 二次定稿）**：不放任何常驻/hover 悬浮工具条（用户：「这个悬浮太丑了还挡着」）——
