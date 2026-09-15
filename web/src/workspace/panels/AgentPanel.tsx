@@ -193,7 +193,12 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [resumeLoading, chat.loading, chat.messages.length])
   // 注意：只看 `=== false`（历史确实未就绪）；undefined（测试/旧调用方）视为就绪，
   // 避免把 loading 屏幕变成常驻。
-  const showLoadingScreen = chat.historyReady === false || resumeLoading
+  // ⚠️ 只在"确实有会话、但它的历史还没到"时才用 loading 屏幕遮挡面板。
+  // 无会话（chatID 为空 / 会话树为空，如全新安装的 E2E 环境）时**绝不能**挡：
+  // 那会把输入区一起盖住，用户既看不到空状态也无法创建/发送（CI 的
+  // chat.spec"should show user message after sending" 就是这样红的 —— 快照里侧栏是
+  // "No sessions yet — create one from the top-right"、面板只有 Loading…）。
+  const showLoadingScreen = (chat.historyReady === false && !!chatID) || resumeLoading
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: The old wasSubscribed effect (reloadChat when shouldSubscribe
