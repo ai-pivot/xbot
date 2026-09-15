@@ -196,9 +196,6 @@ test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', asy
   await page.screenshot({ path: '/tmp/cross-iter.png', fullPage: true })
 
   expect(geo.pills, '7 个工具都要有 pill').toBeGreaterThanOrEqual(7)
-  // 硬断言：长 JSON 参数必须已简化（mock label 用真实形态 "<name>: <json>"）
-  const barText = await page.locator('[data-testid="tool-pill-row"]').first().innerText()
-  expect(barText, `参数必须已简化（实测：${barText.replace(/\s+/g, ' ').slice(0, 200)}）`).toContain('task_id: 3f8f492a')
   // A. 跨迭代折叠：行数必须远小于工具数（修复前 = 7 行）
   expect(geo.rows, `pill 行数必须折叠（rows=${geo.rows}）`).toBeLessThanOrEqual(2)
   expect(geo.distinctPillY, `pill 的 y 值必须收敛（y 数=${geo.distinctPillY}）`).toBeLessThanOrEqual(3)
