@@ -26,6 +26,8 @@ import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
 import { syntheticShortName, syntheticSubject } from './SyntheticToolCard'
 import { useI18n } from '@/providers/i18n'
+import { syntheticKindOf } from './SyntheticToolCard'
+import { CATEGORY_COLOR, syntheticKindBadge, syntheticKindColor, toolCategory } from './toolVisuals'
 
 import { Check, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
@@ -120,49 +122,97 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
   return <Icon className="tool-icon-single shrink-0" style={{ color: statusColorVar(status) }} />
 }
 
-/** 工具 pill 三态（设计稿 1:1）：running=accent 椭圆+pulse 圆点+流光 / error=红椭圆+✗ / done=绿椭圆+✓。 */
+/**
+ * 工具 pill 视觉语言（用户 2026-09-15 定稿）：
+ *   · 分类色用于**图标 + 工具名**（9 套，见 toolVisuals）；状态色与分类色**解耦**；
+ *   · 成功安静（描边绿勾、无标签）/ 失败吵闹（红底+红边+左红条+实心红叉+「失败」+exit N）/
+ *     终止灰虚线「已终止」/ 进行中分类色脉动「执行中」/ 排队空心灰点「排队」；
+ *   · 假工具（注入型）：**虚线 + kind 头像 + 「系统」角标**，第二段是主语（task_id / role·instance）。
+ */
 function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const status = singleStatus(tool)
   const running = status === 'running'
   const failed = status === 'all-failed'
-  const okC = 'var(--status-success, #22c55e)'
-  const c = running ? 'var(--accent)' : failed ? 'var(--destructive)' : okC
-  const bg = running
-    ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
-    : failed
-      ? 'color-mix(in srgb, var(--destructive) 12%, transparent)'
-      : 'color-mix(in srgb, var(--status-success, #22c55e) 12%, transparent)'
+  const raw = (tool.status || '').toLowerCase()
+  const killed = raw === 'killed' || raw === 'aborted' || raw === 'cancelled'
+  const pending = raw === 'pending'
+  const generating = raw === 'generating'
   const synName = syntheticShortName(tool, t)
+  const isSyn = synName !== null
+  const kind = isSyn ? syntheticKindOf(tool) : ''
+  const hue = isSyn ? syntheticKindColor(kind) : CATEGORY_COLOR[toolCategory(tool.name)]
+  const okColor = 'var(--status-success, #22c55e)'
+  const errColor = 'var(--destructive, #ef4444)'
   const name = synName ?? displayName(tool, t)
-  // 注入型工具没有 args；用 subject（role/instance 或 task id）当参数位，
-  // 让 pill 读起来像 `子代理 explore/mem-1`（与 `Shell: cmd` 同构）。
-  const rawParam = synName ? syntheticSubject(tool) : toolParam(tool)
-  // 去重：subject 与显示名相同（user_interrupt 的 label 就是「💬 插话」）时不再重复
+  const rawParam = isSyn ? syntheticSubject(tool) : toolParam(tool)
   const param = rawParam && rawParam.toLowerCase() !== name.toLowerCase() ? rawParam : ''
+  const exit = (tool as unknown as { exitCode?: number }).exitCode
   const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
-  const showSweep = running && !isSubAgentTool(tool)
+  // ⚠️ 精确按 raw status 分支：`singleStatus` 把 pending/generating 也算 running，
+  // 用它会让排队/生成中也显示「执行中」。
+  const executing = raw === 'running' || raw === 'executing'
+  const statusText = failed ? '失败' : killed ? '已终止' : pending ? '排队' : generating ? '生成中' : executing ? '执行中' : ''
+  const statusFg = failed ? '#fff' : killed || pending ? 'var(--text-muted)' : hue
+  const statusBg = failed
+    ? errColor
+    : killed || pending
+      ? 'color-mix(in srgb, var(--text-muted) 18%, transparent)'
+      : `color-mix(in srgb, ${hue} 16%, transparent)`
+  const border = failed
+    ? `1px solid color-mix(in srgb, ${errColor} 55%, transparent)`
+    : (isSyn || killed)
+      ? `1px dashed color-mix(in srgb, ${isSyn ? hue : 'var(--text-muted)'} 55%, transparent)`
+      : '1px solid var(--border)'
+  const bg = failed
+    ? `color-mix(in srgb, ${errColor} 12%, transparent)`
+    : isSyn ? `color-mix(in srgb, ${hue} 10%, transparent)` : 'var(--bg-secondary)'
+  const nameColor = failed ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))' : hue
   return (
     <span
       data-tool-name={tool.name}
-      className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full px-2 py-0.5 text-[11px] font-medium"
-      style={{ color: c, background: bg }}
+      data-tool-status={failed ? 'error' : killed ? 'killed' : pending ? 'pending' : executing || generating ? 'running' : 'done'}
+      className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full py-0.5 pl-1 pr-2 text-[11px] font-medium"
+      style={{ border, background: bg }}
     >
-      {running
-        ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: c, animation: 'pulse-blue 1.2s infinite' }} />
-        : failed
-          ? <X className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />
-          : <Check className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />}
-      {showSweep
-        ? <SweepText text={label} color={c} className={`min-w-0 truncate ${synName ? '' : 'font-mono'}`} />
-        : synName
+      {failed && <span aria-hidden className="h-3.5 w-[3px] shrink-0 rounded-full" style={{ background: errColor }} />}
+      {failed ? (
+        <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-extrabold leading-none text-white" style={{ background: errColor }}>✕</span>
+      ) : killed ? (
+        <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold leading-none" style={{ color: 'var(--text-muted)', border: '1.5px dashed var(--border)' }}>–</span>
+      ) : executing || generating ? (
+        <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: hue, animation: 'pulse-blue 1.2s infinite' }} />
+      ) : pending ? (
+        <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ border: '1.5px solid var(--text-muted)' }} />
+      ) : (
+        <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-extrabold leading-none" style={{ color: okColor, border: `1.5px solid ${okColor}` }}>✓</span>
+      )}
+      {isSyn ? (
+        <span aria-hidden className="flex size-4 shrink-0 items-center justify-center rounded-full text-[8px] font-extrabold leading-none text-black/80" style={{ background: hue }}>{syntheticKindBadge(kind)}</span>
+      ) : (
+        (() => {
+          const Icon = getToolIcon(tool.name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+          return <Icon className="size-3 shrink-0" style={{ color: hue }} />
+        })()
+      )}
+      {isSyn && (
+        <span aria-hidden className="shrink-0 rounded-[4px] border px-1 text-[9px] font-extrabold leading-4" style={{ color: hue, borderColor: `color-mix(in srgb, ${hue} 50%, transparent)` }}>系统</span>
+      )}
+      {executing && !isSubAgentTool(tool)
+        ? <SweepText text={label} color={nameColor} className={`min-w-0 truncate ${isSyn ? '' : 'font-mono'}`} />
+        : isSyn
           ? (
             <>
-              {/* 本地化名字用正文字体（等宽渲染 CJK 会显得很怪），subject/参数保持等宽 */}
-              <span className="min-w-0 truncate">{name}</span>
+              <span className="min-w-0 truncate" style={{ color: nameColor }}>{name}</span>
               {param && <span className="min-w-0 truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
             </>
           )
-          : <span className="min-w-0 truncate font-mono">{label}</span>}
+          : <span className="min-w-0 truncate font-mono" style={{ color: nameColor }}>{label}</span>}
+      {statusText && (
+        <span aria-hidden className="shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-bold leading-4" style={{ color: statusFg, background: statusBg }}>{statusText}</span>
+      )}
+      {failed && exit !== undefined && (
+        <span aria-hidden className="shrink-0 rounded-full border px-1.5 py-px text-[9.5px] font-bold leading-4" style={{ color: errColor, borderColor: `color-mix(in srgb, ${errColor} 50%, transparent)` }}>exit {exit}</span>
+      )}
     </span>
   )
 }
@@ -417,6 +467,9 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   // tools 不变时 pill 行 re-render 零重建（pill 浮窗开合由 radix/懒挂管理）。
   const pillsRow = useMemo(() => <MergedPills tools={otherTools} />, [otherTools])
 
+  // 行级失败告警：组内任一工具失败 ⇒ 行左侧红条 + `N 失败` chip（折叠/滚动时也不漏）。
+  const failedCount = useMemo(() => otherTools.filter((x) => isFailed(x.status)).length, [otherTools])
+
   if (!tools.length) return null
 
   const genuiElements = genuiTools.map((tool, i) => (
@@ -437,7 +490,21 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   return (
     <div className="flex flex-col gap-1.5">
       {genuiElements}
-      <div data-testid="tool-pill-row" className={ROW_ROW_CLASS}>{pillsRow}</div>
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+        {failedCount > 0 && (
+          <>
+            <span aria-hidden className="h-4 w-[3px] shrink-0 rounded-full" style={{ background: 'var(--destructive)' }} />
+            <span
+              data-testid="tool-group-failed"
+              className="shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold text-white"
+              style={{ background: 'var(--destructive)' }}
+            >
+              {failedCount} 失败
+            </span>
+          </>
+        )}
+        <div data-testid="tool-pill-row" className={ROW_ROW_CLASS}>{pillsRow}</div>
+      </div>
     </div>
   )
 })
