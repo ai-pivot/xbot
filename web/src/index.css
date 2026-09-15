@@ -1400,3 +1400,15 @@
   );
   animation: shellDoneGlow 1.2s ease-out 1 forwards;
 }
+
+/* ── tool pill 的分类色：静态**极淡**（不抢注意力），hover / 展开时才升到满饱和 ──
+   依据业界 color-system 指南：categorical 色必须低彩度、不得与 semantic（状态）色争抢注意力。
+   用户 2026-09-15：「分类色不应该直接抓人眼球导致像是警报」+「要有别的表现方案」。 */
+.tool-pill-bar {
+  background: color-mix(in srgb, var(--pill-hue) 34%, transparent);
+  transition: background-color 120ms ease;
+}
+.tool-pill:hover .tool-pill-bar,
+.tool-pill:focus-visible .tool-pill-bar {
+  background: var(--pill-hue);
+}

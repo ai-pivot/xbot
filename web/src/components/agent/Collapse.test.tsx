@@ -18,6 +18,7 @@ import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
 import { SquareTerminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
+import i18n from '@/i18n'
 
 // radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
 // 精简 stub：只要构造函数与三方法存在即可（测试不依赖真实测量）。
@@ -166,7 +167,10 @@ describe('FoldedToolGroup', () => {
       renderWithProviders(<FoldedToolGroup tools={[makeTool({ status })]} />)
       const pill = screen.getByTestId('tool-pill')
       expect(pill.querySelector('.sweep-text')).toBeNull()
-      expect(pill.textContent).toContain(status === 'pending' ? '排队' : '生成中')
+      // 断言按 **i18n 源**（测试环境语言由 i18n 检测决定，不硬编码某语言文案）
+      expect(pill.textContent).toContain(
+        i18n.t(status === 'pending' ? 'agent.tool.statusPending' : 'agent.tool.statusGenerating'),
+      )
     },
   )
 
@@ -199,7 +203,9 @@ describe('FoldedToolGroup', () => {
         <FoldedToolGroup tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]} />,
       )
       expect(container.querySelector('.sweep-text')).toBeNull()
-      expect(container.textContent).toContain(status === 'pending' ? '排队' : '生成中')
+      expect(container.textContent).toContain(
+        i18n.t(status === 'pending' ? 'agent.tool.statusPending' : 'agent.tool.statusGenerating'),
+      )
     },
   )
 

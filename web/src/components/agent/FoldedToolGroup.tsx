@@ -31,6 +31,7 @@ import { CATEGORY_COLOR, syntheticKindBadge, syntheticKindColor, toolCategory } 
 
 import { Check, Minus, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
+import i18n from '@/i18n'
 
 /** Max param preview length in folded row. */
 const MAX_PARAM_LEN = 25
@@ -62,6 +63,27 @@ function toolParam(tool: WebToolProgress): string {
 }
 
 /** Truncate to N chars with ellipsis. */
+/**
+ * 参数美化（用户要求「长 JSON 参数简化」）：`{"task_id": ["3f8f492a"]}` → `task_id: 3f8f492a`。
+ * 非 JSON / 解析失败 / 嵌套对象一律回落原文（不猜、不丢信息）。
+ */
+function formatParam(raw: string): string {
+  const text = raw.trim()
+  if (!text.startsWith('{') || !text.endsWith('}')) return raw
+  try {
+    const obj = JSON.parse(text) as Record<string, unknown>
+    const parts: string[] = []
+    for (const [k, v] of Object.entries(obj)) {
+      if (v === null || typeof v === 'object') continue
+      parts.push(`${k}: ${Array.isArray(v) ? v.join(', ') : String(v)}`)
+      if (parts.length >= 2) break
+    }
+    return parts.length > 0 ? parts.join(' · ') : raw
+  } catch {
+    return raw
+  }
+}
+
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '…'
@@ -149,11 +171,26 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const rawParam = isSyn ? syntheticSubject(tool) : toolParam(tool)
   const param = rawParam && rawParam.toLowerCase() !== name.toLowerCase() ? rawParam : ''
   const exit = (tool as unknown as { exitCode?: number }).exitCode
-  const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
+  const label = name + (param ? ' ' + truncate(formatParam(param), MAX_PARAM_LEN) : '')
   // ⚠️ 精确按 raw status 分支：`singleStatus` 把 pending/generating 也算 running，
   // 用它会让排队/生成中也显示「执行中」。
   const executing = raw === 'running' || raw === 'executing'
-  const statusText = failed ? '失败' : killed ? '已终止' : pending ? '排队' : generating ? '生成中' : executing ? '执行中' : ''
+  // ⚠️ 一律走 i18n（此前硬编码中文 ⇒ en/ja 用户看到中文）
+  // ⚠️ 用 **i18n 实例**而非 `t` prop：pill 渲染在多个路径（folded / expanded / 浮层）里，
+  // prop 未必透传（此前 expanded 路径 t=undefined ⇒ 落到英文兜底）。实例永远可用且语言一致。
+  const tr = (key: string, fallback: string, opts?: Record<string, unknown>): string =>
+    i18n.t(`agent.tool.${key}`, { ...opts, defaultValue: fallback }) as string
+  const statusText = failed
+    ? tr('statusFailed', 'Failed')
+    : killed
+      ? tr('statusKilled', 'Stopped')
+      : pending
+        ? tr('statusPending', 'Queued')
+        : generating
+          ? tr('statusGenerating', 'Generating')
+          : executing
+            ? tr('statusRunning', 'Running')
+            : ''
   const statusFg = failed ? '#fff' : killed || pending ? 'var(--text-muted)' : hue
   const statusBg = failed
     ? errColor
@@ -180,7 +217,6 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   //   分类色**只以低彩度形态**出现在 ① 图标 ② 极细左条（对位用，恒定槽位）；
   //   pill 底色/边框保持**中性**；只有**失败/终止**使用高饱和 semantic 色（响亮是它的语义）。
   const hueQuiet = `color-mix(in srgb, ${hue} 62%, var(--text-secondary))` // 图标：静音分类色
-  const barQuiet = `color-mix(in srgb, ${hue} 42%, transparent)` // 左条：更静（对位 + 轻微类别提示）
   const nameColor = failed
     ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))'
     // ⚠️ 名称颜色**与 done 完全一致**（用户 2026-09-15：「生成中文字和生成完毕不一样」）：
@@ -195,14 +231,15 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       // 规范规定百分比 max-width 对 indefinite 包含块**按 none 处理** ⇒ `calc(50% - 8px)` 完全失效，
       // 只剩 15rem=240px 生效 ⇒ 手机 362px 行宽下 240×2+gap > 362 ⇒ **每个 pill 独占一行**
       // （2026-09-15 用户真机截图 + E2E 实测：4 个 pill 占 4 行）。上限见 wrapper（那里包含块=行宽，definite）。
-      style={{ border, background: bg }}
+      className="tool-pill inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full py-0.5 pl-1 pr-2 text-[11px] font-medium"
+      style={{ border, background: bg, ['--pill-hue' as string]: hue } as React.CSSProperties}
     >
       {/* 左 3px 色条：**每个** pill 都有（失败=红实条 / 终止=灰虚线 / 其余=分类色）——
           恒定槽位是"所有 pill 的 icon 与首字符左对齐"的前提（用户 2026-09-15 明确要求）。 */}
       <span
         aria-hidden
-        className="h-3.5 w-[3px] shrink-0 rounded-full"
-        style={{ background: killed ? 'transparent' : failed ? errColor : barQuiet, borderRight: killed ? '3px dotted var(--text-muted)' : undefined }}
+        className="tool-pill-bar h-3.5 w-[3px] shrink-0 rounded-full"
+        style={killed || failed ? { background: killed ? 'transparent' : errColor, borderRight: killed ? '3px dotted var(--text-muted)' : undefined } : undefined}
       />
       {/* 状态标记：**恒定 14px 槽**，所有状态都塞进同一个 `size-3.5` 盒子 —— running 的点（6px）比
           done 的勾（14px）小 8px，槽位不定宽会让 icon 与名字整体左移（用户 2026-09-15 实测
@@ -236,12 +273,25 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
           ? (
             <>
               <span data-testid="tool-pill-name" className="min-w-0 truncate" style={{ color: nameColor }}>{name}</span>
-              {param && <span className="min-w-0 truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
+              {param && (
+                <span className="min-w-0 shrink truncate font-mono text-text-secondary">
+                  {truncate(formatParam(param), MAX_PARAM_LEN)}
+                </span>
+              )}
             </>
           )
-          : <span data-testid="tool-pill-name" className="min-w-0 truncate font-mono" style={{ color: nameColor }}>{label}</span>}
+          : (
+            <>
+              <span data-testid="tool-pill-name" className="min-w-0 shrink truncate font-mono" style={{ color: nameColor }}>{name}</span>
+              {param && (
+                <span className="min-w-0 shrink truncate font-mono text-text-secondary">
+                  {truncate(formatParam(param), MAX_PARAM_LEN)}
+                </span>
+              )}
+            </>
+          )}
       {isSyn && (
-        <span aria-hidden className="shrink-0 rounded-[4px] border px-1 text-[9px] font-extrabold leading-4" style={{ color: hue, borderColor: `color-mix(in srgb, ${hue} 50%, transparent)` }}>系统</span>
+        <span aria-hidden className="shrink-0 rounded-[4px] border px-1 text-[9px] font-extrabold leading-4" style={{ color: hue, borderColor: `color-mix(in srgb, ${hue} 50%, transparent)` }}>{tr('syntheticBadge', 'System')}</span>
       )}
       {statusText && (
         <span aria-hidden className="shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-bold leading-4" style={{ color: statusFg, background: statusBg }}>{statusText}</span>
@@ -405,7 +455,7 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
       content={<ToolPopoverContent tools={hidden} />}
     >
       <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
-        +{hidden.length}
+        {i18n.t('agent.tool.overflowBadge', { count: hidden.length, defaultValue: `+${hidden.length}` }) as string}
       </span>
     </LazyPillPopover>
   )
@@ -539,7 +589,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
               className="shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold text-white"
               style={{ background: 'var(--destructive)' }}
             >
-              {failedCount} 失败
+              {i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string}
             </span>
           </>
         )}
