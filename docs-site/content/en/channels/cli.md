@@ -55,7 +55,7 @@ Type these in the TUI:
 |---------|-------------|
 | `/setup` | Re-run the configuration wizard |
 | `/settings` | Open settings panels (sandbox, memory, etc.) |
-| `/channel` | **Channel configuration panel** — visually manage Web/Feishu/QQ/NapCat channels |
+| `/channel` | **Channel configuration panel** — visually manage Web/Feishu channels (plugin channels are listed too) |
 | `/llm` | Show the currently resolved subscription and model |
 | `/models` | List selectable models (with normal/offline/disabled status) |
 | `/set-model <subscription> <model>` | Switch the current session's model |

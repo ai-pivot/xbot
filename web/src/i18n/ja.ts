@@ -157,8 +157,6 @@ const ja: Translations = {
   channel: {
     feishu: 'Feishu',
     cli: 'CLI',
-    qq: 'QQ',
-    napcat: 'NapCat',
     web: 'Web',
     system: 'システム',
     all: 'すべてのチャネル',

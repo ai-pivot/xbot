@@ -141,7 +141,7 @@ Job IDs are generated as `plugin:<pluginID>:<index>`.
 | `OnPluginError(callback)` | `hooks.subscribe` | Callback for plugin lifecycle errors (activation failure, runtime crash) — distinct from `OnError` which handles tool execution failures. |
 | `SetValue` / `GetValue` | — | Session-scoped in-memory key-value store for cross-handler data sharing within a plugin. |
 | `ToolCallCount()` / `HookCallCount()` | — | Atomic runtime counters (total tool executions / hook dispatches). |
-| `RegisterChannelProvider(provider)` | `channels.register` | Register a custom channel provider. Provider must implement `Name() string` (plus `CreateChannel`, `ConfigSchema`, `IsEnabled`). Built-in names (`feishu`, `qq`, `napcat`, `web`, `cli`) cannot be overridden. |
+| `RegisterChannelProvider(provider)` | `channels.register` | Register a custom channel provider. Provider must implement `Name() string` (plus `CreateChannel`, `ConfigSchema`, `IsEnabled`). Built-in names (`feishu`, `web`, `cli`) cannot be overridden. |
 | `RegisterCommand(name, description, handler)` | `commands.register` | Register a slash command. Handler: `func(ctx context.Context, args string, pctx PluginContext) (string, error)` — `args` is everything after the command name (trimmed). |
 | `Notify(level, title, message)` | `notifications.send` | Send a user notification. Levels: `info`, `success`, `warning`, `error`. |
 | `PlaySound(sound)` | `notifications.send` | Play a sound: `beep`, `chime`, `complete`, `error`, `achievement`. |

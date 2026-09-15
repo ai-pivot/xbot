@@ -9,7 +9,7 @@ import (
 // serverapp 会在 registerChannels 和动态启停路径中查找并调用。
 type ChannelProvider interface {
 	// Name 返回唯一 channel 标识符（如 "telegram"）。
-	// 不能与内置 channel（feishu/qq/napcat/web）重名。
+	// 不能与内置 channel（web/feishu）重名。
 	Name() string
 
 	// CreateChannel 根据配置创建 Channel 实例。

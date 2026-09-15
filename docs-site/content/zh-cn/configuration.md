@@ -257,8 +257,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 详见各渠道文档：
 
 - [飞书](/zh-cn/channels/feishu/)
-- [QQ](/zh-cn/channels/qq/)
-- [NapCat](/zh-cn/channels/napcat/)
 - [Web](/zh-cn/channels/web/)
 - [CLI](/zh-cn/channels/cli/)
 

@@ -15,8 +15,6 @@ your team reaches the agent through the tools they already use.
 |---------|----------|------------|------------|
 | [CLI](/channels/cli/) | Developers, power users | Local process / WebSocket | Full TUI, streaming output, mouse, themes |
 | [Feishu](/channels/feishu/) | Team collaboration | WebSocket (long-lived) | @mention in groups, interactive cards, Feishu API |
-| [QQ](/channels/qq/) | QQ users | WebSocket | Official QQ Bot protocol |
-| [NapCat](/channels/napcat/) | Individuals, small circles | WebSocket | OneBot 11 protocol, personal QQ account |
 | [Web](/channels/web/) | Anyone with a browser | HTTP + WebSocket | Web chat, registration/login, invite-only |
 
 ## Enabling channels

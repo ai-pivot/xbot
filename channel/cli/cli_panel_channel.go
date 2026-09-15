@@ -12,11 +12,12 @@ import (
 var channelLabels = map[string]string{
 	"web":    "🌐 Web ch.Channel",
 	"feishu": "🐦 Feishu (飞书)",
-	"qq":     "💬 QQ",
-	"napcat": "🐱 NapCat",
 }
 
-var builtinChannelNames = []string{"web", "feishu", "qq", "napcat"}
+// builtinChannelNames lists the built-in channels in display order. QQ / NapCat
+// are no longer built-in (removed 2026-09-15, to be provided as channel plugins)
+// — they only appear when a plugin channel provider registers them.
+var builtinChannelNames = []string{"web", "feishu"}
 
 // openChannelPanel opens the channel configuration panel.
 func (m *cliModel) openChannelPanel() {

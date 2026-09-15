@@ -11,7 +11,7 @@ import (
 )
 
 // mockNonProgressChannel simulates an originating channel that does NOT
-// implement channel.ProgressSender (feishu / qq / napcat). Its Send/SendStreamContent
+// implement channel.ProgressSender (feishu). Its Send/SendStreamContent
 // are not used by buildStreamCallbacks — only the channelFinder resolution matters.
 type mockNonProgressChannel struct{}
 

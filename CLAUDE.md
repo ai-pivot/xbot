@@ -37,7 +37,7 @@ Channel → MessageBus → Dispatcher → Agent → LLM → Tools
 
 **Core components:**
 - **bus/** — Inbound/Outbound message channels
-- **channel/** — IM adapters (CLI BubbleTea, Feishu, QQ, NapCat/OneBot 11, Web), dispatcher routes messages
+- **channel/** — IM adapters (CLI BubbleTea, Feishu, Web), dispatcher routes messages
 - **agent/** — Agent loop: LLM → tool calls → response. Also contains middleware pipeline and `Client` RPC abstraction
 - **llm/** — LLM clients (OpenAI-compatible, Anthropic), retry wrapper, streaming
 - **tools/** — Tool registry; implement `Tool` interface and register in `DefaultRegistry()`
@@ -119,7 +119,7 @@ Key environment variables:
 - `MEMORY_PROVIDER` — `flat` (default) or `letta`
 - `FEISHU_ENABLED`, `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFICATION_TOKEN`, `FEISHU_DOMAIN`
 - `QQ_ENABLED`, `QQ_APP_ID`, `QQ_CLIENT_SECRET`
-- `NAPCAT_ENABLED`, `NAPCAT_WS_URL`, `NAPCAT_TOKEN` — OneBot 11 adapter
+- `FEISHU_APP_ID`, `FEISHU_APP_SECRET` — Feishu adapter credentials
 - `WEB_ENABLED`, `WEB_HOST`, `WEB_PORT`, `WEB_STATIC_DIR`, `WEB_UPLOAD_DIR` — Browser chat channel
 - `WORK_DIR` — Working directory
 - `PROMPT_FILE` — Custom prompt template (default `prompt.md`)
