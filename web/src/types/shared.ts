@@ -530,6 +530,8 @@ export interface ChatMessage {
   role: ChatMessageRole
   content: string
   iterations: WebIteration[]
+  /** 后端按 turn 尾部截断迭代上报的丢弃数量（历史响应有界化）—— 渲染「更早的 N 个迭代」，不静默缺块。 */
+  iterationsTruncated?: number
   timestamp: string
   isPartial: boolean
   turnID: number

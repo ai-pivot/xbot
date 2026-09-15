@@ -282,3 +282,19 @@ describe('AssistantMessage compressing indicator position', () => {
     expect(compressingIdx).not.toBe(0)
   })
 })
+
+describe('AssistantMessage truncated iterations notice', () => {
+  it('renders "更早的 N 个迭代未加载" when history carried iterations_truncated', () => {
+    // 用户 2026-09-15：历史响应按 turn 尾部截断迭代（加载时间随迭代数线性增长的修复）——
+    // 丢弃数量必须显示出来，绝不静默缺块。
+    const m = msg({ iterations: [iter('latest')], iterationsTruncated: 137 })
+    renderMsg(<AssistantMessage message={m} />)
+    const notice = screen.getByTestId('iterations-truncated')
+    expect(notice.textContent).toContain('137')
+  })
+
+  it('renders no notice when nothing was truncated', () => {
+    renderMsg(<AssistantMessage message={msg({ iterations: [iter('only')] })} />)
+    expect(screen.queryByTestId('iterations-truncated')).toBeNull()
+  })
+})

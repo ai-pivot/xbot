@@ -108,6 +108,14 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
 
   return (
     <div className="group/msg px-1">
+      {(message.iterationsTruncated ?? 0) > 0 && (
+        <div
+          data-testid="iterations-truncated"
+          className="mb-1 px-1 text-[11.5px] text-text-muted"
+        >
+          {`更早的 ${message.iterationsTruncated} 个迭代未加载（仅显示最近 ${iterations.length} 个）`}
+        </div>
+      )}
       <TurnBody
         iterations={iterations}
         liveProgress={liveProgress}

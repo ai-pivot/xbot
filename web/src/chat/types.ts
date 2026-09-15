@@ -130,7 +130,7 @@ export type TurnPhase =
  */
 export type CommittedPayload =
   | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[] }
-  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string }
+  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number }
 
 /** 唯一合法的 committed 构造入口（reducer 内使用）。 */
 export function commitViaText(
@@ -144,8 +144,9 @@ export function commitViaText(
 export function commitViaFold(
   iterations: NonEmpty<WebIteration>,
   content: string,
+  iterationsTruncated = 0,
 ): CommittedPayload {
-  return { via: 'fold', iterations, content }
+  return { via: 'fold', iterations, content, iterationsTruncated }
 }
 
 // ─── Turn / ChatState ─────────────────────────────────────────

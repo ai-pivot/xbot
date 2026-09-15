@@ -42,6 +42,7 @@ export interface LiveRowView {
   readonly content: string
   readonly reasoning: string
   readonly iterations: readonly WebIteration[]
+  readonly iterationsTruncated?: number
   readonly activeTools: readonly WebToolProgress[]
   readonly streamingTools: readonly WebToolProgress[]
   readonly genui: string
@@ -59,6 +60,7 @@ export interface FrozenRowView {
   readonly content: string
   readonly reasoning: string
   readonly iterations: readonly WebIteration[]
+  readonly iterationsTruncated?: number
   readonly activeTools: readonly WebToolProgress[]
   readonly genui: string
   readonly lastIter: number
@@ -71,6 +73,7 @@ export interface CommittedRowView {
   readonly isPartial: false
   readonly content: string
   readonly iterations: readonly WebIteration[]
+  readonly iterationsTruncated?: number
 }
 
 export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
@@ -250,6 +253,7 @@ function assistantRow(t: Turn): Row | null {
         isPartial: false,
         content: t.phase.payload.content,
         iterations: t.phase.payload.iterations,
+        iterationsTruncated: t.phase.payload.iterationsTruncated ?? 0,
       }
     }
   }
