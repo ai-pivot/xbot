@@ -134,8 +134,11 @@ test.describe('复制入口（右键 / 长按）', () => {
     const vh = page.viewportSize()?.height ?? 844
     expect(sheetBox, 'sheet must have a box').toBeTruthy()
     expect(sheetBox!.y + sheetBox!.height, 'sheet 必须贴住视口底部').toBeGreaterThan(vh - 24)
-    // 面板要列出**全部**候选（2 个工具 + 全部输出），不能被裁剪成一行
-    expect(await sheet.locator('button').count()).toBe(3)
+    // 面板要列出**全部**候选（该工具组的每个工具各一项 + 「复制全部工具输出」），
+    // 不能被裁剪成一行。注意：这里取的是**第 1 个迭代**的工具组（1 个 WebSearch）⇒ 应为 2 项。
+    expect(await sheet.locator('button').count()).toBe(2)
+    await expect(sheet).toContainText('复制：WebSearch 今日重要新闻')
+    await expect(sheet).toContainText('复制全部工具输出')
     await page.screenshot({ path: `${SHOTS}/mobile-sheet.png`, fullPage: true })
     await ctx.close()
   })
