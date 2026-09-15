@@ -174,7 +174,6 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   //   - **运行/生成中** = 需要注意力 ⇒ 名称保留**分类色**（sweep 动效也是分类色，契约测试守护）；
   //   - **成功/排队/终止** = 安静 ⇒ 名称用中性前景色，分类色只留在左侧 3px 条 + 图标槽
   //     （此前"写入"的琥珀黄名字看着像 warn —— 黄/橙/红只应属于失败与终止）。
-  const active = executing || generating
   // ── 设计（依据业界 color-system 指南：**categorical 色必须低彩度**，且绝不与 semantic
   // （success/warning/danger）色争抢注意力；中性色是主力、semantic 是例外）────────────
   // 用户 2026-09-15：「分类色不应该直接抓人眼球导致像是警报，但分类我是支持的」⇒ 换表现方案：
@@ -184,7 +183,9 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const barQuiet = `color-mix(in srgb, ${hue} 42%, transparent)` // 左条：更静（对位 + 轻微类别提示）
   const nameColor = failed
     ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))'
-    : active ? hue : 'var(--text-primary)'
+    // ⚠️ 名称颜色**与 done 完全一致**（用户 2026-09-15：「生成中文字和生成完毕不一样」）：
+    // 运行中不再用满饱和分类色 —— "进行中"改由 sweep 动画 + 脉动环 + `执行中` chip 表达（非颜色通道）。
+    : 'var(--text-primary)'
   return (
     <span
       data-tool-name={tool.name}

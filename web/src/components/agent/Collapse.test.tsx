@@ -147,15 +147,17 @@ describe('FoldedToolGroup', () => {
     expect(within(content as HTMLElement).getAllByTestId('tool-row')).toHaveLength(2)
   })
 
-  it('uses a category-colored sweep in a folded running tool title', () => {
+  it('running 的 sweep 颜色与 done 一致（中性）—— 用户：生成中文字和生成完毕不一样', () => {
     // 新契约（2026-09-15 设计定稿）：工具名用**分类色**（状态与分类色解耦），不再是 accent；
     // 状态改由状态标记 + chip 表达（失败/终止/排队/生成中带文字标签）。
     renderWithProviders(<FoldedToolGroup tools={[makeTool({ status: 'running' })]} />)
     const pill = screen.getByTestId('tool-pill')
     const sweep = pill.querySelector<HTMLElement>('.sweep-text')
     expect(sweep).not.toBeNull()
-    expect(sweep!.style.getPropertyValue('--sweep-color')).not.toBe('var(--accent)')
-    expect(sweep!.style.getPropertyValue('--sweep-color')).toMatch(/^#/)
+    // 新契约（2026-09-15 用户：「生成中文字和生成完毕不一样」）：运行中的**文字颜色与 done 完全一致**
+    // （中性前景色）。"进行中"改由 sweep 动画 + 脉动环 + `执行中` chip 表达（非颜色通道）；
+    // 分类色只留在左侧 3px 条 + 图标槽。
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--text-primary)')
   })
 
   it.each(['pending', 'generating'] as const)(
@@ -179,15 +181,15 @@ describe('FoldedToolGroup', () => {
     },
   )
 
-  it('uses a category-colored sweep in an expanded running tool card', () => {
+  it('expanded running card 的 sweep 颜色同样是中性（与 done 一致）', () => {
     const { container } = renderWithProviders(
       <FoldedToolGroup tools={[makeTool({ name: 'Read', label: 'Read: file.go', status: 'running' })]} />,
     )
     const sweep = container.querySelector<HTMLElement>('.sweep-text')
     expect(sweep).not.toBeNull()
     expect(sweep).toHaveTextContent('Read')
-    // Read 属"读取"分类（indigo #818cf8）——不再是 accent
-    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('#818cf8')
+    // 与 done 一致的中性色（分类色只体现在图标/左条上，见 ToolRender 的 icon color 断言）
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--text-primary)')
   })
 
   it.each(['pending', 'generating'] as const)(
