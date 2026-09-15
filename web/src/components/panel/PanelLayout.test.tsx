@@ -423,6 +423,43 @@ describe('v5.1 Focus + Drawer', () => {
   })
 })
 
+// ── 标题栏点击语义（2026-09-15 用户：「点 Sessions 这个词有bug，别的位置没有」）──
+
+describe('标题栏点击语义（标题文字/图标/空白一律不折叠）', () => {
+  beforeEach(() => {
+    registerPanel(makeDef('core.sessions', '会话', { source: 'core', icon: 'message' }))
+  })
+
+  function sessionsPanel(): HTMLElement {
+    const el = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')
+    if (!el) throw new Error('core.sessions not rendered')
+    return el
+  }
+
+  it('点标题文字 / 图标 / header 空白区：不折叠（唯一折叠控件是 ⌄ 按钮）', () => {
+    renderShell()
+    expect(sideRenderOrder()).toEqual(['core.sessions'])
+
+    fireEvent.click(within(sessionsPanel()).getByTestId('panel-title'))
+    expect(sideRenderOrder()).toEqual(['core.sessions'])
+
+    fireEvent.click(sessionsPanel().querySelector('header svg')!)
+    expect(sideRenderOrder()).toEqual(['core.sessions'])
+
+    fireEvent.click(sessionsPanel().querySelector('header')!)
+    expect(sideRenderOrder()).toEqual(['core.sessions'])
+    // 未折叠 ⇒ 不落盘（零状态变更）。
+    expect(localStorage.getItem(V2_KEY)).toBeNull()
+  })
+
+  it('⌄ 折叠按钮仍可折叠；折叠后左栏给空态提示（不再是一整片黑）', () => {
+    renderShell()
+    fireEvent.click(within(sessionsPanel()).getByLabelText('折叠'))
+    expect(sideRenderOrder()).toEqual([])
+    expect(screen.getByText('暂无钉选面板')).toBeTruthy()
+  })
+})
+
 // ── 拖拽协议 v5 ─────────────────────────────────────────────────────────────
 
 describe('拖拽协议 v5', () => {

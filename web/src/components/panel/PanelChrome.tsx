@@ -169,22 +169,19 @@ export function PanelChrome({
       {dropIndicator === 'after' && <div data-drop-indicator="after" className="absolute inset-x-1 bottom-0 h-0.5 shrink-0 rounded bg-app-accent" />}
       {/* 标题栏 h-8。floating：整体可拖动（按钮豁免）；docked：grip 拖动。
           v5 规格 7：拖拽把手 touch-action:none（touch-none）防触摸滚动干扰。 */}
+      {/* ⛔ 标题栏【不再是隐藏的折叠点击区】：点击标题文字/图标/空白处一律不折叠
+          （2026-09-15 用户：「点 `Sessions` 这个词有bug，别的位置没有」——侧栏里唯一
+          展开的会话面板被文字点击收掉后，左栏只剩一片黑，看起来像坏了）。折叠只有
+          一个显式控件：⌄ 按钮（+ 左侧图标栏点击激活项 = 收起整栏）。 */}
       <header
         className={`group/header flex h-9 shrink-0 select-none items-center gap-1.5 border-l-2 border-l-transparent px-2 transition-spring hover:border-l-app-accent/60 hover:bg-bg-tertiary/30 ${!collapsed ? 'bg-bg-tertiary/15' : ''} ${floating ? 'cursor-move touch-none' : ''}`}
         onPointerDown={floating ? onTitlePointerDown : undefined}
         onDoubleClick={floating ? onTitleDoubleClick : undefined}
-        onClick={(e) => {
-          // docked header 点击（按钮/grip 以外区域）= 切换折叠（VSCode 行为）。
-          // 旧版只有 14px 的箭头按钮能点开/收起——用户报"不符合人类直觉"。
-          if (floating) return
-          if ((e.target as HTMLElement).closest('button,[role="button"]')) return
-          onToggleCollapse()
-        }}
       >
         {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
             返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
         <Icon className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
-        <span className="min-w-0 truncate text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+        <span data-testid="panel-title" className="min-w-0 truncate text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
           {title}
         </span>
         {sub ? <span className="shrink-0 font-mono text-[9.5px] text-text-muted">{sub}</span> : null}

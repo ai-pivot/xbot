@@ -1,7 +1,30 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Browser, type Page } from '@playwright/test'
 import i18n from '@/i18n'
 
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
+
+/**
+ * ⚠️ 断言期望值来自 **Node 侧** i18n 实例（无 navigator/localStorage ⇒ 回落
+ * DEFAULT_LOCALE zh-CN），而浏览器里 app 按 navigator.language（Playwright 默认
+ * en-US）渲染 **en** ⇒ `i18n.t(...)` 期望与 DOM 必然失配（2026-09-15 CI 红灯根因：
+ * 期望「失败」、DOM 是「Failed」）。
+ *
+ * 修法：两侧显式钉死同一语言（浏览器用 `xbot-locale` initScript，Node 侧
+ * beforeAll changeLanguage）。测试断言的语言不再取决于运行环境的默认值。
+ */
+const SPEC_LOCALE = 'zh-CN'
+
+async function newContext(browser: Browser, viewport: { width: number; height: number }) {
+  const ctx = await browser.newContext({ viewport })
+  await ctx.addInitScript((locale) => {
+    try {
+      localStorage.setItem('xbot-locale', locale as string)
+    } catch {
+      /* ignore */
+    }
+  }, SPEC_LOCALE)
+  return ctx
+}
 
 /** 复制自 tool-pill-width.spec.ts 的 mock（同一套 /api/*）。 */
 async function setupMock(page: Page, historyMessages: unknown[] = []) {
@@ -36,8 +59,13 @@ const ASSISTANT = {
   ],
 }
 
+test.beforeAll(async () => {
+  // Node 侧期望值与浏览器渲染必须同语言（见 newContext 注释）。
+  await i18n.changeLanguage(SPEC_LOCALE)
+})
+
 test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async ({ browser }) => {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const ctx = await newContext(browser, { width: 1280, height: 900 })
   const page = await ctx.newPage()
   await setupMock(page, [{ id: 1, role: 'user', content: 'run check', timestamp: new Date().toISOString(), turn_id: 1 }, ASSISTANT])
   // 与同文件其它用例统一：**真登录**后才落进 agent 视图（`goto('/')` 在 mock 下不一定渲染）
@@ -78,7 +106,7 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
  * 旧断言只查"pill ≤ 行宽"，一行一个时同样成立 —— 所以那两个断言漏掉了这个 bug。
  */
 test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ browser }) => {
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } })
+  const ctx = await newContext(browser, { width: 390, height: 844 })
   const page = await ctx.newPage()
   // ⚠️ 全部用**真实长参数**：短参数下"没有上限也能挤在一行" ⇒ 断言会假绿（2026-09-15 踩过：
   // 4 个 short label 的 pill 恰好同行合并，掩盖了真机长参数一行一个的 bug）。
@@ -151,7 +179,7 @@ test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ b
  *   B. **失败 chip 与 pill 同一行**（`N 失败` 不能独占一行）。
  */
 test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', async ({ browser }) => {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const ctx = await newContext(browser, { width: 1280, height: 900 })
   const page = await ctx.newPage()
   const ts = new Date().toISOString()
   const T = (name: string, label: string, status = 'done') => ({ name, label, status, summary: 'ok', detail: 'ok' })

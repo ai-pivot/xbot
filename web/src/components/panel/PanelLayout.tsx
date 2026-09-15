@@ -1076,6 +1076,11 @@ export function PanelDock(): ReactNode {
   // section 下方也没有分隔条）；要调它就拖它上面那个面板的 handle（成对分配会
   // 让它自动补偿）。
   const lastExpandedId = [...sideIds].reverse().find((pid) => !dock.entryOf(pid).collapsed)
+  // 可见（展开）面板。⚠️ 空态判定必须用【可见】而非【存在】：折叠掉最后一个展开
+  // 面板（或把它升为浮窗）时，旧条件 sideIds.length === 0 为假 ⇒ 既没有面板也没有
+  // 提示 ⇒ 左栏变成一片黑的"坏掉"观感（2026-09-15 用户：「点 Sessions 这个词有bug，
+  // 点完这样」）。空态提示必须给出，让用户知道面板去哪了、从哪拿回来。
+  const visibleSideIds = sideIds.filter((pid) => !dock.entryOf(pid).collapsed)
   return (
     <div
       ref={setDockEl}
@@ -1088,7 +1093,7 @@ export function PanelDock(): ReactNode {
           旧模型把折叠面板的 header 也堆在侧栏底部（"统计/插件/技能/Git" 四行），
           与新 ActivityBar 的图标功能重复、视觉杂乱（VSCode 的侧栏只显示当前 view）。 */}
       <div data-testid="panel-dock-stack" className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
-        {sideIds.filter((id) => !dock.entryOf(id).collapsed).map((id) => {
+        {visibleSideIds.map((id) => {
           const def = dock.defs.find((d) => d.id === id)
           if (!def) return null
           const entry = dock.entryOf(id)
@@ -1142,7 +1147,7 @@ export function PanelDock(): ReactNode {
             </PanelChrome>
           )
         })}
-        {sideIds.length === 0 ? (
+        {visibleSideIds.length === 0 ? (
           <div className="flex flex-1 items-center justify-center px-4 text-center text-[11px] text-text-muted">
             {t('panel.noPinned')}
           </div>

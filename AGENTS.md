@@ -684,6 +684,15 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **类别色静态必须极淡、hover 才升饱和**：左条由 `--pill-hue` + `index.css` 的 `.tool-pill-bar` 驱动（静态 `34%`、`hover/focus-visible` 才满饱和）；名称颜色与 done 完全一致（**"进行中"靠 sweep 动画 + 脉动环 + `执行中` chip 表达，不靠改字色**，用户 2026-09-15）。
 - **溢出/分组**：>6 个 ⇒ 前 5 + `+N`（原地展开）；推荐按类别聚色（左侧 3px 色条 + 类别名），扫描成本更低。
 
+## 侧栏面板标题栏：只有显式控件可折叠（不留"隐藏点击区"）
+
+- **⛔ docked 面板标题栏【不再】把点击当折叠**（2026-09-15 用户：「点 `Sessions` 这个词有bug，别的位置没有」）。旧实现给 `<header>` 挂了 `onClick`（"按钮/grip 以外区域 = 切换折叠"），于是**点标题文字/图标/空白都会收面板**；而左栏唯一的展开面板被收掉后，`panel-dock-stack` 的渲染过滤（`visibleSideIds`）让侧栏**什么都不剩**，用户看到一整片黑 = "侧栏坏了"。**折叠只有一个显式控件：`⌄` 按钮**（`t('panel.collapse')`；左侧图标栏点激活项 = 收起整栏，另一条独立语义）。floating 面板的标题拖动/双击语义不变。
+- **⛔ 空态判定必须用【可见】而非【存在】**：`PanelDock` 的 `noPinned` 提示旧条件是 `sideIds.length === 0` —— 折叠/浮走唯一展开面板时该条件为假 ⇒ 既没面板也没提示（黑栏）。必须用 `visibleSideIds`（`sideIds.filter(id => !entryOf(id).collapsed)`）。守护：`PanelLayout.test.tsx`「标题栏点击语义」两例（点标题/图标/header 不折叠 + 未折叠零落盘；⌄ 折叠后渲染空态提示）+ `e2e/panel-title-click.spec.ts`（真实浏览器：点标题后堆叠仍有 1 个面板，点 ⌄ 后堆叠为空但**非空 DOM** = 有提示）。
+
+## E2E 断言的语言必须两侧钉死（Node 侧 i18n ≠ 浏览器）
+
+- **⚠️ `i18n.t()` 的期望值与浏览器渲染的语言必须显式对齐**（2026-09-15 CI 红灯根因）：spec 里 `import i18n from '@/i18n'` 的实例跑在 **Node**（无 `navigator`/`localStorage` ⇒ 回落 `DEFAULT_LOCALE` = **zh-CN**），而 app 在浏览器里按 `navigator.language`（Playwright 默认 `en-US`）渲染 **en** ⇒ 断言「失败」、DOM 是「Failed」，永远红。修法（`e2e/tool-pill-visuals.spec.ts` 范式）：**两侧钉死同一语言** —— 浏览器 `context.addInitScript(() => localStorage.setItem('xbot-locale', SPEC_LOCALE))` + Node 侧 `test.beforeAll(() => i18n.changeLanguage(SPEC_LOCALE))`。**不要**靠"测试环境默认是 en/zh"这种隐式假设。
+
 ## Web 复制入口 = 电脑右键 / 手机长按（三层粒度；无悬浮条）
 
 - **交互（用户 2026-09-15 二次定稿）**：不放任何常驻/hover 悬浮工具条（用户：「这个悬浮太丑了还挡着」）——
