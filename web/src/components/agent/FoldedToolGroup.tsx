@@ -203,12 +203,12 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       ? 'color-mix(in srgb, var(--text-muted) 18%, transparent)'
       : `color-mix(in srgb, ${hue} 16%, transparent)`
   const border = failed
-    ? `1px solid color-mix(in srgb, ${errColor} 55%, transparent)`
+    ? `1px solid color-mix(in srgb, ${errColor} 45%, transparent)`
     : (isSyn || killed)
       ? `1px dashed color-mix(in srgb, ${isSyn ? hue : 'var(--text-muted)'} 38%, transparent)`
       : '1px solid var(--border)'
   const bg = failed
-    ? `color-mix(in srgb, ${errColor} 12%, transparent)`
+    ? `color-mix(in srgb, ${errColor} 8%, transparent)`
     : isSyn ? `color-mix(in srgb, ${hue} 5%, transparent)` : 'var(--bg-secondary)'
   // 设计原则「色彩只表达状态，成功要安静」：名称一律**中性前景色**，分类色只留在左侧 3px 条 + 图标槽。
   // 原因（用户 2026-09-15）：写入类的琥珀黄名字看着像 warn —— 黄/橙/红必须只属于失败与终止。
@@ -235,7 +235,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       // 规范规定百分比 max-width 对 indefinite 包含块**按 none 处理** ⇒ `calc(50% - 8px)` 完全失效，
       // 只剩 15rem=240px 生效 ⇒ 手机 362px 行宽下 240×2+gap > 362 ⇒ **每个 pill 独占一行**
       // （2026-09-15 用户真机截图 + E2E 实测：4 个 pill 占 4 行）。上限见 wrapper（那里包含块=行宽，definite）。
-      className="tool-pill inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full py-0.5 pl-1 pr-2 text-[11px] font-medium"
+      className="tool-pill inline-flex h-[22px] min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full pl-1 pr-2 text-[11px] leading-[22px] font-medium"
       style={{ border, background: bg, ['--pill-hue' as string]: hue } as React.CSSProperties}
     >
       {/* 左 3px 色条：**每个** pill 都有（失败=红实条 / 终止=灰虚线 / 其余=分类色）——
@@ -411,7 +411,7 @@ function LazyPillPopover({
         // ⚠️ 上限**必须是不含百分比**的确定值：wrapper 的包含块是 flex item（内容尺寸 = indefinite），
         // 百分比（`50%`）在里面无法解析 ⇒ Chrome 把整个 `min()` 当作 `none` ⇒ **上限等于没有**
         // （2026-09-15 真机仍一行一个的根因；`50vw` 是视口单位，永远可解析）。
-        style={{ maxWidth: 'min(calc(50vw - 32px), 15rem)' }}
+        style={{ maxWidth: 'calc(50% - 6px)' /* 容器相对：任何面板宽度都一行 ≥2 个（50vw 在窄面板里会退化成一行一个） */ }}
       >
         {children}
       </span>
@@ -420,7 +420,7 @@ function LazyPillPopover({
   return (
     <Popover open onOpenChange={(o) => { if (!o) setOpen(false) }}>
       <PopoverTrigger asChild>
-        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 cursor-pointer items-center transition-opacity hover:opacity-85" style={{ maxWidth: 'min(calc(50vw - 32px), 15rem)' }}>
+        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 cursor-pointer items-center transition-opacity hover:opacity-85" style={{ maxWidth: 'calc(50% - 6px)' /* 容器相对：任何面板宽度都一行 ≥2 个（50vw 在窄面板里会退化成一行一个） */ }}>
           {children}
         </span>
       </PopoverTrigger>
@@ -585,14 +585,19 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   return (
     <div className="flex flex-col gap-1.5">
       {genuiElements}
-      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-start gap-1.5">
         {failedCount > 0 && (
           <>
-            <span aria-hidden className="h-4 w-[3px] shrink-0 rounded-full" style={{ background: 'var(--destructive)' }} />
+            {/* 1) 度量与 pill 一致（leading-4 / py 0.5）⇒ 不再把整行顶高；
+                2) 安静的红（14% 底 + 38% 边 + 红字），响亮留给失败 pill 自身（状态只表达一次）。 */}
             <span
               data-testid="tool-group-failed"
-              className="shrink-0 rounded-full px-1.5 py-px text-[10px] font-bold text-white"
-              style={{ background: 'var(--destructive)' }}
+              className="h-[18px] shrink-0 rounded-full px-1.5 text-[10px] font-semibold leading-[18px]"
+              style={{
+                color: 'var(--destructive)',
+                background: 'color-mix(in srgb, var(--destructive) 14%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--destructive) 38%, transparent)',
+              }}
             >
               {i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string}
             </span>
