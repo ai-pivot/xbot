@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 
+const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
+
 /** 复制自 tool-pill-width.spec.ts 的 mock（同一套 /api/*）。 */
 async function setupMock(page: Page, historyMessages: unknown[] = []) {
   await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))
@@ -87,7 +89,13 @@ test('手机端：pill 必须同行合并 + icon/首字符左对齐', async ({ b
     ] },
   ]
   await setupMock(page, msgs)
-  await page.goto('/')
+  // 手机壳（MobileAppShell）默认视图不是 agent 面板 ⇒ 必须像通过的移动 spec 那样**真登录**，
+  // 登录后才会落到 agent 视图（`goto('/')` + mock auth 会停在别的视图，pill 不在 DOM）。
+  await page.goto(`${BASE}/login`)
+  await page.locator('input').first().fill('test')
+  await page.locator('input[type="password"]').fill('test')
+  await page.locator('button[type="submit"]').click()
+  await page.waitForSelector('[data-testid="tool-pill"]', { timeout: 30000 })
 
   const pills = page.locator('[data-testid="tool-pill"]')
   const n = await pills.count()
