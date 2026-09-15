@@ -163,11 +163,11 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const border = failed
     ? `1px solid color-mix(in srgb, ${errColor} 55%, transparent)`
     : (isSyn || killed)
-      ? `1px dashed color-mix(in srgb, ${isSyn ? hue : 'var(--text-muted)'} 55%, transparent)`
+      ? `1px dashed color-mix(in srgb, ${isSyn ? hue : 'var(--text-muted)'} 38%, transparent)`
       : '1px solid var(--border)'
   const bg = failed
     ? `color-mix(in srgb, ${errColor} 12%, transparent)`
-    : isSyn ? `color-mix(in srgb, ${hue} 10%, transparent)` : 'var(--bg-secondary)'
+    : isSyn ? `color-mix(in srgb, ${hue} 5%, transparent)` : 'var(--bg-secondary)'
   // 设计原则「色彩只表达状态，成功要安静」：名称一律**中性前景色**，分类色只留在左侧 3px 条 + 图标槽。
   // 原因（用户 2026-09-15）：写入类的琥珀黄名字看着像 warn —— 黄/橙/红必须只属于失败与终止。
   // 设计原则「色彩只表达状态」的精确边界（用户 2026-09-15）：
@@ -175,6 +175,13 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   //   - **成功/排队/终止** = 安静 ⇒ 名称用中性前景色，分类色只留在左侧 3px 条 + 图标槽
   //     （此前"写入"的琥珀黄名字看着像 warn —— 黄/橙/红只应属于失败与终止）。
   const active = executing || generating
+  // ── 设计（依据业界 color-system 指南：**categorical 色必须低彩度**，且绝不与 semantic
+  // （success/warning/danger）色争抢注意力；中性色是主力、semantic 是例外）────────────
+  // 用户 2026-09-15：「分类色不应该直接抓人眼球导致像是警报，但分类我是支持的」⇒ 换表现方案：
+  //   分类色**只以低彩度形态**出现在 ① 图标 ② 极细左条（对位用，恒定槽位）；
+  //   pill 底色/边框保持**中性**；只有**失败/终止**使用高饱和 semantic 色（响亮是它的语义）。
+  const hueQuiet = `color-mix(in srgb, ${hue} 62%, var(--text-secondary))` // 图标：静音分类色
+  const barQuiet = `color-mix(in srgb, ${hue} 42%, transparent)` // 左条：更静（对位 + 轻微类别提示）
   const nameColor = failed
     ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))'
     : active ? hue : 'var(--text-primary)'
@@ -194,7 +201,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
       <span
         aria-hidden
         className="h-3.5 w-[3px] shrink-0 rounded-full"
-        style={{ background: killed ? 'transparent' : failed ? errColor : hue, borderRight: killed ? '3px dotted var(--text-muted)' : undefined }}
+        style={{ background: killed ? 'transparent' : failed ? errColor : barQuiet, borderRight: killed ? '3px dotted var(--text-muted)' : undefined }}
       />
       {/* 状态标记：**恒定 14px 槽**，所有状态都塞进同一个 `size-3.5` 盒子 —— running 的点（6px）比
           done 的勾（14px）小 8px，槽位不定宽会让 icon 与名字整体左移（用户 2026-09-15 实测
@@ -219,7 +226,7 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
           ? <span className="flex size-4 items-center justify-center rounded-full text-[8px] font-extrabold leading-none text-black/80" style={{ background: hue }}>{syntheticKindBadge(kind)}</span>
           : (() => {
               const Icon = getToolIcon(tool.name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
-              return <Icon className="size-3" style={{ color: hue }} />
+              return <Icon className="size-3" style={{ color: executing || generating ? hue : failed ? errColor : hueQuiet }} />
             })()}
       </span>
       {executing && !isSubAgentTool(tool)
