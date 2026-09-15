@@ -716,8 +716,11 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 
 		s.beginIteration(i)
 		if err := s.maybeCompress(ctx); err != nil {
-			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
-			out.Error = fmt.Errorf("persist context compression: %w", err)
+			// maybeCompress 内部已把「压缩失败」降级为 warn + 继续（2026-09-15：
+			// 压缩失败不再终止用户的 turn）。能走到这里只剩取消类错误
+			// （ctx.Err()）——保持既有的中止语义。
+			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID, Content: "Agent was cancelled."})
+			out.Error = fmt.Errorf("context compression interrupted: %w", err)
 			return out
 		}
 		s.notifyThinking(i)
