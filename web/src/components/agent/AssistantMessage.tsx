@@ -12,7 +12,7 @@ import { memo } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
-import { MessageActions } from './MessageActions'
+import { CopyTarget } from './MessageActions'
 import { TurnBody } from './TurnBody'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
@@ -93,7 +93,7 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
   // Action bar shown for completed (non-streaming) messages with content.
 
   return (
-    <div className="group/msg group relative px-1">
+    <CopyTarget kind="message" message={message} className="group/msg px-1">
       {(message.iterationsTruncated ?? 0) > 0 && (
         <div
           data-testid="iterations-truncated"
@@ -129,9 +129,7 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
         </div>
       )}
 
-      {/* 每条消息统一操作入口：右下角 hover 浮出（零占高）。 */}
-      <MessageActions message={message} />
-    </div>
+    </CopyTarget>
   )
 }
 

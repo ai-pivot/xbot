@@ -15,7 +15,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, Check, ChevronRight, Clock, Loader2, Pencil, X } from 'lucide-react'
 
-import { MessageActions } from './MessageActions'
+import { CopyTarget } from './MessageActions'
 import type { ChatMessage } from '@/types/shared'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { Button } from '@/components/ui/button'
@@ -215,6 +215,7 @@ export const UserMessage = memo(function UserMessage({
         {isNotification && (
           <span className="text-xs text-text-muted">🔔 Notification</span>
         )}
+        <CopyTarget kind="message" message={{ role: 'user', content } as unknown as ChatMessage}>
         <div
           ref={displayRef}
           className={
@@ -223,7 +224,6 @@ export const UserMessage = memo(function UserMessage({
               : 'relative rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary'
           }
         >
-          <MessageActions message={{ role: 'user', content } as unknown as ChatMessage} />
           <MarkdownRenderer content={content || ' '} />
           {sending && (
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
@@ -238,6 +238,7 @@ export const UserMessage = memo(function UserMessage({
             </div>
           )}
         </div>
+        </CopyTarget>
         {onRewind && onStartEdit && (
           <Button
             type="button"

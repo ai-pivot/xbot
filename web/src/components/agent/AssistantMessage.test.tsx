@@ -27,39 +27,68 @@ function iter(content: string, iteration = 1): WebIteration {
   return { iteration, content, reasoning: '', tools: [], toolCount: 0 }
 }
 
-describe('AssistantMessage copy affordance (MessageActions)', () => {
-  it('always mounts the copy button — 不再条件挂载（"突然冒出来/没了"的根因）', () => {
-    // 用户 2026-09-15 报告：复制按钮"总是突然冒出来"、且某些消息下"没了"。
-    // 根因是条件挂载 + 判据用错字段（`!isStreaming && !!content`）。新契约：按钮恒在 DOM 里，
-    // 只是 hover 时才可见（absolute ⇒ 零占高），没有内容时 disabled。
-    renderMsg(<AssistantMessage message={msg({ content: '' })} />)
-    expect(screen.getByTestId('msg-copy')).toBeTruthy()
-    expect(screen.getByTestId('msg-actions')).toBeTruthy()
-  })
-
-  it('copies the reply even when it only lives inside iterations（顶层 content 为空）', async () => {
-    // v55 架构下回复常只存在于 iterations ⇒ 旧判据 `!!message.content` 为假、按钮不渲染
-    //（用户："复制按钮怎么没了"）。新判定 resolveCopyText 回退到最后一迭代正文。
+describe('复制入口（电脑右键 / 手机长按；每个迭代独立）', () => {
+  it('右键消息 → 四个变体菜单；"复制回复"写入剪贴板（iterations-only 也拿得到）', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
-    const m = msg({ content: '', iterations: [iter('先看一眼', 1), iter('## 今日要点\n1. 扩容完成', 2)] })
+    // 顶层 content 为空、回复只在 iterations 里（老实现此处"按钮没了"）
+    const m = msg({ content: '', iterations: [iter('先看一眼', 1), iter('## 今日要点', 2)] })
     renderMsg(<AssistantMessage message={m} />)
-    fireEvent.click(screen.getByTestId('msg-copy'))
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith('## 今日要点\n1. 扩容完成'))
-  })
-
-  it('disables copy when there is nothing to copy（display-only / 空消息）', () => {
-    renderMsg(<AssistantMessage message={msg({ content: '', iterations: [], displayOnly: true })} />)
-    expect((screen.getByTestId('msg-copy') as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  it('exposes 含思考/含工具/原始 Markdown 变体菜单', () => {
-    renderMsg(<AssistantMessage message={msg({ content: 'reply', iterations: [iter('reply')] })} />)
-    fireEvent.click(screen.getByTestId('msg-more'))
-    const menu = screen.getByTestId('msg-menu')
+    const target = document.querySelector('[data-copy-target="message"]') as HTMLElement
+    expect(target).toBeTruthy()
+    fireEvent.contextMenu(target)
+    const menu = screen.getByTestId('copy-menu')
     expect(menu.textContent).toContain('复制含思考')
     expect(menu.textContent).toContain('复制含工具调用')
     expect(menu.textContent).toContain('查看原始 Markdown')
+    fireEvent.click(screen.getByText('复制回复'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('## 今日要点'))
+  })
+
+  it('**每个迭代**都有独立的复制目标（用户：不是说每个 iter 都有吗）', () => {
+    const m = msg({ content: 'r', iterations: [iter('a', 1), iter('b', 2), iter('c', 3)] })
+    renderMsg(<AssistantMessage message={m} />)
+    expect(document.querySelectorAll('[data-copy-target="iteration"]').length).toBe(3)
+  })
+
+  it('右键某个迭代 → "复制该迭代正文" 只复制该迭代（不串到别的迭代）', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    renderMsg(<AssistantMessage message={msg({ content: '', iterations: [iter('first', 1), iter('second', 2)] })} />)
+    const its = document.querySelectorAll('[data-copy-target="iteration"]')
+    fireEvent.contextMenu(its[0] as HTMLElement)
+    fireEvent.click(screen.getByText('复制该迭代正文'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('first'))
+  })
+
+  it('工具级：该迭代的每个工具各一项（可单独复制该工具输出）', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const m = msg({
+      content: 'r',
+      iterations: [
+        {
+          iteration: 1,
+          content: 'c',
+          reasoning: '',
+          tools: [{ name: 'Shell', label: 'Shell ls', detail: 'out1', status: 'done' } as unknown as WebToolProgress],
+          toolCount: 1,
+        },
+      ],
+    })
+    renderMsg(<AssistantMessage message={m} />)
+    const t = document.querySelector('[data-copy-target="tools"]') as HTMLElement
+    expect(t).toBeTruthy()
+    fireEvent.contextMenu(t)
+    expect(screen.getByTestId('copy-menu').textContent).toContain('Shell ls')
+    fireEvent.click(screen.getByText('复制：Shell ls'))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('out1'))
+  })
+
+  it('不再有常驻/悬浮工具条（用户：这个悬浮太丑了还挡着）', () => {
+    renderMsg(<AssistantMessage message={msg({ content: 'reply' })} />)
+    expect(screen.queryByTestId('msg-actions')).toBeNull()
+    expect(screen.queryByTestId('msg-copy')).toBeNull()
   })
 })
 
