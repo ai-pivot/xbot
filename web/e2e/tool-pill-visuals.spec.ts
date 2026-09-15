@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import i18n from '@/i18n'
 
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 
@@ -49,18 +50,18 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
   // ① 失败 pill：data-tool-status=error 且带「失败」标签
   const errPill = page.locator('[data-tool-status="error"]').first()
   await expect(errPill).toBeAttached()
-  await expect(errPill).toContainText('失败')
+  await expect(errPill).toContainText(i18n.t('agent.tool.statusFailed'))
 
   // ② 假工具 pill：虚线边框 + 「系统」角标
   // `data-tool-name` 同时在 pill 与其外层 popover 包装上 ⇒ 取**最内层**（含「系统」角标的那个）
   const synPill = page.locator('[data-tool-name="background_task_result"]', { hasText: '系统' }).last()
   await expect(synPill).toBeAttached()
-  await expect(synPill).toContainText('系统')
+  await expect(synPill).toContainText(i18n.t('agent.tool.syntheticBadge'))
   const borderStyle = await synPill.evaluate((el) => getComputedStyle(el).borderStyle)
   expect(borderStyle, '假工具 pill 必须是虚线边框').toBe('dashed')
 
   // ③ 行级失败告警
-  await expect(page.locator('[data-testid="tool-group-failed"]').first()).toContainText('失败')
+  await expect(page.locator('[data-testid="tool-group-failed"]').first()).toContainText(i18n.t('agent.tool.statusFailed'))
 
   // 截图仅供人工/多模态复核；注意 mock 流程下 `historyReady` 不会翻转，面板仍显示 loading 遮罩
   //（移除 DOM 节点无效 —— React 会重渲染）。视觉契约以**上面的断言**为准；真会话截图待服务端重启后补。
@@ -159,9 +160,9 @@ test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', asy
     { id: 2, role: 'assistant', content: '', timestamp: ts, turn_id: 1, iterations: [
       { iteration: 1, content: '', thinking: '', tools: [T('Shell', 'cd /home/smith/src/xbot && cargo check --workspace')] },
       { iteration: 2, content: '', thinking: '', tools: [T('Shell', 'cd /home/smith/src/xbot && cargo test --workspace')] },
-      { iteration: 3, content: '', thinking: '', tools: [T('task_status', '{"task_id": ["3f8f492a"]}')] },
-      { iteration: 4, content: '', thinking: '', tools: [T('task_status', '{"task_id": ["aaaaaaaa"]}')] },
-      { iteration: 5, content: '', thinking: '', tools: [T('task_read', '{"task_id": ["3f8f492a"]}', 'error')] },
+      { iteration: 3, content: '', thinking: '', tools: [T('task_status', 'task_status: {"task_id": ["3f8f492a"]}')] },
+      { iteration: 4, content: '', thinking: '', tools: [T('task_status', 'task_status: {"task_id": ["aaaaaaaa"]}')] },
+      { iteration: 5, content: '', thinking: '', tools: [T('task_read', 'task_read: {"task_id": ["3f8f492a"]}', 'error')] },
       { iteration: 6, content: '', thinking: '', tools: [T('Shell', 'ls -la')] },
       { iteration: 7, content: '', thinking: '', tools: [T('Shell', 'pwd')] },
     ] },
@@ -195,6 +196,9 @@ test('跨迭代连续 tool：必须折叠为少数行 + 失败 chip 同行', asy
   await page.screenshot({ path: '/tmp/cross-iter.png', fullPage: true })
 
   expect(geo.pills, '7 个工具都要有 pill').toBeGreaterThanOrEqual(7)
+  // 硬断言：长 JSON 参数必须已简化（mock label 用真实形态 "<name>: <json>"）
+  const barText = await page.locator('[data-testid="tool-pill-row"]').first().innerText()
+  expect(barText, `参数必须已简化（实测：${barText.replace(/\s+/g, ' ').slice(0, 200)}）`).toContain('task_id: 3f8f492a')
   // A. 跨迭代折叠：行数必须远小于工具数（修复前 = 7 行）
   expect(geo.rows, `pill 行数必须折叠（rows=${geo.rows}）`).toBeLessThanOrEqual(2)
   expect(geo.distinctPillY, `pill 的 y 值必须收敛（y 数=${geo.distinctPillY}）`).toBeLessThanOrEqual(3)
