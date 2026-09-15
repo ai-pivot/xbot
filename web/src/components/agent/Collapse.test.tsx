@@ -147,16 +147,24 @@ describe('FoldedToolGroup', () => {
     expect(within(content as HTMLElement).getAllByTestId('tool-row')).toHaveLength(2)
   })
 
-  it.each(['pending', 'running', 'generating'] as const)(
-    'uses an accent sweep in a folded %s tool title',
+  it('uses a category-colored sweep in a folded running tool title', () => {
+    // 新契约（2026-09-15 设计定稿）：工具名用**分类色**（状态与分类色解耦），不再是 accent；
+    // 状态改由状态标记 + chip 表达（失败/终止/排队/生成中带文字标签）。
+    renderWithProviders(<FoldedToolGroup tools={[makeTool({ status: 'running' })]} />)
+    const pill = screen.getByTestId('tool-pill')
+    const sweep = pill.querySelector<HTMLElement>('.sweep-text')
+    expect(sweep).not.toBeNull()
+    expect(sweep!.style.getPropertyValue('--sweep-color')).not.toBe('var(--accent)')
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toMatch(/^#/)
+  })
+
+  it.each(['pending', 'generating'] as const)(
+    'shows a status chip (no sweep) for a folded %s tool',
     (status) => {
-      renderWithProviders(
-        <FoldedToolGroup tools={[makeTool({ status })]} />,
-      )
+      renderWithProviders(<FoldedToolGroup tools={[makeTool({ status })]} />)
       const pill = screen.getByTestId('tool-pill')
-      const sweep = pill.querySelector<HTMLElement>('.sweep-text')
-      expect(sweep).not.toBeNull()
-      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+      expect(pill.querySelector('.sweep-text')).toBeNull()
+      expect(pill.textContent).toContain(status === 'pending' ? '排队' : '生成中')
     },
   )
 
@@ -171,18 +179,25 @@ describe('FoldedToolGroup', () => {
     },
   )
 
-  it.each(['pending', 'running', 'generating'] as const)(
-    'uses an accent sweep in an expanded %s tool card',
+  it('uses a category-colored sweep in an expanded running tool card', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={[makeTool({ name: 'Read', label: 'Read: file.go', status: 'running' })]} />,
+    )
+    const sweep = container.querySelector<HTMLElement>('.sweep-text')
+    expect(sweep).not.toBeNull()
+    expect(sweep).toHaveTextContent('Read')
+    // Read 属"读取"分类（indigo #818cf8）——不再是 accent
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('#818cf8')
+  })
+
+  it.each(['pending', 'generating'] as const)(
+    'labels an expanded %s tool with a status chip',
     (status) => {
       const { container } = renderWithProviders(
-        <FoldedToolGroup
-          tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]}
-        />,
+        <FoldedToolGroup tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]} />,
       )
-      const sweep = container.querySelector<HTMLElement>('.sweep-text')
-      expect(sweep).not.toBeNull()
-      expect(sweep).toHaveTextContent('Read')
-      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+      expect(container.querySelector('.sweep-text')).toBeNull()
+      expect(container.textContent).toContain(status === 'pending' ? '排队' : '生成中')
     },
   )
 
