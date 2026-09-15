@@ -475,10 +475,29 @@ export const MessageList = memo(function MessageList({
   // trigger correction, keeping visible items stable.
   useLayoutEffect(() => {
     const v = virtualizer as unknown as {
-      shouldAdjustScrollPositionOnItemSizeChange?: (item: { start: number; end: number }, delta: number, instance: { scrollOffset: number | null }) => boolean
+      shouldAdjustScrollPositionOnItemSizeChange?: (item: { key: string; start: number; end: number }, delta: number, instance: unknown) => boolean
     }
     v.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
-      return item.end < (instance.scrollOffset ?? 0)
+      // ⚠️ 必须用 **DOM 真相**判断「是否完全在视口上方」，不能用 virtualizer 的
+      // item 坐标：item.start/item.end 是「内容流从 0 开始」的坐标，**不含**滚动
+      // 容器的 padding-top 与顶部哨兵（loadMore sentinel）高度；而 scrollOffset 是
+      // 原始 scrollTop（含 padding）。两者差一个 padding（16px）⇒ 还剩 ≤16px 露在
+      // 视口里的行会被误判成"完全在上方"，它换行长高时触发 +delta 补偿滚动
+      // （stream-jitter.spec.ts「读历史时视口跳 23px」= 本 bug；是否误判取决于露出
+      // 的宽度是否小于 padding ⇒ 间歇复现，CI 上偶发红灯）。
+      const inst = instance as {
+        scrollOffset?: number | null
+        scrollElement?: HTMLElement | null
+        elementsCache?: Map<string, HTMLElement>
+      }
+      const el = inst.elementsCache?.get(item.key)
+      const scroller = inst.scrollElement
+      if (el && scroller && el.isConnected) {
+        // 行的下缘 ≤ 滚动视口上缘 ⇒ 该行完全在视口上方（真正需要补偿）。
+        return el.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().top
+      }
+      // 兜底（元素未注册时）：沿用坐标比较，按 padding 语义保守判定。
+      return item.end < (inst.scrollOffset ?? 0)
     }
   }, [virtualizer])
 
