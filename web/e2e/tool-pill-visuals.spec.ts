@@ -54,7 +54,7 @@ test('pill 视觉语言：失败吵闹 / 假工具可辨 / 行级告警', async 
 
   // ② 假工具 pill：虚线边框 + 「系统」角标
   // `data-tool-name` 同时在 pill 与其外层 popover 包装上 ⇒ 取**最内层**（含「系统」角标的那个）
-  const synPill = page.locator('[data-tool-name="background_task_result"]', { hasText: i18n.t('agent.tool.syntheticBadge') }).last()
+  const synPill = page.locator('[data-tool-name="background_task_result"]', { hasText: '系统' }).last()
   await expect(synPill).toBeAttached()
   await expect(synPill).toContainText(i18n.t('agent.tool.syntheticBadge'))
   const borderStyle = await synPill.evaluate((el) => getComputedStyle(el).borderStyle)
