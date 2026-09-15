@@ -168,7 +168,16 @@ function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const bg = failed
     ? `color-mix(in srgb, ${errColor} 12%, transparent)`
     : isSyn ? `color-mix(in srgb, ${hue} 10%, transparent)` : 'var(--bg-secondary)'
-  const nameColor = failed ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))' : hue
+  // 设计原则「色彩只表达状态，成功要安静」：名称一律**中性前景色**，分类色只留在左侧 3px 条 + 图标槽。
+  // 原因（用户 2026-09-15）：写入类的琥珀黄名字看着像 warn —— 黄/橙/红必须只属于失败与终止。
+  // 设计原则「色彩只表达状态」的精确边界（用户 2026-09-15）：
+  //   - **运行/生成中** = 需要注意力 ⇒ 名称保留**分类色**（sweep 动效也是分类色，契约测试守护）；
+  //   - **成功/排队/终止** = 安静 ⇒ 名称用中性前景色，分类色只留在左侧 3px 条 + 图标槽
+  //     （此前"写入"的琥珀黄名字看着像 warn —— 黄/橙/红只应属于失败与终止）。
+  const active = executing || generating
+  const nameColor = failed
+    ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))'
+    : active ? hue : 'var(--text-primary)'
   return (
     <span
       data-tool-name={tool.name}

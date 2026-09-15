@@ -12,7 +12,7 @@ export type ToolCategory = 'exec' | 'read' | 'write' | 'search' | 'agent' | 'tas
 export const CATEGORY_COLOR: Record<ToolCategory, string> = {
   exec: '#38bdf8',
   read: '#818cf8',
-  write: '#fbbf24',
+  write: '#14b8a6',
   search: '#c084fc',
   agent: '#34d399',
   task: '#fb7185',
