@@ -571,8 +571,17 @@
 }
 .markdown-body th { background: var(--md-table-header-bg); font-weight: 600; }
 .markdown-body hr { border: 0; border-top: 1px solid var(--md-border); margin: 1em 0; }
-/* KaTeX display blocks stay scrollable on narrow widths. */
+/* KaTeX 公式与其它"不可换行"的行内内容**绝不允许**溢出消息容器。
+ * 2026-09-16 用户报告（手机 + 电脑都中招）：粘贴含 $…$ 的 shell 脚本被 remark-math
+ * 当公式解析，而 KaTeX 行内公式是**定宽不可换行**的盒子（katex.css: .katex{white-space:nowrap}），
+ * 必然比气泡宽 ⇒ 溢出屏幕；仅靠 max-width 夹盒子没用（内部 span 带固定 margin/width，
+ * 照样画出盒子之外）。做法：公式本体不得超出容器宽度 + 承载它的段落/列表项允许横向滚动。 */
 .markdown-body .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25em 0; }
+.markdown-body .katex { max-width: 100%; }
+.markdown-body p,
+.markdown-body li,
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4,
+.markdown-body blockquote { overflow-x: auto; overflow-y: hidden; }
 
 /* 卡片圆角统一（uiux-shadcn §4 Card radius lg=8px）
  * dockview group 卡片 + PanelDock 面板（rounded-lg=8px）——视觉一致 */
