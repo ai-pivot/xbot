@@ -2108,6 +2108,14 @@ func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	// 走到这里 = 所有 pluginDirs 都没有这个文件（web 目录缺失 / 文件不存在 /
+	// 越界被拒都经由 continue 落到此）。运行时 404 是静默的（前端只看到加载
+	// 失败）——打一条 WARN 作为唯一线索，供排查"插件装了但产物没跟上"。
+	log.WithFields(log.Fields{
+		"path":      r.URL.Path,
+		"plugin_id": pluginID,
+		"sub_path":  subPath,
+	}).Warn("plugin-static-miss: plugin web artifact not found (404)")
 	http.NotFound(w, r)
 }
 

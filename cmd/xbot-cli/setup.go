@@ -21,7 +21,9 @@ package main
 //
 // Flags:
 //
-//	--check               diagnose only, exit 1 when pieces are missing
+//	--check               diagnose only; exit 1 only when the release-pinned
+//	                      pieces are missing (local plugin health is reported,
+//	                      not enforced — see scanLocalPluginHealth)
 //	--config-only         skip downloads; only fix channel activation config
 //	--offline-web F       install web dist from a local tarball (air-gapped)
 //	--offline-plugins F   install plugins from a local tarball (air-gapped)
@@ -49,6 +51,7 @@ import (
 	"time"
 
 	"xbot/config"
+	"xbot/plugin"
 	"xbot/version"
 )
 
@@ -91,7 +94,7 @@ func runSetup(args []string) error {
 		fmt.Println("from THIS binary's GitHub release, then activates channel plugins")
 		fmt.Println("(channels.<name>.enabled=true) in config.json.")
 		fmt.Println("")
-		fmt.Println("  --check               diagnose only; exit 1 if pieces are missing")
+		fmt.Println("  --check               diagnose only; exit 1 only if release-pinned pieces are missing")
 		fmt.Println("  --config-only         only fix channel activation config, no downloads")
 		fmt.Println("  --offline-web F       install web dist from local tarball F")
 		fmt.Println("  --offline-plugins F   install plugins from local tarball F")
@@ -771,10 +774,98 @@ func checkSetup(o *setupOptions) error {
 		}
 	}
 
+	// 4. Local plugin health scan — report-only, never touches the exit code.
+	//    Checks EVERY plugin under both discovery dirs (user + builtin):
+	//    manifest readable/valid, and for plugins declaring web.entry the web
+	//    artifact on disk (runtime serves a missing artifact as a silent 404 —
+	//    exactly how xbot.iteration-stats was lost without anyone noticing).
+	//    Disabled plugins (config plugins.disabled_plugins) are listed
+	//    separately.
+	//
+	//    Exit-code rationale: the sections above keep their existing semantics
+	//    (exit 1 only when the RELEASE-PINNED pieces are missing). The local
+	//    dirs are user-managed — a plugin the user installed once and later
+	//    deleted must NOT turn into "installation failed". Issues found here
+	//    are printed as diagnostics instead.
+	scanLocalPluginHealth(xbotHome, cfg)
+
 	if !ok {
 		fmt.Println("setup --check: incomplete (see above)")
 		return errors.New("setup incomplete")
 	}
 	fmt.Println("setup --check: all good")
 	return nil
+}
+
+// scanLocalPluginHealth walks every plugin directory under $XBOT_HOME/plugins
+// (user layer) and $XBOT_HOME/plugins/builtin (release layer) and prints, one
+// per line, the two failure modes that are otherwise invisible:
+//
+//   - missing/invalid: manifest unreadable or failing validation; a declared
+//     web.entry whose artifact file is absent from <dir>/web/
+//   - disabled: the plugin ID appears in config plugins.disabled_plugins
+//
+// Report-only by design (see the call-site comment): it never changes the
+// --check exit code.
+func scanLocalPluginHealth(xbotHome string, cfg *config.Config) {
+	type layer struct{ label, dir string }
+	layers := []layer{
+		{"user", filepath.Join(xbotHome, "plugins")},
+		{"builtin", filepath.Join(xbotHome, "plugins", "builtin")},
+	}
+	disabled := map[string]bool{}
+	if cfg != nil {
+		for _, id := range cfg.Plugins.DisabledPlugins {
+			disabled[id] = true
+		}
+	}
+
+	var missing []string
+	var disabledLines []string
+	for _, l := range layers {
+		entries, err := os.ReadDir(l.dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			dir := filepath.Join(l.dir, e.Name())
+			if _, err := os.Stat(filepath.Join(dir, setupPluginManifestFN)); err != nil {
+				continue
+			}
+			m, err := plugin.LoadManifest(dir)
+			if err != nil {
+				missing = append(missing, fmt.Sprintf("manifest invalid: dir=%s (%s): %v", dir, l.label, err))
+				continue
+			}
+			if m.Web != nil && m.Web.Entry != "" {
+				artifact := filepath.Join(dir, "web", filepath.FromSlash(m.Web.Entry))
+				if _, err := os.Stat(artifact); err != nil {
+					missing = append(missing, fmt.Sprintf("web artifact missing: plugin=%s web.entry=%q dir=%s (%s)", m.ID, m.Web.Entry, dir, l.label))
+				}
+			}
+			if disabled[m.ID] {
+				disabledLines = append(disabledLines, fmt.Sprintf("%s (%s)", m.ID, l.label))
+			}
+		}
+	}
+
+	if len(missing) == 0 && len(disabledLines) == 0 {
+		fmt.Println("Plugin health: OK (local manifests readable; declared web entries present)")
+		return
+	}
+	if len(missing) > 0 {
+		fmt.Println("Plugin health: issues (report-only — does not affect exit code):")
+		for _, line := range missing {
+			fmt.Printf("  %s\n", line)
+		}
+	}
+	if len(disabledLines) > 0 {
+		fmt.Println("Plugin health: disabled (config plugins.disabled_plugins):")
+		for _, line := range disabledLines {
+			fmt.Printf("  %s\n", line)
+		}
+	}
 }

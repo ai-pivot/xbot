@@ -1,0 +1,36 @@
+{
+  "id": "xbot.iteration-stats",
+  "name": "Iteration Stats",
+  "version": "1.0.0",
+  "description": "实时迭代指标徽章（tok/s · ttft）：挂在状态栏右侧。纯前端插件（ESM 模块），消费宿主 window.__xbot_iteration__ 暴露的实时指标桥（getGlobalLiveStats / subscribeGlobalLiveStats）。",
+  "author": "xbot",
+  "runtime": "script",
+  "entry": "true",
+  "activationEvents": ["onStart"],
+  "permissions": ["ui.contribute", "config"],
+  "web": {
+    "entry": "index.js",
+    "contributes": [
+      {
+        "kind": "view",
+        "id": "xbot.iteration-stats.badge",
+        "container": "status_bar_right",
+        "title": "Iteration Stats",
+        "entry": "index.js"
+      }
+    ]
+  },
+  "contributes": {
+    "configuration": {
+      "title": "Iteration Stats",
+      "properties": {
+        "showTTFT": {
+          "type": "boolean",
+          "label": "显示 TTFT",
+          "description": "在 tok/s 徽章旁显示首 token 延迟（关闭则只显示 tok/s）",
+          "default": true
+        }
+      }
+    }
+  }
+}

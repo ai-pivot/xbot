@@ -87,6 +87,15 @@ jobs:
       # that plugin's view entries. Every plugin whose plugin.json declares
       # web.entry must be built here, or the tarball ships without its
       # frontend module (package.sh fails the build in that case).
+      #
+      # NOT enumeration-driven on purpose: the plugin-id → source entry mapping
+      # is not derivable (output name is web.entry, e.g. index.js, while the
+      # source file can be any *.tsx — iteration-stats' entry is entry.tsx, and
+      # git-fancy needs TWO entries for its two view contributes). The guard at
+      # the end enumerates plugins/*/plugin.json and fails the build when any
+      # declared web.entry has no artifact — a new plugin without its block
+      # here can never silently skip the tarball again (that is exactly how
+      # xbot.iteration-stats got lost: never built → never packaged).
       - name: Build plugin web assets
         working-directory: web
         run: |
@@ -98,6 +107,28 @@ jobs:
           npx esbuild src/plugins/genui/index.tsx \
             --bundle --splitting --format=esm --jsx=transform \
             --outdir=../build/plugin-web/xbot.genui/web
+          # xbot.iteration-stats: single entry (entry.tsx), no cross-entry
+          # shared chunk (the module imports nothing — React and the live-stats
+          # bridge come from window) → --outfile names the artifact index.js
+          # directly (same recipe as the documented local build).
+          mkdir -p ../build/plugin-web/xbot.iteration-stats/web
+          npx esbuild src/plugins/iteration-stats/entry.tsx \
+            --bundle --format=esm --jsx=transform \
+            --outfile=../build/plugin-web/xbot.iteration-stats/web/index.js
+          # Guard: enumerate EVERY repo plugin manifest (id + web.entry via
+          # jq); any declared web.entry without its artifact fails the build.
+          missing=0
+          for pj in ../plugins/*/plugin.json; do
+            [ -f "$pj" ] || continue
+            pid=$(jq -r '.id // empty' "$pj")
+            wentry=$(jq -r '.web.entry // empty' "$pj")
+            [ -n "$wentry" ] || continue
+            if [ ! -f "../build/plugin-web/$pid/web/$wentry" ]; then
+              echo "::error::$pj declares web.entry=$wentry but build/plugin-web/$pid/web/$wentry is missing — add its esbuild block to this step"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
           find ../build/plugin-web -type f | sort
 
       - uses: actions/upload-artifact@v4
