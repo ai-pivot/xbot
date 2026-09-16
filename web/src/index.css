@@ -650,7 +650,18 @@
   animation: sectionIn 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.animate-msg-in {
+/* ⚠️ 用户报告 2026-09-16（快速滚动时内容抖动重叠）根因：
+ * 虚拟行（`.virt-row`）靠**内联 `transform: translateY(item.start)`** 定位，
+ * 若把动画挂在这一行**自身**、且 keyframes 里写了 `transform`，则 **CSS 动画会
+ * 覆盖内联 transform**（动画优先级高于内联样式）⇒ 动画期间该行被画到容器原点，
+ * 压在上一行上 ⇒ 视觉重叠；快速滚动时行不断卸载/重挂载 ⇒ 动画反复重放 ⇒ 抖动重叠。
+ *
+ * 契约：**任何挂在虚拟行上的动画/过渡都不得改 `transform`**（它归 virtualizer 所有）。
+ * 需要"滑入"效果就把动画作用在**行内层元素**上（`> *`），行自身的定位 transform
+ * 保持不动。守护：web/e2e/scroll-overlap-guard.spec.ts（同级行不得重叠）
+ * + src/index.test.ts（msgIn 不得含 transform）。
+ */
+.animate-msg-in > * {
   animation: msgIn 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
