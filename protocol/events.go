@@ -402,6 +402,29 @@ type AskUserEvent struct {
 func (AskUserEvent) EventType() string { return "ask_user" }
 func (AskUserEvent) EventVersion() int { return 1 }
 
+// AskUserResolvedEvent is emitted when an AskUser prompt stops being pending —
+// answered, cancelled, rewound, or cleared. Clients MUST drop any locally
+// cached prompt for this (channel, chat_id) when they see it.
+//
+// Why this exists (2026-09-16 user report:「askuser 有时候走前端缓存，不该弹的
+// 时候弹出」): pending AskUser state had *three* independent client-side caches
+// (web askUserPrompts store / CLI ~/.xbot/pending_askuser/*.json / Feishu
+// in-process card map) and no server→client invalidation, so answering in one
+// channel or tab left stale prompts alive in the others. The single authority
+// is the PERSISTED session state (session_messages ask_question/ask_answer
+// control records folded by Replay) — every client cache is only a hint that
+// this event (and a reconnect-time reconcile) invalidates.
+type AskUserResolvedEvent struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	RequestID string `json:"request_id,omitempty"`
+	// Reason: "answered" | "cancelled" | "rewound" | "cleared".
+	Reason string `json:"reason"`
+}
+
+func (AskUserResolvedEvent) EventType() string { return "ask_user_resolved" }
+func (AskUserResolvedEvent) EventVersion() int { return 1 }
+
 // SessionEvent represents a session state change pushed from server to client.
 // Covers busy/idle transitions, session lifecycle (create/delete/rename),
 // and SubAgent lifecycle (started/stopped).
