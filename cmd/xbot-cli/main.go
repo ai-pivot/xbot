@@ -922,6 +922,32 @@ func (app *cliApp) Close() {
 // can opt in by setting RUNEWIDTH_EASTASIAN=1 in their shell profile.
 func ensureCJKWidth() {}
 
+// handleAskUserResolvedBroadcast reacts to an ask_user_resolved broadcast on
+// the CLI client: (1) the persisted pending_askuser disk cache for that
+// session is deleted so a resolved prompt cannot resurface after a session
+// switch or restart; (2) resync_required is delivered to the TUI — its
+// authoritative reconcile path (clearPendingAskUserUI) closes any stale
+// AskUser panel for that session and drops the local copy of the prompt.
+func handleAskUserResolvedBroadcast(cliCh *cli.CLIChannel, env protocol.EventEnvelope) {
+	var ev protocol.AskUserResolvedEvent
+	if err := json.Unmarshal(env.Payload, &ev); err != nil {
+		return
+	}
+	if ev.ChatID == "" {
+		return
+	}
+	channelName := ev.Channel
+	if channelName == "" {
+		channelName = "cli"
+	}
+	cli.DeletePendingAskUserFile(channelName, ev.ChatID)
+	cliCh.SendSessionState(protocol.SessionEvent{
+		Action:  "resync_required",
+		Channel: channelName,
+		ChatID:  ev.ChatID,
+	})
+}
+
 func main() {
 	// CJK width: ensureCJKWidth is now a no-op (see comment above).
 	// Kept as a call site for forward compatibility if we need to re-enable
@@ -1766,6 +1792,12 @@ func main() {
 				WaitingUser: true,
 				Metadata:    meta,
 			})
+		})
+		// Handle ask_user_resolved broadcasts (answered/cancelled/rewound/
+		// cleared from any client): drop the disk cache so a resolved prompt
+		// cannot be restored later, and reconcile an open stale panel.
+		app.client.Subscribe(protocol.EventPattern{Type: "ask_user_resolved"}, func(env protocol.EventEnvelope) {
+			handleAskUserResolvedBroadcast(cliCh, env)
 		})
 		// Register progress handler via Subscribe for streaming progress
 		app.client.Subscribe(protocol.EventPattern{Type: "progress"}, func(env protocol.EventEnvelope) {

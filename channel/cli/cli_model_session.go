@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	ch "xbot/channel"
@@ -650,6 +651,20 @@ func (m *cliModel) clearPendingAskUserUI(chatID string) {
 	}
 }
 
+// DeletePendingAskUserFile removes the persisted pending-AskUser cache entry
+// for (channelName, chatID). Exported for cmd/xbot-cli: its ask_user_resolved
+// handler has no cliModel instance, but must drop the disk cache so a resolved
+// prompt cannot be restored later by checkAndRestorePendingAskUser.
+func DeletePendingAskUserFile(channelName, chatID string) {
+	if channelName == "" || chatID == "" {
+		return
+	}
+	path := pendingAskUserPath(channelName, chatID)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.WithError(err).WithField("chat_id", chatID).Warn("Failed to delete pending ask_user")
+	}
+}
+
 // pendingAskUserOnAnswer returns a callback for answered pending questions.
 // It sends the answer back and cleans up the persisted file.
 // pendingAskUserOnAnswer returns a callback for answered pending questions.
@@ -683,6 +698,10 @@ func (m *cliModel) pendingAskUserOnCancel(requestID string) func() {
 	// Capture chatID at panel open time, not at cancel time.
 	chatID := m.askUserSession
 	return func() {
+		// Tell the server this prompt is cancelled — web sends the same
+		// ask_user_cancel marker. Without it the pending prompt survives
+		// server-side and can be re-broadcast / restored later.
+		m.sendInbound(m.newInbound("/cancel", map[string]string{"ask_user_cancel": "true"}))
 		m.deletePendingAskUser(chatID)
 		m.showSystemMsg(m.locale.AskCancelled, feedbackInfo)
 		m.typing = false

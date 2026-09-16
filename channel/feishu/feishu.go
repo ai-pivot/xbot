@@ -1943,6 +1943,25 @@ func (f *FeishuChannel) sendAskUserCard(msg ch.OutboundMsg) (string, error) {
 	return msgID, nil
 }
 
+// SendAskUserResolved implements ch.AskUserResolvedSender — drops the pending
+// text-reply fallback entries for the chat that stopped being pending, so a
+// late text reply cannot be routed into a dead prompt.
+//
+// The event carries no senderID, so every entry of the chat is removed (the
+// map key is "chatID:senderID" and one chat may hold multiple senders).
+func (f *FeishuChannel) SendAskUserResolved(ev protocol.AskUserResolvedEvent) {
+	if ev.ChatID == "" {
+		return
+	}
+	f.askUserMu.Lock()
+	defer f.askUserMu.Unlock()
+	for key, pending := range f.askUsers {
+		if pending != nil && pending.ChatID == ev.ChatID {
+			delete(f.askUsers, key)
+		}
+	}
+}
+
 // buildAskUserCard constructs a Feishu interactive card for AskUser questions.
 // Uses schema V2 with form elements for input fields and column_set for option buttons.
 // For questions with options: option buttons + an input field for custom answer.
