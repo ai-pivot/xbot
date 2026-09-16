@@ -13,7 +13,7 @@
  *   - Edit container inherits the display height as min-height to prevent jitter
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, Check, ChevronRight, Clock, Loader2, Pencil, X } from 'lucide-react'
+import { Archive, Check, ChevronRight, Clock, Copy, Loader2, Pencil, X } from 'lucide-react'
 
 import { CopyTarget } from './MessageActions'
 import type { ChatMessage } from '@/types/shared'
@@ -63,6 +63,25 @@ export const UserMessage = memo(function UserMessage({
   const editRef = useRef<HTMLTextAreaElement>(null)
   const displayRef = useRef<HTMLDivElement>(null)
   const [editMinHeight, setEditMinHeight] = useState<number | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  // 复制这条 user 消息（2026-09-16 用户报告：手机上没有任何复制 user msg 的入口）。
+  // 触屏上"长按"会被原生文本选择抢走手势（同一版也修了 useLongPress 的抖动误判），
+  // 但可靠的做法是给一个**看得见、点得到**的按钮：isTouch 时常显 + 44px 命中区。
+  const handleCopy = () => {
+    const text = content ?? ''
+    const clip = navigator.clipboard
+    if (!text || !clip?.writeText) return
+    void clip.writeText(text).then(
+      () => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1200)
+      },
+      () => {
+        /* 无剪贴板权限（非安全上下文）时静默 */
+      },
+    )
+  }
 
   // Compact-marker messages ("[Compacted context]\n<summary>") are rendered as
   // a collapsed placeholder so the potentially-huge summary never dominates the
@@ -211,18 +230,24 @@ export const UserMessage = memo(function UserMessage({
 
   return (
     <div className="flex justify-end px-1">
-      <div className="group flex max-w-[85%] flex-col items-end gap-1">
+      <div className="group flex min-w-0 max-w-[85%] flex-col items-end gap-1">
         {isNotification && (
           <span className="text-xs text-text-muted">🔔 Notification</span>
         )}
         <CopyTarget kind="message" message={{ role: 'user', content } as unknown as ChatMessage}>
         <div
           ref={displayRef}
-          className={
+          data-testid="user-bubble"
+          className={cn(
+            // 2026-09-16 用户报告：手机上 user msg 宽度会超出屏幕。
+            // 三层约束：气泡自身不许超出（min-w-0/max-w-full）、长 token 必须可断
+            // （break-words）、Markdown 产出的任意宽子元素（宽表格/图片/pre/长 URL）
+            // 也不许超出（[&_*]:max-w-full）——超宽的它们各自滚动，而不是把气泡撑出屏幕。
+            'relative min-w-0 max-w-full break-words [&_*]:max-w-full rounded-2xl rounded-br-sm px-3.5 py-2',
             isNotification
-              ? 'relative rounded-2xl rounded-br-sm border border-border bg-bg-secondary px-3.5 py-2 text-text-muted'
-              : 'relative rounded-2xl rounded-br-sm bg-accent/15 px-3.5 py-2 text-text-primary'
-          }
+              ? 'border border-border bg-bg-secondary text-text-muted'
+              : 'bg-accent/15 text-text-primary',
+          )}
         >
           <MarkdownRenderer content={content || ' '} />
           {sending && (
@@ -239,26 +264,42 @@ export const UserMessage = memo(function UserMessage({
           )}
         </div>
         </CopyTarget>
-        {onRewind && onStartEdit && (
+        <div className="flex items-center gap-1">
           <Button
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={t('agent.editAndRewind')}
-            title={t('agent.editAndRewind')}
-            disabled={editDisabled}
+            aria-label={copied ? t('agent.tool.copied') : t('agent.tool.copy')}
+            title={copied ? t('agent.tool.copied') : t('agent.tool.copy')}
+            onClick={handleCopy}
             className={cn(
-              // 触屏：常显 + 44px 命中区（hover 不存在，半透明小按钮难命中）。
-              isTouch ? 'h-9 w-9 opacity-100' : 'h-6 w-6',
-              editDisabled
-                ? 'opacity-20 cursor-not-allowed'
-                : isTouch ? undefined : 'opacity-60 hover:opacity-100',
+              // 触屏：常显 + 44px 命中区（hover 不存在，hover 显形的小按钮手机上点不到）。
+              isTouch ? 'h-9 w-9 opacity-100' : 'h-6 w-6 opacity-60 hover:opacity-100',
             )}
-            onClick={handleStartEdit}
           >
-            <Pencil className="size-3.5" />
+            {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
           </Button>
-        )}
+          {onRewind && onStartEdit && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={t('agent.editAndRewind')}
+              title={t('agent.editAndRewind')}
+              disabled={editDisabled}
+              className={cn(
+                // 触屏：常显 + 44px 命中区（hover 不存在，半透明小按钮难命中）。
+                isTouch ? 'h-9 w-9 opacity-100' : 'h-6 w-6',
+                editDisabled
+                  ? 'opacity-20 cursor-not-allowed'
+                  : isTouch ? undefined : 'opacity-60 hover:opacity-100',
+              )}
+              onClick={handleStartEdit}
+            >
+              <Pencil className="size-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
     </div>
   )

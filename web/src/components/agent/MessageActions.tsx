@@ -78,12 +78,18 @@ type OpenState =
   | { kind: 'tools'; x: number; y: number; tools: WebToolProgress[] }
   | null
 
+/** 长按判定容差（px）：触屏手指抖动不超过它就不算"划动"。 */
+const LONG_PRESS_TOLERANCE = 10
+
 function useLongPress(open: (x: number, y: number) => void) {
   const timer = useRef<number | null>(null)
   const fired = useRef(false)
+  /** 按下起点：用位移是否超过容差来判断"抖动"还是"划动"。 */
+  const origin = useRef<{ x: number; y: number } | null>(null)
   const clear = useCallback(() => {
     if (timer.current != null) window.clearTimeout(timer.current)
     timer.current = null
+    origin.current = null
   }, [])
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -91,7 +97,8 @@ function useLongPress(open: (x: number, y: number) => void) {
       e.stopPropagation() // 嵌套目标里只让最内层起长按计时
       fired.current = false
       const { clientX, clientY } = e
-      clear()
+      clear() // clear() 会重置 origin，因此在其之后再记录起点
+      origin.current = { x: clientX, y: clientY }
       timer.current = window.setTimeout(() => {
         fired.current = true
         open(clientX, clientY)
@@ -99,7 +106,23 @@ function useLongPress(open: (x: number, y: number) => void) {
     },
     [clear, open],
   )
-  const onPointerMove = useCallback(() => clear(), [clear])
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      // 触屏上手指必定有轻微抖动：旧实现"任何位移都取消计时"（无容差）导致手机上
+      // 长按几乎不可能成功 —— 用户 2026-09-16 报告「手机上没有复制 user msg 的交互」，
+      // 根因就在这里（长按被 1~2px 的抖动取消，菜单永远不弹）。
+      // 改为**容差 10px**：小幅抖动不取消，真正在滚动/划动（>10px）才取消。
+      const o = origin.current
+      if (!o) {
+        clear()
+        return
+      }
+      if (Math.abs(e.clientX - o.x) > LONG_PRESS_TOLERANCE || Math.abs(e.clientY - o.y) > LONG_PRESS_TOLERANCE) {
+        clear()
+      }
+    },
+    [clear],
+  )
   const onClickCapture = useCallback((e: React.MouseEvent) => {
     if (fired.current) {
       e.preventDefault()
