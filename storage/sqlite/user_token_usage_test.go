@@ -21,17 +21,6 @@ func TestDailyTokenUsage_ConcurrentUpsert(t *testing.T) {
 	svc := NewUserTokenUsageService(db)
 	conn := db.Conn()
 
-	// Create tables
-	if err := svc.createTable(conn); err != nil {
-		t.Fatalf("createTable: %v", err)
-	}
-	if err := svc.createDailyTable(conn); err != nil {
-		t.Fatalf("createDailyTable: %v", err)
-	}
-	if err := svc.addCachedTokensColumn(conn); err != nil {
-		t.Fatalf("addCachedTokensColumn: %v", err)
-	}
-
 	// Concurrent upserts from 10 goroutines, 50 each
 	const goroutines = 10
 	const perGoroutine = 50
@@ -95,16 +84,6 @@ func TestDailyTokenUsage_MultiModel(t *testing.T) {
 	db := openTestDB(t)
 	svc := NewUserTokenUsageService(db)
 	conn := db.Conn()
-
-	if err := svc.createTable(conn); err != nil {
-		t.Fatalf("createTable: %v", err)
-	}
-	if err := svc.createDailyTable(conn); err != nil {
-		t.Fatalf("createDailyTable: %v", err)
-	}
-	if err := svc.addCachedTokensColumn(conn); err != nil {
-		t.Fatalf("addCachedTokensColumn: %v", err)
-	}
 
 	// Record usage for two models
 	svc.RecordUsage(conn, "user-multi", "gpt-4", 1000, 500, 200, 1, 2)

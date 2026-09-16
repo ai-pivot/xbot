@@ -7,7 +7,7 @@ import (
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v61 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v66 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
 // Windows where running every migration per test DB causes CI timeouts (600s+).
 //
@@ -126,7 +126,35 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (65);
+INSERT INTO schema_version (version) VALUES (66);
+
+-- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
+-- historical migrations, so both tables must be part of this schema snapshot.
+CREATE TABLE IF NOT EXISTS user_token_usage (
+    sender_id TEXT PRIMARY KEY,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    conversation_count INTEGER NOT NULL DEFAULT 0,
+    llm_call_count INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS daily_token_usage (
+    date TEXT NOT NULL,
+    sender_id TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    conversation_count INTEGER NOT NULL DEFAULT 0,
+    llm_call_count INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (date, sender_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_token_usage_sender ON daily_token_usage(sender_id);
+CREATE INDEX IF NOT EXISTS idx_daily_token_usage_date ON daily_token_usage(date);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
 -- dropped in v62 — the system subscription was removed, the global fallback

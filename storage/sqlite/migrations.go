@@ -435,6 +435,34 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v66: repair fresh databases created by the optimized current-schema path.
+	// Those databases were stamped at v53-v65 but accidentally omitted both
+	// token-usage tables, so their historical v19/v25 migrations never ran.
+	if from < 66 {
+		if err := migrateV65ToV66(db); err != nil {
+			return fmt.Errorf("migrate to v66: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV65ToV66 ensures both token-usage tables exist. The helpers use
+// idempotent CREATE statements, so this repairs affected fresh databases while
+// preserving databases that already received the v19/v25 migrations.
+func migrateV65ToV66(db *DB) error {
+	conn := db.Conn()
+	svc := NewUserTokenUsageService(db)
+	if err := svc.createTable(conn); err != nil {
+		return fmt.Errorf("migrate v65->v66 create user_token_usage: %w", err)
+	}
+	if err := svc.createDailyTable(conn); err != nil {
+		return fmt.Errorf("migrate v65->v66 create daily_token_usage: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 66"); err != nil {
+		return fmt.Errorf("migrate v65->v66 update version: %w", err)
+	}
+	log.Info("Database migrated to v66 (repaired token usage tables)")
 	return nil
 }
 
