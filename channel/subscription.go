@@ -1137,3 +1137,27 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 	// (which would get a copy button via shouldRenderFinalContent).
 	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: toolEntries}}
 }
+
+// maxHistoryIterationsPerTurn bounds how many iterations of ONE turn the history
+// payload carries. Measured 2026-09-15: a single turn can hold 1,661 iterations
+// (~3.6 MB of content+reasoning) and the response had NO cap ⇒ history load time
+// grew linearly with the turn's iteration count (user report: 「加载时间这么久…
+// busy turn 的 iter 数量非常多就会卡非常久」).
+const maxHistoryIterationsPerTurn = 60
+
+// BoundHistoryIterations keeps only the LAST maxHistoryIterationsPerTurn iterations
+// of each history message and reports how many earlier ones were dropped in
+// IterationsTruncated — so clients can render "更早的 N 个迭代" (and lazy-load
+// them) instead of the payload growing without bound. Older iterations remain in
+// DB iteration_history and can be fetched on demand.
+func BoundHistoryIterations(msgs []HistoryMessage) []HistoryMessage {
+	for i := range msgs {
+		n := len(msgs[i].Iterations)
+		if n <= maxHistoryIterationsPerTurn {
+			continue
+		}
+		msgs[i].IterationsTruncated += n - maxHistoryIterationsPerTurn
+		msgs[i].Iterations = msgs[i].Iterations[n-maxHistoryIterationsPerTurn:]
+	}
+	return msgs
+}

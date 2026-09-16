@@ -1,10 +1,15 @@
 package llm
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
 )
 
@@ -549,6 +554,171 @@ func TestBuildResponsesReasoning_InvalidJSONFallsBackToEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 // responsesStatusToFinishReason
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 加密思维链（reasoning.encrypted_content）—— 捕获与回传
+// ---------------------------------------------------------------------------
+
+// TestToResponsesParams_EchoesEncryptedReasoningVerbatim：服务端给的 reasoning item
+// 必须**逐字段原样**回传（原 id + encrypted_content + summary/content）。
+// 伪造 id 或在 store=false 下丢掉 encrypted_content 都会被 OpenAI 拒（多轮工具调用
+// 场景："was provided without its required 'reasoning' item"）。
+func TestToResponsesParams_EchoesEncryptedReasoningVerbatim(t *testing.T) {
+	msgs := []ChatMessage{
+		{
+			Role: "assistant",
+			ReasoningItems: []ReasoningItem{{
+				ID:               "rs_0f4c1b2e",
+				EncryptedContent: "gAAAAABm-encrypted-blob",
+				Summary:          "summary text",
+				Content:          "full reasoning text",
+			}},
+			ToolCalls: []ToolCall{{ID: "call_1", Name: "Read", Arguments: `{"p":"a"}`}},
+		},
+		{Role: "tool", Content: "ok", ToolCallID: "call_1"},
+	}
+
+	p := toResponsesParams("m", msgs, 0, &mcVisionOn)
+	items := p.Input.OfInputItemList
+	if len(items) != 3 {
+		t.Fatalf("expected 3 input items (reasoning + function_call + output), got %d", len(items))
+	}
+	r := items[0].OfReasoning
+	if r == nil {
+		t.Fatal("first item must be the reasoning item")
+	}
+	if r.ID != "rs_0f4c1b2e" {
+		t.Errorf("reasoning ID = %q, want the ORIGINAL id rs_0f4c1b2e", r.ID)
+	}
+	if !r.EncryptedContent.Valid() || r.EncryptedContent.Value != "gAAAAABm-encrypted-blob" {
+		t.Errorf("encrypted_content = %+v, want the original blob", r.EncryptedContent)
+	}
+	if len(r.Summary) != 1 || r.Summary[0].Text != "summary text" {
+		t.Errorf("summary = %+v, want original text", r.Summary)
+	}
+	if len(r.Content) != 1 || r.Content[0].Text != "full reasoning text" {
+		t.Errorf("content = %+v, want original reasoning text", r.Content)
+	}
+	// function_call 必须**紧跟**在 reasoning 之后（OpenAI 校验该顺序）。
+	fc := items[1].OfFunctionCall
+	if fc == nil || fc.CallID != "call_1" {
+		t.Fatalf("second item must be the function_call for call_1, got %+v", items[1])
+	}
+	if items[2].OfFunctionCallOutput == nil {
+		t.Fatalf("third item must be the function_call_output, got %+v", items[2])
+	}
+
+	// 序列化后的请求体必须真的带上 encrypted_content（SDK 字段名是 snake_case）。
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"reasoning"`,
+		`"id":"rs_0f4c1b2e"`,
+		`"encrypted_content":"gAAAAABm-encrypted-blob"`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("request body missing %s; body=%s", want, raw)
+		}
+	}
+}
+
+// TestResponsesInclude_ReasoningEncryptedContent：`include` 的触发条件。
+func TestResponsesInclude_ReasoningEncryptedContent(t *testing.T) {
+	// 无 reasoning 配置、无历史加密内容：不打扰（非 reasoning 模型/严格网关）。
+	if got := responsesInclude(openai.ReasoningParam{}, nil); got != nil {
+		t.Errorf("include = %v, want nil", got)
+	}
+	// 本轮开启 reasoning → 必须请求加密思维链（无状态重放依赖它）。
+	got := responsesInclude(openai.ReasoningParam{Effort: openai.ReasoningEffortMedium}, nil)
+	if len(got) != 1 || got[0] != responses.ResponseIncludableReasoningEncryptedContent {
+		t.Errorf("include = %v, want [reasoning.encrypted_content]", got)
+	}
+	// 历史里已有加密 reasoning（本轮未显式开 thinking）→ 仍需请求，保证继续拿得到。
+	msgs := []ChatMessage{{Role: "assistant", ReasoningItems: []ReasoningItem{{ID: "rs_1", EncryptedContent: "enc"}}}}
+	if got := responsesInclude(openai.ReasoningParam{}, msgs); len(got) != 1 {
+		t.Errorf("include with encrypted history = %v, want [reasoning.encrypted_content]", got)
+	}
+	// summary-only 也算 reasoning 配置。
+	if got := responsesInclude(openai.ReasoningParam{Summary: openai.ReasoningSummaryAuto}, nil); len(got) != 1 {
+		t.Errorf("include with summary = %v, want [reasoning.encrypted_content]", got)
+	}
+}
+
+// TestCollectStream_MergesReasoningItemsByID：同一 id 的事件（output_item.done 无加密
+// → response.completed 带加密）必须合并成一条；不同 id 递增保留。
+func TestCollectStream_MergesReasoningItemsByID(t *testing.T) {
+	ch := make(chan StreamEvent, 8)
+	ch <- StreamEvent{Type: EventReasoningContent, ReasoningContent: "think"}
+	ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{ID: "rs_1", Summary: "s"}}
+	ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{ID: "rs_1", EncryptedContent: "enc-blob"}}
+	ch <- StreamEvent{Type: EventReasoningItem, ReasoningItem: &ReasoningItem{ID: "rs_2", EncryptedContent: "enc2"}}
+	ch <- StreamEvent{Type: EventDone, FinishReason: FinishReasonStop}
+	close(ch)
+
+	resp, err := CollectStream(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("CollectStream: %v", err)
+	}
+	if resp.ReasoningContent != "think" {
+		t.Errorf("ReasoningContent = %q, want think", resp.ReasoningContent)
+	}
+	if len(resp.ReasoningItems) != 2 {
+		t.Fatalf("ReasoningItems = %+v, want 2 merged items", resp.ReasoningItems)
+	}
+	if resp.ReasoningItems[0].ID != "rs_1" || resp.ReasoningItems[0].EncryptedContent != "enc-blob" || resp.ReasoningItems[0].Summary != "s" {
+		t.Errorf("item[0] = %+v, want merged {rs_1, enc-blob, s}", resp.ReasoningItems[0])
+	}
+	if resp.ReasoningItems[1].ID != "rs_2" || resp.ReasoningItems[1].EncryptedContent != "enc2" {
+		t.Errorf("item[1] = %+v, want {rs_2, enc2}", resp.ReasoningItems[1])
+	}
+}
+
+// TestGenerateResponses_CapturesEncryptedReasoning：非流式响应里的 reasoning item
+// （含 encrypted_content）被完整捕获，供下一轮回传。
+func TestGenerateResponses_CapturesEncryptedReasoning(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","output":[`+
+			`{"id":"rs_9","type":"reasoning","summary":[{"type":"summary_text","text":"sum-9"}],`+
+			`"content":[{"type":"reasoning_text","text":"full-9"}],"encrypted_content":"enc-9"},`+
+			`{"id":"msg_1","type":"message","role":"assistant","status":"completed",`+
+			`"content":[{"type":"output_text","text":"hi"}]}],`+
+			`"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}`)
+	}))
+	defer srv.Close()
+
+	c := NewOpenAILLM(OpenAIConfig{
+		BaseURL:      srv.URL,
+		APIKey:       "k",
+		DefaultModel: "m",
+		APIType:      APITypeResponses,
+	})
+	resp, err := c.Generate(context.Background(), "m", []ChatMessage{{Role: "user", Content: "hi"}}, nil, "enabled")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Content != "hi" {
+		t.Errorf("Content = %q, want hi", resp.Content)
+	}
+	if resp.ReasoningContent != "full-9" {
+		t.Errorf("ReasoningContent = %q, want full-9", resp.ReasoningContent)
+	}
+	if len(resp.ReasoningItems) != 1 {
+		t.Fatalf("ReasoningItems = %+v, want 1 item", resp.ReasoningItems)
+	}
+	ri := resp.ReasoningItems[0]
+	if ri.ID != "rs_9" || ri.EncryptedContent != "enc-9" || ri.Content != "full-9" || ri.Summary != "sum-9" {
+		t.Errorf("captured item = %+v, want {rs_9, enc-9, full-9, sum-9}", ri)
+	}
+	// 请求体必须请求加密思维链（include）。
+	if !strings.Contains(string(gotBody), `"reasoning.encrypted_content"`) {
+		t.Errorf("request body must include reasoning.encrypted_content; body=%s", gotBody)
+	}
+}
 
 func TestResponsesStatusToFinishReason(t *testing.T) {
 	cases := []struct {

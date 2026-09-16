@@ -39,6 +39,7 @@ CREATE TABLE session_messages (
 	    tool_calls TEXT,
 	    detail TEXT,
 	    reasoning_content TEXT DEFAULT '',
+	    reasoning_items TEXT DEFAULT '',
 	    display_only INTEGER DEFAULT 0,
 	    context_tokens INTEGER DEFAULT 0,
 	    turn_id INTEGER DEFAULT 0,
@@ -126,7 +127,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (65);
+INSERT INTO schema_version (version) VALUES (66);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
 -- dropped in v62 — the system subscription was removed, the global fallback

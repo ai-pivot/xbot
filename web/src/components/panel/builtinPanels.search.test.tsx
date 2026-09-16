@@ -89,7 +89,7 @@ describe('CoreSessionsPanel — 会话搜索收起/展开（同行横向挤压�
     expect(screen.queryByRole('textbox')).toBeNull()
 
     const toolbar = screen.getByTestId('session-list-toolbar')
-    const toggle = screen.getByRole('button', { expanded: false })
+    const toggle = screen.getByTestId('session-search-toggle')
     const newBtn = screen.getByRole('button', { name: /新建会话|New Session|新しいセッション/ })
 
     // 同一行：新建会话按钮 / 搜索框槽位 / 开关都在工具栏容器内。
@@ -102,23 +102,23 @@ describe('CoreSessionsPanel — 会话搜索收起/展开（同行横向挤压�
   it('点击按钮展开输入框并自动聚焦；再次点击收起', () => {
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
 
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    fireEvent.click(screen.getByTestId('session-search-toggle'))
 
     const input = screen.getByRole('textbox')
     expect(input).toBeInTheDocument()
     // 展开即聚焦（点击后可直接输入）。
     expect(document.activeElement).toBe(input)
-    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument()
+    expect(screen.getByTestId('session-search-toggle')).toHaveAttribute('aria-expanded', 'true')
 
     // 再次点击 → 收起。
-    fireEvent.click(screen.getByRole('button', { expanded: true }))
+    fireEvent.click(screen.getByTestId('session-search-toggle'))
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
   it('Esc 收起且清空查询（隐藏的过滤条件不能让列表莫名变短）', () => {
     renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
 
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    fireEvent.click(screen.getByTestId('session-search-toggle'))
     const input = screen.getByRole('textbox')
     fireEvent.change(input, { target: { value: '我的' } })
     expect(input).toHaveValue('我的')
@@ -127,7 +127,18 @@ describe('CoreSessionsPanel — 会话搜索收起/展开（同行横向挤压�
     expect(screen.queryByRole('textbox')).toBeNull()
 
     // 重新展开 → 查询已清空（复位为未过滤状态）。
-    fireEvent.click(screen.getByRole('button', { expanded: false }))
+    fireEvent.click(screen.getByTestId('session-search-toggle'))
     expect(screen.getByRole('textbox')).toHaveValue('')
+  })
+})
+
+// ⚠️ 渠道下拉现在在**标题行**（PanelChrome 的 headerExtra 槽），不在面板主体里 ⇒
+// 这里只断言主体工具条【没有】下拉（位置契约），下拉本身由 ChannelPicker.test.tsx
+// 与 PanelLayout.test.tsx（headerExtra 渲染在 header）守护。
+describe('会话面板主体工具条：不放渠道下拉（位置契约）', () => {
+  it('工具条只有新建会话 + 搜索开关，不含 channel-picker', () => {
+    renderWithProviders(<CoreSessionsPanel ctx={{ tabManager: undefined } as never} />)
+    expect(screen.queryByTestId('channel-picker')).toBeNull()
+    expect(screen.getByTestId('session-list-toolbar').querySelector('[data-testid="session-search-toggle"]')).toBeTruthy()
   })
 })

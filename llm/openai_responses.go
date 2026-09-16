@@ -38,6 +38,56 @@ func sanitizeID(s string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Reasoning items (Responses API) — 加密思维链的捕获与回传
+// ---------------------------------------------------------------------------
+
+// responsesInclude 返回 Responses API 请求的 `include` 列表。
+//
+// `reasoning.encrypted_content` 是 xbot（**无状态**：每轮重放完整历史、
+// store=false、不用 previous_response_id）的**必需**参数：
+//   - 不请求它 → 服务端不返回加密思维链 → 后续轮次无法把 reasoning 原样回传；
+//   - OpenAI 对带 function_call 历史的重放做校验，缺 reasoning item 会 400：
+//     "Item 'fc_…' of type 'function_call' was provided without its required
+//     'reasoning' item: 'rs_…'"
+//
+// 触发条件：本次请求带了 reasoning 配置，或历史里已经有加密 reasoning 需要回传。
+// 非 reasoning 模型上该参数被服务端忽略（openai/codex 也是无条件发送，
+// 见 codex-rs/core/src/client.rs: `let include = vec!["reasoning.encrypted_content"]`）。
+func responsesInclude(reasoning openai.ReasoningParam, messages []ChatMessage) []responses.ResponseIncludable {
+	if reasoning.Effort == "" && reasoning.Summary == "" && !hasEncryptedReasoning(messages) {
+		return nil
+	}
+	return []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent}
+}
+
+// hasEncryptedReasoning 判断历史里是否已有加密 reasoning（有则需要继续请求/回传）。
+func hasEncryptedReasoning(messages []ChatMessage) bool {
+	for _, m := range messages {
+		for _, ri := range m.ReasoningItems {
+			if ri.EncryptedContent != "" || ri.ID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reasoningItemFromOutputItem 把服务端返回的 reasoning item 转成要原样回传的
+// ReasoningItem（id / encrypted_content / summary_text / reasoning_text）。
+func reasoningItemFromOutputItem(item responses.ResponseOutputItemUnion) *ReasoningItem {
+	ri := &ReasoningItem{ID: item.ID, EncryptedContent: item.EncryptedContent}
+	for _, part := range item.Content {
+		if part.Type == "reasoning_text" {
+			ri.Content += part.Text
+		}
+	}
+	for _, s := range item.Summary {
+		ri.Summary += s.Text
+	}
+	return ri
+}
+
+// ---------------------------------------------------------------------------
 // Message conversion: ChatMessage[] → ResponseNewParams
 // ---------------------------------------------------------------------------
 
@@ -111,19 +161,39 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int, mc *
 			}
 
 		case "assistant":
-			// Reasoning content MUST be passed back to the API in thinking mode.
-			// A reasoning item carries two shapes:
-			//   - `summary`  → parts of type `summary_text` (a summary)
-			//   - `content`  → parts of type `reasoning_text` (the reasoning text)
-			// We previously emitted ONLY `summary`, so thinking-mode gateways
-			// rejected the request with 400:
-			//   {"message":"The reasoning_text in the thinking mode must be
-			//    passed back to the API.","type":"invalid_request_error"}
-			// (tokendance / OpenAI-compatible gateways validate that an
-			// assistant turn carries its `reasoning_text` back.) Emit the text
-			// in BOTH shapes: `content` is what the gateway requires, `summary`
-			// keeps providers that only read the summary working.
-			if msg.ReasoningContent != "" {
+			// Reasoning MUST be passed back to the API for subsequent turns.
+			//
+			// 首选：把服务端给的 reasoning item **原样**回传（含 id + encrypted_content）。
+			// OpenAI 校验 item id 与顺序；store=false 时 encrypted_content 是唯一载体，
+			// 缺了它下一轮带着 function_call 历史的请求会被拒：
+			//   "Item 'fc_…' of type 'function_call' was provided without its required
+			//    'reasoning' item: 'rs_…'"
+			// （openai/codex 的做法：始终 include ["reasoning.encrypted_content"]，
+			//  并把收到的 reasoning item 原样放回 input。）
+			//
+			// 兜底：历史里没有原始 item（老数据 / 网关只给文本）时，用明文重建
+			// reasoning item。此时必须**同时**填 `summary`(summary_text) 与
+			// `content`(reasoning_text)：部分兼容网关（tokendance 等）校验
+			// "The reasoning_text in the thinking mode must be passed back to the API."
+			if len(msg.ReasoningItems) > 0 {
+				for i, ri := range msg.ReasoningItems {
+					id := ri.ID
+					if id == "" {
+						id = fmt.Sprintf("rs_%s_%d", sanitizeID(msg.ToolCallID), i)
+					}
+					item := &responses.ResponseReasoningItemParam{ID: id}
+					if len(ri.Summary) > 0 {
+						item.Summary = []responses.ResponseReasoningItemSummaryParam{{Text: ri.Summary}}
+					}
+					if len(ri.Content) > 0 {
+						item.Content = []responses.ResponseReasoningItemContentParam{{Text: ri.Content}}
+					}
+					if ri.EncryptedContent != "" {
+						item.EncryptedContent = param.NewOpt(ri.EncryptedContent)
+					}
+					inputItems = append(inputItems, responses.ResponseInputItemUnionParam{OfReasoning: item})
+				}
+			} else if msg.ReasoningContent != "" {
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfReasoning: &responses.ResponseReasoningItemParam{
 						ID: fmt.Sprintf("rs_%s_%d", sanitizeID(msg.ToolCallID), len(inputItems)),
@@ -154,8 +224,11 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int, mc *
 				}
 			}
 
-			// If there's text content (and not just tool calls), add an assistant message
-			if msg.Content != "" || (len(msg.ToolCalls) == 0 && msg.ReasoningContent == "") {
+			// If there's text content, add an assistant message. An assistant item
+			// with EMPTY text is never emitted: OpenAI/Anthropic reject
+			// "content or tool_calls must be set" (SanitizeMessages strips such
+			// messages upstream — this is the secondary guard for the Responses path).
+			if msg.Content != "" {
 				contentText := msg.Content
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
@@ -187,11 +260,15 @@ func toResponsesParams(model string, messages []ChatMessage, maxTokens int, mc *
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: responses.ResponseInputParam(inputItems),
 		},
-		MaxOutputTokens: param.Opt[int64]{Value: int64(maxTokens)},
 		// xbot is stateless — it sends full message history each turn and
 		// never uses previous_response_id. Setting store=false avoids
 		// unnecessary server-side storage of conversation state.
 		Store: param.NewOpt(false),
+	}
+	// max_output_tokens must be > 0 when present (0 is rejected by the API);
+	// omit it entirely and let the server use the model default.
+	if maxTokens > 0 {
+		p.MaxOutputTokens = param.Opt[int64]{Value: int64(maxTokens)}
 	}
 
 	if len(instructions) > 0 {
@@ -342,6 +419,8 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 		params.Reasoning = reasoning
 		log.Ctx(ctx).Debugf("[LLM] Responses API reasoning config: effort=%s, summary=%s", reasoning.Effort, reasoning.Summary)
 	}
+	// 加密思维链：无状态重放（store=false）必需（见 responsesInclude 注释）。
+	params.Include = responsesInclude(reasoning, messages)
 
 	// Build tools
 	if len(tools) > 0 {
@@ -411,7 +490,11 @@ func (o *OpenAILLM) generateResponses(ctx context.Context, model string, message
 					text += summary.Text
 				}
 			}
-			result.ReasoningContent = text
+			// 累积（多个 reasoning item 时不能互相覆盖）。
+			result.ReasoningContent += text
+			// 原样保留该 item（id + encrypted_content + summary/content）——
+			// 后续轮次必须把它逐字段放回 input（见 toResponsesParams）。
+			result.ReasoningItems = append(result.ReasoningItems, *reasoningItemFromOutputItem(item))
 		}
 	}
 
@@ -496,6 +579,8 @@ func (o *OpenAILLM) generateStreamResponses(ctx context.Context, model string, m
 	if reasoning.Effort != "" || reasoning.Summary != "" {
 		params.Reasoning = reasoning
 	}
+	// 加密思维链：无状态重放（store=false）必需（见 responsesInclude 注释）。
+	params.Include = responsesInclude(reasoning, messages)
 
 	// Build tools
 	if len(tools) > 0 {
@@ -570,6 +655,16 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 	// reasoning text. Prefer the full text per reasoning item: once an item has
 	// delivered text deltas, its summary deltas are ignored.
 	reasoningItemHasText := make(map[string]bool)
+	// Reasoning items (Responses API)：捕获 id + encrypted_content 以便原样回传
+	// （见 responsesInclude / toResponsesParams）。同一个 item 可能在
+	// `response.output_item.done` 与 `response.completed.response.output` 各出现一次
+	// （后者才带 encrypted_content）——两处都发事件，消费端按 id 合并补全。
+	emitReasoningItem := func(item *ReasoningItem) {
+		if item == nil || item.ID == "" {
+			return
+		}
+		eventChan <- StreamEvent{Type: EventReasoningItem, ReasoningItem: item}
+	}
 
 	for stream.Next() {
 		select {
@@ -703,6 +798,10 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 						}
 					}
 				}
+				// Reasoning item 完成：捕获 id/encrypted_content/summary 供回传。
+				if event.Item.Type == "reasoning" {
+					emitReasoningItem(reasoningItemFromOutputItem(event.Item))
+				}
 			}
 
 		case "response.completed":
@@ -717,6 +816,12 @@ func (o *OpenAILLM) processResponsesStream(ctx context.Context, stream *ssestrea
 				lastUsage.CacheHitTokens = completed.Usage.InputTokensDetails.CachedTokens
 			}
 			lastFinishReason = responsesStatusToFinishReason(completed.Status, hasToolCalls)
+			// 最终 output 里的 reasoning item（部分网关只在这里带 encrypted_content）。
+			for _, item := range completed.Output {
+				if item.Type == "reasoning" {
+					emitReasoningItem(reasoningItemFromOutputItem(item))
+				}
+			}
 
 		case "response.failed":
 			// Response failed

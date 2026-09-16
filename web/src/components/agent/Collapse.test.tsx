@@ -18,6 +18,7 @@ import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
 import { SquareTerminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
+import i18n from '@/i18n'
 
 // radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
 // 精简 stub：只要构造函数与三方法存在即可（测试不依赖真实测量）。
@@ -147,16 +148,29 @@ describe('FoldedToolGroup', () => {
     expect(within(content as HTMLElement).getAllByTestId('tool-row')).toHaveLength(2)
   })
 
-  it.each(['pending', 'running', 'generating'] as const)(
-    'uses an accent sweep in a folded %s tool title',
+  it('running 的 sweep 颜色与 done 一致（中性）—— 用户：生成中文字和生成完毕不一样', () => {
+    // 新契约（2026-09-15 设计定稿）：工具名用**分类色**（状态与分类色解耦），不再是 accent；
+    // 状态改由状态标记 + chip 表达（失败/终止/排队/生成中带文字标签）。
+    renderWithProviders(<FoldedToolGroup tools={[makeTool({ status: 'running' })]} />)
+    const pill = screen.getByTestId('tool-pill')
+    const sweep = pill.querySelector<HTMLElement>('.sweep-text')
+    expect(sweep).not.toBeNull()
+    // 新契约（2026-09-15 用户：「生成中文字和生成完毕不一样」）：运行中的**文字颜色与 done 完全一致**
+    // （中性前景色）。"进行中"改由 sweep 动画 + 脉动环 + `执行中` chip 表达（非颜色通道）；
+    // 分类色只留在左侧 3px 条 + 图标槽。
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--text-primary)')
+  })
+
+  it.each(['pending', 'generating'] as const)(
+    'shows a status chip (no sweep) for a folded %s tool',
     (status) => {
-      renderWithProviders(
-        <FoldedToolGroup tools={[makeTool({ status })]} />,
-      )
+      renderWithProviders(<FoldedToolGroup tools={[makeTool({ status })]} />)
       const pill = screen.getByTestId('tool-pill')
-      const sweep = pill.querySelector<HTMLElement>('.sweep-text')
-      expect(sweep).not.toBeNull()
-      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+      expect(pill.querySelector('.sweep-text')).toBeNull()
+      // 断言按 **i18n 源**（测试环境语言由 i18n 检测决定，不硬编码某语言文案）
+      expect(pill.textContent).toContain(
+        i18n.t(status === 'pending' ? 'agent.tool.statusPending' : 'agent.tool.statusGenerating'),
+      )
     },
   )
 
@@ -171,18 +185,27 @@ describe('FoldedToolGroup', () => {
     },
   )
 
-  it.each(['pending', 'running', 'generating'] as const)(
-    'uses an accent sweep in an expanded %s tool card',
+  it('expanded running card 的 sweep 颜色同样是中性（与 done 一致）', () => {
+    const { container } = renderWithProviders(
+      <FoldedToolGroup tools={[makeTool({ name: 'Read', label: 'Read: file.go', status: 'running' })]} />,
+    )
+    const sweep = container.querySelector<HTMLElement>('.sweep-text')
+    expect(sweep).not.toBeNull()
+    expect(sweep).toHaveTextContent('Read')
+    // 与 done 一致的中性色（分类色只体现在图标/左条上，见 ToolRender 的 icon color 断言）
+    expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--text-primary)')
+  })
+
+  it.each(['pending', 'generating'] as const)(
+    'labels an expanded %s tool with a status chip',
     (status) => {
       const { container } = renderWithProviders(
-        <FoldedToolGroup
-          tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]}
-        />,
+        <FoldedToolGroup tools={[makeTool({ name: 'Read', label: 'Read: file.go', status })]} />,
       )
-      const sweep = container.querySelector<HTMLElement>('.sweep-text')
-      expect(sweep).not.toBeNull()
-      expect(sweep).toHaveTextContent('Read')
-      expect(sweep!.style.getPropertyValue('--sweep-color')).toBe('var(--accent)')
+      expect(container.querySelector('.sweep-text')).toBeNull()
+      expect(container.textContent).toContain(
+        i18n.t(status === 'pending' ? 'agent.tool.statusPending' : 'agent.tool.statusGenerating'),
+      )
     },
   )
 

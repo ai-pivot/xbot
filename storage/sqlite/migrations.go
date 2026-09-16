@@ -435,6 +435,46 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v66: reasoning_items — Responses API reasoning items（含 encrypted_content）。
+	// xbot 是无状态重放（store=false、每轮发全量历史），必须把这些 item 原样回传：
+	// 缺了带加密内容的 reasoning item，OpenAI 会拒绝重放里的 function_call
+	// （"was provided without its required 'reasoning' item"）。Purely additive。
+	if from < 66 {
+		if err := migrateV65ToV66(db); err != nil {
+			return fmt.Errorf("migrate to v66: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV65ToV66 adds session_messages.reasoning_items — the raw Responses API
+// reasoning items (id + encrypted_content + summary/content) captured from the
+// provider, replayed verbatim on later turns. Idempotent via columnExists
+// (hand-built test fixtures may already have the column).
+func migrateV65ToV66(db *DB) error {
+	conn := db.Conn()
+	// 与其它迁移一致：测试 fixture 可能手工搭了最小 schema（甚至没有
+	// session_messages），所以先确认表存在再 ALTER，版本号照常推进。
+	hasTable, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("migrate v65->v66 check session_messages: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "session_messages", "reasoning_items")
+		if err != nil {
+			return fmt.Errorf("migrate v65->v66 check reasoning_items: %w", err)
+		}
+		if !exists {
+			if _, err = conn.Exec("ALTER TABLE session_messages ADD COLUMN reasoning_items TEXT DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate v65->v66 add reasoning_items: %w", err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 66"); err != nil {
+		return fmt.Errorf("migrate v65->v66 update version: %w", err)
+	}
+	log.Info("Database migrated to v66 (session_messages.reasoning_items: encrypted reasoning replay)")
 	return nil
 }
 

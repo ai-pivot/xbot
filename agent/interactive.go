@@ -1631,6 +1631,12 @@ func (a *Agent) ContinueInteractiveSession(ctx context.Context, fullKey, content
 }
 
 // SendToInteractiveSession 向已有的 interactive session 发送新消息。
+// subAgentSendAckWait bounds how long a queued SubAgent message waits for the
+// run loop's drain ack. Beyond it the tool returns immediately ("queued") while
+// the message STAYS in pendingMessages for the next iteration boundary — an
+// unbounded wait here made the SubAgent tool hang (user report 2026-09-14).
+const subAgentSendAckWait = 3 * time.Second
+
 func (a *Agent) SendToInteractiveSession(
 	ctx context.Context,
 	roleName string,
@@ -1684,8 +1690,11 @@ func (a *Agent) SendToInteractiveSession(
 		})
 		ia.mu.Unlock()
 
-		// Block until the SubAgent's Run loop drains the message (via DrainBgNotifications)
-		// or the parent context is cancelled.
+		// 有界等待（用户 2026-09-14：「subagent 工具有可能卡死，必须立刻成功」）：
+		// 旧实现在这里**无限**等 Run 循环把消息取走（DrainBgNotifications 只在迭代间隙发生，
+		// 子代理长时间跑工具/卡住时调用方就一直不返回）。现在只等 subAgentSendAckWait
+		// 窗口：拿到 ack 就报"已投递"，否则**消息留在队列里**（仍会在下次迭代间隙投递）
+		// 并立即返回"已入队" —— 工具绝不阻塞。
 		select {
 		case err := <-replyCh:
 			if err != nil {
@@ -1697,6 +1706,10 @@ func (a *Agent) SendToInteractiveSession(
 			}
 			return &channelpkg.OutboundMsg{
 				Content: fmt.Sprintf("✅ Message delivered to %q (instance=%q). The sub-agent will process it during its current run.", roleName, instance),
+			}, nil
+		case <-time.After(subAgentSendAckWait):
+			return &channelpkg.OutboundMsg{
+				Content: fmt.Sprintf("✅ Message queued for %q (instance=%q) — it will be delivered at the next iteration boundary of its current run.", roleName, instance),
 			}, nil
 		case <-ctx.Done():
 			// Context cancelled — remove the pending message to avoid stale delivery
@@ -2345,6 +2358,7 @@ func (a *Agent) InspectInteractiveSession(
 		if ia.running {
 			fmt.Fprintf(&sb, "\n_One-shot subagent is executing..._\n")
 		}
+		sb.WriteString(tools.PollingHint)
 		return sb.String(), nil
 	}
 

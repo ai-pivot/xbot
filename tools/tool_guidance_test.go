@@ -257,3 +257,32 @@ func TestRunningInspectionBegsOffPolling(t *testing.T) {
 		t.Errorf("task_status output for a running task must carry the anti-poll guidance:\n%s", out)
 	}
 }
+
+// TestTaskFormats_CarryPollingHint — 用户 2026-09-15：「改一下 task_status / task_read /
+// SubAgent(inspect)，返回中提示模型不要一直调用这些工具轮询，做有意义的事情」。
+// 这三个工具的**返回体**必须携带 PollingHint（后台完成会自动通知，不必轮询）。
+func TestTaskFormats_CarryPollingHint(t *testing.T) {
+	now := time.Now()
+	cases := map[string]string{
+		"task_status(running)": formatTask(&BackgroundTask{
+			ID: "3f8f492a", Command: "sleep 100", Status: BgTaskRunning, StartedAt: now,
+		}),
+		"task_status(done)": formatTask(&BackgroundTask{
+			ID: "3f8f492a", Command: "ls", Status: BgTaskDone, StartedAt: now, FinishedAt: &now, ExitCode: 0,
+		}),
+		"task_read(subagent)": formatSubAgentTask(&SubAgentTask{
+			ID: "sub-1", Role: "explore", Instance: "i1", Status: BgTaskRunning, StartedAt: now,
+		}),
+	}
+	for name, out := range cases {
+		if !strings.Contains(out, PollingHint) {
+			t.Errorf("%s 的返回必须包含 PollingHint（别轮询提示），got:\n%s", name, out)
+		}
+	}
+	// 提示本身必须点明两件事：不要反复轮询 + 完成会自动通知。
+	for _, want := range []string{"不要反复轮询", "自动以通知送达"} {
+		if !strings.Contains(PollingHint, want) {
+			t.Errorf("PollingHint 必须包含 %q，got: %q", want, PollingHint)
+		}
+	}
+}

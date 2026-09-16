@@ -313,7 +313,13 @@ export function normalizeWebSubAgents(raw: unknown[] | undefined): WebSubAgentPr
  * running/done/error tools with the same name+label are deduped (first wins).
  */
 export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
-  const seen = new Set<string>()
+  // 状态优先级：**终态优先**。同一个工具可能同时出现在 activeTools（陈旧快照，仍是
+  // running）与 completedTools（已 done/error）里 —— 旧的"先到先得"会让陈旧的 running
+  // 赢，工具永远不转绿（用户 2026-09-14：「一个 iter 两个 tool，已完成还是渲染成进行中」）。
+  const rank = (status: string): number =>
+    status === 'error' ? 3 : status === 'done' ? 3
+      : status === 'running' ? 2 : status === 'pending' ? 1 : 0
+  const indexByKey = new Map<string, number>()
   const result: WebToolProgress[] = []
   for (const tool of tools) {
     if (tool.status === 'generating') {
@@ -321,10 +327,14 @@ export function dedupTools(tools: WebToolProgress[]): WebToolProgress[] {
       continue
     }
     const key = `${tool.name}\x00${tool.label}`
-    if (!seen.has(key)) {
-      seen.add(key)
+    const idx = indexByKey.get(key)
+    if (idx === undefined) {
+      indexByKey.set(key, result.length)
       result.push(tool)
+      continue
     }
+    // 同键：保留状态更"终态"的那个（running 不会被 done/error 覆盖，反之会）
+    if (rank(tool.status) > rank(result[idx].status)) result[idx] = tool
   }
   return result
 }
