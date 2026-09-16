@@ -37,8 +37,14 @@ type ChatMessage struct {
 	Detail         string          `json:"-"`                        // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
 	Timestamp      time.Time       `json:"-"`                        // 消息时间戳，不参与 LLM 上下文
 	DisplayOnly    bool            `json:"-"`                        // 仅展示消息（如 cron 结果），不参与 LLM 上下文
-	TurnID         uint64          `json:"-"`                        // Agent turn that produced this message (for dedup)
-	Interrupted    bool            `json:"-"`                        // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
+	// Internal 表示"只给模型的内部载体"：**参与 LLM 上下文，但绝不渲染成用户可见消息**。
+	// 场景：view_image 的多模态注入（OpenAI tool role 不能带图，故用 user role 承载
+	// `![label](/api/files/viewimg/…)` 引用）。这类消息与触发它的用户消息共用同一个
+	// turn_id，若不标记就会被渲染层当成"用户消息"，顶掉用户真实输入（用户报告
+	// 2026-09-16：上传图片后自己的消息被换成注入文案、图片地址也变了）。
+	Internal    bool   `json:"-"` // 模型侧载体：进 LLM 上下文，不渲染（与 DisplayOnly 相反）
+	TurnID      uint64 `json:"-"` // Agent turn that produced this message (for dedup)
+	Interrupted bool   `json:"-"` // true = this message marks a cancelled/interrupted turn (replaces string content "[interrupted]" checks)
 
 	// CacheHint 提示 LLM 层此消息的缓存特性。
 	// "static" — 跨请求不变的静态内容（system prompt 基础模板等）

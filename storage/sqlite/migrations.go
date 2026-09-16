@@ -444,7 +444,46 @@ func (db *DB) migrateSchema(from int) error {
 			return fmt.Errorf("migrate to v66: %w", err)
 		}
 	}
+	// v67: internal_only — LLM-only messages（如 view_image 的多模态注入）绝不
+	// 渲染成用户可见历史（display_only 的反面）。Purely additive。
+	if from < 67 {
+		if err := migrateV66ToV67(db); err != nil {
+			return fmt.Errorf("migrate to v67: %w", err)
+		}
+	}
 
+	return nil
+}
+
+// migrateV66ToV67 adds session_messages.internal_only — messages that belong to
+// the LLM context but must NEVER render as user-visible history (the opposite of
+// display_only). First user: the view_image multimodal injection, which carries
+// `![label](/api/files/viewimg/…)` refs under the SAME turn_id as the user's own
+// message (OpenAI tool role cannot carry images). Without the flag the render
+// layer treats it as the turn's user message and the user's real input disappears
+// (reported 2026-09-16). Idempotent via columnExists (hand-built test fixtures
+// may already have the column).
+func migrateV66ToV67(db *DB) error {
+	conn := db.Conn()
+	hasTable, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("migrate v66->v67 check session_messages: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "session_messages", "internal_only")
+		if err != nil {
+			return fmt.Errorf("migrate v66->v67 check internal_only: %w", err)
+		}
+		if !exists {
+			if _, err = conn.Exec("ALTER TABLE session_messages ADD COLUMN internal_only INTEGER DEFAULT 0"); err != nil {
+				return fmt.Errorf("migrate v66->v67 add internal_only: %w", err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 67"); err != nil {
+		return fmt.Errorf("migrate v66->v67 update version: %w", err)
+	}
+	log.Info("Database migrated to v67 (session_messages.internal_only: LLM-only messages never rendered)")
 	return nil
 }
 

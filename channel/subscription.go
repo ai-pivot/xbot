@@ -203,6 +203,42 @@ func formatToolLabel(name, argsJSON string) string {
 	return name
 }
 
+// filterInternalMessages drops Internal messages from a render-facing message
+// list. An Internal message is an LLM-side carrier, NOT user input: e.g. the
+// view_image multimodal injection (OpenAI tool role cannot carry images, so the
+// `![label](/api/files/viewimg/…)` refs ride a user-role message that reuses the
+// turn_id of the user message that triggered it — see agent/engine_run.go
+// injectViewImages).
+//
+// The render layer keeps exactly ONE user slot per turn, so rendering such a row
+// REPLACES the user's own message: content becomes "📷 以下图片已通过 view_image
+// 工具加载…" and the image URL switches from the uploaded file
+// (/api/files/download?key=uploads/…) to the injection copy
+// (/api/files/viewimg/<uuid>) — reported 2026-09-16.
+//
+// Only the render path filters. The LLM context reads via Replay/GetAllMessages,
+// which keep Internal messages (the model must still see the image).
+func filterInternalMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
+	hasInternal := false
+	for i := range msgs {
+		if msgs[i].Internal {
+			hasInternal = true
+			break
+		}
+	}
+	if !hasInternal {
+		return msgs
+	}
+	out := make([]llm.ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Internal {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // ConvertMessagesToHistory converts raw DB messages into HistoryMessages for CLI display.
 // It handles three scenarios:
 //  1. Normal completed turn: assistant with Detail → one tool_summary + assistant
@@ -219,6 +255,9 @@ func formatToolLabel(name, argsJSON string) string {
 // final records into one complete list).
 // Detail JSON is only used as a fallback for old data pre-v55.
 func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
+	// Internal 消息（仅模型可见的载体）不属于用户可见历史 —— 见
+	// filterInternalMessages 的说明。
+	msgs = filterInternalMessages(msgs)
 	// If no structured data, fall back to the legacy path.
 	if turnIterMap == nil {
 		return ConvertMessagesToHistory(msgs)
@@ -638,6 +677,9 @@ func deriveTurnIDs(msgs []llm.ChatMessage) {
 }
 
 func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
+	// Internal 消息（仅模型可见的载体）不属于用户可见历史 —— 见
+	// filterInternalMessages 的说明。
+	msgs = filterInternalMessages(msgs)
 	// Copy so the derivation below never mutates the caller's slice.
 	msgs = append([]llm.ChatMessage(nil), msgs...)
 

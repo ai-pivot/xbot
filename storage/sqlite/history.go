@@ -183,6 +183,12 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	if msg.DisplayOnly {
 		displayOnly = 1
 	}
+	// Internal = 模型侧载体（如 view_image 的多模态注入）：进 LLM 上下文，但
+	// 绝不渲染成用户可见消息（与 display_only 相反，见 llm.ChatMessage.Internal）。
+	internalOnly := 0
+	if msg.Internal {
+		internalOnly = 1
+	}
 	// Responses API reasoning items（含 encrypted_content）——必须原样回传，
 	// 因此随消息一起持久化（见 llm/openai_responses.go 与 v66 迁移）。
 	reasoningItemsJSON, err := marshalReasoningItems(msg.ReasoningItems)
@@ -192,10 +198,10 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		 detail, display_only, reasoning_content, reasoning_items, record_type, created_at, turn_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?)
+		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, created_at, turn_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
-		toolCallsJSON, msg.Detail, displayOnly, msg.ReasoningContent, reasoningItemsJSON,
+		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
 		ts.Format(time.RFC3339), msg.TurnID)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)
@@ -702,7 +708,7 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 	query := `
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
-		       reasoning_content, reasoning_items, display_only, created_at, turn_id
+		       reasoning_content, reasoning_items, display_only, internal_only, created_at, turn_id
 		FROM session_messages WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if fromHistoryID > 0 {
@@ -725,17 +731,18 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		var rawData, role, content, createdAt string
 		var toolCallID, toolName, toolArguments, toolCallsJSON, detail, reasoning, reasoningItems sql.NullString
 		var displayOnly int
+		var internalOnly int
 		var turnID sql.NullInt64
 		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
 			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
-			&reasoning, &reasoningItems, &displayOnly, &createdAt, &turnID); err != nil {
+			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID); err != nil {
 			return nil, fmt.Errorf("scan history record: %w", err)
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
 		record.Data = json.RawMessage(rawData)
 		if record.Type == HistoryRecordMessage {
 			record.Message = llm.ChatMessage{ID: record.HistoryID, Role: role, Content: content,
-				DisplayOnly: displayOnly != 0, Timestamp: record.CreatedAt}
+				DisplayOnly: displayOnly != 0, Internal: internalOnly != 0, Timestamp: record.CreatedAt}
 			if turnID.Valid {
 				record.Message.TurnID = uint64(turnID.Int64)
 			}

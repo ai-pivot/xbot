@@ -2431,8 +2431,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 // manual vision switch is on; vision off degrades them to placeholders.
 //
 // The message is persisted through the normal session pipeline (turnID
-// stamped, incremental watermark advanced) so history replay renders the
-// image (the relative viewimg URL renders in the web frontend's <img> too).
+// stamped, incremental watermark advanced) so later turns still see the image
+// the model looked at. It is marked llm.ChatMessage.Internal: it lives in the
+// LLM context but is NEVER rendered as user-visible history (it shares the
+// triggering user message's turn_id, so a renderer that treated it as user
+// input would REPLACE the user's own message — 2026-09-16 regression).
 func (s *runState) injectViewImages(ctx context.Context, injections []tools.ImageInjection) {
 	var b strings.Builder
 	b.WriteString("📷 以下图片已通过 view_image 工具加载，可直接进行视觉分析：\n\n")
@@ -2441,6 +2444,12 @@ func (s *runState) injectViewImages(ctx context.Context, injections []tools.Imag
 	}
 	msg := llm.NewUserMessage(b.String())
 	msg.TurnID = s.cfg.TurnID
+	// Internal：只给模型的载体 —— 必须留在 LLM 上下文（图片引用由
+	// llm.parseMultimodalContent 在请求构建时解析），但**绝不渲染成用户消息**。
+	// 它与触发它的用户消息共用同一个 turn_id，而渲染层每个 turn 只有一个 user
+	// 槽位 ⇒ 不标记就会被当成"用户输入"顶掉用户真实消息（用户报告 2026-09-16：
+	// 上传图片后自己的消息被换成注入文案、图片地址也从 uploads/… 变成 viewimg 副本）。
+	msg.Internal = true
 	if s.cfg.Session != nil {
 		if historyIDs, err := s.cfg.Session.AppendMessages([]llm.ChatMessage{msg}); err != nil {
 			log.Ctx(ctx).WithError(err).Warn("view_image: persist injected user message failed — message still enters the in-memory context")

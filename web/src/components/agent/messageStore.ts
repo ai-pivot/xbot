@@ -456,7 +456,22 @@ export class MessageStore {
           this.insertTurnID(row.turnID)
         }
         if (row.role === 'user') {
-          slot.user = { ...slot.user, ...row, turnID: row.turnID }
+          // ⚠️ 一个 turn 的 user 槽位只认【最早那条】(dbID 最小 = 用户在 turn
+          // 开始时发的那条)。同一个 turn 里**后来**的 user 行是内部注入，不是
+          // 用户输入 —— 例如 view_image 的多模态载体（agent/engine_run.go
+          // injectViewImages：OpenAI tool role 不能带图，故用 user role 承载
+          // `![label](/api/files/viewimg/...)` 引用并复用当前 turn_id）。
+          // 旧实现无条件后写覆盖 ⇒ 用户上传图片后自己的消息被顶掉，正文变成
+          // 「📷 以下图片已通过 view_image 工具加载…」、图片地址从
+          // `/api/files/download?key=uploads%2F…`（用户上传的原件）变成
+          // `/api/files/viewimg/<uuid>`（注入副本）（用户报告 2026-09-16，
+          // DB 实证 tenant=140480 turn=904：1780461 真实 / 1780467+1780477 注入）。
+          // 用 dbID 比较而非"先到先得"：loadMore 分批时同 turn 的行可能倒序到达。
+          const curID = slot.user?.dbID ?? Number.POSITIVE_INFINITY
+          const rowID = row.dbID ?? Number.POSITIVE_INFINITY
+          if (!slot.user || rowID < curID) {
+            slot.user = { ...slot.user, ...row, turnID: row.turnID }
+          }
         } else if (row.role === 'assistant') {
           // 始终写入/合并 slot.assistant —— 即使 slot.live 存在（非 frozen）。
           // slot.assistant 包含 DB 的已完成迭代，slot.live 只有当前迭代；
