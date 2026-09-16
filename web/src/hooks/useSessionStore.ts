@@ -250,6 +250,7 @@ function toSessionInfo(c: RawChat, channel: string, children?: SessionInfo[]): S
   const label = isAgent
     ? subAgentLabel(c.label, role, instance, c.chat_id)
     : sessionDisplayLabel(c.label, c.chat_id, rawChannel)
+  const status = c.status || (c.running ? 'running' : 'idle')
   return {
     chatID: isAgent ? fullKey : c.chat_id,
     channel: rawChannel,
@@ -259,7 +260,7 @@ function toSessionInfo(c: RawChat, channel: string, children?: SessionInfo[]): S
     createdAt: c.created_at,
     sortOrder: c.sort_order,
     preview: c.preview || '',
-    status: c.status || (c.running ? 'running' : 'idle'),
+    status,
     isCurrent: !!c.is_current,
     type: isAgent ? 'agent' : 'main',
     fullKey: isAgent ? fullKey : undefined,
@@ -269,7 +270,13 @@ function toSessionInfo(c: RawChat, channel: string, children?: SessionInfo[]): S
     parentChannel,
     historical: isHistoricalAgent,
     agentChatID: isAgent ? fullKey : undefined,
-    running: !!c.running,
+    // waiting_input (AskUser pending) is mutually exclusive with running: the
+    // turn is PAUSED, not executing. The backend tree historically sent
+    // running=true for such rows (the pause keeps ss.busy server-side); wave A
+    // now sends running=false — this guard makes the exclusion hold regardless,
+    // so the sidebar spinner / MessageInput busy state can never light while a
+    // prompt is pending ("waiting_input 与 busy 互斥").
+    running: status === 'waiting_input' ? false : !!c.running,
     synthetic: !!c.synthetic,
     children,
   }
@@ -833,8 +840,16 @@ export function useSessionStoreImpl(): SessionStore {
   // window, and the offset to request for the next page.
   const [hasMore, setHasMore] = useState(false)
   const nextOffsetRef = useRef(0)
-  // AskUser prompts keyed by "channel:chatID" — survives session switch.
+  // AskUser prompts keyed by "channel:chatID" — a client-side HINT, never the
+  // authority (the server broadcast ask_user/ask_user_resolved + the session
+  // row's status='waiting_input' are authoritative). Survives session switch so
+  // the panel can reappear when switching back.
   const [askUserPrompts, setAskUserPrompts] = useState<Map<string, AskUserPrompt>>(new Map())
+  /** When each cached prompt was stored locally (ms). The refresh reconciliation
+   * (reconcileAskUserPrompts) uses it as a race guard: a session-tree response
+   * that was REQUESTED before a prompt was stored cannot judge that prompt (the
+   * server may have answered the request before the prompt was registered). */
+  const askUserPromptTsRef = useRef(new Map<string, number>())
 
   // Re-read starred/category from localStorage when server sync updates values.
   useEffect(() => {
@@ -882,6 +897,7 @@ export function useSessionStoreImpl(): SessionStore {
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeqRef.current
+    const requestStartedAt = Date.now()
     const initialLoad = sessionsRef.current.length === 0
     if (initialLoad) setLoading(true)
     setError(null)
@@ -903,6 +919,15 @@ export function useSessionStoreImpl(): SessionStore {
       if (typeof data.next_offset === 'number') nextOffsetRef.current = data.next_offset
       const normalized = normalizeCanonicalSessionTree(data.sessions || [], data.orphan_subagents || [])
       const { mainSessions } = mergeTransientSubAgents(normalized.mainSessions, transientSubAgentsRef.current)
+      // AskUser hint reconciliation — BEFORE any local status overlay: the
+      // server row status (waiting_input ⇔ pending) is the authority for
+      // "does this prompt still exist". Runs against the raw server rows, not
+      // the merged tree (mergeStatus keeps a carried waiting_input to survive
+      // refresh races, which must not shield a stale prompt from this pass).
+      // Covers every reconciliation trigger: initial load, session switch
+      // (switchSession → refresh), SSE reconnect / resync (sessions-resync →
+      // refresh), visibilitychange, agent-idle edge cases.
+      reconcileAskUserPrompts(mainSessions, requestStartedAt)
       const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
       const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
       const cachedSessions = mergeStatus(sessionsRef.current, withUnread, sseIntentsRef.current, Date.now())
@@ -1018,7 +1043,19 @@ export function useSessionStoreImpl(): SessionStore {
       if (!carried) return { ...node, children }
       // waiting_input / error / unread are set by SSE events (ask_user, etc.)
       // and must survive refresh — HTTP doesn't know about these states.
-      if (carried.status === 'waiting_input' || carried.status === 'error' || carried.status === 'unread') {
+      if (carried.status === 'waiting_input') {
+        // EXCEPTION (frozen contract: busy ⇒ 不存在 AskUser): the server row
+        // explicitly reports 'running' → the session is executing, so a carried
+        // waiting_input is STALE and must yield to the server. This is the
+        // mirror of F3 (waiting_input must not display running) — without it a
+        // stale waiting dot survived every refresh whenever the busy event was
+        // missed ("waiting_input 与 busy 互斥" both directions).
+        if (node.status === 'running') {
+          return { ...node, children }
+        }
+        return { ...node, status: carried.status, running: false, children }
+      }
+      if (carried.status === 'error' || carried.status === 'unread') {
         return { ...node, status: carried.status, running: false, children }
       }
       const key = sessionKey(node)
@@ -1109,6 +1146,66 @@ export function useSessionStoreImpl(): SessionStore {
       // SSE-driven status (e.g. 'idle') instead of a stale 'running'.
       sessionsRef.current = next
       return next
+    })
+  }, [])
+
+  /** Drop one cached AskUser prompt (state + timestamp bookkeeping). The server
+   * is the single authority for "is this prompt still pending" — the local Map
+   * is only a hint and MUST be invalidated when the server says so. */
+  const dropAskUserPrompt = useCallback((key: string) => {
+    askUserPromptTsRef.current.delete(key)
+    setAskUserPrompts((prev) => {
+      if (!prev.has(key)) return prev
+      const next = new Map(prev)
+      next.delete(key)
+      return next
+    })
+  }, [])
+
+  /** Reconcile the cached AskUser prompts against a session-tree response.
+   *
+   * The server row reports status 'waiting_input' ONLY while an AskUser prompt
+   * is pending (the turn is paused). A locally cached prompt whose row now
+   * reports another status is STALE — it was answered/cancelled in another
+   * channel/tab, rewound, or the backend canceled it because the session went
+   * busy ("busy ⇒ 不存在 AskUser"). Without this pass the local Map acted as
+   * the authority and stale prompts survived reconnects / session switches
+   * ("有时候走前端缓存，不该弹的时候弹出").
+   *
+   * Rows absent from the response (pagination window, deleted session) are NOT
+   * judged — only a row that says something authoritative counts, so a prompt
+   * for a not-yet-loaded session is never dropped by accident.
+   *
+   * requestStartedAt guards the opposite race: a response that was REQUESTED
+   * before a prompt was stored cannot invalidate it (the server may not have
+   * registered the prompt yet when it answered the request). Such a prompt is
+   * re-evaluated by the next refresh instead.
+   */
+  const reconcileAskUserPrompts = useCallback((sessions: SessionInfo[], requestStartedAt: number) => {
+    if (askUserPromptTsRef.current.size === 0) return
+    const seen = new Set<string>()
+    const pending = new Set<string>()
+    const visit = (nodes: SessionInfo[]) => {
+      for (const node of nodes) {
+        const key = sessionKey(node)
+        seen.add(key)
+        if (node.status === 'waiting_input') pending.add(key)
+        visit(node.children || [])
+      }
+    }
+    visit(sessions)
+    setAskUserPrompts((prev) => {
+      let next: Map<string, AskUserPrompt> | null = null
+      for (const key of prev.keys()) {
+        if (pending.has(key)) continue
+        if (!seen.has(key)) continue
+        const ts = askUserPromptTsRef.current.get(key)
+        if (ts !== undefined && ts > requestStartedAt) continue
+        next = next ?? new Map(prev)
+        next.delete(key)
+        askUserPromptTsRef.current.delete(key)
+      }
+      return next ?? prev
     })
   }, [])
 
@@ -1438,6 +1535,12 @@ export function useSessionStoreImpl(): SessionStore {
         case 'busy':
           sseIntentsRef.current.set(sessionKey(selector), { ts: Date.now(), busy: true })
           setStatus(selector, 'running')
+          // busy ⇒ 不存在 AskUser (server contract): when a session enters busy
+          // the backend cancels any residual prompt and broadcasts
+          // ask_user_resolved{reason:"cancelled"}. Dropping the local prompt on
+          // the busy event as well closes the window where a stale panel would
+          // still render if that broadcast was missed ("不该弹的时候弹出").
+          dropAskUserPrompt(sessionKey(selector))
           break
         case 'idle': {
           const key = sessionKey(selector)
@@ -1463,6 +1566,8 @@ export function useSessionStoreImpl(): SessionStore {
         }
         case 'deleted':
           sseIntentsRef.current.delete(sessionKey(selector))
+          // A deleted session can never have a pending prompt — drop the hint.
+          dropAskUserPrompt(sessionKey(selector))
           markRead(sessionKey(selector))
           setSessions((prev) => prev.filter((s) => !sameSession(s, selector)))
           break
@@ -1561,9 +1666,24 @@ export function useSessionStoreImpl(): SessionStore {
     }
   }, [])
 
-  // ask_user → waiting_input + store prompt for the session.
+  // ask_user → waiting_input + store prompt for the session (a HINT).
+  // ask_user_resolved → DELETE the cached prompt: the server is the single
+  // authority and broadcasts this when the prompt stops being pending
+  // (answered / cancelled / rewound / cleared) — including when it was resolved
+  // in ANOTHER channel or tab. The local Map no longer outlives the server
+  // state ("有时候走前端缓存，不该弹的时候弹出").
   useEffect(() => {
     return wsRef.current.onMessage((msg) => {
+      if (msg.type === 'ask_user_resolved') {
+        const explicitChatID = (msg as AskUserEnvelope).chat_id
+        const fallback = activeSessionRef.current
+        const chatID = explicitChatID ?? wsRef.current.chatID ?? fallback?.chatID
+        const channel = msg.channel
+          ?? (chatID === wsRef.current.chatID ? wsRef.current.channel : null)
+          ?? (fallback && chatID === fallback.chatID ? fallback.channel : DEFAULT_CHANNEL)
+        if (chatID) dropAskUserPrompt(`${channel}:${chatID}`)
+        return
+      }
       if (msg.type !== 'ask_user') return
       const explicitChatID = (msg as AskUserEnvelope).chat_id
       const fallback = activeSessionRef.current
@@ -1618,6 +1738,7 @@ export function useSessionStoreImpl(): SessionStore {
         }
         const requestId = (p?.request_id as string | undefined) ?? msg.id ?? String(Date.now())
         const key = `${channel}:${chatID}`
+        askUserPromptTsRef.current.set(key, Date.now())
         setAskUserPrompts((prev) => {
           const next = new Map(prev)
           next.set(key, { requestId, questions })
@@ -1625,7 +1746,7 @@ export function useSessionStoreImpl(): SessionStore {
         })
       }
     })
-  }, [setStatus])
+  }, [setStatus, dropAskUserPrompt])
 
   // Initial load.
   useEffect(() => {
@@ -1634,13 +1755,8 @@ export function useSessionStoreImpl(): SessionStore {
 
   const sortedSessions = useMemo(() => sortSessions(sessions, starredIds), [sessions, starredIds])
   const clearAskUserPrompt = useCallback((channel: string, chatID: string) => {
-    const key = `${channel}:${chatID}`
-    setAskUserPrompts((prev) => {
-      const next = new Map(prev)
-      next.delete(key)
-      return next
-    })
-  }, [])
+    dropAskUserPrompt(`${channel}:${chatID}`)
+  }, [dropAskUserPrompt])
 
   const groups = useMemo(() => groupSessions(sessions, category, starredIds), [sessions, category, starredIds])
   const activeSessionId = activeSession?.chatID ?? null

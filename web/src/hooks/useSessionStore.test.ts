@@ -748,6 +748,285 @@ describe('normalizeSessionTree', () => {
     ])
   })
 
+  it('drops the cached prompt when ask_user_resolved arrives (server is the authority; multi-channel sync)', async () => {
+    // The prompt stopped being pending on the SERVER (answered / cancelled /
+    // rewound / cleared — possibly in another channel or tab). The local Map
+    // must not keep the panel alive ("有时候走前端缓存，不该弹的时候弹出").
+    // Without the ask_user_resolved branch this stays visible forever.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: '/repo', channel: 'cli', label: 'repo',
+              last_active: '2026-07-08T00:00:00Z', is_current: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'cli',
+        chat_id: '/repo',
+        progress: { request_id: 'r1', questions: [{ question: 'Continue?', options: ['yes', 'no'] }] },
+      })
+    })
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(true)
+
+    // A resolved event for ANOTHER session must not drop ours (key scoping).
+    act(() => {
+      messageHandler?.({ type: 'ask_user_resolved', channel: 'web', chat_id: 'other-chat', reason: 'answered' })
+    })
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(true)
+
+    act(() => {
+      messageHandler?.({ type: 'ask_user_resolved', channel: 'cli', chat_id: '/repo', reason: 'answered' })
+    })
+    expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
+  })
+
+  it('drops a stale cached prompt when a refresh response shows no pending (server row is authoritative)', async () => {
+    // F2: reconciliation on refresh — the session row exists but reports NO
+    // waiting_input, so a locally cached prompt is stale (resolved while this
+    // client was disconnected / switched away). The old implementation treated
+    // the local Map as authoritative and the prompt survived session switches
+    // and reconnects.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'web-chat-1', channel: 'web', label: 'My Chat',
+              last_active: '2026-07-08T00:00:00Z', status: 'idle',
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        progress: { request_id: 'r2', questions: [{ question: 'Proceed?', options: ['yes', 'no'] }] },
+      })
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(false)
+  })
+
+  it('drops a stale cached prompt when a refresh response reports a RUNNING session (busy ⇒ no AskUser)', async () => {
+    // F4 (tree path): the server row says running=true — with "busy ⇒ 不存在
+    // AskUser" a cached prompt for this session cannot be pending anymore.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'web-chat-1', channel: 'web', label: 'My Chat',
+              last_active: '2026-07-08T00:00:00Z', status: 'running', running: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        progress: { request_id: 'r3', questions: [{ question: 'Proceed?', options: ['yes', 'no'] }] },
+      })
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(false)
+    expect(result.current.sessions[0].status).toBe('running')
+  })
+
+  it('does NOT drop a prompt stored AFTER an in-flight refresh request started (stale-response race guard)', async () => {
+    // The response was REQUESTED before the prompt was stored — it may have
+    // been generated before the server registered the prompt, so it must not
+    // judge it. Re-evaluated by the NEXT refresh instead.
+    let deferResolve: ((r: Response) => void) | null = null
+    let deferNext = false
+    const sessionsResponse = () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        sessions: [{
+          chat_id: 'web-chat-1', channel: 'web', label: 'My Chat',
+          last_active: '2026-07-08T00:00:00Z', status: 'idle',
+        }],
+      }),
+    } as Response)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats' || url === '/api/session-tree') {
+        if (deferNext) {
+          deferNext = false
+          return await new Promise<Response>((resolve) => { deferResolve = resolve })
+        }
+        return sessionsResponse()
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000)
+    deferNext = true
+    let pending: Promise<void> = Promise.resolve()
+    act(() => {
+      pending = result.current.refresh()
+    })
+    // The request is now in the fetch mock (deferResolve assigned synchronously).
+    expect(deferResolve).not.toBeNull()
+
+    // The prompt arrives WHILE the request is in flight — later than its start.
+    vi.setSystemTime(2_000)
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        progress: { request_id: 'r4', questions: [{ question: 'Proceed?', options: ['yes', 'no'] }] },
+      })
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
+
+    // The (pre-prompt) response lands with no pending — must NOT drop it.
+    await act(async () => {
+      deferResolve?.(sessionsResponse())
+      await pending
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
+  })
+
+  it('drops the cached prompt when the session goes busy (busy ⇒ 不存在 AskUser)', async () => {
+    // F4 (event path): the backend cancels any residual prompt when the session
+    // enters busy and broadcasts ask_user_resolved; dropping on the busy event
+    // itself closes the window where that broadcast is missed.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'web-chat-1', channel: 'web', label: 'My Chat',
+              last_active: '2026-07-08T00:00:00Z',
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        progress: { request_id: 'r5', questions: [{ question: 'Proceed?', options: ['yes', 'no'] }] },
+      })
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
+
+    act(() => {
+      sessionHandler?.({ action: 'busy', channel: 'web', chat_id: 'web-chat-1' })
+    })
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(false)
+    expect(result.current.sessions[0].status).toBe('running')
+  })
+
+  it('waiting_input is mutually exclusive with running (tree row with running=true must not light the spinner)', async () => {
+    // F3: the backend row historically reported running=true while the turn was
+    // PAUSED on an AskUser (the pause keeps ss.busy server-side). The sidebar
+    // spinner / busy states must never light for waiting_input — normalize the
+    // flag away at the data layer regardless of what the row says.
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/chats') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [{
+              chat_id: 'web-chat-1', channel: 'web', label: 'My Chat',
+              last_active: '2026-07-08T00:00:00Z', status: 'waiting_input', running: true,
+            }],
+          }),
+        } as Response
+      }
+      if (url === '/api/subagents') {
+        return { ok: true, json: async () => ({ ok: true, subagents: [] }) } as Response
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }))
+    const { result } = renderHook(() => useSessionStoreImpl())
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1))
+
+    expect(result.current.sessions[0].status).toBe('waiting_input')
+    expect(result.current.sessions[0].running).toBe(false)
+
+    // A refresh must not resurrect running from the raw row either.
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.sessions[0].status).toBe('waiting_input')
+    expect(result.current.sessions[0].running).toBe(false)
+  })
+
   it('sends the selected channel when renaming and deleting matching chat IDs', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input)

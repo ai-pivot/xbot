@@ -86,7 +86,12 @@ export function SessionItem({
   const isTouch = useIsTouch()
   const key = sessionKey(session)
   const title = isSubAgent ? subAgentTitle(session) : (session.label || session.chatID)
-  const executing = session.running === true || session.status === 'running' || session.status === 'pending'
+  // waiting_input (AskUser pending) and running are mutually exclusive: the
+  // turn is PAUSED. A stale running flag (backend row / carried local state)
+  // must never light the spinner while the waiting dot is the truth.
+  const executing =
+    session.status !== 'waiting_input' &&
+    (session.running === true || session.status === 'running' || session.status === 'pending')
 
   const openInBrowserTab = useCallback(() => {
     const sessionParam = `${session.channel || 'web'}:${session.chatID}`

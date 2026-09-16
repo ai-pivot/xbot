@@ -263,6 +263,28 @@ describe('AgentPanel busy state', () => {
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
   })
+
+  it('suppresses busy while waiting_input — even with running=true and a live streaming snapshot', () => {
+    // F3: waiting_input (AskUser pending) ⇔ NOT busy. Worst case here: the
+    // local prompt was already dropped but the session status is still
+    // waiting_input while the backend row / streaming snapshot says busy — the
+    // input must not show the generating/stop state (the turn is PAUSED).
+    const store = mocks.context.sessionStore as unknown as {
+      sessions: Array<{ chatID: string; channel: string; running: boolean; status: string }>
+    }
+    store.sessions = [{ chatID: 'chat-1', channel: 'web', running: true, status: 'waiting_input' }]
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null, streaming: true, phase: 'thinking' }
+    const first = render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
+    first.unmount()
+
+    // Control (mutation discrimination): the SAME running+streaming state
+    // without waiting_input IS busy — proving the suppression is the status gate.
+    store.sessions = [{ chatID: 'chat-1', channel: 'web', running: true, status: 'running' }]
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('true')
+    store.sessions = []
+  })
 })
 
 describe('AgentPanel liveMessage visibility during reload', () => {

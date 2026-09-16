@@ -442,7 +442,11 @@ export function AgentPanel({ params, api }: PanelProps) {
   const busy = ((currentSession?.running ?? false) ||
     progressSnapshot.streaming ||
     agentChat.busyFallback) &&
-    !askUser.prompt
+    !askUser.prompt &&
+    // waiting_input (AskUser pending) is mutually exclusive with busy/running:
+    // the turn is PAUSED, so the input must not show the generating/stop state.
+    // Covers the window where a stale backend running flag still says busy.
+    currentSession?.status !== 'waiting_input'
 
   // Turn 结束（busy→idle 边沿）时重取 get_goal —— goal 状态变化的事件兜底：
   // set_goal_complete 后端 emitGoalProgress 会推 goal 事件（TDSM 实时更新），
