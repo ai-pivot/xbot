@@ -23,7 +23,6 @@ interface SSEMockState {
   __sseListeners: Record<string, Set<(ev: MessageEvent) => void>>
 }
 
-let seqCounter = 0
 const QUESTION = 'Do you want to proceed?'
 
 /** seq 是**每客户端**的 SSE 游标：必须按 page 独立计数，否则双页场景下
@@ -152,9 +151,8 @@ function resolvedEvent(reason: 'answered' | 'cancelled' | 'rewound' | 'cleared')
 }
 
 test.describe('AskUser 跨客户端失效 / busy 互斥', () => {
-  test.beforeEach(() => {
-    seqCounter = 0
-  })
+  // 无 beforeEach 需要重置：SSE seq 由 `seqByPage`（WeakMap）**按页独立**计数，
+  // 每个新 Page 自动从 1 开始（跨页共享计数曾让第二个页面的事件被序号校验丢弃）。
 
   test('① 另一客户端应答 ⇒ 本客户端面板立即收起（无需刷新）', async ({ browser }) => {
     const a = await newClient(browser)

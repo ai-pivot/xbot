@@ -43,7 +43,7 @@ vi.mock('@/hooks/useWSConnection', () => ({
 
 vi.mock('@/lib/api', () => ({
   postAPI: async (endpoint: string, body: Record<string, unknown> = {}) => {
-    let target = endpoint
+    const target = endpoint
     if (endpoint === '/api/session-tree') {
       let response = await fetch('/api/chats', { method: 'POST', body: JSON.stringify(body) })
       if (!response.ok) response = await fetch('/api/session-tree', { method: 'POST', body: JSON.stringify(body) })
