@@ -70,6 +70,9 @@ vi.mock('@/hooks/useLLMSettings', () => ({
     saving: false,
     setThinkingMode: vi.fn(),
   }),
+  // LLM-config change bus: AgentPanel subscribes to re-resolve the session's
+  // model/limits when the settings dialog mutates subscriptions/models.
+  subscribeLLMConfigChanged: () => () => {},
 }))
 vi.mock('@/components/agent/api', () => ({
   rewindHistory: (...args: unknown[]) => mocks.rewindHistory(...args),
