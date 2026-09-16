@@ -533,7 +533,36 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // turnID null（turn_id=0 缺失）→ 回退 activeTurn；todos 会话级不丢弃。
       const target = ev.turnID !== null ? ev.turnID : s.activeTurn
       if (target === null) return applySessionFields(s, ev.todos, ev.goal)
-      if (target !== s.activeTurn) return applySessionFields(s, ev.todos, ev.goal)
+      if (target !== s.activeTurn) {
+        // ── P0 同类修复（2026-09-16）──────────────────────────────────────
+        // finalIteration 是"最后迭代"的另一个唯一权威载体（后端 recordFinalIteration）。
+        // 旧代码在本分支直接丢弃它 ⇒ 切会话回来后（该 turn 已不是 activeTurn）最后
+        // 迭代内容缺失。改为：目标 turn 已在本地时增量并入（同号权威覆盖、幂等）。
+        const tt = s.turns.get(target)
+        if (tt && ev.finalIteration) {
+          const its = tt.phase.kind === 'committed'
+            ? (tt.phase.payload.iterations ?? [])
+            : (tt.phase.data.iterations ?? [])
+          const mergedIts = mergeIterations(its, [ev.finalIteration])
+          const changed =
+            mergedIts.length !== its.length ||
+            mergedIts.some((it, i) => (it.content ?? '') !== (its[i]?.content ?? ''))
+          if (changed) {
+            const turnsPatched = new Map(s.turns)
+            if (tt.phase.kind === 'committed') {
+              const payload = { ...tt.phase.payload, iterations: mergedIts } as typeof tt.phase.payload
+              turnsPatched.set(target, { ...tt, phase: { kind: 'committed', payload } })
+            } else {
+              turnsPatched.set(target, {
+                ...tt,
+                phase: { ...tt.phase, data: { ...tt.phase.data, iterations: mergedIts } },
+              })
+            }
+            return applySessionFields({ ...s, turns: turnsPatched }, ev.todos, ev.goal)
+          }
+        }
+        return applySessionFields(s, ev.todos, ev.goal)
+      }
       if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return applySessionFields(s, ev.todos, ev.goal)
       const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return applySessionFields(s, ev.todos, ev.goal)
@@ -570,7 +599,35 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         })
       }
 
-      if (t.phase.kind === 'committed') return s // 已提交（重放）—— 幂等
+      if (t.phase.kind === 'committed') {
+        // ── P0 修复（2026-09-16 用户报告）────────────────────────────────
+        // "一个会话从 busy 跑到 idle 后，从别的会话切回去**看不到最后一个迭代的
+        //  内容**，刷新后才出现。"
+        //
+        // 机制：最后一个迭代的**唯一权威载体**是 text.progressHistory（后端
+        // recordFinalIteration 补记 —— 它没有"下一迭代"事件可带动，只能靠 text）。
+        // 而切会话时面板是 mounted 的（只切可见性），本地 turn 可能已按**过时快照**
+        // committed（history_replaced / session(idle) 定格）；SSE 重连后用
+        // last_event_id 回放的那条 text_final 一到就被这里**无条件 return** 丢弃
+        // ⇒ 唯一载体丢失 ⇒ 最后迭代内容永久缺失，只有下一次完整 fetch（F5）才补回。
+        //
+        // 修复：把 incoming progressHistory **增量并入**已 committed 的 payload
+        // （同号以权威覆盖、append-only）；无实际变化时仍返回原 state（幂等、零渲染）。
+        const prevIts = t.phase.payload.iterations ?? []
+        const mergedIts = mergeIterations(prevIts, ev.progressHistory ?? [])
+        const changed =
+          mergedIts.length !== prevIts.length ||
+          mergedIts.some(
+            (it, i) =>
+              (it.content ?? '') !== (prevIts[i]?.content ?? '') ||
+              (it.tools?.length ?? 0) !== (prevIts[i]?.tools?.length ?? 0),
+          )
+        if (!changed) return s
+        const payload = { ...t.phase.payload, iterations: mergedIts } as typeof t.phase.payload
+        const turnsPatched = new Map(s.turns)
+        turnsPatched.set(target, { ...t, phase: { kind: 'committed', payload } })
+        return { ...s, turns: turnsPatched }
+      }
 
       // live / frozen → committed。cancelled 时保留 cancel 定格内容作为 fold content。
       const live = t.phase.data
@@ -675,10 +732,22 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         turns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...live, streaming: false } } })
         return { ...s, turns, activeTurn: null, busy: false }
       }
-      // 无产出：删槽（空壳行灭绝）+ pendingUsers 保留（user 行仍渲染）。
-      // [TURNDROP] 诊断：mid-turn idle 删除无产出 live（整个 turn 的 assistant
-      // 消失形态 —— user 行保留）。reasoning-only streaming 若 reasoning 已被
-      // 迭代边界清空（advanced 清流式字段后新内容未到）即命中此分支。
+      // 无产出：**必须区分两种空壳**（P0#2，2026-09-16 用户报告：「切会话后两个 turn
+      // 之间的 notification（user 形式）不渲染，两侧 assistant 消息粘连」）：
+      //   · turn **有 user 行**（最典型：通知 turn —— `turn_started(trigger=notification)`
+      //     只注入 user 行，agent 不产出 assistant）⇒ **必须保留该 turn**，冻成空壳：
+      //     derive 只跳过 assistant 行（hollow frozen），user 行照常渲染。
+      //     旧实现无条件 `turns.delete(t.id)` 把**通知行一起删掉** ⇒ 两个 turn 的
+      //     assistant 在视觉上粘连（切会话若不重拉 history 就一直不回来，刷新才恢复）。
+      //   · turn **无 user 行** ⇒ 真·空壳，删槽（"空壳行灭绝"，保持原语义）。
+      if (t.user !== null && t.user !== undefined) {
+        const hollowTurns = new Map(s.turns)
+        hollowTurns.set(t.id, { ...t, phase: { kind: 'frozen', data: { ...live, streaming: false } } })
+        return { ...s, turns: hollowTurns, activeTurn: null, busy: false }
+      }
+      // [TURNDROP] 诊断：mid-turn idle 删除无产出且无 user 行的 live（空壳行灭绝）。
+      // reasoning-only streaming 若 reasoning 已被迭代边界清空（advanced 清流式字段后
+      // 新内容未到）即命中此分支。
       console.warn('[TURNDROP] session(idle) DELETED a live turn with no output', {
         chatID: s.chatID, turnID: t.id, lastSeq: s.lastSeq,
         contentLen: live.content.length, reasoningLen: live.reasoning.length,
