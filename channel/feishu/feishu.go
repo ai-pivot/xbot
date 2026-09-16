@@ -50,6 +50,14 @@ type FeishuConfig struct {
 	EncryptKey        string   // 事件订阅加密 Key（可选）
 	VerificationToken string   // 事件订阅验证 Token（可选）
 	AllowFrom         []string // 允许的用户 open_id 白名单（空则允许所有人）
+	// Output 选择进度渲染：
+	//   "cot"  = 飞书**原生 CoT（思考过程）**—— reasoning 进思考区、每个工具
+	//            icon+title、工具结果 code block，最终答复仍走普通消息
+	//            （对齐 dsh-lark：src/runtime.ts 的 /open-apis/im/v1/message_cot）；
+	//   其他值 = 既有 CardKit 流式卡片。
+	// 生产由 serverapp 默认给 "cot"（见 channelOutput）；测试直接构造渠道时为
+	// 零值 ⇒ 走卡片路径（卡片契约的测试不受影响）。
+	Output string
 }
 
 // SettingsCallbacks holds the callback functions for settings card interaction.
@@ -219,6 +227,15 @@ type FeishuChannel struct {
 	// ack for the current turn (progress card unavailable) — cleared on the next
 	// inbound message. Prevents both silence AND per-event spam.
 	streamCardAcked map[string]struct{}
+	// cotEnabled 决定进度走原生 CoT（对齐 dsh-lark）还是 CardKit 卡片。
+	// 由 FeishuConfig.Output == "cot" 打开；测试构造的渠道为零值 ⇒ 保持卡片路径。
+	cotEnabled bool
+	// Native CoT（飞书原生「思考过程」）渲染器，按 chatID 索引 —— 对齐 dsh-lark
+	// (omdsh-dev/dsh-lark)：进度渲染成平台的思考过程（reasoning 区 + 每个工具
+	// icon/title + 工具结果 code block），**最终答复仍走普通消息**。创建/写入失败
+	// 即降级到上面的 CardKit 卡片（思考过程是呈现，答案从不依赖它）。
+	cotMu        sync.Mutex
+	cotRenderers map[string]*feishuCoTRenderer
 
 	// inboundMsgIDs remembers the latest inbound message id per chat so the
 	// progress card can be posted as a reply to it.
@@ -263,6 +280,8 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		streamCards:       make(map[string]*feishuStreamCard),
 		streamCardsBroken: make(map[string]struct{}),
 		streamCardAcked:   make(map[string]struct{}),
+		cotEnabled:        cfg.Output == "cot",
+		cotRenderers:      make(map[string]*feishuCoTRenderer),
 		inboundMsgIDs:     make(map[string]string),
 	}
 }
@@ -542,6 +561,9 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	// 把已打开的卡片收尾（写最终文本 + 关流式），不新建消息。放在空内容判断
 	// 之前 —— 取消的 turn 会用空内容收尾已打开的卡片。
 	if msg.Metadata != nil && msg.Metadata[ch.MetaFinalReply] == "true" {
+		// 原生 CoT：收尾思考过程（RUN_FINISHED）；答复本身继续走下面的普通消息
+		// 路径（平台语义：最终答复是它自己的消息，思考过程只承载过程）。
+		f.closeCoTRun(msg.ChatID, "")
 		if id, ok := f.streamCardSend(msg, content, true); ok {
 			return id, nil
 		}

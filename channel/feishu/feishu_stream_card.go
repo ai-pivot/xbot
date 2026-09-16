@@ -905,6 +905,11 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 	if payload == nil || !f.isFeishuChat(chatID) {
 		return
 	}
+	// 原生 CoT（对齐 dsh-lark）优先；不可用（未配置/已降级）时回落 CardKit 卡片。
+	if r := f.cotRendererFor(chatID); r != nil {
+		r.onProgress(payload)
+		return
+	}
 	card, ok := f.ensureStreamCard(chatID)
 	if !ok {
 		f.streamCardFallbackAck(chatID)
@@ -922,6 +927,10 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 // argument (thinking text) streams into its own element.
 func (f *FeishuChannel) SendStreamContent(chatID, content, reasoning string) {
 	if (content == "" && reasoning == "") || !f.isFeishuChat(chatID) {
+		return
+	}
+	if r := f.cotRendererFor(chatID); r != nil {
+		r.onStreamContent(content, reasoning)
 		return
 	}
 	card, ok := f.ensureStreamCard(chatID)

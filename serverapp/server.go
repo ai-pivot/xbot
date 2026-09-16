@@ -167,6 +167,15 @@ func resolveStaticDir(cfg *config.Config) string {
 // createChannelInstance creates a channel instance by name using current config.
 // Returns nil for channels that require complex setup (e.g. web with DB/OSS).
 // Used for dynamic channel start/stop without server restart.
+// feishuChannelOutput 返回飞书进度渲染方式：默认 "cot"（原生思考过程，对齐 dsh-lark），
+// 可用 channels.feishu.output 覆盖（"card" 回退到 CardKit 流式卡片）。
+func feishuChannelOutput(cfg *config.Config) string {
+	if out := strings.TrimSpace(cfg.Feishu.Output); out != "" {
+		return out
+	}
+	return "cot"
+}
+
 func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageBus) channel.Channel {
 	switch name {
 	case "feishu":
@@ -176,6 +185,7 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 			EncryptKey:        cfg.Feishu.EncryptKey,
 			VerificationToken: cfg.Feishu.VerificationToken,
 			AllowFrom:         cfg.Feishu.AllowFrom,
+			Output:            feishuChannelOutput(cfg),
 		}, msgBus)
 	case "qq":
 		return qq.NewQQChannel(qq.QQConfig{
@@ -254,6 +264,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			EncryptKey:        cfg.Feishu.EncryptKey,
 			VerificationToken: cfg.Feishu.VerificationToken,
 			AllowFrom:         cfg.Feishu.AllowFrom,
+			Output:            feishuChannelOutput(cfg),
 		}, msgBus)
 		disp.Register(feishuCh)
 

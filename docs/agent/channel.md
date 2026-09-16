@@ -20,6 +20,8 @@ IDs and are independent from the semantic progress watermark.
 ### Text-based progress (PreReplyNotifier channels)
 
 Channels without structured display (Feishu streams the turn into a CardKit
+- **2026-09-16：飞书进度渲染改为飞书原生 CoT（思考过程），对齐 dsh-lark。** 契约与实现见 AGENTS.md 同名条目：`POST/PUT /open-apis/im/v1/message_cot`；AG-UI 事件族（RUN_STARTED / REASONING_MESSAGE_* / TOOL_CALL_* / TOOL_CALL_RESULT(code) / RUN_FINISHED）；工具图标词表 read/write/search/bash；事件 ≤50/次、content ≤4096 字符、timestamp 严格递增；**答案仍走普通消息**。开关 `channels.feishu.output`（默认 `cot`），CoT 失败自动降级到本文档描述的 CardKit 卡片；实现 `channel/feishu/feishu_cot.go` + `feishu_cot_renderer.go`，测试 `feishu_cot_test.go`。
+
 card, QQ sends progress as separate messages) implement
 `channel.PreReplyNotifier` and receive per-iteration progress as **text lines**
 via `RunConfig.ProgressNotifier` → `a.sendMessage`. This must be keyed by

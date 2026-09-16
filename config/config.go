@@ -289,6 +289,8 @@ type FeishuConfig struct {
 	VerificationToken string   `json:"verification_token"`
 	AllowFrom         []string `json:"allow_from"`
 	Domain            string   `json:"domain"`
+	// Output 选择进度渲染："cot" = 飞书原生 CoT（思考过程，默认）；其他 = CardKit 卡片。
+	Output string `json:"output"`
 }
 
 // AgentConfig Agent 配置

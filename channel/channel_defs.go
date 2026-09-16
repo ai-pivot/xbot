@@ -28,6 +28,7 @@ func BuiltinChannelSchema(name string) []SettingDefinition {
 			{Key: "encrypt_key", Label: "Encrypt Key", Description: "Feishu event encrypt key", Type: SettingTypePassword, Category: "Feishu (飞书)", DefaultValue: ""},
 			{Key: "verification_token", Label: "Verification Token", Description: "Feishu event verification token", Type: SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
 			{Key: "domain", Label: "Domain", Description: "Custom Feishu API domain (optional)", Type: SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
+			{Key: "output", Label: "Progress rendering", Description: "cot = native Feishu CoT (thinking area + tool icons/results), card = CardKit streaming card", Type: SettingTypeText, Category: "Feishu (飞书)", DefaultValue: "cot"},
 		}
 	case "qq":
 		return []SettingDefinition{

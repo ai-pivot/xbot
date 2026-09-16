@@ -1,0 +1,271 @@
+package feishu
+
+import (
+	"context"
+	"encoding/json"
+	"strconv"
+	"strings"
+	"testing"
+
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+
+	"xbot/protocol"
+)
+
+// feishu_cot_test.go — 飞书原生 CoT 的传输/渲染契约（对齐 dsh-lark）。
+//
+// 用可替换的 request 注入 fake，断言**请求形状**（端点/方法/字段）与 AG-UI 事件
+// 序列 —— 不需要真实飞书租户。
+type cotCall struct {
+	Method string
+	Path   string
+	Body   map[string]any
+	Events []map[string]any
+}
+
+func newFakeCoT(t *testing.T, chatID string) (*feishuCoT, *[]cotCall) {
+	t.Helper()
+	calls := &[]cotCall{}
+	c := newFeishuCoT(nil, chatID, "om_parent", false)
+	c.request = func(_ context.Context, method, path string, body any) (*larkcore.ApiResp, error) {
+		raw, _ := json.Marshal(body)
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("bad body: %v", err)
+		}
+		call := cotCall{Method: method, Path: path, Body: m}
+		if evs, ok := m["events"].([]any); ok {
+			for _, e := range evs {
+				if em, ok := e.(map[string]any); ok {
+					call.Events = append(call.Events, em)
+				}
+			}
+		}
+		*calls = append(*calls, call)
+		if method == "POST" {
+			return &larkcore.ApiResp{RawBody: []byte(`{"code":0,"data":{"cot_id":"cot-1","message_id":"om-cot-1"}}`)}, nil
+		}
+		return &larkcore.ApiResp{RawBody: []byte(`{"code":0}`)}, nil
+	}
+	return c, calls
+}
+
+/** 事件类型序列。 */
+func eventTypes(t *testing.T, calls *[]cotCall) []string {
+	t.Helper()
+	var out []string
+	for _, c := range *calls {
+		for _, e := range c.Events {
+			out = append(out, e["event_type"].(string))
+		}
+	}
+	return out
+}
+
+/** 断言时间戳严格递增（飞书按它排序；重复/回退会乱序）。 */
+func assertTimestampsIncreasing(t *testing.T, calls *[]cotCall) {
+	t.Helper()
+	last := int64(-1)
+	for _, c := range *calls {
+		for _, e := range c.Events {
+			ts, err := strconv.ParseInt(e["timestamp"].(string), 10, 64)
+			if err != nil {
+				t.Fatalf("timestamp not int: %v", e["timestamp"])
+			}
+			if ts <= last {
+				t.Fatalf("timestamps must be strictly increasing: %d after %d", ts, last)
+			}
+			last = ts
+		}
+	}
+}
+
+// 创建 + 写入的请求形状必须与 dsh-lark 一致（端点/方法/字段名/事件族）。
+func TestFeishuCoT_CreateAndWriteShape(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{
+		TurnID:    7,
+		Phase:     "tool_exec",
+		Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{
+			Name: "Shell", Iteration: 1, Status: "running", Label: "ls -la", Args: `{"command":"ls -la"}`,
+		}},
+		CompletedTools: []protocol.ToolProgress{{
+			Name: "Read", Iteration: 1, Status: "done", Detail: "hello world",
+		}},
+	})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	if len(*calls) < 2 {
+		t.Fatalf("expected create + write calls, got %d", len(*calls))
+	}
+
+	create := (*calls)[0]
+	if create.Method != "POST" || !strings.Contains(create.Path, feishuCotAPI) || !strings.Contains(create.Path, "receive_id_type=chat_id") {
+		t.Fatalf("create request shape wrong: %s %s", create.Method, create.Path)
+	}
+	for k, want := range map[string]any{
+		"receive_id":        "chat_1",
+		"origin_message_id": "om_parent",
+		"cot_hidden":        false,
+		"enable_badge":      false,
+		"update_feed_rank":  false,
+	} {
+		if got := create.Body[k]; got != want {
+			t.Fatalf("create body[%s] = %v, want %v", k, got, want)
+		}
+	}
+
+	write := (*calls)[1]
+	if write.Method != "PUT" || write.Path != feishuCotAPI {
+		t.Fatalf("write request shape wrong: %s %s", write.Method, write.Path)
+	}
+	if write.Body["cot_id"] != "cot-1" || write.Body["message_id"] != "om-cot-1" {
+		t.Fatalf("write body must carry cot_id/message_id: %v", write.Body)
+	}
+
+	got := strings.Join(eventTypes(t, calls), ",")
+	want := "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,RUN_FINISHED"
+	if got != want {
+		t.Fatalf("event sequence = %s, want %s", got, want)
+	}
+	assertTimestampsIncreasing(t, calls)
+
+	// 工具图标词表（dsh-lark: read/write/search/bash）+ 结果按 code block
+	for _, e := range (*calls)[1].Events {
+		if e["event_type"] == "TOOL_CALL_START" {
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(e["content"].(string)), &payload); err != nil {
+				t.Fatalf("TOOL_CALL_START content must be JSON: %v", err)
+			}
+			if payload["icon"] != "bash" {
+				t.Fatalf("Shell icon = %v, want bash", payload["icon"])
+			}
+		}
+		if e["event_type"] == "TOOL_CALL_RESULT" {
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			content, _ := payload["content"].(map[string]any)
+			if content["type"] != "code" {
+				t.Fatalf("tool result must be a code block, got %v", payload["content"])
+			}
+		}
+	}
+}
+
+// 事件 content 超 4096 字符必须 rune 安全截断并显式标记（绝不静默丢内容）。
+func TestFeishuCoT_EventContentTruncated(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	c.emit("TOOL_CALL_ARGS", map[string]any{"delta": strings.Repeat("中", cotMaxEventContentChars+500)})
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			content := e["content"].(string)
+			if n := len([]rune(content)); n > cotMaxEventContentChars {
+				t.Fatalf("event content %d runes > %d", n, cotMaxEventContentChars)
+			}
+			if !strings.Contains(content, "truncated") {
+				t.Fatalf("oversized event must carry the truncated marker: %s", content[:60])
+			}
+		}
+	}
+}
+
+// 全量推送 ⇒ 只写增量（否则思考区把整段推理重复 N 遍）。
+func TestFeishuCoTRenderer_ReasoningDeltas(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 3, Phase: "iteration", Iteration: 1})
+	r.onStreamContent("", "推理")
+	r.onStreamContent("", "推理一步")
+	r.onStreamContent("", "推理一步一步")
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	var joined strings.Builder
+	types := eventTypes(t, calls)
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
+				continue
+			}
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			joined.WriteString(payload["delta"].(string))
+		}
+	}
+	if joined.String() != "推理一步一步" {
+		t.Fatalf("reasoning deltas concatenate to %q, want the full text exactly once", joined.String())
+	}
+	if !strings.Contains(strings.Join(types, ","), "REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT") {
+		t.Fatalf("missing reasoning lifecycle: %v", types)
+	}
+}
+
+// 工具结果按 dsh-lark 的 1500 字符上限截断（rune 安全）。
+func TestFeishuCoTRenderer_ToolResultBounded(t *testing.T) {
+	if got := cotBoundResult(strings.Repeat("x", 2000)); len([]rune(got)) != cotMaxToolResultRunes+1 {
+		t.Fatalf("bounded result length = %d, want %d", len([]rune(got)), cotMaxToolResultRunes+1)
+	}
+	if got := cotBoundResult("short"); got != "short" {
+		t.Fatalf("short result must pass through, got %q", got)
+	}
+	// 中文按 rune 截断（绝不切碎 UTF-8）。
+	if got := cotBoundResult(strings.Repeat("中", 2000)); !strings.HasSuffix(got, "…") || len([]rune(got)) != cotMaxToolResultRunes+1 {
+		t.Fatalf("rune-safe truncation failed: %d runes", len([]rune(got)))
+	}
+}
+
+func TestCotDelta(t *testing.T) {
+	cases := []struct{ prev, acc, want string }{
+		{"", "abc", "abc"},
+		{"abc", "abcdef", "def"},
+		{"abc", "abc", ""},
+		{"abc", "ab", "ab"},   // 回退：整段补
+		{"abc", "xyz", "xyz"}, // 改写：整段补
+	}
+	for _, c := range cases {
+		if got := cotDelta(c.prev, c.acc); got != c.want {
+			t.Fatalf("cotDelta(%q,%q) = %q, want %q", c.prev, c.acc, got, c.want)
+		}
+	}
+}
+
+// 工具名 → dsh-lark 图标词表。
+func TestCotToolKind(t *testing.T) {
+	cases := map[string]string{
+		"Shell": "bash", "Read": "read", "FileReplace": "write", "FileCreate": "write",
+		"Grep": "search", "Glob": "search", "Fetch": "search", "WebSearch": "search",
+		"SubAgent": "",
+	}
+	for name, want := range cases {
+		if got := cotToolKind(name); got != want {
+			t.Fatalf("cotToolKind(%q) = %q, want %q", name, got, want)
+		}
+	}
+	if got := cotToolIcon("SubAgent"); got != "default" {
+		t.Fatalf("unknown tool icon = %q, want default", got)
+	}
+}
+
+// 创建失败 ⇒ 标记 broken，调用方据此回落卡片（答案从不依赖思考过程）。
+func TestFeishuCoT_CreateFailureMarksBroken(t *testing.T) {
+	c := newFeishuCoT(nil, "chat_1", "", false)
+	c.request = func(_ context.Context, _ string, _ string, _ any) (*larkcore.ApiResp, error) {
+		return nil, cotError("boom")
+	}
+	c.emit("RUN_STARTED", map[string]any{"threadId": "chat_1"})
+	if err := c.flushNow(); err == nil {
+		t.Fatal("expected create failure")
+	}
+	if !c.brokenNow() {
+		t.Fatal("create failure must mark the CoT broken (caller falls back to the card)")
+	}
+}
