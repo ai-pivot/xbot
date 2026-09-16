@@ -11,6 +11,7 @@ import (
 
 	"xbot/bus"
 	"xbot/llm"
+	log "xbot/logger"
 )
 
 // SendMessageTool sends a message to any addressable target.
@@ -148,6 +149,29 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 		defer cancel()
 		detached.Ctx = rCtx
 		reply, err := sendMessageWithCtx(&detached, addr, "", message)
+		// ── P0（2026-09-16 用户报告：subagent 用 `agent:recov-e8e9/ws` 发消息失败）──
+		// agent 地址是**作为频道名**投递的，而 `agent:<role>/<instance>` 频道只在
+		// "同进程 spawn 且未卸载"期间存在（tools/subagent.go 注册/unload 注销、TTL
+		// 淘汰）⇒ 查不到时 dispatcher 只回 `unknown channel: agent:…`，对调用方毫无
+		// 指向性。这里补两件事：
+		//   ① role/instance 写反是常见笔误 → 用**颠倒地址**再投一次（仅当确为两段式）；
+		//   ② 仍失败 → 把错误翻译成可操作指引（而不是让模型自己猜）。
+		if err != nil && isUnknownAgentChannelErr(err) {
+			if swapped := swapAgentAddress(addr); swapped != "" {
+				if r2, err2 := sendMessageWithCtx(&detached, swapped, "", message); err2 == nil {
+					log.WithFields(log.Fields{"requested": addr, "used": swapped}).
+						Warn("SendMessage: role/instance looked swapped — delivered to the swapped agent address")
+					reply, err = r2, nil
+				}
+			}
+		}
+		if err != nil && isUnknownAgentChannelErr(err) {
+			err = fmt.Errorf("%s 不可达：该 interactive agent 未在本进程注册"+
+				"（interactive agent 仅在其存活期间可寻址；unload 或超时淘汰即注销）。"+
+				"请确认地址形式为 agent:<role>/<instance>（不要颠倒），"+
+				"必要时先用 CreateChat / SubAgent 把它拉起，或改用 session:<key> / peer:<group> 联系。"+
+				"原始错误：%w", addr, err)
+		}
 		outcomeCh <- sendOutcome{reply: reply, err: err}
 	}()
 	select {
@@ -164,6 +188,35 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 			"Message delivered to %s. It is still working, so no reply yet — keep going; any reply arrives asynchronously.",
 			addr)), nil
 	}
+}
+
+// isUnknownAgentChannelErr reports whether err is the Dispatcher's
+// "unknown channel: <name>" failure — i.e. no channel is registered under that
+// name in this process. For `agent:<role>/<instance>` targets that means the
+// interactive agent is not currently alive here (never spawned in this process,
+// unloaded, or TTL-evicted) — see 2026-09-16 user report.
+func isUnknownAgentChannelErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "unknown channel")
+}
+
+// swapAgentAddress rewrites `agent:<a>/<b>` into `agent:<b>/<a>`. Models
+// (and humans) routinely mix up role and instance — the reported failure was
+// `agent:recov-e8e9/ws`, where "recov-e8e9" reads like an instance and "ws" like
+// a role. Returns "" when the address is not a two-segment `agent:` address
+// (nothing to swap) or the segments are identical.
+func swapAgentAddress(addr string) string {
+	rest, ok := strings.CutPrefix(addr, "agent:")
+	if !ok {
+		return ""
+	}
+	role, instance, ok := strings.Cut(rest, "/")
+	if !ok || role == "" || instance == "" || role == instance {
+		return ""
+	}
+	return "agent:" + instance + "/" + role
 }
 
 // isInGroup checks if addr is a member of the caller's group.

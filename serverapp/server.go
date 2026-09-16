@@ -353,6 +353,26 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 					webCh.SetOSSProvider(s3Provider)
 					log.Info("OSS provider configured: s3")
 				}
+			default:
+				// ── 默认本地 static（2026-09-16 用户要求）────────────────────────────
+				// 未配置 oss.provider（空串）或写了未知值时，回落到**本地磁盘存储**：
+				//   · 上传写 <xbotHome>/uploads/<key>（channel/web.handleLocalUpload）
+				//   · 取图由同源 /api/files/download 读盘返回（serveLocalFile）
+				//   · 多模态解析器走同一根目录读盘（image_resolver 的 ?key= 分支）
+				// 免配置即可用 —— 不再 503 "file storage not configured"。
+				localProvider, lerr := web.NewOSSProvider("local", web.LocalUploadRoot(config.XbotHome()))
+				if lerr != nil {
+					log.WithError(lerr).Error("Failed to create local storage provider")
+				} else {
+					imgProvider = localProvider
+					webCh.SetOSSProvider(localProvider)
+					if cfg.OSS.Provider == "" {
+						log.Info("Storage provider: local static (default — no oss.provider configured)")
+					} else {
+						log.WithField("provider", cfg.OSS.Provider).
+							Warn("Unknown oss.provider — falling back to local static storage")
+					}
+				}
 			}
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
 			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
