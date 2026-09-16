@@ -760,6 +760,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
               type="button"
               variant="ghost"
               size="icon-sm"
+              data-testid="goal-mode-toggle"
               aria-label={t('agent.goalModeAria')}
               onClick={() => setGoalMode((v) => !v)}
               className={cn(

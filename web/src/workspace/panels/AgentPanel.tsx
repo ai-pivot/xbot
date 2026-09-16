@@ -169,18 +169,10 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       // 回填服务端 turn_id/queued。
       if (info?.requestID) {
         ackUserRef.current(info.requestID, info.turnID, info.queued)
-        // /goal 已投递成功 —— 乐观目标不再需要失败回滚。
-        if (optimisticGoalRidRef.current === info.requestID) optimisticGoalRidRef.current = null
       }
     },
     onSendFail: (requestID) => {
       failUserRef.current(requestID)
-      // /goal 命令发送失败 → 回滚乐观目标（CR：否则 banner 永久显示一个服务端
-      // 并不存在的目标 —— store 的 goal 始终是旧值，覆盖永不清除）。
-      if (optimisticGoalRidRef.current === requestID) {
-        optimisticGoalRidRef.current = null
-        goalEditRef.current.discard()
-      }
     },
     onCancelSuccess: () => {
       // Optimistically mark the session as idle so the UI exits busy
@@ -473,9 +465,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   goalEditRef.current = goalEdit
   const todosEditRef = useRef(todosEdit)
   todosEditRef.current = todosEdit
-  // /goal 命令的乐观目标对应的 requestID —— 发送失败时回滚（CR：否则 banner 会
-  // 永久显示一个服务端并不存在的目标）。
-  const optimisticGoalRidRef = useRef<string | null>(null)
   // Busy state: sessionStore.running is the primary source (same source the
   // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
   // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
@@ -599,16 +588,11 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     // ⚡ Interject mode: skip optimistic rendering (no user row — the message
     // appears inside the active turn as a user_interrupt tool via SSE).
     const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    // Detect /goal command and optimistically show the new goal (frontend-only;
-    // 后端 push 到达即收敛让位 —— 见 usePendingEdit)。发送失败由 onSendFail 回滚。
-    if (content.startsWith('/goal ') && !content.startsWith('/goal status') && !content.startsWith('/goal clear')) {
-      const objective = content.slice(6).trim()
-      if (objective) {
-        const seq = goalEditRef.current.begin()
-        goalEditRef.current.commit({ objective, status: 'active' }, seq)
-        optimisticGoalRidRef.current = rid
-      }
-    }
+    // ⚠️ 这里**不得**乐观设置 goal（2026-09-16 用户报告）：goal 按钮的语义只是把
+    // 消息加上 `/goal ` 前缀 —— 消息排队时 goal 并没有生效。goal 只能在后端 pop
+    // 该消息并真正执行 `/goal` 之后设置（后端 push / getGoal 回读收敛）。此前在
+    // 发送瞬间就写入乐观覆盖 ⇒ 排队期间 banner 已显示新目标（用户："排队的 goal
+    // 应该 pop 之后才设置"）。
     if (!interrupt) {
       sendUserRef.current(content, rid)
     }
