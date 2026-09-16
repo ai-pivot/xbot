@@ -130,18 +130,21 @@ func (a *Agent) IsProcessingByChannel(ch, chatID string) bool {
 }
 
 // HasPendingAskUserFast reports whether the session has a pending AskUser
-// prompt, checking ONLY the in-memory waitingUserSessions registry (no DB
-// Replay fallback — loadPendingAskUserEntry's Replay is far too expensive to
-// call per session-tree row). Used by the session tree to mark waiting_input
-// rows so the sidebar and the panel agree during a WaitingUser pause:
-// chatCancelCh is already deregistered there, so IsProcessingByChannel reports
-// false and the sidebar showed idle while the panel showed busy.
+// prompt, using the SAME authoritative path as GetPendingAskUser: the
+// in-memory entry is validated against the persisted ask_question/ask_answer
+// records, and a memory miss probes the DB first (one O(1) indexed lookup via
+// idx_sm_tenant_record; the expensive Replay only runs when the DB says a
+// question is genuinely pending). Both entry points therefore always agree.
+// Used by the session tree to mark waiting_input rows so the sidebar and the
+// panel agree during a WaitingUser pause: chatCancelCh is already deregistered
+// there, so IsProcessingByChannel reports false and the sidebar would
+// otherwise show idle while the panel is waiting for an answer.
 func (a *Agent) HasPendingAskUserFast(ch, chatID string) bool {
 	if ch == "" || chatID == "" {
 		return false
 	}
-	_, ok := a.waitingUserSessions.Load(qualifyChatID(ch, chatID))
-	return ok
+	_, entry := a.loadPendingAskUserEntry(ch, chatID)
+	return entry != nil
 }
 
 // GetActiveProgress returns the latest progress snapshot for the given channel:chatID.

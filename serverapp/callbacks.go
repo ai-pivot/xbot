@@ -995,13 +995,12 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 		if row.Running {
 			row.Status = "running"
 		} else if ag.HasPendingAskUserFast(ch, chatID) {
-			// WaitingUser: the turn is paused for an AskUser answer. The pause
-			// intentionally keeps ss.busy + lastProgressSnapshot (for reconnect
-			// recovery) but chatCancelCh is already deregistered, so
-			// IsProcessingByChannel reports false — without this branch the
-			// sidebar shows idle while the panel shows busy (two state sources
-			// disagreeing after a page refresh).
-			row.Running = true
+			// waiting_input: the turn is paused for an AskUser answer — the
+			// session is NOT running (busy ⇔ iterating; the WaitingUser pause
+			// keeps lastProgressSnapshot for reconnect recovery but processes
+			// nothing). Report Status="waiting_input" WITHOUT claiming
+			// running, so the sidebar renders the distinct waiting state
+			// instead of a fake busy row.
 			row.Status = "waiting_input"
 		} else if row.Status == "" {
 			row.Status = "idle"

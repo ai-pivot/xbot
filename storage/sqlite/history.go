@@ -1401,6 +1401,39 @@ func latestCheckpointWith(queryer historyQueryer, tenantID int64) (HistoryRecord
 	return HistoryRecord{}, false, nil
 }
 
+// LatestAskControlRecord returns the newest AskUser control record
+// (ask_question / ask_answer) for a tenant, or (0, "", nil) when the tenant
+// has none. The query is served by the partial index idx_sm_tenant_record
+// (only non-'message' rows are indexed) with LIMIT 1 — no full replay.
+//
+// It is the persisted authority for the pending-AskUser state: latest
+// record ask_question => the prompt is still pending; ask_answer => the
+// prompt has been resolved and any in-memory or client-side copy is stale.
+func (s *SessionService) LatestAskControlRecord(tenantID int64) (int64, HistoryRecordType, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return 0, "", err
+	}
+	var (
+		id         int64
+		recordType string
+	)
+	err = conn.QueryRow(`
+		SELECT id, record_type
+		FROM session_messages
+		WHERE tenant_id = ? AND record_type IN ('ask_question', 'ask_answer')
+		ORDER BY id DESC
+		LIMIT 1
+	`, tenantID).Scan(&id, &recordType)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", fmt.Errorf("query latest ask control record: %w", err)
+	}
+	return id, HistoryRecordType(recordType), nil
+}
+
 func validCheckpointSnapshot(historyID int64, snapshot ContextSnapshot) bool {
 	if snapshot.Version != contextSnapshotVersion || snapshot.Messages == nil || snapshot.HistoryIDs == nil || len(snapshot.Messages) != len(snapshot.HistoryIDs) {
 		return false

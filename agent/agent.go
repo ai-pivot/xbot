@@ -661,6 +661,14 @@ type Agent struct {
 type pendingAskUserEntry struct {
 	mu      sync.RWMutex
 	pending *protocol.ProgressEvent
+	// authRecordID is the id of the persisted ask_question control record
+	// this in-memory copy corresponds to (0 until first validated). The
+	// persisted ask_question/ask_answer records are the SINGLE authority:
+	// an entry the DB has already resolved (ask_answer), or one whose id no
+	// longer matches the latest control record, is stale and gets dropped
+	// instead of resurrecting the prompt (web store / CLI pending files /
+	// Feishu cards must not outlive the DB).
+	authRecordID atomic.Int64
 }
 
 // SetSettingsService sets the SettingsService (for external injection or override).
@@ -975,7 +983,7 @@ func (a *Agent) RewindHistory(channel, chatID string, historyID int64) (protocol
 	a.lastProgressSnapshot.Delete(progressKey)
 	a.iterationHistories.Delete(progressKey)
 	a.clearStreamState(progressKey)
-	a.ClearPendingAskUser(channel, chatID)
+	a.resolvePendingAskUser(channel, chatID, "rewound")
 	if channel == "agent" {
 		a.syncInteractiveSessionAfterRewind(chatID)
 	}
@@ -1177,7 +1185,9 @@ func (a *Agent) ActiveSessionKeys() []string {
 
 // GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 // Used by the web channel to resend ask_user on WS reconnect so refreshing
-// the page doesn't lose the prompt.
+// the page doesn't lose the prompt. The in-memory copy is validated against
+// the persisted ask_question/ask_answer records (the single authority) — see
+// loadPendingAskUserEntry.
 func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
 	var result *protocol.ProgressEvent
 	a.WithPendingAskUser(ch, chatID, func(pending *protocol.ProgressEvent) bool {
@@ -1222,21 +1232,41 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	}
 	key := qualifyChatID(ch, chatID)
 	if value, ok := a.waitingUserSessions.Load(key); ok {
-		return key, value.(*pendingAskUserEntry)
+		entry := value.(*pendingAskUserEntry)
+		// Never trust the in-memory copy blindly: the persisted control
+		// records are the single authority.
+		if !a.pendingAskUserEntryIsAuthoritative(ch, chatID, key, entry) {
+			return key, nil
+		}
+		return key, entry
 	}
-	if a.multiSession != nil {
-		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
-			if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
-				event := &protocol.ProgressEvent{}
-				metadata := replay.PendingAskUser.Metadata
-				event.RequestID = metadata["request_id"]
-				if raw := metadata["ask_questions"]; raw != "" {
-					_ = json.Unmarshal([]byte(raw), &event.Questions)
-				}
-				entry := &pendingAskUserEntry{pending: event}
-				actual, _ := a.waitingUserSessions.LoadOrStore(key, entry)
-				return key, actual.(*pendingAskUserEntry)
+	// Memory miss: probe the persisted control records first (O(1) via the
+	// partial index idx_sm_tenant_record) — a replay is only worth doing when
+	// the DB says a question is genuinely pending. HasPendingAskUserFast runs
+	// this path per session-tree row, so the probe keeps that cheap.
+	id, recordType, available := a.latestAskControlRecordForSession(ch, chatID)
+	if available && recordType != sqlite.HistoryRecordAskQuestion {
+		return key, nil
+	}
+	if a.multiSession == nil {
+		return key, nil
+	}
+	if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
+		if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
+			event := &protocol.ProgressEvent{}
+			metadata := replay.PendingAskUser.Metadata
+			event.RequestID = metadata["request_id"]
+			if raw := metadata["ask_questions"]; raw != "" {
+				_ = json.Unmarshal([]byte(raw), &event.Questions)
 			}
+			entry := &pendingAskUserEntry{pending: event}
+			authID := replay.PendingAskUser.HistoryID
+			if available && id > 0 {
+				authID = id
+			}
+			entry.authRecordID.Store(authID)
+			actual, _ := a.waitingUserSessions.LoadOrStore(key, entry)
+			return key, actual.(*pendingAskUserEntry)
 		}
 	}
 	return key, nil
@@ -1304,6 +1334,150 @@ func (a *Agent) clearPendingAskUserKey(key string) bool {
 	}
 }
 
+// latestAskControlRecordForSession returns the newest persisted AskUser
+// control record (ask_question / ask_answer) for the session's tenant.
+// available=false when there is no DB/session or the probe fails — callers
+// then fall back to trusting the in-memory copy (best effort).
+func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqlite.HistoryRecordType, bool) {
+	if a.multiSession == nil {
+		return 0, "", false
+	}
+	sess, err := a.multiSession.GetOrCreateSession(ch, chatID)
+	if err != nil {
+		return 0, "", false
+	}
+	db := a.multiSession.DB()
+	if db == nil {
+		return 0, "", false
+	}
+	id, recordType, err := sqlite.NewSessionService(db).LatestAskControlRecord(sess.TenantID())
+	if err != nil {
+		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
+			Warn("latestAskControlRecord: query failed, trusting in-memory AskUser state")
+		return 0, "", false
+	}
+	return id, recordType, true
+}
+
+// pendingAskUserEntryIsAuthoritative validates an in-memory pending entry
+// against the persisted control records (the single authority). Only a
+// POSITIVE contradiction drops the entry: the latest record being ask_answer
+// means the DB has resolved the prompt; a non-zero cached id that no longer
+// matches the latest ask_question means the memory copy is for an older
+// question. On a contradiction the exact entry is removed with
+// CompareAndDelete semantics (a concurrently replaced entry is left alone).
+// No control records / probe unavailable => trust the memory copy.
+func (a *Agent) pendingAskUserEntryIsAuthoritative(ch, chatID, key string, entry *pendingAskUserEntry) bool {
+	id, recordType, available := a.latestAskControlRecordForSession(ch, chatID)
+	if !available {
+		return true
+	}
+	if recordType == sqlite.HistoryRecordAskAnswer {
+		a.dropPendingAskUserEntry(key, entry)
+		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID, "answer_record_id": id}).
+			Info("Dropped stale in-memory pending AskUser: persisted ask_answer is newer")
+		return false
+	}
+	if recordType != sqlite.HistoryRecordAskQuestion {
+		// No ask control record at all — no contradiction, trust memory.
+		return true
+	}
+	cached := entry.authRecordID.Load()
+	if cached != 0 && cached != id {
+		a.dropPendingAskUserEntry(key, entry)
+		log.WithFields(log.Fields{
+			"channel": ch, "chat_id": chatID,
+			"cached_record_id": cached, "authoritative_record_id": id,
+		}).Info("Dropped stale in-memory pending AskUser: authoritative question id mismatch")
+		return false
+	}
+	if cached == 0 {
+		entry.authRecordID.CompareAndSwap(0, id)
+	}
+	return true
+}
+
+// dropPendingAskUserEntry removes exactly the given entry from the pending
+// registry (CompareAndDelete semantics, cf. clearPendingAskUserKey). A
+// concurrently replaced entry is left untouched. Returns true when the entry
+// still held a pending prompt.
+func (a *Agent) dropPendingAskUserEntry(key string, entry *pendingAskUserEntry) bool {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	current, ok := a.waitingUserSessions.Load(key)
+	if !ok || current != entry {
+		return false
+	}
+	cleared := entry.pending != nil
+	entry.pending = nil
+	a.waitingUserSessions.CompareAndDelete(key, entry)
+	return cleared
+}
+
+// resolvePendingAskUser is the single funnel for "a pending AskUser prompt
+// stopped being pending". It (1) removes the in-memory pending entry and
+// (2) broadcasts protocol.AskUserResolvedEvent to EVERY registered channel
+// implementing channel.AskUserResolvedSender, so client-side prompt copies
+// (web store, CLI pending files, Feishu cards) collapse immediately. The
+// persisted ask_question/ask_answer records stay the single authority; the
+// event is only the invalidation hint (delivery is repeat-safe).
+// Returns true when an in-memory entry was actually cleared.
+// reason: "answered" | "cancelled" | "rewound" | "cleared".
+func (a *Agent) resolvePendingAskUser(ch, chatID, reason string) bool {
+	requestID := ""
+	if ch != "" && chatID != "" {
+		if value, ok := a.waitingUserSessions.Load(qualifyChatID(ch, chatID)); ok {
+			entry := value.(*pendingAskUserEntry)
+			entry.mu.RLock()
+			if entry.pending != nil {
+				requestID = entry.pending.RequestID
+			}
+			entry.mu.RUnlock()
+		}
+	}
+	cleared := a.clearPendingAskUser(ch, chatID)
+	a.broadcastAskUserResolved(ch, chatID, requestID, reason)
+	return cleared
+}
+
+// broadcastAskUserResolved fans the invalidation event out to every channel
+// that implements channel.AskUserResolvedSender — interface existence check,
+// never a hardcoded channel name.
+func (a *Agent) broadcastAskUserResolved(ch, chatID, requestID, reason string) {
+	if a.channelRange == nil {
+		return
+	}
+	ev := protocol.AskUserResolvedEvent{Channel: ch, ChatID: chatID, RequestID: requestID, Reason: reason}
+	a.channelRange(func(_ string, c channel.Channel) bool {
+		if sender, ok := c.(channel.AskUserResolvedSender); ok {
+			sender.SendAskUserResolved(ev)
+		}
+		return true
+	})
+}
+
+// autoResolveStalePendingAskUser closes the "busy ⇒ no pending" invariant:
+// a turn is starting while the session still has a pending AskUser prompt
+// (the user moved on with a new message, or a stale entry survived a race).
+// The DB pairing (ask_answer "[cancelled]") is written FIRST so the persisted
+// state no longer shows a pending question — otherwise Replay would
+// resurrect the prompt on the next reconnect. Then memory + clients are
+// invalidated via resolvePendingAskUser("cancelled").
+func (a *Agent) autoResolveStalePendingAskUser(ch, chatID string) {
+	if !a.HasPendingAskUserFast(ch, chatID) {
+		return
+	}
+	if a.multiSession != nil {
+		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
+			if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+				log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
+					Warn("Failed to append ask_answer pairing for auto-cancelled AskUser")
+			}
+		}
+	}
+	a.resolvePendingAskUser(ch, chatID, "cancelled")
+}
+
 func clonePendingAskUser(pending *protocol.ProgressEvent) *protocol.ProgressEvent {
 	if pending == nil {
 		return nil
@@ -1325,12 +1499,6 @@ func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
 	}
 }
 
-func (a *Agent) clearPendingAskUserForEnqueuedAnswer(msg bus.InboundMessage) {
-	if msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true" {
-		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
-	}
-}
-
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	cancelKey := msg.Channel + ":" + msg.ChatID
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
@@ -1348,7 +1516,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		}
 		// A prompt may have been stored just before the active Run returned.
 		// Clear it, but never replace the active cancellation with an early ack.
-		a.clearPendingAskUser(msg.Channel, msg.ChatID)
+		a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled")
 		// Persist ask_answer to invalidate the pending ask_question record.
 		// Without this, Replay() finds an unanswered ask_question on reload
 		// and restores the AskUser prompt. The wasCancelled path (line ~2927)
@@ -1371,7 +1539,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		}
 		return
 	}
-	if a.clearPendingAskUser(msg.Channel, msg.ChatID) {
+	if a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled") {
 		// Persist ask_answer to invalidate the pending ask_question record.
 		// Without this, Replay() finds an unanswered ask_question on reload
 		// and restores the AskUser prompt — the user sees it again after
@@ -2633,8 +2801,11 @@ func (a *Agent) Run(ctx context.Context) error {
 				// turn id directly without waiting for turn_started (which
 				// may be lost/coalesced in SSE). If a message somehow never
 				// reaches the chatWorker (ctx cancel), the transport's own
-				// ctx/timeout will unblock the request.
-				a.clearPendingAskUserForEnqueuedAnswer(msg)
+				// ctx/timeout will unblock the request.				// The pending AskUser entry is NOT cleared here on purpose: the
+				// answer is only real once its ask_answer record is persisted
+				// (processMessage → resolvePendingAskUser "answered"). Clearing
+				// at enqueue meant a crash or a dropped queued message left the
+				// DB pending → the prompt resurrected on reconnect.
 			default:
 				acknowledgeInboundDelivery(msg, bus.DeliveryResult{Err: bus.ErrInboundQueueFull})
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
@@ -2988,13 +3159,21 @@ func (a *Agent) resolveResumeTurnID(channel, chatID string) uint64 {
 }
 
 func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
-	// bg notification arrived — drain and process ONLY when chatProcessLoop is idle.
-	// When busy, notifications stay in bgRunPending for chatProcessLoop's
-	// post-turn drain to pick up (guaranteed after response is sent).
+	// bg notification arrived — drain and process ONLY when chatProcessLoop is
+	// idle. While iterating (busy) or waiting for an AskUser answer (pending
+	// prompt — the WaitingUser pause runs with busy=false on purpose),
+	// notifications stay in bgRunPending for chatProcessLoop's post-turn
+	// drain to pick up (guaranteed after the answering turn's response).
 
-	if !ss.busy.Load() {
-		a.drainAndProcessNotifications(chatKey)
+	if ss.busy.Load() {
+		return
 	}
+	if parts := strings.SplitN(chatKey, ":", 2); len(parts) == 2 {
+		if a.HasPendingAskUserFast(parts[0], parts[1]) {
+			return
+		}
+	}
+	a.drainAndProcessNotifications(chatKey)
 }
 
 // restoreTurnIDSeq restores the per-session turn ID counter from DB so it
@@ -3069,6 +3248,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 同步 worktree registry：该 session 正在迭代中（peer 协作提示依据，
 			// busy/idle = 是否在迭代中，而非时间推断）。
 			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), true)
+			// Invariant: busy ⇒ no pending AskUser. A turn starting while the
+			// session still holds a pending prompt means the user moved on (or
+			// a stale entry survived a race) — the prompt is moot and must be
+			// resolved before the new turn runs. The AskUser ANSWER is exempt:
+			// it resolves its own prompt after the ask_answer record lands
+			// (processMessage → resolvePendingAskUser "answered").
+			if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
+				a.autoResolveStalePendingAskUser(msg.Channel, msg.ChatID)
+			}
 
 			// 停止上一次的 idle timer（收到新消息，重置计时）
 			if idleTimer != nil {
@@ -3259,7 +3447,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 						}
 					}
 				}
-				a.ClearPendingAskUser(msg.Channel, msg.ChatID)
+				a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled")
 				// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
 				// Always include cancelled metadata so CLI can distinguish cancel acks
 				// from normal replies and avoid ending a subsequently-started turn.
@@ -3368,9 +3556,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// AskUser panel is showing. The answer message will be dequeued next
 			// and processed as a continuation of this turn.
 			if response != nil && response.WaitingUser {
-				// WaitingUser: turn PAUSED waiting for user input — the session is
-				// NOT iterating. Mark the peer idle for collaboration hints
-				// (ss.busy stays true for chatWorker notification-drain semantics).
+				// WaitingUser: the turn is PAUSED waiting for the user's answer —
+				// the session is NOT iterating, so it is NOT busy (busy ⇔
+				// iterating; waiting_input is surfaced from the pending prompt by
+				// applyWebRunningStatus, not from ss.busy). The anti-drain
+				// property is preserved by handleBgNotifySignal's pending check,
+				// not by busy.
+				ss.busy.Store(false)
 				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
@@ -3559,7 +3751,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			return nil, fmt.Errorf("append AskUser answer: %w", askErr)
 		}
 		_ = answerHistoryID
-		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
+		// The ask_answer record is now durably persisted — only NOW is the
+		// prompt truly resolved. Clear memory + broadcast ask_user_resolved
+		// ("answered") so every client drops its cached prompt copy.
+		a.resolvePendingAskUser(msg.Channel, msg.ChatID, "answered")
 		// Remove last user message appended by Assemble
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages = messages[:len(messages)-1]
