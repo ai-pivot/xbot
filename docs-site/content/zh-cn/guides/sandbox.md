@@ -11,8 +11,8 @@ xbot 支持多种沙箱模式，控制 Agent 执行 Shell 命令时的隔离级�
 
 | 模式 | 说明 | 适合 |
 |------|------|------|
-| `none` | 无隔离，直接在本机执行 | 个人开发机、Docker 内部 |
-| `docker` | 每个用户一个隔离 Docker 容器 | 多用户服务器 |
+| `none` | 无隔离，直接在本机执行（**默认**） | 个人开发机 |
+| `remote` | 通过 Runner（`xbot-runner`）在你的机器上执行 | 需要隔离 / 多机 |
 
 ## 配置
 
@@ -32,10 +32,8 @@ xbot 支持多种沙箱模式，控制 Agent 执行 Shell 命令时的隔离级�
 
 ```go
 type SandboxConfig struct {
-    Mode        string   `json:"mode"`         // 沙箱模式："none" 或 "docker"
-    RemoteMode  string   `json:"remote_mode"`  // 远程沙箱模式
-    DockerImage string   `json:"docker_image"` // Docker 镜像名
-    HostWorkDir string   `json:"host_work_dir"`// 宿主机工作目录，映射到容器内
+    Mode        string   `json:"mode"`         // 沙箱模式："none"（默认）或 "remote"
+    RemoteMode  string   `json:"remote_mode"`  // 远程沙箱模式（非空 ⇒ 启用 Runner 接入）
     IdleTimeout Duration `json:"idle_timeout"` // 空闲超时，超时后自动销毁
     WSPort      int      `json:"ws_port"`      // 远程沙箱 WebSocket 端口
     AuthToken   string   `json:"auth_token"`   // Runner 认证 Token
@@ -47,10 +45,8 @@ type SandboxConfig struct {
 |------|--------|------|
 | `mode` | `"docker"` | 沙箱模式：`"none"` 或 `"docker"` |
 | `remote_mode` | `""` | 远程沙箱模式 |
-| `docker_image` | `"ubuntu:22.04"` | 容器使用的 Docker 镜像 |
-| `host_work_dir` | `""` | 映射到容器内的宿主机目录 |
-| `idle_timeout` | `"30m"` | 空闲超时（`0` = 永不自动销毁） |
-| `ws_port` | `8080` | 远程沙箱 WebSocket 连接端口 |
+| `mode` | `"none"` | 沙箱模式：`"none"` 或 `"remote"` |
+| `remote_mode` | `""` | 远程沙箱模式（非空 ⇒ 启用 Runner 接入） |
 | `auth_token` | `""` | Runner 共享认证 Token |
 | `public_url` | `""` | Runner 用于连接的公开 URL |
 
@@ -70,34 +66,10 @@ type SandboxConfig struct {
 **无隔离意味着 Agent 可以执行你当前用户有权限执行的所有命令。** 请确保你信任 Agent 的行为。在共享服务器或生产环境中请使用沙箱模式。
 {{< /hint >}}
 
-### docker 模式
+### 远程沙箱（推荐的隔离方式）
 
-每个用户获得一个独立的 Docker 容器，文件系统持久化。
-
-**前置条件：**
-
-```bash
-# 安装 Docker
-sudo apt-get update && sudo apt-get install -y docker.io
-sudo systemctl start docker && sudo systemctl enable docker
-sudo usermod -aG docker $USER  # 需要重新登录
-```
-
-**配置：**
-
-```json
-{
-  "sandbox": {
-    "mode": "docker",
-    "docker_image": "ubuntu:22.04",
-    "host_work_dir": "/home/user/projects",
-    "idle_timeout": "30m"
-  }
-}
-```
-
-{{< hint type=note >}}
-**容器生命周期**：Docker 容器在空闲超时触发时会被**停止**（而非删除），下次会话可以复用。路径转换使用 DinD（Docker-in-Docker）模式。
+{{< hint type=warning >}}
+**本地 Docker 沙箱已于 2026-09-16 整体移除**（沙箱统一走 Runner 接入）。需要隔离时请用下一节的远程 Runner —— 命令在**你自己的机器**上执行，服务器不再管理容器。默认 `mode` 为 `"none"`（本机直连）。
 {{< /hint >}}
 
 ### 远程沙箱
@@ -116,7 +88,7 @@ sudo usermod -aG docker $USER  # 需要重新登录
 ```json
 {
   "sandbox": {
-    "mode": "docker",
+    "remote_mode": "remote",
     "auth_token": "your-secure-token",
     "ws_port": 8080,
     "public_url": "ws://your-server.com:8080"
@@ -134,9 +106,8 @@ xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name 
 
 | `active_runner` 值 | 使用的沙箱 |
 |---------------------|------------|
-| `"__docker__"` | DockerSandbox（若已启用） |
 | 具体 Runner 名称 | 对应的 RemoteSandbox（若已连接） |
-| 回退 | Remote → Docker → None |
+| 回退 | Remote → None（本地直连） |
 
 {{< hint type=tip >}}
 **多 Runner 支持**：多个 Runner 可以同时连接，每个拥有独立的名称和 Token。用户通过设置面板（`/settings`）选择自己的活跃 Runner。这支持多用户场景，每个用户在自己的机器上执行命令。
@@ -147,7 +118,7 @@ xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name 
 `SandboxRouter`（`tools/sandbox_router.go`）是统一的沙箱入口。它根据每个用户的配置将执行请求路由到不同后端：
 
 - 同时实现 `Sandbox` 和 `SandboxResolver` 接口
-- 支持双模式：同时持有 Docker 和 Remote 实例
+- 仅两种后端：Remote（Runner）与 None（本地直连；默认）
 - 按用户独立路由——不同用户可以使用不同后端
 - Runner 选择可通过设置面板按用户配置
 

@@ -84,8 +84,6 @@ type OAuthConfig struct {
 type SandboxConfig struct {
 	Mode        string   `json:"mode"`
 	RemoteMode  string   `json:"remote_mode"`
-	DockerImage string   `json:"docker_image"`
-	HostWorkDir string   `json:"host_work_dir"`
 	IdleTimeout Duration `json:"idle_timeout"`
 	WSPort      int      `json:"ws_port"`
 	AuthToken   string   `json:"auth_token"`
@@ -991,8 +989,6 @@ func applyEnvOverrides(cfg *Config) {
 	// Sandbox
 	setStringEnv("SANDBOX_MODE", &cfg.Sandbox.Mode)
 	setStringEnv("SANDBOX_REMOTE_MODE", &cfg.Sandbox.RemoteMode)
-	setStringEnv("SANDBOX_DOCKER_IMAGE", &cfg.Sandbox.DockerImage)
-	setStringEnv("HOST_WORK_DIR", &cfg.Sandbox.HostWorkDir)
 	// SANDBOX_IDLE_TIMEOUT_MINUTES: minutes → Duration — keep inline
 	if v := os.Getenv("SANDBOX_IDLE_TIMEOUT_MINUTES"); v != "" {
 		if min, err := strconv.Atoi(v); err == nil {
@@ -1155,9 +1151,6 @@ func Load() *Config {
 	}
 	if cfg.Sandbox.IdleTimeout == 0 {
 		cfg.Sandbox.IdleTimeout = 30 * Minute
-	}
-	if cfg.Sandbox.DockerImage == "" {
-		cfg.Sandbox.DockerImage = "ubuntu:22.04"
 	}
 	if cfg.Sandbox.WSPort == 0 {
 		cfg.Sandbox.WSPort = 8080

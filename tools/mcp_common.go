@@ -366,21 +366,6 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 
 	var execCmd *exec.Cmd
 	switch sandbox.Name() {
-	case "docker":
-		shell, err := sandbox.GetShell(userID, workspaceRoot)
-		if err != nil {
-			return nil, fmt.Errorf("get shell for MCP: %w", err)
-		}
-		shellCmd := "exec " + shellQuoteCmd(cfg.Command, cfg.Args)
-		if ds, ok := sandbox.(*DockerSandbox); ok {
-			cmdName, cmdArgs, err := ds.Wrap(shell, []string{"-l", "-c", shellCmd}, envList, workspaceRoot, userID)
-			if err != nil {
-				return nil, err
-			}
-			execCmd = exec.Command(cmdName, cmdArgs...)
-		} else {
-			return nil, fmt.Errorf("MCP stdio not supported in %s mode", sandbox.Name())
-		}
 	case "remote":
 		rs, ok := sandbox.(*RemoteSandbox)
 		if !ok {

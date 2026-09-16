@@ -430,7 +430,7 @@ func (rs *RemoteSandbox) getRunnerForSession(userID, sessionKey string) (*runner
 		}
 	}
 	if runnerName == "" && rs.tokenStore != nil {
-		if name, err := rs.tokenStore.GetActiveRunner(userID); err == nil && name != "" && name != BuiltinDockerRunnerName {
+		if name, err := rs.tokenStore.GetActiveRunner(userID); err == nil && name != "" {
 			runnerName = name
 		}
 	}
@@ -688,7 +688,6 @@ func (rs *RemoteSandbox) DisconnectRunner(userID, runnerName string) bool {
 	return true
 }
 
-func (rs *RemoteSandbox) IsExporting(_ string) bool      { return false }
 func (rs *RemoteSandbox) ExportAndImport(_ string) error { return nil }
 func (rs *RemoteSandbox) GetShell(userID string, _ string) (string, error) {
 	rc, err := rs.getRunner(userID)

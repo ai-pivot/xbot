@@ -123,14 +123,14 @@ func TestManageTools_WritePathByChannel(t *testing.T) {
 		}
 	})
 
-	t.Run("cli_docker_sandbox_writes_user_path", func(t *testing.T) {
+	t.Run("cli_with_sandbox_enabled_writes_global_path", func(t *testing.T) {
 		tempDir := t.TempDir()
 		globalPath := filepath.Join(tempDir, "xbotHome", "mcp.json")
 		userPath := filepath.Join(tempDir, "users", "cli_user", "mcp.json")
 
 		tool := NewManageTools(tempDir, globalPath)
-		// Docker sandbox: CLI channel but sandbox is enabled, so should still
-		// write to global (CLI always writes to global regardless of sandbox)
+		// CLI channel with sandbox enabled: CLI always writes to the global
+		// MCP config regardless of sandbox mode.
 		ctx := &ToolContext{
 			Registry:            NewRegistry(),
 			Channel:             "cli",
@@ -142,9 +142,9 @@ func TestManageTools_WritePathByChannel(t *testing.T) {
 
 		input, _ := json.Marshal(manageToolsArgs{
 			Action:       "add_mcp",
-			Name:         "cli-docker",
+			Name:         "cli-sandboxed",
 			MCPConfig:    `{"url":"http://example.com/mcp"}`,
-			Instructions: "docker sandbox test",
+			Instructions: "sandbox enabled test",
 		})
 		if _, err := tool.Execute(ctx, string(input)); err != nil {
 			t.Fatalf("add_mcp failed: %v", err)
@@ -157,8 +157,8 @@ func TestManageTools_WritePathByChannel(t *testing.T) {
 		data, _ := os.ReadFile(globalPath)
 		var cfg MCPConfig
 		json.Unmarshal(data, &cfg)
-		if _, ok := cfg.MCPServers["cli-docker"]; !ok {
-			t.Fatal("cli-docker not found in global config")
+		if _, ok := cfg.MCPServers["cli-sandboxed"]; !ok {
+			t.Fatal("cli-sandboxed not found in global config")
 		}
 	})
 

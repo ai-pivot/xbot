@@ -76,9 +76,11 @@ func (a *Agent) SetCWDForced(ch, chatID, dir string) error {
 }
 
 func (a *Agent) setCWD(ch, chatID, dir string, force bool) error {
-	if a.sandboxMode != "none" {
-		return fmt.Errorf("CWD sync not supported in %s sandbox mode", a.sandboxMode)
-	}
+	// CWD 是**会话级**状态（DB tenants.cwd），与沙箱无关：本机（none）与 runner
+	// （remote）都支持同步。旧代码对任何非 none 模式直接拒绝 —— 而 Agent 在
+	// cfg.SandboxMode 为空时曾把模式写成 "docker"，于是**未配置 sandbox 的部署
+	// 新建会话必失败**（2026-09-16 P0：「CWD sync not supported in docker sandbox
+	// mode」）。本地 docker sandbox 已整体删除，这条拒绝分支不再需要。
 	if a.MultiSession() == nil {
 		return ErrNoSessionManager
 	}

@@ -95,11 +95,6 @@ type SettingsCallbacks struct {
 	// MetricsGet 获取当前运行指标（用于设置页展示）
 	MetricsGet func() string
 
-	// SandboxCleanupTrigger 触发沙箱 export+import 持久化（阻塞直到完成）
-	SandboxCleanupTrigger func(senderID string) error
-	// SandboxIsExporting 检查用户是否正在进行 export+import
-	SandboxIsExporting func(senderID string) bool
-
 	// Model tier get/set (per-user config, stored in user_settings DB)
 	// LLMGetModelTier returns the current (subID, model) mapping for a tier
 	// ("vanguard"/"balance"/"swift") for the given user. subID may be empty

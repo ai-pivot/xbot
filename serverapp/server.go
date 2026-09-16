@@ -983,8 +983,7 @@ func Run(args []string) error {
 		ag.Close()
 	}
 
-	// 关闭沙箱（清理 Docker 容器等资源）
-	// export/import 可能耗时较长（大容器数分钟），不设超时，必须等待完成。
+	// 关闭沙箱（释放 runner 连接等资源）。
 	if sandbox := tools.GetSandbox(); sandbox != nil {
 		if err := sandbox.Close(); err != nil {
 			log.WithError(err).Warn("Sandbox close error")

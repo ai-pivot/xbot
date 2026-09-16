@@ -75,7 +75,6 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 				return nil, err
 			}
 			populateRunnerOnlineStatus(runners, senderID)
-			runners = injectBuiltinDocker(runners)
 			return runners, nil
 		},
 		RunnerCreate: func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
@@ -187,22 +186,6 @@ func populateRunnerOnlineStatus(runners []tools.RunnerInfo, senderID string) {
 			}
 		}
 	}
-}
-
-// injectBuiltinDocker prepends the built-in docker sandbox runner if available.
-func injectBuiltinDocker(runners []tools.RunnerInfo) []tools.RunnerInfo {
-	if sb := tools.GetSandbox(); sb != nil {
-		if router, ok := sb.(*tools.SandboxRouter); ok && router.HasDocker() {
-			dockerEntry := tools.RunnerInfo{
-				Name:        tools.BuiltinDockerRunnerName,
-				Mode:        "docker",
-				DockerImage: router.DockerImage(),
-				Online:      true,
-			}
-			return append([]tools.RunnerInfo{dockerEntry}, runners...)
-		}
-	}
-	return runners
 }
 
 // buildRunnerConnectCmdFromToken builds the xbot-runner CLI command from token + settings.
@@ -2184,22 +2167,6 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		// Metrics
 		MetricsGet: func() string {
 			return agent.GlobalMetrics.Snapshot().FormatMarkdown()
-		},
-
-		// Sandbox
-		SandboxCleanupTrigger: func(senderID string) error {
-			sb := tools.GetSandbox()
-			if sb == nil {
-				return fmt.Errorf("sandbox not initialized")
-			}
-			return sb.ExportAndImport(senderID)
-		},
-		SandboxIsExporting: func(senderID string) bool {
-			sb := tools.GetSandbox()
-			if sb == nil {
-				return false
-			}
-			return sb.IsExporting(senderID)
 		},
 
 		// Runner callbacks

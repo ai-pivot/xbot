@@ -11,19 +11,15 @@ import (
 	log "xbot/logger"
 )
 
-// BuiltinDockerRunnerName is the special name for the built-in docker sandbox.
-// Used in user_settings.active_runner to indicate "use server-side docker sandbox".
-const BuiltinDockerRunnerName = "__docker__"
-
 // SandboxRouter implements Sandbox interface and routes per-user to either
-// DockerSandbox, RemoteSandbox, or NoneSandbox based on user state.
+// RemoteSandbox (runner) or NoneSandbox (local) based on user state.
 //
 // Routing rules (per-user, determined by user_settings.active_runner):
-//   - active_runner == BuiltinDockerRunnerName → docker (if enabled)
 //   - active_runner == specific remote name → remote (if connected)
-//   - Fallback: remote if connected, then docker, then none
+//   - Fallback: remote if connected, then none
+//
+// 本地 docker sandbox 已于 2026-09-16 整体删除（用户要求：沙箱统一走 runner/remote 接入）。
 type SandboxRouter struct {
-	docker     *DockerSandbox
 	remote     *RemoteSandbox
 	none       *NoneSandbox
 	denied     *DeniedSandbox
@@ -45,7 +41,7 @@ type SandboxRouter struct {
 	remoteSyncCfg RemoteSandboxSyncConfig
 
 	// defaultMode is used when SandboxForUser can't determine per-user routing.
-	// "docker" if docker is enabled, "remote" if remote is enabled, "none" otherwise.
+	// "remote" if the runner integration is enabled, "none" otherwise.
 	defaultMode string
 }
 
@@ -55,22 +51,13 @@ func (r *SandboxRouter) SetIsAdminFn(fn func(userID string) bool) {
 	r.IsAdminFn = fn
 }
 
-// NewSandboxRouter creates a router that holds both docker and remote sandbox instances.
-// Either (or both) may be nil — the router falls back gracefully.
+// NewSandboxRouter creates a router holding the runner (remote) sandbox instance.
 // Remote sandbox can be lazy-started later via EnsureRemote() if not configured at construction time.
+// 默认（未配置任何沙箱）为 "none" —— 本机直连。
 func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxRouter {
 	r := &SandboxRouter{
 		none:   &NoneSandbox{},
 		denied: &DeniedSandbox{},
-	}
-
-	// Initialize docker sandbox if configured
-	// Docker is enabled when Mode=="docker", or when RemoteMode is set and Mode is not "none".
-	// Mode=="none" + RemoteMode=="remote" means remote-only, no docker.
-	if sandboxCfg.Mode == "docker" || (sandboxCfg.RemoteMode != "" && sandboxCfg.Mode != "none") {
-		cleanupStaleTmpFiles()
-		pruneDockerResources()
-		r.docker = NewDockerSandbox(sandboxCfg, workDir)
 	}
 
 	// Store config for lazy remote sandbox startup.
@@ -97,14 +84,12 @@ func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxR
 	switch {
 	case r.remote != nil:
 		r.defaultMode = "remote"
-	case r.docker != nil:
-		r.defaultMode = "docker"
 	default:
 		r.defaultMode = "none"
 	}
 
-	log.Infof("SandboxRouter initialized: default=%s, docker=%v, remote=%v",
-		r.defaultMode, r.docker != nil, r.remote != nil)
+	log.Infof("SandboxRouter initialized: default=%s, remote=%v",
+		r.defaultMode, r.remote != nil)
 
 	return r
 }
@@ -144,19 +129,6 @@ func (r *SandboxRouter) EnsureRemote() bool {
 // For per-user resolution, use SandboxForUser(userID).Name().
 func (r *SandboxRouter) Name() string {
 	return r.defaultMode
-}
-
-// HasDocker reports whether the built-in docker sandbox is available.
-func (r *SandboxRouter) HasDocker() bool {
-	return r.docker != nil
-}
-
-// DockerImage returns the configured docker image name (e.g. "ubuntu:22.04").
-func (r *SandboxRouter) DockerImage() string {
-	if r.docker == nil {
-		return ""
-	}
-	return r.docker.Image()
 }
 
 // IsRunnerOnline reports whether a specific named runner is connected for the user.
@@ -204,12 +176,6 @@ func (r *SandboxRouter) GetSessionRunner(sessionKey string) string {
 func (r *SandboxRouter) SandboxForSession(sessionKey, userID string) Sandbox {
 	// 1. Check session-level runner binding (highest priority)
 	if runnerName := r.GetSessionRunner(sessionKey); runnerName != "" {
-		if runnerName == BuiltinDockerRunnerName {
-			if r.docker != nil {
-				return r.docker
-			}
-			return r.none
-		}
 		// Specific remote runner
 		if r.remote != nil && r.remote.IsRunnerOnline(userID, runnerName) {
 			return r.remote
@@ -227,20 +193,13 @@ func (r *SandboxRouter) SandboxForSession(sessionKey, userID string) Sandbox {
 // to inject the correct sandbox into ToolContext.Sandbox.
 //
 // Routing priority:
-//  1. active_runner == BuiltinDockerRunnerName → docker (if enabled)
-//  2. active_runner == specific remote name → remote (only if that runner is online)
-//  3. active_runner set but not online → none (local execution, don't silently fallback to wrong runner)
-//  4. No active_runner → any connected remote (if any), then docker, then none
+//  1. active_runner == specific remote name → remote (only if that runner is online)
+//  2. active_runner set but not online → none (local execution, don't silently fallback to wrong runner)
+//  3. No active_runner → any connected remote (if any), then none
 func (r *SandboxRouter) SandboxForUser(userID string) Sandbox {
 	// 1. Check explicit active_runner preference
 	if userID != "" && r.tokenStore != nil {
 		if activeName, err := r.tokenStore.GetActiveRunner(userID); err == nil && activeName != "" {
-			// Built-in docker
-			if activeName == BuiltinDockerRunnerName {
-				if r.docker != nil {
-					return r.docker
-				}
-			}
 			// Specific remote runner: only route if THAT runner is online
 			if r.remote != nil {
 				if r.remote.IsRunnerOnline(userID, activeName) {
@@ -266,7 +225,7 @@ func (r *SandboxRouter) SandboxForUser(userID string) Sandbox {
 		// Admin users bypass the web-user restriction — they own the server
 		// and should have the same access as CLI users.
 		if r.IsAdminFn != nil && r.IsAdminFn(userID) {
-			// Fall through to docker/none below — admin gets host access.
+			// Fall through to none below — admin gets host access.
 		} else {
 			webServerRunner := false
 			if v := os.Getenv("WEB_USER_SERVER_RUNNER"); v != "" {
@@ -275,24 +234,21 @@ func (r *SandboxRouter) SandboxForUser(userID string) Sandbox {
 				}
 			}
 			if !webServerRunner {
-				// When no sandbox is configured (no docker, no remote), the server
+				// When no sandbox is configured (no remote), the server
 				// is running in local mode — CLI users get NoneSandbox. Denying web
 				// users here would be inconsistent: the server explicitly chose to
 				// run without isolation, so all users get host access.
 				// DeniedSandbox only applies when there IS a sandbox but the user
-				// doesn't have access (docker or remote configured but not for them).
-				if r.docker == nil && r.remote == nil {
+				// doesn't have access (remote configured but not for them).
+				if r.remote == nil {
 					return r.none
 				}
 				return r.denied
 			}
-			// Explicitly enabled: allow fallback to server sandbox (docker)
+			// Explicitly enabled: allow fallback to the server sandbox (local)
 		}
 	}
 
-	if r.docker != nil {
-		return r.docker
-	}
 	return r.none
 }
 
@@ -345,14 +301,9 @@ func (r *SandboxRouter) Workspace(userID string) string {
 	return r.resolve(userID).Workspace(userID)
 }
 
-// Close closes all sandbox instances (docker containers, remote connections).
+// Close closes all sandbox instances (remote connections).
 func (r *SandboxRouter) Close() error {
 	var errs []error
-	if r.docker != nil {
-		if err := r.docker.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
 	if r.remote != nil {
 		if err := r.remote.Close(); err != nil {
 			errs = append(errs, err)
@@ -367,25 +318,6 @@ func (r *SandboxRouter) Close() error {
 // CloseForUser closes sandbox resources for a specific user across all backends.
 // Remote sandbox connections are not closed — runners should be persistent.
 func (r *SandboxRouter) CloseForUser(userID string) error {
-	if r.docker != nil {
-		return r.docker.CloseForUser(userID)
-	}
-	return nil
-}
-
-// IsExporting checks if docker sandbox is exporting for this user.
-func (r *SandboxRouter) IsExporting(userID string) bool {
-	if r.docker != nil {
-		return r.docker.IsExporting(userID)
-	}
-	return false
-}
-
-// ExportAndImport triggers export+import on the docker sandbox.
-func (r *SandboxRouter) ExportAndImport(userID string) error {
-	if r.docker != nil {
-		return r.docker.ExportAndImport(userID)
-	}
 	return nil
 }
 

@@ -379,18 +379,6 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		}
 		return f.BuildLLMsCard(ctx, senderID)
 
-	case "settings_sandbox_cleanup":
-		if f.settingsCallbacks.SandboxCleanupTrigger == nil {
-			return nil, fmt.Errorf("沙箱持久化功能未启用")
-		}
-		if f.settingsCallbacks.SandboxIsExporting != nil && f.settingsCallbacks.SandboxIsExporting(senderID) {
-			return nil, fmt.Errorf("沙箱正在持久化中，请稍候")
-		}
-		if err := f.settingsCallbacks.SandboxCleanupTrigger(senderID); err != nil {
-			return nil, fmt.Errorf("沙箱持久化失败: %v", err)
-		}
-		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
-
 	case "settings_generate_token":
 		if f.settingsCallbacks.RunnerTokenGenerate == nil {
 			return nil, fmt.Errorf("per-user runner token 功能未启用")
@@ -448,9 +436,6 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		runnerName := parsed["runner_name"]
 		if runnerName == "" {
 			return nil, fmt.Errorf("缺少 runner 名称")
-		}
-		if runnerName == tools.BuiltinDockerRunnerName {
-			return nil, fmt.Errorf("内置 Docker Sandbox 不可删除")
 		}
 		if err := f.settingsCallbacks.RunnerDelete(senderID, runnerName); err != nil {
 			return nil, fmt.Errorf("删除 runner 失败: %v", err)
@@ -607,7 +592,6 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 			}
 
 			for _, r := range runners {
-				isBuiltin := r.Name == tools.BuiltinDockerRunnerName
 				statusIcon := "🟢"
 				if !r.Online {
 					statusIcon = "⚫"
@@ -617,9 +601,6 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 					activeTag = " ← 活跃"
 				}
 				displayName := r.Name
-				if isBuiltin {
-					displayName = "Docker Sandbox (内置)"
-				}
 				modeTag := "原生"
 				if r.Mode == "docker" {
 					modeTag = "🐳 Docker"
@@ -628,15 +609,12 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 				if r.Workspace != "" {
 					wsTag = fmt.Sprintf(" · %s", r.Workspace)
 				}
-				if isBuiltin && r.DockerImage != "" {
-					wsTag = fmt.Sprintf(" · %s", r.DockerImage)
-				}
 				elements = append(elements, map[string]any{
 					"tag":     "markdown",
 					"content": fmt.Sprintf("%s **%s**%s (%s%s)", statusIcon, displayName, activeTag, modeTag, wsTag),
 				})
 
-				// Buttons: set active + delete (builtin docker cannot be deleted)
+				// Buttons: set active + delete
 				var btns []map[string]any
 				if r.Name != activeName {
 					btns = append(btns, map[string]any{
@@ -651,19 +629,17 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 						},
 					})
 				}
-				if !isBuiltin {
-					btns = append(btns, map[string]any{
-						"tag":  "button",
-						"text": map[string]any{"tag": "plain_text", "content": "🗑️ 删除"},
-						"type": "danger",
-						"value": map[string]string{
-							"action_data": mustMapToJSON(map[string]string{
-								"action":      "settings_runner_delete",
-								"runner_name": r.Name,
-							}),
-						},
-					})
-				}
+				btns = append(btns, map[string]any{
+					"tag":  "button",
+					"text": map[string]any{"tag": "plain_text", "content": "🗑️ 删除"},
+					"type": "danger",
+					"value": map[string]string{
+						"action_data": mustMapToJSON(map[string]string{
+							"action":      "settings_runner_delete",
+							"runner_name": r.Name,
+						}),
+					},
+				})
 				if len(btns) > 0 {
 					elements = append(elements, wrapButtonsInColumns(btns))
 				}

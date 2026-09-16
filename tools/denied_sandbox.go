@@ -23,7 +23,6 @@ func (s *DeniedSandbox) Workspace(_ string) string { return "" }
 
 func (s *DeniedSandbox) Close() error                        { return nil }
 func (s *DeniedSandbox) CloseForUser(userID string) error    { return nil }
-func (s *DeniedSandbox) IsExporting(userID string) bool      { return false }
 func (s *DeniedSandbox) ExportAndImport(userID string) error { return nil }
 
 func (s *DeniedSandbox) GetShell(userID string, workspace string) (string, error) {

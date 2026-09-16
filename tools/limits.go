@@ -70,7 +70,4 @@ const (
 	RemoteSandboxExecTimeout = 60 * time.Second // remote_sandbox_exec.go default exec
 	RemoteSandboxSyncTimeout = 60 * time.Second // remote_sandbox.go sync operation
 
-	// Docker command timeouts
-	DockerCmdTimeout  = 30 * time.Second  // normal docker commands
-	DockerSlowTimeout = 120 * time.Second // slow docker operations (export/import)
 )

@@ -67,11 +67,6 @@ func (rm *RegistryManager) useSandbox() bool {
 	return rm.sandbox != nil && rm.sandbox.Name() != "none"
 }
 
-// isDockerSandbox returns true if the sandbox is Docker (syncs to .skills/.agents).
-func (rm *RegistryManager) isDockerSandbox() bool {
-	return rm.sandbox != nil && rm.sandbox.Name() == "docker"
-}
-
 // globalSyncedSkillsDir returns the directory where global skills are synced inside the sandbox.
 func (rm *RegistryManager) globalSyncedSkillsDir(senderID string) string {
 	if !rm.useSandbox() {
@@ -80,9 +75,6 @@ func (rm *RegistryManager) globalSyncedSkillsDir(senderID string) string {
 	ws := rm.sandbox.Workspace(senderID)
 	if ws == "" {
 		return ""
-	}
-	if rm.isDockerSandbox() {
-		return filepath.Join(ws, ".skills")
 	}
 	return filepath.Join(ws, "skills")
 }
@@ -95,9 +87,6 @@ func (rm *RegistryManager) globalSyncedAgentsDir(senderID string) string {
 	ws := rm.sandbox.Workspace(senderID)
 	if ws == "" {
 		return ""
-	}
-	if rm.isDockerSandbox() {
-		return filepath.Join(ws, ".agents")
 	}
 	return filepath.Join(ws, "agents")
 }
@@ -379,16 +368,6 @@ func (rm *RegistryManager) findSkillDirForUser(name, senderID string) string {
 		return dir
 	}
 	if senderID != "" {
-		if rm.isDockerSandbox() {
-			if syncedDir := rm.globalSyncedSkillsDir(senderID); syncedDir != "" {
-				path := filepath.Join(syncedDir, name)
-				ctx, cancel := rm.sandboxCtx()
-				defer cancel()
-				if _, err := rm.sandbox.Stat(ctx, filepath.Join(path, "SKILL.md"), senderID); err == nil {
-					return path
-				}
-			}
-		}
 		path := filepath.Join(rm.userSkillsDir(senderID), name)
 		if rm.useSandbox() {
 			ctx, cancel := rm.sandboxCtx()
@@ -413,16 +392,6 @@ func (rm *RegistryManager) findAgentFile(name, senderID string) string {
 		}
 	}
 	if senderID != "" {
-		if rm.isDockerSandbox() {
-			if syncedDir := rm.globalSyncedAgentsDir(senderID); syncedDir != "" {
-				path := filepath.Join(syncedDir, name+".md")
-				ctx, cancel := rm.sandboxCtx()
-				defer cancel()
-				if _, err := rm.sandbox.Stat(ctx, path, senderID); err == nil {
-					return path
-				}
-			}
-		}
 		path := filepath.Join(rm.userAgentsDir(senderID), name+".md")
 		if rm.useSandbox() {
 			ctx, cancel := rm.sandboxCtx()

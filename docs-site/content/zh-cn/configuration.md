@@ -232,8 +232,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 {
   "sandbox": {
     "mode": "docker",
-    "docker_image": "ubuntu:22.04",
-    "host_work_dir": "",
     "idle_timeout": "30m",
     "ws_port": 8080,
     "auth_token": "",
@@ -245,8 +243,6 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
 | `mode` | string | `"docker"` | 沙箱模式：`none` / `docker` |
-| `docker_image` | string | `"ubuntu:22.04"` | Docker 镜像 |
-| `host_work_dir` | string | `""` | 宿主机工作目录 |
 | `idle_timeout` | duration | `"30m"` | 空闲超时（0 = 禁用） |
 | `ws_port` | int | `8080` | 远程沙箱 WebSocket 端口 |
 | `auth_token` | string | `""` | Runner 认证 Token |

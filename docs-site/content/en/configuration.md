@@ -271,8 +271,6 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 {
   "sandbox": {
     "mode": "none",
-    "docker_image": "ubuntu:22.04",
-    "host_work_dir": "",
     "idle_timeout": "30m",
     "ws_port": 8080,
     "auth_token": "",
@@ -285,8 +283,6 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 |-------|------|---------|-------------|
 | `mode` | string | `"none"` | Sandbox mode: `none` or `docker` |
 | `remote_mode` | string | `""` | Remote sandbox mode |
-| `docker_image` | string | `"ubuntu:22.04"` | Docker image |
-| `host_work_dir` | string | `""` | Host working directory |
 | `idle_timeout` | duration | `"30m"` | Idle timeout (0 = disabled) |
 | `ws_port` | int | `8080` | Remote sandbox WebSocket port |
 | `auth_token` | string | `""` | Runner auth token |

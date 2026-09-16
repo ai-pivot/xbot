@@ -429,16 +429,6 @@ func ListAllRunners(senderID string) ([]RunnerInfo, error) {
 					}
 				}
 			}
-			// Inject built-in docker sandbox if available
-			if router.HasDocker() {
-				dockerEntry := RunnerInfo{
-					Name:        BuiltinDockerRunnerName,
-					Mode:        "docker",
-					DockerImage: router.DockerImage(),
-					Online:      true,
-				}
-				runners = append([]RunnerInfo{dockerEntry}, runners...)
-			}
 		case *RemoteSandbox:
 			for i := range runners {
 				runners[i].Online = router.IsRunnerOnline(senderID, runners[i].Name)

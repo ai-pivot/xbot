@@ -1683,7 +1683,7 @@ type Config struct {
 	// DeltaPush 启用流式 delta push（增量文本）。默认 false = 每次推送完整
 	// 累积文本（简单可靠）。见 config.AgentConfig.DeltaPush。
 	DeltaPush   bool
-	SandboxMode string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
+	SandboxMode string        // 沙箱模式: "none" 或 "remote"（默认 "none"；本地 docker sandbox 已删除）
 	Sandbox     tools.Sandbox // Sandbox 实例引用（V4 新增）
 
 	// IterationLoopDetection enables the iteration-loop breaker (consecutive
@@ -2044,10 +2044,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	// 4. 构建 Agent 实例
-	sandboxMode := cfg.SandboxMode
-	if sandboxMode == "" {
-		sandboxMode = "docker"
-	}
+	sandboxMode := resolveSandboxMode(cfg.SandboxMode)
 
 	rm := runner.NewManager()
 	agent := &Agent{
@@ -3422,14 +3419,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					<-sem // 释放槽位（WaitingUser 也需要释放，让 answer 能获取）
 				}()
 
-				// 沙箱正在 export+import 时，拒绝该用户所有请求
-				sbUID := sandboxUserID(msg)
-				if sb := tools.GetSandbox(); sb.IsExporting(sbUID) {
-					log.WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
-					a.sendMessage(msg.Channel, msg.ChatID, "⏳ 沙箱正在持久化中，请稍后再试...")
-					return
-				}
-
 				response, err = a.processMessage(reqCtx, msg)
 			}()
 
@@ -4102,9 +4091,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 
 	promptWorkDir := a.workDir
-	if a.sandboxMode == "docker" {
-		promptWorkDir = "/workspace"
-	} else if ws := a.remoteWorkspace(msg.SenderID); ws != "" {
+	if ws := a.remoteWorkspace(msg.SenderID); ws != "" {
 		promptWorkDir = ws
 	}
 

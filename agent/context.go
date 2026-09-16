@@ -165,9 +165,6 @@ func enrichPromptData(data PromptData) PromptData {
 // 在 Agent 创建时调用一次，后续通过 pipeline.Use/Remove 动态调整。
 func (a *Agent) initPipelines(memoryProvider string) {
 	promptWorkDir := a.workDir
-	if a.sandboxMode == "docker" {
-		promptWorkDir = "/workspace"
-	}
 
 	// 主 pipeline：用于普通消息和卡片响应
 	// UserContext is NOT resolved in the pipeline — it's resolved once at
