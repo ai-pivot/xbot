@@ -19,6 +19,30 @@ import { useWSConnection } from '@/hooks/useWSConnection'
  * instances update their local state instantly — no API re-fetch needed.
  */
 const thinkingModeBus = new EventTarget()
+
+/**
+ * Module-level event bus for LLM **config** changes (subscriptions / models /
+ * tiers). `useLLMSettings` is instantiated more than once — AgentPanel renders
+ * the session LLM bar (ModelSelector) while SettingsDialog does the editing.
+ * Each instance owns its own state, so a mutation in the dialog used to reload
+ * ONLY that instance: the session LLM bar kept showing the pre-edit list until
+ * the page was refreshed (user-reported bug, 2026-09-16).
+ *
+ * Contract: every successful server-side LLM-config mutation dispatches
+ * LLM_CONFIG_CHANGED; every instance reloads unless it is the origin (the
+ * origin already awaited load()).
+ */
+const llmConfigBus = new EventTarget()
+const LLM_CONFIG_CHANGED = 'llm-config-changed'
+
+/** Subscribe to LLM-config changes from ANY writer (hook instance or panel). */
+export function subscribeLLMConfigChanged(handler: () => void): () => void {
+  const listener = () => handler()
+  llmConfigBus.addEventListener(LLM_CONFIG_CHANGED, listener)
+  return () => llmConfigBus.removeEventListener(LLM_CONFIG_CHANGED, listener)
+}
+
+let nextLLMSettingsInstanceId = 0
 import {
   listSubscriptions,
   addSubscription as apiAddSubscription,
@@ -70,6 +94,17 @@ export function useLLMSettings() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
+
+  // Stable per-instance identity: the dispatch carries its origin so the
+  // triggering instance does not fetch twice (it already awaited load()).
+  const instanceIdRef = useRef<number | null>(null)
+  if (instanceIdRef.current === null) instanceIdRef.current = ++nextLLMSettingsInstanceId
+
+  const notifyConfigChanged = useCallback(() => {
+    llmConfigBus.dispatchEvent(
+      new CustomEvent(LLM_CONFIG_CHANGED, { detail: { origin: instanceIdRef.current } }),
+    )
+  }, [])
 
   // `connected` read via ref — NOT a useCallback dep. The old deps
   // ([conn, connected]) meant every SSE disconnect/reconnect cycle rebuilt
@@ -125,6 +160,19 @@ export function useLLMSettings() {
     }
   }, [connected, load])
 
+  // Keep EVERY instance in sync after any LLM-config mutation: the settings
+  // dialog adds/updates a subscription → the session LLM bar must show it
+  // immediately, without a page refresh ("两边数据统一").
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const origin = (e as CustomEvent<{ origin?: number }>).detail?.origin
+      if (origin === instanceIdRef.current) return // self — already reloaded
+      void load()
+    }
+    llmConfigBus.addEventListener(LLM_CONFIG_CHANGED, handler)
+    return () => llmConfigBus.removeEventListener(LLM_CONFIG_CHANGED, handler)
+  }, [load])
+
   // Sync thinking mode across all useLLMSettings instances (e.g. settings
   // dialog changes thinking mode → AgentPanel reflects it instantly).
   useEffect(() => {
@@ -151,6 +199,7 @@ export function useLLMSettings() {
       try {
         await apiAddSubscription(conn, sub)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -190,6 +239,7 @@ export function useLLMSettings() {
           api_type: sub.api_type ?? existing?.api_type ?? '',
         })
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -198,7 +248,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const removeSubscription = useCallback(
@@ -207,6 +257,7 @@ export function useLLMSettings() {
       try {
         await apiRemoveSubscription(conn, id)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -215,7 +266,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const setDefaultSubscription = useCallback(
@@ -224,6 +275,7 @@ export function useLLMSettings() {
       try {
         await apiSetDefaultSubscription(conn, id)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -232,7 +284,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const setSubscriptionEnabled = useCallback(
@@ -241,6 +293,7 @@ export function useLLMSettings() {
       try {
         await apiSetSubscriptionEnabled(conn, subID, enabled)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -249,7 +302,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   // ── Model Management ──
@@ -260,6 +313,7 @@ export function useLLMSettings() {
       try {
         await apiUpdatePerModelConfig(conn, subID, model, config)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -268,7 +322,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const setModelEnabled = useCallback(
@@ -277,6 +331,7 @@ export function useLLMSettings() {
       try {
         await apiSetModelEnabled(conn, subID, model, enabled)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -285,7 +340,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const removeModel = useCallback(
@@ -294,6 +349,7 @@ export function useLLMSettings() {
       try {
         await apiRemoveModel(conn, subID, model)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -302,7 +358,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const upsertModel = useCallback(
@@ -317,6 +373,7 @@ export function useLLMSettings() {
       try {
         await apiUpsertModel(conn, subID, model, maxContext, maxOutput, apiType)
         await load()
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -325,7 +382,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn, load],
+    [conn, load, notifyConfigChanged],
   )
 
   const refreshModels = useCallback(async (): Promise<boolean> => {
@@ -333,6 +390,7 @@ export function useLLMSettings() {
     try {
       const entries = await apiRefreshModelEntries(conn)
       setData((d) => ({ ...d, modelEntries: Array.isArray(entries) ? entries : [] }))
+      notifyConfigChanged()
       return true
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -360,7 +418,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn],
+    [conn, notifyConfigChanged],
   )
 
   const setLLMConcurrency = useCallback(
@@ -377,7 +435,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn],
+    [conn, notifyConfigChanged],
   )
 
   // ── Tier Config ──
@@ -393,6 +451,7 @@ export function useLLMSettings() {
           tierBalance: tier === 'balance' ? value : d.tierBalance,
           tierSwift: tier === 'swift' ? value : d.tierSwift,
         }))
+        notifyConfigChanged()
         return true
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
@@ -401,7 +460,7 @@ export function useLLMSettings() {
         setSaving(false)
       }
     },
-    [conn],
+    [conn, notifyConfigChanged],
   )
 
   return {

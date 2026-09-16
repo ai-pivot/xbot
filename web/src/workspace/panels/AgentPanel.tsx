@@ -24,7 +24,7 @@ import { useTodos } from '@/hooks/useTodos'
 import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdit'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
-import { useLLMSettings } from '@/hooks/useLLMSettings'
+import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSettings'
 import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
@@ -433,6 +433,17 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [busy, chatID, messageChannel])
 
   const llmSettings = useLLMSettings()
+
+  // Session-level LLM info (current model / subscription / context limits) also
+  // depends on server-side LLM config: after the settings dialog adds, updates or
+  // removes a subscription — or changes the default — the session's resolution can
+  // change (e.g. the session was bound to the edited sub). Re-resolve it here so
+  // the selector bar shows the new model/limits immediately, no page refresh.
+  const sessionRefreshRef = useRef(sessionContext.refresh)
+  useEffect(() => {
+    sessionRefreshRef.current = sessionContext.refresh
+  }, [sessionContext.refresh])
+  useEffect(() => subscribeLLMConfigChanged(() => void sessionRefreshRef.current()), [])
   // Vision state of the CURRENT model (purely manual per-model switch — NO
   // built-in whitelist). Read from the owning subscription's per_model_configs
   // (sessionContext.subscriptionID + model); undefined when the model is
