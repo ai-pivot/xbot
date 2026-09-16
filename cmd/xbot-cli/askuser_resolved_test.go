@@ -17,7 +17,17 @@ import (
 // channel/cli/cli_askuser_persist.go: HOME/.xbot/pending_askuser/sha256hex("ch:"+chatID)+".json").
 func TestHandleAskUserResolvedBroadcastDeletesDiskCache(t *testing.T) {
 	home := t.TempDir()
+	// os.UserHomeDir() reads $HOME on unix but %USERPROFILE% on Windows, and the
+	// production path resolution (channel/cli/cli_askuser_persist.go:
+	// pendingAskUserDir) goes through it. Override BOTH so the cache lands in
+	// this temp dir on every platform — with only HOME set, this test passed on
+	// Linux/macOS but failed the Windows CI job (the handler resolved a
+	// different directory and deleted nothing).
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got, err := os.UserHomeDir(); err != nil || got != home {
+		t.Fatalf("test setup: os.UserHomeDir()=%q (err=%v), want %q — the home override did not take effect on this platform", got, err, home)
+	}
 	chatID := "asku-chat-1"
 
 	sum := sha256.Sum256([]byte("cli:" + chatID))
