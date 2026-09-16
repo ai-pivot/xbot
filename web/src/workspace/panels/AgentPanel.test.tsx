@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -334,5 +334,39 @@ describe('AgentPanel liveMessage visibility during reload', () => {
     mocks.chat.loading = false
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
+  })
+})
+
+describe('AgentPanel re-subscribe reconcile（P0：通知行在不可见期间丢失后必须自愈）', () => {
+  it('不可见 → 可见（重新订阅）时必须做一次历史对账', async () => {
+    // 复现（2026-09-16 用户报告）：「切回缓存 tab，user 消息消失，刷新才恢复」，
+    // 消失的一定是**通知变成的 user 行**（🔔 Notification）。
+    // 机制：通知行的唯一载体是 turn_started(trigger='notification')（chat/reduce.ts
+    // 的 notifContent 分支）；面板不可见时 SSE 主动断开（useActiveSSESubscription
+    // 的 active=isVisible）⇒ 该事件丢失；而 reconcile 只在**可检测到 seq gap** 时触发
+    // （resync_required → replay_gap → reloadChat），断连+游标推进不产生 gap ⇒ 该行
+    // 永久缺失（只有手刷全量加载）。
+    // 契约（本用例钉死）：重新可见（= 重新订阅）时**必须**触发一次历史对账。
+    const cbs: Array<(e: { isVisible: boolean }) => void> = []
+    const api = {
+      isVisible: true,
+      onDidVisibilityChange: (fn: (e: { isVisible: boolean }) => void) => {
+        cbs.push(fn)
+        // 必须返回 { dispose } —— AgentPanel.tsx:81 的清理调的是 disp.dispose()
+        // （原先的 `() => {}` 会在清理时抛 TypeError，导致本用例假红）。
+        return { dispose: () => {} }
+      },
+    }
+    render(<AgentPanel params={{} as never} api={api as never} containerApi={{} as never} />)
+    await waitFor(() => expect(cbs.length).toBeGreaterThan(0))
+    mocks.chat.reload.mockClear()
+
+    // 隐藏期间不该对账（避免无谓刷新）。
+    act(() => cbs[0]({ isVisible: false }))
+    expect(mocks.chat.reload).not.toHaveBeenCalled()
+
+    // 重新可见 ⇒ 对账一次（补回断连期间丢失、且不在重放窗口里的行）。
+    act(() => cbs[0]({ isVisible: true }))
+    await waitFor(() => expect(mocks.chat.reload).toHaveBeenCalledTimes(1))
   })
 })

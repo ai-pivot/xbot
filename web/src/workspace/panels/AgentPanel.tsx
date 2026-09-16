@@ -187,6 +187,31 @@ export function AgentPanel({ params, api }: PanelProps) {
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [reloadChat])
+
+  // ── 重新订阅后补齐断连期间丢失的**行**（P0，2026-09-16 用户报告）────────────
+  // 现象（用户截图 + 描述）：「切回缓存的 tab，user 消息消失，刷新才恢复」，且消失的
+  // 一定是**通知变成的 user 行**（🔔 Notification）。
+  //
+  // 机制（三处实证）：
+  //   1) 通知行的**唯一载体**是 turn_started(trigger='notification', content)
+  //      （chat/reduce.ts 的 notifContent 分支；迟到 inject_user 会被 dbID 过滤掉）。
+  //   2) 面板不可见时 SSE 会**主动断开**（useActiveSSESubscription，active=isVisible）
+  //      ⇒ 该事件既没实时到达，也未必在 last_event_id 重放窗口里。
+  //   3) 兜底只在**可检测到 seq gap**时触发（providers/sseConnection 的
+  //      resync_required → replay_gap → reloadChat）。仅"游标推进 + 断连"不产生 gap
+  //      ⇒ 不触发任何 reconcile ⇒ 已持久化到 DB 的那行通知不会自己回来（只有手刷）。
+  //
+  // 修复：在"不可见 → 可见"（= 重新订阅）时做一次**非破坏性**历史对账。
+  // `reloadChat` 走 history_replaced 的 **merge 语义**（DB 覆盖它【有】的 turn，
+  // 状态机持有的 live / post-fetch commit 一律保留），所以不会再出现当年
+  // "live 迭代被 history_replaced 清掉"的问题（见本文件 203-210 行的历史备注）。
+  const wasSubscribedRef = useRef(shouldSubscribe)
+  useEffect(() => {
+    const was = wasSubscribedRef.current
+    wasSubscribedRef.current = shouldSubscribe
+    if (was || !shouldSubscribe || !chatID) return
+    void reloadChat()
+  }, [shouldSubscribe, chatID, reloadChat])
   // 历史落地（重载完成且已有消息）后收起 loading 屏幕。
   useEffect(() => {
     if (resumeLoading && !chat.loading && chat.messages.length > 0) setResumeLoading(false)
@@ -201,15 +226,21 @@ export function AgentPanel({ params, api }: PanelProps) {
   const showLoadingScreen = (chat.historyReady === false && !!chatID) || resumeLoading
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
-  // NOTE: The old wasSubscribed effect (reloadChat when shouldSubscribe
-  // changes false→true) is REMOVED. When a tab becomes visible again (SSE
-  // reconnects), the SSE reconnection mechanism already handles everything:
-  //   1. last_event_id replay (server replays missed events)
-  //   2. restoreActiveProgress (fetches get_active_progress for live state)
-  //   3. resync_required → replay_gap → reloadChat() (only when gap is large)
-  // Calling reloadChat() unconditionally on visibility change was clearing
-  // live iterations via history_replaced, causing "live iter disappears when
-  // switching to a cached tab".
+  // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
+  // 整个移除，理由是把 reloadChat 无条件挂在 visibilitychange 上会经
+  // history_replaced 清掉 live 迭代（"切到缓存 tab 后 live iter 消失"）。
+  //
+  // 但 2026-09-16 用户报告暴露了移除后的**空隙**：通知变成的 user 行（🔔）在
+  // 面板不可见期间**丢失后无法自愈**——它的唯一载体 turn_started(trigger=
+  // notification) 既没实时到达（SSE 因不可见已断开），也未必能被 last_event_id
+  // 重放覆盖；而 reconcile 只在**可检测到 seq gap** 时才触发，断连+游标推进不产生
+  // gap ⇒ 该行永久缺失，只有手刷（全量加载）恢复。
+  //
+  // 现在恢复了这条对账（见上方 `wasSubscribedRef` 的 effect），但用**非破坏性**的
+  // reloadChat：history_replaced 已是 merge 语义（DB 覆盖它【有】的 turn，状态机持有
+  // 的 live / post-fetch commit 保留，见 chat/reduce.ts 的 history_replaced 注释），
+  // 所以不会再清 live 迭代。若将来 history_replaced 退回"盲替换"，这个 effect 会重新
+  // 咬人——届时必须同时修 reduce。
 
   // 暴露当前会话给独立插件视图（window.__xbot_session__）。
   // 独立 ESM 插件（如 xbot.git-fancy）无法 import 宿主内部模块，通过此全局
