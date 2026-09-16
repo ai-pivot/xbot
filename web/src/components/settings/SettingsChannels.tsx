@@ -77,6 +77,11 @@ export function SettingsChannels() {
   const [savedChannel, setSavedChannel] = useState<string | null>(null)
 
   const [bind, setBind] = useState<FeishuBindStatus | null>(null)
+  // feishu_app_guide：要创建的应用长什么样（权限/事件/回调预设，与一键创建同源）。
+  const [guide, setGuide] = useState<{
+    scopes: string[]; events: string[]; callbacks: string[]; create_app_url: string; needs_public_url: boolean
+  } | null>(null)
+  const [showPreset, setShowPreset] = useState(false)
   const [binding, setBinding] = useState(false)
   const pollRef = useRef<number | null>(null)
 
@@ -171,6 +176,28 @@ export function SettingsChannels() {
     }
   }
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        const g = await rpc<{
+          scopes?: string[]; events?: string[]; callbacks?: string[]; create_app_url?: string; needs_public_url?: boolean
+        }>('feishu_app_guide')
+        // 引导是增强项：形状不完整（旧服务端/测试 mock）时宁可不渲染，也不能崩面板。
+        if (g && Array.isArray(g.scopes) && Array.isArray(g.events) && Array.isArray(g.callbacks)) {
+          setGuide({
+            scopes: g.scopes,
+            events: g.events,
+            callbacks: g.callbacks,
+            create_app_url: g.create_app_url ?? 'https://open.feishu.cn/app',
+            needs_public_url: g.needs_public_url ?? false,
+          })
+        }
+      } catch {
+        // 引导信息拿不到不影响绑定本身（按钮仍可用）。
+      }
+    })()
+  }, [])
+
   const startFeishuBind = async () => {
     setBinding(true)
     setError(null)
@@ -248,8 +275,77 @@ export function SettingsChannels() {
             ))}
 
             {name === 'feishu' ? (
-              <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg-tertiary/40 p-3">
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg-tertiary/40 p-3" data-testid="feishu-guide">
+                <p className="text-sm font-medium text-text-primary">{t('settings.channels.feishuGuideTitle')}</p>
+                <ol className="ml-4 list-decimal text-xs text-text-muted" data-testid="feishu-guide-steps">
+                  <li>{t('settings.channels.feishuGuideStep1')}</li>
+                  <li>{t('settings.channels.feishuGuideStep2')}</li>
+                  <li>{t('settings.channels.feishuGuideStep3')}</li>
+                </ol>
                 <p className="text-xs text-text-muted">{t('settings.channels.feishuBindHint')}</p>
+                {guide ? (
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="feishu-guide-preset-toggle"
+                      className="w-fit text-xs text-accent underline-offset-2 hover:underline"
+                      onClick={() => setShowPreset((v) => !v)}
+                    >
+                      {t('settings.channels.feishuGuidePreset', {
+                        scopes: guide.scopes.length,
+                        events: guide.events.length,
+                        callbacks: guide.callbacks.length,
+                      })}
+                    </button>
+                    {showPreset ? (
+                      <div
+                        data-testid="feishu-guide-preset"
+                        className="flex max-h-48 flex-col gap-2 overflow-auto rounded bg-bg-primary p-2 text-[11px] text-text-secondary"
+                      >
+                        {(
+                          [
+                            ['feishu-guide-scopes', t('settings.channels.feishuGuideScopes'), guide.scopes],
+                            ['feishu-guide-events', t('settings.channels.feishuGuideEvents'), guide.events],
+                            ['feishu-guide-callbacks', t('settings.channels.feishuGuideCallbacks'), guide.callbacks],
+                          ] as const
+                        ).map(([tid, label, items]) => (
+                          <div key={tid} className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-text-primary">
+                                {t('settings.channels.feishuGuideItemCount', { label, count: items.length })}
+                              </span>
+                              <button
+                                type="button"
+                                data-testid={`${tid}-copy`}
+                                className="text-accent underline-offset-2 hover:underline"
+                                onClick={() => void copyLink(items.join('\n'))}
+                              >
+                                {t('settings.channels.feishuGuideCopyAll')}
+                              </button>
+                            </div>
+                            <code data-testid={tid} className="break-all font-mono">
+                              {items.join(', ')}
+                            </code>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <p className="text-xs text-text-muted" data-testid="feishu-guide-no-public-url">
+                      {guide.needs_public_url
+                        ? t('settings.channels.feishuGuideNeedsPublicUrl')
+                        : t('settings.channels.feishuGuideNoPublicUrl')}
+                    </p>
+                    <a
+                      data-testid="feishu-guide-manual"
+                      href={guide.create_app_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-fit text-xs text-accent underline-offset-2 hover:underline"
+                    >
+                      {t('settings.channels.feishuGuideManual')}
+                    </a>
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button type="button" size="sm" disabled={binding} onClick={() => void startFeishuBind()}>
                     {binding ? t('settings.channels.feishuBinding') : t('settings.channels.feishuBind')}
