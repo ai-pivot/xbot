@@ -3,9 +3,11 @@ package agent
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 
 	"xbot/channel"
+	log "xbot/logger"
 	"xbot/protocol"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -19,7 +21,61 @@ const maxIncrementalIterations = 30
 
 // SetCWD sets the current working directory for a session.
 // It refreshes plugin workDir with the correct tenantID.
+// cwdApplyDecision 决定是否采纳新的 cwd（纯函数，便于单测）。
+//
+// 2026-09-16 用户报告（严重）：「我创建会话时传的是**绝对路径**，为什么不用我的路径？」
+// 根因：本函数旧实现（内联在 SetCWD 里）只在 existingDir=="" 或旧目录不存在时才写入
+// ⇒ 当 Agent 初始化已把 cwd 设成 workspace 根（事故后 agent.work_dir 丢失 ⇒ 该根是
+// **相对路径** `.xbot/users/<uid>/workspace`，且相对服务进程 cwd 恰好存在）时，
+// 用户的绝对路径被**静默丢弃** ⇒ 新会话 pwd 既不是用户选的、还伴随
+// `no such file or directory`（活日志实证）。
+//
+// 规则：
+//   - force（显式用户动作，如新建会话弹窗的 set_cwd）→ **总是采纳**；
+//   - 否则（自动路径，如 CLI 终端目录同步/重启恢复）：仅在无既有 cwd、或既有 cwd
+//     已不存在时才采纳 —— 保留"不要用终端目录覆盖已持久化 cwd"的既有语义。
+func cwdApplyDecision(existingDir string, existingExists bool, force bool) bool {
+	if force {
+		return true
+	}
+	if existingDir == "" {
+		return true
+	}
+	return !existingExists
+}
+
 func (a *Agent) SetCWD(ch, chatID, dir string) error {
+	return a.setCWD(ch, chatID, dir, false)
+}
+
+// SetCWDForced 应用一次**显式**的工作目录选择（用户/API 直接指定）。
+//
+// 用户要求（2026-09-16，原话）：「我不管你用什么方法，那个接口我传的是什么路径就得是
+// 什么路径，而不是给我转换。」⇒ 本函数**原样应用**传入的 dir：
+//
+//	· 不做任何改写（不 join workspace 根、不相对化、不 trim 成别的路径）；
+//	· 不因"不是绝对路径"或"目录不存在"而拒绝（仅记 warning 便于排查）——
+//	  传什么就是什么。
+//
+// 与 SetCWD 的区别：SetCWD 是**自动**路径（终端目录同步/重启恢复），它不得覆盖已持久化
+// 且仍存在的 cwd；SetCWDForced 是**显式**动作，总是生效（否则用户的绝对路径会被
+// Agent 初始化写下的 workspace 根静默顶掉 —— 线上 bug）。
+func (a *Agent) SetCWDForced(ch, chatID, dir string) error {
+	if dir == "" {
+		return fmt.Errorf("cwd is required")
+	}
+	if !filepath.IsAbs(dir) {
+		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID}).
+			Warn("SetCWDForced received a non-absolute path — applying it verbatim as requested")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID, "error": err.Error()}).
+			Warn("SetCWDForced received a path that does not exist — applying it verbatim as requested")
+	}
+	return a.setCWD(ch, chatID, dir, true)
+}
+
+func (a *Agent) setCWD(ch, chatID, dir string, force bool) error {
 	if a.sandboxMode != "none" {
 		return fmt.Errorf("CWD sync not supported in %s sandbox mode", a.sandboxMode)
 	}
@@ -30,16 +86,16 @@ func (a *Agent) SetCWD(ch, chatID, dir string) error {
 	if err != nil {
 		return err
 	}
-	// Set CWD — but only for brand new sessions with no persisted CWD.
-	// On restart, loadPersistedCWD restores the user's last CWD (which may differ
-	// from the terminal dir if the user used the Cd tool). We must not overwrite it.
-	// Also handles the edge case where the persisted directory no longer exists
-	// (e.g. deleted between runs) by falling back to the terminal CWD.
+	// Set CWD — 详见 cwdApplyDecision 的语义说明（显式 force 总是生效；自动路径
+	// 不得覆盖已持久化且仍存在的 cwd）。
 	existingCWD := sess.GetCurrentDir()
-	if existingCWD == "" {
-		sess.SetCurrentDir(dir)
-	} else if _, err := os.Stat(existingCWD); os.IsNotExist(err) {
-		// Persisted CWD is stale (directory removed), fall back to terminal CWD
+	existingExists := false
+	if existingCWD != "" {
+		if _, statErr := os.Stat(existingCWD); statErr == nil {
+			existingExists = true
+		}
+	}
+	if cwdApplyDecision(existingCWD, existingExists, force) {
 		sess.SetCurrentDir(dir)
 	}
 	// Always refresh plugin contexts so script plugins see the correct workDir

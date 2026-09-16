@@ -424,12 +424,19 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 		Dir     string `json:"dir"`
+		// Force：显式用户动作（新建会话弹窗等）—— 原样应用传入路径，
+		// 不得被既有 cwd / 自动推断值顶掉（2026-09-16 用户要求：
+		// 「我传的是什么路径就得是什么路径，而不是给我转换」）。
+		Force bool `json:"force"`
 	}) error {
 		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return err
 		}
 		// SetCWD internally refreshes plugin workDir with correct tenantID
+		if p.Force {
+			return h.Ag.SetCWDForced(channelName, chatID, p.Dir)
+		}
 		return h.Ag.SetCWD(channelName, chatID, p.Dir)
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {

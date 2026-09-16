@@ -1063,7 +1063,19 @@ func Load() *Config {
 		cfg.Log.Format = "json"
 	}
 	if cfg.Agent.WorkDir == "" {
-		cfg.Agent.WorkDir = "."
+		// ⚠️ 绝不能用相对路径（2026-09-16 事故线上复现的严重 bug）：
+		// Agent.WorkDir 是 **per-user workspace 的根** ——
+		//   {workDir}/.xbot/users/{uid}/workspace   （tools.UserWorkspaceRoot）
+		// 也是 agent 文件工具/角色目录/插件 workDir 的基准。值为 "." 时会产出
+		// **相对工作区**（`.xbot/users/<uid>/workspace`）：用户的会话 cwd 不再是
+		// 他创建会话时选择的绝对路径，且各级目录全部 `no such file or directory`
+		// （活日志实证：dir=.xbot/users/web-4/workspace/agents）。
+		// 缺省回落到**用户 home 的绝对路径**；仅在拿不到 home 时才退回 "."（保底）。
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			cfg.Agent.WorkDir = home
+		} else {
+			cfg.Agent.WorkDir = "."
+		}
 	}
 	if cfg.Agent.PromptFile == "" {
 		cfg.Agent.PromptFile = "prompt.md"
@@ -1108,7 +1120,10 @@ func Load() *Config {
 		cfg.Sandbox.WSPort = 8080
 	}
 	if cfg.Agent.MemoryProvider == "" {
-		cfg.Agent.MemoryProvider = "flat"
+		// 用户决策 2026-09-16：缺省应为内置 **xbot** 记忆（原缺省为 "flat"）。
+		// 注册的 provider 见 memory/{xbot,flat,letta}；memory.CreateProvider 对
+		// 未注册名返回 nil（届时无记忆能力），所以缺省必须落在已注册的 xbot 上。
+		cfg.Agent.MemoryProvider = "xbot"
 	}
 	if cfg.OAuth.Host == "" {
 		cfg.OAuth.Host = "127.0.0.1"
