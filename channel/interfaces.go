@@ -44,6 +44,22 @@ type QueueStateSender interface {
 	SendQueueState(channel, chatID string, payload *protocol.QueueStatePayload)
 }
 
+// AskUserResolvedSender is implemented by channels that transport the
+// ask_user_resolved invalidation to their clients. The agent emits one
+// whenever a pending AskUser prompt stops being pending (answered, cancelled,
+// rewound, or cleared); every channel holding a client-side copy of the
+// pending prompt must deliver it so stale prompts collapse immediately —
+// without this, answering in one tab/device/channel leaves the prompt alive
+// in the others until their next full refresh.
+//
+// Delivery is repeat-safe, NOT exactly-once: channels may deliver the same
+// event multiple times (live broadcast + reconnect replay + reconnect
+// reconcile). Clients MUST treat repeats as no-ops (drop the cached prompt
+// for the (channel, chat_id) pair, keyed by request_id when present).
+type AskUserResolvedSender interface {
+	SendAskUserResolved(ev protocol.AskUserResolvedEvent)
+}
+
 // PreReplyNotifier is implemented by channels that require text-based ack
 // and progress messages before the final LLM reply. These channels lack
 // streaming/structured progress (e.g. Feishu patches the existing message

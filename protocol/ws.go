@@ -8,25 +8,32 @@ import "encoding/json"
 
 // Server → Client message types
 const (
-	MsgTypeText           = "text"
-	MsgTypeProgress       = "progress_structured"
-	MsgTypeStreamContent  = "stream_content"
-	MsgTypeRPCResponse    = "rpc_response"
-	MsgTypeAskUser        = "ask_user"
-	MsgTypeCard           = "card"
-	MsgTypeUserEcho       = "user_echo"
-	MsgTypeInjectUser     = "inject_user"
-	MsgTypePluginWidgets  = "plugin_widgets"
-	MsgTypeWebWidgets     = "web_widgets"
-	MsgTypeTUIControlReq  = "tui_control_req"
-	MsgTypeRunnerStatus   = "runner_status"
-	MsgTypeSyncProgress   = "sync_progress"
-	MsgTypeSession        = "session"
-	MsgTypeGenUI          = "genui"
-	MsgTypeResyncRequired = "resync_required"
-	MsgTypeBgTaskOutput   = "bg_task_output"
-	MsgTypeQueueState     = "queue_state"
-	MsgTypePong           = "__pong__"
+	MsgTypeText          = "text"
+	MsgTypeProgress      = "progress_structured"
+	MsgTypeStreamContent = "stream_content"
+	MsgTypeRPCResponse   = "rpc_response"
+	MsgTypeAskUser       = "ask_user"
+	// MsgTypeAskUserResolved invalidates a pending AskUser prompt on every
+	// client of the session (answered/cancelled/rewound/cleared). Unlike
+	// ask_user it is repeat-safe: delivery may be duplicated (live broadcast,
+	// reconnect replay, reconnect reconcile) — clients must treat repeats as
+	// no-ops. The event travels as FLAT envelope fields (channel, chat_id,
+	// request_id, reason) — see the AskUserResolved* fields on WSMessage.
+	MsgTypeAskUserResolved = "ask_user_resolved"
+	MsgTypeCard            = "card"
+	MsgTypeUserEcho        = "user_echo"
+	MsgTypeInjectUser      = "inject_user"
+	MsgTypePluginWidgets   = "plugin_widgets"
+	MsgTypeWebWidgets      = "web_widgets"
+	MsgTypeTUIControlReq   = "tui_control_req"
+	MsgTypeRunnerStatus    = "runner_status"
+	MsgTypeSyncProgress    = "sync_progress"
+	MsgTypeSession         = "session"
+	MsgTypeGenUI           = "genui"
+	MsgTypeResyncRequired  = "resync_required"
+	MsgTypeBgTaskOutput    = "bg_task_output"
+	MsgTypeQueueState      = "queue_state"
+	MsgTypePong            = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration
 	MsgTypeChannelTools = "channel_tools"
@@ -112,6 +119,13 @@ type WSMessage struct {
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
 	Session         *SessionEvent      `json:"session,omitempty"`
 	QueueState      *QueueStatePayload `json:"queue_state,omitempty"`
+	// AskUserResolved (MsgTypeAskUserResolved): the prompt that stopped being
+	// pending. Channel/ChatID identify the session, RequestID is the client's
+	// idempotency key, Reason is "answered" | "cancelled" | "rewound" |
+	// "cleared". Flat fields are the wire contract (mirrors the Web envelope
+	// type — the front-end reads msg.reason / msg.chat_id directly).
+	AskUserResolvedRequestID string `json:"request_id,omitempty"`
+	AskUserResolvedReason    string `json:"reason,omitempty"`
 }
 
 // QueueItemPayload describes a single queued message in the session queue

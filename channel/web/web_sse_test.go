@@ -798,9 +798,23 @@ func TestWSReconnectSkipsResolvedRetainedAskUser(t *testing.T) {
 	client := &Client{sendCh: make(chan protocol.WSMessage, 4)}
 
 	runWSReplay(t, wc, client, "web-1", 0)
+	// The retained ask_user was resolved — it must NOT be replayed. But the
+	// reconnect MUST reconcile stale client-side caches with
+	// ask_user_resolved("cleared") so a stale panel collapses immediately.
 	select {
 	case msg := <-client.sendCh:
-		t.Fatalf("resolved AskUser replayed over WS: %#v", msg)
+		if msg.Type != protocol.MsgTypeAskUserResolved {
+			t.Fatalf("reconnect without pending must push ask_user_resolved, got %#v", msg)
+		}
+		if msg.ChatID != "web-1" || msg.AskUserResolvedReason != "cleared" {
+			t.Fatalf("reconcile event = %#v, want cleared for web-1", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconnect without pending did not push ask_user_resolved")
+	}
+	select {
+	case msg := <-client.sendCh:
+		t.Fatalf("unexpected extra reconnect message: %#v", msg)
 	default:
 	}
 }
@@ -1164,6 +1178,11 @@ func TestSSEDeliversRealAskUserToolMetadata(t *testing.T) {
 	resp := openSSE(t, server.URL, cookie, chatID, "")
 	defer resp.Body.Close()
 
+	// The fresh SSE connect reconciles stale client caches with
+	// ask_user_resolved("cleared") — wait for it so the following frames
+	// sequence deterministically after it (all frame ids below shift by 1).
+	waitForRouteEventType(t, wc, SessionSelector{Channel: "web", ChatID: chatID}, protocol.MsgTypeAskUserResolved)
+
 	toolResult, err := (&tools.AskUserTool{}).Execute(
 		&tools.ToolContext{},
 		`{"questions":[{"question":"Continue?","options":["yes","no"]}]}`,
@@ -1192,8 +1211,12 @@ func TestSSEDeliversRealAskUserToolMetadata(t *testing.T) {
 	}
 
 	reader := bufio.NewReader(resp.Body)
-	assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, 1)
-	ask := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUser, 2)
+	reconcile := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUserResolved, 1)
+	if reconcile.ChatID != chatID || reconcile.AskUserResolvedReason != "cleared" {
+		t.Fatalf("reconcile event = %#v", reconcile)
+	}
+	assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, 2)
+	ask := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUser, 3)
 	if ask.Progress == nil || ask.Progress.RequestID != requestID {
 		t.Fatalf("AskUser SSE request ID = %#v, want %q", ask.Progress, requestID)
 	}
@@ -1300,11 +1323,24 @@ func TestSSEReconnectSkipsResolvedRetainedAskUser(t *testing.T) {
 	cookie := loginTestAdmin(t, server.URL)
 	resp := openSSE(t, server.URL, cookie, chatID, "1")
 	defer resp.Body.Close()
+
+	// The handler's reconnect reconcile publishes ask_user_resolved("cleared")
+	// — wait until it lands in the route stream so "after" sequences
+	// deterministically after it (the handler runs concurrently).
+	sel := SessionSelector{Channel: "web", ChatID: chatID}
+	waitForRouteEventType(t, wc, sel, protocol.MsgTypeAskUserResolved)
 	wc.hub.sendToClient(chatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "after"})
 
-	msg := assertSSEMessage(t, readSSEEvent(t, bufio.NewReader(resp.Body)), protocol.MsgTypeText, 3)
+	reader := bufio.NewReader(resp.Body)
+	// The retained resolved ask_user is consumed (never replayed); the
+	// reconcile invalidation arrives instead, then the live text.
+	resolved := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeAskUserResolved, 3)
+	if resolved.ChatID != chatID || resolved.AskUserResolvedReason != "cleared" {
+		t.Fatalf("reconcile event = %#v, want cleared for %s", resolved, chatID)
+	}
+	msg := assertSSEMessage(t, readSSEEvent(t, reader), protocol.MsgTypeText, 4)
 	if msg.Content != "after" {
-		t.Fatalf("first reconnect event content = %q, want after", msg.Content)
+		t.Fatalf("first reconnect event after reconcile content = %q, want after", msg.Content)
 	}
 }
 
