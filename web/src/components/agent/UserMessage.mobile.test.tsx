@@ -8,7 +8,8 @@ import { UserMessage } from './UserMessage'
 // 2026-09-16 用户报告（真实手机）：
 //   ① 「手机上 user msg 宽度能超出屏幕」
 //   ② 「你没给手机复制 user msg 的交互」
-// 两条都只在**触屏**（hover: none / pointer: coarse）设备上暴露，所以这里固定 touch=true。
+//   ③ 「手机长按老是变出那个蓝色选中判定，位置还根本不对」
+// 三条都只在**触屏**（hover: none / pointer: coarse）设备上暴露，所以这里固定 touch=true。
 const device = { touch: true }
 vi.mock('@/hooks/useIsMobile', () => ({
   useIsTouch: () => device.touch,
@@ -54,6 +55,21 @@ describe('UserMessage — 手机端（2026-09-16 用户报告）', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('copy me please'))
     // 复制后要有反馈（图标切成 check）
     await waitFor(() => expect(buttonWithIcon('check')).toBeDefined())
+  })
+
+  it('③ 触屏：禁用原生文本选择与 iOS 长按 callout（长按不再弹蓝色选中控件）', () => {
+    renderWithProviders(<UserMessage content="long press me" />)
+    const bubble = screen.getByTestId('user-bubble')
+    // 原生选择被关掉 ⇒ 长按不再出现浏览器蓝色高亮/选择控件（其位置在虚拟滚动容器里不受控）
+    expect(bubble.className).toContain('select-none')
+    expect(bubble.className).toContain('-webkit-touch-callout')
+  })
+
+  it('③ 桌面：不抑制原生选择（拖选文本仍然可用）', () => {
+    device.touch = false
+    renderWithProviders(<UserMessage content="desktop selectable" />)
+    const bubble = screen.getByTestId('user-bubble')
+    expect(bubble.className).not.toContain('select-none')
   })
 
   it('② 桌面（有 hover）：复制按钮仍在，但走半透明 + hover 显形', () => {

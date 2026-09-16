@@ -11,6 +11,8 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChatMessage, WebIteration, WebToolProgress } from '@/types/shared'
 
+import { useIsTouch } from '@/hooks/useIsMobile'
+
 export type CopyVariant = 'reply' | 'thinking' | 'tools' | 'raw'
 export type IterationVariant = 'thinking' | 'content' | 'all'
 export type ToolVariant = 'output' | 'command'
@@ -162,6 +164,7 @@ export function CopyTarget({
     [kind, iteration, tools],
   )
   const press = useLongPress(openAt)
+  const isTouch = useIsTouch()
 
   // ⚠️ 不使用任何全局 window 监听（仓库规则：per-session 代码禁止全局监听，防跨会话污染）。
   // 关闭方式改为纯 React：① 菜单底下铺一层**透明遮罩**，点它即关闭；
@@ -211,7 +214,18 @@ export function CopyTarget({
         // ⚠️ 包裹层自身必须 `min-w-0`：它常被插进 flex 行里（如 tools ⊂ iteration ⊂ message），
         // flex 子项默认 `min-width: auto` ⇒ 拒绝收缩到内容宽度以下 ⇒ 长参数把整行撑满，
         // 手机端 pill 退化成"一行一个"（2026-09-15 用户报告；根因就是我这一层漏了 min-w-0）。
-        className={className ? `min-w-0 ${className}` : 'min-w-0'}
+        className={[
+          'min-w-0',
+          // 触屏：禁用原生文本选择与 iOS 长按 callout。否则长按消息会弹出浏览器的
+          // 蓝色选中高亮 + 选择控件 —— 它在虚拟滚动 + transform 容器里位置不受我们
+          // 控制（用户 2026-09-16：「手机长按老是变出那个蓝色选中判定，位置还根本
+          // 不对」），并且会抢走长按手势（复制菜单永远弹不出来）。
+          // 触屏的复制入口 = 长按菜单 / 可见复制按钮；桌面保留原生选择（拖选 / 右键复制）。
+          isTouch ? 'select-none [-webkit-touch-callout:none]' : '',
+          className ?? '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
         onContextMenu={(e) => {
           // 右键会冒泡：嵌套目标（tools ⊂ iteration ⊂ message）里只让**最内层**开菜单，
           // 否则会同时弹出 3 个菜单（用户右键工具时显然只要工具那一份）。

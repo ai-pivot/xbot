@@ -4,11 +4,19 @@ import '@testing-library/jest-dom'
 
 import { CopyTarget } from './MessageActions'
 
-// 2026-09-16 用户报告：「你没给手机复制 user msg 的交互」。
-// 根因：长按判定 onPointerMove **任何位移都取消计时**（无容差），而触屏手指必然抖动
-// 一两像素 ⇒ 480ms 计时几乎永远被清掉 ⇒ 手机上长按不出复制菜单。
-// 本文件钉死修复后的契约：抖动 <10px 仍然长按成功；真正划动（>10px）则取消；
-// 鼠标按下不触发长按（桌面走右键）。
+// 2026-09-16 用户报告：
+//   ② 「你没给手机复制 user msg 的交互」
+//   ③ 「手机长按老是变出那个蓝色选中判定，位置还根本不对」
+// ② 根因：长按判定 onPointerMove **任何位移都取消计时**（无容差），触屏手指必然抖动
+//    一两像素 ⇒ 480ms 计时几乎永远被清掉 ⇒ 手机上长按不出复制菜单。
+// ③ 根因：消息内容是可选文本，长按触发**浏览器原生**选择（蓝色高亮 + 原生气泡），
+//    其位置在虚拟滚动 + transform 容器里不受我们控制；触屏上必须抑制，把长按让给复制菜单。
+const device = { touch: true }
+vi.mock('@/hooks/useIsMobile', () => ({
+  useIsTouch: () => device.touch,
+  useIsMobile: () => false,
+}))
+
 const child = <span>target</span>
 
 function menuOpen() {
@@ -33,6 +41,7 @@ function advance(ms: number) {
 
 describe('CopyTarget 长按（触屏抖动容差）', () => {
   beforeEach(() => {
+    device.touch = true
     vi.useFakeTimers()
   })
   afterEach(() => {
@@ -66,5 +75,19 @@ describe('CopyTarget 长按（触屏抖动容差）', () => {
     fireEvent.contextMenu(node, { clientX: 10, clientY: 10 })
     expect(menuOpen()).not.toBeNull()
     expect(screen.getAllByText(/复制/).length).toBeGreaterThan(0)
+  })
+
+  it('③ 触屏：复制面禁用原生选择与 callout（长按不再弹蓝色选中控件）', () => {
+    const node = renderTarget()
+    expect(node.className).toContain('select-none')
+    expect(node.className).toContain('-webkit-touch-callout')
+    // min-w-0 不能被丢掉（2026-09-15 的教训）
+    expect(node.className).toContain('min-w-0')
+  })
+
+  it('③ 桌面：不抑制原生选择（拖选文本仍可用）', () => {
+    device.touch = false
+    const node = renderTarget()
+    expect(node.className).not.toContain('select-none')
   })
 })

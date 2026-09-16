@@ -244,6 +244,9 @@ export const UserMessage = memo(function UserMessage({
             // （break-words）、Markdown 产出的任意宽子元素（宽表格/图片/pre/长 URL）
             // 也不许超出（[&_*]:max-w-full）——超宽的它们各自滚动，而不是把气泡撑出屏幕。
             'relative min-w-0 max-w-full break-words [&_*]:max-w-full rounded-2xl rounded-br-sm px-3.5 py-2',
+            // 触屏：禁用原生文本选择与 iOS 长按 callout —— 长按归我们的复制菜单，且原生
+            // 蓝色选中控件在虚拟滚动容器里位置不受我们控制（用户 2026-09-16 报告「位置根本不对」）。
+            isTouch ? 'select-none [-webkit-touch-callout:none]' : '',
             isNotification
               ? 'border border-border bg-bg-secondary text-text-muted'
               : 'bg-accent/15 text-text-primary',
