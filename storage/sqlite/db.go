@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,39 @@ func Open(path string) (*DB, error) {
 		dir := filepath.Dir(path)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("create database directory: %w", err)
+		}
+	}
+
+	// ── 数据安全（2026-09-16 用户要求：防止 xbot-cli 运行覆盖已有 db 数据）──
+	// 设计铁律：**启动路径永不阻塞**。xbot-server 由 supervisor 托管，这里一旦返回错误
+	// 就会形成「启动失败 → 自动重启 → 再失败」的崩溃循环，所以只做**告警 + 数据保全**：
+	//   ① 文件存在但 0 字节 → 可能是新库（SQLite 首次写入前就是 0 字节），也可能是数据
+	//      丢失现场 ⇒ 只 WARN（若同级有备份，一并把备份路径打出来）。
+	//   ② 文件存在且非空但不是 SQLite → 只 WARN，绝不改写/截断该文件；是不是数据库交给
+	//      驱动判定（驱动自己会报错，不需要我们额外制造一条启动失败路径）。
+	//   ③ 文件不存在但同目录有备份 → 只 WARN 并列出备份路径（不自动恢复、不阻塞启动）。
+	if path != ":memory:" {
+		if fi, statErr := os.Stat(path); statErr == nil {
+			if fi.Size() == 0 {
+				if baks := siblingDBBackups(path); len(baks) > 0 {
+					log.WithFields(log.Fields{"path": path, "backups": baks}).
+						Warn("Database file exists but is EMPTY (0 bytes) and backup(s) exist — if this is unexpected data loss, STOP and restore from a backup; continuing")
+				} else {
+					log.WithField("path", path).
+						Warn("Database file exists but is EMPTY (0 bytes) — treating as a fresh database (normal before the first write)")
+				}
+			} else if hdrErr := verifySQLiteHeader(path); hdrErr != nil {
+				log.WithFields(log.Fields{"path": path, "reason": hdrErr.Error()}).
+					Warn("Database file does not start with the SQLite magic — leaving it untouched (never truncated/overwritten); the driver will report an error if it is not a database")
+			}
+		} else if os.IsNotExist(statErr) {
+			if baks := siblingDBBackups(path); len(baks) > 0 {
+				log.WithFields(log.Fields{"path": path, "backups": baks}).
+					Warn("Creating a NEW empty database while backup(s) exist — if you did not expect an empty database, STOP and restore from one of the backups listed above")
+			} else {
+				log.WithField("path", path).
+					Warn("Creating a NEW empty database file (none existed). If this is unexpected, STOP and restore from backup.")
+			}
 		}
 	}
 
@@ -153,10 +187,45 @@ func (db *DB) initSchema() error {
 	if err != nil {
 		version = 1
 	}
-	if version < schemaVersion {
-		return db.migrateSchema(version)
+
+	// ── 数据安全（2026-09-16 用户要求：「我主要是想防止清除已有数据」）────────────
+	// 既有库走迁移是**写主库**的操作，而迁移里含会删行的迁移（如 orphan 清理）。这里的
+	// 保护全部是**非阻塞**的（铁律：启动路径永不阻塞 —— xbot-server 由 supervisor 托管，
+	// 一旦返回错误就会「启动失败 → 自动重启 → 再失败」崩溃循环）：
+	//   ① version > schemaVersion（旧二进制配新库）⇒ 只 WARN，**不跑任何迁移**（既有数据
+	//      原样不动），照常启动；
+	//   ② version < schemaVersion ⇒ **尽力**先整库备份（VACUUM INTO
+	//      <db>.pre-v<from>-<UTC>.bak，与仓库既有迁移的备份约定一致）；备份失败只 WARN，
+	//      **照常迁移、照常启动**。
+	if version > schemaVersion {
+		log.WithFields(log.Fields{"db_schema": version, "binary_schema": schemaVersion}).
+			Warn("Stored schema version is NEWER than this binary supports; no migrations will run and existing data is left untouched")
+		return nil
 	}
-	return nil
+	if version == schemaVersion {
+		return nil
+	}
+	if db.path != "" && db.path != ":memory:" {
+		// **确定性命名 + 已存在即跳过**：每个 from-version 最多留一份整库副本，
+		// 迁移重试 / 崩溃重启都不会反复复制（用户 2026-09-16：库有 2.5GB，
+		// 「迁移一次备份一次」太浪费空间）。命名与仓库既有约定一致：
+		// migrateV61ToV62 → <db>.pre-v62.bak。
+		backup := fmt.Sprintf("%s.pre-v%d.bak", db.path, version)
+		if _, statErr := os.Stat(backup); os.IsNotExist(statErr) {
+			escaped := strings.ReplaceAll(backup, "'", "''")
+			if _, err := conn.Exec("VACUUM INTO '" + escaped + "'"); err != nil {
+				log.WithFields(log.Fields{"path": db.path, "from_version": version, "reason": err.Error()}).
+					Warn("Pre-migration backup FAILED (disk space?) — continuing with the migration; startup must never be blocked")
+			} else {
+				log.WithFields(log.Fields{"backup": backup, "from_version": version, "to_version": schemaVersion}).
+					Info("Existing database backed up before schema migration (data safety)")
+			}
+		} else {
+			log.WithField("backup", backup).
+				Info("Pre-migration backup already exists for this schema version; reusing it (no extra copy)")
+		}
+	}
+	return db.migrateSchema(version)
 }
 
 // parseSQLiteTime parses a time string from SQLite into time.Time.

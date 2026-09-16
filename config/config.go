@@ -746,13 +746,43 @@ func SaveToFile(path string, cfg *Config) error {
 
 	// 尝试读取磁盘上已有的文件，做 JSON 级合并以保留未知字段
 	finalData := structData
+	var existingRaw []byte
 	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 {
+		existingRaw = existing
 		// Normalize existing data so dirty string values don't break the merge
 		existing = normalizeConfigTypes(existing)
 		if merged, mergeErr := mergeJSONPreserveUnknown(existing, structData); mergeErr == nil {
 			finalData = merged
 		}
 		// 合并失败时回退到纯 struct 序列化（安全降级）
+	}
+
+	// ── 数据安全（2026-09-16 用户要求：「xbot-cli 运行可能覆盖已有的 config … 一定要
+	//    避免」，同时要求「一定不能让正常情况无法启动」）──
+	// 深度合并本应保留现有文件的每个顶层 key。这里做**显式核对**：若发现本次写入会丢掉
+	// 某个既有顶层 key，就把该 key 的原始值**补回**（保全数据），而不是拒绝写入 ——
+	// 写入失败会阻塞正常启动/正常配置更新，所以此处只保全、不拒绝，永不丢 key。
+	if len(existingRaw) > 0 {
+		var existingKeys, finalKeys map[string]json.RawMessage
+		if json.Unmarshal(existingRaw, &existingKeys) == nil && json.Unmarshal(finalData, &finalKeys) == nil {
+			var missing []string
+			for k, v := range existingKeys {
+				if _, ok := finalKeys[k]; !ok {
+					finalKeys[k] = v
+					missing = append(missing, k)
+				}
+			}
+			if len(missing) > 0 {
+				if repaired, mErr := json.MarshalIndent(finalKeys, "", "  "); mErr == nil {
+					finalData = repaired
+					slog.Warn("preserved existing top-level config keys this build does not itself produce (user config is never dropped)",
+						"keys", strings.Join(missing, ", "))
+				} else {
+					slog.Warn("could not re-encode preserved config keys; keeping the merged content",
+						"keys", strings.Join(missing, ", "), "error", mErr)
+				}
+			}
+		}
 	}
 
 	// Write via a UNIQUE temp file per call (os.CreateTemp), never a fixed
@@ -784,6 +814,19 @@ func SaveToFile(path string, cfg *Config) error {
 	// call) already prevents the fixed-name clobber race; this retry covers
 	// the remaining target-lock window. POSIX rename is atomic and never
 	// fails this way — the retry is a fast no-op there.
+	// ── 数据安全（2026-09-16 用户要求：「xbot-cli 运行可能覆盖已有的 config … 一定要
+	//    避免」；同时明确要求「一定不能让正常情况无法启动」）──
+	// 覆盖前先把**现有文件**另存一份带时间戳的备份：即使本次写入内容有问题，用户原配置
+	// 也永远可恢复（与仓库既有的 config.json.bak-<时间戳> 约定一致）。备份是**尽力**行为：
+	// 失败只打 WARN，绝不因此阻断写入/启动（fail-closed 打在写配置路径上会让正常启动挂掉）。
+	if prev, readErr := os.ReadFile(path); readErr == nil && len(prev) > 0 {
+		bak := fmt.Sprintf("%s.bak-%s", path, time.Now().UTC().Format("20060102-150405"))
+		if werr := os.WriteFile(bak, prev, 0o600); werr != nil {
+			slog.Warn("config backup failed — writing anyway (a config save must never be blocked)",
+				"path", path, "error", werr)
+		}
+	}
+
 	var renameErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
