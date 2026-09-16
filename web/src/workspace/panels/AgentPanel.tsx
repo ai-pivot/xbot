@@ -42,6 +42,7 @@ import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
+import type { PanelParams } from '@/types/tab'
 import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
 // import { useOptionalPluginRuntime } from '@/plugin-runtime'
@@ -57,7 +58,7 @@ interface RewindHistoryResponse {
   }
 }
 
-export function AgentPanel({ params, api }: PanelProps) {
+export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const ctx = useDockviewContext()
   const ws = ctx.ws
   const store = ctx.sessionStore
@@ -89,11 +90,39 @@ export function AgentPanel({ params, api }: PanelProps) {
   // (session-per-tab architecture, VSCode-like). Mobile (no dockview) or the
   // seed tab (no sessionId) falls back to store.activeSession.
   const activeSession = store.activeSession
+  // 占位 agent tab（无 sessionId）是「引导槽」：只有当它**独占** main agent 面板时
+  // 才跟随 activeSession（移动端 / 首个会话尚未选择时的既有形态）。若已存在绑定会话
+  // 的 agent tab（session tab）而占位再跟随同一会话，两个面板会同时挂载同一会话 ⇒
+  // 消息列表整棵渲染两份、`/api/history` 拉两次（2026-09-16「切会话后同一 user 行
+  // 重复渲染」）。不变量：一个会话至多被一个 agent 面板渲染
+  //（另一半修复在 useTabManager.openTab：会话 tab 认领占位 tab，不再新建面板）。
+  const isPlaceholderMainAgent = !params.sessionId && !isSubAgent && !params.agentChatID
+  const [panelSetVersion, setPanelSetVersion] = useState(0)
+  useEffect(() => {
+    if (!isPlaceholderMainAgent || !containerApi?.onDidAddPanel) return
+    const onAdd = containerApi.onDidAddPanel(() => setPanelSetVersion((v) => v + 1))
+    const onRemove = containerApi.onDidRemovePanel(() => setPanelSetVersion((v) => v + 1))
+    return () => {
+      onAdd.dispose()
+      onRemove.dispose()
+    }
+  }, [containerApi, isPlaceholderMainAgent])
+  const sessionOwnedByPeerPanel = useMemo(() => {
+    if (!isPlaceholderMainAgent || !activeSession?.chatID) return false
+    return (containerApi?.panels ?? []).some((p) => {
+      if (p.id === api?.id) return false
+      const pp = p.params as PanelParams | undefined
+      return (
+        !!pp && pp.type === 'agent' && pp.sessionId === activeSession.chatID && !pp.subAgentRole && !pp.agentChatID
+      )
+    })
+    // panelSetVersion: 面板增删后重新判定（session tab 关闭 ⇒ 占位回到引导态）。
+  }, [containerApi, api, isPlaceholderMainAgent, activeSession?.chatID, panelSetVersion])
   const chatID = params.agentChatID
     ? (params.agentChatID ?? null)
     : isSubAgent
       ? (params.parentChatID ?? null)
-      : (params.sessionId ?? activeSession?.chatID ?? null)
+      : (params.sessionId ?? (sessionOwnedByPeerPanel ? null : (activeSession?.chatID ?? null)))
   const liveSubAgentChatID = !params.agentChatID && isSubAgent && params.subAgentRole && params.parentChatID
     ? `${params.parentChannel ?? 'web'}:${params.parentChatID}/${params.subAgentRole}${params.subAgentInstance ? `:${params.subAgentInstance}` : ''}`
     : null

@@ -30,12 +30,18 @@ const mocks = vi.hoisted(() => {
     liveMessage: null,
     isStreaming: false,
   }
-  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn() }
+  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn(), lastChatID: null as string | null }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/hooks/useAskUser', () => ({ useAskUser: () => ({ prompt: null, respond: vi.fn(), cancel: vi.fn() }) }))
-vi.mock('@/hooks/useChatMessages', () => ({ useChatMessages: () => mocks.chat }))
+vi.mock('@/hooks/useChatMessages', () => ({
+  // 捕获 chatID —— 会话归属不变量（一个会话至多被一个 agent 面板渲染）的断言点。
+  useChatMessages: (opts: { chatID?: string | null }) => {
+    mocks.lastChatID = opts?.chatID ?? null
+    return mocks.chat
+  },
+}))
 vi.mock('@/chat/useAgentChatState', () => ({
   // M4：新状态机 hook 的测试替身 —— messages/liveProgress 直通 mocks
   //（与旧 useProgressStream mock 同语义：busy 测试改 progressSnapshot，
@@ -368,5 +374,59 @@ describe('AgentPanel re-subscribe reconcile（P0：通知行在不可见期间�
     // 重新可见 ⇒ 对账一次（补回断连期间丢失、且不在重放窗口里的行）。
     act(() => cbs[0]({ isVisible: true }))
     await waitFor(() => expect(mocks.chat.reload).toHaveBeenCalledTimes(1))
+  })
+})
+
+/**
+ * 会话归属不变量：**一个会话至多被一个 agent 面板渲染**。
+ *
+ * 根因（2026-09-16「切会话后同一 user 行重复渲染」，e2e + DOM 铁证）：seed 在
+ * "还没有任何已知会话"时建的无 sessionId 占位 tab 用
+ * `params.sessionId ?? activeSession` 解析会话（跟着 activeSession 走）；侧栏点击
+ * 会话时既 `openTab(session tab)` 又 `activateSession` ⇒ 两个面板同时挂载同一会话
+ *（agent tab 是 renderer='always'，常驻 DOM）⇒ 整个消息列表渲染两份（同一
+ * user/assistant 行出现两次、`data-message-id` 相同）、`/api/history` 拉两次、
+ * SSE 双订阅。
+ *
+ * 契约：占位 tab 仅在**独占** main agent 面板时才跟随 activeSession（引导态）；
+ * 已有 session tab 拥有该会话时，占位 tab 不得镜像它。
+ */
+describe('AgentPanel 会话归属（一个会话至多被一个 agent 面板渲染）', () => {
+  const placeholderParams = { type: 'agent', tabId: 't1', title: 'Agent', closable: true }
+
+  it('已有 session tab 拥有 activeSession 时，占位 tab 不得镜像该会话', () => {
+    const peer = {
+      id: 'peer-panel',
+      params: { type: 'agent', tabId: 't2', title: 'S1', sessionId: 'chat-1', closable: true },
+    }
+    const containerApi = {
+      panels: [peer],
+      onDidAddPanel: () => ({ dispose: () => {} }),
+      onDidRemovePanel: () => ({ dispose: () => {} }),
+    }
+    render(
+      <AgentPanel
+        params={placeholderParams as never}
+        api={{ id: 'self-panel' } as never}
+        containerApi={containerApi as never}
+      />,
+    )
+    expect(mocks.lastChatID).toBeNull()
+  })
+
+  it('占位 tab 独占 main agent 面板时仍跟随 activeSession（引导态保持不变）', () => {
+    const containerApi = {
+      panels: [{ id: 'files-panel', params: { type: 'panel', tabId: 'p1', panelId: 'files', closable: true } }],
+      onDidAddPanel: () => ({ dispose: () => {} }),
+      onDidRemovePanel: () => ({ dispose: () => {} }),
+    }
+    render(
+      <AgentPanel
+        params={placeholderParams as never}
+        api={{ id: 'self-panel' } as never}
+        containerApi={containerApi as never}
+      />,
+    )
+    expect(mocks.lastChatID).toBe('chat-1')
   })
 })
