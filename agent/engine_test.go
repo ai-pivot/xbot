@@ -1334,50 +1334,60 @@ func TestCallChain_CanSpawn(t *testing.T) {
 			name:     "normal spawn from main",
 			chain:    []string{"main"},
 			target:   "code-reviewer",
-			maxDepth: 6,
+			maxDepth: 5,
 			wantErr:  false,
 		},
 		{
 			name:     "depth 2 spawn",
 			chain:    []string{"main", "main/code-reviewer"},
 			target:   "explorer",
-			maxDepth: 6,
+			maxDepth: 5,
 			wantErr:  false,
 		},
 		{
-			name:     "max depth reached (old default 3)",
-			chain:    []string{"main", "main/a", "main/a/b"},
-			target:   "c",
+			// 用户决策 2026-09-16：同角色嵌套**不是环**（主 → explore → explore
+			// 是合法用法，旧实现把它当 circular call 拒绝 —— 现场报错
+			// `circular SubAgent call: role "explore" already in chain [main main/explore]`）。
+			name:     "same role nested is allowed (no cycle check)",
+			chain:    []string{"main", "main/explore"},
+			target:   "explore",
+			maxDepth: 5,
+			wantErr:  false,
+		},
+		{
+			name:     "max depth reached (deepest allowed caller has 4 levels)",
+			chain:    []string{"main", "main/a", "main/a/b", "main/a/b/c", "main/a/b/c/d", "main/a/b/c/d/e"},
+			target:   "f",
+			maxDepth: 5,
+			wantErr:  true,
+		},
+		{
+			name:     "depth 5 (main + 4 levels) may still spawn the 5th level",
+			chain:    []string{"main", "main/a", "main/a/b", "main/a/b/c", "main/a/b/c/d"},
+			target:   "e",
+			maxDepth: 5,
+			wantErr:  false,
+		},
+		{
+			name:     "maxDepth 3 reached",
+			chain:    []string{"main", "main/a", "main/a/b", "main/a/b/c"},
+			target:   "d",
 			maxDepth: 3,
 			wantErr:  true,
 		},
 		{
-			name:     "max depth reached (new default 6)",
-			chain:    []string{"main", "main/a", "main/a/b", "main/a/b/c", "main/a/b/c/d", "main/a/b/c/d/e"},
-			target:   "f",
-			maxDepth: 6,
-			wantErr:  true,
-		},
-		{
-			name:     "within new default depth 6",
+			name:     "zero maxDepth uses default (5) — 4-level caller allowed",
 			chain:    []string{"main", "main/a", "main/a/b", "main/a/b/c", "main/a/b/c/d"},
 			target:   "e",
-			maxDepth: 6,
+			maxDepth: 0, // → DefaultMaxSubAgentDepth (5)
 			wantErr:  false,
 		},
 		{
-			name:     "circular call",
-			chain:    []string{"main", "main/code-reviewer"},
-			target:   "code-reviewer",
-			maxDepth: 6,
+			name:     "zero maxDepth uses default (5) — 5-level caller rejected",
+			chain:    []string{"main", "main/a", "main/a/b", "main/a/b/c", "main/a/b/c/d", "main/a/b/c/d/e"},
+			target:   "f",
+			maxDepth: 0,
 			wantErr:  true,
-		},
-		{
-			name:     "zero maxDepth uses default",
-			chain:    []string{"main", "main/a", "main/a/b"},
-			target:   "c",
-			maxDepth: 0, // should use DefaultMaxSubAgentDepth (6)
-			wantErr:  false,
 		},
 	}
 

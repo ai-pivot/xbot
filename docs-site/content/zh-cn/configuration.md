@@ -193,7 +193,7 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
     "compression_threshold": 0.9,
     "context_mode": "",
     "purge_old_messages": false,
-    "max_sub_agent_depth": 6,
+    "max_sub_agent_depth": 5,
     "llm_retry_attempts": 5,
     "llm_retry_delay": "1s",
     "llm_retry_max_delay": "30s",
@@ -217,7 +217,7 @@ Model Tier 是**用户级设置**，存储在 `user_settings` 表（Server 模�
 | `compression_threshold` | float | `0.9` | 触发压缩的 token 比例 |
 | `context_mode` | string | `""` | 上下文管理模式 |
 | `purge_old_messages` | bool | `false` | 压缩后清除旧消息 |
-| `max_sub_agent_depth` | int | `6` | SubAgent 最大嵌套深度 |
+| `max_sub_agent_depth` | int | `5` | SubAgent 最大嵌套层数（只校验深度；同角色嵌套是合法用法，不视为循环调用） |
 | `llm_retry_attempts` | int | `5` | LLM 调用失败重试次数 |
 | `llm_retry_delay` | duration | `"1s"` | 重试初始延迟 |
 | `llm_retry_max_delay` | duration | `"30s"` | 重试最大延迟 |

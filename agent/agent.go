@@ -1560,7 +1560,7 @@ type Config struct {
 	EnableAutoCompress bool // 是否启用自动上下文压缩（默认 true，旧字段）
 
 	// SubAgent 深度控制
-	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
+	MaxSubAgentDepth int // SubAgent 最大嵌套层数（默认 5；只校验深度，同角色嵌套是合法用法）
 
 	// OffloadDir: offload 文件存储目录（默认 ~/.xbot/offload_store）
 	OffloadDir string
@@ -1860,7 +1860,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.CompressionThreshold = 0.9
 	}
 	if cfg.MaxSubAgentDepth <= 0 {
-		cfg.MaxSubAgentDepth = 6
+		cfg.MaxSubAgentDepth = DefaultMaxSubAgentDepth
 	}
 	if cfg.CLISenderID == "" {
 		cfg.CLISenderID = "cli_user"
