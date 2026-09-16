@@ -269,3 +269,74 @@ func TestFeishuCoT_CreateFailureMarksBroken(t *testing.T) {
 		t.Fatal("create failure must mark the CoT broken (caller falls back to the card)")
 	}
 }
+
+// tool title 必须携带「这次调用在做什么」的关键参数（对齐 dsh-lark 的 presenter
+// title 语义：短小、始终可见、描述本次调用，而不是工具名重复）。
+func TestCotToolTitle_CarriesPrimaryArg(t *testing.T) {
+	cases := []struct {
+		name    string
+		tp      protocol.ToolProgress
+		want    string
+		notWant string
+	}{
+		{"shell 带命令", protocol.ToolProgress{Name: "Shell", Args: `{"command":"cargo test --all"}`}, "Shell · cargo test --all", ""},
+		{"read 带路径", protocol.ToolProgress{Name: "Read", Args: `{"path":"src/app.ts"}`}, "Read · src/app.ts", ""},
+		{"grep 带模式", protocol.ToolProgress{Name: "Grep", Args: `{"pattern":"TODO","path":"src"}`}, "Grep · TODO", ""},
+		{"write 带路径", protocol.ToolProgress{Name: "FileReplace", Args: `{"path":"a.go"}`}, "FileReplace · a.go", ""},
+		{"无参数回落 label", protocol.ToolProgress{Name: "Read", Label: "src/x.go\nmore"}, "Read · src/x.go", ""},
+		{"啥都没有就只有名字", protocol.ToolProgress{Name: "WebSearch"}, "WebSearch", ""},
+	}
+	for _, c := range cases {
+		if got := cotToolTitle(c.tp); got != c.want {
+			t.Fatalf("%s: cotToolTitle = %q, want %q", c.name, got, c.want)
+		}
+	}
+	// 超长参数：单行 + rune 安全截断（标题永远只占一行）
+	long := protocol.ToolProgress{Name: "Shell", Args: `{"command":"` + strings.Repeat("x", 300) + `"}`}
+	got := cotToolTitle(long)
+	if strings.Contains(got, "\n") {
+		t.Fatal("title must stay on one line")
+	}
+	if len([]rune(got)) > 96 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("long title must be rune-truncated with an ellipsis, got %d runes", len([]rune(got)))
+	}
+}
+
+// 被顶替的正文（narration）必须 flush 进思考过程；**最后一次**正文不进 CoT（它是答案，
+// 由普通消息路径发送）—— 与 dsh-lark 的 hold/supersede 规则一致。
+func TestFeishuCoTRenderer_NarrationFlushedOnce(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+
+	r.onProgress(&protocol.ProgressEvent{TurnID: 5, Phase: "iteration", Iteration: 1})
+	r.onStreamContent("先看看目录结构，再决定改哪里", "")
+	// 迭代推进 ⇒ 第一段正文变成「过程叙述」写进 CoT
+	r.onProgress(&protocol.ProgressEvent{TurnID: 5, Phase: "iteration", Iteration: 2})
+	r.onStreamContent("最终答案在这里", "")
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	var texts []string
+	types := strings.Join(eventTypes(t, calls), ",")
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] != "TEXT_MESSAGE_CONTENT" {
+				continue
+			}
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			texts = append(texts, payload["delta"].(string))
+		}
+	}
+	if len(texts) != 1 || texts[0] != "先看看目录结构，再决定改哪里" {
+		t.Fatalf("narration must be flushed exactly once (the superseded text), got %v", texts)
+	}
+	if strings.Contains(strings.Join(texts, ""), "最终答案在这里") {
+		t.Fatal("the LAST text is the answer — it must not be written into the CoT")
+	}
+	if !strings.Contains(types, "TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END") {
+		t.Fatalf("missing TEXT_MESSAGE lifecycle: %s", types)
+	}
+}

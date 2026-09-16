@@ -1,7 +1,9 @@
 package feishu
 
 import (
+	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 
 	"xbot/protocol"
@@ -36,8 +38,13 @@ type feishuCoTRenderer struct {
 	runOpen       bool
 	reasoningOpen bool
 	lastReasoning string
-	startedTools  map[string]struct{}
-	doneTools     map[string]struct{}
+	// 正文：只保留「最后一次」作为答案（走普通消息）；被顶替的中间文本是
+	// narration，按 dsh-lark 的做法 flush 进思考过程（TEXT_MESSAGE_*，role=assistant）。
+	heldText     string
+	textSeq      int
+	curIteration int
+	startedTools map[string]struct{}
+	doneTools    map[string]struct{}
 }
 
 func newFeishuCoTRenderer(chatID string, cot *feishuCoT) *feishuCoTRenderer {
@@ -62,6 +69,12 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 		turnID = r.runTurnID
 	}
 	r.ensureRunLocked(turnID)
+	// 迭代推进 ⇒ 上一迭代的正文变成了「过程叙述」（dsh-lark：被顶替的文本进
+	// 思考过程，只有最后一次是答案）。
+	if ev.Iteration > 0 && ev.Iteration != r.curIteration {
+		r.flushNarrationLocked()
+		r.curIteration = ev.Iteration
+	}
 
 	for _, tp := range ev.ActiveTools {
 		key := cotToolKey(tp)
@@ -69,8 +82,9 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			continue
 		}
 		r.startedTools[key] = struct{}{}
-		// 工具开始即结束「思考」块（思考块不跨工具调用，与 dsh-lark 一致）。
+		// 工具开始即结束「思考」块与上一段正文（两者都不跨工具调用，与 dsh-lark 一致）。
 		r.closeReasoningLocked()
+		r.flushNarrationLocked()
 		r.cot.emit("TOOL_CALL_START", map[string]any{
 			"toolCallId":   key,
 			"icon":         cotToolIcon(tp.Name),
@@ -112,14 +126,22 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 
 // onStreamContent 消费流式文本。xbot 推的是**全量**累积文本 ⇒ 这里做增量差分；
 // 只把 reasoning 写进思考区（答案留给普通消息）。
-func (r *feishuCoTRenderer) onStreamContent(_ /*content*/, reasoning string) {
-	if r.cot == nil || reasoning == "" {
+func (r *feishuCoTRenderer) onStreamContent(content, reasoning string) {
+	if r.cot == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.ensureRunLocked(r.runTurnID)
 
+	// 正文：只记「最后一次」作为答案候选（答案由普通消息路径发送）；上一段在
+	// 迭代推进/工具调用时被 flush 成过程叙述。
+	if content != "" {
+		r.heldText = content
+	}
+	if reasoning == "" {
+		return
+	}
 	delta := cotDelta(r.lastReasoning, reasoning)
 	if delta == "" {
 		return
@@ -156,6 +178,9 @@ func (r *feishuCoTRenderer) ensureRunLocked(turnID uint64) {
 	r.runOpen = true
 	r.reasoningOpen = false
 	r.lastReasoning = ""
+	r.heldText = ""
+	r.textSeq = 0
+	r.curIteration = 0
 	r.startedTools = map[string]struct{}{}
 	r.doneTools = map[string]struct{}{}
 	r.cot.emit("RUN_STARTED", map[string]any{
@@ -179,6 +204,20 @@ func (r *feishuCoTRenderer) closeRunLocked(errMsg string) {
 		r.cot.emit("RUN_ERROR", map[string]any{"message": errMsg, "code": "TURN_FAILED"})
 	}
 	r.runOpen = false
+}
+
+// flushNarrationLocked 把「被顶替的正文」写进思考过程（dsh-lark 的 TEXT_MESSAGE_*）。
+func (r *feishuCoTRenderer) flushNarrationLocked() {
+	if r.heldText == "" {
+		return
+	}
+	text := r.heldText
+	r.heldText = ""
+	r.textSeq++
+	messageID := "text-" + strconv.FormatUint(r.runTurnID, 10) + "-" + strconv.Itoa(r.textSeq)
+	r.cot.emit("TEXT_MESSAGE_START", map[string]any{"messageId": messageID, "role": "assistant"})
+	r.cot.emit("TEXT_MESSAGE_CONTENT", map[string]any{"messageId": messageID, "delta": text})
+	r.cot.emit("TEXT_MESSAGE_END", map[string]any{"messageId": messageID})
 }
 
 func (r *feishuCoTRenderer) closeReasoningLocked() {
@@ -215,15 +254,89 @@ func cotToolKey(tp protocol.ToolProgress) string {
 	return tp.Name + "#" + strconv.Itoa(tp.Iteration)
 }
 
-// cotToolTitle 是工具在 CoT 里的标题（首行摘要；与 dsh-lark 的 presenter title 同位）。
+// cotToolTitle 是工具在 CoT 里的标题 —— 对齐 dsh-lark 的 presenter 语义：
+// **「短小、始终可见、描述这一次调用在做什么」的单行标签**（不是工具名重复）。
+//
+// 参数优先从 Args(JSON) 里取该工具最有信息量的那一项（命令/路径/模式/查询…），
+// 其次回落到 Label/Summary 的首行，最后才是工具名本身。长度按 rune 截断（单行）。
 func cotToolTitle(tp protocol.ToolProgress) string {
+	const maxRunes = 96
+	if arg := cotPrimaryArg(tp); arg != "" {
+		return cotBoundTitle(tp.Name+" · "+arg, maxRunes)
+	}
 	if tp.Label != "" {
-		return tp.Name + " · " + firstLine(tp.Label)
+		return cotBoundTitle(tp.Name+" · "+firstLine(tp.Label), maxRunes)
 	}
 	if tp.Summary != "" {
-		return tp.Name + " · " + firstLine(tp.Summary)
+		return cotBoundTitle(tp.Name+" · "+firstLine(tp.Summary), maxRunes)
 	}
 	return tp.Name
+}
+
+// cotPrimaryArg 从参数 JSON 里取该工具最有信息量的字段（按工具语义）。
+func cotPrimaryArg(tp protocol.ToolProgress) string {
+	if tp.Args == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(tp.Args), &m) != nil {
+		return ""
+	}
+	keys := cotArgKeys(tp.Name)
+	for _, k := range keys {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		switch t := v.(type) {
+		case string:
+			if s := firstLine(strings.TrimSpace(t)); s != "" {
+				return s
+			}
+		case []any: // 例如 task_id: ["abc"]
+			if len(t) > 0 {
+				if s, ok := t[0].(string); ok && s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// cotArgKeys 按工具语义给出「最有信息量」的参数优先级。
+func cotArgKeys(name string) []string {
+	switch strings.ToLower(name) {
+	case "shell", "bash":
+		return []string{"command", "cmd"}
+	case "read", "file_read":
+		return []string{"path", "file_path", "file"}
+	case "filereplace", "filecreate", "edit", "write":
+		return []string{"path", "file_path", "file"}
+	case "grep", "search":
+		return []string{"pattern", "query"}
+	case "glob":
+		return []string{"pattern", "path"}
+	case "websearch":
+		return []string{"query"}
+	case "fetch", "webfetch":
+		return []string{"url"}
+	case "subagent", "createchat":
+		return []string{"role", "task"}
+	case "task_read", "task_status", "task_wait", "task_kill":
+		return []string{"task_id"}
+	default:
+		return []string{"command", "path", "query", "pattern", "url", "task_id", "task"}
+	}
+}
+
+// cotBoundTitle 单行 + rune 安全截断（标题永远只占一行）。
+func cotBoundTitle(s string, maxRunes int) string {
+	r := []rune(firstLine(s))
+	if len(r) <= maxRunes {
+		return string(r)
+	}
+	return string(r[:maxRunes-1]) + "…"
 }
 
 // cotToolIcon 返回 dsh-lark 图标词表里的图标名（未知工具用 default）。
