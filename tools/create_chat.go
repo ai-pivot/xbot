@@ -87,9 +87,6 @@ func (t *CreateChatTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 }
 
 func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatParams) (*ToolResult, error) {
-	if params.Role == "" {
-		return nil, fmt.Errorf("role is required for agent type")
-	}
 	if params.Instance == "" {
 		return nil, fmt.Errorf("instance is required for agent type")
 	}
@@ -99,10 +96,18 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 		return nil, fmt.Errorf("interactive SubAgent not supported in this context (type %T)", ctx.Manager)
 	}
 
-	// Load role definition
-	role, ok := loadRoleFromCtx(ctx, params.Role)
-	if !ok {
-		return nil, fmt.Errorf("unknown role: %s, see <available_agents> in system prompt", params.Role)
+	// role：best-effort（同 SubAgent 工具）—— 缺省/拼写不准尽量匹配，只有有歧义才报错。
+	roleSb, roleUserID, userAgentDirs := roleLookupContext(ctx)
+	resolvedRole, roleAutoMatched, roleErr := ResolveSubAgentRoleSandbox(ctx.Ctx, params.Role, params.Task, roleSb, roleUserID, userAgentDirs...)
+	if roleErr != nil {
+		return nil, roleErr
+	}
+	role := resolvedRole
+	// 下游（会话 key / AgentChannel 地址 `agent:<role>/<instance>`）都用 params.Role。
+	params.Role = role.Name
+	roleNote := ""
+	if roleAutoMatched {
+		roleNote = fmt.Sprintf("Auto-matched role %q (role was omitted or misspelled — best effort).\n\n", role.Name)
 	}
 
 	effectiveModel := params.Model
@@ -153,7 +158,7 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 		}
 	}
 
-	return NewResult(fmt.Sprintf("Created agent chat: %s\n%s\n\nUse SendMessage(to=\"%s\", message=\"...\") to send tasks.", addr, result, addr)), nil
+	return NewResult(roleNote + fmt.Sprintf("Created agent chat: %s\n%s\n\nUse SendMessage(to=\"%s\", message=\"...\") to send tasks.", addr, result, addr)), nil
 }
 
 func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatParams) (*ToolResult, error) {
