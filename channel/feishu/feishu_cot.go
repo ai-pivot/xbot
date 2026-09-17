@@ -371,11 +371,14 @@ func cotToolKind(name string) string {
 	}
 }
 
-// cotBoundResult 截断工具结果（rune 安全；dsh-lark 用 1500 字符上限）。
+// cotBoundResult 截断工具结果（rune 安全）。
+//
+// 精确对齐 dsh-lark 的 boundResult：`text.length <= limit ? text : text.slice(0, limit-1) + "…"`，
+// 即**总长恰好等于上限**（1500 rune），而不是 1501（我们旧实现多一个字符）。
 func cotBoundResult(s string) string {
 	r := []rune(s)
 	if len(r) <= cotMaxToolResultRunes {
 		return s
 	}
-	return string(r[:cotMaxToolResultRunes]) + "…"
+	return string(r[:cotMaxToolResultRunes-1]) + "…"
 }

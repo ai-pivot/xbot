@@ -132,7 +132,9 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			"content":    map[string]any{"type": "code", "code": cotBoundResult(body)},
 		}
 		if cotToolFailed(tp.Status) {
-			payload["error"] = "TOOL_FAILED"
+			// 对齐 dsh-lark：error 承载**真实错误标识**（他们用 event.data.error.code；
+			// 我们的等价物是工具状态：error / failed / killed）。
+			payload["error"] = tp.Status
 		}
 		r.cot.emit("TOOL_CALL_RESULT", payload)
 	}

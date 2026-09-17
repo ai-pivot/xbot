@@ -217,14 +217,14 @@ func TestFeishuCoTRenderer_ReasoningDeltas(t *testing.T) {
 
 // 工具结果按 dsh-lark 的 1500 字符上限截断（rune 安全）。
 func TestFeishuCoTRenderer_ToolResultBounded(t *testing.T) {
-	if got := cotBoundResult(strings.Repeat("x", 2000)); len([]rune(got)) != cotMaxToolResultRunes+1 {
-		t.Fatalf("bounded result length = %d, want %d", len([]rune(got)), cotMaxToolResultRunes+1)
+	if got := cotBoundResult(strings.Repeat("x", 2000)); len([]rune(got)) != cotMaxToolResultRunes {
+		t.Fatalf("bounded result length = %d, want exactly %d (dsh-lark: slice(0, limit-1)+…)", len([]rune(got)), cotMaxToolResultRunes)
 	}
 	if got := cotBoundResult("short"); got != "short" {
 		t.Fatalf("short result must pass through, got %q", got)
 	}
 	// 中文按 rune 截断（绝不切碎 UTF-8）。
-	if got := cotBoundResult(strings.Repeat("中", 2000)); !strings.HasSuffix(got, "…") || len([]rune(got)) != cotMaxToolResultRunes+1 {
+	if got := cotBoundResult(strings.Repeat("中", 2000)); !strings.HasSuffix(got, "…") || len([]rune(got)) != cotMaxToolResultRunes {
 		t.Fatalf("rune-safe truncation failed: %d runes", len([]rune(got)))
 	}
 }
