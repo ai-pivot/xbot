@@ -352,7 +352,12 @@ function normalizeStream(env: Record<string, unknown>): readonly DomainEvent[] |
 // ─── text → text_final ──
 
 function normalizeText(env: Record<string, unknown>): readonly DomainEvent[] | null {
-  const turn = optTurnID(env.turn_id)
+  // turn_id 的两处来源：顶层（WSMessage.TurnID，omitempty —— 0 时缺省）与
+  // metadata.turn_id（sendMessage 给最终回复显式带上的权威值）。命令回复
+  // （`!cmd` / slash）**两处都没有** —— 那是"无 turn"的唯一合法形态
+  // （reduce 把它渲染为 legacy 独立行）。
+  const metaTurn = optTurnID(asRecord(env.metadata)?.turn_id)
+  const turn = optTurnID(env.turn_id) ?? metaTurn
   const content = typeof env.content === 'string' ? env.content : ''
   const progressHistory = parseWebIterations(optStr(env.progress_history))
   return [

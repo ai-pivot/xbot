@@ -177,9 +177,13 @@ describe('TDSM 性质测试（P1-P5，种子可复现）', () => {
         }
 
         // P3（T4）：每 turn 至多一行 assistant。
+        // 只统计 **turn 行**（turnID > 0，与 P4 同一判据）：legacy 行（turnID=0）
+        // 是**无 turn 的独立消息**（命令回复 `!cmd`/slash —— 后端命令分发不分配
+        // turn），它们本来就可以有多条，不属于任何 turn（reduce 的 text_final
+        // with turnID=null 分支）。
         const assistantByTurn = new Map<number, number>()
         for (const r of rows) {
-          if (r.kind !== 'user') {
+          if (r.kind !== 'user' && r.turnID > 0) {
             assistantByTurn.set(r.turnID, (assistantByTurn.get(r.turnID) ?? 0) + 1)
           }
         }

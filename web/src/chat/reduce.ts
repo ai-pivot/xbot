@@ -33,6 +33,10 @@ import {
 
 // ─── 工具：迭代合并（I4 append-only + 权威覆盖语义） ──────────
 
+// 命令回复（`!cmd` / slash）渲染为 legacy 独立行 —— 单调序号保证 React key 唯一
+// （同毫秒连续两条命令回复也必须区分，与 normalize.ts 的 echoSeq 同一模式）。
+let commandReplySeq = 0
+
 /**
  * 会话级状态携带（todos + goal）：iteration/phase_done 事件在【任何】路径（早期
  * return / 主路径）都必须应用事件携带的会话级字段 —— 事件未携带（undefined）时保留
@@ -555,9 +559,30 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── text_final：权威 finalizer —— live/frozen → committed（I2 构造） ──
     case 'text_final': {
-      // turnID 为 null（legacy 无归属）→ 尝试 activeTurn；两者皆空 → 不动。
-      const target = ev.turnID !== null ? ev.turnID : s.activeTurn
-      if (target === null) return s
+      // ⚠️ turnID 为 null 的 text_final = **命令回复**（`!cmd` bang / slash 命令）：
+      // 后端命令分发（chatWorker 的 Concurrent 分支）按设计**不分配 turn**
+      // （无 turn_started、无 turn_id），输出以独立消息形式 sendMessage 回来。
+      // 它不属于任何 turn —— 绝不能绑 activeTurn（会污染正在进行的 turn），
+      // 更不能丢弃：旧代码 `target === null → return s` 把命令输出整个吞掉
+      // （用户报告 "我输入 !pwd 没有输出啊" —— 服务端日志证明命令已执行，且
+      // `sendMessage directSend dispatch | send_channel=web` 已发到正确会话）。
+      // 渲染为 legacy 独立行（derive 的 legacy 前缀段，见 derive.ts T5）。
+      if (ev.turnID === null) {
+        const content = ev.content ?? ''
+        if (content === '') return s
+        return {
+          ...s,
+          legacy: [...s.legacy, {
+            id: `cmd-${++commandReplySeq}`,
+            role: 'assistant',
+            content,
+            iterations: ev.progressHistory ?? [],
+            timestamp: new Date().toISOString(),
+            dbID: undefined,
+          }],
+        }
+      }
+      const target = ev.turnID
       const t = s.turns.get(target)
       if (!t) return s
 

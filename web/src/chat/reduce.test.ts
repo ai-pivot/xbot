@@ -64,6 +64,28 @@ const textFinal = (turn: ReturnType<typeof turnID> | null, content: string | nul
   cancelled,
 })
 
+// REPRO（用户报告："我输入 !pwd 没有输出啊"）。服务端日志证明命令**已执行**且
+// `sendMessage directSend dispatch | send_channel=web send_chat_id=chat_1` 已把输出
+// 发到正确会话 —— 但命令回复**没有 turn_id**（后端命令分发按设计不分配 turn），
+// 而 M4 状态机遇到 turnID=null 且 activeTurn=null 时直接 `return s` 把输出吞掉。
+// 命令回复是独立消息（不属于任何 turn），必须渲染出来。
+it('REPRO: 命令回复（text_final with turnID=null）必须渲染为独立消息，不能被吞掉', () => {
+  const s = run([
+    started(T1),
+    iteration1(T1, '正常 turn 的回复'),
+    textFinal(T1, '正常 turn 的回复'),
+    // 用户敲 `!pwd` → 后端命令分发（无 turn）→ text 事件无 turn_id
+    textFinal(null, '```\n/root\n```\n`exit: 0`'),
+  ])
+  const rows = deriveRows(s)
+  const cmdRow = rows.find((r) => String(r.content ?? '').includes('/root'))
+  expect(cmdRow, '命令输出必须出现在渲染行里（否则用户看到"没有输出"）').toBeDefined()
+  // 且不能污染既有 turn 的内容
+  const t1 = rows.filter((r) => r.turnID === 1)
+  expect(t1).toHaveLength(1) // user + assistant 合并在同一 turn 行里（assistant 行）
+  expect(String(t1[0].content ?? '')).toBe('正常 turn 的回复')
+})
+
 const phaseDone = (turn: ReturnType<typeof turnID>, finalIteration: DomainEvent extends never ? never : {
   iteration: number
   content: string
