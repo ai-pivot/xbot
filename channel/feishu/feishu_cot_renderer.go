@@ -372,9 +372,10 @@ func (f *FeishuChannel) cotRendererFor(chatID string) *feishuCoTRenderer {
 	f.cotMu.Lock()
 	defer f.cotMu.Unlock()
 	if r, ok := f.cotRenderers[chatID]; ok {
-		if r.cot.brokenNow() {
-			return nil
-		}
+		// ⚠️ 单模式语义（对齐 dsh-lark：cot 与 stream **从不混用**）：本轮一旦由
+		// CoT 接手，即使它中途降级（平台拒绝/网络故障）也**绝不**回落到卡片 ——
+		// 否则同一轮里「思考过程 + 卡片」同时出现，正是用户报告的「完成后渲染
+		// 两张卡片」。broken 后事件被 emit 静默丢弃（思考过程缺内容，但答案照发）。
 		return r
 	}
 	f.inboundMsgIDsMu.Lock()
