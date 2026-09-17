@@ -135,9 +135,6 @@ func execSandbox(ctx *ToolContext, useShell bool, shellCmd, command string, args
 // setSandboxDir 根据 sandbox 模式设置 ExecSpec 的 Dir 和 Workspace 字段。
 func setSandboxDir(ctx *ToolContext, sandbox Sandbox, spec *ExecSpec) {
 	switch sandbox.Name() {
-	case "docker":
-		spec.Workspace = ctx.WorkspaceRoot
-		spec.Dir = ctx.Sandbox.Workspace(ctx.OriginUserID)
 	case "remote":
 		// Remote: use Cd-set CurrentDir if available, otherwise runner defaults to its workspace
 		if ctx != nil && ctx.CurrentDir != "" {

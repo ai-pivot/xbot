@@ -340,18 +340,6 @@ func resolveXbotBinDir(configPath string) string {
 	return ""
 }
 
-// shellQuoteCmd 将 command + args 转为 shell 安全的单行字符串（用单引号包裹）
-func shellQuoteCmd(command string, args []string) string {
-	quote := func(s string) string {
-		return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-	}
-	parts := []string{quote(command)}
-	for _, a := range args {
-		parts = append(parts, quote(a))
-	}
-	return strings.Join(parts, " ")
-}
-
 // ConnectStdioServer 连接 stdio 模式的 MCP Server（公共函数）
 // Returns a ClientSession (auto-initialized) and the session itself for closing.
 func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, workspaceRoot, userID, serverName string) (*mcp.ClientSession, error) {
@@ -366,21 +354,6 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 
 	var execCmd *exec.Cmd
 	switch sandbox.Name() {
-	case "docker":
-		shell, err := sandbox.GetShell(userID, workspaceRoot)
-		if err != nil {
-			return nil, fmt.Errorf("get shell for MCP: %w", err)
-		}
-		shellCmd := "exec " + shellQuoteCmd(cfg.Command, cfg.Args)
-		if ds, ok := sandbox.(*DockerSandbox); ok {
-			cmdName, cmdArgs, err := ds.Wrap(shell, []string{"-l", "-c", shellCmd}, envList, workspaceRoot, userID)
-			if err != nil {
-				return nil, err
-			}
-			execCmd = exec.Command(cmdName, cmdArgs...)
-		} else {
-			return nil, fmt.Errorf("MCP stdio not supported in %s mode", sandbox.Name())
-		}
 	case "remote":
 		rs, ok := sandbox.(*RemoteSandbox)
 		if !ok {

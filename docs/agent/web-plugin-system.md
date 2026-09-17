@@ -643,7 +643,7 @@ d.setRenderSideBySide(false)                  // 并排 → 行内
 **iter-stats 插件化落地（模式）**：
 1. 后端 `plugin.json`：`web: { entry: "index.js", contributes: [{kind:'view', id, container:'status_bar_right', title, entry:'index.js'}] }` —— view 声明必须放**后端 `web.contributes`**（静态声明），后端 `web_plugin_list` 只返回 `Web.Entry != ""` 的插件
 2. 前端 `entry.tsx`：`export default` 徽章组件（`loadPluginViewComponent` 按 `view.entry` 加载 `mod.default`）
-3. esbuild 打包：`npx esbuild src/plugins/iteration-stats/entry.tsx --bundle --format=esm --jsx=transform --external:react --outfile=~/.xbot/plugins/xbot.iteration-stats/web/index.js`（React external，运行时从 `window.React` 取）
+3. esbuild 打包：`npx esbuild src/plugins/iteration-stats/entry.tsx --bundle --format=esm --jsx=transform --external:react --outfile=~/.xbot/plugins/xbot.iteration-stats/web/index.js`（React external，运行时从 `window.React` 取）。release 流水线同样构建（release.yml frontend job，`--outfile=build/plugin-web/xbot.iteration-stats/web/index.js` 进 tarball）；`plugins/xbot-iteration-stats/plugin.json` 已入库，frontend job 末尾的枚举守卫会断言任何声明 `web.entry` 的仓库插件都有产物（缺则 build fail）
 4. 改 `plugin.json` 后需 `config reload_plugins`（后端 Discover+ActivateAll）让 `web_plugin_list` 返回新声明
 
 **关键陷阱**：

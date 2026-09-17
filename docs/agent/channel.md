@@ -20,7 +20,9 @@ IDs and are independent from the semantic progress watermark.
 ### Text-based progress (PreReplyNotifier channels)
 
 Channels without structured display (Feishu streams the turn into a CardKit
-card) implement
+- **2026-09-16：飞书进度渲染改为飞书原生 CoT（思考过程），对齐 dsh-lark。** 契约与实现见 AGENTS.md 同名条目：`POST/PUT /open-apis/im/v1/message_cot`；AG-UI 事件族（RUN_STARTED / REASONING_MESSAGE_* / TOOL_CALL_* / TOOL_CALL_RESULT(code) / RUN_FINISHED）；工具图标词表 read/write/search/bash；事件 ≤50/次、content ≤4096 字符、timestamp 严格递增；**答案仍走普通消息**。开关 `channels.feishu.output`（默认 `cot`），CoT 失败自动降级到本文档描述的 CardKit 卡片；实现 `channel/feishu/feishu_cot.go` + `feishu_cot_renderer.go`，测试 `feishu_cot_test.go`。
+
+card, QQ sends progress as separate messages) implement
 `channel.PreReplyNotifier` and receive per-iteration progress as **text lines**
 via `RunConfig.ProgressNotifier` → `a.sendMessage`. This must be keyed by
 **channel capability** (`wantsPreReplyNotify`, i.e. `autoNotify` passed into
@@ -150,6 +152,7 @@ covers them; saving goes through `set_channel_config`, which writes config.json
 and hot-starts/stops the channel through the dispatcher.
 
 - **`AskUser` 事件必须送达**（web 端曾因 request-ID 校验静默吞掉事件 → 面板不渲染，用户手动回答污染历史）。规则：同一 (channel, chatID) **只有一个 pending AskUser**，所以 `Send`/SSE 写循环**只按 pending 存在性**判断（存在→发布/发送，清除→跳过/consumed），**绝不做 request-ID 相等校验**；`WithPendingAskUser` 仅用于补全 pending 快照，返回值不 veto 发送。已回答/取消的 prompt 由生产者跳过（Send 不重发）+ SSE consumed（reconnect 不重放）。回归测试：`TestSSEAskUser_PendingExistsSends` / `TestSSEAskUser_PendingMissingConsumed`。
+- **`ask_user_resolved`（pending 解除失效广播）**：pending 停止待答（answered/cancelled/rewound/cleared）时后端发 `AskUserResolvedEvent`；Web 侧 `WebChannel.SendAskUserResolved`（实现 `channel.AskUserResolvedSender`，与 SessionStateSender 同模式）经 hub 按 `(channel, chatID)` 路由广播给该会话**全部 WS/SSE 客户端**（序列化 + 离线缓冲 + 可重放，`isSSEEventType` 已纳入）。信封为**扁平字段**（`channel`/`chat_id`/`request_id`/`reason`——前端直接读 `msg.reason`/`msg.chat_id`，与 `web/src/types/shared.ts` 的 WSMessage 契约一致）。与 `ask_user` 相反：**不做 pending 门、可重复安全投递**（客户端按 request_id 幂等），SSE 写循环也不把 resolved 当 consumed。**重连对账**：WS `enqueuePendingAskUser` / SSE `publishSSEFallbacks` 在无 pending 时补发 `resolved(reason="cleared")` —— 带着陈旧本地缓存（另一标签页/设备已答）的客户端立刻收起面板；有 pending 时只补发 `ask_user`、不发 resolved（不误伤在挂面板）。REST 取消（`/api/cancel`、`POST /api/ask_user/respond cancelled=true`）与 WS 路径一致携带 `ask_user_cancel` 标记（防陈旧取消污染下一条消息）。回归测试：`TestAskUserResolvedBroadcastReachesEveryClientOfSession` / `TestWSReconnectWithoutPendingPushesAskUserResolved` / `TestSSEConnectWithoutPendingPublishesAskUserResolved` / `TestRESTCancelCarriesAskUserCancelMarker` / `TestAskUserResolvedPassesSSEDeliveryWithoutPending`。
 - **`AskUser` 历史记录**：`ask_question`/`ask_answer` 以 control record（role=control, display_only=1）追加（`AppendAskAnswer`），不参与 LLM 上下文与正常消息渲染；回答（`ask_user_answered`）**两条路径**：(a) **替换 AskUser tool 消息内容为回答**（让本轮 LLM 上下文包含回答——否则模型只看到 "Asked N question(s)" 以为用户没答）；(b) **持久化为正常 user 消息**（绑定本 turn 的 turn_id，非 display_only——Replay 排除 display_only 行，前端拿不到会导致顺序破坏）。**回答 user 消息是回答后迭代的 turn 锚点**——没有它，appendAssistant 的 insertBeforeLastUser 回退到原始 user 消息，把回答后的新迭代渲染到旧迭代上方（顺序破坏）。
 
 - **Web 无乐观渲染（确定性原则）**：前端**禁止任何乐观渲染**——用户消息（含 AskUser 回答）只由**后端 `user_echo` 推送**渲染（`web_inbound.go dispatchUserMessage`：每条被接受的 user 消息回显，**含权威 turn_id**）；`sendMessage` 不插乐观行/不绑 turn_id/无 queued 标记；`bindLastUserToTurn` 已删除；`reconcileHistoryWithLiveRows` 保留 history 竞态未覆盖的 persisted user-echo 行（确定性数据不丢）；AskUser 回答后 AgentPanel 触发 `chat.reload()`（回答 user 消息从后端历史加载）。**迭代号（iter id）也由后端下发**：`ProgressEvent.Iteration` + 历史 `HistoryIteration.Iteration`——前端不做任何迭代号推测。**所有数据确定性、决定性**：turn_id/iter_id 由后端生成并在历史/事件/echo 中返回。

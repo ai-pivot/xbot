@@ -159,8 +159,11 @@ export class PluginRuntime {
     try {
       mod = await loadPluginModule(versioned)
     } catch (error) {
+      // 动态 import 失败（404 / 网络 / 语法错误）不再只写 error 后不了了之：
+      // warn 带 pluginId + moduleURL（唯一可检索线索），并按既有通道把错误
+      // 经返回值 { ok: false, error } 交给调用方（热加载/引导路径处理）。
       const msg = error instanceof Error ? error.message : String(error)
-      console.error(`[plugin-runtime] 加载插件 ${manifest.id} 失败: ${msg}`)
+      console.warn(`[plugin-runtime] 加载插件模块失败: plugin=${manifest.id} moduleURL=${versioned}: ${msg}`, error)
       return { ok: false, error: `模块加载失败: ${msg}` }
     }
     return this.activateModule(manifest, mod)

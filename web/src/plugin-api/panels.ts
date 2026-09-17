@@ -88,6 +88,14 @@ export interface PanelDefinition {
   /** 空态协议：render(ctx) 返回 null 时宿主显示统一空态；此文案自定义空态提示（缺省「暂无内容」）。 */
   emptyHint?: string
   /**
+   * 标题行扩展槽：渲染在标题右侧（`[icon] 标题 …… <headerExtra> [面板按钮]`）。
+   *
+   * 用于把**面板自己的筛选/操作**放进标题那一行，而不是挤在主体工具条里
+   * （用户 2026-09-15：「放错位置了，要放 sessions 那一行，你放下面太挤了」）。
+   * 例：core.sessions 把渠道下拉（ChannelPicker）放这里。ctx 与 render 相同。
+   */
+  headerExtra?: (ctx: PanelRenderContext) => ReactNode
+  /**
    * v5 面板位置声明：registry 路按 view.container 语义写入（面板类容器 →
    * zone 'side'；bar 类容器 → 徽章 zone）。缺省视为 side——ctx.panels.register
    * 的纯面板沿用现 docked 语义，零破坏。

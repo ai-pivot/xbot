@@ -191,15 +191,34 @@ jobs:
             test -x "${XBOT_HOME}/plugins/builtin/xbot.genui/bin/genui-plugin"
             test -x "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/bin/git-fancy-plugin"
             echo "✅ Built-in plugins installed (genui + git-fancy + ambience)"
-            # Plugin web bundles. Both plugins are built by the SAME release
-            # pipeline step, so the real invariant is all-or-nothing: a tarball
-            # carrying git-fancy/web/index.js (the post-fix layout, no nested
-            # web/web/) must also carry genui/web/index.js. Assert both when
-            # the new layout is present; warn while the published nightly is
-            # still the previous build (the asset lags one master push).
+            # Plugin web bundles. HARD assertion, driven by the INSTALLED
+            # manifests (never hardcode plugin names): every builtin plugin
+            # whose plugin.json declares web.entry must ship that exact file at
+            # <plugin>/web/<entry> — that is what the web layer serves as
+            # /plugins/<id>/web/<entry> (a missing file is a silent 404 at
+            # runtime). xbot.iteration-stats is covered automatically: it was
+            # the original victim (never built → never shipped → nobody
+            # noticed), so the loop, not a name list, is the invariant.
+            #
+            # Gated on the post-fix layout (git-fancy web/index.js present) so
+            # a published nightly predating the per-plugin web bundle layout
+            # warns instead of failing — the asset lags one master push.
             if [ -f "${XBOT_HOME}/plugins/builtin/xbot.git-fancy/web/index.js" ]; then
-              test -f "${XBOT_HOME}/plugins/builtin/xbot.genui/web/index.js"
-              echo "✅ Plugin web assets installed (git-fancy + genui ESM bundles)"
+              web_broken=0
+              for pj in "${XBOT_HOME}"/plugins/builtin/*/plugin.json; do
+                [ -f "$pj" ] || continue
+                pj_id=$(jq -r '.id // empty' "$pj")
+                pj_we=$(jq -r '.web.entry // empty' "$pj")
+                [ -n "$pj_we" ] || continue
+                if [ -f "${XBOT_HOME}/plugins/builtin/${pj_id}/web/${pj_we}" ]; then
+                  echo "✅ plugin web entry installed: ${pj_id} → web/${pj_we}"
+                else
+                  echo "::error::builtin plugin ${pj_id} declares web.entry=${pj_we} but web/${pj_we} is missing from the installed tarball"
+                  web_broken=1
+                fi
+              done
+              test "$web_broken" = "0"
+              echo "✅ Plugin web assets installed and complete for every web.entry-declaring builtin plugin"
             else
               echo "::warning::nightly plugin tarball predates the per-plugin web bundle layout — skipping web-asset assertions until the next release.yml run publishes it."
             fi

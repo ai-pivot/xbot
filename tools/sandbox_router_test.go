@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"xbot/config"
 )
 
 // ============================================================================
@@ -23,16 +25,6 @@ func newNoneRouter() *SandboxRouter {
 	}
 }
 
-// newDockerRouter 创建一个带 DockerSandbox 的路由器（零值 DockerSandbox 不依赖 Docker daemon）
-func newDockerRouter() *SandboxRouter {
-	return &SandboxRouter{
-		docker:      &DockerSandbox{},
-		none:        &NoneSandbox{},
-		defaultMode: "docker",
-	}
-}
-
-// newRemoteRouter 创建一个带 RemoteSandbox 的路由器，并模拟 userA 已连接
 func newRemoteRouter(connectedUsers ...string) *SandboxRouter {
 	rs := &RemoteSandbox{}
 	for _, uid := range connectedUsers {
@@ -52,7 +44,6 @@ func newFullRouter(connectedUsers ...string) *SandboxRouter {
 		rs.connections.Store(uid, &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
 	}
 	return &SandboxRouter{
-		docker:      &DockerSandbox{},
 		remote:      rs,
 		none:        &NoneSandbox{},
 		defaultMode: "remote",
@@ -70,13 +61,6 @@ func TestSandboxRouter_Name_NoneOnly(t *testing.T) {
 	}
 }
 
-func TestSandboxRouter_Name_DockerOnly(t *testing.T) {
-	r := newDockerRouter()
-	if got := r.Name(); got != "docker" {
-		t.Errorf("Name() = %q, want %q", got, "docker")
-	}
-}
-
 func TestSandboxRouter_Name_RemoteOnly(t *testing.T) {
 	r := newRemoteRouter()
 	if got := r.Name(); got != "remote" {
@@ -85,7 +69,7 @@ func TestSandboxRouter_Name_RemoteOnly(t *testing.T) {
 }
 
 func TestSandboxRouter_Name_FullRouter(t *testing.T) {
-	// docker + remote 同时存在时，remote 优先
+	// remote 存在（本地 docker sandbox 已删除）时，remote 优先
 	r := newFullRouter()
 	if got := r.Name(); got != "remote" {
 		t.Errorf("Name() = %q, want %q (remote should take priority)", got, "remote")
@@ -104,18 +88,6 @@ func TestSandboxForUser_NoneOnly(t *testing.T) {
 		sb := r.SandboxForUser(uid)
 		if sb.Name() != "none" {
 			t.Errorf("SandboxForUser(%q).Name() = %q, want %q", uid, sb.Name(), "none")
-		}
-	}
-}
-
-func TestSandboxForUser_DockerOnly(t *testing.T) {
-	r := newDockerRouter()
-
-	// 有 docker、无 remote → 所有用户走 docker（包括空 userID）
-	for _, uid := range []string{"userA", "userB", ""} {
-		sb := r.SandboxForUser(uid)
-		if sb.Name() != "docker" {
-			t.Errorf("SandboxForUser(%q).Name() = %q, want %q", uid, sb.Name(), "docker")
 		}
 	}
 }
@@ -153,16 +125,16 @@ func TestSandboxForUser_FullRouter(t *testing.T) {
 		t.Errorf("SandboxForUser(userA).Name() = %q, want %q", sb.Name(), "remote")
 	}
 
-	// userB 无 remote 连接 → 回退到 docker
+	// userB 无 remote 连接 → 回退到 none（本地直连；本地 docker sandbox 已删除）
 	sb = r.SandboxForUser("userB")
-	if sb.Name() != "docker" {
-		t.Errorf("SandboxForUser(userB).Name() = %q, want %q", sb.Name(), "docker")
+	if sb.Name() != "none" {
+		t.Errorf("SandboxForUser(userB).Name() = %q, want %q", sb.Name(), "none")
 	}
 
-	// 空 userID → 跳过 remote 检查 → 回退到 docker
+	// 空 userID → 跳过 remote 检查 → 回退到 none
 	sb = r.SandboxForUser("")
-	if sb.Name() != "docker" {
-		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q", sb.Name(), "docker")
+	if sb.Name() != "none" {
+		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q", sb.Name(), "none")
 	}
 }
 
@@ -170,16 +142,15 @@ func TestSandboxForUser_RemoteConnectionTracking(t *testing.T) {
 	// 动态添加/移除 remote 连接，验证路由变化
 	rs := &RemoteSandbox{}
 	r := &SandboxRouter{
-		docker:      &DockerSandbox{},
 		remote:      rs,
 		none:        &NoneSandbox{},
 		defaultMode: "remote",
 	}
 
-	// userA 未连接 → docker
+	// userA 未连接 → none
 	sb := r.SandboxForUser("userA")
-	if sb.Name() != "docker" {
-		t.Errorf("before connect: userA should route to docker, got %q", sb.Name())
+	if sb.Name() != "none" {
+		t.Errorf("before connect: userA should route to none, got %q", sb.Name())
 	}
 
 	// 模拟 userA 连接
@@ -191,19 +162,19 @@ func TestSandboxForUser_RemoteConnectionTracking(t *testing.T) {
 		t.Errorf("after connect: userA should route to remote, got %q", sb.Name())
 	}
 
-	// userB 仍未连接 → docker
+	// userB 仍未连接 → none
 	sb = r.SandboxForUser("userB")
-	if sb.Name() != "docker" {
-		t.Errorf("userB should still route to docker, got %q", sb.Name())
+	if sb.Name() != "none" {
+		t.Errorf("userB should still route to none, got %q", sb.Name())
 	}
 
 	// 模拟 userA 断开
 	rs.connections.Delete("userA")
 
-	// userA 断开后 → 回退到 docker
+	// userA 断开后 → 回退到 none
 	sb = r.SandboxForUser("userA")
-	if sb.Name() != "docker" {
-		t.Errorf("after disconnect: userA should route to docker, got %q", sb.Name())
+	if sb.Name() != "none" {
+		t.Errorf("after disconnect: userA should route to none, got %q", sb.Name())
 	}
 }
 
@@ -311,36 +282,6 @@ func TestSandboxRouter_Delegation_NoneSandbox_FileOps(t *testing.T) {
 	}
 }
 
-func TestSandboxRouter_Delegation_DockerSandbox(t *testing.T) {
-	// 验证有 docker 时操作委托到 DockerSandbox
-	// 使用零值 DockerSandbox，Exec 会因为没有 containers 返回错误
-	r := newDockerRouter()
-
-	// DockerSandbox.Name() 返回 "docker"
-	sb := r.SandboxForUser("user1")
-	if sb.Name() != "docker" {
-		t.Fatalf("SandboxForUser(user1).Name() = %q, want docker", sb.Name())
-	}
-
-	// DockerSandbox.Workspace() 返回 "/workspace"
-	if ws := r.Workspace("user1"); ws != "/workspace" {
-		t.Errorf("Workspace() = %q, want /workspace", ws)
-	}
-
-	// DockerSandbox.GetShell() 需要已创建的 container，未创建时返回 error
-	// 这里验证委托路径正确（会调用到 DockerSandbox 的方法）
-	_, err := r.GetShell("user1", "")
-	if err == nil {
-		// 零值 DockerSandbox 没有 containers，GetShell 应该返回错误
-		// 如果没返回错误，说明可能委托路径有问题
-		t.Log("GetShell returned nil error (unexpected for zero-value DockerSandbox)")
-	}
-}
-
-// ============================================================================
-// Close / CloseForUser 测试
-// ============================================================================
-
 func TestSandboxRouter_Close_NilBackends(t *testing.T) {
 	// 只有 none sandbox 时，Close 不应出错
 	r := newNoneRouter()
@@ -370,26 +311,6 @@ func TestSandboxRouter_CloseForUser_NilDocker_NilRemote(t *testing.T) {
 // SandboxExporter 接口测试
 // ============================================================================
 
-func TestSandboxRouter_IsExporting_NilDocker(t *testing.T) {
-	// 无 docker → IsExporting 返回 false
-	r := newNoneRouter()
-	if r.IsExporting("user1") {
-		t.Error("IsExporting() should return false when docker is nil")
-	}
-}
-
-func TestSandboxRouter_ExportAndImport_NilDocker(t *testing.T) {
-	// 无 docker → ExportAndImport 返回 nil（no-op）
-	r := newNoneRouter()
-	if err := r.ExportAndImport("user1"); err != nil {
-		t.Errorf("ExportAndImport() = %v, want nil", err)
-	}
-}
-
-// ============================================================================
-// SandboxResolver 接口编译时检查
-// ============================================================================
-
 func TestSandboxRouter_ImplementsSandboxResolver(t *testing.T) {
 	// 编译时检查：SandboxRouter 实现 SandboxResolver 接口
 	// 此处不执行任何操作，仅作为文档说明
@@ -402,18 +323,18 @@ func TestSandboxRouter_ImplementsSandboxResolver(t *testing.T) {
 // ============================================================================
 
 func TestSandboxForUser_EmptyUserID_SkipsRemote(t *testing.T) {
-	// 空 userID 应跳过 remote 检查，直接回退到 docker 或 none
+	// 空 userID 应跳过 remote 检查，直接回退到 none
 	r := newFullRouter("userA") // userA 有 remote 连接
 
 	// 空 userID → 即使 remote 有连接，也不走 remote
 	sb := r.SandboxForUser("")
-	if sb.Name() != "docker" {
-		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q (empty userID should skip remote)", sb.Name(), "docker")
+	if sb.Name() != "none" {
+		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q (empty userID should skip remote)", sb.Name(), "none")
 	}
 }
 
 func TestSandboxForUser_NilDocker_NilRemote(t *testing.T) {
-	// docker 和 remote 都为 nil → 走 none
+	// remote 为 nil → 走 none
 	r := &SandboxRouter{
 		none: &NoneSandbox{},
 	}
@@ -451,7 +372,6 @@ func TestSandboxRouter_MultipleUsers_IndependentRouting(t *testing.T) {
 	rs.connections.Store("charlie", &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
 
 	r := &SandboxRouter{
-		docker:      &DockerSandbox{},
 		remote:      rs,
 		none:        &NoneSandbox{},
 		defaultMode: "remote",
@@ -462,10 +382,10 @@ func TestSandboxRouter_MultipleUsers_IndependentRouting(t *testing.T) {
 		expected string
 	}{
 		{"alice", "remote"},   // 已连接
-		{"bob", "docker"},     // 未连接，回退到 docker
+		{"bob", "none"},       // 未连接，回退到 none
 		{"charlie", "remote"}, // 已连接
-		{"dave", "docker"},    // 未连接
-		{"", "docker"},        // 空 userID
+		{"dave", "none"},      // 未连接
+		{"", "none"},          // 空 userID
 	}
 
 	for _, tt := range tests {
@@ -506,45 +426,6 @@ func newTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func TestSandboxForUser_ActiveRunner_Docker(t *testing.T) {
-	// 用户设置 active_runner=__docker__，即使有 remote 连接也应走 docker
-	db := newTestDB(t)
-	store := NewRunnerTokenStore(db)
-	if err := store.SetActiveRunner("userA", BuiltinDockerRunnerName); err != nil {
-		t.Fatal(err)
-	}
-
-	// 创建同时有 docker + remote 的路由器，userA 有 remote 连接
-	r := newFullRouter("userA")
-	r.SetTokenStore(store)
-
-	sb := r.SandboxForUser("userA")
-	if sb.Name() != "docker" {
-		t.Errorf("SandboxForUser(userA) = %q, want %q (active_runner=__docker__ should override remote)", sb.Name(), "docker")
-	}
-}
-
-func TestSandboxForUser_ActiveRunner_Docker_ResolveConsistent(t *testing.T) {
-	// 验证 resolve() 和 SandboxForUser() 行为一致
-	db := newTestDB(t)
-	store := NewRunnerTokenStore(db)
-	if err := store.SetActiveRunner("userA", BuiltinDockerRunnerName); err != nil {
-		t.Fatal(err)
-	}
-
-	r := newFullRouter("userA")
-	r.SetTokenStore(store)
-
-	sb1 := r.SandboxForUser("userA")
-	sb2 := r.resolve("userA")
-	if sb1.Name() != sb2.Name() {
-		t.Errorf("SandboxForUser()=%q != resolve()=%q (should be consistent)", sb1.Name(), sb2.Name())
-	}
-	if sb1.Name() != "docker" {
-		t.Errorf("resolve(userA) = %q, want %q", sb1.Name(), "docker")
-	}
-}
-
 func TestSandboxForUser_ActiveRunner_NotSet_Fallback(t *testing.T) {
 	// 用户未设置 active_runner，有 remote 连接 → 走 remote
 	db := newTestDB(t)
@@ -577,34 +458,15 @@ func TestSandboxForUser_ActiveRunner_NonExistent_Fallback(t *testing.T) {
 	}
 }
 
-func TestSandboxRouter_HasDocker(t *testing.T) {
-	rNone := newNoneRouter()
-	if rNone.HasDocker() {
-		t.Error("newNoneRouter().HasDocker() = true, want false")
+// 默认 sandbox 必须是 none：未配置任何沙箱时 NewSandboxRouter 不得隐式创建
+// 本地 docker sandbox（2026-09-16 P0：空 sandbox 配置被写成 "docker"，导致
+// 新建会话设 CWD 时报 "CWD sync not supported in docker sandbox mode"）。
+func TestNewSandboxRouter_DefaultsToNone(t *testing.T) {
+	r := NewSandboxRouter(config.SandboxConfig{}, t.TempDir())
+	if got := r.Name(); got != "none" {
+		t.Fatalf("router default mode = %q, want %q", got, "none")
 	}
-
-	rDocker := newDockerRouter()
-	if !rDocker.HasDocker() {
-		t.Error("newDockerRouter().HasDocker() = false, want true")
-	}
-
-	rFull := newFullRouter()
-	if !rFull.HasDocker() {
-		t.Error("newFullRouter().HasDocker() = false, want true")
-	}
-}
-
-func TestSandboxRouter_DockerImage(t *testing.T) {
-	r := &SandboxRouter{
-		docker: &DockerSandbox{image: "ubuntu:22.04"},
-		none:   &NoneSandbox{},
-	}
-	if img := r.DockerImage(); img != "ubuntu:22.04" {
-		t.Errorf("DockerImage() = %q, want %q", img, "ubuntu:22.04")
-	}
-
-	rNoDocker := newNoneRouter()
-	if img := rNoDocker.DockerImage(); img != "" {
-		t.Errorf("DockerImage() = %q, want empty", img)
+	if sb := r.SandboxForUser("cli_user"); sb == nil || sb.Name() != "none" {
+		t.Fatalf("SandboxForUser(cli_user) = %v, want NoneSandbox", sb)
 	}
 }

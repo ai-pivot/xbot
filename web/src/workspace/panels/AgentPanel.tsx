@@ -24,7 +24,7 @@ import { useTodos } from '@/hooks/useTodos'
 import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdit'
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
-import { useLLMSettings } from '@/hooks/useLLMSettings'
+import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSettings'
 import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
@@ -42,6 +42,7 @@ import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
 import type { PanelProps } from '@/workspace/panels/types'
+import type { PanelParams } from '@/types/tab'
 import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
 import { useI18n } from '@/providers/i18n'
 // import { useOptionalPluginRuntime } from '@/plugin-runtime'
@@ -57,7 +58,7 @@ interface RewindHistoryResponse {
   }
 }
 
-export function AgentPanel({ params, api }: PanelProps) {
+export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const ctx = useDockviewContext()
   const ws = ctx.ws
   const store = ctx.sessionStore
@@ -89,11 +90,39 @@ export function AgentPanel({ params, api }: PanelProps) {
   // (session-per-tab architecture, VSCode-like). Mobile (no dockview) or the
   // seed tab (no sessionId) falls back to store.activeSession.
   const activeSession = store.activeSession
+  // 占位 agent tab（无 sessionId）是「引导槽」：只有当它**独占** main agent 面板时
+  // 才跟随 activeSession（移动端 / 首个会话尚未选择时的既有形态）。若已存在绑定会话
+  // 的 agent tab（session tab）而占位再跟随同一会话，两个面板会同时挂载同一会话 ⇒
+  // 消息列表整棵渲染两份、`/api/history` 拉两次（2026-09-16「切会话后同一 user 行
+  // 重复渲染」）。不变量：一个会话至多被一个 agent 面板渲染
+  //（另一半修复在 useTabManager.openTab：会话 tab 认领占位 tab，不再新建面板）。
+  const isPlaceholderMainAgent = !params.sessionId && !isSubAgent && !params.agentChatID
+  const [panelSetVersion, setPanelSetVersion] = useState(0)
+  useEffect(() => {
+    if (!isPlaceholderMainAgent || !containerApi?.onDidAddPanel) return
+    const onAdd = containerApi.onDidAddPanel(() => setPanelSetVersion((v) => v + 1))
+    const onRemove = containerApi.onDidRemovePanel(() => setPanelSetVersion((v) => v + 1))
+    return () => {
+      onAdd.dispose()
+      onRemove.dispose()
+    }
+  }, [containerApi, isPlaceholderMainAgent])
+  const sessionOwnedByPeerPanel = useMemo(() => {
+    if (!isPlaceholderMainAgent || !activeSession?.chatID) return false
+    return (containerApi?.panels ?? []).some((p) => {
+      if (p.id === api?.id) return false
+      const pp = p.params as PanelParams | undefined
+      return (
+        !!pp && pp.type === 'agent' && pp.sessionId === activeSession.chatID && !pp.subAgentRole && !pp.agentChatID
+      )
+    })
+    // panelSetVersion: 面板增删后重新判定（session tab 关闭 ⇒ 占位回到引导态）。
+  }, [containerApi, api, isPlaceholderMainAgent, activeSession?.chatID, panelSetVersion])
   const chatID = params.agentChatID
     ? (params.agentChatID ?? null)
     : isSubAgent
       ? (params.parentChatID ?? null)
-      : (params.sessionId ?? activeSession?.chatID ?? null)
+      : (params.sessionId ?? (sessionOwnedByPeerPanel ? null : (activeSession?.chatID ?? null)))
   const liveSubAgentChatID = !params.agentChatID && isSubAgent && params.subAgentRole && params.parentChatID
     ? `${params.parentChannel ?? 'web'}:${params.parentChatID}/${params.subAgentRole}${params.subAgentInstance ? `:${params.subAgentInstance}` : ''}`
     : null
@@ -140,18 +169,10 @@ export function AgentPanel({ params, api }: PanelProps) {
       // 回填服务端 turn_id/queued。
       if (info?.requestID) {
         ackUserRef.current(info.requestID, info.turnID, info.queued)
-        // /goal 已投递成功 —— 乐观目标不再需要失败回滚。
-        if (optimisticGoalRidRef.current === info.requestID) optimisticGoalRidRef.current = null
       }
     },
     onSendFail: (requestID) => {
       failUserRef.current(requestID)
-      // /goal 命令发送失败 → 回滚乐观目标（CR：否则 banner 永久显示一个服务端
-      // 并不存在的目标 —— store 的 goal 始终是旧值，覆盖永不清除）。
-      if (optimisticGoalRidRef.current === requestID) {
-        optimisticGoalRidRef.current = null
-        goalEditRef.current.discard()
-      }
     },
     onCancelSuccess: () => {
       // Optimistically mark the session as idle so the UI exits busy
@@ -163,17 +184,84 @@ export function AgentPanel({ params, api }: PanelProps) {
     },
   })
   const reloadChat = chat.reload
+  // ── 一致性暂态修复（用户 2026-09-15）──
+  // ① 切到 busy 会话时「几秒只看得到 live iter，历史很久才出来」：live 由状态机即时归约，
+  //    而历史要等 fetchHistory —— 渲染层在 history 未就绪时必须显示 loading，
+  //    而不是先给一个"只有 live"的不一致画面。
+  // ② 手机锁屏半天再打开「不触发重新加载、SSE 追赶期间画面剧烈抖动」：隐藏超过阈值 ⇒
+  //    恢复可见时强制整屏重载（DB 权威历史），重载期间同样显示 loading 屏幕
+  //    （用户明确偏好：「不如展示 loading 屏幕」）。
+  const [resumeLoading, setResumeLoading] = useState(false)
+  const hiddenAtRef = useRef<number | null>(null)
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) {
+        hiddenAtRef.current = Date.now()
+        return
+      }
+      const hiddenAt = hiddenAtRef.current
+      hiddenAtRef.current = null
+      if (hiddenAt === null || Date.now() - hiddenAt < 60_000) return
+      setResumeLoading(true)
+      void reloadChat()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [reloadChat])
+
+  // ── 重新订阅后补齐断连期间丢失的**行**（P0，2026-09-16 用户报告）────────────
+  // 现象（用户截图 + 描述）：「切回缓存的 tab，user 消息消失，刷新才恢复」，且消失的
+  // 一定是**通知变成的 user 行**（🔔 Notification）。
+  //
+  // 机制（三处实证）：
+  //   1) 通知行的**唯一载体**是 turn_started(trigger='notification', content)
+  //      （chat/reduce.ts 的 notifContent 分支；迟到 inject_user 会被 dbID 过滤掉）。
+  //   2) 面板不可见时 SSE 会**主动断开**（useActiveSSESubscription，active=isVisible）
+  //      ⇒ 该事件既没实时到达，也未必在 last_event_id 重放窗口里。
+  //   3) 兜底只在**可检测到 seq gap**时触发（providers/sseConnection 的
+  //      resync_required → replay_gap → reloadChat）。仅"游标推进 + 断连"不产生 gap
+  //      ⇒ 不触发任何 reconcile ⇒ 已持久化到 DB 的那行通知不会自己回来（只有手刷）。
+  //
+  // 修复：在"不可见 → 可见"（= 重新订阅）时做一次**非破坏性**历史对账。
+  // `reloadChat` 走 history_replaced 的 **merge 语义**（DB 覆盖它【有】的 turn，
+  // 状态机持有的 live / post-fetch commit 一律保留），所以不会再出现当年
+  // "live 迭代被 history_replaced 清掉"的问题（见本文件 203-210 行的历史备注）。
+  const wasSubscribedRef = useRef(shouldSubscribe)
+  useEffect(() => {
+    const was = wasSubscribedRef.current
+    wasSubscribedRef.current = shouldSubscribe
+    if (was || !shouldSubscribe || !chatID) return
+    void reloadChat()
+  }, [shouldSubscribe, chatID, reloadChat])
+  // 历史落地（重载完成且已有消息）后收起 loading 屏幕。
+  useEffect(() => {
+    if (resumeLoading && !chat.loading && chat.messages.length > 0) setResumeLoading(false)
+  }, [resumeLoading, chat.loading, chat.messages.length])
+  // 注意：只看 `=== false`（历史确实未就绪）；undefined（测试/旧调用方）视为就绪，
+  // 避免把 loading 屏幕变成常驻。
+  // ⚠️ 只在"确实有会话、但它的历史还没到"时才用 loading 屏幕遮挡面板。
+  // 无会话（chatID 为空 / 会话树为空，如全新安装的 E2E 环境）时**绝不能**挡：
+  // 那会把输入区一起盖住，用户既看不到空状态也无法创建/发送（CI 的
+  // chat.spec"should show user message after sending" 就是这样红的 —— 快照里侧栏是
+  // "No sessions yet — create one from the top-right"、面板只有 Loading…）。
+  const showLoadingScreen = (chat.historyReady === false && !!chatID) || resumeLoading
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
-  // NOTE: The old wasSubscribed effect (reloadChat when shouldSubscribe
-  // changes false→true) is REMOVED. When a tab becomes visible again (SSE
-  // reconnects), the SSE reconnection mechanism already handles everything:
-  //   1. last_event_id replay (server replays missed events)
-  //   2. restoreActiveProgress (fetches get_active_progress for live state)
-  //   3. resync_required → replay_gap → reloadChat() (only when gap is large)
-  // Calling reloadChat() unconditionally on visibility change was clearing
-  // live iterations via history_replaced, causing "live iter disappears when
-  // switching to a cached tab".
+  // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
+  // 整个移除，理由是把 reloadChat 无条件挂在 visibilitychange 上会经
+  // history_replaced 清掉 live 迭代（"切到缓存 tab 后 live iter 消失"）。
+  //
+  // 但 2026-09-16 用户报告暴露了移除后的**空隙**：通知变成的 user 行（🔔）在
+  // 面板不可见期间**丢失后无法自愈**——它的唯一载体 turn_started(trigger=
+  // notification) 既没实时到达（SSE 因不可见已断开），也未必能被 last_event_id
+  // 重放覆盖；而 reconcile 只在**可检测到 seq gap** 时才触发，断连+游标推进不产生
+  // gap ⇒ 该行永久缺失，只有手刷（全量加载）恢复。
+  //
+  // 现在恢复了这条对账（见上方 `wasSubscribedRef` 的 effect），但用**非破坏性**的
+  // reloadChat：history_replaced 已是 merge 语义（DB 覆盖它【有】的 turn，状态机持有
+  // 的 live / post-fetch commit 保留，见 chat/reduce.ts 的 history_replaced 注释），
+  // 所以不会再清 live 迭代。若将来 history_replaced 退回"盲替换"，这个 effect 会重新
+  // 咬人——届时必须同时修 reduce。
 
   // 暴露当前会话给独立插件视图（window.__xbot_session__）。
   // 独立 ESM 插件（如 xbot.git-fancy）无法 import 宿主内部模块，通过此全局
@@ -377,9 +465,6 @@ export function AgentPanel({ params, api }: PanelProps) {
   goalEditRef.current = goalEdit
   const todosEditRef = useRef(todosEdit)
   todosEditRef.current = todosEdit
-  // /goal 命令的乐观目标对应的 requestID —— 发送失败时回滚（CR：否则 banner 会
-  // 永久显示一个服务端并不存在的目标）。
-  const optimisticGoalRidRef = useRef<string | null>(null)
   // Busy state: sessionStore.running is the primary source (same source the
   // sidebar uses — SSE session(busy)/session(idle) events). BUT after a page
   // refresh, SSE does NOT replay session(busy) for an in-flight turn, so
@@ -406,7 +491,11 @@ export function AgentPanel({ params, api }: PanelProps) {
   const busy = ((currentSession?.running ?? false) ||
     progressSnapshot.streaming ||
     agentChat.busyFallback) &&
-    !askUser.prompt
+    !askUser.prompt &&
+    // waiting_input (AskUser pending) is mutually exclusive with busy/running:
+    // the turn is PAUSED, so the input must not show the generating/stop state.
+    // Covers the window where a stale backend running flag still says busy.
+    currentSession?.status !== 'waiting_input'
 
   // Turn 结束（busy→idle 边沿）时重取 get_goal —— goal 状态变化的事件兜底：
   // set_goal_complete 后端 emitGoalProgress 会推 goal 事件（TDSM 实时更新），
@@ -433,6 +522,17 @@ export function AgentPanel({ params, api }: PanelProps) {
   }, [busy, chatID, messageChannel])
 
   const llmSettings = useLLMSettings()
+
+  // Session-level LLM info (current model / subscription / context limits) also
+  // depends on server-side LLM config: after the settings dialog adds, updates or
+  // removes a subscription — or changes the default — the session's resolution can
+  // change (e.g. the session was bound to the edited sub). Re-resolve it here so
+  // the selector bar shows the new model/limits immediately, no page refresh.
+  const sessionRefreshRef = useRef(sessionContext.refresh)
+  useEffect(() => {
+    sessionRefreshRef.current = sessionContext.refresh
+  }, [sessionContext.refresh])
+  useEffect(() => subscribeLLMConfigChanged(() => void sessionRefreshRef.current()), [])
   // Vision state of the CURRENT model (purely manual per-model switch — NO
   // built-in whitelist). Read from the owning subscription's per_model_configs
   // (sessionContext.subscriptionID + model); undefined when the model is
@@ -488,16 +588,11 @@ export function AgentPanel({ params, api }: PanelProps) {
     // ⚡ Interject mode: skip optimistic rendering (no user row — the message
     // appears inside the active turn as a user_interrupt tool via SSE).
     const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    // Detect /goal command and optimistically show the new goal (frontend-only;
-    // 后端 push 到达即收敛让位 —— 见 usePendingEdit)。发送失败由 onSendFail 回滚。
-    if (content.startsWith('/goal ') && !content.startsWith('/goal status') && !content.startsWith('/goal clear')) {
-      const objective = content.slice(6).trim()
-      if (objective) {
-        const seq = goalEditRef.current.begin()
-        goalEditRef.current.commit({ objective, status: 'active' }, seq)
-        optimisticGoalRidRef.current = rid
-      }
-    }
+    // ⚠️ 这里**不得**乐观设置 goal（2026-09-16 用户报告）：goal 按钮的语义只是把
+    // 消息加上 `/goal ` 前缀 —— 消息排队时 goal 并没有生效。goal 只能在后端 pop
+    // 该消息并真正执行 `/goal` 之后设置（后端 push / getGoal 回读收敛）。此前在
+    // 发送瞬间就写入乐观覆盖 ⇒ 排队期间 banner 已显示新目标（用户："排队的 goal
+    // 应该 pop 之后才设置"）。
     if (!interrupt) {
       sendUserRef.current(content, rid)
     }
@@ -734,6 +829,15 @@ export function AgentPanel({ params, api }: PanelProps) {
           })}
         />
       )}
+      {showLoadingScreen ? (
+        <div
+          data-testid="session-loading-screen"
+          className="flex h-full w-full flex-1 items-center justify-center gap-2 text-text-muted"
+        >
+          <Loader2 className="size-5 animate-spin" />
+          <span className="text-xs">Loading…</span>
+        </div>
+      ) : (
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -751,6 +855,7 @@ export function AgentPanel({ params, api }: PanelProps) {
         onEndEdit={handleEndEdit}
         footer={askUserFooter}
       />
+      )}
       {!isSubAgent && (
         <StagingTray
           items={agentChat.queue}

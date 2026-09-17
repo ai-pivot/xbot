@@ -68,7 +68,6 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		LLM:                    llmClient,
 		Model:                  cfg.LLM.Model,
 		MaxIterations:          cfg.Agent.MaxIterations,
-		MaxConcurrency:         cfg.Agent.MaxConcurrency,
 		DBPath:                 dbPath,
 		SkillsDir:              filepath.Join(xbotHome, "skills"),
 		AgentsDir:              filepath.Join(xbotHome, "agents"),
@@ -109,6 +108,15 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		return nil, nil, nil, nil, fmt.Errorf("create agent: %w", err)
 	}
 
+	// Concurrency (max_concurrency) has exactly ONE persisted source: the
+	// canonical user_settings row (channel.MaxConcurrencyChannel), written by the
+	// Web LLM console / CLI settings panel / config tool. config.json and
+	// AGENT_MAX_CONCURRENCY no longer carry it (duplicate definitions removed
+	// 2026-09-17 — the old split made the panel show 100+ while the runtime gate
+	// silently ran at llm.DefaultLLMConcurrency), so seed the runtime semaphore
+	// from the DB right after construction.
+	ag.SetMaxConcurrency(ag.GetLLMConcurrency())
+
 	// 2c. Migrate flat memory from SQLite tables to MD files (if needed).
 	// This is a one-time migration; must run after agent opens the DB (via
 	// session.NewMultiTenant) but before any session access.
@@ -130,9 +138,11 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// 4. Register core tools.
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	if !cfg.DisableWebSearch {
-		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-	}
+	// WebSearch 无条件注册：是否激活由**激活集**决定
+	// （config.DisabledTools ← Settings → Tools 面板）。旧的
+	// disable_web_search 布尔旋钮已删除（同一能力的重复定义），
+	// 加载时会被折进 DisabledTools。
+	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	// Agent-initiated compaction (config agent.allow_self_compact, default
 	// off): registers compact_context so the LLM can trigger a context
 	// compression itself (Codex CLI parity — the model observes context pressure
@@ -145,8 +155,9 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	}
 
 	// 全局 tool 黑名单：覆盖在 agent.New 之后注册的 tool（DownloadFileTool /
-	// WebSearchTool），initStores 里已对内置 tool 应用过一次。
-	ag.DisableTools(cfg.DisabledTools)
+	// WebSearchTool），initStores 里已对内置 tool 应用过一次。激活集是可逆的
+	// 过滤（不是注销），Settings → Tools 面板据此启停。
+	ag.SetDisabledTools(cfg.DisabledTools)
 
 	ag.IndexGlobalTools()
 

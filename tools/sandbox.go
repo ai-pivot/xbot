@@ -32,7 +32,7 @@ type ExecSpec struct {
 
 	// RunAsUser is the OS username to execute the command as.
 	// When set, the command is wrapped with: sudo -n -H -u <user> --
-	// Only effective in NoneSandbox (docker/remote ignore this field).
+	// Only effective in NoneSandbox (remote ignores this field).
 	// Requires NOPASSWD sudoers entry for the target user.
 	RunAsUser string
 }
@@ -65,7 +65,7 @@ type DirEntry struct {
 	Size  int64
 }
 
-// Sandbox defines the unified interface for all sandbox modes (none/docker/remote).
+// Sandbox defines the unified interface for all sandbox modes (none/remote).
 // All file path parameters must be absolute paths in sandbox format.
 // Path conversion (sandbox↔host) is an internal concern of each implementation.
 type Sandbox interface {
@@ -99,7 +99,6 @@ type Sandbox interface {
 
 	// DownloadFile downloads a file from the given URL and saves it to outputPath.
 	// For RemoteSandbox, the runner downloads directly (avoids server as proxy).
-	// For DockerSandbox, the container downloads directly.
 	// Path must be absolute.
 	DownloadFile(ctx context.Context, url, outputPath string, userID string) error
 
@@ -112,10 +111,6 @@ type Sandbox interface {
 	Workspace(userID string) string
 	Close() error
 	CloseForUser(userID string) error
-
-	// === Export/Import (docker-specific) ===
-	IsExporting(userID string) bool
-	ExportAndImport(userID string) error
 }
 
 // WalkSandboxDir recursively walks a sandbox directory, equivalent to filepath.WalkDir.
@@ -165,11 +160,4 @@ type SandboxResolver interface {
 	// SandboxForUser returns the user-specific Sandbox instance.
 	// Falls back to the default sandbox if userID is empty or unknown.
 	SandboxForUser(userID string) Sandbox
-}
-
-// SandboxExporter is an optional interface for docker-specific export/import operations.
-// Not all sandbox modes support export/import (e.g., remote, none return no-op).
-type SandboxExporter interface {
-	IsExporting(userID string) bool
-	ExportAndImport(userID string) error
 }

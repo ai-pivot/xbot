@@ -165,6 +165,15 @@ func resolveStaticDir(cfg *config.Config) string {
 // createChannelInstance creates a channel instance by name using current config.
 // Returns nil for channels that require complex setup (e.g. web with DB/OSS).
 // Used for dynamic channel start/stop without server restart.
+// feishuChannelOutput 返回飞书进度渲染方式：默认 "cot"（原生思考过程，对齐 dsh-lark），
+// 可用 channels.feishu.output 覆盖（"card" 回退到 CardKit 流式卡片）。
+func feishuChannelOutput(cfg *config.Config) string {
+	if out := strings.TrimSpace(cfg.Feishu.Output); out != "" {
+		return out
+	}
+	return "cot"
+}
+
 func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageBus) channel.Channel {
 	switch name {
 	case "feishu":
@@ -174,6 +183,7 @@ func createChannelInstance(name string, cfg *config.Config, msgBus *bus.MessageB
 			EncryptKey:        cfg.Feishu.EncryptKey,
 			VerificationToken: cfg.Feishu.VerificationToken,
 			AllowFrom:         cfg.Feishu.AllowFrom,
+			Output:            feishuChannelOutput(cfg),
 		}, msgBus)
 	default:
 		// 插件 channel：从 ChannelProviderRegistry 查找
@@ -236,6 +246,7 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			EncryptKey:        cfg.Feishu.EncryptKey,
 			VerificationToken: cfg.Feishu.VerificationToken,
 			AllowFrom:         cfg.Feishu.AllowFrom,
+			Output:            feishuChannelOutput(cfg),
 		}, msgBus)
 		disp.Register(feishuCh)
 
@@ -314,6 +325,26 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 					imgProvider = s3Provider
 					webCh.SetOSSProvider(s3Provider)
 					log.Info("OSS provider configured: s3")
+				}
+			default:
+				// ── 默认本地 static（2026-09-16 用户要求）────────────────────────────
+				// 未配置 oss.provider（空串）或写了未知值时，回落到**本地磁盘存储**：
+				//   · 上传写 <xbotHome>/uploads/<key>（channel/web.handleLocalUpload）
+				//   · 取图由同源 /api/files/download 读盘返回（serveLocalFile）
+				//   · 多模态解析器走同一根目录读盘（image_resolver 的 ?key= 分支）
+				// 免配置即可用 —— 不再 503 "file storage not configured"。
+				localProvider, lerr := web.NewOSSProvider("local", web.LocalUploadRoot(config.XbotHome()))
+				if lerr != nil {
+					log.WithError(lerr).Error("Failed to create local storage provider")
+				} else {
+					imgProvider = localProvider
+					webCh.SetOSSProvider(localProvider)
+					if cfg.OSS.Provider == "" {
+						log.Info("Storage provider: local static (default — no oss.provider configured)")
+					} else {
+						log.WithField("provider", cfg.OSS.Provider).
+							Warn("Unknown oss.provider — falling back to local static storage")
+					}
 				}
 			}
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
@@ -684,9 +715,8 @@ func Run(args []string) error {
 	// 引用 /api/files/viewimg/<id>（浏览器可渲染 + llm resolver 可解析，双端同源）。
 	ag.RegisterCoreTool(tools.NewViewImageTool())
 	ag.RegisterTool(tools.NewViewImageTool())
-	if !cfg.DisableWebSearch {
-		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-	}
+	// WebSearch 无条件注册（激活与否由 config.DisabledTools 决定）。
+	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 
 	// 初始化事件触发系统（Event Trigger System）
 	triggerSvc := sqlite.NewTriggerService(ag.MultiSession().DB())
@@ -925,8 +955,7 @@ func Run(args []string) error {
 		ag.Close()
 	}
 
-	// 关闭沙箱（清理 Docker 容器等资源）
-	// export/import 可能耗时较长（大容器数分钟），不设超时，必须等待完成。
+	// 关闭沙箱（释放 runner 连接等资源）。
 	if sandbox := tools.GetSandbox(); sandbox != nil {
 		if err := sandbox.Close(); err != nil {
 			log.WithError(err).Warn("Sandbox close error")
@@ -1202,10 +1231,9 @@ func saveServerConfig(cfg *config.Config) error {
 	// Agent settings: write back ONLY fields the server actually modifies at runtime.
 	// Do NOT copy the entire Agent struct — MaxContextTokens and MaxOutputTokens
 	// are user-configured (per-model) and must not be overwritten by server defaults.
-	// Only MaxIterations, MaxConcurrency, CompressionThreshold, and ContextMode
-	// are server-owned runtime settings.
+	// MaxConcurrency is NOT here: its single source is the canonical
+	// user_settings row (channel.MaxConcurrencyChannel).
 	merged.Agent.MaxIterations = cfg.Agent.MaxIterations
-	merged.Agent.MaxConcurrency = cfg.Agent.MaxConcurrency
 	merged.Agent.CompressionThreshold = cfg.Agent.CompressionThreshold
 	merged.Agent.ContextMode = cfg.Agent.ContextMode
 	// Auto-compress: only write back if explicitly set at runtime

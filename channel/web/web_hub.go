@@ -669,6 +669,10 @@ func isSSEEventType(msgType string) bool {
 		protocol.MsgTypeProgress,
 		protocol.MsgTypeStreamContent,
 		protocol.MsgTypeAskUser,
+		// ask_user_resolved is sequenced + buffered + replayable like ask_user:
+		// SSE subscribers must receive the invalidation and the replay window
+		// must retain it for reconnect (delivery is repeat-safe).
+		protocol.MsgTypeAskUserResolved,
 		protocol.MsgTypeCard,
 		protocol.MsgTypeUserEcho,
 		protocol.MsgTypeInjectUser,

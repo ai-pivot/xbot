@@ -84,7 +84,7 @@ task_status(task_id=["sub-a","sub-b"]) (non-blocking; prefer it over task_wait).
 
 Parameters (JSON):
   - task: string (required except some control actions), the task or message for the sub-agent
-  - role: string (required), predefined role name
+  - role: string (REQUIRED to start a sub-agent; optional for send/inspect/interrupt/unload, where instance addresses your own sub-agent tree)
   - instance: string (REQUIRED on every call), unique instance ID used to identify the session/run
   - interactive: boolean (optional), create or reuse an interactive session
   - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (no need to wait; task_wait only if you have nothing else to do). Set false to block for the final reply synchronously.
@@ -101,6 +101,7 @@ Parameters (JSON):
     an existing conversation without re-explaining, or to branch a specialist from current state.
 
 Available roles are listed in the <available_agents> section of the system prompt.
+**role is REQUIRED to start a new sub-agent — there is NO inference**: an omitted or unknown role fails immediately with the list of available roles (never guess). For action="send" / "inspect" / "interrupt" / "unload" the target is addressed by **instance within your OWN sub-agent tree** (role optional there: it is matched best-effort by instance; if nothing or more than one match in your tree, the tool errors out and lists them).
 
 For TUI sidebar session management and layout adjustments, use search_tools to load tui_control. For configuration changes, load config.`
 }
@@ -108,7 +109,7 @@ For TUI sidebar session management and layout adjustments, use search_tools to l
 func (t *SubAgentTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "task", Type: "string", Description: "Task or message for the sub-agent. Required for normal execution and action=\"send\"."},
-		{Name: "role", Type: "string", Description: "Predefined role name (for example: code-reviewer)", Required: true},
+		{Name: "role", Type: "string", Description: `REQUIRED to start a new sub-agent (no inference — an omitted or unknown role errors out and lists the available roles; never guessed). For action="send"/"inspect"/"interrupt"/"unload" it may be omitted: the target is resolved by instance within your OWN sub-agent tree.`},
 		{Name: "instance", Type: "string", Description: `REQUIRED on every call. Stable unique ID for this sub-agent run/session. Never omit it. Examples: "review-1", "planner-main", "bugfix-login".`, Required: true},
 		{Name: "interactive", Type: "boolean", Description: "Create or reuse an interactive session for multi-turn conversation"},
 		{Name: "background", Type: "boolean", Description: "Run the sub-agent in background mode (default: true — spawn returns immediately and the completion is injected as a notification; no need to wait). Set false to block synchronously for the final reply."},
@@ -162,10 +163,9 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 		return nil, fmt.Errorf("task parameter exceeds maximum allowed size (%d bytes)", maxTaskLength)
 	}
 
-	if params.Role == "" {
-		return nil, fmt.Errorf("role is required, see <available_agents> in system prompt")
-	}
-
+	// role：best-effort（用户决策 2026-09-16）—— 缺省/拼写不准都尽量匹配，
+	// 只有"有歧义"（并列最高分 / 多个名字候选）才报错。解析在下面（需要
+	// sandbox / 工作目录上下文才能枚举可见角色）。
 	if params.Instance == "" {
 		return nil, fmt.Errorf("instance is required — provide a unique ID (e.g. \"task-1\") to identify this session. Use different instance values to run multiple sub-agents of the same role in parallel")
 	}
@@ -206,9 +206,24 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			userAgentDirs = append(userAgentDirs, filepath.Join(ctx.WorkspaceRoot, ".agents"))
 		}
 	}
-	role, ok := GetSubAgentRoleSandbox(ctx.Ctx, params.Role, roleSb, roleUserID, userAgentDirs...)
-	if !ok {
-		return nil, fmt.Errorf("unknown role: %s, see <available_agents> in system prompt", params.Role)
+	// ⛔ role 自动推断**只允许用于 spawn（新建会话）**。
+	//
+	// send / inspect / interrupt / unload 是对**已存在会话**寻址：这里**绝不能**推断或
+	// 回填 role —— 否则"模型没传 role"会被换成一个**编造的 role**。现场（2026-09-17
+	// 09:06）：会话 `explore:fuse-attn` 真实 role 是 explore，却被自动配上 `qa`
+	// ⇒ 解析器按 role 找不到 ⇒ 报错，且两次调用表现不一致（用户："那个 qa 是有 bug
+	// 你自动给他设置的"）。这些 action 的 role 原样透传（允许为空），由 agent 侧在
+	// **发起者的子代理树内**按 instance 匹配。
+	role := &SubAgentRole{Name: params.Role}
+	roleNote := ""
+	if params.Action == "" {
+		resolvedRole, _, roleErr := ResolveSubAgentRoleSandbox(ctx.Ctx, params.Role, params.Task, roleSb, roleUserID, userAgentDirs...)
+		if roleErr != nil {
+			return nil, roleErr
+		}
+		role = resolvedRole
+		// 下游全部用 params.Role 做会话 key / AgentChannel 名 —— 匹配成功后必须回填。
+		params.Role = role.Name
 	}
 
 	// Resolve model: model_tier param > role.Model > "balance" (default tier)
@@ -245,7 +260,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			if ctx.UnregisterAgentChannel != nil {
 				ctx.UnregisterAgentChannel(agentChName)
 			}
-			return NewResult(fmt.Sprintf("Interactive session for role %q unloaded successfully.", params.Role)), nil
+			return NewResult(fmt.Sprintf("%sInteractive session for role %q unloaded successfully.", roleNote, params.Role)), nil
 
 		case "send":
 			if params.Task == "" {
@@ -255,7 +270,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			if err != nil {
 				return nil, fmt.Errorf("interactive send failed: %w", err)
 			}
-			return NewResult(result), nil
+			return NewResult(roleNote + result), nil
 
 		case "inspect":
 			tailCount := params.Tail
@@ -266,13 +281,13 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			if err != nil {
 				return nil, fmt.Errorf("inspect failed: %w", err)
 			}
-			return NewResult(result), nil
+			return NewResult(roleNote + result), nil
 
 		case "interrupt":
 			if err := im.InterruptInteractive(ctx, params.Role, params.Instance); err != nil {
 				return nil, err
 			}
-			return NewResult(fmt.Sprintf("Interactive session for role %q (instance=%q) interrupted.", params.Role, params.Instance)), nil
+			return NewResult(fmt.Sprintf("%sInteractive session for role %q (instance=%q) interrupted.", roleNote, params.Role, params.Instance)), nil
 
 		default:
 			// Propagate background flag via ToolContext metadata.
@@ -311,7 +326,7 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 					result += fmt.Sprintf("\n\nWarning: AgentChannel registration failed: %v", regErr)
 				}
 			}
-			return NewResult(result), nil
+			return NewResult(roleNote + result), nil
 		}
 	}
 }

@@ -29,6 +29,7 @@ import { ToolCallBlock } from './ToolCallBlock'
 import { DiffView, extractDiffSource } from './DiffView'
 import { CodeView } from './CodeView'
 import { AnsiText } from './AnsiText'
+import { isToolInProgress } from './statusVisual'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { GenUIPanel } from './GenUIPanel'
 import { useToolSession } from './ToolSessionContext'
@@ -242,6 +243,10 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
   const { command, output, exitCode, timeout, promoted, bgTask } = parseShell(tool, summary, detail)
   const elapsed = elapsedBadge(tool.elapsedMs)
   const isError = exitCode != null && exitCode !== 0
+  // 卡片"运行中"的观感由 isToolInProgress 决定（FoldedToolGroup 的 singleStatus 用的就是它）——
+  // 转后台按钮必须用**同一个判据**，否则 generating/pending 时界面显示运行中模样却没有按钮
+  //（用户 2026-09-14：「我确定是 running，没渲染转后台按钮」）。
+  const inProgress = isToolInProgress(tool.status)
   const isRunning = tool.status === 'running'
 
   return (
@@ -281,8 +286,8 @@ function ShellRender({ tool, summary, detail }: { tool: WebToolProgress; summary
           {!command && !output && <div className="py-0.5 font-mono text-[12px] text-text-muted">—</div>}
         </div>
       </div>
-      {/* Running: promote-to-background bar */}
-      {isRunning && <ShellPromoteBar tool={tool} />}
+      {/* 进行中（pending/generating/running）：转后台按钮 */}
+      {inProgress && <ShellPromoteBar tool={tool} />}
       {/* Status badges */}
       {(exitCode != null || timeout || promoted || bgTask || elapsed) && (
         <div className="flex flex-wrap items-center gap-1.5">

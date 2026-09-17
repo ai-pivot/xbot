@@ -1,5 +1,5 @@
 ---
-name: tester
+name: qa
 description: "Testing agent. Use when you need to write tests, verify bug fixes, or validate functionality."
 tools:
   - Grep

@@ -281,3 +281,20 @@ func (c *RemoteCLIChannel) Send(msg ch.OutboundMsg) (string, error) {
 
 	return msgID, nil
 }
+
+// SendAskUserResolved implements ch.AskUserResolvedSender for the remote CLI
+// transport — forwards the invalidation to the CLI WS client so its disk cache
+// and any open stale panel are dropped. Best-effort: an offline client
+// reconciles from the persisted session state on reconnect.
+func (c *RemoteCLIChannel) SendAskUserResolved(ev protocol.AskUserResolvedEvent) {
+	msg := protocol.WSMessage{
+		Type:                     protocol.MsgTypeAskUserResolved,
+		Channel:                  ev.Channel,
+		ChatID:                   ev.ChatID,
+		AskUserResolvedRequestID: ev.RequestID,
+		AskUserResolvedReason:    ev.Reason,
+	}
+	if !c.hub.sendToSession("cli", ev.ChatID, msg) {
+		log.WithFields(log.Fields{"chat_id": ev.ChatID, "reason": ev.Reason}).Debug("CLI WS client offline, ask_user_resolved not delivered")
+	}
+}

@@ -83,6 +83,11 @@ describe('SSEConnectionImpl', () => {
     const first = MockEventSource.instances[0]
 
     expect([...first.listeners.keys()]).toEqual(SSE_EVENT_TYPES)
+    // 显式点名（弹白名单静默误删）：上面的集合相等断言两边同源于
+    // SSE_EVENT_TYPES —— 从白名单里删掉 'ask_user_resolved' 时它会静默通过。
+    // 该事件必须真实注册到 EventSource，否则跨 channel/tab 的陈旧 AskUser
+    // 面板永远收不到服务端驳回（"有时候走前端缓存，不该弹的时候弹出"）。
+    expect(first.listeners.has('ask_user_resolved')).toBe(true)
     expect(first.url).toBe('/api/sse?chat_id=chat-a&channel=web')
 
     connection.subscribe('chat-b', 'cli')

@@ -210,7 +210,7 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
     "compression_threshold": 0.9,
     "context_mode": "",
     "purge_old_messages": false,
-    "max_sub_agent_depth": 6,
+    "max_sub_agent_depth": 5,
     "llm_retry_attempts": 5,
     "llm_retry_delay": "1s",
     "llm_retry_max_delay": "30s",
@@ -235,7 +235,7 @@ Unconfigured tiers fall back automatically: vanguard → balance → swift.
 | `compression_threshold` | float | `0.9` | Token ratio that triggers compression |
 | `context_mode` | string | `""` | Context management mode |
 | `purge_old_messages` | bool | `false` | Purge old messages after compression |
-| `max_sub_agent_depth` | int | `6` | Max SubAgent nesting depth |
+| `max_sub_agent_depth` | int | `5` | Max SubAgent nesting levels (depth only — nesting the same role is legal, not a cycle) |
 | `llm_retry_attempts` | int | `5` | LLM call retry count |
 | `llm_retry_delay` | duration | `"1s"` | Initial retry delay |
 | `llm_retry_max_delay` | duration | `"30s"` | Max retry delay |
@@ -271,8 +271,6 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 {
   "sandbox": {
     "mode": "none",
-    "docker_image": "ubuntu:22.04",
-    "host_work_dir": "",
     "idle_timeout": "30m",
     "ws_port": 8080,
     "auth_token": "",
@@ -285,8 +283,6 @@ For backward compatibility, legacy nanosecond numbers are also accepted.
 |-------|------|---------|-------------|
 | `mode` | string | `"none"` | Sandbox mode: `none` or `docker` |
 | `remote_mode` | string | `""` | Remote sandbox mode |
-| `docker_image` | string | `"ubuntu:22.04"` | Docker image |
-| `host_work_dir` | string | `""` | Host working directory |
 | `idle_timeout` | duration | `"30m"` | Idle timeout (0 = disabled) |
 | `ws_port` | int | `8080` | Remote sandbox WebSocket port |
 | `auth_token` | string | `""` | Runner auth token |

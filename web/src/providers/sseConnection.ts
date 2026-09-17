@@ -36,6 +36,11 @@ export const SSE_EVENT_TYPES = [
   'progress_structured',
   'stream_content',
   'ask_user',
+  // AskUser 解除（answered/cancelled/rewound/cleared）——后端在 pending 解除时
+  // 广播给该会话所有客户端；客户端必须删除本地缓存的 prompt。⚠️ 必须进白名单，
+  // 否则 EventSource 不注册 addEventListener → 收不到 → 跨 channel/tab 的陈旧
+  // prompt 永远清不掉（"有时候走前端缓存，不该弹的时候弹出"）。
+  'ask_user_resolved',
   'card',
   'user_echo',
   'inject_user',

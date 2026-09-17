@@ -435,34 +435,165 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
-	// v66: repair fresh databases created by the optimized current-schema path.
-	// Those databases were stamped at v53-v65 but accidentally omitted both
-	// token-usage tables, so their historical v19/v25 migrations never ran.
+	// v66: reasoning_items — Responses API reasoning items（含 encrypted_content）。
+	// xbot 是无状态重放（store=false、每轮发全量历史），必须把这些 item 原样回传：
+	// 缺了带加密内容的 reasoning item，OpenAI 会拒绝重放里的 function_call
+	// （"was provided without its required 'reasoning' item"）。Purely additive。
 	if from < 66 {
 		if err := migrateV65ToV66(db); err != nil {
 			return fmt.Errorf("migrate to v66: %w", err)
+		}
+	}
+	// v67: internal_only — LLM-only messages（如 view_image 的多模态注入）绝不
+	// 渲染成用户可见历史（display_only 的反面）。Purely additive。
+	if from < 67 {
+		if err := migrateV66ToV67(db); err != nil {
+			return fmt.Errorf("migrate to v67: %w", err)
+		}
+	}
+
+	// v68: max_concurrency 归一 —— 同一设置曾被写到多个 channel 行
+	// ('cli' / 'web' / '')，读路径又按调用方 channel 读 ⇒ 面板显示 100+、
+	// 实际闸门却是 llm.DefaultLLMConcurrency（用户 2026-09-17 报告）。此迁移把
+	// 老数据合并成唯一规范行（channel 'cli'），删除其余副本。
+	if from < 68 {
+		if err := migrateV67ToV68(db); err != nil {
+			return fmt.Errorf("migrate to v68: %w", err)
 		}
 	}
 
 	return nil
 }
 
-// migrateV65ToV66 ensures both token-usage tables exist. The helpers use
-// idempotent CREATE statements, so this repairs affected fresh databases while
-// preserving databases that already received the v19/v25 migrations.
+// migrateV67ToV68 consolidates the max_concurrency user setting into ONE
+// canonical row (channel "cli", the value the Web LLM console / CLI settings
+// panel display).
+//
+// Rule: the canonical row wins; when it is missing, the newest surviving value
+// is promoted; every other row for this key is deleted. Idempotent (running it
+// twice leaves exactly one row). Literal strings on purpose — migrations encode
+// frozen semantics and must not depend on constants that may evolve later.
+func migrateV67ToV68(db *DB) error {
+	conn := db.Conn()
+	ok, err := tableExists(conn, "user_settings")
+	if err != nil {
+		return fmt.Errorf("migrate v67->v68 check user_settings: %w", err)
+	}
+	// 该库没有 user_settings（手工 fixture）——**仍必须记录版本号**，否则迁移链
+	// 停在 67：schema_version 与 schemaVersion 不一致
+	// （TestMigrateV65ToV66RepairsMissingTokenUsageTables: got 67, want 68）。
+	if !ok {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 68"); err != nil {
+			return fmt.Errorf("migrate v67->v68 update version: %w", err)
+		}
+		return nil
+	}
+	const canonicalChannel = "cli"
+	const concurrencyKey = "max_concurrency"
+
+	var value string
+	err = conn.QueryRow(
+		`SELECT value FROM user_settings WHERE key = ? AND channel = ? ORDER BY updated_at DESC LIMIT 1`,
+		concurrencyKey, canonicalChannel).Scan(&value)
+	if err == sql.ErrNoRows {
+		// No canonical row: promote the newest surviving value.
+		err = conn.QueryRow(
+			`SELECT value FROM user_settings WHERE key = ? ORDER BY updated_at DESC LIMIT 1`,
+			concurrencyKey).Scan(&value)
+	}
+	switch {
+	case err == sql.ErrNoRows:
+		value = ""
+	case err != nil:
+		return fmt.Errorf("migrate v67->v68 read: %w", err)
+	}
+
+	if _, err := conn.Exec(`DELETE FROM user_settings WHERE key = ?`, concurrencyKey); err != nil {
+		return fmt.Errorf("migrate v67->v68 delete: %w", err)
+	}
+	if value != "" {
+		// UNIQUE(channel, sender_id, key) — exactly one canonical row.
+		if _, err := conn.Exec(
+			`INSERT INTO user_settings (channel, sender_id, key, value, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			canonicalChannel, "cli_user", concurrencyKey, value, time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("migrate v67->v68 insert: %w", err)
+		}
+	}
+	// Record the version (every migration does this — the dispatcher does not).
+	if _, err := conn.Exec("UPDATE schema_version SET version = 68"); err != nil {
+		return fmt.Errorf("migrate v67->v68 update version: %w", err)
+	}
+	return nil
+}
+
+// migrateV66ToV67 adds session_messages.internal_only — messages that belong to
+// the LLM context but must NEVER render as user-visible history (the opposite of
+// display_only). First user: the view_image multimodal injection, which carries
+// `![label](/api/files/viewimg/…)` refs under the SAME turn_id as the user's own
+// message (OpenAI tool role cannot carry images). Without the flag the render
+// layer treats it as the turn's user message and the user's real input disappears
+// (reported 2026-09-16). Idempotent via columnExists (hand-built test fixtures
+// may already have the column).
+func migrateV66ToV67(db *DB) error {
+	conn := db.Conn()
+	hasTable, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("migrate v66->v67 check session_messages: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "session_messages", "internal_only")
+		if err != nil {
+			return fmt.Errorf("migrate v66->v67 check internal_only: %w", err)
+		}
+		if !exists {
+			if _, err = conn.Exec("ALTER TABLE session_messages ADD COLUMN internal_only INTEGER DEFAULT 0"); err != nil {
+				return fmt.Errorf("migrate v66->v67 add internal_only: %w", err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 67"); err != nil {
+		return fmt.Errorf("migrate v66->v67 update version: %w", err)
+	}
+	log.Info("Database migrated to v67 (session_messages.internal_only: LLM-only messages never rendered)")
+	return nil
+}
+
+// migrateV65ToV66 adds session_messages.reasoning_items — the raw Responses API
+// reasoning items (id + encrypted_content + summary/content) captured from the
+// provider, replayed verbatim on later turns. Idempotent via columnExists
+// (hand-built test fixtures may already have the column).
 func migrateV65ToV66(db *DB) error {
 	conn := db.Conn()
-	svc := NewUserTokenUsageService(db)
-	if err := svc.createTable(conn); err != nil {
+	// v66 的另一半（来自 master）：修补"优化版当前 schema 路径"创建的库 ——
+	// 那些库被标成 v53-v65，却漏建了两张 token 用量表，导致 v19/v25 的历史迁移
+	// 从未跑过。helpers 用幂等 CREATE，所以对已迁移过的库无副作用。
+	if err := NewUserTokenUsageService(db).createTable(conn); err != nil {
 		return fmt.Errorf("migrate v65->v66 create user_token_usage: %w", err)
 	}
-	if err := svc.createDailyTable(conn); err != nil {
+	if err := NewUserTokenUsageService(db).createDailyTable(conn); err != nil {
 		return fmt.Errorf("migrate v65->v66 create daily_token_usage: %w", err)
+	}
+	// 与其它迁移一致：测试 fixture 可能手工搭了最小 schema（甚至没有
+	// session_messages），所以先确认表存在再 ALTER，版本号照常推进。
+	hasTable, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("migrate v65->v66 check session_messages: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "session_messages", "reasoning_items")
+		if err != nil {
+			return fmt.Errorf("migrate v65->v66 check reasoning_items: %w", err)
+		}
+		if !exists {
+			if _, err = conn.Exec("ALTER TABLE session_messages ADD COLUMN reasoning_items TEXT DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate v65->v66 add reasoning_items: %w", err)
+			}
+		}
 	}
 	if _, err := conn.Exec("UPDATE schema_version SET version = 66"); err != nil {
 		return fmt.Errorf("migrate v65->v66 update version: %w", err)
 	}
-	log.Info("Database migrated to v66 (repaired token usage tables)")
+	log.Info("Database migrated to v66 (session_messages.reasoning_items: encrypted reasoning replay)")
 	return nil
 }
 

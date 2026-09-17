@@ -32,6 +32,9 @@ const TODO_2 = '第二个任务：补齐压测脚本'
 
 let seqCounter = 0
 
+/** POST /api/message 的请求体（断言 goal 按钮只是给消息加 `/goal ` 前缀）。 */
+let sentMessages: Array<{ content?: string; interrupt?: boolean }> = []
+
 async function emitSSE(page: Page, type: string, data: Record<string, unknown>) {
   await page.evaluate(
     ({ type, data, seq }) => {
@@ -75,6 +78,15 @@ async function setupMock(page: Page, opts: { pushBack?: boolean; failRPC?: boole
   await page.route('**/api/history', (r) =>
     r.fulfill({ json: { ok: true, data: { messages: [], chat_id: 'chat-1', last_seq: 0, active_progress: null } } }),
   )
+  await page.route('**/api/message', async (r) => {
+    try {
+      sentMessages.push(JSON.parse(r.request().postData() ?? '{}') as { content?: string })
+    } catch {
+      /* ignore */
+    }
+    // 会话 busy ⇒ 排队（turn_id 尚未分配、queued=true）
+    await r.fulfill({ json: { ok: true, data: { chat_id: 'chat-1', message_id: 99, turn_id: 0, queued: true } } })
+  })
   await page.route('**/api/session/status', (r) => r.fulfill({ json: { ok: true, data: { cwd: '/tmp' } } }))
   await page.route('**/api/sse**', (r) => r.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }))
   await page.route('**/api/rpc', async (r) => {
@@ -162,6 +174,7 @@ async function assertNeverShows(page: Page, text: string, ms = 1000) {
 test.describe('会话级编辑必须立即生效（不等 push）', () => {
   test.beforeEach(() => {
     seqCounter = 0
+    sentMessages = []
   })
 
   test('REPRO: 编辑 goal 按 Enter → 立刻显示新目标（无 push）', async ({ browser }) => {
@@ -267,6 +280,38 @@ test.describe('会话级编辑必须立即生效（不等 push）', () => {
     await page.waitForTimeout(1500)
     await expect(page.getByText(GOAL_B)).toHaveCount(0)
     await expect(page.getByTestId('goal-text')).toHaveCount(0)
+  })
+
+  test('REPRO: 排队中的 goal 消息不得立刻设置 goal（pop/后端 push 后才生效）', async ({ browser }) => {
+    // 用户报告（2026-09-16）：「发 goal 消息时（点 goal 按钮），即使消息排队也会
+    // 立刻设置 goal —— 排队的 goal 应该 pop 之后才设置。这个按钮就是消息自动加个
+    // /goal 罢了，不该干别的事情。」
+    // 根因：AgentPanel.sendMessage 在**发送瞬间**就写乐观 goal 覆盖（不看排队）。
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+    const { structured } = await bootAndSeed(page, { pushBack: false })
+    await expect(page.getByText(GOAL_A)).toBeVisible()
+
+    const QUEUED_GOAL = '排队中不该立刻生效的目标'
+    // ① goal 按钮打开 goal 模式（仅给消息加 /goal 前缀）
+    await page.getByTestId('goal-mode-toggle').click()
+    const editor = page.locator('.ProseMirror')
+    await editor.click()
+    await editor.type(QUEUED_GOAL)
+    await editor.press('Control+Enter')
+
+    // ② 消息确实以 `/goal ` 前缀发出（按钮的语义只有这一件事）
+    await expect.poll(() => sentMessages.length, { timeout: 5000 }).toBeGreaterThan(0)
+    expect(sentMessages[sentMessages.length - 1].content).toBe(`/goal ${QUEUED_GOAL}`)
+
+    // ③ 会话 busy ⇒ 消息在排队：**goal banner** 必须保持旧目标。
+    //    ⚠️ 断言锁定 banner 元素（goal-text）而非裸文本 —— 消息正文本身就是
+    //    `/goal <目标>`，排队队列里当然会出现这段文本。
+    await page.waitForTimeout(800)
+    await expect(page.getByTestId('goal-text')).toHaveText(GOAL_A)
+
+    // ④ 后端 pop 该消息并执行 /goal → push 进度 ⇒ 此时才生效
+    await structured({ phase: 'iteration', iteration: 2, goal: { objective: QUEUED_GOAL, status: 'active' } })
+    await expect(page.getByTestId('goal-text')).toHaveText(QUEUED_GOAL, { timeout: 2000 })
   })
 
   test('RPC 失败：不得留下幽灵目标（保持旧值）', async ({ browser }) => {

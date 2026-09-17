@@ -165,7 +165,7 @@
   --border: #d5d0c0;
   --text-primary: #586e75;
   --text-secondary: #657b83;
-  --text-muted: #93a1a1;
+  --text-muted: #6b7f83;
 }
 
 /* ── One Light ──────────────────────────────────────────────────────── */
@@ -316,8 +316,8 @@
   --bg-tertiary: #3e4451;
   --border: #3e4451;
   --text-primary: #abb2bf;
-  --text-secondary: #5c6370;
-  --text-muted: #5c6370;
+  --text-secondary: #7f8794;
+  --text-muted: #6e7681;
 }
 
 /* ── Monokai ─────────────────────────────────────────────────────────── */
@@ -392,8 +392,8 @@
   --bg-tertiary: #2a2e44;
   --border: #2a2e44;
   --text-primary: #a9b1d6;
-  --text-secondary: #565f89;
-  --text-muted: #565f89;
+  --text-secondary: #787fb5;
+  --text-muted: #5f6a9c;
 }
 
 /* ── Nord ────────────────────────────────────────────────────────────── */
@@ -430,8 +430,8 @@
   --bg-tertiary: #3b4252;
   --border: #3b4252;
   --text-primary: #d8dee9;
-  --text-secondary: #616e88;
-  --text-muted: #616e88;
+  --text-secondary: #8294b3;
+  --text-muted: #6b7c99;
 }
 
 /* ── Solarized Dark ─────────────────────────────────────────────────── */
@@ -468,8 +468,8 @@
   --bg-tertiary: #0d3b48;
   --border: #073642;
   --text-primary: #93a1a1;
-  --text-secondary: #586e75;
-  --text-muted: #586e75;
+  --text-secondary: #8fa3a8;
+  --text-muted: #7d949a;
 }
 
 /* ── Night Wolf Gray (dark-gray variant) ─────────────────────────────── */
@@ -577,7 +577,7 @@
   --border: #3c4043;
   --text-primary: #e8eaed;
   --text-secondary: #9aa0a6;
-  --text-muted: #5f6368;
+  --text-muted: #6d7488;
 }
 
 /* ── TUI Ocean — Deep ocean blues with cyan ──────────────────────────── */
@@ -681,7 +681,7 @@
   --border: #4a2040;
   --text-primary: #fce7f3;
   --text-secondary: #f9a8d4;
-  --text-muted: #6b4c5e;
+  --text-muted: #9a7288;
 }
 
 /* ── TUI Mono — Clean grayscale with red accent ──────────────────────── */
@@ -707,7 +707,7 @@
   --border: #30363d;
   --text-primary: #c9d1d9;
   --text-secondary: #8b949e;
-  --text-muted: #484f58;
+  --text-muted: #6e7681;
 }
 
 /* ── TUI Catppuccin — Catppuccin Mocha, soft pastel dark ─────────────── */
@@ -733,5 +733,97 @@
   --border: #45475a;
   --text-primary: #cdd6f4;
   --text-secondary: #a6adc8;
-  --text-muted: #585b70;
+  --text-muted: #7c839c;
+}
+
+/* ══ xbot 独有内置主题（2026-09-16，最有未来感的一档）═══════════════════════
+ * 二者都刻意走"深空 + 霓虹/极光"路线：
+ *   · 底色压到很深（#07-0a 级）以让发光色"跳"出来
+ *   · 强调色高饱和（极光青绿 / 霓虹紫），但**正文对比度仍 ≥13:1**、次要文字 ≥4.5:1
+ *     —— 只看颜值不看可读性的主题不可用。
+ *   · 代码块比页面底更暗（发光感），行内码用高亮色做"电子脉冲"点缀。
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Xbot Aurora（极光）：极夜底 + 极光青绿/蓝紫 ─────────────────────────── */
+:root[data-md-theme="xbot-aurora"] {
+  --syntax-text: #d7e6f5;
+  --syntax-keyword: #7aa2f7;
+  --syntax-string: #9fe8b8;
+  --syntax-number: #ffd28a;
+  --syntax-comment: #587a9c;
+  --syntax-attr: #7fe3ff;
+  --syntax-title: #ffd9a8;
+  --syntax-builtin: #63e6c8;
+  --syntax-type: #63e6c8;
+  --syntax-meta: #6b8ba8;
+  --syntax-regex: #ff9ec4;
+
+  --md-text: #d7e6f5;
+  --md-heading: #eef7ff;
+  --md-link: #63e6c8;
+  --md-border: #1d2f47;
+  --md-blockquote-text: #9fb6cc;
+  --md-blockquote-border: #63e6c8;
+  --md-blockquote-bg: #0b1524;
+  --md-table-header-bg: #0d1a2c;
+  --md-table-border: #1d2f47;
+  --md-inline-code-bg: #101f33;
+  --md-inline-code-text: #7ff0d8;
+  --md-code-bg: #050a13;
+  --md-code-border: #1a2a40;
+  --md-code-lang-text: #5c7a96;
+
+  --bg-primary: #070c16;
+  --bg-secondary: #0b1424;
+  --bg-tertiary: #111d31;
+  --border: #1d2f47;
+  --border-strong: #2b4368;
+  --text-primary: #d7e6f5;
+  --text-secondary: #9fb6cc;
+  --text-muted: #6b8399;
+  --accent: #34d3b4;
+  --accent-hover: #45e2c4;
+  --accent-foreground: #04150f;
+}
+
+/* ── Xbot Nebula（星云）：紫黑深空 + 霓虹紫/品红 ─────────────────────────── */
+:root[data-md-theme="xbot-nebula"] {
+  --syntax-text: #ece4ff;
+  --syntax-keyword: #b388ff;
+  --syntax-string: #7fe7c4;
+  --syntax-number: #ffcf8a;
+  --syntax-comment: #6d5c99;
+  --syntax-attr: #7fd4ff;
+  --syntax-title: #ffd6f5;
+  --syntax-builtin: #6ee7ff;
+  --syntax-type: #6ee7ff;
+  --syntax-meta: #8577ad;
+  --syntax-regex: #ff8fb0;
+
+  --md-text: #ece4ff;
+  --md-heading: #ffffff;
+  --md-link: #d68bff;
+  --md-border: #2c1f4d;
+  --md-blockquote-text: #b9a8d9;
+  --md-blockquote-border: #b388ff;
+  --md-blockquote-bg: #130c26;
+  --md-table-header-bg: #150e2b;
+  --md-table-border: #2c1f4d;
+  --md-inline-code-bg: #1b1136;
+  --md-inline-code-text: #ff9de2;
+  --md-code-bg: #06040e;
+  --md-code-border: #291b4a;
+  --md-code-lang-text: #7f6ea3;
+
+  --bg-primary: #08060f;
+  --bg-secondary: #0f0a1e;
+  --bg-tertiary: #171030;
+  --border: #2c1f4d;
+  --border-strong: #3f2d6b;
+  --text-primary: #ece4ff;
+  --text-secondary: #b9a8d9;
+  --text-muted: #8577ad;
+  --accent: #a78bfa;
+  --accent-hover: #b9a1ff;
+  --accent-foreground: #150a2b;
 }

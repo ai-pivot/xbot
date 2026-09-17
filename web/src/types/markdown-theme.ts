@@ -27,6 +27,8 @@ export type MarkdownThemeId =
   | 'tui-rose'
   | 'tui-mono'
   | 'tui-catppuccin'
+  | 'xbot-aurora'
+  | 'xbot-nebula'
 
 export interface MarkdownTheme {
   id: MarkdownThemeId
@@ -59,6 +61,10 @@ export const MARKDOWN_THEMES: MarkdownTheme[] = [
   { id: 'tui-rose', labelKey: 'settings.mdThemeTuiRose', mode: 'dark' },
   { id: 'tui-mono', labelKey: 'settings.mdThemeTuiMono', mode: 'dark' },
   { id: 'tui-catppuccin', labelKey: 'settings.mdThemeTuiCatppuccin', mode: 'dark' },
+  // ── xbot 独有内置主题（2026-09-16）─────────────────────────────────────────
+  // 定位：**最有未来感**的一档 —— 深空底 + 极光/霓虹强调色，正文对比度 ≥13:1 保可读。
+  { id: 'xbot-aurora', labelKey: 'settings.mdThemeXbotAurora', mode: 'dark' },
+  { id: 'xbot-nebula', labelKey: 'settings.mdThemeXbotNebula', mode: 'dark' },
 ]
 
 export const DEFAULT_MARKDOWN_THEME: MarkdownThemeId = 'vscode-dark'

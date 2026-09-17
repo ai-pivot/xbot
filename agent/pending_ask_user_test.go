@@ -9,6 +9,7 @@ import (
 	"xbot/channel"
 	"xbot/llm"
 	"xbot/protocol"
+	"xbot/session"
 	"xbot/tools"
 )
 
@@ -204,37 +205,40 @@ func TestPendingAskUserCancelPreventsReplayAndNextTurnCancellation(t *testing.T)
 	}
 }
 
-func TestQueuedAskUserAnswerCancelTargetsQueuedContinuation(t *testing.T) {
+// An AskUser answer sitting in the queue does NOT clear the pending cache:
+// clearing is deferred until the ask_answer record is durably persisted
+// (processMessage → resolvePendingAskUser "answered"). This pins the
+// enqueue-window guarantee — a crash or a dropped queued message must not
+// leave the DB pending with an emptied cache (that resurrected the panel on
+// reconnect; the old code cleared right at enqueue).
+func TestQueuedAskUserAnswerDoesNotClearPendingBeforePersist(t *testing.T) {
 	a := &Agent{bus: bus.NewMessageBus()}
-	key := "web:chat-1"
 	a.setPendingAskUser("web", "chat-1", &protocol.ProgressEvent{RequestID: "request-1"})
-	answer := bus.InboundMessage{
-		Channel:  "web",
-		ChatID:   "chat-1",
-		Content:  "yes",
-		Metadata: map[string]string{"ask_user_answered": "true"},
-	}
-	queue := make(chan bus.InboundMessage, 1)
-	queue <- answer
-	a.clearPendingAskUserForEnqueuedAnswer(answer)
 
-	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
-		t.Fatalf("pending AskUser remained after answer enqueue: %#v", pending)
+	// Enqueue window: the answer message was admitted to the per-session
+	// queue, the ask_answer record is NOT persisted yet. The pending cache
+	// MUST still be there.
+	if pending := a.GetPendingAskUser("web", "chat-1"); pending == nil {
+		t.Fatal("pending AskUser was cleared before the ask_answer record was persisted")
 	}
+
+	// A generic /cancel arriving in this window resolves the whole
+	// interaction (there is no active Run): prompt cleared, ack sent, and
+	// NO pendingCancel armed for the user's next message.
 	a.interceptCancel(bus.InboundMessage{Channel: "web", ChatID: "chat-1", Content: "/cancel"})
-	nextCtx, nextCancel := context.WithCancel(context.Background())
-	defer nextCancel()
-	if !a.registerActiveCancelState(key, make(chan struct{}, 1), nextCancel) {
-		t.Fatal("queued AskUser continuation did not consume pending cancel")
+	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
+		t.Fatalf("pending AskUser remained after cancel: %#v", pending)
 	}
-	if nextCtx.Err() != context.Canceled {
-		t.Fatal("queued AskUser continuation was not cancelled before processing")
+	if _, armed := a.pendingCancel.LoadAndDelete("web:chat-1"); armed {
+		t.Fatal("AskUser cancel in the answer-enqueue window armed pendingCancel")
 	}
-	a.finishActiveCancelState(key, nextCtx, nextCancel)
 	select {
 	case ack := <-a.bus.Outbound:
-		t.Fatalf("queued continuation received premature cancel ack: %#v", ack)
+		if ack.Metadata["cancelled"] != "true" {
+			t.Fatalf("cancel ack metadata = %#v", ack.Metadata)
+		}
 	default:
+		t.Fatal("pending AskUser cancel produced no acknowledgement")
 	}
 }
 
@@ -373,5 +377,61 @@ func TestAskUserCancelResetsWaitingUserBusy(t *testing.T) {
 		}
 	default:
 		t.Fatal("pending AskUser cancel produced no acknowledgement")
+	}
+}
+
+// ─── 权威校验：持久化的 ask_question/ask_answer 是唯一真相源 ─────────────
+
+// seedAskQuestion appends the minimal valid AskUser exchange (assistant tool
+// call + tool result) and the ask_question control record that Replay folds
+// into PendingAskUser.
+func seedAskQuestion(t *testing.T, sess *session.TenantSession, requestID string) {
+	t.Helper()
+	if _, err := sess.AppendMessage(llm.ChatMessage{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "ask", Name: "AskUser", Arguments: `{}`}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendMessage(llm.NewToolMessage("AskUser", "ask", `{}`, "waiting")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.AppendAskQuestion(map[string]string{"request_id": requestID}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// T1: 陈旧内存项 + DB 已答（最新控制记录 = ask_answer）⇒ GetPendingAskUser
+// 返回 nil、HasPendingAskUserFast 返回 false，且陈旧缓存项被真正剔除。
+func TestStaleMemoryEntryDroppedWhenPersistedAnswered(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+	seedAskQuestion(t, sess, "req-1")
+	if _, err := sess.AppendAskAnswer("yes"); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{multiSession: mt}
+	a.setPendingAskUser("test", "chat", &protocol.ProgressEvent{RequestID: "req-1"})
+
+	if pending := a.GetPendingAskUser("test", "chat"); pending != nil {
+		t.Fatalf("stale in-memory pending survived a persisted ask_answer: %+v", pending)
+	}
+	if a.HasPendingAskUserFast("test", "chat") {
+		t.Fatal("HasPendingAskUserFast disagrees with GetPendingAskUser (stale cache trusted)")
+	}
+	if _, ok := a.waitingUserSessions.Load("test:chat"); ok {
+		t.Fatal("stale in-memory entry was not dropped from the registry")
+	}
+}
+
+// T2: DB pending + 内存空 ⇒ 两个查询入口都由持久化记录恢复并一致返回 true。
+func TestPendingEntriesAgreeFromDBWithEmptyMemory(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+	seedAskQuestion(t, sess, "req-2")
+
+	a := &Agent{multiSession: mt}
+	if !a.HasPendingAskUserFast("test", "chat") {
+		t.Fatal("HasPendingAskUserFast missed a DB-pending question with empty memory")
+	}
+	pending := a.GetPendingAskUser("test", "chat")
+	if pending == nil || pending.RequestID != "req-2" {
+		t.Fatalf("GetPendingAskUser = %+v, want pending req-2", pending)
 	}
 }

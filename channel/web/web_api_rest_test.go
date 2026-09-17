@@ -40,7 +40,7 @@ func authedAPIRequest(method, target string, body []byte) *http.Request {
 func authedAPIRequestFor(method, target string, body []byte, senderID string, userID int) *http.Request {
 	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	ctx := contextWithSenderID(contextWithUserID(req.Context(), userID), senderID)
-	ctx = context.WithValue(ctx, webSessionKey, sessionInfo{userID: userID, username: "tester"})
+	ctx = context.WithValue(ctx, webSessionKey, sessionInfo{userID: userID, username: "qa"})
 	return req.WithContext(ctx)
 }
 
@@ -508,7 +508,7 @@ func TestRESTMessageCancellationAfterHandoffPreservesIdempotency(t *testing.T) {
 		UploadKeys: []string{"upload-key"},
 		FileNames:  []string{"test.txt"},
 	}
-	identity := inboundIdentity{SenderID: "web-1", SenderName: "tester", WebUserID: 1}
+	identity := inboundIdentity{SenderID: "web-1", SenderName: "qa", WebUserID: 1}
 	ctx, cancel := context.WithCancel(context.Background())
 	type dispatchResult struct {
 		sel SessionSelector

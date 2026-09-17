@@ -150,7 +150,30 @@ ignored.
 The agent can send interactive message cards (settings panels, confirmation
 dialogs, etc.). Users click buttons on the card to interact.
 
-### Streaming progress card
+### Native CoT progress (thinking process)
+
+While the agent works, progress is rendered as Feishu's **native thinking process**
+(aligned with dsh-lark):
+
+- **Thinking area**: model reasoning streams into the process (`REASONING_MESSAGE_CONTENT`);
+- **Each tool call** gets its own line with an icon (`read` / `write` / `search` / `bash`)
+  and a title;
+- **Each tool result** is shown as a code block (truncated past 1500 characters);
+- **The final answer is a separate ordinary message** — that is the platform's own
+  semantics; the thinking process carries the process only.
+
+Implementation and fallback:
+
+- Events are written in batches (≤50 per call); each event's content is ≤4096 characters
+  (rune-safe truncation with an explicit marker) and timestamps must be strictly
+  increasing;
+- If creation/writing fails (missing scope, older clients) the channel **falls back to
+  the CardKit streaming card below** — the process is presentation, and the answer never
+  depends on it;
+- Pick the renderer with `channels.feishu.output`: `cot` (default) or `card`.
+
+### CardKit streaming card (fallback)
+
 
 While the agent works, its progress renders into a single Feishu **CardKit
 streaming card** — one card per turn, laid out like the Web UI: **per iteration,

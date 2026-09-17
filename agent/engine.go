@@ -461,6 +461,9 @@ type RunOutput struct {
 	// Required for DeepSeek thinking mode — must be persisted so it can be
 	// passed back to the API in subsequent turns.
 	ReasoningContent string
+	// ReasoningItems are the Responses API reasoning items (id + encrypted_content
+	// + summary/content). They must be replayed verbatim on later turns.
+	ReasoningItems []llm.ReasoningItem
 }
 
 // IterationSnapshot captures the tool summary of a completed iteration.
@@ -716,8 +719,11 @@ func Run(ctx context.Context, cfg RunConfig) *RunOutput {
 
 		s.beginIteration(i)
 		if err := s.maybeCompress(ctx); err != nil {
-			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
-			out.Error = fmt.Errorf("persist context compression: %w", err)
+			// maybeCompress 内部已把「压缩失败」降级为 warn + 继续（2026-09-15：
+			// 压缩失败不再终止用户的 turn）。能走到这里只剩取消类错误
+			// （ctx.Err()）——保持既有的中止语义。
+			out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID, Content: "Agent was cancelled."})
+			out.Error = fmt.Errorf("context compression interrupted: %w", err)
 			return out
 		}
 		s.notifyThinking(i)
@@ -1722,8 +1728,18 @@ type CallChain struct {
 	Chain []string // 调用链: ["main", "main/code-reviewer"]
 }
 
-// DefaultMaxSubAgentDepth 默认 SubAgent 嵌套深度。
-const DefaultMaxSubAgentDepth = 6
+// DefaultMaxSubAgentDepth 默认 SubAgent 最大嵌套**层数**。
+//
+// 语义：main → sub1 → sub2 → … 最多 maxDepth 层 SubAgent。调用链长度 = 层数 + 1
+// （chain[0] 是发起方 "main" 自己），所以判断式是 `len(chain) > maxDepth`。
+//
+// ⚠️ **只校验深度，不校验角色重复**（用户决策 2026-09-16）：
+// 主 agent 派 explore、该 explore 再派一个（不同 instance 的）explore 是合法用法，
+// 不是循环调用。旧实现额外做了 "same role already in chain" 判定，把
+// `main → explore → explore` 误判成环并直接拒绝（现场报错：
+// `interactive spawn failed: circular SubAgent call: role "explore" already in chain [main main/explore]`）。
+// 真正的自递归（A→A→A…）由深度上限兜住 —— 不需要角色判定，删除后行为更符合直觉。
+const DefaultMaxSubAgentDepth = 5
 
 type callChainKey struct{}
 
@@ -1741,23 +1757,18 @@ func WithCallChain(ctx context.Context, cc *CallChain) context.Context {
 }
 
 // CanSpawn 检查是否可以创建指定角色的 SubAgent。
-// 返回 nil 表示可以，返回 error 表示不可以（深度超限或循环调用）。
-// maxDepth 为最大允许深度，如果 <= 0 则使用默认值 DefaultMaxSubAgentDepth。
+// 返回 nil 表示可以，返回 error 表示不可以（仅深度超限）。
+// maxDepth 为最大允许嵌套层数，如果 <= 0 则使用默认值 DefaultMaxSubAgentDepth。
+//
+// 注意：targetRole 不参与判定（见 DefaultMaxSubAgentDepth 的说明 —— 同角色嵌套
+// 是合法用法，不是循环调用）。
 func (cc *CallChain) CanSpawn(targetRole string, maxDepth int) error {
+	_ = targetRole // 角色不参与判定（保留参数以稳定调用方签名）
 	if maxDepth <= 0 {
 		maxDepth = DefaultMaxSubAgentDepth
 	}
-	if len(cc.Chain) >= maxDepth {
+	if len(cc.Chain) > maxDepth {
 		return fmt.Errorf("max SubAgent depth %d reached (chain: %v)", maxDepth, cc.Chain)
-	}
-	for _, id := range cc.Chain {
-		role := id
-		if idx := strings.LastIndexByte(id, '/'); idx >= 0 {
-			role = id[idx+1:]
-		}
-		if role == targetRole {
-			return fmt.Errorf("circular SubAgent call: role %q already in chain %v", targetRole, cc.Chain)
-		}
 	}
 	return nil
 }

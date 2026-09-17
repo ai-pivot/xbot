@@ -63,6 +63,8 @@ func TestSubAgentTool_ParseInteractiveParams(t *testing.T) {
 				// but it should NOT be a parameter parsing error
 				if err != nil {
 					// Verify the error is not about missing params
+					// （role 现在是 best-effort：缺省时按 task 推断，只有歧义/无从
+					// 推断才报错 —— 见 ResolveSubAgentRoleSandbox）
 					errStr := err.Error()
 					if errStr == "task is required" || errStr == "role is required" ||
 						errStr == "invalid parameters" {

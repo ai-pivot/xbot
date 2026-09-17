@@ -172,10 +172,11 @@ func (t *ViewImageTool) Execute(ctx *ToolContext, input string) (*ToolResult, er
 	}, nil
 }
 
-// readLocal reads a local image, honoring the sandbox (remote runners read
-// via the sandbox protocol) and the path whitelist: the workspace root, the
-// agent's working directory, and the view_images dir are readable; anything
-// else is rejected (this tool reads IMAGES, not secrets).
+// readLocal reads a local image, honoring the sandbox (remote runners read via
+// the sandbox protocol). Any local path is readable — the old whitelist
+// (workspace root / working dir / view_images / read-only roots) was removed
+// on user request 2026-09-15: it blocked reading e.g. /tmp screenshots the
+// agent had just captured.
 func (t *ViewImageTool) readLocal(ctx *ToolContext, path string) ([]byte, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("nil tool context")
@@ -189,31 +190,10 @@ func (t *ViewImageTool) readLocal(ctx *ToolContext, path string) ([]byte, error)
 		return nil, fmt.Errorf("resolve path: %w", err)
 	}
 
-	// Whitelist: workspace root / working dir / view_images dir / sandbox
-	// read-only roots (pre-converted host paths).
-	allowed := false
-	for _, root := range []string{ctx.WorkspaceRoot, ctx.WorkingDir} {
-		if root != "" && isSubPath(abs, root) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		if dir, derr := viewImagesDir(); derr == nil && isSubPath(abs, dir) {
-			allowed = true
-		}
-	}
-	if !allowed {
-		for _, root := range ctx.ReadOnlyRoots {
-			if isSubPath(abs, root) {
-				allowed = true
-				break
-			}
-		}
-	}
-	if !allowed {
-		return nil, fmt.Errorf("path %s is outside the readable roots (workspace, working dir, view_images)", path)
-	}
+	// 任意路径可读（用户 2026-09-15：「把这个删了，哪里的都允许读」）：
+	// 原先的白名单（workspace root / working dir / view_images / ReadOnlyRoots）会把
+	// /tmp、别的仓库、别的会话目录下的截图全部挡掉（报 "outside the readable roots"），
+	// 导致 agent 无法查看自己刚截的图。view_image 是"看图"工具，读什么由调用方决定。
 
 	if shouldUseSandbox(ctx) && ctx.Sandbox != nil {
 		sandboxCtx, cancel := SandboxCtx()
@@ -265,13 +245,4 @@ func (t *ViewImageTool) fetchURL(ctx *ToolContext, rawURL string) ([]byte, error
 	}
 	log.WithField("url", rawURL).WithField("bytes", len(data)).Debug("view_image downloaded")
 	return data, nil
-}
-
-// isSubPath reports whether path is root or under root (both absolute).
-func isSubPath(path, root string) bool {
-	rel, err := filepath.Rel(root, path)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
 }

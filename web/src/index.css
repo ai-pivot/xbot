@@ -549,7 +549,11 @@
 .markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.5em; list-style-position: outside; }
 .markdown-body ul { list-style-type: disc; }
 .markdown-body ol { list-style-type: decimal; }
-.markdown-body li { margin: 0.2em 0; }
+/* 列表编号必须可见：li 自身带 overflow（下面那条给行内 KaTeX 用的横滚规则）
+ * ⇒ 行外 marker（list-style-position: outside）会被 Blink 裁掉，
+ *   症状=用户消息里 `1.` `2.` 消失（DOM 里 <ol><li> 完好）。
+ * ⇒ marker 改行内（inside）：不参与裁剪，长内容横滚仍生效。 */
+.markdown-body li { margin: 0.2em 0; list-style-position: inside; }
 .markdown-body blockquote {
   border-left: 3px solid var(--md-blockquote-border);
   margin: 0.5em 0;
@@ -571,8 +575,17 @@
 }
 .markdown-body th { background: var(--md-table-header-bg); font-weight: 600; }
 .markdown-body hr { border: 0; border-top: 1px solid var(--md-border); margin: 1em 0; }
-/* KaTeX display blocks stay scrollable on narrow widths. */
+/* KaTeX 公式与其它"不可换行"的行内内容**绝不允许**溢出消息容器。
+ * 2026-09-16 用户报告（手机 + 电脑都中招）：粘贴含 $…$ 的 shell 脚本被 remark-math
+ * 当公式解析，而 KaTeX 行内公式是**定宽不可换行**的盒子（katex.css: .katex{white-space:nowrap}），
+ * 必然比气泡宽 ⇒ 溢出屏幕；仅靠 max-width 夹盒子没用（内部 span 带固定 margin/width，
+ * 照样画出盒子之外）。做法：公式本体不得超出容器宽度 + 承载它的段落/列表项允许横向滚动。 */
 .markdown-body .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25em 0; }
+.markdown-body .katex { max-width: 100%; }
+.markdown-body p,
+.markdown-body li,
+.markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4,
+.markdown-body blockquote { overflow-x: auto; overflow-y: hidden; }
 
 /* 卡片圆角统一（uiux-shadcn §4 Card radius lg=8px）
  * dockview group 卡片 + PanelDock 面板（rounded-lg=8px）——视觉一致 */
@@ -612,9 +625,12 @@
   border-bottom: none !important;
   background-color: transparent !important;
   box-sizing: border-box;
-  flex: 0 1 180px !important;
-  max-width: 180px !important;
-  min-width: 48px !important;
+  /* 用户 2026-09-15：「14 个 tab 全被压成只剩图标」——原因是这里 min-width:48px（≈只有图标）
+     且 flex 允许无限等分压缩。改为：**标题永远可读**（≥104px）+ 不参与压缩（0 0 auto）
+     + 放不下时**横向滚动**（见 .dv-tabs-container 规则）。 */
+  flex: 0 0 auto !important;
+  max-width: 220px !important;
+  min-width: 104px !important;
   padding: 0 !important;
 }
 
@@ -647,7 +663,18 @@
   animation: sectionIn 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-.animate-msg-in {
+/* ⚠️ 用户报告 2026-09-16（快速滚动时内容抖动重叠）根因：
+ * 虚拟行（`.virt-row`）靠**内联 `transform: translateY(item.start)`** 定位，
+ * 若把动画挂在这一行**自身**、且 keyframes 里写了 `transform`，则 **CSS 动画会
+ * 覆盖内联 transform**（动画优先级高于内联样式）⇒ 动画期间该行被画到容器原点，
+ * 压在上一行上 ⇒ 视觉重叠；快速滚动时行不断卸载/重挂载 ⇒ 动画反复重放 ⇒ 抖动重叠。
+ *
+ * 契约：**任何挂在虚拟行上的动画/过渡都不得改 `transform`**（它归 virtualizer 所有）。
+ * 需要"滑入"效果就把动画作用在**行内层元素**上（`> *`），行自身的定位 transform
+ * 保持不动。守护：web/e2e/scroll-overlap-guard.spec.ts（同级行不得重叠）
+ * + src/index.test.ts（msgIn 不得含 transform）。
+ */
+.animate-msg-in > * {
   animation: msgIn 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -1399,4 +1426,51 @@
     transparent 70%
   );
   animation: shellDoneGlow 1.2s ease-out 1 forwards;
+}
+
+/* ── tool pill 的分类色：静态**极淡**（不抢注意力），hover / 展开时才升到满饱和 ──
+   依据业界 color-system 指南：categorical 色必须低彩度、不得与 semantic（状态）色争抢注意力。
+   用户 2026-09-15：「分类色不应该直接抓人眼球导致像是警报」+「要有别的表现方案」。 */
+.tool-pill-bar {
+  background: color-mix(in srgb, var(--pill-hue) 34%, transparent);
+  transition: background-color 120ms ease;
+}
+.tool-pill:hover .tool-pill-bar,
+.tool-pill:focus-visible .tool-pill-bar {
+  background: var(--pill-hue);
+}
+
+/* ── tab 可读性（用户 2026-09-15：「14 个 tab 全被压成只剩图标，完全用不了」）────────────
+ * 根因：`.dv-tab` 没有最小宽度 ⇒ 开的 tab 一多就被等分压扁 ⇒ TabHeader 里的标题
+ * （`min-w-0 flex-1 truncate`）被 truncate 成 0 宽，只剩图标。VSCode 语义：
+ *   ① 每个 tab 有**最小宽度**（标题永远可读）与最大宽度（不浪费空间）；
+ *   ② 放不下时**横向滚动**（而不是无限压缩）；
+ *   ③ 悬停显示完整标题（TabHeader 已设 title 属性）。 */
+/* ⚠️ 不要给 .dv-tabs-container 加 overflow —— dockview 自带溢出下拉（⌄ N，VSCode 语义）；
+   再加横向滚动会两套机制并存（下拉计数与滚动位置不同步）＝用户说的「下拉栏交互冲突」。 */
+.dockview-theme-vs .dv-tab {
+  min-width: 104px;
+  max-width: 220px;
+  flex: 0 0 auto;
+}
+.dockview-theme-vs .dv-tab .dv-default-tab-content,
+.dockview-theme-vs .dv-tab > * {
+  min-width: 0;
+}
+
+/* ── tab 溢出：**横向滚动**（用户 2026-09-15 明确：「我要滚动不要下拉」）────────────────────
+ * 关键：**必须同时关掉 dockview 自带的下拉**，否则又是两套机制并存（上次用户报的
+ * 「下拉栏交互冲突」）。通配选择器覆盖 dockview 的溢出控件类名，不必依赖确切类名。 */
+.dockview-theme-vs /* ⚠️ **只让容器滚**：给子元素也加 overflow-x 会造成**嵌套滚动容器** ⇒ 双滚动条（用户 2026-09-15）。 */
+.dockview-theme-vs .dv-tabs-container {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  scrollbar-width: thin;
+}
+.dockview-theme-vs .dv-tabs-container > * {
+  overflow: visible !important;
+}
+[class*='dv-tabs-overflow'],
+[class*='tabs-overflow'] {
+  display: none !important;
 }

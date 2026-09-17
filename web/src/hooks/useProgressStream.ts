@@ -737,22 +737,51 @@ function commitLiveProgressAndReset(
       // Without this the committed message drops the latest iteration entirely
       // (user report: cancel 后发新 user msg 最新 iter 瞬间消失).
       if (snap.phase === 'frozen') {
+        // ⛔ 编号必须用**规范当前迭代**（snap.lastIter / snap.iteration —— 引擎的
+        // 迭代计数器），**绝不 maxIter+1**。
+        //
+        // 旧实现把当前迭代的流文本（text / liveReasoning）复制到一个自造的
+        // 新号上：当前迭代本身已经有条目（iterationHistory 里就有一条，或上面
+        // 721-729 已把 liveReasoning 折进末迭代）⇒ 同一个物理迭代被物化成 N 与
+        // N+1 两条、reasoning 一字不差渲染两遍（用户 2026-09-17 截图：AskUser
+        // 弹窗上下各一个 `Thought 4930 chars`）。
+        // 现在：同号合并（工具按 name+label 去重，content/reasoning 仅在空时补），
+        // 无该号才补建。
         const maxIter = commitIters.reduce((m, it) => Math.max(m, it.iteration), 0)
         const inFlightTools: WebToolProgress[] = dedupToolsByName([
           ...snap.activeTools,
           ...snap.completedTools,
           ...snap.streamingTools,
         ])
-        commitIters = [
-          ...commitIters,
-          {
-            iteration: maxIter + 1,
-            content: text,
-            reasoning: liveReasoning,
-            tools: inFlightTools,
-            toolCount: inFlightTools.length,
-          },
-        ]
+        const target = Math.max(snap.lastIter || 0, snap.iteration || 0) || maxIter
+        const idx = commitIters.findIndex((it) => it.iteration === target)
+        if (idx >= 0) {
+          const existing = commitIters[idx]
+          const seen = new Set((existing.tools ?? []).map((t) => `${t.name}\u0000${t.label ?? ''}`))
+          const added = inFlightTools.filter((t) => !seen.has(`${t.name}\u0000${t.label ?? ''}`))
+          commitIters = commitIters.map((it, i) =>
+            i === idx
+              ? {
+                  ...it,
+                  content: it.content || text,
+                  reasoning: it.reasoning || liveReasoning,
+                  tools: [...(it.tools ?? []), ...added],
+                  toolCount: (it.toolCount ?? 0) + added.length,
+                }
+              : it,
+          )
+        } else {
+          commitIters = [
+            ...commitIters,
+            {
+              iteration: target,
+              content: text,
+              reasoning: liveReasoning,
+              tools: inFlightTools,
+              toolCount: inFlightTools.length,
+            },
+          ]
+        }
         commitText = ''
       } else if (text && commitIters.length === 0) {
         // v55 rendering: when a message HAS iterations, the top-level content is
@@ -1863,9 +1892,10 @@ function handleProgressMessage(
       // for WaitingUser) and AssistantMessage renders "思考中…" above the
       // AskUser panel — an empty spinner with no content.
       store.stopStreaming()
-      if (messageStore) {
-        messageStore.clearEmptyLives()
-      }
+      // ⚠️ 不再 clearEmptyLives()：WaitingUser 的 committed 占位是**空 assistant**
+      // （v55：正文存 iteration_history），而 live 才是已渲染 CoT 的载体 —— 清掉
+      // 它们会让「AskUser 出现后已渲染的 CoT 消失」（用户 2026-09-17 报告）。
+      // 空壳清理只归 session(idle) 那条路径。
       return
     }
 

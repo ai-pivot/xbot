@@ -13,6 +13,7 @@
 import { memo } from 'react'
 
 import { FoldedToolGroup } from './FoldedToolGroup'
+import { CopyTarget } from './MessageActions'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ThinkingLine } from './ThinkingLine'
@@ -33,7 +34,7 @@ export const IterationGroup = memo(function IterationGroup({
   const { t } = useI18n()
 
   return (
-    <div className="flex flex-col gap-1">
+    <CopyTarget kind="iteration" iteration={iteration} className="flex flex-col gap-1">
       {/* 迭代指标（插件注入点）：把该迭代的 token/TTFT/tool 耗时传给插件。 */}
       <IterationSlot
         data={{
@@ -66,15 +67,17 @@ export const IterationGroup = memo(function IterationGroup({
         />
       )}
 
-      {/* C: tool calls (每个工具一个 pill) */}
+      {/* C: tool calls (每个工具一个 pill) —— 右键/长按可单独复制**每个工具**的输出 */}
       {iteration.tools.length > 0 && (
-        <FoldedToolGroup tools={iteration.tools} />
+        <CopyTarget kind="tools" tools={iteration.tools}>
+          <FoldedToolGroup tools={iteration.tools} />
+        </CopyTarget>
       )}
 
       {/* Fallback: if nothing in this iteration, show a subtle hint */}
       {!iteration.reasoning && iteration.tools.length === 0 && !iteration.content && (
         <span className="text-xs text-text-muted">{t('agent.none')}</span>
       )}
-    </div>
+    </CopyTarget>
   )
 })

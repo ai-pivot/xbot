@@ -200,7 +200,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-xs text-text-primary">{subAgentTitle(agent)}</p>
                     <p className="mt-0.5 truncate text-xs text-text-muted">
-                      {agent.preview || (agent.running ? 'running' : agent.historical ? 'history' : 'idle')}
+                      {agent.preview || (agent.status === 'waiting_input' ? 'waiting' : agent.running ? 'running' : agent.historical ? 'history' : 'idle')}
                     </p>
                   </div>
                 </button>

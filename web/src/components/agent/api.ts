@@ -84,7 +84,10 @@ export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?
 export async function setCwd(session: SessionSelector, dir: string): Promise<{ dir?: string }> {
   await postAPI('/api/rpc', {
     method: 'set_cwd',
-    params: { channel: session.channel, chat_id: session.chatID, dir },
+    // force=true：这是**显式用户动作**（新建会话弹窗 / 会话信息里改路径）——
+    // 服务端必须原样采用传入路径，绝不能被既有 cwd 或自动推断值顶掉。
+    // 2026-09-16 用户要求原话：「我传的是什么路径就得是什么路径，而不是给我转换」。
+    params: { channel: session.channel, chat_id: session.chatID, dir, force: true },
   })
   return { dir }
 }

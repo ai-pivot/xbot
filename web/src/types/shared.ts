@@ -149,6 +149,9 @@ export type WSMessageType =
   | 'stream_content'
   | 'rpc_response'
   | 'ask_user'
+  // AskUser 解除广播（answered/cancelled/rewound/cleared）——收到后客户端必须
+  // 删除本地缓存的 prompt（服务端是唯一权威，多 channel/tab 同步）。
+  | 'ask_user_resolved'
   | 'session'
   | 'user_echo'
   | 'inject_user'
@@ -198,6 +201,9 @@ export interface WSMessage {
   result?: unknown
   error?: string
   session?: SessionEvent | null
+  /** ask_user_resolved: why the prompt stopped being pending —
+   *  "answered" | "cancelled" | "rewound" | "cleared". */
+  reason?: string
   /** Session queue snapshot (Staging Tray data source). Full-snapshot semantics —
    *  frontends replace, never merge. */
   queue_state?: QueueStatePayload | null
@@ -530,6 +536,8 @@ export interface ChatMessage {
   role: ChatMessageRole
   content: string
   iterations: WebIteration[]
+  /** 后端按 turn 尾部截断迭代上报的丢弃数量（历史响应有界化）—— 渲染「更早的 N 个迭代」，不静默缺块。 */
+  iterationsTruncated?: number
   timestamp: string
   isPartial: boolean
   turnID: number

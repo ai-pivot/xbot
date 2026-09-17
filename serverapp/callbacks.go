@@ -75,7 +75,6 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 				return nil, err
 			}
 			populateRunnerOnlineStatus(runners, senderID)
-			runners = injectBuiltinDocker(runners)
 			return runners, nil
 		},
 		RunnerCreate: func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
@@ -187,22 +186,6 @@ func populateRunnerOnlineStatus(runners []tools.RunnerInfo, senderID string) {
 			}
 		}
 	}
-}
-
-// injectBuiltinDocker prepends the built-in docker sandbox runner if available.
-func injectBuiltinDocker(runners []tools.RunnerInfo) []tools.RunnerInfo {
-	if sb := tools.GetSandbox(); sb != nil {
-		if router, ok := sb.(*tools.SandboxRouter); ok && router.HasDocker() {
-			dockerEntry := tools.RunnerInfo{
-				Name:        tools.BuiltinDockerRunnerName,
-				Mode:        "docker",
-				DockerImage: router.DockerImage(),
-				Online:      true,
-			}
-			return append([]tools.RunnerInfo{dockerEntry}, runners...)
-		}
-	}
-	return runners
 }
 
 // buildRunnerConnectCmdFromToken builds the xbot-runner CLI command from token + settings.
@@ -421,7 +404,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap),
+			Messages:       channel.BoundHistoryIterations(channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
@@ -995,13 +978,12 @@ func applyWebRunningStatus(ag *agent.Agent, row *web.UserChatWithPreview) {
 		if row.Running {
 			row.Status = "running"
 		} else if ag.HasPendingAskUserFast(ch, chatID) {
-			// WaitingUser: the turn is paused for an AskUser answer. The pause
-			// intentionally keeps ss.busy + lastProgressSnapshot (for reconnect
-			// recovery) but chatCancelCh is already deregistered, so
-			// IsProcessingByChannel reports false — without this branch the
-			// sidebar shows idle while the panel shows busy (two state sources
-			// disagreeing after a page refresh).
-			row.Running = true
+			// waiting_input: the turn is paused for an AskUser answer — the
+			// session is NOT running (busy ⇔ iterating; the WaitingUser pause
+			// keeps lastProgressSnapshot for reconnect recovery but processes
+			// nothing). Report Status="waiting_input" WITHOUT claiming
+			// running, so the sidebar renders the distinct waiting state
+			// instead of a fake busy row.
 			row.Status = "waiting_input"
 		} else if row.Status == "" {
 			row.Status = "idle"
@@ -2185,22 +2167,6 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		// Metrics
 		MetricsGet: func() string {
 			return agent.GlobalMetrics.Snapshot().FormatMarkdown()
-		},
-
-		// Sandbox
-		SandboxCleanupTrigger: func(senderID string) error {
-			sb := tools.GetSandbox()
-			if sb == nil {
-				return fmt.Errorf("sandbox not initialized")
-			}
-			return sb.ExportAndImport(senderID)
-		},
-		SandboxIsExporting: func(senderID string) bool {
-			sb := tools.GetSandbox()
-			if sb == nil {
-				return false
-			}
-			return sb.IsExporting(senderID)
 		},
 
 		// Runner callbacks

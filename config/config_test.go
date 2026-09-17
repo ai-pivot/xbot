@@ -255,7 +255,6 @@ func TestSaveToFileLoadSaveRoundtrip(t *testing.T) {
 		},
 		Agent: AgentConfig{
 			MaxIterations:    2000,
-			MaxConcurrency:   100,
 			MemoryProvider:   "flat",
 			WorkDir:          "/ipfs_flash/test",
 			PromptFile:       "CLAUDE.md",
@@ -545,9 +544,8 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	if cfg.Agent.MaxIterations != 2000 {
 		t.Errorf("agent.max_iterations: got %d, want 2000", cfg.Agent.MaxIterations)
 	}
-	if cfg.Agent.MaxConcurrency != 3 {
-		t.Errorf("agent.max_concurrency: got %d, want 3", cfg.Agent.MaxConcurrency)
-	}
+	// max_concurrency is NOT a config.json field anymore — its single source is
+	// the canonical user_settings row (channel.MaxConcurrencyChannel).
 	if cfg.Agent.MaxContextTokens != 200000 {
 		t.Errorf("agent.max_context_tokens: got %d, want 200000", cfg.Agent.MaxContextTokens)
 	}
@@ -687,7 +685,7 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 	}
 
 	// Modify a known field and save
-	cfg.Agent.MaxConcurrency = 50
+	cfg.Agent.MaxIterations = 50
 	if err := SaveToFile(path, cfg); err != nil {
 		t.Fatalf("SaveToFile: %v", err)
 	}
@@ -705,8 +703,8 @@ func TestNormalizeConfigTypes_PreservesUnknownFields(t *testing.T) {
 	if !strings.Contains(content, `"my_custom_section"`) {
 		t.Errorf("my_custom_section not preserved in:\n%s", content)
 	}
-	if !strings.Contains(content, `"max_concurrency": 50`) {
-		t.Errorf("max_concurrency=50 not written in:\n%s", content)
+	if !strings.Contains(content, `"max_iterations": 50`) {
+		t.Errorf("max_iterations=50 not written in:\n%s", content)
 	}
 	// Dirty string values should now be proper types after merge
 	if !strings.Contains(content, `"port": 8082`) {

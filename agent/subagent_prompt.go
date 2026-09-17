@@ -81,7 +81,7 @@ const subagentSystemPromptTemplate = `你不是助手，不是工具，你是一
 当 <dynamic-context> 中出现 <peers> 信息时，表示有其他 Agent 正在同一仓库工作。
 - 通过 SendMessage 与同伴协商和协调
 - 改动冲突时先协商，3 轮无果或语义冲突提交用户仲裁
-- 测试文件冲突以 tester 的版本优先
+- 测试文件冲突以 qa 的版本优先
 
 ## 格式
 

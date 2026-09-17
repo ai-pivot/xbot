@@ -424,12 +424,19 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		Channel string `json:"channel"`
 		ChatID  string `json:"chat_id"`
 		Dir     string `json:"dir"`
+		// Force：显式用户动作（新建会话弹窗等）—— 原样应用传入路径，
+		// 不得被既有 cwd / 自动推断值顶掉（2026-09-16 用户要求：
+		// 「我传的是什么路径就得是什么路径，而不是给我转换」）。
+		Force bool `json:"force"`
 	}) error {
 		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
 		if err != nil {
 			return err
 		}
 		// SetCWD internally refreshes plugin workDir with correct tenantID
+		if p.Force {
+			return h.Ag.SetCWDForced(channelName, chatID, p.Dir)
+		}
 		return h.Ag.SetCWD(channelName, chatID, p.Dir)
 	})
 	t["get_settings"] = rpc1(func(ctx context.Context, p struct {
@@ -470,9 +477,10 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if _, ok := result["max_iterations"]; !ok {
 			result["max_iterations"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxIterations)
 		}
-		if _, ok := result["max_concurrency"]; !ok {
-			result["max_concurrency"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxConcurrency)
-		}
+		// max_concurrency is NOT injected from config.json: its single source is
+		// the canonical user_settings row (channel.MaxConcurrencyChannel), which
+		// is already in `result` when set. Removing the config fallback is what
+		// stops the panel value and the runtime value from diverging.
 		if _, ok := result["context_mode"]; !ok {
 			result["context_mode"] = h.Cfg.Agent.ContextMode
 		}
@@ -677,19 +685,37 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	}) error {
 		return h.Ag.SetUserThinkingMode(cliSenderID, p.Mode)
 	})
+	// Settings → Tools panel: list every built-in tool with its activation
+	// state, and toggle one. Inactive tools are omitted from the LLM tool
+	// definitions (never sent in context) and cannot be executed.
+	t["get_tools_settings"] = h.requireAdmin(rpc0(func(ctx context.Context) any {
+		return map[string]any{"tools": h.Ag.ToolSettings()}
+	}))
+	t["set_tool_enabled"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}) error {
+		disabled, err := h.Ag.SetToolEnabled(p.Name, p.Enabled)
+		if err != nil {
+			return err
+		}
+		// Single persisted representation: config.DisabledTools.
+		h.Cfg.DisabledTools = disabled
+		return saveServerConfig(h.Cfg)
+	}))
 	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return h.Ag.GetLLMConcurrency() })
 	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
 		Personal int `json:"personal"`
 	}) error {
+		// Single source of truth: the canonical user_settings row
+		// (channel.MaxConcurrencyChannel). SetLLMConcurrency writes it, the
+		// runtime handler rebuilds the semaphore — do NOT also mirror it into
+		// config.json (duplicate definition removed 2026-09-17).
 		if err := h.Ag.SetLLMConcurrency(p.Personal); err != nil {
 			return err
 		}
-		// Rebuild the global semaphore immediately. SetMaxConcurrency is a
-		// global operation (not per-user), so no senderID is needed.
 		if isAdmin(ctx) {
-			h.Cfg.Agent.MaxConcurrency = p.Personal
 			h.Ag.SetMaxConcurrency(p.Personal)
-			_ = saveServerConfig(h.Cfg)
 		}
 		return nil
 	})
@@ -1306,7 +1332,7 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 					}
 				}
 			}
-			return channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap), nil
+			return channel.BoundHistoryIterations(channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)), nil
 		}()
 		if err != nil {
 			return nil, err

@@ -67,13 +67,20 @@ export function FileSearch({ tabManager }: FileSearchProps) {
     <div className="flex h-full flex-col">
       <div className="relative px-2 py-2">
         <Search className="pointer-events-none absolute left-4 top-1/2 size-3.5 -translate-y-1/2 text-text-muted" />
+        {/* ⚠️ 不要用 readOnly 反自动填充：readOnly 输入框在手机上**永远不弹软键盘**
+            （用户 2026-09-15：「session 面板那个搜索，不要 disable 弹出键盘」）。
+            改用不阻塞键盘的手段：唯一 name + autoComplete=off + data-form-type。 */}
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t('sidebar.searchPlaceholder')}
+          name="xbot-file-search"
           autoComplete="off"
-          readOnly
-          onFocus={(e) => { if (e.currentTarget.readOnly) e.currentTarget.readOnly = false }}
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          enterKeyHint="search"
+          data-form-type="other"
           className="h-7 pl-8 pr-7 text-xs"
           aria-label={t('sidebar.search')}
           autoFocus

@@ -71,10 +71,13 @@ func (wc *WebChannel) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		}).Info("Accepted executable-like upload (unrestricted by design; forced attachment download on serve)")
 	}
 
-	// Web uploads MUST go to cloud OSS - local storage is never allowed for security
+	// 存储后端（2026-09-16 用户要求："默认 storage 应该是本地 static server，不要默认没有"）：
+	//   · 未配置云 OSS（provider 为 nil）或显式 `oss.provider == "local"` ⇒ **本地 static**：
+	//     写到 <xbotHome>/uploads/<key>，由同源 /api/files/download 读盘返回（免配置即可用）。
+	//   · 配置了 qiniu/s3 ⇒ 走云（云端是 source of truth，本地另留一份 spill 供模型拿真实路径）。
+	// 安全语义两侧一致：默认强制 attachment，只有 ?inline=1 才内联（云侧靠 attname 参数）。
 	if wc.ossProvider == nil || wc.ossProvider.Name() == "local" {
-		log.Error("Web file upload rejected: no cloud OSS provider configured (local storage is forbidden for web uploads)")
-		jsonErrorResponse(w, http.StatusServiceUnavailable, "file storage not configured")
+		wc.handleLocalUpload(w, r, header.Filename, ext, data, mimeType)
 		return
 	}
 
@@ -125,8 +128,9 @@ func (wc *WebChannel) handleFileDownload(w http.ResponseWriter, r *http.Request)
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid key")
 		return
 	}
+	// 默认本地 static（见 handleFileUpload 的说明）：同源读盘返回字节，不再 302 到签名 URL。
 	if wc.ossProvider == nil || wc.ossProvider.Name() == "local" {
-		jsonErrorResponse(w, http.StatusServiceUnavailable, "file storage not configured")
+		wc.serveLocalFile(w, r, key)
 		return
 	}
 	var (
@@ -198,6 +202,89 @@ func (wc *WebChannel) handleCloudUpload(w http.ResponseWriter, r *http.Request, 
 		"size":       len(data),
 		"mime":       mimeType,
 	})
+}
+
+// handleLocalUpload stores an upload on LOCAL disk — the DEFAULT storage backend
+// when no cloud OSS is configured (user requirement 2026-09-16: uploads must work
+// out of the box with a local static server instead of failing with
+// "file storage not configured").
+//
+// Path: <xbotHome>/uploads/<key> (same root the image resolver derives — see
+// LocalUploadRoot / webImageResolver.uploadDir — so uploads are always readable
+// by both the HTTP layer and the multimodal resolver). Payload shape identical to
+// the cloud path so the composer/attachments code is backend-agnostic.
+func (wc *WebChannel) handleLocalUpload(w http.ResponseWriter, r *http.Request, filename, ext string, data []byte, mimeType string) {
+	home := config.XbotHome()
+	if home == "" {
+		jsonErrorResponse(w, http.StatusInternalServerError, "xbot home not resolved")
+		return
+	}
+	userID := "anonymous"
+	if si := wc.validateSession(r); si != nil {
+		userID = fmt.Sprintf("%d", si.userID)
+	}
+	key := fmt.Sprintf("uploads/%s/%s%s", userID, uuid.New().String(), ext)
+	root := LocalUploadRoot(home)
+	localPath := filepath.Join(root, key)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
+		log.WithError(err).WithField("path", localPath).Error("Failed to create local upload dir")
+		jsonErrorResponse(w, http.StatusInternalServerError, "failed to store upload")
+		return
+	}
+	if err := os.WriteFile(localPath, data, 0o600); err != nil {
+		log.WithError(err).WithField("path", localPath).Error("Failed to write local upload")
+		jsonErrorResponse(w, http.StatusInternalServerError, "failed to store upload")
+		return
+	}
+	pruneLocalUploads(root, maxLocalUploads)
+	log.WithFields(log.Fields{
+		"key": key, "filename": filename, "size": len(data), "provider": "local",
+	}).Info("File uploaded to local storage")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"upload_key": key,
+		"name":       filename,
+		"size":       len(data),
+		"mime":       mimeType,
+	})
+}
+
+// serveLocalFile serves an upload straight from local disk (the local-storage
+// counterpart of the cloud 302-to-signed-URL path). Same-origin + cookie auth,
+// no external redirect.
+//
+// Security parity with the cloud path (which forces attachment via the qiniu
+// attname parameter): the default is Content-Disposition: attachment; only
+// ?inline=1 renders inline (used by the composer/history <img src>). nosniff is
+// always set so a stored payload can never be sniffed into an active type.
+func (wc *WebChannel) serveLocalFile(w http.ResponseWriter, r *http.Request, key string) {
+	home := config.XbotHome()
+	if home == "" {
+		jsonErrorResponse(w, http.StatusInternalServerError, "xbot home not resolved")
+		return
+	}
+	localPath := filepath.Join(LocalUploadRoot(home), key)
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusNotFound, "file not found")
+		return
+	}
+	mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(localPath)))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	inline := r.URL.Query().Get("inline") == "1"
+	if inline {
+		w.Header().Set("Content-Disposition", "inline")
+	} else {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(localPath)))
+	}
+	w.Header().Set("Content-Type", mimeType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, max-age=60")
+	w.WriteHeader(http.StatusOK)
+	if _, werr := w.Write(data); werr != nil {
+		log.WithError(werr).WithField("key", key).Debug("Local file response write failed")
+	}
 }
 
 // maxLocalUploads bounds the spill-to-disk directory. These copies are a CACHE

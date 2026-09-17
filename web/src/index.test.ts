@@ -100,3 +100,40 @@ describe('iteration block containment CSS (perf)', () => {
     expect(block).toContain('contain: layout')
   })
 })
+
+// 用户报告 2026-09-16：**快速滚动时内容抖动重叠**。
+// 根因：虚拟行靠内联 `transform: translateY(item.start)` 定位，而入场动画
+// （`animate-msg-in` → `@keyframes msgIn`）曾写在同一元素上、keyframes 里含
+// `transform` —— **CSS 动画覆盖内联 transform** ⇒ 动画期间该行被画到容器原点，
+// 压在上一行上。契约：挂在虚拟行上的动效绝不允许改 `transform`。
+describe('virt-row 入场动画不得覆盖定位 transform（快速滚动重叠守护）', () => {
+  it('.animate-msg-in 必须把动画作用在行内层（> *）而不是行自身', () => {
+    const start = css.indexOf('.animate-msg-in')
+    expect(start, '.animate-msg-in rule missing').toBeGreaterThan(-1)
+    const rule = css.slice(start, css.indexOf('}', start) + 1)
+    // 行自身的 transform 归 virtualizer（内联 translateY(item.start)）——
+    // 一旦把动画挂在行元素上，keyframes 的 transform 会覆盖它 ⇒ 行被画到容器原点。
+    expect(rule, '动画必须作用在行内层元素上（.animate-msg-in > *）').toContain('> *')
+  })
+
+  it('⛔ MessageList 不得在承载内联定位 transform 的行上直接挂 animate-msg-in', () => {
+    const src = readFileSync(resolve(here, 'components/agent/MessageList.tsx'), 'utf8')
+    // 定位行：style 里有 `transform: translateY(`，class 里同时出现 animate-msg-in 即违规。
+    const offending = src.split('\n').some((line: string) => line.includes('animate-msg-in') && line.includes('translateY('))
+    expect(offending, '虚拟行既带内联 translateY 又挂入场动画 ⇒ 动画会覆盖定位').toBe(false)
+  })
+})
+
+describe('markdown list markers CSS (用户消息里编号消失)', () => {
+  it('li 的 marker 必须是行内 —— 否则被自身 overflow 裁掉（编号不可见）', () => {
+    // 2026-09-17 现场：用户消息里的 `1.` `2.` 不显示，而 DOM 里 <ol><li> 完好
+    // ⇒ 行外 marker + li{overflow:auto} 被 Blink 裁掉。契约：li 必须 inside。
+    const liBlocks = [...css.matchAll(/\.markdown-body li\s*\{([^}]*)\}/g)].map((m) => m[1])
+    expect(liBlocks.length, 'index.css 里应有 .markdown-body li 规则').toBeGreaterThan(0)
+    expect(liBlocks.join(' ')).toMatch(/list-style-position:\s*inside/)
+  })
+
+  it('长内容横滚规则仍然保留（行内 KaTeX 定宽不可换行）', () => {
+    expect(css).toMatch(/\.markdown-body li[\s\S]{0,200}overflow-x:\s*auto/)
+  })
+})

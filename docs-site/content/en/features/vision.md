@@ -39,14 +39,16 @@ The model can call the `view_image` tool to put an image from its environment in
 
 - Analyze a chart Python just generated, inspect a downloaded picture, compare screenshots
 - Parameters: `path` (workspace-local file) or `url` (http/https image)
-- The tool reads, stores, and injects the image into the next turn's visual context (shown in the message flow as a 📷 injected image)
+- The tool reads, stores, and injects the image into the next turn's visual context
+- **That injected message is an internal carrier for the model — it never shows up in the conversation history.** It reuses the turn of your message and exists only to hand the image to the model (OpenAI tool messages cannot carry images). What you see in the UI is always **your own message** (with the image you uploaded)
 
 ```
 User: check whether chart.png looks right
 Model: (calls view_image path=chart.png)
-📷 image loaded via the view_image tool
 Model: the Y-axis has 3 duplicated ticks...
 ```
+
+> The injection stays in history, so later turns can still see the image the model analyzed (e.g. "make another version" comparing against the previous one) — but it is not rendered again and never replaces your message.
 
 ## Feishu images
 

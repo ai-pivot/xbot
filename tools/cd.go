@@ -46,7 +46,7 @@ func (t *CdTool) Execute(ctx *ToolContext, input string) (*ToolResult, error) {
 		return nil, fmt.Errorf("path is required")
 	}
 
-	// Use Sandbox API for directory operations (docker + remote sandboxes)
+	// Use Sandbox API for directory operations (remote/none sandboxes)
 	if shouldUseSandbox(ctx) {
 		return t.executeWithSandboxAPI(ctx, params.Path)
 	}
