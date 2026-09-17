@@ -123,3 +123,17 @@ describe('virt-row 入场动画不得覆盖定位 transform（快速滚动重叠
     expect(offending, '虚拟行既带内联 translateY 又挂入场动画 ⇒ 动画会覆盖定位').toBe(false)
   })
 })
+
+describe('markdown list markers CSS (用户消息里编号消失)', () => {
+  it('li 的 marker 必须是行内 —— 否则被自身 overflow 裁掉（编号不可见）', () => {
+    // 2026-09-17 现场：用户消息里的 `1.` `2.` 不显示，而 DOM 里 <ol><li> 完好
+    // ⇒ 行外 marker + li{overflow:auto} 被 Blink 裁掉。契约：li 必须 inside。
+    const liBlocks = [...css.matchAll(/\.markdown-body li\s*\{([^}]*)\}/g)].map((m) => m[1])
+    expect(liBlocks.length, 'index.css 里应有 .markdown-body li 规则').toBeGreaterThan(0)
+    expect(liBlocks.join(' ')).toMatch(/list-style-position:\s*inside/)
+  })
+
+  it('长内容横滚规则仍然保留（行内 KaTeX 定宽不可换行）', () => {
+    expect(css).toMatch(/\.markdown-body li[\s\S]{0,200}overflow-x:\s*auto/)
+  })
+})

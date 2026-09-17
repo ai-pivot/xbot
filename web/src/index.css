@@ -549,7 +549,11 @@
 .markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.5em; list-style-position: outside; }
 .markdown-body ul { list-style-type: disc; }
 .markdown-body ol { list-style-type: decimal; }
-.markdown-body li { margin: 0.2em 0; }
+/* 列表编号必须可见：li 自身带 overflow（下面那条给行内 KaTeX 用的横滚规则）
+ * ⇒ 行外 marker（list-style-position: outside）会被 Blink 裁掉，
+ *   症状=用户消息里 `1.` `2.` 消失（DOM 里 <ol><li> 完好）。
+ * ⇒ marker 改行内（inside）：不参与裁剪，长内容横滚仍生效。 */
+.markdown-body li { margin: 0.2em 0; list-style-position: inside; }
 .markdown-body blockquote {
   border-left: 3px solid var(--md-blockquote-border);
   margin: 0.5em 0;
