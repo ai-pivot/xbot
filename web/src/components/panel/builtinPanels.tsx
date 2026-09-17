@@ -24,6 +24,7 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
 import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
+import { openAgentSessionTab } from '@/lib/sessionTabs'
 import {
   groupSessions,
   isSubAgentSession,
@@ -210,7 +211,20 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           />
         )}
       </div>
-      <NewSessionDialog open={newOpen} onOpenChange={setNewOpen} onCreate={store.createSession} />
+      <NewSessionDialog
+        open={newOpen}
+        onOpenChange={setNewOpen}
+        onCreate={async (label, workPath) => {
+          const newID = await store.createSession(label, workPath)
+          // 创建 = 切换到新会话。store.createSession 已经走了完整 switchSession
+          // （store activeSession + 后端 /switch，侧栏因此高亮），但 desktop 主区
+          // 的会话身份来自 tab 自己的 params.sessionId —— 必须再为新会话打开/聚焦
+          // agent tab，否则用户看到「侧栏高亮了、窗口没切」，要再点一次才切过去
+          // （fork / 会话列表点击都补了这一步，只有「新建会话」漏了）。
+          if (newID) openAgentSessionTab(tabManager, newID, 'web', label)
+          return newID
+        }}
+      />
     </div>
   )
 }
