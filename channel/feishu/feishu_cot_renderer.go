@@ -107,8 +107,8 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 		r.heldText = ev.StreamContent
 	}
 
-	for i, tp := range ev.ActiveTools {
-		key := cotToolKey(tp, i)
+	for _, tp := range ev.ActiveTools {
+		key := cotToolKey(tp)
 		if _, seen := r.startedTools[key]; seen {
 			continue
 		}
@@ -130,8 +130,8 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 		r.cot.emit("TOOL_CALL_END", map[string]any{"toolCallId": key})
 	}
 
-	for i, tp := range ev.CompletedTools {
-		key := cotToolKey(tp, i)
+	for _, tp := range ev.CompletedTools {
+		key := cotToolKey(tp)
 		if _, seen := r.doneTools[key]; seen {
 			continue
 		}
@@ -298,14 +298,24 @@ func cotDelta(previous, accumulated string) string {
 	return accumulated
 }
 
-// cotToolKey 是工具调用在 CoT 里的 id。
+// cotToolKey 是**一次工具调用**的身份，必须同时满足两条：
 //
-// ⚠️ 必须带上**本次事件里的下标**：同一迭代内可能出现**同名工具的多个调用**
-// （例如并发两个 Shell）。旧实现用 `name#iteration` ⇒ 两个调用被合并成一个 ⇒
-// 平台显示「Called tools 2 times」却只展开 1 条（用户 2026-09-17 报告）。
-// 下标在同一个事件数组内稳定，因此重复事件仍能正确去重。
-func cotToolKey(tp protocol.ToolProgress, idx int) string {
-	return tp.Name + "#" + strconv.Itoa(tp.Iteration) + "#" + strconv.Itoa(idx)
+//	① 跨状态稳定：同一个调用会以 generating（生成参数中）→ executing（running）
+//	   → done 反复上报，三种状态必须算**同一次**调用（否则平台显示
+//	   「Called tools 2 times」而 web 上只调了 1 个 —— 2026-09-17 用户用 web 截图
+//	   纠正，并指出我把 generating/executing/done 搞混了）；
+//	② 不同调用可区分：同一工具在不同迭代各跑一次 = 两次真实调用；
+//	   同一迭代里的两个不同命令也是两次。
+//
+// ⇒ 身份 = 名字 + 迭代号 + 参数/标签。后台的 iteration 稳定且永不变化，因此
+//
+//	完全够用：状态切换共享同一 iteration（①✓），不同迭代/不同命令各自不同（②✓）。
+func cotToolKey(tp protocol.ToolProgress) string {
+	tag := tp.Label
+	if tag == "" {
+		tag = tp.Args
+	}
+	return tp.Name + "#" + strconv.Itoa(tp.Iteration) + "\x00" + tag
 }
 
 // cotToolTitle 是工具在 CoT 里的标题 —— 对齐 dsh-lark 的 presenter 语义：

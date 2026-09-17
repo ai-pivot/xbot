@@ -501,40 +501,83 @@ func TestFeishuCoTRenderer_ReasoningBlocksHaveUniqueIDs(t *testing.T) {
 	}
 }
 
-// ⚠️ 同一迭代内的**同名工具是不同调用**：旧 key（name#iteration）会把并发两个
-// Shell 合并成一个 ⇒ 平台显示「Called tools 2 times」却只展开 1 条
-// （用户 2026-09-17 报告）。
-func TestFeishuCoTRenderer_SameNameToolsAreDistinct(t *testing.T) {
+// ⚠️ **同一个工具调用绝不能被计两次** —— 尤其是它在事件流里经历
+// generating（生成参数中）→ executing（running）→ done 的**状态切换**时
+// （用户 2026-09-17 指出我把 generating/executing/done 搞混了；web 上只调了 1 个
+// 工具，飞书却显示「Called tools 2 times」，应当显示 1）。
+func TestFeishuCoTRenderer_StatusTransitionsCountOnce(t *testing.T) {
 	c, calls := newFakeCoT(t, "chat_1")
 	r := newFeishuCoTRenderer("chat_1", c)
-	r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{
-			{Name: "Shell", Iteration: 1, Status: "running", Args: `{"command":"a"}`},
-			{Name: "Shell", Iteration: 1, Status: "running", Args: `{"command":"b"}`},
-		}})
+	base := protocol.ToolProgress{Name: "Shell", Label: "echo hi", Args: `{"command":"echo hi"}`, Iteration: 3}
+	generating := base
+	generating.Status = "generating"
+	running := base
+	running.Status = "running"
+	done := base
+	done.Status = "done"
+	// 同一个调用的三种状态（数组位置也在变：第 2 位 → 第 1 位 → 完成列表）
+	r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: 3,
+		ActiveTools: []protocol.ToolProgress{{Name: "Fetch", Label: "u", Iteration: 3, Status: "running"}, generating}})
+	r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: 3,
+		ActiveTools: []protocol.ToolProgress{running}})
+	r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: 3,
+		CompletedTools: []protocol.ToolProgress{done}})
 	r.close("")
 	if err := c.flushNow(); err != nil {
 		t.Fatalf("flushNow: %v", err)
 	}
-	var ids []string
+	// 只统计 **Shell**（事件 1 里的 Fetch 是"数组挪位"的噪声，计入会干扰断言）。
+	starts, results := 0, 0
 	for _, call := range *calls {
 		for _, e := range call.Events {
-			if e["event_type"] != "TOOL_CALL_START" {
+			if e["event_type"] != "TOOL_CALL_START" && e["event_type"] != "TOOL_CALL_RESULT" {
 				continue
 			}
 			var payload map[string]any
 			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
-			ids = append(ids, payload["toolCallId"].(string))
+			if payload["toolCallName"] != "Shell" && payload["toolCallId"] != "Shell#3\x00echo hi" {
+				continue
+			}
+			if e["event_type"] == "TOOL_CALL_START" {
+				starts++
+			} else {
+				results++
+			}
 		}
 	}
-	if len(ids) != 2 || ids[0] == ids[1] {
-		t.Fatalf("同名工具的两个调用必须各自成一条（id 必须不同），got %v", ids)
+	if starts != 1 {
+		t.Fatalf("同一调用的状态切换只应开一次，got %d（web 上只调了 1 个工具）", starts)
+	}
+	if results != 1 {
+		t.Fatalf("同一调用只应出一份结果，got %d", results)
 	}
 }
 
-// ⚠️ narration（正文）**不得**在工具开始时 flush：否则每个工具批之间被插入文本，
-// 平台会把连续的工具调用拆成多条「Called tools 1 time」（用户 2026-09-17 截图
-// 里的五条）。dsh-lark 只在「被更新的文本顶替」时写 narration。
+// 同一工具在**不同迭代**里各跑一次 = 两次真实调用 ⇒ 两条。
+func TestFeishuCoTRenderer_SameToolTwoIterations(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	for _, it := range []int{2, 5} {
+		r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: it,
+			ActiveTools: []protocol.ToolProgress{{Name: "Shell", Label: "ls", Iteration: it, Status: "running"}}})
+	}
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	n := 0
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] == "TOOL_CALL_START" {
+				n++
+			}
+		}
+	}
+	if n != 2 {
+		t.Fatalf("不同迭代各一次 = 两次调用，got %d", n)
+	}
+}
+
 func TestFeishuCoTRenderer_NarrationNotFlushedOnToolStart(t *testing.T) {
 	c, calls := newFakeCoT(t, "chat_1")
 	r := newFeishuCoTRenderer("chat_1", c)
