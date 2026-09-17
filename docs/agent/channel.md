@@ -453,6 +453,12 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **手机端（`MobileAppShell` / mobile AgentPanel 的 `mobilePanelProps` 无 sessionId）不能调它**：手机没有 dockview，`tabManager.openApi.openTab` 只会进 `pending` 队列静默丢失（`bindApi` 前）；手机端 AgentPanel 跟随 `activeSession`，因此「完成切换」= **关闭抽屉**（抽屉是覆盖层，不关就等于"窗口没切"）。侧栏容器 `SessionSidebar`（现仅手机抽屉消费）用 `onSubAgentSelect` 有无判别两态（与 `handleSelect` 同一判据）：有 → 手机（`onSessionSelected` 关抽屉，不开 tab）；无 → desktop（`openAgentSessionTab`）。
 - 守护测试：`web/src/components/panel/builtinPanels.createSession.test.tsx`（创建成功 → `openTab` 带新 chatID；修复前红灯）+ `builtinPanels.fork.test.tsx` + `web/src/components/session/SessionSidebar.test.tsx`（mobile：关抽屉且不开 tab / desktop：开 tab）。
 
+### Web Composer — `!cmd` Bang Commands（终端命令直通）
+
+- **契约**：以 `!` 开头的消息由**后端** `agent/bang_command.go` 处理（`isBangCommand` + `bangCmd`，注册于 `command_builtin.go`，`Concurrent() == true`）——**跳过 LLM**，在 sandbox 里执行并把输出以对话消息返回（超过 16k 字符落盘成文件）。`![...]`（Markdown 图片 / 粘贴截图）与裸 `!` **不是**命令。
+- **⚠️ REST 的 turn_id 豁免必须与分发共用同一判定**：命令消息由 chatWorker 并发处理（**不分配 turn_id**，也不发 `turn_started`），而 `POST /api/message` 对非排队用户消息要求 `turnID != 0`（fail-fast，防止前端把乐观 user 行绑到不存在的 turn）。豁免曾用 `/` 前缀启发式（`isSlashCommand`）→ **`!cmd` 被误判为普通用户消息** → 500 `internal error: message accepted without a turn_id`（日志：`handleMessage: turn_id is 0 for a user message — refusing to return an unbound user message`），前端乐观行卡在"发送中"、输出不渲染，用户表现为**"! 开头的命令没生效"**。修复：`WebCallbacks.MatchesCommand`（`serverapp/callbacks.go` 注入 `ag.Commands().Match(content) != nil`），`WebChannel.isCommandMessage` 优先用它、未接线时回落 slash 前缀。回归：`channel/web/web_rest_bang_command_test.go`（bang 200 且无 turn_id / 普通消息 turnID=0 仍失败 / slash 不回归）。
+- **前端可发现性**：composer 草稿以 `!` 开头时显示 `agent.bangCommandHint`（`data-testid="bang-command-hint"`）。判定 `isBangDraft`（从 `MessageInput.tsx` 导出）**镜像后端 `isBangCommand` 规则**（`![` 不是命令、裸 `!` 不是命令），有单测；纯提示，消息原样发送。
+
 ### Web Frontend Message Composer (tiptap)
 
 - **Stack**: `MessageInput.tsx` — tiptap v3（StarterKit + 定制 Link + Placeholder + tiptap-markdown）。编辑器输出 markdown（`getMarkdown()`），下游 onSend 接口零变化。富文本状态（mark 结构）与 markdown 文本互转由 tiptap-markdown 承担。

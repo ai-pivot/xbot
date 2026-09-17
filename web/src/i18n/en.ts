@@ -205,6 +205,7 @@ const en: Translations = {
     dropToUpload: 'Drop to upload files',
     uploadTooLarge: '{{names}} exceeds the {{size}} limit — skipped',
     visionOffHint: 'Current model has vision input disabled — images are passed as name placeholders (the model cannot see them). Enable "Vision Input" per model in Settings → LLM.',
+    bangCommandHint: 'Messages starting with ! run directly as terminal commands (the AI is skipped)',
     visionImagesAttached: '👁 {{count}} image(s) sent to the model as vision input',
     askUserTitle: 'The Agent needs your input',
     askUserPlaceholder: 'Type a reply…',

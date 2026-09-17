@@ -205,6 +205,7 @@ const ja: Translations = {
     dropToUpload: 'ドロップしてアップロード',
     uploadTooLarge: '{{names}} は {{size}} の上限を超えています。スキップしました',
     visionOffHint: '現在のモデルは視覚入力が無効です。画像はファイル名のプレースホルダーとして渡されます（モデルは画像を見られません）。設定 → LLM → モデル で「視覚入力」を有効にしてください。',
+    bangCommandHint: '! で始まるメッセージはターミナルコマンドとして直接実行されます（AI をスキップ）',
     visionImagesAttached: '👁 {{count}} 枚の画像が視覚入力としてモデルに送信されます',
     askUserTitle: 'Agent が入力内容を求めています',
     askUserPlaceholder: '入力してください…',
