@@ -19,7 +19,7 @@ import (
 type GroupMembership struct {
 	ID      string   // e.g. "g1"
 	Name    string   // e.g. "group:g1"
-	Members []string // agent addresses e.g. ["agent:reviewer/r1", "agent:tester/t1"]
+	Members []string // agent addresses e.g. ["agent:reviewer/r1", "agent:qa/t1"]
 	Closed  bool
 
 	mu sync.RWMutex // protects Members and Closed for concurrent access

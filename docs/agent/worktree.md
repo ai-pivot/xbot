@@ -128,7 +128,7 @@ Agent communication uses structured JSON over SendMessage:
 
 Conflict resolution:
 - No overlap → auto-merge
-- Test file conflict → tester version preferred
+- Test file conflict → qa version preferred
 - Source conflict, agents agree → negotiate
 - 3 rounds no consensus OR semantic conflict → escalate to user
 

@@ -315,7 +315,7 @@ type ChatRoom struct {
 	Instance string `json:"instance"` // SubAgent instance ID (empty for main)
 	Running  bool   `json:"running"`  // Is the SubAgent currently running?
 	Preview  string `json:"preview"`  // Latest message/progress preview
-	Members  string `json:"members"`  // "You ↔ Agent" or "reviewer ↔ tester"
+	Members  string `json:"members"`  // "You ↔ Agent" or "reviewer ↔ qa"
 }
 
 // SessionInfo represents a snapshot of an interactive SubAgent session (for API responses).

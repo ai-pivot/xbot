@@ -694,21 +694,81 @@ func parseInteractiveKeyTail(key string) (channel, chatID, role, instance string
 //  3. **唯一命中** → 用它；**0 个** → 报错并列出 available；**多个** → 报歧义并列出
 //     candidates。绝不静默送到错的会话，也绝不因漏传一个字段就误报"没建过"。
 func (a *Agent) resolveInteractiveSessionKey(callerChannel, callerChatID, roleName, instance string) (string, error) {
+	// 完整地址寻址：instance 直接给的就是会话 key（合法的跨树途径，错误信息里也这么建议）。
+	if strings.Contains(instance, "/") {
+		if _, ok := a.interactiveSubAgents.Load(instance); ok {
+			return instance, nil
+		}
+	}
 	exact := interactiveKey(callerChannel, callerChatID, roleName, instance)
 	if _, ok := a.interactiveSubAgents.Load(exact); ok {
 		return exact, nil
 	}
-	matches := a.matchInteractiveSessions(roleName, instance)
-	switch len(matches) {
-	case 1:
-		return matches[0], nil
-	case 0:
-		return "", fmt.Errorf("no active interactive session matching role=%q instance=%q (available: %v)",
-			roleName, instance, a.matchInteractiveSessions("", ""))
-	default:
-		return "", fmt.Errorf("ambiguous interactive session for role=%q instance=%q: candidates %v — pass the exact role and instance",
-			roleName, instance, matches)
+
+	// ⛔ 严禁全局 fallback（用户 2026-09-17 明确要求）。best-effort 的作用域 =
+	// **发起者自己的子代理树**（parentKey == 调用方 key）：
+	//   tier 1：树内按 **instance** 唯一命中（instance 是寻址目标；role 常被模型写错/漏传）
+	//   tier 2：树内按 **role** 唯一命中（漏传 instance 时）
+	//   0 个或多（歧义）→ 报错，并列出**该树内**可用会话 + 提示可用完整地址寻址。
+	// 绝不因为别处/别的会话里有同名 instance 就把消息送过去。
+	callerKey := qualifyChatID(callerChannel, callerChatID)
+
+	if instance != "" {
+		m := a.matchInteractiveSessionsInTree(callerKey, "", instance)
+		switch len(m) {
+		case 1:
+			return m[0], nil
+		case 0:
+			// 调用方**点名了具体 instance**却在自己的树里找不到 ⇒ 直接报错。
+			// 绝不退化成"同 role 的别的子代理"（那等于换了一个目标）。
+			return "", fmt.Errorf("no sub-agent with instance=%q in your sub-agent tree (role=%q; your tree: %v — or address one by its full key)",
+				instance, roleName, a.matchInteractiveSessionsInTree(callerKey, "", ""))
+		default:
+			return "", fmt.Errorf("ambiguous interactive session in your sub-agent tree for instance=%q: candidates %v — pass the exact role and instance, or the full address", instance, m)
+		}
 	}
+	if roleName != "" {
+		switch m := a.matchInteractiveSessionsInTree(callerKey, roleName, ""); len(m) {
+		case 1:
+			return m[0], nil
+		case 0:
+		default:
+			return "", fmt.Errorf("ambiguous interactive session in your sub-agent tree for role=%q: candidates %v — pass the exact role and instance, or the full address", roleName, m)
+		}
+	}
+	return "", fmt.Errorf("no active interactive session in your sub-agent tree matching role=%q instance=%q (your tree: %v — or address one by its full key)",
+		roleName, instance, a.matchInteractiveSessionsInTree(callerKey, "", ""))
+}
+
+// matchInteractiveSessionsInTree 在**发起者的子代理树内**按 role/instance 匹配
+// （parentKey == 调用方 key 的条目；两者都可能为空 = 该维度通配）。
+//
+// 用户 2026-09-17 定调：best-effort 的作用域就是"发起 agent 自己的子代理树" ——
+// 绝不允许全局 fallback（别处有同名 instance 不等于你的子代理）。
+func (a *Agent) matchInteractiveSessionsInTree(parentKey, roleName, instance string) []string {
+	var keys []string
+	a.interactiveSubAgents.Range(func(k, v any) bool {
+		key, _ := k.(string)
+		ia, _ := v.(*interactiveAgent)
+		if ia == nil {
+			return true
+		}
+		ia.mu.Lock()
+		role, inst, pk := ia.roleName, ia.instance, ia.parentKey
+		ia.mu.Unlock()
+		if parentKey != "" && pk != parentKey {
+			return true
+		}
+		if roleName != "" && role != roleName {
+			return true
+		}
+		if instance != "" && inst != instance {
+			return true
+		}
+		keys = append(keys, key)
+		return true
+	})
+	return keys
 }
 
 // matchInteractiveSessions 按 role/instance 做 **best-effort 匹配**（两者都可能为

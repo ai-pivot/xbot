@@ -187,7 +187,7 @@ invite agents, and control who speaks via @mentions.
 ### Example Workflow
 
 ```
-1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:tester/t1"])
+1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:qa/t1"])
    → returns "group:g1"
 
 2. SendMessage(to="group:g1", message="Let's discuss the API design.")
@@ -196,8 +196,8 @@ invite agents, and control who speaks via @mentions.
 3. SendMessage(to="group:g1", message="@agent:reviewer/r1 What do you think?")
    → Reviewer responds with full context.
 
-4. SendMessage(to="group:g1", message="@agent:tester/t1 Any concerns?")
-   → Tester responds, seeing reviewer's earlier reply too.
+4. SendMessage(to="group:g1", message="@agent:qa/t1 Any concerns?")
+   → QA responds, seeing reviewer's earlier reply too.
 ```
 
 {{< hint type=note >}}

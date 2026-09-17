@@ -69,7 +69,7 @@
 | `agent/middleware.go` | 中间件接口 | `Middleware` 接口：`Name() string`, `Priority() int`, `Process(*MessageContext) error` |
 | `agent/middleware_builtin.go` | 内置中间件 | `SystemPromptMiddleware` Priority=0；`MemoryInjectMiddleware` Priority=100 |
 | `agent/channel_prompt.go` | Channel 特化 prompt | `ChannelPromptMiddleware` Priority=5，通过 `ChannelPromptProvider` 注入渠道特化片段 |
-| `.xbot.example/agents/*.md` | SubAgent 定义 | explorer、code-reviewer、tester 三个示例角色 |
+| `.xbot.example/agents/*.md` | SubAgent 定义 | explorer、code-reviewer、qa 三个示例角色 |
 | `agent/subagent_tenant.go` | SubAgent TenantID 推导 | `deriveSubAgentTenantID()` 从 parentTenantID + parentAgentID + roleName 生成独立 ID |
 
 ### 2.2 中间件管道与优先级

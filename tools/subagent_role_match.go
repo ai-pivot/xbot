@@ -122,13 +122,14 @@ func roleLookupContext(ctx *ToolContext) (Sandbox, string, []string) {
 	return nil, originUserID, dirs
 }
 
-// ResolveSubAgentRoleSandbox 按文件头注释的规则解析角色。
+// ResolveSubAgentRoleSandbox 解析 SubAgent role —— **只做规范化精确匹配**。
 //
-// 返回 (role, autoMatched, err)：
-//   - err == nil 且 role != nil → 命中（autoMatched=true 表示是推断出来的）
-//   - err != nil → 歧义（并列最高分 / 多个名字候选）或无从推断（零分 / 无可用角色）；
-//     err 文案里已列出候选，调用方直接上抛即可。
-func ResolveSubAgentRoleSandbox(ctx context.Context, requested, task string, sb Sandbox, userID string, userAgentDirs ...string) (*SubAgentRole, bool, error) {
+// ⛔ 用户 2026-09-17（三次强调）：「任何地方都不能推断」「send 要 best-effort 但严禁推断」。
+// 这里**不再有任何推断/近似/按 task 打分**：role 必须显式给出且唯一对应到可用角色，
+// 否则报错并列出可用角色（由调用方纠正）。**绝不猜。**
+//
+// 返回 (role, autoMatched, err)：autoMatched 恒为 false（签名保持不变以兼容调用方）。
+func ResolveSubAgentRoleSandbox(ctx context.Context, requested, _ string, sb Sandbox, userID string, userAgentDirs ...string) (*SubAgentRole, bool, error) {
 	available := ListSubAgentRolesSandbox(ctx, sb, userID, userAgentDirs...)
 	if len(available) == 0 {
 		return nil, false, fmt.Errorf("no SubAgent roles available — define one under agents/ or use a built-in role (see <available_agents> in system prompt)")
@@ -139,101 +140,21 @@ func ResolveSubAgentRoleSandbox(ctx context.Context, requested, task string, sb 
 	}
 	sort.Strings(names)
 
-	// 1) 规范化精确匹配。
 	normRequested := normalizeRoleName(requested)
-	if normRequested != "" {
-		for i := range available {
-			if normalizeRoleName(available[i].Name) == normRequested {
-				return &available[i], false, nil
-			}
-		}
-		// 2) 容错名匹配（含拼写近似）：唯一候选才采用，多个即歧义。
-		var fuzzy []int
-		for i := range available {
-			n := normalizeRoleName(available[i].Name)
-			if len(normRequested) >= 3 && (strings.Contains(n, normRequested) || strings.Contains(normRequested, n)) {
-				fuzzy = append(fuzzy, i)
-			}
-		}
-		if len(fuzzy) == 1 {
-			log.WithFields(log.Fields{"requested": requested, "matched": available[fuzzy[0]].Name}).
-				Info("SubAgent role: fuzzy-matched an unknown/typo'd role name")
-			return &available[fuzzy[0]], true, nil
-		}
-		if len(fuzzy) > 1 {
-			return nil, false, fmt.Errorf(
-				"ambiguous role %q — it matches %s; pass the exact role name (available: %s)",
-				requested, roleNameList(available, fuzzy), strings.Join(names, ", "))
-		}
+	if normRequested == "" {
+		return nil, false, fmt.Errorf("role is required — pass one of: %s", strings.Join(names, ", "))
 	}
-
-	// 3) 按 task 文本推断。
-	taskNorm := normalizeRoleName(task)
-	taskTerms := asciiTerms(task)
-	taskBigrams := cjkBigrams(task)
-
-	bestScore := 0
-	var best []int
 	for i := range available {
-		s := scoreRoleForTask(available[i], taskNorm, taskTerms, taskBigrams)
-		switch {
-		case s > bestScore:
-			bestScore, best = s, []int{i}
-		case s == bestScore && s > 0:
-			best = append(best, i)
+		if normalizeRoleName(available[i].Name) == normRequested {
+			return &available[i], false, nil
 		}
 	}
-
-	unknownHint := ""
-	if requested != "" {
-		unknownHint = fmt.Sprintf(" (unknown role %q)", requested)
-	}
-	if bestScore == 0 {
-		return nil, false, fmt.Errorf(
-			"cannot infer SubAgent role%s from the task — pass `role` explicitly (available: %s)",
-			unknownHint, strings.Join(names, ", "))
-	}
-	if len(best) > 1 {
-		return nil, false, fmt.Errorf(
-			"ambiguous SubAgent role: %s all match equally%s — pass `role` explicitly (available: %s)",
-			roleNameList(available, best), unknownHint, strings.Join(names, ", "))
-	}
-
-	matched := available[best[0]]
-	log.WithFields(log.Fields{
-		"matched": matched.Name,
-		"score":   bestScore,
-		"task":    truncateRoleLog(task),
-	}).Info("SubAgent role: best-effort matched from task (role was omitted or unknown)")
-	return &matched, true, nil
+	return nil, false, fmt.Errorf("unknown SubAgent role %q — pass the exact name (available: %s)", requested, strings.Join(names, ", "))
 }
 
 // ─── 匹配打分（纯函数） ─────────────────────────────────────────────────────
 
 // scoreRoleForTask 给角色与 task 的匹配度打分。权重见文件头注释。
-func scoreRoleForTask(role SubAgentRole, taskNorm string, taskTerms, taskBigrams map[string]struct{}) int {
-	score := 0
-	nameNorm := normalizeRoleName(role.Name)
-	if nameNorm != "" && strings.Contains(taskNorm, nameNorm) {
-		score += 100
-	}
-	text := role.Name + " " + role.Description
-	for term := range asciiTerms(text) {
-		if _, ok := taskTerms[term]; ok {
-			score += 10
-		}
-	}
-	overlap := 0
-	for bg := range cjkBigrams(text) {
-		if _, ok := taskBigrams[bg]; ok {
-			overlap++
-		}
-	}
-	if overlap > 10 {
-		overlap = 10
-	}
-	return score + 2*overlap
-}
 
 // normalizeRoleName 归一化角色名/文本用于比较：小写 + 去掉非字母数字（`-`/`_`/
 // 空格/点号等一律忽略，所以 "code-reviewer" == "code_reviewer" == "CodeReviewer"）。
@@ -248,56 +169,10 @@ func normalizeRoleName(s string) string {
 }
 
 // asciiTerms 抽取文本里的英文/数字词（≥3 字符，小写）——用于关键词重合打分。
-func asciiTerms(s string) map[string]struct{} {
-	out := make(map[string]struct{})
-	var cur strings.Builder
-	flush := func() {
-		w := cur.String()
-		cur.Reset()
-		if len(w) >= 3 {
-			out[w] = struct{}{}
-		}
-	}
-	for _, r := range strings.ToLower(s) {
-		if r < unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
-			cur.WriteRune(r)
-			continue
-		}
-		flush()
-	}
-	flush()
-	return out
-}
 
 // cjkBigrams 抽取中日韩文字的 2-gram（连续的两个汉/日/韩字）——中文没有空格，
 // 用 2-gram 重合度近似"语义相关"。
-func cjkBigrams(s string) map[string]struct{} {
-	out := make(map[string]struct{})
-	var prev rune
-	havePrev := false
-	for _, r := range s {
-		if !unicode.Is(unicode.Han, r) && !unicode.Is(unicode.Hiragana, r) && !unicode.Is(unicode.Katakana, r) && !unicode.Is(unicode.Hangul, r) {
-			havePrev = false
-			continue
-		}
-		if havePrev {
-			out[string([]rune{prev, r})] = struct{}{}
-		}
-		prev, havePrev = r, true
-	}
-	return out
-}
 
 // roleNameList 把候选下标渲染成 `"a"/"b"` 形式（用于错误信息）。
-func roleNameList(available []SubAgentRole, idx []int) string {
-	parts := make([]string, 0, len(idx))
-	for _, i := range idx {
-		parts = append(parts, fmt.Sprintf("%q", available[i].Name))
-	}
-	return strings.Join(parts, " / ")
-}
 
 // truncateRoleLog 截断 task 用于日志（rune 安全）。
-func truncateRoleLog(s string) string {
-	return TruncateHeadPreview(s, 120)
-}

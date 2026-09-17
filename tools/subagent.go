@@ -84,7 +84,7 @@ task_status(task_id=["sub-a","sub-b"]) (non-blocking; prefer it over task_wait).
 
 Parameters (JSON):
   - task: string (required except some control actions), the task or message for the sub-agent
-  - role: string (required), predefined role name
+  - role: string (REQUIRED to start a sub-agent; optional for send/inspect/interrupt/unload, where instance addresses your own sub-agent tree)
   - instance: string (REQUIRED on every call), unique instance ID used to identify the session/run
   - interactive: boolean (optional), create or reuse an interactive session
   - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (no need to wait; task_wait only if you have nothing else to do). Set false to block for the final reply synchronously.
@@ -101,7 +101,7 @@ Parameters (JSON):
     an existing conversation without re-explaining, or to branch a specialist from current state.
 
 Available roles are listed in the <available_agents> section of the system prompt.
-The role parameter is **best effort**: if you omit it or misspell it, the tool infers the role from the task text (and from the closest role name). It only fails when the choice is ambiguous — then pass an explicit role.
+**role is REQUIRED to start a new sub-agent — there is NO inference**: an omitted or unknown role fails immediately with the list of available roles (never guess). For action="send" / "inspect" / "interrupt" / "unload" the target is addressed by **instance within your OWN sub-agent tree** (role optional there: it is matched best-effort by instance; if nothing or more than one match in your tree, the tool errors out and lists them).
 
 For TUI sidebar session management and layout adjustments, use search_tools to load tui_control. For configuration changes, load config.`
 }
@@ -109,7 +109,7 @@ For TUI sidebar session management and layout adjustments, use search_tools to l
 func (t *SubAgentTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "task", Type: "string", Description: "Task or message for the sub-agent. Required for normal execution and action=\"send\"."},
-		{Name: "role", Type: "string", Description: `Predefined role name (for example: explore, code-reviewer). Best effort: if omitted or misspelled, the role is inferred from the task text (and from the closest role name); the tool only fails when the choice is ambiguous or nothing matches — then pass an explicit role from <available_agents>.`},
+		{Name: "role", Type: "string", Description: `REQUIRED to start a new sub-agent (no inference — an omitted or unknown role errors out and lists the available roles; never guessed). For action="send"/"inspect"/"interrupt"/"unload" it may be omitted: the target is resolved by instance within your OWN sub-agent tree.`},
 		{Name: "instance", Type: "string", Description: `REQUIRED on every call. Stable unique ID for this sub-agent run/session. Never omit it. Examples: "review-1", "planner-main", "bugfix-login".`, Required: true},
 		{Name: "interactive", Type: "boolean", Description: "Create or reuse an interactive session for multi-turn conversation"},
 		{Name: "background", Type: "boolean", Description: "Run the sub-agent in background mode (default: true — spawn returns immediately and the completion is injected as a notification; no need to wait). Set false to block synchronously for the final reply."},
@@ -206,17 +206,24 @@ func (t *SubAgentTool) Execute(ctx *ToolContext, input string) (*ToolResult, err
 			userAgentDirs = append(userAgentDirs, filepath.Join(ctx.WorkspaceRoot, ".agents"))
 		}
 	}
-	resolvedRole, roleAutoMatched, roleErr := ResolveSubAgentRoleSandbox(ctx.Ctx, params.Role, params.Task, roleSb, roleUserID, userAgentDirs...)
-	if roleErr != nil {
-		return nil, roleErr
-	}
-	role := resolvedRole
-	// 下游全部用 params.Role 做会话 key / AgentChannel 名 —— 匹配成功后必须回填，
-	// 否则 instance 归属与 channel 名都会是空 role。
-	params.Role = role.Name
+	// ⛔ role 自动推断**只允许用于 spawn（新建会话）**。
+	//
+	// send / inspect / interrupt / unload 是对**已存在会话**寻址：这里**绝不能**推断或
+	// 回填 role —— 否则"模型没传 role"会被换成一个**编造的 role**。现场（2026-09-17
+	// 09:06）：会话 `explore:fuse-attn` 真实 role 是 explore，却被自动配上 `qa`
+	// ⇒ 解析器按 role 找不到 ⇒ 报错，且两次调用表现不一致（用户："那个 qa 是有 bug
+	// 你自动给他设置的"）。这些 action 的 role 原样透传（允许为空），由 agent 侧在
+	// **发起者的子代理树内**按 instance 匹配。
+	role := &SubAgentRole{Name: params.Role}
 	roleNote := ""
-	if roleAutoMatched {
-		roleNote = fmt.Sprintf("Auto-matched role %q (role was omitted or misspelled — best effort).\n\n", role.Name)
+	if params.Action == "" {
+		resolvedRole, _, roleErr := ResolveSubAgentRoleSandbox(ctx.Ctx, params.Role, params.Task, roleSb, roleUserID, userAgentDirs...)
+		if roleErr != nil {
+			return nil, roleErr
+		}
+		role = resolvedRole
+		// 下游全部用 params.Role 做会话 key / AgentChannel 名 —— 匹配成功后必须回填。
+		params.Role = role.Name
 	}
 
 	// Resolve model: model_tier param > role.Model > "balance" (default tier)

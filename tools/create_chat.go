@@ -28,7 +28,7 @@ The SubAgent runs in background, processing messages via SendMessage.
 
 ## Group type — Meeting Mode
 Creates a moderated group discussion among multiple SubAgents.
-- Members are specified as agent addresses (e.g., ["agent:reviewer/cr1", "agent:tester/ts1"])
+- Members are specified as agent addresses (e.g., ["agent:reviewer/cr1", "agent:qa/ts1"])
 - Returns a group address like "group:<id>" for use with SendMessage
 - The group works like a meeting: the moderator (you) controls who speaks
 - Messages without @mentions just add to the discussion history (no agent triggered)
@@ -37,10 +37,10 @@ Creates a moderated group discussion among multiple SubAgents.
 - Group auto-closes after max_rounds moderator messages with @mentions (default 10)
 
 ## Example workflow
-1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:tester/t1"])
+1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:qa/t1"])
 2. SendMessage(to="group:g1", message="Let's discuss the API design.") → no agents triggered
 3. SendMessage(to="group:g1", message="@agent:reviewer/r1 What's your opinion?") → reviewer responds
-4. SendMessage(to="group:g1", message="@agent:tester/t1 Any concerns about testability?") → tester responds with full context`
+4. SendMessage(to="group:g1", message="@agent:qa/t1 Any concerns about testability?") → qa responds with full context`
 }
 
 type CreateChatParams struct {
@@ -53,7 +53,7 @@ type CreateChatParams struct {
 	ModelTier string `json:"model_tier,omitempty" jsonschema:"description=Model tier: vanguard/swift/balance (for agent type)"`
 	Model     string `json:"model,omitempty" jsonschema:"description=Explicit model name for the new session (optional). Takes priority over model_tier. When both are empty, defaults to balance tier."`
 	// --- Group params ---
-	Members   []string `json:"members,omitempty" jsonschema:"description=Member addresses for group (e.g. [\"agent:reviewer\",\"agent:tester\"])"`
+	Members   []string `json:"members,omitempty" jsonschema:"description=Member addresses for group (e.g. [\"agent:reviewer\",\"agent:qa\"])"`
 	MaxRounds int      `json:"max_rounds,omitempty" jsonschema:"description=Max conversation rounds for group (default 10)"`
 }
 

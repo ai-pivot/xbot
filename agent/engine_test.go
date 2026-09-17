@@ -595,7 +595,7 @@ func TestSubAgentCallback_StaleIterationNoPollution(t *testing.T) {
 	}
 
 	// Stamp helper: nodes carry the spawning iteration for frontend attribution.
-	nodes := []SubAgentNode{{Role: "explore", Children: []SubAgentNode{{Role: "tester"}}}}
+	nodes := []SubAgentNode{{Role: "explore", Children: []SubAgentNode{{Role: "qa"}}}}
 	stampSubAgentIteration(nodes, 2)
 	if nodes[0].Iteration != 2 || nodes[0].Children[0].Iteration != 2 {
 		t.Errorf("stampSubAgentIteration should stamp the whole tree, got top=%d child=%d",

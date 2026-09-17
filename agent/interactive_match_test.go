@@ -55,3 +55,54 @@ func TestMatchInteractiveSessionsBestEffort(t *testing.T) {
 		t.Fatalf("⑥: got %v, want exactly 1 (chat_B/perf-fp8)", got)
 	}
 }
+
+// TestResolveInteractiveSessionKey_TreeScopedInstanceMatch 复现并锁定 2026-09-17 现场：
+// 会话 `explore:fuse-moe` 是**发起者(chat_A)自己的子代理**，而调用方传的 role 是错的
+// （`qa` —— 由旧的 role 自动推断补出来的）。契约：
+//
+//	· 在**自己的子代理树内**按 **instance** 唯一命中 ⇒ 成功；
+//	· **别的会话（chat_B）绝不允许**匹配到 chat_A 树里的会话（用户：严禁这种自动 fallback）；
+//	· 需要跨树时只能用**完整地址**寻址。
+func TestResolveInteractiveSessionKey_TreeScopedInstanceMatch(t *testing.T) {
+	a := &Agent{}
+	caller := qualifyChatID("web", "chat_A")
+	realKey := interactiveKey("web", "chat_A", "explore", "fuse-moe")
+	a.interactiveSubAgents.Store(realKey, &interactiveAgent{roleName: "explore", instance: "fuse-moe", parentKey: caller})
+
+	// ① 树内：role 写错（qa）+ instance 正确 → 唯一命中
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_A", "qa", "fuse-moe"); err != nil || got != realKey {
+		t.Fatalf("树内按 instance 应命中：got=%q err=%v want=%q", got, err, realKey)
+	}
+	// ② 树内：漏传 role，仅 instance → 命中
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_A", "", "fuse-moe"); err != nil || got != realKey {
+		t.Fatalf("树内仅 instance 应命中：got=%q err=%v", got, err)
+	}
+	// ③ ⛔ 严禁跨树：chat_B 不得命中 chat_A 树里的会话
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_B", "qa", "fuse-moe"); err == nil {
+		t.Fatalf("严禁跨树匹配：chat_B 不应命中 %q（got=%q）", realKey, got)
+	}
+	// ④ 跨树的合法途径：完整地址
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_B", "explore", realKey); err != nil || got != realKey {
+		t.Fatalf("完整地址寻址应可用：got=%q err=%v", got, err)
+	}
+}
+
+// TestResolveInteractiveSessionKey_TreeOnlyUnavailable：树内没有匹配时，错误里只列
+// **本树**的可用会话（并提示可用完整地址），而不是把别处的会话端上来。
+func TestResolveInteractiveSessionKey_TreeOnlyUnavailable(t *testing.T) {
+	a := &Agent{}
+	caller := qualifyChatID("web", "chat_A")
+	mine := interactiveKey("web", "chat_A", "explore", "slot-1")
+	a.interactiveSubAgents.Store(mine, &interactiveAgent{roleName: "explore", instance: "slot-1", parentKey: caller})
+	// 别人的树里的同名 instance：绝不能被本树匹配到
+	other := interactiveKey("web", "chat_B", "explore", "fuse-moe")
+	a.interactiveSubAgents.Store(other, &interactiveAgent{roleName: "explore", instance: "fuse-moe", parentKey: qualifyChatID("web", "chat_B")})
+
+	_, err := a.resolveInteractiveSessionKey("web", "chat_A", "explore", "fuse-moe")
+	if err == nil {
+		t.Fatal("本树内没有 fuse-moe ⇒ 必须报错（不得 fallback 到 chat_B 的树）")
+	}
+	if !strings.Contains(err.Error(), mine) || strings.Contains(err.Error(), other) {
+		t.Fatalf("错误应只列本树会话，got: %v", err)
+	}
+}

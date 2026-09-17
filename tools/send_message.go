@@ -52,7 +52,7 @@ Examples:
   → Adds moderator message to history. No agent triggered.
 - SendMessage(to="group:g1", message="@agent:reviewer/r1 What do you think?")
   → Triggers agent:reviewer/r1 with full history + this question. Response added to history.
-- SendMessage(to="group:g1", message="@agent:reviewer/r1 @agent:tester/t1 Please both review.")
+- SendMessage(to="group:g1", message="@agent:reviewer/r1 @agent:qa/t1 Please both review.")
   → Triggers both agents concurrently. Both see the same history. Both responses added.
   - SendMessage(to="peer:dev-team", message="Found a critical bug in auth module, please check.")
   → Async broadcast to all members in peer group "dev-team".

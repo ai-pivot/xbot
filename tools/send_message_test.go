@@ -17,8 +17,8 @@ func TestParseMentions(t *testing.T) {
 			expected: []string{"agent:reviewer/r1"},
 		},
 		{
-			input:    "@agent:reviewer/r1 @agent:tester/t1 please review",
-			expected: []string{"agent:reviewer/r1", "agent:tester/t1"},
+			input:    "@agent:reviewer/r1 @agent:qa/t1 please review",
+			expected: []string{"agent:reviewer/r1", "agent:qa/t1"},
 		},
 		{
 			input:    "No mentions here",
@@ -33,8 +33,8 @@ func TestParseMentions(t *testing.T) {
 			expected: []string{"agent:a/b-c@d", "agent:x/y"},
 		},
 		{
-			input:    "text @agent:reviewer/r1\nnext line @agent:tester/t2 end",
-			expected: []string{"agent:reviewer/r1", "agent:tester/t2"},
+			input:    "text @agent:reviewer/r1\nnext line @agent:qa/t2 end",
+			expected: []string{"agent:reviewer/r1", "agent:qa/t2"},
 		},
 	}
 
@@ -66,7 +66,7 @@ func TestParseMentionsBoundaryCases(t *testing.T) {
 		// At end of string, valid format
 		{"text @agent:role/r1", []string{"agent:role/r1"}},
 		// Multiple valid + invalid mixed
-		{"@agent:reviewer/r1 @agent:noslash @agent:tester/t2", []string{"agent:reviewer/r1", "agent:tester/t2"}},
+		{"@agent:reviewer/r1 @agent:noslash @agent:qa/t2", []string{"agent:reviewer/r1", "agent:qa/t2"}},
 	}
 
 	for _, tt := range tests {
