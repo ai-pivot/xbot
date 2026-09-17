@@ -455,3 +455,48 @@ func TestFeishuCoTRenderer_ProgressCarriesReasoning(t *testing.T) {
 		t.Fatalf("缺少推理生命周期: %v", types)
 	}
 }
+
+// ⚠️ 每个"推理块"必须独立 messageId：平台按 id 归并内容，整轮共用一个 id 会把
+// 后续迭代的推理**合并追加到第一块** ⇒ 飞书里"推理全堆在最上方"、丢掉 web 上
+// 逐迭代 `Thought N` 的结构（用户 2026-09-17 报告 + 截图）。
+func TestFeishuCoTRenderer_ReasoningBlocksHaveUniqueIDs(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	// 迭代 1：推理 → 工具（工具开始 ⇒ 结束推理块）
+	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 1, ReasoningStreamContent: "第一段推理"})
+	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "running"}}})
+	// 迭代 2：再来一段推理
+	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 2, ReasoningStreamContent: "第二段推理"})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	var starts, ends []string
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			et := e["event_type"].(string)
+			if et != "REASONING_MESSAGE_START" && et != "REASONING_MESSAGE_END" {
+				continue
+			}
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			id, _ := payload["messageId"].(string)
+			if et == "REASONING_MESSAGE_START" {
+				starts = append(starts, id)
+			} else {
+				ends = append(ends, id)
+			}
+		}
+	}
+	if len(starts) != 2 {
+		t.Fatalf("两个迭代应开两个推理块，got starts=%v", starts)
+	}
+	if starts[0] == starts[1] {
+		t.Fatalf("推理块 messageId 必须唯一（否则平台会把第二段并进第一块）: %v", starts)
+	}
+	if len(ends) != 2 || ends[0] != starts[0] || ends[1] != starts[1] {
+		t.Fatalf("REASONING_MESSAGE_END 必须闭合各自的块: starts=%v ends=%v", starts, ends)
+	}
+}

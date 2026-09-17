@@ -37,7 +37,14 @@ type feishuCoTRenderer struct {
 	runTurnID     uint64
 	runOpen       bool
 	reasoningOpen bool
-	lastReasoning string
+	// reasoningSeq / currentReasoningID：**每个推理块**独立 id。
+	// ⚠️ 曾经整轮共用一个 id（`reasoning-<turn>`）⇒ 平台把后续迭代的推理**合并追加
+	// 到第一块**，于是"推理全被渲染到最上方"、丢掉 web 上那种逐迭代 `Thought N`
+	// 的结构（用户 2026-09-17 报告 + 截图）。现在每次开块换新 id ⇒ 推理与工具
+	// 按迭代交错。
+	reasoningSeq       int
+	currentReasoningID string
+	lastReasoning      string
 	// 正文：只保留「最后一次」作为答案（走普通消息）；被顶替的中间文本是
 	// narration，按 dsh-lark 的做法 flush 进思考过程（TEXT_MESSAGE_*，role=assistant）。
 	heldText     string
@@ -178,13 +185,16 @@ func (r *feishuCoTRenderer) emitReasoningLocked(full string) {
 	r.lastReasoning = full
 	if !r.reasoningOpen {
 		r.reasoningOpen = true
+		r.reasoningSeq++
+		// 每块一个唯一 id：平台按 id 归并内容 ⇒ 同 id 会把后续迭代的推理并进第一块。
+		r.currentReasoningID = r.runID() + "-r" + strconv.Itoa(r.reasoningSeq)
 		r.cot.emit("REASONING_MESSAGE_START", map[string]any{
-			"messageId": r.reasoningMessageID(),
+			"messageId": r.currentReasoningID,
 			"role":      "reasoning",
 		})
 	}
 	r.cot.emit("REASONING_MESSAGE_CONTENT", map[string]any{
-		"messageId": r.reasoningMessageID(),
+		"messageId": r.currentReasoningID,
 		"delta":     delta,
 	})
 }
@@ -206,6 +216,8 @@ func (r *feishuCoTRenderer) ensureRunLocked(turnID uint64) {
 	r.runTurnID = turnID
 	r.runOpen = true
 	r.reasoningOpen = false
+	r.reasoningSeq = 0
+	r.currentReasoningID = ""
 	r.lastReasoning = ""
 	r.heldText = ""
 	r.textSeq = 0
@@ -253,7 +265,7 @@ func (r *feishuCoTRenderer) closeReasoningLocked() {
 	if !r.reasoningOpen {
 		return
 	}
-	r.cot.emit("REASONING_MESSAGE_END", map[string]any{"messageId": r.reasoningMessageID()})
+	r.cot.emit("REASONING_MESSAGE_END", map[string]any{"messageId": r.currentReasoningID})
 	r.reasoningOpen = false
 }
 
