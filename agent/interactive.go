@@ -661,6 +661,56 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 	return key
 }
 
+// parseInteractiveKeyTail 从完整地址键里解出 (channel, chatID, role, instance)。
+// 与 parseInteractiveKeyParent 互补：后者只要父路径，本函数还要 role/instance，
+// 供 ContinueInteractiveSession 在精确键 miss 时按 (role, instance) 兜底匹配。
+func parseInteractiveKeyTail(key string) (channel, chatID, role, instance string) {
+	slashIdx := strings.LastIndex(key, "/")
+	if slashIdx <= 0 {
+		return "", "", "", ""
+	}
+	colonIdx := strings.Index(key, ":")
+	if colonIdx < 0 || colonIdx >= slashIdx {
+		return "", "", "", ""
+	}
+	channel = key[:colonIdx]
+	chatID = key[colonIdx+1 : slashIdx]
+	tail := key[slashIdx+1:]
+	if i := strings.Index(tail, ":"); i >= 0 {
+		role, instance = tail[:i], tail[i+1:]
+	} else {
+		role = tail
+	}
+	return channel, chatID, role, instance
+}
+
+// resolveInteractiveSessionKey 是所有「按 role/instance 寻址 interactive session」
+// 入口的**唯一解析器**（send / inspect / interrupt / unload / continue 共用）。
+//
+// 契约（用户 2026-09-17 更正 + 「全收口」）：
+//  1. 精确地址键命中 → 用它；
+//  2. 否则在自己的 subagent 列表里 **best-effort 匹配**（role/instance 任一为空即该
+//     维度通配）——现场就是 `send` 只给了 instance（漏传 role）；
+//  3. **唯一命中** → 用它；**0 个** → 报错并列出 available；**多个** → 报歧义并列出
+//     candidates。绝不静默送到错的会话，也绝不因漏传一个字段就误报"没建过"。
+func (a *Agent) resolveInteractiveSessionKey(callerChannel, callerChatID, roleName, instance string) (string, error) {
+	exact := interactiveKey(callerChannel, callerChatID, roleName, instance)
+	if _, ok := a.interactiveSubAgents.Load(exact); ok {
+		return exact, nil
+	}
+	matches := a.matchInteractiveSessions(roleName, instance)
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no active interactive session matching role=%q instance=%q (available: %v)",
+			roleName, instance, a.matchInteractiveSessions("", ""))
+	default:
+		return "", fmt.Errorf("ambiguous interactive session for role=%q instance=%q: candidates %v — pass the exact role and instance",
+			roleName, instance, matches)
+	}
+}
+
 // matchInteractiveSessions 按 role/instance 做 **best-effort 匹配**（两者都可能为
 // 空 = 该维度通配）。
 //
@@ -1616,6 +1666,16 @@ func (a *Agent) ContinueInteractiveSession(ctx context.Context, fullKey, content
 
 	value, ok := a.interactiveSubAgents.Load(fullKey)
 	if !ok {
+		// 收口：完整地址 miss 时按 key 里的 (role, instance) best-effort 兜底
+		// （调用方给的 key 可能来自旧上下文或漏字段）。
+		ch, chat, role, inst := parseInteractiveKeyTail(fullKey)
+		if alt, rerr := a.resolveInteractiveSessionKey(ch, chat, role, inst); rerr == nil {
+			if v2, ok2 := a.interactiveSubAgents.Load(alt); ok2 {
+				value, ok, fullKey = v2, true, alt
+			}
+		}
+	}
+	if !ok {
 		return fmt.Errorf("no active interactive session for %q", fullKey)
 	}
 	ia, ok := value.(*interactiveAgent)
@@ -1682,29 +1742,19 @@ func (a *Agent) SendToInteractiveSession(
 	originChannel, originChatID, originSender := resolveOriginIDs(msg)
 	instance := msg.Metadata["instance_id"]
 
-	key := interactiveKey(originChannel, originChatID, roleName, instance)
-
-	// best-effort 解析：**漏传 role（或 instance）也要能匹配上** —— 用户 2026-09-17
-	// 的现场就是 `{"action":"send","instance":"perf-slot"}` 没带 role。精确键未命中时
-	// 在 subagent 列表里按已给的维度匹配：唯一命中即用；0 个（完全匹配不上）或
-	// 多个（歧义）才报错，并把可用会话/候选列出来便于调用方纠正。
-	if _, ok := a.interactiveSubAgents.Load(key); !ok {
-		switch matches := a.matchInteractiveSessions(roleName, instance); len(matches) {
-		case 1:
-			key = matches[0]
-		case 0:
-			err := fmt.Errorf("no active interactive session matching role=%q instance=%q (available: %v)",
-				roleName, instance, a.matchInteractiveSessions("", ""))
-			return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
-		default:
-			err := fmt.Errorf("ambiguous interactive session for role=%q instance=%q: candidates %v — pass the exact role and instance",
-				roleName, instance, matches)
-			return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
-		}
+	// 唯一解析器（与 inspect/interrupt/unload 同一实现）：精确地址 → best-effort
+	// 匹配（漏传 role 也能命中）→ 0 个/多个才报错（列出 available/candidates）。
+	key, resolveErr := a.resolveInteractiveSessionKey(originChannel, originChatID, roleName, instance)
+	if resolveErr != nil {
+		return &channelpkg.OutboundMsg{
+			Content: resolveErr.Error(),
+			Error:   resolveErr,
+		}, nil
 	}
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
+		// 解析成功到 Load 之间被并发卸载（TTL / 级联 destroy / unload）。
 		err := fmt.Errorf("no active interactive session for role %q (instance=%q)", roleName, instance)
 		return &channelpkg.OutboundMsg{
 			Content: err.Error(),
@@ -2321,7 +2371,10 @@ func (a *Agent) InterruptInteractiveSession(
 	channel, chatID string,
 	instance string,
 ) error {
-	key := interactiveKey(channel, chatID, roleName, instance)
+	key, rerr := a.resolveInteractiveSessionKey(channel, chatID, roleName, instance)
+	if rerr != nil {
+		return rerr
+	}
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
@@ -2368,7 +2421,10 @@ func (a *Agent) InspectInteractiveSession(
 	instance string,
 	tailCount int,
 ) (string, error) {
-	key := interactiveKey(channel, chatID, roleName, instance)
+	key, rerr := a.resolveInteractiveSessionKey(channel, chatID, roleName, instance)
+	if rerr != nil {
+		return "", rerr
+	}
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
@@ -2581,7 +2637,10 @@ func (a *Agent) UnloadInteractiveSession(
 	channel, chatID string,
 	instance string,
 ) error {
-	key := interactiveKey(channel, chatID, roleName, instance)
+	key, rerr := a.resolveInteractiveSessionKey(channel, chatID, roleName, instance)
+	if rerr != nil {
+		return rerr
+	}
 
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
