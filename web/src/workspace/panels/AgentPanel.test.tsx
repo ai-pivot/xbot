@@ -433,22 +433,31 @@ describe('AgentPanel 会话归属（一个会话至多被一个 agent 面板渲�
 
 describe('断线（重连中）不再显示黄色 Reconnecting 条，改走 loading splash', () => {
   // 2026-09-17 用户要求：「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的
-  // splash screen」。旧实现是一条 bg-amber-500/10 的横条 + `agent.reconnecting` 文案。
-  it('ws.connected=false ⇒ 渲染 session-loading-screen，且没有任何 Reconnecting 文案', () => {
+  // splash screen」。
+  // ⛔ 但**只对"曾经连上过再掉线"的真·重连生效** —— 从未连上（初次加载 / 无 SSE 的 mock
+  // 场景）绝不能遮罩，否则会把已渲染的历史一起藏起来（CI E2E 实测：一刀切会让 8 个
+  // 非 SSE 的 spec 找不到内容）。
+  it('从未连上过（connected=false 首帧）⇒ 不遮罩，照常渲染消息列表', () => {
     mocks.context.ws.connected = false
     try {
       render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
-      expect(screen.getByTestId('session-loading-screen')).toBeInTheDocument()
-      // 黄条已删除（三语文案都不应出现）
-      expect(screen.queryByText(/Reconnecting|重新连接中|再接続中/)).toBeNull()
+      expect(screen.queryByTestId('session-loading-screen')).toBeNull()
     } finally {
       mocks.context.ws.connected = true
     }
   })
 
-  it('ws.connected=true ⇒ 不显示 loading splash（照常渲染消息列表）', () => {
+  it('连上过再掉线（真·重连）⇒ 渲染 session-loading-screen，且没有任何 Reconnecting 文案', () => {
     mocks.context.ws.connected = true
-    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    const { rerender } = render(
+      <AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />,
+    )
     expect(screen.queryByTestId('session-loading-screen')).toBeNull()
+    mocks.context.ws.connected = false // 掉线（重连中）
+    rerender(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('session-loading-screen')).toBeInTheDocument()
+    // 黄条已删除（三语文案都不应出现）
+    expect(screen.queryByText(/Reconnecting|重新连接中|再接続中/)).toBeNull()
+    mocks.context.ws.connected = true
   })
 })

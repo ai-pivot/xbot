@@ -248,8 +248,14 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // 「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的 splash screen」。
   // 重连期间与"历史还没到"是同一语义（面板暂时不可用），统一用 loading splash 表达，
   // 不再另设一条提示（那条黄条既丑又和 splash 表达同一件事）。
+  // ⛔ 断线遮挡面板只适用于**曾经连上过**再掉线的「真·重连」（2026-09-17 CI E2E 实测）：
+  // 从未连上（初次加载 / 没有 SSE 的 mock 场景）绝不能遮罩 —— 那会把已渲染的历史一起藏起来
+  // （实测：`!ws.connected` 一刀切 ⇒ 非 SSE 的 spec 被判成 loading，8 个 E2E 找不到内容）。
+  const sawConnectedRef = useRef(false)
+  if (ws.connected) sawConnectedRef.current = true
+  const reconnecting = !ws.connected && sawConnectedRef.current
   const showLoadingScreen =
-    (chat.historyReady === false && !!chatID) || resumeLoading || (!ws.connected && !!chatID && !isSubAgent)
+    (chat.historyReady === false && !!chatID) || resumeLoading || (reconnecting && !!chatID && !isSubAgent)
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
