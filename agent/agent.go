@@ -2840,7 +2840,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 						"command": cmd.Name(),
 					}).Warn("Command rejected: admin-only command from non-admin sender")
 					acknowledgeInboundDelivery(msg, bus.DeliveryResult{})
-					if sendErr := a.sendMessage(msg.Channel, msg.ChatID, "⛔ 该命令仅操作员可用（管理类命令）"); sendErr != nil {
+					if sendErr := a.sendCommandReply(msg.Channel, msg.ChatID, "⛔ 该命令仅操作员可用（管理类命令）", nil); sendErr != nil {
 						log.WithError(sendErr).Warn("failed to send admin-only rejection")
 					}
 					continue
@@ -2862,7 +2862,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 						if err != nil {
 							log.WithFields(log.Fields{"request_id": m.RequestID, "chat": chatKey}).WithError(err).Error("Error processing command")
 							content := formatErrorForUser(err)
-							if sendErr := a.sendMessage(m.Channel, m.ChatID, content); sendErr != nil {
+							if sendErr := a.sendCommandReply(m.Channel, m.ChatID, content, nil); sendErr != nil {
 								a.bus.Outbound <- bus.OutboundMessage{
 									Channel: m.Channel,
 									ChatID:  m.ChatID,
@@ -3502,7 +3502,8 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			}).Warn("Command rejected: admin-only command from non-admin sender")
 			return &channel.OutboundMsg{
 				Channel: msg.Channel, ChatID: msg.ChatID,
-				Content: "⛔ 该命令仅操作员可用（管理类命令，多用户系统已移除后配置全局共享）",
+				Content:  "⛔ 该命令仅操作员可用（管理类命令，多用户系统已移除后配置全局共享）",
+				Metadata: markCommandReply(nil),
 			}, nil
 		}
 		out, err := cmd.Execute(ctx, a, msg)
@@ -3519,6 +3520,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			a.emitGoalProgress(msg.Channel, msg.ChatID)
 			// fall through to Run
 		} else {
+			// 命令回复：显式标记为 turn-less standalone（见 sendCommandReply 注释）
+			if out != nil {
+				out.Metadata = markCommandReply(out.Metadata)
+			}
 			return out, nil
 		}
 	}
@@ -4334,6 +4339,33 @@ func (a *Agent) emitBuiltinProgressDone(chName, chatID string, tokenUsage *proto
 // 首次发送创建新消息（如有入站 message_id 则回复该消息），后续发送 Patch 更新同一条消息。
 // 工具发送最终回复（如飞书卡片）时同样 Patch 更新，但标记 session 为"已完成"，后续调用自动跳过。
 // sendMessage 向 IM 渠道发送消息。
+// sendCommandReply sends a command's reply as a **turn-less standalone message**.
+//
+// Commands (bang `!cmd` / slash) are dispatched concurrently by the chatWorker and
+// have NO turn (no turn_started, no turn_id by design). Marking the outbound with
+// command_reply=true keeps sendMessage from falling back to getActiveTurnID — which
+// would stamp the reply with whatever turn happens to be running in that session,
+// making the frontend (M4 state machine) treat the command output as that turn's
+// final reply (it then gets overwritten by the real reply and vanishes —
+// user report: "!pwd 没有输出").
+func (a *Agent) sendCommandReply(chName, chatID, content string, metadata map[string]string) error {
+	if metadata == nil {
+		metadata = make(map[string]string, 1)
+	}
+	metadata["command_reply"] = "true"
+	return a.sendMessage(chName, chatID, content, metadata)
+}
+
+// markCommandReply returns metadata marking out as a command reply (turn-less
+// standalone message) — for callers that build the OutboundMsg themselves.
+func markCommandReply(metadata map[string]string) map[string]string {
+	if metadata == nil {
+		metadata = make(map[string]string, 1)
+	}
+	metadata["command_reply"] = "true"
+	return metadata
+}
+
 // 通过 directSend 直连或 bus.Outbound 广播。
 func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[string]string) error {
 	key := qualifyChatID(chName, chatID)
@@ -4365,7 +4397,16 @@ func (a *Agent) sendMessage(chName, chatID, content string, metadata ...map[stri
 		}
 	}
 	if msg.TurnID == 0 {
-		msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
+		// ⚠️ 命令回复（`!cmd` bang / slash 命令）**没有 turn** —— 后端命令分发按设计
+		// 不分配 turn（无 turn_started/turn_id），绝不能回落到 getActiveTurnID：
+		// 否则当该会话里正有 turn 在跑时（例如用户等 agent 输出时插了条 `!pwd`），
+		// 命令输出会被打上那个 turn 的 id，前端 M4 状态机把它当作该 turn 的最终
+		// 回复提交 → 随后被该 turn 的真回复覆盖 → **命令输出静默消失**
+		// （用户报告："!pwd 没有输出"；探针实证：turn 进行中发 !echo 的 text 事件
+		// 带上了 "turn_id":1）。命令回复由 sendCommandReply 打上 command_reply 标记。
+		if msg.Metadata["command_reply"] != "true" {
+			msg.TurnID = a.getActiveTurnID(qualifyChatID(chName, chatID))
+		}
 	}
 
 	isFinal := strings.HasPrefix(content, "__FEISHU_CARD__:")
