@@ -566,13 +566,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // 更不能丢弃：旧代码 `target === null → return s` 把命令输出整个吞掉
       // （用户报告 "我输入 !pwd 没有输出啊" —— 服务端日志证明命令已执行，且
       // `sendMessage directSend dispatch | send_channel=web` 已发到正确会话）。
-      // 渲染为 legacy 独立行（derive 的 legacy 前缀段，见 derive.ts T5）。
+      // 渲染为 **standalone** 独立行（不是 legacy：legacy 是 DB 历史前缀，derive
+      // 排在 turns **之前**，会让命令输出出现在会话顶部 —— 用户仍会觉得"没输出"。
+      // standalone 排 turns 之后 = 底部，即用户视角的最新消息）。
       if (ev.turnID === null) {
         const content = ev.content ?? ''
         if (content === '') return s
         return {
           ...s,
-          legacy: [...s.legacy, {
+          standalone: [...s.standalone, {
             id: `cmd-${++commandReplySeq}`,
             role: 'assistant',
             content,
@@ -967,7 +969,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         return s
       }
 
-      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal }
+      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal, standalone: s.standalone }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

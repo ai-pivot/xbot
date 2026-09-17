@@ -175,7 +175,12 @@ export function deriveRows(s: ChatState): readonly Row[] {
   // legacy 段保持 DB 顺序：user/assistant 交错（非 turn 模型 —— 直接按原序映射）。
   const legacySorted: Row[] = s.legacy.map(cachedLegacyRow)
 
-  return [...legacySorted, ...turnRows, ...pending]
+  // standalone 段（无 turn 归属的**实时**回复：命令 `!cmd`/slash 的输出）——
+  // 排在 turns 之后（用户视角的最新消息）。若与 legacy 混用，命令输出会跑到
+  // 会话顶部（derive 的 legacy 前缀段），用户仍会觉得"没有输出"。
+  const standaloneRows: Row[] = s.standalone.map(cachedLegacyRow)
+
+  return [...legacySorted, ...turnRows, ...standaloneRows, ...pending]
 }
 
 // ─── assistantRow：穷尽 switch（T4：每 turn 至多一行） ─────────
