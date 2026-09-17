@@ -500,3 +500,57 @@ func TestFeishuCoTRenderer_ReasoningBlocksHaveUniqueIDs(t *testing.T) {
 		t.Fatalf("REASONING_MESSAGE_END 必须闭合各自的块: starts=%v ends=%v", starts, ends)
 	}
 }
+
+// ⚠️ 同一迭代内的**同名工具是不同调用**：旧 key（name#iteration）会把并发两个
+// Shell 合并成一个 ⇒ 平台显示「Called tools 2 times」却只展开 1 条
+// （用户 2026-09-17 报告）。
+func TestFeishuCoTRenderer_SameNameToolsAreDistinct(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{
+			{Name: "Shell", Iteration: 1, Status: "running", Args: `{"command":"a"}`},
+			{Name: "Shell", Iteration: 1, Status: "running", Args: `{"command":"b"}`},
+		}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	var ids []string
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] != "TOOL_CALL_START" {
+				continue
+			}
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			ids = append(ids, payload["toolCallId"].(string))
+		}
+	}
+	if len(ids) != 2 || ids[0] == ids[1] {
+		t.Fatalf("同名工具的两个调用必须各自成一条（id 必须不同），got %v", ids)
+	}
+}
+
+// ⚠️ narration（正文）**不得**在工具开始时 flush：否则每个工具批之间被插入文本，
+// 平台会把连续的工具调用拆成多条「Called tools 1 time」（用户 2026-09-17 截图
+// 里的五条）。dsh-lark 只在「被更新的文本顶替」时写 narration。
+func TestFeishuCoTRenderer_NarrationNotFlushedOnToolStart(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 6, Phase: "thinking", Iteration: 1, StreamContent: "一段正文"})
+	// 同一迭代内工具开始（旧实现会在此 flush 正文 ⇒ 插入 TEXT_MESSAGE）
+	r.onProgress(&protocol.ProgressEvent{TurnID: 6, Phase: "tool_exec", Iteration: 1, StreamContent: "一段正文",
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "running"}}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] == "TEXT_MESSAGE_CONTENT" {
+				t.Fatalf("工具开始不得 flush narration（会把工具批拆开）: %v", e)
+			}
+		}
+	}
+}

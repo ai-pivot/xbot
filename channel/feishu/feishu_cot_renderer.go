@@ -88,28 +88,36 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 	} else if ev.ReasoningStreamDelta != "" {
 		r.emitReasoningLocked(r.lastReasoning + ev.ReasoningStreamDelta)
 	}
-	// 正文：结构化进度里的 StreamContent 是**当前迭代的正文**；按 dsh-lark 的
-	// hold/supersede，只有最后一次是答案（走普通消息），被顶替的进思考过程。
-	if ev.StreamContent != "" {
-		r.heldText = ev.StreamContent
-	}
 
 	// 迭代推进 ⇒ 上一迭代的正文变成了「过程叙述」（dsh-lark：被顶替的文本进
 	// 思考过程，只有最后一次是答案）。
+	//
+	// ⚠️ 顺序至关重要：**先** flush 上一迭代的旧稿，**再**记录本迭代的新稿。
+	// 曾经把"记录新稿"放在前面 ⇒ 每个迭代的正文刚到就被当作"被顶替的旧稿"塞进
+	// 思考过程（用户 2026-09-17 两个现象的共同根因）：
+	//   ① 每个工具批之间被插入一段文本 ⇒ 平台把连续工具调用拆成多条
+	//      「Called tools 1 time」（截图里的五条）；
+	//   ② 正文与推理在思考区里混成一片、看不出区别。
 	if ev.Iteration > 0 && ev.Iteration != r.curIteration {
 		r.flushNarrationLocked()
 		r.curIteration = ev.Iteration
 	}
+	// 本迭代的正文（答案候选，走普通消息；旧稿已在上面 flush 过）。
+	if ev.StreamContent != "" {
+		r.heldText = ev.StreamContent
+	}
 
-	for _, tp := range ev.ActiveTools {
-		key := cotToolKey(tp)
+	for i, tp := range ev.ActiveTools {
+		key := cotToolKey(tp, i)
 		if _, seen := r.startedTools[key]; seen {
 			continue
 		}
 		r.startedTools[key] = struct{}{}
-		// 工具开始即结束「思考」块与上一段正文（两者都不跨工具调用，与 dsh-lark 一致）。
+		// 工具开始只结束「思考」块（dsh-lark 同）；**不** flush narration ——
+		// narration 仅在「被更新的文本顶替」时写（见 onProgress 的迭代推进处），
+		// 否则会在每个工具批之间插入文本，平台遂把连续工具调用拆成多条
+		// 「Called tools 1 time」（用户 2026-09-17 报告的五条）。
 		r.closeReasoningLocked()
-		r.flushNarrationLocked()
 		r.cot.emit("TOOL_CALL_START", map[string]any{
 			"toolCallId":   key,
 			"icon":         cotToolIcon(tp.Name),
@@ -122,8 +130,8 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 		r.cot.emit("TOOL_CALL_END", map[string]any{"toolCallId": key})
 	}
 
-	for _, tp := range ev.CompletedTools {
-		key := cotToolKey(tp)
+	for i, tp := range ev.CompletedTools {
+		key := cotToolKey(tp, i)
 		if _, seen := r.doneTools[key]; seen {
 			continue
 		}
@@ -290,9 +298,14 @@ func cotDelta(previous, accumulated string) string {
 	return accumulated
 }
 
-// cotToolKey 是工具调用在 CoT 里的稳定 id（同迭代同名工具只报一次）。
-func cotToolKey(tp protocol.ToolProgress) string {
-	return tp.Name + "#" + strconv.Itoa(tp.Iteration)
+// cotToolKey 是工具调用在 CoT 里的 id。
+//
+// ⚠️ 必须带上**本次事件里的下标**：同一迭代内可能出现**同名工具的多个调用**
+// （例如并发两个 Shell）。旧实现用 `name#iteration` ⇒ 两个调用被合并成一个 ⇒
+// 平台显示「Called tools 2 times」却只展开 1 条（用户 2026-09-17 报告）。
+// 下标在同一个事件数组内稳定，因此重复事件仍能正确去重。
+func cotToolKey(tp protocol.ToolProgress, idx int) string {
+	return tp.Name + "#" + strconv.Itoa(tp.Iteration) + "#" + strconv.Itoa(idx)
 }
 
 // cotToolTitle 是工具在 CoT 里的标题 —— 对齐 dsh-lark 的 presenter 语义：
