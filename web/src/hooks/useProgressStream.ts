@@ -1863,9 +1863,10 @@ function handleProgressMessage(
       // for WaitingUser) and AssistantMessage renders "思考中…" above the
       // AskUser panel — an empty spinner with no content.
       store.stopStreaming()
-      if (messageStore) {
-        messageStore.clearEmptyLives()
-      }
+      // ⚠️ 不再 clearEmptyLives()：WaitingUser 的 committed 占位是**空 assistant**
+      // （v55：正文存 iteration_history），而 live 才是已渲染 CoT 的载体 —— 清掉
+      // 它们会让「AskUser 出现后已渲染的 CoT 消失」（用户 2026-09-17 报告）。
+      // 空壳清理只归 session(idle) 那条路径。
       return
     }
 
