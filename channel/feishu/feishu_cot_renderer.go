@@ -179,7 +179,7 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			"messageId":  "result-" + key,
 			"toolCallId": key,
 			"role":       "tool",
-			"content":    map[string]any{"type": "code", "code": cotBoundResult(body)},
+			"content":    map[string]any{"type": "code", "code": cotBoundResult(redactSensitive(body))},
 		}
 		if cotToolFailed(tp.Status) {
 			// 对齐 dsh-lark：error 承载**真实错误标识**（他们用 event.data.error.code；
@@ -420,14 +420,16 @@ func cotToolSlot(tp protocol.ToolProgress) string {
 // START 循环与「补发从未 START 的完成条目」共用，保证事件族完整（平台按
 // START 计数，孤儿 RESULT 会被多数一次）。
 func (r *feishuCoTRenderer) emitToolCallLocked(tp protocol.ToolProgress, key string) {
+	// ⛔ 出口脱敏（用户 2026-09-17「飞书工具脱敏」）：title 摘自 args、args 原文 ——
+	// 命令里常带真实凭据（GH_TOKEN=… 的 shell、含密脚本），飞书是外部渠道。
 	r.cot.emit("TOOL_CALL_START", map[string]any{
 		"toolCallId":   key,
 		"icon":         cotToolIcon(tp.Name),
-		"title":        cotToolTitle(tp),
+		"title":        redactSensitive(cotToolTitle(tp)),
 		"toolCallName": tp.Name,
 	})
 	if tp.Args != "" {
-		r.cot.emit("TOOL_CALL_ARGS", map[string]any{"toolCallId": key, "delta": tp.Args})
+		r.cot.emit("TOOL_CALL_ARGS", map[string]any{"toolCallId": key, "delta": redactSensitive(tp.Args)})
 	}
 	r.cot.emit("TOOL_CALL_END", map[string]any{"toolCallId": key})
 }
