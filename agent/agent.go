@@ -2726,7 +2726,17 @@ func (a *Agent) sandboxWorkspace(userID string) string {
 // or don't need host-side directories.
 func (a *Agent) ensureWorkspace(ctx context.Context, dir, senderID string) error {
 	name := a.sandboxNameForUser(senderID)
-	if name == "remote" || name == "docker" || name == "denied" || name == "none" {
+	// remote/docker: the workspace lives inside the runner/container and is
+	// provisioned there (container create / runner sync) — nothing to do here.
+	// denied: no execution at all.
+	//
+	// ⚠️ "none" (local) MUST NOT be skipped: the per-user workspace is a real
+	// local path that may not exist yet (fresh machine, first run, cli_user).
+	// Skipping it made `!cmd` (and any exec whose Dir falls back to the
+	// workspace root) fail with the misleading
+	// "fork/exec /bin/bash: no such file or directory" — the shell existed,
+	// the working directory did not.
+	if name == "remote" || name == "docker" || name == "denied" {
 		return nil
 	}
 	if a.sandbox != nil {
