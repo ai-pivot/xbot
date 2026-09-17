@@ -412,3 +412,46 @@ func TestFeishuCoT_CreateUsesRealChatID(t *testing.T) {
 		t.Fatalf("real oc_ id must use chat_id, got %q", got)
 	}
 }
+
+// ⚠️ 推理**必须**能被结构化进度驱动：真实部署里推理随 ProgressEvent 的
+// ReasoningStreamContent 下发（而不是 SendStreamContent 回调）——此前 onProgress
+// 只消费工具字段 ⇒ 飞书思考区「只有工具、没有推理」（用户 2026-09-17 报告：
+// web 上看得到 Thought/正文，飞书里只剩 Called tools）。
+func TestFeishuCoTRenderer_ProgressCarriesReasoning(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	// 第一次结构化进度：带全量推理
+	r.onProgress(&protocol.ProgressEvent{
+		TurnID: 9, Phase: "thinking", Iteration: 1,
+		ReasoningStreamContent: "我在看硬盘占用",
+	})
+	// 第二次：推理继续累积（全量）+ 一个工具
+	r.onProgress(&protocol.ProgressEvent{
+		TurnID: 9, Phase: "tool_exec", Iteration: 1,
+		ReasoningStreamContent: "我在看硬盘占用，先跑 df",
+		ActiveTools:            []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "running"}},
+	})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	var reasoning strings.Builder
+	types := eventTypes(t, calls)
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
+				continue
+			}
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			reasoning.WriteString(payload["delta"].(string))
+		}
+	}
+	if reasoning.String() != "我在看硬盘占用，先跑 df" {
+		t.Fatalf("思考区必须拿到推理全文（增量拼接），got %q", reasoning.String())
+	}
+	if !strings.Contains(strings.Join(types, ","), "REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT") {
+		t.Fatalf("缺少推理生命周期: %v", types)
+	}
+}

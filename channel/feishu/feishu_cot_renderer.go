@@ -69,6 +69,24 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 		turnID = r.runTurnID
 	}
 	r.ensureRunLocked(turnID)
+
+	// ⚠️ 推理/正文有**两条来源**：流式回调（SendStreamContent）与**结构化进度**
+	// （protocol.ProgressEvent 的 ReasoningStreamContent / StreamContent —— 真实
+	// 部署上推理就是随结构化进度下发的）。dsh-lark 只有一条来源（它的 AG-UI 流），
+	// 我们对齐其**行为**：两条都消费、共用同一份差分逻辑，确保「思考区一定有推理」。
+	// 曾经只消费工具字段 ⇒ 飞书 CoT 里**只有工具、没有推理/正文**（用户 2026-06-17
+	// 报告：web 上该会话能看到 Thought/正文，飞书里只剩 Called tools）。
+	if ev.ReasoningStreamContent != "" {
+		r.emitReasoningLocked(ev.ReasoningStreamContent)
+	} else if ev.ReasoningStreamDelta != "" {
+		r.emitReasoningLocked(r.lastReasoning + ev.ReasoningStreamDelta)
+	}
+	// 正文：结构化进度里的 StreamContent 是**当前迭代的正文**；按 dsh-lark 的
+	// hold/supersede，只有最后一次是答案（走普通消息），被顶替的进思考过程。
+	if ev.StreamContent != "" {
+		r.heldText = ev.StreamContent
+	}
+
 	// 迭代推进 ⇒ 上一迭代的正文变成了「过程叙述」（dsh-lark：被顶替的文本进
 	// 思考过程，只有最后一次是答案）。
 	if ev.Iteration > 0 && ev.Iteration != r.curIteration {
@@ -142,11 +160,20 @@ func (r *feishuCoTRenderer) onStreamContent(content, reasoning string) {
 	if reasoning == "" {
 		return
 	}
-	delta := cotDelta(r.lastReasoning, reasoning)
+	r.emitReasoningLocked(reasoning)
+}
+
+// emitReasoningLocked 把**全量推理文本**按增量写进思考区（唯一的推理写出点：
+// 流式回调与结构化进度两条来源共用，避免两份实现漂移）。
+func (r *feishuCoTRenderer) emitReasoningLocked(full string) {
+	if full == "" {
+		return
+	}
+	delta := cotDelta(r.lastReasoning, full)
 	if delta == "" {
 		return
 	}
-	r.lastReasoning = reasoning
+	r.lastReasoning = full
 	if !r.reasoningOpen {
 		r.reasoningOpen = true
 		r.cot.emit("REASONING_MESSAGE_START", map[string]any{
