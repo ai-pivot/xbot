@@ -77,7 +77,14 @@ function useBarAndDialog() {
 }
 
 function useTwo(server: { rpc: unknown }) {
-  connection.current = { connected: true, rpc: server.rpc } as unknown as WSConnection
+  connection.current = {
+    connected: true,
+    rpc: server.rpc,
+    // master 的 useLLMSettings 通过 onConnectionChange 订阅连接变化
+    // （SSE 重连后重新拉取）；假连接必须提供该方法，否则 hook 抛
+    // TypeError: conn.onConnectionChange is not a function。
+    onConnectionChange: () => () => {},
+  } as unknown as WSConnection
   return renderHook(useBarAndDialog)
 }
 
