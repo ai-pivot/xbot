@@ -19,6 +19,12 @@ import {
   observeElementRect as defaultObserveElementRect,
   measureElement as defaultMeasureElement,
 } from '@tanstack/react-virtual'
+import {
+  createHeightAwareMeasureElement,
+  createRowHeightMemory,
+  createWidthTracker,
+  rowSignature,
+} from './rowHeightMemory'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Loader2, Sparkles } from 'lucide-react'
 
@@ -80,7 +86,20 @@ const EDGE_EPSILON = 2
 //      记忆的是初值，不是固化 —— 高度变化仍由 ResizeObserver 修正。
 //   2. estimateRowByContent：首次访问（无记忆）时按内容长度/迭代数/工具数粗估，
 //      比常数 120 的误差缩小数倍。
-const heightMemory = new Map<string, number>()
+const heightMemory = createRowHeightMemory()
+/** 布局宽度追踪：宽度变化 ⇒ 行高记忆作废（高度不变性的前提）。 */
+const heightLayoutWidth = createWidthTracker()
+heightLayoutWidth.onChange(() => heightMemory.clear())
+
+/**
+ * 记忆感知的容器几何：照常忽略"没有布局的测量"（0×0），额外记录布局宽度 ——
+ * 宽度一变就清空行高记忆（否则旧宽度的行高会被当成新宽度的高度）。
+ */
+const widthAwareObserveElementRect: typeof defaultObserveElementRect = (instance, cb) =>
+  nonDegenerateObserveElementRect(instance, (rect) => {
+    heightLayoutWidth.observe(rect.width)
+    cb(rect)
+  })
 
 /** 与 getItemKey 相同的稳定行键（turn-N-role / row.id）。 */
 function rowMemoryKey(row: ChatMessage, index: number): string {
@@ -351,6 +370,34 @@ export const MessageList = memo(function MessageList({
   // after onLoadMore prepends older rows, the effect closure's `rows` is still
   // the pre-prepend array, so findIndex would miss the anchor.
   const rowsRef = useRef(rows)
+
+  /**
+   * 记忆感知的行测量（切会话性能修复，见 rowHeightMemory.ts）：
+   * 内容指纹 + 宽度都命中 ⇒ **零 DOM 读**直接返回记忆高度；因为返回尺寸与 TanStack
+   * 当前记录相等，`resizeItem` 会在 `size === item.size` 处早退 ⇒ 连
+   * `shouldAdjustScrollPositionOnItemSizeChange` 的 getBoundingClientRect 环路也一并消失。
+   * 依赖为空：回调只经 rowsRef/模块级单例现读，身份恒定（不能每帧新建，
+   * 否则可见行的 ref 每帧重挂 → 每帧强制布局）。
+   */
+  const measureRow = useMemo(
+    () =>
+      // 边界 cast：本包装器与 TanStack 的泛型 instance 类型无关（见 rowHeightMemory.ts 的注释），
+      // 只读 `dataset.index` / 记忆表 / 宽度。
+      createHeightAwareMeasureElement({
+        lookup: (index) => {
+          const row = rowsRef.current[index]
+          return row ? { key: rowMemoryKey(row, index), sig: rowSignature(row) } : undefined
+        },
+        measure: noDegenerateMeasureElement as unknown as (
+          element: Element,
+          entry: ResizeObserverEntry | undefined,
+          instance: unknown,
+        ) => number,
+        memory: heightMemory,
+        width: () => heightLayoutWidth.current(),
+      }) as unknown as typeof defaultMeasureElement,
+    [],
+  )
   rowsRef.current = rows
   // ── loadMore 触发状态机（2026-09-13「一次手势 11 次请求」请求风暴根治）─────
   // 触发权：`loadMoreArmedRef` = 本轮「哨兵可见回合」的触发权是否还没用掉。
@@ -425,7 +472,7 @@ export const MessageList = memo(function MessageList({
       const row = rows[index]
       if (!row) return ESTIMATE
       const key = rowMemoryKey(row, index)
-      const remembered = heightMemory.get(key)
+      const remembered = heightMemory.get(key, rowSignature(row), heightLayoutWidth.current())
       if (remembered !== undefined) return remembered
       // GenUI 行给接近实际的初值（面板 header + 典型 UI 高度），真实高度由
       // measureElement 的 ResizeObserver 持续跟踪 —— 内容长高/折叠/展开自动修正。
@@ -438,10 +485,10 @@ export const MessageList = memo(function MessageList({
     observeElementOffset: rafCoalescedObserveElementOffset,
     // 容器几何：忽略「没有布局的测量」（0×0）——否则容器被隐藏（手机端开工具页）
     // 会让可见窗口塌成空、所有行卸载（见模块级 nonDegenerateObserveElementRect）。
-    observeElementRect: nonDegenerateObserveElementRect,
+    observeElementRect: widthAwareObserveElementRect,
     // 行尺寸：同一个退化读数从**行**这一侧进来时同样必须忽略（见上面的
     // noDegenerateMeasureElement）——否则隐藏期间所有行塌成 0 高，返回时多挂 14 行。
-    measureElement: noDegenerateMeasureElement,
+    measureElement: measureRow,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return `row-${index}`
@@ -556,8 +603,14 @@ export const MessageList = memo(function MessageList({
       if (row) {
         const h = node.getBoundingClientRect().height
         if (h > 0) {
-          heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
-          if (heightMemory.size > 3000) heightMemory.clear()
+          // 记录实测高度 + 指纹 + 宽度：同一内容的行在切会话/重挂载时**零 DOM 读**复用
+          // （见 rowHeightMemory.ts；缓存上限与宽度失效都在该模块内处理）。
+          heightMemory.set(
+            rowMemoryKey(row, idx),
+            rowSignature(row),
+            heightLayoutWidth.current(),
+            Math.round(h),
+          )
         }
       }
     },
