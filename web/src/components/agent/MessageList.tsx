@@ -814,23 +814,19 @@ export const MessageList = memo(function MessageList({
   //   - 按 props 内容版本重测（v3）只在内容到达那一帧跑 → 读到尚未吐字的短行；
   //   - 之后的"长高"没有 props 变化，且 RO 在这次增长上静默（或被过期 entry 覆盖）
   //     → 缓存永久停在短行高度 → 追加行按 91px 定位 → 重叠 8569px。
-  // 因此：**只要尾部还有 live 行，就用 rAF 逐帧跟随它**——`textContent.length`
-  // 变化是"内容变了"的廉价信号（不触发布局），只在变化时才做一次 rect 读
-  // （单元素 ~0.1ms），空闲时零开销。不依赖 RO、不依赖 props 变化。
+  // 因此：**只要尾部还有 live 行，就用 rAF 逐帧跟随它** —— 每帧只做一次
+  // `measureRowNode`（单元素 rect 读；`resizeItem` 对 delta=0 自动 no-op），
+  // **不做 `textContent` 之类的子树遍历**（8710px 的行上那是 O(节点数) 的序列化，
+  // 而且"文本相同但高度变了"（异步高亮/图片/字体）会让文字长度信号漏测）。
+  // 一次 rect 读的成本与浏览器本就要为绘制做的那次布局同一量级；关键是它把行尺寸
+  // 的权威来源固定在"当前几何"，不依赖 RO、不依赖 props。
   useEffect(() => {
     if (!liveId) return
     let raf = 0
-    let lastLen = -1
     const tick = () => {
       const root = rowsWrapperRef.current
       const node = root?.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
-      if (node) {
-        const len = node.textContent?.length ?? 0
-        if (len !== lastLen) {
-          lastLen = len
-          measureRowNode(node)
-        }
-      }
+      if (node) measureRowNode(node)
       raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
