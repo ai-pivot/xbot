@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"xbot/protocol"
 )
@@ -37,14 +38,19 @@ type feishuCoTRenderer struct {
 	runTurnID     uint64
 	runOpen       bool
 	reasoningOpen bool
-	// reasoningSeq / currentReasoningID：**每个推理块**独立 id。
-	// ⚠️ 曾经整轮共用一个 id（`reasoning-<turn>`）⇒ 平台把后续迭代的推理**合并追加
-	// 到第一块**，于是"推理全被渲染到最上方"、丢掉 web 上那种逐迭代 `Thought N`
-	// 的结构（用户 2026-09-17 报告 + 截图）。现在每次开块换新 id ⇒ 推理与工具
-	// 按迭代交错。
-	reasoningSeq       int
-	currentReasoningID string
-	lastReasoning      string
+	// ⚠️ 推理 messageId **每轮一个**（reasoningMessageID()，对齐 dsh-lark 的
+	// `reasoning-${turn}`）：平台按 id 归并内容 ⇒ 工具开始后**迟到的尾巴**再用同一
+	// id START 会并回同一块。曾改成"每块独立 id"，迟到的尾巴就成了新块 ⇒ 飞书里
+	// 「推理停在工具调用那一刻（不是推理结尾）+ 位置错乱」（用户 2026-09-17 截图；
+	// DB 真值：该迭代推理 1864 字符，飞书只渲染到 "Let me create /tmp/ems_weather.py"）。
+	lastReasoning string
+	// pendingReasoning + lastTextFlush：尚未写出的推理增量与上次写出时刻。
+	// ⚠️ 引擎**每个 LLM chunk 回调一次**（一轮上千次）——若每次都写一个 CoT 事件，
+	// 一轮就是上千事件 / 几十次 HTTP，平台侧表现为「只渲染开头，后面不再更新」
+	// （用户 2026-09-17 报告）。按时间片合并成少量大批（dsh-lark 同为"少量大批"，
+	// MAX_EVENTS_PER_WRITE=50），工具开始 / 收尾时强制 flush，绝不丢内容。
+	pendingReasoning string
+	lastTextFlush    time.Time
 	// 正文：只保留「最后一次」作为答案（走普通消息）；被顶替的中间文本是
 	// narration，按 dsh-lark 的做法 flush 进思考过程（TEXT_MESSAGE_*，role=assistant）。
 	heldText     string
@@ -53,6 +59,17 @@ type feishuCoTRenderer struct {
 	startedTools map[string]struct{}
 	doneTools    map[string]struct{}
 }
+
+// cotTextFlushInterval / cotTextChunkRunes 是推理/正文的**写出节奏**。
+//
+// ⚠️ 引擎**每个 LLM chunk 回调一次** ⇒ 逐 chunk 写会把一轮放大成上千个 CoT 事件 /
+// 几十次 HTTP，平台侧表现为「只渲染开头，后面不再更新」（用户 2026-09-17 报告）；
+// 且单个事件的 content 有 4096 字符上限（超了会被传输层换成截断标记 = 毁内容）⇒
+// 必须**按时间片合并成少量大批** + **长文本分片**，二者缺一不可。
+const (
+	cotTextFlushInterval = 250 * time.Millisecond
+	cotTextChunkRunes    = 1024
+)
 
 func newFeishuCoTRenderer(chatID string, cot *feishuCoT) *feishuCoTRenderer {
 	return &feishuCoTRenderer{
@@ -113,11 +130,14 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			continue
 		}
 		r.startedTools[key] = struct{}{}
-		// 工具开始只结束「思考」块（dsh-lark 同）；**不** flush narration ——
-		// narration 仅在「被更新的文本顶替」时写（见 onProgress 的迭代推进处），
-		// 否则会在每个工具批之间插入文本，平台遂把连续工具调用拆成多条
-		// 「Called tools 1 time」（用户 2026-09-17 报告的五条）。
 		r.closeReasoningLocked()
+		// ⚠️ 本迭代的正文必须落在**它自己的**工具之前（用户 2026-09-17 报告：
+		// 「第一个迭代的 content 渲染在第一个迭代的 toolcall 之后」）。旧实现只在
+		// 「被更新的文本顶替」时才写 ⇒ 迭代 1 的正文要等迭代 2 的正文到达才落盘，
+		// 于是排到了迭代 1 的工具之后（web 上是正文在前）。
+		// 工具出现 = 这段正文是"过程叙述"而非最终答案 ⇒ 立刻写出；最终答案之后
+		// 没有工具，会一直 held（绝不进思考区，由普通消息发送）。
+		r.flushNarrationLocked()
 		r.cot.emit("TOOL_CALL_START", map[string]any{
 			"toolCallId":   key,
 			"icon":         cotToolIcon(tp.Name),
@@ -191,20 +211,56 @@ func (r *feishuCoTRenderer) emitReasoningLocked(full string) {
 		return
 	}
 	r.lastReasoning = full
+	// 先累积，再按时间片写出（见 pendingReasoning 注释）：引擎每个 chunk 回调一次，
+	// 逐 chunk 写会把一轮放大成上千个 CoT 事件（平台只渲染开头）。
+	r.pendingReasoning += delta
+	r.flushReasoningLocked(false)
+}
+
+// flushReasoningLocked 把累积的推理增量写成 CoT 事件（必要时开块）。
+//
+// force=true 用于**结构性节点**（工具开始 / 块关闭 / 收尾）：这些时刻必须已经把
+// 之前的推理全部写出，否则尾巴会迟到（用户 2026-09-17 截图：推理停在工具调用处）。
+// 非 force 时按 cotTextFlushInterval 合并成少量大批。
+func (r *feishuCoTRenderer) flushReasoningLocked(force bool) {
+	if r.pendingReasoning == "" {
+		return
+	}
+	if !force && time.Since(r.lastTextFlush) < cotTextFlushInterval {
+		return
+	}
+	text := r.pendingReasoning
+	r.pendingReasoning = ""
+	r.lastTextFlush = time.Now()
 	if !r.reasoningOpen {
 		r.reasoningOpen = true
-		r.reasoningSeq++
-		// 每块一个唯一 id：平台按 id 归并内容 ⇒ 同 id 会把后续迭代的推理并进第一块。
-		r.currentReasoningID = r.runID() + "-r" + strconv.Itoa(r.reasoningSeq)
+		// 每轮一个 id（dsh-lark 的 `reasoning-${turn}`）：平台按 id 归并内容 ⇒
+		// 工具开始后迟到的尾巴用**同一 id** 再 START，并回同一块，永不"截断"。
 		r.cot.emit("REASONING_MESSAGE_START", map[string]any{
-			"messageId": r.currentReasoningID,
+			"messageId": r.reasoningMessageID(),
 			"role":      "reasoning",
 		})
 	}
-	r.cot.emit("REASONING_MESSAGE_CONTENT", map[string]any{
-		"messageId": r.currentReasoningID,
-		"delta":     delta,
-	})
+	r.emitDeltaChunkedLocked("REASONING_MESSAGE_CONTENT", r.reasoningMessageID(), text)
+}
+
+// emitDeltaChunkedLocked 按 ≤cotTextChunkRunes 把长文本分片写成多个事件。
+//
+// ⚠️ 单个事件的 content 有 4096 字符上限，超过会被传输层换成 `{"truncated":true,…}`
+// 标记（**内容被毁**）⇒ 长文本必须分片，绝不能靠截断（与「只渲染开头」同一类事故）。
+func (r *feishuCoTRenderer) emitDeltaChunkedLocked(eventType, messageID, text string) {
+	rs := []rune(text)
+	for len(rs) > 0 {
+		n := cotTextChunkRunes
+		if n > len(rs) {
+			n = len(rs)
+		}
+		r.cot.emit(eventType, map[string]any{
+			"messageId": messageID,
+			"delta":     string(rs[:n]),
+		})
+		rs = rs[n:]
+	}
 }
 
 // close 收尾（最终回复 / 取消 / meta final 时调用；幂等）。
@@ -224,9 +280,9 @@ func (r *feishuCoTRenderer) ensureRunLocked(turnID uint64) {
 	r.runTurnID = turnID
 	r.runOpen = true
 	r.reasoningOpen = false
-	r.reasoningSeq = 0
-	r.currentReasoningID = ""
 	r.lastReasoning = ""
+	r.pendingReasoning = ""
+	r.lastTextFlush = time.Time{}
 	r.heldText = ""
 	r.textSeq = 0
 	r.curIteration = 0
@@ -265,15 +321,19 @@ func (r *feishuCoTRenderer) flushNarrationLocked() {
 	r.textSeq++
 	messageID := "text-" + strconv.FormatUint(r.runTurnID, 10) + "-" + strconv.Itoa(r.textSeq)
 	r.cot.emit("TEXT_MESSAGE_START", map[string]any{"messageId": messageID, "role": "assistant"})
-	r.cot.emit("TEXT_MESSAGE_CONTENT", map[string]any{"messageId": messageID, "delta": text})
+	// 长正文（例如 3000 字符的迭代总结）必须分片：单事件超 4096 会被传输层换成
+	// 截断标记（那等于毁掉内容）。
+	r.emitDeltaChunkedLocked("TEXT_MESSAGE_CONTENT", messageID, text)
 	r.cot.emit("TEXT_MESSAGE_END", map[string]any{"messageId": messageID})
 }
 
 func (r *feishuCoTRenderer) closeReasoningLocked() {
+	// 关闭前必须先把累积的推理写出（否则尾巴迟到 = 内容跑到工具之后）。
+	r.flushReasoningLocked(true)
 	if !r.reasoningOpen {
 		return
 	}
-	r.cot.emit("REASONING_MESSAGE_END", map[string]any{"messageId": r.currentReasoningID})
+	r.cot.emit("REASONING_MESSAGE_END", map[string]any{"messageId": r.reasoningMessageID()})
 	r.reasoningOpen = false
 }
 
@@ -298,19 +358,22 @@ func cotDelta(previous, accumulated string) string {
 	return accumulated
 }
 
-// cotToolKey 是**一次工具调用**的身份，必须同时满足两条：
+// cotToolKey 是**一次工具调用**的身份 —— 首选宿主给的 `CallID`（与 dsh-lark 的
+// `event.data.callId` 同源：宿主分配、跨事件稳定）。
 //
-//	① 跨状态稳定：同一个调用会以 generating（生成参数中）→ executing（running）
-//	   → done 反复上报，三种状态必须算**同一次**调用（否则平台显示
-//	   「Called tools 2 times」而 web 上只调了 1 个 —— 2026-09-17 用户用 web 截图
-//	   纠正，并指出我把 generating/executing/done 搞混了）；
-//	② 不同调用可区分：同一工具在不同迭代各跑一次 = 两次真实调用；
-//	   同一迭代里的两个不同命令也是两次。
+// ⚠️ 曾用「名字 # 迭代号 # (Label|Args)」当身份，实测**会多算一次**（用户
+// 2026-09-17 截图：web 上只调了 1 个 FileCreate，飞书却显示「Called tools 2 times」，
+// 而同轮的 Shell 全部正常）：工具完成时 `updateToolResultLine` 会用
+// `formatToolProgress(Name, Arguments)` **重算 label**，而 active 快照里 label 还是空的
+// ⇒ 同一次调用得到两个 key ⇒ TOOL_CALL_START(idA) 与 TOOL_CALL_RESULT(idB) 被平台
+// 算成两次调用。CallID 在两种快照里都是同一个值，天然免疫这类字段漂移。
 //
-// ⇒ 身份 = 名字 + 迭代号 + 参数/标签。后台的 iteration 稳定且永不变化，因此
-//
-//	完全够用：状态切换共享同一 iteration（①✓），不同迭代/不同命令各自不同（②✓）。
+// CallID 缺失（老历史 / 未走 call-id 链路的路径）时才回落到复合 key —— 保证不同
+// 迭代、不同命令仍各自成条。
 func cotToolKey(tp protocol.ToolProgress) string {
+	if tp.CallID != "" {
+		return tp.CallID
+	}
 	tag := tp.Label
 	if tag == "" {
 		tag = tp.Args

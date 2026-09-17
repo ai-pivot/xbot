@@ -76,6 +76,10 @@ type feishuCoT struct {
 	draining  bool
 	// broken 标记创建/写入失败过一次：之后只降级（调用方回落卡片渲染）。
 	broken bool
+	// writeMu 串行化**真实发出的**写请求（drain 异步 × flushNow 收尾/测试 可能并发）：
+	// 两个写线程同时写会让平台侧事件顺序交错（违反渲染线性一致性 —— 用户 2026-09-17
+	// 明确要求），也会让测试 double 被两个 goroutine 同时写（-race 红灯）。
+	writeMu sync.Mutex
 }
 
 func newFeishuCoT(client *lark.Client, chatID, replyTo string, hidden bool) *feishuCoT {
@@ -179,6 +183,15 @@ func (c *feishuCoT) drain() {
 		}
 	}()
 
+	// 瞬时失败（网关 5xx / 超时 / 限流）**绝不允许**直接熔断：旧实现在这里
+	// `pending = nil` + broken=true ⇒ 该 turn 后面的思考过程**全部静默丢弃**，
+	// 症状正是用户报告的「CoT 只显示开头，后面的都不渲染」。改为同批重试，
+	// 仍失败才降级（丢弃量写进日志，绝不静默）。
+	const (
+		maxWriteRetries = 3
+		writeRetryDelay = 500 * time.Millisecond
+	)
+	failures := 0
 	for {
 		c.mu.Lock()
 		if c.broken || len(c.pending) == 0 {
@@ -194,15 +207,39 @@ func (c *feishuCoT) drain() {
 		c.pending = c.pending[n:]
 		c.mu.Unlock()
 
-		if err := c.write(batch); err != nil {
-			log.WithError(err).Warn("feishu cot: write events failed — 思考过程降级（答案不受影响）")
+		if err := c.writeSerialized(batch); err != nil {
+			failures++
+			if failures <= maxWriteRetries {
+				log.WithError(err).WithField("attempt", failures).
+					Warn("feishu cot: write failed — 同批重试（思考过程不丢）")
+				c.mu.Lock()
+				// 放回队首：顺序与内容都不丢。
+				c.pending = append(append([]cotEvent(nil), batch...), c.pending...)
+				c.mu.Unlock()
+				time.Sleep(writeRetryDelay * time.Duration(failures))
+				continue
+			}
+			log.WithError(err).WithField("dropped_events", len(batch)+len(c.pending)).
+				Error("feishu cot: write failed after retries — 思考过程降级（答案不受影响）")
 			c.mu.Lock()
 			c.broken = true
 			c.pending = nil
 			c.mu.Unlock()
 			return
 		}
+		failures = 0
 	}
+}
+
+// writeSerialized 串行化真实写请求 —— 任何时刻至多一个 write 在飞。
+//
+// ⚠️ drain（异步）与 flushNow（收尾/测试）都从同一个 pending 队列取批，若不串行化，
+// 两个 HTTP 写会**同时在飞**：平台侧可能先渲染后取的批 ⇒ 事件顺序交错（用户要求
+// 「渲染消息线性一致性」）；测试 double 也会被两个 goroutine 同时写。
+func (c *feishuCoT) writeSerialized(batch []cotEvent) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.write(batch)
 }
 
 // write 创建（一次）+ 写入一批事件。
@@ -302,6 +339,8 @@ func (c *feishuCoT) brokenNow() bool {
 
 // flushNow 同步写完队列（收尾与测试用；异步 drainer 语义不变）。
 func (c *feishuCoT) flushNow() error {
+	const maxWriteRetries = 3
+	failures := 0
 	for {
 		c.mu.Lock()
 		if c.broken || len(c.pending) == 0 {
@@ -316,13 +355,22 @@ func (c *feishuCoT) flushNow() error {
 		c.pending = c.pending[n:]
 		c.mu.Unlock()
 
-		if err := c.write(batch); err != nil {
+		if err := c.writeSerialized(batch); err != nil {
+			failures++
+			if failures <= maxWriteRetries {
+				// 同 drain：瞬时失败先重试同批，绝不立刻丢弃后续内容。
+				c.mu.Lock()
+				c.pending = append(append([]cotEvent(nil), batch...), c.pending...)
+				c.mu.Unlock()
+				continue
+			}
 			c.mu.Lock()
 			c.broken = true
 			c.pending = nil
 			c.mu.Unlock()
 			return err
 		}
+		failures = 0
 	}
 }
 

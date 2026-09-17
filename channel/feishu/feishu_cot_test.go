@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,9 @@ func newFakeCoT(t *testing.T, chatID string) (*feishuCoT, *[]cotCall) {
 	t.Helper()
 	calls := &[]cotCall{}
 	c := newFeishuCoT(nil, chatID, "om_parent", false)
+	// 测试一律走**同步** drain（调用方显式 flushNow）：异步 drainer 与 flushNow 并发
+	// 会让 fake 被两个 goroutine 同时写（-race 红灯），也让断言非确定。
+	c.draining = true
 	c.request = func(_ context.Context, method, path string, body any) (*larkcore.ApiResp, error) {
 		raw, _ := json.Marshal(body)
 		var m map[string]any
@@ -456,16 +460,63 @@ func TestFeishuCoTRenderer_ProgressCarriesReasoning(t *testing.T) {
 	}
 }
 
-// ⚠️ 每个"推理块"必须独立 messageId：平台按 id 归并内容，整轮共用一个 id 会把
-// 后续迭代的推理**合并追加到第一块** ⇒ 飞书里"推理全堆在最上方"、丢掉 web 上
-// 逐迭代 `Thought N` 的结构（用户 2026-09-17 报告 + 截图）。
-func TestFeishuCoTRenderer_ReasoningBlocksHaveUniqueIDs(t *testing.T) {
+// ⚠️ **工具开始后迟到的推理尾巴必须并回同一块** —— 用户 2026-09-17 截图实证：
+// 飞书里推理停在 `Let me create /tmp/ems_weather.py`（**不是推理结尾**），而该迭代
+// 的真实推理有 1864 字符（DB `iteration_history` 真值），后面还有
+// 「based on the Qinghai one … Let me write the script.」。
+//
+// 根因：reasoning 曾改成「每块独立 id」⇒ 工具开始后再到的尾巴会开**新块**，落到
+// 工具之后（或与下一迭代推理混在一起）⇒ 观感就是「截断 + 位置错乱」。
+// dsh-lark 契约（src/cot.ts）：每轮一个 `reasoning-${turn}`，工具开始只 END，
+// 尾巴再用**同一 id** START ⇒ 平台按 id 归并回同一块，永不缺内容。
+func TestFeishuCoTRenderer_ReasoningTailAfterToolMergesIntoOneBlock(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 7, Phase: "thinking", Iteration: 1,
+		ReasoningStreamContent: "前 1800 字符的推理"})
+	// 工具开始 ⇒ 推理块先 END（dsh 同）。
+	r.onProgress(&protocol.ProgressEvent{TurnID: 7, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{Name: "FileCreate", CallID: "call_1", Iteration: 1, Status: "running"}}})
+	// 尾巴**迟到**（结构化进度晚于工具事件到达）—— 必须并回同一块。
+	r.onProgress(&protocol.ProgressEvent{TurnID: 7, Phase: "tool_exec", Iteration: 1,
+		ReasoningStreamContent: "前 1800 字符的推理 + 尾巴"})
+
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	ids := map[string]bool{}
+	var text strings.Builder
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
+				continue
+			}
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			ids[payload["messageId"].(string)] = true
+			text.WriteString(payload["delta"].(string))
+		}
+	}
+	if len(ids) != 1 {
+		t.Fatalf("尾巴必须并回同一块（dsh: 每轮一个 reasoning id），got ids=%v", ids)
+	}
+	if text.String() != "前 1800 字符的推理 + 尾巴" {
+		t.Fatalf("推理全文必须完整（不得截断），got %q", text.String())
+	}
+}
+
+// ⚠️ 推理的 messageId **每轮一个** —— 与 dsh-lark 的 `reasoning-${turn}` 一致。
+// 曾改成"每块独立 id"（想让推理与工具按迭代交错），但平台按 id 归并内容：独立 id
+// 会让迟到/后续的推理变成**新块** ⇒ 「推理停在工具调用那一刻 + 位置错乱」
+// （用户 2026-09-17 截图）。dsh 从不这么干：同一 id 的内容永远并回同一块。
+func TestFeishuCoTRenderer_ReasoningIsOneBlockPerTurn(t *testing.T) {
 	c, calls := newFakeCoT(t, "chat_1")
 	r := newFeishuCoTRenderer("chat_1", c)
 	// 迭代 1：推理 → 工具（工具开始 ⇒ 结束推理块）
 	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 1, ReasoningStreamContent: "第一段推理"})
 	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "tool_exec", Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "running"}}})
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", CallID: "c1", Iteration: 1, Status: "running"}}})
 	// 迭代 2：再来一段推理
 	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 2, ReasoningStreamContent: "第二段推理"})
 	r.close("")
@@ -474,30 +525,37 @@ func TestFeishuCoTRenderer_ReasoningBlocksHaveUniqueIDs(t *testing.T) {
 	}
 
 	var starts, ends []string
+	var text strings.Builder
 	for _, call := range *calls {
 		for _, e := range call.Events {
 			et := e["event_type"].(string)
-			if et != "REASONING_MESSAGE_START" && et != "REASONING_MESSAGE_END" {
+			if et != "REASONING_MESSAGE_START" && et != "REASONING_MESSAGE_END" && et != "REASONING_MESSAGE_CONTENT" {
 				continue
 			}
 			var payload map[string]any
 			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
 			id, _ := payload["messageId"].(string)
-			if et == "REASONING_MESSAGE_START" {
+			switch et {
+			case "REASONING_MESSAGE_START":
 				starts = append(starts, id)
-			} else {
+			case "REASONING_MESSAGE_END":
 				ends = append(ends, id)
+			default:
+				text.WriteString(payload["delta"].(string))
 			}
 		}
 	}
 	if len(starts) != 2 {
-		t.Fatalf("两个迭代应开两个推理块，got starts=%v", starts)
+		t.Fatalf("工具开始后重新开块必须有 START，got starts=%v", starts)
 	}
-	if starts[0] == starts[1] {
-		t.Fatalf("推理块 messageId 必须唯一（否则平台会把第二段并进第一块）: %v", starts)
+	if starts[0] != starts[1] {
+		t.Fatalf("每轮一个推理 id（dsh-lark 契约）：两个 START 必须同 id，got %v", starts)
 	}
-	if len(ends) != 2 || ends[0] != starts[0] || ends[1] != starts[1] {
-		t.Fatalf("REASONING_MESSAGE_END 必须闭合各自的块: starts=%v ends=%v", starts, ends)
+	if len(ends) != 2 || ends[0] != ends[1] || ends[0] != starts[0] {
+		t.Fatalf("REASONING_MESSAGE_END 必须闭合同一个块: starts=%v ends=%v", starts, ends)
+	}
+	if text.String() != "第一段推理第二段推理" {
+		t.Fatalf("推理全文必须累积在同一块，got %q", text.String())
 	}
 }
 
@@ -553,6 +611,207 @@ func TestFeishuCoTRenderer_StatusTransitionsCountOnce(t *testing.T) {
 	}
 }
 
+// ⚠️ **同一个工具调用的身份必须跨快照稳定** —— 真实事故（用户 2026-09-17 截图）：
+// web 上只调了 1 个 FileCreate，飞书却显示「Called tools 2 times」，应当显示 1。
+//
+// 根因：工具完成时 `updateToolResultLine` 会用 `formatToolProgress(Name, Arguments)`
+// **重算 label**，而 active 快照里 label 还是空的（参数仍在成型的工具尤其明显）⇒
+// 用「名字#迭代号#(Label|Args)」当身份会得到**两个 key** ⇒ START(toolCallId=A) 与
+// RESULT(toolCallId=B) 被平台算成两次调用。
+// 身份必须用宿主给的 call id（与 dsh-lark 的 `event.data.callId` 同源）。
+func TestFeishuCoTRenderer_SameCallCountsOnceWhenSnapshotFieldsDrift(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	// active 快照：label 尚未解析，args 是原始 JSON。
+	r.onProgress(&protocol.ProgressEvent{TurnID: 11, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{
+			Name: "FileCreate", CallID: "call_abc", Iteration: 1, Status: "running",
+			Args: `{"path":"/tmp/ems_weather.py","content":"print(1)"}`,
+		}}})
+	// completed 快照：label 已被重算成路径，args 不再出现。
+	r.onProgress(&protocol.ProgressEvent{TurnID: 11, Phase: "tool_exec", Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{{
+			Name: "FileCreate", CallID: "call_abc", Iteration: 1, Status: "done",
+			Label: "/tmp/ems_weather.py", Detail: "File created successfully: /tmp/ems_weather.py",
+		}}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	startIDs := map[string]bool{}
+	resultIDs := map[string]bool{}
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			id, _ := payload["toolCallId"].(string)
+			switch e["event_type"] {
+			case "TOOL_CALL_START":
+				startIDs[id] = true
+			case "TOOL_CALL_RESULT":
+				resultIDs[id] = true
+			}
+		}
+	}
+	if len(startIDs) != 1 {
+		t.Fatalf("同一次调用只能有一个 toolCallId，got %v", startIDs)
+	}
+	for id := range resultIDs {
+		if !startIDs[id] {
+			t.Fatalf("结果必须挂在同一个 toolCallId 上（否则平台计 2 次）: starts=%v results=%v", startIDs, resultIDs)
+		}
+	}
+	if !startIDs["call_abc"] {
+		t.Fatalf("身份必须用宿主的 CallID（dsh 的 callId 同源），got %v", startIDs)
+	}
+}
+
+// ⚠️ 迭代 1 的正文必须落在**它自己的**工具之前（用户 2026-09-17 报告：
+// 「第一个迭代的 content 渲染在第一个迭代的 toolcall 之后」）。
+// 工具出现即证明这段正文是过程叙述（不是最终答案）⇒ 立刻写出。
+func TestFeishuCoTRenderer_NarrationRendersBeforeItsOwnTool(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 5, Phase: "thinking", Iteration: 1, StreamContent: "我用同样的方法查峨眉山。"})
+	r.onProgress(&protocol.ProgressEvent{TurnID: 5, Phase: "tool_exec", Iteration: 1, StreamContent: "我用同样的方法查峨眉山。",
+		ActiveTools: []protocol.ToolProgress{{Name: "FileCreate", CallID: "c1", Iteration: 1, Status: "running"}}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	var order []string
+	var narration string
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			et := e["event_type"].(string)
+			switch et {
+			case "TOOL_CALL_START":
+				order = append(order, "tool")
+			case "TEXT_MESSAGE_CONTENT":
+				var payload map[string]any
+				_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+				narration += payload["delta"].(string)
+				order = append(order, "text")
+			}
+		}
+	}
+	if len(order) != 2 || order[0] != "text" || order[1] != "tool" {
+		t.Fatalf("正文必须排在它自己的工具之前（web 同序），got %v", order)
+	}
+	if narration != "我用同样的方法查峨眉山。" {
+		t.Fatalf("正文内容必须完整，got %q", narration)
+	}
+}
+
+// ⚠️ 引擎**每个 LLM chunk 回调一次**（一轮上千次）：逐 chunk 写 CoT 事件会把一轮
+// 放大成上千事件，平台侧表现为「只有第一个迭代渲染，后面迭代都不渲染」
+// （用户 2026-09-17 报告）。必须按时间片合并成少量大批（dsh-lark 同为少量大批）。
+func TestFeishuCoTRenderer_CoalescesReasoningEvents(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	full := ""
+	for i := 1; i <= 200; i++ {
+		full += "x"
+		r.onStreamContent("", full)
+	}
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	n, text := 0, ""
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
+				continue
+			}
+			n++
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			text += payload["delta"].(string)
+		}
+	}
+	if n > 5 {
+		t.Fatalf("200 次 chunk 回调必须合并成少量事件（否则平台只渲染开头），got %d 个事件", n)
+	}
+	if text != full {
+		t.Fatalf("合并后内容必须完整，got %d 字符 want %d", len(text), len(full))
+	}
+}
+
+// ⚠️ 瞬时写失败**绝不能**直接熔断：旧实现 `pending = nil` + broken=true ⇒ 该 turn
+// 后面的思考过程全部静默丢弃（用户 2026-09-17 报告：「后面的 cot 都不渲染」）。
+func TestFeishuCoT_TransientWriteFailureRetriesInsteadOfDropping(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	base := c.request
+	fails := 0
+	c.request = func(ctx context.Context, method, path string, body any) (*larkcore.ApiResp, error) {
+		if method == "PUT" && fails < 2 {
+			fails++
+			return nil, cotError("boom")
+		}
+		return base(ctx, method, path, body)
+	}
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 8, Phase: "thinking", Iteration: 1, ReasoningStreamContent: "推理一"})
+	r.onProgress(&protocol.ProgressEvent{TurnID: 8, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", CallID: "c1", Iteration: 1, Status: "running"}}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("瞬时失败必须重试成功，不得把后续内容丢掉: %v", err)
+	}
+	if c.brokenNow() {
+		t.Fatalf("两次瞬时失败不得熔断（后续思考过程会被全部丢弃）")
+	}
+	if n := len(eventTypes(t, calls)); n == 0 {
+		t.Fatalf("重试后事件必须真的送达")
+	}
+}
+
+// ⚠️ **渲染消息线性一致性**（用户 2026-09-17 明确要求「必须保证渲染消息线性一致性」）：
+// 合并/节流**只能改变推送频率，绝不能改变顺序**。真实的迭代结构是
+// [推理1 正文1 工具1] [推理2 正文2 工具2] …，写进 CoT 的事件顺序必须与之一致
+// （引擎单 goroutine 产生 ⇒ 单一有序队列 ⇒ 单一写线程 FIFO）。
+func TestFeishuCoTRenderer_EventOrderIsLinear(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	for i := 1; i <= 2; i++ {
+		r.onProgress(&protocol.ProgressEvent{TurnID: 12, Phase: "thinking", Iteration: i,
+			ReasoningStreamContent: fmt.Sprintf("推理%d", i)})
+		r.onProgress(&protocol.ProgressEvent{TurnID: 12, Phase: "tool_exec", Iteration: i,
+			StreamContent: fmt.Sprintf("正文%d", i),
+			ActiveTools: []protocol.ToolProgress{{
+				Name: "Shell", CallID: fmt.Sprintf("call_%d", i), Iteration: i, Status: "running"}}})
+	}
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+
+	// 只取"内容锚点"（首条 CONTENT / 工具 START），忽略 START/END 包裹事件。
+	var order []string
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			et := e["event_type"].(string)
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			switch et {
+			case "REASONING_MESSAGE_CONTENT":
+				order = append(order, "r:"+payload["delta"].(string))
+			case "TEXT_MESSAGE_CONTENT":
+				order = append(order, "t:"+payload["delta"].(string))
+			case "TOOL_CALL_START":
+				order = append(order, "tool:"+payload["toolCallId"].(string))
+			}
+		}
+	}
+	want := []string{"r:推理1", "t:正文1", "tool:call_1", "r:推理2", "t:正文2", "tool:call_2"}
+	if strings.Join(order, "|") != strings.Join(want, "|") {
+		t.Fatalf("事件顺序必须线性一致（合并不得改变顺序）:\n got %v\nwant %v", order, want)
+	}
+}
+
 // 同一工具在**不同迭代**里各跑一次 = 两次真实调用 ⇒ 两条。
 func TestFeishuCoTRenderer_SameToolTwoIterations(t *testing.T) {
 	c, calls := newFakeCoT(t, "chat_1")
@@ -578,22 +837,36 @@ func TestFeishuCoTRenderer_SameToolTwoIterations(t *testing.T) {
 	}
 }
 
-func TestFeishuCoTRenderer_NarrationNotFlushedOnToolStart(t *testing.T) {
+// ⚠️ 契约已随用户 2026-09-17 的反馈反转：正文**必须**在它自己的工具之前写出
+// （见 NarrationRendersBeforeItsOwnTool），但**只能写一次** —— 工具的多次状态
+// 快照（running → done 反复上报）绝不能重复写 TEXT_MESSAGE，否则同一段正文在
+// 思考区出现 N 遍、并把工具批拆开。
+func TestFeishuCoTRenderer_NarrationWrittenExactlyOnce(t *testing.T) {
 	c, calls := newFakeCoT(t, "chat_1")
 	r := newFeishuCoTRenderer("chat_1", c)
 	r.onProgress(&protocol.ProgressEvent{TurnID: 6, Phase: "thinking", Iteration: 1, StreamContent: "一段正文"})
-	// 同一迭代内工具开始（旧实现会在此 flush 正文 ⇒ 插入 TEXT_MESSAGE）
-	r.onProgress(&protocol.ProgressEvent{TurnID: 6, Phase: "tool_exec", Iteration: 1, StreamContent: "一段正文",
-		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "running"}}})
+	for _, st := range []string{"running", "done"} {
+		r.onProgress(&protocol.ProgressEvent{TurnID: 6, Phase: "tool_exec", Iteration: 1, StreamContent: "一段正文",
+			ActiveTools: []protocol.ToolProgress{{Name: "Shell", CallID: "c9", Iteration: 1, Status: st}}})
+	}
 	r.close("")
 	if err := c.flushNow(); err != nil {
 		t.Fatalf("flushNow: %v", err)
 	}
+	n := 0
+	var text string
 	for _, call := range *calls {
 		for _, e := range call.Events {
-			if e["event_type"] == "TEXT_MESSAGE_CONTENT" {
-				t.Fatalf("工具开始不得 flush narration（会把工具批拆开）: %v", e)
+			if e["event_type"] != "TEXT_MESSAGE_CONTENT" {
+				continue
 			}
+			n++
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			text += payload["delta"].(string)
 		}
+	}
+	if n != 1 || text != "一段正文" {
+		t.Fatalf("正文必须恰好写一次且内容完整，got n=%d text=%q", n, text)
 	}
 }
