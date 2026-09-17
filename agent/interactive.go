@@ -661,6 +661,39 @@ func interactiveKey(channel, chatID, roleName, instance string) string {
 	return key
 }
 
+// matchInteractiveSessions 按 role/instance 做 **best-effort 匹配**（两者都可能为
+// 空 = 该维度通配）。
+//
+// 用户 2026-09-17：「`send` 经常漏传 role（模型只给 instance）——不能因此失败；
+// 要在自己的 subagent 列表里尽可能匹配，只有**完全匹配不上**或**匹配出多个**才报错」。
+// 因此精确 key 未命中时用本函数兜底：
+//   - role 为空、instance 给了 → 按 instance 匹配（这次的 perf-slot 形态）；
+//   - instance 为空、role 给了 → 按 role 匹配；
+//   - 两者都给 → 精确匹配（等价于 key 匹配）；
+//   - 两者都空 → 返回全部（调用方按"多个即歧义"处理）。
+func (a *Agent) matchInteractiveSessions(roleName, instance string) []string {
+	var keys []string
+	a.interactiveSubAgents.Range(func(k, v any) bool {
+		key, _ := k.(string)
+		ia, _ := v.(*interactiveAgent)
+		if ia == nil {
+			return true
+		}
+		ia.mu.Lock()
+		role, inst := ia.roleName, ia.instance
+		ia.mu.Unlock()
+		if roleName != "" && role != roleName {
+			return true
+		}
+		if instance != "" && inst != instance {
+			return true
+		}
+		keys = append(keys, key)
+		return true
+	})
+	return keys
+}
+
 // bgTaskID returns the task ID of a background sub-agent task ("" when nil).
 func bgTaskID(t *tools.SubAgentTask) string {
 	if t == nil {
@@ -1651,9 +1684,28 @@ func (a *Agent) SendToInteractiveSession(
 
 	key := interactiveKey(originChannel, originChatID, roleName, instance)
 
+	// best-effort 解析：**漏传 role（或 instance）也要能匹配上** —— 用户 2026-09-17
+	// 的现场就是 `{"action":"send","instance":"perf-slot"}` 没带 role。精确键未命中时
+	// 在 subagent 列表里按已给的维度匹配：唯一命中即用；0 个（完全匹配不上）或
+	// 多个（歧义）才报错，并把可用会话/候选列出来便于调用方纠正。
+	if _, ok := a.interactiveSubAgents.Load(key); !ok {
+		switch matches := a.matchInteractiveSessions(roleName, instance); len(matches) {
+		case 1:
+			key = matches[0]
+		case 0:
+			err := fmt.Errorf("no active interactive session matching role=%q instance=%q (available: %v)",
+				roleName, instance, a.matchInteractiveSessions("", ""))
+			return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
+		default:
+			err := fmt.Errorf("ambiguous interactive session for role=%q instance=%q: candidates %v — pass the exact role and instance",
+				roleName, instance, matches)
+			return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
+		}
+	}
+
 	val, ok := a.interactiveSubAgents.Load(key)
 	if !ok {
-		err := fmt.Errorf("no active interactive session for role %q, use interactive=true to create one first", roleName)
+		err := fmt.Errorf("no active interactive session for role %q (instance=%q)", roleName, instance)
 		return &channelpkg.OutboundMsg{
 			Content: err.Error(),
 			Error:   err,
