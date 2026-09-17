@@ -380,7 +380,8 @@ func (f *FeishuChannel) cotRendererFor(chatID string) *feishuCoTRenderer {
 	f.inboundMsgIDsMu.Lock()
 	replyTo := f.inboundMsgIDs[chatID]
 	f.inboundMsgIDsMu.Unlock()
-	r := newFeishuCoTRenderer(chatID, newFeishuCoT(f.client, chatID, replyTo, false))
+	// receive_id 必须是**真实** chat_id（合成会话键会被飞书拒为 invalid receive_id）。
+	r := newFeishuCoTRenderer(chatID, newFeishuCoT(f.client, f.cotReceiveID(chatID), replyTo, false))
 	f.cotRenderers[chatID] = r
 	return r
 }

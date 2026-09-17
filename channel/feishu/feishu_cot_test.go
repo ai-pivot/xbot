@@ -395,3 +395,20 @@ func TestFeishuCoT_CreateRejectedSurfacesPlatformMsg(t *testing.T) {
 		t.Fatal("rejection must mark the CoT broken (callers fall back to the card)")
 	}
 }
+
+// 合成会话键（`chat_…`）绝不能直接当 receive_id —— 必须用入站事件记下的真实
+// chat_id（`oc_…`）。这是用户「完全看不到中间进度」的根因（平台 10001 invalid
+// receive_id），也是卡片路径当年改为 reply-to-message 的同一个坑。
+func TestFeishuCoT_CreateUsesRealChatID(t *testing.T) {
+	f := &FeishuChannel{realChatIDs: map[string]string{"chat_SYNTHETIC": "oc_realsynthetic"}}
+	if got := f.cotReceiveID("chat_SYNTHETIC"); got != "oc_realsynthetic" {
+		t.Fatalf("cotReceiveID(synthetic) = %q, want the real oc_ id", got)
+	}
+	if got := f.cotReceiveID("oc_already_real"); got != "oc_already_real" {
+		t.Fatalf("unknown key must fall back to the key itself, got %q", got)
+	}
+	// 真实 id 才允许 chat_id 形态
+	if got := cotReceiveIDType(f.cotReceiveID("chat_SYNTHETIC")); got != "chat_id" {
+		t.Fatalf("real oc_ id must use chat_id, got %q", got)
+	}
+}

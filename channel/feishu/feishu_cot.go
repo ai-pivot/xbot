@@ -246,6 +246,7 @@ func (c *feishuCoT) write(events []cotEvent) error {
 		if created.Code != 0 {
 			log.WithFields(log.Fields{"code": created.Code, "msg": created.Msg,
 				"raw": truncateRaw(resp.RawBody), "receive_id_type": cotReceiveIDType(c.chatID),
+				"receive_id": c.chatID,
 			}).Warn("feishu cot: create rejected by platform")
 			return fmt.Errorf("feishu cot: create failed: code=%d msg=%s", created.Code, created.Msg)
 		}

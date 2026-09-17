@@ -241,6 +241,13 @@ type FeishuChannel struct {
 	// progress card can be posted as a reply to it.
 	inboundMsgIDsMu sync.Mutex
 	inboundMsgIDs   map[string]string
+	// realChatIDs 记录「渠道会话键 → 入站事件里的真实 chat_id（oc_…）」。
+	// ⚠️ 会话键是合成 id（`chat_…`），飞书同时拒收为 open_id 与 chat_id（见本包
+	// 214 行注释：卡片路径当初因此改为 reply 到入站 message_id）。原生 CoT 的建卡
+	// 接口只接受 receive_id ⇒ 必须用真实 chat_id，否则 code=10001 invalid receive_id
+	// ⇒ 思考过程整段丢失（用户报告「完全看不到中间进度」）。
+	realChatIDsMu sync.Mutex
+	realChatIDs   map[string]string
 }
 
 type feishuPendingApproval struct {
@@ -283,6 +290,7 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		cotEnabled:        cfg.Output == "cot",
 		cotRenderers:      make(map[string]*feishuCoTRenderer),
 		inboundMsgIDs:     make(map[string]string),
+		realChatIDs:       make(map[string]string),
 	}
 }
 
@@ -1232,6 +1240,18 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		f.inboundMsgIDs[replyTo] = messageID
 	}
 	f.inboundMsgIDsMu.Unlock()
+	// 记下真实 chat_id —— 原生 CoT 的 receive_id 必须用它（合成键必被拒）。
+	if msg.ChatId != nil && *msg.ChatId != "" {
+		f.realChatIDsMu.Lock()
+		if f.realChatIDs == nil {
+			f.realChatIDs = map[string]string{}
+		}
+		f.realChatIDs[chatID] = *msg.ChatId
+		if replyTo != "" && replyTo != chatID {
+			f.realChatIDs[replyTo] = *msg.ChatId
+		}
+		f.realChatIDsMu.Unlock()
+	}
 	// New inbound message = new turn: the reply target is now known, so give the
 	// progress card a fresh attempt for this chat (and re-arm the one-shot
 	// fallback ack).
@@ -3683,4 +3703,21 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 	sb.WriteString("- 📤 `/app export <name> -s/-a/-p` — 打包导出\n")
 	sb.WriteString("- 🗑️ `/app uninstall -n/-s/-a/-p` — 卸载\n")
 	return sb.String()
+}
+
+// cotReceiveID 返回**平台可接受**的会话标识：优先用入站事件记录的真实 chat_id
+// （`oc_…`），无记录时回落到渠道会话键。
+//
+// ⚠️ 渠道的会话键是合成 id（形如 `chat_…`）：飞书会同时拒收为 open_id 与 chat_id
+// （见本包 214 行注释 —— 卡片路径当年正因此改为 reply 到入站 message_id）。
+// 原生 CoT 的建卡接口只接受 receive_id ⇒ 必须用真实 chat_id，否则报
+// code=10001 invalid receive_id，思考过程整段丢失（用户报告「完全看不到中间进度」）。
+func (f *FeishuChannel) cotReceiveID(key string) string {
+	f.realChatIDsMu.Lock()
+	real := f.realChatIDs[key]
+	f.realChatIDsMu.Unlock()
+	if real != "" {
+		return real
+	}
+	return key
 }
