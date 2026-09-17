@@ -452,6 +452,71 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v68: max_concurrency 归一 —— 同一设置曾被写到多个 channel 行
+	// ('cli' / 'web' / '')，读路径又按调用方 channel 读 ⇒ 面板显示 100+、
+	// 实际闸门却是 llm.DefaultLLMConcurrency（用户 2026-09-17 报告）。此迁移把
+	// 老数据合并成唯一规范行（channel 'cli'），删除其余副本。
+	if from < 68 {
+		if err := migrateV67ToV68(db); err != nil {
+			return fmt.Errorf("migrate to v68: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV67ToV68 consolidates the max_concurrency user setting into ONE
+// canonical row (channel "cli", the value the Web LLM console / CLI settings
+// panel display).
+//
+// Rule: the canonical row wins; when it is missing, the newest surviving value
+// is promoted; every other row for this key is deleted. Idempotent (running it
+// twice leaves exactly one row). Literal strings on purpose — migrations encode
+// frozen semantics and must not depend on constants that may evolve later.
+func migrateV67ToV68(db *DB) error {
+	conn := db.Conn()
+	ok, err := tableExists(conn, "user_settings")
+	if err != nil {
+		return fmt.Errorf("migrate v67->v68 check user_settings: %w", err)
+	}
+	if !ok {
+		return nil
+	}
+	const canonicalChannel = "cli"
+	const concurrencyKey = "max_concurrency"
+
+	var value string
+	err = conn.QueryRow(
+		`SELECT value FROM user_settings WHERE key = ? AND channel = ? ORDER BY updated_at DESC LIMIT 1`,
+		concurrencyKey, canonicalChannel).Scan(&value)
+	if err == sql.ErrNoRows {
+		// No canonical row: promote the newest surviving value.
+		err = conn.QueryRow(
+			`SELECT value FROM user_settings WHERE key = ? ORDER BY updated_at DESC LIMIT 1`,
+			concurrencyKey).Scan(&value)
+	}
+	switch {
+	case err == sql.ErrNoRows:
+		value = ""
+	case err != nil:
+		return fmt.Errorf("migrate v67->v68 read: %w", err)
+	}
+
+	if _, err := conn.Exec(`DELETE FROM user_settings WHERE key = ?`, concurrencyKey); err != nil {
+		return fmt.Errorf("migrate v67->v68 delete: %w", err)
+	}
+	if value != "" {
+		// UNIQUE(channel, sender_id, key) — exactly one canonical row.
+		if _, err := conn.Exec(
+			`INSERT INTO user_settings (channel, sender_id, key, value, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			canonicalChannel, "cli_user", concurrencyKey, value, time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("migrate v67->v68 insert: %w", err)
+		}
+	}
+	// Record the version (every migration does this — the dispatcher does not).
+	if _, err := conn.Exec("UPDATE schema_version SET version = 68"); err != nil {
+		return fmt.Errorf("migrate v67->v68 update version: %w", err)
+	}
 	return nil
 }
 

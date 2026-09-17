@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"xbot/channel"
 	"xbot/config"
 	"xbot/llm"
 	"xbot/storage/sqlite"
@@ -139,8 +140,95 @@ func TestSettingKeyConstants_MatchDB(t *testing.T) {
 	if settingMaxConcurrency != "max_concurrency" {
 		t.Errorf("settingMaxConcurrency = %q, want %q", settingMaxConcurrency, "max_concurrency")
 	}
-	if settingSubAgentMaxConcurrency != "subagent_max_concurrency" {
-		t.Errorf("settingSubAgentMaxConcurrency = %q, want %q", settingSubAgentMaxConcurrency, "subagent_max_concurrency")
+	// There is exactly ONE concurrency knob: subagent_max_concurrency was a
+	// duplicate definition and must not come back.
+	if settingMaxConcurrency != channel.SettingMaxConcurrency {
+		t.Errorf("settingMaxConcurrency = %q, want channel.SettingMaxConcurrency %q", settingMaxConcurrency, channel.SettingMaxConcurrency)
+	}
+	if channel.MaxConcurrencyChannel != "cli" {
+		t.Errorf("channel.MaxConcurrencyChannel = %q, want %q", channel.MaxConcurrencyChannel, "cli")
+	}
+}
+
+// TestLLMSemAcquireForUser_IgnoresCallerChannel is the regression test for the
+// 2026-09-17 user report "set 100 concurrency, but 4-5 subagents already stall".
+//
+// The knob is ONE canonical row (channel "cli"). Reading it with the CALLER's
+// channel meant a Web session (channel "web") found no row and silently fell
+// back to llm.DefaultLLMConcurrency (5) while the panel displayed 100+.
+func TestLLMSemAcquireForUser_IgnoresCallerChannel(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	settingsSvc := NewSettingsService(sqlite.NewUserSettingsService(db))
+	// Written by the Web/CLI panel — the canonical location.
+	if err := settingsSvc.SetSetting(channel.MaxConcurrencyChannel, "cli_user", settingMaxConcurrency, "100"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	f := NewLLMFactory(&llm.MockLLM{}, "default-model")
+	f.SetSettingsService(settingsSvc)
+	f.SetLLMSemaphoreManager(llm.NewLLMSemaphoreManager())
+
+	// A Web session calls in with channel "web" — capacity must still be 100.
+	for _, caller := range []string{"cli", "web", "feishu", ""} {
+		acquire := f.LLMSemAcquireForUser("cli_user", caller)
+		if acquire == nil {
+			t.Fatalf("LLMSemAcquireForUser(caller=%q) returned nil", caller)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		releases := make([]func(), 0, 100)
+		for i := 0; i < 100; i++ {
+			release := acquire(ctx)
+			if release == nil {
+				cancel()
+				t.Fatalf("caller=%q: failed at slot %d — capacity fell back to %d instead of the canonical 100", caller, i, llm.DefaultLLMConcurrency)
+			}
+			releases = append(releases, release)
+		}
+		for _, r := range releases {
+			r()
+		}
+		cancel()
+	}
+}
+
+// TestSetSetting_CanonicalizesMaxConcurrencyChannel pins the write-side
+// normalization: whatever channel a writer passes (web console, config tool,
+// CLI panel), the row lands in the canonical channel — one key, one row.
+func TestSetSetting_CanonicalizesMaxConcurrencyChannel(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	store := sqlite.NewUserSettingsService(db)
+	settingsSvc := NewSettingsService(store)
+	if err := settingsSvc.SetSetting("web", "cli_user", settingMaxConcurrency, "120"); err != nil {
+		t.Fatalf("set setting: %v", err)
+	}
+
+	// Readable at the canonical channel …
+	canonical, err := settingsSvc.GetSettings(channel.MaxConcurrencyChannel, "cli_user")
+	if err != nil {
+		t.Fatalf("get canonical: %v", err)
+	}
+	if canonical[settingMaxConcurrency] != "120" {
+		t.Errorf("canonical row = %q, want 120", canonical[settingMaxConcurrency])
+	}
+	// … and NOT duplicated under the caller's channel.
+	web, err := settingsSvc.GetSettings("web", "cli_user")
+	if err != nil {
+		t.Fatalf("get web: %v", err)
+	}
+	if v, ok := web[settingMaxConcurrency]; ok {
+		t.Errorf("max_concurrency leaked into channel \"web\" (value %q) — must live only in %q", v, channel.MaxConcurrencyChannel)
 	}
 }
 

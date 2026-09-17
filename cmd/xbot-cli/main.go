@@ -242,14 +242,8 @@ func (app *cliApp) refreshRemoteValuesCache(subscriptionID string) {
 			return "30"
 		}()
 	}
-	if _, ok := vals["max_concurrency"]; !ok {
-		vals["max_concurrency"] = func() string {
-			if app.cfg.Agent.MaxConcurrency > 0 {
-				return fmt.Sprintf("%d", app.cfg.Agent.MaxConcurrency)
-			}
-			return "3"
-		}()
-	}
+	// max_concurrency is NOT seeded from config.json — its single source is the
+	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	if _, ok := vals["max_context_tokens"]; !ok {
 		vals["max_context_tokens"] = func() string {
 			if app.cfg.Agent.MaxContextTokens > 0 {

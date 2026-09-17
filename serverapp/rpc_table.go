@@ -477,9 +477,10 @@ func registerSettingsHandlers(t RPCTable, h *RPCContext) {
 		if _, ok := result["max_iterations"]; !ok {
 			result["max_iterations"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxIterations)
 		}
-		if _, ok := result["max_concurrency"]; !ok {
-			result["max_concurrency"] = fmt.Sprintf("%d", h.Cfg.Agent.MaxConcurrency)
-		}
+		// max_concurrency is NOT injected from config.json: its single source is
+		// the canonical user_settings row (channel.MaxConcurrencyChannel), which
+		// is already in `result` when set. Removing the config fallback is what
+		// stops the panel value and the runtime value from diverging.
 		if _, ok := result["context_mode"]; !ok {
 			result["context_mode"] = h.Cfg.Agent.ContextMode
 		}
@@ -688,15 +689,15 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
 		Personal int `json:"personal"`
 	}) error {
+		// Single source of truth: the canonical user_settings row
+		// (channel.MaxConcurrencyChannel). SetLLMConcurrency writes it, the
+		// runtime handler rebuilds the semaphore — do NOT also mirror it into
+		// config.json (duplicate definition removed 2026-09-17).
 		if err := h.Ag.SetLLMConcurrency(p.Personal); err != nil {
 			return err
 		}
-		// Rebuild the global semaphore immediately. SetMaxConcurrency is a
-		// global operation (not per-user), so no senderID is needed.
 		if isAdmin(ctx) {
-			h.Cfg.Agent.MaxConcurrency = p.Personal
 			h.Ag.SetMaxConcurrency(p.Personal)
-			_ = saveServerConfig(h.Cfg)
 		}
 		return nil
 	})

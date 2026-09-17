@@ -265,7 +265,7 @@ func TestSaveCLIConfigPreservesDiskFields(t *testing.T) {
 	// Runtime cfg only modifies LLM and Agent — everything else is zero/default.
 	appCfg := &config.Config{
 		LLM:   config.LLMConfig{Provider: "openai", Model: "gpt-4.1"},
-		Agent: config.AgentConfig{MaxIterations: 123, MaxConcurrency: 7},
+		Agent: config.AgentConfig{MaxIterations: 123},
 		// Deliberately zero: CLI, Admin, Web, Sandbox, Feishu, Subscriptions
 	}
 	if err := saveCLIConfig(appCfg); err != nil {
@@ -279,8 +279,8 @@ func TestSaveCLIConfigPreservesDiskFields(t *testing.T) {
 	}
 
 	// Agent settings should be updated from appCfg.
-	if loaded.Agent.MaxIterations != 123 || loaded.Agent.MaxConcurrency != 7 {
-		t.Fatalf("Agent fields should be updated, got %+v", loaded.Agent)
+	if loaded.Agent.MaxIterations != 123 {
+		t.Fatalf("Agent.MaxIterations should be updated, got %+v", loaded.Agent)
 	}
 	// LLM credentials should NOT be written back when config.json has subscriptions
 	// (single source of truth is the subscription system, not cfg.LLM).
@@ -515,7 +515,7 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 			APIKey:   "runtime-key",
 			Model:    "runtime-model",
 		},
-		Agent: config.AgentConfig{MaxConcurrency: 5},
+		Agent: config.AgentConfig{},
 	}
 
 	if err := saveCLIConfig(appCfg); err != nil {
@@ -543,10 +543,10 @@ func TestSaveCLIConfig_TierModelsAlwaysPersisted(t *testing.T) {
 		t.Errorf("LLM.Model should NOT be overwritten when subscriptions exist, got %q", loaded.LLM.Model)
 	}
 
-	// Agent should be persisted.
-	if loaded.Agent.MaxConcurrency != 5 {
-		t.Errorf("Agent.MaxConcurrency = %d, want %d", loaded.Agent.MaxConcurrency, 5)
-	}
+	// Agent section: max_concurrency is no longer stored in config.json — its
+	// single source is the canonical user_settings row
+	// (channel.MaxConcurrencyChannel). Nothing to assert here for it.
+	_ = loaded.Agent.MaxIterations
 
 	// Disk subscriptions and other sections must remain untouched.
 	if len(loaded.Subscriptions) != 1 || loaded.Subscriptions[0].ID != "sub1" {
@@ -572,9 +572,8 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 			Model:    "claude-3",
 		},
 		Agent: config.AgentConfig{
-			MaxIterations:  10,
-			MaxConcurrency: 3,
-			ContextMode:    "full",
+			MaxIterations: 10,
+			ContextMode:   "full",
 		},
 		Admin:   config.AdminConfig{Token: "admin-tok", ChatID: "ou_admin"},
 		Web:     config.WebConfig{Port: 8080, Enable: true},
@@ -595,7 +594,6 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 		LLM: config.LLMConfig{},
 		Agent: config.AgentConfig{
 			MaxIterations:  99,
-			MaxConcurrency: 12,
 			MemoryProvider: "redis",
 		},
 	}
@@ -614,9 +612,8 @@ func TestSaveCLIConfig_ParsesExistingFile(t *testing.T) {
 	if loaded.Agent.MaxIterations != 99 {
 		t.Errorf("Agent.MaxIterations = %d, want 99", loaded.Agent.MaxIterations)
 	}
-	if loaded.Agent.MaxConcurrency != 12 {
-		t.Errorf("Agent.MaxConcurrency = %d, want 12", loaded.Agent.MaxConcurrency)
-	}
+	// max_concurrency is no longer a config.json field (single source =
+	// canonical user_settings row).
 	if loaded.Agent.MemoryProvider != "redis" {
 		t.Errorf("Agent.MemoryProvider = %q, want %q", loaded.Agent.MemoryProvider, "redis")
 	}

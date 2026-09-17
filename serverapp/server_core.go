@@ -68,7 +68,6 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 		LLM:                    llmClient,
 		Model:                  cfg.LLM.Model,
 		MaxIterations:          cfg.Agent.MaxIterations,
-		MaxConcurrency:         cfg.Agent.MaxConcurrency,
 		DBPath:                 dbPath,
 		SkillsDir:              filepath.Join(xbotHome, "skills"),
 		AgentsDir:              filepath.Join(xbotHome, "agents"),
@@ -108,6 +107,15 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("create agent: %w", err)
 	}
+
+	// Concurrency (max_concurrency) has exactly ONE persisted source: the
+	// canonical user_settings row (channel.MaxConcurrencyChannel), written by the
+	// Web LLM console / CLI settings panel / config tool. config.json and
+	// AGENT_MAX_CONCURRENCY no longer carry it (duplicate definitions removed
+	// 2026-09-17 — the old split made the panel show 100+ while the runtime gate
+	// silently ran at llm.DefaultLLMConcurrency), so seed the runtime semaphore
+	// from the DB right after construction.
+	ag.SetMaxConcurrency(ag.GetLLMConcurrency())
 
 	// 2c. Migrate flat memory from SQLite tables to MD files (if needed).
 	// This is a one-time migration; must run after agent opens the DB (via

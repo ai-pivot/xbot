@@ -128,7 +128,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (67);
+INSERT INTO schema_version (version) VALUES (68);
 
 -- LLM subscriptions (v22→v23 base, modified by v25-v44 migrations; is_system
 -- dropped in v62 — the system subscription was removed, the global fallback

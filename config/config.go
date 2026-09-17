@@ -294,9 +294,15 @@ type FeishuConfig struct {
 }
 
 // AgentConfig Agent 配置
+//
+// NOTE: 并发上限（max_concurrency）**不再**放在这里 —— 它的唯一存储是
+// user_settings 的规范行（channel.MaxConcurrencyChannel + sender cli_user），
+// 由 Web LLM 控制台 / CLI 设置面板 / config 工具写入，运行时由
+// Agent.SetMaxConcurrency 应用。曾同时存在于 config.json 与环境变量
+// （AGENT_MAX_CONCURRENCY），导致"面板显示 100+、实际生效 5/7"
+// （2026-09-17 用户报告）。重复定义已删除。
 type AgentConfig struct {
 	MaxIterations  int    `json:"max_iterations"`
-	MaxConcurrency int    `json:"max_concurrency"`
 	MemoryProvider string `json:"memory_provider"`
 	WorkDir        string `json:"work_dir"`
 	PromptFile     string `json:"prompt_file"`
@@ -973,7 +979,8 @@ func applyEnvOverrides(cfg *Config) {
 	// SINGLE_USER env var removed — singleUser normalization is no longer used
 	setStringEnv("MEMORY_PROVIDER", &cfg.Agent.MemoryProvider)
 	setIntEnv("AGENT_MAX_ITERATIONS", &cfg.Agent.MaxIterations)
-	setIntEnv("AGENT_MAX_CONCURRENCY", &cfg.Agent.MaxConcurrency)
+	// AGENT_MAX_CONCURRENCY removed — max_concurrency lives ONLY in the
+	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	setDurationEnv("MCP_INACTIVITY_TIMEOUT", &cfg.Agent.MCPInactivityTimeout)
 	setDurationEnv("MCP_CLEANUP_INTERVAL", &cfg.Agent.MCPCleanupInterval)
 	setDurationEnv("SESSION_CACHE_TIMEOUT", &cfg.Agent.SessionCacheTimeout)
@@ -1124,9 +1131,9 @@ func Load() *Config {
 	if cfg.Agent.MaxIterations == 0 {
 		cfg.Agent.MaxIterations = 2000
 	}
-	if cfg.Agent.MaxConcurrency == 0 {
-		cfg.Agent.MaxConcurrency = 100
-	}
+	// max_concurrency default is NOT applied here: the knob has a single
+	// persisted source (canonical user_settings row) and its fallback lives in
+	// the agent/llm layers (llm.DefaultLLMConcurrency).
 	if cfg.Agent.MCPInactivityTimeout == 0 {
 		cfg.Agent.MCPInactivityTimeout = 30 * Minute
 	}

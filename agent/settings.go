@@ -99,9 +99,19 @@ func ParseSettingBool(v string) bool {
 }
 
 // SetSetting sets a single setting value.
+//
+// Canonical-channel normalization: `max_concurrency` is ONE global knob whose
+// value must live in exactly one row. Callers pass their own channel (CLI panel
+// → "cli", Web console → "web", config tool → caller namespace), which used to
+// scatter the same setting across several rows and made reads disagree with
+// what the panel displayed. Every write for that key is pinned to
+// channel.MaxConcurrencyChannel here — the single write choke point.
 func (s *SettingsService) SetSetting(channelName, senderID, key, value string) error {
 	if s == nil || s.store == nil {
 		return fmt.Errorf("settings service not initialized")
+	}
+	if key == channel.SettingMaxConcurrency {
+		channelName = channel.MaxConcurrencyChannel
 	}
 	return s.store.Set(channelName, senderID, key, value)
 }

@@ -1270,10 +1270,9 @@ func saveServerConfig(cfg *config.Config) error {
 	// Agent settings: write back ONLY fields the server actually modifies at runtime.
 	// Do NOT copy the entire Agent struct — MaxContextTokens and MaxOutputTokens
 	// are user-configured (per-model) and must not be overwritten by server defaults.
-	// Only MaxIterations, MaxConcurrency, CompressionThreshold, and ContextMode
-	// are server-owned runtime settings.
+	// MaxConcurrency is NOT here: its single source is the canonical
+	// user_settings row (channel.MaxConcurrencyChannel).
 	merged.Agent.MaxIterations = cfg.Agent.MaxIterations
-	merged.Agent.MaxConcurrency = cfg.Agent.MaxConcurrency
 	merged.Agent.CompressionThreshold = cfg.Agent.CompressionThreshold
 	merged.Agent.ContextMode = cfg.Agent.ContextMode
 	// Auto-compress: only write back if explicitly set at runtime
