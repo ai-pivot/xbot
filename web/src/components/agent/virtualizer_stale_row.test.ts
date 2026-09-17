@@ -9,10 +9,16 @@
  * ~115px → 两个绝对定位行重叠 ~1004px（输出在 DOM 里但被盖住）。
  */
 import { describe, expect, it } from 'vitest'
-import { Virtualizer } from '@tanstack/react-virtual'
+import {
+  Virtualizer,
+  elementScroll,
+  observeElementOffset,
+  observeElementRect,
+  type VirtualizerOptions,
+} from '@tanstack/react-virtual'
 
 /** 造一个可被 measureElement 读取的假行节点（jsdom 无布局 → 显式给 offsetHeight）。 */
-function mountRow(index: number, height: number): HTMLElement {
+function mountRow(index: number, height: number): HTMLDivElement {
   const el = document.createElement('div')
   el.className = 'virt-row'
   el.setAttribute('data-index', String(index))
@@ -23,13 +29,17 @@ function mountRow(index: number, height: number): HTMLElement {
 
 function makeVirtualizer(count: number) {
   const scroll = document.createElement('div')
-  const opts = {
+  const opts: VirtualizerOptions<HTMLDivElement, HTMLDivElement> = {
     count,
     getScrollElement: () => scroll,
     estimateSize: () => 115,
     getItemKey: (i: number) => `row-${i}`,
     initialRect: { width: 800, height: 700 },
     initialOffset: 0,
+    // VirtualizerOptions 要求显式提供这三个（运行时有默认实现，类型没有）。
+    observeElementRect,
+    observeElementOffset,
+    scrollToFn: elementScroll,
   }
   const v = new Virtualizer<HTMLDivElement, HTMLDivElement>(opts)
   // ⚠️ TanStack 的 `setOptions` 是**整体替换**（不与上一次 options 合并）——

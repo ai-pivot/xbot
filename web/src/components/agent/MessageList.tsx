@@ -229,9 +229,17 @@ const nonDegenerateObserveElementRect: typeof defaultObserveElementRect = (insta
  * 照实返回（那才是真实的 0 尺寸）。
  */
 const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
+  const el = element as unknown as HTMLElement
+  // ⚠️ **优先读当前几何**，而不是 RO 的 `entry.borderBoxSize`（那是"观察时刻"的快照，
+  // 可能已经过期）。2026-09-17 行重叠事故的第二半根因就是这个：迟到的 entry 把已经
+  // 正确的尺寸覆盖回旧值，此后尺寸不再变化 ⇒ RO 不再上报 ⇒ 旧值永久固化。
+  // 元素有渲染盒时，`offsetHeight/offsetWidth` 是权威值。
+  if (el.isConnected && el.offsetParent !== null) {
+    const live = instance.options.horizontal ? el.offsetWidth : el.offsetHeight
+    if (live > 0) return live
+  }
   const size = defaultMeasureElement(element, entry, instance)
   if (size > 0) return size
-  const el = element as unknown as HTMLElement
   if (el.isConnected && el.offsetParent !== null) return size
   const index = Number(el.dataset?.index ?? -1)
   const v = instance as unknown as {
@@ -747,6 +755,22 @@ export const MessageList = memo(function MessageList({
   // 只处理**尾部追加**（末行变化即追加）。前插（loadMore）末行不变 —— 其视口锚定
   // 由 `restoreLoadMoreAnchor` 的 ΔscrollTop==ΔtotalSize 契约负责，这里清尺寸缓存
   // 会改变它的总高基准。
+  // 权威重测一轮：清尺寸缓存 → 逐个已挂载行读**当前真实几何** → 落可观测标记。
+  // 返回本轮重测到的行数（0 = 没有已挂载行，调用方可跳过贴底）。
+  const remeasureAllRows = useCallback((): number => {
+    const root = rowsWrapperRef.current
+    if (!root) return 0
+    const v = virtualizerRef.current
+    v.measure()
+    const n = remeasureMountedRows(root, measureRowNode)
+    // 可观测标记（真实浏览器排障用：区分"尺寸缓存没更新"与"渲染没跟上"）：
+    //   data-measure-pass 权威重测执行次数；data-virt-total 本轮校正后的虚拟总高
+    //   （应等于 wrapper 的 inline height；与行 DOM 高对比即可判定缓存是否权威）
+    root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
+    root.dataset.virtTotal = String(Math.round(v.getTotalSize()))
+    return n
+  }, [measureRowNode])
+
   const prevRowCountRef = useRef(rows.length)
   const prevTailIdRef = useRef<string | null | undefined>(rowsRef.current[rowsRef.current.length - 1]?.id)
   useLayoutEffect(() => {
@@ -757,12 +781,17 @@ export const MessageList = memo(function MessageList({
     prevTailIdRef.current = cur[cur.length - 1]?.id
     if (cur.length <= prevCount) return
     if (prevCount > 0 && prevTail !== undefined && cur[cur.length - 1]?.id === prevTail) return
-    const root = rowsWrapperRef.current
-    if (!root) return
-    virtualizerRef.current.measure()
-    const measured = remeasureMountedRows(root, measureRowNode)
+    const measured = remeasureAllRows()
     if (measured > 0 && stickToBottomRef.current) scheduleFollow()
-  }, [rows.length, measureRowNode, scheduleFollow])
+    // settle 轮：追加的同一帧里，上一行（仍可能在流式增长）与本行内容都可能尚未
+    // 定形（markdown/代码高亮/图片）——一帧后再权威重测一次，避免"测早了"的尺寸
+    // 被固化。仅在仍贴底时补测（用户已滚走就不打扰）。
+    const raf = requestAnimationFrame(() => {
+      if (!stickToBottomRef.current) return
+      if (remeasureAllRows() > 0) scheduleFollow()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [rows.length, remeasureAllRows, scheduleFollow])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
   // onScroll syncs stickToBottomRef with the true scroll position — this is

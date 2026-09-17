@@ -108,6 +108,18 @@ async function scrollerMetrics(page: Page, cmdSel = '[data-message-id^="cmd-"]')
       }
     }
     const cmdRect = cmd?.getBoundingClientRect()
+    const wrapper = document.querySelector('[data-measure-pass]') as HTMLElement | null
+    const rowInfo = rows.map((r) => {
+      const b = r.getBoundingClientRect()
+      return {
+        idx: Number(r.dataset.index),
+        top: Math.round(b.top),
+        bottom: Math.round(b.bottom),
+        h: Math.round(b.height),
+        transform: r.style.transform,
+        msgId: r.dataset.messageId,
+      }
+    })
     return {
       scrollerFound: true,
       atBottom: sc.scrollTop >= sc.scrollHeight - sc.clientHeight - 2,
@@ -124,6 +136,11 @@ async function scrollerMetrics(page: Page, cmdSel = '[data-message-id^="cmd-"]')
       scTop: scRect.top,
       scBottom: scRect.bottom,
       cmdText: cmd?.textContent ?? '',
+      // ── 修复的可观测证据（排障用）──
+      measurePass: wrapper?.dataset.measurePass ?? null, // 权威重测执行次数（应 > 0）
+      virtTotal: wrapper?.dataset.virtTotal ?? null, // 校正后的虚拟总高
+      wrapperHeight: wrapper?.style.height ?? null, // = getTotalSize()
+      rowInfo,
     }
   }, cmdSel)
 }
@@ -209,9 +226,11 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
     const m = await scrollerMetrics(page)
     expect(m, 'message scroller not found').not.toBeNull()
     console.log(
-      `layout: rows=${m!.rowsMounted} maxOverlap=${m!.maxOverlap} worst=${JSON.stringify(m!.worst)} cmdInViewport=${m!.cmdInViewport} atBottom=${m!.atBottom} top=${m!.cmdTop} bottom=${m!.cmdBottom} sc=[${m!.scTop},${m!.scBottom}]`,
+      `layout: rows=${m!.rowsMounted} maxOverlap=${m!.maxOverlap} worst=${JSON.stringify(m!.worst)} cmdInViewport=${m!.cmdInViewport} atBottom=${m!.atBottom} top=${m!.cmdTop} bottom=${m!.cmdBottom} sc=[${m!.scTop},${m!.scBottom}] measurePass=${m!.measurePass} virtTotal=${m!.virtTotal} wrapperHeight=${m!.wrapperHeight} rows=${JSON.stringify(m!.rowInfo)}`,
     )
 
+    // 修复必须真的执行过（否则断言"不重叠"只是运气）：权威重测至少跑过一次。
+    expect(Number(m!.measurePass ?? 0), '追加行时权威重测未执行（data-measure-pass 缺失）').toBeGreaterThan(0)
     expect(m!.cmdFound, '命令输出的 standalone 行必须存在（data-message-id="cmd-*"）').toBe(true)
     // ① 相邻行不得重叠 —— 这正是"输出在 DOM 里但被上一行盖住"的判据。
     expect(m!.maxOverlap, `相邻行发生重叠（最坏 ${JSON.stringify(m!.worst)}）`).toBeLessThanOrEqual(1)
