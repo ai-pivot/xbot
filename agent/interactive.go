@@ -380,6 +380,9 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+				// CallID 是一次调用的稳定身份（CoT START↔RESULT 配对、promote RPC 都靠它），
+				// 转换层绝不能丢 —— 丢了下游只能靠槽位兜底。
+				CallID: t.CallID,
 			})
 		}
 		for _, t := range s.CompletedTools {
@@ -388,6 +391,7 @@ func (a *Agent) wireSubAgentProgress(key, originChatID string, cfg *RunConfig) {
 				Elapsed: t.Elapsed.Milliseconds(), Iteration: t.Iteration,
 				Summary: t.Summary, Detail: t.Detail, Args: t.Args, ToolHints: t.ToolHints,
 				UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+				CallID: t.CallID,
 			})
 		}
 		payload.Todos = make([]protocol.TodoItem, len(s.Todos))

@@ -57,7 +57,13 @@ type feishuCoTRenderer struct {
 	textSeq      int
 	curIteration int
 	startedTools map[string]struct{}
-	doneTools    map[string]struct{}
+	// startedKeyBySlot：（名字#迭代）→ 该槽位已 START 的 toolCallId。
+	// ⛔ 平台契约（dsh-lark 同）：TOOL_CALL_RESULT.toolCallId 必须等于同一次调用的
+	// TOOL_CALL_START.toolCallId，否则 RESULT 成为孤儿 ⇒ 平台**多数一次**
+	//（用户 2026-09-17 截图：web 2 个工具 ⇒ 飞书「Called tools 3 times」）。
+	// 某些来源的完成快照会丢 CallID（SubAgent 进度转换 / 合成工具），按槽位找回。
+	startedKeyBySlot map[string]string
+	doneTools        map[string]struct{}
 }
 
 // cotTextFlushInterval / cotTextChunkRunes 是推理/正文的**写出节奏**。
@@ -73,10 +79,11 @@ const (
 
 func newFeishuCoTRenderer(chatID string, cot *feishuCoT) *feishuCoTRenderer {
 	return &feishuCoTRenderer{
-		chatID:       chatID,
-		cot:          cot,
-		startedTools: map[string]struct{}{},
-		doneTools:    map[string]struct{}{},
+		chatID:           chatID,
+		cot:              cot,
+		startedTools:     map[string]struct{}{},
+		startedKeyBySlot: map[string]string{},
+		doneTools:        map[string]struct{}{},
 	}
 }
 
@@ -94,20 +101,9 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 	}
 	r.ensureRunLocked(turnID)
 
-	// ⚠️ 推理/正文有**两条来源**：流式回调（SendStreamContent）与**结构化进度**
-	// （protocol.ProgressEvent 的 ReasoningStreamContent / StreamContent —— 真实
-	// 部署上推理就是随结构化进度下发的）。dsh-lark 只有一条来源（它的 AG-UI 流），
-	// 我们对齐其**行为**：两条都消费、共用同一份差分逻辑，确保「思考区一定有推理」。
-	// 曾经只消费工具字段 ⇒ 飞书 CoT 里**只有工具、没有推理/正文**（用户 2026-06-17
-	// 报告：web 上该会话能看到 Thought/正文，飞书里只剩 Called tools）。
-	if ev.ReasoningStreamContent != "" {
-		r.emitReasoningLocked(ev.ReasoningStreamContent)
-	} else if ev.ReasoningStreamDelta != "" {
-		r.emitReasoningLocked(r.lastReasoning + ev.ReasoningStreamDelta)
-	}
-
-	// 迭代推进 ⇒ 上一迭代的正文变成了「过程叙述」（dsh-lark：被顶替的文本进
-	// 思考过程，只有最后一次是答案）。
+	// ⚠️ 迭代推进必须**最先**处理（在消费推理/正文之前）：新迭代要开**新的推理块**
+	//（逐迭代交错 = web 的 Thought→工具→Thought→工具 布局），上一迭代的推理块与
+	// 正文旧稿必须先收尾。
 	//
 	// ⚠️ 顺序至关重要：**先** flush 上一迭代的旧稿，**再**记录本迭代的新稿。
 	// 曾经把"记录新稿"放在前面 ⇒ 每个迭代的正文刚到就被当作"被顶替的旧稿"塞进
@@ -117,7 +113,19 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 	//   ② 正文与推理在思考区里混成一片、看不出区别。
 	if ev.Iteration > 0 && ev.Iteration != r.curIteration {
 		r.flushNarrationLocked()
+		// 上一迭代的推理块到此为止（flush 累积的尾巴 + END）⇒ 新迭代开新块。
+		r.closeReasoningLocked()
 		r.curIteration = ev.Iteration
+	}
+
+	// 推理/正文有**两条来源**：流式回调（SendStreamContent）与**结构化进度**
+	// （protocol.ProgressEvent 的 ReasoningStreamContent / StreamContent —— 真实
+	// 部署上推理就是随结构化进度下发的）。两条都消费、共用同一份差分逻辑，确保
+	// 「思考区一定有推理」（曾经只消费工具字段 ⇒ 飞书 CoT 里只有工具、没有推理）。
+	if ev.ReasoningStreamContent != "" {
+		r.emitReasoningLocked(ev.ReasoningStreamContent)
+	} else if ev.ReasoningStreamDelta != "" {
+		r.emitReasoningLocked(r.lastReasoning + ev.ReasoningStreamDelta)
 	}
 	// 本迭代的正文（答案候选，走普通消息；旧稿已在上面 flush 过）。
 	if ev.StreamContent != "" {
@@ -130,6 +138,10 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			continue
 		}
 		r.startedTools[key] = struct{}{}
+		// 记录槽位（名字#迭代）→ 已 START 的 id：完成快照丢 CallID 时按槽位找回，
+		// 保证 RESULT 永远与 START 同 id（否则平台多数一次）。
+		r.startedKeyBySlot[cotToolSlot(tp)] = key
+		// 工具开始只结束「思考」块（dsh-lark 同）；
 		r.closeReasoningLocked()
 		// ⚠️ 本迭代的正文必须落在**它自己的**工具之前（用户 2026-09-17 报告：
 		// 「第一个迭代的 content 渲染在第一个迭代的 toolcall 之后」）。旧实现只在
@@ -138,16 +150,7 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 		// 工具出现 = 这段正文是"过程叙述"而非最终答案 ⇒ 立刻写出；最终答案之后
 		// 没有工具，会一直 held（绝不进思考区，由普通消息发送）。
 		r.flushNarrationLocked()
-		r.cot.emit("TOOL_CALL_START", map[string]any{
-			"toolCallId":   key,
-			"icon":         cotToolIcon(tp.Name),
-			"title":        cotToolTitle(tp),
-			"toolCallName": tp.Name,
-		})
-		if tp.Args != "" {
-			r.cot.emit("TOOL_CALL_ARGS", map[string]any{"toolCallId": key, "delta": tp.Args})
-		}
-		r.cot.emit("TOOL_CALL_END", map[string]any{"toolCallId": key})
+		r.emitToolCallLocked(tp, key)
 	}
 
 	for _, tp := range ev.CompletedTools {
@@ -156,6 +159,18 @@ func (r *feishuCoTRenderer) onProgress(ev *protocol.ProgressEvent) {
 			continue
 		}
 		r.doneTools[key] = struct{}{}
+		// ⛔ 平台契约（dsh-lark 同）：RESULT.toolCallId 必须等于**同一次调用**的
+		// START.toolCallId，否则 RESULT 成为孤儿 ⇒ 平台**多数一次**（用户
+		// 2026-09-17 截图：web 2 个工具 ⇒ 飞书「Called tools 3 times」）。
+		// 完成快照丢 CallID 的来源（SubAgent 进度转换 / 合成工具）按槽位找回；
+		// 从未 START 过的完成条目（合成通知）补一次完整调用，绝不发孤儿 RESULT。
+		if _, started := r.startedTools[key]; !started {
+			if prev, ok := r.startedKeyBySlot[cotToolSlot(tp)]; ok {
+				key = prev
+			} else {
+				r.emitToolCallLocked(tp, key)
+			}
+		}
 		body := tp.Detail
 		if body == "" {
 			body = tp.Summary
@@ -283,6 +298,7 @@ func (r *feishuCoTRenderer) ensureRunLocked(turnID uint64) {
 	r.lastReasoning = ""
 	r.pendingReasoning = ""
 	r.lastTextFlush = time.Time{}
+	r.startedKeyBySlot = map[string]string{}
 	r.heldText = ""
 	r.textSeq = 0
 	r.curIteration = 0
@@ -337,8 +353,21 @@ func (r *feishuCoTRenderer) closeReasoningLocked() {
 	r.reasoningOpen = false
 }
 
+// reasoningMessageID 返回**当前迭代**的推理块 id（`reasoning-<turn>-<iter>`）。
+//
+// ⚠️ 必须**逐迭代**一个 id：平台按 id 归并内容 ⇒ 同一 id 的推理永远并进同一块。
+// 「每块独立 id」⇒ 工具开始后迟到的尾巴变成新块（截断观感）；「每轮一个 id」⇒
+// 整轮推理全并进第一块（用户 2026-09-17 截图：「所有 cot 合并到了最开头」，而
+// web 是 Thought→工具→Thought→工具 逐迭代交错）。正确契约 = **每迭代一个 id**：
+// 同迭代内迟到的尾巴用同一 id 并回原块（不截断），跨迭代开新块（位置正确）。
+// curIteration<=0（流式回调先于首个结构化事件）归入迭代 1，避免 0→1 切换把同一段
+// 推理劈成两块。
 func (r *feishuCoTRenderer) reasoningMessageID() string {
-	return "reasoning-" + r.runID()
+	it := r.curIteration
+	if it <= 0 {
+		it = 1
+	}
+	return "reasoning-" + r.runID() + "-" + strconv.Itoa(it)
 }
 
 func (r *feishuCoTRenderer) runID() string {
@@ -379,6 +408,28 @@ func cotToolKey(tp protocol.ToolProgress) string {
 		tag = tp.Args
 	}
 	return tp.Name + "#" + strconv.Itoa(tp.Iteration) + "\x00" + tag
+}
+
+// cotToolSlot 是「工具调用槽位」=（名字, 迭代）：同一次调用的执行/完成快照必然
+// 落在同一槽位，是 START↔RESULT 配对的兜底键（CallID 缺失时使用）。
+func cotToolSlot(tp protocol.ToolProgress) string {
+	return tp.Name + "#" + strconv.Itoa(tp.Iteration)
+}
+
+// emitToolCallLocked 写出一次完整的工具调用（START + ARGS + END）。
+// START 循环与「补发从未 START 的完成条目」共用，保证事件族完整（平台按
+// START 计数，孤儿 RESULT 会被多数一次）。
+func (r *feishuCoTRenderer) emitToolCallLocked(tp protocol.ToolProgress, key string) {
+	r.cot.emit("TOOL_CALL_START", map[string]any{
+		"toolCallId":   key,
+		"icon":         cotToolIcon(tp.Name),
+		"title":        cotToolTitle(tp),
+		"toolCallName": tp.Name,
+	})
+	if tp.Args != "" {
+		r.cot.emit("TOOL_CALL_ARGS", map[string]any{"toolCallId": key, "delta": tp.Args})
+	}
+	r.cot.emit("TOOL_CALL_END", map[string]any{"toolCallId": key})
 }
 
 // cotToolTitle 是工具在 CoT 里的标题 —— 对齐 dsh-lark 的 presenter 语义：

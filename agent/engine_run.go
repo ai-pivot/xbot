@@ -2661,6 +2661,9 @@ func (s *runState) injectSyntheticToolPair(
 			ToolHints: progressHints,
 			Elapsed:   progressElapsed,
 			Iteration: iteration,
+			// 合成工具也要带 CallID：CoT/前端的 START↔RESULT 配对靠它，
+			// 缺了会让 RESULT 成为孤儿（平台多数一次「Called tools N times」）。
+			CallID: toolID,
 		})
 		s.progressMu.Unlock()
 		if s.autoNotify {

@@ -1634,6 +1634,15 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 // WaitingUser 是**状态变更**（agent 正在提问），不是可丢弃的瞬时消息 —— 只有真正的
 // shutdown（或 bus 满 10s）才允许放弃。
 func (a *Agent) dispatchWaitingUser(ctx context.Context, busMsg bus.OutboundMessage) bool {
+	// ⛔ 先做非阻塞的 shutdown 检查：ctx 已取消时绝不能再往 bus 发。若把这个判断
+	// 放进下面的 select，与「发送到 bus」同时就绪时 Go 会随机选 —— 和被修的 bug
+	// 是同一个竞态（回归测试 TestDispatchWaitingUser_DropsOnShutdown 抓过）。
+	select {
+	case <-ctx.Done():
+		log.Ctx(ctx).Warn("Shutdown: dropping WaitingUser response")
+		return false
+	default:
+	}
 	select {
 	case a.bus.Outbound <- busMsg:
 		return true

@@ -138,20 +138,24 @@ func TestFeishuCoT_CreateAndWriteShape(t *testing.T) {
 	}
 
 	got := strings.Join(eventTypes(t, calls), ",")
-	want := "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_RESULT,RUN_FINISHED"
+	// ⛔ 从未 START 的完成条目（此处故意喂一个孤儿 Read）必须补成**完整调用**
+	//（START+END）再发 RESULT：孤儿 RESULT 会被平台当成一次新的调用而多数一次
+	//（用户 2026-09-17 截图：web 2 个工具 ⇒ 飞书「Called tools 3 times」）。
+	want := "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_ARGS,TOOL_CALL_END,TOOL_CALL_START,TOOL_CALL_END,TOOL_CALL_RESULT,RUN_FINISHED"
 	if got != want {
 		t.Fatalf("event sequence = %s, want %s", got, want)
 	}
 	assertTimestampsIncreasing(t, calls)
 
-	// 工具图标词表（dsh-lark: read/write/search/bash）+ 结果按 code block
+	// 工具图标词表（dsh-lark: read/write/search/bash/default）+ 结果按 code block
+	// （孤儿 Read 会补成完整调用，icon=read 是词表正确行为 ⇒ 按工具名断言）。
 	for _, e := range (*calls)[1].Events {
 		if e["event_type"] == "TOOL_CALL_START" {
 			var payload map[string]any
 			if err := json.Unmarshal([]byte(e["content"].(string)), &payload); err != nil {
 				t.Fatalf("TOOL_CALL_START content must be JSON: %v", err)
 			}
-			if payload["icon"] != "bash" {
+			if payload["toolCallName"] == "Shell" && payload["icon"] != "bash" {
 				t.Fatalf("Shell icon = %v, want bash", payload["icon"])
 			}
 		}
@@ -506,18 +510,19 @@ func TestFeishuCoTRenderer_ReasoningTailAfterToolMergesIntoOneBlock(t *testing.T
 	}
 }
 
-// ⚠️ 推理的 messageId **每轮一个** —— 与 dsh-lark 的 `reasoning-${turn}` 一致。
-// 曾改成"每块独立 id"（想让推理与工具按迭代交错），但平台按 id 归并内容：独立 id
-// 会让迟到/后续的推理变成**新块** ⇒ 「推理停在工具调用那一刻 + 位置错乱」
-// （用户 2026-09-17 截图）。dsh 从不这么干：同一 id 的内容永远并回同一块。
-func TestFeishuCoTRenderer_ReasoningIsOneBlockPerTurn(t *testing.T) {
+// ⚠️ 推理块的 messageId **每迭代一个**（`reasoning-<turn>-<iter>`）：web 上是
+// Thought→工具→Thought→工具 逐迭代交错，CoT 必须同构。曾试过「每块独立 id」（工具
+// 开始后迟到的尾巴变成新块 ⇒ 截断观感）和「每轮一个 id」（整轮推理全并进第一块 ⇒
+// 用户 2026-09-17 截图「所有 cot 合并到了最开头」）。正确契约：**同一迭代内**共用
+// 一个 id（迟到的尾巴并回原块，不截断），**跨迭代**换新 id（位置正确）。
+func TestFeishuCoTRenderer_ReasoningIsOneBlockPerIteration(t *testing.T) {
 	c, calls := newFakeCoT(t, "chat_1")
 	r := newFeishuCoTRenderer("chat_1", c)
 	// 迭代 1：推理 → 工具（工具开始 ⇒ 结束推理块）
 	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 1, ReasoningStreamContent: "第一段推理"})
 	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "tool_exec", Iteration: 1,
 		ActiveTools: []protocol.ToolProgress{{Name: "Shell", CallID: "c1", Iteration: 1, Status: "running"}}})
-	// 迭代 2：再来一段推理
+	// 迭代 2：再来一段推理 ⇒ 必须开新块（位置在迭代 1 的工具之后）
 	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 2, ReasoningStreamContent: "第二段推理"})
 	r.close("")
 	if err := c.flushNow(); err != nil {
@@ -525,7 +530,7 @@ func TestFeishuCoTRenderer_ReasoningIsOneBlockPerTurn(t *testing.T) {
 	}
 
 	var starts, ends []string
-	var text strings.Builder
+	blocks := map[string]*strings.Builder{}
 	for _, call := range *calls {
 		for _, e := range call.Events {
 			et := e["event_type"].(string)
@@ -541,21 +546,94 @@ func TestFeishuCoTRenderer_ReasoningIsOneBlockPerTurn(t *testing.T) {
 			case "REASONING_MESSAGE_END":
 				ends = append(ends, id)
 			default:
-				text.WriteString(payload["delta"].(string))
+				if blocks[id] == nil {
+					blocks[id] = &strings.Builder{}
+				}
+				blocks[id].WriteString(payload["delta"].(string))
 			}
 		}
 	}
 	if len(starts) != 2 {
-		t.Fatalf("工具开始后重新开块必须有 START，got starts=%v", starts)
+		t.Fatalf("两个迭代应各开一个推理块，got starts=%v", starts)
 	}
-	if starts[0] != starts[1] {
-		t.Fatalf("每轮一个推理 id（dsh-lark 契约）：两个 START 必须同 id，got %v", starts)
+	if starts[0] == starts[1] {
+		t.Fatalf("推理块必须逐迭代一个 id（否则整轮推理并进第一块、堆在最开头）: %v", starts)
 	}
-	if len(ends) != 2 || ends[0] != ends[1] || ends[0] != starts[0] {
-		t.Fatalf("REASONING_MESSAGE_END 必须闭合同一个块: starts=%v ends=%v", starts, ends)
+	if len(ends) != 2 || ends[0] != starts[0] || ends[1] != starts[1] {
+		t.Fatalf("REASONING_MESSAGE_END 必须闭合各自的块: starts=%v ends=%v", starts, ends)
 	}
-	if text.String() != "第一段推理第二段推理" {
-		t.Fatalf("推理全文必须累积在同一块，got %q", text.String())
+	if blocks[starts[0]].String() != "第一段推理" || blocks[starts[1]].String() != "第二段推理" {
+		t.Fatalf("每块的推理必须完整且不串块: %q / %q", blocks[starts[0]].String(), blocks[starts[1]].String())
+	}
+}
+
+// ⚠️ 完成快照**丢了 CallID** 时（SubAgent 进度转换等来源），RESULT 必须挂回该槽位
+// 已 START 的 id —— 否则 RESULT 成为孤儿，平台多数一次（用户 2026-09-17 截图：
+// web 2 个工具 ⇒ 飞书「Called tools 3 times」）。
+func TestFeishuCoTRenderer_ResultWithoutCallIDReusesStartedID(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	// 执行快照：CallID 在。
+	r.onProgress(&protocol.ProgressEvent{TurnID: 3, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", CallID: "call_x", Iteration: 1, Status: "running",
+			Args: `{"command":"ls"}`}}})
+	// 完成快照：CallID 被丢（只剩 label/args）。
+	r.onProgress(&protocol.ProgressEvent{TurnID: 3, Phase: "tool_exec", Iteration: 1,
+		CompletedTools: []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "done",
+			Label: "Shell: ls", Detail: "out"}}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	startIDs, resultIDs := map[string]bool{}, map[string]bool{}
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			var payload map[string]any
+			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
+			id, _ := payload["toolCallId"].(string)
+			switch e["event_type"] {
+			case "TOOL_CALL_START":
+				startIDs[id] = true
+			case "TOOL_CALL_RESULT":
+				resultIDs[id] = true
+			}
+		}
+	}
+	if !startIDs["call_x"] || len(startIDs) != 1 {
+		t.Fatalf("START 必须用 CallID，got %v", startIDs)
+	}
+	for id := range resultIDs {
+		if id != "call_x" {
+			t.Fatalf("RESULT 必须挂回 START 的 id（孤儿 RESULT 会被多数一次）: results=%v", resultIDs)
+		}
+	}
+}
+
+// ⚠️ 从未 START 过的完成条目（合成通知：bg 任务/reqerr 等）必须补成一次**完整**
+// 调用（START+ARGS+END）再发 RESULT —— 孤儿 RESULT 会被平台多数一次。
+func TestFeishuCoTRenderer_OrphanResultBecomesCompleteCall(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 4, Phase: "tool_exec", Iteration: 2,
+		CompletedTools: []protocol.ToolProgress{{Name: "background_task_result", CallID: "bg_1",
+			Iteration: 2, Status: "done", Label: "bg_1", Detail: "task finished"}}})
+	r.close("")
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	starts, results := 0, 0
+	for _, call := range *calls {
+		for _, e := range call.Events {
+			switch e["event_type"] {
+			case "TOOL_CALL_START":
+				starts++
+			case "TOOL_CALL_RESULT":
+				results++
+			}
+		}
+	}
+	if starts != 1 || results != 1 {
+		t.Fatalf("合成通知必须补成完整调用（start=1 result=1），got start=%d result=%d", starts, results)
 	}
 }
 
