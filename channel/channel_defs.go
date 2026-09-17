@@ -8,7 +8,10 @@ package channel
 // ChannelProvider.ConfigSchema() and are NOT listed here.
 
 // BuiltinChannelNames lists the built-in channels in display order.
-var BuiltinChannelNames = []string{"web", "feishu", "qq", "napcat"}
+// QQ / NapCat were removed from the core (2026-09-15) — they are meant to be
+// provided as channel plugins instead, and will show up here only through the
+// ChannelProviderRegistry (plugin channels), never as built-ins.
+var BuiltinChannelNames = []string{"web", "feishu"}
 
 // BuiltinChannelSchema returns the settings schema for a built-in channel, or
 // nil when the name is not a built-in channel (i.e. a plugin provider).
@@ -29,18 +32,6 @@ func BuiltinChannelSchema(name string) []SettingDefinition {
 			{Key: "verification_token", Label: "Verification Token", Description: "Feishu event verification token", Type: SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
 			{Key: "domain", Label: "Domain", Description: "Custom Feishu API domain (optional)", Type: SettingTypeText, Category: "Feishu (飞书)", DefaultValue: ""},
 			{Key: "output", Label: "Progress rendering", Description: "cot = native Feishu CoT (thinking area + tool icons/results), card = CardKit streaming card", Type: SettingTypeText, Category: "Feishu (飞书)", DefaultValue: "cot"},
-		}
-	case "qq":
-		return []SettingDefinition{
-			{Key: "enabled", Label: "Enabled", Description: "Enable QQ channel", Type: SettingTypeToggle, Category: "QQ", DefaultValue: "false"},
-			{Key: "app_id", Label: "App ID", Description: "QQ Bot AppID", Type: SettingTypeText, Category: "QQ", DefaultValue: ""},
-			{Key: "client_secret", Label: "Client Secret", Description: "QQ Bot client secret", Type: SettingTypePassword, Category: "QQ", DefaultValue: ""},
-		}
-	case "napcat":
-		return []SettingDefinition{
-			{Key: "enabled", Label: "Enabled", Description: "Enable NapCat channel", Type: SettingTypeToggle, Category: "NapCat", DefaultValue: "false"},
-			{Key: "ws_url", Label: "WebSocket URL", Description: "NapCat WebSocket URL", Type: SettingTypeText, Category: "NapCat", DefaultValue: ""},
-			{Key: "token", Label: "Token", Description: "NapCat access token", Type: SettingTypePassword, Category: "NapCat", DefaultValue: ""},
 		}
 	default:
 		return nil

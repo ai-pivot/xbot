@@ -142,7 +142,7 @@ pick them up. `--app-id` / the panel's `app_id` field are pre-filled from
 
 设置 → 渠道 renders EVERY channel from `get_channel_config`:
 
-- built-ins (web/feishu/qq/napcat) — schema from
+- built-ins (web/feishu) — schema from
   `channel.BuiltinChannelSchema` (`channel/channel_defs.go`, the single source of
   truth shared with the CLI settings panel),
 - user-registered plugin channels — schema from `ChannelProvider.ConfigSchema()`.
@@ -189,7 +189,6 @@ channel/              # Root package — shared core types, interfaces, infrastr
 ├── setting_helpers.go
 ├── card_converter.go # ConvertFeishuCard (shared by CLI + Web)
 ├── mock.go           # MockChannel for testing
-├── ws_base.go        # WSChannelBase (shared by QQ + NapCat)
 ├── i18n.go           # Internationalization: zh/en UI strings (~1390 lines)
 ├── channel_cli.go    # ChannelCliChannel: WS bridge for remote CLI
 ├── cli_msg_builder.go # CliMsg: message builder (shared by CLI + Web)
@@ -197,8 +196,6 @@ channel/              # Root package — shared core types, interfaces, infrastr
 channel/cli/          # CLI BubbleTea TUI (~44k lines)
 channel/feishu/       # Feishu webhook + settings UI
 channel/web/          # REST + SSE Web server, WebSocket RemoteCLIChannel, auth
-channel/qq/           # QQ bot (WebSocket)
-channel/napcat/       # NapCat HTTP API
 ```
 
 ## Files
@@ -232,8 +229,6 @@ channel/napcat/       # NapCat HTTP API
 | `web_api.go` | REST API endpoints (~1901 lines) |
 | `web_auth.go` | OAuth/token auth (~670 lines) |
 | `web_fs.go` | Filesystem REST API (`/api/fs/list`, `/read`, `/search`, `/stat`); single-level `os.ReadDir`, path-traversal guard, 2MB read cap, language-from-extension map (~511 lines) |
-| `qq.go` | QQ bot API (~1736 lines) |
-| `napcat.go` | NapCat HTTP API (~821 lines) |
 | `i18n.go` | Internationalization: zh/en UI strings (~1390 lines) |
 | `mermaid.go` | Mermaid → ASCII chart rendering |
 
@@ -453,6 +448,13 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **`useIsTouch()` 不受影响**：它是【设备能力】（`(hover: none) and (pointer: coarse)`）而非布局模式——强制手机外壳的桌面上 hover 依然可用，触屏上的 tooltip/popover 分流照常。
 - **设置入口**：设置 → 外观 → UI 模式（`SettingsAppearance.tsx`，三个 `aria-pressed` 按钮 + 当前生效提示）。手机外壳里同样能打开该设置（`MobileAppShell` 的 `SettingsDialog`），因此强制 mobile 后不会被困住。
 - **范围**：只切换外壳，不改 CSS 断点——窄屏强制桌面外壳会得到压缩的桌面布局（有意为之）。
+
+### Web Frontend Session Tabs（session-per-tab：切会话 = 切 tab）
+
+- **主编辑区 AgentPanel 的会话身份在【它自己 tab 的 `params.sessionId`】上，不在全局 `activeSession`。** `useTabManager.openTab({type:'agent', data:{filePath, channel}})` 把 `filePath` 写进 `PanelParams.sessionId`（tab 逻辑键 `agent:<channel>:<chatID>`，`tabLogicalKey` 保证同会话重复打开只聚焦不重复 tab，且 `openTabInternal` 会 `panel.api.setActive()`）。`AgentPanel` 的 `chatID = params.sessionId ?? activeSession?.chatID`（只有 seed tab / 手机端无 sessionId 时才回落 activeSession）。`DockviewContainer` 的 `onDidActivePanelChange` 在 agent tab 激活时反向 `activateSession(params.sessionId, params.channel)`（侧栏高亮跟随 tab）。
+- **推论（踩坑点）：只调 `store.switchSession`/`activateSession` 不会切换主区** —— 侧栏高亮变了、主区当前 tab 仍绑旧 sessionId（用户报告："点侧栏『新建会话』，确认后侧栏新会话高亮了，但窗口没切过去，必须再点一下新会话"）。**任何"创建/派生出新会话并想切过去"的入口都必须同时打开/聚焦该会话的 tab**：`openAgentSessionTab(tabManager, chatID, channel, title)`（`web/src/lib/sessionTabs.ts`，唯一入口）。已接：desktop `core.sessions` 面板的新建会话（`builtinPanels.tsx`）、命令 `session.new`（`AppShell.tsx`）、fork（`builtinPanels` 的 `onFork` → openTab）、会话列表点击（`handleSelect` → openTab + `activateSession`）。
+- **手机端（`MobileAppShell` / mobile AgentPanel 的 `mobilePanelProps` 无 sessionId）不能调它**：手机没有 dockview，`tabManager.openApi.openTab` 只会进 `pending` 队列静默丢失（`bindApi` 前）；手机端 AgentPanel 跟随 `activeSession`，因此「完成切换」= **关闭抽屉**（抽屉是覆盖层，不关就等于"窗口没切"）。侧栏容器 `SessionSidebar`（现仅手机抽屉消费）用 `onSubAgentSelect` 有无判别两态（与 `handleSelect` 同一判据）：有 → 手机（`onSessionSelected` 关抽屉，不开 tab）；无 → desktop（`openAgentSessionTab`）。
+- 守护测试：`web/src/components/panel/builtinPanels.createSession.test.tsx`（创建成功 → `openTab` 带新 chatID；修复前红灯）+ `builtinPanels.fork.test.tsx` + `web/src/components/session/SessionSidebar.test.tsx`（mobile：关抽屉且不开 tab / desktop：开 tab）。
 
 ### Web Frontend Message Composer (tiptap)
 

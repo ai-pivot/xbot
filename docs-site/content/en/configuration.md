@@ -297,8 +297,6 @@ See the per-channel docs:
 - [Feishu](/channels/feishu/)
 - [CLI](/channels/cli/)
 - [Web](/channels/web/)
-- [QQ](/channels/qq/)
-- [NapCat](/channels/napcat/)
 
 ## Server configuration
 

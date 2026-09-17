@@ -2278,7 +2278,6 @@ func TestListDistinctChannelsReturnsAllChannels(t *testing.T) {
 		{"web", "web-1", "2026-07-18T10:00:00Z"},
 		{"cli", "/repo:Agent-main", "2026-07-18T11:00:00Z"},
 		{"feishu", "feishu-chat-1", "2026-07-18T12:00:00Z"},
-		{"qq", "qq-group-1", "2026-07-18T13:00:00Z"},
 		{"my_plugin", "plugin-session-1", "2026-07-18T14:00:00Z"},
 	} {
 		insertTenant(t, db, tc.channel, tc.chatID, tc.lastActive, "", "")
@@ -2288,7 +2287,7 @@ func TestListDistinctChannelsReturnsAllChannels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listDistinctChannels: %v", err)
 	}
-	want := []string{"cli", "feishu", "my_plugin", "qq", "web"}
+	want := []string{"cli", "feishu", "my_plugin", "web"}
 	if len(channels) != len(want) {
 		t.Fatalf("got %d channels %v, want %d %v", len(channels), channels, len(want), want)
 	}

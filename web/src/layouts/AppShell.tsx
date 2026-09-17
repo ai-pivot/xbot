@@ -35,6 +35,7 @@ import { useI18n } from '@/providers/i18n'
 import { useLayoutPersistence } from '@/hooks/useLayoutPersistence'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { commands } from '@/lib/commandRouter'
+import { openAgentSessionTab } from '@/lib/sessionTabs'
 import type { SettingsCategory } from '@/components/settings/SettingsDialog'
 
 // 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
@@ -120,7 +121,11 @@ export function AppShell() {
           titleKey: 'sidebar.newSession',
           category: 'sessions',
           handler: () => {
-            void sessionStore.createSession()
+            void sessionStore.createSession().then((id) => {
+              // desktop：创建后把新会话切到主编辑区（与侧栏点击 / fork 同一处理
+              // —— 主区身份在 tab 的 sessionId 上，光改 activeSession 看不到切换）。
+              if (id && !isMobile) openAgentSessionTab(tabManager, id)
+            })
           },
         },
         {
@@ -132,7 +137,7 @@ export function AppShell() {
           },
         },
       ]),
-    [sessionStore],
+    [sessionStore, tabManager, isMobile],
   )
 
   // 桥接插件 editor-view API：PluginUI.openViewTab/openFileTab（React 树外）

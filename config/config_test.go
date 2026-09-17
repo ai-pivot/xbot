@@ -471,8 +471,6 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
    "oauth": {"enable": "false", "port": "8081"},
    "pprof": {"enable": "true", "port": "6060"},
    "feishu": {"enabled": "true"},
-   "qq": {"enabled": "false"},
-   "napcat": {"enabled": "1"},
    "agent": {
      "max_iterations": "2000",
      "max_concurrency": "3",
@@ -540,12 +538,6 @@ func TestNormalizeConfigTypes_StringPort(t *testing.T) {
 	}
 	if cfg.Feishu.Enabled != true {
 		t.Errorf("feishu.enabled: got %v, want true", cfg.Feishu.Enabled)
-	}
-	if cfg.QQ.Enabled != false {
-		t.Errorf("qq.enabled: got %v, want false", cfg.QQ.Enabled)
-	}
-	if cfg.NapCat.Enabled != true {
-		t.Errorf("napcat.enabled (='1'): got %v, want true", cfg.NapCat.Enabled)
 	}
 
 	// Agent fields

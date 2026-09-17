@@ -155,8 +155,6 @@ const zhCN = {
   channel: {
     feishu: '飞书',
     cli: 'CLI',
-    qq: 'QQ',
-    napcat: 'NapCat',
     web: 'Web',
     system: '系统',
     all: '全部渠道',

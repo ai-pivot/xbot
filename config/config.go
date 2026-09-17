@@ -90,22 +90,6 @@ type SandboxConfig struct {
 	PublicURL   string   `json:"public_url"`
 }
 
-// QQConfig QQ 机器人渠道配置
-type QQConfig struct {
-	Enabled      bool     `json:"enabled"`
-	AppID        string   `json:"app_id"`
-	ClientSecret string   `json:"client_secret"`
-	AllowFrom    []string `json:"allow_from"`
-}
-
-// NapCatConfig NapCat (OneBot 11) 渠道配置
-type NapCatConfig struct {
-	Enabled   bool     `json:"enabled"`
-	WSUrl     string   `json:"ws_url"`
-	Token     string   `json:"token"`
-	AllowFrom []string `json:"allow_from"`
-}
-
 // EmbeddingConfig Embedding 配置
 type EmbeddingConfig struct {
 	Provider  string `json:"provider"`
@@ -199,8 +183,6 @@ type Config struct {
 	Log           LogConfig           `json:"log"`
 	PProf         PProfConfig         `json:"pprof"`
 	Feishu        FeishuConfig        `json:"feishu"`
-	QQ            QQConfig            `json:"qq"`
-	NapCat        NapCatConfig        `json:"napcat"`
 	Agent         AgentConfig         `json:"agent"`
 	OAuth         OAuthConfig         `json:"oauth"`
 	Sandbox       SandboxConfig       `json:"sandbox"`
@@ -228,7 +210,7 @@ type Config struct {
 	Plugins        PluginConfig         `json:"plugins,omitempty"`
 
 	// Channels 存储插件 channel 的配置。key 是 channel name（如 "telegram"）。
-	// 内置 channel（feishu/qq/napcat/web）使用各自的结构体字段，
+	// 内置 channel（web/feishu）使用各自的结构体字段，
 	// 插件 channel 使用此 map 存储任意 key-value 配置。
 	Channels map[string]map[string]string `json:"channels,omitempty"`
 
@@ -491,12 +473,6 @@ var configTypeSchema = map[string]map[string]fieldType{
 		"port":   ftInt,
 	},
 	"feishu": {
-		"enabled": ftBool,
-	},
-	"qq": {
-		"enabled": ftBool,
-	},
-	"napcat": {
 		"enabled": ftBool,
 	},
 	"agent": {
@@ -1037,22 +1013,6 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	setStringEnv("FEISHU_DOMAIN", &cfg.Feishu.Domain)
 
-	// QQ
-	setBoolEnv("QQ_ENABLED", &cfg.QQ.Enabled)
-	setStringEnv("QQ_APP_ID", &cfg.QQ.AppID)
-	setStringEnv("QQ_CLIENT_SECRET", &cfg.QQ.ClientSecret)
-	if v, ok := os.LookupEnv("QQ_ALLOW_FROM"); ok {
-		cfg.QQ.AllowFrom = splitCommaTrim(v)
-	}
-
-	// NapCat
-	setBoolEnv("NAPCAT_ENABLED", &cfg.NapCat.Enabled)
-	setStringEnv("NAPCAT_WS_URL", &cfg.NapCat.WSUrl)
-	setStringEnv("NAPCAT_TOKEN", &cfg.NapCat.Token)
-	if v, ok := os.LookupEnv("NAPCAT_ALLOW_FROM"); ok {
-		cfg.NapCat.AllowFrom = splitCommaTrim(v)
-	}
-
 	// Web
 	setBoolEnv("WEB_ENABLED", &cfg.Web.Enable)
 	setStringEnv("WEB_HOST", &cfg.Web.Host)
@@ -1211,9 +1171,6 @@ func Load() *Config {
 	}
 	if cfg.EventWebhook.RateLimit == 0 {
 		cfg.EventWebhook.RateLimit = 60
-	}
-	if cfg.NapCat.WSUrl == "" {
-		cfg.NapCat.WSUrl = "ws://localhost:3001"
 	}
 	if cfg.PProf.Host == "" {
 		cfg.PProf.Host = "localhost"

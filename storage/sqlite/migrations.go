@@ -479,7 +479,13 @@ func migrateV67ToV68(db *DB) error {
 	if err != nil {
 		return fmt.Errorf("migrate v67->v68 check user_settings: %w", err)
 	}
+	// 该库没有 user_settings（手工 fixture）——**仍必须记录版本号**，否则迁移链
+	// 停在 67：schema_version 与 schemaVersion 不一致
+	// （TestMigrateV65ToV66RepairsMissingTokenUsageTables: got 67, want 68）。
 	if !ok {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 68"); err != nil {
+			return fmt.Errorf("migrate v67->v68 update version: %w", err)
+		}
 		return nil
 	}
 	const canonicalChannel = "cli"
@@ -558,6 +564,15 @@ func migrateV66ToV67(db *DB) error {
 // (hand-built test fixtures may already have the column).
 func migrateV65ToV66(db *DB) error {
 	conn := db.Conn()
+	// v66 的另一半（来自 master）：修补"优化版当前 schema 路径"创建的库 ——
+	// 那些库被标成 v53-v65，却漏建了两张 token 用量表，导致 v19/v25 的历史迁移
+	// 从未跑过。helpers 用幂等 CREATE，所以对已迁移过的库无副作用。
+	if err := NewUserTokenUsageService(db).createTable(conn); err != nil {
+		return fmt.Errorf("migrate v65->v66 create user_token_usage: %w", err)
+	}
+	if err := NewUserTokenUsageService(db).createDailyTable(conn); err != nil {
+		return fmt.Errorf("migrate v65->v66 create daily_token_usage: %w", err)
+	}
 	// 与其它迁移一致：测试 fixture 可能手工搭了最小 schema（甚至没有
 	// session_messages），所以先确认表存在再 ALTER，版本号照常推进。
 	hasTable, err := tableExists(conn, "session_messages")

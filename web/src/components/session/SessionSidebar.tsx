@@ -16,8 +16,10 @@
  * the new-session dialog. Pure presentational composition on top of the store.
  */
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { Loader2, Plus, CheckSquare, X, Trash2 } from 'lucide-react'
+import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, Server, CheckSquare, X, Trash2 } from 'lucide-react'
+import type { ComponentType, SVGProps } from 'react'
 import { Button } from '@/components/ui/button'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,7 +42,19 @@ import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { NewSessionDialog } from './NewSessionDialog'
-import { ChannelPicker } from './ChannelPicker'
+import { openAgentSessionTab } from '@/lib/sessionTabs'
+
+type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
+
+const CHANNEL_ICONS: Record<string, IconComponent> = {
+  web: Globe,
+  cli: Terminal,
+  feishu: MessageCircle,
+  system: Server,
+}
+
+/** All channels that should appear in the picker, in display order. */
+const ALL_CHANNEL_ORDER = ['web', 'cli', 'feishu']
 
 const CATEGORIES = ['time', 'status', 'path'] as const
 
@@ -62,8 +76,6 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
   const [search, setSearch] = useState('')
   const [searchOpen, setSearchOpen] = useState(false)
   const [newOpen, setNewOpen] = useState(false)
-  /** 搜索输入框 ref：开关按钮点击手势内同步 focus（手机软键盘要手势同任务）。 */
-  const searchInputRef = useRef<HTMLInputElement | null>(null)
 
   // 会话搜索默认隐藏（低频操作）；收起时一并清空查询，避免隐藏的过滤条件让
   // 列表"莫名其妙变短"。开关按钮与「+ 新会话」主按钮同排。
@@ -72,14 +84,10 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
     setSearch('')
   }, [])
   const toggleSearch = useCallback(() => {
-    if (searchOpen) {
-      closeSearch()
-      return
-    }
-    // ⚠️ 手势内同步 focus（手机软键盘只在手势同任务里打开）。
-    searchInputRef.current?.focus()
-    setSearchOpen(true)
+    if (searchOpen) closeSearch()
+    else setSearchOpen(true)
   }, [searchOpen, closeSearch])
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false)
 
   // Multi-select state
   const [multiSelectMode, setMultiSelectMode] = useState(false)
@@ -255,8 +263,58 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         <div className="flex items-center gap-1">
-          {/* 渠道下拉：与桌面会话面板（core.sessions 工具条）共用同一实现。 */}
-          <ChannelPicker uppercase />
+          <Popover open={channelPickerOpen} onOpenChange={setChannelPickerOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-text-secondary transition-colors hover:bg-bg-tertiary"
+              >
+                {store.activeChannel
+                  ? t(`channel.${store.activeChannel}`) || store.activeChannel
+                  : t('channel.all')}
+                <ChevronDown className="size-3" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={4} className="w-48 p-1">
+              <button
+                type="button"
+                className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/10 ${!store.activeChannel ? 'font-medium text-accent' : 'text-text-secondary'}`}
+                onClick={() => { store.setActiveChannel(null); setChannelPickerOpen(false) }}
+              >
+                <LayoutGrid className="size-3.5 shrink-0" />
+                {t('channel.all')}
+              </button>
+              {(() => {
+                // Derive available channels from sessions list (including web).
+                // 'agent' is internal — never shown as a filterable channel.
+                const channels = new Set<string>()
+                for (const s of store.sessions) {
+                  if (s.channel && s.channel !== 'agent') channels.add(s.channel)
+                  if (s.parentChannel && s.parentChannel !== 'agent') channels.add(s.parentChannel)
+                }
+                // Sort by predefined order, unknown channels at the end
+                return Array.from(channels).sort((a, b) => {
+                  const ia = ALL_CHANNEL_ORDER.indexOf(a)
+                  const ib = ALL_CHANNEL_ORDER.indexOf(b)
+                  return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib)
+                })
+              })()
+                .map((ch: string) => {
+                  const Icon = CHANNEL_ICONS[ch] || Globe
+                  return (
+                    <button
+                      key={ch}
+                      type="button"
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/10 ${store.activeChannel === ch ? 'font-medium text-accent' : 'text-text-secondary'}`}
+                      onClick={() => { store.setActiveChannel(ch); setChannelPickerOpen(false) }}
+                    >
+                      <Icon className="size-3.5 shrink-0" />
+                      {t(`channel.${ch}`) || ch}
+                    </button>
+                  )
+                })}
+            </PopoverContent>
+          </Popover>
         </div>
         <div className="flex items-center gap-0.5">
           <Tooltip>
@@ -330,7 +388,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           )}
           style={{ flexBasis: 0 }}
         >
-          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} inputRef={searchInputRef} className="ml-1.5" />
+          <SessionSearch value={search} onChange={setSearch} open={searchOpen} onClose={closeSearch} className="ml-1.5" />
         </div>
         <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
@@ -494,7 +552,18 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       <NewSessionDialog
         open={newOpen}
         onOpenChange={setNewOpen}
-        onCreate={store.createSession}
+        onCreate={async (label, workPath) => {
+          const newID = await store.createSession(label, workPath)
+          if (newID) {
+            // 手机端（onSubAgentSelect 存在，无 dockview）AgentPanel 跟随
+            // activeSession —— 与点击会话同一处理：关掉抽屉即完成切换；
+            // desktop 的主区身份在 tab 自己的 sessionId 上，必须打开/聚焦新会话的
+            // agent tab，否则「侧栏高亮了、窗口没切」（fork / 点击都这么处理）。
+            if (!onSubAgentSelect) openAgentSessionTab(tabManager, newID, 'web', label)
+            onSessionSelected?.()
+          }
+          return newID
+        }}
       />
     </div>
   )

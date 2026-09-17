@@ -2110,8 +2110,8 @@ func (a *Agent) buildStreamCallbacks(chatID, channel string, progressSeq *atomic
 	// the TUI's handleProgressMsg filter. These are two different semantics —
 	// never mix them.
 	//
-	// When the originating channel is NOT a ProgressSender (feishu/qq/napcat
-	// implement PreReplyNotifier instead), sender stays nil and the stream
+	// When the originating channel is NOT a ProgressSender (feishu
+	// implements PreReplyNotifier instead), sender stays nil and the stream
 	// events would be silently dropped — a web user viewing that channel's
 	// session saw no typewriter stream, no generating tools, no live tkps
 	// (only the 15s heartbeat snapshot + iteration-boundary structured

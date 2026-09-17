@@ -141,7 +141,7 @@ Job ID 生成格式：`plugin:<pluginID>:<index>`。
 | `OnPluginError(callback)` | `hooks.subscribe` | 插件生命周期错误回调（激活失败、运行时崩溃）——与处理工具执行失败的 `OnError` 不同。 |
 | `SetValue` / `GetValue` | — | 会话级内存键值存储，用于插件内跨 handler 共享数据。 |
 | `ToolCallCount()` / `HookCallCount()` | — | 原子运行时计数器（工具执行总次数 / hook 分发总次数）。 |
-| `RegisterChannelProvider(provider)` | `channels.register` | 注册自定义 channel provider。provider 必须实现 `Name() string`（外加 `CreateChannel`、`ConfigSchema`、`IsEnabled`）。内置名称（`feishu`、`qq`、`napcat`、`web`、`cli`）禁止覆盖。 |
+| `RegisterChannelProvider(provider)` | `channels.register` | 注册自定义 channel provider。provider 必须实现 `Name() string`（外加 `CreateChannel`、`ConfigSchema`、`IsEnabled`）。内置名称（`feishu`、`web`、`cli`）禁止覆盖。 |
 | `RegisterCommand(name, description, handler)` | `commands.register` | 注册斜杠命令。Handler：`func(ctx context.Context, args string, pctx PluginContext) (string, error)`——`args` 为命令名之后的内容（已 trim）。 |
 | `Notify(level, title, message)` | `notifications.send` | 发送用户通知。级别：`info`、`success`、`warning`、`error`。 |
 | `PlaySound(sound)` | `notifications.send` | 播放音效：`beep`、`chime`、`complete`、`error`、`achievement`。 |

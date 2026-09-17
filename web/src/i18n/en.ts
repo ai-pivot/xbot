@@ -158,8 +158,6 @@ const en: Translations = {
   channel: {
     feishu: 'Feishu',
     cli: 'CLI',
-    qq: 'QQ',
-    napcat: 'NapCat',
     web: 'Web',
     system: 'System',
     all: 'All Channels',

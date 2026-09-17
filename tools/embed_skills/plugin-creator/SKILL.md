@@ -109,7 +109,7 @@ tui_control(action="reload_plugins")
 - Channel plugins can declare channel-specific agent prompts via `channel_prompt` message (see channel-plugins.md)
 - Channel plugins can declare channel-scoped tools via `channel_tools` message (see channel-tools.md)
 - Both `channel_prompt` and `channel_tools` support **hot-update**: sending a new message replaces the previous set
-- Channel names cannot be: `feishu`, `qq`, `napcat`, `web`, `cli`
+- Channel names cannot be: `feishu`, `web`, `cli`
 - Web plugin: single validation gate is the FRONTEND runtime (`registry.validate()`); backend never schema-validates `contributes`
 - Web plugin: builtin views MUST be static-imported (dynamic `import()` → React #311 black screen). Only third-party `/plugins/<id>/web/` modules dynamic-import
 - Web plugin: plugin ID may contain dots (`xbot.git-fancy`) — RPC routing uses longest-prefix match, never `SplitN(".")`
