@@ -67,30 +67,6 @@ func (rm *RegistryManager) useSandbox() bool {
 	return rm.sandbox != nil && rm.sandbox.Name() != "none"
 }
 
-// globalSyncedSkillsDir returns the directory where global skills are synced inside the sandbox.
-func (rm *RegistryManager) globalSyncedSkillsDir(senderID string) string {
-	if !rm.useSandbox() {
-		return ""
-	}
-	ws := rm.sandbox.Workspace(senderID)
-	if ws == "" {
-		return ""
-	}
-	return filepath.Join(ws, "skills")
-}
-
-// globalSyncedAgentsDir returns the directory where global agents are synced inside the sandbox.
-func (rm *RegistryManager) globalSyncedAgentsDir(senderID string) string {
-	if !rm.useSandbox() {
-		return ""
-	}
-	ws := rm.sandbox.Workspace(senderID)
-	if ws == "" {
-		return ""
-	}
-	return filepath.Join(ws, "agents")
-}
-
 // sandboxCtx returns a context with a 30-second timeout for sandbox I/O operations.
 func (rm *RegistryManager) sandboxCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)

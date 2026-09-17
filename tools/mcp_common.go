@@ -340,18 +340,6 @@ func resolveXbotBinDir(configPath string) string {
 	return ""
 }
 
-// shellQuoteCmd 将 command + args 转为 shell 安全的单行字符串（用单引号包裹）
-func shellQuoteCmd(command string, args []string) string {
-	quote := func(s string) string {
-		return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-	}
-	parts := []string{quote(command)}
-	for _, a := range args {
-		parts = append(parts, quote(a))
-	}
-	return strings.Join(parts, " ")
-}
-
 // ConnectStdioServer 连接 stdio 模式的 MCP Server（公共函数）
 // Returns a ClientSession (auto-initialized) and the session itself for closing.
 func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, workspaceRoot, userID, serverName string) (*mcp.ClientSession, error) {
