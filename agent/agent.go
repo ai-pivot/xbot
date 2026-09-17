@@ -1891,12 +1891,24 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 全局工具索引通过 IndexGlobalTools() 在所有工具注册完成后调用
 
-	// 注册记忆工具（通过注册表，无硬编码 provider 名称）
-	for _, tool := range tools.GetMemoryTools(memoryProvider) {
+	// 注册记忆工具（**唯一注册点**，完全由 provider 声明决定 —— 见
+	// tools.RegisterMemoryTools/GetMemoryTools；守护测试
+	// tools.TestMemoryTools_ProviderExclusiveSets 保证"集合 = 该 provider 声明的集合"）。
+	// 启动日志打印**实际注册的工具名**：下次若出现"其它 provider 的工具被注入"，
+	// 一眼可见是 provider 配错还是注册泄漏。
+	memTools := tools.GetMemoryTools(memoryProvider)
+	memToolNames := make([]string, 0, len(memTools))
+	for _, tool := range memTools {
 		registry.RegisterCore(tool)
+		memToolNames = append(memToolNames, tool.Name())
 	}
-	if memoryProvider != "none" && len(tools.GetMemoryTools(memoryProvider)) > 0 {
-		log.WithField("provider", memoryProvider).Info("Memory tools registered (core)")
+	if len(memToolNames) > 0 {
+		log.WithFields(log.Fields{
+			"provider": memoryProvider,
+			"tools":    memToolNames,
+		}).Info("Memory tools registered (core)")
+	} else {
+		log.WithField("provider", memoryProvider).Warn("No memory tools declared by provider")
 	}
 
 	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
