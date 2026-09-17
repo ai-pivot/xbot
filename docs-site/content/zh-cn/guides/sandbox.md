@@ -96,31 +96,38 @@ type SandboxConfig struct {
 }
 ```
 
-**Runner 端**（用户机器上）：
+**Runner 端**（被纳管的机器上）：
 
 ```bash
-xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name my-runner
+xbot-runner --server ws://your-server.com:8080/ws --token your-secure-token --name my-runner
 ```
 
-**路由规则**（按用户，由 `user_settings.active_runner` 决定）：
+`--name` 是这台机器的标识；归属由一次性连接 token 在服务端解析，因此 runner 自报名字与注册表里的名字始终一致。
 
-| `active_runner` 值 | 使用的沙箱 |
+**路由规则**（按 **会话**，全局单 operator）：
+
+| 会话状态 | 使用的沙箱 |
 |---------------------|------------|
-| 具体 Runner 名称 | 对应的 RemoteSandbox（若已连接） |
-| 回退 | Remote → None（本地直连） |
+| 绑定到 runner R 且 R 在线 | R 的 RemoteSandbox |
+| 绑定到 runner R 但 R **离线** | **硬失败** —— 工具拒绝执行（绝不静默回退本机） |
+| 未绑定 | None（本机直连） |
+
+绑定方式：`config` 工具（`runner` action，`sub=switch name=...`；`sub=unbind` 切回本机），或 RPC `runner_session_set` / `runner_session_get`。
 
 {{< hint type=tip >}}
-**多 Runner 支持**：多个 Runner 可以同时连接，每个拥有独立的名称和 Token。用户通过设置面板（`/settings`）选择自己的活跃 Runner。这支持多用户场景，每个用户在自己的机器上执行命令。
+**多机器、单 operator**：任意数量的 runner 可同时连接，各带独立名称与 token。绑定是**会话级**的，因此两个会话可以同时跑在两台不同机器上。所有维度都不带用户 —— 见 `docs/design/runner-ssh-provisioning.md`。
+
+**自动纳管**：内置插件 `xbot.ssh-runner`（`plugins/xbot-ssh-runner/`）接受一条 SSH 命令，探测目标机器、自动安装并启动 `xbot-runner` 并完成注册 —— 远端无需手工操作。
 {{< /hint >}}
 
 ### SandboxRouter 架构
 
-`SandboxRouter`（`tools/sandbox_router.go`）是统一的沙箱入口。它根据每个用户的配置将执行请求路由到不同后端：
+`SandboxRouter`（`tools/sandbox_router.go`）是统一的沙箱入口。它**按会话**把执行请求路由到对应后端：
 
 - 同时实现 `Sandbox` 和 `SandboxResolver` 接口
 - 仅两种后端：Remote（Runner）与 None（本地直连；默认）
-- 按用户独立路由——不同用户可以使用不同后端
-- Runner 选择可通过设置面板按用户配置
+- `SandboxForSession("channel:chatID")` → 未绑定=本机、已绑定且在线=Remote、**已绑定但离线=硬失败**
+- 绑定是**会话级**的（`tenants.runner_id`），不是用户级；无 per-user 维度
 
 ### 同步配置
 

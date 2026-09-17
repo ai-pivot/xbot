@@ -2746,7 +2746,8 @@ func (h *RPCContext) listTenants(ctx context.Context) (any, error) {
 // ── Runner CRUD ──
 
 func registerRunnerHandlers(t RPCTable, h *RPCContext) {
-	// runner_create creates a new named runner and returns the token.
+	// runner_create registers (or re-keys) a runner and returns the command to
+	// run on that machine. Single-operator design: no owner column.
 	t["runner_create"] = rpc1(func(ctx context.Context, p struct {
 		Name        string `json:"name"`
 		Mode        string `json:"mode"`
@@ -2761,41 +2762,32 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if db == nil {
 			return nil, fmt.Errorf("runner management not configured")
 		}
-		store := tools.NewRunnerTokenStore(db)
-		bizID := rpcBizID(ctx)
-		if p.Mode == "" {
-			p.Mode = "native"
+		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
+			router.EnsureRemote()
 		}
-		if p.DockerImage == "" {
-			p.DockerImage = "ubuntu:22.04"
-		}
-		llm := tools.RunnerLLMSettings{
-			Provider: p.LLMProvider,
-			APIKey:   p.LLMAPIKey,
-			Model:    p.LLMModel,
-			BaseURL:  p.LLMBaseURL,
-		}
-		token, _, err := store.CreateRunner(bizID, p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
+		llm := tools.RunnerLLMSettings{Provider: p.LLMProvider, APIKey: p.LLMAPIKey, Model: p.LLMModel, BaseURL: p.LLMBaseURL}
+		token, err := tools.NewRunnerStore(db).Create(p.Name, p.Mode, p.DockerImage, p.Workspace, llm)
 		if err != nil {
 			return nil, err
 		}
+		mode, _ := tools.NormalizeRunnerMode(p.Mode)
 		return map[string]string{
-			"name":  p.Name,
-			"token": token,
+			"name":    p.Name,
+			"token":   token,
+			"command": buildRunnerConnectCmd(h.Cfg, p.Name, token, mode, p.DockerImage, p.Workspace, llm),
 		}, nil
 	})
 
-	// runner_list returns all runners for the calling user.
+	// runner_list returns every managed machine (never credentials).
 	t["runner_list"] = rpc0err(func(ctx context.Context) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
-			return nil, fmt.Errorf("runner management not configured")
+		runners, err := tools.ListAllRunners()
+		if err != nil {
+			return nil, err
 		}
-		bizID := rpcBizID(ctx)
-		return tools.NewRunnerTokenStore(db).ListRunners(bizID)
+		return map[string]any{"runners": runners}, nil
 	})
 
-	// runner_delete deletes a runner by name.
+	// runner_delete removes a runner and drops its live connection.
 	t["runner_delete"] = rpc1void(func(ctx context.Context, p struct {
 		Name string `json:"name"`
 	}) error {
@@ -2803,33 +2795,13 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if db == nil {
 			return fmt.Errorf("runner management not configured")
 		}
-		bizID := rpcBizID(ctx)
-		return tools.NewRunnerTokenStore(db).DeleteRunner(bizID, p.Name)
-	})
-
-	// runner_get_active returns the active runner name.
-	t["runner_get_active"] = rpc0err(func(ctx context.Context) (any, error) {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
-			return nil, fmt.Errorf("runner management not configured")
+		if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
+			router.DisconnectRunner(p.Name)
 		}
-		bizID := rpcBizID(ctx)
-		return tools.NewRunnerTokenStore(db).GetActiveRunner(bizID)
+		return tools.NewRunnerStore(db).Delete(p.Name)
 	})
 
-	// runner_set_active sets the active runner.
-	t["runner_set_active"] = rpc1void(func(ctx context.Context, p struct {
-		Name string `json:"name"`
-	}) error {
-		db := tools.GetRunnerTokenDB()
-		if db == nil {
-			return fmt.Errorf("runner management not configured")
-		}
-		bizID := rpcBizID(ctx)
-		return tools.NewRunnerTokenStore(db).SetActiveRunner(bizID, p.Name)
-	})
-
-	// runner_rename renames a runner.
+	// runner_rename renames a runner (session bindings follow the new name).
 	t["runner_rename"] = rpc1void(func(ctx context.Context, p struct {
 		OldName string `json:"old_name"`
 		NewName string `json:"new_name"`
@@ -2838,8 +2810,39 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		if db == nil {
 			return fmt.Errorf("runner management not configured")
 		}
-		bizID := rpcBizID(ctx)
-		return tools.NewRunnerTokenStore(db).RenameRunner(bizID, p.OldName, p.NewName)
+		return tools.NewRunnerStore(db).Rename(p.OldName, p.NewName)
+	})
+
+	// runner_session_get reports the machine a session is bound to.
+	t["runner_session_get"] = rpc1(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+	}) (any, error) {
+		router, ok := tools.GetSandbox().(*tools.SandboxRouter)
+		if !ok || router == nil {
+			return nil, fmt.Errorf("remote runner support is not available")
+		}
+		if p.ChatID == "" {
+			return nil, fmt.Errorf("chat_id is required")
+		}
+		name := router.GetSessionRunner(p.Channel + ":" + p.ChatID)
+		return map[string]any{"name": name, "online": name != "" && router.IsRunnerOnline(name)}, nil
+	})
+
+	// runner_session_set binds a session to a machine ("" = back to the local host).
+	t["runner_session_set"] = rpc1void(func(ctx context.Context, p struct {
+		Channel string `json:"channel"`
+		ChatID  string `json:"chat_id"`
+		Name    string `json:"name"`
+	}) error {
+		router, ok := tools.GetSandbox().(*tools.SandboxRouter)
+		if !ok || router == nil {
+			return fmt.Errorf("remote runner support is not available")
+		}
+		if p.ChatID == "" {
+			return fmt.Errorf("chat_id is required")
+		}
+		return router.SetSessionRunner(p.Channel+":"+p.ChatID, p.Name)
 	})
 
 }

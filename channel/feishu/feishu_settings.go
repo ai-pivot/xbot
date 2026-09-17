@@ -380,8 +380,8 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		return f.BuildLLMsCard(ctx, senderID)
 
 	case "settings_generate_token":
-		if f.settingsCallbacks.RunnerTokenGenerate == nil {
-			return nil, fmt.Errorf("per-user runner token 功能未启用")
+		if f.settingsCallbacks.RunnerCreate == nil {
+			return nil, fmt.Errorf("runner 管理功能未启用")
 		}
 		mode := formStr(actionData, "runner_mode")
 		if mode == "" {
@@ -400,31 +400,31 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		if workspace == "" {
 			workspace = "/workspace"
 		}
-		cmd, err := f.settingsCallbacks.RunnerTokenGenerate(senderID, mode, dockerImage, workspace)
+		cmd, err := f.settingsCallbacks.RunnerCreate(feishuRunnerName(senderID), mode, dockerImage, workspace, tools.RunnerLLMSettings{})
 		if err != nil {
 			return nil, fmt.Errorf("生成 token 失败: %v", err)
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "general", SettingsCardOpts{RunnerConnectBanner: cmd})
 
 	case "settings_revoke_token":
-		if f.settingsCallbacks.RunnerTokenRevoke == nil {
-			return nil, fmt.Errorf("per-user runner token 功能未启用")
+		if f.settingsCallbacks.RunnerDelete == nil {
+			return nil, fmt.Errorf("runner 管理功能未启用")
 		}
-		if err := f.settingsCallbacks.RunnerTokenRevoke(senderID); err != nil {
+		if err := f.settingsCallbacks.RunnerDelete(feishuRunnerName(senderID)); err != nil {
 			return nil, fmt.Errorf("撤销 token 失败: %v", err)
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
 
 	// ── Multi-Runner management actions ──
 	case "settings_runner_set_active":
-		if f.settingsCallbacks.RunnerSetActive == nil {
+		if f.settingsCallbacks.RunnerSessionSet == nil {
 			return nil, fmt.Errorf("runner 管理功能未启用")
 		}
 		runnerName := parsed["runner_name"]
 		if runnerName == "" {
 			return nil, fmt.Errorf("缺少 runner 名称")
 		}
-		if err := f.settingsCallbacks.RunnerSetActive(senderID, runnerName); err != nil {
+		if err := f.settingsCallbacks.RunnerSessionSet("feishu", chatID, runnerName); err != nil {
 			return nil, fmt.Errorf("切换 runner 失败: %v", err)
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
@@ -437,7 +437,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		if runnerName == "" {
 			return nil, fmt.Errorf("缺少 runner 名称")
 		}
-		if err := f.settingsCallbacks.RunnerDelete(senderID, runnerName); err != nil {
+		if err := f.settingsCallbacks.RunnerDelete(runnerName); err != nil {
 			return nil, fmt.Errorf("删除 runner 失败: %v", err)
 		}
 		return f.BuildSettingsCard(ctx, senderID, chatID, "general")
@@ -463,7 +463,7 @@ func (f *FeishuChannel) HandleSettingsAction(ctx context.Context, actionData map
 		if mode != "docker" {
 			dockerImage = ""
 		}
-		cmd, err := f.settingsCallbacks.RunnerCreate(senderID, runnerName, mode, dockerImage, workspace, tools.RunnerLLMSettings{})
+		cmd, err := f.settingsCallbacks.RunnerCreate(runnerName, mode, dockerImage, workspace, tools.RunnerLLMSettings{})
 		if err != nil {
 			return nil, fmt.Errorf("创建 runner 失败: %v", err)
 		}
@@ -576,20 +576,16 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 			})
 		}
 
-		runners, err := f.settingsCallbacks.RunnerList(senderID)
+		runners, err := f.settingsCallbacks.RunnerList()
 		if err != nil || len(runners) == 0 {
 			elements = append(elements, map[string]any{
 				"tag":     "markdown",
 				"content": "尚未添加工作环境。点击下方按钮添加 Runner。",
 			})
 		} else {
-			// Get active runner name
+			// Session→runner bindings are per-chat and surface in the Web UI;
+			// the card only lists machines and their online state.
 			activeName := ""
-			if f.settingsCallbacks.RunnerGetActive != nil {
-				if name, err := f.settingsCallbacks.RunnerGetActive(senderID); err == nil {
-					activeName = name
-				}
-			}
 
 			for _, r := range runners {
 				statusIcon := "🟢"
@@ -761,8 +757,8 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 			"content": "**远程 Runner**",
 		})
 
-		if f.settingsCallbacks.RunnerTokenGet != nil {
-			connectCmd := f.settingsCallbacks.RunnerTokenGet(senderID)
+		if f.settingsCallbacks.RunnerConnectCmd != nil {
+			connectCmd, _ := f.settingsCallbacks.RunnerConnectCmd(feishuRunnerName(senderID))
 			if connectCmd != "" {
 				elements = append(elements, map[string]any{
 					"tag":     "markdown",
@@ -871,19 +867,6 @@ func (f *FeishuChannel) buildGeneralTabContent(senderID string, o SettingsCardOp
 					"tag":      "form",
 					"name":     "runner_token_form_docker",
 					"elements": formLegacyDocker,
-				})
-			}
-		} else if f.settingsCallbacks.RunnerConnectCmdGet != nil {
-			connectCmd := f.settingsCallbacks.RunnerConnectCmdGet(senderID)
-			if connectCmd != "" {
-				elements = append(elements, map[string]any{
-					"tag":     "markdown",
-					"content": fmt.Sprintf("在本地机器上运行以下命令连接远程沙箱：\n```\n%s\n```", connectCmd),
-				})
-			} else {
-				elements = append(elements, map[string]any{
-					"tag":     "markdown",
-					"content": "远程 Runner 功能未启用，请设置 `SANDBOX_AUTH_TOKEN`。",
 				})
 			}
 		}
@@ -2075,4 +2058,18 @@ func (f *FeishuChannel) buildMetricsTabContent() []map[string]any {
 	})
 
 	return elements
+}
+
+// feishuRunnerName is the deterministic runner name used by the legacy
+// "generate token" settings action (the explicit-name action is
+// settings_runner_create). Runners are global, so the name is derived from the
+// requesting chat to stay stable per chat.
+func feishuRunnerName(senderID string) string {
+	if len(senderID) > 16 {
+		senderID = senderID[:16]
+	}
+	if senderID == "" {
+		return "feishu"
+	}
+	return "feishu-" + senderID
 }

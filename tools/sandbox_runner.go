@@ -10,23 +10,23 @@ import (
 
 var (
 	globalSandbox       Sandbox
-	globalSandboxMu     sync.RWMutex // 保护 globalSandbox 的并发读写
+	globalSandboxMu     sync.RWMutex
 	globalRunnerTokenDB *sql.DB
 )
 var sandboxInitOnce sync.Once
 
-// InitSandbox 初始化全局沙箱实例（由 main.go 在启动时调用）。
+// InitSandbox initializes the global sandbox instance (called by the entrypoint).
 //
-// 沙箱统一走 SandboxRouter：RemoteMode 非空时用 runner（remote），否则本机（none）。
+// Sandboxing is unified behind SandboxRouter: a session bound to a runner runs
+// remotely, everything else runs on the local host.
 func InitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
 	sandboxInitOnce.Do(func() {
 		reinitSandbox(sandboxCfg, workDir)
 	})
 }
 
-// ReinitSandbox reinitializes the global sandbox (used when sandbox_mode changes at runtime).
+// ReinitSandbox reinitializes the global sandbox (used when the mode changes at runtime).
 func ReinitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
-	// Close old sandbox if possible
 	globalSandboxMu.Lock()
 	old := globalSandbox
 	globalSandbox = nil
@@ -44,10 +44,10 @@ func reinitSandbox(sandboxCfg config.SandboxConfig, workDir string) {
 	log.Infof("Sandbox initialized: %s (router)", globalSandbox.Name())
 }
 
-// GetSandbox 获取全局沙箱实例
+// GetSandbox returns the global sandbox instance.
 func GetSandbox() Sandbox {
 	sandboxInitOnce.Do(func() {
-		// Fallback: 如果 InitSandbox 未被调用（例如测试场景），使用 NoneSandbox
+		// Fallback for tests that never call InitSandbox.
 		log.Warn("GetSandbox called before InitSandbox, falling back to NoneSandbox")
 		globalSandboxMu.Lock()
 		globalSandbox = &NoneSandbox{}
@@ -59,32 +59,29 @@ func GetSandbox() Sandbox {
 	return s
 }
 
-// SetSandbox 设置全局沙箱实例（用于测试）
+// SetSandbox overrides the global sandbox (tests).
 func SetSandbox(s Sandbox) {
 	globalSandboxMu.Lock()
 	globalSandbox = s
 	globalSandboxMu.Unlock()
 }
 
-// SetRunnerTokenDB sets the DB connection used for per-user runner token persistence.
-// Must be called before any runner connections are authenticated.
+// SetRunnerTokenDB wires the DB used for runner persistence plus the
+// session→runner binding store. Must be called before any runner connects.
 func SetRunnerTokenDB(db *sql.DB) {
 	globalSandboxMu.Lock()
 	defer globalSandboxMu.Unlock()
 	globalRunnerTokenDB = db
-	store := NewRunnerTokenStore(db)
+	store := NewRunnerStore(db)
 	switch sb := globalSandbox.(type) {
 	case *SandboxRouter:
-		sb.SetTokenStore(store)
-		if sb.remote != nil {
-			sb.remote.SetTokenStore(store)
-		}
+		sb.SetRunnerStore(store)
 	case *RemoteSandbox:
-		sb.SetTokenStore(store)
+		sb.SetRunnerStore(store)
 	}
 }
 
-// GetRunnerTokenDB returns the DB connection for runner tokens.
+// GetRunnerTokenDB returns the DB connection used for runner persistence.
 func GetRunnerTokenDB() *sql.DB {
 	return globalRunnerTokenDB
 }

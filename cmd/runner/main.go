@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -14,13 +13,14 @@ import (
 	"time"
 
 	"xbot/internal/runnerclient"
+	"xbot/version"
 )
 
 var (
 	flagServer      = flag.String("server", "", "WebSocket server URL (required)")
 	flagToken       = flag.String("token", "", "Auth token (required)")
 	flagWorkspace   = flag.String("workspace", "/workspace", "Workspace root directory")
-	flagUserID      = flag.String("user-id", "", "User ID (auto-detected from --server URL)")
+	flagName        = flag.String("name", "", "Runner name reported to the server (default: hostname)")
 	flagFullControl = flag.Bool("full-control", false, "Disable path restrictions (allow access to any file)")
 	flagVerbose     = flag.Bool("v", false, "Verbose logging (log all requests)")
 	flagMode        = flag.String("mode", "native", "Runner mode: native or docker")
@@ -37,26 +37,6 @@ const (
 	maxRetries = 0 // 0 = infinite retries
 )
 
-// userIDFromServerURL extracts the user ID from the last non-empty PATH
-// segment of the server URL. Query strings ("?foo=bar") and fragments are
-// stripped — the old strings.LastIndex("/") parsing produced "admin?foo=bar"
-// for "ws://host:8080/ws/admin?foo=bar".
-func userIDFromServerURL(server string) string {
-	u, err := url.Parse(server)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		// Not an absolute URL — no user ID to extract (the old parser also
-		// failed to find a segment here and the caller Fatal-exits).
-		return ""
-	}
-	segs := strings.Split(strings.Trim(u.Path, "/"), "/")
-	for i := len(segs) - 1; i >= 0; i-- {
-		if segs[i] != "" {
-			return segs[i]
-		}
-	}
-	return ""
-}
-
 func main() {
 	flag.Parse()
 
@@ -69,12 +49,11 @@ func main() {
 		log.Fatal("--token is required")
 	}
 
-	userID := *flagUserID
-	if userID == "" {
-		userID = userIDFromServerURL(*flagServer)
-	}
-	if userID == "" {
-		log.Fatal("--user-id is required (or embed in server URL)")
+	runnerName := *flagName
+	if runnerName == "" {
+		if h, err := os.Hostname(); err == nil {
+			runnerName = h
+		}
 	}
 
 	var err error
@@ -84,7 +63,7 @@ func main() {
 
 	if *flagMode == "docker" {
 		log.Printf("Docker mode: image=%s, workspace=%s", *flagDockerImage, *flagWorkspace)
-		exec, err = runnerclient.NewDockerExecutor(userID, *flagDockerImage, *flagWorkspace)
+		exec, err = runnerclient.NewDockerExecutor(runnerName, *flagDockerImage, *flagWorkspace)
 		if err != nil {
 			log.Fatalf("Failed to create docker executor: %v", err)
 		}
@@ -126,8 +105,8 @@ func main() {
 	// 检测 shell
 	shell := runnerclient.DetectShell(dockerMode, exec)
 
-	log.Printf("Starting xbot-runner  mode=%s server=%s  user=%s  workspace=%s  full-control=%v",
-		*flagMode, *flagServer, userID, execWorkspace, *flagFullControl)
+	log.Printf("Starting xbot-runner  mode=%s server=%s  name=%s  version=%s  workspace=%s  full-control=%v",
+		*flagMode, *flagServer, runnerName, version.Version, execWorkspace, *flagFullControl)
 
 	serverURL := *flagServer
 	if !strings.Contains(serverURL, "://") {
@@ -150,7 +129,7 @@ func main() {
 			return
 		default:
 		}
-		err := runSession(serverURL, userID, *flagToken, execWorkspace, shell, handler)
+		err := runSession(serverURL, runnerName, *flagToken, execWorkspace, shell, handler)
 		// SA4023: runSession never returns nil (a clean read-loop exit is also a
 		// disconnection from this side's perspective — it always returns an
 		// error to drive the reconnect loop). No err == nil fast path exists.
@@ -175,17 +154,19 @@ func main() {
 
 // runSession 连接 server 并运行读写循环。
 // 连接丢失时返回错误（触发重连）。
-func runSession(serverURL, userID, authToken, workspace, shell string, handler *runnerclient.Handler) error {
+func runSession(serverURL, runnerName, authToken, workspace, shell string, handler *runnerclient.Handler) error {
 	runnerLogf := handler.LogFunc
-	conn, err := runnerclient.Connect(serverURL, userID, authToken, workspace, shell, runnerclient.ConnectOptions{
+	conn, err := runnerclient.Connect(serverURL, authToken, workspace, shell, runnerclient.ConnectOptions{
 		LLMProvider: handler.LLMProvider(),
 		LLMModel:    handler.LLMModel(),
 		LogFunc:     runnerLogf,
+		RunnerName:  runnerName,
+		Version:     version.Version,
 	})
 	if err != nil {
 		return err
 	}
-	log.Printf("Connected to server, registered as user=%s", userID)
+	log.Printf("Connected to server, registered as runner=%s", runnerName)
 
 	writeCh := make(chan runnerclient.WriteMsg, 64)
 	stopWrite := make(chan struct{})

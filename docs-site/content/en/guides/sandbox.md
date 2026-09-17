@@ -96,21 +96,37 @@ Users can connect their own remote runners to execute commands on their own mach
 }
 ```
 
-**Runner-side** (on the user's machine):
+**Runner-side** (on the managed machine):
 
 ```bash
-xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name my-runner
+xbot-runner --server ws://your-server.com:8080/ws --token your-secure-token --name my-runner
 ```
 
-**Routing rules** (per user, determined by `user_settings.active_runner`):
+`--name` is how the machine is identified; the server resolves ownership through
+the one-shot connect token, so the name the runner reports and the name in the
+registry stay in sync.
 
-| `active_runner` value | Sandbox used |
+**Routing rules** (per session — there is exactly one operator):
+
+| Session state | Sandbox used |
 |------------------------|-------------|
-| Specific runner name | Corresponding RemoteSandbox (if connected) |
-| Fallback | Remote → None (local) |
+| Bound to runner R, R online | R's RemoteSandbox |
+| Bound to runner R, R **offline** | **Hard failure** — tools refuse to run (never a silent local fallback) |
+| Not bound | None (local host) |
+
+Bind a session with the `config` tool (`runner` action, `sub=switch name=...`;
+`sub=unbind` goes back to the local host) or over RPC
+(`runner_session_set` / `runner_session_get`).
 
 {{< hint type=tip >}}
-**Multi-Runner support**: Multiple runners can connect simultaneously, each with an independent name and token. Users select their active runner in the settings panel (`/settings`). This enables multi-user setups where each user runs commands on their own machine.
+**Multiple machines, one operator**: any number of runners can connect at once,
+each with its own name and token. Bindings are per session, so two sessions can
+work on two different machines simultaneously. Nothing is keyed by user — see
+`docs/design/runner-ssh-provisioning.md`.
+
+**Provisioning**: the built-in `xbot.ssh-runner` plugin (`plugins/xbot-ssh-runner/`)
+takes an SSH command, probes the machine, installs and starts `xbot-runner`, and
+registers it — no manual steps on the remote host.
 {{< /hint >}}
 
 ### SandboxRouter Architecture

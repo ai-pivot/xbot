@@ -115,6 +115,12 @@ jobs:
           npx esbuild src/plugins/iteration-stats/entry.tsx \
             --bundle --format=esm --jsx=transform \
             --outfile=../build/plugin-web/xbot.iteration-stats/web/index.js
+          # xbot.ssh-runner: single entry (index.tsx imports only ./shared) →
+          # --outfile names the artifact index.js directly.
+          mkdir -p ../build/plugin-web/xbot.ssh-runner/web
+          npx esbuild src/plugins/ssh-runner/index.tsx \
+            --bundle --format=esm --jsx=transform \
+            --outfile=../build/plugin-web/xbot.ssh-runner/web/index.js
           # Guard: enumerate EVERY repo plugin manifest (id + web.entry via
           # jq); any declared web.entry without its artifact fails the build.
           missing=0
@@ -294,9 +300,42 @@ jobs:
           name: xbot-cli-windows-arm64
           path: dist/xbot-cli-windows-arm64.exe
 
+  # xbot-runner: the remote execution agent installed on managed machines.
+  # Cross-compiled from one runner (CGO_ENABLED=0 ⇒ no platform toolchains).
+  # Without this artifact the SSH provisioning plugin has nothing to install.
+  build-runner:
+    name: Build xbot-runner (all platforms)
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ needs.prepare.outputs.channel }}
+        run: |
+          mkdir -p dist
+          LDFLAGS="-X xbot/version.Version=${VERSION} -X xbot/version.Commit=${COMMIT} -X xbot/version.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X xbot/version.Channel=${CHANNEL}"
+          for target in linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            ext=""; [ "$os" = "windows" ] && ext=".exe"
+            echo "building xbot-runner-$os-$arch$ext"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -ldflags "$LDFLAGS" \
+              -o "dist/xbot-runner-$os-$arch$ext" ./cmd/runner
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xbot-runner-dist
+          path: dist/xbot-runner-*
+          if-no-files-found: error
+
   release:
     name: Release
-    needs: [prepare, frontend, build-plugins, build-linux-amd64, build-linux-arm64, build-darwin-arm64, build-windows-amd64, build-windows-arm64]
+    needs: [prepare, frontend, build-plugins, build-runner, build-linux-amd64, build-linux-arm64, build-darwin-arm64, build-windows-amd64, build-windows-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

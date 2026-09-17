@@ -128,7 +128,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (68);
+INSERT INTO schema_version (version) VALUES (69);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -206,30 +206,20 @@ CREATE TABLE IF NOT EXISTS user_default_model (
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE runner_tokens (
-    user_id     TEXT PRIMARY KEY,
-    token       TEXT NOT NULL,
-    mode        TEXT NOT NULL DEFAULT 'native',
-    docker_image TEXT NOT NULL DEFAULT '',
-    workspace   TEXT NOT NULL DEFAULT '/workspace',
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE runners (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      TEXT    NOT NULL,
-    name         TEXT    NOT NULL,
-    token        TEXT    NOT NULL UNIQUE,
+    name         TEXT    NOT NULL UNIQUE,
+    token        TEXT    NOT NULL,
     mode         TEXT    NOT NULL DEFAULT 'native',
-    docker_image TEXT    NOT NULL DEFAULT 'ubuntu:22.04',
+    docker_image TEXT    NOT NULL DEFAULT '',
     workspace    TEXT    NOT NULL DEFAULT '',
     llm_provider TEXT    NOT NULL DEFAULT '',
     llm_api_key  TEXT    NOT NULL DEFAULT '',
     llm_model    TEXT    NOT NULL DEFAULT '',
     llm_base_url TEXT    NOT NULL DEFAULT '',
-    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, name)
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX IF NOT EXISTS idx_runners_token ON runners(token);
 
 CREATE TABLE web_users (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

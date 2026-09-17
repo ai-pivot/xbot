@@ -16,10 +16,15 @@ type ConnectOptions struct {
 	LLMProvider string  // LLM provider，空 = 无 LLM
 	LLMModel    string  // 默认模型名
 	LogFunc     LogFunc // 日志回调（nil 时静默）
+	// RunnerName is the self-reported runner name (used when the connect token is
+	// unknown to the server, e.g. the shared legacy token).
+	RunnerName string
+	// Version is the runner build version, reported to the server for display.
+	Version string
 }
 
 // Connect 建立 WebSocket 连接并发送注册消息。
-func Connect(serverURL, userID, authToken, workspace, shell string, opts ...ConnectOptions) (*websocket.Conn, error) {
+func Connect(serverURL, authToken, workspace, shell string, opts ...ConnectOptions) (*websocket.Conn, error) {
 	var opt ConnectOptions
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -47,17 +52,18 @@ func Connect(serverURL, userID, authToken, workspace, shell string, opts ...Conn
 	conn.SetReadDeadline(time.Now().Add(PongWait))
 
 	regBody, _ := json.Marshal(runnerproto.RegisterRequest{
-		UserID:      userID,
-		AuthToken:   authToken,
-		Workspace:   workspace,
-		Shell:       shell,
-		LLMProvider: opt.LLMProvider,
-		LLMModel:    opt.LLMModel,
+		AuthToken:       authToken,
+		Workspace:       workspace,
+		Shell:           shell,
+		RunnerName:      opt.RunnerName,
+		Version:         opt.Version,
+		ProtocolVersion: runnerproto.ProtocolVersion,
+		LLMProvider:     opt.LLMProvider,
+		LLMModel:        opt.LLMModel,
 	})
 	regMsg, _ := json.Marshal(runnerproto.RunnerMessage{
-		Type:   "register",
-		UserID: userID,
-		Body:   regBody,
+		Type: "register",
+		Body: regBody,
 	})
 	if err := conn.WriteMessage(websocket.TextMessage, regMsg); err != nil {
 		conn.Close()
@@ -86,7 +92,7 @@ func Connect(serverURL, userID, authToken, workspace, shell string, opts ...Conn
 	// 重置读超时为正常操作的 pongWait
 	conn.SetReadDeadline(time.Now().Add(PongWait))
 
-	callLogf(opt.LogFunc, "Registration sent  user=%s  workspace=%s", userID, workspace)
+	callLogf(opt.LogFunc, "Registration sent  name=%s  workspace=%s", opt.RunnerName, workspace)
 	return conn, nil
 }
 

@@ -1,0 +1,59 @@
+{
+  "id": "xbot.ssh-runner",
+  "name": "Remote Machines (SSH)",
+  "version": "1.0.0",
+  "description": "通过一条 SSH 命令纳管远程机器：探测环境 → 自动安装并启动 xbot-runner → 作为会话可切换的执行目标。控制面插件（stdio），执行仍走既有 runner WebSocket 协议。",
+  "author": "xbot",
+  "runtime": "stdio",
+  "entry": "./bin/ssh-runner-plugin",
+  "activationEvents": ["onStart"],
+  "permissions": ["rpc", "ui", "config"],
+  "contributes": {
+    "configuration": {
+      "title": "Remote Machines",
+      "properties": {
+        "downloadBase": {
+          "type": "string",
+          "label": "Runner 下载基址",
+          "description": "xbot-runner 二进制与 checksums.txt 的下载基址（默认本项目 GitHub Release 的 latest/download，可换国内镜像）",
+          "default": "https://github.com/ai-pivot/xbot/releases/latest/download"
+        },
+        "installDir": {
+          "type": "string",
+          "label": "远端安装目录",
+          "description": "runner 二进制落地目录（非 root 建议 ~/.local/bin）",
+          "default": "/usr/local/bin"
+        },
+        "serviceMode": {
+          "type": "string",
+          "label": "服务方式",
+          "description": "systemd user unit（推荐）或 nohup 兜底（无 systemd 的精简系统）",
+          "default": "systemd",
+          "options": [
+            { "label": "systemd user unit", "value": "systemd" },
+            { "label": "nohup 兜底", "value": "nohup" }
+          ]
+        },
+        "targets": {
+          "type": "string",
+          "label": "已纳管目标（JSON，由面板维护）",
+          "description": "机器目标注册表：[{name, ssh, install_dir, service_mode, added_at}]。宿主托管、跨设备可见。",
+          "default": "[]"
+        }
+      }
+    }
+  },
+  "web": {
+    "entry": "index.js",
+    "contributes": [
+      {
+        "kind": "view",
+        "id": "xbot.ssh-runner.panel",
+        "container": "right_sidebar",
+        "title": "Remote Machines",
+        "icon": "server",
+        "entry": "index.js"
+      }
+    ]
+  }
+}

@@ -536,23 +536,33 @@ func (t *ConfigTool) runnerAction(ctx *ToolContext, sub, name, newName, mode, do
 			return nil, fmt.Errorf("config runner switch: name is required")
 		}
 		sessionKey := ctx.Channel + ":" + ctx.ChatID
-		if sb := GetSandbox(); sb != nil {
-			if router, ok := sb.(*SandboxRouter); ok {
-				router.SetSessionRunner(sessionKey, name)
-				ctx.Sandbox = router.SandboxForSession(sessionKey, ctx.OriginUserID)
-				if router.Remote() != nil {
-					ws, _ := router.Remote().GetConnectionInfo(ctx.OriginUserID, name)
-					if ws == "" {
-						log.WithField("runner", name).Debug("Runner connected but workspace not reported yet, keeping current CWD")
-					} else if ctx.SetCurrentDir != nil {
-						ctx.SetCurrentDir(ws)
-						ctx.CurrentDir = ws
-						ctx.WorkingDir = ws
-					}
-				}
-			}
+		router, ok := GetSandbox().(*SandboxRouter)
+		if !ok {
+			return nil, fmt.Errorf("config runner switch: remote runner support not available")
 		}
-		return NewResult(fmt.Sprintf("Switched active runner to %q.", name)), nil
+		if err := router.SetSessionRunner(sessionKey, name); err != nil {
+			return nil, fmt.Errorf("config runner switch: %w", err)
+		}
+		ctx.Sandbox = router.SandboxForSession(sessionKey)
+		if ws, _ := router.Remote().GetConnectionInfo(name); ws != "" && ctx.SetCurrentDir != nil {
+			ctx.SetCurrentDir(ws)
+			ctx.CurrentDir = ws
+			ctx.WorkingDir = ws
+		} else if ws == "" {
+			log.WithField("runner", name).Debug("Runner not connected yet, keeping current CWD")
+		}
+		return NewResult(fmt.Sprintf("Session bound to runner %q.", name)), nil
+
+	case "unbind":
+		sessionKey := ctx.Channel + ":" + ctx.ChatID
+		router, ok := GetSandbox().(*SandboxRouter)
+		if !ok {
+			return nil, fmt.Errorf("config runner unbind: remote runner support not available")
+		}
+		if err := router.SetSessionRunner(sessionKey, ""); err != nil {
+			return nil, fmt.Errorf("config runner unbind: %w", err)
+		}
+		return NewResult("Session unbound — tools run on the local host again."), nil
 
 	case "rename":
 		if name == "" {
@@ -571,18 +581,23 @@ func (t *ConfigTool) runnerAction(ctx *ToolContext, sub, name, newName, mode, do
 
 	default:
 		if sub == "" {
-			if ctx.RunnerGetActive == nil {
-				return nil, fmt.Errorf("config runner: runner management not configured (no runner DB)")
+			// Report the SESSION's binding (there is no user-level active runner).
+			router, ok := GetSandbox().(*SandboxRouter)
+			if !ok {
+				return NewResult("Remote runner support is not available in this deployment."), nil
 			}
-			active, err := ctx.RunnerGetActive()
-			if err != nil {
-				return nil, fmt.Errorf("config runner: %w", err)
+			sessionKey := ctx.Channel + ":" + ctx.ChatID
+			bound := router.GetSessionRunner(sessionKey)
+			if bound == "" {
+				return NewResult("This session is unbound — tools run on the local host. " +
+					"Use 'config action=runner sub=list' then 'sub=switch name=...' to bind a machine."), nil
 			}
-			if active == "" {
-				return NewResult("No active runner set. Use 'config action=runner sub=list' to see available runners, then 'config action=runner sub=switch name=...' to activate one."), nil
+			state := "offline"
+			if router.IsRunnerOnline(bound) {
+				state = "online"
 			}
-			return NewResult(fmt.Sprintf("Active runner: %s", active)), nil
+			return NewResult(fmt.Sprintf("Session bound to runner: %s (%s)", bound, state)), nil
 		}
-		return nil, fmt.Errorf("config runner: unknown sub-action: %s (valid: create, list, delete, switch, rename)", sub)
+		return nil, fmt.Errorf("config runner: unknown sub-action: %s (valid: create, list, delete, switch, unbind, rename)", sub)
 	}
 }

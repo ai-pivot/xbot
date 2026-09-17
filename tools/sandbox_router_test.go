@@ -2,471 +2,385 @@ package tools
 
 import (
 	"context"
-	"database/sql"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/gorilla/websocket"
+
 	"xbot/config"
 )
 
+// testWSConn returns a real (connected) WebSocket client conn so fixture
+// runnerConnections behave like production ones — notably, Close() on a
+// zero-value websocket.Conn panics, which would hide bugs behind test-only
+// panics.
+func testWSConn(t *testing.T) *websocket.Conn {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		srv.Close()
+		t.Fatalf("dial test websocket: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		srv.Close()
+	})
+	return conn
+}
+
 // ============================================================================
-// SandboxRouter 单元测试
-// 覆盖路由逻辑：Name()、SandboxForUser()、接口委托、生命周期管理
+// 测试夹具
+//
+// 单用户 + 会话级路由：SandboxRouter 只按 session key（"channel:chatID"）解析，
+// 不再有 per-user 维度、active runner 或多用户分支。
 // ============================================================================
 
-// --- 辅助工具 ---
+type fakeBindingStore struct{ m map[string]string }
 
-// newNoneRouter 创建一个只有 NoneSandbox 的路由器（最简配置）
+func (f *fakeBindingStore) SetSessionRunner(sessionKey, runnerName string) error {
+	if runnerName == "" {
+		delete(f.m, sessionKey)
+	} else {
+		f.m[sessionKey] = runnerName
+	}
+	return nil
+}
+
+func (f *fakeBindingStore) GetSessionRunner(sessionKey string) (string, error) {
+	return f.m[sessionKey], nil
+}
+
+// newRemoteRouter 构造一个持有若干"已连接"runner 的路由器。
+func newRemoteRouter(onlineRunners ...string) (*SandboxRouter, *fakeBindingStore) {
+	rs := &RemoteSandbox{
+		runners:  map[string]*runnerConnection{},
+		versions: map[string]string{},
+	}
+	for _, name := range onlineRunners {
+		rs.runners[name] = &runnerConnection{runnerName: name, workspace: "/workspace", shell: "/bin/bash"}
+	}
+	store := &fakeBindingStore{m: map[string]string{}}
+	r := &SandboxRouter{
+		remote:       rs,
+		none:         &NoneSandbox{},
+		offline:      &OfflineRunnerSandbox{},
+		defaultMode:  "remote",
+		bindingStore: store,
+	}
+	rs.sessionRunners = &r.sessionRunners
+	rs.bindingStore = store
+	return r, store
+}
+
 func newNoneRouter() *SandboxRouter {
 	return &SandboxRouter{
-		none:        &NoneSandbox{},
-		defaultMode: "none",
-	}
-}
-
-func newRemoteRouter(connectedUsers ...string) *SandboxRouter {
-	rs := &RemoteSandbox{}
-	for _, uid := range connectedUsers {
-		rs.connections.Store(uid, &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
-	}
-	return &SandboxRouter{
-		remote:      rs,
-		none:        &NoneSandbox{},
-		defaultMode: "remote",
-	}
-}
-
-// newFullRouter 创建同时拥有 docker + remote 的路由器（remote 优先）
-func newFullRouter(connectedUsers ...string) *SandboxRouter {
-	rs := &RemoteSandbox{}
-	for _, uid := range connectedUsers {
-		rs.connections.Store(uid, &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
-	}
-	return &SandboxRouter{
-		remote:      rs,
-		none:        &NoneSandbox{},
-		defaultMode: "remote",
+		none:         &NoneSandbox{},
+		offline:      &OfflineRunnerSandbox{},
+		defaultMode:  "none",
+		bindingStore: &fakeBindingStore{m: map[string]string{}},
 	}
 }
 
 // ============================================================================
-// Name() 测试 — 验证 defaultMode 返回值
+// Name()
 // ============================================================================
 
-func TestSandboxRouter_Name_NoneOnly(t *testing.T) {
-	r := newNoneRouter()
-	if got := r.Name(); got != "none" {
-		t.Errorf("Name() = %q, want %q", got, "none")
+func TestSandboxRouter_Name(t *testing.T) {
+	if got := newNoneRouter().Name(); got != "none" {
+		t.Errorf("Name() = %q, want none", got)
 	}
-}
-
-func TestSandboxRouter_Name_RemoteOnly(t *testing.T) {
-	r := newRemoteRouter()
+	r, _ := newRemoteRouter("m1")
 	if got := r.Name(); got != "remote" {
-		t.Errorf("Name() = %q, want %q", got, "remote")
-	}
-}
-
-func TestSandboxRouter_Name_FullRouter(t *testing.T) {
-	// remote 存在（本地 docker sandbox 已删除）时，remote 优先
-	r := newFullRouter()
-	if got := r.Name(); got != "remote" {
-		t.Errorf("Name() = %q, want %q (remote should take priority)", got, "remote")
+		t.Errorf("Name() = %q, want remote", got)
 	}
 }
 
 // ============================================================================
-// SandboxForUser 路由测试 — 核心路由逻辑
+// SandboxForSession — 核心路由契约
 // ============================================================================
 
-func TestSandboxForUser_NoneOnly(t *testing.T) {
-	r := newNoneRouter()
-
-	// 无 docker、无 remote → 所有用户都走 none
-	for _, uid := range []string{"userA", "userB", ""} {
-		sb := r.SandboxForUser(uid)
-		if sb.Name() != "none" {
-			t.Errorf("SandboxForUser(%q).Name() = %q, want %q", uid, sb.Name(), "none")
+// 未绑定会话 → 本机执行。
+func TestSandboxForSession_UnboundRunsLocally(t *testing.T) {
+	r, _ := newRemoteRouter("m1")
+	for _, key := range []string{"cli:/repo", "", "web:chat_1"} {
+		if got := r.SandboxForSession(key).Name(); got != "none" {
+			t.Errorf("SandboxForSession(%q).Name() = %q, want none", key, got)
 		}
 	}
 }
 
-func TestSandboxForUser_RemoteOnly(t *testing.T) {
-	// 只有 remote，无 docker
-	r := newRemoteRouter("userA")
-
-	// userA 已连接 → 走 remote
-	sb := r.SandboxForUser("userA")
-	if sb.Name() != "remote" {
-		t.Errorf("SandboxForUser(userA).Name() = %q, want %q", sb.Name(), "remote")
-	}
-
-	// userB 未连接、无 docker → 回退到 none
-	sb = r.SandboxForUser("userB")
-	if sb.Name() != "none" {
-		t.Errorf("SandboxForUser(userB).Name() = %q, want %q", sb.Name(), "none")
-	}
-
-	// 空 userID → 跳过 remote 检查 → 回退到 none
-	sb = r.SandboxForUser("")
-	if sb.Name() != "none" {
-		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q", sb.Name(), "none")
+// 已绑定且 runner 在线 → 远端执行。
+func TestSandboxForSession_BoundOnlineRoutesRemote(t *testing.T) {
+	r, store := newRemoteRouter("m1")
+	store.m["cli:/repo"] = "m1"
+	if got := r.SandboxForSession("cli:/repo").Name(); got != "remote" {
+		t.Errorf("bound+online must route remote, got %q", got)
 	}
 }
 
-func TestSandboxForUser_FullRouter(t *testing.T) {
-	// docker + remote 同时存在
-	r := newFullRouter("userA")
+// 已绑定但 runner 离线 → 硬失败（绝不静默回退本机）。
+func TestSandboxForSession_BoundOfflineFailsLoudly(t *testing.T) {
+	r, store := newRemoteRouter("other") // m1 未连接
+	store.m["cli:/repo"] = "m1"
 
-	// userA 有 remote 连接 → 走 remote
-	sb := r.SandboxForUser("userA")
-	if sb.Name() != "remote" {
-		t.Errorf("SandboxForUser(userA).Name() = %q, want %q", sb.Name(), "remote")
+	sb := r.SandboxForSession("cli:/repo")
+	if sb.Name() == "none" {
+		t.Fatal("bound-but-offline must NOT fall back to the local host")
 	}
-
-	// userB 无 remote 连接 → 回退到 none（本地直连；本地 docker sandbox 已删除）
-	sb = r.SandboxForUser("userB")
-	if sb.Name() != "none" {
-		t.Errorf("SandboxForUser(userB).Name() = %q, want %q", sb.Name(), "none")
+	if sb.Name() != "runner-offline" {
+		t.Fatalf("got %q, want runner-offline", sb.Name())
 	}
-
-	// 空 userID → 跳过 remote 检查 → 回退到 none
-	sb = r.SandboxForUser("")
-	if sb.Name() != "none" {
-		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q", sb.Name(), "none")
+	if _, err := sb.Exec(context.Background(), ExecSpec{Command: "echo"}); err == nil {
+		t.Fatal("offline sandbox must refuse to execute")
+	} else if !contains(err.Error(), "m1") {
+		t.Errorf("error should name the unreachable machine, got: %v", err)
 	}
 }
 
-func TestSandboxForUser_RemoteConnectionTracking(t *testing.T) {
-	// 动态添加/移除 remote 连接，验证路由变化
-	rs := &RemoteSandbox{}
-	r := &SandboxRouter{
-		remote:      rs,
-		none:        &NoneSandbox{},
-		defaultMode: "remote",
-	}
-
-	// userA 未连接 → none
-	sb := r.SandboxForUser("userA")
-	if sb.Name() != "none" {
-		t.Errorf("before connect: userA should route to none, got %q", sb.Name())
-	}
-
-	// 模拟 userA 连接
-	rs.connections.Store("userA", &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
-
-	// userA 已连接 → remote
-	sb = r.SandboxForUser("userA")
-	if sb.Name() != "remote" {
-		t.Errorf("after connect: userA should route to remote, got %q", sb.Name())
-	}
-
-	// userB 仍未连接 → none
-	sb = r.SandboxForUser("userB")
-	if sb.Name() != "none" {
-		t.Errorf("userB should still route to none, got %q", sb.Name())
-	}
-
-	// 模拟 userA 断开
-	rs.connections.Delete("userA")
-
-	// userA 断开后 → 回退到 none
-	sb = r.SandboxForUser("userA")
-	if sb.Name() != "none" {
-		t.Errorf("after disconnect: userA should route to none, got %q", sb.Name())
+// 绑定不存在的机器 → 同样硬失败（不是回退本机）。
+func TestSandboxForSession_BoundUnknownRunnerFailsLoudly(t *testing.T) {
+	r, store := newRemoteRouter()
+	store.m["cli:/repo"] = "ghost"
+	if got := r.SandboxForSession("cli:/repo").Name(); got != "runner-offline" {
+		t.Fatalf("got %q, want runner-offline", got)
 	}
 }
 
 // ============================================================================
-// Sandbox 接口委托测试 — 验证方法正确路由到对应后端
+// 绑定读写（权威 = binding store）
 // ============================================================================
 
-func TestSandboxRouter_Delegation_NoneSandbox(t *testing.T) {
-	// 验证无 docker 时，所有操作正确委托到 NoneSandbox
-	r := newNoneRouter()
-	ctx := context.Background()
+func TestSetAndGetSessionRunner(t *testing.T) {
+	r, store := newRemoteRouter("m1")
 
-	// Exec：NoneSandbox 会真实执行命令
-	result, err := r.Exec(ctx, ExecSpec{
-		Command: "echo hello",
-		Shell:   true,
-		UserID:  "user1",
-	})
-	if err != nil {
-		t.Fatalf("Exec failed: %v", err)
+	if err := r.SetSessionRunner("cli:/repo", "m1"); err != nil {
+		t.Fatalf("SetSessionRunner: %v", err)
 	}
-	stdout := strings.ReplaceAll(result.Stdout, "\r\n", "\n")
-	if stdout != "hello\n" {
-		t.Errorf("Exec stdout = %q, want %q", stdout, "hello\n")
+	if got := r.GetSessionRunner("cli:/repo"); got != "m1" {
+		t.Errorf("GetSessionRunner = %q, want m1", got)
+	}
+	if store.m["cli:/repo"] != "m1" {
+		t.Error("binding must be persisted to the store (restart survival)")
 	}
 
-	// Workspace：NoneSandbox 返回空字符串
-	if ws := r.Workspace("user1"); ws != "" {
-		t.Errorf("Workspace() = %q, want empty string", ws)
+	// 空名 = 解绑回本机
+	if err := r.SetSessionRunner("cli:/repo", ""); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if got := r.GetSessionRunner("cli:/repo"); got != "" {
+		t.Errorf("after unbind GetSessionRunner = %q, want empty", got)
+	}
+	if _, ok := store.m["cli:/repo"]; ok {
+		t.Error("unbind must delete the persisted binding")
 	}
 
-	// GetShell：NoneSandbox 返回平台默认 shell
-	shell, err := r.GetShell("user1", "")
-	if err != nil || shell != defaultShell() {
-		t.Errorf("GetShell() = %q, %v, want %s, nil", shell, err, defaultShell())
+	// 空 session key 必须报错（否则会写坏 tenants 行）
+	if err := r.SetSessionRunner("", "m1"); err == nil {
+		t.Error("empty session key must be rejected")
 	}
 }
 
-func TestSandboxRouter_Delegation_NoneSandbox_FileOps(t *testing.T) {
-	// 验证文件操作委托到 NoneSandbox（直接操作宿主机文件系统）
-	r := newNoneRouter()
-	ctx := context.Background()
+// 内存缓存未命中时必须回落到 store（重启后仍能路由）。
+func TestGetSessionRunner_BackfillsFromStore(t *testing.T) {
+	r, store := newRemoteRouter("m1")
+	store.m["cli:/repo"] = "m1" // 只在"DB"里，进程内缓存为空
 
-	// 在临时目录中测试
-	tmpDir := t.TempDir()
-
-	// MkdirAll
-	err := r.MkdirAll(ctx, tmpDir+"/sub", 0o755, "user1")
-	if err != nil {
-		t.Fatalf("MkdirAll failed: %v", err)
+	if got := r.GetSessionRunner("cli:/repo"); got != "m1" {
+		t.Fatalf("GetSessionRunner = %q, want m1 (from store)", got)
 	}
-
-	// WriteFile
-	err = r.WriteFile(ctx, tmpDir+"/sub/test.txt", []byte("hello"), 0o644, "user1")
-	if err != nil {
-		t.Fatalf("WriteFile failed: %v", err)
-	}
-
-	// ReadFile
-	data, err := r.ReadFile(ctx, tmpDir+"/sub/test.txt", "user1")
-	if err != nil {
-		t.Fatalf("ReadFile failed: %v", err)
-	}
-	if string(data) != "hello" {
-		t.Errorf("ReadFile content = %q, want %q", string(data), "hello")
-	}
-
-	// Stat
-	info, err := r.Stat(ctx, tmpDir+"/sub/test.txt", "user1")
-	if err != nil {
-		t.Fatalf("Stat failed: %v", err)
-	}
-	if info.Name != "test.txt" || info.Size != 5 {
-		t.Errorf("Stat: Name=%q Size=%d, want test.txt, 5", info.Name, info.Size)
-	}
-
-	// ReadDir
-	entries, err := r.ReadDir(ctx, tmpDir+"/sub", "user1")
-	if err != nil {
-		t.Fatalf("ReadDir failed: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name != "test.txt" {
-		t.Errorf("ReadDir: got %v, want [test.txt]", entries)
-	}
-
-	// Remove
-	err = r.Remove(ctx, tmpDir+"/sub/test.txt", "user1")
-	if err != nil {
-		t.Fatalf("Remove failed: %v", err)
-	}
-
-	// 验证文件已删除
-	if _, err := os.Stat(tmpDir + "/sub/test.txt"); !os.IsNotExist(err) {
-		t.Error("Remove: file should not exist after removal")
-	}
-
-	// RemoveAll
-	r.MkdirAll(ctx, tmpDir+"/sub2/deep", 0o755, "user1")
-	err = r.RemoveAll(ctx, tmpDir+"/sub2", "user1")
-	if err != nil {
-		t.Fatalf("RemoveAll failed: %v", err)
-	}
-	if _, err := os.Stat(tmpDir + "/sub2"); !os.IsNotExist(err) {
-		t.Error("RemoveAll: directory should not exist after removal")
+	if v, ok := r.sessionRunners.Load("cli:/repo"); !ok || v.(string) != "m1" {
+		t.Error("store hit must backfill the in-memory cache")
 	}
 }
 
-func TestSandboxRouter_Close_NilBackends(t *testing.T) {
-	// 只有 none sandbox 时，Close 不应出错
+func TestSetSessionRunner_WithoutStoreFails(t *testing.T) {
+	r := &SandboxRouter{none: &NoneSandbox{}, offline: &OfflineRunnerSandbox{}}
+	if err := r.SetSessionRunner("cli:/repo", "m1"); err == nil {
+		t.Error("SetSessionRunner without a binding store must error, not silently succeed")
+	}
+}
+
+func TestForgetSession(t *testing.T) {
+	r, store := newRemoteRouter("m1")
+	_ = r.SetSessionRunner("cli:/repo", "m1")
+	store.m["cli:/repo"] = "m1"
+
+	r.ForgetSession("cli:/repo")
+	if _, ok := r.sessionRunners.Load("cli:/repo"); ok {
+		t.Error("ForgetSession must drop the cached binding")
+	}
+}
+
+// SessionsForRunner 用于 runner 上下线时对绑定会话做副作用（如 ProxyLLM）。
+func TestSessionsForRunner(t *testing.T) {
+	r, _ := newRemoteRouter("m1", "m2")
+	_ = r.SetSessionRunner("cli:/a", "m1")
+	_ = r.SetSessionRunner("web:chat_1", "m1")
+	_ = r.SetSessionRunner("cli:/b", "m2")
+
+	got := r.SessionsForRunner("m1")
+	if len(got) != 2 || got[0] != "cli:/a" || got[1] != "web:chat_1" {
+		t.Errorf("SessionsForRunner(m1) = %v, want [cli:/a web:chat_1]", got)
+	}
+	if n := len(r.SessionsForRunner("m2")); n != 1 {
+		t.Errorf("SessionsForRunner(m2) len = %d, want 1", n)
+	}
+	if n := len(r.SessionsForRunner("")); n != 0 {
+		t.Errorf("empty runner name must return nothing, got %d", n)
+	}
+}
+
+// ============================================================================
+// runner 可观测性
+// ============================================================================
+
+func TestRunnerOnlineAndVersion(t *testing.T) {
+	r, _ := newRemoteRouter("m1", "m2")
+	r.remote.versions["m2"] = "0.0.52"
+
+	if !r.IsRunnerOnline("m1") || r.IsRunnerOnline("ghost") {
+		t.Error("IsRunnerOnline misreported")
+	}
+	if got := r.RunnerVersion("m2"); got != "0.0.52" {
+		t.Errorf("RunnerVersion = %q, want 0.0.52", got)
+	}
+	if got := r.RunnerVersion("m1"); got != "" {
+		t.Errorf("unknown version must be empty, got %q", got)
+	}
+	if names := r.OnlineRunnerNames(); len(names) != 2 || names[0] != "m1" || names[1] != "m2" {
+		t.Errorf("OnlineRunnerNames = %v, want sorted [m1 m2]", names)
+	}
+}
+
+func TestDisconnectRunner(t *testing.T) {
+	r, _ := newRemoteRouter()
+	r.remote.runners["m1"] = &runnerConnection{runnerName: "m1", wsConn: testWSConn(t)}
+
+	if !r.DisconnectRunner("m1") {
+		t.Error("DisconnectRunner should report true for a connected runner")
+	}
+	if r.DisconnectRunner("m1") {
+		t.Error("second disconnect must report false")
+	}
+	if r.IsRunnerOnline("m1") {
+		t.Error("runner must be gone after disconnect")
+	}
+}
+
+// ============================================================================
+// 委托方法：无会话身份时必须显式失败（禁止猜机器）
+// ============================================================================
+
+func TestRouterDelegation_RefusesWithoutSession(t *testing.T) {
+	r, _ := newRemoteRouter("m1")
+	ctx := context.Background()
+
+	if _, err := r.Exec(ctx, ExecSpec{Command: "ls"}); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("Exec err = %v, want errSandboxNeedsSession", err)
+	}
+	if _, err := r.ReadFile(ctx, "/tmp/x", "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("ReadFile err = %v, want errSandboxNeedsSession", err)
+	}
+	if err := r.WriteFile(ctx, "/tmp/x", []byte("x"), os.FileMode(0o644), "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("WriteFile err = %v, want errSandboxNeedsSession", err)
+	}
+	if _, err := r.Stat(ctx, "/tmp/x", "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("Stat err = %v, want errSandboxNeedsSession", err)
+	}
+	if _, err := r.ReadDir(ctx, "/tmp", "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("ReadDir err = %v, want errSandboxNeedsSession", err)
+	}
+	if err := r.MkdirAll(ctx, "/tmp/x", 0o755, "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("MkdirAll err = %v, want errSandboxNeedsSession", err)
+	}
+	if err := r.Remove(ctx, "/tmp/x", "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("Remove err = %v, want errSandboxNeedsSession", err)
+	}
+	if err := r.RemoveAll(ctx, "/tmp/x", "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("RemoveAll err = %v, want errSandboxNeedsSession", err)
+	}
+	if err := r.DownloadFile(ctx, "http://x", "/tmp/x", "cli:/repo"); !errors.Is(err, errSandboxNeedsSession) {
+		t.Errorf("DownloadFile err = %v, want errSandboxNeedsSession", err)
+	}
+}
+
+// GetShell / Workspace 是只读的部署默认值，不参与路由，可直接回答。
+func TestRouterDelegation_ShellAndWorkspaceUseLocalDefault(t *testing.T) {
+	r := newNoneRouter()
+	if got, err := r.GetShell("cli:/repo", "/tmp"); err != nil {
+		t.Errorf("GetShell: %v", err)
+	} else if want, _ := (&NoneSandbox{}).GetShell("cli:/repo", "/tmp"); got != want {
+		t.Errorf("GetShell = %q, want the local sandbox's %q", got, want)
+	}
+	if got, want := r.Workspace("cli:/repo"), (&NoneSandbox{}).Workspace("cli:/repo"); got != want {
+		t.Errorf("Workspace = %q, want the local sandbox's %q", got, want)
+	}
+}
+
+// ============================================================================
+// 生命周期
+// ============================================================================
+
+func TestCloseAndCloseForUser(t *testing.T) {
 	r := newNoneRouter()
 	if err := r.Close(); err != nil {
-		t.Errorf("Close() with nil backends returned error: %v", err)
+		t.Errorf("Close on a router without remote must be a no-op, got %v", err)
+	}
+	if err := r.CloseForUser("cli:/repo"); err != nil {
+		t.Errorf("CloseForUser: %v", err)
 	}
 }
 
-func TestSandboxRouter_CloseForUser_NilBackends(t *testing.T) {
-	r := newNoneRouter()
-	if err := r.CloseForUser("user1"); err != nil {
-		t.Errorf("CloseForUser() with nil backends returned error: %v", err)
-	}
-}
-
-func TestSandboxRouter_CloseForUser_NilDocker_NilRemote(t *testing.T) {
-	// docker 和 remote 都为 nil，只有 none
-	r := &SandboxRouter{
-		none: &NoneSandbox{},
-	}
-	if err := r.CloseForUser("user1"); err != nil {
-		t.Errorf("CloseForUser() = %v, want nil", err)
-	}
-}
-
-// ============================================================================
-// SandboxExporter 接口测试
-// ============================================================================
-
-func TestSandboxRouter_ImplementsSandboxResolver(t *testing.T) {
-	// 编译时检查：SandboxRouter 实现 SandboxResolver 接口
-	// 此处不执行任何操作，仅作为文档说明
-	// 实际检查在 sandbox_router.go 中通过 var _ SandboxResolver = (*SandboxRouter)(nil) 完成
+func TestImplementsSandboxAndResolver(t *testing.T) {
+	var _ Sandbox = (*SandboxRouter)(nil)
 	var _ SandboxResolver = (*SandboxRouter)(nil)
 }
 
 // ============================================================================
-// 边界条件和异常情况
+// SplitSessionKey
 // ============================================================================
 
-func TestSandboxForUser_EmptyUserID_SkipsRemote(t *testing.T) {
-	// 空 userID 应跳过 remote 检查，直接回退到 none
-	r := newFullRouter("userA") // userA 有 remote 连接
-
-	// 空 userID → 即使 remote 有连接，也不走 remote
-	sb := r.SandboxForUser("")
-	if sb.Name() != "none" {
-		t.Errorf("SandboxForUser(\"\").Name() = %q, want %q (empty userID should skip remote)", sb.Name(), "none")
+func TestSplitSessionKey(t *testing.T) {
+	cases := []struct{ in, ch, id string }{
+		{"cli:/repo", "cli", "/repo"},
+		{"web:chat_1", "web", "chat_1"},
+		{"cli:/path:Agent-x", "cli", "/path:Agent-x"}, // chatID 自身含冒号
+		{"nodots", "", "nodots"},
 	}
-}
-
-func TestSandboxForUser_NilDocker_NilRemote(t *testing.T) {
-	// remote 为 nil → 走 none
-	r := &SandboxRouter{
-		none: &NoneSandbox{},
-	}
-	for _, uid := range []string{"user1", "user2", ""} {
-		sb := r.SandboxForUser(uid)
-		if sb.Name() != "none" {
-			t.Errorf("SandboxForUser(%q).Name() = %q, want %q", uid, sb.Name(), "none")
-		}
-	}
-}
-
-func TestSandboxRouter_Exec_EmptyUserID(t *testing.T) {
-	// 验证空 userID 时 Exec 正确委托到回退沙箱
-	r := newNoneRouter()
-	ctx := context.Background()
-
-	result, err := r.Exec(ctx, ExecSpec{
-		Command: "echo test",
-		Shell:   true,
-		UserID:  "", // 空 userID
-	})
-	if err != nil {
-		t.Fatalf("Exec with empty userID failed: %v", err)
-	}
-	stdout := strings.ReplaceAll(result.Stdout, "\r\n", "\n")
-	if stdout != "test\n" {
-		t.Errorf("Exec stdout = %q, want %q", stdout, "test\n")
-	}
-}
-
-func TestSandboxRouter_MultipleUsers_IndependentRouting(t *testing.T) {
-	// 多用户独立路由：验证每个用户路由到正确的后端
-	rs := &RemoteSandbox{}
-	rs.connections.Store("alice", &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
-	rs.connections.Store("charlie", &userRunnersEntry{runners: map[string]*runnerConnection{"default": {}}})
-
-	r := &SandboxRouter{
-		remote:      rs,
-		none:        &NoneSandbox{},
-		defaultMode: "remote",
-	}
-
-	tests := []struct {
-		user     string
-		expected string
-	}{
-		{"alice", "remote"},   // 已连接
-		{"bob", "none"},       // 未连接，回退到 none
-		{"charlie", "remote"}, // 已连接
-		{"dave", "none"},      // 未连接
-		{"", "none"},          // 空 userID
-	}
-
-	for _, tt := range tests {
-		sb := r.SandboxForUser(tt.user)
-		if sb.Name() != tt.expected {
-			t.Errorf("SandboxForUser(%q).Name() = %q, want %q", tt.user, sb.Name(), tt.expected)
+	for _, c := range cases {
+		ch, id := SplitSessionKey(c.in)
+		if ch != c.ch || id != c.id {
+			t.Errorf("SplitSessionKey(%q) = (%q,%q), want (%q,%q)", c.in, ch, id, c.ch, c.id)
 		}
 	}
 }
 
 // ============================================================================
-// SandboxForUser active_runner 偏好测试
-// 验证用户设置 active_runner=__docker__ 后，路由行为正确
+// 新路由器的默认部署行为
 // ============================================================================
 
-// newTestDB 创建内存 SQLite DB 并初始化 user_settings 表
-func newTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	_, err = db.Exec(`
-		CREATE TABLE user_settings (
-			channel TEXT NOT NULL,
-			sender_id TEXT NOT NULL,
-			key TEXT NOT NULL,
-			value TEXT,
-			updated_at INTEGER,
-			PRIMARY KEY (channel, sender_id, key)
-		);
-		CREATE INDEX idx_user_settings_sender ON user_settings(channel, sender_id);
-	`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return db
-}
-
-func TestSandboxForUser_ActiveRunner_NotSet_Fallback(t *testing.T) {
-	// 用户未设置 active_runner，有 remote 连接 → 走 remote
-	db := newTestDB(t)
-	store := NewRunnerTokenStore(db)
-
-	r := newFullRouter("userA")
-	r.SetTokenStore(store)
-
-	sb := r.SandboxForUser("userA")
-	if sb.Name() != "remote" {
-		t.Errorf("SandboxForUser(userA) = %q, want %q (fallback to remote when active_runner not set)", sb.Name(), "remote")
-	}
-}
-
-func TestSandboxForUser_ActiveRunner_NonExistent_Fallback(t *testing.T) {
-	// 用户设置了不存在的 runner name → 回退到本地（不 fallback 到其他 runner，避免数据泄露）
-	db := newTestDB(t)
-	store := NewRunnerTokenStore(db)
-	if err := store.SetActiveRunner("userA", "nonexistent-runner"); err != nil {
-		t.Fatal(err)
-	}
-
-	r := newFullRouter("userA")
-	r.SetTokenStore(store)
-
-	sb := r.SandboxForUser("userA")
-	// active_runner explicitly set to an offline runner → must NOT silently route to a different one
-	if sb.Name() != "none" {
-		t.Errorf("SandboxForUser(userA) = %q, want %q (explicit active_runner offline → local, not some other remote)", sb.Name(), "none")
-	}
-}
-
-// 默认 sandbox 必须是 none：未配置任何沙箱时 NewSandboxRouter 不得隐式创建
-// 本地 docker sandbox（2026-09-16 P0：空 sandbox 配置被写成 "docker"，导致
-// 新建会话设 CWD 时报 "CWD sync not supported in docker sandbox mode"）。
 func TestNewSandboxRouter_DefaultsToNone(t *testing.T) {
 	r := NewSandboxRouter(config.SandboxConfig{}, t.TempDir())
-	if got := r.Name(); got != "none" {
-		t.Fatalf("router default mode = %q, want %q", got, "none")
+	if r.Name() != "none" {
+		t.Errorf("Name() = %q, want none (no remote configured)", r.Name())
 	}
-	if sb := r.SandboxForUser("cli_user"); sb == nil || sb.Name() != "none" {
-		t.Fatalf("SandboxForUser(cli_user) = %v, want NoneSandbox", sb)
+	if r.Sandbox().Name() != "none" {
+		t.Error("default Sandbox() must be the local host — never a guessed machine")
 	}
 }

@@ -79,6 +79,84 @@ export interface BackendRPC {
     params: { session_key: string; tool_call_id?: string }
     result: { ok: boolean; task_id: string }
   }
+  // ---- xbot.ssh-runner：SSH 纳管远程机器（探测 → 安装 runner → 会话切换）----
+  // 插件后端方法（含点号 → 路由到插件进程）。
+  'xbot.ssh-runner.probe': {
+    params: { ssh: string }
+    result: {
+      os: string
+      arch: string
+      user: string
+      is_root: boolean
+      has_systemd: boolean
+      has_curl: boolean
+      has_wget: boolean
+      installed_version: string
+      install_dir: string
+    }
+  }
+  'xbot.ssh-runner.provision': {
+    params: {
+      ssh: string
+      name: string
+      /** 远端启动参数串（来自 runner_create 的 command，原样透传，不由前端拼 URL）。 */
+      connect_cmd: string
+      download_base: string
+      install_dir: string
+      service_mode: string
+      dry_run?: boolean
+    }
+    /** 异步作业——立即返回 job_id，用 job_status 轮询。 */
+    result: { job_id: string }
+  }
+  'xbot.ssh-runner.job_status': {
+    params: { job_id: string }
+    result: {
+      state: 'running' | 'done' | 'failed'
+      steps: Array<{ name: string; ok: boolean; detail: string }>
+      error: string
+    }
+  }
+  'xbot.ssh-runner.deprovision': {
+    params: { ssh: string; name: string; uninstall: boolean }
+    result: { job_id: string }
+  }
+  'xbot.ssh-runner.status': {
+    params: { ssh: string; name: string }
+    result: { installed_version: string; service_state: string; detail: string }
+  }
+  'xbot.ssh-runner.logs': {
+    params: { ssh: string; name: string; lines: number }
+    result: { lines: string[] }
+  }
+  // 核心 runner 注册表 / 会话目标（无点号 → 核心 RPC；单用户全局，无用户维度）。
+  'runner_create': {
+    params: { name: string; mode?: string; docker_image?: string; workspace?: string }
+    /** command = 远端启动参数串（--server ws://… --token …），原样传给 provision.connect_cmd。 */
+    result: { name: string; token: string; command: string }
+  }
+  'runner_list': {
+    params: Record<string, never>
+    result: {
+      runners: Array<{
+        name: string
+        mode: string
+        docker_image: string
+        workspace: string
+        online: boolean
+        created_at: string
+      }>
+    }
+  }
+  'runner_delete': { params: { name: string }; result: Record<string, never> }
+  'runner_session_get': {
+    params: { channel: string; chat_id: string }
+    result: { name: string; online: boolean }
+  }
+  'runner_session_set': {
+    params: { channel: string; chat_id: string; name: string }
+    result: Record<string, never>
+  }
 }
 
 // ---- 会话用量/性能聚合（对应 Go sqlite.TenantUsageStats JSON）----

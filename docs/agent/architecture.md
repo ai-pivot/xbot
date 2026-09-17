@@ -237,7 +237,7 @@ then register it with one line in `buildRPCTable()`. No switch-case to update.
 
 CLI connects to server's web channel WebSocket endpoint with query params:
 - `?client_type=cli&token=<runner_token>` — token-based auth
-- Server validates token against `runner_tokens` table
+- Server validates the token against the global `runners` table (one row per machine)
 - RemoteTransport uses the same WS protocol as web browser clients
 
 ## Per-Package Details
