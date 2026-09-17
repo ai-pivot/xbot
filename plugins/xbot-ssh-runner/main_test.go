@@ -183,11 +183,9 @@ func fakeHappyProvision(f *fakeExecutor) {
 		testShaOther+"  checksums.txt\n"+
 		"CHECKSUMS_END\n")
 	f.setResponse("verify", "SHA_OK="+testShaAsset+"\n")
-	f.setResponse("stop-old", "STOPPED=\n")
+	f.setResponse("kill-old", "KILLED=0\n")
 	f.setResponse("install", "INSTALLED_BIN=/home/dev/.local/bin/xbot-runner\nINSTALLED_VERSION=xbot-runner v0.0.99\nCLEANUP=ok\n")
-	f.setResponse("service", "UNIT_PATH=/home/dev/.config/systemd/user/xbot-runner-m1.service\n")
-	f.setResponse("start", "SERVICE_STATE=active\n")
-	f.setResponse("start-nohup", "NOHUP_PID=4242\n")
+	f.setResponse("ready", "")
 }
 
 func defaultProvisionParams() map[string]any {
@@ -538,7 +536,7 @@ func TestProvision_HappyPathRecordsAllSteps(t *testing.T) {
 	if snap.State != "done" {
 		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
 	}
-	want := []string{"detect", "prepare-dir", "download", "verify", "stop-old", "install", "service", "start"}
+	want := []string{"detect", "prepare-dir", "download", "verify", "kill-old", "install", "ready"}
 	if got := stepNamesOf(snap); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps mismatch:\n got %v\nwant %v", got, want)
 	}
@@ -553,11 +551,8 @@ func TestProvision_HappyPathRecordsAllSteps(t *testing.T) {
 	if inst := stepByName(snap, "install"); !strings.Contains(inst.Detail, "xbot-runner v0.0.99") {
 		t.Fatalf("install detail wrong: %q", inst.Detail)
 	}
-	if svc := stepByName(snap, "service"); !strings.Contains(svc.Detail, "xbot-runner-m1.service") {
-		t.Fatalf("service detail wrong: %q", svc.Detail)
-	}
-	if start := stepByName(snap, "start"); !strings.Contains(start.Detail, "active") {
-		t.Fatalf("start detail wrong: %q", start.Detail)
+	if ready := stepByName(snap, "ready"); ready == nil || !strings.Contains(ready.Detail, "installed /home/dev/.local/bin/xbot-runner") {
+		t.Fatalf("ready detail wrong: %+v", ready)
 	}
 
 	// job_status JSON contract: {state, steps:[{name,ok,detail}], error}
@@ -620,53 +615,6 @@ func TestProvision_MissingChecksumEntryFailsBeforeVerify(t *testing.T) {
 	}
 }
 
-func TestProvision_FallsBackToNohupWhenSystemdStartFails(t *testing.T) {
-	f := newFakeExecutor()
-	fakeHappyProvision(f)
-	f.setFailure("start", errors.New("remote command failed (exit 24): START_ERROR=systemctl --user enable --now failed"))
-	svc := newService(f.exec)
-
-	out := callOK(t, svc, "provision", defaultProvisionParams())
-	snap := waitJob(t, svc, out["job_id"].(string))
-	if snap.State != "done" {
-		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
-	}
-	start := stepByName(snap, "start")
-	if start == nil || !start.OK {
-		t.Fatalf("start step missing or not ok: %+v", start)
-	}
-	if !strings.Contains(start.Detail, "fell back to nohup") || !strings.Contains(start.Detail, "4242") {
-		t.Fatalf("downgrade must be visible in the step detail: %q", start.Detail)
-	}
-	if !contains(f.stepNames(), "start-nohup") {
-		t.Fatalf("nohup start must have been attempted: %v", f.stepNames())
-	}
-}
-
-func TestProvision_NohupModeSkipsUnitFile(t *testing.T) {
-	f := newFakeExecutor()
-	fakeHappyProvision(f)
-	svc := newService(f.exec)
-	params := defaultProvisionParams()
-	params["service_mode"] = "nohup"
-
-	out := callOK(t, svc, "provision", params)
-	snap := waitJob(t, svc, out["job_id"].(string))
-	if snap.State != "done" {
-		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
-	}
-	if contains(f.stepNames(), "service") {
-		t.Fatal("nohup mode must not write a systemd unit")
-	}
-	svcStep := stepByName(snap, "service")
-	if svcStep == nil || !strings.Contains(svcStep.Detail, "nohup") {
-		t.Fatalf("service step must note nohup mode: %+v", svcStep)
-	}
-	if start := stepByName(snap, "start"); start == nil || !strings.Contains(start.Detail, "nohup started") {
-		t.Fatalf("start step wrong: %+v", start)
-	}
-}
-
 func TestProvision_DryRunPlanDoesNotWrite(t *testing.T) {
 	f := newFakeExecutor()
 	fakeHappyProvision(f)
@@ -680,7 +628,7 @@ func TestProvision_DryRunPlanDoesNotWrite(t *testing.T) {
 	if snap.State != "done" {
 		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
 	}
-	if got := stepNamesOf(snap); !reflect.DeepEqual(got, []string{"detect", "prepare-dir", "download", "verify", "stop-old", "install", "service", "start"}) {
+	if got := stepNamesOf(snap); !reflect.DeepEqual(got, []string{"detect", "prepare-dir", "download", "verify", "kill-old", "install", "ready"}) {
 		t.Fatalf("dry-run plan steps wrong: %v", got)
 	}
 	for _, st := range snap.Steps {
@@ -688,7 +636,7 @@ func TestProvision_DryRunPlanDoesNotWrite(t *testing.T) {
 			t.Fatalf("dry-run step must be marked: %+v", st)
 		}
 	}
-	for _, banned := range []string{"download", "verify", "install", "stop-old", "service", "start"} {
+	for _, banned := range []string{"download", "verify", "install", "kill-old", "ready"} {
 		if contains(f.stepNames(), banned) {
 			t.Fatalf("dry-run must not execute %q (executed: %v)", banned, f.stepNames())
 		}
@@ -711,7 +659,7 @@ func TestDeprovision_UninstallRunsAllSteps(t *testing.T) {
 	if snap.State != "done" {
 		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
 	}
-	if got := stepNamesOf(snap); !reflect.DeepEqual(got, []string{"stop", "cleanup", "remove-binary"}) {
+	if got := stepNamesOf(snap); !reflect.DeepEqual(got, []string{"disconnect", "stop", "cleanup", "remove-binary"}) {
 		t.Fatalf("steps wrong: %v", got)
 	}
 	if d := stepByName(snap, "remove-binary").Detail; d != "/home/dev/.local/bin/xbot-runner" {
@@ -730,13 +678,13 @@ func TestDeprovision_KeepsBinaryWhenNotUninstalling(t *testing.T) {
 	if snap.State != "done" {
 		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
 	}
-	if got := stepNamesOf(snap); !reflect.DeepEqual(got, []string{"stop", "cleanup"}) {
+	if got := stepNamesOf(snap); !reflect.DeepEqual(got, []string{"disconnect", "stop", "cleanup"}) {
 		t.Fatalf("steps wrong: %v", got)
 	}
 	if contains(f.stepNames(), "remove-binary") {
 		t.Fatal("binary removal must not run without uninstall")
 	}
-	if stop := stepByName(snap, "stop"); stop.Detail != "no running service found" {
+	if stop := stepByName(snap, "stop"); stop.Detail != "no leftover process found" {
 		t.Fatalf("stop detail wrong: %q", stop.Detail)
 	}
 }
@@ -745,24 +693,50 @@ func TestDeprovision_KeepsBinaryWhenNotUninstalling(t *testing.T) {
 // status / logs
 // ---------------------------------------------------------------------------
 
-func TestStatus_ReportsVersionAndServiceState(t *testing.T) {
+func TestStatus_ReportsVersionAndConnectionState(t *testing.T) {
 	f := newFakeExecutor()
 	f.setResponse("status", "STATUS_BIN=/home/dev/.local/bin/xbot-runner\n"+
 		"STATUS_VERSION=xbot-runner v0.0.9\n"+
 		"STATUS_STATE=active\n"+
-		"STATUS_DETAIL=systemd unit=/home/dev/.config/systemd/user/xbot-runner-m1.service\n")
+		"STATUS_DETAIL=leftover process: 4242\n")
 	svc := newService(f.exec)
 
 	out := callOK(t, svc, "status", map[string]any{"ssh": "ssh h", "name": "m1"})
-	if out["service_state"] != "active" {
+	// With the SSH-pipe model there is no remote service: `service_state` reports
+	// the connection state and `connected` is the boolean.
+	if out["service_state"] != "disconnected" {
 		t.Fatalf("service_state wrong: %v", out)
+	}
+	if out["connected"] != false {
+		t.Fatalf("connected wrong: %v", out)
 	}
 	if out["installed_version"] != "xbot-runner v0.0.9" {
 		t.Fatalf("installed_version wrong: %v", out)
 	}
 	detail, _ := out["detail"].(string)
-	if !strings.Contains(detail, "binary=/home/dev/.local/bin/xbot-runner") || !strings.Contains(detail, "systemd unit=") {
+	if !strings.Contains(detail, "binary=/home/dev/.local/bin/xbot-runner") {
 		t.Fatalf("detail wrong: %q", detail)
+	}
+}
+
+// A live supervisor must surface as connected, with its restart counter.
+func TestStatus_ReflectsSupervisorState(t *testing.T) {
+	svc := newService(newFakeExecutor().exec)
+	svc.sups.put(&supervisor{
+		spec:      targetSpec{Name: "m1", ConnMode: connModeTunnel},
+		exec:      svc.exec,
+		connected: true, remotePort: 39042, restarts: 3,
+	})
+
+	out := callOK(t, svc, "status", map[string]any{"ssh": "ssh h", "name": "m1"})
+	if out["service_state"] != "connected" || out["connected"] != true {
+		t.Fatalf("connected state wrong: %v", out)
+	}
+	if toFloat(out["restarts"]) != 3 || toFloat(out["remote_port"]) != 39042 {
+		t.Fatalf("supervisor fields wrong: %v", out)
+	}
+	if d, _ := out["detail"].(string); !strings.Contains(d, "tunnel 127.0.0.1:39042") {
+		t.Fatalf("detail must show the tunnel endpoint: %q", d)
 	}
 }
 
@@ -814,7 +788,6 @@ func TestHandleRPC_ProvisionValidationRunsNoSSH(t *testing.T) {
 		{map[string]any{"ssh": "ssh h"}, "name is required"},
 		{map[string]any{"ssh": "ssh h", "name": "bad name!"}, "invalid name"},
 		{map[string]any{"ssh": "ssh h", "name": "m1"}, "connect_cmd is required"},
-		{map[string]any{"ssh": "ssh h", "name": "m1", "connect_cmd": "--x", "service_mode": "upstart"}, "invalid service_mode"},
 	}
 	for _, tc := range cases {
 		res := callRaw(t, svc, "provision", tc.params)
@@ -838,52 +811,6 @@ func TestJobStatus_UnknownJobReturnsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // systemd unit
 // ---------------------------------------------------------------------------
-
-func TestBuildUnitFile(t *testing.T) {
-	unit, err := buildUnitFile("m1", "/home/dev/.local/bin/xbot-runner", "--server ws://xbot.example:8082/ws --token t0k3n")
-	if err != nil {
-		t.Fatalf("buildUnitFile: %v", err)
-	}
-	for _, want := range []string{
-		"ExecStart=/home/dev/.local/bin/xbot-runner --server ws://xbot.example:8082/ws --token t0k3n",
-		"Restart=always",
-		"RestartSec=5",
-		"WantedBy=default.target",
-	} {
-		if !strings.Contains(unit, want) {
-			t.Errorf("unit missing %q:\n%s", want, unit)
-		}
-	}
-	if _, err := buildUnitFile("m1", "/bin/x", "   "); err == nil {
-		t.Fatal("empty connect_cmd must error")
-	}
-}
-
-func TestBuildUnitFile_TokenLikeContentIsQuoted(t *testing.T) {
-	unit, err := buildUnitFile("m1", "/bin/xbot-runner", `--token abc"def%ghi`)
-	if err != nil {
-		t.Fatalf("buildUnitFile: %v", err)
-	}
-	if !strings.Contains(unit, `\"def%%ghi"`) {
-		t.Fatalf("unsafe token must be quoted and escaped:\n%s", unit)
-	}
-}
-
-func TestSystemdEscapeArg(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"plain-text_1.2:/path", "plain-text_1.2:/path"},
-		{"with space", `"with space"`},
-		{`quote"inside`, `"quote\"inside"`},
-		{`back\slash`, `"back\\slash"`},
-		{"50%done", `"50%%done"`},
-		{"", `""`},
-	}
-	for _, tc := range cases {
-		if got := systemdEscapeArg(tc.in); got != tc.want {
-			t.Errorf("systemdEscapeArg(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
 
 // ---------------------------------------------------------------------------
 // job store concurrency / snapshot semantics
@@ -928,5 +855,20 @@ func TestJobStore_SnapshotIsCopy(t *testing.T) {
 	again, _ := st.snapshot(rec.id)
 	if again.Steps[0].Name != "a" {
 		t.Fatal("snapshot must not alias internal state")
+	}
+}
+
+// toFloat reads a number out of a JSON-decoded RPC result (numbers arrive as
+// float64 after the marshal/unmarshal round trip).
+func toFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return -1
 	}
 }

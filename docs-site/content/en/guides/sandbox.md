@@ -124,9 +124,18 @@ each with its own name and token. Bindings are per session, so two sessions can
 work on two different machines simultaneously. Nothing is keyed by user — see
 `docs/design/runner-ssh-provisioning.md`.
 
-**Provisioning**: the built-in `xbot.ssh-runner` plugin (`plugins/xbot-ssh-runner/`)
-takes an SSH command, probes the machine, installs and starts `xbot-runner`, and
-registers it — no manual steps on the remote host.
+**Provisioning & connection model (VS Code Remote style)**: the built-in
+`xbot.ssh-runner` plugin (`plugins/xbot-ssh-runner/`) takes an SSH command,
+probes the machine, installs `xbot-runner`, and then **connects** by opening an
+SSH session in which the runner runs in the **foreground** — the pipe owns its
+lifetime, and every (re)connect kills the previous runner before starting a new
+one, so two runners can never race for the same name.
+
+By default the connection is **tunnelled** (`ssh -R`): the runner dials
+`127.0.0.1:<port>` on the managed machine and that port is forwarded back to your
+server, so **the managed machine needs no network path to the server at all** —
+only you need to reach it over SSH (works behind NAT on both sides). Set
+`connectionMode: direct` if the machine can reach the server on its own.
 {{< /hint >}}
 
 ### SandboxRouter Architecture

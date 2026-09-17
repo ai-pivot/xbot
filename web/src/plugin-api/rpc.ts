@@ -79,8 +79,11 @@ export interface BackendRPC {
     params: { session_key: string; tool_call_id?: string }
     result: { ok: boolean; task_id: string }
   }
-  // ---- xbot.ssh-runner：SSH 纳管远程机器（探测 → 安装 runner → 会话切换）----
+  // ---- xbot.ssh-runner：SSH 纳管远程机器（VS Code Remote 式 SSH 管道）----
   // 插件后端方法（含点号 → 路由到插件进程）。
+  // 模型：runner 不常驻远端 —— provision 只安装二进制；connect 由后端发起一条
+  // SSH 会话，runner 跑在该会话前台（管道断 = runner 死），重连先杀老 runner
+  // 再起新的；默认 tunnel（ssh -R 反向隧道，远端无需能访问 server）。
   'xbot.ssh-runner.probe': {
     params: { ssh: string }
     result: {
@@ -99,15 +102,38 @@ export interface BackendRPC {
     params: {
       ssh: string
       name: string
-      /** 远端启动参数串（来自 runner_create 的 command，原样透传，不由前端拼 URL）。 */
-      connect_cmd: string
       download_base: string
       install_dir: string
-      service_mode: string
       dry_run?: boolean
     }
-    /** 异步作业——立即返回 job_id，用 job_status 轮询。 */
+    /** 异步作业——立即返回 job_id，用 job_status 轮询。仅安装二进制，不启动任何服务。 */
     result: { job_id: string }
+  }
+  'xbot.ssh-runner.connect': {
+    params: {
+      ssh: string
+      name: string
+      /** 远端启动参数串（来自 runner_create 的 command，原样透传，不由前端拼 URL）。 */
+      connect_cmd: string
+      install_dir: string
+      /** 'tunnel'（默认）：ssh -R 反向隧道，远端无需能访问 server；'direct'：runner 直连 server。 */
+      connection_mode?: 'tunnel' | 'direct'
+      /** true：后端持久化该目标，插件重启后自动重新连接（自愈）。 */
+      auto_connect?: boolean
+    }
+    /** 立即返回（supervisor 已武装，SSH 会话在后端后台存活）——用 status 轮询直到 connected。 */
+    result: {
+      connected: boolean
+      mode: string
+      remote_port?: number
+      restarts: number
+      connected_at?: string
+      last_error?: string
+    }
+  }
+  'xbot.ssh-runner.disconnect': {
+    params: { ssh: string; name: string }
+    result: { connected: boolean }
   }
   'xbot.ssh-runner.job_status': {
     params: { job_id: string }
@@ -123,16 +149,37 @@ export interface BackendRPC {
   }
   'xbot.ssh-runner.status': {
     params: { ssh: string; name: string }
-    result: { installed_version: string; service_state: string; detail: string }
+    result: {
+      installed_version: string
+      /** 连接态权威来源：connected / reconnecting（supervisor 在重连）/ disconnected。 */
+      service_state: 'connected' | 'reconnecting' | 'disconnected'
+      detail: string
+      connected: boolean
+      connection_mode: string
+      restarts: number
+      connected_at: string
+      remote_port: number
+      last_error: string
+    }
   }
   'xbot.ssh-runner.logs': {
     params: { ssh: string; name: string; lines: number }
-    result: { lines: string[] }
+    result: { lines: string[]; source: 'ssh-session' | 'remote-log' }
   }
   // 核心 runner 注册表 / 会话目标（无点号 → 核心 RPC；单用户全局，无用户维度）。
   'runner_create': {
-    params: { name: string; mode?: string; docker_image?: string; workspace?: string }
-    /** command = 远端启动参数串（--server ws://… --token …），原样传给 provision.connect_cmd。 */
+    params: {
+      name: string
+      mode?: string
+      docker_image?: string
+      workspace?: string
+      /** 既有 runner 的 LLM 配置回传（re-key 时保留，不让面板的连接动作重置机器设置）。 */
+      llm_provider?: string
+      llm_api_key?: string
+      llm_model?: string
+      llm_base_url?: string
+    }
+    /** command = 远端启动参数串（--server ws://… --token …），原样传给 xbot.ssh-runner.connect.connect_cmd。 */
     result: { name: string; token: string; command: string }
   }
   'runner_list': {
@@ -145,6 +192,12 @@ export interface BackendRPC {
         workspace: string
         online: boolean
         created_at: string
+        version?: string
+        // The runner may declare a local LLM (omitempty on the server side).
+        llm_provider?: string
+        llm_api_key?: string
+        llm_model?: string
+        llm_base_url?: string
       }>
     }
   }

@@ -2,87 +2,71 @@
 
 内置 **stdio 插件**（独立 Go module，仅依赖 `plugin/protocol`，零外部依赖）。
 
-职责边界：**控制面只做「纳管 + 装机」**——用一条 SSH 命令探测目标机器、下载并安装
-`xbot-runner`、注册为 systemd user unit（或 nohup 兜底）并启动。
-**执行链路不归本插件**：装好之后的 `xbot-runner` 自己通过 WebSocket 连回 server，
-工具执行仍走既有 runner 协议。
+## 模型：VS Code Remote 式 SSH 管道
+
+**runner 不是远端常驻服务**。每次连接由我们这侧发起一条 SSH 会话，`xbot-runner` 在该会话的
+**前台**运行 —— 管道断 = runner 死。四条硬契约：
+
+| 契约 | 做法 |
+|---|---|
+| 连接由我们发起 | supervisor 持有长时 SSH 会话；远端命令用 `exec` 起 runner（**不是** `nohup`/`&`） |
+| 每次（重）连**先杀老 runner** | 远端脚本**开头**执行 `pkill -f 'xbot-runner.*--name[= ]<name>([[:space:]]\|$)'`（名字锚定+转义，不会误杀 `m10`），随后才 `exec` 新进程 ⇒ 同名永不并存两个 runner |
+| 断线自动重连 | 会话结束即退避重试（1s→15s 封顶），重连再次「杀老 + 起新」；`status.restarts` 可见 |
+| server 不装到远端 | `tunnel`（默认）用 `ssh -R` 把远端 `127.0.0.1:<rport>` 转发到我们这里的 server，runner 只 dial `127.0.0.1:<rport>` ⇒ **远端无需任何到 server 的网络可达性**（内网/NAT 均可）。`direct` 为显式选择，runner 直连 `--server` 地址（**无静默回退**） |
 
 ```
-浏览器面板 ──ctx.rpc.call('xbot.ssh-runner.<method>', …)──▶ 本插件进程 ──ssh──▶ 目标机器
-                                                                        （安装并启动 xbot-runner，
-                                                                          之后由它自己连回 server）
+ssh [-R 127.0.0.1:<rport>:127.0.0.1:<sport>] <host> \
+    '<pkill 老 runner>; exec <install_dir>/xbot-runner --server ws://127.0.0.1:<rport>/ws --token … --name …'
 ```
 
-## 构建 / 安装
+`provision` 只负责**把二进制装好**；连接由 `connect` 建立。
 
-```bash
-cd plugins/xbot-ssh-runner
-make build                 # → bin/ssh-runner-plugin
-make vet test              # go vet ./... / go test ./...
-make install               # 装到 ~/.xbot/plugins/xbot.ssh-runner/
-make install PLUGIN_DIR=/tmp/x   # 或指定目录
+## 职责边界
+
+控制面**只做「纳管 + 装机 + 连接」**；**执行链路不归本插件**：runner 装好并由 `connect`
+拉起后，它自己通过 WebSocket 连回 server，工具执行仍走既有 runner 协议。
+
+```
+浏览器面板 ──ctx.rpc.call('xbot.ssh-runner.<method>')──▶ 本插件进程 ──ssh──▶ 目标机器
+                                                                      （跑 runner，前台随管道）
+        ▲                                                                        │
+        └──────────────── 核心 RPC（runner_create / runner_session_set / …）◀────┘
 ```
 
-## RPC 方法（前端经 `web_plugin_rpc` 调用）
+## RPC 方法
 
-| 方法 | 参数 | 返回 | 同步性 |
+前端经 `ctx.rpc.call('xbot.ssh-runner.<method>', params)` 调用。
+
+| 方法 | 参数 | 返回 | 说明 |
 |---|---|---|---|
-| `probe` | `{ssh, install_dir?}` | `{os, arch, user, is_root, has_systemd, has_curl, has_wget, installed_version, install_dir}` | 同步（只读，15s 超时） |
-| `provision` | `{ssh, name, connect_cmd, download_base?, install_dir?, service_mode?, dry_run?}` | `{"job_id":"…"}` **立即返回** | 异步（后台 job） |
-| `job_status` | `{job_id}` | `{job_id, kind, name, state: running\|done\|failed, steps:[{name,ok,detail}], error}` | 同步（只查内存表，立即返回） |
-| `deprovision` | `{ssh, name, uninstall?}` | `{"job_id":"…"}` | 异步（后台 job） |
-| `status` | `{ssh, name}` | `{installed_version, service_state, detail}` | 同步（只读） |
-| `logs` | `{ssh, name, lines?}` | `{lines: [...]}` | 同步（只读，lines 默认 200、上限 2000） |
+| `probe` | `{ssh}` | `{os, arch, user, is_root, has_curl, has_wget, installed_version, install_dir}` | **只读**探测 |
+| `provision` | `{ssh, name, download_base, install_dir, dry_run?}` | `{job_id}` | **仅安装**：探测 → 下载 → sha256 校验 → 杀老 runner → 原子落盘。不启动服务 |
+| `connect` | `{ssh, name, connect_cmd, install_dir, connection_mode?}` | `{connected, mode, remote_port?, restarts, connected_at?, last_error?}` | 起受管 SSH 会话（先杀老 runner）；立即返回，会话在后台 |
+| `disconnect` | `{ssh, name}` | `{connected:false}` | 拆管道 + 杀远端 runner |
+| `status` | `{ssh, name}` | `{installed_version, service_state, detail, connected, connection_mode, restarts, connected_at, remote_port, last_error}` | `service_state` ∈ `connected` / `reconnecting` / `disconnected` |
+| `logs` | `{ssh, name, lines}` | `{lines[], source}` | `source=ssh-session`（管道输出环形缓冲）或 `remote-log`（旧安装遗留日志） |
+| `deprovision` | `{ssh, name, uninstall}` | `{job_id}` | 拆管道 → 杀进程 →（可选）删二进制 |
+| `job_status` | `{job_id}` | `{state, steps[{name,ok,detail}], error}` | `provision` / `deprovision` 的异步进度 |
 
-未知方法返回 `rpcErr("unknown method: X")`。
+`connection_mode`：`tunnel`（默认）| `direct`。插件配置 `connectionMode` 提供默认值，targets 条目可覆盖。
 
-**为什么 provision 必须异步**：宿主对单个插件 RPC 有 30s 硬超时，超时**会杀掉插件进程**
-（`plugin/runtime.go` 的 `pluginCallTimeout`）。装机含下载 10–20MB + 多轮 ssh，必然超时，
-所以长任务一律在后台 goroutine 里跑，状态经 `job_status` 轮询。
+## 为什么必须异步
 
-`provision` 的 job 步骤（成功路径）：
+宿主对插件 RPC 有 **30s 硬超时，且超时会直接杀掉插件进程**（`plugin/runtime.go`）——
+被杀则**所有管道一起断**。所以 `provision` / `deprovision` 返回 `job_id` 由前端轮询；
+`connect` 只是把 supervisor 装好就返回（长时 SSH 会话在后台持有）。
 
-```
-detect → prepare-dir → download → verify → stop-old → install → service → start
-```
+## 自愈（`state.json`）
 
-- `service_mode=systemd`（默认）：写 `~/.config/systemd/user/xbot-runner-<name>.service`
-  （`ExecStart=<install_dir>/xbot-runner <connect_cmd 参数>`、`Restart=always`、`RestartSec=5`），
-  `systemctl --user daemon-reload && enable --now`；远端无 systemd（或 `--user` 起不来，
-  如无用户 D-Bus）时**自动降级为 nohup**，并在 `start` 步骤 detail 里标注。
-- `service_mode=nohup`：`nohup <bin> <args> >> ~/.xbot-runner/<name>.log 2>&1 &` + pid 文件。
-- 幂等：重复 provision 同名目标会先停旧服务（systemd stop / 杀 pid 文件的进程），
-  二进制用同目录内 `install + mv` 原子替换，不会叠加多个进程、也不会撞 `ETXTBSY`。
-- `dry_run=true`：只做只读探测（detect/prepare-dir），其余步骤以 `dry-run: …` 计划记录，
-  不下载、不写盘。
+管道由本插件进程持有 ⇒ 进程重启（server 重启 / 30s RPC 超时被杀）会断开全部管道。
+`connect` 成功后把监督项写入插件目录的 `state.json`（**0600**，tmp+rename 原子写），
+`Activate` 时对 `auto_connect: true` 的条目**自动重新 connect**（自动重开管道；重连又会先杀老 runner）。
+**opt-in**：只有勾选 autoConnect 的目标才自愈；失败仅记日志、条目保留待重试，不阻塞启动。
+`connect_cmd` 含 runner token（同机 DB 里本就明文存有），故文件严格 0600。
 
-## SSH 执行规范
+## 安全
 
-- `ssh` 参数是用户给的**完整命令前缀**，例如 `ssh user@1.2.3.4 -p 2222`、`ssh -i ~/.ssh/k user@host`。
-  实现按 `strings.Fields` 拆词后原样传给本机 ssh 客户端，**脚本作为最后一个 argv 元素**
-  （远端登录 shell 执行它）。
-- 统一注入（**用户已自带同名 `-o` 选项则跳过**，大小写不敏感）：
-  `-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new`。
-  默认项插在程序名之后、用户参数之前，保证用户把 host 写在前面（`ssh user@host -p 2222`）时
-  默认项也一定被 ssh 解析。用户的参数顺序逐字保留。
-- 超时：probe 15s；下载步骤 300s；装机/卸载命令 60s；同步 RPC（status/logs）20s
-  —— 同步调用必须留在宿主 30s RPC 预算内（超时会杀插件进程）。
-
-## 凭据策略
-
-- SSH 凭据**不落盘、不进日志/事件**：`ssh` 前缀原样用于本机 ssh 调用，
-  日志与步骤 detail 一律经 `maskSSH` 脱敏为 `<prog> <user@host> <redacted>`
-  （私钥路径、端口、`-o` 参数全部打码）。私钥沿用 server 主机 `~/.ssh` 与 ssh-agent。
-- `connect_cmd`（含 runner token）不在步骤 detail 中回显；它只会写进远端 unit 文件 /
-  nohup 命令行 —— 这是 runner 自身的连接方式所必需。
-
-## 已知限制 / 设计取舍
-
-- `ssh` 前缀须以 ssh 客户端开头（`ssh`、绝对路径均可）；`sshpass`/`sudo` 之类的包装命令
-  不受支持（默认选项注入在程序名之后，会破坏包装命令的参数解析）。
-- `strings.Fields` 拆词意味着前缀里**不能带引号参数**（如含空格的 `-o "ProxyCommand=…"`）。
-- 远端平台仅支持 `linux`/`darwin` × `amd64`/`arm64`（与 release 产物矩阵一致），其余明确报错。
-- `deprovision({uninstall:true})` 通过常见路径（`~/.local/bin`、`/usr/local/bin`、PATH）
-  发现二进制；非默认安装目录的二进制可能删不掉（会在步骤 detail 里如实说明）。
-- job 表在内存中（上限 128 条，先清理已完成项）；插件进程重启后 `job_status` 会返回
-  `unknown job`，但远端状态不受影响（所有方法都是无状态的，每次调用自带 `ssh`/`name`）。
+- **SSH 凭据不落库、不进日志**：只存用户给的 SSH 命令/别名；私钥沿用 server 主机的 `~/.ssh` + agent。
+- 日志中的 ssh 参数做脱敏（`user@host` 之外打码）。
+- 每次 RPC 自带 `ssh`/`name`，插件不缓存凭据。
+- `pkill` 模式**锚定 runner 名并转义正则元字符**，不会波及其它进程。

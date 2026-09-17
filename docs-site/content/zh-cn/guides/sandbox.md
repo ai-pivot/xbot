@@ -117,7 +117,14 @@ xbot-runner --server ws://your-server.com:8080/ws --token your-secure-token --na
 {{< hint type=tip >}}
 **多机器、单 operator**：任意数量的 runner 可同时连接，各带独立名称与 token。绑定是**会话级**的，因此两个会话可以同时跑在两台不同机器上。所有维度都不带用户 —— 见 `docs/design/runner-ssh-provisioning.md`。
 
-**自动纳管**：内置插件 `xbot.ssh-runner`（`plugins/xbot-ssh-runner/`）接受一条 SSH 命令，探测目标机器、自动安装并启动 `xbot-runner` 并完成注册 —— 远端无需手工操作。
+**自动纳管与连接模型（VS Code Remote 式）**：内置插件 `xbot.ssh-runner`（`plugins/xbot-ssh-runner/`）
+接受一条 SSH 命令，探测目标机器、安装 `xbot-runner`，然后**连接** —— 连接方式是开一条 SSH 会话，
+runner 在该会话的**前台**运行（管道断 = runner 死）；每次（重）连都会**先杀掉老 runner 再起新的**，
+因此同一个 name 永远不会并存两个 runner。
+
+默认走**隧道**（`ssh -R`）：runner 只连目标机器上的 `127.0.0.1:<port>`，该端口被转发回你的 server，
+所以**目标机器完全不需要能访问 server** —— 只需要你能 SSH 到它（两端都在 NAT 后也可以）。
+若机器本身能访问 server，可显式设 `connectionMode: direct`。
 {{< /hint >}}
 
 ### SandboxRouter 架构

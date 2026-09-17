@@ -48,9 +48,17 @@ import (
 func main() {
 	protocol.Run(&protocol.Handler{
 		Activate: func(params *protocol.ActivateParams) (*protocol.ActivateResult, error) {
+			// Re-arm supervised pipes so a plugin/server restart heals itself.
+			defaultService.resumeSupervised()
 			return &protocol.ActivateResult{Result: "ok"}, nil
 		},
-		Deactivate:   func() {},
+		Deactivate: func() {
+			// Host is unloading us: close every pipe (and kill the remote runners)
+			// instead of leaving orphaned ssh children behind.
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			defaultService.sups.StopAll(ctx)
+		},
 		WebPluginRPC: handleWebPluginRPC,
 	})
 }
@@ -63,7 +71,6 @@ const (
 	// defaultDownloadBase mirrors plugin.json's contributes.configuration default.
 	defaultDownloadBase = "https://github.com/ai-pivot/xbot/releases/latest/download"
 	defaultInstallDir   = "/usr/local/bin"
-	defaultServiceMode  = "systemd"
 
 	// sshProbeTimeout bounds read-only probe calls (connect + a few commands).
 	sshProbeTimeout = 15 * time.Second
@@ -113,12 +120,55 @@ func handleWebPluginRPC(p *protocol.WebPluginRPCParams) (*protocol.WebPluginRPCR
 }
 
 type service struct {
-	exec execFunc
-	jobs *jobStore
+	exec  execFunc
+	jobs  *jobStore
+	sups  *supervisorManager
+	state *stateStore
 }
 
 func newService(exec execFunc) *service {
-	return &service{exec: exec, jobs: newJobStore()}
+	return &service{
+		exec:  exec,
+		jobs:  newJobStore(),
+		sups:  newSupervisorManager(exec),
+		state: newStateStore(defaultStatePath()),
+	}
+}
+
+// resumeSupervised re-arms the pipes that were flagged auto_connect.
+//
+// The pipes live in this process, so a plugin restart (server restart, or the
+// host killing us after a 30s RPC overrun) drops every connection. Re-arming on
+// activation is what makes "every connection automatically opens an SSH pipe"
+// hold without requiring the UI to be open.
+func (s *service) resumeSupervised() {
+	if err := s.state.Load(); err != nil {
+		logf("supervision state load failed: %v", err)
+		return
+	}
+	targets := s.state.AutoConnectTargets()
+	if len(targets) == 0 {
+		return
+	}
+	logf("resuming %d supervised connection(s)", len(targets))
+	for _, t := range targets {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := s.sups.Connect(ctx, targetSpec{
+			SSHField:   t.SSH,
+			Name:       t.Name,
+			ConnectCmd: t.ConnectCmd,
+			InstallDir: t.InstallDir,
+			ConnMode:   t.ConnMode,
+		})
+		cancel()
+		if err != nil {
+			// Non-fatal: the target stays in the state file so the next activation
+			// (or an explicit connect from the UI) retries.
+			logf("auto-connect %q failed: %v", t.Name, err)
+			continue
+		}
+		logf("auto-connected %q", t.Name)
+	}
 }
 
 func (s *service) handleRPC(p *protocol.WebPluginRPCParams) (*protocol.WebPluginRPCResult, error) {
@@ -136,6 +186,10 @@ func (s *service) handleRPC(p *protocol.WebPluginRPCParams) (*protocol.WebPlugin
 		return s.handleProbe(params)
 	case "provision":
 		return s.handleProvision(params)
+	case "connect":
+		return s.handleConnect(params)
+	case "disconnect":
+		return s.handleDisconnect(params)
 	case "job_status":
 		return s.handleJobStatus(params)
 	case "deprovision":
@@ -147,6 +201,87 @@ func (s *service) handleRPC(p *protocol.WebPluginRPCParams) (*protocol.WebPlugin
 	default:
 		return rpcErr(fmt.Sprintf("unknown method: %s", p.Method)), nil
 	}
+}
+
+// handleConnect establishes (or re-establishes) the SSH-supervised runner for a
+// target. It is synchronous but returns immediately: the supervisor arms itself
+// and owns the long-lived SSH session in the background (an RPC cannot hold the
+// session open — the host kills the plugin process after 30s).
+//
+// Semantics: kill-old-then-start. A reconnect therefore never leaves two
+// runners competing for the same registry slot.
+func (s *service) handleConnect(params map[string]any) (*protocol.WebPluginRPCResult, error) {
+	sshField := strParam(params, "ssh")
+	if sshField == "" {
+		return rpcErr(`ssh is required (e.g. "ssh user@host")`), nil
+	}
+	name := strParam(params, "name")
+	if err := validateTargetName(name); err != nil {
+		return rpcErr(err.Error()), nil
+	}
+	connectCmd := strParam(params, "connect_cmd")
+	if strings.TrimSpace(connectCmd) == "" {
+		return rpcErr("connect_cmd is required (from runner_create / RunnerConnectCmd)"), nil
+	}
+	installDir := strParam(params, "install_dir")
+	if installDir == "" {
+		installDir = "/usr/local/bin"
+	}
+	mode := strParam(params, "connection_mode")
+	if mode == "" {
+		mode = connModeTunnel
+	}
+	autoConnect := boolParam(params, "auto_connect")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	st, err := s.sups.Connect(ctx, targetSpec{
+		SSHField:   sshField,
+		Name:       name,
+		ConnectCmd: connectCmd,
+		InstallDir: installDir,
+		ConnMode:   mode,
+	})
+	if err != nil {
+		return rpcErr(fmt.Sprintf("connect %s: %v", name, err)), nil
+	}
+	// Remember the target so a plugin/server restart can re-arm it (self-healing
+	// "every connection automatically opens an SSH pipe"). Opt-in via auto_connect.
+	if sErr := s.state.Put(supervisedTarget{
+		SSH:         sshField,
+		Name:        name,
+		ConnectCmd:  connectCmd,
+		InstallDir:  installDir,
+		ConnMode:    st.Mode,
+		AutoConnect: autoConnect,
+	}); sErr != nil {
+		// The connection is up; failing to persist only affects self-healing.
+		logf("persist supervision state for %q failed: %v", name, sErr)
+	}
+	logf("connect target=%q ssh=%s mode=%s auto_connect=%v", name, maskSSH(sshField), st.Mode, autoConnect)
+	return rpcOK(st), nil
+}
+
+// handleDisconnect tears the pipe down: cancel the supervisor and kill the
+// remote runner (the supervisor also kills on every reconnect, so this is the
+// explicit "stop" path).
+func (s *service) handleDisconnect(params map[string]any) (*protocol.WebPluginRPCResult, error) {
+	sshField := strParam(params, "ssh")
+	name := strParam(params, "name")
+	if err := validateTargetName(name); err != nil {
+		return rpcErr(err.Error()), nil
+	}
+	if s.sups.StatusOf(name).Mode == "" && sshField == "" {
+		return rpcErr(`ssh is required to kill a runner this process does not supervise`), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	s.sups.Stop(ctx, name)
+	if sErr := s.state.Delete(name); sErr != nil {
+		logf("clear supervision state for %q failed: %v", name, sErr)
+	}
+	logf("disconnect target=%q", name)
+	return rpcOK(map[string]any{"connected": false}), nil
 }
 
 func rpcErr(msg string) *protocol.WebPluginRPCResult {
@@ -392,7 +527,6 @@ type provisionParams struct {
 	ConnectCmd   string
 	DownloadBase string
 	InstallDir   string
-	ServiceMode  string
 	DryRun       bool
 }
 
@@ -403,7 +537,6 @@ func parseProvisionParams(params map[string]any) (provisionParams, error) {
 		ConnectCmd:   strParam(params, "connect_cmd"),
 		DownloadBase: strParam(params, "download_base"),
 		InstallDir:   strParam(params, "install_dir"),
-		ServiceMode:  strParam(params, "service_mode"),
 		DryRun:       boolParam(params, "dry_run"),
 	}
 	if p.SSH == "" {
@@ -422,12 +555,6 @@ func parseProvisionParams(params map[string]any) (provisionParams, error) {
 	if p.InstallDir == "" {
 		p.InstallDir = defaultInstallDir
 	}
-	if p.ServiceMode == "" {
-		p.ServiceMode = defaultServiceMode
-	}
-	if p.ServiceMode != "systemd" && p.ServiceMode != "nohup" {
-		return p, fmt.Errorf("invalid service_mode %q: want systemd or nohup", p.ServiceMode)
-	}
 	return p, nil
 }
 
@@ -437,7 +564,7 @@ func (s *service) handleProvision(params map[string]any) (*protocol.WebPluginRPC
 		return rpcErr(err.Error()), nil
 	}
 	job := s.jobs.create("provision", p.Name)
-	logf("provision job=%s target=%q ssh=%s mode=%s dry_run=%v", job.id, p.Name, maskSSH(p.SSH), p.ServiceMode, p.DryRun)
+	logf("provision job=%s target=%q ssh=%s dry_run=%v", job.id, p.Name, maskSSH(p.SSH), p.DryRun)
 	// Async: the host kills the plugin process when a single RPC exceeds 30s,
 	// so anything longer than a validation must run in the background. All
 	// state is surfaced via job_status.
@@ -466,9 +593,8 @@ func (s *service) runProvision(jobID string, p provisionParams) {
 		return
 	}
 	isRoot := strings.TrimSpace(kv["UID"]) == "0"
-	hasSystemd := strings.TrimSpace(kv["SYSTEMCTL"]) != ""
 	s.jobs.addStep(jobID, "detect", true,
-		fmt.Sprintf("%s/%s (root=%v, systemd=%v)", plat.OS, plat.Arch, isRoot, hasSystemd))
+		fmt.Sprintf("%s/%s (root=%v)", plat.OS, plat.Arch, isRoot))
 
 	// 2. choose install dir (non-root fallback: ~/.local/bin).
 	out, err = s.exec(ctx, p.SSH, sshCommandTimeout, prepareDirScript(p.InstallDir, p.DryRun))
@@ -489,7 +615,7 @@ func (s *service) runProvision(jobID string, p provisionParams) {
 	s.jobs.addStep(jobID, "prepare-dir", true, dirDetail)
 
 	if p.DryRun {
-		s.planProvision(jobID, p, plat, installDir, hasSystemd)
+		s.planProvision(jobID, p, plat, installDir)
 		return
 	}
 
@@ -528,19 +654,15 @@ func (s *service) runProvision(jobID string, p provisionParams) {
 	}
 	s.jobs.addStep(jobID, "verify", true, "sha256 ok: "+clipRunes(expected, 12)+"…")
 
-	// 5. stop any previous service with the same name (idempotency: never end
-	// up with two runners for one target).
-	out, err = s.exec(ctx, p.SSH, sshCommandTimeout, stopOldScript(p.Name))
+	// 5. kill any previous runner process for this name (kill-old-first: a runner
+	// must never survive a re-provision, or two processes would fight over the
+	// same registry slot).
+	out, err = s.exec(ctx, p.SSH, sshCommandTimeout, markScript("kill-old", killRunnerScript(p.Name)))
 	if err != nil {
-		fail("stop-old", fmt.Errorf("stop previous service failed: %v", err))
+		fail("kill-old", fmt.Errorf("kill previous runner failed: %v", err))
 		return
 	}
-	kv = parseKeyValueLines(out)
-	stopped := strings.TrimSpace(kv["STOPPED"])
-	if stopped == "" {
-		stopped = "no previous service found"
-	}
-	s.jobs.addStep(jobID, "stop-old", true, stopped)
+	s.jobs.addStep(jobID, "kill-old", true, "ensured no stale xbot-runner for this name is running")
 
 	// 6. install (atomic replace: download dir lives on the same filesystem, so
 	// mv is a rename — this also avoids ETXTBSY when the old binary is running).
@@ -562,82 +684,27 @@ func (s *service) runProvision(jobID string, p provisionParams) {
 	}
 	s.jobs.addStep(jobID, "install", true, installDetail)
 
-	// 7. service definition.
-	binPath := strings.TrimRight(installDir, "/") + "/xbot-runner"
-	useSystemd := p.ServiceMode == "systemd" && hasSystemd
-	if useSystemd {
-		unit, uErr := buildUnitFile(p.Name, binPath, p.ConnectCmd)
-		if uErr != nil {
-			fail("service", uErr)
-			return
-		}
-		out, err = s.exec(ctx, p.SSH, sshCommandTimeout, unitScript(p.Name, unit))
-		if err != nil {
-			fail("service", fmt.Errorf("write systemd unit failed: %v", err))
-			return
-		}
-		kv = parseKeyValueLines(out)
-		unitPath := strings.TrimSpace(kv["UNIT_PATH"])
-		if unitPath == "" {
-			unitPath = "~/.config/systemd/user/xbot-runner-" + p.Name + ".service"
-		}
-		s.jobs.addStep(jobID, "service", true, "unit written: "+unitPath)
-	} else {
-		reason := "service_mode=nohup"
-		if p.ServiceMode == "systemd" {
-			reason = "systemd not available on remote"
-		}
-		s.jobs.addStep(jobID, "service", true, "no unit file ("+reason+")")
-	}
-
-	// 8. start.
-	var systemdErr error
-	if useSystemd {
-		out, err = s.exec(ctx, p.SSH, sshCommandTimeout, startSystemdScript(p.Name))
-		if err == nil {
-			kv = parseKeyValueLines(out)
-			state := orDefault(strings.TrimSpace(kv["SERVICE_STATE"]), "unknown")
-			s.jobs.addStep(jobID, "start", true, "systemctl --user enable --now → "+state)
-			s.jobs.finish(jobID, nil)
-			logf("provision job=%s done: target=%q bin=%s", jobID, p.Name, installedBin)
-			return
-		}
-		// e.g. no user D-Bus session over plain ssh — fall back to nohup and
-		// mark the downgrade in the step detail.
-		systemdErr = err
-		logf("provision job=%s systemd start failed (%v); falling back to nohup", jobID, err)
-	}
-	out, err = s.exec(ctx, p.SSH, sshCommandTimeout, nohupScript(p.Name, binPath, p.ConnectCmd))
-	if err != nil {
-		fail("start", fmt.Errorf("start via nohup failed: %v", err))
-		return
-	}
-	kv = parseKeyValueLines(out)
-	pid := orDefault(strings.TrimSpace(kv["NOHUP_PID"]), "?")
-	startDetail := "nohup started (pid " + pid + "); log: ~/.xbot-runner/" + p.Name + ".log"
-	if systemdErr != nil {
-		startDetail = "systemd start failed (" + clipRunes(systemdErr.Error(), 200) +
-			") → fell back to nohup (pid " + pid + ")"
-	}
-	s.jobs.addStep(jobID, "start", true, startDetail)
+	// 7. done — install only.
+	//
+	// The runner is deliberately NOT started here. Connections are established by
+	// `connect`, which runs the runner in the FOREGROUND of an SSH session (VS Code
+	// Remote model): the pipe owns the runner's lifetime, and every (re)connect
+	// kills the previous runner before starting a new one. Provisioning therefore
+	// leaves no resident state behind and stays idempotent.
+	s.jobs.addStep(jobID, "ready", true,
+		"installed "+installedBin+"; call connect to start it over an SSH session")
 	s.jobs.finish(jobID, nil)
-	logf("provision job=%s done: target=%q bin=%s", jobID, p.Name, installedBin)
+	logf("provision job=%s done (install only): target=%q bin=%s", jobID, p.Name, installedBin)
 }
 
 // planProvision records the dry-run plan (no writes are performed).
-func (s *service) planProvision(jobID string, p provisionParams, plat platform, installDir string, hasSystemd bool) {
+func (s *service) planProvision(jobID string, p provisionParams, plat platform, installDir string) {
 	plan := func(name, detail string) { s.jobs.addStep(jobID, name, true, "dry-run: "+detail) }
 	plan("download", fmt.Sprintf("would download %s/%s and %s/checksums.txt", p.DownloadBase, plat.Asset, p.DownloadBase))
 	plan("verify", "would verify sha256("+plat.Asset+") against checksums.txt")
-	plan("stop-old", "would stop any existing xbot-runner-"+p.Name+" service")
+	plan("kill-old", "would kill any running xbot-runner for name "+p.Name)
 	plan("install", "would atomically install to "+strings.TrimRight(installDir, "/")+"/xbot-runner")
-	if p.ServiceMode == "systemd" && hasSystemd {
-		plan("service", "would write ~/.config/systemd/user/xbot-runner-"+p.Name+".service")
-		plan("start", "would run: systemctl --user daemon-reload && systemctl --user enable --now xbot-runner-"+p.Name)
-	} else {
-		plan("service", "no unit file (nohup mode)")
-		plan("start", "would run: nohup <install_dir>/xbot-runner <connect args> >> ~/.xbot-runner/"+p.Name+".log &")
-	}
+	plan("ready", "would be ready; the runner itself is started later by `connect` over an SSH session")
 	s.jobs.finish(jobID, nil)
 	logf("provision job=%s done (dry-run): target=%q", jobID, p.Name)
 }
@@ -686,6 +753,12 @@ func (s *service) runDeprovision(jobID, sshField, name string, uninstall bool) {
 		logf("deprovision job=%s failed at %s: %v", jobID, step, err)
 	}
 
+	// Tear the pipe down first: the runner lives inside our SSH session, so
+	// stopping the supervisor + killing the remote process is what actually ends
+	// it (there is no resident service to stop any more).
+	s.sups.Stop(ctx, name)
+	s.jobs.addStep(jobID, "disconnect", true, "SSH pipe closed and remote runner killed")
+
 	out, err := s.exec(ctx, sshField, sshCommandTimeout, deprovisionStopScript(name))
 	if err != nil {
 		fail("stop", fmt.Errorf("stop service failed: %v", err))
@@ -694,7 +767,7 @@ func (s *service) runDeprovision(jobID, sshField, name string, uninstall bool) {
 	kv := parseKeyValueLines(out)
 	stopped := strings.TrimSpace(kv["STOPPED"])
 	if stopped == "" {
-		stopped = "no running service found"
+		stopped = "no leftover process found"
 	}
 	s.jobs.addStep(jobID, "stop", true, stopped)
 
@@ -753,10 +826,34 @@ func (s *service) handleStatus(params map[string]any) (*protocol.WebPluginRPCRes
 			detail = "binary=" + bin
 		}
 	}
+
+	// The authoritative connection state is the supervisor's: the runner lives in
+	// the foreground of our SSH session, so the remote has no service to inspect.
+	sup := s.sups.StatusOf(name)
+	state := "disconnected"
+	switch {
+	case sup.Connected:
+		state = "connected"
+	case sup.Mode != "":
+		state = "reconnecting"
+	}
+	if sup.RemotePort > 0 {
+		detail = fmt.Sprintf("tunnel 127.0.0.1:%d; %s", sup.RemotePort, detail)
+	}
+	if sup.LastError != "" {
+		detail = strings.TrimSpace(detail + "; last error: " + clipRunes(sup.LastError, 200))
+	}
+
 	return rpcOK(map[string]any{
 		"installed_version": strings.TrimSpace(kv["STATUS_VERSION"]),
-		"service_state":     orDefault(strings.TrimSpace(kv["STATUS_STATE"]), "unknown"),
+		"service_state":     state,
 		"detail":            detail,
+		"connected":         sup.Connected,
+		"connection_mode":   sup.Mode,
+		"restarts":          sup.Restarts,
+		"connected_at":      sup.ConnectedAt,
+		"remote_port":       sup.RemotePort,
+		"last_error":        sup.LastError,
 	}), nil
 }
 
@@ -776,11 +873,22 @@ func (s *service) handleLogs(params map[string]any) (*protocol.WebPluginRPCResul
 	if lines > maxLogLines {
 		lines = maxLogLines
 	}
+
+	// With the SSH-pipe model the runner's output IS the session's output, so the
+	// supervisor's ring buffer is the authoritative log source.
+	if sup, ok := s.sups.get(name); ok {
+		if buf := sup.Tail(lines); len(buf) > 0 {
+			return rpcOK(map[string]any{"lines": buf, "source": "ssh-session"}), nil
+		}
+	}
+
+	// Nothing captured yet (never connected in this process): fall back to a log
+	// file left behind by an older installation, if any.
 	out, err := s.exec(context.Background(), sshField, sshSyncTimeout, logsScript(name, lines))
 	if err != nil {
 		return rpcErr(fmt.Sprintf("logs %s failed: %v", maskSSH(sshField), err)), nil
 	}
-	return rpcOK(map[string]any{"lines": splitLines(out)}), nil
+	return rpcOK(map[string]any{"lines": splitLines(out), "source": "remote-log"}), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -935,26 +1043,6 @@ printf 'SHA_OK=%s\n' "$EXPECT"`
 	return markScript("verify", body)
 }
 
-func stopOldScript(name string) string {
-	body := "NAME=" + shellQuote(name) + `
-STOPPED=""
-if command -v systemctl >/dev/null 2>&1; then
-  if systemctl --user stop "xbot-runner-$NAME.service" >/dev/null 2>&1; then
-    STOPPED="systemd unit stopped"
-  fi
-fi
-PIDFILE="$HOME/.xbot-runner/$NAME.pid"
-if [ -f "$PIDFILE" ]; then
-  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-    kill "$PID" 2>/dev/null || true
-    STOPPED="$STOPPED nohup pid:$PID killed"
-  fi
-fi
-printf 'STOPPED=%s\n' "$STOPPED"`
-	return markScript("stop-old", body)
-}
-
 func installScript(src, installDir, tmpDir string) string {
 	dest := strings.TrimRight(installDir, "/") + "/xbot-runner"
 	body := "SRC=" + shellQuote(src) + "\n" +
@@ -979,59 +1067,6 @@ printf 'CLEANUP=ok\n'`
 	return markScript("install", body)
 }
 
-func unitScript(name, unit string) string {
-	body := "NAME=" + shellQuote(name) + `
-UNIT="$HOME/.config/systemd/user/xbot-runner-$NAME.service"
-mkdir -p "$(dirname "$UNIT")" || { printf 'UNIT_ERROR=cannot create %s\n' "$(dirname "$UNIT")"; exit 22; }
-cat > "$UNIT" <<'XBOT_UNIT_EOF'
-` + unit + `
-XBOT_UNIT_EOF
-printf 'UNIT_PATH=%s\n' "$UNIT"`
-	return markScript("service", body)
-}
-
-func startSystemdScript(name string) string {
-	body := "NAME=" + shellQuote(name) + `
-systemctl --user daemon-reload >/dev/null 2>&1 || { printf 'START_ERROR=systemctl --user daemon-reload failed\n'; exit 23; }
-systemctl --user enable --now "xbot-runner-$NAME.service" >/dev/null 2>&1 || { printf 'START_ERROR=systemctl --user enable --now failed\n'; exit 24; }
-STATE="$(systemctl --user is-active "xbot-runner-$NAME.service" 2>/dev/null || true)"
-printf 'SERVICE_STATE=%s\n' "$STATE"`
-	return markScript("start", body)
-}
-
-func nohupScript(name, binPath, connectCmd string) string {
-	args := strings.Fields(connectCmd)
-	if len(args) == 0 {
-		args = []string{}
-	}
-	invocation := `"$BIN"`
-	for _, a := range args {
-		invocation += " " + shellQuote(a)
-	}
-	body := "NAME=" + shellQuote(name) + "\n" +
-		"BIN=" + shellQuote(binPath) + "\n" + `
-DIR="$HOME/.xbot-runner"
-mkdir -p "$DIR" || { printf 'START_ERROR=cannot create %s\n' "$DIR"; exit 25; }
-LOG="$DIR/$NAME.log"
-PIDFILE="$DIR/$NAME.pid"
-if [ -f "$PIDFILE" ]; then
-  OLDPID="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [ -n "$OLDPID" ] && kill -0 "$OLDPID" 2>/dev/null; then
-    kill "$OLDPID" 2>/dev/null || true
-  fi
-fi
-nohup ` + invocation + ` </dev/null >>"$LOG" 2>&1 &
-NEWPID=$!
-printf '%s\n' "$NEWPID" > "$PIDFILE"
-if kill -0 "$NEWPID" 2>/dev/null; then
-  printf 'NOHUP_PID=%s\n' "$NEWPID"
-else
-  printf 'START_ERROR=process exited immediately\n'
-  exit 26
-fi`
-	return markScript("start-nohup", body)
-}
-
 func statusScript(name string) string {
 	body := "NAME=" + shellQuote(name) + `
 BIN=""
@@ -1041,39 +1076,38 @@ done
 if [ -z "$BIN" ]; then BIN="$(command -v xbot-runner 2>/dev/null || true)"; fi
 VER=""
 if [ -n "$BIN" ]; then VER="$("$BIN" --version 2>/dev/null | head -n1)"; fi
-UNIT="$HOME/.config/systemd/user/xbot-runner-$NAME.service"
-PIDFILE="$HOME/.xbot-runner/$NAME.pid"
-STATE="not-installed"
-DETAIL="no systemd unit or pid file"
-if [ -f "$UNIT" ]; then
-  DETAIL="systemd unit=$UNIT"
-  STATE="unknown"
-  if command -v systemctl >/dev/null 2>&1; then
-    ACTIVE="$(systemctl --user is-active "xbot-runner-$NAME.service" 2>/dev/null || true)"
-    if [ -n "$ACTIVE" ]; then STATE="$ACTIVE"; fi
+# There is no resident service in the SSH-pipe model: report whether a stray
+# runner process for this name is still around (that WOULD be a problem, and
+# connect/provision kill it).
+STRAY="$(pgrep -f "xbot-runner.*--name[= ]$NAME([[:space:]]|$)" 2>/dev/null | head -n1 || true)"
+if [ -z "$BIN" ]; then
+  printf 'STATUS_STATE=not-installed\n'
+  printf 'STATUS_DETAIL=no xbot-runner binary found\n'
+  printf 'STATUS_VERSION=\nSTATUS_BIN=\n'
+  exit 0
   fi
-elif [ -f "$PIDFILE" ]; then
-  DETAIL="nohup pid file=$PIDFILE"
-  STATE="stopped"
-  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then STATE="running"; fi
-fi
-printf 'STATUS_BIN=%s\n' "$BIN"
-printf 'STATUS_VERSION=%s\n' "$VER"
-printf 'STATUS_STATE=%s\n' "$STATE"
-printf 'STATUS_DETAIL=%s\n' "$DETAIL"`
+  if [ -n "$STRAY" ]; then
+  printf 'STATUS_DETAIL=stray runner process pid=%s (cleared on next connect)\n' "$STRAY"
+  else
+  printf 'STATUS_DETAIL=no residual runner process\n'
+  fi
+  printf 'STATUS_STATE=installed\n'
+  printf 'STATUS_VERSION=%s\n' "$VER"
+  printf 'STATUS_BIN=%s\n' "$BIN"`
 	return markScript("status", body)
 }
 
 func logsScript(name string, lines int) string {
 	body := "NAME=" + shellQuote(name) + "\n" +
 		fmt.Sprintf("N=%d\n", lines) + `
-UNIT="$HOME/.config/systemd/user/xbot-runner-$NAME.service"
+# Fallback only: the authoritative log source is the SSH session's own output
+# (source=ssh-session, served from the supervisor's ring buffer). This path
+# surfaces what an OLDER resident installation left behind, if anything.
 LOG="$HOME/.xbot-runner/$NAME.log"
+if [ -f "$LOG" ]; then tail -n "$N" "$LOG" 2>/dev/null || true; fi
+UNIT="$HOME/.config/systemd/user/xbot-runner-$NAME.service"
 if [ -f "$UNIT" ] && command -v journalctl >/dev/null 2>&1; then
   journalctl --user -u "xbot-runner-$NAME.service" -n "$N" --no-pager 2>/dev/null || true
-else
-  if [ -f "$LOG" ]; then tail -n "$N" "$LOG" 2>/dev/null || true; fi
 fi`
 	return markScript("logs", body)
 }
@@ -1081,19 +1115,26 @@ fi`
 func deprovisionStopScript(name string) string {
 	body := "NAME=" + shellQuote(name) + `
 STOPPED=""
-if command -v systemctl >/dev/null 2>&1; then
-  if systemctl --user disable --now "xbot-runner-$NAME.service" >/dev/null 2>&1; then
-    STOPPED="systemd unit stopped"
+# Authoritative path: kill the runner process itself (it lives in an SSH session).
+if pkill -f "xbot-runner.*--name[= ]$NAME([[:space:]]|$)" >/dev/null 2>&1; then
+  STOPPED="runner process killed"
+  sleep 0.3
+  pkill -9 -f "xbot-runner.*--name[= ]$NAME([[:space:]]|$)" >/dev/null 2>&1 || true
   fi
-fi
+  # Leftovers from an older resident-service installation, if any.
+  if [ -f "$HOME/.config/systemd/user/xbot-runner-$NAME.service" ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now "xbot-runner-$NAME.service" >/dev/null 2>&1 || true
+  STOPPED="$STOPPED legacy-unit-disabled"
+  fi
 PIDFILE="$HOME/.xbot-runner/$NAME.pid"
 if [ -f "$PIDFILE" ]; then
   PID="$(cat "$PIDFILE" 2>/dev/null || true)"
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
     kill "$PID" 2>/dev/null || true
-    STOPPED="$STOPPED nohup pid:$PID killed"
+    STOPPED="$STOPPED legacy-pid:$PID killed"
   fi
-fi
+  rm -f "$PIDFILE" 2>/dev/null || true
+  fi
 printf 'STOPPED=%s\n' "$STOPPED"`
 	return markScript("stop", body)
 }
@@ -1135,66 +1176,6 @@ if [ -z "$REMOVED" ]; then
   fi
 fi
 printf 'BIN_REMOVED=%s\n' "$REMOVED"`)
-}
-
-// ---------------------------------------------------------------------------
-// systemd unit
-// ---------------------------------------------------------------------------
-
-// buildUnitFile renders the systemd user unit. connect_cmd is treated as an
-// opaque argument string and split into argv; the path shape of any --server
-// URL is never interpreted here.
-func buildUnitFile(name, binPath, connectCmd string) (string, error) {
-	args := strings.Fields(connectCmd)
-	if len(args) == 0 {
-		return "", errors.New("connect_cmd has no arguments")
-	}
-	execLine := systemdEscapeArg(binPath)
-	for _, a := range args {
-		execLine += " " + systemdEscapeArg(a)
-	}
-	unit := "[Unit]\n" +
-		"Description=xbot runner (" + name + ")\n" +
-		"After=network-online.target\n" +
-		"Wants=network-online.target\n" +
-		"\n" +
-		"[Service]\n" +
-		"Type=simple\n" +
-		"ExecStart=" + execLine + "\n" +
-		"Restart=always\n" +
-		"RestartSec=5\n" +
-		"\n" +
-		"[Install]\n" +
-		"WantedBy=default.target\n"
-	return unit, nil
-}
-
-// systemdEscapeArg renders one argv word for an ExecStart line. systemd is not
-// a shell: it splits on whitespace and applies C-style escapes inside double
-// quotes, and '%' introduces a specifier (escaped as '%%').
-func systemdEscapeArg(s string) string {
-	if s == "" {
-		return `""`
-	}
-	if isSystemdSafeArg(s) {
-		return s
-	}
-	escaped := strings.ReplaceAll(s, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	escaped = strings.ReplaceAll(escaped, `%`, `%%`)
-	return `"` + escaped + `"`
-}
-
-func isSystemdSafeArg(s string) bool {
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '_', r == '-', r == '.', r == ':', r == '/', r == '@', r == '+', r == '=', r == ',':
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // ---------------------------------------------------------------------------

@@ -246,41 +246,81 @@ user_settings:  ('web','cli_user','active_runner','main')   ← 'main' 在 runne
 
 ### 5.3 后端方法（前端经 `ctx.rpc.call('xbot.ssh-runner.<m>')`）
 
-| 方法 | 职责 | 是否写远端 |
+| 方法 | 职责 | 写远端 |
 |---|---|---|
-| `probe {ssh}` | 只读探测：`uname -sm`、是否 root、有无 systemd、出口网络、已装版本、`command -v curl/wget` | 否 |
-| `provision {ssh, name, connect_cmd, download_base?, install_dir?, service_mode?}` | 下载 → `checksums.txt` sha256 校验 → 落盘 → 写 unit（`ExecStart=connect_cmd`）→ `enable --now` → 回报服务状态 | 是（支持 `dry_run`） |
-| `deprovision {ssh, name, uninstall?}` | 停服务、删 unit、（可选）删二进制 | 是 |
-| `status {ssh, name}` | 服务状态 + 已装版本 + 最近日志摘要 | 否 |
-| `logs {ssh, name, lines}` | `journalctl -u ... -n` 或日志尾部 | 否 |
+| `probe {ssh}` | 只读探测：`uname -sm`、是否 root、出口网络、已装版本、`command -v curl/wget` | 否 |
+| `provision {ssh, name, download_base?, install_dir?, dry_run?}` | **仅安装**：下载 → `checksums.txt` sha256 校验 → 杀老 runner → 落盘。**不启动任何服务** | 是（支持 `dry_run`） |
+| `connect {ssh, name, connect_cmd, install_dir?, connection_mode?}` | 起一条受管 SSH 会话，runner 在该会话**前台**运行；连接前**先杀老 runner** | 是 |
+| `disconnect {ssh, name}` | 停 supervisor + `pkill` 远端 runner | 是 |
+| `status {ssh, name}` | 连接状态（`connected`/`reconnecting`/`disconnected`）+ 重启次数 + 隧道端口 + 已装版本 | 否 |
+| `logs {ssh, name, lines}` | 优先返回**管道输出**（supervisor 环形缓冲），否则回落到远端日志文件 | 否 |
+| `deprovision {ssh, name, uninstall?}` | 拆管道 → 杀进程 →（可选）删二进制 | 是 |
 
-**无状态执行器**：每次调用自带 `ssh` 与 `name`（不依赖插件本地缓存）⇒ 插件进程可随时重启/升级而不丢状态。
-**目标注册表**由前端写入插件自身 config（`targets` JSON）—— 宿主托管、跨设备可见、升级不丢。
+**目标注册表**由前端写入插件自身 config（`targets` JSON，含可选 `connectionMode` / `autoConnect`）—— 宿主托管、跨设备可见、升级不丢。
 
-#### 5.3.1 ⚠️ 插件 RPC 的硬约束（实测，直接决定接口形态）
+#### 5.3.1 连接模型：VS Code Remote 式 SSH 管道（2026-09-17 用户要求）
+
+用户原话：「类似 vsc remote 一样，每次连接自动起 ssh 管道然后起 runner 连接我们服务器，且每次重新连接要重新起 runner，杀老 runner。唯一的区别是我们并不是把服务器跑上面，只是 runner 跑上面」。
+
+⇒ **runner 不再是远端常驻服务**（systemd/nohup 已删除），而是：
+
+```
+ssh [-R 127.0.0.1:<rport>:127.0.0.1:<sport>] <host> \
+    '<pkill 老 runner>; exec <install_dir>/xbot-runner --server ws://127.0.0.1:<rport>/ws --token … --name …'
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ runner 在管道前台运行：管道断 = runner 死
+```
+
+四条硬契约：
+
+| 契约 | 实现 |
+|---|---|
+| **连接由我们发起** | supervisor 持有长时 SSH 会话；`ssh` 子进程 = 管道；runner 随管道生死（前台 `exec`，非 `nohup`/`&`） |
+| **每次（重）连先杀老 runner** | 远端脚本**开头**就 `pkill -f 'xbot-runner.*--name[= ]<name>([[:space:]]\|$)'`（名字正则转义、锚定，不会误杀 `m10`）；本地则取消旧 supervisor。⇒ 同一 name 永不并存两个 runner |
+| **断线自动重连** | supervisor 循环：会话结束（无论原因）→ 退避重试（1s→15s 封顶）→ 重连即再杀一次老 + 起新，`status.restarts` 递增 |
+| **server 不用装到远端** | `tunnel`（默认）：`-R` 把远端 `127.0.0.1:<rport>` 转发到我们这里的 server，runner 只 dial `127.0.0.1:<rport>` ⇒ **远端无需任何到 server 的网络可达性**（NAT/内网都行）；<rport> 由 supervisor 在远端探测空闲端口选取（按 name 哈希分窗，避免多次重连撞同一端口）。`direct`：显式选择，runner 直连 `--server` 给定地址（**无静默回退**） |
+
+**为什么不是常驻服务**：常驻 systemd 需要远端能主动连回 server（内网/NAT 场景不成立）、且「改了 token/换机器」会留下孤儿进程与旧连接竞争。管道模型下连接生命周期**与我们一致**，`connect` 即隐式撤销旧连接（对应 R3「单一权威 + 不留孤儿」）。
+
+#### 5.3.3 插件侧自愈（`state.json`）
+
+管道由**插件进程**持有 ⇒ 插件进程重启（server 重启 / 30s RPC 超时被杀）会断开全部管道。为让「每次连接自动起 ssh 管道」在**无人打开浏览器**时也成立：
+
+- `connect` 成功后把监督项（`ssh` / `name` / `connect_cmd` / `install_dir` / `connection_mode` / `auto_connect`）写入插件目录下的 `state.json`（**0600**，tmp+rename 原子写）；`disconnect` 删除该项。
+- `Activate` 时加载该文件，对 `auto_connect: true` 的条目**自动重新 `connect`**（即自动重开管道；重连本身又会先杀老 runner）。
+- **opt-in**：只有显式勾选 autoConnect 的目标才会自愈；失败仅记日志、条目保留待下次重试（不阻塞插件启动）。
+- 凭据权衡：`connect_cmd` 含 runner token（同一台机器的 DB 里本就明文存有该 token），故文件严格 0600 且仅本机可读；不支持文件系统隔离时请勿开启 autoConnect。
+
+#### 5.3.2 ⚠️ 插件 RPC 的硬约束（实测，直接决定接口形态）
 
 | 约束 | 证据 | 设计后果 |
 |---|---|---|
 | **30s 硬超时**：`StdioPluginProcess.Call` 的 `pluginCallTimeout = 30 * time.Second` | `plugin/runtime.go:457, 486-489` | 装机（下载 10–20MB + 多轮 ssh）**必然超时** ⇒ **`provision` 必须异步**：立即返回 `job_id`，前端轮询 `job_status` |
-| **超时会杀进程**：`<-time.After(pluginCallTimeout)` 分支调 `p.stopLocked()` | `plugin/runtime.go:486-489` | 超时不仅失败，还**把插件进程杀掉**（后续调用全挂）⇒ 绝不能同步长任务 |
-| **单飞**：`stdin` 顺序 + 单个 `pending` ⇒ 同一插件同时只允许一个在途调用 | `plugin/runtime.go:463-470`（注释「only one Call can be in-flight at a time」） | 前端的 `status` 轮询与 `provision` 不能并发；需串行化或让长任务在插件内部后台跑 |
+| **超时会杀进程**：`<-time.After(pluginCallTimeout)` 分支调 `p.stopLocked()` | `plugin/runtime.go:486-489` | 超时不仅失败，还**把插件进程杀掉**（后续调用全挂，且**所有管道随之断开**）⇒ 绝不能同步长任务；`connect` 也必须立即返回（supervisor 在后台持有会话） |
+| **单飞**：`stdin` 顺序 + 单个 `pending` ⇒ 同一插件同时只允许一个在途调用 | `plugin/runtime.go:463-470`（注释「only one Call can be in-flight at a time」） | 前端的 `status` 轮询与 `provision` 不能并发；长任务必须在插件内部后台跑（supervisor 即为此） |
 
-⇒ 方法表据此调整为：`provision` / `deprovision` 返回 `{job_id}`；新增 `job_status {job_id}`（纯内存 + 插件日志）；`probe` / `status` / `logs` 保持同步（都是快操作）。
+⇒ 方法表据此调整为：`provision` / `deprovision` 返回 `{job_id}`；`connect` / `disconnect` / `probe` / `status` / `logs` 同步快速返回；`job_status {job_id}` 轮询。
+
+> **注**：管道由插件进程持有 ⇒ 插件进程重启（含 30s 超时被杀、server 重启）会断开全部管道；前端按 `autoConnect` 重新 `connect` 即恢复（重连语义 = 杀老 + 起新，幂等）。
 
 ### 5.4 纳管时序（端到端只用通用接口）
 
 ```
-① 前端 → 核心:  runner_create {name}                    ⇒ {token, connect_cmd}
-② 前端 → 插件:  probe {ssh}                             ⇒ 环境报告（展示给用户确认）
-③ 前端 → 插件:  provision {ssh, name, connect_cmd}       ⇒ {job_id}（异步，<30s 返回）
-   插件内部后台: 下载 → sha256 校验 → 落盘 → 写 unit → enable --now
-④ 前端:        轮询 job_status {job_id}                 ⇒ running/done/failed + 步骤日志
-⑤ 前端 → 核心:  runner_list 轮询                         ⇒ online=true 后高亮
-⑥ 前端 → 核心:  runner_session_set {channel, chat_id, name}  ⇒ 本会话切过去
-   （前端同时把 {name, ssh, install_dir} 写进插件 config.targets）
+① 前端 → 核心:  runner_create {name}                       ⇒ {token, command}
+② 前端 → 插件:  probe {ssh}                                ⇒ 环境报告（展示给用户确认）
+③ 前端 → 插件:  provision {ssh, name, download_base, install_dir}
+   插件后台:     探测平台 → 下载 → sha256 校验 → 杀老 runner → 原子落盘
+④ 前端:        轮询 job_status {job_id}                    ⇒ detect/prepare-dir/download/verify/kill-old/install/ready
+⑤ 前端 → 插件:  connect {ssh, name, connect_cmd: command, install_dir, connection_mode}
+   插件后台:     选空闲远端端口 → ssh -R <隧道> host '<杀老 runner>; exec xbot-runner …'
+⑥ 前端:        轮询 status {ssh, name}                     ⇒ connected=true（否则 reconnecting + last_error）
+⑦ 前端 → 核心:  runner_session_set {channel, chat_id, name}  ⇒ 本会话切过去
+                （前端把 {name, ssh, install_dir, connection_mode, autoConnect} 写进插件 config.targets）
 ```
 
-**agent 侧（可选）**：`contributes.tools` 声明 `ssh_runner` 工具。但插件工具是"桥"，**只能回插件进程、不能调核心 RPC** ⇒ 工具只做"SSH + 装机"并把结果（含 connect 命令）返回给模型，注册/切换由模型走既有的 `config action=runner`。**首期可不做**，UI 路径已闭环。
+**重连**：管道断开 ⇒ supervisor 自动重试（每次都杀老 + 起新）；`status.restarts` 可见。
+**断开**：`disconnect`（或 `deprovision`）⇒ 拆管道 + 杀掉远端 runner。
+
+**agent 侧（可选）**：`contributes.tools` 声明 `ssh_runner` 工具。但插件工具是"桥"，**只能回插件进程、不能调核心 RPC** ⇒ 工具只做"SSH + 装机/连接"并把结果（含 connect 命令）返回给模型，注册/切换由模型走既有的 `config action=runner`。**首期可不做**，UI 路径已闭环。
 
 ### 5.5 安全
 
@@ -344,6 +384,7 @@ user_settings:  ('web','cli_user','active_runner','main')   ← 'main' 在 runne
 | R6 离线硬失败 | `tools/offline_sandbox.go`（`OfflineRunnerSandbox`）+ `SandboxRouter.SandboxForSession` |
 | R7 协议版本 | `internal/runnerproto` 的 `ProtocolVersion`/`RegisterRequest.{RunnerName,Version,ProtocolVersion}`；`tools/remote_sandbox.go` 的版本闸门；端点 `/ws` |
 | R8 文档 | 本文件 + `AGENTS.md` + `docs/agent/{architecture,tools}.md` + `docs-site/content/{en,zh-cn}/{architecture.md,guides/sandbox.md}` |
-| 插件（控制面） | `plugins/xbot-ssh-runner/`（独立 module，只依赖 `plugin/protocol`：probe/provision/job_status/deprovision/status/logs）+ `web/src/plugins/ssh-runner/index.tsx`（右侧栏面板）+ esbuild 接线（`release.yml` 前端 job、`Makefile`） |
+| 插件（控制面） | `plugins/xbot-ssh-runner/`（独立 module，只依赖 `plugin/protocol`）+ `web/src/plugins/ssh-runner/index.tsx`（右侧栏面板）+ esbuild 接线（`release.yml` 前端 job、`Makefile`）。**连接模型 = SSH 管道**：`main.go`（方法/步进脚本）、`supervisor.go`（每目标一个 supervisor：`ssh -R` 隧道、前台跑 runner、**先杀老**、断线退避重连、输出环形缓冲）、`state.go`（`state.json` 0600 原子写：`auto_connect` 目标在插件重启后自动重开管道） |
+| 连接模型（用户 2026-09-17 追加要求） | 见 §5.3.1：连接由我们发起、runner 跑在管道**前台**、每次（重）连**先杀老 runner**、`tunnel` 默认让远端无需可达 server；systemd/nohup 常驻路径**已删除** |
 
-**验证**：`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿；前端 `tsc --noEmit` 0 错、`vitest run src/plugins/ssh-runner` 9/9；插件 module `go build/vet/test` 通过。
+**验证**：`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿；前端 `tsc --noEmit` 0 错 + `vitest` 全绿；插件 module `go build/vet/test` 通过（含 `supervisor_test.go`：隧道改写/直连不改写/杀老在新进程之前/同名 kill 模式锚定与转义/独占 Connect/Stop 远端 pkill/断线重连/Tail 有界/预检缺失二进制/StopAll；`state_test.go`：往返/自动重连过滤/0600/原子写/损坏报错）。
