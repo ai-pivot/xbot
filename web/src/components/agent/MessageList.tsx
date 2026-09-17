@@ -243,6 +243,38 @@ const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry
   return v.itemSizeCache?.get(item.key) ?? item.size
 }
 
+/**
+ * ── 追加行时的「权威重测」（2026-09-17 命令输出被上一条 assistant 行遮挡）──────
+ *
+ * 真实浏览器复现（用户 `!pwd` 输出"看不见"）：长 assistant 行（DOM 实测
+ * 1118.78px）+ 追加无 turn 的 standalone 输出行 → 新行只比上一行起点多约 115px
+ * （= 上一行**缓存的旧尺寸**）→ 两个绝对定位行重叠 ~1004px ⇒ 输出**在 DOM 里但
+ * 被上一行盖住**；滚动到底也没用（总高按旧尺寸算完，scrollTop 到底 ≠ 看到输出）。
+ *
+ * 为什么缓存会停在旧值：TanStack 的增量测量只在 `resizeItem` 时从该 index 往后
+ * 重算，而 ResizeObserver 的 entry 可能**乱序/滞后**（`entry.borderBoxSize` 是观察
+ * 时刻的快照，不是当前几何）——先到 1118、后到 115 就把 1118 覆盖回 115；此后该行
+ * 尺寸不再变化 ⇒ RO 不再上报 ⇒ 115 永久固化。
+ *
+ * 修法：追加（rows 增长）时**主动、权威地重测已挂载行** —— 见 MessageList 内的
+ * append effect：`measure()` 清尺寸缓存（让未实测行按当前内容重新估算）+ 逐个已
+ * 挂载行读真实几何（`resizeItem` 从该行往后重算 `item.start`）+ 校正后贴底。
+ *
+ * 返回重测的行数（测试断言用）。
+ */
+export function remeasureMountedRows(
+  root: HTMLElement | null,
+  measure: (node: HTMLElement) => void,
+): number {
+  if (!root) return 0
+  let n = 0
+  root.querySelectorAll<HTMLElement>('.virt-row[data-index]').forEach((node) => {
+    measure(node)
+    n++
+  })
+  return n
+}
+
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
   let idx = -1
   for (let i = 0; i < rows.length; i++) {
@@ -297,6 +329,9 @@ export const MessageList = memo(function MessageList({
   )
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  // 承载绝对定位行的相对容器（`height: getTotalSize()`）—— 追加行时权威重测的
+  // DOM 搜索根（见下方 append effect / remeasureMountedRows）。
+  const rowsWrapperRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
   // Generation counter — each scheduleFollow call increments this. The
@@ -525,25 +560,35 @@ export const MessageList = memo(function MessageList({
   // = rows), so the callback body always sees the CURRENT row. virtualizer
   // is a stable instance (useVirtualizer keeps one instance; only its options
   // are updated per render).
+  // 单个已挂载行的权威测量：① 喂给 virtualizer（`resizeItem` → 更新尺寸缓存，
+  // 并从该行往后重算 `item.start` + notify）；② 把**当前真实几何**记进
+  // heightMemory（供后续 estimateSize / 未挂载行的估算）。两条路径共用：
+  // ref 回调（挂载/重挂）与追加行时的权威重测（见下方 append effect）。
+  const measureRowNode = useCallback(
+    (node: HTMLElement) => {
+      virtualizer.measureElement(node)
+      const idx = Number(node.dataset?.index ?? -1)
+      const row = rowsRef.current[idx]
+      if (!row) return
+      const h = node.getBoundingClientRect().height
+      if (h > 0) {
+        heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
+        if (heightMemory.size > 3000) heightMemory.clear()
+      }
+    },
+    // PERF note above explains deps choice; rowsRef is a stable closure ref covering row identity
+    [virtualizer],
+  )
+
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) {
         virtualizer.measureElement(null)
         return
       }
-      virtualizer.measureElement(node)
-      const idx = Number(node.dataset?.index ?? -1)
-      const row = rowsRef.current[idx]
-      if (row) {
-        const h = node.getBoundingClientRect().height
-        if (h > 0) {
-          heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
-          if (heightMemory.size > 3000) heightMemory.clear()
-        }
-      }
+      measureRowNode(node)
     },
-    // PERF note above explains deps choice; rowsRef is a stable closure ref covering row identity
-    [virtualizer],
+    [virtualizer, measureRowNode],
   )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
@@ -684,6 +729,40 @@ export const MessageList = memo(function MessageList({
       }
     })
   }, [])
+
+  // ── 追加行 ⇒ 权威重测 + 在校正后的总高上贴底 ────────────────────────────────
+  // 见 `remeasureMountedRows` 上方的完整复现（用户 `!pwd` 输出被上一条 assistant
+  // 行重叠遮挡；缓存停在旧尺寸 115px 而 DOM 实测 1118.78px）。
+  //
+  // 三步，顺序不可换：
+  //   ① `measure()` 清空尺寸缓存 —— TanStack 的 `getMeasurements` memo **不依赖**
+  //      `estimateSize`，未实测行会一直沿用 memo 住的旧尺寸；清掉后按当前内容
+  //      重新估算（实测过的行走 heightMemory）。
+  //   ② 逐个**已挂载**行读*当前*真实几何（`resizeItem`：delta≠0 ⇒ 更新缓存 +
+  //      从该行往后重算 `item.start` + notify）。乱序 RO entry 造成的固化旧值
+  //      在这里被真实几何覆盖。
+  //   ③ 贴底必须在校正**之后** —— 否则 `scrollTop = scrollHeight` 落在旧总高的
+  //      "底部"（用户实测 scrollTop=5031 = 旧 scrollHeight），输出仍在视口上方。
+  //
+  // 只处理**尾部追加**（末行变化即追加）。前插（loadMore）末行不变 —— 其视口锚定
+  // 由 `restoreLoadMoreAnchor` 的 ΔscrollTop==ΔtotalSize 契约负责，这里清尺寸缓存
+  // 会改变它的总高基准。
+  const prevRowCountRef = useRef(rows.length)
+  const prevTailIdRef = useRef<string | null | undefined>(rowsRef.current[rowsRef.current.length - 1]?.id)
+  useLayoutEffect(() => {
+    const cur = rowsRef.current
+    const prevCount = prevRowCountRef.current
+    const prevTail = prevTailIdRef.current
+    prevRowCountRef.current = cur.length
+    prevTailIdRef.current = cur[cur.length - 1]?.id
+    if (cur.length <= prevCount) return
+    if (prevCount > 0 && prevTail !== undefined && cur[cur.length - 1]?.id === prevTail) return
+    const root = rowsWrapperRef.current
+    if (!root) return
+    virtualizerRef.current.measure()
+    const measured = remeasureMountedRows(root, measureRowNode)
+    if (measured > 0 && stickToBottomRef.current) scheduleFollow()
+  }, [rows.length, measureRowNode, scheduleFollow])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
   // onScroll syncs stickToBottomRef with the true scroll position — this is
@@ -1116,6 +1195,7 @@ export const MessageList = memo(function MessageList({
           )}
           {rows.length > 0 && (
             <div
+              ref={rowsWrapperRef}
               style={{ height: `${virtualizer.getTotalSize()}px` }}
               className="relative w-full"
             >
