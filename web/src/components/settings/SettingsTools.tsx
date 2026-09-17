@@ -22,6 +22,8 @@ interface ToolSetting {
   name: string
   description: string
   enabled: boolean
+  /** 后端字段名（Go: json:"server_name,omitempty"）—— 载入时归一化到 serverName。 */
+  server_name?: string
   /** MCP 工具专有：所属 MCP server 名（后端来自 MCP bridge 的真实名字）。 */
   serverName?: string
 }
@@ -39,7 +41,9 @@ export function SettingsTools() {
   const load = useCallback(async () => {
     try {
       const res = await rpc<{ tools: ToolSetting[] }>('get_tools_settings')
-      setTools(res?.tools ?? [])
+      // 字段归一化：后端用 snake_case（server_name），组件内部统一用 serverName。
+      // 曾经直接读 serverName ⇒ 永远 undefined ⇒ MCP 分组/服务器开关静默失效。
+      setTools((res?.tools ?? []).map((tool) => ({ ...tool, serverName: tool.server_name ?? tool.serverName })))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

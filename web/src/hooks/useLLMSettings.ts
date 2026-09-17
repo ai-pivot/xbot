@@ -30,8 +30,10 @@ let nextLLMSettingsInstanceId = 0
 
 /** 订阅 LLM 配置变更（AgentPanel 另用它触发 sessionContext.refresh）。 */
 export function subscribeLLMConfigChanged(listener: () => void): () => void {
-  llmConfigBus.addEventListener(LLM_CONFIG_CHANGED, () => listener())
-  return () => llmConfigBus.removeEventListener(LLM_CONFIG_CHANGED, () => listener())
+  // ⚠️ add/remove 必须用**同一个** handler 实例，否则退订静默失效（监听器泄漏）。
+  const handler = () => listener()
+  llmConfigBus.addEventListener(LLM_CONFIG_CHANGED, handler)
+  return () => llmConfigBus.removeEventListener(LLM_CONFIG_CHANGED, handler)
 }
 import {
   listSubscriptions,
