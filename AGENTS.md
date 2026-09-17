@@ -894,3 +894,9 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **GotoBottom 统一守卫**：所有 `GotoBottom()` 调用通过 `!m.userScrolledUp` 守卫。慢速路径（fullRebuild 后）不再无条件强制滚动。
 - **handleCancelAck 必须 `updateViewportContent()`**：cancel ack 更新缓存后必须立即推送到 viewport，否则 viewport 显示 stale streaming 内容直到下次 tick（用户感知为"历史消失再重现"）。
 - **renderTurnBody 去重**：同一 LLM response 文本从 `iter.Thinking`（ThinkingContent）和 `fallbackContent`（msg.content）两条路径渲染。精确匹配去重是正确做法——它们源自同一数据，必然相等。前缀匹配/百分比阈值是 hack
+
+## 2026-09-17 追加（本轮三条 gotcha）
+
+- **注入型（fake）工具的提示必须声明「不是你调用的」**：模型只看到 `toolContent`（`summary`/`hints` 是 UI 专用），所以提示必须写进 content。单一收口 = `agent.newSyntheticToolPair` 前缀 `syntheticInjectionNotice()`（engine_run 的全部 `injectXxx` 与 `agent_process.backgroundNotificationSyntheticTool` 都经此），文案明确「系统自动注入的提醒/通知、不是你调用的工具、你从未调用过它；不要回谢、不要再次调用；按内容继续任务」。新增注入型工具**不要**自己拼这段文案 —— 它已在收口处自动加上（user 2026-09-17：「faketool，尤其 system notification 的提示要强调这个工具不是你调用的」）。
+- **飞书 CoT 不再输出 reasoning（可一键恢复）**：唯一写出点 `feishuCoTRenderer.emitReasoningLocked` 用 `cotEmitReasoning = false` 掐断（两条来源同时生效；`flushReasoningLocked`/`closeReasoningLocked` 自然退化为 no-op）。用户 2026-09-17：「cot 模式不渲染 reasoning 了，只渲染 content。reasoning 太多了」。契约变更后**旧契约测试要删**（5 个断言 reasoning 存在的用例），保留 `TestFeishuCoTRenderer_NoReasoningEvents` 守护「绝不出现 REASONING_MESSAGE_*」。置 true 即恢复（渲染逻辑完整保留）。
+- **MCP 服务器管理 = 工具面板的 server 分组**：`tools.MCPServerName(tool)`（真实 server 名，来自 MCP bridge 的 `mcpSchemaProvider.mcpServerName()`，**不要用工具名前缀猜**）→ `Agent.ToolSetting.ServerName` → 前端 `SettingsTools` 按 server 分组 + 服务器级主开关（批量 `set_tool_enabled`，无新增后端语义，激活集过滤即"未激活不进上下文且不可执行"）。注意 `ToolSettings()` 里局部变量**不要命名 `tools`**（会遮蔽 `tools` 包 → `tools.MCPServerName undefined`，本轮踩过）。
