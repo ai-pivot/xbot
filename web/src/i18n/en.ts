@@ -124,7 +124,7 @@ const en: Translations = {
     created: 'Session created',
     createFailed: 'Failed to create session',
     deleteTitle: 'Delete session',
-    deleteConfirm: 'Delete session "{{username}}"? This cannot be undone.',
+    deleteConfirm: 'Delete session "{{name}}"? This cannot be undone.',
     multiSelect: 'Multi-select',
     selectedCount: '{{n}} selected',
     selectAll: 'Select All',
@@ -865,7 +865,7 @@ const en: Translations = {
     chipHint: 'Click to expand/collapse',
     pinAria: 'Pin {{title}}',
     pinToSideTitle: 'Pin to sidebar',
-    unknown: 'Unknown panel: ',
+    unknown: 'Unknown panel: {{id}}',
   },
   layout: {
     activityBar: 'Tool panels',
