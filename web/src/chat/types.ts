@@ -181,6 +181,18 @@ export interface LegacyRow {
   readonly iterations: readonly WebIteration[]
   readonly timestamp: string
   readonly dbID: number | undefined
+  /**
+   * 显式「无 turn」标记 —— 仅 standalone 段（命令 `!cmd`/slash 的实时回复）设置。
+   *
+   * ⚠️ 为什么必须显式标记（CI 真实 Chromium 实证的尺寸缓存串味）：standalone 行是
+   * assistant、若不加标记就与"缺 turn_id 的普通 assistant 行"无法区分，
+   * `bindTurnIDs` 会把它绑到**最近的前一个 turn**（= 正在跑的那个）→ 它与 live 行的
+   * 虚拟列表 key 完全相同（`turn-N-assistant`）→ `itemSizeCache`/heightMemory 被两行
+   * 共用 ⇒ 总高翻倍（实测 `wrapperHeight=17320px`＝8660×2）、命令输出被推到可视区之上
+   * （用户看到的仍是"没有输出"）。
+   * 标记后 `turnID` 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
+   */
+  readonly standalone?: boolean
 }
 
 /**

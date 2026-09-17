@@ -581,6 +581,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             iterations: ev.progressHistory ?? [],
             timestamp: new Date().toISOString(),
             dbID: undefined,
+            // ⚠️ **显式标记为「无 turn」** —— CI 真实 Chromium 抓到的尺寸缓存串味根因：
+            // standalone 行是 assistant、若不加标记就与"缺 turn_id 的普通 assistant 行"
+            // 无法区分，`bindTurnIDs` 会把它绑到**最近的前一个 turn**（= 正在跑的那个）
+            // → 它的虚拟列表 key 与 live 行完全相同（`turn-N-assistant`）→ 尺寸缓存/
+            // 高度记忆被两行共用 ⇒ 总高翻倍（实测 `wrapperHeight=17320px`＝8660×2）、
+            // 命令输出被推到可视区之上（用户看到的仍然是"没有输出"）。
+            // 标记后 turnID 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
+            standalone: true,
           }],
         }
       }

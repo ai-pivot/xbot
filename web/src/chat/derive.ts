@@ -71,6 +71,8 @@ export interface CommittedRowView {
   readonly isPartial: false
   readonly content: string
   readonly iterations: readonly WebIteration[]
+  /** 命令回复（standalone 段）的「无 turn」标记 —— `bindTurnIDs` 据此跳过绑定。 */
+  readonly standalone?: boolean
 }
 
 export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
@@ -139,6 +141,10 @@ function cachedLegacyRow(l: LegacyRow): Row {
           kind: 'committed',
           id: l.id,
           turnID: 0,
+          // standalone 段（命令回复）显式透传「无 turn」标记 —— `bindTurnIDs` 见到该
+          // 标记就跳过绑定（否则会绑到 live turn、与 live 行撞虚拟键：CI 实证尺寸缓存
+          // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。
+          standalone: l.standalone,
           isPartial: false,
           content: l.content,
           iterations: l.iterations,

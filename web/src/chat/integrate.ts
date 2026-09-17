@@ -250,6 +250,10 @@ function rowToChatMessage(r: Row): ChatMessage {
         isPartial: false,
         turnID: r.turnID,
         persisted: true,
+        // 命令回复（standalone 段）的「无 turn」标记必须透传到渲染层 ——
+        // `bindTurnIDs` 据此跳过绑定，避免与 live 行撞虚拟列表 key（CI 实证尺寸缓存
+        // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。
+        standalone: r.standalone,
       }
   }
 }
