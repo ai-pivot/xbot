@@ -685,6 +685,24 @@ func registerLLMHandlers(t RPCTable, h *RPCContext) {
 	}) error {
 		return h.Ag.SetUserThinkingMode(cliSenderID, p.Mode)
 	})
+	// Settings → Tools panel: list every built-in tool with its activation
+	// state, and toggle one. Inactive tools are omitted from the LLM tool
+	// definitions (never sent in context) and cannot be executed.
+	t["get_tools_settings"] = h.requireAdmin(rpc0(func(ctx context.Context) any {
+		return map[string]any{"tools": h.Ag.ToolSettings()}
+	}))
+	t["set_tool_enabled"] = h.requireAdmin(rpc1void(func(ctx context.Context, p struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}) error {
+		disabled, err := h.Ag.SetToolEnabled(p.Name, p.Enabled)
+		if err != nil {
+			return err
+		}
+		// Single persisted representation: config.DisabledTools.
+		h.Cfg.DisabledTools = disabled
+		return saveServerConfig(h.Cfg)
+	}))
 	t["get_llm_concurrency"] = rpc0(func(ctx context.Context) int { return h.Ag.GetLLMConcurrency() })
 	t["set_llm_concurrency"] = rpc1void(func(ctx context.Context, p struct {
 		Personal int `json:"personal"`

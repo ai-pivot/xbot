@@ -14,6 +14,14 @@ type Registry struct {
 	sessionMCPMgr    SessionMCPManagerProvider // 会话MCP管理器提供者
 	globalMCPCatalog []MCPServerCatalogEntry   // 全局 MCP Server 目录（由 MCPManager.RegisterTools 设置）
 
+	// disabled: 未激活的内置工具集合（Settings → Tools 面板配置）。
+	// 未激活的工具**不进 LLM 上下文**（AsDefinitionsForSession 过滤）且
+	// **不可执行**（Get/GetForSession 视为不存在）。用"集合过滤"而不是
+	// Unregister 是因为启停必须可逆：面板上重新勾选即可立即恢复，
+	// 不需要重新构造工具实例。
+	disabled   map[string]struct{}
+	disabledMu sync.RWMutex
+
 	tenantTools   map[int64]map[string]Tool // tenantID → toolName → Tool（per-tenant 工具）
 	tenantToolsMu sync.RWMutex
 
@@ -233,7 +241,12 @@ func (r *Registry) GetForSession(name string, tenantID int64, sessionKey string)
 }
 
 // Get looks up a tool by name from the global tool registry.
+// A disabled (inactive) tool is treated as non-existent: it cannot be executed
+// (matching AsDefinitionsForSession, which never sends it to the LLM).
 func (r *Registry) Get(name string) (Tool, bool) {
+	if r.IsDisabled(name) {
+		return nil, false
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	tool, ok := r.globalTools[name]
@@ -245,6 +258,55 @@ func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.globalTools, name)
+}
+
+// SetDisabledTools replaces the disabled (inactive) built-in tool set.
+//
+// Disabled tools are omitted from the tool definitions sent to the LLM
+// (AsDefinitionsForSession) and cannot be executed (Get / GetForSession).
+// Unlike Unregister this is fully reversible — re-enabling a tool on the
+// Settings → Tools panel takes effect on the next LLM call with no
+// re-registration and no lost instances.
+func (r *Registry) SetDisabledTools(names []string) {
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" {
+			set[n] = struct{}{}
+		}
+	}
+	r.disabledMu.Lock()
+	r.disabled = set
+	r.disabledMu.Unlock()
+}
+
+// DisabledTools returns the current disabled (inactive) tool names, sorted.
+func (r *Registry) DisabledTools() []string {
+	r.disabledMu.RLock()
+	out := make([]string, 0, len(r.disabled))
+	for n := range r.disabled {
+		out = append(out, n)
+	}
+	r.disabledMu.RUnlock()
+	sort.Strings(out)
+	return out
+}
+
+// IsDisabled reports whether a global tool is currently deactivated.
+func (r *Registry) IsDisabled(name string) bool {
+	r.disabledMu.RLock()
+	defer r.disabledMu.RUnlock()
+	_, ok := r.disabled[name]
+	return ok
+}
+
+// GetRaw looks up a tool ignoring the disabled (inactive) set — used by the
+// Settings → Tools panel to list/validate built-in tools, and by enable/disable
+// itself. Execution paths must use Get/GetForSession instead.
+func (r *Registry) GetRaw(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.globalTools[name]
+	return tool, ok
 }
 
 // List 列出所有工具（按名称排序，保证顺序稳定以优化 KV-cache）
@@ -313,6 +375,10 @@ func (r *Registry) AsDefinitionsForSession(sessionKey string, tenantID int64) []
 	// 辅助函数：将 tool 转为 ToolDefinition 加入列表
 	addTool := func(tool Tool) {
 		if seen[tool.Name()] {
+			return
+		}
+		// 未激活的内置工具绝不进 LLM 上下文（Settings → Tools 面板配置）。
+		if r.IsDisabled(tool.Name()) {
 			return
 		}
 		seen[tool.Name()] = true

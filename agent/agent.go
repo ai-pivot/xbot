@@ -1837,16 +1837,13 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 		log.WithField("count", n).Info("Cleaned up expired waiting cards")
 	}
 
-	// 全局黑名单：skill 从 catalog 排除，内置 tool 从 registry 注销。
-	// 注意：DownloadFileTool / WebSearchTool 在 agent.New 返回后才注册
-	// （server_core.go），需在调用方对它们再做一次 DisableTools。
+	// 全局黑名单：skill 从 catalog 排除；内置 tool 从**激活集**排除。
+	// 用 registry 过滤（SetDisabledTools）而不是 Unregister —— 启停必须可逆：
+	// Settings → Tools 面板重新勾选即可立即恢复（未激活的 tool 既不进 LLM
+	// 上下文，也不可执行）。DownloadFileTool / WebSearchTool 在 agent.New 之后
+	// 才注册，调用方（server_core.go）会再应用一次同一列表。
 	skillStore.SetDisabledSkills(cfg.DisabledSkills)
-	for _, name := range cfg.DisabledTools {
-		if name = strings.TrimSpace(name); name != "" {
-			registry.Unregister(name)
-			log.WithField("tool", name).Info("Tool disabled by blacklist")
-		}
-	}
+	registry.SetDisabledTools(cfg.DisabledTools)
 
 	return skillStore, agentStore, chatHistory, registry, cardBuilder
 }
@@ -4284,6 +4281,64 @@ func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 func (a *Agent) RegisterToolForChannel(channel string, tool tools.Tool) {
 	a.tools.RegisterForChannel(channel, tool)
 	log.WithField("tool", tool.Name()).WithField("channel", channel).Info("Channel tool registered")
+}
+
+// ToolSetting describes one built-in tool for the Settings → Tools panel.
+type ToolSetting struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+}
+
+// ToolSettings lists every registered GLOBAL tool with its activation state.
+// Only the global registry is listed: channel/runner/MCP tools are scoped
+// resources, not built-in tools the operator activates/deactivates here.
+func (a *Agent) ToolSettings() []ToolSetting {
+	tools := a.tools.List() // sorted by name (stable order for the UI)
+	out := make([]ToolSetting, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, ToolSetting{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Enabled:     !a.tools.IsDisabled(t.Name()),
+		})
+	}
+	return out
+}
+
+// SetToolEnabled activates/deactivates one built-in tool at runtime and returns
+// the resulting disabled set (the single persisted representation, stored in
+// config.DisabledTools). Inactive tools are omitted from the LLM tool
+// definitions and cannot be executed — see tools.Registry.SetDisabledTools.
+func (a *Agent) SetToolEnabled(name string, enabled bool) ([]string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("tool name is required")
+	}
+	if _, ok := a.tools.GetRaw(name); !ok {
+		return nil, fmt.Errorf("unknown built-in tool %q", name)
+	}
+	disabled := a.tools.DisabledTools() // sorted
+	out := make([]string, 0, len(disabled)+1)
+	found := false
+	for _, n := range disabled {
+		if n == name {
+			found = true
+			continue
+		}
+		out = append(out, n)
+	}
+	if !enabled && !found {
+		out = append(out, name)
+	}
+	a.tools.SetDisabledTools(out)
+	log.WithFields(log.Fields{"tool": name, "enabled": enabled}).Info("Tool activation changed")
+	return out, nil
+}
+
+// SetDisabledTools replaces the inactive built-in tool set (startup + settings).
+func (a *Agent) SetDisabledTools(names []string) {
+	a.tools.SetDisabledTools(names)
 }
 
 // DisableTools unregisters the given GLOBAL tool blacklist. These tools become

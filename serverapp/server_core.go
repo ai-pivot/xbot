@@ -138,9 +138,11 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// 4. Register core tools.
 	ag.RegisterCoreTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
 	ag.RegisterTool(tools.NewDownloadFileTool(cfg.Feishu.AppID, cfg.Feishu.AppSecret))
-	if !cfg.DisableWebSearch {
-		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-	}
+	// WebSearch 无条件注册：是否激活由**激活集**决定
+	// （config.DisabledTools ← Settings → Tools 面板）。旧的
+	// disable_web_search 布尔旋钮已删除（同一能力的重复定义），
+	// 加载时会被折进 DisabledTools。
+	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 	// Agent-initiated compaction (config agent.allow_self_compact, default
 	// off): registers compact_context so the LLM can trigger a context
 	// compression itself (Codex CLI parity — the model observes context pressure
@@ -153,8 +155,9 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	}
 
 	// 全局 tool 黑名单：覆盖在 agent.New 之后注册的 tool（DownloadFileTool /
-	// WebSearchTool），initStores 里已对内置 tool 应用过一次。
-	ag.DisableTools(cfg.DisabledTools)
+	// WebSearchTool），initStores 里已对内置 tool 应用过一次。激活集是可逆的
+	// 过滤（不是注销），Settings → Tools 面板据此启停。
+	ag.SetDisabledTools(cfg.DisabledTools)
 
 	ag.IndexGlobalTools()
 

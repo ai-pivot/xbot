@@ -753,9 +753,8 @@ func Run(args []string) error {
 	// 引用 /api/files/viewimg/<id>（浏览器可渲染 + llm resolver 可解析，双端同源）。
 	ag.RegisterCoreTool(tools.NewViewImageTool())
 	ag.RegisterTool(tools.NewViewImageTool())
-	if !cfg.DisableWebSearch {
-		ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
-	}
+	// WebSearch 无条件注册（激活与否由 config.DisabledTools 决定）。
+	ag.RegisterCoreTool(tools.NewWebSearchTool(cfg.TavilyAPIKey))
 
 	// 初始化事件触发系统（Event Trigger System）
 	triggerSvc := sqlite.NewTriggerService(ag.MultiSession().DB())

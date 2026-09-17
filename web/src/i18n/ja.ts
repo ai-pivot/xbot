@@ -599,6 +599,7 @@ const ja: Translations = {
       interaction: '操作',
       language: '言語',
       agent: 'エージェント',
+      tools: 'ツール',
       llm: 'LLM 設定',
       channels: 'チャンネル',
       account: 'アカウント',
@@ -646,6 +647,12 @@ const ja: Translations = {
       feishuLinkExpired: 'リンクの有効期限が切れました。再生成してください',
       feishuLinkStale: '認可リンクが無効になりました（サーバー再起動、または新しい試行に置き換えられました）。再生成してください',
       feishuPopupBlocked: 'ブラウザがポップアップをブロックしました。「リンクを開く」をクリックするか、リンクをコピーしてください',
+    },
+    tools: {
+      title: '組み込みツール',
+      description: '**有効**なツールだけが LLM コンテキストに渡されます（無効なツールはモデルから見えず、実行もできません）。切り替えは即時反映、再起動不要。',
+      loading: '読み込み中…',
+      summary: '有効 {{active}} / {{total}} ツール',
     },
     about: {
       tagline: '智能对话助手',

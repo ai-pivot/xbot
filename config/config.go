@@ -210,13 +210,14 @@ type Config struct {
 	EventWebhook  EventWebhookConfig  `json:"event_webhook"`
 	OSS           OSSConfig           `json:"oss"`
 	TavilyAPIKey  string              `json:"tavily_api_key"`
-	// DisableWebSearch disables the built-in WebSearch tool. Set to true when
-	// using an external search skill (e.g. the "search" skill) to avoid
-	// duplicate tool definitions and wasted context tokens.
-	DisableWebSearch bool `json:"disable_web_search,omitempty"`
-	// DisabledTools is a GLOBAL blacklist of built-in tool names to disable
-	// (registered tools are skipped entirely — not visible, not executable).
-	// Applies to all users/channels.
+	// DisabledTools is the GLOBAL set of INACTIVE built-in tools (registered
+	// tools stay in the registry but are filtered out of the LLM tool
+	// definitions and cannot be executed). Configured from the Web
+	// Settings → Tools panel. Applies to all users/channels.
+	//
+	// NOTE: the legacy `disable_web_search` bool was a duplicate definition of
+	// this same knob; it is folded into DisabledTools at load time (see
+	// Normalize) and no longer exists as a config field.
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 	// DisabledSkills is a GLOBAL blacklist of skill names to disable
 	// (excluded from the available_skills catalog injected into the system
@@ -716,6 +717,23 @@ func LoadFromFile(path string) *Config {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)
 		return nil
+	}
+	// 旧别名折叠：`disable_web_search`（早期版本的独立旋钮）与 disabled_tools 里的
+	// "WebSearch" 是同一个开关，这里折进去，保证只有一种表示（避免"一份数据两处"）。
+	var legacy struct {
+		DisableWebSearch bool `json:"disable_web_search"`
+	}
+	if err := json.Unmarshal(data, &legacy); err == nil && legacy.DisableWebSearch {
+		found := false
+		for _, n := range cfg.DisabledTools {
+			if n == "WebSearch" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.DisabledTools = append(cfg.DisabledTools, "WebSearch")
+		}
 	}
 	return &cfg
 }

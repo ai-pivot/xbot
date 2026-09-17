@@ -596,6 +596,7 @@ const zhCN = {
       interaction: '交互',
       language: '语言',
       agent: '智能体',
+      tools: '工具',
       llm: 'LLM 配置',
       channels: '渠道',
       account: '账号',
@@ -642,6 +643,12 @@ const zhCN = {
       feishuLinkExpired: '链接已过期，请重新生成',
       feishuLinkStale: '授权链接已失效（服务已重启或已被新的绑定顶替），请重新生成',
       feishuPopupBlocked: '浏览器拦截了弹窗，请点「打开链接」或复制链接手动打开',
+    },
+    tools: {
+      title: '内置工具',
+      description: '只有**激活**的工具会被带进 LLM 上下文（未激活的工具模型看不到，也无法执行）。开关立即生效，无需重启。',
+      loading: '加载中…',
+      summary: '已激活 {{active}} / {{total}} 个工具',
     },
     about: {
       tagline: '智能对话助手',

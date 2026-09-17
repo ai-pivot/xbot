@@ -599,6 +599,7 @@ const en: Translations = {
       interaction: 'Interaction',
       language: 'Language',
       agent: 'Agent',
+      tools: 'Tools',
       llm: 'LLM Config',
       channels: 'Channels',
       account: 'Account',
@@ -646,6 +647,12 @@ const en: Translations = {
       feishuLinkExpired: 'The link expired — generate a new one',
       feishuLinkStale: 'The authorization link is no longer valid (server restarted or a newer attempt replaced it) — generate a new one',
       feishuPopupBlocked: 'The browser blocked the popup — click "Open link" or copy the link',
+    },
+    tools: {
+      title: 'Built-in tools',
+      description: 'Only ACTIVE tools are sent to the LLM context (inactive tools are invisible to the model and cannot run). Changes apply immediately — no restart.',
+      loading: 'Loading…',
+      summary: '{{active}} of {{total}} tools active',
     },
     about: {
       tagline: 'AI conversation assistant',
