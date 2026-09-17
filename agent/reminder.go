@@ -81,7 +81,9 @@ func BuildSystemReminder(
 
 	var sb strings.Builder
 	sb.WriteString("<system-reminder role=\"reminder\">")
-	sb.WriteString("<note>This is a system reminder injected per-iteration. It is NOT a user message or tool result — do not acknowledge, reply to, or confirm it. The &lt;user-msg&gt; below is the original user message from this turn (for context only; may be outdated or a continuation).</note>")
+	// note 从简（用户 2026-09-17：原文太长且可能被误读）。只保留最少必要信息：
+	// 这是自动注入的 system reminder（不是用户消息）、<user-msg> 是原始用户消息。
+	sb.WriteString("<note>Auto-injected system reminder for this iteration (not a user message). &lt;user-msg&gt; = the original user message, for context.</note>")
 
 	// 用户原始消息（CDATA 包裹，100% 防 XML 注入——wrapCDATA 拆分 ]]> ）
 	if userMsg != "" {
@@ -170,8 +172,28 @@ func extractUserGoal(content string) string {
 	lines := strings.Split(content, "\n")
 	var goalLines []string
 	inGuide := false
+	// inReminder 是 <system-reminder> 注入块（memory / 改名提示）的独立跳过模式：
+	// 只由 </system-reminder> 结束 —— **空行不结束它**。
+	//
+	// 用户 2026-09-17 实证 bug：memory 的 CDATA 正文以空行开头（"# Memory\n\n## Core"），
+	// 旧的 `inGuide && trimmed == ""` 规则被这个空行提前解除跳过模式 ⇒ 包装行被吞、
+	// 整块 ## Core memory 被当成"用户消息"回显进每一轮的 <user-msg>（每迭代重复几千字符，
+	// 且让模型把 memory 误读成用户输入）。
+	inReminder := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		if inReminder {
+			if strings.Contains(trimmed, "</system-reminder>") {
+				inReminder = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "<system-reminder>") {
+			if !strings.Contains(trimmed, "</system-reminder>") {
+				inReminder = true
+			}
+			continue
+		}
 		// 跳过时间戳行 [2026-03-21 23:08:51 CST]
 		if len(trimmed) > 0 && trimmed[0] == '[' && strings.Contains(trimmed, "CST") {
 			continue
@@ -190,20 +212,6 @@ func extractUserGoal(content string) string {
 		if strings.HasPrefix(trimmed, "<context>") || strings.HasPrefix(trimmed, "</context>") ||
 			strings.HasPrefix(trimmed, "<time>") || strings.HasPrefix(trimmed, "</time>") ||
 			strings.HasPrefix(trimmed, "<sender>") || strings.HasPrefix(trimmed, "</sender>") {
-			continue
-		}
-		// 跳过 <system-reminder> CDATA 块（用户消息里注入的 memory/system-reminder——不是用户写的）
-		if strings.HasPrefix(trimmed, "<system-reminder>") {
-			if strings.Contains(trimmed, "</system-reminder>") {
-				// 单行完整块（<system-reminder>...</system-reminder> 同一行）：跳过本行，不进入跳过模式
-				continue
-			}
-			inGuide = true
-			continue
-		}
-		if strings.Contains(trimmed, "</system-reminder>") {
-			// 多行块的结束行（</system-reminder> 可能在行中间/行尾）：结束跳过模式
-			inGuide = false
 			continue
 		}
 		// Skip auto-naming rename hint (injected by UserMessageMiddleware)

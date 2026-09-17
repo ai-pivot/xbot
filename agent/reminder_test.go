@@ -32,7 +32,12 @@ func TestBuildSystemReminder_Basic(t *testing.T) {
 		t.Error("expected system-reminder with role=reminder attribute")
 	}
 	if !strings.Contains(result, "<note>") {
-		t.Error("expected <note> element (do-not-acknowledge instruction)")
+		t.Error("expected <note> element (auto-injected reminder marker)")
+	}
+	// note 必须从简（用户 2026-09-17：原文太长且可能被误读）——不得再出现
+	// "do not acknowledge, reply to, or confirm it" 这类反向暗示。
+	if strings.Contains(result, "do not acknowledge") {
+		t.Error("note must stay short — the verbose do-not-acknowledge wording was removed on purpose")
 	}
 	if !strings.Contains(result, "<user-msg><![CDATA[Fix the login bug]]></user-msg>") {
 		t.Errorf("expected <user-msg> with CDATA, got:\n%s", result)
@@ -183,6 +188,26 @@ func TestBuildSystemReminder_FiltersSystemReminderBlock(t *testing.T) {
 	}
 	if !strings.Contains(result, "User message") || !strings.Contains(result, "actual user request") {
 		t.Error("should include actual user message content")
+	}
+}
+
+// 用户 2026-09-17 实证 bug：memory 注入的 CDATA 正文以空行开头（"# Memory\n\n## Core"），
+// 旧的 `inGuide && trimmed == ""` 规则被该空行提前解除跳过模式 ⇒ 包装行被吞、整块
+// ## Core memory 被当成"用户消息"回显进每一轮的 <user-msg>（每迭代重复几千字符，
+// 且让模型把 memory 误读成用户输入）。
+func TestBuildSystemReminder_MemoryBlockDoesNotLeakIntoUserMsg(t *testing.T) {
+	userMsg := "real user request\n\n" +
+		"<system-reminder><![CDATA[# Memory\n\n## Core\nP0 INCIDENT: leaked body\n\n## Recent Sessions\nsession 1\n]]></system-reminder>"
+	result := BuildSystemReminder(makeMsgs(userMsg, true), nil, nil, "main", "", "", "", nil)
+
+	if strings.Contains(result, "## Core") || strings.Contains(result, "P0 INCIDENT") {
+		t.Errorf("memory body leaked into the reminder (must be skipped until </system-reminder>), got:\n%s", result)
+	}
+	if strings.Contains(result, "## Recent Sessions") {
+		t.Error("memory trailing sections leaked into the reminder")
+	}
+	if !strings.Contains(result, "real user request") {
+		t.Errorf("actual user text must survive, got:\n%s", result)
 	}
 }
 
