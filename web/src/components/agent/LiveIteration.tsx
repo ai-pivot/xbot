@@ -39,7 +39,8 @@ export const LiveIteration = memo(function LiveIteration({
   const { t } = useI18n()
   // Reasoning: prefer streaming value, fall back to structured (mirrors TUI)
   const reasoningContent = progress.reasoningStreamContent || progress.lastReasoning || ''
-  const hasReasoning = Boolean(reasoningContent)
+  // hasReasoning 在 lastIter 之后计算：需要与"最后一个已完成迭代"的 reasoning
+  // 对比后才能判定（见下方 effectiveReasoning）。
   // Text output: prefer streaming (real-time), fall back to structured content
   // (snapshot from server — may arrive without preceding stream_content events)
   // ── effectiveStreamContent: suppress streamContent that equals the last
@@ -51,6 +52,16 @@ export const LiveIteration = memo(function LiveIteration({
   const lastIter = progress.iterationHistory.length > 0
     ? progress.iterationHistory[progress.iterationHistory.length - 1]
     : null
+  // effectiveReasoning —— 与下方 effectiveStreamContent **同源**的抑制：
+  // live 的 reasoning 若与最后一个已完成迭代的 reasoning 相同，说明该迭代已经
+  // 作为历史渲染过（AskUser 在迭代 N 内部暂停 ⇒ 迭代 N 已 committed，而 live 的
+  // iteration 仍是 N，且仍持有同一段 reasoning）—— live 再渲染一次就是重复的
+  // **空壳思考块**（用户报告 + 真实 DOM 实证：`data-iter-id="24"` 与
+  // `data-iter-id="live" data-iter-num="24"` 各有一个 `Thought 384 chars`，
+  // live 那份只有标题、正文不渲染 ⇒ 红框里那片空白）。
+  const effectiveReasoning =
+    reasoningContent && lastIter?.reasoning === reasoningContent ? '' : reasoningContent
+  const hasReasoning = Boolean(effectiveReasoning)
   const rawTextContent = progress.streamContent || progress.content || ''
   // effectiveStreamContent: suppress streamContent that equals the last
   // completed iteration's content — the same final text arrives in BOTH
@@ -104,13 +115,13 @@ export const LiveIteration = memo(function LiveIteration({
   // this source changes; the typewriter changes visibleChars and clips the
   // already-rendered text nodes instead of reparsing Markdown on every tick.
   const displayText = textContent
-  const displayReasoning = reasoningContent
+  const displayReasoning = effectiveReasoning
 
   // 折叠标题显示的思考字符数：reasoning 流式时用 typewriter 追赶值
   // rw.visibleChars（gap/3 per 50ms 平滑增长，与 content typer 同源），避免
   // reasoningContent.length 随 SSE chunk 直接跳变导致「一卡一卡」。reasoning
   // 完成后静止，显示完整长度。
-  const reasoningCount = reasoningStreaming ? rw.visibleChars : reasoningContent.length
+  const reasoningCount = reasoningStreaming ? rw.visibleChars : effectiveReasoning.length
 
   // PERF：工具派生链 useMemo（字段级依赖）—— 此前每帧重算（progress prop 每帧
   // 新引用，memo 挡不住流式帧）。reduce 的 withTurn patch 是结构性共享：stream 帧
