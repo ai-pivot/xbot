@@ -2872,7 +2872,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 							return
 						}
 						if response != nil {
-							if sendErr := a.sendMessage(m.Channel, m.ChatID, response.Content, response.Metadata); sendErr != nil {
+							if sendErr := a.sendCommandReply(m.Channel, m.ChatID, response.Content, response.Metadata); sendErr != nil {
 								a.bus.Outbound <- bus.OutboundMessage{
 									Channel: response.Channel,
 									ChatID:  response.ChatID,
