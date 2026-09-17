@@ -67,6 +67,7 @@ import {
   sharedIterationHeightTracker,
   type IterationHeightTracker,
 } from './iterationHeight'
+import { createSettleScheduler, type SettleScheduler } from './iterationSettleScheduler'
 import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
 interface TurnBodyProps {
@@ -362,8 +363,30 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   const verifyTimers = useRef<Map<string, number>>(new Map())
   /** 正在复核（临时重新挂载内容）的 key。 */
   const [verifying, setVerifying] = useState<ReadonlySet<string>>(() => new Set())
-  /** 待补充的"第二次一致采样"定时器（RO 仅在尺寸变化时回调，需主动补一次）。 */
-  const settleTimers = useRef<Map<string, number>>(new Map())
+  /** 待补充的"第二次一致采样"定时器（合并式：一个定时器 + 每 key deadline，见 iterationSettleScheduler.ts）。 */
+  const settleSchedulerRef = useRef<SettleScheduler | null>(null)
+  /** 采样实现经 ref 读**最新**的 tracker/invalidate（调度器只建一次，不能钉住旧引用）。
+   *  ⛔ 初值必须是 null：`invalidate` 在本组件里声明于此处**之后**（TDZ），
+   *  在渲染期引用它 → `Cannot access 'invalidate' before initialization`（实测炸 5 个测试）。 */
+  const settleDepsRef = useRef<{ tracker: IterationHeightTracker; invalidate: () => void } | null>(null)
+  useEffect(() => {
+    settleDepsRef.current = { tracker, invalidate }
+  })
+  if (settleSchedulerRef.current === null) {
+    settleSchedulerRef.current = createSettleScheduler({
+      delayMs: ITERATION_HEIGHT_SETTLE_MS + 50,
+      onSample: (hKey) => {
+        const deps = settleDepsRef.current
+        if (!deps) return
+        const el = elements.current.get(hKey)
+        if (!el) return
+        const rect = el.getBoundingClientRect()
+        if (!isLayoutable(el, rect)) return
+        const res = deps.tracker.record(hKey, rect.height, performance.now(), true)
+        if (res.settled || res.changed) deps.invalidate()
+      },
+    })
+  }
   /** 分块元素缓存：**实例作用域**（元素对象天然绑定这一次挂载，不跨挂载复用）。 */
   const chunkCache = useRef<Map<number, ChunkEntry>>(new Map())
   /**
@@ -431,28 +454,17 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
    * ⛔ 采样同样只认**有布局的测量**：无渲染盒（面板 display:none / 元素已脱离文档）
    * 时直接放弃这次采样，等元素可见后由 RO 重新报告（而不是把 0 当成高度）。
    */
-  const scheduleSettleSample = useCallback(
-    (hKey: string) => {
-      // ⚠️ debounce（不是 throttle）：尺寸"变化"可能落在上一次采样**待发期间** ——
-      // 那时 `record` 已把 observedAt 刷新到此刻，若这里因"已有定时器"直接返回，
-      // 采样就会在变化后 <200ms 触发 → 判不出 settled，且**此后再无触发**
-      // （高度已稳定、RO 不再报变化）→ 该块永不结算 → 永不复核 → 永不冻结
-      // （实测：窗口化整段失效，20 块全量挂载）。⇒ 每次变化都重排采样。
-      const pending = settleTimers.current.get(hKey)
-      if (pending !== undefined) window.clearTimeout(pending)
-      const timer = window.setTimeout(() => {
-        settleTimers.current.delete(hKey)
-        const el = elements.current.get(hKey)
-        if (!el) return
-        const rect = el.getBoundingClientRect()
-        if (!isLayoutable(el, rect)) return
-        const res = tracker.record(hKey, rect.height, performance.now(), true)
-        if (res.settled || res.changed) invalidate()
-      }, ITERATION_HEIGHT_SETTLE_MS + 50)
-      settleTimers.current.set(hKey, timer)
-    },
-    [tracker, invalidate],
-  )
+  const scheduleSettleSample = useCallback((hKey: string) => {
+    // ⚠️ 语义仍是 debounce（每次变化都**重排**采样）：尺寸"变化"可能落在上一次采样
+    // **待发期间** —— 那时 `record` 已把 observedAt 刷新到此刻，若因"已有定时器"直接
+    // 返回，采样就会在变化后 <200ms 触发 → 判不出 settled，且**此后再无触发**
+    // （高度已稳定、RO 不再报变化）→ 该块永不结算 → 永不复核 → 永不冻结
+    // （2026-09-13 实测：窗口化整段失效，20 块全量挂载）。
+    // ⇒ 仍然每次变化都重排（deadline 推后），但由调度器**合并成单个定时器**：
+    // 旧实现每 key 一个定时器、每次变化 clear+set，RO 流式期间 ~7.5k 次/秒的
+    // install/remove，clearTimeout 独占 21% CPU（Trace-20260918T000005）。
+    settleSchedulerRef.current?.schedule(hKey)
+  }, [])
 
   // 观察器只建一次（整组块共用一个 RO / 一个 IO）。
   useEffect(() => {
@@ -528,8 +540,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
       roRef.current = null
       for (const t of verifyTimers.current.values()) window.clearTimeout(t)
       verifyTimers.current.clear()
-      for (const t of settleTimers.current.values()) window.clearTimeout(t)
-      settleTimers.current.clear()
+      settleSchedulerRef.current?.cancelAll()
     }
   }, [scheduleSettleSample, tracker, invalidate])
 
