@@ -768,8 +768,40 @@ export const MessageList = memo(function MessageList({
     //   （应等于 wrapper 的 inline height；与行 DOM 高对比即可判定缓存是否权威）
     root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
     root.dataset.virtTotal = String(Math.round(v.getTotalSize()))
+    // 诊断：本轮**实测读到**的每行高度（区分"读到的就是旧值"与"写不进缓存"）
+    const heights: number[] = []
+    root.querySelectorAll<HTMLElement>('.virt-row[data-index]').forEach((n) => {
+      heights.push(Math.round(n.getBoundingClientRect().height))
+    })
+    root.dataset.measureHeights = heights.join(',')
     return n
   }, [measureRowNode])
+
+  // ── live 行尺寸跟随（附加以外的另一半根因，CI 实证）──────────────────────
+  // CI 真实 Chromium 诊断：live 行 DOM 盒高 **8660px**，而虚拟器仍认为它是
+  // **91px**（该行刚出现时的高度）→ 后续追加行按 91 定位 → 重叠 8569px。
+  // `measurePass=4` 证明重测跑了、读到的却是 91 ⇒ **内容是在重测之后长出来的**，
+  // 而这次增长没有任何触发点（行列表未变 → 追加 effect 不跑；RO 在这次增长上
+  // 静默）。修法：**live 行的内容变化本身就是尺寸失效信号** —— 内容版本一变就
+  // 重测该行（O(1)：单元素一次 rect 读），不依赖 RO 的增量上报。
+  const liveContentRev = liveProgress
+    ? [
+        liveProgress.iteration,
+        liveProgress.iterationHistory?.length,
+        liveProgress.streamContent?.length,
+        liveProgress.reasoningStreamContent?.length,
+        liveProgress.activeTools?.length,
+        liveProgress.streamingTools?.length,
+        liveProgress.phase,
+      ].join('|')
+    : ''
+  useLayoutEffect(() => {
+    if (!liveId) return
+    const root = rowsWrapperRef.current
+    if (!root) return
+    const node = root.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
+    if (node) measureRowNode(node)
+  }, [liveContentRev, liveId, measureRowNode])
 
   const prevRowCountRef = useRef(rows.length)
   const prevTailIdRef = useRef<string | null | undefined>(rowsRef.current[rowsRef.current.length - 1]?.id)
