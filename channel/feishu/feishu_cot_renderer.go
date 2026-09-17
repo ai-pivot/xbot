@@ -387,15 +387,9 @@ func (f *FeishuChannel) cotRendererFor(chatID string) *feishuCoTRenderer {
 }
 
 // closeCoTRun 收尾该会话的思考过程（最终回复 / 取消 / 新一轮）。
+//
+// 唯一实现委托给 closeCoTRunReporting（它额外报告"本轮是否用过 CoT"，供最终
+// 答复决定走普通消息还是卡片）—— 一处实现，避免两份漂移。
 func (f *FeishuChannel) closeCoTRun(chatID, errMsg string) {
-	if f.cotRenderers == nil {
-		return
-	}
-	f.cotMu.Lock()
-	r := f.cotRenderers[chatID]
-	delete(f.cotRenderers, chatID)
-	f.cotMu.Unlock()
-	if r != nil {
-		r.close(errMsg)
-	}
+	f.closeCoTRunReporting(chatID, errMsg)
 }

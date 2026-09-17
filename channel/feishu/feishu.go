@@ -569,13 +569,19 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	// 把已打开的卡片收尾（写最终文本 + 关流式），不新建消息。放在空内容判断
 	// 之前 —— 取消的 turn 会用空内容收尾已打开的卡片。
 	if msg.Metadata != nil && msg.Metadata[ch.MetaFinalReply] == "true" {
-		// 原生 CoT：收尾思考过程（RUN_FINISHED）；答复本身继续走下面的普通消息
-		// 路径（平台语义：最终答复是它自己的消息，思考过程只承载过程）。
-		f.closeCoTRun(msg.ChatID, "")
+		// 原生 CoT：收尾思考过程（RUN_FINISHED）。
+		usedCoT := f.closeCoTRunReporting(msg.ChatID, "")
 		if id, ok := f.streamCardSend(msg, content, true); ok {
 			return id, nil
 		}
-		// 没有打开的卡片（本轮没有任何进度事件）→ 继续走下面的静态卡片路径。
+		// ⚠️ CoT 模式：过程已在思考过程里，**答案必须以普通消息发出** ——
+		// 旧实现从这里继续往下走 ⇒ 又发一张静态卡片 ⇒ 用户看到「思考过程 + 一张
+		// 卡片」两张（2026-09-17 用户报告）。dsh-lark 的 answer renderer 同理
+		// （答案是一条普通消息，过程只属于思考过程）。
+		if usedCoT {
+			return f.sendPlainTextReply(msg.ChatID, msg.Metadata, content), nil
+		}
+		// 没有任何进度的普通回复 → 继续走下面的卡片路径（保持既有行为）。
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -660,6 +666,51 @@ func (f *FeishuChannel) sendReplyMessage(chatID, parentID string, cardJSON []byt
 		"message_id": msgID,
 	}).Debug("Feishu reply message sent")
 	return msgID, nil
+}
+
+// sendPlainTextReply 以**普通文本消息**发出最终答复（CoT 模式下用）。
+//
+// 为什么不用卡片：原生 CoT 已经把「过程」呈现完了，答案再发一张卡片就会与思考
+// 过程一起形成"两张卡片"（用户报告）。dsh-lark 的答案同样是普通消息。
+// 有入站 message_id 时用 reply（保持在同一位置/线程）。
+func (f *FeishuChannel) sendPlainTextReply(chatID string, meta map[string]string, content string) string {
+	parentID := ""
+	if meta != nil {
+		parentID = meta["message_id"]
+	}
+	if parentID == "" {
+		parentID = f.lastInboundMessageID(chatID)
+	}
+	if parentID != "" {
+		f.sendTextReply(chatID, parentID, content)
+		return parentID
+	}
+	// 没有可回复的父消息：退化为普通文本消息。
+	receiveIDType := "chat_id"
+	if !strings.HasPrefix(chatID, "oc_") {
+		receiveIDType = "open_id"
+	}
+	body, _ := json.Marshal(map[string]string{"text": content})
+	req := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(receiveIDType).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(chatID).
+			MsgType("text").
+			Content(string(body)).
+			Build()).
+		Build()
+	if f.client == nil {
+		return ""
+	}
+	resp, err := f.client.Im.V1.Message.Create(context.Background(), req)
+	if err != nil || !resp.Success() {
+		log.WithError(err).Warn("Feishu: sendPlainTextReply failed")
+		return ""
+	}
+	if resp.Data != nil && resp.Data.MessageId != nil {
+		return *resp.Data.MessageId
+	}
+	return ""
 }
 
 // sendNormalMessage 发送普通消息，返回新消息的 message_id
@@ -3712,6 +3763,23 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 // （见本包 214 行注释 —— 卡片路径当年正因此改为 reply 到入站 message_id）。
 // 原生 CoT 的建卡接口只接受 receive_id ⇒ 必须用真实 chat_id，否则报
 // code=10001 invalid receive_id，思考过程整段丢失（用户报告「完全看不到中间进度」）。
+// closeCoTRunReporting 收尾并报告**本轮是否用过原生 CoT**（决定最终答复以
+// 「普通消息」还是「卡片」发出 —— dsh-lark 的同款分叉：CoT 模式答案是普通消息）。
+func (f *FeishuChannel) closeCoTRunReporting(chatID, errMsg string) bool {
+	if f.cotRenderers == nil {
+		return false
+	}
+	f.cotMu.Lock()
+	r := f.cotRenderers[chatID]
+	delete(f.cotRenderers, chatID)
+	f.cotMu.Unlock()
+	if r == nil {
+		return false
+	}
+	r.close(errMsg)
+	return true
+}
+
 func (f *FeishuChannel) cotReceiveID(key string) string {
 	f.realChatIDsMu.Lock()
 	real := f.realChatIDs[key]
