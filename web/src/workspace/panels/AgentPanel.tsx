@@ -244,7 +244,12 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // 那会把输入区一起盖住，用户既看不到空状态也无法创建/发送（CI 的
   // chat.spec"should show user message after sending" 就是这样红的 —— 快照里侧栏是
   // "No sessions yet — create one from the top-right"、面板只有 Loading…）。
-  const showLoadingScreen = (chat.historyReady === false && !!chatID) || resumeLoading
+  // ⛔ SSE 断开（重连中）不再显示黄色 "Reconnecting…" 条 —— 2026-09-17 用户要求：
+  // 「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的 splash screen」。
+  // 重连期间与"历史还没到"是同一语义（面板暂时不可用），统一用 loading splash 表达，
+  // 不再另设一条提示（那条黄条既丑又和 splash 表达同一件事）。
+  const showLoadingScreen =
+    (chat.historyReady === false && !!chatID) || resumeLoading || (!ws.connected && !!chatID && !isSubAgent)
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
@@ -799,12 +804,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       value={{ channel: progressChannel, chatID: progressChatID }}
     >
     <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
-      {!ws.connected && !isSubAgent && chatID && (
-        <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
-          <Loader2 className="size-3 animate-spin" />
-          <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
-        </div>
-      )}
       {!isSubAgent && devMode && (
         <DebugToolbar
           ws={ws}

@@ -251,7 +251,6 @@ const ja: Translations = {
     expandTodos: 'タスクリストを展開',
     collapseTodos: 'タスクリストを折りたたむ',
     contextUsage: '{{percent}}% · {{used}} / {{available}}',
-    reconnecting: '再接続中…',
     promptTokens: '入力 Token',
     maxContext: '最大コンテキスト',
     usagePercent: '使用率',

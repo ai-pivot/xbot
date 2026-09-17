@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => {
     upload: vi.fn(),
   }
   const context = {
-    ws: { onSession: vi.fn(() => vi.fn()) },
+    ws: { connected: true, onSession: vi.fn(() => vi.fn()) },
     sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' }, sessions: [] },
     rightSidebar: { openPanel: vi.fn() },
   }
@@ -428,5 +428,27 @@ describe('AgentPanel 会话归属（一个会话至多被一个 agent 面板渲�
       />,
     )
     expect(mocks.lastChatID).toBe('chat-1')
+  })
+})
+
+describe('断线（重连中）不再显示黄色 Reconnecting 条，改走 loading splash', () => {
+  // 2026-09-17 用户要求：「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的
+  // splash screen」。旧实现是一条 bg-amber-500/10 的横条 + `agent.reconnecting` 文案。
+  it('ws.connected=false ⇒ 渲染 session-loading-screen，且没有任何 Reconnecting 文案', () => {
+    mocks.context.ws.connected = false
+    try {
+      render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+      expect(screen.getByTestId('session-loading-screen')).toBeInTheDocument()
+      // 黄条已删除（三语文案都不应出现）
+      expect(screen.queryByText(/Reconnecting|重新连接中|再接続中/)).toBeNull()
+    } finally {
+      mocks.context.ws.connected = true
+    }
+  })
+
+  it('ws.connected=true ⇒ 不显示 loading splash（照常渲染消息列表）', () => {
+    mocks.context.ws.connected = true
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.queryByTestId('session-loading-screen')).toBeNull()
   })
 })

@@ -251,7 +251,6 @@ const en: Translations = {
     expandTodos: 'Expand todo list',
     collapseTodos: 'Collapse todo list',
     contextUsage: '{{percent}}% · {{used}} / {{available}}',
-    reconnecting: 'Reconnecting…',
     promptTokens: 'Prompt tokens',
     maxContext: 'Max context',
     usagePercent: 'Usage',

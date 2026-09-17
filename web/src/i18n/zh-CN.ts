@@ -248,7 +248,6 @@ const zhCN = {
     expandTodos: '展开任务列表',
     collapseTodos: '折叠任务列表',
     contextUsage: '{{percent}}% · {{used}} / {{available}}',
-    reconnecting: '重新连接中…',
     promptTokens: '输入 Token',
     maxContext: '最大上下文',
     usagePercent: '使用率',
