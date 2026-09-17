@@ -42,6 +42,7 @@ import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
 import { NewSessionDialog } from './NewSessionDialog'
+import { openAgentSessionTab } from '@/lib/sessionTabs'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -551,7 +552,18 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
       <NewSessionDialog
         open={newOpen}
         onOpenChange={setNewOpen}
-        onCreate={store.createSession}
+        onCreate={async (label, workPath) => {
+          const newID = await store.createSession(label, workPath)
+          if (newID) {
+            // 手机端（onSubAgentSelect 存在，无 dockview）AgentPanel 跟随
+            // activeSession —— 与点击会话同一处理：关掉抽屉即完成切换；
+            // desktop 的主区身份在 tab 自己的 sessionId 上，必须打开/聚焦新会话的
+            // agent tab，否则「侧栏高亮了、窗口没切」（fork / 点击都这么处理）。
+            if (!onSubAgentSelect) openAgentSessionTab(tabManager, newID, 'web', label)
+            onSessionSelected?.()
+          }
+          return newID
+        }}
       />
     </div>
   )
