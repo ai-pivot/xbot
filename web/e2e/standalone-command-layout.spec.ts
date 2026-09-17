@@ -191,7 +191,7 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
         phase: 'tool_exec',
         turn_id: 1,
         iteration: 9,
-        iteration_history: JSON.stringify(tallIterations()),
+        iteration_history: tallIterations(),
         chat_id: 'web:chat-1',
       },
     })
@@ -239,7 +239,7 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
         phase: 'tool_exec',
         turn_id: 1,
         iteration: 9,
-        iteration_history: JSON.stringify(tallIterations()),
+        iteration_history: tallIterations(),
         chat_id: 'web:chat-1',
       },
     })
