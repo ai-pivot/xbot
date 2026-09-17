@@ -1505,20 +1505,21 @@ func (f *LLMFactory) resolveTierModel(senderID, value string) (subID, model stri
 // single per-user value regardless of which channel the LLM call comes from.
 const canonicalSettingsSender = "cli_user"
 
-// getGlobalSetting reads a global setting (tier_*, thinking_mode — canonical
-// channel 'cli') for the single operator. After the multi-user removal there
-// is exactly one operator: the sender dimension (every UserContext sender
-// collapses to "cli_user") IS the global dimension. The fallback to the
-// canonical CLI sender covers direct caller-site passes of non-collapsed
-// senders (early init, cron paths).
-func (f *LLMFactory) getGlobalSetting(senderID, key string) string {
+// getGlobalSetting reads a canonical-channel user setting for the single
+// operator: the sender dimension (every UserContext sender collapses to
+// "cli_user") IS the global dimension. `channelName` is the canonical channel
+// the key is stored under (channel.ThinkingModeChannel for thinking/tiers,
+// channel.MaxConcurrencyChannel for concurrency). The fallback to the canonical
+// CLI sender covers direct caller-site passes of non-collapsed senders (early
+// init, cron paths).
+func (f *LLMFactory) getGlobalSetting(senderID, channelName, key string) string {
 	// Sender-dimension exact row.
-	if val := f.getSetting(senderID, thinkingModeChannel, key); val != "" {
+	if val := f.getSetting(senderID, channelName, key); val != "" {
 		return val
 	}
 	// Canonical CLI sender fallback.
 	if senderID != canonicalSettingsSender {
-		return f.getSetting(canonicalSettingsSender, thinkingModeChannel, key)
+		return f.getSetting(canonicalSettingsSender, channelName, key)
 	}
 	return ""
 }
@@ -1527,7 +1528,7 @@ func (f *LLMFactory) getGlobalSetting(senderID, key string) string {
 // Value is "subID|model" or legacy plain "model". Returns "" when unset.
 // Falls back to canonical sender so non-CLI channels inherit CLI tier config.
 func (f *LLMFactory) userTierModel(senderID, tier string) string {
-	return f.getGlobalSetting(senderID, "tier_"+tier)
+	return f.getGlobalSetting(senderID, thinkingModeChannel, "tier_"+tier)
 }
 
 // parseTierValue splits a tier config value into (subID, model).
@@ -1562,10 +1563,12 @@ func guessProvider(model string) string {
 
 // Setting keys used by LLMFactory for concurrency control.
 // Must match keys stored in user_settings DB (written by settings panel).
-const (
-	settingMaxConcurrency         = "max_concurrency" // channel.SettingMaxConcurrency
-	settingSubAgentMaxConcurrency = "subagent_max_concurrency"
-)
+//
+// There is exactly ONE knob: `max_concurrency`, stored under the canonical
+// channel (channel.MaxConcurrencyChannel). The former `subagent_max_concurrency`
+// key was a duplicate definition and has been deleted — SubAgents share the
+// single operator-level cap.
+const settingMaxConcurrency = channel.SettingMaxConcurrency
 
 func parseOrDefault(s string, defaultVal int) int {
 	if s == "" {
@@ -1578,7 +1581,16 @@ func parseOrDefault(s string, defaultVal int) int {
 	return v
 }
 
-func (f *LLMFactory) LLMSemAcquireForUser(senderID, channel string) func(context.Context) func() {
+// LLMSemAcquireForUser returns the acquire function gating ALL LLM calls of the
+// operator (shared and personal LLM alike).
+//
+// The capacity comes from the canonical max_concurrency row
+// (channel.MaxConcurrencyChannel) — NEVER from the caller's channel. Reading it
+// with the caller's channel meant Web/Feishu sessions (channel "web"/"feishu")
+// found no row and silently fell back to llm.DefaultLLMConcurrency (5) while the
+// panel displayed 100+, so "4-5 subagents already stall" (user report
+// 2026-09-17). One key, one row, one value.
+func (f *LLMFactory) LLMSemAcquireForUser(senderID string, _ string) func(context.Context) func() {
 	if f.llmSemManager == nil {
 		return nil
 	}
@@ -1587,32 +1599,29 @@ func (f *LLMFactory) LLMSemAcquireForUser(senderID, channel string) func(context
 		llmKey = "personal"
 	}
 	return func(ctx context.Context) func() {
-		// max_concurrency is the single unified knob controlling ALL LLM calls
-		// regardless of whether the user uses shared or personal LLM.
-		cap := parseOrDefault(f.getSetting(senderID, channel, settingMaxConcurrency), -1)
+		cap := parseOrDefault(f.getGlobalSetting(senderID, channel.MaxConcurrencyChannel, settingMaxConcurrency), -1)
 		if cap <= 0 {
 			cap = llm.DefaultLLMConcurrency
 		}
 		log.WithFields(log.Fields{
-			"sender":  senderID,
-			"channel": channel,
-			"llmKey":  llmKey,
-			"cap":     cap,
-			"dbVal":   f.getSetting(senderID, channel, settingMaxConcurrency),
+			"sender": senderID,
+			"llmKey": llmKey,
+			"cap":    cap,
 		}).Debug("LLMSemAcquireForUser: resolved capacity")
 		return f.llmSemManager.Acquire(ctx, senderID, llmKey, func() int { return cap })
 	}
 }
 
-func (f *LLMFactory) SubAgentSemAcquireForUser(senderID, channel string) func(context.Context) func() {
+// SubAgentSemAcquireForUser returns the acquire function gating SubAgent-created
+// LLM calls. It reads the SAME canonical knob as LLMSemAcquireForUser — the
+// separate `subagent_max_concurrency` key was a duplicate definition and has
+// been removed.
+func (f *LLMFactory) SubAgentSemAcquireForUser(senderID string, _ string) func(context.Context) func() {
 	if f.llmSemManager == nil {
 		return nil
 	}
 	return func(ctx context.Context) func() {
-		cap := parseOrDefault(f.getSetting(senderID, channel, settingSubAgentMaxConcurrency), -1)
-		if cap < 0 {
-			cap = parseOrDefault(f.getSetting(senderID, channel, settingMaxConcurrency), llm.DefaultLLMConcurrency)
-		}
+		cap := parseOrDefault(f.getGlobalSetting(senderID, channel.MaxConcurrencyChannel, settingMaxConcurrency), llm.DefaultLLMConcurrency)
 		return f.llmSemManager.Acquire(ctx, senderID, "subagent", func() int { return cap })
 	}
 }
@@ -1645,5 +1654,5 @@ const thinkingModeChannel = channel.ThinkingModeChannel
 // Per-model overrides still win above this; sub.ThinkingMode is no longer
 // consulted.
 func (f *LLMFactory) userThinkingMode(senderID string) string {
-	return f.getGlobalSetting(senderID, "thinking_mode")
+	return f.getGlobalSetting(senderID, thinkingModeChannel, "thinking_mode")
 }

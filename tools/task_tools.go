@@ -273,6 +273,12 @@ const runningTaskGuidanceBody = "⛔ Do NOT keep calling task_status/task_read t
 	"→ Go do other useful work NOW (continue another step / investigate something else); only come back when you genuinely need the result.\n" +
 	"(Non-blocking status check: task_status (task_id=[...]); avoid task_wait.)\n"
 
+// PollingHint 是给模型的"别轮询"提示 —— **单一实现**，由 task_status / task_read /
+// SubAgent(inspect) 的返回统一复用：后台任务与子代理完成时会**自动以通知送达**，
+// 反复调用这些工具只是白白消耗轮次（用户 2026-09-15 明确要求把这句话放进返回里）。
+const PollingHint = "\n💡 不要反复轮询本工具：后台任务/子代理完成时会**自动以通知送达**；" +
+	"请继续做其他有意义的事，只在真正需要时做一次性查询。\n"
+
 // formatTask formats a task for display.
 func formatTask(task *BackgroundTask) string {
 	elapsed := time.Since(task.StartedAt).Round(time.Second)
@@ -312,6 +318,7 @@ func formatTask(task *BackgroundTask) string {
 		}
 	}
 
+	sb.WriteString(PollingHint)
 	return sb.String()
 }
 
@@ -352,6 +359,7 @@ func formatSubAgentTask(task *SubAgentTask) string {
 		fmt.Fprintf(&sb, "Result Preview:\n%s\n", preview)
 	}
 
+	sb.WriteString(PollingHint)
 	return sb.String()
 }
 

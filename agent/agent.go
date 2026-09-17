@@ -69,10 +69,13 @@ func formatErrorForUser(err error) string {
 	return fmt.Sprintf("处理消息时发生错误: %v", err)
 }
 
-// resolveMemoryProvider returns the effective memory provider, defaulting to "flat".
+// resolveMemoryProvider returns the effective memory provider.
+//
+// 用户决策（2026-09-17 再次确认）：**缺省必须是内置 xbot**（此前缺省为 "flat"）。
+// 空值一律落到 xbot —— 不猜别的 provider（用户铁律：严禁推断/自动 fallback）。
 func resolveMemoryProvider(cfg string) string {
 	if cfg == "" {
-		return "flat"
+		return "xbot"
 	}
 	return cfg
 }
@@ -661,6 +664,14 @@ type Agent struct {
 type pendingAskUserEntry struct {
 	mu      sync.RWMutex
 	pending *protocol.ProgressEvent
+	// authRecordID is the id of the persisted ask_question control record
+	// this in-memory copy corresponds to (0 until first validated). The
+	// persisted ask_question/ask_answer records are the SINGLE authority:
+	// an entry the DB has already resolved (ask_answer), or one whose id no
+	// longer matches the latest control record, is stale and gets dropped
+	// instead of resurrecting the prompt (web store / CLI pending files /
+	// Feishu cards must not outlive the DB).
+	authRecordID atomic.Int64
 }
 
 // SetSettingsService sets the SettingsService (for external injection or override).
@@ -975,7 +986,7 @@ func (a *Agent) RewindHistory(channel, chatID string, historyID int64) (protocol
 	a.lastProgressSnapshot.Delete(progressKey)
 	a.iterationHistories.Delete(progressKey)
 	a.clearStreamState(progressKey)
-	a.ClearPendingAskUser(channel, chatID)
+	a.resolvePendingAskUser(channel, chatID, "rewound")
 	if channel == "agent" {
 		a.syncInteractiveSessionAfterRewind(chatID)
 	}
@@ -1177,7 +1188,9 @@ func (a *Agent) ActiveSessionKeys() []string {
 
 // GetPendingAskUser returns the pending AskUser prompt for a chat, or nil.
 // Used by the web channel to resend ask_user on WS reconnect so refreshing
-// the page doesn't lose the prompt.
+// the page doesn't lose the prompt. The in-memory copy is validated against
+// the persisted ask_question/ask_answer records (the single authority) — see
+// loadPendingAskUserEntry.
 func (a *Agent) GetPendingAskUser(ch, chatID string) *protocol.ProgressEvent {
 	var result *protocol.ProgressEvent
 	a.WithPendingAskUser(ch, chatID, func(pending *protocol.ProgressEvent) bool {
@@ -1222,21 +1235,41 @@ func (a *Agent) loadPendingAskUserEntry(ch, chatID string) (string, *pendingAskU
 	}
 	key := qualifyChatID(ch, chatID)
 	if value, ok := a.waitingUserSessions.Load(key); ok {
-		return key, value.(*pendingAskUserEntry)
+		entry := value.(*pendingAskUserEntry)
+		// Never trust the in-memory copy blindly: the persisted control
+		// records are the single authority.
+		if !a.pendingAskUserEntryIsAuthoritative(ch, chatID, key, entry) {
+			return key, nil
+		}
+		return key, entry
 	}
-	if a.multiSession != nil {
-		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
-			if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
-				event := &protocol.ProgressEvent{}
-				metadata := replay.PendingAskUser.Metadata
-				event.RequestID = metadata["request_id"]
-				if raw := metadata["ask_questions"]; raw != "" {
-					_ = json.Unmarshal([]byte(raw), &event.Questions)
-				}
-				entry := &pendingAskUserEntry{pending: event}
-				actual, _ := a.waitingUserSessions.LoadOrStore(key, entry)
-				return key, actual.(*pendingAskUserEntry)
+	// Memory miss: probe the persisted control records first (O(1) via the
+	// partial index idx_sm_tenant_record) — a replay is only worth doing when
+	// the DB says a question is genuinely pending. HasPendingAskUserFast runs
+	// this path per session-tree row, so the probe keeps that cheap.
+	id, recordType, available := a.latestAskControlRecordForSession(ch, chatID)
+	if available && recordType != sqlite.HistoryRecordAskQuestion {
+		return key, nil
+	}
+	if a.multiSession == nil {
+		return key, nil
+	}
+	if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
+		if replay, err := sess.Replay(); err == nil && replay.PendingAskUser != nil {
+			event := &protocol.ProgressEvent{}
+			metadata := replay.PendingAskUser.Metadata
+			event.RequestID = metadata["request_id"]
+			if raw := metadata["ask_questions"]; raw != "" {
+				_ = json.Unmarshal([]byte(raw), &event.Questions)
 			}
+			entry := &pendingAskUserEntry{pending: event}
+			authID := replay.PendingAskUser.HistoryID
+			if available && id > 0 {
+				authID = id
+			}
+			entry.authRecordID.Store(authID)
+			actual, _ := a.waitingUserSessions.LoadOrStore(key, entry)
+			return key, actual.(*pendingAskUserEntry)
 		}
 	}
 	return key, nil
@@ -1304,6 +1337,150 @@ func (a *Agent) clearPendingAskUserKey(key string) bool {
 	}
 }
 
+// latestAskControlRecordForSession returns the newest persisted AskUser
+// control record (ask_question / ask_answer) for the session's tenant.
+// available=false when there is no DB/session or the probe fails — callers
+// then fall back to trusting the in-memory copy (best effort).
+func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqlite.HistoryRecordType, bool) {
+	if a.multiSession == nil {
+		return 0, "", false
+	}
+	sess, err := a.multiSession.GetOrCreateSession(ch, chatID)
+	if err != nil {
+		return 0, "", false
+	}
+	db := a.multiSession.DB()
+	if db == nil {
+		return 0, "", false
+	}
+	id, recordType, err := sqlite.NewSessionService(db).LatestAskControlRecord(sess.TenantID())
+	if err != nil {
+		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
+			Warn("latestAskControlRecord: query failed, trusting in-memory AskUser state")
+		return 0, "", false
+	}
+	return id, recordType, true
+}
+
+// pendingAskUserEntryIsAuthoritative validates an in-memory pending entry
+// against the persisted control records (the single authority). Only a
+// POSITIVE contradiction drops the entry: the latest record being ask_answer
+// means the DB has resolved the prompt; a non-zero cached id that no longer
+// matches the latest ask_question means the memory copy is for an older
+// question. On a contradiction the exact entry is removed with
+// CompareAndDelete semantics (a concurrently replaced entry is left alone).
+// No control records / probe unavailable => trust the memory copy.
+func (a *Agent) pendingAskUserEntryIsAuthoritative(ch, chatID, key string, entry *pendingAskUserEntry) bool {
+	id, recordType, available := a.latestAskControlRecordForSession(ch, chatID)
+	if !available {
+		return true
+	}
+	if recordType == sqlite.HistoryRecordAskAnswer {
+		a.dropPendingAskUserEntry(key, entry)
+		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID, "answer_record_id": id}).
+			Info("Dropped stale in-memory pending AskUser: persisted ask_answer is newer")
+		return false
+	}
+	if recordType != sqlite.HistoryRecordAskQuestion {
+		// No ask control record at all — no contradiction, trust memory.
+		return true
+	}
+	cached := entry.authRecordID.Load()
+	if cached != 0 && cached != id {
+		a.dropPendingAskUserEntry(key, entry)
+		log.WithFields(log.Fields{
+			"channel": ch, "chat_id": chatID,
+			"cached_record_id": cached, "authoritative_record_id": id,
+		}).Info("Dropped stale in-memory pending AskUser: authoritative question id mismatch")
+		return false
+	}
+	if cached == 0 {
+		entry.authRecordID.CompareAndSwap(0, id)
+	}
+	return true
+}
+
+// dropPendingAskUserEntry removes exactly the given entry from the pending
+// registry (CompareAndDelete semantics, cf. clearPendingAskUserKey). A
+// concurrently replaced entry is left untouched. Returns true when the entry
+// still held a pending prompt.
+func (a *Agent) dropPendingAskUserEntry(key string, entry *pendingAskUserEntry) bool {
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	current, ok := a.waitingUserSessions.Load(key)
+	if !ok || current != entry {
+		return false
+	}
+	cleared := entry.pending != nil
+	entry.pending = nil
+	a.waitingUserSessions.CompareAndDelete(key, entry)
+	return cleared
+}
+
+// resolvePendingAskUser is the single funnel for "a pending AskUser prompt
+// stopped being pending". It (1) removes the in-memory pending entry and
+// (2) broadcasts protocol.AskUserResolvedEvent to EVERY registered channel
+// implementing channel.AskUserResolvedSender, so client-side prompt copies
+// (web store, CLI pending files, Feishu cards) collapse immediately. The
+// persisted ask_question/ask_answer records stay the single authority; the
+// event is only the invalidation hint (delivery is repeat-safe).
+// Returns true when an in-memory entry was actually cleared.
+// reason: "answered" | "cancelled" | "rewound" | "cleared".
+func (a *Agent) resolvePendingAskUser(ch, chatID, reason string) bool {
+	requestID := ""
+	if ch != "" && chatID != "" {
+		if value, ok := a.waitingUserSessions.Load(qualifyChatID(ch, chatID)); ok {
+			entry := value.(*pendingAskUserEntry)
+			entry.mu.RLock()
+			if entry.pending != nil {
+				requestID = entry.pending.RequestID
+			}
+			entry.mu.RUnlock()
+		}
+	}
+	cleared := a.clearPendingAskUser(ch, chatID)
+	a.broadcastAskUserResolved(ch, chatID, requestID, reason)
+	return cleared
+}
+
+// broadcastAskUserResolved fans the invalidation event out to every channel
+// that implements channel.AskUserResolvedSender — interface existence check,
+// never a hardcoded channel name.
+func (a *Agent) broadcastAskUserResolved(ch, chatID, requestID, reason string) {
+	if a.channelRange == nil {
+		return
+	}
+	ev := protocol.AskUserResolvedEvent{Channel: ch, ChatID: chatID, RequestID: requestID, Reason: reason}
+	a.channelRange(func(_ string, c channel.Channel) bool {
+		if sender, ok := c.(channel.AskUserResolvedSender); ok {
+			sender.SendAskUserResolved(ev)
+		}
+		return true
+	})
+}
+
+// autoResolveStalePendingAskUser closes the "busy ⇒ no pending" invariant:
+// a turn is starting while the session still has a pending AskUser prompt
+// (the user moved on with a new message, or a stale entry survived a race).
+// The DB pairing (ask_answer "[cancelled]") is written FIRST so the persisted
+// state no longer shows a pending question — otherwise Replay would
+// resurrect the prompt on the next reconnect. Then memory + clients are
+// invalidated via resolvePendingAskUser("cancelled").
+func (a *Agent) autoResolveStalePendingAskUser(ch, chatID string) {
+	if !a.HasPendingAskUserFast(ch, chatID) {
+		return
+	}
+	if a.multiSession != nil {
+		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
+			if _, err := sess.AppendAskAnswer("[cancelled]"); err != nil {
+				log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
+					Warn("Failed to append ask_answer pairing for auto-cancelled AskUser")
+			}
+		}
+	}
+	a.resolvePendingAskUser(ch, chatID, "cancelled")
+}
+
 func clonePendingAskUser(pending *protocol.ProgressEvent) *protocol.ProgressEvent {
 	if pending == nil {
 		return nil
@@ -1325,12 +1502,6 @@ func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
 	}
 }
 
-func (a *Agent) clearPendingAskUserForEnqueuedAnswer(msg bus.InboundMessage) {
-	if msg.Metadata != nil && msg.Metadata["ask_user_answered"] == "true" {
-		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
-	}
-}
-
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	cancelKey := msg.Channel + ":" + msg.ChatID
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
@@ -1348,7 +1519,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		}
 		// A prompt may have been stored just before the active Run returned.
 		// Clear it, but never replace the active cancellation with an early ack.
-		a.clearPendingAskUser(msg.Channel, msg.ChatID)
+		a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled")
 		// Persist ask_answer to invalidate the pending ask_question record.
 		// Without this, Replay() finds an unanswered ask_question on reload
 		// and restores the AskUser prompt. The wasCancelled path (line ~2927)
@@ -1371,7 +1542,7 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		}
 		return
 	}
-	if a.clearPendingAskUser(msg.Channel, msg.ChatID) {
+	if a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled") {
 		// Persist ask_answer to invalidate the pending ask_question record.
 		// Without this, Replay() finds an unanswered ask_question on reload
 		// and restores the AskUser prompt — the user sees it again after
@@ -1453,6 +1624,40 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	return wasCancelled
 }
 
+// dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。
+//
+// ⛔ 传入的 ctx 必须是**会话/进程级**上下文（只在 shutdown 时取消）——**绝不能**用
+// per-request 的 reqCtx：请求体跑完后 teardown 里的 finishActiveCancelState 会
+// **无条件** reqCancel()（释放资源），而本派发发生在 teardown **之后** ⇒ reqCtx
+// 必然已 Done ⇒ select 的「发送到 bus」与「ctx.Done」两个分支同时就绪 ⇒ Go 随机
+// 选一个 ⇒ **AskUser 面板随机不弹**（用户 2026-09-17 报告「前端完全不弹窗」；日志
+// 实证 "Context cancelled, dropping WaitingUser response"，且该次连 ask_question
+// 都没落库 ⇒ 刷新也恢复不了，用户只看到一个 ✓ 的工具 pill 且 turn 直接结束）。
+//
+// WaitingUser 是**状态变更**（agent 正在提问），不是可丢弃的瞬时消息 —— 只有真正的
+// shutdown（或 bus 满 10s）才允许放弃。
+func (a *Agent) dispatchWaitingUser(ctx context.Context, busMsg bus.OutboundMessage) bool {
+	// ⛔ 先做非阻塞的 shutdown 检查：ctx 已取消时绝不能再往 bus 发。若把这个判断
+	// 放进下面的 select，与「发送到 bus」同时就绪时 Go 会随机选 —— 和被修的 bug
+	// 是同一个竞态（回归测试 TestDispatchWaitingUser_DropsOnShutdown 抓过）。
+	select {
+	case <-ctx.Done():
+		log.Ctx(ctx).Warn("Shutdown: dropping WaitingUser response")
+		return false
+	default:
+	}
+	select {
+	case a.bus.Outbound <- busMsg:
+		return true
+	case <-ctx.Done():
+		log.Ctx(ctx).Warn("Shutdown: dropping WaitingUser response")
+		return false
+	case <-time.After(10 * time.Second):
+		log.Ctx(ctx).Error("Message bus outbound channel full for 10s, dropping WaitingUser response")
+		return false
+	}
+}
+
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
 func (a *Agent) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
 	a.userSys.llmFactory.SetProxyLLM(senderID, proxy, model)
@@ -1515,7 +1720,7 @@ type Config struct {
 	// DeltaPush 启用流式 delta push（增量文本）。默认 false = 每次推送完整
 	// 累积文本（简单可靠）。见 config.AgentConfig.DeltaPush。
 	DeltaPush   bool
-	SandboxMode string        // 沙箱模式: "none" 或 "docker"（默认 "docker"）
+	SandboxMode string        // 沙箱模式: "none" 或 "remote"（默认 "none"；本地 docker sandbox 已删除）
 	Sandbox     tools.Sandbox // Sandbox 实例引用（V4 新增）
 
 	// IterationLoopDetection enables the iteration-loop breaker (consecutive
@@ -1560,7 +1765,7 @@ type Config struct {
 	EnableAutoCompress bool // 是否启用自动上下文压缩（默认 true，旧字段）
 
 	// SubAgent 深度控制
-	MaxSubAgentDepth int // SubAgent 最大嵌套深度（默认 6）
+	MaxSubAgentDepth int // SubAgent 最大嵌套层数（默认 5；只校验深度，同角色嵌套是合法用法）
 
 	// OffloadDir: offload 文件存储目录（默认 ~/.xbot/offload_store）
 	OffloadDir string
@@ -1635,16 +1840,13 @@ func initStores(cfg Config) (*SkillStore, *AgentStore, *tools.ChatHistoryStore, 
 		log.WithField("count", n).Info("Cleaned up expired waiting cards")
 	}
 
-	// 全局黑名单：skill 从 catalog 排除，内置 tool 从 registry 注销。
-	// 注意：DownloadFileTool / WebSearchTool 在 agent.New 返回后才注册
-	// （server_core.go），需在调用方对它们再做一次 DisableTools。
+	// 全局黑名单：skill 从 catalog 排除；内置 tool 从**激活集**排除。
+	// 用 registry 过滤（SetDisabledTools）而不是 Unregister —— 启停必须可逆：
+	// Settings → Tools 面板重新勾选即可立即恢复（未激活的 tool 既不进 LLM
+	// 上下文，也不可执行）。DownloadFileTool / WebSearchTool 在 agent.New 之后
+	// 才注册，调用方（server_core.go）会再应用一次同一列表。
 	skillStore.SetDisabledSkills(cfg.DisabledSkills)
-	for _, name := range cfg.DisabledTools {
-		if name = strings.TrimSpace(name); name != "" {
-			registry.Unregister(name)
-			log.WithField("tool", name).Info("Tool disabled by blacklist")
-		}
-	}
+	registry.SetDisabledTools(cfg.DisabledTools)
 
 	return skillStore, agentStore, chatHistory, registry, cardBuilder
 }
@@ -1692,12 +1894,24 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 全局工具索引通过 IndexGlobalTools() 在所有工具注册完成后调用
 
-	// 注册记忆工具（通过注册表，无硬编码 provider 名称）
-	for _, tool := range tools.GetMemoryTools(memoryProvider) {
+	// 注册记忆工具（**唯一注册点**，完全由 provider 声明决定 —— 见
+	// tools.RegisterMemoryTools/GetMemoryTools；守护测试
+	// tools.TestMemoryTools_ProviderExclusiveSets 保证"集合 = 该 provider 声明的集合"）。
+	// 启动日志打印**实际注册的工具名**：下次若出现"其它 provider 的工具被注入"，
+	// 一眼可见是 provider 配错还是注册泄漏。
+	memTools := tools.GetMemoryTools(memoryProvider)
+	memToolNames := make([]string, 0, len(memTools))
+	for _, tool := range memTools {
 		registry.RegisterCore(tool)
+		memToolNames = append(memToolNames, tool.Name())
 	}
-	if memoryProvider != "none" && len(tools.GetMemoryTools(memoryProvider)) > 0 {
-		log.WithField("provider", memoryProvider).Info("Memory tools registered (core)")
+	if len(memToolNames) > 0 {
+		log.WithFields(log.Fields{
+			"provider": memoryProvider,
+			"tools":    memToolNames,
+		}).Info("Memory tools registered (core)")
+	} else {
+		log.WithField("provider", memoryProvider).Warn("No memory tools declared by provider")
 	}
 
 	log.Info("Knowledge tools removed — project knowledge is managed via AGENTS.md + docs/agent/")
@@ -1860,7 +2074,7 @@ func New(cfg Config) (*Agent, error) {
 		cfg.CompressionThreshold = 0.9
 	}
 	if cfg.MaxSubAgentDepth <= 0 {
-		cfg.MaxSubAgentDepth = 6
+		cfg.MaxSubAgentDepth = DefaultMaxSubAgentDepth
 	}
 	if cfg.CLISenderID == "" {
 		cfg.CLISenderID = "cli_user"
@@ -1876,10 +2090,7 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	// 4. 构建 Agent 实例
-	sandboxMode := cfg.SandboxMode
-	if sandboxMode == "" {
-		sandboxMode = "docker"
-	}
+	sandboxMode := resolveSandboxMode(cfg.SandboxMode)
 
 	rm := runner.NewManager()
 	agent := &Agent{
@@ -2633,8 +2844,11 @@ func (a *Agent) Run(ctx context.Context) error {
 				// turn id directly without waiting for turn_started (which
 				// may be lost/coalesced in SSE). If a message somehow never
 				// reaches the chatWorker (ctx cancel), the transport's own
-				// ctx/timeout will unblock the request.
-				a.clearPendingAskUserForEnqueuedAnswer(msg)
+				// ctx/timeout will unblock the request.				// The pending AskUser entry is NOT cleared here on purpose: the
+				// answer is only real once its ask_answer record is persisted
+				// (processMessage → resolvePendingAskUser "answered"). Clearing
+				// at enqueue meant a crash or a dropped queued message left the
+				// DB pending → the prompt resurrected on reconnect.
 			default:
 				acknowledgeInboundDelivery(msg, bus.DeliveryResult{Err: bus.ErrInboundQueueFull})
 				log.WithFields(log.Fields{"request_id": msg.RequestID, "chat": key}).Warn("Chat queue full, dropping message")
@@ -2998,13 +3212,21 @@ func (a *Agent) resolveResumeTurnID(channel, chatID string) uint64 {
 }
 
 func (a *Agent) handleBgNotifySignal(chatKey string, ss *bgSessionState) {
-	// bg notification arrived — drain and process ONLY when chatProcessLoop is idle.
-	// When busy, notifications stay in bgRunPending for chatProcessLoop's
-	// post-turn drain to pick up (guaranteed after response is sent).
+	// bg notification arrived — drain and process ONLY when chatProcessLoop is
+	// idle. While iterating (busy) or waiting for an AskUser answer (pending
+	// prompt — the WaitingUser pause runs with busy=false on purpose),
+	// notifications stay in bgRunPending for chatProcessLoop's post-turn
+	// drain to pick up (guaranteed after the answering turn's response).
 
-	if !ss.busy.Load() {
-		a.drainAndProcessNotifications(chatKey)
+	if ss.busy.Load() {
+		return
 	}
+	if parts := strings.SplitN(chatKey, ":", 2); len(parts) == 2 {
+		if a.HasPendingAskUserFast(parts[0], parts[1]) {
+			return
+		}
+	}
+	a.drainAndProcessNotifications(chatKey)
 }
 
 // restoreTurnIDSeq restores the per-session turn ID counter from DB so it
@@ -3079,6 +3301,15 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// 同步 worktree registry：该 session 正在迭代中（peer 协作提示依据，
 			// busy/idle = 是否在迭代中，而非时间推断）。
 			tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), true)
+			// Invariant: busy ⇒ no pending AskUser. A turn starting while the
+			// session still holds a pending prompt means the user moved on (or
+			// a stale entry survived a race) — the prompt is moot and must be
+			// resolved before the new turn runs. The AskUser ANSWER is exempt:
+			// it resolves its own prompt after the ask_answer record lands
+			// (processMessage → resolvePendingAskUser "answered").
+			if msg.Metadata == nil || msg.Metadata["ask_user_answered"] != "true" {
+				a.autoResolveStalePendingAskUser(msg.Channel, msg.ChatID)
+			}
 
 			// 停止上一次的 idle timer（收到新消息，重置计时）
 			if idleTimer != nil {
@@ -3244,14 +3475,6 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					<-sem // 释放槽位（WaitingUser 也需要释放，让 answer 能获取）
 				}()
 
-				// 沙箱正在 export+import 时，拒绝该用户所有请求
-				sbUID := sandboxUserID(msg)
-				if sb := tools.GetSandbox(); sb.IsExporting(sbUID) {
-					log.WithFields(log.Fields{"request_id": msg.RequestID, "sender": msg.SenderID, "sandbox_user": sbUID}).Info("Request rejected: sandbox export in progress")
-					a.sendMessage(msg.Channel, msg.ChatID, "⏳ 沙箱正在持久化中，请稍后再试...")
-					return
-				}
-
 				response, err = a.processMessage(reqCtx, msg)
 			}()
 
@@ -3269,7 +3492,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 						}
 					}
 				}
-				a.ClearPendingAskUser(msg.Channel, msg.ChatID)
+				a.resolvePendingAskUser(msg.Channel, msg.ChatID, "cancelled")
 				// 即使取消也要发送 response，让 CLI 清理 typing/progress 状态。
 				// Always include cancelled metadata so CLI can distinguish cancel acks
 				// from normal replies and avoid ending a subsequently-started turn.
@@ -3337,14 +3560,17 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// WaitingUser 消息不可静默丢弃：AskUser 面板不显示 = turn 永久暂停
 					// 等一个不会到达的回答（ss.busy 保持 true，会话卡死）。带超时的
 					// 阻塞发送替代立即丢弃（对齐上方 err 分支的直接写语义），仅在
-					// shutdown（reqCtx.Done）或 10s 仍满时放弃。
-					select {
-					case a.bus.Outbound <- busMsg:
-					case <-reqCtx.Done():
-						log.Ctx(ctx).Warn("Context cancelled, dropping WaitingUser response")
-					case <-time.After(10 * time.Second):
-						log.Ctx(ctx).Error("Message bus outbound channel full for 10s, dropping WaitingUser response")
-					}
+					// shutdown 或 10s 仍满时放弃。
+					//
+					// ⛔ 判据必须是**会话/进程级 ctx**（只在 shutdown 取消），**绝不能**用
+					// reqCtx：请求体跑完后 teardown 的 finishActiveCancelState 会**无条件**
+					// reqCancel()（释放资源），而本派发发生在 teardown **之后** ⇒ reqCtx
+					// 必然已 Done ⇒ select 的「发送」与「ctx.Done」同时就绪 ⇒ Go 随机选 ⇒
+					// **AskUser 面板随机不弹**（用户 2026-09-17：「前端完全不弹窗」；日志
+					// 实证 "Context cancelled, dropping WaitingUser response"，且该次连
+					// ask_question 都没落库 ⇒ 刷新也恢复不了）。见 dispatchWaitingUser 注释 +
+					// TestWaitingUserDispatchMustNotUseRequestCtx 回归守卫。
+					a.dispatchWaitingUser(ctx, busMsg)
 				} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
 					log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
 				}
@@ -3378,9 +3604,13 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// AskUser panel is showing. The answer message will be dequeued next
 			// and processed as a continuation of this turn.
 			if response != nil && response.WaitingUser {
-				// WaitingUser: turn PAUSED waiting for user input — the session is
-				// NOT iterating. Mark the peer idle for collaboration hints
-				// (ss.busy stays true for chatWorker notification-drain semantics).
+				// WaitingUser: the turn is PAUSED waiting for the user's answer —
+				// the session is NOT iterating, so it is NOT busy (busy ⇔
+				// iterating; waiting_input is surfaced from the pending prompt by
+				// applyWebRunningStatus, not from ss.busy). The anti-drain
+				// property is preserved by handleBgNotifySignal's pending check,
+				// not by busy.
+				ss.busy.Store(false)
 				tools.GlobalWorktreeRegistry.SetBusy(qualifyChatID(msg.Channel, msg.ChatID), false)
 				return true
 			}
@@ -3574,7 +3804,10 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 			return nil, fmt.Errorf("append AskUser answer: %w", askErr)
 		}
 		_ = answerHistoryID
-		a.ClearPendingAskUser(msg.Channel, msg.ChatID)
+		// The ask_answer record is now durably persisted — only NOW is the
+		// prompt truly resolved. Clear memory + broadcast ask_user_resolved
+		// ("answered") so every client drops its cached prompt copy.
+		a.resolvePendingAskUser(msg.Channel, msg.ChatID, "answered")
 		// Remove last user message appended by Assemble
 		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
 			messages = messages[:len(messages)-1]
@@ -3922,9 +4155,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 
 	promptWorkDir := a.workDir
-	if a.sandboxMode == "docker" {
-		promptWorkDir = "/workspace"
-	} else if ws := a.remoteWorkspace(msg.SenderID); ws != "" {
+	if ws := a.remoteWorkspace(msg.SenderID); ws != "" {
 		promptWorkDir = ws
 	}
 
@@ -4080,6 +4311,69 @@ func (a *Agent) RegisterCoreTool(tool tools.Tool) {
 func (a *Agent) RegisterToolForChannel(channel string, tool tools.Tool) {
 	a.tools.RegisterForChannel(channel, tool)
 	log.WithField("tool", tool.Name()).WithField("channel", channel).Info("Channel tool registered")
+}
+
+// ToolSetting describes one built-in tool for the Settings → Tools panel.
+type ToolSetting struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+	// ServerName is non-empty for MCP tools: the MCP server that provides them
+	// (used by the panel to group tools per server + offer a master switch).
+	ServerName string `json:"server_name,omitempty"`
+}
+
+// ToolSettings lists every registered GLOBAL tool with its activation state.
+// Only the global registry is listed: channel/runner/MCP tools are scoped
+// resources, not built-in tools the operator activates/deactivates here.
+// MCP tools carry their ServerName so the UI can group them per server.
+func (a *Agent) ToolSettings() []ToolSetting {
+	all := a.tools.List() // sorted by name (stable order for the UI)
+	out := make([]ToolSetting, 0, len(all))
+	for _, t := range all {
+		out = append(out, ToolSetting{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Enabled:     !a.tools.IsDisabled(t.Name()),
+			ServerName:  tools.MCPServerName(t),
+		})
+	}
+	return out
+}
+
+// SetToolEnabled activates/deactivates one built-in tool at runtime and returns
+// the resulting disabled set (the single persisted representation, stored in
+// config.DisabledTools). Inactive tools are omitted from the LLM tool
+// definitions and cannot be executed — see tools.Registry.SetDisabledTools.
+func (a *Agent) SetToolEnabled(name string, enabled bool) ([]string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("tool name is required")
+	}
+	if _, ok := a.tools.GetRaw(name); !ok {
+		return nil, fmt.Errorf("unknown built-in tool %q", name)
+	}
+	disabled := a.tools.DisabledTools() // sorted
+	out := make([]string, 0, len(disabled)+1)
+	found := false
+	for _, n := range disabled {
+		if n == name {
+			found = true
+			continue
+		}
+		out = append(out, n)
+	}
+	if !enabled && !found {
+		out = append(out, name)
+	}
+	a.tools.SetDisabledTools(out)
+	log.WithFields(log.Fields{"tool": name, "enabled": enabled}).Info("Tool activation changed")
+	return out, nil
+}
+
+// SetDisabledTools replaces the inactive built-in tool set (startup + settings).
+func (a *Agent) SetDisabledTools(names []string) {
+	a.tools.SetDisabledTools(names)
 }
 
 // DisableTools unregisters the given GLOBAL tool blacklist. These tools become

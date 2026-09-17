@@ -17,34 +17,38 @@ jobs:
     steps:
       - name: Get PR info
         id: pr
+        # ⛔ 评论正文/用户名绝不能内联进 run:（`${{ github.event.comment.body }}`）——
+        # 评论里出现反引号或 $( ) 会被 shell 当命令替换**执行**（脚本注入），
+        # 一条带反引号的 /cr 评论就能把这一步打成 exit 127，机器人静默挂掉、
+        # review 不再产生（2026-09-15 事故：三次 /cr 触发全部 failure）。
+        # 一律经 env: 传值 —— 值不参与脚本文本拼接。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
         run: |
-          PR_NUMBER="${{ github.event.issue.number }}"
-          REPO="${{ github.repository }}"
-          COMMENT_USER="${{ github.event.comment.user.login }}"
-          COMMENT_BODY="${{ github.event.comment.body }}"
-
-          # Fetch PR details via GitHub API
-          PR_INFO=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '{
-            number: .number,
-            title: .title,
-            head_ref: .head.ref,
-            base_ref: .base.ref
-          }')
+          PR_INFO=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq -c '{number: .number, title: .title, head_ref: .head.ref, base_ref: .base.ref}')
 
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          # GITHUB_OUTPUT 只接受单行值 ⇒ 用紧凑 JSON（--jq -c）
           echo "pr_info=$PR_INFO" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trigger xbot code review
+        env:
+          REPO: ${{ steps.pr.outputs.repo }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          COMMENT_USER: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          WEBHOOK_URL: ${{ secrets.XBOT_WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.XBOT_WEBHOOK_SECRET }}
         run: |
-          # Build webhook payload
+          # 同样经 env 取值（见上一步注释）：评论正文只作为 jq 参数，绝不进 shell 文本。
           PAYLOAD=$(jq -n \
-            --arg repo "${{ steps.pr.outputs.repo }}" \
-            --argjson pr_num ${{ steps.pr.outputs.pr_number }} \
-            --arg comment_user "${{ github.event.comment.user.login }}" \
-            --arg comment_body "${{ github.event.comment.body }}" \
+            --arg repo "$REPO" \
+            --argjson pr_num "${PR_NUMBER:-0}" \
+            --arg comment_user "$COMMENT_USER" \
+            --arg comment_body "$COMMENT_BODY" \
             '{
               repository: {full_name: $repo},
               pull_request: {number: $pr_num},
@@ -55,11 +59,11 @@ jobs:
             }')
 
           # Compute HMAC-SHA256 signature
-          SIG=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "${{ secrets.XBOT_WEBHOOK_SECRET }}" | cut -d' ' -f2)
+          SIG=$(printf '%s' "$PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | cut -d' ' -f2)
 
           # POST to xbot webhook
           RESPONSE=$(curl -sS -w "\n%{http_code}" -X POST \
-            "${{ secrets.XBOT_WEBHOOK_URL }}" \
+            "$WEBHOOK_URL" \
             -H "Content-Type: application/json" \
             -H "X-Hub-Signature-256: sha256=$SIG" \
             -d "$PAYLOAD")

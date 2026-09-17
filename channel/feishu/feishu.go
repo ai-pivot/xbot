@@ -50,6 +50,14 @@ type FeishuConfig struct {
 	EncryptKey        string   // 事件订阅加密 Key（可选）
 	VerificationToken string   // 事件订阅验证 Token（可选）
 	AllowFrom         []string // 允许的用户 open_id 白名单（空则允许所有人）
+	// Output 选择进度渲染：
+	//   "cot"  = 飞书**原生 CoT（思考过程）**—— reasoning 进思考区、每个工具
+	//            icon+title、工具结果 code block，最终答复仍走普通消息
+	//            （对齐 dsh-lark：src/runtime.ts 的 /open-apis/im/v1/message_cot）；
+	//   其他值 = 既有 CardKit 流式卡片。
+	// 生产由 serverapp 默认给 "cot"（见 channelOutput）；测试直接构造渠道时为
+	// 零值 ⇒ 走卡片路径（卡片契约的测试不受影响）。
+	Output string
 }
 
 // SettingsCallbacks holds the callback functions for settings card interaction.
@@ -94,11 +102,6 @@ type SettingsCallbacks struct {
 
 	// MetricsGet 获取当前运行指标（用于设置页展示）
 	MetricsGet func() string
-
-	// SandboxCleanupTrigger 触发沙箱 export+import 持久化（阻塞直到完成）
-	SandboxCleanupTrigger func(senderID string) error
-	// SandboxIsExporting 检查用户是否正在进行 export+import
-	SandboxIsExporting func(senderID string) bool
 
 	// Model tier get/set (per-user config, stored in user_settings DB)
 	// LLMGetModelTier returns the current (subID, model) mapping for a tier
@@ -224,11 +227,27 @@ type FeishuChannel struct {
 	// ack for the current turn (progress card unavailable) — cleared on the next
 	// inbound message. Prevents both silence AND per-event spam.
 	streamCardAcked map[string]struct{}
+	// cotEnabled 决定进度走原生 CoT（对齐 dsh-lark）还是 CardKit 卡片。
+	// 由 FeishuConfig.Output == "cot" 打开；测试构造的渠道为零值 ⇒ 保持卡片路径。
+	cotEnabled bool
+	// Native CoT（飞书原生「思考过程」）渲染器，按 chatID 索引 —— 对齐 dsh-lark
+	// (omdsh-dev/dsh-lark)：进度渲染成平台的思考过程（reasoning 区 + 每个工具
+	// icon/title + 工具结果 code block），**最终答复仍走普通消息**。创建/写入失败
+	// 即降级到上面的 CardKit 卡片（思考过程是呈现，答案从不依赖它）。
+	cotMu        sync.Mutex
+	cotRenderers map[string]*feishuCoTRenderer
 
 	// inboundMsgIDs remembers the latest inbound message id per chat so the
 	// progress card can be posted as a reply to it.
 	inboundMsgIDsMu sync.Mutex
 	inboundMsgIDs   map[string]string
+	// realChatIDs 记录「渠道会话键 → 入站事件里的真实 chat_id（oc_…）」。
+	// ⚠️ 会话键是合成 id（`chat_…`），飞书同时拒收为 open_id 与 chat_id（见本包
+	// 214 行注释：卡片路径当初因此改为 reply 到入站 message_id）。原生 CoT 的建卡
+	// 接口只接受 receive_id ⇒ 必须用真实 chat_id，否则 code=10001 invalid receive_id
+	// ⇒ 思考过程整段丢失（用户报告「完全看不到中间进度」）。
+	realChatIDsMu sync.Mutex
+	realChatIDs   map[string]string
 }
 
 type feishuPendingApproval struct {
@@ -268,7 +287,10 @@ func NewFeishuChannel(cfg FeishuConfig, msgBus *bus.MessageBus) *FeishuChannel {
 		streamCards:       make(map[string]*feishuStreamCard),
 		streamCardsBroken: make(map[string]struct{}),
 		streamCardAcked:   make(map[string]struct{}),
+		cotEnabled:        cfg.Output == "cot",
+		cotRenderers:      make(map[string]*feishuCoTRenderer),
 		inboundMsgIDs:     make(map[string]string),
+		realChatIDs:       make(map[string]string),
 	}
 }
 
@@ -547,10 +569,18 @@ func (f *FeishuChannel) Send(msg ch.OutboundMsg) (string, error) {
 	// 把已打开的卡片收尾（写最终文本 + 关流式），不新建消息。放在空内容判断
 	// 之前 —— 取消的 turn 会用空内容收尾已打开的卡片。
 	if msg.Metadata != nil && msg.Metadata[ch.MetaFinalReply] == "true" {
+		// 原生 CoT：收尾思考过程（RUN_FINISHED）。
+		usedCoT := f.closeCoTRunReporting(msg.ChatID, "")
 		if id, ok := f.streamCardSend(msg, content, true); ok {
 			return id, nil
 		}
-		// 没有打开的卡片（本轮没有任何进度事件）→ 继续走下面的静态卡片路径。
+		// 答案继续走下面的卡片路径：飞书**只有卡片能渲染 markdown**（标题/列表/表格/
+		// 代码块）——上一版把它改成 msg_type=text（纯文本）导致"最终回复没有渲染
+		// md"（用户 2026-09-17 截图：`# 🌁 青海国庆天气` 原样显示）。
+		// `usedCoT` 仅用于诊断日志：过程在原生思考过程里，答案是一条独立消息。
+		if usedCoT {
+			log.WithField("chat_id", msg.ChatID).Debug("Feishu: cot handled the process; answer goes as its own message")
+		}
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -1215,6 +1245,18 @@ func (f *FeishuChannel) onMessage(ctx context.Context, event *larkim.P2MessageRe
 		f.inboundMsgIDs[replyTo] = messageID
 	}
 	f.inboundMsgIDsMu.Unlock()
+	// 记下真实 chat_id —— 原生 CoT 的 receive_id 必须用它（合成键必被拒）。
+	if msg.ChatId != nil && *msg.ChatId != "" {
+		f.realChatIDsMu.Lock()
+		if f.realChatIDs == nil {
+			f.realChatIDs = map[string]string{}
+		}
+		f.realChatIDs[chatID] = *msg.ChatId
+		if replyTo != "" && replyTo != chatID {
+			f.realChatIDs[replyTo] = *msg.ChatId
+		}
+		f.realChatIDsMu.Unlock()
+	}
 	// New inbound message = new turn: the reply target is now known, so give the
 	// progress card a fresh attempt for this chat (and re-arm the one-shot
 	// fallback ack).
@@ -1941,6 +1983,25 @@ func (f *FeishuChannel) sendAskUserCard(msg ch.OutboundMsg) (string, error) {
 	}).Info("Feishu: AskUser card sent")
 
 	return msgID, nil
+}
+
+// SendAskUserResolved implements ch.AskUserResolvedSender — drops the pending
+// text-reply fallback entries for the chat that stopped being pending, so a
+// late text reply cannot be routed into a dead prompt.
+//
+// The event carries no senderID, so every entry of the chat is removed (the
+// map key is "chatID:senderID" and one chat may hold multiple senders).
+func (f *FeishuChannel) SendAskUserResolved(ev protocol.AskUserResolvedEvent) {
+	if ev.ChatID == "" {
+		return
+	}
+	f.askUserMu.Lock()
+	defer f.askUserMu.Unlock()
+	for key, pending := range f.askUsers {
+		if pending != nil && pending.ChatID == ev.ChatID {
+			delete(f.askUsers, key)
+		}
+	}
 }
 
 // buildAskUserCard constructs a Feishu interactive card for AskUser questions.
@@ -3647,4 +3708,38 @@ func (f *FeishuChannel) BuildMainMenuUI(ctx context.Context, senderID string) st
 	sb.WriteString("- 📤 `/app export <name> -s/-a/-p` — 打包导出\n")
 	sb.WriteString("- 🗑️ `/app uninstall -n/-s/-a/-p` — 卸载\n")
 	return sb.String()
+}
+
+// cotReceiveID 返回**平台可接受**的会话标识：优先用入站事件记录的真实 chat_id
+// （`oc_…`），无记录时回落到渠道会话键。
+//
+// ⚠️ 渠道的会话键是合成 id（形如 `chat_…`）：飞书会同时拒收为 open_id 与 chat_id
+// （见本包 214 行注释 —— 卡片路径当年正因此改为 reply 到入站 message_id）。
+// 原生 CoT 的建卡接口只接受 receive_id ⇒ 必须用真实 chat_id，否则报
+// code=10001 invalid receive_id，思考过程整段丢失（用户报告「完全看不到中间进度」）。
+// closeCoTRunReporting 收尾并报告**本轮是否用过原生 CoT**（决定最终答复以
+// 「普通消息」还是「卡片」发出 —— dsh-lark 的同款分叉：CoT 模式答案是普通消息）。
+func (f *FeishuChannel) closeCoTRunReporting(chatID, errMsg string) bool {
+	if f.cotRenderers == nil {
+		return false
+	}
+	f.cotMu.Lock()
+	r := f.cotRenderers[chatID]
+	delete(f.cotRenderers, chatID)
+	f.cotMu.Unlock()
+	if r == nil {
+		return false
+	}
+	r.close(errMsg)
+	return true
+}
+
+func (f *FeishuChannel) cotReceiveID(key string) string {
+	f.realChatIDsMu.Lock()
+	real := f.realChatIDs[key]
+	f.realChatIDsMu.Unlock()
+	if real != "" {
+		return real
+	}
+	return key
 }

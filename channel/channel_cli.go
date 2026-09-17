@@ -126,6 +126,19 @@ func (c *ChannelCliChannel) SendSessionState(ev protocol.SessionEvent) {
 	c.sendMsgBestEffort(msg)
 }
 
+// SendAskUserResolved implements ch.AskUserResolvedSender — transports the
+// server-side invalidation of a pending AskUser prompt to the CLI client so
+// its disk cache (~/.xbot/pending_askuser) and any open panel are dropped.
+func (c *ChannelCliChannel) SendAskUserResolved(ev protocol.AskUserResolvedEvent) {
+	c.sendMsgBestEffort(protocol.WSMessage{
+		Type:                     protocol.MsgTypeAskUserResolved,
+		Channel:                  ev.Channel,
+		ChatID:                   ev.ChatID,
+		AskUserResolvedRequestID: ev.RequestID,
+		AskUserResolvedReason:    ev.Reason,
+	})
+}
+
 func (c *ChannelCliChannel) SendToast(msg string) {
 	c.sendMsgBestEffort(protocol.WSMessage{
 		Type:    protocol.MsgTypeText,

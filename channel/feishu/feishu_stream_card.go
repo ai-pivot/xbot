@@ -31,7 +31,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,9 +47,6 @@ import (
 )
 
 const (
-	// streamCardElementID identifies the markdown element that receives the
-	// streamed text of the CURRENT iteration. Feishu validates element_id:
-	// letters/digits/underscore, must start with a letter, ≤20 characters.
 
 	// streamCardSummary is the chat-list preview shown while streaming.
 	streamCardSummary = "🔄 生成中…"
@@ -69,19 +66,16 @@ const (
 	// stay scannable, so the detail is cut (with an ellipsis) well before the
 	// full command fits — otherwise the row degenerates into a wall of text.
 	streamCardToolRowRunes = 40
+	// streamCardToolHeaderRunes bounds the collapsed tool-panel header to ONE
+	// short line (the full text goes to the expanded body).
+	streamCardToolHeaderRunes = 16
+	// streamCardToolBodyBytes bounds the expanded tool body.
+	streamCardToolBodyBytes = 1200
 )
 
 // streamCardMinInterval throttles the streaming-text element pushes.
 // A var (not a const) so tests can disable/force the throttle.
 var streamCardMinInterval = 250 * time.Millisecond
-
-// streamCardReasonCountMinInterval throttles the thinking-panel HEADER refresh
-// ("💭 思考 N 字"). The thinking TEXT streams through the per-element content API
-// (typewriter), but a panel header can only change via a full-card update — so
-// the character count is refreshed on its own, slower throttle to keep it
-// visibly counting up without flooding the card API.
-// A var (not a const) so tests can force it.
-var streamCardReasonCountMinInterval = 400 * time.Millisecond
 
 // streamCardPanelMinInterval throttles the full-card updates that re-lay out the
 // iterations (thinking blocks / finished iterations / tool rows).
@@ -188,24 +182,6 @@ type feishuStreamCard struct {
 	lastReasonIter int
 	lastReasoning  string
 	lastReasonAt   time.Time
-	// lastReasonCountAt throttles the thinking-panel HEADER refresh (the character
-	// count in "💭 思考 N 字" is refreshed via partial_update_element — never a full
-	// card replace; see feishu_stream_card_ops.go).
-	lastReasonCountAt time.Time
-
-	// ─── 元素级增量（方案 A，见 feishu_stream_card_ops.go）───
-	// ops 是待提交的元素级变更队列（合并成一次 BatchUpdateCard）。
-	ops []cardOp
-	// appendThink/appendAnswer/appendTool 记录**已经追加过**的元素，保证每个元素
-	// 只 append 一次（结构变化只增不改 → 不打断打字机、不重排整卡）。
-	appendThink  map[int]bool
-	appendAnswer map[int]bool
-	appendTool   map[string]bool
-	// elements 是卡片的**虚拟布局**：创建时的骨架 + 之后每一次 append 的元素，
-	// 顺序即飞书卡片里的顺序（用于 renderCard 与断言；真实卡片由元素级 API 增量维护）。
-	elements []map[string]any
-	// panelTitles 记录各思考面板标题的当前值（实时字数）。
-	panelTitles map[int]string
 }
 
 // newFeishuStreamCard creates the card entity (streaming enabled) and posts it.
@@ -213,18 +189,15 @@ type feishuStreamCard struct {
 // progress and the legacy final-reply fallback).
 func newFeishuStreamCard(client *lark.Client, title, chatID, replyTo string) (*feishuStreamCard, error) {
 	card := &feishuStreamCard{
-		client:       client,
-		title:        title,
-		iters:        map[int]*streamIteration{},
-		appendThink:  map[int]bool{},
-		appendAnswer: map[int]bool{},
-		appendTool:   map[string]bool{},
-		panelTitles:  map[int]string{},
+		client: client,
+		title:  title,
+		iters:  map[int]*streamIteration{},
 	}
 	data, err := json.Marshal(card.renderCard(true))
 	if err != nil {
 		return nil, fmt.Errorf("marshal stream card: %w", err)
 	}
+
 	req := larkcardkit.NewCreateCardReqBuilder().
 		Body(larkcardkit.NewCreateCardReqBodyBuilder().
 			Type("card_json").
@@ -415,13 +388,20 @@ func (c *feishuStreamCard) pushText(n int, text string) {
 	if time.Since(c.lastTextAt) < streamCardMinInterval {
 		return
 	}
-	// 该迭代的元素必须先存在（结构只 append 一次），内容才有地方写。
-	c.ensureElementsLocked(n)
-	c.submitOpsLocked()
 	it := c.iter(n)
+	firstText := it.content == ""
 	it.content = text
+	if firstText {
+		// 该迭代的正文元素还没进卡片（只有整卡更新会创建元素）→ 先建再写，
+		// 否则这第一段文本会因为没有元素而静默丢失（用户报告：正文/思考"执行完毕才出现"）。
+		if err := c.updateCard(true); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: layout before text failed")
+			return
+		}
+		c.lastCardAt = time.Now()
+	}
 	c.seq++
-	if err := c.setElementContent(answerElementID(n), text, c.seq); err != nil {
+	if err := c.setElementContent(contentElementID(n), text, c.seq); err != nil {
 		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream text push failed")
 		return
 	}
@@ -440,19 +420,11 @@ func (c *feishuStreamCard) syncLayout(force bool) {
 	if !force && time.Since(c.lastCardAt) < streamCardPanelMinInterval {
 		return
 	}
-	// 结构变化只 append / patch（元素级）—— 不再整卡替换。
-	c.ensureAllElementsLocked()
-	c.flushOps(true)
-	// 快照里带的正文也要落到元素上（progress 事件可能先于流式文本到达）。
-	if it := c.iters[c.current]; it != nil && it.content != "" && it.content != c.lastText {
-		c.seq++
-		if err := c.setElementContent(answerElementID(c.current), it.content, c.seq); err != nil {
-			log.WithError(err).WithField("card_id", c.cardID).
-				Debug("Feishu: snapshot text push failed")
-		} else {
-			c.lastText, c.lastTextAt = it.content, time.Now()
-		}
+	if err := c.updateCard(true); err != nil {
+		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: stream card layout update failed")
+		return
 	}
+	c.lastCardAt = time.Now()
 }
 
 // finalize renders the finished card and closes the streaming mode. Closing is
@@ -469,35 +441,71 @@ func (c *feishuStreamCard) finalize(text string) error {
 		it := c.iter(c.current)
 		it.content = text
 	}
-	// 最终文本走元素级内容更新；结构先落地（只 append，不整卡替换）。
-	c.ensureAllElementsLocked()
-	if text != "" {
-		c.seq++
-		if err := c.setElementContent(answerElementID(c.current), text, c.seq); err != nil {
-			log.WithError(err).WithField("card_id", c.cardID).
-				Debug("Feishu: final text push failed")
-		}
+	if err := c.updateCard(false); err != nil {
+		log.WithError(err).WithField("card_id", c.cardID).
+			Warn("Feishu: stream card final update failed, closing streaming mode")
+		return c.setStreamingMode(false)
 	}
-	// 收尾：批量折叠各思考面板（一张卡片的"干净"形态 = 正文 + 工具行）。
-	for n := range c.iters {
-		c.queuePatch(panelElementID(n), map[string]any{"expanded": false})
-	}
-	c.submitOpsLocked()
-	// 关流式是强制项（开着的流会让卡片卡在"生成中"直到飞书 10 分钟后强关）。
-	return c.setStreamingMode(false)
+	return nil
 }
 
 // renderCard builds the Card JSON 2.0 for the current state.
 // The caller must hold c.mu (or hold exclusive ownership, e.g. at creation).
 func (c *feishuStreamCard) renderCard(streaming bool) map[string]any {
-	// 创建时消费掉排队中的 append（它们已经记进 c.elements 这个虚拟布局），
-	// 于是 renderCard 始终反映卡片的真实元素序列；此后结构变化只走元素级 append。
-	c.takeOpsElements()
-	elements := c.elements
-	if len(elements) == 0 {
-		elements = []map[string]any{
-			{"tag": "markdown", "element_id": answerElementID(1), "content": ""},
+	nums := make([]int, 0, len(c.iters))
+	for n := range c.iters {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+
+	elements := make([]map[string]any, 0, len(nums)*3)
+	// 卡片**只渲染当前迭代**（用户 2026-09-14：「每次都只渲染最后一个迭代」「一旦到下一个迭代
+	// 就不展示上一个迭代了」）。上一迭代的内容随新迭代的整卡更新一起消失；元素数因此恒定
+	// （≈ 思考面板 + 工具面板 + 正文），与 turn 长度无关 —— 飞书卡片元素上限（~50 / 11310）撞不到。
+	if c.current > 0 {
+		nums = []int{c.current}
+	}
+	for _, n := range nums {
+		it := c.iters[n]
+		if it == nil {
+			continue
 		}
+		if n == c.current && streaming {
+			// 流式期间：内层元素为空（思考文本由 CardElement.Content 逐段写 = 打字机），
+			// 折叠态标题固定「💭 思考中」而不是「思考 N 字」（用户 2026-09-14）。
+			elements = append(elements, reasoningPanelStreaming(n))
+		} else if it.reasoning != "" {
+			elements = append(elements, reasoningPanel(n, it.reasoning))
+		}
+		// 当前迭代的正文用可流式元素；已完结迭代用普通 markdown。
+		// ⚠️ 收尾（streaming=false）时必须把文本写进卡片 —— 否则最终答复只存在于
+		// Content 推送里，整卡更新会把它清空（content stream 丢失）。
+		if n == c.current && streaming {
+			elements = append(elements, map[string]any{
+				"tag": "markdown", "element_id": contentElementID(n),
+				"content": "", "text_size": "normal",
+			})
+		} else if it.content != "" {
+			elements = append(elements, map[string]any{
+				"tag": "markdown", "content": it.content, "text_size": "normal",
+			})
+		}
+		if len(it.tools) > 0 {
+			// 工具与思考**同款**：每个工具一个可折叠面板（用户 2026-09-14：
+			// 「注意工具要类似思考的样式可用展开」）。标题 = 工具 + 参数 + 耗时 + 状态，
+			// 展开后是命令/输出/错误详情。结构变化靠整卡 Card.Update 重排
+			// （元素级 append/patch 线上返回 0 但无渲染效果，已弃用）。
+			for i := range it.tools {
+				elements = append(elements, toolPanel(it.tools[i]))
+			}
+		}
+	}
+	if len(elements) == 0 {
+		// Keep the streaming element present from the very first frame so the
+		// typewriter has somewhere to land.
+		elements = append(elements, map[string]any{
+			"tag": "markdown", "element_id": contentElementID(1), "content": "",
+		})
 	}
 
 	summary := streamCardSummary
@@ -532,26 +540,17 @@ func currentContent(iters map[int]*streamIteration, current int) string {
 	return ""
 }
 
-// thinkingPanelTitle renders the folded thinking panel's header title.
-// The count is refreshed live via partial_update_element (patchThinkingCountLocked).
-func thinkingPanelTitle(reasoning string) string {
-	return fmt.Sprintf("💭 思考 %d 字", len([]rune(reasoning)))
-}
-
-// reasoningPanel renders the folded thinking block (💭 思考 N 字).
-//
-// The PANEL carries element_id panelElementID(n) so its header title can be
-// patched in place (live character count), and the inner markdown element carries
-// reasoningElementID(n) so the thinking text streams independently of the answer
-// — both without ever re-rendering the whole card.
+// reasoningPanel renders the folded thinking block (web parity: 💭 思考 N 字).
+// The inner markdown element carries a per-iteration element id so the thinking
+// text streams independently of the answer text.
 func reasoningPanel(n int, reasoning string) map[string]any {
+	title := fmt.Sprintf("💭 思考 %d 字", len([]rune(reasoning)))
 	return map[string]any{
-		"tag":        "collapsible_panel",
-		"element_id": panelElementID(n),
-		"expanded":   false,
+		"tag":      "collapsible_panel",
+		"expanded": false,
 		"header": map[string]any{
 			"title": map[string]any{
-				"tag": "plain_text", "content": thinkingPanelTitle(reasoning),
+				"tag": "plain_text", "content": title,
 				"text_color": "grey", "text_size": "notation",
 			},
 			"vertical_align": "center",
@@ -572,6 +571,34 @@ func reasoningPanel(n int, reasoning string) map[string]any {
 			},
 		},
 	}
+}
+
+// contentElementID is the streamable element id of iteration n's ANSWER text.
+// Measured 2026-09-14 (SDK path, live API): an element introduced by a whole-card
+// Card.Update IS writable through CardElement.Content (code=0) — so every
+// iteration gets its OWN element and streams independently; no slot pool, no
+// iteration cap is needed.
+func contentElementID(n int) string {
+	return fmt.Sprintf("content_%d", n)
+}
+
+// reasoningPanelStreaming is the streaming twin of reasoningPanel: identical
+// shell, but the inner markdown element is declared EMPTY because while the
+// iteration is in flight its text is owned by CardElement.Content (a full-card
+// update writes text in one shot and would cancel the typewriter).
+func reasoningPanelStreaming(n int) map[string]any {
+	p := reasoningPanel(n, "")
+	// 折叠态标题固定显示「思考中」（用户 2026-09-14：「stream 的时候展开前显示思考中」）。
+	if hdr, ok := p["header"].(map[string]any); ok {
+		hdr["title"] = map[string]any{
+			"tag": "plain_text", "content": "💭 思考中",
+			"text_color": "grey", "text_size": "notation",
+		}
+	}
+	p["elements"] = []map[string]any{
+		{"tag": "markdown", "element_id": reasoningElementID(n), "content": "", "text_size": "notation"},
+	}
+	return p
 }
 
 // reasoningElementID is the streamable element id of iteration n's thinking.
@@ -604,6 +631,107 @@ func toolChip(t streamTool) string {
 	}
 	parts = append(parts, fmt.Sprintf("<font color='%s'>%s</font>", color, state))
 	return strings.Join(parts, " · ")
+}
+
+// toolChipPlain is toolChip's plain-text twin for panel HEADERS: a header title
+// is plain_text (markdown/HTML tags would render literally), so the status colour
+// must be dropped instead of wrapped in <font>.
+func toolChipPlain(t streamTool) string {
+	icon, _, state := toolStatusLabel(t.status)
+	label := t.label
+	if label == "" {
+		label = t.name
+	}
+	parts := []string{icon + " " + label}
+	if detail := redactSensitive(toolHeaderArg(t)); detail != "" {
+		parts = append(parts, detail)
+	}
+	parts = append(parts, state)
+	return strings.Join(parts, " · ")
+}
+
+// toolHeaderArg is the ONE-LINE argument summary shown in a collapsed tool panel
+// (user 2026-09-14: 「tool 参数总是完整渲染可能有很多行，应该控制在展开前一行」).
+// Newlines/tabs collapse to spaces (a header is a single line) and the result is
+// rune-safe truncated — the FULL argument text lives in the panel body instead.
+func toolHeaderArg(t streamTool) string {
+	// 参数还在生成（args 只是半截 JSON）/ 还没开始执行 → 标题不展示参数，只留状态
+	//（用户 2026-09-14：「处理一下 tool generating 和 executing」）。执行中/完成才显示参数。
+	if t.status == "generating" || t.status == "pending" {
+		return ""
+	}
+	raw := toolDetail(t)
+	if raw == "" {
+		return ""
+	}
+	one := strings.Join(strings.Fields(strings.ReplaceAll(strings.ReplaceAll(raw, "\r", " "), "\n", " ")), " ")
+	if r := []rune(one); len(r) > streamCardToolHeaderRunes {
+		return string(r[:streamCardToolHeaderRunes]) + "…"
+	}
+	return one
+}
+
+// toolDetailFull is the panel BODY: the tool's full argument text (what the
+// collapsed header deliberately truncates) plus its output when available.
+// Rune-safe capped so one tool cannot blow up the card.
+func toolDetailFull(t streamTool) string {
+	if t.status == "generating" {
+		return "_参数生成中…_"
+	}
+	parts := make([]string, 0, 2)
+	if t.summary != "" {
+		parts = append(parts, strings.TrimSpace(t.summary))
+	}
+	if t.args != "" {
+		args := strings.TrimSpace(t.args)
+		if len(parts) == 0 || !strings.Contains(parts[0], args) {
+			var m map[string]any
+			if json.Unmarshal([]byte(args), &m) == nil {
+				if pretty, err := json.MarshalIndent(m, "", "  "); err == nil {
+					args = string(pretty)
+				}
+			}
+			parts = append(parts, "```\n"+args+"\n```")
+		}
+	}
+	return strings.TrimSpace(tools.TruncateHeadPreview(strings.Join(parts, "\n\n"), streamCardToolBodyBytes))
+}
+
+// toolPanel renders ONE tool as a collapsible panel in the SAME visual language as
+// the thinking panel (user 2026-09-14: 「注意工具要类似思考的样式可用展开」).
+// Header = icon + label + arg + elapsed + status; body = the tool's bounded detail.
+// Structural changes go through the whole-card Card.Update — element-level
+// add_elements/partial_update_element return code=0 but have NO rendering effect
+// (measured 2026-09-14), so they are not used for visible content.
+func toolPanel(t streamTool) map[string]any {
+	// ⛔ 出口脱敏（同 CoT）：面板正文 = 完整参数 + 输出，常含凭据。
+	body := redactSensitive(toolDetailFull(t))
+	if body == "" {
+		body = "_（无详情）_"
+	}
+	return map[string]any{
+		"tag":      "collapsible_panel",
+		"expanded": false,
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag": "plain_text", "content": toolChipPlain(t),
+				"text_color": "grey", "text_size": "notation",
+			},
+			"vertical_align": "center",
+			"icon": map[string]any{
+				"tag": "standard_icon", "token": streamCardPanelIconToken,
+				"color": "grey", "size": "16px 16px",
+			},
+			"icon_position":       "right",
+			"icon_expanded_angle": -180,
+		},
+		"border":           map[string]any{"color": "grey", "corner_radius": "5px"},
+		"vertical_spacing": "4px",
+		"padding":          "8px 8px 8px 8px",
+		"elements": []map[string]any{
+			{"tag": "markdown", "content": body, "text_size": "notation"},
+		},
+	}
 }
 
 // toolDetailShort returns a SINGLE bounded line for a tool row.
@@ -663,8 +791,15 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	if text == c.lastReasoning || time.Since(c.lastReasonAt) < streamCardMinInterval {
 		return
 	}
-	c.ensureElementsLocked(n)
-	c.submitOpsLocked()
+	if n != c.lastReasonIter {
+		// 该迭代的思考面板还没进卡片 → 先整卡更新创建元素，否则这第一段思考写不进去
+		//（元素不存在），面板要等到下一次结构化事件才出现（用户报告："思考执行完毕才出现"）。
+		if err := c.updateCard(true); err != nil {
+			log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: layout before reasoning failed")
+			return
+		}
+		c.lastCardAt = time.Now()
+	}
 	c.seq++
 	if err := c.setElementContent(reasoningElementID(n), text, c.seq); err != nil {
 		log.WithError(err).WithField("card_id", c.cardID).Debug("Feishu: thinking push failed")
@@ -673,13 +808,12 @@ func (c *feishuStreamCard) pushReasoning(n int, text string) {
 	c.lastReasoning = text
 	c.lastReasonAt = time.Now()
 
-	// 思考正文刚打完字（元素级 content）；标题里的字数改用 partial_update_element
-	// 刷新 —— 只改这一个元素的 header，不重排整卡、不打断打字机。
-	if time.Since(c.lastReasonCountAt) >= streamCardReasonCountMinInterval {
-		c.patchThinkingCountLocked(n, text)
-		c.flushOps(true)
-		c.lastReasonCountAt = time.Now()
-	}
+	// NOTE (2026-09-14, user: 「没有 stream 特效」): a whole-card update writes the
+	// element text in ONE shot, which cancels the typewriter from the Content push
+	// above. So the panel title ("💭 思考 N 字") is intentionally NOT refreshed per
+	// character anymore — it is refreshed by the structural updates (new iteration /
+	// tool status change / finalize), which are the only moments a full-card update
+	// is allowed to run while text is streaming.
 }
 
 // pushCurrentReasoning streams the current iteration's thinking, if any.
@@ -692,6 +826,36 @@ func (c *feishuStreamCard) pushCurrentReasoning() {
 	}
 	c.mu.Unlock()
 	c.pushReasoning(n, text)
+}
+
+// updateCard replaces the whole card.
+// The caller must hold c.mu.
+func (c *feishuStreamCard) updateCard(streaming bool) error {
+	cardJSON, err := json.Marshal(c.renderCard(streaming))
+	if err != nil {
+		return fmt.Errorf("marshal card: %w", err)
+	}
+	c.seq++
+	req := larkcardkit.NewUpdateCardReqBuilder().
+		CardId(c.cardID).
+		Body(larkcardkit.NewUpdateCardReqBodyBuilder().
+			Card(larkcardkit.NewCardBuilder().
+				Type("card_json").
+				Data(string(cardJSON)).
+				Build()).
+			Sequence(c.seq).
+			Uuid(newStreamCardUUID()).
+			Build()).
+		Build()
+
+	resp, err := c.client.Cardkit.V1.Card.Update(context.Background(), req)
+	if err != nil {
+		return fmt.Errorf("stream card update: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("stream card update: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
 }
 
 // setStreamingMode toggles the card's streaming_mode via the settings API.
@@ -742,6 +906,11 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 	if payload == nil || !f.isFeishuChat(chatID) {
 		return
 	}
+	// 原生 CoT（对齐 dsh-lark）优先；不可用（未配置/已降级）时回落 CardKit 卡片。
+	if r := f.cotRendererFor(chatID); r != nil {
+		r.onProgress(payload)
+		return
+	}
 	card, ok := f.ensureStreamCard(chatID)
 	if !ok {
 		f.streamCardFallbackAck(chatID)
@@ -759,6 +928,10 @@ func (f *FeishuChannel) SendProgress(chatID string, payload *protocol.ProgressEv
 // argument (thinking text) streams into its own element.
 func (f *FeishuChannel) SendStreamContent(chatID, content, reasoning string) {
 	if (content == "" && reasoning == "") || !f.isFeishuChat(chatID) {
+		return
+	}
+	if r := f.cotRendererFor(chatID); r != nil {
+		r.onStreamContent(content, reasoning)
 		return
 	}
 	card, ok := f.ensureStreamCard(chatID)

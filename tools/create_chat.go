@@ -28,7 +28,7 @@ The SubAgent runs in background, processing messages via SendMessage.
 
 ## Group type — Meeting Mode
 Creates a moderated group discussion among multiple SubAgents.
-- Members are specified as agent addresses (e.g., ["agent:reviewer/cr1", "agent:tester/ts1"])
+- Members are specified as agent addresses (e.g., ["agent:reviewer/cr1", "agent:qa/ts1"])
 - Returns a group address like "group:<id>" for use with SendMessage
 - The group works like a meeting: the moderator (you) controls who speaks
 - Messages without @mentions just add to the discussion history (no agent triggered)
@@ -37,10 +37,10 @@ Creates a moderated group discussion among multiple SubAgents.
 - Group auto-closes after max_rounds moderator messages with @mentions (default 10)
 
 ## Example workflow
-1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:tester/t1"])
+1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:qa/t1"])
 2. SendMessage(to="group:g1", message="Let's discuss the API design.") → no agents triggered
 3. SendMessage(to="group:g1", message="@agent:reviewer/r1 What's your opinion?") → reviewer responds
-4. SendMessage(to="group:g1", message="@agent:tester/t1 Any concerns about testability?") → tester responds with full context`
+4. SendMessage(to="group:g1", message="@agent:qa/t1 Any concerns about testability?") → qa responds with full context`
 }
 
 type CreateChatParams struct {
@@ -53,7 +53,7 @@ type CreateChatParams struct {
 	ModelTier string `json:"model_tier,omitempty" jsonschema:"description=Model tier: vanguard/swift/balance (for agent type)"`
 	Model     string `json:"model,omitempty" jsonschema:"description=Explicit model name for the new session (optional). Takes priority over model_tier. When both are empty, defaults to balance tier."`
 	// --- Group params ---
-	Members   []string `json:"members,omitempty" jsonschema:"description=Member addresses for group (e.g. [\"agent:reviewer\",\"agent:tester\"])"`
+	Members   []string `json:"members,omitempty" jsonschema:"description=Member addresses for group (e.g. [\"agent:reviewer\",\"agent:qa\"])"`
 	MaxRounds int      `json:"max_rounds,omitempty" jsonschema:"description=Max conversation rounds for group (default 10)"`
 }
 
@@ -87,9 +87,6 @@ func (t *CreateChatTool) Execute(ctx *ToolContext, raw string) (*ToolResult, err
 }
 
 func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatParams) (*ToolResult, error) {
-	if params.Role == "" {
-		return nil, fmt.Errorf("role is required for agent type")
-	}
 	if params.Instance == "" {
 		return nil, fmt.Errorf("instance is required for agent type")
 	}
@@ -99,10 +96,18 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 		return nil, fmt.Errorf("interactive SubAgent not supported in this context (type %T)", ctx.Manager)
 	}
 
-	// Load role definition
-	role, ok := loadRoleFromCtx(ctx, params.Role)
-	if !ok {
-		return nil, fmt.Errorf("unknown role: %s, see <available_agents> in system prompt", params.Role)
+	// role：best-effort（同 SubAgent 工具）—— 缺省/拼写不准尽量匹配，只有有歧义才报错。
+	roleSb, roleUserID, userAgentDirs := roleLookupContext(ctx)
+	resolvedRole, roleAutoMatched, roleErr := ResolveSubAgentRoleSandbox(ctx.Ctx, params.Role, params.Task, roleSb, roleUserID, userAgentDirs...)
+	if roleErr != nil {
+		return nil, roleErr
+	}
+	role := resolvedRole
+	// 下游（会话 key / AgentChannel 地址 `agent:<role>/<instance>`）都用 params.Role。
+	params.Role = role.Name
+	roleNote := ""
+	if roleAutoMatched {
+		roleNote = fmt.Sprintf("Auto-matched role %q (role was omitted or misspelled — best effort).\n\n", role.Name)
 	}
 
 	effectiveModel := params.Model
@@ -153,7 +158,7 @@ func (t *CreateChatTool) createAgentChat(ctx *ToolContext, params *CreateChatPar
 		}
 	}
 
-	return NewResult(fmt.Sprintf("Created agent chat: %s\n%s\n\nUse SendMessage(to=\"%s\", message=\"...\") to send tasks.", addr, result, addr)), nil
+	return NewResult(roleNote + fmt.Sprintf("Created agent chat: %s\n%s\n\nUse SendMessage(to=\"%s\", message=\"...\") to send tasks.", addr, result, addr)), nil
 }
 
 func (t *CreateChatTool) createGroupChat(ctx *ToolContext, params *CreateChatParams) (*ToolResult, error) {

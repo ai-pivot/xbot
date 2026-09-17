@@ -84,8 +84,6 @@ type OAuthConfig struct {
 type SandboxConfig struct {
 	Mode        string   `json:"mode"`
 	RemoteMode  string   `json:"remote_mode"`
-	DockerImage string   `json:"docker_image"`
-	HostWorkDir string   `json:"host_work_dir"`
 	IdleTimeout Duration `json:"idle_timeout"`
 	WSPort      int      `json:"ws_port"`
 	AuthToken   string   `json:"auth_token"`
@@ -194,13 +192,14 @@ type Config struct {
 	EventWebhook  EventWebhookConfig  `json:"event_webhook"`
 	OSS           OSSConfig           `json:"oss"`
 	TavilyAPIKey  string              `json:"tavily_api_key"`
-	// DisableWebSearch disables the built-in WebSearch tool. Set to true when
-	// using an external search skill (e.g. the "search" skill) to avoid
-	// duplicate tool definitions and wasted context tokens.
-	DisableWebSearch bool `json:"disable_web_search,omitempty"`
-	// DisabledTools is a GLOBAL blacklist of built-in tool names to disable
-	// (registered tools are skipped entirely — not visible, not executable).
-	// Applies to all users/channels.
+	// DisabledTools is the GLOBAL set of INACTIVE built-in tools (registered
+	// tools stay in the registry but are filtered out of the LLM tool
+	// definitions and cannot be executed). Configured from the Web
+	// Settings → Tools panel. Applies to all users/channels.
+	//
+	// NOTE: the legacy `disable_web_search` bool was a duplicate definition of
+	// this same knob; it is folded into DisabledTools at load time (see
+	// Normalize) and no longer exists as a config field.
 	DisabledTools []string `json:"disabled_tools,omitempty"`
 	// DisabledSkills is a GLOBAL blacklist of skill names to disable
 	// (excluded from the available_skills catalog injected into the system
@@ -273,12 +272,20 @@ type FeishuConfig struct {
 	VerificationToken string   `json:"verification_token"`
 	AllowFrom         []string `json:"allow_from"`
 	Domain            string   `json:"domain"`
+	// Output 选择进度渲染："cot" = 飞书原生 CoT（思考过程，默认）；其他 = CardKit 卡片。
+	Output string `json:"output"`
 }
 
 // AgentConfig Agent 配置
+//
+// NOTE: 并发上限（max_concurrency）**不再**放在这里 —— 它的唯一存储是
+// user_settings 的规范行（channel.MaxConcurrencyChannel + sender cli_user），
+// 由 Web LLM 控制台 / CLI 设置面板 / config 工具写入，运行时由
+// Agent.SetMaxConcurrency 应用。曾同时存在于 config.json 与环境变量
+// （AGENT_MAX_CONCURRENCY），导致"面板显示 100+、实际生效 5/7"
+// （2026-09-17 用户报告）。重复定义已删除。
 type AgentConfig struct {
 	MaxIterations  int    `json:"max_iterations"`
-	MaxConcurrency int    `json:"max_concurrency"`
 	MemoryProvider string `json:"memory_provider"`
 	WorkDir        string `json:"work_dir"`
 	PromptFile     string `json:"prompt_file"`
@@ -687,6 +694,23 @@ func LoadFromFile(path string) *Config {
 		slog.Warn("failed to parse config file, ignoring", "path", path, "error", err)
 		return nil
 	}
+	// 旧别名折叠：`disable_web_search`（早期版本的独立旋钮）与 disabled_tools 里的
+	// "WebSearch" 是同一个开关，这里折进去，保证只有一种表示（避免"一份数据两处"）。
+	var legacy struct {
+		DisableWebSearch bool `json:"disable_web_search"`
+	}
+	if err := json.Unmarshal(data, &legacy); err == nil && legacy.DisableWebSearch {
+		found := false
+		for _, n := range cfg.DisabledTools {
+			if n == "WebSearch" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.DisabledTools = append(cfg.DisabledTools, "WebSearch")
+		}
+	}
 	return &cfg
 }
 
@@ -722,13 +746,43 @@ func SaveToFile(path string, cfg *Config) error {
 
 	// 尝试读取磁盘上已有的文件，做 JSON 级合并以保留未知字段
 	finalData := structData
+	var existingRaw []byte
 	if existing, readErr := os.ReadFile(path); readErr == nil && len(existing) > 0 {
+		existingRaw = existing
 		// Normalize existing data so dirty string values don't break the merge
 		existing = normalizeConfigTypes(existing)
 		if merged, mergeErr := mergeJSONPreserveUnknown(existing, structData); mergeErr == nil {
 			finalData = merged
 		}
 		// 合并失败时回退到纯 struct 序列化（安全降级）
+	}
+
+	// ── 数据安全（2026-09-16 用户要求：「xbot-cli 运行可能覆盖已有的 config … 一定要
+	//    避免」，同时要求「一定不能让正常情况无法启动」）──
+	// 深度合并本应保留现有文件的每个顶层 key。这里做**显式核对**：若发现本次写入会丢掉
+	// 某个既有顶层 key，就把该 key 的原始值**补回**（保全数据），而不是拒绝写入 ——
+	// 写入失败会阻塞正常启动/正常配置更新，所以此处只保全、不拒绝，永不丢 key。
+	if len(existingRaw) > 0 {
+		var existingKeys, finalKeys map[string]json.RawMessage
+		if json.Unmarshal(existingRaw, &existingKeys) == nil && json.Unmarshal(finalData, &finalKeys) == nil {
+			var missing []string
+			for k, v := range existingKeys {
+				if _, ok := finalKeys[k]; !ok {
+					finalKeys[k] = v
+					missing = append(missing, k)
+				}
+			}
+			if len(missing) > 0 {
+				if repaired, mErr := json.MarshalIndent(finalKeys, "", "  "); mErr == nil {
+					finalData = repaired
+					slog.Warn("preserved existing top-level config keys this build does not itself produce (user config is never dropped)",
+						"keys", strings.Join(missing, ", "))
+				} else {
+					slog.Warn("could not re-encode preserved config keys; keeping the merged content",
+						"keys", strings.Join(missing, ", "), "error", mErr)
+				}
+			}
+		}
 	}
 
 	// Write via a UNIQUE temp file per call (os.CreateTemp), never a fixed
@@ -760,6 +814,19 @@ func SaveToFile(path string, cfg *Config) error {
 	// call) already prevents the fixed-name clobber race; this retry covers
 	// the remaining target-lock window. POSIX rename is atomic and never
 	// fails this way — the retry is a fast no-op there.
+	// ── 数据安全（2026-09-16 用户要求：「xbot-cli 运行可能覆盖已有的 config … 一定要
+	//    避免」；同时明确要求「一定不能让正常情况无法启动」）──
+	// 覆盖前先把**现有文件**另存一份带时间戳的备份：即使本次写入内容有问题，用户原配置
+	// 也永远可恢复（与仓库既有的 config.json.bak-<时间戳> 约定一致）。备份是**尽力**行为：
+	// 失败只打 WARN，绝不因此阻断写入/启动（fail-closed 打在写配置路径上会让正常启动挂掉）。
+	if prev, readErr := os.ReadFile(path); readErr == nil && len(prev) > 0 {
+		bak := fmt.Sprintf("%s.bak-%s", path, time.Now().UTC().Format("20060102-150405"))
+		if werr := os.WriteFile(bak, prev, 0o600); werr != nil {
+			slog.Warn("config backup failed — writing anyway (a config save must never be blocked)",
+				"path", path, "error", werr)
+		}
+	}
+
 	var renameErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
@@ -906,7 +973,8 @@ func applyEnvOverrides(cfg *Config) {
 	// SINGLE_USER env var removed — singleUser normalization is no longer used
 	setStringEnv("MEMORY_PROVIDER", &cfg.Agent.MemoryProvider)
 	setIntEnv("AGENT_MAX_ITERATIONS", &cfg.Agent.MaxIterations)
-	setIntEnv("AGENT_MAX_CONCURRENCY", &cfg.Agent.MaxConcurrency)
+	// AGENT_MAX_CONCURRENCY removed — max_concurrency lives ONLY in the
+	// canonical user_settings row (channel.MaxConcurrencyChannel).
 	setDurationEnv("MCP_INACTIVITY_TIMEOUT", &cfg.Agent.MCPInactivityTimeout)
 	setDurationEnv("MCP_CLEANUP_INTERVAL", &cfg.Agent.MCPCleanupInterval)
 	setDurationEnv("SESSION_CACHE_TIMEOUT", &cfg.Agent.SessionCacheTimeout)
@@ -924,8 +992,6 @@ func applyEnvOverrides(cfg *Config) {
 	// Sandbox
 	setStringEnv("SANDBOX_MODE", &cfg.Sandbox.Mode)
 	setStringEnv("SANDBOX_REMOTE_MODE", &cfg.Sandbox.RemoteMode)
-	setStringEnv("SANDBOX_DOCKER_IMAGE", &cfg.Sandbox.DockerImage)
-	setStringEnv("HOST_WORK_DIR", &cfg.Sandbox.HostWorkDir)
 	// SANDBOX_IDLE_TIMEOUT_MINUTES: minutes → Duration — keep inline
 	if v := os.Getenv("SANDBOX_IDLE_TIMEOUT_MINUTES"); v != "" {
 		if min, err := strconv.Atoi(v); err == nil {
@@ -1023,7 +1089,19 @@ func Load() *Config {
 		cfg.Log.Format = "json"
 	}
 	if cfg.Agent.WorkDir == "" {
-		cfg.Agent.WorkDir = "."
+		// ⚠️ 绝不能用相对路径（2026-09-16 事故线上复现的严重 bug）：
+		// Agent.WorkDir 是 **per-user workspace 的根** ——
+		//   {workDir}/.xbot/users/{uid}/workspace   （tools.UserWorkspaceRoot）
+		// 也是 agent 文件工具/角色目录/插件 workDir 的基准。值为 "." 时会产出
+		// **相对工作区**（`.xbot/users/<uid>/workspace`）：用户的会话 cwd 不再是
+		// 他创建会话时选择的绝对路径，且各级目录全部 `no such file or directory`
+		// （活日志实证：dir=.xbot/users/web-4/workspace/agents）。
+		// 缺省回落到**用户 home 的绝对路径**；仅在拿不到 home 时才退回 "."（保底）。
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			cfg.Agent.WorkDir = home
+		} else {
+			cfg.Agent.WorkDir = "."
+		}
 	}
 	if cfg.Agent.PromptFile == "" {
 		cfg.Agent.PromptFile = "prompt.md"
@@ -1031,9 +1109,9 @@ func Load() *Config {
 	if cfg.Agent.MaxIterations == 0 {
 		cfg.Agent.MaxIterations = 2000
 	}
-	if cfg.Agent.MaxConcurrency == 0 {
-		cfg.Agent.MaxConcurrency = 100
-	}
+	// max_concurrency default is NOT applied here: the knob has a single
+	// persisted source (canonical user_settings row) and its fallback lives in
+	// the agent/llm layers (llm.DefaultLLMConcurrency).
 	if cfg.Agent.MCPInactivityTimeout == 0 {
 		cfg.Agent.MCPInactivityTimeout = 30 * Minute
 	}
@@ -1061,14 +1139,14 @@ func Load() *Config {
 	if cfg.Sandbox.IdleTimeout == 0 {
 		cfg.Sandbox.IdleTimeout = 30 * Minute
 	}
-	if cfg.Sandbox.DockerImage == "" {
-		cfg.Sandbox.DockerImage = "ubuntu:22.04"
-	}
 	if cfg.Sandbox.WSPort == 0 {
 		cfg.Sandbox.WSPort = 8080
 	}
 	if cfg.Agent.MemoryProvider == "" {
-		cfg.Agent.MemoryProvider = "flat"
+		// 用户决策 2026-09-16：缺省应为内置 **xbot** 记忆（原缺省为 "flat"）。
+		// 注册的 provider 见 memory/{xbot,flat,letta}；memory.CreateProvider 对
+		// 未注册名返回 nil（届时无记忆能力），所以缺省必须落在已注册的 xbot 上。
+		cfg.Agent.MemoryProvider = "xbot"
 	}
 	if cfg.OAuth.Host == "" {
 		cfg.OAuth.Host = "127.0.0.1"

@@ -58,15 +58,16 @@ const (
 	TokenHTTPTimeout    = 30 * time.Second // download.go token request
 
 	// RPC / communication timeouts
-	AgentRPCTimeout      = 30 * time.Second // send_message.go agent RPC
-	MCPConnectTimeout    = 30 * time.Second // mcp_common.go MCP connection
-	LoginShellEnvTimeout = 10 * time.Second // mcp_common.go shell env detection
+	AgentRPCTimeout = 30 * time.Second // send_message.go agent RPC
+	// SendMessageAwaitReply 是 send_message 对 agent 目标"顺手拿回复"的等待窗口：超过它
+	// 立刻返回"已投递"，投递在后台继续 —— 工具绝不能被目标 agent 的忙碌/卡住拖死
+	//（用户 2026-09-14：「sendmessage 工具有可能卡死，必须立刻成功」）。
+	SendMessageAwaitReply = 2 * time.Second
+	MCPConnectTimeout     = 30 * time.Second // mcp_common.go MCP connection
+	LoginShellEnvTimeout  = 10 * time.Second // mcp_common.go shell env detection
 
 	// Remote sandbox timeouts
 	RemoteSandboxExecTimeout = 60 * time.Second // remote_sandbox_exec.go default exec
 	RemoteSandboxSyncTimeout = 60 * time.Second // remote_sandbox.go sync operation
 
-	// Docker command timeouts
-	DockerCmdTimeout  = 30 * time.Second  // normal docker commands
-	DockerSlowTimeout = 120 * time.Second // slow docker operations (export/import)
 )

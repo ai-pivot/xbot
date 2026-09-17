@@ -19,7 +19,7 @@ import {
   normalizeWebSubAgents,
   normalizeWebTools,
 } from '@/components/agent/progressStore'
-import type { GoalInfo, QueueItemPayload, TodoItem } from '@/types/shared'
+import type { GoalInfo, QueueItemPayload, TodoItem, WebIteration } from '@/types/shared'
 import {
   eventSeq,
   iterNum,
@@ -255,7 +255,9 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
     // 而丢弃（turnID 置 null，reduce 回退 activeTurn）。
     // 后端 recordFinalIteration attach 的最后迭代快照（可能 null/缺失）。
     const rawHist = Array.isArray(p.iteration_history) ? p.iteration_history : []
-    const normalized = rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null)
+    const normalized = dedupeIterationsByNumber(
+      rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null),
+    )
     const finalIteration = normalized.length > 0 ? normalized[normalized.length - 1] : null
     const done: DomainEvent = {
       type: 'phase_done',
@@ -308,7 +310,9 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
     // Go nil slice → JSON null → []（I6：normalize 之后无 null 数组）
     activeTools: normalizeWebTools(Array.isArray(p.active_tools) ? p.active_tools : []),
     completedTools: normalizeWebTools(Array.isArray(p.completed_tools) ? p.completed_tools : []),
-    iterationsDelta: rawDelta.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null),
+    iterationsDelta: dedupeIterationsByNumber(
+      rawDelta.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null),
+    ),
     todos: optTodos(p.todos),
     goal: optGoal(p.goal),
     subAgents: Array.isArray(p.sub_agents)
@@ -423,3 +427,29 @@ function normalizeUserEcho(env: Record<string, unknown>): readonly DomainEvent[]
 // ─── 本地事件构造器（非 SSE —— UI 侧直接构造已规范化的 DomainEvent） ──
 // F#8：userSentEvent/historyReplacedEvent 已删除 —— grep 全项目零引用
 //（useAgentChatState 直接内联构造 DomainEvent，不经过这两个包装）。
+
+/**
+ * 按 iteration 号去重（**渲染层防线**）。
+ *
+ * 场景（用户 2026-09-17）：等待用户回答（WaitingUser）期间，同一个 turn 的
+ * assistant 会同时存在「committed 占位行（正文空、迭代来自 iteration_history）」
+ * 与「live（流式/进行中迭代）」两种表示，刷新后两路都可能喂进渲染层 ⇒
+ * **同一段 CoT 渲染两次**；一旦用户回答（WaitingUser 结束、Run 续跑并收敛），
+ * 重复消失。这里以 iteration 号为唯一键收敛：同号保留"更有内容的一条"
+ * （content/reasoning 非空优先），否则保留**最后**一条，并按号升序输出。
+ */
+export function dedupeIterationsByNumber(iters: readonly WebIteration[]): WebIteration[] {
+  if (iters.length <= 1) return iters as WebIteration[]
+  const byNum = new Map<number, WebIteration>()
+  for (const it of iters) {
+    const prev = byNum.get(it.iteration)
+    if (!prev) {
+      byNum.set(it.iteration, it)
+      continue
+    }
+    const prevHas = (prev.content ?? '') !== '' || (prev.reasoning ?? '') !== ''
+    const curHas = (it.content ?? '') !== '' || (it.reasoning ?? '') !== ''
+    if (curHas || !prevHas) byNum.set(it.iteration, it)
+  }
+  return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
+}

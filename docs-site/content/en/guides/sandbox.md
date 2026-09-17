@@ -32,10 +32,8 @@ The sandbox config struct (`config/config.go`):
 
 ```go
 type SandboxConfig struct {
-    Mode        string   `json:"mode"`         // sandbox mode: "none" or "docker"
+    Mode       string   `json:"mode"`        // sandbox mode: "none" (default) or "remote"
     RemoteMode  string   `json:"remote_mode"`  // remote sandbox mode
-    DockerImage string   `json:"docker_image"` // Docker image name
-    HostWorkDir string   `json:"host_work_dir"`// host work directory mapped into container
     IdleTimeout Duration `json:"idle_timeout"` // idle timeout before auto-destroy
     WSPort      int      `json:"ws_port"`      // WebSocket port for remote sandbox
     AuthToken   string   `json:"auth_token"`   // Runner authentication token
@@ -45,10 +43,8 @@ type SandboxConfig struct {
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `mode` | `"docker"` | Sandbox mode: `"none"` or `"docker"` |
+| `mode` | `"none"` | Sandbox mode: `"none"` or `"remote"` |
 | `remote_mode` | `""` | Remote sandbox mode |
-| `docker_image` | `"ubuntu:22.04"` | Docker image for container |
-| `host_work_dir` | `""` | Host directory mapped into the container |
 | `idle_timeout` | `"30m"` | Idle timeout (`0` = never auto-destroy) |
 | `ws_port` | `8080` | WebSocket port for remote sandbox connections |
 | `auth_token` | `""` | Shared authentication token for runners |
@@ -70,34 +66,10 @@ Commands execute directly on the host machine. On Windows, PowerShell is used.
 **No isolation means the agent can execute any command your current user has permission to run.** Ensure you trust the agent's behavior. Use sandboxing on shared or production servers.
 {{< /hint >}}
 
-### docker Mode
+### Remote sandbox (the recommended isolation)
 
-Each user gets an independent Docker container with persistent filesystem storage.
-
-**Prerequisites:**
-
-```bash
-# Install Docker
-sudo apt-get update && sudo apt-get install -y docker.io
-sudo systemctl start docker && sudo systemctl enable docker
-sudo usermod -aG docker $USER  # re-login required
-```
-
-**Configuration:**
-
-```json
-{
-  "sandbox": {
-    "mode": "docker",
-    "docker_image": "ubuntu:22.04",
-    "host_work_dir": "/home/user/projects",
-    "idle_timeout": "30m"
-  }
-}
-```
-
-{{< hint type=note >}}
-**Container lifecycle**: Docker containers are **stopped** (not removed) when idle timeout triggers, so they can be reused on the next session. Path translation uses DinD (Docker-in-Docker) mode.
+{{< hint type=warning >}}
+**The local Docker sandbox was removed entirely on 2026-09-16** (sandboxing now goes through a Runner). For isolation use the remote Runner below — commands run on **your own machine**; the server no longer manages containers. The default `mode` is `"none"` (local).
 {{< /hint >}}
 
 ### Remote Sandbox
@@ -116,7 +88,7 @@ Users can connect their own remote runners to execute commands on their own mach
 ```json
 {
   "sandbox": {
-    "mode": "docker",
+    "remote_mode": "remote",
     "auth_token": "your-secure-token",
     "ws_port": 8080,
     "public_url": "ws://your-server.com:8080"
@@ -134,9 +106,8 @@ xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name 
 
 | `active_runner` value | Sandbox used |
 |------------------------|-------------|
-| `"__docker__"` | DockerSandbox (if enabled) |
 | Specific runner name | Corresponding RemoteSandbox (if connected) |
-| Fallback | Remote → Docker → None |
+| Fallback | Remote → None (local) |
 
 {{< hint type=tip >}}
 **Multi-Runner support**: Multiple runners can connect simultaneously, each with an independent name and token. Users select their active runner in the settings panel (`/settings`). This enables multi-user setups where each user runs commands on their own machine.
@@ -147,7 +118,7 @@ xbot-runner --server ws://your-server.com:8080 --token your-secure-token --name 
 `SandboxRouter` (`tools/sandbox_router.go`) is the unified sandbox entry point. It routes execution requests to different backends based on per-user configuration:
 
 - Implements both `Sandbox` and `SandboxResolver` interfaces
-- Supports dual-mode: simultaneously holds Docker and Remote instances
+- Only two backends: Remote (Runner) and None (local; the default)
 - Routes independently per user — different users can use different backends
 - Runner selection is configurable per user via the settings panel
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -30,12 +30,18 @@ const mocks = vi.hoisted(() => {
     liveMessage: null,
     isStreaming: false,
   }
-  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn() }
+  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn(), lastChatID: null as string | null }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/hooks/useAskUser', () => ({ useAskUser: () => ({ prompt: null, respond: vi.fn(), cancel: vi.fn() }) }))
-vi.mock('@/hooks/useChatMessages', () => ({ useChatMessages: () => mocks.chat }))
+vi.mock('@/hooks/useChatMessages', () => ({
+  // 捕获 chatID —— 会话归属不变量（一个会话至多被一个 agent 面板渲染）的断言点。
+  useChatMessages: (opts: { chatID?: string | null }) => {
+    mocks.lastChatID = opts?.chatID ?? null
+    return mocks.chat
+  },
+}))
 vi.mock('@/chat/useAgentChatState', () => ({
   // M4：新状态机 hook 的测试替身 —— messages/liveProgress 直通 mocks
   //（与旧 useProgressStream mock 同语义：busy 测试改 progressSnapshot，
@@ -70,6 +76,9 @@ vi.mock('@/hooks/useLLMSettings', () => ({
     saving: false,
     setThinkingMode: vi.fn(),
   }),
+  // LLM-config change bus: AgentPanel subscribes to re-resolve the session's
+  // model/limits when the settings dialog mutates subscriptions/models.
+  subscribeLLMConfigChanged: () => () => {},
 }))
 vi.mock('@/components/agent/api', () => ({
   rewindHistory: (...args: unknown[]) => mocks.rewindHistory(...args),
@@ -260,6 +269,28 @@ describe('AgentPanel busy state', () => {
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
   })
+
+  it('suppresses busy while waiting_input — even with running=true and a live streaming snapshot', () => {
+    // F3: waiting_input (AskUser pending) ⇔ NOT busy. Worst case here: the
+    // local prompt was already dropped but the session status is still
+    // waiting_input while the backend row / streaming snapshot says busy — the
+    // input must not show the generating/stop state (the turn is PAUSED).
+    const store = mocks.context.sessionStore as unknown as {
+      sessions: Array<{ chatID: string; channel: string; running: boolean; status: string }>
+    }
+    store.sessions = [{ chatID: 'chat-1', channel: 'web', running: true, status: 'waiting_input' }]
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null, streaming: true, phase: 'thinking' }
+    const first = render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('false')
+    first.unmount()
+
+    // Control (mutation discrimination): the SAME running+streaming state
+    // without waiting_input IS busy — proving the suppression is the status gate.
+    store.sessions = [{ chatID: 'chat-1', channel: 'web', running: true, status: 'running' }]
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('message-list-busy').textContent).toBe('true')
+    store.sessions = []
+  })
 })
 
 describe('AgentPanel liveMessage visibility during reload', () => {
@@ -309,5 +340,93 @@ describe('AgentPanel liveMessage visibility during reload', () => {
     mocks.chat.loading = false
     render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
     expect(screen.getByTestId('message-list-live').textContent).toBe('live-visible')
+  })
+})
+
+describe('AgentPanel re-subscribe reconcile（P0：通知行在不可见期间丢失后必须自愈）', () => {
+  it('不可见 → 可见（重新订阅）时必须做一次历史对账', async () => {
+    // 复现（2026-09-16 用户报告）：「切回缓存 tab，user 消息消失，刷新才恢复」，
+    // 消失的一定是**通知变成的 user 行**（🔔 Notification）。
+    // 机制：通知行的唯一载体是 turn_started(trigger='notification')（chat/reduce.ts
+    // 的 notifContent 分支）；面板不可见时 SSE 主动断开（useActiveSSESubscription
+    // 的 active=isVisible）⇒ 该事件丢失；而 reconcile 只在**可检测到 seq gap** 时触发
+    // （resync_required → replay_gap → reloadChat），断连+游标推进不产生 gap ⇒ 该行
+    // 永久缺失（只有手刷全量加载）。
+    // 契约（本用例钉死）：重新可见（= 重新订阅）时**必须**触发一次历史对账。
+    const cbs: Array<(e: { isVisible: boolean }) => void> = []
+    const api = {
+      isVisible: true,
+      onDidVisibilityChange: (fn: (e: { isVisible: boolean }) => void) => {
+        cbs.push(fn)
+        // 必须返回 { dispose } —— AgentPanel.tsx:81 的清理调的是 disp.dispose()
+        // （原先的 `() => {}` 会在清理时抛 TypeError，导致本用例假红）。
+        return { dispose: () => {} }
+      },
+    }
+    render(<AgentPanel params={{} as never} api={api as never} containerApi={{} as never} />)
+    await waitFor(() => expect(cbs.length).toBeGreaterThan(0))
+    mocks.chat.reload.mockClear()
+
+    // 隐藏期间不该对账（避免无谓刷新）。
+    act(() => cbs[0]({ isVisible: false }))
+    expect(mocks.chat.reload).not.toHaveBeenCalled()
+
+    // 重新可见 ⇒ 对账一次（补回断连期间丢失、且不在重放窗口里的行）。
+    act(() => cbs[0]({ isVisible: true }))
+    await waitFor(() => expect(mocks.chat.reload).toHaveBeenCalledTimes(1))
+  })
+})
+
+/**
+ * 会话归属不变量：**一个会话至多被一个 agent 面板渲染**。
+ *
+ * 根因（2026-09-16「切会话后同一 user 行重复渲染」，e2e + DOM 铁证）：seed 在
+ * "还没有任何已知会话"时建的无 sessionId 占位 tab 用
+ * `params.sessionId ?? activeSession` 解析会话（跟着 activeSession 走）；侧栏点击
+ * 会话时既 `openTab(session tab)` 又 `activateSession` ⇒ 两个面板同时挂载同一会话
+ *（agent tab 是 renderer='always'，常驻 DOM）⇒ 整个消息列表渲染两份（同一
+ * user/assistant 行出现两次、`data-message-id` 相同）、`/api/history` 拉两次、
+ * SSE 双订阅。
+ *
+ * 契约：占位 tab 仅在**独占** main agent 面板时才跟随 activeSession（引导态）；
+ * 已有 session tab 拥有该会话时，占位 tab 不得镜像它。
+ */
+describe('AgentPanel 会话归属（一个会话至多被一个 agent 面板渲染）', () => {
+  const placeholderParams = { type: 'agent', tabId: 't1', title: 'Agent', closable: true }
+
+  it('已有 session tab 拥有 activeSession 时，占位 tab 不得镜像该会话', () => {
+    const peer = {
+      id: 'peer-panel',
+      params: { type: 'agent', tabId: 't2', title: 'S1', sessionId: 'chat-1', closable: true },
+    }
+    const containerApi = {
+      panels: [peer],
+      onDidAddPanel: () => ({ dispose: () => {} }),
+      onDidRemovePanel: () => ({ dispose: () => {} }),
+    }
+    render(
+      <AgentPanel
+        params={placeholderParams as never}
+        api={{ id: 'self-panel' } as never}
+        containerApi={containerApi as never}
+      />,
+    )
+    expect(mocks.lastChatID).toBeNull()
+  })
+
+  it('占位 tab 独占 main agent 面板时仍跟随 activeSession（引导态保持不变）', () => {
+    const containerApi = {
+      panels: [{ id: 'files-panel', params: { type: 'panel', tabId: 'p1', panelId: 'files', closable: true } }],
+      onDidAddPanel: () => ({ dispose: () => {} }),
+      onDidRemovePanel: () => ({ dispose: () => {} }),
+    }
+    render(
+      <AgentPanel
+        params={placeholderParams as never}
+        api={{ id: 'self-panel' } as never}
+        containerApi={containerApi as never}
+      />,
+    )
+    expect(mocks.lastChatID).toBe('chat-1')
   })
 })

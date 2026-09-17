@@ -1412,6 +1412,36 @@ describe('Loop2 — in-flight 工具折叠（frozen / 收尸 / text_final 三路
     expect(toolsA).toContain('Shell:error')
   })
 
+  it('AskUser WaitingUser: 空 text 信封不擦内容，在飞迭代 reasoning 折进 committed', () => {
+    // 场景：iter1 已完成；iter2 进行中（live.iter=2，reasoning 只在 live 快照 ——
+    // turn 暂停没跑 snapshotCompletedIteration，progressHistory 没有 iter2）。
+    // AskUser 面板弹出时 web 通道随 ask 事件发一条【空 text 信封】（content=''）
+    // ⇒ 旧代码把它当权威 finalizer：iter2 不在 iterations ⇒ 提交行丢
+    // 「Thought 1848 chars」（用户 2026-09-17：弹窗瞬间 CoT 消失、content 还在、
+    // 稍后对账 reload 才恢复 = 闪烁）。
+    const s = run([
+      started(T1),
+      { type: 'iteration', turnID: T1, iter: iterNum(1), seq: 10 as never,
+        content: undefined, reasoning: undefined, activeTools: [], completedTools: [],
+        iterationsDelta: [{ iteration: 1, content: '迭代1正文', reasoning: '思考1', tools: [], toolCount: 0 }],
+        todos: undefined, subAgents: undefined, tokenUsage: undefined, streamStats: undefined },
+      { type: 'stream', turnID: T1, seq: null, iteration: iterNum(2),
+        content: undefined, reasoning: '在飞迭代的思考（Thought 1848）',
+        streamingTools: [], genui: undefined, streamStats: undefined },
+      textFinal(T1, '', false),
+    ])
+    assertInvariants(s)
+    const t = s.turns.get(T1)!
+    expect(t.phase.kind).toBe('committed')
+    if (t.phase.kind === 'committed') {
+      const its = t.phase.payload.iterations
+      const it2 = its.find((it) => it.iteration === 2)
+      expect(it2).toBeDefined()
+      expect(it2?.reasoning).toBe('在飞迭代的思考（Thought 1848）')
+      expect(its.find((it) => it.iteration === 1)?.content).toBe('迭代1正文')
+    }
+  })
+
   it('F2 对照: text_final 的既有折叠行为不回归（activeTools+streamingTools 都折）', () => {
     // text_final(cancel) 的既有 foldInFlightTools 语义（reduce.ts:464）——
     // 提取共享 helper 后不得改变。

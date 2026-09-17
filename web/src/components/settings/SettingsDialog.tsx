@@ -37,9 +37,10 @@ import { SettingsAbout } from './SettingsAbout'
 import { SettingsDeveloper } from './SettingsDeveloper'
 import { SettingsLayout } from './SettingsLayout'
 import { SettingsPlugins } from './SettingsPlugins'
+import { SettingsTools } from './SettingsTools'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'language' | 'agent' | 'llm' | 'channels' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
+type Category = 'appearance' | 'interaction' | 'language' | 'agent' | 'tools' | 'llm' | 'channels' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
 
 /** 设置分类（供命令路由 `xbot://settings.open?section=llm` 使用）。 */
 export type SettingsCategory = Category
@@ -117,6 +118,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     { key: 'interaction', labelKey: 'nav.interaction' },
     { key: 'language', labelKey: 'nav.language' },
     { key: 'agent', labelKey: 'nav.agent' },
+    { key: 'tools', labelKey: 'nav.tools' },
     { key: 'llm', labelKey: 'nav.llm' },
     { key: 'channels', labelKey: 'nav.channels' },
     { key: 'account', labelKey: 'nav.account' },
@@ -172,6 +174,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
             {active === 'interaction' ? <SettingsInteraction /> : null}
             {active === 'language' ? <SettingsGeneral /> : null}
             {active === 'agent' ? <SettingsAgent /> : null}
+            {active === 'tools' ? <SettingsTools /> : null}
             {active === 'llm' ? <SettingsLLMPanel /> : null}
             {active === 'channels' ? <SettingsChannels /> : null}
             {active === 'account' ? (

@@ -67,7 +67,6 @@ func (m *MockSandbox) Name() string { return m.NameVal }
 func (m *MockSandbox) Workspace(userID string) string      { return m.WorkspaceVal }
 func (m *MockSandbox) Close() error                        { return nil }
 func (m *MockSandbox) CloseForUser(userID string) error    { return nil }
-func (m *MockSandbox) IsExporting(userID string) bool      { return false }
 func (m *MockSandbox) ExportAndImport(userID string) error { return nil }
 
 func (m *MockSandbox) GetShell(userID string, workspace string) (string, error) {

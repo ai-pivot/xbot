@@ -200,6 +200,31 @@ function useTabManagerImpl(): TabManager {
         }
       }
     }
+    // 认领「未绑定会话的引导占位 agent tab」：seed 在"还没有任何已知会话"时建的
+    // agent tab 不带 sessionId（AgentPanel 用 `params.sessionId ?? activeSession`
+    // 解析会话）。若再为同一个 activeSession 新开一个 session tab，**两个面板会同时
+    // 挂载同一会话**（agent tab 是 renderer='always'，常驻 DOM）⇒ 整棵消息列表渲染
+    // 两份（同一 user/assistant 行在 DOM 出现两次）、`/api/history` 拉两次、SSE 双订阅
+    // （2026-09-16「切会话后同一 user 行重复渲染」的根因）。
+    // 占位 tab 的语义就是"首个会话的槽位" ⇒ 直接把会话绑到它身上（与"每个 tab 承载
+    // 自己的会话"模型一致），绝不新建第二个面板。
+    if (input.type === 'agent' && input.data?.filePath && !input.data?.subAgentRole && !input.data?.agentChatID) {
+      const placeholder = api.panels.find((p) => {
+        const pp = p.params as PanelParams | undefined
+        return !!pp && pp.type === 'agent' && !pp.sessionId && !pp.subAgentRole && !pp.agentChatID
+      })
+      if (placeholder) {
+        const base = placeholder.params as PanelParams
+        const title = input.title
+        placeholder.update({
+          params: { ...base, title, sessionId: input.data.filePath, channel: input.data.channel ?? 'web' },
+        })
+        placeholder.api.setTitle(title)
+        panelIdByTab.current.set(base.tabId, placeholder.id)
+        placeholder.api.setActive()
+        return base.tabId
+      }
+    }
     const tabId = genId(input.type)
     const panelId = `dv-${tabId}`
     const params: PanelParams = {

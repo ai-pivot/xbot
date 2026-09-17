@@ -120,10 +120,12 @@ var SettingHandlerRegistry = map[string]SettingHandler{
 			}
 		},
 	},
+	// max_concurrency: ONE canonical row (user_settings, channel
+	// channel.MaxConcurrencyChannel). There is deliberately NO ApplyConfig —
+	// config.json is not a storage location for this knob (duplicate definition
+	// removed 2026-09-17); reads go through LLMFactory.getGlobalSetting and
+	// Agent.GetLLMConcurrency, both pinned to the canonical channel.
 	"max_concurrency": {
-		ApplyConfig: func(cfg *config.Config, value string) {
-			cfg.Agent.MaxConcurrency = cli.ParseSettingInt(value, cfg.Agent.MaxConcurrency)
-		},
 		ApplyAgent: func(ag *Agent, senderID, chatID, value string) {
 			if ag == nil {
 				return

@@ -411,6 +411,15 @@ func (wc *WebChannel) dispatchCancel(ctx context.Context, identity inboundIdenti
 		}
 	}
 	cancelMeta := map[string]string{}
+	// Marker consumed by the agent's interceptCancel: a REST/API cancel can be
+	// a stale AskUser panel cancel (the prompt was already resolved in another
+	// tab/device/channel). If it reaches a state with no active Run and no
+	// pending prompt, the agent ignores it instead of arming pendingCancel —
+	// which would otherwise cancel the user's NEXT message. Mirrors the WS
+	// ask_user_response cancel path (web.go handleWS) and keeps both external
+	// API entry points (POST /api/cancel and POST /api/ask_user/respond with
+	// cancelled=true) consistent with the WebSocket transport.
+	cancelMeta["ask_user_cancel"] = "true"
 	withPhysicalChannel(cancelMeta, identity.IsCLI)
 	_, err = wc.enqueueInbound(ctx, bus.InboundMessage{
 		Channel:    sel.Channel,

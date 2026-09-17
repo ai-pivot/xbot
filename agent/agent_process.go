@@ -576,6 +576,7 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// with content + reasoning; iteration data lives in iteration_history.
 	assistantMsg := llm.NewAssistantMessage(finalContent)
 	assistantMsg.ReasoningContent = out.ReasoningContent
+	assistantMsg.ReasoningItems = out.ReasoningItems
 	// v55+ 数据模型：assistant 回复不再写 session_messages.content —— 回复文本
 	// 在 iteration_history 的最终迭代（msg 是 iter 组成的集合，content 是历史
 	// 遗留字段）。内存 cfg.Messages 保留 content（同 Run 内 LLM 上下文需要），

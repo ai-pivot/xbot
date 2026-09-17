@@ -55,17 +55,16 @@ async function setupMock(page: Page) {
   await page.route('**/api/rpc', (r) => r.fulfill({ json: { ok: true, data: null } }))
 }
 
-/** Count how many times a tool name appears as a leaf text node (tool label, not prose). */
+/**
+ * 统计"某个工具 pill"渲染次数。
+ *
+ * ⚠️ 按**属性**计数（`data-tool-status` + `data-tool-name`，两者都只挂在 pill 本体上），
+ * 不要再用 TreeWalker 数 `text === name` 的文本节点 —— pill 重构后名字渲染为独立 span
+ * （`data-testid="tool-pill-name"`）且外层还有 popover 包装，纯文本匹配会恒为 0
+ * （2026-09-15 E2E 长期红：截图里 pill 明明在，计数却是 0）。
+ */
 async function countToolLabels(page: Page, toolName: string): Promise<number> {
-  return page.evaluate((name) => {
-    let count = 0
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-    while (walker.nextNode()) {
-      const text = walker.currentNode.textContent?.trim() || ''
-      if (text === name) count++
-    }
-    return count
-  }, toolName)
+  return page.locator(`[data-tool-status][data-tool-name="${toolName}"]`).count()
 }
 
 test.describe('Iteration duplication', () => {
@@ -107,7 +106,7 @@ test.describe('Iteration duplication', () => {
     })
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'thinking', iteration: 0, seq: 2, turn_id: 1, chat_id: 'web:chat-1' },
+      progress: { phase: 'thinking', iteration: 1, seq: 2, turn_id: 1, chat_id: 'web:chat-1' },
     })
     // Tool generating
     await emitSSE(page, 'stream_content', {
@@ -118,11 +117,11 @@ test.describe('Iteration duplication', () => {
     // Tool running → done
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'tool_exec', iteration: 0, seq: 3, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'running', iteration: 0 }] },
+      progress: { phase: 'tool_exec', iteration: 1, seq: 3, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'running', iteration: 1 }] },
     })
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'tool_exec', iteration: 0, seq: 4, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'done', iteration: 0 }], completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'main.go' }] },
+      progress: { phase: 'tool_exec', iteration: 1, seq: 4, turn_id: 1, chat_id: 'web:chat-1', active_tools: [{ name: 'Read', status: 'done', iteration: 1 }], completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'main.go' }] },
     })
     await page.waitForTimeout(200)
 
@@ -134,7 +133,7 @@ test.describe('Iteration duplication', () => {
     // ── PhaseDone: turn ends ──
     await emitSSE(page, 'progress_structured', {
       type: 'progress_structured',
-      progress: { phase: 'done', iteration: 0, seq: 5, turn_id: 1, chat_id: 'web:chat-1' },
+      progress: { phase: 'done', iteration: 1, seq: 5, turn_id: 1, chat_id: 'web:chat-1' },
     })
     await page.waitForTimeout(200)
 
@@ -146,7 +145,7 @@ test.describe('Iteration duplication', () => {
       turn_id: 1,
       chat_id: 'web:chat-1',
       progress_history: JSON.stringify([
-        { iteration: 0, thinking: 'Let me read the file.', completed_tools: [{ name: 'Read', status: 'done', iteration: 0, summary: 'main.go' }] },
+        { iteration: 1, thinking: 'Let me read the file.', completed_tools: [{ name: 'Read', status: 'done', iteration: 1, summary: 'main.go' }] },
       ]),
     })
     await page.waitForTimeout(300)

@@ -231,23 +231,30 @@ type HistoryToolCall struct {
 
 // HistoryMessage represents a message in session history.
 type HistoryMessage struct {
-	ID               int64               `json:"id,omitempty"`         // DB auto-increment id (stable history node)
-	HistoryID        int64               `json:"history_id,omitempty"` // alias of ID for append-only rewind (kept for client compat)
-	Role             string              `json:"role"`
-	Content          string              `json:"content"`
-	ReasoningContent string              `json:"reasoning_content,omitempty"`
-	ToolCallID       string              `json:"tool_call_id,omitempty"`
-	ToolName         string              `json:"tool_name,omitempty"`
-	ToolArguments    string              `json:"tool_arguments,omitempty"`
-	ToolCalls        []HistoryToolCall   `json:"tool_calls,omitempty"`
-	Timestamp        time.Time           `json:"timestamp"`
-	TurnID           uint64              `json:"turn_id,omitempty"`
-	Iterations       []HistoryIteration  `json:"iterations,omitempty"`
-	RecordType       string              `json:"record_type,omitempty"`
-	TargetHistoryID  int64               `json:"target_history_id,omitempty"`
-	CompactedBy      int64               `json:"compacted_by,omitempty"`
-	Compression      *HistoryCompression `json:"compression,omitempty"`
-	DisplayOnly      bool                `json:"display_only,omitempty"`
+	ID               int64              `json:"id,omitempty"`         // DB auto-increment id (stable history node)
+	HistoryID        int64              `json:"history_id,omitempty"` // alias of ID for append-only rewind (kept for client compat)
+	Role             string             `json:"role"`
+	Content          string             `json:"content"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	ToolCallID       string             `json:"tool_call_id,omitempty"`
+	ToolName         string             `json:"tool_name,omitempty"`
+	ToolArguments    string             `json:"tool_arguments,omitempty"`
+	ToolCalls        []HistoryToolCall  `json:"tool_calls,omitempty"`
+	Timestamp        time.Time          `json:"timestamp"`
+	TurnID           uint64             `json:"turn_id,omitempty"`
+	Iterations       []HistoryIteration `json:"iterations,omitempty"`
+	// IterationsTruncated = how many EARLIER iterations of this turn were dropped
+	// from Iterations to bound the payload size. A busy turn can hold 1,600+
+	// iterations / ~3.6 MB (measured 2026-09-15) and the history response had no
+	// cap, so load time grew linearly with the turn's iteration count. Only the
+	// TAIL is sent; this counter lets the client render "更早的 N 个迭代" (and
+	// lazy-load them) instead of the data silently disappearing.
+	IterationsTruncated int                 `json:"iterations_truncated,omitempty"`
+	RecordType          string              `json:"record_type,omitempty"`
+	TargetHistoryID     int64               `json:"target_history_id,omitempty"`
+	CompactedBy         int64               `json:"compacted_by,omitempty"`
+	Compression         *HistoryCompression `json:"compression,omitempty"`
+	DisplayOnly         bool                `json:"display_only,omitempty"`
 }
 
 // HistoryCompression describes the original DB nodes replaced by one
@@ -394,6 +401,29 @@ type AskUserEvent struct {
 
 func (AskUserEvent) EventType() string { return "ask_user" }
 func (AskUserEvent) EventVersion() int { return 1 }
+
+// AskUserResolvedEvent is emitted when an AskUser prompt stops being pending —
+// answered, cancelled, rewound, or cleared. Clients MUST drop any locally
+// cached prompt for this (channel, chat_id) when they see it.
+//
+// Why this exists (2026-09-16 user report:「askuser 有时候走前端缓存，不该弹的
+// 时候弹出」): pending AskUser state had *three* independent client-side caches
+// (web askUserPrompts store / CLI ~/.xbot/pending_askuser/*.json / Feishu
+// in-process card map) and no server→client invalidation, so answering in one
+// channel or tab left stale prompts alive in the others. The single authority
+// is the PERSISTED session state (session_messages ask_question/ask_answer
+// control records folded by Replay) — every client cache is only a hint that
+// this event (and a reconnect-time reconcile) invalidates.
+type AskUserResolvedEvent struct {
+	Channel   string `json:"channel"`
+	ChatID    string `json:"chat_id"`
+	RequestID string `json:"request_id,omitempty"`
+	// Reason: "answered" | "cancelled" | "rewound" | "cleared".
+	Reason string `json:"reason"`
+}
+
+func (AskUserResolvedEvent) EventType() string { return "ask_user_resolved" }
+func (AskUserResolvedEvent) EventVersion() int { return 1 }
 
 // SessionEvent represents a session state change pushed from server to client.
 // Covers busy/idle transitions, session lifecycle (create/delete/rename),

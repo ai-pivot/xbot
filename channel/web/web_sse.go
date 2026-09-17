@@ -275,7 +275,13 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 	}
 
 	if wc.callbacks.WithPendingAskUser != nil {
+		// found distinguishes "no pending prompt" (reconcile with an
+		// ask_user_resolved invalidation) from "pending exists but the
+		// publication declined" (already present in the replay window /
+		// reset barrier). A declination must never invalidate a live panel.
+		found := false
 		wc.callbacks.WithPendingAskUser(sel.Channel, sel.ChatID, func(current *protocol.ProgressEvent) bool {
+			found = true
 			return wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
 				Type:     protocol.MsgTypeAskUser,
 				TS:       time.Now().Unix(),
@@ -283,6 +289,21 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 				Progress: current,
 			}, current.RequestID)
 		})
+		if !found {
+			// No pending prompt: every reconnect also reconciles stale local
+			// caches. A client that was disconnected while its prompt was
+			// answered/cancelled elsewhere still holds the panel — this
+			// invalidation collapses it immediately. Reason "cleared" marks
+			// reconcile semantics (vs live answered/cancelled/rewound).
+			// publishSSEFallbackIfMissing dedups against the replay window
+			// the client is about to receive AND against previously published
+			// reconciles still retained there; repeat delivery stays safe.
+			wc.publishSSEFallbackIfMissing(sel, lastSeq, askUserResolvedMessage(protocol.AskUserResolvedEvent{
+				Channel: sel.Channel,
+				ChatID:  sel.ChatID,
+				Reason:  "cleared",
+			}), "")
+		}
 	}
 }
 

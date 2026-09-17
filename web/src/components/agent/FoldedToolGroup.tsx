@@ -26,9 +26,12 @@ import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
 import { syntheticShortName, syntheticSubject } from './SyntheticToolCard'
 import { useI18n } from '@/providers/i18n'
+import { syntheticKindOf } from './SyntheticToolCard'
+import { CATEGORY_COLOR, syntheticKindBadge, syntheticKindColor, toolCategory } from './toolVisuals'
 
-import { Check, X } from 'lucide-react'
+import { Check, Minus, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
+import i18n from '@/i18n'
 
 /** Max param preview length in folded row. */
 const MAX_PARAM_LEN = 25
@@ -38,7 +41,10 @@ const PILL_INLINE_MAX = 8
 const PILL_INLINE_HEAD = 7
 
 /** 合并组 pill 行容器（div——行本身不是 trigger，pill 各自独立 Popover）。 */
-const ROW_ROW_CLASS = 'flex w-full flex-wrap items-center gap-2 px-0.5 py-1 text-xs'
+// ⚠️ 不能带 `w-full`：pill 行是 `flex-col` 里的**兄弟**，`w-full` 会让它另起一行，
+// 于是 `N 失败` chip 孤零零占一行（用户 2026-09-15：「失败单独一行也很丑」）。
+// `min-w-0 flex-1` 让它占据剩余宽度（pills 才能在其中 wrap），chip 与它同行。
+const ROW_ROW_CLASS = 'flex min-w-0 flex-1 flex-wrap items-center gap-2 px-0.5 py-1 text-xs'
 
 /** 浮层样式（设计稿 1:1）：固定深色玻璃底 + 大阴影；宽 430px、内部滚动。
  *  覆盖 ui/popover 默认的 w-72/rounded-md/bg-popover/p-4/shadow-md。 */
@@ -57,6 +63,32 @@ function toolParam(tool: WebToolProgress): string {
 }
 
 /** Truncate to N chars with ellipsis. */
+/**
+ * 参数美化（用户要求「长 JSON 参数简化」）：`{"task_id": ["3f8f492a"]}` → `task_id: 3f8f492a`。
+ * 非 JSON / 解析失败 / 嵌套对象一律回落原文（不猜、不丢信息）。
+ */
+function formatParam(raw: string): string {
+  const text = raw.trim()
+  if (!text.startsWith('{') || !text.endsWith('}')) return raw
+  try {
+    const obj = JSON.parse(text) as Record<string, unknown>
+    const parts: string[] = []
+    for (const [k, v] of Object.entries(obj)) {
+      if (Array.isArray(v)) {
+        parts.push(`${k}: ${v.join(', ')}`)
+      } else if (v === null || typeof v === 'object') {
+        continue // 嵌套对象不做花哨展开（不猜、不丢信息）
+      } else {
+        parts.push(`${k}: ${String(v)}`)
+      }
+      if (parts.length >= 2) break
+    }
+    return parts.length > 0 ? parts.join(' · ') : raw
+  } catch {
+    return raw
+  }
+}
+
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text
   return text.slice(0, max) + '…'
@@ -120,49 +152,162 @@ function ToolIcon({ name, status }: { name: string; status: ToolStatusColor }) {
   return <Icon className="tool-icon-single shrink-0" style={{ color: statusColorVar(status) }} />
 }
 
-/** 工具 pill 三态（设计稿 1:1）：running=accent 椭圆+pulse 圆点+流光 / error=红椭圆+✗ / done=绿椭圆+✓。 */
+/**
+ * 工具 pill 视觉语言（用户 2026-09-15 定稿）：
+ *   · 分类色用于**图标 + 工具名**（9 套，见 toolVisuals）；状态色与分类色**解耦**；
+ *   · 成功安静（描边绿勾、无标签）/ 失败吵闹（红底+红边+左红条+实心红叉+「失败」+exit N）/
+ *     终止灰虚线「已终止」/ 进行中分类色脉动「执行中」/ 排队空心灰点「排队」；
+ *   · 假工具（注入型）：**虚线 + kind 头像 + 「系统」角标**，第二段是主语（task_id / role·instance）。
+ */
 function toolPill(tool: WebToolProgress, t?: T): ReactNode {
   const status = singleStatus(tool)
-  const running = status === 'running'
-  const failed = status === 'all-failed'
-  const okC = 'var(--status-success, #22c55e)'
-  const c = running ? 'var(--accent)' : failed ? 'var(--destructive)' : okC
-  const bg = running
-    ? 'color-mix(in srgb, var(--accent) 14%, transparent)'
-    : failed
-      ? 'color-mix(in srgb, var(--destructive) 12%, transparent)'
-      : 'color-mix(in srgb, var(--status-success, #22c55e) 12%, transparent)'
+    const failed = status === 'all-failed'
+  const raw = (tool.status || '').toLowerCase()
+  const killed = raw === 'killed' || raw === 'aborted' || raw === 'cancelled'
+  const pending = raw === 'pending'
+  const generating = raw === 'generating'
   const synName = syntheticShortName(tool, t)
+  const isSyn = synName !== null
+  const kind = isSyn ? syntheticKindOf(tool) : ''
+  const hue = isSyn ? syntheticKindColor(kind) : CATEGORY_COLOR[toolCategory(tool.name)]
+  const okColor = 'var(--status-success, #22c55e)'
+  const errColor = 'var(--destructive, #ef4444)'
   const name = synName ?? displayName(tool, t)
-  // 注入型工具没有 args；用 subject（role/instance 或 task id）当参数位，
-  // 让 pill 读起来像 `子代理 explore/mem-1`（与 `Shell: cmd` 同构）。
-  const rawParam = synName ? syntheticSubject(tool) : toolParam(tool)
-  // 去重：subject 与显示名相同（user_interrupt 的 label 就是「💬 插话」）时不再重复
+  const rawParam = isSyn ? syntheticSubject(tool) : toolParam(tool)
   const param = rawParam && rawParam.toLowerCase() !== name.toLowerCase() ? rawParam : ''
-  const label = name + (param ? ' ' + truncate(param, MAX_PARAM_LEN) : '')
-  const showSweep = running && !isSubAgentTool(tool)
+  const exit = (tool as unknown as { exitCode?: number }).exitCode
+  const label = name + (param ? ' ' + truncate(formatParam(param), MAX_PARAM_LEN) : '')
+  // ⚠️ 精确按 raw status 分支：`singleStatus` 把 pending/generating 也算 running，
+  // 用它会让排队/生成中也显示「执行中」。
+  const executing = raw === 'running' || raw === 'executing'
+  // ⚠️ 一律走 i18n（此前硬编码中文 ⇒ en/ja 用户看到中文）
+  // ⚠️ 用 **i18n 实例**而非 `t` prop：pill 渲染在多个路径（folded / expanded / 浮层）里，
+  // prop 未必透传（此前 expanded 路径 t=undefined ⇒ 落到英文兜底）。实例永远可用且语言一致。
+  const tr = (key: string, fallback: string, opts?: Record<string, unknown>): string =>
+    i18n.t(`agent.tool.${key}`, { ...opts, defaultValue: fallback }) as string
+  const statusText = failed
+    ? tr('statusFailed', 'Failed')
+    : killed
+      ? tr('statusKilled', 'Stopped')
+      : pending
+        ? tr('statusPending', 'Queued')
+        : generating
+          ? tr('statusGenerating', 'Generating')
+          : executing
+            ? tr('statusRunning', 'Running')
+            : ''
+  const statusFg = failed ? '#fff' : killed || pending ? 'var(--text-muted)' : hue
+  const statusBg = failed
+    ? errColor
+    : killed || pending
+      ? 'color-mix(in srgb, var(--text-muted) 18%, transparent)'
+      : `color-mix(in srgb, ${hue} 16%, transparent)`
+  const border = failed
+    ? `1px solid color-mix(in srgb, ${errColor} 45%, transparent)`
+    : (isSyn || killed)
+      ? `1px dashed color-mix(in srgb, ${isSyn ? hue : 'var(--text-muted)'} 38%, transparent)`
+      : '1px solid var(--border)'
+  // ⚠️ 底色一律**不透明**：此前失败/假工具把颜色 mix 到 `transparent` ⇒ 真的半透明（能看到背景），
+  // 与成功态（`--bg-secondary` 不透明）在同一排里**透明度不一致**（用户 2026-09-15 指出：失败像半透明）。
+  const bg = failed
+    ? `color-mix(in srgb, ${errColor} 10%, var(--bg-secondary))`
+    : isSyn ? `color-mix(in srgb, ${hue} 6%, var(--bg-secondary))` : 'var(--bg-secondary)'
+  // 设计原则「色彩只表达状态，成功要安静」：名称一律**中性前景色**，分类色只留在左侧 3px 条 + 图标槽。
+  // 原因（用户 2026-09-15）：写入类的琥珀黄名字看着像 warn —— 黄/橙/红必须只属于失败与终止。
+  // 设计原则「色彩只表达状态」的精确边界（用户 2026-09-15）：
+  //   - **运行/生成中** = 需要注意力 ⇒ 名称保留**分类色**（sweep 动效也是分类色，契约测试守护）；
+  //   - **成功/排队/终止** = 安静 ⇒ 名称用中性前景色，分类色只留在左侧 3px 条 + 图标槽
+  //     （此前"写入"的琥珀黄名字看着像 warn —— 黄/橙/红只应属于失败与终止）。
+  // ── 设计（依据业界 color-system 指南：**categorical 色必须低彩度**，且绝不与 semantic
+  // （success/warning/danger）色争抢注意力；中性色是主力、semantic 是例外）────────────
+  // 用户 2026-09-15：「分类色不应该直接抓人眼球导致像是警报，但分类我是支持的」⇒ 换表现方案：
+  //   分类色**只以低彩度形态**出现在 ① 图标 ② 极细左条（对位用，恒定槽位）；
+  //   pill 底色/边框保持**中性**；只有**失败/终止**使用高饱和 semantic 色（响亮是它的语义）。
+  const hueQuiet = `color-mix(in srgb, ${hue} 62%, var(--text-secondary))` // 图标：静音分类色
+  const nameColor = failed
+    ? 'color-mix(in srgb, var(--destructive) 78%, var(--text-primary))'
+    // ⚠️ 名称颜色**与 done 完全一致**（用户 2026-09-15：「生成中文字和生成完毕不一样」）：
+    // 运行中不再用满饱和分类色 —— "进行中"改由 sweep 动画 + 脉动环 + `执行中` chip 表达（非颜色通道）。
+    : 'var(--text-primary)'
   return (
     <span
       data-tool-name={tool.name}
-      className="inline-flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full px-2 py-0.5 text-[11px] font-medium"
-      style={{ color: c, background: bg }}
+      data-tool-status={failed ? 'error' : killed ? 'killed' : pending ? 'pending' : executing || generating ? 'running' : 'done'}
+      // ⚠️ 上限**不能**写在这里：pill 的包含块是外层 `LazyPillPopover` wrapper（内容定宽 = indefinite），
+      // 规范规定百分比 max-width 对 indefinite 包含块**按 none 处理** ⇒ `calc(50% - 8px)` 完全失效，
+      // 只剩 15rem=240px 生效 ⇒ 手机 362px 行宽下 240×2+gap > 362 ⇒ **每个 pill 独占一行**
+      // （2026-09-15 用户真机截图 + E2E 实测：4 个 pill 占 4 行）。上限见 wrapper（那里包含块=行宽，definite）。
+      className="tool-pill inline-flex h-[22px] min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-full pl-1 pr-2 text-[11px] leading-[22px] font-medium"
+      style={{ border, background: bg, ['--pill-hue' as string]: hue } as React.CSSProperties}
     >
-      {running
-        ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: c, animation: 'pulse-blue 1.2s infinite' }} />
-        : failed
-          ? <X className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />
-          : <Check className="shrink-0" size={9} strokeWidth={3} style={{ color: c }} />}
-      {showSweep
-        ? <SweepText text={label} color={c} className={`min-w-0 truncate ${synName ? '' : 'font-mono'}`} />
-        : synName
+      {/* 左 3px 色条：**每个** pill 都有（失败=红实条 / 终止=灰虚线 / 其余=分类色）——
+          恒定槽位是"所有 pill 的 icon 与首字符左对齐"的前提（用户 2026-09-15 明确要求）。 */}
+      <span
+        aria-hidden
+        className="tool-pill-bar h-3.5 w-[3px] shrink-0 rounded-full"
+        style={killed || failed ? { background: killed ? 'transparent' : errColor, borderRight: killed ? '3px dotted var(--text-muted)' : undefined } : undefined}
+      />
+      {/* 状态标记：**恒定 14px 槽**，所有状态都塞进同一个 `size-3.5` 盒子 —— running 的点（6px）比
+          done 的勾（14px）小 8px，槽位不定宽会让 icon 与名字整体左移（用户 2026-09-15 实测
+          「执行中的工具和执行完毕的 align 有问题」）。 */}
+      <span aria-hidden className="flex size-3.5 shrink-0 items-center justify-center">
+        {failed ? (
+          <span className="flex size-3.5 items-center justify-center rounded-full text-white" style={{ background: errColor }}><X className="size-2.5" strokeWidth={3.5} /></span>
+        ) : killed ? (
+          <span className="flex size-3.5 items-center justify-center rounded-full" style={{ color: 'var(--text-muted)', border: '1.5px dashed var(--border)' }}><Minus className="size-2.5" strokeWidth={3} /></span>
+        ) : executing || generating ? (
+          <span className="size-1.5 rounded-full" style={{ background: hue, animation: 'pulse-blue 1.2s infinite' }} />
+        ) : pending ? (
+          <span className="size-1.5 rounded-full" style={{ border: '1.5px solid var(--text-muted)' }} />
+        ) : (
+          <span className="flex size-3.5 items-center justify-center rounded-full" style={{ color: okColor, border: `1.5px solid ${okColor}` }}><Check className="size-2.5" strokeWidth={3.5} /></span>
+        )}
+      </span>
+      {/* 图标槽位：真工具（12px glyph）与假工具（16px 字母头像）都塞进**同一个 16px 方槽** ——
+          槽位宽度恒定是"所有 pill 的 icon 列与名字首字符左对齐"的前提（用户 2026-09-15 要求）。 */}
+      <span aria-hidden data-testid="tool-pill-icon" className="flex size-4 shrink-0 items-center justify-center">
+        {isSyn
+          ? <span className="flex size-4 items-center justify-center rounded-full text-[8px] font-extrabold leading-none text-black/80" style={{ background: hue }}>{syntheticKindBadge(kind)}</span>
+          : (() => {
+              const Icon = getToolIcon(tool.name) as React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+              return <Icon className="size-3" style={{ color: executing || generating ? hue : failed ? errColor : hueQuiet }} />
+            })()}
+      </span>
+      {((executing || (tool as { streaming?: boolean }).streaming === true) && !isSubAgentTool(tool))
+        ? <SweepText text={label} color={nameColor} className={`min-w-0 truncate ${isSyn ? '' : 'font-mono'}`} />
+        : isSyn
           ? (
             <>
-              {/* 本地化名字用正文字体（等宽渲染 CJK 会显得很怪），subject/参数保持等宽 */}
-              <span className="min-w-0 truncate">{name}</span>
-              {param && <span className="min-w-0 truncate font-mono opacity-70">{truncate(param, MAX_PARAM_LEN)}</span>}
+              {/* 假工具名字是句子（"BG task done"）⇒ 允许截断；「系统」徽标 shrink-0 ⇒ **永不被裁**
+                  （此前名字 shrink-0 + pill overflow-hidden ⇒ 窄视口下徽标被裁成 "Sys…"，我自己看 mobile 样张发现的）。 */}
+              <span data-testid="tool-pill-name" className="min-w-0 shrink truncate" style={{ color: nameColor }}>{name}</span>
+              {param && (
+                <span className="min-w-0 truncate font-mono text-text-secondary" style={{ flexShrink: 1000 }}>
+                  {truncate(formatParam(param), MAX_PARAM_LEN)}
+                </span>
+              )}
             </>
           )
-          : <span className="min-w-0 truncate font-mono">{label}</span>}
+          : (
+            <>
+              {/* 名字优先：**不截断**（用户 2026-09-15：「工具名尽可能显示全」）——先截参数 */}
+              <span data-testid="tool-pill-name" className="min-w-0 truncate font-mono" style={{ color: nameColor, flexShrink: 1 }}>{name}</span>
+              {param && (
+                <span className="min-w-0 truncate font-mono text-text-secondary" style={{ flexShrink: 1000 }}>
+                  {truncate(formatParam(param), MAX_PARAM_LEN)}
+                </span>
+              )}
+            </>
+          )}
+      {isSyn && (
+        <span aria-hidden className="shrink-0 rounded-[4px] border px-1 text-[9px] font-extrabold leading-4" style={{ color: hue, borderColor: `color-mix(in srgb, ${hue} 50%, transparent)` }}>{tr('syntheticBadge', 'System')}</span>
+      )}
+      {statusText && (
+        <span aria-hidden className="shrink-0 rounded-full px-1.5 py-px text-[9.5px] font-bold leading-4" style={{ color: statusFg, background: statusBg }}>{statusText}</span>
+      )}
+      {failed && exit !== undefined && (
+        <span aria-hidden className="shrink-0 rounded-full border px-1.5 py-px text-[9.5px] font-bold leading-4" style={{ color: errColor, borderColor: `color-mix(in srgb, ${errColor} 50%, transparent)` }}>exit {exit}</span>
+      )}
     </span>
   )
 }
@@ -266,7 +411,11 @@ function LazyPillPopover({
             setOpen(true)
           }
         }}
-        className="inline-flex min-w-0 max-w-full cursor-pointer items-center transition-opacity hover:opacity-85"
+        className="inline-flex min-w-0 cursor-pointer items-center transition-opacity hover:opacity-85"
+        // ⚠️ 上限**必须是不含百分比**的确定值：wrapper 的包含块是 flex item（内容尺寸 = indefinite），
+        // 百分比（`50%`）在里面无法解析 ⇒ Chrome 把整个 `min()` 当作 `none` ⇒ **上限等于没有**
+        // （2026-09-15 真机仍一行一个的根因；`50vw` 是视口单位，永远可解析）。
+        style={{ maxWidth: 'calc(50% - 6px)' /* 容器相对：任何面板宽度都一行 ≥2 个（50vw 在窄面板里会退化成一行一个） */ }}
       >
         {children}
       </span>
@@ -275,7 +424,7 @@ function LazyPillPopover({
   return (
     <Popover open onOpenChange={(o) => { if (!o) setOpen(false) }}>
       <PopoverTrigger asChild>
-        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 max-w-full cursor-pointer items-center transition-opacity hover:opacity-85">
+        <span data-testid={testId} data-tool-name={toolName} className="inline-flex min-w-0 cursor-pointer items-center transition-opacity hover:opacity-85" style={{ maxWidth: 'calc(50% - 6px)' /* 容器相对：任何面板宽度都一行 ≥2 个（50vw 在窄面板里会退化成一行一个） */ }}>
           {children}
         </span>
       </PopoverTrigger>
@@ -294,7 +443,7 @@ const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgres
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
-    <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
+    <span data-testid="merged-pills" className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
         <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" toolName={tool.name} content={<ToolPopoverDetail tool={tool} />}>
           {toolPill(tool, t)}
@@ -315,7 +464,7 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
       content={<ToolPopoverContent tools={hidden} />}
     >
       <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
-        +{hidden.length}
+        {i18n.t('agent.tool.overflowBadge', { count: hidden.length, defaultValue: `+${hidden.length}` }) as string}
       </span>
     </LazyPillPopover>
   )
@@ -417,6 +566,9 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   // tools 不变时 pill 行 re-render 零重建（pill 浮窗开合由 radix/懒挂管理）。
   const pillsRow = useMemo(() => <MergedPills tools={otherTools} />, [otherTools])
 
+  // 行级失败告警：组内任一工具失败 ⇒ 行左侧红条 + `N 失败` chip（折叠/滚动时也不漏）。
+  const failedCount = useMemo(() => otherTools.filter((x) => isFailed(x.status)).length, [otherTools])
+
   if (!tools.length) return null
 
   const genuiElements = genuiTools.map((tool, i) => (
@@ -435,9 +587,31 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   // 唯一形态：pill 行——每个 pill 独立浮窗（该工具 summary+参数+fancy 渲染），
   // +N 徽标弹溢出列表。行本身不是 trigger（无 ▸ 箭头，用户要求）。
   return (
-    <div className="flex flex-col gap-1.5">
+    <div
+      className="flex flex-col gap-1.5"
+      data-testid={failedCount > 0 ? 'tool-group-failed' : undefined}
+      data-failed-count={failedCount > 0 ? failedCount : undefined}
+      title={failedCount > 0 ? (i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string) : undefined}
+      aria-label={failedCount > 0 ? (i18n.t('agent.tool.groupFailed', { count: failedCount, defaultValue: '{{count}} failed' }) as string) : undefined}
+      style={
+        failedCount > 0
+          ? {
+              // 「工具组失败」新机制（用户 2026-09-15 要求换机制）：整组左侧 2px 红导轨 + 极淡红渐变。
+              // 导轨**不参与 pill wrap** ⇒ 与 pill 行天然对齐（浮动 chip 是所有对齐问题的根源，已删除）；
+              // 计数通过 title / aria-label 暴露（信息不丢、不占位）。
+              borderLeft: '2px solid color-mix(in srgb, var(--destructive) 62%, transparent)',
+              paddingLeft: '8px',
+              borderRadius: '6px',
+              backgroundImage:
+                'linear-gradient(90deg, color-mix(in srgb, var(--destructive) 7%, transparent), transparent 45%)',
+            }
+          : undefined
+      }
+    >
       {genuiElements}
-      <div data-testid="tool-pill-row" className={ROW_ROW_CLASS}>{pillsRow}</div>
+      <div className="flex min-w-0 flex-wrap items-start gap-1.5">
+        <div data-testid="tool-pill-row" className={ROW_ROW_CLASS}>{pillsRow}</div>
+      </div>
     </div>
   )
 })

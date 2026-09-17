@@ -50,6 +50,7 @@ export function historyToReplaced(
         role: m.role === 'user' ? 'user' : 'assistant',
         content: m.content,
         iterations: m.iterations,
+        iterationsTruncated: m.iterationsTruncated ?? 0,
         timestamp: m.timestamp,
         dbID: m.dbID,
       })
@@ -83,10 +84,13 @@ export function historyToReplaced(
     // 多个 assistant 行（异常历史）合并：iterations 连接，content 取最后非空。
     const iterations = slot.assistants.flatMap((a) => a.iterations ?? [])
     const lastContent = [...slot.assistants].reverse().find((a) => a.content !== '')?.content ?? ''
+    // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
+    // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
+    const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)
     const nonEmptyIts = nonEmptyArr(iterations)
     const payload =
       nonEmptyIts !== null
-        ? commitViaFold(nonEmptyIts, lastContent)
+        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated)
         : nonEmptyStr(lastContent) !== null
           ? commitViaText(nonEmptyStr(lastContent)!, [])
           : null
@@ -226,6 +230,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         // 透传引用（不拷贝）：iterations 的引用稳定性是 TurnBody→CommittedTurn
         // memo 生效的前提（详见 rowsToChatMessages 的 memo 契约）。
         iterations: r.iterations as WebIteration[],
+        iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: true,
         turnID: r.turnID,
@@ -236,6 +241,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         role: 'assistant',
         content: r.content,
         iterations: r.iterations as WebIteration[],
+        iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: true,
         turnID: r.turnID,
@@ -246,6 +252,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         role: 'assistant',
         content: r.content,
         iterations: r.iterations as WebIteration[],
+        iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: false,
         turnID: r.turnID,

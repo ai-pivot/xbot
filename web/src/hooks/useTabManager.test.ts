@@ -1,6 +1,13 @@
+import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { filterAgentPanels, groupCloseTargets, tabLogicalKey, tabLogicalKeyFromParams } from './useTabManager'
+import {
+  filterAgentPanels,
+  groupCloseTargets,
+  tabLogicalKey,
+  tabLogicalKeyFromParams,
+  useTabManager,
+} from './useTabManager'
 
 function agentPanel(id: string) {
   return { id, params: { type: 'agent', closable: false }, contentComponent: 'agent' }
@@ -184,5 +191,125 @@ describe('groupCloseTargets (tab 右键菜单批量关闭目标)', () => {
 
   it('未知 tabId（不在组内）→ 空结果', () => {
     expect(groupCloseTargets(tabs, 'Z', 'all')).toEqual([])
+  })
+})
+
+/**
+ * 认领「未绑定会话的引导占位 agent tab」—— 2026-09-16「切会话后同一 user 行
+ * 重复渲染」根因修复的一半。
+ *
+ * 现象（e2e 实测 + DOM 铁证）：切到 S2 后 `hello from S2` 命中 **2 个**元素，
+ * 两行的 `data-message-id` 完全相同（`db-3` / `turn-202-c`），且 `/api/history`
+ * 对 chat-2 被拉**两次** —— 不是 reducer 重复造行，而是**同一会话被两个 agent
+ * 面板渲染**：seed 建的无 sessionId 占位 tab 用 `params.sessionId ?? activeSession`
+ * 解析会话（跟随 activeSession），侧栏点击又为同一会话新开 session tab；agent
+ * tab 是 `renderer='always'`（常驻 DOM）⇒ 整棵消息列表 + SSE 双订阅。
+ *
+ * 契约：为会话打开 agent tab 时若存在未绑定会话的占位 tab ⇒ **会话绑到它身上**
+ * （不新建第二个面板）；不同会话仍各自开面板。
+ */
+describe('openTab: 认领未绑定会话的占位 agent tab', () => {
+  interface FakePanel {
+    id: string
+    params: Record<string, unknown>
+    update: (p: { params: Record<string, unknown> }) => void
+    api: { setActive: () => void; setTitle: (t: string) => void }
+  }
+
+  function makeApi() {
+    const panels: FakePanel[] = []
+    const titles: string[] = []
+    const state = { activePanel: undefined as FakePanel | undefined }
+    const api = {
+      panels,
+      get activePanel() {
+        return state.activePanel
+      },
+      onDidAddPanel: () => ({ dispose: () => {} }),
+      onDidRemovePanel: () => ({ dispose: () => {} }),
+      onDidActivePanelChange: () => ({ dispose: () => {} }),
+      addPanel: (opts: { id: string; params: Record<string, unknown> }) => {
+        const panel: FakePanel = {
+          id: opts.id,
+          params: opts.params,
+          update: (p) => {
+            panel.params = p.params
+          },
+          api: {
+            setActive: () => {
+              state.activePanel = panel
+            },
+            setTitle: (t: string) => {
+              titles.push(t)
+            },
+          },
+        }
+        panels.push(panel)
+        return panel
+      },
+      getPanel: (id: string) => panels.find((p) => p.id === id),
+      toJSON: () => ({}),
+      fromJSON: () => {},
+    }
+    return { api, panels, titles }
+  }
+
+  it('会话 tab 复用占位面板（绝不产生第二个渲染同一会话的面板）', () => {
+    const { result } = renderHook(() => useTabManager())
+    const { api, panels, titles } = makeApi()
+    act(() => result.current.bindApi(api as never))
+
+    // seed：无 sessionId 的引导占位 tab（DockviewContainer 在"还没有已知会话"时建）
+    act(() => {
+      result.current.openTab({ type: 'agent', title: 'Agent', icon: 'bot', closable: true })
+    })
+    expect(panels).toHaveLength(1)
+    expect(panels[0].params.sessionId).toBeUndefined()
+
+    // 点击会话 ⇒ 会话绑到占位 tab 上（而不是再开一个面板渲染同一会话）
+    let tabId = ''
+    act(() => {
+      tabId = result.current.openTab({
+        type: 'agent',
+        title: 'S1',
+        icon: 'bot',
+        closable: true,
+        data: { filePath: 'chat-1', channel: 'web' },
+      })
+    })
+    expect(panels).toHaveLength(1)
+    expect(panels[0].params.sessionId).toBe('chat-1')
+    expect(panels[0].params.title).toBe('S1')
+    expect(titles).toContain('S1')
+    expect(tabId).toBeTruthy()
+  })
+
+  it('不同会话仍各自开面板（认领只作用于未绑定会话的占位 tab）', () => {
+    const { result } = renderHook(() => useTabManager())
+    const { api, panels } = makeApi()
+    act(() => result.current.bindApi(api as never))
+    act(() => {
+      result.current.openTab({ type: 'agent', title: 'Agent', icon: 'bot', closable: true })
+    })
+    act(() => {
+      result.current.openTab({
+        type: 'agent',
+        title: 'S1',
+        icon: 'bot',
+        closable: true,
+        data: { filePath: 'chat-1', channel: 'web' },
+      })
+    })
+    act(() => {
+      result.current.openTab({
+        type: 'agent',
+        title: 'S2',
+        icon: 'bot',
+        closable: true,
+        data: { filePath: 'chat-2', channel: 'web' },
+      })
+    })
+    expect(panels).toHaveLength(2)
+    expect(panels.map((p) => p.params.sessionId)).toEqual(['chat-1', 'chat-2'])
   })
 })

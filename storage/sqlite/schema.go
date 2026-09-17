@@ -39,7 +39,9 @@ CREATE TABLE session_messages (
 	    tool_calls TEXT,
 	    detail TEXT,
 	    reasoning_content TEXT DEFAULT '',
+	    reasoning_items TEXT DEFAULT '',
 	    display_only INTEGER DEFAULT 0,
+	    internal_only INTEGER DEFAULT 0,
 	    context_tokens INTEGER DEFAULT 0,
 	    turn_id INTEGER DEFAULT 0,
 	    record_type TEXT NOT NULL DEFAULT 'message',
@@ -126,7 +128,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (66);
+INSERT INTO schema_version (version) VALUES (68);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.

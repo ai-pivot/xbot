@@ -77,7 +77,22 @@ export function SettingsChannels() {
   const [savedChannel, setSavedChannel] = useState<string | null>(null)
 
   const [bind, setBind] = useState<FeishuBindStatus | null>(null)
+  // feishu_app_guide：要创建的应用长什么样（权限/事件/回调预设，与一键创建同源）。
+  const [guide, setGuide] = useState<{
+    scopes: string[]; events: string[]; callbacks: string[]; create_app_url: string; needs_public_url: boolean
+  } | null>(null)
+  const [showPreset, setShowPreset] = useState(false)
   const [binding, setBinding] = useState(false)
+  // The authorization window is opened BY THE USER GESTURE (browsers only allow
+  // a popup requested inside a click) and navigated to the link once the RPC
+  // returns — see startFeishuBind. `popupBlocked` records the fallback case so
+  // the panel points at the manual "Open link" / copy actions instead of
+  // pretending the window opened.
+  const [popupBlocked, setPopupBlocked] = useState(false)
+  // Waiting link past its validity window: the single-use code is dead, so stop
+  // polling and let the user regenerate. Without this the panel keeps polling a
+  // dead link and shows no way forward.
+  const [expired, setExpired] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   const load = useCallback(async () => {
@@ -97,7 +112,7 @@ export function SettingsChannels() {
 
   // 轮询绑定状态：链接是单次使用的，用户确认后服务端会写回凭据。
   useEffect(() => {
-    if (bind?.state !== 'waiting') {
+    if (bind?.state !== 'waiting' || expired) {
       if (pollRef.current !== null) {
         window.clearInterval(pollRef.current)
         pollRef.current = null
@@ -108,15 +123,18 @@ export function SettingsChannels() {
       void (async () => {
         try {
           const status = await rpc<FeishuBindStatus>('feishu_bind_status')
-          setBind(status)
-          if (status.state === 'done') {
-            setBinding(false)
-            await load()
-          } else if (status.state === 'error') {
-            setBinding(false)
+          if (status.state === 'idle') {
+            // The server no longer owns this attempt (restart, or a newer
+            // attempt superseded it) — the link is dead. Reset the panel
+            // instead of leaving a disabled button behind (user report:
+            // "一直停在 Requesting link…").
+            setBind(null)
+            setError(t('settings.channels.feishuLinkStale'))
+            return
           }
+          setBind(status)
         } catch (err) {
-          setBinding(false)
+          setBind(null)
           setError(err instanceof Error ? err.message : String(err))
         }
       })()
@@ -127,7 +145,17 @@ export function SettingsChannels() {
         pollRef.current = null
       }
     }
-  }, [bind?.state, load])
+  }, [bind?.state, expired, t])
+
+  // Local expiry guard: the single-use code lives `expires_in` seconds while the
+  // server-side attempt may live longer. Without this the panel keeps polling a
+  // dead link and offers no way forward.
+  useEffect(() => {
+    if (bind?.state !== 'waiting') return
+    const seconds = bind.expires_in ?? 600
+    const timer = window.setTimeout(() => setExpired(true), Math.max(1, seconds) * 1000)
+    return () => window.clearTimeout(timer)
+  }, [bind?.state, bind?.expires_in])
 
   const names = useMemo(() => {
     if (!channels) return []
@@ -171,19 +199,67 @@ export function SettingsChannels() {
     }
   }
 
+  useEffect(() => {
+    void (async () => {
+      try {
+        const g = await rpc<{
+          scopes?: string[]; events?: string[]; callbacks?: string[]; create_app_url?: string; needs_public_url?: boolean
+        }>('feishu_app_guide')
+        // 引导是增强项：形状不完整（旧服务端/测试 mock）时宁可不渲染，也不能崩面板。
+        if (g && Array.isArray(g.scopes) && Array.isArray(g.events) && Array.isArray(g.callbacks)) {
+          setGuide({
+            scopes: g.scopes,
+            events: g.events,
+            callbacks: g.callbacks,
+            create_app_url: g.create_app_url ?? 'https://open.feishu.cn/app',
+            needs_public_url: g.needs_public_url ?? false,
+          })
+        }
+      } catch {
+        // 引导信息拿不到不影响绑定本身（按钮仍可用）。
+      }
+    })()
+  }, [])
+
   const startFeishuBind = async () => {
     setBinding(true)
     setError(null)
     setBind(null)
+    setExpired(false)
+    setPopupBlocked(false)
+    // 打开授权窗口必须发生在**用户手势内**（浏览器只允许 click 内发起的
+    // window.open），而链接要等 RPC 返回才有。所以先生成一个空白窗口，拿到 URL
+    // 后再导航过去 —— 用户看到的就是「点按钮 → 飞书创建应用页自动打开」。
+    const popup = window.open('about:blank', '_blank')
     try {
       const res = await rpc<{ url: string; expires_in: number; app_id?: string }>('feishu_bind_start', {
         app_id: drafts['feishu']?.app_id ?? '',
       })
       setBind({ state: 'waiting', url: res.url, expires_in: res.expires_in, app_id: res.app_id })
+      if (popup && !popup.closed) {
+        try {
+          popup.opener = null // 不要把本面板交给第三方 origin
+        } catch {
+          // 已经跨域，无法再触碰 opener —— 无妨。
+        }
+        popup.location.replace(res.url)
+      } else {
+        // 被拦截（或用户秒关）：如实告知，让用户走「打开链接 / 复制链接」。
+        setPopupBlocked(true)
+      }
     } catch (err) {
-      setBinding(false)
+      if (popup && !popup.closed) popup.close()
       setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      // 绝不能让按钮停在 in-flight 文案上：旧实现只在 done/error 时清这个标志，
+      // 于是 waiting 期间按钮一直禁用、文案一直「正在获取链接…」（用户报告
+      // 「一直 Requesting link…」）。
+      setBinding(false)
     }
+  }
+
+  const openBindLink = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   const copyLink = async (url: string) => {
@@ -248,12 +324,102 @@ export function SettingsChannels() {
             ))}
 
             {name === 'feishu' ? (
-              <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg-tertiary/40 p-3">
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg-tertiary/40 p-3" data-testid="feishu-guide">
+                <p className="text-sm font-medium text-text-primary">{t('settings.channels.feishuGuideTitle')}</p>
+                <ol className="ml-4 list-decimal text-xs text-text-muted" data-testid="feishu-guide-steps">
+                  <li>{t('settings.channels.feishuGuideStep1')}</li>
+                  <li>{t('settings.channels.feishuGuideStep2')}</li>
+                  <li>{t('settings.channels.feishuGuideStep3')}</li>
+                </ol>
                 <p className="text-xs text-text-muted">{t('settings.channels.feishuBindHint')}</p>
+                {guide ? (
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="feishu-guide-preset-toggle"
+                      className="w-fit text-xs text-accent underline-offset-2 hover:underline"
+                      onClick={() => setShowPreset((v) => !v)}
+                    >
+                      {t('settings.channels.feishuGuidePreset', {
+                        scopes: guide.scopes.length,
+                        events: guide.events.length,
+                        callbacks: guide.callbacks.length,
+                      })}
+                    </button>
+                    {showPreset ? (
+                      <div
+                        data-testid="feishu-guide-preset"
+                        className="flex max-h-48 flex-col gap-2 overflow-auto rounded bg-bg-primary p-2 text-[11px] text-text-secondary"
+                      >
+                        {(
+                          [
+                            ['feishu-guide-scopes', t('settings.channels.feishuGuideScopes'), guide.scopes],
+                            ['feishu-guide-events', t('settings.channels.feishuGuideEvents'), guide.events],
+                            ['feishu-guide-callbacks', t('settings.channels.feishuGuideCallbacks'), guide.callbacks],
+                          ] as const
+                        ).map(([tid, label, items]) => (
+                          <div key={tid} className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-text-primary">
+                                {t('settings.channels.feishuGuideItemCount', { label, count: items.length })}
+                              </span>
+                              <button
+                                type="button"
+                                data-testid={`${tid}-copy`}
+                                className="text-accent underline-offset-2 hover:underline"
+                                onClick={() => void copyLink(items.join('\n'))}
+                              >
+                                {t('settings.channels.feishuGuideCopyAll')}
+                              </button>
+                            </div>
+                            <code data-testid={tid} className="break-all font-mono">
+                              {items.join(', ')}
+                            </code>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    <p className="text-xs text-text-muted" data-testid="feishu-guide-no-public-url">
+                      {guide.needs_public_url
+                        ? t('settings.channels.feishuGuideNeedsPublicUrl')
+                        : t('settings.channels.feishuGuideNoPublicUrl')}
+                    </p>
+                    <a
+                      data-testid="feishu-guide-manual"
+                      href={guide.create_app_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-fit text-xs text-accent underline-offset-2 hover:underline"
+                    >
+                      {t('settings.channels.feishuGuideManual')}
+                    </a>
+                  </div>
+                ) : null}
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button type="button" size="sm" disabled={binding} onClick={() => void startFeishuBind()}>
-                    {binding ? t('settings.channels.feishuBinding') : t('settings.channels.feishuBind')}
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={binding}
+                    data-testid="feishu-bind"
+                    onClick={() => void startFeishuBind()}
+                  >
+                    {binding
+                      ? t('settings.channels.feishuBinding')
+                      : bind?.state === 'waiting'
+                        ? t('settings.channels.feishuRebind')
+                        : t('settings.channels.feishuBind')}
                   </Button>
+                  {bind?.state === 'waiting' && bind.url && !expired ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      data-testid="feishu-open-link"
+                      onClick={() => openBindLink(bind.url!)}
+                    >
+                      {t('settings.channels.feishuOpenLink')}
+                    </Button>
+                  ) : null}
                   {bind?.state === 'done' ? (
                     <Badge variant="secondary">{t('settings.channels.feishuBound')}</Badge>
                   ) : null}
@@ -261,6 +427,21 @@ export function SettingsChannels() {
                     <span className="text-xs text-red-500">{bind.error}</span>
                   ) : null}
                 </div>
+                {bind?.state === 'waiting' && !expired ? (
+                  <p className="text-xs text-text-muted" data-testid="feishu-bind-waiting">
+                    {t('settings.channels.feishuWaitingConfirm')}
+                  </p>
+                ) : null}
+                {popupBlocked ? (
+                  <p className="text-xs text-amber-500" data-testid="feishu-popup-blocked">
+                    {t('settings.channels.feishuPopupBlocked')}
+                  </p>
+                ) : null}
+                {expired && bind?.state === 'waiting' ? (
+                  <p className="text-xs text-amber-500" data-testid="feishu-link-expired">
+                    {t('settings.channels.feishuLinkExpired')}
+                  </p>
+                ) : null}
                 {bind?.url ? (
                   <div className="flex flex-col gap-1">
                     <code

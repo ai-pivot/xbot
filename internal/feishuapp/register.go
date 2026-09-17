@@ -141,3 +141,11 @@ func SaveCredentials(cfgPath, appID, appSecret string) error {
 	cfg.Feishu.Enabled = true
 	return config.SaveToFile(cfgPath, cfg)
 }
+
+// Scopes / Events / Callbacks 暴露预设清单的**只读副本**，供 Web 渠道面板把
+// 「应用需要什么」原样展示给用户（单一事实来源仍在本文件，禁止在别处再抄一份）。
+func Scopes() []string { return append([]string(nil), tenantScopes...) }
+
+func Events() []string { return append([]string(nil), tenantEvents...) }
+
+func Callbacks() []string { return []string{"card.action.trigger"} }

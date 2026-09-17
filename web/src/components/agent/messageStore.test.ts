@@ -111,6 +111,60 @@ describe('MessageStore — 跨 turn 迭代号碰撞（turn-vanish P0）', () => 
   })
 })
 
+// ── AskUser：上迭代 reasoning 不得重复渲染（2026-09-17 用户截图）──
+describe('MessageStore — AskUser 上迭代 reasoning 去重', () => {
+  it('freeze 折在飞工具必须用当前迭代号（不得自造 maxIter+1 并复制 reasoning）', () => {
+    const s = new MessageStore()
+    s.setUser(360, user('u360', 'q', 360))
+    // 真实形态：迭代 1 已渲染（reasoning R4930 + 已有工具），AskUser 在本迭代
+    // 完成、live 的流式字段仍持有本迭代的 reasoning（lastIter=1）。
+    s.updateLive(360, liveState(360, {
+      content: '这条我需要先确认一下语义…',
+      reasoningStreamContent: 'R4930',
+      lastIter: 1,
+      iterations: [
+        {
+          iteration: 1,
+          content: '这条我需要先确认一下语义…',
+          reasoning: 'R4930',
+          tools: [{ name: 'Grep', label: 'x', status: 'done', elapsedMs: 1, summary: '', detail: '', args: '', toolHints: '', iteration: 1 }],
+          toolCount: 1,
+        },
+      ],
+      completedTools: [{ name: 'AskUser', label: '', status: 'done', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '', iteration: 1 }],
+    }))
+
+    s.freeze(360)
+
+    const row = s.toRows()[1]
+    // ① 不得出现编号 2（旧实现自造 maxIter+1）
+    expect(row.iterations.map((it) => it.iteration)).toEqual([1])
+    // ② reasoning 只渲染一份（旧实现会渲染两份 → 用户截图）
+    expect(row.iterations.filter((it) => it.reasoning === 'R4930')).toHaveLength(1)
+    // ③ 在飞工具折进**本**迭代，且不重复计数
+    expect(row.iterations[0].tools.map((t) => t.name)).toEqual(['Grep', 'AskUser'])
+  })
+
+  it('当前迭代尚无条目（lastIter 未被 snapshot）→ 补建该号，仍只有一份 reasoning', () => {
+    const s = new MessageStore()
+    s.setUser(361, user('u361', 'q', 361))
+    s.updateLive(361, liveState(361, {
+      content: 'partial',
+      reasoningStreamContent: 'R2',
+      lastIter: 2,
+      iterations: [iter(1)],
+      activeTools: [{ name: 'Shell', label: '', status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '', iteration: 2 }],
+    }))
+
+    s.freeze(361)
+
+    const row = s.toRows()[1]
+    expect(row.iterations.map((it) => it.iteration)).toEqual([1, 2])
+    expect(row.iterations.filter((it) => it.reasoning === 'R2')).toHaveLength(1)
+    expect(row.iterations[1].tools.map((t) => t.name)).toEqual(['Shell'])
+  })
+})
+
 // ── cancel 冻结 ──
 describe('MessageStore — cancel 冻结', () => {
   it('cancel 后 assistant=[interrupted] + frozen live → 合并渲染（content 用 live）', () => {
@@ -554,5 +608,67 @@ describe('destructive reload 与乐观 user 行', () => {
     } as never)
     store.clear()
     expect(store.toRows().some((r) => r.content === 'bye')).toBe(false)
+  })
+})
+
+// ── 幂等：同一份 DB 快照重复 mergeHistory **不得通知** ──
+// 用户 2026-09-15：「切换 session 后什么也不做，过 0.5s 内容会突然闪烁一下」——
+// 切会话是**两次数据到达**：① reload() 首拉；② SSE 连上后 restoreActiveProgress 的
+// done/null 分支按契约**无条件再 reload 一次**。第二次写的是同一份 DB 快照，原先无条件
+// bumpCommitted()+invalidate() ⇒ syncMessages() 换掉 messages 数组 ⇒ 整表重渲染 = 闪烁。
+describe('MessageStore — mergeHistory 幂等（切会话闪烁根治）', () => {
+  const assistantRow = (turnID: number, content: string): ChatMessage => ({
+    id: `seq-${turnID}`, role: 'assistant', content, iterations: [iter(1)],
+    timestamp: '', isPartial: false, turnID, persisted: true,
+  })
+
+  it('同一份快照重复 mergeHistory：只在首次通知，第二次零通知', () => {
+    const s = new MessageStore()
+    let notified = 0
+    s.subscribe(() => { notified++ })
+    const rows: ChatMessage[] = [user('u1', 'hi', 7), assistantRow(7, 'reply')]
+    s.mergeHistory(rows, { replace: true, watermark: 0 })
+    expect(notified, '首次写入必须通知').toBeGreaterThan(0)
+    const afterFirst = notified
+    // 第二次：同一份 DB 快照（内容逐字节相同）⇒ 幂等，不得通知（否则整表重渲染 = 闪烁）
+    s.mergeHistory(rows, { replace: true, watermark: 0 })
+    expect(notified, '重复合并同一快照不得通知').toBe(afterFirst)
+    expect(s.toRows()).toHaveLength(2)
+  })
+
+  it('内容真的变化（新增 turn / 内容变化）仍然通知', () => {
+    const s = new MessageStore()
+    let notified = 0
+    s.subscribe(() => { notified++ })
+    s.mergeHistory([user('u1', 'hi', 7), assistantRow(7, 'reply')], { replace: true, watermark: 0 })
+    const afterFirst = notified
+    // 新 turn 到达（真实变化）⇒ 必须通知
+    s.mergeHistory(
+      [user('u1', 'hi', 7), assistantRow(7, 'reply'), user('u2', 'again', 8), assistantRow(8, 'r2')],
+      { replace: true, watermark: 0 },
+    )
+    expect(notified, '真实变化必须通知').toBeGreaterThan(afterFirst)
+  })
+
+  it('同一 turn 的 assistant 内容变化（流式补全）仍然通知', () => {
+    const s = new MessageStore()
+    s.mergeHistory([assistantRow(7, 'partial')], { replace: true, watermark: 0 })
+    let notified = 0
+    s.subscribe(() => { notified++ })
+    s.mergeHistory([assistantRow(7, 'partial + more')], { replace: true, watermark: 0 })
+    expect(notified, '内容变化必须通知').toBeGreaterThan(0)
+  })
+
+  it('【严重回归】committed 内容相同但 **user 行回填** 必须通知（否则 user msg 不渲染）', () => {
+    const s = new MessageStore()
+    // 第一次：DB 快照只有 assistant 行（user 行缺失/尚未回填的现场）
+    s.mergeHistory([assistantRow(7, 'reply')], { replace: true, watermark: 0 })
+    let notified = 0
+    s.subscribe(() => { notified++ })
+    // 第二次：同一 turn 的 **user 行** 到达（assistant 内容逐字节相同）——
+    // 渲染行集变了 ⇒ 必须通知（内部结构指纹曾漏掉这一点 ⇒ user msg 不渲染）
+    s.mergeHistory([user('u1', 'hi', 7), assistantRow(7, 'reply')], { replace: true, watermark: 0 })
+    expect(notified, 'user 行回填必须通知（渲染行集变化）').toBeGreaterThan(0)
+    expect(s.toRows().some((r) => r.role === 'user'), 'user 行必须在渲染行里').toBe(true)
   })
 })

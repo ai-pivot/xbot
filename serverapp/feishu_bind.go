@@ -171,4 +171,22 @@ func registerChannelOpsHandlers(t RPCTable, h *RPCContext) {
 	t["feishu_bind_status"] = h.requireAdmin(rpc0(func(ctx context.Context) any {
 		return globalFeishuBinder.Status()
 	}))
+
+	// feishu_app_guide 是「全新安装的引导」：告诉 Web 面板要创建的应用长什么样
+	// （权限/事件/回调的预设清单 —— 与 feishu_bind_start 实际创建的应用完全同源，
+	// 都来自 internal/feishuapp），以及手动创建入口。
+	//
+	// 用户视角的那句话：「点生成链接 → 在飞书里确认 → 应用就按这个清单建好了」。
+	t["feishu_app_guide"] = h.requireAdmin(rpc0(func(ctx context.Context) any {
+		return map[string]any{
+			"scopes":         feishuapp.Scopes(),
+			"events":         feishuapp.Events(),
+			"callbacks":      feishuapp.Callbacks(),
+			"create_app_url": "https://open.feishu.cn/app",
+			"link_lifetime":  feishuapp.LinkLifetimeSeconds,
+			// 事件走 WebSocket 长连接（larkws）⇒ **不需要公网回调地址**，
+			// 这是全新安装能一键跑通的关键前提。
+			"needs_public_url": false,
+		}
+	}))
 }

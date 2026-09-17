@@ -68,10 +68,17 @@ func (h *ForegroundShellHandle) Promote() <-chan promoteResult {
 type foregroundShellRegistry struct {
 	mu       sync.Mutex
 	sessions map[string]map[string]*ForegroundShellHandle
+	// byCallID 是**全局**索引：callID 是 LLM 的 tool_call id，全局唯一，而"会话键"在不同
+	// 会话类型下并不一致（canonical vs physicalChannel override：CLI 会话在 web 里看是
+	// web:chatID；子代理是 agent:role/instance）。只按会话键查找会让**别的会话/面板**
+	// 点"转后台"落空，报 "no running foreground shell in this session"
+	//（用户 2026-09-14：「所有会话都要支持转移到 background」）。
+	byCallID map[string]*ForegroundShellHandle
 }
 
 var globalForegroundShells = &foregroundShellRegistry{
 	sessions: make(map[string]map[string]*ForegroundShellHandle),
+	byCallID: make(map[string]*ForegroundShellHandle),
 }
 
 // registerForegroundShell adds a handle. Called at the start of every
@@ -99,7 +106,23 @@ func registerForegroundShell(sessionKey, callID, command string) *ForegroundShel
 		globalForegroundShells.sessions[sessionKey] = m
 	}
 	m[callID] = h
+	if globalForegroundShells.byCallID == nil {
+		globalForegroundShells.byCallID = make(map[string]*ForegroundShellHandle)
+	}
+	globalForegroundShells.byCallID[callID] = h
 	return h
+}
+
+// foregroundShellByCallID looks a running foreground shell up by its (globally
+// unique) tool-call id, regardless of which session key it was registered under.
+// This is what makes promote-to-background work from ANY session view.
+func foregroundShellByCallID(callID string) *ForegroundShellHandle {
+	if callID == "" {
+		return nil
+	}
+	globalForegroundShells.mu.Lock()
+	defer globalForegroundShells.mu.Unlock()
+	return globalForegroundShells.byCallID[callID]
 }
 
 // unregisterForegroundShell removes a finished/promoted handle. Always called
@@ -119,6 +142,9 @@ func unregisterForegroundShell(h *ForegroundShellHandle) {
 	}
 	if len(m) == 0 {
 		delete(globalForegroundShells.sessions, h.SessionKey)
+	}
+	if cur, ok := globalForegroundShells.byCallID[h.CallID]; ok && cur == h {
+		delete(globalForegroundShells.byCallID, h.CallID)
 	}
 }
 
@@ -158,6 +184,12 @@ func PromoteForegroundShell(sessionKey, callID string) (string, error) {
 		return "", fmt.Errorf("session_key is required")
 	}
 	h := foregroundShellFor(sessionKey, callID)
+	if h == nil {
+		// 会话键不一致（canonical vs physicalChannel override / SubAgent key）⇒ 按 callID
+		// 全局兜底：callID 唯一，跨会话查找不会误伤（用户 2026-09-14：
+		// 「所有会话都要支持转移到 background」）。
+		h = foregroundShellByCallID(callID)
+	}
 	if h == nil {
 		return "", fmt.Errorf("no running foreground shell in this session")
 	}

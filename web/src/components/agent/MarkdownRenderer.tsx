@@ -242,6 +242,17 @@ const CodeBlock = memo(function CodeBlock({
  * memoized markdown tree untouched), load failure degrades to a compact
  * placeholder with the original link (expired OSS signed URLs in history).
  */
+/**
+ * 已实测的图片高度（module 级、按 src 记忆）。
+ *
+ * 抖动机制（用户 2026-09-15：「加载图片时已渲染内容可能抖动」）：`<img>` 初始高度为 0，
+ * 加载完成后行高 0→N 突变 ⇒ 视口内的行被推走。两层修复：
+ *   ① 未实测前 **预留** 一块高度（`minHeight`），把跳变幅度从 N 压到 |N - 预留|；
+ *   ② 实测后把高度**记住**：再次渲染（滚动回来 / 重挂载）直接用该高度 ⇒ 零跳变。
+ */
+const IMG_HEIGHT_MEMORY = new Map<string, number>()
+const IMG_PLACEHOLDER_MIN_HEIGHT = 140
+
 function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<"img"> & { node?: unknown }) {
   const [failed, setFailed] = useState(false)
   const src = typeof props.src === 'string' ? props.src : ''
@@ -261,15 +272,29 @@ function MarkdownImage({ node: _node, alt, ...props }: ComponentPropsWithoutRef<
       </span>
     )
   }
+  const remembered = IMG_HEIGHT_MEMORY.get(src)
   return (
-    <img
-      alt={alt ?? ''}
-      className="my-2 max-h-[400px] max-w-full cursor-zoom-in rounded object-contain"
-      loading="lazy"
-      onClick={() => openLightbox(src, alt ?? '')}
-      onError={() => setFailed(true)}
-      {...props}
-    />
+    <span
+      // 预留高度：未实测过时先占位，避免 0→N 的整行跳变把视口推走
+      className="my-2 inline-block max-w-full align-top"
+      data-testid={remembered ? undefined : 'img-placeholder'}
+      style={remembered ? undefined : { minHeight: IMG_PLACEHOLDER_MIN_HEIGHT }}
+    >
+      <img
+        alt={alt ?? ''}
+        className="my-2 max-h-[400px] max-w-full cursor-zoom-in rounded object-contain"
+        loading="lazy"
+        onClick={() => openLightbox(src, alt ?? '')}
+        onError={() => setFailed(true)}
+        onLoad={(e) => {
+          // 记住实测高度（含缩放后）⇒ 同一 src 后续渲染零跳变
+          const box = e.currentTarget.getBoundingClientRect()
+          if (box.height > 0) IMG_HEIGHT_MEMORY.set(src, box.height)
+        }}
+        style={remembered ? { height: remembered } : undefined}
+        {...props}
+      />
+    </span>
   )
 }
 

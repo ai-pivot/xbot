@@ -15,7 +15,7 @@
  *    （glass 模式下 --bg-primary 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
  */
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
-import { ChevronRight, GripVertical, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
+import { ChevronRight, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import type { PanelBadge, PanelMode } from '@/plugin-api'
@@ -55,6 +55,13 @@ export interface PanelChromeProps {
   badge?: PanelBadge | null
   mode: PanelMode
   collapsed: boolean
+  /**
+   * v5.3 常驻面板（PINNED_DEFAULTS/core.sessions）：**不可折叠、不可浮窗**——它是
+   * 左栏的常驻内容，任何"离开左栏/从堆叠消失"的动作都只留下一个空左栏，用户看到
+   * 的是"点一下会话面板没了"（2026-09-15：「sessions 这一行还有一个有完全一样的 bug
+   * 的按钮」）。这两颗按钮因此不渲染（状态层 `enforcePinnedState` 同时兜底不变量）。
+   */
+  pinned?: boolean
   onToggleCollapse: () => void
   /** 停靠⇄浮动切换。 */
   onToggleMode: () => void
@@ -62,8 +69,6 @@ export interface PanelChromeProps {
   onUnpin?: () => void
   /** floating 专属：关闭浮窗（收回 chips）。 */
   onClose?: () => void
-  /** docked grip 拖拽重排（pointerdown 起始）。 */
-  onGripPointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** floating 标题栏拖动（pointerdown 起始；按钮区自动豁免）。 */
   onTitlePointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** 双击标题回启动器（floating 语义）。 */
@@ -73,9 +78,11 @@ export interface PanelChromeProps {
   /** v5.1 docked 展开态底边调高 handle（pointerdown 起始；拖拽协议 v5）。 */
   onResizeHeightPointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** docked 拖拽重排的插入线位置（PanelLayout 计算）。 */
-  dropIndicator?: 'before' | 'after' | null
-  /** docked 拖拽中的源面板半透明。 */
-  isDragSource?: boolean
+  /**
+   * 标题行扩展节点（渲染在标题右侧、面板按钮左侧）。
+   * 面板定义 `headerExtra(ctx)` 的产物经 PanelLayout 传入（见 plugin-api/panels.ts）。
+   */
+  headerExtra?: ReactNode
   /** floating 绝对定位（left/top/width/height 由 PanelLayout 传）。 */
   style?: CSSProperties
   /** 空态协议：render(ctx) 返回 null 时 body 显示统一空态（此文案可自定义，默认「暂无内容」）。 */
@@ -106,17 +113,16 @@ export function PanelChrome({
   badge,
   mode,
   collapsed,
+  pinned = false,
+  headerExtra,
   onToggleCollapse,
   onToggleMode,
   onUnpin,
   onClose,
-  onGripPointerDown,
   onTitlePointerDown,
   onTitleDoubleClick,
   onResizePointerDown,
   onResizeHeightPointerDown,
-  dropIndicator = null,
-  isDragSource = false,
   style,
   emptyHint,
   children,
@@ -144,10 +150,7 @@ export function PanelChrome({
     : {
         background: 'var(--bg-secondary)',
         boxShadow: 'inset 0 0 0 1px var(--border)',
-        opacity: isDragSource ? 0.4 : undefined,
         // 拖拽物理感：源元素轻微缩小（被"提起"的错觉）
-        transform: isDragSource ? 'scale(0.98)' : undefined,
-        pointerEvents: isDragSource ? 'none' : undefined,
         ...style,
       }
 
@@ -165,30 +168,26 @@ export function PanelChrome({
       }
       style={shellStyle}
     >
-      {dropIndicator === 'before' && <div data-drop-indicator="before" className="absolute inset-x-1 top-0 h-0.5 shrink-0 rounded bg-app-accent" />}
-      {dropIndicator === 'after' && <div data-drop-indicator="after" className="absolute inset-x-1 bottom-0 h-0.5 shrink-0 rounded bg-app-accent" />}
       {/* 标题栏 h-8。floating：整体可拖动（按钮豁免）；docked：grip 拖动。
           v5 规格 7：拖拽把手 touch-action:none（touch-none）防触摸滚动干扰。 */}
+      {/* ⛔ 标题栏【不再是隐藏的折叠点击区】：点击标题文字/图标/空白处一律不折叠
+          （2026-09-15 用户：「点 `Sessions` 这个词有bug，别的位置没有」——侧栏里唯一
+          展开的会话面板被文字点击收掉后，左栏只剩一片黑，看起来像坏了）。折叠只有
+          一个显式控件：⌄ 按钮（+ 左侧图标栏点击激活项 = 收起整栏）。 */}
       <header
         className={`group/header flex h-9 shrink-0 select-none items-center gap-1.5 border-l-2 border-l-transparent px-2 transition-spring hover:border-l-app-accent/60 hover:bg-bg-tertiary/30 ${!collapsed ? 'bg-bg-tertiary/15' : ''} ${floating ? 'cursor-move touch-none' : ''}`}
         onPointerDown={floating ? onTitlePointerDown : undefined}
         onDoubleClick={floating ? onTitleDoubleClick : undefined}
-        onClick={(e) => {
-          // docked header 点击（按钮/grip 以外区域）= 切换折叠（VSCode 行为）。
-          // 旧版只有 14px 的箭头按钮能点开/收起——用户报"不符合人类直觉"。
-          if (floating) return
-          if ((e.target as HTMLElement).closest('button,[role="button"]')) return
-          onToggleCollapse()
-        }}
       >
         {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
             返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
         <Icon className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
-        <span className="min-w-0 truncate text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+        <span data-testid="panel-title" className="min-w-0 truncate text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
           {title}
         </span>
         {sub ? <span className="shrink-0 font-mono text-[9.5px] text-text-muted">{sub}</span> : null}
         <span className="min-w-2 flex-1" />
+        {headerExtra}
         {badge ? (
           <span
             className="shrink-0 rounded-full px-1.5 py-px text-[9px] font-semibold leading-4"
@@ -200,14 +199,17 @@ export function PanelChrome({
             {badge.text}
           </span>
         ) : null}
-        <button
-          {...iconButtonProps(floating ? t('panel.recall') : t('panel.float'))}
-          onPointerDown={stop}
-          onClick={onToggleMode}
-          className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-        >
-          {floating ? <PanelLeft className="size-3.5" /> : <PictureInPicture2 className="size-3.5" />}
-        </button>
+        {/* 停靠⇄浮动：常驻面板（pinned）不渲染——浮走等于左栏空掉。 */}
+        {floating || !pinned ? (
+          <button
+            {...iconButtonProps(floating ? t('panel.recall') : t('panel.floatAction'))}
+            onPointerDown={stop}
+            onClick={onToggleMode}
+            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
+          >
+            {floating ? <PanelLeft className="size-3.5" /> : <PictureInPicture2 className="size-3.5" />}
+          </button>
+        ) : null}
         {!floating && onUnpin ? (
           <button
             {...iconButtonProps(t('panel.unpin'))}
@@ -228,27 +230,19 @@ export function PanelChrome({
             <X className="size-3.5" />
           </button>
         ) : null}
-        <button
-          {...iconButtonProps(collapsed ? t('panel.expand') : t('panel.collapse'))}
-          onPointerDown={stop}
-          onClick={onToggleCollapse}
-          className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-        >
-          <ChevronRight
-            className={`size-3.5 shrink-0 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
-          />
-        </button>
-        {!floating && onGripPointerDown ? (
-          <span
-            role="button"
-            data-testid="panel-grip"
-            aria-label={t('panel.dragReorder')}
-            title={t('panel.dragReorderHint')}
-            onPointerDown={onGripPointerDown}
-            className={`ml-0.5 flex shrink-0 cursor-grab touch-none items-center rounded-md p-2 text-text-muted transition-spring active:cursor-grabbing hover:bg-bg-tertiary/60 hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
+        {/* 折叠：常驻面板（pinned）不渲染——收起后它连同自己的 header 一起从堆叠
+            消失，左栏只剩空态提示（用户报的"点一下会话面板没了"）。 */}
+        {floating || !pinned ? (
+          <button
+            {...iconButtonProps(collapsed ? t('panel.expand') : t('panel.collapse'))}
+            onPointerDown={stop}
+            onClick={onToggleCollapse}
+            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
           >
-            <GripVertical className="size-3.5" />
-          </span>
+            <ChevronRight
+              className={`size-3.5 shrink-0 transition-transform duration-200 ${collapsed ? '' : 'rotate-90'}`}
+            />
+          </button>
         ) : null}
       </header>
       {/* 折叠时用 display:none 而非条件渲染——保留 children 的 React state

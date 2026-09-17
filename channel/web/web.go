@@ -331,7 +331,7 @@ type ChatRoom struct {
 	Instance string `json:"instance"` // SubAgent instance ID (empty for main)
 	Running  bool   `json:"running"`  // Is the SubAgent currently running?
 	Preview  string `json:"preview"`  // Latest message/progress preview
-	Members  string `json:"members"`  // "You ↔ Agent" or "reviewer ↔ tester"
+	Members  string `json:"members"`  // "You ↔ Agent" or "reviewer ↔ qa"
 }
 
 // SessionInfo represents a snapshot of an interactive SubAgent session (for API responses).
@@ -647,6 +647,54 @@ func (wc *WebChannel) SendQueueState(channelName, chatID string, payload *protoc
 	}
 	// Route-scoped: same routing as user messages (agent channel + chatID).
 	wc.hub.sendToSession(channelName, chatID, msg)
+}
+
+// askUserResolvedMessage builds the transport envelope for an
+// AskUserResolvedEvent. The event travels as FLAT envelope fields
+// (channel/chat_id/request_id/reason) — the wire contract shared with the Web
+// front-end (web/src/types/shared.ts reads msg.reason / msg.chat_id directly;
+// the self-describing top-level doctrine applies). ChatID is set at the top
+// level so every consumer (filters, replays, debugging) resolves ownership
+// there.
+func askUserResolvedMessage(ev protocol.AskUserResolvedEvent) protocol.WSMessage {
+	if ev.Channel == "" {
+		ev.Channel = "web"
+	}
+	return protocol.WSMessage{
+		Type:                     protocol.MsgTypeAskUserResolved,
+		TS:                       time.Now().Unix(),
+		Channel:                  ev.Channel,
+		ChatID:                   ev.ChatID,
+		AskUserResolvedRequestID: ev.RequestID,
+		AskUserResolvedReason:    ev.Reason,
+	}
+}
+
+// SendAskUserResolved implements ch.AskUserResolvedSender — the live publish
+// gate for "this pending AskUser prompt is no longer valid". It broadcasts to
+// EVERY client of the session's route (WS + SSE, all tabs/devices): the
+// pending prompt is session-level state, so one client answering/cancelling
+// must collapse the panel everywhere.
+//
+// Deliberately NOT gated on WithPendingAskUser: the invalidation describes a
+// transition that already happened (wave A emits it AFTER the pending was
+// cleared), and a gate would both invert the meaning (deliver only when a
+// pending still exists) and drag the agent's pending lock into this path.
+// Delivery is repeat-safe — clients keyed by request_id treat repeats as
+// no-ops (see protocol.AskUserResolvedEvent).
+func (wc *WebChannel) SendAskUserResolved(ev protocol.AskUserResolvedEvent) {
+	if ev.ChatID == "" {
+		log.WithField("event", "ask_user_resolved").Debug("Web ask_user_resolved without chat_id, dropped")
+		return
+	}
+	if wc.hub == nil {
+		return
+	}
+	if ev.Channel == "" {
+		ev.Channel = "web"
+	}
+	msg := askUserResolvedMessage(ev)
+	wc.hub.sendToSession(ev.Channel, ev.ChatID, msg)
 }
 
 func isSubAgentLifecycle(ev protocol.SessionEvent) bool {
@@ -1424,11 +1472,29 @@ func (wc *WebChannel) subscribeAndReplay(client *Client, sel SessionSelector, ac
 	return true
 }
 
+// enqueuePendingAskUser ships the authoritative AskUser state to a
+// (re)connecting WS client as one bounded admission:
+//   - a pending prompt still exists → resend ask_user (page refresh must not
+//     lose the panel);
+//   - NO pending prompt → push ask_user_resolved("cleared"): the client may
+//     be reconnecting with a stale locally cached panel (answered/cancelled
+//     in another tab/device while this one was disconnected) — the session's
+//     persisted state is the single authority, and this reconcile collapses
+//     the stale cache immediately instead of waiting for a history refresh.
+//
+// Reason is always "cleared" (reconcile semantics), distinct from the live
+// path's business reasons (answered/cancelled/rewound).
 func (wc *WebChannel) enqueuePendingAskUser(client *Client, route SessionSelector, accessChannel string) bool {
 	if wc.callbacks.WithPendingAskUser == nil {
 		return false
 	}
-	return wc.callbacks.WithPendingAskUser(accessChannel, route.ChatID, func(pending *protocol.ProgressEvent) bool {
+	// found distinguishes "no pending prompt" (reconcile with a resolved
+	// event) from "pending exists but the callback declined" (send queue
+	// full / marshal error — never invalidate a live panel). The callback
+	// only runs while a pending entry exists.
+	found := false
+	matched := wc.callbacks.WithPendingAskUser(accessChannel, route.ChatID, func(pending *protocol.ProgressEvent) bool {
+		found = true
 		questions, err := json.Marshal(pending.Questions)
 		if err != nil {
 			return false
@@ -1458,6 +1524,30 @@ func (wc *WebChannel) enqueuePendingAskUser(client *Client, route SessionSelecto
 			return false
 		}
 	})
+	if !found {
+		return wc.enqueueAskUserResolved(client, route, accessChannel)
+	}
+	return matched
+}
+
+// enqueueAskUserResolved pushes the reconnect reconcile invalidation
+// (ask_user_resolved, reason "cleared") onto a client's bounded send queue.
+// Best-effort: a full queue drops it — the next reconnect repeats the
+// reconcile (the event is repeat-safe by contract).
+func (wc *WebChannel) enqueueAskUserResolved(client *Client, route SessionSelector, accessChannel string) bool {
+	msg := askUserResolvedMessage(protocol.AskUserResolvedEvent{
+		Channel: accessChannel,
+		ChatID:  route.ChatID,
+		Reason:  "cleared",
+	})
+	msg.RouteChannel = route.Channel
+	msg.RouteChatID = route.ChatID
+	select {
+	case client.sendCh <- msg:
+		return true
+	default:
+		return false
+	}
 }
 
 func (wc *WebChannel) writePump(c *Client) {
@@ -2034,6 +2124,14 @@ func (wc *WebChannel) handlePluginStatic(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	// 走到这里 = 所有 pluginDirs 都没有这个文件（web 目录缺失 / 文件不存在 /
+	// 越界被拒都经由 continue 落到此）。运行时 404 是静默的（前端只看到加载
+	// 失败）——打一条 WARN 作为唯一线索，供排查"插件装了但产物没跟上"。
+	log.WithFields(log.Fields{
+		"path":      r.URL.Path,
+		"plugin_id": pluginID,
+		"sub_path":  subPath,
+	}).Warn("plugin-static-miss: plugin web artifact not found (404)")
 	http.NotFound(w, r)
 }
 

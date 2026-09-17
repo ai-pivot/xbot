@@ -161,7 +161,7 @@ ls -la .xbot/agents/             # project-local agents (if applicable)
 
 ## Agent Naming Convention
 
-- Use lowercase with hyphens: `code-reviewer`, `explorer`, `tester`
+- Use lowercase with hyphens: `code-reviewer`, `explorer`, `qa`
 - Name should reflect its role/function
 - Description must include "Use when..." trigger phrase
 

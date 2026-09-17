@@ -293,8 +293,16 @@ func (r *webImageResolver) load(ctx context.Context, ref string) ([]byte, string
 		if !strings.HasPrefix(key, "uploads/") || strings.Contains(key, "..") {
 			return nil, "", fmt.Errorf("invalid upload key")
 		}
-		if r.provider == nil {
-			return nil, "", fmt.Errorf("no OSS provider configured for image key refs")
+		if r.provider == nil || r.provider.Name() == "local" {
+			// 默认本地 static（2026-09-16 用户要求）：上传落在 <xbotHome>/uploads/<key>，
+			// 这里直接读盘 —— 与 web 侧 handleLocalUpload/serveLocalFile 同一根目录
+			// （web.LocalUploadRoot ≡ r.uploadDir），两侧不会漂移。
+			abs := filepath.Join(r.uploadDir, filepath.FromSlash(key))
+			data, rerr := os.ReadFile(abs)
+			if rerr != nil {
+				return nil, "", fmt.Errorf("read local upload: %w", rerr)
+			}
+			return data, detectImageMIME(data), nil
 		}
 		viewURL, err := r.provider.GetViewURL(key)
 		if err != nil {

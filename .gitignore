@@ -114,3 +114,8 @@ core.*
 plugins/xbot-genui/xbot-genui
 plugins/*/bin/
 test-results/
+
+# 私钥/证书类：永不入库（2026-09-17 曾把 gpg 私钥备份误放在仓库根目录，未被提交，已删除）
+*.key
+*.pem
+gpg-private.key*

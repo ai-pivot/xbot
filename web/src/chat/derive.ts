@@ -42,6 +42,7 @@ export interface LiveRowView {
   readonly content: string
   readonly reasoning: string
   readonly iterations: readonly WebIteration[]
+  readonly iterationsTruncated?: number
   readonly activeTools: readonly WebToolProgress[]
   readonly streamingTools: readonly WebToolProgress[]
   readonly genui: string
@@ -59,6 +60,7 @@ export interface FrozenRowView {
   readonly content: string
   readonly reasoning: string
   readonly iterations: readonly WebIteration[]
+  readonly iterationsTruncated?: number
   readonly activeTools: readonly WebToolProgress[]
   readonly genui: string
   readonly lastIter: number
@@ -73,6 +75,7 @@ export interface CommittedRowView {
   readonly iterations: readonly WebIteration[]
   /** 命令回复（standalone 段）的「无 turn」标记 —— `bindTurnIDs` 据此跳过绑定。 */
   readonly standalone?: boolean
+  readonly iterationsTruncated?: number
 }
 
 export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
@@ -261,6 +264,7 @@ function assistantRow(t: Turn): Row | null {
         isPartial: false,
         content: t.phase.payload.content,
         iterations: t.phase.payload.iterations,
+        iterationsTruncated: t.phase.payload.iterationsTruncated ?? 0,
       }
     }
   }

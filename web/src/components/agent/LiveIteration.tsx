@@ -148,8 +148,9 @@ export const LiveIteration = memo(function LiveIteration({
       (t) => !completedIterToolKeys.has(`${t.name}\x00${t.label}`),
     )
     const allTools = dedupTools([
-      ...currentStreaming,
-      ...currentActive,
+      // streaming（未提交）工具标记：pill 据此渲染 sweep 标签
+      ...currentStreaming.map((t) => ({ ...t, streaming: true })),
+      ...currentActive.map((t) => ({ ...t, streaming: true })),
       ...filteredCompleted,
       // 排除 genui 工具（uiMode）—— 它们由 hasGenUI 的 <GenUIPanel> 唯一渲染。
       // 不排除会导致同一 genui 双渲染（hasGenUI + FoldedToolGroup→ToolRender 各一个
@@ -178,7 +179,11 @@ export const LiveIteration = memo(function LiveIteration({
     // （rows 最后是 user）不满足 → 两个指示器都不渲染 → 完全空白（用户报告：
     // "切换会话后新 agent turn 完全是空，不渲染思考中"）。busy placeholder 已
     // 收紧为 liveId===null（互斥），第一迭代窗口由本组件渲染。
-    if (progress.streaming) {
+    // 压缩期间【不】渲染思考占位符：phase='compressing' 时状态指示器归压缩
+    // 指示器（AssistantMessage / MessageList 的 agent.compressing）—— 不变量
+    // 「每个状态下有且只有一个状态指示器」（用户报告截图：`thinking…` 与
+    // `Compressing context…` 同时渲染，看起来像 bug）。
+    if (progress.streaming && progress.phase !== 'compressing') {
       return <ShimmerThinking />
     }
     return null

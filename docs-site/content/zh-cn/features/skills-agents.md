@@ -118,7 +118,7 @@ Group Chat 是一种**主持式多 Agent 讨论**。你创建一个群组，邀�
 ### 工作流示例
 
 ```
-1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:tester/t1"])
+1. CreateChat(type="group", members=["agent:reviewer/r1", "agent:qa/t1"])
    → 返回 "group:g1"
 
 2. SendMessage(to="group:g1", message="我们来讨论一下 API 设计。")
@@ -127,8 +127,8 @@ Group Chat 是一种**主持式多 Agent 讨论**。你创建一个群组，邀�
 3. SendMessage(to="group:g1", message="@agent:reviewer/r1 你觉得怎么样？")
    → Reviewer 以完整上下文回应。
 
-4. SendMessage(to="group:g1", message="@agent:tester/t1 有什么顾虑吗？")
-   → Tester 回应时也能看到 Reviewer 之前的回复。
+4. SendMessage(to="group:g1", message="@agent:qa/t1 有什么顾虑吗？")
+   → QA 回应时也能看到 Reviewer 之前的回复。
 ```
 
 {{< hint type=note >}}

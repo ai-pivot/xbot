@@ -19,6 +19,23 @@ import (
 // import agent.
 const ThinkingModeChannel = "cli"
 
+// MaxConcurrencyChannel is the canonical channel under which the global
+// max_concurrency user setting is stored — exactly like ThinkingModeChannel.
+//
+// The knob is ONE per-user value shown in the Web LLM console ("Max concurrent
+// sessions") and in the CLI settings panel. Historically the value was written
+// under whichever channel happened to be calling (CLI → "cli", Web → "web") and
+// read back with the caller's channel, so a Web session read NO row and silently
+// fell back to llm.DefaultLLMConcurrency (5) while the panel displayed 100+ —
+// "set 100 concurrency, still stalls at 4-5 subagents". Every read/write now
+// goes through this constant.
+const MaxConcurrencyChannel = "cli"
+
+// SettingMaxConcurrency is the canonical key of the single concurrency knob
+// (max concurrent LLM calls and concurrent session turns). There is exactly one
+// such key — `subagent_max_concurrency` was a duplicate and has been removed.
+const SettingMaxConcurrency = "max_concurrency"
+
 // SettingScope defines where a setting's value is stored and persisted.
 type SettingScope int
 
@@ -103,7 +120,7 @@ var AllSettingDefs = []SettingDef{
 	// ── Global-scoped settings (config.json top-level) ──
 	{Key: "sandbox_mode", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Execution sandbox type", ValidValues: "none|docker|remote", DefaultValue: "none"},
 	{Key: "compression_threshold", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermPersistent, AIDescription: "Token count at which context compression triggers", ValidValues: "any positive integer", DefaultValue: "0"},
-	{Key: "memory_provider", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence", ValidValues: "flat|letta", DefaultValue: "flat"},
+	{Key: "memory_provider", Scope: ScopeGlobal, Source: SourceConfigJSON, Runtime: true, Permission: PermPersistent, AIDescription: "Memory backend for agent state persistence", ValidValues: "xbot|flat|letta", DefaultValue: "xbot"},
 	{Key: "tavily_api_key", Scope: ScopeUser, Source: SourceUserDB, Runtime: true, Permission: PermManual, Sensitive: true, AIDescription: "API key for Tavily web search (per-user, falls back to config.json)", ValidValues: "any valid Tavily API key"},
 	{Key: "default_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermPersistent, AIDescription: "Default username for new sessions", ValidValues: "any valid username"},
 	{Key: "privileged_user", Scope: ScopeGlobal, Source: SourceConfigJSON, Permission: PermManual, AIDescription: "Username with full admin access", ValidValues: "any valid username"},

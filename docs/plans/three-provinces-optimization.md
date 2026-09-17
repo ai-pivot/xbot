@@ -19,7 +19,7 @@
 
 ### 现有 agent 定义
 
-- `.xbot/agents/` 目录下只有 `code-reviewer.md`、`tester.md`、`explorer.md`（通用角色）
+- `.xbot/agents/` 目录下只有 `code-reviewer.md`、`qa.md`、`explorer.md`（通用角色）
 - 三省六部角色（crown-prince、secretariat、chancellery 等）只在飞书系统提示词中声明
 
 ### Agent 定义机制

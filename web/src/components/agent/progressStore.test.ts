@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { ProgressStore, normalizeWebSubAgent, continuousIterations } from './progressStore'
+import { ProgressStore, normalizeWebSubAgent, continuousIterations, dedupTools } from './progressStore'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 
 // Helper: create a tool with defaults
@@ -659,6 +659,17 @@ describe('ProgressStore tool dedup', () => {
     flushRaf()
     expect(store.getSnapshot().activeTools).toHaveLength(3)
     store.dispose()
+  })
+
+  it('dedupTools: 同键时终态优先（陈旧 running 不得压过已完成的 done）', () => {
+    // 用户 2026-09-14：「一个 iter 两个 tool，这两个 tool 已完成不会变成绿色，还是渲染成进行中」
+    // 根因：activeTools 的陈旧快照（running）与 completedTools（done）同 name+label 时，
+    // 旧的"先到先得"让 running 赢 → 永远不转绿。
+    const running = tool({ name: 'Shell', label: 'Shell: ls', status: 'running' })
+    const done = tool({ name: 'Shell', label: 'Shell: ls', status: 'done' })
+    // 无论数组顺序如何，终态都必须胜出
+    expect(dedupTools([running, done]).map((t) => t.status)).toEqual(['done'])
+    expect(dedupTools([done, running]).map((t) => t.status)).toEqual(['done'])
   })
 
   it('dedupTools: running/done/error tools dedup by name+label', () => {

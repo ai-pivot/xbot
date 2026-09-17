@@ -12,7 +12,7 @@
  * 显示扁平排序结果；清除查询恢复分组视图。
  */
 import { Search, X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
@@ -24,17 +24,24 @@ interface SessionSearchProps {
   open: boolean
   /** Esc 关闭（父组件收起并清空查询）。 */
   onClose?: () => void
+  /**
+   * 外部持有的输入框 ref。父组件在**开关按钮的点击手势内**同步
+   * `focus()`（`toggleSearch`）——手机浏览器只在用户手势的同一次任务里
+   * 打开软键盘，`useEffect` 里的异步 focus 拿不到键盘。
+   */
+  inputRef?: RefObject<HTMLInputElement | null>
   className?: string
 }
 
-export function SessionSearch({ value, onChange, open, onClose, className }: SessionSearchProps) {
+export function SessionSearch({ value, onChange, open, onClose, inputRef, className }: SessionSearchProps) {
   const { t } = useI18n()
-  const inputRef = useRef<HTMLInputElement | null>(null)
+  const innerRef = useRef<HTMLInputElement | null>(null)
+  const ref = inputRef ?? innerRef
 
-  // 展开即聚焦：点击按钮后可直接输入。
+  // 展开即聚焦：点击按钮后可直接输入（桌面即时；手机另由父组件在手势内同步 focus）。
   useEffect(() => {
-    if (open) inputRef.current?.focus()
-  }, [open])
+    if (open) ref.current?.focus()
+  }, [open, ref])
 
   return (
     <div
@@ -42,14 +49,15 @@ export function SessionSearch({ value, onChange, open, onClose, className }: Ses
       style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
     >
       <Search className="size-3.5 shrink-0" style={{ color: 'var(--text-muted)' }} />
-      {/* readOnly-until-focus: Chrome IGNORES autoComplete="off" for form-history
-          fill (it offered the saved login username "adm" in this box). A readOnly
-          input can NEVER be autofilled — flip it synchronously in onFocus (direct
-          DOM write, lands before the first keystroke; React won't reset it because
-          the JSX prop never changes). autoComplete stays as belt-and-suspenders. */}
+      {/* ⚠️ 绝不使用 readOnly-until-focus 反自动填充：readOnly 的输入框在手机上
+          **永远不会弹出软键盘**（用户 2026-09-15：「session 面板那个搜索，不要
+          disable 弹出键盘，这导致手机端都不会弹出键盘」）。反自动填充改用不阻塞
+          键盘的手段：唯一的非凭据 name + autoComplete="off" + data-form-type。 */}
       <input
-        ref={inputRef}
+        ref={ref}
         type="text"
+        inputMode="search"
+        name="xbot-session-search"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
@@ -60,9 +68,12 @@ export function SessionSearch({ value, onChange, open, onClose, className }: Ses
         }}
         placeholder={t('session.searchPlaceholder')}
         autoComplete="off"
-        readOnly
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        enterKeyHint="search"
+        data-form-type="other"
         tabIndex={open ? undefined : -1}
-        onFocus={(e) => { if (e.currentTarget.readOnly) e.currentTarget.readOnly = false }}
         className="h-6 min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-text-muted"
         style={{ color: 'var(--text-primary)' }}
         aria-label={t('common.search')}
@@ -98,6 +109,7 @@ export function SessionSearchToggle({ open, onToggle, className }: SessionSearch
   return (
     <button
       type="button"
+      data-testid="session-search-toggle"
       onClick={onToggle}
       aria-expanded={open}
       aria-label={t('session.searchToggle')}

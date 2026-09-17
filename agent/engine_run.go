@@ -865,39 +865,64 @@ func (s *runState) handleInputTooLong(ctx context.Context, retryNotifyCtx contex
 	})
 	if compressErr != nil {
 		log.Ctx(ctx).WithError(compressErr).Warn("Forced context compression after input-too-long failed")
-		return nil, compressErr
-	}
-	s.messages = pipelineResult.NewMessages
-	// Update token estimate so CLI shows reduced context immediately. Use the
-	// FULL message estimate (system + summary + tail), NOT the summary-only
-	// CompressedTokens — same ruler as runCompression's post-compress check.
-	// The retry below will overwrite the tracker with the real API value.
-	postCompressTokens := estimateMessagesTokens(s.messages)
-	s.setTokenUsageAfterCompress(postCompressTokens)
-	// Persist the post-compress estimate in case retry fails and Run ends.
-	if s.cfg.SaveContextTokens != nil && postCompressTokens > 0 {
-		s.cfg.SaveContextTokens(postCompressTokens)
-	}
-	if s.cfg.SaveTokenState != nil && postCompressTokens > 0 {
-		s.cfg.SaveTokenState(postCompressTokens, 0)
-	}
-	if s.autoNotify {
-		// M2 锁覆盖：progressLines/Phase/HistoryCompacted 与后台 SubAgent 回调
-		// 的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
-		s.progressMu.Lock()
-		s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", postCompressTokens))
+		if ctx.Err() != nil {
+			return nil, compressErr
+		}
+		// 压缩失败**不再终止 turn**（2026-09-15 用户报告："自动/主动压缩导致迭代终止"）。
+		// 压缩错误源都是可恢复的瞬时故障（compress.go: "compaction engine.Run failed"
+		// = 压缩用的那次 LLM 调用失败；"append compression history" = 持久化失败），
+		// 而 ApplyCompress 是 fail-closed（失败时不安装压缩视图，s.messages 仍是原上下文）。
+		// 降级路径：先用确定性截断（无 LLM 调用）兜底，再重试本次请求；只有连截断都
+		// 不可行（消息太少/无 system）时才把错误交给上层 —— 此时确实无路可走。
+		s.compressWarning = "⚠️ 输入超限但压缩失败，已改为截断旧消息后重试：" + compressErr.Error()
+		if !s.aggressiveTruncate(ctx) {
+			return nil, compressErr
+		}
 		if s.structuredProgress != nil {
+			s.progressMu.Lock()
 			s.structuredProgress.Phase = PhaseThinking
 			s.structuredProgress.HistoryCompacted = true
+			s.progressMu.Unlock()
 		}
-		s.progressMu.Unlock()
 		s.notifyProgress("")
-	}
-	if s.structuredProgress != nil {
-		s.progressMu.Lock()
-		s.structuredProgress.HistoryCompacted = false
-		s.progressMu.Unlock()
-	}
+		if s.structuredProgress != nil {
+			s.progressMu.Lock()
+			s.structuredProgress.HistoryCompacted = false
+			s.progressMu.Unlock()
+		}
+	} else {
+		s.messages = pipelineResult.NewMessages
+		// Update token estimate so CLI shows reduced context immediately. Use the
+		// FULL message estimate (system + summary + tail), NOT the summary-only
+		// CompressedTokens — same ruler as runCompression's post-compress check.
+		// The retry below will overwrite the tracker with the real API value.
+		postCompressTokens := estimateMessagesTokens(s.messages)
+		s.setTokenUsageAfterCompress(postCompressTokens)
+		// Persist the post-compress estimate in case retry fails and Run ends.
+		if s.cfg.SaveContextTokens != nil && postCompressTokens > 0 {
+			s.cfg.SaveContextTokens(postCompressTokens)
+		}
+		if s.cfg.SaveTokenState != nil && postCompressTokens > 0 {
+			s.cfg.SaveTokenState(postCompressTokens, 0)
+		}
+		if s.autoNotify {
+			// M2 锁覆盖：progressLines/Phase/HistoryCompacted 与后台 SubAgent 回调
+			// 的 notifyProgress 并发，写点持锁（notifyProgress 在锁外）。
+			s.progressMu.Lock()
+			s.progressLines = append(s.progressLines, fmt.Sprintf("> ✅ 强制压缩完成 → %d tokens", postCompressTokens))
+			if s.structuredProgress != nil {
+				s.structuredProgress.Phase = PhaseThinking
+				s.structuredProgress.HistoryCompacted = true
+			}
+			s.progressMu.Unlock()
+			s.notifyProgress("")
+		}
+		if s.structuredProgress != nil {
+			s.progressMu.Lock()
+			s.structuredProgress.HistoryCompacted = false
+			s.progressMu.Unlock()
+		}
+	} // end of compression-success bookkeeping (compressErr == nil)
 
 	// Post-compression retry sends a NEW request — reset the live TTFT
 	// baseline here too (same contract as the primary call above), so live
@@ -1072,6 +1097,9 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			//   - HistoryCompacted flag triggers TUI rebuild
 			//   - Progress notifications are sent to CLI
 			cm := s.cfg.ContextManager
+			// forcedCompressErr 记录本次强制压缩的失败原因：Phase 2 截断也救不回来时
+			// （Phase 3），把它挂到输出上 —— fail-closed 语义要求失败可见、不静默。
+			var forcedCompressErr error
 			if cm != nil && s.compressRetryCount < maxCompressRetries {
 				s.compressRetryCount++
 				totalTokens, tokenSource := s.tokenTracker.GetPromptTokens()
@@ -1083,16 +1111,28 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				if s.cfg.ContextManagerConfig != nil {
 					maxTokens = s.cfg.ContextManagerConfig.MaxContextTokens
 				}
-				if err := s.runCompression(ctx, cm, int(totalTokens), maxTokens); err != nil {
+				if err := s.runCompression(ctx, cm, int(totalTokens), maxTokens); err == nil {
+					log.Ctx(ctx).WithFields(log.Fields{
+						"new_msg_count": len(s.messages),
+						"retry":         s.compressRetryCount,
+					}).Info("Compression completed after context_window_exceeded, retrying")
+					return nil, true // retry loop iteration
+				} else if ctx.Err() != nil {
 					out := s.buildOutput(&channel.OutboundMsg{Channel: s.cfg.Channel, ChatID: s.cfg.ChatID})
-					out.Error = fmt.Errorf("persist forced context compression: %w", err)
+					out.Error = ctx.Err()
 					return out, false
+				} else {
+					// 压缩失败**不再终止 turn**（2026-09-15）：降级到 Phase 2 的
+					// 确定性截断（无 LLM 调用）兜底，随后重试本次请求。
+					log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+						"chat_id":   s.cfg.ChatID,
+						"turn_id":   s.cfg.TurnID,
+						"msg_count": len(s.messages),
+					}).Warn("forced compression after context_window_exceeded failed — falling back to aggressive truncation")
+					s.compressWarning = "⚠️ 强制压缩失败，已改为截断旧消息兜底：" + err.Error()
+					forcedCompressErr = err
+					s.notifyProgress("")
 				}
-				log.Ctx(ctx).WithFields(log.Fields{
-					"new_msg_count": len(s.messages),
-					"retry":         s.compressRetryCount,
-				}).Info("Compression completed after context_window_exceeded, retrying")
-				return nil, true // retry loop iteration
 			}
 
 			// Phase 2: Aggressive truncation — keep system messages + last N messages
@@ -1110,7 +1150,13 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 				Content:   "⚠️ Context window exceeded. Use /new to start a new conversation.",
 				ToolsUsed: s.toolsUsed,
 			})
+			if forcedCompressErr != nil {
+				// 本轮压缩失败（如持久化 append 失败）且截断也无法兜底 → 必须把失败
+				// 如实上抛（fail-closed），不能只留一句泛化提示。
+				out.Error = fmt.Errorf("context window exceeded: forced compression failed: %w", forcedCompressErr)
+			}
 			out.ReasoningContent = response.ReasoningContent
+			out.ReasoningItems = response.ReasoningItems
 			return out, false
 		}
 
@@ -1196,6 +1242,7 @@ func (s *runState) handleFinalResponse(ctx context.Context, response *llm.LLMRes
 			WaitingUser: s.waitingUser,
 		})
 		out.ReasoningContent = response.ReasoningContent
+		out.ReasoningItems = response.ReasoningItems
 		return out, false
 	}
 	return nil, false
@@ -1246,8 +1293,11 @@ func (s *runState) recordAssistantMsg(ctx context.Context, response *llm.LLMResp
 		Role:             "assistant",
 		Content:          strings.TrimRight(response.Content, " \t"),
 		ReasoningContent: response.ReasoningContent,
-		ToolCalls:        response.ToolCalls,
-		TurnID:           s.cfg.TurnID,
+		// Responses API：reasoning items（含 encrypted_content）必须随该 assistant
+		// 消息一起回传（下一迭代 / 下一轮都要原样重放）。
+		ReasoningItems: response.ReasoningItems,
+		ToolCalls:      response.ToolCalls,
+		TurnID:         s.cfg.TurnID,
 	}
 	s.messages = s.syncMessages(append(s.messages, assistantMsg))
 
@@ -1485,7 +1535,32 @@ func (s *runState) maybeCompress(ctx context.Context) error {
 		// same runCompression path. No engine state vetoes either one: if the
 		// context is still over the line after a compaction, the next auto
 		// trigger fires after the cooldown (or immediately, if the model asks).
-		return s.runCompression(ctx, cm, int(totalTokens), maxTokens)
+		if err := s.runCompression(ctx, cm, int(totalTokens), maxTokens); err != nil {
+			// 压缩失败**不是**致命错误（2026-09-15 用户报告："自动/主动压缩导致
+			// 迭代终止"）。错误源都是可恢复的瞬时故障：
+			//   - compress.go:804 "compaction engine.Run failed" = 压缩用的那次
+			//     LLM 调用失败（网关 5xx / 超时）；
+			//   - compress.go:379 "append compression history" = 持久化 append 失败。
+			// 而 ApplyCompress 是 fail-closed：失败时**不安装**压缩视图，
+			// s.messages 仍是压缩前的原上下文 —— 直接继续跑即可，用户的任务不受影响。
+			// 真·上下文超限仍由下游兜底：下一次 callLLM 的 input-too-long 路径
+			// （handleInputTooLong：压缩 → aggressiveTruncate）。
+			// 取消（用户 /cancel）保持原有中止语义。
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+				"chat_id":      s.cfg.ChatID,
+				"turn_id":      s.cfg.TurnID,
+				"msg_count":    len(s.messages),
+				"self_compact": explicitCompress,
+				"auto":         autoCompress,
+			}).Warn("context compression failed — continuing the turn with the uncompressed context (best-effort)")
+			s.compressWarning = "⚠️ 上下文压缩失败，已跳过本次压缩并继续执行（原上下文保留）：" + err.Error()
+			s.notifyProgress("")
+			return nil
+		}
+		return nil
 	}
 
 	// Observation masking (lightweight, no LLM call).
@@ -2356,8 +2431,11 @@ func (s *runState) postToolProcessing(ctx context.Context, response *llm.LLMResp
 // manual vision switch is on; vision off degrades them to placeholders.
 //
 // The message is persisted through the normal session pipeline (turnID
-// stamped, incremental watermark advanced) so history replay renders the
-// image (the relative viewimg URL renders in the web frontend's <img> too).
+// stamped, incremental watermark advanced) so later turns still see the image
+// the model looked at. It is marked llm.ChatMessage.Internal: it lives in the
+// LLM context but is NEVER rendered as user-visible history (it shares the
+// triggering user message's turn_id, so a renderer that treated it as user
+// input would REPLACE the user's own message — 2026-09-16 regression).
 func (s *runState) injectViewImages(ctx context.Context, injections []tools.ImageInjection) {
 	var b strings.Builder
 	b.WriteString("📷 以下图片已通过 view_image 工具加载，可直接进行视觉分析：\n\n")
@@ -2366,6 +2444,12 @@ func (s *runState) injectViewImages(ctx context.Context, injections []tools.Imag
 	}
 	msg := llm.NewUserMessage(b.String())
 	msg.TurnID = s.cfg.TurnID
+	// Internal：只给模型的载体 —— 必须留在 LLM 上下文（图片引用由
+	// llm.parseMultimodalContent 在请求构建时解析），但**绝不渲染成用户消息**。
+	// 它与触发它的用户消息共用同一个 turn_id，而渲染层每个 turn 只有一个 user
+	// 槽位 ⇒ 不标记就会被当成"用户输入"顶掉用户真实消息（用户报告 2026-09-16：
+	// 上传图片后自己的消息被换成注入文案、图片地址也从 uploads/… 变成 viewimg 副本）。
+	msg.Internal = true
 	if s.cfg.Session != nil {
 		if historyIDs, err := s.cfg.Session.AppendMessages([]llm.ChatMessage{msg}); err != nil {
 			log.Ctx(ctx).WithError(err).Warn("view_image: persist injected user message failed — message still enters the in-memory context")
@@ -2510,7 +2594,23 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 // user_cancelled, system_reminder). Do NOT hand-roll assistant+tool pairs
 // elsewhere — the offload / persistence / progress / cleanup behavior would
 // silently diverge.
+// syntheticInjectionNotice 是**所有注入型（fake）工具**结果的统一前缀。
+//
+// 用户 2026-09-17：「faketool，尤其 system notification 也优化一下，里面的提示要
+// 强调这个工具不是你调用的，是自动注入用于提醒你的」。模型看到的只有 toolContent
+// （summary/hints 是 UI 专用），所以提示必须写进 content —— 否则模型会以为自己
+// 调用过它、甚至回谢/重复调用。
+func syntheticInjectionNotice() string {
+	return "[AUTO-INJECTED NOTIFICATION — NOT A TOOL YOU CALLED]\n" +
+		"这是系统自动注入的提醒/通知（不是你调用的工具，你从未调用过它）。\n" +
+		"直接把它当作一条外部事件信息使用：不要回谢、不要试图再次调用它；\n" +
+		"如需继续，按其中的内容继续完成用户的任务。\n\n"
+}
+
 func newSyntheticToolPair(toolName, toolID, toolContent string) (llm.ChatMessage, llm.ChatMessage) {
+	// 单一收口：所有注入型工具的 content 都带上「非你调用」声明
+	// （engine_run 的各 injectXxx 与 agent_process 的后台通知都走这里）。
+	toolContent = syntheticInjectionNotice() + toolContent
 	assistantMsg := llm.ChatMessage{
 		Role: "assistant",
 		ToolCalls: []llm.ToolCall{{
@@ -2577,6 +2677,9 @@ func (s *runState) injectSyntheticToolPair(
 			ToolHints: progressHints,
 			Elapsed:   progressElapsed,
 			Iteration: iteration,
+			// 合成工具也要带 CallID：CoT/前端的 START↔RESULT 配对靠它，
+			// 缺了会让 RESULT 成为孤儿（平台多数一次「Called tools N times」）。
+			CallID: toolID,
 		})
 		s.progressMu.Unlock()
 		if s.autoNotify {

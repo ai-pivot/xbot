@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"xbot/bus"
 	"xbot/llm"
+	log "xbot/logger"
 )
 
 // SendMessageTool sends a message to any addressable target.
@@ -50,7 +52,7 @@ Examples:
   → Adds moderator message to history. No agent triggered.
 - SendMessage(to="group:g1", message="@agent:reviewer/r1 What do you think?")
   → Triggers agent:reviewer/r1 with full history + this question. Response added to history.
-- SendMessage(to="group:g1", message="@agent:reviewer/r1 @agent:tester/t1 Please both review.")
+- SendMessage(to="group:g1", message="@agent:reviewer/r1 @agent:qa/t1 Please both review.")
   → Triggers both agents concurrently. Both see the same history. Both responses added.
   - SendMessage(to="peer:dev-team", message="Found a critical bug in auth module, please check.")
   → Async broadcast to all members in peer group "dev-team".
@@ -128,23 +130,93 @@ func (t *SendMessageTool) sendToAgent(ctx *ToolContext, addr, message string) (*
 	if ctx.MessageSender == nil {
 		return nil, fmt.Errorf("message sending not available in this context")
 	}
-	// Timeout protection to prevent indefinite blocking on agent RPC.
+	// **立刻成功**（用户 2026-09-14：「sendmessage 工具有可能卡死，必须立刻成功」）：
+	// 旧实现整段等目标 agent 的回复（最多 AgentRPCTimeout=30s），目标忙/卡住时工具就卡死。
+	// 现在只在 SendMessageAwaitReply（2s）窗口内顺手拿回复；拿不到就立即回"已投递"，
+	// 投递在后台继续（独立 ctx，绝不用工具 ctx —— 工具返回后它会被取消）。
 	baseCtx := ctx.Ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
 	}
-	timeoutCtx, cancel := context.WithTimeout(baseCtx, AgentRPCTimeout)
-	defer cancel()
-	timeoutToolCtx := *ctx
-	timeoutToolCtx.Ctx = timeoutCtx
-	result, err := sendMessageWithCtx(&timeoutToolCtx, addr, "", message)
-	if err != nil {
-		return nil, fmt.Errorf("agent send failed: %w", err)
+	type sendOutcome struct {
+		reply string
+		err   error
 	}
-	if result == "" {
-		return nil, fmt.Errorf("agent %s returned empty response (session may have ended)", addr)
+	outcomeCh := make(chan sendOutcome, 1)
+	go func() {
+		detached := *ctx
+		rCtx, cancel := context.WithTimeout(context.WithoutCancel(baseCtx), AgentRPCTimeout)
+		defer cancel()
+		detached.Ctx = rCtx
+		reply, err := sendMessageWithCtx(&detached, addr, "", message)
+		// ── P0（2026-09-16 用户报告：subagent 用 `agent:recov-e8e9/ws` 发消息失败）──
+		// agent 地址是**作为频道名**投递的，而 `agent:<role>/<instance>` 频道只在
+		// "同进程 spawn 且未卸载"期间存在（tools/subagent.go 注册/unload 注销、TTL
+		// 淘汰）⇒ 查不到时 dispatcher 只回 `unknown channel: agent:…`，对调用方毫无
+		// 指向性。这里补两件事：
+		//   ① role/instance 写反是常见笔误 → 用**颠倒地址**再投一次（仅当确为两段式）；
+		//   ② 仍失败 → 把错误翻译成可操作指引（而不是让模型自己猜）。
+		if err != nil && isUnknownAgentChannelErr(err) {
+			if swapped := swapAgentAddress(addr); swapped != "" {
+				if r2, err2 := sendMessageWithCtx(&detached, swapped, "", message); err2 == nil {
+					log.WithFields(log.Fields{"requested": addr, "used": swapped}).
+						Warn("SendMessage: role/instance looked swapped — delivered to the swapped agent address")
+					reply, err = r2, nil
+				}
+			}
+		}
+		if err != nil && isUnknownAgentChannelErr(err) {
+			err = fmt.Errorf("%s 不可达：该 interactive agent 未在本进程注册"+
+				"（interactive agent 仅在其存活期间可寻址；unload 或超时淘汰即注销）。"+
+				"请确认地址形式为 agent:<role>/<instance>（不要颠倒），"+
+				"必要时先用 CreateChat / SubAgent 把它拉起，或改用 session:<key> / peer:<group> 联系。"+
+				"原始错误：%w", addr, err)
+		}
+		outcomeCh <- sendOutcome{reply: reply, err: err}
+	}()
+	select {
+	case out := <-outcomeCh:
+		if out.err != nil {
+			return nil, fmt.Errorf("agent send failed: %w", out.err)
+		}
+		if out.reply == "" {
+			return nil, fmt.Errorf("agent %s returned empty response (session may have ended)", addr)
+		}
+		return NewResult(out.reply), nil
+	case <-time.After(SendMessageAwaitReply):
+		return NewResult(fmt.Sprintf(
+			"Message delivered to %s. It is still working, so no reply yet — keep going; any reply arrives asynchronously.",
+			addr)), nil
 	}
-	return NewResult(result), nil
+}
+
+// isUnknownAgentChannelErr reports whether err is the Dispatcher's
+// "unknown channel: <name>" failure — i.e. no channel is registered under that
+// name in this process. For `agent:<role>/<instance>` targets that means the
+// interactive agent is not currently alive here (never spawned in this process,
+// unloaded, or TTL-evicted) — see 2026-09-16 user report.
+func isUnknownAgentChannelErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "unknown channel")
+}
+
+// swapAgentAddress rewrites `agent:<a>/<b>` into `agent:<b>/<a>`. Models
+// (and humans) routinely mix up role and instance — the reported failure was
+// `agent:recov-e8e9/ws`, where "recov-e8e9" reads like an instance and "ws" like
+// a role. Returns "" when the address is not a two-segment `agent:` address
+// (nothing to swap) or the segments are identical.
+func swapAgentAddress(addr string) string {
+	rest, ok := strings.CutPrefix(addr, "agent:")
+	if !ok {
+		return ""
+	}
+	role, instance, ok := strings.Cut(rest, "/")
+	if !ok || role == "" || instance == "" || role == instance {
+		return ""
+	}
+	return "agent:" + instance + "/" + role
 }
 
 // isInGroup checks if addr is a member of the caller's group.

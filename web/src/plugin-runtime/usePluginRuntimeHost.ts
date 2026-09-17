@@ -84,7 +84,10 @@ async function loadPluginViewComponent(
     )
     return null
   } catch (error) {
-    console.error(`[plugin-runtime] loadViewComponent 加载失败: plugin=${pluginId} view=${view.id} url=${url}`, error)
+    // import 失败（插件产物缺失 → 404 / 语法错误 / 网络）不静默：warn 带
+    // pluginId + moduleURL。返回值 null 走既有"插件加载失败"提示通道
+    // （AsyncPluginView 渲染错误框）——这里只补日志线索。
+    console.warn(`[plugin-runtime] loadViewComponent 加载失败: plugin=${pluginId} view=${view.id} moduleURL=${url}`, error)
     return null
   }
 }
