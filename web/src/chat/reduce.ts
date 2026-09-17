@@ -660,9 +660,19 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       //      （iter2 内容变成 iter3 文本）。
       const iterListLast = iterations.length > 0 ? iterations[iterations.length - 1].iteration : 0
       const inFlightIter = Math.max(live.iter, iterListLast)
-      const iterationsFinal = finalText !== null && iterations.length > 0
+      // ⛔ 空 finalText（WaitingUser 的空 text 信封）不得擦已有内容：
+      //    AskUser 弹窗瞬间 web 通道会发一条空 text（ask 面板事件之外），把它当
+      //    权威 finalizer 提交时，`content: ''` 会擦掉最后迭代的正文/思考
+      //    （用户 2026-09-17：「Thought 1848 chars 消失、content 还在、稍后自愈」
+      //    —— 稍后对账 reload 又把内容带回来 = 闪烁）。
+      //    ⚠️ reasoning 同理：进行中迭代的 reasoning 只存在于 live 快照（turn 暂停
+      //    没跑 snapshotCompletedIteration，DB iteration_history 还没有它），覆盖/
+      //    追加时必须把 live.reasoning 带上，否则提交行丢「Thought N chars」。
+      const iterationsFinal = finalText !== null && finalText !== '' && iterations.length > 0
         ? (iterations.some((it) => it.iteration === inFlightIter)
-            ? iterations.map((it) => it.iteration === inFlightIter ? { ...it, content: finalText } : it)
+            ? iterations.map((it) => it.iteration === inFlightIter
+                ? { ...it, content: finalText, reasoning: it.reasoning || live.reasoning || '' }
+                : it)
             : [...iterations, {
                 iteration: inFlightIter,
                 content: finalText,
@@ -671,12 +681,32 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                 toolCount: 0,
               }])
         : iterations
+      // ⛔ WaitingUser 空 text 信封（finalText=''）：在飞迭代的 reasoning/content
+      // 只存在于 live 快照（turn 暂停，后端没跑 snapshotCompletedIteration，DB
+      // iteration_history 没有它；text 路径的 foldInFlightToIterations 只折工具、
+      // append 传 ('','')）—— 它不在 iterations 里时必须从 live 补上，否则提交行
+      // 丢「Thought N chars」（用户 2026-09-17：弹窗瞬间 CoT 消失、content 还在、
+      // 稍后对账 reload 才恢复 = 闪烁）。
+      const iterationsWithLive = (finalText === '' || finalText === null) && live.iter > 0
+        && !iterationsFinal.some((it) => it.iteration === inFlightIter)
+        && (nonEmptyStr(live.reasoning) !== null || nonEmptyStr(live.content) !== null)
+        ? [...iterationsFinal, {
+            iteration: inFlightIter,
+            content: live.content ?? '',
+            reasoning: live.reasoning ?? '',
+            tools: [],
+            toolCount: 0,
+          }]
+        : iterationsFinal
 
       let payload
-      if (finalText !== null) {
-        payload = commitViaText(finalText, iterationsFinal)
+      if (finalText !== null && finalText !== '') {
+        payload = commitViaText(finalText, iterationsWithLive)
       } else {
-        const nonEmptyIts = nonEmptyArr(iterations)
+        // 空 finalText（WaitingUser 的空 text 信封）与 cancel（null）同语义：走
+        // fold 提交 —— via:'text' 的不变式要求顶层 content 非空，空串提交会被
+        // assertInvariants 拒绝；fold 提交只带迭代（含在飞折叠）。
+        const nonEmptyIts = nonEmptyArr(iterationsWithLive)
         if (nonEmptyIts === null) {
           // 完全无产出（text 也空、iterations 也空）—— frozen 定格。
           // I2：不可构造空 committed。该 turn 渲染 user 行（若有）。
