@@ -640,6 +640,12 @@ const ja: Translations = {
         '下のリンクを Feishu で開いて確認すると、このアプリにエージェント権限・イベント購読・カードコールバック（「カードの作成と更新」を含む／ストリーミング進捗カードに必要）が付与されます。',
       copyLink: 'リンクをコピー',
       linkExpiry: 'リンクは {{seconds}} 秒間有効、1 回のみ使用可',
+      feishuRebind: 'リンクを再生成',
+      feishuOpenLink: 'リンクを開く',
+      feishuWaitingConfirm: 'Feishu での確認をお待ちしています…（アプリは自動作成され、認証情報が書き戻されます）',
+      feishuLinkExpired: 'リンクの有効期限が切れました。再生成してください',
+      feishuLinkStale: '認可リンクが無効になりました（サーバー再起動、または新しい試行に置き換えられました）。再生成してください',
+      feishuPopupBlocked: 'ブラウザがポップアップをブロックしました。「リンクを開く」をクリックするか、リンクをコピーしてください',
     },
     about: {
       tagline: '智能对话助手',

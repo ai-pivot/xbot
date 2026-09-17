@@ -636,6 +636,12 @@ const zhCN = {
         '在飞书中打开下面的链接确认后，当前应用会获得智能体权限、事件订阅与卡片回调（含「创建与更新卡片」，流式进度卡片需要它）。',
       copyLink: '复制链接',
       linkExpiry: '链接 {{seconds}} 秒内有效，仅可使用一次',
+      feishuRebind: '重新生成链接',
+      feishuOpenLink: '打开链接',
+      feishuWaitingConfirm: '等待你在飞书中确认…（应用会自动创建并写回凭据）',
+      feishuLinkExpired: '链接已过期，请重新生成',
+      feishuLinkStale: '授权链接已失效（服务已重启或已被新的绑定顶替），请重新生成',
+      feishuPopupBlocked: '浏览器拦截了弹窗，请点「打开链接」或复制链接手动打开',
     },
     about: {
       tagline: '智能对话助手',

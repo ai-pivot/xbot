@@ -640,6 +640,12 @@ const en: Translations = {
         'Open the link below in Feishu and confirm — the app then gains the agent permissions, event subscriptions and card callback (including "Create and update cards", required by the streaming progress card).',
       copyLink: 'Copy link',
       linkExpiry: 'Link valid for {{seconds}}s, single use',
+      feishuRebind: 'Generate a new link',
+      feishuOpenLink: 'Open link',
+      feishuWaitingConfirm: 'Waiting for you to confirm in Feishu… (the app is created and the credentials are written back automatically)',
+      feishuLinkExpired: 'The link expired — generate a new one',
+      feishuLinkStale: 'The authorization link is no longer valid (server restarted or a newer attempt replaced it) — generate a new one',
+      feishuPopupBlocked: 'The browser blocked the popup — click "Open link" or copy the link',
     },
     about: {
       tagline: 'AI conversation assistant',

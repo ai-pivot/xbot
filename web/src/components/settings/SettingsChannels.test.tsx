@@ -103,6 +103,8 @@ describe('SettingsChannels — 渠道面板', () => {
   it('一键绑定飞书：调用 feishu_bind_start 并把链接展示出来', async () => {
     const bindURL = 'https://open.feishu.cn/page/launcher?user_code=AB12-CD34'
     mockRPC({ feishu_bind_start: { url: bindURL, expires_in: 600, app_id: 'cli_existing' } })
+    // jsdom 没有 window.open；这里显式返回 null（= 被拦截）以走「手动打开」兜底。
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
     renderWithProviders(<SettingsChannels />)
 
     const bindBtn = await screen.findByRole('button', { name: '一键绑定飞书智能体应用' })
@@ -115,5 +117,71 @@ describe('SettingsChannels — 渠道面板', () => {
       }),
     )
     expect(await screen.findByTestId('feishu-bind-url')).toHaveTextContent(bindURL)
+    openSpy.mockRestore()
+  })
+
+  it('点击按钮即自动打开浏览器窗口并导航到授权链接（全新安装引导）', async () => {
+    const bindURL = 'https://open.feishu.cn/page/launcher?addons=H4sIA'
+    mockRPC({ feishu_bind_start: { url: bindURL, expires_in: 600, app_id: 'cli_new' } })
+    const replace = vi.fn()
+    const popup = { closed: false, opener: {} as unknown, location: { replace } } as unknown as Window
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup)
+
+    renderWithProviders(<SettingsChannels />)
+    fireEvent.click(await screen.findByTestId('feishu-bind'))
+
+    // 窗口必须在用户手势内同步打开（否则被弹窗拦截器干掉）……
+    expect(openSpy).toHaveBeenCalledWith('about:blank', '_blank')
+    // ……拿到链接后导航过去，并摘掉 opener。
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(bindURL))
+    expect(popup.opener).toBeNull()
+    openSpy.mockRestore()
+  })
+
+  it('拿到链接后按钮立刻脱离「正在获取链接…」（不再永久禁用），并提供打开链接', async () => {
+    const bindURL = 'https://open.feishu.cn/page/launcher?user_code=XY'
+    mockRPC({ feishu_bind_start: { url: bindURL, expires_in: 600 } })
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null) // 被拦截
+
+    renderWithProviders(<SettingsChannels />)
+    fireEvent.click(await screen.findByTestId('feishu-bind'))
+
+    const btn = await screen.findByTestId('feishu-bind')
+    await waitFor(() => expect(btn).toBeEnabled())
+    expect(btn).toHaveTextContent('重新生成链接')
+    expect(screen.getByTestId('feishu-open-link')).toBeInTheDocument()
+    expect(screen.getByTestId('feishu-popup-blocked')).toBeInTheDocument()
+    openSpy.mockRestore()
+  })
+
+  it('服务端状态回到 idle（重启/被新绑定顶替）→ 复位提示且按钮可用', async () => {
+    mockRPC({
+      feishu_bind_start: { url: 'https://open.feishu.cn/page/launcher?user_code=Z', expires_in: 600 },
+      feishu_bind_status: { state: 'idle' },
+    })
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+
+    renderWithProviders(<SettingsChannels />)
+    fireEvent.click(await screen.findByTestId('feishu-bind'))
+
+    await waitFor(() => expect(screen.getByText(/授权链接已失效/)).toBeInTheDocument(), { timeout: 6000 })
+    expect(screen.getByTestId('feishu-bind')).toBeEnabled()
+    openSpy.mockRestore()
+  })
+
+  it('链接过期（expires_in 已过）→ 明确提示过期并允许重新生成', async () => {
+    mockRPC({
+      feishu_bind_start: { url: 'https://open.feishu.cn/page/launcher?user_code=Z', expires_in: 1 },
+    })
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+
+    renderWithProviders(<SettingsChannels />)
+    fireEvent.click(await screen.findByTestId('feishu-bind'))
+
+    await waitFor(() => expect(screen.getByTestId('feishu-link-expired')).toBeInTheDocument(), {
+      timeout: 6000,
+    })
+    expect(screen.getByTestId('feishu-bind')).toBeEnabled()
+    openSpy.mockRestore()
   })
 })

@@ -83,6 +83,16 @@ export function SettingsChannels() {
   } | null>(null)
   const [showPreset, setShowPreset] = useState(false)
   const [binding, setBinding] = useState(false)
+  // The authorization window is opened BY THE USER GESTURE (browsers only allow
+  // a popup requested inside a click) and navigated to the link once the RPC
+  // returns — see startFeishuBind. `popupBlocked` records the fallback case so
+  // the panel points at the manual "Open link" / copy actions instead of
+  // pretending the window opened.
+  const [popupBlocked, setPopupBlocked] = useState(false)
+  // Waiting link past its validity window: the single-use code is dead, so stop
+  // polling and let the user regenerate. Without this the panel keeps polling a
+  // dead link and shows no way forward.
+  const [expired, setExpired] = useState(false)
   const pollRef = useRef<number | null>(null)
 
   const load = useCallback(async () => {
@@ -102,7 +112,7 @@ export function SettingsChannels() {
 
   // 轮询绑定状态：链接是单次使用的，用户确认后服务端会写回凭据。
   useEffect(() => {
-    if (bind?.state !== 'waiting') {
+    if (bind?.state !== 'waiting' || expired) {
       if (pollRef.current !== null) {
         window.clearInterval(pollRef.current)
         pollRef.current = null
@@ -113,15 +123,18 @@ export function SettingsChannels() {
       void (async () => {
         try {
           const status = await rpc<FeishuBindStatus>('feishu_bind_status')
-          setBind(status)
-          if (status.state === 'done') {
-            setBinding(false)
-            await load()
-          } else if (status.state === 'error') {
-            setBinding(false)
+          if (status.state === 'idle') {
+            // The server no longer owns this attempt (restart, or a newer
+            // attempt superseded it) — the link is dead. Reset the panel
+            // instead of leaving a disabled button behind (user report:
+            // "一直停在 Requesting link…").
+            setBind(null)
+            setError(t('settings.channels.feishuLinkStale'))
+            return
           }
+          setBind(status)
         } catch (err) {
-          setBinding(false)
+          setBind(null)
           setError(err instanceof Error ? err.message : String(err))
         }
       })()
@@ -132,7 +145,17 @@ export function SettingsChannels() {
         pollRef.current = null
       }
     }
-  }, [bind?.state, load])
+  }, [bind?.state, expired, t])
+
+  // Local expiry guard: the single-use code lives `expires_in` seconds while the
+  // server-side attempt may live longer. Without this the panel keeps polling a
+  // dead link and offers no way forward.
+  useEffect(() => {
+    if (bind?.state !== 'waiting') return
+    const seconds = bind.expires_in ?? 600
+    const timer = window.setTimeout(() => setExpired(true), Math.max(1, seconds) * 1000)
+    return () => window.clearTimeout(timer)
+  }, [bind?.state, bind?.expires_in])
 
   const names = useMemo(() => {
     if (!channels) return []
@@ -202,15 +225,41 @@ export function SettingsChannels() {
     setBinding(true)
     setError(null)
     setBind(null)
+    setExpired(false)
+    setPopupBlocked(false)
+    // 打开授权窗口必须发生在**用户手势内**（浏览器只允许 click 内发起的
+    // window.open），而链接要等 RPC 返回才有。所以先生成一个空白窗口，拿到 URL
+    // 后再导航过去 —— 用户看到的就是「点按钮 → 飞书创建应用页自动打开」。
+    const popup = window.open('about:blank', '_blank')
     try {
       const res = await rpc<{ url: string; expires_in: number; app_id?: string }>('feishu_bind_start', {
         app_id: drafts['feishu']?.app_id ?? '',
       })
       setBind({ state: 'waiting', url: res.url, expires_in: res.expires_in, app_id: res.app_id })
+      if (popup && !popup.closed) {
+        try {
+          popup.opener = null // 不要把本面板交给第三方 origin
+        } catch {
+          // 已经跨域，无法再触碰 opener —— 无妨。
+        }
+        popup.location.replace(res.url)
+      } else {
+        // 被拦截（或用户秒关）：如实告知，让用户走「打开链接 / 复制链接」。
+        setPopupBlocked(true)
+      }
     } catch (err) {
-      setBinding(false)
+      if (popup && !popup.closed) popup.close()
       setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      // 绝不能让按钮停在 in-flight 文案上：旧实现只在 done/error 时清这个标志，
+      // 于是 waiting 期间按钮一直禁用、文案一直「正在获取链接…」（用户报告
+      // 「一直 Requesting link…」）。
+      setBinding(false)
     }
+  }
+
+  const openBindLink = (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   const copyLink = async (url: string) => {
@@ -347,9 +396,30 @@ export function SettingsChannels() {
                   </div>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button type="button" size="sm" disabled={binding} onClick={() => void startFeishuBind()}>
-                    {binding ? t('settings.channels.feishuBinding') : t('settings.channels.feishuBind')}
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={binding}
+                    data-testid="feishu-bind"
+                    onClick={() => void startFeishuBind()}
+                  >
+                    {binding
+                      ? t('settings.channels.feishuBinding')
+                      : bind?.state === 'waiting'
+                        ? t('settings.channels.feishuRebind')
+                        : t('settings.channels.feishuBind')}
                   </Button>
+                  {bind?.state === 'waiting' && bind.url && !expired ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      data-testid="feishu-open-link"
+                      onClick={() => openBindLink(bind.url!)}
+                    >
+                      {t('settings.channels.feishuOpenLink')}
+                    </Button>
+                  ) : null}
                   {bind?.state === 'done' ? (
                     <Badge variant="secondary">{t('settings.channels.feishuBound')}</Badge>
                   ) : null}
@@ -357,6 +427,21 @@ export function SettingsChannels() {
                     <span className="text-xs text-red-500">{bind.error}</span>
                   ) : null}
                 </div>
+                {bind?.state === 'waiting' && !expired ? (
+                  <p className="text-xs text-text-muted" data-testid="feishu-bind-waiting">
+                    {t('settings.channels.feishuWaitingConfirm')}
+                  </p>
+                ) : null}
+                {popupBlocked ? (
+                  <p className="text-xs text-amber-500" data-testid="feishu-popup-blocked">
+                    {t('settings.channels.feishuPopupBlocked')}
+                  </p>
+                ) : null}
+                {expired && bind?.state === 'waiting' ? (
+                  <p className="text-xs text-amber-500" data-testid="feishu-link-expired">
+                    {t('settings.channels.feishuLinkExpired')}
+                  </p>
+                ) : null}
                 {bind?.url ? (
                   <div className="flex flex-col gap-1">
                     <code
