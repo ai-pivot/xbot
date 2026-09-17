@@ -10,7 +10,7 @@
  * All RPC calls go through WSConnection.rpc → POST /api/rpc.
  * The backend resolves sender_id from auth context.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useWSConnection } from '@/hooks/useWSConnection'
 
 /**
@@ -64,29 +64,20 @@ const empty: LLMSettingsData = {
 
 export function useLLMSettings() {
   const conn = useWSConnection()
-  const connected = conn.connected
   const [data, setData] = useState<LLMSettingsData>(empty)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
-  // `connected` read via ref — NOT a useCallback dep. The old deps
-  // ([conn, connected]) meant every SSE disconnect/reconnect cycle rebuilt
-  // `load`, and the effect ([load]) re-ran it — 5 parallel RPCs per flap,
-  // escalating into the 479 req/s storm on a flapping connection.
-  const connectedRef = useRef(connected)
-  connectedRef.current = connected
-
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
-      if (!connectedRef.current) {
-        setError('not_connected')
-        setLoading(false)
-        return
-      }
+      // Settings use authenticated REST RPCs, which remain available without
+      // an active chat/SSE subscription. Gating this load on `conn.connected`
+      // made the LLM page stay empty on the welcome screen even though adding
+      // subscriptions and refreshing models both succeeded server-side.
       const [subs, entries, thinkingMode, concurrency, settings] = await Promise.all([
         listSubscriptions(conn),
         listAllModelEntries(conn),
@@ -114,16 +105,18 @@ export function useLLMSettings() {
     void load()
   }, [load])
 
-  // Reconnect edge (false → true): reload once. This is the ONLY path where a
-  // connection-state change should trigger RPCs — not every flap of `connected`.
-  const prevConnectedRef = useRef(connected)
+  // Reload once on each disconnected → connected edge. Subscribe directly to
+  // the stable connection object instead of depending on its mutable getter;
+  // the provider deliberately keeps the context value identity stable.
   useEffect(() => {
-    const was = prevConnectedRef.current
-    prevConnectedRef.current = connected
-    if (!was && connected) {
-      void load()
-    }
-  }, [connected, load])
+    let wasConnected = conn.connected
+    return conn.onConnectionChange((isConnected) => {
+      if (!wasConnected && isConnected) {
+        void load()
+      }
+      wasConnected = isConnected
+    })
+  }, [conn, load])
 
   // Sync thinking mode across all useLLMSettings instances (e.g. settings
   // dialog changes thinking mode → AgentPanel reflects it instantly).
