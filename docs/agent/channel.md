@@ -446,6 +446,14 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **设置入口**：设置 → 外观 → UI 模式（`SettingsAppearance.tsx`，三个 `aria-pressed` 按钮 + 当前生效提示）。手机外壳里同样能打开该设置（`MobileAppShell` 的 `SettingsDialog`），因此强制 mobile 后不会被困住。
 - **范围**：只切换外壳，不改 CSS 断点——窄屏强制桌面外壳会得到压缩的桌面布局（有意为之）。
 
+### Web Frontend i18n（占位符契约 + 守卫）
+
+- **契约：文案里的每个 `{{占位符}}` 必须与 `t()` 调用点传入的参数名**逐字**一致。** i18next 对缺失参数**不报错**，直接把模板原样渲染给用户（`Delete session "{{username}}"? This cannot be undone.`）—— 2026-09-17 用户报告："删除会话的时候弹窗内容有问题，看上去是占位符没有实际被替换掉"（`session.deleteConfirm` 三语言写 `{{username}}`，唯一调用点 `SessionList.tsx` 传的是 `{ name: del?.label }`）。
+- **两类失败模式**：① 文案有 `{{x}}` 而调用点没传 x → 界面出现字面量模板；② 调用点传了 x 而文案里没有 `{{x}}` → **值永不显示**（句子看起来被截断，例：`settings.llmConsole.deleteSubConfirm: '删除订阅「'`、`exportFailed: '导出失败：'`、`panel.unknown`）。
+- **守卫 = `web/src/i18n/i18n.test.ts` 的「i18n 占位符守卫」（两组）**：① 用 `import.meta.glob('../**/*.{ts,tsx}', { query: '?raw', import: 'default', eager: true })` 读全仓源码（**不需要 `node:fs`** —— `tsconfig.app.json` 的 `types` 是 `["vite/client"]`），扫 `t('key', {...})` 断言传入参数覆盖文案里每个占位符（并报「key 不存在于 zh-CN」）；② 断言三语言同一 key 的占位符集合完全相同。
+- **同一轮双向审计查出的历史缺陷（均已修，40+ 处）**：`session.deleteConfirm`（用户可见模板）；`panel.unknown` / `panel.resizeFromEdge` / `settings.plugins.configOf` / `settings.llmConsole.deleteSubConfirm|exportFailed|importFailed`（传值但文案无占位符）；三语言漂移（en/ja 有 `{{name}}` 而 zh 没有）；zh `settings.about` 的 `refreshing/updateAvailable/checking/upToDate/checkUpdate` **5 键同值 `'正在刷新…'`**；zh `settings.llmConsole` toast 语义反转（`subEnabledToast`/`subDisabledToast` 都是 `'已停用'`、`subDeletedToast: '删除失败'`）；ja 文件混入中文（`exportFailed: '导出失败：'`）。
+- **改占位符名 = 同时改三语言 + 所有调用点**（`{{name}}` vs `{{username}}` 这类不一致肉眼极难发现，靠守卫兜底；旧的「单括号语法守卫」只查 `{name}` 语法，查不出名字不匹配）。
+
 ### Web Frontend Message Composer (tiptap)
 
 - **Stack**: `MessageInput.tsx` — tiptap v3（StarterKit + 定制 Link + Placeholder + tiptap-markdown）。编辑器输出 markdown（`getMarkdown()`），下游 onSend 接口零变化。富文本状态（mark 结构）与 markdown 文本互转由 tiptap-markdown 承担。
