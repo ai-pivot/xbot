@@ -186,7 +186,7 @@ Users can also configure via TUI Settings → Channels panel (auto-rendered from
 
 ## Channel Name Restrictions
 
-Channel names must NOT conflict with built-in channels: `feishu`, `qq`, `napcat`, `web`, `cli`.
+Channel names must NOT conflict with built-in channels: `feishu`, `web`, `cli`.
 
 ## Minimal Channel Plugin (Python)
 

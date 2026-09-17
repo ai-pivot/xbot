@@ -56,7 +56,7 @@ type QueueStateSender interface {
 // The agent uses this capability to decide whether to send ack messages and
 // text-based progress, keeping the core loop channel-agnostic. Individual
 // messages can still opt out via ReplyPolicyOptional metadata (e.g. Feishu
-// @all mentions, NapCat which doesn't support patching).
+// @all mentions).
 type PreReplyNotifier interface {
 	PreReplyNotify() bool
 }

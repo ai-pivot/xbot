@@ -1035,7 +1035,7 @@ func (pc *pluginContextImpl) RegisterChannelProvider(provider any) error {
 	}
 	// 内置 channel 名称禁止覆盖
 	switch name {
-	case "feishu", "qq", "napcat", "web", "cli":
+	case "feishu", "web", "cli":
 		return fmt.Errorf("cannot register provider with built-in channel name %q", name)
 	}
 	pc.mu.Lock()

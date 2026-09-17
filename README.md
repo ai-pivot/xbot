@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Browser · Feishu · QQ · Terminal — one agent, one config, your server
+  Browser · Feishu · Terminal — one agent, one config, your server
 </p>
 
 <p align="center">
@@ -36,12 +36,12 @@ server.
 
 The **Web UI is the primary surface**: sessions and live streaming, file
 preview, git diffs, a built-in terminal, plugin panels, and a model picker —
-all in the browser. Feishu / QQ / terminal channels connect the *same* agent to
+all in the browser. Feishu / terminal channels connect the *same* agent to
 wherever your team already works, sharing one LLM configuration.
 
 | | xbot | Terminal-only agents |
 |--|------|----------------------|
-| **Primary UI** | **Web browser** (+ Feishu · QQ · CLI) | Terminal only |
+| **Primary UI** | **Web browser** (+ Feishu · CLI) | Terminal only |
 | **Team LLM** | Admin configures once, everyone uses | Each user brings their own key |
 | **Self-hosted** | ✅ Your data stays on your server | ✅ |
 | **Plugin system** | Web views, panels, tools, hooks, channel plugins | Limited |
@@ -181,7 +181,7 @@ Create an app on the [Feishu Open Platform](https://open.feishu.cn), then:
 Required permissions: `im:message`, `im:message.receive_v1`,
 `im:message:send_as_bot`, `contact:user.base:readonly`
 
-### QQ / NapCat / CLI
+### Other channels
 
 See the [Channels documentation](https://ai-pivot.github.io/xbot/channels/).
 
@@ -219,7 +219,7 @@ The agent can call these tools in conversation:
 | [Installation](https://ai-pivot.github.io/xbot/installation/) | Every install path, offline & mirrors |
 | [Configuration](https://ai-pivot.github.io/xbot/configuration/) | `config.json` reference |
 | [Plugins](https://ai-pivot.github.io/xbot/plugins/) | Manifest, permissions, web views |
-| [Channels](https://ai-pivot.github.io/xbot/channels/) | Web · Feishu · QQ · CLI |
+| [Channels](https://ai-pivot.github.io/xbot/channels/) | Web · Feishu · CLI |
 | [FAQ](https://ai-pivot.github.io/xbot/faq/) | Common questions |
 
 ## License

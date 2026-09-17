@@ -3519,8 +3519,8 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 	}
 
 	// Channel-capability check: does this channel need text-based ack/progress?
-	// (Feishu/QQ do; Web/CLI have structured progress via SendProgress events.)
-	// Per-message opt-out via ReplyPolicyOptional (e.g. Feishu @all, NapCat).
+	// (Feishu does; Web/CLI have structured progress via SendProgress events.)
+	// Per-message opt-out via ReplyPolicyOptional (e.g. Feishu @all).
 	preReplyNotify := a.wantsPreReplyNotify(msg.Channel) && bus.ShouldPreReplyNotify(msg.Metadata)
 	replyPolicy := bus.InboundReplyPolicy(msg.Metadata)
 

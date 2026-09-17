@@ -413,8 +413,12 @@ func loadRoleFromCtx(ctx *ToolContext, roleName string) (*SubAgentRole, bool) {
 // "feishu:ou_xxx" → ("feishu", "ou_xxx")
 // "group:rt1" → ("group:rt1", "")
 func parseAddress(addr string) (channelName, chatID string) {
-	// Known IM prefixes: checked longest-first to avoid ambiguity
-	imPrefixes := []string{"feishu", "web", "qq", "cli"}
+	// Known IM prefixes = the built-in channels (checked longest-first to avoid
+	// ambiguity). Plugin-provided channels are intentionally NOT listed: a plugin
+	// channel address must be passed whole (its channel name) — if we ever want
+	// `plugin:chatID` addressing, the prefix set should be derived from the
+	// channel registry instead of growing this hardcoded list.
+	imPrefixes := []string{"feishu", "web", "cli"}
 	for _, prefix := range imPrefixes {
 		if len(addr) > len(prefix)+1 && addr[:len(prefix)+1] == prefix+":" {
 			return prefix, addr[len(prefix)+1:]

@@ -13,8 +13,6 @@ xbot 通过**渠道（Channel）**接收和发送消息。每个渠道是一个�
 |------|--------|----------|------|
 | [CLI](/zh-cn/channels/cli/) | 开发者、终端用户 | 本地进程 / WebSocket | 全功能 TUI，流式输出，工具调用，SubAgent |
 | [飞书](/zh-cn/channels/feishu/) | 团队协作 | WebSocket | 群内 @机器人 对话，消息卡片交互，飞书 API 集成 |
-| [QQ](/zh-cn/channels/qq/) | QQ 用户 | WebSocket | QQ 官方机器人协议 |
-| [NapCat](/zh-cn/channels/napcat/) | 个人/小圈子 | WebSocket | OneBot 11 协议，兼容 NapCat 等 |
 | [Web](/zh-cn/channels/web/) | 任何有浏览器的人 | HTTP + WebSocket | 网页聊天，注册/登录，邀请制 |
 
 ## 启用方式

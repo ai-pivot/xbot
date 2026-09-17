@@ -16,7 +16,7 @@
  * the new-session dialog. Pure presentational composition on top of the store.
  */
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, MessageSquare, Bot, Server, CheckSquare, X, Trash2 } from 'lucide-react'
+import { ChevronDown, Globe, LayoutGrid, Loader2, Plus, Terminal, MessageCircle, Server, CheckSquare, X, Trash2 } from 'lucide-react'
 import type { ComponentType, SVGProps } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -49,13 +49,11 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
   web: Globe,
   cli: Terminal,
   feishu: MessageCircle,
-  qq: MessageSquare,
-  napcat: Bot,
   system: Server,
 }
 
 /** All channels that should appear in the picker, in display order. */
-const ALL_CHANNEL_ORDER = ['web', 'cli', 'feishu', 'qq', 'napcat']
+const ALL_CHANNEL_ORDER = ['web', 'cli', 'feishu']
 
 const CATEGORIES = ['time', 'status', 'path'] as const
 
