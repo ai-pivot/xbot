@@ -803,6 +803,40 @@ export const MessageList = memo(function MessageList({
     if (node) measureRowNode(node)
   }, [liveContentRev, liveId, measureRowNode])
 
+  // ── live 行尺寸跟随：逐帧（文本长度变化才测）─────────────────────────────
+  // CI 实测链（三次诊断逐步钉死）：live 行 DOM 盒高 **8660px**，虚拟器却始终认为
+  // 它是 **91px**（`measurePass=4`、`virtTotal=182` = 两行都是**估算值**）。
+  // 决定性推理：cmd 行的 91 正是 `estimateRowByContent` 的估算值，而 live 行的
+  // 91 是 `heightMemory` 里早先记下的"短行"高度 ⇒ **每一次实测拿到的都是短行**。
+  // 为什么：live 行内容到达后，**打字机（MarkdownRenderer 的 `visibleChars`）继续
+  // 逐帧把文本吐出来** —— 那是组件内部的 rAF 状态，**不经过 MessageList 的
+  // props**，所以：
+  //   - 按 props 内容版本重测（v3）只在内容到达那一帧跑 → 读到尚未吐字的短行；
+  //   - 之后的"长高"没有 props 变化，且 RO 在这次增长上静默（或被过期 entry 覆盖）
+  //     → 缓存永久停在短行高度 → 追加行按 91px 定位 → 重叠 8569px。
+  // 因此：**只要尾部还有 live 行，就用 rAF 逐帧跟随它**——`textContent.length`
+  // 变化是"内容变了"的廉价信号（不触发布局），只在变化时才做一次 rect 读
+  // （单元素 ~0.1ms），空闲时零开销。不依赖 RO、不依赖 props 变化。
+  useEffect(() => {
+    if (!liveId) return
+    let raf = 0
+    let lastLen = -1
+    const tick = () => {
+      const root = rowsWrapperRef.current
+      const node = root?.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
+      if (node) {
+        const len = node.textContent?.length ?? 0
+        if (len !== lastLen) {
+          lastLen = len
+          measureRowNode(node)
+        }
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [liveId, measureRowNode])
+
   const prevRowCountRef = useRef(rows.length)
   const prevTailIdRef = useRef<string | null | undefined>(rowsRef.current[rowsRef.current.length - 1]?.id)
   useLayoutEffect(() => {

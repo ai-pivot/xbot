@@ -138,6 +138,7 @@ async function scrollerMetrics(page: Page, cmdSel = '[data-message-id^="cmd-"]')
       cmdText: cmd?.textContent ?? '',
       // ── 修复的可观测证据（排障用）──
       measurePass: wrapper?.dataset.measurePass ?? null, // 权威重测执行次数（应 > 0）
+      measureHeights: wrapper?.dataset.measureHeights ?? null, // 本轮实测读到的每行高度
       virtTotal: wrapper?.dataset.virtTotal ?? null, // 校正后的虚拟总高
       wrapperHeight: wrapper?.style.height ?? null, // = getTotalSize()
       rowInfo,
