@@ -1621,6 +1621,31 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	return wasCancelled
 }
 
+// dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。
+//
+// ⛔ 传入的 ctx 必须是**会话/进程级**上下文（只在 shutdown 时取消）——**绝不能**用
+// per-request 的 reqCtx：请求体跑完后 teardown 里的 finishActiveCancelState 会
+// **无条件** reqCancel()（释放资源），而本派发发生在 teardown **之后** ⇒ reqCtx
+// 必然已 Done ⇒ select 的「发送到 bus」与「ctx.Done」两个分支同时就绪 ⇒ Go 随机
+// 选一个 ⇒ **AskUser 面板随机不弹**（用户 2026-09-17 报告「前端完全不弹窗」；日志
+// 实证 "Context cancelled, dropping WaitingUser response"，且该次连 ask_question
+// 都没落库 ⇒ 刷新也恢复不了，用户只看到一个 ✓ 的工具 pill 且 turn 直接结束）。
+//
+// WaitingUser 是**状态变更**（agent 正在提问），不是可丢弃的瞬时消息 —— 只有真正的
+// shutdown（或 bus 满 10s）才允许放弃。
+func (a *Agent) dispatchWaitingUser(ctx context.Context, busMsg bus.OutboundMessage) bool {
+	select {
+	case a.bus.Outbound <- busMsg:
+		return true
+	case <-ctx.Done():
+		log.Ctx(ctx).Warn("Shutdown: dropping WaitingUser response")
+		return false
+	case <-time.After(10 * time.Second):
+		log.Ctx(ctx).Error("Message bus outbound channel full for 10s, dropping WaitingUser response")
+		return false
+	}
+}
+
 // SetProxyLLM injects a ProxyLLM for a user (when their active runner has local LLM).
 func (a *Agent) SetProxyLLM(senderID string, proxy *llm.ProxyLLM, model string) {
 	a.userSys.llmFactory.SetProxyLLM(senderID, proxy, model)
@@ -3504,14 +3529,17 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 					// WaitingUser 消息不可静默丢弃：AskUser 面板不显示 = turn 永久暂停
 					// 等一个不会到达的回答（ss.busy 保持 true，会话卡死）。带超时的
 					// 阻塞发送替代立即丢弃（对齐上方 err 分支的直接写语义），仅在
-					// shutdown（reqCtx.Done）或 10s 仍满时放弃。
-					select {
-					case a.bus.Outbound <- busMsg:
-					case <-reqCtx.Done():
-						log.Ctx(ctx).Warn("Context cancelled, dropping WaitingUser response")
-					case <-time.After(10 * time.Second):
-						log.Ctx(ctx).Error("Message bus outbound channel full for 10s, dropping WaitingUser response")
-					}
+					// shutdown 或 10s 仍满时放弃。
+					//
+					// ⛔ 判据必须是**会话/进程级 ctx**（只在 shutdown 取消），**绝不能**用
+					// reqCtx：请求体跑完后 teardown 的 finishActiveCancelState 会**无条件**
+					// reqCancel()（释放资源），而本派发发生在 teardown **之后** ⇒ reqCtx
+					// 必然已 Done ⇒ select 的「发送」与「ctx.Done」同时就绪 ⇒ Go 随机选 ⇒
+					// **AskUser 面板随机不弹**（用户 2026-09-17：「前端完全不弹窗」；日志
+					// 实证 "Context cancelled, dropping WaitingUser response"，且该次连
+					// ask_question 都没落库 ⇒ 刷新也恢复不了）。见 dispatchWaitingUser 注释 +
+					// TestWaitingUserDispatchMustNotUseRequestCtx 回归守卫。
+					a.dispatchWaitingUser(ctx, busMsg)
 				} else if err := a.sendMessage(msg.Channel, msg.ChatID, response.Content, response.Metadata); err != nil {
 					log.Ctx(ctx).WithError(err).Warn("Failed to dispatch response via sendMessage")
 				}
