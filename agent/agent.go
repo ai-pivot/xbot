@@ -69,10 +69,13 @@ func formatErrorForUser(err error) string {
 	return fmt.Sprintf("处理消息时发生错误: %v", err)
 }
 
-// resolveMemoryProvider returns the effective memory provider, defaulting to "flat".
+// resolveMemoryProvider returns the effective memory provider.
+//
+// 用户决策（2026-09-17 再次确认）：**缺省必须是内置 xbot**（此前缺省为 "flat"）。
+// 空值一律落到 xbot —— 不猜别的 provider（用户铁律：严禁推断/自动 fallback）。
 func resolveMemoryProvider(cfg string) string {
 	if cfg == "" {
-		return "flat"
+		return "xbot"
 	}
 	return cfg
 }
