@@ -16,9 +16,12 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 
-const BASE = process.env.E2E_BASE_URL || 'http://127.0.0.1:16099'
-const USER = process.env.E2E_USER || 'e2e'
-const PASS = process.env.E2E_PASS || 'e2e-pass-123'
+const BASE = process.env.E2E_BASE_URL || 'http://127.0.0.1:5199'
+// ⚠️ CI 的 E2E job 注入的是 **E2E_USERNAME / E2E_PASSWORD**（见 .github/workflows/ci.yml）。
+// 本 spec 曾只读 E2E_USER / E2E_PASS ⇒ CI 里落到默认的 e2e/e2e-pass-123 ⇒ 登录失败 ⇒
+// `waitForFunction` 卡到 60s 超时（2026-09-17 CI 唯一红）。兼容两种命名 + 对齐默认值。
+const USER = process.env.E2E_USERNAME || process.env.E2E_USER || 'admin'
+const PASS = process.env.E2E_PASSWORD || process.env.E2E_PASS || 'admin'
 const SHOTS = process.env.E2E_SHOT_DIR || '/tmp/feishu-guide-shots'
 
 async function login(page: Page) {
@@ -27,8 +30,20 @@ async function login(page: Page) {
   await inputs.first().fill(USER)
   await page.locator('input[type="password"]').fill(PASS)
   await page.getByRole('button', { name: /log ?in|登录|sign in/i }).click()
-  // 登录成功后进入主界面（SPA）
-  await page.waitForFunction(() => !location.pathname.startsWith('/login'), { timeout: 20_000 })
+  // 登录成功后进入主界面（SPA）。**失败必须明确报错**，不能静默等到测试超时
+  // （那会把"凭据/环境变量配错"伪装成"页面没渲染"）。
+  await Promise.race([
+    page.waitForFunction(() => !location.pathname.startsWith('/login'), { timeout: 30_000 }),
+    page
+      .locator('text=/Invalid username or password|用户名或密码|incorrect/i')
+      .first()
+      .waitFor({ timeout: 30_000 })
+      .then(() => {
+        throw new Error(
+          `E2E login failed for user ${USER} — check E2E_USERNAME/E2E_PASSWORD (CI sets those; E2E_USER/E2E_PASS also accepted)`,
+        )
+      }),
+  ])
 }
 
 /** 打开设置 → 渠道。 */
@@ -39,6 +54,9 @@ async function openChannelsSettings(page: Page) {
 }
 
 test.describe('飞书引导（全新安装）', () => {
+  // 该 spec 有多次 10~30s 的等待（登录 + 两段清单 + 点击后的 race），默认 60s 太紧。
+  test.describe.configure({ timeout: 150_000 })
+
   test('引导渲染 + 点击生成链接（全链路交互）', async ({ browser }) => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
     await login(page)
