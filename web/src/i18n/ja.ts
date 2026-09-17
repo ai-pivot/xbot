@@ -653,6 +653,8 @@ const ja: Translations = {
       description: '**有効**なツールだけが LLM コンテキストに渡されます（無効なツールはモデルから見えず、実行もできません）。切り替えは即時反映、再起動不要。',
       loading: '読み込み中…',
       summary: '有効 {{active}} / {{total}} ツール',
+      mcpServers: 'MCP サーバー',
+      mcpToolCount: '{{count}} ツール',
     },
     about: {
       tagline: '智能对话助手',

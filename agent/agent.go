@@ -4288,19 +4288,24 @@ type ToolSetting struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Enabled     bool   `json:"enabled"`
+	// ServerName is non-empty for MCP tools: the MCP server that provides them
+	// (used by the panel to group tools per server + offer a master switch).
+	ServerName string `json:"server_name,omitempty"`
 }
 
 // ToolSettings lists every registered GLOBAL tool with its activation state.
 // Only the global registry is listed: channel/runner/MCP tools are scoped
 // resources, not built-in tools the operator activates/deactivates here.
+// MCP tools carry their ServerName so the UI can group them per server.
 func (a *Agent) ToolSettings() []ToolSetting {
-	tools := a.tools.List() // sorted by name (stable order for the UI)
-	out := make([]ToolSetting, 0, len(tools))
-	for _, t := range tools {
+	all := a.tools.List() // sorted by name (stable order for the UI)
+	out := make([]ToolSetting, 0, len(all))
+	for _, t := range all {
 		out = append(out, ToolSetting{
 			Name:        t.Name(),
 			Description: t.Description(),
 			Enabled:     !a.tools.IsDisabled(t.Name()),
+			ServerName:  tools.MCPServerName(t),
 		})
 	}
 	return out

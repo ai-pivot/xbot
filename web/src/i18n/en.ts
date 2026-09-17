@@ -653,6 +653,8 @@ const en: Translations = {
       description: 'Only ACTIVE tools are sent to the LLM context (inactive tools are invisible to the model and cannot run). Changes apply immediately — no restart.',
       loading: 'Loading…',
       summary: '{{active}} of {{total}} tools active',
+      mcpServers: 'MCP servers',
+      mcpToolCount: '{{count}} tools',
     },
     about: {
       tagline: 'AI conversation assistant',

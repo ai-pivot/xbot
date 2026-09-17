@@ -299,6 +299,17 @@ func (r *Registry) IsDisabled(name string) bool {
 	return ok
 }
 
+// MCPServerName returns the MCP server that owns a tool, or "" for built-in /
+// non-MCP tools. Used by the Settings → Tools panel to group MCP tools under
+// their server (real server name from the MCP bridge — never a name-prefix
+// guess) and to offer a per-server master switch.
+func MCPServerName(t Tool) string {
+	if p, ok := t.(mcpSchemaProvider); ok {
+		return p.mcpServerName()
+	}
+	return ""
+}
+
 // GetRaw looks up a tool ignoring the disabled (inactive) set — used by the
 // Settings → Tools panel to list/validate built-in tools, and by enable/disable
 // itself. Execution paths must use Get/GetForSession instead.

@@ -649,6 +649,8 @@ const zhCN = {
       description: '只有**激活**的工具会被带进 LLM 上下文（未激活的工具模型看不到，也无法执行）。开关立即生效，无需重启。',
       loading: '加载中…',
       summary: '已激活 {{active}} / {{total}} 个工具',
+      mcpServers: 'MCP 服务器',
+      mcpToolCount: '{{count}} 个工具',
     },
     about: {
       tagline: '智能对话助手',

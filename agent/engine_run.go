@@ -2594,7 +2594,23 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 // user_cancelled, system_reminder). Do NOT hand-roll assistant+tool pairs
 // elsewhere — the offload / persistence / progress / cleanup behavior would
 // silently diverge.
+// syntheticInjectionNotice 是**所有注入型（fake）工具**结果的统一前缀。
+//
+// 用户 2026-09-17：「faketool，尤其 system notification 也优化一下，里面的提示要
+// 强调这个工具不是你调用的，是自动注入用于提醒你的」。模型看到的只有 toolContent
+// （summary/hints 是 UI 专用），所以提示必须写进 content —— 否则模型会以为自己
+// 调用过它、甚至回谢/重复调用。
+func syntheticInjectionNotice() string {
+	return "[AUTO-INJECTED NOTIFICATION — NOT A TOOL YOU CALLED]\n" +
+		"这是系统自动注入的提醒/通知（不是你调用的工具，你从未调用过它）。\n" +
+		"直接把它当作一条外部事件信息使用：不要回谢、不要试图再次调用它；\n" +
+		"如需继续，按其中的内容继续完成用户的任务。\n\n"
+}
+
 func newSyntheticToolPair(toolName, toolID, toolContent string) (llm.ChatMessage, llm.ChatMessage) {
+	// 单一收口：所有注入型工具的 content 都带上「非你调用」声明
+	// （engine_run 的各 injectXxx 与 agent_process 的后台通知都走这里）。
+	toolContent = syntheticInjectionNotice() + toolContent
 	assistantMsg := llm.ChatMessage{
 		Role: "assistant",
 		ToolCalls: []llm.ToolCall{{

@@ -22,6 +22,8 @@ interface ToolSetting {
   name: string
   description: string
   enabled: boolean
+  /** MCP 工具专有：所属 MCP server 名（后端来自 MCP bridge 的真实名字）。 */
+  serverName?: string
 }
 
 async function rpc<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -64,6 +66,50 @@ export function SettingsTools() {
   }
 
   const active = tools?.filter((x) => x.enabled).length ?? 0
+  // MCP 工具按**后端给的真实 server 名**分组（不用名字前缀猜）；服务器级开关
+  // = 批量启停该服务器的全部工具（复用 set_tool_enabled，无新增后端语义）。
+  const builtin = (tools ?? []).filter((x) => !x.serverName)
+  const mcpGroups = new Map<string, ToolSetting[]>()
+  for (const tool of tools ?? []) {
+    if (!tool.serverName) continue
+    const arr = mcpGroups.get(tool.serverName) ?? []
+    arr.push(tool)
+    mcpGroups.set(tool.serverName, arr)
+  }
+
+  const setMany = async (names: string[], next: boolean) => {
+    setBusy(names.join(','))
+    setTools((prev) => prev?.map((x) => (names.includes(x.name) ? { ...x, enabled: next } : x)) ?? prev)
+    try {
+      for (const name of names) {
+        await rpc('set_tool_enabled', { name, enabled: next })
+      }
+    } catch (err) {
+      setTools((prev) => prev?.map((x) => (names.includes(x.name) ? { ...x, enabled: !next } : x)) ?? prev)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const renderTool = (tool: ToolSetting, indented = false) => (
+    <li
+      key={tool.name}
+      className={`flex items-start gap-3 py-2.5 ${indented ? 'pl-6' : ''}`}
+      data-testid={`tool-row-${tool.name}`}
+    >
+      <Switch
+        checked={tool.enabled}
+        disabled={busy === tool.name}
+        onCheckedChange={(v) => void toggle(tool.name, v)}
+        aria-label={tool.name}
+      />
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <span className="font-mono text-sm text-text-primary">{tool.name}</span>
+        {tool.description ? <span className="text-xs text-text-muted">{tool.description}</span> : null}
+      </div>
+    </li>
+  )
 
   return (
     <div className="flex flex-col gap-4 p-5" data-testid="tools-settings">
@@ -83,23 +129,41 @@ export function SettingsTools() {
               {t('settings.tools.summary', { active, total: tools.length })}
             </p>
             <ul className="flex flex-col divide-y divide-border">
-              {tools.map((tool) => (
-                <li key={tool.name} className="flex items-start gap-3 py-2.5" data-testid={`tool-row-${tool.name}`}>
-                  <Switch
-                    checked={tool.enabled}
-                    disabled={busy === tool.name}
-                    onCheckedChange={(v) => void toggle(tool.name, v)}
-                    aria-label={tool.name}
-                  />
-                  <div className="flex min-w-0 flex-col gap-0.5">
-                    <span className="font-mono text-sm text-text-primary">{tool.name}</span>
-                    {tool.description ? (
-                      <span className="text-xs text-text-muted">{tool.description}</span>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
+              {builtin.map((tool) => renderTool(tool))}
             </ul>
+
+            {mcpGroups.size > 0 ? (
+              <div className="mt-4 flex flex-col gap-2" data-testid="mcp-section">
+                <span className="text-xs font-medium text-text-secondary">
+                  {t('settings.tools.mcpServers')}
+                </span>
+                {[...mcpGroups.entries()].map(([server, group]) => {
+                  const names = group.map((g) => g.name)
+                  const allOn = group.every((g) => g.enabled)
+                  return (
+                    <div key={server} className="flex flex-col" data-testid={`mcp-server-${server}`}>
+                      <div className="flex items-center gap-3 py-2">
+                        <Switch
+                          checked={allOn}
+                          disabled={busy === names.join(',')}
+                          onCheckedChange={(v) => void setMany(names, v)}
+                          aria-label={server}
+                        />
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <span className="font-mono text-sm text-text-primary">{server}</span>
+                          <span className="text-xs text-text-muted">
+                            {t('settings.tools.mcpToolCount', { count: group.length })}
+                          </span>
+                        </div>
+                      </div>
+                      <ul className="flex flex-col divide-y divide-border">
+                        {group.map((tool) => renderTool(tool, true))}
+                      </ul>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
           </>
         )}
       </SettingsSection>
