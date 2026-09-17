@@ -797,12 +797,12 @@ describe('normalizeSessionTree', () => {
     expect(result.current.askUserPrompts.has('cli:/repo')).toBe(false)
   })
 
-  it('drops a stale cached prompt when a refresh response shows no pending (server row is authoritative)', async () => {
-    // F2: reconciliation on refresh — the session row exists but reports NO
-    // waiting_input, so a locally cached prompt is stale (resolved while this
-    // client was disconnected / switched away). The old implementation treated
-    // the local Map as authoritative and the prompt survived session switches
-    // and reconnects.
+  it('KEEPS a cached prompt when a refresh row is not waiting_input —— 行状态不是权威（2026-09-17 回归）', async () => {
+    // 契约（2026-09-17 回归修复）：会话行的 status 不是 AskUser pending 的
+    // 权威——运行中的旧后端在 WaitingUser 暂停期就报 idle/running。据此删本地
+    // prompt，任何一次 refresh（visibilitychange / SSE resync / 切会话）都会把
+    // 刚到的面板抹掉（用户报告「任何情况下提问面板都无法正常显示」）。
+    // 解除只认权威信号：ask_user_resolved 广播，或 RPC get_pending_ask_user 的答复。
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/chats') {
@@ -838,12 +838,12 @@ describe('normalizeSessionTree', () => {
     await act(async () => {
       await result.current.refresh()
     })
-    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(false)
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
   })
 
-  it('drops a stale cached prompt when a refresh response reports a RUNNING session (busy ⇒ no AskUser)', async () => {
-    // F4 (tree path): the server row says running=true — with "busy ⇒ 不存在
-    // AskUser" a cached prompt for this session cannot be pending anymore.
+  it('KEEPS a cached prompt when the refresh row reports RUNNING（旧后端形态）—— 不得据行状态丢弃', async () => {
+    // 同上（tree path）：服务端行报 running=true 同样不得作为删除依据 ——
+    // 运行中的旧后端在 WaitingUser 暂停期就是这样报的。
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/chats') {
@@ -879,7 +879,7 @@ describe('normalizeSessionTree', () => {
     await act(async () => {
       await result.current.refresh()
     })
-    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(false)
+    expect(result.current.askUserPrompts.has('web:web-chat-1')).toBe(true)
     expect(result.current.sessions[0].status).toBe('running')
   })
 

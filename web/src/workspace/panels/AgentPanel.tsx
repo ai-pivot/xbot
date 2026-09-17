@@ -497,6 +497,28 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     // Covers the window where a stale backend running flag still says busy.
     currentSession?.status !== 'waiting_input'
 
+  // AskUser 面板的**权威恢复路径**（不是兜底 hack）：面板状态唯一权威在服务端
+  // —— RPC get_pending_ask_user 走的正是实时发布那条路径（loadPendingAskUserEntry）。
+  // 实时推送是 best-effort：会话切换 / SSE 重建 / 页面回到前台都可能整条丢，
+  // 面板随即永久空白（用户报告「任何情况下提问面板都无法正常显示」）。
+  // 这里在（重）挂载 / 切会话 / 连接重建 / 回到前台时各查一次；busy→idle 边沿
+  // 由下方 get_goal effect 一并触发（agent 调用 AskUser 后 turn 必停在 WaitingUser）。
+  useEffect(() => {
+    if (!chatID || !messageChannel) return
+    void store.queryPendingAskUser(messageChannel, chatID)
+  }, [chatID, messageChannel, ws.connected, store])
+
+  useEffect(() => {
+    if (!chatID || !messageChannel) return
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void store.queryPendingAskUser(messageChannel, chatID)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [chatID, messageChannel, store])
+
   // Turn 结束（busy→idle 边沿）时重取 get_goal —— goal 状态变化的事件兜底：
   // set_goal_complete 后端 emitGoalProgress 会推 goal 事件（TDSM 实时更新），
   // 但 SSE 丢事件 / 事件被合并时 banner 会滞留旧状态，RPC 兜底保证收敛。
@@ -508,6 +530,10 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       // Stale-guard（xbotgh CR）：慢响应跨会话切换会把旧会话的 goal 写进新会话的
       // banner —— 与 session-load getGoal effect（cancelled flag 模式）保持一致。
       let cancelled = false
+      // AskUser 的同一 busy→idle 边沿：agent 调用 AskUser 后 turn 必然停在
+      // WaitingUser（这就是一次 turn 结束）。若那条实时推送丢了（连接重建 /
+      // 未订阅窗口），面板只能靠服务端查询恢复 —— 与实时发布同一条权威路径。
+      void store.queryPendingAskUser(messageChannel, chatID)
       getGoal({ channel: messageChannel, chatID })
         .then((g) => {
           if (cancelled) return
@@ -519,7 +545,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         .catch(() => {})
       return () => { cancelled = true }
     }
-  }, [busy, chatID, messageChannel])
+  }, [busy, chatID, messageChannel, store])
 
   const llmSettings = useLLMSettings()
 
@@ -853,9 +879,14 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         editingMessageId={editingMessageId}
         onStartEdit={handleStartEdit}
         onEndEdit={handleEndEdit}
-        footer={askUserFooter}
       />
       )}
+      {/* ⛔ AskUserPanel 必须与 MessageList / loading 屏【平级】，绝不能挂在
+        MessageList 的 footer 上：`showLoadingScreen`（historyReady===false 或
+        resumeLoading）时会整块替代 MessageList ⇒ 面板在任何 loading 状态下都
+        不会渲染（2026-09-17 用户报告「任何情况下提问面板都无法正常显示」，
+        后端日志证明 WaitingUser 确实发出）。现在列表态/加载态都吞不掉它。 */}
+      {askUserFooter}
       {!isSubAgent && (
         <StagingTray
           items={agentChat.queue}

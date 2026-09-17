@@ -703,6 +703,44 @@ export async function getContextUsage(ws: WSConnection, channel: string, chatID:
   })
 }
 
+/**
+ * Wire shape of RPC `get_pending_ask_user` (a protocol.ProgressEvent subset,
+ * snake_case as serialized by Go).
+ */
+export interface PendingAskUserWire {
+  request_id?: string
+  questions?: Array<{
+    question?: string
+    options?: string[]
+    multi_select?: boolean
+    allow_other?: boolean
+  }>
+}
+
+/**
+ * Authoritative pending-AskUser query.
+ *
+ * The SERVER is the single source of truth for "is this prompt still
+ * pending". The live SSE push is best-effort — a prompt published while this
+ * client was not subscribed (session switch, SSE reconnect, turn end) would
+ * otherwise be lost forever and the panel would never appear. This RPC goes
+ * through the exact same authoritative path as the live publish
+ * (Agent.GetPendingAskUser → loadPendingAskUserEntry), so the client never
+ * has to guess from session-row status.
+ *
+ * Returns null when nothing is pending for that session.
+ */
+export async function getPendingAskUser(
+  ws: WSConnection,
+  channel: string,
+  chatID: string,
+): Promise<PendingAskUserWire | null> {
+  return ws.rpc<PendingAskUserWire | null>('get_pending_ask_user', {
+    channel,
+    chat_id: chatID,
+  })
+}
+
 // ── User-Level Settings ──
 
 export async function getUserThinkingMode(ws: WSConnection): Promise<string> {

@@ -23,7 +23,8 @@
  */
 import { createElement, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
-import { getContextUsage, setCwd } from '@/components/agent/api'
+import { getContextUsage, getPendingAskUser, setCwd } from '@/components/agent/api'
+import type { PendingAskUserWire } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { postAPI } from '@/lib/api'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
@@ -105,6 +106,13 @@ export interface SessionStore {
   reorderSessions: (channel: string, orderedIDs: string[]) => Promise<boolean>
   /** Clear the AskUser prompt for a session (after answer/cancel). */
   clearAskUserPrompt: (channel: string, chatID: string) => void
+  /** Server-authoritative reconcile for the AskUser panel: ask the backend
+   *  whether this session still has an unanswered prompt (RPC
+   *  get_pending_ask_user) and materialize / drop the local panel accordingly.
+   *  Recovers prompts whose live push was missed (session switch, SSE
+   *  reconnect, turn end while unsubscribed) — the panel must never depend on
+   *  "the push happened to arrive". */
+  queryPendingAskUser: (channel: string, chatID: string) => Promise<void>
 }
 
 /* ── localStorage starred ids ── */
@@ -845,11 +853,6 @@ export function useSessionStoreImpl(): SessionStore {
   // row's status='waiting_input' are authoritative). Survives session switch so
   // the panel can reappear when switching back.
   const [askUserPrompts, setAskUserPrompts] = useState<Map<string, AskUserPrompt>>(new Map())
-  /** When each cached prompt was stored locally (ms). The refresh reconciliation
-   * (reconcileAskUserPrompts) uses it as a race guard: a session-tree response
-   * that was REQUESTED before a prompt was stored cannot judge that prompt (the
-   * server may have answered the request before the prompt was registered). */
-  const askUserPromptTsRef = useRef(new Map<string, number>())
 
   // Re-read starred/category from localStorage when server sync updates values.
   useEffect(() => {
@@ -897,7 +900,6 @@ export function useSessionStoreImpl(): SessionStore {
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeqRef.current
-    const requestStartedAt = Date.now()
     const initialLoad = sessionsRef.current.length === 0
     if (initialLoad) setLoading(true)
     setError(null)
@@ -927,7 +929,6 @@ export function useSessionStoreImpl(): SessionStore {
       // Covers every reconciliation trigger: initial load, session switch
       // (switchSession → refresh), SSE reconnect / resync (sessions-resync →
       // refresh), visibilitychange, agent-idle edge cases.
-      reconcileAskUserPrompts(mainSessions, requestStartedAt)
       const { sessions: markedSessions, active } = reconcileActiveSession(mainSessions, activeSessionRef.current)
       const withUnread = applyPersistedUnreadStatuses(markedSessions, new Set(unreadIdsRef.current), active)
       const cachedSessions = mergeStatus(sessionsRef.current, withUnread, sseIntentsRef.current, Date.now())
@@ -1153,7 +1154,6 @@ export function useSessionStoreImpl(): SessionStore {
    * is the single authority for "is this prompt still pending" — the local Map
    * is only a hint and MUST be invalidated when the server says so. */
   const dropAskUserPrompt = useCallback((key: string) => {
-    askUserPromptTsRef.current.delete(key)
     setAskUserPrompts((prev) => {
       if (!prev.has(key)) return prev
       const next = new Map(prev)
@@ -1162,52 +1162,58 @@ export function useSessionStoreImpl(): SessionStore {
     })
   }, [])
 
-  /** Reconcile the cached AskUser prompts against a session-tree response.
+  /** Materialize / drop the AskUser panel from the SERVER's answer.
    *
-   * The server row reports status 'waiting_input' ONLY while an AskUser prompt
-   * is pending (the turn is paused). A locally cached prompt whose row now
-   * reports another status is STALE — it was answered/cancelled in another
-   * channel/tab, rewound, or the backend canceled it because the session went
-   * busy ("busy ⇒ 不存在 AskUser"). Without this pass the local Map acted as
-   * the authority and stale prompts survived reconnects / session switches
-   * ("有时候走前端缓存，不该弹的时候弹出").
+   * Reads RPC get_pending_ask_user — the SAME authoritative path the live
+   * publish uses (Agent.GetPendingAskUser → loadPendingAskUserEntry). The live
+   * SSE push is best-effort: a prompt published while this client was not
+   * subscribed (session switch, SSE reconnect, turn end while unsubscribed)
+   * is otherwise lost forever and the panel never appears — the reported
+   * "任何情况下提问面板都无法正常显示".
    *
-   * Rows absent from the response (pagination window, deleted session) are NOT
-   * judged — only a row that says something authoritative counts, so a prompt
-   * for a not-yet-loaded session is never dropped by accident.
-   *
-   * requestStartedAt guards the opposite race: a response that was REQUESTED
-   * before a prompt was stored cannot invalidate it (the server may not have
-   * registered the prompt yet when it answered the request). Such a prompt is
-   * re-evaluated by the next refresh instead.
-   */
-  const reconcileAskUserPrompts = useCallback((sessions: SessionInfo[], requestStartedAt: number) => {
-    if (askUserPromptTsRef.current.size === 0) return
-    const seen = new Set<string>()
-    const pending = new Set<string>()
-    const visit = (nodes: SessionInfo[]) => {
-      for (const node of nodes) {
-        const key = sessionKey(node)
-        seen.add(key)
-        if (node.status === 'waiting_input') pending.add(key)
-        visit(node.children || [])
-      }
+   * pending → materialize the panel (+ waiting_input);
+   * null    → drop the cached prompt (server says it is no longer pending);
+   * RPC failure (offline / not ready) → leave local state untouched: the
+   * client never guesses pending-ness from session-row status. */
+  const queryPendingAskUser = useCallback(async (channel: string, chatID: string) => {
+    if (!channel || !chatID) return
+    let pending: PendingAskUserWire | null
+    try {
+      pending = await getPendingAskUser(wsRef.current, channel, chatID)
+    } catch {
+      return
     }
-    visit(sessions)
+    const key = `${channel}:${chatID}`
+    if (!pending) {
+      dropAskUserPrompt(key)
+      return
+    }
+    // Same snake_case → camelCase mapping as the live ask_user handler: the
+    // backend serializes multi_select / allow_other (protocol/events.go).
+    const questions: AskUserQuestion[] = []
+    for (const q of pending.questions ?? []) {
+      if (!q || typeof q !== 'object') continue
+      const question = typeof q.question === 'string' ? q.question : ''
+      const options = Array.isArray(q.options)
+        ? q.options.filter((x): x is string => typeof x === 'string')
+        : undefined
+      // Keep a question that has options even when its title is empty.
+      if (!question && !(options && options.length > 0)) continue
+      questions.push({
+        question,
+        options,
+        multiSelect: q.multi_select === true,
+        allowOther: q.allow_other === true,
+      })
+    }
     setAskUserPrompts((prev) => {
-      let next: Map<string, AskUserPrompt> | null = null
-      for (const key of prev.keys()) {
-        if (pending.has(key)) continue
-        if (!seen.has(key)) continue
-        const ts = askUserPromptTsRef.current.get(key)
-        if (ts !== undefined && ts > requestStartedAt) continue
-        next = next ?? new Map(prev)
-        next.delete(key)
-        askUserPromptTsRef.current.delete(key)
-      }
-      return next ?? prev
+      const next = new Map(prev)
+      next.set(key, { requestId: pending.request_id ?? '', questions })
+      return next
     })
-  }, [])
+    setStatus({ channel, chatID }, 'waiting_input')
+  }, [dropAskUserPrompt, setStatus])
+
 
   const applySubAgentLifecycle = useCallback((ev: SessionEvent, running: boolean) => {
     if (!ev.role && !parseAgentChatID(ev.chat_id || '')) return
@@ -1738,7 +1744,6 @@ export function useSessionStoreImpl(): SessionStore {
         }
         const requestId = (p?.request_id as string | undefined) ?? msg.id ?? String(Date.now())
         const key = `${channel}:${chatID}`
-        askUserPromptTsRef.current.set(key, Date.now())
         setAskUserPrompts((prev) => {
           const next = new Map(prev)
           next.set(key, { requestId, questions })
@@ -1791,8 +1796,9 @@ export function useSessionStoreImpl(): SessionStore {
     deleteSession,
     reorderSessions,
     clearAskUserPrompt,
+    queryPendingAskUser,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, queryPendingAskUser])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {
