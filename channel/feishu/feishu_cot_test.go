@@ -104,8 +104,14 @@ func TestFeishuCoT_CreateAndWriteShape(t *testing.T) {
 	}
 
 	create := (*calls)[0]
-	if create.Method != "POST" || !strings.Contains(create.Path, feishuCotAPI) || !strings.Contains(create.Path, "receive_id_type=chat_id") {
+	if create.Method != "POST" || !strings.Contains(create.Path, feishuCotAPI) {
 		t.Fatalf("create request shape wrong: %s %s", create.Method, create.Path)
+	}
+	// receive_id_type 必须与渠道自身一致：非 oc_ 的会话 id 用 open_id
+	//（硬编码 chat_id 会被平台拒为 code=10001 invalid receive_id —— 用户
+	// 「完全看不到中间进度」的根因）。
+	if !strings.Contains(create.Path, "receive_id_type=open_id") {
+		t.Fatalf("non-oc_ chat must use open_id: %s", create.Path)
 	}
 	for k, want := range map[string]any{
 		"receive_id":        "chat_1",
@@ -338,5 +344,54 @@ func TestFeishuCoTRenderer_NarrationFlushedOnce(t *testing.T) {
 	}
 	if !strings.Contains(types, "TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END") {
 		t.Fatalf("missing TEXT_MESSAGE lifecycle: %s", types)
+	}
+}
+
+// receive_id_type 归一化：oc_ → chat_id；其余（ou_/会话键）→ open_id。
+func TestCotReceiveIDType(t *testing.T) {
+	cases := map[string]string{
+		"oc_58ca927a7ae619ad7ec2d1ed14924924": "chat_id",
+		"chat_1":                              "open_id",
+		"ou_abc":                              "open_id",
+	}
+	for in, want := range cases {
+		if got := cotReceiveIDType(in); got != want {
+			t.Fatalf("cotReceiveIDType(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// oc_ 会话必须用 chat_id（正例，防止把归一化写反）。
+func TestFeishuCoT_OcChatUsesChatID(t *testing.T) {
+	c, calls := newFakeCoT(t, "oc_test_chat")
+	c.emit("RUN_STARTED", map[string]any{"threadId": "oc_test_chat"})
+	if err := c.flushNow(); err != nil {
+		t.Fatalf("flushNow: %v", err)
+	}
+	if !strings.Contains((*calls)[0].Path, "receive_id_type=chat_id") {
+		t.Fatalf("oc_ chat must use chat_id: %s", (*calls)[0].Path)
+	}
+}
+
+// ⚠️ 平台拒绝必须**可诊断**：错误信息带 code/msg（丢掉平台错误是本 bug 一开始
+// 不可诊断的原因），且标记 broken 让调用方降级到卡片。
+func TestFeishuCoT_CreateRejectedSurfacesPlatformMsg(t *testing.T) {
+	c := newFeishuCoT(nil, "chat_1", "", false)
+	c.request = func(_ context.Context, method, _ string, _ any) (*larkcore.ApiResp, error) {
+		if method == "POST" {
+			return &larkcore.ApiResp{RawBody: []byte(`{"code":10001,"msg":"Your request contains an invalid request parameter, ext=invalid receive_id"}`)}, nil
+		}
+		return &larkcore.ApiResp{RawBody: []byte(`{"code":0}`)}, nil
+	}
+	c.emit("RUN_STARTED", map[string]any{"threadId": "chat_1"})
+	err := c.flushNow()
+	if err == nil {
+		t.Fatal("expected create rejection")
+	}
+	if !strings.Contains(err.Error(), "10001") || !strings.Contains(err.Error(), "invalid receive_id") {
+		t.Fatalf("error must carry the platform code/msg, got: %v", err)
+	}
+	if !c.brokenNow() {
+		t.Fatal("rejection must mark the CoT broken (callers fall back to the card)")
 	}
 }

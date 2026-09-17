@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +82,17 @@ func newFeishuCoT(client *lark.Client, chatID, replyTo string, hidden bool) *fei
 	c := &feishuCoT{client: client, chatID: chatID, replyTo: replyTo, hidden: hidden}
 	c.request = c.sdkRequest
 	return c
+}
+
+// cotReceiveIDType 与渠道自身保持一致（feishu.go 的 sendNormalMessage/sendFile）：
+// `oc_` 开头是群/单聊的 chat_id；否则（`ou_`/用户 id 等）必须用 open_id。
+// ⚠️ 硬编码 chat_id 会让平台返回 code=10001 invalid receive_id（2026-09-17 用户
+// 报告「完全看不到中间进度」的根因之一 —— 见 write() 的 code/msg 处理）。
+func cotReceiveIDType(chatID string) string {
+	if strings.HasPrefix(chatID, "oc_") {
+		return "chat_id"
+	}
+	return "open_id"
 }
 
 // sdkRequest 生产实现：lark SDK 的裸请求（租户 token）。
@@ -213,20 +225,32 @@ func (c *feishuCoT) write(events []cotEvent) error {
 		if c.replyTo != "" {
 			body["origin_message_id"] = c.replyTo
 		}
-		resp, err := c.request(ctx, "POST", feishuCotAPI+"?receive_id_type=chat_id", body)
+		path := feishuCotAPI + "?receive_id_type=" + cotReceiveIDType(c.chatID)
+		resp, err := c.request(ctx, "POST", path, body)
 		if err != nil {
 			return err
 		}
 		var created struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
 			Data struct {
 				CotID     string `json:"cot_id"`
 				MessageID string `json:"message_id"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(resp.RawBody, &created); err != nil {
+			log.WithField("raw", truncateRaw(resp.RawBody)).Error("feishu cot: create response is not JSON")
 			return err
 		}
+		// ⚠️ 必须看 code/msg：丢平台错误是本 bug 一开始不可诊断的原因。
+		if created.Code != 0 {
+			log.WithFields(log.Fields{"code": created.Code, "msg": created.Msg,
+				"raw": truncateRaw(resp.RawBody), "receive_id_type": cotReceiveIDType(c.chatID),
+			}).Warn("feishu cot: create rejected by platform")
+			return fmt.Errorf("feishu cot: create failed: code=%d msg=%s", created.Code, created.Msg)
+		}
 		if created.Data.CotID == "" || created.Data.MessageID == "" {
+			log.WithField("raw", truncateRaw(resp.RawBody)).Warn("feishu cot: create returned no handle")
 			return errCotNoHandle
 		}
 		c.mu.Lock()
@@ -235,12 +259,37 @@ func (c *feishuCoT) write(events []cotEvent) error {
 		c.mu.Unlock()
 	}
 
-	_, err := c.request(ctx, "PUT", feishuCotAPI, map[string]any{
+	resp, err := c.request(ctx, "PUT", feishuCotAPI, map[string]any{
 		"events":     events,
 		"message_id": messageID,
 		"cot_id":     cotID,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	var wrote struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(resp.RawBody, &wrote); err != nil {
+		log.WithField("raw", truncateRaw(resp.RawBody)).Error("feishu cot: write response is not JSON")
+		return err
+	}
+	if wrote.Code != 0 {
+		log.WithFields(log.Fields{"code": wrote.Code, "msg": wrote.Msg,
+			"raw": truncateRaw(resp.RawBody), "events": len(events)}).Warn("feishu cot: write rejected by platform")
+		return fmt.Errorf("feishu cot: write failed: code=%d msg=%s", wrote.Code, wrote.Msg)
+	}
+	return nil
+}
+
+// truncateRaw 截断原始响应体（日志可读；rune 安全）。
+func truncateRaw(b []byte) string {
+	r := []rune(string(b))
+	if len(r) <= 300 {
+		return string(r)
+	}
+	return string(r[:300]) + "…"
 }
 
 // brokenNow 报告该 turn 的思考过程是否已不可用（调用方据此回落卡片渲染）。
