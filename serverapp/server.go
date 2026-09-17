@@ -955,6 +955,19 @@ func Run(args []string) error {
 	// 先取消 context，让 agent.Run() 退出（其 defer 会清理 cron 和 cleanup routine）
 	cancel()
 
+	// 把 WAL 里已提交的数据 checkpoint 进主库。
+	// 位置很关键：① 在 collectPendingResumes 之后 —— 恢复标记本身也必须落进主库，
+	// 否则"记录已写入"仍然只是一个 WAL 事实；② 在下面那些可能卡住的收尾（webhook /
+	// dispatcher / 插件 deactivate）之前 —— 2026-09-17 的停机就是在插件阶段被卡住，
+	// 10 秒后被 supervisor SIGKILL，丢掉了约 2 分钟的已提交迭代与 2 条恢复标记。
+	// TRUNCATE 会把全部 WAL 帧写回主库并重置 WAL；它受 busy_timeout(10s) 约束、
+	// 失败只 WARN，绝不阻塞停机。
+	if webDB != nil {
+		if err := webDB.CheckpointForShutdown(); err != nil {
+			log.WithError(err).Warn("Shutdown WAL checkpoint incomplete — data already acknowledged may be lost if this process is SIGKILLed; continuing shutdown")
+		}
+	}
+
 	// 关闭 Webhook 事件服务器
 	if webhookServer != nil {
 		webhookServer.Stop()
