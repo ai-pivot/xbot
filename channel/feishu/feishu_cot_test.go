@@ -190,39 +190,6 @@ func TestFeishuCoT_EventContentTruncated(t *testing.T) {
 	}
 }
 
-// 全量推送 ⇒ 只写增量（否则思考区把整段推理重复 N 遍）。
-func TestFeishuCoTRenderer_ReasoningDeltas(t *testing.T) {
-	c, calls := newFakeCoT(t, "chat_1")
-	r := newFeishuCoTRenderer("chat_1", c)
-	r.onProgress(&protocol.ProgressEvent{TurnID: 3, Phase: "iteration", Iteration: 1})
-	r.onStreamContent("", "推理")
-	r.onStreamContent("", "推理一步")
-	r.onStreamContent("", "推理一步一步")
-	r.close("")
-	if err := c.flushNow(); err != nil {
-		t.Fatalf("flushNow: %v", err)
-	}
-
-	var joined strings.Builder
-	types := eventTypes(t, calls)
-	for _, call := range *calls {
-		for _, e := range call.Events {
-			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
-				continue
-			}
-			var payload map[string]any
-			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
-			joined.WriteString(payload["delta"].(string))
-		}
-	}
-	if joined.String() != "推理一步一步" {
-		t.Fatalf("reasoning deltas concatenate to %q, want the full text exactly once", joined.String())
-	}
-	if !strings.Contains(strings.Join(types, ","), "REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT") {
-		t.Fatalf("missing reasoning lifecycle: %v", types)
-	}
-}
-
 // 工具结果按 dsh-lark 的 1500 字符上限截断（rune 安全）。
 func TestFeishuCoTRenderer_ToolResultBounded(t *testing.T) {
 	if got := cotBoundResult(strings.Repeat("x", 2000)); len([]rune(got)) != cotMaxToolResultRunes {
@@ -418,152 +385,6 @@ func TestFeishuCoT_CreateUsesRealChatID(t *testing.T) {
 	// 真实 id 才允许 chat_id 形态
 	if got := cotReceiveIDType(f.cotReceiveID("chat_SYNTHETIC")); got != "chat_id" {
 		t.Fatalf("real oc_ id must use chat_id, got %q", got)
-	}
-}
-
-// ⚠️ 推理**必须**能被结构化进度驱动：真实部署里推理随 ProgressEvent 的
-// ReasoningStreamContent 下发（而不是 SendStreamContent 回调）——此前 onProgress
-// 只消费工具字段 ⇒ 飞书思考区「只有工具、没有推理」（用户 2026-09-17 报告：
-// web 上看得到 Thought/正文，飞书里只剩 Called tools）。
-func TestFeishuCoTRenderer_ProgressCarriesReasoning(t *testing.T) {
-	c, calls := newFakeCoT(t, "chat_1")
-	r := newFeishuCoTRenderer("chat_1", c)
-	// 第一次结构化进度：带全量推理
-	r.onProgress(&protocol.ProgressEvent{
-		TurnID: 9, Phase: "thinking", Iteration: 1,
-		ReasoningStreamContent: "我在看硬盘占用",
-	})
-	// 第二次：推理继续累积（全量）+ 一个工具
-	r.onProgress(&protocol.ProgressEvent{
-		TurnID: 9, Phase: "tool_exec", Iteration: 1,
-		ReasoningStreamContent: "我在看硬盘占用，先跑 df",
-		ActiveTools:            []protocol.ToolProgress{{Name: "Shell", Iteration: 1, Status: "running"}},
-	})
-	r.close("")
-	if err := c.flushNow(); err != nil {
-		t.Fatalf("flushNow: %v", err)
-	}
-
-	var reasoning strings.Builder
-	types := eventTypes(t, calls)
-	for _, call := range *calls {
-		for _, e := range call.Events {
-			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
-				continue
-			}
-			var payload map[string]any
-			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
-			reasoning.WriteString(payload["delta"].(string))
-		}
-	}
-	if reasoning.String() != "我在看硬盘占用，先跑 df" {
-		t.Fatalf("思考区必须拿到推理全文（增量拼接），got %q", reasoning.String())
-	}
-	if !strings.Contains(strings.Join(types, ","), "REASONING_MESSAGE_START,REASONING_MESSAGE_CONTENT") {
-		t.Fatalf("缺少推理生命周期: %v", types)
-	}
-}
-
-// ⚠️ **工具开始后迟到的推理尾巴必须并回同一块** —— 用户 2026-09-17 截图实证：
-// 飞书里推理停在 `Let me create /tmp/ems_weather.py`（**不是推理结尾**），而该迭代
-// 的真实推理有 1864 字符（DB `iteration_history` 真值），后面还有
-// 「based on the Qinghai one … Let me write the script.」。
-//
-// 根因：reasoning 曾改成「每块独立 id」⇒ 工具开始后再到的尾巴会开**新块**，落到
-// 工具之后（或与下一迭代推理混在一起）⇒ 观感就是「截断 + 位置错乱」。
-// dsh-lark 契约（src/cot.ts）：每轮一个 `reasoning-${turn}`，工具开始只 END，
-// 尾巴再用**同一 id** START ⇒ 平台按 id 归并回同一块，永不缺内容。
-func TestFeishuCoTRenderer_ReasoningTailAfterToolMergesIntoOneBlock(t *testing.T) {
-	c, calls := newFakeCoT(t, "chat_1")
-	r := newFeishuCoTRenderer("chat_1", c)
-	r.onProgress(&protocol.ProgressEvent{TurnID: 7, Phase: "thinking", Iteration: 1,
-		ReasoningStreamContent: "前 1800 字符的推理"})
-	// 工具开始 ⇒ 推理块先 END（dsh 同）。
-	r.onProgress(&protocol.ProgressEvent{TurnID: 7, Phase: "tool_exec", Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{{Name: "FileCreate", CallID: "call_1", Iteration: 1, Status: "running"}}})
-	// 尾巴**迟到**（结构化进度晚于工具事件到达）—— 必须并回同一块。
-	r.onProgress(&protocol.ProgressEvent{TurnID: 7, Phase: "tool_exec", Iteration: 1,
-		ReasoningStreamContent: "前 1800 字符的推理 + 尾巴"})
-
-	r.close("")
-	if err := c.flushNow(); err != nil {
-		t.Fatalf("flushNow: %v", err)
-	}
-	ids := map[string]bool{}
-	var text strings.Builder
-	for _, call := range *calls {
-		for _, e := range call.Events {
-			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
-				continue
-			}
-			var payload map[string]any
-			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
-			ids[payload["messageId"].(string)] = true
-			text.WriteString(payload["delta"].(string))
-		}
-	}
-	if len(ids) != 1 {
-		t.Fatalf("尾巴必须并回同一块（dsh: 每轮一个 reasoning id），got ids=%v", ids)
-	}
-	if text.String() != "前 1800 字符的推理 + 尾巴" {
-		t.Fatalf("推理全文必须完整（不得截断），got %q", text.String())
-	}
-}
-
-// ⚠️ 推理块的 messageId **每迭代一个**（`reasoning-<turn>-<iter>`）：web 上是
-// Thought→工具→Thought→工具 逐迭代交错，CoT 必须同构。曾试过「每块独立 id」（工具
-// 开始后迟到的尾巴变成新块 ⇒ 截断观感）和「每轮一个 id」（整轮推理全并进第一块 ⇒
-// 用户 2026-09-17 截图「所有 cot 合并到了最开头」）。正确契约：**同一迭代内**共用
-// 一个 id（迟到的尾巴并回原块，不截断），**跨迭代**换新 id（位置正确）。
-func TestFeishuCoTRenderer_ReasoningIsOneBlockPerIteration(t *testing.T) {
-	c, calls := newFakeCoT(t, "chat_1")
-	r := newFeishuCoTRenderer("chat_1", c)
-	// 迭代 1：推理 → 工具（工具开始 ⇒ 结束推理块）
-	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 1, ReasoningStreamContent: "第一段推理"})
-	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "tool_exec", Iteration: 1,
-		ActiveTools: []protocol.ToolProgress{{Name: "Shell", CallID: "c1", Iteration: 1, Status: "running"}}})
-	// 迭代 2：再来一段推理 ⇒ 必须开新块（位置在迭代 1 的工具之后）
-	r.onProgress(&protocol.ProgressEvent{TurnID: 9, Phase: "thinking", Iteration: 2, ReasoningStreamContent: "第二段推理"})
-	r.close("")
-	if err := c.flushNow(); err != nil {
-		t.Fatalf("flushNow: %v", err)
-	}
-
-	var starts, ends []string
-	blocks := map[string]*strings.Builder{}
-	for _, call := range *calls {
-		for _, e := range call.Events {
-			et := e["event_type"].(string)
-			if et != "REASONING_MESSAGE_START" && et != "REASONING_MESSAGE_END" && et != "REASONING_MESSAGE_CONTENT" {
-				continue
-			}
-			var payload map[string]any
-			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
-			id, _ := payload["messageId"].(string)
-			switch et {
-			case "REASONING_MESSAGE_START":
-				starts = append(starts, id)
-			case "REASONING_MESSAGE_END":
-				ends = append(ends, id)
-			default:
-				if blocks[id] == nil {
-					blocks[id] = &strings.Builder{}
-				}
-				blocks[id].WriteString(payload["delta"].(string))
-			}
-		}
-	}
-	if len(starts) != 2 {
-		t.Fatalf("两个迭代应各开一个推理块，got starts=%v", starts)
-	}
-	if starts[0] == starts[1] {
-		t.Fatalf("推理块必须逐迭代一个 id（否则整轮推理并进第一块、堆在最开头）: %v", starts)
-	}
-	if len(ends) != 2 || ends[0] != starts[0] || ends[1] != starts[1] {
-		t.Fatalf("REASONING_MESSAGE_END 必须闭合各自的块: starts=%v ends=%v", starts, ends)
-	}
-	if blocks[starts[0]].String() != "第一段推理" || blocks[starts[1]].String() != "第二段推理" {
-		t.Fatalf("每块的推理必须完整且不串块: %q / %q", blocks[starts[0]].String(), blocks[starts[1]].String())
 	}
 }
 
@@ -783,41 +604,6 @@ func TestFeishuCoTRenderer_NarrationRendersBeforeItsOwnTool(t *testing.T) {
 	}
 }
 
-// ⚠️ 引擎**每个 LLM chunk 回调一次**（一轮上千次）：逐 chunk 写 CoT 事件会把一轮
-// 放大成上千事件，平台侧表现为「只有第一个迭代渲染，后面迭代都不渲染」
-// （用户 2026-09-17 报告）。必须按时间片合并成少量大批（dsh-lark 同为少量大批）。
-func TestFeishuCoTRenderer_CoalescesReasoningEvents(t *testing.T) {
-	c, calls := newFakeCoT(t, "chat_1")
-	r := newFeishuCoTRenderer("chat_1", c)
-	full := ""
-	for i := 1; i <= 200; i++ {
-		full += "x"
-		r.onStreamContent("", full)
-	}
-	r.close("")
-	if err := c.flushNow(); err != nil {
-		t.Fatalf("flushNow: %v", err)
-	}
-	n, text := 0, ""
-	for _, call := range *calls {
-		for _, e := range call.Events {
-			if e["event_type"] != "REASONING_MESSAGE_CONTENT" {
-				continue
-			}
-			n++
-			var payload map[string]any
-			_ = json.Unmarshal([]byte(e["content"].(string)), &payload)
-			text += payload["delta"].(string)
-		}
-	}
-	if n > 5 {
-		t.Fatalf("200 次 chunk 回调必须合并成少量事件（否则平台只渲染开头），got %d 个事件", n)
-	}
-	if text != full {
-		t.Fatalf("合并后内容必须完整，got %d 字符 want %d", len(text), len(full))
-	}
-}
-
 // ⚠️ 瞬时写失败**绝不能**直接熔断：旧实现 `pending = nil` + broken=true ⇒ 该 turn
 // 后面的思考过程全部静默丢弃（用户 2026-09-17 报告：「后面的 cot 都不渲染」）。
 func TestFeishuCoT_TransientWriteFailureRetriesInsteadOfDropping(t *testing.T) {
@@ -884,7 +670,7 @@ func TestFeishuCoTRenderer_EventOrderIsLinear(t *testing.T) {
 			}
 		}
 	}
-	want := []string{"r:推理1", "t:正文1", "tool:call_1", "r:推理2", "t:正文2", "tool:call_2"}
+	want := []string{"t:正文1", "tool:call_1", "t:正文2", "tool:call_2"}
 	if strings.Join(order, "|") != strings.Join(want, "|") {
 		t.Fatalf("事件顺序必须线性一致（合并不得改变顺序）:\n got %v\nwant %v", order, want)
 	}
@@ -946,5 +732,26 @@ func TestFeishuCoTRenderer_NarrationWrittenExactlyOnce(t *testing.T) {
 	}
 	if n != 1 || text != "一段正文" {
 		t.Fatalf("正文必须恰好写一次且内容完整，got n=%d text=%q", n, text)
+	}
+}
+
+// 用户 2026-09-17：「飞书 cot 模式不渲染 reasoning 了，只渲染 content。
+// reasoning 太多了」—— CoT **绝不**再发任何 REASONING_MESSAGE_* 事件
+// （推理只存在于 web / 本地，飞书思考过程只留正文与工具调用）。
+// 恢复方式：把 cotEmitReasoning 置 true（渲染逻辑完整保留）。
+func TestFeishuCoTRenderer_NoReasoningEvents(t *testing.T) {
+	c, calls := newFakeCoT(t, "chat_1")
+	r := newFeishuCoTRenderer("chat_1", c)
+	r.onProgress(&protocol.ProgressEvent{TurnID: 11, Phase: "thinking", Iteration: 1, ReasoningStreamContent: "第一段推理"})
+	r.onStreamContent("", "更多推理")
+	r.onProgress(&protocol.ProgressEvent{TurnID: 11, Phase: "tool_exec", Iteration: 1,
+		ActiveTools: []protocol.ToolProgress{{Name: "Shell", Status: "running"}}})
+	r.onProgress(&protocol.ProgressEvent{TurnID: 11, Phase: "done", Iteration: 1})
+	r.close("")
+
+	for _, et := range eventTypes(t, calls) {
+		if strings.HasPrefix(et, "REASONING_MESSAGE") {
+			t.Fatalf("CoT 不得再发 reasoning 事件（用户要求只发 content + 工具），got %s", et)
+		}
 	}
 }

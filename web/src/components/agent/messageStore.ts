@@ -309,26 +309,42 @@ export class MessageStore {
         ...live.streamingTools,
       ].filter((t) => t && t.name)
       if (inFlightTools.length > 0) {
-        const maxIter = live.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
-        const lastIter = live.iterations[live.iterations.length - 1]
-        // If the last iteration has no tools, fold into it; otherwise append.
-        if (lastIter && (!lastIter.tools || lastIter.tools.length === 0)) {
-          live.iterations = [
-            ...live.iterations.slice(0, -1),
-            { ...lastIter, tools: inFlightTools, toolCount: inFlightTools.length },
-          ]
+        // ⛔ 编号必须用**规范当前迭代** live.lastIter（引擎的迭代计数器，也是
+        // reduce.foldInFlightToIterations / derive.foldToolsIntoIterations 用的
+        // 同一个号）。
+        //
+        // 旧实现「最后迭代没工具就折进去，否则 append maxIter+1，并把
+        // live.content / live.reasoningStreamContent 一起复制过去」是错的：
+        // 流式文本属于**当前迭代**，而当前迭代本身已经有条目（只是它的工具还没
+        // 折进来）⇒ 同一个物理迭代被物化成 N 和 N+1 两条、reasoning 一字不差地
+        // 渲染两遍（用户 2026-09-17 截图：AskUser 弹窗前后的 `Thought 4930 chars`
+        // 各一次；标题「上迭代 reasoning 在 askuser 后重复渲染」）。
+        // 现在：同号合并（工具去重），无该号才补建，且补建时带上属于它的流文本。
+        const target = live.lastIter > 0
+          ? live.lastIter
+          : live.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+        const arr = [...live.iterations]
+        const idx = arr.findIndex((it) => it.iteration === target)
+        if (idx >= 0) {
+          const existing = arr[idx]
+          const seen = new Set((existing.tools ?? []).map((t) => `${t.name}\u0000${t.label ?? ''}`))
+          const added = inFlightTools.filter((t) => !seen.has(`${t.name}\u0000${t.label ?? ''}`))
+          arr[idx] = {
+            ...existing,
+            tools: [...(existing.tools ?? []), ...added],
+            toolCount: (existing.toolCount ?? 0) + added.length,
+          }
         } else {
-          live.iterations = [
-            ...live.iterations,
-            {
-              iteration: maxIter + 1,
-              content: live.content || '',
-              reasoning: live.reasoningStreamContent || '',
-              tools: inFlightTools,
-              toolCount: inFlightTools.length,
-            },
-          ]
+          // 该迭代此前没有任何条目（lastIter 未被 snapshot）——补建。
+          arr.push({
+            iteration: target,
+            content: live.content || '',
+            reasoning: live.reasoningStreamContent || '',
+            tools: inFlightTools,
+            toolCount: inFlightTools.length,
+          })
         }
+        live.iterations = arr
       }
       slot.live = { ...live, frozen: true }
       this.invalidate()

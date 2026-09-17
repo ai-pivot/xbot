@@ -111,6 +111,60 @@ describe('MessageStore — 跨 turn 迭代号碰撞（turn-vanish P0）', () => 
   })
 })
 
+// ── AskUser：上迭代 reasoning 不得重复渲染（2026-09-17 用户截图）──
+describe('MessageStore — AskUser 上迭代 reasoning 去重', () => {
+  it('freeze 折在飞工具必须用当前迭代号（不得自造 maxIter+1 并复制 reasoning）', () => {
+    const s = new MessageStore()
+    s.setUser(360, user('u360', 'q', 360))
+    // 真实形态：迭代 1 已渲染（reasoning R4930 + 已有工具），AskUser 在本迭代
+    // 完成、live 的流式字段仍持有本迭代的 reasoning（lastIter=1）。
+    s.updateLive(360, liveState(360, {
+      content: '这条我需要先确认一下语义…',
+      reasoningStreamContent: 'R4930',
+      lastIter: 1,
+      iterations: [
+        {
+          iteration: 1,
+          content: '这条我需要先确认一下语义…',
+          reasoning: 'R4930',
+          tools: [{ name: 'Grep', label: 'x', status: 'done', elapsedMs: 1, summary: '', detail: '', args: '', toolHints: '', iteration: 1 }],
+          toolCount: 1,
+        },
+      ],
+      completedTools: [{ name: 'AskUser', label: '', status: 'done', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '', iteration: 1 }],
+    }))
+
+    s.freeze(360)
+
+    const row = s.toRows()[1]
+    // ① 不得出现编号 2（旧实现自造 maxIter+1）
+    expect(row.iterations.map((it) => it.iteration)).toEqual([1])
+    // ② reasoning 只渲染一份（旧实现会渲染两份 → 用户截图）
+    expect(row.iterations.filter((it) => it.reasoning === 'R4930')).toHaveLength(1)
+    // ③ 在飞工具折进**本**迭代，且不重复计数
+    expect(row.iterations[0].tools.map((t) => t.name)).toEqual(['Grep', 'AskUser'])
+  })
+
+  it('当前迭代尚无条目（lastIter 未被 snapshot）→ 补建该号，仍只有一份 reasoning', () => {
+    const s = new MessageStore()
+    s.setUser(361, user('u361', 'q', 361))
+    s.updateLive(361, liveState(361, {
+      content: 'partial',
+      reasoningStreamContent: 'R2',
+      lastIter: 2,
+      iterations: [iter(1)],
+      activeTools: [{ name: 'Shell', label: '', status: 'running', elapsedMs: 0, summary: '', detail: '', args: '', toolHints: '', iteration: 2 }],
+    }))
+
+    s.freeze(361)
+
+    const row = s.toRows()[1]
+    expect(row.iterations.map((it) => it.iteration)).toEqual([1, 2])
+    expect(row.iterations.filter((it) => it.reasoning === 'R2')).toHaveLength(1)
+    expect(row.iterations[1].tools.map((t) => t.name)).toEqual(['Shell'])
+  })
+})
+
 // ── cancel 冻结 ──
 describe('MessageStore — cancel 冻结', () => {
   it('cancel 后 assistant=[interrupted] + frozen live → 合并渲染（content 用 live）', () => {

@@ -75,6 +75,13 @@ type feishuCoTRenderer struct {
 const (
 	cotTextFlushInterval = 250 * time.Millisecond
 	cotTextChunkRunes    = 1024
+
+	// cotEmitReasoning 控制飞书 CoT（思考过程）是否输出 reasoning。
+	//
+	// 用户 2026-09-17：「飞书 cot 模式不渲染 reasoning 了，只渲染 content。
+	// reasoning 太多了」⇒ 关闭。渲染逻辑完整保留（唯一的写出点
+	// emitReasoningLocked 里掐断），置 true 即可一键恢复。
+	cotEmitReasoning = false
 )
 
 func newFeishuCoTRenderer(chatID string, cot *feishuCoT) *feishuCoTRenderer {
@@ -217,8 +224,15 @@ func (r *feishuCoTRenderer) onStreamContent(content, reasoning string) {
 
 // emitReasoningLocked 把**全量推理文本**按增量写进思考区（唯一的推理写出点：
 // 流式回调与结构化进度两条来源共用，避免两份实现漂移）。
+//
+// ⛔ 用户 2026-09-17：「飞书 cot 模式不渲染 reasoning 了，只渲染 content。
+// reasoning 太多了」——推理**不再**写入飞书 CoT（思考过程），只发正文与工具调用。
+// 这里是唯一的写出点：在此处掐断，两条来源（流式回调 / 结构化进度）同时生效，
+// flushReasoningLocked / closeReasoningLocked 自然退化为 no-op（pendingReasoning
+// 恒空、reasoningOpen 恒 false）。保留全部渲染逻辑与 cotEmitReasoning 开关：
+// 置 true 即可一键恢复（用户可随时改主意）。
 func (r *feishuCoTRenderer) emitReasoningLocked(full string) {
-	if full == "" {
+	if !cotEmitReasoning || full == "" {
 		return
 	}
 	delta := cotDelta(r.lastReasoning, full)
