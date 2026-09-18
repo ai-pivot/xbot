@@ -135,12 +135,23 @@ func (c *immediateHistoryConn) QueryRow(query string, args ...any) *sql.Row {
 
 // withImmediateHistoryWrite binds the whole semantic operation to one SQLite
 // connection and acquires the write lock before any replay or validation read.
+//
+// ⛔ The ENTIRE BEGIN..COMMIT window holds the process-wide write gate
+// (db.writeMu). SQLite allows exactly one writer, and the modernc driver can
+// return SQLITE_BUSY on the write-lock acquisition path WITHOUT consulting
+// busy_timeout (see db.writeMu). Serializing in-process removes the collision
+// at the SOURCE — no retries, no fallbacks. 2026-09-18 P0: a transient lock
+// used to abort a whole SubAgent turn (20 iterations lost).
 func (s *SessionService) withImmediateHistoryWrite(fn func(historyQueryExecer) error) error {
 	db, err := s.conn()
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
+	// Gate BEFORE taking a pooled connection: waiting writers must not pin
+	// connections (the pool has only 4).
+	s.db.writeMu.Lock()
+	defer s.db.writeMu.Unlock()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire history write connection: %w", err)

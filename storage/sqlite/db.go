@@ -34,6 +34,26 @@ type DB struct {
 	mu           sync.RWMutex
 	historyLocks [historyLockStripes]sync.Mutex
 
+	// writeMu serializes EVERY in-process write transaction.
+	//
+	// SQLite allows exactly one writer at a time; WAL only removes the
+	// reader/writer conflict. The DSN's busy_timeout(10000) makes a second
+	// writer wait — but the modernc (pure-Go) driver can return SQLITE_BUSY on
+	// the **write-lock acquisition path without consulting the busy handler**
+	// (the same hole user_token_usage.go originally worked around with its own
+	// writeMu). Under a large multi-agent orchestration many sessions/SubAgents
+	// (each its own tenant) write concurrently, so a collision used to abort a
+	// whole turn — 2026-09-18 P0:
+	//   `persist message batch: begin immediate history write:
+	//    database is locked (5) (SQLITE_BUSY)` (20 iterations of work lost).
+	//
+	// Serializing in-process removes the collision at the SOURCE — no retries,
+	// no fallbacks, no defensive busy-checks. SQLite itself serializes writers,
+	// so the gate costs nothing in write throughput; it only prevents the
+	// driver-level collision. EVERY write transaction in this package MUST hold
+	// it for the whole BEGIN..COMMIT window.
+	writeMu sync.Mutex
+
 	// WAL observability (see logWALState). Remembers the last observed
 	// <db>-wal file so that a replacement (unlink + recreate) — which is how
 	// committed frames can end up in a file that no longer has a name — is

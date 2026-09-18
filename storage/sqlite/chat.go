@@ -251,6 +251,10 @@ func (s *ChatService) createChat(channel, senderID, label string) (string, error
 // UpdateChatSortOrders batch-updates sort_order for multiple chats.
 // orders is a map of chatID → sort_order. Only web-channel chats are updated.
 func (s *ChatService) UpdateChatSortOrders(channel, senderID string, orders map[string]int) error {
+	// Process-wide write gate — see db.writeMu.
+	s.db.writeMu.Lock()
+	defer s.db.writeMu.Unlock()
+
 	conn := s.db.Conn()
 	tx, err := conn.Begin()
 	if err != nil {
@@ -292,6 +296,10 @@ func (s *ChatService) DeleteChat(channel, senderID, chatID string) error {
 		"SELECT id FROM tenants WHERE channel = ? AND chat_id = ?",
 		channel, chatID,
 	).Scan(&tenantID)
+
+	// Process-wide write gate — see db.writeMu.
+	s.db.writeMu.Lock()
+	defer s.db.writeMu.Unlock()
 
 	tx, err := conn.Begin()
 	if err != nil {
