@@ -425,6 +425,18 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	SetImageResolver(resolver)
 	ag.LLMFactory().SetImageResolver(resolver)
 
+	// ── Web-only tool: share_file ─────────────────────────────────────────
+	// Registers the `share_file` tool that lets the agent publish a local file
+	// as a web-accessible URL. Uses the same OSS provider as web uploads
+	// (local disk / Qiniu / S3). Only registered when web is enabled —
+	// pure CLI/Feishu deployments don't have a web server to serve the URL.
+	if cfg.Web.Enable && imgProvider != nil {
+		sharer := NewWebFileSharer(imgProvider, config.XbotHome())
+		shareTool := tools.NewShareFileTool(sharer)
+		ag.RegisterCoreTool(shareTool)
+		ag.RegisterTool(shareTool)
+	}
+
 	// 注册插件 channel（从 ChannelProviderRegistry 查找）
 	reg := GetChannelProviderRegistry()
 	if reg != nil {
