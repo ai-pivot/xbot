@@ -891,8 +891,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // ⚠️ 空壳占位（user-only 历史行组成的 frozen 空壳）必须升级为 live ——
       // DB 权威快照声明该 turn 正在运行；不升级则 activeTurn=null → 后续
       // stream 事件全部被丢弃（用户报告："切换或刷新后只显示 history，
-      // live progress 不显示"）。committed/有输出 frozen 不动（DB 行更权威，
-      // 快照可能滞后于 SSE commit）。
+      // live progress 不显示"）。
       let activeTurn: TurnID | null = null
       if (s.activeTurn !== null) {
         const t = turns.get(s.activeTurn)
@@ -909,6 +908,42 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             user: existing?.user ?? null,
             phase: { kind: 'live', data: ev.active.snapshot },
             requestID: existing?.requestID ?? null,
+          })
+          activeTurn = tid
+        } else {
+          // ⚠️ P0（2026-09-18 用户报告「手机端 busy 会话熄屏再打开，loading 后状态
+          // 不对：明明 busy 却看不到最新进度，且再也不更新」）────────────────────
+          // DB 里已有该 turn 的中间行（增量持久化的 assistant/tool 行 + 已完成迭代的
+          // iteration_history）⇒ historyToReplaced 把它折成 **committed**；而服务端
+          // active_progress（同一次 fetchHistory 返回的一致快照；phase ∈ {done,frozen}
+          // 时 historyToReplaced 根本不会构造 ev.active，turn 结束时后端也会删掉该
+          // 快照）明确声明它 **仍在跑**。旧实现只升级「无 turn / 空壳 frozen」，
+          // committed（"跑了一半"的**常态**）被原样保留 ⇒ activeTurn=null：
+          //   · liveProgressFromState 返回 EMPTY ⇒ 看不到 live 进度
+          //   · 后续 iteration/stream 事件先被「committed 遮蔽」拦下
+          //     （ev.iter 不大于已落库 maxIter 时 return s）⇒ 界面永久冻结
+          // ⇒ 按服务端的权威声明升级回 live；两侧迭代 union（DB 侧可能比快照更全：
+          // 快照 iteration_history 只保留尾部 SNAPSHOT_ITERATION_LIMIT 条），
+          // 同号以**快照**权威（服务端 live 比 DB 增量行新——与 3.5 同向）。
+          // 对照保护（本文件 P0 测试「没有 active 快照时 committed 不得被复活」）：
+          // 只有在 ev.active 指向该 turn 时才升级，真结束的 turn 不受影响。
+          const dbIters = existing.phase.kind === 'committed'
+            ? existing.phase.payload.iterations
+            : existing.phase.data.iterations
+          const dbContent = existing.phase.kind === 'committed'
+            ? existing.phase.payload.content
+            : existing.phase.data.content
+          const snap = ev.active.snapshot
+          turns.set(tid, {
+            ...existing,
+            phase: {
+              kind: 'live',
+              data: {
+                ...snap,
+                content: nonEmptyStr(snap.content) ?? dbContent,
+                iterations: mergeIterations(dbIters, snap.iterations),
+              },
+            },
           })
           activeTurn = tid
         }
