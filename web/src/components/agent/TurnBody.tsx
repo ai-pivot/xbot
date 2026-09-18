@@ -98,6 +98,20 @@ const canWindow = (): boolean =>
 const VERIFY_DELAY_MS = 400
 
 /**
+ * 冻结（卸载内容）模式的**高度下限**。
+ *
+ * 低于此值一律视为「高度不可信」⇒ **保持内容挂载**，绝不冻结成空块。
+ *
+ * 为什么需要它（2026-09-18 用户报告）：「内容全部消失」是**高度计算**问题 ——
+ * 向上滚动能看到历史，再滚回来又消失。机制：内容未定形时的**瞬态小高**只要连续
+ * 两次同值即可 `settled`、复核一次即可 `verified`，于是被误判为可信高度并冻结成
+ * 一条近乎为零的空盒（历史同源 P0：26.65px 空块 =「部分 tool 渲染为空」）。
+ * 真实迭代块至少含一个工具 pill / 思考行（≥120px）⇒ 用下限兜住"小高"这一类
+ * 不可信测量；宁可多挂载一点内容，也绝不出现空块。
+ */
+const MIN_FREEZE_HEIGHT = 120
+
+/**
  * 「这次测量是不是一次真实测量」—— 元素必须在文档里、有渲染盒、且有正的宽高。
  *
  * ⛔ 没有布局的测量（面板被移动端外壳 `display:none`、元素已脱离文档、宽高为 0）
@@ -491,6 +505,13 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     const height = tracker.get(hKey)
     if (height === undefined || !tracker.isSettled(hKey)) return undefined
     if (!tracker.isVerified(hKey)) return undefined
+    // ⛔ 高度下限（2026-09-18 用户报告：「内容全部消失是高度计算相关 bug —— 向上滚动
+    // 能看到历史，再滚回来 bug 也消失」）：**瞬态小高**（内容尚未定形时的首帧测量）
+    // 只要连续两次同值即可 settled、再复核一次就 verified ⇒ 块被冻结成一条近乎为零的
+    // 空盒（历史 P0：26.65px 空块 =「部分 tool 渲染为空」）。真实迭代块至少含一个工具
+    // pill / 思考行（≥120px）⇒ **低于下限一律视为"高度不可信"**，保持内容挂载
+    // （宁可多挂一点，也绝不出现空块）。
+    if (height < MIN_FREEZE_HEIGHT) return undefined
     if (near.has(iter.iteration as number)) return undefined
     if (verifyingSet.has(hKey)) return undefined
     return height
