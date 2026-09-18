@@ -124,6 +124,15 @@ function isLayoutable(el: HTMLElement, rect: { width: number; height: number }):
  */
 const COMMITTED_CHUNK_SIZE = 64
 
+/**
+ * PERF-4 计数钩子：本帧"重算决策"的块数（每个被重算的 chunk 计其长度）。
+ *
+ * 用途：守护"脏帧只重算受影响的 chunk"。修复前（整帧脏）尾部一次高度变化会把
+ * **全部 N 个块**重算一遍；修复后 ≤ 一个 chunk（用户报告："为什么这么慢…
+ * 理论上只要计算倒数的几十个迭代…应该快如闪电"）。
+ */
+export const __turnBodyDecisionCompute = { value: 0 }
+
 interface IterationBlockProps {
   iter: WebIteration
   turnID?: number
@@ -369,12 +378,12 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   const [verifying, setVerifying] = useState<ReadonlySet<string>>(() => new Set())
   /** 待补充的"第二次一致采样"定时器（合并式：一个定时器 + 每 key deadline，见 iterationSettleScheduler.ts）。 */
   const settleSchedulerRef = useRef<SettleScheduler | null>(null)
-  /** 采样实现经 ref 读**最新**的 tracker/invalidate（调度器只建一次，不能钉住旧引用）。
-   *  ⛔ 初值必须是 null：`invalidate` 在本组件里声明于此处**之后**（TDZ），
-   *  在渲染期引用它 → `Cannot access 'invalidate' before initialization`（实测炸 5 个测试）。 */
-  const settleDepsRef = useRef<{ tracker: IterationHeightTracker; invalidate: () => void } | null>(null)
+  /** 采样实现经 ref 读**最新**的 tracker/invalidateKey（调度器只建一次，不能钉住旧引用）。
+   *  ⛔ 初值必须是 null：`invalidateKey` 在本组件里声明于此处**之后**（TDZ），
+   *  在渲染期引用它 → `Cannot access 'invalidateKey' before initialization`（实测炸 5 个测试）。 */
+  const settleDepsRef = useRef<{ tracker: IterationHeightTracker; invalidateKey: (key: string) => void } | null>(null)
   useEffect(() => {
-    settleDepsRef.current = { tracker, invalidate }
+    settleDepsRef.current = { tracker, invalidateKey }
   })
   if (settleSchedulerRef.current === null) {
     settleSchedulerRef.current = createSettleScheduler({
@@ -387,7 +396,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         const rect = el.getBoundingClientRect()
         if (!isLayoutable(el, rect)) return
         const res = deps.tracker.record(hKey, rect.height, performance.now(), true)
-        if (res.settled || res.changed) deps.invalidate()
+        if (res.settled || res.changed) deps.invalidateKey(hKey)
       },
     })
   }
@@ -407,9 +416,42 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   /** 本帧新冻结、待复核的 key（渲染期收集，effect 里建定时器）。 */
   const pendingVerify = useRef<string[]>([])
 
-  /** 任何"决策输入"变化 → 置脏 + 触发一次重渲染。 */
-  const invalidate = useCallback(() => {
-    dirty.current = true
+  /**
+   * PERF-4（2026-09-18 用户报告「高度估算算得慢、async 计算导致抖动」）：把"脏"从
+   * **整帧**下沉到 **chunk**。
+   *
+   * 为什么必须这样做：`invalidate()` 会被 RO 的**每一次尺寸变化**触发，而流式期间
+   * 尾部块每帧都在长高 ⇒ **每帧都是"脏帧"**。旧实现里"脏帧"是整帧语义 —— 每次都要
+   * 为**全部 N 个迭代**查 tracker（`mutedHeightFor`）并分配 N 长度的 `heights` 数组，
+   * 代价与 turn 总长成正比（用户观察："为什么这么慢…turn 越长越慢"）。而窗口化之后
+   * **真正影响画面的只有视口内的那几十个块**。
+   *
+   * 现在：只有"输入真的变了"的 chunk 进 `dirtyChunks`；其余 chunk 即使这一帧是脏帧也
+   * 原样复用上帧元素（React 在该子树直接 bail）⇒ 每帧代价 = **O(视口内块)**。
+   */
+  const keyToChunk = useRef<Map<string, number>>(new Map())
+  const iterToChunk = useRef<Map<number, number>>(new Map())
+  const dirtyChunks = useRef<Set<number>>(new Set())
+
+  /** 某个高度 key 变了 → 只把它的 chunk 标脏（映射缺失则退化为整帧，保证正确性）。 */
+  const invalidateKey = useCallback((hKey: string) => {
+    const c = keyToChunk.current.get(hKey)
+    if (c === undefined) {
+      dirty.current = true
+    } else {
+      dirtyChunks.current.add(c)
+    }
+    bumpTick()
+  }, [])
+
+  /** 某个迭代的可见性变了 → 只把它的 chunk 标脏。 */
+  const invalidateIter = useCallback((iteration: number) => {
+    const c = iterToChunk.current.get(iteration)
+    if (c === undefined) {
+      dirty.current = true
+    } else {
+      dirtyChunks.current.add(c)
+    }
     bumpTick()
   }, [])
 
@@ -475,7 +517,8 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     if (!canWindow()) return
     const io = new IntersectionObserver(
       (entries) => {
-        let changed = false
+        // PERF-4：可见性变化只标脏**相关 chunk**（不再整帧重算全部 N 个迭代）。
+        const changedIters: number[] = []
         for (const e of entries) {
           const target = e.target as HTMLElement
           const n = Number(target.dataset.iterId)
@@ -490,19 +533,20 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
           const was = nearRef.current.has(n)
           if (e.isIntersecting && !was) {
             nearRef.current.add(n)
-            changed = true
+            changedIters.push(n)
           } else if (!e.isIntersecting && was) {
             nearRef.current.delete(n)
-            changed = true
+            changedIters.push(n)
           }
         }
-        if (changed) invalidate()
+        for (const n of changedIters) invalidateIter(n)
       },
       // 视口上下各扩 1.2 屏 —— 滚动时下一批块已挂载好，避免"滚到才渲染"的白屏。
       { rootMargin: '120% 0px 120% 0px' },
     )
     const ro = new ResizeObserver((entries) => {
-      let changed = false
+      // PERF-4：高度变化只标脏该 key 所在的 chunk（不再整帧重算全部 N 个迭代）。
+      const changedKeys: string[] = []
       for (const e of entries) {
         const el = e.target as HTMLElement
         const key = el.dataset.heightKey
@@ -514,13 +558,13 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         // 高度变了 → 复核裁决一并作废（`record` 内部已经清），必须重新稳定 + 重新复核。
         const res = tracker.record(key, e.contentRect.height, performance.now(), true)
         if (res.changed) {
-          changed = true
+          changedKeys.push(key)
           scheduleSettleSample(key)
         } else if (res.settled) {
-          changed = true // 刚结算 → 可以进入复核（需要一次渲染把决策落下）
+          changedKeys.push(key) // 刚结算 → 可以进入复核（需要一次渲染把决策落下）
         }
       }
-      if (changed) invalidate()
+      for (const k of changedKeys) invalidateKey(k)
     })
     ioRef.current = io
     roRef.current = ro
@@ -546,7 +590,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
       verifyTimers.current.clear()
       settleSchedulerRef.current?.cancelAll()
     }
-  }, [scheduleSettleSample, tracker, invalidate])
+  }, [scheduleSettleSample, tracker, invalidateKey, invalidateIter])
 
   const register = useCallback((hKey: string, el: HTMLDivElement | null) => {
     const prev = elements.current.get(hKey)
@@ -572,6 +616,9 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     turnIDRef.current = turnID
     dirty.current = true
     cache.clear()
+    keyToChunk.current.clear()
+    iterToChunk.current.clear()
+    dirtyChunks.current.clear()
     pendingVerify.current.length = 0
   }
   if (scopeRef.current !== heightScope) {
@@ -580,12 +627,17 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     scopeRef.current = heightScope
     dirty.current = true
     cache.clear()
+    keyToChunk.current.clear()
+    iterToChunk.current.clear()
+    dirtyChunks.current.clear()
     pendingVerify.current.length = 0
   }
   const win = canWindow()
   const near = nearRef.current
   const recompute = dirty.current
   dirty.current = false
+  /** 本帧需要重算决策的 chunk（PERF-4：脏帧不再是"整帧"，而是"这些 chunk"）。 */
+  const touchedChunks = dirtyChunks.current
 
   /**
    * 收集本帧**候选复核**的 key（effect 里为它们建复核定时器）。
@@ -617,12 +669,17 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         }
       }
       if (itemsSame) {
-        // 干净帧 → 元素对象原样复用（React 在该 chunk 子树直接 bail）
-        if (!recompute) {
+        // 未触及的 chunk → 元素对象原样复用（React 在该 chunk 子树直接 bail）。
+        // PERF-4：脏标记按 chunk 下沉。流式期间**尾部块每帧都在长高**，RO 每次都
+        // 触发 invalidate —— 若"脏"仍是整帧语义，就会每帧为全部 N 个迭代重算决策 +
+        // 分配 N 长度数组（用户实测"turn 越长越慢"）。现在这一帧只有 touchedChunks
+        // 里的 chunk 重算，其余原样复用 ⇒ 每帧代价 = O(视口内块)。
+        if (!recompute && !touchedChunks.has(c)) {
           chunks.push(prev.element)
           continue
         }
         // 脏帧 → 重算决策；值没变仍复用（不给 React 造无谓的 props 变更）
+        __turnBodyDecisionCompute.value += len
         const heights = new Array<number | undefined>(len)
         let heightsSame = prev.mutedHeights.length === len
         for (let i = 0; i < len; i++) {
@@ -655,7 +712,15 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     }
     // 2) 新 chunk / items 变了 → 重建该 chunk（尾部 chunk 随流式重渲染）
     const items = contiguous.slice(start, start + len)
+    // PERF-4：登记 key/迭代 → chunk 映射，让"某个 key 变了"能精确标脏对应 chunk
+    // （映射缺失时 `invalidateKey` 退化为整帧，正确性不依赖映射完整性）。
+    for (let i = 0; i < items.length; i++) {
+      keyToChunk.current.set(hKeyFor(items[i]), c)
+      const it = items[i].iteration
+      if (Number.isFinite(it)) iterToChunk.current.set(it as number, c)
+    }
     const heights = new Array<number | undefined>(len)
+    __turnBodyDecisionCompute.value += len
     for (let i = 0; i < len; i++) {
       heights[i] = win ? mutedHeightFor(items[i], win, near, verifying) : undefined
     }
@@ -672,6 +737,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     collectPending(items)
     chunks.push(element)
   }
+  touchedChunks.clear()
   if (cache.size > chunkCount) {
     // 前缀被截断（弱网丢包）→ 清掉越界 chunk，避免缓存泄漏
     for (const k of Array.from(cache.keys())) if (k >= chunkCount) cache.delete(k)
@@ -701,7 +767,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
           next.add(hKey)
           return next
         })
-        invalidate()
+        invalidateKey(hKey)
       }, VERIFY_DELAY_MS)
       verifyTimers.current.set(hKey, timer)
     }
@@ -713,7 +779,8 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   useLayoutEffect(() => {
     if (!canWindow()) return
     if (verifying.size === 0) return
-    let changed = false
+    // PERF-4：复核结果只标脏相关 chunk。
+    const changedKeys: string[] = []
     for (const hKey of Array.from(verifying)) {
       const el = elements.current.get(hKey)
       const finish = () =>
@@ -729,7 +796,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         // 复核失败（元素没了 / 内容没挂回 / 没有布局）：解冻并保持挂载，等真实测量
         tracker.unverify(hKey, performance.now())
         finish()
-        changed = true
+        changedKeys.push(hKey)
         continue
       }
       const res = tracker.record(hKey, rect.height, performance.now(), true)
@@ -742,9 +809,9 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         tracker.markVerified(hKey) // 内容实测高度 == 缓存高度 → 复核通过
       }
       finish()
-      changed = true
+      changedKeys.push(hKey)
     }
-    if (changed) invalidate()
+    for (const k of changedKeys) invalidateKey(k)
   })
 
   return <>{chunks}</>
