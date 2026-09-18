@@ -98,18 +98,30 @@ const canWindow = (): boolean =>
 const VERIFY_DELAY_MS = 400
 
 /**
- * 冻结（卸载内容）模式的**高度下限**。
+ * 「内容被裁剪（压扁）」判定 —— 取代此前的绝对高度下限 `MIN_FREEZE_HEIGHT = 120`。
  *
- * 低于此值一律视为「高度不可信」⇒ **保持内容挂载**，绝不冻结成空块。
+ * ⛔ 为什么高度阈值是错的（2026-09-18 生产 trace 12.gz 实测归因）：真实迭代块的高度
+ * **中位数只有 54px、最低 19px**（"一行文本 + 一个工具 pill"就是一次迭代），而"压扁态"
+ * 约 26px —— 两者**区间重叠** ⇒ 任何高度阈值都不可能同时成立：要么放过空块，要么把
+ * 绝大多数真块排除在窗口化之外（实测 N=2000：`muted 7/2011`、DOM **44k** 而非 2.3k
+ * ⇒ 每帧样式/布局代价 19 倍 ⇒ 掉帧，正是用户报的那次）。
  *
- * 为什么需要它（2026-09-18 用户报告）：「内容全部消失」是**高度计算**问题 ——
- * 向上滚动能看到历史，再滚回来又消失。机制：内容未定形时的**瞬态小高**只要连续
- * 两次同值即可 `settled`、复核一次即可 `verified`，于是被误判为可信高度并冻结成
- * 一条近乎为零的空盒（历史同源 P0：26.65px 空块 =「部分 tool 渲染为空」）。
- * 真实迭代块至少含一个工具 pill / 思考行（≥120px）⇒ 用下限兜住"小高"这一类
- * 不可信测量；宁可多挂载一点内容，也绝不出现空块。
+ * 正确的判据是「内容有没有被夹住」：**直接子元素**的 `scrollHeight > clientHeight`
+ * ⇒ 内容被 `max-height`/`overflow:hidden` 裁剪（内容挂回来了，却量不到它的自然高度）
+ * ⇒ 这次高度不可信，既不能冻结、也不必反复复核（内容一变 ⇒ 高度随之变化 ⇒
+ * `record` 自动清除 clipped 标记）。
+ *
+ * 只看直接子元素：嵌套的**合法**裁剪（工具卡片里"展开查看"的 `max-h` 区域、代码块的
+ * 最大高度）不该让整块失去冻结资格。
  */
-const MIN_FREEZE_HEIGHT = 120
+function contentClipped(el: HTMLElement): boolean {
+  const children = el.children
+  for (let i = 0; i < children.length; i++) {
+    const c = children[i] as HTMLElement
+    if (c.scrollHeight > c.clientHeight + 1) return true
+  }
+  return false
+}
 
 /**
  * 「这次测量是不是一次真实测量」—— 元素必须在文档里、有渲染盒、且有正的宽高。
@@ -505,13 +517,11 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     const height = tracker.get(hKey)
     if (height === undefined || !tracker.isSettled(hKey)) return undefined
     if (!tracker.isVerified(hKey)) return undefined
-    // ⛔ 高度下限（2026-09-18 用户报告：「内容全部消失是高度计算相关 bug —— 向上滚动
-    // 能看到历史，再滚回来 bug 也消失」）：**瞬态小高**（内容尚未定形时的首帧测量）
-    // 只要连续两次同值即可 settled、再复核一次就 verified ⇒ 块被冻结成一条近乎为零的
-    // 空盒（历史 P0：26.65px 空块 =「部分 tool 渲染为空」）。真实迭代块至少含一个工具
-    // pill / 思考行（≥120px）⇒ **低于下限一律视为"高度不可信"**，保持内容挂载
-    // （宁可多挂一点，也绝不出现空块）。
-    if (height < MIN_FREEZE_HEIGHT) return undefined
+    // ⛔ 高度下限（`MIN_FREEZE_HEIGHT`）**已删除** —— 真实迭代块高度中位数 54px、
+    // 最低 19px，与"压扁态 26px"区间重叠 ⇒ 高度阈值会把绝大多数真块挡在窗口化外
+    // （实测 muted 7/2011、DOM 44k）。可信度改由「内容是否被裁剪」判定：裁剪过的块
+    // 永远不会 verified（见复核 effect 的 `contentClipped`），所以这里不需要高度阈值。
+    if (tracker.isClipped(hKey)) return undefined
     if (near.has(iter.iteration as number)) return undefined
     if (verifyingSet.has(hKey)) return undefined
     return height
@@ -706,6 +716,9 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
       const hKey = hKeyFor(items[i])
       if (!tracker.isSettled(hKey)) continue
       if (tracker.isVerified(hKey) || verifyTimers.current.has(hKey)) continue
+      // 已被判"内容被裁剪"（高度不可信）→ 不排复核（否则每 400ms 白量一次）。
+      // 内容一变 ⇒ 高度变化 ⇒ `record` 清除该标记 ⇒ 自动回到候选。
+      if (tracker.isClipped(hKey)) continue
       pendingVerify.current.push(hKey)
     }
   }
@@ -853,6 +866,16 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         tracker.unverify(hKey, performance.now())
         finish()
         changedKeys.push(hKey)
+        continue
+      }
+      if (contentClipped(el)) {
+        // ⛔ 内容被夹住（`max-height`/`overflow:hidden` 压扁）⇒ 量到的不是自然高度，
+        // **不可信**：不冻结（内容保持挂载）、也不再反复复核它。内容一变 ⇒ 高度随之
+        // 变化 ⇒ `record` 清除 clipped 标记 ⇒ 自动回到候选。
+        // （曾经的 `MIN_FREEZE_HEIGHT = 120` 就是想挡这一类，但真块中位数仅 54px ⇒
+        //   阈值把几乎所有块挡在窗口化外，见 `contentClipped` 的注释。）
+        tracker.markClipped(hKey, performance.now())
+        finish()
         continue
       }
       const res = tracker.record(hKey, rect.height, performance.now(), true)

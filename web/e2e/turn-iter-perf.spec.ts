@@ -75,8 +75,7 @@ async function setupMock(page: Page, historyMessages: unknown[] = []) {
 }
 
 /** 40 个高迭代，**一次性提交**（不是流式追加）——视口外的块从未渲染过。 */
-function longTurnHistory(): unknown[] {
-  return Array.from({ length: 40 }, (_, i) => ({
+function longTurnHistory(): unknown[] {  return Array.from({ length: 40 }, (_, i) => ({
     iteration: i + 1,
     thinking: `thinking ${i + 1}`,
     content: Array.from(
@@ -725,6 +724,74 @@ test.describe('history-loaded long turn is windowed', () => {
     expect(stats.mounted).toBeLessThan(60)
     // DOM 规模有界（回归时 120 个全挂载 ≈ 3000+）
     expect(stats.nodes).toBeLessThan(3000)
+
+    await context.close()
+  })
+})
+
+/**
+ * ⛔ 短迭代块也必须被窗口化（2026-09-18 生产 trace 12.gz 的掉帧根因回归守卫）。
+ *
+ * 现场：真实迭代块的高度**中位数只有 54px、最低 19px**（"一行文本 + 一个工具 pill"
+ * 就是一次迭代），而冻结门槛曾硬编码 `MIN_FREEZE_HEIGHT = 120`（假设"真实块 ≥120px"）。
+ * 后果：**几乎所有块都冻结不了** —— 实测 N=2000 短块 `muted 7/2011`、DOM **44k**
+ * （长块对照 2.3k，19 倍）⇒ 每帧样式/布局代价 19 倍 ⇒ 掉帧（主线程 94% busy、
+ * 127 个 ≥16ms 长任务、最长 534ms）。
+ *
+ * 判据（确定性因果量，不是计时）：短块**也必须被窗口化** —— muted 占多数、DOM 有界。
+ * 修复前红（muted ≈ 0、nodes ≈ 26k），修复后绿。
+ */
+function shortHistoryWith(n: number): unknown[] {
+  return Array.from({ length: n }, (_, i) => ({
+    iteration: i + 1,
+    thinking: '',
+    content: `ok ${i + 1}`,
+    completed_tools: [{ name: 'Shell', status: 'done', summary: `cmd ${i + 1}` }],
+  }))
+}
+
+test.describe('short (tool-only) iterations must be windowed too', () => {
+  test('N=1200 短块：绝大多数块被卸载，DOM 有界', async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 1470, height: 842 },
+      deviceScaleFactor: 1,
+    })
+    const page = await context.newPage()
+    await setupMock(page, [
+      { id: 1, role: 'user', content: 'u1', turn_id: 1, timestamp: new Date().toISOString(), iterations: [] },
+      {
+        id: 2,
+        role: 'assistant',
+        content: 'a1',
+        turn_id: 1,
+        timestamp: new Date().toISOString(),
+        iterations: shortHistoryWith(1200),
+      },
+    ])
+    await page.goto(`${BASE}/login`)
+    await page.locator('input').first().fill('test')
+    await page.locator('input[type="password"]').fill('test')
+    await page.locator('button[type="submit"]').click()
+    await page.waitForTimeout(6000)
+
+    const stats = await page.evaluate(() => {
+      const blocks = Array.from(document.querySelectorAll('.iter-block')) as HTMLElement[]
+      const hs = blocks.map((b) => b.getBoundingClientRect().height)
+      return {
+        nodes: document.querySelectorAll('*').length,
+        blocks: blocks.length,
+        muted: blocks.filter((b) => b.dataset.windowMuted === 'true').length,
+        medianH: hs.length ? Math.round(hs.slice().sort((a, b) => a - b)[Math.floor(hs.length / 2)]) : 0,
+      }
+    })
+    console.log('SHORT-ITER-WINDOW-GUARD', JSON.stringify(stats))
+
+    // 场景自证：确实是"短块"（否则本守护失去意义）
+    expect(stats.blocks).toBeGreaterThanOrEqual(1200)
+    expect(stats.medianH).toBeLessThan(120)
+    // 修复前：muted 7/2011、nodes 44k → 红
+    expect(stats.muted).toBeGreaterThan(stats.blocks * 0.5)
+    expect(stats.nodes).toBeLessThan(6000)
 
     await context.close()
   })
