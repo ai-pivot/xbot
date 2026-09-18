@@ -46,6 +46,21 @@ func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 			if err != nil {
 				return "", err
 			}
+			// ⛔ 端点自检（2026-09-18 用户实机事故根因类别）：**宣告给 runner 的端口**必须与
+			// runner 端点**真实绑定**的端口一致。漂移时（如 public_url 指向 web 端口 16000，
+			// 而协议端点在 8080）runner 会打到别的监听上 —— 例如网页 `/ws` 直接 401 ⇒
+			// 日志里只有 `websocket: bad handshake` 无限重连，**过去没有任何一处报错**。
+			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
+				if rs := router.Remote(); rs != nil {
+					if warn := cfg.RunnerEndpointDrift(rs.BoundAddr()); warn != "" {
+						log.WithFields(log.Fields{
+							"runner":     name,
+							"advertised": cfg.PublicWSAddr(),
+							"bound":      rs.BoundAddr(),
+						}).Error("RUNNER_ENDPOINT_DRIFT: " + warn)
+					}
+				}
+			}
 			return buildRunnerConnectCmd(cfg, name, token, mode, dockerImage, workspace, llm), nil
 		},
 		RunnerDelete: func(name string) error {

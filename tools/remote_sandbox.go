@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path"
@@ -62,12 +63,16 @@ type sendEntry struct {
 // NAME only — there is no per-user dimension. Which runner a session uses is
 // decided by the session→runner binding (SandboxRouter + tenants.runner_id).
 type RemoteSandbox struct {
-	runnersMu            sync.RWMutex
-	runners              map[string]*runnerConnection // runnerName → live connection
-	versions             map[string]string            // runnerName → reported version
-	wsServer             *http.Server
-	authToken            string
-	addr                 string
+	runnersMu sync.RWMutex
+	runners   map[string]*runnerConnection // runnerName → live connection
+	versions  map[string]string            // runnerName → reported version
+	wsServer  *http.Server
+	authToken string
+	addr      string
+	// boundAddr 是**真实绑定**的监听地址（net.Listen 之后取 ln.Addr()），例如
+	// "0.0.0.0:8080"。与 addr（请求的地址）区分：启动自检用它比对"宣告给 runner
+	// 的端口"，避免因端口漂移而**静默**交出死地址（2026-09-18 实机事故根因类别）。
+	boundAddr            string
 	store                *RunnerStore
 	sessionRunners       *sync.Map // shared with SandboxRouter: "channel:chatID" → runnerName
 	bindingStore         SessionBindingStore
@@ -151,14 +156,38 @@ func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) 
 		Handler: mux,
 	}
 
+	// ⛔ 同步绑定（2026-09-18 用户实机事故："目标机器当前离线 / bad handshake" 的根因类别）：
+	// 旧实现 `go wsServer.ListenAndServe()` 把绑定放进 goroutine ⇒ **绑定失败（端口被占/
+	// 端口写错）也无人知晓**：构造方照常返回成功，`buildRunnerConnectCmd` 照常铸出一个
+	// 指向**无人监听端口**的地址，runner 永远连不上，而日志里甚至还印着
+	// "listening on <cfg.Addr>"（打的只是"打算"的地址）—— 既是死地址，又让日志撒谎。
+	//
+	// 现在：**先 net.Listen，失败即返回错误**（调用方据此上报"remote 不可用"，绝不假装
+	// 就绪）；并记录**真实绑定地址**（`ln.Addr()`，`0.0.0.0:0` 之类的写法也会解析成具体
+	// 端口），供启动自检与状态展示比对。
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("remote sandbox: listen %s: %w", cfg.Addr, err)
+	}
+	rs.boundAddr = ln.Addr().String()
+
 	go func() {
-		log.Infof("RemoteSandbox WebSocket server listening on %s", cfg.Addr)
-		if err := rs.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		// 打印**真实**绑定地址（不是 cfg.Addr 的打算值）。
+		log.Infof("RemoteSandbox WebSocket server listening on %s (requested %s)", rs.boundAddr, cfg.Addr)
+		if err := rs.wsServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.WithError(err).Error("RemoteSandbox server error")
 		}
 	}()
 
 	return rs, nil
+}
+
+// BoundAddr returns the ACTUALLY bound listener address (e.g. "0.0.0.0:8080"),
+// as opposed to the requested address. Empty until the server is constructed.
+// Startup self-check compares its port against the advertised runner address
+// (config.PublicWSAddr) so a drift can never silently hand runners a dead URL.
+func (rs *RemoteSandbox) BoundAddr() string {
+	return rs.boundAddr
 }
 
 // handleWebSocket handles incoming WebSocket connections from runners.
