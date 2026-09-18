@@ -75,6 +75,12 @@ export interface UseChatMessagesResult {
    *  加载时为 false（live 延迟写入，与 history 一起渲染）；同会话 reload
    *  （resync_required/replay_gap）保持 true（已渲染 live 不得消失）。 */
   historyReady: boolean
+  /** 把当前会话标记为「history 未就绪」—— 用于**一次新的会话激活**（切 tab / 面板
+   *  重新可见进入该会话）：面板里保存的是上一时刻的快照，必须先回到 loading，等
+   *  DB 权威历史落地再渲染（用户判据：会话只要开始切换就应该渲染 loading）。
+   *  ⛔ 只用于"新激活"，绝不可用于同会话的后台 reload（resync/compaction）——
+   *  那条路径重置会让已渲染的 live 消失。 */
+  markHistoryStale: () => void
   error: string | null
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
@@ -366,6 +372,11 @@ export function useChatMessages({
     messagesRef.current = rows
     setMessages(rows)
   }, [store])
+  // markHistoryStale：把当前会话标记为「history 未就绪」（见 UseChatMessagesResult
+  // 的接口注释）—— 用于**一次新的会话激活**（切 tab 进入该面板 / 面板重新可见）。
+  // 只重置 readyHistoryKey（渲染层据此显示 loading），**不动** store/messages：
+  // 历史落地前的保留内容不进渲染，避免"先画旧快照、再被后台对账改写"的一帧错误。
+  const markHistoryStale = useCallback(() => setReadyHistoryKey(null), [])
   // session 切换：清空 store（新会话从零开始，由 reload mergeHistory 重建）
   const prevStoreChatIDRef = useRef(chatID)
   if (prevStoreChatIDRef.current !== chatID) {
@@ -899,6 +910,7 @@ export function useChatMessages({
     messages,
     loading,
     historyReady,
+    markHistoryStale,
     error,
     initialProgress,
     resolvedChatID,

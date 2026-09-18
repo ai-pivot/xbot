@@ -12,7 +12,7 @@
  *   - The main Agent tab follows SessionStore.activeSession directly.
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -226,11 +226,20 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // `reloadChat` 走 history_replaced 的 **merge 语义**（DB 覆盖它【有】的 turn，
   // 状态机持有的 live / post-fetch commit 一律保留），所以不会再出现当年
   // "live 迭代被 history_replaced 清掉"的问题（见本文件 203-210 行的历史备注）。
+  // ⛔ 「一次新的会话激活」= 面板重新变为可见（切 tab / 点侧栏进入该会话）。
+  // 用户判据（2026-09-18）：「会话只要开始切换就应该渲染 loading 了，这才是修复」。
+  // 面板里保存的是**上一次可见时**的快照 —— 直接渲染它再等后台对账回来改写，就是
+  // 用户看到的那「一瞬间的渲染错误」。所以进入即回到 loading，等 DB 权威历史落地。
+  // 必须用 **useLayoutEffect**：与"变为可见"落在同一帧（paint 前提交），否则会先画
+  // 一帧旧内容再翻成 loading（那仍是一帧错误渲染）。
+  const markHistoryStaleRef = useRef(chat.markHistoryStale)
+  markHistoryStaleRef.current = chat.markHistoryStale
   const wasSubscribedRef = useRef(shouldSubscribe)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = wasSubscribedRef.current
     wasSubscribedRef.current = shouldSubscribe
     if (was || !shouldSubscribe || !chatID) return
+    markHistoryStaleRef.current()
     void reloadChat()
   }, [shouldSubscribe, chatID, reloadChat])
   // 历史落地（重载完成且已有消息）后收起 loading 屏幕。
@@ -838,7 +847,12 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     <ToolSessionContext.Provider
       value={{ channel: progressChannel, chatID: progressChatID }}
     >
-    <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
+    <div
+      ref={agentPanelRootRef}
+      data-agent-chat-id={chatID ?? ''}
+      data-agent-visible={isVisible ? '1' : '0'}
+      className="flex h-full min-h-0 flex-col"
+    >
       {!isSubAgent && devMode && (
         <DebugToolbar
           ws={ws}

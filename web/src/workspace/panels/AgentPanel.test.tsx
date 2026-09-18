@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => {
   const chat = {
     messages: [] as Array<{ id: string; role: string; content: string; isPartial?: boolean; turnID?: number }>,
     loading: false,
+    historyReady: true,
+    markHistoryStale: vi.fn(() => order.push('markHistoryStale')),
     error: null,
     resolvedChatID: 'chat-1',
     initialProgress: null,
