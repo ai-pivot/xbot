@@ -150,7 +150,7 @@ func BuildSystemReminder(
 			if sa.Instance != "" {
 				label += "/" + sa.Instance
 			}
-			fmt.Fprintf(&sb, "<subagent status=%q>%s</subagent>", status, html.EscapeString(label))
+			fmt.Fprintf(&sb, "<subagent role=%q status=%q>%s</subagent>", sa.Role, status, html.EscapeString(label))
 		}
 		sb.WriteString("</subagents>")
 	}

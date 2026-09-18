@@ -158,4 +158,36 @@ describe('P0 手机锁屏恢复：busy turn 必须从 DB 快照 + active_progres
     // 同号快照权威（服务端 live 比 DB 行新）。
     expect(t.phase.data.iterations.find((i) => i.iteration === 3)?.content).toBe('i3-fresh')
   })
+
+  it('对照（线性一致性红线）：committed turn 收到【同号 + 在跑工具】的迟到重放 ⇒ 不得升级 live', () => {
+    // c3cb2f02 回归：把「同号 + running 工具」当活动证据升级成 live ⇒ live 行与
+    // committed 渲染分叉 ⇒ 上下文视图缺迭代（刷新才恢复）。committed 的迭代前缀
+    // 是持久化权威：只有【新迭代】（ev.iter > maxIter）才能解除遮蔽 —— 迟到重放
+    // （事件在工具完成前捕获，天然带 running 工具）必须丢弃。
+    const s = reduce(initialChatState('chat-1'), {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [committedInFlightTurn()],
+      active: null,
+      lastSeq: null,
+      todos: [],
+    })
+    const s2 = reduce(s, {
+      type: 'iteration',
+      turnID: T,
+      iter: iterNum(3),
+      seq: 30 as never,
+      content: undefined,
+      reasoning: undefined,
+      activeTools: [runningTool('Shell')] as never,
+      completedTools: [],
+      iterationsDelta: [],
+      todos: undefined,
+    } as never)
+    const t2 = s2.turns.get(T)
+    expect(t2?.phase.kind).toBe('committed')
+    expect(s2.activeTurn).toBeNull()
+    // 线性一致性：一个迭代都不能少。
+    if (t2?.phase.kind === 'committed') expect(t2.phase.payload.iterations).toHaveLength(3)
+  })
 })

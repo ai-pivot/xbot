@@ -362,18 +362,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // 已有最大迭代 → 升级回 live（迭代 union 保留，content 用事件值）。
         if (t0 && t0.phase.kind === 'committed' && s.activeTurn === null) {
           const maxIter = t0.phase.payload.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
-          // ⚠️ 第二半（2026-09-18 用户复测「熄屏解锁后还是可能这样」）：
-          // 升级不能只靠 `ev.iter > maxIter`。服务端 active_progress 快照缺失/为
-          // done 时（Run 之间的窗口 / 快照已被 turn-end 删除但 running turn 仍在、
-          // SSE backpressure）hydration 根本没材料恢复 live；而 DB 经**增量持久化**
-          // 已含**当前正在跑的迭代** ⇒ `ev.iter === maxIter` ⇒ 旧逻辑把在跑迭代的
-          // 事件全丢（界面永久冻结，"不更新"）。
-          // 事件本身携带【在跑的工具】（running/generating/pending）= 活动铁证
-          // ——重放的历史迭代不会带在跑工具（它们已折进 completed）⇒ 同样升级回 live。
-          const liveTools = (ev.activeTools ?? []).some(
-            (t) => t.status === 'running' || t.status === 'generating' || t.status === 'pending',
-          )
-          if (ev.iter > maxIter || (ev.iter >= maxIter && liveTools)) {
+          // ⛔ 线性一致性红线（2026-09-18 用户报告回归，已回滚 c3cb2f02 的
+          // 「ev.iter >= maxIter 且带在跑工具也放行」）：committed 的迭代前缀是
+          // 持久化权威；「同号 + 在跑工具」无法区分【仍在跑】与【已结束 turn 的
+          // 迟到重放】（重放事件在工具完成前捕获，天然带 running/generating 工具）
+          // ⇒ 误升级成 live 后，live 行（以 iter=ev.iter 重建）与 committed 渲染
+          // （含尾部截断的「更早 N 个迭代」路径）分叉 ⇒ 上下文视图缺迭代（刷新才
+          // 恢复）。只有【新迭代】（ev.iter > maxIter —— 后端不会对已结束的 turn
+          // 发新迭代）才能证明 turn 仍在运行并解除遮蔽。
+          if (ev.iter > maxIter) {
             const live: LiveSnapshot = {
               ...EMPTY_LIVE,
               iter: ev.iter,

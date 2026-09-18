@@ -237,10 +237,10 @@ func TestBuildSystemReminder_SubAgentStatus(t *testing.T) {
 		{Role: "coder", Instance: "fix-1", Running: false},
 	}
 	result := BuildSystemReminder(msgs, nil, nil, "main", "", "", "", subAgents)
-	if !strings.Contains(result, `<subagent status="running">explore/search-1</subagent>`) {
-		t.Errorf("expected running subagent, got:\n%s", result)
+	if !strings.Contains(result, `<subagent role="explore" status="running">explore/search-1</subagent>`) {
+		t.Errorf("expected running subagent with role, got:\n%s", result)
 	}
-	if !strings.Contains(result, `<subagent status="idle">coder/fix-1</subagent>`) {
-		t.Errorf("expected idle subagent, got:\n%s", result)
+	if !strings.Contains(result, `<subagent role="coder" status="idle">coder/fix-1</subagent>`) {
+		t.Errorf("expected idle subagent with role, got:\n%s", result)
 	}
 }
