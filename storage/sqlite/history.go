@@ -133,6 +133,112 @@ func (c *immediateHistoryConn) QueryRow(query string, args ...any) *sql.Row {
 	return c.conn.QueryRowContext(c.ctx, query, args...)
 }
 
+// splitHistoryStore implements historyQueryExecer with split read/write phases:
+// reads go to a plain pooled connection (**no SQLite write lock held**), and the
+// write transaction is opened lazily — only on the first Exec — as a short
+// BEGIN IMMEDIATE.
+//
+// Why this is safe (2026-09-18 P0, "缩短写事务"):
+//   - Validation atomicity comes from the process-wide gate (db.writeMu), which
+//     every write path holds for its whole operation — no in-process writer can
+//     interleave between the read/validation phase and the writes. That is the
+//     same guarantee the old "replay inside BEGIN IMMEDIATE" provided.
+//   - The SQLite write lock now covers ONLY the writes: hold time drops from
+//     O(history length) (replay/validation reads) to O(rows written), so the
+//     collision probability no longer grows with database size (user report:
+//     SQLITE_BUSY frequency rising with uptime).
+//   - A validation failure opens NO write transaction at all (the old code
+//     opened an empty BEGIN IMMEDIATE and held the write lock for nothing).
+//
+// ⛔ Precondition: the caller's fn must be strictly READ-THEN-WRITE (no read may
+// depend on this transaction's own uncommitted writes). RewindToHistoryID is
+// READ→WRITE→READ and therefore keeps using withImmediateHistoryWrite.
+type splitHistoryStore struct {
+	ctx   context.Context
+	pool  *sql.DB
+	read  *sql.Conn
+	write *sql.Conn
+	begun bool
+}
+
+func (c *splitHistoryStore) Query(query string, args ...any) (*sql.Rows, error) {
+	return c.read.QueryContext(c.ctx, query, args...)
+}
+
+func (c *splitHistoryStore) QueryRow(query string, args ...any) *sql.Row {
+	return c.read.QueryRowContext(c.ctx, query, args...)
+}
+
+func (c *splitHistoryStore) Exec(query string, args ...any) (sql.Result, error) {
+	if !c.begun {
+		conn, err := c.pool.Conn(c.ctx)
+		if err != nil {
+			return nil, fmt.Errorf("acquire history write connection: %w", err)
+		}
+		if _, err := conn.ExecContext(c.ctx, "BEGIN IMMEDIATE"); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("begin immediate history write: %w", err)
+		}
+		c.write, c.begun = conn, true
+	}
+	return c.write.ExecContext(c.ctx, query, args...)
+}
+
+// commit commits the lazily-opened write transaction (no-op when the operation
+// turned out to be read-only, e.g. a validation error).
+func (c *splitHistoryStore) commit() error {
+	if !c.begun {
+		return nil
+	}
+	if _, err := c.write.ExecContext(c.ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("commit history write: %w", err)
+	}
+	c.begun = false
+	return nil
+}
+
+// cleanup rolls back an uncommitted write transaction and returns the write
+// connection to the pool. Idempotent — always deferred by the driver.
+func (c *splitHistoryStore) cleanup() {
+	if c.write == nil {
+		return
+	}
+	if c.begun {
+		_, _ = c.write.ExecContext(c.ctx, "ROLLBACK")
+		c.begun = false
+	}
+	_ = c.write.Close()
+}
+
+// withSplitHistoryWrite is the shortened-transaction driver: reads (replay /
+// validation) run on a pooled read connection WITHOUT the SQLite write lock;
+// writes open a short IMMEDIATE transaction lazily. Process-wide atomicity comes
+// from db.writeMu, held across both phases.
+func (s *SessionService) withSplitHistoryWrite(fn func(historyQueryExecer) error) error {
+	pool, err := s.conn()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	// Gate BEFORE taking pooled connections: waiting writers must not pin
+	// connections (the pool has only 4).
+	s.db.writeMu.Lock()
+	defer s.db.writeMu.Unlock()
+
+	readConn, err := pool.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire history read connection: %w", err)
+	}
+	defer readConn.Close()
+
+	store := &splitHistoryStore{ctx: ctx, pool: pool, read: readConn}
+	defer store.cleanup()
+	if err := fn(store); err != nil {
+		return err
+	}
+	return store.commit()
+}
+
 // withImmediateHistoryWrite binds the whole semantic operation to one SQLite
 // connection and acquires the write lock before any replay or validation read.
 //
@@ -245,7 +351,7 @@ func (s *SessionService) AppendMessages(tenantID int64, messages []llm.ChatMessa
 	lock.Lock()
 	defer lock.Unlock()
 	var ids []int64
-	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+	err := s.withSplitHistoryWrite(func(store historyQueryExecer) error {
 		ids = make([]int64, len(messages))
 		for i, msg := range messages {
 			id, err := appendMessageWith(store, tenantID, msg)
@@ -282,7 +388,7 @@ func (s *SessionService) AppendMessagesAndAskQuestion(tenantID int64, messages [
 	}
 	var ids []int64
 	var questionID int64
-	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+	err := s.withSplitHistoryWrite(func(store historyQueryExecer) error {
 		ids = make([]int64, len(messages))
 		for i, msg := range messages {
 			id, err := appendMessageWith(store, tenantID, msg)
@@ -469,7 +575,7 @@ func (s *SessionService) AppendAskQuestion(tenantID int64, metadata map[string]s
 
 func (s *SessionService) appendAskQuestionLocked(tenantID int64, metadata map[string]string) (int64, error) {
 	var historyID int64
-	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
+	err := s.withSplitHistoryWrite(func(store historyQueryExecer) error {
 		var err error
 		historyID, err = validateAndAppendAskQuestionWith(store, tenantID, metadata)
 		return err
