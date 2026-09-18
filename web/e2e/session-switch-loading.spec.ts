@@ -33,8 +33,12 @@ type Sample = {
   visibleLists: number
   rows: string
   text: string
-  /** 所有 agent 面板：[chatID|visible|text] */
+  /** 所有 agent 面板：[chatID|grp|visible|rect|list|load|text] */
   panels: string
+  /** dockview group 数（>1 = 主区被分成多个窗格） */
+  groups: number
+  /** 可见输入框数量（会话加载态必须为 0） */
+  composers: number
 }
 
 async function newClient(browser: import('@playwright/test').Browser): Promise<{ page: Page }> {
@@ -164,6 +168,13 @@ async function startSampler(page: Page): Promise<void> {
       const rows = lists.flatMap((el) =>
         Array.from(el.querySelectorAll('[data-message-id]')).map((r) => r.getAttribute('data-message-id') ?? ''),
       )
+      const groups = document.querySelectorAll('.dv-groupview').length
+      // 会话加载态下**不得存在输入框**（用户截图：消息区上方浮着输入框控件）——
+      // 面板被以未兑现尺寸布局时，flex 会把消息区压到 0、把输入框顶到面板顶部。
+      const composers = Array.from(document.querySelectorAll('textarea')).filter((el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        return r.height > 0 && r.width > 0
+      }).length
       const panels = Array.from(document.querySelectorAll('[data-agent-chat-id]'))
         .map((el) => {
           const rect = (el as HTMLElement).getBoundingClientRect()
@@ -176,7 +187,10 @@ async function startSampler(page: Page): Promise<void> {
           const loadingEl = el.querySelector('[data-testid="session-loading-screen"]')
           const isLoading = !!loadingEl && (loadingEl as HTMLElement).getBoundingClientRect().height > 0
           const r = Math.round
-          return `${el.getAttribute('data-agent-chat-id') || '(seed)'}|vis=${visible ? 1 : 0}|rect=${r(rect.x)},${r(rect.y)} ${r(rect.width)}x${r(rect.height)}|list=${hasList ? 1 : 0}${listVisible ? 'v' : 'h'}|load=${isLoading ? 1 : 0}|"${listText}"`
+          const grp = Array.from(document.querySelectorAll('.dv-groupview')).indexOf(
+            el.closest('.dv-groupview') as Element,
+          )
+          return `${el.getAttribute('data-agent-chat-id') || '(seed)'}|grp=${grp}|vis=${visible ? 1 : 0}|rect=${r(rect.x)},${r(rect.y)} ${r(rect.width)}x${r(rect.height)}|list=${hasList ? 1 : 0}${listVisible ? 'v' : 'h'}|load=${isLoading ? 1 : 0}|"${listText}"`
         })
         .join('  ~  ')
       samples.push({
@@ -188,6 +202,8 @@ async function startSampler(page: Page): Promise<void> {
         rows: rows.join(','),
         text: (lists[0]?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 70),
         panels,
+        groups,
+        composers,
       })
       if (samples.length < 300) requestAnimationFrame(tick)
     }
@@ -239,7 +255,7 @@ test.describe('切换会话：切换开始即 loading，不得先渲染上一会
         afterClick
           .map(
             (s) =>
-              `+${Math.round(s.t - clickT)}ms #${s.frame} loading=${s.loading} lists=${s.visibleLists} rows=[${s.rows}]\n    panels: ${s.panels}`,
+              `+${Math.round(s.t - clickT)}ms #${s.frame} groups=${s.groups} loading=${s.loading} lists=${s.visibleLists}\n    panels: ${s.panels}`,
           )
           .join('\n'),
     )
@@ -295,6 +311,21 @@ test.describe('切换会话：切换开始即 loading，不得先渲染上一会
     )
 
     expect(first, '点击后必须有采样帧').toBeTruthy()
+
+    // ⛔ 分组守卫（用户报告「切换会话闪烁一瞬间错误布局」的判据之一）：切换过程中
+    // 主区**不得被分成多个窗格**（`groups > 1` = dockview 分屏 = 那两个「错位输入框
+    // 控件」浮在消息区上方的直接来源）。帧级采样，瞬态也抓得到。
+    const maxGroups = Math.max(...samples.map((s) => s.groups ?? 1))
+    expect(maxGroups, '切换过程中主区不得出现分屏（groups>1）').toBe(1)
+
+    // ⛔ 会话加载态**不得存在输入框**（用户截图「消息区上方浮着一排输入框控件」= 面板
+    // 被以未兑现尺寸布局时，flex 把消息区压到 0、输入框顶到面板顶部 ⇒ 一闪而过、
+    // DOM 抓不到）。修法：会话加载态只渲染 loading 屏（不渲染托盘/输入框）。
+    const loadingWithComposer = after.filter((s) => s.loading && (s.composers ?? 0) > 0)
+    expect(
+      loadingWithComposer,
+      `会话加载态出现了输入框：\n${loadingWithComposer.map((v) => `#${v.frame} composers=${v.composers}`).join('\n')}`,
+    ).toEqual([])
     // 用户判据：会话只要开始切换就应该渲染 loading。切回已有 tab 时，面板不得先渲染
     // 保留内容（那是上一时刻的快照，稍后会被后台对账改写 ⇒ 肉眼可见的"渲染错误"）。
     expect(

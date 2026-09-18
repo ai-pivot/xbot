@@ -265,6 +265,15 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const reconnecting = !ws.connected && sawConnectedRef.current
   const showLoadingScreen =
     (chat.historyReady === false && !!chatID) || resumeLoading || (reconnecting && !!chatID && !isSubAgent)
+  // ⛔ 「换会话/进入新会话」的加载态 = 面板**只渲染 loading 屏**（不渲染消息区/托盘/输入框）。
+  // 理由（2026-09-18 用户报告「切换会话一闪而过、DOM 抓不到的错误布局」，附截图：
+  // 消息区**上方浮着一排输入框控件**=回形针/ContextRing/发送按钮）：
+  // 新面板被 dockview 以**未兑现的尺寸**布局一帧时，flex 会把 `flex-1 min-h-0` 的消息区
+  // 压到 0、把输入框（自然高度）顶到面板顶部 ⇒ 那排控件就出现在消息区上方一闪而过。
+  // 加载态本就不该出现任何输入控件（也无法使用），从结构上不渲染它们 ⇒ 该类瞬态不可能出现。
+  // ⚠️ 只对「会话加载」生效（`historyReady===false`）；`resumeLoading`/`reconnecting`
+  // 仍保留输入框 —— 那两种情况面板可能有用户草稿，卸载会丢草稿（且它们不在顶部布局）。
+  const sessionLoading = chat.historyReady === false && !!chatID
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
@@ -915,7 +924,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         footer={askUserFooter}
       />
       ) : null}
-      {!isSubAgent && (
+      {!isSubAgent && !sessionLoading && (
         <StagingTray
           items={agentChat.queue}
           busy={busy}
@@ -936,7 +945,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           onReorder={handleReorderQueue}
         />
       )}
-      {!isSubAgent && (
+      {!isSubAgent && !sessionLoading && (
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
