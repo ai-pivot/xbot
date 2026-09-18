@@ -253,19 +253,38 @@ const nonDegenerateObserveElementRect: typeof defaultObserveElementRect = (insta
  * 返回"上次已知尺寸"（`resizeItem` 里 delta === 0 ⇒ 完全无副作用）；元素可见时的 0
  * 照实返回（那才是真实的 0 尺寸）。
  */
-const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
+/**
+ * ⛔ 不变式：**行高永远不允许是 0**。
+ *
+ * 虚拟行是 `position: absolute; top: 0; transform: translateY(start)`（见 render）。
+ * TanStack 用 `start` 定位，而 `start` 是前面所有行 size 的累加 —— **只要某行 size=0，
+ * 它的下一行就与它共享同一个 start ⇒ 两层内容画在同一 y 区间**（用户 2026-09-18 报的
+ * P0：偶发消息正文互相穿插）。所以 0 高度不是"小"，而是**布局破坏**。
+ *
+ * 0 测量的两个来源都不可信：
+ *   1. 元素当前没有渲染盒（隐藏 tab / 脱离文档 / `display:none` 祖先）——TanStack 的
+ *      `observeElementRect` 那侧已由 `nonDegenerateObserveElementRect` 保住容器尺寸，
+ *      但**行级**测量仍会拿到 0；
+ *   2. 元素可见但内容尚未定形（刚挂载的异步 markdown / mermaid / 字体）—— 稍后
+ *      ResizeObserver 会用真实高度修正。
+ * 因此一律退回：**记住的实测高度 → 该行估算高度 → 1px 占位**（永不 0）。
+ * 旧实现在「可见元素」分支直接返回 0，正是这条 P0 的口子。
+ */
+export const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
   const size = defaultMeasureElement(element, entry, instance)
-  if (size > 0) return size
   const el = element as unknown as HTMLElement
-  if (el.isConnected && el.offsetParent !== null) return size
   const index = Number(el.dataset?.index ?? -1)
   const v = instance as unknown as {
     measurementsCache?: { key: unknown; size: number }[]
     itemSizeCache?: Map<unknown, number>
+    options?: { estimateSize?: (index: number) => number }
   }
+  if (size > 0) return size
   const item = index >= 0 ? v.measurementsCache?.[index] : undefined
-  if (!item) return size
-  return v.itemSizeCache?.get(item.key) ?? item.size
+  const remembered = item ? (v.itemSizeCache?.get(item.key) ?? item.size) : 0
+  if (remembered > 0) return remembered
+  const est = v.options?.estimateSize?.(index)
+  return est && est > 0 ? est : 1
 }
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
