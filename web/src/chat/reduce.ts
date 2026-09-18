@@ -195,6 +195,26 @@ function isHollowFrozen(t: Turn | undefined): boolean {
 }
 
 /** stream 事件携带实质载荷（活动证据）：内容/思考/genui/流式工具任一非空。 */
+/**
+ * 迭代边界保留：把仍在跑/生成/排队中的工具标记为「已完成」（视觉上 done，
+ * 而不是误导性的 "仍在跑"）。
+ *
+ * ⛔ 线性一致性（用户 2026-09-18 P0，信息倒退）：「一个迭代的工具执行完成后会从
+ * web 迭代历史里消失，直到收到下一个迭代的第一个新 SSE 才重新出现。」
+ * 根因：迭代推进/commit 的边界事件常常**不带**该迭代的 `iteration_history`
+ * （多为 phase:undefined 的流式 delta / 新迭代首个事件），而本状态机原先
+ * `activeTools: ev.activeTools` 是**整表替换** ⇒ 上一迭代的工具被清空，直到下一个
+ * 携带 `iterationsDelta` 的事件到达才回来。旧 store 早有同款守卫
+ * （progressStore.ts "ALREADY-RENDERED CONTENT NEVER DISAPPEARS"）。
+ */
+function markToolsCompleted<T extends { status: string }>(tools: readonly T[]): readonly T[] {
+  return tools.map((t) =>
+    t.status === 'running' || t.status === 'generating' || t.status === 'pending'
+      ? ({ ...t, status: 'done' } as T)
+      : t,
+  )
+}
+
 function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: string; streamingTools?: readonly unknown[] }): boolean {
   return (
     (ev.content !== undefined && ev.content !== '') ||
@@ -439,7 +459,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             : (ev.reasoning ?? prev.reasoning),
         // I4：append-only 合并（dedup by iteration#，同号权威覆盖）
         iterations: merged,
-        activeTools: ev.activeTools,
+        // ⛔ 已渲染的工具绝不消失（线性一致性，用户 2026-09-18 P0）：
+        // 边界事件（迭代推进/commit）常常不带上一迭代的 iteration_history 与
+        // active_tools ⇒ 整表替换会让刚跑完的工具「消失到下一个带 iterationsDelta
+        // 的事件到达」才回来。规则（与旧 store 同语义）：边界且事件不带工具时，
+        // 保留 prev 的已渲染工具并把在跑中的标记为 done；事件自带列表时以其为权威
+        // （新迭代的工具照常替换）。
+        activeTools:
+          (advanced || committedNow) && ev.activeTools.length === 0
+            ? markToolsCompleted(prev.activeTools)
+            : ev.activeTools,
         // 工具去重（旧前端 mergeProgressState 语义）：工具从 generating 转
         // running 时，stream 事件残留的同名 streamingTools 条目必须清除 ——
         // 否则同一工具渲染两个（一个 executing 带参数 + 一个 generating 无

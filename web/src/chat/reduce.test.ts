@@ -2121,3 +2121,51 @@ describe('TDSM reduce — goal 会话级状态（agent set_goal_complete 后 ban
     expect(iter && 'goal' in iter ? iter.goal : 'sentinel').toBeNull()
   })
 })
+
+// ─── P0 渲染回归（2026-09-18 用户报告）：迭代边界工具绝不消失 ───────────────
+//
+// 现象：「一个迭代的工具执行完成后会从 web 迭代历史里消失，直到收到下一个迭代的
+// 第一个新 SSE 才重新出现」= 线性不一致（信息倒退）。
+//
+// 根因：`reduce.ts` 的迭代分支原先 `activeTools: ev.activeTools` 整表替换，而边界
+// 事件（迭代推进）常不带上一迭代的 iteration_history / active_tools，于是刚跑完的
+// 工具被清空，直到下一个携带 iterationsDelta 的事件到达才回来。
+//
+// 契约：边界事件不带工具 ⇒ 保留已渲染的工具（在跑中的标记 done）；事件自带工具
+// 列表 ⇒ 以其为权威。变异自证：把 activeTools 改回 `ev.activeTools` ⇒ 本用例必红。
+describe('P0(2026-09-18): iteration boundary keeps already-rendered tools', () => {
+  const shell = (status: string, iteration = 1) =>
+    ({ name: 'Shell', label: 'ls -la', status, iteration, args: '{}' }) as never
+
+  it('边界事件不带 active_tools ⇒ 上一迭代的工具必须保留（标记 done），不得清空', () => {
+    const s0 = run([
+      started(T1),
+      { ...iteration1(T1, 'iter1', 1), activeTools: [shell('running')] } as DomainEvent,
+    ])
+    const live0 = s0.turns.get(T1)
+    if (live0?.phase.kind !== 'live') throw new Error('expected live turn')
+    expect(live0.phase.data.activeTools).toHaveLength(1)
+
+    // 迭代推进（边界）：新迭代首个事件不带工具、也不带 iterationsDelta。
+    const s1 = run([{ ...iteration1(T1, '', 2), seq: 11 as never } as DomainEvent], s0)
+    const live1 = s1.turns.get(T1)
+    if (live1?.phase.kind !== 'live') throw new Error('expected live turn')
+    expect(live1.phase.data.activeTools.map((t) => t.name)).toContain('Shell')
+    expect(live1.phase.data.activeTools[0].status).toBe('done')
+  })
+
+  it('边界事件**自带** active_tools ⇒ 以其为权威（新迭代的工具正常替换）', () => {
+    const s0 = run([
+      started(T1),
+      { ...iteration1(T1, 'iter1', 1), activeTools: [shell('running')] } as DomainEvent,
+    ])
+    const s1 = run(
+      [{ ...iteration1(T1, '', 2), seq: 11 as never, activeTools: [shell('running', 2)] } as DomainEvent],
+      s0,
+    )
+    const live1 = s1.turns.get(T1)
+    if (live1?.phase.kind !== 'live') throw new Error('expected live turn')
+    expect(live1.phase.data.activeTools).toHaveLength(1)
+    expect(live1.phase.data.activeTools[0].iteration).toBe(2)
+  })
+})
