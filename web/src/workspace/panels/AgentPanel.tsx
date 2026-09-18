@@ -12,7 +12,7 @@
  *   - The main Agent tab follows SessionStore.activeSession directly.
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -37,6 +37,7 @@ import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
 import { ModelSelector } from '@/components/agent/ModelSelector'
+import { sessionSwitch } from '@/lib/sessionSwitch'
 import { StagingTray } from '@/components/agent/StagingTray'
 import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
@@ -274,6 +275,16 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // ⚠️ 只对「会话加载」生效（`historyReady===false`）；`resumeLoading`/`reconnecting`
   // 仍保留输入框 —— 那两种情况面板可能有用户草稿，卸载会丢草稿（且它们不在顶部布局）。
   const sessionLoading = chat.historyReady === false && !!chatID
+  // 切换过渡态（sessionSwitch）：只要存在**指向其他面板**的切换，本面板只渲染 loading
+  // —— 这是「会话只要开始切换就应该渲染 loading」的实现点。目标面板历史就绪后 end()。
+  const pendingSwitch = useSyncExternalStore(sessionSwitch.subscribe, sessionSwitch.get)
+  const panelSwitchKey = `agent:${messageChannel}:${chatID ?? ''}`
+  const switchSplash = pendingSwitch !== null && pendingSwitch.key !== panelSwitchKey
+  useEffect(() => {
+    if (pendingSwitch && pendingSwitch.key === panelSwitchKey && chat.historyReady) {
+      sessionSwitch.end(pendingSwitch.key)
+    }
+  }, [pendingSwitch, panelSwitchKey, chat.historyReady])
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
@@ -897,7 +908,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           })}
         />
       )}
-      {!showLoadingScreen && isVisible ? (
+      {!(showLoadingScreen || switchSplash) && isVisible ? (
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -916,7 +927,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         footer={askUserFooter}
       />
       ) : null}
-      {!isSubAgent && !sessionLoading && (
+      {!isSubAgent && !(sessionLoading || switchSplash) && (
         <StagingTray
           items={agentChat.queue}
           busy={busy}
@@ -937,7 +948,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           onReorder={handleReorderQueue}
         />
       )}
-      {!isSubAgent && !sessionLoading && (
+      {!isSubAgent && !(sessionLoading || switchSplash) && (
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
@@ -993,7 +1004,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           尺寸兑现又回到底部。所以：① 会话加载态（history 未就绪）**根本不渲染输入框/托盘**；
           ② 其余 loading 态（reconnecting / 长时间恢复）输入框**保持挂载**（草稿不丢、不闪），
           但由这层**不透明覆盖层**盖住整块面板 ⇒ 任何一帧的错位布局都不可能被看见。 */}
-      {showLoadingScreen && (
+      {(showLoadingScreen || switchSplash) && (
         <div
           data-testid="session-loading-screen"
           className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-bg-primary text-text-muted"
