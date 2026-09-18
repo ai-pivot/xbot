@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sort"
 	"strconv"
@@ -81,7 +82,10 @@ func NewSandboxRouter(sandboxCfg config.SandboxConfig, workDir string) *SandboxR
 
 	wsPort := sandboxCfg.WSPort
 	if wsPort == 0 {
-		wsPort = 8080
+		// 与 PublicWSAddr()（serverapp 铸 runner 命令用）共用同一个默认端口：
+		// 两者曾经各自用不同来源（监听用 8080、铸地址用 server.port），铸出的地址指向
+		// 无人监听的端口 ⇒ runner 永远连不上（用户实机 2026-09-18「目标机器 当前离线」）。
+		wsPort = config.DefaultRunnerWSPort
 	}
 	xbotDir := workDir + "/.xbot"
 	r.remoteCfg = RemoteSandboxConfig{
@@ -196,8 +200,53 @@ func (r *SandboxRouter) OnlineRunnerNames() []string {
 	return r.remote.OnlineRunnerNames()
 }
 
+// localRunnerAliases are the strings the sessions UI / users send to mean
+// "run on this host" instead of on a managed machine.
+var localRunnerAliases = map[string]bool{
+	"local": true, "本机": true, "本機": true, "none": true, "this": true,
+}
+
+// normalizeRunnerName maps the "this host" aliases onto "" (unbound).
+//
+// 用户实机 2026-09-18：在会话面板选「本机」时，字面量 `本机` 被原样写进
+// tenants.runner_id ⇒ 路由去找一个名叫「本机」的 runner ⇒ 找不到 ⇒ 每次工具调用都
+// 硬失败 `⚠️ 目标机器 "本机" 当前离线，无法执行工具`（用户："切回本机也能用不了"）。
+// 「本机」不是 runner 名，它表示**解绑**。
+func normalizeRunnerName(name string) string {
+	n := strings.TrimSpace(name)
+	if localRunnerAliases[strings.ToLower(n)] {
+		return ""
+	}
+	return n
+}
+
+// requireKnownRunner rejects a binding to an unregistered runner, so a typo fails
+// here (at switch time, with a clear message) instead of silently poisoning the
+// session binding — every later tool call would otherwise hard-fail with
+// `目标机器 "X" 当前离线`.
+func (r *SandboxRouter) requireKnownRunner(name string) error {
+	store := r.runnerStore()
+	if store == nil {
+		return nil // registry not wired yet (early boot / tests): nothing to validate against
+	}
+	if _, err := store.Get(name); err != nil {
+		return fmt.Errorf("unknown runner %q — add it first, or pick \"local\" to run on this host", name)
+	}
+	return nil
+}
+
+// runnerStore returns the wired runner registry (nil when absent).
+func (r *SandboxRouter) runnerStore() *RunnerStore {
+	return r.remoteCfg.RunnerStore
+}
+
 // SetSessionRunner binds a session to a runner (sessionKey "channel:chatID").
-// An empty runnerName unbinds the session (back to the local host).
+//
+// An empty runnerName — or the user-facing "this host" alias (「本机」/ "local") —
+// unbinds the session, so it runs on the local host again. A non-empty name must
+// be a registered runner: unknown names are rejected here rather than stored and
+// then hard-failing on every tool call.
+//
 // The binding is persisted immediately; the in-memory map is a write-through
 // cache (reads lazily backfill from the store).
 func (r *SandboxRouter) SetSessionRunner(sessionKey, runnerName string) error {
@@ -206,6 +255,12 @@ func (r *SandboxRouter) SetSessionRunner(sessionKey, runnerName string) error {
 	}
 	if r.bindingStore == nil {
 		return errors.New("SetSessionRunner: session binding store not configured")
+	}
+	runnerName = normalizeRunnerName(runnerName)
+	if runnerName != "" {
+		if err := r.requireKnownRunner(runnerName); err != nil {
+			return err
+		}
 	}
 	if err := r.bindingStore.SetSessionRunner(sessionKey, runnerName); err != nil {
 		return err

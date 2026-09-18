@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gorilla/websocket"
 
 	"xbot/config"
+	"xbot/storage/sqlite"
 )
 
 // testWSConn returns a real (connected) WebSocket client conn so fixture
@@ -382,5 +384,80 @@ func TestNewSandboxRouter_DefaultsToNone(t *testing.T) {
 	}
 	if r.Sandbox().Name() != "none" {
 		t.Error("default Sandbox() must be the local host — never a guessed machine")
+	}
+}
+
+// ============================================================================
+// SetSessionRunner — 规范化 + 校验
+// ============================================================================
+
+// REGRESSION (2026-09-18 用户实机「切回本机也报 当前离线」): 「本机」/local 是
+// "回到本机"的**别名**，必须解绑。历史实现把它当 runner 名原样持久化 ⇒ 路由去找
+// 一个名叫「本机」的机器 ⇒ 每次工具调用硬失败 `⚠️ 目标机器 "本机" 当前离线`。
+func TestSetSessionRunner_LocalAliasUnbindsInsteadOfBinding(t *testing.T) {
+	for _, alias := range []string{"", "local", "LOCAL", " local ", "本机", " 本機 ", "none", "this"} {
+		r, store := newRemoteRouter("m1")
+		if err := r.SetSessionRunner("web:chat_1", alias); err != nil {
+			t.Fatalf("alias %q must unbind cleanly: %v", alias, err)
+		}
+		if got := r.GetSessionRunner("web:chat_1"); got != "" {
+			t.Fatalf("alias %q bound %q, want unbound", alias, got)
+		}
+		if _, ok := store.m["web:chat_1"]; ok {
+			t.Fatalf("alias %q must not persist a binding (would make every tool call fail)", alias)
+		}
+	}
+}
+
+// A real runner name binds, and unbinding works in both directions.
+func TestSetSessionRunner_BindsAndUnbinds(t *testing.T) {
+	r, store := newRemoteRouter("m1")
+	if err := r.SetSessionRunner("web:chat_1", "m1"); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if got := r.GetSessionRunner("web:chat_1"); got != "m1" {
+		t.Fatalf("bound = %q, want m1", got)
+	}
+	if store.m["web:chat_1"] != "m1" {
+		t.Fatalf("binding must be persisted, store = %v", store.m)
+	}
+	if err := r.SetSessionRunner("web:chat_1", ""); err != nil {
+		t.Fatalf("unbind: %v", err)
+	}
+	if got := r.GetSessionRunner("web:chat_1"); got != "" {
+		t.Fatalf("after unbind = %q, want empty", got)
+	}
+	if _, ok := store.m["web:chat_1"]; ok {
+		t.Fatal("unbind must clear the persisted row")
+	}
+}
+
+// Unknown names are rejected at switch time instead of silently poisoning the
+// session (which then hard-fails on every tool call).
+func TestSetSessionRunner_RejectsUnknownName(t *testing.T) {
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "runners.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	r, store := newRemoteRouter("m1")
+	r.remoteCfg.RunnerStore = NewRunnerStore(db.Conn()) // wired registry → validation runs
+
+	if err := r.SetSessionRunner("web:chat_1", "typo-machine"); err == nil {
+		t.Fatal("an unregistered runner name must be rejected at switch time")
+	}
+	if _, ok := store.m["web:chat_1"]; ok {
+		t.Fatal("a rejected name must not be persisted")
+	}
+
+	if _, err := NewRunnerStore(db.Conn()).Create("m1", "native", "", "/workspace", RunnerLLMSettings{}); err != nil {
+		t.Fatalf("seed runner: %v", err)
+	}
+	if err := r.SetSessionRunner("web:chat_1", "m1"); err != nil {
+		t.Fatalf("a registered runner must bind: %v", err)
+	}
+	if got := r.GetSessionRunner("web:chat_1"); got != "m1" {
+		t.Fatalf("bound = %q, want m1", got)
 	}
 }

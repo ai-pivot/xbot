@@ -88,6 +88,41 @@ func (s *stateStore) Put(t supervisedTarget) error {
 	return s.saveLocked()
 }
 
+// Get returns the stored entry for a target name (ok=false when absent).
+func (s *stateStore) Get(name string) (supervisedTarget, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.items[name]
+	return t, ok
+}
+
+// ── Provision ⇒ supervision write-back (root-fix helper) ───────────────────
+
+// mergeProvisionedTarget merges a provisioning result into a supervision entry:
+// everything already known about the target is preserved, and the **effective**
+// install dir (where the binary actually landed) is recorded.
+//
+// 根因（用户实机 2026-09-18「目标机器 当前离线」）：非 root 远端会把安装目录回落到
+// `~/.local/bin`，而 target 里记的仍是用户填的 `/usr/local/bin`；connect 的 preflight
+// `[ -x <install_dir>/xbot-runner ]` 因此直接失败 ⇒ runner 从未启动 ⇒ 服务端永远
+// offline。只有 provision 知道二进制真正落在哪，它必须把结果写回。
+func mergeProvisionedTarget(prev supervisedTarget, name, ssh, connectCmd, installedBin string) supervisedTarget {
+	t := prev
+	if name != "" {
+		t.Name = name
+	}
+	if ssh != "" {
+		t.SSH = ssh
+	}
+	if connectCmd != "" {
+		t.ConnectCmd = connectCmd
+	}
+	if dir := dirOf(installedBin); dir != "" {
+		t.InstallDir = dir
+	}
+	return t
+}
+
 // Delete removes an entry and persists.
 func (s *stateStore) Delete(name string) error {
 	s.mu.Lock()

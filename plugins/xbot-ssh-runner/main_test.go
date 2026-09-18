@@ -536,7 +536,7 @@ func TestProvision_HappyPathRecordsAllSteps(t *testing.T) {
 	if snap.State != "done" {
 		t.Fatalf("state=%s error=%s", snap.State, snap.Error)
 	}
-	want := []string{"detect", "prepare-dir", "download", "verify", "kill-old", "install", "ready"}
+	want := []string{"detect", "prepare-dir", "download", "verify", "kill-old", "install", "persist", "ready"}
 	if got := stepNamesOf(snap); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps mismatch:\n got %v\nwant %v", got, want)
 	}

@@ -56,11 +56,10 @@ const (
 	// supervisorBackoff* bound the reconnect backoff.
 	supervisorBackoffMin = 1 * time.Second
 	supervisorBackoffMax = 15 * time.Second
-	// portProbeRangeSize is how many candidate remote ports we probe per target.
-	portProbeRangeSize = 64
-	// portRangeBase/Size pick the remote listen-port window used for tunnels.
-	portRangeBase = 39000
-	portRangeSize = 900
+	// tunnelPortWait bounds how long we wait for sshd to hand us the allocated
+	// reverse-tunnel port before we give up on this attempt (the remote script is
+	// blocked on `read` until then, so a silent failure must not hang forever).
+	tunnelPortWait = 20 * time.Second
 )
 
 // supervisorStatus is the observable state of one target's pipe.
@@ -87,23 +86,32 @@ type targetSpec struct {
 }
 
 // spawnFunc starts one long-lived ssh session and returns its combined output
-// stream plus a wait function. Injectable so the supervisor can be tested
-// without spawning a real ssh process.
-type spawnFunc func(ctx context.Context, argv []string) (io.ReadCloser, func() error, error)
+// stream, a **stdin writer** and a wait function. Injectable so the supervisor
+// can be tested without spawning a real ssh process.
+//
+// stdin 是隧道模式必需的：`-R 0:<serverPort>` 让**远端 sshd 自己分配**反向端口
+// （避免"自己挑端口"被拒/竞态，见 runOnce 的说明），分配结果由 ssh 打在输出里
+// （`Allocated port N for remote forward to …`），我们再把它经 stdin 交给远端脚本，
+// 远端脚本用 `read` 拿到后启动 runner。
+type spawnFunc func(ctx context.Context, argv []string) (io.ReadCloser, io.WriteCloser, func() error, error)
 
 // defaultSpawn runs the real ssh process: one stream (stderr folded into
 // stdout) because the pipe IS the runner's output.
-func defaultSpawn(ctx context.Context, argv []string) (io.ReadCloser, func() error, error) {
+func defaultSpawn(ctx context.Context, argv []string) (io.ReadCloser, io.WriteCloser, func() error, error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return stdout, cmd.Wait, nil
+	return stdout, stdin, cmd.Wait, nil
 }
 
 // supervisor owns one target's pipe and keeps it alive.
@@ -273,10 +281,16 @@ func (m *supervisorManager) sshFieldHint(name string) string {
 	return ""
 }
 
-// killRunnerScript kills any process whose command line matches this runner.
+// killRunnerScript kills the previous runner for this name — and ONLY that.
 //
-// The pattern is anchored on the runner's --name value (validated to a safe
-// character set), so it cannot match unrelated processes.
+// ⚠️ 为什么必须锚定到「首个词是 xbot-runner」：`pkill -f` 按**整条命令行**正则匹配，
+// 而本脚本自身的命令行（`bash -c "<script>"`）里就含有 runner 的调用文本
+// （`…/xbot-runner --server … --name <name>`）—— 旧的 `xbot-runner.*--name …` 模式
+// **会命中正在执行本脚本的 shell 自己**，pkill 直接把会话杀掉：runner 从未启动、
+// ssh 以 255 退出、上层无限重试（用户实机现场：`ssh session ended: exit status 255`，
+// 远端始终 "no residual runner process"）。
+// 锚定 `^` 到首词后，`bash -c …` / `sh -c …` 不再可能匹配，只有真正的 runner 进程
+// （argv[0] 以 xbot-runner 结尾，如 /home/u/.local/bin/xbot-runner）才会被选中。
 func killRunnerScript(name string) string {
 	return fmt.Sprintf(
 		"pkill -f %s >/dev/null 2>&1; sleep 0.3; pkill -9 -f %s >/dev/null 2>&1; exit 0",
@@ -286,8 +300,12 @@ func killRunnerScript(name string) string {
 }
 
 // xbotRunnerKillPattern matches only xbot-runner processes bound to this name.
+//
+// 「首词以 xbot-runner 结尾」排除了执行脚本的 shell（其首词是 bash/sh），
+// --name 值经 regexp.QuoteMeta 转义且要求词边界，保证 m1 不会误伤 m10。
 func xbotRunnerKillPattern(name string) string {
-	return fmt.Sprintf("xbot-runner.*--name[= ]%s([[:space:]]|$)", regexp.QuoteMeta(name))
+	return fmt.Sprintf(`^[^[:space:]]*xbot-runner[[:space:]].*--name[= ]%s([[:space:]]|$)`,
+		regexp.QuoteMeta(name))
 }
 
 // loop keeps the pipe up until cancelled.
@@ -330,35 +348,38 @@ func (s *supervisor) loop(ctx context.Context) {
 
 // runOnce establishes one SSH session and blocks until it ends.
 func (s *supervisor) runOnce(ctx context.Context) error {
-	remotePort := 0
-	if s.spec.ConnMode == connModeTunnel {
-		port, err := s.pickRemotePort(ctx)
-		if err != nil {
-			return fmt.Errorf("pick remote port: %w", err)
-		}
-		remotePort = port
-		s.mu.Lock()
-		s.remotePort = port
-		s.mu.Unlock()
-	}
-
-	argv, _, err := s.buildPipeCommand(remotePort)
+	argv, _, err := s.buildPipeCommand()
 	if err != nil {
 		return err
 	}
 
-	out, wait, err := s.spawn(ctx, argv)
+	out, stdin, wait, err := s.spawn(ctx, argv)
 	if err != nil {
 		return fmt.Errorf("start ssh session: %w", err)
 	}
-	s.mu.Lock()
-	s.connected = true
-	s.connectedAt = time.Now()
-	s.lastErr = ""
-	s.mu.Unlock()
 	sshFieldHints.Store(s.spec.Name, s.spec.SSHField)
 
-	go s.drain(out)
+	// 隧道端口握手（见 buildPipeCommand）：ssh 把 sshd 分配的端口打在输出里，
+	// pump 解析后经 **stdin** 交给远端脚本（脚本开头 `read` 的就是它）。
+	// 超时未拿到 ⇒ 关 stdin ⇒ 远端 read 失败 ⇒ 脚本退出 ⇒ 上层退避重连。
+	portDelivered := make(chan struct{})
+	go s.pump(out, stdin, portDelivered)
+	if s.spec.ConnMode == connModeTunnel {
+		select {
+		case <-portDelivered:
+		case <-ctx.Done():
+			_ = stdin.Close()
+			_ = wait()
+			return nil
+		case <-time.After(tunnelPortWait):
+			_ = stdin.Close()
+			s.mu.Lock()
+			s.lastErr = "remote sshd did not allocate a reverse-tunnel port in time"
+			s.mu.Unlock()
+		}
+	} else {
+		s.markConnected()
+	}
 
 	err = wait()
 	s.mu.Lock()
@@ -373,20 +394,65 @@ func (s *supervisor) runOnce(ctx context.Context) error {
 	return errors.New("ssh session ended (runner exited)")
 }
 
+// markConnected records a healthy pipe. Called immediately in direct mode and
+// only after the tunnel port was handed to the remote script in tunnel mode —
+// "connected" must mean the runner can actually dial us, never just "ssh started".
+func (s *supervisor) markConnected() {
+	s.mu.Lock()
+	s.connected = true
+	s.connectedAt = time.Now()
+	s.lastErr = ""
+	s.mu.Unlock()
+}
+
+// parseAllocatedPort extracts the sshd-assigned reverse-tunnel port from an ssh
+// log line, e.g. "debug1: Allocated port 37887 for remote forward to 127.0.0.1:8089".
+func parseAllocatedPort(line string) (int, bool) {
+	const marker = "Allocated port "
+	i := strings.Index(line, marker)
+	if i < 0 {
+		return 0, false
+	}
+	rest := line[i+len(marker):]
+	end := strings.IndexAny(rest, " \t")
+	if end < 0 {
+		end = len(rest)
+	}
+	p, err := strconv.Atoi(strings.TrimSpace(rest[:end]))
+	if err != nil || p <= 0 {
+		return 0, false
+	}
+	return p, true
+}
+
+// tunnelPortVar is the remote-shell variable the script reads the sshd-allocated
+// reverse-tunnel port into (passed over the session's stdin by runOnce).
+const tunnelPortVar = "__XBOT_TUNNEL_PORT"
+
 // buildPipeCommand is the pure part of a (re)connect: it returns the ssh argv
 // and the remote script.
 //
-// remotePort is only meaningful in tunnel mode (the free port we forward on the
-// remote side); it is ignored in direct mode.
-func (s *supervisor) buildPipeCommand(remotePort int) ([]string, string, error) {
+// 隧道模式下**反向端口一律由远端 sshd 分配**（`-R 0:`）。旧实现自己探一个"空闲端口"
+// 再固定转发，既与残留连接/TIME_WAIT 竞态（探针只看 LISTEN），又会在该端口不可绑定时
+// 把整个会话打死 —— 用户实机现场：
+//
+//	debug1: remote forward failure for: listen 127.0.0.1:39667, connect 127.0.0.1:8089
+//	Error: remote port forwarding failed for listen port 39667   → ssh 退出 255 → 无限重试
+//
+// 而 `-R 0:` 在同一个远端是 **成功** 的（`Allocated port 37887 …`）。分配结果由 ssh
+// 打在输出里，runOnce 解析后经 **stdin** 交给远端脚本（脚本开头 `read`），runner 用
+// 变量展开拿到端口 —— 从设计上不存在"端口被占用"这一类失败。
+func (s *supervisor) buildPipeCommand() ([]string, string, error) {
 	serverArg := connectCmdServerValue(s.spec.ConnectCmd)
 	forward := ""
 	if s.spec.ConnMode == connModeTunnel {
-		if remotePort <= 0 || s.spec.ServerPort <= 0 {
-			return nil, "", errors.New("tunnel mode needs both a remote port and the server port")
+		if s.spec.ServerPort <= 0 {
+			return nil, "", errors.New("tunnel mode needs the server port to forward to")
 		}
-		forward = fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", remotePort, s.spec.ServerPort)
-		serverArg = fmt.Sprintf("ws://127.0.0.1:%d%s%s", remotePort, s.spec.ServerPath, s.spec.ServerQuery)
+		forward = fmt.Sprintf("127.0.0.1:0:127.0.0.1:%d", s.spec.ServerPort)
+		// 远端脚本先 `read` 拿端口（见 buildRemoteScript 的前导），这里的 $VAR 由**远端
+		// shell** 展开（我们是 exec.Command 传 argv，不经本地 shell，不会被本地吃掉）。
+		serverArg = fmt.Sprintf("ws://127.0.0.1:$%s%s%s", tunnelPortVar, s.spec.ServerPath, s.spec.ServerQuery)
 	}
 
 	script := s.buildRemoteScript(serverArg)
@@ -416,49 +482,64 @@ func (s *supervisor) buildPipeCommand(remotePort int) ([]string, string, error) 
 // actionable message in status.last_error.
 func (s *supervisor) buildRemoteScript(serverArg string) string {
 	bin := strings.TrimSuffix(strings.TrimSpace(s.spec.InstallDir)+"/xbot-runner", "/")
-	arg := strings.TrimSpace(s.spec.ConnectCmd)
+	// 服务端铸出的命令是**完整命令行**（`xbot-runner --server … --token …`），而我们自己
+	// 用安装好的绝对路径执行它 ⇒ 必须剥掉前导的程序名，否则它会作为**位置参数**落在
+	// bin 之后：Go 的 flag 解析遇到第一个位置参数即停止 ⇒ runner 报 `--server is required`
+	// （用户实机现场：隧道建好了、runner 一启动就退出，服务端永远 offline）。
+	arg := stripLeadingProgram(strings.TrimSpace(s.spec.ConnectCmd))
 	// Replace the --server value with the (possibly tunnelled) endpoint.
 	arg = replaceConnectCmdServer(arg, serverArg)
 	quotedBin := shellQuote(bin)
 	preflight := fmt.Sprintf(
 		`if [ ! -x %s ]; then echo "xbot-runner not found at %s — run provision first" >&2; exit 1; fi`,
 		quotedBin, bin)
-	return fmt.Sprintf("%s; %s; exec %s %s",
+	// 隧道模式：端口由远端 sshd 分配，runOnce 解析 `Allocated port N` 后经 **stdin**
+	// 写给我们，这里先 `read` 到变量（脚本随后用 $VAR 展开进 runner 的 --server）。
+	// 若 runOnce 在超时内拿不到分配结果，它会关掉 stdin ⇒ read 失败 ⇒ 本脚本退出 ⇒
+	// 上层退避重连（不会永久挂住）。
+	preamble := ""
+	if s.spec.ConnMode == connModeTunnel {
+		preamble = fmt.Sprintf("read -r %s || { echo 'tunnel port not provided by the session' >&2; exit 1; }; ", tunnelPortVar)
+	}
+	return fmt.Sprintf("%s%s; %s; exec %s %s",
+		preamble,
 		preflight,
 		strings.TrimSuffix(killRunnerScript(s.spec.Name), "; exit 0"),
 		quotedBin, arg)
 }
 
-// pickRemotePort finds a free TCP port on the remote inside this target's window.
-func (s *supervisor) pickRemotePort(ctx context.Context) (int, error) {
-	base := portRangeBase + int(hash32(s.spec.Name))%portRangeSize
-	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-	out, err := s.execProbe(probeCtx, fmt.Sprintf(
-		"for p in $(seq %d %d); do if command -v ss >/dev/null 2>&1; then "+
-			"ss -ltn 2>/dev/null | grep -q \"[:.]$p \" || { echo $p; exit 0; }; "+
-			"else netstat -an 2>/dev/null | grep -q \"[:.]$p \" || { echo $p; exit 0; }; fi; done; exit 1",
-		base, base+portProbeRangeSize-1))
-	if err != nil {
-		return 0, err
+// stripLeadingProgram drops a leading program token (e.g. the `xbot-runner` prefix in
+// the minted command `xbot-runner --server …`) so only the flags remain. We always
+// execute the binary we installed ourselves, so the leading token is redundant — and
+// harmful: a stray positional argument stops Go's flag parsing before --server.
+func stripLeadingProgram(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return cmd
 	}
-	port, err := strconv.Atoi(strings.TrimSpace(firstLine(out)))
-	if err != nil || port <= 0 {
-		return 0, fmt.Errorf("no free remote port in %d..%d", base, base+portProbeRangeSize-1)
+	fields := strings.Fields(cmd)
+	head := fields[0]
+	if head == "xbot-runner" || strings.HasSuffix(head, "/xbot-runner") {
+		return strings.TrimSpace(strings.TrimPrefix(cmd, head))
 	}
-	return port, nil
+	return cmd
 }
 
-// execProbe runs a read-only remote command (shares the service's ssh executor).
-func (s *supervisor) execProbe(ctx context.Context, script string) (string, error) {
-	if s.exec == nil {
-		return "", errors.New("supervisor: remote executor not configured")
-	}
-	return s.exec(ctx, s.spec.SSHField, 20*time.Second, script)
-}
+// NOTE: 隧道端口不再由我们探测/挑选 —— 一律交给远端 sshd 分配（`-R 0:`，见
+// buildPipeCommand）。旧实现 `pickRemotePort` 只探 LISTEN 端口，无法避开 TIME_WAIT
+// 与残留转发；用户实机表现为固定端口被拒后**反复重试同一个坏端口**（39667），该实现已删除。
 
-// drain captures pipe output into a bounded ring.
-func (s *supervisor) drain(r io.Reader) {
+// pump forwards the session's combined output into the bounded ring and performs
+// the tunnel port handshake: when ssh reports the sshd-allocated reverse-tunnel
+// port ("Allocated port N for remote forward to …"), remember it and hand it to
+// the remote script over **stdin** (the script blocks on `read` until then).
+// portDone is closed exactly once — on delivery or when the stream ends — so
+// runOnce's timeout select can never leak.
+func (s *supervisor) pump(r io.Reader, stdin io.WriteCloser, portDone chan struct{}) {
+	var once sync.Once
+	done := func() { once.Do(func() { close(portDone) }) }
+	defer done()
+
 	buf := make([]byte, 4096)
 	var partial string
 	for {
@@ -473,6 +554,14 @@ func (s *supervisor) drain(r io.Reader) {
 				line := strings.TrimRight(partial[:idx], "\r")
 				partial = partial[idx+1:]
 				s.appendLine(line)
+				if p, ok := parseAllocatedPort(line); ok {
+					s.mu.Lock()
+					s.remotePort = p
+					s.mu.Unlock()
+					s.markConnected()
+					fmt.Fprintf(stdin, "%d\n", p)
+					done()
+				}
 			}
 			if len(partial) > 8192 { // never grow unbounded on a \n-less stream
 				s.appendLine(partial)

@@ -1214,14 +1214,29 @@ func Load() *Config {
 	return cfg
 }
 
+// DefaultRunnerWSPort is the port the RemoteSandbox (the endpoint runners dial)
+// listens on when Sandbox.WSPort is unset. Keep in sync with SandboxRouter.
+const DefaultRunnerWSPort = 8080
+
 // PublicWSAddr returns the WebSocket address runners should connect to.
-// Uses Sandbox.PublicURL if set, otherwise falls back to the unified
-// web server address (Server.Host:Server.Port, which defaults to Web.Host:Web.Port).
+//
+// ⚠️ 该地址必须指向**真正提供 runner 协议的那个监听**：`RemoteSandbox`（`/ws`），
+// 它监听 `Sandbox.WSPort`（默认 DefaultRunnerWSPort）—— **不是** `Server.Port`。
+// 历史 bug（用户实机 2026-09-18「目标机器 当前离线」）：这里用 `Server.Port`（该部署里是
+// 8089，但 `xbot-cli serve` 从未在该端口监听）铸出 `ws://…:8089/ws`，runner 拨打的
+// 是一个**死端口**，于是隧道/鉴权都对也永远连不上；而真实端点在 8080
+// （日志：`RemoteSandbox WebSocket server listening on 0.0.0.0:8080`）。
+//
+// Sandbox.PublicURL（显式配置）永远优先：NAT/端口映射场景需要它。
 func (c *Config) PublicWSAddr() string {
 	if c.Sandbox.PublicURL != "" {
 		return c.Sandbox.PublicURL
 	}
-	return fmt.Sprintf("ws://%s:%d", c.Server.Host, c.Server.Port)
+	port := c.Sandbox.WSPort
+	if port == 0 {
+		port = DefaultRunnerWSPort
+	}
+	return fmt.Sprintf("ws://%s:%d", c.Server.Host, port)
 }
 
 // getAdminChatID 获取管理员会话 ID，实现回退逻辑

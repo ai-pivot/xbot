@@ -225,6 +225,13 @@ func (s *service) handleConnect(params map[string]any) (*protocol.WebPluginRPCRe
 	}
 	installDir := strParam(params, "install_dir")
 	if installDir == "" {
+		// 回落到 provision 记录的**生效目录**（非 root 远端是 ~/.local/bin）。用默认值
+		// /usr/local/bin 会让 preflight 扑空 ⇒ runner 起不来 ⇒ 服务端永远 offline。
+		if prev, ok := s.state.Get(name); ok && prev.InstallDir != "" {
+			installDir = prev.InstallDir
+		}
+	}
+	if installDir == "" {
 		installDir = "/usr/local/bin"
 	}
 	mode := strParam(params, "connection_mode")
@@ -685,6 +692,20 @@ func (s *service) runProvision(jobID string, p provisionParams) {
 		installDetail += " (version: " + installedVer + ")"
 	}
 	s.jobs.addStep(jobID, "install", true, installDetail)
+
+	// 6b. 记录**生效的安装目录**（根因修复）。
+	//
+	// 非 root 远端会把目录回落到 ~/.local/bin，而 target 里记的可能仍是
+	// /usr/local/bin ⇒ connect 的 preflight `[ -x <install_dir>/xbot-runner ]` 直接失败
+	// ⇒ runner 从未启动 ⇒ 服务端永远 offline ⇒ 前端每次工具调用都报「目标机器 X 当前离线」
+	// （用户实机 2026-09-18）。只有 provision 知道二进制真正落在哪，必须写回。
+	prev, _ := s.state.Get(p.Name)
+	effectiveDir := dirOf(installedBin)
+	if err := s.state.Put(mergeProvisionedTarget(prev, p.Name, p.SSH, p.ConnectCmd, installedBin)); err != nil {
+		s.jobs.addStep(jobID, "persist", false, "could not record effective install dir: "+err.Error())
+	} else {
+		s.jobs.addStep(jobID, "persist", true, "effective install dir: "+effectiveDir)
+	}
 
 	// 7. done — install only.
 	//
