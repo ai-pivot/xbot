@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ProgressStore, normalizeWebSubAgent, continuousIterations, dedupTools } from './progressStore'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
+import { __resetFrameSchedulerForTests } from '@/lib/frameScheduler'
+
+// ⚠️ 帧调度器是**模块级单例**（chat store 与 progress store 共享同一帧）。本文件各
+// describe 用各自的 mock `requestAnimationFrame` 手动驱动帧 ⇒ 前一个用例遗留的
+// "已排队但从未触发"的任务会让队列非空 ⇒ 后续 `schedule` 不再武装 ⇒ 通知永不 flush
+// （实测症状：phase 停在 ''、eventSeq 停在 0）。按仓库约定
+// （`__resetSharedIterationHeightTrackers()`）在每个用例前显式复位。
+beforeEach(() => __resetFrameSchedulerForTests())
 
 // Helper: create a tool with defaults
 function tool(opts: Partial<WebToolProgress>): WebToolProgress {
