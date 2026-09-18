@@ -65,6 +65,7 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Link editing | Select text to reveal a floating toolbar (bold/italic/strikethrough/inline code/link); `Ctrl/Cmd+K` adds or edits a link, one-click unlink |
 | File upload | **Any file type is accepted** (no type whitelist). Click 📎, **paste** (screenshots upload automatically), or **drag-and-drop** files onto the composer to attach them |
 | Upload limit | 10MB per file (size only — no type restrictions) |
+| Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
 
 ## Authentication
 

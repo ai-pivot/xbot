@@ -204,6 +204,7 @@ const zhCN = {
     dropToUpload: '松开以上传文件',
     uploadTooLarge: '{{names}} 超过 {{size}} 上限，已跳过',
     visionOffHint: '当前模型未开启视觉输入，图片将以文件名占位传递（模型看不到图）。在 设置 → LLM → 模型 中开启「视觉输入」。',
+    bangCommandHint: '! 开头的消息将作为终端命令直接执行（跳过 AI）',
     visionImagesAttached: '👁 {{count}} 张图片将作为视觉输入发送给模型',
     askUserTitle: 'Agent 需要你的输入',
     askUserPlaceholder: '请输入…',

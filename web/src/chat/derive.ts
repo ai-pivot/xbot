@@ -73,6 +73,8 @@ export interface CommittedRowView {
   readonly isPartial: false
   readonly content: string
   readonly iterations: readonly WebIteration[]
+  /** 命令回复（standalone 段）的「无 turn」标记 —— `bindTurnIDs` 据此跳过绑定。 */
+  readonly standalone?: boolean
   readonly iterationsTruncated?: number
 }
 
@@ -142,6 +144,10 @@ function cachedLegacyRow(l: LegacyRow): Row {
           kind: 'committed',
           id: l.id,
           turnID: 0,
+          // standalone 段（命令回复）显式透传「无 turn」标记 —— `bindTurnIDs` 见到该
+          // 标记就跳过绑定（否则会绑到 live turn、与 live 行撞虚拟键：CI 实证尺寸缓存
+          // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。
+          standalone: l.standalone,
           isPartial: false,
           content: l.content,
           iterations: l.iterations,
@@ -178,7 +184,12 @@ export function deriveRows(s: ChatState): readonly Row[] {
   // legacy 段保持 DB 顺序：user/assistant 交错（非 turn 模型 —— 直接按原序映射）。
   const legacySorted: Row[] = s.legacy.map(cachedLegacyRow)
 
-  return [...legacySorted, ...turnRows, ...pending]
+  // standalone 段（无 turn 归属的**实时**回复：命令 `!cmd`/slash 的输出）——
+  // 排在 turns 之后（用户视角的最新消息）。若与 legacy 混用，命令输出会跑到
+  // 会话顶部（derive 的 legacy 前缀段），用户仍会觉得"没有输出"。
+  const standaloneRows: Row[] = s.standalone.map(cachedLegacyRow)
+
+  return [...legacySorted, ...turnRows, ...standaloneRows, ...pending]
 }
 
 // ─── assistantRow：穷尽 switch（T4：每 turn 至多一行） ─────────

@@ -34,6 +34,12 @@ import type { ChatMessage } from '@/types/shared'
  *  「长历史也会卡」）。改成两个标量取值。 */
 function sortTurnKey(m: ChatMessage): number {
   if (m.turnID > 0) return m.turnID
+  // 命令回复（standalone 段）：**按构造无 turn**，必须渲染在最底部（turn 行之后）。
+  // 它有 `persisted: true`（integrate 的 committed 映射），若不单独判定会落到
+  // "早起 legacy 行"分支（-1）→ 命令输出跑到会话**顶部**（用户看到的仍是"没有输出"）。
+  // 注意：判定放在 `turnID === 0` 之内，**字段保持 0** —— 属性测试 P4/P5 用
+  // `turnID > 0` 识别 turn 行（模型约定：0 = 无 turn 的独立消息）。
+  if (m.standalone) return Number.MAX_SAFE_INTEGER
   // turnID=0 residue (undeducible):
   //  - isPartial (live streaming) or persisted=false (optimistic send): the
   //    newest content — must render at the BOTTOM (below all committed rows).
@@ -78,7 +84,7 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
   // between frames) does not allocate per frame.
   let needsBinding = false
   for (const m of messages) {
-    if (m.turnID === 0 && !m.isPartial) {
+    if (m.turnID === 0 && !m.isPartial && !m.standalone) {
       needsBinding = true
       break
     }
@@ -105,7 +111,7 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
   }
   for (let i = 0; i < n; i++) {
     const m = result[i]
-    if (m.turnID > 0 || m.isPartial) continue // live rows: snapshot turnID wins
+    if (m.turnID > 0 || m.isPartial || m.standalone) continue // live rows: snapshot turnID wins；standalone: 按构造无 turn（不绑定）
     let bound = 0
     if (m.role === 'assistant' && prevTurn[i] > 0) {
       bound = prevTurn[i]

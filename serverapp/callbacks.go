@@ -914,6 +914,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	}
 	callbacks.SessionExists = sessionExists
 
+	// MatchesCommand — the REST layer decides whether a user message needs a
+	// turn_id by asking whether it is a COMMAND. That judgement must be the same
+	// one the dispatch uses (agent.CommandRegistry.Match), otherwise they drift:
+	// the old "/" prefix heuristic excluded the `!cmd` bang shell command, so
+	// every bang command was rejected with "message accepted without a turn_id"
+	// and its output never reached the browser (user report: "! 开头的命令没生效").
+	callbacks.MatchesCommand = func(content string) bool {
+		if ag == nil || ag.Commands() == nil {
+			return strings.HasPrefix(strings.TrimSpace(content), "/")
+		}
+		return ag.Commands().Match(content) != nil
+	}
+
 	// Phantom-session gate at the choke point EVERY read path funnels through:
 	// SSE, REST and RPC (handleRPC forwards straight to RPCHandler, bypassing
 	// resolveAPISession) all end up in MultiTenantSession.GetOrCreateSession.
