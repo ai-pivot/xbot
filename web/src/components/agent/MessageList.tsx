@@ -423,6 +423,19 @@ export const MessageList = memo(function MessageList({
           const row = rowsRef.current[index]
           return row ? { key: rowMemoryKey(row, index), sig: rowSignature(row) } : undefined
         },
+        // 挂载时的**初值提示**（记忆命中值，否则内容估算）——**零 DOM 读**；
+        // 真实高度由上方 layout effect 的"先批量读、后批量写"在 **paint 前**校正。
+        // 这样估算偏小不会压字、偏大不会留白：任何一帧渲染出的都是实测值。
+        hint: (index) => {
+          const row = rowsRef.current[index]
+          if (!row) return undefined
+          const remembered = heightMemory.get(
+            rowMemoryKey(row, index),
+            rowSignature(row),
+            heightLayoutWidth.current(),
+          )
+          return remembered ?? estimateRowByContent(row)
+        },
         measure: noDegenerateMeasureElement as unknown as (
           element: Element,
           entry: ResizeObserverEntry | undefined,
@@ -652,6 +665,50 @@ export const MessageList = memo(function MessageList({
   // = rows), so the callback body always sees the CURRENT row. virtualizer
   // is a stable instance (useVirtualizer keeps one instance; only its options
   // are updated per render).
+  /**
+   * ⛔ 「**永远准** + **性能优秀**」两条硬要求的落点（2026-09-18，用户明确要求）。
+   *
+   * 虚拟列表的行位置只能由**真实高度**决定：估算偏小 ⇒ 下一行压上来（字符重合）；
+   * 估算偏大 ⇒ 出现大段空白（用户截图）。而挂载时**逐行**读 DOM 又是 O(N) 强制布局
+   * （切会话 10.9s 的根源）—— 所以"跳过测量"和"逐行测量"都不行。
+   *
+   * 正解：**同一个 commit 的 layout effect 里"先批量读、后批量写"** ——
+   *   ① 读阶段：一次把所有已渲染行的真实高度读完（**读之间没有任何写** ⇒ 整批只付
+   *      **一次**布局，而不是 N 次）；
+   *   ② 写阶段：把真实高度喂回虚拟器（尺寸未变的行 `resizeItem` 内部早退 ⇒ 零写）。
+   * layout effect 在 **paint 之前**执行 ⇒ 用户永远看不到"按估算定位"的那一帧
+   * ⇒ **既无重叠也无空白**，且每 commit 只付一次布局。
+   *（后续内容变化仍由 ResizeObserver 自带的 borderBoxSize 免费校正。）
+   */
+  useLayoutEffect(() => {
+    const items = virtualizer.getVirtualItems()
+    if (items.length === 0) return
+    // TanStack 的 elementsCache 以 VirtualItem.key 为键（Key = string | number）
+    // —— 用 Map<unknown, …> 取，避免把 key 强转成 string（运行期行为不变）。
+    const inst = virtualizer as unknown as { elementsCache?: Map<unknown, HTMLElement> }
+    const measured: Array<{ index: number; height: number }> = []
+    // ① 读：整批（无写穿插）
+    for (const it of items) {
+      const el = inst.elementsCache?.get(it.key)
+      if (!el) continue
+      const h = Math.round(el.getBoundingClientRect().height)
+      if (h > 0 && h !== Math.round(it.size)) measured.push({ index: it.index, height: h })
+    }
+    // ② 写：仅尺寸变化的行（并把真值记进记忆，供后续未渲染行做初值）
+    for (const m of measured) {
+      virtualizer.resizeItem(m.index, m.height)
+      const row = rowsRef.current[m.index]
+      if (row) {
+        heightMemory.set(
+          rowMemoryKey(row, m.index),
+          rowSignature(row),
+          heightLayoutWidth.current(),
+          m.height,
+        )
+      }
+    }
+  })
+
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) {

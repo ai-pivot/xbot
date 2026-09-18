@@ -185,6 +185,10 @@ export function createWidthTracker(): {
 }
 
 export interface MeasureElementDeps {
+  /** 挂载时的**初值提示**（记忆命中值或估算）——**绝不允许读 DOM**。
+   *  真实高度由调用方在同一 commit 的 layout effect 里"先批量读、后批量写"校正，
+   *  因此挂载路径可以零强制布局，而画面仍是准的（paint 前已校正）。 */
+  hint?: (index: number) => number | undefined
   /** index → { key, sig }（由调用方经 rowsRef 现读） */
   lookup: (index: number) => { key: string; sig: string } | undefined
   /** 真实测量（TanStack defaultMeasureElement 的包装）。**instance 与我们无关**：
@@ -233,6 +237,10 @@ export function createHeightAwareMeasureElement(
       if (row && width > 0) deps.memory.set(row.key, row.sig, width, observed)
       return observed
     }
+    // 挂载（无 RO entry）：**不读 DOM**，返回初值提示（记忆/估算）。真实高度由
+    // 调用方的批量 pass 在 paint 前喂回 ⇒ 既不重叠也不留白，且零强制布局。
+    const hinted = deps.hint?.(index)
+    if (hinted !== undefined && hinted > 0) return hinted
     const size = deps.measure(element, entry, instance)
     if (row && width > 0 && size > 0) deps.memory.set(row.key, row.sig, width, size)
     return size
