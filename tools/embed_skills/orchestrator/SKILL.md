@@ -69,7 +69,7 @@ subagent 的**每个 top 发现**，主 agent 亲自抽查后才进报告：
 
 1. **先列触达面矩阵**：每个修复项 → 它要改的 file:line 清单。同文件**串行**，异文件**并行**。
 2. **按波派发**：波内文件集两两不相交 ⇒ 并行安全；波间按"谁让出谁"排队。
-3. **大特性 / 高风险改动 ⇒ worktree 隔离**：`Worktree(action="init", role="peer", instance="<feature>")` 创建隔离 worktree，改完合并，主树不受 WIP 污染。**验证用隔离 worktree**——共享树被多线并发写，"共享树编译不过"可能是别人的 WIP。任务完成后 `Worktree(action="cleanup")` 释放。
+3. **大特性 / 高风险改动 ⇒ git worktree 隔离**：`git worktree add ../<project>-<feature> -b <branch>` 创建隔离工作树，改完合并，主树不受 WIP 污染。**验证用隔离 worktree**——共享树被多线并发写，"共享树编译不过"可能是别人的 WIP。任务完成后 `git worktree remove` 释放。
 4. **交付物 = 分步 commit，每步独立绿**。
 5. **任务书差异**：实现类允许写代码+提交，但加：①只 add 自己的文件；②交付 = file:line 摘要 + 测试结果 + 提交哈希 + **Pitfalls** + **移交项**。
 
