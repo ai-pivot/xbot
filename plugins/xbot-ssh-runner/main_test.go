@@ -643,6 +643,40 @@ func TestProvision_DryRunPlanDoesNotWrite(t *testing.T) {
 	}
 }
 
+// provision 是 install-only ⇒ **不要求 connect_cmd**。
+// 2026-09-18 生产踩坑：面板的 provision 只传 ssh/name/download_base/install_dir，
+// 旧校验把「点 Provision」变成硬失败（"connect_cmd is required"），二进制装不上。
+// 反向守护：connect 仍然必须带它（启动 runner 需要 --server/--token）。
+func TestProvision_ConnectCmdOptional(t *testing.T) {
+	p, err := parseProvisionParams(map[string]any{"ssh": "ssh h", "name": "m1"})
+	if err != nil {
+		t.Fatalf("provision must not require connect_cmd: %v", err)
+	}
+	if p.ConnectCmd != "" {
+		t.Fatalf("connect_cmd should stay empty when omitted, got %q", p.ConnectCmd)
+	}
+
+	// 端到端（dry-run，不跑 ssh）：无 connect_cmd 也必须走完计划
+	f := newFakeExecutor()
+	fakeHappyProvision(f)
+	f.setResponse("prepare-dir", "INSTALL_DIR=/usr/local/bin\nINSTALL_DIR_WHY=requested\n")
+	svc := newService(f.exec)
+	params := defaultProvisionParams()
+	delete(params, "connect_cmd")
+	params["dry_run"] = true
+	out := callOK(t, svc, "provision", params)
+	snap := waitJob(t, svc, out["job_id"].(string))
+	if snap.State != "done" {
+		t.Fatalf("dry-run provision without connect_cmd must succeed: state=%s error=%s", snap.State, snap.Error)
+	}
+
+	// 反向：connect 仍必须要求 connect_cmd
+	res := callRaw(t, svc, "connect", map[string]any{"ssh": "ssh h", "name": "m1"})
+	if !strings.Contains(res.Error, "connect_cmd is required") {
+		t.Fatalf("connect must still require connect_cmd, got %q", res.Error)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // deprovision
 // ---------------------------------------------------------------------------
@@ -787,7 +821,6 @@ func TestHandleRPC_ProvisionValidationRunsNoSSH(t *testing.T) {
 		{map[string]any{}, "ssh is required"},
 		{map[string]any{"ssh": "ssh h"}, "name is required"},
 		{map[string]any{"ssh": "ssh h", "name": "bad name!"}, "invalid name"},
-		{map[string]any{"ssh": "ssh h", "name": "m1"}, "connect_cmd is required"},
 	}
 	for _, tc := range cases {
 		res := callRaw(t, svc, "provision", tc.params)

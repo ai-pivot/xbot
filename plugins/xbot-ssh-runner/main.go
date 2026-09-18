@@ -545,9 +545,11 @@ func parseProvisionParams(params map[string]any) (provisionParams, error) {
 	if err := validateTargetName(p.Name); err != nil {
 		return p, err
 	}
-	if p.ConnectCmd == "" {
-		return p, errors.New(`connect_cmd is required (e.g. "--server ws://host:8082/ws --token <token>")`)
-	}
+	// `connect_cmd` 在 install-only 的 provision 流程里**根本不被使用**（安装链路是
+	// download → 校验 sha256 → kill-old → 原子安装；runner 的启动命令由 **connect 时**
+	// 经 runner_create/RunnerConnectCmd 现铸 —— 那样 token 更新鲜）。所以这里不再强制。
+	// ⚠️ 2026-09-18 生产踩坑：面板的 provision 只传 ssh/name/download_base/install_dir，
+	// 旧校验直接报 "connect_cmd is required"，导致点 Provision 即失败（装不上二进制）。
 	if p.DownloadBase == "" {
 		p.DownloadBase = defaultDownloadBase
 	}
