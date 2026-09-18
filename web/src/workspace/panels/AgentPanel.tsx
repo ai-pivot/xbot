@@ -871,7 +871,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           <Loader2 className="size-5 animate-spin" />
           <span className="text-xs">Loading…</span>
         </div>
-      ) : (
+      ) : isVisible ? (
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -889,7 +889,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         onEndEdit={handleEndEdit}
         footer={askUserFooter}
       />
-      )}
+      ) : null}
       {!isSubAgent && (
         <StagingTray
           items={agentChat.queue}
