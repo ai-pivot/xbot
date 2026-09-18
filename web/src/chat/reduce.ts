@@ -229,6 +229,25 @@ function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: s
 export function reduce(s: ChatState, ev: DomainEvent): ChatState {
   switch (ev.type) {
     // ── turn_started：收尸旧 active + 新 turn 进 live + 绑定 user ──
+    // ── 权威 idle（session(idle) / agent-idle）───────────────────────────────
+    // busyFallback = activeTurn !== null。若没有任何权威 idle 清它，任何一次
+    // turn 结束事件丢失（SSE gap / 面板当时未订阅 / 事件被合并）都会让 busy
+    // **永久**卡住，直到整页刷新（用户 2026-09-18 P0：后端 idle、前端 busy）。
+    // 清 activeTurn 的同时把活跃 turn 定格为 frozen —— **保留已渲染内容**
+    // （与 cancel 的 freeze 同语义，绝不 wipe），并把 streaming 置 false。
+    case 'session_idle': {
+      if (s.activeTurn === null) return s // 幂等：无活跃 turn ⇒ 原 state（零渲染）
+      const turns = new Map(s.turns)
+      const t = turns.get(s.activeTurn)
+      if (t && t.phase.kind === 'live') {
+        turns.set(s.activeTurn, {
+          ...t,
+          phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } },
+        })
+      }
+      return { ...s, turns, activeTurn: null, lastSeq: null }
+    }
+
     case 'turn_started': {
       // I5：seq 属于 per-run —— 新 turn 重置。
       let next: ChatState = { ...s, activeTurn: ev.turnID, lastSeq: null }

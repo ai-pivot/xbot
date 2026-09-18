@@ -2169,3 +2169,32 @@ describe('P0(2026-09-18): iteration boundary keeps already-rendered tools', () =
     expect(live1.phase.data.activeTools[0].iteration).toBe(2)
   })
 })
+
+// ─── P0（2026-09-18）：权威 idle 必须清 activeTurn ──────────────────────────
+// 现象：后端 idle，前端仍渲染 busy（输入框 "Agent is busy"，只能整页刷新）。
+// 根因：busy 三路 OR 里的 busyFallback = activeTurn !== null 没有任何权威 idle
+// 清除路径 ⇒ 任何一次 turn 结束事件丢失都会永久卡 busy。
+// 契约：session_idle（agent-idle/session(idle) 派发）⇒ activeTurn=null，活跃 turn
+// 转 frozen（**内容保留**，与 cancel 同语义），且幂等（无活跃 turn 时原引用返回）。
+describe('P0(2026-09-18): session_idle 清 activeTurn（后端 idle ⇒ 前端不卡 busy）', () => {
+  it('session_idle ⇒ activeTurn=null；活跃 turn 转 frozen 且内容保留（不 wipe）', () => {
+    const s0 = run([started(T1), iteration1(T1, '完成的工作', 1) as DomainEvent])
+    expect(s0.activeTurn).toBe(T1)
+
+    const s1 = run([{ type: 'session_idle' } as DomainEvent], s0)
+    expect(s1.activeTurn).toBeNull()
+    const t = s1.turns.get(T1)
+    expect(t?.phase.kind).toBe('frozen')
+    if (t?.phase.kind === 'frozen') {
+      expect(t.phase.data.content).toBe('完成的工作')
+      expect(t.phase.data.streaming).toBe(false)
+    }
+  })
+
+  it('幂等：无活跃 turn 时返回原 state 引用（零渲染，防重放抖动）', () => {
+    const s0 = run([started(T1), iteration1(T1, 'x', 1) as DomainEvent])
+    const s1 = run([{ type: 'session_idle' } as DomainEvent], s0)
+    const s2 = run([{ type: 'session_idle' } as DomainEvent], s1)
+    expect(s2).toBe(s1)
+  })
+})
