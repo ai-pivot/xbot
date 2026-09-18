@@ -175,7 +175,8 @@ async function startSampler(page: Page): Promise<void> {
           const listText = (listEl?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 24)
           const loadingEl = el.querySelector('[data-testid="session-loading-screen"]')
           const isLoading = !!loadingEl && (loadingEl as HTMLElement).getBoundingClientRect().height > 0
-          return `${el.getAttribute('data-agent-chat-id') || '(seed)'}|vis=${visible ? 1 : 0}|list=${hasList ? 1 : 0}${listVisible ? 'v' : 'h'}|load=${isLoading ? 1 : 0}|"${listText}"`
+          const r = Math.round
+          return `${el.getAttribute('data-agent-chat-id') || '(seed)'}|vis=${visible ? 1 : 0}|rect=${r(rect.x)},${r(rect.y)} ${r(rect.width)}x${r(rect.height)}|list=${hasList ? 1 : 0}${listVisible ? 'v' : 'h'}|load=${isLoading ? 1 : 0}|"${listText}"`
         })
         .join('  ~  ')
       samples.push({
@@ -300,6 +301,13 @@ test.describe('切换会话：切换开始即 loading，不得先渲染上一会
       first.loading,
       `切回已有 tab 的第一帧必须已是 loading，实际 panels=${first.panels}`,
     ).toBe(true)
+
+    // ⛔ 幽灵面板守卫：占位 tab（无 sessionId）在别的面板承载会话时**不渲染任何 UI**
+    //（用户截图：消息区上方浮着一排输入框控件 = 幽灵面板的 MessageInput 漏出）。
+    const ghosts = await page.evaluate(
+      () => document.querySelectorAll('[data-agent-chat-id=""]').length,
+    )
+    expect(ghosts, '不得存在无归属会话的幽灵 agent 面板（会漏出输入框控件）').toBe(0)
 
     await page.close()
   })

@@ -843,6 +843,17 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     )
   }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
 
+  // ⛔ 幽灵面板（2026-09-18 用户截图「切换会话闪烁一瞬间错误布局」根因之一）：
+  // 占位 tab（无 sessionId）在**已有别的 agent 面板承载 activeSession** 时 chatID=null
+  // （不镜像，避免同一会话两个面板渲染两份）。但它此前**仍然渲染整块面板 UI**（欢迎
+  // 空态 + MessageInput）—— 而 agent tab 是 `renderer='always'`（常驻 DOM），dockview
+  // 在切换瞬间会重排分组/尺寸 ⇒ 这些**没有任何会话可承载**的输入框控件会漏进可见区
+  // （实测：帧级 E2E 里出现 `(seed)|vis=1|rect=…` 与真实面板**完全重叠**，切换瞬间甚至
+  // 先分屏）。
+  // 契约：占位面板**不承载会话时不渲染任何面板 UI**（tab 本身仍在，尺寸归 dockview）；
+  // 只有它真的在镜像一个会话（引导态 / 独占）时才渲染，否则一律 null。
+  if (isPlaceholderMainAgent && sessionOwnedByPeerPanel) return null
+
   return (
     <ToolSessionContext.Provider
       value={{ channel: progressChannel, chatID: progressChatID }}
