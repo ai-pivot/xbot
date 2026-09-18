@@ -42,10 +42,18 @@ func (s *webFileSharer) ShareFile(localPath string, displayName string) (string,
 		displayName = filepath.Base(localPath)
 	}
 
-	// Key: agent/<uuid>/<display-name> — namespace separates agent-published
+	// Name: strip any extension the caller supplied, then append the SOURCE
+	// file's real extension — so the key ends with exactly one extension that
+	// matches the content (the download endpoint derives Content-Type from it).
+	// ⛔ 不能无条件 `displayName + ext`：默认显示名就是带扩展名的文件名，
+	// 会拼出 `chart.png.png`（单测 TestWebFileSharer_LocalCopiesFileAndReturnsURL 抓到）。
+	base := sanitizeFileName(displayName)
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+
+	// Key: agent/<uuid>/<name> — namespace separates agent-published
 	// files from user uploads (uploads/<uid>/...). The /api/files/download
 	// endpoint serves both prefixes.
-	key := fmt.Sprintf("agent/%s/%s%s", uuid.New().String(), sanitizeFileName(displayName), ext)
+	key := fmt.Sprintf("agent/%s/%s%s", uuid.New().String(), base, ext)
 
 	// Local storage: write to disk (same root as user uploads — the HTTP
 	// handler serves from <uploadRoot>/<key>).

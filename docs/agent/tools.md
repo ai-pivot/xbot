@@ -225,6 +225,17 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `WebSearch` | `tools/web_search.go` | Tavily web search |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |
 
+## File Publishing — `share_file` (`tools/share_file.go` + `serverapp/file_sharer.go`)
+
+Agent 把**本地文件发布成 Web 可访问 URL**，在回复里嵌入给用户看（图表 / 报告 / 截图）。**Web 专属**：`serverapp/server.go` 只在 `cfg.Web.Enable && imgProvider != nil` 时注册（`RegisterCoreTool` + `RegisterTool`）。
+
+- **接口与实现分离（避免 import cycle）**：`tools.FileSharer` 接口在 `tools/`，实现 `webFileSharer` 在 `serverapp/`（`tools` 不能 import `channel/web`；`channel/web → channel → tools`）。构造函数 `serverapp.NewWebFileSharer(provider web.OSSProvider, xbotHome string)`。
+- **provider 无关，绝不用软链接**（用户明确要求：不同 provider 绑本地 fs 不合适）：本地后端（`provider == nil` 或 `Name() == "local"`）⇒ **copy** 到 `<xbotHome>/uploads/agent/<uuid>/<name>`（0o700 目录 / 0o600 文件）；云后端（qiniu/s3）⇒ `provider.Upload` + `provider.GetDownloadURL`（签名 URL）。
+- **key 命名空间**：`agent/<uuid>/<name>` —— 与用户上传 `uploads/<uid>/...` 分离；`channel/web/web_file.go` 的 `handleFileDownload` 放行这两个前缀（其余一律 400），`..` 仍被拒。key 含不可预测 uuid ⇒ 未分享的文件没有可达路径。
+- **URL 形态**：本地 ⇒ 同源 `/api/files/download?key=agent%2F<uuid>%2F<name>`（走会话 cookie 鉴权；图片附 `&inline=1` 让浏览器内联渲染，其他文件走 attachment 语义）；URL **稳定不过期**。
+- **文件名**：先剥掉调用方给的扩展名、再补源文件的**真实**扩展名 —— 保证结尾恰好一个与内容一致的扩展名（下载端点按 key 的扩展名推导 Content-Type）。⛔ 无条件 `displayName + ext` 会拼出 `chart.png.png`（`serverapp/file_sharer_test.go` 抓到）。
+- **工具返回**：`Summary`（Published X → URL）+ `Detail`（URL + 可直接粘贴的 Markdown）+ `Tips`（图片 `![name](url)` / 其他 `[name](url)`），模型把这段 Markdown 放进回复即可。
+
 ## Foreground shell promote-to-background (`tools/shell.go` + `tools/shell_promote.go`)
 
 Users can move a RUNNING foreground shell to the background from the web UI so the agent iteration stops blocking. Full chain:

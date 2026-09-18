@@ -53,6 +53,16 @@ never re-executed). Manage promoted tasks with `task_wait` / `task_status` /
 | `Fetch` | Fetch web URL content, convert HTML to markdown via readability, truncate with tiktoken. |
 | `WebSearch` | Web search via Tavily API with configurable depth and max results. |
 | `search_tools` | Semantic search for available tools using embedding similarity. |
+| `share_file` | Publish a local file as a web-accessible URL (**web channel only**): local storage copies it to `uploads/agent/<uuid>/<name>`; cloud storage (qiniu/s3) uploads and returns a signed URL |
+
+{{< hint type=note >}}
+**`share_file` (web-only)**: charts, reports and screenshots produced by the agent can be embedded straight into a reply — the tool returns ready-to-paste Markdown (`![name](url)` renders inline for images, `[name](url)` is a download link).
+
+- The returned URL is the **same-origin** endpoint `/api/files/download?key=agent%2F<uuid>%2F<name>`, protected by the session cookie. The key contains an unguessable uuid, so unshared files have no reachable path.
+- **Local storage (default, no cloud OSS configured)**: the file is copied to `<XBOT_HOME>/uploads/agent/<uuid>/<name>`; the URL never expires.
+- **Cloud storage**: uploaded through the storage provider and returned as a signed URL.
+- Registered only when the web channel is active (invisible to other channels).
+{{< /hint >}}
 
 ## Context & Session
 
