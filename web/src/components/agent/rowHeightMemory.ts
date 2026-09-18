@@ -29,26 +29,98 @@ export interface RowHeightLike {
   toolCount?: number
 }
 
-const sigCache = new WeakMap<object, string>()
+/**
+ * ⛔ 2026-09-18 P0（字符重合 / 行重叠）根因就在旧实现的两个缺陷：
+ *  1) 只记**长度**（`content.length`、Σ iterations 长度）—— 长度相同而文本不同会命中陈旧高度；
+ *  2) 结果按 **row 对象**记忆化（注释假设"行对象在帧间引用稳定"）—— 但 `derive.ts` 正是按
+ *     源对象做 **WeakMap 恒等 memo**：**对象标识稳定、内容却会变**（流式增长、窗口化
+ *     unmute、边界保留工具、折叠展开…）⇒ 指纹被永久冻结在首帧值 ⇒ 记忆高度永远偏小
+ *     ⇒ `resizeItem` 在 `size === item.size` 处早退不校正 ⇒ 虚拟行
+ *     `translateY(item.start)` 偏小 ⇒ **下一行画到上一行身上（两段文字压同一 y）**。
+ *
+ * 修法：① 指纹纳入**内容哈希**（不再只看长度）；② 记忆化必须按**输入**校验
+ * （内容字符串 / iterations 引用 / 各计数）——任一输入变了就重算。
+ */
+interface SigCacheEntry {
+  content: string
+  /** 逐项的 content/reasoning（**就地改写**元素时数组/对象引用都不变，必须逐项比） */
+  iterParts: readonly (readonly [string, string])[]
+  itersCount: number
+  iterLen: number
+  toolCount: number
+  partial: boolean
+  sig: string
+}
 
-/** 渲染内容指纹（按 row 对象记忆化：行对象在帧间引用稳定，切会话时是新对象 ⇒ 只算一次）。 */
+const sigCache = new WeakMap<object, SigCacheEntry>()
+
+/** FNV-1a 32-bit：便宜的内容指纹（不把整段文本拼进签名字符串，避免大分配）。 */
+function hashString(s: string): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
+function mixHash(h: number, v: number): number {
+  return Math.imul(h ^ v, 0x01000193) >>> 0
+}
+
+/** 渲染内容指纹：**内容哈希** + 计数；记忆化按输入校验（内容/引用变了必重算）。 */
 export function rowSignature(row: RowHeightLike): string {
-  const cached = sigCache.get(row as object)
-  if (cached !== undefined) return cached
+  const content = row.content ?? ''
   const iters = row.iterations ?? []
+  const partial = row.isPartial === true
+  const toolCount = row.toolCount ?? 0
   let iterLen = 0
   for (const it of iters) {
     iterLen += (it.content?.length ?? 0) + (it.reasoning?.length ?? 0)
   }
+
+  const hit = sigCache.get(row as object)
+  if (
+    hit !== undefined &&
+    hit.content === content &&
+    hit.itersCount === iters.length &&
+    hit.iterParts.length === iters.length &&
+    iters.every((it, i) => {
+      const p = hit.iterParts[i]
+      return p !== undefined && p[0] === (it.content ?? '') && p[1] === (it.reasoning ?? '')
+    }) &&
+    hit.iterLen === iterLen &&
+    hit.toolCount === toolCount &&
+    hit.partial === partial
+  ) {
+    return hit.sig
+  }
+
+  let h = 0x811c9dc5
+  for (const it of iters) {
+    h = mixHash(h, hashString(it.content ?? ''))
+    h = mixHash(h, hashString(it.reasoning ?? ''))
+    h = mixHash(h, it.tools?.length ?? 0)
+  }
   const sig = [
     row.role ?? '',
-    row.isPartial ? 'p' : 'c',
-    (row.content ?? '').length,
+    partial ? 'p' : 'c',
+    content.length,
+    hashString(content).toString(36),
     iters.length,
     iterLen,
-    row.toolCount ?? 0,
+    h.toString(36),
+    toolCount,
   ].join('|')
-  sigCache.set(row as object, sig)
+  sigCache.set(row as object, {
+    content,
+    iterParts: iters.map((it) => [it.content ?? '', it.reasoning ?? ''] as const),
+    itersCount: iters.length,
+    iterLen,
+    toolCount,
+    partial,
+    sig,
+  })
   return sig
 }
 
