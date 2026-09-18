@@ -436,6 +436,35 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       resumeRenderRef.current()
     }
   }, [])
+
+  // ⚠️ 熄屏/后台恢复必须“主动” resume 渲染通知（2026-09-18 用户复现：「熄屏解锁后
+  // loading 结束但消息区冻死 —— 头部速率在动、消息不再更新」）。上面那个
+  // IntersectionObserver 只在**交叉状态变化**时回调：页面被 OS 冻结/隐藏期间浏览器
+  // 可能投递一次 isIntersecting=false（→ pause），恢复可见时若交叉状态未再变化就
+  // **没有回调** ⇒ store 永久 paused（dispatch 照常、React 永不重渲染，表现为
+  // “状态机在动但 UI 冻死”）。这里在 visibilitychange→可见 / pageshow(bfcache) /
+  // focus 时按需 resume：只有面板真有渲染盒（非 display:none）才恢复，避免把
+  // 移动端隐藏视图（工具页/终端页）也解暂停。
+  useEffect(() => {
+    const resumeIfVisible = () => {
+      const el = agentPanelRootRef.current
+      if (!el) return
+      if (el.offsetParent !== null || el.getBoundingClientRect().width > 0) {
+        resumeRenderRef.current()
+      }
+    }
+    const onVisibilityChange = () => {
+      if (!document.hidden) resumeIfVisible()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pageshow', resumeIfVisible)
+    window.addEventListener('focus', resumeIfVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pageshow', resumeIfVisible)
+      window.removeEventListener('focus', resumeIfVisible)
+    }
+  }, [])
   // liveMessage comes from useProgressStream's live store — its visibility is
   // governed by the store's own hydration/reset lifecycle (initialProgress →
   // historyProgressToLive → store.replace, SSE-driven updates, reset on
