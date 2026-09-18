@@ -76,6 +76,12 @@ const ESTIMATE = 120
 // 跟踪高度变化并 resizeItem），estimate 只需给接近的初值。
 const GENUI_PANEL_ESTIMATE = 560
 const EDGE_EPSILON = 2
+/**
+ * 「钉到底」用的超界 `top`：跟随底部时写 `el.scrollTo({ top: SCROLL_PIN_MAX })`，
+ * 浏览器自行 clamp 到真实底部 —— **无需读 `scrollHeight`**（读它紧跟 React 提交会触发
+ * 强制同步布局，2026-09-18 生产 trace 实测该点 27% CPU）。任何真实内容高度都远小于它。
+ */
+const SCROLL_PIN_MAX = 1e9
 
 // ── 历史高度抖动根治：高度记忆 + 内容感知估算 ──────────────────────────────
 // 抖动机制：历史加载时 estimateSize 返回常数（120），而实际高度 200–900px →
@@ -316,6 +322,10 @@ export const MessageList = memo(function MessageList({
   )
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  /** virtualizer 坐标原点在滚动容器里的 y（padding-top + 顶部哨兵高度）。
+   *  **只量一次**（见下方 useLayoutEffect）——谓词里做纯算术，绝不逐行读 DOM。 */
+  const contentOriginRef = useRef(0)
+  const originRefEl = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
   // Generation counter — each scheduleFollow call increments this. The
@@ -365,6 +375,8 @@ export const MessageList = memo(function MessageList({
     () => orderMessageRows(bindTurnIDs(messages)),
     [messages],
   )
+  /** 供 useLayoutEffect 的依赖用（`rows` 每帧换引用，只关心"有没有行"）。 */
+  const rowsEmpty = rows.length === 0
   // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
   // must read the CURRENT rows, not a stale snapshot captured in effect deps —
   // after onLoadMore prepends older rows, the effect closure's `rows` is still
@@ -537,16 +549,42 @@ export const MessageList = memo(function MessageList({
         scrollElement?: HTMLElement | null
         elementsCache?: Map<string, HTMLElement>
       }
-      const el = inst.elementsCache?.get(item.key)
-      const scroller = inst.scrollElement
-      if (el && scroller && el.isConnected) {
-        // 行的下缘 ≤ 滚动视口上缘 ⇒ 该行完全在视口上方（真正需要补偿）。
-        return el.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().top
-      }
-      // 兜底（元素未注册时）：沿用坐标比较，按 padding 语义保守判定。
-      return item.end < (inst.scrollOffset ?? 0)
+      // ⛔ 绝不在这里读 DOM（2026-09-18 生产 trace 归因，用户实测"还是卡"）：
+      // 本谓词由 TanStack `resizeItem` **对每个尺寸变化的行**调用一次，而它内部
+      // 紧接着会写 `scrollTop`（补偿滚动）——「读 → 写 → 读」交替 ⇒ 每次调用都
+      // 触发一次**强制同步布局**。一次流式提交挂载/改高 N 行 = N 次全量布局。
+      // 实测：`getBoundingClientRect` 33.3% + `get offsetHeight` 13.3%（合计 46.6% CPU），
+      // 22 个 long task 累计 5.2s、单次最大 **1036ms**，调用链 = React commit → 本谓词。
+      //
+      // 用**只量一次**的内容原点（padding-top + 顶部哨兵高度，见 originRefEl 的
+      // useLayoutEffect）把 virtualizer 坐标换成滚动容器坐标，再与 TanStack 自己维护的
+      // `scrollOffset`（= 真实 scrollTop）比较 —— 语义与「元素下缘 ≤ 视口上缘」逐字等价，
+      // 但 O(1) 且**零 DOM 读**。
+      return item.end + contentOriginRef.current <= (inst.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  /**
+   * 内容原点（virtualizer 坐标 0 在滚动容器里的真实 y）——**只量一次**。
+   *
+   * 需要它是因为 virtualizer 的 item 坐标从「内容流 0」起算，而 `scrollOffset` 是**原始
+   * scrollTop**（含容器 padding-top 与顶部 loadMore 哨兵的高度）。两者差一个常量；
+   * 用常量把坐标换算对齐后，`shouldAdjustScrollPositionOnItemSizeChange` 里就能做纯
+   * 算术判定（见该处的 PERF 注释：逐行读 DOM 会在 resizeItem 写 scrollTop 之后
+   * 触发强制同步布局，实测占 46.6% CPU）。
+   *
+   * 依赖只在**会改变原点**的时刻重算：会话切换（padding/结构变）、哨兵出现/消失
+   * （hasMore）、哨兵内容切换（loadingMore：spinner ↔ 文本）、以及首行出现时。
+   * 每次测量是一次强制布局，但只发生在这几个稀疏时刻（不是每行、不是每帧）。
+   */
+  useLayoutEffect(() => {
+    const wrapper = originRefEl.current
+    const scroller = scrollRef.current
+    if (!wrapper || !scroller) return
+    const origin =
+      wrapper.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+    if (Number.isFinite(origin) && origin >= 0) contentOriginRef.current = origin
+  }, [chatKey, hasMore, loadingMore, rowsEmpty])
 
   /**
    * 迭代块「高度 / 冻结裁决」的作用域 = **会话身份 + 布局宽度**。
@@ -601,15 +639,20 @@ export const MessageList = memo(function MessageList({
       const idx = Number(node.dataset?.index ?? -1)
       const row = rowsRef.current[idx]
       if (row) {
-        const h = node.getBoundingClientRect().height
-        if (h > 0) {
+        // ⛔ 不要再读一次 DOM（2026-09-18 trace：`measureElement` 本身已经量过，
+        // 紧跟一次 `getBoundingClientRect()` 会与 TanStack 内部刚做的写（scrollTop
+        // 补偿）交错 ⇒ 又一次强制同步布局）。直接从 TanStack 的测量缓存取（纯内存）。
+        const size =
+          (virtualizer as unknown as { measurementsCache?: { size: number }[] }).measurementsCache?.[idx]
+            ?.size ?? 0
+        if (size > 0) {
           // 记录实测高度 + 指纹 + 宽度：同一内容的行在切会话/重挂载时**零 DOM 读**复用
           // （见 rowHeightMemory.ts；缓存上限与宽度失效都在该模块内处理）。
           heightMemory.set(
             rowMemoryKey(row, idx),
             rowSignature(row),
             heightLayoutWidth.current(),
-            Math.round(h),
+            Math.round(size),
           )
         }
       }
@@ -695,6 +738,13 @@ export const MessageList = memo(function MessageList({
       if (items.length > 0) {
         const lastItemIdx = items[items.length - 1].index
         if (lastItemIdx < rows.length - 1) {
+          const scroller = scrollRef.current
+          const v = virtualizer as unknown as {
+            scrollOffset?: number
+            scrollRect?: { height: number } | null
+            getTotalSize?: () => number
+            scrollElement?: HTMLElement | null
+          }
           console.error('[VIRTUALIZER_TAIL_DROP] getVirtualItems() does not cover the LIVE last row while sticking to bottom', {
             lastItemIdx,
             rowsLen: rows.length,
@@ -702,6 +752,13 @@ export const MessageList = memo(function MessageList({
             lastRowId: lastRow.id,
             lastRowRole: lastRow.role,
             busy,
+            // ── 决定性诊断：内部 offset vs DOM 真相 ──
+            vOffset: v.scrollOffset,
+            vTotal: v.getTotalSize?.(),
+            domTop: scroller ? Math.round(scroller.scrollTop) : null,
+            domScrollH: scroller?.scrollHeight ?? null,
+            domClientH: scroller?.clientHeight ?? null,
+            sameEl: v.scrollElement === scroller,
           })
           console.error(new Error('[VIRTUALIZER_TAIL_DROP] stack'))
         }
@@ -985,13 +1042,40 @@ export const MessageList = memo(function MessageList({
       setHasNewContent(true)
       return
     }
-    // stick=true — ensure we're actually at the bottom
     const el = scrollRef.current
-    if (el && el.scrollHeight - el.clientHeight - el.scrollTop > 2) {
-      programmaticScrollRef.current = true
-      el.scrollTop = el.scrollHeight
-      queueMicrotask(() => { programmaticScrollRef.current = false })
+    if (!el) return
+    // ⛔ 本 effect 依赖含 `liveProgress` ⇒ **每流式帧都跑**。因此这里既不能读几何
+    // （`el.scrollHeight` 紧跟 React 提交 ⇒ 强制同步布局；2026-09-18 生产 trace 实测
+    // 这一处 **1.58s / 27.1% CPU**，单次 long task 885ms），也不能每帧写滚动位置
+    // （写会把布局弄脏 ⇒ 下一次几何读又要重排，`get scrollTop` 0.64s 就是这么来的）。
+    //
+    // 两个动作都换成内存数字 + 一次 clamp 写入：
+    //  1) 「是否已在底部」用**同一原点**换算：内容绝对底 = totalSize + contentOrigin
+    //     （origin = 容器 padding + 顶部哨兵，见内容原点 effect）——
+    //     不换算就会差一个 origin ⇒ 判断恒为"没到底" ⇒ 每帧写（本 bug 的根因）。
+    //  2) 需要钉底时给一个必然超界的 `top`，浏览器自行 clamp 到底：
+    //     **零几何读**（`el.scrollTop = el.scrollHeight` 那种写法必须先读 scrollHeight）。
+    const v = virtualizerRef.current as unknown as {
+      scrollOffset?: number
+      scrollRect?: { height: number } | null
+      getTotalSize?: () => number
     }
+    const total = v.getTotalSize?.() ?? 0
+    const viewport = v.scrollRect?.height ?? 0
+    const offset = v.scrollOffset ?? 0
+    if (viewport > 0 && total > 0 && offset + viewport >= total + contentOriginRef.current - 2) {
+      return // 已经在底部：零布局读、零写入
+    }
+    programmaticScrollRef.current = true
+    if (typeof el.scrollTo === 'function') {
+      // 生产路径：超界 top 由浏览器 clamp ⇒ **零几何读**。
+      el.scrollTo({ top: SCROLL_PIN_MAX })
+    } else {
+      // jsdom（单测）/ 极老环境没有 `Element.prototype.scrollTo`：退回直接赋值，
+      // 这条退化路径读一次 `scrollHeight` 是可接受的（测试环境没有布局成本）。
+      el.scrollTop = el.scrollHeight
+    }
+    queueMicrotask(() => { programmaticScrollRef.current = false })
   }, [rows.length, liveProgress, hasFooter])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
@@ -1195,6 +1279,7 @@ export const MessageList = memo(function MessageList({
           )}
           {rows.length > 0 && (
             <div
+              ref={originRefEl}
               style={{ height: `${virtualizer.getTotalSize()}px` }}
               className="relative w-full"
             >

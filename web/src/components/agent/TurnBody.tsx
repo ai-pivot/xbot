@@ -106,7 +106,11 @@ const VERIFY_DELAY_MS = 400
  * 思考之前的已提交内容整段不渲染」）。这类结果一律忽略，等元素可见后由 RO 重报。
  */
 function isLayoutable(el: HTMLElement, rect: { width: number; height: number }): boolean {
-  return el.isConnected && el.offsetParent !== null && rect.width > 0 && rect.height > 0
+  // ⛔ 不读 `offsetParent`（2026-09-18 dev-build trace：`get offsetParent` 0.16s，
+  // 同一「强制同步布局」家族）。它当初只是为了排除 `display:none` —— 而这类元素
+  // 的尺寸读数本就是 0，`rect.width/height > 0` 已经把它排除；`isConnected` 覆盖
+  // 「已脱离文档」。少一次布局读，语义不变。
+  return el.isConnected && rect.width > 0 && rect.height > 0
 }
 
 /**

@@ -136,6 +136,10 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
   const ids = dock.zoneIds(zone)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const widthRef = useRef<Map<string, number>>(new Map())
+  /** 容器可用宽度（ResizeObserver 报来的，**零布局读**；0 = 尚未报过）。
+   *  见 `recompute` 的注释：`useLayoutEffect` 无依赖 ⇒ 每次渲染都调 recompute，
+   *  若在那里读 `clientWidth` 就是每次渲染一次强制同步布局（实测 0.68s / 11.6%）。 */
+  const containerWidthRef = useRef(0)
   // null = 全部可见（未测量/绰绰有余）；数字 = 前 N 个可见，其余收进 ＋N。
   const [visibleCount, setVisibleCount] = useState<number | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -144,12 +148,30 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
   /** rail 内联徽章的详情 popover。 */
   const [inlineDetailId, setInlineDetailId] = useState<string | null>(null)
 
-  const setBadgeRef = useCallback((id: string) => (el: HTMLElement | null) => {
-    if (el) {
-      const w = el.getBoundingClientRect().width
-      if (w > 0) widthRef.current.set(id, w)
+  /**
+   * 每个 id 一个**稳定**的 ref 回调。
+   *
+   * ⛔ 不要写成 `useCallback((id) => (el) => {...}, [])`：`useCallback` 只固定外层，
+   * 每次渲染调 `setBadgeRef(id)` 仍返回**新的内层箭头函数** ⇒ React 认为 ref 变了，
+   * 对每个徽章执行 detach(`ref(null)`) + attach(`ref(el)`) ⇒ **每帧每徽章一次
+   * `getBoundingClientRect()`**（强制同步布局）。dev-build trace 实测：这一处
+   * `getBoundingClientRect` = **1.48s / 17.1% CPU**（`bundle:21735:59`），是本应用
+   * 最大的单点热点。按 id 缓存后，ref 身份恒定 ⇒ 每徽章只在挂载/卸载时各量一次。
+   */
+  const badgeRefCache = useRef(new Map<string, (el: HTMLElement | null) => void>())
+  const setBadgeRef = useCallback((id: string) => {
+    let fn = badgeRefCache.current.get(id)
+    if (!fn) {
+      fn = (el: HTMLElement | null) => {
+        if (el) {
+          const w = el.getBoundingClientRect().width
+          if (w > 0) widthRef.current.set(id, w)
+        }
+        // el=null（收纳卸载）保留缓存——容器再变宽时仍能恢复该徽章。
+      }
+      badgeRefCache.current.set(id, fn)
     }
-    // el=null（收纳卸载）保留缓存——容器再变宽时仍能恢复该徽章。
+    return fn
   }, [])
 
   const recompute = useCallback(() => {
@@ -158,7 +180,15 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
       setVisibleCount((prev) => (prev === null ? prev : null))
       return
     }
-    const available = el.clientWidth
+    // ⛔ 不在这里读 `el.clientWidth`（2026-09-18 dev-build trace：本函数由**无依赖的
+    // useLayoutEffect** 在每次渲染后调用 ⇒ 每次渲染一次 `get clientWidth` 强制同步布局，
+    // 实测 0.68s / 11.6% CPU）。宽度改由 ResizeObserver 回调带进来（它本来就在观察容器，
+    // `entry.contentRect.width` 是免费的），仅在 RO 还没报过时兜底读一次。
+    let available = containerWidthRef.current
+    if (available <= 0) {
+      available = el.clientWidth
+      containerWidthRef.current = available
+    }
     const scan = (reservePlus: boolean): number => {
       let used = 0
       let count = 0
@@ -192,7 +222,11 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
   useEffect(() => {
     const el = containerRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => recompute())
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width ?? 0
+      if (w > 0) containerWidthRef.current = w
+      recompute()
+    })
     ro.observe(el)
     return () => ro.disconnect()
   }, [recompute])
