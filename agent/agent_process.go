@@ -283,11 +283,12 @@ func (a *Agent) requeueDrainedBgNotifications(sessionKey string) {
 // Called by chatProcessLoop after each turn completes (response sent), and by
 // chatWorker when idle. Safe for concurrent use — bgRunPendingMu serializes access.
 //
-// Per-notification injection (one user message each): every notification gets
-// its own turn, its own 🔔 row and its own traceable turn_id — the queue tray
-// shows each as an individually cancellable FIFO item. The previous batching
-// (N notifications joined by "\n\n---\n\n" into one giant message) merged
-// unrelated events behind a single turn and made them untraceable in the UI.
+// ⛔ **一次突发 = 一条 user 消息 = 一个 turn**（2026-09-18 用户 P0 修复）：
+// 所有排空的通知按 `"\n\n---\n\n"` 拼成**一条** user 消息注入。旧实现「每条通知
+// 各自注入一条 user 消息」会让 N 条通知变成 N 条消息 —— 收尾 drain 一次性注入后，
+// 队列开始跑第 1 条（busy=true），**其余 N-1 条卡在用户可见的排队 tray 里**
+// （用户截图：Next turn 83 + Turn 84–88，既不能立刻发出、也拿不到一次处理完）。
+// 批量成一条同时保证：一个 turn 处理完所有事件、不会挤爆队列。
 func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	mine := a.takePendingBgNotifications(sessionKey)
 	if len(mine) == 0 {
@@ -304,7 +305,10 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// Inject each notification individually. Notifications are admitted
 	// sequentially through the session queue, so per-session FIFO ordering is
 	// preserved (queue seq = turn_id = processing order).
-	injected := 0
+	var batched []string
+	// 发送方取**第一条有 sender 的通知**（批量成一条消息后只有一个 sender 字段）；
+	// 后续无 sender 的通知不会"继承"上一条身份 —— 与逐条注入时的语义一致（CR#4）。
+	firstSender := ""
 	for _, notif := range mine {
 		var content string
 		// Per-notification sender: NOT inherited across iterations. A
@@ -343,17 +347,31 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		if content == "" {
 			continue
 		}
-		a.injectBgUserMessage(channelName, chatID, senderID, content)
-		injected++
+		batched = append(batched, content)
+		if firstSender == "" && senderID != "" {
+			firstSender = senderID
+		}
 	}
 
-	if injected > 0 {
-		log.WithFields(log.Fields{
-			"channel":     channelName,
-			"chat_id":     chatID,
-			"notif_count": injected,
-		}).Info("Bg notifications: injecting individually (one turn each)")
+	if len(batched) == 0 {
+		return
 	}
+
+	// ⛔ **一次突发 = 一条 user 消息 = 一个 turn**（2026-09-18 用户 P0）。
+	// 旧实现「每条通知各自注入一条 user 消息」会让 6 条通知变成 6 条消息：
+	// 收尾 drain 一次性注入后，队列开始跑第 1 条（busy=true），**其余 5 条就卡在
+	// 用户可见的排队 tray 里**（截图：Next turn 83 + Turn 84–88），用户既没法立刻
+	// 发出、也拿不到"一次处理完"。这正是 AGENTS.md 早已写明的契约：
+	//   「drainAndProcessNotifications batches all notifications into ONE user
+	//     message … joined with "\n\n---\n\n" … avoids … triggering N separate
+	//     agent turns when multiple bg tasks complete simultaneously.」
+	joined := strings.Join(batched, "\n\n---\n\n")
+	a.injectBgUserMessage(channelName, chatID, firstSender, joined)
+	log.WithFields(log.Fields{
+		"channel":     channelName,
+		"chat_id":     chatID,
+		"notif_count": len(batched),
+	}).Info("Bg notifications: injected as ONE batched user message")
 }
 
 // handleCancelledRun persists un-saved engine messages and iteration history
