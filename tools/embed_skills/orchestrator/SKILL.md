@@ -58,9 +58,44 @@ subagent 的**每个 top 发现**，主 agent 亲自抽查后才进报告：
 
 1. **先列触达面矩阵**：每个修复项 → 它要改的 file:line 清单。同文件的修复**串行**（等先行者提交"让出文件"），异文件的**并行**。行号相邻（同一段代码两处改）也算同文件冲突。
 2. **按波派发**：波内任务文件集两两不相交 ⇒ 并行安全；波与波之间按"谁让出谁"排队。派发语（任务书里）显式写"文件 X 由另一线在改 ⇒ 禁碰"，在飞 agent 完成后立即补派排队项（"文件已空闲"）。
-3. **大特性 / 高风险改动 ⇒ worktree 隔离**：`git worktree add ../proj-<feature> -b <branch>`，改完合并，主树不受在途 WIP 污染。**验证用隔离 worktree**——共享树被多线并发写，"共享树编译不过"可能是别人的 WIP，不判真伪。
+3. **大特性 / 高风险改动 ⇒ worktree 隔离**：按 §worktree 派发契约执行——主 agent 分配**每路一个**目录（`<repo>/../.xbot-worktrees/<role>-<instance>`）+ 写死 **BASE_COMMIT**，由 subagent **自己** `git worktree add --detach <目录> <BASE_COMMIT>`；改完合并，主树不受在途 WIP 污染；**收工必须清理**（`git worktree remove --force` + `prune`）并在交付里确认。**验证用隔离 worktree**——共享树被多线并发写，"共享树编译不过"可能是别人的 WIP，不判真伪。
 4. **交付物 = 分步 commit，每步独立绿**：大特性拆两步（例：先落"诚实声明硬门"——覆盖率不满时禁止对拍；再落"真修"），每步可独立 revert、独立验证。提交信息写透根因与验证结果。
-5. **任务书差异（实现类 vs 调研类）**：允许写代码 + 提交，但要加：①只 add 自己的文件；②交付 = file:line 摘要 + 测试结果 + 提交哈希 + **Pitfalls**（诚实记录踩坑与发现的存量问题，取证）+ **移交项**。
+5. **任务书差异（实现类 vs 调研类）**：允许写代码 + 提交，但要加：①只 add 自己的文件；②交付 = file:line 摘要 + 测试结果 + 提交哈希 + **Pitfalls**（诚实记录踩坑与发现的存量问题，取证）+ **移交项**；③**worktree 三件套（可写任务必填）**：`BASE_COMMIT=<sha>`（写死，不让 agent 自己取 HEAD）、`WT_DIR=<repo>/../.xbot-worktrees/<role>-<instance>`（任务书分配的**唯一**目录，由 agent **自己** `git worktree add --detach` 开出、后续只在这里读写）、收工 `git worktree remove --force <WT_DIR>` + `git worktree prune` 并在交付里**确认已清理**（见 §worktree 派发契约）。
+
+## worktree 派发契约（每路一个目录 + 基 commit + 收工清理）
+
+派发**可写**任务（实现/修复/大特性）时，任务书里必须**写死三件事**，缺一不可：
+
+1. **基准 commit（写死完整 SHA，不让他们自己取 HEAD）**
+   派发前在主树跑 `git rev-parse HEAD` ⇒ 把完整 SHA 写进任务书（例 `BASE_COMMIT=<sha>`）。
+   理由：并行期间主树会前进（别的车道在提交），让 subagent 各自 `HEAD` 会取到**不同起点** ⇒ 合起来对不上、bisect 失效。基于非 HEAD（tag/分支/父提交）时同样写死解析后的 SHA。父提交判别（§主线交叉验证）也复用这个 SHA。
+
+2. **worktree 目录（主 agent 分配，subagent 自己开）**
+   每路一个**唯一**目录、放在主仓之外、命名带 role/instance：
+   `<repo>/../.xbot-worktrees/<role>-<instance>`（例 `../.xbot-worktrees/explore-audit-1`）。
+   任务书写明「**你自己开**」：
+
+   ```bash
+   git worktree add --detach <目录> <BASE_COMMIT>     # --detach：脏树/分支名都不冲突
+   cd <目录>                                          # 之后所有读写/构建都在这里
+   ```
+
+   也可用宿主工具 `Worktree(action="init")`（会自动 cd 进去），但**目录以任务书为准**——不许自己挑路径，否则收工清理找不到它。
+
+3. **收工清理（做完必须做，并在交付里确认）**
+
+   ```bash
+   git worktree remove --force <目录>   # 或在目录内 Worktree(action="cleanup")
+   git worktree prune                    # 清 register 残留
+   ```
+
+   - **先提交/落盘再清理**：未提交改动会随 `--force` 一起消失；要留证据先
+     `git diff <BASE_COMMIT> > /tmp/<role>-<instance>.patch`（落到主树可见处）再删。
+   - 交付报告**固定一栏**：`worktree 已清理：<目录> —— 是/否（命令）`。
+
+**主 agent 侧**：派发后 `git worktree list` 应能看到每路目录（缺 ⇒ 该路没真开）；每路
+交付后**复核目录确实消失**（`git worktree list` + `git worktree prune`）——残留会污染
+后续 `git status`/构建，也会让"主树编译不过"的误判复发。
 
 ## 验收回路
 
@@ -101,6 +136,8 @@ subagent 的**每个 top 发现**，主 agent 亲自抽查后才进报告：
 - 把 subagent 原始长输出全量读进上下文（只读结论 + 证据）
 - agent 停在半路就换人重做（不要求精确落点清单）⇒ 上下文浪费 + 重复探索
 - 接受"看起来修了"的交付：没有判别力测试/没有 mutation 自证/没有门禁 = 未完成
+- 派发**可写**任务却不给 worktree 目录与 `BASE_COMMIT`（subagent 各自取 HEAD ⇒ 起点不一致、合并对不上；或在共享主树里改 ⇒ 与他人在途 WIP 互相污染）
+- subagent **收工不清理 worktree**（目录/register 残留污染 `git status`/构建，并让"主树编译不过"的误判复发）——主 agent 必须复核 `git worktree list` 确认已消失
 
 ## 何时不用
 
