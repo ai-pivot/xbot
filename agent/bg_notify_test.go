@@ -865,3 +865,66 @@ func TestBgNotifyLoop_CronFired_NoSession_MultipleNotifications(t *testing.T) {
 func containsPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
+
+// TestDrainAndProcessNotifications_LabelsSourceAndRange —— 用户要求（2026-09-18）：
+// 「N 合 1 必须明显标识每条消息的范围和来源」。
+// 契约：① 消息以 `🔔 合并通知 ×N` 总览开头（N>1）；② 每节以 `【i/N】` 标出范围；
+// ③ 节头写明来源（后台任务 + task id / 子代理 role/instance / 定时任务 + 摘要）；
+// ④ 节间仍用既有分隔符 "\n\n---\n\n"。
+func TestDrainAndProcessNotifications_LabelsSourceAndRange(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{bus: bus.NewMessageBus(), agentCtx: ctx}
+	a.bgTaskMgr.Store(mgr)
+
+	chatKey := "cli:label-chat"
+	// ① 后台任务（完成通知带真实 ID 与命令）
+	_ = mgr.Start(chatKey, "user-1", "cargo check", func(ctx context.Context, outputBuf func(string)) (int, error) {
+		outputBuf("ok")
+		return 0, nil
+	})
+	var bgNotif tools.BgNotification
+	select {
+	case bgNotif = <-mgr.NotifyCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for bg task notification")
+	}
+	// ② 子代理完成 ③ 定时任务
+	subNotif := &tools.SubAgentBgNotify{
+		Key: chatKey, Type: tools.SubAgentBgNotifyCompleted,
+		Role: "explore", Instance: "mem-1", Content: "SUB_DONE", Sid: "user-1",
+	}
+	cronNotif := &tools.CronFired{Key: chatKey, Sid: "user-1", Message: "check health"}
+	a.enqueueBgNotifications([]tools.BgNotification{bgNotif, subNotif, cronNotif})
+
+	a.drainAndProcessNotifications(chatKey)
+
+	var msg bus.InboundMessage
+	select {
+	case msg = <-a.bus.Inbound:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the batched notification message in bus.Inbound")
+	}
+	// 恰好一条（N 合 1，绝不逐条）。
+	select {
+	case extra := <-a.bus.Inbound:
+		t.Fatalf("expected ONE batched message, got a second: %q", extra.Content)
+	default:
+	}
+
+	c := msg.Content
+	for _, want := range []string{
+		"🔔 合并通知 ×3",               // 总览（范围）
+		"【1/3】", "【2/3】", "【3/3】", // 每节的序号（范围）
+		"后台任务 ",             // 来源：后台任务（带 task id）
+		"子代理 explore/mem-1", // 来源：子代理 role/instance
+		"定时任务",              // 来源：定时任务
+		"\n\n---\n\n",       // 既有分隔符（契约不变）
+		"SUB_DONE",          // 正文仍完整
+	} {
+		if !strings.Contains(c, want) {
+			t.Errorf("batched message must contain %q;\n--- got ---\n%s", want, c)
+		}
+	}
+}

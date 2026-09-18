@@ -278,6 +278,47 @@ func (a *Agent) requeueDrainedBgNotifications(sessionKey string) {
 	a.bgRunPendingMu.Unlock()
 }
 
+// bgNotificationSectionLabel 生成每条通知的**来源标识**，用于「N 合 1」时的分节头。
+//
+// 契约（用户 2026-09-18 要求）：N 条通知合并成一条消息时，必须一眼看出**每条通知的
+// 范围与来源** —— 分节头形如 `【i/N】后台任务 3f8f492a · cargo check`；节间沿用既有
+// 分隔符（"\n\n---\n\n"），单条通知保持原有形态不加标号。
+func bgNotificationSectionLabel(notif tools.BgNotification) string {
+	switch n := notif.(type) {
+	case *tools.BackgroundTask:
+		label := "后台任务 " + n.ID
+		if cmd := tools.TruncateHeadPreview(firstNonEmptyLine(n.Command), 80); cmd != "" {
+			label += " · " + cmd
+		}
+		return label
+	case *tools.SubAgentBgNotify:
+		return "子代理 " + n.Role + "/" + n.Instance
+	case *tools.CronFired:
+		label := "定时任务"
+		if msg := tools.TruncateHeadPreview(firstNonEmptyLine(n.Message), 80); msg != "" {
+			label += " · " + msg
+		}
+		return label
+	case *tools.AsyncMessageNotification:
+		if n.Source != "" {
+			return "异步消息（" + n.Source + "）"
+		}
+		return "异步消息"
+	default:
+		return "通知"
+	}
+}
+
+// firstNonEmptyLine 取首个非空行（用 strings.Lines —— 不在 Go 源码里写换行字面量）。
+func firstNonEmptyLine(s string) string {
+	for line := range strings.Lines(s) {
+		if t := strings.TrimSpace(line); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 // drainAndProcessNotifications drains bg notifications for the given session
 // from bgRunPending and processes them via processBgNotification/processSubAgentBgNotification.
 // Called by chatProcessLoop after each turn completes (response sent), and by
@@ -305,7 +346,8 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	// Inject each notification individually. Notifications are admitted
 	// sequentially through the session queue, so per-session FIFO ordering is
 	// preserved (queue seq = turn_id = processing order).
-	var batched []string
+	type bgSection struct{ label, content string }
+	var sections []bgSection
 	// 发送方取**第一条有 sender 的通知**（批量成一条消息后只有一个 sender 字段）；
 	// 后续无 sender 的通知不会"继承"上一条身份 —— 与逐条注入时的语义一致（CR#4）。
 	firstSender := ""
@@ -347,13 +389,13 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 		if content == "" {
 			continue
 		}
-		batched = append(batched, content)
+		sections = append(sections, bgSection{label: bgNotificationSectionLabel(notif), content: content})
 		if firstSender == "" && senderID != "" {
 			firstSender = senderID
 		}
 	}
 
-	if len(batched) == 0 {
+	if len(sections) == 0 {
 		return
 	}
 
@@ -365,12 +407,26 @@ func (a *Agent) drainAndProcessNotifications(sessionKey string) {
 	//   「drainAndProcessNotifications batches all notifications into ONE user
 	//     message … joined with "\n\n---\n\n" … avoids … triggering N separate
 	//     agent turns when multiple bg tasks complete simultaneously.」
-	joined := strings.Join(batched, "\n\n---\n\n")
+	var joined string
+	if len(sections) == 1 {
+		// 单条通知：**保持原有形态**（⏰ / [System Notification] 等前导标记是既有约定，
+		// 其他消费者依赖它们 —— 不加标号、不加总览）。
+		joined = sections[0].content
+	} else {
+		sectionTexts := make([]string, 0, len(sections))
+		for i, sec := range sections {
+			// 范围（【i/N】）+ 来源（节头标签）显式标出，正文紧随其后。
+			sectionTexts = append(sectionTexts, fmt.Sprintf("【%d/%d】%s\n%s", i+1, len(sections), sec.label, sec.content))
+		}
+		joined = strings.Join(sectionTexts, "\n\n---\n\n")
+		// 总览：让读者立刻知道这条消息里有 N 条通知、每节都有【i/N】标号与来源。
+		joined = fmt.Sprintf("🔔 合并通知 ×%d（每节以 【i/N】 标注范围，来源见节头）\n\n%s", len(sections), joined)
+	}
 	a.injectBgUserMessage(channelName, chatID, firstSender, joined)
 	log.WithFields(log.Fields{
 		"channel":     channelName,
 		"chat_id":     chatID,
-		"notif_count": len(batched),
+		"notif_count": len(sections),
 	}).Info("Bg notifications: injected as ONE batched user message")
 }
 
