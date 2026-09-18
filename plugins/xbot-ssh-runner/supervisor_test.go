@@ -311,6 +311,17 @@ func TestParseServerFromConnectCmd(t *testing.T) {
 	if _, _, _, _, err := parseServerFromConnectCmd("--server ws://nohost --token t"); err == nil {
 		t.Error("missing port must error")
 	}
+
+	// 空 host + 有端口 ⇒ **必须可解析**：默认隧道模式下 runner 连的是 ssh -R 暴露在
+	// 远端的 127.0.0.1:<remotePort>，铸命令里的 host 只是服务端 bind 地址（未配置时为空）。
+	// 2026-09-18 用户实机 P1：`--server "ws://:8089/ws"` 曾报 "must include host:port"，
+	// 把默认（且唯一无需公网的）隧道模式直接卡死。
+	h, p, ph, _, err := parseServerFromConnectCmd(`--server ws://:8089/ws --token t --name b300-4`)
+	if err != nil {
+		t.Errorf("host-less --server must parse (tunnel mode needs only the port): %v", err)
+	} else if h != "" || p != 8089 || ph != "/ws" {
+		t.Errorf("host-less parse = (%q,%d,%q), want (\"\", 8089, \"/ws\")", h, p, ph)
+	}
 }
 
 func TestReplaceConnectCmdServer_PreservesOtherArgs(t *testing.T) {

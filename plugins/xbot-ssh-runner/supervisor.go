@@ -197,12 +197,19 @@ func (m *supervisorManager) Connect(ctx context.Context, spec targetSpec) (super
 		return supervisorStatus{}, fmt.Errorf("invalid connection mode %q (want %s or %s)",
 			spec.ConnMode, connModeTunnel, connModeDirect)
 	}
+	// 解析 --server：**host 可空、端口必需**（见 parseServerFromConnectCmd 的注释）。
+	// 隧道模式下 host 与铸命令无关（runner 连的是 ssh -R 暴露在远端的
+	// 127.0.0.1:<remotePort>，我们只需要**转发目标端口** ServerPort）；直连模式才要求
+	// host 真实可达。
+	host, port, path, query, perr := parseServerFromConnectCmd(spec.ConnectCmd)
+	if perr != nil {
+		return supervisorStatus{}, perr
+	}
 	if spec.ConnMode == connModeTunnel {
-		host, port, path, query, err := parseServerFromConnectCmd(spec.ConnectCmd)
-		if err != nil {
-			return supervisorStatus{}, err
-		}
-		spec.ServerHost, spec.ServerPort, spec.ServerPath, spec.ServerQuery = host, port, path, query
+		spec.ServerHost, spec.ServerPort, spec.ServerPath, spec.ServerQuery = "127.0.0.1", port, path, query
+	} else if host == "" {
+		return supervisorStatus{}, errors.New(
+			"direct mode needs a reachable --server host (set sandbox.public_url, or use tunnel mode)")
 	}
 
 	// Stop any existing pipe for this name first: the invariant is that at most
@@ -525,6 +532,14 @@ func (s *supervisor) Tail(n int) []string {
 
 // parseServerFromConnectCmd extracts the server endpoint from
 // "--server ws://host:port/path?query …".
+//
+// ⛔ **host 允许为空**（2026-09-18 用户实机 P1）。默认的**隧道模式**下，runner 连的是
+// `ssh -R` 暴露在**远端**的 `127.0.0.1:<remotePort>`（见 buildPipeCommand），铸命令里的
+// host 只是服务端 `server.host`（常为空 = 绑定所有网卡、无需任何公网入口）——要求它存在
+// 会把默认隧道模式直接卡死（报 `--server "ws://:8089/ws" must include host:port`）。
+//
+// **端口是必需的**：隧道用它做 `-R …:127.0.0.1:<ServerPort>` 的转发目标，直连用它拨号。
+// 直连模式对 host 的要求由调用方显式校验（那里 host 才真的必须可达）。
 func parseServerFromConnectCmd(connectCmd string) (host string, port int, path, query string, err error) {
 	raw := connectCmdServerValue(connectCmd)
 	if raw == "" {
@@ -536,8 +551,8 @@ func parseServerFromConnectCmd(connectCmd string) (host string, port int, path, 
 	}
 	host = u.Hostname()
 	portStr := u.Port()
-	if host == "" || portStr == "" {
-		return "", 0, "", "", fmt.Errorf("--server %q must include host:port", raw)
+	if portStr == "" {
+		return "", 0, "", "", fmt.Errorf("--server %q must include a port", raw)
 	}
 	port, err = strconv.Atoi(portStr)
 	if err != nil || port <= 0 {
