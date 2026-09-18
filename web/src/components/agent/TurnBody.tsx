@@ -352,6 +352,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   const elements = useRef<Map<string, HTMLDivElement>>(new Map())
   const roRef = useRef<ResizeObserver | null>(null)
   const ioRef = useRef<IntersectionObserver | null>(null)
+  // 同帧脏标记合并（见下方 IO/RO 回调）：一个 rAF flush = 一次 React 更新。
+  const ioFlushRafRef = useRef(0)
+  const pendingIterRef = useRef<Set<number>>(new Set())
+  const pendingKeyRef = useRef<Set<string>>(new Set())
   /**
    * 高度/结算/复核裁决：**内容身份作用域**（`heightScope` = 会话身份 + 布局宽度）。
    *
@@ -515,6 +519,24 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   // 观察器只建一次（整组块共用一个 RO / 一个 IO）。
   useEffect(() => {
     if (!canWindow()) return
+    // ⛔ 必须 rAF 合帧（2026-09-18 trace 8.gz 实测铁证）：IO/RO 回调在**零散的任务**
+    // 里逐批到达（8 秒内 IntersectionObserver 回调 13043 次），旧实现每次回调直接
+    // 同步 invalidateIter/invalidateKey ⇒ **每次回调一次 React 更新** ⇒ 主线程 8 秒
+    // 满载（React te 3.2s + UpdateLayoutTree 1.7s + rAF 1.2s，可见长任务 220ms）。
+    // 现在：同帧内的可见性/高度变化只进 pending 集合，rAF 里**一次** flush
+    // （React 18 在同一 task 内自动批处理 ⇒ 每帧最多一次重渲染）。
+    const scheduleInvalidationFlush = () => {
+      if (ioFlushRafRef.current !== 0) return
+      ioFlushRafRef.current = requestAnimationFrame(() => {
+        ioFlushRafRef.current = 0
+        const its = pendingIterRef.current
+        const keys = pendingKeyRef.current
+        pendingIterRef.current = new Set()
+        pendingKeyRef.current = new Set()
+        for (const n of its) invalidateIter(n)
+        for (const k of keys) invalidateKey(k)
+      })
+    }
     const io = new IntersectionObserver(
       (entries) => {
         // PERF-4：可见性变化只标脏**相关 chunk**（不再整帧重算全部 N 个迭代）。
@@ -539,7 +561,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
             changedIters.push(n)
           }
         }
-        for (const n of changedIters) invalidateIter(n)
+        if (changedIters.length > 0) {
+          for (const n of changedIters) pendingIterRef.current.add(n)
+          scheduleInvalidationFlush()
+        }
       },
       // 视口上下各扩 1.2 屏 —— 滚动时下一批块已挂载好，避免"滚到才渲染"的白屏。
       { rootMargin: '120% 0px 120% 0px' },
@@ -564,7 +589,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
           changedKeys.push(key) // 刚结算 → 可以进入复核（需要一次渲染把决策落下）
         }
       }
-      for (const k of changedKeys) invalidateKey(k)
+      if (changedKeys.length > 0) {
+        for (const k of changedKeys) pendingKeyRef.current.add(k)
+        scheduleInvalidationFlush()
+      }
     })
     ioRef.current = io
     roRef.current = ro
@@ -586,6 +614,13 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
       ro.disconnect()
       ioRef.current = null
       roRef.current = null
+      // 取消未落的合并 flush（并清空 pending，防跨 effect 生命周期残留）。
+      if (ioFlushRafRef.current !== 0) {
+        cancelAnimationFrame(ioFlushRafRef.current)
+        ioFlushRafRef.current = 0
+      }
+      pendingIterRef.current = new Set()
+      pendingKeyRef.current = new Set()
       for (const t of verifyTimers.current.values()) window.clearTimeout(t)
       verifyTimers.current.clear()
       settleSchedulerRef.current?.cancelAll()

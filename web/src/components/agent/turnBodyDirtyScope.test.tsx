@@ -91,6 +91,10 @@ describe('PERF-4: 脏帧只重算受影响的 chunk（与 turn 总迭代数无�
           {} as ResizeObserver,
         )
       }
+      // ⛔ 脏标记现在**合并到一次 rAF flush**（2026-09-18 trace 8.gz 性能修复：
+      // IO/RO 回调逐个同步更新曾是主线程满载的根因）⇒ 必须等一帧再断言，
+      // 否则看到的是 flush 前的计数 0（这正是修复前 0 个重算的假象）。
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
     })
 
     // 修复前：整帧脏 ⇒ 重算 N=200 个块。修复后：只有尾部一个 chunk（≤64）。
