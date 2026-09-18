@@ -8,7 +8,7 @@
   "entry": "./bin/genui-plugin",
   "activationEvents": ["onStart"],
   "web": { "entry": "index.js" },
-  "permissions": ["channels.register", "tools.register", "ui.contribute"],
+  "permissions": ["channels.register", "tools.register", "ui.contribute", "share"],
   "contributes": {
     "channelProvider": {
       "name": "genui",
