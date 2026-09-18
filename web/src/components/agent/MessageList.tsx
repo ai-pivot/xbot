@@ -34,6 +34,7 @@ import { ShimmerThinking } from './ShimmerThinking'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import { commands } from '@/lib/commandRouter'
+import { frameScheduler } from '@/lib/frameScheduler'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
 interface MessageListProps {
@@ -178,43 +179,49 @@ export function estimateRowByContent(row: ChatMessage): number {
 // isScrolling=false（scrollend / isScrollingResetDelay debounce 的停止通知）
 // 保持同步直达（取消 pending rAF）——isScrolling 的状态语义不变，仅通知
 // 频率锁帧率。渲染结果零变化（合帧不改语义，只改时机）。
+// ⛔ trace 13.gz（2026-09-18）实测：rAF 回调里读 `el.scrollTop` 在 21 万节点 DOM 上
+// 每次强制布局 ~7ms，90 次 = 643ms（8.5s trace 的 7.5%）。现在改成：scroll 事件里
+// 同步读 scrollTop（此时布局已完成，零强制布局），只把 cb(setState) 延迟到共享
+// frameScheduler 的一个 rAF（一帧最多一次 React 通知，且与 TurnBody / store 共用
+// 同一个 rAF → 自动批处理）。
 const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (instance, cb) => {
   const win = instance.targetWindow
   if (!win || typeof win.requestAnimationFrame !== 'function') {
     return defaultObserveElementOffset(instance, cb)
   }
-  let raf = 0
+  // scroll 事件里同步读 offset（免费——scroll 事件本身意味着布局刚做完），
+  // 只把 setState 延迟到 frameScheduler。
+  let pendingOffset: number | null = null
+  let pendingIsScrolling = false
+  const flushTask = () => {
+    if (pendingOffset === null) return
+    cb(pendingOffset, pendingIsScrolling)
+    pendingOffset = null
+  }
   const wrappedCb: (offset: number, isScrolling: boolean) => void = (offset, isScrolling) => {
     if (!isScrolling) {
       // 滚动停止通知：取消 pending 合帧，同步直达（isScrolling=false 语义
       // 是"滚动已停"，延迟它会让 TanStack 的 isScrolling 状态晚一帧）。
-      if (raf) {
-        win.cancelAnimationFrame(raf)
-        raf = 0
-      }
+      frameScheduler.cancel(flushTask)
+      pendingOffset = null
       cb(offset, false)
       return
     }
-    // 滚动中：一帧一次。pending 期间到达的 scroll 事件被合帧丢弃（rAF 执行
-    // 时读最新 scrollTop，offset 参数的旧值不用）。
-    if (raf) return
-    raf = win.requestAnimationFrame(() => {
-      raf = 0
-      const el = instance.scrollElement
-      if (!el) {
-        cb(offset, true)
-        return
-      }
-      const { horizontal, isRtl } = instance.options
-      cb(horizontal ? el.scrollLeft * (isRtl ? -1 : 1) : el.scrollTop, true)
-    })
+    // 滚动中：在 scroll 事件里**同步读 scrollTop**（免费），只把 cb 延迟到
+    // frameScheduler（一帧最多一次 React 通知，与 TurnBody / store 共用 rAF）。
+    const el = instance.scrollElement
+    if (!el) {
+      cb(offset, true)
+      return
+    }
+    const { horizontal, isRtl } = instance.options
+    pendingOffset = horizontal ? el.scrollLeft * (isRtl ? -1 : 1) : el.scrollTop
+    pendingIsScrolling = true
+    frameScheduler.schedule(flushTask)
   }
   const cleanup = defaultObserveElementOffset(instance, wrappedCb)
   return () => {
-    if (raf) {
-      win.cancelAnimationFrame(raf)
-      raf = 0
-    }
+    frameScheduler.cancel(flushTask)
     cleanup?.()
   }
 }

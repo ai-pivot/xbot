@@ -68,6 +68,7 @@ import {
   type IterationHeightTracker,
 } from './iterationHeight'
 import { createSettleScheduler, type SettleScheduler } from './iterationSettleScheduler'
+import { frameScheduler } from '@/lib/frameScheduler'
 import type { ProgressSnapshot, WebIteration } from '@/types/shared'
 
 interface TurnBodyProps {
@@ -378,8 +379,14 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   const elements = useRef<Map<string, HTMLDivElement>>(new Map())
   const roRef = useRef<ResizeObserver | null>(null)
   const ioRef = useRef<IntersectionObserver | null>(null)
-  // 同帧脏标记合并（见下方 IO/RO 回调）：一个 rAF flush = 一次 React 更新。
-  const ioFlushRafRef = useRef(0)
+  // 同帧脏标记合并：IO/RO 回调把变更存进 pending 集合，由**共享 frameScheduler**
+  // 的一个 rAF 统一 flush（不再是每实例一个 rAF —— 7+ 实例 × 60fps = 420 rAF/s
+  // 是 trace 13.gz 的掉帧根因）。frameScheduler 按任务身份去重 → 所有实例的
+  // flush 在**同一帧的同一 task** 里执行 → React 18 自动批处理 → 每帧最多一次渲染。
+  const flushImplRef = useRef<() => void>(() => {})
+  // stableFlush.current 是**稳定身份**（useRef 初始值，永不重建）—— frameScheduler
+  // 按它去重；它的 body 转调 flushImplRef.current（每次 effect 更新为实现）。
+  const stableFlush = useRef<() => void>(() => { flushImplRef.current() })
   const pendingIterRef = useRef<Set<number>>(new Set())
   const pendingKeyRef = useRef<Set<string>>(new Set())
   /**
@@ -550,23 +557,23 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
   // 观察器只建一次（整组块共用一个 RO / 一个 IO）。
   useEffect(() => {
     if (!canWindow()) return
-    // ⛔ 必须 rAF 合帧（2026-09-18 trace 8.gz 实测铁证）：IO/RO 回调在**零散的任务**
-    // 里逐批到达（8 秒内 IntersectionObserver 回调 13043 次），旧实现每次回调直接
-    // 同步 invalidateIter/invalidateKey ⇒ **每次回调一次 React 更新** ⇒ 主线程 8 秒
-    // 满载（React te 3.2s + UpdateLayoutTree 1.7s + rAF 1.2s，可见长任务 220ms）。
-    // 现在：同帧内的可见性/高度变化只进 pending 集合，rAF 里**一次** flush
-    // （React 18 在同一 task 内自动批处理 ⇒ 每帧最多一次重渲染）。
+    // ⛔ 必须合帧（trace 8.gz + 13.gz 实测铁证）：IO/RO 回调在**零散的任务**里逐批
+    // 到达，旧实现每次回调直接 invalidateIter/invalidateKey ⇒ 每次回调一次 React
+    // 更新 ⇒ 主线程满载。现在：同帧内的可见性/高度变化只进 pending 集合，由
+    // **共享 frameScheduler** 的一个 rAF 统一 flush（不再是每实例一个 rAF ——
+    // 7+ 实例 × 60fps = 420 rAF/s 是 trace 13.gz 的掉帧根因）。frameScheduler 按任
+    // 务身份去重 → 所有实例的 flush 在**同一帧的同一 task** 里 → React 18 自动
+    // 批处理 → 每帧最多一次渲染。
+    flushImplRef.current = () => {
+      const its = pendingIterRef.current
+      const keys = pendingKeyRef.current
+      pendingIterRef.current = new Set()
+      pendingKeyRef.current = new Set()
+      for (const n of its) invalidateIter(n)
+      for (const k of keys) invalidateKey(k)
+    }
     const scheduleInvalidationFlush = () => {
-      if (ioFlushRafRef.current !== 0) return
-      ioFlushRafRef.current = requestAnimationFrame(() => {
-        ioFlushRafRef.current = 0
-        const its = pendingIterRef.current
-        const keys = pendingKeyRef.current
-        pendingIterRef.current = new Set()
-        pendingKeyRef.current = new Set()
-        for (const n of its) invalidateIter(n)
-        for (const k of keys) invalidateKey(k)
-      })
+      frameScheduler.schedule(stableFlush.current)
     }
     const io = new IntersectionObserver(
       (entries) => {
@@ -646,10 +653,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
       ioRef.current = null
       roRef.current = null
       // 取消未落的合并 flush（并清空 pending，防跨 effect 生命周期残留）。
-      if (ioFlushRafRef.current !== 0) {
-        cancelAnimationFrame(ioFlushRafRef.current)
-        ioFlushRafRef.current = 0
-      }
+      frameScheduler.cancel(stableFlush.current)
       pendingIterRef.current = new Set()
       pendingKeyRef.current = new Set()
       for (const t of verifyTimers.current.values()) window.clearTimeout(t)
