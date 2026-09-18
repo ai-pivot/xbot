@@ -422,6 +422,34 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           } else {
             return s // 已含该迭代的 committed 快照 —— 重放，丢弃
           }
+        } else if (t0 && t0.phase.kind === 'frozen' && s.activeTurn === null && !isHollowFrozen(t0)) {
+          // ⛔ 线性一致性红线（2026-09-18 用户报告「切换 session 后 live iter 不断
+          // 出现消失，刷新才恢复」）───────────────────────────────────────────
+          // turn 结尾信号族（session(idle) / session_idle / 空 text_final）会把
+          // live turn **冻结**并清 activeTurn；此后该 turn 的 iteration 事件因
+          // kind !== 'live' 被**整批丢弃**，直到带 active 快照的 history_replaced
+          // 把它复活 ⇒ 出现 ⇒ 再次冻结 ⇒ 消失……（P0 测试逐帧复现）。
+          // 后端的顺序保证：turn 的迭代事件只出现在它的 idle 之前，之后绝不会再有
+          // ⇒ 冻结后收到**更大迭代号**即证明该 idle 是陈旧/误传的
+          //（restoreActiveProgress 竞态 / SSE 重放），必须解冻恢复 live ——
+          // 与上面 committed 遮蔽解除**同一规则、同一证据标准**（ev.iter > maxIter）。
+          // 保留 frozen 数据（已渲染的迭代/内容/工具一个不少），流式恢复更新。
+          const maxIter = t0.phase.data.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+          if (ev.iter > maxIter) {
+            const live: LiveSnapshot = {
+              ...t0.phase.data,
+              iter: ev.iter,
+              content: ev.content ?? t0.phase.data.content,
+              reasoning: ev.reasoning ?? t0.phase.data.reasoning,
+              streaming: true,
+              iterations: t0.phase.data.iterations,
+            }
+            const turns = new Map(s.turns)
+            turns.set(target, { ...t0, phase: { kind: 'live', data: live } })
+            s = { ...s, turns, activeTurn: target, lastSeq: null }
+          } else {
+            return s // 冻结快照已含该迭代 —— 重放，丢弃
+          }
         } else {
           if (s.activeTurn !== null && t0?.phase.kind !== 'live') return s
           if (s.activeTurn !== null && t0?.phase.kind === 'live' && s.activeTurn !== target) return s
