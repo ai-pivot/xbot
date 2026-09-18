@@ -153,6 +153,10 @@ export function estimateRowByContent(row: ChatMessage): number {
     // 实测后 heightMemory 覆盖估算。
     const len = (row.content || '').length + iterLen
     const lines = Math.ceil(len / 90) || 1
+    // 估算**只作未渲染行的初值提示**（渲染中的行一律以浏览器实测为准 —— 见
+    // createHeightAwareMeasureElement 的根因修复）。⛔ 不得再按元素类型写特判：
+    // 任何"高度与字符数不成比例"的元素（表格 / 代码块 / mermaid / 图片 / KaTeX /
+    // 嵌套列表…）都会被低估，逐类型打补丁永远追不上。
     result = Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
   }
   estimateCache.set(row, result)

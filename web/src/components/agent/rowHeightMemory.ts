@@ -205,23 +205,57 @@ export interface MeasureElementDeps {
  * 因此：元素实例的第一次测量（挂载爆发期，含 RO 的初始回调）可命中缓存；
  * 之后的每一次测量（RO 因真实尺寸变化而回调）一律真实读取并刷新缓存。
  */
+/**
+ * 记忆感知的 `measureElement` —— **只信浏览器的真实尺寸**。
+ *
+ * ⛔ 根因修复（2026-09-18 P0 字符重合 / 行重叠）：旧实现有两条"说谎"路径，且都与
+ * 元素类型无关，因此**无法靠按类型打补丁解决**：
+ *   ① **首次测量直接返回记忆值** —— 内容/宽度指纹只要不完全等价，就会返回偏小的
+ *      高度；TanStack `resizeItem` 在 `size === item.size` 处早退 ⇒ 不再校正 ⇒
+ *      下一行 `translateY(item.start)` 偏小 ⇒ **两行压在同一 y**；
+ *   ② 依赖**估算**定位已渲染的行 —— 任何"高度与字符数不成比例"的元素（表格 /
+ *      代码块 / mermaid / 图片 / KaTeX / 嵌套列表…）都会被低估 ⇒ 同样重叠。
+ *
+ * 现在：ResizeObserver 回调**自带真实块尺寸**（`borderBoxSize`）——**零 DOM 读、
+ * 零强制布局，完全免费**；挂载时（无 entry）才真实测量。`memory` 仅作为
+ * `estimateSize` 的**初值提示**，**绝不**作为已渲染行的定位依据。
+ */
 export function createHeightAwareMeasureElement(
   deps: MeasureElementDeps,
 ): (element: Element, entry: ResizeObserverEntry | undefined, instance: unknown) => number {
-  const measuredOnce = new WeakSet<Element>()
   return (element, entry, instance) => {
     const index = Number((element as HTMLElement).dataset?.index ?? -1)
     const row = index >= 0 ? deps.lookup(index) : undefined
     const width = deps.width()
-    const firstMeasure = !measuredOnce.has(element)
-    measuredOnce.add(element)
 
-    if (row && width > 0 && firstMeasure) {
-      const remembered = deps.memory.get(row.key, row.sig, width)
-      if (remembered !== undefined) return remembered
+    const observed = readObservedBlockSize(entry)
+    if (observed > 0) {
+      if (row && width > 0) deps.memory.set(row.key, row.sig, width, observed)
+      return observed
     }
     const size = deps.measure(element, entry, instance)
     if (row && width > 0 && size > 0) deps.memory.set(row.key, row.sig, width, size)
     return size
   }
+}
+
+/** ResizeObserver 回调自带的真实块尺寸（免费；兼容数组/单值与新旧字段名）。 */
+export function readObservedBlockSize(entry: ResizeObserverEntry | undefined): number {
+  if (!entry) return 0
+  const border = entry.borderBoxSize as unknown
+  const borderSize = Array.isArray(border)
+    ? (border[0] as { blockSize?: number } | undefined)
+    : (border as { blockSize?: number } | undefined)
+  if (borderSize && typeof borderSize.blockSize === 'number' && borderSize.blockSize > 0) {
+    return borderSize.blockSize
+  }
+  const content = entry.contentBoxSize as unknown
+  const contentSize = Array.isArray(content)
+    ? (content[0] as { blockSize?: number } | undefined)
+    : (content as { blockSize?: number } | undefined)
+  if (contentSize && typeof contentSize.blockSize === 'number' && contentSize.blockSize > 0) {
+    return contentSize.blockSize
+  }
+  const h = entry.contentRect?.height
+  return typeof h === 'number' && h > 0 ? h : 0
 }
