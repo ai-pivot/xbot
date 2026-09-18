@@ -185,12 +185,19 @@ async function startSampler(page: Page): Promise<void> {
           const listVisible = !!listRect && listRect.height > 0 && listRect.width > 0
           const listText = (listEl?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 24)
           const loadingEl = el.querySelector('[data-testid="session-loading-screen"]')
-          const isLoading = !!loadingEl && (loadingEl as HTMLElement).getBoundingClientRect().height > 0
+          const loadingRect = loadingEl?.getBoundingClientRect()
+          const isLoading = !!loadingRect && loadingRect.height > 0
+          // loading 必须是**覆盖整块面板**的覆盖层（否则面板被压扁那一帧，输入框会露在
+          // 消息区上方 —— 用户截图那排浮着的控件）。判据：覆盖层矩形 ≈ 面板矩形。
+          const coversPanel =
+            isLoading &&
+            Math.abs(loadingRect!.top - rect.top) <= 2 &&
+            loadingRect!.height >= rect.height - 2
           const r = Math.round
           const grp = Array.from(document.querySelectorAll('.dv-groupview')).indexOf(
             el.closest('.dv-groupview') as Element,
           )
-          return `${el.getAttribute('data-agent-chat-id') || '(seed)'}|grp=${grp}|vis=${visible ? 1 : 0}|rect=${r(rect.x)},${r(rect.y)} ${r(rect.width)}x${r(rect.height)}|list=${hasList ? 1 : 0}${listVisible ? 'v' : 'h'}|load=${isLoading ? 1 : 0}|"${listText}"`
+          return `${el.getAttribute('data-agent-chat-id') || '(seed)'}|grp=${grp}|vis=${visible ? 1 : 0}|rect=${r(rect.x)},${r(rect.y)} ${r(rect.width)}x${r(rect.height)}|list=${hasList ? 1 : 0}${listVisible ? 'v' : 'h'}|load=${isLoading ? 1 : 0}${coversPanel ? 'c' : '!'}|"${listText}"`
         })
         .join('  ~  ')
       samples.push({
@@ -321,6 +328,12 @@ test.describe('切换会话：切换开始即 loading，不得先渲染上一会
     // ⛔ 会话加载态**不得存在输入框**（用户截图「消息区上方浮着一排输入框控件」= 面板
     // 被以未兑现尺寸布局时，flex 把消息区压到 0、输入框顶到面板顶部 ⇒ 一闪而过、
     // DOM 抓不到）。修法：会话加载态只渲染 loading 屏（不渲染托盘/输入框）。
+    const notCovering = after.filter((s) => s.loading && s.panels.includes('!'))
+    expect(
+      notCovering,
+      `loading 覆盖层没有盖住整块面板（那一帧输入框会露在消息区上方）：\n${notCovering.map((v) => v.panels).join('\n')}`,
+    ).toEqual([])
+
     const loadingWithComposer = after.filter((s) => s.loading && (s.composers ?? 0) > 0)
     expect(
       loadingWithComposer,

@@ -871,7 +871,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       ref={agentPanelRootRef}
       data-agent-chat-id={chatID ?? ''}
       data-agent-visible={isVisible ? '1' : '0'}
-      className="flex h-full min-h-0 flex-col"
+      className="relative flex h-full min-h-0 flex-col"
     >
       {!isSubAgent && devMode && (
         <DebugToolbar
@@ -897,15 +897,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           })}
         />
       )}
-      {showLoadingScreen ? (
-        <div
-          data-testid="session-loading-screen"
-          className="flex h-full w-full flex-1 items-center justify-center gap-2 text-text-muted"
-        >
-          <Loader2 className="size-5 animate-spin" />
-          <span className="text-xs">Loading…</span>
-        </div>
-      ) : isVisible ? (
+      {!showLoadingScreen && isVisible ? (
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -993,6 +985,22 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           onDraftConsumed={() => setDraft(undefined)}
           sessionKey={`${messageChannel}:${chatID ?? ''}`}
         />
+      )}
+      {/* ⛔ loading = **覆盖整块面板的不透明覆盖层**（不是替换消息区）。
+          用户的「切换会话一闪而过」实测为：面板在切换那一帧被 dockview 以**未兑现的尺寸**
+          布局，flex 把消息区（flex-1 min-h-0）压到 0，而 MessageInput（自然高度）仍占位
+          ⇒ 它被顶到面板**顶部**（= 截图里消息区上方那排回形针/Clock/Stop 控件），下一帧
+          尺寸兑现又回到底部。所以：① 会话加载态（history 未就绪）**根本不渲染输入框/托盘**；
+          ② 其余 loading 态（reconnecting / 长时间恢复）输入框**保持挂载**（草稿不丢、不闪），
+          但由这层**不透明覆盖层**盖住整块面板 ⇒ 任何一帧的错位布局都不可能被看见。 */}
+      {showLoadingScreen && (
+        <div
+          data-testid="session-loading-screen"
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-bg-primary text-text-muted"
+        >
+          <Loader2 className="size-5 animate-spin" />
+          <span className="text-xs">Loading…</span>
+        </div>
       )}
     </div>
     </ToolSessionContext.Provider>
