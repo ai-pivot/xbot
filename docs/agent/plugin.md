@@ -417,3 +417,22 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
 - `runner_session_set { channel, chat_id, name }` → 绑定该会话到 `name`（**name 为空 = 切回本机**）。
 - 核心实现：`serverapp/rpc_table.go:2821` / `:2837`；前端已声明：`web/src/plugin-api/rpc.ts:205` / `:209`。
 - 语义：绑定是**会话级**（存在 `tenants.runner_id`），路由按会话解析；未绑定 ⇒ 本机执行。
+
+## ⚠️ 部署坑：线上插件副本必须与 repo 同步（否则功能"看不见"、Reload 报红框）
+
+`~/.xbot/plugins/<plugin-id>/` 是**线上实际使用**的那份插件（`DefaultPluginDirs` 顺序
+`plugins` → `plugins/builtin`，**first-match-wins** ⇒ 用户目录副本优先）。它**不会**随仓库改动自动更新：
+
+- 改了 repo 里的 `plugins/<src-dir>/`（清单 / 前端源码）后**必须**重装到 `~/.xbot/plugins/<plugin-id>/`：
+  ① 前端产物按 release.yml 的 esbuild 命令重建（`--splitting` 用于多入口插件，如 git-fancy / ssh-runner）；
+  ② 拷 `plugin.json` + `web/` 到用户目录；③ 改过清单则 `reload_plugins`（见上一条"清单缓存"）。
+  否则**代码是新的、线上跑的是几个月前的旧副本**（本轮实测：线上是 9-16 的副本，i18n/趋势图/底部 bar 全部不可见）。
+
+- **src 目录名用连字符、插件 ID 用点**（`plugins/xbot-iteration-stats/` ↔ `xbot.iteration-stats`）。
+  按 ID 去拼路径会静默装不上（`cp: cannot stat 'plugins/xbot.iteration-stats/plugin.json'`）。
+
+- **插件运行时目录会"伪装"成插件目录**：插件运行后会在 `~/.xbot/plugins/<plugin-id>/` 下创建
+  `data/`、`logs/`（见 `pluginLogger` 的 per-plugin 日志路径）。若该目录**没有** `plugin.json`
+  （从未装过、或装到别处），`Discover` 会打印 `Skipping invalid plugin: read manifest ... no such file`，
+  而**点 Reload 会直接报错**（`reload <id>: failed to load manifest: ... no such file or directory`）。
+  修法：把 repo 的清单 + 产物真的装上（而不是删目录 —— `data/`/`logs/` 是插件数据，不能丢）。
