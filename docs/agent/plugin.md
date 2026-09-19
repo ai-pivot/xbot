@@ -363,3 +363,18 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
 - 插件信任模型：插件本就有 `execute_tool` 可执行任意命令，iframe 隔离是防御纵深而非信任基础
 
 
+
+## ⚠️ 清单缓存（改 plugin.json 必须 reload）
+
+`PluginManager.Discover` **只在进程启动时**读一次插件清单并缓存在内存。之后修改 `plugin.json`
+（`web.entry` / `web.i18n` / `permissions` / `version` …）**内存里不会变** —— 必须
+`config action=reload_plugins`（日志打印 `Plugin discovered plugin=<id>`）或重启 server。
+
+**注意不对称**：插件 web 静态产物 `/plugins/<id>/web/*.js` 是**每请求从磁盘读**的 ⇒ 会出现
+「前端 bundle 已更新、清单内容没生效」的组合（2026-09-19 实测：宿主 `hostLocale=en` 但
+`hasTable=false`，插件面板全中文 —— 服务端启动于两天前，`web.i18n` 是当天才写盘的）。
+
+诊断手法：插件面板打印 `ctx / i18n / locale / probe`（probe = 某 key 的实际解析值：
+命中 = 链路通；`<fallback-used>` = 表没到；`<no-i18n>` = ctx 没注入），宿主侧打印
+`hasTable / locales / hostLocale`。守护测试 `plugins/xbot-ssh-runner/manifest_i18n_test.go`、
+`web/src/plugin-runtime/toManifest.i18n.test.ts`。
