@@ -19,22 +19,26 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { usePluginRuntime } from '@/plugin-runtime'
-import type { DailyTokenUsage, TenantUsageStats, UserTokenUsage } from '@/plugin-api'
+import type { DailyTokenUsage, TenantUsageStats, UserTokenUsage, UsageIterationRow } from '@/plugin-api'
 import { useI18n } from '@/providers/i18n'
 import { Button } from '@/components/ui/button'
 import { BarChart3, Loader2, RefreshCw } from 'lucide-react'
 import { subscribeStatsRefresh } from './sessionStats'
+import { TokenTrendSection } from './TokenTrendSection'
+import { formatTokenCount as fmtTokens } from './format'
+
+// ── 数据面常量 ─────────────────────────────────────────────────────────────
+
+/**
+ * 明细取样上限。服务端 `ORDER BY id DESC LIMIT ?`（session.go 钳制：>500 或 <0 ⇒ 500，
+ * 0 ⇒ 无明细）—— 趋势图要多粒度复用同一份明细，所以按**上限**取（500），
+ * 最近迭代表只显示其中最新的一部分（RECENT_ITERATION_ROWS）。
+ */
+const TREND_SAMPLE_LIMIT = 500
+/** 表格展示行数（500 行全铺进 DOM 没必要，且行高抖动）。 */
+const RECENT_ITERATION_ROWS = 60
 
 // ── 格式化 ─────────────────────────────────────────────────────────────────
-
-/** token 数缩写：12,345 → 12.3k；1,234,567 → 1.23M。 */
-function fmtTokens(n: number): string {
-  if (!n) return '0'
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
-  return String(n)
-}
 
 function fmtInt(n: number): string {
   return (n ?? 0).toLocaleString('en-US')
@@ -269,6 +273,8 @@ export function SessionStatsPanel({
   const [days, setDays] = useState(30)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  /** 取数时刻 —— 趋势图的窗口右端（渲染期不许调 Date.now，见 TokenTrendSection 注释）。 */
+  const [statsFetchedAt, setStatsFetchedAt] = useState(0)
   const requestRef = useRef(0)
 
   const load = useCallback(async () => {
@@ -281,7 +287,8 @@ export function SessionStatsPanel({
           ? runtime.rpc.call('get_session_usage_stats', {
               channel: activeSession.channel,
               chat_id: activeSession.chatID,
-              limit: 40,
+              // 趋势图需要足量明细（多粒度复用同一份）：取服务端上限 500。
+              limit: TREND_SAMPLE_LIMIT,
             })
           : Promise.resolve(null),
         runtime.rpc.call('get_user_token_usage', {} as never),
@@ -291,6 +298,7 @@ export function SessionStatsPanel({
       setStats(sessionRes)
       setUserUsage(userRes)
       setDaily(Array.isArray(dailyRes) ? dailyRes : [])
+      setStatsFetchedAt(Date.now())
     } catch (e) {
       if (id !== requestRef.current) return
       setError(e instanceof Error ? e.message : String(e))
@@ -339,6 +347,13 @@ export function SessionStatsPanel({
 
   const sessionTotal = stats ? stats.input_tokens + stats.output_tokens : 0
   const cacheRate = stats ? fmtPct(stats.cached_tokens, stats.input_tokens) : '—'
+
+  // 明细行（时间从旧到新）：趋势图用全量样本，表格只显示最新的一段。
+  const allIterations: readonly UsageIterationRow[] = stats?.recent_iterations ?? []
+  const recentRows = useMemo(
+    () => allIterations.slice(Math.max(0, allIterations.length - RECENT_ITERATION_ROWS)),
+    [allIterations],
+  )
 
   // 侧边栏 → 主编辑区：把同一 view 以 editor tab 打开（openViewTab 支持
   // container 任意——editor tab 全宽渲染；同 key 聚焦已有 tab）。
@@ -516,6 +531,9 @@ export function SessionStatsPanel({
               </div>
             </Card>
 
+            {/* ── Row 2.5：多粒度 token 趋势（分钟 / 小时 / 天）── */}
+            <TokenTrendSection rows={allIterations} now={statsFetchedAt} />
+
             {/* ── Row 3：分日期趋势 + 明细 ── */}
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">
               <Card
@@ -623,11 +641,11 @@ export function SessionStatsPanel({
                 </Card>
               )}
 
-              {stats?.recent_iterations && stats.recent_iterations.length > 0 && (
+              {recentRows.length > 0 && (
                 <Card
-                  title={t('plugins.sessionStats.recentIterations', { count: stats.recent_iterations.length })}
+                  title={t('plugins.sessionStats.recentIterations', { count: recentRows.length })}
                   className={
-                    stats.by_model && stats.by_model.filter((m) => m.model).length > 0 ? 'xl:col-span-3' : 'xl:col-span-5'
+                    stats?.by_model && stats.by_model.filter((m) => m.model).length > 0 ? 'xl:col-span-3' : 'xl:col-span-5'
                   }
                 >
                   <div className="max-h-[220px] overflow-y-auto">
@@ -645,7 +663,7 @@ export function SessionStatsPanel({
                         </tr>
                       </thead>
                       <tbody>
-                        {stats.recent_iterations.map((it, i) => (
+                        {recentRows.map((it, i) => (
                           <tr key={`${it.turn_id}-${it.iteration}-${i}`} className="border-t border-border/30">
                             <td className="px-1.5 py-1 text-left text-muted-foreground">
                               {it.turn_id}.{it.iteration}
@@ -736,10 +754,10 @@ export function SessionStatsPanel({
             )}
 
             {/* ── 最近迭代明细 ── */}
-            {stats.recent_iterations && stats.recent_iterations.length > 0 && (
+            {recentRows.length > 0 && (
               <div>
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-                  {t('plugins.sessionStats.recentIterations', { count: stats.recent_iterations.length })}
+                  {t('plugins.sessionStats.recentIterations', { count: recentRows.length })}
                 </div>
                 <div className="overflow-x-auto rounded-md border border-border">
                   <table className="w-full whitespace-nowrap font-mono text-[10px] tabular-nums">
@@ -755,7 +773,7 @@ export function SessionStatsPanel({
                       </tr>
                     </thead>
                     <tbody>
-                      {stats.recent_iterations.map((it, i) => (
+                      {recentRows.map((it, i) => (
                         <tr key={`${it.turn_id}-${it.iteration}-${i}`} className="border-b border-border/50 last:border-0">
                           <td className="px-1.5 py-1 text-left text-muted-foreground">
                             {it.turn_id}.{it.iteration}
