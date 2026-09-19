@@ -20,7 +20,7 @@
  *   - 代价：固定偏移（不做夏令时切换）。跨 DST 的窗口会有 1 小时级的边界偏移，
  *     换来的是纯函数可确定性测试 + 标签稳定。
  */
-import type { UsageIterationRow } from '@/plugin-api'
+import type { UsageBucket, UsageIterationRow } from '@/plugin-api'
 
 // ── 粒度 ───────────────────────────────────────────────────────────────────
 
@@ -166,7 +166,15 @@ export interface TokenTrend {
   readonly skippedOutOfWindow: number
   /** `created_at` 无法解析而被忽略的行数（数据质量信号，必须可见）。 */
   readonly unparsableRows: number
+  /**
+   * 数据来源：`buckets` = 服务端 SQL 全量分桶（覆盖整段历史，永不出现未覆盖区）；
+   * `samples` = 前端按 per-iteration 明细分桶（明细被 LIMIT ≤500 截断 ⇒ 更早的桶
+   * 只能标 `covered=false`）。
+   */
+  readonly dataSource: TrendDataSource
 }
+
+export type TrendDataSource = 'buckets' | 'samples'
 
 
 
@@ -284,6 +292,99 @@ export function bucketizeUsageTrend(
     matchedCalls,
     skippedOutOfWindow,
     unparsableRows,
+    dataSource: 'samples',
+  }
+}
+
+/**
+ * 把**服务端全量分桶**（`get_session_usage_buckets`）适配成同一条 `TokenTrend`。
+ *
+ * 与明细路径的本质区别：服务端在 SQL 里 `GROUP BY` 全量 `iteration_history`（无 LIMIT），
+ * 所以窗口内每个桶的值都是**已知真值** ⇒ 空桶就是真的 0（`covered: true`），
+ * 而明细路径只能覆盖最近 ≤500 行、更早的桶必须标未覆盖。
+ *
+ * 桶的匹配是**精确等值**（`bucket_start*1000 === floorToBucket(ts, bucketMs, tz)`）：
+ * 服务端与前端用同一条「平移到墙钟 → 取整 → 平移回来」的公式（同 `tzOffsetMinutes`），
+ * 因此对齐是恒等式。**绝不四舍五入**落到最近的桶 —— 对齐不上说明两边的时区/网格不一致，
+ * 宁可丢进 `skippedOutOfWindow`（计数可见），也不把数据画到错误的桶里。
+ *
+ * @param buckets       服务端桶（epoch **秒**，已按 tz 对齐；顺序无关）
+ * @param now           窗口右端基准（同 `bucketizeUsageTrend`，显式传入保证纯函数可测）
+ * @param windowBuckets 覆盖桶数（缺省用粒度默认值；越界裁剪到 [1, 360]）
+ */
+export function bucketizeUsageTrendFromBuckets(
+  buckets: readonly UsageBucket[],
+  granularity: TrendGranularity,
+  now: number,
+  tzOffsetMinutes: number,
+  windowBuckets?: number,
+): TokenTrend {
+  const spec = trendGranularitySpec(granularity)
+  const bucketMs = spec.bucketMs
+  const count = normalizeBucketCount(windowBuckets ?? spec.windowBuckets)
+
+  const lastStart = floorToBucket(now, bucketMs, tzOffsetMinutes)
+  const firstStart = lastStart - (count - 1) * bucketMs
+  const windowEnd = lastStart + bucketMs
+
+  const acc = Array.from({ length: count }, (_, i) => ({
+    start: firstStart + i * bucketMs,
+    end: firstStart + (i + 1) * bucketMs,
+    calls: 0,
+    input: 0,
+    cached: 0,
+    output: 0,
+  }))
+
+  let matchedCalls = 0
+  let skippedOutOfWindow = 0
+  let unparsableRows = 0
+  let oldestSampleAt: number | null = null
+  let newestSampleAt: number | null = null
+
+  for (const bucket of buckets ?? []) {
+    const seconds = bucket?.bucket_start
+    if (typeof seconds !== 'number' || !Number.isFinite(seconds)) {
+      unparsableRows++
+      continue
+    }
+    const start = seconds * 1000
+    const idx = (start - firstStart) / bucketMs
+    if (!Number.isInteger(idx) || idx < 0 || idx >= count) {
+      // 窗口外的桶（服务端按自己的 now 多给了几个做余量）→ 正常忽略；
+      // 网格不对齐的桶（时区/公式不一致）→ 也不能画，一并计数。
+      skippedOutOfWindow++
+      continue
+    }
+    const slot = acc[idx]
+    const calls = bucket.calls || 0
+    slot.calls += calls
+    slot.input += bucket.input_tokens || 0
+    slot.cached += bucket.cached_tokens || 0
+    slot.output += bucket.output_tokens || 0
+    matchedCalls += calls
+    if (calls > 0) {
+      if (oldestSampleAt === null || start < oldestSampleAt) oldestSampleAt = start
+      if (newestSampleAt === null || start > newestSampleAt) newestSampleAt = start
+    }
+  }
+
+  return {
+    granularity,
+    bucketMs,
+    tzOffsetMinutes,
+    start: firstStart,
+    end: windowEnd,
+    // 全量聚合 ⇒ 窗口内每个桶都覆盖（含"确实是 0"的空桶）。
+    buckets: acc.map((b) => finalizeBucket(b, true)),
+    coverageStart: firstStart,
+    oldestSampleAt,
+    newestSampleAt,
+    sampleSize: (buckets ?? []).length,
+    matchedCalls,
+    skippedOutOfWindow,
+    unparsableRows,
+    dataSource: 'buckets',
   }
 }
 

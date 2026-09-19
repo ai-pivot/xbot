@@ -1,20 +1,24 @@
 /**
  * TokenTrendSection —— 趋势卡片（毛玻璃容器 + 粒度分段控件 + 摘要 + 图表）。
  *
- * 数据面：入参是该会话的 per-iteration 明细（`get_session_usage_stats.recent_iterations`）。
- * ⛔ 服务端明细被 `ORDER BY id DESC LIMIT ≤500` 截断（session.go 的钳制：>500 或 <0 ⇒ 500，
- * 0 ⇒ 无明细）—— 所以窗口越宽、越可能"左边没有数据"。这里**如实呈现**：
- *   - 未覆盖的时间桶不画（斜纹留空 + 标注），绝不画成"零用量"；
- *   - 底部给出行数 / 覆盖区间 / 未解析行数等数据质量信息。
+ * 数据面（两级，优先全量）：
+ *   1. `loadBuckets`（`get_session_usage_buckets`）—— 服务端在 SQL 里对**全量**
+ *      iteration_history 分桶聚合 ⇒ 覆盖整段历史，没有"未覆盖区"。
+ *   2. 回落到 per-iteration 明细（`get_session_usage_stats.recent_iterations`）——
+ *      ⛔ 服务端明细被 `ORDER BY id DESC LIMIT ≤500` 截断，所以窗口越宽、越可能
+ *      "左边没有数据"。这里**如实呈现**：未覆盖的时间桶不画（斜纹留空 + 标注），
+ *      绝不画成"零用量"；底部给出行数 / 覆盖区间 / 未解析行数等数据质量信息。
+ *      （旧后端没有 buckets RPC 时走这条，降级逻辑**必须保留**。）
  *
- * 聚合全部在 ./tokenTrend（纯函数、单测覆盖）；本组件只管状态与外观。
+ * 聚合全部在 ./tokenTrend（纯函数、单测覆盖）；本组件只管取数状态与外观。
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { CalendarDays, CalendarRange, Clock, Database } from 'lucide-react'
-import type { UsageIterationRow } from '@/plugin-api'
+import type { UsageBucket, UsageIterationRow } from '@/plugin-api'
 import {
   browserTzOffsetMinutes,
   bucketizeUsageTrend,
+  bucketizeUsageTrendFromBuckets,
   summarizeTrend,
   trendGranularitySpec,
   formatBucketLabel,
@@ -32,8 +36,15 @@ const GRANULARITY_META: Record<TrendGranularity, { icon: typeof Clock; labelKey:
   day: { icon: CalendarRange, labelKey: 'trend.granularity.day', label: '天', windowKey: 'trend.window.day', window: '最近 {{n}} 天' },
 }
 
+/**
+ * 请求窗口余量：服务端用**自己的** now 计算窗口，可能比本地的 `now` 晚一个桶
+ * （响应必在请求之后）。多要 2 个桶再由前端按本地窗口裁剪 ⇒ 本地窗口恒被覆盖，
+ * 不会因为一两个桶的时钟偏差把窗口左端画成空的。
+ */
+const BUCKET_WINDOW_MARGIN = 2
+
 export interface TokenTrendSectionProps {
-  /** per-iteration 明细（顺序无关）。 */
+  /** per-iteration 明细（顺序无关）—— `loadBuckets` 不可用时的回落数据源。 */
   readonly rows: readonly UsageIterationRow[]
   /**
    * 窗口右端基准（"数据是什么时候取的"）—— 由调用方显式传入：
@@ -41,15 +52,48 @@ export interface TokenTrendSectionProps {
    * 而且用"取数时刻"当窗口右端语义更准（窗口与数据快照对齐）。
    */
   readonly now: number
+  /**
+   * 服务端全量分桶取数（`get_session_usage_buckets`）。`count` 已含窗口余量。
+   * 返回 null / 抛错（旧后端没有该 RPC / 请求失败）⇒ 自动回落到 `rows` 明细路径。
+   */
+  readonly loadBuckets?: (
+    granularity: TrendGranularity,
+    count: number,
+  ) => Promise<readonly UsageBucket[] | null>
 }
 
-export function TokenTrendSection({ rows, now }: TokenTrendSectionProps) {
+export function TokenTrendSection({ rows, now, loadBuckets }: TokenTrendSectionProps) {
   const [granularity, setGranularity] = useState<TrendGranularity>('hour')
   const tzOffsetMinutes = useMemo(() => browserTzOffsetMinutes(), [])
+  /** 服务端全量桶；null = 不可用（走明细回落路径）。 */
+  const [serverBuckets, setServerBuckets] = useState<readonly UsageBucket[] | null>(null)
+
+  // 粒度切换 / 重新取数（now 变化）时重拉全量桶。失败即降级（绝不阻塞渲染）。
+  useEffect(() => {
+    if (!loadBuckets || !(now > 0)) {
+      setServerBuckets(null)
+      return
+    }
+    let cancelled = false
+    const count = trendGranularitySpec(granularity).windowBuckets + BUCKET_WINDOW_MARGIN
+    loadBuckets(granularity, count)
+      .then((result) => {
+        if (!cancelled) setServerBuckets(Array.isArray(result) ? result : null)
+      })
+      .catch(() => {
+        if (!cancelled) setServerBuckets(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [loadBuckets, granularity, now])
 
   const trend = useMemo(
-    () => bucketizeUsageTrend(rows, granularity, now, tzOffsetMinutes),
-    [rows, granularity, tzOffsetMinutes, now],
+    () =>
+      serverBuckets !== null
+        ? bucketizeUsageTrendFromBuckets(serverBuckets, granularity, now, tzOffsetMinutes)
+        : bucketizeUsageTrend(rows, granularity, now, tzOffsetMinutes),
+    [serverBuckets, rows, granularity, tzOffsetMinutes, now],
   )
   const summary = useMemo(() => summarizeTrend(trend), [trend])
 
@@ -75,7 +119,11 @@ export function TokenTrendSection({ rows, now }: TokenTrendSectionProps) {
           </h3>
           <p className="truncate text-[10px] text-muted-foreground/80">
             {t(meta.windowKey, meta.window, { n: spec.windowBuckets })}
-            {coverage ? ` · ${t('trend.coverage', '覆盖')} ${coverage}` : ''}
+            {trend.dataSource === 'buckets'
+              ? ` · ${t('trend.fullCoverage', '全量聚合')}`
+              : coverage
+                ? ` · ${t('trend.coverage', '覆盖')} ${coverage}`
+                : ''}
           </p>
         </div>
         <GranularitySwitch value={granularity} onChange={setGranularity} />
@@ -113,10 +161,17 @@ export function TokenTrendSection({ rows, now }: TokenTrendSectionProps) {
       {/* 数据质量 / 诚实说明（有情况才出现，不刷屏） */}
       {(summary.uncoveredBuckets > 0 || trend.unparsableRows > 0 || trend.sampleSize > 0) && (
         <footer className="relative mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border/40 pt-1.5 text-[10px] text-muted-foreground">
-          <span className="flex items-center gap-1">
-            <Database className="size-3" />
-            {t('trend.sampleSize', '明细 {{n}} 行', { n: formatCount(trend.sampleSize) })}
-          </span>
+          {trend.dataSource === 'buckets' ? (
+            <span data-testid="trend-bucket-source" className="flex items-center gap-1">
+              <Database className="size-3" />
+              {t('trend.bucketSource', '服务端全量分桶 · {{n}} 个非空时间桶', { n: formatCount(trend.sampleSize) })}
+            </span>
+          ) : (
+            <span className="flex items-center gap-1">
+              <Database className="size-3" />
+              {t('trend.sampleSize', '明细 {{n}} 行', { n: formatCount(trend.sampleSize) })}
+            </span>
+          )}
           {summary.uncoveredBuckets > 0 && (
             <span data-testid="trend-uncovered-note">
               {t('trend.uncoveredNote', '{{n}} 个更早的时间桶不在明细内（未按 0 渲染）', { n: summary.uncoveredBuckets })}

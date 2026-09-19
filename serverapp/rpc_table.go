@@ -1163,6 +1163,38 @@ func registerSessionHandlers(t RPCTable, h *RPCContext) {
 		}
 		return stats, nil
 	})
+	// Trend chart data: fixed-width buckets aggregated ENTIRELY in SQL over the
+	// full iteration_history table. The detail list above is capped at ≤500 rows
+	// (session.go), so it cannot cover a long session's history — this endpoint
+	// is what makes the trend chart complete instead of "not covered" on the left.
+	t["get_session_usage_buckets"] = rpc1(func(ctx context.Context, p struct {
+		Channel         string `json:"channel"`
+		ChatID          string `json:"chat_id"`
+		Granularity     string `json:"granularity"`
+		Count           int    `json:"count"`
+		TZOffsetMinutes int    `json:"tz_offset_minutes"`
+	}) (any, error) {
+		if err := h.requireMultiSession(); err != nil {
+			return nil, err
+		}
+		bucketSeconds, ok := sqlite.UsageBucketSecondsForGranularity(p.Granularity)
+		if !ok {
+			return nil, fmt.Errorf("invalid granularity %q (want minute, hour or day)", p.Granularity)
+		}
+		channelName, chatID, err := h.resolveOwnedSession(ctx, p.Channel, p.ChatID, "web")
+		if err != nil {
+			return nil, err
+		}
+		buckets, err := h.Ag.MultiSession().GetSessionUsageBuckets(channelName, chatID, bucketSeconds, p.Count, p.TZOffsetMinutes)
+		if err != nil {
+			return nil, err
+		}
+		if buckets == nil {
+			// Unknown session: empty series (zero-state), never null.
+			return []sqlite.UsageBucket{}, nil
+		}
+		return buckets, nil
+	})
 
 	// ── Sub-agents / sessions ──
 	t["count_interactive_sessions"] = rpc1(func(ctx context.Context, p struct {

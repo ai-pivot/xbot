@@ -609,6 +609,24 @@ func (c *Client) GetSessionUsageStats(channel, chatID string, limit int) (*sqlit
 	return &r, nil
 }
 
+// GetSessionUsageBuckets fetches a session's usage aggregated into fixed-width
+// time buckets, computed ENTIRELY in SQL over the full iteration_history table
+// (the trend chart must cover the whole history, not just the newest ≤500 rows
+// that GetSessionUsageStats' detail list is capped to).
+func (c *Client) GetSessionUsageBuckets(channel, chatID, granularity string, count, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
+	var r []sqlite.UsageBucket
+	if err := c.call(MethodGetSessionUsageBuckets, getSessionUsageBucketsReq{
+		Channel:         channel,
+		ChatID:          chatID,
+		Granularity:     granularity,
+		Count:           count,
+		TZOffsetMinutes: tzOffsetMinutes,
+	}, &r); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 func (c *Client) GetTokenState(ch, chatID string) (int64, int64, error) {
 	var r struct {
 		Prompt     int64 `json:"prompt_tokens"`

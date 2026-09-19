@@ -19,12 +19,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { usePluginRuntime } from '@/plugin-runtime'
-import type { DailyTokenUsage, TenantUsageStats, UserTokenUsage, UsageIterationRow } from '@/plugin-api'
+import type { DailyTokenUsage, TenantUsageStats, UserTokenUsage, UsageBucket, UsageIterationRow } from '@/plugin-api'
 import { useI18n } from '@/providers/i18n'
 import { Button } from '@/components/ui/button'
 import { BarChart3, Loader2, RefreshCw } from 'lucide-react'
 import { subscribeStatsRefresh } from './sessionStats'
 import { TokenTrendSection } from './TokenTrendSection'
+import { browserTzOffsetMinutes, type TrendGranularity } from './tokenTrend'
 import { formatTokenCount as fmtTokens } from './format'
 
 // ── 数据面常量 ─────────────────────────────────────────────────────────────
@@ -317,6 +318,26 @@ export function SessionStatsPanel({
   loadRef.current = load
   useEffect(() => subscribeStatsRefresh(() => void loadRef.current()), [])
 
+  /**
+   * 趋势图数据源：服务端**全量分桶**（SQL GROUP BY 整张 iteration_history）。
+   * 与 `get_session_usage_stats` 的明细不同，它不受 ≤500 行截断 ⇒ 覆盖整段历史。
+   * 旧后端没有该 RPC / 请求失败时抛错，TokenTrendSection 会回落到明细路径。
+   */
+  const loadBuckets = useCallback(
+    async (granularity: TrendGranularity, count: number): Promise<readonly UsageBucket[] | null> => {
+      if (!activeSession) return null
+      const result = await runtime.rpc.call('get_session_usage_buckets', {
+        channel: activeSession.channel,
+        chat_id: activeSession.chatID,
+        granularity,
+        count,
+        tz_offset_minutes: browserTzOffsetMinutes(),
+      })
+      return Array.isArray(result) ? result : null
+    },
+    [runtime, activeSession],
+  )
+
   // 分日期数据按天聚合（原始维度是 date × model）。
   const byDate = useMemo(() => {
     const m = new Map<string, { date: string; input: number; cached: number; output: number; calls: number }>()
@@ -532,7 +553,7 @@ export function SessionStatsPanel({
             </Card>
 
             {/* ── Row 2.5：多粒度 token 趋势（分钟 / 小时 / 天）── */}
-            <TokenTrendSection rows={allIterations} now={statsFetchedAt} />
+            <TokenTrendSection rows={allIterations} now={statsFetchedAt} loadBuckets={loadBuckets} />
 
             {/* ── Row 3：分日期趋势 + 明细 ── */}
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-5">

@@ -9,8 +9,8 @@
  */
 import { fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
-import { beforeEach, describe, expect, it } from 'vitest'
-import type { UsageIterationRow } from '@/plugin-api'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { UsageBucket, UsageIterationRow } from '@/plugin-api'
 
 import { TokenTrendSection } from './TokenTrendSection'
 import { setPluginI18n } from './i18n'
@@ -138,5 +138,52 @@ describe('TokenTrendSection：摘要', () => {
     expect(section).toHaveTextContent('3.0k')
     expect(section).toHaveTextContent('50.0%')
     expect(section).toHaveTextContent('2 次调用')
+  })
+})
+
+describe('TokenTrendSection：服务端全量分桶优先（无"未覆盖"）', () => {
+  /** 服务端桶：hour 粒度的本地整点（tz=0 时就是整点 UTC）。 */
+  const hourBucket = (startMs: number, input: number, cached: number, output: number): UsageBucket => ({
+    bucket_start: Math.floor(startMs / 1000),
+    input_tokens: input,
+    cached_tokens: cached,
+    output_tokens: output,
+    calls: 1,
+    ttft_ms_sum: 0,
+    total_ms_sum: 0,
+  })
+
+  it('loadBuckets 有数据 ⇒ 用全量分桶渲染：底部标注来源、不出现"未覆盖"提示', async () => {
+    const loadBuckets = vi.fn(async () => [hourBucket(NOW - 3600_000, 1000, 500, 100)])
+    render(<TokenTrendSection rows={[]} now={NOW} loadBuckets={loadBuckets} />)
+
+    expect(await screen.findByTestId('trend-bucket-source')).toBeInTheDocument()
+    expect(screen.getByTestId('trend-section')).toHaveTextContent('全量聚合')
+    // 全量聚合下没有"未覆盖区"（这正是本次改造要消除的"为什么是空"）
+    expect(screen.queryByTestId('trend-uncovered-note')).toBeNull()
+    expect(screen.queryByTestId('trend-uncovered')).toBeNull()
+    // 请求窗口 = 粒度窗口桶数(24) + 余量(2)
+    expect(loadBuckets).toHaveBeenCalledWith('hour', 26)
+  })
+
+  it('loadBuckets 失败（旧后端 / 无该 RPC）⇒ 回落明细路径，未覆盖区仍如实标注', async () => {
+    const loadBuckets = vi.fn(async () => {
+      throw new Error('unknown rpc method: get_session_usage_buckets')
+    })
+    render(<TokenTrendSection rows={[row(2 * 60_000, 100, 0, 10)]} now={NOW} loadBuckets={loadBuckets} />)
+
+    expect(await screen.findByTestId('trend-uncovered-note')).toBeInTheDocument()
+    expect(screen.queryByTestId('trend-bucket-source')).toBeNull()
+    expect(screen.getByText(/明细 1 行/)).toBeInTheDocument()
+  })
+
+  it('切换粒度会按新粒度重新取桶（窗口桶数随之变化）', async () => {
+    const loadBuckets = vi.fn(async () => [hourBucket(NOW - 3600_000, 100, 0, 10)])
+    render(<TokenTrendSection rows={[]} now={NOW} loadBuckets={loadBuckets} />)
+    await screen.findByTestId('trend-bucket-source')
+
+    fireEvent.click(screen.getByTestId('trend-granularity-day'))
+    expect(await screen.findByText(/最近 30 天/)).toBeInTheDocument()
+    expect(loadBuckets).toHaveBeenCalledWith('day', 32)
   })
 })

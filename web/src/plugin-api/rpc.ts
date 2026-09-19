@@ -62,6 +62,19 @@ export interface BackendRPC {
     params: { channel?: string; chat_id: string; limit?: number }
     result: TenantUsageStats
   }
+  // ---- 会话用量分桶（服务端 SQL 全量聚合，趋势图数据源）----
+  // 与 get_session_usage_stats 的关键区别：明细列表被 LIMIT ≤500 截断，而这里在
+  // SQL 里直接 GROUP BY 全量 iteration_history ⇒ 趋势覆盖整段历史（无 "not covered"）。
+  'get_session_usage_buckets': {
+    params: {
+      channel?: string
+      chat_id: string
+      granularity: 'minute' | 'hour' | 'day'
+      count?: number
+      tz_offset_minutes?: number
+    }
+    result: UsageBucket[]
+  }
   // ---- 用户累计用量（所有会话汇总）----
   'get_user_token_usage': {
     params: Record<string, never>
@@ -260,6 +273,21 @@ export interface UsageIterationRow {
   total_ms: number
   model: string
   created_at: string
+}
+
+/**
+ * 一个时间桶的用量（服务端在 SQL 里对**全量** iteration_history 聚合得出）。
+ * `bucket_start` 是桶起点（epoch **秒**），已按请求的 `tz_offset_minutes` 对齐到
+ * 本地墙钟（日桶 = 本地零点）。
+ */
+export interface UsageBucket {
+  bucket_start: number
+  input_tokens: number
+  cached_tokens: number
+  output_tokens: number
+  calls: number
+  ttft_ms_sum: number
+  total_ms_sum: number
 }
 
 export interface TenantUsageStats {

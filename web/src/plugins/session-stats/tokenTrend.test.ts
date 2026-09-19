@@ -4,10 +4,11 @@
  * 全部用**显式注入的 now 与时区偏移**驱动：不依赖进程 TZ（CI 与本机结果一致）。
  */
 import { describe, expect, it } from 'vitest'
-import type { UsageIterationRow } from '@/plugin-api'
+import type { UsageBucket, UsageIterationRow } from '@/plugin-api'
 import {
   browserTzOffsetMinutes,
   bucketizeUsageTrend,
+  bucketizeUsageTrendFromBuckets,
   buildAxis,
   floorToBucket,
   formatBucketLabel,
@@ -337,5 +338,127 @@ describe('曲线几何（平滑堆叠面积）', () => {
 describe('browserTzOffsetMinutes', () => {
   it('是 getTimezoneOffset 的反号（东为正）', () => {
     expect(browserTzOffsetMinutes()).toBe(-new Date().getTimezoneOffset())
+  })
+})
+
+// ── 服务端全量分桶（get_session_usage_buckets）→ TokenTrend ────────────────
+
+/** 一个服务端桶（epoch 秒，已按 tz 对齐）。 */
+function bucket(bucketStartSeconds: number, input: number, cached: number, output: number, calls = 1): UsageBucket {
+  return {
+    bucket_start: bucketStartSeconds,
+    input_tokens: input,
+    cached_tokens: cached,
+    output_tokens: output,
+    calls,
+    ttft_ms_sum: 0,
+    total_ms_sum: 0,
+  }
+}
+
+/** 桶起点（epoch 秒）= 本地墙钟某个整点/整日 —— 与服务端分桶公式同一坐标系。 */
+const bucketStartSec = (iso: string) => Math.floor(Date.parse(iso) / 1000)
+
+const BUCKET_NOW = Date.parse('2026-09-19T12:00:30Z') // 窗口右端基准
+
+describe('bucketizeUsageTrendFromBuckets：服务端全量分桶', () => {
+  it('空桶集 ⇒ 连续零窗口且【全部覆盖】（全量聚合下空桶就是真的 0，不是"未覆盖"）', () => {
+    const trend = bucketizeUsageTrendFromBuckets([], 'hour', BUCKET_NOW, 0)
+    expect(trend.dataSource).toBe('buckets')
+    expect(trend.buckets).toHaveLength(24)
+    expect(trend.buckets.every((b) => b.covered)).toBe(true)
+    expect(trend.buckets.every((b) => b.calls === 0 && b.total === 0)).toBe(true)
+    expect(trend.sampleSize).toBe(0)
+    expect(trend.matchedCalls).toBe(0)
+    expect(trend.coverageStart).toBe(trend.start)
+    // 全量覆盖 ⇒ 摘要里"未覆盖桶数"必须为 0（这正是本次改造的目的）
+    expect(summarizeTrend(trend).uncoveredBuckets).toBe(0)
+    expect(summarizeTrend(trend).idleBuckets).toBe(24)
+  })
+
+  it('单桶 ⇒ 数值落到正确的桶位（且其余桶为 0、covered=true）', () => {
+    const start = bucketStartSec('2026-09-19T11:00:00Z')
+    const trend = bucketizeUsageTrendFromBuckets([bucket(start, 1000, 400, 250, 3)], 'hour', BUCKET_NOW, 0)
+    const hit = trend.buckets.find((b) => b.start === Date.parse('2026-09-19T11:00:00Z'))
+    expect(hit).toBeDefined()
+    expect(hit).toMatchObject({ calls: 3, input: 1000, cached: 400, uncached: 600, output: 250, total: 1250, covered: true })
+    expect(hit!.cacheRate).toBeCloseTo(0.4)
+    const summary = summarizeTrend(trend)
+    expect(summary.calls).toBe(3)
+    expect(summary.activeBuckets).toBe(1)
+    expect(summary.peak?.start).toBe(hit!.start)
+    // 只有一个活跃桶 ⇒ 图表降级为标记点（沿用既有契约）
+    expect(summary.activeBuckets).toBe(1)
+  })
+
+  it('跨日（天级，tz=+08:00）⇒ 本地零点对齐、两天各自求和', () => {
+    const tz = 480
+    // 本地 09-18 23:30 = UTC 09-18T15:30Z；本地 09-19 00:30 = UTC 09-18T16:30Z
+    // 天桶（本地）⇒ 两个时刻分属 09-18 / 09-19 两个本地日。
+    const d18 = Math.floor(Date.parse('2026-09-17T16:00:00Z') / 1000) // 本地 09-18 00:00
+    const d19 = Math.floor(Date.parse('2026-09-18T16:00:00Z') / 1000) // 本地 09-19 00:00
+    const trend = bucketizeUsageTrendFromBuckets(
+      [bucket(d18, 100, 10, 5), bucket(d19, 200, 20, 9, 2)],
+      'day',
+      BUCKET_NOW,
+      tz,
+    )
+    expect(trend.buckets).toHaveLength(30)
+    const b18 = trend.buckets.find((b) => b.start === d18 * 1000)
+    const b19 = trend.buckets.find((b) => b.start === d19 * 1000)
+    expect(b18).toMatchObject({ calls: 1, input: 100, output: 5 })
+    expect(b19).toMatchObject({ calls: 2, input: 200, output: 9 })
+    // 本地标签由 UTC getter + 平移得到（不依赖进程 TZ）
+    expect(formatBucketLabel(b19!.start, 'day', tz)).toEqual({ primary: '09-19', secondary: '2026' })
+    expect(summarizeTrend(trend).uncoveredBuckets).toBe(0)
+    expect(summarizeTrend(trend).total).toBe(100 + 5 + 200 + 9)
+  })
+
+  it('窗口外的桶（服务端多给的余量）被忽略，且不污染窗口内合计', () => {
+    const inWindow = bucketStartSec('2026-09-19T11:00:00Z')
+    const tooOld = bucketStartSec('2026-09-10T00:00:00Z') // 远在 24 小时窗口之外
+    const trend = bucketizeUsageTrendFromBuckets(
+      [bucket(inWindow, 100, 0, 10), bucket(tooOld, 999_999, 0, 0)],
+      'hour',
+      BUCKET_NOW,
+      0,
+    )
+    expect(trend.skippedOutOfWindow).toBe(1)
+    expect(trend.matchedCalls).toBe(1)
+    expect(summarizeTrend(trend).total).toBe(110)
+    expect(trend.sampleSize).toBe(2) // 服务端确实给了 2 个非空桶
+  })
+
+  it('网格不对齐的桶绝不被"就近吸附"（宁可丢弃并计数，也不画到错误的桶）', () => {
+    // 偏 30 秒的桶起点：与本地网格（整点）不对齐
+    const misaligned = bucketStartSec('2026-09-19T11:00:00Z') + 30
+    const trend = bucketizeUsageTrendFromBuckets([bucket(misaligned, 500, 0, 30)], 'hour', BUCKET_NOW, 0)
+    expect(trend.matchedCalls).toBe(0)
+    expect(trend.skippedOutOfWindow).toBe(1)
+    expect(summarizeTrend(trend).total).toBe(0)
+  })
+
+  it('分桶求和 == 同批数据走明细路径的合计（两条路径口径一致）', () => {
+    const rows: UsageIterationRow[] = [
+      row('2026-09-19T11:10:00Z', 1000, 400, 100),
+      row('2026-09-19T11:40:00Z', 2000, 500, 200),
+      row('2026-09-19T10:05:00Z', 500, 0, 50),
+    ]
+    const bySamples = summarizeTrend(bucketizeUsageTrend(rows, 'hour', BUCKET_NOW, 0))
+    const byBuckets = summarizeTrend(
+      bucketizeUsageTrendFromBuckets(
+        [bucket(bucketStartSec('2026-09-19T11:00:00Z'), 3000, 900, 300, 2), bucket(bucketStartSec('2026-09-19T10:00:00Z'), 500, 0, 50)],
+        'hour',
+        BUCKET_NOW,
+        0,
+      ),
+    )
+    expect(byBuckets.input).toBe(bySamples.input)
+    expect(byBuckets.cached).toBe(bySamples.cached)
+    expect(byBuckets.output).toBe(bySamples.output)
+    expect(byBuckets.calls).toBe(bySamples.calls)
+    expect(byBuckets.uncoveredBuckets).toBe(0)
+    expect(bySamples.uncoveredBuckets).toBeGreaterThan(0) // 明细路径仍如实标注未覆盖
+    expect(bySamples.total).toBe(byBuckets.total)
   })
 })
