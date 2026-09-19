@@ -14,7 +14,7 @@
  *
  * 构建：esbuild --bundle --format=esm --jsx=transform（React external）。
  */
-import type { BackendRPC } from '@/plugin-api'
+import type { BackendRPC, PanelsAPI } from '@/plugin-api'
 
 const w = window as unknown as {
   React: typeof import('react')
@@ -191,6 +191,15 @@ export interface SshRunnerCtx {
     set(key: string, value: unknown): Promise<void>
     onConfigChange(handler: (config: Record<string, unknown>) => void): () => void
   }
+  /**
+   * 面板注册能力（'ui' 权限）——桌面底栏徽章经此注册。
+   *
+   * manifest 的 `info_bar` 视图会被并入**同插件主面板**的 badgeRender
+   * （`plugin-runtime/panelRegistry.ts:146-165`），而 side 面板的 badgeRender
+   * 无人消费（只有 top/bottom 的 rail 会渲染它，`components/panel/rails.tsx:87`）
+   * ⇒ 桌面底栏只能额外注册一个 `location.zone='bottom'` 的徽章面板。
+   */
+  panels?: PanelsAPI
 }
 
 let ctxRef: SshRunnerCtx | null = null

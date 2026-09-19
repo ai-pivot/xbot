@@ -115,12 +115,14 @@ jobs:
           npx esbuild src/plugins/iteration-stats/entry.tsx \
             --bundle --format=esm --jsx=transform \
             --outfile=../build/plugin-web/xbot.iteration-stats/web/index.js
-          # xbot.ssh-runner: single entry (index.tsx imports only ./shared) →
-          # --outfile names the artifact index.js directly.
+          # xbot.ssh-runner: two entries (index = panel + activate(ctx), bar =
+          # bottom-bar / info_bar view) → --splitting so shared.js (the ctx
+          # singleton injected by activate) is emitted once and imported by both;
+          # --outdir names the artifacts.
           mkdir -p ../build/plugin-web/xbot.ssh-runner/web
-          npx esbuild src/plugins/ssh-runner/index.tsx \
-            --bundle --format=esm --jsx=transform \
-            --outfile=../build/plugin-web/xbot.ssh-runner/web/index.js
+          npx esbuild src/plugins/ssh-runner/index.tsx src/plugins/ssh-runner/bar.tsx \
+            --bundle --splitting --format=esm --jsx=transform \
+            --outdir=../build/plugin-web/xbot.ssh-runner/web
           # Guard: enumerate EVERY repo plugin manifest (id + web.entry via
           # jq); any declared web.entry without its artifact fails the build.
           missing=0

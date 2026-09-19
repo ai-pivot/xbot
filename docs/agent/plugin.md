@@ -393,6 +393,23 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
 - ⚠️ 宿主对 main 级横幅的既有约定（AGENTS.md「InfoBar 必须与 Dockview 垂直堆叠」）：外层
   `flex flex-col` 堆叠 + 内部 `overflow` 裁剪 + **固定高度始终渲染**（不要 `return null`，
   否则出现/消失会让布局跳动），不要依赖子元素自身收缩。
+- ⚠️ **`info_bar` 视图在【桌面端】不会被渲染——除非该插件没有主 view**（2026-09-19 实测，写
+  ssh-runner 底栏时踩到）。链路：桌面底栏是 `web/src/layouts/AppShell.tsx:322-338`（连接状态 +
+  `TopRail` + `BottomRailBadges` + `SWUpdateButton` + ⚙），**没有 `<InfoBar/>`**（`InfoBar` 只被
+  `MobileAppShell.tsx:476` 渲染）⇒ 桌面唯一可用的 bar 面 = `BottomRailBadges`，而它只渲染
+  `panelRegistry` 里 `location.zone ∈ {top,bottom}` 的徽章（`components/panel/rails.tsx:87/136`）。
+  `mapContainerToLocation` 虽把 `info_bar` 映射为 `{zone:'bottom'}`，但
+  `buildPanelDefs`（`plugin-runtime/panelRegistry.ts:146-165`）**会把 bar 类 view 合并进同插件
+  主面板的 `badgeRender`** —— 而 side 面板的 badgeRender 无人消费（`PanelChrome` 只吃
+  `badges()` 文本 pill）⇒ 声明了 `info_bar` 却什么都没显示（移动端除外）。
+  绕行（插件侧，ssh-runner 采用）：`activate(ctx)` 里 `ctx.panels.register({ id: <同视图 id>,
+  location: { zone: 'bottom', order: 0 }, render: () => null, badgeRender: () => <Bar/> })`
+  —— 同 id 保证宿主将来修好合并规则时按 id 覆盖、不双渲染。根治应在宿主侧（bar 类 view 一律
+  产出独立徽章 def，或桌面底栏也渲染 `PluginPanelContainer container="info_bar"`）。
+  另：`container` 只是徽章/面板的**位置语义**，视图组件最终形态由宿主 rail 决定 ⇒ 触发元素
+  必须带 `span[role=button]` + 行 `div[role=menuitem]`（徽章内联在 rail 的 `<button>` 里，
+  嵌套 `<button>` 非法），浮层用 `position: fixed`（独立 bundle 无 react-dom/portal，
+  fixed 才能逃出 rail/InfoBar 的 `overflow-hidden`）。
 
 ## 会话级 runner 绑定 RPC（插件可直接用，无需后端改动）
 

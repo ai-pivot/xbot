@@ -78,9 +78,12 @@ plugins-web:
 	cd web && npx esbuild src/plugins/genui/index.tsx \
 		--bundle --splitting --format=esm --jsx=transform \
 		--outdir=../plugins/xbot-genui/web
-	cd web && npx esbuild src/plugins/ssh-runner/index.tsx \
-		--bundle --format=esm --jsx=transform \
-		--outfile=../plugins/xbot-ssh-runner/web/index.js
+	# 多入口（index = 面板 + activate，bar = 底栏视图）：必须 --splitting，
+	# 否则两个产物各带一份 shared.js 副本 —— activate 注入的 ctx 单例对 bar
+	# 视图不可见（视图显示"插件未初始化"）。
+	cd web && npx esbuild src/plugins/ssh-runner/index.tsx src/plugins/ssh-runner/bar.tsx \
+		--bundle --splitting --format=esm --jsx=transform \
+		--outdir=../plugins/xbot-ssh-runner/web
 
 # Copy a plugin's built web assets into its installed dir. Every plugin whose
 # plugin.json declares web.entry must get this, or its frontend module 404s at

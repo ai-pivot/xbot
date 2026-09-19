@@ -48,12 +48,48 @@ import {
   type RunnerInfo,
   type SessionIdentity,
 } from './shared'
+import { RunnerBarView } from './bar'
+
+/** 底栏 bar 视图 id（manifest `web.contributes` 里的声明与此一致）。 */
+const RUNNER_BAR_VIEW_ID = 'xbot.ssh-runner.bar'
 
 const { useState, useEffect, useCallback, useRef, useMemo } = React
 
-/** 激活时注入 ctx（PluginRuntime 调用 mod.activate(ctx)）——能力存入 shared 单例。 */
-export function activate(ctx: unknown): void {
+/**
+ * 激活：注入 ctx + 注册**桌面底栏徽章**。
+ *
+ * bar 视图在宿主有两条渲染路径（同一个组件）：
+ *  - 移动端 InfoBar 走 manifest 的 `info_bar` 视图（`PluginPanelContainer` → `bar.js`）；
+ *  - 桌面底栏（与「检查更新」按钮同一行）的 rail **只消费 panelRegistry 里
+ *    zone 'top'/'bottom' 的徽章**（`components/panel/rails.tsx:87/136`），而 manifest
+ *    的 `info_bar` 视图会被 `buildPanelDefs` 并入**同插件主面板**的 badgeRender
+ *    （`plugin-runtime/panelRegistry.ts:146-165`），side 面板的 badgeRender 无人消费
+ *    ⇒ 这里额外注册一个 zone='bottom' 的徽章面板（badgeRender 即 bar 组件）。
+ *
+ * 返回 disposable：插件停用时注销该面板（内核会调用 activate 的返回值）。
+ */
+export function activate(ctx: unknown): void | (() => void) {
   setCtx(ctx)
+  return registerRunnerBarBadge()
+}
+
+/** 注册底栏徽章面板（无 `ui` 权限 / 无面板能力时静默跳过——bar 仍走 info_bar 视图）。 */
+function registerRunnerBarBadge(): void | (() => void) {
+  const panels = getCtx()?.panels
+  if (!panels) return
+  return panels.register({
+    // 与 manifest 的 info_bar 视图同 id：若宿主将来直接把该视图渲染为独立底栏徽章，
+    // 注册表按 id 覆盖 ⇒ 只会有一个徽章，不会双渲染。
+    id: RUNNER_BAR_VIEW_ID,
+    title: 'Remote Machines',
+    icon: 'server',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    location: { zone: 'bottom', order: 0 },
+    // 徽章面板没有面板主体（主体即徽章）——与 buildPanelDefs 的独立徽章面板同形。
+    render: () => null,
+    badgeRender: () => React.createElement(RunnerBarView),
+  })
 }
 
 // ---------- 内联 SVG 图标（禁止 emoji——缺字体会成方框） ----------
