@@ -19,7 +19,7 @@ import (
 var (
 	flagServer      = flag.String("server", "", "WebSocket server URL (required)")
 	flagToken       = flag.String("token", "", "Auth token (required)")
-	flagWorkspace   = flag.String("workspace", "/workspace", "Workspace root directory")
+	flagWorkspace   = flag.String("workspace", "", "Workspace root directory (default: the current dir — i.e. $HOME over SSH; docker mode defaults to /workspace)")
 	flagName        = flag.String("name", "", "Runner name reported to the server (default: hostname)")
 	flagFullControl = flag.Bool("full-control", false, "Disable path restrictions (allow access to any file)")
 	flagVerbose     = flag.Bool("v", false, "Verbose logging (log all requests)")
@@ -61,19 +61,35 @@ func main() {
 	var dockerMode bool
 	var execWorkspace string
 
+	// ⛔ 2026-09-19 用户实机 P0：**默认不再用硬编码 "/workspace"**。
+	// 那个根目录在非 root 用户下 mkdir 必失败 ⇒ workspace 建不出来 ⇒ 后续 shell 执行
+	// 失败（用户原话："总是试图创建他不一定有权限的目录然后 shell 执行失败"）。
+	// native 模式默认用**当前目录**（SSH 会话里即 $HOME），再退 $HOME、最后 "."。
+	workspace := *flagWorkspace
 	if *flagMode == "docker" {
-		log.Printf("Docker mode: image=%s, workspace=%s", *flagDockerImage, *flagWorkspace)
-		exec, err = runnerclient.NewDockerExecutor(runnerName, *flagDockerImage, *flagWorkspace)
+		if workspace == "" {
+			workspace = "/workspace" // 容器内挂载点 —— docker 模式的正确默认
+		}
+		log.Printf("Docker mode: image=%s, workspace=%s", *flagDockerImage, workspace)
+		exec, err = runnerclient.NewDockerExecutor(runnerName, *flagDockerImage, workspace)
 		if err != nil {
 			log.Fatalf("Failed to create docker executor: %v", err)
 		}
 		dockerMode = true
-		execWorkspace = "/workspace"
 	} else {
-		exec = runnerclient.NewNativeExecutor(*flagWorkspace)
+		if workspace == "" {
+			if wd, wdErr := os.Getwd(); wdErr == nil && wd != "" {
+				workspace = wd
+			} else if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+				workspace = home
+			} else {
+				workspace = "."
+			}
+		}
+		exec = runnerclient.NewNativeExecutor(workspace)
 		dockerMode = false
-		execWorkspace = *flagWorkspace
 	}
+	execWorkspace = workspace
 	defer func() {
 		if cerr := exec.Close(); cerr != nil {
 			log.Printf("Executor close error: %v", cerr)
