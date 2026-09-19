@@ -21,7 +21,7 @@
  *
  * 构建：esbuild --bundle --format=esm --jsx=transform（React external）。
  */
-import {
+import { __pluginI18nDebug,
   React,
   t,
   getCtx,
@@ -236,6 +236,9 @@ function omitKey<T>(rec: Record<string, T>, key: string): Record<string, T> {
 // ---------- 面板 ----------
 
 export default function SshRunnerPanel() {
+  // 诊断（临时）：把 i18n 链路状态显示在面板顶部，便于一眼定位。
+  // 诊断（临时）：把 i18n 链路状态打到 console（[plugin-i18n] ssh-runner debug）
+  __pluginI18nDebug()
   const [config, setConfig] = useState<RunnerConfigValues | null>(null)
   const [targets, setTargets] = useState<MachineTarget[]>([])
   const [loading, setLoading] = useState(true)
