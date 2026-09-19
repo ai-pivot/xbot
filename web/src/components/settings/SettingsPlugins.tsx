@@ -12,6 +12,8 @@ import { ImagePlus, Loader2, Search, X } from 'lucide-react'
 import { postAPI } from '@/lib/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
+import i18n from '@/i18n'
+import { createPluginI18n, type PluginI18nTable } from '@/plugin-runtime/i18n'
 import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -50,9 +52,24 @@ interface PluginConfigView {
   values: Record<string, unknown>
 }
 
+/**
+ * 用**插件自带的文案表**（plugin.json 的 `web.i18n`）解析 schema 文本。
+ *
+ * 契约（2026-09-19，与 `ctx.i18n` 同源）：schema 的 `label`/`description`/`section`
+ * 允许写**该插件文案表里的 key** —— 命中 ⇒ 按宿主当前语言取译文；**不是 key**
+ * （历史插件的裸字符串）或**该插件没有表** ⇒ **原样返回**（向后兼容，零 hack）。
+ * 解析器直接复用插件运行时的 `createPluginI18n`（回退链与 `ctx.i18n` 完全一致）。
+ */
+function resolvePluginText(table: PluginI18nTable | undefined, raw: string | undefined): string | undefined {
+  if (!raw || !table) return raw
+  return createPluginI18n(table, () => i18n.language).t(raw, raw)
+}
+
 export function SettingsPlugins() {
   const { t } = useI18n()
   const [plugins, setPlugins] = useState<PluginConfigView[]>([])
+  // 插件自有文案表（plugin_config 的 schema 文本可以是它的 key）——来源见 load()。
+  const [i18nTables, setI18nTables] = useState<Record<string, PluginI18nTable>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
@@ -61,11 +78,25 @@ export function SettingsPlugins() {
     setLoading(true)
     setError('')
     try {
-      const res = await postAPI<{ plugins?: PluginConfigView[] }>('/api/rpc', {
-        method: 'plugin_config',
-        params: {},
-      })
+      const [res, decls] = await Promise.all([
+        postAPI<{ plugins?: PluginConfigView[] }>('/api/rpc', {
+          method: 'plugin_config',
+          params: {},
+        }),
+        // 文案表随清单分发（web.i18n）——`web_plugin_list` 是既有 RPC（不新增）：
+        // 它覆盖**所有**带 web 声明的插件（含已禁用的，插件运行时 registry 只含已激活的），
+        // 因此配置页在插件被禁用时也能正确解析 label/description。
+        postAPI<{ plugins?: Array<{ id: string; i18n?: PluginI18nTable }> }>('/api/rpc', {
+          method: 'web_plugin_list',
+          params: {},
+        }).catch(() => ({ plugins: [] as Array<{ id: string; i18n?: PluginI18nTable }> })),
+      ])
       setPlugins(res.plugins ?? [])
+      const tables: Record<string, PluginI18nTable> = {}
+      for (const d of decls?.plugins ?? []) {
+        if (d?.id && d.i18n) tables[d.id] = d.i18n
+      }
+      setI18nTables(tables)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -105,24 +136,32 @@ export function SettingsPlugins() {
     return off
   }, [ws])
 
-  // 搜索过滤：按属性 key / label / description 匹配；无查询时显示全部。
+  // 搜索过滤：按属性 key / label / description 匹配（label/description 先按插件文案表
+  // 解析 —— plugin.json 里写的是 key 时，用户搜的是译文而不是 key）；无查询时显示全部。
   const q = query.trim().toLowerCase()
   const filtered = useMemo(() => {
     if (!q) return plugins
     return plugins
       .map((p) => {
+        const table = i18nTables[p.id]
         const props = Object.fromEntries(
-          Object.entries(p.properties).filter(
-            ([key, prop]) =>
+          Object.entries(p.properties).filter(([key, prop]) => {
+            const label = resolvePluginText(table, prop.label) ?? ''
+            const description = resolvePluginText(table, prop.description) ?? ''
+            return (
               key.toLowerCase().includes(q) ||
+              label.toLowerCase().includes(q) ||
+              description.toLowerCase().includes(q) ||
+              // key 原文也参与匹配（开发/插件作者可能直接搜 key）
               (prop.label ?? '').toLowerCase().includes(q) ||
-              (prop.description ?? '').toLowerCase().includes(q),
-          ),
+              (prop.description ?? '').toLowerCase().includes(q)
+            )
+          }),
         )
         return { ...p, properties: props }
       })
       .filter((p) => Object.keys(p.properties).length > 0)
-  }, [plugins, q])
+  }, [plugins, q, i18nTables])
 
   return (
     <div className="flex flex-col gap-2.5 p-4">
@@ -158,7 +197,7 @@ export function SettingsPlugins() {
 
       {!loading &&
         filtered.map((p) => (
-          <PluginConfigSection key={p.id} plugin={p} />
+          <PluginConfigSection key={p.id} plugin={p} i18nTable={i18nTables[p.id]} />
         ))}
     </div>
   )
@@ -453,8 +492,11 @@ function NumberControl({
 /** 单个插件的配置区块。 */
 function PluginConfigSection({
   plugin,
+  i18nTable,
 }: {
   plugin: PluginConfigView
+  /** 该插件自带的文案表（plugin.json 的 web.i18n）——schema 文本可以是它的 key。 */
+  i18nTable?: PluginI18nTable
 }) {
   const { t } = useI18n()
   const [values, setValues] = useState<Record<string, unknown>>(plugin.values)
@@ -488,7 +530,23 @@ function PluginConfigSection({
     [plugin.id, plugin.values],
   )
 
-  const groups = groupBySection(plugin.properties)
+  // schema 文本在渲染前统一解析：命中插件文案表 ⇒ 译文；非 key / 无表 ⇒ 原样。
+  const properties = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(plugin.properties).map(([key, prop]) => [
+          key,
+          {
+            ...prop,
+            label: resolvePluginText(i18nTable, prop.label),
+            description: resolvePluginText(i18nTable, prop.description),
+            section: resolvePluginText(i18nTable, prop.section),
+          },
+        ]),
+      ),
+    [plugin.properties, i18nTable],
+  )
+  const groups = groupBySection(properties)
 
   return (
     <SettingsSection

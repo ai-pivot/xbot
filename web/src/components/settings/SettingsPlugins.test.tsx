@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 
@@ -12,6 +12,7 @@ vi.mock('@/hooks/useWSConnection', () => ({
 }))
 
 import { postAPI } from '@/lib/api'
+import { changeLocale } from '@/i18n'
 import { SettingsPlugins } from './SettingsPlugins'
 
 const mockPost = postAPI as unknown as ReturnType<typeof vi.fn>
@@ -143,5 +144,92 @@ describe('SettingsPlugins', () => {
     expect(input.value).toBe('')
     // 无范围属性（Level）不渲染滑条。
     expect(screen.queryByRole('slider', { name: 'Level' })).not.toBeInTheDocument()
+  })
+})
+
+/**
+ * schema 文本走**插件自有文案表**（plugin.json 的 `web.i18n`）。
+ *
+ * 契约：`label` / `description` 可以写该插件文案表里的 **key** —— 宿主用**该插件的表** +
+ * 当前语言解析；**不是 key**（历史插件的裸字符串）或**该插件没有表** ⇒ **原样透传**
+ * （向后兼容，零 hack）。表来自既有 RPC `web_plugin_list`（不新增 RPC），解析器与插件
+ * 运行时的 `ctx.i18n` 同一份实现（`createPluginI18n`）。
+ */
+describe('SettingsPlugins · schema 文案走插件表（web.i18n）', () => {
+  const TABLE = {
+    'zh-CN': { 'config.mode.label': '模式', 'config.mode.description': '运行模式说明' },
+    en: { 'config.mode.label': 'Mode', 'config.mode.description': 'How the mode works' },
+    ja: { 'config.mode.label': 'モード', 'config.mode.description': 'モードの説明' },
+  }
+  const keyedPlugin = {
+    id: 'xbot.keyed',
+    name: 'Keyed Plugin',
+    title: 'Keyed',
+    runtime: 'script',
+    enabled: true,
+    properties: {
+      // key —— 命中插件表 ⇒ 按宿主语言解析
+      mode: { type: 'string', label: 'config.mode.label', description: 'config.mode.description' },
+      // 裸字符串 —— 非 key ⇒ 原样透传
+      raw: { type: 'string', label: 'Raw label', description: 'Raw description' },
+    },
+    values: {},
+  }
+
+  /** 两个既有 RPC：plugin_config（schema）+ web_plugin_list（清单里的 web.i18n 表）。 */
+  function mockRpc(decls: Array<{ id: string; i18n?: Record<string, unknown> }>) {
+    mockPost.mockImplementation(
+      async (_url: string, args: { method?: string }) =>
+        args?.method === 'web_plugin_list' ? { plugins: decls } : { plugins: [keyedPlugin] },
+    )
+  }
+
+  afterEach(() => changeLocale('zh-CN'))
+
+  it('宿主 en：key 命中插件表 ⇒ 显示英文', async () => {
+    changeLocale('en')
+    mockRpc([{ id: 'xbot.keyed', i18n: TABLE }])
+    render(<SettingsPlugins />)
+    expect(await screen.findByText('Mode')).toBeInTheDocument()
+    expect(screen.getByText('How the mode works')).toBeInTheDocument()
+  })
+
+  it('宿主 zh-CN：key 命中插件表 ⇒ 显示中文', async () => {
+    changeLocale('zh-CN')
+    mockRpc([{ id: 'xbot.keyed', i18n: TABLE }])
+    render(<SettingsPlugins />)
+    expect(await screen.findByText('模式')).toBeInTheDocument()
+    expect(screen.getByText('运行模式说明')).toBeInTheDocument()
+  })
+
+  it('非 key 的裸字符串原样透传（向后兼容历史插件）', async () => {
+    changeLocale('en')
+    mockRpc([{ id: 'xbot.keyed', i18n: TABLE }])
+    render(<SettingsPlugins />)
+    await screen.findByText('Mode')
+    expect(screen.getByText('Raw label')).toBeInTheDocument()
+    expect(screen.getByText('Raw description')).toBeInTheDocument()
+  })
+
+  it('插件没有 i18n 表 ⇒ 原样透传、不报错', async () => {
+    changeLocale('en')
+    mockRpc([{ id: 'xbot.keyed' }])
+    render(<SettingsPlugins />)
+    // 无表 ⇒ 不做任何替换（key 也照原样显示），配置面板照常渲染。
+    expect(await screen.findByText('config.mode.label')).toBeInTheDocument()
+    expect(screen.getByText('Raw label')).toBeInTheDocument()
+  })
+
+  it('web_plugin_list 失败 ⇒ 配置仍渲染（降级为原样透传）', async () => {
+    changeLocale('en')
+    mockPost.mockImplementation(async (_url: string, args: { method?: string }) => {
+      if (args?.method === 'web_plugin_list') throw new Error('rpc down')
+      return { plugins: [keyedPlugin] }
+    })
+    render(<SettingsPlugins />)
+    // 清单 RPC 挂掉不连坐配置面板：插件照常渲染，key 原样透传（不崩、不卡 loading）。
+    expect(await screen.findByText('Keyed Plugin')).toBeInTheDocument()
+    expect(screen.getByText('config.mode.label')).toBeInTheDocument()
+    expect(screen.getByText('Raw label')).toBeInTheDocument()
   })
 })

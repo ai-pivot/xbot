@@ -19,16 +19,16 @@
       "properties": {
         "defaultLogLimit": {
           "type": "number",
-          "label": "默认 Commit 条数",
-          "description": "Git 日志面板默认加载的 commit 数量（log limit 默认值）",
+          "label": "config.defaultLogLimit.label",
+          "description": "config.defaultLogLimit.description",
           "default": 10,
           "minimum": 1,
           "maximum": 100
         },
         "showDiffStats": {
           "type": "boolean",
-          "label": "显示 Diff 变更统计",
-          "description": "commit 详情中显示 numstat 变更统计（++/-- 行数）",
+          "label": "config.showDiffStats.label",
+          "description": "config.showDiffStats.description",
           "default": true
         }
       }
@@ -54,6 +54,83 @@
         "entry": "commit.js",
         "dynamic": true
       }
-    ]
+    ],
+    "i18n": {
+      "zh-CN": {
+        "loadingGit": "加载 git 状态…",
+        "notRepo": "当前目录不是 git 仓库",
+        "refresh": "刷新",
+        "openDiff": "在编辑区查看 diff",
+        "expandCommit": "展开 commit 详情",
+        "changesSummary": "变更 {{count}} · +{{added}} -{{deleted}}",
+        "dragSplit": "拖拽调整上下区域比例",
+        "commitSummary": "提交 {{shown}}/{{total}}",
+        "loading": "加载中…",
+        "loadMore": "加载更多（{{count}} 条）",
+        "viewCommitFileDiff": "查看此 commit 内该文件的 diff",
+        "scopeWorktree": "工作区",
+        "missingHash": "缺少 hash 参数",
+        "pluginNotInitialized": "Git 插件未初始化",
+        "loadingCommit": "加载 commit 详情…",
+        "fileChanges": "{{count}} 个文件变更",
+        "openCommitFileDiff": "在编辑区查看此 commit 内该文件的 diff",
+        "sessionNotReady": "会话身份尚未就绪（__xbot_session__ 未设置）——等待 session.switched 或轮询重试",
+        "rpcNotInitialized": "Git 插件未初始化（rpc 未注入）",
+        "config.defaultLogLimit.label": "默认 Commit 条数",
+        "config.defaultLogLimit.description": "Git 日志面板默认加载的 commit 数量（log limit 默认值）",
+        "config.showDiffStats.label": "显示 Diff 变更统计",
+        "config.showDiffStats.description": "commit 详情中显示 numstat 变更统计（++/-- 行数）"
+      },
+      "en": {
+        "loadingGit": "Loading git status…",
+        "notRepo": "Not a git repository",
+        "refresh": "Refresh",
+        "openDiff": "View diff in editor",
+        "expandCommit": "Expand commit details",
+        "changesSummary": "{{count}} changed · +{{added}} -{{deleted}}",
+        "dragSplit": "Drag to resize the two panes",
+        "commitSummary": "Commits {{shown}}/{{total}}",
+        "loading": "Loading…",
+        "loadMore": "Load more ({{count}})",
+        "viewCommitFileDiff": "View this file's diff in the commit",
+        "scopeWorktree": "Working tree",
+        "missingHash": "Missing hash parameter",
+        "pluginNotInitialized": "Git plugin not initialized",
+        "loadingCommit": "Loading commit details…",
+        "fileChanges": "{{count}} file(s) changed",
+        "openCommitFileDiff": "View this file's diff in the editor",
+        "sessionNotReady": "Session identity is not ready yet (__xbot_session__ not set) — waiting for session.switched or a poll retry",
+        "rpcNotInitialized": "Git plugin not initialized (rpc not injected)",
+        "config.defaultLogLimit.label": "Default commit count",
+        "config.defaultLogLimit.description": "Number of commits the git log panel loads by default (default log limit).",
+        "config.showDiffStats.label": "Show diff stats",
+        "config.showDiffStats.description": "Show numstat change stats (++/-- lines) in commit details."
+      },
+      "ja": {
+        "loadingGit": "git の状態を読み込み中…",
+        "notRepo": "現在のディレクトリは git リポジトリではありません",
+        "refresh": "更新",
+        "openDiff": "エディタで diff を表示",
+        "expandCommit": "commit の詳細を展開",
+        "changesSummary": "{{count}} 件の変更 · +{{added}} -{{deleted}}",
+        "dragSplit": "ドラッグで上下エリアの比率を調整",
+        "commitSummary": "コミット {{shown}}/{{total}}",
+        "loading": "読み込み中…",
+        "loadMore": "さらに読み込む（{{count}} 件）",
+        "viewCommitFileDiff": "この commit 内の該当ファイルの diff を表示",
+        "scopeWorktree": "ワークツリー",
+        "missingHash": "hash パラメータがありません",
+        "pluginNotInitialized": "Git プラグインが初期化されていません",
+        "loadingCommit": "commit の詳細を読み込み中…",
+        "fileChanges": "{{count}} 件のファイル変更",
+        "openCommitFileDiff": "エディタでこの commit 内の該当ファイルの diff を表示",
+        "sessionNotReady": "セッション識別子がまだ準備できていません（__xbot_session__ 未設定）— session.switched またはポーリングの再試行を待機中",
+        "rpcNotInitialized": "Git プラグインが初期化されていません（rpc 未注入）",
+        "config.defaultLogLimit.label": "既定のコミット数",
+        "config.defaultLogLimit.description": "git ログパネルが既定で読み込む commit 数（log limit の既定値）。",
+        "config.showDiffStats.label": "Diff の変更統計を表示",
+        "config.showDiffStats.description": "commit 詳細に numstat の変更統計（++/-- 行数）を表示します。"
+      }
+    }
   }
 }
