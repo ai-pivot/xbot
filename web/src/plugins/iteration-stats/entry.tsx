@@ -1,26 +1,22 @@
 /**
- * xbot.iteration-stats —— 独立 ESM 插件入口（状态栏徽章 + 趋势面板）。
+ * xbot.iteration-stats —— 独立 ESM 插件入口（顶栏 / 状态栏徽章）。
  *
- * 本模块由 PluginRuntime 通过 `/plugins/xbot.iteration-stats/web/index.js`
- * 动态 import 加载（与第三方插件完全相同的路径）。它**不 import 任何宿主
- * 内部模块的运行时值** —— React 与实时指标桥都从 window 全局获取（宿主在
- * plugin-runtime 中注入，见 bridge.ts），RPC / i18n / config / events 能力
- * 在 `activate(ctx)` 时注入 bridge 的模块级单例。
+ * 此模块由 PluginRuntime 通过 `/plugins/xbot.iteration-stats/web/index.js`
+ * 动态 import 加载（与第三方插件完全相同的路径）。它不 import 任何宿主
+ * 内部模块 —— React 和全局实时指标通过 window 全局获取（宿主在
+ * iteration-render.tsx 中暴露）。
  *
- * 单入口服务两个 view（宿主 `PluginRuntime.loadViewComponent` 的解析顺序是
- * `mod[view.id]` → `mod.default`）：
- *   - `xbot.iteration-stats.badge`（容器 status_bar_right）→ 实时 tok/s 徽章
- *   - `xbot.iteration-stats.trend`（容器 right_sidebar）→ 多粒度用量趋势面板
- * ⛔ 因此**故意不导出 default** —— 有 default 时宿主会把它当成所有视图的组件
- * （趋势面板会渲染成徽章）。
- *
- * 配置（showTTFT）经 bridge 的 config 单例读写：`wireConfig()` 读一次 +
- * 订阅变更（设置面板改 showTTFT 后徽章实时生效，无需重载）。
+ * 配置（showTTFT）经 `activate(ctx)` 读写：ctx.config（需 'config' 权限）
+ * 读取并订阅变化（onConfigChange），存到模块级 store 供徽章 useSyncExternalStore
+ * 消费 —— 设置面板改 showTTFT 后实时生效（无需重载徽章）。
  */
-import { React, getConfigSnapshot, setPluginCtx, subscribeConfig, wireConfig, wireRefreshEvents } from './bridge'
-import { IterationStatsTrendPanel } from './TrendPanel'
-
-// ── 实时指标桥（宿主注入 window.__xbot_iteration__）────────────────────────
+const w = window as unknown as {
+  React: typeof import('react')
+  __xbot_iteration__: {
+    getGlobalLiveStats: () => LiveStreamStats
+    subscribeGlobalLiveStats: (cb: () => void) => () => void
+  }
+}
 
 interface LiveStreamStats {
   tokensPerSec?: number
@@ -28,31 +24,40 @@ interface LiveStreamStats {
   completionTokens?: number
 }
 
-interface LiveStatsBridge {
-  getGlobalLiveStats: () => LiveStreamStats
-  subscribeGlobalLiveStats: (cb: () => void) => () => void
+interface PluginConfig {
+  showTTFT: boolean
 }
 
-function getLiveBridge(): LiveStatsBridge | null {
-  const b = (window as unknown as { __xbot_iteration__?: LiveStatsBridge }).__xbot_iteration__
-  return b && typeof b.getGlobalLiveStats === 'function' && typeof b.subscribeGlobalLiveStats === 'function'
-    ? b
-    : null
-}
+const { getGlobalLiveStats, subscribeGlobalLiveStats } = w.__xbot_iteration__
+const React = w.React
 
-const NOOP_UNSUBSCRIBE = () => {}
-const EMPTY_LIVE_STATS: LiveStreamStats = {}
+// ── 模块级配置 store（供徽章 useSyncExternalStore 订阅）──────────────────────
+const DEFAULT_CONFIG: PluginConfig = { showTTFT: true }
+let __config: PluginConfig = DEFAULT_CONFIG
+const __configListeners = new Set<() => void>()
+
+function getConfigSnapshot(): PluginConfig {
+  return __config
+}
+function subscribeConfig(cb: () => void): () => void {
+  __configListeners.add(cb)
+  return () => {
+    __configListeners.delete(cb)
+  }
+}
 
 /**
- * activate(ctx)：注入插件能力（i18n / rpc / config / events）。
- * ctx 由 PluginRuntime 传入（buildContext 构建）。
+ * activate(ctx)：读配置并订阅变更（实时生效）。
+ * ctx 由 PluginRuntime 传入（buildContext 构建，含 config）。
  */
 export function activate(ctx: unknown): void {
-  setPluginCtx(ctx)
-  // showTTFT 配置：读一次 + 订阅变更（徽章 useSyncExternalStore 消费）。
-  wireConfig()
-  // turn.ended / session.switched → 趋势面板自动刷新（无 events 权限时静默降级）。
-  wireRefreshEvents()
+  const cfg = (ctx as { config: { get(): Promise<Record<string, unknown>>; onConfigChange(cb: (c: Record<string, unknown>) => void): () => void } }).config
+  const apply = (c: Record<string, unknown>) => {
+    __config = { showTTFT: c?.showTTFT !== false }
+    __configListeners.forEach((f) => f())
+  }
+  void cfg.get().then(apply).catch(() => {})
+  cfg.onConfigChange(apply)
 }
 
 function fmtMs(ms?: number): string {
@@ -61,37 +66,29 @@ function fmtMs(ms?: number): string {
   return `${(ms / 1000).toFixed(1)}s`
 }
 
-/** 状态栏徽章：流式期间显示 tok/s（+ 可选 ttft）。非流式无实时指标 ⇒ 不渲染。 */
-export function IterStatsBadge() {
-  const bridge = React.useMemo(() => getLiveBridge(), [])
-  const subscribe = bridge ? bridge.subscribeGlobalLiveStats : () => NOOP_UNSUBSCRIBE
-  const snapshot = bridge ? bridge.getGlobalLiveStats : () => EMPTY_LIVE_STATS
-  const live = React.useSyncExternalStore(subscribe, snapshot)
+export default function IterStatsBadge() {
+  const live = React.useSyncExternalStore(subscribeGlobalLiveStats, getGlobalLiveStats)
   const cfg = React.useSyncExternalStore(subscribeConfig, getConfigSnapshot)
-
-  const tps = live?.tokensPerSec
-  // 只在 streaming（tok/s > 0）时显示 —— 非流式没有实时指标。
+  const tps = live.tokensPerSec
+  // 只在 streaming（tok/s > 0）时显示 —— 非流式无实时指标。
   if (!tps || tps <= 0) return null
-  const ttft = live?.ttftMs
-  const hasTTFT = cfg.showTTFT && ttft !== undefined && ttft > 0
+  const showTTFT = cfg.showTTFT
+  const ttft = live.ttftMs
+  const hasTTFT = showTTFT && ttft !== undefined && ttft > 0
 
-  return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap sm:gap-1.5">
-      {/* 手机版：紧凑单行 pill（去掉 ttft 前缀词）。 */}
-      <span className="font-mono text-[9px] font-semibold tabular-nums whitespace-nowrap text-emerald-600 sm:hidden dark:text-emerald-400">
-        {`${tps.toFixed(0)}t/s${hasTTFT ? ` · ${fmtMs(ttft)}` : ''}`}
-      </span>
-      {/* 桌面版：完整「tok/s · ttft X」。 */}
-      <span className="hidden font-mono text-xs font-semibold tabular-nums whitespace-nowrap text-emerald-600 sm:inline dark:text-emerald-400">
-        {`${tps.toFixed(0)} tok/s${hasTTFT ? ` · ttft ${fmtMs(ttft)}` : ''}`}
-      </span>
-    </span>
-  )
-}
-
-// 视图组件按 view.id 命名导出（宿主 mod[view.id] 解析）——两个 view 共用
-// 同一份 index.js 产物，无需第二个 esbuild 入口。
-export {
-  IterStatsBadge as 'xbot.iteration-stats.badge',
-  IterationStatsTrendPanel as 'xbot.iteration-stats.trend',
+  const children = [
+    // 手机版：紧凑单行 pill（9px，去掉 ttft 前缀词），sm 以下显示。
+    React.createElement(
+      'span',
+      { key: 'ttft', className: 'sm:hidden font-mono text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums whitespace-nowrap' },
+      `${tps.toFixed(0)}t/s${hasTTFT ? ` · ${fmtMs(ttft)}` : ''}`,
+    ),
+    // 桌面版：完整「tok/s · ttft X」（12px），sm 及以上显示。
+    React.createElement(
+      'span',
+      { key: 'desktop', className: 'hidden sm:inline font-mono text-xs font-semibold text-emerald-600 dark:text-emerald-400 tabular-nums whitespace-nowrap' },
+      `${tps.toFixed(0)} tok/s${hasTTFT ? ` · ttft ${fmtMs(ttft)}` : ''}`,
+    ),
+  ]
+  return React.createElement('span', { className: 'inline-flex items-center gap-1 sm:gap-1.5 whitespace-nowrap' }, ...children)
 }
