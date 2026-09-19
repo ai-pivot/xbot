@@ -991,6 +991,10 @@ const en: Translations = {
       },
     },
     sessionStats: {
+      manifest: {
+        name: 'Session Stats',
+        description: 'Session usage: tokens / cache hits / TTFT / TPOT / iterations / multi-granularity trends',
+      },
       title: 'Stats',
       refresh: 'Refresh',
       noActiveSession: 'No active session',

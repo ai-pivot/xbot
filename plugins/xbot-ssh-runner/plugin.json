@@ -1,8 +1,8 @@
 {
   "id": "xbot.ssh-runner",
-  "name": "Remote Machines (SSH)",
+  "name": "manifest.name",
   "version": "1.0.6",
-  "description": "通过一条 SSH 命令纳管远程机器：探测环境 → 自动安装并启动 xbot-runner → 作为会话可切换的执行目标。控制面插件（stdio），执行仍走既有 runner WebSocket 协议。",
+  "description": "manifest.description",
   "author": "xbot",
   "runtime": "stdio",
   "entry": "./bin/ssh-runner-plugin",
@@ -62,7 +62,7 @@
         "kind": "view",
         "id": "xbot.ssh-runner.panel",
         "container": "right_sidebar",
-        "title": "Remote Machines",
+        "title": "view.panel.title",
         "icon": "server",
         "entry": "index.js"
       },
@@ -70,7 +70,7 @@
         "kind": "view",
         "id": "xbot.ssh-runner.bar",
         "container": "info_bar",
-        "title": "Remote Machines (bar)",
+        "title": "view.bar.title",
         "icon": "server",
         "entry": "bar.js"
       }
@@ -173,7 +173,11 @@
         "switching": "正在切换…",
         "unknown": "未知",
         "version": "版本",
-        "yes": "是"
+        "yes": "是",
+        "manifest.name": "远程机器（SSH）",
+        "manifest.description": "通过一条 SSH 命令纳管远程机器：探测环境 → 自动安装并启动 xbot-runner → 作为会话可切换的执行目标。控制面插件（stdio），执行仍走既有 runner WebSocket 协议。",
+        "view.panel.title": "远程机器",
+        "view.bar.title": "远程机器（状态栏）"
       },
       "en": {
         "reinstall": "Reinstall",
@@ -272,7 +276,11 @@
         "switching": "Switching…",
         "unknown": "Unknown",
         "version": "Version",
-        "yes": "Yes"
+        "yes": "Yes",
+        "manifest.name": "Remote Machines (SSH)",
+        "manifest.description": "Onboard remote machines with a single SSH command: probe the environment, auto-install and start xbot-runner, then use the machine as a switchable execution target for sessions. Control-plane plugin (stdio); execution still runs over the existing runner WebSocket protocol.",
+        "view.panel.title": "Remote Machines",
+        "view.bar.title": "Remote Machines (bar)"
       },
       "ja": {
         "reinstall": "再インストール",
@@ -371,7 +379,11 @@
         "switching": "切り替え中…",
         "unknown": "不明",
         "version": "バージョン",
-        "yes": "はい"
+        "yes": "はい",
+        "manifest.name": "リモートマシン（SSH）",
+        "manifest.description": "SSH コマンド 1 本でリモートマシンを登録：環境を検出し、xbot-runner を自動インストールして起動し、セッションの実行先として切り替えられます。制御プレーンのプラグイン（stdio）で、実行は既存の runner WebSocket プロトコル経由です。",
+        "view.panel.title": "リモートマシン",
+        "view.bar.title": "リモートマシン（バー）"
       }
     }
   }

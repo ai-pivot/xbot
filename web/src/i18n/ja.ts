@@ -991,6 +991,10 @@ const ja: Translations = {
       },
     },
     sessionStats: {
+      manifest: {
+        name: 'セッション統計',
+        description: 'セッションの使用量：トークン・キャッシュヒット・TTFT・TPOT・イテレーション・多粒度トレンド',
+      },
       title: '統計',
       refresh: '刷新',
       noActiveSession: '暂无活跃会话',

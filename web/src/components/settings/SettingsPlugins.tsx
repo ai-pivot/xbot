@@ -540,12 +540,17 @@ function PluginConfigSection({
   )
   const groups = groupBySection(properties)
 
+  // 插件标题/副标题同样可能来自清单文案表（`name` / `contributes.configuration.title`
+  // 允许是 key）—— 与属性文本走同一个解析器，避免把裸 key 渲染到设置页。
+  const sectionTitle = resolvePluginText(i18nTable, plugin.name) ?? plugin.name
+  const sectionSubtitle = resolvePluginText(i18nTable, plugin.title) ?? plugin.title
+
   return (
     <SettingsSection
-      title={plugin.name}
+      title={sectionTitle}
       description={
-        plugin.title && plugin.title !== plugin.name
-          ? plugin.title
+        sectionSubtitle && sectionSubtitle !== sectionTitle
+          ? sectionSubtitle
           : t('settings.plugins.configOf', { runtime: plugin.runtime })
       }
     >

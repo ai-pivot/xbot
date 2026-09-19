@@ -13,6 +13,7 @@
  * （iteration-stats __configListeners 同模式）→ 重拉聚合数据。
  */
 import type { PluginContext, PluginManifest, Disposable } from '@/plugin-api'
+import i18n from '@/i18n'
 import { setPluginI18n } from './i18n'
 
 // ── 模块级刷新信号（activate 的 event handler → 面板组件）──────────────────
@@ -33,9 +34,12 @@ export function subscribeStatsRefresh(cb: () => void): () => void {
 
 export const manifest = {
   id: 'xbot.session-stats',
-  name: 'Session Stats',
+  // 内置插件随主 bundle 打包（拿不到清单 web.i18n）⇒ 名称/描述/视图标题走宿主 i18n。
+  name: i18n.t('plugins.sessionStats.manifest.name', { defaultValue: '会话统计' }),
   version: '0.2.0',
-  description: '当前会话用量统计：token / cache 命中 / TTFT / TPOT / 迭代明细 / 多粒度趋势',
+  description: i18n.t('plugins.sessionStats.manifest.description', {
+    defaultValue: '当前会话用量统计：token / cache 命中 / TTFT / TPOT / 迭代明细 / 多粒度趋势',
+  }),
   permissions: ['rpc', 'ui', 'events'] as const,
   // 本插件自己的文案表（随清单分发，**不写进宿主 web/src/i18n/*.ts**）。
   // 趋势卡片的新文案走这里；历史卡片沿用宿主 plugins.sessionStats.* key（那条线由
@@ -70,6 +74,8 @@ export const manifest = {
       'trend.activeBuckets': '活跃区间',
       'trend.bucketsCount': '/ {{n}} 个时间桶',
       'trend.coverage': '覆盖',
+      'trend.fullCoverage': '全量聚合',
+      'trend.bucketSource': '服务端全量分桶 · {{n}} 个非空时间桶',
       'trend.sampleSize': '明细 {{n}} 行',
       'trend.uncoveredNote': '{{n}} 个更早的时间桶不在明细内（未按 0 渲染）',
       'trend.unparsableNote': '{{n}} 行时间戳无法解析，已忽略',
@@ -103,6 +109,8 @@ export const manifest = {
       'trend.activeBuckets': 'Active intervals',
       'trend.bucketsCount': '/ {{n}} buckets',
       'trend.coverage': 'coverage',
+      'trend.fullCoverage': 'full history',
+      'trend.bucketSource': 'Server-side full aggregation · {{n}} non-empty buckets',
       'trend.sampleSize': '{{n}} detail rows',
       'trend.uncoveredNote': '{{n}} earlier buckets are outside the sample (not rendered as zero)',
       'trend.unparsableNote': '{{n}} rows have an unparsable timestamp and were ignored',
@@ -136,6 +144,8 @@ export const manifest = {
       'trend.activeBuckets': 'アクティブ区間',
       'trend.bucketsCount': '/ {{n}} バケット',
       'trend.coverage': 'カバー',
+      'trend.fullCoverage': '全履歴集計',
+      'trend.bucketSource': 'サーバー側で全量集計 · 空でないバケット {{n}}',
       'trend.sampleSize': '明細 {{n}} 行',
       'trend.uncoveredNote': '{{n}} 個の古いバケットは明細外です（0 としては描画しません）',
       'trend.unparsableNote': '{{n}} 行のタイムスタンプを解析できず無視しました',
@@ -146,7 +156,8 @@ export const manifest = {
       kind: 'view',
       id: 'xbot.session-stats.panel',
       container: 'right_sidebar',
-      title: '统计',
+      // 复用既有宿主 key（宿主 i18n 的 plugins.sessionStats.title = 统计 / Stats / 統計）。
+      title: i18n.t('plugins.sessionStats.title', { defaultValue: '统计' }),
       icon: 'chart',
       entry: 'builtin:xbot.session-stats.panel',
     },

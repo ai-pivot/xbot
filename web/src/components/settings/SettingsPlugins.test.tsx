@@ -157,9 +157,9 @@ describe('SettingsPlugins', () => {
  */
 describe('SettingsPlugins · schema 文案走插件表（web.i18n）', () => {
   const TABLE = {
-    'zh-CN': { 'config.mode.label': '模式', 'config.mode.description': '运行模式说明' },
-    en: { 'config.mode.label': 'Mode', 'config.mode.description': 'How the mode works' },
-    ja: { 'config.mode.label': 'モード', 'config.mode.description': 'モードの説明' },
+    'zh-CN': { 'config.mode.label': '模式', 'config.mode.description': '运行模式说明', 'manifest.name': '键控插件' },
+    en: { 'config.mode.label': 'Mode', 'config.mode.description': 'How the mode works', 'manifest.name': 'Keyed Plugin' },
+    ja: { 'config.mode.label': 'モード', 'config.mode.description': 'モードの説明', 'manifest.name': 'キー付きプラグイン' },
   }
   const keyedPlugin = {
     id: 'xbot.keyed',
@@ -177,10 +177,13 @@ describe('SettingsPlugins · schema 文案走插件表（web.i18n）', () => {
   }
 
   /** 两个既有 RPC：plugin_config（schema）+ web_plugin_list（清单里的 web.i18n 表）。 */
-  function mockRpc(decls: Array<{ id: string; i18n?: Record<string, unknown> }>) {
+  function mockRpc(
+    decls: Array<{ id: string; i18n?: Record<string, unknown> }>,
+    configs: unknown[] = [keyedPlugin],
+  ) {
     mockPost.mockImplementation(
       async (_url: string, args: { method?: string }) =>
-        args?.method === 'web_plugin_list' ? { plugins: decls } : { plugins: [keyedPlugin] },
+        args?.method === 'web_plugin_list' ? { plugins: decls } : { plugins: configs },
     )
   }
 
@@ -218,6 +221,17 @@ describe('SettingsPlugins · schema 文案走插件表（web.i18n）', () => {
     // 无表 ⇒ 不做任何替换（key 也照原样显示），配置面板照常渲染。
     expect(await screen.findByText('config.mode.label')).toBeInTheDocument()
     expect(screen.getByText('Raw label')).toBeInTheDocument()
+  })
+
+  it('插件标题（plugin_config 的 name）是插件表里的 key ⇒ 解析（设置页不得显示裸 key）', async () => {
+    // 回归守护（2026-09-19）：清单 `name` 改成 key 后，设置页曾直接渲染 `plugin.name`
+    // ⇒ 用户看到裸 key `manifest.name`（与插件卡片同类的泄漏）。标题/副标题必须与属性文本
+    // 走同一个解析器。
+    changeLocale('en')
+    mockRpc([{ id: 'xbot.keyed', i18n: TABLE }], [{ ...keyedPlugin, name: 'manifest.name', title: '' }])
+    render(<SettingsPlugins />)
+    expect(await screen.findByText('Keyed Plugin')).toBeInTheDocument()
+    expect(screen.queryByText('manifest.name')).not.toBeInTheDocument()
   })
 
   it('web_plugin_list 失败 ⇒ 配置仍渲染（降级为原样透传）', async () => {

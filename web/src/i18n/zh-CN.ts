@@ -987,6 +987,10 @@ const zhCN = {
       },
     },
     sessionStats: {
+      manifest: {
+        name: '会话统计',
+        description: '当前会话用量统计：token / cache 命中 / TTFT / TPOT / 迭代明细 / 多粒度趋势',
+      },
       title: '统计',
       refresh: '刷新',
       noActiveSession: '暂无活跃会话',
