@@ -20,7 +20,6 @@ import {
   commitViaFold,
   commitViaText,
   initialChatState,
-  iterNum,
   nonEmptyArr,
   nonEmptyStr,
   turnID,
@@ -226,58 +225,26 @@ function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: s
 }
 
 /**
- * withRunningInvariant —— 「服务端说在跑 ⇒ store 里必须有 live turn」的结构性保证。
+ * 不变量（用户 2026-09-19）：「输入框是 cancel（busy）⟹ 上面必须能看到进行中信号」。
  *
- * 不变量（用户 2026-09-19 点名）：「只要输入框是 cancel 按钮，就一定不能上面渲染
- * 的内容是 idle 内容」。composer 的 cancel = busy = `currentSession.running ||
- * progressSnapshot.streaming || busyFallback`；其中 `currentSession.running` 是
- * **服务端 reconcile 后的权威**（session-tree/status REST 对账 + SSE session）。
- * 而 turn 的 live-ness 此前**只**由事件驱动 —— 一条迟到/误传/重放的 coarse idle
- *（`session(idle)` 不带 turn 身份），或一次 reload 把运行中的 turn 折成
- * committed，都会让两侧权威分叉：输入框仍 cancel，列表却渲染成 idle 内容。
+ * ⛔ 教训（我上一版的回归，用户二次报告「普通切换 session 就必现、更严重」）：
+ * **绝不允许为了让不变量成立而"伪造 live turn"。** 上一版在 `history_replaced`
+ *（每次切会话都会跑）里按"最新未 finalize 的 turn"提升，而判据 `via !== 'text'`
+ * 对 DB 还原的 turn **恒成立** —— `integrate.ts` 对带迭代的历史 turn 用的是
+ * `commitViaFold`，所以**已结束的 turn 被伪装成 live**：
+ *   ① `busyFallback` / `progressSnapshot.streaming` 变 true ⇒ composer 显示 stop
+ *      （幽灵 busy）；
+ *   ② 占位符被 `liveShowsIndicator` 抑制，而伪造的 live 行往往不在可视尾部
+ *   ⇒ 用户看到「cancel + 完全没有进行中信号」（不变量更严重地被破坏）。
  *
- * 规则：
- *   · 非 running / 已有 live turn ⇒ 原 state（返回原引用 = 零渲染）。
- *   · 提升目标 = **最新未 finalize** 的 turn：`via:'text'` 的 committed 是后端
- *     已发最终回复的**权威结束信号**，绝不复活（否则已结束的 turn 变 busy 幽灵）；
- *     frozen（idle 定格 / cancel 定格）与 fold 提交（无最终回复）都可提升。
- *   · 提升**不新增任何内容**：内容/迭代全保留，只把 `streaming` 置 true 让渲染层
- *     显示进行中信号（本地没有更新数据时只表达"仍在进行"—— 事件到达后自然更新）。
+ * 分工（单一权威、**不造状态**）：
+ *   · live-ness 只由真实信号决定：事件（`stream`/`iteration` 的遮蔽解除）+
+ *     服务端权威快照（`history_replaced` 的 `ev.active`，仅当它指向该 turn 时恢复 live）。
+ *   · `sessionRunning` 只作**闸门**：true ⇒ coarse idle **不得**冻结运行中的 turn
+ *     （陈旧/误传信号）；false ⇒ live turn 定格（权威收尾，内容保留）。
+ *   · **可视保障交给渲染层**：busy 而列表尾行没有"进行中"渲染时，必须渲染占位符
+ *     （见 `MessageList` 的 `tailShowsIndicator`）。
  */
-function withRunningInvariant(s: ChatState): ChatState {
-  if (!s.sessionRunning) return s
-  const cur = s.activeTurn !== null ? s.turns.get(s.activeTurn) : undefined
-  if (cur && cur.phase.kind === 'live') return s
-  let target: TurnID | null = null
-  for (const [id, t] of s.turns) {
-    if (t.phase.kind === 'committed' && t.phase.payload.via === 'text') continue
-    if (target === null || id > target) target = id
-  }
-  if (target === null) return s
-  const t = s.turns.get(target)
-  if (!t) return s
-  const data: LiveSnapshot =
-    t.phase.kind === 'live'
-      ? t.phase.data
-      : t.phase.kind === 'frozen'
-        ? { ...t.phase.data, streaming: true }
-        : {
-            ...EMPTY_LIVE,
-            // DB 快照里的迭代都是**已完成**的；进行中迭代 = 最后一个 + 1
-            //（后端只在迭代完成后写 iteration_history ⇒ 永远大于已落盘最大号）。
-            iter: iterNum(lastIterationNumber(t.phase.payload.iterations) + 1),
-            content: t.phase.payload.content,
-            iterations: t.phase.payload.iterations,
-          }
-  const turns = new Map(s.turns)
-  turns.set(target, { ...t, phase: { kind: 'live', data } })
-  return { ...s, turns, activeTurn: target }
-}
-
-/** 迭代列表里的最大迭代号（0 = 空）。 */
-function lastIterationNumber(its: readonly WebIteration[]): number {
-  return its.reduce((m, it) => Math.max(m, it.iteration), 0)
-}
 
 // ─── reduce：8 case 穷尽（never 检查由 TS 判别联合保证） ───────
 
@@ -320,7 +287,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     case 'session_running': {
       if (s.sessionRunning === ev.running) return s // 幂等（零渲染）
       const flagged: ChatState = { ...s, sessionRunning: ev.running }
-      if (ev.running) return withRunningInvariant(flagged)
+      // ⛔ running=true 只更新**闸门**（stale idle 不得冻结运行中的 turn）——
+      // **绝不伪造 live turn**（上一版在此提升"未 finalize"的 turn，而 DB 还原的
+      // turn 走 `commitViaFold`（integrate.ts），判据恒成立 ⇒ 已结束的 turn 被
+      // 伪装成 live ⇒ composer 幽灵 busy + 占位符被抑制 ⇒ 普通切换会话就必现
+      // 「cancel + 看不到任何进行中信号」）。live-ness 只由真实信号决定。
+      if (ev.running) return flagged
       // 权威收尾：running=false 而 turn 还是 live ⇒ 定格（绝不 wipe 内容）。
       if (s.activeTurn === null) return flagged
       const t = s.turns.get(s.activeTurn)
@@ -1276,15 +1248,18 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         return s
       }
 
-      // ⛔ 施加 running 不变量（不变量：cancel ⇒ 进行中可见）：reload 可能把
-      // **运行中**的 turn 折成 committed（DB 中间行）而 ev.active 快照缺失
-      //（active_progress=null / 竞态）—— 此时服务端 running 仍为 true，必须把它
-      // 提回 live，否则输入框 cancel、列表却渲染成 idle 内容（用户 2026-09-19）。
-      return withRunningInvariant({
+      // ⛔ 这里【绝不】"提升 turn 为 live"（我上一版的回归）：DB 还原的 turn 走
+      // `commitViaFold`（integrate.ts:94），"未 finalize"判据对它恒成立 ⇒ 每次切
+      // 会话都会把**已结束**的 turn 伪装成 live（composer 幽灵 busy + 占位符被
+      // 抑制 ⇒ 「cancel + 看不到进行中信号」）。live-ness 只由真实信号决定：
+      // 服务端权威快照 `ev.active`（仅当它指向该 turn 时恢复 live，见上文 step 3）
+      // + 事件路径（stream/iteration 的遮蔽解除）。切片时的可视保障由渲染层的
+      // 占位符承担（MessageList 的 tailShowsIndicator）。
+      return {
         chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
         busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
         sessionRunning: s.sessionRunning,
-      })
+      }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

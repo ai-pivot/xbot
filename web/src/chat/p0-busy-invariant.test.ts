@@ -112,28 +112,40 @@ describe('P0 不变量：busy（composer=cancel）⟹ store 必须有 live turn'
     expect(t.phase.data.iterations.map((i) => i.iteration)).toEqual([1]) // 内容不丢
   })
 
-  it('running=true 且 turn 已是 fold-committed（无最终回复）⇒ 提回 live（reload 折叠的分叉入口）', () => {
+  it('running=true **绝不**把已结束的 turn 伪装成 live（历史 turn 走 commitViaFold ⇒ 伪造会让普通切会话必现 ghost busy）', () => {
+    // 现场：切到一个 busy 会话（running=true），历史里是**已结束**的 turn
+    //（DB 还原 ⇒ integrate 用 commitViaFold ⇒ `via !== 'text'` 恒成立）。
+    // 上一版据此"提升"它就是"idle 被当作 busy"的反方向 P0 —— 必须不成立。
     let s = initialChatState('web:chatX')
-    s = reduce(s, evRunning(true))
-    s = reduce(s, evTurnStarted())
-    // 模拟 reload 把运行中的 turn 折成 committed（DB 中间快照，无最终回复）。
     s = reduce(s, {
       type: 'history_replaced',
       turns: [
         {
           id: T,
           user: null,
-          phase: { kind: 'committed', payload: { via: 'fold', content: '', iterations: [mkIter(1, 'one')] } },
+          phase: { kind: 'committed', payload: { via: 'fold', content: '', iterations: [mkIter(1, 'one'), mkIter(2, 'two')] } },
           requestID: null,
         },
       ],
       legacy: [],
       lastSeq: null,
-      active: null, // active_progress 缺失（竞态）—— 分叉入口
+      active: null, // active_progress 缺失（切会话竞态）
       todos: [],
     })
-    expect(s.turns.get(T)?.phase.kind, 'running=true ⇒ reload 折叠也必须被不变量纠正').toBe('live')
-    expect(s.activeTurn).toBe(T)
+    const afterHistory = s
+    expect(s.turns.get(T)?.phase.kind, '历史 turn 必须保持 committed').toBe('committed')
+    expect(s.activeTurn).toBeNull()
+
+    // 会话 running=true 只更新闸门 —— 不造 live（可视化由渲染层占位符保障）。
+    s = reduce(s, evRunning(true))
+    expect(s.turns.get(T)?.phase.kind, 'running=true 不得把历史 turn 提升为 live').toBe('committed')
+    expect(s.activeTurn).toBeNull()
+    expect(s.sessionRunning).toBe(true)
+    // 幂等：同一 running=true 再来一次 ⇒ 原 state（零渲染）。
+    const once = s
+    expect(reduce(s, evRunning(true))).toBe(once)
+    // 且历史内容零改动。
+    expect(s.turns.get(T)).toBe(afterHistory.turns.get(T))
   })
 
   it('running=true 但 turn 已被**权威 finalizer**（via:text）结束 ⇒ 绝不复活（不得变 busy 幽灵）', () => {

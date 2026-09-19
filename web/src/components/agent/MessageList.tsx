@@ -510,18 +510,22 @@ export const MessageList = memo(function MessageList({
     }
     return null
   }, [rows])
-  // live 行**自身**是否已经渲染了"进行中"信号（LiveIteration 的 ShimmerThinking
-  // 需要 streaming；AssistantMessage 的压缩指示器需要 phase==='compressing'）。
-  // 只有当它为 false 时才需要下面的 busy 占位符 —— 不变量：
-  //   busy（输入框 = cancel）⟹ 列表里**必须**有一个可见的进行中信号
-  //   （要么 live 行自己的，要么这个占位符）；两者严格互斥（恰好一个指示器）。
-  // 用户 2026-09-19 点名的不变量被破坏就发生在这里：frozen 行（isPartial=true）
-  // 曾占用 liveId ⇒ 它拿到的 liveProgress 是 EMPTY（streaming=false）⇒ 自身不
-  // 渲染任何信号，同时 `liveId === null` 条件又不成立 ⇒ 占位符也被抑制 ⇒
-  // 「输入框是 cancel，上面的内容却完全像 idle」。
-  const liveShowsIndicator =
+  // 不变量（用户 2026-09-19）：「只要输入框是 cancel 按钮，就一定不能上面渲染的
+  // 内容是 idle 内容」⇒ **列表尾部**必须有一个「进行中」信号。
+  //
+  // 判据必须看**尾行**：只有"live 行本身正好是尾行、且它自己在渲染信号"时才不需要
+  // 占位符。live 行不在尾部（例如下面还有更新的 user 行），或 live 行是 frozen
+  //（frozen 不算 live，见 liveId），或压根没有 live 行 ⇒ busy 时必须渲染占位符。
+  //
+  // ⛔ 教训：早前用 `liveId === null` 判据时，frozen 行会冒充 live 行把占位符挡掉；
+  // 而若 store 里存在**不在可视尾部**的 live 行（例如被伪造成 live 的历史 turn），
+  // 单看 liveId 也会把占位符挡掉 ⇒ 用户看到「cancel + 完全没有进行中信号」。
+  const tailRowId = rows.length > 0 ? rows[rows.length - 1].id : null
+  const tailShowsIndicator =
     liveId !== null &&
+    liveId === tailRowId &&
     (liveProgress?.streaming === true || liveProgress?.phase === 'compressing')
+  const showBusyPlaceholder = busy && !(loading && rows.length === 0) && !tailShowsIndicator
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -1454,7 +1458,7 @@ export const MessageList = memo(function MessageList({
               也不渲染 → 完全空白（切换会话新 turn，用户报告）。收紧为
               liveId === null 与 LiveIteration 严格互斥（排队消息沉底在 live
               行之后时 rows 最后是 user，旧条件会与本组件双渲染）。 */}
-          {busy && !(loading && rows.length === 0) && !liveShowsIndicator && (
+          {showBusyPlaceholder && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

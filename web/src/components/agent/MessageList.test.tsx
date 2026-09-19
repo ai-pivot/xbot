@@ -663,6 +663,35 @@ describe('MessageList virtualization', () => {
     expect(container.textContent, 'live 行已渲染信号时不得双渲染').not.toContain('thinking')
   })
 
+  it('INVARIANT: busy + live 行不在列表尾部 ⇒ 占位符必须渲染（用户 2026-09-19 二次报告）', () => {
+    // 回归复现：store 里存在 live 行但**不在可视尾部**（例如被伪造/提升的历史 turn
+    // 排在更新的行之前）。此时只看 liveId 会把占位符挡掉 ⇒ 「cancel + 完全没有进行中
+    // 信号」（普通切换 session 就必现）。判据必须看**尾行**。
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'hello', iterations: [], timestamp: 't', isPartial: false, turnID: 1 },
+      {
+        id: 'turn-1-live',
+        role: 'assistant',
+        content: '',
+        iterations: [],
+        timestamp: '',
+        isPartial: true, // live（非 frozen）—— 但它下面还有更新的行
+        turnID: 1,
+      },
+      { id: 'u2', role: 'user', content: '新的一条', iterations: [], timestamp: 't2', isPartial: false, turnID: 2 },
+    ]
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={messages}
+        liveProgress={{ ...EMPTY_LIVE_PROGRESS, streaming: true, phase: 'thinking' }}
+        loading={false}
+        error={null}
+        busy={true}
+      />,
+    )
+    expect(container.textContent, '尾行不是 live 行 ⇒ busy 必须给出进行中信号').toContain('thinking')
+  })
+
   it('finds the latest compact marker for rewind eligibility', () => {
     const messages: ChatMessage[] = [
       { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },
