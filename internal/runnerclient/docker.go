@@ -32,17 +32,17 @@ type DockerExecutor struct {
 }
 
 // NewDockerExecutor 创建一个 DockerExecutor。
-func NewDockerExecutor(userID, image, hostWorkspace string) (*DockerExecutor, error) {
+func NewDockerExecutor(name, image, hostWorkspace string) (*DockerExecutor, error) {
 	if err := CheckDockerAvailable(); err != nil {
 		return nil, err
 	}
 	de := &DockerExecutor{
-		ContainerName: fmt.Sprintf("xbot-runner-%s", userID),
+		ContainerName: fmt.Sprintf("xbot-runner-%s", name),
 		Image:         image,
 		HostWorkspace: hostWorkspace,
 		CtrWorkspace:  "/workspace",
 	}
-	if err := de.validateUserID(userID); err != nil {
+	if err := de.validateName(name); err != nil {
 		return nil, err
 	}
 	if err := de.getOrCreateContainer(); err != nil {
@@ -155,10 +155,10 @@ func (de *DockerExecutor) containerExists() bool {
 	return de.dockerRun("inspect", "-f", "{{.Id}}", de.ContainerName) == nil
 }
 
-func (de *DockerExecutor) validateUserID(userID string) error {
-	matched, _ := regexp.MatchString(`^[a-z0-9][a-z0-9_.-]{0,127}$`, userID)
+func (de *DockerExecutor) validateName(name string) error {
+	matched, _ := regexp.MatchString(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`, name)
 	if !matched {
-		return fmt.Errorf("invalid userID %q for Docker container naming", userID)
+		return fmt.Errorf("invalid runner name %q for Docker container naming", name)
 	}
 	return nil
 }

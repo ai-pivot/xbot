@@ -135,16 +135,30 @@ var (
 
 // imagePlaceholder builds the degrade text for an image reference that will
 // NOT become a content part (vision off / resolve failed / over budget).
-// The raw reference is appended when available: the model cannot see the
-// image, but it can tell the user where it lives (or hand it to a tool),
-// instead of being left with a bare filename — the Feishu report "也没有给我
-// 可下载的 file_key/URL" was exactly this information loss.
-func imagePlaceholder(alt, reason, ref string) string {
-	name := strings.TrimSpace(alt)
+//
+// The raw reference is always included when available. When the ImageResolver
+// can provide a local path (LocalPath), that path is also included — this is
+// critical for non-vision models: the agent can use `view_image` to look at
+// the file if it knows the local path, but a bare `/api/files/download?key=`
+// URL is useless to the agent (it's a Web API endpoint, not a file path).
+//
+// alt text is sanitized via sanitizeImageAlt (same as imageRefText) to prevent
+// user-controlled alt from forging trusted fields like "本地路径:".
+func imagePlaceholder(alt, reason, ref string, mc *MultimodalConfig) string {
+	name := sanitizeImageAlt(alt)
 	if name == "" {
 		name = "未命名"
 	}
 	if ref != "" && !strings.HasPrefix(ref, "data:") {
+		// Resolve local path — even when vision is off, the agent can use
+		// view_image to look at the file if it knows where it lives.
+		if mc != nil && mc.ImageResolver != nil {
+			if p, ok := mc.ImageResolver.(localPathProvider); ok {
+				if local, ok2 := p.LocalPath(ref); ok2 && local != "" {
+					return "[图片: " + name + " — " + reason + "；本地路径: " + local + "；引用: " + ref + "]"
+				}
+			}
+		}
 		return "[图片: " + name + " — " + reason + "；引用: " + ref + "]"
 	}
 	return "[图片: " + name + " — " + reason + "]"
@@ -226,13 +240,13 @@ func parseMultimodalContent(ctx context.Context, content string, mc *MultimodalC
 
 		switch {
 		case overBudget[i]:
-			parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "已省略，超出单次请求图片预算", r.url)})
+			parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "已省略，超出单次请求图片预算", r.url, mc)})
 		case !mc.VisionEnabled:
-			parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "当前模型未开启视觉输入", r.url)})
+			parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "当前模型未开启视觉输入", r.url, mc)})
 		default:
 			dataURL, err := resolveImageRef(ctx, r.url, mc)
 			if err != nil {
-				parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "加载失败", r.url)})
+				parts = append(parts, imageContentPart{Type: "text", Text: imagePlaceholder(r.alt, "加载失败", r.url, mc)})
 				continue
 			}
 			// Caption FIRST, then the pixels: the image part carries no path,

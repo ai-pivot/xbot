@@ -16,6 +16,7 @@ import type { PluginsAPI } from '@/plugin-api'
 import type { ConfigAPI } from '@/plugin-api'
 import type { FilesAPI } from '@/plugin-api/files'
 import type { ShareAPI } from '@/plugin-api'
+import type { I18nAPI } from '@/plugin-api'
 import type { ContributionAPI, Disposable, PluginMeta } from '@/plugin-api'
 import type { Contribution } from '@/plugin-api'
 
@@ -31,6 +32,8 @@ export interface ContextServices {
   config: ConfigAPI
   files: FilesAPI
   share: ShareAPI
+  /** 插件自带 i18n 解析器（**所有插件可用**，不设权限 —— 见 PluginContext.i18n）。 */
+  i18n: I18nAPI
   registerContribution: (c: Contribution) => Disposable
 }
 
@@ -67,5 +70,8 @@ export function buildContext(
   if (has('config')) ctx.config = svc.config
   if (has('files')) ctx.files = svc.files
   if (has('share')) ctx.share = svc.share
+  // i18n 是**所有插件可用**的呈现能力（不设权限）：文案随插件清单走（web.i18n），
+  // 宿主只负责按当前语言解析 ⇒ 插件可独立安装/卸载，不污染宿主 i18n 命名空间。
+  ctx.i18n = svc.i18n
   return ctx as PluginContext<readonly Permission[]>
 }

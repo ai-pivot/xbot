@@ -62,18 +62,20 @@ Avoid task_wait — it blocks a whole turn doing nothing.
 Set background=false only when you must block synchronously and get the final reply directly.
 
 ## One-shot mode (default)
-SubAgent(task, role, instance="...") — runs once (background by default; set background=false to block for the result).
+SubAgent(task="...", role="explore", instance="review-1") — runs once (background by default; set background=false to block for the result). **role is REQUIRED (必填) on every call.**
 
 ## Interactive mode
 Persistent multi-turn session. Create once, send multiple messages, unload when done.
 
 | Call | Behavior |
 |------|----------|
-| SubAgent(task, role, instance="...", interactive=true) | Create or reuse an interactive session (background by default) |
-| SubAgent(task, role, instance="...", action="send") | Send a new user message to an existing interactive session |
-| SubAgent(task, role, instance="...", action="unload") | End the interactive session and consolidate memory |
-| SubAgent(task, role, instance="...", action="inspect") | Inspect recent progress/state of a sub-agent |
-| SubAgent(task, role, instance="...", action="interrupt") | Interrupt the current iteration of an interactive sub-agent |
+| SubAgent(task="...", role="explore", instance="review-1", interactive=true) | Create or reuse an interactive session (background by default) |
+| SubAgent(task="...", role="explore", instance="review-1", action="send") | Send a new user message to an existing interactive session |
+| SubAgent(task="...", role="explore", instance="review-1", action="unload") | End the interactive session and consolidate memory |
+| SubAgent(task="...", role="explore", instance="review-1", action="inspect") | Inspect recent progress/state of a sub-agent |
+| SubAgent(task="...", role="explore", instance="review-1", action="interrupt") | Interrupt the current iteration of an interactive sub-agent |
+
+**Every example above passes role explicitly — role is REQUIRED (必填) on every call; copy it verbatim from <available_agents>.**
 
 ## Background rule
 Background sub-agents report progress automatically; when one finishes, the result is delivered to your
@@ -84,7 +86,7 @@ task_status(task_id=["sub-a","sub-b"]) (non-blocking; prefer it over task_wait).
 
 Parameters (JSON):
   - task: string (required except some control actions), the task or message for the sub-agent
-  - role: string (REQUIRED to start a sub-agent; optional for send/inspect/interrupt/unload, where instance addresses your own sub-agent tree)
+  - role: string (REQUIRED on every call — 必填. Copy the role verbatim from <available_agents>; for send/inspect/interrupt/unload it selects the target together with instance — a misspelled role is matched best-effort within your own sub-agent tree)
   - instance: string (REQUIRED on every call), unique instance ID used to identify the session/run
   - interactive: boolean (optional), create or reuse an interactive session
   - background: boolean (optional), defaults to true — spawn returns immediately and the result is injected when done (no need to wait; task_wait only if you have nothing else to do). Set false to block for the final reply synchronously.
@@ -100,8 +102,8 @@ Parameters (JSON):
     the sub-agent's system prompt explains the inherited context. Use it to continue work from
     an existing conversation without re-explaining, or to branch a specialist from current state.
 
-Available roles are listed in the <available_agents> section of the system prompt.
-**role is REQUIRED to start a new sub-agent — there is NO inference**: an omitted or unknown role fails immediately with the list of available roles (never guess). For action="send" / "inspect" / "interrupt" / "unload" the target is addressed by **instance within your OWN sub-agent tree** (role optional there: it is matched best-effort by instance; if nothing or more than one match in your tree, the tool errors out and lists them).
+Available roles are listed in the <available_agents> section of the system prompt — each entry carries its <role> value; copy it verbatim.
+**role is REQUIRED on EVERY call (必填) — there is NO inference**: omitting it fails immediately with the list of available roles (never guess). For action="send"/"inspect"/"interrupt"/"unload" the role selects the target together with instance (a misspelled role is matched best-effort within your OWN sub-agent tree; zero or ambiguous matches error out and list the candidates).
 
 For TUI sidebar session management and layout adjustments, use search_tools to load tui_control. For configuration changes, load config.`
 }
@@ -109,7 +111,7 @@ For TUI sidebar session management and layout adjustments, use search_tools to l
 func (t *SubAgentTool) Parameters() []llm.ToolParam {
 	return []llm.ToolParam{
 		{Name: "task", Type: "string", Description: "Task or message for the sub-agent. Required for normal execution and action=\"send\"."},
-		{Name: "role", Type: "string", Description: `REQUIRED to start a new sub-agent (no inference — an omitted or unknown role errors out and lists the available roles; never guessed). For action="send"/"inspect"/"interrupt"/"unload" it may be omitted: the target is resolved by instance within your OWN sub-agent tree.`},
+		{Name: "role", Type: "string", Description: `REQUIRED on every call (必填). The agent role to run — copy it verbatim from <available_agents> (e.g. "explore"). No inference: an omitted or unknown role errors out and lists the available roles. For action="send"/"inspect"/"interrupt"/"unload" it selects the target together with instance (a misspelled role is matched best-effort within your OWN sub-agent tree).`, Required: true},
 		{Name: "instance", Type: "string", Description: `REQUIRED on every call. Stable unique ID for this sub-agent run/session. Never omit it. Examples: "review-1", "planner-main", "bugfix-login".`, Required: true},
 		{Name: "interactive", Type: "boolean", Description: "Create or reuse an interactive session for multi-turn conversation"},
 		{Name: "background", Type: "boolean", Description: "Run the sub-agent in background mode (default: true — spawn returns immediately and the completion is injected as a notification; no need to wait). Set false to block synchronously for the final reply."},

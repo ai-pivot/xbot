@@ -1,14 +1,55 @@
 {
   "id": "xbot.genui",
-  "name": "GenUI (display_html)",
+  "name": "manifest.name",
   "version": "1.0.0",
-  "description": "LLM 生成交互式 UI：组件库 / ECharts 图表 / three.js 3D / framer-motion 动画，流式预览 + 交互回传。display_html 工具的插件化实现（独立 Go stdio channel plugin）。",
+  "description": "manifest.description",
   "author": "xbot",
   "runtime": "grpc",
   "entry": "./bin/genui-plugin",
-  "activationEvents": ["onStart"],
-  "web": { "entry": "index.js" },
-  "permissions": ["channels.register", "tools.register", "ui.contribute"],
+  "activationEvents": [
+    "onStart"
+  ],
+  "web": {
+    "entry": "index.js",
+    "i18n": {
+      "zh-CN": {
+        "share": "分享",
+        "shareGenerating": "生成链接…",
+        "shareCopied": "已复制链接",
+        "shareFailed": "分享失败，重试",
+        "shareTooltip": "生成公开链接（任何拿到链接的人都能查看）",
+        "panelTitle": "GenUI 面板",
+        "manifest.name": "GenUI（display_html）",
+        "manifest.description": "LLM 生成交互式 UI：组件库 / ECharts 图表 / three.js 3D / framer-motion 动画，流式预览 + 交互回传。display_html 工具的插件化实现（独立 Go channel 插件）。"
+      },
+      "en": {
+        "share": "Share",
+        "shareGenerating": "Creating link…",
+        "shareCopied": "Link copied",
+        "shareFailed": "Share failed, retry",
+        "shareTooltip": "Create a public link (anyone with the link can view it)",
+        "panelTitle": "GenUI panel",
+        "manifest.name": "GenUI (display_html)",
+        "manifest.description": "LLM-generated interactive UI: component library / ECharts charts / three.js 3D / framer-motion animations, streamed preview with interaction callbacks. Plugin implementation of the display_html tool."
+      },
+      "ja": {
+        "share": "共有",
+        "shareGenerating": "リンクを生成中…",
+        "shareCopied": "リンクをコピーしました",
+        "shareFailed": "共有に失敗しました（再試行）",
+        "shareTooltip": "公開リンクを作成（リンクを知っている人は誰でも閲覧できます）",
+        "panelTitle": "GenUI パネル",
+        "manifest.name": "GenUI（display_html）",
+        "manifest.description": "LLM が生成するインタラクティブ UI：コンポーネントライブラリ / ECharts グラフ / three.js 3D / framer-motion アニメーションをストリーミングプレビューし、操作をモデルへ返します。display_html ツールのプラグイン実装。"
+      }
+    }
+  },
+  "permissions": [
+    "channels.register",
+    "tools.register",
+    "ui.contribute",
+    "share"
+  ],
   "contributes": {
     "channelProvider": {
       "name": "genui",

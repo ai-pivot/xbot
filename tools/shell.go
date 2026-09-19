@@ -120,7 +120,7 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 		} else {
 			execDir = toolCtx.WorkingDir
 		}
-		userID = toolCtx.OriginUserID
+		userID = toolCtx.SessionKey
 		if userID == "" {
 			userID = toolCtx.SenderID // fallback
 		}
@@ -166,12 +166,12 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 				remoteDir = rs.Workspace(userID)
 			}
 			return ExecSpec{
-				Command: shell,
-				Args:    []string{shell, "-l", "-c", shellCmd},
-				Shell:   false,
-				Dir:     remoteDir,
-				Timeout: timeout,
-				UserID:  userID,
+				Command:    shell,
+				Args:       []string{shell, "-l", "-c", shellCmd},
+				Shell:      false,
+				Dir:        remoteDir,
+				Timeout:    timeout,
+				SessionKey: userID,
 			}
 		default:
 			// None sandbox: use platform-aware shell args.
@@ -179,13 +179,13 @@ func (t *ShellTool) Execute(toolCtx *ToolContext, input string) (*ToolResult, er
 			// Windows: powershell.exe -Command "command" (loads profile by default)
 			args := LoginShellArgs(shell, shellCmd)
 			return ExecSpec{
-				Command:   shell,
-				Args:      args,
-				Shell:     false,
-				Dir:       execDir,
-				Timeout:   timeout,
-				UserID:    userID,
-				RunAsUser: params.RunAs,
+				Command:    shell,
+				Args:       args,
+				Shell:      false,
+				Dir:        execDir,
+				Timeout:    timeout,
+				SessionKey: userID,
+				RunAsUser:  params.RunAs,
 			}
 		}
 	}
@@ -552,13 +552,13 @@ func remoteSandboxExecAsync(
 		case <-ctx.Done():
 			// Try to kill the task on the runner before returning.
 			killCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			rs.KillBg(killCtx, spec.UserID, taskID)
+			rs.KillBg(killCtx, spec.SessionKey, taskID)
 			cancel()
 			return -1, ctx.Err()
 		case <-time.After(pollInterval):
 		}
 
-		status, err := rs.StatusBg(ctx, spec.UserID, taskID)
+		status, err := rs.StatusBg(ctx, spec.SessionKey, taskID)
 		if err != nil {
 			return -1, fmt.Errorf("remote bg_status: %w", err)
 		}

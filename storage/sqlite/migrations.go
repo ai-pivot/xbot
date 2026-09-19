@@ -462,6 +462,112 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v69: runner 单用户化 —— runner 从「按用户维度」收敛为「全局单表」。
+	// 背景：v63 已删除多用户体系（单 operator），但 runner 仍留着 user_id 维度并
+	// 与 legacy runner_tokens 双表并存，而运行时读路径用的是原始 sender
+	// （web 为 web-<n>）⇒ 折叠到 'cli_user' 的存量行对 web 完全不可见；生产库还
+	// 出现悬空的 active_runner。此迁移：runners 重建为无 user_id 的全局表
+	// （按 name 去重、mode 归一）、DROP runner_tokens、删除 user 级 active_runner
+	// 设置（会话级绑定统一由 tenants.runner_id 承担）。
+	if from < 69 {
+		if err := migrateV68ToV69(db); err != nil {
+			return fmt.Errorf("migrate to v69: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV68ToV69 collapses the runner tables into ONE global table.
+//
+// Single-operator design (see v63): a runner is a machine, not a per-user
+// resource. The previous shape had three problems in production:
+//   - `runners.user_id` was collapsed to 'cli_user' by v63 while the runtime
+//     read it with the raw sender (web-<n>) → migrated rows were invisible;
+//   - `runner_tokens` (legacy single-token table) drifted from `runners`;
+//   - `user_settings.active_runner` could point at a runner name that no longer
+//     existed → silent fall back to local execution.
+//
+// Steps: rebuild `runners` without user_id (dedupe by name, keep the newest
+// row, normalize mode), drop `runner_tokens`, drop the user-level
+// `active_runner` setting. Idempotent — safe to run twice.
+func migrateV68ToV69(db *DB) error {
+	conn := db.Conn()
+
+	setVersion := func() error {
+		_, err := conn.Exec("UPDATE schema_version SET version = 69")
+		if err != nil {
+			return fmt.Errorf("migrate v68->v69 update version: %w", err)
+		}
+		return nil
+	}
+
+	hasRunners, err := tableExists(conn, "runners")
+	if err != nil {
+		return fmt.Errorf("migrate v68->v69 check runners: %w", err)
+	}
+	if hasRunners {
+		hasUserID, err := columnExists(conn, "runners", "user_id")
+		if err != nil {
+			return fmt.Errorf("migrate v68->v69 check runners.user_id: %w", err)
+		}
+		if hasUserID {
+			stmts := []string{
+				`CREATE TABLE runners_v69 (
+					id           INTEGER PRIMARY KEY AUTOINCREMENT,
+					name         TEXT    NOT NULL UNIQUE,
+					token        TEXT    NOT NULL,
+					mode         TEXT    NOT NULL DEFAULT 'native',
+					docker_image TEXT    NOT NULL DEFAULT '',
+					workspace    TEXT    NOT NULL DEFAULT '',
+					llm_provider TEXT    NOT NULL DEFAULT '',
+					llm_api_key  TEXT    NOT NULL DEFAULT '',
+					llm_model    TEXT    NOT NULL DEFAULT '',
+					llm_base_url TEXT    NOT NULL DEFAULT '',
+					created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+				)`,
+				// Keep the newest row per name; normalize the mode column so the
+				// invalid leftovers (production had mode='remote') can't survive.
+				`INSERT INTO runners_v69 (name, token, mode, docker_image, workspace,
+				                          llm_provider, llm_api_key, llm_model, llm_base_url, created_at)
+				 SELECT name, token,
+				        CASE WHEN mode IN ('native','docker') THEN mode ELSE 'native' END,
+				        COALESCE(docker_image,''), COALESCE(workspace,''),
+				        COALESCE(llm_provider,''), COALESCE(llm_api_key,''),
+				        COALESCE(llm_model,''), COALESCE(llm_base_url,''),
+				        COALESCE(created_at, datetime('now'))
+				 FROM runners
+				 WHERE id IN (SELECT MAX(id) FROM runners GROUP BY name)`,
+				`DROP TABLE runners`,
+				`ALTER TABLE runners_v69 RENAME TO runners`,
+				`CREATE INDEX IF NOT EXISTS idx_runners_token ON runners(token)`,
+			}
+			for _, stmt := range stmts {
+				if _, err := conn.Exec(stmt); err != nil {
+					return fmt.Errorf("migrate v68->v69 rebuild runners: %w", err)
+				}
+			}
+			log.Info("Database migrated to v69: runners rebuilt without user_id")
+		}
+	}
+
+	if _, err := conn.Exec("DROP TABLE IF EXISTS runner_tokens"); err != nil {
+		return fmt.Errorf("migrate v68->v69 drop runner_tokens: %w", err)
+	}
+	// Guarded: hand-built migration fixtures may not create user_settings.
+	hasUserSettings, err := tableExists(conn, "user_settings")
+	if err != nil {
+		return fmt.Errorf("migrate v68->v69 check user_settings: %w", err)
+	}
+	if hasUserSettings {
+		if _, err := conn.Exec("DELETE FROM user_settings WHERE key = 'active_runner'"); err != nil {
+			return fmt.Errorf("migrate v68->v69 drop active_runner setting: %w", err)
+		}
+	}
+	if err := setVersion(); err != nil {
+		return err
+	}
+	log.Info("Database migrated to v69: runner tables collapsed to one global table")
 	return nil
 }
 

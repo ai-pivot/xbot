@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react'
 
 import type { ViewContainer, ViewContribution } from '@/plugin-api'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
+import { pluginI18nTableOf, resolvePluginText } from './i18n'
 
 export interface PluginViewPanel {
   /** 面板唯一 id（= view.id）。 */
@@ -53,7 +54,9 @@ export function usePluginViewPanels(container: ViewContainer): PluginViewPanel[]
           .map(({ pluginId, view }) => ({
             id: view.id,
             pluginId,
-            title: view.title,
+            // view 的 title 允许是**该插件 `web.i18n` 表里的 key** —— 用该插件的表解析；
+            // 内置插件（builtin:）没有表 ⇒ 其 title 已是宿主 i18n 解析后的文本，原样透传。
+            title: resolvePluginText(pluginI18nTableOf(runtime.registry, pluginId), view.title) ?? view.title,
             container: view.container,
             view,
           })),

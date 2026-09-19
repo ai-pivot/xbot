@@ -228,7 +228,7 @@ func toAnthropicMessages(ctx context.Context, messages []ChatMessage, thinkingEn
 						// The resolver only produces data: URLs; a non-data
 						// image part here means a placeholder slipped through
 						// (never happens with parseMultimodalContent) — degrade.
-						blocks = append(blocks, anthropicTextBlock{Type: "text", Text: imagePlaceholder("", "加载失败", p.URL)})
+						blocks = append(blocks, anthropicTextBlock{Type: "text", Text: imagePlaceholder("", "加载失败", p.URL, nil)})
 						continue
 					}
 					blocks = append(blocks, anthropicImageBlock{

@@ -322,26 +322,27 @@ func TestMigrateV62ToV63_CollapsesMultiUserToSingleOperator(t *testing.T) {
 		t.Errorf("daily usage input_tokens = %d, want 14 (10+4 SUM)", dInTok)
 	}
 
-	// runners: same-name conflict renamed, all owned by cli_user.
-	var runnerCount, gpuOwner int
-	if err := conn.QueryRow(`SELECT COUNT(*), SUM(CASE WHEN user_id = 'cli_user' THEN 1 ELSE 0 END) FROM runners`).Scan(&runnerCount, &gpuOwner); err != nil {
+	// runners: same-name conflict renamed by v63. The ownership column itself is
+	// dropped later by v69 (single-user collapse), so assert on what survives:
+	// all three rows are still there and the conflicting name was disambiguated.
+	var runnerCount int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM runners`).Scan(&runnerCount); err != nil {
 		t.Fatalf("count runners: %v", err)
 	}
-	if runnerCount != 3 || gpuOwner != 3 {
-		t.Errorf("runners = (%d total, %d operator), want (3, 3)", runnerCount, gpuOwner)
+	if runnerCount != 3 {
+		t.Errorf("runners = %d, want 3 (v63 keeps every machine, renaming conflicts)", runnerCount)
 	}
 	var renamed string
 	if err := conn.QueryRow(`SELECT token FROM runners WHERE name = 'gpu_web-7'`).Scan(&renamed); err != nil {
 		t.Fatalf("renamed conflicting runner missing: %v", err)
 	}
 
-	// runner_tokens / user_profiles: single collapsed row each.
-	var rtCount int
-	if err := conn.QueryRow(`SELECT COUNT(*) FROM runner_tokens WHERE user_id = 'cli_user'`).Scan(&rtCount); err != nil {
-		t.Fatalf("count runner_tokens: %v", err)
-	}
-	if rtCount != 1 {
-		t.Errorf("runner_tokens collapsed rows = %d, want 1", rtCount)
+	// runner_tokens: v63 collapsed it to one row per operator; v69 then removed
+	// the legacy table entirely (runners is the single global table now).
+	if ok, err := tableExists(conn, "runner_tokens"); err != nil {
+		t.Fatalf("check runner_tokens: %v", err)
+	} else if ok {
+		t.Error("runner_tokens must be gone after v69 — runners is the only runner table")
 	}
 	var upCount int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM user_profiles WHERE sender_id = 'cli_user'`).Scan(&upCount); err != nil {
@@ -389,24 +390,43 @@ func TestMigrateV62ToV63_CollapsesMultiUserToSingleOperator(t *testing.T) {
 	}
 }
 
-// TestMigrateV62ToV63_Idempotent re-running the migration body on an
-// already-migrated database must not error (all steps are guarded).
+// TestMigrateV62ToV63_Idempotent: re-opening an already-migrated database must be
+// a no-op. The v62→v63 body itself is version-gated, so the contract that
+// matters is "run the chain twice ⇒ same state, no error" (before v69 the test
+// re-ran the v63 body directly, which is out of contract once runners.user_id
+// has been dropped).
 func TestMigrateV62ToV63_Idempotent(t *testing.T) {
-	db, err := Open(createV62Fixture(t))
+	path := createV62Fixture(t)
+	db, err := Open(path)
 	if err != nil {
 		t.Fatalf("open (first run): %v", err)
 	}
-	defer db.Close()
-	// Second run must be safe: every step is guarded (tableExists /
-	// columnExists / conflict resolution on an already-collapsed DB).
-	if err := migrateV62ToV63(db); err != nil {
-		t.Fatalf("re-run migrateV62ToV63: %v", err)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close (first run): %v", err)
 	}
+
+	// Second run must be safe: every step is version-gated and guarded
+	// (tableExists / columnExists / conflict resolution).
+	db2, err := Open(path)
+	if err != nil {
+		t.Fatalf("re-open (second run): %v", err)
+	}
+	defer db2.Close()
+
 	var version int
-	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
+	if err := db2.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 63 {
+	if version != schemaVersion {
 		t.Errorf("version after re-run = %d, want %d", version, schemaVersion)
+	}
+
+	// Data survives the second pass untouched.
+	var runnerCount int
+	if err := db2.Conn().QueryRow("SELECT COUNT(*) FROM runners").Scan(&runnerCount); err != nil {
+		t.Fatalf("count runners after re-run: %v", err)
+	}
+	if runnerCount != 3 {
+		t.Errorf("runners after re-run = %d, want 3", runnerCount)
 	}
 }

@@ -10,7 +10,8 @@
  * reload/loadMore/rewind 支持。其 messages 输出只作为 history 映射的输入。
  */
 
-import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import {useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { subscribeAgentIdle } from '@/lib/sessionEvents'
 import type { ChatMessage, GoalInfo, ProgressSnapshot, QueueItemPayload, TodoItem } from '@/types/shared'
 import type { WSConnection } from '@/hooks/useWSConnection'
 import { deriveRows } from './derive'
@@ -18,6 +19,12 @@ import { historyToReplaced, liveProgressFromState, rowsToChatMessages } from './
 import { normalizeEvent } from './normalize'
 import { ChatStore } from './store'
 import { initialChatState, type DomainEvent } from './types'
+
+/** chatID 归一（事件可能带 channel 前缀）—— 只比裸 chatID。 */
+function bareChatID(v: string): string {
+  const i = v.indexOf(':')
+  return i >= 0 ? v.slice(i + 1) : v
+}
 
 export interface UseAgentChatStateArgs {
   /** 事件归属的 chat（SSE chat_id 匹配用，支持带/不带 channel 前缀）。 */
@@ -35,6 +42,10 @@ export interface UseAgentChatStateArgs {
   readonly initialProgress: unknown
   /** 会话切换时重置（chatKey 变化）。 */
   readonly resetKey: string
+  /** 会话 running（**服务端 reconcile 后的权威**：session-tree/status REST 对账 +
+   *  SSE session）—— turn 的 live-ness 服从它（不变量：输入框 = cancel ⇒ 上面必须
+   *  显示进行中信号）。见 `chat/types.ts` 的 `session_running` 事件。 */
+  readonly sessionRunning: boolean
 }
 
 export interface AgentChatState {
@@ -66,10 +77,13 @@ export interface AgentChatState {
   readonly pauseRender: () => void
   /** 恢复通知：pending 期间有更新时一次 flush（一帧全量）。 */
   readonly resumeRender: () => void
+  /** 权威 idle（agent-idle 事件）：清 activeTurn —— 否则 busyFallback 会永久卡
+   *  busy（用户 2026-09-18 P0：后端 idle、前端渲染 busy，直到刷新）。 */
+  readonly sessionIdle: () => void
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
-  const { progressChatID, ws, historyMessages, historyReady, historyOwner, historyChatID, initialProgress, resetKey } = args
+  const { progressChatID, ws, historyMessages, historyReady, historyOwner, historyChatID, initialProgress, resetKey, sessionRunning } = args
 
   // per-chat store（ref 式切换 —— 渲染期只做幂等 ref 变更，无 setState/dispose，
   // 避免 render-phase update 的时序陷阱；key 变化 = 丢弃旧实例换新空 store）。
@@ -206,9 +220,31 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     [store],
   )
 
+  // 权威 idle（agent-idle，按本面板自己的 chatID 过滤）⇒ 清 activeTurn。
+  const sessionIdle = useCallback((): void => {
+    store.dispatch({ type: 'session_idle' })
+  }, [store])
+  useEffect(() => {
+    if (!progressChatID) return
+    return subscribeAgentIdle((d) => {
+      if (bareChatID(d.chatID) === bareChatID(progressChatID)) sessionIdle()
+    })
+  }, [progressChatID, sessionIdle])
+
+  // 会话 running（服务端 reconcile 权威）⇒ 状态机。不变量（用户 2026-09-19）：
+  // 「输入框 = cancel ⇒ 上面必须显示进行中信号」；composer 的 cancel 已包含
+  // `currentSession.running`，所以 turn 的 live-ness 必须服从同一个权威 ——
+  // running=true 时把最新未 finalize 的 turn 提回 live，running=false 时定格
+  // （内容保留）。每次变化都 dispatch（幂等：值未变 ⇒ 状态机返回原引用）。
+  useEffect(() => {
+    if (!progressChatID) return
+    store.dispatch({ type: 'session_running', running: sessionRunning })
+  }, [progressChatID, sessionRunning, store])
+
   return {
     messages,
     liveProgress,
+    sessionIdle,
   // busyFallback：状态机有活动 turn 即 busy —— 不依赖 streaming（lazy 采纳
   // 的 live turn 可能 streaming=false，但 turn 仍在运行；turn_started 建的
   // EMPTY_LIVE streaming=true）。覆盖 REST ack 到 session(busy) 之间的窗口

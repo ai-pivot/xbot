@@ -35,6 +35,7 @@ import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
 import type { WSMessage } from '@/types/shared'
+import i18n from '@/i18n'
 
 interface UseChatMessagesOptions {
   /** Chat ID this list tracks. */
@@ -75,6 +76,12 @@ export interface UseChatMessagesResult {
    *  加载时为 false（live 延迟写入，与 history 一起渲染）；同会话 reload
    *  （resync_required/replay_gap）保持 true（已渲染 live 不得消失）。 */
   historyReady: boolean
+  /** 把当前会话标记为「history 未就绪」—— 用于**一次新的会话激活**（切 tab / 面板
+   *  重新可见进入该会话）：面板里保存的是上一时刻的快照，必须先回到 loading，等
+   *  DB 权威历史落地再渲染（用户判据：会话只要开始切换就应该渲染 loading）。
+   *  ⛔ 只用于"新激活"，绝不可用于同会话的后台 reload（resync/compaction）——
+   *  那条路径重置会让已渲染的 live 消失。 */
+  markHistoryStale: () => void
   error: string | null
   /** Active progress snapshot from history (for resuming a busy session). */
   initialProgress: HistProgress | null
@@ -308,10 +315,18 @@ export function useChatMessages({
 }: UseChatMessagesOptions): UseChatMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
-  // historyReady：当前会话 history 是否已 ready。切换会话/首次加载时 false
-  // （live 延迟写入，与 history 一起渲染）；fetchHistory 完成后 true；同会话
-  // reload（resync_required/replay_gap）不重置（已渲染 live 不得消失）。
-  const [historyReady, setHistoryReady] = useState(false)
+  // historyReady：当前会话 history 是否已 ready。**派生状态**（不是可写 state）：
+  // readyHistoryKey 记录「哪个会话的 history 已经就绪」，historyReady 由它与当前
+  // session key 是否相等推导。
+  //
+  // ⛔ 为什么必须是派生（2026-09-18 用户报告「切换会话会闪烁一瞬间错误布局」）：
+  // 旧实现是 `useState(false)` + 在 **异步 reload() 回调里** `setHistoryReady(false)`。
+  // 切会话时那一帧：chatID 已切（`activeMessageCacheKey` 变了、store 已在渲染期清空
+  // ⇒ messages=[]），但 historyReady **仍是上一会话的 true**（setState 还没跑）⇒
+  // `showLoadingScreen` 为 false ⇒ 渲染「空 MessageList + 输入框」（没有 loading、
+  // 消息区空白）⇒ 下一帧才翻成 loading ⇒ 再下一帧才是内容。派生状态让它在
+  // **同一次渲染**里就随 key 翻转，窗口为 0。
+  const [readyHistoryKey, setReadyHistoryKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [initialProgress, setInitialProgress] = useState<HistProgress | null>(null)
   const [resolvedChatID, setResolvedChatID] = useState<string | null>(null)
@@ -330,6 +345,9 @@ export function useChatMessages({
   )
   const activeMessageCacheKeyRef = useRef(activeMessageCacheKey)
   activeMessageCacheKeyRef.current = activeMessageCacheKey
+  // 派生：本会话的 history 是否已就绪（见上方注释 —— 必须同帧随 key 翻转，
+  // 不能在异步 reload 回调里 setState，否则切会话会闪一帧空列表）。
+  const historyReady = readyHistoryKey === activeMessageCacheKey
   const lastReloadKeyRef = useRef<string | null>(null)
 
   // Generation counter to discard stale async fetches when the user rapidly
@@ -355,6 +373,11 @@ export function useChatMessages({
     messagesRef.current = rows
     setMessages(rows)
   }, [store])
+  // markHistoryStale：把当前会话标记为「history 未就绪」（见 UseChatMessagesResult
+  // 的接口注释）—— 用于**一次新的会话激活**（切 tab 进入该面板 / 面板重新可见）。
+  // 只重置 readyHistoryKey（渲染层据此显示 loading），**不动** store/messages：
+  // 历史落地前的保留内容不进渲染，避免"先画旧快照、再被后台对账改写"的一帧错误。
+  const markHistoryStale = useCallback(() => setReadyHistoryKey(null), [])
   // session 切换：清空 store（新会话从零开始，由 reload mergeHistory 重建）
   const prevStoreChatIDRef = useRef(chatID)
   if (prevStoreChatIDRef.current !== chatID) {
@@ -408,7 +431,8 @@ export function useChatMessages({
       // 切换会话/首次加载：history 未 ready —— live 延迟写入 MessageStore，
       // 与 history（fetchHistory committed）一起渲染（用户要求：live progress
       // 不得先于 history 渲染）。同会话 reload 不重置（已渲染 live 不得消失）。
-      setHistoryReady(false)
+      // 注：historyReady 现在是派生状态（readyHistoryKey === activeMessageCacheKey），
+      // 会话一换它**同帧**即为 false —— 这里无需（也不应）再 setState。
     }
     setError(null)
     lastReloadKeyRef.current = reloadKey
@@ -437,7 +461,7 @@ export function useChatMessages({
           store.mergeHistory(parsed)
           syncMessages()
           setInitialProgress(null)
-          setHistoryReady(true)
+          setReadyHistoryKey(reloadKey)
           return parsed
         }
         const msgs = await w.rpc<SubAgentMsg[]>('get_session_messages', {
@@ -452,7 +476,7 @@ export function useChatMessages({
         store.mergeHistory(parsed)
         syncMessages()
         setInitialProgress(null)
-        setHistoryReady(true)
+        setReadyHistoryKey(reloadKey)
         return parsed
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
@@ -496,7 +520,9 @@ export function useChatMessages({
       if (data.chat_id) setResolvedChatID(data.chat_id)
       // history ready：committed（mergeHistory）已写入、hydration（initialProgress）
       // 已触发 —— 之后的 SSE live 事件恢复写入 MessageStore，与 history 一起渲染。
-      setHistoryReady(true)
+      // 用本请求捕获的 reloadKey（不是 activeMessageCacheKey）：迟到完成的旧会话
+      // 请求只会把「它自己」标为 ready，不会把新会话误标为 ready。
+      setReadyHistoryKey(reloadKey)
       return messagesRef.current // syncMessages 已更新为 store.toRows()（含 dbID）
     } catch (e) {
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
@@ -507,7 +533,7 @@ export function useChatMessages({
       }
       setInitialProgress(null)
       // 加载失败也放行 live（否则 live 永不渲染 —— 卡死）；history 下次 reload 重试。
-      setHistoryReady(true)
+      setReadyHistoryKey(reloadKey)
       return null
     } finally {
       if (gen === reloadGenRef.current) setLoading(false)
@@ -699,7 +725,7 @@ export function useChatMessages({
         })
           .then((resp) => {
             if (resp?.interrupted) {
-              toast.success('⚡ 已送达')
+              toast.success(i18n.t('agent.interjectDelivered'))
             } else {
               // Server degraded to normal send (idle session) — treat as
               // a regular message. onSendSuccess triggers agentChat.ackUser
@@ -829,7 +855,7 @@ export function useChatMessages({
   const cancelQueued = useCallback((msgID: string) => {
     void postAPI('/api/queue/cancel', { channel, chat_id: chatIDRef.current ?? undefined, msg_id: msgID })
       .catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : 'cancel queued message failed')
+        toast.error(e instanceof Error ? e.message : i18n.t('agent.cancelQueuedFailed'))
       })
   }, [channel, chatIDRef])
 
@@ -848,11 +874,11 @@ export function useChatMessages({
         })
           .then((resp) => {
             if (resp?.interrupted) {
-              toast.success('⚡ 已插话')
+              toast.success(i18n.t('agent.interjectSent'))
             }
           })
           .catch((e: unknown) => {
-            toast.error(e instanceof Error ? e.message : 'interject failed')
+            toast.error(e instanceof Error ? e.message : i18n.t('agent.interjectFailed'))
           })
       })
       .catch((e: unknown) => {
@@ -885,6 +911,7 @@ export function useChatMessages({
     messages,
     loading,
     historyReady,
+    markHistoryStale,
     error,
     initialProgress,
     resolvedChatID,

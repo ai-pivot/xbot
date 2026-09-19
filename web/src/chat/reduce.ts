@@ -195,6 +195,26 @@ function isHollowFrozen(t: Turn | undefined): boolean {
 }
 
 /** stream 事件携带实质载荷（活动证据）：内容/思考/genui/流式工具任一非空。 */
+/**
+ * 迭代边界保留：把仍在跑/生成/排队中的工具标记为「已完成」（视觉上 done，
+ * 而不是误导性的 "仍在跑"）。
+ *
+ * ⛔ 线性一致性（用户 2026-09-18 P0，信息倒退）：「一个迭代的工具执行完成后会从
+ * web 迭代历史里消失，直到收到下一个迭代的第一个新 SSE 才重新出现。」
+ * 根因：迭代推进/commit 的边界事件常常**不带**该迭代的 `iteration_history`
+ * （多为 phase:undefined 的流式 delta / 新迭代首个事件），而本状态机原先
+ * `activeTools: ev.activeTools` 是**整表替换** ⇒ 上一迭代的工具被清空，直到下一个
+ * 携带 `iterationsDelta` 的事件到达才回来。旧 store 早有同款守卫
+ * （progressStore.ts "ALREADY-RENDERED CONTENT NEVER DISAPPEARS"）。
+ */
+function markToolsCompleted<T extends { status: string }>(tools: readonly T[]): readonly T[] {
+  return tools.map((t) =>
+    t.status === 'running' || t.status === 'generating' || t.status === 'pending'
+      ? ({ ...t, status: 'done' } as T)
+      : t,
+  )
+}
+
 function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: string; streamingTools?: readonly unknown[] }): boolean {
   return (
     (ev.content !== undefined && ev.content !== '') ||
@@ -204,11 +224,87 @@ function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: s
   )
 }
 
+/**
+ * 不变量（用户 2026-09-19）：「输入框是 cancel（busy）⟹ 上面必须能看到进行中信号」。
+ *
+ * ⛔ 教训（我上一版的回归，用户二次报告「普通切换 session 就必现、更严重」）：
+ * **绝不允许为了让不变量成立而"伪造 live turn"。** 上一版在 `history_replaced`
+ *（每次切会话都会跑）里按"最新未 finalize 的 turn"提升，而判据 `via !== 'text'`
+ * 对 DB 还原的 turn **恒成立** —— `integrate.ts` 对带迭代的历史 turn 用的是
+ * `commitViaFold`，所以**已结束的 turn 被伪装成 live**：
+ *   ① `busyFallback` / `progressSnapshot.streaming` 变 true ⇒ composer 显示 stop
+ *      （幽灵 busy）；
+ *   ② 占位符被 `liveShowsIndicator` 抑制，而伪造的 live 行往往不在可视尾部
+ *   ⇒ 用户看到「cancel + 完全没有进行中信号」（不变量更严重地被破坏）。
+ *
+ * 分工（单一权威、**不造状态**）：
+ *   · live-ness 只由真实信号决定：事件（`stream`/`iteration` 的遮蔽解除）+
+ *     服务端权威快照（`history_replaced` 的 `ev.active`，仅当它指向该 turn 时恢复 live）。
+ *   · `sessionRunning` 只作**闸门**：true ⇒ coarse idle **不得**冻结运行中的 turn
+ *     （陈旧/误传信号）；false ⇒ live turn 定格（权威收尾，内容保留）。
+ *   · **可视保障交给渲染层**：busy 而列表尾行没有"进行中"渲染时，必须渲染占位符
+ *     （见 `MessageList` 的 `tailShowsIndicator`）。
+ */
+
 // ─── reduce：8 case 穷尽（never 检查由 TS 判别联合保证） ───────
 
 export function reduce(s: ChatState, ev: DomainEvent): ChatState {
   switch (ev.type) {
     // ── turn_started：收尸旧 active + 新 turn 进 live + 绑定 user ──
+    // ── 权威 idle（session(idle) / agent-idle）───────────────────────────────
+    // busyFallback = activeTurn !== null。若没有任何权威 idle 清它，任何一次
+    // turn 结束事件丢失（SSE gap / 面板当时未订阅 / 事件被合并）都会让 busy
+    // **永久**卡住，直到整页刷新（用户 2026-09-18 P0：后端 idle、前端 busy）。
+    // 清 activeTurn 的同时把活跃 turn 定格为 frozen —— **保留已渲染内容**
+    // （与 cancel 的 freeze 同语义，绝不 wipe），并把 streaming 置 false。
+    case 'session_idle': {
+      // ⛔ 权威按 `sessionRunning` 判定（不变量：输入框 = cancel ⇒ 上面必须显示
+      // 进行中信号）。`session(idle)` / `agent-idle` 是 **coarse 会话级**信号
+      //（不带 turn 身份），可能来自 SSE 重连的 last_event_id 回放窗口或
+      // restoreActiveProgress 竞态 —— 与"真 idle"无法区分。服务端 reconcile 后
+      // 的 running 仍为 true 时，这条 idle 必然是陈旧/误传的 ⇒ **不得**冻结
+      // 运行中的 turn（否则输入框仍 cancel、列表却渲染成 idle 内容）。
+      // 真结束时 running 会由会话状态对账翻成 false，那条 `session_running(false)`
+      // 才是权威收尾（内容保留，不 wipe）。
+      if (s.sessionRunning) return s
+      if (s.activeTurn === null) return s // 幂等：无活跃 turn ⇒ 原 state（零渲染）
+      const turns = new Map(s.turns)
+      const t = turns.get(s.activeTurn)
+      if (t && t.phase.kind === 'live') {
+        turns.set(s.activeTurn, {
+          ...t,
+          phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } },
+        })
+      }
+      return { ...s, turns, activeTurn: null, lastSeq: null }
+    }
+
+    // ── session_running：会话 running（服务端 reconcile 权威）─────────────
+    // 唯一职责：让 turn 的 live-ness 服从它 —— running=true 且 store 里没有
+    // live turn 时，把**最新未 finalize** 的 turn 提回 live（内容/迭代全保留、
+    // streaming=true ⇒ 渲染出进行中信号）；running=false 时把 live turn 定格
+    // （内容保留）。这是「输入框 = cancel ⇒ 内容不能像 idle」不变量的结构性保证。
+    case 'session_running': {
+      if (s.sessionRunning === ev.running) return s // 幂等（零渲染）
+      const flagged: ChatState = { ...s, sessionRunning: ev.running }
+      // ⛔ running=true 只更新**闸门**（stale idle 不得冻结运行中的 turn）——
+      // **绝不伪造 live turn**（上一版在此提升"未 finalize"的 turn，而 DB 还原的
+      // turn 走 `commitViaFold`（integrate.ts），判据恒成立 ⇒ 已结束的 turn 被
+      // 伪装成 live ⇒ composer 幽灵 busy + 占位符被抑制 ⇒ 普通切换会话就必现
+      // 「cancel + 看不到任何进行中信号」）。live-ness 只由真实信号决定。
+      if (ev.running) return flagged
+      // 权威收尾：running=false 而 turn 还是 live ⇒ 定格（绝不 wipe 内容）。
+      if (s.activeTurn === null) return flagged
+      const t = s.turns.get(s.activeTurn)
+      if (!t || t.phase.kind !== 'live') return flagged
+      const turns = new Map(s.turns)
+      turns.set(s.activeTurn, {
+        ...t,
+        phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } },
+      })
+      return { ...flagged, turns, activeTurn: null, lastSeq: null }
+    }
+
     case 'turn_started': {
       // I5：seq 属于 per-run —— 新 turn 重置。
       let next: ChatState = { ...s, activeTurn: ev.turnID, lastSeq: null }
@@ -362,6 +458,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // 已有最大迭代 → 升级回 live（迭代 union 保留，content 用事件值）。
         if (t0 && t0.phase.kind === 'committed' && s.activeTurn === null) {
           const maxIter = t0.phase.payload.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+          // ⛔ 线性一致性红线（2026-09-18 用户报告回归，已回滚 c3cb2f02 的
+          // 「ev.iter >= maxIter 且带在跑工具也放行」）：committed 的迭代前缀是
+          // 持久化权威；「同号 + 在跑工具」无法区分【仍在跑】与【已结束 turn 的
+          // 迟到重放】（重放事件在工具完成前捕获，天然带 running/generating 工具）
+          // ⇒ 误升级成 live 后，live 行（以 iter=ev.iter 重建）与 committed 渲染
+          // （含尾部截断的「更早 N 个迭代」路径）分叉 ⇒ 上下文视图缺迭代（刷新才
+          // 恢复）。只有【新迭代】（ev.iter > maxIter —— 后端不会对已结束的 turn
+          // 发新迭代）才能证明 turn 仍在运行并解除遮蔽。
           if (ev.iter > maxIter) {
             const live: LiveSnapshot = {
               ...EMPTY_LIVE,
@@ -374,6 +478,34 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             s = { ...s, turns, activeTurn: target, lastSeq: null }
           } else {
             return s // 已含该迭代的 committed 快照 —— 重放，丢弃
+          }
+        } else if (t0 && t0.phase.kind === 'frozen' && s.activeTurn === null && !isHollowFrozen(t0)) {
+          // ⛔ 线性一致性红线（2026-09-18 用户报告「切换 session 后 live iter 不断
+          // 出现消失，刷新才恢复」）───────────────────────────────────────────
+          // turn 结尾信号族（session(idle) / session_idle / 空 text_final）会把
+          // live turn **冻结**并清 activeTurn；此后该 turn 的 iteration 事件因
+          // kind !== 'live' 被**整批丢弃**，直到带 active 快照的 history_replaced
+          // 把它复活 ⇒ 出现 ⇒ 再次冻结 ⇒ 消失……（P0 测试逐帧复现）。
+          // 后端的顺序保证：turn 的迭代事件只出现在它的 idle 之前，之后绝不会再有
+          // ⇒ 冻结后收到**更大迭代号**即证明该 idle 是陈旧/误传的
+          //（restoreActiveProgress 竞态 / SSE 重放），必须解冻恢复 live ——
+          // 与上面 committed 遮蔽解除**同一规则、同一证据标准**（ev.iter > maxIter）。
+          // 保留 frozen 数据（已渲染的迭代/内容/工具一个不少），流式恢复更新。
+          const maxIter = t0.phase.data.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+          if (ev.iter > maxIter) {
+            const live: LiveSnapshot = {
+              ...t0.phase.data,
+              iter: ev.iter,
+              content: ev.content ?? t0.phase.data.content,
+              reasoning: ev.reasoning ?? t0.phase.data.reasoning,
+              streaming: true,
+              iterations: t0.phase.data.iterations,
+            }
+            const turns = new Map(s.turns)
+            turns.set(target, { ...t0, phase: { kind: 'live', data: live } })
+            s = { ...s, turns, activeTurn: target, lastSeq: null }
+          } else {
+            return s // 冻结快照已含该迭代 —— 重放，丢弃
           }
         } else {
           if (s.activeTurn !== null && t0?.phase.kind !== 'live') return s
@@ -431,7 +563,16 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             : (ev.reasoning ?? prev.reasoning),
         // I4：append-only 合并（dedup by iteration#，同号权威覆盖）
         iterations: merged,
-        activeTools: ev.activeTools,
+        // ⛔ 已渲染的工具绝不消失（线性一致性，用户 2026-09-18 P0）：
+        // 边界事件（迭代推进/commit）常常不带上一迭代的 iteration_history 与
+        // active_tools ⇒ 整表替换会让刚跑完的工具「消失到下一个带 iterationsDelta
+        // 的事件到达」才回来。规则（与旧 store 同语义）：边界且事件不带工具时，
+        // 保留 prev 的已渲染工具并把在跑中的标记为 done；事件自带列表时以其为权威
+        // （新迭代的工具照常替换）。
+        activeTools:
+          (advanced || committedNow) && ev.activeTools.length === 0
+            ? markToolsCompleted(prev.activeTools)
+            : ev.activeTools,
         // 工具去重（旧前端 mergeProgressState 语义）：工具从 generating 转
         // running 时，stream 事件残留的同名 streamingTools 条目必须清除 ——
         // 否则同一工具渲染两个（一个 executing 带参数 + 一个 generating 无
@@ -468,14 +609,41 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       if (s.turns.has(target)) {
         const t0 = s.turns.get(target)!
         if (t0.phase.kind !== 'live') {
-          // committed 遮蔽解除（同 iteration case）：DB 中间快照组成的
-          // committed 收到流式事件（活动证据）→ 升级回 live（迭代保留）。
-          // 带内容/载荷的 stream 事件只可能属于运行中的 turn。
-          if (t0.phase.kind === 'committed' && s.activeTurn === null && hasStreamEvidence(ev)) {
+          // ── 遮蔽解除（与 `iteration` case **同一规则、同一证据标准**）──────────
+          // 用户 2026-09-19 P0（手机熄屏解锁后 busy 会话「live 进度消失且**永远
+          // 不再更新**」）：非空壳 frozen turn 的 stream 事件此前被整批 `return s`
+          // 丢弃 —— 而 LLM 生成期**只有** stream 事件（结构化事件只在迭代边界/
+          // 工具状态变化时发）⇒ turn 一旦被迟到/误传的 idle 冻结，live 进度就再也
+          // 回不来（`iteration` case 当时已做遮蔽解除，`stream` case 漏做 ——
+          // AGENTS 的「对称性检查表：committed 与 frozen 的遮蔽解除规则必须成对
+          // 存在」）。
+          //
+          // 证据标准：`ev.iteration > maxIter`。后端绝不会对已结束的 turn 发新迭代
+          // （也绝不会发新流式），故「更大迭代号」即可证明该 turn 仍在跑；仅凭
+          // 「带流式载荷」不足以证明活动 —— 重放事件同样带载荷（可能来自已结束的
+          // turn），照旧规则升级会让**已结束**的 turn 复活成 live（busy 幽灵）。
+          // 两个分支的既有状态分开取（TS 判别联合的安全取法）。
+          const committedPayload = t0.phase.kind === 'committed' ? t0.phase.payload : null
+          const frozenData = t0.phase.kind === 'frozen' ? t0.phase.data : null
+          const its = committedPayload !== null
+            ? committedPayload.iterations
+            : (frozenData?.iterations ?? [])
+          const maxIter = its.reduce((m, it) => Math.max(m, it.iteration), 0)
+          const evIter = ev.iteration
+          if (
+            s.activeTurn === null &&
+            evIter !== null &&
+            evIter > maxIter &&
+            hasStreamEvidence(ev)
+          ) {
             const live: LiveSnapshot = {
               ...EMPTY_LIVE,
-              content: t0.phase.payload.content,
-              iterations: t0.phase.payload.iterations,
+              // iter 必须落在**进行中的那个迭代**上：EMPTY_LIVE.iter=1 会让紧随其后的
+              // 同迭代 stream 事件被判「迭代前进」⇒ 清空刚恢复的流式内容/正文。
+              iter: evIter,
+              content: committedPayload !== null ? committedPayload.content : (frozenData?.content ?? ''),
+              reasoning: committedPayload !== null ? '' : (frozenData?.reasoning ?? ''),
+              iterations: its,
             }
             const turns = new Map(s.turns)
             turns.set(target, { ...t0, phase: { kind: 'live', data: live } })
@@ -742,6 +910,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     case 'session': {
       if (ev.busy) return s.busy ? s : { ...s, busy: true }
       // idle：active live 的兜底收尾。
+      // ⛔ 同 session_idle：coarse 会话级 idle 在服务端 reconcile 的 running 仍为
+      // true 时必然陈旧/误传 ⇒ 不得冻结运行中的 turn（不变量：cancel ⇒ 进行中
+      // 可见）。真结束由 `session_running(false)` 权威收尾。
+      if (s.sessionRunning) return s
       if (s.activeTurn === null) return s.busy ? { ...s, busy: false } : s
       const t = s.turns.get(s.activeTurn)
       if (!t || t.phase.kind !== 'live') return s.busy ? { ...s, busy: false } : s
@@ -891,8 +1063,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // ⚠️ 空壳占位（user-only 历史行组成的 frozen 空壳）必须升级为 live ——
       // DB 权威快照声明该 turn 正在运行；不升级则 activeTurn=null → 后续
       // stream 事件全部被丢弃（用户报告："切换或刷新后只显示 history，
-      // live progress 不显示"）。committed/有输出 frozen 不动（DB 行更权威，
-      // 快照可能滞后于 SSE commit）。
+      // live progress 不显示"）。
       let activeTurn: TurnID | null = null
       if (s.activeTurn !== null) {
         const t = turns.get(s.activeTurn)
@@ -909,6 +1080,42 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             user: existing?.user ?? null,
             phase: { kind: 'live', data: ev.active.snapshot },
             requestID: existing?.requestID ?? null,
+          })
+          activeTurn = tid
+        } else {
+          // ⚠️ P0（2026-09-18 用户报告「手机端 busy 会话熄屏再打开，loading 后状态
+          // 不对：明明 busy 却看不到最新进度，且再也不更新」）────────────────────
+          // DB 里已有该 turn 的中间行（增量持久化的 assistant/tool 行 + 已完成迭代的
+          // iteration_history）⇒ historyToReplaced 把它折成 **committed**；而服务端
+          // active_progress（同一次 fetchHistory 返回的一致快照；phase ∈ {done,frozen}
+          // 时 historyToReplaced 根本不会构造 ev.active，turn 结束时后端也会删掉该
+          // 快照）明确声明它 **仍在跑**。旧实现只升级「无 turn / 空壳 frozen」，
+          // committed（"跑了一半"的**常态**）被原样保留 ⇒ activeTurn=null：
+          //   · liveProgressFromState 返回 EMPTY ⇒ 看不到 live 进度
+          //   · 后续 iteration/stream 事件先被「committed 遮蔽」拦下
+          //     （ev.iter 不大于已落库 maxIter 时 return s）⇒ 界面永久冻结
+          // ⇒ 按服务端的权威声明升级回 live；两侧迭代 union（DB 侧可能比快照更全：
+          // 快照 iteration_history 只保留尾部 SNAPSHOT_ITERATION_LIMIT 条），
+          // 同号以**快照**权威（服务端 live 比 DB 增量行新——与 3.5 同向）。
+          // 对照保护（本文件 P0 测试「没有 active 快照时 committed 不得被复活」）：
+          // 只有在 ev.active 指向该 turn 时才升级，真结束的 turn 不受影响。
+          const dbIters = existing.phase.kind === 'committed'
+            ? existing.phase.payload.iterations
+            : existing.phase.data.iterations
+          const dbContent = existing.phase.kind === 'committed'
+            ? existing.phase.payload.content
+            : existing.phase.data.content
+          const snap = ev.active.snapshot
+          turns.set(tid, {
+            ...existing,
+            phase: {
+              kind: 'live',
+              data: {
+                ...snap,
+                content: nonEmptyStr(snap.content) ?? dbContent,
+                iterations: mergeIterations(dbIters, snap.iterations),
+              },
+            },
           })
           activeTurn = tid
         }
@@ -1041,7 +1248,18 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         return s
       }
 
-      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal }
+      // ⛔ 这里【绝不】"提升 turn 为 live"（我上一版的回归）：DB 还原的 turn 走
+      // `commitViaFold`（integrate.ts:94），"未 finalize"判据对它恒成立 ⇒ 每次切
+      // 会话都会把**已结束**的 turn 伪装成 live（composer 幽灵 busy + 占位符被
+      // 抑制 ⇒ 「cancel + 看不到进行中信号」）。live-ness 只由真实信号决定：
+      // 服务端权威快照 `ev.active`（仅当它指向该 turn 时恢复 live，见上文 step 3）
+      // + 事件路径（stream/iteration 的遮蔽解除）。切片时的可视保障由渲染层的
+      // 占位符承担（MessageList 的 tailShowsIndicator）。
+      return {
+        chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
+        busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
+        sessionRunning: s.sessionRunning,
+      }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

@@ -18,7 +18,6 @@ import (
 	"xbot/bus"
 	ch "xbot/channel"
 	"xbot/protocol"
-	"xbot/tools"
 )
 
 type fixedOSSProvider struct{}
@@ -112,8 +111,6 @@ func TestProductionRoutesUseWebPOSTContract(t *testing.T) {
 		"/api/session/status",
 		"/api/runners/list",
 		"/api/runners/create",
-		"/api/runners/active",
-		"/api/runners/runner-a/delete",
 		"/api/files/upload",
 		"/api/fs/list",
 		"/api/fs/read",
@@ -842,33 +839,6 @@ func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
 	wc.handleHistory(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("history status = %d: %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestRESTRunnersIncludeTokenOnListAndCreate(t *testing.T) {
-	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
-	wc.SetCallbacks(WebCallbacks{
-		RunnerList: func(senderID string) ([]tools.RunnerInfo, error) {
-			return []tools.RunnerInfo{{Name: "runner-a", Token: "secret-token", LLMAPIKey: "llm-secret"}}, nil
-		},
-		RunnerCreate: func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
-			return "xbot-runner --token secret-token", nil
-		},
-	})
-
-	listRecorder := httptest.NewRecorder()
-	wc.handleRunners(listRecorder, authedAPIRequest(http.MethodGet, "/api/runners", nil))
-	_, listData := decodeAPIResponse(t, listRecorder)
-	runner := listData["runners"].([]any)[0].(map[string]any)
-	if runner["token"] != "secret-token" || runner["llm_api_key"] == "llm-secret" {
-		t.Fatalf("runner list token/key handling is wrong: %#v", runner)
-	}
-
-	createRecorder := httptest.NewRecorder()
-	wc.handleRunners(createRecorder, authedAPIRequest(http.MethodPost, "/api/runners", []byte(`{"name":"runner-a","mode":"native"}`)))
-	_, createData := decodeAPIResponse(t, createRecorder)
-	if createData["token"] != "secret-token" {
-		t.Fatalf("runner create did not return token: %#v", createData)
 	}
 }
 

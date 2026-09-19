@@ -50,6 +50,17 @@ export interface IterationHeightTracker {
   markVerified(key: string): void
   /** 复核失败：撤销裁决并 unsettle（必须重新稳定 + 重新复核）。 */
   unverify(key: string, now: number): void
+  /**
+   * 「内容被裁剪（压扁）」裁决 —— 复核时块的内容被 `max-height`/`overflow` 夹住。
+   *
+   * ⛔ 这是「瞬态小高」的**唯一正确判据**（曾经的绝对高度下限 `MIN_FREEZE_HEIGHT`
+   * 已被证明是错的，见 `TurnBody.contentClipped`）：真实迭代块高度中位数只有 ~54px
+   * 而压扁态 ~26px，高度区间重叠 ⇒ 任何阈值都会误伤。裁剪与否才是"高度是否可信"
+   * 的直接证据。标记在**高度变化时自动清除**（内容变了 ⇒ 重新判定）。
+   */
+  isClipped(key: string): boolean
+  /** 复核发现内容被裁剪 ⇒ 撤销裁决 +  unsettle，并记住"别反复复核它"。 */
+  markClipped(key: string, now: number): void
   /** 调试/测试：清空。 */
   clear(): void
 }
@@ -65,6 +76,12 @@ export function createIterationHeightTracker(): IterationHeightTracker {
   const settled = new Set<string>()
   /** 复核裁决（内容实测确认过）—— 与 settled 同生存期：高度一变即作废。 */
   const verified = new Set<string>()
+  /**
+   * 「内容被裁剪（压扁）」标记 —— 复核时看到块的**直接子元素被 `max-height`/`overflow`
+   * 夹住**（内容挂回来了，却量不到它的自然高度）。这类高度**不可信**：既不能冻结，
+   * 也不必反复排复核（内容一变 ⇒ 高度随之变化 ⇒ `record` 自动清除本标记）。
+   */
+  const clipped = new Set<string>()
   return {
     get: (key) => heights.get(key),
     isSettled: (key) => settled.has(key),
@@ -83,6 +100,7 @@ export function createIterationHeightTracker(): IterationHeightTracker {
         observedAt.set(key, now)
         settled.delete(key) // 值变了 → 必须重新稳定
         verified.delete(key) // 值变了 → 复核裁决一并作废
+        clipped.delete(key) // 值变了 → 内容不再是被夹住的那一份，重新判定裁剪
         return { changed: true, settled: false }
       }
       if (!settled.has(key)) {
@@ -104,11 +122,19 @@ export function createIterationHeightTracker(): IterationHeightTracker {
       settled.delete(key)
       observedAt.set(key, now)
     },
+    isClipped: (key) => clipped.has(key),
+    markClipped(key, now) {
+      clipped.add(key)
+      verified.delete(key)
+      settled.delete(key)
+      observedAt.set(key, now)
+    },
     clear() {
       heights.clear()
       observedAt.clear()
       settled.clear()
       verified.clear()
+      clipped.clear()
     },
   }
 }

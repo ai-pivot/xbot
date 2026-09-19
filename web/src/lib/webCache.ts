@@ -106,6 +106,19 @@ export const lastSeqCache = new BoundedSessionCache<number>()
  *  (the ONLY real-data-loss signal; iteration deltas cannot be backfilled by
  *  later snapshots). */
 export const lastIterationCache = new BoundedSessionCache<number>()
+
+/**
+ * Last known TurnID for each channel-qualified session. Unlike
+ * `progressSnapshotCache` (cleared by terminal events like `text`/`phase_done`),
+ * this cache is **never cleared by terminal events** — it survives turn
+ * completion so that SSE reconnect after a long screen-off can detect
+ * "the server is now on turn N+1 but we last saw turn N" even when the
+ * snapshot cache was already cleared by the previous turn's terminal event.
+ *
+ * Written on every `progress_structured` event that carries a `turn_id > 0`.
+ * Reset only on `resetLastSeq` (seq rollback / session switch).
+ */
+export const lastTurnIDCache = new BoundedSessionCache<number>()
 /** Latest structured progress event for each channel-qualified session — SSE
  *  reconnect recovery (restoreActiveProgress) uses it to replay the newest
  *  snapshot when the ring buffer evicted events. NOT a render cache. */
@@ -173,10 +186,28 @@ export function setLastSeq(cacheKey: string, seq: number): void {
 
 export function resetLastSeq(cacheKey: string): void {
   lastSeqCache.delete(cacheKey)
+  // TurnID cache follows seq lifecycle: reset on session switch / seq rollback.
+  resetLastTurnID(cacheKey)
 }
 
 /** Last progress_structured iteration seen for a session (for cross-iteration
  *  gap detection). 0 = none seen yet. */
+/** Last known TurnID for a session. Unlike progressSnapshotCache (cleared by
+ *  terminal events), this survives turn completion so SSE reconnect after long
+ *  screen-off can detect "server is on turn N+1 but we last saw turn N" even
+ *  when the snapshot cache was cleared. 0 = none seen yet. */
+export function getLastTurnID(cacheKey: string): number {
+  return lastTurnIDCache.get(cacheKey) ?? 0
+}
+
+export function setLastTurnID(cacheKey: string, turnID: number): void {
+  lastTurnIDCache.set(cacheKey, turnID)
+}
+
+export function resetLastTurnID(cacheKey: string): void {
+  lastTurnIDCache.delete(cacheKey)
+}
+
 export function getLastIteration(cacheKey: string): number {
   return lastIterationCache.get(cacheKey) ?? 0
 }

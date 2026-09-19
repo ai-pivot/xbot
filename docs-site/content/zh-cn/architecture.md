@@ -467,9 +467,12 @@ type MemoryProvider interface {
 
 **Sandbox 接口**: Name, Workspace, Exec, ReadFile, WriteFile, Stat, ReadDir, MkdirAll, Close。
 
-**SandboxRouter** (`tools/sandbox_router.go`): 统一沙箱入口，按用户级别路由到不同的后端。实现了 `Sandbox` 和 `SandboxResolver` 接口。路由规则（per-user，由 `user_settings.active_runner` 决定）:
-- `active_runner == "__docker__"` → DockerSandbox（如启用）
-- `active_runner == 特定远程 Runner 名称` → 对应的 RemoteSandbox 连接（如已连接）
+**SandboxRouter** (`tools/sandbox_router.go`): 统一沙箱入口，**按会话**路由到对应后端。实现了 `Sandbox` 和 `SandboxResolver` 接口。路由规则（`SandboxForSession("channel:chatID")`）:
+- 未绑定 → NoneSandbox（本机直连）
+- 绑定到 runner R 且 R 在线 → R 的 RemoteSandbox
+- 绑定到 runner R 但 R **离线** → 硬失败（`OfflineRunnerSandbox`；工具拒绝执行，绝不静默回退本机）
+
+router 自身的委托方法（`Exec`/`ReadFile`/…）返回 `errSandboxNeedsSession`：由引擎在每次工具调用时解析会话的沙箱（`agent/engine.go`、`agent/engine_wire.go`），而不是让 router 猜。
 - 兜底: Remote → Docker → None
 
 支持同时持有 Docker 和 Remote 实例（dual-mode），可按用户独立路由。用户可在设置面板中切换活跃 Runner。

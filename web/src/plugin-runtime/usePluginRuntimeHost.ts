@@ -20,6 +20,7 @@ import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from 
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
 import { layoutRegistry, VIEW_CONTAINER_TO_SLOT } from '@/plugin-runtime/layoutRegistry'
 import { panelRegistry, buildPanelDefs } from '@/plugin-runtime/panelRegistry'
+import { resolvePluginText } from '@/plugin-runtime/i18n'
 import { PluginView } from '@/plugin-runtime/PluginView'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
@@ -33,6 +34,12 @@ export interface WebPluginDecl {
   entry: string
   module_url: string
   contributes?: unknown
+  /** 插件**自带**的文案表（locale → key → text），由后端从 plugin.json 的 `web.i18n`
+   *  **原样透传**（`serverapp/rpc_table.go` 的 `I18n json.RawMessage`）。
+   *  ⛔ 必须在 `toManifest()` 里继续透传：一旦在这里丢掉，`createPluginI18n(undefined)`
+   *  会让插件的 `ctx.i18n.t()` 全部走兜底文案 —— 宿主语言怎么切都不生效
+   *  （2026-09-19 用户实测：宿主语言英文、ssh 插件仍显示中文）。 */
+  i18n?: import('@/plugin-api').PluginManifest['i18n']
 }
 
 /** 视图组件动态 import（第三方插件模块经 versioned URL 加载）。 */
@@ -123,6 +130,8 @@ export function toManifest(decl: WebPluginDecl): import('@/plugin-api').PluginMa
     permissions: (decl.permissions as import('@/plugin-api').Permission[]) ?? [],
     contributes,
     entry: decl.entry,
+    // ⛔ 不能漏：插件文案随清单走（见 WebPluginDecl.i18n 注释）——漏掉即 ctx.i18n 全回退。
+    i18n: decl.i18n,
   }
 }
 
@@ -402,7 +411,19 @@ export function PluginRuntimeBootstrap() {
     const syncedPanels = new Set<string>()
     const syncedLayout = new Set<string>()
     const syncViews = () => {
-      const views = runtime.listAllViews().filter(({ view }) => !view.dynamic)
+      const views = runtime
+        .listAllViews()
+        .filter(({ view }) => !view.dynamic)
+        // 面板/dock 标题允许是**该插件 `web.i18n` 表里的 key**（内置插件的 title 已是
+        // 宿主 i18n 解析后的文本 ⇒ 无表 ⇒ 原样透传）。在源头解析一次，panelRegistry 与
+        // layoutRegistry 两处消费点同时受益。
+        .map(({ pluginId, view }) => ({
+          pluginId,
+          view: {
+            ...view,
+            title: resolvePluginText(runtime.registry.manifestOf(pluginId)?.i18n, view.title) ?? view.title,
+          },
+        }))
       const built = buildPanelDefs(views, (pluginId, view) =>
         createElement(PluginView, { pluginId, view }),
       )

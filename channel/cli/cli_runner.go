@@ -136,17 +136,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			handler.SetLLMClient(llmClient, models, llmProvider)
 		}
 
-		// 6. 解析 userID
-		userID := parseUserID(serverURL)
-		if userID == "" {
-			program.Send(runnerStatusMsg{
-				status: RunnerDisconnected,
-				err:    fmt.Errorf("cannot parse userID from server URL"),
-			})
-			return
-		}
-
-		// 7. 确保有 ws:// 前缀
+		// 6. 确保有 ws:// 前缀
 		wsURL := serverURL
 		if !strings.Contains(wsURL, "://") {
 			wsURL = "ws://" + wsURL
@@ -160,7 +150,7 @@ func (rb *RunnerBridge) Connect(serverURL, token, workspace string, llmClient ll
 			opts.LLMProvider = handler.LLMProvider()
 			opts.LLMModel = handler.LLMModel()
 		}
-		conn, err := runnerclient.Connect(wsURL, userID, token, workspace, shell, opts)
+		conn, err := runnerclient.Connect(wsURL, token, workspace, shell, opts)
 		if err != nil {
 			program.Send(runnerStatusMsg{
 				status: RunnerDisconnected,
@@ -268,19 +258,4 @@ func (rb *RunnerBridge) LogPath() string {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.logPath
-}
-
-// parseUserID 从 server URL 中解析 userID
-// 例如: ws://host:port/ws/abc123 → abc123
-func parseUserID(serverURL string) string {
-	// 去掉协议前缀
-	u := serverURL
-	if idx := strings.Index(u, "://"); idx >= 0 {
-		u = u[idx+3:]
-	}
-	// 取最后一段路径
-	if idx := strings.LastIndex(u, "/"); idx >= 0 {
-		return u[idx+1:]
-	}
-	return ""
 }

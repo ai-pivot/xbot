@@ -130,6 +130,7 @@ func InitServer(cfg *config.Config, llmClient llm_pkg.LLM, dbPath, workDir, xbot
 	// we retrieve the *sql.DB from MultiSession to avoid a second sqlite.Open.
 	if db := ag.MultiSession().DB(); db != nil {
 		tools.SetRunnerTokenDB(db.Conn())
+		wireRunnerBindingStore(db)
 	}
 
 	// 3. Create RPCTable.

@@ -4,6 +4,7 @@ import {
   clearProgressSnapshot,
   getLastIteration,
   getLastSeq,
+  getLastTurnID,
   hasLastSeq,
   progressSnapshotCache,
   resetLastIteration,
@@ -11,6 +12,7 @@ import {
   sessionCacheKey,
   setLastIteration,
   setLastSeq,
+  setLastTurnID,
 } from '@/lib/webCache'
 import type {
   ProgressEvent,
@@ -353,6 +355,11 @@ export class SSEConnectionImpl implements WSConnection {
       if (msg.type === 'progress_structured' && typeof msg.progress?.iteration === 'number' && msg.progress.iteration > 0) {
         setLastIteration(cacheKey, msg.progress.iteration)
       }
+      // Track last known TurnID — survives terminal events (unlike progressSnapshotCache).
+      // Used by restoreActiveProgress to detect cross-turn gaps after long screen-off.
+      if (msg.type === 'progress_structured' && typeof msg.progress?.turn_id === 'number' && (msg.progress.turn_id as number) > 0) {
+        setLastTurnID(cacheKey, msg.progress.turn_id as number)
+      }
     }
     this.eventsSinceOpen += 1
     if (cacheKey && isProgressLifecycleEvent(msg)) {
@@ -603,35 +610,52 @@ export class SSEConnectionImpl implements WSConnection {
       // recovery snapshot below covers most of them — progress_structured is a
       // SNAPSHOT, later events supersede earlier ones.
       //
-      // This check is deliberately COARSE: cachedProgress.iteration_history is
-      // only the LAST event's delta, NOT the cumulative history — it CANNOT
-      // prove that iteration 3 is complete when the server is at 4. A difference
-      // of exactly 1 (3→4) does NOT mean 3's delta arrived: it may have been
-      // dropped in the gap while 4's events kept coming. So ANY advance
-      // (> 0) during a gap is treated as possible loss → force reload; the DB
-      // is authoritative. handleEvent's crossedIteration already covers the
-      // common case (gap followed by a higher-iteration progress_structured);
-      // this catches the rest (e.g. the first post-gap structured event is not
-      // the one that advanced).
-      const turnIDChanged = cachedProgress && progress &&
-        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
-        cachedProgress.turn_id !== progress.turn_id
-      const sameTurn = cachedProgress && progress &&
-        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
-        cachedProgress.turn_id === progress.turn_id
-      const cachedIter = cachedProgress?.iteration ?? 0
+      // **Two-source turn ID comparison** (2026-09-18 P0 线性一致性修复):
+      // `cachedProgress` (progressSnapshotCache) is cleared by terminal events
+      // (text/phase_done) — after a long screen-off, it's null even if the
+      // previous turn was valid. `lastTurnIDCache` is NOT cleared by terminal
+      // events and survives turn completion. We check BOTH: cachedProgress for
+      // the common case (snapshot still alive), lastTurnIDCache for the
+      // long-gap case (snapshot was cleared by the previous turn's terminal
+      // event while the user was away).
+      const cachedTurnID = cachedProgress && typeof cachedProgress.turn_id === 'number'
+        ? cachedProgress.turn_id
+        : (cacheKey ? getLastTurnID(cacheKey) : 0)
+      const serverTurnID = progress && typeof progress.turn_id === 'number' ? progress.turn_id : 0
+      const turnIDChanged = cachedTurnID > 0 && serverTurnID > 0 && cachedTurnID !== serverTurnID
+      const sameTurn = cachedTurnID > 0 && serverTurnID > 0 && cachedTurnID === serverTurnID
+
+      // Iteration gap: same turn, server advanced iterations.
+      // ≤100 → catch-up (the from_iteration fetch above already covers this;
+      //   the recovery snapshot dispatches the delta — appendIterations merges).
+      // >100 → force reload from DB (too many iterations lost for incremental
+      //   recovery to be reliable).
+      const cachedIter = cachedProgress?.iteration ?? (cacheKey ? getLastIteration(cacheKey) : 0)
       const newIter = progress?.iteration ?? 0
       const iterationGap = sameTurn && cachedIter > 0 && newIter > 0 && newIter > cachedIter
+      const iterationGapSize = iterationGap ? newIter - cachedIter : 0
+      const MAX_CATCH_UP_ITERATIONS = 100
 
-      if (turnIDChanged || iterationGap) {
-        // force_reload=true: show a loading spinner during reload. For cross-turn
-        // and iteration-id gaps, the UI is too stale to render incrementally — a
-        // clean reload is better than a partially-inconsistent view.
+      if (turnIDChanged) {
+        // Turn gap: the server is on a different turn — the previous turn's
+        // committed message (text event) may have been lost during the SSE
+        // disconnect window. Force reload from DB (authoritative).
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
-        // The recovery gap also implies possible session-state loss (busy/idle
-        // for other sessions during the same window) — reconcile the sidebar.
         this.dispatchSessionsResync()
+        return
       }
+      if (iterationGap && iterationGapSize > MAX_CATCH_UP_ITERATIONS) {
+        // Same turn but iteration gap too large (>100): incremental recovery
+        // is unreliable — reload from DB.
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
+        this.dispatchSessionsResync()
+        return
+      }
+      // iterationGap ≤ 100: fall through — the recovery snapshot (dispatched
+      // below) carries the missing iterations via from_iteration delta. The
+      // store's appendIterations merges them in (deduped by iteration number).
+      // No reload needed — this is the "catch-up" path.
+
       // Recovery snapshot — carry its seq so setStructuredTools can apply the
       // stale watermark check (an old snapshot must not roll back a newer
       // live state that SSE already delivered during the reconnect window).

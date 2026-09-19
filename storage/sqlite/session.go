@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"xbot/llm"
 	log "xbot/logger"
@@ -736,4 +737,160 @@ func (s *SessionService) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 		Scan(&stats.CurrentModel, &stats.SessionCreatedAt, &stats.SessionLastActive)
 
 	return stats, nil
+}
+
+// ── Time-bucketed usage aggregation (full history, no LIMIT) ──────────────
+
+// UsageBucket is one fixed-width time bucket of a session's usage, aggregated
+// ENTIRELY inside SQL over the full iteration_history table (no LIMIT — the
+// trend chart must cover the whole history, not just the newest N detail rows).
+type UsageBucket struct {
+	// BucketStart is the bucket's inclusive start as epoch SECONDS, already
+	// shifted into the caller's timezone (tzOffsetMinutes): a day bucket starts
+	// at local midnight, an hour bucket at the local top of the hour.
+	BucketStart int64 `json:"bucket_start"`
+	// InputTokens is the sum of prompt tokens (cache hits included).
+	InputTokens int64 `json:"input_tokens"`
+	// CachedTokens is the sum of prompt-cache hit tokens.
+	CachedTokens int64 `json:"cached_tokens"`
+	// OutputTokens is the sum of generated tokens (iteration_history.tokens).
+	OutputTokens int64 `json:"output_tokens"`
+	// Calls is the number of LLM calls (iteration rows) in the bucket.
+	Calls int64 `json:"calls"`
+	// TTFTMsSum / TotalMsSum are reserved sums (unused by the chart today).
+	TTFTMsSum  int64 `json:"ttft_ms_sum"`
+	TotalMsSum int64 `json:"total_ms_sum"`
+}
+
+// Supported bucket widths (seconds). A closed set on purpose: the width is a
+// SQL divisor, so arbitrary client values must be rejected rather than silently
+// producing a mis-aligned or absurd series.
+const (
+	UsageBucketMinuteSeconds int64 = 60
+	UsageBucketHourSeconds   int64 = 3600
+	UsageBucketDaySeconds    int64 = 86400
+)
+
+// Bucket count clamp (defensive: the returned series size must be bounded).
+const (
+	minUsageBuckets = 1
+	maxUsageBuckets = 1000
+)
+
+// UsageBucketSecondsForGranularity maps an API granularity name to its bucket
+// width in seconds; false for unknown names (single source of truth for the
+// allowed granularities).
+func UsageBucketSecondsForGranularity(granularity string) (int64, bool) {
+	switch granularity {
+	case "minute":
+		return UsageBucketMinuteSeconds, true
+	case "hour":
+		return UsageBucketHourSeconds, true
+	case "day":
+		return UsageBucketDaySeconds, true
+	}
+	return 0, false
+}
+
+// GetTenantUsageBuckets aggregates a tenant's iteration_history into `count`
+// fixed-width buckets ending with the in-progress bucket, entirely in SQL:
+//
+//	SUM(input_tokens) / SUM(cached_tokens) / SUM(tokens) / COUNT(*)
+//
+// Why this exact expression (the bucketing maths):
+//
+//		((strftime('%s', created_at) + shift) / W) * W - shift
+//
+//	  - `strftime('%s', created_at)` normalises BOTH storage shapes to UTC epoch
+//	    seconds: RFC3339 with an offset (`2026-09-19T16:00:00+08:00`) and SQLite's
+//	    naive UTC (`YYYY-MM-DD HH:MM:SS`, DEFAULT CURRENT_TIMESTAMP) — no timestamp
+//	    parsing happens in Go, and an offset-carrying value is not silently read
+//	    as wall-clock.
+//	  - `shift` = tzOffsetMinutes*60 moves the instant into the caller's
+//	    wall-clock space, the integer division floors it there (both operands are
+//	    integers ⇒ SQLite does truncating integer division), then the shift is
+//	    subtracted back so `bucket_start` is a real UTC instant (epoch seconds)
+//	    that a client can match with its own `floor(ts + shift)`.
+//	  - Dividing by the width in ONE expression (rather than range comparisons)
+//	    is what makes the aggregation start at the right boundary for any
+//	    offset-compatible width: local midnight in UTC+8 is 16:00Z of the
+//	    previous day, not a UTC midnight.
+//
+// Rows whose created_at cannot be converted (NULL / malformed) are excluded —
+// they cannot be placed on the time axis, and coercing them to a bucket would
+// invent data. A session with no history returns an EMPTY (non-nil) slice.
+func (s *SessionService) GetTenantUsageBuckets(tenantID int64, bucketSeconds int64, count int, tzOffsetMinutes int) ([]UsageBucket, error) {
+	switch bucketSeconds {
+	case UsageBucketMinuteSeconds, UsageBucketHourSeconds, UsageBucketDaySeconds:
+	default:
+		return nil, fmt.Errorf("unsupported bucket width %ds (want 60, 3600 or 86400)", bucketSeconds)
+	}
+	if count < minUsageBuckets {
+		count = minUsageBuckets
+	} else if count > maxUsageBuckets {
+		count = maxUsageBuckets
+	}
+	// Real offsets live in [-12h, +14h]; clamp so a hostile value cannot shift
+	// the series off the calendar.
+	if tzOffsetMinutes < -14*60 {
+		tzOffsetMinutes = -14 * 60
+	} else if tzOffsetMinutes > 14*60 {
+		tzOffsetMinutes = 14 * 60
+	}
+
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+
+	shift := int64(tzOffsetMinutes) * 60 // seconds east of UTC
+	windowStart := floorEpochBucket(time.Now().Unix(), bucketSeconds, shift) -
+		(int64(count)-1)*bucketSeconds
+
+	rows, err := conn.Query(`
+		SELECT ((CAST(strftime('%s', created_at) AS INTEGER) + ?) / ?) * ? - ? AS bucket_start,
+		       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(cached_tokens), 0),
+		       COALESCE(SUM(tokens), 0), COUNT(*),
+		       COALESCE(SUM(ttft_ms), 0), COALESCE(SUM(total_ms), 0)
+		FROM iteration_history
+		WHERE tenant_id = ?
+		  AND created_at IS NOT NULL
+		  AND strftime('%s', created_at) IS NOT NULL
+		GROUP BY bucket_start
+		HAVING bucket_start >= ?
+		ORDER BY bucket_start
+	`, shift, bucketSeconds, bucketSeconds, shift, tenantID, windowStart)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant usage buckets: %w", err)
+	}
+	defer rows.Close()
+
+	buckets := []UsageBucket{}
+	for rows.Next() {
+		var b UsageBucket
+		if err := rows.Scan(&b.BucketStart, &b.InputTokens, &b.CachedTokens, &b.OutputTokens, &b.Calls, &b.TTFTMsSum, &b.TotalMsSum); err != nil {
+			return nil, fmt.Errorf("scan usage bucket: %w", err)
+		}
+		buckets = append(buckets, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage buckets: %w", err)
+	}
+	return buckets, nil
+}
+
+// floorEpochBucket floors an epoch-second instant to a bucket boundary in the
+// shifted (wall-clock) space and returns the boundary as epoch seconds.
+func floorEpochBucket(epoch, bucketSeconds, shiftSeconds int64) int64 {
+	shifted := epoch + shiftSeconds
+	if shifted >= 0 {
+		return (shifted/bucketSeconds)*bucketSeconds - shiftSeconds
+	}
+	// Pre-1970 instants need floor (not truncating) division; irrelevant in
+	// practice, kept explicit so the maths is always a true floor.
+	q := shifted / bucketSeconds
+	if q*bucketSeconds != shifted {
+		q--
+	}
+	return q*bucketSeconds - shiftSeconds
 }

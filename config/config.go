@@ -1214,14 +1214,76 @@ func Load() *Config {
 	return cfg
 }
 
+// DefaultRunnerWSPort is the port the RemoteSandbox (the endpoint runners dial)
+// listens on when Sandbox.WSPort is unset. Keep in sync with SandboxRouter.
+const DefaultRunnerWSPort = 8080
+
 // PublicWSAddr returns the WebSocket address runners should connect to.
-// Uses Sandbox.PublicURL if set, otherwise falls back to the unified
-// web server address (Server.Host:Server.Port, which defaults to Web.Host:Web.Port).
+//
+// ⚠️ 该地址必须指向**真正提供 runner 协议的那个监听**：`RemoteSandbox`（`/ws`），
+// 它监听 `Sandbox.WSPort`（默认 DefaultRunnerWSPort）—— **不是** `Server.Port`。
+// 历史 bug（用户实机 2026-09-18「目标机器 当前离线」）：这里用 `Server.Port`（该部署里是
+// 8089，但 `xbot-cli serve` 从未在该端口监听）铸出 `ws://…:8089/ws`，runner 拨打的
+// 是一个**死端口**，于是隧道/鉴权都对也永远连不上；而真实端点在 8080
+// （日志：`RemoteSandbox WebSocket server listening on 0.0.0.0:8080`）。
+//
+// Sandbox.PublicURL（显式配置）永远优先：NAT/端口映射场景需要它。
 func (c *Config) PublicWSAddr() string {
 	if c.Sandbox.PublicURL != "" {
 		return c.Sandbox.PublicURL
 	}
-	return fmt.Sprintf("ws://%s:%d", c.Server.Host, c.Server.Port)
+	port := c.Sandbox.WSPort
+	if port == 0 {
+		port = DefaultRunnerWSPort
+	}
+	return fmt.Sprintf("ws://%s:%d", c.Server.Host, port)
+}
+
+// RunnerEndpointDrift compares the runner address we ADVERTISE (PublicWSAddr —
+// what `xbot-runner --server` is told to dial) with the address the runner
+// endpoint ACTUALLY bound (RemoteSandbox.BoundAddr), and returns a human-readable
+// warning when their ports differ; "" means consistent.
+//
+// ⛔ 为什么必须有这道自检（2026-09-18 用户实机事故的根因类别）：宣告地址与实际监听
+// 端口一旦漂移（例如 `sandbox.public_url` 指向 web 端口 16000，而 runner 端点在 8080），
+// 铸出的 `--server` 就指向**无人提供 runner 协议的端口** —— runner 会打到网页的 `/ws`
+// 上拿到 401 ⇒ 日志里表现为 `websocket: bad handshake` 无限重连，而**没有任何一处报错**。
+// 启动时显式比对，把"静默死地址"变成一条明确的 ERROR。
+//
+// 只比端口：host 差异是正常的（端点在 0.0.0.0，宣告用公网/内网 host）。
+func (c *Config) RunnerEndpointDrift(boundAddr string) string {
+	boundPort := portOf(boundAddr)
+	advertisedPort := portOf(c.PublicWSAddr())
+	if boundPort == 0 || advertisedPort == 0 {
+		return "" // 无法解析（如 BoundAddr 为空）—— 不误报
+	}
+	if boundPort != advertisedPort {
+		return fmt.Sprintf(
+			"runner endpoint port drift: runners are told to dial %s (port %d) but the runner endpoint is bound on %s (port %d) — runners will hit whatever else listens on port %d (e.g. the web UI, which answers 401 ⇒ websocket: bad handshake). Fix: unset/align sandbox.public_url, or set sandbox.ws_port=%d",
+			c.PublicWSAddr(), advertisedPort, boundAddr, boundPort, advertisedPort, boundPort,
+		)
+	}
+	return ""
+}
+
+// portOf extracts the port from "host:port", "ws://host:port" or "ws://host:port/path".
+func portOf(addr string) int {
+	s := addr
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	i := strings.LastIndexByte(s, ':')
+	if i < 0 {
+		return 0
+	}
+	p, err := strconv.Atoi(s[i+1:])
+	if err != nil {
+		return 0
+	}
+	return p
 }
 
 // getAdminChatID 获取管理员会话 ID，实现回退逻辑

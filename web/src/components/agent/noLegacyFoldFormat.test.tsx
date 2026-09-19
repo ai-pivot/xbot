@@ -161,4 +161,35 @@ describe('渲染层：只有"逐迭代 + 每工具一 pill"这一种形态', () 
     })
     expect(container.textContent ?? '').toContain(reply)
   })
+
+  // 用户 2026-09-19：「折叠版本的 icon 搞好看点」——折叠态的 pill 是用户唯一看到的形态，
+  // 内置工具在这里必须是专属 glyph（share_file → Upload），而不是未知工具的扳手兜底。
+  it('share_file 的 pill 渲染专属 glyph（lucide-upload），不是扳手兜底', () => {
+    const iters: WebIteration[] = [
+      {
+        iteration: 1,
+        content: '',
+        reasoning: '',
+        toolCount: 1,
+        tools: [{ name: 'share_file', label: 'name: share-file-card.png', status: 'done' }],
+      },
+    ] as unknown as WebIteration[]
+    const m: ChatMessage = {
+      id: 'a3',
+      role: 'assistant',
+      content: '',
+      iterations: iters,
+      timestamp: '2026-09-19T00:00:00Z',
+      isPartial: false,
+      turnID: 1,
+    }
+    const { container } = render(<AssistantMessage message={m} />, {
+      wrapper: ({ children }) => <I18nProvider>{children}</I18nProvider>,
+    })
+
+    const slot = container.querySelector('[data-testid="tool-pill-icon"]')
+    expect(slot).not.toBeNull()
+    expect(slot?.querySelector('svg.lucide-upload')).not.toBeNull()
+    expect(slot?.querySelector('svg.lucide-wrench')).toBeNull()
+  })
 })

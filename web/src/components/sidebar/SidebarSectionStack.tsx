@@ -32,6 +32,7 @@ import {
 
 import { layoutRegistry } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutSlotId } from '@/plugin-runtime/layoutTypes'
+import i18n from '@/i18n'
 import { computeReorder } from '@/lib/reorder'
 import { DRAG_TYPE, DRAG_SLOT_TYPE, startDrag, getDrag, clearDrag, isOurDrag } from '@/lib/dragState'
 
@@ -285,7 +286,7 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
             // 跨 slot：在目标位置插入 ghost 占位。
             const ghost: SidebarSection = {
               id: '__drag_ghost__',
-              title: '（拖入预览）',
+              title: i18n.t('sidebar.dragPreviewPlaceholder', { defaultValue: '拖入预览' }),
               content: null,
               defaultHeight: 240,
             }
@@ -352,7 +353,7 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
               >
                 {isGhost ? (
                   <div className="flex items-center justify-center py-4 text-xs text-text-muted">
-                    {drag?.itemId ?? '拖入预览'}
+                    {drag?.itemId ?? i18n.t('sidebar.dragPreviewPlaceholder', { defaultValue: '拖入预览' })}
                   </div>
                 ) : (
                   <>
@@ -362,7 +363,9 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
                       draggable={canReorder}
                       onDragStart={onSectionDragStart(sec.id)}
                       onDragEnd={onSectionDragEnd}
-                      title={isCollapsed ? `展开${sec.title}` : `收起${sec.title}`}
+                      title={isCollapsed
+                        ? i18n.t('sidebar.sectionExpand', { title: sec.title, defaultValue: '展开 {{title}}' })
+                        : i18n.t('sidebar.sectionCollapse', { title: sec.title, defaultValue: '收起 {{title}}' })}
                       className={`flex w-full shrink-0 select-none items-center gap-1.5 rounded-md px-2 pb-1.5 pt-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted transition-spring hover:bg-bg-tertiary/50 hover:text-text-secondary active:scale-[0.99] ${
                         canReorder ? 'cursor-grab active:cursor-grabbing' : ''
                       }`}

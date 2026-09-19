@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => {
   const chat = {
     messages: [] as Array<{ id: string; role: string; content: string; isPartial?: boolean; turnID?: number }>,
     loading: false,
+    historyReady: true,
+    markHistoryStale: vi.fn(() => order.push('markHistoryStale')),
     error: null,
     resolvedChatID: 'chat-1',
     initialProgress: null,
@@ -17,7 +19,7 @@ const mocks = vi.hoisted(() => {
     upload: vi.fn(),
   }
   const context = {
-    ws: { onSession: vi.fn(() => vi.fn()) },
+    ws: { connected: true, onSession: vi.fn(() => vi.fn()) },
     sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' }, sessions: [] },
     rightSidebar: { openPanel: vi.fn() },
   }
@@ -89,7 +91,9 @@ vi.mock('@/components/agent/api', () => ({
 }))
 vi.mock('@/components/agent/AskUserPanel', () => ({ AskUserPanel: () => null }))
 vi.mock('@/components/agent/ContextRing', () => ({ ContextRing: () => null }))
-vi.mock('@/components/agent/MessageInput', () => ({ MessageInput: () => null }))
+vi.mock('@/components/agent/MessageInput', () => ({
+  MessageInput: () => <div data-testid="agent-composer" />,
+}))
 vi.mock('@/components/agent/ModelSelector', () => ({ ModelSelector: () => null }))
 vi.mock('@/components/agent/MessageList', () => ({
   latestCompactBoundaryIndex: () => -1,
@@ -377,6 +381,38 @@ describe('AgentPanel re-subscribe reconcile（P0：通知行在不可见期间�
   })
 })
 
+describe('\u4e0d\u53ef\u89c1\u9762\u677f\u4e0d\u5f97\u5728 DOM \u91cc\u4fdd\u7559 chrome\uff082026-09-19 P0\uff1a\u5207\u56de\u300c\u5df2\u6253\u5f00\u8fc7\u300d\u7684 tab \u65f6\u8f93\u5165\u6846\u6d6e\u5728\u6d88\u606f\u533a\u4e0a\u65b9\u4e00\u95ea\uff09', () => {
+  it('\u9762\u677f\u4e0d\u53ef\u89c1\u65f6\u4e0d\u5f97\u6e32\u67d3\u8f93\u5165\u6846\uff08\u9648\u65e7 DOM \u662f\u6fc0\u6d3b\u90a3\u4e00\u5e27\u88ab\u753b\u51fa\u6765\u7684\u552f\u4e00\u6765\u6e90\uff09', async () => {
+    // \u7528\u6237\u590d\u73b0\u6761\u4ef6\uff08\u51b3\u5b9a\u6027\uff09\uff1a\u53ea\u6709\u7535\u8111\u7aef\u3001\u4e14\u76ee\u6807 tab **\u4e4b\u524d\u5df2\u7ecf\u6253\u5f00\u8fc7**\u65f6\u51fa\u73b0\uff1b
+    // \u5148\u628a\u8be5 tab \u4ece tab \u680f x \u6389\u518d\u5207\u5c31\u6ca1\u6709\u3002\u21d2 \u5df2\u6253\u5f00 = \u9762\u677f\u65e9\u5df2\u6302\u8f7d\uff08renderer='always'
+    // \u5e38\u9a7b DOM\uff09\u3002dockview \u5bf9\u975e\u6fc0\u6d3b\u9762\u677f\u7f6e visibility:hidden\uff0c\u6fc0\u6d3b\u90a3\u4e00\u5e27\u5728\u5b83\u81ea\u5df1\u7684 rAF \u91cc
+    // \u6e05\u6389 hidden\uff0c\u800c React \u7684 isVisible \u66f4\u65b0\uff08+ markHistoryStale \u21d2 loading \u5c4f\uff09\u843d\u5728\u66f4\u665a\u7684\u63d0\u4ea4
+    // \u21d2 \u6d4f\u89c8\u5668\u5148\u753b**\u9648\u65e7 DOM**\u3002\u65e7\u4ee3\u7801\u53ea\u628a MessageList \u6309 isVisible \u9690\u85cf\uff0c
+    // \u6258\u76d8/\u8f93\u5165\u6846\u4ecd\u5728 DOM \u21d2 \u753b\u51fa\u300c\u7a7a\u6d88\u606f\u533a + \u6258\u76d8 + \u8f93\u5165\u6846\u300d\uff08\u8f93\u5165\u6846\u81ea\u7136\u9ad8\u5ea6\u3001
+    // \u8d34\u5728\u9762\u677f\u9876\u90e8\uff09= \u7528\u6237\u622a\u56fe\u90a3\u6392\u6d6e\u7740\u7684\u63a7\u4ef6\u3002
+    // \u5951\u7ea6\uff1a\u4e0d\u53ef\u89c1 \u21d2 chrome\uff08\u6258\u76d8/\u8f93\u5165\u6846\uff09\u4e5f\u5fc5\u987b\u4e0d\u6e32\u67d3\uff08\u4e0e MessageList \u540c\u4e00\u6761\u89c4\u5219\uff09\u3002
+    const cbs: Array<(e: { isVisible: boolean }) => void> = []
+    const api = {
+      isVisible: true,
+      onDidVisibilityChange: (fn: (e: { isVisible: boolean }) => void) => {
+        cbs.push(fn)
+        return { dispose: () => {} }
+      },
+    }
+    const { container } = render(
+      <AgentPanel params={{} as never} api={api as never} containerApi={{} as never} />,
+    )
+    await waitFor(() => expect(cbs.length).toBeGreaterThan(0))
+    // 可见时确实渲染（自证 mock 生效、断言有判别力）
+    expect(container.querySelector('[data-testid="agent-composer"]')).not.toBeNull()
+
+    act(() => cbs[0]({ isVisible: false }))
+
+    // 不可见 ⇒ 输入框必须从 DOM 移除（陈旧 DOM 是激活那一帧被画出来的唯一来源）
+    expect(container.querySelector('[data-testid="agent-composer"]')).toBeNull()
+  })
+})
+
 /**
  * 会话归属不变量：**一个会话至多被一个 agent 面板渲染**。
  *
@@ -428,5 +464,36 @@ describe('AgentPanel 会话归属（一个会话至多被一个 agent 面板渲�
       />,
     )
     expect(mocks.lastChatID).toBe('chat-1')
+  })
+})
+
+describe('断线（重连中）不再显示黄色 Reconnecting 条，改走 loading splash', () => {
+  // 2026-09-17 用户要求：「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的
+  // splash screen」。
+  // ⛔ 但**只对"曾经连上过再掉线"的真·重连生效** —— 从未连上（初次加载 / 无 SSE 的 mock
+  // 场景）绝不能遮罩，否则会把已渲染的历史一起藏起来（CI E2E 实测：一刀切会让 8 个
+  // 非 SSE 的 spec 找不到内容）。
+  it('从未连上过（connected=false 首帧）⇒ 不遮罩，照常渲染消息列表', () => {
+    mocks.context.ws.connected = false
+    try {
+      render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+      expect(screen.queryByTestId('session-loading-screen')).toBeNull()
+    } finally {
+      mocks.context.ws.connected = true
+    }
+  })
+
+  it('连上过再掉线（真·重连）⇒ 渲染 session-loading-screen，且没有任何 Reconnecting 文案', () => {
+    mocks.context.ws.connected = true
+    const { rerender } = render(
+      <AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />,
+    )
+    expect(screen.queryByTestId('session-loading-screen')).toBeNull()
+    mocks.context.ws.connected = false // 掉线（重连中）
+    rerender(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('session-loading-screen')).toBeInTheDocument()
+    // 黄条已删除（三语文案都不应出现）
+    expect(screen.queryByText(/Reconnecting|重新连接中|再接続中/)).toBeNull()
+    mocks.context.ws.connected = true
   })
 })

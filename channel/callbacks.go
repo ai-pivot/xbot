@@ -7,14 +7,21 @@ import (
 
 // RunnerCallbacks groups runner management closures shared between Web and Feishu channels.
 type RunnerCallbacks struct {
-	RunnerTokenGet      func(senderID string) string
-	RunnerTokenGenerate func(senderID, mode, dockerImage, workspace string) (string, error)
-	RunnerTokenRevoke   func(senderID string) error
-	RunnerList          func(senderID string) ([]tools.RunnerInfo, error)
-	RunnerCreate        func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error)
-	RunnerDelete        func(senderID, name string) error
-	RunnerGetActive     func(senderID string) (string, error)
-	RunnerSetActive     func(senderID, name string) error
+	// RunnerList lists every managed machine (no credentials included).
+	RunnerList func() ([]tools.RunnerInfo, error)
+	// RunnerCreate registers (or re-keys) a runner and returns the connect command
+	// to run on that machine.
+	RunnerCreate func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error)
+	// RunnerDelete removes a runner (and drops its live connection).
+	RunnerDelete func(name string) error
+	// RunnerRename renames a runner.
+	RunnerRename func(oldName, newName string) error
+	// RunnerConnectCmd returns the connect command for an existing runner.
+	RunnerConnectCmd func(name string) (string, error)
+	// RunnerSessionGet reports the runner bound to a session and whether it is online.
+	RunnerSessionGet func(channelName, chatID string) (string, bool)
+	// RunnerSessionSet binds a session to a runner ("" = back to the local host).
+	RunnerSessionSet func(channelName, chatID, name string) error
 }
 
 // LLMCallbacks groups LLM management closures shared between Web and Feishu channels.

@@ -56,6 +56,17 @@ export interface BackendRPC {
     params: { channel?: string; chat_id: string; limit?: number }
     result: TenantUsageStats
   }
+  // ---- Session usage buckets (full aggregation done server-side in SQL) ----
+  'get_session_usage_buckets': {
+    params: {
+      channel?: string
+      chat_id: string
+      granularity: 'minute' | 'hour' | 'day'
+      count?: number             // number of buckets (1..1000)
+      tz_offset_minutes?: number // minutes east of UTC (UTC+8 = 480) — buckets align to that local wall clock
+    }
+    result: UsageBucket[]
+  }
 }
 ```
 

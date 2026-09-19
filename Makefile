@@ -78,6 +78,12 @@ plugins-web:
 	cd web && npx esbuild src/plugins/genui/index.tsx \
 		--bundle --splitting --format=esm --jsx=transform \
 		--outdir=../plugins/xbot-genui/web
+	# 多入口（index = 面板 + activate，bar = 底栏视图）：必须 --splitting，
+	# 否则两个产物各带一份 shared.js 副本 —— activate 注入的 ctx 单例对 bar
+	# 视图不可见（视图显示"插件未初始化"）。
+	cd web && npx esbuild src/plugins/ssh-runner/index.tsx src/plugins/ssh-runner/bar.tsx \
+		--bundle --splitting --format=esm --jsx=transform \
+		--outdir=../plugins/xbot-ssh-runner/web
 
 # Copy a plugin's built web assets into its installed dir. Every plugin whose
 # plugin.json declares web.entry must get this, or its frontend module 404s at
@@ -90,6 +96,7 @@ endef
 plugins-build:
 	$(MAKE) -C plugins/xbot-genui build
 	$(MAKE) -C plugins/xbot-git-fancy build
+	$(MAKE) -C plugins/xbot-ssh-runner build
 
 plugins-install: plugins-build plugins-web
 	$(MAKE) -C plugins/xbot-genui install
@@ -99,6 +106,8 @@ plugins-install: plugins-build plugins-web
 	# plugins/package.sh --web-dist-dir instead)
 	$(call install_plugin_web,$(XBOT_HOME)/plugins,xbot.git-fancy,xbot-git-fancy)
 	$(call install_plugin_web,$(XBOT_HOME)/plugins,xbot.genui,xbot-genui)
+	$(MAKE) -C plugins/xbot-ssh-runner install PLUGIN_DIR='$(XBOT_HOME)/plugins/xbot.ssh-runner'
+	$(call install_plugin_web,$(XBOT_HOME)/plugins,xbot.ssh-runner,xbot-ssh-runner)
 	# ambience: script-runtime plugin, manifest only (frontend builtin handles the rest)
 	mkdir -p $(XBOT_HOME)/plugins/xbot.ambience
 	cp plugins/xbot-ambience/plugin.json $(XBOT_HOME)/plugins/xbot.ambience/
@@ -115,6 +124,8 @@ plugins-install-builtin: plugins-build plugins-web
 	$(MAKE) -C plugins/xbot-git-fancy install PLUGIN_DIR='$(XBOT_HOME)/plugins/builtin/xbot.git-fancy'
 	$(call install_plugin_web,$(XBOT_HOME)/plugins/builtin,xbot.git-fancy,xbot-git-fancy)
 	$(call install_plugin_web,$(XBOT_HOME)/plugins/builtin,xbot.genui,xbot-genui)
+	$(MAKE) -C plugins/xbot-ssh-runner install PLUGIN_DIR='$(XBOT_HOME)/plugins/builtin/xbot.ssh-runner'
+	$(call install_plugin_web,$(XBOT_HOME)/plugins/builtin,xbot.ssh-runner,xbot-ssh-runner)
 	mkdir -p $(XBOT_HOME)/plugins/builtin/xbot.ambience
 	cp plugins/xbot-ambience/plugin.json $(XBOT_HOME)/plugins/builtin/xbot.ambience/
 	@echo "Built-in plugins installed to $(XBOT_HOME)/plugins/builtin/ (release-managed dir)."
@@ -122,7 +133,8 @@ plugins-install-builtin: plugins-build plugins-web
 plugins-clean:
 	$(MAKE) -C plugins/xbot-genui clean
 	$(MAKE) -C plugins/xbot-git-fancy clean
-	rm -rf plugins/xbot-git-fancy/web
+	$(MAKE) -C plugins/xbot-ssh-runner clean
+	rm -rf plugins/xbot-git-fancy/web plugins/xbot-ssh-runner/web
 
 # Package plugins into per-platform tarballs (release-style) for local testing.
 # Produces dist/xbot-plugins-<os>-<arch>.tar.gz — the same artifacts the

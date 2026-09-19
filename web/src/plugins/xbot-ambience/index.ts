@@ -11,7 +11,8 @@ import i18n from '@/i18n'
 
 export const manifest = {
   id: 'xbot.ambience',
-  name: 'Ambience',
+  // 内置插件（宿主静态 import）⇒ 名称/描述/壁纸名都走宿主 i18n。
+  name: i18n.t('plugins.ambience.manifest.name', { defaultValue: '氛围' }),
   version: '0.3.0',
   description: i18n.t('plugins.ambience.description', { defaultValue: '壁纸 + 玻璃拟态（Ambience Layer）' }),
   permissions: ['config'] as const,

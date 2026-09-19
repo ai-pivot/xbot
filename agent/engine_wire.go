@@ -1203,10 +1203,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(
-				cfg.Channel+":"+cfg.ChatID,
-				cfg.OriginUserID,
-			)
+			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)

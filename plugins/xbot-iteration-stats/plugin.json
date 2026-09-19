@@ -1,13 +1,18 @@
 {
   "id": "xbot.iteration-stats",
-  "name": "Iteration Stats",
+  "name": "manifest.name",
   "version": "1.0.0",
-  "description": "实时迭代指标徽章（tok/s · ttft）：挂在状态栏右侧。纯前端插件（ESM 模块），消费宿主 window.__xbot_iteration__ 暴露的实时指标桥（getGlobalLiveStats / subscribeGlobalLiveStats）。",
+  "description": "manifest.description",
   "author": "xbot",
   "runtime": "script",
   "entry": "true",
-  "activationEvents": ["onStart"],
-  "permissions": ["ui.contribute", "config"],
+  "activationEvents": [
+    "onStart"
+  ],
+  "permissions": [
+    "ui.contribute",
+    "config"
+  ],
   "web": {
     "entry": "index.js",
     "contributes": [
@@ -15,19 +20,45 @@
         "kind": "view",
         "id": "xbot.iteration-stats.badge",
         "container": "status_bar_right",
-        "title": "Iteration Stats",
+        "title": "view.badge.title",
         "entry": "index.js"
       }
-    ]
+    ],
+    "i18n": {
+      "zh-CN": {
+        "manifest.name": "迭代指标",
+        "manifest.description": "实时迭代指标徽章（tok/s · ttft）：挂在状态栏右侧。纯前端插件，消费宿主暴露的实时指标桥。",
+        "view.badge.title": "迭代指标",
+        "config.title": "迭代指标",
+        "config.showTTFT.label": "显示 TTFT",
+        "config.showTTFT.description": "在 tok/s 徽章旁显示首 token 延迟（关闭则只显示 tok/s）"
+      },
+      "en": {
+        "manifest.name": "Iteration Stats",
+        "manifest.description": "Live iteration metrics badge (tok/s · ttft) in the status bar. Pure frontend plugin consuming the host live-metrics bridge.",
+        "view.badge.title": "Iteration Stats",
+        "config.title": "Iteration Stats",
+        "config.showTTFT.label": "Show TTFT",
+        "config.showTTFT.description": "Show first-token latency next to the tok/s badge (off = tok/s only)."
+      },
+      "ja": {
+        "manifest.name": "イテレーション統計",
+        "manifest.description": "ステータスバー右側のリアルタイム指標バッジ（tok/s・ttft）。ホストが公開するライブ指標ブリッジを消費する純フロントエンドプラグイン。",
+        "view.badge.title": "イテレーション統計",
+        "config.title": "イテレーション統計",
+        "config.showTTFT.label": "TTFT を表示",
+        "config.showTTFT.description": "tok/s バッジの横に初回トークン遅延を表示します（オフなら tok/s のみ）。"
+      }
+    }
   },
   "contributes": {
     "configuration": {
-      "title": "Iteration Stats",
+      "title": "config.title",
       "properties": {
         "showTTFT": {
           "type": "boolean",
-          "label": "显示 TTFT",
-          "description": "在 tok/s 徽章旁显示首 token 延迟（关闭则只显示 tok/s）",
+          "label": "config.showTTFT.label",
+          "description": "config.showTTFT.description",
           "default": true
         }
       }

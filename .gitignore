@@ -119,3 +119,6 @@ test-results/
 *.key
 *.pem
 gpg-private.key*
+
+# plugin Go build artifacts (module-named binaries produced by `go build ./...`)
+plugins/xbot-ssh-runner/xbot-ssh-runner

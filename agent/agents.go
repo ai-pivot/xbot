@@ -139,8 +139,8 @@ func (s *AgentStore) GetAgentsCatalog(ctx context.Context, senderID string, proj
 		if len(info.role.AllowedTools) > 0 {
 			toolsInfo = strings.Join(info.role.AllowedTools, ", ")
 		}
-		fmt.Fprintf(&sb, "  <agent>\n    <name>%s</name>\n    <description>%s</description>\n    <tools>%s</tools>\n    <dir>%s</dir>\n  </agent>\n",
-			info.role.Name, info.role.Description, toolsInfo, info.dir)
+		fmt.Fprintf(&sb, "  <agent>\n    <role>%s</role>\n    <name>%s</name>\n    <description>%s</description>\n    <tools>%s</tools>\n    <dir>%s</dir>\n  </agent>\n",
+			info.role.Name, info.role.Name, info.role.Description, toolsInfo, info.dir)
 	}
 	sb.WriteString("</available_agents>\n")
 	return sb.String()

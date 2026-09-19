@@ -12,10 +12,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
+import i18n from '@/i18n'
 import { SidebarSectionStack } from './SidebarSectionStack'
 
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
+
+/**
+ * header 的 aria-title 走宿主 i18n（`sidebar.sectionExpand/sectionCollapse`）——
+ * 断言必须按 i18n 源取值：测试环境语言由 i18n 检测决定（实测 en），硬编码中文
+ * 会在语言变化时假红。
+ */
+const collapseTitle = (title: string) => i18n.t('sidebar.sectionCollapse', { title })
+const expandTitle = (title: string) => i18n.t('sidebar.sectionExpand', { title })
 
 beforeEach(() => {
   localStorage.removeItem(HEIGHTS_KEY)
@@ -54,11 +63,11 @@ describe('SidebarSectionStack', () => {
         ]}
       />,
     )
-    fireEvent.click(screen.getByTitle('收起Git'))
+    fireEvent.click(screen.getByTitle(collapseTitle('Git')))
     expect(screen.getByText('git-panel').parentElement?.style.display).toBe('none')
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}')).toEqual({ git: true })
 
-    fireEvent.click(screen.getByTitle('展开Git'))
+    fireEvent.click(screen.getByTitle(expandTitle('Git')))
     expect(screen.getByText('git-panel')).toBeTruthy()
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}')).toEqual({ git: false })
   })
@@ -153,8 +162,8 @@ describe('SidebarSectionStack', () => {
         ]}
       />,
     )
-    const gitHeader = screen.getByTitle('收起Git')
-    const noteHeader = screen.getByTitle('收起Notes')
+    const gitHeader = screen.getByTitle(collapseTitle('Git'))
+    const noteHeader = screen.getByTitle(collapseTitle('Notes'))
     // jsdom 的 DragEvent 不自动创建 dataTransfer —— 测试注入 mock。
     const dt = () => ({
       setData: vi.fn(),
@@ -189,7 +198,7 @@ describe('SidebarSectionStack', () => {
     )
     const dt = () => ({ setData: vi.fn(), getData: vi.fn(), effectAllowed: 'move', dropEffect: 'move', types: ['text/plain'] })
     // 拖 sessions 悬停在 sessions 上（自己 → 无插入线），drop 无副作用。
-    const sessionsHeader = screen.getByTitle('收起会话')
+    const sessionsHeader = screen.getByTitle(collapseTitle('会话'))
     fireEvent.dragStart(sessionsHeader, { dataTransfer: dt() })
     fireEvent.dragOver(sessionsHeader, { dataTransfer: dt(), clientY: 10 })
     expect(screen.queryByTestId('insertion-line')).toBeNull()
@@ -207,6 +216,6 @@ describe('SidebarSectionStack', () => {
         ]}
       />,
     )
-    expect(screen.getByTitle('收起会话').getAttribute('draggable')).toBe('false')
+    expect(screen.getByTitle(collapseTitle('会话')).getAttribute('draggable')).toBe('false')
   })
 })
