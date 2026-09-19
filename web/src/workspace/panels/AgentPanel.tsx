@@ -927,7 +927,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         footer={askUserFooter}
       />
       ) : null}
-      {!isSubAgent && !(sessionLoading || switchSplash) && (
+      {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <StagingTray
           items={agentChat.queue}
           busy={busy}
@@ -948,7 +948,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           onReorder={handleReorderQueue}
         />
       )}
-      {!isSubAgent && !(sessionLoading || switchSplash) && (
+      {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
