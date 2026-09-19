@@ -945,6 +945,8 @@ const zhCN = {
   },
   plugins: {
     sshRunner: {
+      reinstall: '重新安装',
+      reinstallHint: '重新下载并原子替换 runner 二进制（不影响当前连接；装完自动重连生效）',
       autoConnect: '启动时自动连接',
       autoConnectFailed: '自动连接失败',
       cancelWait: '停止等待',

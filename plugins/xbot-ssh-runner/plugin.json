@@ -1,7 +1,7 @@
 {
   "id": "xbot.ssh-runner",
   "name": "Remote Machines (SSH)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "通过一条 SSH 命令纳管远程机器：探测环境 → 自动安装并启动 xbot-runner → 作为会话可切换的执行目标。控制面插件（stdio），执行仍走既有 runner WebSocket 协议。",
   "author": "xbot",
   "runtime": "stdio",

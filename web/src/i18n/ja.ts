@@ -949,6 +949,8 @@ const ja: Translations = {
   },
   plugins: {
     sshRunner: {
+      reinstall: '再インストール',
+      reinstallHint: 'runner バイナリを再ダウンロードして原子的に置換します（接続には影響しません。完了後に自動再接続します）',
       autoConnect: '起動時に自動接続',
       autoConnectFailed: '自動接続に失敗しました',
       cancelWait: '待機を中止',

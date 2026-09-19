@@ -499,6 +499,58 @@ export default function SshRunnerPanel() {
     [connectTarget],
   )
 
+  /**
+   * 重新安装（重装 runner 二进制）—— 用户要求 2026-09-19：**不重启 server** 就能把受管机器上
+   * 的 runner 换成最新二进制。复用插件的 provision（download → sha256 校验 → 原子替换），
+   * **不影响当前连接**；装完自动走一次「重连」（先杀老 runner 再起新的）⇒ 新二进制立即生效。
+   */
+  const onReinstallRow = useCallback(
+    (target: MachineTarget) => {
+      if (connectBusyRef.current.has(target.name)) return
+      connectBusyRef.current.add(target.name)
+      setConnectBusy((prev) => ({ ...prev, [target.name]: true }))
+      void (async () => {
+        const cfg = configRef.current
+        try {
+          const res = await callRpc('xbot.ssh-runner.provision', {
+            ssh: target.ssh,
+            name: target.name,
+            download_base: cfg.downloadBase,
+            install_dir: target.install_dir || cfg.installDir,
+          })
+          await new Promise<void>((resolve, reject) => {
+            const poller = pollJobStatus(
+              res.job_id,
+              (id) => callRpc('xbot.ssh-runner.job_status', { job_id: id }),
+              (job) => {
+                if (job.state === 'done') {
+                  poller.cancel()
+                  resolve()
+                } else if (job.state === 'failed') {
+                  poller.cancel()
+                  reject(new Error(job.error || t('plugins.sshRunner.installFailed', '安装失败')))
+                }
+              },
+              (message) => {
+                poller.cancel()
+                reject(new Error(message))
+              },
+            )
+          })
+          if (!mountedRef.current) return
+          // 装完即重连：runner 跑在 SSH 会话前台，重连 = 杀老 + 起新 ⇒ 新二进制生效。
+          await connectTarget(target)
+        } catch (e) {
+          if (mountedRef.current) setRowError((prev) => ({ ...prev, [target.name]: errMessage(e) }))
+        } finally {
+          connectBusyRef.current.delete(target.name)
+          if (mountedRef.current) setConnectBusy((prev) => omitKey(prev, target.name))
+        }
+      })()
+    },
+    [connectTarget],
+  )
+
   const onDisconnectRow = useCallback(
     (target: MachineTarget) => {
       void (async () => {
@@ -1472,6 +1524,18 @@ export default function SshRunnerPanel() {
                 >
                   <IconRotate />
                   {t('plugins.sshRunner.reconnect', '重连')}
+                </button>
+                <button
+                  data-testid={`ssh-reinstall-${target.name}`}
+                  onClick={() => onReinstallRow(target)}
+                  disabled={busyConnect || delActive}
+                  title={t(
+                    'plugins.sshRunner.reinstallHint',
+                    '重新下载并原子替换 runner 二进制（不影响当前连接；装完自动重连生效）',
+                  )}
+                  className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t('plugins.sshRunner.reinstall', '重新安装')}
                 </button>
                 {!isCurrent && (
                   <button

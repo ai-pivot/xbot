@@ -949,6 +949,8 @@ const en: Translations = {
   },
   plugins: {
     sshRunner: {
+      reinstall: 'Reinstall',
+      reinstallHint: 'Download and atomically replace the runner binary (does not affect the live connection; reconnects automatically when done)',
       autoConnect: 'Auto-connect on startup',
       autoConnectFailed: 'Auto-connect failed',
       cancelWait: 'Stop waiting',
