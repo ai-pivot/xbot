@@ -35,6 +35,7 @@ import { matchesChatID } from '@/hooks/useProgressStream'
 import type { WSConnection } from '@/types/ws'
 import type { ChatMessage, WebIteration } from '@/types/shared'
 import type { WSMessage } from '@/types/shared'
+import i18n from '@/i18n'
 
 interface UseChatMessagesOptions {
   /** Chat ID this list tracks. */
@@ -724,7 +725,7 @@ export function useChatMessages({
         })
           .then((resp) => {
             if (resp?.interrupted) {
-              toast.success('⚡ 已送达')
+              toast.success(i18n.t('agent.interjectDelivered'))
             } else {
               // Server degraded to normal send (idle session) — treat as
               // a regular message. onSendSuccess triggers agentChat.ackUser
@@ -854,7 +855,7 @@ export function useChatMessages({
   const cancelQueued = useCallback((msgID: string) => {
     void postAPI('/api/queue/cancel', { channel, chat_id: chatIDRef.current ?? undefined, msg_id: msgID })
       .catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : 'cancel queued message failed')
+        toast.error(e instanceof Error ? e.message : i18n.t('agent.cancelQueuedFailed'))
       })
   }, [channel, chatIDRef])
 
@@ -873,11 +874,11 @@ export function useChatMessages({
         })
           .then((resp) => {
             if (resp?.interrupted) {
-              toast.success('⚡ 已插话')
+              toast.success(i18n.t('agent.interjectSent'))
             }
           })
           .catch((e: unknown) => {
-            toast.error(e instanceof Error ? e.message : 'interject failed')
+            toast.error(e instanceof Error ? e.message : i18n.t('agent.interjectFailed'))
           })
       })
       .catch((e: unknown) => {
