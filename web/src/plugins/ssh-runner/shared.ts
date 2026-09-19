@@ -406,29 +406,3 @@ export function maskSSH(ssh: string): string {
   if (tokens[0] === 'ssh') return tokens[1] ?? ssh.trim()
   return tokens[0] ?? ssh.trim()
 }
-
-/** 诊断探针（临时）：面板里直接显示 i18n 链路状态，用来定位"宿主英文仍中文"。 */
-export function __pluginI18nDebug(): {
-  hasCtx: boolean
-  hasI18n: boolean
-  locale: string | null
-  probe: string
-} {
-  const inst = ctxRef?.i18n
-  let probe = '<no-i18n>'
-  if (inst) {
-    try {
-      probe = String(inst.t('stateDisconnected', '<fallback-used>'))
-    } catch (e) {
-      probe = 'throw:' + String(e)
-    }
-  }
-  const out = {
-    hasCtx: !!ctxRef,
-    hasI18n: !!inst,
-    locale: ((inst as unknown as { locale?: string } | undefined)?.locale) ?? null,
-    probe,
-  }
-  console.log('[plugin-i18n] ssh-runner debug', out)
-  return out
-}

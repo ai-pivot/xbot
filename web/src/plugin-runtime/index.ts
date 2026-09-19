@@ -211,14 +211,7 @@ export class PluginRuntime {
     const ctx = buildContext(perms, {
       meta,
       // 插件自带 i18n：表来自清单（web.i18n），locale 每次调用实时读取宿主语言。
-      i18n: (() => {
-        const table = effective.i18n
-        // eslint-disable-next-line no-console
-        console.log('[plugin-i18n] host activate', {
-          plugin: effective.id, hasTable: !!table, locales: table ? Object.keys(table) : [], hostLocale: i18n.language,
-        })
-        return createPluginI18n(table, () => i18n.language)
-      })(),
+      i18n: createPluginI18n(effective.i18n, () => i18n.language),
       events: this.events,
       commands: this.commands,
       rpc: this.rpc,

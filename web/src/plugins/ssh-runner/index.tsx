@@ -21,7 +21,7 @@
  *
  * 构建：esbuild --bundle --format=esm --jsx=transform（React external）。
  */
-import { __pluginI18nDebug,
+import {
   React,
   t,
   getCtx,
@@ -237,8 +237,6 @@ function omitKey<T>(rec: Record<string, T>, key: string): Record<string, T> {
 
 export default function SshRunnerPanel() {
   // 诊断（临时）：把 i18n 链路状态显示在面板顶部，便于一眼定位。
-  // 诊断（临时）：把 i18n 链路状态打到 console 并显示在面板顶部
-  const i18nDbg = __pluginI18nDebug()
   const [config, setConfig] = useState<RunnerConfigValues | null>(null)
   const [targets, setTargets] = useState<MachineTarget[]>([])
   const [loading, setLoading] = useState(true)
@@ -1034,9 +1032,6 @@ export default function SshRunnerPanel() {
   if (!c) {
     return (
       <div data-testid="ssh-runner-not-initialized" className="p-3 text-xs text-text-muted">
-      <div data-testid="plugin-i18n-debug" style={{ fontSize: 10, fontFamily: 'monospace', color: '#94a3b8', padding: '2px 8px', wordBreak: 'break-all' }}>
-        i18n-debug: ctx={String(i18nDbg.hasCtx)} i18n={String(i18nDbg.hasI18n)} locale={String(i18nDbg.locale)} probe={i18nDbg.probe}
-      </div>
       
         {t('notInitialized', 'Remote Machines 插件尚未初始化（activate(ctx) 未调用）')}
       </div>

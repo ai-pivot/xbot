@@ -252,7 +252,15 @@ export const UserMessage = memo(function UserMessage({
               : 'bg-accent/15 text-text-primary',
           )}
         >
-          <MarkdownRenderer content={content || ' '} />
+          {isNotification ? (
+            /* 系统通知是机器文本（后台任务命令 + 输出），**必须原样呈现**：
+               曾用 MarkdownRenderer，命令里成对的 `$`（如 `echo A=$?; … $D/x`）被 remark-math
+               当数学公式交给 KaTeX，而 KaTeX 的 .katex-html 是 white-space:nowrap ⇒ 内容不换行，
+               盒子被 max-w-full 限住也没用 ⇒ 手机上整页横向溢出。机器文本不走 markdown 解析。 */
+            <div className="whitespace-pre-wrap break-words">{content}</div>
+          ) : (
+            <MarkdownRenderer content={content || ' '} />
+          )}
           {sending && (
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
               <Loader2 className="size-3 animate-spin" />
