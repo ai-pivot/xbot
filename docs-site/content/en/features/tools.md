@@ -62,6 +62,7 @@ never re-executed). Manage promoted tasks with `task_wait` / `task_status` /
 - **Local storage (default, no cloud OSS configured)**: the file is copied to `<XBOT_HOME>/uploads/agent/<uuid>/<name>`; the URL never expires.
 - **Cloud storage**: uploaded through the storage provider and returned as a signed URL.
 - Registered only when the web channel is active (invisible to other channels).
+- In the Web UI the call renders as a **dedicated card**: icon + file name + inline image preview + Open / Copy-link; the collapsed tool pill uses a dedicated upload glyph and the "write" category colour (no longer the generic "unknown tool" wrench).
 {{< /hint >}}
 
 ## Context & Session
