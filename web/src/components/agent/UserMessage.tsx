@@ -219,7 +219,7 @@ export const UserMessage = memo(function UserMessage({
             <span className="truncate">{compactBody.title}</span>
           </summary>
           {compactBody.body && (
-            <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-muted">
+            <div className="mt-2 min-w-0 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-text-muted">
               {compactBody.body}
             </div>
           )}

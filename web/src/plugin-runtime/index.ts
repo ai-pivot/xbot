@@ -11,6 +11,7 @@
  * 设计约束（反 cordis）：不叫 effect/fiber/epoch；disposable 就叫 disposable。
  */
 import type { ReactNode } from 'react'
+import { toManifest, type WebPluginDecl } from './usePluginRuntimeHost'
 import { createContext, createElement, useContext, useMemo, useRef } from 'react'
 
 import type { Contribution, Disposable, PluginManifest, PluginMeta } from '@/plugin-api'
@@ -137,16 +138,23 @@ export class PluginRuntime {
   private async fetchPluginDecl(
     id: string,
   ): Promise<{ manifest: PluginManifest; moduleUrl: string } | null> {
-    // 后端 RPC 返回插件清单（web_plugin_list）。
-    const list = (await this.host.rpcTransport.call('web_plugin_list', {})) as Array<{
-      id: string
-      manifest: PluginManifest
-      module_url?: string
-    }>
-    const found = list?.find((p) => p.id === id)
+    // ⛔ 后端载荷是 `{ plugins: [<扁平 decl>] }`（与 usePluginRuntimeHost 消费的同一形状），
+    // **不是** `Array<{id, manifest, module_url}>` —— 旧实现 `list.find`/`found.manifest`
+    // 都取不到值，这条懒加载路径从未工作（评审实测）。必须经 `toManifest` 转换，
+    // 否则 `web.i18n` 丢失 ⇒ 插件 ctx.i18n 全回退（用户实测：宿主英文仍显示中文）。
+    const res = (await this.host.rpcTransport.call('web_plugin_list', {})) as
+      | { plugins?: unknown }
+      | undefined
+    const list = res?.plugins
+    if (!Array.isArray(list)) return null
+    const found = (list as Array<Record<string, unknown>>).find((d) => d?.id === id)
     if (!found) return null
-    const moduleUrl = found.module_url ?? `${this.host.moduleBaseUrl(id)}/index.js`
-    return { manifest: found.manifest, moduleUrl }
+    const moduleUrl =
+      typeof found.module_url === 'string' && found.module_url.length > 0
+        ? found.module_url
+        : `${this.host.moduleBaseUrl(id)}/index.js`
+    // 与宿主消费方共用同一转换（含 i18n 透传）—— 不另写字段映射。
+    return { manifest: toManifest(found as unknown as WebPluginDecl), moduleUrl }
   }
 
   /** 激活插件：加载模块 → 单一门控 → 挂载贡献点 → 调 activate。 */
