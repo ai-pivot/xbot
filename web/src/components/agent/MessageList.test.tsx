@@ -599,6 +599,70 @@ describe('MessageList virtualization', () => {
     expect(container.textContent).toContain('thinking')
   })
 
+  // ⛔ 不变量（用户 2026-09-19 反复点名）：「只要输入框是 cancel 按钮，就一定不能
+  // 上面渲染的内容是 idle 内容」。渲染层破坏点：frozen 行也 isPartial=true，曾被
+  // 当作 live 行（liveId）⇒ ① 它拿到的 liveProgress 是空快照
+  //（liveProgressFromState 在 activeTurn===null 时返回 EMPTY）⇒ 自身不渲染任何
+  // 进行中信号；② busy 占位符的 `liveId === null` 条件因此不成立 ⇒ 也被抑制
+  // ⇒ busy（cancel）+ 内容像 idle。以下两条守护占位符逻辑（不变量所在）：
+  // frozen 行不得吞掉进行中信号；live 行自身已渲染信号时不得双渲染。
+  // ⚠️ jsdom 下虚拟列表不渲染行内容（行内指示器由 AssistantMessage.test.tsx
+  // 的 `.sweep-text` 断言 + `e2e/busy-invariant.spec.ts` 的真实 DOM 覆盖）。
+  it('INVARIANT: busy + frozen 行 ⇒ 必须显示进行中信号（frozen 不得冒充 live 行）', () => {
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'hello', iterations: [], timestamp: 't', isPartial: false, turnID: 1 },
+      {
+        id: 'turn-1',
+        role: 'assistant',
+        content: '',
+        iterations: [{ iteration: 1, content: 'iter 1', reasoning: '', tools: [] } as never],
+        timestamp: '',
+        isPartial: true,
+        frozen: true, // cancel / idle 兜底定格
+        turnID: 1,
+      },
+    ]
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={messages}
+        // frozen ⇒ activeTurn===null ⇒ liveProgressFromState 输出空快照
+        //（streaming=false）—— 正是"自身不渲染信号"的输入。
+        liveProgress={{ ...EMPTY_LIVE_PROGRESS, streaming: false }}
+        loading={false}
+        error={null}
+        busy={true}
+      />,
+    )
+    // 输入框是 cancel（busy）⇒ 列表必须给出进行中信号。
+    expect(container.textContent, 'busy + frozen 行必须显示进行中信号').toContain('thinking')
+  })
+
+  it('INVARIANT: busy + live 行自身已渲染信号 ⇒ 占位符被抑制（恰好一个指示器）', () => {
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', content: 'hello', iterations: [], timestamp: 't', isPartial: false, turnID: 1 },
+      {
+        id: 'turn-1-live',
+        role: 'assistant',
+        content: '',
+        iterations: [],
+        timestamp: '',
+        isPartial: true, // live 行（非 frozen）
+        turnID: 1,
+      },
+    ]
+    const { container } = renderWithProviders(
+      <MessageList
+        messages={messages}
+        liveProgress={{ ...EMPTY_LIVE_PROGRESS, streaming: true, phase: 'thinking' }}
+        loading={false}
+        error={null}
+        busy={true}
+      />,
+    )
+    // live 行由 LiveIteration 渲染 ShimmerThinking ⇒ 占位符必须被抑制（互斥）。
+    expect(container.textContent, 'live 行已渲染信号时不得双渲染').not.toContain('thinking')
+  })
+
   it('finds the latest compact marker for rewind eligibility', () => {
     const messages: ChatMessage[] = [
       { id: 'u-old', role: 'user', content: 'old', iterations: [], timestamp: '2026-07-08T00:00:00Z', isPartial: false, turnID: 0 },

@@ -42,6 +42,10 @@ export interface UseAgentChatStateArgs {
   readonly initialProgress: unknown
   /** 会话切换时重置（chatKey 变化）。 */
   readonly resetKey: string
+  /** 会话 running（**服务端 reconcile 后的权威**：session-tree/status REST 对账 +
+   *  SSE session）—— turn 的 live-ness 服从它（不变量：输入框 = cancel ⇒ 上面必须
+   *  显示进行中信号）。见 `chat/types.ts` 的 `session_running` 事件。 */
+  readonly sessionRunning: boolean
 }
 
 export interface AgentChatState {
@@ -79,7 +83,7 @@ export interface AgentChatState {
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
-  const { progressChatID, ws, historyMessages, historyReady, historyOwner, historyChatID, initialProgress, resetKey } = args
+  const { progressChatID, ws, historyMessages, historyReady, historyOwner, historyChatID, initialProgress, resetKey, sessionRunning } = args
 
   // per-chat store（ref 式切换 —— 渲染期只做幂等 ref 变更，无 setState/dispose，
   // 避免 render-phase update 的时序陷阱；key 变化 = 丢弃旧实例换新空 store）。
@@ -226,6 +230,16 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
       if (bareChatID(d.chatID) === bareChatID(progressChatID)) sessionIdle()
     })
   }, [progressChatID, sessionIdle])
+
+  // 会话 running（服务端 reconcile 权威）⇒ 状态机。不变量（用户 2026-09-19）：
+  // 「输入框 = cancel ⇒ 上面必须显示进行中信号」；composer 的 cancel 已包含
+  // `currentSession.running`，所以 turn 的 live-ness 必须服从同一个权威 ——
+  // running=true 时把最新未 finalize 的 turn 提回 live，running=false 时定格
+  // （内容保留）。每次变化都 dispatch（幂等：值未变 ⇒ 状态机返回原引用）。
+  useEffect(() => {
+    if (!progressChatID) return
+    store.dispatch({ type: 'session_running', running: sessionRunning })
+  }, [progressChatID, sessionRunning, store])
 
   return {
     messages,

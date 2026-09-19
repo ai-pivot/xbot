@@ -20,6 +20,7 @@ import {
   commitViaFold,
   commitViaText,
   initialChatState,
+  iterNum,
   nonEmptyArr,
   nonEmptyStr,
   turnID,
@@ -224,6 +225,60 @@ function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: s
   )
 }
 
+/**
+ * withRunningInvariant —— 「服务端说在跑 ⇒ store 里必须有 live turn」的结构性保证。
+ *
+ * 不变量（用户 2026-09-19 点名）：「只要输入框是 cancel 按钮，就一定不能上面渲染
+ * 的内容是 idle 内容」。composer 的 cancel = busy = `currentSession.running ||
+ * progressSnapshot.streaming || busyFallback`；其中 `currentSession.running` 是
+ * **服务端 reconcile 后的权威**（session-tree/status REST 对账 + SSE session）。
+ * 而 turn 的 live-ness 此前**只**由事件驱动 —— 一条迟到/误传/重放的 coarse idle
+ *（`session(idle)` 不带 turn 身份），或一次 reload 把运行中的 turn 折成
+ * committed，都会让两侧权威分叉：输入框仍 cancel，列表却渲染成 idle 内容。
+ *
+ * 规则：
+ *   · 非 running / 已有 live turn ⇒ 原 state（返回原引用 = 零渲染）。
+ *   · 提升目标 = **最新未 finalize** 的 turn：`via:'text'` 的 committed 是后端
+ *     已发最终回复的**权威结束信号**，绝不复活（否则已结束的 turn 变 busy 幽灵）；
+ *     frozen（idle 定格 / cancel 定格）与 fold 提交（无最终回复）都可提升。
+ *   · 提升**不新增任何内容**：内容/迭代全保留，只把 `streaming` 置 true 让渲染层
+ *     显示进行中信号（本地没有更新数据时只表达"仍在进行"—— 事件到达后自然更新）。
+ */
+function withRunningInvariant(s: ChatState): ChatState {
+  if (!s.sessionRunning) return s
+  const cur = s.activeTurn !== null ? s.turns.get(s.activeTurn) : undefined
+  if (cur && cur.phase.kind === 'live') return s
+  let target: TurnID | null = null
+  for (const [id, t] of s.turns) {
+    if (t.phase.kind === 'committed' && t.phase.payload.via === 'text') continue
+    if (target === null || id > target) target = id
+  }
+  if (target === null) return s
+  const t = s.turns.get(target)
+  if (!t) return s
+  const data: LiveSnapshot =
+    t.phase.kind === 'live'
+      ? t.phase.data
+      : t.phase.kind === 'frozen'
+        ? { ...t.phase.data, streaming: true }
+        : {
+            ...EMPTY_LIVE,
+            // DB 快照里的迭代都是**已完成**的；进行中迭代 = 最后一个 + 1
+            //（后端只在迭代完成后写 iteration_history ⇒ 永远大于已落盘最大号）。
+            iter: iterNum(lastIterationNumber(t.phase.payload.iterations) + 1),
+            content: t.phase.payload.content,
+            iterations: t.phase.payload.iterations,
+          }
+  const turns = new Map(s.turns)
+  turns.set(target, { ...t, phase: { kind: 'live', data } })
+  return { ...s, turns, activeTurn: target }
+}
+
+/** 迭代列表里的最大迭代号（0 = 空）。 */
+function lastIterationNumber(its: readonly WebIteration[]): number {
+  return its.reduce((m, it) => Math.max(m, it.iteration), 0)
+}
+
 // ─── reduce：8 case 穷尽（never 检查由 TS 判别联合保证） ───────
 
 export function reduce(s: ChatState, ev: DomainEvent): ChatState {
@@ -236,6 +291,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     // 清 activeTurn 的同时把活跃 turn 定格为 frozen —— **保留已渲染内容**
     // （与 cancel 的 freeze 同语义，绝不 wipe），并把 streaming 置 false。
     case 'session_idle': {
+      // ⛔ 权威按 `sessionRunning` 判定（不变量：输入框 = cancel ⇒ 上面必须显示
+      // 进行中信号）。`session(idle)` / `agent-idle` 是 **coarse 会话级**信号
+      //（不带 turn 身份），可能来自 SSE 重连的 last_event_id 回放窗口或
+      // restoreActiveProgress 竞态 —— 与"真 idle"无法区分。服务端 reconcile 后
+      // 的 running 仍为 true 时，这条 idle 必然是陈旧/误传的 ⇒ **不得**冻结
+      // 运行中的 turn（否则输入框仍 cancel、列表却渲染成 idle 内容）。
+      // 真结束时 running 会由会话状态对账翻成 false，那条 `session_running(false)`
+      // 才是权威收尾（内容保留，不 wipe）。
+      if (s.sessionRunning) return s
       if (s.activeTurn === null) return s // 幂等：无活跃 turn ⇒ 原 state（零渲染）
       const turns = new Map(s.turns)
       const t = turns.get(s.activeTurn)
@@ -246,6 +310,27 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         })
       }
       return { ...s, turns, activeTurn: null, lastSeq: null }
+    }
+
+    // ── session_running：会话 running（服务端 reconcile 权威）─────────────
+    // 唯一职责：让 turn 的 live-ness 服从它 —— running=true 且 store 里没有
+    // live turn 时，把**最新未 finalize** 的 turn 提回 live（内容/迭代全保留、
+    // streaming=true ⇒ 渲染出进行中信号）；running=false 时把 live turn 定格
+    // （内容保留）。这是「输入框 = cancel ⇒ 内容不能像 idle」不变量的结构性保证。
+    case 'session_running': {
+      if (s.sessionRunning === ev.running) return s // 幂等（零渲染）
+      const flagged: ChatState = { ...s, sessionRunning: ev.running }
+      if (ev.running) return withRunningInvariant(flagged)
+      // 权威收尾：running=false 而 turn 还是 live ⇒ 定格（绝不 wipe 内容）。
+      if (s.activeTurn === null) return flagged
+      const t = s.turns.get(s.activeTurn)
+      if (!t || t.phase.kind !== 'live') return flagged
+      const turns = new Map(s.turns)
+      turns.set(s.activeTurn, {
+        ...t,
+        phase: { kind: 'frozen', data: { ...t.phase.data, streaming: false } },
+      })
+      return { ...flagged, turns, activeTurn: null, lastSeq: null }
     }
 
     case 'turn_started': {
@@ -853,6 +938,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
     case 'session': {
       if (ev.busy) return s.busy ? s : { ...s, busy: true }
       // idle：active live 的兜底收尾。
+      // ⛔ 同 session_idle：coarse 会话级 idle 在服务端 reconcile 的 running 仍为
+      // true 时必然陈旧/误传 ⇒ 不得冻结运行中的 turn（不变量：cancel ⇒ 进行中
+      // 可见）。真结束由 `session_running(false)` 权威收尾。
+      if (s.sessionRunning) return s
       if (s.activeTurn === null) return s.busy ? { ...s, busy: false } : s
       const t = s.turns.get(s.activeTurn)
       if (!t || t.phase.kind !== 'live') return s.busy ? { ...s, busy: false } : s
@@ -1187,7 +1276,15 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         return s
       }
 
-      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal }
+      // ⛔ 施加 running 不变量（不变量：cancel ⇒ 进行中可见）：reload 可能把
+      // **运行中**的 turn 折成 committed（DB 中间行）而 ev.active 快照缺失
+      //（active_progress=null / 竞态）—— 此时服务端 running 仍为 true，必须把它
+      // 提回 live，否则输入框 cancel、列表却渲染成 idle 内容（用户 2026-09-19）。
+      return withRunningInvariant({
+        chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
+        busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
+        sessionRunning: s.sessionRunning,
+      })
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

@@ -369,6 +369,18 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // ── M4：新状态机（web/src/chat/）作为唯一渲染数据源 ──
   // 全部 SSE 事件 → normalizeEvent → reduce；DB 历史 → history_replaced。
   // 旧 useProgressStream（1742 行）+ MessageStore（622 行）双轨协调已移除。
+  // Per-panel session lookup: derive from this panel's own chatID/channel
+  // (from params), NOT from the global activeSession. Using activeSession would
+  // make split-view panels share the same busy/running state — tab A's
+  // session(busy) event would set tab B's input to busy too.
+  //
+  // ⚠️ 必须早于 useAgentChatState：状态机的 turn live-ness **服从**这个 running
+  // （不变量：输入框 = cancel ⇒ 上面必须显示进行中信号 —— 见 chat/types.ts 的
+  // `session_running`）。
+  const currentSession = chatID
+    ? store.sessions.find((s) => sameSession(s, { channel: messageChannel, chatID }))
+    : undefined
+
   const agentChat = useAgentChatState({
     progressChatID,
     ws,
@@ -380,6 +392,9 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     historyChatID: chatID,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     resetKey: `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`,
+    // 会话 running（服务端 reconcile 权威）—— 状态机的 turn live-ness 服从它
+    //（不变量：输入框 = cancel ⇒ 上面必须显示进行中信号）。
+    sessionRunning: currentSession?.running ?? false,
   })
   // SubAgent idle/done 时重置（SubAgent 面板收不到 text/session(idle)）。
   const resetAgentChatRef = useRef(agentChat.reset)
@@ -542,13 +557,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // Fall back to the hydrated progressSnapshot.streaming (set true by
   // historyProgressToLive and by any stream/structured event while phase !=
   // done) so the "思考中…" placeholder still renders on refresh.
-  // Per-panel session lookup: derive from this panel's own chatID/channel
-  // (from params), NOT from the global activeSession. Using activeSession would
-  // make split-view panels share the same busy/running state — tab A's
-  // session(busy) event would set tab B's input to busy too.
-  const currentSession = chatID
-    ? store.sessions.find((s) => sameSession(s, { channel: messageChannel, chatID }))
-    : undefined
   // busy 来源（三路 OR，覆盖所有窗口）：
   // 1. currentSession.running（SSE session(busy) 事件设置 —— 主路径）
   // 2. progressSnapshot.streaming（live turn 在跑 —— TDSM 状态机经

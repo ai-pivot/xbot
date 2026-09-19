@@ -43,6 +43,9 @@
 - **快照权威修复链**：`resync_required` / `replay_gap` / `onIterationGap` 三路强制 DB reload。
 - **半开连接检测**：heartbeat 事件行 + 45s 静默超时 watchdog + REST 轮询兜底。
 - **遮蔽/解冻对称（2026-09-19 补齐）**：`session(idle)` / `session_idle` 会把运行中的 live turn 冻结（迟到 / 误传 / SSE 重放的陈旧 idle 无法与真 idle 区分 —— idle 事件不带 turn 身份）；因此**四条事件路径**（`iteration` / `stream` / `phase_done` / `text_final`）都必须能凭**服务端顺序保证**解冻：`ev.iteration > maxIter`（后端绝不会对已结束的 turn 发新迭代/新流式）⇒ 解冻恢复 live（既有内容全保留、`streaming: true`）。`stream` 路径曾漏做 ⇒ LLM 生成期只有流式事件时 live 永久不回来（"live 进度消失且永远不再更新"，用户 2026-09-19 手机熄屏解锁场景；`p0-live-iteration-oscillation.test.ts` + `e2e/mobile-frozen-live-revive.spec.ts` 守护）。升级后 `iter` 必须落在进行中的迭代上（不得回退到 1，否则下一帧被判"迭代前进"而清空刚恢复的内容）。**已知缺口**：服务端 15s heartbeat 的 `sync_progress` live 快照未被 `chat/normalize.ts` 归一化（新状态机丢弃）—— 若再遇"冻结后长时间无业务事件"，把它接进状态机是首选修复。
+- **⛔ 不变量：`busy（composer = cancel）⟹ 列表必须有可见的进行中信号`（用户 2026-09-19 反复点名）。** 两侧权威必须一致 —— composer 的 busy 含 `currentSession.running`（服务端 reconcile 权威），故 turn 的 live-ness 必须服从它：
+  ① **渲染层**：`frozen` 行虽 `isPartial=true` 但**不是** live 行 —— `MessageList.liveId` 必须排除它（否则它拿到 EMPTY 的 `liveProgress`（frozen ⇒ `activeTurn===null`）既不渲染信号，又把 busy 占位符的 `liveId===null` 条件挡掉 ⇒ cancel + 内容像 idle）；占位符条件 = `busy && !liveShowsIndicator`（live 行自身已渲染信号才抑制，仍严格互斥 ⇒ 恰好一个指示器）。
+  ② **状态层**：`ChatState.sessionRunning` + `session_running` 事件（`currentSession?.running` 驱动）是 turn live-ness 的权威 —— coarse `session(idle)`/`agent-idle` 在 running=true 时**被忽略**（陈旧/误传）；running=true ⇒ 最新**未 finalize** 的 turn 提回 live（`withRunningInvariant`；`via:'text'` 的 committed 是权威结束信号，绝不复活）；running=false ⇒ live turn 定格（内容保留）。`history_replaced` 同样施加该不变量。守护：`chat/p0-busy-invariant.test.ts` + `MessageList.test.tsx` + **E2E `e2e/busy-invariant.spec.ts`**（变异自证：撤修复必红）。
 
 ## 4. 弱网一致性风险点（审计结论，2026-08）
 

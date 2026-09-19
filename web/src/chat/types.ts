@@ -218,10 +218,17 @@ export interface ChatState {
   readonly goal: GoalInfo | null
   /** 排队中的消息（Staging Tray 数据源）。queue_state SSE 事件全量替换。 */
   readonly queue: readonly QueueItemPayload[]
+  /** 会话 running（**服务端 reconcile 后的权威**，来自 session-tree/status 的
+   *  REST 对账 + SSE session 事件；AgentPanel 每次变化都 dispatch
+   *  `session_running`）。turn 的 live-ness 必须服从它 —— 不变量（用户
+   *  2026-09-19）：「输入框是 cancel ⇒ 上面必须显示进行中信号」。coarse 的
+   *  `session(idle)`（不带 turn 身份、可能是回放/迟到事件）在 running=true 时
+   *  **不得**冻结运行中的 turn；running=false 时才允许冻结（内容保留）。 */
+  readonly sessionRunning: boolean
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [] }
+  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -238,6 +245,23 @@ export type DomainEvent =
        *  后端 idle、前端渲染成 busy，只能整页刷新恢复）。
        *  **不丢内容**：活跃 turn 转 frozen（与 cancel 的 freeze 同语义）。 */
       readonly type: 'session_idle'
+    }
+  | {
+      /** 会话 running 状态（**服务端 reconcile 后的权威**：`currentSession.running`，
+       *  来自 session-tree/status 的 REST 对账，而非单条 SSE 事件）。
+       *
+       *  不变量（用户 2026-09-19 点名）：「输入框是 cancel（busy）⇒ 上面渲染的内容
+       *  必须能看到进行中信号」。busy 的三路 OR 之一就是 `currentSession.running`；
+       *  而 turn 的 live 与否此前**只**由事件驱动 —— 一条迟到/误传/重放的
+       *  `session(idle)`（不带 turn 身份、可能是回放窗口里的旧事件）就能把运行中的
+       *  turn 冻结并清 activeTurn ⇒ 两侧权威分叉：输入框仍 cancel，列表却像 idle。
+       *
+       *  **结构性修复**：让 running 成为 turn live-ness 的权威 —— running=true 时，
+       *  最新的**未 finalize** turn 必须回到 live（内容/迭代全保留，streaming=true
+       *  ⇒ 渲染出进行中信号）。`via:'text'` 的 committed（后端已发最终回复）是
+       *  权威结束信号，**绝不**复活（否则已结束的 turn 会变成 busy 幽灵）。 */
+      readonly type: 'session_running'
+      readonly running: boolean
     }
   | {
       readonly type: 'turn_started'

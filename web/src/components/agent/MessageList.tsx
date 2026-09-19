@@ -500,10 +500,28 @@ export const MessageList = memo(function MessageList({
   // isPartial 才是真正在接收 live 进度的行。
   const liveId = useMemo(() => {
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].isPartial) return rows[i].id
+      // ⛔ 只认真正的 live 行：frozen 行（cancel / idle 兜底定格）也 isPartial=true，
+      // 但它不是 live —— 占用 liveId 会让它拿到 EMPTY 的 liveProgress
+      //（liveProgressFromState 在 activeTurn===null 时返回空快照，frozen 恒满足）
+      // 并在 busy 时抑制下面的占位符 ⇒ 「输入框是 cancel，上面的内容却像 idle」
+      //（用户 2026-09-19 明确点名的不变量被破坏）。frozen 行的工具/内容已在
+      // deriveRows 折进 iterations，不需要 liveProgress。
+      if (rows[i].isPartial && !rows[i].frozen) return rows[i].id
     }
     return null
   }, [rows])
+  // live 行**自身**是否已经渲染了"进行中"信号（LiveIteration 的 ShimmerThinking
+  // 需要 streaming；AssistantMessage 的压缩指示器需要 phase==='compressing'）。
+  // 只有当它为 false 时才需要下面的 busy 占位符 —— 不变量：
+  //   busy（输入框 = cancel）⟹ 列表里**必须**有一个可见的进行中信号
+  //   （要么 live 行自己的，要么这个占位符）；两者严格互斥（恰好一个指示器）。
+  // 用户 2026-09-19 点名的不变量被破坏就发生在这里：frozen 行（isPartial=true）
+  // 曾占用 liveId ⇒ 它拿到的 liveProgress 是 EMPTY（streaming=false）⇒ 自身不
+  // 渲染任何信号，同时 `liveId === null` 条件又不成立 ⇒ 占位符也被抑制 ⇒
+  // 「输入框是 cancel，上面的内容却完全像 idle」。
+  const liveShowsIndicator =
+    liveId !== null &&
+    (liveProgress?.streaming === true || liveProgress?.phase === 'compressing')
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -1436,7 +1454,7 @@ export const MessageList = memo(function MessageList({
               也不渲染 → 完全空白（切换会话新 turn，用户报告）。收紧为
               liveId === null 与 LiveIteration 严格互斥（排队消息沉底在 live
               行之后时 rows 最后是 user，旧条件会与本组件双渲染）。 */}
-          {busy && !(loading && rows.length === 0) && liveId === null && (
+          {busy && !(loading && rows.length === 0) && !liveShowsIndicator && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

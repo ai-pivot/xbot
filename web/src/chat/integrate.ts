@@ -255,6 +255,9 @@ function rowToChatMessage(r: Row): ChatMessage {
         iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: true,
+        // frozen ≠ live：见 ChatMessage.frozen 的注释（不变量：busy ⇒ 必须有
+        // 进行中信号；frozen 行不得占用 live 槽位 / 抑制 busy 占位符）。
+        frozen: true,
         turnID: r.turnID,
       }
     case 'committed':
