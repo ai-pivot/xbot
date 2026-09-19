@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { toManifest } from './usePluginRuntimeHost'
 import { createPluginI18n } from './i18n'
 
 // ===========================================================================
@@ -71,5 +72,25 @@ describe('createPluginI18n：逐级回退', () => {
 
   it('下划线写法的 locale 归一化为连字符（zh_CN → zh-CN）', () => {
     expect(createPluginI18n(table, () => 'zh_CN').t('hello')).toBe('你好')
+  })
+})
+
+describe('桥：插件清单 web.i18n → ctx.i18n（端到端可达性）', () => {
+  it('toManifest() 必须透传 decl.i18n，且该表真的参与解析（不是 fallback）', () => {
+    // 断链根因（2026-09-19 用户实测：「插件语言设置英文，ssh 插件仍中文」）：
+    // 前端 WebPluginDecl 无 i18n 字段、toManifest() 不透传 ⇒ createPluginI18n(undefined)
+    // ⇒ 插件 ctx.i18n.t(key, 中文兜底) 永远走 fallback。此用例守住整条桥。
+    const decl = {
+      id: 'xbot.ssh-runner', name: 'ssh-runner', version: '1.0.0', state: 'active', enabled: true,
+      permissions: ['rpc'], entry: 'web/index.js', module_url: '/plugins/xbot.ssh-runner/web/index.js',
+      i18n: { en: { connect: 'Connect' }, ja: { connect: '接続' } },
+    }
+    const manifest = toManifest(decl)
+    expect(manifest.i18n).toBeDefined() // 漏透传时这里红
+    const en = createPluginI18n(manifest.i18n, () => 'en')
+    expect(en.t('connect', '连接')).toBe('Connect') // 命中清单表（宿主语言=en），而非中文兜底
+    const ja = createPluginI18n(manifest.i18n, () => 'ja')
+    expect(ja.t('connect', '连接')).toBe('接続')
+    expect(en.t('missing', '兜底')).toBe('兜底') // 缺 key 才回落
   })
 })
