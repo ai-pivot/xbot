@@ -1,8 +1,8 @@
 {
   "id": "xbot.git-fancy",
-  "name": "Git Fancy",
+  "name": "manifest.name",
   "version": "0.3.5",
-  "description": "Fancy Git 面板：分支、变更文件、提交历史（分页）、commit 详情、全宽 diff tab（VSCode editor view）。纯 stdio IPC 后端（独立 Go 进程）。",
+  "description": "manifest.description",
   "author": "xbot",
   "runtime": "stdio",
   "entry": "./bin/git-fancy-plugin",
@@ -41,7 +41,7 @@
         "kind": "view",
         "id": "xbot.git-fancy.panel",
         "container": "right_sidebar",
-        "title": "Git",
+        "title": "view.panel.title",
         "icon": "git-branch",
         "entry": "index.js"
       },
@@ -49,7 +49,7 @@
         "kind": "view",
         "id": "xbot.git-fancy.commit",
         "container": "main",
-        "title": "Commit",
+        "title": "view.commit.title",
         "icon": "git-commit-horizontal",
         "entry": "commit.js",
         "dynamic": true
@@ -79,7 +79,11 @@
         "config.defaultLogLimit.label": "默认 Commit 条数",
         "config.defaultLogLimit.description": "Git 日志面板默认加载的 commit 数量（log limit 默认值）",
         "config.showDiffStats.label": "显示 Diff 变更统计",
-        "config.showDiffStats.description": "commit 详情中显示 numstat 变更统计（++/-- 行数）"
+        "config.showDiffStats.description": "commit 详情中显示 numstat 变更统计（++/-- 行数）",
+        "manifest.name": "Git 面板",
+        "manifest.description": "Git 面板：分支、变更文件、提交历史（分页）、commit 详情、全宽 diff tab。",
+        "view.panel.title": "Git",
+        "view.commit.title": "Commit"
       },
       "en": {
         "loadingGit": "Loading git status…",
@@ -104,7 +108,11 @@
         "config.defaultLogLimit.label": "Default commit count",
         "config.defaultLogLimit.description": "Number of commits the git log panel loads by default (default log limit).",
         "config.showDiffStats.label": "Show diff stats",
-        "config.showDiffStats.description": "Show numstat change stats (++/-- lines) in commit details."
+        "config.showDiffStats.description": "Show numstat change stats (++/-- lines) in commit details.",
+        "manifest.name": "Git Fancy",
+        "manifest.description": "Git panel: branch, changed files, commit history (paged), commit details, full-width diff tabs.",
+        "view.panel.title": "Git",
+        "view.commit.title": "Commit"
       },
       "ja": {
         "loadingGit": "git の状態を読み込み中…",
@@ -129,7 +137,11 @@
         "config.defaultLogLimit.label": "既定のコミット数",
         "config.defaultLogLimit.description": "git ログパネルが既定で読み込む commit 数（log limit の既定値）。",
         "config.showDiffStats.label": "Diff の変更統計を表示",
-        "config.showDiffStats.description": "commit 詳細に numstat の変更統計（++/-- 行数）を表示します。"
+        "config.showDiffStats.description": "commit 詳細に numstat の変更統計（++/-- 行数）を表示します。",
+        "manifest.name": "Git パネル",
+        "manifest.description": "Git パネル：ブランチ・変更ファイル・コミット履歴（ページング）・commit 詳細・全幅 diff タブ。",
+        "view.panel.title": "Git",
+        "view.commit.title": "Commit"
       }
     }
   }

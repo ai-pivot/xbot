@@ -29,7 +29,7 @@ func TestManifest_DeclaresI18nTable(t *testing.T) {
 	}
 	// 下限 = 当前实际条数（分享按钮 4 态 + tooltip + 分享标题）。
 	// 只增不减：删 key 属于功能回退，必须显式改这个下限并说明原因。
-	const minKeys = 6
+	const minKeys = 8
 	for _, loc := range []string{"zh-CN", "en", "ja"} {
 		table, ok := m.Web.I18n[loc]
 		if !ok {

@@ -35,7 +35,7 @@ func TestManifest_DeclaresI18nTable(t *testing.T) {
 	// + 会话身份未就绪 / rpc 未注入 两条错误文案 + contributes.configuration 的
 	// label/description 4 条 —— 设置页经插件表解析这些 key，见 SettingsPlugins.resolvePluginText）。
 	// 只增不减：删 key 属于功能回退，必须显式改这个下限并说明原因。
-	const minKeys = 23
+	const minKeys = 27
 	for _, loc := range []string{"zh-CN", "en", "ja"} {
 		table, ok := m.Web.I18n[loc]
 		if !ok {
