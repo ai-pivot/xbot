@@ -10,6 +10,7 @@
  *     这样插件 UI 至少显示可读的 key，而不是空白。
  */
 import type { I18nAPI } from '@/plugin-api'
+import i18n from '@/i18n'
 
 /** 插件清单里的文案表形状：locale → key → text。 */
 export type PluginI18nTable = Readonly<Record<string, Readonly<Record<string, string>>>>
@@ -79,4 +80,38 @@ export function createPluginI18n(table: PluginI18nTable | undefined, readLocale:
       return fallback ?? key
     },
   }
+}
+
+/**
+ * 宿主侧解析「**插件清单文本**（key 或裸文本）」的唯一 helper。
+ *
+ * 契约（2026-09-19，与插件运行时的 `ctx.i18n` 同源）：插件清单里凡是用户可见的文本
+ * ——`contributes.configuration` 的 `label`/`description`/`section`、插件卡片
+ * `name`/`description`、view 的 `title`——都允许写**该插件 `web.i18n` 表里的 key**。
+ * 命中 ⇒ 按宿主当前语言取译文；**不是 key**（历史清单里的裸字符串）或**该插件没有表**
+ * ⇒ **原样返回**（向后兼容，零 hack）。解析器复用 `createPluginI18n`（回退链一致）。
+ *
+ * @param table 该插件的文案表（`PluginManifest.i18n`）；缺省 ⇒ 原样透传
+ * @param keyOrText 清单里的文本或 key；空值原样返回
+ * @param readLocale 宿主语言读取器（默认读宿主 i18n；测试可注入固定值）
+ */
+export function resolvePluginText(
+  table: PluginI18nTable | undefined,
+  keyOrText: string | undefined | null,
+  readLocale: LocaleReader = () => i18n.language,
+): string | undefined {
+  if (keyOrText === undefined || keyOrText === null || keyOrText === '') return keyOrText ?? undefined
+  if (!table) return keyOrText
+  return createPluginI18n(table, readLocale).t(keyOrText, keyOrText)
+}
+
+/**
+ * 从插件清单里取某插件的文案表（宿主各处消费插件文本时的统一取表入口）。
+ * 未激活/无 web 声明的插件 ⇒ undefined（调用方原样透传文本）。
+ */
+export function pluginI18nTableOf(
+  manifests: { manifestOf(pluginId: string): { i18n?: PluginI18nTable } | undefined },
+  pluginId: string,
+): PluginI18nTable | undefined {
+  return manifests.manifestOf(pluginId)?.i18n
 }

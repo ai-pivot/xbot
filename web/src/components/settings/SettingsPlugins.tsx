@@ -12,8 +12,7 @@ import { ImagePlus, Loader2, Search, X } from 'lucide-react'
 import { postAPI } from '@/lib/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { useI18n } from '@/providers/i18n'
-import i18n from '@/i18n'
-import { createPluginI18n, type PluginI18nTable } from '@/plugin-runtime/i18n'
+import { resolvePluginText, type PluginI18nTable } from '@/plugin-runtime/i18n'
 import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
@@ -53,17 +52,10 @@ interface PluginConfigView {
 }
 
 /**
- * 用**插件自带的文案表**（plugin.json 的 `web.i18n`）解析 schema 文本。
- *
- * 契约（2026-09-19，与 `ctx.i18n` 同源）：schema 的 `label`/`description`/`section`
- * 允许写**该插件文案表里的 key** —— 命中 ⇒ 按宿主当前语言取译文；**不是 key**
- * （历史插件的裸字符串）或**该插件没有表** ⇒ **原样返回**（向后兼容，零 hack）。
- * 解析器直接复用插件运行时的 `createPluginI18n`（回退链与 `ctx.i18n` 完全一致）。
+ * schema 文本按**插件自带的文案表**（plugin.json 的 `web.i18n`）解析 —— 唯一实现见
+ * `@/plugin-runtime/i18n` 的 `resolvePluginText`（与插件运行时 `ctx.i18n` 同一解析器）：
+ * 命中表 ⇒ 译文；非 key / 无表 ⇒ 原样透传。
  */
-function resolvePluginText(table: PluginI18nTable | undefined, raw: string | undefined): string | undefined {
-  if (!raw || !table) return raw
-  return createPluginI18n(table, () => i18n.language).t(raw, raw)
-}
 
 export function SettingsPlugins() {
   const { t } = useI18n()

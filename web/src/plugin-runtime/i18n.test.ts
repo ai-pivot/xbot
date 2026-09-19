@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { toManifest } from './usePluginRuntimeHost'
-import { createPluginI18n } from './i18n'
+import { createPluginI18n, resolvePluginText } from './i18n'
 
 // ===========================================================================
 // 插件自带 i18n 的契约（2026-09-19 用户要求：插件 i18n 是平台通用能力）
@@ -92,5 +92,48 @@ describe('桥：插件清单 web.i18n → ctx.i18n（端到端可达性）', () 
     const ja = createPluginI18n(manifest.i18n, () => 'ja')
     expect(ja.t('connect', '连接')).toBe('接続')
     expect(en.t('missing', '兜底')).toBe('兜底') // 缺 key 才回落
+  })
+})
+
+// ===========================================================================
+// resolvePluginText：宿主侧解析「**插件清单文本**（key 或裸文本）」的唯一 helper。
+//
+// 契约：清单里凡是用户可见的文本（配置项 label/description、插件卡片 name、view 的 title）
+// 都允许写该插件 web.i18n 表里的 key —— 命中 ⇒ 按宿主语言取译文；**不是 key 或该插件没有表**
+// ⇒ **原样返回**（向后兼容历史清单，零 hack）。
+// ===========================================================================
+
+describe('resolvePluginText（清单文本 key/裸文本解析）', () => {
+  const table = {
+    'zh-CN': { 'manifest.name': 'Git 面板', 'view.title': '视图' },
+    en: { 'manifest.name': 'Git Fancy', 'view.title': 'View' },
+  }
+
+  it('宿主 en：key 命中 ⇒ 英文', () => {
+    expect(resolvePluginText(table, 'manifest.name', () => 'en')).toBe('Git Fancy')
+  })
+
+  it('宿主 zh-CN：key 命中 ⇒ 中文', () => {
+    expect(resolvePluginText(table, 'manifest.name', () => 'zh-CN')).toBe('Git 面板')
+  })
+
+  it('裸字符串（非 key）⇒ 原样透传（向后兼容历史清单）', () => {
+    expect(resolvePluginText(table, 'Git Fancy', () => 'en')).toBe('Git Fancy')
+    expect(resolvePluginText(table, '不是 key 的中文', () => 'en')).toBe('不是 key 的中文')
+  })
+
+  it('插件没有文案表 ⇒ 原样透传、不报错', () => {
+    expect(resolvePluginText(undefined, 'manifest.name', () => 'en')).toBe('manifest.name')
+    expect(resolvePluginText(undefined, 'Git Fancy', () => 'en')).toBe('Git Fancy')
+  })
+
+  it('空值/未定义 ⇒ 原样返回（由调用方兜底）', () => {
+    expect(resolvePluginText(table, undefined)).toBeUndefined()
+    expect(resolvePluginText(table, null)).toBeUndefined()
+    expect(resolvePluginText(table, '')).toBe('')
+  })
+
+  it('view 标题同一 helper 复用（一处实现）', () => {
+    expect(resolvePluginText(table, 'view.title', () => 'zh-CN')).toBe('视图')
   })
 })

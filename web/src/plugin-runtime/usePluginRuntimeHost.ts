@@ -20,6 +20,7 @@ import { PluginRuntimeProvider, usePluginRuntime, type PluginRuntimeHost } from 
 import { FetchRpcTransport } from '@/plugin-runtime/rpc'
 import { layoutRegistry, VIEW_CONTAINER_TO_SLOT } from '@/plugin-runtime/layoutRegistry'
 import { panelRegistry, buildPanelDefs } from '@/plugin-runtime/panelRegistry'
+import { resolvePluginText } from '@/plugin-runtime/i18n'
 import { PluginView } from '@/plugin-runtime/PluginView'
 
 /** 后端 web_plugin_list 返回的单个插件声明。 */
@@ -410,7 +411,19 @@ export function PluginRuntimeBootstrap() {
     const syncedPanels = new Set<string>()
     const syncedLayout = new Set<string>()
     const syncViews = () => {
-      const views = runtime.listAllViews().filter(({ view }) => !view.dynamic)
+      const views = runtime
+        .listAllViews()
+        .filter(({ view }) => !view.dynamic)
+        // 面板/dock 标题允许是**该插件 `web.i18n` 表里的 key**（内置插件的 title 已是
+        // 宿主 i18n 解析后的文本 ⇒ 无表 ⇒ 原样透传）。在源头解析一次，panelRegistry 与
+        // layoutRegistry 两处消费点同时受益。
+        .map(({ pluginId, view }) => ({
+          pluginId,
+          view: {
+            ...view,
+            title: resolvePluginText(runtime.registry.manifestOf(pluginId)?.i18n, view.title) ?? view.title,
+          },
+        }))
       const built = buildPanelDefs(views, (pluginId, view) =>
         createElement(PluginView, { pluginId, view }),
       )

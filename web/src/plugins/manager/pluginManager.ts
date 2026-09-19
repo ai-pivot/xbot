@@ -10,19 +10,24 @@
  * 是插件系统能力模型的高保真演示（dogfooding）。第三方可写更好的面板覆盖它。
  */
 import type { PluginContext, PluginManifest, Disposable } from '@/plugin-api'
+import i18n from '@/i18n'
 
 export const manifest = {
   id: 'xbot.plugin-manager',
-  name: 'Plugin Manager',
+  // 内置插件随主 bundle 打包（拿不到清单 web.i18n）⇒ 名称/描述/标题走宿主 i18n。
+  name: i18n.t('plugins.manager.manifest.name', { defaultValue: '插件管理' }),
   version: '0.1.0',
-  description: '管理插件：查看/启用/禁用/卸载/重载（自举实现，本身也是一个插件）',
+  description: i18n.t('plugins.manager.manifest.description', {
+    defaultValue: '管理插件：查看/启用/禁用/卸载/重载（自举实现，本身也是一个插件）',
+  }),
   permissions: ['rpc', 'plugins', 'ui'] as const,
   contributes: [
     {
       kind: 'view',
       id: 'xbot.plugin-manager.panel',
       container: 'right_sidebar',
-      title: '插件',
+      // 内置插件随主 bundle 打包（拿不到插件清单的 web.i18n）⇒ 走宿主 i18n。
+      title: i18n.t('plugins.manager.manifest.title', { defaultValue: '插件' }),
       icon: 'blocks',
       // 内置视图标记：宿主 host.loadViewComponent 识别此标记直接返回静态组件。
       entry: 'builtin:xbot.plugin-manager.panel',
