@@ -28,6 +28,8 @@ import { PluginConfigService } from './config'
 import { panelRegistry } from './panelRegistry'
 import type { PanelsAPI } from '@/plugin-api'
 import { buildContext } from './context'
+import { createPluginI18n } from './i18n'
+import i18n from '@/i18n'
 import { createShareAPI } from './share'
 import { PluginFileService } from './files'
 import { loadPluginModule, versionedUrl, type PluginModule } from './loader'
@@ -200,6 +202,8 @@ export class PluginRuntime {
     const meta: PluginMeta = { id: effective.id, version: effective.version }
     const ctx = buildContext(perms, {
       meta,
+      // 插件自带 i18n：表来自清单（web.i18n），locale 每次调用实时读取宿主语言。
+      i18n: createPluginI18n(effective.i18n, () => i18n.language),
       events: this.events,
       commands: this.commands,
       rpc: this.rpc,

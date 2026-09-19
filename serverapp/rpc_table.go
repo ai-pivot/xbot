@@ -2179,6 +2179,9 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 			Entry       string          `json:"entry"`
 			ModuleURL   string          `json:"module_url"`
 			Contributes json.RawMessage `json:"contributes,omitempty"`
+			// I18n 是插件**自带**的文案表（locale → key → text），原样透传给前端运行时，
+			// 由 `ctx.i18n.t(key, fallback)` 解析（后端不解析其内容 —— 与 contributes 同一门控）。
+			I18n json.RawMessage `json:"i18n,omitempty"`
 		}
 		var out []webPluginJSON
 		for _, e := range pm.ListPlugins() {
@@ -2196,6 +2199,7 @@ func registerPluginHandlers(t RPCTable, h *RPCContext) {
 				Entry:       e.Manifest.Web.Entry,
 				ModuleURL:   moduleURL,
 				Contributes: e.Manifest.Web.Contributes,
+				I18n:        e.Manifest.Web.I18n,
 			})
 		}
 		return map[string]any{"plugins": out}, nil

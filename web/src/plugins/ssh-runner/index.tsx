@@ -214,11 +214,11 @@ const CONN_TEXT: Record<ConnectionState, string> = {
 function connectionStateLabel(state: ConnectionState): string {
   switch (state) {
     case 'connected':
-      return t('plugins.sshRunner.stateConnected', '已连接')
+      return t('stateConnected', '已连接')
     case 'reconnecting':
-      return t('plugins.sshRunner.stateReconnecting', '重连中')
+      return t('stateReconnecting', '重连中')
     default:
-      return t('plugins.sshRunner.stateDisconnected', '未连接')
+      return t('stateDisconnected', '未连接')
   }
 }
 
@@ -285,7 +285,7 @@ export default function SshRunnerPanel() {
     const c = getCtx()
     if (!c) return
     if (!c.config) {
-      setListError(t('plugins.sshRunner.configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
+      setListError(t('configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
       setLoading(false)
       return
     }
@@ -447,7 +447,7 @@ export default function SshRunnerPanel() {
           setRowError((prev) => ({
             ...prev,
             [name]: t(
-              'plugins.sshRunner.connectTimeout',
+              'connectTimeout',
               '等待连接超时（后端仍在后台重连）——可重试，或稍后刷新状态。',
             ),
           }))
@@ -528,7 +528,7 @@ export default function SshRunnerPanel() {
                   resolve()
                 } else if (job.state === 'failed') {
                   poller.cancel()
-                  reject(new Error(job.error || t('plugins.sshRunner.installFailed', '安装失败')))
+                  reject(new Error(job.error || t('installFailed', '安装失败')))
                 }
               },
               (message) => {
@@ -612,7 +612,7 @@ export default function SshRunnerPanel() {
         if (!mountedRef.current) return
         setRowError((prev) => ({
           ...prev,
-          [target.name]: t('plugins.sshRunner.autoConnectFailed', '自动连接失败：{{msg}}', { msg: errMessage(e) }),
+          [target.name]: t('autoConnectFailed', '自动连接失败：{{msg}}', { msg: errMessage(e) }),
         }))
       }
     },
@@ -646,7 +646,7 @@ export default function SshRunnerPanel() {
       try {
         const c = getCtx()
         if (!c?.config) {
-          throw new Error(t('plugins.sshRunner.configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
+          throw new Error(t('configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
         }
         await c.config.set('targets', serializeTargets(next))
         targetsRef.current = next
@@ -699,7 +699,7 @@ export default function SshRunnerPanel() {
                       ...prev,
                       status: last ?? prev.status,
                       error: t(
-                        'plugins.sshRunner.connectTimeout',
+                        'connectTimeout',
                         '等待连接超时（后端仍在后台重连）——可重试，或稍后刷新状态。',
                       ),
                     }
@@ -741,7 +741,7 @@ export default function SshRunnerPanel() {
                   ? {
                       ...prev,
                       job,
-                      error: job.state === 'failed' ? job.error || t('plugins.sshRunner.installFailed', '安装失败') : prev.error,
+                      error: job.state === 'failed' ? job.error || t('installFailed', '安装失败') : prev.error,
                     }
                   : prev,
               )
@@ -780,15 +780,15 @@ export default function SshRunnerPanel() {
     const name = flow.name.trim()
     const ssh = flow.ssh.trim()
     if (!name) {
-      setFlow({ ...flow, error: t('plugins.sshRunner.errorNameRequired', '请填写名称') })
+      setFlow({ ...flow, error: t('errorNameRequired', '请填写名称') })
       return
     }
     if (!ssh) {
-      setFlow({ ...flow, error: t('plugins.sshRunner.errorSshRequired', '请填写 SSH 命令（例如 ssh user@host -p 22）') })
+      setFlow({ ...flow, error: t('errorSshRequired', '请填写 SSH 命令（例如 ssh user@host -p 22）') })
       return
     }
     if (targetsRef.current.some((x) => x.name === name)) {
-      setFlow({ ...flow, error: t('plugins.sshRunner.errorDuplicate', '名称已存在：{{name}}', { name }) })
+      setFlow({ ...flow, error: t('errorDuplicate', '名称已存在：{{name}}', { name }) })
       return
     }
     const { connectionMode, autoConnect } = flow
@@ -826,7 +826,7 @@ export default function SshRunnerPanel() {
     if (current.phase !== 'connecting') return
     connectPollersRef.current[current.name]?.cancel()
     delete connectPollersRef.current[current.name]
-    setFlow({ ...current, error: t('plugins.sshRunner.connectCancelled', '已停止等待连接（后端仍在后台尝试重连）。') })
+    setFlow({ ...current, error: t('connectCancelled', '已停止等待连接（后端仍在后台尝试重连）。') })
   }, [])
 
   const saveOnly = useCallback(() => {
@@ -908,7 +908,7 @@ export default function SshRunnerPanel() {
     try {
       const c = getCtx()
       if (!c?.config) {
-        throw new Error(t('plugins.sshRunner.configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
+        throw new Error(t('configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
       }
       await c.config.set('targets', serializeTargets(next))
       targetsRef.current = next
@@ -947,7 +947,7 @@ export default function SshRunnerPanel() {
           (job) => {
             setDeleteState((prev) => ({
               ...prev,
-              [name]: { job, error: job.state === 'failed' ? job.error || t('plugins.sshRunner.deleteFailed', '移除机器失败') : null },
+              [name]: { job, error: job.state === 'failed' ? job.error || t('deleteFailed', '移除机器失败') : null },
             }))
             if (job.state === 'done') void finishDelete(target)
           },
@@ -973,7 +973,7 @@ export default function SshRunnerPanel() {
     try {
       const c = getCtx()
       if (!c?.config) {
-        throw new Error(t('plugins.sshRunner.configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
+        throw new Error(t('configUnavailable', '插件配置能力不可用（permissions 需含 config）'))
       }
       await c.config.set('targets', serializeTargets(next))
       targetsRef.current = next
@@ -1031,7 +1031,7 @@ export default function SshRunnerPanel() {
   if (!c) {
     return (
       <div data-testid="ssh-runner-not-initialized" className="p-3 text-xs text-text-muted">
-        {t('plugins.sshRunner.notInitialized', 'Remote Machines 插件尚未初始化（activate(ctx) 未调用）')}
+        {t('notInitialized', 'Remote Machines 插件尚未初始化（activate(ctx) 未调用）')}
       </div>
     )
   }
@@ -1039,19 +1039,19 @@ export default function SshRunnerPanel() {
   const cfgForDisplay = config ?? mergeConfigValues(null)
 
   const sessionLine = !session.ready ? (
-    <span>{t('plugins.sshRunner.sessionNotReady', '会话身份未就绪——切换功能暂不可用（等待会话加载）')}</span>
+    <span>{t('sessionNotReady', '会话身份未就绪——切换功能暂不可用（等待会话加载）')}</span>
   ) : sessionError ? (
-    <span className="text-red-500">{t('plugins.sshRunner.sessionError', '无法读取当前目标：{{msg}}', { msg: sessionError })}</span>
+    <span className="text-red-500">{t('sessionError', '无法读取当前目标：{{msg}}', { msg: sessionError })}</span>
   ) : sessionTarget ? (
-    <span>{t('plugins.sshRunner.currentTarget', '当前目标：{{name}}', { name: sessionTarget })}</span>
+    <span>{t('currentTarget', '当前目标：{{name}}', { name: sessionTarget })}</span>
   ) : (
-    <span>{t('plugins.sshRunner.currentLocal', '当前目标：本机')}</span>
+    <span>{t('currentLocal', '当前目标：本机')}</span>
   )
 
   const modeOptionLabel = (mode: ConnectionMode): string =>
     mode === 'tunnel'
-      ? t('plugins.sshRunner.modeTunnelOption', 'tunnel（反向隧道，远端无需能访问 server）')
-      : t('plugins.sshRunner.modeDirectOption', 'direct（runner 直连 server）')
+      ? t('modeTunnelOption', 'tunnel（反向隧道，远端无需能访问 server）')
+      : t('modeDirectOption', 'direct（runner 直连 server）')
 
   return (
     <div data-testid="ssh-runner-panel" className="flex h-full flex-col overflow-hidden text-xs">
@@ -1061,11 +1061,11 @@ export default function SshRunnerPanel() {
           data-testid="ssh-switch-local"
           onClick={() => void switchToLocal()}
           disabled={!session.ready || switchLocalBusy}
-          title={t('plugins.sshRunner.switchLocalHint', '把当前会话切回本机执行')}
+          title={t('switchLocalHint', '把当前会话切回本机执行')}
           className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
           <IconHome />
-          {switchLocalBusy ? t('plugins.sshRunner.switching', '切换中…') : t('plugins.sshRunner.switchLocal', '切回本机')}
+          {switchLocalBusy ? t('switching', '切换中…') : t('switchLocal', '切回本机')}
         </button>
         <div className="min-w-0 flex-1" />
         <button
@@ -1074,7 +1074,7 @@ export default function SshRunnerPanel() {
             void reload()
             void loadSessionTarget()
           }}
-          title={t('plugins.sshRunner.refresh', '刷新')}
+          title={t('refresh', '刷新')}
           className="rounded p-1 text-text-muted hover:bg-bg-hover hover:text-text-primary"
         >
           <IconRefresh className={loading ? 'h-3.5 w-3.5 animate-spin' : 'h-3.5 w-3.5'} />
@@ -1085,7 +1085,7 @@ export default function SshRunnerPanel() {
           className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary"
         >
           <IconPlus />
-          {t('plugins.sshRunner.add', '添加机器')}
+          {t('add', '添加机器')}
         </button>
       </div>
 
@@ -1106,10 +1106,10 @@ export default function SshRunnerPanel() {
             >
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-text-primary">
                 <IconServer />
-                {t('plugins.sshRunner.addTitle', '添加远程机器')}
+                {t('addTitle', '添加远程机器')}
               </div>
               <label className="mb-1 block">
-                <span className="mb-0.5 block text-[10px] text-text-muted">{t('plugins.sshRunner.fieldName', '名称')}</span>
+                <span className="mb-0.5 block text-[10px] text-text-muted">{t('fieldName', '名称')}</span>
                 <input
                   data-testid="ssh-add-name"
                   value={flow.name}
@@ -1119,7 +1119,7 @@ export default function SshRunnerPanel() {
                 />
               </label>
               <label className="mb-1 block">
-                <span className="mb-0.5 block text-[10px] text-text-muted">{t('plugins.sshRunner.fieldSSH', 'SSH 命令')}</span>
+                <span className="mb-0.5 block text-[10px] text-text-muted">{t('fieldSSH', 'SSH 命令')}</span>
                 <input
                   data-testid="ssh-add-ssh"
                   value={flow.ssh}
@@ -1129,7 +1129,7 @@ export default function SshRunnerPanel() {
                 />
               </label>
               <label className="mb-1 block">
-                <span className="mb-0.5 block text-[10px] text-text-muted">{t('plugins.sshRunner.connectionMode', '连接方式')}</span>
+                <span className="mb-0.5 block text-[10px] text-text-muted">{t('connectionMode', '连接方式')}</span>
                 <select
                   data-testid="ssh-add-mode"
                   value={flow.connectionMode}
@@ -1148,11 +1148,11 @@ export default function SshRunnerPanel() {
                   onChange={(e) => setAutoConnect(e.target.checked)}
                   className="h-3 w-3"
                 />
-                {t('plugins.sshRunner.autoConnect', '面板打开后自动连接该机器')}
+                {t('autoConnect', '面板打开后自动连接该机器')}
               </label>
               <p className="mb-1 text-[10px] leading-snug text-text-muted">
                 {t(
-                  'plugins.sshRunner.connectionModeHint',
+                  'connectionModeHint',
                   'tunnel：远端无需能访问 server（ssh -R 反向隧道）；direct：runner 直连 server。runner 跑在 SSH 会话前台，断开管道即结束。',
                 )}
               </p>
@@ -1167,10 +1167,10 @@ export default function SshRunnerPanel() {
                   type="submit"
                   className="rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground hover:opacity-90"
                 >
-                  {t('plugins.sshRunner.probeBtn', '探测环境')}
+                  {t('probeBtn', '探测环境')}
                 </button>
                 <button type="button" onClick={closeAdd} className="rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover">
-                  {t('plugins.sshRunner.cancel', '取消')}
+                  {t('cancel', '取消')}
                 </button>
               </div>
             </form>
@@ -1179,7 +1179,7 @@ export default function SshRunnerPanel() {
           {flow.phase === 'probing' && (
             <div className="flex items-center gap-1.5 text-[10px] text-text-muted">
               <Spinner />
-              {t('plugins.sshRunner.probing', '正在创建 runner 并探测远程环境…')}
+              {t('probing', '正在创建 runner 并探测远程环境…')}
             </div>
           )}
 
@@ -1188,52 +1188,52 @@ export default function SshRunnerPanel() {
               <div className="mb-1 flex items-center justify-between text-[11px] font-semibold text-text-primary">
                 <span className="inline-flex items-center gap-1.5">
                   <IconServer />
-                  {t('plugins.sshRunner.probeTitle', '环境报告')}
+                  {t('probeTitle', '环境报告')}
                 </span>
                 <span className="font-mono text-[10px] font-normal text-text-muted">{flow.name}</span>
               </div>
               <div className="mb-1 space-y-0.5 rounded border border-border bg-bg-secondary p-1.5 text-[10px]">
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.probeOS', '系统')}</span>
+                  <span className="text-text-muted">{t('probeOS', '系统')}</span>
                   <span className="min-w-0 truncate font-mono text-text-secondary">
                     {flow.probe.os || '—'} / {flow.probe.arch || '—'}
                   </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.probeUser', '用户')}</span>
+                  <span className="text-text-muted">{t('probeUser', '用户')}</span>
                   <span className="min-w-0 truncate font-mono text-text-secondary">
                     {flow.probe.user || '—'}
                     {flow.probe.is_root ? ' (root)' : ''}
                   </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.probeTools', '工具')}</span>
+                  <span className="text-text-muted">{t('probeTools', '工具')}</span>
                   <span className="font-mono text-text-secondary">
-                    {`systemd:${flow.probe.has_systemd ? t('plugins.sshRunner.yes', '是') : t('plugins.sshRunner.no', '否')}`}
-                    {` curl:${flow.probe.has_curl ? t('plugins.sshRunner.yes', '是') : t('plugins.sshRunner.no', '否')}`}
-                    {` wget:${flow.probe.has_wget ? t('plugins.sshRunner.yes', '是') : t('plugins.sshRunner.no', '否')}`}
+                    {`systemd:${flow.probe.has_systemd ? t('yes', '是') : t('no', '否')}`}
+                    {` curl:${flow.probe.has_curl ? t('yes', '是') : t('no', '否')}`}
+                    {` wget:${flow.probe.has_wget ? t('yes', '是') : t('no', '否')}`}
                   </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.probeInstalled', '已装版本')}</span>
+                  <span className="text-text-muted">{t('probeInstalled', '已装版本')}</span>
                   <span className="min-w-0 truncate font-mono text-text-secondary">
-                    {flow.probe.installed_version || t('plugins.sshRunner.probeNotInstalled', '未安装')}
+                    {flow.probe.installed_version || t('probeNotInstalled', '未安装')}
                   </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.probeInstallDir', '安装目录')}</span>
+                  <span className="text-text-muted">{t('probeInstallDir', '安装目录')}</span>
                   <span className="min-w-0 truncate font-mono text-text-secondary">{cfgForDisplay.installDir}</span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.connectionMode', '连接方式')}</span>
+                  <span className="text-text-muted">{t('connectionMode', '连接方式')}</span>
                   <span data-testid="ssh-probe-mode" className="font-mono text-text-secondary">
                     {flow.connectionMode}
                   </span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-muted">{t('plugins.sshRunner.autoConnect', '自动连接')}</span>
+                  <span className="text-text-muted">{t('autoConnect', '自动连接')}</span>
                   <span className="font-mono text-text-secondary">
-                    {flow.autoConnect ? t('plugins.sshRunner.yes', '是') : t('plugins.sshRunner.no', '否')}
+                    {flow.autoConnect ? t('yes', '是') : t('no', '否')}
                   </span>
                 </div>
               </div>
@@ -1248,10 +1248,10 @@ export default function SshRunnerPanel() {
                   onClick={confirmProvision}
                   className="rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground hover:opacity-90"
                 >
-                  {t('plugins.sshRunner.confirmInstall', '安装并连接')}
+                  {t('confirmInstall', '安装并连接')}
                 </button>
                 <button onClick={closeAdd} className="rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover">
-                  {t('plugins.sshRunner.cancel', '取消')}
+                  {t('cancel', '取消')}
                 </button>
               </div>
             </div>
@@ -1268,10 +1268,10 @@ export default function SshRunnerPanel() {
                   <StepMark ok={false} />
                 )}
                 {flow.job?.state === 'done'
-                  ? t('plugins.sshRunner.installDone', 'xbot-runner 已安装')
+                  ? t('installDone', 'xbot-runner 已安装')
                   : flow.error === null
-                    ? t('plugins.sshRunner.installing', '正在安装 xbot-runner（只安装二进制）…')
-                    : t('plugins.sshRunner.installFailed', '安装失败')}
+                    ? t('installing', '正在安装 xbot-runner（只安装二进制）…')
+                    : t('installFailed', '安装失败')}
               </div>
               {flow.error !== null && (
                 <div data-testid="ssh-add-error" className="mb-1 text-[10px] text-red-500">
@@ -1299,16 +1299,16 @@ export default function SshRunnerPanel() {
                       onClick={retryProvision}
                       className="rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground hover:opacity-90"
                     >
-                      {t('plugins.sshRunner.retry', '重试')}
+                      {t('retry', '重试')}
                     </button>
                     <button onClick={closeAdd} className="rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover">
-                      {t('plugins.sshRunner.close', '关闭')}
+                      {t('close', '关闭')}
                     </button>
                   </>
                 )}
                 {flow.error === null && (
                   <span className="text-[10px] text-text-muted">
-                    {t('plugins.sshRunner.provisionRunningHint', '正在远端下载并安装二进制（不启动常驻服务）；完成后自动建立 SSH 连接。')}
+                    {t('provisionRunningHint', '正在远端下载并安装二进制（不启动常驻服务）；完成后自动建立 SSH 连接。')}
                   </span>
                 )}
               </div>
@@ -1320,26 +1320,26 @@ export default function SshRunnerPanel() {
               <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-text-primary">
                 {flow.error === null ? <Spinner /> : <StepMark ok={false} />}
                 {flow.error === null
-                  ? t('plugins.sshRunner.connectingTitle', '正在通过 SSH 建立连接…')
-                  : t('plugins.sshRunner.connectNotEstablished', '连接未建立')}
+                  ? t('connectingTitle', '正在通过 SSH 建立连接…')
+                  : t('connectNotEstablished', '连接未建立')}
               </div>
               {flow.status !== null && (
                 <div className="mb-1 space-y-0.5 rounded border border-border bg-bg-secondary p-1.5 text-[10px]">
                   <div className="flex justify-between gap-2">
-                    <span className="text-text-muted">{t('plugins.sshRunner.connectionState', '连接状态')}</span>
+                    <span className="text-text-muted">{t('connectionState', '连接状态')}</span>
                     <span data-testid="ssh-connect-state" className={`font-mono ${CONN_TEXT[connectionStateOf(flow.status)]}`}>
                       {connectionStateLabel(connectionStateOf(flow.status))}
                     </span>
                   </div>
                   {flow.status.connection_mode === 'tunnel' && flow.status.remote_port > 0 && (
                     <div className="flex justify-between gap-2">
-                      <span className="text-text-muted">{t('plugins.sshRunner.tunnelPort', '隧道端口')}</span>
+                      <span className="text-text-muted">{t('tunnelPort', '隧道端口')}</span>
                       <span className="font-mono text-text-secondary">{flow.status.remote_port}</span>
                     </div>
                   )}
                   {flow.status.restarts > 0 && (
                     <div className="flex justify-between gap-2">
-                      <span className="text-text-muted">{t('plugins.sshRunner.restartsLabel', '重连次数')}</span>
+                      <span className="text-text-muted">{t('restartsLabel', '重连次数')}</span>
                       <span className="font-mono text-text-secondary">{flow.status.restarts}</span>
                     </div>
                   )}
@@ -1362,17 +1362,17 @@ export default function SshRunnerPanel() {
                       onClick={retryConnect}
                       className="rounded bg-accent px-2 py-0.5 text-[10px] font-medium text-accent-foreground hover:opacity-90"
                     >
-                      {t('plugins.sshRunner.retryConnect', '重试连接')}
+                      {t('retryConnect', '重试连接')}
                     </button>
                     <button
                       data-testid="ssh-add-save-only"
                       onClick={saveOnly}
                       className="rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover"
                     >
-                      {t('plugins.sshRunner.saveOnly', '仅保存机器')}
+                      {t('saveOnly', '仅保存机器')}
                     </button>
                     <button onClick={closeAdd} className="rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover">
-                      {t('plugins.sshRunner.close', '关闭')}
+                      {t('close', '关闭')}
                     </button>
                   </div>
                 </>
@@ -1380,14 +1380,14 @@ export default function SshRunnerPanel() {
               {flow.error === null && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[10px] text-text-muted">
-                    {t('plugins.sshRunner.connectWaitHint', 'runner 跑在 SSH 会话前台：管道断开会自动重连（先杀老 runner 再起新的）。')}
+                    {t('connectWaitHint', 'runner 跑在 SSH 会话前台：管道断开会自动重连（先杀老 runner 再起新的）。')}
                   </span>
                   <button
                     data-testid="ssh-connect-cancel"
                     onClick={cancelConnectWait}
                     className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover"
                   >
-                    {t('plugins.sshRunner.cancelWait', '停止等待')}
+                    {t('cancelWait', '停止等待')}
                   </button>
                 </div>
               )}
@@ -1403,8 +1403,8 @@ export default function SshRunnerPanel() {
               >
                 <StepMark ok={flow.connected} />
                 {flow.connected
-                  ? t('plugins.sshRunner.connectedDone', '已安装并连接')
-                  : t('plugins.sshRunner.savedDone', '已安装并保存（尚未连接）')}
+                  ? t('connectedDone', '已安装并连接')
+                  : t('savedDone', '已安装并保存（尚未连接）')}
                 ：<span className="font-mono">{flow.name}</span>
               </div>
               <button
@@ -1412,7 +1412,7 @@ export default function SshRunnerPanel() {
                 onClick={closeAdd}
                 className="rounded border border-border px-2 py-0.5 text-[10px] text-text-secondary hover:bg-bg-hover"
               >
-                {t('plugins.sshRunner.close', '关闭')}
+                {t('close', '关闭')}
               </button>
             </div>
           )}
@@ -1427,12 +1427,12 @@ export default function SshRunnerPanel() {
           </div>
         )}
         {loading && config === null && (
-          <div className="px-2 py-3 text-[10px] text-text-muted">{t('plugins.sshRunner.loading', '加载中…')}</div>
+          <div className="px-2 py-3 text-[10px] text-text-muted">{t('loading', '加载中…')}</div>
         )}
         {!loading && targets.length === 0 && (
           <div className="px-2 py-3 text-[10px] leading-relaxed text-text-muted">
             {t(
-              'plugins.sshRunner.empty',
+              'empty',
               '还没有纳管的远程机器。点击「添加机器」输入一条 SSH 命令（如 ssh user@host -p 22）：远端会自动安装 xbot-runner，然后通过 SSH 管道连接。',
             )}
           </div>
@@ -1457,7 +1457,7 @@ export default function SshRunnerPanel() {
                 <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary">{target.name}</span>
                 {isCurrent && (
                   <span className="shrink-0 rounded-sm bg-accent/15 px-1 py-px text-[9px] font-medium text-accent">
-                    {t('plugins.sshRunner.current', '当前')}
+                    {t('current', '当前')}
                   </span>
                 )}
                 <span data-testid={`ssh-conn-badge-${target.name}`} className={`shrink-0 text-[10px] ${CONN_TEXT[state]}`}>
@@ -1470,17 +1470,17 @@ export default function SshRunnerPanel() {
                 </span>
                 <span className="shrink-0 rounded-sm bg-bg-tertiary px-1 py-px font-mono">
                   {target.connection_mode === 'tunnel'
-                    ? t('plugins.sshRunner.modeTunnelShort', 'tunnel')
-                    : t('plugins.sshRunner.modeDirectShort', 'direct')}
+                    ? t('modeTunnelShort', 'tunnel')
+                    : t('modeDirectShort', 'direct')}
                 </span>
                 {st !== null && st.restarts > 0 && (
                   <span data-testid={`ssh-restarts-${target.name}`}>
-                    {t('plugins.sshRunner.restarts', '重连 {{count}} 次', { count: st.restarts })}
+                    {t('restarts', '重连 {{count}} 次', { count: st.restarts })}
                   </span>
                 )}
                 {st !== null && st.connection_mode === 'tunnel' && st.remote_port > 0 && (
                   <span data-testid={`ssh-tunnel-port-${target.name}`} className="font-mono">
-                    {t('plugins.sshRunner.tunnelPort', '隧道端口')} :{st.remote_port}
+                    {t('tunnelPort', '隧道端口')} :{st.remote_port}
                   </span>
                 )}
                 {st !== null && st.installed_version !== '' && (
@@ -1496,11 +1496,11 @@ export default function SshRunnerPanel() {
                     data-testid={`ssh-connect-${target.name}`}
                     onClick={() => onConnectRow(target)}
                     disabled={busyConnect || delActive}
-                    title={t('plugins.sshRunner.connectHint', 'runner_create 拿启动参数 → 发起一条 SSH 会话（runner 在会话前台运行）')}
+                    title={t('connectHint', 'runner_create 拿启动参数 → 发起一条 SSH 会话（runner 在会话前台运行）')}
                     className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <IconLink />
-                    {t('plugins.sshRunner.connect', '连接')}
+                    {t('connect', '连接')}
                   </button>
                 )}
                 {state !== 'disconnected' && (
@@ -1508,34 +1508,34 @@ export default function SshRunnerPanel() {
                     data-testid={`ssh-disconnect-${target.name}`}
                     onClick={() => onDisconnectRow(target)}
                     disabled={delActive}
-                    title={t('plugins.sshRunner.disconnectHint', '结束 SSH 管道（远端 runner 随之退出）')}
+                    title={t('disconnectHint', '结束 SSH 管道（远端 runner 随之退出）')}
                     className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <IconUnlink />
-                    {t('plugins.sshRunner.disconnect', '断开')}
+                    {t('disconnect', '断开')}
                   </button>
                 )}
                 <button
                   data-testid={`ssh-reconnect-${target.name}`}
                   onClick={() => onReconnectRow(target)}
                   disabled={busyConnect || delActive}
-                  title={t('plugins.sshRunner.reconnectHint', '断开后重新连接（新连接会先杀老 runner）')}
+                  title={t('reconnectHint', '断开后重新连接（新连接会先杀老 runner）')}
                   className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <IconRotate />
-                  {t('plugins.sshRunner.reconnect', '重连')}
+                  {t('reconnect', '重连')}
                 </button>
                 <button
                   data-testid={`ssh-reinstall-${target.name}`}
                   onClick={() => onReinstallRow(target)}
                   disabled={busyConnect || delActive}
                   title={t(
-                    'plugins.sshRunner.reinstallHint',
+                    'reinstallHint',
                     '重新下载并原子替换 runner 二进制（不影响当前连接；装完自动重连生效）',
                   )}
                   className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {t('plugins.sshRunner.reinstall', '重新安装')}
+                  {t('reinstall', '重新安装')}
                 </button>
                 {!isCurrent && (
                   <button
@@ -1544,7 +1544,7 @@ export default function SshRunnerPanel() {
                     disabled={!session.ready || busySwitch || delActive}
                     className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {busySwitch ? t('plugins.sshRunner.switching', '切换中…') : t('plugins.sshRunner.switch', '切换')}
+                    {busySwitch ? t('switching', '切换中…') : t('switch', '切换')}
                   </button>
                 )}
                 <button
@@ -1552,23 +1552,23 @@ export default function SshRunnerPanel() {
                   onClick={() => toggleDiag(target)}
                   className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover hover:text-text-primary"
                 >
-                  {isOpen ? t('plugins.sshRunner.collapse', '收起') : t('plugins.sshRunner.diag', '诊断')}
+                  {isOpen ? t('collapse', '收起') : t('diag', '诊断')}
                 </button>
                 {confirmDelete === target.name ? (
                   <>
-                    <span className="text-[10px] text-red-500">{t('plugins.sshRunner.confirmDelete', '确认删除？')}</span>
+                    <span className="text-[10px] text-red-500">{t('confirmDelete', '确认删除？')}</span>
                     <button
                       data-testid={`ssh-delete-confirm-${target.name}`}
                       onClick={() => void runDelete(target)}
                       className="rounded border border-red-500/40 px-1.5 py-px text-[10px] text-red-600 hover:bg-red-500/10 dark:text-red-400"
                     >
-                      {t('plugins.sshRunner.delete', '删除')}
+                      {t('delete', '删除')}
                     </button>
                     <button
                       onClick={() => setConfirmDelete(null)}
                       className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover"
                     >
-                      {t('plugins.sshRunner.cancel', '取消')}
+                      {t('cancel', '取消')}
                     </button>
                   </>
                 ) : (
@@ -1576,7 +1576,7 @@ export default function SshRunnerPanel() {
                     data-testid={`ssh-delete-${target.name}`}
                     onClick={() => setConfirmDelete(target.name)}
                     disabled={delActive}
-                    title={t('plugins.sshRunner.delete', '删除')}
+                    title={t('delete', '删除')}
                     className="rounded border border-border p-1 text-text-muted hover:bg-red-500/10 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-red-400"
                   >
                     <IconTrash />
@@ -1585,7 +1585,7 @@ export default function SshRunnerPanel() {
               </div>
               {rs?.error !== null && rs?.error !== undefined && (
                 <div data-testid={`ssh-status-error-${target.name}`} className="mt-0.5 text-[10px] text-amber-600 dark:text-amber-400">
-                  {t('plugins.sshRunner.statusUnavailable', '无法读取连接状态：{{msg}}', { msg: rs.error })}
+                  {t('statusUnavailable', '无法读取连接状态：{{msg}}', { msg: rs.error })}
                 </div>
               )}
               {err !== undefined && (
@@ -1596,7 +1596,7 @@ export default function SshRunnerPanel() {
               {delActive && (
                 <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-text-muted">
                   <Spinner />
-                  {t('plugins.sshRunner.deleting', '移除中…')}
+                  {t('deleting', '移除中…')}
                   {del?.job !== null && del?.job !== undefined && del.job.steps.length > 0 && (
                     <span className="min-w-0 truncate font-mono">{del.job.steps[del.job.steps.length - 1]?.name}</span>
                   )}
@@ -1609,55 +1609,55 @@ export default function SshRunnerPanel() {
                     onClick={() => void runDelete(target)}
                     className="rounded border border-border px-1.5 py-px text-text-secondary hover:bg-bg-hover"
                   >
-                    {t('plugins.sshRunner.retry', '重试')}
+                    {t('retry', '重试')}
                   </button>
                   <button
                     onClick={() => void removeRecordOnly(target)}
                     className="rounded border border-border px-1.5 py-px text-text-secondary hover:bg-bg-hover"
                   >
-                    {t('plugins.sshRunner.removeRecordOnly', '仅移除记录（不卸载）')}
+                    {t('removeRecordOnly', '仅移除记录（不卸载）')}
                   </button>
                 </div>
               )}
               {isOpen && (
                 <div data-testid={`ssh-diag-panel-${target.name}`} className="mt-1 rounded border border-border bg-bg-primary p-1.5">
-                  {dstate?.loading === true && <div className="text-[10px] text-text-muted">{t('plugins.sshRunner.loading', '加载中…')}</div>}
+                  {dstate?.loading === true && <div className="text-[10px] text-text-muted">{t('loading', '加载中…')}</div>}
                   {dstate?.error !== null && dstate?.error !== undefined && (
                     <div className="text-[10px] text-red-500">{dstate.error}</div>
                   )}
                   {dstate?.status !== null && dstate?.status !== undefined && (
                     <div className="space-y-0.5 text-[10px]">
                       <div className="flex justify-between gap-2">
-                        <span className="text-text-muted">{t('plugins.sshRunner.connectionState', '连接状态')}</span>
+                        <span className="text-text-muted">{t('connectionState', '连接状态')}</span>
                         <span className="font-mono text-text-secondary">{connectionStateLabel(connectionStateOf(dstate.status))}</span>
                       </div>
                       <div className="flex justify-between gap-2">
-                        <span className="text-text-muted">{t('plugins.sshRunner.connectionMode', '连接方式')}</span>
+                        <span className="text-text-muted">{t('connectionMode', '连接方式')}</span>
                         <span className="font-mono text-text-secondary">{dstate.status.connection_mode || '—'}</span>
                       </div>
                       <div className="flex justify-between gap-2">
-                        <span className="text-text-muted">{t('plugins.sshRunner.restartsLabel', '重连次数')}</span>
+                        <span className="text-text-muted">{t('restartsLabel', '重连次数')}</span>
                         <span className="font-mono text-text-secondary">{dstate.status.restarts}</span>
                       </div>
                       {dstate.status.connection_mode === 'tunnel' && dstate.status.remote_port > 0 && (
                         <div className="flex justify-between gap-2">
-                          <span className="text-text-muted">{t('plugins.sshRunner.tunnelPort', '隧道端口')}</span>
+                          <span className="text-text-muted">{t('tunnelPort', '隧道端口')}</span>
                           <span className="font-mono text-text-secondary">127.0.0.1:{dstate.status.remote_port}</span>
                         </div>
                       )}
                       {dstate.status.connected_at !== '' && (
                         <div className="flex justify-between gap-2">
-                          <span className="text-text-muted">{t('plugins.sshRunner.connectedAt', '连接时间')}</span>
+                          <span className="text-text-muted">{t('connectedAt', '连接时间')}</span>
                           <span className="min-w-0 truncate font-mono text-text-secondary">{dstate.status.connected_at}</span>
                         </div>
                       )}
                       <div className="flex justify-between gap-2">
-                        <span className="text-text-muted">{t('plugins.sshRunner.version', '版本')}</span>
+                        <span className="text-text-muted">{t('version', '版本')}</span>
                         <span className="min-w-0 truncate font-mono text-text-secondary">{dstate.status.installed_version || '—'}</span>
                       </div>
                       {dstate.status.last_error !== '' && (
                         <div className="break-all text-amber-600 dark:text-amber-400">
-                          {t('plugins.sshRunner.lastError', '最近错误：')}
+                          {t('lastError', '最近错误：')}
                           {dstate.status.last_error}
                         </div>
                       )}
@@ -1672,7 +1672,7 @@ export default function SshRunnerPanel() {
                       onClick={() => void loadStatus(target)}
                       className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover"
                     >
-                      {t('plugins.sshRunner.refreshStatus', '刷新状态')}
+                      {t('refreshStatus', '刷新状态')}
                     </button>
                     <button
                       data-testid={`ssh-diag-logs-${target.name}`}
@@ -1680,20 +1680,20 @@ export default function SshRunnerPanel() {
                       disabled={dstate?.logsLoading === true}
                       className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {t('plugins.sshRunner.loadLogs', '加载日志')}
+                      {t('loadLogs', '加载日志')}
                     </button>
                     {dstate?.logsLoading === true && <Spinner />}
                     {dstate?.logsSource !== null && dstate?.logsSource !== undefined && (
                       <span data-testid={`ssh-diag-logs-source-${target.name}`} className="font-mono text-[9px] text-text-muted">
                         {dstate.logsSource === 'ssh-session'
-                          ? t('plugins.sshRunner.logsSourceSession', '来源：SSH 会话输出')
-                          : t('plugins.sshRunner.logsSourceRemote', '来源：远端日志文件')}
+                          ? t('logsSourceSession', '来源：SSH 会话输出')
+                          : t('logsSourceRemote', '来源：远端日志文件')}
                       </span>
                     )}
                   </div>
                   {dstate?.logs !== null && dstate?.logs !== undefined && (
                     dstate.logs.length === 0 ? (
-                      <div className="mt-1 text-[10px] text-text-muted">{t('plugins.sshRunner.logsEmpty', '（无日志）')}</div>
+                      <div className="mt-1 text-[10px] text-text-muted">{t('logsEmpty', '（无日志）')}</div>
                     ) : (
                       <pre
                         data-testid={`ssh-diag-logs-content-${target.name}`}

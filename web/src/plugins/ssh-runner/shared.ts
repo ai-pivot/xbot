@@ -18,8 +18,6 @@ import type { BackendRPC } from '@/plugin-api'
 
 const w = window as unknown as {
   React: typeof import('react')
-  /** 宿主 iteration-render.tsx 挂载的 i18next 实例（独立 bundle 的 i18n 桥）。 */
-  __xbot_i18n__?: { t: (key: string, opts?: Record<string, unknown>) => string }
 }
 
 export const React = w.React
@@ -27,23 +25,28 @@ export const React = w.React
 // ---------- i18n 桥（独立 bundle 无法 import 宿主 '@/i18n'） ----------
 
 /**
- * 翻译 helper：优先走宿主 i18next（window.__xbot_i18n__，命中 key 时插值
- * {{x}} 占位符）；key 缺失或桥未挂载时回退中文原文（defaultValue 同样插值）。
- * 插件产物与主 bundle 的语言包可能不同步，fallback 保证 UI 永不显示裸 key。
+ * 翻译 helper：**优先用插件自己的文案表**（`ctx.i18n`，表来自插件清单的 `web.i18n`），
+ * 命中后在本函数内插值 `{{x}}` 占位符；ctx 尚未注入或 key 缺失时回退第二参数
+ *（调用点写的是中文原文）⇒ UI 永不显示裸 key。
+ *
+ * ⛔ 2026-09-19（用户要求「插件 i18n 应该是插件通用功能」）：**不再借用宿主的
+ * `window.__xbot_i18n__` / `plugins.sshRunner.*` 命名空间** —— 插件文案随插件分发，
+ * 否则插件无法独立安装/卸载，且会污染宿主的 i18n 命名空间。
  */
 export function t(key: string, fallback: string, params?: Record<string, string | number>): string {
-  const inst = w.__xbot_i18n__
+  let text = fallback
+  const inst = ctxRef?.i18n
   if (inst) {
     try {
-      return inst.t(key, { ...params, defaultValue: fallback })
+      text = inst.t(key, fallback)
     } catch {
-      /* 桥异常时回退中文原文 */
+      /* 解析异常 ⇒ 回退中文原文 */
     }
   }
   if (params) {
-    return fallback.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ''))
+    return text.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ''))
   }
-  return fallback
+  return text
 }
 
 // ---------- 类型（BackendRPC 声明的别名——契约单一来源） ----------
@@ -181,6 +184,8 @@ type RpcCall = (method: string, params: Record<string, unknown>) => Promise<unkn
 /** activate(ctx) 注入的 ctx 形状——仅取本面板用到的能力（rpc / config）。 */
 export interface SshRunnerCtx {
   rpc?: { call: RpcCall }
+  /** 插件自带文案解析器（宿主注入；见 PluginContext.i18n 的契约）。 */
+  i18n?: { t(key: string, fallback?: string): string }
   config?: {
     get(): Promise<Record<string, unknown>>
     set(key: string, value: unknown): Promise<void>
@@ -211,7 +216,7 @@ export async function callRpc<K extends keyof BackendRPC>(
   params: BackendRPC[K]['params'],
 ): Promise<BackendRPC[K]['result']> {
   const rpc = getRpc()
-  if (!rpc) throw new Error(t('plugins.sshRunner.notInitialized', 'Remote Machines 插件尚未初始化（ctx 未注入）'))
+  if (!rpc) throw new Error(t('notInitialized', 'Remote Machines 插件尚未初始化（ctx 未注入）'))
   return (await rpc(method as string, params as Record<string, unknown>)) as BackendRPC[K]['result']
 }
 
@@ -241,7 +246,7 @@ export function resolveSession(): SessionIdentity {
 /** 会话身份尚未就绪（resolveChat 等价的守卫）——调用方应禁用操作，不是重试场景。 */
 export class SessionNotReadyError extends Error {
   constructor() {
-    super(t('plugins.sshRunner.sessionNotReady', '会话身份未就绪（__xbot_session__ 未设置）——切换功能暂不可用'))
+    super(t('sessionNotReady', '会话身份未就绪（__xbot_session__ 未设置）——切换功能暂不可用'))
     this.name = 'SessionNotReadyError'
   }
 }
