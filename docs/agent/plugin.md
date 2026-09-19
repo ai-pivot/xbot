@@ -378,3 +378,25 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
 命中 = 链路通；`<fallback-used>` = 表没到；`<no-i18n>` = ctx 没注入），宿主侧打印
 `hasTable / locales / hostLocale`。守护测试 `plugins/xbot-ssh-runner/manifest_i18n_test.go`、
 `web/src/plugin-runtime/toManifest.i18n.test.ts`。
+
+## 宿主原生容器贡献点（info_bar / bottom / status_bar_right）
+
+插件视图的 `container` 取值（`web/src/plugin-api/manifest.ts:16` 的 `ViewContainer`）：
+`right_sidebar | panel | bottom | info_bar | status_bar_right | iteration | main`。
+
+- **`info_bar`** = 主区**底部状态栏**（与 `SWUpdateButton`「检查更新」同一行）。
+  渲染点：`web/src/plugins/InfoBar.tsx:23` 的 `<PluginPanelContainer container="info_bar" />`
+  （同文件 `:24` 还有 `<WidgetZone zone="infoBar" … excludePrefixes={['git:']} />`，
+  后者服务 script/widget 插件，前者服务 web 插件 view 贡献点）。
+- `panelRegistry.mapContainerToLocation`（`web/src/plugin-runtime/panelRegistry.ts:55`）把
+  `info_bar` / `bottom` 都映射为 `{ zone: 'bottom' }` ⇒ 面板徽章落在底部区。
+- ⚠️ 宿主对 main 级横幅的既有约定（AGENTS.md「InfoBar 必须与 Dockview 垂直堆叠」）：外层
+  `flex flex-col` 堆叠 + 内部 `overflow` 裁剪 + **固定高度始终渲染**（不要 `return null`，
+  否则出现/消失会让布局跳动），不要依赖子元素自身收缩。
+
+## 会话级 runner 绑定 RPC（插件可直接用，无需后端改动）
+
+- `runner_session_get { channel, chat_id }` → 当前会话绑定的 runner 名（**空字符串 = 本机**）。
+- `runner_session_set { channel, chat_id, name }` → 绑定该会话到 `name`（**name 为空 = 切回本机**）。
+- 核心实现：`serverapp/rpc_table.go:2821` / `:2837`；前端已声明：`web/src/plugin-api/rpc.ts:205` / `:209`。
+- 语义：绑定是**会话级**（存在 `tenants.runner_id`），路由按会话解析；未绑定 ⇒ 本机执行。
