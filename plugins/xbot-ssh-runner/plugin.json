@@ -20,20 +20,20 @@
       "properties": {
         "downloadBase": {
           "type": "string",
-          "label": "Runner 下载基址",
-          "description": "xbot-runner 二进制与 checksums.txt 的下载基址（默认本项目 GitHub Release 的 latest/download，可换国内镜像）",
+          "label": "config.downloadBase.label",
+          "description": "config.downloadBase.description",
           "default": "https://github.com/ai-pivot/xbot/releases/latest/download"
         },
         "installDir": {
           "type": "string",
-          "label": "远端安装目录",
-          "description": "runner 二进制落地目录（非 root 建议 ~/.local/bin）",
+          "label": "config.installDir.label",
+          "description": "config.installDir.description",
           "default": "/usr/local/bin"
         },
         "serviceMode": {
           "type": "string",
-          "label": "服务方式",
-          "description": "systemd user unit（推荐）或 nohup 兜底（无 systemd 的精简系统）",
+          "label": "config.serviceMode.label",
+          "description": "config.serviceMode.description",
           "default": "systemd",
           "options": [
             {
@@ -48,8 +48,8 @@
         },
         "targets": {
           "type": "string",
-          "label": "已纳管目标（JSON，由面板维护）",
-          "description": "机器目标注册表：[{name, ssh, install_dir, service_mode, added_at}]。宿主托管、跨设备可见。",
+          "label": "config.targets.label",
+          "description": "config.targets.description",
           "default": "[]"
         }
       }
@@ -177,7 +177,15 @@
         "manifest.name": "远程机器（SSH）",
         "manifest.description": "通过一条 SSH 命令纳管远程机器：探测环境 → 自动安装并启动 xbot-runner → 作为会话可切换的执行目标。控制面插件（stdio），执行仍走既有 runner WebSocket 协议。",
         "view.panel.title": "远程机器",
-        "view.bar.title": "远程机器（状态栏）"
+        "view.bar.title": "远程机器（状态栏）",
+        "config.downloadBase.label": "Runner 下载基址",
+        "config.downloadBase.description": "xbot-runner 二进制与 checksums.txt 的下载基址（默认本项目 GitHub Release 的 latest/download，可换国内镜像）",
+        "config.installDir.label": "远端安装目录",
+        "config.installDir.description": "runner 二进制落地目录（非 root 建议 ~/.local/bin）",
+        "config.serviceMode.label": "服务方式",
+        "config.serviceMode.description": "systemd user unit（推荐）或 nohup 兜底（无 systemd 的精简系统）",
+        "config.targets.label": "已纳管目标（JSON，由面板维护）",
+        "config.targets.description": "机器目标注册表：[{name, ssh, install_dir, service_mode, added_at}]。宿主托管、跨设备可见。"
       },
       "en": {
         "reinstall": "Reinstall",
@@ -280,7 +288,15 @@
         "manifest.name": "Remote Machines (SSH)",
         "manifest.description": "Onboard remote machines with a single SSH command: probe the environment, auto-install and start xbot-runner, then use the machine as a switchable execution target for sessions. Control-plane plugin (stdio); execution still runs over the existing runner WebSocket protocol.",
         "view.panel.title": "Remote Machines",
-        "view.bar.title": "Remote Machines (bar)"
+        "view.bar.title": "Remote Machines (bar)",
+        "config.downloadBase.label": "Runner download base URL",
+        "config.downloadBase.description": "Download base for the xbot-runner binary and checksums.txt (defaults to this project's GitHub Release latest/download; point it at a mirror if needed).",
+        "config.installDir.label": "Remote install directory",
+        "config.installDir.description": "Directory the runner binary is installed into (for non-root users ~/.local/bin is recommended).",
+        "config.serviceMode.label": "Service mode",
+        "config.serviceMode.description": "systemd user unit (recommended) or a nohup fallback for minimal systems without systemd.",
+        "config.targets.label": "Onboarded targets (JSON, maintained by the panel)",
+        "config.targets.description": "Machine target registry: [{name, ssh, install_dir, service_mode, added_at}]. Hosted by the server and visible across devices."
       },
       "ja": {
         "reinstall": "再インストール",
@@ -383,7 +399,15 @@
         "manifest.name": "リモートマシン（SSH）",
         "manifest.description": "SSH コマンド 1 本でリモートマシンを登録：環境を検出し、xbot-runner を自動インストールして起動し、セッションの実行先として切り替えられます。制御プレーンのプラグイン（stdio）で、実行は既存の runner WebSocket プロトコル経由です。",
         "view.panel.title": "リモートマシン",
-        "view.bar.title": "リモートマシン（バー）"
+        "view.bar.title": "リモートマシン（バー）",
+        "config.downloadBase.label": "runner のダウンロードベース",
+        "config.downloadBase.description": "xbot-runner バイナリと checksums.txt のダウンロードベース（既定は本プロジェクトの GitHub Release latest/download。ミラーに差し替え可能）。",
+        "config.installDir.label": "リモートのインストール先",
+        "config.installDir.description": "runner バイナリを配置するディレクトリ（非 root なら ~/.local/bin を推奨）。",
+        "config.serviceMode.label": "サービス方式",
+        "config.serviceMode.description": "systemd user unit（推奨）または nohup フォールバック（systemd のない最小構成向け）。",
+        "config.targets.label": "登録済みターゲット（JSON、パネルが管理）",
+        "config.targets.description": "マシンターゲットのレジストリ：[{name, ssh, install_dir, service_mode, added_at}]。サーバー側で保持され、デバイス間で共有されます。"
       }
     }
   }

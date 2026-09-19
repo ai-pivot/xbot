@@ -30,6 +30,15 @@ func TestManifest_DeclaresI18nTable(t *testing.T) {
 			} `json:"contributes"`
 			I18n map[string]map[string]string `json:"i18n"`
 		} `json:"web"`
+		Contributes struct {
+			Configuration struct {
+				Title      string `json:"title"`
+				Properties map[string]struct {
+					Label       string `json:"label"`
+					Description string `json:"description"`
+				} `json:"properties"`
+			} `json:"configuration"`
+		} `json:"contributes"`
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("parse plugin.json: %v", err)
@@ -79,5 +88,11 @@ func TestManifest_DeclaresI18nTable(t *testing.T) {
 		if c.Kind == "view" {
 			check("view."+c.ID+".title", c.Title)
 		}
+	}
+	// 设置页里直接显示给用户的配置项文案（label / description）同样必须是表里的 key ——
+	// 否则宿主英文时用户看到中文（或裸 key）。
+	for k, p := range m.Contributes.Configuration.Properties {
+		check("properties."+k+".label", p.Label)
+		check("properties."+k+".description", p.Description)
 	}
 }
