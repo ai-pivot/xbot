@@ -235,6 +235,8 @@ Agent 把**本地文件发布成 Web 可访问 URL**，在回复里嵌入给用�
 - **URL 形态**：本地 ⇒ 同源 `/api/files/download?key=agent%2F<uuid>%2F<name>`（走会话 cookie 鉴权；图片附 `&inline=1` 让浏览器内联渲染，其他文件走 attachment 语义）；URL **稳定不过期**。
 - **文件名**：先剥掉调用方给的扩展名、再补源文件的**真实**扩展名 —— 保证结尾恰好一个与内容一致的扩展名（下载端点按 key 的扩展名推导 Content-Type）。⛔ 无条件 `displayName + ext` 会拼出 `chart.png.png`（`serverapp/file_sharer_test.go` 抓到）。
 - **工具返回**：`Summary`（Published X → URL）+ `Detail`（URL + 可直接粘贴的 Markdown）+ `Tips`（图片 `![name](url)` / 其他 `[name](url)`），模型把这段 Markdown 放进回复即可。
+- **Web 端渲染**：`web/src/components/agent/ToolRender.tsx` 的 `ShareFileRender`（`case 'share_file'`）
+  解析上面这份 `Summary`/`Detail`（`parseShareFile`，导出供测试）→ 渲染「图标 + 文件名 + 图片/文件徽章 + 图片内联预览（图片时）+ URL 行 + 打开/复制链接」。**解析即契约**：改后端返回文案要同步改解析与 `ToolRender.test.tsx`；历史行只带 `summary`（无 args/detail）也必须能解析；无 URL（失败行）回落默认渲染。
 
 ## Foreground shell promote-to-background (`tools/shell.go` + `tools/shell_promote.go`)
 
