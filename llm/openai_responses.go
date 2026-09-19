@@ -322,66 +322,94 @@ func toResponsesTools(tools []ToolDefinition) []responses.ToolUnionParam {
 
 // buildResponsesReasoning maps xbot thinkingMode to Responses API ReasoningParam.
 //
-// thinkingMode values:
-//   - "" (default): no reasoning param (let API decide)
-//   - "enabled": medium effort with auto summary
-//   - "disabled": none effort (explicitly disable reasoning)
-//   - custom JSON: parsed and mapped to ReasoningParam fields
+// 取值（与 UI/CLI 实际写入的一致 —— `ThinkingModeControl` 写 `think` / `think-max`；
+// `enabled` 是旧别名，保留兼容；`disabled` 显式关闭；`{"effort":…,"summary":…}`
+// 为自定义 JSON）：
+//   - ""            : 不发 reasoning 参数（让 API 决定）
+//   - "think"       : medium effort + auto summary（= 旧 "enabled"）
+//   - "think-max"   : high effort  + auto summary
+//   - "disabled"    : none effort
+//   - JSON          : 逐字段映射（缺 summary 时按下面的不变量补 auto）
+//
+// ⛔ 不变量：**请求 reasoning 就必须请求摘要**（`withSummaryDefault`）。用户
+// 2026-09-19 报告「用 Responses API 访问 gpt-6-astra 时 Web 不显示 reasoning ——
+// 他就算是加密了也会有个思考摘要吧」：`encrypted_content` 是给**无状态重放**用的，
+// 不是给人看的；不请求 summary 时服务端只回加密思维链 ⇒ 前端**没有任何 reasoning
+// 可显示**（正是本 bug：命名档位曾落到 default 分支 ⇒ 空 ReasoningParam ⇒ 请求里
+// 连 reasoning 配置都没有）。
 func buildResponsesReasoning(thinkingMode string) openai.ReasoningParam {
-	if thinkingMode == "" {
-		return openai.ReasoningParam{}
-	}
-
 	switch thinkingMode {
-	case "enabled":
+	case "":
+		return openai.ReasoningParam{}
+	case "enabled", "think":
+		// "enabled" 向后兼容 = "think"（与 Chat Completions 路径的
+		// resolveThinkingMode/thinkingPresets 同语义：think = medium effort）。
 		return openai.ReasoningParam{
 			Effort:  openai.ReasoningEffortMedium,
+			Summary: openai.ReasoningSummaryAuto,
+		}
+	case "think-max":
+		// 与 thinkingPresets["think-max"]["openai"] = reasoning_effort: high 对齐。
+		return openai.ReasoningParam{
+			Effort:  openai.ReasoningEffortHigh,
 			Summary: openai.ReasoningSummaryAuto,
 		}
 	case "disabled":
 		return openai.ReasoningParam{
 			Effort: openai.ReasoningEffortNone,
 		}
-	default:
-		// Try parsing as JSON for custom reasoning config
-		if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
-			var custom map[string]any
-			if err := json.Unmarshal([]byte(thinkingMode), &custom); err == nil {
-				rp := openai.ReasoningParam{}
-				if effort, ok := custom["effort"]; ok {
-					if effortStr, ok := effort.(string); ok {
-						rp.Effort = openai.ReasoningEffort(effortStr)
-					}
+	}
+
+	// Custom JSON: {"effort":"high"} / {"reasoning":{"effort":"high","summary":"auto"}}
+	if len(thinkingMode) > 0 && thinkingMode[0] == '{' {
+		var custom map[string]any
+		if err := json.Unmarshal([]byte(thinkingMode), &custom); err == nil {
+			rp := openai.ReasoningParam{}
+			if effort, ok := custom["effort"]; ok {
+				if effortStr, ok := effort.(string); ok {
+					rp.Effort = openai.ReasoningEffort(effortStr)
 				}
-				if summary, ok := custom["summary"]; ok {
-					if summaryStr, ok := summary.(string); ok {
-						rp.Summary = openai.ReasoningSummary(summaryStr)
-					}
-				}
-				// Check for nested "reasoning" key (e.g. {"reasoning": {"effort": "high"}})
-				if reasoningObj, ok := custom["reasoning"]; ok {
-					if reasoningMap, ok := reasoningObj.(map[string]any); ok {
-						if effort, ok := reasoningMap["effort"]; ok {
-							if effortStr, ok := effort.(string); ok {
-								rp.Effort = openai.ReasoningEffort(effortStr)
-							}
-						}
-						if summary, ok := reasoningMap["summary"]; ok {
-							if summaryStr, ok := summary.(string); ok {
-								rp.Summary = openai.ReasoningSummary(summaryStr)
-							}
-						}
-					}
-				}
-				return rp
 			}
-			log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Failed to parse thinking mode as JSON for Responses API, ignoring")
-			return openai.ReasoningParam{}
+			if summary, ok := custom["summary"]; ok {
+				if summaryStr, ok := summary.(string); ok {
+					rp.Summary = openai.ReasoningSummary(summaryStr)
+				}
+			}
+			// Check for nested "reasoning" key (e.g. {"reasoning": {"effort": "high"}})
+			if reasoningObj, ok := custom["reasoning"]; ok {
+				if reasoningMap, ok := reasoningObj.(map[string]any); ok {
+					if effort, ok := reasoningMap["effort"]; ok {
+						if effortStr, ok := effort.(string); ok {
+							rp.Effort = openai.ReasoningEffort(effortStr)
+						}
+					}
+					if summary, ok := reasoningMap["summary"]; ok {
+						if summaryStr, ok := summary.(string); ok {
+							rp.Summary = openai.ReasoningSummary(summaryStr)
+						}
+					}
+				}
+			}
+			return withSummaryDefault(rp)
 		}
-		// Non-JSON unknown value
-		log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON for Responses API, ignoring")
+		log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Failed to parse thinking mode as JSON for Responses API, ignoring")
 		return openai.ReasoningParam{}
 	}
+	// 非 JSON 的未知值：保持既有契约 —— 不干预（让 API 决定）+ 可见告警。
+	// （UI/CLI 的真实档位在上面已显式处理；能走到这里的只有手改配置写错的值。）
+	log.WithField("thinking_mode", thinkingMode).Warn("[LLM] Unknown thinking mode is not valid JSON for Responses API, ignoring")
+	return openai.ReasoningParam{}
+}
+
+// withSummaryDefault 落实本文件的核心不变量：**要了 reasoning 就必须要摘要**。
+// `encrypted_content`（include 的那个）只服务于无状态重放，用户看不到；只有
+// summary 才会以 `response.reasoning_summary_text.delta` 流回来并渲染成
+// 「思考 N 字」。effort 为空（不干预）或 none（显式关闭）时不强加摘要。
+func withSummaryDefault(rp openai.ReasoningParam) openai.ReasoningParam {
+	if rp.Summary == "" && rp.Effort != "" && rp.Effort != openai.ReasoningEffortNone {
+		rp.Summary = openai.ReasoningSummaryAuto
+	}
+	return rp
 }
 
 // ---------------------------------------------------------------------------
