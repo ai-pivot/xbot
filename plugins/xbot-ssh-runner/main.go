@@ -124,6 +124,12 @@ type service struct {
 	jobs  *jobStore
 	sups  *supervisorManager
 	state *stateStore
+
+	// A. 自动更新（VSC 语义：后台检查 + 暂存，下次启动生效）—— 见 update.go。
+	updMu      sync.Mutex
+	autoUpdate *bool                  // nil = 默认开启
+	updates    map[string]updateState // target name → 最近一次检查结果
+	dlBases    map[string]string      // target name → download_base（status/手动检查复用）
 }
 
 func newService(exec execFunc) *service {
@@ -196,6 +202,8 @@ func (s *service) handleRPC(p *protocol.WebPluginRPCParams) (*protocol.WebPlugin
 		return s.handleDeprovision(params)
 	case "status":
 		return s.handleStatus(params)
+	case "check_update":
+		return s.handleCheckUpdate(params)
 	case "logs":
 		return s.handleLogs(params)
 	default:
@@ -266,6 +274,24 @@ func (s *service) handleConnect(params map[string]any) (*protocol.WebPluginRPCRe
 		logf("persist supervision state for %q failed: %v", name, sErr)
 	}
 	logf("connect target=%q ssh=%s mode=%s auto_connect=%v", name, maskSSH(sshField), st.Mode, autoConnect)
+
+	// A. 自动更新（用户要求：默认像 VS Code 一样后台自动更新，**下次启动生效**）。
+	// 连接成功后**后台**跑一次「检查 + 暂存」：比对远端 sha256 与 <download_base>/checksums.txt，
+	// 不等则走 download→校验→**原子替换**（绝不 kill / 不重启当前 runner）⇒ 下次 connect 生效。
+	// best-effort：任何失败只记日志/状态，绝不影响已建立的连接。
+	dlBase := strParam(params, "download_base")
+	if dlBase == "" {
+		dlBase = s.DownloadBaseOf(name)
+	}
+	if dlBase == "" {
+		dlBase = defaultDownloadBase
+	}
+	s.rememberDownloadBase(name, dlBase)
+	if plat, derr := s.detectPlatformOn(context.Background(), sshField); derr == nil {
+		s.maybeAutoUpdate(sshField, name, dlBase, installDir, plat)
+	} else {
+		logf("auto-update %s: platform detect failed (skipped): %v", name, derr)
+	}
 	return rpcOK(st), nil
 }
 
@@ -867,6 +893,7 @@ func (s *service) handleStatus(params map[string]any) (*protocol.WebPluginRPCRes
 		detail = strings.TrimSpace(detail + "; last error: " + clipRunes(sup.LastError, 200))
 	}
 
+	upd := s.UpdateStateOf(name)
 	return rpcOK(map[string]any{
 		"installed_version": strings.TrimSpace(kv["STATUS_VERSION"]),
 		"service_state":     state,
@@ -877,6 +904,12 @@ func (s *service) handleStatus(params map[string]any) (*protocol.WebPluginRPCRes
 		"connected_at":      sup.ConnectedAt,
 		"remote_port":       sup.RemotePort,
 		"last_error":        sup.LastError,
+		// A. 自动更新可观测性（VSC 语义：暂存后**下次启动生效**）。
+		"auto_update":       s.autoUpdateEnabled(),
+		"update_checked_at": upd.CheckedAt,
+		"update_staged":     upd.Staged,
+		"update_detail":     upd.Detail,
+		"update_error":      upd.Err,
 	}), nil
 }
 
