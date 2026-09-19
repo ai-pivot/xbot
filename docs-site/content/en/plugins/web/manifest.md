@@ -186,3 +186,39 @@ The frontend `ContributionRegistry.validate()` is the only place that validates 
 - All `activationDependencies` must already be active.
 
 The backend performs only transport-level checks (non-empty entry, valid plugin ID, safe static path). Never add a second semantic-validation layer on the backend — two gates drift.
+
+### Localization (`web.i18n`)
+
+Plugin copy ships **with the plugin** — never in the host's i18n files:
+
+```json
+{
+  "web": {
+    "entry": "index.js",
+    "i18n": { "en": { "save": "Save" }, "zh-CN": { "save": "保存" }, "ja": { "save": "保存" } }
+  }
+}
+```
+
+`ctx.i18n.t(key, fallback)` resolves against the host's current locale with this chain:
+exact locale → language prefix (`zh-TW`/`zh-HK` fall back to `zh-CN`) → `en` → first available
+locale → your `fallback` argument → the key itself. `ctx.i18n` is available to **every** plugin
+(no permission needed) and reads the locale at call time, so switching the host language updates
+the plugin UI immediately. Either make the fallback argument the English string, or keep all three
+tables complete — otherwise the plugin shows fallback text where the host shows another language.
+
+> ⚠️ **Manifests are read once at server startup.** Editing `plugin.json`
+> (`web.i18n` / `web.entry` / `permissions` / `version` …) does **not** change anything until you
+> reload plugins (`config action=reload_plugins`, logged as `Plugin discovered plugin=<id>`) or
+> restart the server. Plugin **web assets** (`/plugins/<id>/web/*.js`) are served from disk per
+> request, so they update immediately — which makes "the new bundle runs but the manifest is old"
+> a real trap (symptom: `ctx.i18n` silently falls back to your fallback strings).
+
+### Containers (`container`)
+
+`right_sidebar` · `panel` · `bottom` · `info_bar` · `status_bar_right` · `iteration` · `main`.
+
+- `main` renders as a full-width editor tab in the desktop main area.
+- `info_bar` renders in the **desktop bottom status bar** — the same row as the app's "check for
+  updates" button, ideal for a compact status chip (e.g. the ssh-runner plugin shows the session's
+  bound runner there and lets you switch it with a click).

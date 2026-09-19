@@ -436,3 +436,36 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
   （从未装过、或装到别处），`Discover` 会打印 `Skipping invalid plugin: read manifest ... no such file`，
   而**点 Reload 会直接报错**（`reload <id>: failed to load manifest: ... no such file or directory`）。
   修法：把 repo 的清单 + 产物真的装上（而不是删目录 —— `data/`/`logs/` 是插件数据，不能丢）。
+
+## 内置统计相关的分工（避免重复实现 —— 2026-09-19 用户要求合并）
+
+- **趋势图（token / 缓存命中 / 输出的多时间粒度：分钟 · 小时 · 天）只在「统计」面板**：
+  实现 `web/src/plugins/session-stats/TokenTrendSection.tsx`（+ `TokenTrendChart.tsx` / `tokenTrend.ts` 纯函数分桶），
+  由 `SessionStatsPanel.tsx` **内嵌**渲染（`<TokenTrendSection rows={allIterations} now={statsFetchedAt} loadBuckets={loadBuckets} />`）。
+  **数据源优先 `get_session_usage_buckets`**：服务端在 SQL 里对**全量** `iteration_history` `GROUP BY`
+  固定宽度时间桶（`SUM(input_tokens/cached_tokens/tokens) + COUNT(*)`，按 `tz_offset_minutes` 对齐本地墙钟）
+  ⇒ 覆盖整段历史，空桶就是真的 0（`covered=true`，无"未覆盖区"）。
+  **回落**：buckets 取数失败（旧后端没有该 RPC / 请求出错）时用 `get_session_usage_stats` 的 per-iteration
+  明细（`created_at` RFC3339、**已按时间正序**、`recentLimit` 被服务端钳到 **≤500** ⇒ **未覆盖区间必须留空并标注**，
+  绝不能在空桶画零值假装"那段没用量"）。降级逻辑是兜底，不要删。
+- **`xbot.iteration-stats` 只保留 `status_bar_right` 的徽章视图**（当前迭代指标）。
+  **不要**再往里加趋势面板 —— 曾重复实现过一份（`f12d1a38`），用户明确要求"trend 放在统计面板里，不要单独做个新的"，
+  已于 `fe39d4da` 精准回退（删 TrendPanel/trend/bridge + 恢复 entry/plugin.json）。
+
+## 内置视图清单的 i18n 契约（name / description / view title 三处都要走宿主 i18n）
+
+**内置（`builtin:`）视图的清单随主 bundle 打包 ⇒ 拿不到插件 `web.i18n`，必须走宿主 i18n**：
+`import i18n from '@/i18n'`，三处字段都用 `i18n.t('<key>', { defaultValue: '<现文案>' })`：
+
+| 清单文件 | key 命名空间 | 状态 |
+|---|---|---|
+| `web/src/plugins/manager/pluginManager.ts` | `plugins.manager.manifest.{name,description,title}` | ✅ 正例 |
+| `web/src/plugins/xbot-skill-manager/skillManager.ts` | `skills.manifest.{name,description,title}` | ✅ 正例 |
+| `web/src/plugins/xbot-ambience/index.ts` | `plugins.ambience.*` | ✅ 正例 |
+| `web/src/plugins/session-stats/sessionStats.ts` | `plugins.sessionStats.*`（已存在 `title: 'Stats'` 等） | ⚠️ 曾把 `name`/`description`/`title` 写死（`title: '统计'`）⇒ 宿主英文时 tab 仍显示中文，被用户点名；改用 `i18n.t(...)` |
+
+**审计方法（新增内置清单后照此自查）**：
+`grep -n "name:\|description:\|title:" web/src/plugins/*/*.ts` ⇒ 任何**字面量**（非 `i18n.t(`）都是漏网。
+
+⚠️ 与"外置插件（URL 加载）"的区别：后者的名字/标题在**插件自己的 `plugin.json`**（`name` / `contributes[].title`），
+遵循"文案随插件清单走"（见上文「本地化」一节），**不要**塞进宿主 i18n。
