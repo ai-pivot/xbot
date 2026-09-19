@@ -1035,7 +1035,7 @@ export default function SshRunnerPanel() {
     return (
       <div data-testid="ssh-runner-not-initialized" className="p-3 text-xs text-text-muted">
       <div data-testid="plugin-i18n-debug" style={{ fontSize: 10, fontFamily: 'monospace', color: '#94a3b8', padding: '2px 8px', wordBreak: 'break-all' }}>
-        i18n-debug: ctx={String(i18nDbg.hasCtx)} i18n={String(i18nDbg.hasI18n)} locale={String(i18nDbg.locale)} table=[{i18nDbg.tableLocales.join(',')}] probe={i18nDbg.probe}
+        i18n-debug: ctx={String(i18nDbg.hasCtx)} i18n={String(i18nDbg.hasI18n)} locale={String(i18nDbg.locale)} probe={i18nDbg.probe}
       </div>
       
         {t('notInitialized', 'Remote Machines 插件尚未初始化（activate(ctx) 未调用）')}

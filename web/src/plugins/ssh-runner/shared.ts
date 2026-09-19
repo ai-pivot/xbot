@@ -412,12 +412,9 @@ export function __pluginI18nDebug(): {
   hasCtx: boolean
   hasI18n: boolean
   locale: string | null
-  tableLocales: string[]
   probe: string
 } {
   const inst = ctxRef?.i18n
-  const table = (inst as unknown as { __table?: Record<string, unknown> } | undefined)?.__table
-  const tableLocales = table ? Object.keys(table) : []
   let probe = '<no-i18n>'
   if (inst) {
     try {
@@ -430,7 +427,6 @@ export function __pluginI18nDebug(): {
     hasCtx: !!ctxRef,
     hasI18n: !!inst,
     locale: ((inst as unknown as { locale?: string } | undefined)?.locale) ?? null,
-    tableLocales,
     probe,
   }
   console.log('[plugin-i18n] ssh-runner debug', out)
