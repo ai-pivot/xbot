@@ -552,14 +552,41 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       if (s.turns.has(target)) {
         const t0 = s.turns.get(target)!
         if (t0.phase.kind !== 'live') {
-          // committed 遮蔽解除（同 iteration case）：DB 中间快照组成的
-          // committed 收到流式事件（活动证据）→ 升级回 live（迭代保留）。
-          // 带内容/载荷的 stream 事件只可能属于运行中的 turn。
-          if (t0.phase.kind === 'committed' && s.activeTurn === null && hasStreamEvidence(ev)) {
+          // ── 遮蔽解除（与 `iteration` case **同一规则、同一证据标准**）──────────
+          // 用户 2026-09-19 P0（手机熄屏解锁后 busy 会话「live 进度消失且**永远
+          // 不再更新**」）：非空壳 frozen turn 的 stream 事件此前被整批 `return s`
+          // 丢弃 —— 而 LLM 生成期**只有** stream 事件（结构化事件只在迭代边界/
+          // 工具状态变化时发）⇒ turn 一旦被迟到/误传的 idle 冻结，live 进度就再也
+          // 回不来（`iteration` case 当时已做遮蔽解除，`stream` case 漏做 ——
+          // AGENTS 的「对称性检查表：committed 与 frozen 的遮蔽解除规则必须成对
+          // 存在」）。
+          //
+          // 证据标准：`ev.iteration > maxIter`。后端绝不会对已结束的 turn 发新迭代
+          // （也绝不会发新流式），故「更大迭代号」即可证明该 turn 仍在跑；仅凭
+          // 「带流式载荷」不足以证明活动 —— 重放事件同样带载荷（可能来自已结束的
+          // turn），照旧规则升级会让**已结束**的 turn 复活成 live（busy 幽灵）。
+          // 两个分支的既有状态分开取（TS 判别联合的安全取法）。
+          const committedPayload = t0.phase.kind === 'committed' ? t0.phase.payload : null
+          const frozenData = t0.phase.kind === 'frozen' ? t0.phase.data : null
+          const its = committedPayload !== null
+            ? committedPayload.iterations
+            : (frozenData?.iterations ?? [])
+          const maxIter = its.reduce((m, it) => Math.max(m, it.iteration), 0)
+          const evIter = ev.iteration
+          if (
+            s.activeTurn === null &&
+            evIter !== null &&
+            evIter > maxIter &&
+            hasStreamEvidence(ev)
+          ) {
             const live: LiveSnapshot = {
               ...EMPTY_LIVE,
-              content: t0.phase.payload.content,
-              iterations: t0.phase.payload.iterations,
+              // iter 必须落在**进行中的那个迭代**上：EMPTY_LIVE.iter=1 会让紧随其后的
+              // 同迭代 stream 事件被判「迭代前进」⇒ 清空刚恢复的流式内容/正文。
+              iter: evIter,
+              content: committedPayload !== null ? committedPayload.content : (frozenData?.content ?? ''),
+              reasoning: committedPayload !== null ? '' : (frozenData?.reasoning ?? ''),
+              iterations: its,
             }
             const turns = new Map(s.turns)
             turns.set(target, { ...t0, phase: { kind: 'live', data: live } })

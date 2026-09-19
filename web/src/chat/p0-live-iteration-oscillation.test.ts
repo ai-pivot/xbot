@@ -116,6 +116,58 @@ const evHistory = (activeIter: number): DomainEvent => ({
 const liveIters = (state: ReturnType<typeof reduce>): number[] =>
   liveProgressFromState(state).iterationHistory.map((it) => it.iteration)
 
+/** 流式事件（后端 stamp `iteration` —— 进行中迭代号）。 */
+const evStream = (
+  seq: number,
+  iter: number,
+  content: string | undefined,
+  reasoning = '',
+): DomainEvent => ({
+  type: 'stream',
+  turnID: T,
+  seq: eventSeq(seq),
+  iteration: iterNum(iter),
+  content,
+  reasoning,
+  streamingTools: [],
+  genui: '',
+  streamStats: undefined,
+})
+
+/** DB 中间快照组成的 committed（无 active 快照）—— 运行中被折成 committed 的形态。 */
+const evHistoryNoActive = (): DomainEvent => ({
+  type: 'history_replaced',
+  turns: [
+    {
+      id: T,
+      user: {
+        id: 'db-u9',
+        content: 'running task' as never,
+        timestamp: 't',
+        isNotification: false,
+        queued: false,
+        sending: false,
+        requestID: 'r1',
+        turnHint: undefined,
+        dbID: 900,
+      },
+      phase: {
+        kind: 'committed',
+        payload: {
+          via: 'fold',
+          content: 'C',
+          iterations: [mkIter(1, 'iter1'), mkIter(2, 'iter2')],
+        },
+      },
+      requestID: 'r1',
+    },
+  ],
+  legacy: [],
+  lastSeq: null,
+  active: null,
+  todos: [],
+})
+
 describe('P0 线性一致性：迟到 idle 冻结不得吞掉运行中 turn 的新迭代', () => {
   it('session(idle) 冻结后，更大迭代号的事件必须解冻并继续 live（不得丢弃）', () => {
     let s = reduce(initialChatState('web:chatX'), evTurnStarted())
@@ -166,5 +218,58 @@ describe('P0 线性一致性：迟到 idle 冻结不得吞掉运行中 turn 的�
     }
     // 收尾：turn 必须仍处于 live 且迭代完整（1..6）。
     expect(prevIters).toEqual([1, 2, 3, 4, 5, 6])
+  })
+})
+
+// ─── 对称性：遮盖解除对 stream 事件必须同样成立 ──────────────────────────────
+// 用户 2026-09-19 P0（手机熄屏解锁后 busy 会话 live 进度消失且**永远不再更新**）：
+// `iteration` case 有 frozen/committed 遮蔽解除，`stream` case **没有** —— 非空壳
+// frozen turn 的 `stream` 事件被整批 `return s` 丢弃。而 LLM 生成期（reasoning/
+// content 流式）**只有** stream 事件（结构化事件只在迭代边界/工具状态变化时发），
+// ⇒ 冻结后 live 进度永不回来（用户看到的"live 进度消失且永远不再更新"）。
+// 证据标准与 `iteration` case 完全一致：`ev.iteration > maxIter`（后端绝不会对已
+// 结束的 turn 发新迭代；进行中迭代号必然大于已落库的最大迭代号）。
+describe('P0 对称性：冻结 / committed 的遮蔽解除对 stream 事件必须同样成立', () => {
+  it('冻结后：进行中迭代的 stream 事件必须解冻并继续流式更新（不得整批丢弃）', () => {
+    let s = reduce(initialChatState('web:chatX'), evTurnStarted())
+    s = reduce(s, evIteration(2, 1, 'one'))
+    s = reduce(s, evIteration(3, 2, 'two'))
+    // 迭代 3 开始流式（后端 stamp iteration=3；DB iteration_history 只到 2）。
+    s = reduce(s, evStream(4, 3, 'stream A'))
+    expect(s.activeTurn).toBe(T)
+
+    // 迟到/误传 idle（restoreActiveProgress 竞态 / SSE 重放）冻结了运行中的 turn。
+    s = reduce(s, evIdle())
+    expect(s.activeTurn).toBeNull()
+    expect(s.turns.get(T)?.phase.kind).toBe('frozen')
+
+    // ★ 进行中迭代的流式内容继续到达 —— 后端只对运行中的 turn 发流式事件。
+    s = reduce(s, evStream(5, 3, 'stream B'))
+    expect(s.activeTurn, 'stream 事件必须解冻（否则 live 进度永远不再更新）').toBe(T)
+    const t = s.turns.get(T)
+    if (t?.phase.kind !== 'live') throw new Error('frozen turn must be revived by an in-flight stream event')
+    expect(t.phase.data.content).toBe('stream B')
+    // 冻结前已渲染的迭代一个不少。
+    expect(t.phase.data.iterations.map((i) => i.iteration)).toEqual([1, 2])
+
+    // 后续流式继续更新（不是一次性的）。
+    s = reduce(s, evStream(6, 3, 'stream C'))
+    const t2 = s.turns.get(T)
+    if (t2?.phase.kind !== 'live') throw new Error('live')
+    expect(t2.phase.data.content).toBe('stream C')
+  })
+
+  it('committed + 只带 reasoning 的 stream：迭代号不得回退到 1（否则"迭代前进"会把已恢复内容清空）', () => {
+    // DB 中间快照组成的 committed（迭代 1..2，content='C'），turn 仍在跑。
+    let s = reduce(initialChatState('web:chatX'), evHistoryNoActive())
+    s = reduce(s, evStream(10, 3, undefined, 'reasoning of iter 3'))
+    expect(s.activeTurn).toBe(T)
+    const t = s.turns.get(T)
+    if (t?.phase.kind !== 'live') throw new Error('committed turn must be upgraded by a stream event')
+    // 迭代号 = 进行中的 3（修复前是 EMPTY_LIVE.iter=1 ⇒ 下一帧被判"迭代前进"并清空）。
+    expect(t.phase.data.iter).toBe(3)
+    // 已恢复的 content 不得被清空（ev.content 为 undefined ⇒ 保留 prev）。
+    expect(t.phase.data.content).toBe('C')
+    expect(t.phase.data.reasoning).toBe('reasoning of iter 3')
   })
 })

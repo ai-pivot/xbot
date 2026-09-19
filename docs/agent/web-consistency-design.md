@@ -42,6 +42,7 @@
 - **内容永不消失**：cancel → `freeze()` 保留已渲染内容；iteration 边界保留 activeTools（标记 done）；`hasVisibleProgress` 的 `lastIter>0` 兜底。
 - **快照权威修复链**：`resync_required` / `replay_gap` / `onIterationGap` 三路强制 DB reload。
 - **半开连接检测**：heartbeat 事件行 + 45s 静默超时 watchdog + REST 轮询兜底。
+- **遮蔽/解冻对称（2026-09-19 补齐）**：`session(idle)` / `session_idle` 会把运行中的 live turn 冻结（迟到 / 误传 / SSE 重放的陈旧 idle 无法与真 idle 区分 —— idle 事件不带 turn 身份）；因此**四条事件路径**（`iteration` / `stream` / `phase_done` / `text_final`）都必须能凭**服务端顺序保证**解冻：`ev.iteration > maxIter`（后端绝不会对已结束的 turn 发新迭代/新流式）⇒ 解冻恢复 live（既有内容全保留、`streaming: true`）。`stream` 路径曾漏做 ⇒ LLM 生成期只有流式事件时 live 永久不回来（"live 进度消失且永远不再更新"，用户 2026-09-19 手机熄屏解锁场景；`p0-live-iteration-oscillation.test.ts` + `e2e/mobile-frozen-live-revive.spec.ts` 守护）。升级后 `iter` 必须落在进行中的迭代上（不得回退到 1，否则下一帧被判"迭代前进"而清空刚恢复的内容）。**已知缺口**：服务端 15s heartbeat 的 `sync_progress` live 快照未被 `chat/normalize.ts` 归一化（新状态机丢弃）—— 若再遇"冻结后长时间无业务事件"，把它接进状态机是首选修复。
 
 ## 4. 弱网一致性风险点（审计结论，2026-08）
 
