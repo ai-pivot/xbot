@@ -120,5 +120,8 @@ test-results/
 *.pem
 gpg-private.key*
 
-# plugin Go build artifacts (module-named binaries produced by `go build ./...`)
-plugins/xbot-ssh-runner/xbot-ssh-runner
+# plugin Go build artifacts (module-named binaries produced by `go build ./...`
+# — module name == plugin source dir, e.g. plugins/xbot-ssh-runner/xbot-ssh-runner).
+# Generic: one entry per plugin instead of naming modules one by one (the
+# git-fancy binary kept showing up untracked).
+plugins/*/xbot-*
