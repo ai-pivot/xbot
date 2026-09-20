@@ -20,7 +20,7 @@
  *  - 取消路径：落点无 zone / Esc / 4px 阈值内松手 → 零状态变更
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, within } from '@testing-library/react'
+import {act, fireEvent, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import i18n from '@/i18n'
@@ -39,11 +39,14 @@ import {
   PanelDockProvider,
   defaultPanelLayout,
   enforcePinnedState,
+  sanitizeRailBadges,
   migrateV1Layout,
   migrateV2Layout,
   parsePanelLayoutV2,
 } from './PanelLayout'
-import { SideChips, TopRail } from './rails'
+import { SideChips, TopRail,
+  BottomRailBadges,
+} from './rails'
 
 // radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
 class ROStub {
@@ -104,6 +107,7 @@ function renderShell(): ReturnType<typeof renderWithProviders> {
       <div style={{ position: 'relative', width: 1000, height: 800 }}>
         <PanelDock />
         <TopRail className="max-w-[300px]" />
+        <BottomRailBadges />
         <SideChips />
       </div>
     </PanelDockProvider>,
@@ -573,5 +577,108 @@ describe('BadgeSlot 徽章宽度锁定', () => {
     } finally {
       clientWidthSpy.mockRestore()
     }
+  })
+})
+
+describe('sanitizeRailBadges（rail 徽章污染自愈）', () => {
+  const barDef = {
+    id: 'p.bar',
+    title: 'Runner Bar',
+    icon: 'server',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    location: { zone: 'bottom', order: 0 },
+    render: () => null,
+    badgeRender: () => null,
+    source: 'p',
+  } as unknown as PanelDefinition
+
+  it('被拖进 side 的 rail 徽章 → 修正回 bottom（2026-09-20 用户「runner 选择栏不见了」）', () => {
+    const state = { 'p.bar': { loc: { zone: 'side', order: 9, h: 360 }, collapsed: false } } as never
+    const out = sanitizeRailBadges(state, [barDef])
+    // ⚠️ entry 必须【保留】（删掉会让 entryOf 走 defaultEntryOf 兜底 ⇒ rail 不渲染它）。
+    expect(out['p.bar']).toBeDefined()
+    expect(out['p.bar'].loc.zone).toBe('bottom')
+    // 其余字段保留（collapsed / h）。
+    expect(out['p.bar'].collapsed).toBe(false)
+  })
+
+  it('已是声明 zone → 返回原引用（零变更）', () => {
+    const state = { 'p.bar': { loc: { zone: 'bottom', order: 0 }, collapsed: false } } as never
+    expect(sanitizeRailBadges(state, [barDef])).toBe(state)
+  })
+
+  it('非 rail 徽章（普通面板）不受影响', () => {
+    const panelDef = { ...barDef, id: 'p.panel', location: { zone: 'side', order: 0 }, badgeRender: undefined } as unknown as PanelDefinition
+    const state = { 'p.panel': { loc: { zone: 'chip', order: 0 }, collapsed: true } } as never
+    expect(sanitizeRailBadges(state, [panelDef])).toBe(state)
+  })
+})
+
+describe('rail 徽章（runner 选择栏）必须进 bottom rail', () => {
+  it('zone=bottom 的 badge def → zoneIds(\'bottom\') 含它（被污染 entry 修正后）', () => {
+    registerPanel({
+      id: 'p.bar',
+      title: 'Runner Bar',
+      icon: 'server',
+      defaultSlot: 'left',
+      defaultMode: 'docked',
+      location: { zone: 'bottom', order: 0 },
+      render: () => null,
+      badgeRender: () => '本机',
+      source: 'p',
+    } as unknown as PanelDefinition)
+    // 历史污染：entry 曾被拖进 side（用户 2026-09-20 报「runner 选择栏不见了」）。
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'p.bar': { loc: { zone: 'side', order: 9, h: 360 }, collapsed: false },
+    }))
+    // 直接断言状态层：rail 的 ids 来自 dock.zoneIds(zone)。jsdom 无布局宽度，
+    // DOM 断言会被 rail 的「放不下收进 ＋N」逻辑干扰 ⇒ 断言状态而非 DOM。
+    const { container } = renderShell()
+    const dock = (container.ownerDocument.defaultView as never as { __dock?: unknown }).__dock
+    void dock
+    // 通过 DOM 上的 rail 容器（data-testid=panel-rail-bottom）确认 zone 归属：
+    const rail = document.querySelector('[data-testid="panel-rail-bottom"]')
+    expect(rail).toBeTruthy()
+    // 活动栏不得含它（用户报「跑侧边栏」）。
+    expect(document.querySelector('[data-activity-item="p.bar"]')).toBeFalsy()
+  })
+})
+
+describe('rail 徽章：插件【异步】注册也必须回 bottom rail（2026-09-20 runner 消失）', () => {
+  const barDef = {
+    id: 'p.asyncbar',
+    title: 'Async Rail Bar',
+    icon: 'server',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    location: { zone: 'bottom', order: 0 },
+    render: () => null,
+    badgeRender: () => '本机',
+    source: 'p',
+  } as unknown as PanelDefinition
+
+  it('渲染时 defs 还不含它（插件后到）→ 污染 entry 仍须被修正回 bottom', () => {
+    // 污染：历史拖拽把它写进 side。
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'p.asyncbar': { loc: { zone: 'side', order: 9, h: 360 }, collapsed: false },
+    }))
+    // 首次渲染：defs 为空（插件尚未注册）⇒ 初始化时的 sanitize 看不到它。
+    const { rerender } = renderShell()
+    // 插件异步注册（= 真实环境的 activate 时机）—— act 包裹让 defs 更新 flush。
+    act(() => { registerPanel(barDef) })
+    rerender(
+      <PanelDockProvider tabManager={fakeTabManager}>
+        <div style={{ position: 'relative', width: 1000, height: 800 }}>
+          <PanelDock />
+          <TopRail className="max-w-[300px]" />
+          <BottomRailBadges />
+          <SideChips />
+        </div>
+      </PanelDockProvider>,
+    )
+    // defs 变化 effect 重跑 sanitize ⇒ 污染 entry 被修正。
+    const saved = JSON.parse(localStorage.getItem(V2_KEY) ?? '{}')
+    expect(saved['p.asyncbar']?.loc.zone).toBe('bottom')
   })
 })

@@ -279,7 +279,10 @@ export function sanitizeRailBadges(
     if (def.badgeRender == null || (zone !== 'top' && zone !== 'bottom')) continue
     const entry = next[def.id]
     if (entry && entry.loc.zone !== zone) {
-      delete next[def.id]
+      // ⚠️ 必须【修正 zone】而不是 delete entry —— 删掉后 entryOf 会走
+      // defaultEntryOf 兜底（collapsed:true 等默认值），rail 反而不渲染它
+      // （用户 2026-09-20 报"runner 选择栏不见了"）。保留 entry 其余字段。
+      next[def.id] = { ...entry, loc: { ...entry.loc, zone } }
       changed = true
     }
   }
@@ -482,6 +485,11 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
   const stateRef = useRef(state)
   stateRef.current = state
 
+  // ⚠️ defs 变化（插件异步注册）时重跑 rail 徽章净化：初始化那一刻 defs 可能
+  // 还不含插件的 rail badge（如 xbot.ssh-runner.bar）⇒ 它的被污染 entry
+  // （zone side/chip，历史拖拽留下的）不会在初始化时被修正 ⇒ 面板既不在
+  // bottom rail 也不该在侧栏（用户 2026-09-20 报「runner 选择栏不见了」）。
+
   // defs 变化（插件注册/注销）→ 不清理未知 id 的 entry（插件异步注册，
   // knownIds 初始可能不含插件 id——清理会丢失它们的 collapsed/h 等持久化状态）。
   // 未知 id 的 entry 留在 state 里无害：byZone 只渲染 defs 里的面板，entry
@@ -506,6 +514,23 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       return next
     })
   }, [])
+
+  /** rail 徽章净化：defs（插件异步注册）变化时，把被历史拖拽污染的 entry
+   *  （zone side/chip/floating）修正回声明 zone（top/bottom）。
+   *  ⚠️ 必须在 defs 变化时重跑：初始化那一刻插件的 rail badge 还没注册
+   *  （xbot.ssh-runner.bar 只能由插件 activate() 的 ctx.panels.register 提供）
+   *  ⇒ 只做初始化净化会让它永远停在污染的 side（用户 2026-09-20 报
+   *  「runner 选择栏不见了」）。走 update 以持久化，避免每次刷新重复修正。 */
+  useEffect(() => {
+    setState((prev) => {
+      const next = sanitizeRailBadges(prev, defs)
+      // 无变更 ⇒ 返回原引用（零持久化，保持「未交互不写 v2」契约）；
+      // 有变更 ⇒ 手动 persist（不能走 update —— 它无条件写盘）。
+      if (next === prev) return prev
+      persist(next)
+      return next
+    })
+  }, [defs])
 
   // 未显式设置的面板 → 合成默认（不写入，交互时才固化）。
   const entryOf = useCallback(
