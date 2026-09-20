@@ -7,7 +7,7 @@
  * Rendered through SessionStoreProvider so the assertions exercise the real
  * store wiring (event handler → askUserPrompts → useAskUser.prompt).
  */
-import { createElement } from 'react'
+import { createElement, useEffect } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
@@ -66,7 +66,11 @@ vi.mock('@/lib/api', () => ({
 function Probe({ chatID, channel }: { chatID: string; channel: string }) {
   const { prompt } = useAskUser({ chatID, channel })
   const store = useSessionStore()
-  storeRef = store
+  // 模块级 storeRef 的赋值必须发生在 render 之外（react-hooks/globals：
+  // render 期间改外部变量是不纯的副作用）。用 effect 同步即可。
+  useEffect(() => {
+    storeRef = store
+  }, [store])
   return (
     <div>
       <div data-testid="panel">{prompt ? 'panel-visible' : 'panel-hidden'}</div>
