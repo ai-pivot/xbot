@@ -469,3 +469,30 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
 
 ⚠️ 与"外置插件（URL 加载）"的区别：后者的名字/标题在**插件自己的 `plugin.json`**（`name` / `contributes[].title`），
 遵循"文案随插件清单走"（见上文「本地化」一节），**不要**塞进宿主 i18n。
+## ⛔ 不变量：切换语言 ⇒ 插件/内置面板文案必须**无刷新**更新（2026-09-20 用户实测「改了语言插件没动态变化」）
+
+用户原话给了方向：「**加个插件事件**不就好了」⇒ 采用**事件驱动**（禁止轮询、禁止"刷新页面兜底"）。
+
+**四个缺口**（缺任一 ⇒ 文案停留在旧语言）：
+1. **登记表只在 mount / view 集合变化时同步** ⇒ 标题（`resolvePluginText` 的结果）登记后永不重算
+   （`usePluginRuntimeHost.ts` 的 syncViews → `panelRegistry`/`layoutRegistry`/`usePluginViewPanels`）。
+2. **内置清单在模块 import 时求值**（`i18n.t(...)` 直接当值）⇒ 文本本身定格
+   （`plugins/manager/pluginManager.ts`、`xbot-skill-manager/skillManager.ts`、`session-stats/sessionStats.ts`）。
+3. **URL 加载的插件视图零订阅**（用 call-time 的 `ctx.i18n.t`，但没人让它们重渲染）。
+4. **registry 把 `manifest.name` 快照进 state**（`plugin-runtime/registry.ts`）。
+
+**实现契约（四条，改这块必须同时满足）**：
+- **单一 seam**：`web/src/i18n/index.ts` 暴露 `onLocaleChanged(cb)`（内部即 i18next `languageChanged`）；
+  **禁止各处自己 `i18n.on(...)`**。
+- **幂等重算**：`plugin-runtime/viewRegistrySync.ts` 的 `sync()` 在**语言变化 + view 集合变化**时都重跑；
+  用覆盖语义重新登记 ⇒ **只换文本，绝不重置用户布局 override/顺序**；`usePluginViewPanels` 同订阅。
+- **插件视图 remount**：`PluginView`/`ViewSlot` 用 `useLocale()` 作 React `key` ⇒ 语言变化重挂载
+  （**已发布插件不改代码也生效**；只"重渲染"不够，插件内部可能 memo/缓存文案）。代价：切语言重置该视图局部状态（可接受）。
+- **插件事件**：`plugin-api/events.ts` 声明 `EventMap['i18n.localeChanged'] = { locale }`；宿主 Bootstrap 广播，
+  插件可 `ctx.events.on('i18n.localeChanged', …)`（需 `events` 权限）。
+
+**内置清单必须惰性求值**：`get name() { return i18n.t(…) }`（getter，而非求值一次）；`registry.listStates()` 读取时取 `r.manifest.name`。
+
+**守护测试要求**：切语言 ⇒ 登记表标题 + 插件视图文案都必须变；**且必须含"接线守卫"**
+（hook 层全绿但启动器忘调用 = 功能不存在 ⇒ 需断言 Bootstrap 真的挂了广播与登记表同步）+
+**变异自证**（撤掉任一契约，对应用例必红）。

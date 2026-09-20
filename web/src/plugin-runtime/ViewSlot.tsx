@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import type { ViewContainer, ViewContribution } from '@/plugin-api'
 import { useI18n } from '@/providers/i18n'
+import { useLocale } from './useLocale'
 
 export interface ViewSlotProps {
   container: ViewContainer
