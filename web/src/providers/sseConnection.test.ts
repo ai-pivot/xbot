@@ -640,7 +640,16 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
-  it('does not apply delayed recovery after a newer SSE event', async () => {
+  it('applies the recovery snapshot after a newer SSE event — staleness is judged by the state machine, not by silencing the snapshot', async () => {
+    // ⛔ 契约变更（用户 2026-09-20 报告：「熄屏后新迭代完成即消失、历史卡死在
+    // 熄屏前的进度」+「catch up 失败应该直接 session reload，静默失败导致 bug」）。
+    // 旧契约「RPC 期间有新事件 ⇒ 静默丢弃快照」在流式期间**几乎恒成立**（每个
+    // 结构化事件都 bump progressVersion）⇒ 断连窗口丢掉的迭代永久缺失 —— 新事件
+    // 不会重放它们（流式帧只带当前迭代的全量文本，结构化事件只带 0-1 条 delta）。
+    // 新契约：快照**一律投递**，是否过期由唯一的状态机判据决定 —— ChatStore 的
+    // I5「seq ≤ 水位 **且** 无新迭代信息才丢弃」（纯重放被丢弃 ⇒ 不会回退已渲染
+    // 状态；携带缺失迭代 ⇒ 应用）。分层职责：provider 只负责送达与真实数据丢失的
+    // 全量 reload 降级（resync_required / turnID 变化 / >100 迭代 gap / RPC 失败）。
     let resolveProgress: (progress: { phase: string; iteration: number }) => void = () => undefined
     postAPIMock.mockImplementation((endpoint: string) => {
       if (endpoint === '/api/rpc') {
@@ -663,8 +672,11 @@ describe('SSEConnectionImpl', () => {
     resolveProgress({ phase: 'tool', iteration: 1 })
     await Promise.resolve()
 
-    expect(received.map((message) => message.content)).toEqual(['gap event', 'newer event'])
-    expect(progressSnapshotCache.has(sessionCacheKey('web', 'chat-a'))).toBe(false)
+    // 原事件未被扰动（顺序不变），恢复快照照常投递给状态机（由它判定是否为重放）。
+    expect(received.slice(0, 2).map((message) => message.content)).toEqual(['gap event', 'newer event'])
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)?.progress).toMatchObject({
+      iteration: 1,
+    })
     connection.dispose()
   })
 
@@ -832,6 +844,93 @@ describe('SSEConnectionImpl', () => {
       type: 'progress_structured',
       progress: { phase: 'tool', iteration: 3 },
     })
+    connection.dispose()
+  })
+
+  it('applies the recovery snapshot even when a lifecycle event bumped progressVersion during the RPC', async () => {
+    // ⛔ 用户 2026-09-20 报告：熄屏很久后回来「新迭代 live 时会渲染、**完成后立刻
+    // 消失**，前端历史永久卡死在熄屏前的进度」。旧实现只要 RPC 期间有**任何**
+    // 结构化事件到达（流式期间几乎必然 —— 每个 tool/thinking 事件都 bump
+    // progressVersion）就 `return` **静默丢弃**恢复快照；而断连窗口丢掉的迭代
+    // **只有**这份快照（或 DB reload）能补 —— 新事件不会重放它们 ⇒ 迭代永久缺失。
+    // 现在快照一律应用：迭代是 append-only union（I4），且由 I5 的「seq ≤ 水位
+    // **且**无新信息才丢弃」判据去重（携带缺失迭代 ⇒ 应用；纯重放 ⇒ 丢弃）。
+    let resolveProgress: (progress: Record<string, unknown>) => void = () => undefined
+    postAPIMock.mockImplementation((endpoint: string) => {
+      if (endpoint === '/api/rpc') {
+        return new Promise((resolve) => {
+          resolveProgress = resolve
+        })
+      }
+      return Promise.resolve({})
+    })
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
+
+    // seq gap（stateful 事件）触发 restoreActiveProgress（RPC 在途）。
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 4,
+      progress: { phase: 'tool_exec', iteration: 2, turn_id: 9 },
+    })
+    await Promise.resolve()
+    expect(postAPIMock).toHaveBeenCalledWith('/api/rpc', expect.objectContaining({
+      method: 'get_active_progress',
+    }))
+
+    // RPC 在途中另一个结构化事件到达（bump progressVersion）。
+    source.emit('progress_structured', {
+      type: 'progress_structured',
+      seq: 5,
+      progress: { phase: 'thinking', iteration: 3, turn_id: 9 },
+    })
+
+    // RPC 返回：快照携带断连窗口丢失的迭代 —— 必须应用，不得静默丢弃。
+    resolveProgress({
+      phase: 'tool_exec',
+      iteration: 9,
+      turn_id: 9,
+      iteration_history: [{ iteration: 8, content: 'i8' }],
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(received.filter((m) => m.type === 'progress_structured').at(-1)?.progress).toMatchObject({
+      iteration: 9,
+    })
+    connection.dispose()
+  })
+
+  it('falls back to a full DB reload when the recovery RPC fails (never a silent no-op)', async () => {
+    // 用户 2026-09-20：「catch up 失败应该直接 session reload，我怀疑是现在静默
+    // 失败导致 bug」—— 旧实现 `catch {}` 完全吞掉错误：既没有 reload 也没有日志，
+    // 界面永久停在旧进度（且 live 与已渲染迭代互相矛盾）。
+    postAPIMock.mockImplementation(async (endpoint: string) => {
+      if (endpoint === '/api/rpc') throw new Error('rpc timeout')
+      return {}
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat-a')
+    const source = MockEventSource.instances[0]
+    source.open()
+    lastSeqCache.set(sessionCacheKey('web', 'chat-a'), 1)
+
+    source.emit('text', { type: 'text', seq: 4, content: 'after gap' })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const gap = received.find((m) => m.type === 'replay_gap')
+    expect(gap?.metadata?.force_reload).toBe('true')
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
     connection.dispose()
   })
 

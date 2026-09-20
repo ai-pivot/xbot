@@ -165,6 +165,29 @@ export function continuousIterations(iters: WebIteration[]): WebIteration[] {
   return out
 }
 
+/**
+ * live 区里是否还有「在飞的迭代」—— 判据：进行中迭代号**尚未**作为历史渲染过。
+ *
+ * ⛔ 为什么必须成对使用（用户 2026-09-20 报告：「思考中和思考 stream 明显不可能同时
+ * 存在才对」——截图里上方一条已完成的「思考 15175 字」下方又出现「思考中…」）：
+ * `iteration` 是后端当前迭代号；迭代边界（刚 commit 完迭代 N、N+1 的首个 delta 还没
+ * 到）时它仍等于 N，而 N **已经**作为历史块渲染（TurnBody 的已提交迭代）——此时
+ * 任何"思考中…"占位符都是自相矛盾的（同一个迭代既已完成又在思考）。
+ * 两个占位符渲染点（LiveIteration 的空内容分支、MessageList 的 busy 占位符）互斥，
+ * 必须共用**同一判据**，否则要么双渲染（矛盾）要么两者都没有（busy 无信号）。
+ */
+export function liveIterationInFlight(progress: {
+  iteration: number
+  iterationHistory: readonly { iteration: number }[]
+}): boolean {
+  if (progress.iterationHistory.length === 0) return true
+  let maxCompleted = -1
+  for (const it of progress.iterationHistory) {
+    if (it.iteration > maxCompleted) maxCompleted = it.iteration
+  }
+  return progress.iteration > maxCompleted
+}
+
 // ── exported helpers (used by useProgressStream) ──────────────────────────
 
 /** Detect a stream-only event: no phase/iteration, has stream fields. */

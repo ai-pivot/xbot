@@ -25,6 +25,7 @@ import {
   turnID,
   type ChatState,
   type DomainEvent,
+  type EventSeq,
   type IterNum,
   type LiveSnapshot,
   type Turn,
@@ -222,6 +223,49 @@ function hasStreamEvidence(ev: { content?: string; reasoning?: string; genui?: s
     (ev.genui !== undefined && ev.genui !== '') ||
     (ev.streamingTools !== undefined && ev.streamingTools.length > 0)
   )
+}
+
+/**
+ * I5 重放判定 —— **seq ≤ 水位 且 无新迭代信息**，绝不能只看 seq。
+ *
+ * ⛔ 根因（用户 2026-09-20 报告）：「手机熄屏很久之后回来：新迭代 live 时**会渲染**、
+ * **完成后立刻消失**，前端显示的历史永久卡死在熄屏前的进度。」
+ *
+ * `ProgressEvent.Seq` 是 **per-Run** 水位 —— 后端 `buildMainRunConfig` 每次 Run 新建
+ * 一个 `atomic.Uint64`（`agent/engine_wire.go`），而**同一个 turn 的 Run 会被重启**：
+ * 最典型的是服务端重启后的 resume（`resolveResumeTurnID` 复用被中断 turn 的 turn_id +
+ * `IterationStart = K+1` 续接迭代号）——**同一 turn、迭代号连续，但新 Run 的 Seq 从 1
+ * 重新计数**。客户端在熄屏/断线期间保留的是**旧 Run** 的水位（`ChatState.lastSeq`）⇒
+ * 恢复后新 Run 的 structured 事件（seq 1..N ≤ 旧水位）被整批判成"重放"丢弃；而
+ * `stream` 事件**没有** seq gate（累积全量推送）⇒ 打字机照常更新。于是：
+ *   · live 帧看得到内容（stream 生效）；
+ *   · 迭代推进时下一帧 stream 的 `advanced` 清空流式内容，而携带该迭代 delta 的
+ *     structured 事件被吞 ⇒ 迭代**出现即消失**；
+ *   · `iterations` 永不增长 ⇒ **历史卡死**（刷新从 DB 恢复才回来）。
+ *
+ * 判据（与遮蔽解除 `ev.iter > maxIter` 同一证据标准）：迭代号在 turn 域内单调，
+ * 后端**绝不会**对更早的迭代重发更大号 ⇒ 携带更大迭代号 / 我们还没有的迭代 delta 的
+ * 事件**不可能**是"已应用过的重放"，只能是新 Run 的事件（应用它并让水位切到新 Run）。
+ * 真·重放（同号、delta 已持有）仍被丢弃 —— 该 gate 的原始目的不变。
+ */
+function isStaleSeq(
+  lastSeq: EventSeq | null,
+  seq: EventSeq | null,
+  live: Pick<LiveSnapshot, 'iter' | 'iterations'>,
+  extra: {
+    iter?: IterNum
+    iterationsDelta?: readonly WebIteration[]
+    finalIteration?: WebIteration | null
+  },
+): boolean {
+  if (lastSeq === null || seq === null || seq > lastSeq) return false
+  if (extra.iter !== undefined && extra.iter > live.iter) return false
+  const maxKnown = live.iterations.reduce((m, it) => Math.max(m, it.iteration), 0)
+  if (extra.iterationsDelta?.some((it) => it.iteration > maxKnown)) return false
+  // phase_done 的 finalIteration 是**进行中迭代**的收尾快照（可能 = live.iter）——
+  // "是否新信息"看它是否已落进 iterations（`> maxKnown`），不看 live.iter。
+  if (extra.finalIteration != null && extra.finalIteration.iteration > maxKnown) return false
+  return true
 }
 
 /**
@@ -515,11 +559,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           s = lazyAdoptLive(s, target)
         }
       }
-      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return s // I5：重放丢弃（null seq 无基准，不比较）
       const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return s
 
       const prev = t.phase.data
+      // I5：重放丢弃（seq ≤ 水位 **且** 无新迭代信息 —— 见 isStaleSeq 的 Run 重启说明）。
+      if (isStaleSeq(s.lastSeq, ev.seq, prev, { iter: ev.iter, iterationsDelta: ev.iterationsDelta })) return s
       const advanced = ev.iter > prev.iter
       // ── 迭代 commit（history append 且 iteration 未前进）──
       // 事件 A（snapshotCompletedIteration）：iterationsDelta append 了刚完成
@@ -543,7 +588,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const committedNow = !advanced && appendedNew && appendedMax === prev.iter
       const data: LiveSnapshot = {
         ...prev,
-        iter: ev.iter,
+        // ⚠️ 迭代号**单调不回退**（gap 修复 delta 可能携带更早的迭代号 —— 后端
+        // attachIterationDelta 附的是"前一个"迭代）：回退会让"进行中迭代"落到一个
+        // 已渲染成历史块的迭代上 ⇒ LiveIteration / MessageList 的「思考中…」与上方
+        // 已完成的「思考 N 字」同时出现（用户 2026-09-20 报告的矛盾画面）。
+        iter: advanced ? ev.iter : prev.iter,
         // progressPhase（后端 structuredProgress.Phase 透传——'compressing' 等）：
         // 事件携带时更新；undefined 保留 prev（同 LiveSnapshot 其他字段的覆盖
         // 语义——phase 缺失不回退初始值）。这是 web 端压缩提示（agent.compressing
@@ -731,10 +780,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         }
         return applySessionFields(s, ev.todos, ev.goal)
       }
-      if (s.lastSeq !== null && ev.seq !== null && ev.seq <= s.lastSeq) return applySessionFields(s, ev.todos, ev.goal)
       const t = s.turns.get(target)
       if (!t || t.phase.kind !== 'live') return applySessionFields(s, ev.todos, ev.goal)
       const prev = t.phase.data
+      // I5：重放丢弃（seq ≤ 水位 **且** 无新迭代信息 —— 见 isStaleSeq 的 Run 重启说明）。
+      if (isStaleSeq(s.lastSeq, ev.seq, prev, { finalIteration: ev.finalIteration })) {
+        return applySessionFields(s, ev.todos, ev.goal)
+      }
       // I4：finalIteration（后端 recordFinalIteration 补记的最后迭代）fold 进
       // iterations —— text 到达前它已在 committed 路径的数据里（不依赖 text 重建）。
       const data: LiveSnapshot = {

@@ -80,7 +80,7 @@ export class SSEConnectionImpl implements WSConnection {
   private pollRequestToken: object | null = null
   private replayTimer: ReturnType<typeof setTimeout> | null = null
   private sessionVersion = 0
-  private progressVersion = 0
+  /** restoreActiveProgress 的请求代际（切换会话后丢弃迟到的恢复结果）。 */
   private recoveryRequestVersion = 0
   // Half-open connection watchdog: the browser EventSource does NOT fire
   // onerror when the server dies / network cuts without a TCP reset — the
@@ -363,7 +363,9 @@ export class SSEConnectionImpl implements WSConnection {
     }
     this.eventsSinceOpen += 1
     if (cacheKey && isProgressLifecycleEvent(msg)) {
-      this.progressVersion += 1
+      // 生命周期事件 ⇒ 前进一个 generation（useChatMessages 的 reload 竞态判定读它）。
+      // ⚠️ 不再维护"恢复快照是否过期"的 progressVersion 比对：过期判定收口到状态机
+      // 的 I5 判据（见 restoreActiveProgress 的注释，2026-09-20 用户报告的根因）。
       bumpProgressGeneration(cacheKey)
     }
     this.dispatch(msg)
@@ -496,7 +498,6 @@ export class SSEConnectionImpl implements WSConnection {
     if (this.recoveryInProgress) return
     this.recoveryInProgress = true
     const sessionVersion = this.sessionVersion
-    const progressVersion = this.progressVersion
     const recoveryRequestVersion = ++this.recoveryRequestVersion
     const cacheKey = sessionCacheKey(channel, chatID)
     // Snapshot the cached progress BEFORE recovery to detect TurnID changes.
@@ -551,12 +552,10 @@ export class SSEConnectionImpl implements WSConnection {
       // ── Turn ended on the server (or get_active_progress returned null) ──
       // The committed reply (text event) may have been lost during the SSE
       // gap; the DB is authoritative. ALWAYS reload from DB so the complete
-      // turn (user + assistant) renders. This must run BEFORE the
-      // progressVersion check below: any event arriving during the reconnect
-      // window bumps progressVersion, and without this unconditional reload
-      // the live row is cleared (phase=done) with no committed replacement —
-      // the in-progress turn "vanishes" until a manual refresh (user report:
-      // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
+      // turn (user + assistant) renders. (Deliberately unconditional: an
+      // earlier version gated it on a progressVersion snapshot and silently
+      // skipped the reload whenever any event arrived during the RPC — the
+      // in-progress turn then "vanished" until a manual refresh.)
       if (!progress || progress.phase === 'done') {
         // Turn ended: dispatch agent-idle so useSessionStore clears the
         // session's busy state. The session(idle) SSE event may have been
@@ -609,13 +608,18 @@ export class SSEConnectionImpl implements WSConnection {
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
         return
       }
-      // progressVersion changed during the fetch: newer events already arrived
-      // (SSE replay delivers the live state), so the snapshot restore below
-      // would be stale — skip it. The unconditional reload decision above is
-      // unaffected (turn is still running here, so no reload needed).
-      if (this.progressVersion !== progressVersion) return
+      // ⛔ 不能因 progressVersion 变化而**静默丢弃**快照（用户 2026-09-20 报告：
+      // 「熄屏后新迭代 live 时会渲染、完成即消失，历史卡死在熄屏前的进度」+
+      //  「catch up 失败应该直接 session reload，我怀疑是现在静默失败」）。
+      // 断连窗口里丢掉的迭代**只能**靠这份快照或 DB reload 补齐 —— 新事件不会
+      // 重放它们（流式帧只带当前迭代的全量文本，结构化事件只带 0-1 条 delta）。
+      // 旧实现 `if (this.progressVersion !== progressVersion) return` 在
+      // **流式期间几乎恒成立**（每个结构化事件都 bump progressVersion）⇒ 快照
+      // 被静默扔掉 ⇒ 迭代永久缺失（消息越长/事件越密越必然）。
+      // 安全性：快照走 normalize → `iteration` case，由 I5 的「seq ≤ 水位**且**
+      // 无新信息才丢弃」判据去重（携带缺失迭代 ⇒ 应用；纯重放 ⇒ 丢弃），且
+      // 迭代是 append-only union、content 非空优先 ⇒ 应用过期快照不会回退。
       bumpProgressGeneration(cacheKey)
-      this.progressVersion += 1
 
       // ── Detect real data loss: TurnID changed or iteration advanced in gap ──
       // SSE event gaps are normal (stateless coalescing, buffer drops) and the
@@ -683,8 +687,23 @@ export class SSEConnectionImpl implements WSConnection {
         type: 'session',
         session: { channel, chat_id: chatID, action: 'busy' },
       })
-    } catch {
-      // The next native SSE reconnect or status poll gets another recovery chance.
+    } catch (err) {
+      // ⛔ 绝不能静默失败（用户 2026-09-20 报告 + 明确要求：
+      // 「catch up 失败应该直接 session reload，我怀疑是现在静默失败导致 bug」）。
+      // 本会话在断连窗口丢掉的迭代**没有第二个来源**（新事件不会重放它们），
+      // 静默 return 会让界面永久停在旧进度、且 live 与已渲染迭代互相矛盾。
+      // 降级为全量 DB reload（权威），并留下可诊断的日志（不再无声无息）。
+      console.warn('[SSE] active-progress recovery failed — falling back to DB reload', {
+        channel,
+        chatID,
+        err,
+      })
+      this.dispatch({
+        type: 'replay_gap',
+        chat_id: `${channel}:${chatID}`,
+        metadata: { force_reload: 'true' },
+      })
+      this.dispatchSessionsResync()
     } finally {
       this.recoveryInProgress = false
     }

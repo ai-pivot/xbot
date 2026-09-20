@@ -24,7 +24,7 @@ import { SweepText } from './SweepText'
 import { isToolInProgress } from './statusVisual'
 import { useTypewriter } from '@/hooks/useTypewriter'
 import { useI18n } from '@/providers/i18n'
-import { dedupTools } from './progressStore'
+import { dedupTools, liveIterationInFlight } from './progressStore'
 import { IterationSlot, setGlobalLiveStats } from '@/plugin-runtime/iteration-render'
 import type { ProgressSnapshot } from '@/types/shared'
 import type { LiveStreamStats } from '@/plugin-api'
@@ -194,7 +194,11 @@ export const LiveIteration = memo(function LiveIteration({
     // 指示器（AssistantMessage / MessageList 的 agent.compressing）—— 不变量
     // 「每个状态下有且只有一个状态指示器」（用户报告截图：`thinking…` 与
     // `Compressing context…` 同时渲染，看起来像 bug）。
-    if (progress.streaming && progress.phase !== 'compressing') {
+    // ⛔ 「在飞迭代已被渲染成历史块」时不得再显示占位符（用户 2026-09-20 报告：
+    // 「思考中和思考 stream 明显不可能同时存在才对」——截图里已完成的
+    // 「思考 15175 字」下方又冒出「思考中…」）。判据与 MessageList 的 busy 占位符
+    // **共用** `liveIterationInFlight`（两者互斥 ⇒ 同一状态下恰好一个指示器）。
+    if (progress.streaming && progress.phase !== 'compressing' && liveIterationInFlight(progress)) {
       return <ShimmerThinking />
     }
     return null

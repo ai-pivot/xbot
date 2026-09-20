@@ -31,6 +31,7 @@ import { ChevronRight, Loader2, Sparkles } from 'lucide-react'
 import { MessageItem } from './MessageItem'
 import { MessageUserNav } from './MessageUserNav'
 import { ShimmerThinking } from './ShimmerThinking'
+import { liveIterationInFlight } from './progressStore'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import { commands } from '@/lib/commandRouter'
@@ -521,11 +522,25 @@ export const MessageList = memo(function MessageList({
   // 而若 store 里存在**不在可视尾部**的 live 行（例如被伪造成 live 的历史 turn），
   // 单看 liveId 也会把占位符挡掉 ⇒ 用户看到「cancel + 完全没有进行中信号」。
   const tailRowId = rows.length > 0 ? rows[rows.length - 1].id : null
+  // live 行自身在尾部且**确有在飞迭代**时才认为"尾部已渲染进行中信号"。
+  // ⛔ `liveIterationInFlight` 与 LiveIteration 的空内容分支**共用同一判据**
+  //（用户 2026-09-20 报告：「思考中和思考 stream 明显不可能同时存在才对」）：
+  // 迭代边界时进行中迭代号仍等于刚 commit 的迭代（已渲染成历史块），此时
+  // LiveIteration 不再显示占位符 —— 本处的 tailShowsIndicator 必须同步为 false，
+  // 但又**不能**回落到 busy 占位符（那会再画一个「思考中…」，与上方已完成的
+  // 「思考 N 字」自相矛盾）。尾行就是 live 行 ⇒ 列表尾部渲染的是该 turn 自己的
+  // 迭代内容（非 idle 画面，不变量仍成立），无需再叠加占位符。
+  const tailIsLiveRow = liveId !== null && liveId === tailRowId
   const tailShowsIndicator =
-    liveId !== null &&
-    liveId === tailRowId &&
-    (liveProgress?.streaming === true || liveProgress?.phase === 'compressing')
-  const showBusyPlaceholder = busy && !(loading && rows.length === 0) && !tailShowsIndicator
+    tailIsLiveRow &&
+    (liveProgress?.phase === 'compressing' ||
+      (liveProgress?.streaming === true &&
+        liveIterationInFlight({
+          iteration: liveProgress?.iteration ?? 0,
+          iterationHistory: liveProgress?.iterationHistory ?? [],
+        })))
+  const showBusyPlaceholder =
+    busy && !(loading && rows.length === 0) && !tailShowsIndicator && !tailIsLiveRow
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
