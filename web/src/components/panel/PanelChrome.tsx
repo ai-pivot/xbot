@@ -15,35 +15,12 @@
  *    （glass 模式下 --bg-primary 被 AmbienceBackground 覆盖为半透明，浮窗自动玻璃化）
  */
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
-import { ChevronRight, Inbox, PanelLeft, PictureInPicture2, X } from 'lucide-react'
+import { ChevronRight, Inbox } from 'lucide-react'
 
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import type { PanelBadge, PanelMode } from '@/plugin-api'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
-import type { ResizeDir } from './PanelLayout'
-
-/**
- * floating 全方向 resize 手柄（四角 + 四边，OS 窗口式）。
- * 热区纯透明（光标形状提示），仅 se 角保留条纹渐变视觉（可发现性锚点）；
- * 边手柄内缩 12px（left-3 等）避让角手柄。cursor 按方向：nw/se=nwse、ne/sw=nesw、
- * n/s=ns、e/w=ew。touch-none 防触摸滚动干扰（拖拽协议 v5 规格 7）。
- * label 为 i18n key（panel.edge.*），渲染时经 t() 解析。
- */
-const RESIZE_HANDLES: ReadonlyArray<{ dir: ResizeDir; cls: string; label: string }> = [
-  { dir: 'nw', cls: 'left-0 top-0 size-3 cursor-nwse-resize', label: 'panel.edge.nw' },
-  { dir: 'n', cls: 'left-3 right-3 top-0 h-1.5 cursor-ns-resize', label: 'panel.edge.n' },
-  { dir: 'ne', cls: 'right-0 top-0 size-3 cursor-nesw-resize', label: 'panel.edge.ne' },
-  { dir: 'e', cls: 'bottom-3 right-0 top-3 w-1.5 cursor-ew-resize', label: 'panel.edge.e' },
-  { dir: 'se', cls: 'bottom-0 right-0 size-3 cursor-nwse-resize', label: 'panel.edge.se' },
-  { dir: 's', cls: 'bottom-0 left-3 right-3 h-1.5 cursor-ns-resize', label: 'panel.edge.s' },
-  { dir: 'sw', cls: 'bottom-0 left-0 size-3 cursor-nesw-resize', label: 'panel.edge.sw' },
-  { dir: 'w', cls: 'bottom-3 left-0 top-3 w-1.5 cursor-ew-resize', label: 'panel.edge.w' },
-]
-
-/** se 角视觉锚点：条纹渐变用 text-primary 低透明（dark=白条纹/light=黑条纹，两主题可见）。 */
-const SE_RESIZE_GRADIENT =
-  'linear-gradient(135deg, transparent 0 50%, color-mix(in srgb, var(--text-primary) 18%, transparent) 50% 60%, transparent 60% 72%, color-mix(in srgb, var(--text-primary) 18%, transparent) 72% 84%, transparent 84%)'
 
 export interface PanelChromeProps {
   /** 面板 id（data-dock-item 定位 + 拖拽数据）。 */
@@ -63,18 +40,6 @@ export interface PanelChromeProps {
    */
   pinned?: boolean
   onToggleCollapse: () => void
-  /** 停靠⇄浮动切换。 */
-  onToggleMode: () => void
-  /** v5.1 docked 专属：取消钉选（✕ → 'chip'）。缺省不渲染 ✕（PINNED_DEFAULTS 面板不可取消钉选）。 */
-  onUnpin?: () => void
-  /** floating 专属：关闭浮窗（收回 chips）。 */
-  onClose?: () => void
-  /** floating 标题栏拖动（pointerdown 起始；按钮区自动豁免）。 */
-  onTitlePointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
-  /** 双击标题回启动器（floating 语义）。 */
-  onTitleDoubleClick?: () => void
-  /** floating 全方向 resize（pointerdown 起始；dir = 手柄方向，四角+四边）。 */
-  onResizePointerDown?: (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => void
   /** v5.1 docked 展开态底边调高 handle（pointerdown 起始；拖拽协议 v5）。 */
   onResizeHeightPointerDown?: (e: ReactPointerEvent<HTMLElement>) => void
   /** docked 拖拽重排的插入线位置（PanelLayout 计算）。 */
@@ -111,17 +76,10 @@ export function PanelChrome({
   title,
   sub,
   badge,
-  mode,
   collapsed,
   pinned = false,
   headerExtra,
   onToggleCollapse,
-  onToggleMode,
-  onUnpin,
-  onClose,
-  onTitlePointerDown,
-  onTitleDoubleClick,
-  onResizePointerDown,
   onResizeHeightPointerDown,
   style,
   emptyHint,
@@ -130,42 +88,22 @@ export function PanelChrome({
   const isTouch = useIsTouch()
   const { t } = useI18n()
   const Icon = pluginIcon(icon)
-  const floating = mode === 'floating'
   const stop = (e: ReactPointerEvent) => e.stopPropagation()
 
-  // 皮肤走 theme token（light/dark/glass 自适应）：
-  //  - floating：bg-primary 90% 半透明毛玻璃（glass 模式下 --bg-primary 已被
-  //    AmbienceBackground 覆盖为半透明，自动继承玻璃效果）；ring 用 var(--border)。
-  //  - docked：bg-secondary（相对侧栏底 bg-primary 微亮/微暗形成层次）。
-  // 阴影保持黑色系（阴影无色相，两主题通用）。
-  const shellStyle: CSSProperties = floating
-    ? {
-        background: 'color-mix(in srgb, var(--bg-primary) 90%, transparent)',
-        backdropFilter: 'blur(14px)',
-        WebkitBackdropFilter: 'blur(14px)',
-        boxShadow: '0 16px 48px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.4), inset 0 0 0 1px var(--border)',
-        pointerEvents: 'auto',
-        ...style,
-      }
-    : {
-        background: 'var(--bg-secondary)',
-        boxShadow: 'inset 0 0 0 1px var(--border)',
-        // 拖拽物理感：源元素轻微缩小（被"提起"的错觉）
-        ...style,
-      }
+  // 皮肤走 theme token（light/dark/glass 自适应）：docked = bg-secondary
+  // （相对侧栏底 bg-primary 微亮/微暗形成层次）。阴影保持黑色系。
+  // 浮窗皮肤已删除（2026-09-20 用户要求：删掉悬浮窗口）。
+  const shellStyle: CSSProperties = {
+    background: 'var(--bg-secondary)',
+    boxShadow: 'inset 0 0 0 1px var(--border)',
+    ...style,
+  }
 
   return (
     <section
       data-panel-id={id}
-      {...(!floating ? { 'data-dock-item': id } : {})}
-      className={
-        floating
-          ? 'absolute flex flex-col overflow-hidden'
-          // v5 规格 9：docked section overflow-hidden——flex 收缩时 body 溢出
-          // 叠到相邻面板（重叠 corner case）。
-          // 展开态层次：inset shadow 画分隔线（不占布局、不影响 flex 分配）。
-          : 'relative flex min-h-0 flex-col overflow-hidden shadow-[inset_0_-1px_0_0_rgba(255,255,255,0.055)]'
-      }
+      data-dock-item={id}
+      className="relative flex min-h-0 flex-col overflow-hidden shadow-[inset_0_-1px_0_0_rgba(255,255,255,0.055)]"
       style={shellStyle}
     >
       {/* 标题栏 h-8。floating：整体可拖动（按钮豁免）；docked：grip 拖动。
@@ -175,9 +113,7 @@ export function PanelChrome({
           展开的会话面板被文字点击收掉后，左栏只剩一片黑，看起来像坏了）。折叠只有
           一个显式控件：⌄ 按钮（+ 左侧图标栏点击激活项 = 收起整栏）。 */}
       <header
-        className={`group/header flex h-9 shrink-0 select-none items-center gap-1.5 border-l-2 border-l-transparent px-2 transition-spring hover:border-l-app-accent/60 hover:bg-bg-tertiary/30 ${!collapsed ? 'bg-bg-tertiary/15' : ''} ${floating ? 'cursor-move touch-none' : ''}`}
-        onPointerDown={floating ? onTitlePointerDown : undefined}
-        onDoubleClick={floating ? onTitleDoubleClick : undefined}
+        className={`group/header flex h-9 shrink-0 select-none items-center gap-1.5 border-l-2 border-l-transparent px-2 transition-spring hover:border-l-app-accent/60 hover:bg-bg-tertiary/30 ${!collapsed ? 'bg-bg-tertiary/15' : ''}`}
       >
         {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
             返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
@@ -199,40 +135,11 @@ export function PanelChrome({
             {badge.text}
           </span>
         ) : null}
-        {/* 停靠⇄浮动：常驻面板（pinned）不渲染——浮走等于左栏空掉。 */}
-        {floating || !pinned ? (
-          <button
-            {...iconButtonProps(floating ? t('panel.recall') : t('panel.floatAction'))}
-            onPointerDown={stop}
-            onClick={onToggleMode}
-            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-secondary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-          >
-            {floating ? <PanelLeft className="size-3.5" /> : <PictureInPicture2 className="size-3.5" />}
-          </button>
-        ) : null}
-        {!floating && onUnpin ? (
-          <button
-            {...iconButtonProps(t('panel.unpin'))}
-            onPointerDown={stop}
-            onClick={onUnpin}
-            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-primary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-          >
-            <X className="size-3.5" />
-          </button>
-        ) : null}
-        {floating && onClose ? (
-          <button
-            {...iconButtonProps(t('panel.closeFloat'))}
-            onPointerDown={stop}
-            onClick={onClose}
-            className={`flex shrink-0 items-center rounded-md p-2 text-text-muted transition-spring hover:bg-bg-tertiary/60 hover:text-text-primary active:scale-90 hover:[&_svg]:scale-110 [&_svg]:transition-transform [&_svg]:duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-app-accent/50 ${isTouch ? '' : 'opacity-0 group-hover/header:opacity-100'}`}
-          >
-            <X className="size-3.5" />
-          </button>
-        ) : null}
+        {/* 停靠⇄浮动 / 取消钉选 / 关闭浮窗按钮已删除（2026-09-20 用户要求：
+            删掉悬浮窗口和拖拽逻辑）。面板只能 docked 在侧栏堆叠里。 */}
         {/* 折叠：常驻面板（pinned）不渲染——收起后它连同自己的 header 一起从堆叠
             消失，左栏只剩空态提示（用户报的"点一下会话面板没了"）。 */}
-        {floating || !pinned ? (
+        {!pinned ? (
           <button
             {...iconButtonProps(collapsed ? t('panel.expand') : t('panel.collapse'))}
             onPointerDown={stop}
@@ -260,7 +167,7 @@ export function PanelChrome({
       </div>
       {/* v5.1 docked 展开态底边调高 handle：7px 高，hover 显 accent 条（设计稿样式）。
           拖拽协议 v5：pointerdown 起始 + pointer capture + touch-none，move 零持久化。 */}
-      {!floating && !collapsed && onResizeHeightPointerDown ? (
+      {!collapsed && onResizeHeightPointerDown ? (
         <span
           role="separator"
           aria-label={t('panel.resizeHeight')}
@@ -270,19 +177,6 @@ export function PanelChrome({
         >
           <span className="h-[3px] w-10 rounded-full bg-text-muted/30 transition-colors group-hover:bg-app-accent" />
         </span>
-      ) : null}
-      {floating && onResizePointerDown ? (
-        RESIZE_HANDLES.map(({ dir, cls, label }) => (
-          <span
-            key={dir}
-            data-resize-dir={dir}
-            role="separator"
-            aria-label={t('panel.resizeFromEdge', { edge: t(label) })}
-            onPointerDown={(e) => onResizePointerDown(dir, e)}
-            className={`absolute z-10 touch-none ${cls}`}
-            style={dir === 'se' ? { background: SE_RESIZE_GRADIENT } : undefined}
-          />
-        ))
       ) : null}
     </section>
   )

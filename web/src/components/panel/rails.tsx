@@ -29,7 +29,7 @@
  *  3. visibleCount 稳定时 setState 同值 bail-out，无渲染循环。
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Maximize2, Pin, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 
 import { usePanelDock, zoneHighlightStyle } from './PanelLayout'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
@@ -100,32 +100,19 @@ export function PanelBadgeView({ def, tabManager }: { def: PanelDefinition; tabM
   )
 }
 
-/** 徽章紧凑详情 popover 内容（badgeRender 内容 + ⤢ 升为浮窗）。 */
+/** 徽章紧凑详情 popover 内容（badgeRender 内容）。浮动入口已删除（2026-09-20）。 */
 function BadgeDetail({
   def,
   tabManager,
-  onFloat,
 }: {
   def: PanelDefinition
   tabManager: TabManager
-  onFloat: () => void
 }): ReactNode {
-  const { t } = useI18n()
   return (
     <div data-rail-detail={def.id} className="flex min-w-56 flex-col gap-2 p-1">
       <div className="flex items-center gap-1.5">
         <PanelBadgeView def={def} tabManager={tabManager} />
       </div>
-      <button
-        type="button"
-        data-testid="rail-detail-float"
-        onClick={onFloat}
-        className="flex items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] transition-colors hover:bg-accent/10"
-        style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
-      >
-        <Maximize2 className="size-3" />
-        {t('panel.floatAction')}
-      </button>
     </div>
   )
 }
@@ -240,12 +227,6 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
   }, [ids])
 
   const defOf = useCallback((id: string) => dock.defs.find((d) => d.id === id), [dock])
-  const float = useCallback((id: string) => {
-    dock.floatPanel(id)
-    setInlineDetailId(null)
-    setMenuOpen(false)
-    setMenuDetailId(null)
-  }, [dock])
 
   const visible = visibleCount == null ? ids : ids.slice(0, visibleCount)
   const overflow = visibleCount == null ? [] : ids.slice(visibleCount)
@@ -273,7 +254,6 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
             data-rail-badge={id}
             title={t('panel.badgeHint', { title: def.labelKey ? t(def.labelKey) : def.title })}
             onClick={() => setInlineDetailId((prev) => (prev === id ? null : id))}
-            onDoubleClick={() => float(id)}
             className="flex max-w-[200px] shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[11px] transition-colors hover:bg-accent/10 has-[>[data-badge-slot]:empty]:hidden"
             style={{ borderColor: 'var(--border)' }}
           >
@@ -284,7 +264,7 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
           </button>
         </PopoverAnchor>
         <PopoverContent align="start" sideOffset={6} className="w-auto p-2">
-          <BadgeDetail def={def} tabManager={dock.tabManager} onFloat={() => float(id)} />
+          <BadgeDetail def={def} tabManager={dock.tabManager} />
         </PopoverContent>
       </Popover>
     )
@@ -329,7 +309,7 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
                       </button>
                     </PopoverAnchor>
                     <PopoverContent align="start" sideOffset={6} className="w-auto p-2">
-                      <BadgeDetail def={def} tabManager={dock.tabManager} onFloat={() => float(id)} />
+                      <BadgeDetail def={def} tabManager={dock.tabManager} />
                     </PopoverContent>
                   </Popover>
                 )
@@ -340,7 +320,7 @@ function BadgeRail({ zone, className }: { zone: 'top' | 'bottom'; className?: st
       </div>
     ) : null
 
-  const zoneActive = dock.activeZone === zone
+  const zoneActive = false
   return (
     <div
       ref={containerRef}
@@ -388,7 +368,7 @@ export function SideChips(): ReactNode {
   const { t } = useI18n()
   const dock = usePanelDock()
   const ids = dock.zoneIds('chip')
-  const zoneActive = dock.activeZone === 'chip'
+  const zoneActive = false
   // 当前"独占左栏"的面板（唯一展开的 side 面板）——图标高亮表示它在前台。
   const sideIds = dock.zoneIds('side')
   const expandedSideIds = sideIds.filter((pid) => !dock.entryOf(pid).collapsed)
@@ -428,16 +408,6 @@ export function SideChips(): ReactNode {
                 {isActive && (
                   <span className="absolute top-0 left-1/2 h-[2px] w-4 -translate-x-1/2 rounded-full" style={{ background: 'var(--accent)' }} />
                 )}
-              </button>
-              <button
-                type="button"
-                aria-label={t('panel.pinAria', { title: chipTitle })}
-                title={t('panel.pinToSideTitle', { title: chipTitle })}
-                onClick={() => dock.pinPanel(id)}
-                className="absolute right-0.5 top-0.5 hidden items-center justify-center rounded-full border p-0.5 group-hover:flex"
-                style={{ borderColor: 'var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}
-              >
-                <Pin className="size-2.5" />
               </button>
             </div>
           )

@@ -277,7 +277,9 @@ export const UserMessage = memo(function UserMessage({
                盒子被 max-w-full 限住也没用 ⇒ 手机上整页横向溢出。机器文本不走 markdown 解析。 */
             <div className="whitespace-pre-wrap wrap-anywhere">{content}</div>
           ) : (
-            <MarkdownRenderer content={content || ' '} />
+            <>
+              <MarkdownRenderer content={content || ' '} />
+            </>
           )}
           {sending && (
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">

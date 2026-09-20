@@ -51,7 +51,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { useI18n } from '@/providers/i18n'
 
 import { panelRegistry } from '@/plugin-runtime/panelRegistry'
@@ -68,13 +67,7 @@ import { PanelChrome } from './PanelChrome'
 
 const LS_KEY_V2 = 'xbot:panel-layout-v2'
 const LS_KEY_V1 = 'xbot:panel-layout'
-const MIN_W = 220
-const MIN_H = 120
-const FLOATING_STEP = 24
 /** 拖拽位移阈值：小于此值的 pointerup 视为误触（点击），零状态变更。 */
-const DRAG_THRESHOLD = 4
-/** jsdom/无布局环境合成 floating 默认 xywh 用的虚拟视口（仅 layer 尺寸为 0 时）。 */
-const FALLBACK_VIEWPORT = { w: 1280, h: 800 }
 
 // ── v5.1 钉选堆叠常量（数据表驱动，零过程式特化）────────────────────────────
 
@@ -266,6 +259,33 @@ export function defaultPanelLayout(defsInDefOrder: readonly PanelDefinition[]): 
  * 收进 chips，左栏就只剩空态提示 —— 用户看到的是"点一下会话面板没了"。状态层统一
  * 收敛（而不是各入口各写一遍 guard），持久化/跨设备同步过来的旧状态也会自愈。
  */
+/**
+ * 清理 rail 徽章面板被拖拽/钉选污染的 layout entry（2026-09-20）。
+ *
+ * 纯徽章面板（`badgeRender` 有值 + 声明 location.zone 为 top/bottom）没有面板
+ * 主体，只能待在徽章 rail。历史上的拖拽/浮窗/钉选把它们的 entry 改成了
+ * side/chip/floating ⇒ 它们会出现在 ActivityBar 里（用户报"runner 选择栏跑到
+ * 侧边栏，点两下就过去"）。拖拽+浮窗已删除，这里把污染 entry 直接删掉（回落
+ * def.location 声明值 = 徽章 rail）。
+ */
+export function sanitizeRailBadges(
+  state: PanelLayoutState,
+  defs: readonly PanelDefinition[],
+): PanelLayoutState {
+  let changed = false
+  const next: PanelLayoutState = { ...state }
+  for (const def of defs) {
+    const zone = def.location?.zone
+    if (def.badgeRender == null || (zone !== 'top' && zone !== 'bottom')) continue
+    const entry = next[def.id]
+    if (entry && entry.loc.zone !== zone) {
+      delete next[def.id]
+      changed = true
+    }
+  }
+  return changed ? next : state
+}
+
 export function enforcePinnedState(state: PanelLayoutState): PanelLayoutState {
   let changed = false
   const next: PanelLayoutState = { ...state }
@@ -324,13 +344,7 @@ interface LayerRect {
   height: number
 }
 
-const ZERO_LAYER: LayerRect = { left: 0, top: 0, width: FALLBACK_VIEWPORT.w, height: FALLBACK_VIEWPORT.h }
 
-function layerRectOf(el: HTMLElement | null): LayerRect {
-  const r = el?.getBoundingClientRect()
-  if (!r || (r.width === 0 && r.height === 0)) return ZERO_LAYER
-  return { left: r.left, top: r.top, width: r.width, height: r.height }
-}
 
 interface PanelDragState {
   kind: 'panel'
@@ -401,21 +415,9 @@ interface PanelDockContextValue {
   entryOf: (id: string) => PanelLayoutEntry
   /** 指定 zone 的渲染顺序（order 升序；side 序 = 重排与落盘的基准——修 v4 bug 3）。 */
   zoneIds: (zone: PanelZone) => string[]
-  /** 拖拽/缩放本地状态（move 中渲染跟随的数据源；非 null 时零持久化）。 */
-  drag: DragState | null
-  /** 拖拽悬停判定的目标 zone（宿主 ring 高亮 + ghost 形态预告）。 */
-  activeZone: PanelZone | null
-  dropHint: DropHint | null
-  dragSrcId: string | null
-  /** 拖拽 ghost 跟随的指针位置（视口坐标；阈值内/resize 为 null）。 */
-  dragPointer: { x: number; y: number } | null
   toggleCollapse: (id: string) => void
-  /** 升浮窗（rail 徽章 ⤢ / chips 单击 / docked ⤶ / 双击）：主区中上部 + 阶梯 offset 落位。 */
-  floatPanel: (id: string) => void
-  /** 收回 chips（floating 关闭按钮 / 双击标题）——v5.1：浮动退出一律回收纳态。 */
-  dockPanel: (id: string) => void
-  /** 钉选（chips 📌）：zone 'side'，append 堆叠尾，默认 h 220。 */
-  pinPanel: (id: string) => void
+  /** 最小拖拽状态（只服务底边调高）。 */
+  drag: DragState | null
   /**
    * 点击 chip 图标 = 该面板【独占左侧栏】（VSCode Activity Bar 模式）：
    * pin 到 side + 展开 + 其他 side 面板全部折叠 → 它占满左栏全高（grow）。
@@ -423,11 +425,6 @@ interface PanelDockContextValue {
    * 取代旧的小浮层（340×440 空间局促、遮挡内容、点外部即消失）。
    */
   focusPanel: (id: string) => void
-  /** 取消钉选（side 面板 ✕）：→ 'chip'。PINNED_DEFAULTS 面板不可取消（无 ✕ 入口）。 */
-  unpinPanel: (id: string) => void
-  onTitlePointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
-  /** floating 全方向 resize（pointerdown 起始；四角+四边手柄，dir 见 ResizeDir）。 */
-  onResizePointerDown: (id: string) => (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => void
   /** v5.1 side 面板底边调高（拖拽协议 v5：move 零持久化，up 一次落盘 clamp 140–640）。 */
   onHeightPointerDown: (id: string) => (e: ReactPointerEvent<HTMLElement>) => void
   registerDockEl: (el: HTMLElement | null) => void
@@ -479,7 +476,8 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     const list = panelRegistry.listPanels()
     const known = new Set(list.map((d) => d.id))
     const loaded = parsePanelLayoutV2(safeGet(LS_KEY_V2), known) ?? migrateV1Layout(safeGet(LS_KEY_V1), known)
-    return enforcePinnedState(loaded ? migrateV2Layout(loaded) : defaultPanelLayout(list))
+    const base = enforcePinnedState(loaded ? migrateV2Layout(loaded) : defaultPanelLayout(list))
+    return sanitizeRailBadges(base, list)
   })
   const stateRef = useRef(state)
   stateRef.current = state
@@ -495,7 +493,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     const handler = () => {
       const known = new Set(panelRegistry.listPanels().map((d) => d.id))
       const loaded = parsePanelLayoutV2(safeGet(LS_KEY_V2), known)
-      if (loaded) setState(enforcePinnedState(migrateV2Layout(loaded)))
+      if (loaded) setState((prev) => sanitizeRailBadges(enforcePinnedState(migrateV2Layout(loaded)), panelRegistry.listPanels()) ?? prev)
     }
     window.addEventListener(SETTINGS_SYNCED_EVENT, handler)
     return () => window.removeEventListener(SETTINGS_SYNCED_EVENT, handler)
@@ -551,18 +549,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [update, entryOf],
   )
 
-  /** 收回 chips（v5.1：floating 退出一律回收纳态——「临时使用不占侧栏」）。 */
-  const dockPanel = useCallback(
-    (id: string) => {
-      update((prev) => {
-        const cur = prev[id] ?? entryOf(id)
-        if (cur.loc.zone !== 'floating') return prev
-        const { x: _x, y: _y, w: _w, h: _h, segment: _s, ...rest } = cur.loc
-        return { ...prev, [id]: { ...cur, loc: { ...rest, zone: 'chip' } } }
-      })
-    },
-    [update, entryOf],
-  )
+
 
   /** 钉选（chips 📌）：zone 'side'，append 堆叠尾，默认 h 220（floating 已有 h 则 clamp 复用）。 */
   const pinPanel = useCallback(
@@ -620,338 +607,47 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [update, entryOf, defs],
   )
 
-  /** 取消钉选（side 面板 ✕）→ 'chip'。PINNED_DEFAULTS 面板无 ✕ 入口（不可取消）。 */
-  const unpinPanel = useCallback(
-    (id: string) => {
-      update((prev) => {
-        const cur = prev[id] ?? entryOf(id)
-        if (cur.loc.zone !== 'side' || PINNED_DEFAULTS[id]) return prev
-        const { h: _h, segment: _s, x: _x, y: _y, w: _w, ...rest } = cur.loc
-        return { ...prev, [id]: { ...cur, loc: { ...rest, zone: 'chip' } } }
-      })
-    },
-    [update, entryOf],
-  )
 
-  /** 升浮窗：主区中上部落位（layer 宽 40% × 高 22%，阶梯 offset 防重叠）。
-   *  ⛔ PINNED_DEFAULTS（core.sessions）不可升浮窗——它是左栏的常驻内容，浮走
-   *  等于左栏空掉（用户 2026-09-15：「就 sessions 这一行还有一个有完全一样的
-   *  bug 的按钮」；与 `unpinPanel` 拒绝「取消钉选」同一语义）。 */
-  const floatPanel = useCallback(
-    (id: string) => {
-      if (PINNED_DEFAULTS[id]) return
-      const c = layerRectOf(layerElRef.current)
-      const def = defMap.get(id)
-      const w = def?.defaultSize?.w ?? Math.round(c.width * 0.4)
-      const h = def?.defaultSize?.h ?? Math.round(c.height * 0.22)
-      const floatingCount = Object.values(stateRef.current).filter((e) => e.loc.zone === 'floating').length
-      const offset = floatingCount * FLOATING_STEP
-      const x = Math.max(0, Math.round((c.width - w) / 2) + offset)
-      const y = Math.max(0, Math.round(c.height * 0.12) + offset)
-      update((prev) => {
-        const cur = prev[id] ?? entryOf(id)
-        return {
-          ...prev,
-          [id]: { ...cur, loc: { zone: 'floating', order: floatingCount, x, y, w, h }, collapsed: false },
-        }
-      })
-    },
-    [update, entryOf, defMap],
-  )
+
+
 
   // ── 拖拽状态（move 中零持久化；up 才 update+persist 一次——修 v4 bug 1）──
-  const [drag, setDrag] = useState<DragState | null>(null)
-  const [dropHint, setDropHint] = useState<DropHint | null>(null)
-  const [activeZone, setActiveZone] = useState<PanelZone | null>(null)
-  const dragRef = useRef<DragState | null>(null)
-  dragRef.current = drag
   const dockElRef = useRef<HTMLElement | null>(null)
   const layerElRef = useRef<HTMLElement | null>(null)
   const registerDockEl = useCallback((el: HTMLElement | null) => { dockElRef.current = el }, [])
   const registerLayerEl = useCallback((el: HTMLElement | null) => { layerElRef.current = el }, [])
 
-  /** move 中判定悬停 zone：elementFromPoint 最近的 [data-panel-zone] 宿主。 */
-  const zoneAtPoint = useCallback((clientX: number, clientY: number): PanelZone | null => {
-    const el = document.elementFromPoint(clientX, clientY)
-    const zone = el?.closest<HTMLElement>('[data-panel-zone]')?.dataset.panelZone
-    return ZONES.includes(zone as PanelZone) ? (zone as PanelZone) : null
-  }, [])
 
-  /** move 中判定 side 插入目标（渲染序 sideIds 上的 [data-dock-item]）。 */
-  const sideHintAtPoint = useCallback((clientX: number, clientY: number): DropHint | null => {
-    const el = document.elementFromPoint(clientX, clientY)?.closest<HTMLElement>('[data-dock-item]')
-    const targetId = el?.dataset.dockItem
-    if (!targetId || !el) return null
-    const r = el.getBoundingClientRect()
-    return { targetId, before: clientY < r.top + r.height / 2 }
-  }, [])
 
-  /** 结束拖拽（正常落点 / 取消共用）：清全部本地拖拽态。 */
-  const endDrag = useCallback(() => {
-    setDrag(null)
-    setDropHint(null)
-    setActiveZone(null)
-  }, [])
-
-  /** pointerup 落点 → 跨 zone 放置（规格 5；落点无 zone = 取消零变更）。 */
-  const placeDropped = useCallback(
-    (id: string, ev: { clientX: number; clientY: number }) => {
-      const zone = zoneAtPoint(ev.clientX, ev.clientY)
-      if (!zone) return // 取消：零状态变更
-      // ⛔ 常驻面板（PINNED_DEFAULTS/core.sessions）只能在左栏内重排：拖到
-      // floating / chip / 其他 zone 一律拒绝（否则同样会让左栏空掉）。
-      if (PINNED_DEFAULTS[id] && zone !== 'side') return
+  // openPanel 入口（RightSidebarControlContext / AgentPanel onOpenTasks）：
+  // 面板展开（collapsed=false）。side 面板展开；floating 面板展开；chip 面板
+  // pin 到 side（展开可见，不弹浮窗）。
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id
+      if (!id || !panelRegistry.getPanel(id)) return
       const cur = stateRef.current[id] ?? entryOf(id)
-      const d = dragRef.current
-      if (zone === 'floating') {
-        // floating：原地 xywh（跟随中的面板位置）。
-        const layer = d?.kind === 'panel' ? d.layer : layerRectOf(layerElRef.current)
-        const w = d?.kind === 'panel' ? d.originW : (cur.loc.w ?? 320)
-        const h = d?.kind === 'panel' ? d.originH : (cur.loc.h ?? 280)
-        const gx = d?.kind === 'panel' ? d.grabOffset.x : w / 2
-        const gy = d?.kind === 'panel' ? d.grabOffset.y : h / 2
-        const x = Math.max(0, Math.round(ev.clientX - layer.left - gx))
-        const y = Math.max(0, Math.round(ev.clientY - layer.top - gy))
-        update((prev) => ({
-          ...prev,
-          [id]: { ...(prev[id] ?? cur), loc: { zone: 'floating', order: 0, x, y, w, h }, collapsed: false },
-        }))
+      if (cur.loc.zone === 'chip') {
+        // chip 面板：pin 到 side 展开（不弹浮窗——v5.2 设计稿确认）。
+        pinPanel(id)
         return
       }
-      if (zone === 'chip') {
-        // chips 收纳（拖入底部 chips 条 / 📌 反向）：无高度语义。
-        update((prev) => {
-          const e = prev[id] ?? entryOf(id)
-          const { h: _h, segment: _s, x: _x, y: _y, w: _w, ...rest } = e.loc
-          return { ...prev, [id]: { ...e, loc: { ...rest, zone: 'chip' } } }
-        })
-        return
-      }
-      if (zone === 'side') {
-        // side：插入位 order（基于渲染序 sideIds——修 v4 bug 3；落盘完整 order）。
-        const sideIds = zoneIds('side')
-        const hint = sideHintAtPoint(ev.clientX, ev.clientY)
-        const others = sideIds.filter((x) => x !== id)
-        let index: number
-        if (hint && hint.targetId !== id) {
-          const to = others.indexOf(hint.targetId)
-          index = to === -1 ? others.length : hint.before ? to : to + 1
-        } else {
-          index = others.length
-        }
-        const order = [...others.slice(0, index), id, ...others.slice(index)]
-        update((prev) => {
-          const next = { ...prev }
-          order.forEach((pid, i) => {
-            const e = next[pid] ?? entryOf(pid)
-            const { segment: _s, x: _x, y: _y, w: _w, ...rest } = e.loc
-            const h = PINNED_DEFAULTS[pid]
-              ? (e.loc.h != null ? Math.min(Math.max(DOCK_H_MIN, e.loc.h), DOCK_H_MAX) : PINNED_DEFAULTS[pid].h)
-              : (e.loc.h != null ? Math.min(Math.max(DOCK_H_MIN, e.loc.h), DOCK_H_MAX) : undefined)
-            next[pid] = { ...e, loc: { ...rest, zone: 'side', order: i, ...(h !== undefined ? { h } : {}) } }
-          })
-          return next
-        })
-        return
-      }
-      // top/bottom：segment 按落点左右半（rail 左半 → left、右半 → right；
-      // center 无拖放入口，类型预留），order = 该 zone 现有最大 +1。
-      const railEl = document.querySelector<HTMLElement>(`[data-panel-zone="${zone}"]`)
-      const r = railEl?.getBoundingClientRect()
-      const leftHalf = r ? ev.clientX < r.left + r.width / 2 : true
-      const segment: RailSegment = leftHalf ? 'left' : 'right'
-      const maxOrder = defs.reduce((m, dd) => {
-        const loc = (stateRef.current[dd.id] ?? entryOf(dd.id)).loc
-        return loc.zone === zone ? Math.max(m, loc.order) : m
-      }, -1)
       update((prev) => {
-        const e = prev[id] ?? entryOf(id)
-        const { x: _x, y: _y, w: _w, h: _h, ...rest } = e.loc
-        return { ...prev, [id]: { ...e, loc: { ...rest, zone, segment, order: maxOrder + 1 } } }
+        const c = prev[id] ?? entryOf(id)
+        if (!c.collapsed) return prev
+        return { ...prev, [id]: { ...c, collapsed: false } }
       })
-    },
-    [zoneAtPoint, sideHintAtPoint, zoneIds, update, entryOf, defs],
-  )
+    }
+    window.addEventListener('xbot:panel-request', handler)
+    return () => window.removeEventListener('xbot:panel-request', handler)
+  }, [update, entryOf, pinPanel])
 
-  // 统一拖拽入口：grip（side 面板）与 floating 标题共用，跨 zone 放置。
-  const startPanelDrag = useCallback(
-    (id: string, e: ReactPointerEvent<HTMLElement>) => {
-      if (e.button !== 0) return
-      e.preventDefault()
-      const handle = e.currentTarget
-      const cur = stateRef.current[id] ?? entryOf(id)
-      const layer = layerRectOf(layerElRef.current)
-      const floating = cur.loc.zone === 'floating'
-      const w = cur.loc.w ?? 320
-      const h = cur.loc.h ?? 280
-      try {
-        handle.setPointerCapture(e.pointerId)
-      } catch {
-        /* pointer capture unsupported (jsdom) */
-      }
-      setDrag({
-        kind: 'panel',
-        id,
-        pointer: { x: e.clientX, y: e.clientY },
-        startX: e.clientX,
-        startY: e.clientY,
-        started: false,
-        grabOffset: floating
-          ? { x: e.clientX - layer.left - (cur.loc.x ?? 0), y: e.clientY - layer.top - (cur.loc.y ?? 0) }
-          : { x: w / 2, y: h / 2 },
-        originW: w,
-        originH: h,
-        layer,
-      })
-      // 拖拽期间全局样式：禁止文本选中 + 抓取手势（防止指针抖动时选中文字/光标闪烁）。
-      const prevCursor = document.body.style.cursor
-      const prevUserSelect = document.body.style.userSelect
-      document.body.style.cursor = 'grabbing'
-      document.body.style.userSelect = 'none'
+  /** 最小拖拽状态（只服务 side 面板底边调高；拖拽移动/浮窗已删 2026-09-20）。 */
+  const [drag, setDrag] = useState<DragState | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  dragRef.current = drag
+  const endDrag = useCallback(() => setDrag(null), [])
 
-      const detach = () => {
-        handle.removeEventListener('pointermove', onMove)
-        handle.removeEventListener('pointerup', onUp)
-        handle.removeEventListener('pointercancel', onCancel)
-        window.removeEventListener('keydown', onKey, true)
-        // 恢复全局样式。
-        document.body.style.cursor = prevCursor
-        document.body.style.userSelect = prevUserSelect
-      }
-      const onMove = (ev: PointerEvent) => {
-        const d = dragRef.current
-        if (!d || d.kind !== 'panel' || d.id !== id) return
-        const started = d.started
-          || Math.abs(ev.clientX - d.startX) > DRAG_THRESHOLD
-          || Math.abs(ev.clientY - d.startY) > DRAG_THRESHOLD
-        setDrag({ ...d, pointer: { x: ev.clientX, y: ev.clientY }, started })
-        if (!started) return
-        const zone = zoneAtPoint(ev.clientX, ev.clientY)
-        setActiveZone(zone)
-        setDropHint(zone === 'side' ? sideHintAtPoint(ev.clientX, ev.clientY) : null)
-      }
-      const onUp = (ev: PointerEvent) => {
-        detach()
-        const d = dragRef.current
-        endDrag()
-        // 阈值内松手 = 点击误触，零状态变更。
-        if (!d || d.kind !== 'panel' || !d.started) return
-        placeDropped(id, ev)
-      }
-      const onCancel = () => {
-        detach()
-        endDrag() // 取消：零状态变更
-      }
-      const onKey = (ev: KeyboardEvent) => {
-        if (ev.key !== 'Escape') return
-        detach()
-        endDrag()
-      }
-      handle.addEventListener('pointermove', onMove)
-      handle.addEventListener('pointerup', onUp)
-      handle.addEventListener('pointercancel', onCancel)
-      window.addEventListener('keydown', onKey, true)
-    },
-    [entryOf, endDrag, placeDropped, sideHintAtPoint, zoneAtPoint],
-  )
-
-
-  const onTitlePointerDown = useCallback(
-    (id: string) => (e: ReactPointerEvent<HTMLElement>) => startPanelDrag(id, e),
-    [startPanelDrag],
-  )
-
-  /** floating 全方向 resize（四角+四边；move 中本地跟随，up 一次写入；Esc/pointercancel 恢复）。 */
-  const onResizePointerDown = useCallback(
-    (id: string) => (dir: ResizeDir, e: ReactPointerEvent<HTMLElement>) => {
-      if (e.button !== 0) return
-      e.preventDefault()
-      e.stopPropagation()
-      const handle = e.currentTarget
-      const cur = stateRef.current[id] ?? entryOf(id)
-      const layer = layerRectOf(layerElRef.current)
-      // 起拖矩形（move 从 startRect + 指针总 delta 绝对计算——零增量累计误差）。
-      const startRect = { x: cur.loc.x ?? 0, y: cur.loc.y ?? 0, w: cur.loc.w ?? 320, h: cur.loc.h ?? 280 }
-      try {
-        handle.setPointerCapture(e.pointerId)
-      } catch {
-        /* pointer capture unsupported (jsdom) */
-      }
-      setDrag({
-        kind: 'resize', id, dir, startX: e.clientX, startY: e.clientY, startRect,
-        curX: startRect.x, curY: startRect.y, curW: startRect.w, curH: startRect.h, layer,
-      })
-
-      const detach = () => {
-        handle.removeEventListener('pointermove', onMove)
-        handle.removeEventListener('pointerup', onUp)
-        handle.removeEventListener('pointercancel', onCancel)
-        window.removeEventListener('keydown', onKey, true)
-      }
-      const onMove = (ev: PointerEvent) => {
-        const d = dragRef.current
-        if (!d || d.kind !== 'resize' || d.id !== id) return
-        const dx = ev.clientX - d.startX
-        const dy = ev.clientY - d.startY
-        const r = d.startRect
-        // 方向分量（dir 子串匹配方向字母：'ne' 含 n+e）。
-        const we = d.dir.includes('e')
-        const ws = d.dir.includes('s')
-        const ww = d.dir.includes('w')
-        const wn = d.dir.includes('n')
-        // 尺寸期望值：e/s 拖大右侧/下侧；w/n 拖大左侧/上侧（右/下边缘固定）。
-        let w = r.w + (we ? dx : 0) - (ww ? dx : 0)
-        let h = r.h + (ws ? dy : 0) - (wn ? dy : 0)
-        // clamp 下限 MIN_W/MIN_H；上限按方向——e/s 不越浮层右/下缘（r.x/r.y 起），
-        // w/n 不越过初始左/上缘（右/下边缘 r.x+r.w 为极限：x=0 时 w 最大）。
-        w = Math.min(Math.max(MIN_W, w), Math.max(MIN_W, ww ? r.x + r.w : d.layer.width - r.x))
-        h = Math.min(Math.max(MIN_H, h), Math.max(MIN_H, wn ? r.y + r.h : d.layer.height - r.y))
-        // 位置联动：w/n 方向拖动时对侧边缘固定（clamp 保证 x/y ≥ 0——w 上限即右缘，
-        // x = 右缘 - w；w 收到 MIN_W 时 x 最大 = 右缘 - MIN_W）。
-        const x = ww ? r.x + r.w - w : r.x
-        const y = wn ? r.y + r.h - h : r.y
-        setDrag({ ...d, curX: x, curY: y, curW: w, curH: h })
-      }
-      const onUp = () => {
-        detach()
-        const d = dragRef.current
-        endDrag()
-        if (!d || d.kind !== 'resize') return
-        update((prev) => {
-          const e2 = prev[id] ?? entryOf(id)
-          return { ...prev, [id]: { ...e2, loc: { ...e2.loc, x: d.curX, y: d.curY, w: d.curW, h: d.curH } } }
-        })
-      }
-      const onCancel = () => {
-        detach()
-        endDrag() // 取消：尺寸/位置不落盘（零状态变更）
-      }
-      const onKey = (ev: KeyboardEvent) => {
-        if (ev.key !== 'Escape') return
-        detach()
-        endDrag()
-      }
-      handle.addEventListener('pointermove', onMove)
-      handle.addEventListener('pointerup', onUp)
-      handle.addEventListener('pointercancel', onCancel)
-      window.addEventListener('keydown', onKey, true)
-    },
-    [entryOf, endDrag, update],
-  )
-
-  /**
-   * v5.1 side 面板底边调高（复用 v5 拖拽协议：move 中零持久化本地跟随，
-   * pointerup 一次 update+persist；pointer capture；handle touch-none）。
-   * clamp 140–640；Esc/pointercancel 零状态变更。
-   *
-   * v6 成对分配 + 绝对基准（用户报"拖拽不符合人类直觉"的根因修复）：
-   * 1. 补偿对象 = 下一个【展开】面板——拖 i 变高时它等量变矮，总高恒定，用户
-   *    能看到真实的"空间重新分配"（旧模型只有被拖面板动，其他零响应）。
-   * 2. 起始高度取【实际渲染高度】而非 loc.h——两者可能不一致（兄弟面板变化、
-   *    flex 分配），用 loc.h 会让按下瞬间高度跳变。
-   * 3. move 用 pointerdown 的绝对基准（startY 不写回）——增量累积在 React
-   *    批处理下同帧多次 pointermove 会读到旧 dragRef 而丢步。
-   */
   const onHeightPointerDown = useCallback(
     (id: string) => (e: ReactPointerEvent<HTMLElement>) => {
       if (e.button !== 0) return
@@ -1028,29 +724,6 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     [entryOf, endDrag, update, zoneIds],
   )
 
-  // openPanel 入口（RightSidebarControlContext / AgentPanel onOpenTasks）：
-  // 面板展开（collapsed=false）。side 面板展开；floating 面板展开；chip 面板
-  // pin 到 side（展开可见，不弹浮窗）。
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const id = (e as CustomEvent<{ id?: string }>).detail?.id
-      if (!id || !panelRegistry.getPanel(id)) return
-      const cur = stateRef.current[id] ?? entryOf(id)
-      if (cur.loc.zone === 'chip') {
-        // chip 面板：pin 到 side 展开（不弹浮窗——v5.2 设计稿确认）。
-        pinPanel(id)
-        return
-      }
-      update((prev) => {
-        const c = prev[id] ?? entryOf(id)
-        if (!c.collapsed) return prev
-        return { ...prev, [id]: { ...c, collapsed: false } }
-      })
-    }
-    window.addEventListener('xbot:panel-request', handler)
-    return () => window.removeEventListener('xbot:panel-request', handler)
-  }, [update, entryOf, pinPanel])
-
   const value = useMemo<PanelDockContextValue>(
     () => ({
       tabManager,
@@ -1058,18 +731,8 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
       entryOf,
       zoneIds,
       drag,
-      activeZone,
-      dropHint,
-      dragSrcId: drag?.kind === 'panel' ? drag.id : null,
-      dragPointer: drag?.kind === 'panel' && drag.started ? drag.pointer : null,
       toggleCollapse,
-      floatPanel,
-      dockPanel,
-      pinPanel,
       focusPanel,
-      unpinPanel,
-      onTitlePointerDown,
-      onResizePointerDown,
       onHeightPointerDown,
       registerDockEl,
       registerLayerEl,
@@ -1077,7 +740,7 @@ export function PanelDockProvider({ tabManager, children }: { tabManager: TabMan
     // ⚠️ deps 必须含 state：entryOf 读 stateRef 引用稳定——collapse/拖拽落盘只改
     // state，若缺则 context value 永不重建（v4 已修，保持）。v5 另需 drag +
     // activeZone + dropHint（拖拽本地跟随渲染全靠 context 重建）。
-    [tabManager, defs, entryOf, zoneIds, state, drag, activeZone, dropHint, toggleCollapse, floatPanel, dockPanel, pinPanel, focusPanel, unpinPanel, onTitlePointerDown, onResizePointerDown, onHeightPointerDown, registerDockEl, registerLayerEl],
+    [tabManager, defs, entryOf, zoneIds, state, drag, toggleCollapse, focusPanel, onHeightPointerDown, registerDockEl, registerLayerEl],
   )
 
   return <PanelDockContext.Provider value={value}>{children}</PanelDockContext.Provider>
@@ -1099,7 +762,7 @@ export function PanelDock(): ReactNode {
   const { t } = useI18n()
   const dock = usePanelDock()
   const setDockEl = useCallback((el: HTMLDivElement | null) => dock.registerDockEl(el), [dock])
-  const zoneActive = dock.activeZone === 'side'
+  const zoneActive = false
   const sideIds = dock.zoneIds('side')
   // ⚠️ 空间分配模型（VSCode 式 + 消灭底部空白）：
   // 最后一个【展开】面板 flex-1 吸收剩余空间——旧模型所有面板 `flex: 0 0 h`
@@ -1154,8 +817,6 @@ export function PanelDock(): ReactNode {
               collapsed={entry.collapsed}
               pinned={PINNED_DEFAULTS[id] !== undefined}
               onToggleCollapse={() => dock.toggleCollapse(id)}
-              onToggleMode={() => dock.floatPanel(id)}
-              onUnpin={PINNED_DEFAULTS[id] ? undefined : () => dock.unpinPanel(id)}
               emptyHint={def.emptyHint}
               headerExtra={def.headerExtra ? def.headerExtra({ tabManager: dock.tabManager }) : undefined}
               onResizeHeightPointerDown={id === lastExpandedId ? undefined : dock.onHeightPointerDown(id)}
@@ -1188,118 +849,3 @@ export function PanelDock(): ReactNode {
   )
 }
 
-/** floating 宿主：窗口内浮层（AppShell 根容器内 absolute inset-0，非 body portal）。 */
-export function FloatingLayer(): ReactNode {
-  const { t } = useI18n()
-  const dock = usePanelDock()
-  const setLayerEl = useCallback((el: HTMLDivElement | null) => dock.registerLayerEl(el), [dock])
-  const zoneActive = dock.activeZone === 'floating'
-  return (
-    <div
-      ref={setLayerEl}
-      data-panel-zone="floating"
-      data-zone-active={zoneActive || undefined}
-      className="pointer-events-none absolute inset-0 z-40"
-      style={zoneHighlightStyle(zoneActive)}
-    >
-      {dock.zoneIds('floating').map((id) => {
-        const def = dock.defs.find((d) => d.id === id)
-        if (!def) return null
-        const entry = dock.entryOf(id)
-        const d = dock.drag
-        // 拖动跟随：本地 drag state 渲染（零持久化），up 落盘。
-        const follow = d && d.kind === 'panel' && d.id === id && d.started ? d : null
-        // resize 跟随：本地 curX/curY/curW/curH 渲染（零持久化），up 落盘。
-        // 左/上方向拖动时 x/y 联动（对侧边缘固定）。
-        const resizing = d && d.kind === 'resize' && d.id === id ? d : null
-        const x = follow
-          ? Math.max(0, follow.pointer.x - follow.layer.left - follow.grabOffset.x)
-          : resizing
-            ? resizing.curX
-            : (entry.loc.x ?? 0)
-        const y = follow
-          ? Math.max(0, follow.pointer.y - follow.layer.top - follow.grabOffset.y)
-          : resizing
-            ? resizing.curY
-            : (entry.loc.y ?? 0)
-        const style: CSSProperties = {
-          left: x,
-          top: y,
-          width: follow ? follow.originW : (resizing ? resizing.curW : (entry.loc.w ?? 320)),
-          ...(entry.collapsed
-            ? { height: undefined }
-            : follow
-              ? { height: follow.originH }
-              : resizing
-                ? { height: resizing.curH }
-                : { height: entry.loc.h ?? 280 }),
-        }
-        return (
-          <PanelChrome
-            key={id}
-            id={id}
-            icon={def.icon}
-            title={def.labelKey ? t(def.labelKey) : def.title}
-            badge={def.badges?.() ?? null}
-            mode="floating"
-            collapsed={entry.collapsed}
-            onToggleCollapse={() => dock.toggleCollapse(id)}
-            onToggleMode={() => dock.dockPanel(id)}
-            onClose={() => {
-              dock.dockPanel(id)
-              if (!dock.entryOf(id).collapsed) dock.toggleCollapse(id)
-            }}
-            onTitlePointerDown={dock.onTitlePointerDown(id)}
-            onTitleDoubleClick={() => dock.dockPanel(id)}
-            onResizePointerDown={dock.onResizePointerDown(id)}
-            emptyHint={def.emptyHint}
-            style={style}
-          >
-            {def.render({ tabManager: dock.tabManager })}
-          </PanelChrome>
-        )
-      })}
-      <DragGhost />
-    </div>
-  )
-}
-
-/**
- * 拖拽 ghost（fixed 相对视口；pointer-events-none 不挡 elementFromPoint）。
- * 形态预告：activeZone floating → 完整面板预览；side/top/bottom → 徽章形态。
- */
-function DragGhost(): ReactNode {
-  const { t } = useI18n()
-  const { drag, dragPointer, activeZone, defs } = usePanelDock()
-  const def = drag?.kind === 'panel' && drag.started ? defs.find((p) => p.id === drag.id) : null
-  if (!def || !dragPointer) return null
-  const title = def.labelKey ? t(def.labelKey) : def.title
-  const Icon = pluginIcon(def.icon)
-  const isFullPreview = activeZone === 'floating'
-  return (
-    <div
-      data-testid="panel-drag-ghost"
-      data-ghost-mode={isFullPreview ? 'panel' : 'badge'}
-      className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold"
-      style={{
-        position: 'fixed',
-        zIndex: 50,
-        // transform 替代 left/top——GPU 合成层，不触发布局回流，拖拽更顺滑。
-        transform: `translate3d(${dragPointer.x + 8}px, ${dragPointer.y + 8}px, 0)`,
-        // theme token（light/dark 自适应）：bg-primary 高不透明 + var(--border) 描边
-        background: 'color-mix(in srgb, var(--bg-primary) 95%, transparent)',
-        border: '1px solid var(--border)',
-        boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
-        color: 'var(--text-primary)',
-        pointerEvents: 'none',
-        willChange: 'transform',
-        ...(isFullPreview ? { width: 240, height: 160, alignItems: 'flex-start' } : {}),
-      }}
-    >
-      {/* eslint-disable-next-line react-hooks/static-components -- pluginIcon
-          返回 lucide 映射表中的稳定图标组件引用（无状态），规则误报。 */}
-      <Icon className="size-3 shrink-0" style={{ color: 'var(--text-muted)' }} />
-      {title}
-    </div>
-  )
-}
