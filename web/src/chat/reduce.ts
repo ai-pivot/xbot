@@ -33,6 +33,10 @@ import {
 
 // ─── 工具：迭代合并（I4 append-only + 权威覆盖语义） ──────────
 
+// 命令回复（`!cmd` / slash）渲染为 legacy 独立行 —— 单调序号保证 React key 唯一
+// （同毫秒连续两条命令回复也必须区分，与 normalize.ts 的 echoSeq 同一模式）。
+let commandReplySeq = 0
+
 /**
  * 会话级状态携带（todos + goal）：iteration/phase_done 事件在【任何】路径（早期
  * return / 主路径）都必须应用事件携带的会话级字段 —— 事件未携带（undefined）时保留
@@ -584,9 +588,40 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── text_final：权威 finalizer —— live/frozen → committed（I2 构造） ──
     case 'text_final': {
-      // turnID 为 null（legacy 无归属）→ 尝试 activeTurn；两者皆空 → 不动。
-      const target = ev.turnID !== null ? ev.turnID : s.activeTurn
-      if (target === null) return s
+      // ⚠️ turnID 为 null 的 text_final = **命令回复**（`!cmd` bang / slash 命令）：
+      // 后端命令分发（chatWorker 的 Concurrent 分支）按设计**不分配 turn**
+      // （无 turn_started、无 turn_id），输出以独立消息形式 sendMessage 回来。
+      // 它不属于任何 turn —— 绝不能绑 activeTurn（会污染正在进行的 turn），
+      // 更不能丢弃：旧代码 `target === null → return s` 把命令输出整个吞掉
+      // （用户报告 "我输入 !pwd 没有输出啊" —— 服务端日志证明命令已执行，且
+      // `sendMessage directSend dispatch | send_channel=web` 已发到正确会话）。
+      // 渲染为 **standalone** 独立行（不是 legacy：legacy 是 DB 历史前缀，derive
+      // 排在 turns **之前**，会让命令输出出现在会话顶部 —— 用户仍会觉得"没输出"。
+      // standalone 排 turns 之后 = 底部，即用户视角的最新消息）。
+      if (ev.turnID === null) {
+        const content = ev.content ?? ''
+        if (content === '') return s
+        return {
+          ...s,
+          standalone: [...s.standalone, {
+            id: `cmd-${++commandReplySeq}`,
+            role: 'assistant',
+            content,
+            iterations: ev.progressHistory ?? [],
+            timestamp: new Date().toISOString(),
+            dbID: undefined,
+            // ⚠️ **显式标记为「无 turn」** —— CI 真实 Chromium 抓到的尺寸缓存串味根因：
+            // standalone 行是 assistant、若不加标记就与"缺 turn_id 的普通 assistant 行"
+            // 无法区分，`bindTurnIDs` 会把它绑到**最近的前一个 turn**（= 正在跑的那个）
+            // → 它的虚拟列表 key 与 live 行完全相同（`turn-N-assistant`）→ 尺寸缓存/
+            // 高度记忆被两行共用 ⇒ 总高翻倍（实测 `wrapperHeight=17320px`＝8660×2）、
+            // 命令输出被推到可视区之上（用户看到的仍然是"没有输出"）。
+            // 标记后 turnID 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
+            standalone: true,
+          }],
+        }
+      }
+      const target = ev.turnID
       const t = s.turns.get(target)
       if (!t) return s
 
@@ -1041,7 +1076,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         return s
       }
 
-      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal }
+      return { chatID: s.chatID, turns, legacy, activeTurn, lastSeq, busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal, standalone: s.standalone }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

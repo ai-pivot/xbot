@@ -462,6 +462,46 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v69: repair databases that reached v66 before reasoning_items was folded
+	// into that already-released migration. Their schema_version can be 66-68
+	// while session_messages.reasoning_items is still absent, which makes every
+	// history query fail with "no such column: reasoning_items".
+	if from < 69 {
+		if err := migrateV68ToV69(db); err != nil {
+			return fmt.Errorf("migrate to v69: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV68ToV69 repairs the v66 migration-version collision: some databases
+// had already recorded v66 for the token-usage-table migration before
+// reasoning_items was added to migrateV65ToV66. Because migrations are selected
+// by version, those databases permanently skipped the new column while later
+// migrations advanced them to v68. Keep this repair idempotent so partially
+// repaired or hand-built databases also migrate safely.
+func migrateV68ToV69(db *DB) error {
+	conn := db.Conn()
+	hasTable, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("migrate v68->v69 check session_messages: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "session_messages", "reasoning_items")
+		if err != nil {
+			return fmt.Errorf("migrate v68->v69 check reasoning_items: %w", err)
+		}
+		if !exists {
+			if _, err = conn.Exec("ALTER TABLE session_messages ADD COLUMN reasoning_items TEXT DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate v68->v69 add reasoning_items: %w", err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 69"); err != nil {
+		return fmt.Errorf("migrate v68->v69 update version: %w", err)
+	}
+	log.Info("Database migrated to v69 (repair missing session_messages.reasoning_items)")
 	return nil
 }
 

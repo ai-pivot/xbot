@@ -229,9 +229,17 @@ const nonDegenerateObserveElementRect: typeof defaultObserveElementRect = (insta
  * 照实返回（那才是真实的 0 尺寸）。
  */
 const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
+  const el = element as unknown as HTMLElement
+  // ⚠️ **优先读当前几何**，而不是 RO 的 `entry.borderBoxSize`（那是"观察时刻"的快照，
+  // 可能已经过期）。2026-09-17 行重叠事故的第二半根因就是这个：迟到的 entry 把已经
+  // 正确的尺寸覆盖回旧值，此后尺寸不再变化 ⇒ RO 不再上报 ⇒ 旧值永久固化。
+  // 元素有渲染盒时，`offsetHeight/offsetWidth` 是权威值。
+  if (el.isConnected && el.offsetParent !== null) {
+    const live = instance.options.horizontal ? el.offsetWidth : el.offsetHeight
+    if (live > 0) return live
+  }
   const size = defaultMeasureElement(element, entry, instance)
   if (size > 0) return size
-  const el = element as unknown as HTMLElement
   if (el.isConnected && el.offsetParent !== null) return size
   const index = Number(el.dataset?.index ?? -1)
   const v = instance as unknown as {
@@ -241,6 +249,38 @@ const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry
   const item = index >= 0 ? v.measurementsCache?.[index] : undefined
   if (!item) return size
   return v.itemSizeCache?.get(item.key) ?? item.size
+}
+
+/**
+ * ── 追加行时的「权威重测」（2026-09-17 命令输出被上一条 assistant 行遮挡）──────
+ *
+ * 真实浏览器复现（用户 `!pwd` 输出"看不见"）：长 assistant 行（DOM 实测
+ * 1118.78px）+ 追加无 turn 的 standalone 输出行 → 新行只比上一行起点多约 115px
+ * （= 上一行**缓存的旧尺寸**）→ 两个绝对定位行重叠 ~1004px ⇒ 输出**在 DOM 里但
+ * 被上一行盖住**；滚动到底也没用（总高按旧尺寸算完，scrollTop 到底 ≠ 看到输出）。
+ *
+ * 为什么缓存会停在旧值：TanStack 的增量测量只在 `resizeItem` 时从该 index 往后
+ * 重算，而 ResizeObserver 的 entry 可能**乱序/滞后**（`entry.borderBoxSize` 是观察
+ * 时刻的快照，不是当前几何）——先到 1118、后到 115 就把 1118 覆盖回 115；此后该行
+ * 尺寸不再变化 ⇒ RO 不再上报 ⇒ 115 永久固化。
+ *
+ * 修法：追加（rows 增长）时**主动、权威地重测已挂载行** —— 见 MessageList 内的
+ * append effect：`measure()` 清尺寸缓存（让未实测行按当前内容重新估算）+ 逐个已
+ * 挂载行读真实几何（`resizeItem` 从该行往后重算 `item.start`）+ 校正后贴底。
+ *
+ * 返回重测的行数（测试断言用）。
+ */
+export function remeasureMountedRows(
+  root: HTMLElement | null,
+  measure: (node: HTMLElement) => void,
+): number {
+  if (!root) return 0
+  let n = 0
+  root.querySelectorAll<HTMLElement>('.virt-row[data-index]').forEach((node) => {
+    measure(node)
+    n++
+  })
+  return n
 }
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -297,6 +337,9 @@ export const MessageList = memo(function MessageList({
   )
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  // 承载绝对定位行的相对容器（`height: getTotalSize()`）—— 追加行时权威重测的
+  // DOM 搜索根（见下方 append effect / remeasureMountedRows）。
+  const rowsWrapperRef = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
   // Generation counter — each scheduleFollow call increments this. The
@@ -544,25 +587,35 @@ export const MessageList = memo(function MessageList({
   // = rows), so the callback body always sees the CURRENT row. virtualizer
   // is a stable instance (useVirtualizer keeps one instance; only its options
   // are updated per render).
+  // 单个已挂载行的权威测量：① 喂给 virtualizer（`resizeItem` → 更新尺寸缓存，
+  // 并从该行往后重算 `item.start` + notify）；② 把**当前真实几何**记进
+  // heightMemory（供后续 estimateSize / 未挂载行的估算）。两条路径共用：
+  // ref 回调（挂载/重挂）与追加行时的权威重测（见下方 append effect）。
+  const measureRowNode = useCallback(
+    (node: HTMLElement) => {
+      virtualizer.measureElement(node)
+      const idx = Number(node.dataset?.index ?? -1)
+      const row = rowsRef.current[idx]
+      if (!row) return
+      const h = node.getBoundingClientRect().height
+      if (h > 0) {
+        heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
+        if (heightMemory.size > 3000) heightMemory.clear()
+      }
+    },
+    // PERF note above explains deps choice; rowsRef is a stable closure ref covering row identity
+    [virtualizer],
+  )
+
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) {
         virtualizer.measureElement(null)
         return
       }
-      virtualizer.measureElement(node)
-      const idx = Number(node.dataset?.index ?? -1)
-      const row = rowsRef.current[idx]
-      if (row) {
-        const h = node.getBoundingClientRect().height
-        if (h > 0) {
-          heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
-          if (heightMemory.size > 3000) heightMemory.clear()
-        }
-      }
+      measureRowNode(node)
     },
-    // PERF note above explains deps choice; rowsRef is a stable closure ref covering row identity
-    [virtualizer],
+    [virtualizer, measureRowNode],
   )
 
   // ── RENDER-LOSS / VIRTUALIZER-DROP monitor ────────────────────────────────
@@ -703,6 +756,123 @@ export const MessageList = memo(function MessageList({
       }
     })
   }, [])
+
+  // ── 追加行 ⇒ 权威重测 + 在校正后的总高上贴底 ────────────────────────────────
+  // 见 `remeasureMountedRows` 上方的完整复现（用户 `!pwd` 输出被上一条 assistant
+  // 行重叠遮挡；缓存停在旧尺寸 115px 而 DOM 实测 1118.78px）。
+  //
+  // 三步，顺序不可换：
+  //   ① `measure()` 清空尺寸缓存 —— TanStack 的 `getMeasurements` memo **不依赖**
+  //      `estimateSize`，未实测行会一直沿用 memo 住的旧尺寸；清掉后按当前内容
+  //      重新估算（实测过的行走 heightMemory）。
+  //   ② 逐个**已挂载**行读*当前*真实几何（`resizeItem`：delta≠0 ⇒ 更新缓存 +
+  //      从该行往后重算 `item.start` + notify）。乱序 RO entry 造成的固化旧值
+  //      在这里被真实几何覆盖。
+  //   ③ 贴底必须在校正**之后** —— 否则 `scrollTop = scrollHeight` 落在旧总高的
+  //      "底部"（用户实测 scrollTop=5031 = 旧 scrollHeight），输出仍在视口上方。
+  //
+  // 只处理**尾部追加**（末行变化即追加）。前插（loadMore）末行不变 —— 其视口锚定
+  // 由 `restoreLoadMoreAnchor` 的 ΔscrollTop==ΔtotalSize 契约负责，这里清尺寸缓存
+  // 会改变它的总高基准。
+  // 权威重测一轮：清尺寸缓存 → 逐个已挂载行读**当前真实几何** → 落可观测标记。
+  // 返回本轮重测到的行数（0 = 没有已挂载行，调用方可跳过贴底）。
+  const remeasureAllRows = useCallback((): number => {
+    const root = rowsWrapperRef.current
+    if (!root) return 0
+    const v = virtualizerRef.current
+    v.measure()
+    const n = remeasureMountedRows(root, measureRowNode)
+    // 可观测标记（真实浏览器排障用：区分"尺寸缓存没更新"与"渲染没跟上"）：
+    //   data-measure-pass 权威重测执行次数；data-virt-total 本轮校正后的虚拟总高
+    //   （应等于 wrapper 的 inline height；与行 DOM 高对比即可判定缓存是否权威）
+    root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
+    root.dataset.virtTotal = String(Math.round(v.getTotalSize()))
+    // 诊断：本轮**实测读到**的每行高度（区分"读到的就是旧值"与"写不进缓存"）
+    const heights: number[] = []
+    root.querySelectorAll<HTMLElement>('.virt-row[data-index]').forEach((n) => {
+      heights.push(Math.round(n.getBoundingClientRect().height))
+    })
+    root.dataset.measureHeights = heights.join(',')
+    return n
+  }, [measureRowNode])
+
+  // ── live 行尺寸跟随（附加以外的另一半根因，CI 实证）──────────────────────
+  // CI 真实 Chromium 诊断：live 行 DOM 盒高 **8660px**，而虚拟器仍认为它是
+  // **91px**（该行刚出现时的高度）→ 后续追加行按 91 定位 → 重叠 8569px。
+  // `measurePass=4` 证明重测跑了、读到的却是 91 ⇒ **内容是在重测之后长出来的**，
+  // 而这次增长没有任何触发点（行列表未变 → 追加 effect 不跑；RO 在这次增长上
+  // 静默）。修法：**live 行的内容变化本身就是尺寸失效信号** —— 内容版本一变就
+  // 重测该行（O(1)：单元素一次 rect 读），不依赖 RO 的增量上报。
+  const liveContentRev = liveProgress
+    ? [
+        liveProgress.iteration,
+        liveProgress.iterationHistory?.length,
+        liveProgress.streamContent?.length,
+        liveProgress.reasoningStreamContent?.length,
+        liveProgress.activeTools?.length,
+        liveProgress.streamingTools?.length,
+        liveProgress.phase,
+      ].join('|')
+    : ''
+  useLayoutEffect(() => {
+    if (!liveId) return
+    const root = rowsWrapperRef.current
+    if (!root) return
+    const node = root.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
+    if (node) measureRowNode(node)
+  }, [liveContentRev, liveId, measureRowNode])
+
+  // ── live 行尺寸跟随：逐帧（文本长度变化才测）─────────────────────────────
+  // CI 实测链（三次诊断逐步钉死）：live 行 DOM 盒高 **8660px**，虚拟器却始终认为
+  // 它是 **91px**（`measurePass=4`、`virtTotal=182` = 两行都是**估算值**）。
+  // 决定性推理：cmd 行的 91 正是 `estimateRowByContent` 的估算值，而 live 行的
+  // 91 是 `heightMemory` 里早先记下的"短行"高度 ⇒ **每一次实测拿到的都是短行**。
+  // 为什么：live 行内容到达后，**打字机（MarkdownRenderer 的 `visibleChars`）继续
+  // 逐帧把文本吐出来** —— 那是组件内部的 rAF 状态，**不经过 MessageList 的
+  // props**，所以：
+  //   - 按 props 内容版本重测（v3）只在内容到达那一帧跑 → 读到尚未吐字的短行；
+  //   - 之后的"长高"没有 props 变化，且 RO 在这次增长上静默（或被过期 entry 覆盖）
+  //     → 缓存永久停在短行高度 → 追加行按 91px 定位 → 重叠 8569px。
+  // 因此：**只要尾部还有 live 行，就用 rAF 逐帧跟随它** —— 每帧只做一次
+  // `measureRowNode`（单元素 rect 读；`resizeItem` 对 delta=0 自动 no-op），
+  // **不做 `textContent` 之类的子树遍历**（8710px 的行上那是 O(节点数) 的序列化，
+  // 而且"文本相同但高度变了"（异步高亮/图片/字体）会让文字长度信号漏测）。
+  // 一次 rect 读的成本与浏览器本就要为绘制做的那次布局同一量级；关键是它把行尺寸
+  // 的权威来源固定在"当前几何"，不依赖 RO、不依赖 props。
+  useEffect(() => {
+    if (!liveId) return
+    let raf = 0
+    const tick = () => {
+      const root = rowsWrapperRef.current
+      const node = root?.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
+      if (node) measureRowNode(node)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [liveId, measureRowNode])
+
+  const prevRowCountRef = useRef(rows.length)
+  const prevTailIdRef = useRef<string | null | undefined>(rowsRef.current[rowsRef.current.length - 1]?.id)
+  useLayoutEffect(() => {
+    const cur = rowsRef.current
+    const prevCount = prevRowCountRef.current
+    const prevTail = prevTailIdRef.current
+    prevRowCountRef.current = cur.length
+    prevTailIdRef.current = cur[cur.length - 1]?.id
+    if (cur.length <= prevCount) return
+    if (prevCount > 0 && prevTail !== undefined && cur[cur.length - 1]?.id === prevTail) return
+    const measured = remeasureAllRows()
+    if (measured > 0 && stickToBottomRef.current) scheduleFollow()
+    // settle 轮：追加的同一帧里，上一行（仍可能在流式增长）与本行内容都可能尚未
+    // 定形（markdown/代码高亮/图片）——一帧后再权威重测一次，避免"测早了"的尺寸
+    // 被固化。仅在仍贴底时补测（用户已滚走就不打扰）。
+    const raf = requestAnimationFrame(() => {
+      if (!stickToBottomRef.current) return
+      if (remeasureAllRows() > 0) scheduleFollow()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [rows.length, remeasureAllRows, scheduleFollow])
 
   // ── Scroll event handler ──────────────────────────────────────────────────
   // onScroll syncs stickToBottomRef with the true scroll position — this is
@@ -1142,6 +1312,7 @@ export const MessageList = memo(function MessageList({
           )}
           {rows.length > 0 && (
             <div
+              ref={rowsWrapperRef}
               style={{ height: `${virtualizer.getTotalSize()}px` }}
               className="relative w-full"
             >

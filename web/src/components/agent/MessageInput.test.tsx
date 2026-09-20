@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { MessageInput, __getTestEditor } from './MessageInput'
+import { MessageInput, __getTestEditor, isBangDraft } from './MessageInput'
 
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
@@ -436,5 +436,42 @@ describe('MessageInput links & file paste', () => {
     const html = editor.getHTML()
     expect(html).toContain('href="https://example.com"')
     expect(editor.state.doc.textContent).toBe('check https://example.com ok')
+  })
+
+  // `!cmd` 前缀提示（可发现性）：用户不知道输入框支持 `!` 直接执行终端命令
+  // （后端早已支持，但 web 输入框没有任何提示，用户以为"没这个功能"）。
+  describe('bang-command hint (`!cmd` 终端命令提示)', () => {
+    it('isBangDraft mirrors the backend rule (bang yes, markdown image / bare ! no)', () => {
+      // 与 agent/bang_command.go 的 isBangCommand 规则保持一致
+      expect(isBangDraft('!ls -la')).toBe(true)
+      expect(isBangDraft('  !pwd')).toBe(true) // 前导空白
+      expect(isBangDraft('! echo hi')).toBe(true) // ! 后多空格再跟命令
+      expect(isBangDraft('!!ls')).toBe(true) // 双 !! 交给 shell 处理
+      expect(isBangDraft('ls -la')).toBe(false)
+      expect(isBangDraft('!')).toBe(false) // 光秃秃一个 ! 不是命令
+      expect(isBangDraft('!   ')).toBe(false)
+      expect(isBangDraft('![image.png](/api/files/download?key=x&inline=1)')).toBe(false) // markdown 图片
+      expect(isBangDraft('![chart](https://example.com/x.png) 这个图')).toBe(false)
+      expect(isBangDraft('')).toBe(false)
+    })
+
+    it('shows the hint only while the draft is a bang command', async () => {
+      const { editor } = await renderInput()
+      expect(screen.queryByTestId('bang-command-hint')).not.toBeInTheDocument()
+
+      await setEditorContent('ls -la')
+      expect(screen.queryByTestId('bang-command-hint')).not.toBeInTheDocument()
+
+      await setEditorContent('!ls -la')
+      expect(await screen.findByTestId('bang-command-hint')).toBeInTheDocument()
+      expect(screen.getByTestId('bang-command-hint')).toHaveTextContent('agent.bangCommandHint')
+
+      // 粘贴的 markdown 图片回到普通消息语义 → 提示消失
+      await setEditorContent('![x](https://example.com/a.png)')
+      await waitFor(() => expect(screen.queryByTestId('bang-command-hint')).not.toBeInTheDocument())
+
+      act(() => { editor.commands.clearContent() })
+      await waitFor(() => expect(screen.queryByTestId('bang-command-hint')).not.toBeInTheDocument())
+    })
   })
 })
