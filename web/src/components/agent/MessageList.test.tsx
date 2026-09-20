@@ -868,4 +868,24 @@ describe('MessageList new-content bubble (Spec A §3)', () => {
     expect(footer).not.toBeNull()
     expect(contentElement(container).contains(footer)).toBe(true)
   })
+
+  // 2026-09-20 P0：AskUser 面板是 MessageList 的 footer —— 它**不得**被 busy /
+  // loading / live 行等任何门控掉。事故现场用户看到的正是「busy 占位 + 没有面板」，
+  // 而排查证实 footer 的渲染与 busy 无关（真正的丢失发生在事件准入/水合，已另修）。
+  // 这条守卫把该不变量钉死：busy + 有 prompt ⇒ footer 必须渲染。
+  it('INVARIANT: busy 时 footer（AskUser 面板）必须渲染', () => {
+    const { container } = renderMessageList(
+      <MessageList
+        chatKey="web:chat-1"
+        messages={makeMessages(10)}
+        liveProgress={EMPTY_LIVE_PROGRESS}
+        busy
+        loading={false}
+        error={null}
+        footer={<div data-testid="ask-footer">Question</div>}
+      />,
+    )
+
+    expect(container.querySelector('[data-testid="ask-footer"]')).not.toBeNull()
+  })
 })

@@ -25,7 +25,7 @@ import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdi
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos } from '@/components/agent/api'
+import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, getPendingAskUser } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
 import type { QueueItemPayload } from '@/types/shared'
@@ -42,6 +42,7 @@ import { StagingTray } from '@/components/agent/StagingTray'
 import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
+import { parseAskUserPrompt } from '@/hooks/useSessionStore'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { PanelParams } from '@/types/tab'
 import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
@@ -342,6 +343,26 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       .catch(() => {})
     return () => { cancelled = true }
   }, [chatID, messageChannel])
+
+  // AskUser 面板的 DB 权威水合（与上面的 get_goal 同模式）。
+  // 面板过去唯一载体是实时 ask_user 事件：会话在提问时刻没有 SSE 订阅（用户正在看别的
+  // 会话 / 事件被 ring 淘汰 / 信封 key 推导失败）⇒ 没有任何路径重新推导 pending 状态
+  // ⇒ 面板永不渲染、turn 永远"思考中"，用户只能用 Stop 逃出去（2026-09-20 事故：
+  // 提问 05:22:53 时该会话无任何 SSE 订阅者，用户 05:29:40 才切回）。
+  // get_pending_ask_user 走服务器同一份持久化 ask_question/ask_answer 记录（DB 单一
+  // 权威）⇒ 在「会话加载 / tab 重新可见」两个时机水合，漏事件必然自愈。
+  // 缺失时不做删除：响应可能早于提问登记（服务端 WithPendingAskUser 文档同一竞态）。
+  useEffect(() => {
+    if (!chatID || !messageChannel || !isVisible) return
+    let cancelled = false
+    getPendingAskUser({ channel: messageChannel, chatID })
+      .then((pending) => {
+        if (cancelled || !pending) return
+        store.hydrateAskUserPrompt(messageChannel, chatID, parseAskUserPrompt(pending))
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [chatID, messageChannel, isVisible, store])
 
   useEffect(() => {
     if (!isSubAgent) return

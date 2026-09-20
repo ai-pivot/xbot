@@ -1225,6 +1225,43 @@ func TestSSEDeliversRealAskUserToolMetadata(t *testing.T) {
 	}
 }
 
+func TestSSEPendingAskUserFallbackCarriesEnvelopeIdentity(t *testing.T) {
+	wc, _ := newTestWebChannel(t, nil)
+	sel := SessionSelector{Channel: "web", ChatID: "chat_AABAA2BC15DC"}
+	wc.SetCallbacks(WebCallbacks{
+		WithPendingAskUser: func(channel, gotChatID string, fn func(*protocol.ProgressEvent) bool) bool {
+			if channel != "web" || gotChatID != sel.ChatID {
+				t.Fatalf("pending lookup = %q/%q, want web/%s", channel, gotChatID, sel.ChatID)
+			}
+			return fn(&protocol.ProgressEvent{RequestID: "request-1"})
+		},
+	})
+
+	// 2026-09-20 P0 事故：提问发布时该会话【没有任何 SSE 订阅者】（服务端日志：最后一次
+	// 订阅 05:19:37、下一次 05:29:40），所以这次重连 fallback 是面板的唯一载体。它的
+	// 信封必须携带完整身份（Channel + route 字段）：前端把缓存的 prompt 按
+	// "<channel>:<chatID>" 建 key（与 live 路径 WebChannel.Send 发布的 key 同一份），
+	// 缺 Channel 会让客户端进入"猜 channel"的回退链（连接 channel → active session →
+	// 默认值）——猜错即 prompt 存进没人读的 key ⇒ 面板永不渲染，turn 永远"思考中"，
+	// 用户只能按 Stop 逃出去。
+	wc.publishSSEFallbacks(sel, 0)
+
+	events := wc.replaySSEEvents(sel, 0)
+	if len(events) != 1 || events[0].Type != protocol.MsgTypeAskUser {
+		t.Fatalf("published events = %#v", events)
+	}
+	ask := events[0]
+	if ask.Channel != "web" || ask.ChatID != sel.ChatID {
+		t.Fatalf("ask envelope identity = %q/%q, want web/%s", ask.Channel, ask.ChatID, sel.ChatID)
+	}
+	if ask.RouteChannel != "web" || ask.RouteChatID != sel.ChatID {
+		t.Fatalf("ask envelope route = %q/%q, want web/%s", ask.RouteChannel, ask.RouteChatID, sel.ChatID)
+	}
+	if askUserRequestID(ask) != "request-1" {
+		t.Fatalf("ask request id = %q, want request-1", askUserRequestID(ask))
+	}
+}
+
 func TestSSEPendingAskUserFallbackPublishesAtomicSnapshot(t *testing.T) {
 	wc, _ := newTestWebChannel(t, nil)
 	chatID := "web-1"

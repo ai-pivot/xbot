@@ -96,6 +96,29 @@ describe('SSEConnectionImpl', () => {
     connection.dispose()
   })
 
+  it('stamps the connection channel on identity-less envelopes (AskUser fallback)', () => {
+    // 2026-09-20 P0：SSE 重连时后端为 pending AskUser 合成的 fallback 信封只带
+    // chat_id（无 channel，见 channel/web/web_sse.go 的修复）。消费方（useSessionStore
+    // 的 ask_user handler）按 "<channel>:<chatID>" 缓存 prompt —— 缺 channel 就只能猜
+    // （连接 channel → active session → 默认值），猜错即 key 错 ⇒ 面板永不渲染、turn
+    // 永远"思考中"。连接自己知道 (channel, chatID)：必须由 dispatch 补全，禁止猜。
+    const connection = new SSEConnectionImpl()
+    const received: WSMessage[] = []
+    connection.onMessage((message) => received.push(message))
+    connection.subscribe('chat_AABAA2BC15DC', 'web')
+
+    MockEventSource.instances[0].emit('ask_user', {
+      type: 'ask_user',
+      seq: 1,
+      progress: { request_id: 'request-1', questions: [{ question: 'Continue?' }] },
+    })
+
+    expect(received).toHaveLength(1)
+    expect(received[0].chat_id).toBe('chat_AABAA2BC15DC')
+    expect(received[0].channel).toBe('web')
+    connection.dispose()
+  })
+
   it('isolates replay cursors and progress for matching chat IDs on different channels', () => {
     const connection = new SSEConnectionImpl()
     connection.subscribe('shared', 'web')

@@ -12,7 +12,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
-import { SessionStoreProvider, useSessionStore } from './useSessionStore'
+import { SessionStoreProvider, useSessionStore, parseAskUserPrompt } from './useSessionStore'
 import { useAskUser } from './useAskUser'
 import type { WSMessage } from '@/types/shared'
 
@@ -66,6 +66,7 @@ vi.mock('@/lib/api', () => ({
 function Probe({ chatID, channel }: { chatID: string; channel: string }) {
   const { prompt } = useAskUser({ chatID, channel })
   const store = useSessionStore()
+  storeRef = store
   return (
     <div>
       <div data-testid="panel">{prompt ? 'panel-visible' : 'panel-hidden'}</div>
@@ -74,6 +75,9 @@ function Probe({ chatID, channel }: { chatID: string; channel: string }) {
     </div>
   )
 }
+
+/** Latest store handle from the rendered probe (hydration tests drive it). */
+let storeRef: ReturnType<typeof useSessionStore> | null = null
 
 function askUserEvent() {
   return {
@@ -162,5 +166,69 @@ describe('useAskUser panel mirrors the server state', () => {
     })
     expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
     expect(screen.getByTestId('prompt-count').textContent).toBe('0')
+  })
+
+  // 2026-09-20 P0 事故回归：提问发布时该会话【没有任何 SSE 订阅者】（用户正在看别的
+  // 会话 —— 服务端日志：该路由最后一次订阅 05:19:37、下一次 05:29:40），所以实时
+  // ask_user 事件永远不会到达这个会话的面板。此时唯一能让面板出现的路径是 DB 权威水合
+  // （AgentPanel 的 get_pending_ask_user effect → hydrateAskUserPrompt）。缺这条路径的
+  // 症状就是事故现场：只有 AskUser 工具 pill + 永远"思考中"，用户只能按 Stop 逃出去。
+  it('实时事件丢失（无 SSE 订阅者）+ DB 权威水合 ⇒ 面板必须渲染', async () => {
+    await renderProbe()
+    expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
+    expect(screen.getByTestId('prompt-count').textContent).toBe('0')
+
+    // No ask_user event ever arrives (session had no subscription when the ask
+    // was published). The panel state comes from the server's persisted
+    // ask_question record instead.
+    act(() => {
+      storeRef?.hydrateAskUserPrompt(
+        'web',
+        'web-chat-1',
+        parseAskUserPrompt({
+          request_id: 'req-hydrated',
+          questions: [{ question: '「7ms」按哪个口径判定？', options: ['A', 'B'], allow_other: true }],
+        }),
+      )
+    })
+
+    expect(screen.getByTestId('panel').textContent).toBe('panel-visible')
+    expect(screen.getByTestId('prompt-count').textContent).toBe('1')
+  })
+
+  it('水合幂等；同 key 的旧 request 被服务端权威替换', async () => {
+    await renderProbe()
+
+    act(() => {
+      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-1', questions: [{ question: 'Q1' }] }))
+    })
+    const first = storeRef?.askUserPrompts.get('web:web-chat-1')
+    expect(first?.requestId).toBe('req-1')
+
+    // Same request id ⇒ identical content ⇒ the Map instance is preserved
+    // (zero re-render for a repeated hydration — the panel is already correct).
+    act(() => {
+      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-1', questions: [{ question: 'Q1' }] }))
+    })
+    expect(storeRef?.askUserPrompts.get('web:web-chat-1')).toBe(first)
+
+    // A NEWER server-side pending question (different request id) replaces the
+    // stale prompt — the DB is the authority for "which question is pending".
+    act(() => {
+      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-2', questions: [{ question: 'Q2' }] }))
+    })
+    expect(storeRef?.askUserPrompts.get('web:web-chat-1')?.requestId).toBe('req-2')
+  })
+
+  it('水合不得为缺失身份建 key（空 channel/chatID 直接忽略）', async () => {
+    await renderProbe()
+
+    act(() => {
+      storeRef?.hydrateAskUserPrompt('', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-x', questions: [{ question: 'Q' }] }))
+      storeRef?.hydrateAskUserPrompt('web', '', parseAskUserPrompt({ request_id: 'req-y', questions: [{ question: 'Q' }] }))
+    })
+
+    expect(screen.getByTestId('prompt-count').textContent).toBe('0')
+    expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
   })
 })

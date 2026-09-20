@@ -411,6 +411,18 @@ export class SSEConnectionImpl implements WSConnection {
     if (!msg.chat_id && this._chatID) {
       msg.chat_id = this._chatID
     }
+    // Stamp channel for the SAME reason: consumers key per-session state by
+    // "<channel>:<chatID>" (e.g. the cached AskUser prompt). Server-side
+    // server→client envelopes do NOT always carry it — the SSE reconnect
+    // fallback for a pending AskUser publishes ChatID only (no Channel), and
+    // the client then had to GUESS the channel (connection channel → active
+    // session → default). Any mismatch silently stored the prompt under a key
+    // nothing reads ⇒ the AskUser panel never appears while the ask is pending
+    // (2026-09-20 incident). The connection knows its own (channel, chatID):
+    // stamp it, never guess.
+    if (!msg.channel && this._channel) {
+      msg.channel = this._channel
+    }
     if (this._chatID) {
       const cacheKey = sessionCacheKey(this._channel, this._chatID)
       if (isTerminalProgressEvent(msg)) {

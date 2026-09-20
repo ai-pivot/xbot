@@ -282,11 +282,22 @@ func (wc *WebChannel) publishSSEFallbacks(sel SessionSelector, lastSeq uint64) {
 		found := false
 		wc.callbacks.WithPendingAskUser(sel.Channel, sel.ChatID, func(current *protocol.ProgressEvent) bool {
 			found = true
+			// ⛔ Identity must be complete on the envelope: the frontend keys the
+			// cached prompt by "<channel>:<chatID>" (the SAME key the live path
+			// publishes — see WebChannel.Send). Omitting Channel here forced the
+			// client into a guess chain (connection channel → active session →
+			// default), which silently mis-keys the prompt whenever none of those
+			// matches ⇒ the panel never renders while the ask is pending
+			// (2026-09-20 incident: the ask was published while NO SSE client was
+			// subscribed, so this fallback was the ONLY carrier on reconnect).
 			return wc.publishSSEFallbackIfMissing(sel, lastSeq, protocol.WSMessage{
-				Type:     protocol.MsgTypeAskUser,
-				TS:       time.Now().Unix(),
-				ChatID:   sel.ChatID,
-				Progress: current,
+				Type:         protocol.MsgTypeAskUser,
+				TS:           time.Now().Unix(),
+				Channel:      sel.Channel,
+				ChatID:       sel.ChatID,
+				RouteChannel: sel.Channel,
+				RouteChatID:  sel.ChatID,
+				Progress:     current,
 			}, current.RequestID)
 		})
 		if !found {
