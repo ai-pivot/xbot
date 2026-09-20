@@ -47,19 +47,19 @@ func isMaskedStorageValue(v string) bool { return strings.Contains(v, "****") }
 // storageValuesFromConfig projects config.OSS into the schema-key space.
 func storageValuesFromConfig(cfg *config.Config) map[string]string {
 	return map[string]string{
-		"provider":           cfg.OSS.Provider,
-		"qiniu_access_key":   cfg.OSS.QiniuAccessKey,
-		"qiniu_secret_key":   cfg.OSS.QiniuSecretKey,
-		"qiniu_bucket":       cfg.OSS.QiniuBucket,
-		"qiniu_domain":       cfg.OSS.QiniuDomain,
-		"qiniu_region":       cfg.OSS.QiniuRegion,
-		"s3_access_key":      cfg.OSS.S3AccessKey,
-		"s3_secret_key":      cfg.OSS.S3SecretKey,
-		"s3_bucket":          cfg.OSS.S3Bucket,
-		"s3_region":          cfg.OSS.S3Region,
-		"s3_endpoint":        cfg.OSS.S3Endpoint,
-		"s3_domain":          cfg.OSS.S3Domain,
-		"s3_use_path_style":  strconv.FormatBool(cfg.OSS.S3UsePathStyle),
+		"provider":          cfg.OSS.Provider,
+		"qiniu_access_key":  cfg.OSS.QiniuAccessKey,
+		"qiniu_secret_key":  cfg.OSS.QiniuSecretKey,
+		"qiniu_bucket":      cfg.OSS.QiniuBucket,
+		"qiniu_domain":      cfg.OSS.QiniuDomain,
+		"qiniu_region":      cfg.OSS.QiniuRegion,
+		"s3_access_key":     cfg.OSS.S3AccessKey,
+		"s3_secret_key":     cfg.OSS.S3SecretKey,
+		"s3_bucket":         cfg.OSS.S3Bucket,
+		"s3_region":         cfg.OSS.S3Region,
+		"s3_endpoint":       cfg.OSS.S3Endpoint,
+		"s3_domain":         cfg.OSS.S3Domain,
+		"s3_use_path_style": strconv.FormatBool(cfg.OSS.S3UsePathStyle),
 	}
 }
 

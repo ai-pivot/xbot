@@ -270,12 +270,12 @@ func TestBuildStorageProvider_AliyunCosEndpoints(t *testing.T) {
 	}
 	for _, tc := range cases {
 		cfg := &config.Config{OSS: config.OSSConfig{
-			Provider:     tc.provider,
-			S3AccessKey:  "AK",
-			S3SecretKey:  "SK",
-			S3Bucket:     "mybucket",
-			S3Region:     tc.region,
-			S3Endpoint:   tc.endpoint,
+			Provider:    tc.provider,
+			S3AccessKey: "AK",
+			S3SecretKey: "SK",
+			S3Bucket:    "mybucket",
+			S3Region:    tc.region,
+			S3Endpoint:  tc.endpoint,
 		}}
 		p, name, err := buildStorageProvider(cfg)
 		if err != nil {
