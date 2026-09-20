@@ -57,6 +57,9 @@ After starting the server, open `http://your-server:8082` in a browser.
 
 ## Message Composer
 
+> **New session**: you may pick a working directory; **a missing directory is created automatically** (including parent directories). If a regular file blocks the path (or permissions fail), the panel reports "failed to set working directory" instead of silently using a wrong one.
+
+
 Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.) and links:
 
 | Feature | Description |
