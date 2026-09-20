@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
@@ -291,5 +291,40 @@ describe('SessionList', () => {
     expect(screen.getByText('Agent-main')).toBeInTheDocument()
     expect(screen.getByText('review/1')).toBeInTheDocument()
     expect(screen.getByText('fix/2')).toBeInTheDocument()
+  })
+
+  // REPRO（用户报告："删除会话的时候弹窗内容有问题，看上去是占位符没有实际被
+  // 替换掉"）。根因：i18n `session.deleteConfirm` 的占位符是 `{{username}}`，
+  // 而唯一调用点传的是 `{ name }` —— i18next 取不到 username，把模板原样渲染：
+  // `确定删除会话「{{username}}」吗？此操作不可撤销。`
+  it('删除确认弹窗必须插入会话名，且不得残留 {{...}} 占位符（REPRO）', async () => {
+    const s = session({ chatID: 'web:chat-1', channel: 'web', label: 'My Session', type: 'main' })
+
+    renderWithProviders(
+      <SessionList
+        sessions={[s]}
+        groups={[{ key: 'today', sessions: [s] }]}
+        sortedSessions={[s]}
+        category="time"
+        starredIds={[]}
+        unreadIds={[]}
+        activeSession={null}
+        search=""
+        subAgents={[]}
+        onSelect={vi.fn()}
+        onToggleStar={vi.fn()}
+        onRename={vi.fn()}
+        onDelete={vi.fn().mockResolvedValue(true)}
+      />,
+    )
+
+    // 右键会话行 → 菜单里点「删除」→ 打开确认弹窗。
+    fireEvent.contextMenu(screen.getByText('My Session'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete|删除/ }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    // 会话名必须被真正插入（修复前这里是字面量 "{{username}}"）。
+    expect(dialog.textContent).toContain('My Session')
+    expect(dialog.textContent ?? '').not.toMatch(/\{\{|\}\}/)
   })
 })

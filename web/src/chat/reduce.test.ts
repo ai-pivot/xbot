@@ -64,6 +64,59 @@ const textFinal = (turn: ReturnType<typeof turnID> | null, content: string | nul
   cancelled,
 })
 
+// REPRO（用户报告："还是不行啊，!pwd 发出去之后消息直接消失了"）——命令消息的完整
+// 前端时序：乐观行 → REST ack（命令**没有 turn_id**）→ 命令回复（turn-less text）
+// → 随后的一次历史刷新（命令消息不落库，DB 快照里没有它）。
+// 断言：user 行与回复行都必须留在渲染里。
+it('REPRO: !cmd 完整时序（ack 无 turn_id + 历史刷新）不得让 user 行/回复消失', () => {
+  let s = initialChatState('chat-1')
+  s = reduce(s, {
+    type: 'user_sent',
+    row: {
+      id: 'u-cmd-1', content: '!pwd' as never, timestamp: 't0', isNotification: false,
+      queued: false, sending: true, requestID: 'r-cmd-1', turnHint: undefined, dbID: undefined,
+    },
+  })
+  // REST ack：命令没有 turn_id → turnHint undefined/0
+  s = reduce(s, { type: 'user_ack', requestID: 'r-cmd-1', dbID: 0, turnHint: 0, queued: false })
+  // 命令回复（turn-less）
+  s = reduce(s, {
+    type: 'text_final', turnID: null, content: '```\n/root\n```' as never, progressHistory: [], cancelled: false,
+  })
+  const before = deriveRows(s)
+  expect(before.some((r) => r.kind === 'user' && String(r.content) === '!pwd'), 'ack+回复后 user 行应仍在').toBe(true)
+  expect(before.some((r) => String(r.content ?? '').includes('/root')), '命令回复应可见').toBe(true)
+
+  // 历史刷新（命令消息不落库 → DB 快照为空）
+  const after = deriveRows(reduce(s, {
+    type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null, todos: [],
+  } as never))
+  expect(after.some((r) => r.kind === 'user' && String(r.content) === '!pwd'), '历史刷新后 user 行不应消失').toBe(true)
+  expect(after.some((r) => String(r.content ?? '').includes('/root')), '历史刷新后回复不应消失').toBe(true)
+})
+
+// REPRO（用户报告："我输入 !pwd 没有输出啊"）。服务端日志证明命令**已执行**且
+// `sendMessage directSend dispatch | send_channel=web send_chat_id=chat_1` 已把输出
+// 发到正确会话 —— 但命令回复**没有 turn_id**（后端命令分发按设计不分配 turn），
+// 而 M4 状态机遇到 turnID=null 且 activeTurn=null 时直接 `return s` 把输出吞掉。
+// 命令回复是独立消息（不属于任何 turn），必须渲染出来。
+it('REPRO: 命令回复（text_final with turnID=null）必须渲染为独立消息，不能被吞掉', () => {
+  const s = run([
+    started(T1),
+    iteration1(T1, '正常 turn 的回复'),
+    textFinal(T1, '正常 turn 的回复'),
+    // 用户敲 `!pwd` → 后端命令分发（无 turn）→ text 事件无 turn_id
+    textFinal(null, '```\n/root\n```\n`exit: 0`'),
+  ])
+  const rows = deriveRows(s)
+  const cmdRow = rows.find((r) => String(r.content ?? '').includes('/root'))
+  expect(cmdRow, '命令输出必须出现在渲染行里（否则用户看到"没有输出"）').toBeDefined()
+  // 且不能污染既有 turn 的内容
+  const t1 = rows.filter((r) => r.turnID === 1)
+  expect(t1).toHaveLength(1) // user + assistant 合并在同一 turn 行里（assistant 行）
+  expect(String(t1[0].content ?? '')).toBe('正常 turn 的回复')
+})
+
 const phaseDone = (turn: ReturnType<typeof turnID>, finalIteration: DomainEvent extends never ? never : {
   iteration: number
   content: string

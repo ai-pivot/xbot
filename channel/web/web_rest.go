@@ -104,15 +104,20 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		if turnID != 0 {
 			resp["turn_id"] = turnID
 		}
-	} else if turnID == 0 && !isSlashCommand(request.Content) {
+	} else if turnID == 0 && !wc.isCommandMessage(request.Content) {
 		// INSERTED (non-queued): the response MUST carry a non-zero turn_id —
-		// EXCEPT slash commands (e.g. /help, /new), which are handled
-		// concurrently by the chatWorker and have no user-message turn
-		// semantics (their turn_id is legitimately 0; the frontend does not
-		// bind a turn for them). A 0 turn_id on a real user message means the
-		// queue-admission allocation failed upstream — the frontend binds the
-		// optimistic user row from this value and a 0 would break turn order
-		// (replies rendering above the user msg). Fail fast.
+		// EXCEPT command messages (e.g. /help, /new, and `!cmd` bang shell
+		// commands), which are handled concurrently by the chatWorker and have
+		// no user-message turn semantics (their turn_id is legitimately 0; the
+		// frontend does not bind a turn for them). A 0 turn_id on a real user
+		// message means the queue-admission allocation failed upstream — the
+		// frontend binds the optimistic user row from this value and a 0 would
+		// break turn order (replies rendering above the user msg). Fail fast.
+		//
+		// The judgement MUST match the dispatch itself (CommandRegistry.Match via
+		// WebCallbacks.MatchesCommand): a "/" prefix heuristic silently excluded
+		// `!cmd`, so every bang command died here with "message accepted without
+		// a turn_id" and its output never reached the browser.
 		log.WithFields(log.Fields{
 			"channel": sel.Channel,
 			"chat_id": sel.ChatID,
@@ -261,6 +266,21 @@ func (wc *WebChannel) handleQueueReorder(w http.ResponseWriter, r *http.Request)
 // legitimately be 0 and is omitted from the API response.
 func isSlashCommand(content string) bool {
 	return strings.HasPrefix(strings.TrimSpace(content), "/")
+}
+
+// isCommandMessage reports whether content is dispatched as an agent command —
+// slash commands (/new, /help, …) AND the `!cmd` bang shell command.
+//
+// It prefers the command registry (WebCallbacks.MatchesCommand, injected from
+// serverapp) so the REST layer's turn_id judgement can never drift from the
+// actual dispatch: both call the same `CommandRegistry.Match`. When no registry
+// is wired (unit tests, embedded use) it degrades to the historical
+// slash-prefix heuristic.
+func (wc *WebChannel) isCommandMessage(content string) bool {
+	if wc.callbacks.MatchesCommand != nil {
+		return wc.callbacks.MatchesCommand(content)
+	}
+	return isSlashCommand(content)
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {

@@ -132,3 +132,99 @@ describe('i18n 守卫：按钮文案不得等于状态文案', () => {
     }
   })
 })
+
+/**
+ * 占位符一致性守卫（2026-09-17 用户报告："删除会话的时候弹窗内容有问题，看上去是
+ * 占位符没有实际被替换掉"）。
+ *
+ * 事故：`session.deleteConfirm` 文案写的是 `{{username}}`，而唯一调用点传的是
+ * `{ name }` —— i18next 取不到 username，把模板**原样渲染**成
+ * `Delete session "{{username}}"?`。这类错误不报错、不告警，只能靠肉眼在界面上发现。
+ *
+ * 两条不变量（同一轮审计还发现 30+ 处同族缺陷：某种语言丢了占位符、或调用点传值
+ * 而文案里没有对应占位符 → 值永不显示）：
+ *   1. `t('key', {...})` 传入的参数必须覆盖文案里的**每个**占位符；
+ *   2. 三种语言的同一 key 必须使用**完全相同**的占位符集合。
+ * 两条都直接对应「用户看到 {{xxx}} 或看不到值」这一症状。
+ */
+function flatten(node: unknown, prefix = '', out: Record<string, string> = {}): Record<string, string> {
+  if (typeof node === 'string') {
+    if (prefix) out[prefix] = node
+    return out
+  }
+  if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      flatten(v, prefix ? `${prefix}.${k}` : k, out)
+    }
+  }
+  return out
+}
+
+const placeholders = (s: string): string[] => [...s.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)].map((m) => m[1])
+
+/** i18next 的保留选项键 —— 出现在 `t(key, {...})` 里但不是插值参数。 */
+const I18N_OPTION_KEYS = new Set([
+  'count', 'defaultValue', 'ns', 'lng', 'context', 'replace', 'interpolation',
+  'keySeparator', 'nsSeparator', 'postProcess', 'returnObjects', 'joinArrays',
+])
+
+// 源码文本（Vite raw glob；无需 node:fs —— web tsconfig 未含 node 类型）。
+const SOURCES = import.meta.glob('../**/*.{ts,tsx}', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>
+
+describe('i18n 占位符守卫', () => {
+  it('t() 调用点传入的参数必须覆盖文案里的每个占位符', () => {
+    const zh = flatten(zhCN)
+    const problems: string[] = []
+    for (const [file, src] of Object.entries(SOURCES)) {
+      if (/\.(test|spec)\./.test(file) || file.includes('/i18n/')) continue
+      for (const m of src.matchAll(/\bt\(\s*'([\w.]+)'\s*,\s*\{([^}]*)\}/g)) {
+        const [, key, body] = m
+        const value = zh[key]
+        if (value === undefined) {
+          problems.push(`${file}: key 不存在于 zh-CN: ${key}`)
+          continue
+        }
+        if (body.includes('...')) continue // 展开无法静态判定
+        const params = new Set(
+          body.split(',').map((p) => p.trim().split(':')[0].trim()).filter((p) => /^[\w$]+$/.test(p)),
+        )
+        const paramsForThisKey = new Set([...params].filter((p) => !I18N_OPTION_KEYS.has(p)))
+        for (const need of placeholders(value)) {
+          if (!params.has(need)) {
+            problems.push(
+              `${file}: t('${key}') 缺参数 {{${need}}} → 会渲染出字面量模板` +
+                `（文案=${JSON.stringify(value)}，实际传=[${[...paramsForThisKey].join(', ')}]）`,
+            )
+          }
+        }
+      }
+    }
+    expect(problems, `调用点与文案占位符不一致：\n${problems.join('\n')}`).toEqual([])
+  })
+
+  it('三种语言的同一 key 必须使用完全相同的占位符集合', () => {
+    const dicts: Array<[string, Record<string, string>]> = [
+      ['zh-CN', flatten(zhCN)],
+      ['en', flatten(en)],
+      ['ja', flatten(ja)],
+    ]
+    const problems: string[] = []
+    const keys = new Set(dicts.flatMap(([, d]) => Object.keys(d)))
+    for (const key of [...keys].sort()) {
+      const sets = dicts.map(
+        ([locale, d]) => [locale, placeholders(d[key] ?? '').sort().join(',')] as const,
+      )
+      const [baseLocale, base] = sets[0]
+      for (const [locale, s] of sets) {
+        if (s !== base) {
+          problems.push(`${key}: ${baseLocale}=[${base}] 但 ${locale}=[${s}]`)
+        }
+      }
+    }
+    expect(problems, `三语言占位符漂移（某种语言会丢值）：\n${problems.join('\n')}`).toEqual([])
+  })
+})

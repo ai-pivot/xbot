@@ -19,7 +19,7 @@ import Link from '@tiptap/extension-link'
 import Image from '@tiptap/extension-image'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { Markdown } from 'tiptap-markdown'
-import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock } from 'lucide-react'
+import { Loader2, Mail, Paperclip, Send, Square, Target, X, Zap, Clock, Terminal } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -172,6 +172,10 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const [uploading, setUploading] = useState(false)
   const [focused, setFocused] = useState(false)
   const [hasContent, setHasContent] = useState(false)
+  // `!cmd` bang mode: the composer shows a hint that the text will be executed
+  // as a terminal command (the backend runs it in the sandbox, skipping the
+  // LLM). Purely informational — the message is sent verbatim.
+  const [bangMode, setBangMode] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   // Refs for stable callbacks inside editor's handleKeyDown (avoids stale closures)
@@ -326,6 +330,11 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     },
     onUpdate: ({ editor }) => {
       setHasContent(!editor.isEmpty)
+      // Markdown snapshot — used for the draft AND for the `!` bang-mode hint.
+      const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? editor.getText()
+      // `!cmd` (but NOT a pasted markdown image `![...]`, and not a bare `!`)
+      // → terminal-command hint. Mirrors agent/bang_command.go `isBangCommand`.
+      setBangMode(isBangDraft(md))
       // IMMEDIATE save on every keystroke — no debounce.
       // Previous debounce approach failed on mobile: if user switches sessions
       // within 300ms, clearTimeout cancels the timer and the draft is lost.
@@ -333,7 +342,6 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       // as fallback when getMarkdown() returns empty (before Markdown ext parses).
       if (draftStorageKey) {
         try {
-          const md = (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? ''
           if (md) {
             latestContentRef.current = md
             localStorage.setItem(draftStorageKey, md)
@@ -662,6 +670,17 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
             </span>
           </div>
         )}
+        {/* `!cmd` bang hint: the message is a terminal command executed directly
+            in the sandbox (skips the LLM). Non-blocking — the text still sends
+            verbatim; this only makes the `!` contract discoverable. */}
+        {bangMode && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-app-accent/30 bg-app-accent/10 px-2.5 py-1.5" data-testid="bang-command-hint">
+            <Terminal className="size-3.5 shrink-0 text-app-accent" aria-hidden />
+            <span className="min-w-0 flex-1 text-[11px] leading-snug text-text-secondary">
+              {t('agent.bangCommandHint')}
+            </span>
+          </div>
+        )}
         {/* Vision advisory: image attachments + current model's vision switch OFF →
             non-blocking hint (the images still send as name-only placeholders;
             the model will tell the user it can't see them). modelVision ===
@@ -837,4 +856,17 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 /** Test-only: get the current tiptap editor instance for integration tests. */
 export function __getTestEditor() {
   return __testEditor
+}
+
+/**
+ * isBangDraft mirrors the backend's bang-command rule
+ * (agent/bang_command.go `isBangCommand`): the first non-space character is `!`
+ * and a non-empty command follows it. `![...]` is markdown image syntax (a
+ * pasted screenshot) and a bare `!` carries no command — neither is a bang
+ * command, so neither shows the terminal-command hint.
+ */
+export function isBangDraft(text: string): boolean {
+  const trimmed = text.trimStart()
+  if (!trimmed.startsWith('!') || trimmed.startsWith('![')) return false
+  return trimmed.slice(1).trim().length > 0
 }

@@ -289,63 +289,23 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 			// URLs at LLM-request-build time, see serverapp/image_resolver.go).
 			// NOTE: imgProvider is declared OUTSIDE the web block (deployment-wide
 			// resolver registration below).
-			switch cfg.OSS.Provider {
-			case "qiniu":
-				ossProvider, err := web.NewOSSProvider(
-					cfg.OSS.Provider,
-					"",
-					web.QiniuConfig{
-						AccessKey: cfg.OSS.QiniuAccessKey,
-						SecretKey: cfg.OSS.QiniuSecretKey,
-						Bucket:    cfg.OSS.QiniuBucket,
-						Domain:    cfg.OSS.QiniuDomain,
-						Region:    cfg.OSS.QiniuRegion,
-					},
-				)
-				if err != nil {
-					log.WithError(err).Error("Failed to create Qiniu OSS provider")
-				} else {
-					imgProvider = ossProvider
-					webCh.SetOSSProvider(ossProvider)
-					log.Info("OSS provider configured: qiniu")
+			// 存储后端：**唯一构建路径**（与 Web 设置的热切换共用 buildStorageProvider，
+			// 避免两处实现漂移）。空 provider ⇒ 本地 static（免配置即用）。
+			provider, provName, perr := buildStorageProvider(cfg)
+			if perr != nil {
+				log.WithError(perr).WithField("provider", cfg.OSS.Provider).
+					Warn("Storage provider unavailable — falling back to local static storage")
+				provider, provName, _ = buildStorageProvider(&config.Config{})
+			}
+			imgProvider = provider
+			webCh.SetOSSProvider(provider)
+			SetActiveStorageProvider(provName)
+			if provName == "local" {
+				if cfg.OSS.Provider == "" {
+					log.Info("Storage provider: local static (default — no oss.provider configured)")
 				}
-			case "s3":
-				s3Provider, err := web.NewS3Provider(web.S3Config{
-					AccessKey:    cfg.OSS.S3AccessKey,
-					SecretKey:    cfg.OSS.S3SecretKey,
-					Bucket:       cfg.OSS.S3Bucket,
-					Region:       cfg.OSS.S3Region,
-					Endpoint:     cfg.OSS.S3Endpoint,
-					UsePathStyle: cfg.OSS.S3UsePathStyle,
-					Domain:       cfg.OSS.S3Domain,
-				})
-				if err != nil {
-					log.WithError(err).Error("Failed to create S3 OSS provider")
-				} else {
-					imgProvider = s3Provider
-					webCh.SetOSSProvider(s3Provider)
-					log.Info("OSS provider configured: s3")
-				}
-			default:
-				// ── 默认本地 static（2026-09-16 用户要求）────────────────────────────
-				// 未配置 oss.provider（空串）或写了未知值时，回落到**本地磁盘存储**：
-				//   · 上传写 <xbotHome>/uploads/<key>（channel/web.handleLocalUpload）
-				//   · 取图由同源 /api/files/download 读盘返回（serveLocalFile）
-				//   · 多模态解析器走同一根目录读盘（image_resolver 的 ?key= 分支）
-				// 免配置即可用 —— 不再 503 "file storage not configured"。
-				localProvider, lerr := web.NewOSSProvider("local", web.LocalUploadRoot(config.XbotHome()))
-				if lerr != nil {
-					log.WithError(lerr).Error("Failed to create local storage provider")
-				} else {
-					imgProvider = localProvider
-					webCh.SetOSSProvider(localProvider)
-					if cfg.OSS.Provider == "" {
-						log.Info("Storage provider: local static (default — no oss.provider configured)")
-					} else {
-						log.WithField("provider", cfg.OSS.Provider).
-							Warn("Unknown oss.provider — falling back to local static storage")
-					}
-				}
+			} else {
+				log.WithField("provider", provName).Info("OSS provider configured")
 			}
 			webCh.SetCallbacks(buildWebCallbacks(cfg, ag, webDB))
 			// Wire BgTaskManager real-time output push → WebChannel bg_task_output
@@ -415,6 +375,25 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 	resolver := NewImageResolver(imgProvider, config.XbotHome(), workDir)
 	SetImageResolver(resolver)
 	ag.LLMFactory().SetImageResolver(resolver)
+
+	// 文件存储热切换（Web 设置 → 存储 → 保存）：重建 provider + 重注册多模态解析器，
+	// **无需重启**。webCh 为 nil（web 未启用）时只更新解析器（view_image / 飞书入站
+	// 仍需要 provider 才能把引用 materialize 成 data: URL）。
+	SetStorageApplier(func(c *config.Config) (string, error) {
+		p, name, err := buildStorageProvider(c)
+		if err != nil {
+			return "", err
+		}
+		if webCh != nil {
+			webCh.SetOSSProvider(p)
+		}
+		r := NewImageResolver(p, config.XbotHome(), workDir)
+		SetImageResolver(r)
+		ag.LLMFactory().SetImageResolver(r)
+		SetActiveStorageProvider(name)
+		log.WithField("provider", name).Info("Storage provider switched (hot apply)")
+		return name, nil
+	})
 
 	// 注册插件 channel（从 ChannelProviderRegistry 查找）
 	reg := GetChannelProviderRegistry()
