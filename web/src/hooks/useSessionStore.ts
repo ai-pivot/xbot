@@ -56,6 +56,62 @@ interface AskUserEnvelope {
   chat_id?: string
 }
 
+/**
+ * Normalize a server AskUser payload (snake_case wire contract, see
+ * protocol/events.go) into the frontend prompt shape.
+ *
+ * Single implementation for BOTH carriers: the live ask_user event and the
+ * DB-authoritative `get_pending_ask_user` hydration. Duplicating this mapping
+ * was how multi_select/allow_other silently regressed before.
+ *
+ * Returns **null** when the payload carries no usable question — a real prompt
+ * always has at least one (the model cannot ask nothing). A payload without
+ * questions is therefore NOT a prompt, and synthesizing an empty one was a
+ * whole-app crash: the panel rendered with `questions: []`, `questions[0]` was
+ * `undefined` and reading `.allowOther` threw inside render, so the crash
+ * boundary replaced the entire panel (2026-09-20 CI: 9 E2E specs red after a
+ * generic `/api/rpc` mock answered `get_pending_ask_user` with `{ok:true}`).
+ * Callers MUST treat null as "nothing to show" — never as "cancel the pending
+ * prompt"; absence/removal stays event-driven (ask_user_resolved) or
+ * row-driven (reconcileAskUserPrompts).
+ */
+export function parseAskUserPrompt(payload: unknown, fallbackRequestID?: string): AskUserPrompt | null {
+  // The payload is unvalidated wire data (live SSE event / RPC response) — the
+  // declared shape could never be trusted, so narrow it here instead of lying
+  // at the boundary with a structural parameter type.
+  const env =
+    payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+  const questions: AskUserQuestion[] = []
+  const raw = env?.questions
+  if (Array.isArray(raw)) {
+    for (const q of raw) {
+      if (!q || typeof q !== 'object') continue
+      const o = q as Record<string, unknown>
+      const question = typeof o.question === 'string' ? o.question : ''
+      const options = Array.isArray(o.options)
+        ? o.options.filter((x): x is string => typeof x === 'string')
+        : undefined
+      // Only drop a question that has NEITHER text NOR options. A question
+      // with no prompt text but real options (the LLM sometimes emits
+      // `{allow_other:true, options:[...]}` without `question`) must still
+      // survive so the panel renders the options — the title is skipped.
+      if (!question && !(options && options.length > 0)) continue
+      // snake_case → camelCase so AskUserPanel renders multi-select checkboxes
+      // and the "Other" toggle.
+      questions.push({
+        question,
+        options,
+        multiSelect: o.multi_select === true,
+        allowOther: o.allow_other === true,
+      })
+    }
+  }
+  if (questions.length === 0) return null
+  const explicitId = typeof env?.request_id === 'string' && env.request_id ? env.request_id : undefined
+  const requestId = explicitId ?? fallbackRequestID ?? String(Date.now())
+  return { requestId, questions }
+}
+
 export interface SessionGroup {
   key: string
   sessions: SessionInfo[]
@@ -105,6 +161,14 @@ export interface SessionStore {
   reorderSessions: (channel: string, orderedIDs: string[]) => Promise<boolean>
   /** Clear the AskUser prompt for a session (after answer/cancel). */
   clearAskUserPrompt: (channel: string, chatID: string) => void
+  /**
+   * Store a server-authoritative pending AskUser prompt (hydration of a missed
+   * live event). Presence is authoritative (a pending prompt ALWAYS yields a
+   * rendered panel); absence is NOT (a fetch requested before the prompt was
+   * registered must never cancel a live panel — removal stays driven by
+   * ask_user_resolved / session-row reconciliation).
+   */
+  hydrateAskUserPrompt: (channel: string, chatID: string, prompt: AskUserPrompt) => void
 }
 
 /* ── localStorage starred ids ── */
@@ -1707,43 +1771,20 @@ export function useSessionStoreImpl(): SessionStore {
         })
       }
       if (chatID) {
-        setStatus({ channel, chatID }, 'waiting_input')
-        // Store the prompt so it survives session switch.
-        const p = msg.progress
-        const questions: AskUserQuestion[] = []
-        if (p?.questions && Array.isArray(p.questions)) {
-          for (const q of p.questions) {
-            if (!q || typeof q !== 'object') continue
-            const o = q as Record<string, unknown>
-            const question = typeof o.question === 'string' ? o.question : ''
-            const options = Array.isArray(o.options)
-              ? o.options.filter((x): x is string => typeof x === 'string')
-              : undefined
-            // Only drop a question that has NEITHER text NOR options. A question
-            // with no prompt text but real options (the LLM sometimes emits
-            // `{allow_other:true, options:[...]}` without `question`) must still
-            // survive so the panel renders the options — the title is skipped.
-            if (!question && !(options && options.length > 0)) continue
-            // Backend serializes AskUserQuestion as snake_case (multi_select /
-            // allow_other, see protocol/events.go). Map to the frontend
-            // camelCase fields so AskUserPanel renders multi-select checkboxes
-            // and the "Other" toggle — without this they are always undefined.
-            questions.push({
-              question,
-              options,
-              multiSelect: o.multi_select === true,
-              allowOther: o.allow_other === true,
-            })
-          }
+        const prompt = parseAskUserPrompt(msg.progress, msg.id)
+        // A question-less payload is not a prompt (see parseAskUserPrompt) —
+        // leave the store alone instead of fabricating an empty panel.
+        if (prompt) {
+          setStatus({ channel, chatID }, 'waiting_input')
+          // Store the prompt so it survives session switch.
+          const key = `${channel}:${chatID}`
+          askUserPromptTsRef.current.set(key, Date.now())
+          setAskUserPrompts((prev) => {
+            const next = new Map(prev)
+            next.set(key, prompt)
+            return next
+          })
         }
-        const requestId = (p?.request_id as string | undefined) ?? msg.id ?? String(Date.now())
-        const key = `${channel}:${chatID}`
-        askUserPromptTsRef.current.set(key, Date.now())
-        setAskUserPrompts((prev) => {
-          const next = new Map(prev)
-          next.set(key, { requestId, questions })
-          return next
-        })
       }
     })
   }, [setStatus, dropAskUserPrompt])
@@ -1757,6 +1798,35 @@ export function useSessionStoreImpl(): SessionStore {
   const clearAskUserPrompt = useCallback((channel: string, chatID: string) => {
     dropAskUserPrompt(`${channel}:${chatID}`)
   }, [dropAskUserPrompt])
+
+  /** Server-authoritative hydration for a MISSED live ask_user event.
+   *
+   * The panel's only carrier used to be the live SSE event: if the session had
+   * no subscription when the ask was published (user was on another session /
+   * the event was evicted from the replay ring), NOTHING ever re-derived the
+   * pending state ⇒ the panel never appeared, the turn stayed visually busy and
+   * the user could only escape with Stop (2026-09-20 incident). The DB (the
+   * ask_question/ask_answer records behind get_pending_ask_user) is the single
+   * authority — hydration closes the gap at the same points goal/todos are
+   * hydrated (session open / tab becomes visible again).
+   *
+   * Presence is authoritative: the stored prompt is replaced whenever the
+   * server's pending request id differs (stale panel for an older question).
+   * Absence is NOT handled here — a response requested before the prompt was
+   * registered must never cancel a live panel; removal stays event-driven
+   * (ask_user_resolved) or row-driven (reconcileAskUserPrompts). */
+  const hydrateAskUserPrompt = useCallback((channel: string, chatID: string, prompt: AskUserPrompt) => {
+    if (!channel || !chatID) return
+    const key = `${channel}:${chatID}`
+    askUserPromptTsRef.current.set(key, Date.now())
+    setAskUserPrompts((prev) => {
+      const current = prev.get(key)
+      if (current && current.requestId === prompt.requestId) return prev
+      const next = new Map(prev)
+      next.set(key, prompt)
+      return next
+    })
+  }, [])
 
   const groups = useMemo(() => groupSessions(sessions, category, starredIds), [sessions, category, starredIds])
   const activeSessionId = activeSession?.chatID ?? null
@@ -1791,8 +1861,9 @@ export function useSessionStoreImpl(): SessionStore {
     deleteSession,
     reorderSessions,
     clearAskUserPrompt,
+    hydrateAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt])
+    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, hydrateAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

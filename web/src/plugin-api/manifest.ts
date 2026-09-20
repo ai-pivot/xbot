@@ -136,6 +136,14 @@ export interface PluginManifest {
   contributes: readonly Contribution[]
   /** 前端入口模块（ESM）。纯后端插件无此字段。 */
   entry?: string
+  /**
+   * 插件**自带的文案表**：locale → (key → text)。宿主运行时按当前语言逐级回退解析，
+   * 通过 `ctx.i18n.t(key, fallback?)` 暴露给插件。
+   *
+   * 契约（2026-09-19）：插件文案**随插件清单分发**，绝不写进宿主的 `i18n/*.ts`
+   * （那是跨插件命名空间污染，也让插件无法独立安装/卸载）。
+   */
+  i18n?: Readonly<Record<string, Readonly<Record<string, string>>>>
 }
 
 /**

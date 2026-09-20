@@ -272,7 +272,12 @@ function QueueCard({
 
         {/* hover/touch 操作（触屏始终可见，桌面 hover 显示） */}
         <div className={`staging-card-actions flex shrink-0 items-center gap-0.5 transition-opacity ${isTouch ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-          {!isNotification && (
+          {/* ⚡ 立刻插入（插话）：**通知行同样允许**（2026-09-18 P0 止血）——
+              背景任务/子代理通知在 busy 时会被排进队列（真根因另行修复），此时用户
+              必须能把它立刻插进正在跑的 turn，否则只能干等队列逐条执行。
+              显隐判据用**可寻址性**（`msg_id` 存在）而不是"是不是通知"：无 msg_id
+              的行（不可寻址的通知/resume 行）点了也发不出去，故不渲染按钮。 */}
+          {item.msg_id && (
             <button
               type="button"
               aria-label={t('agent.staging.toInterject')}

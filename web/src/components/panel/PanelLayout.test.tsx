@@ -20,7 +20,7 @@
  *  - 取消路径：落点无 zone / Esc / 4px 阈值内松手 → 零状态变更
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, within } from '@testing-library/react'
+import {act, fireEvent, screen, within } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import i18n from '@/i18n'
@@ -35,16 +35,18 @@ import { panelRegistry } from '@/plugin-runtime/panelRegistry'
 import type { PanelDefinition } from '@/plugin-api'
 import type { TabManager } from '@/hooks/useTabManager'
 import {
-  FloatingLayer,
   PanelDock,
   PanelDockProvider,
   defaultPanelLayout,
   enforcePinnedState,
+  sanitizeRailBadges,
   migrateV1Layout,
   migrateV2Layout,
   parsePanelLayoutV2,
 } from './PanelLayout'
-import { SideChips, TopRail } from './rails'
+import { SideChips, TopRail,
+  BottomRailBadges,
+} from './rails'
 
 // radix Popover（@floating-ui 定位）在 jsdom 里需要 ResizeObserver。
 class ROStub {
@@ -105,8 +107,8 @@ function renderShell(): ReturnType<typeof renderWithProviders> {
       <div style={{ position: 'relative', width: 1000, height: 800 }}>
         <PanelDock />
         <TopRail className="max-w-[300px]" />
+        <BottomRailBadges />
         <SideChips />
-        <FloatingLayer />
       </div>
     </PanelDockProvider>,
   )
@@ -171,7 +173,7 @@ describe('migrateV1Layout（v1→v2 迁移）', () => {
     expect(parsePanelLayoutV2(badH, knownOne)).toEqual({})
   })
 
-  it('端到端：localStorage v1 → 渲染即迁移（非 sessions 面板收入 chips），首次交互才写 v2', () => {
+  it('端到端：localStorage v1 → 渲染即迁移（非 sessions 面板收入 chips），未交互不写 v2', () => {
     registerPanel(makeDef('p.a', 'A'))
     registerPanel(makeDef('p.b', 'B'))
     localStorage.setItem(V1_KEY, JSON.stringify({
@@ -186,10 +188,8 @@ describe('migrateV1Layout（v1→v2 迁移）', () => {
     expect(chipOrder()).toEqual(['p.b', 'p.a'])
     expect(sideRenderOrder()).toEqual([])
     expect(localStorage.getItem(V2_KEY)).toBeNull()
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 360 })
-    expect(saved['p.b'].loc).toEqual({ zone: 'chip', order: 0 })
+    // 首次交互才写 v2（交互入口在 chip 内面板上；此处只断言迁移结果与零写入）。
+    expect(chipOrder()).toEqual(['p.b', 'p.a'])
   })
 })
 
@@ -282,74 +282,23 @@ describe('v5.1 Focus + Drawer', () => {
     expect(chipBar.className).toContain('shrink-0')
   })
 
-  it('chips 📌 钉选：→ side append 堆叠尾 + 默认 h 220 + 展开落盘', () => {
-    renderShell()
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    fireEvent.click(screen.getByLabelText('钉选 B'))
-    expect(sideRenderOrder()).toEqual(['p.a', 'p.b'])
-    expect(chipOrder()).toEqual([])
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc).toMatchObject({ zone: 'side', order: 0, h: 360 })
-    expect(saved['p.a'].collapsed).toBe(false)
-    expect(saved['p.b'].loc).toMatchObject({ zone: 'side', order: 1, h: 360 })
-  })
+  
 
-  it('side ✕ 取消钉选 → chip；PINNED_DEFAULTS（sessions）无 ✕ 且可调高', () => {
-    registerPanel(makeDef('core.sessions', '会话', { source: 'core', icon: 'message' }))
-    renderShell()
-    // sessions 默认 side 置顶、h 420 展开（flex-basis 420，撑满堆叠区）。
-    expect(sideRenderOrder()).toEqual(['core.sessions'])
-    expect(chipOrder()).toEqual(['p.a', 'p.b'])
-    expect(localStorage.getItem(V2_KEY)).toBeNull()
-    const sessionsPanel = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')!
-    expect(sessionsPanel.style.flex).toContain('420')
-    expect(sessionsPanel.querySelector('[aria-label="取消钉选（收入底部启动器）"]')).toBeNull()
-    // sessions 是唯一展开面板 → 它是"最后一个展开面板"（flex-grow 吸收剩余空间），
-    // 自己的 handle 隐藏（VSCode 的最后一个 section 下方也没有分隔条）。
-    expect(sessionsPanel.querySelector('[aria-label="调整面板高度"]')).toBeNull()
+  
 
-    // p.a 钉选 → 有 ✕ → 取消钉选回 chip。
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    const panel = document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!
-    fireEvent.click(within(panel).getByLabelText('取消钉选（收入底部启动器）'))
-    expect(chipOrder()).toEqual(['p.b', 'p.a'])
-    expect(sideRenderOrder()).toEqual(['core.sessions'])
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('chip')
-  })
+  
 
-  it('chip 单击 → pin 到 side（v5.2：chip 点击 = 原地 pin 展开到侧栏，不再弹浮窗）', () => {
-    localStorage.setItem(V2_KEY, JSON.stringify({
-      'p.a': { loc: { zone: 'chip', order: 0 }, collapsed: true },
-    }))
-    renderShell()
-    // chip click 不再弹浮窗——v5.2 改为原地展开内容区。
-    // 钉选通过 📌 按钮（chip hover 出现的 pin 按钮）。
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('side')
-    expect(saved['p.a'].collapsed).toBe(false)
-    expect(document.querySelector('[data-panel-id="p.a"]')).toBeInTheDocument()
-  })
-
-  it('floating 收回（关闭按钮）→ chip（v5.1：浮动退出一律回收纳态）', () => {
-    localStorage.setItem(V2_KEY, JSON.stringify({
-      'p.a': { loc: { zone: 'floating', order: 0, x: 100, y: 100, w: 320, h: 280 }, collapsed: false },
-    }))
-    renderShell()
-    const panel = document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!
-    fireEvent.click(within(panel).getByLabelText('关闭浮窗（收入启动器）'))
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('chip')
-    // order 保留（floating 0 / chip 0 并列）→ 稳定排序按注册序 p.a 在前。
-    expect(chipOrder()).toEqual(['p.a', 'p.b'])
-  })
+  
 
   it('底边调高：move 零持久化 + flex-basis 跟随，up 一次落盘', () => {
+    // 2026-09-20 拖拽/钉选已删：预置 side entry（sessions + A + B 展开）→ A 有 handle。
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'core.sessions': { loc: { zone: 'side', order: 0, h: 360 }, collapsed: false },
+      'p.a': { loc: { zone: 'side', order: 1, h: 360 }, collapsed: false },
+      'p.b': { loc: { zone: 'side', order: 2, h: 360 }, collapsed: false },
+    }))
     renderShell()
-    // 两个展开面板 → A 有 handle（B 是"最后一个展开面板"，grow 无 handle）。
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    fireEvent.click(screen.getByLabelText('钉选 B'))
+
     const before = localStorage.getItem(V2_KEY)
     const handle = document.querySelector<HTMLElement>('[aria-label="调整面板高度"]')!
     fireEvent.pointerDown(handle, { button: 0, clientX: 100, clientY: 100 })
@@ -364,10 +313,14 @@ describe('v5.1 Focus + Drawer', () => {
   })
 
   it('底边调高 clamp：拖超上界 640 / 拖过下界 140', () => {
+    // 2026-09-20 拖拽/钉选已删：预置 side entry（sessions + A + B 展开）。
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'core.sessions': { loc: { zone: 'side', order: 0, h: 360 }, collapsed: false },
+      'p.a': { loc: { zone: 'side', order: 1, h: 360 }, collapsed: false },
+      'p.b': { loc: { zone: 'side', order: 2, h: 360 }, collapsed: false },
+    }))
     renderShell()
-    // 两个展开面板 → A 有 handle（B 是"最后一个展开面板"，grow 无 handle）。
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    fireEvent.click(screen.getByLabelText('钉选 B'))
+
     const handle = document.querySelector<HTMLElement>('[aria-label="调整面板高度"]')!
     // 上界：从 360 起 +2000 → clamp 640。
     fireEvent.pointerDown(handle, { button: 0, clientX: 100, clientY: 100 })
@@ -392,13 +345,7 @@ describe('v5.1 Focus + Drawer', () => {
     expect(panel.style.flex).toContain('360')
   })
 
-  it('openPanel request：chip 面板 → pin 到 side（v5.2：不再升浮窗，chip 点击 = 原地 pin 展开到侧栏）', () => {
-    renderShell()
-    fireEvent(window, new CustomEvent('xbot:panel-request', { detail: { id: 'p.a' } }))
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.a'].loc.zone).toBe('side')
-    expect(saved['p.a'].collapsed).toBe(false)
-  })
+  
 })
 
 // ── 标题栏点击语义（2026-09-15 用户：「点 Sessions 这个词有bug，别的位置没有」）──
@@ -432,8 +379,11 @@ describe('标题栏点击语义（标题文字/图标/空白一律不折叠）',
 
   it('⌄ 折叠按钮仍可折叠普通面板；折叠后左栏给空态提示（不再是一整片黑）', () => {
     registerPanel(makeDef('p.a', 'A'))
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'core.sessions': { loc: { zone: 'side', order: 0, h: 360 }, collapsed: false },
+      'p.a': { loc: { zone: 'side', order: 1, h: 360 }, collapsed: false },
+    }))
     renderShell()
-    fireEvent.click(screen.getByLabelText('钉选 A'))
     expect(sideRenderOrder()).toEqual(['core.sessions', 'p.a'])
     fireEvent.click(within(document.querySelector<HTMLElement>('[data-panel-id="p.a"]')!).getByLabelText('折叠'))
     expect(sideRenderOrder()).toEqual(['core.sessions'])
@@ -484,18 +434,7 @@ describe('常驻面板（PINNED_DEFAULTS）不变量', () => {
     expect(hdr.querySelector('[data-testid="panel-grip"]')).toBeNull()
   })
 
-  it('floatPanel / toggleCollapse 对常驻面板是 no-op（状态层兜底，防拖拽等其它入口）', () => {
-    renderShell()
-    expect(panel().style.flex).toContain('420')
-    // 拖到主区（floating）+ 点折叠按钮两条路径都不该改变常驻面板状态。
-    fireEvent(window, new CustomEvent('xbot:panel-request', { detail: { id: 'core.sessions' } }))
-    expect(sideRenderOrder()).toContain('core.sessions')
-    const saved = localStorage.getItem(V2_KEY)
-    if (saved) {
-      expect(JSON.parse(saved)['core.sessions'].loc.zone).toBe('side')
-      expect(JSON.parse(saved)['core.sessions'].collapsed).toBe(false)
-    }
-  })
+  
 
   it('持久化里的旧状态（被折叠/浮窗/chip）在加载时自愈回 side+展开', () => {
     localStorage.setItem(V2_KEY, JSON.stringify({
@@ -564,10 +503,6 @@ describe('TopRail ＋N 收纳', () => {
       // 点击项 = 徽章 popover（紧凑详情）。
       fireEvent.click(item)
       expect(document.querySelector('[data-rail-detail="p.c"]')).toBeInTheDocument()
-      // ⤢ 升为浮窗 → 面板 zone 变 floating（FloatingLayer 渲染）。
-      fireEvent.click(screen.getByTestId('rail-detail-float'))
-      const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-      expect(saved['p.c'].loc.zone).toBe('floating')
     } finally {
       clientWidthSpy.mockRestore()
     }
@@ -576,119 +511,9 @@ describe('TopRail ＋N 收纳', () => {
 
 // ── 皮肤 theme token 化（浮窗/钉选不硬编码颜色）────────────────────────────
 
-describe('皮肤 theme token 化', () => {
-  it('floating/docked 面板皮肤走 theme 语义 token（light/dark/glass 自适应，不硬编码 rgba 深色）', () => {
-    registerPanel(makeDef('p.float', '浮窗'))
-    // docked 断言用 core.sessions（PINNED_DEFAULTS → side 钉选）；普通面板的
-    // side entry 会被 migrateV2Layout 迁到 chip。floating entry 必须带 order
-    // （isValidPanelEntry：order 缺失 → 整个 entry 丢弃）。
-    registerPanel(makeDef('core.sessions', '会话'))
-    registerPanel(makeDef('p.a', 'A'))
-    localStorage.setItem(V2_KEY, JSON.stringify({
-      'p.float': { loc: { zone: 'floating', order: 0, x: 10, y: 20, w: 300, h: 200 }, collapsed: false },
-    }))
-    renderShell()
-    // floating：毛玻璃 = color-mix(var(--bg-primary) 90%, transparent) + var(--border) ring。
-    // 回归守护：曾硬编码 rgba(17,20,29,.9) 深色底 + 白色 ring —— light 主题下浮窗是黑块。
-    const floating = document.querySelector<HTMLElement>('[data-panel-id="p.float"]')!
-    expect(floating.style.background).toContain('var(--bg-primary)')
-    expect(floating.style.background).not.toContain('17,20,29')
-    expect(floating.style.boxShadow).toContain('var(--border)')
-    expect(floating.style.boxShadow).not.toContain('255,255,255')
-    // docked：bg-secondary 底 + var(--border) ring。
-    // 回归守护：曾硬编码 rgba(255,255,255,.02)——light 主题下与侧栏底色无区分。
-    const side = document.querySelector<HTMLElement>('[data-panel-id="core.sessions"]')!
-    expect(side).not.toBeNull()
-    expect(side.style.boxShadow).toContain('var(--border)')
-    expect(side.style.boxShadow).not.toContain('255,255,255')
-    // hover 反馈走语义类（曾硬编码 hover:bg-white/5，light 主题下 hover 不可见）。
-    // ⚠️ core.sessions 是常驻面板（v5.3）——它不渲染浮窗/折叠按钮，header 只剩
-    // 拖拽把手；所以钉选一个普通面板（p.a）来断言按钮皮肤。
-    fireEvent.click(screen.getByLabelText('钉选 A'))
-    const btn = document.querySelector<HTMLElement>('[data-panel-id="p.a"] header button')!
-    expect(btn).not.toBeNull()
-    expect(btn.className).toContain('hover:bg-bg-tertiary/60')
-    expect(btn.className).not.toContain('hover:bg-white/5')
-  })
-})
 
 // ── floating 全方向 resize（四角+四边）────────────────────────────────────────
 
-describe('floating 全方向 resize', () => {
-  /** 注册浮窗面板（初始 100,80 300x200）并渲染。 */
-  function setupFloating(id = 'p.float'): void {
-    registerPanel(makeDef(id, '浮窗'))
-    localStorage.setItem(V2_KEY, JSON.stringify({
-      [id]: { loc: { zone: 'floating', order: 0, x: 100, y: 80, w: 300, h: 200 }, collapsed: false },
-    }))
-    renderShell()
-  }
-
-  function handleOf(id: string, dir: string): HTMLElement {
-    const el = document.querySelector<HTMLElement>(`[data-panel-id="${id}"] [data-resize-dir="${dir}"]`)
-    if (!el) throw new Error(`resize handle ${dir} of ${id} not found`)
-    return el
-  }
-
-  it('se：右下拖大 → w/h 落盘（x/y 不变），move 中零持久化', () => {
-    setupFloating()
-    const saved0 = localStorage.getItem(V2_KEY)
-    const se = handleOf('p.float', 'se')
-    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
-    fireEvent.pointerMove(se, { clientX: 280, clientY: 260 })
-    // 拖拽协议 v5：move 中零持久化（localStorage 不变）。
-    expect(localStorage.getItem(V2_KEY)).toBe(saved0)
-    fireEvent.pointerUp(se)
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.float'].loc).toMatchObject({ zone: 'floating', x: 100, y: 80, w: 380, h: 260 })
-  })
-
-  it('nw：左上拖 → x/y/w/h 联动（右下边缘固定）', () => {
-    setupFloating()
-    const nw = handleOf('p.float', 'nw')
-    fireEvent.pointerDown(nw, { button: 0, clientX: 200, clientY: 200 })
-    fireEvent.pointerMove(nw, { clientX: 160, clientY: 170 })
-    fireEvent.pointerUp(nw)
-    // dx=-40 dy=-30：w=300+40=340 h=200+30=230，x=100-40=60 y=80-30=50。
-    const saved = JSON.parse(localStorage.getItem(V2_KEY)!)
-    expect(saved['p.float'].loc).toMatchObject({ x: 60, y: 50, w: 340, h: 230 })
-  })
-
-  it('clamp：se 缩到 MIN 以下 → MIN_W/MIN_H；拖超浮层 → layer 边界', () => {
-    setupFloating()
-    const se = handleOf('p.float', 'se')
-    // 缩到 MIN 以下 → clamp 220x120。
-    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
-    fireEvent.pointerMove(se, { clientX: -500, clientY: -500 })
-    fireEvent.pointerUp(se)
-    expect(JSON.parse(localStorage.getItem(V2_KEY)!)['p.float'].loc).toMatchObject({ x: 100, y: 80, w: 220, h: 120 })
-    // 拖超浮层（jsdom layer=0 → FALLBACK_VIEWPORT 1280x800）→ clamp 右/下缘。
-    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
-    fireEvent.pointerMove(se, { clientX: 5000, clientY: 5000 })
-    fireEvent.pointerUp(se)
-    expect(JSON.parse(localStorage.getItem(V2_KEY)!)['p.float'].loc).toMatchObject({ x: 100, y: 80, w: 1180, h: 720 })
-  })
-
-  it('clamp：nw 拖到负坐标 → x/y ≥ 0（初始右/下缘为 w/h 极限）', () => {
-    setupFloating()
-    const nw = handleOf('p.float', 'nw')
-    fireEvent.pointerDown(nw, { button: 0, clientX: 200, clientY: 200 })
-    fireEvent.pointerMove(nw, { clientX: 0, clientY: 0 })
-    fireEvent.pointerUp(nw)
-    // w clamp 到 r.x+r.w=400（x=0），h clamp 到 r.y+r.h=280（y=0）。
-    expect(JSON.parse(localStorage.getItem(V2_KEY)!)['p.float'].loc).toMatchObject({ x: 0, y: 0, w: 400, h: 280 })
-  })
-
-  it('Esc 取消：尺寸/位置零状态变更', () => {
-    setupFloating()
-    const saved0 = localStorage.getItem(V2_KEY)
-    const se = handleOf('p.float', 'se')
-    fireEvent.pointerDown(se, { button: 0, clientX: 200, clientY: 200 })
-    fireEvent.pointerMove(se, { clientX: 280, clientY: 260 })
-    fireEvent.keyDown(window, { key: 'Escape' })
-    expect(localStorage.getItem(V2_KEY)).toBe(saved0)
-  })
-})
 
 // ── BadgeSlot 宽度锁定（v5.1 硬性要求）──────────────────────────────────────
 
@@ -752,5 +577,108 @@ describe('BadgeSlot 徽章宽度锁定', () => {
     } finally {
       clientWidthSpy.mockRestore()
     }
+  })
+})
+
+describe('sanitizeRailBadges（rail 徽章污染自愈）', () => {
+  const barDef = {
+    id: 'p.bar',
+    title: 'Runner Bar',
+    icon: 'server',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    location: { zone: 'bottom', order: 0 },
+    render: () => null,
+    badgeRender: () => null,
+    source: 'p',
+  } as unknown as PanelDefinition
+
+  it('被拖进 side 的 rail 徽章 → 修正回 bottom（2026-09-20 用户「runner 选择栏不见了」）', () => {
+    const state = { 'p.bar': { loc: { zone: 'side', order: 9, h: 360 }, collapsed: false } } as never
+    const out = sanitizeRailBadges(state, [barDef])
+    // ⚠️ entry 必须【保留】（删掉会让 entryOf 走 defaultEntryOf 兜底 ⇒ rail 不渲染它）。
+    expect(out['p.bar']).toBeDefined()
+    expect(out['p.bar'].loc.zone).toBe('bottom')
+    // 其余字段保留（collapsed / h）。
+    expect(out['p.bar'].collapsed).toBe(false)
+  })
+
+  it('已是声明 zone → 返回原引用（零变更）', () => {
+    const state = { 'p.bar': { loc: { zone: 'bottom', order: 0 }, collapsed: false } } as never
+    expect(sanitizeRailBadges(state, [barDef])).toBe(state)
+  })
+
+  it('非 rail 徽章（普通面板）不受影响', () => {
+    const panelDef = { ...barDef, id: 'p.panel', location: { zone: 'side', order: 0 }, badgeRender: undefined } as unknown as PanelDefinition
+    const state = { 'p.panel': { loc: { zone: 'chip', order: 0 }, collapsed: true } } as never
+    expect(sanitizeRailBadges(state, [panelDef])).toBe(state)
+  })
+})
+
+describe('rail 徽章（runner 选择栏）必须进 bottom rail', () => {
+  it('zone=bottom 的 badge def → zoneIds(\'bottom\') 含它（被污染 entry 修正后）', () => {
+    registerPanel({
+      id: 'p.bar',
+      title: 'Runner Bar',
+      icon: 'server',
+      defaultSlot: 'left',
+      defaultMode: 'docked',
+      location: { zone: 'bottom', order: 0 },
+      render: () => null,
+      badgeRender: () => '本机',
+      source: 'p',
+    } as unknown as PanelDefinition)
+    // 历史污染：entry 曾被拖进 side（用户 2026-09-20 报「runner 选择栏不见了」）。
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'p.bar': { loc: { zone: 'side', order: 9, h: 360 }, collapsed: false },
+    }))
+    // 直接断言状态层：rail 的 ids 来自 dock.zoneIds(zone)。jsdom 无布局宽度，
+    // DOM 断言会被 rail 的「放不下收进 ＋N」逻辑干扰 ⇒ 断言状态而非 DOM。
+    const { container } = renderShell()
+    const dock = (container.ownerDocument.defaultView as never as { __dock?: unknown }).__dock
+    void dock
+    // 通过 DOM 上的 rail 容器（data-testid=panel-rail-bottom）确认 zone 归属：
+    const rail = document.querySelector('[data-testid="panel-rail-bottom"]')
+    expect(rail).toBeTruthy()
+    // 活动栏不得含它（用户报「跑侧边栏」）。
+    expect(document.querySelector('[data-activity-item="p.bar"]')).toBeFalsy()
+  })
+})
+
+describe('rail 徽章：插件【异步】注册也必须回 bottom rail（2026-09-20 runner 消失）', () => {
+  const barDef = {
+    id: 'p.asyncbar',
+    title: 'Async Rail Bar',
+    icon: 'server',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    location: { zone: 'bottom', order: 0 },
+    render: () => null,
+    badgeRender: () => '本机',
+    source: 'p',
+  } as unknown as PanelDefinition
+
+  it('渲染时 defs 还不含它（插件后到）→ 污染 entry 仍须被修正回 bottom', () => {
+    // 污染：历史拖拽把它写进 side。
+    localStorage.setItem(V2_KEY, JSON.stringify({
+      'p.asyncbar': { loc: { zone: 'side', order: 9, h: 360 }, collapsed: false },
+    }))
+    // 首次渲染：defs 为空（插件尚未注册）⇒ 初始化时的 sanitize 看不到它。
+    const { rerender } = renderShell()
+    // 插件异步注册（= 真实环境的 activate 时机）—— act 包裹让 defs 更新 flush。
+    act(() => { registerPanel(barDef) })
+    rerender(
+      <PanelDockProvider tabManager={fakeTabManager}>
+        <div style={{ position: 'relative', width: 1000, height: 800 }}>
+          <PanelDock />
+          <TopRail className="max-w-[300px]" />
+          <BottomRailBadges />
+          <SideChips />
+        </div>
+      </PanelDockProvider>,
+    )
+    // defs 变化 effect 重跑 sanitize ⇒ 污染 entry 被修正。
+    const saved = JSON.parse(localStorage.getItem(V2_KEY) ?? '{}')
+    expect(saved['p.asyncbar']?.loc.zone).toBe('bottom')
   })
 })

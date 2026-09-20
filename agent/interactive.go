@@ -756,7 +756,7 @@ func (a *Agent) matchInteractiveSessionsInTree(parentKey, roleName, instance str
 		ia.mu.Lock()
 		role, inst, pk := ia.roleName, ia.instance, ia.parentKey
 		ia.mu.Unlock()
-		if parentKey != "" && pk != parentKey {
+		if parentKey != "" && pk != parentKey && !isDescendantSessionKey(pk, parentKey) {
 			return true
 		}
 		if roleName != "" && role != roleName {
@@ -769,6 +769,26 @@ func (a *Agent) matchInteractiveSessionsInTree(parentKey, roleName, instance str
 		return true
 	})
 	return keys
+}
+
+// isDescendantSessionKey 判断 `child` 是否位于 `ancestor` 的**子树内**（任意深度）。
+//
+// 为什么需要它（2026-09-18 用户实机 P0）：
+//
+//	interactive send failed: no sub-agent with instance="mma4-tcgen05" in your
+//	sub-agent tree (role=""; your tree: [web:chat_A/explore:mma3])
+//
+// 目标 `mma4-tcgen05` 是由**同一棵树里的另一个子代理**（mma3）spawn 的**孙级** ——
+// 它的 `bgParentKey` = mma3 的 key，而不是发起者的 key。best-effort 路径旧实现要求
+// `pk == 发起者 key`（只认直接子级）⇒ 孙级 0 命中 ⇒ 误导性报错"不在你的子树里"；
+// 而补上 role 走「精确地址键」路径（按 `channel:chatID/role:instance` 查，**与深度
+// 无关**）就能命中 —— 两条路径作用域不一致 = 本 bug。
+//
+// 语义：`child` 必须严格以 `ancestor + "/"` 开头 ⇒ 发起者自身、以及**别的会话**的树
+// 都不匹配（`web:chat_B/…` 不以 `web:chat_A/` 开头）⇒ 用户「严禁自动 fallback 到
+// 别的会话」的要求不变。
+func isDescendantSessionKey(child, ancestor string) bool {
+	return ancestor != "" && child != ancestor && strings.HasPrefix(child, ancestor+"/")
 }
 
 // matchInteractiveSessions 按 role/instance 做 **best-effort 匹配**（两者都可能为

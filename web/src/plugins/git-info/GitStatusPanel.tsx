@@ -10,6 +10,7 @@
  */
 import { GitBranch, GitCommitHorizontal, ArrowUp, ArrowDown, CircleDashed } from 'lucide-react'
 
+import i18n from '@/i18n'
 import { usePluginWidgets } from '@/plugins/PluginWidgetProvider'
 
 /** 解析 git-info.sh 输出的 "git:branch ΔN ↑A ↓B" 文本。 */
@@ -51,7 +52,7 @@ export function GitStatusPanel() {
     return (
       <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-400">
         <GitBranch className="size-3" />
-        not a repo
+        {i18n.t('plugins.gitInfo.notRepo', { defaultValue: '不是 git 仓库' })}
       </span>
     )
   }
@@ -72,7 +73,7 @@ export function GitStatusPanel() {
       ) : (
         <span className="inline-flex items-center gap-1 rounded-full border border-green-200 bg-green-50 px-2 py-0.5 text-[11px] text-green-600">
           <GitCommitHorizontal className="size-3" />
-          clean
+          {i18n.t('plugins.gitInfo.clean', { defaultValue: '干净' })}
         </span>
       )}
       {/* 领先/落后 */}

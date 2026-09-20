@@ -38,9 +38,8 @@ const BUILTIN_NAMES: Record<string, string> = {
 
 export function SettingsLayout() {
   const { t } = useI18n()
-  const { allItems, overrides, moveItem, moveItemTo, resetItem, resetAll } = useLayoutConfig()
+  const { allItems, overrides, moveItem, resetItem, resetAll } = useLayoutConfig()
   const [changed, setChanged] = useState(0) // force re-render after moves
-  const [dragOverId, setDragOverId] = useState<string | null>(null)
   // 重置面板布局：请求进行中 / 失败提示。
   const [resetting, setResetting] = useState(false)
   const [resetErr, setResetErr] = useState<string | null>(null)
@@ -118,33 +117,7 @@ export function SettingsLayout() {
               return (
                 <div
                   key={item.id}
-                  draggable
-                  onDragStart={(e) => {
-                    e.dataTransfer.setData('text/plain', item.id)
-                    e.dataTransfer.effectAllowed = 'move'
-                  }}
-                  onDragOver={(e) => {
-                    // 拖到另一项上 = 移到该项所在 slot（drop zone）
-                    if (e.dataTransfer.types.includes('text/plain')) {
-                      e.preventDefault()
-                      e.dataTransfer.dropEffect = 'move'
-                      setDragOverId(item.id)
-                    }
-                  }}
-                  onDragLeave={() => setDragOverId((id) => (id === item.id ? null : id))}
-                  onDrop={(e) => {
-                    e.preventDefault()
-                    const src = e.dataTransfer.getData('text/plain') || dragOverId
-                    if (src && src !== item.id) {
-                      // 拖到某项上 = 插入到该项之前（与真实 UI 的插入线语义一致）。
-                      moveItemTo(src, slot, { beforeId: item.id })
-                      setChanged((v) => v + 1)
-                    }
-                    setDragOverId(null)
-                  }}
-                  className={`flex items-center justify-between gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary ${
-                    dragOverId === item.id ? 'ring-2 ring-accent' : ''
-                  }`}
+                  className={`flex items-center justify-between gap-2.5 rounded-lg border border-border bg-bg-secondary px-3 py-2 transition-colors hover:bg-bg-tertiary`}
                 >
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium text-text-primary">{itemName(item.id, item.title)}</div>

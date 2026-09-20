@@ -121,6 +121,32 @@ export async function getGoal(session: SessionSelector): Promise<{ objective: st
   })
 }
 
+/**
+ * Get the authoritative pending AskUser prompt for the session (null when no
+ * prompt is pending). The RPC resolves through the same persisted
+ * ask_question/ask_answer records the server uses for delivery admission, so it
+ * is the DB authority — NOT a client cache. Used to hydrate the panel when the
+ * live ask_user event was missed (the session had no SSE subscription while the
+ * ask was published, the event was evicted from the replay ring, ...).
+ */
+export async function getPendingAskUser(session: SessionSelector): Promise<AskUserProgressPayload | null> {
+  return postAPI('/api/rpc', {
+    method: 'get_pending_ask_user',
+    params: { channel: session.channel, chat_id: session.chatID },
+  })
+}
+
+/** Server payload for a pending AskUser prompt (snake_case, wire contract). */
+export interface AskUserProgressPayload {
+  request_id?: string
+  questions?: Array<{
+    question?: string
+    options?: string[]
+    multi_select?: boolean
+    allow_other?: boolean
+  }>
+}
+
 /** Clear the goal for the session. */
 export async function clearGoal(session: SessionSelector): Promise<void> {
   await postAPI('/api/rpc', {

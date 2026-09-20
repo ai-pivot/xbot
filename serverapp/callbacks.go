@@ -30,90 +30,89 @@ import (
 // Used by both WebCallbacks and SettingsCallbacks to avoid duplication.
 func runnerCallbacks(cfg *config.Config) channel.RunnerCallbacks {
 	return channel.RunnerCallbacks{
-		RunnerTokenGet: func(senderID string) string {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return ""
-			}
-			entry := tools.NewRunnerTokenStore(db).Get(senderID)
-			if entry == nil {
-				return ""
-			}
-			return buildRunnerConnectCmd(cfg, entry)
+		RunnerList: func() ([]tools.RunnerInfo, error) {
+			return tools.ListAllRunners()
 		},
-		RunnerTokenGenerate: func(senderID, mode, dockerImage, workspace string) (string, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return "", fmt.Errorf("remote sandbox not configured")
-			}
-			entry, err := tools.NewRunnerTokenStore(db).Generate(senderID, tools.RunnerTokenSettings{
-				Mode:        mode,
-				DockerImage: dockerImage,
-				Workspace:   workspace,
-			})
-			if err != nil {
-				return "", fmt.Errorf("generate token: %w", err)
-			}
-			return buildRunnerConnectCmd(cfg, entry), nil
-		},
-		RunnerTokenRevoke: func(senderID string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return fmt.Errorf("remote sandbox not configured")
-			}
-			tools.NewRunnerTokenStore(db).Revoke(senderID)
-			return nil
-		},
-		RunnerList: func(senderID string) ([]tools.RunnerInfo, error) {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return nil, fmt.Errorf("runner management not configured")
-			}
-			store := tools.NewRunnerTokenStore(db)
-			runners, err := store.ListRunners(senderID)
-			if err != nil {
-				return nil, err
-			}
-			populateRunnerOnlineStatus(runners, senderID)
-			return runners, nil
-		},
-		RunnerCreate: func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
+		RunnerCreate: func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error) {
 			db := tools.GetRunnerTokenDB()
 			if db == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
-			store := tools.NewRunnerTokenStore(db)
-			token, _, err := store.CreateRunner(senderID, name, mode, dockerImage, workspace, llm)
+			// Make sure the WebSocket listener is up before the machine dials in.
+			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
+				router.EnsureRemote()
+			}
+			token, err := tools.NewRunnerStore(db).Create(name, mode, dockerImage, workspace, llm)
 			if err != nil {
 				return "", err
 			}
-			return buildRunnerConnectCmdFromToken(cfg, senderID, token, mode, dockerImage, workspace, llm), nil
+			// ⛔ 端点自检（2026-09-18 用户实机事故根因类别）：**宣告给 runner 的端口**必须与
+			// runner 端点**真实绑定**的端口一致。漂移时（如 public_url 指向 web 端口 16000，
+			// 而协议端点在 8080）runner 会打到别的监听上 —— 例如网页 `/ws` 直接 401 ⇒
+			// 日志里只有 `websocket: bad handshake` 无限重连，**过去没有任何一处报错**。
+			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
+				if rs := router.Remote(); rs != nil {
+					if warn := cfg.RunnerEndpointDrift(rs.BoundAddr()); warn != "" {
+						log.WithFields(log.Fields{
+							"runner":     name,
+							"advertised": cfg.PublicWSAddr(),
+							"bound":      rs.BoundAddr(),
+						}).Error("RUNNER_ENDPOINT_DRIFT: " + warn)
+					}
+				}
+			}
+			return buildRunnerConnectCmd(cfg, name, token, mode, dockerImage, workspace, llm), nil
 		},
-		RunnerDelete: func(senderID, name string) error {
+		RunnerDelete: func(name string) error {
 			db := tools.GetRunnerTokenDB()
 			if db == nil {
 				return fmt.Errorf("runner management not configured")
 			}
-			if sb := tools.GetSandbox(); sb != nil {
-				if router, ok := sb.(*tools.SandboxRouter); ok {
-					router.DisconnectRunner(senderID, name)
-				}
+			if router, ok := tools.GetSandbox().(*tools.SandboxRouter); ok {
+				router.DisconnectRunner(name)
 			}
-			return tools.NewRunnerTokenStore(db).DeleteRunner(senderID, name)
+			return tools.NewRunnerStore(db).Delete(name)
 		},
-		RunnerGetActive: func(senderID string) (string, error) {
+		RunnerRename: func(oldName, newName string) error {
+			db := tools.GetRunnerTokenDB()
+			if db == nil {
+				return fmt.Errorf("runner management not configured")
+			}
+			return tools.NewRunnerStore(db).Rename(oldName, newName)
+		},
+		RunnerConnectCmd: func(name string) (string, error) {
 			db := tools.GetRunnerTokenDB()
 			if db == nil {
 				return "", fmt.Errorf("runner management not configured")
 			}
-			return tools.NewRunnerTokenStore(db).GetActiveRunner(senderID)
-		},
-		RunnerSetActive: func(senderID, name string) error {
-			db := tools.GetRunnerTokenDB()
-			if db == nil {
-				return fmt.Errorf("runner management not configured")
+			store := tools.NewRunnerStore(db)
+			info, err := store.Get(name)
+			if err != nil {
+				return "", err
 			}
-			return tools.NewRunnerTokenStore(db).SetActiveRunner(senderID, name)
+			token, err := store.Token(name)
+			if err != nil {
+				return "", err
+			}
+			return buildRunnerConnectCmd(cfg, name, token, info.Mode, info.DockerImage, info.Workspace, info.LLMSettings()), nil
+		},
+		RunnerSessionGet: func(channelName, chatID string) (string, bool) {
+			router, ok := tools.GetSandbox().(*tools.SandboxRouter)
+			if !ok || router == nil || chatID == "" {
+				return "", false
+			}
+			name := router.GetSessionRunner(channelName + ":" + chatID)
+			return name, name != "" && router.IsRunnerOnline(name)
+		},
+		RunnerSessionSet: func(channelName, chatID, name string) error {
+			router, ok := tools.GetSandbox().(*tools.SandboxRouter)
+			if !ok || router == nil {
+				return fmt.Errorf("remote runner support is not available")
+			}
+			if chatID == "" {
+				return fmt.Errorf("chat_id is required")
+			}
+			return router.SetSessionRunner(channelName+":"+chatID, name)
 		},
 	}
 }
@@ -177,36 +176,6 @@ func llmCallbacks(ag *agent.Agent) channel.LLMCallbacks {
 	}
 }
 
-// populateRunnerOnlineStatus fills the Online field for each runner.
-func populateRunnerOnlineStatus(runners []tools.RunnerInfo, senderID string) {
-	if sb := tools.GetSandbox(); sb != nil {
-		if router, ok := sb.(*tools.SandboxRouter); ok {
-			for i := range runners {
-				runners[i].Online = router.IsRunnerOnline(senderID, runners[i].Name)
-			}
-		}
-	}
-}
-
-// buildRunnerConnectCmdFromToken builds the xbot-runner CLI command from token + settings.
-func buildRunnerConnectCmdFromToken(cfg *config.Config, senderID, token, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) string {
-	pubURL := cfg.PublicWSAddr()
-	cmd := fmt.Sprintf("./xbot-runner --server %s/ws/%s --token %s", pubURL, senderID, token)
-	if mode == "docker" && dockerImage != "" {
-		cmd += fmt.Sprintf(" --mode docker --docker-image %s", dockerImage)
-	}
-	if workspace != "" {
-		cmd += fmt.Sprintf(" --workspace %s", workspace)
-	}
-	if llm.HasLLM() {
-		cmd += fmt.Sprintf(" --llm-provider %s --llm-api-key %s --llm-model %s", llm.Provider, llm.APIKey, llm.Model)
-		if llm.BaseURL != "" {
-			cmd += fmt.Sprintf(" --llm-base-url %s", llm.BaseURL)
-		}
-	}
-	return cmd
-}
-
 // buildWebCallbacks creates WebCallbacks using shared callback builders.
 func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) web.WebCallbacks {
 	rc := runnerCallbacks(cfg)
@@ -214,14 +183,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 
 	callbacks := web.WebCallbacks{
 		// Runner callbacks
-		RunnerTokenGet:      rc.RunnerTokenGet,
-		RunnerTokenGenerate: rc.RunnerTokenGenerate,
-		RunnerTokenRevoke:   rc.RunnerTokenRevoke,
-		RunnerList:          rc.RunnerList,
-		RunnerCreate:        rc.RunnerCreate,
-		RunnerDelete:        rc.RunnerDelete,
-		RunnerGetActive:     rc.RunnerGetActive,
-		RunnerSetActive:     rc.RunnerSetActive,
+		RunnerList:       rc.RunnerList,
+		RunnerCreate:     rc.RunnerCreate,
+		RunnerDelete:     rc.RunnerDelete,
+		RunnerRename:     rc.RunnerRename,
+		RunnerConnectCmd: rc.RunnerConnectCmd,
+		RunnerSessionGet: rc.RunnerSessionGet,
+		RunnerSessionSet: rc.RunnerSessionSet,
 
 		// LLM callbacks (Web channel exposes only basic model/max-context via HTTP API;
 		// ThinkingMode/MaxOutputTokens/PersonalConcurrency are CLI-only via RPC.)
@@ -240,7 +208,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			if !ok {
 				return "", fmt.Errorf("sandbox does not support per-user resolution")
 			}
-			userSbx := resolver.SandboxForUser(senderID)
+			userSbx := resolver.SandboxForSession(senderID)
 			if userSbx == nil || userSbx.Name() == "none" {
 				return "", fmt.Errorf("no sandbox available for user %s", senderID)
 			}
@@ -2170,22 +2138,12 @@ func buildFeishuSettingsCallbacks(cfg *config.Config, ag *agent.Agent) feishu.Se
 		},
 
 		// Runner callbacks
-		RunnerConnectCmdGet: func(senderID string) string {
-			token := cfg.Sandbox.AuthToken
-			if token == "" {
-				return ""
-			}
-			pubURL := cfg.PublicWSAddr()
-			return fmt.Sprintf("./xbot-runner --server %s/ws/%s --token %s", pubURL, senderID, token)
-		},
-		RunnerTokenGet:      rc.RunnerTokenGet,
-		RunnerTokenGenerate: rc.RunnerTokenGenerate,
-		RunnerTokenRevoke:   rc.RunnerTokenRevoke,
-		RunnerList:          rc.RunnerList,
-		RunnerCreate:        rc.RunnerCreate,
-		RunnerDelete:        rc.RunnerDelete,
-		RunnerGetActive:     rc.RunnerGetActive,
-		RunnerSetActive:     rc.RunnerSetActive,
+		RunnerList:       rc.RunnerList,
+		RunnerCreate:     rc.RunnerCreate,
+		RunnerDelete:     rc.RunnerDelete,
+		RunnerConnectCmd: rc.RunnerConnectCmd,
+		RunnerSessionGet: rc.RunnerSessionGet,
+		RunnerSessionSet: rc.RunnerSessionSet,
 
 		// Memory
 		MemoryClear: func(senderID, chatID, targetType string) error {

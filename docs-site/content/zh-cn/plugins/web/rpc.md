@@ -56,6 +56,17 @@ export interface BackendRPC {
     params: { channel?: string; chat_id: string; limit?: number }
     result: TenantUsageStats
   }
+  // ---- 会话用量分桶（服务端 SQL 全量聚合 —— 趋势图数据源）----
+  'get_session_usage_buckets': {
+    params: {
+      channel?: string
+      chat_id: string
+      granularity: 'minute' | 'hour' | 'day'
+      count?: number            // 返回的桶数（1..1000）
+      tz_offset_minutes?: number // 东为正（东八区 = 480）—— 桶对齐到该时区的本地墙钟
+    }
+    result: UsageBucket[]
+  }
 }
 ```
 

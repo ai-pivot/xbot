@@ -79,24 +79,21 @@ type WebChannelConfig struct {
 // WebCallbacks holds callback functions for Web channel API endpoints.
 // Injected from main to decouple channel from agent/tools packages.
 type WebCallbacks struct {
-	// RunnerTokenGet returns the runner connect command for the user ("" if none).
-	RunnerTokenGet func(senderID string) string
-	// RunnerTokenGenerate generates a new per-user token and returns the connect command.
-	RunnerTokenGenerate func(senderID, mode, dockerImage, workspace string) (string, error)
-	// RunnerTokenRevoke revokes the user's current token.
-	RunnerTokenRevoke func(senderID string) error
-	// RunnerList lists all runners for a user with online status.
-	RunnerList func(senderID string) ([]tools.RunnerInfo, error)
-	// RunnerCreate creates a new named runner and returns the connect command.
-	RunnerCreate func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error)
-	// RunnerDelete deletes a named runner.
-	RunnerDelete func(senderID, name string) error
-	// RunnerGetActive returns the active runner name for the user.
-	RunnerGetActive func(senderID string) (string, error)
-	// RunnerSetActive sets the active runner for the user.
-	RunnerSetActive func(senderID, name string) error
-	// LLMList returns available model entries and current entry.
-	LLMList func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
+	// RunnerList lists every managed machine (no credentials).
+	RunnerList func() ([]tools.RunnerInfo, error)
+	// RunnerCreate registers (or re-keys) a runner and returns the connect command.
+	RunnerCreate func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error)
+	// RunnerDelete removes a runner.
+	RunnerDelete func(name string) error
+	// RunnerRename renames a runner.
+	RunnerRename func(oldName, newName string) error
+	// RunnerConnectCmd returns the connect command for an existing runner.
+	RunnerConnectCmd func(name string) (string, error)
+	// RunnerSessionGet reports the runner bound to a session and its online state.
+	RunnerSessionGet func(channelName, chatID string) (string, bool)
+	// RunnerSessionSet binds a session to a runner ("" = local host).
+	RunnerSessionSet func(channelName, chatID, name string) error
+	LLMList          func(senderID string) ([]protocol.ModelEntry, protocol.ModelEntry)
 	// LLMSet switches the user's model via explicit (subID, model).
 	LLMSet func(senderID, subID, model string) error
 	// LLMGetConfig returns user's LLM config (provider, baseURL, model, ok).
@@ -888,8 +885,6 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/runners/list", wc.authenticatedPOST(wc.handleRunnersListPOST))
 	mux.HandleFunc("/api/runners/create", wc.authenticatedPOST(wc.handleRunnersCreatePOST))
-	mux.HandleFunc("/api/runners/active", wc.authenticatedPOST(wc.handleRunnerActivePOST))
-	mux.HandleFunc("/api/runners/{name}/delete", wc.authenticatedPOST(wc.handleRunnerDeletePOST))
 
 	mux.HandleFunc("/api/files/upload", wc.authenticatedPOST(wc.handleFileUpload))
 	mux.HandleFunc("/api/files/download", wc.authMiddleware(wc.handleFileDownload))
@@ -1359,15 +1354,10 @@ func (wc *WebChannel) validateCLIToken(token string) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("runner token auth not available")
 	}
-	store := tools.NewRunnerTokenStore(db)
-	if userID, _, err := store.FindByToken(token); err == nil && userID != "" {
-		return userID, nil
-	}
-	userID := store.FindByTokenInRunnerTokens(token)
-	if userID == "" {
+	if _, ok := tools.NewRunnerStore(db).FindByToken(token); !ok {
 		return "", fmt.Errorf("invalid token")
 	}
-	return userID, nil
+	return "cli_user", nil
 }
 
 // subscribeAndReplay atomically switches a WS client to one route and installs

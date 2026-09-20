@@ -16,7 +16,7 @@ import { IterationGroup } from '@/components/agent/IterationHistory'
 import { ReasoningBlock } from '@/components/agent/ReasoningBlock'
 import { ToolCallBlock } from '@/components/agent/ToolCallBlock'
 import { getToolIcon } from '@/components/agent/toolIcons'
-import { SquareTerminal, FileText, Search, Sparkles, Wrench } from 'lucide-react'
+import { SquareTerminal, FileText, Search, Sparkles, Upload, Wrench } from 'lucide-react'
 import type { WebIteration, WebToolProgress } from '@/types/shared'
 import i18n from '@/i18n'
 
@@ -448,6 +448,13 @@ describe('getToolIcon', () => {
 
   it('returns Sparkles for SubAgent', () => {
     expect(getToolIcon('SubAgent')).toBe(Sparkles)
+  })
+
+  // 用户 2026-09-19：「折叠版本的 icon 搞好看点」—— share_file 此前落到 Wrench 兜底
+  // （通用"未知工具"扳手，既不表意也不好看）。内置工具必须有**专属** glyph。
+  it('returns a dedicated glyph for share_file (never the Wrench fallback)', () => {
+    expect(getToolIcon('share_file')).toBe(Upload)
+    expect(getToolIcon('share_file')).not.toBe(Wrench)
   })
 
   it('returns Wrench for unmapped tool names', () => {

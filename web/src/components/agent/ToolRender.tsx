@@ -20,6 +20,7 @@
 import { memo, useCallback, useMemo, useState, type ReactNode } from 'react'
 import {
   FileText, ChevronRight, CheckCircle2, Circle, FastForward, Loader2,
+  Image as ImageIcon, ExternalLink, Copy, Check,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import type { WebToolProgress } from '@/types/shared'
@@ -145,6 +146,8 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
       return <GlobRender tool={tool} summary={summary} />
     case 'TodoWrite':
       return <TodoWriteRender tool={tool} summary={summary} />
+    case 'share_file':
+      return <ShareFileRender tool={tool} summary={summary} detail={detail} />
     default: {
       // Injected system notifications (bg task / sub-agent completion, cron,
       // interjection, cancel…) render as structured cards instead of raw text.
@@ -176,6 +179,158 @@ export const ToolRender = memo(function ToolRender({ tool, hideArgs = false }: T
     }
   }
 })
+
+// ── share_file ─────────────────────────────────────────────────────────
+//
+// 内置 web 专属工具：把本地文件发布成 Web 可访问 URL（图片内联渲染 / 其他文件下载）。
+// 后端返回体：
+//   summary: "Published <name> → <url>"
+//   detail : "File published successfully.\n\nURL: <url>\n\nEmbed in your reply:\n![name](url)"
+// 历史行只带 summary/label（无 args）——两种来源都要能解析。
+export interface ShareFileParsed {
+  name: string
+  url: string
+  isImage: boolean
+}
+
+/** 从 summary/detail/label 解析出「显示名 + URL + 是否图片」。 */
+export function parseShareFile(
+  tool: WebToolProgress,
+  summary: string,
+  detail: string,
+): ShareFileParsed | null {
+  const text = `${detail}\n${summary}\n${tool.label || ''}`
+  const urlMatch = text.match(/\/api\/files\/download\?key=[^\s)\]"'<>]+/)
+  if (!urlMatch) return null
+  const url = urlMatch[0]
+
+  const keyRaw = url.match(/[?&]key=([^&]*)/)?.[1] ?? ''
+  let key = keyRaw
+  try {
+    key = decodeURIComponent(keyRaw.replace(/\+/g, '%20'))
+  } catch {
+    /* 非法转义：保持原样（只用于取名/判扩展名，不参与请求） */
+  }
+  const base = key.split('/').pop() || key
+
+  const fromSummary = text.match(/Published\s+(.+?)\s*(?:→|->)/)?.[1]?.trim()
+  const fromMd =
+    text.match(/!\[([^\]]+)\]\(/)?.[1]?.trim() ||
+    text.match(/\[([^\]]+)\]\s*\(\s*\/api\/files\/download/)?.[1]?.trim()
+  const name = fromSummary || fromMd || base || 'file'
+
+  const isImage =
+    /[?&]inline=1\b/.test(url) || /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i.test(base)
+  return { name, url, isImage }
+}
+
+function ShareFileRender({
+  tool,
+  summary,
+  detail,
+}: {
+  tool: WebToolProgress
+  summary: string
+  detail: string
+}) {
+  const { t } = useI18n()
+  const parsed = useMemo(() => parseShareFile(tool, summary, detail), [tool, summary, detail])
+  const [copied, setCopied] = useState(false)
+
+  const copyLink = useCallback(async () => {
+    if (!parsed) return
+    const full = parsed.url.startsWith('http') ? parsed.url : `${window.location.origin}${parsed.url}`
+    try {
+      await navigator.clipboard.writeText(full)
+    } catch {
+      // clipboard 不可用（非 https / 无权限）——回退 execCommand（与落地页复制按钮同一策略）
+      const ta = document.createElement('textarea')
+      ta.value = full
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1500)
+  }, [parsed])
+
+  // 历史行缺结构化信息 / 发布失败：回落默认渲染，绝不吞掉内容。
+  if (!parsed) return <ToolCallBlock tool={tool} />
+
+  return (
+    <div className="flex flex-col gap-2 py-1 text-xs" data-testid="share-file-card">
+      <div className="flex min-w-0 items-center gap-2">
+        <span
+          className="grid size-6 shrink-0 place-items-center rounded-md"
+          style={{
+            background: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+            color: 'var(--accent)',
+          }}
+        >
+          {parsed.isImage ? <ImageIcon className="size-3.5" /> : <FileText className="size-3.5" />}
+        </span>
+        <code
+          className="min-w-0 flex-1 truncate font-mono text-text-primary"
+          title={parsed.name}
+        >
+          {parsed.name}
+        </code>
+        <Badge tone="accent">
+          {parsed.isImage ? t('agent.tool.shareImage') : t('agent.tool.shareFile')}
+        </Badge>
+      </div>
+
+      {parsed.isImage && (
+        <a
+          href={parsed.url}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="share-file-preview"
+          className="block w-fit overflow-hidden rounded-md transition-opacity hover:opacity-90"
+          style={{ border: '1px solid var(--border)' }}
+        >
+          <img
+            src={parsed.url}
+            alt={parsed.name}
+            loading="lazy"
+            className="max-h-72 w-auto max-w-full"
+          />
+        </a>
+      )}
+
+      <div className="flex min-w-0 items-center gap-1.5">
+        <code
+          className="min-w-0 flex-1 truncate rounded-md bg-bg-secondary px-2 py-1 font-mono text-[11px] text-text-muted"
+          title={parsed.url}
+        >
+          {parsed.url}
+        </code>
+        <button
+          type="button"
+          data-testid="share-file-copy"
+          onClick={() => void copyLink()}
+          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
+          style={{ border: '1px solid var(--border)' }}
+        >
+          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+          {copied ? t('agent.tool.copied') : t('agent.tool.copyLink')}
+        </button>
+        <a
+          href={parsed.url}
+          target="_blank"
+          rel="noreferrer"
+          data-testid="share-file-open"
+          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
+          style={{ border: '1px solid var(--border)' }}
+        >
+          <ExternalLink className="size-3" />
+          {t('agent.tool.open')}
+        </a>
+      </div>
+    </div>
+  )
+}
 
 // ── Shell ──────────────────────────────────────────────────────────────
 

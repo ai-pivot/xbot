@@ -729,35 +729,9 @@ func (wc *WebChannel) handleSessionTreePOST(w http.ResponseWriter, r *http.Reque
 }
 
 func (wc *WebChannel) handleRunnersListPOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleRunners(w, legacyRequest(r, http.MethodGet, nil, nil))
 }
 
 func (wc *WebChannel) handleRunnersCreatePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleRunners(w, r)
-}
-
-func (wc *WebChannel) handleRunnerDeletePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleRunnerByName(w, legacyRequest(r, http.MethodDelete, nil, nil))
-}
-
-func (wc *WebChannel) handleRunnerActivePOST(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	var request struct {
-		Name string `json:"name,omitempty"`
-	}
-	if len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &request) != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	method := http.MethodGet
-	if request.Name != "" {
-		method = http.MethodPut
-	}
-	wc.handleRunnerActive(w, legacyRequest(r, method, nil, body))
 }
 
 func (wc *WebChannel) handleChannelsPOST(w http.ResponseWriter, r *http.Request) {

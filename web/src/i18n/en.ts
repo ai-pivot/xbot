@@ -98,6 +98,10 @@ const en: Translations = {
     toggleHidden: 'Toggle hidden files',
     loadingFiles: 'Loading files…',
     loadFailed: 'Failed to load files',
+    // Left-rail section drag preview / collapse aria-title (VSCode-style section stack)
+    dragPreviewPlaceholder: 'Drop preview',
+    sectionExpand: 'Expand {{title}}',
+    sectionCollapse: 'Collapse {{title}}',
   },
   session: {
     forkDesc: 'Create a new session that copies the full conversation context of {{name}}.',
@@ -251,7 +255,6 @@ const en: Translations = {
     expandTodos: 'Expand todo list',
     collapseTodos: 'Collapse todo list',
     contextUsage: '{{percent}}% · {{used}} / {{available}}',
-    reconnecting: 'Reconnecting…',
     promptTokens: 'Prompt tokens',
     maxContext: 'Max context',
     usagePercent: 'Usage',
@@ -306,6 +309,10 @@ const en: Translations = {
     switchToQueueMode: 'Switch to queue mode',
     switchToInterjectMode: 'Switch to interject mode',
     interjectModeHint: 'Interject mode: sends immediately into the current turn',
+    interjectDelivered: '⚡ Delivered',
+    interjectSent: '⚡ Interjected',
+    interjectFailed: 'Interject failed',
+    cancelQueuedFailed: 'Cancel queued message failed',
     queueModeHint: 'Queue mode: sends after the current turn finishes',
     interjectSend: 'Interject',
     setAsGoal: 'Set as goal',
@@ -422,6 +429,11 @@ const en: Translations = {
       syntheticOutputStats: '{{lines}} lines · {{size}}',
       copy: 'Copy',
       copied: 'Copied',
+      shareImage: 'Image',
+      shareFile: 'File',
+      copyLink: 'Copy link',
+      open: 'Open',
+      sharePublished: 'Published to the web',
     },
     thinkingLive: 'Thinking · {{count}} chars',
     thoughtChars: 'Thought {{count}} chars',
@@ -437,6 +449,12 @@ const en: Translations = {
     export: 'Export',
     uninstall: 'Uninstall',
     confirmUninstall: 'Uninstall skill "{{name}}"?',
+    // Built-in skill panel (host static import) — manifest text uses host i18n.
+    manifest: {
+      name: 'Skill Manager',
+      title: 'Skills',
+      description: 'Manage skills: view / enable / disable / export / uninstall / install',
+    },
   },
   settings: {
     title: 'Settings',
@@ -965,8 +983,18 @@ const en: Translations = {
       enable: 'Enable',
       reloading: 'Reloading…',
       reload: 'Reload',
+      // Built-in plugin panel (host static import) — manifest text uses host i18n.
+      manifest: {
+        name: 'Plugin Manager',
+        title: 'Plugins',
+        description: 'Manage plugins: view / enable / disable / uninstall / reload (self-hosted implementation, itself a plugin)',
+      },
     },
     sessionStats: {
+      manifest: {
+        name: 'Session Stats',
+        description: 'Session usage: tokens / cache hits / TTFT / TPOT / iterations / multi-granularity trends',
+      },
       title: 'Stats',
       refresh: 'Refresh',
       noActiveSession: 'No active session',
@@ -1002,26 +1030,14 @@ const en: Translations = {
       openOverview: 'Stats detail',
       openOverviewHint: 'Open the stats detail in the main area (all sessions / daily aggregates)',
     },
-    gitFancy: {
-      missingHash: 'Missing hash parameter',
-      pluginNotInitialized: 'Git plugin not initialized',
-      loadingCommit: 'Loading commit details…',
-      fileChanges: '{{count}} file changes',
-      openCommitFileDiff: 'View this file\\\\\\\'s diff in this commit in the editor',
-      loadingGit: 'Loading git status…',
-      notRepo: 'Current directory is not a git repository',
-      refresh: 'Refresh',
-      openDiff: 'View diff in the editor',
-      expandCommit: 'Expand commit details',
-      changesSummary: '{{count}} changes',
-      dragSplit: 'Drag to resize the panes',
-      commitSummary: 'Commit {{hash}}',
-      loading: 'Loading…',
-      loadMore: 'Load more ({{count}})',
-      viewCommitFileDiff: 'View this file\\\\\\\'s diff in this commit',
-      scopeWorktree: 'Worktree',
+    gitInfo: {
+      notRepo: 'Not a git repository',
+      clean: 'Clean',
     },
     ambience: {
+      manifest: {
+        name: 'Ambience',
+      },
       description: 'Wallpaper + glassmorphism (Ambience Layer)',
       wallpaper: {
         aurora: 'Aurora Night',

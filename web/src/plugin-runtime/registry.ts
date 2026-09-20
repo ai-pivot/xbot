@@ -72,7 +72,9 @@ export class ContributionRegistry {
 
   /** 所有插件运行时状态（管理面板数据源）。 */
   listStates(): PluginRuntimeState[] {
-    return [...this.plugins.values()].map((r) => ({ ...r.state }))
+    // name 从 manifest **读取时**取：内置插件的 name 是 getter（按当前宿主语言解析），
+    // state 里的 name 是注册瞬间的快照 —— 直接用快照会让插件列表明细定格在旧语言。
+    return [...this.plugins.values()].map((r) => ({ ...r.state, name: r.manifest.name }))
   }
 
   /** 同步取已激活插件 exports（§3.7 Exports API）。 */

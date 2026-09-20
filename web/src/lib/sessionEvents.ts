@@ -56,3 +56,15 @@ export function dispatchSessionsResync(): void {
 export function dispatchBgTaskPromoted(): void {
   window.dispatchEvent(new CustomEvent('bg-task-promoted'))
 }
+
+/** 订阅 agent-idle（**唯一**合法入口）—— 面板/hook 严禁直接 window.addEventListener
+ *（eslint 的 no-restricted-properties 对此有约束）。chatID 为空的事件直接丢弃。 */
+export function subscribeAgentIdle(handler: (d: AgentIdleDetail) => void): () => void {
+  const listener = (e: Event): void => {
+    const d = (e as CustomEvent<AgentIdleDetail>).detail
+    if (!d || !d.chatID) return
+    handler(d)
+  }
+  window.addEventListener('agent-idle', listener)
+  return () => window.removeEventListener('agent-idle', listener)
+}

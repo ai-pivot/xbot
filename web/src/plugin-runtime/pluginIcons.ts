@@ -20,6 +20,7 @@ import {
   MessageCircle,
   Puzzle,
   Search,
+  ServerCog,
   Sparkles,
   Terminal,
   Wrench,
@@ -49,11 +50,28 @@ const ICON_MAP: Record<string, LucideIcon> = {
   'git-branch': GitBranch,
   'git-commit-horizontal': GitCommitHorizontal,
   git: GitBranch,
+  // 远程机器 / runner 类（xbot.ssh-runner 声明 "server"）
+  server: ServerCog,
+  'server-cog': ServerCog,
 }
+
+// 未登记图标只告警一次/名字，避免每帧刷屏。
+const warnedUnknownIcons = new Set<string>()
 
 export function pluginIcon(name?: string): LucideIcon {
   if (!name) return Puzzle
-  const icon = ICON_MAP[name.toLowerCase()]
+  const key = name.toLowerCase()
+  const icon = ICON_MAP[key]
+  if (icon) return icon
+  // 协议层契约：manifest 里声明什么名字，就必须在这里登记（否则面板退化成 Puzzle）。
+  // 显式告警 —— 2026-09-17 就是因为 xbot.ssh-runner 声明 "server" 没登记而一直显示默认图标。
+  if (!warnedUnknownIcons.has(key)) {
+    warnedUnknownIcons.add(key)
+    console.warn(
+      `[pluginIcon] unknown icon name "${name}" — falling back to Puzzle. ` +
+        `Register it in ICON_MAP (web/src/plugin-runtime/pluginIcons.ts).`,
+    )
+  }
   // grid 已弃用（v5.1 前布局项使用）—— 回退到 Puzzle 而非 undefined
-  return icon ?? Puzzle
+  return Puzzle
 }

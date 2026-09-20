@@ -137,6 +137,12 @@ type WebPluginDecl struct {
 	// the plugin author against @xbot/plugin-api). Serialized to JSON and
 	// forwarded verbatim to the frontend runtime.
 	Contributes json.RawMessage `json:"contributes,omitempty"`
+
+	// I18n is the plugin's OWN translation table (locale → key → text). Forwarded
+	// verbatim to the frontend runtime, which exposes it as `ctx.i18n.t(key, fallback)`.
+	// Plugin copy ships WITH the plugin — never in the host's i18n files (that would
+	// pollute a shared namespace and prevent independent install/uninstall).
+	I18n json.RawMessage `json:"i18n,omitempty"`
 }
 
 // PluginDependency declares a dependency on another plugin.

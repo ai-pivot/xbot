@@ -21,6 +21,38 @@ const SandboxedUI = w.__xbot_ui__?.SandboxedUI
 // 本插件公开分享的内容类型。宿主不认识它 —— 只是把 artifact 原样交回本插件。
 const SHARE_CONTENT_TYPE = 'xbot.genui/tsx'
 
+// ─── i18n（文案随插件清单走：plugin.json 的 web.i18n）─────────────
+/** ctx.i18n 的最小形状（宿主 I18nAPI 的子集 —— 独立 bundle 不 import 宿主类型）。 */
+interface I18nLike {
+  t: (key: string, fallback?: string) => string
+}
+
+let i18nRef: I18nLike | null = null
+
+/**
+ * 翻译 helper：**优先用插件自己的文案表**（`ctx.i18n`，表来自 plugin.json 的
+ * `web.i18n`），命中后插值 `{{x}}` 占位符；ctx 尚未注入或 key 缺失时回退第二参数
+ * （调用点写的是中文原文）⇒ UI 永不显示裸 key。
+ *
+ * ⛔ 绝不借用宿主的 `window.__xbot_i18n__` —— 插件文案随插件分发（见
+ * `web/src/plugin-runtime/i18n.ts` 的契约），否则插件无法独立安装/卸载。
+ */
+function t(key: string, fallback: string, params?: Record<string, string | number>): string {
+  let text = fallback
+  const inst = i18nRef
+  if (inst) {
+    try {
+      text = inst.t(key, fallback)
+    } catch {
+      /* 解析异常 ⇒ 回退中文原文 */
+    }
+  }
+  if (params) {
+    return text.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ''))
+  }
+  return text
+}
+
 // ─── Code extraction ───────────────────────────────────────────
 function stripGenUIPrefix(code: string): string {
   if (!code) return ''
@@ -76,6 +108,8 @@ type ShareAPI = {
 type ActivateCtx = {
   contributes: { register: (c: MessageRenderer) => () => void }
   share?: ShareAPI
+  /** 插件自带文案表（宿主按当前语言解析；缺省 ⇒ 全部回退中文兜底）。 */
+  i18n?: I18nLike
 }
 
 /**
@@ -101,7 +135,7 @@ function ShareablePanel({ code, share, children }: { code: string; share?: Share
       const link = await share.create({
         contentType: SHARE_CONTENT_TYPE,
         payload: code,
-        title: 'GenUI panel',
+        title: t('panelTitle', 'GenUI 面板'),
       })
       const absolute = new URL(link.path, window.location.origin).toString()
       setUrl(absolute)
@@ -117,10 +151,10 @@ function ShareablePanel({ code, share, children }: { code: string; share?: Share
   }
 
   const label =
-    state === 'busy' ? '生成链接…'
-      : state === 'done' ? '已复制链接'
-        : state === 'error' ? '分享失败，重试'
-          : '分享'
+    state === 'busy' ? t('shareGenerating', '生成链接…')
+      : state === 'done' ? t('shareCopied', '已复制链接')
+        : state === 'error' ? t('shareFailed', '分享失败，重试')
+          : t('share', '分享')
 
   const button = share
     ? R.createElement(
@@ -128,7 +162,7 @@ function ShareablePanel({ code, share, children }: { code: string; share?: Share
         {
           type: 'button',
           onClick: onShare,
-          title: state === 'done' && url ? url : '生成公开链接（任何拿到链接的人都能查看）',
+          title: state === 'done' && url ? url : t('shareTooltip', '生成公开链接（任何拿到链接的人都能查看）'),
           'data-testid': 'genui-share',
           style: {
             position: 'absolute', top: '6px', right: '8px', zIndex: 10,
@@ -147,6 +181,8 @@ function ShareablePanel({ code, share, children }: { code: string; share?: Share
 }
 
 export function activate(ctx: ActivateCtx): () => void {
+  // i18n 注入与渲染能力无关：即使 UI 不可用也要保持一致（幂等）。
+  i18nRef = ctx?.i18n ?? null
   if (!React || !SandboxedUI) return () => {}
 
   const make = (id: string, priority: number, matches: MessageRenderer['matches']): MessageRenderer => ({

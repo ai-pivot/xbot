@@ -363,3 +363,136 @@ Channel plugin 通过 `web_ui` 消息声明 web 组件（热更新覆盖式，�
 - 插件信任模型：插件本就有 `execute_tool` 可执行任意命令，iframe 隔离是防御纵深而非信任基础
 
 
+
+## ⚠️ 清单缓存（改 plugin.json 必须 reload）
+
+`PluginManager.Discover` **只在进程启动时**读一次插件清单并缓存在内存。之后修改 `plugin.json`
+（`web.entry` / `web.i18n` / `permissions` / `version` …）**内存里不会变** —— 必须
+`config action=reload_plugins`（日志打印 `Plugin discovered plugin=<id>`）或重启 server。
+
+**注意不对称**：插件 web 静态产物 `/plugins/<id>/web/*.js` 是**每请求从磁盘读**的 ⇒ 会出现
+「前端 bundle 已更新、清单内容没生效」的组合（2026-09-19 实测：宿主 `hostLocale=en` 但
+`hasTable=false`，插件面板全中文 —— 服务端启动于两天前，`web.i18n` 是当天才写盘的）。
+
+诊断手法：插件面板打印 `ctx / i18n / locale / probe`（probe = 某 key 的实际解析值：
+命中 = 链路通；`<fallback-used>` = 表没到；`<no-i18n>` = ctx 没注入），宿主侧打印
+`hasTable / locales / hostLocale`。守护测试 `plugins/xbot-ssh-runner/manifest_i18n_test.go`、
+`web/src/plugin-runtime/toManifest.i18n.test.ts`。
+
+## 宿主原生容器贡献点（info_bar / bottom / status_bar_right）
+
+插件视图的 `container` 取值（`web/src/plugin-api/manifest.ts:16` 的 `ViewContainer`）：
+`right_sidebar | panel | bottom | info_bar | status_bar_right | iteration | main`。
+
+- **`info_bar`** = 主区**底部状态栏**（与 `SWUpdateButton`「检查更新」同一行）。
+  渲染点：`web/src/plugins/InfoBar.tsx:23` 的 `<PluginPanelContainer container="info_bar" />`
+  （同文件 `:24` 还有 `<WidgetZone zone="infoBar" … excludePrefixes={['git:']} />`，
+  后者服务 script/widget 插件，前者服务 web 插件 view 贡献点）。
+- `panelRegistry.mapContainerToLocation`（`web/src/plugin-runtime/panelRegistry.ts:55`）把
+  `info_bar` / `bottom` 都映射为 `{ zone: 'bottom' }` ⇒ 面板徽章落在底部区。
+- ⚠️ 宿主对 main 级横幅的既有约定（AGENTS.md「InfoBar 必须与 Dockview 垂直堆叠」）：外层
+  `flex flex-col` 堆叠 + 内部 `overflow` 裁剪 + **固定高度始终渲染**（不要 `return null`，
+  否则出现/消失会让布局跳动），不要依赖子元素自身收缩。
+- ⚠️ **`info_bar` 视图在【桌面端】不会被渲染——除非该插件没有主 view**（2026-09-19 实测，写
+  ssh-runner 底栏时踩到）。链路：桌面底栏是 `web/src/layouts/AppShell.tsx:322-338`（连接状态 +
+  `TopRail` + `BottomRailBadges` + `SWUpdateButton` + ⚙），**没有 `<InfoBar/>`**（`InfoBar` 只被
+  `MobileAppShell.tsx:476` 渲染）⇒ 桌面唯一可用的 bar 面 = `BottomRailBadges`，而它只渲染
+  `panelRegistry` 里 `location.zone ∈ {top,bottom}` 的徽章（`components/panel/rails.tsx:87/136`）。
+  `mapContainerToLocation` 虽把 `info_bar` 映射为 `{zone:'bottom'}`，但
+  `buildPanelDefs`（`plugin-runtime/panelRegistry.ts:146-165`）**会把 bar 类 view 合并进同插件
+  主面板的 `badgeRender`** —— 而 side 面板的 badgeRender 无人消费（`PanelChrome` 只吃
+  `badges()` 文本 pill）⇒ 声明了 `info_bar` 却什么都没显示（移动端除外）。
+  绕行（插件侧，ssh-runner 采用）：`activate(ctx)` 里 `ctx.panels.register({ id: <同视图 id>,
+  location: { zone: 'bottom', order: 0 }, render: () => null, badgeRender: () => <Bar/> })`
+  —— 同 id 保证宿主将来修好合并规则时按 id 覆盖、不双渲染。根治应在宿主侧（bar 类 view 一律
+  产出独立徽章 def，或桌面底栏也渲染 `PluginPanelContainer container="info_bar"`）。
+  另：`container` 只是徽章/面板的**位置语义**，视图组件最终形态由宿主 rail 决定 ⇒ 触发元素
+  必须带 `span[role=button]` + 行 `div[role=menuitem]`（徽章内联在 rail 的 `<button>` 里，
+  嵌套 `<button>` 非法），浮层用 `position: fixed`（独立 bundle 无 react-dom/portal，
+  fixed 才能逃出 rail/InfoBar 的 `overflow-hidden`）。
+
+## 会话级 runner 绑定 RPC（插件可直接用，无需后端改动）
+
+- `runner_session_get { channel, chat_id }` → 当前会话绑定的 runner 名（**空字符串 = 本机**）。
+- `runner_session_set { channel, chat_id, name }` → 绑定该会话到 `name`（**name 为空 = 切回本机**）。
+- 核心实现：`serverapp/rpc_table.go:2821` / `:2837`；前端已声明：`web/src/plugin-api/rpc.ts:205` / `:209`。
+- 语义：绑定是**会话级**（存在 `tenants.runner_id`），路由按会话解析；未绑定 ⇒ 本机执行。
+
+## ⚠️ 部署坑：线上插件副本必须与 repo 同步（否则功能"看不见"、Reload 报红框）
+
+`~/.xbot/plugins/<plugin-id>/` 是**线上实际使用**的那份插件（`DefaultPluginDirs` 顺序
+`plugins` → `plugins/builtin`，**first-match-wins** ⇒ 用户目录副本优先）。它**不会**随仓库改动自动更新：
+
+- 改了 repo 里的 `plugins/<src-dir>/`（清单 / 前端源码）后**必须**重装到 `~/.xbot/plugins/<plugin-id>/`：
+  ① 前端产物按 release.yml 的 esbuild 命令重建（`--splitting` 用于多入口插件，如 git-fancy / ssh-runner）；
+  ② 拷 `plugin.json` + `web/` 到用户目录；③ 改过清单则 `reload_plugins`（见上一条"清单缓存"）。
+  否则**代码是新的、线上跑的是几个月前的旧副本**（本轮实测：线上是 9-16 的副本，i18n/趋势图/底部 bar 全部不可见）。
+
+- **src 目录名用连字符、插件 ID 用点**（`plugins/xbot-iteration-stats/` ↔ `xbot.iteration-stats`）。
+  按 ID 去拼路径会静默装不上（`cp: cannot stat 'plugins/xbot.iteration-stats/plugin.json'`）。
+
+- **插件运行时目录会"伪装"成插件目录**：插件运行后会在 `~/.xbot/plugins/<plugin-id>/` 下创建
+  `data/`、`logs/`（见 `pluginLogger` 的 per-plugin 日志路径）。若该目录**没有** `plugin.json`
+  （从未装过、或装到别处），`Discover` 会打印 `Skipping invalid plugin: read manifest ... no such file`，
+  而**点 Reload 会直接报错**（`reload <id>: failed to load manifest: ... no such file or directory`）。
+  修法：把 repo 的清单 + 产物真的装上（而不是删目录 —— `data/`/`logs/` 是插件数据，不能丢）。
+
+## 内置统计相关的分工（避免重复实现 —— 2026-09-19 用户要求合并）
+
+- **趋势图（token / 缓存命中 / 输出的多时间粒度：分钟 · 小时 · 天）只在「统计」面板**：
+  实现 `web/src/plugins/session-stats/TokenTrendSection.tsx`（+ `TokenTrendChart.tsx` / `tokenTrend.ts` 纯函数分桶），
+  由 `SessionStatsPanel.tsx` **内嵌**渲染（`<TokenTrendSection rows={allIterations} now={statsFetchedAt} loadBuckets={loadBuckets} />`）。
+  **数据源优先 `get_session_usage_buckets`**：服务端在 SQL 里对**全量** `iteration_history` `GROUP BY`
+  固定宽度时间桶（`SUM(input_tokens/cached_tokens/tokens) + COUNT(*)`，按 `tz_offset_minutes` 对齐本地墙钟）
+  ⇒ 覆盖整段历史，空桶就是真的 0（`covered=true`，无"未覆盖区"）。
+  **回落**：buckets 取数失败（旧后端没有该 RPC / 请求出错）时用 `get_session_usage_stats` 的 per-iteration
+  明细（`created_at` RFC3339、**已按时间正序**、`recentLimit` 被服务端钳到 **≤500** ⇒ **未覆盖区间必须留空并标注**，
+  绝不能在空桶画零值假装"那段没用量"）。降级逻辑是兜底，不要删。
+- **`xbot.iteration-stats` 只保留 `status_bar_right` 的徽章视图**（当前迭代指标）。
+  **不要**再往里加趋势面板 —— 曾重复实现过一份（`f12d1a38`），用户明确要求"trend 放在统计面板里，不要单独做个新的"，
+  已于 `fe39d4da` 精准回退（删 TrendPanel/trend/bridge + 恢复 entry/plugin.json）。
+
+## 内置视图清单的 i18n 契约（name / description / view title 三处都要走宿主 i18n）
+
+**内置（`builtin:`）视图的清单随主 bundle 打包 ⇒ 拿不到插件 `web.i18n`，必须走宿主 i18n**：
+`import i18n from '@/i18n'`，三处字段都用 `i18n.t('<key>', { defaultValue: '<现文案>' })`：
+
+| 清单文件 | key 命名空间 | 状态 |
+|---|---|---|
+| `web/src/plugins/manager/pluginManager.ts` | `plugins.manager.manifest.{name,description,title}` | ✅ 正例 |
+| `web/src/plugins/xbot-skill-manager/skillManager.ts` | `skills.manifest.{name,description,title}` | ✅ 正例 |
+| `web/src/plugins/xbot-ambience/index.ts` | `plugins.ambience.*` | ✅ 正例 |
+| `web/src/plugins/session-stats/sessionStats.ts` | `plugins.sessionStats.*`（已存在 `title: 'Stats'` 等） | ⚠️ 曾把 `name`/`description`/`title` 写死（`title: '统计'`）⇒ 宿主英文时 tab 仍显示中文，被用户点名；改用 `i18n.t(...)` |
+
+**审计方法（新增内置清单后照此自查）**：
+`grep -n "name:\|description:\|title:" web/src/plugins/*/*.ts` ⇒ 任何**字面量**（非 `i18n.t(`）都是漏网。
+
+⚠️ 与"外置插件（URL 加载）"的区别：后者的名字/标题在**插件自己的 `plugin.json`**（`name` / `contributes[].title`），
+遵循"文案随插件清单走"（见上文「本地化」一节），**不要**塞进宿主 i18n。
+## ⛔ 不变量：切换语言 ⇒ 插件/内置面板文案必须**无刷新**更新（2026-09-20 用户实测「改了语言插件没动态变化」）
+
+用户原话给了方向：「**加个插件事件**不就好了」⇒ 采用**事件驱动**（禁止轮询、禁止"刷新页面兜底"）。
+
+**四个缺口**（缺任一 ⇒ 文案停留在旧语言）：
+1. **登记表只在 mount / view 集合变化时同步** ⇒ 标题（`resolvePluginText` 的结果）登记后永不重算
+   （`usePluginRuntimeHost.ts` 的 syncViews → `panelRegistry`/`layoutRegistry`/`usePluginViewPanels`）。
+2. **内置清单在模块 import 时求值**（`i18n.t(...)` 直接当值）⇒ 文本本身定格
+   （`plugins/manager/pluginManager.ts`、`xbot-skill-manager/skillManager.ts`、`session-stats/sessionStats.ts`）。
+3. **URL 加载的插件视图零订阅**（用 call-time 的 `ctx.i18n.t`，但没人让它们重渲染）。
+4. **registry 把 `manifest.name` 快照进 state**（`plugin-runtime/registry.ts`）。
+
+**实现契约（四条，改这块必须同时满足）**：
+- **单一 seam**：`web/src/i18n/index.ts` 暴露 `onLocaleChanged(cb)`（内部即 i18next `languageChanged`）；
+  **禁止各处自己 `i18n.on(...)`**。
+- **幂等重算**：`plugin-runtime/viewRegistrySync.ts` 的 `sync()` 在**语言变化 + view 集合变化**时都重跑；
+  用覆盖语义重新登记 ⇒ **只换文本，绝不重置用户布局 override/顺序**；`usePluginViewPanels` 同订阅。
+- **插件视图 remount**：`PluginView`/`ViewSlot` 用 `useLocale()` 作 React `key` ⇒ 语言变化重挂载
+  （**已发布插件不改代码也生效**；只"重渲染"不够，插件内部可能 memo/缓存文案）。代价：切语言重置该视图局部状态（可接受）。
+- **插件事件**：`plugin-api/events.ts` 声明 `EventMap['i18n.localeChanged'] = { locale }`；宿主 Bootstrap 广播，
+  插件可 `ctx.events.on('i18n.localeChanged', …)`（需 `events` 权限）。
+
+**内置清单必须惰性求值**：`get name() { return i18n.t(…) }`（getter，而非求值一次）；`registry.listStates()` 读取时取 `r.manifest.name`。
+
+**守护测试要求**：切语言 ⇒ 登记表标题 + 插件视图文案都必须变；**且必须含"接线守卫"**
+（hook 层全绿但启动器忘调用 = 功能不存在 ⇒ 需断言 Bootstrap 真的挂了广播与登记表同步）+
+**变异自证**（撤掉任一契约，对应用例必红）。

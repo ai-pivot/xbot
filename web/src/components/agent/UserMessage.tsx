@@ -219,7 +219,7 @@ export const UserMessage = memo(function UserMessage({
             <span className="truncate">{compactBody.title}</span>
           </summary>
           {compactBody.body && (
-            <div className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-muted">
+            <div className="mt-2 min-w-0 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed text-text-muted">
               {compactBody.body}
             </div>
           )}
@@ -234,16 +234,34 @@ export const UserMessage = memo(function UserMessage({
         {isNotification && (
           <span className="text-xs text-text-muted">🔔 Notification</span>
         )}
-        <CopyTarget kind="message" message={{ role: 'user', content } as unknown as ChatMessage}>
+        {/* ⚠️ `max-w-full` 必须挂在**这个**包裹层上（它是列 flex 容器里的 flex 子项，
+            宽度由 fit-content 决定 ⇒ 气泡自己的 `max-w-full` 是相对它算的）。
+            子项是"内容定宽"时气泡的 `max-w-full` 等于虚空约束（100% 的内容宽度），
+            2026-09-20 P0 通知气泡溢出正是这条链断在这里。 */}
+        <CopyTarget
+          kind="message"
+          className="max-w-full"
+          message={{ role: 'user', content } as unknown as ChatMessage}
+        >
         <div
           ref={displayRef}
           data-testid="user-bubble"
           className={cn(
             // 2026-09-16 用户报告：手机上 user msg 宽度会超出屏幕。
             // 三层约束：气泡自身不许超出（min-w-0/max-w-full）、长 token 必须可断
-            // （break-words）、Markdown 产出的任意宽子元素（宽表格/图片/pre/长 URL）
+            // （wrap-anywhere，见下）、Markdown 产出的任意宽子元素（宽表格/图片/pre/长 URL）
             // 也不许超出（[&_*]:max-w-full）——超宽的它们各自滚动，而不是把气泡撑出屏幕。
-            'relative min-w-0 max-w-full break-words [&_*]:max-w-full rounded-2xl rounded-br-sm px-3.5 py-2',
+            //
+            // ⚠️ 2026-09-20（P0 通知气泡越界）：必须是 `wrap-anywhere`（overflow-wrap: anywhere），
+            // **不能**用 `break-words`（overflow-wrap: break-word）。`break-word` 在**布局时**会
+            // 断长词，但按规范**不参与 intrinsic size（min-content）计算**；而本气泡的宽度由
+            // 「列 flex 容器（items-end ⇒ 子项不 stretch）+ CopyTarget 这个 flex 子项的
+            // fit-content」决定 —— fit-content = max(min-content, min(可用宽度, max-content))，
+            // min-content 被最长不可断 token 顶到 620px ⇒ 子项比容器（85% = 297px）还宽，
+            // 气泡再 `max-w-full`（=100% 的父项）也只好跟着 620px ⇒ 手机上左右两端被裁。
+            // `anywhere` 才会把软换行机会计入 min-content ⇒ min-content 收缩 ⇒ 整条链正常收敛。
+            // （同一个道理的先例：tiptap composer 的 `.ProseMirror.xbot-editor{}` 用 anywhere。）
+            'relative min-w-0 max-w-full wrap-anywhere [&_*]:max-w-full rounded-2xl rounded-br-sm px-3.5 py-2',
             // 触屏：禁用原生文本选择与 iOS 长按 callout —— 长按归我们的复制菜单，且原生
             // 蓝色选中控件在虚拟滚动容器里位置不受我们控制（用户 2026-09-16 报告「位置根本不对」）。
             isTouch ? 'select-none [-webkit-touch-callout:none]' : '',
@@ -252,7 +270,17 @@ export const UserMessage = memo(function UserMessage({
               : 'bg-accent/15 text-text-primary',
           )}
         >
-          <MarkdownRenderer content={content || ' '} />
+          {isNotification ? (
+            /* 系统通知是机器文本（后台任务命令 + 输出），**必须原样呈现**：
+               曾用 MarkdownRenderer，命令里成对的 `$`（如 `echo A=$?; … $D/x`）被 remark-math
+               当数学公式交给 KaTeX，而 KaTeX 的 .katex-html 是 white-space:nowrap ⇒ 内容不换行，
+               盒子被 max-w-full 限住也没用 ⇒ 手机上整页横向溢出。机器文本不走 markdown 解析。 */
+            <div className="whitespace-pre-wrap wrap-anywhere">{content}</div>
+          ) : (
+            <>
+              <MarkdownRenderer content={content || ' '} />
+            </>
+          )}
           {sending && (
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-muted">
               <Loader2 className="size-3 animate-spin" />

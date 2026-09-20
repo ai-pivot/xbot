@@ -125,7 +125,11 @@ Routes by address prefix:
 
 ### tui_control (`tools/tui_control.go`)
 
-Core tool (always loaded). AI operates TUI sidebar, layout, and themes.
+**CLI 渠道专属工具**（`agent/agent.go` 用 `registry.RegisterForChannel("cli", …)`）—— AI 操作 TUI 侧边栏、布局与主题。
+
+TUI 只存在于 CLI：本地与远程 CLI 的 sessionKey 都是 `cli:...`，都命中该渠道；web/feishu 等渠道既**看不到**（`AsDefinitionsForSession` 按 sessionKey 的 channel 前缀过滤）也**执行不了**（`GetForSession` 回落全局查找 ⇒ 不存在）。⚠️ web 端浏览 CLI 会话时 `physical_channel` override 把 sessionKey 换成 `web:...`（`agent/engine_wire.go`），同样过滤掉 —— 与"web 里没有 TUI"一致（历史 bug：全局注册导致 web 模型能看到并调用它，必然报 "only available in local CLI mode"）。
+
+**SubAgent 不继承**：channel 工具会随 `Registry.Clone()` 进入子代理注册表，而 `filterSubAgentTools` 只遍历全局工具 ⇒ `buildSubAgentRunConfig` 显式 `UnregisterChannelTool("cli", "tui_control")`（子代理绝不能切换/关闭用户正在看的会话）。
 
 **Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`, `send_slash`, `reload_plugins`, `reload_hooks`
 
@@ -224,6 +228,19 @@ Manages webhook event subscriptions for external service integration. Actions: `
 | `logs` | `tools/logs.go` | Query agent logs |
 | `WebSearch` | `tools/web_search.go` | Tavily web search |
 | `Runner` | `tools/sandbox_runner.go` | Manage remote sandbox connections |
+
+## File Publishing — `share_file` (`tools/share_file.go` + `serverapp/file_sharer.go`)
+
+Agent 把**本地文件发布成 Web 可访问 URL**，在回复里嵌入给用户看（图表 / 报告 / 截图）。**Web 专属**：`serverapp/server.go` 只在 `cfg.Web.Enable && imgProvider != nil` 时注册（`RegisterCoreTool` + `RegisterTool`）。
+
+- **接口与实现分离（避免 import cycle）**：`tools.FileSharer` 接口在 `tools/`，实现 `webFileSharer` 在 `serverapp/`（`tools` 不能 import `channel/web`；`channel/web → channel → tools`）。构造函数 `serverapp.NewWebFileSharer(provider web.OSSProvider, xbotHome string)`。
+- **provider 无关，绝不用软链接**（用户明确要求：不同 provider 绑本地 fs 不合适）：本地后端（`provider == nil` 或 `Name() == "local"`）⇒ **copy** 到 `<xbotHome>/uploads/agent/<uuid>/<name>`（0o700 目录 / 0o600 文件）；云后端（qiniu/s3）⇒ `provider.Upload` + `provider.GetDownloadURL`（签名 URL）。
+- **key 命名空间**：`agent/<uuid>/<name>` —— 与用户上传 `uploads/<uid>/...` 分离；`channel/web/web_file.go` 的 `handleFileDownload` 放行这两个前缀（其余一律 400），`..` 仍被拒。key 含不可预测 uuid ⇒ 未分享的文件没有可达路径。
+- **URL 形态**：本地 ⇒ 同源 `/api/files/download?key=agent%2F<uuid>%2F<name>`（走会话 cookie 鉴权；图片附 `&inline=1` 让浏览器内联渲染，其他文件走 attachment 语义）；URL **稳定不过期**。
+- **文件名**：先剥掉调用方给的扩展名、再补源文件的**真实**扩展名 —— 保证结尾恰好一个与内容一致的扩展名（下载端点按 key 的扩展名推导 Content-Type）。⛔ 无条件 `displayName + ext` 会拼出 `chart.png.png`（`serverapp/file_sharer_test.go` 抓到）。
+- **工具返回**：`Summary`（Published X → URL）+ `Detail`（URL + 可直接粘贴的 Markdown）+ `Tips`（图片 `![name](url)` / 其他 `[name](url)`），模型把这段 Markdown 放进回复即可。
+- **Web 端渲染**：`web/src/components/agent/ToolRender.tsx` 的 `ShareFileRender`（`case 'share_file'`）
+  解析上面这份 `Summary`/`Detail`（`parseShareFile`，导出供测试）→ 渲染「图标 + 文件名 + 图片/文件徽章 + 图片内联预览（图片时）+ URL 行 + 打开/复制链接」。**解析即契约**：改后端返回文案要同步改解析与 `ToolRender.test.tsx`；历史行只带 `summary`（无 args/detail）也必须能解析；无 URL（失败行）回落默认渲染。
 
 ## Foreground shell promote-to-background (`tools/shell.go` + `tools/shell_promote.go`)
 

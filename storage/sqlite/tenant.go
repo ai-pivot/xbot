@@ -32,6 +32,12 @@ func (s *TenantService) GetOrCreateTenantID(channel, chatID string) (int64, erro
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("tenant service not initialized")
 	}
+	// Process-wide write gate — see db.writeMu. SQLite allows one writer at a
+	// time and the modernc driver can bypass busy_timeout on the write-lock
+	// acquisition path; serializing in-process removes the collision at source.
+	s.db.writeMu.Lock()
+	defer s.db.writeMu.Unlock()
+
 	conn := s.db.Conn()
 
 	tx, err := conn.Begin()

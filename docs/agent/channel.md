@@ -468,3 +468,27 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **测试 gotchas**：vitest 里 PM 内部 handler 先于 editorProps 读取 clipboard——合成事件必须带 `getData: () => ''`（paste 路径 PM 先 `clipboardData.getData('text/plain')`）+ drop 测试需 polyfill `document.elementFromPoint`（PM 内部 handleDrop 先 posAtCoords）；jsdom 里 `focus()` 会把 PM selection 塌缩成光标（inclusive=false mark 后的光标 isActive('link') 为 false）——测工具栏用显式 `setTextSelection`。Playwright E2E：**position-click 到块级 `<p>` 中心会落在短文本右侧空白 → caret 在文本末尾**——确定性光标用 `Home` 键（配合 domObserver.flush 后 PM state 同步）；E2E 用 notification-flicker.spec.ts 的全 mock 后端模式（page.route 拦 `/api/*`，不需要真实 server）。
 - **Streaming pipeline**: `MarkdownRenderer` gates re-parsing behind the typewriter — markdown is only re-parsed when `visibleChars` catches up to the parsed content length, NOT on every SSE chunk. `ParsedMarkdown` uses `key={debouncedContent}` to force fresh DOM on content change (typewriter clips `text.data` behind React's back). The `streaming` prop flows through a `StreamingContext` to all code-block-level components.
 - **Mermaid rendering**: `MermaidDiagram` (`web/src/components/agent/MermaidDiagram.tsx`) lazy-loads the ~1MB mermaid package via `import('mermaid')` (module-scope singleton + `useSyncExternalStore`). **Must NOT render during streaming** — the source is incomplete (typewriter-clipped) and `mermaid.render()` is async + CPU-intensive. `CodeBlock` checks `StreamingContext`: streaming → `MermaidSourceBlock` (plain source, synchronous); settled → `MermaidDiagram` (renders SVG once). Theme-aware: re-initialises mermaid on dark/light + accent color changes. Error fallback shows raw source. `MarkdownPreview` always renders `MermaidDiagram` directly (non-streaming).
+
+## ⛔ AskUser 面板的 pending 状态必须**双路径**（2026-09-20 P0 复盘：面板不渲染）
+
+**事故现场**：agent 提问时用户**在别的会话** ⇒ 提问发布那一刻该会话**没有 SSE 订阅者** ✗
+（日志：`05:19:37 disconnected` → `05:22:53 提问发布` → `05:29:40 connected`）⇒
+**实时 `ask_user` 事件物理上到不了面板**，唯一载体是重连 replay/fallback；
+而 `channel/web/web_sse.go` 的 **fallback 信封当时不带 `Channel`** ✗ ⇒ 前端只能靠"猜测链"
+（`msg.channel ?? 连接 channel ?? active session ?? 默认`）推 key ⇒ **猜错就永不渲染** ✗。
+用户侧表现：只有 `AskUs…` 工具 pill + 输入框 busy，最后用 Stop 硬逃。
+
+**两条契约（缺一即复发）**：
+1. **DB 权威水合**：面板的 pending 不能只依赖"实时事件"这一条路径 —— 与 goal/todos 同模式，
+   会话加载 / tab 重新可见时调 **`get_pending_ask_user`**（服务端读同一份 `ask_question/ask_answer`
+   记录 ⇒ DB 单一权威）水合本地 prompt。
+   ⚠️ **present 权威、absent 不删除**（响应可能早于提问登记 ⇒ 反向竞态会把刚弹出的面板误杀）；
+   删除只由 `ask_user_resolved`（answered/cancelled/rewound/cleared）与会话行对账驱动。
+2. **两条发布路径的信封必须同形**：`Send`（live，`web.go`）与 `publishSSEFallbacks`（重连，`web_sse.go`）
+   **都必须带 `Channel`/`RouteChannel`/`RouteChatID`** ⇒ 前端**不需要猜** key（`sseConnection` 的 dispatch
+   同时补 `channel` 与 `chat_id`：连接自己知道身份）。
+   ⚠️ 任一处漏字段 ⇒ 前端退化成猜测链（同类回归只需"漏改一次"）。
+
+**排查手法**：这类失败**全静默**（`Send` 的 `matched==false`、`sseEventShouldWrite` 的 consumed、
+`publishSSEFallbacks` 的 `cleared` 都不打日志）。复现时先对齐 **SSE connect/disconnect 日志与提问时间戳**
+（判断"发布时有无订阅者"），再看前端 key（`[ASKDEBUG]` 是 DEV-only，线上不足为凭）。

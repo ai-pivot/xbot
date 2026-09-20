@@ -122,9 +122,10 @@ func (wc *WebChannel) handleFileDownload(w http.ResponseWriter, r *http.Request)
 		jsonErrorResponse(w, http.StatusBadRequest, "key is required")
 		return
 	}
-	// Only upload-issued keys are addressable (uploads/<uid>/<uuid><ext>) —
+	// Only upload-issued or agent-published keys are addressable
+	// (uploads/<uid>/<uuid><ext> or agent/<uuid>/<name>) —
 	// blocks arbitrary object probing of the OSS bucket.
-	if !strings.HasPrefix(key, "uploads/") || strings.Contains(key, "..") {
+	if (!strings.HasPrefix(key, "uploads/") && !strings.HasPrefix(key, "agent/")) || strings.Contains(key, "..") {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid key")
 		return
 	}

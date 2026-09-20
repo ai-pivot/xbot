@@ -19,6 +19,7 @@ import { SkillManagerPanel } from '@/plugins/xbot-skill-manager/SkillManagerPane
 import { SessionStatsPanel } from '@/plugins/session-stats/SessionStatsPanel'
 import type { ViewContribution } from '@/plugin-api'
 import { usePluginRuntime } from '@/plugin-runtime'
+import { useLocale } from './useLocale'
 import i18n from '@/i18n'
 
 interface LoadedViewProps {
@@ -114,12 +115,24 @@ function BuiltinView({
 
 /** 渲染单个插件 view。内置视图同步渲染；第三方插件走异步加载。 */
 export function PluginView({ pluginId, view, panelParams }: LoadedViewProps) {
-  // 内置视图（builtin: 前缀）——同步渲染，无异步加载态。
+  // 语言变化 ⇒ 强制重挂载该视图（React key 变化 = remount）。
+  //
+  // 为什么必须是 remount：插件视图是**独立 bundle**，文案经 `ctx.i18n.t()` /
+  // 模块级单例在**渲染时**取值，自身没有任何宿主语言的订阅；不重新渲染就永远
+  // 停在旧语言（用户实测：「改了语言插件没动态变化」）。内置视图同样是宿主
+  // 组件里直接调 `i18n.t` 的形态（如 GitStatusPanel），不经 context 订阅。
+  //
+  // 为什么不用「让插件订阅 ctx.i18n」：那要求**每个已发布插件**改代码，
+  // 对存量插件无效；key 是宿主的单点机制，对所有插件（含已发布）零改动生效，
+  // 也不引入第二套 i18n。代价：切语言会重置该视图的局部状态（罕见操作，可接受）。
+  const locale = useLocale()
   if (view.entry?.startsWith('builtin:')) {
-    return <BuiltinView view={view} viewParams={panelParams?.viewParams} />
+    return <BuiltinView key={locale} view={view} viewParams={panelParams?.viewParams} />
   }
   // 第三方插件（URL 加载）：独立组件，hooks 数量恒定，不受内置视图影响。
-  return <AsyncPluginView pluginId={pluginId} view={view} viewParams={panelParams?.viewParams} />
+  return (
+    <AsyncPluginView key={locale} pluginId={pluginId} view={view} viewParams={panelParams?.viewParams} />
+  )
 }
 
 function AsyncPluginView({

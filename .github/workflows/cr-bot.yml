@@ -27,11 +27,16 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          PR_INFO=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq -c '{number: .number, title: .title, head_ref: .head.ref, base_ref: .base.ref}')
+          # ⛔ `--jq -c '{...}'` 是**错的**：`gh api` 的 `--jq` 只接受一个值，
+          # 短横线选项会被当作 jq 程序本身（`--jq` 的值 = `-c`），紧跟的 `'{...}'`
+          # 就变成**第二个位置参数** ⇒ `accepts 1 arg(s), received 2` ⇒ 这一步 exit 1，
+          # 后面的 webhook 步骤被 skip ⇒ 机器人**静默不产生 review**（2026-09-19 实测：
+          # /cr 评论触发的 run 在 "Get PR info" 失败，Trigger 步骤 skipped）。
+          # 单行紧凑用 jq 自带 `tostring`（GITHUB_OUTPUT 只接受单行值；不额外依赖 jq 进程）。
+          PR_INFO=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '{number: .number, title: .title, head_ref: .head.ref, base_ref: .base.ref} | tostring')
 
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "repo=$REPO" >> "$GITHUB_OUTPUT"
-          # GITHUB_OUTPUT 只接受单行值 ⇒ 用紧凑 JSON（--jq -c）
           echo "pr_info=$PR_INFO" >> "$GITHUB_OUTPUT"
 
       - name: Trigger xbot code review

@@ -65,8 +65,9 @@ func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, c
 		"command":      tools.Truncate(command, 80),
 	}).Info("Bang command")
 
-	workspaceRoot := a.sandboxWorkspace(sbUID)
-	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
+	sessionKey := msg.Channel + ":" + msg.ChatID
+	workspaceRoot := a.sandboxWorkspace(sessionKey)
+	if err := a.ensureWorkspace(ctx, workspaceRoot, sessionKey); err != nil {
 		return nil, fmt.Errorf("create user workspace: %w", err)
 	}
 
@@ -124,7 +125,7 @@ func (a *Agent) resolveBangCWD(channel, chatID, senderID, workspaceRoot string) 
 	if a.sandbox != nil {
 		sb := a.sandbox
 		if resolver, ok := sb.(tools.SandboxResolver); ok {
-			sb = resolver.SandboxForUser(senderID)
+			sb = resolver.SandboxForSession(senderID)
 		}
 		if sb.Name() == "docker" {
 			hostRoot := a.workspaceRoot(senderID)
@@ -149,7 +150,7 @@ func (a *Agent) executeBangCommand(ctx context.Context, command, workspaceRoot, 
 	sandbox := tools.GetSandbox()
 	// Resolve per-user sandbox for correct Name() routing
 	if resolver, ok := sandbox.(tools.SandboxResolver); ok {
-		sandbox = resolver.SandboxForUser(senderID)
+		sandbox = resolver.SandboxForSession(senderID)
 	}
 
 	// GetShell triggers Docker container management (create/start/verify mount),
@@ -180,12 +181,12 @@ func (a *Agent) executeBangCommand(ctx context.Context, command, workspaceRoot, 
 	}
 
 	spec := tools.ExecSpec{
-		Command: shell,
-		Args:    tools.LoginShellArgs(shell, command),
-		Shell:   false,
-		Dir:     dir,
-		Timeout: bangDefaultTimeout,
-		UserID:  senderID,
+		Command:    shell,
+		Args:       tools.LoginShellArgs(shell, command),
+		Shell:      false,
+		Dir:        dir,
+		Timeout:    bangDefaultTimeout,
+		SessionKey: senderID,
 	}
 	if sandbox.Name() == "docker" {
 		spec.Workspace = hostWorkspace

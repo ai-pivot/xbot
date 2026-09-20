@@ -19,15 +19,23 @@ import {
   observeElementRect as defaultObserveElementRect,
   measureElement as defaultMeasureElement,
 } from '@tanstack/react-virtual'
+import {
+  createHeightAwareMeasureElement,
+  createRowHeightMemory,
+  createWidthTracker,
+  rowSignature,
+} from './rowHeightMemory'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ChevronRight, Loader2, Sparkles } from 'lucide-react'
 
 import { MessageItem } from './MessageItem'
 import { MessageUserNav } from './MessageUserNav'
 import { ShimmerThinking } from './ShimmerThinking'
+import { liveIterationInFlight } from './progressStore'
 import { bindTurnIDs, orderMessageRows } from './messageOrder'
 import { useI18n } from '@/providers/i18n'
 import { commands } from '@/lib/commandRouter'
+import { frameScheduler } from '@/lib/frameScheduler'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
 interface MessageListProps {
@@ -70,6 +78,12 @@ const ESTIMATE = 120
 // 跟踪高度变化并 resizeItem），estimate 只需给接近的初值。
 const GENUI_PANEL_ESTIMATE = 560
 const EDGE_EPSILON = 2
+/**
+ * 「钉到底」用的超界 `top`：跟随底部时写 `el.scrollTo({ top: SCROLL_PIN_MAX })`，
+ * 浏览器自行 clamp 到真实底部 —— **无需读 `scrollHeight`**（读它紧跟 React 提交会触发
+ * 强制同步布局，2026-09-18 生产 trace 实测该点 27% CPU）。任何真实内容高度都远小于它。
+ */
+const SCROLL_PIN_MAX = 1e9
 
 // ── 历史高度抖动根治：高度记忆 + 内容感知估算 ──────────────────────────────
 // 抖动机制：历史加载时 estimateSize 返回常数（120），而实际高度 200–900px →
@@ -80,7 +94,20 @@ const EDGE_EPSILON = 2
 //      记忆的是初值，不是固化 —— 高度变化仍由 ResizeObserver 修正。
 //   2. estimateRowByContent：首次访问（无记忆）时按内容长度/迭代数/工具数粗估，
 //      比常数 120 的误差缩小数倍。
-const heightMemory = new Map<string, number>()
+const heightMemory = createRowHeightMemory()
+/** 布局宽度追踪：宽度变化 ⇒ 行高记忆作废（高度不变性的前提）。 */
+const heightLayoutWidth = createWidthTracker()
+heightLayoutWidth.onChange(() => heightMemory.clear())
+
+/**
+ * 记忆感知的容器几何：照常忽略"没有布局的测量"（0×0），额外记录布局宽度 ——
+ * 宽度一变就清空行高记忆（否则旧宽度的行高会被当成新宽度的高度）。
+ */
+const widthAwareObserveElementRect: typeof defaultObserveElementRect = (instance, cb) =>
+  nonDegenerateObserveElementRect(instance, (rect) => {
+    heightLayoutWidth.observe(rect.width)
+    cb(rect)
+  })
 
 /** 与 getItemKey 相同的稳定行键（turn-N-role / row.id）。 */
 function rowMemoryKey(row: ChatMessage, index: number): string {
@@ -128,6 +155,10 @@ export function estimateRowByContent(row: ChatMessage): number {
     // 实测后 heightMemory 覆盖估算。
     const len = (row.content || '').length + iterLen
     const lines = Math.ceil(len / 90) || 1
+    // 估算**只作未渲染行的初值提示**（渲染中的行一律以浏览器实测为准 —— 见
+    // createHeightAwareMeasureElement 的根因修复）。⛔ 不得再按元素类型写特判：
+    // 任何"高度与字符数不成比例"的元素（表格 / 代码块 / mermaid / 图片 / KaTeX /
+    // 嵌套列表…）都会被低估，逐类型打补丁永远追不上。
     result = Math.min(Math.max(70 + lines * 21 + iters.length * 34 + Math.ceil(tools / 4) * 20, 140), 6000)
   }
   estimateCache.set(row, result)
@@ -149,43 +180,49 @@ export function estimateRowByContent(row: ChatMessage): number {
 // isScrolling=false（scrollend / isScrollingResetDelay debounce 的停止通知）
 // 保持同步直达（取消 pending rAF）——isScrolling 的状态语义不变，仅通知
 // 频率锁帧率。渲染结果零变化（合帧不改语义，只改时机）。
+// ⛔ trace 13.gz（2026-09-18）实测：rAF 回调里读 `el.scrollTop` 在 21 万节点 DOM 上
+// 每次强制布局 ~7ms，90 次 = 643ms（8.5s trace 的 7.5%）。现在改成：scroll 事件里
+// 同步读 scrollTop（此时布局已完成，零强制布局），只把 cb(setState) 延迟到共享
+// frameScheduler 的一个 rAF（一帧最多一次 React 通知，且与 TurnBody / store 共用
+// 同一个 rAF → 自动批处理）。
 const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (instance, cb) => {
   const win = instance.targetWindow
   if (!win || typeof win.requestAnimationFrame !== 'function') {
     return defaultObserveElementOffset(instance, cb)
   }
-  let raf = 0
+  // scroll 事件里同步读 offset（免费——scroll 事件本身意味着布局刚做完），
+  // 只把 setState 延迟到 frameScheduler。
+  let pendingOffset: number | null = null
+  let pendingIsScrolling = false
+  const flushTask = () => {
+    if (pendingOffset === null) return
+    cb(pendingOffset, pendingIsScrolling)
+    pendingOffset = null
+  }
   const wrappedCb: (offset: number, isScrolling: boolean) => void = (offset, isScrolling) => {
     if (!isScrolling) {
       // 滚动停止通知：取消 pending 合帧，同步直达（isScrolling=false 语义
       // 是"滚动已停"，延迟它会让 TanStack 的 isScrolling 状态晚一帧）。
-      if (raf) {
-        win.cancelAnimationFrame(raf)
-        raf = 0
-      }
+      frameScheduler.cancel(flushTask)
+      pendingOffset = null
       cb(offset, false)
       return
     }
-    // 滚动中：一帧一次。pending 期间到达的 scroll 事件被合帧丢弃（rAF 执行
-    // 时读最新 scrollTop，offset 参数的旧值不用）。
-    if (raf) return
-    raf = win.requestAnimationFrame(() => {
-      raf = 0
-      const el = instance.scrollElement
-      if (!el) {
-        cb(offset, true)
-        return
-      }
-      const { horizontal, isRtl } = instance.options
-      cb(horizontal ? el.scrollLeft * (isRtl ? -1 : 1) : el.scrollTop, true)
-    })
+    // 滚动中：在 scroll 事件里**同步读 scrollTop**（免费），只把 cb 延迟到
+    // frameScheduler（一帧最多一次 React 通知，与 TurnBody / store 共用 rAF）。
+    const el = instance.scrollElement
+    if (!el) {
+      cb(offset, true)
+      return
+    }
+    const { horizontal, isRtl } = instance.options
+    pendingOffset = horizontal ? el.scrollLeft * (isRtl ? -1 : 1) : el.scrollTop
+    pendingIsScrolling = true
+    frameScheduler.schedule(flushTask)
   }
   const cleanup = defaultObserveElementOffset(instance, wrappedCb)
   return () => {
-    if (raf) {
-      win.cancelAnimationFrame(raf)
-      raf = 0
-    }
+    frameScheduler.cancel(flushTask)
     cleanup?.()
   }
 }
@@ -228,19 +265,38 @@ const nonDegenerateObserveElementRect: typeof defaultObserveElementRect = (insta
  * 返回"上次已知尺寸"（`resizeItem` 里 delta === 0 ⇒ 完全无副作用）；元素可见时的 0
  * 照实返回（那才是真实的 0 尺寸）。
  */
-const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
+/**
+ * ⛔ 不变式：**行高永远不允许是 0**。
+ *
+ * 虚拟行是 `position: absolute; top: 0; transform: translateY(start)`（见 render）。
+ * TanStack 用 `start` 定位，而 `start` 是前面所有行 size 的累加 —— **只要某行 size=0，
+ * 它的下一行就与它共享同一个 start ⇒ 两层内容画在同一 y 区间**（用户 2026-09-18 报的
+ * P0：偶发消息正文互相穿插）。所以 0 高度不是"小"，而是**布局破坏**。
+ *
+ * 0 测量的两个来源都不可信：
+ *   1. 元素当前没有渲染盒（隐藏 tab / 脱离文档 / `display:none` 祖先）——TanStack 的
+ *      `observeElementRect` 那侧已由 `nonDegenerateObserveElementRect` 保住容器尺寸，
+ *      但**行级**测量仍会拿到 0；
+ *   2. 元素可见但内容尚未定形（刚挂载的异步 markdown / mermaid / 字体）—— 稍后
+ *      ResizeObserver 会用真实高度修正。
+ * 因此一律退回：**记住的实测高度 → 该行估算高度 → 1px 占位**（永不 0）。
+ * 旧实现在「可见元素」分支直接返回 0，正是这条 P0 的口子。
+ */
+export const noDegenerateMeasureElement: typeof defaultMeasureElement = (element, entry, instance) => {
   const size = defaultMeasureElement(element, entry, instance)
-  if (size > 0) return size
   const el = element as unknown as HTMLElement
-  if (el.isConnected && el.offsetParent !== null) return size
   const index = Number(el.dataset?.index ?? -1)
   const v = instance as unknown as {
     measurementsCache?: { key: unknown; size: number }[]
     itemSizeCache?: Map<unknown, number>
+    options?: { estimateSize?: (index: number) => number }
   }
+  if (size > 0) return size
   const item = index >= 0 ? v.measurementsCache?.[index] : undefined
-  if (!item) return size
-  return v.itemSizeCache?.get(item.key) ?? item.size
+  const remembered = item ? (v.itemSizeCache?.get(item.key) ?? item.size) : 0
+  if (remembered > 0) return remembered
+  const est = v.options?.estimateSize?.(index)
+  return est && est > 0 ? est : 1
 }
 
 export function latestCompactBoundaryIndex(rows: Pick<ChatMessage, 'role' | 'content'>[]): number {
@@ -297,6 +353,10 @@ export const MessageList = memo(function MessageList({
   )
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  /** virtualizer 坐标原点在滚动容器里的 y（padding-top + 顶部哨兵高度）。
+   *  **只量一次**（见下方 useLayoutEffect）——谓词里做纯算术，绝不逐行读 DOM。 */
+  const contentOriginRef = useRef(0)
+  const originRefEl = useRef<HTMLDivElement>(null)
   const stickToBottomRef = useRef(true)
   const pendingFollowRafRef = useRef<number | null>(null)
   // Generation counter — each scheduleFollow call increments this. The
@@ -346,11 +406,54 @@ export const MessageList = memo(function MessageList({
     () => orderMessageRows(bindTurnIDs(messages)),
     [messages],
   )
+  /** 供 useLayoutEffect 的依赖用（`rows` 每帧换引用，只关心"有没有行"）。 */
+  const rowsEmpty = rows.length === 0
   // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
   // must read the CURRENT rows, not a stale snapshot captured in effect deps —
   // after onLoadMore prepends older rows, the effect closure's `rows` is still
   // the pre-prepend array, so findIndex would miss the anchor.
   const rowsRef = useRef(rows)
+
+  /**
+   * 记忆感知的行测量（切会话性能修复，见 rowHeightMemory.ts）：
+   * 内容指纹 + 宽度都命中 ⇒ **零 DOM 读**直接返回记忆高度；因为返回尺寸与 TanStack
+   * 当前记录相等，`resizeItem` 会在 `size === item.size` 处早退 ⇒ 连
+   * `shouldAdjustScrollPositionOnItemSizeChange` 的 getBoundingClientRect 环路也一并消失。
+   * 依赖为空：回调只经 rowsRef/模块级单例现读，身份恒定（不能每帧新建，
+   * 否则可见行的 ref 每帧重挂 → 每帧强制布局）。
+   */
+  const measureRow = useMemo(
+    () =>
+      // 边界 cast：本包装器与 TanStack 的泛型 instance 类型无关（见 rowHeightMemory.ts 的注释），
+      // 只读 `dataset.index` / 记忆表 / 宽度。
+      createHeightAwareMeasureElement({
+        lookup: (index) => {
+          const row = rowsRef.current[index]
+          return row ? { key: rowMemoryKey(row, index), sig: rowSignature(row) } : undefined
+        },
+        // 挂载时的**初值提示**（记忆命中值，否则内容估算）——**零 DOM 读**；
+        // 真实高度由上方 layout effect 的"先批量读、后批量写"在 **paint 前**校正。
+        // 这样估算偏小不会压字、偏大不会留白：任何一帧渲染出的都是实测值。
+        hint: (index) => {
+          const row = rowsRef.current[index]
+          if (!row) return undefined
+          const remembered = heightMemory.get(
+            rowMemoryKey(row, index),
+            rowSignature(row),
+            heightLayoutWidth.current(),
+          )
+          return remembered ?? estimateRowByContent(row)
+        },
+        measure: noDegenerateMeasureElement as unknown as (
+          element: Element,
+          entry: ResizeObserverEntry | undefined,
+          instance: unknown,
+        ) => number,
+        memory: heightMemory,
+        width: () => heightLayoutWidth.current(),
+      }) as unknown as typeof defaultMeasureElement,
+    [],
+  )
   rowsRef.current = rows
   // ── loadMore 触发状态机（2026-09-13「一次手势 11 次请求」请求风暴根治）─────
   // 触发权：`loadMoreArmedRef` = 本轮「哨兵可见回合」的触发权是否还没用掉。
@@ -398,10 +501,46 @@ export const MessageList = memo(function MessageList({
   // isPartial 才是真正在接收 live 进度的行。
   const liveId = useMemo(() => {
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].isPartial) return rows[i].id
+      // ⛔ 只认真正的 live 行：frozen 行（cancel / idle 兜底定格）也 isPartial=true，
+      // 但它不是 live —— 占用 liveId 会让它拿到 EMPTY 的 liveProgress
+      //（liveProgressFromState 在 activeTurn===null 时返回空快照，frozen 恒满足）
+      // 并在 busy 时抑制下面的占位符 ⇒ 「输入框是 cancel，上面的内容却像 idle」
+      //（用户 2026-09-19 明确点名的不变量被破坏）。frozen 行的工具/内容已在
+      // deriveRows 折进 iterations，不需要 liveProgress。
+      if (rows[i].isPartial && !rows[i].frozen) return rows[i].id
     }
     return null
   }, [rows])
+  // 不变量（用户 2026-09-19）：「只要输入框是 cancel 按钮，就一定不能上面渲染的
+  // 内容是 idle 内容」⇒ **列表尾部**必须有一个「进行中」信号。
+  //
+  // 判据必须看**尾行**：只有"live 行本身正好是尾行、且它自己在渲染信号"时才不需要
+  // 占位符。live 行不在尾部（例如下面还有更新的 user 行），或 live 行是 frozen
+  //（frozen 不算 live，见 liveId），或压根没有 live 行 ⇒ busy 时必须渲染占位符。
+  //
+  // ⛔ 教训：早前用 `liveId === null` 判据时，frozen 行会冒充 live 行把占位符挡掉；
+  // 而若 store 里存在**不在可视尾部**的 live 行（例如被伪造成 live 的历史 turn），
+  // 单看 liveId 也会把占位符挡掉 ⇒ 用户看到「cancel + 完全没有进行中信号」。
+  const tailRowId = rows.length > 0 ? rows[rows.length - 1].id : null
+  // live 行自身在尾部且**确有在飞迭代**时才认为"尾部已渲染进行中信号"。
+  // ⛔ `liveIterationInFlight` 与 LiveIteration 的空内容分支**共用同一判据**
+  //（用户 2026-09-20 报告：「思考中和思考 stream 明显不可能同时存在才对」）：
+  // 迭代边界时进行中迭代号仍等于刚 commit 的迭代（已渲染成历史块），此时
+  // LiveIteration 不再显示占位符 —— 本处的 tailShowsIndicator 必须同步为 false，
+  // 但又**不能**回落到 busy 占位符（那会再画一个「思考中…」，与上方已完成的
+  // 「思考 N 字」自相矛盾）。尾行就是 live 行 ⇒ 列表尾部渲染的是该 turn 自己的
+  // 迭代内容（非 idle 画面，不变量仍成立），无需再叠加占位符。
+  const tailIsLiveRow = liveId !== null && liveId === tailRowId
+  const tailShowsIndicator =
+    tailIsLiveRow &&
+    (liveProgress?.phase === 'compressing' ||
+      (liveProgress?.streaming === true &&
+        liveIterationInFlight({
+          iteration: liveProgress?.iteration ?? 0,
+          iterationHistory: liveProgress?.iterationHistory ?? [],
+        })))
+  const showBusyPlaceholder =
+    busy && !(loading && rows.length === 0) && !tailShowsIndicator && !tailIsLiveRow
   const compactBoundaryIndex = useMemo(() => latestCompactBoundaryIndex(rows), [rows])
   const hasFooter = footer !== null && footer !== undefined
 
@@ -425,7 +564,7 @@ export const MessageList = memo(function MessageList({
       const row = rows[index]
       if (!row) return ESTIMATE
       const key = rowMemoryKey(row, index)
-      const remembered = heightMemory.get(key)
+      const remembered = heightMemory.get(key, rowSignature(row), heightLayoutWidth.current())
       if (remembered !== undefined) return remembered
       // GenUI 行给接近实际的初值（面板 header + 典型 UI 高度），真实高度由
       // measureElement 的 ResizeObserver 持续跟踪 —— 内容长高/折叠/展开自动修正。
@@ -438,10 +577,10 @@ export const MessageList = memo(function MessageList({
     observeElementOffset: rafCoalescedObserveElementOffset,
     // 容器几何：忽略「没有布局的测量」（0×0）——否则容器被隐藏（手机端开工具页）
     // 会让可见窗口塌成空、所有行卸载（见模块级 nonDegenerateObserveElementRect）。
-    observeElementRect: nonDegenerateObserveElementRect,
+    observeElementRect: widthAwareObserveElementRect,
     // 行尺寸：同一个退化读数从**行**这一侧进来时同样必须忽略（见上面的
     // noDegenerateMeasureElement）——否则隐藏期间所有行塌成 0 高，返回时多挂 14 行。
-    measureElement: noDegenerateMeasureElement,
+    measureElement: measureRow,
     getItemKey: (index) => {
       const r = rows[index]
       if (!r) return `row-${index}`
@@ -490,16 +629,42 @@ export const MessageList = memo(function MessageList({
         scrollElement?: HTMLElement | null
         elementsCache?: Map<string, HTMLElement>
       }
-      const el = inst.elementsCache?.get(item.key)
-      const scroller = inst.scrollElement
-      if (el && scroller && el.isConnected) {
-        // 行的下缘 ≤ 滚动视口上缘 ⇒ 该行完全在视口上方（真正需要补偿）。
-        return el.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().top
-      }
-      // 兜底（元素未注册时）：沿用坐标比较，按 padding 语义保守判定。
-      return item.end < (inst.scrollOffset ?? 0)
+      // ⛔ 绝不在这里读 DOM（2026-09-18 生产 trace 归因，用户实测"还是卡"）：
+      // 本谓词由 TanStack `resizeItem` **对每个尺寸变化的行**调用一次，而它内部
+      // 紧接着会写 `scrollTop`（补偿滚动）——「读 → 写 → 读」交替 ⇒ 每次调用都
+      // 触发一次**强制同步布局**。一次流式提交挂载/改高 N 行 = N 次全量布局。
+      // 实测：`getBoundingClientRect` 33.3% + `get offsetHeight` 13.3%（合计 46.6% CPU），
+      // 22 个 long task 累计 5.2s、单次最大 **1036ms**，调用链 = React commit → 本谓词。
+      //
+      // 用**只量一次**的内容原点（padding-top + 顶部哨兵高度，见 originRefEl 的
+      // useLayoutEffect）把 virtualizer 坐标换成滚动容器坐标，再与 TanStack 自己维护的
+      // `scrollOffset`（= 真实 scrollTop）比较 —— 语义与「元素下缘 ≤ 视口上缘」逐字等价，
+      // 但 O(1) 且**零 DOM 读**。
+      return item.end + contentOriginRef.current <= (inst.scrollOffset ?? 0)
     }
   }, [virtualizer])
+
+  /**
+   * 内容原点（virtualizer 坐标 0 在滚动容器里的真实 y）——**只量一次**。
+   *
+   * 需要它是因为 virtualizer 的 item 坐标从「内容流 0」起算，而 `scrollOffset` 是**原始
+   * scrollTop**（含容器 padding-top 与顶部 loadMore 哨兵的高度）。两者差一个常量；
+   * 用常量把坐标换算对齐后，`shouldAdjustScrollPositionOnItemSizeChange` 里就能做纯
+   * 算术判定（见该处的 PERF 注释：逐行读 DOM 会在 resizeItem 写 scrollTop 之后
+   * 触发强制同步布局，实测占 46.6% CPU）。
+   *
+   * 依赖只在**会改变原点**的时刻重算：会话切换（padding/结构变）、哨兵出现/消失
+   * （hasMore）、哨兵内容切换（loadingMore：spinner ↔ 文本）、以及首行出现时。
+   * 每次测量是一次强制布局，但只发生在这几个稀疏时刻（不是每行、不是每帧）。
+   */
+  useLayoutEffect(() => {
+    const wrapper = originRefEl.current
+    const scroller = scrollRef.current
+    if (!wrapper || !scroller) return
+    const origin =
+      wrapper.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+    if (Number.isFinite(origin) && origin >= 0) contentOriginRef.current = origin
+  }, [chatKey, hasMore, loadingMore, rowsEmpty])
 
   /**
    * 迭代块「高度 / 冻结裁决」的作用域 = **会话身份 + 布局宽度**。
@@ -544,6 +709,50 @@ export const MessageList = memo(function MessageList({
   // = rows), so the callback body always sees the CURRENT row. virtualizer
   // is a stable instance (useVirtualizer keeps one instance; only its options
   // are updated per render).
+  /**
+   * ⛔ 「**永远准** + **性能优秀**」两条硬要求的落点（2026-09-18，用户明确要求）。
+   *
+   * 虚拟列表的行位置只能由**真实高度**决定：估算偏小 ⇒ 下一行压上来（字符重合）；
+   * 估算偏大 ⇒ 出现大段空白（用户截图）。而挂载时**逐行**读 DOM 又是 O(N) 强制布局
+   * （切会话 10.9s 的根源）—— 所以"跳过测量"和"逐行测量"都不行。
+   *
+   * 正解：**同一个 commit 的 layout effect 里"先批量读、后批量写"** ——
+   *   ① 读阶段：一次把所有已渲染行的真实高度读完（**读之间没有任何写** ⇒ 整批只付
+   *      **一次**布局，而不是 N 次）；
+   *   ② 写阶段：把真实高度喂回虚拟器（尺寸未变的行 `resizeItem` 内部早退 ⇒ 零写）。
+   * layout effect 在 **paint 之前**执行 ⇒ 用户永远看不到"按估算定位"的那一帧
+   * ⇒ **既无重叠也无空白**，且每 commit 只付一次布局。
+   *（后续内容变化仍由 ResizeObserver 自带的 borderBoxSize 免费校正。）
+   */
+  useLayoutEffect(() => {
+    const items = virtualizer.getVirtualItems()
+    if (items.length === 0) return
+    // TanStack 的 elementsCache 以 VirtualItem.key 为键（Key = string | number）
+    // —— 用 Map<unknown, …> 取，避免把 key 强转成 string（运行期行为不变）。
+    const inst = virtualizer as unknown as { elementsCache?: Map<unknown, HTMLElement> }
+    const measured: Array<{ index: number; height: number }> = []
+    // ① 读：整批（无写穿插）
+    for (const it of items) {
+      const el = inst.elementsCache?.get(it.key)
+      if (!el) continue
+      const h = Math.round(el.getBoundingClientRect().height)
+      if (h > 0 && h !== Math.round(it.size)) measured.push({ index: it.index, height: h })
+    }
+    // ② 写：仅尺寸变化的行（并把真值记进记忆，供后续未渲染行做初值）
+    for (const m of measured) {
+      virtualizer.resizeItem(m.index, m.height)
+      const row = rowsRef.current[m.index]
+      if (row) {
+        heightMemory.set(
+          rowMemoryKey(row, m.index),
+          rowSignature(row),
+          heightLayoutWidth.current(),
+          m.height,
+        )
+      }
+    }
+  })
+
   const measureRef = useCallback(
     (node: HTMLElement | null) => {
       if (!node) {
@@ -554,10 +763,21 @@ export const MessageList = memo(function MessageList({
       const idx = Number(node.dataset?.index ?? -1)
       const row = rowsRef.current[idx]
       if (row) {
-        const h = node.getBoundingClientRect().height
-        if (h > 0) {
-          heightMemory.set(rowMemoryKey(row, idx), Math.round(h))
-          if (heightMemory.size > 3000) heightMemory.clear()
+        // ⛔ 不要再读一次 DOM（2026-09-18 trace：`measureElement` 本身已经量过，
+        // 紧跟一次 `getBoundingClientRect()` 会与 TanStack 内部刚做的写（scrollTop
+        // 补偿）交错 ⇒ 又一次强制同步布局）。直接从 TanStack 的测量缓存取（纯内存）。
+        const size =
+          (virtualizer as unknown as { measurementsCache?: { size: number }[] }).measurementsCache?.[idx]
+            ?.size ?? 0
+        if (size > 0) {
+          // 记录实测高度 + 指纹 + 宽度：同一内容的行在切会话/重挂载时**零 DOM 读**复用
+          // （见 rowHeightMemory.ts；缓存上限与宽度失效都在该模块内处理）。
+          heightMemory.set(
+            rowMemoryKey(row, idx),
+            rowSignature(row),
+            heightLayoutWidth.current(),
+            Math.round(size),
+          )
         }
       }
     },
@@ -642,6 +862,13 @@ export const MessageList = memo(function MessageList({
       if (items.length > 0) {
         const lastItemIdx = items[items.length - 1].index
         if (lastItemIdx < rows.length - 1) {
+          const scroller = scrollRef.current
+          const v = virtualizer as unknown as {
+            scrollOffset?: number
+            scrollRect?: { height: number } | null
+            getTotalSize?: () => number
+            scrollElement?: HTMLElement | null
+          }
           console.error('[VIRTUALIZER_TAIL_DROP] getVirtualItems() does not cover the LIVE last row while sticking to bottom', {
             lastItemIdx,
             rowsLen: rows.length,
@@ -649,6 +876,13 @@ export const MessageList = memo(function MessageList({
             lastRowId: lastRow.id,
             lastRowRole: lastRow.role,
             busy,
+            // ── 决定性诊断：内部 offset vs DOM 真相 ──
+            vOffset: v.scrollOffset,
+            vTotal: v.getTotalSize?.(),
+            domTop: scroller ? Math.round(scroller.scrollTop) : null,
+            domScrollH: scroller?.scrollHeight ?? null,
+            domClientH: scroller?.clientHeight ?? null,
+            sameEl: v.scrollElement === scroller,
           })
           console.error(new Error('[VIRTUALIZER_TAIL_DROP] stack'))
         }
@@ -932,13 +1166,40 @@ export const MessageList = memo(function MessageList({
       setHasNewContent(true)
       return
     }
-    // stick=true — ensure we're actually at the bottom
     const el = scrollRef.current
-    if (el && el.scrollHeight - el.clientHeight - el.scrollTop > 2) {
-      programmaticScrollRef.current = true
-      el.scrollTop = el.scrollHeight
-      queueMicrotask(() => { programmaticScrollRef.current = false })
+    if (!el) return
+    // ⛔ 本 effect 依赖含 `liveProgress` ⇒ **每流式帧都跑**。因此这里既不能读几何
+    // （`el.scrollHeight` 紧跟 React 提交 ⇒ 强制同步布局；2026-09-18 生产 trace 实测
+    // 这一处 **1.58s / 27.1% CPU**，单次 long task 885ms），也不能每帧写滚动位置
+    // （写会把布局弄脏 ⇒ 下一次几何读又要重排，`get scrollTop` 0.64s 就是这么来的）。
+    //
+    // 两个动作都换成内存数字 + 一次 clamp 写入：
+    //  1) 「是否已在底部」用**同一原点**换算：内容绝对底 = totalSize + contentOrigin
+    //     （origin = 容器 padding + 顶部哨兵，见内容原点 effect）——
+    //     不换算就会差一个 origin ⇒ 判断恒为"没到底" ⇒ 每帧写（本 bug 的根因）。
+    //  2) 需要钉底时给一个必然超界的 `top`，浏览器自行 clamp 到底：
+    //     **零几何读**（`el.scrollTop = el.scrollHeight` 那种写法必须先读 scrollHeight）。
+    const v = virtualizerRef.current as unknown as {
+      scrollOffset?: number
+      scrollRect?: { height: number } | null
+      getTotalSize?: () => number
     }
+    const total = v.getTotalSize?.() ?? 0
+    const viewport = v.scrollRect?.height ?? 0
+    const offset = v.scrollOffset ?? 0
+    if (viewport > 0 && total > 0 && offset + viewport >= total + contentOriginRef.current - 2) {
+      return // 已经在底部：零布局读、零写入
+    }
+    programmaticScrollRef.current = true
+    if (typeof el.scrollTo === 'function') {
+      // 生产路径：超界 top 由浏览器 clamp ⇒ **零几何读**。
+      el.scrollTo({ top: SCROLL_PIN_MAX })
+    } else {
+      // jsdom（单测）/ 极老环境没有 `Element.prototype.scrollTo`：退回直接赋值，
+      // 这条退化路径读一次 `scrollHeight` 是可接受的（测试环境没有布局成本）。
+      el.scrollTop = el.scrollHeight
+    }
+    queueMicrotask(() => { programmaticScrollRef.current = false })
   }, [rows.length, liveProgress, hasFooter])
 
   // ── ResizeObserver: follow bottom when sticky ─────────────────────────────
@@ -1142,6 +1403,7 @@ export const MessageList = memo(function MessageList({
           )}
           {rows.length > 0 && (
             <div
+              ref={originRefEl}
               style={{ height: `${virtualizer.getTotalSize()}px` }}
               className="relative w-full"
             >
@@ -1211,7 +1473,7 @@ export const MessageList = memo(function MessageList({
               也不渲染 → 完全空白（切换会话新 turn，用户报告）。收紧为
               liveId === null 与 LiveIteration 严格互斥（排队消息沉底在 live
               行之后时 rows 最后是 user，旧条件会与本组件双渲染）。 */}
-          {busy && !(loading && rows.length === 0) && liveId === null && (
+          {showBusyPlaceholder && (
             <div className="px-3 py-2">
               {liveProgress?.phase === 'compressing' ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted">

@@ -930,6 +930,24 @@ func (m *MultiTenantSession) GetSessionUsageStats(channel, chatID string, recent
 	return m.sessionSvc.GetTenantUsageStats(tenantID, recentLimit)
 }
 
+// GetSessionUsageBuckets aggregates a session's usage into fixed-width time
+// buckets, entirely in SQL over the FULL iteration_history table (unlike
+// GetSessionUsageStats' RecentIterations, which is capped at ≤500 detail rows —
+// that cap is why the trend chart could only cover the newest calls).
+// Read-only mirror of GetSessionUsageStats: resolves the tenant via
+// GetTenantIDByChannelChatID (no tenant creation side effect). Returns
+// (nil, nil) when the session doesn't exist.
+func (m *MultiTenantSession) GetSessionUsageBuckets(channel, chatID string, bucketSeconds int64, count int, tzOffsetMinutes int) ([]sqlite.UsageBucket, error) {
+	tenantID, err := m.tenantSvc.GetTenantIDByChannelChatID(channel, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("get tenant: %w", err)
+	}
+	if tenantID == 0 {
+		return nil, nil
+	}
+	return m.sessionSvc.GetTenantUsageBuckets(tenantID, bucketSeconds, count, tzOffsetMinutes)
+}
+
 // RewindHistory truncates a session at a stable user history node.
 func (m *MultiTenantSession) RewindHistory(channel, chatID string, historyID int64) (llm.ChatMessage, int, error) {
 	tenantID, err := m.tenantSvc.GetOrCreateTenantID(channel, chatID)
