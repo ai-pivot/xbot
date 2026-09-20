@@ -22,14 +22,16 @@ func StorageSchema() []SettingDefinition {
 		{
 			Key:          "provider",
 			Label:        "Storage backend",
-			Description:  "local = keep uploads on this server (default, no config needed). qiniu / s3 = cloud object storage (bucket is the source of truth; images never expire unless you set a lifecycle rule).",
+			Description:  "local = keep uploads on this server (default, no config needed). aliyun (阿里云 OSS) / cos (腾讯云 COS) / qiniu / s3 = cloud object storage — the bucket becomes the source of truth and images never expire unless you set a lifecycle rule.",
 			Type:         SettingTypeSelect,
 			Category:     "File storage",
 			DefaultValue: "local",
 			Options: []SettingOption{
 				{Label: "Local static (this server)", Value: "local", Description: "Served by /api/files/download; newest 500 uploads are kept (older ones are pruned)"},
-				{Label: "Qiniu Kodo", Value: "qiniu"},
-				{Label: "S3 compatible", Value: "s3", Description: "AWS S3 / MinIO / R2 / OSS-S3 ..."},
+				{Label: "Alibaba Cloud OSS (阿里云 OSS)", Value: "aliyun", Description: "S3-compatible; endpoint derived from region (e.g. cn-hangzhou ⇒ oss-cn-hangzhou.aliyuncs.com)"},
+				{Label: "Tencent Cloud COS (腾讯云 COS)", Value: "cos", Description: "S3-compatible; endpoint derived from region (e.g. ap-guangzhou ⇒ cos.ap-guangzhou.myqcloud.com)"},
+				{Label: "Qiniu Kodo (七牛)", Value: "qiniu"},
+				{Label: "S3 compatible", Value: "s3", Description: "AWS S3 / MinIO / R2 / SeaweedFS ..."},
 			},
 		},
 
@@ -50,24 +52,24 @@ func StorageSchema() []SettingDefinition {
 
 		// ── S3 compatible ────────────────────────────────────────────────────
 		{Key: "s3_access_key", Label: "Access key", Type: SettingTypeText, Category: "File storage",
-			Description: "S3 access key ID", DefaultValue: "", DependsOnKey: "provider", DependsOnValues: "s3"},
+			Description: "S3 access key ID", DefaultValue: "", DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 		{Key: "s3_secret_key", Label: "Secret key", Type: SettingTypePassword, Category: "File storage",
 			Description: "S3 secret access key (stored in config.json, masked on read)", DefaultValue: "",
-			DependsOnKey: "provider", DependsOnValues: "s3"},
+			DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 		{Key: "s3_bucket", Label: "Bucket", Type: SettingTypeText, Category: "File storage",
-			Description: "S3 bucket name", DefaultValue: "", DependsOnKey: "provider", DependsOnValues: "s3"},
+			Description: "S3 bucket name", DefaultValue: "", DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 		{Key: "s3_region", Label: "Region", Type: SettingTypeText, Category: "File storage",
-			Description: "S3 region (e.g. us-east-1; MinIO accepts us-east-1)", DefaultValue: "",
-			DependsOnKey: "provider", DependsOnValues: "s3"},
+			Description: "Region — AWS: us-east-1 · Aliyun OSS: cn-hangzhou · Tencent COS: ap-guangzhou · MinIO: us-east-1", DefaultValue: "",
+			DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 		{Key: "s3_endpoint", Label: "Endpoint", Type: SettingTypeText, Category: "File storage",
-			Description: "Custom endpoint for MinIO / R2 / OSS-S3 (empty = AWS default)", DefaultValue: "",
-			DependsOnKey: "provider", DependsOnValues: "s3"},
+			Description: "Optional endpoint override. Empty = derived from the provider + region (AWS default / oss-<region>.aliyuncs.com / cos.<region>.myqcloud.com); set it for MinIO / R2 / self-hosted gateways", DefaultValue: "",
+			DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 		{Key: "s3_domain", Label: "CDN domain", Type: SettingTypeText, Category: "File storage",
 			Description: "Public domain for inline rendering (empty = presigned URLs)", DefaultValue: "",
-			DependsOnKey: "provider", DependsOnValues: "s3"},
+			DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 		{Key: "s3_use_path_style", Label: "Path-style addressing", Type: SettingTypeToggle, Category: "File storage",
 			Description: "Enable for MinIO and most S3-compatible gateways", DefaultValue: "false",
-			DependsOnKey: "provider", DependsOnValues: "s3"},
+			DependsOnKey: "provider", DependsOnValues: "s3,aliyun,cos"},
 	}
 }
 

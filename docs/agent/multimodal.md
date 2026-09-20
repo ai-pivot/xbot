@@ -117,6 +117,7 @@ find（用户报告）。因此成功解析的 image part 旁会附一个**结�
 | provider | 行为 | 保留策略 |
 |---|---|---|
 | `""` / `local`（默认、免配置） | 上传写 `<xbotHome>/uploads/<key>`，由同源 `/api/files/download` 读盘返回（`serveLocalFile`） | 每次上传后 `pruneLocalUploads(root, 500)`：**按数量保留最新 500 个**（无时间上限；≈ 500 ÷ 日均上传数 天） |
+| `aliyun`（阿里云 OSS） / `cos`（腾讯云 COS） | **S3 兼容**：复用同一组 `s3_*` 凭据；**endpoint 由 region 推导**（`oss-<region>.aliyuncs.com` / `cos.<region>.myqcloud.com`），显式 `s3_endpoint` 优先（MinIO/R2/自建网关） | 同下（云端永不过期；本地 spill 受 500 上限） |
 | `qiniu` / `s3` | 对象存储是权威；本地**仍留一份 spill 副本**（给模型真实路径用） | 云端**永不自动删除**（`OSSProvider` 接口没有 delete，全仓无删除调用；要过期请在云控制台设 lifecycle）；本地副本仍受 500 上限 |
 
 三条单一来源（改这些能力时不要另起一份）：
@@ -125,7 +126,7 @@ find（用户报告）。因此成功解析的 image part 旁会附一个**结�
 - **provider 构建**：`serverapp.buildStorageProvider(cfg)` —— startup 与热切换**共用**（避免两处实现漂移）；未知 provider 回退本地并告警。
 - **掩码**：`channel.StorageSecretKeys()` —— 读取时打码（前 4 字符 + `****`），写回掩码值**不覆盖**真实凭据（服务端跳过含 `****` 的值）。
 
-**校验**：切到 `qiniu`/`s3` 前必须给齐 access/secret/bucket，否则**拒绝写入**（半配置会让所有上传失败）。
+**校验**：切到 `qiniu`/`s3`/`aliyun`/`cos` 前必须给齐 access/secret/bucket（`aliyun`/`cos` **还需 region**，除非给了显式 `s3_endpoint`），否则**拒绝写入**（半配置会让所有上传失败）。别名（`aliyun-oss`/`tencent`/`tencent-cos`）会归一为规范值 `aliyun`/`cos` 后落盘。
 
 **热切换链路**：`set_storage_config` → 写 config.json（`SaveToFile` 深度合并保留未知字段）→ 调
 `storageApplier`（server.go 里接线）：重建 provider → `webCh.SetOSSProvider` → 重建并重注册

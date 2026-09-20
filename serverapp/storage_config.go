@@ -164,7 +164,18 @@ func setStorageConfig(values map[string]string) (map[string]string, error) {
 		if len(missing) > 0 {
 			return nil, fmt.Errorf("qiniu storage requires: %s", strings.Join(missing, ", "))
 		}
-	case "s3":
+	case "s3", "aliyun", "aliyun-oss", "cos", "tencent", "tencent-cos":
+		// S3-compatible clouds share the s3_* credential fields. Aliyun OSS /
+		// Tencent COS additionally need a region (endpoint is derived from it)
+		// unless an explicit endpoint override is provided — so a half-configured
+		// backend is rejected here instead of breaking every upload later.
+		canonical := cfg.OSS.Provider
+		switch canonical {
+		case "aliyun-oss":
+			canonical = "aliyun"
+		case "tencent", "tencent-cos":
+			canonical = "cos"
+		}
 		var missing []string
 		if cfg.OSS.S3AccessKey == "" {
 			missing = append(missing, "s3_access_key")
@@ -175,9 +186,13 @@ func setStorageConfig(values map[string]string) (map[string]string, error) {
 		if cfg.OSS.S3Bucket == "" {
 			missing = append(missing, "s3_bucket")
 		}
-		if len(missing) > 0 {
-			return nil, fmt.Errorf("s3 storage requires: %s", strings.Join(missing, ", "))
+		if canonical != "s3" && cfg.OSS.S3Region == "" && cfg.OSS.S3Endpoint == "" {
+			missing = append(missing, "s3_region (e.g. cn-hangzhou / ap-guangzhou) or s3_endpoint")
 		}
+		if len(missing) > 0 {
+			return nil, fmt.Errorf("%s storage requires: %s", canonical, strings.Join(missing, ", "))
+		}
+		cfg.OSS.Provider = canonical // persist the canonical name (tencent → cos)
 	default:
 		return nil, fmt.Errorf("unknown storage provider %q (want local/qiniu/s3)", cfg.OSS.Provider)
 	}

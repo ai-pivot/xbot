@@ -132,9 +132,10 @@ When `persona_isolation` is `true`:
 | Backend | Notes | Retention |
 |---|---|---|
 | **Local** (default, zero config) | Uploads go to `<XBOT_HOME>/uploads/`, served by the same-origin `/api/files/download` | Only the **newest 500 uploads** are kept after each upload (by mtime; no time limit — i.e. `500 ÷ uploads per day` days) |
+| **Alibaba Cloud OSS** / **Tencent Cloud COS** | S3-compatible: same credential fields, with the **endpoint derived from the region** (`cn-hangzhou` → `oss-cn-hangzhou.aliyuncs.com`; `ap-guangzhou` → `cos.ap-guangzhou.myqcloud.com`); an explicit endpoint overrides it (MinIO / R2 / self-hosted) | Cloud objects **never expire automatically** |
 | **Qiniu Kodo** / **S3 compatible** | The bucket is the source of truth; a local copy is kept so the model can be handed a real path | Cloud objects **never expire automatically** (set a lifecycle rule in your cloud console if you want expiry) |
 
 - Upload: paste/drag in the composer → `POST /api/files/upload` (≤10MB, any file type) → returns `upload_key`; the message stores only a **relative reference** `![name](/api/files/download?key=…&inline=1)` (never base64; renders a placeholder if it is gone).
 - Fetch: `GET /api/files/download?key=…` (download by default; add `&inline=1` to render inline).
-- Credentials are **masked** on read (`AKID****`); echoing a masked value back never overwrites the real key. Switching to a cloud backend requires access/secret/bucket, otherwise the save is **rejected** (a half-configured backend would break every upload).
+- Credentials are **masked** on read (`AKID****`); echoing a masked value back never overwrites the real key. Switching to a cloud backend requires access/secret/bucket (Alibaba OSS / Tencent COS also need a region unless you provide an explicit endpoint), otherwise the save is **rejected** (a half-configured backend would break every upload).
 - For the model to actually *see* an image, also enable **Settings → LLM → model row → Vision input**.

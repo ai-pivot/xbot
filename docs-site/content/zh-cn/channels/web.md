@@ -111,9 +111,10 @@ Web UI 有桌面与移动两套外壳，默认按视口宽度自动选择（≤7
 | 后端 | 说明 | 保留策略 |
 |---|---|---|
 | **本地**（默认，免配置） | 上传写 `<XBOT_HOME>/uploads/`，由同源 `/api/files/download` 读盘返回 | 每次上传后只保留**最新 500 个**（按文件修改时间；没有时间上限，等于 `500 ÷ 日均上传数` 天） |
+| **阿里云 OSS** / **腾讯云 COS** | S3 兼容：复用同一组凭据，**endpoint 由 region 自动推导**（`cn-hangzhou` → `oss-cn-hangzhou.aliyuncs.com`；`ap-guangzhou` → `cos.ap-guangzhou.myqcloud.com`），也可手填 endpoint 覆盖（MinIO/R2/自建网关） | 云端**不会自动过期** |
 | **七牛 Kodo** / **S3 兼容** | 对象存储为权威；本地仍留一份副本供模型拿到真实路径 | 云端**不会自动过期**（如需过期请在云控制台设 lifecycle） |
 
 - 上传：编辑器里粘贴/拖拽 → `POST /api/files/upload`（≤10MB，类型不限制）→ 返回 `upload_key`，消息正文里只存**相对引用** `![name](/api/files/download?key=…&inline=1)`（不存 base64；取不到时显示占位）。
 - 取回：`GET /api/files/download?key=…`（默认「下载」，加 `&inline=1` 才内联渲染）。
-- 凭据在读取时**打码**（`AKID****`），回写掩码值不会覆盖真实密钥；切到云后端前必须给齐 access/secret/bucket，否则会**拒绝保存**（避免半配置把上传打断）。
+- 凭据在读取时**打码**（`AKID****`），回写掩码值不会覆盖真实密钥；切到云后端前必须给齐 access/secret/bucket（阿里云 OSS / 腾讯云 COS 还需 region，除非手填 endpoint），否则会**拒绝保存**（避免半配置把上传打断）。
 - 想让模型"看到"图片，还需在 **设置 → LLM → 模型行 → 视觉输入（多模态）** 打开对应模型的开关。
