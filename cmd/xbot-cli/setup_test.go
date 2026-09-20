@@ -457,6 +457,30 @@ func TestPluginHealthFindings_BinaryAndWebArtifacts(t *testing.T) {
 	}
 }
 
+// TestShippedBinaryPath_Predicate —— "随包相对二进制"的判据必须 **GOOS 无关**：
+// `filepath.IsAbs("/usr/bin/node")` 在 windows 上是 false（CI Test (Windows) 实测
+// 报出假的 plugin binary missing），所以前导路径分隔符必须单独判定。
+func TestShippedBinaryPath_Predicate(t *testing.T) {
+	cases := []struct {
+		entry string
+		want  bool
+	}{
+		{"./bin/ssh-runner-plugin", true},
+		{"bin/genui-plugin", true},
+		{"/usr/bin/node", false},      // unix 绝对路径（windows 上 IsAbs 为 false ⇒ 必须仍跳过）
+		{`\bin\x.exe`, false},         // windows 绝对路径（无盘符形式）
+		{`C:\tools\x.exe`, false},     // windows 盘符绝对路径（非 windows 上 IsAbs 为 false）
+		{"node server.js", false},     // 命令行（带参数）
+		{"bash run.sh /tmp/x", false}, // script runtime 的命令行
+		{"", false},
+	}
+	for _, c := range cases {
+		if _, ok := shippedBinaryPath("/plugins/x", c.entry); ok != c.want {
+			t.Errorf("shippedBinaryPath(entry=%q) ok = %v, want %v", c.entry, ok, c.want)
+		}
+	}
+}
+
 // TestPluginHealthFindings_OnlyJudgesShippedBinaries —— entry 不一定是"随包文件"：
 // script runtime 的 entry 是命令行，stdio 的 entry 也可能是绝对路径（系统二进制）
 // 或带参数的命令行。这些都无法判定为随包文件 ⇒ 一律不产生假警。

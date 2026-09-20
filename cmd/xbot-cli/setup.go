@@ -914,12 +914,39 @@ func platformEntry(m *plugin.PluginManifest) string {
 // shippedBinaryPath 判断入口是否是"随插件分发的相对二进制"（单个 token 的相对
 // 路径），是则给出磁盘路径。带空格的命令行（entry 也可以是启动命令）与绝对路径
 // （系统二进制）无法判定为随包文件 ⇒ 跳过（不产生假警）。
+//
+// ⚠️ "绝对路径"的判定必须 **GOOS 无关**：`filepath.IsAbs("/usr/bin/node")` 在
+// windows 上是 **false**（windows 要求盘符），异平台写法会被误判成"随包相对
+// 二进制"⇒ `setup --check` 报出假的 `plugin binary missing`（CI Test (Windows)
+// 实测）。因此额外按前导路径分隔符判定。
 func shippedBinaryPath(dir, entry string) (string, bool) {
 	e := strings.TrimSpace(entry)
-	if e == "" || strings.ContainsAny(e, " \t") || filepath.IsAbs(e) {
+	if e == "" || strings.ContainsAny(e, " \t") || filepath.IsAbs(e) ||
+		hasLeadingPathSeparator(e) || isWindowsDrivePath(e) {
 		return "", false
 	}
 	return filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(e, "./"))), true
+}
+
+// hasLeadingPathSeparator 报告路径是否以 `/` 或 `\` 开头（绝对/系统路径的标志），
+// 与运行平台无关。
+func hasLeadingPathSeparator(p string) bool {
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
+}
+
+// isWindowsDrivePath 报告路径是否是 windows 盘符绝对路径（`C:\x` / `C:/x`）。
+// 非 windows 平台上 `filepath.IsAbs` 不认它 ⇒ 不单独跳过就会把跨平台 manifest 的
+// 系统二进制误判成"随包相对文件"，报出假的 `plugin binary missing`。
+func isWindowsDrivePath(p string) bool {
+	if len(p) < 3 || p[1] != ':' {
+		return false
+	}
+	c := p[0]
+	isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	if !isLetter {
+		return false
+	}
+	return p[2] == '\\' || p[2] == '/'
 }
 
 // shippedBinaryIssue 返回入口二进制的问题描述（"" = 正常）。
