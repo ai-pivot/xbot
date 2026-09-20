@@ -36,6 +36,9 @@ export function ViewSlot({ container, getViews, loadView, empty = null, classNam
 
 function LazyView({ view, loadView }: { view: ViewContribution; loadView: ViewSlotProps['loadView'] }) {
   const { t } = useI18n()
+  // 语言变化 ⇒ 重挂载插件组件（与 PluginView 同一契约：插件不订阅语言，
+  // 宿主负责让它们重新渲染）。见 PluginView 的注释。
+  const locale = useLocale()
   const [Comp, setComp] = useState<React.ComponentType | null>(null)
   const [failed, setFailed] = useState(false)
 
@@ -59,5 +62,5 @@ function LazyView({ view, loadView }: { view: ViewContribution; loadView: ViewSl
     return <div className="rounded border border-red-200 bg-red-50 p-2 text-xs text-red-600">{t('plugins.view.loadFailedWithId', { id: view.id })}</div>
   }
   if (!Comp) return <div className="animate-pulse rounded border border-slate-200 p-3 text-xs text-slate-400">{t('plugins.view.loadingView', { title: view.title })}</div>
-  return <Comp />
+  return <Comp key={locale} />
 }

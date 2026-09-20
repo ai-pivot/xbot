@@ -89,6 +89,30 @@ export function getLocale(): Locale {
   return (i18n.language as Locale) || DEFAULT_LOCALE
 }
 
+/**
+ * 订阅宿主语言切换（**唯一 seam**）。
+ *
+ * 谁需要：所有「**在调用/渲染时解析文案、但自身没有 React i18n 订阅**」的消费方 ——
+ * 插件 view 登记表（panelRegistry/layoutRegistry/usePluginViewPanels 的标题解析）、
+ * 模块级插件清单、URL 加载的插件视图（独立 bundle，用 `ctx.i18n.t()` 取值）。
+ *
+ * 契约：
+ *  - `@/i18n` 是宿主语言的**唯一权威**；需要跟随语言的模块订阅这里，
+ *    **禁止各自 `i18n.on('languageChanged')`**（事件名/退订语义只在一处维护）；
+ *  - 回调在语言**已生效后**触发（i18next 的 languageChanged 在 setLng 之后 emit），
+ *    回调内直接读 `i18n.language` 即为新值；
+ *  - 返回值是退订函数（组件 useEffect cleanup 直接用）。
+ */
+export function onLocaleChanged(listener: (locale: Locale) => void): () => void {
+  const handler = (lng: string): void => {
+    listener((lng as Locale) || DEFAULT_LOCALE)
+  }
+  i18n.on('languageChanged', handler)
+  return () => {
+    i18n.off('languageChanged', handler)
+  }
+}
+
 // Re-read locale from localStorage when server sync updates the value.
 if (typeof window !== 'undefined') {
   window.addEventListener(SETTINGS_SYNCED_EVENT, () => {

@@ -35,11 +35,16 @@ export function subscribeStatsRefresh(cb: () => void): () => void {
 export const manifest = {
   id: 'xbot.session-stats',
   // 内置插件随主 bundle 打包（拿不到清单 web.i18n）⇒ 名称/描述/视图标题走宿主 i18n。
-  name: i18n.t('plugins.sessionStats.manifest.name', { defaultValue: '会话统计' }),
+  // ⛔ getter（**读取时**求值）：import 时求值一次会让 tab/面板标题定格在加载时的语言。
+  get name() {
+    return i18n.t('plugins.sessionStats.manifest.name', { defaultValue: '会话统计' })
+  },
   version: '0.2.0',
-  description: i18n.t('plugins.sessionStats.manifest.description', {
-    defaultValue: '当前会话用量统计：token / cache 命中 / TTFT / TPOT / 迭代明细 / 多粒度趋势',
-  }),
+  get description() {
+    return i18n.t('plugins.sessionStats.manifest.description', {
+      defaultValue: '当前会话用量统计：token / cache 命中 / TTFT / TPOT / 迭代明细 / 多粒度趋势',
+    })
+  },
   permissions: ['rpc', 'ui', 'events'] as const,
   // 本插件自己的文案表（随清单分发，**不写进宿主 web/src/i18n/*.ts**）。
   // 趋势卡片的新文案走这里；历史卡片沿用宿主 plugins.sessionStats.* key（那条线由
@@ -157,7 +162,10 @@ export const manifest = {
       id: 'xbot.session-stats.panel',
       container: 'right_sidebar',
       // 复用既有宿主 key（宿主 i18n 的 plugins.sessionStats.title = 统计 / Stats / 統計）。
-      title: i18n.t('plugins.sessionStats.title', { defaultValue: '统计' }),
+      // getter：读取时按当前语言解析（见文件头 name/description 的说明）。
+      get title() {
+        return i18n.t('plugins.sessionStats.title', { defaultValue: '统计' })
+      },
       icon: 'chart',
       entry: 'builtin:xbot.session-stats.panel',
     },

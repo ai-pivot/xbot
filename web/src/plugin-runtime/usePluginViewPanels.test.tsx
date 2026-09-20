@@ -10,10 +10,10 @@
  * mock 模式仿 PluginView.test.tsx：vi.mock 工厂引用的外部变量必须经
  * vi.hoisted() 定义；runtime mock 返回【稳定引用】。
  */
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { changeLocale } from '@/i18n'
+import i18n, { changeLocale } from '@/i18n'
 
 import { panelRegistry, buildPanelDefs } from './panelRegistry'
 import { usePluginViewPanels } from './usePluginViewPanels'
@@ -123,5 +123,25 @@ describe('usePluginViewPanels (布局 v5 shim 语义)', () => {
     syncFixture([{ pluginId: 'xbot.git-info', view: { ...makeView('git-info.status', 'status_bar_right'), title: '不是 key 的标题' } }])
     const { result } = renderHook(() => usePluginViewPanels('status_bar_right'))
     expect(result.current[0].title).toBe('不是 key 的标题')
+  })
+
+  it('宿主切语言 ⇒ 【已渲染】的 hook 结果标题随之更新（无需重新挂载/刷新）', async () => {
+    // 手机工具 tab / rail 的标题就是这个 hook 的产物 ⇒ 必须随语言变化重算。
+    // 修复前：只在 mount + subscribeViews 时算一次 ⇒ 标题定格在旧语言（本用例必红）。
+    manifests['xbot.git-fancy'] = {
+      i18n: { 'zh-CN': { 'view.panel.title': 'Git 面板' }, en: { 'view.panel.title': 'Git panel' } },
+    }
+    syncFixture([
+      { pluginId: 'xbot.git-fancy', view: { ...makeView('xbot.git-fancy.panel', 'right_sidebar'), title: 'view.panel.title' } },
+    ])
+
+    const { result } = renderHook(() => usePluginViewPanels('right_sidebar'))
+    expect(result.current[0].title).toBe('Git 面板')
+
+    await act(async () => {
+      changeLocale('en')
+      await i18n.changeLanguage('en')
+    })
+    expect(result.current[0].title).toBe('Git panel')
   })
 })

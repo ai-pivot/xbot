@@ -12,8 +12,9 @@
  * 且 mock 必须返回【稳定引用】——AsyncPluginView 的 useEffect deps 含 runtime，
  * 每次渲染返回新对象会触发 effect→setState→render 死循环（挂死 worker）。
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
+import { useEffect } from 'react'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import i18n from '@/i18n'
@@ -94,6 +95,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
 }))
 
 import { PluginView } from './PluginView'
+import { createPluginI18n } from './i18n'
 
 function makeView(id: string, entry: string): ViewContribution {
   return {
@@ -178,6 +180,77 @@ describe('PluginView 分发', () => {
         expect(screen.getByTestId('captured')).toBeInTheDocument()
       })
       expect(screen.getByTestId('captured').textContent).toBe('{}')
+    })
+  })
+
+  // 回归背景（2026-09-19 用户实测：「改了语言插件没动态变化」）：插件视图是**独立
+  // bundle**，文案经 `ctx.i18n.t()` / 模块级单例在**渲染时**取值，自身没有任何宿主
+  // 语言的订阅；宿主不重新渲染它 ⇒ 永远停在旧语言。宿主的修复是在语言变化时换 React
+  // key（remount）—— 对**已发布、不改代码**的插件同样生效。
+  describe('语言变化 ⇒ 插件视图重挂载（文案跟随）', () => {
+    const view: ViewContribution = {
+      kind: 'view',
+      id: 'xbot.ssh-runner.panel',
+      container: 'right_sidebar',
+      title: '远程机器',
+      entry: 'index.js',
+    }
+
+    it('宿主切语言后，URL 加载插件视图的文案变成新语言（插件零改动）', async () => {
+      // 忠实复现插件侧形态：模块级解析器 + 渲染时取值（ssh-runner shared.ts 的 t() 同构）。
+      const pluginI18n = createPluginI18n(
+        { 'zh-CN': { greet: '你好' }, en: { greet: 'Hello' }, ja: { greet: 'こんにちは' } },
+        () => i18n.language,
+      )
+      runtimeMock.loadViewComponent.mockResolvedValue(() => (
+        <div data-testid="plugin-text">{pluginI18n.t('greet')}</div>
+      ))
+
+      render(<PluginView pluginId="xbot.ssh-runner" view={view} />)
+      await waitFor(() => expect(screen.getByTestId('plugin-text')).toBeInTheDocument())
+      expect(screen.getByTestId('plugin-text').textContent).toBe('你好')
+
+      await act(async () => {
+        await i18n.changeLanguage('ja')
+      })
+      // 修复前：组件不重渲染 ⇒ 仍是 '你好'（本断言必红）。
+      expect(screen.getByTestId('plugin-text').textContent).toBe('こんにちは')
+
+      await act(async () => {
+        await i18n.changeLanguage('en')
+      })
+      expect(screen.getByTestId('plugin-text').textContent).toBe('Hello')
+
+      await act(async () => {
+        await i18n.changeLanguage('zh-CN')
+      })
+    })
+
+    it('重挂载由 key 驱动（语言变化才 remount；普通重渲染不丢状态）', async () => {
+      let mounts = 0
+      runtimeMock.loadViewComponent.mockResolvedValue(() => {
+        useEffect(() => {
+          mounts += 1
+        }, [])
+        return <div data-testid="plugin-text">x</div>
+      })
+
+      const { rerender } = render(<PluginView pluginId="xbot.ssh-runner" view={view} />)
+      await waitFor(() => expect(screen.getByTestId('plugin-text')).toBeInTheDocument())
+      expect(mounts).toBe(1)
+
+      // 普通重渲染（props 不变）不 remount
+      rerender(<PluginView pluginId="xbot.ssh-runner" view={view} />)
+      expect(mounts).toBe(1)
+
+      await act(async () => {
+        await i18n.changeLanguage('en')
+      })
+      expect(mounts).toBe(2) // 语言变化 ⇒ key 变化 ⇒ remount
+
+      await act(async () => {
+        await i18n.changeLanguage('zh-CN')
+      })
     })
   })
 })

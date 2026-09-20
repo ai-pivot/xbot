@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react'
 
 import type { ViewContainer, ViewContribution } from '@/plugin-api'
+import { onLocaleChanged } from '@/i18n'
 import { useOptionalPluginRuntime } from '@/plugin-runtime'
 import { pluginI18nTableOf, resolvePluginText } from './i18n'
 
@@ -64,7 +65,13 @@ export function usePluginViewPanels(container: ViewContainer): PluginViewPanel[]
     }
     recompute()
     const unsubscribe = runtime.subscribeViews?.(recompute) ?? (() => {})
-    return unsubscribe
+    // 标题是「**按当前语言解析后**的文本」（view.title 允许是清单 web.i18n 的 key），
+    // 宿主切语言后必须重跑解析 —— 否则手机工具 tab / rail 标题停在旧语言。
+    const unsubscribeLocale = onLocaleChanged(recompute)
+    return () => {
+      unsubscribe()
+      unsubscribeLocale()
+    }
   }, [runtime, container])
 
   return panels
