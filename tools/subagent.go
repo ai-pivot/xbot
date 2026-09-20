@@ -105,7 +105,7 @@ Parameters (JSON):
 Available roles are listed in the <available_agents> section of the system prompt — each entry carries its <role> value; copy it verbatim.
 **role is REQUIRED on EVERY call (必填) — there is NO inference**: omitting it fails immediately with the list of available roles (never guess). For action="send"/"inspect"/"interrupt"/"unload" the role selects the target together with instance (a misspelled role is matched best-effort within your OWN sub-agent tree; zero or ambiguous matches error out and list the candidates).
 
-For TUI sidebar session management and layout adjustments, use search_tools to load tui_control. For configuration changes, load config.`
+For TUI sidebar session management and layout adjustments (CLI sessions only), use search_tools to load tui_control. For configuration changes, load config.`
 }
 
 func (t *SubAgentTool) Parameters() []llm.ToolParam {

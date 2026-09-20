@@ -20,7 +20,7 @@ func (t *ConfigTool) Description() string {
 		"This is the PRIMARY tool for all configuration management — subscriptions, models, settings, plugins, hooks, and runners. " +
 		"Use this whenever the user wants to see available configs, check a setting, or change a setting " +
 		"like max_iterations, context_mode, llm_model, llm_provider, or any other config key. " +
-		"For theme switching and TUI layout (sidebar_width, sidebar_position), use tui_control. " +
+		"For theme switching and TUI layout (sidebar_width, sidebar_position) — CLI sessions only — use tui_control. " +
 		"Actions: list, get, set, subscriptions, model, subscription, reload_plugins, reload_hooks, runner. " +
 		"To view token usage, tell the user to run /usage."
 }

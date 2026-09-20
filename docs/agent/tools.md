@@ -125,7 +125,11 @@ Routes by address prefix:
 
 ### tui_control (`tools/tui_control.go`)
 
-Core tool (always loaded). AI operates TUI sidebar, layout, and themes.
+**CLI 渠道专属工具**（`agent/agent.go` 用 `registry.RegisterForChannel("cli", …)`）—— AI 操作 TUI 侧边栏、布局与主题。
+
+TUI 只存在于 CLI：本地与远程 CLI 的 sessionKey 都是 `cli:...`，都命中该渠道；web/feishu 等渠道既**看不到**（`AsDefinitionsForSession` 按 sessionKey 的 channel 前缀过滤）也**执行不了**（`GetForSession` 回落全局查找 ⇒ 不存在）。⚠️ web 端浏览 CLI 会话时 `physical_channel` override 把 sessionKey 换成 `web:...`（`agent/engine_wire.go`），同样过滤掉 —— 与"web 里没有 TUI"一致（历史 bug：全局注册导致 web 模型能看到并调用它，必然报 "only available in local CLI mode"）。
+
+**SubAgent 不继承**：channel 工具会随 `Registry.Clone()` 进入子代理注册表，而 `filterSubAgentTools` 只遍历全局工具 ⇒ `buildSubAgentRunConfig` 显式 `UnregisterChannelTool("cli", "tui_control")`（子代理绝不能切换/关闭用户正在看的会话）。
 
 **Actions**: `switch_session`, `close_session`, `set_layout`, `set_theme`, `send_slash`, `reload_plugins`, `reload_hooks`
 

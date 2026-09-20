@@ -2016,8 +2016,15 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	registry.RegisterCore(&setGoalCompleteTool{manager: a.goalManager, onComplete: a.emitGoalProgress})
 	a.hookManager.RegisterBuiltin(a.goalManager.PreTurnEndHook())
 
-	// Register AI-Native TUI & Config tools as core (always available)
-	registry.RegisterCore(&tools.TuiControlTool{})
+	// Register AI-Native TUI & Config tools.
+	// tui_control 是 **CLI 渠道专属**工具：TUI 只存在于 CLI（本地/远程 CLI 的
+	// sessionKey 都是 "cli:..."），web/feishu 等渠道既没有 TUI，也没有
+	// TUIControl 回调 —— 在这些会话里它必须**不可见**（AsDefinitionsForSession
+	// 按 sessionKey 的 channel 前缀过滤）且**不可执行**（GetForSession 回落全局
+	// 查找 ⇒ 不存在）。⚠️ web 端浏览 CLI 会话时 `physical_channel` override 会把
+	// sessionKey 换成 "web:..."（engine_wire），此时同样不可见 —— 与"web 里没有
+	// TUI"一致（历史 bug：全局注册导致 web 模型能看到并调用一个必然报错的工具）。
+	registry.RegisterForChannel("cli", &tools.TuiControlTool{})
 	registry.RegisterCore(&tools.ConfigTool{})
 
 	// Initialize RegistryManager
