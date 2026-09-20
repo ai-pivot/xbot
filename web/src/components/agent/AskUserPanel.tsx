@@ -109,7 +109,10 @@ export function AskUserPanel({ prompt, onRespond, onCancel }: AskUserPanelProps)
   const otherSelected = q.allowOther && picks.includes(t('agent.askUserOther'))
 
   return (
-    <div className="mx-auto my-4 w-full max-w-2xl shrink-0 overflow-hidden rounded-2xl border border-border/60 bg-card shadow-lg shadow-black/[0.04]">
+    <div
+      data-testid="ask-user-panel"
+      className="mx-auto my-4 w-full max-w-2xl shrink-0 overflow-hidden rounded-2xl border border-border/60 bg-card shadow-lg shadow-black/[0.04]"
+    >
       {/* Header */}
       <div className="flex items-center gap-2.5 px-5 pb-1 pt-4">
         <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-accent/10">

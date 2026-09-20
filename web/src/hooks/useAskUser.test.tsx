@@ -83,6 +83,26 @@ function Probe({ chatID, channel }: { chatID: string; channel: string }) {
 /** Latest store handle from the rendered probe (hydration tests drive it). */
 let storeRef: ReturnType<typeof useSessionStore> | null = null
 
+/** Render the probe against the real store wiring (shared by every describe). */
+async function renderProbe() {
+  render(
+    createElement(
+      SessionStoreProvider,
+      null,
+      createElement(Probe, { chatID: 'web-chat-1', channel: 'web' }),
+    ),
+  )
+  await waitFor(() => expect(screen.getByTestId('session-count').textContent).toBe('1'))
+}
+
+/** Parse a payload that MUST yield a prompt (test assertions below depend on it).
+ * Keeps the nullable contract explicit instead of scattering `!` at call sites. */
+function mustParse(payload: unknown, fallbackRequestID?: string) {
+  const prompt = parseAskUserPrompt(payload, fallbackRequestID)
+  if (!prompt) throw new Error('expected payload to yield a prompt')
+  return prompt
+}
+
 function askUserEvent() {
   return {
     type: 'ask_user',
@@ -122,17 +142,6 @@ describe('useAskUser panel mirrors the server state', () => {
       throw new Error(`unexpected fetch: ${url}`)
     }))
   })
-
-  async function renderProbe() {
-    render(
-      createElement(
-        SessionStoreProvider,
-        null,
-        createElement(Probe, { chatID: 'web-chat-1', channel: 'web' }),
-      ),
-    )
-    await waitFor(() => expect(screen.getByTestId('session-count').textContent).toBe('1'))
-  }
 
   it('ask_user_resolved (answered in another channel) ⇒ prompt dropped, panel hidden', async () => {
     await renderProbe()
@@ -189,7 +198,7 @@ describe('useAskUser panel mirrors the server state', () => {
       storeRef?.hydrateAskUserPrompt(
         'web',
         'web-chat-1',
-        parseAskUserPrompt({
+        mustParse({
           request_id: 'req-hydrated',
           questions: [{ question: '「7ms」按哪个口径判定？', options: ['A', 'B'], allow_other: true }],
         }),
@@ -204,7 +213,7 @@ describe('useAskUser panel mirrors the server state', () => {
     await renderProbe()
 
     act(() => {
-      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-1', questions: [{ question: 'Q1' }] }))
+      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', mustParse({ request_id: 'req-1', questions: [{ question: 'Q1' }] }))
     })
     const first = storeRef?.askUserPrompts.get('web:web-chat-1')
     expect(first?.requestId).toBe('req-1')
@@ -212,14 +221,14 @@ describe('useAskUser panel mirrors the server state', () => {
     // Same request id ⇒ identical content ⇒ the Map instance is preserved
     // (zero re-render for a repeated hydration — the panel is already correct).
     act(() => {
-      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-1', questions: [{ question: 'Q1' }] }))
+      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', mustParse({ request_id: 'req-1', questions: [{ question: 'Q1' }] }))
     })
     expect(storeRef?.askUserPrompts.get('web:web-chat-1')).toBe(first)
 
     // A NEWER server-side pending question (different request id) replaces the
     // stale prompt — the DB is the authority for "which question is pending".
     act(() => {
-      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-2', questions: [{ question: 'Q2' }] }))
+      storeRef?.hydrateAskUserPrompt('web', 'web-chat-1', mustParse({ request_id: 'req-2', questions: [{ question: 'Q2' }] }))
     })
     expect(storeRef?.askUserPrompts.get('web:web-chat-1')?.requestId).toBe('req-2')
   })
@@ -228,11 +237,64 @@ describe('useAskUser panel mirrors the server state', () => {
     await renderProbe()
 
     act(() => {
-      storeRef?.hydrateAskUserPrompt('', 'web-chat-1', parseAskUserPrompt({ request_id: 'req-x', questions: [{ question: 'Q' }] }))
-      storeRef?.hydrateAskUserPrompt('web', '', parseAskUserPrompt({ request_id: 'req-y', questions: [{ question: 'Q' }] }))
+      storeRef?.hydrateAskUserPrompt('', 'web-chat-1', mustParse({ request_id: 'req-x', questions: [{ question: 'Q' }] }))
+      storeRef?.hydrateAskUserPrompt('web', '', mustParse({ request_id: 'req-y', questions: [{ question: 'Q' }] }))
     })
 
     expect(screen.getByTestId('prompt-count').textContent).toBe('0')
     expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
+  })
+})
+
+/**
+ * 载荷契约：**没有问题的问题不是 prompt**（2026-09-20 CI 回归的根因）。
+ *
+ * 任何"成功但不含可用问题"的响应（典型：通用 `/api/rpc` 通配路由 mock 回的
+ * `{ok:true, data:{ok:true}}`）过去会被合成为 `{requestId: Date.now(), questions: []}`
+ * ⇒ AskUserPanel 以 `questions[0] === undefined` 渲染 ⇒ 读 `.allowOther` 抛异常 ⇒
+ * 崩溃边界把**整块面板**换掉（CI 的 9 个 goal/todo spec 全红）。真实提问必然 ≥1 题，
+ * 所以"无问题"只能解释为"没有 prompt"。
+ */
+describe('AskUser 载荷契约：没有问题 ⇒ 不是 prompt', () => {
+  it('通用 RPC / 空载荷 / 空问题列表都不产生 prompt', () => {
+    expect(parseAskUserPrompt({ ok: true })).toBeNull()
+    expect(parseAskUserPrompt({})).toBeNull()
+    expect(parseAskUserPrompt(null)).toBeNull()
+    expect(parseAskUserPrompt(undefined)).toBeNull()
+    expect(parseAskUserPrompt({ request_id: 'req-x', questions: [] })).toBeNull()
+    expect(parseAskUserPrompt({ request_id: 'req-x', questions: 'nope' })).toBeNull()
+    // 有问题数组但每个都被过滤掉（既无文本也无 options）同样不是 prompt。
+    expect(parseAskUserPrompt({ request_id: 'req-x', questions: [{}] })).toBeNull()
+  })
+
+  it('实时事件缺 questions ⇒ 不建 prompt（绝不伪造空面板、也不进 waiting_input）', async () => {
+    await renderProbe()
+
+    act(() => {
+      messageHandler?.({
+        type: 'ask_user',
+        channel: 'web',
+        chat_id: 'web-chat-1',
+        progress: { request_id: 'r-empty' },
+      } as WSMessage)
+    })
+
+    expect(screen.getByTestId('prompt-count').textContent).toBe('0')
+    expect(screen.getByTestId('panel').textContent).toBe('panel-hidden')
+  })
+
+  it('≥1 个有效问题仍是 prompt（契约未被削弱）', () => {
+    const withText = parseAskUserPrompt({ request_id: 'r1', questions: [{ question: 'Q' }] })
+    expect(withText?.requestId).toBe('r1')
+    expect(withText?.questions).toHaveLength(1)
+
+    // 只有 options（LLM 有时不发 question 文本）的问题同样保留，且 fallback id 生效。
+    const optionsOnly = parseAskUserPrompt(
+      { questions: [{ options: ['A', 'B'], allow_other: true }] },
+      'fallback-id',
+    )
+    expect(optionsOnly?.requestId).toBe('fallback-id')
+    expect(optionsOnly?.questions[0].allowOther).toBe(true)
+    expect(optionsOnly?.questions[0].options).toEqual(['A', 'B'])
   })
 })

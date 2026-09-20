@@ -566,4 +566,16 @@ describe('AgentPanel AskUser 水合（get_pending_ask_user，DB 权威）', () =
     await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
     expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
   })
+
+  it('载荷不含任何问题（通用 RPC mock 的 {ok:true}）时不水合 —— 空 prompt 会崩掉整块面板', async () => {
+    // 判别力：这不是"额外的防御"——它是 2026-09-20 CI 9 个 spec 全红的根因。
+    // 通用 `/api/rpc` 通配路由 mock 对任何方法都回 {ok:true, data:{ok:true}}，
+    // 过去它被合成为 questions: [] 的 prompt ⇒ AskUserPanel 读 questions[0].allowOther
+    // 抛异常 ⇒ 崩溃边界替换整块面板（goal banner / todo 面板全消失）。
+    mocks.getPendingAskUser.mockResolvedValue({ ok: true })
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
+    expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
+  })
 })

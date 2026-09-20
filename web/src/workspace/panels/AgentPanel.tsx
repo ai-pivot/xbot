@@ -352,13 +352,19 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // get_pending_ask_user 走服务器同一份持久化 ask_question/ask_answer 记录（DB 单一
   // 权威）⇒ 在「会话加载 / tab 重新可见」两个时机水合，漏事件必然自愈。
   // 缺失时不做删除：响应可能早于提问登记（服务端 WithPendingAskUser 文档同一竞态）。
+  // 载荷不含任何问题时 `parseAskUserPrompt` 返回 null ⇒ 不水合（真实提问必然 ≥1 题；
+  // 伪造空 prompt 会让面板以 `questions: []` 渲染并抛异常，整块面板被崩溃边界替换 ——
+  // 2026-09-20 CI 的 9 个 spec 正是这样红的：通用 `/api/rpc` mock 对
+  // `get_pending_ask_user` 回了 `{ok:true}`）。
   useEffect(() => {
     if (!chatID || !messageChannel || !isVisible) return
     let cancelled = false
     getPendingAskUser({ channel: messageChannel, chatID })
       .then((pending) => {
         if (cancelled || !pending) return
-        store.hydrateAskUserPrompt(messageChannel, chatID, parseAskUserPrompt(pending))
+        const prompt = parseAskUserPrompt(pending)
+        if (!prompt) return
+        store.hydrateAskUserPrompt(messageChannel, chatID, prompt)
       })
       .catch(() => {})
     return () => { cancelled = true }

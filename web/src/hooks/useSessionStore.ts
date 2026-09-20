@@ -63,13 +63,26 @@ interface AskUserEnvelope {
  * Single implementation for BOTH carriers: the live ask_user event and the
  * DB-authoritative `get_pending_ask_user` hydration. Duplicating this mapping
  * was how multi_select/allow_other silently regressed before.
+ *
+ * Returns **null** when the payload carries no usable question — a real prompt
+ * always has at least one (the model cannot ask nothing). A payload without
+ * questions is therefore NOT a prompt, and synthesizing an empty one was a
+ * whole-app crash: the panel rendered with `questions: []`, `questions[0]` was
+ * `undefined` and reading `.allowOther` threw inside render, so the crash
+ * boundary replaced the entire panel (2026-09-20 CI: 9 E2E specs red after a
+ * generic `/api/rpc` mock answered `get_pending_ask_user` with `{ok:true}`).
+ * Callers MUST treat null as "nothing to show" — never as "cancel the pending
+ * prompt"; absence/removal stays event-driven (ask_user_resolved) or
+ * row-driven (reconcileAskUserPrompts).
  */
-export function parseAskUserPrompt(
-  payload: { request_id?: string; questions?: unknown } | null | undefined,
-  fallbackRequestID?: string,
-): AskUserPrompt {
+export function parseAskUserPrompt(payload: unknown, fallbackRequestID?: string): AskUserPrompt | null {
+  // The payload is unvalidated wire data (live SSE event / RPC response) — the
+  // declared shape could never be trusted, so narrow it here instead of lying
+  // at the boundary with a structural parameter type.
+  const env =
+    payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
   const questions: AskUserQuestion[] = []
-  const raw = payload?.questions
+  const raw = env?.questions
   if (Array.isArray(raw)) {
     for (const q of raw) {
       if (!q || typeof q !== 'object') continue
@@ -93,7 +106,9 @@ export function parseAskUserPrompt(
       })
     }
   }
-  const requestId = payload?.request_id ?? fallbackRequestID ?? String(Date.now())
+  if (questions.length === 0) return null
+  const explicitId = typeof env?.request_id === 'string' && env.request_id ? env.request_id : undefined
+  const requestId = explicitId ?? fallbackRequestID ?? String(Date.now())
   return { requestId, questions }
 }
 
@@ -1756,15 +1771,20 @@ export function useSessionStoreImpl(): SessionStore {
         })
       }
       if (chatID) {
-        setStatus({ channel, chatID }, 'waiting_input')
-        // Store the prompt so it survives session switch.
-        const key = `${channel}:${chatID}`
-        askUserPromptTsRef.current.set(key, Date.now())
-        setAskUserPrompts((prev) => {
-          const next = new Map(prev)
-          next.set(key, parseAskUserPrompt(msg.progress, msg.id))
-          return next
-        })
+        const prompt = parseAskUserPrompt(msg.progress, msg.id)
+        // A question-less payload is not a prompt (see parseAskUserPrompt) —
+        // leave the store alone instead of fabricating an empty panel.
+        if (prompt) {
+          setStatus({ channel, chatID }, 'waiting_input')
+          // Store the prompt so it survives session switch.
+          const key = `${channel}:${chatID}`
+          askUserPromptTsRef.current.set(key, Date.now())
+          setAskUserPrompts((prev) => {
+            const next = new Map(prev)
+            next.set(key, prompt)
+            return next
+          })
+        }
       }
     })
   }, [setStatus, dropAskUserPrompt])
