@@ -98,7 +98,7 @@ async function loadPluginViewComponent(
 }
 
 // 内置视图组件：静态 import，随主 bundle 一起打包（不生成独立 chunk）。
-
+// xbot.iteration-stats 已改为独立插件（后端 plugin.json + ESM 模块动态加载），
 // 不再走 builtin: 路径。
 import { PluginManagerPanel } from '@/plugins/manager/PluginManagerPanel'
 import { GitStatusPanel } from '@/plugins/git-info/GitStatusPanel'

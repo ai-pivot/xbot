@@ -145,7 +145,7 @@ export function DockviewContainer({ tabManager, onReady }: DockviewContainerProp
   const rightSidebarValue = useRightSidebarControl()
   // PluginRuntime for the isolated dockview roots — without this the
   // iteration UI injection point (IterationSlot → usePluginRuntime) returns
-  // null inside panels, so plugin views only rendered
+  // null inside panels, so plugin views (e.g. iteration-stats) only rendered
   // on mobile (which stays inside the PluginRuntimeProvider tree).
   const pluginRuntimeValue = useOptionalPluginRuntime()
 
