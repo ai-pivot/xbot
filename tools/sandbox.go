@@ -15,15 +15,15 @@ func SandboxCtx() (context.Context, context.CancelFunc) {
 
 // ExecSpec defines the parameters for a sandbox command execution.
 type ExecSpec struct {
-	Command   string        // executable or shell command
-	Args      []string      // arguments (ignored when Shell=true)
-	Shell     bool          // use shell for execution (sh -c)
-	Dir       string        // working directory (absolute path in sandbox)
-	Env       []string      // environment variables
-	Stdin     string        // stdin input
-	Timeout   time.Duration // execution timeout
-	Workspace string        // workspace root (for sandbox setup)
-	UserID    string        // user identity (for sandbox routing)
+	Command    string        // executable or shell command
+	Args       []string      // arguments (ignored when Shell=true)
+	Shell      bool          // use shell for execution (sh -c)
+	Dir        string        // working directory (absolute path in sandbox)
+	Env        []string      // environment variables
+	Stdin      string        // stdin input
+	Timeout    time.Duration // execution timeout
+	Workspace  string        // workspace root (for sandbox setup)
+	SessionKey string        // session routing key ("channel:chatID")
 
 	// KeepAlive indicates that on timeout, the process should NOT be killed.
 	// Instead, the caller takes ownership of the process via ExecResult.Process.
@@ -75,52 +75,52 @@ type Sandbox interface {
 	// === File I/O ===
 	// ReadFile reads the entire file at path. Path must be absolute.
 	// Returns os.ErrNotExist if file does not exist.
-	ReadFile(ctx context.Context, path string, userID string) ([]byte, error)
+	ReadFile(ctx context.Context, path string, sessionKey string) ([]byte, error)
 
 	// WriteFile writes data to path. Path must be absolute.
 	// Does NOT auto-create parent directories — call MkdirAll first.
-	WriteFile(ctx context.Context, path string, data []byte, perm os.FileMode, userID string) error
+	WriteFile(ctx context.Context, path string, data []byte, perm os.FileMode, sessionKey string) error
 
 	// Stat returns file info. Path must be absolute.
 	// Returns os.ErrNotExist if file does not exist.
-	Stat(ctx context.Context, path string, userID string) (*SandboxFileInfo, error)
+	Stat(ctx context.Context, path string, sessionKey string) (*SandboxFileInfo, error)
 
 	// ReadDir lists directory entries. Path must be absolute.
-	ReadDir(ctx context.Context, path string, userID string) ([]DirEntry, error)
+	ReadDir(ctx context.Context, path string, sessionKey string) ([]DirEntry, error)
 
 	// MkdirAll creates directory tree. Path must be absolute.
-	MkdirAll(ctx context.Context, path string, perm os.FileMode, userID string) error
+	MkdirAll(ctx context.Context, path string, perm os.FileMode, sessionKey string) error
 
 	// Remove removes a file. Path must be absolute.
-	Remove(ctx context.Context, path string, userID string) error
+	Remove(ctx context.Context, path string, sessionKey string) error
 
 	// RemoveAll removes a directory tree. Path must be absolute.
-	RemoveAll(ctx context.Context, path string, userID string) error
+	RemoveAll(ctx context.Context, path string, sessionKey string) error
 
 	// DownloadFile downloads a file from the given URL and saves it to outputPath.
 	// For RemoteSandbox, the runner downloads directly (avoids server as proxy).
 	// Path must be absolute.
-	DownloadFile(ctx context.Context, url, outputPath string, userID string) error
+	DownloadFile(ctx context.Context, url, outputPath string, sessionKey string) error
 
 	// === Shell Configuration ===
 	// GetShell returns the preferred shell command for the user/workspace.
-	GetShell(userID string, workspace string) (string, error)
+	GetShell(sessionKey string, workspace string) (string, error)
 
 	// === Lifecycle ===
 	Name() string
-	Workspace(userID string) string
+	Workspace(sessionKey string) string
 	Close() error
-	CloseForUser(userID string) error
+	CloseForUser(sessionKey string) error
 }
 
 // WalkSandboxDir recursively walks a sandbox directory, equivalent to filepath.WalkDir.
 // fn is called for each file (directories are traversed but not passed to fn).
-func WalkSandboxDir(ctx context.Context, sb Sandbox, root, userID string, fn func(relPath string, entry DirEntry) error) error {
-	return walkSandboxDir(ctx, sb, root, "", userID, fn)
+func WalkSandboxDir(ctx context.Context, sb Sandbox, root, sessionKey string, fn func(relPath string, entry DirEntry) error) error {
+	return walkSandboxDir(ctx, sb, root, "", sessionKey, fn)
 }
 
-func walkSandboxDir(ctx context.Context, sb Sandbox, dir, relBase, userID string, fn func(string, DirEntry) error) error {
-	entries, err := sb.ReadDir(ctx, dir, userID)
+func walkSandboxDir(ctx context.Context, sb Sandbox, dir, relBase, sessionKey string, fn func(string, DirEntry) error) error {
+	entries, err := sb.ReadDir(ctx, dir, sessionKey)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func walkSandboxDir(ctx context.Context, sb Sandbox, dir, relBase, userID string
 			relPath = relBase + "/" + e.Name
 		}
 		if e.IsDir {
-			if err := walkSandboxDir(ctx, sb, dir+"/"+e.Name, relPath, userID, fn); err != nil {
+			if err := walkSandboxDir(ctx, sb, dir+"/"+e.Name, relPath, sessionKey, fn); err != nil {
 				return err
 			}
 		} else {
@@ -157,7 +157,7 @@ type SandboxSyncer interface {
 // buildToolContext uses this to inject the user-specific sandbox into ToolContext.Sandbox,
 // so that downstream code (shell, sandbox_exec, etc.) sees the correct Name(), Workspace(), etc.
 type SandboxResolver interface {
-	// SandboxForUser returns the user-specific Sandbox instance.
-	// Falls back to the default sandbox if userID is empty or unknown.
-	SandboxForUser(userID string) Sandbox
+	// SandboxForSession returns the sandbox for a session key
+	// ("channel:chatID"). Unbound sessions resolve to the local host.
+	SandboxForSession(sessionKey string) Sandbox
 }

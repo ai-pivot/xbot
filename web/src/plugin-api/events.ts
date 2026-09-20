@@ -31,6 +31,22 @@ export interface EventMap {
   'progress.iteration': { iteration: number; tools: readonly ToolProgress[] }
   'context.compressed': { beforeTokens: number; afterTokens: number }
   'command.executed': { commandId: string; args: unknown }
+  /**
+   * 宿主语言切换（i18next `languageChanged`）。
+   *
+   * 谁广播：宿主 PluginRuntime（`PluginRuntimeBootstrap`）。
+   * 谁订阅：需要跟随语言的插件（文案表命中 + 局部刷新，无需整面板重挂载）。
+   * 载荷 `locale` 是**已生效**的新宿主语言（如 `'zh-CN'` / `'en'` / `'ja'`）。
+   *
+   * 用法（插件侧）：
+   * ```ts
+   * ctx.events.on('i18n.localeChanged', ({ locale }) => { setLocale(locale) })
+   * ```
+   * 注：`ctx.i18n.t()` 本身已是「调用时读语言」——插件**不改代码**也会拿到新语言，
+   * 因为宿主在语言切换时会重挂载插件视图（React key）。本事件是给「希望细粒度
+   * 更新、不想丢掉面板状态」的插件的可选能力。
+   */
+  'i18n.localeChanged': { locale: string }
 }
 
 export interface EventsAPI {

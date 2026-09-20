@@ -12,10 +12,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 
+import i18n from '@/i18n'
 import { SidebarSectionStack } from './SidebarSectionStack'
 
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
+
+/**
+ * header 的 aria-title 走宿主 i18n（`sidebar.sectionExpand/sectionCollapse`）——
+ * 断言必须按 i18n 源取值：测试环境语言由 i18n 检测决定（实测 en），硬编码中文
+ * 会在语言变化时假红。
+ */
+const collapseTitle = (title: string) => i18n.t('sidebar.sectionCollapse', { title })
+const expandTitle = (title: string) => i18n.t('sidebar.sectionExpand', { title })
 
 beforeEach(() => {
   localStorage.removeItem(HEIGHTS_KEY)
@@ -54,11 +63,11 @@ describe('SidebarSectionStack', () => {
         ]}
       />,
     )
-    fireEvent.click(screen.getByTitle('收起Git'))
+    fireEvent.click(screen.getByTitle(collapseTitle('Git')))
     expect(screen.getByText('git-panel').parentElement?.style.display).toBe('none')
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}')).toEqual({ git: true })
 
-    fireEvent.click(screen.getByTitle('展开Git'))
+    fireEvent.click(screen.getByTitle(expandTitle('Git')))
     expect(screen.getByText('git-panel')).toBeTruthy()
     expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '{}')).toEqual({ git: false })
   })
@@ -140,44 +149,7 @@ describe('SidebarSectionStack', () => {
     }
   })
 
-  it('VSCode 式重排：拖 header 到另一 section 下方 → setSlotOrder 持久化 + 插入线出现', async () => {
-    const { layoutRegistry } = await import('@/plugin-runtime/layoutRegistry')
-    const spy = vi.spyOn(layoutRegistry, 'setSlotOrder')
-    render(
-      <SidebarSectionStack
-        slotId="desktop.activity_bar"
-        sections={[
-          { id: 'sessions', title: '会话', content: <div>session-list</div> },
-          { id: 'git', title: 'Git', defaultHeight: 240, content: <div>git-panel</div> },
-          { id: 'note', title: 'Notes', defaultHeight: 240, content: <div>note-panel</div> },
-        ]}
-      />,
-    )
-    const gitHeader = screen.getByTitle('收起Git')
-    const noteHeader = screen.getByTitle('收起Notes')
-    // jsdom 的 DragEvent 不自动创建 dataTransfer —— 测试注入 mock。
-    const dt = () => ({
-      setData: vi.fn(),
-      getData: (type: string) => type === 'application/x-xbot-layout-item' ? '' : '',
-      effectAllowed: 'move',
-      dropEffect: 'move',
-      types: ['application/x-xbot-layout-item', 'application/x-xbot-layout-slot'],
-    })
-
-    // 开始拖 git；悬停在 notes 下方（jsdom rect 全 0，clientY>0 → after）。
-    fireEvent.dragStart(gitHeader, { dataTransfer: dt() })
-    fireEvent.dragOver(noteHeader, { dataTransfer: dt(), clientY: 10 })
-    // 插入线渲染（dropHint: notes, after）。
-    expect(screen.getAllByTestId('insertion-line').length).toBe(1)
-
-    fireEvent.drop(noteHeader, { dataTransfer: dt(), clientY: 10 })
-    expect(spy).toHaveBeenCalledWith('desktop.activity_bar', ['sessions', 'note', 'git'])
-    spy.mockRestore()
-  })
-
-  it('VSCode 式重排：拖回原位（no-op）不调用 setSlotOrder', async () => {
-    const { layoutRegistry } = await import('@/plugin-runtime/layoutRegistry')
-    const spy = vi.spyOn(layoutRegistry, 'setSlotOrder')
+  it('DnD 已删除：header 无 draggable/onDragStart/onDragOver 属性', () => {
     render(
       <SidebarSectionStack
         slotId="desktop.activity_bar"
@@ -187,26 +159,10 @@ describe('SidebarSectionStack', () => {
         ]}
       />,
     )
-    const dt = () => ({ setData: vi.fn(), getData: vi.fn(), effectAllowed: 'move', dropEffect: 'move', types: ['text/plain'] })
-    // 拖 sessions 悬停在 sessions 上（自己 → 无插入线），drop 无副作用。
-    const sessionsHeader = screen.getByTitle('收起会话')
-    fireEvent.dragStart(sessionsHeader, { dataTransfer: dt() })
-    fireEvent.dragOver(sessionsHeader, { dataTransfer: dt(), clientY: 10 })
+    // DnD 已删除（2026-09-20）：即使有 slotId，header 也不再有 DnD 属性。
+    const header = screen.getByTitle(collapseTitle('会话'))
+    expect(header.getAttribute('draggable')).toBeNull()
+    // 插入线不再渲染。
     expect(screen.queryByTestId('insertion-line')).toBeNull()
-    fireEvent.drop(sessionsHeader, { dataTransfer: dt(), clientY: 10 })
-    expect(spy).not.toHaveBeenCalled()
-    spy.mockRestore()
-  })
-
-  it('无 slotId 时 header 不可拖拽（draggable=false）', () => {
-    render(
-      <SidebarSectionStack
-        sections={[
-          { id: 'sessions', title: '会话', content: <div>session-list</div> },
-          { id: 'git', title: 'Git', defaultHeight: 240, content: <div>git-panel</div> },
-        ]}
-      />,
-    )
-    expect(screen.getByTitle('收起会话').getAttribute('draggable')).toBe('false')
   })
 })

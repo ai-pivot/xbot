@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,10 +26,10 @@ import (
 
 // RemoteSandboxConfig holds configuration for creating a RemoteSandbox.
 type RemoteSandboxConfig struct {
-	Addr           string            // WebSocket listen address (e.g., "0.0.0.0:8080")
-	AuthToken      string            // Authentication token for runners
-	AllowedOrigins []string          // Allowed WebSocket origins (empty = allow all, for development)
-	TokenStore     *RunnerTokenStore // Per-user token store (optional, for per-user tokens)
+	Addr           string       // WebSocket listen address (e.g., "0.0.0.0:8080")
+	AuthToken      string       // Optional shared token (legacy; runner tokens are preferred)
+	AllowedOrigins []string     // Allowed WebSocket origins (empty = allow all, for development)
+	RunnerStore    *RunnerStore // Runner registry + token validation
 }
 
 // RemoteSandboxSyncConfig holds directories to sync to runners on registration.
@@ -40,19 +42,12 @@ type RemoteSandboxSyncConfig struct {
 // All writes to the WebSocket go through sendCh, consumed by writePump.
 type runnerConnection struct {
 	wsConn     *websocket.Conn
-	userID     string
-	runnerName string // runner name from DB
+	runnerName string // runner name from the registry
+	version    string // protocol/runner version reported at registration
 	workspace  string
 	shell      string         // runner's default shell (e.g. /bin/bash)
 	sendCh     chan sendEntry // buffered channel for serialized writes
 	done       chan struct{}  // closed when writePump exits
-}
-
-// userRunnersEntry holds all runner connections for a single user.
-type userRunnersEntry struct {
-	mu      sync.RWMutex
-	runners map[string]*runnerConnection // runnerName → conn
-	active  string                       // currently active runnerName
 }
 
 // sendEntry represents a write to be sent by writePump.
@@ -62,28 +57,39 @@ type sendEntry struct {
 }
 
 // RemoteSandbox implements the Sandbox interface via WebSocket communication
-// with xbot-runner instances running on users' machines.
+// with xbot-runner instances running on remote machines.
+//
+// Single-operator design (v69 runner collapse): connections are keyed by runner
+// NAME only — there is no per-user dimension. Which runner a session uses is
+// decided by the session→runner binding (SandboxRouter + tenants.runner_id).
 type RemoteSandbox struct {
-	connections          sync.Map // userID → *userRunnersEntry
-	wsServer             *http.Server
-	authToken            string
-	addr                 string
-	tokenStore           *RunnerTokenStore
+	runnersMu sync.RWMutex
+	runners   map[string]*runnerConnection // runnerName → live connection
+	versions  map[string]string            // runnerName → reported version
+	wsServer  *http.Server
+	authToken string
+	addr      string
+	// boundAddr 是**真实绑定**的监听地址（net.Listen 之后取 ln.Addr()），例如
+	// "0.0.0.0:8080"。与 addr（请求的地址）区分：启动自检用它比对"宣告给 runner
+	// 的端口"，避免因端口漂移而**静默**交出死地址（2026-09-18 实机事故根因类别）。
+	boundAddr            string
+	store                *RunnerStore
 	sessionRunners       *sync.Map // shared with SandboxRouter: "channel:chatID" → runnerName
+	bindingStore         SessionBindingStore
 	pendingMu            sync.Mutex
 	pending              map[string]chan *RunnerMessage // request ID → response channel
 	upgrader             websocket.Upgrader             // per-instance upgrader with origin check
 	globalSkillDirs      []string                       // global skill dirs to sync to runner on registration
 	agentsDir            string                         // global agents dir to sync to runner on registration
 	syncMu               sync.Mutex
-	synced               map[string]bool // userID → whether initial sync has completed
-	syncing              map[string]bool // userID → sync in progress (prevent concurrent syncs)
+	synced               map[string]bool // runnerName → whether initial sync has completed
+	syncing              map[string]bool // runnerName → sync in progress (prevent concurrent syncs)
 	stdioMu              sync.Mutex
 	stdioStreams         map[string]*stdioStream // streamID → active stdio stream
 	ptyMu                sync.Mutex
 	ptyStreams           map[string]*ptyStream // streamID → active PTY stream
-	OnRunnerStatusChange func(userID, runnerName string, online bool)
-	OnSyncProgress       func(userID string, phase string, message string)
+	OnRunnerStatusChange func(runnerName string, online bool)
+	OnSyncProgress       func(runnerName string, phase string, message string)
 }
 
 // parseSandboxErrorResponse unmarshals a ProtoError body and returns a
@@ -126,10 +132,12 @@ func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) 
 	}
 
 	rs := &RemoteSandbox{
-		authToken:  cfg.AuthToken,
-		addr:       cfg.Addr,
-		tokenStore: cfg.TokenStore,
-		pending:    make(map[string]chan *RunnerMessage),
+		authToken: cfg.AuthToken,
+		addr:      cfg.Addr,
+		store:     cfg.RunnerStore,
+		pending:   make(map[string]chan *RunnerMessage),
+		runners:   make(map[string]*runnerConnection),
+		versions:  make(map[string]string),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: checkOrigin,
 		},
@@ -140,6 +148,7 @@ func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) 
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", rs.handleWebSocket)
 	mux.HandleFunc("/ws/", rs.handleWebSocket)
 
 	rs.wsServer = &http.Server{
@@ -147,9 +156,25 @@ func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) 
 		Handler: mux,
 	}
 
+	// ⛔ 同步绑定（2026-09-18 用户实机事故："目标机器当前离线 / bad handshake" 的根因类别）：
+	// 旧实现 `go wsServer.ListenAndServe()` 把绑定放进 goroutine ⇒ **绑定失败（端口被占/
+	// 端口写错）也无人知晓**：构造方照常返回成功，`buildRunnerConnectCmd` 照常铸出一个
+	// 指向**无人监听端口**的地址，runner 永远连不上，而日志里甚至还印着
+	// "listening on <cfg.Addr>"（打的只是"打算"的地址）—— 既是死地址，又让日志撒谎。
+	//
+	// 现在：**先 net.Listen，失败即返回错误**（调用方据此上报"remote 不可用"，绝不假装
+	// 就绪）；并记录**真实绑定地址**（`ln.Addr()`，`0.0.0.0:0` 之类的写法也会解析成具体
+	// 端口），供启动自检与状态展示比对。
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return nil, fmt.Errorf("remote sandbox: listen %s: %w", cfg.Addr, err)
+	}
+	rs.boundAddr = ln.Addr().String()
+
 	go func() {
-		log.Infof("RemoteSandbox WebSocket server listening on %s", cfg.Addr)
-		if err := rs.wsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		// 打印**真实**绑定地址（不是 cfg.Addr 的打算值）。
+		log.Infof("RemoteSandbox WebSocket server listening on %s (requested %s)", rs.boundAddr, cfg.Addr)
+		if err := rs.wsServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.WithError(err).Error("RemoteSandbox server error")
 		}
 	}()
@@ -157,17 +182,21 @@ func NewRemoteSandbox(cfg RemoteSandboxConfig, syncCfg RemoteSandboxSyncConfig) 
 	return rs, nil
 }
 
-// handleWebSocket handles incoming WebSocket connections from runners.
-// The URL path must be /ws/{userID} — the userID is bound to this connection,
-// preventing a token-holder from registering as a different user.
-func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Extract userID from URL path: /ws/{userID}
-	pathUserID := strings.TrimPrefix(r.URL.Path, "/ws/")
-	if pathUserID == "" || pathUserID == r.URL.Path {
-		http.Error(w, "user ID required in URL path (/ws/{userID})", http.StatusBadRequest)
-		return
-	}
+// BoundAddr returns the ACTUALLY bound listener address (e.g. "0.0.0.0:8080"),
+// as opposed to the requested address. Empty until the server is constructed.
+// Startup self-check compares its port against the advertised runner address
+// (config.PublicWSAddr) so a drift can never silently hand runners a dead URL.
+func (rs *RemoteSandbox) BoundAddr() string {
+	return rs.boundAddr
+}
 
+// handleWebSocket handles incoming WebSocket connections from runners.
+//
+// The canonical endpoint is /ws; the legacy user-scoped form /ws/{anything} is
+// still accepted so existing installations keep connecting. Identity comes from
+// the connect token — there is exactly one operator (v63), so no path-derived
+// identity binding is required.
+func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := rs.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.WithError(err).Error("WebSocket upgrade failed")
@@ -210,29 +239,29 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 		log.WithError(err).Error("Invalid registration body")
 		return
 	}
-	authenticated := (rs.tokenStore != nil && rs.tokenStore.Validate(reg.AuthToken, reg.UserID)) ||
+	// --- Authentication: the connect token IS the identity (single operator) ---
+	authenticated := (rs.store != nil && rs.store.Validate(reg.AuthToken)) ||
 		(rs.authToken != "" && subtle.ConstantTimeCompare([]byte(reg.AuthToken), []byte(rs.authToken)) == 1)
 	if !authenticated {
 		log.WithFields(log.Fields{
-			"user_id":    reg.UserID,
-			"has_store":  rs.tokenStore != nil,
+			"has_store":  rs.store != nil,
 			"has_global": rs.authToken != "",
 		}).Warn("Runner authentication failed")
 		rs.sendRegisterError(conn, "AUTH_FAILED", "authentication failed")
 		return
 	}
-	if reg.UserID == "" {
-		log.Warn("Runner registration missing user_id")
-		rs.sendRegisterError(conn, "INVALID", "missing user_id")
-		return
-	}
-	// S6: Bind token to userID — the URL path determines identity, not the claim.
-	if reg.UserID != pathUserID {
+
+	// Protocol version gate: refuse incompatible runners loudly instead of
+	// failing mysteriously mid-session. 0 = legacy runner (accepted).
+	if reg.ProtocolVersion != 0 && reg.ProtocolVersion != runnerproto.ProtocolVersion {
 		log.WithFields(log.Fields{
-			"path_user_id": pathUserID,
-			"claimed_id":   reg.UserID,
-		}).Warn("Runner userID mismatch (potential impersonation)")
-		rs.sendRegisterError(conn, "FORBIDDEN", "user_id mismatch")
+			"runner":          reg.RunnerName,
+			"runner_protocol": reg.ProtocolVersion,
+			"server_protocol": runnerproto.ProtocolVersion,
+		}).Warn("Runner protocol version mismatch")
+		rs.sendRegisterError(conn, "PROTOCOL_MISMATCH", fmt.Sprintf(
+			"runner protocol v%d is incompatible with server v%d — upgrade xbot-runner",
+			reg.ProtocolVersion, runnerproto.ProtocolVersion))
 		return
 	}
 
@@ -241,19 +270,17 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 		shell = "/bin/sh"
 	}
 
-	// Look up runner name from token.
+	// Resolve the runner name: the registry is the authority. A runner that
+	// connected with an unknown/shared token registers under its self-reported
+	// name so it stays addressable (session bindings reference names).
 	runnerName := ""
-	if rs.tokenStore != nil {
-		if uid, rname, err := rs.tokenStore.FindByToken(reg.AuthToken); err == nil && uid == reg.UserID {
-			runnerName = rname
-		} else {
-			// Fallback: check legacy runner_tokens table for backward compat.
-			uid := rs.tokenStore.FindByTokenInRunnerTokens(reg.AuthToken)
-			if uid == reg.UserID {
-				// Legacy token: use "default" as name.
-				runnerName = "default"
-			}
+	if rs.store != nil {
+		if name, ok := rs.store.FindByToken(reg.AuthToken); ok {
+			runnerName = name
 		}
+	}
+	if runnerName == "" {
+		runnerName = reg.RunnerName
 	}
 	if runnerName == "" {
 		runnerName = "default"
@@ -261,60 +288,38 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 
 	rc := &runnerConnection{
 		wsConn:     conn,
-		userID:     reg.UserID,
 		runnerName: runnerName,
+		version:    reg.Version,
 		workspace:  reg.Workspace,
 		shell:      shell,
 		sendCh:     make(chan sendEntry, 64),
 		done:       make(chan struct{}),
 	}
 
-	// Register connection in userRunnersEntry.
-	newEntry := &userRunnersEntry{
-		runners: map[string]*runnerConnection{runnerName: rc},
-		active:  runnerName,
+	// Replace any previous connection under the same name: a reconnecting runner
+	// must not coexist with its stale socket (writes would go to the dead one).
+	rs.runnersMu.Lock()
+	old := rs.runners[runnerName]
+	rs.runners[runnerName] = rc
+	if reg.Version != "" {
+		rs.versions[runnerName] = reg.Version
 	}
-	actual, loaded := rs.connections.LoadOrStore(reg.UserID, newEntry)
-	entry, ok := actual.(*userRunnersEntry)
-	if !ok {
-		log.WithField("user_id", reg.UserID).Error("invalid runner connection type")
-		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","body":{"code":"internal_error","message":"invalid connection state"}}`))
-		conn.Close()
-		return
-	}
-	if loaded {
-		entry.mu.Lock()
-		entry.runners[runnerName] = rc
-		if entry.active == "" {
-			entry.active = runnerName
-		}
-		entry.mu.Unlock()
+	rs.runnersMu.Unlock()
+	if old != nil && old != rc {
+		log.WithField("runner", runnerName).Warn("Replacing stale runner connection")
+		_ = old.wsConn.Close()
 	}
 
 	defer func() {
-		// On disconnect, remove this runner from the entry.
-		entry.mu.Lock()
-		delete(entry.runners, runnerName)
-		// If the disconnected runner was active, fallback to first available.
-		if entry.active == runnerName {
-			for name := range entry.runners {
-				entry.active = name
-				break
-			}
-			if entry.active == "" {
-				// No runners left — remove entry entirely.
-				entry.mu.Unlock()
-				rs.connections.Delete(reg.UserID)
-				if rs.OnRunnerStatusChange != nil {
-					go rs.OnRunnerStatusChange(reg.UserID, runnerName, false)
-				}
-				return
-			}
+		rs.runnersMu.Lock()
+		if rs.runners[runnerName] == rc {
+			delete(rs.runners, runnerName)
+			delete(rs.versions, runnerName)
 		}
+		rs.runnersMu.Unlock()
 		if rs.OnRunnerStatusChange != nil {
-			go rs.OnRunnerStatusChange(reg.UserID, runnerName, false)
+			go rs.OnRunnerStatusChange(runnerName, false)
 		}
-		entry.mu.Unlock()
 	}()
 
 	// Send registration acknowledgment
@@ -333,20 +338,20 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 	conn.WriteMessage(websocket.TextMessage, okMsg)
 
 	log.WithFields(log.Fields{
-		"user_id":     reg.UserID,
 		"runner_name": runnerName,
+		"version":     reg.Version,
 		"workspace":   reg.Workspace,
 	}).Info("Runner connected")
 
-	// If runner declares LLM capability, update DB record (for injectProxyLLM to query)
-	if reg.LLMProvider != "" && rs.tokenStore != nil {
-		rs.tokenStore.UpdateRunnerLLM(reg.UserID, runnerName, RunnerLLMSettings{
+	// If the runner declares LLM capability, update its record (queried by
+	// injectProxyLLM to decide whether to proxy LLM calls to the runner).
+	if reg.LLMProvider != "" && rs.store != nil {
+		rs.store.UpdateLLM(runnerName, RunnerLLMSettings{
 			Provider: reg.LLMProvider,
 			Model:    reg.LLMModel,
-			// APIKey and BaseURL are not needed here — runner holds them locally
+			// APIKey and BaseURL are not needed here — the runner holds them locally
 		})
 		log.WithFields(log.Fields{
-			"user_id":      reg.UserID,
 			"runner_name":  runnerName,
 			"llm_provider": reg.LLMProvider,
 			"llm_model":    reg.LLMModel,
@@ -355,14 +360,14 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 
 	// Notify runner status change
 	if rs.OnRunnerStatusChange != nil {
-		go rs.OnRunnerStatusChange(reg.UserID, runnerName, true)
+		go rs.OnRunnerStatusChange(runnerName, true)
 	}
 
 	// Single writer goroutine: handles both request writes and ping heartbeats.
 	go rs.writePump(rc, pingPeriod, writeWait)
 
 	// Sync global skills and agents to the runner in the background
-	go rs.syncToRunner(reg.UserID, reg.Workspace)
+	go rs.syncToRunner(runnerName, reg.Workspace)
 
 	// Keep reading messages (responses, heartbeats, and stdio push messages)
 	for {
@@ -401,96 +406,84 @@ func (rs *RemoteSandbox) handleWebSocket(w http.ResponseWriter, r *http.Request)
 
 }
 
-// getRunner returns the active connection for a user (backward-compat wrapper).
-// For session-aware routing, use getRunnerForSession.
-func (rs *RemoteSandbox) getRunner(userID string) (*runnerConnection, error) {
-	return rs.getRunnerForSession(userID, "")
+// getRunner resolves the connection for a routing key (session key).
+func (rs *RemoteSandbox) getRunner(routingKey string) (*runnerConnection, error) {
+	return rs.getRunnerForSession(routingKey)
 }
 
-// getRunnerForSession resolves the runner connection for a session, checking
-// session-level binding (sessionRunners) first, then falling back to entry.active.
-func (rs *RemoteSandbox) getRunnerForSession(userID, sessionKey string) (*runnerConnection, error) {
-	val, ok := rs.connections.Load(userID)
-	if !ok {
-		return nil, fmt.Errorf("no runner connected for user %q", userID)
-	}
-	entry, ok := val.(*userRunnersEntry)
-	if !ok {
-		return nil, fmt.Errorf("invalid runner connection type for user %q", userID)
-	}
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
+// getRunnerForSession resolves the live connection for a session.
+//
+// Resolution order (single-operator design — no user dimension):
+//  1. the session's own binding (authoritative: tenants.runner_id, mirrored in
+//     sessionRunners);
+//  2. for session-less calls, the only connected runner when exactly one exists.
+//
+// It never guesses between multiple machines: an ambiguous or offline binding is
+// an explicit error, not a silent fallback.
+func (rs *RemoteSandbox) getRunnerForSession(sessionKey string) (*runnerConnection, error) {
+	rs.runnersMu.RLock()
+	defer rs.runnersMu.RUnlock()
 
-	// Determine which runner to use.
-	// Priority: sessionRunners (session-level) → tokenStore.active_runner (user-level) → entry.active
-	runnerName := entry.active
+	runnerName := ""
 	if rs.sessionRunners != nil && sessionKey != "" {
 		if v, ok := rs.sessionRunners.Load(sessionKey); ok {
-			runnerName = v.(string)
+			if name, _ := v.(string); name != "" {
+				runnerName = name
+			}
 		}
 	}
-	if runnerName == "" && rs.tokenStore != nil {
-		if name, err := rs.tokenStore.GetActiveRunner(userID); err == nil && name != "" {
-			runnerName = name
+	if runnerName == "" {
+		if len(rs.runners) == 1 {
+			for name := range rs.runners {
+				runnerName = name
+			}
+		} else if len(rs.runners) == 0 {
+			return nil, fmt.Errorf("no runner connected")
+		} else {
+			return nil, fmt.Errorf("session %q is not bound to a runner and %d runners are connected — bind one first",
+				sessionKey, len(rs.runners))
 		}
 	}
-
-	if runnerName == "" || len(entry.runners) == 0 {
-		return nil, fmt.Errorf("no active runner for user %q", userID)
-	}
-	rc, ok := entry.runners[runnerName]
+	rc, ok := rs.runners[runnerName]
 	if !ok {
-		return nil, fmt.Errorf("active runner %q not connected for user %q", runnerName, userID)
+		return nil, fmt.Errorf("runner %q is not connected", runnerName)
 	}
 	return rc, nil
 }
 
-// HasUser reports whether the given user has any active runner connection.
-// Used by SandboxRouter for per-user routing decisions.
-func (rs *RemoteSandbox) HasUser(userID string) bool {
-	val, ok := rs.connections.Load(userID)
-	if !ok {
-		return false
-	}
-	entry, ok := val.(*userRunnersEntry)
-	if !ok {
-		return false
-	}
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
-	return len(entry.runners) > 0
-}
-
-// IsRunnerOnline reports whether a specific named runner is connected for the user.
-func (rs *RemoteSandbox) IsRunnerOnline(userID, runnerName string) bool {
-	val, ok := rs.connections.Load(userID)
-	if !ok {
-		return false
-	}
-	entry, ok := val.(*userRunnersEntry)
-	if !ok {
-		return false
-	}
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
-	_, ok = entry.runners[runnerName]
+// IsRunnerOnline reports whether the named runner is connected.
+func (rs *RemoteSandbox) IsRunnerOnline(runnerName string) bool {
+	rs.runnersMu.RLock()
+	defer rs.runnersMu.RUnlock()
+	_, ok := rs.runners[runnerName]
 	return ok
 }
 
-// GetConnectionInfo returns the actual workspace and shell reported by the runner's connection.
-// Returns empty strings if the runner is not connected.
-func (rs *RemoteSandbox) GetConnectionInfo(userID, runnerName string) (workspace, shell string) {
-	val, ok := rs.connections.Load(userID)
-	if !ok {
-		return "", ""
+// RunnerVersion returns the version reported by the runner at registration.
+func (rs *RemoteSandbox) RunnerVersion(runnerName string) string {
+	rs.runnersMu.RLock()
+	defer rs.runnersMu.RUnlock()
+	return rs.versions[runnerName]
+}
+
+// OnlineRunnerNames lists currently connected runner names.
+func (rs *RemoteSandbox) OnlineRunnerNames() []string {
+	rs.runnersMu.RLock()
+	defer rs.runnersMu.RUnlock()
+	names := make([]string, 0, len(rs.runners))
+	for name := range rs.runners {
+		names = append(names, name)
 	}
-	entry, ok := val.(*userRunnersEntry)
-	if !ok {
-		return "", ""
-	}
-	entry.mu.RLock()
-	defer entry.mu.RUnlock()
-	rc, ok := entry.runners[runnerName]
+	sort.Strings(names)
+	return names
+}
+
+// GetConnectionInfo returns the workspace and shell reported by the runner.
+// Empty strings when the runner is not connected.
+func (rs *RemoteSandbox) GetConnectionInfo(runnerName string) (workspace, shell string) {
+	rs.runnersMu.RLock()
+	defer rs.runnersMu.RUnlock()
+	rc, ok := rs.runners[runnerName]
 	if !ok {
 		return "", ""
 	}
@@ -579,7 +572,7 @@ func (rs *RemoteSandbox) writePump(rc *runnerConnection, pingPeriod, writeWait t
 			}
 		case <-ticker.C:
 			if err := rc.wsConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
-				log.WithError(err).WithField("user_id", rc.userID).Debug("Ping to runner failed")
+				log.WithError(err).WithField("runner", rc.runnerName).Debug("Ping to runner failed")
 				return
 			}
 		}
@@ -617,15 +610,24 @@ func generateID() string {
 
 func (rs *RemoteSandbox) Name() string { return "remote" }
 
-// SetTokenStore sets or replaces the token store.
-func (rs *RemoteSandbox) SetTokenStore(store *RunnerTokenStore) {
-	rs.tokenStore = store
+// SetRunnerStore sets or replaces the runner registry (token validation + names).
+func (rs *RemoteSandbox) SetRunnerStore(store *RunnerStore) {
+	rs.runnersMu.Lock()
+	rs.store = store
+	rs.runnersMu.Unlock()
 }
 
-// Workspace returns the runner's workspace root directory for the given user.
-// Returns empty string if the runner is not connected or hasn't reported a workspace.
-func (rs *RemoteSandbox) Workspace(userID string) string {
-	rc, err := rs.getRunner(userID)
+// SetSessionBindingStore wires the session→runner binding persistence (shared
+// with the SandboxRouter).
+func (rs *RemoteSandbox) SetSessionBindingStore(store SessionBindingStore) {
+	rs.runnersMu.Lock()
+	rs.bindingStore = store
+	rs.runnersMu.Unlock()
+}
+
+// Workspace returns the connected runner's workspace root ("" when none).
+func (rs *RemoteSandbox) Workspace(_ string) string {
+	rc, err := rs.getRunnerForSession("")
 	if err != nil {
 		return ""
 	}
@@ -636,61 +638,41 @@ func (rs *RemoteSandbox) Close() error {
 	return rs.wsServer.Close()
 }
 
-func (rs *RemoteSandbox) CloseForUser(userID string) error {
-	val, ok := rs.connections.Load(userID)
-	if !ok {
-		return nil
+// CloseForUser closes every runner connection (legacy name; connections are
+// global in the single-operator design).
+func (rs *RemoteSandbox) CloseForUser(_ string) error {
+	rs.runnersMu.Lock()
+	conns := rs.runners
+	rs.runners = make(map[string]*runnerConnection)
+	rs.versions = make(map[string]string)
+	rs.runnersMu.Unlock()
+	for _, rc := range conns {
+		_ = rc.wsConn.Close()
 	}
-	entry, ok := val.(*userRunnersEntry)
-	if !ok {
-		return nil
-	}
-	entry.mu.Lock()
-	for _, rc := range entry.runners {
-		rc.wsConn.Close()
-	}
-	entry.runners = make(map[string]*runnerConnection)
-	entry.active = ""
-	entry.mu.Unlock()
-	rs.connections.Delete(userID)
 	return nil
 }
 
 // DisconnectRunner closes a specific runner connection by name.
-func (rs *RemoteSandbox) DisconnectRunner(userID, runnerName string) bool {
-	val, ok := rs.connections.Load(userID)
+func (rs *RemoteSandbox) DisconnectRunner(runnerName string) bool {
+	rs.runnersMu.Lock()
+	rc, ok := rs.runners[runnerName]
+	if ok {
+		delete(rs.runners, runnerName)
+		delete(rs.versions, runnerName)
+	}
+	rs.runnersMu.Unlock()
 	if !ok {
 		return false
 	}
-	entry, ok := val.(*userRunnersEntry)
-	if !ok {
-		return false
-	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	rc, ok := entry.runners[runnerName]
-	if !ok {
-		return false
-	}
-	rc.wsConn.Close()
-	delete(entry.runners, runnerName)
-	// If active was this runner, fallback to first available
-	if entry.active == runnerName {
-		entry.active = ""
-		for name := range entry.runners {
-			entry.active = name
-			break
-		}
-	}
-	if len(entry.runners) == 0 {
-		rs.connections.Delete(userID)
-	}
+	_ = rc.wsConn.Close()
 	return true
 }
 
 func (rs *RemoteSandbox) ExportAndImport(_ string) error { return nil }
-func (rs *RemoteSandbox) GetShell(userID string, _ string) (string, error) {
-	rc, err := rs.getRunner(userID)
+
+// GetShell returns the connected runner's default shell ("/bin/sh" when none).
+func (rs *RemoteSandbox) GetShell(_, _ string) (string, error) {
+	rc, err := rs.getRunnerForSession("")
 	if err != nil {
 		return "/bin/sh", nil
 	}
@@ -699,8 +681,8 @@ func (rs *RemoteSandbox) GetShell(userID string, _ string) (string, error) {
 
 // LLMGenerate sends an LLM generation request to the runner and returns the response.
 // This is used by ProxyLLM to forward LLM calls to runners with local LLM configured.
-func (rs *RemoteSandbox) LLMGenerate(ctx context.Context, userID, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string) (*llm.LLMResponse, error) {
-	rc, err := rs.getRunner(userID)
+func (rs *RemoteSandbox) LLMGenerate(ctx context.Context, model string, messages []llm.ChatMessage, tools []llm.ToolDefinition, thinkingMode string) (*llm.LLMResponse, error) {
+	rc, err := rs.getRunnerForSession("")
 	if err != nil {
 		return nil, err
 	}
@@ -716,10 +698,9 @@ func (rs *RemoteSandbox) LLMGenerate(ctx context.Context, userID, model string, 
 	}
 
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   runnerproto.ProtoLLMGenerate,
-		UserID: userID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: runnerproto.ProtoLLMGenerate,
+		Body: reqBody,
 	}
 
 	resp, err := rs.sendRequest(ctx, rc, msg, llm.ProxyRequestTimeout)
@@ -740,16 +721,15 @@ func (rs *RemoteSandbox) LLMGenerate(ctx context.Context, userID, model string, 
 }
 
 // LLMModels queries available models from the runner's local LLM.
-func (rs *RemoteSandbox) LLMModels(ctx context.Context, userID string) ([]string, error) {
-	rc, err := rs.getRunner(userID)
+func (rs *RemoteSandbox) LLMModels(ctx context.Context) ([]string, error) {
+	rc, err := rs.getRunnerForSession("")
 	if err != nil {
 		return nil, err
 	}
 
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   runnerproto.ProtoLLMModels,
-		UserID: userID,
+		ID:   generateID(),
+		Type: runnerproto.ProtoLLMModels,
 	}
 
 	resp, err := rs.sendRequest(ctx, rc, msg, defaultRequestTimeout)
@@ -773,21 +753,21 @@ func (rs *RemoteSandbox) LLMModels(ctx context.Context, userID string) ([]string
 
 // syncToRunner syncs global skills and agents from the server to the runner.
 // Runs in a background goroutine; errors are logged but not fatal.
-func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
+func (rs *RemoteSandbox) syncToRunner(runnerName, workspace string) {
 	if workspace == "" {
-		log.WithField("user_id", userID).Warn("syncToRunner: workspace is empty, skipping sync")
+		log.WithField("runner", runnerName).Warn("syncToRunner: workspace is empty, skipping sync")
 		return
 	}
 
 	rs.syncMu.Lock()
-	rs.syncing[userID] = true
+	rs.syncing[runnerName] = true
 	rs.syncMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), RemoteSandboxSyncTimeout)
 	defer cancel()
 
 	log.WithFields(log.Fields{
-		"user_id":           userID,
+		"runner":            runnerName,
 		"workspace":         workspace,
 		"global_skill_dirs": rs.globalSkillDirs,
 		"agents_dir":        rs.agentsDir,
@@ -795,90 +775,90 @@ func (rs *RemoteSandbox) syncToRunner(userID, workspace string) {
 
 	// Notify sync start
 	if rs.OnSyncProgress != nil {
-		rs.OnSyncProgress(userID, "start", "正在同步 skills 和 agents...")
+		rs.OnSyncProgress(runnerName, "start", "正在同步 skills 和 agents...")
 	}
 
 	// Sync each global skill directory
 	for _, skillDir := range rs.globalSkillDirs {
 		dstDir := filepath.Join(workspace, "skills")
-		rs.syncDirToRunner(ctx, userID, workspace, skillDir, dstDir)
+		rs.syncDirToRunner(ctx, runnerName, workspace, skillDir, dstDir)
 	}
 
 	// Sync embedded skills (skipped if external version already exists)
 	dstSkillsDir := filepath.Join(workspace, "skills")
 	for _, name := range ListEmbeddedSkills() {
-		rs.syncEmbeddedSkillToRunner(ctx, userID, workspace, name, dstSkillsDir)
+		rs.syncEmbeddedSkillToRunner(ctx, runnerName, workspace, name, dstSkillsDir)
 	}
 
 	// Sync global agents
 	if rs.agentsDir != "" {
 		dstDir := filepath.Join(workspace, "agents")
-		rs.syncAgentsToRunner(ctx, userID, workspace, rs.agentsDir, dstDir)
+		rs.syncAgentsToRunner(ctx, runnerName, workspace, rs.agentsDir, dstDir)
 	}
 
 	// Sync embedded agents (skipped if external version already exists)
 	dstAgentsDir := filepath.Join(workspace, "agents")
 	for _, name := range ListEmbeddedAgents() {
-		rs.syncEmbeddedAgentToRunner(ctx, userID, workspace, name, dstAgentsDir)
+		rs.syncEmbeddedAgentToRunner(ctx, runnerName, workspace, name, dstAgentsDir)
 	}
 
 	log.WithFields(log.Fields{
-		"user_id":   userID,
+		"runner":    runnerName,
 		"workspace": workspace,
 	}).Info("Runner sync completed")
 
 	// Notify sync done
 	if rs.OnSyncProgress != nil {
-		rs.OnSyncProgress(userID, "done", "同步完成")
+		rs.OnSyncProgress(runnerName, "done", "同步完成")
 	}
 	// Mark sync as completed (even if some dirs failed, we don't retry individual failures)
 	rs.syncMu.Lock()
-	rs.synced[userID] = true
-	rs.syncing[userID] = false
+	rs.synced[runnerName] = true
+	rs.syncing[runnerName] = false
 	rs.syncMu.Unlock()
 }
 
 // EnsureSynced implements SandboxSyncer interface.
 // If the runner hasn't been synced yet (or sync failed), triggers a sync.
 // This is called from EnsureSynced(ctx) in skill_sync.go.
-func (rs *RemoteSandbox) EnsureSynced(ctx context.Context, userID string) {
+func (rs *RemoteSandbox) EnsureSynced(ctx context.Context, runnerName string) {
 	rs.syncMu.Lock()
-	if rs.synced[userID] {
+	if rs.synced[runnerName] {
 		rs.syncMu.Unlock()
 		return
 	}
 	// If sync is already in progress, wait for it
-	if rs.syncing[userID] {
+	if rs.syncing[runnerName] {
 		rs.syncMu.Unlock()
 		// Poll every 500ms, up to 30s
 		for i := 0; i < 60; i++ {
 			time.Sleep(500 * time.Millisecond)
 			rs.syncMu.Lock()
-			if rs.synced[userID] {
+			if rs.synced[runnerName] {
 				rs.syncMu.Unlock()
 				return
 			}
 			rs.syncMu.Unlock()
 		}
-		log.WithField("user_id", userID).Warn("EnsureSynced: timed out waiting for in-progress sync")
+		log.WithField("runner", runnerName).Warn("EnsureSynced: timed out waiting for in-progress sync")
 		return
 	}
 	rs.syncMu.Unlock()
 
 	// Get runner workspace
-	rc, err := rs.getRunner(userID)
+	rc, err := rs.getRunnerForSession("")
 	if err != nil {
-		log.WithError(err).WithField("user_id", userID).Debug("EnsureSynced: no runner connected, skipping sync")
+		log.WithError(err).WithField("runner", runnerName).Debug("EnsureSynced: no runner connected, skipping sync")
 		return
 	}
 
-	log.WithField("user_id", userID).Info("EnsureSynced: triggering on-demand sync")
-	go rs.syncToRunner(userID, rc.workspace)
+	log.WithField("runner", runnerName).Info("EnsureSynced: triggering on-demand sync")
+	go rs.syncToRunner(runnerName, rc.workspace)
 }
 
 // syncDirToRunner recursively syncs a skill directory tree from the server to the runner.
 // Each skill is a subdirectory; only directories containing SKILL.md are synced.
-func (rs *RemoteSandbox) syncDirToRunner(ctx context.Context, userID, workspace, srcDir, dstSubdir string) {
+func (rs *RemoteSandbox) syncDirToRunner(ctx context.Context, runnerName, workspace, srcDir, dstSubdir string) {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -898,12 +878,12 @@ func (rs *RemoteSandbox) syncDirToRunner(ctx context.Context, userID, workspace,
 			continue // not a valid skill (no SKILL.md)
 		}
 		dstDir := filepath.Join(dstSubdir, e.Name())
-		rs.syncTreeToRunner(ctx, userID, skillDir, dstDir)
+		rs.syncTreeToRunner(ctx, runnerName, skillDir, dstDir)
 	}
 }
 
 // syncAgentsToRunner syncs .md agent files from the server's agents dir to the runner.
-func (rs *RemoteSandbox) syncAgentsToRunner(ctx context.Context, userID, workspace, srcDir, dstSubdir string) {
+func (rs *RemoteSandbox) syncAgentsToRunner(ctx context.Context, runnerName, workspace, srcDir, dstSubdir string) {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -919,13 +899,13 @@ func (rs *RemoteSandbox) syncAgentsToRunner(ctx context.Context, userID, workspa
 		}
 		srcPath := filepath.Join(srcDir, e.Name())
 		dstPath := filepath.Join(dstSubdir, e.Name())
-		rs.syncFileToRunner(ctx, userID, srcPath, dstPath)
+		rs.syncFileToRunner(ctx, runnerName, srcPath, dstPath)
 	}
 }
 
 // syncTreeToRunner recursively syncs a directory from the server to the runner.
-func (rs *RemoteSandbox) syncTreeToRunner(ctx context.Context, userID, srcDir, dstDir string) {
-	if err := rs.MkdirAll(ctx, dstDir, 0o755, userID); err != nil {
+func (rs *RemoteSandbox) syncTreeToRunner(ctx context.Context, runnerName, srcDir, dstDir string) {
+	if err := rs.MkdirAll(ctx, dstDir, 0o755, runnerName); err != nil {
 		log.WithError(err).WithFields(log.Fields{"src": srcDir, "dst": dstDir}).Warn("syncTree: mkdir failed")
 		return
 	}
@@ -940,21 +920,21 @@ func (rs *RemoteSandbox) syncTreeToRunner(ctx context.Context, userID, srcDir, d
 		srcPath := filepath.Join(srcDir, e.Name())
 		dstPath := filepath.Join(dstDir, e.Name())
 		if e.IsDir() {
-			rs.syncTreeToRunner(ctx, userID, srcPath, dstPath)
+			rs.syncTreeToRunner(ctx, runnerName, srcPath, dstPath)
 		} else {
-			rs.syncFileToRunner(ctx, userID, srcPath, dstPath)
+			rs.syncFileToRunner(ctx, runnerName, srcPath, dstPath)
 		}
 	}
 }
 
 // syncFileToRunner reads a local file and writes it to the runner.
-func (rs *RemoteSandbox) syncFileToRunner(ctx context.Context, userID, srcPath, dstPath string) {
+func (rs *RemoteSandbox) syncFileToRunner(ctx context.Context, runnerName, srcPath, dstPath string) {
 	data, err := os.ReadFile(srcPath)
 	if err != nil {
 		log.WithError(err).WithField("file", srcPath).Warn("syncFile: read failed")
 		return
 	}
-	if err := rs.WriteFile(ctx, dstPath, data, 0o644, userID); err != nil {
+	if err := rs.WriteFile(ctx, dstPath, data, 0o644, runnerName); err != nil {
 		log.WithError(err).WithFields(log.Fields{"src": srcPath, "dst": dstPath}).Warn("syncFile: write failed")
 	}
 }
@@ -962,10 +942,10 @@ func (rs *RemoteSandbox) syncFileToRunner(ctx context.Context, userID, srcPath, 
 // syncEmbeddedSkillToRunner syncs a single embedded skill to the runner.
 // Skips if the skill directory already exists on the runner.
 // Recursively syncs subdirectories (supports multi-file embed skills).
-func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, userID, workspace, skillName, dstSkillsDir string) {
+func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, runnerName, workspace, skillName, dstSkillsDir string) {
 	dstDir := filepath.Join(dstSkillsDir, skillName)
 	// Check if already exists on runner
-	if _, err := rs.Stat(ctx, dstDir, userID); err == nil {
+	if _, err := rs.Stat(ctx, dstDir, runnerName); err == nil {
 		return // already exists
 	}
 	// Recursively walk the embedded skill directory
@@ -979,7 +959,7 @@ func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, userID, 
 		rel := strings.TrimPrefix(p, skillDir+"/")
 		dstPath := filepath.Join(dstDir, rel)
 		if d.IsDir() {
-			if err := rs.MkdirAll(ctx, dstPath, 0o755, userID); err != nil {
+			if err := rs.MkdirAll(ctx, dstPath, 0o755, runnerName); err != nil {
 				log.WithError(err).Warn("syncEmbeddedSkill: mkdir failed")
 			}
 			return nil
@@ -988,7 +968,7 @@ func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, userID, 
 		if err != nil {
 			return nil
 		}
-		if err := rs.WriteFile(ctx, dstPath, data, 0o644, userID); err != nil {
+		if err := rs.WriteFile(ctx, dstPath, data, 0o644, runnerName); err != nil {
 			log.WithError(err).Warn("syncEmbeddedSkill: write failed")
 		}
 		return nil
@@ -1000,21 +980,21 @@ func (rs *RemoteSandbox) syncEmbeddedSkillToRunner(ctx context.Context, userID, 
 
 // syncEmbeddedAgentToRunner syncs a single embedded agent to the runner.
 // Skips if the agent file already exists on the runner.
-func (rs *RemoteSandbox) syncEmbeddedAgentToRunner(ctx context.Context, userID, workspace, agentName, dstAgentsDir string) {
+func (rs *RemoteSandbox) syncEmbeddedAgentToRunner(ctx context.Context, runnerName, workspace, agentName, dstAgentsDir string) {
 	dstPath := filepath.Join(dstAgentsDir, agentName+".md")
 	// Check if already exists on runner
-	if _, err := rs.Stat(ctx, dstPath, userID); err == nil {
+	if _, err := rs.Stat(ctx, dstPath, runnerName); err == nil {
 		return // already exists
 	}
 	data, err := ReadEmbeddedAgentFile(agentName)
 	if err != nil {
 		return
 	}
-	if err := rs.MkdirAll(ctx, dstAgentsDir, 0o755, userID); err != nil {
+	if err := rs.MkdirAll(ctx, dstAgentsDir, 0o755, runnerName); err != nil {
 		log.WithError(err).Warn("syncEmbeddedAgent: mkdir failed")
 		return
 	}
-	if err := rs.WriteFile(ctx, dstPath, data, 0o644, userID); err != nil {
+	if err := rs.WriteFile(ctx, dstPath, data, 0o644, runnerName); err != nil {
 		log.WithError(err).Warn("syncEmbeddedAgent: write failed")
 	}
 }

@@ -202,6 +202,44 @@ describe('IterationHeightTracker（实例作用域 + settle 语义）', () => {
     expect(t.isSettled(key)).toBe(false)
     expect(t.get(key)).toBe(812) // 高度本身保留（复核失败不解冻高度值）
   })
+
+  /**
+   * ⛔ 「内容被裁剪（压扁）」裁决 —— 取代已被证伪的绝对高度下限 `MIN_FREEZE_HEIGHT`。
+   *
+   * 生产 trace 12.gz 实测：真实迭代块高度**中位数 54px / 最低 19px**，而压扁态 ~26px
+   * ⇒ 高度阈值区间重叠、不可能区分（旧阈值 120px 让 `muted 7/2011`、DOM 44k）。
+   * 正确判据是「内容有没有被 `max-height`/`overflow` 夹住」：夹住 ⇒ 高度不可信 ⇒
+   * 既不能冻结、也不再排复核；内容一变（高度变化）⇒ 自动清除该裁决。
+   */
+  it('⛔ clipped 裁决：标记后不得冻结，且内容一变（高度变化）自动清除', () => {
+    t.record(key, 26, 0)
+    t.record(key, 26, ITERATION_HEIGHT_SETTLE_MS)
+    t.markVerified(key)
+    t.markClipped(key, 1000)
+    expect(t.isClipped(key)).toBe(true)
+    expect(t.isVerified(key)).toBe(false) // 撤销裁决 ⇒ TurnBody 不会冻结它
+    expect(t.isSettled(key)).toBe(false)
+    // 内容变化（压扁解除 → 真实高度）⇒ 清除 clipped ⇒ 重新走"稳定 + 复核"
+    t.record(key, 812, 2000)
+    expect(t.isClipped(key)).toBe(false)
+    expect(t.isSettled(key)).toBe(false)
+    t.record(key, 812, 2000 + ITERATION_HEIGHT_SETTLE_MS)
+    expect(t.isSettled(key)).toBe(true)
+    t.markVerified(key)
+    expect(t.isVerified(key)).toBe(true)
+  })
+
+  it('clipped 与 clear() 一起复位（会话/作用域切换不得残留裁决）', () => {
+    t.record(key, 26, 0)
+    t.record(key, 26, ITERATION_HEIGHT_SETTLE_MS)
+    t.markClipped(key, 500)
+    expect(t.isClipped(key)).toBe(true)
+    t.clear()
+    expect(t.isClipped(key)).toBe(false)
+    expect(t.get(key)).toBeUndefined()
+    expect(t.isSettled(key)).toBe(false)
+    expect(t.isVerified(key)).toBe(false)
+  })
 })
 
 describe('sharedIterationHeightTracker（内容身份作用域，跨重挂载复用）', () => {

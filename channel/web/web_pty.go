@@ -279,19 +279,20 @@ func (m *ptyManager) Stop() {
 	m.mu.Unlock()
 }
 
-// selectBackend resolves the user's sandbox and picks the right PTY backend.
-func (m *ptyManager) selectBackend(senderID string) (PtyBackend, error) {
+// selectBackend resolves the session's sandbox and picks the right PTY backend.
+// sessionKey is "channel:chatID"; senderID is kept for the local backend identity.
+func (m *ptyManager) selectBackend(senderID, sessionKey string) (PtyBackend, error) {
 	sandbox := tools.GetSandbox()
 	if sandbox == nil {
 		return nil, fmt.Errorf("no sandbox available")
 	}
 
-	// Try per-user resolution (SandboxRouter).
+	// Resolve the session's sandbox (SandboxRouter).
 	resolver, ok := sandbox.(tools.SandboxResolver)
 	if ok {
-		userSbx := resolver.SandboxForUser(senderID)
+		userSbx := resolver.SandboxForSession(sessionKey)
 		if userSbx == nil {
-			return nil, fmt.Errorf("no sandbox for user %s", senderID)
+			return nil, fmt.Errorf("no sandbox for session %s", sessionKey)
 		}
 		// Remote sandbox → PTY on runner.
 		if rs, ok := userSbx.(*tools.RemoteSandbox); ok {
@@ -308,8 +309,8 @@ func (m *ptyManager) selectBackend(senderID string) (PtyBackend, error) {
 }
 
 // Create creates a new PTY session.
-func (m *ptyManager) Create(senderID, chatID, cwd string, cols, rows uint16) (string, error) {
-	backend, err := m.selectBackend(senderID)
+func (m *ptyManager) Create(senderID, sessionKey, chatID, cwd string, cols, rows uint16) (string, error) {
+	backend, err := m.selectBackend(senderID, sessionKey)
 	if err != nil {
 		return "", err
 	}
@@ -550,7 +551,12 @@ func (wc *WebChannel) handleTerminalCreate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	tid, err := wc.ptyMgr.Create(senderID, req.ChatID, cwd, 80, 24)
+	sel := wc.GetCurrentSession(senderID)
+	ptyChannel := sel.Channel
+	if ptyChannel == "" {
+		ptyChannel = "cli"
+	}
+	tid, err := wc.ptyMgr.Create(senderID, ptyChannel+":"+req.ChatID, req.ChatID, cwd, 80, 24)
 	if err != nil {
 		log.WithError(err).Warn("Failed to create PTY")
 		jsonErrorResponse(w, http.StatusInternalServerError, fmt.Sprintf("create terminal: %v", err))

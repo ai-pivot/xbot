@@ -520,6 +520,39 @@ describe('useChatMessages', () => {
     expect(result.current.loading).toBe(false)
   })
 
+  it('⛔ historyReady flips in the SAME render as the session switch (no empty-list flash)', async () => {
+    const ws = makeWS([
+      { messages: [{ role: 'user', content: 'from A', timestamp: '2026-07-08T00:00:00Z' }] },
+      { messages: [] },
+    ])
+
+    // 记录每次渲染的 historyReady —— 要断言的是「切换后的**第一次**渲染」。
+    const seen: boolean[] = []
+    const { rerender } = renderHook(
+      ({ chatID }) => {
+        const r = useChatMessages({ chatID, channel: 'web', ws })
+        seen.push(r.historyReady)
+        return r
+      },
+      { initialProps: { chatID: 'a' } },
+    )
+
+    await waitFor(() => expect(seen[seen.length - 1]).toBe(true))
+
+    const before = seen.length
+    rerender({ chatID: 'b' })
+
+    // 用户报告：「切换会话会闪烁一瞬间错误布局」（2026-09-18）。
+    // 根因：historyReady 曾是 useState，由**异步 reload() 回调**置 false ⇒ 切会话
+    // 那一帧 chatID 已变、messages 已清空，historyReady 却仍是上一会话的 true ⇒
+    // AgentPanel 的 showLoadingScreen 为 false ⇒ 渲染「空 MessageList + 输入框」
+    // （没有 loading、消息区空白）⇒ 下一帧才翻成 loading ⇒ 再下一帧才是内容。
+    // 修法：historyReady 改为派生状态（readyHistoryKey === activeMessageCacheKey）
+    // ⇒ 随 session key **同帧**翻转。本断言（不 waitFor，直接看第一次渲染）就是
+    // 判别力所在：改回 setState 实现时 `seen[before]` 会是 true ⇒ 必红。
+    expect(seen[before]).toBe(false)
+  })
+
   it('sends /new to the agent without showing an optimistic slash-command row', async () => {
     const ws = makeWS([
       { messages: [{ role: 'user', content: 'old', timestamp: '2026-07-08T00:00:00Z' }] },

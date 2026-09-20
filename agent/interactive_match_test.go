@@ -87,6 +87,49 @@ func TestResolveInteractiveSessionKey_TreeScopedInstanceMatch(t *testing.T) {
 	}
 }
 
+// TestResolveInteractiveSessionKey_GrandchildInstanceMatch 复现用户现场（2026-09-18）：
+//
+//	interactive send failed: no sub-agent with instance="mma4-tcgen05" in your
+//	sub-agent tree (role=""; …)          ← 补上 role="explore" 后同一次调用成功
+//
+// 现场形态：`mma4-tcgen05` 是**发起者子树里的"孙级"**（由同一棵树里的另一个子代理
+// spawn，例如 mma3 → mma4-tcgen05），调用方漏传 role。旧实现里 best-effort 的作用域是
+// **严格直接子级**（`pk == callerKey`）⇒ 孙级 0 命中 ⇒ 报错；而补上 role 后走「精确
+// 地址键」（`channel:chatID/role:instance`，与深度无关）⇒ 命中。**两条路径作用域不一致
+// = 本 bug**（契约：best-effort 的作用域 = 发起者的**整棵子树**；别的会话的树仍严格排除）。
+func TestResolveInteractiveSessionKey_GrandchildInstanceMatch(t *testing.T) {
+	a := &Agent{}
+	caller := qualifyChatID("web", "chat_A")
+
+	// 直接子级：mma3（parentKey = 发起者）
+	mma3 := interactiveKey("web", "chat_A", "explore", "mma3")
+	a.interactiveSubAgents.Store(mma3, &interactiveAgent{roleName: "explore", instance: "mma3", parentKey: caller})
+
+	// 孙级：mma4-tcgen05（parentKey = mma3，而不是发起者）
+	grandchild := interactiveKey("web", "chat_A", "explore", "mma4-tcgen05")
+	a.interactiveSubAgents.Store(grandchild, &interactiveAgent{
+		roleName: "explore", instance: "mma4-tcgen05", parentKey: mma3,
+	})
+
+	// ① 用户现场：只给 instance（漏传 role）⇒ 必须命中孙级
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_A", "", "mma4-tcgen05"); err != nil || got != grandchild {
+		t.Fatalf("孙级仅 instance 必须命中：got=%q err=%v want=%q", got, err, grandchild)
+	}
+	// ② 带 role 也必须命中（精确地址键路径）
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_A", "explore", "mma4-tcgen05"); err != nil || got != grandchild {
+		t.Fatalf("带 role 必须命中：got=%q err=%v", got, err)
+	}
+	// ③ ⛔ 跨树仍严禁：chat_B 用 instance-only 不得命中 chat_A 树里的孙级
+	if got, err := a.resolveInteractiveSessionKey("web", "chat_B", "", "mma4-tcgen05"); err == nil {
+		t.Fatalf("严禁跨树：chat_B 不应命中 %q（got=%q）", grandchild, got)
+	}
+	// ④ 孙级也出现在"本树可用列表"里（错误信息不再漏列）
+	tree := a.matchInteractiveSessionsInTree(caller, "", "")
+	if len(tree) != 2 {
+		t.Fatalf("本树（含孙级）应列出 2 个会话，got %v", tree)
+	}
+}
+
 // TestResolveInteractiveSessionKey_TreeOnlyUnavailable：树内没有匹配时，错误里只列
 // **本树**的可用会话（并提示可用完整地址），而不是把别处的会话端上来。
 func TestResolveInteractiveSessionKey_TreeOnlyUnavailable(t *testing.T) {

@@ -327,6 +327,10 @@ func (s *CoreMemoryService) ClearBlock(tenantID int64, blockName, userID string)
 // ClearAllBlocks clears all core memory blocks (persona + working_context + human) for a tenant.
 // Uses resolveBlockKey to handle persona/human/working_context correctly.
 func (s *CoreMemoryService) ClearAllBlocks(tenantID int64, userID string) error {
+	// Process-wide write gate — see db.writeMu.
+	s.db.writeMu.Lock()
+	defer s.db.writeMu.Unlock()
+
 	conn := s.db.Conn()
 	tx, err := conn.Begin()
 	if err != nil {

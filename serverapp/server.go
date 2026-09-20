@@ -33,19 +33,26 @@ import (
 	"xbot/version"
 )
 
-// injectProxyLLM checks if the user's active runner has local LLM configured,
-// and if so, injects a ProxyLLM into the agent's LLM factory.
-func injectProxyLLM(userID string, ag *agent.Agent) {
+// injectProxyLLM checks whether the machine a session is bound to declares a
+// local LLM, and if so injects a ProxyLLM so generation happens on that machine.
+//
+// routingKey is the session key ("channel:chatID") — with session-scoped runner
+// bindings there is no user-level "active runner" any more.
+func injectProxyLLM(routingKey string, ag *agent.Agent) {
 	db := tools.GetRunnerTokenDB()
 	if db == nil {
 		return
 	}
-	store := tools.NewRunnerTokenStore(db)
-	activeName, err := store.GetActiveRunner(userID)
-	if err != nil || activeName == "" {
+	router, _ := tools.GetSandbox().(*tools.SandboxRouter)
+	if router == nil {
 		return
 	}
-	runners, err := store.ListRunners(userID)
+	activeName := router.GetSessionRunner(routingKey)
+	if activeName == "" || !router.IsRunnerOnline(activeName) {
+		return
+	}
+	store := tools.NewRunnerStore(db)
+	runners, err := store.List()
 	if err != nil {
 		return
 	}
@@ -64,12 +71,12 @@ func injectProxyLLM(userID string, ag *agent.Agent) {
 				rs := router.Remote()
 				proxy := &llm_pkg.ProxyLLM{
 					GenerateFunc: func(ctx context.Context, _, model string, messages []llm_pkg.ChatMessage, tools []llm_pkg.ToolDefinition, thinkingMode string) (*llm_pkg.LLMResponse, error) {
-						return rs.LLMGenerate(ctx, userID, model, messages, tools, thinkingMode)
+						return rs.LLMGenerate(ctx, model, messages, tools, thinkingMode)
 					},
 					ListModelsFunc: func() []string {
 						ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 						defer cancel()
-						models, err := rs.LLMModels(ctx, userID)
+						models, err := rs.LLMModels(ctx)
 						if err != nil {
 							return nil
 						}
@@ -80,10 +87,10 @@ func injectProxyLLM(userID string, ag *agent.Agent) {
 				if model == "" {
 					model = ag.GetDefaultModel()
 				}
-				ag.SetProxyLLM(userID, proxy, model)
-				log.Infof("ProxyLLM injected for user=%s runner=%s provider=%s", userID, activeName, llm.Provider)
+				ag.SetProxyLLM(routingKey, proxy, model)
+				log.Infof("ProxyLLM injected for session=%s runner=%s provider=%s", routingKey, activeName, llm.Provider)
 			} else {
-				ag.ClearProxyLLM(userID)
+				ag.ClearProxyLLM(routingKey)
 			}
 			return
 		}
@@ -318,25 +325,27 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 					}
 				})
 			}
-			// Wire admin role check into SandboxRouter — admin web users bypass
-			// the DeniedSandbox restriction. Uses WebChannel's IsAdminIdentity
-			// (role-based, checks DB for web-1 or "admin" auth identity).
+			// Wire runner lifecycle into the Web channel. With session-scoped
+			// bindings there is no "active runner" — when a machine connects or
+			// disappears we walk the sessions bound to it.
 			sb := tools.GetSandbox()
 			if sb != nil {
 				if router, ok := sb.(*tools.SandboxRouter); ok {
-					router.SetIsAdminFn(webCh.IsAdminIdentity)
 					if remote := router.Remote(); remote != nil {
-						remote.OnRunnerStatusChange = func(userID, runnerName string, online bool) {
-							webCh.PushRunnerStatus(userID, runnerName, online)
-							// When a runner with local LLM connects/disconnects, update ProxyLLM.
-							if online {
-								injectProxyLLM(userID, ag)
-							} else {
-								ag.ClearProxyLLM(userID)
+						remote.OnRunnerStatusChange = func(runnerName string, online bool) {
+							// The status event is global; every client re-reads the
+							// session bindings from runner_session_get.
+							webCh.PushRunnerStatus("", runnerName, online)
+							for _, sessionKey := range router.SessionsForRunner(runnerName) {
+								if online {
+									injectProxyLLM(sessionKey, ag)
+								} else {
+									ag.ClearProxyLLM(sessionKey)
+								}
 							}
 						}
-						remote.OnSyncProgress = func(userID, phase, message string) {
-							webCh.PushSyncProgress(userID, phase, message)
+						remote.OnSyncProgress = func(runnerName, phase, message string) {
+							webCh.PushSyncProgress(runnerName, phase, message)
 						}
 					}
 				}
@@ -394,6 +403,17 @@ func registerChannels(disp *channel.Dispatcher, cfg *config.Config, msgBus *bus.
 		log.WithField("provider", name).Info("Storage provider switched (hot apply)")
 		return name, nil
 	})
+	// ── Web-only tool: share_file ─────────────────────────────────────────
+	// Registers the `share_file` tool that lets the agent publish a local file
+	// as a web-accessible URL. Uses the same OSS provider as web uploads
+	// (local disk / Qiniu / S3). Only registered when web is enabled —
+	// pure CLI/Feishu deployments don't have a web server to serve the URL.
+	if cfg.Web.Enable && imgProvider != nil {
+		sharer := NewWebFileSharer(imgProvider, config.XbotHome())
+		shareTool := tools.NewShareFileTool(sharer)
+		ag.RegisterCoreTool(shareTool)
+		ag.RegisterTool(shareTool)
+	}
 
 	// 注册插件 channel（从 ChannelProviderRegistry 查找）
 	reg := GetChannelProviderRegistry()
@@ -734,6 +754,7 @@ func Run(args []string) error {
 		log.WithError(err).Warn("Failed to open token database, runner tokens disabled")
 	} else {
 		tools.SetRunnerTokenDB(tokenDB.Conn())
+		wireRunnerBindingStore(tokenDB)
 	}
 
 	var webDB *sqlite.DB
@@ -923,6 +944,19 @@ func Run(args []string) error {
 
 	// 先取消 context，让 agent.Run() 退出（其 defer 会清理 cron 和 cleanup routine）
 	cancel()
+
+	// 把 WAL 里已提交的数据 checkpoint 进主库。
+	// 位置很关键：① 在 collectPendingResumes 之后 —— 恢复标记本身也必须落进主库，
+	// 否则"记录已写入"仍然只是一个 WAL 事实；② 在下面那些可能卡住的收尾（webhook /
+	// dispatcher / 插件 deactivate）之前 —— 2026-09-17 的停机就是在插件阶段被卡住，
+	// 10 秒后被 supervisor SIGKILL，丢掉了约 2 分钟的已提交迭代与 2 条恢复标记。
+	// TRUNCATE 会把全部 WAL 帧写回主库并重置 WAL；它受 busy_timeout(10s) 约束、
+	// 失败只 WARN，绝不阻塞停机。
+	if webDB != nil {
+		if err := webDB.CheckpointForShutdown(); err != nil {
+			log.WithError(err).Warn("Shutdown WAL checkpoint incomplete — data already acknowledged may be lost if this process is SIGKILLed; continuing shutdown")
+		}
+	}
 
 	// 关闭 Webhook 事件服务器
 	if webhookServer != nil {
@@ -1168,18 +1202,23 @@ func (a *feishuPromptAdapter) ChannelSystemParts(ctx context.Context, chatID, se
 	return a.ch.ChannelSystemParts(ctx, chatID, senderID)
 }
 
-// buildRunnerConnectCmd constructs the xbot-runner CLI command from a token entry.
-func buildRunnerConnectCmd(cfg *config.Config, entry *tools.RunnerTokenEntry) string {
+// buildRunnerConnectCmd constructs the xbot-runner command to run on the
+// managed machine. The endpoint is the single-operator /ws path; the runner
+// reports its own name so the server can match it to its registry entry.
+func buildRunnerConnectCmd(cfg *config.Config, name, token, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) string {
 	pubURL := cfg.PublicWSAddr()
-	cmd := fmt.Sprintf("./xbot-runner --server %s/ws/%s --token %s", pubURL, entry.UserID, entry.Token)
-	if entry.Settings.Mode == "docker" {
-		cmd += " --mode docker"
-		if entry.Settings.DockerImage != "" {
-			cmd += fmt.Sprintf(" --docker-image %s", entry.Settings.DockerImage)
-		}
+	cmd := fmt.Sprintf("xbot-runner --server %s/ws --token %s --name %s", pubURL, token, name)
+	if mode == tools.RunnerModeDocker && dockerImage != "" {
+		cmd += " --mode docker --docker-image " + dockerImage
 	}
-	if entry.Settings.Workspace != "" && entry.Settings.Workspace != "/workspace" {
-		cmd += fmt.Sprintf(" --workspace %s", entry.Settings.Workspace)
+	if workspace != "" {
+		cmd += " --workspace " + workspace
+	}
+	if llm.HasLLM() {
+		cmd += fmt.Sprintf(" --llm-provider %s --llm-model %s", llm.Provider, llm.Model)
+		if llm.BaseURL != "" {
+			cmd += " --llm-base-url " + llm.BaseURL
+		}
 	}
 	return cmd
 }

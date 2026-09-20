@@ -335,7 +335,7 @@ func buildDirectoryTree(dir string) string {
 
 // buildDirectoryTreeSandboxAPI builds a directory tree using Sandbox.ReadDir API.
 func buildDirectoryTreeSandboxAPI(ctx *ToolContext, dir string) string {
-	entries, err := ctx.Sandbox.ReadDir(ctx.Ctx, dir, ctx.OriginUserID)
+	entries, err := ctx.Sandbox.ReadDir(ctx.Ctx, dir, ctx.SessionKey)
 	if err != nil {
 		return ""
 	}
@@ -515,7 +515,7 @@ func (t *CdTool) executeWithSandboxAPI(ctx *ToolContext, dir string) (*ToolResul
 	target = path.Clean(target)
 
 	// Verify directory exists in sandbox
-	userID := ctx.OriginUserID
+	userID := ctx.SessionKey
 	if userID == "" {
 		userID = ctx.SenderID
 	}

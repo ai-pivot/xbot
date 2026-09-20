@@ -362,36 +362,35 @@ func TestDrainAndProcessNotifications_ConcurrentSafety(t *testing.T) {
 	}()
 	wg.Wait()
 
-	// Per-notification injection (v3 queue redesign): each of the 10 drained
-	// notifications becomes its OWN user message (one turn each, individually
-	// traceable in the queue tray). Collect all 10 — no losses.
+	// ⛔ 契约（2026-09-18 用户 P0）：10 条通知 ⇒ **恰好 1 条** user 消息（一个 turn）。
+	// 并发 drain 只有一个能拿到条目（另一个拿到 0）⇒ 不可能出现重复注入。
 	var msgs []bus.InboundMessage
 	timeout := time.After(2 * time.Second)
-	for len(msgs) < 10 {
+	for len(msgs) < 1 {
 		select {
 		case msg := <-a.bus.Inbound:
 			msgs = append(msgs, msg)
 		case <-timeout:
-			t.Fatalf("expected 10 individual messages in bus.Inbound (one per notification), got %d (duplicates or losses)", len(msgs))
+			t.Fatal("expected exactly 1 batched message in bus.Inbound, got none")
 		}
 	}
 
-	// Check no more messages (no duplicates from the concurrent drains)
+	// 不得有第二条（并发 drain 的重复注入回归）。
 	select {
-	case <-a.bus.Inbound:
-		t.Fatal("should not have more than 10 messages — possible duplicate")
+	case extra := <-a.bus.Inbound:
+		t.Fatalf("should be exactly 1 batched message — possible duplicate: %q", extra.Content)
 	default:
 	}
 
-	// Every message must carry the bg-notification marker (injected via
-	// injectBgUserMessage → bgNotificationMetadataKey).
-	for i, msg := range msgs {
-		if msg.Metadata["xbot_internal_bg_notification"] != "true" {
-			t.Errorf("msg[%d] missing bg notification marker", i)
-		}
+	// 批量消息必须携带 10 段（每段含任务输出 "test output"），且带通知标记。
+	if n := strings.Count(msgs[0].Content, "test output"); n != 10 {
+		t.Errorf("batched message must carry all 10 notifications, got %d sections", n)
+	}
+	if msgs[0].Metadata["xbot_internal_bg_notification"] != "true" {
+		t.Error("batched message missing bg notification marker")
 	}
 
-	t.Logf("SUCCESS: exactly 10 individual messages for 10 notifications (no duplicates, no losses)")
+	t.Logf("SUCCESS: exactly 1 batched message for 10 notifications (no duplicates, no losses)")
 }
 
 // TestDrainAndProcessNotifications_AfterResponseSent verifies the KEY INVARIANT:
@@ -710,37 +709,38 @@ func TestDrainAndProcessNotifications_MixedTypes(t *testing.T) {
 
 	a.drainAndProcessNotifications(chatKey)
 
-	// Per-notification injection (v3 queue redesign): bg task and CronFired
-	// are injected as TWO separate user messages — each gets its own turn,
-	// own 🔔 row and stays individually traceable in the queue tray.
+	// ⛔ 契约（2026-09-18 用户 P0）：一次突发 = **一条** user 消息 = 一个 turn。
+	// 旧实现逐条注入 ⇒ N 条通知在 busy 期堆进**用户可见队列**（截图：Next turn 83
+	// + Turn 84–88），既不能立刻发出也拿不到"一次处理完"。
 	var msgs []bus.InboundMessage
 	timeout := time.After(2 * time.Second)
-	for len(msgs) < 2 {
+	for len(msgs) < 1 {
 		select {
 		case msg := <-a.bus.Inbound:
 			msgs = append(msgs, msg)
 		case <-timeout:
-			t.Fatalf("expected 2 individual messages in bus.Inbound (one per notification), got %d", len(msgs))
+			t.Fatal("expected exactly 1 batched message in bus.Inbound, got none")
 		}
+	}
+	// 不得有第二条（禁止逐条注入回归）。
+	select {
+	case extra := <-a.bus.Inbound:
+		t.Fatalf("expected ONE batched message, got a second one: %q", extra.Content)
+	default:
 	}
 
-	var hasCron, hasBgTask bool
-	for _, msg := range msgs {
-		if strings.Contains(msg.Content, "⏰") {
-			hasCron = true
-		}
-		if strings.Contains(msg.Content, "[System Notification]") {
-			hasBgTask = true
-		}
+	joined := msgs[0].Content
+	if !strings.Contains(joined, "⏰") {
+		t.Errorf("batched message must contain cron part (⏰), got: %s", joined)
 	}
-	if !hasCron {
-		t.Error("expected one individual message to contain ⏰ prefix (cron)")
+	if !strings.Contains(joined, "[System Notification]") {
+		t.Errorf("batched message must contain bg task part ([System Notification]), got: %s", joined)
 	}
-	if !hasBgTask {
-		t.Error("expected one individual message to contain [System Notification] (bg task)")
+	if !strings.Contains(joined, "\n\n---\n\n") {
+		t.Errorf("parts must be joined by the documented separator, got: %s", joined)
 	}
 
-	t.Logf("SUCCESS: bg task and CronFired injected as 2 individual messages (one turn each)")
+	t.Logf("SUCCESS: bg task + CronFired injected as ONE batched message")
 }
 
 // TestBgNotifyLoop_CronFired_NoSession_ProcessesDirectly is the regression test for
@@ -864,4 +864,67 @@ func TestBgNotifyLoop_CronFired_NoSession_MultipleNotifications(t *testing.T) {
 // containsPrefix checks if s starts with the given prefix string.
 func containsPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// TestDrainAndProcessNotifications_LabelsSourceAndRange —— 用户要求（2026-09-18）：
+// 「N 合 1 必须明显标识每条消息的范围和来源」。
+// 契约：① 消息以 `🔔 合并通知 ×N` 总览开头（N>1）；② 每节以 `【i/N】` 标出范围；
+// ③ 节头写明来源（后台任务 + task id / 子代理 role/instance / 定时任务 + 摘要）；
+// ④ 节间仍用既有分隔符 "\n\n---\n\n"。
+func TestDrainAndProcessNotifications_LabelsSourceAndRange(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr := tools.NewBackgroundTaskManager()
+	a := &Agent{bus: bus.NewMessageBus(), agentCtx: ctx}
+	a.bgTaskMgr.Store(mgr)
+
+	chatKey := "cli:label-chat"
+	// ① 后台任务（完成通知带真实 ID 与命令）
+	_ = mgr.Start(chatKey, "user-1", "cargo check", func(ctx context.Context, outputBuf func(string)) (int, error) {
+		outputBuf("ok")
+		return 0, nil
+	})
+	var bgNotif tools.BgNotification
+	select {
+	case bgNotif = <-mgr.NotifyCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for bg task notification")
+	}
+	// ② 子代理完成 ③ 定时任务
+	subNotif := &tools.SubAgentBgNotify{
+		Key: chatKey, Type: tools.SubAgentBgNotifyCompleted,
+		Role: "explore", Instance: "mem-1", Content: "SUB_DONE", Sid: "user-1",
+	}
+	cronNotif := &tools.CronFired{Key: chatKey, Sid: "user-1", Message: "check health"}
+	a.enqueueBgNotifications([]tools.BgNotification{bgNotif, subNotif, cronNotif})
+
+	a.drainAndProcessNotifications(chatKey)
+
+	var msg bus.InboundMessage
+	select {
+	case msg = <-a.bus.Inbound:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected the batched notification message in bus.Inbound")
+	}
+	// 恰好一条（N 合 1，绝不逐条）。
+	select {
+	case extra := <-a.bus.Inbound:
+		t.Fatalf("expected ONE batched message, got a second: %q", extra.Content)
+	default:
+	}
+
+	c := msg.Content
+	for _, want := range []string{
+		"🔔 合并通知 ×3",               // 总览（范围）
+		"【1/3】", "【2/3】", "【3/3】", // 每节的序号（范围）
+		"后台任务 ",             // 来源：后台任务（带 task id）
+		"子代理 explore/mem-1", // 来源：子代理 role/instance
+		"定时任务",              // 来源：定时任务
+		"\n\n---\n\n",       // 既有分隔符（契约不变）
+		"SUB_DONE",          // 正文仍完整
+	} {
+		if !strings.Contains(c, want) {
+			t.Errorf("batched message must contain %q;\n--- got ---\n%s", want, c)
+		}
+	}
 }

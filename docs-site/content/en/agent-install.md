@@ -74,6 +74,13 @@ ls ~/.xbot/web/dist/index.html        # Web UI in place
 
 > If `setup --check` is non-zero, re-run `xbot-cli setup`. Missing plugin tarballs on an old release:
 > reinstall with `CHANNEL=nightly`.
+>
+> The plugin health scan is manifest-driven (no plugin name list): for every
+> `plugins/builtin/*/plugin.json` it lists a declared `web.entry` artifact and — for stdio/grpc
+> plugins — the **entry binary** (present + executable). Both are report-only (they never change
+> the `--check` exit code: plugins in the user dir are the user's own business), but "the plugin is
+> installed yet does nothing" is almost always one of the two. Adding a built-in plugin needs no
+> change to this page.
 
 ## 2. Start the web server
 

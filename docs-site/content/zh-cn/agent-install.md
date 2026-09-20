@@ -73,6 +73,11 @@ ls ~/.xbot/web/dist/index.html        # Web UI 已就位
 ```
 
 > `setup --check` 非 0 时重跑 `xbot-cli setup` 修复。旧 release 缺插件包时用 `CHANNEL=nightly` 重装。
+>
+> 插件体检是 manifest 驱动的（不维护插件名单）：每个 `plugins/builtin/*/plugin.json` 声明的
+> `web.entry` 产物、以及 stdio/grpc 插件的**入口二进制**（存在 + 可执行）都会逐条列出。
+> 这两类缺失都只**报告**（不影响 `--check` 退出码 —— 用户目录的插件是用户自己的事），
+> 但"插件装了却没反应"十有八九是其中之一。新增内置插件无需改本页。
 
 ## 2. 启动 Web
 

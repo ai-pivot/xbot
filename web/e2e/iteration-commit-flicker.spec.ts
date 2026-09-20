@@ -205,19 +205,23 @@ test.describe('Iteration completion flicker', () => {
     }
     /** Double-render spike: the committed fold AND the live fold render the
      *  SAME iteration content simultaneously (event A) until the live area
-     *  clears (event B) — the row briefly grows then shrinks back. A spike
-     *  frame is ≥8px ABOVE both neighbours. */
+     *  clears (event B) — the row **briefly grows then shrinks back**. 判据与
+     *  `dips` 对称：必须**同时高于前后两侧**（`>= before + 12 && >= after + 12`）。
+     *
+     *  ⛔ 不能用 `min(before, after)`：那会把**一次性台阶**也算成 spike —— 迭代推进
+     *  （事件 B：live 迭代号 N → N+1）时，下一个迭代的「思考中…」指示器出现 ⇒ 行高
+     *  **永久** +~28px（不是抖动，是合法的新内容）。2026-09-20：占位符在边界窗口被
+     *  抑制（不再与已完成的「思考 N 字」并存，见 LiveIteration 的
+     *  `liveIterationInFlight`）之后，这个台阶第一次变得可见，旧判据把它误报为
+     *  double-render（本地确定性复现：rowH 73 → 101 且此后恒为 101）。 */
     const spikes = (frames: Frame[]) => {
       const out: string[] = []
       const h = frames.map((f) => f.rowH)
       for (let i = 3; i < h.length - 3; i++) {
         const before = Math.max(h[i - 3], h[i - 2], h[i - 1])
         const after = Math.max(h[i + 1], h[i + 2], h[i + 3])
-        // Compare against the SMALLER plateau (the steady state after the
-        // spike collapses) — spike must exceed the post-collapse level.
-        const plateau = Math.min(before, after)
-        if (h[i] >= plateau + 12) {
-          out.push(`frame ${i}: ${h[i]} (plateau ${plateau})`)
+        if (h[i] >= before + 12 && h[i] >= after + 12) {
+          out.push(`frame ${i}: ${h[i]} (before ${before}, after ${after})`)
         }
       }
       return out
@@ -238,6 +242,14 @@ test.describe('Iteration completion flicker', () => {
       }
       return out
     }
+
+    // 判据自检（guard-on-guard）：`spikes` 必须只对**瞬态** double-render 报警，
+    // 对「迭代推进 ⇒ 下一个迭代的『思考中…』指示器出现」这种**一次性台阶**不报
+    //（否则无法区分真抖动与合法增高；2026-09-20 实测误报，根因见上面 spikes 的注释）。
+    const synth = (rowH: number[]): Frame[] =>
+      rowH.map((h, i) => ({ t: i, live: 0, committed: {}, rowH: h }))
+    expect(spikes(synth([73, 73, 73, 101, 73, 73, 73, 73])), 'transient double-render must be flagged').toHaveLength(1)
+    expect(spikes(synth([73, 73, 73, 101, 101, 101, 101, 101])), 'one-time step must NOT be flagged').toHaveLength(0)
 
     const report = [
       `M1 dips: ${dips(frames1).join(' | ') || 'none'}`,

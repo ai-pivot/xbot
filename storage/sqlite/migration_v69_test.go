@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// TestMigrateV68ToV69RepairsMissingReasoningItems reproduces the production
+// TestMigrateV69ToV70RepairsMissingReasoningItems reproduces the production
 // schema created by the v66 migration-version collision: the database has
 // already advanced to v68, but session_messages never received reasoning_items.
-func TestMigrateV68ToV69RepairsMissingReasoningItems(t *testing.T) {
+func TestMigrateV69ToV70RepairsMissingReasoningItems(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v68-missing-reasoning-items.db")
 	raw, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -47,8 +47,8 @@ func TestMigrateV68ToV69RepairsMissingReasoningItems(t *testing.T) {
 	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 69 {
-		t.Fatalf("schema version = %d, want 69", version)
+	if version != 70 {
+		t.Fatalf("schema version = %d, want 70", version)
 	}
 
 	var content, reasoningItems string

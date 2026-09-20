@@ -4,6 +4,7 @@ import {
   clearProgressSnapshot,
   getLastIteration,
   getLastSeq,
+  getLastTurnID,
   hasLastSeq,
   progressSnapshotCache,
   resetLastIteration,
@@ -11,6 +12,7 @@ import {
   sessionCacheKey,
   setLastIteration,
   setLastSeq,
+  setLastTurnID,
 } from '@/lib/webCache'
 import type {
   ProgressEvent,
@@ -78,7 +80,7 @@ export class SSEConnectionImpl implements WSConnection {
   private pollRequestToken: object | null = null
   private replayTimer: ReturnType<typeof setTimeout> | null = null
   private sessionVersion = 0
-  private progressVersion = 0
+  /** restoreActiveProgress 的请求代际（切换会话后丢弃迟到的恢复结果）。 */
   private recoveryRequestVersion = 0
   // Half-open connection watchdog: the browser EventSource does NOT fire
   // onerror when the server dies / network cuts without a TCP reset — the
@@ -353,10 +355,17 @@ export class SSEConnectionImpl implements WSConnection {
       if (msg.type === 'progress_structured' && typeof msg.progress?.iteration === 'number' && msg.progress.iteration > 0) {
         setLastIteration(cacheKey, msg.progress.iteration)
       }
+      // Track last known TurnID — survives terminal events (unlike progressSnapshotCache).
+      // Used by restoreActiveProgress to detect cross-turn gaps after long screen-off.
+      if (msg.type === 'progress_structured' && typeof msg.progress?.turn_id === 'number' && (msg.progress.turn_id as number) > 0) {
+        setLastTurnID(cacheKey, msg.progress.turn_id as number)
+      }
     }
     this.eventsSinceOpen += 1
     if (cacheKey && isProgressLifecycleEvent(msg)) {
-      this.progressVersion += 1
+      // 生命周期事件 ⇒ 前进一个 generation（useChatMessages 的 reload 竞态判定读它）。
+      // ⚠️ 不再维护"恢复快照是否过期"的 progressVersion 比对：过期判定收口到状态机
+      // 的 I5 判据（见 restoreActiveProgress 的注释，2026-09-20 用户报告的根因）。
       bumpProgressGeneration(cacheKey)
     }
     this.dispatch(msg)
@@ -403,6 +412,18 @@ export class SSEConnectionImpl implements WSConnection {
     // tab's live progress renders in idle tabs).
     if (!msg.chat_id && this._chatID) {
       msg.chat_id = this._chatID
+    }
+    // Stamp channel for the SAME reason: consumers key per-session state by
+    // "<channel>:<chatID>" (e.g. the cached AskUser prompt). Server-side
+    // server→client envelopes do NOT always carry it — the SSE reconnect
+    // fallback for a pending AskUser publishes ChatID only (no Channel), and
+    // the client then had to GUESS the channel (connection channel → active
+    // session → default). Any mismatch silently stored the prompt under a key
+    // nothing reads ⇒ the AskUser panel never appears while the ask is pending
+    // (2026-09-20 incident). The connection knows its own (channel, chatID):
+    // stamp it, never guess.
+    if (!msg.channel && this._channel) {
+      msg.channel = this._channel
     }
     if (this._chatID) {
       const cacheKey = sessionCacheKey(this._channel, this._chatID)
@@ -477,7 +498,6 @@ export class SSEConnectionImpl implements WSConnection {
     if (this.recoveryInProgress) return
     this.recoveryInProgress = true
     const sessionVersion = this.sessionVersion
-    const progressVersion = this.progressVersion
     const recoveryRequestVersion = ++this.recoveryRequestVersion
     const cacheKey = sessionCacheKey(channel, chatID)
     // Snapshot the cached progress BEFORE recovery to detect TurnID changes.
@@ -532,12 +552,10 @@ export class SSEConnectionImpl implements WSConnection {
       // ── Turn ended on the server (or get_active_progress returned null) ──
       // The committed reply (text event) may have been lost during the SSE
       // gap; the DB is authoritative. ALWAYS reload from DB so the complete
-      // turn (user + assistant) renders. This must run BEFORE the
-      // progressVersion check below: any event arriving during the reconnect
-      // window bumps progressVersion, and without this unconditional reload
-      // the live row is cleared (phase=done) with no committed replacement —
-      // the in-progress turn "vanishes" until a manual refresh (user report:
-      // "重连之后 user msg 后进行中的 turn 消失了，刷新才能看到").
+      // turn (user + assistant) renders. (Deliberately unconditional: an
+      // earlier version gated it on a progressVersion snapshot and silently
+      // skipped the reload whenever any event arrived during the RPC — the
+      // in-progress turn then "vanished" until a manual refresh.)
       if (!progress || progress.phase === 'done') {
         // Turn ended: dispatch agent-idle so useSessionStore clears the
         // session's busy state. The session(idle) SSE event may have been
@@ -590,48 +608,70 @@ export class SSEConnectionImpl implements WSConnection {
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}` })
         return
       }
-      // progressVersion changed during the fetch: newer events already arrived
-      // (SSE replay delivers the live state), so the snapshot restore below
-      // would be stale — skip it. The unconditional reload decision above is
-      // unaffected (turn is still running here, so no reload needed).
-      if (this.progressVersion !== progressVersion) return
+      // ⛔ 不能因 progressVersion 变化而**静默丢弃**快照（用户 2026-09-20 报告：
+      // 「熄屏后新迭代 live 时会渲染、完成即消失，历史卡死在熄屏前的进度」+
+      //  「catch up 失败应该直接 session reload，我怀疑是现在静默失败」）。
+      // 断连窗口里丢掉的迭代**只能**靠这份快照或 DB reload 补齐 —— 新事件不会
+      // 重放它们（流式帧只带当前迭代的全量文本，结构化事件只带 0-1 条 delta）。
+      // 旧实现 `if (this.progressVersion !== progressVersion) return` 在
+      // **流式期间几乎恒成立**（每个结构化事件都 bump progressVersion）⇒ 快照
+      // 被静默扔掉 ⇒ 迭代永久缺失（消息越长/事件越密越必然）。
+      // 安全性：快照走 normalize → `iteration` case，由 I5 的「seq ≤ 水位**且**
+      // 无新信息才丢弃」判据去重（携带缺失迭代 ⇒ 应用；纯重放 ⇒ 丢弃），且
+      // 迭代是 append-only union、content 非空优先 ⇒ 应用过期快照不会回退。
       bumpProgressGeneration(cacheKey)
-      this.progressVersion += 1
 
       // ── Detect real data loss: TurnID changed or iteration advanced in gap ──
       // SSE event gaps are normal (stateless coalescing, buffer drops) and the
       // recovery snapshot below covers most of them — progress_structured is a
       // SNAPSHOT, later events supersede earlier ones.
       //
-      // This check is deliberately COARSE: cachedProgress.iteration_history is
-      // only the LAST event's delta, NOT the cumulative history — it CANNOT
-      // prove that iteration 3 is complete when the server is at 4. A difference
-      // of exactly 1 (3→4) does NOT mean 3's delta arrived: it may have been
-      // dropped in the gap while 4's events kept coming. So ANY advance
-      // (> 0) during a gap is treated as possible loss → force reload; the DB
-      // is authoritative. handleEvent's crossedIteration already covers the
-      // common case (gap followed by a higher-iteration progress_structured);
-      // this catches the rest (e.g. the first post-gap structured event is not
-      // the one that advanced).
-      const turnIDChanged = cachedProgress && progress &&
-        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
-        cachedProgress.turn_id !== progress.turn_id
-      const sameTurn = cachedProgress && progress &&
-        typeof cachedProgress.turn_id === 'number' && typeof progress.turn_id === 'number' &&
-        cachedProgress.turn_id === progress.turn_id
-      const cachedIter = cachedProgress?.iteration ?? 0
+      // **Two-source turn ID comparison** (2026-09-18 P0 线性一致性修复):
+      // `cachedProgress` (progressSnapshotCache) is cleared by terminal events
+      // (text/phase_done) — after a long screen-off, it's null even if the
+      // previous turn was valid. `lastTurnIDCache` is NOT cleared by terminal
+      // events and survives turn completion. We check BOTH: cachedProgress for
+      // the common case (snapshot still alive), lastTurnIDCache for the
+      // long-gap case (snapshot was cleared by the previous turn's terminal
+      // event while the user was away).
+      const cachedTurnID = cachedProgress && typeof cachedProgress.turn_id === 'number'
+        ? cachedProgress.turn_id
+        : (cacheKey ? getLastTurnID(cacheKey) : 0)
+      const serverTurnID = progress && typeof progress.turn_id === 'number' ? progress.turn_id : 0
+      const turnIDChanged = cachedTurnID > 0 && serverTurnID > 0 && cachedTurnID !== serverTurnID
+      const sameTurn = cachedTurnID > 0 && serverTurnID > 0 && cachedTurnID === serverTurnID
+
+      // Iteration gap: same turn, server advanced iterations.
+      // ≤100 → catch-up (the from_iteration fetch above already covers this;
+      //   the recovery snapshot dispatches the delta — appendIterations merges).
+      // >100 → force reload from DB (too many iterations lost for incremental
+      //   recovery to be reliable).
+      const cachedIter = cachedProgress?.iteration ?? (cacheKey ? getLastIteration(cacheKey) : 0)
       const newIter = progress?.iteration ?? 0
       const iterationGap = sameTurn && cachedIter > 0 && newIter > 0 && newIter > cachedIter
+      const iterationGapSize = iterationGap ? newIter - cachedIter : 0
+      const MAX_CATCH_UP_ITERATIONS = 100
 
-      if (turnIDChanged || iterationGap) {
-        // force_reload=true: show a loading spinner during reload. For cross-turn
-        // and iteration-id gaps, the UI is too stale to render incrementally — a
-        // clean reload is better than a partially-inconsistent view.
+      if (turnIDChanged) {
+        // Turn gap: the server is on a different turn — the previous turn's
+        // committed message (text event) may have been lost during the SSE
+        // disconnect window. Force reload from DB (authoritative).
         this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
-        // The recovery gap also implies possible session-state loss (busy/idle
-        // for other sessions during the same window) — reconcile the sidebar.
         this.dispatchSessionsResync()
+        return
       }
+      if (iterationGap && iterationGapSize > MAX_CATCH_UP_ITERATIONS) {
+        // Same turn but iteration gap too large (>100): incremental recovery
+        // is unreliable — reload from DB.
+        this.dispatch({ type: 'replay_gap', chat_id: `${channel}:${chatID}`, metadata: { force_reload: 'true' } })
+        this.dispatchSessionsResync()
+        return
+      }
+      // iterationGap ≤ 100: fall through — the recovery snapshot (dispatched
+      // below) carries the missing iterations via from_iteration delta. The
+      // store's appendIterations merges them in (deduped by iteration number).
+      // No reload needed — this is the "catch-up" path.
+
       // Recovery snapshot — carry its seq so setStructuredTools can apply the
       // stale watermark check (an old snapshot must not roll back a newer
       // live state that SSE already delivered during the reconnect window).
@@ -647,8 +687,23 @@ export class SSEConnectionImpl implements WSConnection {
         type: 'session',
         session: { channel, chat_id: chatID, action: 'busy' },
       })
-    } catch {
-      // The next native SSE reconnect or status poll gets another recovery chance.
+    } catch (err) {
+      // ⛔ 绝不能静默失败（用户 2026-09-20 报告 + 明确要求：
+      // 「catch up 失败应该直接 session reload，我怀疑是现在静默失败导致 bug」）。
+      // 本会话在断连窗口丢掉的迭代**没有第二个来源**（新事件不会重放它们），
+      // 静默 return 会让界面永久停在旧进度、且 live 与已渲染迭代互相矛盾。
+      // 降级为全量 DB reload（权威），并留下可诊断的日志（不再无声无息）。
+      console.warn('[SSE] active-progress recovery failed — falling back to DB reload', {
+        channel,
+        chatID,
+        err,
+      })
+      this.dispatch({
+        type: 'replay_gap',
+        chat_id: `${channel}:${chatID}`,
+        metadata: { force_reload: 'true' },
+      })
+      this.dispatchSessionsResync()
     } finally {
       this.recoveryInProgress = false
     }

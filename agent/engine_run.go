@@ -2594,23 +2594,17 @@ func (s *runState) maybeContinueTurn(ctx context.Context, response *llm.LLMRespo
 // user_cancelled, system_reminder). Do NOT hand-roll assistant+tool pairs
 // elsewhere — the offload / persistence / progress / cleanup behavior would
 // silently diverge.
-// syntheticInjectionNotice 是**所有注入型（fake）工具**结果的统一前缀。
+// 注入型（fake）工具的结果【不加任何"这不是你调用的工具"前缀】—— 用户 2026-09-17 决策：
+// 「我们自己注入的不要告诉他别调用，否则他会以为这个是他自己调用的」。
 //
-// 用户 2026-09-17：「faketool，尤其 system notification 也优化一下，里面的提示要
-// 强调这个工具不是你调用的，是自动注入用于提醒你的」。模型看到的只有 toolContent
-// （summary/hints 是 UI 专用），所以提示必须写进 content —— 否则模型会以为自己
-// 调用过它、甚至回谢/重复调用。
-func syntheticInjectionNotice() string {
-	return "[AUTO-INJECTED NOTIFICATION — NOT A TOOL YOU CALLED]\n" +
-		"这是系统自动注入的提醒/通知（不是你调用的工具，你从未调用过它）。\n" +
-		"直接把它当作一条外部事件信息使用：不要回谢、不要试图再次调用它；\n" +
-		"如需继续，按其中的内容继续完成用户的任务。\n\n"
-}
-
+// 实测证据：模型收到 "[AUTO-INJECTED NOTIFICATION — NOT A TOOL YOU CALLED] … 不要试图
+// 再次调用它" 后，会在思考里写出「我注意到自己在反复误触一个不存在的工具」——反向暗示
+// 凭空造出一个"不存在的工具"的焦虑，比不加提示更糟。
+//
+// 现在注入工具的结果就是一段普通 tool-result 文本（与 Shell/Read 的输出同形态），模型按
+// 内容继续任务即可。真正由模型【主动调用】的工具（task_status / task_read / SubAgent
+// inspect）仍带 tools.PollingHint —— 只有"它自己调用"的场景才需要劝导。
 func newSyntheticToolPair(toolName, toolID, toolContent string) (llm.ChatMessage, llm.ChatMessage) {
-	// 单一收口：所有注入型工具的 content 都带上「非你调用」声明
-	// （engine_run 的各 injectXxx 与 agent_process 的后台通知都走这里）。
-	toolContent = syntheticInjectionNotice() + toolContent
 	assistantMsg := llm.ChatMessage{
 		Role: "assistant",
 		ToolCalls: []llm.ToolCall{{

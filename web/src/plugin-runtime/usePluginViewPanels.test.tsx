@@ -10,21 +10,26 @@
  * mock 模式仿 PluginView.test.tsx：vi.mock 工厂引用的外部变量必须经
  * vi.hoisted() 定义；runtime mock 返回【稳定引用】。
  */
-import { renderHook } from '@testing-library/react'
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import i18n, { changeLocale } from '@/i18n'
 
 import { panelRegistry, buildPanelDefs } from './panelRegistry'
 import { usePluginViewPanels } from './usePluginViewPanels'
 import type { ViewContribution } from '@/plugin-api'
 
-const { viewsFixture, runtimeMock } = vi.hoisted(() => {
+const { viewsFixture, manifests, runtimeMock } = vi.hoisted(() => {
   const viewsFixture: Array<{ pluginId: string; view: unknown }> = []
+  // 插件清单（view 标题允许是清单 web.i18n 表里的 key）——per-plugin 表。
+  const manifests: Record<string, { i18n?: Record<string, Record<string, string>> }> = {}
   // 稳定引用：shim 的 useEffect deps 含 runtime，每次渲染新对象会重触发 effect。
   const runtimeMock = {
     listAllViews: () => viewsFixture,
     subscribeViews: () => () => {},
+    registry: { manifestOf: (id: string) => manifests[id] },
   }
-  return { viewsFixture, runtimeMock }
+  return { viewsFixture, manifests, runtimeMock }
 })
 
 vi.mock('@/plugin-runtime', () => ({
@@ -47,6 +52,8 @@ describe('usePluginViewPanels (布局 v5 shim 语义)', () => {
   beforeEach(() => {
     for (const p of panelRegistry.listPanels()) panelRegistry.unregisterPanel(p.id)
     viewsFixture.splice(0, viewsFixture.length)
+    for (const k of Object.keys(manifests)) delete manifests[k]
+    changeLocale('zh-CN')
   })
 
   afterEach(() => {
@@ -92,5 +99,49 @@ describe('usePluginViewPanels (布局 v5 shim 语义)', () => {
     const { result } = renderHook(() => usePluginViewPanels('info_bar'))
     expect(result.current).toHaveLength(1)
     expect(result.current[0]).toMatchObject({ id: 'b.item', container: 'info_bar' })
+  })
+
+  // ── view 标题的 i18n：标题允许是**该插件**清单（web.i18n）里的 key ──
+  it('view 标题是插件清单表里的 key ⇒ 用该插件的表按宿主语言解析', () => {
+    manifests['xbot.git-fancy'] = {
+      i18n: { 'zh-CN': { 'view.panel.title': 'Git 面板' }, en: { 'view.panel.title': 'Git panel' } },
+    }
+    syncFixture([
+      { pluginId: 'xbot.git-fancy', view: { ...makeView('xbot.git-fancy.panel', 'right_sidebar'), title: 'view.panel.title' } },
+    ])
+
+    changeLocale('en')
+    const en = renderHook(() => usePluginViewPanels('right_sidebar'))
+    expect(en.result.current[0].title).toBe('Git panel')
+
+    changeLocale('zh-CN')
+    const zh = renderHook(() => usePluginViewPanels('right_sidebar'))
+    expect(zh.result.current[0].title).toBe('Git 面板')
+  })
+
+  it('插件没有文案表 ⇒ view 标题原样透传（内置插件标题已是宿主 i18n 解析后的文本）', () => {
+    syncFixture([{ pluginId: 'xbot.git-info', view: { ...makeView('git-info.status', 'status_bar_right'), title: '不是 key 的标题' } }])
+    const { result } = renderHook(() => usePluginViewPanels('status_bar_right'))
+    expect(result.current[0].title).toBe('不是 key 的标题')
+  })
+
+  it('宿主切语言 ⇒ 【已渲染】的 hook 结果标题随之更新（无需重新挂载/刷新）', async () => {
+    // 手机工具 tab / rail 的标题就是这个 hook 的产物 ⇒ 必须随语言变化重算。
+    // 修复前：只在 mount + subscribeViews 时算一次 ⇒ 标题定格在旧语言（本用例必红）。
+    manifests['xbot.git-fancy'] = {
+      i18n: { 'zh-CN': { 'view.panel.title': 'Git 面板' }, en: { 'view.panel.title': 'Git panel' } },
+    }
+    syncFixture([
+      { pluginId: 'xbot.git-fancy', view: { ...makeView('xbot.git-fancy.panel', 'right_sidebar'), title: 'view.panel.title' } },
+    ])
+
+    const { result } = renderHook(() => usePluginViewPanels('right_sidebar'))
+    expect(result.current[0].title).toBe('Git 面板')
+
+    await act(async () => {
+      changeLocale('en')
+      await i18n.changeLanguage('en')
+    })
+    expect(result.current[0].title).toBe('Git panel')
   })
 })

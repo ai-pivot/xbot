@@ -35,6 +35,7 @@ import {
   type UISurface,
   type GoalInfo,
 } from '@/types/shared'
+import { frameScheduler } from '@/lib/frameScheduler'
 import type { ProgressEvent, StreamStatsInfo } from '@/types/shared'
 
 type Listener = () => void
@@ -162,6 +163,29 @@ export function continuousIterations(iters: WebIteration[]): WebIteration[] {
     out.push(curr)
   }
   return out
+}
+
+/**
+ * live 区里是否还有「在飞的迭代」—— 判据：进行中迭代号**尚未**作为历史渲染过。
+ *
+ * ⛔ 为什么必须成对使用（用户 2026-09-20 报告：「思考中和思考 stream 明显不可能同时
+ * 存在才对」——截图里上方一条已完成的「思考 15175 字」下方又出现「思考中…」）：
+ * `iteration` 是后端当前迭代号；迭代边界（刚 commit 完迭代 N、N+1 的首个 delta 还没
+ * 到）时它仍等于 N，而 N **已经**作为历史块渲染（TurnBody 的已提交迭代）——此时
+ * 任何"思考中…"占位符都是自相矛盾的（同一个迭代既已完成又在思考）。
+ * 两个占位符渲染点（LiveIteration 的空内容分支、MessageList 的 busy 占位符）互斥，
+ * 必须共用**同一判据**，否则要么双渲染（矛盾）要么两者都没有（busy 无信号）。
+ */
+export function liveIterationInFlight(progress: {
+  iteration: number
+  iterationHistory: readonly { iteration: number }[]
+}): boolean {
+  if (progress.iterationHistory.length === 0) return true
+  let maxCompleted = -1
+  for (const it of progress.iterationHistory) {
+    if (it.iteration > maxCompleted) maxCompleted = it.iteration
+  }
+  return progress.iteration > maxCompleted
 }
 
 // ── exported helpers (used by useProgressStream) ──────────────────────────
@@ -385,7 +409,21 @@ export class ProgressStore {
   private current: ProgressSnapshot = { ...EMPTY_PROGRESS_SNAPSHOT }
   private snapshot: ProgressSnapshot = EMPTY_PROGRESS_SNAPSHOT
   private listeners = new Set<Listener>()
-  private rafHandle: number | null = null
+  /** 本帧是否已排通知（去重；等价旧 `rafHandle !== null`）。 */
+  private notifyQueued = false
+  /** 通知任务：注册到**共享**帧调度器 —— 与 chat store 的通知、滚动、几何测量
+   *  同帧执行 ⇒ React 18 在同一 task 内自动批处理 ⇒ 每帧最多一次渲染
+   *  （零掉帧重构，2026-09-18；layout 重算与 React 提交随之减半）。 */
+  private readonly notifyTask = (): void => {
+    this.notifyQueued = false
+    this.flush()
+  }
+  /** 取消本帧待执行的通知 —— 语义与旧 `cancelAnimationFrame(rafHandle)` 完全一致：
+   *  同步 reset/替换快照前调用，避免"陈旧快照"在下一帧被通知出去。 */
+  private cancelPendingNotify(): void {
+    frameScheduler.cancel(this.notifyTask)
+    this.notifyQueued = false
+  }
   private dirty = false
   private disposed = false
   /** Tracks the last seen TurnID for monotonicity assertions. 0 = untracked. */
@@ -469,10 +507,7 @@ export class ProgressStore {
     this.dirty = false
     this.lastIter = 0
     // lastTurnID is NOT reset here — it tracks across turns for monotonicity.
-    if (this.rafHandle !== null) {
-      cancelAnimationFrame(this.rafHandle)
-      this.rafHandle = null
-    }
+    this.cancelPendingNotify()
     // Notify listeners immediately (synchronous) so React re-render sees empty snapshot.
     this.listeners.forEach((l) => l())
   }
@@ -485,10 +520,7 @@ export class ProgressStore {
     this.dirty = false
     this.lastTurnID = 0
     this.lastIter = 0
-    if (this.rafHandle !== null) {
-      cancelAnimationFrame(this.rafHandle)
-      this.rafHandle = null
-    }
+    this.cancelPendingNotify()
     this.listeners.forEach((l) => l())
   }
 
@@ -531,10 +563,7 @@ export class ProgressStore {
     // Single snapshot + single notification
     this.snapshot = { ...this.current }
     this.dirty = false
-    if (this.rafHandle !== null) {
-      cancelAnimationFrame(this.rafHandle)
-      this.rafHandle = null
-    }
+    this.cancelPendingNotify()
     this.listeners.forEach((l) => l())
   }
 
@@ -598,10 +627,7 @@ export class ProgressStore {
     // Synchronously update snapshot so getSnapshot() returns 'frozen' immediately
     this.snapshot = { ...this.current }
     this.dirty = false
-    if (this.rafHandle !== null) {
-      cancelAnimationFrame(this.rafHandle)
-      this.rafHandle = null
-    }
+    this.cancelPendingNotify()
     this.listeners.forEach((l) => l())
   }
 
@@ -1021,21 +1047,16 @@ export class ProgressStore {
 
   dispose(): void {
     this.disposed = true
-    if (this.rafHandle !== null) {
-      cancelAnimationFrame(this.rafHandle)
-      this.rafHandle = null
-    }
+    this.cancelPendingNotify()
     this.listeners.clear()
   }
 
   /* ── internals ── */
 
   private scheduleNotify(): void {
-    if (this.rafHandle !== null) return // already scheduled this frame
-    this.rafHandle = requestAnimationFrame(() => {
-      this.rafHandle = null
-      this.flush()
-    })
+    if (this.notifyQueued) return // already scheduled this frame
+    this.notifyQueued = true
+    frameScheduler.schedule(this.notifyTask)
   }
 
   /** Build a fresh immutable snapshot (shallow-copied top-level) and notify.

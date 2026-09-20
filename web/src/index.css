@@ -554,6 +554,12 @@
  *   症状=用户消息里 `1.` `2.` 消失（DOM 里 <ol><li> 完好）。
  * ⇒ marker 改行内（inside）：不参与裁剪，长内容横滚仍生效。 */
 .markdown-body li { margin: 0.2em 0; list-style-position: inside; }
+/* 松散列表（源 markdown 列表项与嵌套内容/段落之间有空行 ⇒ <li><p>…</p><ul>…</ul>）：
+ * 上面的 inside marker 是【行内盒】，而 li 的第一个子元素是【块级】<p> ⇒ marker 被
+ * 单独放进 li 的第一行 ⇒ 编号独占一行、正文掉到下一行（2026-09-18 用户截图证据）。
+ * 首段 inline 化后 marker 与正文同行；嵌套列表仍是块级 ⇒ 正确另起一行并缩进。
+ * 行内盒不吃 margin ⇒ 一并去掉首段 margin，避免视觉空档。 */
+.markdown-body li > p { display: inline; margin: 0; }
 .markdown-body blockquote {
   border-left: 3px solid var(--md-blockquote-border);
   margin: 0.5em 0;

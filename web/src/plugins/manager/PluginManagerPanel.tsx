@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Loader2 } from 'lucide-react'
 import { usePluginRuntime } from '@/plugin-runtime'
+import { resolvePluginText, type PluginI18nTable } from '@/plugin-runtime/i18n'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
 import { toManifest, type WebPluginDecl } from '@/plugin-runtime/usePluginRuntimeHost'
@@ -39,6 +40,8 @@ export function PluginManagerPanel() {
   const runtime = usePluginRuntime()
   const { t } = useI18n()
   const [backendPlugins, setBackendPlugins] = useState<BackendPlugin[]>([])
+  // 插件自有文案表（清单 web.i18n）——卡片 `name` 允许是它的 key（见 resolvePluginText）。
+  const [i18nTables, setI18nTables] = useState<Record<string, PluginI18nTable>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
@@ -51,8 +54,20 @@ export function PluginManagerPanel() {
     setError(null)
     try {
       // rescan=true：重新扫描磁盘插件目录 + 重新激活（发现新安装的插件）。
-      const res = await runtime.rpc.call('plugin_status' as never, { rescan: true } as never) as unknown as PluginStatusResponse
+      // 同时取 `web_plugin_list`（既有 RPC，不新增）拿各插件清单里的 web.i18n 表 ——
+      // 卡片 `name` 允许是它的 key。
+      const [res, decls] = await Promise.all([
+        runtime.rpc.call('plugin_status' as never, { rescan: true } as never) as unknown as Promise<PluginStatusResponse>,
+        (runtime.rpc.call('web_plugin_list' as never, {} as never) as unknown as Promise<{
+          plugins?: Array<{ id: string; i18n?: PluginI18nTable }>
+        }>).catch(() => ({ plugins: [] as Array<{ id: string; i18n?: PluginI18nTable }> })),
+      ])
       setBackendPlugins(res?.plugins ?? [])
+      const tables: Record<string, PluginI18nTable> = {}
+      for (const d of decls?.plugins ?? []) {
+        if (d?.id && d.i18n) tables[d.id] = d.i18n
+      }
+      setI18nTables(tables)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -207,7 +222,9 @@ export function PluginManagerPanel() {
                       animate={{ opacity: isPending ? 0.4 : 1 }}
                       className={`inline-block h-2 w-2 rounded-full ${isActive ? 'bg-green-500' : 'bg-slate-400'}`}
                     />
-                    <span className="truncate font-medium">{p.name}</span>
+                    <span className="truncate font-medium">
+                      {resolvePluginText(i18nTables[p.id], p.name) ?? p.name}
+                    </span>
                     <span className="ml-auto text-[10px] text-text-muted">v{p.version}</span>
                   </div>
                   <div className={`mt-2 flex gap-1.5 transition-spring ${isTouch ? '' : 'opacity-0 group-hover/card:opacity-100'}`}>

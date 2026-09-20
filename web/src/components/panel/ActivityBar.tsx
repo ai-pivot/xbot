@@ -32,6 +32,11 @@ export function ActivityBar({ collapsed, onToggleCollapse }: ActivityBarProps): 
   const items = useMemo(() => {
     const out: Array<{ id: string; title: string; icon: string; badge: { text: string; color: string } | null }> = []
     for (const def of dock.defs) {
+      // ⛔ 纯徽章面板（badgeRender + 声明 top/bottom）**永不出现在 ActivityBar**
+      // —— 它没有面板主体（render 返回 null），点开是空白。2026-09-20 用户报
+      // "runner 选择栏跑到侧边栏"：拖拽/钉选曾把它的 zone 改成 side ⇒ 这里保底。
+      const declaredZone = def.location?.zone
+      if (def.badgeRender != null && (declaredZone === 'top' || declaredZone === 'bottom')) continue
       const zone = dock.entryOf(def.id).loc.zone
       if (zone !== 'side' && zone !== 'chip') continue
       out.push({

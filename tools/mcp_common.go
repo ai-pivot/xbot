@@ -342,14 +342,14 @@ func resolveXbotBinDir(configPath string) string {
 
 // ConnectStdioServer 连接 stdio 模式的 MCP Server（公共函数）
 // Returns a ClientSession (auto-initialized) and the session itself for closing.
-func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, workspaceRoot, userID, serverName string) (*mcp.ClientSession, error) {
+func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, workspaceRoot, sessionKey, serverName string) (*mcp.ClientSession, error) {
 	envList := BuildStdioEnv(cfg, configPath)
 
 	sandbox := GetSandbox()
 
-	// Resolve per-user sandbox if using a router.
-	if resolver, ok := sandbox.(SandboxResolver); ok && userID != "" {
-		sandbox = resolver.SandboxForUser(userID)
+	// Resolve the session's sandbox if using a router.
+	if resolver, ok := sandbox.(SandboxResolver); ok && sessionKey != "" {
+		sandbox = resolver.SandboxForSession(sessionKey)
 	}
 
 	var execCmd *exec.Cmd
@@ -361,7 +361,7 @@ func ConnectStdioServer(ctx context.Context, cfg MCPServerConfig, configPath, wo
 		}
 		transport := &RemoteStdioTransport{
 			Sandbox:    rs,
-			UserID:     userID,
+			SessionKey: sessionKey,
 			StreamID:   generateID(),
 			Command:    cfg.Command,
 			Args:       cfg.Args,

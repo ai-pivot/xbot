@@ -219,6 +219,33 @@ jobs:
               done
               test "$web_broken" = "0"
               echo "✅ Plugin web assets installed and complete for every web.entry-declaring builtin plugin"
+              # Plugin entry BINARIES. HARD assertion, same manifest-driven rule:
+              # every builtin plugin whose plugin.json declares a stdio/grpc entry
+              # must ship that exact binary (executable). A missing binary is the
+              # other half of the "installed but never works" blind spot (the
+              # plugin process just never starts). xbot.ssh-runner is covered
+              # automatically (entry ./bin/ssh-runner-plugin) — no name list.
+              bin_broken=0
+              for pj in "${XBOT_HOME}"/plugins/builtin/*/plugin.json; do
+                [ -f "$pj" ] || continue
+                pj_id=$(jq -r '.id // empty' "$pj")
+                pj_rt=$(jq -r '.runtime // empty' "$pj")
+                pj_entry=$(jq -r '.entry // empty' "$pj")
+                { [ "$pj_rt" = "stdio" ] || [ "$pj_rt" = "grpc" ]; } || continue
+                [ -n "$pj_entry" ] || continue
+                case "$pj_entry" in
+                  /*|*" "*) continue ;; # absolute path / command line: not a shipped file
+                esac
+                pj_bin="${XBOT_HOME}/plugins/builtin/${pj_id}/${pj_entry#./}"
+                if [ -x "$pj_bin" ]; then
+                  echo "✅ plugin entry binary installed: ${pj_id} → ${pj_entry#./}"
+                else
+                  echo "::error::builtin plugin ${pj_id} declares entry=${pj_entry} but ${pj_bin} is missing/not executable"
+                  bin_broken=1
+                fi
+              done
+              test "$bin_broken" = "0"
+              echo "✅ Plugin entry binaries installed for every stdio/grpc builtin plugin"
             else
               echo "::warning::nightly plugin tarball predates the per-plugin web bundle layout — skipping web-asset assertions until the next release.yml run publishes it."
             fi

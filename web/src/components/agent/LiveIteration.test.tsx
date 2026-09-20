@@ -302,15 +302,38 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     // the boundary wait (user: "之前那个思考中有些情况没显示"). Requires a
     // predecessor iteration (iterationHistory non-empty) — the FIRST iteration
     // is special: busy placeholder covers the pre-first-iter window.
+    // ⚠️ `iteration` 必须显式给出**下一个**迭代号（2）：边界态 = 迭代 1 已完成、
+    // 迭代 2 在飞但尚无内容。默认值 1 表示"在飞的就是那个已渲染完的迭代 1" ——
+    // 那种自相矛盾的状态现在**故意**不再显示占位符（见下一条用例）。
     const { container } = renderWithProviders(
       <LiveIteration
         progress={makeSnapshot({
+          iteration: 2,
           lastIter: 2,
           iterationHistory: [{ iteration: 1, content: 't1', reasoning: '', tools: [], toolCount: 0 }],
         })}
       />,
     )
     expect(container.textContent).toMatch(/思考中|thinking/)
+  })
+
+  it('does NOT show the placeholder when the in-flight iteration is already rendered as history (user 2026-09-20)', () => {
+    // ⛔ 用户报告（截图：「思考 15175 字」下方同时出现「思考中…」）：
+    // 「思考中和思考 stream 明显不可能同时存在才对」。
+    // 迭代边界时后端当前迭代号仍等于刚 commit 的迭代（live.iter === maxCompleted）
+    // ⇒ 该迭代已被 TurnBody 渲染成历史块，此处再画「思考中…」就是同一个迭代
+    // "既已完成又在思考"。判据 `liveIterationInFlight` 与 MessageList 的 busy
+    // 占位符共用（互斥 ⇒ 恰好一个指示器；此状态下两者都不渲染）。
+    const { container } = renderWithProviders(
+      <LiveIteration
+        progress={makeSnapshot({
+          iteration: 1,
+          lastIter: 1,
+          iterationHistory: [{ iteration: 1, content: '', reasoning: '思考 15175 字', tools: [], toolCount: 0 }],
+        })}
+      />,
+    )
+    expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
 
   it('renders ShimmerThinking for the FIRST iteration (iterationHistory empty — M4: live row exists so MessageList busy placeholder is suppressed)', () => {

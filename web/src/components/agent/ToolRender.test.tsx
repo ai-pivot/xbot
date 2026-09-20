@@ -10,7 +10,7 @@ import { fireEvent, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
-import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints } from '@/components/agent/ToolRender'
+import { ToolRender, parseShell, parseRead, parseGrepResult, parseGlobResult, langFromPath, parseSyntheticHints, parseShareFile } from '@/components/agent/ToolRender'
 import { syntheticShortName, syntheticSubject } from '@/components/agent/SyntheticToolCard'
 import { DiffView, extractDiffSource, parseUnifiedDiff } from '@/components/agent/DiffView'
 import type { WebToolProgress } from '@/types/shared'
@@ -655,5 +655,80 @@ describe('合成卡片：两个「展开全部」按钮必须同款（曾上下�
     expect(cmd.className).toContain('inline-flex')
     expect(cmd.className).not.toContain('w-full')
     expect(cmd.className).not.toContain('justify-center')
+  })
+})
+
+// ── share_file（内置 web 专属工具：发布本地文件为 Web URL）──────────────
+describe('parseShareFile', () => {
+  it('parses name / url / isImage from the backend detail (image)', () => {
+    const url = '/api/files/download?key=agent%2Fabc-123%2Fchart.png&inline=1'
+    const tool = makeTool({
+      name: 'share_file',
+      summary: `Published chart.png → ${url}`,
+      detail: `File published successfully.\n\nURL: ${url}\n\nEmbed in your reply:\n![chart.png](${url})`,
+    })
+    const r = parseShareFile(tool, tool.summary, tool.detail)
+    expect(r).toEqual({ name: 'chart.png', url, isImage: true })
+  })
+
+  it('parses history rows that only carry summary (no detail/args)', () => {
+    const url = '/api/files/download?key=agent%2Fabc%2Freport.pdf'
+    const tool = makeTool({ name: 'share_file', summary: `Published report.pdf → ${url}` })
+    const r = parseShareFile(tool, tool.summary, '')
+    expect(r?.name).toBe('report.pdf')
+    expect(r?.url).toBe(url)
+    expect(r?.isImage).toBe(false) // 非图片：无 inline=1 且扩展名非图片
+  })
+
+  it('returns null when there is no publish URL (legacy / failed rows)', () => {
+    const tool = makeTool({ name: 'share_file', summary: 'publish failed: permission denied' })
+    expect(parseShareFile(tool, tool.summary, tool.detail)).toBeNull()
+  })
+})
+
+describe('ToolRender · share_file', () => {
+  it('renders an inline preview + open/copy actions for images', () => {
+    const url = '/api/files/download?key=agent%2Fabc%2Fchart.png&inline=1'
+    const tool = makeTool({
+      name: 'share_file',
+      status: 'done',
+      summary: `Published chart.png → ${url}`,
+      detail: `URL: ${url}`,
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+
+    expect(screen.getByTestId('share-file-card')).toBeInTheDocument()
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img?.getAttribute('src')).toBe(url)
+    expect(img?.getAttribute('alt')).toBe('chart.png')
+
+    // 打开：新标签页 + noreferrer；复制：按钮存在（无 emoji 图标）
+    const open = screen.getByTestId('share-file-open')
+    expect(open).toHaveAttribute('href', url)
+    expect(open).toHaveAttribute('target', '_blank')
+    expect(open).toHaveAttribute('rel', 'noreferrer')
+    expect(screen.getByTestId('share-file-copy')).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u)
+  })
+
+  it('renders no image preview for non-image files (download link only)', () => {
+    const url = '/api/files/download?key=agent%2Fabc%2Fdata.json'
+    const tool = makeTool({
+      name: 'share_file',
+      status: 'done',
+      summary: `Published data.json → ${url}`,
+    })
+    const { container } = renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.getByTestId('share-file-card')).toBeInTheDocument()
+    expect(container.querySelector('img')).toBeNull()
+    expect(screen.getByTestId('share-file-open')).toHaveAttribute('href', url)
+  })
+
+  it('falls back to the default block when the row carries no URL', () => {
+    const tool = makeTool({ name: 'share_file', status: 'error', summary: 'publish failed' })
+    renderWithProviders(<ToolRender tool={tool} />)
+    expect(screen.queryByTestId('share-file-card')).toBeNull()
+    expect(screen.getByText(/publish failed/)).toBeInTheDocument()
   })
 })

@@ -31,7 +31,7 @@ PLUGINS_DIR="$SCRIPT_DIR"
 OUT_DIR="dist"
 WEB_DIST_DIR=""
 VERSION="dev"
-PLATFORMS="linux/amd64 linux/arm64 darwin/arm64 windows/armd64 windows/armd64"
+PLATFORMS="linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

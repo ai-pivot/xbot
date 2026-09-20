@@ -15,7 +15,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, PanelLeft, Settings } from 'lucide-react'
 
-import { PanelDockProvider, PanelDock, FloatingLayer } from '@/components/panel/PanelLayout'
+import { PanelDockProvider, PanelDock } from '@/components/panel/PanelLayout'
 import { TopRail, BottomRailBadges } from '@/components/panel/rails'
 import { ActivityBar } from '@/components/panel/ActivityBar'
 import { registerBuiltinPanels } from '@/components/panel/builtinPanels'
@@ -352,7 +352,6 @@ export function AppShell() {
 
       {/* Floating panel layer — 窗口内浮层（根容器内 absolute inset-0，非 body portal），
           floating 面板 pointer-events-auto，其余透明不拦截。 */}
-      <FloatingLayer />
 
       {/* Settings dialog — slides in from the right (Spec 7 Sheet). */}
       <Suspense fallback={<div className="flex h-full items-center justify-center"><Loader2 className="size-6 animate-spin text-muted-foreground" /></div>}>

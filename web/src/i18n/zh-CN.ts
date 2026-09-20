@@ -95,6 +95,10 @@ const zhCN = {
     toggleHidden: '显示/隐藏 隐藏文件',
     loadingFiles: '加载文件列表…',
     loadFailed: '文件列表加载失败',
+    // 左栏 section 拖拽预览 / 折叠 aria-title（VSCode 式 section 堆叠）
+    dragPreviewPlaceholder: '拖入预览',
+    sectionExpand: '展开 {{title}}',
+    sectionCollapse: '收起 {{title}}',
   },
   session: {
     all: '全部',
@@ -249,7 +253,6 @@ const zhCN = {
     expandTodos: '展开任务列表',
     collapseTodos: '折叠任务列表',
     contextUsage: '{{percent}}% · {{used}} / {{available}}',
-    reconnecting: '重新连接中…',
     promptTokens: '输入 Token',
     maxContext: '最大上下文',
     usagePercent: '使用率',
@@ -304,6 +307,10 @@ const zhCN = {
     switchToQueueMode: '切换到排队模式',
     switchToInterjectMode: '切换到插话模式',
     interjectModeHint: '插话模式：发送后立即注入当前 Turn',
+    interjectDelivered: '⚡ 已送达',
+    interjectSent: '⚡ 已插话',
+    interjectFailed: '插话失败',
+    cancelQueuedFailed: '取消排队消息失败',
     queueModeHint: '排队模式：当前 Turn 结束后依次发送',
     interjectSend: '插话',
     setAsGoal: '设为目标',
@@ -420,6 +427,11 @@ const zhCN = {
       syntheticOutputStats: '{{lines}} 行 · {{size}}',
       copy: '复制',
       copied: '已复制',
+      shareImage: '图片',
+      shareFile: '文件',
+      copyLink: '复制链接',
+      open: '打开',
+      sharePublished: '已发布到 Web',
     },
     thinkingLive: '思考中 {{count}} 字',
     thoughtChars: '思考 {{count}} 字',
@@ -435,6 +447,12 @@ const zhCN = {
     export: '导出',
     uninstall: '卸载',
     confirmUninstall: '卸载技能 "{{name}}"？',
+    // 内置技能面板（宿主静态 import）的插件清单文案 —— 随主 bundle 走宿主 i18n。
+    manifest: {
+      name: '技能管理',
+      title: '技能',
+      description: '管理技能：查看/启用/禁用/导出/卸载/安装',
+    },
   },
   settings: {
     title: '设置',
@@ -971,8 +989,18 @@ const zhCN = {
       enable: '启用',
       reloading: '重载中…',
       reload: '重载',
+      // 内置插件面板（宿主静态 import）的清单文案 —— 随主 bundle 走宿主 i18n。
+      manifest: {
+        name: '插件管理',
+        title: '插件',
+        description: '管理插件：查看/启用/禁用/卸载/重载（自举实现，本身也是一个插件）',
+      },
     },
     sessionStats: {
+      manifest: {
+        name: '会话统计',
+        description: '当前会话用量统计：token / cache 命中 / TTFT / TPOT / 迭代明细 / 多粒度趋势',
+      },
       title: '统计',
       refresh: '刷新',
       noActiveSession: '暂无活跃会话',
@@ -1008,26 +1036,14 @@ const zhCN = {
       openOverview: '统计详情',
       openOverviewHint: '在主区域打开统计详情（全部会话汇总 / 分日期聚合）',
     },
-    gitFancy: {
-      missingHash: '缺少 hash 参数',
-      pluginNotInitialized: 'Git 插件未初始化',
-      loadingCommit: '加载 commit 详情…',
-      fileChanges: '{{count}} 个文件变更',
-      openCommitFileDiff: '在编辑区查看此 commit 内该文件的 diff',
-      loadingGit: '加载 git 状态…',
-      notRepo: '当前目录不是 git 仓库',
-      refresh: '刷新',
-      openDiff: '在编辑区查看 diff',
-      expandCommit: '展开 commit 详情',
-      changesSummary: '{{count}} 处变更',
-      dragSplit: '拖拽调整上下区域比例',
-      commitSummary: '提交 {{hash}}',
-      loading: '加载中…',
-      loadMore: '加载更多（{{count}} 条）',
-      viewCommitFileDiff: '查看此 commit 内该文件的 diff',
-      scopeWorktree: '工作区',
+    gitInfo: {
+      notRepo: '不是 git 仓库',
+      clean: '干净',
     },
     ambience: {
+      manifest: {
+        name: '氛围',
+      },
       description: '壁纸 + 玻璃拟态（Ambience Layer）',
       wallpaper: {
         aurora: '星夜极光',

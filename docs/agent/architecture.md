@@ -178,6 +178,32 @@ Debug-mode state consistency checker, called at key transition points:
 - **ValidateInvariants()** — Checks that the persistence watermark never exceeds the active message count and that token state is internally consistent.
 - Called via `validateInvariantsAt(ctx, point)` at: post_llm_call, post_llm_call_input_too_long, post_compress, post_compress_window_exceeded, post_persist.
 
+## Shutdown Durability (WAL checkpoint)
+
+SQLite runs in WAL mode (pool of 4 connections). Committed writes therefore live
+in `<db>-wal` until a checkpoint copies them into the main file. A SIGKILL
+(supervisor `stopwaitsecs` firing while plugin/dispatcher teardown hangs) then
+loses everything still WAL-only — that is how ~2 minutes of committed turn
+iterations plus the `pending_resumes` recovery markers were lost on 2026-09-17.
+
+Contract for the shutdown path (`serverapp/server.go`):
+
+1. `collectPendingResumes` — recovery markers written first (they must land in
+   the main file too, otherwise "recorded" is only a WAL fact).
+2. `cancel()` — stop the agent loops.
+3. `webDB.CheckpointForShutdown()` — `PRAGMA wal_checkpoint(TRUNCATE)`, bounded
+   by `busy_timeout` (10s), one retry, non-fatal, logged either way.
+4. Only then the hang-prone teardown: webhook, dispatcher, plugin deactivate.
+
+`stopwaitsecs=120` in `supervisord.conf` is the required companion: the default
+10s is shorter than this server's shutdown takes in bad states.
+
+Observability (log-only, zero behaviour change): `sqlite.Open`/`Close` record
+the caller `file:line` (a second opener/closer of the same file is enough to
+reset the WAL of a connection that is still writing); `logWALState` records WAL
+presence/size and flags a WAL that disappeared (`missing` — inode-reuse-proof)
+or was replaced (`replaced`) since the last observation.
+
 ## AgentBackend
 
 The `AgentBackend` interface (`agent/backend.go`) abstracts where the agent loop runs.
@@ -237,7 +263,7 @@ then register it with one line in `buildRPCTable()`. No switch-case to update.
 
 CLI connects to server's web channel WebSocket endpoint with query params:
 - `?client_type=cli&token=<runner_token>` — token-based auth
-- Server validates token against `runner_tokens` table
+- Server validates the token against the global `runners` table (one row per machine)
 - RemoteTransport uses the same WS protocol as web browser clients
 
 ## Per-Package Details

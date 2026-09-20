@@ -42,6 +42,10 @@ const NAMED: Record<string, ToolCategory> = {
   // 写入
   FileCreate: 'write',
   FileReplace: 'write',
+  // share_file：把本地文件发布成可嵌入的 URL（产出可分享的文件产物）。
+  // ⚠️ 必须显式归类 —— 落到 `toolCategory` 的 `sys` 兜底时图标是灰蓝静音色，
+  // 在一排 pill 里等于"未分类"（用户 2026-09-19：折叠态 icon 要好看）。
+  share_file: 'write',
   // 检索
   Grep: 'search',
   Glob: 'search',

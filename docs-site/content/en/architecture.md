@@ -470,9 +470,12 @@ The old `ToolHook`/`HookChain` has been replaced by `Manager` in `agent/hooks/`.
 
 **Sandbox interface**: Name, Workspace, Exec, ReadFile, WriteFile, Stat, ReadDir, MkdirAll, Close.
 
-**SandboxRouter** (`tools/sandbox_router.go`): unified sandbox entry, routes per-user to different backends. Implements `Sandbox` and `SandboxResolver` interfaces. Routing rules (per-user, determined by `user_settings.active_runner`):
-- `active_runner == "__docker__"` → DockerSandbox (if enabled)
-- `active_runner == specific remote runner name` → corresponding RemoteSandbox connection (if connected)
+**SandboxRouter** (`tools/sandbox_router.go`): unified sandbox entry, routes **per session** to the right backend. Implements `Sandbox` and `SandboxResolver` interfaces. Routing rules (`SandboxForSession("channel:chatID")`):
+- not bound → NoneSandbox (local host)
+- bound to runner R and R is online → R's RemoteSandbox
+- bound to runner R and R is **offline** → hard failure (`OfflineRunnerSandbox`; tools refuse to run — never a silent local fallback)
+
+The router's own delegating methods (`Exec`/`ReadFile`/…) return `errSandboxNeedsSession`: the engine resolves the session's sandbox once per tool call (`agent/engine.go`, `agent/engine_wire.go`) instead of letting the router guess.
 - Fallback: Remote → Docker → None
 
 Supports simultaneously holding Docker and Remote instances (dual-mode), routes independently per user. Users can switch active runner in settings panel.

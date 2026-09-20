@@ -1,4 +1,20 @@
 /**
+ * 迭代历史的**尾部上限**（与后端 BoundHistoryIterations 的「每 turn 60」一致）。
+ *
+ * ⛔ 为什么必须在前端消费处再兜一层（2026-09-17 我自己的 E2E 实测根因）：
+ * 服务端 `FetchAll` 的 active_progress 快照曾把 **1964 个迭代（11.2MB）** 整包下发，
+ * 浏览器据此物化 1961 个 `.iter-block` / **50,633 个 DOM 节点** ⇒ 切会话 **7175ms**、
+ * 长任务 2997ms、rAF 卡 3104ms（Trace 与 Playwright 双向复现）。
+ * 后端已加 `maxActiveSnapshotIterations=60`，但在客户端截尾能让「服务器还是旧二进制 /
+ * 历史缓存 / 其它端点」都不可能把浏览器拖垮 —— 快照的用途只是把进行中 turn 的画面撑起来。
+ */
+export const SNAPSHOT_ITERATION_LIMIT = 60
+
+export function boundIterationTail<T>(list: T[], limit = SNAPSHOT_ITERATION_LIMIT): T[] {
+  return list.length > limit ? list.slice(list.length - limit) : list
+}
+
+/**
  * normalize.ts — raw SSE/WS JSON → DomainEvent 的唯一入口（I6 保证点）。
  *
  * 职责（全项目唯一的 null/格式处理点）：
@@ -254,7 +270,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
     // turn 缺失（turn_id=0）也照常产出 —— todos 是会话级状态，不因 turn 缺失
     // 而丢弃（turnID 置 null，reduce 回退 activeTurn）。
     // 后端 recordFinalIteration attach 的最后迭代快照（可能 null/缺失）。
-    const rawHist = Array.isArray(p.iteration_history) ? p.iteration_history : []
+    const rawHist = Array.isArray(p.iteration_history) ? boundIterationTail(p.iteration_history) : []
     const normalized = dedupeIterationsByNumber(
       rawHist.map(normalizeWebIteration).filter((x): x is NonNullable<typeof x> => x !== null),
     )
@@ -275,7 +291,7 @@ function normalizeProgress(env: Record<string, unknown>): readonly DomainEvent[]
   // seq 缺失（E2E mock 省略）宽容：事件照常产出（reduce 的 I5 对 null seq
   // 不推进基准 —— `ev.seq <= s.lastSeq` 对 null 恒 false，不误杀）。
   // turn 缺失（turn_id=0）也照常产出 —— todos 是会话级，不因 turn 缺失丢弃。
-  const rawDelta = Array.isArray(p.iteration_history) ? p.iteration_history : []
+  const rawDelta = Array.isArray(p.iteration_history) ? boundIterationTail(p.iteration_history) : []
   // token_usage（ContextRing/会话上下文刷新）。
   const rawTU = asRecord(p.token_usage)
   const tokenUsage =

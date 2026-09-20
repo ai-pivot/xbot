@@ -18,6 +18,7 @@
 import {
   React,
   setSharedApi,
+  setI18n,
   getRpc,
   gitRpc,
   resolveChat,
@@ -88,18 +89,22 @@ function useSplitRatio(storageKey: string, initialTopPct = 40): { topPct: number
   return { topPct, onDragStart }
 }
 
-/** 激活时注入 ctx（PluginRuntime 调用 mod.activate(ctx)）——rpc/ui/events 存入共享单例。 */
+/** 激活时注入 ctx（PluginRuntime 调用 mod.activate(ctx)）——rpc/ui/events/i18n 存入共享单例。 */
 export function activate(ctx: unknown): void {
   const c = ctx as {
     rpc?: { call: (m: string, p: Record<string, unknown>) => Promise<unknown> }
     ui?: { openViewTab: (o: never) => void; openFileTab: (path: string) => void }
     events?: { on: (name: string, handler: (payload: unknown) => void) => () => void }
+    /** 插件自带文案表解析器（清单 web.i18n）——宿主对所有插件无条件注入。 */
+    i18n?: import('./shared').I18nLike
   }
   setSharedApi(
     c?.rpc ? (m, p) => c.rpc!.call(m, p) : undefined,
     c?.ui ? (c.ui as unknown as import('./shared').PluginUIApi) : undefined,
     c?.events ? (c.events as unknown as import('./shared').PluginEventsApi) : undefined,
   )
+  // 文案随插件清单分发（web.i18n）；三个视图模块经 --splitting 共享本单例。
+  setI18n(c?.i18n)
 }
 
 const PAGE_SIZE = 10
@@ -240,7 +245,7 @@ export function GitFancyPanel() {
   const { topPct, onDragStart } = useSplitRatio('git-fancy:split-ratio', 40)
 
   if (loading && !status) {
-    return <div className="p-2 text-xs text-text-muted">{t('plugins.gitFancy.loadingGit', '加载 git 状态…')}</div>
+    return <div className="p-2 text-xs text-text-muted">{t('loadingGit', '加载 git 状态…')}</div>
   }
 
   if (error && !status) {
@@ -248,7 +253,7 @@ export function GitFancyPanel() {
   }
 
   if (status && !status.repo) {
-    return <div className="p-2 text-xs text-text-muted">{t('plugins.gitFancy.notRepo', '当前目录不是 git 仓库')}</div>
+    return <div className="p-2 text-xs text-text-muted">{t('notRepo', '当前目录不是 git 仓库')}</div>
   }
 
   const totalAdded = status?.changes.reduce((a, c) => a + c.added, 0) ?? 0
@@ -276,7 +281,7 @@ export function GitFancyPanel() {
         <button
           onClick={() => void refresh()}
           className="rounded px-1.5 py-0.5 text-[10px] text-text-muted hover:bg-bg-hover"
-          title={t('plugins.gitFancy.refresh', '刷新')}
+          title={t('refresh', '刷新')}
         >
           ↻
         </button>
@@ -292,7 +297,7 @@ export function GitFancyPanel() {
         key={c.path}
         onClick={() => openDiffTab(c.path)}
         className="flex cursor-pointer items-center gap-1.5 px-2 py-0.5 hover:bg-bg-hover active:bg-bg-hover"
-        title={t('plugins.gitFancy.openDiff', '在编辑区查看 diff')}
+        title={t('openDiff', '在编辑区查看 diff')}
       >
         <span
           className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold ${badge.cls}`}
@@ -318,7 +323,7 @@ export function GitFancyPanel() {
         <div
           onClick={() => toggleExpand(c.hash)}
           className="flex cursor-pointer items-center gap-1.5 px-2 py-0.5 hover:bg-bg-hover active:bg-bg-hover"
-          title={t('plugins.gitFancy.expandCommit', '展开 commit 详情')}
+          title={t('expandCommit', '展开 commit 详情')}
         >
           <span className={`font-mono text-[10px] text-indigo-500 transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
           <span className="font-mono text-[10px] text-indigo-500">{c.hash.slice(0, 7)}</span>
@@ -336,7 +341,7 @@ export function GitFancyPanel() {
     <div className="flex h-full flex-col overflow-hidden text-xs">
       {header}
       <div className="shrink-0 border-b border-border bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
-        {t('plugins.gitFancy.changesSummary', '变更 {{count}} · +{{added}} -{{deleted}}', {
+        {t('changesSummary', '变更 {{count}} · +{{added}} -{{deleted}}', {
           count: status?.changes.length ?? 0,
           added: totalAdded,
           deleted: totalDeleted,
@@ -350,12 +355,12 @@ export function GitFancyPanel() {
       <div
         onPointerDown={onDragStart}
         className="group flex h-1.5 shrink-0 cursor-ns-resize touch-none items-center justify-center"
-        title={t('plugins.gitFancy.dragSplit', '拖拽调整上下区域比例')}
+        title={t('dragSplit', '拖拽调整上下区域比例')}
       >
         <div className="h-[2px] w-8 rounded-full bg-border transition-all group-hover:w-12 group-hover:bg-accent/50 group-active:bg-accent" />
       </div>
       <div className="shrink-0 border-t border-border bg-bg-primary px-2 py-1 text-[10px] uppercase tracking-wide text-text-muted">
-        {t('plugins.gitFancy.commitSummary', '提交 {{shown}}/{{total}}', {
+        {t('commitSummary', '提交 {{shown}}/{{total}}', {
           shown: commits.length,
           total,
         })}
@@ -369,8 +374,8 @@ export function GitFancyPanel() {
           className="sticky bottom-0 border-t border-border bg-bg-primary px-2 py-1.5 text-center text-[10px] text-text-muted hover:bg-bg-hover hover:text-text-primary disabled:opacity-50"
         >
           {loadingMore
-            ? t('plugins.gitFancy.loading', '加载中…')
-            : t('plugins.gitFancy.loadMore', '加载更多（{{count}} 条）', { count: total - commits.length })}
+            ? t('loading', '加载中…')
+            : t('loadMore', '加载更多（{{count}} 条）', { count: total - commits.length })}
         </button>
       )}
     </div>
@@ -407,7 +412,7 @@ function CommitExpand({ hash }: { hash: string }) {
     return <div className="px-2 py-1 font-mono text-[10px] text-red-500">{error}</div>
   }
   if (!detail) {
-    return <div className="px-2 py-1 text-[10px] text-text-muted">{t('plugins.gitFancy.loadingCommit', '加载 commit 详情…')}</div>
+    return <div className="px-2 py-1 text-[10px] text-text-muted">{t('loadingCommit', '加载 commit 详情…')}</div>
   }
 
   return (
@@ -429,7 +434,7 @@ function CommitExpand({ hash }: { hash: string }) {
             key={f.path}
             onClick={() => openDiffTab(f.path, detail.hash)}
             className="flex cursor-pointer items-center gap-1.5 py-0.5 pl-4 pr-2 hover:bg-bg-hover active:bg-bg-hover"
-            title={t('plugins.gitFancy.viewCommitFileDiff', '查看此 commit 内该文件的 diff')}
+            title={t('viewCommitFileDiff', '查看此 commit 内该文件的 diff')}
           >
             <span
               className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-bold ${badge.cls}`}

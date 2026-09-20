@@ -10,7 +10,7 @@ import (
 )
 
 func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, error) {
-	rc, err := rs.getRunner(spec.UserID)
+	rc, err := rs.getRunnerForSession(spec.SessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -34,10 +34,9 @@ func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 	}
 
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   ProtoExec,
-		UserID: spec.UserID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: ProtoExec,
+		Body: reqBody,
 	}
 
 	resp, err := rs.sendRequest(ctx, rc, msg, timeout+5*time.Second)
@@ -65,7 +64,7 @@ func (rs *RemoteSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, 
 // ExecBg starts a background command on the runner.
 // Returns immediately with the task ID — the command runs asynchronously on the runner.
 func (rs *RemoteSandbox) ExecBg(ctx context.Context, spec ExecSpec, taskID string) error {
-	rc, err := rs.getRunner(spec.UserID)
+	rc, err := rs.getRunnerForSession(spec.SessionKey)
 	if err != nil {
 		return err
 	}
@@ -84,10 +83,9 @@ func (rs *RemoteSandbox) ExecBg(ctx context.Context, spec ExecSpec, taskID strin
 	}
 
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   runnerproto.ProtoBgExec,
-		UserID: spec.UserID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: runnerproto.ProtoBgExec,
+		Body: reqBody,
 	}
 
 	resp, err := rs.sendRequest(ctx, rc, msg, defaultRequestTimeout)
@@ -103,8 +101,8 @@ func (rs *RemoteSandbox) ExecBg(ctx context.Context, spec ExecSpec, taskID strin
 }
 
 // KillBg kills a background task on the runner.
-func (rs *RemoteSandbox) KillBg(ctx context.Context, userID, taskID string) error {
-	rc, err := rs.getRunner(userID)
+func (rs *RemoteSandbox) KillBg(ctx context.Context, sessionKey, taskID string) error {
+	rc, err := rs.getRunnerForSession(sessionKey)
 	if err != nil {
 		return err
 	}
@@ -114,10 +112,9 @@ func (rs *RemoteSandbox) KillBg(ctx context.Context, userID, taskID string) erro
 		return fmt.Errorf("marshal request: %w", err)
 	}
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   runnerproto.ProtoBgKill,
-		UserID: userID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: runnerproto.ProtoBgKill,
+		Body: reqBody,
 	}
 
 	resp, err := rs.sendRequest(ctx, rc, msg, defaultRequestTimeout)
@@ -133,8 +130,8 @@ func (rs *RemoteSandbox) KillBg(ctx context.Context, userID, taskID string) erro
 }
 
 // StatusBg queries the current status and output of a background task on the runner.
-func (rs *RemoteSandbox) StatusBg(ctx context.Context, userID, taskID string) (*RemoteBgTaskStatus, error) {
-	rc, err := rs.getRunner(userID)
+func (rs *RemoteSandbox) StatusBg(ctx context.Context, sessionKey, taskID string) (*RemoteBgTaskStatus, error) {
+	rc, err := rs.getRunnerForSession(sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -144,10 +141,9 @@ func (rs *RemoteSandbox) StatusBg(ctx context.Context, userID, taskID string) (*
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   runnerproto.ProtoBgStatus,
-		UserID: userID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: runnerproto.ProtoBgStatus,
+		Body: reqBody,
 	}
 
 	resp, err := rs.sendRequest(ctx, rc, msg, defaultRequestTimeout)

@@ -13,13 +13,22 @@
  *   display:none（元素无渲染盒 → 0 交叉）。
  */
 
+import { frameScheduler } from '@/lib/frameScheduler'
 import { reduce } from './reduce'
 import { initialChatState, type ChatState, type DomainEvent } from './types'
 
 export class ChatStore {
   private state: ChatState
   private listeners = new Set<() => void>()
-  private raf = 0
+  /** 本帧是否已把通知排给**共享**帧调度器（去重；等价旧 `raf !== 0`）。 */
+  private notifyQueued = false
+  /** 通知任务：注册到共享调度器 ⇒ 同一帧内所有「每帧一次」的工作（另一个
+   *  store 的通知、滚动、几何测量）落进**同一个 rAF 回调**，React 18 在同一
+   *  task 内自动批处理 ⇒ 每帧最多一次渲染（零掉帧重构，2026-09-18）。 */
+  private readonly notifyTask = (): void => {
+    this.notifyQueued = false
+    for (const l of this.listeners) l()
+  }
   private paused = false
   private pausedDirty = false
 
@@ -56,9 +65,9 @@ export class ChatStore {
    */
   pause(): void {
     this.paused = true
-    if (this.raf !== 0) {
-      cancelAnimationFrame(this.raf)
-      this.raf = 0
+    if (this.notifyQueued) {
+      frameScheduler.cancel(this.notifyTask)
+      this.notifyQueued = false
       this.pausedDirty = true
     }
   }
@@ -85,17 +94,14 @@ export class ChatStore {
   }
 
   private notify(): void {
-    if (this.raf === 0) {
-      this.raf = requestAnimationFrame(() => {
-        this.raf = 0
-        for (const l of this.listeners) l()
-      })
-    }
+    if (this.notifyQueued) return
+    this.notifyQueued = true
+    frameScheduler.schedule(this.notifyTask)
   }
 
   dispose(): void {
-    if (this.raf !== 0) cancelAnimationFrame(this.raf)
-    this.raf = 0
+    frameScheduler.cancel(this.notifyTask)
+    this.notifyQueued = false
     this.listeners.clear()
   }
 }

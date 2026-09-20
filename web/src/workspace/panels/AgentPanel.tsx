@@ -12,7 +12,7 @@
  *   - The main Agent tab follows SessionStore.activeSession directly.
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -25,7 +25,7 @@ import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdi
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos } from '@/components/agent/api'
+import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, getPendingAskUser } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
 import { sendStartsTurn } from '@/lib/sendTurn'
@@ -38,10 +38,12 @@ import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
 import { ModelSelector } from '@/components/agent/ModelSelector'
+import { sessionSwitch } from '@/lib/sessionSwitch'
 import { StagingTray } from '@/components/agent/StagingTray'
 import { useDockviewContext } from '@/workspace/types'
 import { DebugToolbar } from '@/workspace/panels/DebugToolbar'
 import { useDeveloperMode } from '@/hooks/useDeveloperMode'
+import { parseAskUserPrompt } from '@/hooks/useSessionStore'
 import type { PanelProps } from '@/workspace/panels/types'
 import type { PanelParams } from '@/types/tab'
 import type { ChatMessage, GoalInfo, TodoItem } from '@/types/shared'
@@ -229,11 +231,20 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // `reloadChat` 走 history_replaced 的 **merge 语义**（DB 覆盖它【有】的 turn，
   // 状态机持有的 live / post-fetch commit 一律保留），所以不会再出现当年
   // "live 迭代被 history_replaced 清掉"的问题（见本文件 203-210 行的历史备注）。
+  // ⛔ 「一次新的会话激活」= 面板重新变为可见（切 tab / 点侧栏进入该会话）。
+  // 用户判据（2026-09-18）：「会话只要开始切换就应该渲染 loading 了，这才是修复」。
+  // 面板里保存的是**上一次可见时**的快照 —— 直接渲染它再等后台对账回来改写，就是
+  // 用户看到的那「一瞬间的渲染错误」。所以进入即回到 loading，等 DB 权威历史落地。
+  // 必须用 **useLayoutEffect**：与"变为可见"落在同一帧（paint 前提交），否则会先画
+  // 一帧旧内容再翻成 loading（那仍是一帧错误渲染）。
+  const markHistoryStaleRef = useRef(chat.markHistoryStale)
+  markHistoryStaleRef.current = chat.markHistoryStale
   const wasSubscribedRef = useRef(shouldSubscribe)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = wasSubscribedRef.current
     wasSubscribedRef.current = shouldSubscribe
     if (was || !shouldSubscribe || !chatID) return
+    markHistoryStaleRef.current()
     void reloadChat()
   }, [shouldSubscribe, chatID, reloadChat])
   // 历史落地（重载完成且已有消息）后收起 loading 屏幕。
@@ -247,7 +258,37 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // 那会把输入区一起盖住，用户既看不到空状态也无法创建/发送（CI 的
   // chat.spec"should show user message after sending" 就是这样红的 —— 快照里侧栏是
   // "No sessions yet — create one from the top-right"、面板只有 Loading…）。
-  const showLoadingScreen = (chat.historyReady === false && !!chatID) || resumeLoading
+  // ⛔ SSE 断开（重连中）不再显示黄色 "Reconnecting…" 条 —— 2026-09-17 用户要求：
+  // 「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的 splash screen」。
+  // 重连期间与"历史还没到"是同一语义（面板暂时不可用），统一用 loading splash 表达，
+  // 不再另设一条提示（那条黄条既丑又和 splash 表达同一件事）。
+  // ⛔ 断线遮挡面板只适用于**曾经连上过**再掉线的「真·重连」（2026-09-17 CI E2E 实测）：
+  // 从未连上（初次加载 / 没有 SSE 的 mock 场景）绝不能遮罩 —— 那会把已渲染的历史一起藏起来
+  // （实测：`!ws.connected` 一刀切 ⇒ 非 SSE 的 spec 被判成 loading，8 个 E2E 找不到内容）。
+  const sawConnectedRef = useRef(false)
+  if (ws.connected) sawConnectedRef.current = true
+  const reconnecting = !ws.connected && sawConnectedRef.current
+  const showLoadingScreen =
+    (chat.historyReady === false && !!chatID) || resumeLoading || (reconnecting && !!chatID && !isSubAgent)
+  // ⛔ 「换会话/进入新会话」的加载态 = 面板**只渲染 loading 屏**（不渲染消息区/托盘/输入框）。
+  // 理由（2026-09-18 用户报告「切换会话一闪而过、DOM 抓不到的错误布局」，附截图：
+  // 消息区**上方浮着一排输入框控件**=回形针/ContextRing/发送按钮）：
+  // 新面板被 dockview 以**未兑现的尺寸**布局一帧时，flex 会把 `flex-1 min-h-0` 的消息区
+  // 压到 0、把输入框（自然高度）顶到面板顶部 ⇒ 那排控件就出现在消息区上方一闪而过。
+  // 加载态本就不该出现任何输入控件（也无法使用），从结构上不渲染它们 ⇒ 该类瞬态不可能出现。
+  // ⚠️ 只对「会话加载」生效（`historyReady===false`）；`resumeLoading`/`reconnecting`
+  // 仍保留输入框 —— 那两种情况面板可能有用户草稿，卸载会丢草稿（且它们不在顶部布局）。
+  const sessionLoading = chat.historyReady === false && !!chatID
+  // 切换过渡态（sessionSwitch）：只要存在**指向其他面板**的切换，本面板只渲染 loading
+  // —— 这是「会话只要开始切换就应该渲染 loading」的实现点。目标面板历史就绪后 end()。
+  const pendingSwitch = useSyncExternalStore(sessionSwitch.subscribe, sessionSwitch.get)
+  const panelSwitchKey = `agent:${messageChannel}:${chatID ?? ''}`
+  const switchSplash = pendingSwitch !== null && pendingSwitch.key !== panelSwitchKey
+  useEffect(() => {
+    if (pendingSwitch && pendingSwitch.key === panelSwitchKey && chat.historyReady) {
+      sessionSwitch.end(pendingSwitch.key)
+    }
+  }, [pendingSwitch, panelSwitchKey, chat.historyReady])
   const sessionContext = useSessionContext(messageChannel, isSubAgent ? null : chatID)
 
   // NOTE: 这里曾经把 `wasSubscribed`（shouldSubscribe false→true 时 reloadChat）
@@ -306,6 +347,32 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     return () => { cancelled = true }
   }, [chatID, messageChannel])
 
+  // AskUser 面板的 DB 权威水合（与上面的 get_goal 同模式）。
+  // 面板过去唯一载体是实时 ask_user 事件：会话在提问时刻没有 SSE 订阅（用户正在看别的
+  // 会话 / 事件被 ring 淘汰 / 信封 key 推导失败）⇒ 没有任何路径重新推导 pending 状态
+  // ⇒ 面板永不渲染、turn 永远"思考中"，用户只能用 Stop 逃出去（2026-09-20 事故：
+  // 提问 05:22:53 时该会话无任何 SSE 订阅者，用户 05:29:40 才切回）。
+  // get_pending_ask_user 走服务器同一份持久化 ask_question/ask_answer 记录（DB 单一
+  // 权威）⇒ 在「会话加载 / tab 重新可见」两个时机水合，漏事件必然自愈。
+  // 缺失时不做删除：响应可能早于提问登记（服务端 WithPendingAskUser 文档同一竞态）。
+  // 载荷不含任何问题时 `parseAskUserPrompt` 返回 null ⇒ 不水合（真实提问必然 ≥1 题；
+  // 伪造空 prompt 会让面板以 `questions: []` 渲染并抛异常，整块面板被崩溃边界替换 ——
+  // 2026-09-20 CI 的 9 个 spec 正是这样红的：通用 `/api/rpc` mock 对
+  // `get_pending_ask_user` 回了 `{ok:true}`）。
+  useEffect(() => {
+    if (!chatID || !messageChannel || !isVisible) return
+    let cancelled = false
+    getPendingAskUser({ channel: messageChannel, chatID })
+      .then((pending) => {
+        if (cancelled || !pending) return
+        const prompt = parseAskUserPrompt(pending)
+        if (!prompt) return
+        store.hydrateAskUserPrompt(messageChannel, chatID, prompt)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [chatID, messageChannel, isVisible, store])
+
   useEffect(() => {
     if (!isSubAgent) return
     return ws.onSession((ev) => {
@@ -332,6 +399,18 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // ── M4：新状态机（web/src/chat/）作为唯一渲染数据源 ──
   // 全部 SSE 事件 → normalizeEvent → reduce；DB 历史 → history_replaced。
   // 旧 useProgressStream（1742 行）+ MessageStore（622 行）双轨协调已移除。
+  // Per-panel session lookup: derive from this panel's own chatID/channel
+  // (from params), NOT from the global activeSession. Using activeSession would
+  // make split-view panels share the same busy/running state — tab A's
+  // session(busy) event would set tab B's input to busy too.
+  //
+  // ⚠️ 必须早于 useAgentChatState：状态机的 turn live-ness **服从**这个 running
+  // （不变量：输入框 = cancel ⇒ 上面必须显示进行中信号 —— 见 chat/types.ts 的
+  // `session_running`）。
+  const currentSession = chatID
+    ? store.sessions.find((s) => sameSession(s, { channel: messageChannel, chatID }))
+    : undefined
+
   const agentChat = useAgentChatState({
     progressChatID,
     ws,
@@ -343,6 +422,9 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     historyChatID: chatID,
     initialProgress: chat.resolvedChatID === chatID ? chat.initialProgress : null,
     resetKey: `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`,
+    // 会话 running（服务端 reconcile 权威）—— 状态机的 turn live-ness 服从它
+    //（不变量：输入框 = cancel ⇒ 上面必须显示进行中信号）。
+    sessionRunning: currentSession?.running ?? false,
   })
   // SubAgent idle/done 时重置（SubAgent 面板收不到 text/session(idle)）。
   const resetAgentChatRef = useRef(agentChat.reset)
@@ -428,6 +510,35 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       resumeRenderRef.current()
     }
   }, [])
+
+  // ⚠️ 熄屏/后台恢复必须“主动” resume 渲染通知（2026-09-18 用户复现：「熄屏解锁后
+  // loading 结束但消息区冻死 —— 头部速率在动、消息不再更新」）。上面那个
+  // IntersectionObserver 只在**交叉状态变化**时回调：页面被 OS 冻结/隐藏期间浏览器
+  // 可能投递一次 isIntersecting=false（→ pause），恢复可见时若交叉状态未再变化就
+  // **没有回调** ⇒ store 永久 paused（dispatch 照常、React 永不重渲染，表现为
+  // “状态机在动但 UI 冻死”）。这里在 visibilitychange→可见 / pageshow(bfcache) /
+  // focus 时按需 resume：只有面板真有渲染盒（非 display:none）才恢复，避免把
+  // 移动端隐藏视图（工具页/终端页）也解暂停。
+  useEffect(() => {
+    const resumeIfVisible = () => {
+      const el = agentPanelRootRef.current
+      if (!el) return
+      if (el.offsetParent !== null || el.getBoundingClientRect().width > 0) {
+        resumeRenderRef.current()
+      }
+    }
+    const onVisibilityChange = () => {
+      if (!document.hidden) resumeIfVisible()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pageshow', resumeIfVisible)
+    window.addEventListener('focus', resumeIfVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pageshow', resumeIfVisible)
+      window.removeEventListener('focus', resumeIfVisible)
+    }
+  }, [])
   // liveMessage comes from useProgressStream's live store — its visibility is
   // governed by the store's own hydration/reset lifecycle (initialProgress →
   // historyProgressToLive → store.replace, SSE-driven updates, reset on
@@ -476,13 +587,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   // Fall back to the hydrated progressSnapshot.streaming (set true by
   // historyProgressToLive and by any stream/structured event while phase !=
   // done) so the "思考中…" placeholder still renders on refresh.
-  // Per-panel session lookup: derive from this panel's own chatID/channel
-  // (from params), NOT from the global activeSession. Using activeSession would
-  // make split-view panels share the same busy/running state — tab A's
-  // session(busy) event would set tab B's input to busy too.
-  const currentSession = chatID
-    ? store.sessions.find((s) => sameSession(s, { channel: messageChannel, chatID }))
-    : undefined
   // busy 来源（三路 OR，覆盖所有窗口）：
   // 1. currentSession.running（SSE session(busy) 事件设置 —— 主路径）
   // 2. progressSnapshot.streaming（live turn 在跑 —— TDSM 状态机经
@@ -797,17 +901,27 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     )
   }, [askUser.prompt, askUser.respond, askUser.cancel, isSubAgent])
 
+  // ⛔ 幽灵面板（2026-09-18 用户截图「切换会话闪烁一瞬间错误布局」根因之一）：
+  // 占位 tab（无 sessionId）在**已有别的 agent 面板承载 activeSession** 时 chatID=null
+  // （不镜像，避免同一会话两个面板渲染两份）。但它此前**仍然渲染整块面板 UI**（欢迎
+  // 空态 + MessageInput）—— 而 agent tab 是 `renderer='always'`（常驻 DOM），dockview
+  // 在切换瞬间会重排分组/尺寸 ⇒ 这些**没有任何会话可承载**的输入框控件会漏进可见区
+  // （实测：帧级 E2E 里出现 `(seed)|vis=1|rect=…` 与真实面板**完全重叠**，切换瞬间甚至
+  // 先分屏）。
+  // 契约：占位面板**不承载会话时不渲染任何面板 UI**（tab 本身仍在，尺寸归 dockview）；
+  // 只有它真的在镜像一个会话（引导态 / 独占）时才渲染，否则一律 null。
+  if (isPlaceholderMainAgent && sessionOwnedByPeerPanel) return null
+
   return (
     <ToolSessionContext.Provider
       value={{ channel: progressChannel, chatID: progressChatID }}
     >
-    <div ref={agentPanelRootRef} className="flex h-full min-h-0 flex-col">
-      {!ws.connected && !isSubAgent && chatID && (
-        <div className="flex items-center gap-2 border-b border-border/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
-          <Loader2 className="size-3 animate-spin" />
-          <span>{t('agent.reconnecting') || 'Reconnecting…'}</span>
-        </div>
-      )}
+    <div
+      ref={agentPanelRootRef}
+      data-agent-chat-id={chatID ?? ''}
+      data-agent-visible={isVisible ? '1' : '0'}
+      className="relative flex h-full min-h-0 flex-col"
+    >
       {!isSubAgent && devMode && (
         <DebugToolbar
           ws={ws}
@@ -832,15 +946,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           })}
         />
       )}
-      {showLoadingScreen ? (
-        <div
-          data-testid="session-loading-screen"
-          className="flex h-full w-full flex-1 items-center justify-center gap-2 text-text-muted"
-        >
-          <Loader2 className="size-5 animate-spin" />
-          <span className="text-xs">Loading…</span>
-        </div>
-      ) : (
+      {!(showLoadingScreen || switchSplash) && isVisible ? (
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -858,8 +964,8 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         onEndEdit={handleEndEdit}
         footer={askUserFooter}
       />
-      )}
-      {!isSubAgent && (
+      ) : null}
+      {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <StagingTray
           items={agentChat.queue}
           busy={busy}
@@ -880,7 +986,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           onReorder={handleReorderQueue}
         />
       )}
-      {!isSubAgent && (
+      {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <MessageInput
           key={`${messageChannel}:${chatID ?? ''}`}
           busy={busy}
@@ -928,6 +1034,22 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           onDraftConsumed={() => setDraft(undefined)}
           sessionKey={`${messageChannel}:${chatID ?? ''}`}
         />
+      )}
+      {/* ⛔ loading = **覆盖整块面板的不透明覆盖层**（不是替换消息区）。
+          用户的「切换会话一闪而过」实测为：面板在切换那一帧被 dockview 以**未兑现的尺寸**
+          布局，flex 把消息区（flex-1 min-h-0）压到 0，而 MessageInput（自然高度）仍占位
+          ⇒ 它被顶到面板**顶部**（= 截图里消息区上方那排回形针/Clock/Stop 控件），下一帧
+          尺寸兑现又回到底部。所以：① 会话加载态（history 未就绪）**根本不渲染输入框/托盘**；
+          ② 其余 loading 态（reconnecting / 长时间恢复）输入框**保持挂载**（草稿不丢、不闪），
+          但由这层**不透明覆盖层**盖住整块面板 ⇒ 任何一帧的错位布局都不可能被看见。 */}
+      {(showLoadingScreen || switchSplash) && (
+        <div
+          data-testid="session-loading-screen"
+          className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-bg-primary text-text-muted"
+        >
+          <Loader2 className="size-5 animate-spin" />
+          <span className="text-xs">Loading…</span>
+        </div>
       )}
     </div>
     </ToolSessionContext.Provider>

@@ -274,12 +274,22 @@ function useTabManagerImpl(): TabManager {
     // ReactContentRenderer looks up CONTENT_COMPONENTS[component] first and
     // falls back to the plugin view by `view.id === component` — a generic
     // 'plugin' component name would never match any view id (rendered blank).
+    // ⛔ 必须显式指定 position（`within` = 加为**参考面板所在 group 的 tab**）：
+    // 不传 position 时 dockview 在「没有 activePanel」的瞬间会退回 `direction:'right'`
+    // ⇒ **新建 group（分屏）**！那一刻旧面板所在 group 被压成窄条，其 MessageInput
+    // 就被挤到面板上半部分 —— 用户看到的「切换会话一闪而过、消息区上方浮着一排
+    // 输入框控件（回形针/Clock/Stop）」正是这一帧（帧级 E2E 曾抓到 groups 短暂 >1）。
+    // 契约：**开 tab 永不改变布局**（所有 tab 都是同组兄弟）。
+    const referencePanel = api.activePanel ?? api.panels[api.panels.length - 1] ?? null
     api.addPanel({
       id: panelId,
       title: input.title,
       component: input.type === 'plugin' ? (input.data?.viewId ?? 'plugin') : input.type,
       params,
       renderer: input.type === 'agent' ? 'always' : 'onlyWhenVisible',
+      ...(referencePanel
+        ? { position: { referencePanel: referencePanel.id, direction: 'within' as const } }
+        : {}),
     })
     panelIdByTab.current.set(tabId, panelId)
     const panel = api.getPanel(panelId)

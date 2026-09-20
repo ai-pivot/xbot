@@ -117,27 +117,18 @@ type SettingsCallbacks struct {
 	// not bare names.
 	LLMListAllModels func(senderID string) []protocol.ModelEntry
 
-	// RunnerConnectCmdGet 返回远程 Runner 连接命令（空字符串表示未启用）
-	// Deprecated: replaced by per-user token callbacks below.
-	RunnerConnectCmdGet func(senderID string) string
-
-	// RunnerTokenGet returns the runner connect command for the user's current token ("" if none).
-	RunnerTokenGet func(senderID string) string
-	// RunnerTokenGenerate generates a new per-user token and returns the connect command.
-	RunnerTokenGenerate func(senderID, mode, dockerImage, workspace string) (string, error)
-	// RunnerTokenRevoke revokes the user's current token.
-	RunnerTokenRevoke func(senderID string) error
-
-	// RunnerList lists all runners for a user with online status.
-	RunnerList func(senderID string) ([]tools.RunnerInfo, error)
-	// RunnerCreate creates a new named runner and returns the connect command.
-	RunnerCreate func(senderID, name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error)
-	// RunnerDelete deletes a named runner.
-	RunnerDelete func(senderID, name string) error
-	// RunnerGetActive returns the active runner name for the user.
-	RunnerGetActive func(senderID string) (string, error)
-	// RunnerSetActive sets the active runner for the user.
-	RunnerSetActive func(senderID, name string) error
+	// RunnerList lists every managed machine (no credentials included).
+	RunnerList func() ([]tools.RunnerInfo, error)
+	// RunnerCreate registers (or re-keys) a runner and returns the connect command.
+	RunnerCreate func(name, mode, dockerImage, workspace string, llm tools.RunnerLLMSettings) (string, error)
+	// RunnerDelete removes a runner.
+	RunnerDelete func(name string) error
+	// RunnerConnectCmd returns the connect command for an existing runner.
+	RunnerConnectCmd func(name string) (string, error)
+	// RunnerSessionGet reports the runner bound to a session and its online status.
+	RunnerSessionGet func(channelName, chatID string) (string, bool)
+	// RunnerSessionSet binds a session to a runner ("" = local host).
+	RunnerSessionSet func(channelName, chatID, name string) error
 
 	// FeishuWebLink links a Feishu user to a web account (creates web user if needed).
 	// Returns the web username on success.
