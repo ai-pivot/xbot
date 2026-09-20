@@ -47,7 +47,7 @@ Feishu 图片入站
 | `llm.MultimodalConfig` | `llm/multimodal.go` | `{ImageResolver, VisionEnabled, VisionDetail, MaxImages=8}`——createClient 时从 per-model config 构造 |
 | `parseMultimodalContent` | `llm/multimodal.go` | markdown `![]()` + 旧 `<image url=…>` 标签 → text/image parts；vision off 全降级（折叠单 text part）；预算：最近 8 张保留，旧图占位 `[图片: name — 已省略…]`；resolver 失败 → `[图片: name — 加载失败]`（**绝不 fail 请求**） |
 | `webImageResolver` | `serverapp/image_resolver.go` | 四类 ref：`viewimg://`、`/api/files/viewimg/`、`/api/files/download?key=`（OSS GetViewURL→GET）、`http(s)://`、`file://`（workspace 白名单）；**预处理**（CatmullRom 缩到 ≤2048px 长边 → >4MB 再 jpeg q85→q70；bmp/tiff→png；gif/未知格式透传）；LRU（32 entries / 128MB） |
-| `expandUploadKeys` | `channel/web/web_inbound.go` | 图片 → **单份** markdown 相对 URL（`appendUploadRef` 共享 helper，REST+WS 同一格式）；附件 → `<file url=签名URL>`（DownloadFile 工具用） |
+| `expandUploadKeys` | `channel/web/web_inbound.go` | 图片 → **单份** markdown 相对 URL（`appendUploadRef` 共享 helper，REST+WS 同一格式）；附件 → `<file url=…>`，URL 解析走**单一实现** `uploadDownloadRef`（`channel/web/upload_ref.go`：云 OSS → 签名 URL；本地 static → server base URL + 相对路径，拿不到 base 则降级为稳定相对 URL；**绝不失败、绝不把错误文案写进 content**） |
 | viewimg 端点 | `channel/web/web_viewimg.go` | `GET /api/files/viewimg/<uuid>.<ext>`（cookie auth + magic bytes Content-Type + view_images 目录边界）|
 | `view_image` 工具 | `tools/view_image.go` | path（workspace/view_images/ReadOnlyRoots 白名单 + 沙箱感知 ReadFile）或 url；magic bytes 校验（拒绝非图片）；`ToolResult.Images` 注入 |
 | `injectViewImages` | `agent/engine_run.go` | processToolResults 尾部收集 `result.Images` → follow-up user 消息（**user role 是 OpenAI 多模态的唯一载体**） |
