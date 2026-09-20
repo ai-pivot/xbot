@@ -20,7 +20,12 @@ const mocks = vi.hoisted(() => {
   }
   const context = {
     ws: { connected: true, onSession: vi.fn(() => vi.fn()) },
-    sessionStore: { activeSession: { channel: 'web', chatID: 'chat-1' }, sessions: [] },
+    sessionStore: {
+      activeSession: { channel: 'web', chatID: 'chat-1' },
+      sessions: [],
+      // AgentPanel 的 AskUser DB 权威水合 effect 调它（会话加载 / tab 重新可见）。
+      hydrateAskUserPrompt: vi.fn(),
+    },
     rightSidebar: { openPanel: vi.fn() },
   }
   const progress: {
@@ -32,7 +37,21 @@ const mocks = vi.hoisted(() => {
     liveMessage: null,
     isStreaming: false,
   }
-  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn(), lastChatID: null as string | null }
+  return {
+    chat,
+    context,
+    order,
+    progress,
+    rewindHistory: vi.fn(),
+    fetchHistory: vi.fn(),
+    // get_pending_ask_user 水合（AgentPanel 的 DB 权威 AskUser 水合 effect）。
+    // 这里是**全量模块 mock**：生产代码 import 的每个符号都必须导出，否则 effect
+    // 在被动挂载期间访问该绑定即抛
+    // `No "getPendingAskUser" export is defined on the "@/components/agent/api" mock`
+    // （vitest 的 mock 命名空间对未知导出直接抛错，不是返回 undefined）。
+    getPendingAskUser: vi.fn(),
+    lastChatID: null as string | null,
+  }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -88,6 +107,7 @@ vi.mock('@/components/agent/api', () => ({
   setGoal: vi.fn().mockResolvedValue(undefined),
   clearGoal: vi.fn().mockResolvedValue(undefined),
   getGoal: vi.fn().mockResolvedValue(null),
+  getPendingAskUser: (...args: unknown[]) => mocks.getPendingAskUser(...args),
 }))
 vi.mock('@/components/agent/AskUserPanel', () => ({ AskUserPanel: () => null }))
 vi.mock('@/components/agent/ContextRing', () => ({ ContextRing: () => null }))
@@ -147,6 +167,16 @@ vi.mock('@/workspace/types', () => ({ useDockviewContext: () => mocks.context })
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 import { AgentPanel } from './AgentPanel'
+
+// `get_pending_ask_user` 水合（AgentPanel 的 DB 权威 AskUser 水合 effect）在**每个用例
+// 渲染时都会各发一次**（chatID/messageChannel/isVisible 就绪即触发）。默认给"当前无
+// pending 提问"⇒ 水合是 no-op，既有用例（rewind/busy/live/归属/断线）的断言不被副作用
+// 污染；需要验证水合的用例在自身 it 里覆盖实现。
+beforeEach(() => {
+  mocks.getPendingAskUser.mockReset()
+  mocks.getPendingAskUser.mockResolvedValue(null)
+  mocks.context.sessionStore.hydrateAskUserPrompt.mockClear()
+})
 
 describe('AgentPanel rewind', () => {
   beforeEach(() => {
@@ -495,5 +525,45 @@ describe('断线（重连中）不再显示黄色 Reconnecting 条，改走 load
     // 黄条已删除（三语文案都不应出现）
     expect(screen.queryByText(/Reconnecting|重新连接中|再接続中/)).toBeNull()
     mocks.context.ws.connected = true
+  })
+})
+
+/**
+ * AskUser 面板的 DB 权威水合（`get_pending_ask_user`）。
+ *
+ * 面板过去唯一的载体是实时 `ask_user` 事件：会话在提问时刻没有 SSE 订阅（用户正在看
+ * 别的会话 / 事件被 replay ring 淘汰 / 信封 key 推导失败）⇒ 没有任何路径重新推导
+ * pending 状态 ⇒ 面板永不渲染、turn 永远"思考中"（2026-09-20 事故）。
+ * 契约（本组用例钉死）：会话加载 / tab 重新可见时经 `get_pending_ask_user` 水合状态机
+ * —— 该 RPC 走服务端持久化的 ask_question/ask_answer 记录，是 DB 单一权威。
+ *
+ * 判别力：删掉 AgentPanel 的那次水合调用 ⇒ 本例的 `hydrateAskUserPrompt` 断言必红。
+ */
+describe('AgentPanel AskUser 水合（get_pending_ask_user，DB 权威）', () => {
+  it('会话可见时用 DB 的 pending 记录水合（漏掉实时 ask_user 事件也能自愈）', async () => {
+    mocks.getPendingAskUser.mockResolvedValue({
+      request_id: 'req-7',
+      questions: [{ question: 'proceed?', options: ['yes', 'no'], multi_select: true, allow_other: true }],
+    })
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() =>
+      expect(mocks.getPendingAskUser).toHaveBeenCalledWith({ channel: 'web', chatID: 'chat-1' }),
+    )
+    await waitFor(() =>
+      expect(mocks.context.sessionStore.hydrateAskUserPrompt).toHaveBeenCalledWith('web', 'chat-1', {
+        // 与实时 ask_user 事件共用同一个 parseAskUserPrompt（snake_case → camelCase）。
+        requestId: 'req-7',
+        questions: [{ question: 'proceed?', options: ['yes', 'no'], multiSelect: true, allowOther: true }],
+      }),
+    )
+  })
+
+  it('DB 无 pending 记录时不水合（绝不伪造面板）', async () => {
+    mocks.getPendingAskUser.mockResolvedValue(null)
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
+    expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
   })
 })
