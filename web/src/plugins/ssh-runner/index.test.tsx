@@ -889,3 +889,109 @@ describe('未注入 ctx', () => {
     expect(screen.getByTestId('ssh-runner-not-initialized')).toBeInTheDocument()
   })
 })
+
+// ---------- 11) 写入侧：失败的纳管不留孤儿（幽灵执行目标的根因） ----------
+
+describe('纳管失败回滚（注册表不留孤儿）', () => {
+  it('探针失败 ⇒ 回滚本次登记（runner_delete），且目标不被写入', async () => {
+    const { ctx, call, store } = makeCtx({
+      rpc: (method) => {
+        if (method === 'runner_registry') return { runners: [], orphans: [] }
+        if (method === 'runner_session_get') return { name: '', online: false }
+        if (method === 'runner_create') return { name: 'ghost-box', token: 'tok', command: 'xbot-runner --token tok' }
+        if (method === 'xbot.ssh-runner.probe') throw new Error('ssh: connect to host refused')
+        return {}
+      },
+    })
+    setPluginSession('chat-rollback')
+    mod.activate(ctx)
+    render(<Panel />)
+    await flushAsync()
+
+    await openAddForm('ghost-box', 'ssh u@nope')
+    fireEvent.click(screen.getByTestId('ssh-add-probe'))
+    await flushAsync()
+
+    // 流程失败（如实提示）
+    expect(screen.getByTestId('ssh-add-error')).toHaveTextContent('connect to host refused')
+    // 回滚：登记行被删（runner_create 先于机器存在，失败即回收）
+    await waitFor(() => expect(callsOf(call, 'runner_delete')).toEqual([{ name: 'ghost-box' }]))
+    // 不受管 ⇒ 不进 targets（机器从未成立）
+    expect(String(store['targets'])).not.toContain('ghost-box')
+  })
+
+  it('机器真的连着（status.connected）⇒ 绝不回滚（不误删真机器）', async () => {
+    const { ctx, call } = makeCtx({
+      rpc: (method) => {
+        if (method === 'runner_registry') return { runners: [], orphans: [] }
+        if (method === 'runner_session_get') return { name: '', online: false }
+        if (method === 'runner_create') return { name: 'live-box', token: 'tok', command: 'cmd' }
+        if (method === 'xbot.ssh-runner.status') return remoteStatus({ connected: true, service_state: 'connected' })
+        if (method === 'xbot.ssh-runner.probe') throw new Error('probe hiccup')
+        return {}
+      },
+    })
+    setPluginSession('chat-rollback-live')
+    mod.activate(ctx)
+    render(<Panel />)
+    await flushAsync()
+
+    await openAddForm('live-box', 'ssh u@live')
+    fireEvent.click(screen.getByTestId('ssh-add-probe'))
+    await flushAsync()
+    await waitFor(() => expect(screen.getByTestId('ssh-add-error')).toHaveTextContent('probe hiccup'))
+
+    expect(callsOf(call, 'runner_delete')).toEqual([])
+  })
+})
+
+// ---------- 12) 未纳管注册记录（遗留登记的唯一清理入口） ----------
+
+describe('未纳管注册记录', () => {
+  function registryPayload(): Record<string, unknown> {
+    return {
+      runners: [
+        { ...runnerInfo('b300-4'), managed: true, state: 'managed', selectable: true, bound_count: 3 },
+        { ...runnerInfo('default', { online: false }), managed: false, state: 'orphan', selectable: false, bound_count: 0 },
+        { ...runnerInfo('ubuntu', { online: false }), managed: false, state: 'orphan', selectable: false, bound_count: 0 },
+      ],
+      orphans: ['default', 'ubuntu'],
+    }
+  }
+
+  async function renderPanel(chatID: string) {
+    const bundle = makeCtx({
+      rpc: (method) => {
+        if (method === 'runner_registry') return registryPayload()
+        if (method === 'runner_session_get') return { name: '', online: false }
+        if (method === 'xbot.ssh-runner.status') return remoteStatus()
+        return {}
+      },
+      config: { targets: targetsJSON([target('b300-4', 'ssh u@b300-4')]) },
+    })
+    setPluginSession(chatID)
+    mod.activate(bundle.ctx)
+    render(<Panel />)
+    await screen.findByTestId('ssh-unmanaged')
+    return bundle
+  }
+
+  it('列出遗留行（含注册表里有、面板 targets 里没有的机器）+ 单条删除', async () => {
+    const { call } = await renderPanel('chat-unmanaged')
+    expect(screen.getByTestId('ssh-unmanaged-row-default')).toBeInTheDocument()
+    expect(screen.getByTestId('ssh-unmanaged-row-ubuntu')).toBeInTheDocument()
+    // 受管的机器不在遗留区
+    expect(screen.queryByTestId('ssh-unmanaged-row-b300-4')).toBeNull()
+
+    fireEvent.click(screen.getByTestId('ssh-unmanaged-delete-default'))
+    await waitFor(() => expect(callsOf(call, 'runner_delete')).toEqual([{ name: 'default' }]))
+  })
+
+  it('一键清理：逐条删除全部遗留行（幂等删除，之后 reload 注册表）', async () => {
+    const { call } = await renderPanel('chat-unmanaged-all')
+    fireEvent.click(screen.getByTestId('ssh-unmanaged-cleanup'))
+    await waitFor(() => expect(callsOf(call, 'runner_delete')).toEqual([{ name: 'default' }, { name: 'ubuntu' }]))
+    // 清理后重新拉注册表（列表以后端为准）
+    expect(callsOf(call, 'runner_registry').length).toBeGreaterThan(1)
+  })
+})

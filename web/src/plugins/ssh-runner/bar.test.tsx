@@ -236,3 +236,148 @@ describe('桌面底栏徽章注册', () => {
     expect(() => indexMod.activate({ rpc: { call } })).not.toThrow()
   })
 })
+
+// ---------- 6) 执行目标列表 = 注册表分类视图（幽灵行不进列表） ----------
+
+/** 注册表行（核心 runner_registry 的分类字段）。 */
+function registryEntry(
+  name: string,
+  opts: { online?: boolean; managed?: boolean; bound?: number } = {},
+): Record<string, unknown> {
+  const online = opts.online ?? true
+  const managed = opts.managed ?? true
+  const state = managed ? 'managed' : online ? 'live' : 'orphan'
+  return { ...runnerInfo(name, online), managed, state, selectable: state !== 'orphan', bound_count: opts.bound ?? 0 }
+}
+
+/** 受管集合（插件配置 targets）——管理视图就是机器的唯一添加/删除入口。 */
+function targetsConfig(names: string[]): Record<string, unknown> {
+  return {
+    targets: JSON.stringify(
+      names.map((n) => ({
+        name: n,
+        ssh: `ssh ${n}`,
+        install_dir: '/usr/local/bin',
+        connection_mode: 'tunnel',
+        auto_connect: false,
+        added_at: '',
+      })),
+    ),
+  }
+}
+
+function makeCtxWithConfig(
+  rpc: (method: string, params: Record<string, unknown>) => unknown,
+): { call: RpcMock } {
+  const call = vi.fn((method: string, params: Record<string, unknown>) => Promise.resolve(rpc(method, params)))
+  shared.setCtx({
+    rpc: { call },
+    config: { get: async () => targetsConfig(['b300-4']), set: async () => {}, onConfigChange: () => () => {} },
+  })
+  return { call }
+}
+
+describe('执行目标列表来源 = 注册表分类（与管理视图同一份权威）', () => {
+  it('遗留登记行（不受管且离线）不进列表；受管机器可选；受管集合按 targets 声明给核心', async () => {
+    setPluginSession('chat-bar-registry')
+    const { call } = makeCtxWithConfig((method) => {
+      if (method === 'runner_session_get') return { name: '', online: false }
+      if (method === 'runner_registry') {
+        return {
+          runners: [
+            registryEntry('b300-4', { online: true, bound: 3 }),
+            registryEntry('default', { online: false, managed: false }),
+            registryEntry('ubuntu', { online: false, managed: false }),
+          ],
+          orphans: ['default', 'ubuntu'],
+        }
+      }
+      return {}
+    })
+    render(<bar.default />)
+    await waitFor(() => expect(screen.getByTestId('ssh-runner-bar-label')).toHaveTextContent('本机'))
+
+    fireEvent.click(screen.getByTestId('ssh-runner-bar'))
+
+    // 受管 + 在线的真机器在列表里
+    expect(await screen.findByTestId('ssh-runner-bar-option-b300-4')).toBeInTheDocument()
+    // 幽灵行**不进**执行目标列表（它们只能在「远程机器」面板清理）
+    expect(screen.queryByTestId('ssh-runner-bar-option-default')).toBeNull()
+    expect(screen.queryByTestId('ssh-runner-bar-option-ubuntu')).toBeNull()
+    // 受管集合 = 面板 targets（单一权威）——选择器与面板读同一份
+    expect(call).toHaveBeenCalledWith('runner_registry', { managed: ['b300-4'] })
+  })
+
+  it('一个可选目标都没有 ⇒ 显示空态（并指出去哪儿添加机器）', async () => {
+    setPluginSession('chat-bar-empty')
+    makeCtxWithConfig((method) => {
+      if (method === 'runner_session_get') return { name: '', online: false }
+      if (method === 'runner_registry') return { runners: [], orphans: [] }
+      return {}
+    })
+    render(<bar.default />)
+    await waitFor(() => expect(screen.getByTestId('ssh-runner-bar-label')).toHaveTextContent('本机'))
+
+    fireEvent.click(screen.getByTestId('ssh-runner-bar'))
+    const empty = await screen.findByTestId('ssh-runner-bar-empty')
+    expect(empty).toHaveTextContent('远程机器')
+    // 空态下仍可切回本机（本机永远可用）
+    expect(screen.getByTestId('ssh-runner-bar-option-local')).toBeInTheDocument()
+  })
+
+  it('选择离线机器必须二次确认并给出原因；确认后才发 runner_session_set', async () => {
+    setPluginSession('chat-bar-offline')
+    const { call } = makeCtxWithConfig((method) => {
+      if (method === 'runner_session_get') return { name: '', online: false }
+      if (method === 'runner_registry') return { runners: [registryEntry('gpu-01', { online: false })], orphans: [] }
+      return {}
+    })
+    render(<bar.default />)
+    await waitFor(() => expect(screen.getByTestId('ssh-runner-bar-label')).toHaveTextContent('本机'))
+
+    fireEvent.click(screen.getByTestId('ssh-runner-bar'))
+    fireEvent.click(await screen.findByTestId('ssh-runner-bar-option-gpu-01'))
+
+    // 未确认：绝不绑定（绑定到离线机器 = 该会话每次工具调用硬失败）
+    const confirm = await screen.findByTestId('ssh-runner-bar-offline-confirm')
+    expect(confirm).toHaveTextContent('离线')
+    expect(call.mock.calls.some((c) => c[0] === 'runner_session_set')).toBe(false)
+
+    // 取消 ⇒ 什么都不发生
+    fireEvent.click(screen.getByTestId('ssh-runner-bar-offline-cancel'))
+    expect(screen.queryByTestId('ssh-runner-bar-offline-confirm')).toBeNull()
+    expect(call.mock.calls.some((c) => c[0] === 'runner_session_set')).toBe(false)
+
+    // 再次选择 + 确认 ⇒ 才真的绑定
+    fireEvent.click(screen.getByTestId('ssh-runner-bar-option-gpu-01'))
+    fireEvent.click(await screen.findByTestId('ssh-runner-bar-offline-accept'))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('runner_session_set', {
+        channel: 'web',
+        chat_id: 'chat-bar-offline',
+        name: 'gpu-01',
+      }),
+    )
+  })
+
+  it('当前绑定是遗留记录 ⇒ 明确标注（不让人误以为是普通离线）', async () => {
+    setPluginSession('chat-bar-current-orphan')
+    makeCtxWithConfig((method) => {
+      if (method === 'runner_session_get') return { name: 'default', online: false }
+      if (method === 'runner_registry') {
+        return {
+          runners: [registryEntry('b300-4', { online: true }), registryEntry('default', { online: false, managed: false })],
+          orphans: ['default'],
+        }
+      }
+      return {}
+    })
+    render(<bar.default />)
+    await waitFor(() => expect(screen.getByTestId('ssh-runner-bar-label')).toHaveTextContent('default'))
+
+    fireEvent.click(screen.getByTestId('ssh-runner-bar'))
+    // 当前绑定不在可选列表里也要可见（绝不悄悄隐藏），并标注为遗留
+    expect(await screen.findByTestId('ssh-runner-bar-option-default')).toBeInTheDocument()
+    expect(screen.getByTestId('ssh-runner-bar-current-orphan')).toBeInTheDocument()
+  })
+})

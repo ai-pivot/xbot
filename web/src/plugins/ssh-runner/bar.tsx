@@ -29,7 +29,9 @@ import {
   callRpc,
   resolveSession,
   errMessage,
-  type RunnerInfo,
+  loadRunnerRegistryFromConfig,
+  type RunnerRegistryEntry,
+  type RunnerRegistryView,
   type SessionIdentity,
 } from './shared'
 
@@ -100,10 +102,13 @@ export interface RunnerBarData {
   /** 当前绑定的 runner 名（'' = 本机）。 */
   current: string
   currentOnline: boolean
-  runners: RunnerInfo[]
+  /** 可选目标（注册表中 `selectable` 的行——遗留登记行不会出现在这里）。 */
+  runners: RunnerRegistryEntry[]
+  /** 注册表视图（`orphans` 用于标注"当前绑定是遗留记录"）。 */
+  registry: RunnerRegistryView | null
   error: string | null
   busy: boolean
-  /** 重新拉取 runner 列表（选择器打开时刷新）。 */
+  /** 重新拉取注册表（选择器打开时刷新）。 */
   reloadList: () => Promise<void>
   /** 切换绑定；返回是否成功（失败已回滚 + error 已置）。 */
   select: (name: string) => Promise<boolean>
@@ -117,7 +122,8 @@ export function useRunnerBar(): RunnerBarData {
   const [session, setSession] = useState<SessionIdentity>(resolveSession)
   const [current, setCurrent] = useState('')
   const [currentOnline, setCurrentOnline] = useState(false)
-  const [runners, setRunners] = useState<RunnerInfo[]>([])
+  const [runners, setRunners] = useState<RunnerRegistryEntry[]>([])
+  const [registry, setRegistry] = useState<RunnerRegistryView | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const mountedRef = useRef(true)
@@ -127,8 +133,13 @@ export function useRunnerBar(): RunnerBarData {
 
   const reloadList = useCallback(async (): Promise<void> => {
     try {
-      const list = await callRpc('runner_list', {})
-      if (mountedRef.current) setRunners(list.runners ?? [])
+      // 注册表是「管理视图 ↔ 执行目标」的**同一份权威**：受管集合（面板 targets）
+      // 由插件声明给核心做分类，选择器只列 selectable 的行——遗留登记行（既不受管
+      // 也不在线）不会出现在执行目标里。
+      const view = await loadRunnerRegistryFromConfig()
+      if (!mountedRef.current) return
+      setRegistry(view)
+      setRunners(view.selectable)
     } catch (e) {
       if (mountedRef.current) setError(errMessage(e))
     }
@@ -217,7 +228,7 @@ export function useRunnerBar(): RunnerBarData {
     [current, currentOnline, runners],
   )
 
-  return { session, current, currentOnline, runners, error, busy, reloadList, select }
+  return { session, current, currentOnline, runners, registry, error, busy, reloadList, select }
 }
 
 // ---------- 视图 ----------
@@ -279,10 +290,45 @@ function TargetRow({
   )
 }
 
-/** 选择器内容（本机 + 全部 runner；当前目标打勾 + 在线/离线标记）。 */
-export function RunnerBarPicker({ data, onSelect }: { data: RunnerBarData; onSelect: (name: string) => void }): ReactNode {
-  // 绑定值不在列表里（记录被删/未注册）也要可辨——补一行，绝不悄悄隐藏当前绑定。
+/**
+ * 选择器内容（本机 + **可选**目标；当前目标打勾 + 在线/离线标记）。
+ *
+ * 三条契约：
+ * ① 只列注册表里 `selectable` 的行（受管 / 在线）——既不受管也不在线的**遗留登记行**
+ *    不进执行目标列表（它们只能从管理面板清理）；唯一的例外是"当前绑定"本身
+ *    （记录被删/被判定为遗留也要可辨，绝不悄悄隐藏，见 extra）。
+ * ② **离线机器要二次确认**：绑定到离线机器会让该会话的每一次工具调用硬失败
+ *    （SandboxRouter 刻意不回退本机），所以必须**在选择时**说清原因，而不是让用户
+ *    事后每次都撞硬失败。
+ * ③ 一个可选目标都没有时给出**空态**（去哪儿添加机器），而不是一个空菜单。
+ */
+export function RunnerBarPicker({
+  data,
+  orphans = [],
+  onSelect,
+}: {
+  data: RunnerBarData
+  /** 被判定为遗留登记的名字（当前绑定若是遗留，行内标注以免误以为正常离线）。 */
+  orphans?: string[]
+  onSelect: (name: string) => void
+}): ReactNode {
+  const [pendingOffline, setPendingOffline] = useState<string | null>(null)
+
+  // 绑定值不在列表里（记录被删/被判定为遗留）也要可辨——补一行，绝不悄悄隐藏当前绑定。
   const extra = data.current !== '' && !data.runners.some((r) => r.name === data.current) ? [data.current] : []
+
+  const requestSelect = useCallback(
+    (name: string) => {
+      const entry = data.runners.find((r) => r.name === name)
+      if (name === '' || !entry || entry.online === true) {
+        onSelect(name)
+        return
+      }
+      setPendingOffline(name)
+    },
+    [data.runners, onSelect],
+  )
+
   return (
     <div className="flex min-w-0 flex-col gap-0.5" data-testid="ssh-runner-bar-list">
       <div className="px-2 pb-1 text-[10px] uppercase tracking-wide text-text-muted">
@@ -295,7 +341,7 @@ export function RunnerBarPicker({ data, onSelect }: { data: RunnerBarData; onSel
         active={data.current === ''}
         online
         local
-        onSelect={onSelect}
+        onSelect={requestSelect}
       />
       {[...data.runners.map((r) => r.name), ...extra].map((name) => (
         <TargetRow
@@ -306,9 +352,59 @@ export function RunnerBarPicker({ data, onSelect }: { data: RunnerBarData; onSel
           active={data.current === name}
           online={data.runners.find((r) => r.name === name)?.online === true}
           local={false}
-          onSelect={onSelect}
+          onSelect={requestSelect}
         />
       ))}
+      {orphans.length > 0 && data.current !== '' && orphans.includes(data.current) ? (
+        <div className="px-2 pt-1 text-[10px] text-amber-500" data-testid="ssh-runner-bar-current-orphan">
+          {t('currentOrphan', '当前绑定是未纳管的遗留记录 —— 请在「远程机器」面板清理或改绑')}
+        </div>
+      ) : null}
+      {data.runners.length === 0 ? (
+        <div className="px-2 py-1 text-[10px] text-text-muted" data-testid="ssh-runner-bar-empty">
+          {t('barEmpty', '尚无远程机器 —— 在「远程机器」面板添加一台')}
+        </div>
+      ) : null}
+      {pendingOffline !== null ? (
+        <div
+          className="mx-1 mt-1 flex flex-col gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5"
+          data-testid="ssh-runner-bar-offline-confirm"
+        >
+          <span className="text-[10px] text-text-primary">
+            {t('offlineBindReason', '{{name}} 当前离线：绑定后本会话的每次工具调用都会失败（刻意不回退本机），直到它重新连接。', {
+              name: pendingOffline,
+            })}
+          </span>
+          <span className="flex items-center gap-2">
+            <span
+              role="button"
+              tabIndex={-1}
+              data-testid="ssh-runner-bar-offline-accept"
+              onClick={(e) => {
+                e.stopPropagation()
+                const name = pendingOffline
+                setPendingOffline(null)
+                onSelect(name)
+              }}
+              className="cursor-pointer rounded px-1.5 py-0.5 text-[10px] text-amber-600 hover:bg-amber-500/15 dark:text-amber-400"
+            >
+              {t('offlineBindAccept', '仍然绑定')}
+            </span>
+            <span
+              role="button"
+              tabIndex={-1}
+              data-testid="ssh-runner-bar-offline-cancel"
+              onClick={(e) => {
+                e.stopPropagation()
+                setPendingOffline(null)
+              }}
+              className="cursor-pointer rounded px-1.5 py-0.5 text-[10px] text-text-secondary hover:bg-bg-tertiary"
+            >
+              {t('cancel', '取消')}
+            </span>
+          </span>
+        </div>
+      ) : null}
       {data.error ? (
         <div className="px-2 pt-1 text-[10px] text-red-500" data-testid="ssh-runner-bar-error">
           {data.error}
@@ -427,7 +523,7 @@ export function RunnerBarView(): ReactNode {
           style={{ position: 'fixed', left: pos?.left, bottom: pos?.bottom, zIndex: 60 }}
           className="block w-60 rounded-lg border border-border bg-bg-elevated p-1 text-left font-normal shadow-lg"
         >
-          <RunnerBarPicker data={data} onSelect={onSelect} />
+          <RunnerBarPicker data={data} orphans={data.registry?.orphans ?? []} onSelect={onSelect} />
         </span>
       ) : null}
     </span>

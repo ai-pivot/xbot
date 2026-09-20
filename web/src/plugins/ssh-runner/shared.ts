@@ -229,6 +229,76 @@ export async function callRpc<K extends keyof BackendRPC>(
   return (await rpc(method as string, params as Record<string, unknown>)) as BackendRPC[K]['result']
 }
 
+// ---------- 机器注册表（管理视图与执行目标 = 同一份权威） ----------
+
+/** 注册表行（核心 `runner_registry` 的分类视图）。 */
+export type RunnerRegistryEntry = BackendRPC['runner_registry']['result']['runners'][number]
+
+/** 注册表视图：全部行 + 可选目标 + 遗留行（管理面板的清理入口）。 */
+export interface RunnerRegistryView {
+  /** 全部注册表行（含遗留行）——管理面板用。 */
+  runners: RunnerRegistryEntry[]
+  /** `selectable` 的目标 —— 执行目标选择器只列这些。 */
+  selectable: RunnerRegistryEntry[]
+  /** 未受管也不在线的遗留登记行（只能由管理面板显式 `runner_delete` 清理）。 */
+  orphans: string[]
+}
+
+/**
+ * 由注册表行构建视图（分类由核心给出，前端只做投影——不重复实现判定）。
+ */
+function viewFromEntries(entries: RunnerRegistryEntry[], orphans: string[]): RunnerRegistryView {
+  return {
+    runners: entries,
+    selectable: entries.filter((r) => r.selectable === true),
+    orphans: orphans.filter((name) => entries.some((r) => r.name === name)),
+  }
+}
+
+/**
+ * 读注册表并分类（核心 RPC `runner_registry`）。
+ *
+ * `managed` = 管理视图（「远程机器」面板）里的 targets —— 机器由此添加/删除，
+ * 这就是**单一权威**：面板与执行目标选择器读的是同一份注册表；`managed` 只用于
+ * 分类（`managed` / `live` / `orphan`），核心因此不需要懂 SSH。
+ *
+ * 旧版核心（尚未部署该 RPC）或瞬时失败 ⇒ 退回 `runner_list`（宽松：全部可选），
+ * 绝不因为一次读取失败就把机器从列表里抹掉。
+ */
+export async function loadRunnerRegistry(managed: string[]): Promise<RunnerRegistryView> {
+  try {
+    const res = await callRpc('runner_registry', { managed })
+    return viewFromEntries(res.runners ?? [], res.orphans ?? [])
+  } catch {
+    return permissiveView()
+  }
+}
+
+/** 宽松视图：无分类信息时把注册表原样视为可用（只读，不改任何东西）。 */
+async function permissiveView(): Promise<RunnerRegistryView> {
+  const list = await callRpc('runner_list', {})
+  const entries = (list.runners ?? []).map(
+    (r): RunnerRegistryEntry => ({ ...r, managed: true, state: 'managed', selectable: true, bound_count: 0 }),
+  )
+  return viewFromEntries(entries, [])
+}
+
+/**
+ * bar 等**没有**配置快照的调用方：自己读插件配置里的受管集合再查注册表。
+ * 配置能力不可用时同样退回宽松视图（未知受管集合 ≠ 空集合）。
+ */
+export async function loadRunnerRegistryFromConfig(): Promise<RunnerRegistryView> {
+  const c = ctxRef
+  if (!c?.config) return permissiveView()
+  try {
+    const raw = await c.config.get()
+    const managed = parseTargets(mergeConfigValues(raw).targets).map((tg) => tg.name)
+    return await loadRunnerRegistry(managed)
+  } catch {
+    return permissiveView()
+  }
+}
+
 // ---------- 会话身份 ----------
 
 export interface SessionIdentity {

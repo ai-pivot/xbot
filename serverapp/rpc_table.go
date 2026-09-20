@@ -2823,6 +2823,24 @@ func registerRunnerHandlers(t RPCTable, h *RPCContext) {
 		return map[string]any{"runners": runners}, nil
 	})
 
+	// runner_registry annotates every registry row against the caller's managed
+	// set (`managed` = the operator's machine list in the management view).
+	//
+	// Single authority: the registry is what both the management view and the
+	// execution-target picker read; `managed` only classifies rows
+	// (managed / live / orphan). Read-only — orphan rows are *reported*
+	// (`orphans`) so the management view can list and delete them explicitly;
+	// the server never silently drops rows the operator has not confirmed.
+	t["runner_registry"] = rpc1(func(ctx context.Context, p struct {
+		Managed []string `json:"managed"`
+	}) (any, error) {
+		db := tools.GetRunnerTokenDB()
+		if db == nil {
+			return nil, fmt.Errorf("runner management not configured")
+		}
+		return tools.BuildRunnerRegistry(db, p.Managed)
+	})
+
 	// runner_delete removes a runner and drops its live connection.
 	t["runner_delete"] = rpc1void(func(ctx context.Context, p struct {
 		Name string `json:"name"`

@@ -388,3 +388,58 @@ ssh [-R 127.0.0.1:<rport>:127.0.0.1:<sport>] <host> \
 | 连接模型（用户 2026-09-17 追加要求） | 见 §5.3.1：连接由我们发起、runner 跑在管道**前台**、每次（重）连**先杀老 runner**、`tunnel` 默认让远端无需可达 server；systemd/nohup 常驻路径**已删除** |
 
 **验证**：`go build ./...` / `go vet ./...` / `go test ./... -count=1` 全绿；前端 `tsc --noEmit` 0 错 + `vitest` 全绿；插件 module `go build/vet/test` 通过（含 `supervisor_test.go`：隧道改写/直连不改写/杀老在新进程之前/同名 kill 模式锚定与转义/独占 Connect/Stop 远端 pkill/断线重连/Tail 有界/预检缺失二进制/StopAll；`state_test.go`：往返/自动重连过滤/0600/原子写/损坏报错）。
+
+## ⚠️ 已知坑：`runners` 表只增不减 ⇒ "执行目标"列表出现幽灵机器（2026-09-20 用户实测）
+
+**现象**：「远程机器」面板只有 1 台真实机器（在线），但「切换执行目标」列表有 6 条，其中 5 条**离线**。
+
+**DB 实证**（`~/.xbot/xbot.db`，只读查询）：
+
+| id | name | created_at | mode | 备注 |
+|---|---|---|---|---|
+| 1 | `default` | 2026-03-27 | docker | 遗留（docker 时代）|
+| 2 | `ubuntu` | 2026-03-30 | docker | 遗留（workspace 指向 sandbox-test）|
+| 3 | `web1` | 2026-03-30 | docker | 遗留 |
+| 4 | `remote-arch` | 2026-06-29 | native | 遗留（workspace=/tmp/runner-test）|
+| 5 | `linked` | 2026-07-10 | native | 遗留 |
+| 6 | `b300-4` | 2026-09-18 | native | ✅ 唯一在用（`tenants.runner_id`: `b300-4`×3，其余为空）|
+
+**根因（两个视图不同源 + 写入侧不回滚）**：
+- 「远程机器」面板列的是**插件自管的机器**（`web/src/plugins/ssh-runner/index.tsx` 的 `targets` 配置）；
+- 「切换执行目标」列表读的是**核心 `runners` 表全量**（`serverapp/rpc_table.go` 的 `runner_list` + `tools/runner_store.go:326 ListAllRunners`）。
+⇒ 历史 provisioning 试验留下的行**没有清理入口**（面板不显示它们 ⇒ UI 删不掉），却**可以被选中** ⇒
+会话会被绑定到不存在的机器 ⇒ `SandboxRouter.SandboxForSession` 对"已绑定但离线"**硬失败**
+（`tools/sandbox_router.go:324-336`）⇒ 该会话**每次工具调用全废**。
+- 写入侧：`runner_create` 必须在连接之前铸 token/command，所以登记行天然先于机器存在；
+  纳管流程失败/取消（`submitProbe` 探针失败、向导被关掉）**从不回滚** ⇒ 源源不断产生孤儿。
+
+### ✅ 已修（2026-09-20）—— 单一权威 + 可清理 + 写入侧回滚
+
+| # | 修法 | 落点 |
+|---|---|---|
+| 1 | **单一权威**：注册表（`runners` 表）是唯一数据源，两个视图都读它；插件把**受管集合**（面板 `targets`）声明给核心做**分类**（核心因此仍不懂 SSH） | `tools/runner_registry.go:BuildRunnerRegistry` + RPC `runner_registry`（`serverapp/rpc_table.go`） |
+| 2 | **不可选**：分类 `managed`（受管）/ `live`（在线）/ `orphan`（既不受管也不在线 = 遗留登记）；`selectable = state != orphan` ⇒ 幽灵行**不进**执行目标列表。受管但离线仍可选（绑定离线是刻意设计），但**选择时必须二次确认**并说明"绑定后每次工具调用都会失败" | 判定在 Go（`Selectable`），提示在 `web/src/plugins/ssh-runner/bar.tsx` 的 `RunnerBarPicker`（`ssh-runner-bar-offline-confirm`） |
+| 3 | **可清理**：管理面板新增「未纳管注册记录」区，列出**任意**注册表行（含插件不认得的遗留行、未纳管的在线机器）+ 单条删除 + 一键清理（`runner_delete` 幂等） | `web/src/plugins/ssh-runner/index.tsx`（`unmanaged` / `removeUnmanaged` / `cleanupUnmanaged`，`data-testid="ssh-unmanaged*"`） |
+| 4 | **写入侧回滚**：探针失败 / 关掉未完成的向导 ⇒ `discardEnrollment` 删掉本次登记行；两道守卫——已受管（在 targets 里）不动、后端仍连着（`status.connected=true`）不删；状态查询失败也不删（宁可留给显式清理） | `web/src/plugins/ssh-runner/index.tsx:discardEnrollment`（调用点：`submitProbe` catch、`closeAdd`） |
+| 5 | **列表只读**：分类/列绝不改数据 —— 删除只发生在 `runner_delete`（用户显式动作） | `TestBuildRunnerRegistry_IsReadOnly` 守护 |
+
+**用户那 5 行的实际状态**：它们 **`state=orphan` ⇒ 不再出现在「切换执行目标」**（不可选），
+但**数据库里仍然存在**（本修复明确不自动删用户数据）；它们在「远程机器」面板的
+**未纳管注册记录**里显式列出，点「全部清理」即逐条 `runner_delete`（幂等，重复点无副作用）。
+`mode=docker` 残留：**不是**判定依据 —— `runners.mode` 的 docker 仍合法（runner 侧 docker 执行器
+`internal/runnerclient/docker.go` + `cmd/runner --mode docker` 仍在用）；这 5 行的 problem 是
+"既不受管也不在线"，与 mode 无关。
+
+**测试**：`tools/runner_registry_test.go`（幽灵不可选 / 受管离线可选 / live 未纳管保留 / 声明集合去重 /
+中途放弃的纳管回滚后零残留 + 删除幂等 / 列表只读）+ `web/src/plugins/ssh-runner/{bar,index}.test.tsx`
+（列表来源=受管集合声明 + 空态 + 离线二次确认 + 当前绑定是遗留时的标注 + 回滚 + 未纳管区清理）。
+
+### 附带结论：`default` 不是"默认 runner"（别按名字误判）
+
+- `tools/remote_sandbox.go:276-287` 的 `runnerName = "default"` 是**runner 连接进来、名字解析不出来时的命名兜底**
+  （token 查不到 → 用它自报的名字 → 都没有 → `"default"`）。它**不查 `runners` 表**，也**不是**"去找名为 default 的 runner"。
+- 全仓**没有**按名字取 runner `default` 的路由/解析逻辑；`serverapp/callbacks.go` 里那批 `"default"`
+  是**会话标签**语义（`parseCLIChatID` 的默认会话名），与 runner 路由无关。
+- 因此：**本机执行 = 「未绑定」**（`SandboxForSession` 里 `name == "" ⇒ r.none`）；`runners` 表里的
+  行只在**会话显式绑定**时才参与路由。⇒ 删除一条名为 `default` 的**表行**不会影响未绑定会话的本机执行；
+  反过来，真正会造成"所有工具跑不了"的是**把会话绑到一个离线/不存在的 runner**（`OfflineRunnerSandbox` 硬失败）。

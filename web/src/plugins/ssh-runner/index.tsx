@@ -32,6 +32,7 @@ import {
   mergeConfigValues,
   parseTargets,
   serializeTargets,
+  loadRunnerRegistry,
   pollJobStatus,
   pollConnectStatus,
   connectionStateOf,
@@ -46,6 +47,7 @@ import {
   type RemoteStatus,
   type RunnerConfigValues,
   type RunnerInfo,
+  type RunnerRegistryView,
   type SessionIdentity,
 } from './shared'
 import { RunnerBarView } from './bar'
@@ -291,6 +293,8 @@ export default function SshRunnerPanel() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [deleteState, setDeleteState] = useState<Record<string, DeleteState>>({})
   const [rowError, setRowError] = useState<Record<string, string>>({})
+  /** 注册表视图（分类后的权威列表；`orphans` 即管理面板要清理的遗留登记行）。 */
+  const [registry, setRegistry] = useState<RunnerRegistryView | null>(null)
 
   const targetsRef = useRef<MachineTarget[]>([])
   const configRef = useRef<RunnerConfigValues>(mergeConfigValues(null))
@@ -328,9 +332,15 @@ export default function SshRunnerPanel() {
     }
     setLoading(true)
     try {
-      const [rawCfg, list] = await Promise.all([c.config.get(), callRpc('runner_list', {})])
-      applyConfig(mergeConfigValues(rawCfg))
-      runnersRef.current = list.runners ?? []
+      const rawCfg = await c.config.get()
+      const merged = mergeConfigValues(rawCfg)
+      applyConfig(merged)
+      // 注册表 = 管理视图与执行目标的**同一份权威**。受管集合（本面板的 targets）
+      // 声明给核心做分类：受管 / 在线 = 真实机器；既不受管也不在线的行是遗留登记
+      // （流程中断留下的孤儿/历史行），只在这里列出供显式清理，绝不进入执行目标。
+      const view = await loadRunnerRegistry(parseTargets(merged.targets).map((tg) => tg.name))
+      runnersRef.current = view.runners
+      setRegistry(view)
       setListError(null)
     } catch (e) {
       setListError(errMessage(e))
@@ -812,6 +822,38 @@ export default function SshRunnerPanel() {
     setFlow((prev) => (prev.phase === 'form' ? { ...prev, autoConnect } : prev))
   }, [])
 
+  // ---- 写入侧回滚：失败的纳管不留孤儿 ----
+
+  /**
+   * 放弃一次未完成的纳管：把本次流程注册的 runner 行删掉。
+   *
+   * **写入侧根因修复** —— `runner_create` 必须在连接之前铸出 token/command，所以
+   * 登记行天然先于机器存在；流程失败/取消若不回滚，注册表里就会留下「永远离线、
+   * 也没有 SSH 目标」的孤儿（用户报告的幽灵执行目标：`default`/`ubuntu`/`web1`/
+   * `remote-arch`/`linked` 正是这类 + 历史残留）。
+   *
+   * 两道守卫：
+   * ① 名字已在 targets 里 ⇒ 机器已受管，**绝不动**；
+   * ② 后端仍持有连接（status.connected）⇒ 机器是真的，**绝不**悄悄删掉它
+   *   （这种行会在注册表里以 live 状态出现）。
+   * 状态查询失败时**不删**（宁可不回滚，也不误删真机器——遗留行仍可在「未纳管记录」
+   * 里显式清理）。幂等：`runner_delete` 删不存在的行是成功，重复调用无副作用。
+   */
+  const discardEnrollment = useCallback(async (name: string, ssh: string): Promise<void> => {
+    if (targetsRef.current.some((x) => x.name === name)) return
+    try {
+      const status = await callRpc('xbot.ssh-runner.status', { ssh, name })
+      if (status.connected === true) return
+    } catch {
+      return
+    }
+    try {
+      await callRpc('runner_delete', { name })
+    } catch {
+      /* 回滚失败不阻断 UI：该行会在「未纳管记录」里可见，可手动清理 */
+    }
+  }, [])
+
   const submitProbe = useCallback(() => {
     if (flow.phase !== 'form') return
     const name = flow.name.trim()
@@ -838,10 +880,12 @@ export default function SshRunnerPanel() {
         setFlow({ phase: 'confirm', name, ssh, connectionMode, autoConnect, command: created.command, probe, error: null })
       } catch (e) {
         if (!mountedRef.current) return
+        // 回滚本次登记：探针失败 ⇒ 这台机器从未成立，注册表里不该留行。
+        void discardEnrollment(name, ssh)
         setFlow({ phase: 'form', name, ssh, connectionMode, autoConnect, error: errMessage(e) })
       }
     })()
-  }, [flow])
+  }, [flow, discardEnrollment])
 
   const confirmProvision = useCallback(() => {
     if (flow.phase !== 'confirm') return
@@ -880,9 +924,14 @@ export default function SshRunnerPanel() {
       connectPollersRef.current[current.name]?.cancel()
       delete connectPollersRef.current[current.name]
     }
+    if (current.phase === 'confirm' || current.phase === 'provisioning' || current.phase === 'connecting') {
+      // 关闭一次**未完成**的纳管 ⇒ 回滚本次登记的 runner 行（写入侧不留孤儿）。
+      // 已完成的纳管（completed）或已保存的目标不受影响；真连上的机器也不会被删。
+      void discardEnrollment(current.name, current.ssh)
+    }
     setAddOpen(false)
     setFlow(initialForm(configRef.current.connectionMode))
-  }, [])
+  }, [discardEnrollment])
 
   const openAdd = useCallback(() => {
     setAddOpen(true)
@@ -1020,6 +1069,54 @@ export default function SshRunnerPanel() {
       setDeleteState((prev) => ({ ...prev, [name]: { job: prev[name]?.job ?? null, error: errMessage(e) } }))
     }
   }, [])
+
+  // ---- 未纳管注册表记录（遗留登记 = 幽灵条目的唯一清理入口） ----
+
+  /**
+   * 未纳管的注册表行：没有对应 SSH 目标的机器记录（中途中止的纳管登记、旧版本
+   * 残留）。管理面板是它们**唯一**的可见/可删入口 —— 执行目标选择器只列可选目标。
+   */
+  const unmanaged = useMemo(
+    () => (registry?.runners ?? []).filter((r) => r.state !== 'managed'),
+    [registry],
+  )
+  const [unmanagedBusy, setUnmanagedBusy] = useState<string | null>(null)
+  const [unmanagedError, setUnmanagedError] = useState<string | null>(null)
+
+  /** 删除一条未纳管记录（幂等：不存在的行同样成功）。 */
+  const removeUnmanaged = useCallback(
+    async (name: string) => {
+      setUnmanagedBusy(name)
+      setUnmanagedError(null)
+      try {
+        await callRpc('runner_delete', { name })
+        await reload()
+      } catch (e) {
+        setUnmanagedError(errMessage(e))
+      } finally {
+        setUnmanagedBusy(null)
+      }
+    },
+    [reload],
+  )
+
+  /** 一键清理全部未纳管记录（逐条删除，幂等；失败即停并显示原因）。 */
+  const cleanupUnmanaged = useCallback(async () => {
+    const names = unmanaged.map((r) => r.name)
+    if (names.length === 0) return
+    setUnmanagedBusy('*')
+    setUnmanagedError(null)
+    try {
+      for (const name of names) {
+        await callRpc('runner_delete', { name })
+      }
+      await reload()
+    } catch (e) {
+      setUnmanagedError(errMessage(e))
+    } finally {
+      setUnmanagedBusy(null)
+    }
+  }, [unmanaged, reload])
 
   // ---- 诊断（status / logs，按需拉取） ----
 
@@ -1746,6 +1843,59 @@ export default function SshRunnerPanel() {
             </div>
           )
         })}
+        {unmanaged.length > 0 && (
+          <div data-testid="ssh-unmanaged" className="mt-2 rounded border border-amber-500/40 bg-amber-500/5 p-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                {t('unmanagedTitle', '未纳管的注册记录（{{n}}）', { n: unmanaged.length })}
+              </span>
+              <button
+                data-testid="ssh-unmanaged-cleanup"
+                onClick={() => void cleanupUnmanaged()}
+                disabled={unmanagedBusy !== null}
+                className="rounded border border-border px-1.5 py-px text-[10px] text-text-secondary hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {unmanagedBusy === '*' ? t('cleaning', '清理中…') : t('cleanupAll', '全部清理')}
+              </button>
+            </div>
+            <div className="mt-1 text-[10px] leading-relaxed text-text-muted">
+              {t(
+                'unmanagedHint',
+                '没有对应 SSH 目标的注册记录（中途中止的纳管 / 旧版本残留）。它们不会出现在「切换执行目标」里，可以在这里删除。',
+              )}
+            </div>
+            {unmanaged.map((r) => (
+              <div key={r.name} data-testid={`ssh-unmanaged-row-${r.name}`} className="mt-1 flex items-center gap-1.5">
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-text-secondary">{r.name}</span>
+                <span className="shrink-0 text-[9px] text-text-muted">
+                  {r.state === 'live' ? t('unmanagedLive', '已连接但未纳管') : t('unmanagedOrphan', '遗留登记')}
+                </span>
+                {r.bound_count > 0 && (
+                  <span
+                    data-testid={`ssh-unmanaged-bound-${r.name}`}
+                    className="shrink-0 text-[9px] text-amber-600 dark:text-amber-400"
+                  >
+                    {t('unmanagedBound', '{{n}} 个会话仍绑定', { n: r.bound_count })}
+                  </span>
+                )}
+                <button
+                  data-testid={`ssh-unmanaged-delete-${r.name}`}
+                  onClick={() => void removeUnmanaged(r.name)}
+                  disabled={unmanagedBusy !== null}
+                  title={t('delete', '删除')}
+                  className="shrink-0 rounded border border-border p-0.5 text-text-muted hover:bg-red-500/10 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-red-400"
+                >
+                  <IconTrash />
+                </button>
+              </div>
+            ))}
+            {unmanagedError !== null && (
+              <div data-testid="ssh-unmanaged-error" className="mt-1 text-[10px] text-red-500">
+                {unmanagedError}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

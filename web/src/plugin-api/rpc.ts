@@ -215,6 +215,28 @@ export interface BackendRPC {
     }
   }
   'runner_delete': { params: { name: string }; result: Record<string, never> }
+  /**
+   * 注册表分类视图（只读）：把每一行按「运维声明的受管集合」标注为
+   * managed / live / orphan，并给出可选中性与绑定的会话数。
+   *
+   * 管理视图（面板）与执行目标（选择器）**读同一份权威**（核心 `runners` 注册表）：
+   * 选择器只列 selectable 的行，面板额外列出 `orphans` 供显式清理（`runner_delete`）。
+   */
+  'runner_registry': {
+    params: { managed: string[] }
+    result: {
+      runners: Array<
+        BackendRPC['runner_list']['result']['runners'][number] & {
+          managed: boolean
+          state: 'managed' | 'live' | 'orphan'
+          selectable: boolean
+          bound_count: number
+        }
+      >
+      /** 未受管也不在线的遗留登记行（管理面板的清理入口；列表本身不改数据）。 */
+      orphans: string[]
+    }
+  }
   'runner_session_get': {
     params: { channel: string; chat_id: string }
     result: { name: string; online: boolean }
