@@ -13,10 +13,7 @@
  */
 import { Files, Search, Info, ListChecks, SquareTerminal } from 'lucide-react'
 import {
-  useCallback,
-  useState,
   type ComponentType,
-  type DragEvent as ReactDragEvent,
   type SVGProps,
 } from 'react'
 import { useI18n } from '@/providers/i18n'
@@ -25,10 +22,8 @@ import type { SidebarPanel } from '@/components/sidebar/RightSidebar'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import type { PluginViewPanel } from '@/plugin-runtime/usePluginViewPanels'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
-import { layoutRegistry, useLayoutItems } from '@/plugin-runtime/layoutRegistry'
+import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS } from '@/plugin-runtime/layoutTypes'
-import { computeReorder } from '@/lib/reorder'
-import { DRAG_TYPE, DRAG_SLOT_TYPE, startDrag, getDrag, clearDrag, isOurDrag } from '@/lib/dragState'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -82,97 +77,12 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
     }
   }
 
-  // ── VSCode 式拖拽（HTML5 DnD）──
-  // 用模块级 dragState 跨组件共享源信息（dataTransfer.getData 在 dragOver
-  // 阶段受限，跨组件时各自的 state 不可见）。
-  const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean } | null>(null)
-  const [dragSrcId, setDragSrcId] = useState<string | null>(null)
-  const canReorder = tabs.length > 1
-
-  const onIconDragStart = useCallback(
-    (layoutId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      if (!canReorder) return
-      startDrag({ itemId: layoutId, sourceSlot: RIGHT_SLOT })
-      setDragSrcId(layoutId)
-      e.dataTransfer.setData(DRAG_TYPE, layoutId)
-      e.dataTransfer.setData(DRAG_SLOT_TYPE, RIGHT_SLOT)
-      e.dataTransfer.effectAllowed = 'move'
-    },
-    [canReorder],
-  )
-
-  const onIconDragOver = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      // 用 types 判断（dragOver 阶段 getData 受限），用模块级 state 读源。
-      if (!isOurDrag(e)) return
-      const drag = getDrag()
-      if (!drag || drag.itemId === targetId) return
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'move'
-      const rect = e.currentTarget.getBoundingClientRect()
-      const before = e.clientY < rect.top + rect.height / 2
-      if (drag.sourceSlot === RIGHT_SLOT) {
-        // 同 slot：computeReorder 判 no-op。
-        const next = computeReorder(tabs.map((x) => x.layoutId), drag.itemId, targetId, before)
-        if (next) setDropHint({ targetId, before })
-        else setDropHint(null)
-      } else {
-        // 跨 slot：总是有效。
-        setDropHint({ targetId, before })
-      }
-    },
-    [tabs],
-  )
-
-  const onIconDrop = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      e.preventDefault()
-      const drag = getDrag()
-      setDropHint(null)
-      setDragSrcId(null)
-      clearDrag()
-      if (!drag || drag.itemId === targetId) return
-      const rect = e.currentTarget.getBoundingClientRect()
-      const before = e.clientY < rect.top + rect.height / 2
-      if (drag.sourceSlot !== RIGHT_SLOT) {
-        // 跨 slot：moveItemTo。
-        layoutRegistry.moveItemTo(drag.itemId, RIGHT_SLOT, { beforeId: before ? targetId : undefined })
-      } else {
-        // 同 slot：setSlotOrder 重排。
-        const next = computeReorder(tabs.map((x) => x.layoutId), drag.itemId, targetId, before)
-        if (next) layoutRegistry.setSlotOrder(RIGHT_SLOT, next)
-      }
-    },
-    [tabs],
-  )
-
-  const onIconDragEnd = useCallback(() => {
-    setDropHint(null)
-    setDragSrcId(null)
-    clearDrag()
-  }, [])
-
-  // dragLeave 闪烁修复：检查 relatedTarget 是否仍在当前按钮内。
-  const onIconDragLeave = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLButtonElement>) => {
-      const related = e.relatedTarget as Node | null
-      if (related && e.currentTarget.contains(related)) return
-      setDropHint((h) => (h?.targetId === targetId ? null : h))
-    },
-    [],
-  )
-
   return (
     <div className="flex h-full w-12 shrink-0 flex-col items-center gap-1 border-l bg-bg-secondary py-2">
       {tabs.map(({ layoutId, panel, icon: Icon, label }) => {
         const active = activePanel === panel
-        const showLine = dropHint?.targetId === layoutId
-        const isDragSrc = dragSrcId === layoutId
         return (
           <div key={layoutId} className="flex w-full flex-col items-center">
-            {showLine && dropHint!.before && (
-              <div data-testid="insertion-line" className="mb-0.5 h-0.5 w-6 shrink-0 rounded-full bg-app-accent" />
-            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
@@ -180,16 +90,9 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
                   aria-label={label}
                   aria-pressed={active}
                   onClick={() => onTogglePanel(panel)}
-                  draggable={canReorder}
-                  onDragStart={onIconDragStart(layoutId)}
-                  onDragOver={onIconDragOver(layoutId)}
-                  onDrop={onIconDrop(layoutId)}
-                  onDragEnd={onIconDragEnd}
-                  onDragLeave={onIconDragLeave(layoutId)}
                   className="group relative flex size-9 shrink-0 select-none items-center justify-center rounded-md transition-opacity hover:bg-bg-tertiary"
                   style={{
                     color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-                    opacity: isDragSrc ? 0.4 : undefined,
                   }}
                 >
                   <span
@@ -201,9 +104,6 @@ export function RightActivityBar({ activePanel, onTogglePanel, onOpenMainView }:
               </TooltipTrigger>
               <TooltipContent side="left">{label}</TooltipContent>
             </Tooltip>
-            {showLine && !dropHint!.before && (
-              <div data-testid="insertion-line" className="mt-0.5 h-0.5 w-6 shrink-0 rounded-full bg-app-accent" />
-            )}
           </div>
         )
       })}

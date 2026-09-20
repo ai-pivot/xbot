@@ -5,13 +5,6 @@
  * header；相邻 section 之间有拖拽分隔条（拖动调整上方 section 高度，像素级）；
  * 高度与折叠状态纯前端持久化（localStorage），清缓存后回到默认自动 layout。
  *
- * VSCode 式拖拽（slotId 提供时启用）：
- * - 同 slot 重排：拖 section 到另一个 section 上方/下方，插入线指示
- * - 跨 slot 拖入：右栏图标拖到左栏 section 上 → moveItemTo 跨 slot 移动
- * - drop 判定放宽：整个 section 区域可放置（不只 header），指针在 section
- *   上半区=before、下半区=after
- * - 实时预览：拖拽时显示半透明 ghost 占位（松手前预览 layout 结果）
- *
  * 高度模型（自动 layout 与手动拖拽共存）：
  * - 用户拖过分隔条的 section：固定 px（localStorage 记忆）
  * - 未拖过但有 defaultHeight 的 section：固定 defaultHeight
@@ -25,16 +18,12 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
 
-import { layoutRegistry } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutSlotId } from '@/plugin-runtime/layoutTypes'
 import i18n from '@/i18n'
-import { computeReorder } from '@/lib/reorder'
-import { DRAG_TYPE, DRAG_SLOT_TYPE, startDrag, getDrag, clearDrag, isOurDrag } from '@/lib/dragState'
 
 const HEIGHTS_KEY = 'xbot:leftbar:section-heights'
 const COLLAPSED_KEY = 'xbot:leftbar:section-collapsed'
@@ -72,7 +61,7 @@ function readJSON<T>(key: string, fallback: T): T {
   }
 }
 
-export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackProps): ReactNode {
+export function SidebarSectionStack({ sections, slotId: _slotId }: SidebarSectionStackProps): ReactNode {
   const [heights, setHeights] = useState<Record<string, number>>(() => {
     const h = readJSON<Record<string, number>>(HEIGHTS_KEY, {})
     if (h.sessions !== undefined && h[BUILTIN_LAYOUT_ITEMS.desktopSessions] === undefined) {
@@ -86,24 +75,6 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
   )
   const containerRef = useRef<HTMLDivElement>(null)
   const [draggingId, setDraggingId] = useState('')
-  // dropHint: 当前悬停目标 + before/after + 是否跨 slot（用于 ghost 预览）。
-  const [dropHint, setDropHint] = useState<{ targetId: string; before: boolean; crossSlot: boolean } | null>(null)
-  // 拖拽中的源 itemId（用于 ghost 半透明渲染）。
-  const [dragSrcId, setDragSrcId] = useState<string | null>(null)
-
-  // window 级 dragend 兜底：松手后无论 drop 是否触发（松在源自身上、松在
-  // 空白处），都清除 dropHint + dragSrcId + 模块级 dragState。header button
-  // 的 onDragEnd 在某些场景（松在源自身上时 onDragOver 没 preventDefault →
-  // onDrop 不触发）可能不可靠，window 级监听保证一定清理。
-  useEffect(() => {
-    const handler = () => {
-      setDropHint(null)
-      setDragSrcId(null)
-      clearDrag()
-    }
-    window.addEventListener('dragend', handler)
-    return () => window.removeEventListener('dragend', handler)
-  }, [])
 
   useEffect(() => {
     try {
@@ -147,93 +118,6 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
     })
   }, [])
 
-  // ── VSCode 式拖拽（HTML5 DnD）──
-  // 用模块级 dragState 跨组件共享源信息（dataTransfer.getData 在 dragOver
-  // 阶段受限，跨组件时各自的 state 不可见）。
-  const canReorder = Boolean(slotId) && sections.length > 1
-
-  const onSectionDragStart = useCallback(
-    (id: string) => (e: ReactDragEvent<HTMLElement>) => {
-      if (!canReorder) return
-      const srcSlot = slotId ?? ''
-      startDrag({ itemId: id, sourceSlot: srcSlot })
-      setDragSrcId(id)
-      e.dataTransfer.setData(DRAG_TYPE, id)
-      e.dataTransfer.setData(DRAG_SLOT_TYPE, srcSlot)
-      e.dataTransfer.effectAllowed = 'move'
-    },
-    [canReorder, slotId],
-  )
-
-  const onSectionDragOver = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
-      if (!slotId) return
-      // 用 types 判断（dragOver 阶段 getData 受限），用模块级 state 读源。
-      if (!isOurDrag(e)) return
-      const drag = getDrag()
-      if (!drag || drag.itemId === targetId) return
-      e.preventDefault()
-      e.dataTransfer.dropEffect = 'move'
-      const rect = e.currentTarget.getBoundingClientRect()
-      const before = e.clientY < rect.top + rect.height / 2
-      const crossSlot = drag.sourceSlot !== slotId
-      if (!crossSlot) {
-        // 同 slot：computeReorder 判 no-op（拖回原位不显示插入线）。
-        // 但即使 no-op 也设置 dropHint（显示插入线），让用户知道当前位置
-        // 可放置——只是 drop 时 computeReorder 返回 null 不实际重排。
-        const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, before)
-        setDropHint({ targetId, before, crossSlot: false })
-        void next
-      } else {
-        setDropHint({ targetId, before, crossSlot: true })
-      }
-    },
-    [slotId, sections],
-  )
-
-  const onSectionDrop = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
-      e.preventDefault()
-      const drag = getDrag()
-      setDropHint(null)
-      setDragSrcId(null)
-      clearDrag()
-      if (!slotId || !drag || drag.itemId === targetId) return
-      const rect = e.currentTarget.getBoundingClientRect()
-      const before = e.clientY < rect.top + rect.height / 2
-      if (drag.sourceSlot !== slotId) {
-        // 跨 slot：moveItemTo 把项从原 slot 移到本 slot 的指定位置。
-        layoutRegistry.moveItemTo(drag.itemId, slotId, { beforeId: before ? targetId : undefined })
-      } else {
-        // 同 slot：setSlotOrder 重排。
-        const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, before)
-        if (next) layoutRegistry.setSlotOrder(slotId, next)
-      }
-    },
-    [slotId, sections],
-  )
-
-  const onSectionDragEnd = useCallback(() => {
-    setDropHint(null)
-    setDragSrcId(null)
-    clearDrag()
-  }, [])
-
-  // dragLeave 闪烁修复：拖拽期间不在 dragLeave 清除 dropHint。
-  // 根因：同 slot 拖拽时，从一个 section 移到另一个 section，dragLeave 清了
-  // dropHint，下一帧 dragOver 又设回来 → 闪烁。改为只在 dragEnd/drop 清除。
-  const onSectionDragLeave = useCallback(
-    (targetId: string) => (e: ReactDragEvent<HTMLElement>) => {
-      // 拖拽进行中：不清除（让 dragOver 在新 section 上更新 dropHint）。
-      if (getDrag()) return
-      // 非拖拽状态（如鼠标离开整个区域）：清除。
-      const related = e.relatedTarget as Node | null
-      if (related && e.currentTarget.contains(related)) return
-      setDropHint((h) => (h?.targetId === targetId ? null : h))
-    },
-    [],
-  )
-
   const startResize = useCallback(
     (sectionId: string) => (e: ReactPointerEvent<HTMLDivElement>) => {
       e.preventDefault()
@@ -274,145 +158,67 @@ export function SidebarSectionStack({ sections, slotId }: SidebarSectionStackPro
 
   return (
     <div ref={containerRef} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      {(() => {
-        // 拖拽实时预览：计算松手后的 section 列表（含跨 slot 拖入的 ghost 占位）。
-        // 同 slot 重排：按 dropHint 位置重排现有 sections。
-        // 跨 slot 拖入：在 dropHint 位置插入一个 ghost section（半透明占位）。
-        const drag = getDrag()
-        const isCrossSlot = drag != null && drag.sourceSlot !== slotId
-        const previewSections = (() => {
-          if (!dropHint || !drag) return sections
-          if (isCrossSlot) {
-            // 跨 slot：在目标位置插入 ghost 占位。
-            const ghost: SidebarSection = {
-              id: '__drag_ghost__',
-              title: i18n.t('sidebar.dragPreviewPlaceholder', { defaultValue: '拖入预览' }),
-              content: null,
-              defaultHeight: 240,
-            }
-            const idx = sections.findIndex((s) => s.id === dropHint.targetId)
-            if (idx === -1) return [...sections, ghost]
-            return dropHint.before
-              ? [...sections.slice(0, idx), ghost, ...sections.slice(idx)]
-              : [...sections.slice(0, idx + 1), ghost, ...sections.slice(idx + 1)]
-          }
-        // 同 slot：不重排预览（只显示插入线 + 源半透明）。
-        // 重排预览会导致源 section 移动到新位置，用户松手在源自身上 →
-        // onSectionDrop 检测到 drag.itemId === targetId → return → 不重排。
-        // 插入线已足够指示目标位置。
-        return sections
-        })()
-
-        return previewSections.map((sec, i) => {
-          const isGhost = sec.id === '__drag_ghost__'
-          const isCollapsed = isGhost ? false : (collapsed[sec.id] ?? false)
-          const fixedH = isGhost ? sec.defaultHeight : (heights[sec.id] ?? sec.defaultHeight)
-          const isLast = i === previewSections.length - 1
-          const style: CSSProperties = isCollapsed
-            ? { flex: '0 0 auto' }
-            : fixedH != null && !isLast
-              ? { height: fixedH, flex: '0 0 auto' }
-              : { flex: '1 1 0%' }
-          const showLine = !isGhost && dropHint?.targetId === sec.id
-          const isDragSrc = !isGhost && dragSrcId === sec.id
-          return (
-            <div key={sec.id} className="contents">
-              {showLine && dropHint!.before && (
-                <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
-              )}
-              <section
-                data-section-id={sec.id}
-                className="flex min-h-0 flex-col overflow-hidden transition-opacity"
-                style={{
-                  ...style,
-                  opacity: isGhost ? 0.3 : isDragSrc ? 0.4 : undefined,
-                  border: isGhost ? '2px dashed var(--accent)' : undefined,
-                }}
-                onDragOver={isGhost ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move' } : onSectionDragOver(sec.id)}
-                onDrop={isGhost ? (e) => {
-                  // ghost 的 onDrop：直接用 dropHint.before（dragOver 时已算好），
-                  // 不从 e.currentTarget 重新算 before（e.currentTarget 是 ghost
-                  // 元素，不是目标 section，rect 不对 → before 算错 → computeReorder
-                  // 返回 null → 松手回去）。
-                  e.preventDefault()
-                  const drag = getDrag()
-                  setDropHint(null)
-                  setDragSrcId(null)
-                  clearDrag()
-                  if (!slotId || !drag || !dropHint) return
-                  const targetId = dropHint.targetId
-                  if (drag.itemId === targetId) return
-                  if (drag.sourceSlot !== slotId) {
-                    layoutRegistry.moveItemTo(drag.itemId, slotId, { beforeId: dropHint.before ? targetId : undefined })
-                  } else {
-                    const next = computeReorder(sections.map((s) => s.id), drag.itemId, targetId, dropHint.before)
-                    if (next) layoutRegistry.setSlotOrder(slotId, next)
-                  }
-                } : onSectionDrop(sec.id)}
-                onDragLeave={isGhost ? undefined : onSectionDragLeave(sec.id)}
+      {sections.map((sec, i) => {
+        const isCollapsed = collapsed[sec.id] ?? false
+        const fixedH = heights[sec.id] ?? sec.defaultHeight
+        const isLast = i === sections.length - 1
+        const style: CSSProperties = isCollapsed
+          ? { flex: '0 0 auto' }
+          : fixedH != null && !isLast
+            ? { height: fixedH, flex: '0 0 auto' }
+            : { flex: '1 1 0%' }
+        return (
+          <div key={sec.id} className="contents">
+            <section
+              data-section-id={sec.id}
+              className="flex min-h-0 flex-col overflow-hidden"
+              style={style}
+            >
+              <button
+                type="button"
+                onClick={() => toggle(sec.id)}
+                title={isCollapsed
+                  ? i18n.t('sidebar.sectionExpand', { title: sec.title, defaultValue: '展开 {{title}}' })
+                  : i18n.t('sidebar.sectionCollapse', { title: sec.title, defaultValue: '收起 {{title}}' })}
+                className="flex w-full shrink-0 select-none items-center gap-1.5 rounded-md px-2 pb-1.5 pt-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted transition-spring hover:bg-bg-tertiary/50 hover:text-text-secondary active:scale-[0.99]"
               >
-                {isGhost ? (
-                  <div className="flex items-center justify-center py-4 text-xs text-text-muted">
-                    {drag?.itemId ?? i18n.t('sidebar.dragPreviewPlaceholder', { defaultValue: '拖入预览' })}
-                  </div>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => toggle(sec.id)}
-                      draggable={canReorder}
-                      onDragStart={onSectionDragStart(sec.id)}
-                      onDragEnd={onSectionDragEnd}
-                      title={isCollapsed
-                        ? i18n.t('sidebar.sectionExpand', { title: sec.title, defaultValue: '展开 {{title}}' })
-                        : i18n.t('sidebar.sectionCollapse', { title: sec.title, defaultValue: '收起 {{title}}' })}
-                      className={`flex w-full shrink-0 select-none items-center gap-1.5 rounded-md px-2 pb-1.5 pt-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted transition-spring hover:bg-bg-tertiary/50 hover:text-text-secondary active:scale-[0.99] ${
-                        canReorder ? 'cursor-grab active:cursor-grabbing' : ''
-                      }`}
-                    >
-                      <ChevronRight
-                        className={`size-3.5 shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
-                      />
-                      {(() => {
-                        const SectionIcon = SECTION_ICON[sec.id]
-                        return SectionIcon ? <SectionIcon className="size-3.5 shrink-0 opacity-70" /> : null
-                      })()}
-                      <span className="truncate normal-case">{sec.title}</span>
-                    </button>
-                    {/* 折叠常驻（display:none 而非条件 unmount——2026-08-30 侧边栏
-                        展开卡顿修复）：条件渲染让每次展开都重新 mount 面板
-                        （SessionList 数百行 render + 插件面板 RPC + DOM 构建，
-                        100ms+ 掉帧）。display:none 保留 DOM/state/RPC 缓存，
-                        展开零成本（与 PanelChrome 的折叠模式一致）；display:none
-                        的子树不参与布局（折叠时 section 高度塌缩到 header 不变），
-                        IntersectionObserver/ResizeObserver 也不触发（不可见）。 */}
-                    <div
-                      className={`min-h-0 flex-1 overflow-hidden ${isCollapsed ? '' : 'animate-section-in'}`}
-                      style={{ display: isCollapsed ? 'none' : undefined }}
-                    >
-                      {sec.content}
-                    </div>
-                  </>
-                )}
-              </section>
-              {showLine && !dropHint!.before && (
-                <div data-testid="insertion-line" className="h-0.5 shrink-0 bg-app-accent" />
-              )}
-              {i < previewSections.length - 1 && !isGhost && (
-                <div
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label={`Resize ${sec.title}`}
-                  onPointerDown={startResize(sec.id)}
-                  className={`h-2 shrink-0 cursor-row-resize transition-colors hover:bg-app-accent/40 ${
-                    draggingId === sec.id ? 'bg-app-accent/40' : 'bg-transparent'
-                  }`}
+                <ChevronRight
+                  className={`size-3.5 shrink-0 transition-transform duration-200 ${isCollapsed ? '' : 'rotate-90'}`}
                 />
-              )}
-            </div>
-          )
-        })
-      })()}
+                {(() => {
+                  const SectionIcon = SECTION_ICON[sec.id]
+                  return SectionIcon ? <SectionIcon className="size-3.5 shrink-0 opacity-70" /> : null
+                })()}
+                <span className="truncate normal-case">{sec.title}</span>
+              </button>
+              {/* 折叠常驻（display:none 而非条件 unmount——2026-08-30 侧边栏
+                  展开卡顿修复）：条件渲染让每次展开都重新 mount 面板
+                  （SessionList 数百行 render + 插件面板 RPC + DOM 构建，
+                  100ms+ 掉帧）。display:none 保留 DOM/state/RPC 缓存，
+                  展开零成本（与 PanelChrome 的折叠模式一致）；display:none
+                  的子树不参与布局（折叠时 section 高度塌缩到 header 不变），
+                  IntersectionObserver/ResizeObserver 也不触发（不可见）。 */}
+              <div
+                className={`min-h-0 flex-1 overflow-hidden ${isCollapsed ? '' : 'animate-section-in'}`}
+                style={{ display: isCollapsed ? 'none' : undefined }}
+              >
+                {sec.content}
+              </div>
+            </section>
+            {i < sections.length - 1 && (
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label={`Resize ${sec.title}`}
+                onPointerDown={startResize(sec.id)}
+                className={`h-2 shrink-0 cursor-row-resize transition-colors hover:bg-app-accent/40 ${
+                  draggingId === sec.id ? 'bg-app-accent/40' : 'bg-transparent'
+                }`}
+              />
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
