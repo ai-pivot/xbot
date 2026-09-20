@@ -108,3 +108,27 @@ find（用户报告）。因此成功解析的 image part 旁会附一个**结�
 - `storage/sqlite/subscription_vision_test.go`——vision 列 round-trip/SetModelVisionConfig 唯一写路径/v64 幂等
 - `web/e2e/vision-input.spec.ts`——👁 徽标 / vision-off 提示条（route mock）
 - `plugin/protocol/protocol_test.go`——**协议超长单行（>2MB）不再以 token-too-long 中止循环**（Scanner→bufio.Reader 回归）
+
+## 存储配置（Web 设置 → 存储）
+
+文件存储后端**可在 Web 设置里配置**（`get_storage_config` / `set_storage_config`，admin-only —
+保存即**热切换**，无需重启）：
+
+| provider | 行为 | 保留策略 |
+|---|---|---|
+| `""` / `local`（默认、免配置） | 上传写 `<xbotHome>/uploads/<key>`，由同源 `/api/files/download` 读盘返回（`serveLocalFile`） | 每次上传后 `pruneLocalUploads(root, 500)`：**按数量保留最新 500 个**（无时间上限；≈ 500 ÷ 日均上传数 天） |
+| `qiniu` / `s3` | 对象存储是权威；本地**仍留一份 spill 副本**（给模型真实路径用） | 云端**永不自动删除**（`OSSProvider` 接口没有 delete，全仓无删除调用；要过期请在云控制台设 lifecycle）；本地副本仍受 500 上限 |
+
+三条单一来源（改这些能力时不要另起一份）：
+
+- **schema**：`channel.StorageSchema()` —— Web 面板的 `_schema` 与任何消费者共用；新增后端字段只改这一处（`provider` 选择 + `DependsOnKey/Values` 条件显示）。
+- **provider 构建**：`serverapp.buildStorageProvider(cfg)` —— startup 与热切换**共用**（避免两处实现漂移）；未知 provider 回退本地并告警。
+- **掩码**：`channel.StorageSecretKeys()` —— 读取时打码（前 4 字符 + `****`），写回掩码值**不覆盖**真实凭据（服务端跳过含 `****` 的值）。
+
+**校验**：切到 `qiniu`/`s3` 前必须给齐 access/secret/bucket，否则**拒绝写入**（半配置会让所有上传失败）。
+
+**热切换链路**：`set_storage_config` → 写 config.json（`SaveToFile` 深度合并保留未知字段）→ 调
+`storageApplier`（server.go 里接线）：重建 provider → `webCh.SetOSSProvider` → 重建并重注册
+`ImageResolver`（`SetImageResolver` + `ag.LLMFactory().SetImageResolver`）→ 记 `_active`。
+web 渠道未启用时 `webCh == nil`，只更新解析器（`view_image` / 飞书入站仍需要 provider）。
+
