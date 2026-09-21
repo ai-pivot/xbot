@@ -11,11 +11,11 @@ import (
 // 命令回复（`!cmd` / slash）的 `command_reply` 标记**必须透传进 WS 消息**。
 //
 // 前端 `normalize` 只认这个**显式标记**把 turn-less 的 text 渲染成 standalone 行
-//（CR 2026-09-21 P1-1：判别式从"turn_id 缺失"改为显式 metadata —— 因为服务端重启
+// （CR 2026-09-21 P1-1：判别式从"turn_id 缺失"改为显式 metadata —— 因为服务端重启
 // 恢复也会让普通 turn 的 text 丢 turn_id）。`WebChannel.Send` 只白名单转发少量
 // metadata 键，曾经漏掉 `command_reply` ⇒ 前端把命令回复当普通 turn 回复 ⇒
 // `activeTurn === null`（会话空闲）时**静默丢弃** ⇒ 用户报告「!cmd 输出不显示」
-//（2026-09-21 P0 实测：SSE 载荷 `{"type":"text","content":"...","seq":2}` 里没有 metadata）。
+// （2026-09-21 P0 实测：SSE 载荷 `{"type":"text","content":"...","seq":2}` 里没有 metadata）。
 //
 // ⚠️ 这条守护必须走**真实 Send 链路**（不是前端 E2E 的 mock）—— 本次事故正是
 // "E2E 手写 metadata、真机却不带" 的 mock 漂移。
