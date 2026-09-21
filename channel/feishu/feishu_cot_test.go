@@ -237,14 +237,21 @@ func TestCotToolKind(t *testing.T) {
 }
 
 // 创建失败 ⇒ 标记 broken，调用方据此回落卡片（答案从不依赖思考过程）。
+//
+// ⚠️ 这里**不能用 `err == nil` 判失败**：`emit` 会启动异步 drainer，它可能先把该批次
+// 消费掉（调用注入的 request 失败）并置 `broken` ⇒ 随后 `flushNow` 看到 `broken`/空队列
+// 直接返回 nil（Windows 调度下必现：CI 实测 `expected create failure`；Linux 通常是
+// flushNow 抢到）。契约本身是「创建失败 ⇒ broken 置位」（调用方据此回落卡片）：
+// 两者必居其一 —— 若 `flushNow` 自己处理了批次，它必须报错。
 func TestFeishuCoT_CreateFailureMarksBroken(t *testing.T) {
 	c := newFeishuCoT(nil, "chat_1", "", false)
 	c.request = func(_ context.Context, _ string, _ string, _ any) (*larkcore.ApiResp, error) {
 		return nil, cotError("boom")
 	}
 	c.emit("RUN_STARTED", map[string]any{"threadId": "chat_1"})
-	if err := c.flushNow(); err == nil {
-		t.Fatal("expected create failure")
+	flushErr := c.flushNow()
+	if flushErr == nil && !c.brokenNow() {
+		t.Fatalf("create failure must mark the CoT broken (caller falls back to the card); flushNow returned nil and broken is unset")
 	}
 	if !c.brokenNow() {
 		t.Fatal("create failure must mark the CoT broken (caller falls back to the card)")
