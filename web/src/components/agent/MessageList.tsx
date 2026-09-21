@@ -632,8 +632,12 @@ export const MessageList = memo(function MessageList({
       if (h <= 0 || h === lastH) return // ① 变化门控（打字机长高时才继续）
       lastH = h
       virtualizer.resizeItem(liveRowIndex, h) // ② 下标已缓存
-      root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
-      root.dataset.virtTotal = String(Math.round(virtualizer.getTotalSize()))
+      // 诊断标记：只在 dev/E2E 构建下写（CR 2026-09-21 P1-2 子项 5 —— 生产版不每帧
+      // 改 DOM 属性；E2E 用 `npm run dev` 起服务 ⇒ DEV=true，`measure-pass > 0` 契约不变）。
+      if (import.meta.env.DEV) {
+        root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
+        root.dataset.virtTotal = String(Math.round(virtualizer.getTotalSize()))
+      }
     }
     apply() // 挂载即测一次（E2E 契约：measure-pass > 0）
 
