@@ -280,7 +280,11 @@ func (wc *WebChannel) isCommandMessage(content string) bool {
 	if wc.callbacks.MatchesCommand != nil {
 		return wc.callbacks.MatchesCommand(content)
 	}
-	return isSlashCommand(content)
+	// 降级（无 registry：单测 / 嵌入式）：必须与分发口径**一致地覆盖 bang** ——
+	// 只认 `/` 会让 `!cmd` 落到 handleMessage 的 fail-fast
+	// （"message accepted without a turn_id"），与本次修复目标自相矛盾
+	// （CR 2026-09-21 指出）。
+	return isSlashCommand(content) || strings.HasPrefix(strings.TrimSpace(content), "!")
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {

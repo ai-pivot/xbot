@@ -361,6 +361,13 @@ export type DomainEvent =
       readonly content: NonEmptyS | null
       readonly progressHistory: readonly WebIteration[]
       readonly cancelled: boolean
+      /**
+       * 后端**显式标记**的命令回复（`metadata.command_reply`，见 `agent.markCommandReply`）：
+       * 只有它代表「无 turn 的独立命令输出」⇒ 渲染为 `standalone` 独立行。
+       * 其余 `turnID === null` 的 text（后端 gap / 重启恢复丢 turn_id 的普通回复）
+       * 必须按 master 语义并入 `activeTurn`（CR 2026-09-21 P1-1）。
+       */
+      readonly commandReply?: boolean
     }
   | {
       /** 会话级字段的**本地水合**（非 SSE）：AgentPanel 用 get_goal RPC 兜底读取

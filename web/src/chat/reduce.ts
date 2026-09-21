@@ -36,7 +36,24 @@ import {
 
 // 命令回复（`!cmd` / slash）渲染为 legacy 独立行 —— 单调序号保证 React key 唯一
 // （同毫秒连续两条命令回复也必须区分，与 normalize.ts 的 echoSeq 同一模式）。
-let commandReplySeq = 0
+/**
+ * 无 turn 的独立行（命令回复 `!cmd` / slash）的行 id。
+ *
+ * 生命周期：只在收到一条**显式命令回复**时生成一次；命令不落库，reload 后这些行由
+ * DB 历史替换（`history_replaced` 会重建 standalone 段），因此它只需在**当前会话的
+ * 生命周期内**唯一。
+ *
+ * 用 `crypto.randomUUID()` 而不是模块级自增计数器：计数器是跨会话/跨刷新共享的
+ * **隐式全局状态**（刷新后从 1 重新开始，会与其它会话/历史行的 id 撞车），违反
+ * 「行 id 唯一」的契约（CR 2026-09-21 P2-1）。与 `useChatMessages.newMessageRequestID()`
+ * 同一范式。
+ */
+function commandRowId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return uuid
+    ? `cmd-${uuid.replaceAll('-', '').slice(0, 12)}`
+    : `cmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
 
 /**
  * 会话级状态携带（todos + goal）：iteration/phase_done 事件在【任何】路径（早期
@@ -818,13 +835,19 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // 渲染为 **standalone** 独立行（不是 legacy：legacy 是 DB 历史前缀，derive
       // 排在 turns **之前**，会让命令输出出现在会话顶部 —— 用户仍会觉得"没输出"。
       // standalone 排 turns 之后 = 底部，即用户视角的最新消息）。
-      if (ev.turnID === null) {
+      //
+      // ⚠️ **只有显式命令回复**（后端 `metadata.command_reply`）才走这里：其余
+      // turnID 缺失的 text（后端 gap / 重启恢复会让普通 turn 的 text 丢 turn_id）
+      // 必须按 master 语义提交进 `s.activeTurn` —— 否则会被误判成命令回复、排到
+      // 底部 standalone 行并与 live 行重复渲染，且该 live turn 直到刷新都不收尾
+      // （CR 2026-09-21 P1-1）。
+      if (ev.turnID === null && ev.commandReply === true) {
         const content = ev.content ?? ''
         if (content === '') return s
         return {
           ...s,
           standalone: [...s.standalone, {
-            id: `cmd-${++commandReplySeq}`,
+            id: commandRowId(),
             role: 'assistant',
             content,
             iterations: ev.progressHistory ?? [],
@@ -841,7 +864,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           }],
         }
       }
-      const target = ev.turnID
+      // 非命令回复：turnID 缺失时按 master 语义回落到 `s.activeTurn`
+      //（后端 gap / 重启恢复丢 turn_id 的普通回复必须并入正在跑的 turn，而不是
+      // 变成底部独立行 —— 见上方 P1-1 注释）。
+      const target = ev.turnID !== null ? ev.turnID : s.activeTurn
+      if (target === null) return s
       const t = s.turns.get(target)
       if (!t) return s
 

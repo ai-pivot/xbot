@@ -113,3 +113,26 @@ func TestRESTMessageSlashCommandNeedsNoTurnID(t *testing.T) {
 		t.Fatalf("slash command status = %d, want 200: %s", recorder.Code, recorder.Body.String())
 	}
 }
+
+// CR 2026-09-21 P2-2：**无 registry**（单测 / 嵌入式）时的降级分支也必须认 bang ——
+// 只认 `/` 前缀会让 `!cmd` 落到 handleMessage 的 fail-fast
+// （"message accepted without a turn_id"），与本次修复目标自相矛盾。
+func TestIsCommandMessage_FallbackCoversBang(t *testing.T) {
+	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
+	// 注意：这里刻意**不**注入 callbacks.MatchesCommand ⇒ 走降级分支。
+	cases := []struct {
+		content string
+		want    bool
+	}{
+		{"!pwd", true},
+		{"   !ls -la", true}, // 前导空白（与 isSlashCommand 同款 trim 语义）
+		{"/help", true},
+		{"hello world", false},
+		{"echo hi", false},
+	}
+	for _, tc := range cases {
+		if got := wc.isCommandMessage(tc.content); got != tc.want {
+			t.Errorf("isCommandMessage(%q) = %v, want %v（降级分支必须覆盖 bang 前缀）", tc.content, got, tc.want)
+		}
+	}
+}

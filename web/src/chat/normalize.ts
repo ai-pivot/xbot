@@ -376,13 +376,18 @@ function normalizeText(env: Record<string, unknown>): readonly DomainEvent[] | n
   // metadata.turn_id（sendMessage 给最终回复显式带上的权威值）。命令回复
   // （`!cmd` / slash）**两处都没有** —— 那是"无 turn"的唯一合法形态
   // （reduce 把它渲染为 legacy 独立行）。
-  const metaTurn = optTurnID(asRecord(env.metadata)?.turn_id)
+  const meta = asRecord(env.metadata)
+  const metaTurn = optTurnID(meta?.turn_id)
   const turn = optTurnID(env.turn_id) ?? metaTurn
+  // 后端 `markCommandReply` / `sendCommandReply` 显式打标（字符串 'true'，兼容布尔值）——
+  // **只有**它代表「无 turn 的独立命令回复」（CR 2026-09-21 P1-1）。
+  const commandReply = meta?.command_reply === 'true' || meta?.command_reply === true
   const content = typeof env.content === 'string' ? env.content : ''
   const progressHistory = parseWebIterations(optStr(env.progress_history))
   return [
     {
       type: 'text_final',
+      commandReply,
       turnID: turn !== null ? turnID(turn) : null,
       content: nonEmptyStr(content),
       progressHistory,

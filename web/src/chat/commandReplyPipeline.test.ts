@@ -34,7 +34,7 @@ describe('命令回复（!cmd）整条渲染链', () => {
 
     // 原始 SSE 事件（与探针抓到的线上事件同形：无 turn_id 字段）
     const evs = normalizeEvent(
-      { type: 'text', content: '```\n/root\n```', chat_id: 'chat-1', channel: 'web' } as never,
+      { type: 'text', content: '```\n/root\n```', chat_id: 'chat-1', channel: 'web', metadata: { command_reply: 'true' } } as never,
       'chat-1',
     )
     expect(evs, 'normalizeEvent 必须产出事件（否则前端根本没处理这条 text）').not.toBeNull()
@@ -70,7 +70,7 @@ describe('命令回复（!cmd）整条渲染链', () => {
     })
     // 命令回复（无 turn_id）
     const evs = normalizeEvent(
-      { type: 'text', content: '```\n/root\n```', chat_id: 'chat-1', channel: 'web' } as never,
+      { type: 'text', content: '```\n/root\n```', chat_id: 'chat-1', channel: 'web', metadata: { command_reply: 'true' } } as never,
       'chat-1',
     )
     for (const e of evs as DomainEvent[]) s = reduce(s, e)
