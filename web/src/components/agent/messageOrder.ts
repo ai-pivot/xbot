@@ -32,18 +32,29 @@ import type { ChatMessage } from '@/types/shared'
  *  原实现每行返回 `[turnID, roleRank]` 元组，而 orderMessageRows 每个流式帧都
  *  对**全表**调用 ⇒ 每帧 N 个数组分配（代价 ∝ 已加载历史总量，2026-09-13
  *  「长历史也会卡」）。改成两个标量取值。 */
-function sortTurnKey(m: ChatMessage): number {
+function sortTurnKey(m: ChatMessage, presentTurns?: ReadonlySet<number>): number {
   if (m.turnID > 0) return m.turnID
-  // 命令回复（standalone 段）：**按构造无 turn**，必须渲染在最底部（turn 行之后）。
+  // 命令回复（standalone 段）：**按构造无 turn**。
   // 它有 `persisted: true`（integrate 的 committed 映射），若不单独判定会落到
   // "早起 legacy 行"分支（-1）→ 命令输出跑到会话**顶部**（用户看到的仍是"没有输出"）。
   // 注意：判定放在 `turnID === 0` 之内，**字段保持 0** —— 属性测试 P4/P5 用
   // `turnID > 0` 识别 turn 行（模型约定：0 = 无 turn 的独立消息）。
+  //
   // 命令行的「时间锚点」：插回它发生的那一刻 —— anchor+0.5 落在该 turn 的所有行
   // **之后**、下一个 turn **之前**（turnID 保持 0 只是虚拟键的回落依据，排序键用
-  // 小数锚点，绝不与真实 turn 行等键）。无锚点（旧数据/锚点 turn 已被裁剪）回落沉底。
+  // 小数锚点，绝不与真实 turn 行等键）。
+  //
+  // ⚠️ **锚点无效时必须回落「沉底」，绝不能退化成 0.5（列表顶部）**（2026-09-21
+  // 用户 P0：「!cmd 输出又不显示了」）：状态里没有 turns（会话刚切换 / 历史重建的
+  // 瞬间）时 `lastTurnIDOf` 返回 0，`0 + 0.5` 会把命令行排到 **turn 1 之前** ——
+  // 用户在底部就完全看不到输出（要滚到最上面）。锚点 turn 已被裁剪同理。
+  // 可靠判据 = 「锚点 turn 是否真的出现在本次渲染的行里」（presentTurns 由
+  // orderMessageRows 一次性建好传入；未提供时保守认定锚点有效）。
   if (m.standalone) {
-    return m.anchorTurnID !== undefined ? m.anchorTurnID + 0.5 : Number.MAX_SAFE_INTEGER
+    const anchor = m.anchorTurnID
+    if (anchor === undefined || anchor === 0) return Number.MAX_SAFE_INTEGER
+    if (presentTurns && !presentTurns.has(anchor)) return Number.MAX_SAFE_INTEGER
+    return anchor + 0.5
   }
   // turnID=0 residue (undeducible):
   //  - isPartial (live streaming) or persisted=false (optimistic send): the
@@ -154,17 +165,22 @@ export function bindTurnIDs(messages: ChatMessage[]): ChatMessage[] {
  */
 export function orderMessageRows(messages: ChatMessage[]): ChatMessage[] {
   if (messages.length < 2) return messages
+  // 命令行锚点的有效性判据（见 sortTurnKey）：锚点必须落在**本次渲染真实存在**的
+  // turn 之后 —— 否则回落沉底。若状态里没有 turns，reduce 记的锚点会是 0，加了
+  // presentTurns 判定后同样回落沉底（绝不排到列表顶部 ⇒ 用户"看不到命令输出"）。
+  const presentTurns = new Set<number>()
+  for (const m of messages) if (m.turnID > 0) presentTurns.add(m.turnID)
   // Detect order violations in O(N)（只做标量比较，零分配）；一处逆序才排序。
-  let prevTurn = sortTurnKey(messages[0])
+  let prevTurn = sortTurnKey(messages[0], presentTurns)
   let prevRank = sortRoleRank(messages[0])
   for (let i = 1; i < messages.length; i++) {
-    const turn = sortTurnKey(messages[i])
+    const turn = sortTurnKey(messages[i], presentTurns)
     const rank = sortRoleRank(messages[i])
     if (turn < prevTurn || (turn === prevTurn && rank < prevRank)) {
       // Out of order — do the stable sort.
       return [...messages].sort((a, b) => {
-        const at = sortTurnKey(a)
-        const bt = sortTurnKey(b)
+        const at = sortTurnKey(a, presentTurns)
+        const bt = sortTurnKey(b, presentTurns)
         if (at !== bt) return at - bt
         const ar = sortRoleRank(a)
         const br = sortRoleRank(b)

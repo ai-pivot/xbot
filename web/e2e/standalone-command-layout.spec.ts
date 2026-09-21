@@ -333,14 +333,32 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
       },
     })
     await emitSSE(page, 'text', { type: 'text', content: 'answer one', turn_id: 1, metadata: {}, chat_id: 'web:chat-1' })
+    // turn 1 收尾：必须回到 idle —— busy 态下输入框是**取消**按钮，`Enter` 不会发送
+    // 消息（CI 实测：命令输入行根本没出现，本条 E2E 曾因此红灯）。
+    await emitSSE(page, 'session', {
+      type: 'session',
+      session: { action: 'idle', chat_id: 'chat-1', channel: 'web' },
+    })
     await page.waitForTimeout(300)
 
-    // 用户敲 `!pwd`（真实 composer + REST ack：command=true、无 turn_id）
+    // 用户敲 `!pwd`（真实 composer + REST ack：command=true、无 turn_id）。
+    // 发送方式与已验证可用的 send-busy.spec.ts 一致 = 点发送按钮（Enter 仅在按钮
+    // 不可见时兜底）。CI 环境里 `keyboard.press('Enter')` alone 不会提交。
     const editor = page.locator('.tiptap, textarea, [contenteditable]').first()
     await editor.click()
     await page.keyboard.type('!pwd')
-    await page.keyboard.press('Enter')
-    await page.waitForTimeout(400)
+    await page.waitForTimeout(100)
+    const sendButton = page.locator('button.bg-accent:not(.destructive)').first()
+    if (await sendButton.isVisible().catch(() => false)) {
+      await sendButton.click()
+    } else {
+      await page.keyboard.press('Enter')
+    }
+    // 前置断言：帖子必须真的发出去（否则后面的顺序断言失败原因会很模糊）。
+    await expect(page.getByText('!pwd').first(), '命令输入行必须出现（发送未生效）').toBeVisible({
+      timeout: 5000,
+    })
+    await page.waitForTimeout(200)
 
     // 命令输出（turn-less text，与后端 sendCommandReply 同形）
     await emitSSE(page, 'text', {
