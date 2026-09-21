@@ -74,6 +74,10 @@ export interface LiveSnapshot {
   readonly reasoning: string
   /** 已完成迭代（append-only —— I4：只增不删，dedup by iteration#）。 */
   readonly iterations: readonly WebIteration[]
+  /** 后端按 turn 尾部有界化后**丢弃**的更早迭代数（「更早的 N 个迭代未加载」）。
+   *  窗口一致性合并（mergeIterationWindows，P0 2026-09-21）会把过期窗口替换成
+   *  权威尾部窗口 —— 被丢弃的更早迭代必须仍然可见地告知用户（绝不静默缺块）。 */
+  readonly iterationsTruncated?: number
   /** 当前迭代的执行中工具。 */
   readonly activeTools: readonly WebToolProgress[]
   /** 流式检测中的工具（参数未生成完）。 */
@@ -136,8 +140,9 @@ export type CommittedPayload =
 export function commitViaText(
   content: NonEmptyS,
   iterations: readonly WebIteration[],
+  iterationsTruncated = 0,
 ): CommittedPayload {
-  return { via: 'text', content, iterations }
+  return { via: 'text', content, iterations, iterationsTruncated }
 }
 
 /** fold 构造：iterations 必须非空（类型强制）；content 可为空字符串。 */

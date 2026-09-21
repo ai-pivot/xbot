@@ -83,6 +83,69 @@ function mergeIterations(
   return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
 }
 
+/** 迭代集合是否为**单一窗口**（相邻 = +1；同号重复不算 gap —— 与连续前缀守卫
+ *  `progressStore.continuousIterations` 同判据）。 */
+function isIterationWindow(its: readonly WebIteration[]): boolean {
+  for (let i = 1; i < its.length; i++) {
+    if (its[i].iteration === its[i - 1].iteration) continue
+    if (its[i].iteration !== its[i - 1].iteration + 1) return false
+  }
+  return true
+}
+
+function maxIterationOf(its: readonly WebIteration[]): number {
+  let max = 0
+  for (const it of its) if (it.iteration > max) max = it.iteration
+  return max
+}
+
+function minIterationOf(its: readonly WebIteration[]): number {
+  let min = Infinity
+  for (const it of its) if (it.iteration < min) min = it.iteration
+  return min
+}
+
+/**
+ * 窗口一致性合并（⛔ P0 2026-09-21 用户报告）──────────────
+ *
+ * 现象：「切到这个会话时历史永远停在某个位置（+N 工具那一段）；新迭代**进行中**会渲染
+ * 出来，**执行完毕就消失**，看起来进度一直卡在这里；刷新一下就好了。」
+ *
+ * 机制（DB 取证：turn 有 510 个连续迭代，前端渲染窗口却停在第 93 个 = 用户切走那一刻的
+ * 进度）：
+ *   ① 状态机里残留**用户切走那一刻的旧窗口**（如 `[1..93]`）；
+ *   ② 切回来时 fetchHistory 的 DB 权威是**有界尾部窗口** —— 服务端
+ *      `BoundHistoryIterations` / 客户端 `boundIterationTail` 都只保留最近 60 个迭代
+ *      ⇒ incoming = `[451..510]`（`iterationsTruncated` = 450）；
+ *   ③ `mergeIterations`（I4 append-only）把两个**不相邻**的窗口拼成
+ *      `[1..93] ∪ [451..510]` —— 出现 357 宽的 gap；
+ *   ④ 渲染层的线性一致性守卫在第一个 gap 处截断 ⇒ 永远只渲染 `[1..93]`，
+ *      **最新窗口永久不可见**；新迭代完成时 delta 落进被隐藏的尾部（"出现即消失"），
+ *      历史窗口再也不前进。整页刷新（丢掉状态机旧窗口）才恢复。
+ *
+ * 规则：并集必须仍是**单一窗口** —— 相邻/重叠 ⇒ 就是并集（resume 竞态 "lazy live 只有
+ * `[4]` + DB `[1..3]`" 的 union 语义不变）；出现 gap ⇒ 两侧是**同一 turn 的不相邻窗口**
+ * （即"过期窗口 × 权威窗口"），保留**较新**的一侧（权威窗口），丢弃过期窗口。这正是
+ * 「用权威窗口替换过期窗口」的唯一正确语义 —— 结果与整页刷新逐字一致（DB 是持久化权威；
+ * 更早的迭代由窗口自身的 `iterationsTruncated`「更早的 N 个迭代未加载」承载）。
+ */
+function mergeIterationWindows(
+  base: readonly WebIteration[],
+  authoritative: readonly WebIteration[],
+): readonly WebIteration[] {
+  const merged = mergeIterations(base, authoritative)
+  // 快路径：一侧为空（mergeIterations 原样返回）或并集已连续 ⇒ 无需窗口裁决。
+  if (merged === base || merged === authoritative || isIterationWindow(merged)) return merged
+  // 两侧**相接或重叠**（`[1..3]` × `[4]`、`[1,2,4]` × `[4]`）⇒ 是同一窗口的增量合并：
+  // 并集内部的 gap（丢了一张 delta / 同 turn 的缺号）不是"两个窗口"的证据，交给渲染层的
+  // 连续前缀守卫 + 下一次 reload（DB 权威、连续）修复 —— **不得**据此丢弃已有的迭代。
+  if (minIterationOf(base) <= maxIterationOf(authoritative) + 1 && minIterationOf(authoritative) <= maxIterationOf(base) + 1) {
+    return merged
+  }
+  // 完全不相邻 ⇒ 同一 turn 的**两个窗口**（过期窗口 × 权威窗口）：保留较新的一侧。
+  return maxIterationOf(authoritative) >= maxIterationOf(base) ? authoritative : base
+}
+
 /** merged 与 existing 逐元素同引用（同长、同序、同对象）⇒ 返回 existing。
  *
  * 幂等重放（useChatMessages 的 store 每帧 notify → setMessages → historyMessages
@@ -1055,6 +1118,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             : h.phase.kind === 'frozen'
               ? h.phase.data.iterations
               : []
+          // 截断计数（更早的 N 个迭代未加载）跟随**权威窗口** —— 窗口一致性合并
+          // （mergeIterationWindows）可能把过期窗口整体换成 DB 尾部窗口，此时更早的
+          // 迭代必须仍然可见地告知用户（绝不静默缺块）。
+          const incomingTruncated = h.phase.kind === 'committed' ? h.phase.payload.iterationsTruncated : undefined
           if (incomingIts.length === 0) {
             turns.set(h.id, cur.user ? cur : { ...cur, user: h.user })
           } else {
@@ -1062,7 +1129,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             // ⇒ 复用原 Turn 对象（零重建 —— 否则 derive 的行 memo + TurnBody 的
             // iterations memo 被逐帧击穿，代价 O(turn 迭代数)）。
             const mergedIts = reuseIfSame(
-              mergeIterations(incomingIts, cur.phase.data.iterations),
+              mergeIterationWindows(incomingIts, cur.phase.data.iterations),
               cur.phase.data.iterations,
             )
             if (mergedIts === cur.phase.data.iterations && (cur.user || !h.user)) {
@@ -1073,7 +1140,14 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                 user: cur.user ?? h.user,
                 phase: {
                   kind: 'live',
-                  data: { ...cur.phase.data, iterations: mergedIts as WebIteration[] },
+                  data: {
+                    ...cur.phase.data,
+                    iterations: mergedIts as WebIteration[],
+                    iterationsTruncated:
+                      mergedIts === incomingIts
+                        ? (incomingTruncated ?? cur.phase.data.iterationsTruncated)
+                        : cur.phase.data.iterationsTruncated,
+                  },
                 },
               })
             }
@@ -1158,6 +1232,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             ? existing.phase.payload.content
             : existing.phase.data.content
           const snap = ev.active.snapshot
+          // 窗口一致性：DB 侧与快照侧都是**有界尾部窗口**，取较新的一侧（见
+          // mergeIterationWindows —— 过期窗口 ∪ 权威窗口会造 gap，渲染层永久截断）。
+          const mergedIts = mergeIterationWindows(dbIters, snap.iterations)
           turns.set(tid, {
             ...existing,
             phase: {
@@ -1165,7 +1242,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
               data: {
                 ...snap,
                 content: nonEmptyStr(snap.content) ?? dbContent,
-                iterations: mergeIterations(dbIters, snap.iterations),
+                iterations: mergedIts,
+                // 保留权威窗口的截断计数（「更早的 N 个迭代未加载」）——
+                // 过期窗口被丢弃后，更早的迭代必须仍然可见地告知用户。
+                iterationsTruncated: existing.phase.kind === 'committed'
+                  ? existing.phase.payload.iterationsTruncated
+                  : undefined,
               },
             },
           })
@@ -1200,7 +1282,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           )
           // 幂等重放（每帧 history_replaced）：逐字段都无变化 ⇒ 不重建（保住
           // Turn / iterations / 工具数组引用 —— 渲染层 memo 依赖它们）。
-          const mergedIterations = reuseIfSame(mergeIterations(d.iterations, snap.iterations), d.iterations)
+          const mergedIterations = reuseIfSame(
+            mergeIterationWindows(d.iterations, snap.iterations),
+            d.iterations,
+          )
           const mergedIter = d.iter > snap.iter ? d.iter : snap.iter
           const mergedContent = d.content !== '' ? d.content : snap.content
           const mergedReasoning = d.reasoning !== '' ? d.reasoning : snap.reasoning
@@ -1491,7 +1576,13 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const incIts = h.phase.kind === 'committed' ? h.phase.payload.iterations : h.phase.data.iterations
   const curContent = cur.phase.kind === 'committed' ? cur.phase.payload.content : cur.phase.data.content
   const incContent = h.phase.kind === 'committed' ? h.phase.payload.content : h.phase.data.content
-  const iterations = reuseIfSame(mergeIterations(curIts, incIts), curIts)
+  // 窗口一致性（P0 2026-09-21）：两侧都可能是**有界尾部窗口**（DB 历史有界化），
+  // 不相邻时取较新的一侧 —— 见 mergeIterationWindows。
+  const iterations = reuseIfSame(mergeIterationWindows(curIts, incIts), curIts)
+  // 截断计数跟随「被保留的那一侧」（更早的迭代绝不静默缺块）。
+  const curTruncated = cur.phase.kind === 'committed' ? cur.phase.payload.iterationsTruncated : undefined
+  const incTruncated = h.phase.kind === 'committed' ? h.phase.payload.iterationsTruncated : undefined
+  const itsTruncated = iterations === incIts ? (incTruncated ?? curTruncated) : (curTruncated ?? incTruncated)
   const content = curContent !== '' ? curContent : incContent
   // 幂等重放（每帧 history_replaced）：committed 侧逐项未变 ⇒ 复用原对象。
   // （frozen→committed 是真实相变，不走此短路。）
@@ -1508,9 +1599,9 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const its = nonEmptyArr(iterations)
   const phase: Turn['phase'] =
     text !== null
-      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[]) }
+      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[], itsTruncated) }
       : its !== null
-        ? { kind: 'committed', payload: commitViaFold(its, content) }
+        ? { kind: 'committed', payload: commitViaFold(its, content, itsTruncated) }
         : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }
   return { id: h.id, user: cur.user ?? h.user, phase, requestID: cur.requestID ?? h.requestID }
 }

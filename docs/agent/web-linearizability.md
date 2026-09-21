@@ -160,3 +160,28 @@ known violations V1-V4 are precondition breaks, not design flaws** — each has 
 small, testable fix. Until V1-V2 land, the system guarantees *eventual*
 consistency for the affected edge cases (fast double-send, session-switch race);
 after all four, linearizability holds unconditionally.
+
+## 迭代窗口一致性（新增不变量 I8）— 2026-09-21 P0
+
+**I8**：一个 turn 的 `iterations` 必须是**单一窗口**（相邻 +1；同号重复不算 gap）；
+`iterationsTruncated` 记录该窗口之前"未加载"的迭代数。
+
+**为什么需要**：两侧权威都是**有界窗口**而非全量 —— 服务端 `BoundHistoryIterations`（60）与
+客户端 `boundIterationTail`/`SNAPSHOT_ITERATION_LIMIT`（60）。状态机里还可能残留用户**切走
+那一刻的窗口**（如 `[1..93]`）。把两个**不相邻**的窗口 union（旧 I4 append-only 语义）会造出
+gap ⇒ 渲染层的线性一致性守卫 `continuousIterations` 在第一个 gap 处截断 ⇒ **最新窗口永久
+不可见**（新迭代"出现即消失"、历史窗口不再前进），只有整页刷新（丢掉状态机旧窗口）才恢复。
+DB 取证：turn 有 510 个连续迭代，前端渲染窗口停在第 93 个。
+
+**规则**（`web/src/chat/reduce.ts` 的 `mergeIterationWindows`）：
+
+- 并集**相接/重叠**（`[1..3] × [4]`、或一侧自身带缺号的 `[1,2,4] × [4]`）⇒ 原样并集
+  （resume 竞态"lazy live 只有 `[4]` + DB `[1..3]`"的 union 语义**不变**；内部 gap 交给守卫 +
+  下一次 reload 修复）。
+- **完全不相邻**（同一 turn 的两个窗口）⇒ 保留**较新**的一侧（权威窗口），丢弃过期窗口；
+  截断计数跟随窗口（`LiveSnapshot.iterationsTruncated` → `derive` 的 live 行 →
+  AssistantMessage 的「更早的 N 个迭代未加载」）。
+- `iteration` case 的 delta 合并**不适用**（小增量、含 gap 修复语义）。
+
+**应用点（四处窗口合并）**：`history_replaced` 的 live 胜分支 / DB→live 升级（step 3）/
+`ev.active` 快照 union（step 3.5）/ `mergeTurnData`。守护：`web/src/chat/p0-window-gap.test.ts`。

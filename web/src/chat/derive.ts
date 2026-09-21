@@ -201,6 +201,7 @@ function assistantRow(t: Turn): Row | null {
         genui: d.genui,
         subAgents: d.subAgents,
         todos: d.todos,
+        iterationsTruncated: d.iterationsTruncated ?? 0,
         lastIter: d.iter,
       }
     }
