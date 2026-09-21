@@ -2919,7 +2919,14 @@ func (a *Agent) sandboxWorkspace(sessionKey string) string {
 // Skipped for remote, docker, and denied sandboxes — they manage their own filesystems
 // or don't need host-side directories.
 func (a *Agent) ensureWorkspace(ctx context.Context, dir, sessionKey string) error {
-	name := a.sandboxNameForSession(sessionKey)
+	sb := a.sandbox
+	if resolver, ok := sb.(tools.SandboxResolver); ok {
+		sb = resolver.SandboxForSession(sessionKey)
+	}
+	name := ""
+	if sb != nil {
+		name = sb.Name()
+	}
 	// remote/docker: the workspace lives inside the runner/container and is
 	// provisioned there (container create / runner sync) — nothing to do here.
 	// denied: no execution at all.
@@ -2933,8 +2940,8 @@ func (a *Agent) ensureWorkspace(ctx context.Context, dir, sessionKey string) err
 	if name == "remote" || name == "docker" || name == "denied" {
 		return nil
 	}
-	if a.sandbox != nil {
-		return a.sandbox.MkdirAll(ctx, dir, 0o755, sessionKey)
+	if sb != nil {
+		return sb.MkdirAll(ctx, dir, 0o755, sessionKey)
 	}
 	return os.MkdirAll(dir, 0o755)
 }
@@ -4123,7 +4130,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
 	history = llm.SanitizeMessages(history)
-	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
+	if err := a.ensureWorkspace(ctx, workspaceRoot, sessKey); err != nil {
 		return nil, fmt.Errorf("create user workspace: %w", err)
 	}
 	newTools, err := a.multiSession.ConfigureSessionMCP(msg.Channel, msg.ChatID, msg.SenderID, a.workDir)
