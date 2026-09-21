@@ -19,12 +19,15 @@ const mocks = vi.hoisted(() => {
     upload: vi.fn(),
   }
   const context = {
-    ws: { connected: true, onSession: vi.fn(() => vi.fn()) },
-    sessionStore: {
-      activeSession: { channel: 'web', chatID: 'chat-1' },
-      sessions: [],
-      // AgentPanel 的 AskUser DB 权威水合 effect 调它（会话加载 / tab 重新可见）。
-      hydrateAskUserPrompt: vi.fn(),
+      ws: { connected: true, onSession: vi.fn(() => vi.fn()) },
+      sessionStore: {
+        activeSession: { channel: 'web', chatID: 'chat-1' },
+        sessions: [],
+        // AgentPanel 的 AskUser DB 权威水合 effect 调它（会话加载 / tab 重新可见）。
+        hydrateAskUserPrompt: vi.fn(),
+        // 乐观 busy 的断言点：命令（无 turn_id）绝不允许置 'running'
+        // （命令没有 turn 生命周期 ⇒ 置了永远清不掉 ⇒ busy 占位符永远显示「思考中」）。
+        setStatus: vi.fn(),
     },
     rightSidebar: { openPanel: vi.fn() },
   }
@@ -51,15 +54,22 @@ const mocks = vi.hoisted(() => {
     // （vitest 的 mock 命名空间对未知导出直接抛错，不是返回 undefined）。
     getPendingAskUser: vi.fn(),
     lastChatID: null as string | null,
+    // 乐观 busy（命令不得置位）的接线断言点：捕获 onSendSuccess 回调。
+    lastOnSendSuccess: null as ((info?: { requestID: string; turnID?: number; queued?: boolean }) => void) | null,
   }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('@/hooks/useAskUser', () => ({ useAskUser: () => ({ prompt: null, respond: vi.fn(), cancel: vi.fn() }) }))
 vi.mock('@/hooks/useChatMessages', () => ({
-  // 捕获 chatID —— 会话归属不变量（一个会话至多被一个 agent 面板渲染）的断言点。
-  useChatMessages: (opts: { chatID?: string | null }) => {
+  // 捕获 chatID —— 会话归属不变量（一个会话至多被一个 agent 面板渲染）的断言点；
+  // 同时捕获 onSendSuccess —— 乐观 busy（命令不得置位）的接线断言点。
+  useChatMessages: (opts: {
+    chatID?: string | null
+    onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean }) => void
+  }) => {
     mocks.lastChatID = opts?.chatID ?? null
+    mocks.lastOnSendSuccess = opts?.onSendSuccess ?? null
     return mocks.chat
   },
 }))
@@ -260,6 +270,42 @@ describe('AgentPanel busy state', () => {
   beforeEach(() => {
     mocks.progress.progressSnapshot = { todos: [], tokenUsage: null }
     mocks.progress.liveMessage = null
+    mocks.lastOnSendSuccess = null
+    ;(mocks.context.sessionStore as unknown as { setStatus: ReturnType<typeof vi.fn> }).setStatus.mockClear()
+  })
+
+  it('命令回复（无 turn_id）不得乐观置 busy —— 否则会话永久卡 busy（输出下方多出「思考中」）', async () => {
+    // REPRO（用户报告 2026-09-17）：`!pwd` 输出可见了，但下方多出「思考中」。
+    // 根因：onSendSuccess 对**每一条**发送都乐观置 running；命令后端按设计没有
+    // turn 生命周期（无 turn_started / session(idle)）⇒ 置了永远清不掉 ⇒
+    // MessageList 的 busy 占位符（busy && liveId === null）在列表底部渲染
+    // ShimmerThinking。契约：只有会开启 turn 的发送才可以乐观置 busy。
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null, streaming: false, phase: 'idle' }
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() => expect(mocks.lastOnSendSuccess, 'onSendSuccess 必须已接线').toBeTruthy())
+    const setStatus = (mocks.context.sessionStore as unknown as { setStatus: ReturnType<typeof vi.fn> }).setStatus
+
+    // 命令响应：后端对命令省略 turn_id、且不排队
+    act(() => mocks.lastOnSendSuccess?.({ requestID: 'r-cmd', turnID: undefined, queued: false }))
+    expect(
+      setStatus.mock.calls.some((c) => c[1] === 'running'),
+      '命令（无 turn_id）不得乐观置 running —— 没有清除路径，会导致永久 busy',
+    ).toBe(false)
+
+    // 普通消息：带 turn_id ⇒ 可以乐观置位（turn 生命周期会清除它）
+    act(() => mocks.lastOnSendSuccess?.({ requestID: 'r-normal', turnID: 7, queued: false }))
+    expect(setStatus.mock.calls.some((c) => c[1] === 'running')).toBe(true)
+  })
+
+  it('排队消息（queued=true，无 turn_id）可以乐观置 busy —— 它随后会开启 turn', async () => {
+    mocks.progress.progressSnapshot = { todos: [], tokenUsage: null, streaming: false, phase: 'idle' }
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() => expect(mocks.lastOnSendSuccess).toBeTruthy())
+    const setStatus = (mocks.context.sessionStore as unknown as { setStatus: ReturnType<typeof vi.fn> }).setStatus
+    act(() => mocks.lastOnSendSuccess?.({ requestID: 'r-queued', turnID: undefined, queued: true }))
+    expect(setStatus.mock.calls.some((c) => c[1] === 'running')).toBe(true)
   })
 
   it('falls back to progressSnapshot.streaming when sessionStore.running is false (refresh mid-turn)', () => {

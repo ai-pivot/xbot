@@ -28,6 +28,7 @@ import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSetting
 import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, getPendingAskUser } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
+import { sendStartsTurn } from '@/lib/sendTurn'
 import type { QueueItemPayload } from '@/types/shared'
 
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
@@ -160,10 +161,12 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     agentChatID: params.agentChatID,
     liveEventsEnabled: shouldSubscribe,
     onSendSuccess: (info) => {
-      // Optimistically mark the session as running so the UI enters busy
-      // immediately — don't wait for the SSE session(busy) event which may
-      // arrive late or get lost.
-      if (chatID) {
+      // ⚠️ **只对「会开启 turn」的发送乐观置 busy**（`sendStartsTurn`）：
+      // 命令（`!cmd` / slash）后端按设计没有 turn 生命周期（无 turn_started、
+      // 无 session(idle)）⇒ 乐观置位**永远清不掉** ⇒ 会话卡 busy，而命令不产生
+      // live 行（`liveId === null`）⇒ `MessageList` 的 busy 占位符在**列表最底部**
+      // 渲染「思考中…」（用户报告：`!pwd` 输出下方多出一个思考中）。
+      if (chatID && sendStartsTurn(info)) {
         const selector = { channel: messageChannel, chatID }
         store.setStatus(selector, 'running')
       }

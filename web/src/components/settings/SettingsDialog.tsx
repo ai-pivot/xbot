@@ -30,6 +30,7 @@ import { SettingsInteraction } from './SettingsInteraction'
 import { SettingsGeneral } from './SettingsGeneral'
 import { SettingsAgent } from './SettingsAgent'
 import { SettingsChannels } from './SettingsChannels'
+import { SettingsStorage } from './SettingsStorage'
 import { SettingsLLM } from './SettingsLLM'
 import { SettingsWebUsers } from './SettingsWebUsers'
 import { SettingsSection } from './SettingsSection'
@@ -40,7 +41,7 @@ import { SettingsPlugins } from './SettingsPlugins'
 import { SettingsTools } from './SettingsTools'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'language' | 'agent' | 'tools' | 'llm' | 'channels' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
+type Category = 'appearance' | 'interaction' | 'language' | 'agent' | 'tools' | 'llm' | 'channels' | 'storage' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
 
 /** 设置分类（供命令路由 `xbot://settings.open?section=llm` 使用）。 */
 export type SettingsCategory = Category
@@ -121,6 +122,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     { key: 'tools', labelKey: 'nav.tools' },
     { key: 'llm', labelKey: 'nav.llm' },
     { key: 'channels', labelKey: 'nav.channels' },
+    { key: 'storage', labelKey: 'nav.storage' },
     { key: 'account', labelKey: 'nav.account' },
     { key: 'webusers', labelKey: 'nav.webUsers' },
     { key: 'developer', labelKey: 'nav.developer' },
@@ -177,6 +179,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
             {active === 'tools' ? <SettingsTools /> : null}
             {active === 'llm' ? <SettingsLLMPanel /> : null}
             {active === 'channels' ? <SettingsChannels /> : null}
+            {active === 'storage' ? <SettingsStorage /> : null}
             {active === 'account' ? (
               <SettingsAccountPanel onLoggedOut={() => navigate('/login', { replace: true })} />
             ) : null}

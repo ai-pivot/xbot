@@ -79,9 +79,23 @@ func (a *Agent) SetCWDForced(ch, chatID, dir string) error {
 		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID}).
 			Warn("SetCWDForced received a non-absolute path — applying it verbatim as requested")
 	}
-	if _, err := os.Stat(dir); err != nil {
-		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID, "error": err.Error()}).
-			Warn("SetCWDForced received a path that does not exist — applying it verbatim as requested")
+	// 显式工作目录（新建会话弹窗 / 会话信息里改路径）**不存在则自动创建**
+	// （2026-09-20 用户要求：「创建新会话时如果选择了一个不存在的目录则自动创建」）。
+	// 旧实现只打一条 Warn 然后原样落库 ⇒ 会话卡在一个不存在的 cwd 上（终端/工具/Cd
+	// 全在错地方），而用户以为"路径没生效"。这里只创建目录本身（含多级父目录）；
+	// 真正的错误（路径被普通文件占住、权限不足）必须**显式返回**，让 UI 报出
+	// "工作目录设置失败"，绝不静默落一个坏 cwd。
+	if info, err := os.Stat(dir); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", dir, err)
+		}
+		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
+			return fmt.Errorf("create working directory %s: %w", dir, mkErr)
+		}
+		log.WithFields(log.Fields{"cwd": dir, "session": ch + ":" + chatID}).
+			Info("SetCWDForced created a missing working directory")
+	} else if !info.IsDir() {
+		return fmt.Errorf("%s exists but is not a directory", dir)
 	}
 	return a.setCWD(ch, chatID, dir, true)
 }

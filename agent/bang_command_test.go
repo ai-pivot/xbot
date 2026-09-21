@@ -7,7 +7,63 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"xbot/config"
+	"xbot/tools"
 )
+
+// REPRO —— 本机（none 沙箱）首次运行时工作区目录不存在 → `!cmd` 直接失败。
+//
+// 现场：`xbot-cli --local -p '!echo hi'` 报
+// `exit: fork/exec /bin/bash: no such file or directory`（bash 明明存在），
+// 插桩显示 exec 的 dir=/root/.xbot/users/cli_user/workspace 并不存在；
+// 手动 mkdir 后同一条命令立刻成功。
+//
+// 根因：ensureWorkspace 把 "none"（本机）与 remote/docker 一样直接跳过 —— 而
+// 本机的工作区是一个真实路径，需要建；bang 的 exec Dir 恰好回落到它。
+func TestEnsureWorkspace_LocalSandboxCreatesWorkspace(t *testing.T) {
+	prev := tools.GetSandbox()
+	tools.SetSandbox(&tools.NoneSandbox{})
+	t.Cleanup(func() { tools.SetSandbox(prev) })
+
+	dir := filepath.Join(t.TempDir(), "users", "cli_user", "workspace") // 不存在
+	// ⚠️ a.sandbox 必须设置：sandboxNameForUser 只有在 a.sandbox 非 nil 时才
+	// 返回 "none"（否则返回 ""，会绕过 skip 分支走 os.MkdirAll —— 那样旧的
+	// 跳过逻辑也能"通过"测试，回归守卫就失效了）。
+	a := &Agent{sandbox: &tools.NoneSandbox{}}
+	if err := a.ensureWorkspace(context.Background(), dir, "cli_user"); err != nil {
+		t.Fatalf("ensureWorkspace: %v", err)
+	}
+	st, err := os.Stat(dir)
+	if err != nil || !st.IsDir() {
+		t.Fatalf("本机工作区未创建: dir=%s stat=%v err=%v", dir, st, err)
+	}
+
+	// 端到端：工作区刚建好时 bang 必须能跑（回归：以前 exec 直接失败）
+	out, err := a.executeBangCommand(context.Background(), "echo bang_workspace_probe", dir, "cli_user", dir)
+	if err != nil {
+		t.Fatalf("executeBangCommand 失败（工作区不存在时 !cmd 不可用）: %v", err)
+	}
+	if !strings.Contains(out, "bang_workspace_probe") {
+		t.Fatalf("bang 输出 = %q，未见探针字符串", out)
+	}
+}
+
+// SandboxRouter itself deliberately rejects filesystem operations because it
+// has no session identity at that boundary. ensureWorkspace must therefore
+// resolve the concrete per-session sandbox before creating the local directory.
+func TestEnsureWorkspace_RouterResolvesSessionBeforeCreatingWorkspace(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "users", "web-user", "workspace")
+	router := tools.NewSandboxRouter(config.SandboxConfig{}, t.TempDir())
+	a := &Agent{sandbox: router}
+
+	if err := a.ensureWorkspace(context.Background(), dir, "web:chat-test"); err != nil {
+		t.Fatalf("ensureWorkspace through SandboxRouter: %v", err)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Fatalf("本机会话工作区未创建: dir=%s stat=%v err=%v", dir, st, err)
+	}
+}
 
 func TestIsBangCommand(t *testing.T) {
 	tests := []struct {

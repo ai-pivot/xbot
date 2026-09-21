@@ -216,6 +216,22 @@ type WebCallbacks struct {
 	// tenant on every reconnect — the "phantom chat_XXXX sessions" bug.
 	SessionExists func(channel, chatID string) bool
 
+	// MatchesCommand reports whether content is handled by the agent's command
+	// dispatch — i.e. `agent.CommandRegistry.Match(content) != nil` (slash
+	// commands like /new, and the `!` bang shell command).
+	//
+	// The web REST layer uses it to decide whether a user message needs a
+	// turn_id: command messages are executed CONCURRENTLY by the chatWorker and
+	// legitimately carry no turn_id (no user-message turn semantics), while a
+	// real user message with turn_id 0 must fail fast. Matching through the
+	// registry (injected from serverapp — channel and agent stay decoupled)
+	// keeps this judgement identical to the dispatch itself; a "/" prefix
+	// heuristic silently excluded `!cmd` and made bang output undeliverable
+	// (the user-visible symptom: "! 开头的命令没生效").
+	//
+	// nil → fall back to the slash-prefix heuristic.
+	MatchesCommand func(content string) bool
+
 	// InjectInterrupt delivers a ⚡ user interject into the ACTIVE turn of a
 	// session (synthetic user_interrupt tool result — no new turn, no queueing).
 	// Returns false when the session is idle (caller degrades to a normal send).

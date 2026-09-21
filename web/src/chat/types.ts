@@ -184,6 +184,18 @@ export interface LegacyRow {
   readonly iterations: readonly WebIteration[]
   readonly timestamp: string
   readonly dbID: number | undefined
+  /**
+   * 显式「无 turn」标记 —— 仅 standalone 段（命令 `!cmd`/slash 的实时回复）设置。
+   *
+   * ⚠️ 为什么必须显式标记（CI 真实 Chromium 实证的尺寸缓存串味）：standalone 行是
+   * assistant、若不加标记就与"缺 turn_id 的普通 assistant 行"无法区分，
+   * `bindTurnIDs` 会把它绑到**最近的前一个 turn**（= 正在跑的那个）→ 它与 live 行的
+   * 虚拟列表 key 完全相同（`turn-N-assistant`）→ `itemSizeCache`/heightMemory 被两行
+   * 共用 ⇒ 总高翻倍（实测 `wrapperHeight=17320px`＝8660×2）、命令输出被推到可视区之上
+   * （用户看到的仍是"没有输出"）。
+   * 标记后 `turnID` 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
+   */
+  readonly standalone?: boolean
 }
 
 /**
@@ -199,6 +211,12 @@ export interface ChatState {
   readonly chatID: string
   readonly turns: ReadonlyMap<TurnID, Turn>
   readonly legacy: readonly LegacyRow[]
+  /** 无 turn 归属的**实时**消息（命令回复 `!cmd`/slash —— 后端命令分发不分配
+   *  turn）：与 legacy 同为 turn-less 行，但渲染位置不同 —— legacy 是 DB 历史
+   *  前缀（derive 里排在 turns 之前），standalone 是"刚刚发生"的独立回复，
+   *  必须排在 turns 之后（底部，用户视角的最新消息）。混用 legacy 会让命令
+   *  输出跑到会话顶部（用户仍会觉得"没有输出"）。 */
+  readonly standalone: readonly LegacyRow[]
   /** 唯一 live turn 的指针（I3）；null = 无活动 turn。 */
   readonly activeTurn: TurnID | null
   readonly lastSeq: EventSeq | null
@@ -228,7 +246,7 @@ export interface ChatState {
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false }
+  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -343,6 +361,13 @@ export type DomainEvent =
       readonly content: NonEmptyS | null
       readonly progressHistory: readonly WebIteration[]
       readonly cancelled: boolean
+      /**
+       * 后端**显式标记**的命令回复（`metadata.command_reply`，见 `agent.markCommandReply`）：
+       * 只有它代表「无 turn 的独立命令输出」⇒ 渲染为 `standalone` 独立行。
+       * 其余 `turnID === null` 的 text（后端 gap / 重启恢复丢 turn_id 的普通回复）
+       * 必须按 master 语义并入 `activeTurn`（CR 2026-09-21 P1-1）。
+       */
+      readonly commandReply?: boolean
     }
   | {
       /** 会话级字段的**本地水合**（非 SSE）：AgentPanel 用 get_goal RPC 兜底读取

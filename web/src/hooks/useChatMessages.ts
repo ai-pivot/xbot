@@ -804,7 +804,12 @@ export function useChatMessages({
             const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
             messageMutationGenRef.current += 1
             store.patchUserById(sentID, {
-              persisted: true,
+              // ⚠️ 命令消息（`!cmd` / slash）**不落库**：后端命令分发不走
+              // processMessage，响应里 message_id=0 且**没有 turn_id**。此时绝不能
+              // 标记 persisted=true —— 那样它会被 M4 当作 DB 行（legacy 段，渲染在
+              // 会话**顶部**），而乐观 pending 行被过滤掉 → 用户看到的是"消息直接
+              // 消失"（实际被挪到顶部）。用"真的落库了"作为判据。
+              persisted: (msgID ?? 0) > 0 || (respTurnID ?? 0) > 0,
               sending: false,
               ...(msgID ? { dbID: msgID } : {}),
               ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),

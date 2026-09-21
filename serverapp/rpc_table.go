@@ -1911,6 +1911,15 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 	}))
 
 	// ── Web user management (admin only) ──
+	// 文件存储（本地 static / 云 OSS）—— Web 设置 → 存储。保存即热切换（无重启）。
+	t["get_storage_config"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
+		return getStorageConfig()
+	}))
+	t["set_storage_config"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
+		Values map[string]string `json:"values"`
+	}) (any, error) {
+		return setStorageConfig(p.Values)
+	}))
 	t["create_web_user"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
 		Username string `json:"username"`
 	}) (any, error) {
