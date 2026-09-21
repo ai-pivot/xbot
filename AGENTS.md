@@ -956,3 +956,18 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - ⛔ **名字不承担唯一性**：key 形如 `agent/<uuid>/<name>`，uuid 是**每次发布新铸**的 ⇒ 不同会话分享同名文件天然各自独立（守护测试断言两次分享 key 不同）。❌ 不要为了"可读"把原始空格/任意字符塞回 key；用户可见的名字由 markdown 标签（display name）承载。
 - **存量链接**：2026-09-19 之前发布的 key **确实含空格**（磁盘名如此，不可回写）—— 在解码正确的客户端仍可下载；用**修好的代码重新分享一次**即得到干净 key。
 - 守护：`serverapp/file_sharer_test.go` 的 `TestWebFileSharer_KeyIsURLSafeAndEncodingAgnostic`（URL 不得含 `+`/空白 + **`+` 语义与 `%20` 语义必须解出同一个 key**（本 bug 的判别点）+ 同名两次分享 key 不同）；既有 `TestWebFileSharer_LocalCopiesFileAndReturnsURL` 的口径随之更新为"key 名必须 URL 安全（空格 → `_`）"。
+
+## 「无法追赶的 gap ⇒ 重新加载 session」（用户 2026-09-21 要求；纯前端，无需重启 server）
+
+- **判据**（`web/src/chat/reduce.ts` 的 `unreachableGapSig`）：本地迭代窗口 ∪ 权威窗口之后
+  **仍有洞**，且洞**有一部分落在权威窗口之外** —— 服务端历史按 turn 尾部有界
+  （`BoundHistoryIterations` 每个 turn 只回最近 60 个迭代）⇒ 那段不在响应里、**也再取不回来**
+  ⇒ 本地视图与权威**永久断裂**（线性一致性被破坏）。
+- **行为**：**不拼合、不遮掩** —— `ChatState.gapReloadToken` 自增（缺口形状签名
+  `unreachableGapSig` **同一形状只自增一次** ⇒ **不可能造成重载循环**），`AgentPanel` 据此
+  `chat.markHistoryStale()`（强制 loading 屏，本地视图不可信）+ `agentChat.reset()`（丢弃带洞
+  的本地窗口，等价于刷新时的状态复位）+ `reload()`（权威重载）。
+- **可追赶的洞不触发**（重要）：洞被权威窗口覆盖 ⇒ 交给既有 union / 下一次 reload（DB 权威）修复。
+- 守护：`web/src/chat/p0-unreachable-gap.test.ts`（4 例：窗外的洞 ⇒ 自增；同一形状不重复触发；
+  可追赶的洞 ⇒ 不自增；洞部分在窗外 ⇒ 自增）。判别力：去掉自增 ⇒ 1 例红；去掉"同形状只触发
+  一次" ⇒ 1 例红；把可追赶的洞也当无法追赶 ⇒ 1 例红。

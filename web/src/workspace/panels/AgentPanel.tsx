@@ -423,6 +423,37 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     //（不变量：输入框 = cancel ⇒ 上面必须显示进行中信号）。
     sessionRunning: currentSession?.running ?? false,
   })
+
+  // ── 「无法追赶的 gap」⇒ **重新加载该会话**（用户 2026-09-21 要求）───────────────────
+  // 状态机在 `history_replaced` 里检测到：本地迭代窗口 ∪ 权威窗口之后**仍有洞**，且洞
+  // **落在权威窗口之外**（服务端历史按 turn 尾部有界 ⇒ 那段再也取不回来）⇒ 本地视图与
+  // 权威永久断裂。**不拼合、不遮掩**：直接重载该会话 —— 丢弃带洞的本地窗口（reset）+
+  // 权威重载（reload）+ loading 屏（本地视图不可信时只渲染 loading）。
+  // 计数器语义：同一缺口形状只触发一次 ⇒ **不可能造成重载循环**。
+  const gapReloadSeenRef = useRef<{ key: string; token: number }>({ key: '', token: 0 })
+  useEffect(() => {
+    const key = `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}`
+    const token = agentChat.gapReloadToken ?? 0
+    if (gapReloadSeenRef.current.key !== key) {
+      gapReloadSeenRef.current = { key, token } // 新会话首帧只记录
+      return
+    }
+    if (token === gapReloadSeenRef.current.token) return
+    gapReloadSeenRef.current = { key, token }
+    console.warn('[SESSION_RELOAD] 出现无法追赶的 gap ⇒ 重新加载会话', { chatID, token })
+    chat.markHistoryStale() // ⇒ historyReady=false：本地视图不可信，只渲染 loading 屏
+    agentChat.reset()       // 丢弃带洞的本地窗口（等价于页面刷新时的状态复位）
+    setResumeLoading(true)
+    void reloadChat()
+  }, [
+    agentChat.gapReloadToken,
+    agentChat.reset,
+    chat.markHistoryStale,
+    reloadChat,
+    messageChannel,
+    chatID,
+    params.agentChatID,
+  ])
   // SubAgent idle/done 时重置（SubAgent 面板收不到 text/session(idle)）。
   const resetAgentChatRef = useRef(agentChat.reset)
   resetAgentChatRef.current = agentChat.reset
