@@ -27,7 +27,7 @@ import { getContextUsage, setCwd } from '@/components/agent/api'
 import { useWSConnection } from '@/hooks/useWSConnection'
 import { postAPI } from '@/lib/api'
 import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
-import { groupSessions, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
+import { DEFAULT_SESSION_CATEGORY, groupSessions, isSessionCategory, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { clearSessionCaches, loadSessionTreeCache, saveSessionTreeCache, sessionCacheKey } from '@/lib/webCache'
 import { rememberRecentWorkDir } from '@/lib/recent-workdirs'
 import type { SessionCategory, SessionEvent, SessionInfo, SessionSelector, SessionStatus, TodoItem } from '@/types/shared'
@@ -35,6 +35,12 @@ import type { AskUserPrompt, AskUserQuestion } from '@/types/agent'
 
 const STARRED_KEY = 'xbot-starred'
 const CATEGORY_KEY = 'xbot:session-category'
+/** Marks the stored category as a DELIBERATE choice (or already migrated).
+ *  Guards the one-time legacy-'time' migration in loadCategory(). */
+const CATEGORY_MIGRATED_KEY = 'xbot:session-category-migrated'
+/** Collapsed group keys (`collapseKey(category, groupKey)`). Frontend-only —
+ *  same convention as panel heights/widths (never synced to the server). */
+const COLLAPSED_GROUPS_KEY = 'xbot:session-collapsed-groups'
 const UNREAD_KEY = 'xbot:session-unread'
 const ACTIVE_CHANNEL_KEY = 'xbot:active-channel'
 const DEFAULT_CHANNEL = 'web'
@@ -137,6 +143,13 @@ export interface SessionStore {
   /** Pending AskUser prompts keyed by "channel:chatID". Survives session switch. */
   askUserPrompts: Map<string, AskUserPrompt>
   setCategory: (c: SessionCategory) => void
+  /** Collapsed groups, keyed by `collapseKey(category, groupKey)`. For the
+   *  project (path) category this is "remembered per project". */
+  collapsedGroups: Set<string>
+  /** Toggle one group's collapsed state (persisted). */
+  toggleGroupCollapsed: (key: string) => void
+  /** Collapse or expand every listed group at once（「全部折叠/展开」）. */
+  setGroupsCollapsed: (keys: string[], collapsed: boolean) => void
   setActiveChannel: (channel: string | null) => void
   markRead: (key: string) => void
   /** Optimistically set a session's status (e.g. running after send). */
@@ -199,17 +212,54 @@ function persistStarred(ids: string[]): void {
 function loadCategory(): SessionCategory {
   try {
     const raw = localStorage.getItem(CATEGORY_KEY)
-    if (raw === 'time' || raw === 'status' || raw === 'path') return raw
+    if (isSessionCategory(raw)) {
+      // One-time migration: 'time' used to be the hard-coded default, so a
+      // stored 'time' predating this feature is (almost always) incidental,
+      // not a deliberate choice. Move it to the new default ONCE, then honour
+      // explicit choices forever (persistCategory sets the marker).
+      if (raw === 'time' && !localStorage.getItem(CATEGORY_MIGRATED_KEY)) {
+        localStorage.setItem(CATEGORY_MIGRATED_KEY, '1')
+        localStorage.setItem(CATEGORY_KEY, DEFAULT_SESSION_CATEGORY)
+        // Keep the server copy in sync — otherwise the next app-load sync
+        // (server → localStorage) would resurrect 'time'.
+        syncSettingToServer(CATEGORY_KEY, DEFAULT_SESSION_CATEGORY)
+        return DEFAULT_SESSION_CATEGORY
+      }
+      return raw
+    }
   } catch {
     /* ignore */
   }
-  return 'time'
+  return DEFAULT_SESSION_CATEGORY
 }
 
 function persistCategory(c: SessionCategory): void {
   try {
     localStorage.setItem(CATEGORY_KEY, c)
+    // Explicit choice — never auto-migrated again.
+    localStorage.setItem(CATEGORY_MIGRATED_KEY, '1')
     syncSettingToServer(CATEGORY_KEY, c)
+  } catch {
+    /* ignore */
+  }
+}
+
+/* ── localStorage collapsed-groups persistence (per project) ── */
+
+function loadCollapsedGroups(): string[] {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null
+    if (Array.isArray(parsed)) return parsed.filter((x): x is string => typeof x === 'string')
+  } catch {
+    /* ignore */
+  }
+  return []
+}
+
+function persistCollapsedGroups(keys: string[]): void {
+  try {
+    localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(keys))
   } catch {
     /* ignore */
   }
@@ -894,6 +944,7 @@ export function useSessionStoreImpl(): SessionStore {
   })
   const [starredIds, setStarredIds] = useState<string[]>(loadStarred)
   const [category, setCategoryState] = useState<SessionCategory>(loadCategory)
+  const [collapsedGroups, setCollapsedGroupsState] = useState<string[]>(loadCollapsedGroups)
   const [unreadIds, setUnreadIds] = useState<string[]>(loadUnread)
   const unreadIdsRef = useRef(unreadIds)
   unreadIdsRef.current = unreadIds
@@ -1178,6 +1229,30 @@ export function useSessionStoreImpl(): SessionStore {
     persistCategory(c)
     setCategoryState(c)
   }, [])
+
+  const toggleGroupCollapsed = useCallback((key: string) => {
+    setCollapsedGroupsState((prev) => {
+      const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+      persistCollapsedGroups(next)
+      return next
+    })
+  }, [])
+
+  const setGroupsCollapsed = useCallback((keys: string[], collapsed: boolean) => {
+    if (keys.length === 0) return
+    setCollapsedGroupsState((prev) => {
+      const next = new Set(prev)
+      for (const key of keys) {
+        if (collapsed) next.add(key)
+        else next.delete(key)
+      }
+      const list = [...next]
+      persistCollapsedGroups(list)
+      return list
+    })
+  }, [])
+
+  const collapsedGroupSet = useMemo(() => new Set(collapsedGroups), [collapsedGroups])
 
   const setActiveChannel = useCallback((channel: string | null) => {
     persistActiveChannel(channel)
@@ -1839,6 +1914,9 @@ export function useSessionStoreImpl(): SessionStore {
     activeSession,
     starredIds,
     category,
+    collapsedGroups: collapsedGroupSet,
+    toggleGroupCollapsed,
+    setGroupsCollapsed,
     unreadIds,
     activeChannel,
     loading,
@@ -1863,7 +1941,7 @@ export function useSessionStoreImpl(): SessionStore {
     clearAskUserPrompt,
     hydrateAskUserPrompt,
   }), [sessions, groups, sortedSessions, activeSessionId, activeSession, starredIds, category, unreadIds, activeChannel, loading, error, subAgents,
-    askUserPrompts, setCategory, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, hydrateAskUserPrompt])
+    askUserPrompts, setCategory, collapsedGroupSet, toggleGroupCollapsed, setGroupsCollapsed, setActiveChannel, markRead, setStatus, refresh, hasMore, loadMore, toggleStar, createSession, forkSession, switchSession, activateSession, renameSession, deleteSession, reorderSessions, clearAskUserPrompt, hydrateAskUserPrompt])
 }
 
 function markCurrentSession(nodes: SessionInfo[], selector: SessionSelector): SessionInfo[] {

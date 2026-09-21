@@ -70,6 +70,22 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Upload limit | 10MB per file (size only — no type restrictions) |
 | Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
 
+## Session list (organised by project)
+
+The session list is organised **by project** by default — a project is the session's **working directory** (backend `tenants.cwd`). Sessions in the same directory share one group; its header shows the **project name + session count** (hover for the full path; sessions without a working directory land in "No work path").
+
+The view bar above the list switches the organisation (identical on the desktop sidebar and the mobile drawer):
+
+| Category | Group key |
+|----------|-----------|
+| **Project** (default) | working directory |
+| Status | running / waiting for input / queued / unread / idle / error |
+| Time | today / yesterday / earlier |
+
+**Collapse / expand**: click a group header to collapse or expand that group; use "Collapse all / Expand all" on the right of the view bar to change every group at once. Collapse state is **remembered per project** (kept in `localStorage`; frontend-only, not synced across devices) and survives reloads and panel remounts.
+
+> Upgrading from an older version: the previous default was "by time" and the first load switches to "by project" **once**; a category you pick yourself is never changed afterwards.
+
 ## Authentication
 
 | Method | Description |
