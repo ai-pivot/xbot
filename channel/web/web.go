@@ -1034,6 +1034,18 @@ func (wc *WebChannel) Send(msg ch.OutboundMsg) (string, error) {
 			"check_id":     msg.Metadata["check_id"],
 		}
 	}
+	// 命令回复（`!cmd`/slash）：**必须把 `command_reply` 透传给前端**。
+	// 前端 `normalize` 只认这个**显式标记**来把 turn-less 的 text 渲染成 standalone 行
+	//（CR 2026-09-21 P1-1：判别式从"turn_id 缺失"改成显式 metadata —— 因为重启恢复
+	// 也会让普通 turn 的 text 丢 turn_id）。这里漏传 ⇒ 命令回复被当成普通 turn 回复
+	// ⇒ `activeTurn === null`（会话空闲）时**静默丢弃** ⇒ 用户报告「!cmd 输出不显示」
+	//（2026-09-21 P0 实测：SSE 载荷 `{"type":"text","content":"...","seq":2}` 无 metadata）。
+	if msg.Metadata != nil && msg.Metadata["command_reply"] == "true" {
+		if wsMsg.Metadata == nil {
+			wsMsg.Metadata = map[string]string{}
+		}
+		wsMsg.Metadata["command_reply"] = "true"
+	}
 
 	targetClientID := msg.ChatID
 	channelName := msg.Channel
