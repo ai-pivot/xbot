@@ -6,6 +6,7 @@ import { normalizeEvent } from './normalize'
 import { reduce } from './reduce'
 import { initialChatState } from './types'
 import type { DomainEvent } from './types'
+import { bindTurnIDs, orderMessageRows } from '@/components/agent/messageOrder'
 
 /**
  * 端到端管线 REPRO（用户报告："!pwd 发出去之后消息直接消失了 / 还是不显示"）。
@@ -91,5 +92,56 @@ describe('命令回复（!cmd）整条渲染链', () => {
     const standaloneKey = standalone.id
     expect(standaloneKey).not.toBe(turnRowKey)
     expect(standaloneKey.startsWith('cmd-')).toBe(true)
+  })
+
+  // 用户报告（2026-09-21）：「现在所有的 !cmd 内容（包括输入和输出）会固定挂在
+  // 会话底部。能不能按消息顺序展示在消息列表中？」
+  // 旧实现：turn-less 行（standalone 输出 + 未绑定的乐观输入）一律**追加在 turns
+  // 之后** ⇒ 后到的 turn 长在它们上面（顺序相反），命令输入还渲染在自己输出下面。
+  // 契约：命令行按「到达时已知的最大 turn id」锚定，由 derive 插回该 turn 之后。
+  it('命令行（输入+输出）必须按时间顺序插在所属 turn 之后，不得固定沉底', () => {
+    let s = initialChatState('chat-1')
+    // turn 1 完整走完
+    s = reduce(s, { type: 'turn_started', turnID: 1 as never, trigger: 'user' as never, requestID: 'r-1', content: null })
+    s = reduce(s, { type: 'text_final', turnID: 1 as never, content: 'answer one' as never, progressHistory: [], cancelled: false, commandReply: false })
+
+    // 用户敲 `!pwd`：乐观行 → REST ack（命令：显式标记 + 无 turn_id）
+    s = reduce(s, {
+      type: 'user_sent',
+      row: {
+        id: 'u-cmd', content: '!pwd' as never, timestamp: 't1', isNotification: false,
+        queued: false, sending: true, requestID: 'r-cmd', turnHint: undefined, dbID: undefined,
+      },
+    })
+    s = reduce(s, { type: 'user_ack', requestID: 'r-cmd', dbID: 0, turnHint: 0, queued: false, command: true })
+    // 命令输出（turn-less text）
+    for (const e of normalizeEvent(
+      { type: 'text', content: '```\n/root\n```', chat_id: 'chat-1', channel: 'web', metadata: { command_reply: 'true' } } as never,
+      'chat-1',
+    ) as DomainEvent[]) {
+      s = reduce(s, e)
+    }
+
+    // 随后的 turn 2
+    s = reduce(s, { type: 'turn_started', turnID: 2 as never, trigger: 'user' as never, requestID: 'r-2', content: null })
+    s = reduce(s, { type: 'text_final', turnID: 2 as never, content: 'answer two' as never, progressHistory: [], cancelled: false, commandReply: false })
+
+    // 断言**最终渲染顺序**（与 MessageList 同一条链路：deriveRows → rowsToChatMessages
+    // → bindTurnIDs → orderMessageRows）—— turn 行的排序唯一收口在
+    // messageOrder.sortTurnKey（命令行按 anchorTurnID 插回原位）。
+    const msgs = orderMessageRows(bindTurnIDs(rowsToChatMessages(deriveRows(s))))
+    const at = (pred: (m: (typeof msgs)[number]) => boolean) => msgs.findIndex(pred)
+    const iT1 = at((m) => String(m.content ?? '').includes('answer one'))
+    const iIn = at((m) => m.role === 'user' && String(m.content) === '!pwd')
+    const iOut = at((m) => String(m.content ?? '').includes('/root'))
+    const iT2 = at((m) => String(m.content ?? '').includes('answer two'))
+
+    expect(iIn, '命令输入行必须存在').toBeGreaterThan(-1)
+    expect(iOut, '命令输出行必须存在').toBeGreaterThan(-1)
+    expect(iT1, 'turn 1 回复必须存在').toBeGreaterThan(-1)
+    expect(iT2, 'turn 2 回复必须存在').toBeGreaterThan(-1)
+    expect(iT1, `命令行必须在 turn 1 之后（顺序 ${iT1}/${iIn}/${iOut}/${iT2}）`).toBeLessThan(iIn)
+    expect(iIn, `输入必须排在输出之前（顺序 ${iT1}/${iIn}/${iOut}/${iT2}）`).toBeLessThan(iOut)
+    expect(iOut, `命令行必须在 turn 2 之前（旧实现沉底 → 失败；顺序 ${iT1}/${iIn}/${iOut}/${iT2}）`).toBeLessThan(iT2)
   })
 })

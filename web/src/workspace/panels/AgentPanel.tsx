@@ -171,9 +171,10 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         store.setStatus(selector, 'running')
       }
       // REST 成功 ack 状态机乐观行：清 sending（成功即非发送中），
-      // 回填服务端 turn_id/queued。
+      // 回填服务端 turn_id/queued/command（命令 ⇒ 无 turn 生命周期，状态机
+      // 把它移入 standalone 段并按锚点插回原位，而不是固定沉底）。
       if (info?.requestID) {
-        ackUserRef.current(info.requestID, info.turnID, info.queued)
+        ackUserRef.current(info.requestID, info.turnID, info.queued, info.command)
       }
     },
     onSendFail: (requestID) => {

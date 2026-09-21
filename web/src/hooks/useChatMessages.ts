@@ -59,7 +59,7 @@ interface UseChatMessagesOptions {
   /** Called when a message is successfully sent (for optimistic busy trigger). */
   /** REST 发送成功。携带 requestID + 服务端响应（turn_id/queued）供调用方
    *  ack 状态机乐观行（清 sending —— 成功即非发送中）。 */
-  onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean }) => void
+  onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean; command?: boolean }) => void
   /** REST 发送失败（乐观行需移除）。 */
   onSendFail?: (requestID: string) => void
   /** Called when cancel is successfully sent (for optimistic idle trigger). */
@@ -732,7 +732,7 @@ export function useChatMessages({
               // which is a no-op when no pendingUser exists (we skipped
               // optimistic rendering), and the turn_started/user_echo will
               // arrive via SSE to render the message normally.
-              onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
+              onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true, command: resp?.command === true })
             }
           })
           .catch((error: unknown) => {
@@ -794,7 +794,7 @@ export function useChatMessages({
           // Two renders with different scroll heights = visible jitter.
           // Calling onSendSuccess first lets both updates land in the same
           // React batch (React 18 automatic batching for promises).
-          onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
+          onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true, command: resp?.command === true })
           if (optimisticID && resp) {
             const sentID = optimisticID
             const respTurnID = resp.turn_id

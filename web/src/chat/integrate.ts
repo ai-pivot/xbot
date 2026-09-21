@@ -232,6 +232,12 @@ function rowToChatMessage(r: Row): ChatMessage {
         queued: r.queued,
         sending: r.sending,
         dbID: r.dbID,
+        // 命令行（turn-less）的时间锚点必须透传到渲染层 —— `sortTurnKey` 据此把它
+        // 插回所属 turn 之后（否则与 turns 的排列顺序相反、固定沉底）。
+        anchorTurnID: r.anchorTurnID,
+        // 「无 turn」标记同样必须透传：命令输入行也是 turn-less，缺了它
+        // `bindTurnIDs` 会把它绑到最近的**后续** turn（渲染到自己的输出之后）。
+        standalone: r.standalone,
       }
     case 'live':
       return {
@@ -275,6 +281,7 @@ function rowToChatMessage(r: Row): ChatMessage {
         // `bindTurnIDs` 据此跳过绑定，避免与 live 行撞虚拟列表 key（CI 实证尺寸缓存
         // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。
         standalone: r.standalone,
+        anchorTurnID: r.anchorTurnID,
       }
   }
 }

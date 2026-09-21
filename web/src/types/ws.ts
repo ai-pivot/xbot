@@ -25,6 +25,10 @@ export interface SendMessageResponse {
   timestamp?: number
   turn_id?: number
   queued?: boolean
+  /** 命令消息（`!cmd`/slash）：后端显式标记（与 turn_id 豁免同一判据
+   *  `isCommandMessage`）—— 命令没有 turn 生命周期，前端据此把命令行（输入+输出）
+   *  按"到达时已知的最大 turn id"插回原位，而不是固定沉底。绝不从 turn_id 缺失推断。 */
+  command?: boolean
   /** ⚡ interject was delivered into the active turn (synthetic user_interrupt
    * tool — no new turn, no queueing). The frontend renders it inside the live
    * turn, not as a user message row. */

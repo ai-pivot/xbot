@@ -297,4 +297,92 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
     expect(m!.maxOverlap, `相邻行发生重叠（最坏 ${JSON.stringify(m!.worst)}）`).toBeLessThanOrEqual(1)
     expect(m!.cmdInViewport, '滚到底后命令输出仍必须可见').toBe(true)
   })
+
+  // 用户报告（2026-09-21）：「现在所有的 !cmd 内容（包括输入和输出）会固定挂在会话
+  // 底部。能不能按消息顺序展示在消息列表中？」—— 旧实现把 turn-less 行（命令输出
+  // standalone 段 + 未绑定的乐观输入行）一律追加在 turns 之后 ⇒ 后到的 turn 长在它们
+  // **上面**（顺序相反）、命令输入还渲染在自己输出**下面**。
+  // 本用例断言**几何顺序**（top 递增）：turn1 < 命令输入 < 命令输出 < turn2。
+  test('命令行（输入+输出）按时间顺序插在所属 turn 之后，不沉底', async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 800 })
+    // REST ack：命令 ⇒ **显式** command 标记 + 无 turn_id（与真实后端同形）
+    await page.route('**/api/message', (r) =>
+      r.fulfill({
+        json: {
+          ok: true,
+          data: {
+            chat_id: 'chat-1',
+            channel: 'web',
+            message_id: 7,
+            timestamp: Date.now(),
+            queued: false,
+            command: true,
+          },
+        },
+      }),
+    )
+
+    // turn 1（已收尾）
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'turn_started',
+        turn_id: 1,
+        turn_start: { trigger: 'user', request_id: 'r1' },
+        chat_id: 'web:chat-1',
+      },
+    })
+    await emitSSE(page, 'text', { type: 'text', content: 'answer one', turn_id: 1, metadata: {}, chat_id: 'web:chat-1' })
+    await page.waitForTimeout(300)
+
+    // 用户敲 `!pwd`（真实 composer + REST ack：command=true、无 turn_id）
+    const editor = page.locator('.tiptap, textarea, [contenteditable]').first()
+    await editor.click()
+    await page.keyboard.type('!pwd')
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(400)
+
+    // 命令输出（turn-less text，与后端 sendCommandReply 同形）
+    await emitSSE(page, 'text', {
+      type: 'text',
+      content: '```\n/root\n```',
+      metadata: { command_reply: 'true' },
+      chat_id: 'web:chat-1',
+    })
+    await page.waitForTimeout(300)
+
+    // 随后的 turn 2 —— 它绝不能长在命令行**上面**
+    await emitSSE(page, 'progress_structured', {
+      type: 'progress_structured',
+      progress: {
+        phase: 'turn_started',
+        turn_id: 2,
+        turn_start: { trigger: 'user', request_id: 'r2' },
+        chat_id: 'web:chat-1',
+      },
+    })
+    await emitSSE(page, 'text', { type: 'text', content: 'answer two', turn_id: 2, metadata: {}, chat_id: 'web:chat-1' })
+    await page.waitForTimeout(600)
+
+    const order = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('[data-message-id]')) as HTMLElement[]
+      return rows
+        .map((el) => ({ top: el.getBoundingClientRect().top, text: (el.textContent ?? '').replace(/\s+/g, ' ') }))
+        .sort((a, b) => a.top - b.top)
+        .map((r) => r.text)
+    })
+    console.log('final order =', JSON.stringify(order))
+    const at = (needle: string) => order.findIndex((t) => t.includes(needle))
+    const iT1 = at('answer one')
+    const iIn = at('!pwd')
+    const iOut = at('/root')
+    const iT2 = at('answer two')
+    expect(iT1, `turn1 必须存在: ${JSON.stringify(order)}`).toBeGreaterThanOrEqual(0)
+    expect(iIn, `命令输入必须存在: ${JSON.stringify(order)}`).toBeGreaterThanOrEqual(0)
+    expect(iOut, `命令输出必须存在: ${JSON.stringify(order)}`).toBeGreaterThanOrEqual(0)
+    expect(iT2, `turn2 必须存在: ${JSON.stringify(order)}`).toBeGreaterThanOrEqual(0)
+    expect(iT1, `命令行必须在 turn1 之后: ${JSON.stringify(order)}`).toBeLessThan(iIn)
+    expect(iIn, `输入必须排在输出之前: ${JSON.stringify(order)}`).toBeLessThan(iOut)
+    expect(iOut, `命令行必须在 turn2 之前（旧实现沉底 → 失败）: ${JSON.stringify(order)}`).toBeLessThan(iT2)
+  })
 })

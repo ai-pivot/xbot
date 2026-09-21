@@ -30,6 +30,11 @@ export interface UserRowView {
   readonly dbID: number | undefined
   /** 排序键（turnID；pending 行 = Infinity 沉底）。 */
   readonly turnID: number
+  /** 「无 turn」标记 —— 命令行（turn-less 命令输入行）设置；`bindTurnIDs` 据此跳过
+   *  绑定（否则会被绑到最近的**后续** turn，跑到它的输出之后 / 下一个 turn 里）。 */
+  readonly standalone?: boolean
+  /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——仅 turn-less 命令输入行设置。 */
+  readonly anchorTurnID?: number
 }
 
 /** live assistant 行 —— 唯一接收实时进度的行（kind 判别，无启发式）。 */
@@ -75,6 +80,8 @@ export interface CommittedRowView {
   readonly iterations: readonly WebIteration[]
   /** 命令回复（standalone 段）的「无 turn」标记 —— `bindTurnIDs` 据此跳过绑定。 */
   readonly standalone?: boolean
+  /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——排序键用它插回原位。 */
+  readonly anchorTurnID?: number
   readonly iterationsTruncated?: number
 }
 
@@ -139,6 +146,8 @@ function cachedLegacyRow(l: LegacyRow): Row {
           sending: false,
           dbID: l.dbID,
           turnID: 0,
+          standalone: l.standalone,
+          anchorTurnID: l.anchorTurnID,
         }
       : {
           kind: 'committed',
@@ -148,6 +157,7 @@ function cachedLegacyRow(l: LegacyRow): Row {
           // 标记就跳过绑定（否则会绑到 live turn、与 live 行撞虚拟键：CI 实证尺寸缓存
           // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。
           standalone: l.standalone,
+          anchorTurnID: l.anchorTurnID,
           isPartial: false,
           content: l.content,
           iterations: l.iterations,
