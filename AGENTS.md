@@ -729,9 +729,13 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **StreamingTools 事件必须 stamp `Iteration`（engine_wire.go）**——否则序列化为 `iteration:0`，前端收到"tool generating"的 stream_content 时迭代号突变为 0，**整个 turn 的 DOM 消失**（用户报告："iter id 突然变成 0 导致整个 turn 的 DOM 消失"，两次复现 dump 都显示消失紧跟在 `iteration:0` 的 streaming_tools 事件后）。`StreamContent`/`ReasoningStreamContent` 事件已 stamp `Iteration: getActiveIteration(...)`，**StreamingTools 曾漏掉**（只此一处）——新增任何 progress 事件构造时都必须带 `Iteration`。**事件级 stamp 还不够——streaming_tools 数组中的每个 `ToolProgress` 也必须 stamp `Iteration`**（engine_wire.go `streamToolCallFunc`），否则旧迭代的 generating 工具（经 `streamState.StreamingTools` merge 进 `get_active_progress` 快照 / catchup gap 重放）无迭代号，前端无法过滤 → 错误渲染在最新迭代上直到新 tool 出现（用户报告："过去的 generating 状态错误的在最新迭代上渲染"）。前端三层防护：(1) `LiveIteration` 的 `streamingTools` 与 `activeTools` 一样按 `t.iteration > maxCompletedIter` 过滤（此前 streamingTools 完全不过滤）；(2) `useProgressStream` 的 `stream_content` 分支对 `streaming_tools` 加迭代 regression guard（`p.iteration < store.lastIter` 时跳过——与 `setStructuredTools` 的 guard 一致，catchup gap 重放的旧事件不覆盖当前迭代）；(3) `stream_state.go mergeStreamState` 只在 `result.StreamingTools` 为空时补充 streamState 的残留，迭代切换后旧工具随 `clearStreamState` 清除。
 - **Peer 提示必须按"是否在迭代中"过滤（`Busy` 标志），不能只看 WorktreeDir 或时间推断。** session 注册到 `GlobalWorktreeRegistry` 后**从不注销**（CLI 会话可能一直挂着），如果 `BuildSystemReminder` 只按 `WorktreeDir != ""` 显示 peer，每个注册过的 peer（哪怕已 idle 数小时）都会被报为"协作中"——错误地暗示并发工作、干扰 agent（用户报告："peer 已 idle 仍被提示协作中"）。机制：`WorktreeEntry.Busy`（agent.go `chatProcessLoop` 在 `ss.busy.Store(true/false)` 处同步 `WorktreeRegistry.SetBusy(sessKey, busy)`——**busy/idle = 是否在迭代中**，turn 开始 true、每个 turn 退出路径 false、WaitingUser 暂停时 false）；`BuildSystemReminder` 只显示**有真实 worktree 且 `Busy==true`**（正在迭代）的 peer。**不要用 LastActive/时间阈值推断**——长 turn（30 分钟工具循环）中间无 turn 级事件，时间推断会把迭代中的 peer 误判 idle。`Busy` 是运行时状态，不持久化（registry 从磁盘加载后为 false，直到 session 下次 SetBusy）。
 
-## 历史响应必须按 turn 有界（尾部 N 个迭代），且丢弃数量必须显示
+## ⛔ 迭代历史**禁止任何有界化/截断**——不完整就是 gap，gap 就是破坏线性一致性
 
-- **历史加载时间曾随 turn 的迭代数线性增长**（用户 2026-09-15：「加载时间这么久，能优化吗？是不是如果 busy turn 的 iter 数量非常多就会卡非常久啊」）。实测（生产 DB）：`iteration_history` 15.6 万行、**单 turn 最多 1,661 个迭代**（该 turn content+reasoning ≈ **3.6 MB**）、`session_messages` 54.2 万行 / 316 MB；而 `ConvertMessagesToHistoryWithIterations` 对窗口内每个 turn 的**全部迭代无上限、无字节预算**。修法：`channel.BoundHistoryIterations`（`maxHistoryIterationsPerTurn = 60`）只保留**尾部 N 个迭代**，在 `serverapp/rpc_table.go`（get_history）与 `serverapp/callbacks.go`（web history snapshot）两个出口统一接入；丢弃数量写进 `protocol.HistoryMessage.IterationsTruncated`（json `iterations_truncated`）。**绝不静默缺块**：前端必须显示它 —— `AssistantMessage` 渲染 `data-testid="iterations-truncated"`（「更早的 N 个迭代未加载（仅显示最近 M 个）」）。更早的迭代仍完整保存在 DB `iteration_history`，后续按 `(turn_id, before_iteration)` 懒加载（尚未实现）。守护用例：`channel/history_iterations_cap_test.go` 的 `TestBoundHistoryIterations_TailOnly` + `web/src/components/agent/AssistantMessage.test.tsx` 的 truncated notice 两例。
+- **规则（用户 2026-09-21 定稿，推翻 2026-09-15/09-17 的两次"有界化"）**：「**不能有任何 gap，任何 gap 都是破坏线性一致性**」。一个 turn 的迭代历史必须**完整下发**（iteration 1..N 连续、无损）。**两侧的截断实现已全部删除**：服务端 `channel.BoundHistoryIterations` + `maxHistoryIterationsPerTurn=60`、`agent.maxActiveSnapshotIterations=60`（active_progress 快照），客户端 `web/src/chat/normalize.ts` 的 `boundIterationTail`/`SNAPSHOT_ITERATION_LIMIT`。**再引入任何"尾部 N 个/有界窗口"都是 P0 回归。**
+- **为什么当年错了**：`ConvertMessagesToHistoryWithIterations` 对窗口内每个 turn 无上限（实测单 turn 最多 1,661 个迭代 ≈3.6MB）确实会让历史加载随迭代数线性变长，于是两次"压体积"分别截了服务端与客户端 —— 但**两个各截一次的有界窗口会造出两个不相邻的集合**：本地 `[1..93]`（切走那一刻）∪ 权威 `[451..510]`（尾部窗口）＝ 357 宽的 gap ⇒ 渲染层的线性一致性守卫（`continuousIterations`）只能在 gap 处截断 ⇒ 用户看到「历史永远停在旧位置 / 中间很多迭代不见了 / 新迭代进行中会渲染、执行完毕就消失」，而且**取不回来**（当时没有 `(turn_id, before_iteration)` 分页通路）。**完整下发后根本不需要这些**：`[1..93] ∪ [1..435] = [1..435]` —— 连续、无损、最新可见（这就是"上一条下一条接得上"）。
+- **性能归渲染层，不得以丢数据换体积**：`TurnBody` 的迭代级窗口化（只挂载视口附近的块 + `contain: layout paint`，代价与迭代数解耦）+ `MessageList` 的虚拟行。payload 体积问题若再次出现，用压缩/流式等**不丢数据**的手段解决。
+- **「落后 ⇒ 整会话重载」（用户明确要求"重新实现"）**：`reduce.ts` 的 `history_replaced` 逐 turn 检查权威迭代完整性（`incompleteTurnSig`：不从 iteration 1 开始 ⇒ `fromN`；内部有洞 ⇒ `gap@N`）。**不完整 ⇒ 不拼接、不截断**，只把"缺口形状"记进 `ChatState.incompleteSig` 并自增 `resyncToken`（**同一形状只自增一次 ⇒ 不可能重载循环**；形状消失后再出现会重新触发）⇒ `AgentPanel` 收到 token 变化即 `reload()` + loading 屏（`resumeLoading`，与 `force_reload`/长时间后台恢复同语义；用户偏好「不如展示 loading 屏幕」）。这既是"旧二进制仍在截断"时的自愈路径，也是任何未来"客户端落后"的统一出口。
+- 守护用例：`channel/history_iterations_cap_test.go`（`TestConvertMessagesToHistoryWithIterations_CarriesAllIterations`：120 个迭代必须全量下发、`IterationsTruncated == 0`、1..120 连续）、`agent/active_progress_snapshot_bound_test.go`（FetchAll 500 个迭代必须完整）、`web/src/chat/iterationBound.test.ts`（客户端不得截断：200 个迭代必须全留）、`web/src/chat/p0-iteration-completeness.test.ts`（权威不完整 ⇒ resyncToken 自增；同形状不重复触发；**完整时永不自增且 union 连续无损**；内部有洞同样视为不完整）。
 
 ## Tool pill 视觉语言（真工具 / 假工具 / 状态 / 手机限宽）—— 设计契约
 
@@ -957,3 +961,21 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - ⛔ **名字不承担唯一性**：key 形如 `agent/<uuid>/<name>`，uuid 是**每次发布新铸**的 ⇒ 不同会话分享同名文件天然各自独立（守护测试断言两次分享 key 不同）。❌ 不要为了"可读"把原始空格/任意字符塞回 key；用户可见的名字由 markdown 标签（display name）承载。
 - **存量链接**：2026-09-19 之前发布的 key **确实含空格**（磁盘名如此，不可回写）—— 在解码正确的客户端仍可下载；用**修好的代码重新分享一次**即得到干净 key。
 - 守护：`serverapp/file_sharer_test.go` 的 `TestWebFileSharer_KeyIsURLSafeAndEncodingAgnostic`（URL 不得含 `+`/空白 + **`+` 语义与 `%20` 语义必须解出同一个 key**（本 bug 的判别点）+ 同名两次分享 key 不同）；既有 `TestWebFileSharer_LocalCopiesFileAndReturnsURL` 的口径随之更新为"key 名必须 URL 安全（空格 → `_`）"。
+
+## ⛔ 翻页（loadMore）锚定补偿：只认**锚点行位移**，绝不用 `ΔtotalSize`（2026-09-21 P0）
+
+- **现象（用户报告）**：「严重 p0，向上滚动触发加载更多后视角会被移动到最底下」。
+- **根因（两处，缺一不可地修）**：`web/src/components/agent/MessageList.tsx` 的
+  `loadMoreRestoreRef` 曾以 `ΔtotalSize` 作为补偿量（`scrollTop = snap.scrollTop + (total - snap.totalSize)`），
+  而**总高也包含视口下方的增长**（正在流式的 turn 持续输出、新 turn 到来）⇒ 下方每长一像素就把
+  `scrollTop` 往下推一像素 ⇒ 视口被一路推到最底；且快照里的 `deadline` **写了但从没被读过**
+  （grep 只有类型声明 + 两处赋值、零处判过期）⇒ 补偿窗口**永不失效**，snapshot 无限期保留并把
+  之后一切增长都算作"欠账"。
+- **正解**：补偿量 = **锚点行（prepend 前首个可见行）的 offset 位移**（`virtualizer.getOffsetForIndex(idx)[0]`，
+  按 `key` 反查新下标，见 `rowsRef`）；下方增长不改锚点 offset ⇒ `delta` 恒 0 ⇒ 视口纹丝不动。
+  **同时真的判过期**（`performance.now() > snap.deadline ⇒ 销账`）。快照仍"平移基准后保留"，以覆盖
+  前置行从估算被实测的那几次长高（既有语义不变）。
+- ⚠️ 该版 TanStack Virtual 的 `getOffsetForIndex` 返回 **`[offset, align]` 元组**（不是 `{start}`）。
+- 守护：`web/src/components/agent/loadMoreAnchor.test.ts`（策略钉死：上方 prepend ⇒ 等量下移；
+  **下方增长 ⇒ 补偿 0**；上方变矮 ⇒ 负值）；把实现换回 `ΔtotalSize` ⇒ 第 2 条必红。
+  E2E：`web/e2e/loadmore-pagination.spec.ts` 仍须全绿（一次手势 = 一次请求 + 滚动稳定）。

@@ -423,6 +423,27 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     //（不变量：输入框 = cancel ⇒ 上面必须显示进行中信号）。
     sessionRunning: currentSession?.running ?? false,
   })
+
+  // ── 权威数据不完整 ⇒ **整会话重载**（用户 2026-09-21：「不能有任何 gap，任何 gap 都是
+  //    破坏线性一致性」+「重新实现那个落后 reload session 逻辑」）────────────────────
+  // 状态机在 `history_replaced` 里发现权威侧迭代**不完整**（不从 iteration 1 开始 / 内部有洞
+  // ——典型：旧二进制仍按"每 turn 最近 60 个"截断）时，把"缺口形状"记进 `incompleteSig` 并
+  // 自增 `resyncToken`（同一形状只自增一次 ⇒ 不会重载循环）。面板据此**重载该会话**并显示
+  // loading 屏（本地视图不可信时只渲染 loading —— 绝不把"有洞的画面"留在屏幕上）。
+  const resyncSeenRef = useRef<{ key: string; token: number }>({ key: '', token: 0 })
+  useEffect(() => {
+    const key = `${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}`
+    const token = agentChat.resyncToken ?? 0
+    if (resyncSeenRef.current.key !== key) {
+      resyncSeenRef.current = { key, token } // 新会话首帧只记录
+      return
+    }
+    if (token === resyncSeenRef.current.token) return
+    resyncSeenRef.current = { key, token }
+    console.warn('[HISTORY_RESYNC] 权威迭代数据不完整 ⇒ 整会话重载', { chatID, token })
+    setResumeLoading(true)
+    void reloadChat()
+  }, [agentChat.resyncToken, reloadChat, messageChannel, chatID, params.agentChatID])
   // SubAgent idle/done 时重置（SubAgent 面板收不到 text/session(idle)）。
   const resetAgentChatRef = useRef(agentChat.reset)
   resetAgentChatRef.current = agentChat.reset

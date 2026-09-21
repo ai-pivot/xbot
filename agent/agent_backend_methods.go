@@ -19,16 +19,14 @@ import (
 // signalled to reload from DB instead (ResyncRequired).
 const maxIncrementalIterations = 30
 
-// maxActiveSnapshotIterations bounds active_progress.iteration_history **even for
-// FetchAll** (initial restore / session switch / /su).
+// ⛔ active_progress 快照的 iteration_history **必须完整**（用户 2026-09-21：**「不能有
+// 任何 gap，任何 gap 都是破坏线性一致性」**）—— 这里**禁止**再引入尾部截断。
 //
-// 2026-09-17 实测根因：chat_07B68B101679 的 turn 101 有 1964 个迭代（每个 content+reasoning
-// ≈5.7KB）⇒ 每次 /api/history 快照就带 11.2MB 的 iteration_history（响应总量 12.9MB），
-// 前端物化 1964 个迭代块 / 50,633 个 DOM 节点 ⇒ 原生布局数秒 + rect 环路（自测：切会话
-// 7175ms、长任务 2997ms、rAF 卡 3104ms）。快照只需「最近 N 个 + 当前迭代 + active_tools」
-// 把进行中 turn 的画面撑起来；更早的迭代由 messages（每 turn 尾部 N 个 + iterations_truncated）
-// 与后续 SSE 增量覆盖。
-const maxActiveSnapshotIterations = 60
+// 历史教训：2026-09-17 曾为压体积把 FetchAll 的快照截到最近 60 个迭代（当时现场 turn
+// 有 1964 个迭代 ⇒ 11.2MB 快照 + 前端 5 万 DOM 节点）。但截断的代价是**客户端持有的
+// 窗口与之后下发的窗口不相邻** ⇒ 合并出 gap ⇒ 线性一致性被破坏（用户之见：上一条与
+// 下一条断开、中间迭代不见），且当时**没有取回通路**。体积/渲染性能归**渲染层**解决
+// （TurnBody 迭代级窗口化，代价与迭代数解耦），绝不以丢数据换体积。
 
 // SetCWD sets the current working directory for a session.
 // It refreshes plugin workDir with the correct tenantID.
@@ -293,18 +291,6 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 				result.ResyncRequired = true
 				result.IterationHistory = nil
 				return &result
-			}
-			// ⛔ FetchAll 也必须**有界**（2026-09-17 实测：切会话 7.2s 卡顿的根因）。
-			// 现场 chat_07B68B101679 turn 101 有 1964 个迭代（每个含 content+reasoning
-			// ≈5.7KB）⇒ 每次 /api/history 的 active_progress.iteration_history 就是
-			// **11.2 MB**（响应总量 12.9MB），前端随即物化 1964 个迭代块 / 50,633 个
-			// DOM 节点 → 原生布局数秒 + rect 环路（我自己的 E2E：switchMs 7175ms、
-			// 长任务 2997ms、rAF 卡 3104ms）。
-			// 快照的用途只是「切过去时把进行中 turn 的画面撑起来」：最近 N 个迭代 +
-			// active_tools/当前迭代足矣；更早的迭代由 messages（每 turn 尾部 N 个，
-			// 带 iterations_truncated 标记）与后续 SSE 增量覆盖。
-			if len(filtered) > maxActiveSnapshotIterations {
-				filtered = filtered[len(filtered)-maxActiveSnapshotIterations:]
 			}
 			result.IterationHistory = filtered
 			return &result

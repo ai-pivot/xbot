@@ -465,11 +465,15 @@ export const MessageList = memo(function MessageList({
   const loadMoreArmedRef = useRef(false)
   // 哨兵上一次的可见性（null = 本 observer 尚未收到回调），用于识别"变得可见"。
   const sentinelVisibleRef = useRef<boolean | null>(null)
-  // **待补偿**的锚定快照（prepend 前的 scrollTop + totalSize）。与触发权**解耦**：
+  // **待补偿**的锚定快照（prepend 前的 scrollTop + **锚点行**位置）。与触发权**解耦**：
   // 它记的是"还欠用户一次视口补偿"，只有补偿成功（或视口已被别处移动）才销账。
-  // 绝不能在补偿成功前清掉（旧实现先清后判 delta<=0，等于白清），也绝不能拿它
-  // 当触发守卫（长 turn 的页 delta 恒为 0 → 会把分页永久锁死）。
-  const loadMoreRestoreRef = useRef<{ scrollTop: number; totalSize: number; deadline: number } | null>(null)
+  // ⛔ 补偿量**必须**是「锚点行的 offset 位移」（= 上方新增的高度），**绝不能**用
+  // `ΔtotalSize`：总高也包含**视口下方**的增长（正在流式的 turn、新 turn 到来）——
+  // 用 ΔtotalSize 会把视口一路往下推，最后落到最底（P0 用户报告「向上滚动触发加载更多后
+  // 视角会被移动到最底下」）。锚点行的 offset 不受下方增长影响 ⇒ delta 恒为 0 ⇒ 不动。
+  const loadMoreRestoreRef = useRef<
+    { scrollTop: number; anchorKey: string; anchorOffset: number; deadline: number } | null
+  >(null)
   // observer 回调必须读到**最新**的 loading/hasMore/onLoadMore/virtualizer，但这些
   // 值每次渲染都变（onLoadMore 的 useCallback deps 含 loadingMore/hasMore，身份每
   // 次 loading 翻转都变）—— 一旦进 effect deps，observer 就会反复重建，而**新建
@@ -1059,12 +1063,14 @@ export const MessageList = memo(function MessageList({
         const scroller = scrollRef.current
         if (!cb || !scroller) return
         loadMoreArmedRef.current = false // 触发即 disarm
-        // 快照必须在 onLoadMore **之前**取：prepend 落地后要用
-        // ΔscrollTop == ΔtotalSize 把视口钉回原来那段内容（老行只出现在视口上方，
-        // 用户只看到"数据多了"，不闪到顶部再跳回来）。
+        // 快照必须在 onLoadMore **之前**取：prepend 落地后用它把视口钉回原来那段内容。
+        // 记**锚点行**（当前首个可见行）的 key + offset —— 补偿量只由它的位移决定
+        // （= 上方新增高度），下方增长不影响它（见 loadMoreRestoreRef 的说明）。
+        const firstVisible = virtualizerRef.current.getVirtualItems()[0]
         loadMoreRestoreRef.current = {
           scrollTop: scroller.scrollTop,
-          totalSize: virtualizerRef.current.getTotalSize(),
+          anchorKey: firstVisible ? String(firstVisible.key) : '',
+          anchorOffset: firstVisible ? firstVisible.start : 0,
           // 补偿窗口：覆盖"前置行从估算被实测"的那几次长高（约几百 ms）
           deadline: performance.now() + 800,
         }
@@ -1093,17 +1099,38 @@ export const MessageList = memo(function MessageList({
       loadMoreRestoreRef.current = null
       return
     }
-    const total = virtualizerRef.current.getTotalSize()
-    const delta = total - snap.totalSize
-    if (delta <= 0) return // 上方还没长出来：欠着，等下一次（不放弃，也不销账）
-    programmaticScrollRef.current = true
-    el.scrollTop = snap.scrollTop + delta
-    queueMicrotask(() => { programmaticScrollRef.current = false })
-    // ⚠️ **补偿后继续欠着**（2026-09-15「翻页时已渲染内容抖动」根治）：
-    // prepend 落地那一刻前置行还是**估算**高度，随后被实测 ⇒ 总高**再次**变化 ⇒ 只补一次的
-    // 旧实现会把这段二次长高留给浏览器 ⇒ 位置二次跳。改为把快照**平移到新基准**并保留，
-    // 让后续每一次长高都继续补偿；只在「用户自己滚动」（非程序滚动）或超时后才销账。
-    loadMoreRestoreRef.current = { scrollTop: el.scrollTop, totalSize: total, deadline: snap.deadline }
+    // ⛔ 补偿窗口**必须真的判过期**（P0 根因之一：deadline 写了却从没被读过 ⇒
+    // 快照无限期留着 ⇒ 之后任何总高增长都会被加进 scrollTop，把视口推到最底）。
+    if (performance.now() > snap.deadline) {
+      loadMoreRestoreRef.current = null
+      return
+    }
+    // 补偿量 = **锚点行的 offset 位移**（只反映"上方新增"）。下方增长（流式输出、
+    // 新 turn）不改变锚点行的 offset ⇒ delta 恒为 0 ⇒ 视口绝不因此移动。
+    let anchorOffset = snap.anchorOffset
+    if (snap.anchorKey !== '') {
+      const idx = rowsRef.current.findIndex((r) => String(r.id) === snap.anchorKey)
+      if (idx >= 0) {
+        // TanStack Virtual 的 getOffsetForIndex 返回 `[offset, align]` 元组（不是 {start}）。
+        const off = virtualizerRef.current.getOffsetForIndex(idx)
+        if (off) anchorOffset = off[0]
+      }
+    }
+    const delta = anchorOffset - snap.anchorOffset
+    if (delta > 0) {
+      programmaticScrollRef.current = true
+      el.scrollTop = snap.scrollTop + delta
+      queueMicrotask(() => { programmaticScrollRef.current = false })
+    }
+    // ⚠️ **补偿后继续欠着**（2026-09-15「翻页时已渲染内容抖动」根治）：prepend 落地那一刻
+    // 前置行还是**估算**高度，随后被实测 ⇒ 锚点 offset 再次变化 ⇒ 继续补偿（把快照平移到
+    // 新基准并保留），直到「用户自己滚动」或窗口过期才销账。
+    loadMoreRestoreRef.current = {
+      scrollTop: delta > 0 ? el.scrollTop : snap.scrollTop,
+      anchorKey: snap.anchorKey,
+      anchorOffset,
+      deadline: snap.deadline,
+    }
   }, [])
 
   useLayoutEffect(() => {
@@ -1543,4 +1570,17 @@ export function canRewindMessage(
 
 function isAtBottom(el: HTMLDivElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= EDGE_EPSILON
+}
+
+/**
+ * 翻页锚定补偿的位移（纯函数，供单测钉住策略）—— ⛔ 只认**锚点行的 offset 位移**：
+ * 该值只反映「视口**上方**新增的高度」；**下方**增长（正在流式的 turn、新 turn 到来）
+ * 让 `totalSize` 变大但锚点行 offset 不变 ⇒ 返回 0 ⇒ 视口纹丝不动。
+ *
+ * 反面教材（P0 用户报告「向上滚动触发加载更多后视角会被移动到最底下」）：旧实现用
+ * `ΔtotalSize` 当补偿量 —— 下方每长一像素就把 scrollTop 往下推一像素，流式输出会一路
+ * 把视口推到最底。
+ */
+export function loadMoreScrollDelta(anchorOffsetBefore: number, anchorOffsetAfter: number): number {
+  return anchorOffsetAfter - anchorOffsetBefore
 }

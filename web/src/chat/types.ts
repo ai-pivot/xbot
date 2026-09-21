@@ -230,10 +230,19 @@ export interface ChatState {
    *  `session(idle)`（不带 turn 身份、可能是回放/迟到事件）在 running=true 时
    *  **不得**冻结运行中的 turn；running=false 时才允许冻结（内容保留）。 */
   readonly sessionRunning: boolean
+  /** **权威重载信号**（单调计数器）—— 用户 2026-09-21 定稿：**「不能有任何 gap，任何 gap
+   *  都是破坏线性一致性」**。当 `history_replaced` 发现**权威迭代数据本身不完整**
+   *（不从 iteration 1 开始 / 内部有洞 —— 即服务端仍有任何形式的截断）时自增 ⇒ 面板
+   *  **整会话重载**（带 loading 屏），而不是在页面上留一个洞或静默截断。
+   *  0 = 从未发生。 */
+  readonly resyncToken: number
+  /** 当前"缺口形状"签名（'' = 完整）。同一形状只触发一次重载 ⇒ **不可能造成重载循环**；
+   *  服务端数据修好（形状消失）后再出现同一形状则会重新触发。 */
+  readonly incompleteSig: string
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false }
+  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, resyncToken: 0, incompleteSig: '' }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────

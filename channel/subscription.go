@@ -1205,26 +1205,15 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: toolEntries}}
 }
 
-// maxHistoryIterationsPerTurn bounds how many iterations of ONE turn the history
-// payload carries. Measured 2026-09-15: a single turn can hold 1,661 iterations
-// (~3.6 MB of content+reasoning) and the response had NO cap ⇒ history load time
-// grew linearly with the turn's iteration count (user report: 「加载时间这么久…
-// busy turn 的 iter 数量非常多就会卡非常久」).
-const maxHistoryIterationsPerTurn = 60
-
-// BoundHistoryIterations keeps only the LAST maxHistoryIterationsPerTurn iterations
-// of each history message and reports how many earlier ones were dropped in
-// IterationsTruncated — so clients can render "更早的 N 个迭代" (and lazy-load
-// them) instead of the payload growing without bound. Older iterations remain in
-// DB iteration_history and can be fetched on demand.
-func BoundHistoryIterations(msgs []HistoryMessage) []HistoryMessage {
-	for i := range msgs {
-		n := len(msgs[i].Iterations)
-		if n <= maxHistoryIterationsPerTurn {
-			continue
-		}
-		msgs[i].IterationsTruncated += n - maxHistoryIterationsPerTurn
-		msgs[i].Iterations = msgs[i].Iterations[n-maxHistoryIterationsPerTurn:]
-	}
-	return msgs
-}
+// ⛔ 每 turn 的迭代**必须完整下发**（用户 2026-09-21 定稿：**「不能有任何 gap，任何
+// gap 都是破坏线性一致性」**）—— 这里**禁止**再引入任何"有界窗口/尾部截断"。
+//
+// 历史教训：曾用 BoundHistoryIterations 把每个 turn 截到最近 60 个（2026-09-15 为压
+// payload 体积）。但截断让客户端手里"上一次的窗口"与之后下发的窗口**不相邻** ⇒
+// 合并出 gap；渲染层的线性一致性守卫只能在 gap 处截断 ⇒ 用户看到「历史永远停在旧的
+// 位置 / 中间很多迭代不见了 / 新迭代出现即消失」——而且**取不回来**（没有分页通路）。
+//
+// 正确做法：完整性由这里保证（turn 的迭代 1..N 全量）；体积/渲染性能在**渲染层**解决
+// （TurnBody 的迭代级窗口化：只挂载视口附近的块 + contain，代价与迭代数解耦），
+// 绝不以丢数据换取体积。任何"数据不完整"都必须表现为**整会话重载**（见前端
+// `resyncToken`），而不是在页面上留一个洞。

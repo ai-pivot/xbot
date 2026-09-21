@@ -7,12 +7,17 @@ import (
 	"xbot/protocol"
 )
 
-// 2026-09-17 我自己的 E2E 实测根因：chat_07B68B101679 的 turn 101 有 1964 个迭代，
-// FetchAll 快照就带 **11.2MB** iteration_history（/api/history 总量 12.9MB）⇒ 前端物化
-// 1964 个迭代块 / 50,633 DOM 节点 ⇒ 切会话 7175ms、长任务 2997ms。
-// 契约：FetchAll 也必须**有界**（只给尾部最近 N 个），且必须保留**最新**的迭代号
-// （进行中 turn 的 live 视图靠尾部撑起来）。
-func TestGetActiveProgress_FetchAllIsBounded(t *testing.T) {
+// ⛔ P0 不变量（用户 2026-09-21 定稿）：「不能有任何 gap，任何 gap 都是破坏线性一致性」。
+//
+// active_progress 快照是「切过去时把进行中 turn 的画面撑起来」的权威来源之一 —— 它
+// **必须完整**（该 turn 的迭代 1..N 全给）。曾经为压体积把 FetchAll 截到最近 60 个迭代
+// （2026-09-17），代价是客户端手里的窗口与之后下发的窗口**不相邻** ⇒ 合并出 gap ⇒
+// 渲染层只能在 gap 处截断 ⇒ 用户看到「历史停在旧位置 / 中间很多迭代不见 / 新迭代出现即
+// 消失」，而且**取不回来**（当时没有分页通路）。体积与渲染性能归渲染层（TurnBody 的迭代
+// 级窗口化：只挂载视口附近的块），绝不以丢数据换体积。
+//
+// 判别力：把任何尾部截断加回 GetActiveProgress ⇒ 本例必红。
+func TestGetActiveProgress_FetchAllIsComplete(t *testing.T) {
 	a := NewTestAgent()
 	key := "web:chat-big"
 	iters := make([]protocol.ProgressEvent, 0, 500)
@@ -31,22 +36,25 @@ func TestGetActiveProgress_FetchAllIsBounded(t *testing.T) {
 	if res == nil {
 		t.Fatal("GetActiveProgress returned nil")
 	}
-	if len(res.IterationHistory) != maxActiveSnapshotIterations {
-		t.Errorf("IterationHistory len = %d, want %d — FetchAll 快照必须有界（否则切会话一次 11MB）",
-			len(res.IterationHistory), maxActiveSnapshotIterations)
+	if len(res.IterationHistory) != 500 {
+		t.Fatalf("IterationHistory len = %d, want 500 —— 快照必须完整（任何尾部截断都会让客户端窗口与权威窗口不相邻 ⇒ gap）",
+			len(res.IterationHistory))
 	}
-	if n := len(res.IterationHistory); n > 0 {
-		if last := res.IterationHistory[n-1].Iteration; last != 500 {
-			t.Errorf("尾部必须保留最新迭代：last.Iteration = %d, want 500", last)
-		}
-		first := res.IterationHistory[0].Iteration
-		if want := 500 - maxActiveSnapshotIterations + 1; first != want {
-			t.Errorf("尾部起点 = %d, want %d", first, want)
+	if first := res.IterationHistory[0].Iteration; first != 1 {
+		t.Errorf("首个迭代 = %d, want 1（必须从 1 开始，否则渲染起点就断）", first)
+	}
+	if last := res.IterationHistory[len(res.IterationHistory)-1].Iteration; last != 500 {
+		t.Errorf("末个迭代 = %d, want 500", last)
+	}
+	for i := 1; i < len(res.IterationHistory); i++ {
+		if res.IterationHistory[i].Iteration != res.IterationHistory[i-1].Iteration+1 {
+			t.Fatalf("快照出现 gap：iter %d 之后是 %d（任何 gap 都破坏线性一致性）",
+				res.IterationHistory[i-1].Iteration, res.IterationHistory[i].Iteration)
 		}
 	}
 }
 
-// 迭代数不超过上限时**不得**截断（正常会话行为不变）。
+// 短历史同样必须完整（正常会话行为不变）。
 func TestGetActiveProgress_FetchAllKeepsShortHistory(t *testing.T) {
 	a := NewTestAgent()
 	key := "web:chat-small"

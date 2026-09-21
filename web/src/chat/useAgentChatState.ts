@@ -53,6 +53,9 @@ export interface AgentChatState {
   readonly liveProgress: ProgressSnapshot
   readonly busyFallback: boolean
   readonly tokenPrompt: number | null
+  /** **权威重载信号**（单调计数器，来自状态机）：权威迭代数据不完整（缺口形状变化）时
+   *  自增 ⇒ AgentPanel **整会话重载**（reload + loading 屏）。见 chat/types.ts。 */
+  readonly resyncToken: number
   /** 排队中的消息（queue_state SSE 事件 → Staging Tray 数据源）。 */
   readonly queue: readonly QueueItemPayload[]
   /** 全量替换排队快照（queue_state 事件 / 恢复时重建 Staging Tray）。 */
@@ -250,7 +253,8 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   // EMPTY_LIVE streaming=true）。覆盖 REST ack 到 session(busy) 之间的窗口
   // + 切换会话后 currentSession.running 是旧会话状态的场景。
   busyFallback: state.activeTurn !== null,
-    tokenPrompt,
+  tokenPrompt,
+  resyncToken: state.resyncToken,
     queue: state.queue,
     reset,
     sendUser,

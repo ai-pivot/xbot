@@ -85,25 +85,6 @@ function mergeIterations(
 
 /** 迭代集合是否为**单一窗口**（相邻 = +1；同号重复不算 gap —— 与连续前缀守卫
  *  `progressStore.continuousIterations` 同判据）。 */
-function isIterationWindow(its: readonly WebIteration[]): boolean {
-  for (let i = 1; i < its.length; i++) {
-    if (its[i].iteration === its[i - 1].iteration) continue
-    if (its[i].iteration !== its[i - 1].iteration + 1) return false
-  }
-  return true
-}
-
-function maxIterationOf(its: readonly WebIteration[]): number {
-  let max = 0
-  for (const it of its) if (it.iteration > max) max = it.iteration
-  return max
-}
-
-function minIterationOf(its: readonly WebIteration[]): number {
-  let min = Infinity
-  for (const it of its) if (it.iteration < min) min = it.iteration
-  return min
-}
 
 /**
  * 窗口一致性合并（⛔ P0 2026-09-21 用户报告）──────────────
@@ -129,21 +110,76 @@ function minIterationOf(its: readonly WebIteration[]): number {
  * 「用权威窗口替换过期窗口」的唯一正确语义 —— 结果与整页刷新逐字一致（DB 是持久化权威；
  * 更早的迭代由窗口自身的 `iterationsTruncated`「更早的 N 个迭代未加载」承载）。
  */
-function mergeIterationWindows(
-  base: readonly WebIteration[],
-  authoritative: readonly WebIteration[],
-): readonly WebIteration[] {
-  const merged = mergeIterations(base, authoritative)
-  // 快路径：一侧为空（mergeIterations 原样返回）或并集已连续 ⇒ 无需窗口裁决。
-  if (merged === base || merged === authoritative || isIterationWindow(merged)) return merged
-  // 两侧**相接或重叠**（`[1..3]` × `[4]`、`[1,2,4]` × `[4]`）⇒ 是同一窗口的增量合并：
-  // 并集内部的 gap（丢了一张 delta / 同 turn 的缺号）不是"两个窗口"的证据，交给渲染层的
-  // 连续前缀守卫 + 下一次 reload（DB 权威、连续）修复 —— **不得**据此丢弃已有的迭代。
-  if (minIterationOf(base) <= maxIterationOf(authoritative) + 1 && minIterationOf(authoritative) <= maxIterationOf(base) + 1) {
-    return merged
+/** turn（任意三态）当前的迭代窗口。 */
+function turnIterations(t: Turn): readonly WebIteration[] {
+  return t.phase.kind === 'committed' ? t.phase.payload.iterations : t.phase.data.iterations
+}
+
+/**
+ * **权威迭代完整性的签名**（`'' = 完整`）—— 用户 2026-09-21 定稿：
+ * 「不能有任何 gap，任何 gap 都是破坏线性一致性」。
+ *
+ * 只要权威侧（DB 历史 / active 快照）下发的迭代**不从 iteration 1 开始**、或**内部有洞**，
+ * 本地视图与权威之间就必然存在缺口 —— 这时**既不拼接、也不截断**，而是让面板**整会话
+ * 重载**（`resyncToken` → reload + loading 屏），并把"缺口形状"记进 `ChatState.incompleteSig`：
+ * 同一形状只触发一次重载 ⇒ **不可能造成重载循环**；服务端数据修好后形状消失。
+ */
+function incompleteTurnSig(turn: TurnID, its: readonly WebIteration[]): string {
+  if (its.length === 0) return ''
+  if (its[0].iteration !== 1) return `${turn}:from${its[0].iteration}`
+  for (let i = 1; i < its.length; i++) {
+    if (its[i].iteration !== its[i - 1].iteration + 1) return `${turn}:gap@${its[i].iteration}`
   }
-  // 完全不相邻 ⇒ 同一 turn 的**两个窗口**（过期窗口 × 权威窗口）：保留较新的一侧。
-  return maxIterationOf(authoritative) >= maxIterationOf(base) ? authoritative : base
+  return ''
+}
+
+function joinSig(acc: string, sig: string): string {
+  if (sig === '') return acc
+  return acc === '' ? sig : `${acc},${sig}`
+}
+
+function maxIterationOf(its: readonly WebIteration[]): number {
+  let max = 0
+  for (const it of its) if (it.iteration > max) max = it.iteration
+  return max
+}
+
+function minIterationOf(its: readonly WebIteration[]): number {
+  let min = Infinity
+  for (const it of its) if (it.iteration < min) min = it.iteration
+  return min
+}
+
+/**
+ * **gap-free 的迭代合并**（用户 2026-09-21：**「不能有任何 gap，任何 gap 都是破坏线性一致性」**）。
+ *
+ * - 权威侧**完整**（1..N 连续）⇒ 正常 union：只增不减、结果必然连续（本地 `[1..93]` ∪
+ *   权威 `[1..435]` = `[1..435]`）。
+ * - 权威侧**不完整**（旧二进制仍在截断 / 快照不完整）⇒ **绝不 union**（两侧不相邻，union
+ *   必然造出 gap），只取**较新的一侧**（max 迭代号更大者；两者各自都连续）——同时
+ *   `resyncToken` 已触发整会话重载去取完整数据。
+ */
+function mergeIterationsGapFree(
+  authoritativeIts: readonly WebIteration[],
+  otherIts: readonly WebIteration[],
+): readonly WebIteration[] {
+  if (authoritativeIts.length === 0 || otherIts.length === 0) {
+    return mergeIterations(authoritativeIts, otherIts)
+  }
+  const aMin = minIterationOf(authoritativeIts)
+  const aMax = maxIterationOf(authoritativeIts)
+  const bMin = minIterationOf(otherIts)
+  const bMax = maxIterationOf(otherIts)
+  // 两侧**相接或重叠**（`[1..3]`×`[4]`、`[1,2,4]`×`[4]`）⇒ 正常 union：同号权威覆盖、
+  // 只增不减；结果要么连续、要么与单侧同形 ⇒ **绝不新增 gap**（既有语义完全保留）。
+  // ⚠️ mergeIterations(base, authoritative)：**权威侧必须在第二个参数位**（同号覆盖它）。
+  if (aMin <= bMax + 1 && bMin <= aMax + 1) {
+    return mergeIterations(otherIts, authoritativeIts)
+  }
+  // **完全不相邻**（两个 disjoint 窗口）⇒ union 必然造出 gap ⇒ 绝不 union。
+  // 现实来源只有"权威侧本身被截断"（旧二进制仍在按 turn 截断 / 快照不完整）——
+  // 此时保留较新的一侧（各自都连续），并由 resyncToken 触发**整会话重载**去取完整数据。
+  return aMax >= bMax ? authoritativeIts : otherIts
 }
 
 /** merged 与 existing 逐元素同引用（同长、同序、同对象）⇒ 返回 existing。
@@ -1104,8 +1140,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       //    行即复现）。迭代 union（incoming 同号权威覆盖 —— DB 是持久化权威，
       //    append-only 不减）；content 非空优先（状态机 SSE text 是权威 finalizer；
       //    DB 空 content 是 tool_summary 中间行）。
+      // ⛔ 「落后」检测（用户 2026-09-21）：权威侧迭代**不完整**（不从 1 开始 / 内部有洞）
+      // ⇒ 本地与权威之间必然存在缺口 ⇒ 不拼接、不截断，改为**整会话重载**（resyncToken）。
+      let incompleteSig = ''
       for (const h of ev.turns) {
         const cur = s.turns.get(h.id)
+        incompleteSig = joinSig(incompleteSig, incompleteTurnSig(h.id, turnIterations(h)))
         if (cur && cur.phase.kind === 'live') {
           // live 胜（SSE 比 DB 快照新）—— 但 live 只含【增量】迭代（重启
           // resume 后 SSE 先到的 lazy 采纳只带 resume Run 的迭代 k+1..；DB
@@ -1129,7 +1169,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             // ⇒ 复用原 Turn 对象（零重建 —— 否则 derive 的行 memo + TurnBody 的
             // iterations memo 被逐帧击穿，代价 O(turn 迭代数)）。
             const mergedIts = reuseIfSame(
-              mergeIterationWindows(incomingIts, cur.phase.data.iterations),
+              mergeIterationsGapFree(cur.phase.data.iterations, incomingIts),
               cur.phase.data.iterations,
             )
             if (mergedIts === cur.phase.data.iterations && (cur.user || !h.user)) {
@@ -1234,7 +1274,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           const snap = ev.active.snapshot
           // 窗口一致性：DB 侧与快照侧都是**有界尾部窗口**，取较新的一侧（见
           // mergeIterationWindows —— 过期窗口 ∪ 权威窗口会造 gap，渲染层永久截断）。
-          const mergedIts = mergeIterationWindows(dbIters, snap.iterations)
+          const mergedIts = mergeIterationsGapFree(snap.iterations, dbIters)
           turns.set(tid, {
             ...existing,
             phase: {
@@ -1283,7 +1323,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           // 幂等重放（每帧 history_replaced）：逐字段都无变化 ⇒ 不重建（保住
           // Turn / iterations / 工具数组引用 —— 渲染层 memo 依赖它们）。
           const mergedIterations = reuseIfSame(
-            mergeIterationWindows(d.iterations, snap.iterations),
+            mergeIterationsGapFree(snap.iterations, d.iterations),
             d.iterations,
           )
           const mergedIter = d.iter > snap.iter ? d.iter : snap.iter
@@ -1380,7 +1420,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         sameItems(pendingUsers, s.pendingUsers) &&
         activeTurn === s.activeTurn &&
         lastSeq === s.lastSeq &&
-        sameItems(todos, s.todos)
+        sameItems(todos, s.todos) &&
+        // 缺口形状变化也必须返回新 state（否则 resyncToken 的自增被短路吞掉，
+        // 面板拿不到"权威数据不完整 ⇒ 重载"的信号）。
+        incompleteSig === s.incompleteSig
       ) {
         return s
       }
@@ -1396,6 +1439,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
         busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
         sessionRunning: s.sessionRunning,
+        // 权威迭代不完整（缺口形状变化）⇒ 自增触发面板**整会话重载**（reload + loading）。
+        // 同一形状只自增一次（防重载循环）；形状消失（服务端修好）后再次出现会重新触发。
+        resyncToken: incompleteSig !== '' && incompleteSig !== s.incompleteSig ? s.resyncToken + 1 : s.resyncToken,
+        incompleteSig,
       }
     }
 
@@ -1578,7 +1625,7 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const incContent = h.phase.kind === 'committed' ? h.phase.payload.content : h.phase.data.content
   // 窗口一致性（P0 2026-09-21）：两侧都可能是**有界尾部窗口**（DB 历史有界化），
   // 不相邻时取较新的一侧 —— 见 mergeIterationWindows。
-  const iterations = reuseIfSame(mergeIterationWindows(curIts, incIts), curIts)
+  const iterations = reuseIfSame(mergeIterationsGapFree(incIts, curIts), curIts)
   // 截断计数跟随「被保留的那一侧」（更早的迭代绝不静默缺块）。
   const curTruncated = cur.phase.kind === 'committed' ? cur.phase.payload.iterationsTruncated : undefined
   const incTruncated = h.phase.kind === 'committed' ? h.phase.payload.iterationsTruncated : undefined

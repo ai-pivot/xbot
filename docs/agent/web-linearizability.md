@@ -185,3 +185,23 @@ DB 取证：turn 有 510 个连续迭代，前端渲染窗口停在第 93 个。
 
 **应用点（四处窗口合并）**：`history_replaced` 的 live 胜分支 / DB→live 升级（step 3）/
 `ev.active` 快照 union（step 3.5）/ `mergeTurnData`。守护：`web/src/chat/p0-window-gap.test.ts`。
+
+## 迭代完整性（不变量 I8，用户 2026-09-21 定稿）
+
+> **「不能有任何 gap，任何 gap 都是破坏线性一致性」**
+
+**I8**：一个 turn 的 `iteration_history` 必须**完整**（iteration 1..N 连续、无损）地到达客户端。
+**任何"有界窗口/尾部截断"都是违规** —— 两侧各截一次会造出两个不相邻的集合，合并即产生 gap，
+渲染层的连续前缀守卫只能在 gap 处截断（= 用户看到的「历史停在旧位置 / 中间迭代不见 /
+新迭代出现即消失」，且**取不回来**）。
+
+- **已删除的实现（禁止复活）**：服务端 `channel.BoundHistoryIterations` +
+  `maxHistoryIterationsPerTurn=60`、`agent.maxActiveSnapshotIterations=60`；
+  客户端 `normalize.ts` 的 `boundIterationTail` / `SNAPSHOT_ITERATION_LIMIT`。
+- **体积/性能归渲染层**：`TurnBody` 迭代级窗口化（只挂载视口附近的块 + contain，代价与
+  迭代数解耦）+ `MessageList` 虚拟行。不得以丢数据换体积。
+- **「落后 ⇒ 整会话重载」**：`history_replaced` 检测权威迭代不完整（`incompleteTurnSig`：
+  `fromN` / `gap@N`）⇒ `ChatState.resyncToken++`（**同一缺口形状只自增一次 ⇒ 无重载循环**）
+  ⇒ `AgentPanel` `reload()` + loading 屏。这是"落后/不完整"的统一出口：**不拼接、不截断、
+  不静默**。
+- 完整下发后 `[1..93] ∪ [1..435] = [1..435]` ⇒ 连续、无损、最新可见（线性一致性成立）。
