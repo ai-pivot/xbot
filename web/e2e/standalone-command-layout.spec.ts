@@ -313,7 +313,11 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
           data: {
             chat_id: 'chat-1',
             channel: 'web',
-            message_id: 7,
+            // ⚠️ 与真机对齐（实测探针）：命令的 REST ack 是 **message_id: 0**（命令不落库）。
+            // 若这里给非 0（例如 7），回显行会被标成 persisted ⇒ history_replaced 把它当
+            // "无 turn 的早期 legacy 行"排到**列表顶部**（排序键 -1）⇒ 与 ChatStore 里那
+            // 条正确锚定的输入行重复（CI 实测：["!pwd","answer one","!pwd","/root ",…]）。
+            message_id: 0,
             timestamp: Date.now(),
             queued: false,
             command: true,
