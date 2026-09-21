@@ -16,6 +16,43 @@ function msg(over: Partial<ChatMessage>): ChatMessage {
   }
 }
 
+// 命令行的「时间锚点」排序契约（用户 P0 2026-09-21：「!cmd 输出又不显示了」）。
+// 根因：锚点无效时旧实现退化成 `0 + 0.5 = 0.5` ⇒ 命令行被排到 **turn 1 之前**
+// （列表最顶部），用户在底部完全看不到输出（要滚到最上面才有）。
+// 契约：锚点必须落在**本次渲染真实存在**的 turn 之后，否则回落**沉底**。
+describe('命令行锚点（standalone + anchorTurnID）', () => {
+  it('锚点为 0（状态里没有 turns —— 会话刚切换/历史重建）⇒ 沉底，绝不排到 turn 之前', () => {
+    const rows = [
+      msg({ id: 'u1', role: 'user', turnID: 1 }),
+      msg({ id: 'a1', role: 'assistant', turnID: 1 }),
+      msg({ id: 'cmd-1', turnID: 0, standalone: true, anchorTurnID: 0, content: 'x' }),
+    ]
+    const out = orderMessageRows(rows)
+    expect(out[out.length - 1].id, '锚点 0 必须沉底（旧实现 0.5 会排到列表顶部）').toBe('cmd-1')
+  })
+
+  it('锚点 turn 不在本次渲染的列表里（历史被裁剪/替换）⇒ 同样沉底', () => {
+    const rows = [
+      msg({ id: 'u1', role: 'user', turnID: 1 }),
+      msg({ id: 'a1', role: 'assistant', turnID: 1 }),
+      msg({ id: 'cmd-1', turnID: 0, standalone: true, anchorTurnID: 99, content: 'x' }),
+    ]
+    const out = orderMessageRows(rows)
+    expect(out[out.length - 1].id).toBe('cmd-1')
+  })
+
+  it('锚点 turn 存在 ⇒ 插在该 turn 所有行之后、下一个 turn 之前', () => {
+    const rows = [
+      msg({ id: 'u1', role: 'user', turnID: 1 }),
+      msg({ id: 'a1', role: 'assistant', turnID: 1 }),
+      msg({ id: 'u2', role: 'user', turnID: 2 }),
+      msg({ id: 'a2', role: 'assistant', turnID: 2 }),
+      msg({ id: 'cmd-1', turnID: 0, standalone: true, anchorTurnID: 1, content: 'x' }),
+    ]
+    expect(orderMessageRows(rows).map((m) => m.id)).toEqual(['u1', 'a1', 'cmd-1', 'u2', 'a2'])
+  })
+})
+
 describe('bindTurnIDs', () => {
   it('binds assistant rows to the nearest preceding turn', () => {
     const rows = [
