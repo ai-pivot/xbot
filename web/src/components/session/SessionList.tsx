@@ -36,7 +36,7 @@ import type { ExportFormat } from '@/components/agent/api'
 import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
 import { SessionEmptyState } from './SessionEmptyState'
-import { isSubAgentSession, sortSessions } from '@/lib/session-grouping'
+import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent } from './session-tree'
 
@@ -45,6 +45,10 @@ interface SessionListProps {
   groups: { key: string; sessions: SessionInfo[] }[]
   sortedSessions: SessionInfo[]
   category: SessionCategory
+  /** Collapsed group keys (`collapseKey(category, groupKey)`) — owned by the store. */
+  collapsedGroups: Set<string>
+  /** Toggle one group's collapsed state (persisted by the store). */
+  onToggleGroup: (key: string) => void
   starredIds: string[]
   unreadIds: string[]
   activeSession: SessionSelector | null
@@ -78,6 +82,8 @@ export function SessionList({
   groups,
   sortedSessions,
   category,
+  collapsedGroups,
+  onToggleGroup,
   starredIds,
   unreadIds,
   activeSession,
@@ -377,12 +383,16 @@ export function SessionList({
           </div>
         ) : (
           <div className="flex min-w-0 flex-1 flex-col gap-1 p-1">
-            {mainGroups.map((g) => (
+            {mainGroups.map((g) => {
+              const ck = collapseKey(category, g.key)
+              return (
               <SessionGroup
                 key={g.key}
                 groupKey={g.key}
                 category={category}
                 sessions={g.sessions}
+                open={!collapsedGroups.has(ck)}
+                onToggle={() => onToggleGroup(ck)}
                 starredIds={starredIds}
                 unreadIds={unreadIds}
                 activeSession={activeSession}
@@ -397,7 +407,8 @@ export function SessionList({
                 onToggleSelect={onToggleSelect}
                 {...dndProps}
               />
-            ))}
+              )
+            })}
             {hasMore && <div ref={sentinelRef} className="h-px" aria-hidden />}
           </div>
         )}

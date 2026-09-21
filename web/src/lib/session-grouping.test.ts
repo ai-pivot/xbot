@@ -6,7 +6,11 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  DEFAULT_SESSION_CATEGORY,
+  SESSION_CATEGORIES,
+  collapseKey,
   groupSessions,
+  isSessionCategory,
   isSubAgentSession,
   parseAgentChatID,
   sessionKey,
@@ -242,5 +246,34 @@ describe('path grouping', () => {
     expect(groups[0].key).toBe('/home/user/project1')
     expect(groups[0].sessions).toHaveLength(1)
     expect(groups[0].sessions[0].chatID).toBe('/home/user/project1:session-a')
+  })
+})
+
+// 需求（用户）：「会话列表按项目组织。项目会话列表可以折叠/展开」——
+// 项目 = 工作目录（`path` 分类），且它是**默认**组织方式；折叠状态按
+// (category, groupKey) 记账，所以项目维度天然"按项目记住"。
+describe('category & collapse helpers (project organisation)', () => {
+  it('exposes project (path) as the default category and lists it first', () => {
+    expect(DEFAULT_SESSION_CATEGORY).toBe('path')
+    // SESSION_CATEGORIES is the single source for the switcher order.
+    expect(SESSION_CATEGORIES[0]).toBe('path')
+    expect([...SESSION_CATEGORIES].sort()).toEqual(['path', 'status', 'time'])
+  })
+
+  it('narrows stored values to known categories', () => {
+    expect(isSessionCategory('path')).toBe(true)
+    expect(isSessionCategory('status')).toBe(true)
+    expect(isSessionCategory('time')).toBe(true)
+    expect(isSessionCategory('bogus')).toBe(false)
+    expect(isSessionCategory(null)).toBe(false)
+    expect(isSessionCategory(undefined)).toBe(false)
+  })
+
+  it('scopes the collapse key by category', () => {
+    expect(collapseKey('path', '/home/user/repo')).toBe('path:/home/user/repo')
+    expect(collapseKey('time', 'today')).toBe('time:today')
+    // Same literal group key in another category must NOT share collapse state
+    // (time bucket 'today' vs a directory literally named today).
+    expect(collapseKey('path', 'today')).not.toBe(collapseKey('time', 'today'))
   })
 })

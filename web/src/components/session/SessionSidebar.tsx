@@ -35,12 +35,13 @@ import { useI18n } from '@/providers/i18n'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { groupSessions, isSubAgentSession, parseAgentChatID, sameSession, sessionKey, sortSessions } from '@/lib/session-grouping'
 import { cn } from '@/lib/utils'
-import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { SessionInfo, SessionSelector } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
 import { downloadSession } from '@/components/agent/api'
 import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
+import { SessionViewBar } from './SessionViewBar'
 import { NewSessionDialog } from './NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 
@@ -55,8 +56,6 @@ const CHANNEL_ICONS: Record<string, IconComponent> = {
 
 /** All channels that should appear in the picker, in display order. */
 const ALL_CHANNEL_ORDER = ['web', 'cli', 'feishu']
-
-const CATEGORIES = ['time', 'status', 'path'] as const
 
 interface SessionSidebarProps {
   /** Tab manager for opening SubAgent conversation tabs (Child 5). */
@@ -393,31 +392,7 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
         <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
 
-      {/* Category switcher */}
-      <div
-        className="flex shrink-0 items-center gap-0.5 px-2 py-1"
-        style={{
-          borderBottom: '1px solid var(--border)',
-        }}
-      >
-        {CATEGORIES.map((c) => {
-          const active = store.category === c
-          return (
-            <button
-              key={c}
-              type="button"
-              onClick={() => store.setCategory(c)}
-              className="flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors"
-              style={{
-                backgroundColor: active ? 'var(--bg-tertiary)' : 'transparent',
-                color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
-              }}
-            >
-              {labelForCategory(c, t)}
-            </button>
-          )
-        })}
-      </div>
+      <SessionViewBar groupKeys={filteredGroups.map((g) => g.key)} />
 
       {/* List */}
       <div className="min-h-0 flex-1">
@@ -436,6 +411,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           groups={filteredGroups}
           sortedSessions={filteredSorted}
           category={store.category}
+          collapsedGroups={store.collapsedGroups}
+          onToggleGroup={store.toggleGroupCollapsed}
           starredIds={store.starredIds}
           unreadIds={store.unreadIds}
           activeSession={store.activeSession}
@@ -600,18 +577,4 @@ function subAgentTitle(session: SessionInfo): string {
   const parsed = parseAgentChatID(session.fullKey || session.agentChatID || session.chatID)
   if (parsed?.role) return parsed.instance ? `${parsed.role}/${parsed.instance}` : parsed.role
   return session.agentChatID || session.fullKey || session.chatID || 'SubAgent'
-}
-
-function labelForCategory(
-  c: SessionCategory,
-  t: (k: string) => string,
-): string {
-  switch (c) {
-    case 'time':
-      return t('session.byTime')
-    case 'status':
-      return t('session.byStatus')
-    case 'path':
-      return t('session.byPath')
-  }
 }

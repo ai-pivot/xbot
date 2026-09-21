@@ -59,6 +59,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [parent] }]}
         sortedSessions={[parent]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -100,6 +102,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [parent] }]}
         sortedSessions={[parent]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -148,6 +152,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [parent] }]}
         sortedSessions={[parent]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -188,6 +194,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [parent] }]}
         sortedSessions={[parent]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -228,6 +236,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [parent] }]}
         sortedSessions={[parent]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -276,6 +286,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [parent] }]}
         sortedSessions={[parent]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -306,6 +318,8 @@ describe('SessionList', () => {
         groups={[{ key: 'today', sessions: [s] }]}
         sortedSessions={[s]}
         category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
         starredIds={[]}
         unreadIds={[]}
         activeSession={null}
@@ -326,5 +340,46 @@ describe('SessionList', () => {
     // 会话名必须被真正插入（修复前这里是字面量 "{{username}}"）。
     expect(dialog.textContent).toContain('My Session')
     expect(dialog.textContent ?? '').not.toMatch(/\{\{|\}\}/)
+  })
+})
+
+// 需求（用户）：「项目会话列表可以折叠/展开」。组头是**受控**的（open/onToggle 来自
+// store）—— 状态提升后才能持久化 + 支持「全部折叠/展开」；折叠键必须含 category。
+describe('project group collapse', () => {
+  it('toggles through the store and hides the rows while collapsed', () => {
+    const onToggleGroup = vi.fn()
+    const repo = session({ chatID: '/repo:Agent-main', channel: 'cli', label: 'Agent-main', type: 'main' })
+    const baseProps = {
+      sessions: [repo],
+      groups: [{ key: '/repo', sessions: [repo] }],
+      sortedSessions: [repo],
+      category: 'path' as const,
+      starredIds: [],
+      unreadIds: [],
+      activeSession: null,
+      search: '',
+      subAgents: [],
+      onSelect: vi.fn(),
+      onToggleStar: vi.fn(),
+      onRename: vi.fn(),
+      onDelete: vi.fn(),
+    }
+
+    // 默认展开：组头 aria-expanded=true，会话行可见，tooltip 是完整路径。
+    const { rerender } = renderWithProviders(
+      <SessionList {...baseProps} collapsedGroups={new Set()} onToggleGroup={onToggleGroup} />,
+    )
+    const title = screen.getByTitle('/repo')
+    expect(title.closest('button')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Agent-main')).toBeInTheDocument()
+
+    // 点组头 → 折叠键（含 category）交给 store。
+    fireEvent.click(title)
+    expect(onToggleGroup).toHaveBeenCalledWith('path:/repo')
+
+    // 折叠态：组头 aria-expanded=false。内容被裁到 0 高这一层由 E2E 的几何判据
+    // 守护 —— jsdom 没有布局，断言 AnimatedCollapse 的挂载语义会与浏览器不一致。
+    rerender(<SessionList {...baseProps} collapsedGroups={new Set(['path:/repo'])} onToggleGroup={onToggleGroup} />)
+    expect(screen.getByTitle('/repo').closest('button')).toHaveAttribute('aria-expanded', 'false')
   })
 })

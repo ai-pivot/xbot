@@ -24,6 +24,7 @@ import { useSessionStore } from '@/hooks/useSessionStore'
 import { SessionList } from '@/components/session/SessionList'
 import { ChannelPicker } from '@/components/session/ChannelPicker'
 import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
+import { SessionViewBar } from '@/components/session/SessionViewBar'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 import {
@@ -175,6 +176,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
         </div>
         <SessionSearchToggle open={searchOpen} onToggle={toggleSearch} className="ml-1.5" />
       </div>
+      {/* 分类切换 + 全部折叠/展开：与手机抽屉共用（桌面曾整体缺失，切不到按项目） */}
+      <SessionViewBar groupKeys={filteredGroups.map((g) => g.key)} />
       <div className="min-h-0 flex-1">
         {store.loading ? (
           <div className="flex h-full items-center justify-center px-4 text-xs text-text-muted">{t('common.loading')}</div>
@@ -188,6 +191,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
             groups={filteredGroups}
             sortedSessions={filteredSorted}
             category={store.category}
+            collapsedGroups={store.collapsedGroups}
+            onToggleGroup={store.toggleGroupCollapsed}
             starredIds={store.starredIds}
             unreadIds={store.unreadIds}
             activeSession={store.activeSession}
