@@ -220,6 +220,10 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
     await emitSSE(page, 'text', {
       type: 'text',
       content: '```\n/root/projects/xbot\n```',
+      // 命令回复的真实形态：后端 `sendCommandReply`/`markCommandReply` 会打
+      // `metadata.command_reply`，前端**只认这个显式标记**才渲染 standalone 行
+      //（CR 2026-09-21 P1-1：不能再用"turn_id 缺失"当判别式）——E2E 载荷必须与后端一致。
+      metadata: { command_reply: 'true' },
       chat_id: 'web:chat-1',
     })
     await page.waitForTimeout(3000) // 用户实测等 3 秒后仍被遮挡
@@ -267,6 +271,10 @@ test.describe('turn-less command output layout（行重叠 guard）', () => {
     await emitSSE(page, 'text', {
       type: 'text',
       content: '```\n/root/projects/xbot\n```',
+      // 命令回复的真实形态：后端 `sendCommandReply`/`markCommandReply` 会打
+      // `metadata.command_reply`，前端**只认这个显式标记**才渲染 standalone 行
+      //（CR 2026-09-21 P1-1：不能再用"turn_id 缺失"当判别式）——E2E 载荷必须与后端一致。
+      metadata: { command_reply: 'true' },
       chat_id: 'web:chat-1',
     })
     await page.waitForTimeout(1200)
