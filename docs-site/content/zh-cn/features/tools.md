@@ -42,6 +42,17 @@ xbot 内置 50+ 工具，Agent 在对话中可以随时调用。所有工具默�
 | `Fetch` | 获取网页内容，通过 readability 转 Markdown + tiktoken 截断 |
 | `WebSearch` | 通过 Tavily API 搜索网页，可配置深度和最大结果数 |
 | `search_tools` | 通过嵌入向量相似度进行工具语义搜索 |
+| `share_file` | 把本地文件发布为 Web 可访问 URL（**仅 Web 渠道**）：本地存储复制到 `uploads/agent/<uuid>/<name>`；云存储（qiniu/s3）上传并返回签名 URL |
+
+{{< hint type=note >}}
+**`share_file`（Web 专属）**：Agent 生成的图表 / 报告 / 截图可以直接贴进回复 —— 它返回一段 Markdown（图片 `![name](url)` 内联渲染，其他文件 `[name](url)` 下载链接），Agent 把这段 Markdown 放进回复即可。
+
+- 返回值是**同源**端点 `/api/files/download?key=agent%2F<uuid>%2F<name>`，走会话 cookie 鉴权；key 含不可预测 uuid，未分享的文件没有路径可达。
+- **本地存储（默认，无云 OSS 配置）**：复制到 `<XBOT_HOME>/uploads/agent/<uuid>/<name>`，URL 稳定不过期。
+- **云存储**：经 storage provider 上传，返回带签名的下载 URL。
+- 只有在 Web 渠道启用时才注册该工具（其他渠道不可见）。
+- 在 Web UI 里这次调用渲染成**专用卡片**：图标 + 文件名 + 图片内联预览 + 「打开」/「复制链接」；折叠态的工具 pill 用专属上传图标与「写入」分类色（不再落到"未知工具"的扳手兜底）。
+{{< /hint >}}
 
 ## Context & Session
 

@@ -30,7 +30,6 @@ import (
 	"xbot/memory/letta"
 	"xbot/plugin"
 	"xbot/protocol"
-	"xbot/runner"
 	"xbot/session"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -444,7 +443,6 @@ type Agent struct {
 	cronPipeline       *MessagePipeline // Cron 专用消息构建管道
 	sandboxMode        string           // "none" or "docker"
 	sandbox            tools.Sandbox    // Sandbox 实例引用（V4 新增）
-	runnerManager      *runner.Manager  // Runner 管理器（V5：runner 作为一等公民）
 	sandboxIdleTimeout time.Duration    // 沙箱空闲超时（0 禁用）
 
 	// toolProviders are the ordered tool sources for the agent.
@@ -2018,8 +2016,15 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	registry.RegisterCore(&setGoalCompleteTool{manager: a.goalManager, onComplete: a.emitGoalProgress})
 	a.hookManager.RegisterBuiltin(a.goalManager.PreTurnEndHook())
 
-	// Register AI-Native TUI & Config tools as core (always available)
-	registry.RegisterCore(&tools.TuiControlTool{})
+	// Register AI-Native TUI & Config tools.
+	// tui_control 是 **CLI 渠道专属**工具：TUI 只存在于 CLI（本地/远程 CLI 的
+	// sessionKey 都是 "cli:..."），web/feishu 等渠道既没有 TUI，也没有
+	// TUIControl 回调 —— 在这些会话里它必须**不可见**（AsDefinitionsForSession
+	// 按 sessionKey 的 channel 前缀过滤）且**不可执行**（GetForSession 回落全局
+	// 查找 ⇒ 不存在）。⚠️ web 端浏览 CLI 会话时 `physical_channel` override 会把
+	// sessionKey 换成 "web:..."（engine_wire），此时同样不可见 —— 与"web 里没有
+	// TUI"一致（历史 bug：全局注册导致 web 模型能看到并调用一个必然报错的工具）。
+	registry.RegisterForChannel("cli", &tools.TuiControlTool{})
 	registry.RegisterCore(&tools.ConfigTool{})
 
 	// Initialize RegistryManager
@@ -2092,7 +2097,6 @@ func New(cfg Config) (*Agent, error) {
 	// 4. 构建 Agent 实例
 	sandboxMode := resolveSandboxMode(cfg.SandboxMode)
 
-	rm := runner.NewManager()
 	agent := &Agent{
 		bus:                    cfg.Bus,
 		multiSession:           multiSession,
@@ -2110,11 +2114,9 @@ func New(cfg Config) (*Agent, error) {
 		promptLoader:       NewPromptLoader(cfg.PromptFile),
 		sandboxMode:        sandboxMode,
 		sandbox:            cfg.Sandbox,
-		runnerManager:      rm,
 		sandboxIdleTimeout: cfg.SandboxIdleTimeout,
 		toolProviders: []tools.ToolProvider{
 			newAgentToolProvider(),
-			runner.NewToolProvider(rm),
 		},
 		directWorkspace:  cfg.DirectWorkspace,
 		globalSkillDirs:  resolveGlobalSkillsDirs(cfg.SkillsDir),
@@ -2293,31 +2295,8 @@ func New(cfg Config) (*Agent, error) {
 		agent.bgNotifyLoop()
 	}()
 
-	// 7. Inject all registered tools into the local runner's tool set.
-	// This bridges the gap until tools are migrated to runner/tools/.
-	agent.runnerManager.SetLocalTools(registry.List())
-
-	// 8. Populate local runner's skill/agent declarations from the stores.
-	// Base scan (embedded + global) — per-user and project-local are
-	// merged at buildPrompt time via the existing store calls.
-	if skills, err := agent.skills.ListSkills(context.Background(), ""); err == nil {
-		entries := make([]runner.SkillEntry, len(skills))
-		for i, s := range skills {
-			entries[i] = runner.SkillEntry{
-				Name: s.Name, Description: s.Description, Dir: s.Path,
-			}
-		}
-		agent.runnerManager.Local().Skills = entries
-	}
-	if roles, err := tools.LoadAgentRoles(agent.agentsDir); err == nil {
-		entries := make([]runner.Entry, 0, len(roles))
-		for _, r := range roles {
-			entries = append(entries, runner.Entry{
-				Name: r.Name, Description: r.Description, Dir: agent.agentsDir,
-			})
-		}
-		agent.runnerManager.Local().Agents = entries
-	}
+	// 7. Runner wiring: execution routing lives in tools.SandboxRouter
+	// (session → machine bindings); there is no in-agent runner registry.
 
 	return agent, nil
 }
@@ -2880,17 +2859,18 @@ func (a *Agent) workspaceRoot(senderID string) string {
 // isRemoteUser checks whether the given user routes to a remote sandbox.
 // Uses SandboxResolver for per-user routing instead of checking Name() on the
 // global SandboxRouter (which returns "router", not "remote").
-func (a *Agent) isRemoteUser(userID string) bool {
-	return a.sandboxNameForUser(userID) == "remote"
+func (a *Agent) isRemoteUser(sessionKey string) bool {
+	return a.sandboxNameForSession(sessionKey) == "remote"
 }
 
-// sandboxNameForUser resolves the sandbox name for a given user.
-func (a *Agent) sandboxNameForUser(userID string) string {
+// sandboxNameForSession resolves the sandbox name for a session key
+// ("channel:chatID"). Routing is session-scoped (single-operator design).
+func (a *Agent) sandboxNameForSession(sessionKey string) string {
 	if a.sandbox == nil {
 		return ""
 	}
 	if resolver, ok := a.sandbox.(tools.SandboxResolver); ok {
-		return resolver.SandboxForUser(userID).Name()
+		return resolver.SandboxForSession(sessionKey).Name()
 	}
 	return a.sandbox.Name()
 }
@@ -2900,15 +2880,15 @@ func (a *Agent) sandboxNameForUser(userID string) string {
 // Note: sandboxWorkspace covers all sandbox modes (docker/remote/none) but
 // this function is kept for the promptWorkDir fallback path where we need
 // to distinguish remote-runner from in-process docker sandbox.
-func (a *Agent) remoteWorkspace(userID string) string {
+func (a *Agent) remoteWorkspace(sessionKey string) string {
 	if a.sandbox == nil {
 		return ""
 	}
 	if resolver, ok := a.sandbox.(tools.SandboxResolver); ok {
-		return resolver.SandboxForUser(userID).Workspace(userID)
+		return resolver.SandboxForSession(sessionKey).Workspace(sessionKey)
 	}
 	if a.sandbox.Name() == "remote" {
-		return a.sandbox.Workspace(userID)
+		return a.sandbox.Workspace(sessionKey)
 	}
 	return ""
 }
@@ -2917,29 +2897,36 @@ func (a *Agent) remoteWorkspace(userID string) string {
 // For docker mode: returns "/workspace" (the container-internal mount point).
 // For remote mode: returns the runner's registered workspace.
 // For none/local mode: returns the host-side user workspace root.
-func (a *Agent) sandboxWorkspace(userID string) string {
+func (a *Agent) sandboxWorkspace(sessionKey string) string {
 	if a.sandbox == nil {
-		return a.workspaceRoot(userID)
+		return a.workspaceRoot(sessionKey)
 	}
 	sb := a.sandbox
 	if resolver, ok := sb.(tools.SandboxResolver); ok {
-		sb = resolver.SandboxForUser(userID)
+		sb = resolver.SandboxForSession(sessionKey)
 	}
 	switch sb.Name() {
 	case "docker":
-		return sb.Workspace(userID) // "/workspace"
+		return sb.Workspace(sessionKey) // "/workspace"
 	case "remote":
-		return sb.Workspace(userID) // runner's workspace
+		return sb.Workspace(sessionKey) // runner's workspace
 	default:
-		return a.workspaceRoot(userID)
+		return a.workspaceRoot(sessionKey)
 	}
 }
 
 // ensureWorkspace ensures the workspace directory exists (sandbox-aware).
 // Skipped for remote, docker, and denied sandboxes — they manage their own filesystems
 // or don't need host-side directories.
-func (a *Agent) ensureWorkspace(ctx context.Context, dir, senderID string) error {
-	name := a.sandboxNameForUser(senderID)
+func (a *Agent) ensureWorkspace(ctx context.Context, dir, sessionKey string) error {
+	sb := a.sandbox
+	if resolver, ok := sb.(tools.SandboxResolver); ok {
+		sb = resolver.SandboxForSession(sessionKey)
+	}
+	name := ""
+	if sb != nil {
+		name = sb.Name()
+	}
 	// remote/docker: the workspace lives inside the runner/container and is
 	// provisioned there (container create / runner sync) — nothing to do here.
 	// denied: no execution at all.
@@ -2953,8 +2940,8 @@ func (a *Agent) ensureWorkspace(ctx context.Context, dir, senderID string) error
 	if name == "remote" || name == "docker" || name == "denied" {
 		return nil
 	}
-	if a.sandbox != nil {
-		return a.sandbox.MkdirAll(ctx, dir, 0o755, senderID)
+	if sb != nil {
+		return sb.MkdirAll(ctx, dir, 0o755, sessionKey)
 	}
 	return os.MkdirAll(dir, 0o755)
 }
@@ -3583,7 +3570,7 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 			// Remote sandbox 连接应保持常驻，不做 idle 清理
 			if a.sandboxIdleTimeout > 0 && lastSenderID != "" {
 				// Skip idle cleanup for remote sandbox — the runner connection should be persistent
-				if !a.isRemoteUser(lastSenderID) {
+				if !a.isRemoteUser(msg.Channel + ":" + msg.ChatID) {
 					idleTimer = time.AfterFunc(a.sandboxIdleTimeout, func() {
 						if err := a.sandbox.CloseForUser(lastSenderID); err != nil {
 							log.WithError(err).Warnf("Idle sandbox cleanup failed for user %s", lastSenderID)
@@ -4143,7 +4130,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	// Fixup: strip trailing unpaired tool_calls left by a cancelled Run.
 	// Both Anthropic and OpenAI APIs reject requests with unpaired tool_calls.
 	history = llm.SanitizeMessages(history)
-	if err := a.ensureWorkspace(ctx, workspaceRoot, sbUID); err != nil {
+	if err := a.ensureWorkspace(ctx, workspaceRoot, sessKey); err != nil {
 		return nil, fmt.Errorf("create user workspace: %w", err)
 	}
 	newTools, err := a.multiSession.ConfigureSessionMCP(msg.Channel, msg.ChatID, msg.SenderID, a.workDir)
@@ -4155,7 +4142,7 @@ func (a *Agent) buildPrompt(ctx context.Context, msg bus.InboundMessage, tenantS
 	}
 
 	promptWorkDir := a.workDir
-	if ws := a.remoteWorkspace(msg.SenderID); ws != "" {
+	if ws := a.remoteWorkspace(msg.Channel + ":" + msg.ChatID); ws != "" {
 		promptWorkDir = ws
 	}
 
@@ -4394,11 +4381,6 @@ func (a *Agent) DisableTools(names []string) {
 // Tools returns the agent's tool registry.
 func (a *Agent) Tools() *tools.Registry {
 	return a.tools
-}
-
-// RunnerManager returns the agent's runner manager.
-func (a *Agent) RunnerManager() *runner.Manager {
-	return a.runnerManager
 }
 
 // ToolProviders returns the ordered tool providers.

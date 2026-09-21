@@ -186,3 +186,35 @@ export interface PluginMeta {
 - 所有 `activationDependencies` 必须已激活。
 
 后端只做传输层检查（entry 非空、插件 ID 合法、静态路径安全）。**绝不在后端再加一层语义校验**——两处门控必漂移。
+
+### 插件文案（`web.i18n`）
+
+插件文案随插件**一起分发**，绝不写进宿主的 i18n 文件：
+
+```json
+{
+  "web": {
+    "entry": "index.js",
+    "i18n": { "en": { "save": "Save" }, "zh-CN": { "save": "保存" }, "ja": { "save": "保存" } }
+  }
+}
+```
+
+`ctx.i18n.t(key, fallback)` 按宿主当前语言解析，回退链：精确 locale → 语言前缀
+（`zh-TW`/`zh-HK` 命中 `zh-CN`）→ `en` → 表里首个可用 locale → 你的 `fallback` 参数 → key 本身。
+`ctx.i18n` 对**所有插件**可用（不需要权限），且**调用时**读取语言 ⇒ 宿主切语言后插件界面立即跟随。
+建议 fallback 直接写英文，或三语表都补齐——否则宿主显示某种语言时插件会显示兜底文案。
+
+> ⚠️ **清单在服务端启动时只读一次。** 改 `plugin.json`（`web.i18n` / `web.entry` / `permissions` /
+> `version` …）在**重载插件之前不生效**：`config action=reload_plugins`（日志出现
+> `Plugin discovered plugin=<id>`）或重启服务。插件的 **web 静态产物**（`/plugins/<id>/web/*.js`）
+> 是每次请求从磁盘读的，改完立即可见——这会造成「新 bundle 生效、清单却是旧的」的陷阱
+> （症状：`ctx.i18n` 静默回退到你的兜底文案）。
+
+### 容器（`container`）
+
+`right_sidebar` · `panel` · `bottom` · `info_bar` · `status_bar_right` · `iteration` · `main`。
+
+- `main`：渲染为桌面主编辑区的全宽编辑器 tab。
+- `info_bar`：渲染在**桌面底部状态栏**——与应用的「检查更新」按钮同一行，适合放紧凑状态条
+  （例如 ssh-runner 插件在这里显示当前会话绑定的 runner，并可点击切换）。

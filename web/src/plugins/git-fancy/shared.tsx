@@ -12,30 +12,48 @@
 
 const w = window as unknown as {
   React: typeof import('react')
-  /** 宿主 iteration-render.tsx 挂载的 i18next 实例（独立 bundle 的 i18n 桥）。 */
-  __xbot_i18n__?: { t: (key: string, opts?: Record<string, unknown>) => string }
 }
 
 export const React = w.React
 
-// ---------- i18n 桥（独立 bundle 无法 import 宿主 '@/i18n'） ----------
+// ---------- i18n（文案随插件清单走：plugin.json 的 web.i18n） ----------
+
+/** ctx.i18n 的最小形状（宿主 I18nAPI 的子集——独立 bundle 不 import 宿主类型）。 */
+export interface I18nLike {
+  t: (key: string, fallback?: string) => string
+}
+
+let i18n: I18nLike | null = null
 
 /**
- * 翻译 helper：优先走宿主 i18next（window.__xbot_i18n__，key 命中时插值
- * {{x}} 占位符）；key 缺失或桥未挂载时回退中文原文（defaultValue 同样插值）。
- * 插件产物与主 bundle 的语言包可能不同步，fallback 保证 UI 永不显示裸 key。
+ * 主入口 activate(ctx) 调用——把插件自己的 i18n 解析器注入共享单例。
+ *
+ * ⛔ 2026-09-19：**不再借用宿主的 `window.__xbot_i18n__`** —— 文案随插件清单
+ * （`web.i18n`）分发，否则插件无法独立安装/卸载，且污染宿主 i18n 命名空间
+ * （见 `web/src/plugin-runtime/i18n.ts` 的契约）。
+ */
+export function setI18n(inst?: I18nLike | null): void {
+  i18n = inst ?? null
+}
+
+/**
+ * 翻译 helper：**优先用插件自己的文案表**（`ctx.i18n`），命中后插值 `{{x}}`
+ * 占位符；ctx 尚未注入或 key 缺失时回退中文原文 ⇒ UI 永不显示裸 key。
  */
 export function t(key: string, fallback: string, params?: Record<string, string | number>): string {
-  const inst = w.__xbot_i18n__
+  let text = fallback
+  const inst = i18n
   if (inst) {
     try {
-      return inst.t(key, { ...params, defaultValue: fallback })
-    } catch { /* 桥异常时回退 */ }
+      text = inst.t(key, fallback)
+    } catch {
+      /* 解析异常 ⇒ 回退中文原文 */
+    }
   }
   if (params) {
-    return fallback.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ''))
+    return text.replace(/\{\{(\w+)\}\}/g, (_, k: string) => String(params[k] ?? ''))
   }
-  return fallback
+  return text
 }
 
 // ---------- 类型（与后端 main.go 的 JSON 输出一一对应） ----------
@@ -188,7 +206,7 @@ export function resolveChat(): { channel: string; chatID: string } | null {
 /** 会话身份尚未就绪（resolveChat 返回 null）——调用方应延迟请求，不是错误重试场景。 */
 export class SessionNotReadyError extends Error {
   constructor() {
-    super('会话身份尚未就绪（__xbot_session__ 未设置）——等待 session.switched 或轮询重试')
+    super(t('sessionNotReady', '会话身份尚未就绪（__xbot_session__ 未设置）——等待 session.switched 或轮询重试'))
     this.name = 'SessionNotReadyError'
   }
 }
@@ -196,7 +214,7 @@ export class SessionNotReadyError extends Error {
 /** 调用 git-fancy 后端 RPC（带 session 标识，后端注入 cwd）。
  * 身份未知时抛 SessionNotReadyError（调用方延迟到 session.switched / 轮询身份就绪后重试）。 */
 export async function gitRpc<T>(method: string, extra: Record<string, unknown> = {}): Promise<T> {
-  if (!rpc) throw new Error('Git 插件未初始化（rpc 未注入）')
+  if (!rpc) throw new Error(t('rpcNotInitialized', 'Git 插件未初始化（rpc 未注入）'))
   const chat = resolveChat()
   if (!chat) throw new SessionNotReadyError()
   const res = await rpc(`xbot.git-fancy.${method}`, { ...chat, ...extra })
@@ -234,7 +252,7 @@ export async function openDiffTab(path: string, commit?: string): Promise<void> 
     modified: res.modified ?? '',
     path,
     key: commit ? `git-diff:${commit}:${path}` : `git-diff:worktree:${path}`,
-    scope: commit ? `commit ${commit.slice(0, 7)}` : t('plugins.gitFancy.scopeWorktree', '工作区'),
+    scope: commit ? `commit ${commit.slice(0, 7)}` : t('scopeWorktree', '工作区'),
   })
 }
 

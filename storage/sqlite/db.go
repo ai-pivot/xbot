@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +33,37 @@ type DB struct {
 	path         string
 	mu           sync.RWMutex
 	historyLocks [historyLockStripes]sync.Mutex
+
+	// writeMu serializes EVERY in-process write transaction.
+	//
+	// SQLite allows exactly one writer at a time; WAL only removes the
+	// reader/writer conflict. The DSN's busy_timeout(10000) makes a second
+	// writer wait — but the modernc (pure-Go) driver can return SQLITE_BUSY on
+	// the **write-lock acquisition path without consulting the busy handler**
+	// (the same hole user_token_usage.go originally worked around with its own
+	// writeMu). Under a large multi-agent orchestration many sessions/SubAgents
+	// (each its own tenant) write concurrently, so a collision used to abort a
+	// whole turn — 2026-09-18 P0:
+	//   `persist message batch: begin immediate history write:
+	//    database is locked (5) (SQLITE_BUSY)` (20 iterations of work lost).
+	//
+	// Serializing in-process removes the collision at the SOURCE — no retries,
+	// no fallbacks, no defensive busy-checks. SQLite itself serializes writers,
+	// so the gate costs nothing in write throughput; it only prevents the
+	// driver-level collision. EVERY write transaction in this package MUST hold
+	// it for the whole BEGIN..COMMIT window.
+	writeMu sync.Mutex
+
+	// WAL observability (see logWALState). Remembers the last observed
+	// <db>-wal file so that a replacement (unlink + recreate) — which is how
+	// committed frames can end up in a file that no longer has a name — is
+	// logged instead of passing silently. Guarded by walMu.
+	walMu       sync.Mutex
+	lastWALInfo os.FileInfo
+	lastWALSize int64
 }
 
-const schemaVersion = 69
+const schemaVersion = 70
 const historyLockStripes = 64
 
 // Open opens or creates a SQLite database at the given path
@@ -130,7 +159,8 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("initialize schema: %w", err)
 	}
 
-	log.WithField("path", path).Info("SQLite database opened")
+	log.WithFields(log.Fields{"path": path, "caller": callerTag(1)}).Info("SQLite database opened")
+	db.logWALState("open")
 	return db, nil
 }
 
@@ -142,7 +172,13 @@ func (db *DB) historyLock(tenantID int64) *sync.Mutex {
 	return &db.historyLocks[stripe]
 }
 
-// Close closes the database connection
+// Close closes the database connection.
+//
+// It logs the caller and the WAL file state: closing the LAST connection to a
+// WAL database checkpoints and DELETES the -wal file. An unexpected closer (a
+// component that opens/closes the same database on its own) is therefore
+// enough to reset the WAL of a connection that is still writing — exactly the
+// class of event that lost ~2 minutes of committed writes on 2026-09-17.
 func (db *DB) Close() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -151,8 +187,150 @@ func (db *DB) Close() error {
 			return fmt.Errorf("close database: %w", err)
 		}
 		db.conn = nil
+		log.WithFields(log.Fields{"path": db.path, "caller": callerTag(1)}).Info("SQLite database closed")
+		db.logWALState("close")
 	}
 	return nil
+}
+
+// callerTag renders "file.go:line" for the caller `skip` frames up the stack.
+// Used to record WHO opened/closed the database: the 2026-09-17 incident showed
+// the set of callers matters — a second opener/closer of the same file is
+// enough to reset the WAL of a connection that is still writing.
+func callerTag(skip int) string {
+	if _, file, line, ok := runtime.Caller(skip + 1); ok {
+		return fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	}
+	return "?"
+}
+
+// walAnomaly classifies the current WAL observation against the previous one:
+//
+//	"missing"  — a WAL existed at the previous observation and the path is now
+//	             GONE while the connection is still open. This is the primary
+//	             signature: the file was unlinked, so every frame written into it
+//	             afterwards lives in a file with no name left (acknowledged to
+//	             callers, unreachable to everyone else, lost when the process
+//	             dies). It cannot be fooled by filesystem inode reuse.
+//	"replaced" — the path holds a DIFFERENT file than before (os.SameFile).
+//	             Best effort only: a recycled inode can hide this case, which is
+//	             why "missing" carries the weight.
+//	""         — nothing anomalous (first observation, or the same file).
+func walAnomaly(prevInfo os.FileInfo, curPresent bool, curInfo os.FileInfo) string {
+	if prevInfo != nil && !curPresent {
+		return "missing"
+	}
+	if prevInfo != nil && curPresent && curInfo != nil && !os.SameFile(prevInfo, curInfo) {
+		return "replaced"
+	}
+	return ""
+}
+
+// logWALState records and logs the state of the <db>-wal file (presence, size,
+// mtime, and whether it disappeared/was replaced since the last observation).
+// Log-only: it changes no behaviour and is safe to call from any goroutine.
+func (db *DB) logWALState(where string) {
+	if db == nil || db.path == "" || db.path == ":memory:" {
+		return
+	}
+	fi, statErr := os.Stat(db.path + "-wal")
+	present := statErr == nil && fi != nil
+
+	db.walMu.Lock()
+	prevInfo, prevSize := db.lastWALInfo, db.lastWALSize
+	anomaly := walAnomaly(prevInfo, present, fi)
+	db.lastWALInfo, db.lastWALSize = fi, 0
+	if present {
+		db.lastWALSize = fi.Size()
+	}
+	db.walMu.Unlock()
+
+	fields := log.Fields{
+		"path":          db.path,
+		"where":         where,
+		"wal_present":   present,
+		"wal_prev_size": prevSize,
+	}
+	if present {
+		fields["wal_size"] = fi.Size()
+		fields["wal_mtime"] = fi.ModTime().Format(time.RFC3339)
+	}
+	switch anomaly {
+	case "missing":
+		log.WithFields(fields).Warn("WAL file DISAPPEARED while this connection is open — frames written after the unlink are unreachable (the 2026-09-17 committed-data-loss signature)")
+		return
+	case "replaced":
+		log.WithFields(fields).Warn("WAL file was REPLACED (different file at the same path) — frames written to the previous WAL file are unreachable")
+		return
+	}
+	if !present {
+		log.WithFields(fields).Info("WAL file absent")
+		return
+	}
+	log.WithFields(fields).Info("WAL state")
+}
+
+// CheckpointForShutdown copies every committed WAL frame into the main database
+// file and resets the WAL.
+//
+// Call it on SIGTERM: AFTER the recovery markers have been written (they must
+// land in the main file too) and AFTER the agent loops were cancelled, but
+// BEFORE the teardown steps that can hang (webhook / dispatcher / plugins). A
+// SIGKILL that arrives later (supervisor stopwaitsecs, OOM killer, kill -9)
+// then can no longer lose data that was already acknowledged — it is in the
+// main database file, not only in the WAL.
+//
+// Best effort by design: bounded by the connection's busy_timeout (10s), one
+// retry, non-fatal for the caller, and the outcome is logged either way.
+func (db *DB) CheckpointForShutdown() error {
+	if db == nil {
+		return nil
+	}
+	db.mu.RLock()
+	conn, path := db.conn, db.path
+	db.mu.RUnlock()
+	if conn == nil {
+		return nil
+	}
+	start := time.Now()
+	var lastBusy, lastLog, lastMoved int
+	for attempt := 1; attempt <= 2; attempt++ {
+		busy, logFrames, moved, err := walCheckpointTruncate(conn)
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{"path": path, "attempt": attempt}).
+				Warn("wal_checkpoint(TRUNCATE) failed during shutdown")
+			return err
+		}
+		lastBusy, lastLog, lastMoved = busy, logFrames, moved
+		log.WithFields(log.Fields{
+			"path": path, "attempt": attempt, "busy": busy,
+			"wal_frames": logFrames, "checkpointed": moved,
+			"elapsed_ms": time.Since(start).Milliseconds(),
+		}).Info("WAL checkpoint on shutdown")
+		if busy == 0 {
+			db.logWALState("checkpoint(TRUNCATE)")
+			return nil
+		}
+		if attempt == 1 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	db.logWALState("checkpoint(TRUNCATE)")
+	return fmt.Errorf("wal_checkpoint(TRUNCATE) still busy (busy=%d log=%d checkpointed=%d) — a reader may still be active", lastBusy, lastLog, lastMoved)
+}
+
+// walCheckpointTruncate runs PRAGMA wal_checkpoint(TRUNCATE) and returns the
+// (busy, log, checkpointed) counters SQLite reports for it.
+func walCheckpointTruncate(conn *sql.DB) (busy, logFrames, checkpointed int, err error) {
+	if scanErr := conn.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); scanErr != nil {
+		// Some driver/path combinations do not return a row for an admin
+		// pragma: fall back to Exec, which still performs the checkpoint.
+		if _, execErr := conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); execErr != nil {
+			return 0, 0, 0, fmt.Errorf("wal_checkpoint(TRUNCATE): %w", execErr)
+		}
+		return 0, 0, 0, nil
+	}
+	return busy, logFrames, checkpointed, nil
 }
 
 // Conn returns the underlying database connection

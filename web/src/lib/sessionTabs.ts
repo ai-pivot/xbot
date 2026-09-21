@@ -15,6 +15,7 @@
  * 手机端 AgentPanel 跟随 activeSession，因此不要在那里调用本函数。
  */
 import type { TabManager } from '@/hooks/useTabManager'
+import { sessionSwitch } from '@/lib/sessionSwitch'
 
 /** 打开（或聚焦）主会话的 desktop agent tab。 */
 export function openAgentSessionTab(
@@ -24,6 +25,12 @@ export function openAgentSessionTab(
   title?: string,
 ): void {
   if (!chatID) return
+  // ⛔ 契约（用户，多次）：「会话只要开始切换就应该渲染 loading」。
+  // 在点击的**同一帧**同步进入切换态：所有可见面板据此只渲染 loading，直到目标面板
+  // 历史就绪（AgentPanel 里 end）。切换窗口期里 dockview 建/激活 tab 的布局变化帧
+  // 不再可能把旧面板（正常态：历史区+托盘+输入框）以未兑现尺寸画出来 —— 用户截图
+  // 「一闪而过的错乱帧」从结构上消失。key 与 tab 逻辑键同构。
+  sessionSwitch.begin(`agent:${channel || 'web'}:${chatID}`)
   tabManager.openTab({
     type: 'agent',
     title: title || chatID,

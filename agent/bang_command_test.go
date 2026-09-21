@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"xbot/config"
 	"xbot/tools"
 )
 
@@ -45,6 +46,22 @@ func TestEnsureWorkspace_LocalSandboxCreatesWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(out, "bang_workspace_probe") {
 		t.Fatalf("bang 输出 = %q，未见探针字符串", out)
+	}
+}
+
+// SandboxRouter itself deliberately rejects filesystem operations because it
+// has no session identity at that boundary. ensureWorkspace must therefore
+// resolve the concrete per-session sandbox before creating the local directory.
+func TestEnsureWorkspace_RouterResolvesSessionBeforeCreatingWorkspace(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "users", "web-user", "workspace")
+	router := tools.NewSandboxRouter(config.SandboxConfig{}, t.TempDir())
+	a := &Agent{sandbox: router}
+
+	if err := a.ensureWorkspace(context.Background(), dir, "web:chat-test"); err != nil {
+		t.Fatalf("ensureWorkspace through SandboxRouter: %v", err)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		t.Fatalf("本机会话工作区未创建: dir=%s stat=%v err=%v", dir, st, err)
 	}
 }
 

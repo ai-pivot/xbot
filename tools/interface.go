@@ -213,12 +213,6 @@ type ToolContext struct {
 	// RunnerDelete deletes a runner by name.
 	RunnerDelete func(name string) error
 
-	// RunnerGetActive returns the active runner name for the current user.
-	RunnerGetActive func() (string, error)
-
-	// RunnerSetActive sets the active runner by name.
-	RunnerSetActive func(name string) error
-
 	// RunnerRename renames a runner.
 	RunnerRename func(oldName, newName string) error
 

@@ -43,6 +43,7 @@ const (
 	MethodGetUserTokenUsage            = "get_user_token_usage"
 	MethodGetDailyTokenUsage           = "get_daily_token_usage"
 	MethodGetSessionUsageStats         = "get_session_usage_stats"
+	MethodGetSessionUsageBuckets       = "get_session_usage_buckets"
 	MethodGetBgTaskCount               = "get_bg_task_count"
 	MethodListBgTasks                  = "list_bg_tasks"
 	MethodKillBgTask                   = "kill_bg_task"
@@ -232,6 +233,14 @@ type getSessionUsageStatsReq struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
 	Limit   int    `json:"limit"`
+}
+
+type getSessionUsageBucketsReq struct {
+	Channel         string `json:"channel"`
+	ChatID          string `json:"chat_id"`
+	Granularity     string `json:"granularity"`
+	Count           int    `json:"count"`
+	TZOffsetMinutes int    `json:"tz_offset_minutes"`
 }
 
 // --- Background Tasks ---

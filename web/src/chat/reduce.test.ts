@@ -56,12 +56,20 @@ const started = (turn: ReturnType<typeof turnID>, requestID: string | null = nul
   content: null,
 })
 
-const textFinal = (turn: ReturnType<typeof turnID> | null, content: string | null, cancelled = false): DomainEvent => ({
+const textFinal = (
+  turn: ReturnType<typeof turnID> | null,
+  content: string | null,
+  cancelled = false,
+  // 命令回复必须带后端显式标记（`metadata.command_reply` → normalize 透传）：
+  // standalone 的判别式现在是**该标记**，而不是「turnID 缺失」（CR 2026-09-21 P1-1）。
+  commandReply = false,
+): DomainEvent => ({
   type: 'text_final',
   turnID: turn,
   content: content === null ? null : (content as never),
   progressHistory: [],
   cancelled,
+  commandReply,
 })
 
 // REPRO（用户报告："还是不行啊，!pwd 发出去之后消息直接消失了"）——命令消息的完整
@@ -81,7 +89,7 @@ it('REPRO: !cmd 完整时序（ack 无 turn_id + 历史刷新）不得让 user �
   s = reduce(s, { type: 'user_ack', requestID: 'r-cmd-1', dbID: 0, turnHint: 0, queued: false })
   // 命令回复（turn-less）
   s = reduce(s, {
-    type: 'text_final', turnID: null, content: '```\n/root\n```' as never, progressHistory: [], cancelled: false,
+    type: 'text_final', turnID: null, content: '```\n/root\n```' as never, progressHistory: [], cancelled: false, commandReply: true,
   })
   const before = deriveRows(s)
   expect(before.some((r) => r.kind === 'user' && String(r.content) === '!pwd'), 'ack+回复后 user 行应仍在').toBe(true)
@@ -106,7 +114,7 @@ it('REPRO: 命令回复（text_final with turnID=null）必须渲染为独立消
     iteration1(T1, '正常 turn 的回复'),
     textFinal(T1, '正常 turn 的回复'),
     // 用户敲 `!pwd` → 后端命令分发（无 turn）→ text 事件无 turn_id
-    textFinal(null, '```\n/root\n```\n`exit: 0`'),
+    textFinal(null, '```\n/root\n```\n`exit: 0`', false, true),
   ])
   const rows = deriveRows(s)
   const cmdRow = rows.find((r) => String(r.content ?? '').includes('/root'))
@@ -2172,5 +2180,123 @@ describe('TDSM reduce — goal 会话级状态（agent set_goal_complete 后 ban
     }, 'chat-1')
     const iter = evs?.find((e) => e.type === 'iteration')
     expect(iter && 'goal' in iter ? iter.goal : 'sentinel').toBeNull()
+  })
+})
+
+// ─── P0 渲染回归（2026-09-18 用户报告）：迭代边界工具绝不消失 ───────────────
+//
+// 现象：「一个迭代的工具执行完成后会从 web 迭代历史里消失，直到收到下一个迭代的
+// 第一个新 SSE 才重新出现」= 线性不一致（信息倒退）。
+//
+// 根因：`reduce.ts` 的迭代分支原先 `activeTools: ev.activeTools` 整表替换，而边界
+// 事件（迭代推进）常不带上一迭代的 iteration_history / active_tools，于是刚跑完的
+// 工具被清空，直到下一个携带 iterationsDelta 的事件到达才回来。
+//
+// 契约：边界事件不带工具 ⇒ 保留已渲染的工具（在跑中的标记 done）；事件自带工具
+// 列表 ⇒ 以其为权威。变异自证：把 activeTools 改回 `ev.activeTools` ⇒ 本用例必红。
+describe('P0(2026-09-18): iteration boundary keeps already-rendered tools', () => {
+  const shell = (status: string, iteration = 1) =>
+    ({ name: 'Shell', label: 'ls -la', status, iteration, args: '{}' }) as never
+
+  it('边界事件不带 active_tools ⇒ 上一迭代的工具必须保留（标记 done），不得清空', () => {
+    const s0 = run([
+      started(T1),
+      { ...iteration1(T1, 'iter1', 1), activeTools: [shell('running')] } as DomainEvent,
+    ])
+    const live0 = s0.turns.get(T1)
+    if (live0?.phase.kind !== 'live') throw new Error('expected live turn')
+    expect(live0.phase.data.activeTools).toHaveLength(1)
+
+    // 迭代推进（边界）：新迭代首个事件不带工具、也不带 iterationsDelta。
+    const s1 = run([{ ...iteration1(T1, '', 2), seq: 11 as never } as DomainEvent], s0)
+    const live1 = s1.turns.get(T1)
+    if (live1?.phase.kind !== 'live') throw new Error('expected live turn')
+    expect(live1.phase.data.activeTools.map((t) => t.name)).toContain('Shell')
+    expect(live1.phase.data.activeTools[0].status).toBe('done')
+  })
+
+  it('边界事件**自带** active_tools ⇒ 以其为权威（新迭代的工具正常替换）', () => {
+    const s0 = run([
+      started(T1),
+      { ...iteration1(T1, 'iter1', 1), activeTools: [shell('running')] } as DomainEvent,
+    ])
+    const s1 = run(
+      [{ ...iteration1(T1, '', 2), seq: 11 as never, activeTools: [shell('running', 2)] } as DomainEvent],
+      s0,
+    )
+    const live1 = s1.turns.get(T1)
+    if (live1?.phase.kind !== 'live') throw new Error('expected live turn')
+    expect(live1.phase.data.activeTools).toHaveLength(1)
+    expect(live1.phase.data.activeTools[0].iteration).toBe(2)
+  })
+})
+
+// ─── P0（2026-09-18）：权威 idle 必须清 activeTurn ──────────────────────────
+// 现象：后端 idle，前端仍渲染 busy（输入框 "Agent is busy"，只能整页刷新）。
+// 根因：busy 三路 OR 里的 busyFallback = activeTurn !== null 没有任何权威 idle
+// 清除路径 ⇒ 任何一次 turn 结束事件丢失都会永久卡 busy。
+// 契约：session_idle（agent-idle/session(idle) 派发）⇒ activeTurn=null，活跃 turn
+// 转 frozen（**内容保留**，与 cancel 同语义），且幂等（无活跃 turn 时原引用返回）。
+describe('P0(2026-09-18): session_idle 清 activeTurn（后端 idle ⇒ 前端不卡 busy）', () => {
+  it('session_idle ⇒ activeTurn=null；活跃 turn 转 frozen 且内容保留（不 wipe）', () => {
+    const s0 = run([started(T1), iteration1(T1, '完成的工作', 1) as DomainEvent])
+    expect(s0.activeTurn).toBe(T1)
+
+    const s1 = run([{ type: 'session_idle' } as DomainEvent], s0)
+    expect(s1.activeTurn).toBeNull()
+    const t = s1.turns.get(T1)
+    expect(t?.phase.kind).toBe('frozen')
+    if (t?.phase.kind === 'frozen') {
+      expect(t.phase.data.content).toBe('完成的工作')
+      expect(t.phase.data.streaming).toBe(false)
+    }
+  })
+
+  it('幂等：无活跃 turn 时返回原 state 引用（零渲染，防重放抖动）', () => {
+    const s0 = run([started(T1), iteration1(T1, 'x', 1) as DomainEvent])
+    const s1 = run([{ type: 'session_idle' } as DomainEvent], s0)
+    const s2 = run([{ type: 'session_idle' } as DomainEvent], s1)
+    expect(s2).toBe(s1)
+  })
+})
+
+// ── CR 2026-09-21 P1-1：standalone 判别式必须是后端**显式**的 command_reply 标记 ──
+// 旧实现用「turnID 缺失」当判别式，会把"后端 gap / 重启恢复导致普通 turn 的 text 丢
+// turn_id"误判成命令回复 ⇒ 该回复被排到底部 standalone 行、与 live 行重复渲染，
+// 且该 live turn 直到刷新都不收尾。
+describe('P1-1 — standalone 只认显式命令回复标记', () => {
+  it('有 activeTurn 时 text_final{turnID:null}（非命令）不得产生 standalone 行，必须并入 activeTurn', () => {
+    let s = run([started(T1), iteration1(T1, '部分输出', 1) as DomainEvent])
+    const before = s.standalone.length
+    // 普通回复丢了 turn_id（**没有** command_reply 标记）—— 必须按 master 语义并入
+    // activeTurn，而不是变成底部独立行。
+    s = reduce(s, {
+      type: 'text_final', turnID: null, content: '最终回复' as never,
+      progressHistory: [], cancelled: false,
+    } as DomainEvent)
+    expect(s.standalone.length, '普通回复（无命令标记）绝不能变成 standalone 独立行').toBe(before)
+    const rows = deriveRows(s)
+    expect(
+      rows.some((r) => String(r.content ?? '').includes('最终回复')),
+      '内容必须提交进 activeTurn（否则就是被静默丢弃）',
+    ).toBe(true)
+  })
+
+  it('命令回复（commandReply=true）即使有 activeTurn 也必须走 standalone 独立行', () => {
+    let s = run([started(T1), iteration1(T1, '进行中', 1) as DomainEvent])
+    s = reduce(s, {
+      type: 'text_final', turnID: null, content: '```\n/root\n```' as never,
+      progressHistory: [], cancelled: false, commandReply: true,
+    } as DomainEvent)
+    expect(s.standalone.length, '命令回复必须成为独立行（turnID 保持 0 + standalone 标记）').toBe(1)
+    expect(s.standalone[0].standalone).toBe(true)
+    // 派生出的行必须落在「无 turn」桶（turnID 0）—— `cachedLegacyRow` 把 standalone
+    // 段映射成 kind='committed' + standalone 透传，turnID 保持 0（虚拟键回落 row.id）。
+    const rows = deriveRows(s)
+    const row = rows.find(
+      (r) => String((r as { content?: string }).content ?? '').includes('/root'),
+    ) as { turnID?: number } | undefined
+    expect(row, 'standalone 行必须能在派生结果里找到').toBeTruthy()
+    expect(row!.turnID, 'standalone 行的 turnID 必须保持 0（虚拟键回落 row.id）').toBe(0)
   })
 })

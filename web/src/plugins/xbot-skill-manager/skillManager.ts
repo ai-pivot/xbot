@@ -8,19 +8,32 @@
  * - export 走保留的薄 REST /api/skills/export（zip 二进制下载）。
  */
 import type { PluginContext, PluginManifest, Disposable } from '@/plugin-api'
+import i18n from '@/i18n'
 
 export const manifest = {
   id: 'xbot.skill-manager',
-  name: 'Skill Manager',
+  // 内置插件随主 bundle 打包（拿不到清单 web.i18n）⇒ 名称/描述/标题走宿主 i18n。
+  // ⛔ getter（**读取时**求值）：import 时求值一次会让 tab/面板标题定格在加载时的语言
+  //（切语言后不变 —— 用户实测根因之一）。
+  get name() {
+    return i18n.t('skills.manifest.name', { defaultValue: '技能管理' })
+  },
   version: '0.1.0',
-  description: '管理技能：查看/启用/禁用/导出/卸载/安装',
+  get description() {
+    return i18n.t('skills.manifest.description', {
+      defaultValue: '管理技能：查看/启用/禁用/导出/卸载/安装',
+    })
+  },
   permissions: ['rpc', 'ui'] as const,
   contributes: [
     {
       kind: 'view',
       id: 'xbot.skill-manager.panel',
       container: 'right_sidebar',
-      title: '技能',
+      // 内置插件随主 bundle 打包（拿不到插件清单的 web.i18n）⇒ 走宿主 i18n（同上：getter）。
+      get title() {
+        return i18n.t('skills.manifest.title', { defaultValue: '技能' })
+      },
       icon: 'sparkles',
       entry: 'builtin:xbot.skill-manager.panel',
     },

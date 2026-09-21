@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"xbot/bus"
-	log "xbot/logger"
 	"xbot/protocol"
 
 	"github.com/google/uuid"
@@ -375,14 +374,15 @@ func (wc *WebChannel) appendUploadRef(content, key, displayName string, fileSize
 		}
 		return content + fmt.Sprintf("\n\n![%s](%s)", displayName, ref)
 	}
-	// Non-image attachment: absolute signed URL (DownloadFile fetches it
-	// directly; a relative URL would be useless to the tool).
-	downloadURL, err := wc.ossProvider.GetDownloadURL(key)
-	if err != nil {
-		log.WithError(err).WithField("key", key).Warn("Failed to get download URL for OSS file")
-		return content + fmt.Sprintf("\n\n📎 [用户上传文件: %s] (获取下载链接失败)", displayName)
-	}
-	return content + fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, downloadURL, fileSize)
+	// Non-image attachment: a directly fetchable reference for the model /
+	// DownloadFile tool. URL resolution is single-sourced in uploadDownloadRef
+	// (cloud OSS → signed URL; local static → server base URL + relative path,
+	// degrading to the stable relative URL) — it never fails and its internal
+	// failure mode must NEVER leak error text into user-visible content
+	// (P0 user report 2026-09-20: local storage appended
+	// "（获取下载链接失败）" to the message although the upload had succeeded).
+	ref := wc.uploadDownloadRef(key)
+	return content + fmt.Sprintf("\n\n<file name=\"%s\" url=\"%s\" size=\"%d\" />", displayName, ref, fileSize)
 }
 
 // uploadKeyReferenced reports whether content already points at the given

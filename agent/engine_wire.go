@@ -669,6 +669,13 @@ func (a *Agent) buildSubAgentRunConfig(
 	// 无条件移除，避免静默失效。
 	subTools.Unregister("AskUser")
 
+	// tui_control 是 **CLI 渠道专属**工具（agent.go 用 RegisterForChannel("cli")），
+	// 而 SubAgent 的 sessionKey 形如 "cli:/path/repo/role:inst" —— channel 前缀仍是
+	// "cli"，且 channel 工具会随 Clone 复制到子代理注册表（filterSubAgentTools 只
+	// 遍历*全局*工具，删不掉它）⇒ 子代理会继承 tui_control。子代理**绝不能操作
+	// 父会话的 TUI**（切换/关闭用户正在看的会话是用户级动作），必须显式移除。
+	subTools.UnregisterChannelTool("cli", "tui_control")
+
 	// 如果指定了工具白名单，只保留白名单中的工具
 	filterSubAgentTools(subTools, allowedTools, caps, interactive)
 
@@ -1203,10 +1210,7 @@ func (a *Agent) buildToolExecutor(ctx context.Context, channel, chatID, senderID
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(
-				cfg.Channel+":"+cfg.ChatID,
-				cfg.OriginUserID,
-			)
+			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)

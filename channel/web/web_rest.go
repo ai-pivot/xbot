@@ -280,7 +280,11 @@ func (wc *WebChannel) isCommandMessage(content string) bool {
 	if wc.callbacks.MatchesCommand != nil {
 		return wc.callbacks.MatchesCommand(content)
 	}
-	return isSlashCommand(content)
+	// 降级（无 registry：单测 / 嵌入式）：必须与分发口径**一致地覆盖 bang** ——
+	// 只认 `/` 会让 `!cmd` 落到 handleMessage 的 fail-fast
+	// （"message accepted without a turn_id"），与本次修复目标自相矛盾
+	// （CR 2026-09-21 指出）。
+	return isSlashCommand(content) || strings.HasPrefix(strings.TrimSpace(content), "!")
 }
 
 func (wc *WebChannel) handleCancel(w http.ResponseWriter, r *http.Request) {
@@ -749,35 +753,9 @@ func (wc *WebChannel) handleSessionTreePOST(w http.ResponseWriter, r *http.Reque
 }
 
 func (wc *WebChannel) handleRunnersListPOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleRunners(w, legacyRequest(r, http.MethodGet, nil, nil))
 }
 
 func (wc *WebChannel) handleRunnersCreatePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleRunners(w, r)
-}
-
-func (wc *WebChannel) handleRunnerDeletePOST(w http.ResponseWriter, r *http.Request) {
-	wc.handleRunnerByName(w, legacyRequest(r, http.MethodDelete, nil, nil))
-}
-
-func (wc *WebChannel) handleRunnerActivePOST(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	var request struct {
-		Name string `json:"name,omitempty"`
-	}
-	if len(bytes.TrimSpace(body)) > 0 && json.Unmarshal(body, &request) != nil {
-		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	method := http.MethodGet
-	if request.Name != "" {
-		method = http.MethodPut
-	}
-	wc.handleRunnerActive(w, legacyRequest(r, method, nil, body))
 }
 
 func (wc *WebChannel) handleChannelsPOST(w http.ResponseWriter, r *http.Request) {

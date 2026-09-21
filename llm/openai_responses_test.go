@@ -747,3 +747,60 @@ func TestResponsesStatusToFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// buildResponsesReasoning 必须理解 UI/CLI 实际写入的命名档位（think / think-max），
+// 并**始终请求思考摘要**。
+//
+// 用户 2026-09-19：用 Responses API 访问 gpt-6-astra 时 Web 不显示 reasoning。
+// 根因：命名档位（think / think-max —— ThinkingModeControl 写入的真实值）落到
+// default 分支（非 JSON）⇒ 告警后返回**空** ReasoningParam ⇒ 请求里根本没有
+// reasoning 配置 ⇒ 服务端只回（加密）思维链、不返回摘要 ⇒ 前端无 reasoning 可显示。
+func TestBuildResponsesReasoning_NamedModesAlwaysRequestSummary(t *testing.T) {
+	cases := []struct {
+		mode       string
+		wantEffort openai.ReasoningEffort
+	}{
+		{"think", openai.ReasoningEffortMedium},
+		{"enabled", openai.ReasoningEffortMedium}, // 旧别名（向后兼容）
+		{"think-max", openai.ReasoningEffortHigh},
+	}
+	for _, c := range cases {
+		got := buildResponsesReasoning(c.mode)
+		if got.Effort != c.wantEffort {
+			t.Errorf("mode=%q effort=%q, want %q", c.mode, got.Effort, c.wantEffort)
+		}
+		if got.Summary != openai.ReasoningSummaryAuto {
+			t.Errorf("mode=%q summary=%q, want %q —— 不请求摘要时服务端只回加密思维链，Web 就没有 reasoning 可显示",
+				c.mode, got.Summary, openai.ReasoningSummaryAuto)
+		}
+		if ids := responsesInclude(got, nil); len(ids) == 0 {
+			t.Errorf("mode=%q 的 include 必须请求 reasoning.encrypted_content（无状态重放需要）", c.mode)
+		}
+	}
+}
+
+// 空档位 = 不干预（不发 reasoning 参数，让 API 决定）；disabled = 显式关闭。
+func TestBuildResponsesReasoning_EmptyAndDisabled(t *testing.T) {
+	if got := buildResponsesReasoning(""); got.Effort != "" || got.Summary != "" {
+		t.Errorf("空档位必须不发 reasoning 参数，got effort=%q summary=%q", got.Effort, got.Summary)
+	}
+	if got := buildResponsesReasoning("disabled"); got.Effort != openai.ReasoningEffortNone {
+		t.Errorf("disabled 必须显式关闭 reasoning，got %q", got.Effort)
+	}
+}
+
+// 自定义 JSON 档位：缺省 summary 时**必须补 auto**（同一条不变量：请求 reasoning
+// 就必须请求摘要，否则前端拿不到任何可显示内容）。
+func TestBuildResponsesReasoning_CustomJSONDefaultsSummaryToAuto(t *testing.T) {
+	got := buildResponsesReasoning(`{"effort":"high"}`)
+	if got.Effort != openai.ReasoningEffortHigh {
+		t.Fatalf("effort=%q, want high", got.Effort)
+	}
+	if got.Summary != openai.ReasoningSummaryAuto {
+		t.Errorf("自定义 JSON 未指定 summary 时必须补 auto，got %q", got.Summary)
+	}
+	// 显式指定则尊重用户选择。
+	if got := buildResponsesReasoning(`{"effort":"high","summary":"detailed"}`); got.Summary != openai.ReasoningSummaryDetailed {
+		t.Errorf("显式 summary 必须保留，got %q", got.Summary)
+	}
+}

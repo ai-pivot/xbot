@@ -808,6 +808,34 @@ func checkSetup(o *setupOptions) error {
 // Report-only by design (see the call-site comment): it never changes the
 // --check exit code.
 func scanLocalPluginHealth(xbotHome string, cfg *config.Config) {
+	missing, disabledLines := pluginHealthFindings(xbotHome, cfg)
+	if len(missing) == 0 && len(disabledLines) == 0 {
+		fmt.Println("Plugin health: OK (local manifests readable; declared web entries + plugin binaries present)")
+		return
+	}
+	if len(missing) > 0 {
+		fmt.Println("Plugin health: issues (report-only — does not affect exit code):")
+		for _, line := range missing {
+			fmt.Printf("  %s\n", line)
+		}
+	}
+	if len(disabledLines) > 0 {
+		fmt.Println("Plugin health: disabled (config plugins.disabled_plugins):")
+		for _, line := range disabledLines {
+			fmt.Printf("  %s\n", line)
+		}
+	}
+}
+
+// pluginHealthFindings 扫描两层插件目录，返回（问题行, 被禁用行）。
+// 与打印解耦，便于单测（打印函数只负责呈现）。
+//
+// 判定三类"装了但从未工作"的形态：
+//   - manifest 读不出/校验失败
+//   - 声明了 web.entry 但 <dir>/web/<entry> 不在（web 层只会 404）
+//   - stdio/grpc 插件的入口二进制不在（或 unix 上丢了可执行位）——
+//     插件进程起不来，运行期没有任何地方会报出来（xbot.iteration-stats 同族形态）
+func pluginHealthFindings(xbotHome string, cfg *config.Config) (missing, disabledLines []string) {
 	type layer struct{ label, dir string }
 	layers := []layer{
 		{"user", filepath.Join(xbotHome, "plugins")},
@@ -820,8 +848,6 @@ func scanLocalPluginHealth(xbotHome string, cfg *config.Config) {
 		}
 	}
 
-	var missing []string
-	var disabledLines []string
 	for _, l := range layers {
 		entries, err := os.ReadDir(l.dir)
 		if err != nil {
@@ -846,26 +872,98 @@ func scanLocalPluginHealth(xbotHome string, cfg *config.Config) {
 					missing = append(missing, fmt.Sprintf("web artifact missing: plugin=%s web.entry=%q dir=%s (%s)", m.ID, m.Web.Entry, dir, l.label))
 				}
 			}
+			if m.Runtime == plugin.RuntimeStdio || m.Runtime == plugin.RuntimeGRPC {
+				if entry := platformEntry(m); entry != "" {
+					if binPath, ok := shippedBinaryPath(dir, entry); ok {
+						if issue := shippedBinaryIssue(binPath); issue != "" {
+							missing = append(missing, fmt.Sprintf("%s: plugin=%s entry=%q dir=%s (%s)", issue, m.ID, entry, dir, l.label))
+						}
+					}
+				}
+			}
 			if disabled[m.ID] {
 				disabledLines = append(disabledLines, fmt.Sprintf("%s (%s)", m.ID, l.label))
 			}
 		}
 	}
+	return missing, disabledLines
+}
 
-	if len(missing) == 0 && len(disabledLines) == 0 {
-		fmt.Println("Plugin health: OK (local manifests readable; declared web entries present)")
-		return
+// platformEntry 返回当前平台的入口（平台专属字段优先），与 plugin 包
+// scriptPlugin.resolvedEntry() 同一规则。
+func platformEntry(m *plugin.PluginManifest) string {
+	firstNonEmpty := func(vals ...string) string {
+		for _, v := range vals {
+			if strings.TrimSpace(v) != "" {
+				return v
+			}
+		}
+		return ""
 	}
-	if len(missing) > 0 {
-		fmt.Println("Plugin health: issues (report-only — does not affect exit code):")
-		for _, line := range missing {
-			fmt.Printf("  %s\n", line)
+	switch runtime.GOOS {
+	case "windows":
+		return firstNonEmpty(m.EntryWindows, m.Entry)
+	case "darwin":
+		return firstNonEmpty(m.EntryDarwin, m.Entry)
+	case "linux":
+		return firstNonEmpty(m.EntryLinux, m.Entry)
+	}
+	return m.Entry
+}
+
+// shippedBinaryPath 判断入口是否是"随插件分发的相对二进制"（单个 token 的相对
+// 路径），是则给出磁盘路径。带空格的命令行（entry 也可以是启动命令）与绝对路径
+// （系统二进制）无法判定为随包文件 ⇒ 跳过（不产生假警）。
+//
+// ⚠️ "绝对路径"的判定必须 **GOOS 无关**：`filepath.IsAbs("/usr/bin/node")` 在
+// windows 上是 **false**（windows 要求盘符），异平台写法会被误判成"随包相对
+// 二进制"⇒ `setup --check` 报出假的 `plugin binary missing`（CI Test (Windows)
+// 实测）。因此额外按前导路径分隔符判定。
+func shippedBinaryPath(dir, entry string) (string, bool) {
+	e := strings.TrimSpace(entry)
+	if e == "" || strings.ContainsAny(e, " \t") || filepath.IsAbs(e) ||
+		hasLeadingPathSeparator(e) || isWindowsDrivePath(e) {
+		return "", false
+	}
+	return filepath.Join(dir, filepath.FromSlash(strings.TrimPrefix(e, "./"))), true
+}
+
+// hasLeadingPathSeparator 报告路径是否以 `/` 或 `\` 开头（绝对/系统路径的标志），
+// 与运行平台无关。
+func hasLeadingPathSeparator(p string) bool {
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
+}
+
+// isWindowsDrivePath 报告路径是否是 windows 盘符绝对路径（`C:\x` / `C:/x`）。
+// 非 windows 平台上 `filepath.IsAbs` 不认它 ⇒ 不单独跳过就会把跨平台 manifest 的
+// 系统二进制误判成"随包相对文件"，报出假的 `plugin binary missing`。
+func isWindowsDrivePath(p string) bool {
+	if len(p) < 3 || p[1] != ':' {
+		return false
+	}
+	c := p[0]
+	isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	if !isLetter {
+		return false
+	}
+	return p[2] == '\\' || p[2] == '/'
+}
+
+// shippedBinaryIssue 返回入口二进制的问题描述（"" = 正常）。
+// windows 上按 plugin/runtime.go 的 resolvePluginBinary 同一规则允许
+// <entry>.exe sibling（tarball 里的 windows 产物就是带 .exe 的）。
+func shippedBinaryIssue(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil && runtime.GOOS == "windows" {
+		if exeFi, exeErr := os.Stat(path + ".exe"); exeErr == nil {
+			fi, err = exeFi, nil
 		}
 	}
-	if len(disabledLines) > 0 {
-		fmt.Println("Plugin health: disabled (config plugins.disabled_plugins):")
-		for _, line := range disabledLines {
-			fmt.Printf("  %s\n", line)
-		}
+	switch {
+	case err != nil:
+		return "plugin binary missing"
+	case runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0:
+		return "plugin binary not executable"
 	}
+	return ""
 }

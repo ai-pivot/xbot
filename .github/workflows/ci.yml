@@ -55,6 +55,42 @@ jobs:
         working-directory: plugin/protocol
         run: go test -v -race ./...
 
+      # Plugin modules are SEPARATE Go modules (plugins/*/go.mod) — the root
+      # `./...` patterns never reach them, so before this step a plugin could
+      # fail to compile or fail its own tests while PR CI stayed green (the
+      # breakage would only surface in release.yml's build-plugins job, i.e. at
+      # release time). New built-in plugins (xbot.ssh-runner, xbot.genui,
+      # xbot.git-fancy, xbot.iteration-stats) are covered by the glob — no name
+      # list to maintain. Cross-compiling the release targets here catches
+      # platform-specific breakage (e.g. windows-only code) in the PR.
+      - name: Build + test plugin modules (separate go.mod under plugins/*)
+        run: |
+          set -euo pipefail
+          for mod in plugins/*/; do
+            [ -f "${mod}go.mod" ] || continue
+            echo "::group::plugin module ${mod}"
+            # Manifest-only / test-only modules (xbot.iteration-stats ships no
+            # non-test sources) have no buildable package — `go build ./...`
+            # exits 1 with "no packages to build" ⇒ only build real packages;
+            # their tests still run below.
+            has_src=0
+            for f in "${mod}"*.go; do
+              case "$f" in
+                *_test.go) ;;
+                *) [ -f "$f" ] && has_src=1 ;;
+              esac
+            done
+            if [ "$has_src" = "1" ]; then
+              (cd "$mod" && go build ./...)
+              for target in windows/amd64 linux/arm64 darwin/arm64; do
+                echo "  cross-compile ${target}"
+                (cd "$mod" && CGO_ENABLED=0 GOOS="${target%%/*}" GOARCH="${target##*/}" go build ./...)
+              done
+            fi
+            (cd "$mod" && go test -race ./...)
+            echo "::endgroup::"
+          done
+
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         if: always()

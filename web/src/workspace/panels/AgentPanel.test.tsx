@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => {
   const chat = {
     messages: [] as Array<{ id: string; role: string; content: string; isPartial?: boolean; turnID?: number }>,
     loading: false,
+    historyReady: true,
+    markHistoryStale: vi.fn(() => order.push('markHistoryStale')),
     error: null,
     resolvedChatID: 'chat-1',
     initialProgress: null,
@@ -17,13 +19,15 @@ const mocks = vi.hoisted(() => {
     upload: vi.fn(),
   }
   const context = {
-    ws: { onSession: vi.fn(() => vi.fn()) },
-    sessionStore: {
-      activeSession: { channel: 'web', chatID: 'chat-1' },
-      sessions: [],
-      // 乐观 busy 的断言点：命令（无 turn_id）绝不允许置 'running'
-      // （命令没有 turn 生命周期 ⇒ 置了永远清不掉 ⇒ busy 占位符永远显示「思考中」）。
-      setStatus: vi.fn(),
+      ws: { connected: true, onSession: vi.fn(() => vi.fn()) },
+      sessionStore: {
+        activeSession: { channel: 'web', chatID: 'chat-1' },
+        sessions: [],
+        // AgentPanel 的 AskUser DB 权威水合 effect 调它（会话加载 / tab 重新可见）。
+        hydrateAskUserPrompt: vi.fn(),
+        // 乐观 busy 的断言点：命令（无 turn_id）绝不允许置 'running'
+        // （命令没有 turn 生命周期 ⇒ 置了永远清不掉 ⇒ busy 占位符永远显示「思考中」）。
+        setStatus: vi.fn(),
     },
     rightSidebar: { openPanel: vi.fn() },
   }
@@ -36,7 +40,23 @@ const mocks = vi.hoisted(() => {
     liveMessage: null,
     isStreaming: false,
   }
-  return { chat, context, order, progress, rewindHistory: vi.fn(), fetchHistory: vi.fn(), lastChatID: null as string | null, lastOnSendSuccess: null as ((info?: { requestID: string; turnID?: number; queued?: boolean }) => void) | null }
+  return {
+    chat,
+    context,
+    order,
+    progress,
+    rewindHistory: vi.fn(),
+    fetchHistory: vi.fn(),
+    // get_pending_ask_user 水合（AgentPanel 的 DB 权威 AskUser 水合 effect）。
+    // 这里是**全量模块 mock**：生产代码 import 的每个符号都必须导出，否则 effect
+    // 在被动挂载期间访问该绑定即抛
+    // `No "getPendingAskUser" export is defined on the "@/components/agent/api" mock`
+    // （vitest 的 mock 命名空间对未知导出直接抛错，不是返回 undefined）。
+    getPendingAskUser: vi.fn(),
+    lastChatID: null as string | null,
+    // 乐观 busy（命令不得置位）的接线断言点：捕获 onSendSuccess 回调。
+    lastOnSendSuccess: null as ((info?: { requestID: string; turnID?: number; queued?: boolean }) => void) | null,
+  }
 })
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -97,10 +117,13 @@ vi.mock('@/components/agent/api', () => ({
   setGoal: vi.fn().mockResolvedValue(undefined),
   clearGoal: vi.fn().mockResolvedValue(undefined),
   getGoal: vi.fn().mockResolvedValue(null),
+  getPendingAskUser: (...args: unknown[]) => mocks.getPendingAskUser(...args),
 }))
 vi.mock('@/components/agent/AskUserPanel', () => ({ AskUserPanel: () => null }))
 vi.mock('@/components/agent/ContextRing', () => ({ ContextRing: () => null }))
-vi.mock('@/components/agent/MessageInput', () => ({ MessageInput: () => null }))
+vi.mock('@/components/agent/MessageInput', () => ({
+  MessageInput: () => <div data-testid="agent-composer" />,
+}))
 vi.mock('@/components/agent/ModelSelector', () => ({ ModelSelector: () => null }))
 vi.mock('@/components/agent/MessageList', () => ({
   latestCompactBoundaryIndex: () => -1,
@@ -154,6 +177,16 @@ vi.mock('@/workspace/types', () => ({ useDockviewContext: () => mocks.context })
 vi.mock('@/providers/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 import { AgentPanel } from './AgentPanel'
+
+// `get_pending_ask_user` 水合（AgentPanel 的 DB 权威 AskUser 水合 effect）在**每个用例
+// 渲染时都会各发一次**（chatID/messageChannel/isVisible 就绪即触发）。默认给"当前无
+// pending 提问"⇒ 水合是 no-op，既有用例（rewind/busy/live/归属/断线）的断言不被副作用
+// 污染；需要验证水合的用例在自身 it 里覆盖实现。
+beforeEach(() => {
+  mocks.getPendingAskUser.mockReset()
+  mocks.getPendingAskUser.mockResolvedValue(null)
+  mocks.context.sessionStore.hydrateAskUserPrompt.mockClear()
+})
 
 describe('AgentPanel rewind', () => {
   beforeEach(() => {
@@ -424,6 +457,38 @@ describe('AgentPanel re-subscribe reconcile（P0：通知行在不可见期间�
   })
 })
 
+describe('\u4e0d\u53ef\u89c1\u9762\u677f\u4e0d\u5f97\u5728 DOM \u91cc\u4fdd\u7559 chrome\uff082026-09-19 P0\uff1a\u5207\u56de\u300c\u5df2\u6253\u5f00\u8fc7\u300d\u7684 tab \u65f6\u8f93\u5165\u6846\u6d6e\u5728\u6d88\u606f\u533a\u4e0a\u65b9\u4e00\u95ea\uff09', () => {
+  it('\u9762\u677f\u4e0d\u53ef\u89c1\u65f6\u4e0d\u5f97\u6e32\u67d3\u8f93\u5165\u6846\uff08\u9648\u65e7 DOM \u662f\u6fc0\u6d3b\u90a3\u4e00\u5e27\u88ab\u753b\u51fa\u6765\u7684\u552f\u4e00\u6765\u6e90\uff09', async () => {
+    // \u7528\u6237\u590d\u73b0\u6761\u4ef6\uff08\u51b3\u5b9a\u6027\uff09\uff1a\u53ea\u6709\u7535\u8111\u7aef\u3001\u4e14\u76ee\u6807 tab **\u4e4b\u524d\u5df2\u7ecf\u6253\u5f00\u8fc7**\u65f6\u51fa\u73b0\uff1b
+    // \u5148\u628a\u8be5 tab \u4ece tab \u680f x \u6389\u518d\u5207\u5c31\u6ca1\u6709\u3002\u21d2 \u5df2\u6253\u5f00 = \u9762\u677f\u65e9\u5df2\u6302\u8f7d\uff08renderer='always'
+    // \u5e38\u9a7b DOM\uff09\u3002dockview \u5bf9\u975e\u6fc0\u6d3b\u9762\u677f\u7f6e visibility:hidden\uff0c\u6fc0\u6d3b\u90a3\u4e00\u5e27\u5728\u5b83\u81ea\u5df1\u7684 rAF \u91cc
+    // \u6e05\u6389 hidden\uff0c\u800c React \u7684 isVisible \u66f4\u65b0\uff08+ markHistoryStale \u21d2 loading \u5c4f\uff09\u843d\u5728\u66f4\u665a\u7684\u63d0\u4ea4
+    // \u21d2 \u6d4f\u89c8\u5668\u5148\u753b**\u9648\u65e7 DOM**\u3002\u65e7\u4ee3\u7801\u53ea\u628a MessageList \u6309 isVisible \u9690\u85cf\uff0c
+    // \u6258\u76d8/\u8f93\u5165\u6846\u4ecd\u5728 DOM \u21d2 \u753b\u51fa\u300c\u7a7a\u6d88\u606f\u533a + \u6258\u76d8 + \u8f93\u5165\u6846\u300d\uff08\u8f93\u5165\u6846\u81ea\u7136\u9ad8\u5ea6\u3001
+    // \u8d34\u5728\u9762\u677f\u9876\u90e8\uff09= \u7528\u6237\u622a\u56fe\u90a3\u6392\u6d6e\u7740\u7684\u63a7\u4ef6\u3002
+    // \u5951\u7ea6\uff1a\u4e0d\u53ef\u89c1 \u21d2 chrome\uff08\u6258\u76d8/\u8f93\u5165\u6846\uff09\u4e5f\u5fc5\u987b\u4e0d\u6e32\u67d3\uff08\u4e0e MessageList \u540c\u4e00\u6761\u89c4\u5219\uff09\u3002
+    const cbs: Array<(e: { isVisible: boolean }) => void> = []
+    const api = {
+      isVisible: true,
+      onDidVisibilityChange: (fn: (e: { isVisible: boolean }) => void) => {
+        cbs.push(fn)
+        return { dispose: () => {} }
+      },
+    }
+    const { container } = render(
+      <AgentPanel params={{} as never} api={api as never} containerApi={{} as never} />,
+    )
+    await waitFor(() => expect(cbs.length).toBeGreaterThan(0))
+    // 可见时确实渲染（自证 mock 生效、断言有判别力）
+    expect(container.querySelector('[data-testid="agent-composer"]')).not.toBeNull()
+
+    act(() => cbs[0]({ isVisible: false }))
+
+    // 不可见 ⇒ 输入框必须从 DOM 移除（陈旧 DOM 是激活那一帧被画出来的唯一来源）
+    expect(container.querySelector('[data-testid="agent-composer"]')).toBeNull()
+  })
+})
+
 /**
  * 会话归属不变量：**一个会话至多被一个 agent 面板渲染**。
  *
@@ -475,5 +540,88 @@ describe('AgentPanel 会话归属（一个会话至多被一个 agent 面板渲�
       />,
     )
     expect(mocks.lastChatID).toBe('chat-1')
+  })
+})
+
+describe('断线（重连中）不再显示黄色 Reconnecting 条，改走 loading splash', () => {
+  // 2026-09-17 用户要求：「把黄色的 reconnecting… 去掉，以后这个期间直接显示 loading 的
+  // splash screen」。
+  // ⛔ 但**只对"曾经连上过再掉线"的真·重连生效** —— 从未连上（初次加载 / 无 SSE 的 mock
+  // 场景）绝不能遮罩，否则会把已渲染的历史一起藏起来（CI E2E 实测：一刀切会让 8 个
+  // 非 SSE 的 spec 找不到内容）。
+  it('从未连上过（connected=false 首帧）⇒ 不遮罩，照常渲染消息列表', () => {
+    mocks.context.ws.connected = false
+    try {
+      render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+      expect(screen.queryByTestId('session-loading-screen')).toBeNull()
+    } finally {
+      mocks.context.ws.connected = true
+    }
+  })
+
+  it('连上过再掉线（真·重连）⇒ 渲染 session-loading-screen，且没有任何 Reconnecting 文案', () => {
+    mocks.context.ws.connected = true
+    const { rerender } = render(
+      <AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />,
+    )
+    expect(screen.queryByTestId('session-loading-screen')).toBeNull()
+    mocks.context.ws.connected = false // 掉线（重连中）
+    rerender(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+    expect(screen.getByTestId('session-loading-screen')).toBeInTheDocument()
+    // 黄条已删除（三语文案都不应出现）
+    expect(screen.queryByText(/Reconnecting|重新连接中|再接続中/)).toBeNull()
+    mocks.context.ws.connected = true
+  })
+})
+
+/**
+ * AskUser 面板的 DB 权威水合（`get_pending_ask_user`）。
+ *
+ * 面板过去唯一的载体是实时 `ask_user` 事件：会话在提问时刻没有 SSE 订阅（用户正在看
+ * 别的会话 / 事件被 replay ring 淘汰 / 信封 key 推导失败）⇒ 没有任何路径重新推导
+ * pending 状态 ⇒ 面板永不渲染、turn 永远"思考中"（2026-09-20 事故）。
+ * 契约（本组用例钉死）：会话加载 / tab 重新可见时经 `get_pending_ask_user` 水合状态机
+ * —— 该 RPC 走服务端持久化的 ask_question/ask_answer 记录，是 DB 单一权威。
+ *
+ * 判别力：删掉 AgentPanel 的那次水合调用 ⇒ 本例的 `hydrateAskUserPrompt` 断言必红。
+ */
+describe('AgentPanel AskUser 水合（get_pending_ask_user，DB 权威）', () => {
+  it('会话可见时用 DB 的 pending 记录水合（漏掉实时 ask_user 事件也能自愈）', async () => {
+    mocks.getPendingAskUser.mockResolvedValue({
+      request_id: 'req-7',
+      questions: [{ question: 'proceed?', options: ['yes', 'no'], multi_select: true, allow_other: true }],
+    })
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() =>
+      expect(mocks.getPendingAskUser).toHaveBeenCalledWith({ channel: 'web', chatID: 'chat-1' }),
+    )
+    await waitFor(() =>
+      expect(mocks.context.sessionStore.hydrateAskUserPrompt).toHaveBeenCalledWith('web', 'chat-1', {
+        // 与实时 ask_user 事件共用同一个 parseAskUserPrompt（snake_case → camelCase）。
+        requestId: 'req-7',
+        questions: [{ question: 'proceed?', options: ['yes', 'no'], multiSelect: true, allowOther: true }],
+      }),
+    )
+  })
+
+  it('DB 无 pending 记录时不水合（绝不伪造面板）', async () => {
+    mocks.getPendingAskUser.mockResolvedValue(null)
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
+    expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
+  })
+
+  it('载荷不含任何问题（通用 RPC mock 的 {ok:true}）时不水合 —— 空 prompt 会崩掉整块面板', async () => {
+    // 判别力：这不是"额外的防御"——它是 2026-09-20 CI 9 个 spec 全红的根因。
+    // 通用 `/api/rpc` 通配路由 mock 对任何方法都回 {ok:true, data:{ok:true}}，
+    // 过去它被合成为 questions: [] 的 prompt ⇒ AskUserPanel 读 questions[0].allowOther
+    // 抛异常 ⇒ 崩溃边界替换整块面板（goal banner / todo 面板全消失）。
+    mocks.getPendingAskUser.mockResolvedValue({ ok: true })
+    render(<AgentPanel params={{} as never} api={{} as never} containerApi={{} as never} />)
+
+    await waitFor(() => expect(mocks.getPendingAskUser).toHaveBeenCalled())
+    expect(mocks.context.sessionStore.hydrateAskUserPrompt).not.toHaveBeenCalled()
   })
 })

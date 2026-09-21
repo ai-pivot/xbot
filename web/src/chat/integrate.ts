@@ -15,6 +15,7 @@ import {
   historyProgressToLive,
   normalizeWebIteration,
 } from '@/components/agent/normalize'
+import { boundIterationTail, SNAPSHOT_ITERATION_LIMIT } from './normalize'
 import {
   EMPTY_PROGRESS_SNAPSHOT,
   type ChatMessage,
@@ -110,7 +111,17 @@ export function historyToReplaced(
   // 或 DB 行已 commit）；恢复成 live 会让后续事件错挂（切回会话后
   // "看不到新进度"的帮凶之一）。
   let active: { turnID: ReturnType<typeof mkTurnID>; snapshot: LiveSnapshot } | null = null
-  const hp = initialProgress as { turn_id?: number; phase?: string; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean; todos?: unknown } | null
+  const hpRaw = initialProgress as { turn_id?: number; phase?: string; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean; todos?: unknown } | null
+  // ⛔ 超大快照只取**尾部 N 个**迭代（2026-09-17 实测根因，见 boundIterationTail）：
+  // 服务端 FetchAll 曾把 1964 个迭代（11.2MB）整包下发 ⇒ 浏览器物化 1961 个迭代块 /
+  // 50,633 DOM 节点 ⇒ 切会话 7175ms、长任务 2997ms。快照只需撑起进行中 turn 的画面。
+  const hp =
+    hpRaw && Array.isArray(hpRaw.iteration_history) && hpRaw.iteration_history.length > SNAPSHOT_ITERATION_LIMIT
+      ? {
+          ...hpRaw,
+          iteration_history: boundIterationTail(hpRaw.iteration_history, SNAPSHOT_ITERATION_LIMIT),
+        }
+      : hpRaw
   if (
     hp &&
     typeof hp.turn_id === 'number' &&
@@ -244,6 +255,9 @@ function rowToChatMessage(r: Row): ChatMessage {
         iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: true,
+        // frozen ≠ live：见 ChatMessage.frozen 的注释（不变量：busy ⇒ 必须有
+        // 进行中信号；frozen 行不得占用 live 槽位 / 抑制 busy 占位符）。
+        frozen: true,
         turnID: r.turnID,
       }
     case 'committed':

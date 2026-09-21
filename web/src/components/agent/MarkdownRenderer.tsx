@@ -124,12 +124,17 @@ const StreamingContext = createContext(false);
  */
 type CodeProps = ComponentPropsWithoutRef<"code"> & {
   inline?: boolean;
+  /** react-markdown 传入的 AST 节点 —— **绝不能落到 DOM 上**（否则产出的 HTML
+   *  带 `node="[object Object]"`；用户复制/导出消息就会带出这种垃圾属性，
+   *  2026-09-18 用户用真实 HTML 证据报告）。 */
+  node?: unknown;
 };
 
 const CodeBlock = memo(function CodeBlock({
   inline,
   className,
   children,
+  node: _node,
   ...props
 }: CodeProps) {
   const { wordWrap } = useCodeWordWrap();
@@ -415,7 +420,18 @@ function clipTrailingUnclosedMath(markdown: string): string {
       }
     }
   }
-  if (openBlockAt !== -1) return markdown.slice(0, openBlockAt);
+  if (openBlockAt !== -1) {
+    const clipped = markdown.slice(0, openBlockAt);
+    // ⛔ 绝不返回空串（2026-09-18 用户报告「有概率内容全部消失」）：模型刚开写公式时
+    // 未闭合 `$$` 就落在内容最前面 ⇒ slice(0, 0) === "" ⇒ 整条消息渲染成空白（
+    // 概率性出现，因为取决于 $$ 落在流式文本的哪个位置）。此时既不能裁空、也不能
+    // 原样交给 remark-math（未闭合 $$ 会把到结尾的内容全吞进 KaTeX，同样看不见）——
+    // 把定界符转义为普通文本，其余内容照常渲染；公式闭合后自动恢复成真公式。
+    if (clipped.trim() === "") {
+      return "\\$\\$" + markdown.slice(openBlockAt + 2);
+    }
+    return clipped;
+  }
 
   // No unclosed block math — check the LAST line for an unclosed INLINE `$`.
   // remark-math inline math pairs `$...$` on the SAME line, so a trailing

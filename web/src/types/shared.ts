@@ -540,6 +540,11 @@ export interface ChatMessage {
   iterationsTruncated?: number
   timestamp: string
   isPartial: boolean
+  /** live 槽位区分：frozen 行（cancel / idle 兜底定格）也 isPartial=true，但它
+   *  **不是** live 行 —— 不得占用 liveProgress 槽位、不得抑制 busy 占位符。
+   *  不变量（用户 2026-09-19）：「输入框是 cancel（busy）⇒ 上面必须能看到进行中
+   *  信号」；frozen 行冒充 live 行会让 busy 时看起来像 idle（不变量被破坏）。 */
+  frozen?: boolean
   turnID: number
   displayOnly?: boolean
   /** True when loaded from persisted backend history, not an optimistic echo. */

@@ -109,8 +109,8 @@ func TestFormStr(t *testing.T) {
 func TestBuildSettingsCard_GeneralTab(t *testing.T) {
 	f := newTestFeishuChannel()
 	f.SetSettingsCallbacks(SettingsCallbacks{
-		RunnerConnectCmdGet: func(senderID string) string {
-			return "./xbot-runner --server ws://example.com:8080/" + senderID + " --token secret"
+		RunnerConnectCmd: func(name string) (string, error) {
+			return "./xbot-runner --server ws://example.com:8080/ws --name " + name + " --token secret", nil
 		},
 	})
 
@@ -136,8 +136,8 @@ func TestBuildSettingsCard_GeneralTab(t *testing.T) {
 func TestBuildSettingsCard_DefaultsToGeneral(t *testing.T) {
 	f := newTestFeishuChannel()
 	f.SetSettingsCallbacks(SettingsCallbacks{
-		RunnerConnectCmdGet: func(senderID string) string {
-			return "./xbot-runner --server ws://example.com:8080/" + senderID + " --token secret"
+		RunnerConnectCmd: func(name string) (string, error) {
+			return "./xbot-runner --server ws://example.com:8080/ws --name " + name + " --token secret", nil
 		},
 	})
 

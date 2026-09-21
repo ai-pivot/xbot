@@ -232,6 +232,19 @@ class LayoutRegistryImpl {
   }
 
   private loadOverrides(): void {
+    // 一次性迁移（2026-09-20）：DnD 已删除，清除旧的拖拽产生的陈旧布局覆盖。
+    // 用户报告：runner 选择器被拖到侧边栏后回不去 —— 覆盖持久化在 localStorage
+    // 且同步到后端。后端已清（DB），这里清前端 localStorage。
+    const MIGRATED_KEY = 'xbot:layout-dnd-removed-migrated'
+    try {
+      if (!localStorage.getItem(MIGRATED_KEY)) {
+        localStorage.removeItem(LAYOUT_OVERRIDES_KEY)
+        localStorage.removeItem(LAYOUT_ORDER_KEY)
+        localStorage.setItem(MIGRATED_KEY, '1')
+      }
+    } catch {
+      /* storage unavailable */
+    }
     try {
       const raw = localStorage.getItem(LAYOUT_OVERRIDES_KEY)
       if (raw) this.overrides = JSON.parse(raw) as LayoutOverrides

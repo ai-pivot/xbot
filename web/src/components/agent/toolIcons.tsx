@@ -10,7 +10,7 @@ import {
   SquareTerminal, FileText, Search, FolderSearch, FilePlus, FilePen,
   Globe, Download, Sparkles, Wrench, GitBranch, FolderOpen,
   Clock, MessageSquare, Users, Settings, ListTodo, Edit, Zap,
-  Layers, HelpCircle, type LucideIcon,
+  Layers, HelpCircle, Upload, type LucideIcon,
 } from 'lucide-react'
 
 const TOOL_ICON_MAP: Record<string, LucideIcon> = {
@@ -53,6 +53,12 @@ const TOOL_ICON_MAP: Record<string, LucideIcon> = {
 
   // File operations (download)
   DownloadFile: Download,
+
+  // 发布/分享（share_file：把本地文件发布成可嵌入的 URL）——
+  // ⚠️ 内置工具**必须**有专属 glyph：此前落到 `FALLBACK_ICON`（Wrench = "未知工具"），
+  // 在一排工具 pill 里既不表意也不好看（用户 2026-09-19：「折叠版本的 icon 搞好看点」）。
+  // `Upload`（托盘 + 上箭头）与 `Download`（Fetch/DownloadFile）成镜像对：进 / 出。
+  share_file:   Upload,
 
   // Group / peers
   JoinGroup:        Users,

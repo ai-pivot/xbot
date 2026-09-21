@@ -95,14 +95,12 @@ func execSandbox(ctx *ToolContext, useShell bool, shellCmd, command string, args
 		return nil, fmt.Errorf("sandbox not enabled")
 	}
 
-	userID := ctx.OriginUserID
-	if userID == "" {
-		userID = ctx.SenderID
-	}
+	// Sandbox routing is session-scoped (single-operator design).
+	userID := ctx.SessionKey
 
 	spec := ExecSpec{
-		Timeout: resolveTimeout(timeout...),
-		UserID:  userID,
+		Timeout:    resolveTimeout(timeout...),
+		SessionKey: userID,
 	}
 
 	if useShell {

@@ -18,7 +18,7 @@ import (
 // WebSocket connection using the stdio streaming protocol.
 type RemoteStdioTransport struct {
 	Sandbox    *RemoteSandbox
-	UserID     string
+	SessionKey string
 	StreamID   string
 	Command    string
 	Args       []string
@@ -30,9 +30,9 @@ type RemoteStdioTransport struct {
 // Connect starts the remote process and returns an MCP Connection that
 // proxies stdin/stdout over the runner WebSocket.
 func (t *RemoteStdioTransport) Connect(ctx context.Context) (mcp.Connection, error) {
-	rc, err := t.Sandbox.getRunner(t.UserID)
+	rc, err := t.Sandbox.getRunnerForSession(t.SessionKey)
 	if err != nil {
-		return nil, fmt.Errorf("no runner for user %q: %w", t.UserID, err)
+		return nil, fmt.Errorf("no runner for user %q: %w", t.SessionKey, err)
 	}
 
 	reqBody, _ := json.Marshal(StdioStartRequest{
@@ -43,10 +43,9 @@ func (t *RemoteStdioTransport) Connect(ctx context.Context) (mcp.Connection, err
 		Dir:      t.Dir,
 	})
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   ProtoStdioStart,
-		UserID: t.UserID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: ProtoStdioStart,
+		Body: reqBody,
 	}
 
 	resp, err := t.Sandbox.sendRequest(ctx, rc, msg, defaultRequestTimeout)
@@ -71,18 +70,18 @@ func (t *RemoteStdioTransport) Connect(ctx context.Context) (mcp.Connection, err
 
 	writer := &remoteStdinWriter{
 		sandbox:  t.Sandbox,
-		userID:   t.UserID,
+		userID:   t.SessionKey,
 		streamID: t.StreamID,
 	}
 
 	log.WithFields(log.Fields{
-		"user_id":     t.UserID,
+		"user_id":     t.SessionKey,
 		"stream_id":   t.StreamID,
 		"server_name": t.ServerName,
 		"command":     t.Command,
 	}).Info("Remote stdio MCP transport connected")
 
-	inner := &mcp.IOTransport{Reader: pr, Writer: &stdinWriteCloser{w: writer, sandbox: t.Sandbox, streamID: t.StreamID, userID: t.UserID}}
+	inner := &mcp.IOTransport{Reader: pr, Writer: &stdinWriteCloser{w: writer, sandbox: t.Sandbox, streamID: t.StreamID, userID: t.SessionKey}}
 	return inner.Connect(ctx)
 }
 
@@ -108,7 +107,7 @@ type remoteStdinWriter struct {
 }
 
 func (w *remoteStdinWriter) Write(p []byte) (int, error) {
-	rc, err := w.sandbox.getRunner(w.userID)
+	rc, err := w.sandbox.getRunnerForSession("")
 	if err != nil {
 		return 0, fmt.Errorf("runner disconnected: %w", err)
 	}
@@ -118,9 +117,8 @@ func (w *remoteStdinWriter) Write(p []byte) (int, error) {
 		Data:     base64.StdEncoding.EncodeToString(p),
 	})
 	msg := &RunnerMessage{
-		Type:   ProtoStdioWrite,
-		UserID: w.userID,
-		Body:   reqBody,
+		Type: ProtoStdioWrite,
+		Body: reqBody,
 	}
 
 	if err := w.sandbox.sendOnly(rc, msg); err != nil {
@@ -142,17 +140,16 @@ func (c *stdinWriteCloser) Write(p []byte) (int, error) {
 }
 
 func (c *stdinWriteCloser) Close() error {
-	rc, err := c.sandbox.getRunner(c.userID)
+	rc, err := c.sandbox.getRunnerForSession("")
 	if err != nil {
 		return nil // runner already gone
 	}
 
 	reqBody, _ := json.Marshal(StdioCloseRequest{StreamID: c.streamID})
 	msg := &RunnerMessage{
-		ID:     generateID(),
-		Type:   ProtoStdioClose,
-		UserID: c.userID,
-		Body:   reqBody,
+		ID:   generateID(),
+		Type: ProtoStdioClose,
+		Body: reqBody,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)

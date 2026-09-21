@@ -72,12 +72,32 @@ type RunnerMessage struct {
 	Body   json.RawMessage `json:"body,omitempty"`
 }
 
+// ProtocolVersion is the wire-protocol revision spoken by this build.
+//
+// Bump it whenever the runner↔server message contract changes in a way that is
+// not backward compatible. Runners report their version at registration; the
+// server refuses a mismatch loudly instead of failing mysteriously later.
+// Version 1 introduced the single-operator endpoint (/ws) and runner-attested
+// name/version fields.
+const ProtocolVersion = 1
+
 // RegisterRequest is sent by the runner on first connection.
 type RegisterRequest struct {
-	UserID    string `json:"user_id"`
+	// UserID is retained for wire compatibility with pre-v1 runners; it is
+	// ignored (single-operator design).
+	UserID    string `json:"user_id,omitempty"`
 	AuthToken string `json:"auth_token"`
 	Workspace string `json:"workspace,omitempty"` // Runner's workspace root directory
 	Shell     string `json:"shell,omitempty"`     // Runner's default shell path (e.g. /bin/bash)
+
+	// RunnerName is the runner's self-reported name. The server prefers the name
+	// bound to the connect token; this is used when the token is unknown (e.g.
+	// the shared legacy token).
+	RunnerName string `json:"runner_name,omitempty"`
+	// Version is the xbot-runner build version (informational; shown in the UI).
+	Version string `json:"version,omitempty"`
+	// ProtocolVersion is the wire revision the runner speaks (0 = legacy).
+	ProtocolVersion int `json:"protocol_version,omitempty"`
 
 	// LLM capability declaration (runner self-reports)
 	LLMProvider string `json:"llm_provider,omitempty"` // "openai" or "anthropic", empty = no LLM

@@ -33,6 +33,7 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1', res
   let activeProgress: unknown = null
   let curResetKey = resetKey
   let curProgressChatID = progressChatID
+  let curSessionRunning = false
   const api = renderHook(() =>
     useAgentChatState({
       progressChatID: curProgressChatID,
@@ -43,6 +44,7 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1', res
       historyChatID: curProgressChatID,
       initialProgress: activeProgress,
       resetKey: curResetKey,
+      sessionRunning: curSessionRunning,
     }),
   )
   return {
@@ -61,6 +63,11 @@ function mountHook(ws: ReturnType<typeof makeWS>, progressChatID = 'chat-1', res
     },
     rerenderWithActiveProgress(ap: unknown) {
       activeProgress = ap
+      api.rerender()
+    },
+    /** 会话 running（服务端 reconcile 权威）变化 → 状态机收到 session_running。 */
+    setSessionRunning(next: boolean) {
+      curSessionRunning = next
       api.rerender()
     },
   }

@@ -981,10 +981,7 @@ func defaultToolExecutor(cfg *RunConfig) func(ctx context.Context, tc llm.ToolCa
 
 		// Re-resolve sandbox per tool call — picks up runner switches immediately
 		if router, ok := cfg.SandboxRouter.(*tools.SandboxRouter); ok {
-			cfg.Sandbox = router.SandboxForSession(
-				cfg.Channel+":"+cfg.ChatID,
-				cfg.OriginUserID,
-			)
+			cfg.Sandbox = router.SandboxForSession(cfg.Channel + ":" + cfg.ChatID)
 		}
 
 		toolExecCtx := withApprovalTarget(ctx, cfg.ChatID, cfg.OriginUserID)
@@ -1185,12 +1182,12 @@ func sandboxReadOnlyRoots(hostRoots []string, sandboxWorkDir, workspaceRoot stri
 // 从 RunConfig 中提取所有字段，主 Agent 和 SubAgent 使用同一个构建路径。
 // resolveSandbox resolves the per-user sandbox instance if the global sandbox
 // implements SandboxResolver (e.g., SandboxRouter). Falls back to the global instance.
-func resolveSandbox(sandbox tools.Sandbox, userID string) tools.Sandbox {
+func resolveSandbox(sandbox tools.Sandbox, sessionKey string) tools.Sandbox {
 	if sandbox == nil {
 		return nil
 	}
 	if resolver, ok := sandbox.(tools.SandboxResolver); ok {
-		return resolver.SandboxForUser(userID)
+		return resolver.SandboxForSession(sessionKey)
 	}
 	return sandbox
 }
@@ -1674,8 +1671,7 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 	// Inject runner CRUD callbacks (for config tool).
 	// Runner management requires a database — if not configured, callbacks return errors.
 	if db := tools.GetRunnerTokenDB(); db != nil {
-		store := tools.NewRunnerTokenStore(db)
-		originUserID := cfg.OriginUserID
+		store := tools.NewRunnerStore(db)
 		tc.RunnerCreate = func(name, mode, dockerImage, workspace, llmProvider, llmAPIKey, llmModel, llmBaseURL string) (string, error) {
 			llm := tools.RunnerLLMSettings{
 				Provider: llmProvider,
@@ -1688,35 +1684,22 @@ func buildToolContext(ctx context.Context, cfg *RunConfig) *tools.ToolContext {
 			if router, ok := sb.(*tools.SandboxRouter); ok {
 				router.EnsureRemote()
 			}
-			token, _, err := store.CreateRunner(originUserID, name, mode, dockerImage, workspace, llm)
+			token, err := store.Create(name, mode, dockerImage, workspace, llm)
 			return token, err
 		}
 		tc.RunnerList = func() ([]tools.RunnerInfo, error) {
-			runners, err := store.ListRunners(originUserID)
+			runners, err := store.List()
 			if err != nil {
 				return nil, err
 			}
-			// Populate online status (same as server-side populateRunnerOnlineStatus)
-			if sb := tools.GetSandbox(); sb != nil {
-				if router, ok := sb.(*tools.SandboxRouter); ok {
-					for i := range runners {
-						runners[i].Online = router.IsRunnerOnline(originUserID, runners[i].Name)
-					}
-				}
-			}
+			tools.PopulateRunnerOnlineStatus(runners)
 			return runners, nil
 		}
 		tc.RunnerDelete = func(name string) error {
-			return store.DeleteRunner(originUserID, name)
-		}
-		tc.RunnerGetActive = func() (string, error) {
-			return store.GetActiveRunner(originUserID)
-		}
-		tc.RunnerSetActive = func(name string) error {
-			return store.SetActiveRunner(originUserID, name)
+			return store.Delete(name)
 		}
 		tc.RunnerRename = func(oldName, newName string) error {
-			return store.RenameRunner(originUserID, oldName, newName)
+			return store.Rename(oldName, newName)
 		}
 	}
 

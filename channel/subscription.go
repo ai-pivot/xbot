@@ -307,6 +307,12 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 	var pendingTurnID uint64
 	var lastAssistantID int64
 	var syntheticIdx int
+	// 同一 turn 的 assistant 行**只能有一条**（2026-09-17 实测修复）：v55 起回复文本存
+	// iteration_history，session_messages 只留空壳占位，重启/续跑会各写一条空壳 ⇒
+	// 旧实现为每条都追加一条 HistoryMessage（每条都重复带完整 turnIterMap 迭代 ≈272KB）
+	// ⇒ 真实会话里同一 turn 重复 6 份（/api/history 12.9MB 中的 1.4MB）。
+	// 这里按 turn 去重：迭代只附一次，真实最终回复文本（非空 content）并入那唯一一条。
+	structuredRowIdx := map[uint64]int{}
 
 	flushPending := func() {
 		finishCurIter()
@@ -315,6 +321,11 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 		// turn's fallback (no turnIterMap) iteration numbers restart at 1.
 		curIterIdx = 0
 		if len(pendingIters) > 0 {
+			// 该 turn 已经有权威行（structured）⇒ 绝不重复追加（见 structuredRowIdx）。
+			if _, dup := structuredRowIdx[pendingTurnID]; dup && pendingTurnID > 0 {
+				pendingIters = nil
+				return
+			}
 			// v55: if structured iteration_history data exists for this turn,
 			// use it as the authoritative source instead of fabricated pendingIters.
 			// This handles BOTH cases:
@@ -460,8 +471,21 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 					}
 
 					if len(iters) > 0 {
+						// 同一 turn 只能有一条 assistant 行：v55 空壳占位（重启/续跑各写一条）
+						// 会让旧实现为**每条**都追加一份（都带同样迭代）⇒ 同一 turn 重复 N 份
+						// （实测 6 份 × 272KB）。这里只把真实最终回复文本并进那唯一一条。
+						if idx, dup := structuredRowIdx[m.TurnID]; dup {
+							if m.Content != "" && !m.Interrupted && history[idx].Content == "" {
+								history[idx].Content = m.Content
+								history[idx].ID = m.ID
+								history[idx].HistoryID = m.ID
+								history[idx].Timestamp = m.Timestamp
+							}
+							continue
+						}
 						isInterrupted := m.Interrupted
 						if m.Content != "" && !isInterrupted {
+							structuredRowIdx[m.TurnID] = len(history)
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
 								Role:       "assistant",
@@ -471,6 +495,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Iterations: iters,
 							})
 						} else {
+							structuredRowIdx[m.TurnID] = len(history)
 							history = append(history, HistoryMessage{
 								ID:         m.ID,
 								Role:       "assistant",

@@ -37,8 +37,12 @@ describe('UserMessage — 手机端（2026-09-16 用户报告）', () => {
     // min-w-0：让 flex 子项可收缩到内容宽度以下（否则 min-content 会把整行撑宽）
     expect(bubble.className).toContain('min-w-0')
     expect(bubble.className).toContain('max-w-full')
-    // 长 token（URL / token / 长英文词）必须能断行
-    expect(bubble.className).toContain('break-words')
+    // 长 token（URL / 路径 / hex）必须能断行，且**必须**是 `anywhere` 变体：
+    // `break-words`(overflow-wrap: break-word) 只在布局时断词，**不计入 min-content**
+    // ⇒ 外层 fit-content 的 flex 子项仍被最长 token 顶宽（2026-09-20 P0：通知气泡 620px
+    //    > 容器 297px，手机上左右两端被裁）。这里显式禁止回退到 break-words。
+    expect(bubble.className).toContain('wrap-anywhere')
+    expect(bubble.className).not.toContain('break-words')
     // markdown 产出的任意宽子元素（宽表格 / 图片 / <pre>）也不许超出气泡
     expect(bubble.className).toContain('[&_*]:max-w-full')
   })
