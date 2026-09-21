@@ -39,7 +39,12 @@ function sortTurnKey(m: ChatMessage): number {
   // "早起 legacy 行"分支（-1）→ 命令输出跑到会话**顶部**（用户看到的仍是"没有输出"）。
   // 注意：判定放在 `turnID === 0` 之内，**字段保持 0** —— 属性测试 P4/P5 用
   // `turnID > 0` 识别 turn 行（模型约定：0 = 无 turn 的独立消息）。
-  if (m.standalone) return Number.MAX_SAFE_INTEGER
+  // 命令行的「时间锚点」：插回它发生的那一刻 —— anchor+0.5 落在该 turn 的所有行
+  // **之后**、下一个 turn **之前**（turnID 保持 0 只是虚拟键的回落依据，排序键用
+  // 小数锚点，绝不与真实 turn 行等键）。无锚点（旧数据/锚点 turn 已被裁剪）回落沉底。
+  if (m.standalone) {
+    return m.anchorTurnID !== undefined ? m.anchorTurnID + 0.5 : Number.MAX_SAFE_INTEGER
+  }
   // turnID=0 residue (undeducible):
   //  - isPartial (live streaming) or persisted=false (optimistic send): the
   //    newest content — must render at the BOTTOM (below all committed rows).

@@ -84,6 +84,14 @@ func (wc *WebChannel) handleMessage(w http.ResponseWriter, r *http.Request) {
 		"timestamp":  ts.UnixMilli(),
 		"queued":     queued,
 	}
+	// 命令消息（`!cmd` / slash）的**显式**标记 —— 判据与 turn_id 豁免完全同一处
+	// （`isCommandMessage`，即 CommandRegistry.Match）。前端据此把 turn-less 的
+	// 命令行（输入+输出）按"到达时已知的最大 turn id"插回原位；否则它们会固定
+	// 沉底（用户报告 2026-09-21：「所有 !cmd 内容（包括输入和输出）固定挂在会话
+	// 底部」）。绝不从「turn_id 缺失」反推命令（CR P1-1 的教训）。
+	if wc.isCommandMessage(request.Content) {
+		resp["command"] = true
+	}
 	if interrupted {
 		// ⚡ INTERJECT: the message was delivered into the ACTIVE turn as a
 		// synthetic user_interrupt tool result (no new turn, no queueing, no

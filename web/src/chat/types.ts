@@ -196,6 +196,17 @@ export interface LegacyRow {
    * 标记后 `turnID` 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
    */
   readonly standalone?: boolean
+  /**
+   * 命令行的「时间锚点」= 该行**到达时**已知的最大 turn id（0 = 尚无 turn）。
+   * 用普通 number（不是品牌 TurnID）：它是**序数**而非 turn 身份，0 表示"无锚点"。
+   *
+   * 命令（`!cmd`/slash）由后端在 chatWorker 里并发执行：既没有 turn_id、也不落库，
+   * 渲染层没有任何 turn 归属可用。若一律追加在 turns 之后（旧行为），后到的 turn
+   * 会长在它们**上面**（顺序相反）、且命令输入渲染在自己输出**下面** —— 用户报告
+   * 「所有 !cmd 内容固定挂在会话底部」。anchorTurnID 记录"它发生在哪个 turn 之后"，
+   * derive 据此把它插回原位（锚点 turn 已不存在时回退为沉底）。
+   */
+  readonly anchorTurnID?: number
 }
 
 /**
@@ -418,6 +429,11 @@ export type DomainEvent =
       readonly turnHint?: number
       /** 消息入队（chat 忙，排队等待执行）。 */
       readonly queued?: boolean
+      /** 后端判定这条消息是**命令**（`!cmd`/slash —— 没有 turn 生命周期，
+       *  响应里 turn_id 缺省）。来自 REST 响应的**显式** `command` 标记
+       *  （与后端 `isCommandMessage` 同一判据）—— 判别式绝不从「turn_id 缺失」
+       *  推断（CR 2026-09-21 P1-1 的教训）。 */
+      readonly command?: boolean
     }
   | {
       /** REST 发送失败：移除乐观行（对齐旧 removeById 语义）。 */

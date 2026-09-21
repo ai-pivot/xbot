@@ -136,3 +136,36 @@ func TestIsCommandMessage_FallbackCoversBang(t *testing.T) {
 		}
 	}
 }
+
+// 前端要按"消息顺序"把命令行（输入+输出）插回原位，必须能从 REST ack 拿到**显式**的
+// command 标记（绝不从「turn_id 缺失」反推 —— CR 2026-09-21 P1-1 的教训）：命令没有
+// turn 生命周期，状态机据此把乐观行移出 pendingUsers 并按锚点插回（否则它固定沉底、
+// 且渲染在自己输出**之后** —— 用户报告 2026-09-21「所有 !cmd 内容（包括输入和输出）
+// 固定挂在会话底部」）。非命令消息绝不能带该标记。
+func TestRESTMessageCarriesExplicitCommandFlag(t *testing.T) {
+	wc, msgBus, _ := bangRestHarness(t, registryLike)
+
+	ackEmpty(msgBus)
+	recorder := postMessage(t, wc, "bang-flag", "!pwd")
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("bang command status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"command":true`) {
+		t.Fatalf("命令消息的 REST ack 必须带显式 command 标记: %s", recorder.Body.String())
+	}
+
+	// 非命令消息（正常分配 turn_id）不得带该标记。
+	wc2, msgBus2, _ := bangRestHarness(t, registryLike)
+	go func() {
+		message := <-msgBus2.Inbound
+		message.DeliveryAck <- bus.DeliveryResult{TurnID: 42}
+	}()
+	plain := postMessage(t, wc2, "plain-flag", "hello there")
+	if plain.Code != http.StatusOK {
+		t.Fatalf("plain message status = %d, want 200: %s", plain.Code, plain.Body.String())
+	}
+	if strings.Contains(plain.Body.String(), `"command"`) {
+		t.Fatalf("非命令消息不得带 command 标记: %s", plain.Body.String())
+	}
+}

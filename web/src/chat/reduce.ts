@@ -34,6 +34,20 @@ import {
 
 // ─── 工具：迭代合并（I4 append-only + 权威覆盖语义） ──────────
 
+/**
+ * 已知的最大 turn id（0 = 尚无 turn）—— 命令行（turn-less）的**时间锚点**。
+ *
+ * 命令由后端并发执行：不分配 turn、不落库，渲染层没有任何 turn 归属可用。锚点记录
+ * "它发生在哪个 turn 之后"，`sortTurnKey` 据此把它插回原位（旧行为一律沉底 ⇒ 后到的
+ * turn 长在它们**上面** = 用户报告的「所有 !cmd 内容固定挂在会话底部」）。
+ * O(T) —— 只在命令事件（极低频）上调用。
+ */
+function lastTurnIDOf(s: ChatState): number {
+  let max = 0
+  for (const id of s.turns.keys()) if (id > max) max = id
+  return max
+}
+
 // 命令回复（`!cmd` / slash）渲染为 legacy 独立行 —— 单调序号保证 React key 唯一
 // （同毫秒连续两条命令回复也必须区分，与 normalize.ts 的 echoSeq 同一模式）。
 /**
@@ -861,6 +875,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             // 命令输出被推到可视区之上（用户看到的仍然是"没有输出"）。
             // 标记后 turnID 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
             standalone: true,
+            // 时间锚点：插回"命令发生的那一刻"（见 lastTurnIDOf 注释）。
+            anchorTurnID: lastTurnIDOf(s),
           }],
         }
       }
@@ -1462,6 +1478,29 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const dbID = ev.dbID > 0 ? ev.dbID : undefined
       const idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
       if (idx >= 0) {
+        // 命令（`!cmd`/slash；REST 响应的**显式** `command` 标记）**没有 turn 生命周期**：
+        // 它永远等不到 turn_started，若留在 pendingUsers 就会固定沉底、且渲染在自己输出
+        // **之后**（用户报告：「所有 !cmd 内容（包括输入和输出）固定挂在会话底部」）。
+        // 移入 standalone 段并记录锚点（到达时已知的最大 turn id）——`sortTurnKey` 据此
+        // 把它插回原位；turnID 保持 0 ⇒ 虚拟键回落 row.id（不与 turn 行撞键）。
+        // 有 turn_id 的命令（有状态命令走串行队列）不受影响：正常绑定到它的 turn。
+        if (ev.command === true && !ev.turnHint) {
+          const row = s.pendingUsers[idx]
+          return {
+            ...s,
+            pendingUsers: s.pendingUsers.filter((_, i) => i !== idx),
+            standalone: [...s.standalone, {
+              id: row.id,
+              role: 'user',
+              content: row.content,
+              iterations: [],
+              timestamp: row.timestamp,
+              dbID,
+              standalone: true,
+              anchorTurnID: lastTurnIDOf(s),
+            }],
+          }
+        }
         // queued → 撤出消息流（StagingTray 是唯一渲染面）。
         if (ev.queued === true) {
           const pendingUsers = s.pendingUsers.filter((_, i) => i !== idx)
