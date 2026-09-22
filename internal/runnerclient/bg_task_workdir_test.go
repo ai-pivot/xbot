@@ -3,11 +3,23 @@ package runnerclient
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"xbot/internal/runnerproto"
 )
+
+// skipOnWindows guards Unix-only shell tests: DetectShell's $SHELL precedence
+// and the sh-based bg-task execution only apply on Unix runners (Windows
+// DetectShell returns powershell.exe/cmd.exe before the $SHELL check, and
+// there is no "sh" to exec).
+func skipOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only: $SHELL precedence / sh execution do not exist on Windows")
+	}
+}
 
 // ============================================================================
 // DetectShell — must match the LOCAL sandbox's defaultShell() precedence
@@ -23,6 +35,7 @@ import (
 // ============================================================================
 
 func TestDetectShell_PrefersShellEnv(t *testing.T) {
+	skipOnWindows(t)
 	dir := t.TempDir()
 	zsh := filepath.Join(dir, "zsh")
 	if err := os.WriteFile(zsh, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -57,6 +70,7 @@ func TestDetectShell_FallsBackToBashWithoutEnv(t *testing.T) {
 // ============================================================================
 
 func TestBgTaskRunNative_MissingWorkDirFallsBack(t *testing.T) {
+	skipOnWindows(t)
 	ws := t.TempDir()
 	m := newBgTaskManager(false, false, ws, nil)
 
@@ -80,6 +94,7 @@ func TestBgTaskRunNative_MissingWorkDirFallsBack(t *testing.T) {
 }
 
 func TestBgTaskRunNative_UsesRequestedDirWhenPresent(t *testing.T) {
+	skipOnWindows(t)
 	ws := t.TempDir()
 	m := newBgTaskManager(false, false, ws, nil)
 
