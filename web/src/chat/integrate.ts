@@ -15,7 +15,6 @@ import {
   historyProgressToLive,
   normalizeWebIteration,
 } from '@/components/agent/normalize'
-import { boundIterationTail, SNAPSHOT_ITERATION_LIMIT } from './normalize'
 import {
   EMPTY_PROGRESS_SNAPSHOT,
   type ChatMessage,
@@ -131,16 +130,10 @@ export function historyToReplaced(
   // "看不到新进度"的帮凶之一）。
   let active: { turnID: ReturnType<typeof mkTurnID>; snapshot: LiveSnapshot } | null = null
   const hpRaw = initialProgress as { turn_id?: number; phase?: string; iteration?: number; stream_content?: string; content?: string; reasoning_stream_content?: string; iteration_history?: unknown[]; active_tools?: unknown[]; streaming?: boolean; todos?: unknown } | null
-  // ⛔ 超大快照只取**尾部 N 个**迭代（2026-09-17 实测根因，见 boundIterationTail）：
-  // 服务端 FetchAll 曾把 1964 个迭代（11.2MB）整包下发 ⇒ 浏览器物化 1961 个迭代块 /
-  // 50,633 DOM 节点 ⇒ 切会话 7175ms、长任务 2997ms。快照只需撑起进行中 turn 的画面。
-  const hp =
-    hpRaw && Array.isArray(hpRaw.iteration_history) && hpRaw.iteration_history.length > SNAPSHOT_ITERATION_LIMIT
-      ? {
-          ...hpRaw,
-          iteration_history: boundIterationTail(hpRaw.iteration_history, SNAPSHOT_ITERATION_LIMIT),
-        }
-      : hpRaw
+  // ⛔ 快照迭代**不截断**（用户 2026-09-21：「不能有任何 gap，任何 gap 都是破坏线性一致性」）。
+  // 见 normalize.ts 顶部说明：两侧各截一次 ⇒ 两个不相邻窗口 ⇒ 拼接出 gap ⇒ 渲染只能在 gap
+  // 处截断（"历史停在旧位置 / 中间迭代不见"），而且取不回来。体积/渲染性能归渲染层，不丢数据。
+  const hp = hpRaw
   if (
     hp &&
     typeof hp.turn_id === 'number' &&
