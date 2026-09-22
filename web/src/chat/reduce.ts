@@ -1279,8 +1279,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           //   · liveProgressFromState 返回 EMPTY ⇒ 看不到 live 进度
           //   · 后续 iteration/stream 事件先被「committed 遮蔽」拦下
           //     （ev.iter 不大于已落库 maxIter 时 return s）⇒ 界面永久冻结
-          // ⇒ 按服务端的权威声明升级回 live；两侧迭代 union（DB 侧可能比快照更全：
-          // 快照 iteration_history 只保留尾部 SNAPSHOT_ITERATION_LIMIT 条），
+          // ⇒ 按服务端的权威声明升级回 live；两侧迭代 union（DB 侧可能比快照更全 ——
+          // 快照与 DB 历史现在都**完整**下发，不再有任何尾部截断），
           // 同号以**快照**权威（服务端 live 比 DB 增量行新——与 3.5 同向）。
           // 对照保护（本文件 P0 测试「没有 active 快照时 committed 不得被复活」）：
           // 只有在 ev.active 指向该 turn 时才升级，真结束的 turn 不受影响。
