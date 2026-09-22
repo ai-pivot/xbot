@@ -577,14 +577,41 @@ func remoteSandboxExecAsync(
 		case "completed":
 			return status.ExitCode, nil
 		case "failed":
-			return status.ExitCode, fmt.Errorf("remote task failed with exit code %d", status.ExitCode)
+			return remoteTaskOutcome(status.Status, status.ExitCode)
 		case "killed":
-			return -1, fmt.Errorf("remote task was killed")
+			return remoteTaskOutcome(status.Status, status.ExitCode)
 		case "running":
 			// Continue polling.
 		default:
-			return -1, fmt.Errorf("unknown remote task status: %s", status.Status)
+			return remoteTaskOutcome(status.Status, status.ExitCode)
 		}
+	}
+}
+
+// remoteTaskOutcome maps a runner bg-task status to the (exitCode, error)
+// pair, following LOCAL sandbox semantics (noneSandboxExecAsync): a command
+// that RAN and exited non-zero is a NORMAL completion — the caller
+// (executeForeground) formats it as "[EXIT N] <cmd>\n<output>" exactly like a
+// local command. Only execution failures (the command never ran — the runner
+// reports a negative exit code for start/chdir errors) are errors.
+//
+// ⛔ 2026-09-22 parity fix: the remote path used to return a Go error for
+// every non-zero exit ("remote task failed with exit code N"), producing a
+// different tool-result shape than local for the same failing command.
+func remoteTaskOutcome(status string, exitCode int) (int, error) {
+	switch status {
+	case "completed":
+		return exitCode, nil
+	case "failed":
+		if exitCode >= 0 {
+			// The command ran and exited non-zero — same semantics as local.
+			return exitCode, nil
+		}
+		return exitCode, fmt.Errorf("remote task failed with exit code %d", exitCode)
+	case "killed":
+		return -1, fmt.Errorf("remote task was killed")
+	default:
+		return -1, fmt.Errorf("unknown remote task status: %s", status)
 	}
 }
 

@@ -3,6 +3,7 @@ package runnerclient
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -104,11 +105,22 @@ func (t *bgTask) runNative(m *bgTaskManager) (int, string) {
 	// 创建进程组以便 kill 整个进程树
 	setProcessAttrs(cmd)
 
-	dir := t.req.Dir
-	if dir == "" {
-		dir = m.workspace
+	// ⛔ 2026-09-22 parity fix: the work dir must NEVER fail the command.
+	// NativeExecutor.Exec (the sync path) resolves a usable dir with fallbacks
+	// (requested → workspace → home → nearest existing ancestor); the bg path
+	// used to hard-set cmd.Dir — a session CWD that exists on the server but
+	// not on the runner made chdir fail → the command never started →
+	// "remote task failed with exit code -1". Same resolution rules here.
+	dir, dirWarn := resolveBgWorkDir(t.req.Dir, m.workspace)
+	if dir != "" {
+		cmd.Dir = dir
 	}
-	cmd.Dir = filepath.Clean(dir)
+	if dirWarn != "" {
+		// Never silently replace the dir: surface WHY in stderr.
+		t.mu.Lock()
+		fmt.Fprintf(&t.stderr, "[runner] %s\n", dirWarn)
+		t.mu.Unlock()
+	}
 
 	if len(t.req.Env) > 0 {
 		cmd.Env = append(getBaseEnv(), t.req.Env...)
@@ -129,6 +141,54 @@ func (t *bgTask) runNative(m *bgTaskManager) (int, string) {
 		return -1, "failed"
 	}
 	return 0, "completed"
+}
+
+// resolveBgWorkDir resolves a USABLE working directory for bg-task execution —
+// same contract as NativeExecutor.resolveWorkDir (never fail a command because
+// the requested dir is missing): requested → workspace → home, each level
+// used when present (created when missing), falling back to the nearest
+// existing ancestor. Returns a warning when a replacement happened.
+func resolveBgWorkDir(requested, workspace string) (string, string) {
+	candidates := make([]string, 0, 3)
+	cleaned := ""
+	if requested != "" {
+		cleaned = filepath.Clean(requested)
+		candidates = append(candidates, cleaned)
+	}
+	if workspace != "" {
+		candidates = append(candidates, filepath.Clean(workspace))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, home)
+	}
+
+	firstErr := ""
+	for _, c := range candidates {
+		if st, err := os.Stat(c); err == nil {
+			if st.IsDir() {
+				return c, ""
+			}
+			if firstErr == "" {
+				firstErr = c + " exists but is not a directory"
+			}
+			continue
+		}
+		if err := os.MkdirAll(c, 0o755); err == nil {
+			return c, "created missing work dir " + c
+		} else if firstErr == "" {
+			firstErr = err.Error()
+		}
+	}
+
+	// All unusable: nearest existing ancestor (the command still runs).
+	if cleaned != "" {
+		for d := filepath.Dir(cleaned); d != "" && d != "." && d != string(filepath.Separator); d = filepath.Dir(d) {
+			if st, err := os.Stat(d); err == nil && st.IsDir() {
+				return d, fmt.Sprintf("work dir %s unusable (%s); fell back to nearest existing ancestor %s", cleaned, firstErr, d)
+			}
+		}
+	}
+	return "", fmt.Sprintf("no usable work dir for %q (%s); running in the runner's inherited cwd", requested, firstErr)
 }
 
 // runDocker 在 docker 容器内同步执行命令。

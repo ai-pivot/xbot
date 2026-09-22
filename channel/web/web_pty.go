@@ -299,12 +299,15 @@ func (m *ptyManager) selectBackend(senderID, sessionKey string) (PtyBackend, err
 			return &remotePtyBackend{sandbox: rs, senderID: senderID}, nil
 		}
 		// None sandbox → PTY on server.
-		shell, _ := userSbx.GetShell(senderID, userSbx.Workspace(senderID))
+		// ⛔ 2026-09-22 parity fix: GetShell routes by SESSION key (the same key
+		// SandboxForSession used above) — passing senderID here would fail
+		// runner resolution for remote sandboxes with 2+ runners connected.
+		shell, _ := userSbx.GetShell(sessionKey, userSbx.Workspace(sessionKey))
 		return newLocalPtyBackend(senderID, shell), nil
 	}
 
 	// Fallback: use sandbox directly.
-	shell, _ := sandbox.GetShell(senderID, sandbox.Workspace(senderID))
+	shell, _ := sandbox.GetShell(sessionKey, sandbox.Workspace(sessionKey))
 	return newLocalPtyBackend(senderID, shell), nil
 }
 

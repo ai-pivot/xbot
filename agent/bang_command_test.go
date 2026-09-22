@@ -40,7 +40,7 @@ func TestEnsureWorkspace_LocalSandboxCreatesWorkspace(t *testing.T) {
 	}
 
 	// 端到端：工作区刚建好时 bang 必须能跑（回归：以前 exec 直接失败）
-	out, err := a.executeBangCommand(context.Background(), "echo bang_workspace_probe", dir, "cli_user", dir)
+	out, err := a.executeBangCommand(context.Background(), "echo bang_workspace_probe", dir, "cli:chat-test", "cli_user", dir)
 	if err != nil {
 		t.Fatalf("executeBangCommand 失败（工作区不存在时 !cmd 不可用）: %v", err)
 	}

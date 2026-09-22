@@ -670,11 +670,25 @@ func (rs *RemoteSandbox) DisconnectRunner(runnerName string) bool {
 
 func (rs *RemoteSandbox) ExportAndImport(_ string) error { return nil }
 
-// GetShell returns the connected runner's default shell ("/bin/sh" when none).
-func (rs *RemoteSandbox) GetShell(_, _ string) (string, error) {
-	rc, err := rs.getRunnerForSession("")
+// GetShell returns the shell of the runner bound to THIS session.
+//
+// ⛔ 2026-09-22 P0 ("remote task failed with exit code 2" on runner 1101):
+// this used to resolve the runner with an EMPTY session key. With 2+ runners
+// connected that resolution fails → the old code silently fell back to the
+// hardcoded "/bin/sh". On machines where /bin/sh is dash and /etc/profile.d
+// uses bash-only syntax (PAI DSW images: process substitution in
+// dsw_runtime_env.sh), the login shell died with a syntax error → exit 2 and
+// the command NEVER RAN. The session's own runner (which reported /bin/bash)
+// was ignored.
+//
+// Resolution now uses the session key (same key ExecBg routes by, so the shell
+// always matches the machine the command actually runs on). Failure is loud:
+// an unbound session with multiple runners is a routing error, and guessing a
+// shell from the wrong machine is strictly worse than an error.
+func (rs *RemoteSandbox) GetShell(sessionKey, _ string) (string, error) {
+	rc, err := rs.getRunnerForSession(sessionKey)
 	if err != nil {
-		return "/bin/sh", nil
+		return "", err
 	}
 	return rc.shell, nil
 }
