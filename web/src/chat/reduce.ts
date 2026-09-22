@@ -1389,7 +1389,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
         busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
         sessionRunning: s.sessionRunning,
-        standalone: s.standalone,
+        // 命令行（`!cmd`）落库行：事件带 standalone 时**采纳**它（刷新后状态是空的，
+        // DB 权威行必须进渲染）；事件未带（手写事件/旧路径）则保留现有。
+        standalone: ev.standalone ?? s.standalone,
       }
     }
 

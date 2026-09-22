@@ -214,6 +214,10 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
       // 乐观/echo 副本不经过 parseHistoryMessages（store.setUser 直接写入），
       // 仍 dbID=undefined 被过滤 —— 不重新引入双行 bug。
       dbID: m.id ?? (i + 1),
+      // 命令行（`!cmd`）落库行：standalone（无 turn 独立行）+ 时间锚点（后端按行序
+      // 算出）。渲染层据此走 standalone 路径插回原位 —— 刷新后仍在、顺序一致。
+      standalone: m.standalone === true,
+      anchorTurnID: typeof m.anchor_turn_id === 'number' ? m.anchor_turn_id : undefined,
     })
   }
 

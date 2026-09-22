@@ -403,6 +403,10 @@ export type DomainEvent =
       readonly type: 'history_replaced'
       readonly legacy: readonly LegacyRow[]
       readonly turns: readonly Turn[]
+      /** 无 turn 的独立行（命令行 `!cmd` 的输入/输出 —— 落库行，display_only=1）：
+       *  带 anchorTurnID，渲染时按锚点插回原位（与实时渲染同一条路径）。
+       *  可选：唯一生产者 historyToReplaced 总会给；手写事件（测试/旧路径）可省略。 */
+      readonly standalone?: readonly LegacyRow[]
       readonly active: { readonly turnID: TurnID; readonly snapshot: LiveSnapshot } | null
       readonly lastSeq: EventSeq | null
       /** 会话级 todos（active_progress 快照携带 —— 含 phase=done 的快照，

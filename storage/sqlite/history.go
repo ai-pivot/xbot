@@ -16,7 +16,12 @@ import (
 type HistoryRecordType string
 
 const (
-	HistoryRecordMessage     HistoryRecordType = "message"
+	HistoryRecordMessage HistoryRecordType = "message"
+	// HistoryRecordCommand = 命令行（`!cmd` / slash）的输入/输出行：**只给 UI 展示**
+	//（刷新后仍在），绝不进 LLM 上下文 —— 展示回放（replayDisplayRecords）显式包含它，
+	// LLM 回放（replayWith）只处理 HistoryRecordMessage ⇒ 天然跳过；再叠 display_only=1
+	// 作第二道保险（见 llm.ChatMessage.CommandRow）。
+	HistoryRecordCommand     HistoryRecordType = "command"
 	HistoryRecordCompress    HistoryRecordType = "compress"
 	HistoryRecordPrune       HistoryRecordType = "prune"
 	HistoryRecordContextEdit HistoryRecordType = "context_edit"
@@ -336,6 +341,34 @@ func (s *SessionService) appendMessage(tenantID int64, msg llm.ChatMessage) (int
 		return 0, err
 	}
 	return appendMessageWith(conn, tenantID, msg)
+}
+
+// AppendCommandMessage 持久化一行命令行（`!cmd` / slash 的输入或输出）。
+//
+// 命令没有 turn（不走 processMessage），但**必须落库**，否则刷新即消失（用户报告
+// 2026-09-21：「为什么 !cmd 消息的输入输出在页面刷新之后就消失了？」—— 刷新 = 从 DB
+// 重建渲染状态，而命令此前只活在内存里）。落库语义（三件套）：
+//   - record_type='command' ⇒ 展示回放包含它、LLM 回放跳过（replayWith 只认 'message'）；
+//   - display_only=1 ⇒ 第二道保险（LLM 侧 display_only=0 过滤同样排除它）；
+//   - turn_id=0 ⇒ 命令按设计无 turn；前端靠 protocol.HistoryMessage.Standalone +
+//     AnchorTurnID（转换层按"走到该行时已知的最新 turn"计算）把它插回原位。
+func (s *SessionService) AppendCommandMessage(tenantID int64, role, content string) (int64, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return 0, err
+	}
+	res, err := conn.Exec(`
+		INSERT INTO session_messages
+		(tenant_id, role, content, display_only, record_type, created_at, turn_id)
+		VALUES (?, ?, ?, 1, 'command', ?, 0)
+	`, tenantID, role, content, time.Now().Format(time.RFC3339))
+	if err != nil {
+		return 0, fmt.Errorf("insert command history row: %w", err)
+	}
+	return res.LastInsertId()
 }
 
 func (s *SessionService) AppendMessage(tenantID int64, msg llm.ChatMessage) (int64, error) {
@@ -857,9 +890,10 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
 		record.Data = json.RawMessage(rawData)
-		if record.Type == HistoryRecordMessage {
+		if record.Type == HistoryRecordMessage || record.Type == HistoryRecordCommand {
 			record.Message = llm.ChatMessage{ID: record.HistoryID, Role: role, Content: content,
-				DisplayOnly: displayOnly != 0, Internal: internalOnly != 0, Timestamp: record.CreatedAt}
+				DisplayOnly: displayOnly != 0, Internal: internalOnly != 0,
+				CommandRow: record.Type == HistoryRecordCommand, Timestamp: record.CreatedAt}
 			if turnID.Valid {
 				record.Message.TurnID = uint64(turnID.Int64)
 			}
@@ -1104,6 +1138,11 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 			if !record.Message.DisplayOnly {
 				result.Messages = append(result.Messages, record.Message)
 			}
+		case HistoryRecordCommand:
+			// 命令行（`!cmd`/slash）的输入与输出：**display_only 也要包含** —— 它就是
+			// 给 UI 看的（见 HistoryRecordCommand 注释）。CommandRow 标记随消息带给
+			// 转换层，由它写出 Standalone/AnchorTurnID 供前端插回原位。
+			result.Messages = append(result.Messages, record.Message)
 		case HistoryRecordCompress, HistoryRecordPrune:
 			// Insert the [Compacted context] summary as a marker.
 			// Don't replace existing messages — keep the full history.
@@ -1355,6 +1394,11 @@ func replayWith(queryer historyQueryer, tenantID int64) (*ReplayResult, error) {
 	msgIdx := newMessageIndex(nil)
 	for recordIndex, record := range records {
 		switch record.Type {
+		case HistoryRecordCommand:
+			// 命令行（`!cmd` / slash）落库行：只给 UI 展示（display_only=1 +
+			// record_type='command'），**永不进 LLM 上下文** —— LLM 回放必须显式忽略它
+			//（default 分支对未知类型直接报错，不能靠 default 兜底）。这里什么都不做，
+			// 仍走循环尾部的 known 记账，供后续控制记录的 target 校验。
 		case HistoryRecordMessage:
 			if !record.Message.DisplayOnly {
 				result.Messages = append(result.Messages, record.Message)
