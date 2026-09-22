@@ -1,17 +1,24 @@
 /**
- * 复制入口（用户 2026-09-15 二次定稿）：**电脑右键 / 手机长按**，不再有任何常驻或 hover 悬浮条
+ * 消息区交互入口（用户 2026-09-15 二次定稿）：**电脑右键 / 手机长按**，不再有任何常驻或 hover 悬浮条
  * （用户：「这个悬浮太丑了还挡着」）。复制粒度覆盖三层：
  *   - message  ：整条回复（回复 / 含思考 / 含工具调用 / 原始 Markdown）
  *   - iteration：**每个迭代都有**（这段思考 / 该迭代正文 / 该迭代含工具）—— 用户明确要求
  *   - tools    ：该迭代里的**每个工具**（该工具输出 / 该命令参数）
  * 判定收敛在 resolveCopyText / buildCopyVariant / iterationCopyText / toolCopyText 里，
  * 保证"只要这条消息/迭代/工具可渲染就一定复制得到内容"（iterations-only 的回复也能复制）。
+ *
+ * 另外两类**落点相关**的动作（2026-09-22）：
+ *   - **打开链接 / 复制链接地址**：本组件对 contextmenu 做了 preventDefault（否则冒出来的是浏览器
+ *     原生菜单），所以链接必须由这里给入口；协议白名单 http/https/mailto，`javascript:`/`data:`/
+ *     `file:` 一律拒绝（消息内容来自模型与用户输入，不能给它新开窗口提权）。
+ *   - **复制选区**：桌面拖选文字后右键 → 复制选区；触屏是 select-none（无选区）故不出现。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { ChatMessage, WebIteration, WebToolProgress } from '@/types/shared'
 
 import { useIsTouch } from '@/hooks/useIsMobile'
+import { useI18n } from '@/providers/i18n'
 
 export type CopyVariant = 'reply' | 'thinking' | 'tools' | 'raw'
 export type IterationVariant = 'thinking' | 'content' | 'all'
@@ -74,16 +81,67 @@ export function toolCopyText(tl: WebToolProgress, variant: ToolVariant): string 
   return toolBody(tl) || (tl.args || '').trim()
 }
 
-type OpenState =
-  | { kind: 'message'; x: number; y: number }
-  | { kind: 'iteration'; x: number; y: number; iteration: WebIteration }
-  | { kind: 'tools'; x: number; y: number; tools: WebToolProgress[] }
-  | null
+/** 可打开的链接协议白名单：http / https / mailto（相对链接按 base 解析）。 */
+export function resolveOpenableHref(href: string, base?: string): string | null {
+  if (!href) return null
+  let url: URL
+  try {
+    url = new URL(href, base ?? (typeof window !== 'undefined' ? window.location.href : undefined))
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:') return null
+  return url.href
+}
+
+type LinkTarget = { href: string; text: string }
+
+/** 右键/长按落点若命中 `<a href>` → 解析出可打开的目标（白名单外 / 非链接返回 null）。 */
+export function resolveLinkTarget(target: EventTarget | null, base?: string): LinkTarget | null {
+  const el = target as HTMLElement | null
+  const anchor =
+    el && typeof (el as HTMLElement).closest === 'function' ? (el.closest('a[href]') as HTMLAnchorElement | null) : null
+  if (!anchor) return null
+  const href = resolveOpenableHref(anchor.getAttribute('href') ?? '', base)
+  if (!href) return null
+  return { href, text: (anchor.textContent ?? '').trim() }
+}
+
+/**
+ * 打开菜单那一瞬的选区文本。必须在 openAt 里读一次就好：菜单挂载后会 focus，
+ * 焦点移动可能让选区折叠，之后再读就取不到了。
+ */
+export function readSelectionText(): string {
+  try {
+    return (window.getSelection()?.toString() ?? '').trim()
+  } catch {
+    return ''
+  }
+}
+
+/** 新标签打开。noopener,noreferrer：链接来自消息内容，不能让它拿到 opener。 */
+function openInNewTab(href: string) {
+  window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+type MenuItem = { label: string; run: () => void }
+
+type OpenState = {
+  kind: 'message' | 'iteration' | 'tools'
+  x: number
+  y: number
+  iteration?: WebIteration
+  tools?: WebToolProgress[]
+  /** 落点命中链接时的目标（无则不给「打开链接 / 复制链接地址」）。 */
+  link?: LinkTarget | null
+  /** 打开瞬间的选区文本（触屏 select-none ⇒ 通常为空）。 */
+  selection?: string
+} | null
 
 /** 长按判定容差（px）：触屏手指抖动不超过它就不算"划动"。 */
 const LONG_PRESS_TOLERANCE = 10
 
-function useLongPress(open: (x: number, y: number) => void) {
+function useLongPress(open: (x: number, y: number, target: EventTarget | null) => void) {
   const timer = useRef<number | null>(null)
   const fired = useRef(false)
   /** 按下起点：用位移是否超过容差来判断"抖动"还是"划动"。 */
@@ -99,11 +157,12 @@ function useLongPress(open: (x: number, y: number) => void) {
       e.stopPropagation() // 嵌套目标里只让最内层起长按计时
       fired.current = false
       const { clientX, clientY } = e
+      const target = e.target
       clear() // clear() 会重置 origin，因此在其之后再记录起点
       origin.current = { x: clientX, y: clientY }
       timer.current = window.setTimeout(() => {
         fired.current = true
-        open(clientX, clientY)
+        open(clientX, clientY, target)
       }, 480)
     },
     [clear, open],
@@ -136,7 +195,7 @@ function useLongPress(open: (x: number, y: number) => void) {
 }
 
 /**
- * CopyTarget —— 把"右键 / 长按 → 复制菜单"挂到任意内容上（message / iteration / tools）。
+ * CopyTarget —— 把"右键 / 长按 → 动作菜单"挂到任意内容上（message / iteration / tools）。
  * 不渲染任何可见 UI（只有触发后才出现菜单/面板），因此**不占位、不遮挡**。
  */
 export function CopyTarget({
@@ -154,12 +213,16 @@ export function CopyTarget({
   children: ReactNode
   className?: string
 }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState<OpenState>(null)
   const openAt = useCallback(
-    (x: number, y: number) => {
-      if (kind === 'message') setOpen({ kind: 'message', x, y })
-      else if (kind === 'iteration' && iteration) setOpen({ kind: 'iteration', x, y, iteration })
-      else if (kind === 'tools' && tools) setOpen({ kind: 'tools', x, y, tools })
+    (x: number, y: number, target: EventTarget | null) => {
+      // 落点上下文（链接 / 选区）在这里一次算清：菜单挂载后会 focus，选区可能折叠。
+      const link = resolveLinkTarget(target)
+      const selection = readSelectionText()
+      if (kind === 'message') setOpen({ kind: 'message', x, y, link, selection })
+      else if (kind === 'iteration' && iteration) setOpen({ kind: 'iteration', x, y, iteration, link, selection })
+      else if (kind === 'tools' && tools) setOpen({ kind: 'tools', x, y, tools, link, selection })
     },
     [kind, iteration, tools],
   )
@@ -179,32 +242,58 @@ export function CopyTarget({
     setOpen(null)
   }, [])
 
-  const items: Array<{ label: string; text: string }> = (() => {
+  const items: MenuItem[] = (() => {
     if (!open) return []
+    const list: MenuItem[] = []
+    // ① 落点相关：链接（打开 / 复制地址）优先于泛化的复制项。
+    if (open.link) {
+      const { href } = open.link
+      list.push({
+        label: t('agent.copyMenu.openLink'),
+        run: () => {
+          openInNewTab(href)
+          setOpen(null)
+        },
+      })
+      list.push({ label: t('agent.copyMenu.copyLinkAddress'), run: () => void copy(href) })
+    }
+    // ② 选区相关（桌面拖选后右键；触屏 select-none 无选区）。
+    if (open.selection) {
+      const selection = open.selection
+      list.push({ label: t('agent.copyMenu.copySelection'), run: () => void copy(selection) })
+    }
+    // ③ 三层粒度：message / iteration / tools。
     if (open.kind === 'message' && message) {
-      return [
-        { label: '复制回复', text: buildCopyVariant(message, 'reply') },
-        { label: '复制含思考', text: buildCopyVariant(message, 'thinking') },
-        { label: '复制含工具调用', text: buildCopyVariant(message, 'tools') },
-        { label: '查看原始 Markdown', text: buildCopyVariant(message, 'raw') },
-      ]
-    }
-    if (open.kind === 'iteration') {
+      list.push(
+        { label: t('agent.copyMenu.copyReply'), run: () => void copy(buildCopyVariant(message, 'reply')) },
+        { label: t('agent.copyMenu.copyWithThinking'), run: () => void copy(buildCopyVariant(message, 'thinking')) },
+        { label: t('agent.copyMenu.copyWithTools'), run: () => void copy(buildCopyVariant(message, 'tools')) },
+        { label: t('agent.copyMenu.copyRawMarkdown'), run: () => void copy(buildCopyVariant(message, 'raw')) },
+      )
+    } else if (open.kind === 'iteration' && open.iteration) {
       const it = open.iteration
-      const list = [
-        { label: '复制这段思考', text: iterationCopyText(it, 'thinking') },
-        { label: '复制该迭代正文', text: iterationCopyText(it, 'content') },
-        { label: '复制该迭代（含工具）', text: iterationCopyText(it, 'all') },
+      const variants: Array<[string, string]> = [
+        [t('agent.copyMenu.copyIterationThinking'), iterationCopyText(it, 'thinking')],
+        [t('agent.copyMenu.copyIterationContent'), iterationCopyText(it, 'content')],
+        [t('agent.copyMenu.copyIterationAll'), iterationCopyText(it, 'all')],
       ]
-      return list.filter((i) => i.text)
+      // 空项按设计过滤（不给无内容的复制项）。
+      for (const [label, text] of variants) {
+        if (text) list.push({ label, run: () => void copy(text) })
+      }
+    } else if (open.kind === 'tools' && open.tools) {
+      for (const tl of open.tools) {
+        const label = t('agent.copyMenu.copyTool', { name: tl.label || tl.name })
+        const text = toolCopyText(tl, 'output')
+        if (text) list.push({ label, run: () => void copy(text) })
+      }
+      const all = open.tools
+        .map((tl) => toolCopyText(tl, 'output'))
+        .filter(Boolean)
+        .join('\n\n')
+      if (all) list.push({ label: t('agent.copyMenu.copyAllToolOutput'), run: () => void copy(all) })
     }
-    if (open.kind === 'tools') {
-      const list = open.tools.map((tl) => ({ label: `复制：${tl.label || tl.name}`, text: toolCopyText(tl, 'output') }))
-      const all = open.tools.map((tl) => toolCopyText(tl, 'output')).filter(Boolean).join('\n\n')
-      if (all) list.push({ label: '复制全部工具输出', text: all })
-      return list.filter((i) => i.text)
-    }
-    return []
+    return list
   })()
 
   return (
@@ -231,7 +320,7 @@ export function CopyTarget({
           // 否则会同时弹出 3 个菜单（用户右键工具时显然只要工具那一份）。
           e.preventDefault()
           e.stopPropagation()
-          openAt(e.clientX, e.clientY)
+          openAt(e.clientX, e.clientY, e.target)
         }}
         {...press}
       >
@@ -257,7 +346,7 @@ export function CopyTarget({
                 setOpen(null)
               }}
             />
-            <CopyMenu x={open.x} y={open.y} items={items} onPick={(text) => void copy(text)} onClose={() => setOpen(null)} />
+            <CopyMenu x={open.x} y={open.y} items={items} onClose={() => setOpen(null)} />
           </>,
           document.body,
         )}
@@ -270,13 +359,11 @@ function CopyMenu({
   x,
   y,
   items,
-  onPick,
   onClose,
 }: {
   x: number
   y: number
-  items: Array<{ label: string; text: string }>
-  onPick: (text: string) => void
+  items: MenuItem[]
   onClose?: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -308,7 +395,7 @@ function CopyMenu({
             type="button"
             onClick={(e) => {
               e.stopPropagation()
-              onPick(it.text)
+              it.run()
             }}
             className="block min-h-11 w-full px-3 py-3 text-left text-sm text-text-primary active:bg-bg-tertiary"
           >
@@ -335,7 +422,7 @@ function CopyMenu({
           type="button"
           onClick={(e) => {
             e.stopPropagation()
-            onPick(it.text)
+            it.run()
           }}
           className="block w-full px-3 py-2 text-left text-[12.5px] text-text-primary hover:bg-bg-tertiary"
         >

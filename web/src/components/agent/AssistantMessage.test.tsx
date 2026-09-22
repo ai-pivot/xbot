@@ -1,10 +1,16 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ReactElement } from 'react'
 
 import { AssistantMessage } from '@/components/agent/AssistantMessage'
+import i18n from '@/i18n'
 import { I18nProvider } from '@/providers/i18n'
 import type { ChatMessage, WebIteration, WebToolProgress } from '@/types/shared'
+
+// 复制菜单标签走 i18n（agent.copyMenu.*）⇒ 断言语言两侧钉死（jsdom 默认 en-US）。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN')
+})
 
 function renderMsg(node: ReactElement) {
   return render(node, { wrapper: ({ children }) => <I18nProvider>{children}</I18nProvider> })

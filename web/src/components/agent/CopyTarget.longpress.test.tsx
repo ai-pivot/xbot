@@ -1,8 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
+import i18n from '@/i18n'
+import { I18nProvider } from '@/providers/i18n'
 import { CopyTarget } from './MessageActions'
+
+// 菜单标签走 i18n（agent.copyMenu.*）⇒ ① 组件必须在 I18nProvider 内渲染（useI18n 无 Provider 会 throw）；
+// ② 断言语言两侧钉死（jsdom 的 navigator.language 是 en-US，不钉就断言到英文标签）。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN')
+})
 
 // 2026-09-16 用户报告：
 //   ② 「你没给手机复制 user msg 的交互」
@@ -25,9 +33,11 @@ function menuOpen() {
 
 function renderTarget() {
   const { container } = render(
-    <CopyTarget kind="message" message={{ role: 'user', content: 'hi' } as never}>
-      {child}
-    </CopyTarget>,
+    <I18nProvider>
+      <CopyTarget kind="message" message={{ role: 'user', content: 'hi' } as never}>
+        {child}
+      </CopyTarget>
+    </I18nProvider>,
   )
   return container.querySelector('[data-copy-target="message"]') as HTMLElement
 }

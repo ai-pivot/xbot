@@ -780,7 +780,10 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **三层粒度**：`kind=message`（复制回复 / 含思考 / 含工具调用 / 查看原始 Markdown）、`kind=iteration`（**每个迭代都有**：复制这段思考 / 复制该迭代正文 / 复制该迭代含工具 —— **空项按设计过滤**，不给无内容的复制项）、`kind=tools`（该迭代**每个工具各一项** + 全部输出）。判定收敛在 `resolveCopyText` / `buildCopyVariant` / `iterationCopyText` / `toolCopyText`，**assistant 顶层 content 为空时回退到最后一迭代正文**（旧实现用 `!isStreaming && !!message.content` 条件挂载 ⇒ iterations-only 时"复制按钮没了"，且流式结束才凭空冒出 ⇒ 行高跳变；老 `AssistantActions`/`showActions` 已删除）。
 - **嵌套目标必须最内层优先**：`onContextMenu` / `onPointerDown` 里 `stopPropagation()` —— 否则 tools ⊂ iteration ⊂ message 会同时弹出 3 个菜单。
 - **⚠️ 菜单/面板必须 `createPortal(..., document.body)`**（React 19 从 `react-dom` 导入）：虚拟行用 `transform: translateY(...)` 定位（`MessageList.tsx`），CSS 下 `position: fixed` 的包含块会变成**最近的被 transform 的祖先**，再叠加 `.virt-row{contain:layout}` / `.iter-block{contain:layout paint}` 的裁剪 ⇒ 面板渲染到对话流中间且只露一行（2026-09-15 我自己截 E2E 图发现的缺陷；修完加了"贴住视口底部 + 项数完整"的守护断言）。
-- 守护：`web/e2e/msg-actions.spec.ts`（**迭代目标数 == 迭代数**、右键某迭代只复制该迭代、工具级逐项复制、触屏长按面板贴视口底部且项数 == 工具数+1、`[data-testid="msg-actions"]` 必须为 0 —— 即"不再有悬浮条"）+ `AssistantMessage.test.tsx` 同名契约用例。
+- **落点相关项（2026-09-22）**：`打开链接` / `复制链接地址`（右键或长按落在 `<a href>` 上）+ `复制选区`（打开菜单那一刻读 `window.getSelection()` —— **必须在 openAt 里读**：菜单挂载后会 focus，焦点移动会让选区折叠，之后再读就取不到）。因为我们对 `contextmenu` 做了 `preventDefault`（否则弹的是浏览器原生菜单），链接只能由这里给入口。
+- **⛔ 打开链接必须过协议白名单**：`resolveOpenableHref` 只放行 http/https/mailto（`javascript:` / `data:` / `file:` 一律拒绝），相对链接按 base 解析成绝对地址（消息里有 `/api/files/download?...` 这类同源链接）；打开用 `window.open(href, '_blank', 'noopener,noreferrer')` —— 链接内容来自模型与用户输入，绝不能给它 opener 提权。
+- **菜单标签必须走 i18n**（`agent.copyMenu.*`，zh/en/ja 三语言）：本菜单曾硬编码中文（E2E 因此只能断言中文字面量）；改 i18n 后 **E2E 必须两侧钉死语言** —— `addInitScript` 写 `localStorage['xbot-locale'] = 'zh-CN'`，否则 Playwright 默认 en-US ⇒ 断言中文必红。
+- 守护：`web/e2e/msg-actions.spec.ts`（**迭代目标数 == 迭代数**、右键某迭代只复制该迭代、工具级逐项复制、触屏长按面板贴视口底部且项数 == 工具数+1、`[data-testid="msg-actions"]` 必须为 0 —— 即"不再有悬浮条"、**右键链接 → 打开链接（断言新标签最终 URL）+ 复制链接地址 + 有选区 → 复制选区**）+ `MessageActions.test.tsx`（白名单 / 落点解析 / 菜单项三态）+ `AssistantMessage.test.tsx` 同名契约用例。⚠️ `window.open(..., 'noopener')` 的弹窗在**导航 commit 之前 `page.url()` 是空串** —— 必须 `popup.waitForURL(...)`；等 about:blank 的 `loadState` 等于没等（首版就这么假绿过）。
 
 ## Web 一致性暂态（切换/恢复）必须显示 loading，不得给不一致画面
 
