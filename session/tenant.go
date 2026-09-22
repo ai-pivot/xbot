@@ -73,6 +73,15 @@ func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
 	return s.sessionSvc.AppendMessage(s.tenantID, msg)
 }
 
+// AppendCommandRow 落库一行命令行（`!cmd` / slash 的输入或输出）。
+//
+// 语义 = **只给 UI 展示**（display_only=1 + record_type='command'），永不进 LLM 上下文；
+// 目的是让命令行在**页面刷新后仍在**（刷新 = 从 DB 重建渲染状态，用户报告
+// 2026-09-21：「为什么 !cmd 消息的输入输出在页面刷新之后就消失了？」）。
+func (s *TenantSession) AppendCommandRow(role, content string) (int64, error) {
+	return s.sessionSvc.AppendCommandMessage(s.tenantID, role, content)
+}
+
 // AppendMessages atomically appends a related message batch.
 func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, error) {
 	return s.sessionSvc.AppendMessages(s.tenantID, messages)

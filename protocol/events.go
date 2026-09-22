@@ -255,6 +255,15 @@ type HistoryMessage struct {
 	CompactedBy         int64               `json:"compacted_by,omitempty"`
 	Compression         *HistoryCompression `json:"compression,omitempty"`
 	DisplayOnly         bool                `json:"display_only,omitempty"`
+	// Standalone = 无 turn 的独立行（命令行 `!cmd` 的输入/输出）：前端跳过 bindTurnIDs
+	// 绑定，改按 AnchorTurnID 插回"它发生的那一刻"（与实时渲染同一条 standalone 路径）。
+	// 落库形态见 storage.HistoryRecordCommand（display_only=1 + record_type='command'，
+	// 永不进 LLM 上下文）。
+	Standalone bool `json:"standalone,omitempty"`
+	// AnchorTurnID = 该 standalone 行所属的时间锚点：转换时"走到这一行时已知的最新 turn"。
+	// 前端按 anchor+0.5 排序 ⇒ 落在该 turn 的所有行之后、下一个 turn 之前（0 = 无锚点，
+	// 前端回落沉底 —— 绝不排到列表顶部）。
+	AnchorTurnID uint64 `json:"anchor_turn_id,omitempty"`
 }
 
 // HistoryCompression describes the original DB nodes replaced by one

@@ -21,6 +21,12 @@ export interface HistMsg {
   tool_name?: string
   tool_arguments?: string
   tool_calls?: { id: string; name: string; arguments: string }[]
+  /** 命令行（`!cmd` / slash）落库行：无 turn 的独立行（display_only=1 +
+   *  record_type='command'）—— 前端走 standalone 路径渲染，永不进 LLM 上下文。 */
+  standalone?: boolean
+  /** 该 standalone 行的时间锚点（转换层按行序算出的"当时最新 turn"）：前端按
+   *  anchor+0.5 插回原位（锚点无效则沉底，绝不排到列表顶部）。 */
+  anchor_turn_id?: number
   timestamp?: string
   id?: number
   iterations?: unknown[]

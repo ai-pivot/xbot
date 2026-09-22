@@ -3059,10 +3059,16 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 						cmdKey := qualifyChatID(m.Channel, m.ChatID)
 						a.resetSessionState(cmdKey)
 
+						// 命令行**落库**（display_only=1 + record_type='command'）：只给 UI
+						// 展示、刷新后仍在、永不进 LLM 上下文。输入行先落，输出行在
+						// Execute 之后落 —— DB 顺序即历史顺序（前端按 anchor 插回原位）。
+						a.persistCommandRow(m.Channel, m.ChatID, "user", m.Content)
+
 						response, err := c.Execute(ctx, a, m)
 						if err != nil {
 							log.WithFields(log.Fields{"request_id": m.RequestID, "chat": chatKey}).WithError(err).Error("Error processing command")
 							content := formatErrorForUser(err)
+							a.persistCommandRow(m.Channel, m.ChatID, "assistant", content)
 							if sendErr := a.sendCommandReply(m.Channel, m.ChatID, content, nil); sendErr != nil {
 								a.bus.Outbound <- bus.OutboundMessage{
 									Channel: m.Channel,
@@ -3073,6 +3079,7 @@ func (a *Agent) chatWorker(ctx context.Context, chatKey string, ch <-chan bus.In
 							return
 						}
 						if response != nil {
+							a.persistCommandRow(m.Channel, m.ChatID, "assistant", response.Content)
 							if sendErr := a.sendCommandReply(m.Channel, m.ChatID, response.Content, response.Metadata); sendErr != nil {
 								a.bus.Outbound <- bus.OutboundMessage{
 									Channel: response.Channel,
@@ -4640,6 +4647,30 @@ func markCommandReply(metadata map[string]string) map[string]string {
 	}
 	metadata["command_reply"] = "true"
 	return metadata
+}
+
+// persistCommandRow 落库一行命令行（`!cmd` / slash 的输入或输出）。
+//
+// 命令不走 processMessage（无 turn、无 turn_started），此前**完全不落库** ⇒ 页面刷新
+// （= 从 DB 重建渲染状态）后命令的输入与输出都消失（用户报告 2026-09-21）。现在按
+// 「只给 UI 看」的语义落库：display_only=1 + record_type='command'（见
+// storage.AppendCommandMessage）—— 展示回放包含、LLM 回放跳过，模型永远看不到。
+//
+// 失败只 Warn：命令本身已执行/已回复，展示层降级绝不能反过来影响功能。
+func (a *Agent) persistCommandRow(channel, chatID, role, content string) {
+	if a.multiSession == nil || content == "" {
+		return
+	}
+	sess, err := a.multiSession.GetOrCreateSession(channel, chatID)
+	if err != nil {
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID}).WithError(err).
+			Warn("persistCommandRow: GetOrCreateSession failed (command row not persisted)")
+		return
+	}
+	if _, err := sess.AppendCommandRow(role, content); err != nil {
+		log.WithFields(log.Fields{"channel": channel, "chat_id": chatID, "role": role}).WithError(err).
+			Warn("persistCommandRow: append failed (command row not persisted)")
+	}
 }
 
 // 通过 directSend 直连或 bus.Outbound 广播。

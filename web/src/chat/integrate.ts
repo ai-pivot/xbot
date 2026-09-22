@@ -35,6 +35,8 @@ export function historyToReplaced(
   initialProgress: unknown,
 ): DomainEvent {
   const legacy: LegacyRow[] = []
+  // 命令行（`!cmd`）落库行（standalone + 锚点）—— 见 HistoryRecordCommand。
+  const standalone: LegacyRow[] = []
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
 
   for (const m of messages) {
@@ -45,6 +47,23 @@ export function historyToReplaced(
     // - 无 dbID 的行（乐观/echo 副本）一律跳过 —— 渲染源是状态机
     // - 有 dbID 的行（DB 权威历史）放行进 turns/legacy
     if (m.dbID === undefined) continue
+    if (m.standalone === true) {
+      // 命令行（`!cmd` / slash）落库行：**无 turn 的独立行** ⇒ 进 standalone 段并带
+      // 时间锚点（后端转换时按行序算出）—— 与实时渲染同一条路径：turnID 保持 0，
+      // sortTurnKey 按 anchor+0.5 插回原位；锚点无效则沉底（绝不排到列表顶部）。
+      standalone.push({
+        id: m.id,
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content,
+        iterations: m.iterations,
+        iterationsTruncated: m.iterationsTruncated ?? 0,
+        timestamp: m.timestamp,
+        dbID: m.dbID,
+        standalone: true,
+        anchorTurnID: m.anchorTurnID ?? 0,
+      })
+      continue
+    }
     if (!m.turnID || m.turnID <= 0) {
       legacy.push({
         id: m.id,
@@ -147,7 +166,7 @@ export function historyToReplaced(
       }))
     : []
 
-  return { type: 'history_replaced', legacy, turns, active, lastSeq: null, todos: snapshotTodos }
+  return { type: 'history_replaced', legacy, turns, standalone, active, lastSeq: null, todos: snapshotTodos }
 }
 
 function snapshotToLive(live: ProgressSnapshot): LiveSnapshot {
