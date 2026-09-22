@@ -83,6 +83,46 @@ function mergeIterations(
   return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
 }
 
+/**
+ * **「无法追赶的 gap」判据**（用户 2026-09-21：「出现无法追赶的 gap 就重新加载 session」）。
+ *
+ * 本地窗口 ∪ 权威窗口之后**仍有洞**，且**洞有一部分落在权威窗口之外**（服务端历史按 turn
+ * 尾部有界 ⇒ 那段不在响应里、也再取不回来）⇒ 本地视图与权威之间**永久断裂**（线性一致性
+ * 被破坏）⇒ 不能拼合、不能遮掩，只能**重新加载该会话**（丢弃本地带洞窗口 + 权威重载）。
+ *
+ * 反之：洞完全落在权威窗口内 ⇒ 只是本地丢了一张 delta（可追赶）：既有的 union 补洞 +
+ * 下一次 reload（DB 权威）即可修复 ⇒ **不**触发重载。
+ *
+ * 返回 `''` = 没有无法追赶的洞；否则返回缺口形状签名（供幂等判重，避免重载循环）。
+ */
+function unreachableGapSig(
+  turn: TurnID,
+  localIts: readonly WebIteration[],
+  incomingIts: readonly WebIteration[],
+): string {
+  if (localIts.length === 0 || incomingIts.length === 0) return ''
+  let incMin = Infinity
+  let incMax = 0
+  for (const it of incomingIts) {
+    if (it.iteration < incMin) incMin = it.iteration
+    if (it.iteration > incMax) incMax = it.iteration
+  }
+  const merged = mergeIterations(incomingIts, localIts)
+  for (let i = 1; i < merged.length; i++) {
+    const a = merged[i - 1].iteration
+    const b = merged[i].iteration
+    if (b <= a + 1) continue
+    // 洞 = [a+1, b-1]：只要有一部分在权威窗口之外 ⇒ 追不回来。
+    if (a + 1 < incMin || b - 1 > incMax) return `${turn}:gap${a + 1}-${b - 1}`
+  }
+  return ''
+}
+
+function joinSig(acc: string, sig: string): string {
+  if (sig === '') return acc
+  return acc === '' ? sig : `${acc},${sig}`
+}
+
 /** merged 与 existing 逐元素同引用（同长、同序、同对象）⇒ 返回 existing。
  *
  * 幂等重放（useChatMessages 的 store 每帧 notify → setMessages → historyMessages
@@ -1041,8 +1081,23 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       //    行即复现）。迭代 union（incoming 同号权威覆盖 —— DB 是持久化权威，
       //    append-only 不减）；content 非空优先（状态机 SSE text 是权威 finalizer；
       //    DB 空 content 是 tool_summary 中间行）。
+      // ⛔ 「无法追赶的 gap」检测（用户 2026-09-21：「出现无法追赶的 gap 就重新加载 session」）：
+      // 逐 turn 比较「本地窗口」与「权威窗口」——合并后仍有洞、且洞在权威窗口之外（服务端
+      // 历史按 turn 尾部有界，那段再也取不回来）⇒ 本地视图永久断裂 ⇒ 触发整会话重载。
+      let gapSig = ''
       for (const h of ev.turns) {
         const cur = s.turns.get(h.id)
+        if (cur) {
+          const curIts = cur.phase.kind === 'committed'
+            ? cur.phase.payload.iterations
+            : cur.phase.data.iterations
+          const incIts = h.phase.kind === 'committed'
+            ? h.phase.payload.iterations
+            : h.phase.kind === 'frozen'
+              ? h.phase.data.iterations
+              : []
+          gapSig = joinSig(gapSig, unreachableGapSig(h.id, curIts, incIts))
+        }
         if (cur && cur.phase.kind === 'live') {
           // live 胜（SSE 比 DB 快照新）—— 但 live 只含【增量】迭代（重启
           // resume 后 SSE 先到的 lazy 采纳只带 resume Run 的迭代 k+1..；DB
@@ -1295,7 +1350,10 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         sameItems(pendingUsers, s.pendingUsers) &&
         activeTurn === s.activeTurn &&
         lastSeq === s.lastSeq &&
-        sameItems(todos, s.todos)
+        sameItems(todos, s.todos) &&
+        // 「无法追赶的 gap」形状变化时必须返回新 state（否则 gapReloadToken 的自增被
+        // 短路吞掉，面板拿不到"重载该会话"的信号）。
+        gapSig === s.unreachableGapSig
       ) {
         return s
       }
@@ -1311,6 +1369,12 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
         busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
         sessionRunning: s.sessionRunning,
+        // ⛔ 出现**无法追赶的 gap**（本地洞在权威窗口之外 ⇒ 永久断裂）⇒ 自增触发面板
+        // **重新加载该会话**（丢弃带洞的本地窗口 + 权威重载 + loading 屏）。同一缺口形状
+        // 只自增一次 ⇒ 不可能造成重载循环；形状消失后再出现会重新触发。
+        gapReloadToken:
+          gapSig !== '' && gapSig !== s.unreachableGapSig ? s.gapReloadToken + 1 : s.gapReloadToken,
+        unreachableGapSig: gapSig,
       }
     }
 

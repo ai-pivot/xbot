@@ -225,10 +225,22 @@ export interface ChatState {
    *  `session(idle)`（不带 turn 身份、可能是回放/迟到事件）在 running=true 时
    *  **不得**冻结运行中的 turn；running=false 时才允许冻结（内容保留）。 */
   readonly sessionRunning: boolean
+  /** **会话重载信号**（单调计数器）—— 出现**无法追赶的 gap** 时自增。
+   *
+   *  判据（`reduce.ts` 的 `hasUnreachableGap`）：本地迭代与权威窗口合并后仍有洞，
+   *  而该洞**落在权威窗口之外**（服务端历史按 turn 尾部有界 ⇒ 那段再也取不回来）。
+   *  此时本地视图与权威之间永久断裂（线性一致性被破坏），**不拼合、不遮掩**，而是
+   *  让面板**重新加载该会话**（丢弃本地带洞的窗口 + 权威重载 + loading 屏）。
+   *
+   *  计数器（而非 bool）：`AgentPanel` 按值变化触发一次；同一"缺口形状"只触发一次
+   *  ⇒ 不可能造成重载循环（0 = 从未发生）。 */
+  readonly gapReloadToken: number
+  /** 当前"无法追赶的缺口形状"签名（'' = 无）。形状不变 ⇒ 不重复触发重载。 */
+  readonly unreachableGapSig: string
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false }
+  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '' }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────

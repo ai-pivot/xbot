@@ -53,6 +53,9 @@ export interface AgentChatState {
   readonly liveProgress: ProgressSnapshot
   readonly busyFallback: boolean
   readonly tokenPrompt: number | null
+  /** **会话重载信号**（单调计数器）：出现「无法追赶的 gap」时自增（见 chat/types.ts）。
+   *  `AgentPanel` 据此 `markHistoryStale` + `reset` + `reload`（重载该会话）。 */
+  readonly gapReloadToken: number
   /** 排队中的消息（queue_state SSE 事件 → Staging Tray 数据源）。 */
   readonly queue: readonly QueueItemPayload[]
   /** 全量替换排队快照（queue_state 事件 / 恢复时重建 Staging Tray）。 */
@@ -252,6 +255,8 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
   busyFallback: state.activeTurn !== null,
     tokenPrompt,
     queue: state.queue,
+    /** **会话重载信号**：出现「无法追赶的 gap」时自增（见 chat/types.ts）。 */
+    gapReloadToken: state.gapReloadToken,
     reset,
     sendUser,
     ackUser,

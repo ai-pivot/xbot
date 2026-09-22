@@ -728,9 +728,15 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **StreamingTools 事件必须 stamp `Iteration`（engine_wire.go）**——否则序列化为 `iteration:0`，前端收到"tool generating"的 stream_content 时迭代号突变为 0，**整个 turn 的 DOM 消失**（用户报告："iter id 突然变成 0 导致整个 turn 的 DOM 消失"，两次复现 dump 都显示消失紧跟在 `iteration:0` 的 streaming_tools 事件后）。`StreamContent`/`ReasoningStreamContent` 事件已 stamp `Iteration: getActiveIteration(...)`，**StreamingTools 曾漏掉**（只此一处）——新增任何 progress 事件构造时都必须带 `Iteration`。**事件级 stamp 还不够——streaming_tools 数组中的每个 `ToolProgress` 也必须 stamp `Iteration`**（engine_wire.go `streamToolCallFunc`），否则旧迭代的 generating 工具（经 `streamState.StreamingTools` merge 进 `get_active_progress` 快照 / catchup gap 重放）无迭代号，前端无法过滤 → 错误渲染在最新迭代上直到新 tool 出现（用户报告："过去的 generating 状态错误的在最新迭代上渲染"）。前端三层防护：(1) `LiveIteration` 的 `streamingTools` 与 `activeTools` 一样按 `t.iteration > maxCompletedIter` 过滤（此前 streamingTools 完全不过滤）；(2) `useProgressStream` 的 `stream_content` 分支对 `streaming_tools` 加迭代 regression guard（`p.iteration < store.lastIter` 时跳过——与 `setStructuredTools` 的 guard 一致，catchup gap 重放的旧事件不覆盖当前迭代）；(3) `stream_state.go mergeStreamState` 只在 `result.StreamingTools` 为空时补充 streamState 的残留，迭代切换后旧工具随 `clearStreamState` 清除。
 - **Peer 提示必须按"是否在迭代中"过滤（`Busy` 标志），不能只看 WorktreeDir 或时间推断。** session 注册到 `GlobalWorktreeRegistry` 后**从不注销**（CLI 会话可能一直挂着），如果 `BuildSystemReminder` 只按 `WorktreeDir != ""` 显示 peer，每个注册过的 peer（哪怕已 idle 数小时）都会被报为"协作中"——错误地暗示并发工作、干扰 agent（用户报告："peer 已 idle 仍被提示协作中"）。机制：`WorktreeEntry.Busy`（agent.go `chatProcessLoop` 在 `ss.busy.Store(true/false)` 处同步 `WorktreeRegistry.SetBusy(sessKey, busy)`——**busy/idle = 是否在迭代中**，turn 开始 true、每个 turn 退出路径 false、WaitingUser 暂停时 false）；`BuildSystemReminder` 只显示**有真实 worktree 且 `Busy==true`**（正在迭代）的 peer。**不要用 LastActive/时间阈值推断**——长 turn（30 分钟工具循环）中间无 turn 级事件，时间推断会把迭代中的 peer 误判 idle。`Busy` 是运行时状态，不持久化（registry 从磁盘加载后为 false，直到 session 下次 SetBusy）。
 
-## 历史响应必须按 turn 有界（尾部 N 个迭代），且丢弃数量必须显示
+## ⛔ 迭代历史**禁止任何有界化/截断**——缺 iter 就是 bug（用户 2026-09-21 定稿）
 
-- **历史加载时间曾随 turn 的迭代数线性增长**（用户 2026-09-15：「加载时间这么久，能优化吗？是不是如果 busy turn 的 iter 数量非常多就会卡非常久啊」）。实测（生产 DB）：`iteration_history` 15.6 万行、**单 turn 最多 1,661 个迭代**（该 turn content+reasoning ≈ **3.6 MB**）、`session_messages` 54.2 万行 / 316 MB；而 `ConvertMessagesToHistoryWithIterations` 对窗口内每个 turn 的**全部迭代无上限、无字节预算**。修法：`channel.BoundHistoryIterations`（`maxHistoryIterationsPerTurn = 60`）只保留**尾部 N 个迭代**，在 `serverapp/rpc_table.go`（get_history）与 `serverapp/callbacks.go`（web history snapshot）两个出口统一接入；丢弃数量写进 `protocol.HistoryMessage.IterationsTruncated`（json `iterations_truncated`）。**绝不静默缺块**：前端必须显示它 —— `AssistantMessage` 渲染 `data-testid="iterations-truncated"`（「更早的 N 个迭代未加载（仅显示最近 M 个）」）。更早的迭代仍完整保存在 DB `iteration_history`，后续按 `(turn_id, before_iteration)` 懒加载（尚未实现）。守护用例：`channel/history_iterations_cap_test.go` 的 `TestBoundHistoryIterations_TailOnly` + `web/src/components/agent/AssistantMessage.test.tsx` 的 truncated notice 两例。
+- **规则**：用户原话「**不能有任何 gap，任何 gap 都是破坏线性一致性**」「为什么我的 iter 还是缺」。一个 turn 的迭代历史必须**完整下发**（iteration 1..N 连续、无损）。**三处截断实现已全部删除，禁止复活**：
+  - 服务端历史 `channel.BoundHistoryIterations` + `maxHistoryIterationsPerTurn = 60`（引入于 **`1b1f41e9`：`perf(history): 历史响应按 turn 尾部截断迭代（修「busy turn 迭代多 ⇒ 加载很久」）`，2026-09-15 smith**）
+  - 服务端快照 `agent.maxActiveSnapshotIterations = 60`（引入于 **`5b43c212`：`perf(agent): active_progress 快照的 iteration_history 必须有界（切会话一次 11.2MB 的根因）`，2026-09-17 xbot agent**）
+  - 客户端 `web/src/chat/normalize.ts` 的 `boundIterationTail` / `SNAPSHOT_ITERATION_LIMIT = 60`（引入于 **`1d6e98ff`：`perf(web): 快照迭代历史上限（客户端护栏）`，2026-09-17 xbot agent**）
+- **为什么当年错了**：实测单 turn 最多 1,661 个迭代（≈3.6MB）确实让历史加载随迭代数线性变长 ⇒ 三处"压体积"各截一刀。代价是**用户直接看到迭代缺失**（生产取证：`turn-1-c` 的 `data-iter-range="60-119"`、**1..59 永久不见**），而且**没有任何取回通路**（全 history 搜索 `before_iteration` 零命中）。⚠️ 更糟的是多处截断会制造两个**不相邻**的窗口 ⇒ 拼接出 gap ⇒ 渲染层的线性一致性守卫只能在 gap 处截断（「历史停在旧位置 / 中间迭代不见 / 新迭代出现即消失」）——**这就是历次"iter 缺了"投诉的根因**。
+- **性能归渲染层，不得以丢数据换体积**：`TurnBody` 迭代级窗口化（只挂载视口附近的块 + `contain: layout paint`，代价与迭代数解耦）+ `MessageList` 虚拟行。payload 体积若再次成为问题，用压缩/流式等**不丢数据**的手段解决。
+- 守护（判别力：任一处加回截断 ⇒ 对应用例必红）：`channel/history_iterations_complete_test.go`（120 个迭代必须全量下发、`IterationsTruncated == 0`、1..120 连续）、`agent/active_progress_snapshot_complete_test.go`（FetchAll 500 个迭代必须完整且连续）、`web/src/chat/iterationBound.test.ts`（客户端不得截断：200 个全留）。
 
 ## Tool pill 视觉语言（真工具 / 假工具 / 状态 / 手机限宽）—— 设计契约
 
@@ -956,3 +962,18 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - ⛔ **名字不承担唯一性**：key 形如 `agent/<uuid>/<name>`，uuid 是**每次发布新铸**的 ⇒ 不同会话分享同名文件天然各自独立（守护测试断言两次分享 key 不同）。❌ 不要为了"可读"把原始空格/任意字符塞回 key；用户可见的名字由 markdown 标签（display name）承载。
 - **存量链接**：2026-09-19 之前发布的 key **确实含空格**（磁盘名如此，不可回写）—— 在解码正确的客户端仍可下载；用**修好的代码重新分享一次**即得到干净 key。
 - 守护：`serverapp/file_sharer_test.go` 的 `TestWebFileSharer_KeyIsURLSafeAndEncodingAgnostic`（URL 不得含 `+`/空白 + **`+` 语义与 `%20` 语义必须解出同一个 key**（本 bug 的判别点）+ 同名两次分享 key 不同）；既有 `TestWebFileSharer_LocalCopiesFileAndReturnsURL` 的口径随之更新为"key 名必须 URL 安全（空格 → `_`）"。
+
+## 「无法追赶的 gap ⇒ 重新加载 session」（用户 2026-09-21 要求；纯前端，无需重启 server）
+
+- **判据**（`web/src/chat/reduce.ts` 的 `unreachableGapSig`）：本地迭代窗口 ∪ 权威窗口之后
+  **仍有洞**，且洞**有一部分落在权威窗口之外** —— 服务端历史按 turn 尾部有界
+  （`BoundHistoryIterations` 每个 turn 只回最近 60 个迭代）⇒ 那段不在响应里、**也再取不回来**
+  ⇒ 本地视图与权威**永久断裂**（线性一致性被破坏）。
+- **行为**：**不拼合、不遮掩** —— `ChatState.gapReloadToken` 自增（缺口形状签名
+  `unreachableGapSig` **同一形状只自增一次** ⇒ **不可能造成重载循环**），`AgentPanel` 据此
+  `chat.markHistoryStale()`（强制 loading 屏，本地视图不可信）+ `agentChat.reset()`（丢弃带洞
+  的本地窗口，等价于刷新时的状态复位）+ `reload()`（权威重载）。
+- **可追赶的洞不触发**（重要）：洞被权威窗口覆盖 ⇒ 交给既有 union / 下一次 reload（DB 权威）修复。
+- 守护：`web/src/chat/p0-unreachable-gap.test.ts`（4 例：窗外的洞 ⇒ 自增；同一形状不重复触发；
+  可追赶的洞 ⇒ 不自增；洞部分在窗外 ⇒ 自增）。判别力：去掉自增 ⇒ 1 例红；去掉"同形状只触发
+  一次" ⇒ 1 例红；把可追赶的洞也当无法追赶 ⇒ 1 例红。
