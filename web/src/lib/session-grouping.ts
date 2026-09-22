@@ -61,6 +61,35 @@ export function parseAgentChatID(chatID: string): ParsedAgentChatID | null {
   }
 }
 
+/**
+ * Categories in display order.
+ *
+ * `path` (project = work directory) comes first because it is the default
+ * organisation of the session list — the switcher renders this array verbatim,
+ * so this is the single source for the order (never re-list the categories in
+ * a component).
+ */
+export const SESSION_CATEGORIES: SessionCategory[] = ['path', 'status', 'time']
+
+/** Default session-list organisation: by project (= work directory). */
+export const DEFAULT_SESSION_CATEGORY: SessionCategory = 'path'
+
+/** Narrow an arbitrary stored value to a known category. */
+export function isSessionCategory(value: unknown): value is SessionCategory {
+  return value === 'time' || value === 'status' || value === 'path'
+}
+
+/**
+ * Collapse-state key for one group.
+ *
+ * The group key alone is NOT unique across categories (`today` vs `/repo`),
+ * so the key is scoped by category. The project dimension is therefore
+ * `collapseKey('path', workDir)` — "remember collapsed per project".
+ */
+export function collapseKey(category: SessionCategory, groupKey: string): string {
+  return `${category}:${groupKey}`
+}
+
 /** Bucket a single session into one group key for the active category. */
 export function sessionGroupKey(s: SessionInfo, category: SessionCategory): string {
   switch (category) {

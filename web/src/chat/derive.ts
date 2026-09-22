@@ -30,6 +30,11 @@ export interface UserRowView {
   readonly dbID: number | undefined
   /** 排序键（turnID；pending 行 = Infinity 沉底）。 */
   readonly turnID: number
+  /** 「无 turn」标记 —— 命令行（turn-less 命令输入行）设置；`bindTurnIDs` 据此跳过
+   *  绑定（否则会被绑到最近的**后续** turn，跑到它的输出之后 / 下一个 turn 里）。 */
+  readonly standalone?: boolean
+  /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——仅 turn-less 命令输入行设置。 */
+  readonly anchorTurnID?: number
 }
 
 /** live assistant 行 —— 唯一接收实时进度的行（kind 判别，无启发式）。 */
@@ -73,6 +78,10 @@ export interface CommittedRowView {
   readonly isPartial: false
   readonly content: string
   readonly iterations: readonly WebIteration[]
+  /** 命令回复（standalone 段）的「无 turn」标记 —— `bindTurnIDs` 据此跳过绑定。 */
+  readonly standalone?: boolean
+  /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——排序键用它插回原位。 */
+  readonly anchorTurnID?: number
   readonly iterationsTruncated?: number
 }
 
@@ -137,11 +146,18 @@ function cachedLegacyRow(l: LegacyRow): Row {
           sending: false,
           dbID: l.dbID,
           turnID: 0,
+          standalone: l.standalone,
+          anchorTurnID: l.anchorTurnID,
         }
       : {
           kind: 'committed',
           id: l.id,
           turnID: 0,
+          // standalone 段（命令回复）显式透传「无 turn」标记 —— `bindTurnIDs` 见到该
+          // 标记就跳过绑定（否则会绑到 live turn、与 live 行撞虚拟键：CI 实证尺寸缓存
+          // 串味 → 总高翻倍 → 命令输出被推到可视区之上）。
+          standalone: l.standalone,
+          anchorTurnID: l.anchorTurnID,
           isPartial: false,
           content: l.content,
           iterations: l.iterations,
@@ -178,7 +194,12 @@ export function deriveRows(s: ChatState): readonly Row[] {
   // legacy 段保持 DB 顺序：user/assistant 交错（非 turn 模型 —— 直接按原序映射）。
   const legacySorted: Row[] = s.legacy.map(cachedLegacyRow)
 
-  return [...legacySorted, ...turnRows, ...pending]
+  // standalone 段（无 turn 归属的**实时**回复：命令 `!cmd`/slash 的输出）——
+  // 排在 turns 之后（用户视角的最新消息）。若与 legacy 混用，命令输出会跑到
+  // 会话顶部（derive 的 legacy 前缀段），用户仍会觉得"没有输出"。
+  const standaloneRows: Row[] = s.standalone.map(cachedLegacyRow)
+
+  return [...legacySorted, ...turnRows, ...standaloneRows, ...pending]
 }
 
 // ─── assistantRow：穷尽 switch（T4：每 turn 至多一行） ─────────

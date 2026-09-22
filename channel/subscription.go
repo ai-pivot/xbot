@@ -400,7 +400,22 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 		}
 	}
 
+	var cmdAnchor uint64
 	for _, m := range msgs {
+		if m.TurnID > cmdAnchor {
+			cmdAnchor = m.TurnID
+		}
+		if m.CommandRow {
+			// 命令行（`!cmd` / slash）的输入与输出：**无 turn 的独立行** —— 输出
+			// standalone + 锚点（= 走到这一行时已知的最新 turn），前端据此把它插回原位
+			//（与实时渲染同一条 standalone 路径）。落库形态见 storage.HistoryRecordCommand
+			//（display_only=1 + record_type='command'，永不进 LLM 上下文）。
+			history = append(history, HistoryMessage{
+				ID: m.ID, HistoryID: m.ID, Role: m.Role, Content: m.Content,
+				Standalone: true, AnchorTurnID: cmdAnchor, Timestamp: m.Timestamp,
+			})
+			continue
+		}
 		switch m.Role {
 		case "tool":
 			continue
@@ -665,6 +680,9 @@ func deriveTurnIDs(msgs []llm.ChatMessage) {
 	// Pass 1 (forward, user only): assign the first turn_id>0 to preceding user rows.
 	nextTurnID := uint64(0)
 	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].CommandRow {
+			continue // 命令行（`!cmd`）无 turn：绝不参与 turn 推导（见 storage.HistoryRecordCommand）
+		}
 		if msgs[i].Role == "user" && msgs[i].TurnID > 0 {
 			nextTurnID = msgs[i].TurnID
 		}
@@ -675,6 +693,9 @@ func deriveTurnIDs(msgs []llm.ChatMessage) {
 	// Pass 2 (backward): assign nearest preceding turn_id>0 to assistant/tool rows.
 	var lastTurnID uint64
 	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].CommandRow {
+			continue // 同上：命令行不参与 turn 推导
+		}
 		if msgs[i].TurnID > 0 {
 			lastTurnID = msgs[i].TurnID
 		} else if lastTurnID > 0 {
@@ -693,6 +714,9 @@ func deriveTurnIDs(msgs []llm.ChatMessage) {
 	// below the assistant reply" in the SubAgent session view).
 	var prevTurnID uint64
 	for i := 0; i < len(msgs); i++ {
+		if msgs[i].CommandRow {
+			continue // 同上：命令行不参与 turn 推导
+		}
 		if msgs[i].TurnID > 0 {
 			prevTurnID = msgs[i].TurnID
 		} else if prevTurnID > 0 && msgs[i].Role != "user" {
@@ -721,6 +745,9 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	//    the final assistant (same turn, different batch), causing duplicate
 	//    assistant messages at batch boundaries within a super-long turn.
 	for i := range msgs {
+		if msgs[i].CommandRow {
+			continue // 命令行（`!cmd`）无 turn：不参与推导（同 deriveTurnIDs）
+		}
 		if msgs[i].Role != "user" || msgs[i].TurnID > 0 {
 			continue
 		}
@@ -737,6 +764,9 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// Pass 2: backward search for assistant messages with turn_id=0.
 	// Stops at the preceding user message (turn boundary).
 	for i := range msgs {
+		if msgs[i].CommandRow {
+			continue // 命令行（`!cmd`）无 turn：不参与推导（同 deriveTurnIDs）
+		}
 		if msgs[i].TurnID > 0 {
 			continue
 		}
@@ -825,7 +855,22 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 		}
 	}
 
+	var cmdAnchor uint64
 	for _, m := range msgs {
+		if m.TurnID > cmdAnchor {
+			cmdAnchor = m.TurnID
+		}
+		if m.CommandRow {
+			// 命令行（`!cmd` / slash）的输入与输出：**无 turn 的独立行** —— 输出
+			// standalone + 锚点（= 走到这一行时已知的最新 turn），前端据此把它插回原位
+			//（与实时渲染同一条 standalone 路径）。落库形态见 storage.HistoryRecordCommand
+			//（display_only=1 + record_type='command'，永不进 LLM 上下文）。
+			history = append(history, HistoryMessage{
+				ID: m.ID, HistoryID: m.ID, Role: m.Role, Content: m.Content,
+				Standalone: true, AnchorTurnID: cmdAnchor, Timestamp: m.Timestamp,
+			})
+			continue
+		}
 		switch m.Role {
 		case "tool":
 			continue

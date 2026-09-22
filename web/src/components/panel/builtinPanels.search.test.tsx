@@ -7,6 +7,8 @@ import { CoreSessionsPanel } from './builtinPanels'
 import type { SessionStore } from '@/hooks/useSessionStore'
 import type { SessionInfo } from '@/types/shared'
 
+const panelSpies = vi.hoisted(() => ({ setCategory: vi.fn() }))
+
 // 需求（用户）：会话搜索是低频操作——搜索框默认收起，点击按钮才展开；
 // 输入框与「新建会话」在**同一行**内（展开时横向挤压新建会话按钮），
 // **不纵向撑开列表**。
@@ -47,7 +49,10 @@ vi.mock('@/hooks/useSessionStore', () => ({
     error: null,
     subAgents: [],
     askUserPrompts: new Map(),
-    setCategory: vi.fn(),
+    setCategory: panelSpies.setCategory,
+    collapsedGroups: new Set<string>(),
+    toggleGroupCollapsed: vi.fn(),
+    setGroupsCollapsed: vi.fn(),
     setActiveChannel: vi.fn(),
     markRead: vi.fn(),
     refresh: vi.fn(),
@@ -141,5 +146,26 @@ describe('会话面板主体工具条：不放渠道下拉（位置契约）', (
     renderWithProviders(<CoreSessionsPanel ctx={{ tabManager: undefined } as never} />)
     expect(screen.queryByTestId('channel-picker')).toBeNull()
     expect(screen.getByTestId('session-list-toolbar').querySelector('[data-testid="session-search-toggle"]')).toBeTruthy()
+  })
+})
+
+// 需求（用户）：「会话列表按项目组织」——桌面会话面板必须能切分类（默认项目）。
+// 历史事故：分类切换器只存在于手机抽屉 SessionSidebar，桌面换成 CoreSessionsPanel
+// 后再也切不到分类（与「渠道下拉只在手机里」同类遗漏）。此断言即回归守护。
+describe('桌面会话面板：分类切换器必须在（回归守护）', () => {
+  it('渲染分类切换器并能切到「项目」，工具条与列表之间', () => {
+    renderWithProviders(<CoreSessionsPanel ctx={ctx} />)
+
+    const bar = screen.getByTestId('session-view-bar')
+    expect(bar).toBeInTheDocument()
+    // 三个分类都在，且项目在最前（默认组织方式）。
+    expect(
+      screen.getAllByTestId(/^session-category-/).map((el) => el.getAttribute('data-testid')),
+    ).toEqual(['session-category-path', 'session-category-status', 'session-category-time'])
+    // 「全部折叠/展开」也在（有组时可点）。
+    expect(screen.getByTestId('session-collapse-all')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('session-category-path'))
+    expect(panelSpies.setCategory).toHaveBeenCalledWith('path')
   })
 })

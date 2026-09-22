@@ -559,6 +559,23 @@ export interface ChatMessage {
   isNotification?: boolean
   /** SSE sequence for live committed rows, used to reconcile them with history. */
   eventSeq?: number
+  /**
+   * 显式「无 turn」标记 —— 仅命令回复（`!cmd`/slash 的 standalone 段）设置。
+   * `bindTurnIDs` 见到它就跳过 turn 绑定：standalone 行**按构造不属于任何 turn**，
+   * 若被绑到"最近的前一个 turn"会与 live 行撞虚拟列表 key（`turn-N-assistant`）→
+   * 尺寸缓存/高度记忆串味 → 总高翻倍、命令输出被推到可视区之上（CI 真实 Chromium
+   * 实证 `wrapperHeight=17320px`＝8660×2、`cmdInViewport=false`）。
+   * 标记后 turnID 保持 0，虚拟键回落 `row.id`（`cmd-N`，唯一）。
+   */
+  standalone?: boolean
+  /**
+   * 命令行的「时间锚点」= 该行到达时已知的最大 turn id（0 = 尚无 turn）。
+   * `sortTurnKey` 用它把命令内容插回**它发生的那一刻**（anchor+0.5 ⇒ 在该 turn
+   * 之后、下一个 turn 之前）：无锚点时 turn-less 行一律沉底 ⇒ 后到的 turn 长在
+   * 它们上面（用户报告「所有 !cmd 内容固定挂在会话底部」）。turnID 仍保持 0
+   * （虚拟键回落 `row.id`，绝不与 turn 行撞键）。
+   */
+  anchorTurnID?: number
   /** Stable logical-send ID used to correlate optimistic rows with echoes. */
   requestID?: string
   /** DB auto-increment id from session_messages table. Used for rewind. */

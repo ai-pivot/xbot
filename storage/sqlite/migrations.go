@@ -475,6 +475,16 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v70: 修复 v66 迁移版本碰撞 —— 部分库在 reasoning_items 被折进 v65→v66 之前
+	// 就已把 v66 记成"token 用量表"那次迁移（迁移按版本选择，于是这些库永久跳过
+	// 了新列，后续迁移又把它们推进到 v69）。上游的 v68→v69 承担 runner 单表化，
+	// 因此该修复落在 v69→v70（幂等，手工构造的库也安全）。
+	if from < 70 {
+		if err := migrateV69ToV70(db); err != nil {
+			return fmt.Errorf("migrate to v70: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -568,6 +578,36 @@ func migrateV68ToV69(db *DB) error {
 		return err
 	}
 	log.Info("Database migrated to v69: runner tables collapsed to one global table")
+	return nil
+}
+
+// migrateV69ToV70 repairs the v66 migration-version collision: some databases
+// had already recorded v66 for the token-usage-table migration before
+// reasoning_items was added to migrateV65ToV66. Because migrations are selected
+// by version, those databases permanently skipped the new column while later
+// migrations advanced them. Keep this repair idempotent so partially repaired or
+// hand-built databases also migrate safely.
+func migrateV69ToV70(db *DB) error {
+	conn := db.Conn()
+	hasTable, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("migrate v69->v70 check session_messages: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "session_messages", "reasoning_items")
+		if err != nil {
+			return fmt.Errorf("migrate v69->v70 check reasoning_items: %w", err)
+		}
+		if !exists {
+			if _, err = conn.Exec("ALTER TABLE session_messages ADD COLUMN reasoning_items TEXT DEFAULT ''"); err != nil {
+				return fmt.Errorf("migrate v69->v70 add reasoning_items: %w", err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 70"); err != nil {
+		return fmt.Errorf("migrate v69->v70 update version: %w", err)
+	}
+	log.Info("Database migrated to v70 (repair missing session_messages.reasoning_items)")
 	return nil
 }
 

@@ -184,6 +184,29 @@ export interface LegacyRow {
   readonly iterations: readonly WebIteration[]
   readonly timestamp: string
   readonly dbID: number | undefined
+  /**
+   * 显式「无 turn」标记 —— 仅 standalone 段（命令 `!cmd`/slash 的实时回复）设置。
+   *
+   * ⚠️ 为什么必须显式标记（CI 真实 Chromium 实证的尺寸缓存串味）：standalone 行是
+   * assistant、若不加标记就与"缺 turn_id 的普通 assistant 行"无法区分，
+   * `bindTurnIDs` 会把它绑到**最近的前一个 turn**（= 正在跑的那个）→ 它与 live 行的
+   * 虚拟列表 key 完全相同（`turn-N-assistant`）→ `itemSizeCache`/heightMemory 被两行
+   * 共用 ⇒ 总高翻倍（实测 `wrapperHeight=17320px`＝8660×2）、命令输出被推到可视区之上
+   * （用户看到的仍是"没有输出"）。
+   * 标记后 `turnID` 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
+   */
+  readonly standalone?: boolean
+  /**
+   * 命令行的「时间锚点」= 该行**到达时**已知的最大 turn id（0 = 尚无 turn）。
+   * 用普通 number（不是品牌 TurnID）：它是**序数**而非 turn 身份，0 表示"无锚点"。
+   *
+   * 命令（`!cmd`/slash）由后端在 chatWorker 里并发执行：既没有 turn_id、也不落库，
+   * 渲染层没有任何 turn 归属可用。若一律追加在 turns 之后（旧行为），后到的 turn
+   * 会长在它们**上面**（顺序相反）、且命令输入渲染在自己输出**下面** —— 用户报告
+   * 「所有 !cmd 内容固定挂在会话底部」。anchorTurnID 记录"它发生在哪个 turn 之后"，
+   * derive 据此把它插回原位（锚点 turn 已不存在时回退为沉底）。
+   */
+  readonly anchorTurnID?: number
 }
 
 /**
@@ -199,6 +222,12 @@ export interface ChatState {
   readonly chatID: string
   readonly turns: ReadonlyMap<TurnID, Turn>
   readonly legacy: readonly LegacyRow[]
+  /** 无 turn 归属的**实时**消息（命令回复 `!cmd`/slash —— 后端命令分发不分配
+   *  turn）：与 legacy 同为 turn-less 行，但渲染位置不同 —— legacy 是 DB 历史
+   *  前缀（derive 里排在 turns 之前），standalone 是"刚刚发生"的独立回复，
+   *  必须排在 turns 之后（底部，用户视角的最新消息）。混用 legacy 会让命令
+   *  输出跑到会话顶部（用户仍会觉得"没有输出"）。 */
+  readonly standalone: readonly LegacyRow[]
   /** 唯一 live turn 的指针（I3）；null = 无活动 turn。 */
   readonly activeTurn: TurnID | null
   readonly lastSeq: EventSeq | null
@@ -240,7 +269,7 @@ export interface ChatState {
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '' }
+  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '' }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────
@@ -355,6 +384,13 @@ export type DomainEvent =
       readonly content: NonEmptyS | null
       readonly progressHistory: readonly WebIteration[]
       readonly cancelled: boolean
+      /**
+       * 后端**显式标记**的命令回复（`metadata.command_reply`，见 `agent.markCommandReply`）：
+       * 只有它代表「无 turn 的独立命令输出」⇒ 渲染为 `standalone` 独立行。
+       * 其余 `turnID === null` 的 text（后端 gap / 重启恢复丢 turn_id 的普通回复）
+       * 必须按 master 语义并入 `activeTurn`（CR 2026-09-21 P1-1）。
+       */
+      readonly commandReply?: boolean
     }
   | {
       /** 会话级字段的**本地水合**（非 SSE）：AgentPanel 用 get_goal RPC 兜底读取
@@ -379,6 +415,10 @@ export type DomainEvent =
       readonly type: 'history_replaced'
       readonly legacy: readonly LegacyRow[]
       readonly turns: readonly Turn[]
+      /** 无 turn 的独立行（命令行 `!cmd` 的输入/输出 —— 落库行，display_only=1）：
+       *  带 anchorTurnID，渲染时按锚点插回原位（与实时渲染同一条路径）。
+       *  可选：唯一生产者 historyToReplaced 总会给；手写事件（测试/旧路径）可省略。 */
+      readonly standalone?: readonly LegacyRow[]
       readonly active: { readonly turnID: TurnID; readonly snapshot: LiveSnapshot } | null
       readonly lastSeq: EventSeq | null
       /** 会话级 todos（active_progress 快照携带 —— 含 phase=done 的快照，
@@ -405,6 +445,11 @@ export type DomainEvent =
       readonly turnHint?: number
       /** 消息入队（chat 忙，排队等待执行）。 */
       readonly queued?: boolean
+      /** 后端判定这条消息是**命令**（`!cmd`/slash —— 没有 turn 生命周期，
+       *  响应里 turn_id 缺省）。来自 REST 响应的**显式** `command` 标记
+       *  （与后端 `isCommandMessage` 同一判据）—— 判别式绝不从「turn_id 缺失」
+       *  推断（CR 2026-09-21 P1-1 的教训）。 */
+      readonly command?: boolean
     }
   | {
       /** REST 发送失败：移除乐观行（对齐旧 removeById 语义）。 */

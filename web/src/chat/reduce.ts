@@ -35,6 +35,41 @@ import {
 // ─── 工具：迭代合并（I4 append-only + 权威覆盖语义） ──────────
 
 /**
+ * 已知的最大 turn id（0 = 尚无 turn）—— 命令行（turn-less）的**时间锚点**。
+ *
+ * 命令由后端并发执行：不分配 turn、不落库，渲染层没有任何 turn 归属可用。锚点记录
+ * "它发生在哪个 turn 之后"，`sortTurnKey` 据此把它插回原位（旧行为一律沉底 ⇒ 后到的
+ * turn 长在它们**上面** = 用户报告的「所有 !cmd 内容固定挂在会话底部」）。
+ * O(T) —— 只在命令事件（极低频）上调用。
+ */
+function lastTurnIDOf(s: ChatState): number {
+  let max = 0
+  for (const id of s.turns.keys()) if (id > max) max = id
+  return max
+}
+
+// 命令回复（`!cmd` / slash）渲染为 legacy 独立行 —— 单调序号保证 React key 唯一
+// （同毫秒连续两条命令回复也必须区分，与 normalize.ts 的 echoSeq 同一模式）。
+/**
+ * 无 turn 的独立行（命令回复 `!cmd` / slash）的行 id。
+ *
+ * 生命周期：只在收到一条**显式命令回复**时生成一次；命令不落库，reload 后这些行由
+ * DB 历史替换（`history_replaced` 会重建 standalone 段），因此它只需在**当前会话的
+ * 生命周期内**唯一。
+ *
+ * 用 `crypto.randomUUID()` 而不是模块级自增计数器：计数器是跨会话/跨刷新共享的
+ * **隐式全局状态**（刷新后从 1 重新开始，会与其它会话/历史行的 id 撞车），违反
+ * 「行 id 唯一」的契约（CR 2026-09-21 P2-1）。与 `useChatMessages.newMessageRequestID()`
+ * 同一范式。
+ */
+function commandRowId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return uuid
+    ? `cmd-${uuid.replaceAll('-', '').slice(0, 12)}`
+    : `cmd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/**
  * 会话级状态携带（todos + goal）：iteration/phase_done 事件在【任何】路径（早期
  * return / 主路径）都必须应用事件携带的会话级字段 —— 事件未携带（undefined）时保留
  * 现值（与 optTodos/optGoal 的"缺省=不覆盖"语义一致）。
@@ -844,7 +879,50 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
 
     // ── text_final：权威 finalizer —— live/frozen → committed（I2 构造） ──
     case 'text_final': {
-      // turnID 为 null（legacy 无归属）→ 尝试 activeTurn；两者皆空 → 不动。
+      // ⚠️ turnID 为 null 的 text_final = **命令回复**（`!cmd` bang / slash 命令）：
+      // 后端命令分发（chatWorker 的 Concurrent 分支）按设计**不分配 turn**
+      // （无 turn_started、无 turn_id），输出以独立消息形式 sendMessage 回来。
+      // 它不属于任何 turn —— 绝不能绑 activeTurn（会污染正在进行的 turn），
+      // 更不能丢弃：旧代码 `target === null → return s` 把命令输出整个吞掉
+      // （用户报告 "我输入 !pwd 没有输出啊" —— 服务端日志证明命令已执行，且
+      // `sendMessage directSend dispatch | send_channel=web` 已发到正确会话）。
+      // 渲染为 **standalone** 独立行（不是 legacy：legacy 是 DB 历史前缀，derive
+      // 排在 turns **之前**，会让命令输出出现在会话顶部 —— 用户仍会觉得"没输出"。
+      // standalone 排 turns 之后 = 底部，即用户视角的最新消息）。
+      //
+      // ⚠️ **只有显式命令回复**（后端 `metadata.command_reply`）才走这里：其余
+      // turnID 缺失的 text（后端 gap / 重启恢复会让普通 turn 的 text 丢 turn_id）
+      // 必须按 master 语义提交进 `s.activeTurn` —— 否则会被误判成命令回复、排到
+      // 底部 standalone 行并与 live 行重复渲染，且该 live turn 直到刷新都不收尾
+      // （CR 2026-09-21 P1-1）。
+      if (ev.turnID === null && ev.commandReply === true) {
+        const content = ev.content ?? ''
+        if (content === '') return s
+        return {
+          ...s,
+          standalone: [...s.standalone, {
+            id: commandRowId(),
+            role: 'assistant',
+            content,
+            iterations: ev.progressHistory ?? [],
+            timestamp: new Date().toISOString(),
+            dbID: undefined,
+            // ⚠️ **显式标记为「无 turn」** —— CI 真实 Chromium 抓到的尺寸缓存串味根因：
+            // standalone 行是 assistant、若不加标记就与"缺 turn_id 的普通 assistant 行"
+            // 无法区分，`bindTurnIDs` 会把它绑到**最近的前一个 turn**（= 正在跑的那个）
+            // → 它的虚拟列表 key 与 live 行完全相同（`turn-N-assistant`）→ 尺寸缓存/
+            // 高度记忆被两行共用 ⇒ 总高翻倍（实测 `wrapperHeight=17320px`＝8660×2）、
+            // 命令输出被推到可视区之上（用户看到的仍然是"没有输出"）。
+            // 标记后 turnID 保持 0 ⇒ 虚拟键回落到 `row.id`（`cmd-N`，天然唯一）。
+            standalone: true,
+            // 时间锚点：插回"命令发生的那一刻"（见 lastTurnIDOf 注释）。
+            anchorTurnID: lastTurnIDOf(s),
+          }],
+        }
+      }
+      // 非命令回复：turnID 缺失时按 master 语义回落到 `s.activeTurn`
+      //（后端 gap / 重启恢复丢 turn_id 的普通回复必须并入正在跑的 turn，而不是
+      // 变成底部独立行 —— 见上方 P1-1 注释）。
       const target = ev.turnID !== null ? ev.turnID : s.activeTurn
       if (target === null) return s
       const t = s.turns.get(target)
@@ -1201,8 +1279,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           //   · liveProgressFromState 返回 EMPTY ⇒ 看不到 live 进度
           //   · 后续 iteration/stream 事件先被「committed 遮蔽」拦下
           //     （ev.iter 不大于已落库 maxIter 时 return s）⇒ 界面永久冻结
-          // ⇒ 按服务端的权威声明升级回 live；两侧迭代 union（DB 侧可能比快照更全：
-          // 快照 iteration_history 只保留尾部 SNAPSHOT_ITERATION_LIMIT 条），
+          // ⇒ 按服务端的权威声明升级回 live；两侧迭代 union（DB 侧可能比快照更全 ——
+          // 快照与 DB 历史现在都**完整**下发，不再有任何尾部截断），
           // 同号以**快照**权威（服务端 live 比 DB 增量行新——与 3.5 同向）。
           // 对照保护（本文件 P0 测试「没有 active 快照时 committed 不得被复活」）：
           // 只有在 ev.active 指向该 turn 时才升级，真结束的 turn 不受影响。
@@ -1369,6 +1447,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         chatID: s.chatID, turns, legacy, activeTurn, lastSeq,
         busy: s.busy, pendingUsers, queue: s.queue, todos, goal: s.goal,
         sessionRunning: s.sessionRunning,
+        // 命令行（`!cmd`）落库行：事件带 standalone 时**采纳**它（刷新后状态是空的，
+        // DB 权威行必须进渲染）；事件未带（手写事件/旧路径）则保留现有。
+        standalone: ev.standalone ?? s.standalone,
         // ⛔ 出现**无法追赶的 gap**（本地洞在权威窗口之外 ⇒ 永久断裂）⇒ 自增触发面板
         // **重新加载该会话**（丢弃带洞的本地窗口 + 权威重载 + loading 屏）。同一缺口形状
         // 只自增一次 ⇒ 不可能造成重载循环；形状消失后再出现会重新触发。
@@ -1463,6 +1544,29 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       const dbID = ev.dbID > 0 ? ev.dbID : undefined
       const idx = s.pendingUsers.findIndex((u) => u.requestID === ev.requestID)
       if (idx >= 0) {
+        // 命令（`!cmd`/slash；REST 响应的**显式** `command` 标记）**没有 turn 生命周期**：
+        // 它永远等不到 turn_started，若留在 pendingUsers 就会固定沉底、且渲染在自己输出
+        // **之后**（用户报告：「所有 !cmd 内容（包括输入和输出）固定挂在会话底部」）。
+        // 移入 standalone 段并记录锚点（到达时已知的最大 turn id）——`sortTurnKey` 据此
+        // 把它插回原位；turnID 保持 0 ⇒ 虚拟键回落 row.id（不与 turn 行撞键）。
+        // 有 turn_id 的命令（有状态命令走串行队列）不受影响：正常绑定到它的 turn。
+        if (ev.command === true && !ev.turnHint) {
+          const row = s.pendingUsers[idx]
+          return {
+            ...s,
+            pendingUsers: s.pendingUsers.filter((_, i) => i !== idx),
+            standalone: [...s.standalone, {
+              id: row.id,
+              role: 'user',
+              content: row.content,
+              iterations: [],
+              timestamp: row.timestamp,
+              dbID,
+              standalone: true,
+              anchorTurnID: lastTurnIDOf(s),
+            }],
+          }
+        }
         // queued → 撤出消息流（StagingTray 是唯一渲染面）。
         if (ev.queued === true) {
           const pendingUsers = s.pendingUsers.filter((_, i) => i !== idx)

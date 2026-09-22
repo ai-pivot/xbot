@@ -3056,3 +3056,64 @@ describe('sidebar state reconciliation (trust window + lost events)', () => {
     unmount()
   })
 })
+
+// 需求（用户）：「会话列表按项目组织。项目会话列表可以折叠/展开」——
+// 默认分类 = 项目（path，按工作目录分组）；折叠状态按 (category, groupKey)
+// 持久化，因此项目维度天然"按项目记住"。
+describe('session list organisation: project default + collapsible groups', () => {
+  it('defaults to project (path) grouping when nothing is stored', () => {
+    const { result } = renderHook(() => useSessionStoreImpl())
+    expect(result.current.category).toBe('path')
+  })
+
+  it('migrates a legacy stored "time" (the old hard-coded default) to project grouping once', () => {
+    localStorage.setItem('xbot:session-category', 'time')
+    const { result } = renderHook(() => useSessionStoreImpl())
+    expect(result.current.category).toBe('path')
+    // localStorage + the marker are updated, otherwise the next app-load sync
+    // (server → localStorage) would resurrect 'time'.
+    expect(localStorage.getItem('xbot:session-category')).toBe('path')
+    expect(localStorage.getItem('xbot:session-category-migrated')).toBe('1')
+  })
+
+  it('never migrates twice: an explicit switch back to time survives a reload', () => {
+    localStorage.setItem('xbot:session-category', 'time')
+    const first = renderHook(() => useSessionStoreImpl())
+    expect(first.result.current.category).toBe('path') // migrated
+
+    act(() => first.result.current.setCategory('time')) // deliberate choice
+    expect(localStorage.getItem('xbot:session-category')).toBe('time')
+
+    const reloaded = renderHook(() => useSessionStoreImpl())
+    expect(reloaded.result.current.category).toBe('time')
+  })
+
+  it('toggles one group and persists it (remember collapsed per project)', () => {
+    const { result } = renderHook(() => useSessionStoreImpl())
+    expect(result.current.collapsedGroups.size).toBe(0)
+
+    act(() => result.current.toggleGroupCollapsed('path:/repo'))
+    expect(result.current.collapsedGroups.has('path:/repo')).toBe(true)
+    expect(JSON.parse(localStorage.getItem('xbot:session-collapsed-groups') ?? '[]')).toEqual(['path:/repo'])
+
+    const reloaded = renderHook(() => useSessionStoreImpl())
+    expect(reloaded.result.current.collapsedGroups.has('path:/repo')).toBe(true)
+
+    act(() => result.current.toggleGroupCollapsed('path:/repo'))
+    expect(result.current.collapsedGroups.has('path:/repo')).toBe(false)
+  })
+
+  it('collapses / expands every listed group at once（全部折叠/展开）', () => {
+    const { result } = renderHook(() => useSessionStoreImpl())
+
+    act(() => result.current.setGroupsCollapsed(['path:/a', 'path:/b'], true))
+    expect([...result.current.collapsedGroups].sort()).toEqual(['path:/a', 'path:/b'])
+
+    act(() => result.current.setGroupsCollapsed(['path:/a', 'path:/b'], false))
+    expect(result.current.collapsedGroups.size).toBe(0)
+
+    // 不存在的键不会凭空写进状态（no-op）。
+    act(() => result.current.setGroupsCollapsed(['path:/a'], false))
+    expect(result.current.collapsedGroups.size).toBe(0)
+  })
+})

@@ -57,6 +57,9 @@ After starting the server, open `http://your-server:8082` in a browser.
 
 ## Message Composer
 
+> **New session**: you may pick a working directory; **a missing directory is created automatically** (including parent directories). If a regular file blocks the path (or permissions fail), the panel reports "failed to set working directory" instead of silently using a wrong one.
+
+
 Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.) and links:
 
 | Feature | Description |
@@ -65,6 +68,23 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Link editing | Select text to reveal a floating toolbar (bold/italic/strikethrough/inline code/link); `Ctrl/Cmd+K` adds or edits a link, one-click unlink |
 | File upload | **Any file type is accepted** (no type whitelist). Click 📎, **paste** (screenshots upload automatically), or **drag-and-drop** files onto the composer to attach them |
 | Upload limit | 10MB per file (size only — no type restrictions) |
+| Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
+
+## Session list (organised by project)
+
+The session list is organised **by project** by default — a project is the session's **working directory** (backend `tenants.cwd`). Sessions in the same directory share one group; its header shows the **project name + session count** (hover for the full path; sessions without a working directory land in "No work path").
+
+The view bar above the list switches the organisation (identical on the desktop sidebar and the mobile drawer):
+
+| Category | Group key |
+|----------|-----------|
+| **Project** (default) | working directory |
+| Status | running / waiting for input / queued / unread / idle / error |
+| Time | today / yesterday / earlier |
+
+**Collapse / expand**: click a group header to collapse or expand that group; use "Collapse all / Expand all" on the right of the view bar to change every group at once. Collapse state is **remembered per project** (kept in `localStorage`; frontend-only, not synced across devices) and survives reloads and panel remounts.
+
+> Upgrading from an older version: the previous default was "by time" and the first load switches to "by project" **once**; a category you pick yourself is never changed afterwards.
 
 ## Authentication
 
@@ -123,3 +143,18 @@ When `persona_isolation` is `true`:
 - [Feishu Channel](/channels/feishu/) — team collaboration
 - [CLI Channel](/channels/cli/) — terminal TUI
 - [Configuration](/configuration/) — web channel settings
+
+## File storage (where uploads live)
+
+**Settings → Storage** switches the backend; saving takes effect **immediately, no restart**:
+
+| Backend | Notes | Retention |
+|---|---|---|
+| **Local** (default, zero config) | Uploads go to `<XBOT_HOME>/uploads/`, served by the same-origin `/api/files/download` | Only the **newest 500 uploads** are kept after each upload (by mtime; no time limit — i.e. `500 ÷ uploads per day` days) |
+| **Alibaba Cloud OSS** / **Tencent Cloud COS** | S3-compatible: same credential fields, with the **endpoint derived from the region** (`cn-hangzhou` → `oss-cn-hangzhou.aliyuncs.com`; `ap-guangzhou` → `cos.ap-guangzhou.myqcloud.com`); an explicit endpoint overrides it (MinIO / R2 / self-hosted) | Cloud objects **never expire automatically** |
+| **Qiniu Kodo** / **S3 compatible** | The bucket is the source of truth; a local copy is kept so the model can be handed a real path | Cloud objects **never expire automatically** (set a lifecycle rule in your cloud console if you want expiry) |
+
+- Upload: paste/drag in the composer → `POST /api/files/upload` (≤10MB, any file type) → returns `upload_key`; the message stores only a **relative reference** `![name](/api/files/download?key=…&inline=1)` (never base64; renders a placeholder if it is gone).
+- Fetch: `GET /api/files/download?key=…` (download by default; add `&inline=1` to render inline).
+- Credentials are **masked** on read (`AKID****`); echoing a masked value back never overwrites the real key. Switching to a cloud backend requires access/secret/bucket (Alibaba OSS / Tencent COS also need a region unless you provide an explicit endpoint), otherwise the save is **rejected** (a half-configured backend would break every upload).
+- For the model to actually *see* an image, also enable **Settings → LLM → model row → Vision input**.

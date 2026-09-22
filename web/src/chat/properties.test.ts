@@ -101,6 +101,9 @@ function generateEvents(rng: () => number, o: GenOptions): DomainEvent[] {
         content: hasContent ? (`最终回复-${i}` as never) : null,
         progressHistory: rng() < 0.5 ? [{ iteration: 1 + Math.floor(rng() * 3), content: `历史迭代-${i}`, reasoning: '', tools: [], toolCount: 0 }] : [],
         cancelled: rng() < 0.3,
+        // turnID 缺失的 text 在真实链路里**只有命令回复**会带该标记（后端
+        // markCommandReply）；不带的会被并入 activeTurn（CR 2026-09-21 P1-1）。
+        commandReply: t === null,
       })
     } else if (kind < 0.95) {
       evs.push({ type: 'session', busy: rng() < 0.5 })
@@ -177,9 +180,13 @@ describe('TDSM 性质测试（P1-P5，种子可复现）', () => {
         }
 
         // P3（T4）：每 turn 至多一行 assistant。
+        // 只统计 **turn 行**（turnID > 0，与 P4 同一判据）：legacy 行（turnID=0）
+        // 是**无 turn 的独立消息**（命令回复 `!cmd`/slash —— 后端命令分发不分配
+        // turn），它们本来就可以有多条，不属于任何 turn（reduce 的 text_final
+        // with turnID=null 分支）。
         const assistantByTurn = new Map<number, number>()
         for (const r of rows) {
-          if (r.kind !== 'user') {
+          if (r.kind !== 'user' && r.turnID > 0) {
             assistantByTurn.set(r.turnID, (assistantByTurn.get(r.turnID) ?? 0) + 1)
           }
         }

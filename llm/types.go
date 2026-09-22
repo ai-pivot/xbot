@@ -37,6 +37,10 @@ type ChatMessage struct {
 	Detail         string          `json:"-"`                        // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
 	Timestamp      time.Time       `json:"-"`                        // 消息时间戳，不参与 LLM 上下文
 	DisplayOnly    bool            `json:"-"`                        // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	// CommandRow = 命令行（`!cmd` / slash）的输入/输出行：与 DisplayOnly 同为"只给 UI"，
+	// 但额外标识「无 turn 的独立命令行」—— 转换层据此写出 protocol.HistoryMessage 的
+	// Standalone/AnchorTurnID，前端按锚点把它插回原位（见 storage.HistoryRecordCommand）。
+	CommandRow bool `json:"-"`
 	// Internal 表示"只给模型的内部载体"：**参与 LLM 上下文，但绝不渲染成用户可见消息**。
 	// 场景：view_image 的多模态注入（OpenAI tool role 不能带图，故用 user role 承载
 	// `![label](/api/files/viewimg/…)` 引用）。这类消息与触发它的用户消息共用同一个

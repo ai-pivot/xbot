@@ -511,6 +511,7 @@ export const MessageList = memo(function MessageList({
     }
     return null
   }, [rows])
+
   // 不变量（用户 2026-09-19）：「只要输入框是 cancel 按钮，就一定不能上面渲染的
   // 内容是 idle 内容」⇒ **列表尾部**必须有一个「进行中」信号。
   //
@@ -601,6 +602,66 @@ export const MessageList = memo(function MessageList({
   // 必须读**当前**实例 —— 经 ref 现读，避免把 virtualizer 放进 effect deps。
   const virtualizerRef = useRef(virtualizer)
   virtualizerRef.current = virtualizer
+
+  // ── live 行尺寸跟随（打字机逐帧长高）────────────────────────────────────────
+  // 为什么需要：打字机（MarkdownRenderer 内部 rAF）逐帧吐字改变 live 行的**真实高度**，
+  // 这条增长**不经过 props** ⇒ 上游"每 commit 批量重测"不触发；而 TanStack 的
+  // ResizeObserver 在乱序/过期 `borderBoxSize` entry 下可能静默（实测：8660px 的行被
+  // 当成 91px，随后追加的行全按 91px 定位 ⇒ 命令输出被上一条 assistant 行盖住）。
+  //
+  // 性能约束（CR 2026-09-21 P1-2；与 2026-09-18 trace 定下的铁律"不在每帧回调里读
+  // 几何"一致）：① **变化门控** —— 实测高度（round）与上次相同 ⇒ 直接返回，不做
+  // resizeItem、不写 dataset；② **下标缓存** —— live 行下标只在 rows/liveId 变化时算
+  // 一次，帧内不再 findIndex（O(N)/帧 → O(1)）；③ **共享帧调度** —— 注册到
+  // `frameScheduler`（与 store/TurnBody 共用同一 rAF，不叠加）；④ **首选 observer** ——
+  // 给 live 元素挂 `ResizeObserver`（长高精确触发），帧调度降为**低频兜底**（元素被替换
+  // / RO 静默时）；⑤ dataset 诊断标记只在**高度真的变化**时写。
+  const liveRowIndex = useMemo(
+    () => (liveId ? rows.findIndex((r) => r.id === liveId) : -1),
+    [rows, liveId],
+  )
+  useEffect(() => {
+    const root = scrollRef.current
+    if (!root || !liveId || liveRowIndex < 0) return
+    const findNode = () => root.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
+    let lastH = -1
+    const apply = () => {
+      const node = findNode()
+      if (!node) return
+      const h = Math.round(node.getBoundingClientRect().height)
+      if (h <= 0 || h === lastH) return // ① 变化门控（打字机长高时才继续）
+      lastH = h
+      virtualizer.resizeItem(liveRowIndex, h) // ② 下标已缓存
+      // 诊断标记：只在 dev/E2E 构建下写（CR 2026-09-21 P1-2 子项 5 —— 生产版不每帧
+      // 改 DOM 属性；E2E 用 `npm run dev` 起服务 ⇒ DEV=true，`measure-pass > 0` 契约不变）。
+      if (import.meta.env.DEV) {
+        root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
+        root.dataset.virtTotal = String(Math.round(virtualizer.getTotalSize()))
+      }
+    }
+    apply() // 挂载即测一次（E2E 契约：measure-pass > 0）
+
+    // ④ 首选 ResizeObserver —— 长高精确触发（不需要每帧读几何）
+    let ro: ResizeObserver | undefined
+    const node = findNode()
+    if (node && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => apply())
+      ro.observe(node)
+    }
+    // ③ 低频兜底：有 RO 时每 15 帧（~4Hz）一次；无 RO（jsdom/测试）时每帧 —— 两种情况
+    // 都由①的变化门控吸收空转成本。
+    let frame = 0
+    const task = () => {
+      frame++
+      if (!ro || frame % 15 === 0) apply()
+      frameScheduler.schedule(task)
+    }
+    frameScheduler.schedule(task)
+    return () => {
+      frameScheduler.cancel(task)
+      ro?.disconnect()
+    }
+  }, [liveId, liveRowIndex, virtualizer])
 
   // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
   // (direct instance property) in resizeItem, but setOptions only stores it in

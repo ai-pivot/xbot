@@ -56,12 +56,73 @@ const started = (turn: ReturnType<typeof turnID>, requestID: string | null = nul
   content: null,
 })
 
-const textFinal = (turn: ReturnType<typeof turnID> | null, content: string | null, cancelled = false): DomainEvent => ({
+const textFinal = (
+  turn: ReturnType<typeof turnID> | null,
+  content: string | null,
+  cancelled = false,
+  // 命令回复必须带后端显式标记（`metadata.command_reply` → normalize 透传）：
+  // standalone 的判别式现在是**该标记**，而不是「turnID 缺失」（CR 2026-09-21 P1-1）。
+  commandReply = false,
+): DomainEvent => ({
   type: 'text_final',
   turnID: turn,
   content: content === null ? null : (content as never),
   progressHistory: [],
   cancelled,
+  commandReply,
+})
+
+// REPRO（用户报告："还是不行啊，!pwd 发出去之后消息直接消失了"）——命令消息的完整
+// 前端时序：乐观行 → REST ack（命令**没有 turn_id**）→ 命令回复（turn-less text）
+// → 随后的一次历史刷新（命令消息不落库，DB 快照里没有它）。
+// 断言：user 行与回复行都必须留在渲染里。
+it('REPRO: !cmd 完整时序（ack 无 turn_id + 历史刷新）不得让 user 行/回复消失', () => {
+  let s = initialChatState('chat-1')
+  s = reduce(s, {
+    type: 'user_sent',
+    row: {
+      id: 'u-cmd-1', content: '!pwd' as never, timestamp: 't0', isNotification: false,
+      queued: false, sending: true, requestID: 'r-cmd-1', turnHint: undefined, dbID: undefined,
+    },
+  })
+  // REST ack：命令没有 turn_id → turnHint undefined/0
+  s = reduce(s, { type: 'user_ack', requestID: 'r-cmd-1', dbID: 0, turnHint: 0, queued: false })
+  // 命令回复（turn-less）
+  s = reduce(s, {
+    type: 'text_final', turnID: null, content: '```\n/root\n```' as never, progressHistory: [], cancelled: false, commandReply: true,
+  })
+  const before = deriveRows(s)
+  expect(before.some((r) => r.kind === 'user' && String(r.content) === '!pwd'), 'ack+回复后 user 行应仍在').toBe(true)
+  expect(before.some((r) => String(r.content ?? '').includes('/root')), '命令回复应可见').toBe(true)
+
+  // 历史刷新（命令消息不落库 → DB 快照为空）
+  const after = deriveRows(reduce(s, {
+    type: 'history_replaced', legacy: [], turns: [], active: null, lastSeq: null, todos: [],
+  } as never))
+  expect(after.some((r) => r.kind === 'user' && String(r.content) === '!pwd'), '历史刷新后 user 行不应消失').toBe(true)
+  expect(after.some((r) => String(r.content ?? '').includes('/root')), '历史刷新后回复不应消失').toBe(true)
+})
+
+// REPRO（用户报告："我输入 !pwd 没有输出啊"）。服务端日志证明命令**已执行**且
+// `sendMessage directSend dispatch | send_channel=web send_chat_id=chat_1` 已把输出
+// 发到正确会话 —— 但命令回复**没有 turn_id**（后端命令分发按设计不分配 turn），
+// 而 M4 状态机遇到 turnID=null 且 activeTurn=null 时直接 `return s` 把输出吞掉。
+// 命令回复是独立消息（不属于任何 turn），必须渲染出来。
+it('REPRO: 命令回复（text_final with turnID=null）必须渲染为独立消息，不能被吞掉', () => {
+  const s = run([
+    started(T1),
+    iteration1(T1, '正常 turn 的回复'),
+    textFinal(T1, '正常 turn 的回复'),
+    // 用户敲 `!pwd` → 后端命令分发（无 turn）→ text 事件无 turn_id
+    textFinal(null, '```\n/root\n```\n`exit: 0`', false, true),
+  ])
+  const rows = deriveRows(s)
+  const cmdRow = rows.find((r) => String(r.content ?? '').includes('/root'))
+  expect(cmdRow, '命令输出必须出现在渲染行里（否则用户看到"没有输出"）').toBeDefined()
+  // 且不能污染既有 turn 的内容
+  const t1 = rows.filter((r) => r.turnID === 1)
+  expect(t1).toHaveLength(1) // user + assistant 合并在同一 turn 行里（assistant 行）
+  expect(String(t1[0].content ?? '')).toBe('正常 turn 的回复')
 })
 
 const phaseDone = (turn: ReturnType<typeof turnID>, finalIteration: DomainEvent extends never ? never : {
@@ -2196,5 +2257,46 @@ describe('P0(2026-09-18): session_idle 清 activeTurn（后端 idle ⇒ 前端�
     const s1 = run([{ type: 'session_idle' } as DomainEvent], s0)
     const s2 = run([{ type: 'session_idle' } as DomainEvent], s1)
     expect(s2).toBe(s1)
+  })
+})
+
+// ── CR 2026-09-21 P1-1：standalone 判别式必须是后端**显式**的 command_reply 标记 ──
+// 旧实现用「turnID 缺失」当判别式，会把"后端 gap / 重启恢复导致普通 turn 的 text 丢
+// turn_id"误判成命令回复 ⇒ 该回复被排到底部 standalone 行、与 live 行重复渲染，
+// 且该 live turn 直到刷新都不收尾。
+describe('P1-1 — standalone 只认显式命令回复标记', () => {
+  it('有 activeTurn 时 text_final{turnID:null}（非命令）不得产生 standalone 行，必须并入 activeTurn', () => {
+    let s = run([started(T1), iteration1(T1, '部分输出', 1) as DomainEvent])
+    const before = s.standalone.length
+    // 普通回复丢了 turn_id（**没有** command_reply 标记）—— 必须按 master 语义并入
+    // activeTurn，而不是变成底部独立行。
+    s = reduce(s, {
+      type: 'text_final', turnID: null, content: '最终回复' as never,
+      progressHistory: [], cancelled: false,
+    } as DomainEvent)
+    expect(s.standalone.length, '普通回复（无命令标记）绝不能变成 standalone 独立行').toBe(before)
+    const rows = deriveRows(s)
+    expect(
+      rows.some((r) => String(r.content ?? '').includes('最终回复')),
+      '内容必须提交进 activeTurn（否则就是被静默丢弃）',
+    ).toBe(true)
+  })
+
+  it('命令回复（commandReply=true）即使有 activeTurn 也必须走 standalone 独立行', () => {
+    let s = run([started(T1), iteration1(T1, '进行中', 1) as DomainEvent])
+    s = reduce(s, {
+      type: 'text_final', turnID: null, content: '```\n/root\n```' as never,
+      progressHistory: [], cancelled: false, commandReply: true,
+    } as DomainEvent)
+    expect(s.standalone.length, '命令回复必须成为独立行（turnID 保持 0 + standalone 标记）').toBe(1)
+    expect(s.standalone[0].standalone).toBe(true)
+    // 派生出的行必须落在「无 turn」桶（turnID 0）—— `cachedLegacyRow` 把 standalone
+    // 段映射成 kind='committed' + standalone 透传，turnID 保持 0（虚拟键回落 row.id）。
+    const rows = deriveRows(s)
+    const row = rows.find(
+      (r) => String((r as { content?: string }).content ?? '').includes('/root'),
+    ) as { turnID?: number } | undefined
+    expect(row, 'standalone 行必须能在派生结果里找到').toBeTruthy()
+    expect(row!.turnID, 'standalone 行的 turnID 必须保持 0（虚拟键回落 row.id）').toBe(0)
   })
 })

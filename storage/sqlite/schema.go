@@ -7,7 +7,7 @@ import (
 )
 
 // createSchema creates the initial database schema at the current schemaVersion.
-// The DDL includes ALL tables/columns/indexes that migrations v1→v66 would add,
+// The DDL includes ALL tables/columns/indexes that migrations v1→v69 would add,
 // so fresh databases skip the migration chain entirely. This is critical on
 // Windows where running every migration per test DB causes CI timeouts (600s+).
 //
@@ -128,7 +128,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (69);
+INSERT INTO schema_version (version) VALUES (70);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.

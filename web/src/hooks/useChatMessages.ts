@@ -59,7 +59,7 @@ interface UseChatMessagesOptions {
   /** Called when a message is successfully sent (for optimistic busy trigger). */
   /** REST 发送成功。携带 requestID + 服务端响应（turn_id/queued）供调用方
    *  ack 状态机乐观行（清 sending —— 成功即非发送中）。 */
-  onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean }) => void
+  onSendSuccess?: (info?: { requestID: string; turnID?: number; queued?: boolean; command?: boolean }) => void
   /** REST 发送失败（乐观行需移除）。 */
   onSendFail?: (requestID: string) => void
   /** Called when cancel is successfully sent (for optimistic idle trigger). */
@@ -214,6 +214,10 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
       // 乐观/echo 副本不经过 parseHistoryMessages（store.setUser 直接写入），
       // 仍 dbID=undefined 被过滤 —— 不重新引入双行 bug。
       dbID: m.id ?? (i + 1),
+      // 命令行（`!cmd`）落库行：standalone（无 turn 独立行）+ 时间锚点（后端按行序
+      // 算出）。渲染层据此走 standalone 路径插回原位 —— 刷新后仍在、顺序一致。
+      standalone: m.standalone === true,
+      anchorTurnID: typeof m.anchor_turn_id === 'number' ? m.anchor_turn_id : undefined,
     })
   }
 
@@ -732,7 +736,7 @@ export function useChatMessages({
               // which is a no-op when no pendingUser exists (we skipped
               // optimistic rendering), and the turn_started/user_echo will
               // arrive via SSE to render the message normally.
-              onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
+              onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true, command: resp?.command === true })
             }
           })
           .catch((error: unknown) => {
@@ -794,7 +798,7 @@ export function useChatMessages({
           // Two renders with different scroll heights = visible jitter.
           // Calling onSendSuccess first lets both updates land in the same
           // React batch (React 18 automatic batching for promises).
-          onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true })
+          onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true, command: resp?.command === true })
           if (optimisticID && resp) {
             const sentID = optimisticID
             const respTurnID = resp.turn_id
@@ -804,7 +808,12 @@ export function useChatMessages({
             const serverTimestamp = serverTs != null ? new Date(serverTs).toISOString() : undefined
             messageMutationGenRef.current += 1
             store.patchUserById(sentID, {
-              persisted: true,
+              // ⚠️ 命令消息（`!cmd` / slash）**不落库**：后端命令分发不走
+              // processMessage，响应里 message_id=0 且**没有 turn_id**。此时绝不能
+              // 标记 persisted=true —— 那样它会被 M4 当作 DB 行（legacy 段，渲染在
+              // 会话**顶部**），而乐观 pending 行被过滤掉 → 用户看到的是"消息直接
+              // 消失"（实际被挪到顶部）。用"真的落库了"作为判据。
+              persisted: (msgID ?? 0) > 0 || (respTurnID ?? 0) > 0,
               sending: false,
               ...(msgID ? { dbID: msgID } : {}),
               ...(serverTimestamp ? { timestamp: serverTimestamp } : {}),
