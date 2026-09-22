@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { suppressTerminalQueryReplies } from '@/lib/terminalQueries'
 import '@xterm/xterm/css/xterm.css'
 
 import { TerminalWS } from '@/lib/terminalWS'
@@ -140,6 +141,9 @@ export function TerminalPanel({ params }: PanelProps) {
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.loadAddon(new WebLinksAddon())
+    // 屏蔽终端探针的应答（OSC 10/11 颜色、DA1、DECRQM、DSR…）：否则应答会被 PTY
+    // 行规程回显成正文（用户报告 2026-09-22：终端里凭空出现 `10;rgb:…`/`;0c`/`2$y`）。
+    suppressTerminalQueryReplies(term)
     term.open(containerRef.current)
     fitAddon.fit()
 
