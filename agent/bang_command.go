@@ -74,7 +74,7 @@ func (a *Agent) handleBangCommand(ctx context.Context, msg bus.InboundMessage, c
 	// Resolve session CWD so bang commands run in the same directory as the agent.
 	sessionCWD := a.resolveBangCWD(msg.Channel, msg.ChatID, sbUID, workspaceRoot)
 
-	output, exitErr := a.executeBangCommand(ctx, command, workspaceRoot, sbUID, sessionCWD)
+	output, exitErr := a.executeBangCommand(ctx, command, workspaceRoot, sessionKey, sbUID, sessionCWD)
 
 	// Format result
 	content := formatBangOutput(command, output, exitErr)
@@ -143,14 +143,19 @@ func (a *Agent) resolveBangCWD(channel, chatID, senderID, workspaceRoot string) 
 // Both paths use login shell (bash -l -c) via Sandbox.Exec for consistent behavior.
 // workspaceRoot is the sandbox-internal path for file operations.
 // cwd is the session's current working directory (may be empty if not set).
-func (a *Agent) executeBangCommand(ctx context.Context, command, workspaceRoot, senderID string, cwd string) (string, error) {
+//
+// sessionKey ("channel:chatID") is the routing key for sandbox resolution —
+// ⛔ 2026-09-22 parity fix: this used to route by senderID, which never matches
+// a session→runner binding, so with 2+ runners connected the bang command could
+// not resolve the session's runner (and GetShell fell back to /bin/sh).
+func (a *Agent) executeBangCommand(ctx context.Context, command, workspaceRoot, sessionKey, senderID string, cwd string) (string, error) {
 	execCtx, cancel := context.WithTimeout(ctx, bangDefaultTimeout)
 	defer cancel()
 
 	sandbox := tools.GetSandbox()
-	// Resolve per-user sandbox for correct Name() routing
+	// Resolve per-session sandbox for correct Name() routing
 	if resolver, ok := sandbox.(tools.SandboxResolver); ok {
-		sandbox = resolver.SandboxForSession(senderID)
+		sandbox = resolver.SandboxForSession(sessionKey)
 	}
 
 	// GetShell triggers Docker container management (create/start/verify mount),
@@ -159,7 +164,7 @@ func (a *Agent) executeBangCommand(ctx context.Context, command, workspaceRoot, 
 	if sandbox.Name() == "docker" {
 		hostWorkspace = a.workspaceRoot(senderID)
 	}
-	shell, err := sandbox.GetShell(senderID, hostWorkspace)
+	shell, err := sandbox.GetShell(sessionKey, hostWorkspace)
 	if err != nil {
 		return "", fmt.Errorf("failed to get shell: %w", err)
 	}
@@ -186,7 +191,7 @@ func (a *Agent) executeBangCommand(ctx context.Context, command, workspaceRoot, 
 		Shell:      false,
 		Dir:        dir,
 		Timeout:    bangDefaultTimeout,
-		SessionKey: senderID,
+		SessionKey: sessionKey,
 	}
 	if sandbox.Name() == "docker" {
 		spec.Workspace = hostWorkspace
