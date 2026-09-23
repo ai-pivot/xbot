@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"xbot/memory"
 
@@ -54,10 +55,18 @@ var agentContextFiles = []string{
 }
 
 const (
-	// maxProjectContextChars is the maximum number of characters injected into
-	// the system prompt. Content beyond this is truncated with a hint to use
-	// the Read tool for the full file.
-	maxProjectContextChars = 10000
+	// maxProjectContextChars is the maximum number of CHARACTERS (runes, not
+	// bytes) of a context file that may be injected into the system prompt.
+	// Content beyond this is truncated with a hint to use the Read tool for the
+	// full file.
+	//
+	// Unit note (get this right): tokenizers are ~1 token per CJK character and
+	// ~1 token per 4 ASCII characters (≈0.25 token/char). So 100k chars ≈ 100k
+	// tokens for CJK-heavy content and ≈ 25k tokens for ASCII-heavy content —
+	// the worst case is roughly half of a 200k context window, which is the
+	// intended "generous but bounded" budget. Do not reason in bytes: a CJK
+	// character is 3 UTF-8 bytes, so "bytes" and "chars" differ by 3×.
+	maxProjectContextChars = 100_000
 
 	// projectContextCacheTTL controls how long the file content is cached
 	// before re-reading from disk.
@@ -142,7 +151,7 @@ func (m *ProjectContextMiddleware) Process(mc *MessageContext) error {
 		"dir":       dir,
 		"file":      filePath,
 		"chars":     len(content),
-		"truncated": len(content) > maxProjectContextChars,
+		"truncated": utf8.RuneCountInString(content) > maxProjectContextChars,
 	}).Debug("ProjectContextMiddleware: injected project context")
 
 	return nil
@@ -233,6 +242,23 @@ func (m *ProjectContextMiddleware) loadGlobal(xbotHome string) (content string, 
 	return "", ""
 }
 
+// contextFileTooLargeHint is the SINGLE truncation notice for both the global
+// and the project context file. It must:
+//   - say the file was truncated and where the full content lives (Read tool);
+//   - INSTRUCT THE MODEL TO SHORTEN THE FILE (user requirement 2026-09-23): an
+//     oversized context file silently loses its tail on every request, so the
+//     fix belongs to the agent that can edit it — condense the file to the
+//     budget, moving details into docs/agent/*.md knowledge files.
+func contextFileTooLargeHint(filePath string, budget int) string {
+	return fmt.Sprintf(
+		"\n\n... (truncated at %d characters, use Read tool to view the full `%s`)\n"+
+			"⛔ `%s` IS TOO LARGE: only the first %d characters can be injected into the system prompt "+
+			"(everything past that is INVISIBLE to you). Immediately shorten `%s` so it fits within %d characters: "+
+			"move the detailed content into `docs/agent/*.md` knowledge files (read on demand with the Read tool) "+
+			"and keep only the quick reference / knowledge-file index in `%s`.\n",
+		budget, filePath, filePath, budget, filePath, budget, filePath)
+}
+
 // formatGlobalContext builds a formatted string for global context injection.
 func formatGlobalContext(content string, filePath string) string {
 	var sb strings.Builder
@@ -241,12 +267,11 @@ func formatGlobalContext(content string, filePath string) string {
 	sb.WriteString(filePath)
 	sb.WriteString("`.\n\n")
 
-	if len(content) > maxProjectContextChars {
-		// Rune-safe: this is prompt content and is routinely CJK (a raw
-		// content[:n] would slice a character in half and put invalid UTF-8
-		// into the system prompt).
-		sb.WriteString(tools.TruncateHeadPreview(content, maxProjectContextChars))
-		fmt.Fprintf(&sb, "\n\n... (truncated, use Read tool to view full `%s`)\n", filePath)
+	if utf8.RuneCountInString(content) > maxProjectContextChars {
+		// Rune-safe by construction (tools.Truncate slices []rune): a byte-wise
+		// cut of CJK content would emit invalid UTF-8 into the system prompt.
+		sb.WriteString(tools.Truncate(content, maxProjectContextChars))
+		sb.WriteString(contextFileTooLargeHint("~/.xbot/"+filePath, maxProjectContextChars))
 	} else {
 		sb.WriteString(content)
 	}
@@ -359,7 +384,21 @@ func formatProjectContext(content string, filePath string) string {
 
 	fmt.Fprintf(&sb, "<project_instructions source=\"%s\">\n", filePath)
 	sb.WriteString("<![CDATA[\n")
-	sb.WriteString(content)
+	// Enforce the documented injection budget (CHARACTERS, not bytes). The
+	// project context file is USER CONTENT of unbounded size — xbot's own
+	// AGENTS.md is 690 KB / 500k chars (≈180k tokens), which alone nearly fills
+	// a 200k context window. Compression only rewrites conversation messages,
+	// never the system prompt, so an unbounded injection makes every compaction
+	// "ineffective" (the un-shrinkable part is over the line by itself) and the
+	// session loops compressing forever while the model repeats tool calls
+	// (2026-09-23 incident). The tail stays reachable through the Read tool —
+	// the same contract documented on maxProjectContextChars.
+	if utf8.RuneCountInString(content) > maxProjectContextChars {
+		sb.WriteString(tools.Truncate(content, maxProjectContextChars))
+		sb.WriteString(contextFileTooLargeHint(filePath, maxProjectContextChars))
+	} else {
+		sb.WriteString(content)
+	}
 	sb.WriteString("\n]]>\n")
 	sb.WriteString("</project_instructions>\n")
 	sb.WriteString("Project instruction block ended. Continue following the base prompt and current user request.\n")
