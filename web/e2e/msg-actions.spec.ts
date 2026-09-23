@@ -205,4 +205,27 @@ test.describe('复制入口（右键 / 长按）', () => {
     expect(copied, '复制选区应拿到选中的正文').toContain('今日要点')
     await ctx.close()
   })
+
+  // 触屏长按是需求的两条主路径之一；上面的用例只覆盖了桌面右键。
+  // CR 实测：把长按回调的 target 置空（等价于"手机长按链接再也出不来『打开链接』"）时，
+  // 全量单测 + E2E 会**全绿** ⇒ 这条必须有（长按路径的落点也要给链接入口）。
+  test('触屏长按落在链接上 → sheet 含「打开链接 / 复制链接地址」', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    const page = await ctx.newPage()
+    await setupMock(page)
+    await page.goto('/')
+    const link = page.getByRole('link', { name: '新的基准评测' })
+    await expect(link).toBeAttached()
+    await link.evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true, clientX: 120, clientY: 300 }),
+      )
+    })
+    const sheet = page.locator('[data-testid="copy-sheet"]')
+    await expect(sheet).toBeVisible({ timeout: 3000 })
+    await expect(sheet).toContainText('打开链接')
+    await expect(sheet).toContainText('复制链接地址')
+    await page.screenshot({ path: `${SHOTS}/mobile-link-sheet.png`, fullPage: true })
+    await ctx.close()
+  })
 })

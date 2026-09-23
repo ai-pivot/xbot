@@ -100,4 +100,34 @@ describe('CopyTarget 长按（触屏抖动容差）', () => {
     const node = renderTarget()
     expect(node.className).not.toContain('select-none')
   })
+
+  // 触屏长按的**落点**同样要给链接入口（PR #398）：桌面右键路径已有单测 + E2E，
+  // 但长按路径此前零守护 —— 把长按回调的 target 置空（等价于"手机长按链接再也出不来
+  // 『打开链接』"）时，全量单测与 E2E 会**全绿**（CR 实测），因此这条必须有。
+  it('触屏长按落在链接上 → 菜单含「打开链接 / 复制链接地址」', () => {
+    render(
+      <I18nProvider>
+        <CopyTarget
+          kind="message"
+          message={
+            { id: 'm1', role: 'assistant', content: '', iterations: [], isPartial: false, turnID: 1, timestamp: '' } as never
+          }
+        >
+          <p>
+            参考 <a href="https://example.com/bench">新的基准评测</a>
+          </p>
+        </CopyTarget>
+      </I18nProvider>,
+    )
+    fireEvent.pointerDown(screen.getByText('新的基准评测'), {
+      pointerType: 'touch',
+      clientX: 120,
+      clientY: 300,
+    })
+    advance(520)
+    const menu = menuOpen()
+    expect(menu).not.toBeNull()
+    expect(menu?.textContent ?? '').toContain('打开链接')
+    expect(menu?.textContent ?? '').toContain('复制链接地址')
+  })
 })

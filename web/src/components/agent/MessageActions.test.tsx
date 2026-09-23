@@ -68,7 +68,7 @@ describe('resolveLinkTarget（落点是否命中链接）', () => {
 })
 
 describe('CopyTarget 菜单：打开链接 / 复制选区', () => {
-  it('右键落在链接上 → 菜单含「打开链接 / 复制链接地址」，打开走 window.open(noopener,noreferrer)', () => {
+  it('右键落在链接上 → 菜单含「打开链接 / 复制链接地址」，打开走 window.open(noopener,noreferrer)', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
@@ -87,11 +87,14 @@ describe('CopyTarget 菜单：打开链接 / 复制选区', () => {
 
     fireEvent.click(screen.getByText('打开链接'))
     expect(openSpy).toHaveBeenCalledWith('https://example.com/bench', '_blank', 'noopener,noreferrer')
+    // 点完必须关菜单（否则菜单滞留屏幕上，要再点一次遮罩才关；CR 实测这条此前零断言）
+    await vi.waitFor(() => expect(screen.queryByTestId('copy-menu')).toBeNull())
 
     // 复制链接地址 → 绝对地址进剪贴板
     fireEvent.contextMenu(screen.getByText('新的基准评测'), { clientX: 10, clientY: 20 })
     fireEvent.click(screen.getByText('复制链接地址'))
     expect(writeText).toHaveBeenCalledWith('https://example.com/bench')
+    await vi.waitFor(() => expect(screen.queryByTestId('copy-menu')).toBeNull())
     openSpy.mockRestore()
   })
 
