@@ -1233,17 +1233,45 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 				l.WithField("model", model).Info("[LLM] Stream: mid-stream max_tokens error, updated preference for future requests")
 			}
 		}
-		l.WithFields(log.Fields{
+		fields := log.Fields{
 			"provider":    "openai",
 			"model":       model,
 			"base_url":    o.baseURL,
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
-		}).Warn("[LLM] Stream error: " + err.Error())
+		}
+		o.addStreamBodyTailField(fields)
+		l.WithFields(fields).Warn("[LLM] Stream error: " + err.Error())
 		select {
 		case eventChan <- StreamEvent{
 			Type:  EventError,
 			Error: err.Error(),
+		}:
+		case <-ctx.Done():
+			return
+		}
+		return
+	}
+
+	// A cleanly closed SSE response with no decoded chunks is still a failed
+	// request.  Treating it as EventDone makes CollectStream report success,
+	// which suppresses retries and can leave optional-reply channels silent.
+	// Keep the captured response tail in the log so an empty body, provider
+	// error payload, or non-standard SSE response can be diagnosed.
+	if chunkCount == 0 {
+		fields := log.Fields{
+			"provider":    "openai",
+			"model":       model,
+			"base_url":    o.baseURL,
+			"chunk_count": chunkCount,
+			"duration":    time.Since(startTime).String(),
+		}
+		o.addStreamBodyTailField(fields)
+		l.WithFields(fields).Warn("[LLM] Stream ended with zero chunks")
+		select {
+		case eventChan <- StreamEvent{
+			Type:  EventError,
+			Error: "stream ended with zero chunks (empty response)",
 		}:
 		case <-ctx.Done():
 			return
@@ -1258,13 +1286,15 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	// truncated content is returned as a "successful" response, causing the
 	// caller to treat partial output as complete.
 	if lastFinishReason == "" && !hasToolCalls && chunkCount > 0 {
-		l.WithFields(log.Fields{
+		fields := log.Fields{
 			"provider":    "openai",
 			"model":       model,
 			"base_url":    o.baseURL,
 			"chunk_count": chunkCount,
 			"duration":    time.Since(startTime).String(),
-		}).Warn("[LLM] Stream ended without finish_reason — likely truncated by proxy/network")
+		}
+		o.addStreamBodyTailField(fields)
+		l.WithFields(fields).Warn("[LLM] Stream ended without finish_reason — likely truncated by proxy/network")
 		select {
 		case eventChan <- StreamEvent{
 			Type:  EventError,
@@ -1319,8 +1349,10 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		"provider":       "openai",
 		"chunk_count":    chunkCount,
 		"total_duration": time.Since(startTime).String(),
-		"ttft":           firstChunkTime.Sub(startTime).String(),
 		"finish_reason":  lastFinishReason,
+	}
+	if !firstChunkTime.IsZero() {
+		fields["ttft"] = firstChunkTime.Sub(startTime).String()
 	}
 	if lastUsage != nil {
 		fields["prompt_tokens"] = lastUsage.PromptTokens
@@ -1330,6 +1362,7 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	// Debug: 当 chunk_count 极低（空响应）时打印详细请求信息
 	if chunkCount <= 1 {
 		addNearEmptyResponseDebugFields(fields, messages, model, tools, thinkingMode)
+		o.addStreamBodyTailField(fields)
 		l.WithFields(fields).Warn("[LLM] Stream completed with near-empty response")
 	} else {
 		l.WithFields(fields).Debug("[LLM] Stream completed")
@@ -1362,6 +1395,18 @@ func addNearEmptyResponseDebugFields(fields log.Fields, messages []ChatMessage, 
 			break
 		}
 	}
+}
+
+// addStreamBodyTailField attaches the bounded tail captured by tailReader to
+// diagnostics.  The copy keeps the log payload independent from the next
+// request, which clears streamBodyTail when its response starts.
+func (o *OpenAILLM) addStreamBodyTailField(fields log.Fields) {
+	o.streamBodyMu.Lock()
+	defer o.streamBodyMu.Unlock()
+	if len(o.streamBodyTail) == 0 {
+		return
+	}
+	fields["stream_body_tail"] = string(append([]byte(nil), o.streamBodyTail...))
 }
 
 // ---------------------------------------------------------------------------
