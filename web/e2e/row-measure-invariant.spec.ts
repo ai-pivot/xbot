@@ -124,7 +124,7 @@ async function login(page: Page) {
   await page.waitForTimeout(1200)
 }
 
-/** 页内不变量检查：① 记账尺寸 == 实际高度；② 任意两行不重叠。 */
+/** 页内不变量检查：① 记账尺寸 == 实际高度；② 任意两行不重叠；③ DEV 尺寸属性存在。 */
 const CHECK = () => {
   const rows = Array.from(document.querySelectorAll('.virt-row')) as HTMLElement[]
   const boxes = rows.map((el) => {
@@ -137,6 +137,8 @@ const CHECK = () => {
       h: Math.round(rect.height),
     }
   })
+  // ③ DEV 契约：`data-row-size` 必须存在（否则"尺寸 == 实际高度"这条断言会静默消失）
+  const sizeAttrMissing = boxes.filter((b) => !Number.isFinite(b.size) || b.size <= 0).map((b) => b.id)
   const sizeMismatch = boxes
     .filter((b) => Number.isFinite(b.size) && b.size > 0 && Math.abs(b.size - b.h) > 1)
     .map((b) => ({ id: b.id, size: b.size, h: b.h }))
@@ -146,19 +148,33 @@ const CHECK = () => {
     const d = sorted[i - 1].bottom - sorted[i].top
     if (d > 1) overlap.push({ a: sorted[i - 1].id, b: sorted[i].id, delta: Math.round(d) })
   }
-  return { count: boxes.length, sizeMismatch, overlap }
+  return { count: boxes.length, sizeMismatch, overlap, sizeAttrMissing }
 }
 
+const settle = (page: Page) =>
+  page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))
+
+/**
+ * 两级判据（F2：`data-row-size` 是 React 渲染产物，flush→notify→commit 之间存在毫秒级
+ * 采样窗口；CI 高负载会放大它 ⇒ 尺寸允许「收敛」，但**重叠在任何一轮都不允许出现**）：
+ *  - **硬不变量**：每一轮采样的 `overlap` 必须为空（位置是 flush 与渲染同源写出的）；
+ *  - **收敛**：`sizeMismatch` 在若干轮内必须变为空（`resizeItem` → notify → 重渲染）；
+ *  - **DEV 契约**：`data-row-size` 必须存在（否则尺寸断言会静默失效）。
+ */
 async function expectInvariant(page: Page, where: string) {
-  // 先让两帧过去：flush 是「microtask / paint 前」调度的，等两帧可确保任何已发生的尺寸
-  // 变化都已写回（避免把"变更已发生、flush 尚未执行"的中间态误判为违反不变量）。
-  await page.evaluate(
-    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
-  )
-  const r = await page.evaluate(CHECK)
-  expect(r.count, `${where}: 必须有已渲染的虚拟行`).toBeGreaterThan(0)
-  expect(r.sizeMismatch, `${where}: 行记账尺寸必须等于实际高度`).toEqual([])
-  expect(r.overlap, `${where}: 行之间不得重叠`).toEqual([])
+  const rounds = 8
+  const overlapSeen: unknown[] = []
+  let last = { count: 0, sizeMismatch: [] as unknown[], overlap: [] as unknown[], sizeAttrMissing: [] as string[] }
+  for (let i = 0; i < rounds; i++) {
+    await settle(page)
+    last = await page.evaluate(CHECK)
+    if (last.overlap.length > 0) overlapSeen.push({ round: i, overlap: last.overlap })
+    if (last.sizeMismatch.length === 0 && last.sizeAttrMissing.length === 0) break
+  }
+  expect(last.count, `${where}: 必须有已渲染的虚拟行`).toBeGreaterThan(0)
+  expect(last.sizeAttrMissing, `${where}: DEV 下 data-row-size 必须存在`).toEqual([])
+  expect(overlapSeen, `${where}: 行之间不得重叠（任何一轮）`).toEqual([])
+  expect(last.sizeMismatch, `${where}: 行记账尺寸必须收敛到实际高度`).toEqual([])
 }
 
 test.describe('行尺寸/位置不变量（真实浏览器几何）', () => {
@@ -167,7 +183,14 @@ test.describe('行尺寸/位置不变量（真实浏览器几何）', () => {
     await page.waitForSelector('.virt-row', { timeout: 10_000 })
     await page.waitForTimeout(300)
     await expectInvariant(page, '历史加载后')
-    expect(await page.evaluate(() => Number(document.querySelector('[data-message-list-content]')?.parentElement?.parentElement?.dataset.measurePass ?? 0))).toBeGreaterThanOrEqual(0)
+    // DEV 诊断契约：flush 真的跑过（`data-measure-pass` 写在滚动容器上；同仓库既有写法见
+    // `standalone-command-layout.spec.ts`）。阈值必须 > 0 —— 恒真的断言等于没有守护。
+    expect(
+      await page.evaluate(() =>
+        Number(document.querySelector('[data-measure-pass]')?.dataset.measurePass ?? -1),
+      ),
+      'flush 必须至少执行过一次（data-measure-pass > 0）',
+    ).toBeGreaterThan(0)
 
     // ── 流式追加一个 turn（多个迭代、每个都带正文 + 两个工具 pill）──
     const turn = 8

@@ -639,7 +639,11 @@ export const MessageList = memo(function MessageList({
   virtualizerRef.current = virtualizer
 
   /**
-   * 唯一的「行尺寸/行位置」写入点（见上方不变量注释）。
+   * **已挂载行**的「尺寸/位置」唯一**几何**写入点（见上方不变量注释）。
+   *
+   * ⚠️ 精确边界：挂载 ref（`measureElement(node)`）与 `onTransitionEnd` 仍会把**初值**（记忆/
+   * 估算 hint）写进虚拟器；但它们与本 flush 在**同一 commit** 内先后执行（flush 在 layout
+   * effect 里跑 ⇒ paint 前），所以任何一帧渲染出来的仍是实测值 —— 初值只是"占位"。
    *
    * ① 读：按 **DOM 顺序**枚举已挂载行（`data-index` 为准，**绝不按虚拟键查表** ——
    *    键冲突 / 表未命中都不能漏行），一次读完所有行的高度（整批只付一次布局）；
@@ -670,7 +674,10 @@ export const MessageList = memo(function MessageList({
     for (const m of measured) v.resizeItem(m.index, m.h)
 
     // ③ 写位置（真实高度累加）—— 只在已挂载行**索引连续**时做（虚拟窗口天然连续；
-    //    不连续说明 DOM 处于卸载/重挂的中间态 ⇒ 只写尺寸，位置留给下一帧的渲染）
+    //    不连续 = 中间有未渲染行 / `h<=0` 被过滤 = DOM 处于卸载·重挂中间态）
+    //    ⇒ **整体跳过**（绝不"漏一行高度后把后续行错误上移"的半截累加），本帧只写尺寸，
+    //    位置由 `resizeItem` → notify → React 重渲染补位（≤1 帧、且 flush 在 paint 前跑，
+    //    下一次 commit 必补 —— 这条补位链是跳过分支的前提，不要删）。
     const starts = new Map<number, number>()
     for (const it of v.getVirtualItems()) starts.set(it.index, it.start)
     const consecutive = measured.every((m, i) => m.index === measured[0].index + i)
@@ -683,12 +690,18 @@ export const MessageList = memo(function MessageList({
       }
     }
 
-    // ④ 记忆（初值，只供未挂载行）
+    // ④ 记忆：实测高度写进 `heightMemory`，**只作未挂载行 `estimateSize` 的初值**
+    //    （绝不是权威值 —— 已挂载行的尺寸/位置只由上面的真几何读取决定）。
+    //    变化短路：与已记忆值相同则不写（否则每次 flush 对每行都做一遍签名 + Map 写）。
     const width = heightLayoutWidth.current()
     if (width > 0) {
       for (const m of measured) {
         const row = rowsRef.current[m.index]
-        if (row) heightMemory.set(rowMemoryKey(row, m.index), rowSignature(row), width, m.h)
+        if (!row) continue
+        const key = rowMemoryKey(row, m.index)
+        const sig = rowSignature(row)
+        if (heightMemory.get(key, sig, width) === m.h) continue
+        heightMemory.set(key, sig, width, m.h)
       }
     }
 

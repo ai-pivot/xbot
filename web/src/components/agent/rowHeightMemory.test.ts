@@ -116,4 +116,37 @@ describe('measureElement：RO 快照绝不作为尺寸（只触发真几何读�
     // 无提示（未记忆）⇒ 真实测量兜底
     expect(fn(el, undefined, null)).toBe(999)
   })
+
+  it('currentSize 为 0（记账里还没有尺寸）⇒ 真实测量兜底，绝不用快照', () => {
+    const measured: number[] = []
+    const fn = createHeightAwareMeasureElement({
+      lookup: () => ({ key: 'k', sig: 's' }),
+      measure: () => {
+        measured.push(1)
+        return 999
+      },
+      memory: createRowHeightMemory(),
+      width: () => 800,
+      onResize: () => {},
+      currentSize: () => 0,
+    })
+    const el = { dataset: { index: '0' } } as unknown as Element
+    const staleEntry = { borderBoxSize: [{ blockSize: 60, inlineSize: 800 }] } as unknown as ResizeObserverEntry
+    expect(fn(el, staleEntry, null)).toBe(999) // 兜底真实测量（不是 60）
+    expect(measured).toHaveLength(1)
+  })
+
+  it('未提供可选依赖（onResize/currentSize）⇒ 不抛错，且仍不回退到快照', () => {
+    const fn = createHeightAwareMeasureElement({
+      lookup: () => ({ key: 'k', sig: 's' }),
+      hint: () => 111,
+      measure: () => 999,
+      memory: createRowHeightMemory(),
+      width: () => 800,
+    })
+    const el = { dataset: { index: '0' } } as unknown as Element
+    const entry = { borderBoxSize: [{ blockSize: 60, inlineSize: 800 }] } as unknown as ResizeObserverEntry
+    expect(fn(el, entry, null)).toBe(999) // 无 currentSize ⇒ 走真实测量
+    expect(fn(el, undefined, null)).toBe(111) // 挂载 ⇒ hint
+  })
 })
