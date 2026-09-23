@@ -238,20 +238,22 @@ func TestCotToolKind(t *testing.T) {
 
 // 创建失败 ⇒ 标记 broken，调用方据此回落卡片（答案从不依赖思考过程）。
 //
-// ⚠️ 这里**不能用 `err == nil` 判失败**：`emit` 会启动异步 drainer，它可能先把该批次
-// 消费掉（调用注入的 request 失败）并置 `broken` ⇒ 随后 `flushNow` 看到 `broken`/空队列
-// 直接返回 nil（Windows 调度下必现：CI 实测 `expected create failure`；Linux 通常是
-// flushNow 抢到）。契约本身是「创建失败 ⇒ broken 置位」（调用方据此回落卡片）：
-// 两者必居其一 —— 若 `flushNow` 自己处理了批次，它必须报错。
+// ⚠️ 契约：创建失败 ⇒ `flushNow` 报错 **且** 置 broken（调用方据此回落卡片）。
+//
+// ⛔ 测试必须走**同步** drain（`newFakeCoT` 已禁用异步 drainer）：若任由 `emit`
+// 启动的 drain goroutine 与 `flushNow` 并发，两者会争抢同一 pending 队列——drain
+// 先取批时把失败消费掉（重试 3 次后置 broken），`flushNow` 只看到空队列/已 broken
+// 便返回 nil ⇒ 断言非确定（Windows 调度下必现，CI 实测 `expected create failure`；
+// Linux 通常 flushNow 抢到）。历史修复只改了断言容忍两种时序，本轮改为**从根上
+// 消除竞态**（禁用 drainer ⇒ 唯一写线程 = flushNow ⇒ 断言确定）。
 func TestFeishuCoT_CreateFailureMarksBroken(t *testing.T) {
-	c := newFeishuCoT(nil, "chat_1", "", false)
+	c, _ := newFakeCoT(t, "chat_1") // 禁用异步 drainer（同步 flushNow 驱动）
 	c.request = func(_ context.Context, _ string, _ string, _ any) (*larkcore.ApiResp, error) {
 		return nil, cotError("boom")
 	}
 	c.emit("RUN_STARTED", map[string]any{"threadId": "chat_1"})
-	flushErr := c.flushNow()
-	if flushErr == nil && !c.brokenNow() {
-		t.Fatalf("create failure must mark the CoT broken (caller falls back to the card); flushNow returned nil and broken is unset")
+	if err := c.flushNow(); err == nil {
+		t.Fatal("create failure must make flushNow report the error (sync drain: flushNow is the only writer)")
 	}
 	if !c.brokenNow() {
 		t.Fatal("create failure must mark the CoT broken (caller falls back to the card)")
@@ -357,8 +359,12 @@ func TestFeishuCoT_OcChatUsesChatID(t *testing.T) {
 
 // ⚠️ 平台拒绝必须**可诊断**：错误信息带 code/msg（丢掉平台错误是本 bug 一开始
 // 不可诊断的原因），且标记 broken 让调用方降级到卡片。
+//
+// ⛔ 与 CreateFailureMarksBroken 同：测试走**同步** drain（禁用异步 drainer），
+// 否则 drain 可能先消费该批次并置 broken，`flushNow` 便返回 nil ⇒ 断言非确定
+// （Windows 调度下必现：master CI 实测 `expected create rejection`）。
 func TestFeishuCoT_CreateRejectedSurfacesPlatformMsg(t *testing.T) {
-	c := newFeishuCoT(nil, "chat_1", "", false)
+	c, _ := newFakeCoT(t, "chat_1") // 禁用异步 drainer（同步 flushNow 驱动）
 	c.request = func(_ context.Context, method, _ string, _ any) (*larkcore.ApiResp, error) {
 		if method == "POST" {
 			return &larkcore.ApiResp{RawBody: []byte(`{"code":10001,"msg":"Your request contains an invalid request parameter, ext=invalid receive_id"}`)}, nil
@@ -368,7 +374,7 @@ func TestFeishuCoT_CreateRejectedSurfacesPlatformMsg(t *testing.T) {
 	c.emit("RUN_STARTED", map[string]any{"threadId": "chat_1"})
 	err := c.flushNow()
 	if err == nil {
-		t.Fatal("expected create rejection")
+		t.Fatal("expected create rejection (sync drain: flushNow is the only writer)")
 	}
 	if !strings.Contains(err.Error(), "10001") || !strings.Contains(err.Error(), "invalid receive_id") {
 		t.Fatalf("error must carry the platform code/msg, got: %v", err)
