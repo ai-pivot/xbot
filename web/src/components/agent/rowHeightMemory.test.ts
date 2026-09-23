@@ -53,11 +53,19 @@ describe('行高记忆：指纹 / 宽度不匹配一律不命中', () => {
   })
 })
 
-// P0（2026-09-18）根因判据：measureElement **绝不用"猜"的高度定位已渲染的行**。
-// 变异自证：恢复"首次测量返回记忆值" ⇒ 第二个用例必红（返回 111 而非真实 999）。
-describe('measureElement：只信浏览器实测（记忆仅作 estimate 提示）', () => {
+// P0（2026-09-23「正文互相穿插 / 两行压在同一 y」）根因判据：
+// **ResizeObserver 的 `entry.borderBoxSize` 是"观察时刻的快照"，不是当前几何** ——
+// 乱序/滞后投递时它比真实尺寸**小**；一旦作为尺寸写回虚拟器（resizeItem），该行就比
+// 真实高度矮 ⇒ 下一行 `translateY(start)` 偏小 ⇒ 画到它身上；随后 DOM 不再变化 ⇒
+// 没有下一次回调 ⇒ 错值**永久固化**（旧实现的主路径正是"直接返回 entry 尺寸"）。
+//
+// 契约：**行尺寸只能来自它自己的当前几何（批量读真几何）**；RO 快照只允许用来
+// **触发**一次真几何读取（`onResize`），绝不允许当作尺寸。
+// 变异自证：把实现改回 `readObservedBlockSize(entry)` 直接返回 ⇒ 第 1 个用例必红。
+describe('measureElement：RO 快照绝不作为尺寸（只触发真几何读取）', () => {
   const deps = () => {
     const measured: number[] = []
+    const onResize: number[] = []
     const m = createRowHeightMemory()
     const fn = createHeightAwareMeasureElement({
       lookup: () => ({ key: 'k', sig: 's' }),
@@ -67,29 +75,45 @@ describe('measureElement：只信浏览器实测（记忆仅作 estimate 提示�
       },
       memory: m,
       width: () => 800,
+      onResize: () => onResize.push(1),
+      currentSize: () => 300,
     })
     const el = { dataset: { index: '0' } } as unknown as Element
-    return { fn, m, el, measured }
+    return { fn, m, el, measured, onResize }
   }
 
-  it('有 RO entry ⇒ 直接用 entry 的真实尺寸（零 DOM 读，且把记忆刷新为真值）', () => {
-    const { fn, m, el, measured } = deps()
+  it('过期快照（比真实高度小）绝不允许缩行 —— 返回记账尺寸并标脏', () => {
+    const { fn, m, el, measured, onResize } = deps()
     m.set('k', 's', 800, 111)
-    const entry = { borderBoxSize: [{ blockSize: 250, inlineSize: 800 }] } as unknown as ResizeObserverEntry
-    expect(fn(el, entry, null)).toBe(250)
-    expect(measured).toHaveLength(0)
-    expect(m.get('k', 's', 800)).toBe(250)
+    // 快照说 60，真实几何 300（旧实现返回 60 ⇒ 行矮 240px ⇒ 下一行压上来，永久固化）
+    const staleEntry = { borderBoxSize: [{ blockSize: 60, inlineSize: 800 }] } as unknown as ResizeObserverEntry
+    expect(fn(el, staleEntry, null)).toBe(300) // 记账尺寸（不变 ⇒ resizeItem 早退）
+    expect(onResize).toHaveLength(1) // 标脏 ⇒ 由 flush 读真几何校正
+    expect(measured).toHaveLength(0) // 本次不做 DOM 读（批量留给 flush）
+    expect(m.get('k', 's', 800)).toBe(111) // 记忆不被快照污染
   })
 
-  it('无 entry（挂载）⇒ 真实测量，绝不返回记忆值', () => {
+  it('快照说变大也不直接采纳（唯一真相是真几何，同一批读后写）', () => {
+    const { fn, el, onResize } = deps()
+    const entry = { borderBoxSize: [{ blockSize: 250, inlineSize: 800 }] } as unknown as ResizeObserverEntry
+    expect(fn(el, entry, null)).toBe(300)
+    expect(onResize).toHaveLength(1)
+  })
+
+  it('无 entry（挂载）⇒ 提示优先（记忆/估算），真实高度由 flush 校正', () => {
     const { fn, m, el } = deps()
     m.set('k', 's', 800, 111)
+    const fnWithHint = createHeightAwareMeasureElement({
+      lookup: () => ({ key: 'k', sig: 's' }),
+      hint: () => 111,
+      measure: () => 999,
+      memory: m,
+      width: () => 800,
+      onResize: () => {},
+      currentSize: () => 300,
+    })
+    expect(fnWithHint(el, undefined, null)).toBe(111)
+    // 无提示（未记忆）⇒ 真实测量兜底
     expect(fn(el, undefined, null)).toBe(999)
-  })
-
-  it('contentRect 兜底也能取到真实高度', () => {
-    const { fn, el } = deps()
-    const entry = { contentRect: { height: 321 } } as unknown as ResizeObserverEntry
-    expect(fn(el, entry, null)).toBe(321)
   })
 })

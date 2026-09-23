@@ -422,6 +422,29 @@ export const MessageList = memo(function MessageList({
    * 依赖为空：回调只经 rowsRef/模块级单例现读，身份恒定（不能每帧新建，
    * 否则可见行的 ref 每帧重挂 → 每帧强制布局）。
    */
+  // ── 行尺寸：唯一真相 = 「行元素自己的当前几何」─────────────────────────────
+  /**
+   * ⛔ 不变量（2026-09-23 P0「正文互相穿插」根治）：**任何已渲染行的"尺寸"与"位置"
+   * 都只能由它自己的当前几何决定** —— 不许来自 ResizeObserver 快照、记忆值或估算。
+   *
+   *  - 尺寸：`getBoundingClientRect().height`，**整批一次读完、再整批写**（只付一次布局）；
+   *  - 位置：以窗口首行为锚、按**真实高度**逐行累加后直接写 `transform`。
+   *
+   * 两个触发点共用本 flush：① 每次 commit（layout effect 内同步跑，paint 前）；
+   * ② ResizeObserver 回调（快照不可信 ⇒ 只标脏，由本 flush 读真几何）—— 见
+   * `rowHeightMemory.ts` 的 `createHeightAwareMeasureElement`。
+   */
+  const flushMeasureRef = useRef<() => void>(() => {})
+  const flushScheduledRef = useRef(false)
+  const scheduleMeasureFlush = useCallback(() => {
+    // microtask 合帧：同一批 RO 回调只排一次（读阶段无写穿插 ⇒ 一次布局）
+    if (flushScheduledRef.current) return
+    flushScheduledRef.current = true
+    queueMicrotask(() => {
+      flushScheduledRef.current = false
+      flushMeasureRef.current()
+    })
+  }, [])
   const measureRow = useMemo(
     () =>
       // 边界 cast：本包装器与 TanStack 的泛型 instance 类型无关（见 rowHeightMemory.ts 的注释），
@@ -451,6 +474,19 @@ export const MessageList = memo(function MessageList({
         ) => number,
         memory: heightMemory,
         width: () => heightLayoutWidth.current(),
+        // RO 回调（真实尺寸变化）⇒ 标脏 + 批量真几何读取（快照绝不作为尺寸）。
+        onResize: scheduleMeasureFlush,
+        // RO 路径的返回值：虚拟器**当前记账尺寸**（不变 ⇒ resizeItem 早退）。
+        // 记不清时退回 0 ⇒ 由 createHeightAwareMeasureElement 走真实测量兜底。
+        currentSize: (index) => {
+          const v = virtualizerRef.current as unknown as {
+            measurementsCache?: { key: unknown; size: number }[]
+            itemSizeCache?: Map<unknown, number>
+          }
+          const item = v?.measurementsCache?.[index]
+          if (!item) return 0
+          return v?.itemSizeCache?.get(item.key) ?? item.size ?? 0
+        },
       }) as unknown as typeof defaultMeasureElement,
     [],
   )
@@ -557,7 +593,6 @@ export const MessageList = memo(function MessageList({
 
   // TanStack Virtual —— API 返回函数，React Compiler 无法安全 memo；
   // virtualizer 按设计每次渲染重建内部映射。
-  // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -603,19 +638,82 @@ export const MessageList = memo(function MessageList({
   const virtualizerRef = useRef(virtualizer)
   virtualizerRef.current = virtualizer
 
+  /**
+   * 唯一的「行尺寸/行位置」写入点（见上方不变量注释）。
+   *
+   * ① 读：按 **DOM 顺序**枚举已挂载行（`data-index` 为准，**绝不按虚拟键查表** ——
+   *    键冲突 / 表未命中都不能漏行），一次读完所有行的高度（整批只付一次布局）；
+   * ② 写尺寸：`resizeItem`（尺寸未变时内部早退 ⇒ 零写）；
+   * ③ 写位置：以窗口首行的 `start` 为锚、按**真实高度**逐行累加直接写 `transform`
+   *    ⇒ **"两行压在同一 y"在结构上不可能**，哪怕虚拟器记账因任何原因滞后一帧；
+   * ④ 记忆：把实测高度写进 `heightMemory`，供**未挂载行**的 `estimateSize` 作初值
+   *    （初值永远会被本 flush 校正，因此偏小也不会压字）。
+   */
+  const flushMeasure = useCallback(() => {
+    const v = virtualizerRef.current
+    const container = originRefEl.current
+    if (!container) return
+
+    // ① 读阶段（其间没有任何写 ⇒ 整批一次布局）
+    const els = container.querySelectorAll<HTMLElement>(':scope > [data-index]')
+    const measured: Array<{ index: number; el: HTMLElement; h: number }> = []
+    for (const el of els) {
+      const index = Number(el.dataset.index ?? -1)
+      if (!Number.isFinite(index) || index < 0) continue
+      const h = Math.round(el.getBoundingClientRect().height)
+      // 「没有布局的测量不是测量」（隐藏 tab / 未定形）—— 同 noDegenerateMeasureElement
+      if (h > 0) measured.push({ index, el, h })
+    }
+    if (measured.length === 0) return
+
+    // ② 写尺寸
+    for (const m of measured) v.resizeItem(m.index, m.h)
+
+    // ③ 写位置（真实高度累加）—— 只在已挂载行**索引连续**时做（虚拟窗口天然连续；
+    //    不连续说明 DOM 处于卸载/重挂的中间态 ⇒ 只写尺寸，位置留给下一帧的渲染）
+    const starts = new Map<number, number>()
+    for (const it of v.getVirtualItems()) starts.set(it.index, it.start)
+    const consecutive = measured.every((m, i) => m.index === measured[0].index + i)
+    let y = consecutive ? starts.get(measured[0].index) : undefined
+    if (y !== undefined) {
+      for (const m of measured) {
+        const desired = `translateY(${y}px)`
+        if (m.el.style.transform !== desired) m.el.style.transform = desired
+        y += m.h
+      }
+    }
+
+    // ④ 记忆（初值，只供未挂载行）
+    const width = heightLayoutWidth.current()
+    if (width > 0) {
+      for (const m of measured) {
+        const row = rowsRef.current[m.index]
+        if (row) heightMemory.set(rowMemoryKey(row, m.index), rowSignature(row), width, m.h)
+      }
+    }
+
+    // 诊断标记（DEV/E2E 契约：`measure-pass > 0`、`virt-total` 为校正后总高）
+    if (import.meta.env.DEV) {
+      const root = scrollRef.current
+      if (root) {
+        root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
+        root.dataset.virtTotal = String(Math.round(v.getTotalSize()))
+      }
+    }
+  }, [])
+  flushMeasureRef.current = flushMeasure
+
   // ── live 行尺寸跟随（打字机逐帧长高）────────────────────────────────────────
   // 为什么需要：打字机（MarkdownRenderer 内部 rAF）逐帧吐字改变 live 行的**真实高度**，
   // 这条增长**不经过 props** ⇒ 上游"每 commit 批量重测"不触发；而 TanStack 的
-  // ResizeObserver 在乱序/过期 `borderBoxSize` entry 下可能静默（实测：8660px 的行被
-  // 当成 91px，随后追加的行全按 91px 定位 ⇒ 命令输出被上一条 assistant 行盖住）。
+  // ResizeObserver 实测会乱序/滞后（8660px 的行被当成 91px，随后追加的行全按 91px
+  // 定位 ⇒ 命令输出被上一条 assistant 行盖住）。
   //
-  // 性能约束（CR 2026-09-21 P1-2；与 2026-09-18 trace 定下的铁律"不在每帧回调里读
-  // 几何"一致）：① **变化门控** —— 实测高度（round）与上次相同 ⇒ 直接返回，不做
-  // resizeItem、不写 dataset；② **下标缓存** —— live 行下标只在 rows/liveId 变化时算
-  // 一次，帧内不再 findIndex（O(N)/帧 → O(1)）；③ **共享帧调度** —— 注册到
-  // `frameScheduler`（与 store/TurnBody 共用同一 rAF，不叠加）；④ **首选 observer** ——
-  // 给 live 元素挂 `ResizeObserver`（长高精确触发），帧调度降为**低频兜底**（元素被替换
-  // / RO 静默时）；⑤ dataset 诊断标记只在**高度真的变化**时写。
+  // 现在它只是 **flush 的第三个触发点**（触发而已：尺寸/位置的真相全在 flush 里）：
+  // ① 变化门控由 `resizeItem` 早退 + `transform` 字符串比较吸收（不再自己读几何）；
+  // ② 下标缓存 —— live 行下标只在 rows/liveId 变化时算一次；
+  // ③ 共享帧调度 —— 注册到 `frameScheduler`（与 store/TurnBody 共用同一 rAF）；
+  // ④ 首选 observer —— 给 live 元素挂 `ResizeObserver`，帧调度降为**低频兜底**。
   const liveRowIndex = useMemo(
     () => (liveId ? rows.findIndex((r) => r.id === liveId) : -1),
     [rows, liveId],
@@ -623,29 +721,13 @@ export const MessageList = memo(function MessageList({
   useEffect(() => {
     const root = scrollRef.current
     if (!root || !liveId || liveRowIndex < 0) return
-    const findNode = () => root.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
-    let lastH = -1
-    const apply = () => {
-      const node = findNode()
-      if (!node) return
-      const h = Math.round(node.getBoundingClientRect().height)
-      if (h <= 0 || h === lastH) return // ① 变化门控（打字机长高时才继续）
-      lastH = h
-      virtualizer.resizeItem(liveRowIndex, h) // ② 下标已缓存
-      // 诊断标记：只在 dev/E2E 构建下写（CR 2026-09-21 P1-2 子项 5 —— 生产版不每帧
-      // 改 DOM 属性；E2E 用 `npm run dev` 起服务 ⇒ DEV=true，`measure-pass > 0` 契约不变）。
-      if (import.meta.env.DEV) {
-        root.dataset.measurePass = String((Number(root.dataset.measurePass) || 0) + 1)
-        root.dataset.virtTotal = String(Math.round(virtualizer.getTotalSize()))
-      }
-    }
-    apply() // 挂载即测一次（E2E 契约：measure-pass > 0）
+    flushMeasure() // 挂载即测一次（E2E 契约：measure-pass > 0）
 
-    // ④ 首选 ResizeObserver —— 长高精确触发（不需要每帧读几何）
+    // ④ 首选 ResizeObserver —— live 行长高精确触发（快照不参与尺寸，只用来触发 flush）
     let ro: ResizeObserver | undefined
-    const node = findNode()
+    const node = root.querySelector<HTMLElement>(`[data-message-id="${liveId}"]`)
     if (node && typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => apply())
+      ro = new ResizeObserver(() => flushMeasure())
       ro.observe(node)
     }
     // ③ 低频兜底：有 RO 时每 15 帧（~4Hz）一次；无 RO（jsdom/测试）时每帧 —— 两种情况
@@ -653,7 +735,7 @@ export const MessageList = memo(function MessageList({
     let frame = 0
     const task = () => {
       frame++
-      if (!ro || frame % 15 === 0) apply()
+      if (!ro || frame % 15 === 0) flushMeasure()
       frameScheduler.schedule(task)
     }
     frameScheduler.schedule(task)
@@ -661,7 +743,7 @@ export const MessageList = memo(function MessageList({
       frameScheduler.cancel(task)
       ro?.disconnect()
     }
-  }, [liveId, liveRowIndex, virtualizer])
+  }, [liveId, liveRowIndex, flushMeasure])
 
   // Workaround: virtual-core checks `this.shouldAdjustScrollPositionOnItemSizeChange`
   // (direct instance property) in resizeItem, but setOptions only stores it in
@@ -780,38 +862,16 @@ export const MessageList = memo(function MessageList({
    * 正解：**同一个 commit 的 layout effect 里"先批量读、后批量写"** ——
    *   ① 读阶段：一次把所有已渲染行的真实高度读完（**读之间没有任何写** ⇒ 整批只付
    *      **一次**布局，而不是 N 次）；
-   *   ② 写阶段：把真实高度喂回虚拟器（尺寸未变的行 `resizeItem` 内部早退 ⇒ 零写）。
+   *   ② 写阶段：把真实高度喂回虚拟器（尺寸未变的行 `resizeItem` 内部早退 ⇒ 零写），
+   *      并按真实高度**重锚**已挂载行的位置（`translateY`）⇒ 任何陈旧尺寸都不可能
+   *      把两行压在同一 y。
    * layout effect 在 **paint 之前**执行 ⇒ 用户永远看不到"按估算定位"的那一帧
    * ⇒ **既无重叠也无空白**，且每 commit 只付一次布局。
-   *（后续内容变化仍由 ResizeObserver 自带的 borderBoxSize 免费校正。）
+   *（后续内容变化由 ResizeObserver 触发同一 flush —— 见 rowHeightMemory.ts 的
+   *  `createHeightAwareMeasureElement`：RO 快照只用来**触发**，绝不当作尺寸。）
    */
   useLayoutEffect(() => {
-    const items = virtualizer.getVirtualItems()
-    if (items.length === 0) return
-    // TanStack 的 elementsCache 以 VirtualItem.key 为键（Key = string | number）
-    // —— 用 Map<unknown, …> 取，避免把 key 强转成 string（运行期行为不变）。
-    const inst = virtualizer as unknown as { elementsCache?: Map<unknown, HTMLElement> }
-    const measured: Array<{ index: number; height: number }> = []
-    // ① 读：整批（无写穿插）
-    for (const it of items) {
-      const el = inst.elementsCache?.get(it.key)
-      if (!el) continue
-      const h = Math.round(el.getBoundingClientRect().height)
-      if (h > 0 && h !== Math.round(it.size)) measured.push({ index: it.index, height: h })
-    }
-    // ② 写：仅尺寸变化的行（并把真值记进记忆，供后续未渲染行做初值）
-    for (const m of measured) {
-      virtualizer.resizeItem(m.index, m.height)
-      const row = rowsRef.current[m.index]
-      if (row) {
-        heightMemory.set(
-          rowMemoryKey(row, m.index),
-          rowSignature(row),
-          heightLayoutWidth.current(),
-          m.height,
-        )
-      }
-    }
+    flushMeasure()
   })
 
   const measureRef = useCallback(
@@ -1503,6 +1563,9 @@ export const MessageList = memo(function MessageList({
                     data-message-id={row.id}
                     data-role={row.role}
                     data-iter-count={row.iterations?.length ?? 0}
+                    // 诊断（DEV/E2E）：虚拟器记账的行尺寸 —— 不变量是它必须等于
+                    // 本元素的实际高度（见 flushMeasure / rowHeightMemory.ts）。
+                    data-row-size={import.meta.env.DEV ? Math.round(item.size) : undefined}
                   >
                     <MessageItem
                       message={row}
