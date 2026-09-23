@@ -185,7 +185,7 @@ export function estimateRowByContent(row: ChatMessage): number {
 // 同步读 scrollTop（此时布局已完成，零强制布局），只把 cb(setState) 延迟到共享
 // frameScheduler 的一个 rAF（一帧最多一次 React 通知，且与 TurnBody / store 共用
 // 同一个 rAF → 自动批处理）。
-const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (instance, cb) => {
+export const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (instance, cb) => {
   const win = instance.targetWindow
   if (!win || typeof win.requestAnimationFrame !== 'function') {
     return defaultObserveElementOffset(instance, cb)
@@ -194,12 +194,29 @@ const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (in
   // 只把 setState 延迟到 frameScheduler。
   let pendingOffset: number | null = null
   let pendingIsScrolling = false
+  // ⛔ disposed：cleanup 之后**彻底静默**（2026-09-23 CI 红根因）。
+  //
+  // virtual-core 的默认 observer 排了一个 `isScrollingResetDelay` 的 debounce
+  // 定时器（`() => cb(offset, false)`），但它返回的 cleanup **只移除事件监听、
+  // 从不取消这个定时器**（虚测源码实证）：
+  //
+  //   const fallback = debounce(targetWindow, () => { cb(offset, false) }, delay)
+  //   return () => { element.removeEventListener('scroll', handler); ... }  // ← 没有 cancel
+  //
+  // 于是「滚动 → 组件卸载/测试环境销毁 → 定时器仍触发 → cb → virtualizer.notify
+  // → React setState → 读 window（已销毁）→ ReferenceError: window is not defined」
+  // ⇒ 1693 个用例全绿但 vitest 进程 exit 1（CI Frontend job 红）。
+  //
+  // observer 被 cleanup 后不得再通知是 **disposed 语义**，不是防御性编程：
+  // 我们把 cb 交给第三方调度器，就必须保证销毁后对它的调用是 no-op。
+  let disposed = false
   const flushTask = () => {
     if (pendingOffset === null) return
     cb(pendingOffset, pendingIsScrolling)
     pendingOffset = null
   }
   const wrappedCb: (offset: number, isScrolling: boolean) => void = (offset, isScrolling) => {
+    if (disposed) return
     if (!isScrolling) {
       // 滚动停止通知：取消 pending 合帧，同步直达（isScrolling=false 语义
       // 是"滚动已停"，延迟它会让 TanStack 的 isScrolling 状态晚一帧）。
@@ -222,6 +239,8 @@ const rafCoalescedObserveElementOffset: typeof defaultObserveElementOffset = (in
   }
   const cleanup = defaultObserveElementOffset(instance, wrappedCb)
   return () => {
+    disposed = true
+    pendingOffset = null
     frameScheduler.cancel(flushTask)
     cleanup?.()
   }

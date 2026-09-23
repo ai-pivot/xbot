@@ -266,3 +266,44 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - 守护：`web/src/chat/p0-unreachable-gap.test.ts`（4 例：窗外的洞 ⇒ 自增；同一形状不重复触发；
   可追赶的洞 ⇒ 不自增；洞部分在窗外 ⇒ 自增）。判别力：去掉自增 ⇒ 1 例红；去掉"同形状只触发
   一次" ⇒ 1 例红；把可追赶的洞也当无法追赶 ⇒ 1 例红。
+
+## ⛔ observer 被 cleanup 之后必须**彻底静默**（2026-09-23 CI 红根因：`ReferenceError: window is not defined`）
+
+**症状**（CI Frontend job 红，但用例全绿 ⇒ 极易被误判为 flake）：
+
+```
+Test Files  160 passed (160)
+Tests       1693 passed (1693)
+Errors      1 error
+##[error]ReferenceError: window is not defined
+ ❯ resolveUpdatePriority  react-dom-client.development.js:1308
+ ❯ dispatchReducerAction  react-dom-client.development.js:9102
+ ❯ Virtualizer.notify     @tanstack/virtual-core/dist/esm/index.js:263
+ ❯ wrappedCb              src/components/agent/MessageList.tsx:208
+ ❯ @tanstack/virtual-core/dist/esm/index.js:84
+```
+
+**根因（虚测源码实证，不是概率问题）**：`@tanstack/virtual-core` 的默认 `observeElementOffset`
+排了一个 `isScrollingResetDelay` 的 debounce 定时器，**它返回的 cleanup 只移除事件监听、
+从不取消这个定时器**：
+
+```js
+const fallback = debounce(targetWindow, () => { cb(offset, false) }, isScrollingResetDelay)
+...
+return () => { element.removeEventListener("scroll", handler); ... }   // ← 没有 cancel
+```
+
+于是：**滚动 → 组件卸载 / 测试环境销毁 → 定时器仍触发 `cb(offset,false)` → virtualizer.notify
+→ React setState → 读 `window`（jsdom 已销毁）→ `ReferenceError`** ⇒ 用例全绿但 vitest 进程
+exit 1。本地 pre-commit 常绿（时序不同：本地 debounce 在环境存活时就烧掉了），**只在 CI 的
+时序下爆** ⇒ 表现为"概率性"，实为确定性契约缺失。
+
+**契约（修法）**：包装第三方 observer 时，cleanup 必须把「已销毁」变成硬状态 ——
+`MessageList.tsx` 的 `rafCoalescedObserveElementOffset` 用 `let disposed = false`；
+`wrappedCb` 首行 `if (disposed) return`；cleanup 里 `disposed = true` + 清 pending + 
+`frameScheduler.cancel(flushTask)` + 调 default cleanup。这不是防御性编程，而是
+**disposed 语义**：我们把 cb 交给第三方调度器，就必须保证销毁后对它的调用是 no-op。
+
+**守护测试**：`web/src/components/agent/messageListObserverDisposal.test.ts`
+（假定时器 + 真实 scroll 事件 + cleanup + 推进时钟 ⇒ 断言 cleanup 之后**零新增回调**；
+另有一条"未 cleanup 时行为不变"的反向守护）。判别力：去掉 `disposed` 守卫即红。
