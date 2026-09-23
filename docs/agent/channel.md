@@ -455,6 +455,7 @@ The context bar (top border of input box) replaces the default lipgloss border w
 - **推论（踩坑点）：只调 `store.switchSession`/`activateSession` 不会切换主区** —— 侧栏高亮变了、主区当前 tab 仍绑旧 sessionId（用户报告："点侧栏『新建会话』，确认后侧栏新会话高亮了，但窗口没切过去，必须再点一下新会话"）。**任何"创建/派生出新会话并想切过去"的入口都必须同时打开/聚焦该会话的 tab**：`openAgentSessionTab(tabManager, chatID, channel, title)`（`web/src/lib/sessionTabs.ts`，唯一入口）。已接：desktop `core.sessions` 面板的新建会话（`builtinPanels.tsx`）、命令 `session.new`（`AppShell.tsx`）、fork（`builtinPanels` 的 `onFork` → openTab）、会话列表点击（`handleSelect` → openTab + `activateSession`）。
 - **手机端（`MobileAppShell` / mobile AgentPanel 的 `mobilePanelProps` 无 sessionId）不能调它**：手机没有 dockview，`tabManager.openApi.openTab` 只会进 `pending` 队列静默丢失（`bindApi` 前）；手机端 AgentPanel 跟随 `activeSession`，因此「完成切换」= **关闭抽屉**（抽屉是覆盖层，不关就等于"窗口没切"）。侧栏容器 `SessionSidebar`（现仅手机抽屉消费）用 `onSubAgentSelect` 有无判别两态（与 `handleSelect` 同一判据）：有 → 手机（`onSessionSelected` 关抽屉，不开 tab）；无 → desktop（`openAgentSessionTab`）。
 - 守护测试：`web/src/components/panel/builtinPanels.createSession.test.tsx`（创建成功 → `openTab` 带新 chatID；修复前红灯）+ `builtinPanels.fork.test.tsx` + `web/src/components/session/SessionSidebar.test.tsx`（mobile：关抽屉且不开 tab / desktop：开 tab）。
+- **会话右键菜单的普通项与子菜单触发器必须保持相同的图标-文字间距**：通用 `ContextMenuItem` 与 `ContextMenuSubTrigger` 都使用 `gap-2`。若子菜单触发器漏掉 gap，带图标的“导出会话”等文字会比相邻项左移约 8px；不要在 `SessionItem` 单点加 margin，统一在 `web/src/components/ui/context-menu.tsx` 修复。回归测试：`SessionItem.fork.test.tsx` 的 context menu layout 用例。
 
 ### Web Frontend Message Composer (tiptap)
 
