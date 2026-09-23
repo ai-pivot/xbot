@@ -150,6 +150,11 @@ const CHECK = () => {
 }
 
 async function expectInvariant(page: Page, where: string) {
+  // 先让两帧过去：flush 是「microtask / paint 前」调度的，等两帧可确保任何已发生的尺寸
+  // 变化都已写回（避免把"变更已发生、flush 尚未执行"的中间态误判为违反不变量）。
+  await page.evaluate(
+    () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))),
+  )
   const r = await page.evaluate(CHECK)
   expect(r.count, `${where}: 必须有已渲染的虚拟行`).toBeGreaterThan(0)
   expect(r.sizeMismatch, `${where}: 行记账尺寸必须等于实际高度`).toEqual([])
