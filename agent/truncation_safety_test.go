@@ -15,8 +15,11 @@ import (
 // ── project/global context goes straight into the SYSTEM PROMPT ──
 
 func TestFormatGlobalContext_CJKTruncationRuneSafe(t *testing.T) {
-	// > maxProjectContextChars (10000) bytes of CJK.
-	content := strings.Repeat("这是全局指令中的一段中文内容，用于验证截断不会切断多字节字符。", 200)
+	// > maxProjectContextChars CHARACTERS of CJK. NOTE the unit: the budget is
+	// runes, not bytes (a CJK char is 3 UTF-8 bytes) — a shorter input that only
+	// exceeds the byte count must NOT be truncated any more.
+	line := "这是全局指令中的一段中文内容，用于验证截断不会切断多字节字符。"
+	content := strings.Repeat(line, maxProjectContextChars/utf8.RuneCountInString(line)+1)
 
 	got := formatGlobalContext(content, "AGENTS.md")
 
@@ -29,6 +32,9 @@ func TestFormatGlobalContext_CJKTruncationRuneSafe(t *testing.T) {
 	}
 	if !strings.Contains(got, "AGENTS.md") {
 		t.Errorf("hint must name the file to read, got: %q", tail(got, 300))
+	}
+	if n := utf8.RuneCountInString(got); n > maxProjectContextChars+4096 {
+		t.Errorf("global context is unbounded: %d chars > %d", n, maxProjectContextChars+4096)
 	}
 }
 
