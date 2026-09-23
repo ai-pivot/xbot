@@ -84,3 +84,21 @@ describe('SessionItem fork', () => {
     expect(forkEntries).toHaveLength(0)
   })
 })
+
+describe('SessionItem context menu layout', () => {
+  it('子菜单触发器与普通菜单项使用相同的图标文字间距', async () => {
+    renderWithProviders(
+      <SessionItem
+        {...baseProps}
+        session={session({})}
+        onExport={vi.fn()}
+      />,
+    )
+
+    const item = screen.getByText('Agent-main').closest('[data-slot="context-menu-trigger"]') ?? screen.getByText('Agent-main')
+    fireEvent.contextMenu(item)
+
+    const exportEntry = await screen.findByRole('menuitem', { name: /导出会话|Export/ })
+    expect(exportEntry).toHaveClass('gap-2')
+  })
+})
