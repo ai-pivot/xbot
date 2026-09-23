@@ -76,6 +76,9 @@ type feishuCoT struct {
 	draining  bool
 	// broken 标记创建/写入失败过一次：之后只降级（调用方回落卡片渲染）。
 	broken bool
+	// stopped 标记用户点了飞书 CoT 的「停止生成」按钮（2026-09-23）：之后 emit
+	// 全部丢弃（思考过程已按 RUN_ERROR 收尾，后续事件只会让平台侧"复活"）。
+	stopped bool
 	// writeMu 串行化**真实发出的**写请求（drain 异步 × flushNow 收尾/测试 可能并发）：
 	// 两个写线程同时写会让平台侧事件顺序交错（违反渲染线性一致性 —— 用户 2026-09-17
 	// 明确要求），也会让测试 double 被两个 goroutine 同时写（-race 红灯）。
@@ -141,7 +144,7 @@ func (c *feishuCoT) emit(eventType string, payload map[string]any) {
 	}
 
 	c.mu.Lock()
-	if c.broken {
+	if c.broken || c.stopped {
 		c.mu.Unlock()
 		return
 	}
@@ -335,6 +338,35 @@ func (c *feishuCoT) brokenNow() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.broken
+}
+
+// stop 响应飞书 CoT 的「停止生成」按钮（2026-09-23）：
+// 标记 stopped（后续 emit 全部丢弃——思考过程已按 RUN_ERROR 收尾，后续事件只会
+// 让平台侧"复活"）+ 同步写完已入队的事件（含渲染器发的 RUN_ERROR）。
+func (c *feishuCoT) stop() {
+	c.mu.Lock()
+	c.stopped = true
+	c.mu.Unlock()
+	_ = c.flushNow()
+}
+
+// stoppedNow 报告用户是否已点过「停止生成」。
+func (c *feishuCoT) stoppedNow() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopped
+}
+
+// cotIDValue 返回平台分配的 cot_id（停止按钮回调按它精确匹配；空 = 尚未创建）。
+func (c *feishuCoT) cotIDValue() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cotID
+}
+
+// chatIDValue 返回该思考过程所属的真实会话 id（receive_id；回调的 open_chat_id 与它同源）。
+func (c *feishuCoT) chatIDValue() string {
+	return c.chatID
 }
 
 // flushNow 同步写完队列（收尾与测试用；异步 drainer 语义不变）。

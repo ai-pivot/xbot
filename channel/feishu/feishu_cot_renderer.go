@@ -299,6 +299,35 @@ func (r *feishuCoTRenderer) close(errMsg string) {
 	r.closeRunLocked(errMsg)
 }
 
+// stop 响应飞书 CoT 的「停止生成」按钮（2026-09-23）：
+// 以 RUN_ERROR 收尾思考过程（用户主动停止），并停掉后续写入（cot.stop 标记
+// stopped —— 停止后到达的进度/流式事件全部丢弃，平台侧不会"复活"）。
+func (r *feishuCoTRenderer) stop() {
+	r.mu.Lock()
+	r.closeRunLocked("用户停止了生成")
+	r.mu.Unlock()
+	if r.cot != nil {
+		r.cot.stop()
+	}
+}
+
+// matchesCoTStop 报告该渲染器是否是「停止生成」按钮的目标。
+// cotID 非空且渲染器已创建时精确匹配（平台回传 cot_id）；渲染器尚未创建
+// （还没写过事件、cot_id 为空）或 cotID 缺失时，按回调的 open_chat_id（真实
+// 会话 id，与 cot.chatID 同源）匹配。
+func (r *feishuCoTRenderer) matchesCoTStop(cotID, chatID string) bool {
+	if r == nil || r.cot == nil {
+		return false
+	}
+	if cotID != "" {
+		if id := r.cot.cotIDValue(); id != "" {
+			return id == cotID
+		}
+		// 渲染器尚未创建（还没写过事件）：回落按 chatID 匹配。
+	}
+	return chatID != "" && r.cot.chatIDValue() == chatID
+}
+
 func (r *feishuCoTRenderer) ensureRunLocked(turnID uint64) {
 	if r.runOpen && turnID == r.runTurnID {
 		return

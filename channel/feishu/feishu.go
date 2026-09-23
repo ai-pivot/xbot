@@ -1490,6 +1490,13 @@ func (f *FeishuChannel) onCardAction(ctx context.Context, event *callback.CardAc
 		messageID = event.Event.Context.OpenMessageID
 	}
 
+	// Intercept the native CoT (思考过程) "停止生成" button FIRST — its
+	// action.tag is "cot_stop" (not button/form_submit), so it must be routed
+	// before the generic card paths which would drop it as an unknown tag.
+	if resp, ok := f.handleCoTStopAction(action, chatID, senderID); ok {
+		return resp, nil
+	}
+
 	// Intercept permission approval actions before other card routing.
 	if resp, ok := f.handleApprovalCardAction(actionData, action, senderID); ok {
 		return resp, nil
@@ -3723,6 +3730,71 @@ func (f *FeishuChannel) closeCoTRunReporting(chatID, errMsg string) bool {
 	}
 	r.close(errMsg)
 	return true
+}
+
+// handleCoTStopAction 拦截飞书原生 CoT（思考过程）的「停止生成」按钮（2026-09-23）。
+//
+// 平台契约：用户点 CoT 消息上的「停止生成」时，飞书发 card.action.trigger 回调，
+// action.tag == "cot_stop"（value 带 cot_id/message_id）。此前该回调落到通用卡片
+// 路径被当 unknown tag 丢弃 —— 按钮完全无效（用户报告「中止按钮没处理」）。
+//
+// 停止 = ① 收尾思考过程（RUN_ERROR，后续写入丢弃）；② 取消 agent turn（发 /cancel，
+// 与 AskUser cancel 同模式 —— cancel 按 channel:chatID 路由到正在跑的 turn）。
+// 匹配：优先 value.cot_id（精确），否则按回调 open_chat_id（与 cot.chatID 同源）。
+func (f *FeishuChannel) handleCoTStopAction(action *callback.CallBackAction, chatID, senderID string) (*callback.CardActionTriggerResponse, bool) {
+	if action == nil || action.Tag != "cot_stop" {
+		return nil, false
+	}
+
+	// value 里可能带 cot_id（平台回传，精确匹配）；miss 时按回调 chatID 匹配。
+	cotID := ""
+	if action.Value != nil {
+		if id, ok := action.Value["cot_id"].(string); ok {
+			cotID = id
+		}
+	}
+
+	f.cotMu.Lock()
+	var r *feishuCoTRenderer
+	for _, cand := range f.cotRenderers {
+		if cand != nil && cand.matchesCoTStop(cotID, chatID) {
+			r = cand
+			break
+		}
+	}
+	f.cotMu.Unlock()
+
+	if r == nil {
+		// 没有活跃的思考过程（已结束/已停止）——按钮点了也没东西可停。
+		log.WithFields(log.Fields{"chat_id": chatID, "cot_id": cotID}).
+			Info("Feishu: CoT stop clicked but no active run")
+		return &callback.CardActionTriggerResponse{
+			Toast: &callback.Toast{Type: "info", Content: "没有正在进行的生成"},
+		}, true
+	}
+
+	// ① 收尾思考过程（RUN_ERROR + 后续写入丢弃）。
+	r.stop()
+
+	// ② 取消 agent turn（与 AskUser cancel 同模式：/cancel 按 channel:chatID 路由）。
+	// r.chatID 是渠道会话键（cotRenderers 的 key），与消息路由同源。
+	f.msgBus.Inbound <- bus.InboundMessage{
+		Channel:   "feishu",
+		SenderID:  senderID,
+		ChatID:    r.chatID,
+		ChatType:  "p2p",
+		Content:   "/cancel",
+		Time:      time.Now(),
+		RequestID: log.NewRequestID(),
+		From:      bus.NewIMAddress("feishu", senderID),
+		To:        bus.NewIMAddress("feishu", r.chatID),
+	}
+
+	log.WithFields(log.Fields{"chat_id": r.chatID, "sender_id": senderID, "cot_id": cotID}).
+		Info("Feishu: CoT stop — run cancelled via 停止生成 button")
+	return &callback.CardActionTriggerResponse{
+		Toast: &callback.Toast{Type: "success", Content: "已停止生成"},
+	}, true
 }
 
 func (f *FeishuChannel) cotReceiveID(key string) string {
