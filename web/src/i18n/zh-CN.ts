@@ -437,6 +437,21 @@ const zhCN = {
     },
     thinkingLive: '思考中 {{count}} 字',
     thoughtChars: '思考 {{count}} 字',
+    // 消息区右键 / 长按菜单（MessageActions）
+    copyMenu: {
+      openLink: '打开链接',
+      copyLinkAddress: '复制链接地址',
+      copySelection: '复制选区',
+      copyReply: '复制回复',
+      copyWithThinking: '复制含思考',
+      copyWithTools: '复制含工具调用',
+      copyRawMarkdown: '查看原始 Markdown',
+      copyIterationThinking: '复制这段思考',
+      copyIterationContent: '复制该迭代正文',
+      copyIterationAll: '复制该迭代（含工具）',
+      copyTool: '复制：{{name}}',
+      copyAllToolOutput: '复制全部工具输出',
+    },
   },
   skills: {
     install: '安装',

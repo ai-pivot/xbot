@@ -440,6 +440,21 @@ const en: Translations = {
     },
     thinkingLive: 'Thinking · {{count}} chars',
     thoughtChars: 'Thought {{count}} chars',
+    // Message-area right-click / long-press menu (MessageActions)
+    copyMenu: {
+      openLink: 'Open link',
+      copyLinkAddress: 'Copy link address',
+      copySelection: 'Copy selection',
+      copyReply: 'Copy reply',
+      copyWithThinking: 'Copy with thinking',
+      copyWithTools: 'Copy with tool calls',
+      copyRawMarkdown: 'View raw Markdown',
+      copyIterationThinking: 'Copy this thinking',
+      copyIterationContent: 'Copy this iteration',
+      copyIterationAll: 'Copy iteration (with tools)',
+      copyTool: 'Copy: {{name}}',
+      copyAllToolOutput: 'Copy all tool output',
+    },
   },
   skills: {
     install: 'Install',

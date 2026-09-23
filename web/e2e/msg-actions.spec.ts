@@ -15,12 +15,20 @@ const ITERATIONS = [
   { iteration: 2, content: '我搜一下今天的新闻。' },
   {
     iteration: 3,
-    content: '## 今日要点\n1. 推理集群扩容完成\n2. 新的基准评测出炉',
+    content: '## 今日要点\n1. 推理集群扩容完成\n2. [新的基准评测](https://example.com/bench) 出炉',
     tools: [{ name: 'Shell', label: 'Shell ls -la', status: 'done', detail: 'second tool output' }],
   },
 ]
 
 async function setupMock(page: Page) {
+  // 菜单标签走 i18n ⇒ 浏览器语言必须与断言语言一致（Playwright 默认 en-US → 英文标签）。
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('xbot-locale', 'zh-CN')
+    } catch {
+      /* ignore */
+    }
+  })
   await page.route('**/api/settings', (r) => r.fulfill({ json: { ok: true, data: {} } }))
   await page.route('**/api/auth/config', (r) => r.fulfill({ json: { ok: true, data: { invite_only: false } } }))
   await page.route('**/api/auth/login', (r) => r.fulfill({ json: { ok: true, data: { user_id: 'test' } } }))
@@ -140,6 +148,84 @@ test.describe('复制入口（右键 / 长按）', () => {
     await expect(sheet).toContainText('复制：WebSearch 今日重要新闻')
     await expect(sheet).toContainText('复制全部工具输出')
     await page.screenshot({ path: `${SHOTS}/mobile-sheet.png`, fullPage: true })
+    await ctx.close()
+  })
+
+  test('打开链接 / 复制选区（落点相关的两项）', async ({ browser }) => {
+    const ctx = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      permissions: ['clipboard-read', 'clipboard-write'],
+    })
+    // 站外链接不真出去：stub 掉 example.com（既避免依赖外网，也能拿到最终 URL）。
+    await ctx.route('**example.com/**', (r) => r.fulfill({ status: 200, contentType: 'text/html', body: 'stub' }))
+    const page = await ctx.newPage()
+    await setupMock(page)
+    await page.goto('/')
+
+    // ① 右键链接 → 「打开链接 / 复制链接地址」
+    const link = page.getByRole('link', { name: '新的基准评测' })
+    await expect(link).toBeAttached()
+    await link.click({ button: 'right' })
+    const menu = page.locator('[data-testid="copy-menu"]')
+    await expect(menu).toContainText('打开链接')
+    await expect(menu).toContainText('复制链接地址')
+    await page.screenshot({ path: `${SHOTS}/desktop-link-menu.png`, fullPage: true })
+
+    // 打开链接 → 新标签打开（noopener,noreferrer）。
+    // ⚠️ noopener 弹窗在导航 commit 之前 `url()` 是空串，必须 waitForURL 等真实导航
+    //（等 about:blank 的 loadstate 等于没等 —— 首版就是这么假绿的）。
+    const popupPromise = ctx.waitForEvent('page')
+    await menu.getByText('打开链接').click()
+    const popup = await popupPromise
+    await popup.waitForURL(/example\.com\/bench/, { timeout: 10_000 })
+    expect(popup.url(), '打开链接应打开该 href').toContain('example.com/bench')
+    await popup.close()
+
+    // 复制链接地址 → 绝对地址进剪贴板
+    await link.click({ button: 'right' })
+    const menu2 = page.locator('[data-testid="copy-menu"]')
+    await expect(menu2).toContainText('复制链接地址')
+    await menu2.getByText('复制链接地址').click()
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('https://example.com/bench')
+
+    // ② 有选区 → 「复制选区」；右键落在**选区内**（选区才会保留）
+    const target = page.locator('[data-copy-target="message"]').last()
+    await target.evaluate((el) => {
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+    })
+    await target.click({ button: 'right' })
+    const selMenu = page.locator('[data-testid="copy-menu"]')
+    await expect(selMenu).toContainText('复制选区')
+    await selMenu.getByText('复制选区').click()
+    const copied = await page.evaluate(() => navigator.clipboard.readText())
+    expect(copied, '复制选区应拿到选中的正文').toContain('今日要点')
+    await ctx.close()
+  })
+
+  // 触屏长按是需求的两条主路径之一；上面的用例只覆盖了桌面右键。
+  // CR 实测：把长按回调的 target 置空（等价于"手机长按链接再也出不来『打开链接』"）时，
+  // 全量单测 + E2E 会**全绿** ⇒ 这条必须有（长按路径的落点也要给链接入口）。
+  test('触屏长按落在链接上 → sheet 含「打开链接 / 复制链接地址」', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    const page = await ctx.newPage()
+    await setupMock(page)
+    await page.goto('/')
+    const link = page.getByRole('link', { name: '新的基准评测' })
+    await expect(link).toBeAttached()
+    await link.evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true, clientX: 120, clientY: 300 }),
+      )
+    })
+    const sheet = page.locator('[data-testid="copy-sheet"]')
+    await expect(sheet).toBeVisible({ timeout: 3000 })
+    await expect(sheet).toContainText('打开链接')
+    await expect(sheet).toContainText('复制链接地址')
+    await page.screenshot({ path: `${SHOTS}/mobile-link-sheet.png`, fullPage: true })
     await ctx.close()
   })
 })

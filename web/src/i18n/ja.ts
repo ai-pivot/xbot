@@ -440,6 +440,21 @@ const ja: Translations = {
     },
     thinkingLive: '{{count}} 文字思考中',
     thoughtChars: '{{count}} 文字思考',
+    // メッセージ領域の右クリック / 長押しメニュー（MessageActions）
+    copyMenu: {
+      openLink: 'リンクを開く',
+      copyLinkAddress: 'リンク先をコピー',
+      copySelection: '選択範囲をコピー',
+      copyReply: '返信をコピー',
+      copyWithThinking: '思考を含めてコピー',
+      copyWithTools: 'ツール呼び出しを含めてコピー',
+      copyRawMarkdown: '生の Markdown を表示',
+      copyIterationThinking: 'この思考をコピー',
+      copyIterationContent: 'このイテレーションをコピー',
+      copyIterationAll: 'イテレーションをコピー（ツール込み）',
+      copyTool: 'コピー：{{name}}',
+      copyAllToolOutput: 'ツール出力をすべてコピー',
+    },
   },
   skills: {
     install: 'インストール',
