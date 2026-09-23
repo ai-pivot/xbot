@@ -137,3 +137,25 @@ Docs are bilingual: English (default, `content/en/`) and Chinese
 Read `AGENTS.md` at the project root for detailed conventions, gotchas, and
 architecture notes before making code changes.
 {{< /hint >}}
+
+### Keep `AGENTS.md` within its injection budget
+
+`AGENTS.md` is injected into the system prompt on every request, so it has a
+**hard budget of 100,000 characters** (`maxProjectContextChars` in
+`agent/middleware_builtin.go`). Anything beyond it is truncated and the model is
+told the missing content is invisible — with an instruction to shorten the file.
+
+Two consequences for contributors:
+
+- **Keep the root `AGENTS.md` small** (quick reference + knowledge-file index +
+  one-line rule index). Put the detail into `docs/agent/*.md` — those files are
+  read on demand, so they have no budget.
+- **Mind the unit**: the budget counts **characters (runes), not bytes** — a CJK
+  character is 3 UTF-8 bytes, so a 690 KB file is ~500k characters. Tokenizers are
+  roughly 1 token per CJK character and 0.25 token per ASCII character, so 100k
+  characters ≈ at most 100k tokens (half of a 200k context window).
+
+Why this is enforced: compaction only rewrites conversation **messages**, never
+the system prompt. An oversized `AGENTS.md` therefore makes the un-shrinkable
+part exceed the model's context on its own, so every compaction is ineffective
+and the session loops compressing forever while the model repeats itself.
