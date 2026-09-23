@@ -197,73 +197,56 @@ export interface MeasureElementDeps {
   measure: (element: Element, entry: ResizeObserverEntry | undefined, instance: unknown) => number
   memory: RowHeightMemory
   width: () => number
+  /** 已挂载行的**真实尺寸发生变化**（ResizeObserver 回调）。快照不可信 ⇒ 只标脏，
+   *  由调用方排一次「批量读真几何」的 flush（见下）。 */
+  onResize?: () => void
+  /** 该 index 在虚拟器记账里的**当前尺寸**（纯内存读，零 DOM）；用于 RO 路径的返回值
+   *  —— 返回"不变"⇒ TanStack 的 `resizeItem` 早退，尺寸只由 flush 的真几何读取决定。 */
+  currentSize?: (index: number) => number
 }
 
 /**
- * 记忆感知的 `measureElement`：
- * 命中 ⇒ **零 DOM 读**直接返回（这是切会话/回访旧会话的关键路径）；否则真实测量并记忆。
+ * 记忆感知的 `measureElement` —— **行尺寸的唯一真相是"它自己的当前几何"**。
  *
- * ⛔ 但**每个元素实例只允许"首次测量"走缓存**（`measuredOnce`）：
- * 折叠/展开、图片加载、mermaid 渲染、字体替换都会**在不改行内容的前提下改变高度** ——
- * 若之后仍返回旧缓存值，这些真实的高度变化会被永久吞掉（虚拟列表总高与实际不符）。
- * 因此：元素实例的第一次测量（挂载爆发期，含 RO 的初始回调）可命中缓存；
- * 之后的每一次测量（RO 因真实尺寸变化而回调）一律真实读取并刷新缓存。
- */
-/**
- * 记忆感知的 `measureElement` —— **只信浏览器的真实尺寸**。
+ * ⛔ 2026-09-23 P0（正文互相穿插 / 两行压在同一 y）根因：**ResizeObserver 的
+ * `entry.borderBoxSize` 是"观察时刻的快照"，不是当前几何**。乱序/滞后投递时它比真实
+ * 尺寸**小**，而它被当作尺寸写回虚拟器（`resizeItem`）后：该行比真实高度矮 ⇒
+ * 下一行 `translateY(start)` 偏小 ⇒ **画到它身上（两段文字压同一 y）**；随后 DOM 不再
+ * 变化 ⇒ 没有下一次回调 ⇒ 错值**永久固化**（同一流水线里 `noDegenerateMeasureElement`
+ * 已经改成"读当前几何"，但那只在**无 entry 的兜底分支**生效 —— 主路径仍信快照）。
  *
- * ⛔ 根因修复（2026-09-18 P0 字符重合 / 行重叠）：旧实现有两条"说谎"路径，且都与
- * 元素类型无关，因此**无法靠按类型打补丁解决**：
- *   ① **首次测量直接返回记忆值** —— 内容/宽度指纹只要不完全等价，就会返回偏小的
- *      高度；TanStack `resizeItem` 在 `size === item.size` 处早退 ⇒ 不再校正 ⇒
- *      下一行 `translateY(item.start)` 偏小 ⇒ **两行压在同一 y**；
- *   ② 依赖**估算**定位已渲染的行 —— 任何"高度与字符数不成比例"的元素（表格 /
- *      代码块 / mermaid / 图片 / KaTeX / 嵌套列表…）都会被低估 ⇒ 同样重叠。
- *
- * 现在：ResizeObserver 回调**自带真实块尺寸**（`borderBoxSize`）——**零 DOM 读、
- * 零强制布局，完全免费**；挂载时（无 entry）才真实测量。`memory` 仅作为
- * `estimateSize` 的**初值提示**，**绝不**作为已渲染行的定位依据。
+ * 现在：
+ *  - **RO 回调（有 entry）**：绝不把快照当尺寸 —— 只 `onResize?.()` 标脏，返回虚拟器
+ *    **当前记账尺寸**（不变 ⇒ `resizeItem` 早退），真实尺寸由调用方的 batch flush
+ *    在 paint 前用真几何统一写回；
+ *  - **挂载（无 entry）**：返回初值提示（记忆/估算），同样由 batch flush 校正；
+ *  - 于是"尺寸"永远只来自**真几何**（一次批量读 → 一次批量写），快照、记忆、估算
+ *    都只能作为**初值**，不可能覆盖真值。
  */
 export function createHeightAwareMeasureElement(
   deps: MeasureElementDeps,
 ): (element: Element, entry: ResizeObserverEntry | undefined, instance: unknown) => number {
   return (element, entry, instance) => {
     const index = Number((element as HTMLElement).dataset?.index ?? -1)
-    const row = index >= 0 ? deps.lookup(index) : undefined
-    const width = deps.width()
 
-    const observed = readObservedBlockSize(entry)
-    if (observed > 0) {
-      if (row && width > 0) deps.memory.set(row.key, row.sig, width, observed)
-      return observed
+    if (entry) {
+      // ⛔ 不用 entry 的尺寸（可能是过期快照）—— 只标脏，交给 batch flush 读真几何。
+      deps.onResize?.()
+      const cur = deps.currentSize?.(index) ?? 0
+      if (cur > 0) return cur
+      // 记账里还没有尺寸（极罕见：RO 先于挂载测量到达）——退回真实测量。
+      return deps.measure(element, undefined, instance)
     }
-    // 挂载（无 RO entry）：**不读 DOM**，返回初值提示（记忆/估算）。真实高度由
-    // 调用方的批量 pass 在 paint 前喂回 ⇒ 既不重叠也不留白，且零强制布局。
+
+    // 挂载（无 RO entry）：**不读 DOM**，返回初值提示（记忆/估算）。真实高度由调用方的
+    // batch flush 在 paint 前喂回 ⇒ 既不重叠也不留白，且零强制布局。
     const hinted = deps.hint?.(index)
     if (hinted !== undefined && hinted > 0) return hinted
     const size = deps.measure(element, entry, instance)
+    const row = index >= 0 ? deps.lookup(index) : undefined
+    const width = deps.width()
     if (row && width > 0 && size > 0) deps.memory.set(row.key, row.sig, width, size)
     return size
   }
 }
 
-/** ResizeObserver 回调自带的真实块尺寸（免费；兼容数组/单值与新旧字段名）。 */
-export function readObservedBlockSize(entry: ResizeObserverEntry | undefined): number {
-  if (!entry) return 0
-  const border = entry.borderBoxSize as unknown
-  const borderSize = Array.isArray(border)
-    ? (border[0] as { blockSize?: number } | undefined)
-    : (border as { blockSize?: number } | undefined)
-  if (borderSize && typeof borderSize.blockSize === 'number' && borderSize.blockSize > 0) {
-    return borderSize.blockSize
-  }
-  const content = entry.contentBoxSize as unknown
-  const contentSize = Array.isArray(content)
-    ? (content[0] as { blockSize?: number } | undefined)
-    : (content as { blockSize?: number } | undefined)
-  if (contentSize && typeof contentSize.blockSize === 'number' && contentSize.blockSize > 0) {
-    return contentSize.blockSize
-  }
-  const h = entry.contentRect?.height
-  return typeof h === 'number' && h > 0 ? h : 0
-}
