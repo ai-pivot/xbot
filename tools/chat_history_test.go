@@ -1,211 +1,97 @@
 package tools
 
 import (
-	"fmt"
-	"sync"
+	"path/filepath"
+	"strings"
 	"testing"
-	"time"
+
+	"xbot/llm"
+	"xbot/storage/sqlite"
 )
 
-func TestNewChatHistoryStore(t *testing.T) {
-	t.Run("default max size", func(t *testing.T) {
-		s := NewChatHistoryStore(0)
-		if s.maxSize != 200 {
-			t.Errorf("expected default maxSize 200, got %d", s.maxSize)
+// ChatHistory 必须读会话历史的**唯一权威**（session_messages + Replay）：
+//  1. 能读到 DB 里的对话消息，且过滤 tool 等过程噪声；
+//  2. limit 生效（只回最近 N 条对话消息）；
+//  3. **回溯（RewindToHistoryID 物理删除）之后，被截断的消息不能再被捞到**。
+//
+// 第 3 条是本工具曾经的 bug：它另存了一份进程内 ring（每条入站消息 Add 一次），
+// 而 RewindHistory/Clear 都不清它 —— 用户回溯后仍能用本工具"回忆"起被截断的
+// 消息（实测复现：回溯后仍返回 888）。会话内容的第二份副本 = 必漏，故删除。
+func TestChatHistoryToolReadsAuthoritativeSessionHistory(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XBOT_HOME", dir)
+	db, err := sqlite.Open(filepath.Join(dir, "xbot.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	sess := sqlite.NewSessionService(db)
+	tenantID, err := sqlite.NewTenantService(db).GetOrCreateTenantID("web", "c1")
+	if err != nil {
+		t.Fatalf("tenant: %v", err)
+	}
+
+	appendMsg := func(role, content string) int64 {
+		t.Helper()
+		id, err := sess.AppendMessage(tenantID, llm.ChatMessage{Role: role, Content: content})
+		if err != nil {
+			t.Fatalf("append %s: %v", role, err)
 		}
-	})
+		return id
+	}
+	appendMsg("user", "第一句 777")
+	appendMsg("assistant", "收到 111")
+	id2 := appendMsg("user", "第二句 888")
+	appendMsg("tool", "tool noise 999")
 
-	t.Run("custom max size", func(t *testing.T) {
-		s := NewChatHistoryStore(50)
-		if s.maxSize != 50 {
-			t.Errorf("expected maxSize 50, got %d", s.maxSize)
+	tool := NewChatHistoryTool()
+	ctx := &ToolContext{TenantID: tenantID, SessionSvc: sess, Channel: "web", ChatID: "c1"}
+
+	res, err := tool.Execute(ctx, `{"limit": 10}`)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	out := res.Summary
+	for _, want := range []string{"777", "111", "888", "<user>", "<assistant>"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("history 缺少 %q：\n%s", want, out)
 		}
-	})
-
-	t.Run("negative max size uses default", func(t *testing.T) {
-		s := NewChatHistoryStore(-1)
-		if s.maxSize != 200 {
-			t.Errorf("expected default maxSize 200 for negative input, got %d", s.maxSize)
-		}
-	})
-}
-
-func TestChatHistoryStore_AddAndGet(t *testing.T) {
-	s := NewChatHistoryStore(10)
-
-	// Add messages to a channel
-	s.Add("feishu", "chat1", "user1", "hello")
-	s.Add("feishu", "chat1", "user2", "hi there")
-	s.Add("feishu", "chat1", "user1", "how are you?")
-
-	t.Run("get all messages", func(t *testing.T) {
-		msgs := s.Get("feishu", "chat1", 0)
-		if len(msgs) != 3 {
-			t.Fatalf("expected 3 messages, got %d", len(msgs))
-		}
-		if msgs[0].Content != "hello" {
-			t.Errorf("expected first message 'hello', got %q", msgs[0].Content)
-		}
-		if msgs[1].Content != "hi there" {
-			t.Errorf("expected second message 'hi there', got %q", msgs[1].Content)
-		}
-		if msgs[2].Content != "how are you?" {
-			t.Errorf("expected third message 'how are you?', got %q", msgs[2].Content)
-		}
-	})
-
-	t.Run("get with limit", func(t *testing.T) {
-		msgs := s.Get("feishu", "chat1", 2)
-		if len(msgs) != 2 {
-			t.Fatalf("expected 2 messages with limit=2, got %d", len(msgs))
-		}
-		// Should return the most recent 2
-		if msgs[0].Content != "hi there" {
-			t.Errorf("expected first of limited 'hi there', got %q", msgs[0].Content)
-		}
-		if msgs[1].Content != "how are you?" {
-			t.Errorf("expected second of limited 'how are you?', got %q", msgs[1].Content)
-		}
-	})
-
-	t.Run("get from non-existent channel returns nil", func(t *testing.T) {
-		msgs := s.Get("feishu", "nonexistent", 10)
-		if msgs != nil {
-			t.Errorf("expected nil for non-existent channel, got %v", msgs)
-		}
-	})
-
-	t.Run("limit exceeds total returns all", func(t *testing.T) {
-		msgs := s.Get("feishu", "chat1", 100)
-		if len(msgs) != 3 {
-			t.Errorf("expected 3 messages with large limit, got %d", len(msgs))
-		}
-	})
-}
-
-func TestChatHistoryStore_MaxSize(t *testing.T) {
-	s := NewChatHistoryStore(5)
-
-	// Add 8 messages
-	for i := 0; i < 8; i++ {
-		s.Add("feishu", "chat1", "user1", time.Now().Format("msg_"+string(rune('A'+i))))
+	}
+	if strings.Contains(out, "tool noise") {
+		t.Fatalf("tool 行不该出现在对话历史里：\n%s", out)
 	}
 
-	msgs := s.Get("feishu", "chat1", 0)
-	if len(msgs) != 5 {
-		t.Fatalf("expected maxSize 5 messages, got %d", len(msgs))
+	// limit 生效：只要最近 1 条对话消息。
+	res, err = tool.Execute(ctx, `{"limit": 1}`)
+	if err != nil {
+		t.Fatalf("execute limit=1: %v", err)
 	}
-}
-
-func TestChatHistoryStore_ReturnsCopy(t *testing.T) {
-	s := NewChatHistoryStore(10)
-	s.Add("feishu", "chat1", "user1", "original")
-
-	msgs := s.Get("feishu", "chat1", 0)
-	msgs[0].Content = "modified"
-
-	// Original should not be affected
-	msgs2 := s.Get("feishu", "chat1", 0)
-	if msgs2[0].Content != "original" {
-		t.Errorf("Get() should return a copy; modifying returned slice affected original")
-	}
-}
-
-func TestChatHistoryStore_MultipleChannels(t *testing.T) {
-	s := NewChatHistoryStore(10)
-
-	s.Add("feishu", "chat1", "user1", "feishu message")
-	s.Add("onebot", "chat1", "user1", "onebot message")
-
-	feishuMsgs := s.Get("feishu", "chat1", 0)
-	onebotMsgs := s.Get("onebot", "chat1", 0)
-
-	if len(feishuMsgs) != 1 || feishuMsgs[0].Content != "feishu message" {
-		t.Errorf("feishu channel: expected 1 message 'feishu message', got %d: %v", len(feishuMsgs), feishuMsgs)
-	}
-	if len(onebotMsgs) != 1 || onebotMsgs[0].Content != "onebot message" {
-		t.Errorf("onebot channel: expected 1 message 'onebot message', got %d: %v", len(onebotMsgs), onebotMsgs)
-	}
-}
-
-func TestChatHistoryStore_ConcurrentAccess(t *testing.T) {
-	s := NewChatHistoryStore(100)
-	var wg sync.WaitGroup
-
-	// Concurrently add messages
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			s.Add("feishu", "chat1", "user1", "concurrent")
-		}(i)
+	if strings.Count(res.Summary, "<") != 1 || !strings.Contains(res.Summary, "888") {
+		t.Fatalf("limit=1 应只返回最后一条对话消息：\n%s", res.Summary)
 	}
 
-	// Concurrently read messages
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			_ = s.Get("feishu", "chat1", 10)
-		}(i)
+	// 关键回归：回溯到"第二句 888"→ DB 里它（及之后）被物理删除 → 工具必须立即读不到。
+	if _, _, err := sess.RewindToHistoryID(tenantID, id2); err != nil {
+		t.Fatalf("rewind: %v", err)
+	}
+	res, err = tool.Execute(ctx, `{"limit": 10}`)
+	if err != nil {
+		t.Fatalf("execute after rewind: %v", err)
+	}
+	if strings.Contains(res.Summary, "888") {
+		t.Fatalf("回溯后仍能捞到被截断的消息（第二份副本没清干净）：\n%s", res.Summary)
+	}
+	if !strings.Contains(res.Summary, "777") {
+		t.Fatalf("回溯只应截断其后的消息，777 应保留：\n%s", res.Summary)
 	}
 
-	wg.Wait()
-
-	msgs := s.Get("feishu", "chat1", 0)
-	if len(msgs) != 50 {
-		t.Errorf("expected 50 messages after concurrent adds, got %d", len(msgs))
+	// 无会话上下文时给出明确结果（而不是静默返回历史）。
+	res, err = tool.Execute(&ToolContext{}, `{"limit": 5}`)
+	if err != nil {
+		t.Fatalf("execute without ctx: %v", err)
 	}
-}
-
-func TestChatHistoryStore_EvictOldest(t *testing.T) {
-	// Fill up to defaultMaxChannels (10000) to trigger eviction.
-	// Each iteration creates a unique channel to ensure the history map grows.
-	s := NewChatHistoryStore(10)
-
-	for i := 0; i < defaultMaxChannels+100; i++ {
-		s.Add("feishu", fmt.Sprintf("chat_evict_%d", i), "user1", "msg")
-	}
-
-	// The very last channel added should still exist (it was just created)
-	msgs := s.Get("feishu", fmt.Sprintf("chat_evict_%d", defaultMaxChannels+50), 0)
-	if len(msgs) == 0 {
-		t.Error("expected messages in recently added channel after eviction")
-	}
-
-	// After adding defaultMaxChannels+100 channels, eviction should have
-	// reduced the map to at most defaultMaxChannels. We can't assert which
-	// specific channel was evicted because time.Now() precision varies
-	// across platforms (Windows ~15ms, Linux ~1µs) and eviction is time-based.
-	// Instead, verify the size invariant holds.
-	s.mu.RLock()
-	count := len(s.history)
-	s.mu.RUnlock()
-	if count > defaultMaxChannels {
-		t.Errorf("expected at most %d channels after eviction, got %d", defaultMaxChannels, count)
-	}
-
-	// Some channels should have been evicted — not all 10100 can fit
-	evicted := (defaultMaxChannels + 100) - count
-	if evicted < 1 {
-		t.Error("expected at least 1 channel to be evicted")
-	}
-}
-
-func TestChatMessage_Fields(t *testing.T) {
-	msg := ChatMessage{
-		Content:   "test content",
-		SenderID:  "user123",
-		Timestamp: time.Now(),
-	}
-
-	if msg.Content != "test content" {
-		t.Errorf("expected Content 'test content', got %q", msg.Content)
-	}
-	if msg.SenderID != "user123" {
-		t.Errorf("expected SenderID 'user123', got %q", msg.SenderID)
-	}
-	if msg.Timestamp.IsZero() {
-		t.Error("expected non-zero Timestamp")
+	if !strings.Contains(res.Summary, "No active conversation context") {
+		t.Fatalf("缺少会话上下文时应明确说明：%q", res.Summary)
 	}
 }

@@ -53,6 +53,12 @@ type ToolContext struct {
 	RecallTimeRange vectordb.RecallTimeRangeFunc // 时间范围会话历史搜索
 	ToolIndexer     memory.ToolIndexer           // 工具索引服务（Letta 模式下可用）
 
+	// SessionSvc 会话历史服务（session_messages 的权威读取路径，Replay 出当前视图）。
+	// 工具只能读它，**绝不另存一份会话内容副本** —— 回溯（RewindToHistoryID）/
+	// 清空（Clear）截断 DB 后必须天然生效（ChatHistory 工具曾用进程内 ring 存第二份，
+	// 回溯后仍能读到被截断的消息）。
+	SessionSvc *sqlite.SessionService
+
 	// MemoryProvider is the generic memory provider instance.
 	// Tools access provider-specific methods via type assertion:
 	//   xm, ok := ctx.MemoryProvider.(*xbotmemory.XbotMemory)
