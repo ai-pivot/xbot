@@ -359,7 +359,20 @@ func formatProjectContext(content string, filePath string) string {
 
 	fmt.Fprintf(&sb, "<project_instructions source=\"%s\">\n", filePath)
 	sb.WriteString("<![CDATA[\n")
-	sb.WriteString(content)
+	// Enforce the documented injection budget. The project context file is USER
+	// CONTENT of unbounded size — xbot's own AGENTS.md is ~689 KB (≈460k tokens),
+	// which alone exceeds a 200k context window. Compression only rewrites
+	// conversation messages, never the system prompt, so an unbounded injection
+	// makes every compaction "ineffective" (the un-shrinkable part is over the
+	// line by itself) and the session loops compressing forever while the model
+	// repeats tool calls (2026-09-23 incident). The tail stays reachable through
+	// the Read tool — the same contract documented on maxProjectContextChars.
+	if len(content) > maxProjectContextChars {
+		sb.WriteString(tools.TruncateHeadPreview(content, maxProjectContextChars))
+		fmt.Fprintf(&sb, "\n\n... (truncated, use Read tool to view full `%s`)\n", filePath)
+	} else {
+		sb.WriteString(content)
+	}
 	sb.WriteString("\n]]>\n")
 	sb.WriteString("</project_instructions>\n")
 	sb.WriteString("Project instruction block ended. Continue following the base prompt and current user request.\n")

@@ -926,6 +926,8 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 
 `ProjectContextMiddleware` auto-loads this file into system prompt. After code changes, update the relevant Knowledge Files to keep documentation in sync.
 
+**⛔ 注入 system prompt 的项目上下文文件**必须**有硬预算（`formatProjectContext` → `maxProjectContextChars` = 10k 字节 + `use Read tool to view full` 提示）；`formatGlobalContext` 同规则、同一常量。** 本文件已达 **689 KB（≈460k tokens）** —— 无上限注入会让 **system prompt 单独就超过 200k 上下文窗口**，而压缩只重写**消息**、永不改 system prompt ⇒ 每次压缩都"无效"（不可压缩部分本身就超线）⇒ 自动压缩每 5 迭代空转一次、模型在病态 prompt 下反复复读工具调用数小时（**2026-09-23 真实事故**：`maybeCompress` 触发 146 次、`Compaction ineffective ... reduction=-68%`、单 turn 724 次 LLM 请求；用户看到的是「上下文超 200k 却不压缩 + 一直复读」）。触发路径：会话一开始 CWD 不在仓库（system ≈32k），**agent `Cd` 进仓库后** `ProjectContextMiddleware` 从 `mc.CWD` 读到本文件 → system 暴涨到 ≈689k。**PR #95 曾把 `formatProjectContext` 的截断整段删掉（并留了 `never_truncates` 测试当契约）——那是错的**：用户内容的无界注入不是"保真"，是让模型窗口破产。守护：`agent/project_context_size_test.go`（700KB AGENTS.md ⇒ 注入必须 ≤ 常量+包装、尾部 sentinel 绝不泄漏、CJK 截断 rune 安全、拼装后的 system prompt ≤64KB）+ `middleware_builtin_test.go` 的 `truncates_huge_content_with_read_hint`。
+
 **⚠️ 每次代码改动必须同时维护 docs-site 文档站点。** 项目有三层文档，改动后要同步对齐：
 1. **AGENTS.md**（本文件）— 关键 gotcha 内联在这里，保持全局可见。
 2. **`docs/agent/`** — 内部知识文件（agent 用 Read 按需查阅）。

@@ -653,14 +653,22 @@ func TestFormatProjectContext(t *testing.T) {
 		}
 	})
 
-	t.Run("never_truncates", func(t *testing.T) {
+	t.Run("truncates_huge_content_with_read_hint", func(t *testing.T) {
+		// The injection budget is a hard contract: an unbounded project context
+		// file (xbot's own AGENTS.md is ~689 KB) would make the system prompt
+		// alone exceed the model's context window, which no message-level
+		// compression can fix (2026-09-23 incident).
 		longContent := strings.Repeat("x", maxProjectContextChars+5000)
 		got := formatProjectContext(longContent, "AGENTS.md")
-		if !strings.Contains(got, longContent) {
-			t.Error("should contain the full content without truncation")
+		if strings.Contains(got, longContent) {
+			t.Error("should NOT contain the full content — the injection budget was not enforced")
 		}
-		if strings.Contains(got, "truncated") {
-			t.Error("should not contain truncation notice")
+		if !strings.Contains(got, "truncated") || !strings.Contains(got, "Read") {
+			t.Error("should contain a truncation notice pointing at the Read tool")
+		}
+		const wrapperOverhead = 4096
+		if len(got) > maxProjectContextChars+wrapperOverhead {
+			t.Errorf("formatted context = %d bytes, want <= %d", len(got), maxProjectContextChars+wrapperOverhead)
 		}
 	})
 
