@@ -143,6 +143,15 @@ const EditorLink = Link.extend({
 })
 
 /** Select the word at the cursor (used by Ctrl/Cmd+K with an empty selection). */
+/**
+ * 编辑器当前内容的 markdown 快照（Markdown 扩展缺失时退回纯文本）。
+ * 用于「内容真的不同才 setContent」判据 —— setContent 一律派发事务，
+ * 触发编辑器事件监听器的 setState（见 draft effect 的 #185 注释）。
+ */
+function editorMarkdown(editor: Editor): string {
+  return (editor.storage as unknown as { markdown?: { getMarkdown?: () => string } }).markdown?.getMarkdown?.() ?? editor.getText()
+}
+
 function selectWordAtCursor(editor: Editor): boolean {
   const { selection } = editor.state
   const { $from } = selection
@@ -218,6 +227,11 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   const saveDraftTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   // Latest content ref — updated on every onUpdate, used for unmount flush
   const latestContentRef = useRef('')
+  // Latest onDraftConsumed —— **只经 ref 现读**（绝不进 effect deps；原因见下方
+  // draft effect 的注释：父组件内联箭头会让 effect 每次渲染重跑 → commit 期派发
+  // 事务 → 编辑器事件监听器 setState → React #185）。
+  const onDraftConsumedRef = useRef(onDraftConsumed)
+  onDraftConsumedRef.current = onDraftConsumed
   // Keep editor ref for unmount flush (editor may be destroyed by useEditor cleanup)
   const editorRef = useRef<Editor | null>(null)
 
@@ -438,11 +452,21 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   submitRef.current = submit
 
   // --- Draft prop changes (external session switch) ---
+  //
+  // ⛔ 两个不变量（2026-09-24 React #185「Maximum update depth exceeded」根治）：
+  //  ① `onDraftConsumed` **只经 ref 现读、绝不进 deps**：父组件习惯传内联箭头
+  //     （`onDraftConsumed={() => setDraft(undefined)}`），它每次渲染都换身份 ⇒
+  //     这个 effect 会**每次渲染都重跑**；
+  //  ② **内容相同就不 setContent**：`setContent` 一律派发事务，会触发编辑器事件
+  //     监听器里的 setState（`useCompletion` 的 update 等）⇒ 在 commit 期形成
+  //     「渲染 → 派发 → setState → 渲染」闭环，叠上高频输入（语音输入）即崩。
   useEffect(() => {
     if (draft === undefined || !editor) return
-    editor.commands.setContent(draft)
-    onDraftConsumed?.()
-  }, [draft, onDraftConsumed, editor])
+    if (editorMarkdown(editor) !== draft) {
+      editor.commands.setContent(draft)
+    }
+    onDraftConsumedRef.current?.()
+  }, [draft, editor])
 
   // --- chatInputBridge: let file explorer inject text ---
   useEffect(() => {
@@ -461,11 +485,14 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
     if (!editor) return
     const ext = editor.extensionManager.extensions.find(e => e.name === 'placeholder')
     if (ext) {
+      const changed = ext.options.placeholder !== placeholderText
       ext.options.placeholder = placeholderText
-    }
-    // Force placeholder re-evaluation if editor is empty
-    if (editor.isEmpty) {
-      editor.view.dispatch(editor.view.state.tr)
+      // ⛔ 只在 placeholder 文案**真的变了**、且编辑器为空时补派一次空事务让占位符
+      // 重新求值 —— 不给每次渲染都派发（派发发生在 commit 期，会和编辑器事件监听器
+      // 的 setState 组成嵌套更新链，见 draft effect 的 #185 注释）。
+      if (changed && editor.isEmpty) {
+        editor.view.dispatch(editor.view.state.tr)
+      }
     }
   }, [placeholderText, editor])
 

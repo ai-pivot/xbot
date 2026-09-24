@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import { fetchCommands } from '@/components/agent/api'
+import { frameScheduler } from '@/lib/frameScheduler'
 import type { WSConnection } from '@/types/ws'
 import { postAPI } from '@/lib/api'
 
@@ -174,18 +175,43 @@ export function useCompletion({
   }, [ws])
 
   // Subscribe to editor updates to track text content + cursor position changes.
+  //
+  // ⛔ 绝不在编辑器事件回调里**同步 setState**（2026-09-24 生产崩溃 React #185
+  // "Maximum update depth exceeded" 根治）。ProseMirror 的事务派发可能发生在
+  // **React commit 期**（layout/passive effect 里调 `editor.commands.*`），此时监听器
+  // 里的同步 setState 会被 React 计为**嵌套更新**；而旧实现拼出的
+  // `getText()+':'+selection.from` **每次都是新字符串** ⇒ React 永不短路 ⇒ 每个按键 /
+  // 每次光标移动都强制重渲染。高频输入（语音输入）把嵌套计数推过 50 ⇒ #185
+  // （崩溃栈：`dispatchTransaction → emit → forEach → update@useCompletion`，
+  // bundle 坐标 `index-CxWS9lE3.js:58:424` 精确对应旧 `update` 闭包）。
+  //
+  // 现在：事件里**只标脏 + 排一次帧**（与全站共用 `frameScheduler`，每帧至多一次），
+  // 真正的 setState 发生在帧内，且值未变时短路（引用不变 ⇒ 不通知）。
+  const textRef = useRef('')
   useEffect(() => {
     if (!editor) return
-    const update = () => {
-      setTextContent(editor.getText() + ':' + editor.state.selection.from)
+    let pending = false
+    const flush = () => {
+      pending = false
+      const next = editor.getText() + ':' + editor.state.selection.from
+      if (next === textRef.current) return
+      textRef.current = next
+      setTextContent(next)
     }
-    editor.on('update', update)
-    editor.on('selectionUpdate', update)
-    // Initial trigger
-    update()
+    const onEditorEvent = () => {
+      if (pending) return
+      pending = true
+      frameScheduler.schedule(flush)
+    }
+    editor.on('update', onEditorEvent)
+    editor.on('selectionUpdate', onEditorEvent)
+    // Initial trigger（同样走帧，不在挂载期同步 setState）
+    onEditorEvent()
     return () => {
-      editor.off('update', update)
-      editor.off('selectionUpdate', update)
+      pending = false
+      frameScheduler.cancel(flush)
+      editor.off('update', onEditorEvent)
+      editor.off('selectionUpdate', onEditorEvent)
     }
   }, [editor])
 
