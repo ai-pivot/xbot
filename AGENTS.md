@@ -142,6 +142,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-agent-core.md` — Web 端 LLM 配置必须「两边数据统一」：设置里改完，会话 LLM 选择栏必须立刻更新（用户报告 2026-09-16：「设置里添加/更新 LLM 之后，当前会话的 llm 选择栏不更新，需要刷新」）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — 会话模型绑定永不留空 + 单 operator user_default_model 兜底（2026-09-07 "模型漂移 + 显示 1M 但 200k 触发压缩"根治）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — 估算 token 禁止做决策（2026-09-02 用户指令，全局原则——Development Principles "Never Estimate Tokens" 条目）。
+- ⛔ `docs/agent/gotchas-agent-core.md` — v55+ 回复文本回填（`fillAssistantContentFromIterations`）只能补「该 turn 的收尾回复行」：按 turn 补所有 `content==''` 的 assistant 消息 = 把该 turn 最终回复复制进它的每条无正文迭代 ⇒ 上下文暴涨 + 模型**复读上一 turn 的回复**（2026-09-24 用户报告「上一个迭代结束的 Content 在下一个 turn 的某一个迭代中莫名其妙重复一次」；DB 实证 turn 48 最终迭代 == turn 49 第 2 迭代 byte-identical，prompt_chars 432,095 → 801,870）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — 压缩失败【绝不允许】终止用户的 turn（2026-09-15 用户报告「自动压缩 / 主动压缩（compact_context）导致迭代终止」根治）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — xbot-memory 的 LLM 调用必须流式（`m.generateLLM`，2026-08-30 "PostCompress 卡 10 分钟"修复）——三个调用点（updateCoreSummary/generateSessionSummary/extractAtomicMemories）曾直调 `llmClient.Generate`（非流式）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — xbot-memory 的 LLM client 必须参数化传递，禁止共享可变字段（2026-09-02 chat_BD94FA4BB469 事故修复）——`XbotMemory.llmClient/model` 共享字段已删除。

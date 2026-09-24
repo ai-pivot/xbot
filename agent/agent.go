@@ -4059,14 +4059,44 @@ func (a *Agent) processMessage(ctx context.Context, msg bus.InboundMessage) (*ch
 
 // buildPrompt 构建完整的 LLM 消息列表（共用逻辑：processMessage 和 handlePromptQuery 都调用）。
 // 使用 Agent 持有的 pipeline 实例，通过 MessageContext.Extra 传递动态数据。
-// fillAssistantContentFromIterations 为 content 空的 assistant 消息补充迭代内容
+// fillAssistantContentFromIterations 恢复每个 turn 的**最终回复文本**
 // （LLM 上下文构建用）。v55+ 数据模型：assistant 回复不写 session_messages.content
 // （msg 是 iter 组成的集合），回复文本在 iteration_history 的最终迭代。
-// 迭代 content 是权威数据源，没有才 fallback 到 msg.content（旧数据不受影响）。
+//
+// ⛔ 只补该 turn 的**最后一条消息**（= handleRunOutput 写入的最终回复占位行，
+// content 被刻意清空，且它是该 turn 的收尾行）—— 这是唯一一个"content 空但
+// 本该有文本"的 assistant 消息。中间迭代的 assistant 消息 content 为空是
+// **模型真实输出**（只调工具 / 只思考，没有正文），是忠实数据，必须保持空：
+// 拿「该 turn 最后一个迭代的 content」去填它们，等于把该 turn 的最终回复复制
+// 进每一条空消息 ⇒ ① LLM 上下文暴涨（2026-09-24 事故：tenant 229007 turn 48
+// 有 88 条无正文迭代，turn 49 首个请求 prompt_chars 432,095 → 801,870，
+// ~110k token 全是同一段回复的副本，且前缀缓存整段失效）；② 模型看到自己的
+// 历史里塞满了同一段话，紧接着新 user 消息 ⇒ 新 turn 复读上一 turn 的回复
+// （用户报告「上一个迭代结束的 Content 在下一个 turn 的某一个迭代中莫名其妙
+// 重复一次」，DB 实证 turn 48 最终迭代 == turn 49 第 2 迭代，byte-identical）。
 func (a *Agent) fillAssistantContentFromIterations(msgs []llm.ChatMessage, tenantSession *session.TenantSession) {
+	// 收集每个 turn 的收尾 assistant 行 → turn id。
+	finalReply := make(map[int]uint64) // msgs 下标 → turn id
 	var turnIDs []uint64
-	for _, m := range msgs {
-		if m.Role == "assistant" && m.Content == "" && m.TurnID > 0 {
+	seen := make(map[uint64]bool)
+	for i := range msgs {
+		if msgs[i].TurnID == 0 {
+			continue
+		}
+		// 只看该 turn 的最后一条消息（后面还有同 turn 的消息 ⇒ 不是收尾行）。
+		if i+1 < len(msgs) && msgs[i+1].TurnID == msgs[i].TurnID {
+			continue
+		}
+		m := msgs[i]
+		// 收尾行必须是「无正文、无 tool_calls 的 assistant」：
+		// - 有 tool_calls / 有正文 ⇒ 是迭代行或 [interrupted]，各自有自己的文本
+		// - 最后一条是 tool 行 ⇒ 该 turn 还没写回复占位行（进行中 / 工具收尾）
+		if m.Role != "assistant" || m.Content != "" || len(m.ToolCalls) != 0 {
+			continue
+		}
+		finalReply[i] = m.TurnID
+		if !seen[m.TurnID] {
+			seen[m.TurnID] = true
 			turnIDs = append(turnIDs, m.TurnID)
 		}
 	}
@@ -4077,19 +4107,15 @@ func (a *Agent) fillAssistantContentFromIterations(msgs []llm.ChatMessage, tenan
 	if err != nil {
 		return // 补充失败：保持 content 空（前端/CLI 从迭代取）
 	}
-	for i := range msgs {
-		m := &msgs[i]
-		if m.Role != "assistant" || m.Content != "" || m.TurnID == 0 {
-			continue
-		}
-		iterRecs, ok := recs[m.TurnID]
+	for i, turnID := range finalReply {
+		iterRecs, ok := recs[turnID]
 		if !ok || len(iterRecs) == 0 {
 			continue
 		}
 		// 最终迭代的 content 就是该 turn 的回复文本（最后回复 = 最终 iter）
 		last := iterRecs[len(iterRecs)-1]
 		if last.Content != "" {
-			m.Content = last.Content
+			msgs[i].Content = last.Content
 		}
 	}
 }
