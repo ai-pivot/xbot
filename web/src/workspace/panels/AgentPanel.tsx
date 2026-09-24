@@ -69,6 +69,10 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const { t } = useI18n()
   const { enabled: devMode } = useDeveloperMode()
   const [draft, setDraft] = useState<string | undefined>(undefined)
+  // ⛔ 必须稳定身份：MessageInput 的 draft effect 会消费它（2026-09-24 React #185
+  // 根治）——传内联箭头会让那个 effect 每次渲染重跑 ⇒ commit 期派发事务 ⇒ 编辑器
+  // 事件监听器 setState ⇒ 嵌套更新爆表（语音输入等高频输入下必崩）。
+  const consumeDraft = useCallback(() => setDraft(undefined), [])
   const [followResetToken, setFollowResetToken] = useState(0)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [interruptMode, setInterruptMode] = useState(false)
@@ -1063,7 +1067,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
             ) : null
           }
           draft={draft}
-          onDraftConsumed={() => setDraft(undefined)}
+          onDraftConsumed={consumeDraft}
           sessionKey={`${messageChannel}:${chatID ?? ''}`}
         />
       )}
