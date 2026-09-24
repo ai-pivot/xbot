@@ -7,6 +7,9 @@
 - **⛔ 禁止直接 push 主分支（用户明确要求，2026-09-10；违反会被严厉批评）。** 任何改动一律走 **分支 + Pull Request**：
   `git checkout -b <fix|feat|chore>/<slug>` → commit → `git push origin <branch>` → `gh pr create --base master`。
   **绝不允许 `git push origin master`**（历史事故：agent 连续多轮直接 push master，绕过 review 与 CI 门禁）。合并交给用户/CI，agent 的职责是开 PR 并**确保 CI 全绿**。
+- **⛔ 分支 / PR 纪律（用户明确要求，2026-09-24；违反会被严厉批评）：**
+  - **开新分支、开 PR、合并 —— 必须先问用户**，没说就绝不动。一次任务**只开一个 PR**；修完一个 bug 后发现新问题（哪怕同会话、哪怕修好了）也**先停下来汇报**，等用户说"开 PR / 修掉它"再动 —— 2026-09-24 事故：用户只让排查"React #185 是什么"，agent 修完直接开了第二个 PR（#411），被用户严厉批评。
+  - **Commit / Push 不用问**：只要不在 master，**已开分支上随便 commit、随便 push**（问"要不要 commit/push"是浪费用户时间）。需要请示的只有三件事：**开新分支、开 PR、合并**。
 - Entry points: `cmd/xbot-cli/` (CLI), `cmd/runner/` (remote sandbox), `cmd/xbot/` (server)
 - Build: `go build ./...` | Test: `go test ./...` | Lint: `golangci-lint run ./...`
 - Config: `~/.xbot/config.json`, env var overrides
