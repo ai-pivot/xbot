@@ -117,6 +117,53 @@ function rowMemoryKey(row: ChatMessage, index: number): string {
   return row.id ?? `row-${index}`
 }
 
+/**
+ * 重复行键诊断（每键只报一次 —— derive 每帧调用，Set 去重防刷屏）。
+ * 出现重复键 = 渲染层给了同一 (turnID, role) 两行（如 bindTurnIDs 把 turn_id=0 的
+ * legacy 行绑到已有同 role 行的 turn）—— 本身是要修的渲染 bug，但绝不允许它
+ * 升级成 React #185 崩溃（见 buildUniqueRowKeys）。
+ */
+const dupKeyReported = new Set<string>()
+
+/**
+ * ⛔ 虚拟列表行键必须**全表唯一**（2026-09-24 生产崩溃根治：React #185
+ * "Maximum update depth exceeded"）。
+ *
+ * TanStack Virtual 的 `itemSizeCache` 按 `getItemKey` 的键记账：两行共享同一个键时，
+ * `resizeItem(i₁,h₁)` 与 `resizeItem(i₂,h₂)` 互相覆盖对方的记账 ⇒ 每轮
+ * `flushMeasure`（layout effect，每 commit 必跑）都 delta≠0 ⇒ `notify` ⇒ React
+ * adapter `rerender()` ⇒ 嵌套 commit ⇒ layout effect 再跑 flushMeasure …… 50 层
+ * 后 React 抛 #185（复现：`virtualizer_duplicate_key_loop.test.ts` —— 高度完全
+ * 不变，notify 却每轮递增）。
+ *
+ * 键规则保持既有语义：`turn-${turnID}-${role}`（live→committed 复用同一元素不
+ * 重挂 —— 首个出现者保留规范键）；**重复出现**的同键行加 `#dup${n}` 后缀 ——
+ * 它们本身是渲染层的重复行 bug（同一 turn 两行同 role），后缀只保证不崩溃 +
+ * 诊断日志暴露源头（`[DUPROWKEY]`），修源头看这个日志。
+ */
+export function buildUniqueRowKeys(rows: readonly ChatMessage[]): string[] {
+  const seen = new Map<string, number>()
+  const keys = new Array<string>(rows.length)
+  for (let i = 0; i < rows.length; i++) {
+    const key = rowMemoryKey(rows[i], i)
+    const n = seen.get(key) ?? 0
+    seen.set(key, n + 1)
+    if (n === 0) {
+      keys[i] = key
+    } else {
+      keys[i] = `${key}#dup${n}`
+      if (!dupKeyReported.has(key)) {
+        dupKeyReported.add(key)
+        console.warn(
+          '[DUPROWKEY] duplicate virtualizer row key — two rows share (turnID, role); the 2nd+ got a #dup suffix to avoid React #185 (resizeItem oscillation). Fix the row source:',
+          { key, index: i, turnID: rows[i].turnID, role: rows[i].role, id: rows[i].id },
+        )
+      }
+    }
+  }
+  return keys
+}
+
 /** 首次访问（无记忆）时的内容感知估算：量级正确即可，精度由实测修正。 */
 /**
  * 行高估算 —— **按 row 对象记忆化**（WeakMap）。
@@ -425,6 +472,10 @@ export const MessageList = memo(function MessageList({
     () => orderMessageRows(bindTurnIDs(messages)),
     [messages],
   )
+  // ⛔ 虚拟列表行键必须全表唯一（2026-09-24 生产崩溃 React #185 根治）：两行共享
+  // 同一个 getItemKey 键时，TanStack 的 itemSizeCache 互相覆盖 ⇒ resizeItem 每轮
+  // delta≠0 ⇒ notify ⇒ 无限嵌套重渲染（50 层后 #185）。见 buildUniqueRowKeys。
+  const rowKeys = useMemo(() => buildUniqueRowKeys(rows), [rows])
   /** 供 useLayoutEffect 的依赖用（`rows` 每帧换引用，只关心"有没有行"）。 */
   const rowsEmpty = rows.length === 0
   // Latest-rows ref: closures (IntersectionObserver, loadMore anchor restore)
@@ -637,18 +688,12 @@ export const MessageList = memo(function MessageList({
     // noDegenerateMeasureElement）——否则隐藏期间所有行塌成 0 高，返回时多挂 14 行。
     measureElement: measureRow,
     getItemKey: (index) => {
-      const r = rows[index]
-      if (!r) return `row-${index}`
-      // 稳定 turn 键：assistant 行 live→committed 使用同一个 turnID+role（live 行
-      // id="turn-N-live"、committed 行 id=assistant.id）—— 若用 row.id，提交瞬间
-      // item.key 改变 → TanStack 整行 <div key> 卸载重建（"agent turn 结束后整个
-      // turn DOM 重建"根因）。keying 用 turnID+role 让行在 live→committed 间保持
-      // 挂载，内容由 React reconcile（不 remount）。legacy（turnID=0）与 pending
-      // 用户行（MAX_SAFE_INTEGER，绑定真实 turn 前）回退 row.id。
-      if (r.turnID > 0 && r.turnID < Number.MAX_SAFE_INTEGER) {
-        return `turn-${r.turnID}-${r.role}`
-      }
-      return r.id ?? `row-${index}`
+      // ⛔ 键必须全表唯一（buildUniqueRowKeys）：两行共享同一个键时 TanStack 的
+      // itemSizeCache 互相覆盖 ⇒ resizeItem 每轮 delta≠0 ⇒ notify ⇒ 无限嵌套重渲染
+      // （React #185，2026-09-24 生产崩溃；复现 virtualizer_duplicate_key_loop.test.ts）。
+      // 首个出现者保留规范键 `turn-${turnID}-${role}`（live→committed 复用同一元素
+      // 不重挂的既有设计不变），重复行加 #dup 后缀 + [DUPROWKEY] 诊断日志暴露源头。
+      return rowKeys[index] ?? `row-${index}`
     },
   })
 

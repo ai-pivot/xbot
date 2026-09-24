@@ -7,6 +7,9 @@
 - **⛔ 禁止直接 push 主分支（用户明确要求，2026-09-10；违反会被严厉批评）。** 任何改动一律走 **分支 + Pull Request**：
   `git checkout -b <fix|feat|chore>/<slug>` → commit → `git push origin <branch>` → `gh pr create --base master`。
   **绝不允许 `git push origin master`**（历史事故：agent 连续多轮直接 push master，绕过 review 与 CI 门禁）。合并交给用户/CI，agent 的职责是开 PR 并**确保 CI 全绿**。
+- **⛔ 分支 / PR 纪律（用户明确要求，2026-09-24；违反会被严厉批评）：**
+  - **开新分支、开 PR、合并 —— 必须先问用户**，没说就绝不动。一次任务**只开一个 PR**；修完一个 bug 后发现新问题（哪怕同会话、哪怕修好了）也**先停下来汇报**，等用户说"开 PR / 修掉它"再动 —— 2026-09-24 事故：用户只让排查"React #185 是什么"，agent 修完直接开了第二个 PR（#411），被用户严厉批评。
+  - **Commit / Push 不用问**：只要不在 master，**已开分支上随便 commit、随便 push**（问"要不要 commit/push"是浪费用户时间）。需要请示的只有三件事：**开新分支、开 PR、合并**。
 - Entry points: `cmd/xbot-cli/` (CLI), `cmd/runner/` (remote sandbox), `cmd/xbot/` (server)
 - Build: `go build ./...` | Test: `go test ./...` | Lint: `golangci-lint run ./...`
 - Config: `~/.xbot/config.json`, env var overrides
@@ -104,6 +107,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 迭代块禁止用 `content-visibility` 做离屏跳过（2026-09-13 用户报告「向上快速滚动鬼打墙，看起来一直在滚其实几乎一点没动，永远到不了最上方」；
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 窗口化状态的身份必须是「内容」而不是「组件实例」，且「没有布局的测量」永不是测量（2026-09-13「手机上 iter 多了就卡 / 开侧边栏慢 5-6 倍」真正根因根治）。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 追加行必须「权威重测」虚拟列表（2026-09-17 用户报告「`!pwd` 输出看不见」的真正最后一环，纯前端）。
+- ⛔ `docs/agent/gotchas-web-frontend.md` — 虚拟列表行键必须全表唯一（`buildUniqueRowKeys`，2026-09-24 生产崩溃 React #185 根治）：两行共享同一个 `getItemKey` 键（`turn-${turnID}-${role}`）→ TanStack `itemSizeCache` 互覆 → `resizeItem` 每轮 delta≠0 → notify → 无限嵌套重渲染（50 层后 #185）。复现 `virtualizer_duplicate_key_loop.test.ts`；重复行加 `#dup` 后缀 + `[DUPROWKEY]` 诊断。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 命令（`!cmd`/slash）回复的前端渲染契约（2026-09-17 "发了没反应 / 消息消失" 三连根因）。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 判别式（discriminator）类改动必须有【真实链路】守护 —— E2E mock 不能作为唯一判据（2026-09-21 P0「`!cmd` 输出不显示」的根因与教训）。
 - ⛔ `docs/agent/gotchas-web-frontend.md` — 网页终端里"凭空出现"的乱码 = 终端探针的【应答被 PTY 回显】（2026-09-22 用户报告：`10;rgb:cccc/cccc/cccc11;rgb:1e1e/1e1e/1e1e12;2$y…;0c`）。
@@ -142,6 +146,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-agent-core.md` — Web 端 LLM 配置必须「两边数据统一」：设置里改完，会话 LLM 选择栏必须立刻更新（用户报告 2026-09-16：「设置里添加/更新 LLM 之后，当前会话的 llm 选择栏不更新，需要刷新」）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — 会话模型绑定永不留空 + 单 operator user_default_model 兜底（2026-09-07 "模型漂移 + 显示 1M 但 200k 触发压缩"根治）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — 估算 token 禁止做决策（2026-09-02 用户指令，全局原则——Development Principles "Never Estimate Tokens" 条目）。
+- ⛔ `docs/agent/gotchas-agent-core.md` — v55+ 回复文本回填（`fillAssistantContentFromIterations`）只能补「该 turn 的收尾回复行」：按 turn 补所有 `content==''` 的 assistant 消息 = 把该 turn 最终回复复制进它的每条无正文迭代 ⇒ 上下文暴涨 + 模型**复读上一 turn 的回复**（2026-09-24 用户报告「上一个迭代结束的 Content 在下一个 turn 的某一个迭代中莫名其妙重复一次」；DB 实证 turn 48 最终迭代 == turn 49 第 2 迭代 byte-identical，prompt_chars 432,095 → 801,870）。写路径契约（回复行 = turn 收尾行、content 空、无 tool_calls）由 `TestHandleRunOutput_ProducesReplyRowShapeTheFillReliesOn` 守护。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — 压缩失败【绝不允许】终止用户的 turn（2026-09-15 用户报告「自动压缩 / 主动压缩（compact_context）导致迭代终止」根治）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — xbot-memory 的 LLM 调用必须流式（`m.generateLLM`，2026-08-30 "PostCompress 卡 10 分钟"修复）——三个调用点（updateCoreSummary/generateSessionSummary/extractAtomicMemories）曾直调 `llmClient.Generate`（非流式）。
 - ⚠️ `docs/agent/gotchas-agent-core.md` — xbot-memory 的 LLM client 必须参数化传递，禁止共享可变字段（2026-09-02 chat_BD94FA4BB469 事故修复）——`XbotMemory.llmClient/model` 共享字段已删除。
