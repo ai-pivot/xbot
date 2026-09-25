@@ -19,6 +19,7 @@ prompt/           Go embed templates for system prompt construction
 event/            Event routing and trigger system
 cron/             Cron scheduler for timed tasks
 oauth/            OAuth 2.0 server and providers
+version/          Build version/commit info (ldflags-injected) + GitHub update check
 ```
 
 ## Message Flow
@@ -76,6 +77,34 @@ Two modes (`agent/engine_run.go`):
 | `Client` | `agent/client.go` | Unified RPC client: all methods = Transport.Call() |
 | `RunnerManager` | `runner/manager.go` | Runner CRUD, session binding, ResolveSession |
 | `ServerCore` | `serverapp/server_core.go` | Shared server core: Agent + RPCTable + Bus (local & remote) |
+
+## Build Version Info
+
+`version/version.go` defines package-level `Version` / `Commit` / `BuildTime` / `Channel`
+(defaults `"dev"` / `"unknown"` / `"unknown"` / `""`), injected at build time via
+`-ldflags -X xbot/version.*`; `Info()` formats `xbot <ver> (channel: <ch>, commit: <sha>, built: <ts>)`.
+
+- **Injection points**: `Makefile:19-21` (`VERSION=git describe --tags --always`, `CHANNEL` sed-normalized
+  to `stable`; `build` / `dev` / `install-cli` all pass LDFLAGS), `.github/workflows/release.yml` (prepare job
+  computes version/channel — nightly-YYYYMMDD[-sha] / release tag / beta-YYYYMMDD; every platform build job
+  injects), `Dockerfile:20` (Commit/BuildTime only — no Version/Channel), `scripts/pre-push:70-73`.
+  Bare `go build` / `go install` inject nothing → `"dev"`.
+- **Update check**: `version/check.go` `CheckUpdate` queries GitHub Releases (ai-pivot/xbot, falling back to
+  CjiW/xbot); stable channel only — dev/beta/nightly skip. The CLI TUI triggers it async via `CheckUpdateAsync`.
+  `FetchLatestRelease` / `IsNewer` are exported for `internal/selfupdate` (web update panel).
+- **Frontend version injection**: `web/vite.config.ts` `define.__BUILD_INFO__` = `{version, channel, commit,
+  buildTime}` — release CI passes `VITE_APP_VERSION`/`VITE_APP_CHANNEL` (same source as binary ldflags);
+  local builds fall back to `git rev-parse --short HEAD` + build timestamp so DEV builds still show a concrete
+  version. Consumed by `SettingsAbout.tsx` (About panel "frontend version" card).
+- **Web update/restart RPCs** (`serverapp/rpc_table.go` `registerSystemHandlers`, admin-gated):
+  `get_system_info` (backend version + runtime env + `managedBy` supervisor verdict), `check_update`
+  (GitHub Releases on the binary's channel, always returns a reason when skipped), `apply_update`
+  (download binary + web dist + plugins, checksum-verified, atomic binary swap — does NOT restart),
+  `restart_server` (systemd `systemctl --user restart` / launchd `kickstart` / SIGTERM self for manual
+  starts; fires ~800ms after the response so it flushes). Primitives live in `internal/selfupdate/`
+  (shared with `xbot-cli setup` — single download/verify/install implementation). The web About panel
+  (`SettingsAbout.tsx`) renders both versions, warns before restart when `managedBy == "none"` (manual
+  start → process exits and stays down), and polls `get_system_info` until the server returns.
 
 ## Subscription System
 
@@ -252,12 +281,16 @@ The `serverapp/` package:
 - `server.go` — `Run()` startup, channel registration, graceful shutdown
 - `rpc.go` — generic RPC dispatch helpers (`rpc0`, `rpc1`, `rpc1void`, etc.)
 - `rpc_table.go` — RPC method registry + auth helpers (`requireAdmin`, `ownOrAdmin`)
-- `rpc_*.go` — handler groups by domain (settings, llm, subscription, session, tasks)
+- `rpc_table.go` — handler groups by domain, as `register*Handlers` funcs in this
+  same file (settings, llm, subscription, session, task, admin, plugin, runner,
+  app, genui, channel-ops); wired together by `BuildRPCTable()` (`rpc_table.go:279`)
 - `callbacks.go` — shared Runner/Registry/LLM callback builders
 - `setting_handlers.go` — runtime setting registry for server-side effects
 
-Adding a new CLI RPC: define a typed handler method on `rpcContext` in the appropriate `rpc_*.go`,
-then register it with one line in `buildRPCTable()`. No switch-case to update.
+Adding a new RPC: register it in the appropriate `register*Handlers` func with one
+line (`t["method"] = rpc1(...)`). Per-request identity travels via `context.Context`
+(`RPCContext` holds only shared deps), and auth wrappers (`h.requireAdmin(...)`) are
+applied at registration time. No switch-case to update.
 
 ### Remote Connection
 

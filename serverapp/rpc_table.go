@@ -18,6 +18,7 @@ import (
 	"xbot/channel"
 	"xbot/channel/web"
 	"xbot/config"
+	"xbot/internal/selfupdate"
 	llm_pkg "xbot/llm"
 	log "xbot/logger"
 	"xbot/plugin"
@@ -285,6 +286,7 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerSessionHandlers(t, h)
 	registerTaskHandlers(t, h)
 	registerAdminHandlers(t, h)
+	registerSystemHandlers(t, h)
 	registerCommandHandlers(t, h)
 	registerPluginHandlers(t, h)
 	registerRunnerHandlers(t, h)
@@ -1936,6 +1938,59 @@ func registerAdminHandlers(t RPCTable, h *RPCContext) {
 		Username string `json:"username"`
 	}) error {
 		return web.DeleteWebUser(h.Ag.MultiSession().DB().Conn(), p.Username)
+	}))
+}
+
+// ── System info / update / restart RPCs (web About panel) ──
+
+// registerSystemHandlers exposes version info, update check/apply, and
+// service restart to the web About panel. All four are admin-gated: they
+// touch the running process (restart) or replace its binary (apply_update).
+func registerSystemHandlers(t RPCTable, h *RPCContext) {
+	// get_system_info: backend version + runtime environment. The frontend
+	// pairs this with its own build-time __BUILD_INFO__ to render both the
+	// backend and frontend version in the About panel.
+	t["get_system_info"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
+		return selfupdate.GetSystemInfo(), nil
+	}))
+
+	// check_update: query GitHub Releases for the latest version on the
+	// binary's channel. Always returns a result (skipped=true + reason when
+	// the check cannot run, e.g. dev build or network offline) so the UI can
+	// explain WHY instead of showing a bare error.
+	t["check_update"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
+		return selfupdate.CheckForUpdate(), nil
+	}))
+
+	// apply_update: download + install a release in-place (binary + web dist +
+	// built-in plugins), checksum-verified. Does NOT restart — the UI prompts
+	// the user to press the separate restart button afterwards.
+	t["apply_update"] = h.requireAdmin(rpc1(func(ctx context.Context, p struct {
+		Tag    string `json:"tag"`    // release tag from check_update (required)
+		Mirror string `json:"mirror"` // optional GitHub CDN mirror (GH_MIRROR)
+	}) (any, error) {
+		if p.Tag == "" {
+			return nil, fmt.Errorf("tag is required (run check_update first)")
+		}
+		res, err := selfupdate.ApplyUpdateWithTimeout(p.Tag, config.XbotHome(), p.Mirror)
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}))
+
+	// restart_server: trigger a service restart. Returns immediately with the
+	// supervision mode so the UI can warn BEFORE the connection drops:
+	//   managedBy=systemd/launchd → supervisor revives the process
+	//   managedBy=none           → process exits and stays down (manual start)
+	// The actual restart fires ~800ms later (goroutine) so this response
+	// flushes first.
+	t["restart_server"] = h.requireAdmin(rpc0err(func(ctx context.Context) (any, error) {
+		managedBy := selfupdate.DetectServiceManager()
+		if err := selfupdate.Restart(); err != nil {
+			return nil, err
+		}
+		return map[string]string{"managedBy": managedBy}, nil
 	}))
 }
 

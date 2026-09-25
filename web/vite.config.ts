@@ -3,7 +3,31 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
+
+// __BUILD_INFO__ — 前端构建身份（About 面板展示「前端版本」）。
+// release CI 传 VITE_APP_VERSION / VITE_APP_CHANNEL（与后端二进制同源）；
+// 本地构建回退到 git commit + 构建时刻，保证 DEV 构建也能展示具体版本。
+function buildInfo() {
+  const version = process.env.VITE_APP_VERSION || 'dev'
+  const channel = process.env.VITE_APP_CHANNEL || ''
+  let commit = 'unknown'
+  try {
+    commit = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim()
+      .slice(0, 12)
+  } catch {
+    // git unavailable (e.g. tarball build) — keep 'unknown'
+  }
+  return JSON.stringify({
+    version,
+    channel,
+    commit,
+    buildTime: new Date().toISOString(),
+  })
+}
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -200,6 +224,12 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
+  },
+  // __BUILD_INFO__ — 前端构建身份（About 面板「前端版本」）。release CI 传
+  // VITE_APP_VERSION/VITE_APP_CHANNEL（与后端二进制同源）；本地构建回退到
+  // git commit + 构建时刻，保证 DEV 构建也能展示具体版本。
+  define: {
+    __BUILD_INFO__: buildInfo(),
   },
   }
 })
