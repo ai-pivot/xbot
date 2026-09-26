@@ -144,4 +144,30 @@ describe('压缩点穿透历史管线', () => {
     // 用户消息不被顶掉。
     expect(rows.find((r) => r && r.turnID === 4 && r.role === 'user')?.content).toBe('继续')
   })
+
+  it('兜底不变量：旧后端把标记绑到后续 turn（turn_id=4、非 standalone）也绝不顶掉用户消息', () => {
+    // 部署不同步窗口 / 存量数据：deriveTurnIDs 的历史 bug 把标记绑到了 turn 4。
+    // historyToReplaced 的域不变量必须拦下它（路由到 standalone），用户消息保留。
+    const msgs: ChatMessage[] = [
+      { id: 'u3', role: 'user', content: 'turn3 用户消息', iterations: [], timestamp: '', isPartial: false, turnID: 3, dbID: 100 },
+      { id: 'a3', role: 'assistant', content: 'turn3 回复', iterations: [iter(1, 'a')], timestamp: '', isPartial: false, turnID: 3, dbID: 101 },
+      // ⚠️ 旧后端形态：标记 role=user、turn_id=4（绑到了用户消息所在的 turn）、无 standalone。
+      {
+        id: 'marker', role: 'user', content: '[Compacted context]\n\nsummary', iterations: [],
+        timestamp: '', isPartial: false, turnID: 4, dbID: 150,
+      },
+      { id: 'u4', role: 'user', content: '继续优化到 7ms', iterations: [], timestamp: '', isPartial: false, turnID: 4, dbID: 160 },
+      { id: 'a4', role: 'assistant', content: 'turn4 回复', iterations: [iter(1, 'x')], timestamp: '', isPartial: false, turnID: 4, dbID: 161 },
+    ]
+    let s = initialChatState('chat-1')
+    s = reduce(s, historyToReplaced(msgs, null))
+    const rows = rowsToChatMessages(deriveRows(s))
+    // 用户消息必须保留（绝不被标记顶掉）。
+    const turn4User = rows.find((r) => r && r.turnID === 4 && r.role === 'user')
+    expect(turn4User?.content, '用户消息绝不能被压缩标记顶掉（兜底不变量）').toBe('继续优化到 7ms')
+    // 标记仍然渲染（信息不丢），但作为无 turn 的独立行。
+    const marker = rows.find((r) => r && String(r.content).startsWith('[Compacted context]'))
+    expect(marker, '压缩标记必须仍渲染（不丢信息）').toBeTruthy()
+    expect(marker!.turnID, '标记必须是「无 turn」的独立行').toBe(0)
+  })
 })
