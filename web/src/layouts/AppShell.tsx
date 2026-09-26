@@ -37,6 +37,7 @@ import { syncSettingToServer, SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import { commands } from '@/lib/commandRouter'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 import type { SettingsCategory } from '@/components/settings/SettingsDialog'
+import { UpdateReminder } from '@/components/UpdateReminder'
 
 // 内置面板（core.*）注册——模块级幂等调用（同 id 覆盖，与
 // registerBuiltinLayoutItems 在 App.tsx 模块级注册的模式一致）。
@@ -332,6 +333,10 @@ export function AppShell() {
               />
               <span className="text-text-muted">{ws.connected ? t('layout.connected') : t('layout.connecting')}</span>
             </span>
+            <UpdateReminder onOpenSettings={() => {
+              setSettingsSection('about')
+              setSettingsOpen(true)
+            }} />
             <TopRail className="min-w-0 flex-1" />
             <BottomRailBadges />
             <Suspense fallback={null}>

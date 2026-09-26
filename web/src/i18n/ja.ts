@@ -1015,6 +1015,8 @@ const ja: Translations = {
     connected: '接続済み',
     connecting: '接続中',
     openSettings: '設定',
+    updateReminder: '更新可能：{{current}} → {{latest}}',
+    dismissUpdateReminder: '更新通知を閉じる',
   },
   plugins: {
     view: {

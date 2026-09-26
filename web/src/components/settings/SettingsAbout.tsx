@@ -89,7 +89,7 @@ function ChannelBadge({ channel }: { channel: string }) {
   )
 }
 
-export function SettingsAbout() {
+export function SettingsAbout({ autoCheckUpdate = false }: { autoCheckUpdate?: boolean }) {
   const { t } = useI18n()
   const { canInstall, isInstalled, install, updateAvailable, refreshSW, diagnostics } = usePwaInstall()
 
@@ -124,7 +124,7 @@ export function SettingsAbout() {
     void loadSysInfo()
   }, [loadSysInfo])
 
-  const handleCheckUpdate = async () => {
+  const handleCheckUpdate = useCallback(async () => {
     setChecking(true)
     setUpdateError(null)
     setUpdateInfo(null)
@@ -137,7 +137,11 @@ export function SettingsAbout() {
     } finally {
       setChecking(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (autoCheckUpdate) void handleCheckUpdate()
+  }, [autoCheckUpdate, handleCheckUpdate])
 
   const handleApplyUpdate = async () => {
     if (!updateInfo?.tag) return

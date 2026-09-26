@@ -1011,6 +1011,8 @@ const zhCN = {
     connected: '已连接',
     connecting: '已连接',
     openSettings: '设置',
+    updateReminder: '可更新：{{current}} → {{latest}}',
+    dismissUpdateReminder: '关闭更新提醒',
   },
   plugins: {
     view: {

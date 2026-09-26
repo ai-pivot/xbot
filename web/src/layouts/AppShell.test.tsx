@@ -58,7 +58,14 @@ vi.mock('@/hooks/useAuth', () => ({
 }))
 // Heavy chrome mocked away; keep InfoBar + DockviewContainer real (they own the
 // layout under test).
-vi.mock('@/components/settings/SettingsDialog', () => ({ SettingsDialog: () => null }))
+vi.mock('@/components/settings/SettingsDialog', () => ({
+  SettingsDialog: ({ open, initialSection }: { open: boolean; initialSection?: string }) =>
+    open ? <div role="dialog" data-section={initialSection}>Settings</div> : null,
+}))
+vi.mock('@/components/UpdateReminder', () => ({
+  UpdateReminder: ({ onOpenSettings }: { onOpenSettings: () => void }) =>
+    <button type="button" onClick={onOpenSettings}>New version</button>,
+}))
 // 布局测试不关心插件视图面板内容，但要记录挂载的 container 名——布局 v5 断言
 // status_bar_right 容器已移除（被引擎路 TopRail 替代），info_bar 仍在（InfoBar 内部）。
 const panelContainers = vi.hoisted(() => ({ list: [] as string[] }))
@@ -158,5 +165,11 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     // info_bar 容器不受影响。
     expect(panelContainers.list).not.toContain('status_bar_right')
     // info_bar panel container removed (InfoBar deleted from bottom bar)
+  })
+
+  it('opens Settings on the About update page from the reminder', async () => {
+    renderWithProviders(<AppShell />)
+    screen.getByRole('button', { name: 'New version' }).click()
+    expect(await screen.findByRole('dialog')).toHaveAttribute('data-section', 'about')
   })
 })
