@@ -60,7 +60,14 @@ export function AppShell() {
   const { t } = useI18n()
   const tabManager = useTabManager()
   const ws = useWSConnection()
+  const [connected, setConnected] = useState(ws.connected)
   const sessionStore = useSessionStore()
+  // WSProvider keeps its context value stable, so connection changes do not
+  // re-render the shell unless we subscribe to the connection itself.
+  useEffect(() => {
+    setConnected(ws.connected)
+    return ws.onConnectionChange(setConnected)
+  }, [ws])
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
     if (stored) {
@@ -323,15 +330,15 @@ export function AppShell() {
       {/* 全局底栏：连接状态 + chips + TopRail + InfoBar + Badges + SW 更新 + 设置 */}
       <RightSidebarControlContext.Provider value={rightSidebarControl}><div className="relative z-10 flex h-10 min-w-0 shrink-0 items-center gap-1.5 border-t border-border px-2 text-xs" style={{ background: 'var(--bg-secondary-src)' }}>
             {/* 左：连接状态（VS Code 远程连接风格：色点+文本，含会话名） */}
-            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={ws.connected ? t('layout.connected') : t('layout.connecting')}>
+            <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={connected ? t('layout.connected') : t('layout.connecting')}>
               <span
                 className={
-                  ws.connected
+                  connected
                     ? 'size-1.5 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_6px_0_rgba(16,185,129,0.55)]'
                     : 'size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500 shadow-[0_0_6px_0_rgba(245,158,11,0.55)]'
                 }
               />
-              <span className="text-text-muted">{ws.connected ? t('layout.connected') : t('layout.connecting')}</span>
+              <span className="text-text-muted">{connected ? t('layout.connected') : t('layout.connecting')}</span>
             </span>
             <UpdateReminder onOpenSettings={() => {
               setSettingsSection('about')

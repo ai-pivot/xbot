@@ -1009,7 +1009,7 @@ const zhCN = {
   layout: {
     activityBar: '工具面板',
     connected: '已连接',
-    connecting: '已连接',
+    connecting: '连接中',
     openSettings: '设置',
     updateReminder: '可更新：{{current}} → {{latest}}',
     dismissUpdateReminder: '关闭更新提醒',

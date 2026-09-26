@@ -11,7 +11,7 @@
  * workspace) and the dockview host uses `min-h-0 w-full flex-1` to fill the
  * remaining vertical space instead of `h-full w-full`.
  */
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
@@ -47,9 +47,22 @@ vi.mock('@/hooks/useLayoutPersistence', () => ({ useLayoutPersistence: () => {} 
 vi.mock('@/hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'dark', accentColor: '#3388BB', setAccentColor: vi.fn(), mdTheme: 'vscode-dark', setMdTheme: vi.fn() }),
 }))
-vi.mock('@/providers/WSProvider', () => ({
-  useWSConnection: () => ({ connected: true, send: vi.fn(), rpc: vi.fn(), onMessage: vi.fn(() => vi.fn()), onSession: vi.fn(() => vi.fn()), onProgress: vi.fn(() => vi.fn()) }),
+const connection = vi.hoisted(() => ({
+  connected: true,
+  listeners: new Set<(connected: boolean) => void>(),
 }))
+vi.mock('@/providers/WSProvider', () => {
+  const ws = {
+    get connected() { return connection.connected },
+    onConnectionChange: (handler: (connected: boolean) => void) => {
+      connection.listeners.add(handler)
+      return () => connection.listeners.delete(handler)
+    },
+    send: vi.fn(), rpc: vi.fn(), onMessage: vi.fn(() => vi.fn()),
+    onSession: vi.fn(() => vi.fn()), onProgress: vi.fn(() => vi.fn()),
+  }
+  return { useWSConnection: () => ws }
+})
 vi.mock('@/providers/CwdProvider', () => ({
   useCwd: () => ({ cwd: '/repo', loading: false }),
 }))
@@ -87,6 +100,8 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
   beforeEach(() => {
     localStorage.clear()
     panelContainers.list.length = 0
+    connection.connected = true
+    connection.listeners.clear()
   })
 
   it('bottom bar stacks below the dockview (flex column), never side by side', () => {
@@ -171,5 +186,26 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     renderWithProviders(<AppShell />)
     screen.getByRole('button', { name: 'New version' }).click()
     expect(await screen.findByRole('dialog')).toHaveAttribute('data-section', 'about')
+  })
+
+  it('keeps the connection indicator in sync with connection changes', () => {
+    renderWithProviders(<AppShell />)
+    const status = document.querySelector('.flex.h-10.min-w-0.shrink-0.items-center span[title]') as HTMLElement
+    expect(status.title).toMatch(/已连接|Connected/)
+    expect(status.firstElementChild?.className).toContain('bg-emerald-500')
+
+    act(() => {
+      connection.connected = false
+      connection.listeners.forEach((listener) => listener(false))
+    })
+    expect(status.title).toMatch(/连接中|Connecting/)
+    expect(status.firstElementChild?.className).toContain('bg-amber-500')
+
+    act(() => {
+      connection.connected = true
+      connection.listeners.forEach((listener) => listener(true))
+    })
+    expect(status.title).toMatch(/已连接|Connected/)
+    expect(status.firstElementChild?.className).toContain('bg-emerald-500')
   })
 })
