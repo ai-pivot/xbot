@@ -187,7 +187,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
             {active === 'developer' ? <SettingsDeveloper /> : null}
             {active === 'layout' ? <SettingsLayout /> : null}
             {active === 'plugins' ? <SettingsPlugins /> : null}
-            {active === 'about' ? <SettingsAbout /> : null}
+            {active === 'about' ? <SettingsAbout autoCheckUpdate={initialSection === 'about'} /> : null}
           </div>
         </div>
       </DialogContent>

@@ -1017,6 +1017,8 @@ const en: Translations = {
     connected: 'Connected',
     connecting: 'Connecting',
     openSettings: 'Settings',
+    updateReminder: 'Update available: {{current}} → {{latest}}',
+    dismissUpdateReminder: 'Dismiss update reminder',
   },
   plugins: {
     view: {
