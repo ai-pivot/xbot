@@ -1,14 +1,19 @@
 package selfupdate
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
+
+// errRestartUnsupported：本平台不支持「自动重启」（Windows —— 见
+// restart_windows.go）。返回错误而非硬退出，避免跳过 serverapp 的安全停机
+// （WAL checkpoint）造成 committed 数据丢失。
+var errRestartUnsupported = errors.New("automatic restart is not supported on this platform — please restart the process manually")
 
 // Service manager detection + restart.
 //
@@ -81,13 +86,20 @@ func systemdUnitName() string {
 // restart happens after a short delay so the HTTP response flushes first).
 //
 // For systemd/launchd we ask the manager to restart us explicitly. For
-// everything else (supervisord, docker, pm2, a manual start, …) we SIGTERM
-// ourselves: the graceful shutdown path runs (WAL checkpoint, pending-resume
+// everything else (supervisord, docker, pm2, a manual start, …) we terminate
+// ourselves gracefully: the shutdown path runs (WAL checkpoint, pending-resume
 // stamps — see serverapp.Run's signal handling) and the process exits. Whether
 // it comes back is up to the user's service management (supervisord
 // autorestart, docker --restart, …) — the UI copy stays neutral and does not
 // assume either way.
+//
+// Windows has no deliverable terminate signal for this path (see
+// restart_windows.go) — there Restart returns an explanatory error instead of
+// hard-exiting, because a hard exit would skip the WAL checkpoint.
 func Restart() error {
+	if !restartSupported {
+		return errRestartUnsupported
+	}
 	switch DetectServiceManager() {
 	case "systemd":
 		unit := systemdUnitName()
@@ -99,7 +111,7 @@ func Restart() error {
 			if err := exec.Command("systemctl", "--user", "restart", unit).Run(); err != nil {
 				// Supervisor restart failed (renamed unit, D-Bus session gone).
 				// Fall back to SIGTERM so at least the graceful path runs.
-				_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				_ = terminateSelf()
 			}
 		}()
 		return nil
@@ -108,7 +120,7 @@ func Restart() error {
 			time.Sleep(800 * time.Millisecond)
 			label := fmt.Sprintf("gui/%d/com.xbot.server", os.Getuid())
 			if err := exec.Command("launchctl", "kickstart", "-k", label).Run(); err != nil {
-				_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+				_ = terminateSelf()
 			}
 		}()
 		return nil
@@ -118,7 +130,7 @@ func Restart() error {
 		// the UI has already shown the neutral restart notice.
 		go func() {
 			time.Sleep(800 * time.Millisecond)
-			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+			_ = terminateSelf()
 		}()
 		return nil
 	}

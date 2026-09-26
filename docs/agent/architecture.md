@@ -101,7 +101,12 @@ Two modes (`agent/engine_run.go`):
   (GitHub Releases on the binary's channel, always returns a reason when skipped), `apply_update`
   (download binary + web dist + plugins, checksum-verified, atomic binary swap — does NOT restart),
   `restart_server` (systemd `systemctl --user restart` / launchd `kickstart` / SIGTERM self for manual
-  starts; fires ~800ms after the response so it flushes). Primitives live in `internal/selfupdate/`
+  starts; fires ~800ms after the response so it flushes). ⚠️ **平台分离**：SIGTERM 自助终止在
+  `restart_unix.go`（`syscall.Kill` **仅 Unix** —— 直接写在共享文件里会让 Windows 构建失败：
+  `undefined: syscall.Kill`）；`restart_windows.go` 的 `restartSupported=false` + 返回错误而**不硬退出**
+  （`os.Exit`/`TerminateProcess` 会跳过 serverapp 的安全停机 WAL checkpoint —— 2026-09-17 丢数据事故的形态），
+  提示用户手动重启。**新增任何跨平台功能时必须交叉编译 windows/darwin 验证**
+  （`CGO_ENABLED=0 GOOS=windows go build ./...`）。 Primitives live in `internal/selfupdate/`
   (shared with `xbot-cli setup` — single download/verify/install implementation). The web About panel
   (`SettingsAbout.tsx`) renders both versions, warns before restart when `managedBy == "none"` (manual
   start → process exits and stays down), and polls `get_system_info` until the server returns.
