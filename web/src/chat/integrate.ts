@@ -54,12 +54,34 @@ export function historyToReplaced(
     // - 无 dbID 的行（乐观/echo 副本）一律跳过 —— 渲染源是状态机
     // - 有 dbID 的行（DB 权威历史）放行进 turns/legacy
     if (m.dbID === undefined) continue
+    if (m.standalone === true) {
+      // 命令行（`!cmd` / slash）落库行：**无 turn 的独立行** ⇒ 进 standalone 段并带
+      // 时间锚点（后端转换时按行序算出）—— 与实时渲染同一条路径：turnID 保持 0，
+      // sortTurnKey 按 anchor+0.5 插回原位；锚点无效则沉底（绝不排到列表顶部）。
+      // 压缩标记的 standalone 回落形态也走这里（后端给的 AnchorTurnID 权威——
+      // 绝不覆盖成前端自己推的 seenTurnID）。
+      const anchor = m.anchorTurnID ?? 0
+      if (anchor > seenTurnID) seenTurnID = anchor
+      standalone.push({
+        id: m.id,
+        role: m.role === 'user' ? 'user' : 'assistant',
+        content: m.content,
+        iterations: m.iterations,
+        iterationsTruncated: m.iterationsTruncated ?? 0,
+        timestamp: m.timestamp,
+        dbID: m.dbID,
+        standalone: true,
+        anchorTurnID: anchor,
+      })
+      continue
+    }
     // ⛔ 域不变量（P0 2026-09-26）：压缩标记（`[Compacted context]`）**永远不是
     // 某个 turn 的 user 消息** —— 若让它进入下面的 turn user 槽位，「每 turn 只取
     // 第一条 user」会让它（id 更小、先到）顶掉用户真实消息。
     // 新后端把它作为 turn 的 `compactions` 下发（走上面的 compactions 通道）；
     // 但**旧后端 / 存量数据**仍可能把它绑到后续 turn（deriveTurnIDs 的历史 bug），
-    // 部署也存在前/后端不同步的窗口 ⇒ 这里兜住：路由到 standalone 段。
+    // 部署也存在前/后端不同步的窗口 ⇒ 这里兜住：路由到 standalone 段
+    // （锚点 = 走到它时已知的最新 turn）。
     if (isCompactMarkerRow(m)) {
       standalone.push({
         id: m.id,
@@ -71,23 +93,6 @@ export function historyToReplaced(
         dbID: m.dbID,
         standalone: true,
         anchorTurnID: seenTurnID,
-      })
-      continue
-    }
-    if (m.standalone === true) {
-      // 命令行（`!cmd` / slash）落库行：**无 turn 的独立行** ⇒ 进 standalone 段并带
-      // 时间锚点（后端转换时按行序算出）—— 与实时渲染同一条路径：turnID 保持 0，
-      // sortTurnKey 按 anchor+0.5 插回原位；锚点无效则沉底（绝不排到列表顶部）。
-      standalone.push({
-        id: m.id,
-        role: m.role === 'user' ? 'user' : 'assistant',
-        content: m.content,
-        iterations: m.iterations,
-        iterationsTruncated: m.iterationsTruncated ?? 0,
-        timestamp: m.timestamp,
-        dbID: m.dbID,
-        standalone: true,
-        anchorTurnID: m.anchorTurnID ?? 0,
       })
       continue
     }
@@ -132,8 +137,9 @@ export function historyToReplaced(
     // 多个 assistant 行（异常历史）合并：iterations 连接，content 取最后非空。
     const iterations = slot.assistants.flatMap((a) => a.iterations ?? [])
     const lastContent = [...slot.assistants].reverse().find((a) => a.content !== '')?.content ?? ''
-    // turn 内的压缩点（迭代之间内联渲染）。
-    const compactions = slot.assistants.flatMap((a) => a.compactions ?? [])
+    // turn 内的压缩点（迭代之间内联渲染）；无则 undefined（不留空数组引用）。
+    const compactionsRaw = slot.assistants.flatMap((a) => a.compactions ?? [])
+    const compactions = compactionsRaw.length > 0 ? compactionsRaw : undefined
     // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
     // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
     const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)

@@ -14,7 +14,7 @@
  *   I6 无 null   — normalize 已保证（reducer 零格式防御）
  */
 
-import type { GoalInfo, TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
+import type { GoalInfo, TodoItem, WebCompaction, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 import {
   EMPTY_LIVE,
   commitViaFold,
@@ -1659,6 +1659,17 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const incIts = h.phase.kind === 'committed' ? h.phase.payload.iterations : h.phase.data.iterations
   const curContent = cur.phase.kind === 'committed' ? cur.phase.payload.content : cur.phase.data.content
   const incContent = h.phase.kind === 'committed' ? h.phase.payload.content : h.phase.data.content
+  // turn 内压缩点（迭代之间内联渲染）：DB 侧是持久化权威，本地 live→committed 的 turn
+  // 没有它 ⇒ **必须吸收**，否则「压缩点到达」被并合吞掉、内联分隔永不出现（压缩触发的
+  // reload 正是这条路径：本地 committed（无 compactions）× incoming committed（有））。
+  // 内容相同则复用当前引用 —— 否则每帧 history_replaced 都会因新数组引用而重建整个 Turn，
+  // 击穿 derive/MessageBody 的行 memo（幂等重放必须零重建）。
+  const curComps = cur.phase.kind === 'committed' ? cur.phase.payload.compactions : undefined
+  const incComps = h.phase.kind === 'committed' ? h.phase.payload.compactions : undefined
+  let compactions = curComps
+  if (incComps && incComps.length > 0 && !sameCompactions(incComps, curComps)) {
+    compactions = incComps
+  }
   const iterations = reuseIfSame(mergeIterations(curIts, incIts), curIts)
   const content = curContent !== '' ? curContent : incContent
   // 幂等重放（每帧 history_replaced）：committed 侧逐项未变 ⇒ 复用原对象。
@@ -1667,6 +1678,7 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
     cur.phase.kind === 'committed' &&
     iterations === curIts &&
     content === curContent &&
+    compactions === curComps &&
     (cur.user !== null || h.user === null) &&
     (cur.requestID !== null || h.requestID === null)
   ) {
@@ -1676,11 +1688,23 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const its = nonEmptyArr(iterations)
   const phase: Turn['phase'] =
     text !== null
-      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[]) }
+      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[], compactions) }
       : its !== null
-        ? { kind: 'committed', payload: commitViaFold(its, content) }
+        ? { kind: 'committed', payload: commitViaFold(its, content, 0, compactions) }
         : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }
   return { id: h.id, user: cur.user ?? h.user, phase, requestID: cur.requestID ?? h.requestID }
+}
+
+/** 压缩点内容相等（幂等重放用 —— 直接引用比较会把每帧的新数组误判为「真实变化」）。 */
+function sameCompactions(a?: readonly WebCompaction[], b?: readonly WebCompaction[]): boolean {
+  if (a === b) return true
+  const A = a ?? []
+  const B = b ?? []
+  if (A.length !== B.length) return false
+  for (let i = 0; i < A.length; i++) {
+    if (A[i].afterIteration !== B[i].afterIteration || A[i].content !== B[i].content) return false
+  }
+  return true
 }
 
 function foldPhase(data: LiveSnapshot): Turn['phase'] {

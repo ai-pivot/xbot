@@ -170,4 +170,36 @@ describe('压缩点穿透历史管线', () => {
     expect(marker, '压缩标记必须仍渲染（不丢信息）').toBeTruthy()
     expect(marker!.turnID, '标记必须是「无 turn」的独立行').toBe(0)
   })
+
+  it('压缩点到达（压缩触发的 reload）必须被 mergeTurnData 吸收，不被幂等重放短路吞掉', () => {
+    // 压缩触发的 reload 路径：本地 committed（无 compactions）× incoming committed（有）
+    // —— iterations/content **完全相同**（同一数组引用）⇒ 旧 mergeTurnData 会走幂等短路
+    // `return cur`，把新到达的压缩点吞掉（内联分隔永不出现）。
+    const iters: WebIteration[] = [iter(1, 'a'), iter(2, 'b')]
+    const user: ChatMessage = {
+      id: 'u3', role: 'user', content: 'turn3 用户消息', iterations: [], timestamp: '',
+      isPartial: false, turnID: 3, dbID: 100,
+    }
+    const assistantNoComp: ChatMessage = {
+      id: 'a3', role: 'assistant', content: 'turn3 回复', iterations: iters, timestamp: '',
+      isPartial: false, turnID: 3, dbID: 101,
+    }
+    const assistantWithComp: ChatMessage = {
+      ...assistantNoComp,
+      compactions: [{ afterIteration: 1, content: '[Compacted context]\n\ns' }],
+    }
+
+    let s = initialChatState('chat-1')
+    s = reduce(s, historyToReplaced([user, assistantNoComp], null))
+    expect(
+      rowsToChatMessages(deriveRows(s)).find((r) => r && r.turnID === 3 && r.role === 'assistant')?.compactions,
+      '第一次（无压缩点）不得有 compactions',
+    ).toBeUndefined()
+
+    // 第二次：同迭代引用 + 同 content，仅多了压缩点 → 必须吸收并重建该 turn。
+    s = reduce(s, historyToReplaced([user, assistantWithComp], null))
+    const row = rowsToChatMessages(deriveRows(s)).find((r) => r && r.turnID === 3 && r.role === 'assistant')
+    expect(row?.compactions?.length, '压缩点必须被 mergeTurnData 吸收（不被并合吞掉）').toBe(1)
+    expect(row?.compactions?.[0].afterIteration).toBe(1)
+  })
 })

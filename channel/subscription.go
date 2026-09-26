@@ -859,8 +859,8 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	//    the final assistant (same turn, different batch), causing duplicate
 	//    assistant messages at batch boundaries within a super-long turn.
 	for i := range msgs {
-		if msgs[i].CommandRow {
-			continue // 命令行（`!cmd`）无 turn：不参与推导（同 deriveTurnIDs）
+		if msgs[i].CommandRow || isCompactMarkerMsg(msgs[i]) {
+			continue // 命令行（`!cmd`）/ 压缩标记无 turn：不参与推导（同 deriveTurnIDs）
 		}
 		if msgs[i].Role != "user" || msgs[i].TurnID > 0 {
 			continue
@@ -878,8 +878,8 @@ func ConvertMessagesToHistory(msgs []llm.ChatMessage) []HistoryMessage {
 	// Pass 2: backward search for assistant messages with turn_id=0.
 	// Stops at the preceding user message (turn boundary).
 	for i := range msgs {
-		if msgs[i].CommandRow {
-			continue // 命令行（`!cmd`）无 turn：不参与推导（同 deriveTurnIDs）
+		if msgs[i].CommandRow || isCompactMarkerMsg(msgs[i]) {
+			continue // 命令行（`!cmd`）/ 压缩标记无 turn：不参与推导（同 deriveTurnIDs）
 		}
 		if msgs[i].TurnID > 0 {
 			continue

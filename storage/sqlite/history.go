@@ -1168,6 +1168,11 @@ func replayDisplayRecords(records []HistoryRecord) (*ReplayResult, error) {
 				if snapshot.HistoryIDs[i] == 0 &&
 					strings.HasPrefix(msg.Content, "[Compacted context]") {
 					msg.ID = record.HistoryID
+					// ⚠️ Timestamp 必须显式从 compress 记录补上：`llm.ChatMessage.Timestamp`
+					// 的 tag 是 `json:"-"`（snapshot JSON 不持久化它）⇒ 反序列化后是零值 ⇒
+					// 下游 `compactionIteration`（按 created_at 定位「压缩发生在哪个迭代
+					// 之后」）会因 ts.IsZero() 永远回落 ⇒ 内联渲染永不生效。
+					msg.Timestamp = record.CreatedAt
 					result.Messages = append(result.Messages, msg)
 				}
 			}
