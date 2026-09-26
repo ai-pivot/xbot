@@ -175,31 +175,43 @@ describe('SettingsAbout（关于 → 版本/更新/重启）', () => {
     expect(screen.getByText(/binary, web, plugins/)).toBeInTheDocument()
   })
 
-  it('重启：手动启动（managedBy=none）必须先展示警告再确认', async () => {
+  it('重启：托管方式未知（managedBy=none）展示中性提示（不假定是否自动恢复）', async () => {
     mockRPC({ get_system_info: sysInfo({ managedBy: 'none' }) })
     renderWithProviders(<SettingsAbout />)
-    // 警告文案先于确认按钮出现
+    // 中性提示：提到进程管理器会自动恢复 + 手动启动需自行重启，不假定任何一方
     expect(
-      await screen.findByText(/不会自动恢复|will NOT come back automatically/i),
+      await screen.findByText(/进程管理器|process manager/i),
     ).toBeInTheDocument()
+    expect(
+      screen.getByText(/手动启动|manually started/i),
+    ).toBeInTheDocument()
+    // 不再出现「不会自动恢复」这种绝对化断言
+    expect(
+      screen.queryByText(/不会自动恢复|will NOT come back/i),
+    ).not.toBeInTheDocument()
     // 点击重启 → 出现确认描述 + 确认按钮（两步确认，防误触）
     fireEvent.click(screen.getByRole('button', { name: /重启服务|Restart server/ }))
     expect(
-      screen.getByText(/停止后端进程|stops the backend process/i),
+      screen.getByText(/进行中的任务会被中断|In-flight turns are interrupted/i),
     ).toBeInTheDocument()
     expect(
       screen.getByRole('button', { name: /确认重启|Confirm restart/ }),
     ).toBeInTheDocument()
   })
 
-  it('重启：systemd 托管时展示托管提示（无手动启动警告）', async () => {
-    mockRPC({ get_system_info: sysInfo({ managedBy: 'systemd' }) })
+  it('重启：检测到托管（systemd/supervisord）展示托管提示（中性，按其策略恢复）', async () => {
+    mockRPC({ get_system_info: sysInfo({ managedBy: 'supervisord' }) })
     renderWithProviders(<SettingsAbout />)
+    // 托管提示：检测到 manager 名 + 按其策略恢复（不承诺"一定自动重启"）
     await waitFor(() =>
-      expect(screen.getByText(/systemd/)).toBeInTheDocument(),
+      expect(screen.getByText(/supervisord/)).toBeInTheDocument(),
     )
     expect(
-      screen.queryByText(/不会自动恢复|will NOT come back automatically/i),
+      screen.getByText(/按其策略|per that manager/i),
+    ).toBeInTheDocument()
+    // 不显示"手动启动需自行重启"的未知托管提示
+    expect(
+      screen.queryByText(/手动启动的服务需要您重新启动|must be restarted by hand/i),
     ).not.toBeInTheDocument()
   })
 

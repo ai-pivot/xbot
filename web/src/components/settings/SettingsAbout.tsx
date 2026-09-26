@@ -1,6 +1,6 @@
 /**
- * SettingsAbout — 关于面板：版本信息（前端 + 后端）、检查更新、一键更新、
- * 重启服务，以及 PWA 安装诊断。
+ * SettingsAbout — 关于面板：版本信息（前端 + 后端）、检查更新（后端程序 +
+ * 网页界面一起）、一键更新、重启服务，以及 PWA 安装诊断。
  *
  * 数据来源：
  *  - 后端版本/运行环境：`get_system_info` RPC（version 包的 ldflags 注入值；
@@ -9,8 +9,11 @@
  *    VITE_APP_VERSION/VITE_APP_CHANNEL，本地构建回退 git commit + 构建时刻）。
  *  - 更新：`check_update`（GitHub Releases，按二进制渠道）→ `apply_update`
  *    （下载二进制 + web dist + 内置插件，校验和验证，原子替换）。
- *  - 重启：`restart_server`（systemd/launchd 托管则 supervisor 拉起；
- *    手动启动则优雅退出后**不会自动复活** —— UI 必须提前警告）。
+ *    后端程序与网页界面在同一个 release 里发布，一次更新全部覆盖 —— UI 不
+ *    区分"前端更新/后端更新"，只有一个检查入口、一个更新按钮。
+ *  - 重启：`restart_server`（systemd/launchd 主动调 manager 重启；supervisord/
+ *    docker/手动启动走 SIGTERM 优雅停机，是否自动恢复取决于用户的服务管理
+ *    策略 —— UI 文案保持中性，不假定会不会自动重启）。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { AlertTriangle, Check, Download, Info, RefreshCw, RotateCw, Server } from 'lucide-react'
@@ -30,7 +33,7 @@ interface SystemInfo {
   os: string
   arch: string
   exePath: string
-  managedBy: 'systemd' | 'launchd' | 'none' | string
+  managedBy: 'systemd' | 'launchd' | 'supervisord' | 'docker' | 'none' | string
   devBuild: boolean
 }
 
@@ -88,13 +91,13 @@ function ChannelBadge({ channel }: { channel: string }) {
 
 export function SettingsAbout() {
   const { t } = useI18n()
-  const { canInstall, isInstalled, install, updateAvailable, checkForUpdate, refreshSW, diagnostics } = usePwaInstall()
+  const { canInstall, isInstalled, install, updateAvailable, refreshSW, diagnostics } = usePwaInstall()
 
   // ── 版本信息 ──
   const [sysInfo, setSysInfo] = useState<SystemInfo | null>(null)
   const [infoError, setInfoError] = useState<string | null>(null)
 
-  // ── 检查更新 / 一键更新 ──
+  // ── 检查更新 / 一键更新（后端程序 + 网页界面一起） ──
   const [checking, setChecking] = useState(false)
   const [updateInfo, setUpdateInfo] = useState<UpdateCheck | null>(null)
   const [applying, setApplying] = useState(false)
@@ -106,11 +109,6 @@ export function SettingsAbout() {
   const [restarting, setRestarting] = useState(false)
   const [restartDone, setRestartDone] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
-
-  // ── PWA（既有） ──
-  const [pwaChecking, setPwaChecking] = useState(false)
-  const [upToDate, setUpToDate] = useState(false)
-  const [pwaReloading, setPwaReloading] = useState(false)
 
   const loadSysInfo = useCallback(async () => {
     try {
@@ -157,8 +155,8 @@ export function SettingsAbout() {
 
   /**
    * 重启：restart_server 立即返回（实际重启 ~800ms 后触发），随后轮询
-   * get_system_info 直到服务回来（systemd/launchd 托管）或超时（手动启动
-   * 的进程退出后不会复活 —— 提示用户自行启动）。
+   * get_system_info 直到服务回来（托管的服务自动恢复）或超时（手动启动
+   * 的进程不会自动恢复 —— 提示用户自行启动）。
    */
   const handleRestart = async () => {
     setRestarting(true)
@@ -194,26 +192,7 @@ export function SettingsAbout() {
     await poll()
   }
 
-  const handlePwaUpdate = async () => {
-    if (updateAvailable) {
-      setPwaReloading(true)
-      await refreshSW()
-      return
-    }
-    setPwaChecking(true)
-    setUpToDate(false)
-    const found = await checkForUpdate()
-    setPwaChecking(false)
-    if (found) {
-      setPwaReloading(true)
-      await refreshSW()
-    } else {
-      setUpToDate(true)
-    }
-  }
-
   const managedBy = sysInfo?.managedBy
-  const unmanaged = managedBy === 'none'
 
   return (
     <div className="flex flex-col gap-5 p-4">
@@ -260,10 +239,11 @@ export function SettingsAbout() {
         </div>
       </section>
 
-      {/* ── 检查更新 / 一键更新 ── */}
+      {/* ── 检查更新 / 一键更新（后端程序 + 网页界面一起） ── */}
       <section className="flex flex-col gap-2">
         <h3 className="text-sm font-semibold text-text-primary">{t('settings.about.updateTitle')}</h3>
         <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg-secondary px-3 py-2.5">
+          <p className="text-xs text-text-muted">{t('settings.about.updateIncludes')}</p>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               type="button"
@@ -349,6 +329,25 @@ export function SettingsAbout() {
               <p className="font-medium text-text-primary">{t('settings.about.restartRequired')}</p>
             </div>
           )}
+
+          {/* 浏览器缓存的网页界面落后于服务器（SW 自动检测到新 bundle）——
+              被动提示刷新，不是主动检查按钮（更新入口统一在上方）。 */}
+          {updateAvailable && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-border pt-2">
+              <span className="text-xs" style={{ color: 'var(--status-warning, #f59e0b)' }}>
+                ● {t('settings.about.frontendBundleUpdate')}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void refreshSW()}
+                className="h-7 w-fit gap-1.5 border-border bg-bg-tertiary px-2.5 text-xs hover:bg-bg-hover"
+              >
+                <RefreshCw className="size-3.5" />
+                {t('settings.about.refreshPage')}
+              </Button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -356,21 +355,13 @@ export function SettingsAbout() {
       <section className="flex flex-col gap-2">
         <h3 className="text-sm font-semibold text-text-primary">{t('settings.about.restartTitle')}</h3>
         <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg-secondary px-3 py-2.5">
-          {/* 非常规启动警告：手动启动（无 systemd/launchd 托管）的进程重启后不会自动复活 */}
-          {unmanaged && (
-            <p
-              className="flex items-start gap-1.5 rounded-lg px-2 py-1.5 text-xs"
-              style={{ backgroundColor: 'rgba(245, 158, 11, 0.1)', color: 'var(--status-warning, #f59e0b)' }}
-            >
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              {t('settings.about.restartUnmanagedWarning')}
-            </p>
-          )}
-          {managedBy && managedBy !== 'none' && (
-            <p className="text-xs text-text-muted">
-              {t('settings.about.restartManagedBy', { manager: managedBy })}
-            </p>
-          )}
+          {/* 中性提示：不假定会不会自动重启 —— 是否恢复取决于用户的服务管理方式 */}
+          <p className="flex items-start gap-1.5 text-xs text-text-secondary">
+            <Info className="mt-0.5 size-3.5 shrink-0 text-text-muted" />
+            {managedBy && managedBy !== 'none'
+              ? t('settings.about.restartManagedBy', { manager: managedBy })
+              : t('settings.about.restartHint')}
+          </p>
 
           {!confirmRestart ? (
             <Button
@@ -411,7 +402,8 @@ export function SettingsAbout() {
           )}
 
           {restartError && (
-            <p className="text-xs" style={{ color: 'var(--status-error)' }}>
+            <p className="flex items-start gap-1.5 text-xs" style={{ color: 'var(--status-error)' }}>
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
               {restartError}
             </p>
           )}
@@ -475,43 +467,6 @@ export function SettingsAbout() {
             </div>
           </div>
         )}
-
-        {/* PWA 前端资源更新（SW precache）—— 与上面的服务端更新是两回事 */}
-        <div className="flex items-center gap-2.5">
-          <Button
-            type="button"
-            variant={updateAvailable ? 'default' : 'outline'}
-            onClick={() => void handlePwaUpdate()}
-            disabled={pwaChecking || pwaReloading}
-            className={cn(
-              'w-fit gap-2',
-              updateAvailable
-                ? 'bg-accent/14 text-accent hover:bg-accent/25'
-                : 'border-border bg-bg-tertiary hover:bg-bg-hover',
-            )}
-          >
-            <RefreshCw className={cn('size-4', pwaChecking || pwaReloading ? 'animate-spin' : '')} />
-            {pwaReloading
-              ? t('settings.about.refreshing')
-              : updateAvailable
-                ? t('settings.about.updateAvailable')
-                : pwaChecking
-                  ? t('settings.about.checking')
-                  : upToDate
-                    ? t('settings.about.upToDate')
-                    : t('settings.about.checkFrontendUpdate')}
-          </Button>
-          {updateAvailable && (
-            <span className="text-xs" style={{ color: 'var(--status-warning, #f59e0b)' }}>
-              ● {t('settings.about.newVersionAvailable')}
-            </span>
-          )}
-          {upToDate && !updateAvailable && (
-            <span className="text-xs" style={{ color: 'var(--status-success, #22c55e)' }}>
-              ● {t('settings.about.upToDate')}
-            </span>
-          )}
-        </div>
       </section>
     </div>
   )

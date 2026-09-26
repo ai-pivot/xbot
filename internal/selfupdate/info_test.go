@@ -18,10 +18,10 @@ func TestGetSystemInfo_CarriesVersionAndSupervisor(t *testing.T) {
 		t.Errorf("runtime fields must never be empty: %+v", info)
 	}
 	switch info.ManagedBy {
-	case "systemd", "launchd", "none":
+	case "systemd", "launchd", "supervisord", "docker", "none":
 		// valid verdicts
 	default:
-		t.Errorf("ManagedBy = %q, want systemd|launchd|none", info.ManagedBy)
+		t.Errorf("ManagedBy = %q, want systemd|launchd|supervisord|docker|none", info.ManagedBy)
 	}
 	// DevBuild must be derived, not hardcoded: tests run without ldflags so
 	// Version=="dev" and Commit=="unknown" — the dev verdict must hold here.
@@ -63,8 +63,8 @@ func TestSystemdUnitName_Fallback(t *testing.T) {
 // DetectServiceManager must return a valid verdict in every environment.
 func TestDetectServiceManager_ValidVerdict(t *testing.T) {
 	switch got := DetectServiceManager(); got {
-	case "systemd", "launchd", "none":
+	case "systemd", "launchd", "supervisord", "docker", "none":
 	default:
-		t.Errorf("DetectServiceManager() = %q, want systemd|launchd|none", got)
+		t.Errorf("DetectServiceManager() = %q, want systemd|launchd|supervisord|docker|none", got)
 	}
 }

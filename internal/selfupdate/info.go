@@ -13,8 +13,8 @@ import (
 
 // SystemInfo describes the running backend binary: version, build metadata,
 // runtime environment, and how the process is supervised (systemd / launchd /
-// none). Served by the get_system_info RPC and rendered in the web About
-// panel.
+// supervisord / docker / none). Served by the get_system_info RPC and rendered
+// in the web About panel.
 type SystemInfo struct {
 	Version   string `json:"version"`
 	Commit    string `json:"commit"`
@@ -24,8 +24,10 @@ type SystemInfo struct {
 	OS        string `json:"os"`
 	Arch      string `json:"arch"`
 	ExePath   string `json:"exePath"`
-	// ManagedBy reports how the process is supervised: "systemd", "launchd",
-	// or "none" (started manually / by hand — restart will NOT auto-revive).
+	// ManagedBy reports the detected supervisor: "systemd", "launchd",
+	// "supervisord", "docker", or "none" (unknown — could be a manual start OR
+	// an unrecognized manager; the UI must NOT assume the process will or
+	// will not come back after a restart).
 	ManagedBy string `json:"managedBy"`
 	// DevBuild is true when the binary was built without release ldflags
 	// (Version=="dev" or Commit=="unknown"). The web UI uses it to explain

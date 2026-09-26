@@ -730,7 +730,8 @@ const en: Translations = {
       frontendVersion: 'Frontend',
       version: 'Version',
       built: 'Built',
-      updateTitle: 'Server update',
+      updateTitle: 'Check for updates',
+      updateIncludes: 'Checks and installs the full xbot release (backend program and web UI together; restart to apply).',
       updating: 'Updating…',
       updateTo: 'Update to {{version}}',
       currentToLatest: 'Current {{current}} → latest {{latest}}',
@@ -738,20 +739,21 @@ const en: Translations = {
       updateDone: 'Updated to {{version}}',
       updatedComponents: 'Updated: {{components}}',
       restartRequired: 'Restart the server to apply the update.',
+      frontendBundleUpdate: 'A new web UI is ready — refresh to load it',
+      refreshPage: 'Refresh page',
       restartTitle: 'Restart server',
-      restartUnmanagedWarning:
-        'The server was started manually (no systemd/launchd supervisor). After restart it will NOT come back automatically — you will need to start it again yourself.',
-      restartManagedBy: 'Supervised by {{manager}} — the service restarts automatically.',
+      restartHint:
+        'Restarting stops and restarts the xbot service. If it is managed by a process manager (systemd / launchd / supervisord, …), it comes back automatically per that manager\u2019s policy; a manually started service must be restarted by hand.',
+      restartManagedBy: 'Managed by {{manager}} — it will come back per that manager\u2019s policy.',
       restartServer: 'Restart server',
       restartConfirmDesc:
-        'This stops the backend process. In-flight turns are interrupted; queued messages resume after restart.',
+        'This stops and restarts the xbot service. In-flight turns are interrupted; queued messages resume after restart.',
       restartConfirm: 'Confirm restart',
       restarting: 'Restarting…',
       restartTimeout:
-        'The server did not come back within 40s. If it was started manually, start it again yourself (e.g. xbot-cli serve).',
+        'The server did not come back within 40s. Check your service manager\u2019s logs (or restart it yourself if it was started manually).',
       restartDone: 'Server restarted',
       cancel: 'Cancel',
-      checkFrontendUpdate: 'Check frontend update',
     },
     developer: {
       toolsTitle: 'Developer tools',
