@@ -439,6 +439,25 @@ export interface WebIteration {
 }
 
 /**
+ * WebCompaction — 一个在 turn **内部**发生的上下文压缩点。
+ *
+ * 压缩由后端在 LLM 请求**之前**触发（agent.maybeCompress）⇒ 恒在**迭代边界** ⇒
+ * 渲染在「迭代 AfterIteration 与 AfterIteration+1 之间」，与迭代同级（Cursor 式
+ * "context summarized"）。AfterIteration=0 表示在第一个迭代之前。
+ *
+ * 老数据（无结构化迭代 / 无时间戳）无法定位 ⇒ 压缩以独立的 standalone 行渲染
+ * （见 ChatMessage.standalone），不进此字段 —— 基本兼容。
+ */
+export interface WebCompaction {
+  /** 压缩发生在该迭代号**之后**（0 = 第一个迭代之前）。 */
+  afterIteration: number
+  /** "[Compacted context]\n\n<summary>" 摘要正文（前端可展开查看）。 */
+  content?: string
+  /** 压缩记录时刻（compress record created_at）。 */
+  timestamp?: string
+}
+
+/**
  * ProgressStore snapshot — the complete live state of an in-flight agent turn.
  *
  * Stream-only fields (`streamContent`, `reasoningStreamContent`, `streamingTools`)
@@ -538,6 +557,10 @@ export interface ChatMessage {
   iterations: WebIteration[]
   /** 后端按 turn 尾部截断迭代上报的丢弃数量（历史响应有界化）—— 渲染「更早的 N 个迭代」，不静默缺块。 */
   iterationsTruncated?: number
+  /** turn **内部**发生过的上下文压缩点（压缩在迭代边界触发 ⇒ 渲染在迭代之间、
+   *  与迭代同级；Cursor 式 "context summarized"）。老数据无法定位迭代位置时，
+   *  压缩以独立的 standalone 行渲染（`standalone` + `anchorTurnID`），不进此字段。 */
+  compactions?: WebCompaction[]
   timestamp: string
   isPartial: boolean
   /** live 槽位区分：frozen 行（cancel / idle 兜底定格）也 isPartial=true，但它

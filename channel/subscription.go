@@ -288,6 +288,9 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 	var curIterIdx int
 	var curIterThinking string
 	var curIterReasoning string
+	// pendingCompactions = 本轮历史转换中「turn 内发生的压缩」，循环结束后挂到
+	// 对应 turn 的 assistant 行上（该行可能在标记之后才 append —— 挂载用后处理）。
+	var pendingCompactions []pendingCompaction
 
 	finishCurIter := func() {
 		if len(curIterTools) > 0 || curIterThinking != "" || curIterReasoning != "" {
@@ -417,15 +420,27 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			continue
 		}
 		if isCompactMarkerMsg(m) {
-			// 压缩标记（[Compacted context]）：同样是**无 turn 的独立展示行** —— 它
-			// 在 compress 记录的 id 位置，可能落在某个 turn 的 id 区间内。绝不占用任何
-			// turn 的 user 槽位（否则前端「每 turn 取第一条 user」会顶掉用户真实消息，
-			// P0 2026-09-26）。它不触发 turn 边界 flush —— 相邻 turn 的迭代在下一个
-			// turn 边界 / 收尾 flushPending 时整体成行，标记只按锚点插位。
-			history = append(history, HistoryMessage{
-				ID: m.ID, HistoryID: m.ID, Role: m.Role, Content: m.Content,
-				Standalone: true, AnchorTurnID: cmdAnchor, Timestamp: m.Timestamp,
-			})
+			// 压缩标记（[Compacted context]）：压缩在**迭代边界**触发（maybeCompress
+			// 在 LLM 请求前），所以它属于「它所在的那个 turn」并渲染在**迭代之间**
+			// （与迭代同级，Cursor 式 "context summarized"）。
+			//
+			// 定位 = 该 turn 中 created_at 早于压缩时刻的最大迭代号（AfterIteration）。
+			// ⚠️ 绝不占用任何 turn 的 user 槽位（否则前端「每 turn 取第一条 user」会
+			// 顶掉用户真实消息 —— P0 2026-09-26）。
+			//
+			// 老数据（无结构化迭代 / 迭代无时间戳）无法定位 ⇒ 回落为独立的
+			// standalone 标记行（基本兼容，前端仍支持）。
+			if after, ok := compactionIteration(turnIterMap, cmdAnchor, m.Timestamp); ok {
+				pendingCompactions = append(pendingCompactions, pendingCompaction{
+					turnID: cmdAnchor, afterIteration: after,
+					content: m.Content, markerID: m.ID, timestamp: m.Timestamp,
+				})
+			} else {
+				history = append(history, HistoryMessage{
+					ID: m.ID, HistoryID: m.ID, Role: m.Role, Content: m.Content,
+					Standalone: true, AnchorTurnID: cmdAnchor, Timestamp: m.Timestamp,
+				})
+			}
 			continue
 		}
 		switch m.Role {
@@ -683,6 +698,40 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 		}
 	}
 	flushPending()
+	history = attachCompactions(history, pendingCompactions)
+	return history
+}
+
+// attachCompactions attaches each pending in-turn compaction to its turn's
+// assistant row (前端渲染在迭代之间 —— 与迭代同级)。该 turn 的行不在本次窗口
+// 内（分页裁剪）时回落为独立的 standalone 标记行 —— 信息绝不丢失（老数据 /
+// 边界场景的基本兼容）。
+func attachCompactions(history []HistoryMessage, pending []pendingCompaction) []HistoryMessage {
+	if len(pending) == 0 {
+		return history
+	}
+	rowIdx := make(map[uint64]int, len(history))
+	for i := range history {
+		if history[i].Role == "assistant" && history[i].TurnID > 0 {
+			if _, ok := rowIdx[history[i].TurnID]; !ok {
+				rowIdx[history[i].TurnID] = i
+			}
+		}
+	}
+	for _, c := range pending {
+		if idx, ok := rowIdx[c.turnID]; ok {
+			history[idx].Compactions = append(history[idx].Compactions, protocol.HistoryCompaction{
+				AfterIteration: c.afterIteration,
+				Content:        c.content,
+				Timestamp:      c.timestamp,
+			})
+			continue
+		}
+		history = append(history, HistoryMessage{
+			ID: c.markerID, HistoryID: c.markerID, Role: "user", Content: c.content,
+			Standalone: true, AnchorTurnID: c.turnID, Timestamp: c.timestamp,
+		})
+	}
 	return history
 }
 
@@ -700,6 +749,45 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 // to the FOLLOWING turn by deriveTurnIDs).
 func isCompactMarkerMsg(m llm.ChatMessage) bool {
 	return m.Role == "user" && strings.HasPrefix(strings.TrimSpace(m.Content), "[Compacted context]")
+}
+
+// pendingCompaction = 一个「turn 内发生」的压缩，等待挂到它所属 turn 的 assistant 行。
+type pendingCompaction struct {
+	turnID         uint64
+	afterIteration int
+	content        string
+	markerID       int64
+	timestamp      time.Time
+}
+
+// compactionIteration returns the iteration number after which the compaction
+// recorded at ts happened inside turn turnID — 压缩由 agent.maybeCompress 在
+// LLM 请求**之前**触发，即迭代边界，故渲染在「迭代 N 与 N+1 之间」。
+//
+// ok=false 当位置无法确定（该 turn 无结构化迭代，或迭代记录都没有 created_at
+// —— 老数据），调用方回落为独立的 standalone 标记行（基本兼容）。
+func compactionIteration(turnIterMap map[uint64][]sqlite.IterationRecord, turnID uint64, ts time.Time) (int, bool) {
+	if turnID == 0 || ts.IsZero() {
+		return 0, false
+	}
+	recs, ok := turnIterMap[turnID]
+	if !ok || len(recs) == 0 {
+		return 0, false
+	}
+	after, anyTS := 0, false
+	for _, rec := range recs {
+		if rec.CreatedAt.IsZero() {
+			continue
+		}
+		anyTS = true
+		if rec.CreatedAt.Before(ts) && rec.Iteration > after {
+			after = rec.Iteration
+		}
+	}
+	if !anyTS {
+		return 0, false
+	}
+	return after, true
 }
 
 func deriveTurnIDs(msgs []llm.ChatMessage) {

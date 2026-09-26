@@ -3,6 +3,7 @@ package channel
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"xbot/llm"
 	"xbot/storage/sqlite"
@@ -11,87 +12,136 @@ import (
 // compressMarker 构造一个压缩标记行 —— 落库/回放形态：role=user、turn_id=0、
 // content 前缀 "[Compacted context]"（见 storage.replayDisplayRecords 与
 // agent/compress.go 的 llm.NewUserMessage("[Compacted context]\n\n"+summary)）。
-func compressMarker(summary string) llm.ChatMessage {
-	return llm.ChatMessage{Role: "user", Content: "[Compacted context]\n\n" + summary}
+func compressMarker(summary string, ts time.Time) llm.ChatMessage {
+	return llm.ChatMessage{Role: "user", Content: "[Compacted context]\n\n" + summary, Timestamp: ts}
 }
 
-// 复现（P0，2026-09-26 用户报告「发了个继续结果前端显示压缩了」）：
+func findTurnRow(t *testing.T, out []HistoryMessage, turnID uint64) *HistoryMessage {
+	t.Helper()
+	for i := range out {
+		if out[i].Role == "assistant" && out[i].TurnID == turnID {
+			return &out[i]
+		}
+	}
+	return nil
+}
+
+func hasStandaloneCompactMarker(out []HistoryMessage) bool {
+	for _, h := range out {
+		if h.Standalone && strings.HasPrefix(strings.TrimSpace(h.Content), "[Compacted context]") {
+			return true
+		}
+	}
+	return false
+}
+
+// 重新设计（2026-09-26，用户：「如果真的是在一个 turn 中间压缩的，应该插在 Iter
+// 中间，跟 Iter 同级渲染，类似 Cursor 的 context summarized」）：
 //
-// 压缩发生在 turn 3 **中间**（compress 记录的 id 夹在 turn 3 的消息之间），
-// 压缩标记行的 turn_id=0。turn 3 之后才有下一个 user 行（turn 4）。旧
-// deriveTurnIDs Pass 1（反向扫描）把 turn_id=0 的 user 行绑到**后面最近的
-// user 行**的 turn → 标记被绑到 turn 4 ⇒ 前端 historyToReplaced「每 turn 只取
-// 第一条 user」⇒ 标记抢占 turn 4 的 user 槽位，**顶掉用户真正发的消息**。
+// 压缩由 agent.maybeCompress 在 LLM 请求前触发 ⇒ 恒在**迭代边界** ⇒ 归属「它所在的
+// 那个 turn」，渲染在**迭代之间**。后端把它挂到该 turn 的 assistant 行
+// （`Compactions` + `AfterIteration`），而不是独立的 standalone 行。
 //
-// 正确契约：压缩标记是「无 turn 的独立展示行」——绝不参与 turn 绑定，
-// 带 standalone + 时间锚点（= 走到它时已知的最新 turn，此处 3），前端据此
-// 插回原位（turn 3 之后、turn 4 之前），且**绝不占用任何 turn 的 user 槽位**。
-func TestCompactMarker_NotBoundToFollowingTurn(t *testing.T) {
+// 定位 = 该 turn 中 created_at 早于压缩时刻的最大迭代号（此处迭代 1 已在压缩前、
+// 迭代 2 在压缩后 ⇒ AfterIteration=1）。
+func TestCompactMarker_AttachedToTurnAsInlineCompaction(t *testing.T) {
+	base := time.Date(2026, 9, 26, 5, 0, 0, 0, time.UTC)
+	markerTS := base.Add(41 * time.Minute) // 05:41（示例 tenant 的真实压缩时刻）
 	msgs := []llm.ChatMessage{
 		{Role: "user", Content: "turn3 的用户消息", TurnID: 3},
 		{Role: "assistant", Content: "turn3 迭代", TurnID: 3},
-		compressMarker("context compacted summary"),
+		compressMarker("context compacted summary", markerTS),
 		{Role: "assistant", Content: "turn3 继续迭代", TurnID: 3},
 		{Role: "user", Content: "继续优化到 7ms，你的上下文无限", TurnID: 4},
 		{Role: "assistant", Content: "turn4 迭代", TurnID: 4},
 	}
-
-	out := ConvertMessagesToHistory(msgs)
-
-	var marker *HistoryMessage
-	for i := range out {
-		if strings.HasPrefix(strings.TrimSpace(out[i].Content), "[Compacted context]") {
-			marker = &out[i]
-			break
-		}
-	}
-	if marker == nil {
-		t.Fatalf("压缩标记必须出现在历史里，got %+v", out)
-	}
-	// ① 绝不绑定到 turn 4（本 bug 的直接症状）——否则前端它会顶掉用户消息。
-	if marker.TurnID == 4 {
-		t.Fatalf("压缩标记被错误绑定到 turn 4 —— 会顶掉用户的「继续」消息（P0 复现）: %+v", marker)
-	}
-	if marker.TurnID != 0 {
-		t.Fatalf("压缩标记必须保持 turnID=0（无 turn 的独立行），got %d: %+v", marker.TurnID, marker)
-	}
-	// ② 必须是 standalone + 锚点 = 它所在的 turn（3），前端按锚点插回原位。
-	if !marker.Standalone {
-		t.Fatalf("压缩标记必须是 standalone（前端据此跳过 bindTurnIDs 绑定）: %+v", marker)
-	}
-	if marker.AnchorTurnID != 3 {
-		t.Fatalf("压缩标记锚点应为 3（发生在 turn 3 中间），got %d: %+v", marker.AnchorTurnID, marker)
-	}
-}
-
-// 结构化迭代路径（Web 实际走的 ConvertMessagesToHistoryWithIterations）同样必须
-// 不把压缩标记绑到后续 turn —— 这条路径有自己的 deriveTurnIDs 调用。
-func TestCompactMarker_StructuredPath_NotBoundToFollowingTurn(t *testing.T) {
-	msgs := []llm.ChatMessage{
-		{Role: "user", Content: "turn3 的用户消息", TurnID: 3},
-		{Role: "assistant", Content: "turn3 迭代", TurnID: 3},
-		compressMarker("summary"),
-		{Role: "assistant", Content: "turn3 继续", TurnID: 3},
-		{Role: "user", Content: "继续优化到 7ms", TurnID: 4},
-		{Role: "assistant", Content: "turn4 迭代", TurnID: 4},
-	}
 	turnIterMap := map[uint64][]sqlite.IterationRecord{
-		3: {{Iteration: 1, Content: "turn3 迭代"}, {Iteration: 2, Content: "turn3 继续"}},
-		4: {{Iteration: 1, Content: "turn4 迭代"}},
+		3: {
+			{Iteration: 1, Content: "turn3 迭代", CreatedAt: base.Add(10 * time.Minute)},
+			{Iteration: 2, Content: "turn3 继续迭代", CreatedAt: base.Add(50 * time.Minute)},
+		},
+		4: {{Iteration: 1, Content: "turn4 迭代", CreatedAt: base.Add(60 * time.Minute)}},
 	}
 
 	out := ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
 
+	// ① 绝无独立的压缩标记行（它现在内联在 turn 里）。
+	if hasStandaloneCompactMarker(out) {
+		t.Fatalf("压缩标记不应是独立行（应内联在 turn 的 Compactions 上）: %+v", out)
+	}
+	// ② 归属正确的 turn（3）—— 绝不是下一个 turn（4，用户消息所在 turn）。
+	turn3 := findTurnRow(t, out, 3)
+	if turn3 == nil {
+		t.Fatalf("turn 3 的 assistant 行必须存在: %+v", out)
+	}
+	if len(turn3.Compactions) != 1 {
+		t.Fatalf("turn 3 必须带 1 个内联压缩点，got %d: %+v", len(turn3.Compactions), turn3.Compactions)
+	}
+	c := turn3.Compactions[0]
+	if c.AfterIteration != 1 {
+		t.Fatalf("AfterIteration 应为 1（迭代 1 在压缩前、迭代 2 在压缩后），got %d", c.AfterIteration)
+	}
+	if !strings.Contains(c.Content, "context compacted summary") {
+		t.Fatalf("内联压缩点必须带摘要正文，got %q", c.Content)
+	}
+	// ③ 用户消息所在的 turn 4 不得被污染。
+	turn4 := findTurnRow(t, out, 4)
+	if turn4 != nil && len(turn4.Compactions) != 0 {
+		t.Fatalf("turn 4 不得带压缩点（用户消息所在 turn）: %+v", turn4.Compactions)
+	}
+}
+
+// 老数据（无结构化迭代 ⇒ 无法定位迭代位置）回落为独立的 standalone 标记行 ——
+// 前端仍支持该形态（基本兼容），信息不丢。
+func TestCompactMarker_LegacyFallbackStandaloneWhenNoIterations(t *testing.T) {
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "turn3 的用户消息", TurnID: 3},
+		{Role: "assistant", Content: "turn3 迭代", TurnID: 3},
+		compressMarker("summary", time.Now()),
+		{Role: "user", Content: "继续优化到 7ms", TurnID: 4},
+		{Role: "assistant", Content: "turn4 迭代", TurnID: 4},
+	}
+	// 无结构化迭代（turnIterMap 缺失 ⇒ 走 legacy 转换路径）。
+	out := ConvertMessagesToHistory(msgs)
+
+	if !hasStandaloneCompactMarker(out) {
+		t.Fatalf("无结构化迭代时压缩标记必须回落为 standalone 行: %+v", out)
+	}
 	for _, h := range out {
-		if strings.HasPrefix(strings.TrimSpace(h.Content), "[Compacted context]") {
+		if h.Standalone && strings.HasPrefix(strings.TrimSpace(h.Content), "[Compacted context]") {
 			if h.TurnID != 0 {
-				t.Fatalf("结构化路径：压缩标记不得绑 turn（会顶掉用户消息），got turnID=%d: %+v", h.TurnID, h)
+				t.Fatalf("standalone 标记 turnID 必须保持 0，got %d", h.TurnID)
 			}
-			if !h.Standalone || h.AnchorTurnID != 3 {
-				t.Fatalf("结构化路径：压缩标记必须 standalone + anchor=3，got %+v", h)
+			if h.AnchorTurnID != 3 {
+				t.Fatalf("standalone 标记锚点应为 3（发生在 turn 3 中间），got %d", h.AnchorTurnID)
 			}
-			return
 		}
 	}
-	t.Fatalf("压缩标记未出现在结构化历史里: %+v", out)
+	// 用户消息绝不被顶掉（turn 4 的 user 行仍在）。
+	var turn4User *HistoryMessage
+	for i := range out {
+		if out[i].Role == "user" && out[i].TurnID == 4 {
+			turn4User = &out[i]
+		}
+	}
+	if turn4User == nil || !strings.Contains(turn4User.Content, "继续优化到 7ms") {
+		t.Fatalf("用户消息必须保留（P0 不得回归）: %+v", out)
+	}
+}
+
+// 迭代记录缺 created_at（老数据）时同样回落 standalone —— 绝不把压缩点错放到
+// 无法验证的位置。
+func TestCompactionIteration_NoTimestampFallsBack(t *testing.T) {
+	recs := map[uint64][]sqlite.IterationRecord{
+		3: {{Iteration: 1}, {Iteration: 2}}, // 无 CreatedAt
+	}
+	if _, ok := compactionIteration(recs, 3, time.Now()); ok {
+		t.Fatal("迭代无 created_at 时必须回落（ok=false）")
+	}
+	if _, ok := compactionIteration(recs, 0, time.Now()); ok {
+		t.Fatal("无 turn 时必须回落（ok=false）")
+	}
+	if _, ok := compactionIteration(recs, 3, time.Time{}); ok {
+		t.Fatal("压缩时刻缺失时必须回落（ok=false）")
+	}
 }

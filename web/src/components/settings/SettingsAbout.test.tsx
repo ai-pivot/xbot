@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import '@testing-library/jest-dom/vitest'
 
 // 面板与服务端只经 postAPI('/api/rpc', {method, params}) 通信。
@@ -177,41 +177,45 @@ describe('SettingsAbout（关于 → 版本/更新/重启）', () => {
 
   it('重启：托管方式未知（managedBy=none）展示中性提示（不假定是否自动恢复）', async () => {
     mockRPC({ get_system_info: sysInfo({ managedBy: 'none' }) })
-    renderWithProviders(<SettingsAbout />)
+    const { container } = renderWithProviders(<SettingsAbout />)
+    // 锚定到组件自身容器 —— 避免跨测试 DOM/i18n 残留导致 flaky。
+    const view = within(container)
     // 中性提示：提到进程管理器会自动恢复 + 手动启动需自行重启，不假定任何一方
     expect(
-      await screen.findByText(/进程管理器|process manager/i),
+      await view.findByText(/进程管理器|process manager/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/手动启动|manually started/i),
+      view.getByText(/手动启动|manually started/i),
     ).toBeInTheDocument()
     // 不再出现「不会自动恢复」这种绝对化断言
     expect(
-      screen.queryByText(/不会自动恢复|will NOT come back/i),
+      view.queryByText(/不会自动恢复|will NOT come back/i),
     ).not.toBeInTheDocument()
     // 点击重启 → 出现确认描述 + 确认按钮（两步确认，防误触）
-    fireEvent.click(screen.getByRole('button', { name: /重启服务|Restart server/ }))
+    fireEvent.click(view.getByRole('button', { name: /重启服务|Restart server/ }))
     expect(
-      screen.getByText(/进行中的任务会被中断|In-flight turns are interrupted/i),
+      view.getByText(/进行中的任务会被中断|In-flight turns are interrupted/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: /确认重启|Confirm restart/ }),
+      view.getByRole('button', { name: /确认重启|Confirm restart/ }),
     ).toBeInTheDocument()
   })
 
   it('重启：检测到托管（systemd/supervisord）展示托管提示（中性，按其策略恢复）', async () => {
     mockRPC({ get_system_info: sysInfo({ managedBy: 'supervisord' }) })
-    renderWithProviders(<SettingsAbout />)
+    const { container } = renderWithProviders(<SettingsAbout />)
+    // 锚定到组件自身容器 —— 全量套件里同文档的其它残留 DOM 会让 text 查询误命中（曾 flaky 红灯）。
+    const view = within(container)
     // 托管提示：检测到 manager 名 + 按其策略恢复（不承诺"一定自动重启"）
     await waitFor(() =>
-      expect(screen.getByText(/supervisord/)).toBeInTheDocument(),
+      expect(view.getByText(/supervisord/)).toBeInTheDocument(),
     )
     expect(
-      screen.getByText(/按其策略|per that manager/i),
+      view.getByText(/按其策略|per that manager/i),
     ).toBeInTheDocument()
     // 不显示"手动启动需自行重启"的未知托管提示
     expect(
-      screen.queryByText(/手动启动的服务需要您重新启动|must be restarted by hand/i),
+      view.queryByText(/手动启动的服务需要您重新启动|must be restarted by hand/i),
     ).not.toBeInTheDocument()
   })
 

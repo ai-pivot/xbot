@@ -30,6 +30,9 @@ export interface HistMsg {
   timestamp?: string
   id?: number
   iterations?: unknown[]
+  /** turn 内部发生过的压缩点（迭代边界；渲染在迭代之间，Cursor 式）——
+   *  `after_iteration` = 压缩发生在该迭代之后。老数据无此字段（回落独立行）。 */
+  compactions?: { after_iteration?: number; content?: string; timestamp?: string }[]
   /** TurnID of the turn that produced this message. 0 = untracked (old data
    *  before v50 migration). Used by MessageList to dedup committed history
    *  against the live store's active turn. */

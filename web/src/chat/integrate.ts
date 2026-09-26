@@ -20,6 +20,7 @@ import {
   type ChatMessage,
   type ProgressSnapshot,
   type TodoItem,
+  type WebCompaction,
   type WebIteration,
   type WebSubAgentProgress,
   type WebToolProgress,
@@ -103,15 +104,17 @@ export function historyToReplaced(
     // 多个 assistant 行（异常历史）合并：iterations 连接，content 取最后非空。
     const iterations = slot.assistants.flatMap((a) => a.iterations ?? [])
     const lastContent = [...slot.assistants].reverse().find((a) => a.content !== '')?.content ?? ''
+    // turn 内的压缩点（迭代之间内联渲染）。
+    const compactions = slot.assistants.flatMap((a) => a.compactions ?? [])
     // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
     // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
     const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)
     const nonEmptyIts = nonEmptyArr(iterations)
     const payload =
       nonEmptyIts !== null
-        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated)
+        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated, compactions)
         : nonEmptyStr(lastContent) !== null
-          ? commitViaText(nonEmptyStr(lastContent)!, [])
+          ? commitViaText(nonEmptyStr(lastContent)!, [], compactions)
           : null
     turns.push({
       id,
@@ -284,6 +287,8 @@ function rowToChatMessage(r: Row): ChatMessage {
         role: 'assistant',
         content: r.content,
         iterations: r.iterations as WebIteration[],
+        // turn 内压缩点（迭代之间内联渲染）——透传引用（memo 契约同上）。
+        compactions: r.compactions as WebCompaction[] | undefined,
         iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: false,

@@ -465,6 +465,10 @@ type IterationRecord struct {
 	// SubscriptionID is the owning subscription of the model (v62,
 	// model-subscription integration: the model never travels alone).
 	SubscriptionID string `json:"subscription_id"`
+	// CreatedAt = 该迭代记录落库时间（DB created_at，解析为 time.Time）。
+	// 用于把「turn 中间发生的压缩」（compress 记录的 created_at）定位到
+	// **它之后的迭代号** —— 压缩在迭代边界触发，渲染在迭代之间。
+	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
 // AppendIterationHistory inserts a single iteration record linked to a message.
@@ -492,7 +496,7 @@ func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 		return nil, err
 	}
 	rows, err := conn.Query(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
 		FROM iteration_history
 		WHERE tenant_id = ? AND turn_id = ?
 		ORDER BY iteration ASC
@@ -524,7 +528,7 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		args = append(args, id)
 	}
 	query := fmt.Sprintf(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
 		FROM iteration_history
 		WHERE tenant_id = ? AND turn_id IN (%s)
 		ORDER BY turn_id ASC, iteration ASC
@@ -536,9 +540,11 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 	defer rows.Close()
 	for rows.Next() {
 		var rec IterationRecord
-		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID); err != nil {
+		var createdAt string
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt); err != nil {
 			continue
 		}
+		rec.CreatedAt = parseSQLiteTime(createdAt)
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
 	}
 	return result, nil
@@ -548,9 +554,11 @@ func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
 	var records []IterationRecord
 	for rows.Next() {
 		var rec IterationRecord
-		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID); err != nil {
+		var createdAt string
+		if err := rows.Scan(&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools, &rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs, &rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt); err != nil {
 			continue
 		}
+		rec.CreatedAt = parseSQLiteTime(createdAt)
 		records = append(records, rec)
 	}
 	return records, nil
@@ -565,7 +573,7 @@ func (s *SessionService) GetAllIterationHistory(tenantID int64) ([]IterationReco
 		return nil, err
 	}
 	rows, err := conn.Query(`
-		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
 		FROM iteration_history
 		WHERE tenant_id = ?
 		ORDER BY turn_id ASC, iteration ASC
