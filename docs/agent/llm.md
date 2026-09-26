@@ -20,6 +20,7 @@
 - **Anthropic `hasContent` must be set on ALL content-emitting branches, not just `text_delta`.** `thinking_delta`, `input_json_delta`, and `content_block_start`→`tool_use` all emit events to eventChan but were missing `hasContent = true`. Without this, a stream truncated during thinking-only or tool-use-only responses has `hasContent=false` → EOF sends `EventDone` instead of `EventError` → `stream.go` safety net (`gotDone`) doesn't fire → three layers of defense all penetrated → truncated content silently dropped (`anthropic.go` `streamAnthropic`).
 - DeepSeek duplicates `reasoning_content` in Content — deduplicate with TrimSpace (`openai.go:584`)
 - Empty stream deltas (all nil) cause panic if not skipped (`openai.go:763`)
+- A cleanly closed OpenAI-compatible stream with zero decoded chunks is an error: emit `EventError` so the retry layer can recover, and include the bounded response-body tail in diagnostics (`openai.go:1261`)
 - `finish_reason` in intermediate chunks causes premature termination — check only after loop ends (`openai.go:788`)
 - Must send Usage before Done event (`openai.go:836`)
 - Provider without `finish_reason` but with tool_calls: infer reason as tool_calls (`openai.go:844`)
