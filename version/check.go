@@ -28,10 +28,39 @@ const (
 
 // githubRelease represents the GitHub API response for a release.
 type githubRelease struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-	Name    string `json:"name"`
-	Body    string `json:"body"`
+	TagName     string    `json:"tag_name"`
+	HTMLURL     string    `json:"html_url"`
+	Name        string    `json:"name"`
+	Body        string    `json:"body"`
+	PublishedAt time.Time `json:"published_at"`
+}
+
+// ReleaseInfo is the publicly-visible subset of a GitHub release needed by
+// consumers outside this package (web update panel, selfupdate). It exists so
+// internal/selfupdate does not depend on the private githubRelease type.
+type ReleaseInfo struct {
+	Tag         string    // release tag (e.g. "v1.2.3", "nightly")
+	URL         string    // release page URL
+	Name        string    // release name (nightly: the version string)
+	PublishedAt time.Time // when the release was published
+}
+
+// FetchLatestRelease returns the latest release for the channel, or nil when
+// none is reachable (network error, or the channel has no releases yet).
+// Exported for the web update panel (internal/selfupdate).
+func FetchLatestRelease(ctx context.Context, ch ReleaseChannel) *ReleaseInfo {
+	r := FetchLatestByChannel(ctx, ch)
+	if r == nil {
+		return nil
+	}
+	return &ReleaseInfo{Tag: r.TagName, URL: r.HTMLURL, Name: r.Name, PublishedAt: r.PublishedAt}
+}
+
+// IsNewer reports whether b is newer than a (semver comparison, falling back
+// to string inequality for non-semver values such as nightly version strings).
+// Exported for internal/selfupdate (web update panel).
+func IsNewer(a, b string) bool {
+	return isNewer(a, b)
 }
 
 // UpdateInfo holds the result of an update check.

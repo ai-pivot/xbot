@@ -75,6 +75,12 @@ jobs:
 
       - name: Build
         working-directory: web
+        # VITE_APP_VERSION/VITE_APP_CHANNEL flow into __BUILD_INFO__ (vite
+        # define) so the web About panel can show the frontend build identity
+        # alongside the backend version (same source as the binary ldflags).
+        env:
+          VITE_APP_VERSION: ${{ needs.prepare.outputs.version }}
+          VITE_APP_CHANNEL: ${{ needs.prepare.outputs.channel }}
         run: npm ci --fetch-retries=5 --fetch-retry-maxtimeout=120000 && npm run build
 
       - name: Package

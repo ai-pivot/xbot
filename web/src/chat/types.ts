@@ -13,7 +13,7 @@
  * 断言（构造函数内部）——渲染层/reducer 一律禁止（ESLint no-as 规则管 辖）。
  */
 
-import type { GoalInfo, QueueItemPayload, TodoItem, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
+import type { GoalInfo, QueueItemPayload, TodoItem, WebCompaction, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 
 // ─── Brand：ID 防混淆 ─────────────────────────────────────────
 
@@ -129,15 +129,16 @@ export type TurnPhase =
  * 不存在 { content:"", iterations:[] } 的组合 —— 构造函数签名不接受。
  */
 export type CommittedPayload =
-  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number }
-  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number }
+  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
+  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
 
 /** 唯一合法的 committed 构造入口（reducer 内使用）。 */
 export function commitViaText(
   content: NonEmptyS,
   iterations: readonly WebIteration[],
+  compactions?: readonly WebCompaction[],
 ): CommittedPayload {
-  return { via: 'text', content, iterations }
+  return { via: 'text', content, iterations, compactions }
 }
 
 /** fold 构造：iterations 必须非空（类型强制）；content 可为空字符串。 */
@@ -145,8 +146,9 @@ export function commitViaFold(
   iterations: NonEmpty<WebIteration>,
   content: string,
   iterationsTruncated = 0,
+  compactions?: readonly WebCompaction[],
 ): CommittedPayload {
-  return { via: 'fold', iterations, content, iterationsTruncated }
+  return { via: 'fold', iterations, content, iterationsTruncated, compactions }
 }
 
 // ─── Turn / ChatState ─────────────────────────────────────────

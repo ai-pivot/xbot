@@ -129,6 +129,14 @@ curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/instal
 Re-running the installer is the upgrade path: the binary is replaced, `config.json`
 and the database are left untouched.
 
+You can also upgrade from the Web UI: **Settings → About** shows both the backend
+and frontend versions (including the commit for DEV builds), with **Check for
+updates → one-click update** (downloads the new binary + web dist + built-in
+plugins, checksum-verified), then a **Restart server** button to apply it.
+Processes supervised by systemd/launchd come back automatically; a **manually
+started process (e.g. `xbot-cli serve`) stays down after restart and must be
+restarted by hand** — the panel warns about this beforehand.
+
 ## Uninstall
 
 ```bash

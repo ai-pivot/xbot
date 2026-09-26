@@ -84,6 +84,44 @@ func TestReplayForDisplayKeepsPreCompressionMessages(t *testing.T) {
 	}
 }
 
+// TestReplayForDisplay_CompactMarkerCarriesTimestamp —— 压缩标记必须带**非零**
+// Timestamp（= compress 记录的 created_at）。
+//
+// 为什么（2026-09-26 复查抓到的真实链路 bug）：`llm.ChatMessage.Timestamp` 的 tag 是
+// `json:"-"` ⇒ snapshot JSON **不持久化**它 ⇒ 从 snapshot 反序列化出来的标记 Timestamp
+// 是零值。而下游 `channel.compactionIteration` 用「标记时刻 vs 迭代 created_at」定位
+// 「压缩发生在哪个迭代之后」（渲染在迭代之间）—— 零值会因 `ts.IsZero()` 永远回落成
+// 独立行 ⇒ **内联渲染永不生效**（单测里手动构造 msgs 会掩盖它，所以必须守护真实链路）。
+func TestReplayForDisplay_CompactMarkerCarriesTimestamp(t *testing.T) {
+	_, svc, tenantID := newHistoryTestService(t)
+
+	svc.AppendMessage(tenantID, llm.NewUserMessage("old"))
+	if _, err := svc.AppendContextSnapshot(tenantID, HistoryRecordCompress, []llm.ChatMessage{
+		{Role: "user", Content: "[Compacted context]\n\nSummary"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.AppendMessage(tenantID, llm.NewUserMessage("new"))
+
+	displayReplay, err := svc.ReplayForDisplay(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range displayReplay.Messages {
+		if !strings.HasPrefix(m.Content, "[Compacted context]") {
+			continue
+		}
+		found = true
+		if m.Timestamp.IsZero() {
+			t.Fatalf("压缩标记的 Timestamp 是零值 —— compactionIteration 会回落，内联渲染永不生效: %+v", m)
+		}
+	}
+	if !found {
+		t.Fatal("ReplayForDisplay 必须包含 [Compacted context] 标记")
+	}
+}
+
 // TestGetHistoryBeforeForDisplayPagination verifies that GetHistoryBeforeForDisplay
 // returns all messages (including pre-compression) and the correct total count
 // for has_more pagination.

@@ -20,6 +20,7 @@ import {
   type ChatMessage,
   type ProgressSnapshot,
   type TodoItem,
+  type WebCompaction,
   type WebIteration,
   type WebSubAgentProgress,
   type WebToolProgress,
@@ -29,6 +30,11 @@ import type { Row } from './derive'
 
 // ─── history → history_replaced ───────────────────────────────
 
+/** 压缩标记行（`[Compacted context]\n\n<summary>`）—— 见 agent/compress.go。 */
+function isCompactMarkerRow(m: Pick<ChatMessage, 'role' | 'content'>): boolean {
+  return m.role === 'user' && m.content.trimStart().startsWith('[Compacted context]')
+}
+
 export function historyToReplaced(
   messages: readonly ChatMessage[],
   initialProgress: unknown,
@@ -37,6 +43,8 @@ export function historyToReplaced(
   // 命令行（`!cmd`）落库行（standalone + 锚点）—— 见 HistoryRecordCommand。
   const standalone: LegacyRow[] = []
   const byTurn = new Map<number, { user: ChatMessage | null; assistants: ChatMessage[] }>()
+  // 「走到这一行时已知的最新 turn」—— 压缩标记回落为 standalone 时的锚点。
+  let seenTurnID = 0
 
   for (const m of messages) {
     if (m.role === 'system') continue
@@ -50,6 +58,10 @@ export function historyToReplaced(
       // 命令行（`!cmd` / slash）落库行：**无 turn 的独立行** ⇒ 进 standalone 段并带
       // 时间锚点（后端转换时按行序算出）—— 与实时渲染同一条路径：turnID 保持 0，
       // sortTurnKey 按 anchor+0.5 插回原位；锚点无效则沉底（绝不排到列表顶部）。
+      // 压缩标记的 standalone 回落形态也走这里（后端给的 AnchorTurnID 权威——
+      // 绝不覆盖成前端自己推的 seenTurnID）。
+      const anchor = m.anchorTurnID ?? 0
+      if (anchor > seenTurnID) seenTurnID = anchor
       standalone.push({
         id: m.id,
         role: m.role === 'user' ? 'user' : 'assistant',
@@ -59,7 +71,28 @@ export function historyToReplaced(
         timestamp: m.timestamp,
         dbID: m.dbID,
         standalone: true,
-        anchorTurnID: m.anchorTurnID ?? 0,
+        anchorTurnID: anchor,
+      })
+      continue
+    }
+    // ⛔ 域不变量（P0 2026-09-26）：压缩标记（`[Compacted context]`）**永远不是
+    // 某个 turn 的 user 消息** —— 若让它进入下面的 turn user 槽位，「每 turn 只取
+    // 第一条 user」会让它（id 更小、先到）顶掉用户真实消息。
+    // 新后端把它作为 turn 的 `compactions` 下发（走上面的 compactions 通道）；
+    // 但**旧后端 / 存量数据**仍可能把它绑到后续 turn（deriveTurnIDs 的历史 bug），
+    // 部署也存在前/后端不同步的窗口 ⇒ 这里兜住：路由到 standalone 段
+    // （锚点 = 走到它时已知的最新 turn）。
+    if (isCompactMarkerRow(m)) {
+      standalone.push({
+        id: m.id,
+        role: 'user',
+        content: m.content,
+        iterations: [],
+        iterationsTruncated: 0,
+        timestamp: m.timestamp,
+        dbID: m.dbID,
+        standalone: true,
+        anchorTurnID: seenTurnID,
       })
       continue
     }
@@ -75,6 +108,7 @@ export function historyToReplaced(
       })
       continue
     }
+    if (m.turnID > seenTurnID) seenTurnID = m.turnID
     let slot = byTurn.get(m.turnID)
     if (!slot) {
       slot = { user: null, assistants: [] }
@@ -103,15 +137,18 @@ export function historyToReplaced(
     // 多个 assistant 行（异常历史）合并：iterations 连接，content 取最后非空。
     const iterations = slot.assistants.flatMap((a) => a.iterations ?? [])
     const lastContent = [...slot.assistants].reverse().find((a) => a.content !== '')?.content ?? ''
+    // turn 内的压缩点（迭代之间内联渲染）；无则 undefined（不留空数组引用）。
+    const compactionsRaw = slot.assistants.flatMap((a) => a.compactions ?? [])
+    const compactions = compactionsRaw.length > 0 ? compactionsRaw : undefined
     // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
     // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
     const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)
     const nonEmptyIts = nonEmptyArr(iterations)
     const payload =
       nonEmptyIts !== null
-        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated)
+        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated, compactions)
         : nonEmptyStr(lastContent) !== null
-          ? commitViaText(nonEmptyStr(lastContent)!, [])
+          ? commitViaText(nonEmptyStr(lastContent)!, [], compactions)
           : null
     turns.push({
       id,
@@ -284,6 +321,8 @@ function rowToChatMessage(r: Row): ChatMessage {
         role: 'assistant',
         content: r.content,
         iterations: r.iterations as WebIteration[],
+        // turn 内压缩点（迭代之间内联渲染）——透传引用（memo 契约同上）。
+        compactions: r.compactions as WebCompaction[] | undefined,
         iterationsTruncated: r.iterationsTruncated ?? 0,
         timestamp: '',
         isPartial: false,

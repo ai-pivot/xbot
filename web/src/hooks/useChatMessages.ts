@@ -218,6 +218,16 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
       // 算出）。渲染层据此走 standalone 路径插回原位 —— 刷新后仍在、顺序一致。
       standalone: m.standalone === true,
       anchorTurnID: typeof m.anchor_turn_id === 'number' ? m.anchor_turn_id : undefined,
+      // turn 内压缩点（迭代之间内联渲染）—— 后端转成 `compactions`。
+      compactions: Array.isArray(m.compactions)
+        ? m.compactions
+            .filter((c) => c && typeof c.after_iteration === 'number')
+            .map((c) => ({
+              afterIteration: typeof c.after_iteration === 'number' ? c.after_iteration : 0,
+              content: typeof c.content === 'string' ? c.content : undefined,
+              timestamp: typeof c.timestamp === 'string' ? c.timestamp : undefined,
+            }))
+        : undefined,
     })
   }
 

@@ -264,6 +264,25 @@ type HistoryMessage struct {
 	// 前端按 anchor+0.5 排序 ⇒ 落在该 turn 的所有行之后、下一个 turn 之前（0 = 无锚点，
 	// 前端回落沉底 —— 绝不排到列表顶部）。
 	AnchorTurnID uint64 `json:"anchor_turn_id,omitempty"`
+	// Compactions = 该 turn **内部**发生过的上下文压缩点（压缩发生在迭代边界 ⇒
+	// 渲染在迭代之间、与迭代同级，Cursor 式 "context summarized"）。为空 = 该 turn
+	// 没有压缩。老数据（无结构化迭代、无法定位迭代位置）回落为独立的 standalone
+	// 标记行（见 Standalone/AnchorTurnID）。
+	Compactions []HistoryCompaction `json:"compactions,omitempty"`
+}
+
+// HistoryCompaction marks one context compaction that happened DURING a turn.
+// The compaction is triggered before an LLM request (agent.maybeCompress), i.e.
+// at an iteration boundary — so it renders inline between iterations, at the
+// same level as an iteration, instead of as a between-turns row.
+type HistoryCompaction struct {
+	// AfterIteration = the compaction happened AFTER this iteration number of
+	// the owning turn (0 = before the turn's first iteration).
+	AfterIteration int `json:"after_iteration"`
+	// Content = the "[Compacted context]\n\n<summary>" body (expandable in UI).
+	Content string `json:"content,omitempty"`
+	// Timestamp = when the compaction was recorded (compress record created_at).
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
 // HistoryCompression describes the original DB nodes replaced by one

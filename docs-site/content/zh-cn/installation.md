@@ -118,6 +118,11 @@ curl -fsSL https://raw.githubusercontent.com/ai-pivot/xbot/master/scripts/instal
 
 重跑安装脚本即可：二进制覆盖，`config.json` 与数据库原样保留。
 
+也可以直接在 Web UI 里升级：**设置 → 关于** 面板展示前后端版本（含 DEV 构建的 commit），
+支持「检查更新 → 一键更新」（下载新二进制 + Web 产物 + 内置插件，校验和验证），
+更新完成后点「重启服务」生效。systemd/launchd 托管的进程会自动拉起；
+**手动启动（如 `xbot-cli serve`）的进程重启后不会自动恢复，需要自行重新启动**（面板会提前警告）。
+
 ## 卸载
 
 ```bash

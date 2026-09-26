@@ -55,6 +55,7 @@
 import { memo, type ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 import { IterationGroup } from './IterationHistory'
+import { CompactionDivider } from './CompactionDivider'
 import { LiveIteration } from './LiveIteration'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
 import { reasoningKey } from './reasoningOpenState'
@@ -69,10 +70,12 @@ import {
 } from './iterationHeight'
 import { createSettleScheduler, type SettleScheduler } from './iterationSettleScheduler'
 import { frameScheduler } from '@/lib/frameScheduler'
-import type { ProgressSnapshot, WebIteration } from '@/types/shared'
+import type { ProgressSnapshot, WebCompaction, WebIteration } from '@/types/shared'
 
 interface TurnBodyProps {
   iterations: WebIteration[]
+  /** turn 内的压缩点（迭代之间内联渲染，Cursor 式）—— 见 WebCompaction。 */
+  compactions?: WebCompaction[]
   /** Live progress for an in-flight turn; null for committed history. */
   liveProgress?: ProgressSnapshot | null
   /** TurnID for data-attribute debugging (data-turn-id on each block). */
@@ -87,6 +90,8 @@ interface TurnBodyProps {
 interface CommittedTurnProps {
   /** 连续前缀迭代（增量扫描于 iterations —— 无变化时引用稳定）。 */
   contiguous: WebIteration[]
+  /** 迭代号 → 该迭代块之后要渲染的压缩点（折叠 tool-only run 后仍能落对位置）。 */
+  compactionByIter?: ReadonlyMap<number, WebCompaction[]>
   turnID?: number
   heightScope?: string
 }
@@ -168,6 +173,8 @@ interface IterationBlockProps {
   /** muted 时的占位高度（**必须**是实测值，绝不允许常数）。 */
   mutedHeight?: number
   register: (hKey: string, el: HTMLDivElement | null) => void
+  /** 该迭代块之后要渲染的压缩点（迭代之间内联，Cursor 式）。 */
+  compactions?: WebCompaction[]
 }
 
 /**
@@ -183,6 +190,7 @@ const IterationBlock = memo(function IterationBlock({
   muted,
   mutedHeight,
   register,
+  compactions,
 }: IterationBlockProps) {
   const elRef = useRef<HTMLDivElement | null>(null)
   const hKey = iterationHeightKey(turnID, iter.iteration)
@@ -213,6 +221,10 @@ const IterationBlock = memo(function IterationBlock({
           {iter.subAgents && iter.subAgents.length > 0 && (
             <SubAgentProgressTree nodes={iter.subAgents} />
           )}
+          {/* 该迭代之后的压缩点（迭代之间、与迭代同级渲染 —— Cursor 式）。 */}
+          {compactions?.map((c, i) => (
+            <CompactionDivider key={`compact-${iter.iteration}-${i}`} compaction={c} />
+          ))}
         </>
       )}
     </div>
@@ -226,6 +238,8 @@ interface CommittedChunkProps {
   /** 与 items 一一对应：undefined = 渲染内容；number = 窗口化卸载并以此高度占位。 */
   mutedHeights: (number | undefined)[]
   register: (hKey: string, el: HTMLDivElement | null) => void
+  /** 迭代号 → 该迭代块之后的压缩点（引用稳定 ⇒ 不击穿 chunk memo）。 */
+  compactionByIter?: ReadonlyMap<number, WebCompaction[]>
 }
 
 /**
@@ -240,6 +254,7 @@ const CommittedChunk = memo(function CommittedChunk({
   turnID,
   mutedHeights,
   register,
+  compactionByIter,
 }: CommittedChunkProps) {
   return (
     <>
@@ -251,6 +266,7 @@ const CommittedChunk = memo(function CommittedChunk({
           muted={mutedHeights[i] !== undefined}
           mutedHeight={mutedHeights[i]}
           register={register}
+          compactions={compactionByIter?.get(iter.iteration)}
         />
       ))}
     </>
@@ -265,6 +281,9 @@ interface ChunkEntry {
   mutedHeights: (number | undefined)[]
   /** 上一帧创建的元素对象（props 未变时原样复用 → React bail）。 */
   element: ReactElement
+  /** 压缩点映射的引用 —— 变了（如 reload 后压缩点到达/改变）必须重建该 chunk，
+   *  否则复用的旧元素里没有新的内联分隔。 */
+  compactionByIter?: ReadonlyMap<number, WebCompaction[]>
 }
 
 // ── 连续前缀的增量扫描（PERF-3 #4） ─────────────────────────────────────────
@@ -373,7 +392,7 @@ function extendContiguous(prev: ContiguousScan | null, iters: WebIteration[]): C
  * CommittedTurn — 已提交迭代的唯一渲染点（memo 边界 + 迭代级窗口化 + 冻结复核 +
  * 分块冻结/元素复用）。
  */
-const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightScope }: CommittedTurnProps) {
+const CommittedTurn = memo(function CommittedTurn({ contiguous, compactionByIter, turnID, heightScope }: CommittedTurnProps) {
   const [, bumpTick] = useReducer((n: number) => n + 1, 0)
   const nearRef = useRef<Set<number>>(new Set())
   const elements = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -732,7 +751,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     const start = c * COMMITTED_CHUNK_SIZE
     const len = Math.min(COMMITTED_CHUNK_SIZE, total - start)
     const prev = cache.get(c)
-    if (prev !== undefined && prev.items.length === len) {
+    if (prev !== undefined && prev.items.length === len && prev.compactionByIter === compactionByIter) {
       // 1) items 只做指针比较（零分配）—— 同号覆盖/前缀被换也能立刻发现。
       let itemsSame = true
       for (let i = 0; i < len; i++) {
@@ -775,9 +794,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
             turnID={turnID}
             mutedHeights={heights}
             register={registerStable}
+            compactionByIter={compactionByIter}
           />
         )
-        cache.set(c, { items: prev.items, mutedHeights: heights, element })
+        cache.set(c, { items: prev.items, mutedHeights: heights, element, compactionByIter })
         collectPending(prev.items)
         chunks.push(element)
         continue
@@ -804,9 +824,10 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
         turnID={turnID}
         mutedHeights={heights}
         register={registerStable}
+        compactionByIter={compactionByIter}
       />
     )
-    cache.set(c, { items, mutedHeights: heights, element })
+    cache.set(c, { items, mutedHeights: heights, element, compactionByIter })
     collectPending(items)
     chunks.push(element)
   }
@@ -897,7 +918,16 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, turnID, heightSc
     for (const k of changedKeys) invalidateKey(k)
   })
 
-  return <>{chunks}</>
+  // 第一个迭代**之前**的压缩点（afterIteration=0 ⇒ anchor 0）。
+  const leading = compactionByIter?.get(0)
+  return (
+    <>
+      {leading?.map((c, i) => (
+        <CompactionDivider key={`compact-head-${i}`} compaction={c} />
+      ))}
+      {chunks}
+    </>
+  )
 })
 
 
@@ -927,6 +957,7 @@ function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
 
 export const TurnBody = memo(function TurnBody({
   iterations,
+  compactions,
   liveProgress,
   turnID,
   heightScope,
@@ -941,6 +972,26 @@ export const TurnBody = memo(function TurnBody({
   // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
   // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
   const merged = useMemo(() => mergeToolRuns(contiguous), [contiguous])
+  /**
+   * 把每个压缩点解析到**实际渲染的迭代块**上：anchor = merged 中「迭代号 ≤
+   * afterIteration 的最大迭代号」（0 = 第一个迭代之前）。折叠（tool-only run 合并
+   * 后迭代号跳号）也不会让压缩点丢失 —— 找不到就落到最近的更早块之后。
+   * 引用随 [merged, compactions] 稳定 ⇒ 不击穿 chunk memo。
+   */
+  const compactionByIter = useMemo(() => {
+    const map = new Map<number, WebCompaction[]>()
+    if (!compactions || compactions.length === 0) return map
+    for (const c of compactions) {
+      let anchor = 0
+      for (const it of merged) {
+        if (it.iteration <= c.afterIteration && it.iteration > anchor) anchor = it.iteration
+      }
+      const arr = map.get(anchor)
+      if (arr) arr.push(c)
+      else map.set(anchor, [c])
+    }
+    return map
+  }, [merged, compactions])
 
   return (
     <div
@@ -952,7 +1003,7 @@ export const TurnBody = memo(function TurnBody({
       }
       data-iter-total={contiguous.length}
     >
-      <CommittedTurn contiguous={merged} turnID={turnID} heightScope={heightScope} />
+      <CommittedTurn contiguous={merged} compactionByIter={compactionByIter} turnID={turnID} heightScope={heightScope} />
       {liveProgress && (
         <div
           className="iter-block"
