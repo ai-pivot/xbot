@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon-48.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- interactive-widget=resizes-content（Chrome 108+ / Firefox Android 132+）：
+         软键盘弹出时让【布局视口】收缩（默认 resizes-visual 只缩 visual viewport，
+         fixed inset-0 的输入框仍锚定被键盘盖住的布局视口底部 —— 2026-09-27 用户
+         报告「安卓浏览器键盘盖住输入框」的根因之一）。不认识该参数的浏览器
+         （iOS Safari / 老 Chrome / 国产 WebView）会直接忽略它，由 AppShell /
+         MobileAppShell 的 useKeyboardInset 补偿兜底 —— 两个机制天然互斥：
+         resizes-content 生效时 visualViewport ≈ innerHeight，补偿量算出来是 0。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#1e1e1e" />
     <meta name="description" content="xbot AI 智能对话助手" />
     <!-- iOS PWA support -->

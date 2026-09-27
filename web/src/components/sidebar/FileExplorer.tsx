@@ -19,8 +19,8 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { TouchContextMenuTrigger } from '@/components/ui/TouchContextMenuTrigger'
 import { toast } from 'sonner'
 import { statFile, parentPath, invalidateFsCache } from '@/hooks/useFileSystem'
 import type { TabManager } from '@/hooks/useTabManager'
@@ -367,7 +367,7 @@ function FileTreeNode({ node, depth, expanded, onToggleDir, onOpenFile, expandin
   return (
     <div>
       <ContextMenu>
-        <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+        <TouchContextMenuTrigger asChild>{row}</TouchContextMenuTrigger>
         <ContextMenuContent>
           <ContextMenuItem onSelect={() => onOpenFile(node)}>
             {t('sidebar.openInTab')}
