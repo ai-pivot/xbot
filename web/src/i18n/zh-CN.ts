@@ -223,6 +223,8 @@ const zhCN = {
     emptyAssistant: '（无文本输出）',
     emptyResponseWarning: 'LLM 本次没有返回文本内容，可能是模型输出异常或中途结束。',
     displayOnly: '仅展示',
+    /** v71 窗口化滚动回拉 divider：窗口之上还有 count 个未加载迭代。 */
+    iterWindowMore: '加载更早的 {{count}} 个迭代',
     emptyConversation: '在下方发送消息开始对话。',
     welcomeTitle: '欢迎使用 xbot',
     welcomeHint: '三步开始你的第一次对话：',

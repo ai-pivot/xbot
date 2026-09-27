@@ -71,7 +71,7 @@ import {
 } from './iterationHeight'
 import { createSettleScheduler, type SettleScheduler } from './iterationSettleScheduler'
 import { frameScheduler } from '@/lib/frameScheduler'
-import type { ProgressSnapshot, WebCompaction, WebIteration } from '@/types/shared'
+import type { ProgressSnapshot, WebCompaction, WebIteration, WebRunSummary } from '@/types/shared'
 
 interface TurnBodyProps {
   iterations: WebIteration[]
@@ -995,8 +995,8 @@ export const TurnBody = memo(function TurnBody({
     return [...iterations, ...virtual].sort((a, b) => a.iteration - b.iteration)
   }, [iterations, runSummaries])
   const scan = windowed ? null : extendContiguous(scanRef.current, iterations)
-  if (!windowed) scanRef.current = scan
-  const contiguous = windowed ? interleaved : scan.out
+  if (!windowed && scan !== null) scanRef.current = scan
+  const contiguous = windowed ? interleaved : (scan as { out: WebIteration[] }).out
   // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
   // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
   const merged = useMemo(() => mergeToolRuns(contiguous), [contiguous])

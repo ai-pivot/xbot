@@ -311,8 +311,8 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 				total := len(filtered)
 				filtered = filtered[len(filtered)-tail:]
 				result.IterWindow = &protocol.HistoryIterWindow{
-					Total:      total,
-					LoadedTop:  filtered[0].Iteration,
+					Total:     total,
+					LoadedTop: filtered[0].Iteration,
 				}
 			}
 			result.IterationHistory = filtered

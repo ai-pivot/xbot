@@ -17,12 +17,12 @@ import (
 func writeTestIter(t *testing.T, svc *SessionService, tenantID int64, turnID uint64, iter int, content, reasoning, tools string) {
 	t.Helper()
 	if err := svc.AppendIterationHistory(tenantID, 0, turnID, IterationRecord{
-		MessageID:  0,
-		TurnID:     turnID,
-		Iteration:  iter,
-		Content:    content,
-		Reasoning:  reasoning,
-		Tools:      tools,
+		MessageID: 0,
+		TurnID:    turnID,
+		Iteration: iter,
+		Content:   content,
+		Reasoning: reasoning,
+		Tools:     tools,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -84,6 +84,9 @@ export interface AgentChatState {
   /** 权威 idle（agent-idle 事件）：清 activeTurn —— 否则 busyFallback 会永久卡
    *  busy（用户 2026-09-18 P0：后端 idle、前端渲染 busy，直到刷新）。 */
   readonly sessionIdle: () => void
+  /** v71 窗口化滚动回拉：单 turn 更早迭代窗口（fetchTurnIterations → 状态机
+   *  iteration_window 事件合并，窗口向上扩展）。失败静默。 */
+  readonly loadMoreIterations: (turnID: number, beforeIter: number) => Promise<void>
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {

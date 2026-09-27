@@ -22,10 +22,11 @@ import {
   type TodoItem,
   type WebCompaction,
   type WebIteration,
+  type WebRunSummary,
   type WebSubAgentProgress,
   type WebToolProgress,
 } from '@/types/shared'
-import { commitViaFold, commitViaText, iterNum, nonEmptyArr, nonEmptyStr, turnID as mkTurnID, type ChatState, type DomainEvent, type LegacyRow, type LiveSnapshot, type Turn } from './types'
+import { commitViaFold, commitViaText, iterNum, nonEmptyArr, nonEmptyStr, turnID as mkTurnID, type ChatState, type DomainEvent, type LegacyRow, type LiveSnapshot, type NonEmpty, type Turn } from './types'
 import type { Row } from './derive'
 
 // ─── history → history_replaced ───────────────────────────────

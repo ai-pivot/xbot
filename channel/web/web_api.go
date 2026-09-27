@@ -200,12 +200,12 @@ func (wc *WebChannel) handleHistoryIterations(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"turn_id":         body.TurnID,
-		"iterations":      res.Iterations,
-		"run_summaries":   res.RunSummaries,
-		"total":           res.Total,
-		"loaded_top":      res.LoadedTop,
+		"ok":            true,
+		"turn_id":       body.TurnID,
+		"iterations":    res.Iterations,
+		"run_summaries": res.RunSummaries,
+		"total":         res.Total,
+		"loaded_top":    res.LoadedTop,
 	})
 }
 
@@ -265,9 +265,9 @@ func (wc *WebChannel) handleRunTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"tools":  res.Tools,
-		"total":  res.Total,
+		"ok":    true,
+		"tools": res.Tools,
+		"total": res.Total,
 	})
 }
 

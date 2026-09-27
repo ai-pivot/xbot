@@ -60,7 +60,7 @@ type RunSummaryRecord struct {
 	EndIter int
 	// HeadContent / HeadReasoning: the head iteration's text (the run block
 	// renders it above the pills — mergeToolRuns keeps the head's text).
-	HeadContent  string
+	HeadContent   string
 	HeadReasoning string
 	// HeadToolsJSON is the merged head-7 tools as a raw JSON array (the head's
 	// tools + the first members' tools, first 7 total — PILL_INLINE_HEAD).
@@ -385,10 +385,10 @@ func memberStretch(entries []windowEntry, from, to int) []toolOnlyMemberRow {
 // head-7 tools (payload reads for the first members) + the true tool count.
 func (s *SessionService) buildRunSummary(conn *sql.DB, tenantID int64, turnID uint64, head *IterationRecord, stretch []toolOnlyMemberRow) (*RunSummaryRecord, error) {
 	summary := &RunSummaryRecord{
-		StartIter:      head.Iteration,
-		EndIter:        head.Iteration,
-		HeadContent:     head.Content,
-		HeadReasoning:  head.Reasoning,
+		StartIter:     head.Iteration,
+		EndIter:       head.Iteration,
+		HeadContent:   head.Content,
+		HeadReasoning: head.Reasoning,
 	}
 	headTools, headCount, err := parseToolsArray(head.Tools)
 	if err != nil {

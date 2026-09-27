@@ -384,7 +384,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 					// is index-driven (the covering scan + the K payload rows),
 					// and the turn count per page is small (the message window
 					// is turn-boundary aligned).
+					// turnIterMap is initialized here for the per-turn full-path
+					// fallback below (a nil-map write would panic — SA5000).
 					turnWindowMap = make(map[uint64]*sqlite.IterationWindowResult, len(turnIDs))
+					turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(turnIDs))
 					for _, turnID := range turnIDs {
 						w, err := svc.GetIterationWindow(tenantID, turnID, sqlite.IterationWindowOpts{MixedLimit: iterWindow})
 						if err != nil {
@@ -464,9 +467,9 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			return nil, err
 		}
 		out := &protocol.TurnIterationWindow{
-			TurnID:     turnID,
-			Total:      w.Total,
-			LoadedTop:  w.LoadedTop,
+			TurnID:    turnID,
+			Total:     w.Total,
+			LoadedTop: w.LoadedTop,
 		}
 		for _, rec := range w.Rows {
 			out.Iterations = append(out.Iterations, channel.HistoryIterationFromRecord(rec))

@@ -711,8 +711,8 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 		tail := []progressHistoryTailEntry{{
 			IterationSnapshot: last,
 			IterWindow: &protocol.HistoryIterWindow{
-				Total:      len(out.IterationHistory),
-				LoadedTop:  last.Iteration,
+				Total:     len(out.IterationHistory),
+				LoadedTop: last.Iteration,
 			},
 		}}
 		if jsonBytes, err := json.Marshal(tail); err == nil {
