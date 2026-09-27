@@ -35,6 +35,7 @@
 
 ## Knowledge Files
 
+- `docs/agent/blackboard.md` — **跨 agent 共享黑板（schema v71）**: 宿主通用的协作底座（`board`+`key`，`kind`/`body` 不透明）；三机制 = revision CAS / 租约认领（**claim token**，因为身份不唯一——同 role 的 SubAgent 实例共享 SessionKey）/ `blocked_by` 依赖门控（**claim 直接拒绝未满足依赖**）；默认板 = `RootSessionKey`（主 + 全部 SubAgent 自动共享，**禁用 SessionKey**——physicalChannel override 会把同一会话劈成两块）；推送 = SSE seq=0 全客户端广播 + bg 通知管线唤醒（busy 注入 / idle 开轮，3s leading+trailing 合并，**不通知写入者**）；面板 `core.blackboard`
 - `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
 - `docs/agent/install.md` — **安装的 agent 入口（指针，不是完整文档）**：指向公开可执行手册 `https://ai-pivot.github.io/xbot/agent-install/`（zh: `/zh-cn/agent-install/`），并保留最小事实集（`setup --check` 是唯一完整性判据 / LLM 配置在数据库不在 config.json / systemd 服务名是 `xbot-server` 且 `serve` 没有 `--install-service` / 回复文本在 `iteration_history`）。**改安装流程时同步更新公开页 + `scripts/install.sh` 头部注释 + 运行结束打印**（三处）
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder
@@ -83,6 +84,8 @@
 
 The highest-priority rules, one line each. **Before changing the related code, Read the named file** — it carries the full rule, the incident that produced it, and the guard test.
 
+- ⛔ `docs/agent/blackboard.md` — **黑板默认板必须是 `RootSessionKey`**（主 agent + 全部 SubAgent 自动共享的唯一实现）；用 `SessionKey` 会被 physicalChannel override 劈成两块板。**租约必须用 `claim_token`**（身份不唯一：同 role 的 SubAgent 实例共享 SessionKey，用身份做租约会被第二个实例"续租"掉）。
+- ⛔ `docs/agent/blackboard.md` — 黑板变更的**推送**三条铁律：① 新事件必须进 `SSE_EVENT_TYPES` 白名单（漏注册 = 面板永远收不到）；② 合并必须 **leading + trailing**（只做 leading 会把窗口内的变更**永久吞掉**）；③ **绝不通知写入者自己**（否则自我循环）。唤醒只走既有 bg 管线（busy 注入 / idle 开轮），**绝不伪造 turn**。
 - ⛔ `docs/agent/gotchas-agent-core.md` — `max_concurrency` 只能有一个存储位置（2026-09-17 用户报告根治）：「设了 100 并发，只起 4-5 个子代理就卡」+「统计里的 TTFT 很短、和入库时间对不上」。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 模型解析严禁用"裸模型名"——任何时候解析模型必须带订阅 id（用户明确要求，2026-09-11）。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 压缩三把尺子 + 无限循环三重防线（2026-08-30 "200k 上下文无限循环压缩"修复）。

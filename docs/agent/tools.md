@@ -34,6 +34,7 @@
 | `create_chat.go` | CreateChat tool — create agent private chat or moderated group chat |
 | `send_message.go` | SendMessage tool — unified routing to agent/group/IM targets |
 | `group_state.go` | GroupState struct + sync.Map store for meeting-mode group chats |
+| `blackboard.go` | **BlackboardTool** — 跨 agent 共享黑板（post/get/list/update/claim/release/close/reopen/delete/watch/unwatch）。默认板 = `RootSessionKey`（主 + 全部 SubAgent 自动共享）；CAS（`expected_revision`）+ 租约（`claim_token`）+ 依赖门控（`blocked_by`，claim 拒绝未满足依赖）。`BlackboardHub` 接口把变更交给运行时（SSE + 唤醒），工具层不依赖 agent |
 
 ## Tool Schema Rule
 

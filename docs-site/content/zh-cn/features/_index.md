@@ -17,6 +17,10 @@ Shell、文件读写、网页搜索、定时任务、子 Agent 委派。
 Markdown 能力包、基于角色的子 Agent、群聊讨论模式。
 → [技能与子 Agent](/zh-cn/features/skills-agents/)
 
+### 共享黑板
+跨 agent 的持久工作面：原子认领、revision CAS、依赖门控，推送而非轮询。
+→ [共享黑板](/zh-cn/features/blackboard/)
+
 ### MCP 协议
 全局和会话级 MCP Server，stdio 和 HTTP 传输。
 → [MCP 配置](/zh-cn/features/mcp/)
