@@ -91,12 +91,14 @@ Two tools for inter-agent messaging via the Dispatcher's AgentChannel mechanism.
 
 ### CreateChat
 - **type=agent**: Spawns an interactive SubAgent (`InteractiveSubAgentManager.SpawnInteractive`), registers an `AgentChannel` in the Dispatcher. Returns `agent:<role>/<instance>` address.
-- **type=group**: Creates a `GroupState` in the global `sync.Map`. Members are address strings (not pre-spawned). Returns `group:<id>` address.
+- **type=group**: Creates a `GroupMembership` in the global `sync.Map` (`group_state.go`; the old `GroupState` struct is gone). Members ARE pre-spawned (`create_chat.go:187-239`) and addressed as `agent:<role>/<instance>` — Dispatcher channel names, valid only while that SubAgent is alive. Returns `group:<id>` address.
+  - ⚠️ `max_rounds` is a **declared-but-unimplemented** parameter: nothing counts rounds and `Closed` has no production writer, so a meeting group does NOT auto-close. Membership shrinks only when a member SubAgent is destroyed (`RemoveMember`), and an empty group is dropped.
+  - ⚠️ Because members are live channel names, meeting groups are ephemeral by construction: a UI that edited them would be able to add members nobody can reach. The Web 群组 tab therefore manages **peer groups** (durable) and leaves meeting groups alone.
 
 ### SendMessage
 Routes by address prefix:
 - `agent:*` → `Dispatcher.SendMessageCtx()` → `AgentChannel.Send()` (RPC, blocks for reply)
-- `group:*` → `GroupState` meeting mode: parses `@agent:xxx` mentions, builds history prompt, sends to each mentioned agent sequentially via `sendMessageWithCtx()`
+- `group:*` → meeting mode: parses `@agent:xxx` mentions, builds history prompt, sends to each mentioned agent **concurrently** (`send_message.go:281-297`; not sequentially)
 - `peer:*` → `PeerMessageFn` (async broadcast, busy→inject, idle→user message)
 - `session:*` → `PeerMessageFn` (async to specific session)
 - `feishu:/web:/qq:/cli:` → `Dispatcher.SendMessage()` → IM channel (fire-and-forget)
@@ -109,9 +111,18 @@ Routes by address prefix:
 - Moderator (caller) controls who speaks via `@agent:role/instance` mentions
 - Messages without @mentions are recorded in history but don't trigger agents
 - @mentioned agents receive full discussion history + current question
-- Round counter increments per moderator message WITH mentions; group auto-closes at `max_rounds` (default 10)
-- `group_state.go`: `GroupState` struct with `sync.Mutex`, global `groupStore sync.Map`
+- ⚠️ There is **no round counter and no auto-close** (the `max_rounds` parameter is accepted but never enforced — see CreateChat above)
+- `group_state.go`: `GroupMembership` struct (ID/Name/Members/Closed + RWMutex), global `groupStore sync.Map`
 - `channel/agent_channel.go`: `AgentChannel` wraps SubAgent as Dispatcher Channel with **concurrent** per-request RPC reply channels. Uses `ac.wg.Go()` dispatch + `msg.Ctx` for caller cancellation.
+
+### Peer groups (the durable agent group)
+`group_state.go` 的另一半：`PeerGroup`（ID + Members[]PeerGroupMember{session_key, name}），持久化到 `$XBOT_HOME/peer_groups.json`（**debounced 100ms** 写盘 + 原子 tmp+rename）。
+
+- 成员是**会话键** `channel:chatID`（`qualifySessionKey`：`Channel+":"+ChatID`，回落 `BgSessionKey`/`RootSessionKey`）—— 也就是消息投递实际路由的地址；SubAgent 继承父会话的 Channel/ChatID，所以**成员永远是顶层会话，不会是 `agent:*` 地址**。
+- 入口：`JoinGroup`/`LeaveGroup`/`ListGroupMembers` 工具（agent 自助）；**Web 群组 Tab** 走 RPC（`peer_group_list/create/delete/join/leave`，`serverapp/rpc_group.go`）让用户直接看/改成员。
+- ⚠️ **空组自动删除**（最后一个成员离开 ⇒ 组消失，`Leave` 内 `delete`）——UI 与工具语义一致，不是 bug。
+- ⚠️ **每次 UI 编辑后必须 `tools.FlushPeerGroups()`**：`savePeerGroupsLocked` 只排一个 100ms 定时器，而 `FlushPeerGroups` 原先**全仓无调用方** ⇒ 用户改完立刻重启会丢最后一次修改。RPC handler 里已同步落盘（`serverapp/rpc_group_test.go` 直接读文件证明）。
+- 组 ID 校验 `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`（`ValidatePeerGroupID`）；`session_key` 必须是 `channel:chatID`（无空格），否则显式报错（坏键会"存下来但永远投不出去"）。
 
 ## Windows Support
 

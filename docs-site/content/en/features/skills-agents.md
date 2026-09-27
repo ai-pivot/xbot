@@ -201,8 +201,11 @@ invite agents, and control who speaks via @mentions.
 ```
 
 {{< hint type=note >}}
-Groups auto-close after `max_rounds` moderator messages with @mentions (default
-10). Use `SendMessage(to="group:...", message="...")` to continue the discussion.
+⚠️ `max_rounds` is accepted but **not enforced** today: nothing counts rounds and
+a meeting group does not auto-close. Its membership shrinks when a member SubAgent
+is destroyed, and an empty group is dropped. Groups whose members matter across
+restarts should be **peer groups** (below). Use
+`SendMessage(to="group:...", message="...")` to keep the discussion going.
 {{< /hint >}}
 
 ## Market
@@ -233,6 +236,24 @@ xbot supports publishing, browsing, and installing skills and agents:
 - `data-analyst` — analyze CSV/JSON data files
 
 Ask the agent: "Create a skill for [your workflow]" or "Create a [role] agent."
+
+## Collaboration in the Web UI
+
+- **The Task panel renders SubAgents as a hierarchy**: main agent → subagent →
+  grandchild (we support nesting up to 5 levels) with indentation, connector
+  guides and child counts; running nodes carry a status dot. The nesting is not
+  decoration — it tells you which worker a grandchild belongs to. (Implementation
+  constraint: pruning must keep the ancestors of a match, otherwise a running
+  grandchild shows up as an orphan row.)
+- **The sidebar's Groups tab** lists every **peer group** and its members (members
+  *are* sessions: display name + `channel:chatID`), and lets you add/remove
+  members and create/delete groups. A member whose session is gone is struck
+  through and labelled — exactly what you want to clean up — and a group
+  disappears once its last member leaves (the same rule the `LeaveGroup` tool
+  relies on).
+- Group members message each other with `SendMessage(to="peer:<id>")`: a busy peer
+  gets it injected into its current iteration, an idle one is woken for a turn —
+  no polling involved.
 
 ## See also
 - [Built-in Tools](/features/tools/) — all available tools

@@ -86,6 +86,9 @@ The highest-priority rules, one line each. **Before changing the related code, R
 
 - ⛔ `docs/agent/blackboard.md` — **黑板默认板必须是 `RootSessionKey`**（主 agent + 全部 SubAgent 自动共享的唯一实现）；用 `SessionKey` 会被 physicalChannel override 劈成两块板。**租约必须用 `claim_token`**（身份不唯一：同 role 的 SubAgent 实例共享 SessionKey，用身份做租约会被第二个实例"续租"掉）。
 - ⛔ `docs/agent/blackboard.md` — 黑板变更的**推送**三条铁律：① 新事件必须进 `SSE_EVENT_TYPES` 白名单（漏注册 = 面板永远收不到）；② 合并必须 **leading + trailing**（只做 leading 会把窗口内的变更**永久吞掉**）；③ **绝不通知写入者自己**（否则自我循环）。唤醒只走既有 bg 管线（busy 注入 / idle 开轮），**绝不伪造 turn**。
+- ⛔ `docs/agent/gotchas-web-frontend.md` — **Task 面板的 SubAgent 区域必须渲染层级**（后端 `children` 是任意深度真嵌套）：**禁止「先 flatten 再 filter(isActive)」**——会把 active 节点的 inactive 祖先丢掉，running 的 sub-sub-agent 变成无父孤儿行；正解 `pruneSubAgentForest`（自身或任一后代命中即保留）+ 递归行（`data-depth`/connector/子节点数）。
+- ⛔ `docs/agent/gotchas-web-frontend.md` — **群组 Tab 是「视图」不是「分组维度」**（`SessionCategory` 加 `'group'`，但 `groupSessions`/`sessionGroupKey` 只收 `SessionGroupingCategory`）；内容分支必须在**桌面 `CoreSessionsPanel` + 手机 `SessionSidebar` 两处**都接（历史两次"只改一处"事故）。成员只能是顶层会话（peer group 键 = `channel:chatID`，SubAgent 继承父键 ⇒ 列 SubAgent 会造出投不出去的死成员）；解析不到的成员标 `data-stale` 而非隐藏；空组被 store 自动删除（如实反映）。
+- ⛔ `docs/agent/tools.md` — peer group 的 UI 编辑**必须同步落盘**（`tools.FlushPeerGroups()`；`savePeerGroupsLocked` 只是 100ms debounce，而 Flush 原先全仓无调用方 ⇒ 用户改完立刻重启丢最后一次修改）。守护 `serverapp/rpc_group_test.go` 直接读 `peer_groups.json` 证明。
 - ⛔ `docs/agent/gotchas-agent-core.md` — `max_concurrency` 只能有一个存储位置（2026-09-17 用户报告根治）：「设了 100 并发，只起 4-5 个子代理就卡」+「统计里的 TTFT 很短、和入库时间对不上」。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 模型解析严禁用"裸模型名"——任何时候解析模型必须带订阅 id（用户明确要求，2026-09-11）。
 - ⛔ `docs/agent/gotchas-agent-core.md` — 压缩三把尺子 + 无限循环三重防线（2026-08-30 "200k 上下文无限循环压缩"修复）。
