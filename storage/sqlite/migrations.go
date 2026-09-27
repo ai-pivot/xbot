@@ -485,6 +485,37 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v71: shared blackboard — the cross-agent workspace (generic host storage:
+	// board-scoped entries with a CAS revision, a lease-based claim and
+	// structural dependency edges). Purely additive: a new global table, no
+	// existing column or row is touched, so old binaries keep working against
+	// a v71 database (they simply never read the table). Idempotent.
+	if from < 71 {
+		if err := migrateV70ToV71(db); err != nil {
+			return fmt.Errorf("migrate to v71: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV70ToV71 creates the blackboard table.
+//
+// The table is intentionally agnostic about content: `kind` is named by the
+// producing agent and `body` is opaque, exactly like shared_artifacts. What
+// the host does own are the three coordination mechanics that make a shared
+// workspace safe under concurrency: `revision` (compare-and-swap), the
+// `claimed_by`/`claim_expires_at` lease (atomic, self-healing) and
+// `blocked_by` (dependency edges). Idempotent — safe to run twice.
+func migrateV70ToV71(db *DB) error {
+	conn := db.Conn()
+	if _, err := conn.Exec(blackboardSchema); err != nil {
+		return fmt.Errorf("migrate v70->v71 create blackboard table: %w", err)
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 71"); err != nil {
+		return fmt.Errorf("migrate v70->v71 update version: %w", err)
+	}
+	log.Info("Database migrated to v71 (shared blackboard)")
 	return nil
 }
 

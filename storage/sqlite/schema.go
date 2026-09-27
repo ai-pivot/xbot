@@ -128,7 +128,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (70);
+INSERT INTO schema_version (version) VALUES (71);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -345,6 +345,11 @@ CREATE INDEX IF NOT EXISTS idx_shared_artifacts_creator ON shared_artifacts(crea
 `
 	if _, err := db.Conn().Exec(schema); err != nil {
 		return fmt.Errorf("create schema: %w", err)
+	}
+	// The blackboard DDL lives with its service (storage/sqlite/blackboard.go)
+	// so the fresh-database path and the v70→v71 migration share ONE definition.
+	if _, err := db.Conn().Exec(blackboardSchema); err != nil {
+		return fmt.Errorf("create blackboard schema: %w", err)
 	}
 	log.WithField("version", schemaVersion).Info("Database schema initialized")
 	return nil

@@ -47,8 +47,8 @@ func TestMigrateV69ToV70RepairsMissingReasoningItems(t *testing.T) {
 	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 70 {
-		t.Fatalf("schema version = %d, want 70", version)
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, schemaVersion)
 	}
 
 	var content, reasoningItems string
