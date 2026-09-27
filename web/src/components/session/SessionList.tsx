@@ -31,7 +31,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/providers/i18n'
-import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { SessionInfo, SessionSelector } from '@/types/shared'
+import type { SessionGroupingCategory } from '@/lib/session-grouping'
 import type { ExportFormat } from '@/components/agent/api'
 import { SessionGroup } from './SessionGroup'
 import { SessionItem } from './SessionItem'
@@ -44,7 +45,8 @@ interface SessionListProps {
   sessions: SessionInfo[]
   groups: { key: string; sessions: SessionInfo[] }[]
   sortedSessions: SessionInfo[]
-  category: SessionCategory
+  /** Only the grouping categories — the group tab renders the group manager. */
+  category: SessionGroupingCategory
   /** Collapsed group keys (`collapseKey(category, groupKey)`) — owned by the store. */
   collapsedGroups: Set<string>
   /** Toggle one group's collapsed state (persisted by the store). */

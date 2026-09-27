@@ -13,6 +13,7 @@ import type {
   BlackboardEntry,
   ContextUsage,
   ModelEntry,
+  PeerGroup,
   PerModelConfig,
   ProgressEvent,
   SessionSelector,
@@ -230,6 +231,55 @@ export async function releaseBlackboardEntry(board: string, key: string): Promis
 
 export async function deleteBlackboardEntry(board: string, key: string): Promise<void> {
   await postAPI('/api/rpc', { method: 'blackboard_delete', params: { board, key } })
+}
+
+/* ---------------------------------------------------------------------------
+ * Agent groups (peer groups) RPCs.
+ *
+ * Groups are durable ("$XBOT_HOME/peer_groups.json") and their members are
+ * session keys — the same address the peer-messaging pipeline routes on — so a
+ * member always maps to a session row in the sidebar. Every mutation returns the
+ * whole list: the store is the authority, the UI never patches its own copy.
+ * ------------------------------------------------------------------------- */
+
+export async function fetchPeerGroups(): Promise<PeerGroup[]> {
+  const data = await postAPI<{ groups?: PeerGroup[] }>('/api/rpc', {
+    method: 'peer_group_list',
+    params: {},
+  })
+  return data.groups ?? []
+}
+
+export async function createPeerGroup(id: string): Promise<PeerGroup[]> {
+  const data = await postAPI<{ groups?: PeerGroup[] }>('/api/rpc', {
+    method: 'peer_group_create',
+    params: { id },
+  })
+  return data.groups ?? []
+}
+
+export async function deletePeerGroup(id: string): Promise<PeerGroup[]> {
+  const data = await postAPI<{ groups?: PeerGroup[] }>('/api/rpc', {
+    method: 'peer_group_delete',
+    params: { id },
+  })
+  return data.groups ?? []
+}
+
+export async function joinPeerGroup(id: string, sessionKey: string, name: string): Promise<PeerGroup[]> {
+  const data = await postAPI<{ groups?: PeerGroup[] }>('/api/rpc', {
+    method: 'peer_group_join',
+    params: { id, session_key: sessionKey, name },
+  })
+  return data.groups ?? []
+}
+
+export async function leavePeerGroup(id: string, sessionKey: string): Promise<PeerGroup[]> {
+  const data = await postAPI<{ groups?: PeerGroup[] }>('/api/rpc', {
+    method: 'peer_group_leave',
+    params: { id, session_key: sessionKey },
+  })
+  return data.groups ?? []
 }
 
 /** Get the current goal for the session. */

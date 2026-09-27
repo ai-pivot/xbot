@@ -46,7 +46,7 @@ describe('SessionViewBar', () => {
   it('renders 项目 → 状态 → 时间，并高亮当前分类', () => {
     renderWithProviders(<SessionViewBar groupKeys={['/repo']} />)
 
-    expect(categoryOrder()).toEqual(['session-category-path', 'session-category-status', 'session-category-time'])
+    expect(categoryOrder()).toEqual(['session-category-path', 'session-category-status', 'session-category-time', 'session-category-group'])
     expect(screen.getByTestId('session-category-path')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('session-category-time')).toHaveAttribute('aria-pressed', 'false')
   })

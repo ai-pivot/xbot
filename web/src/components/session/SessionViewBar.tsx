@@ -28,6 +28,8 @@ function labelForCategory(c: SessionCategory, t: (k: string) => string): string 
       return t('session.byStatus')
     case 'path':
       return t('session.byPath')
+    case 'group':
+      return t('session.byGroup')
   }
 }
 

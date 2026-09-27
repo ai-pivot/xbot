@@ -1903,7 +1903,13 @@ export function useSessionStoreImpl(): SessionStore {
     })
   }, [])
 
-  const groups = useMemo(() => groupSessions(sessions, category, starredIds), [sessions, category, starredIds])
+  // The group tab is a different VIEW (agent groups), not a grouping of the
+  // session list — in that mode there are no list groups at all, so the store
+  // exposes none (and the view bar hides "collapse all" for lack of keys).
+  const groups = useMemo(
+    () => (category === 'group' ? [] : groupSessions(sessions, category, starredIds)),
+    [sessions, category, starredIds],
+  )
   const activeSessionId = activeSession?.chatID ?? null
 
   return useMemo(() => ({

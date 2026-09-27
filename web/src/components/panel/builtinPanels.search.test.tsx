@@ -161,7 +161,7 @@ describe('桌面会话面板：分类切换器必须在（回归守护）', () =
     // 三个分类都在，且项目在最前（默认组织方式）。
     expect(
       screen.getAllByTestId(/^session-category-/).map((el) => el.getAttribute('data-testid')),
-    ).toEqual(['session-category-path', 'session-category-status', 'session-category-time'])
+    ).toEqual(['session-category-path', 'session-category-status', 'session-category-time', 'session-category-group'])
     // 「全部折叠/展开」也在（有组时可点）。
     expect(screen.getByTestId('session-collapse-all')).toBeInTheDocument()
 

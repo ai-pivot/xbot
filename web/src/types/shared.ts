@@ -9,7 +9,7 @@ export type Theme = 'dark' | 'light'
 export type Locale = 'zh-CN' | 'en' | 'ja'
 export type TabType = 'agent' | 'file' | 'terminal' | 'background' | 'plugin' | 'diff' | 'panel'
 export type SessionStatus = 'running' | 'waiting_input' | 'pending' | 'idle' | 'unread' | 'error'
-export type SessionCategory = 'time' | 'status' | 'path'
+export type SessionCategory = 'time' | 'status' | 'path' | 'group'
 
 export interface Tab {
   id: string
@@ -180,6 +180,22 @@ export interface BlackboardUpdatePayload {
   closed?: boolean
   claimed_by?: string
   at?: number
+}
+
+/* ---------------------------------------------------------------------------
+ * Agent groups (peer groups) — the durable "these sessions work together" set.
+ * Members are addressed by session key ("channel:chatID"), which is also what
+ * the peer-messaging pipeline routes on, so a member IS a session row.
+ * ------------------------------------------------------------------------- */
+
+export interface PeerGroupMember {
+  session_key: string
+  name: string
+}
+
+export interface PeerGroup {
+  id: string
+  members: PeerGroupMember[]
 }
 
 /** Authoritative context-usage snapshot returned by get_context_usage. */

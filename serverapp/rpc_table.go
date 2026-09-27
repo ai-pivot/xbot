@@ -294,6 +294,7 @@ func BuildRPCTable(cfg *config.Config, ag *agent.Agent, disp *channel.Dispatcher
 	registerGenUIHandlers(t, h)
 	registerChannelOpsHandlers(t, h)
 	registerBlackboardHandlers(t, h)
+	registerGroupHandlers(t, h)
 	return t
 }
 

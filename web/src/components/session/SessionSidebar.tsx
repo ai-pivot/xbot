@@ -41,6 +41,7 @@ import { downloadSession } from '@/components/agent/api'
 import type { TabManager } from '@/hooks/useTabManager'
 import { SessionSearch, SessionSearchToggle } from './SessionSearch'
 import { SessionList } from './SessionList'
+import { GroupList } from './GroupList'
 import { SessionViewBar } from './SessionViewBar'
 import { NewSessionDialog } from './NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
@@ -107,7 +108,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
 
   // Re-derive groups and sortedSessions for filtered sessions
   const filteredGroups = useMemo(
-    () => groupSessions(filteredSessions, store.category, store.starredIds),
+    // Group tab = a different VIEW (agent groups); there are no list groups there.
+    () => (store.category === 'group' ? [] : groupSessions(filteredSessions, store.category, store.starredIds)),
     [filteredSessions, store.category, store.starredIds],
   )
   const filteredSorted = useMemo(
@@ -405,6 +407,8 @@ export function SessionSidebar({ tabManager, onSessionSelected, onSubAgentSelect
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-text-muted">
             {t('session.noSessionsForChannel', { channel: store.activeChannel })}
           </div>
+        ) : store.category === 'group' ? (
+          <GroupList />
         ) : (
         <SessionList
           sessions={filteredSessions}

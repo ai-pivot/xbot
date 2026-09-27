@@ -13,6 +13,7 @@ import {
   isSessionCategory,
   isSubAgentSession,
   parseAgentChatID,
+  sessionGroupKey,
   sessionKey,
   sortSessions,
   type SessionGroup,
@@ -257,7 +258,20 @@ describe('category & collapse helpers (project organisation)', () => {
     expect(DEFAULT_SESSION_CATEGORY).toBe('path')
     // SESSION_CATEGORIES is the single source for the switcher order.
     expect(SESSION_CATEGORIES[0]).toBe('path')
-    expect([...SESSION_CATEGORIES].sort()).toEqual(['path', 'status', 'time'])
+    // 'group' is a VIEW tab (agent groups), not a grouping dimension — it lives
+    // in the same array so desktop and the mobile drawer render it from one place.
+    expect([...SESSION_CATEGORIES].sort()).toEqual(['group', 'path', 'status', 'time'])
+  })
+
+  it('limits the grouping dimension to the three list categories', () => {
+    // sessionGroupKey only accepts grouping categories: the group tab renders the
+    // group manager instead of grouping sessions, so 'group' is deliberately NOT
+    // a valid grouping key (type-level: SessionGroupingCategory) — and the three
+    // real categories keep working.
+    const s = mk({ chatID: '/repo:main', channel: 'cli' })
+    for (const category of ['path', 'status', 'time'] as const) {
+      expect(typeof sessionGroupKey(s, category)).toBe('string')
+    }
   })
 
   it('narrows stored values to known categories', () => {

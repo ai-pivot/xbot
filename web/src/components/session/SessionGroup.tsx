@@ -8,7 +8,8 @@ import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
-import type { SessionCategory, SessionInfo, SessionSelector } from '@/types/shared'
+import type { SessionInfo, SessionSelector } from '@/types/shared'
+import type { SessionGroupingCategory } from '@/lib/session-grouping'
 import type { ExportFormat } from '@/components/agent/api'
 import { SessionItem } from './SessionItem'
 import { childrenForParent } from './session-tree'
@@ -16,7 +17,8 @@ import { AnimatedCollapse } from '@/components/ui/animated-collapse'
 
 interface SessionGroupProps {
   groupKey: string
-  category: SessionCategory
+  /** Only the grouping categories — the group tab renders the group manager. */
+  category: SessionGroupingCategory
   sessions: SessionInfo[]
   /** Controlled collapsed state — the store owns it so it survives remounts
    *  and is shared by every panel instance（「全部折叠/展开」也要能改它）。 */
@@ -183,7 +185,7 @@ function isVisibleSubAgent(session: SessionInfo): boolean {
 
 function groupTitle(
   key: string,
-  category: SessionCategory,
+  category: SessionGroupingCategory,
   t: (k: string, p?: Record<string, string | number>) => string,
 ): string {
   switch (category) {

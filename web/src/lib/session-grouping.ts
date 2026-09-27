@@ -68,15 +68,22 @@ export function parseAgentChatID(chatID: string): ParsedAgentChatID | null {
  * organisation of the session list — the switcher renders this array verbatim,
  * so this is the single source for the order (never re-list the categories in
  * a component).
+ *
+ * `group` is a VIEW tab, not a grouping dimension: it replaces the list with the
+ * agent-group manager (which agents share a group, editable). It stays in this
+ * array so desktop and the mobile drawer both get the tab from one place.
  */
-export const SESSION_CATEGORIES: SessionCategory[] = ['path', 'status', 'time']
+export const SESSION_CATEGORIES: SessionCategory[] = ['path', 'status', 'time', 'group']
+
+/** The categories that GROUP the session list (everything except the group tab). */
+export type SessionGroupingCategory = Exclude<SessionCategory, 'group'>
 
 /** Default session-list organisation: by project (= work directory). */
 export const DEFAULT_SESSION_CATEGORY: SessionCategory = 'path'
 
 /** Narrow an arbitrary stored value to a known category. */
 export function isSessionCategory(value: unknown): value is SessionCategory {
-  return value === 'time' || value === 'status' || value === 'path'
+  return value === 'time' || value === 'status' || value === 'path' || value === 'group'
 }
 
 /**
@@ -90,8 +97,8 @@ export function collapseKey(category: SessionCategory, groupKey: string): string
   return `${category}:${groupKey}`
 }
 
-/** Bucket a single session into one group key for the active category. */
-export function sessionGroupKey(s: SessionInfo, category: SessionCategory): string {
+/** Bucket a single session into one group key for the active grouping category. */
+export function sessionGroupKey(s: SessionInfo, category: SessionGroupingCategory): string {
   switch (category) {
     case 'time':
       return timeBucket(s.lastActive)
@@ -208,7 +215,7 @@ export interface SessionGroup {
  */
 export function groupSessions(
   sessions: SessionInfo[],
-  category: SessionCategory,
+  category: SessionGroupingCategory,
   starredIds: string[],
 ): SessionGroup[] {
   const sorted = sortSessions(sessions, starredIds)

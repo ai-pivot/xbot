@@ -26,6 +26,7 @@ import { SessionList } from '@/components/session/SessionList'
 import { ChannelPicker } from '@/components/session/ChannelPicker'
 import { SessionSearch, SessionSearchToggle } from '@/components/session/SessionSearch'
 import { SessionViewBar } from '@/components/session/SessionViewBar'
+import { GroupList } from '@/components/session/GroupList'
 import { NewSessionDialog } from '@/components/session/NewSessionDialog'
 import { openAgentSessionTab } from '@/lib/sessionTabs'
 import {
@@ -78,7 +79,10 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
   }, [store.sessions, store.activeChannel])
 
   const filteredGroups = useMemo(
-    () => groupSessions(filteredSessions, store.category, store.starredIds),
+    // The group tab is a different VIEW (agent groups), not a grouping of the
+    // session list — in that mode there are no list groups (and the view bar
+    // hides "collapse all" for lack of keys).
+    () => (store.category === 'group' ? [] : groupSessions(filteredSessions, store.category, store.starredIds)),
     [filteredSessions, store.category, store.starredIds],
   )
   const filteredSorted = useMemo(
@@ -186,6 +190,8 @@ export function CoreSessionsPanel({ ctx }: { ctx: PanelRenderContext }) {
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-text-muted">
             {t('session.noSessionsForChannel')}
           </div>
+        ) : store.category === 'group' ? (
+          <GroupList />
         ) : (
           <SessionList
             sessions={filteredSessions}
