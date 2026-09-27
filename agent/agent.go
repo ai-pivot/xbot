@@ -592,6 +592,11 @@ type Agent struct {
 	// todoManager 管理当前会话的 TODO 列表
 	todoManager *tools.TodoManager
 
+	// blackboardSvc / blackboardHub 管理跨 agent 共享黑板：服务是进程级单例
+	// （持久化 + CAS/租约），hub 负责实时推送与唤醒关注者。
+	blackboardSvc *sqlite.BlackboardService
+	blackboardHub *blackboardHub
+
 	// goalManager 管理当前会话的 Goal 生命周期
 	goalManager *GoalManager
 
@@ -1929,6 +1934,14 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 
 	// 注册 CronTool（核心工具，始终可用）
 	registry.RegisterCore(tools.NewCronTool(cronSvc))
+
+	// 共享黑板：主 agent、它的全部 SubAgent 与参与同一块板的独立会话共享的
+	// 工作台。服务是进程级单例（与 TodoManager 同模式：构造器注入工具），
+	// hub 承担实时推送（Web）与唤醒（bg 通知管线）——黑板本身是策略无关的
+	// 通用存储，语义由使用它的 agent 决定。
+	a.blackboardSvc = sqlite.NewBlackboardService(multiSession.DB())
+	a.blackboardHub = newBlackboardHub(a)
+	registry.RegisterCore(&tools.BlackboardTool{Board: a.blackboardSvc, Hub: a.blackboardHub})
 
 	a.cronSvc = cronSvc
 	a.cronSch = cronSch

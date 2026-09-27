@@ -574,6 +574,12 @@ func filterSubAgentTools(subTools *tools.Registry, allowedTools []string, caps t
 		if toolName == "offload_recall" || toolName == "recall_masked" {
 			continue
 		}
+		// Blackboard is a COLLABORATION primitive: a role that declares a tool
+		// whitelist must still be able to coordinate on the shared board (and to
+		// see what its siblings posted), or parallel work cannot self-organise.
+		if toolName == "Blackboard" {
+			continue
+		}
 		// SendMessage / CreateChat：interactive SubAgent 始终可用（群聊通信）
 		if interactive && (toolName == "SendMessage" || toolName == "CreateChat") {
 			continue

@@ -683,6 +683,11 @@ func isSSEEventType(msgType string) bool {
 		protocol.MsgTypeSyncProgress,
 		protocol.MsgTypeResyncRequired,
 		protocol.MsgTypeBgTaskOutput,
+		// A blackboard change is fanned out to EVERY web client (a board is
+		// shared across sessions), as a seq=0 control broadcast — the same
+		// semantics as session/sidebar events: never replayed, reconciled by the
+		// client's own board refetch.
+		protocol.MsgTypeBlackboardUpdate,
 		protocol.MsgTypeQueueState:
 		return true
 	default:

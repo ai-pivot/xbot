@@ -60,6 +60,14 @@ type AskUserResolvedSender interface {
 	SendAskUserResolved(ev protocol.AskUserResolvedEvent)
 }
 
+// BlackboardUpdateSender is implemented by channels that show shared-board
+// activity. The agent emits one per accepted blackboard change; delivery is a
+// repeat-safe "something changed, refetch" signal (the board itself is read
+// through the blackboard RPC), so channels may deliver it more than once.
+type BlackboardUpdateSender interface {
+	SendBlackboardUpdate(p *protocol.BlackboardUpdatePayload)
+}
+
 // PreReplyNotifier is implemented by channels that require text-based ack
 // and progress messages before the final LLM reply. These channels lack
 // streaming/structured progress (e.g. Feishu patches the existing message

@@ -33,7 +33,12 @@ const (
 	MsgTypeResyncRequired  = "resync_required"
 	MsgTypeBgTaskOutput    = "bg_task_output"
 	MsgTypeQueueState      = "queue_state"
-	MsgTypePong            = "__pong__"
+	// MsgTypeBlackboardUpdate announces an accepted change on a shared board
+	// (the cross-agent blackboard). It is a "something changed" signal for the
+	// UI, not the data: every client pulls the board it displays through the
+	// blackboard RPC, so the board stays the single source of truth.
+	MsgTypeBlackboardUpdate = "blackboard_update"
+	MsgTypePong             = "__pong__"
 
 	// Channel Plugin → xbot: tool declaration
 	MsgTypeChannelTools = "channel_tools"
@@ -119,6 +124,10 @@ type WSMessage struct {
 	TUIControl      *TUIControlPayload `json:"tui_control,omitempty"`
 	Session         *SessionEvent      `json:"session,omitempty"`
 	QueueState      *QueueStatePayload `json:"queue_state,omitempty"`
+	// Blackboard (MsgTypeBlackboardUpdate): one accepted board change, fanned out
+	// to every web client (a board is shared across sessions, so route-scoped
+	// delivery would miss the clients that most need it).
+	Blackboard *BlackboardUpdatePayload `json:"blackboard,omitempty"`
 	// AskUserResolved (MsgTypeAskUserResolved): the prompt that stopped being
 	// pending. Channel/ChatID identify the session, RequestID is the client's
 	// idempotency key, Reason is "answered" | "cancelled" | "rewound" |
@@ -126,6 +135,23 @@ type WSMessage struct {
 	// type — the front-end reads msg.reason / msg.chat_id directly).
 	AskUserResolvedRequestID string `json:"request_id,omitempty"`
 	AskUserResolvedReason    string `json:"reason,omitempty"`
+}
+
+// BlackboardUpdatePayload is one accepted change on a shared board. It carries
+// enough to flash the exact row ("api-impl was claimed by main/explore") while
+// the client refetches the board it is displaying — the payload is a signal,
+// never a second copy of the board state.
+type BlackboardUpdatePayload struct {
+	Board     string `json:"board"`
+	Key       string `json:"key"`
+	Op        string `json:"op"`
+	Revision  int64  `json:"revision"`
+	Actor     string `json:"actor,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Closed    bool   `json:"closed,omitempty"`
+	ClaimedBy string `json:"claimed_by,omitempty"`
+	At        int64  `json:"at,omitempty"`
 }
 
 // QueueItemPayload describes a single queued message in the session queue

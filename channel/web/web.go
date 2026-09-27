@@ -1165,6 +1165,28 @@ func (wc *WebChannel) SendBgTaskOutput(chatID, taskID, delta string) {
 	_ = wc.hub.sendToSession("web", chatID, wsMsg) // best-effort push
 }
 
+// SendBlackboardUpdate implements channel.BlackboardUpdateSender: it fans an
+// accepted board change out to EVERY web client, not just the subscribers of one
+// route. A board is shared across sessions (the default board belongs to a root
+// session and its SubAgents; named boards span sessions entirely), so
+// route-scoped delivery would miss exactly the clients that need the update.
+//
+// The copy is a seq=0 control broadcast (like session/sidebar events): it is not
+// sequenced into any route's event stream and is not replayed on reconnect —
+// each client reconciles by refetching the board it displays, so a missed signal
+// costs one refresh, never consistency.
+func (wc *WebChannel) SendBlackboardUpdate(p *protocol.BlackboardUpdatePayload) {
+	if p == nil {
+		return
+	}
+	msg := protocol.WSMessage{
+		Type:       protocol.MsgTypeBlackboardUpdate,
+		TS:         time.Now().Unix(),
+		Blackboard: p,
+	}
+	wc.hub.broadcastSessionStateToWebClients(msg)
+}
+
 // InjectUserMessage implements channel.UserMessageInjector.
 // Called by agent.injectCLIUserMessage when bg task / cron notifications are
 // drained and injected as user messages. Without this, web clients never

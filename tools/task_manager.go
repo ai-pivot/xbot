@@ -957,6 +957,9 @@ const (
 	// without interrupting the run) instead of queueing for a new turn.
 	// Web's ⚡ mode and "convert queued → interject" both use this source.
 	AsyncSourceUserInterrupt = "user_interrupt"
+	// AsyncSourceBlackboard marks a shared-board change delivered to a session
+	// that explicitly watched that board (Blackboard action=watch).
+	AsyncSourceBlackboard = "blackboard"
 )
 
 // AsyncMessageNotification is a BgNotification that wraps an arbitrary async message.
