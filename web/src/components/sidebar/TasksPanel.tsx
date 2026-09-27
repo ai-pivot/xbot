@@ -13,7 +13,7 @@ import { useWSConnection } from '@/hooks/useWSConnection'
 import { useSessionStore } from '@/hooks/useSessionStore'
 import { useTasks } from '@/hooks/useTasks'
 import { openMobileAgent } from '@/lib/mobileNav'
-import { flattenSubAgentTree } from '@/components/session/session-tree'
+import { pruneSubAgentForest } from '@/components/session/session-tree'
 import { parseAgentChatID } from '@/lib/session-grouping'
 import type { TabManager } from '@/hooks/useTabManager'
 import type { SessionInfo, SessionSelector } from '@/types/shared'
@@ -33,17 +33,25 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
   )
   const { cronTasks, bgTasks, loading, killBgTask, removeCronTask } = useTasks(ws, taskSession)
   const [expandedCronID, setExpandedCronID] = useState<string | null>(null)
-  const subAgents = useMemo(() => {
+  // SubAgents as a TREE (we support nesting — up to 5 levels deep): keep every
+  // active node plus the ancestors that make its position readable. The previous
+  // "flatten then filter" lost those ancestors, so a running sub-sub-agent
+  // appeared as a flat row with no parent.
+  const subAgentTree = useMemo(() => {
     const activeNode = findSessionNode(session.sessions, sessionForFocusedAgent(tabManager, session.activeSession))
-    if (activeNode?.children?.length) return flattenSubAgentTree([activeNode]).filter(isActiveSubAgent)
-    return []
+    if (!activeNode?.children?.length) return []
+    return pruneSubAgentForest(activeNode.children, isActiveSubAgent)
   }, [session.sessions, tabManager?.activeTabId, tabManager?.tabs, session.activeSession])
 
   const hasCron = cronTasks.length > 0
   const hasBg = bgTasks.length > 0
-  const hasSubAgents = subAgents.length > 0
+  const hasSubAgents = subAgentTree.length > 0
   const empty = !hasCron && !hasBg && !hasSubAgents && !loading
-  const hasRunningSubAgent = subAgents.some((agent) => agent.running)
+  const hasRunningSubAgent = useMemo(() => {
+    const some = (nodes: SessionInfo[]): boolean =>
+      nodes.some((n) => n.running === true || (n.children ? some(n.children) : false))
+    return some(subAgentTree)
+  }, [subAgentTree])
 
   useEffect(() => {
     if (!hasRunningSubAgent) return
@@ -53,7 +61,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
     return () => clearInterval(timer)
   }, [hasRunningSubAgent, session])
 
-  const openSubAgent = (agent: (typeof subAgents)[number]) => {
+  const openSubAgent = (agent: SessionInfo) => {
     // Mobile first: there is no dockview on the phone, so openTab would be a
     // no-op (user report: "手机端 task view 里 subagent 无法点开交互").
     // openMobileAgent returns false when no mobile shell is registered.
@@ -189,22 +197,7 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
           </h3>
           {hasSubAgents ? (
             <div className="flex flex-col gap-1.5">
-              {subAgents.map((agent) => (
-                <button
-                  type="button"
-                  key={`${agent.channel}:${agent.chatID}`}
-                  className="flex w-full items-start gap-2 rounded-md bg-bg-tertiary px-2 py-1.5 text-left hover:bg-bg-hover"
-                  onClick={() => openSubAgent(agent)}
-                >
-                  <Bot className="mt-0.5 size-3.5 shrink-0 text-text-secondary" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs text-text-primary">{subAgentTitle(agent)}</p>
-                    <p className="mt-0.5 truncate text-xs text-text-muted">
-                      {agent.preview || (agent.status === 'waiting_input' ? 'waiting' : agent.running ? 'running' : agent.historical ? 'history' : 'idle')}
-                    </p>
-                  </div>
-                </button>
-              ))}
+              <SubAgentTreeRows nodes={subAgentTree} depth={0} onOpen={openSubAgent} />
             </div>
           ) : (
             <p className="text-xs text-text-muted">—</p>
@@ -277,6 +270,82 @@ export function TasksPanel({ tabManager }: TasksPanelProps) {
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * SubAgentTreeRows — SubAgents rendered as the TREE they really are.
+ *
+ * We support nesting (main → sub → sub-sub …, up to 5 levels), so a flat list
+ * hides the structure that matters when reading progress: which worker a
+ * grandchild belongs to. Depth is shown three ways — indentation, a connector
+ * guide, and a child-count pill on parents — and every row stays clickable
+ * (same target as before, so opening a session is unchanged).
+ */
+function SubAgentTreeRows({
+  nodes,
+  depth,
+  onOpen,
+}: {
+  nodes: SessionInfo[]
+  depth: number
+  onOpen: (agent: SessionInfo) => void
+}) {
+  return (
+    <>
+      {nodes.map((agent) => {
+        const children = agent.children || []
+        const running = agent.running === true || agent.status === 'running'
+        return (
+          <div key={`${agent.channel}:${agent.chatID}`} className="flex flex-col gap-1.5">
+            <div className="flex items-stretch gap-1.5" style={depth > 0 ? { paddingLeft: depth * 10 } : undefined}>
+              {depth > 0 && (
+                // Connector: makes the parent/child relation visible even when
+                // the rows are far apart (long previews, scrolled panel).
+                <span aria-hidden data-testid="subagent-guide" className="w-[2px] shrink-0 rounded-full bg-border" />
+              )}
+              <button
+                type="button"
+                data-testid="subagent-row"
+                data-depth={depth}
+                className={
+                  'flex w-full min-w-0 items-start gap-2 rounded-md px-2 py-1.5 text-left hover:bg-bg-hover ' +
+                  (depth === 0 ? 'bg-bg-tertiary' : 'bg-bg-tertiary/50')
+                }
+                onClick={() => onOpen(agent)}
+              >
+                <span className="relative mt-0.5 shrink-0">
+                  <Bot className="size-3.5 text-text-secondary" />
+                  {running && (
+                    <span
+                      aria-hidden
+                      className="absolute -right-1 -top-0.5 size-1.5 animate-pulse rounded-full bg-status-running"
+                    />
+                  )}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-xs text-text-primary">{subAgentTitle(agent)}</span>
+                    {children.length > 0 && (
+                      <span
+                        data-testid="subagent-child-count"
+                        className="shrink-0 rounded bg-bg-secondary px-1 text-[10px] leading-4 text-text-muted"
+                      >
+                        {children.length}
+                      </span>
+                    )}
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-text-muted">
+                    {agent.preview || (agent.status === 'waiting_input' ? 'waiting' : agent.running ? 'running' : agent.historical ? 'history' : 'idle')}
+                  </p>
+                </div>
+              </button>
+            </div>
+            {children.length > 0 && <SubAgentTreeRows nodes={children} depth={depth + 1} onOpen={onOpen} />}
+          </div>
+        )
+      })}
+    </>
   )
 }
 

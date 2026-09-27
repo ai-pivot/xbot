@@ -161,6 +161,37 @@ describe('TasksPanel', () => {
     expect(screen.queryByText('review/1')).not.toBeInTheDocument()
   })
 
+  it('renders SubAgents as a TREE (depth + connector + child count), not a flat list', () => {
+    const tabManager = { activeTabId: 'main', tabs: [{ id: 'main', type: 'agent' }], openTab: vi.fn() } as unknown as TabManager
+
+    renderWithProviders(<TasksPanel tabManager={tabManager} />)
+
+    // review/1 (depth 0) → fix/1 (depth 1): the nesting is what tells a reader
+    // which worker a grandchild belongs to.
+    const rows = screen.getAllByTestId('subagent-row')
+    expect(rows.map((r) => r.getAttribute('data-depth'))).toEqual(['0', '1'])
+    expect(screen.getByText('review/1')).toBeInTheDocument()
+    expect(screen.getByText('fix/1')).toBeInTheDocument()
+    // Parents advertise their subtree; only nested rows carry a connector.
+    expect(screen.getByTestId('subagent-child-count')).toHaveTextContent('1')
+    expect(screen.getAllByTestId('subagent-guide')).toHaveLength(1)
+  })
+
+  it('keeps an idle parent of a running grandchild (the hierarchy must not break)', () => {
+    // Regression: the old "flatten then filter(isActive)" dropped the idle
+    // parent, so the running grandchild showed up as an orphaned flat row.
+    const review = mocks.sessionStore.sessions[0].children![0]
+    review.running = false
+    review.status = 'idle'
+    const tabManager = { activeTabId: 'main', tabs: [{ id: 'main', type: 'agent' }], openTab: vi.fn() } as unknown as TabManager
+
+    renderWithProviders(<TasksPanel tabManager={tabManager} />)
+
+    expect(screen.getByText('review/1')).toBeInTheDocument()
+    expect(screen.getByText('fix/1')).toBeInTheDocument()
+    expect(screen.getAllByTestId('subagent-row').map((r) => r.getAttribute('data-depth'))).toEqual(['0', '1'])
+  })
+
   it('opens background task output in a Background tab', () => {
     const openTab = vi.fn()
     const tabManager = { activeTabId: 'main', tabs: [{ id: 'main', type: 'agent' }], openTab } as unknown as TabManager

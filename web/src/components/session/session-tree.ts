@@ -34,6 +34,29 @@ export function descendantsForParent(parent: SessionInfo): SessionInfo[] {
   return result
 }
 
+// pruneSubAgentForest keeps the hierarchy: a node is kept when it is itself
+// interesting OR any descendant is. The older "flatten then filter" trick broke
+// the tree — an active SubAgent whose parent was idle lost its parent, so the
+// panel showed orphaned rows with no depth information.
+export function pruneSubAgentForest(  nodes: SessionInfo[] | undefined,
+  isInteresting: (node: SessionInfo) => boolean,
+): SessionInfo[] {
+  const seen = new Set<string>()
+  const visit = (list: SessionInfo[] | undefined): SessionInfo[] => {
+    const out: SessionInfo[] = []
+    for (const node of list || []) {
+      const key = sessionKey(node)
+      if (seen.has(key)) continue // same dedupe contract as childrenForParent
+      const keptChildren = visit(node.children)
+      if (!isInteresting(node) && keptChildren.length === 0) continue
+      seen.add(key)
+      out.push(keptChildren.length > 0 ? { ...node, children: keptChildren } : node)
+    }
+    return out
+  }
+  return visit(nodes)
+}
+
 export function flattenSubAgentTree(sessions: SessionInfo[]): SessionInfo[] {
   const result: SessionInfo[] = []
   const seen = new Set<string>()
