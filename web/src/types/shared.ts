@@ -423,6 +423,10 @@ export interface WebIteration {
   reasoning: string
   tools: WebToolProgress[]
   toolCount: number
+  /** v71 窗口化 run 块的真实工具总数。窗口化拉取时 tools 只携带头部 7 个
+   *  （PILL_INLINE_HEAD），+N 徽标 / 溢出菜单必须用本字段（绝不估算）；
+   *  全量路径不设置（undefined ⇒ 回落 tools.length）。 */
+  toolTotal?: number
   /** Wall-clock duration (ms), optional — not always available from snapshots. */
   elapsedMs?: number
   /** 该迭代生成的 completion tokens（per-iteration，非累计）。 */
@@ -603,6 +607,26 @@ export interface ChatMessage {
   requestID?: string
   /** DB auto-increment id from session_messages table. Used for rewind. */
   dbID?: number
+  /** v71 窗口化：折叠 run 的渲染摘要（与 iterations 互斥的载荷形态 —— run 内部
+   *  tool-only 成员不传输，只给头部 7 工具 + 真实总数；"+N" 菜单按需分页拉取
+   *  /api/history/run_tools）。仅窗口化响应携带（undefined = 全量路径）。 */
+  runSummaries?: WebRunSummary[]
+  /** v71 窗口化：该 turn 已加载集合的边界。total = 迭代总数；loadedTop =
+   *  已加载顶端迭代号（1 = 从 turn 开头完整加载；> 1 = 之上还有未加载内容，
+   *  向上滚动按批回拉 /api/history/iterations）。仅窗口化响应携带。 */
+  iterWindow?: { total: number; loadedTop: number }
+}
+
+/** v71 窗口化：折叠 run 的渲染摘要（protocol.HistoryRunSummary 的前端形态）。
+ *  run 块默认渲染所需的全部信息（头部文本 + 合并后前 7 个工具 + 真实总数），
+ *  与全量拉取时 mergeToolRuns 折叠渲染逐像素一致。 */
+export interface WebRunSummary {
+  startIter: number
+  endIter: number
+  headContent?: string
+  headReasoning?: string
+  headTools?: WebToolProgress[]
+  toolCount: number
 }
 
 /* ---------------------------------------------------------------------------

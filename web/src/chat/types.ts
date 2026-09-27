@@ -13,7 +13,7 @@
  * 断言（构造函数内部）——渲染层/reducer 一律禁止（ESLint no-as 规则管 辖）。
  */
 
-import type { GoalInfo, QueueItemPayload, TodoItem, WebCompaction, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
+import type { GoalInfo, QueueItemPayload, TodoItem, WebCompaction, WebIteration, WebRunSummary, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 
 // ─── Brand：ID 防混淆 ─────────────────────────────────────────
 
@@ -129,8 +129,8 @@ export type TurnPhase =
  * 不存在 { content:"", iterations:[] } 的组合 —— 构造函数签名不接受。
  */
 export type CommittedPayload =
-  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
-  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
+  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[]; readonly runSummaries?: readonly WebRunSummary[]; readonly iterWindow?: { readonly total: number; readonly loadedTop: number } }
+  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[]; readonly runSummaries?: readonly WebRunSummary[]; readonly iterWindow?: { readonly total: number; readonly loadedTop: number } }
 
 /** 唯一合法的 committed 构造入口（reducer 内使用）。 */
 export function commitViaText(

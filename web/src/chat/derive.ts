@@ -10,7 +10,7 @@
  * 不再有 find(isPartial) 启发式 —— Bug 7 根治点）。
  */
 
-import type { TodoItem, WebCompaction, WebIteration, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
+import type { TodoItem, WebCompaction, WebIteration, WebRunSummary, WebSubAgentProgress, WebToolProgress } from '@/types/shared'
 import type { ChatState, LegacyRow, LiveSnapshot, Turn, TurnID } from './types'
 
 // [TURNDROP] 诊断去重（derive 每帧调用 —— 同一 turnID 的 hollow-frozen 跳过
@@ -80,6 +80,10 @@ export interface CommittedRowView {
   readonly iterations: readonly WebIteration[]
   /** turn 内压缩点（迭代之间内联渲染，Cursor 式）—— 见 WebCompaction。 */
   readonly compactions?: readonly WebCompaction[]
+  /** v71 窗口化：折叠 run 摘要（头部 7 工具 + 真实总数）—— run 内部不传输。 */
+  readonly runSummaries?: readonly WebRunSummary[]
+  /** v71 窗口化：已加载边界（total / loadedTop —— 滚动回拉游标 + gap 判定）。 */
+  readonly iterWindow?: { readonly total: number; readonly loadedTop: number }
   /** 命令回复（standalone 段）的「无 turn」标记 —— `bindTurnIDs` 据此跳过绑定。 */
   readonly standalone?: boolean
   /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——排序键用它插回原位。 */
@@ -279,6 +283,9 @@ function assistantRow(t: Turn): Row | null {
         iterationsTruncated: t.phase.payload.iterationsTruncated ?? 0,
         // turn 内压缩点：透传引用（payload 引用稳定 ⇒ memo 不失效）。
         compactions: t.phase.payload.compactions,
+        // v71 窗口化载荷：run 摘要 + 已加载边界（透传引用，memo 契约同上）。
+        runSummaries: t.phase.payload.runSummaries,
+        iterWindow: t.phase.payload.iterWindow,
       }
     }
   }

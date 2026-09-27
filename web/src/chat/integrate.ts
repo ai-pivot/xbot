@@ -143,6 +143,11 @@ export function historyToReplaced(
     // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
     // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
     const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)
+    // v71 窗口化载荷：折叠 run 摘要 + 已加载边界（同一 turn 只有一条 assistant
+    // 行携带 —— 后端按 turn 去重；flatMap 兜底异常多行）。
+    const runSummariesRaw = slot.assistants.flatMap((a) => a.runSummaries ?? [])
+    const runSummaries = runSummariesRaw.length > 0 ? runSummariesRaw : undefined
+    const iterWindow = slot.assistants.find((a) => a.iterWindow)?.iterWindow
     const nonEmptyIts = nonEmptyArr(iterations)
     const payload =
       nonEmptyIts !== null
@@ -150,11 +155,19 @@ export function historyToReplaced(
         : nonEmptyStr(lastContent) !== null
           ? commitViaText(nonEmptyStr(lastContent)!, [], compactions)
           : null
+    // 窗口化载荷挂到 committed payload（v71：run 摘要 + 边界 —— 巨型 run turn
+    // 的 iterations 可能为空（Rows 只含文本块），runSummaries 就是该 turn 的主体；
+    // 此时 payload 为 null 会丢 turn —— 窗口化行有 runSummaries 也必须构造）。
+    const winPayload = payload
+      ? { ...payload, runSummaries, iterWindow }
+      : runSummaries
+        ? { via: 'fold' as const, iterations: [{ iteration: 0, content: '', reasoning: '', tools: [], toolCount: 0 }] as unknown as NonEmpty<WebIteration>, content: lastContent, runSummaries, iterWindow }
+        : null
     turns.push({
       id,
       user,
-      phase: payload
-        ? { kind: 'committed', payload }
+      phase: winPayload
+        ? { kind: 'committed', payload: winPayload }
         : // 无产出 assistant 行：frozen 空壳（derive 跳过渲染，user 行保留）。
           { kind: 'frozen', data: { ...EMPTY_SNAPSHOT } },
       requestID: user?.requestID ?? null,
@@ -324,6 +337,9 @@ function rowToChatMessage(r: Row): ChatMessage {
         // turn 内压缩点（迭代之间内联渲染）——透传引用（memo 契约同上）。
         compactions: r.compactions as WebCompaction[] | undefined,
         iterationsTruncated: r.iterationsTruncated ?? 0,
+        // v71 窗口化载荷：折叠 run 摘要 + 已加载边界（透传引用 —— memo 契约同上）。
+        runSummaries: r.runSummaries as WebRunSummary[] | undefined,
+        iterWindow: r.iterWindow,
         timestamp: '',
         isPartial: false,
         turnID: r.turnID,

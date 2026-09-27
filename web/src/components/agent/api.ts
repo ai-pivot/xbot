@@ -8,7 +8,7 @@
  * LLM subscription/model RPCs (Spec D) go through WSConnection.rpc → POST /api/rpc.
  */
 import type { WSConnection } from '@/types/ws'
-import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem } from '@/types/shared'
+import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem, WebIteration, WebToolProgress } from '@/types/shared'
 import { APIError, postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
@@ -37,6 +37,21 @@ export interface HistMsg {
    *  before v50 migration). Used by MessageList to dedup committed history
    *  against the live store's active turn. */
   turn_id?: number
+  /** v71 窗口化：折叠 run 的渲染摘要（与 iterations 互斥的载荷形态 —— run 内部
+   *  tool-only 成员不传输，只给头部 7 工具 + 真实总数；"+N" 菜单按需分页拉取
+   *  /api/history/run_tools）。仅窗口化响应携带（undefined = 全量路径）。 */
+  run_summaries?: {
+    start_iter: number
+    end_iter: number
+    head_content?: string
+    head_reasoning?: string
+    head_tools?: WebToolProgress[]
+    tool_count: number
+  }[]
+  /** v71 窗口化：该 turn 已加载集合的边界。total = 迭代总数；loaded_top =
+   *  已加载顶端迭代号（1 = 从 turn 开头完整加载；> 1 = 之上还有未加载内容，
+   *  向上滚动按批回拉 /api/history/iterations）。仅窗口化响应携带。 */
+  iter_window?: { total: number; loaded_top: number }
   /** SSE sequence number (present when the message was delivered via SSE
    *  before being persisted to DB). Used as a stable dedup key — no string
    *  matching needed. */
@@ -76,13 +91,76 @@ export interface UploadResponse {
 
 /** Fetch conversation history through the Web-only snapshot API.
  *  limit: max user turns (default 30, server-side default).
- *  beforeId: pagination cursor — return messages older than this id. */
-export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null, opts?: { limit?: number; beforeId?: number }): Promise<HistoryResponse> {
+ *  beforeId: pagination cursor — return messages older than this id.
+ *  iterWindow: v71 rendering-mirrored windowing opt-in (the mixed-block window
+ *  size; 0/absent = the legacy full path). When > 0, each turn's iterations
+ *  come back as the windowed payload: the text-block rows + the run summaries
+ *  (head-7 tools + the true count) + the bounds — the run interiors
+ *  (tool-only members) are NOT transferred (they render collapsed; the "+N"
+ *  menu paginates on demand). */
+export async function fetchHistory(_ws: WSConnection, session?: SessionSelector | null, opts?: { limit?: number; beforeId?: number; iterWindow?: number }): Promise<HistoryResponse> {
   return postAPI<HistoryResponse>('/api/history', {
     ...sessionBody(session),
     ...(opts?.limit ? { limit: opts.limit } : {}),
     ...(opts?.beforeId ? { before_id: opts.beforeId } : {}),
+    ...(opts?.iterWindow ? { iter_window: opts.iterWindow } : {}),
   })
+}
+
+/** v71 滚动回拉：单 turn 的窗口化迭代回拉（/api/history/iterations）。
+ *  beforeIter = 客户端已加载集合的顶端迭代号（游标）；返回它之下的窗口
+ *  （文本块行 + 相交 run 摘要 + 边界）。前端按迭代号 union 合并
+ *  （append-only、同号权威覆盖 —— 与 history_replaced 同语义）。 */
+export async function fetchTurnIterations(
+  session: SessionSelector | null | undefined,
+  turnID: number,
+  beforeIter: number,
+  mixedLimit = 50,
+): Promise<TurnIterationWindowResponse> {
+  return postAPI<TurnIterationWindowResponse>('/api/history/iterations', {
+    ...sessionBody(session),
+    turn_id: turnID,
+    before_iter: beforeIter,
+    mixed_limit: mixedLimit,
+  })
+}
+
+/** v71 "+N" 菜单分页：折叠 run 内部工具的按需拉取（/api/history/run_tools）。
+ *  run 由其范围 [startIter, endIter] 标识（来自 RunSummary）；返回合并工具
+ *  数组的切片 [offset, offset+limit) + 总数（分页导航）。 */
+export async function fetchRunTools(
+  session: SessionSelector | null | undefined,
+  turnID: number,
+  startIter: number,
+  endIter: number,
+  offset: number,
+  limit = 50,
+): Promise<RunToolsPageResponse> {
+  return postAPI<RunToolsPageResponse>('/api/history/run_tools', {
+    ...sessionBody(session),
+    turn_id: turnID,
+    start_iter: startIter,
+    end_iter: endIter,
+    offset,
+    limit,
+  })
+}
+
+/** /api/history/iterations response (protocol.TurnIterationWindow). The
+ *  iterations are the raw history shape (the same as HistMsg.iterations —
+ *  cast to WebIteration[] by the consumer, the same as the history path). */
+export interface TurnIterationWindowResponse {
+  turn_id: number
+  iterations?: WebIteration[]
+  run_summaries?: HistMsg['run_summaries']
+  total: number
+  loaded_top: number
+}
+
+/** /api/history/run_tools response (protocol.RunToolsPage). */
+export interface RunToolsPageResponse {
+  tools: WebToolProgress[]
+  total: number
 }
 
 export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string; todos?: TodoItem[] }> {

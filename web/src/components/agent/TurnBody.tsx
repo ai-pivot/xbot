@@ -76,6 +76,13 @@ interface TurnBodyProps {
   iterations: WebIteration[]
   /** turn 内的压缩点（迭代之间内联渲染，Cursor 式）—— 见 WebCompaction。 */
   compactions?: WebCompaction[]
+  /** v71 窗口化：折叠 run 的渲染摘要（头部 7 工具 + 真实总数）—— run 内部
+   *  tool-only 成员不传输，渲染为虚拟块（与全量渲染逐像素一致）。仅窗口化
+   *  响应携带（undefined = 全量路径，iterations 即全量）。 */
+  runSummaries?: WebRunSummary[]
+  /** v71 窗口化：已加载边界（total / loadedTop）。存在 = 窗口化载荷（迭代号
+   *  有洞是预期的 —— run 内部不传输），跳过连续前缀守卫；滚动回拉按批补洞。 */
+  iterWindow?: { total: number; loadedTop: number }
   /** Live progress for an in-flight turn; null for committed history. */
   liveProgress?: ProgressSnapshot | null
   /** TurnID for data-attribute debugging (data-turn-id on each block). */
@@ -957,18 +964,38 @@ function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
 
 export const TurnBody = memo(function TurnBody({
   iterations,
+  runSummaries,
+  iterWindow,
   compactions,
   liveProgress,
   turnID,
   heightScope,
 }: TurnBodyProps) {
-  // Linear-consistency guard: 只渲染**连续前缀**（弱网丢中间迭代时不能出现 1,3）。
-  // PERF（#4）：增量扫描 —— 只扫新增的尾部（锚点校验前缀；不符即全量扫描）。
-  // 无变化时 `out` 引用稳定 → 保住 CommittedTurn 的 memo。
+  // v71 窗口化路径：iterWindow 存在 = 窗口化载荷（迭代号有洞是预期的 —— run
+  // 内部 tool-only 成员不传输，只给 run 摘要）。把 run 摘要转成**虚拟块**
+  // （头部文本 + 头部 7 工具 + 真实总数 toolTotal）与文本块按迭代号交错 ——
+  // 与全量渲染逐像素一致（mergeToolRuns 对虚拟块的行为：有头部文本 ⇒ 独立块；
+  // 无文本 ⇒ 与后续 tool-only 吸收 —— 但窗口载荷里文本块无工具、虚拟块之间
+  // 不相邻（存储端 run 检测同判据），行为一致）。
+  // ⚠️ 窗口化载荷跳过连续前缀守卫（extendContiguous）：洞是**设计**（run 内部
+  // 不传输），不是弱网丢迭代 —— 守卫会把窗口截断到第一个洞。全量路径守卫不变。
+  const windowed = iterWindow !== undefined
   const scanRef = useRef<ContiguousScan | null>(null)
-  const scan = extendContiguous(scanRef.current, iterations)
-  scanRef.current = scan
-  const contiguous = scan.out
+  const interleaved = useMemo(() => {
+    if (!runSummaries || runSummaries.length === 0) return iterations
+    const virtual: WebIteration[] = runSummaries.map((rs) => ({
+      iteration: rs.startIter,
+      content: rs.headContent ?? '',
+      reasoning: rs.headReasoning ?? '',
+      tools: rs.headTools ?? [],
+      toolCount: rs.headTools?.length ?? 0,
+      toolTotal: rs.toolCount,
+    }))
+    return [...iterations, ...virtual].sort((a, b) => a.iteration - b.iteration)
+  }, [iterations, runSummaries])
+  const scan = windowed ? null : extendContiguous(scanRef.current, iterations)
+  if (!windowed) scanRef.current = scan
+  const contiguous = windowed ? interleaved : scan.out
   // 跨迭代折叠（连续 tool-only 迭代共享一行）；`contiguous` 引用稳定 ⇒ 这个 memo 也稳定，
   // 不会击穿 CommittedTurn 的 memo / 迭代级窗口化。
   const merged = useMemo(() => mergeToolRuns(contiguous), [contiguous])

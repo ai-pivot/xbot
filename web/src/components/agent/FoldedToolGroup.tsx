@@ -53,6 +53,9 @@ const POPOVER_CLASS =
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
+  /** v71 窗口化 run 块的真实工具总数（tools 只携带头部 7 个时，+N 徽标必须
+   *  用本字段显示真实溢出数 —— 绝不估算）。全量路径不设置（回落 tools.length）。 */
+  toolTotal?: number
 }
 
 /** Extract a short parameter hint from the tool label (text after ": "). */
@@ -437,10 +440,13 @@ function LazyPillPopover({
 
 /** 折叠行 pill 列表：≤8 全量；>8 显示前 7 pill + "+N" 徽标。
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
- *  "+N" 弹溢出工具的全量列表。 */
-const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgress[] }) {
+ *  "+N" 弹溢出工具的全量列表。
+ *  v71 窗口化：tools 只携带头部 7 个时，toolTotal 携带真实总数 —— +N 徽标
+ *  显示真实溢出数（toolTotal - 7，绝不估算）；溢出菜单按需分页拉取。 */
+const MergedPills = memo(function MergedPills({ tools, toolTotal }: { tools: WebToolProgress[]; toolTotal?: number }) {
   const { t } = useI18n()
-  const overflow = tools.length > PILL_INLINE_MAX
+  const total = toolTotal ?? tools.length
+  const overflow = total > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
     <span data-testid="merged-pills" className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
@@ -449,22 +455,25 @@ const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgres
           {toolPill(tool, t)}
         </LazyPillPopover>
       ))}
-      {overflow && <OverflowPillsMenu tools={tools} />}
+      {overflow && <OverflowPillsMenu tools={tools} toolTotal={total} />}
     </span>
   )
 })
 
-/** "+N" 溢出菜单：被收纳工具的全量列表（点击条目展开该工具卡片）。 */
-function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
-  const hidden = tools.slice(PILL_INLINE_HEAD)
+/** "+N" 溢出菜单：被收纳工具的全量列表（点击条目展开该工具卡片）。
+ *  v71 窗口化：toolTotal > tools.length 时溢出工具未随窗口传输 —— 徽标显示
+ *  真实溢出数（toolTotal - 7），菜单内容按需分页拉取（/api/history/run_tools）。 */
+function OverflowPillsMenu({ tools, toolTotal }: { tools: WebToolProgress[]; toolTotal?: number }) {
+  const total = toolTotal ?? tools.length
+  const hidden = total - PILL_INLINE_HEAD
   return (
     <LazyPillPopover
       testId="tool-pill-more"
       toolName="__overflow__"
-      content={<ToolPopoverContent tools={hidden} />}
+      content={<ToolPopoverContent tools={tools.slice(PILL_INLINE_HEAD)} />}
     >
       <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
-        {i18n.t('agent.tool.overflowBadge', { count: hidden.length, defaultValue: `+${hidden.length}` }) as string}
+        {i18n.t('agent.tool.overflowBadge', { count: hidden, defaultValue: `+${hidden}` }) as string}
       </span>
     </LazyPillPopover>
   )
@@ -554,6 +563,7 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
 
 export const FoldedToolGroup = memo(function FoldedToolGroup({
   tools,
+  toolTotal,
 }: FoldedToolGroupProps) {
   // GenUI 工具永不折叠（metadata 驱动）；non-GenUI 才进入 pill 行/浮层。
   // useMemo 必须在 early return 之前（hooks 规则）；tools 为空时结果为空数组，
@@ -564,7 +574,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   )
   // pill 行 JSX：依赖 tools 引用（otherTools 由上方 useMemo 派生，引用稳定）——
   // tools 不变时 pill 行 re-render 零重建（pill 浮窗开合由 radix/懒挂管理）。
-  const pillsRow = useMemo(() => <MergedPills tools={otherTools} />, [otherTools])
+  const pillsRow = useMemo(() => <MergedPills tools={otherTools} toolTotal={toolTotal} />, [otherTools, toolTotal])
 
   // 行级失败告警：组内任一工具失败 ⇒ 行左侧红条 + `N 失败` chip（折叠/滚动时也不漏）。
   const failedCount = useMemo(() => otherTools.filter((x) => isFailed(x.status)).length, [otherTools])

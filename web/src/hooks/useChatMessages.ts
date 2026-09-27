@@ -228,6 +228,22 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
               timestamp: typeof c.timestamp === 'string' ? c.timestamp : undefined,
             }))
         : undefined,
+      // v71 窗口化载荷：折叠 run 摘要（头部 7 工具 + 真实总数）+ 已加载边界。
+      // 仅窗口化响应携带（undefined = 全量路径，iterations 即全量）。
+      runSummaries: Array.isArray(m.run_summaries)
+        ? m.run_summaries.map((r) => ({
+            startIter: r.start_iter,
+            endIter: r.end_iter,
+            headContent: r.head_content,
+            headReasoning: r.head_reasoning,
+            headTools: Array.isArray(r.head_tools) ? r.head_tools : undefined,
+            toolCount: r.tool_count,
+          }))
+        : undefined,
+      iterWindow:
+        m.iter_window && typeof m.iter_window.total === 'number'
+          ? { total: m.iter_window.total, loadedTop: m.iter_window.loaded_top }
+          : undefined,
     })
   }
 
@@ -494,7 +510,10 @@ export function useChatMessages({
         return parsed
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
+      // v71 渲染镜像窗口化 opt-in：iter_window=50 —— 每 turn 的迭代载荷 = 尾部
+      // 50 个混合块 + run 摘要（头部 7 工具 + 真实总数）+ 边界；run 内部不传输
+      // （折叠渲染 + "+N" 菜单按需分页）。0/缺省 = 全量路径（向后兼容）。
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, iterWindow: 50 })
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
@@ -566,7 +585,8 @@ export function useChatMessages({
       // 第二批的 `hist-0` 与第一批冲突，下方 existingIds 把新数据全判为
       // 重复 → hasMore=false 分页截断（更老的消息永远加载不出来）。
       const beforeId = oldestIdRef.current
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId })
+      // v71 窗口化 opt-in（与初始加载同参）：loadMore 拉取的更早 turn 同样窗口化。
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId, iterWindow: 50 })
       const rows = data.messages ?? []
       if (rows.length === 0) {
         setHasMore(false)

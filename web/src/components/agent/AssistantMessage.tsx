@@ -104,6 +104,8 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
       )}
       <TurnBody
         iterations={iterations}
+        runSummaries={message.runSummaries}
+        iterWindow={message.iterWindow}
         compactions={message.compactions}
         liveProgress={liveProgress}
         turnID={message.turnID}
