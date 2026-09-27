@@ -310,3 +310,51 @@ exit 1。本地 pre-commit 常绿（时序不同：本地 debounce 在环境存�
 **守护测试**：`web/src/components/agent/messageListObserverDisposal.test.ts`
 （假定时器 + 真实 scroll 事件 + cleanup + 推进时钟 ⇒ 断言 cleanup 之后**零新增回调**；
 另有一条"未 cleanup 时行为不变"的反向守护）。判别力：去掉 `disposed` 守卫即红。
+
+## 移动端浏览器适配三连坑（2026-09-27 用户报告：安卓键盘盖输入框 / 新 tab about:blank / 安卓长按菜单失效）
+
+**① 软键盘盖住输入框 —— 双机制必须成对存在。**
+`AppShell`/`MobileAppShell` 的根容器是 `fixed inset-0`（锚定**布局视口**）。Chrome Android 默认
+`interactive-widget=resizes-visual`：键盘弹出时布局视口不变、只有 visualViewport 缩小 ⇒ fixed
+底部的输入框正被键盘盖住。修复两件套（**天然互斥，不会双重补偿**）：
+- `index.html` viewport meta 加 `interactive-widget=resizes-content`（Chrome 108+ / Firefox Android
+  132+ 直接缩小布局视口；此时 `vv.height ≈ innerHeight` ⇒ 补偿量算出 0）。iOS Safari 不认识该
+  参数、直接忽略，行为不变。**守护**：`src/viewport-contract.test.ts`（`?raw` 导入断言 meta
+  内容——build 的 tsc 无 `@types/node`，禁用 `node:fs`/`__dirname`）。
+- `useKeyboardInset()`（visualViewport 实测键盘高度）以 `paddingBottom` 垫高根容器，兜住老
+  Chrome / 国产 WebView / iOS。公式 `innerHeight - vv.height - vv.offsetTop` = 键盘盖住布局视口
+  底部的像素数（iOS 页面被自动滚动时按可见部分折算，自洽）。**守护**：
+  `src/hooks/useKeyboardInset.test.ts`（6 例：关闭=0 / resizes-visual=键盘高度 /
+  **resizes-content=0 不双补** / iOS offsetTop 折算 / <80px 抖动不算键盘 / 卸载解绑）。
+- ⚠️ **portal 到 body 的 `fixed bottom-0` 元素不随根容器 padding 上移**（GoalBanner /
+  TodoPullOut 的移动端编辑 sheet）——它们要**各自** `useKeyboardInset` + `style={{ bottom }}`。
+
+**② 预开的授权弹窗停在 about:blank —— 必须在手势内同步写入加载页。**
+`SettingsChannels.startFeishuBind` 的模式是「手势内 `window.open('about:blank')` 占位 → await
+RPC → `popup.location.replace(url)`」。RPC 慢、或**安卓浏览器把切到后台的本页冻结（fetch 挂起）**
+时，用户盯着的就是一个空白 about:blank 标签。修复：`window.open` 后**立即（同步、同一手势内）**
+`document.write` 一个带品牌样式（prefers-color-scheme 深浅 + CSS spinner）的「正在获取飞书授权链接…」
+页（`writePopupLoading`，文案 i18n key `feishuPopupLoading` ×3 语言）。RPC 失败仍 `popup.close()`
+（面板显示 error）。**守护**：`SettingsChannels.test.tsx` 的「弹窗打开后立即写入加载页」用例
+（RPC 挂起时断言 `write` 已被调用且含文案，resolve 后 `location.replace` 照常）。
+
+**③ 安卓长按 ContextMenu 不弹 —— Radix 触屏实现的两处断链。**
+Radix `ContextMenuTrigger`（node_modules 源码实证）= `onPointerDown(touch) → 700ms timer` +
+`onPointerMove → clearLongPress`（**无容差**）+ `onPointerCancel → clearLongPress`。安卓断在：
+(a) 触发元素无 `user-select:none` 时，Chrome Android 长按 ~500ms 判定为**文本选择** → 派发
+`pointercancel`（timer 被杀）且**不派发** `contextmenu`（选择优先）⇒ 菜单永远不弹；iOS 上 Radix
+自动设置的 `WebkitTouchCallout:none` 恰好压制了原生接管——这就是「只有 iPhone 能长按」的真因；
+(b) 无容差的 move 清计时被触摸噪声击穿（与 `MessageActions.useLongPress` 2026-09-16 同款坑）。
+修复：`components/ui/TouchContextMenuTrigger.tsx`（SessionItem / FileExplorer / TabHeader 三处
+换用）——触屏时包一层 `select-none [-webkit-touch-callout:none]` div + 自建**容差 12px** 的
+500ms 长按；触发时先派发 synthetic `pointerup`（杀 Radix 自己的 700ms 无容差计时器，防二次
+handleOpen 重定位跳动）再派发 synthetic `contextmenu`（带触点坐标）→ 走 Radix 正常开菜单路径，
+**不依赖 Radix 内部 API**。长按触发后 `onClickCapture` 拦截抬手 click（安卓长按抬手仍派发
+click，会把「长按菜单」误变成「点击切会话」）。菜单项不会误触：pointerdown（wrapper）与
+pointerup（portal 到 body 的菜单项）不同元素 ⇒ click 落在公共祖先上。桌面（hover 可用）**零
+变化**：直接透传 asChild，无包裹层。
+**守护**：`TouchContextMenuTrigger.test.tsx`（5 例：select-none 层 / 容差内抖动长按开菜单 /
+click 拦截 / 超容差取消 / 桌面零包裹 + 右键照常）+ **E2E** `e2e/touch-longpress.spec.ts`
+（真实 hasTouch+isMobile Chromium：开抽屉 → dispatchEvent pointerdown → 菜单出现；revert 修复
+则 `touch-context-trigger` 消失、长按无菜单 ⇒ 必红）。E2E 断言的菜单文案是
+`session.openInTab` = **「在新标签页中打开」**（不是「在新标签页打开」）。

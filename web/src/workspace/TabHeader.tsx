@@ -20,8 +20,8 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
-  ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { TouchContextMenuTrigger } from '@/components/ui/TouchContextMenuTrigger'
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement> & { size?: number | string }>
 
@@ -68,7 +68,7 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
 
   return (
     <ContextMenu>
-      <ContextMenuTrigger asChild>
+      <TouchContextMenuTrigger asChild>
         <div
           className={cn(
             'group flex h-[35px] w-full min-w-0 cursor-pointer select-none items-center gap-1.5',
@@ -123,7 +123,7 @@ export function TabHeader({ params, api, isActive, onActivate }: TabHeaderProps)
             </button>
           )}
         </div>
-      </ContextMenuTrigger>
+      </TouchContextMenuTrigger>
       <ContextMenuContent>
         <ContextMenuItem
           disabled={!params.closable}

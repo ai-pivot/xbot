@@ -138,6 +138,43 @@ describe('SettingsChannels — 渠道面板', () => {
     openSpy.mockRestore()
   })
 
+  it('弹窗打开后立即写入加载页（不再停在 about:blank —— RPC 慢/后台冻结时用户看到品牌加载页）', async () => {
+    const bindURL = 'https://open.feishu.cn/page/launcher?user_code=LM'
+    // RPC 慢：先挂起，等 loading 页断言之后再放行。
+    let resolveStart!: (v: { url: string; expires_in: number }) => void
+    const startPromise = new Promise<{ url: string; expires_in: number }>((r) => { resolveStart = r })
+    postAPIMock.mockImplementation((_endpoint: string, body: { method: string }) => {
+      if (body?.method === 'get_channel_config') return Promise.resolve(channelsFixture)
+      if (body?.method === 'feishu_bind_start') return startPromise
+      return Promise.resolve({})
+    })
+    const write = vi.fn()
+    const replace = vi.fn()
+    const popup = {
+      closed: false,
+      opener: {} as unknown,
+      document: { open: vi.fn(), write, close: vi.fn() },
+      location: { replace },
+      close: vi.fn(),
+    } as unknown as Window
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(popup)
+
+    renderWithProviders(<SettingsChannels />)
+    fireEvent.click(await screen.findByTestId('feishu-bind'))
+
+    // ① 同一用户手势内同步写入：RPC 还没返回，加载页就必须已经在弹窗里。
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1))
+    expect(write.mock.calls[0][0]).toContain('正在获取飞书授权链接')
+    // 品牌加载页带转圈动画与响应式 viewport（手机上可读）。
+    expect(write.mock.calls[0][0]).toContain('spin')
+    expect(write.mock.calls[0][0]).toContain('viewport')
+
+    // ② RPC 返回后照常导航（既有行为不回归）。
+    resolveStart({ url: bindURL, expires_in: 600 })
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(bindURL))
+    openSpy.mockRestore()
+  })
+
   it('拿到链接后按钮立刻脱离「正在获取链接…」（不再永久禁用），并提供打开链接', async () => {
     const bindURL = 'https://open.feishu.cn/page/launcher?user_code=XY'
     mockRPC({ feishu_bind_start: { url: bindURL, expires_in: 600 } })

@@ -675,6 +675,7 @@ const zhCN = {
       feishuGuideManual: '也可以在飞书开放平台手动创建应用 →',
       feishuBind: '一键绑定飞书智能体应用',
       feishuBinding: '正在获取链接…',
+      feishuPopupLoading: '正在获取飞书授权链接，请稍候…',
       feishuBound: '已绑定',
       feishuBindHint:
         '在飞书中打开下面的链接确认后，当前应用会获得智能体权限、事件订阅与卡片回调（含「创建与更新卡片」，流式进度卡片需要它）。',

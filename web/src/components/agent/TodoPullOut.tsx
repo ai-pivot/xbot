@@ -3,6 +3,7 @@ import { CheckCircle2, ChevronRight, Circle, Loader2, MoreHorizontal, Pencil, Ta
 
 import { cn } from '@/lib/utils'
 import { useIsTouch } from '@/hooks/useIsMobile'
+import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 import { useI18n } from '@/providers/i18n'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import type { TodoState } from '@/hooks/useTodos'
@@ -34,6 +35,7 @@ export function TodoPullOut({
 }: TodoPullOutProps) {
   const { t } = useI18n()
   const isTouch = useIsTouch()
+  const keyboardInset = useKeyboardInset()
   const [expanded, setExpanded] = useState(false)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   /** 触屏：哪一行的操作菜单（⋯）是打开的。 */
@@ -130,6 +132,9 @@ export function TodoPullOut({
                 <div
                   key={i}
                   data-testid="todo-edit-sheet"
+                  // 键盘补偿：fixed bottom-0 不随 AppShell padding 上移，安卓
+                  // 键盘弹出会盖住 textarea —— bottom 跟随实测键盘高度。
+                  style={{ bottom: `${keyboardInset}px` }}
                   className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-bg-primary p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-lg"
                 >
                   <div className="mb-2 text-xs font-medium text-text-secondary">{t('agent.todoEdit')}</div>

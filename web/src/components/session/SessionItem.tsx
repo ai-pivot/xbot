@@ -17,8 +17,8 @@ import {
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
-  ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { TouchContextMenuTrigger } from '@/components/ui/TouchContextMenuTrigger'
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import i18n from '@/i18n'
@@ -254,7 +254,7 @@ export function SessionItem({
   if (isSubAgent || session.synthetic) {
     return (
      <ContextMenu>
-       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+       <TouchContextMenuTrigger asChild>{row}</TouchContextMenuTrigger>
        <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
           <ContextMenuItem onSelect={openInBrowserTab}>
             <ExternalLink className="size-4" />
@@ -267,9 +267,9 @@ export function SessionItem({
 
   return (
      <ContextMenu>
-       <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+       <TouchContextMenuTrigger asChild>{row}</TouchContextMenuTrigger>
        <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
-          <ContextMenuItem onSelect={openInBrowserTab}>
+         <ContextMenuItem onSelect={openInBrowserTab}>
           <ExternalLink className="size-4" />
           {t('session.openInTab')}
         </ContextMenuItem>

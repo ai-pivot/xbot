@@ -38,6 +38,7 @@ import { AmbienceBackground } from '@/ambience/AmbienceRoot'
 import { PluginView } from '@/plugin-runtime/PluginView'
 import { registerMobileAgentOpener } from '@/lib/mobileNav'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
+import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutItem } from '@/plugin-runtime/layoutTypes'
@@ -111,6 +112,13 @@ export function MobileAppShell() {
   const cwd = useCwd()
   const auth = useAuth()
   const { t } = i18n
+  // 软键盘补偿（2026-09-27 用户报告「安卓浏览器键盘盖住输入框」）：根容器
+  // fixed inset-0 锚定【布局视口】，键盘弹出时布局视口底部正被键盘盖住。
+  // index.html 已加 interactive-widget=resizes-content（新 Chrome/Firefox 直接
+  // 缩小布局视口，此时本补偿量算出来是 0 —— 两机制天然互斥）；对不认识该
+  // 参数的浏览器（iOS Safari / 老安卓 / 国产 WebView），用 visualViewport
+  // 实测的键盘高度把内容区垫上去。桌面无软键盘 ⇒ 恒 0，零副作用。
+  const keyboardInset = useKeyboardInset()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [view, setView] = useState<MobileView>('agent')
@@ -356,7 +364,10 @@ export function MobileAppShell() {
          *  LAYOUT viewport, which DOES span the full screen under
          *  viewport-fit=cover. This is the community-verified iOS PWA
          *  full-bleed fix. */}
-        <div className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary">
+        <div
+          className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary"
+          style={keyboardInset > 0 ? { paddingBottom: `${keyboardInset}px` } : undefined}
+        >
           {/* Ambience 壁纸层（z:0）——第一子元素 */}
           <AmbienceBackground />
           {/* relative（定位元素）必须保留在 header/main/nav 上：壁纸层是
