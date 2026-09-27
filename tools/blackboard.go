@@ -569,7 +569,9 @@ func renderBlackboardRow(e *sqlite.BlackboardEntry, now int64) string {
 	case e.Closed:
 		line += "closed"
 	case e.Blocked:
-		line += fmt.Sprintf("blocked by %s", strings.Join(unsatisfiedDeps(e), ", "))
+		// Blocked means at least one dependency is unsatisfied (see
+		// blackboardBlocked), so the edge list is never empty here.
+		line += fmt.Sprintf("blocked by %s", strings.Join(e.BlockedBy, ", "))
 	case e.ClaimedBy != "":
 		line += fmt.Sprintf("claimed by %s (%s left)", e.ClaimedBy, formatBlackboardDuration(e.ClaimExpiresAt-now))
 	default:
@@ -616,22 +618,11 @@ func boardBlockedNote(e *sqlite.BlackboardEntry) string {
 	return "（已满足）"
 }
 
-// unsatisfiedDeps lists the dependencies still open (best effort: the entry
-// only carries its edges, so the caller sees the full list).
-func unsatisfiedDeps(e *sqlite.BlackboardEntry) []string {
-	if len(e.BlockedBy) == 0 {
-		return []string{"?"}
-	}
-	return e.BlockedBy
-}
-
 func formatBlackboardTime(unixMs int64) string {
-	if unixMs <= 0 {
-		return "-"
-	}
 	return time.UnixMilli(unixMs).Format("15:04:05")
 }
 
+// formatBlackboardDuration renders a lease remainder for humans ("4m58s").
 func formatBlackboardDuration(ms int64) string {
 	if ms <= 0 {
 		return "0s"
