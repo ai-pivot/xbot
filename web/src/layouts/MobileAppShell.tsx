@@ -14,7 +14,7 @@
  * 迭代可能少。保持挂载则流式状态持续更新，切回立即显示完整历史。
  */
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Bot, Files, Info, ListChecks, Loader2, Menu, Plus, Search, Settings, SquareTerminal, Wrench } from 'lucide-react'
+import { ArrowLeft, Bot, ClipboardList, Files, Info, ListChecks, Loader2, Menu, Plus, Search, Settings, SquareTerminal, Wrench } from 'lucide-react'
 
 import { AgentPanel } from '@/workspace/panels/AgentPanel'
 const TerminalPanel = lazy(() =>
@@ -31,6 +31,7 @@ import { SessionInfo } from '@/components/sidebar/SessionInfo'
 import type { SessionInfo as SessionInfoType } from '@/types/shared'
 import { SessionSidebar } from '@/components/session/SessionSidebar'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
+import { BlackboardPanel } from '@/components/blackboard/BlackboardPanel'
 import { TerminalList } from '@/components/sidebar/TerminalList'
 import { InfoBar } from '@/plugins/InfoBar'
 import { PluginPanelContainer } from '@/plugins/manager/PluginPanelContainer'
@@ -70,6 +71,7 @@ const PANEL_BUTTONS: { panel: SidebarPanel; icon: typeof Files; labelKey: string
   { panel: 'search', icon: Search, labelKey: 'sidebar.search' },
   { panel: 'info', icon: Info, labelKey: 'sidebar.info' },
   { panel: 'tasks', icon: ListChecks, labelKey: 'sidebar.tasks' },
+  { panel: 'blackboard', icon: ClipboardList, labelKey: 'sidebar.blackboard' },
   { panel: 'terminal', icon: SquareTerminal, labelKey: 'sidebar.terminal' },
 ]
 
@@ -751,6 +753,8 @@ function renderMobilePanel(
       return <SessionInfo tabManager={tabManager} />
     case 'tasks':
       return <TasksPanel tabManager={tabManager} />
+    case 'blackboard':
+      return <BlackboardPanel />
     case 'terminal':
       return terminalManager ? <TerminalList terminalManager={terminalManager} /> : null
     default: {
