@@ -8,7 +8,7 @@
  *
  * Streaming state: 流式时 TurnBody 追加 LiveIteration 渲染进行中迭代。
  */
-import { memo } from 'react'
+import { createContext, memo, useContext } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -16,6 +16,16 @@ import { CopyTarget } from './MessageActions'
 import { TurnBody } from './TurnBody'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
+
+/**
+ * v71 窗口化滚动回拉的 loader 上下文：TurnBody/AssistantMessage 深处（divider）
+ * 调用 useAgentChatState 的 loadMoreIterations（fetch → 状态机 iteration_window
+ * 事件合并）。用 Context 而非 prop 穿透（AgentPanel→MessageList→MessageItem→
+ * AssistantMessage 四层只为一个回调）。provider 挂在 builtinPanels（store 所在层）。
+ */
+export const IterationWindowLoaderContext = createContext<
+  ((turnID: number, beforeIter: number) => Promise<void>) | null
+>(null)
 
 interface AssistantMessageProps {
   message: ChatMessage
@@ -27,6 +37,11 @@ interface AssistantMessageProps {
 
 function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessageProps) {
   const { t } = useI18n()
+  // v71 窗口化滚动回拉：loadedTop > 1 时窗口之上还有未加载迭代 —— divider 提示
+  // 并按需回拉（fetchTurnIterations → 状态机 iteration_window 合并，窗口向上扩展）。
+  const loadMoreIterations = useContext(IterationWindowLoaderContext)
+  const iterWindow = message.iterWindow
+  const canLoadMore = iterWindow !== undefined && iterWindow.loadedTop > 1 && loadMoreIterations !== null
   // ── Single source of truth ──────────────────────────────────────────
   // When a LIVE progress snapshot exists (phase != "done"), the snapshot is
   // the sole authority for the active turn:
@@ -101,6 +116,18 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
         >
           {`更早的 ${message.iterationsTruncated} 个迭代未加载（仅显示最近 ${iterations.length} 个）`}
         </div>
+      )}
+      {canLoadMore && iterWindow && (
+        <button
+          type="button"
+          data-testid="iteration-window-more"
+          onClick={() => {
+            void loadMoreIterations?.(message.turnID, iterWindow.loadedTop)
+          }}
+          className="mb-1 block w-full rounded px-1 py-0.5 text-left text-[11.5px] text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+        >
+          {t('agent.iterWindowMore', { count: iterWindow.loadedTop - 1, defaultValue: `加载更早的 ${iterWindow.loadedTop - 1} 个迭代` })}
+        </button>
       )}
       <TurnBody
         iterations={iterations}

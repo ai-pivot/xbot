@@ -1459,12 +1459,51 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       }
     }
 
+    // ── iteration_window：v71 窗口化滚动回拉（单 turn 更早迭代窗口的合并）──
+    // 合并语义与 history_replaced 同源：append-only union（同号权威覆盖）、
+    // runSummaries 按 startIter 去重合并（跨窗口 run 摘要一致 —— 头部 7 工具 +
+    // 真实总数）、iterWindow.loadedTop 取更小值（窗口向上扩展）。幂等：无实际
+    // 变化返回原 state 引用（零渲染 —— 否则滚动回拉的每次触发都击穿行 memo）。
+    case 'iteration_window': {
+      const t = s.turns.get(ev.turnID)
+      if (!t || t.phase.kind !== 'committed') return s
+      const p = t.phase.payload
+      // iterations union（append-only，同号权威覆盖 —— 与 history_replaced 同语义）。
+      const mergedIts = reuseIfSame(mergeIterations(p.iterations, ev.iterations), p.iterations)
+      // runSummaries union（按 startIter 去重 —— 已加载的 run 保留（跨窗口 run
+      // 的摘要一致：头部 7 工具 + 真实总数），新窗口的更早 run 追加）。
+      const existingRuns = p.runSummaries ?? []
+      const runByStart = new Map(existingRuns.map((r) => [r.startIter, r]))
+      for (const r of ev.runSummaries) {
+        if (!runByStart.has(r.startIter)) runByStart.set(r.startIter, r)
+      }
+      const mergedRuns = [...runByStart.values()].sort((a, b) => a.startIter - b.startIter)
+      const runsChanged = mergedRuns.length !== existingRuns.length
+      // iterWindow：loadedTop 取更小值（窗口向上扩展）；total 权威更新。
+      const prevWin = p.iterWindow
+      const newWin = {
+        total: ev.total,
+        loadedTop: Math.min(prevWin?.loadedTop ?? ev.loadedTop, ev.loadedTop),
+      }
+      const winChanged =
+        !prevWin || newWin.total !== prevWin.total || newWin.loadedTop !== prevWin.loadedTop
+      // 幂等短路：无实际变化返回原 state（零渲染）。
+      if (mergedIts === p.iterations && !runsChanged && !winChanged) return s
+      const payload = {
+        ...p,
+        iterations: mergedIts,
+        runSummaries: mergedRuns,
+        iterWindow: newWin,
+      } as typeof p
+      const turns = new Map(s.turns)
+      turns.set(ev.turnID, { ...t, phase: { kind: 'committed', payload } })
+      return { ...s, turns }
+    }
+
     // ── user_sent：乐观行入 pending 队列 ──
     case 'user_sent': {
       return { ...s, pendingUsers: [...s.pendingUsers, ev.row] }
-    }
-
-    // ── user_echo：后端权威回显（带 turn_id）。已绑定同 request -> 幂等；
+    }    // ── user_echo：后端权威回显（带 turn_id）。已绑定同 request -> 幂等；
     //     turn 已存在但 user 空 -> 挂 user；否则入 pending（turnHint 绑定）。 ──
     // ⚠️ 核心修复（双 user 行 + 双思考中）：user_echo 是"同一条 user 消息的
     //    权威回显"，绝不产生【第二条】渲染行 —— 渲染源是状态机 pendingUsers

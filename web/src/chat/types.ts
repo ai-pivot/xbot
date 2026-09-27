@@ -428,6 +428,22 @@ export type DomainEvent =
       readonly todos: readonly TodoItem[]
     }
   | {
+      /** v71 窗口化滚动回拉：单 turn 的更早迭代窗口（/api/history/iterations）。
+       *  合并语义与 history_replaced 同源 —— append-only union（同号权威覆盖）、
+       *  runSummaries 按 startIter 去重合并、iterWindow.loadedTop 取更小值
+       *  （窗口向上扩展）。幂等：无实际变化返回原 state 引用（零渲染）。 */
+      readonly type: 'iteration_window'
+      readonly turnID: TurnID
+      /** 本次回拉窗口的文本块行（非 tool-only 且无工具 —— 逐块渲染）。 */
+      readonly iterations: readonly WebIteration[]
+      /** 本次回拉窗口相交的 run 摘要（头部 7 工具 + 真实总数）。 */
+      readonly runSummaries: readonly WebRunSummary[]
+      /** 该 turn 的迭代总数（gap 判定 + 游标）。 */
+      readonly total: number
+      /** 本次回拉后已加载集合的顶端迭代号（1 = 完整）。 */
+      readonly loadedTop: number
+    }
+  | {
       /** 乐观 user 创建（本地事件，非 SSE）。 */
       readonly type: 'user_sent'
       readonly row: UserRow

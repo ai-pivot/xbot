@@ -12,13 +12,14 @@
 
 import {useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { subscribeAgentIdle } from '@/lib/sessionEvents'
-import type { ChatMessage, GoalInfo, ProgressSnapshot, QueueItemPayload, TodoItem } from '@/types/shared'
+import type { ChatMessage, GoalInfo, ProgressSnapshot, QueueItemPayload, TodoItem, WebIteration } from '@/types/shared'
 import type { WSConnection } from '@/hooks/useWSConnection'
+import { fetchTurnIterations } from '@/components/agent/api'
 import { deriveRows } from './derive'
 import { historyToReplaced, liveProgressFromState, rowsToChatMessages } from './integrate'
 import { normalizeEvent } from './normalize'
 import { ChatStore } from './store'
-import { initialChatState, type DomainEvent } from './types'
+import { initialChatState, turnID, type DomainEvent } from './types'
 
 /** chatID 归一（事件可能带 channel 前缀）—— 只比裸 chatID。 */
 function bareChatID(v: string): string {
@@ -234,6 +235,37 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     })
   }, [progressChatID, sessionIdle])
 
+  // v71 窗口化滚动回拉：单 turn 的更早迭代窗口（/api/history/iterations）。
+  // fetch → 状态机 iteration_window 事件（append-only union + loadedTop 取更小值
+  // —— 窗口向上扩展）。失败静默（用户可再点；不破坏已有渲染）。
+  const loadMoreIterations = useMemo(
+    () => async (turnIDNum: number, beforeIter: number) => {
+      if (!progressChatID || beforeIter <= 1) return
+      const session = { channel: 'web', chatID: bareChatID(progressChatID) }
+      try {
+        const res = await fetchTurnIterations(session, turnIDNum, beforeIter, 50)
+        store.dispatch({
+          type: 'iteration_window',
+          turnID: turnID(turnIDNum),
+          iterations: (res.iterations ?? []).filter(Boolean) as WebIteration[],
+          runSummaries: (res.run_summaries ?? []).map((r) => ({
+            startIter: r.start_iter,
+            endIter: r.end_iter,
+            headContent: r.head_content,
+            headReasoning: r.head_reasoning,
+            headTools: r.head_tools,
+            toolCount: r.tool_count,
+          })),
+          total: res.total,
+          loadedTop: res.loaded_top,
+        })
+      } catch {
+        // fetch 失败静默 —— 用户可再点（不破坏已有渲染）。
+      }
+    },
+    [store, progressChatID],
+  )
+
   // 会话 running（服务端 reconcile 权威）⇒ 状态机。不变量（用户 2026-09-19）：
   // 「输入框 = cancel ⇒ 上面必须显示进行中信号」；composer 的 cancel 已包含
   // `currentSession.running`，所以 turn 的 live-ness 必须服从同一个权威 ——
@@ -265,6 +297,8 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     hydrateSessionFields,
     pauseRender,
     resumeRender,
+    /** v71 窗口化滚动回拉：单 turn 的更早迭代窗口（fetch → iteration_window 事件）。 */
+    loadMoreIterations,
   }
 }
 

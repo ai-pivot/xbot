@@ -37,6 +37,7 @@ import { ToolSessionContext } from '@/components/agent/ToolSessionContext'
 import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
+import { IterationWindowLoaderContext } from '@/components/agent/AssistantMessage'
 import { ModelSelector } from '@/components/agent/ModelSelector'
 import { sessionSwitch } from '@/lib/sessionSwitch'
 import { StagingTray } from '@/components/agent/StagingTray'
@@ -983,6 +984,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         />
       )}
       {!(showLoadingScreen || switchSplash) && isVisible ? (
+      <IterationWindowLoaderContext.Provider value={agentChat.loadMoreIterations}>
       <MessageList
         chatKey={`${messageChannel}:${chatID ?? ''}:${params.agentChatID ?? ''}:${params.subAgentRole ?? ''}:${params.subAgentInstance ?? ''}`}
         followResetToken={followResetToken}
@@ -1000,6 +1002,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         onEndEdit={handleEndEdit}
         footer={askUserFooter}
       />
+      </IterationWindowLoaderContext.Provider>
       ) : null}
       {!isSubAgent && isVisible && !(sessionLoading || switchSplash) && (
         <StagingTray
