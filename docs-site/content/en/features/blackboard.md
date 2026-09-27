@@ -51,11 +51,12 @@ board per 3 seconds, and a writer is never notified of its own change.
 
 ## In the Web UI
 
-The **Blackboard** panel (panel chips / rail) shows the board of the session you
-are viewing: the derived counts (ready / claimed / blocked / open), each entry's
-state, the lease countdown of whoever holds it, its dependencies — and it updates
-live when *any* session changes the board. You can also write on the board
-yourself: add an entry, close or reopen one, release a stuck claim, or delete.
+The **Blackboard** panel (left activity bar on desktop, the tools sheet on mobile)
+shows the board of the session you are viewing: the derived counts (ready /
+claimed / blocked / open), each entry's state, the lease countdown of whoever
+holds it, its dependencies — and it updates live when *any* session changes the
+board. You can also write on the board yourself: add an entry, close or reopen
+one, release a stuck claim, or delete.
 
 ## Compared with Claude Code / Codex
 
