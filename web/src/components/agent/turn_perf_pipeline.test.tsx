@@ -15,7 +15,7 @@
  *
  * 不变量：流式帧对已提交迭代的渲染次数 = 0，且与 N 完全无关。
  */
-import { memo, useMemo, useSyncExternalStore, type ReactNode } from 'react'
+import { createContext, memo, useMemo, useSyncExternalStore, type ReactNode } from 'react'
 
 import { act, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
@@ -45,6 +45,8 @@ vi.mock('@/components/agent/ThinkingLine', () => ({
 }))
 vi.mock('@/components/agent/FoldedToolGroup', () => ({
   FoldedToolGroup: () => <div data-testid="ftg" />,
+  // v71 窗口化：TurnBody 引用的 turnID 上下文（mock 必须导出，否则 Provider 报 undefined）。
+  RunToolsTurnIDContext: createContext(0),
 }))
 vi.mock('@/components/agent/GenUIPanel', () => ({
   GenUICollapsiblePanel: () => <div data-testid="genui" />,

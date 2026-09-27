@@ -14,7 +14,7 @@
  * 时，流式帧**不得重渲染任何已提交迭代** —— 渲染只允许发生在 LiveIteration
  * 子树内。
  */
-import { createRef, forwardRef, useImperativeHandle, useState, type ReactNode } from 'react'
+import { createContext, createRef, forwardRef, useImperativeHandle, useState, type ReactNode } from 'react'
 
 import { act, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
@@ -33,6 +33,8 @@ vi.mock('@/components/agent/FoldedToolGroup', () => ({
     counters.committed++
     return <div data-testid="ftg" />
   },
+  // v71 窗口化：TurnBody 引用的 turnID 上下文（mock 必须导出，否则 Provider 报 undefined）。
+  RunToolsTurnIDContext: createContext(0),
 }))
 vi.mock('@/components/agent/MarkdownRenderer', () => ({
   MarkdownRenderer: () => <div data-testid="md" />,

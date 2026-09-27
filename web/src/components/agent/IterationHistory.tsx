@@ -70,7 +70,7 @@ export const IterationGroup = memo(function IterationGroup({
       {/* C: tool calls (每个工具一个 pill) —— 右键/长按可单独复制**每个工具**的输出 */}
       {iteration.tools.length > 0 && (
         <CopyTarget kind="tools" tools={iteration.tools}>
-          <FoldedToolGroup tools={iteration.tools} toolTotal={iteration.toolTotal} />
+          <FoldedToolGroup tools={iteration.tools} toolTotal={iteration.toolTotal} startIter={iteration.iteration} />
         </CopyTarget>
       )}
 

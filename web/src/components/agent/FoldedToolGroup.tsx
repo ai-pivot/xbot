@@ -15,7 +15,7 @@
  * 等"气泡之外"的形态已彻底删除。
  * GenUI 工具（uiMode）永不折叠，直接渲染为顶层卡片。
  */
-import { memo, useMemo, useState, type ReactNode } from 'react'
+import { createContext, memo, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { AnsiText } from './AnsiText'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -32,6 +32,8 @@ import { CATEGORY_COLOR, syntheticKindBadge, syntheticKindColor, toolCategory } 
 import { Check, Minus, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 import i18n from '@/i18n'
+import { fetchRunTools } from './api'
+import { useSessionStore } from '@/hooks/useSessionStore'
 
 /** Max param preview length in folded row. */
 const MAX_PARAM_LEN = 25
@@ -56,6 +58,10 @@ interface FoldedToolGroupProps {
   /** v71 窗口化 run 块的真实工具总数（tools 只携带头部 7 个时，+N 徽标必须
    *  用本字段显示真实溢出数 —— 绝不估算）。全量路径不设置（回落 tools.length）。 */
   toolTotal?: number
+  /** v71 窗口化：run 的首迭代号（+N 菜单按需分页 fetchRunTools 的定位参数 ——
+   *  服务端按 startIter 找 run 头部并 CLAMP 到真实连续 run）。虚拟块的
+   *  iteration 即 startIter。 */
+  startIter?: number
 }
 
 /** Extract a short parameter hint from the tool label (text after ": "). */
@@ -438,12 +444,45 @@ function LazyPillPopover({
   )
 }
 
+/** v71 窗口化：+N 菜单按需分页的 turnID 上下文。TurnBody 提供（避免 4 层 prop
+ *  穿透 IterationGroup→FoldedToolGroup→MergedPills→OverflowPillsMenu）；
+ * OverflowPillsMenu 的窗口化分支消费（fetchRunTools 需要 turnID 定位 run）。 */
+export const RunToolsTurnIDContext = createContext<number>(0)
+
+/** v71 窗口化 +N 菜单的懒挂载内容：浮窗打开时才 fetch（LazyPillPopover 的
+ * content 懒挂载 ⇒ 本组件 mount 即用户点了 +N）。拉取 run 内部被收纳的工具
+ * （[PILL_INLINE_HEAD, total) 分页），渲染与全量路径同一 ToolPopoverContent。 */
+function WindowedOverflowContent({ startIter, total }: { startIter: number; total: number }) {
+  const turnID = useContext(RunToolsTurnIDContext)
+  const { activeSession } = useSessionStore()
+  const [tools, setTools] = useState<WebToolProgress[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!activeSession || !turnID) return
+    let cancelled = false
+    // endIter 传大值：GetRunTools 服务端把成员 CLAMP 到真实连续 run（首个非
+    // tool-only 行即止）—— 客户端无需携带精确 run 终点（stale extent 也不会
+    // 泄漏下一个 run 的工具）。
+    fetchRunTools(activeSession, turnID, startIter, startIter + 100000, PILL_INLINE_HEAD, total - PILL_INLINE_HEAD)
+      .then((res) => { if (!cancelled) setTools(res.tools ?? []) })
+      .catch(() => { if (!cancelled) setError('load failed') })
+    return () => { cancelled = true }
+  }, [activeSession, turnID, startIter, total])
+  if (error) {
+    return <div className="px-2 py-1.5 text-[11px] text-text-muted">{error}</div>
+  }
+  if (tools === null) {
+    return <div className="px-2 py-1.5 text-[11px] text-text-muted">…</div>
+  }
+  return <ToolPopoverContent tools={tools} />
+}
+
 /** 折叠行 pill 列表：≤8 全量；>8 显示前 7 pill + "+N" 徽标。
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
  *  "+N" 弹溢出工具的全量列表。
  *  v71 窗口化：tools 只携带头部 7 个时，toolTotal 携带真实总数 —— +N 徽标
  *  显示真实溢出数（toolTotal - 7，绝不估算）；溢出菜单按需分页拉取。 */
-const MergedPills = memo(function MergedPills({ tools, toolTotal }: { tools: WebToolProgress[]; toolTotal?: number }) {
+const MergedPills = memo(function MergedPills({ tools, toolTotal, startIter }: { tools: WebToolProgress[]; toolTotal?: number; startIter?: number }) {
   const { t } = useI18n()
   const total = toolTotal ?? tools.length
   const overflow = total > PILL_INLINE_MAX
@@ -455,7 +494,7 @@ const MergedPills = memo(function MergedPills({ tools, toolTotal }: { tools: Web
           {toolPill(tool, t)}
         </LazyPillPopover>
       ))}
-      {overflow && <OverflowPillsMenu tools={tools} toolTotal={total} />}
+      {overflow && <OverflowPillsMenu tools={tools} toolTotal={total} startIter={startIter} />}
     </span>
   )
 })
@@ -463,14 +502,20 @@ const MergedPills = memo(function MergedPills({ tools, toolTotal }: { tools: Web
 /** "+N" 溢出菜单：被收纳工具的全量列表（点击条目展开该工具卡片）。
  *  v71 窗口化：toolTotal > tools.length 时溢出工具未随窗口传输 —— 徽标显示
  *  真实溢出数（toolTotal - 7），菜单内容按需分页拉取（/api/history/run_tools）。 */
-function OverflowPillsMenu({ tools, toolTotal }: { tools: WebToolProgress[]; toolTotal?: number }) {
+function OverflowPillsMenu({ tools, toolTotal, startIter }: { tools: WebToolProgress[]; toolTotal?: number; startIter?: number }) {
   const total = toolTotal ?? tools.length
   const hidden = total - PILL_INLINE_HEAD
+  // 窗口化分支：溢出工具不在本地（tools 只有头部 7 个）⇒ 懒挂载时按需拉取。
+  // startIter 缺失（非窗口化路径的防御）回落本地切片。
+  const windowed = toolTotal !== undefined && toolTotal > tools.length && startIter !== undefined
+  const content = windowed
+    ? <WindowedOverflowContent startIter={startIter!} total={total} />
+    : <ToolPopoverContent tools={tools.slice(PILL_INLINE_HEAD)} />
   return (
     <LazyPillPopover
       testId="tool-pill-more"
       toolName="__overflow__"
-      content={<ToolPopoverContent tools={tools.slice(PILL_INLINE_HEAD)} />}
+      content={content}
     >
       <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
         {i18n.t('agent.tool.overflowBadge', { count: hidden, defaultValue: `+${hidden}` }) as string}
@@ -564,6 +609,7 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
 export const FoldedToolGroup = memo(function FoldedToolGroup({
   tools,
   toolTotal,
+  startIter,
 }: FoldedToolGroupProps) {
   // GenUI 工具永不折叠（metadata 驱动）；non-GenUI 才进入 pill 行/浮层。
   // useMemo 必须在 early return 之前（hooks 规则）；tools 为空时结果为空数组，
@@ -574,7 +620,7 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   )
   // pill 行 JSX：依赖 tools 引用（otherTools 由上方 useMemo 派生，引用稳定）——
   // tools 不变时 pill 行 re-render 零重建（pill 浮窗开合由 radix/懒挂管理）。
-  const pillsRow = useMemo(() => <MergedPills tools={otherTools} toolTotal={toolTotal} />, [otherTools, toolTotal])
+  const pillsRow = useMemo(() => <MergedPills tools={otherTools} toolTotal={toolTotal} startIter={startIter} />, [otherTools, toolTotal, startIter])
 
   // 行级失败告警：组内任一工具失败 ⇒ 行左侧红条 + `N 失败` chip（折叠/滚动时也不漏）。
   const failedCount = useMemo(() => otherTools.filter((x) => isFailed(x.status)).length, [otherTools])

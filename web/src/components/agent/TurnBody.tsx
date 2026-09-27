@@ -55,6 +55,7 @@
 import { memo, type ReactElement, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 
 import { IterationGroup } from './IterationHistory'
+import { RunToolsTurnIDContext } from './FoldedToolGroup'
 import { CompactionDivider } from './CompactionDivider'
 import { LiveIteration } from './LiveIteration'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
@@ -1021,26 +1022,28 @@ export const TurnBody = memo(function TurnBody({
   }, [merged, compactions])
 
   return (
-    <div
-      className="iter-blocks"
-      data-iter-range={
-        contiguous.length > 0
-          ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}`
-          : undefined
-      }
-      data-iter-total={contiguous.length}
-    >
-      <CommittedTurn contiguous={merged} compactionByIter={compactionByIter} turnID={turnID} heightScope={heightScope} />
-      {liveProgress && (
-        <div
-          className="iter-block"
-          data-iter-id="live"
-          data-iter-num={liveProgress.iteration || undefined}
-          data-turn-id={liveProgress.turnID || turnID}
-        >
-          <LiveIteration progress={liveProgress} />
-        </div>
-      )}
-    </div>
+    <RunToolsTurnIDContext.Provider value={turnID ?? 0}>
+      <div
+        className="iter-blocks"
+        data-iter-range={
+          contiguous.length > 0
+            ? `${contiguous[0].iteration}-${contiguous[contiguous.length - 1].iteration}`
+            : undefined
+        }
+        data-iter-total={contiguous.length}
+      >
+        <CommittedTurn contiguous={merged} compactionByIter={compactionByIter} turnID={turnID} heightScope={heightScope} />
+        {liveProgress && (
+          <div
+            className="iter-block"
+            data-iter-id="live"
+            data-iter-num={liveProgress.iteration || undefined}
+            data-turn-id={liveProgress.turnID || turnID}
+          >
+            <LiveIteration progress={liveProgress} />
+          </div>
+        )}
+      </div>
+    </RunToolsTurnIDContext.Provider>
   )
 })
