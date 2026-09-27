@@ -63,6 +63,9 @@ export const SSE_EVENT_TYPES = [
   'web_plugin_push',
   'web_plugin_rpc',
   'queue_state',
+  // 共享黑板变更广播（推给全部 web 客户端）。⚠️ 必须进白名单，否则 EventSource
+  // 不注册 addEventListener → 面板看不到别人的改动（"别人认领了任务但我这边不变"）。
+  'blackboard_update',
 ] as const
 
 type Handler<T> = (payload: T) => void
@@ -446,6 +449,13 @@ export class SSEConnectionImpl implements WSConnection {
       window.dispatchEvent(new CustomEvent('bg-task-output', {
         detail: { taskID: msg.task_id, delta: msg.content, chatID: msg.chat_id },
       }))
+    }
+    // Shared blackboard change (SSE broadcast to every client): dispatched as a
+    // window CustomEvent so the panel owning the board reacts without every
+    // consumer having to filter a global handler. The panel refetches — the
+    // event is a signal, not the data.
+    if (msg.type === 'blackboard_update' && msg.blackboard) {
+      window.dispatchEvent(new CustomEvent('blackboard-update', { detail: msg.blackboard }))
     }
     this.messageHandlers.forEach((handler) => handler(msg))
   }

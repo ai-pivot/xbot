@@ -11,6 +11,7 @@ import {
   Blocks,
   Boxes,
   ChartColumn,
+  ClipboardList,
   FileCode2,
   Files,
   GitBranch,
@@ -44,6 +45,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   info: Info,
   tasks: ListTodo,
   terminal: Terminal,
+  // 共享黑板（builtinPanels.tsx 的 core.blackboard）
+  board: ClipboardList,
 
   // 插件声明的图标
   activity: Activity,

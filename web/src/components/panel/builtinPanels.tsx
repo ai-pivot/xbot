@@ -15,6 +15,7 @@ import { useCallback, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { panelRegistry, type PanelDefinition, type PanelRenderContext } from '@/plugin-runtime/panelRegistry'
 import { FileExplorer } from '@/components/sidebar/FileExplorer'
+import { BlackboardPanel } from '@/components/blackboard/BlackboardPanel'
 import { FileSearch } from '@/components/sidebar/FileSearch'
 import { SessionInfo as SessionInfoPanel } from '@/components/sidebar/SessionInfo'
 import { TasksPanel } from '@/components/sidebar/TasksPanel'
@@ -320,6 +321,16 @@ const BUILTIN_PANELS: PanelDefinition[] = [
     defaultSlot: 'left',
     defaultMode: 'docked',
     render: (ctx) => <CoreTerminalPanel ctx={ctx} />,
+    source: 'core',
+  },
+  {
+    id: 'core.blackboard',
+    title: '黑板',
+    labelKey: 'sidebar.blackboard',
+    icon: 'board',
+    defaultSlot: 'left',
+    defaultMode: 'docked',
+    render: () => <BlackboardPanel />,
     source: 'core',
   },
 ]

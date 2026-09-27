@@ -124,6 +124,64 @@ export interface SessionSelector {
   chatID: string
 }
 
+/* ---------------------------------------------------------------------------
+ * Shared blackboard (mirrors storage/sqlite/blackboard.go on the wire).
+ *
+ * A board is a durable, cross-agent workspace: entries carry a revision
+ * (compare-and-swap), a lease claim (token + expiry, so a crashed holder heals
+ * itself) and structural dependencies. The host never interprets kind/body —
+ * the board is a coordination substrate, not a task schema.
+ * ------------------------------------------------------------------------- */
+
+/** One board entry as the API returns it (body only when explicitly asked for). */
+export interface BlackboardEntry {
+  board: string
+  key: string
+  kind: string
+  title: string
+  body?: string
+  status: string
+  closed: boolean
+  blocked_by?: string[]
+  /** Compare-and-swap token: every write bumps it. */
+  revision: number
+  /** Effective holder — empty when the lease has expired. */
+  claimed_by?: string
+  claim_expires_at?: number
+  created_by?: string
+  created_at: number
+  updated_at: number
+  /** Derived: any dependency still open. */
+  blocked: boolean
+  /** Derived: open, unblocked and unclaimed — the actionable entries. */
+  ready: boolean
+}
+
+/** Board summary for the picker (counts are derived, like the entry flags). */
+export interface BlackboardBoard {
+  board: string
+  total: number
+  open: number
+  claimed: number
+  blocked: number
+  closed: number
+  updated_at: number
+}
+
+/** Payload of a `blackboard_update` SSE event (a refetch signal). */
+export interface BlackboardUpdatePayload {
+  board: string
+  key: string
+  op: string
+  revision: number
+  actor?: string
+  kind?: string
+  title?: string
+  closed?: boolean
+  claimed_by?: string
+  at?: number
+}
+
 /** Authoritative context-usage snapshot returned by get_context_usage. */
 export interface ContextUsage {
   available: boolean
@@ -163,6 +221,9 @@ export type WSMessageType =
   | 'genui'
   | 'replay_gap'
   | 'resync_required'
+  // 共享黑板：任何一块板发生变化（agent 或人写的）都会广播给所有 web 客户端，
+  // 面板据此重新拉取自己正在看的板（信号 + 权威拉取，不做本地合并）。
+  | 'blackboard_update'
   | '__pong__'
 
 /** Client operations mapped to REST endpoints by the connection adapter. */
@@ -207,6 +268,9 @@ export interface WSMessage {
   /** Session queue snapshot (Staging Tray data source). Full-snapshot semantics —
    *  frontends replace, never merge. */
   queue_state?: QueueStatePayload | null
+  /** blackboard_update: one accepted change on a shared board. A refetch signal —
+   *  the client re-reads the board it displays (the board is the authority). */
+  blackboard?: BlackboardUpdatePayload | null
 }
 
 /** Pending queue item (mirrors protocol.QueueItemPayload). */

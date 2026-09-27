@@ -8,7 +8,17 @@
  * LLM subscription/model RPCs (Spec D) go through WSConnection.rpc → POST /api/rpc.
  */
 import type { WSConnection } from '@/types/ws'
-import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem } from '@/types/shared'
+import type {
+  BlackboardBoard,
+  BlackboardEntry,
+  ContextUsage,
+  ModelEntry,
+  PerModelConfig,
+  ProgressEvent,
+  SessionSelector,
+  Subscription,
+  TodoItem,
+} from '@/types/shared'
 import { APIError, postAPI } from '@/lib/api'
 
 /** History message row (protocol.HistoryMessage). */
@@ -120,6 +130,106 @@ export async function updateTodos(
     method: 'set_todos',
     params: { channel: session.channel, chat_id: session.chatID, todos },
   })
+}
+
+/* ---------------------------------------------------------------------------
+ * Shared blackboard RPCs.
+ *
+ * The board is the single source of truth: the panel always READS it (the SSE
+ * blackboard_update event is only a "refetch" signal), so a missed event costs
+ * one refresh instead of consistency.
+ * ------------------------------------------------------------------------- */
+
+/** Entries of one board. An empty `board` means "the board of this session". */
+export async function fetchBlackboardEntries(
+  session: SessionSelector | null,
+  opts: { board?: string; prefix?: string; includeClosed?: boolean; limit?: number } = {},
+): Promise<{ board: string; entries: BlackboardEntry[] }> {
+  const data = await postAPI<{ board?: string; entries?: BlackboardEntry[] }>('/api/rpc', {
+    method: 'blackboard_list',
+    params: {
+      board: opts.board ?? '',
+      prefix: opts.prefix ?? '',
+      include_closed: opts.includeClosed ?? false,
+      limit: opts.limit ?? 50,
+      ...sessionBody(session),
+    },
+  })
+  return { board: data.board ?? opts.board ?? '', entries: data.entries ?? [] }
+}
+
+/** Every board with its derived counts (the picker). */
+export async function fetchBlackboardBoards(): Promise<BlackboardBoard[]> {
+  const data = await postAPI<{ boards?: BlackboardBoard[] }>('/api/rpc', {
+    method: 'blackboard_boards',
+    params: {},
+  })
+  return data.boards ?? []
+}
+
+/** One entry WITH its body (list omits bodies on purpose). */
+export async function fetchBlackboardEntry(board: string, key: string): Promise<BlackboardEntry> {
+  const data = await postAPI<{ entry?: BlackboardEntry }>('/api/rpc', {
+    method: 'blackboard_get',
+    params: { board, key },
+  })
+  if (!data.entry) throw new APIError('blackboard entry missing', 'invalid_response', 500)
+  return data.entry
+}
+
+/** Write an entry from the UI (the operator's own note / task on the board). */
+export async function postBlackboardEntry(
+  session: SessionSelector | null,
+  entry: {
+    board?: string
+    key: string
+    kind?: string
+    title: string
+    body?: string
+    status?: string
+    blocked_by?: string[]
+  },
+): Promise<BlackboardEntry> {
+  const data = await postAPI<{ entry?: BlackboardEntry }>('/api/rpc', {
+    method: 'blackboard_post',
+    params: {
+      board: entry.board ?? '',
+      key: entry.key,
+      kind: entry.kind ?? '',
+      title: entry.title,
+      body: entry.body ?? '',
+      status: entry.status ?? '',
+      blocked_by: entry.blocked_by ?? [],
+      ...sessionBody(session),
+    },
+  })
+  if (!data.entry) throw new APIError('blackboard entry missing', 'invalid_response', 500)
+  return data.entry
+}
+
+/** Close (done) or reopen an entry. The backend CASes against the revision it
+ *  reads, so a concurrent agent write surfaces as a conflict, never a silent
+ *  overwrite. */
+export async function closeBlackboardEntry(
+  board: string,
+  key: string,
+  closed: boolean,
+): Promise<BlackboardEntry> {
+  const data = await postAPI<{ entry?: BlackboardEntry }>('/api/rpc', {
+    method: 'blackboard_close',
+    params: { board, key, closed },
+  })
+  if (!data.entry) throw new APIError('blackboard entry missing', 'invalid_response', 500)
+  return data.entry
+}
+
+/** Free a stuck lease (the operator's escape hatch). */
+export async function releaseBlackboardEntry(board: string, key: string): Promise<void> {
+  await postAPI('/api/rpc', { method: 'blackboard_release', params: { board, key } })
+}
+
+export async function deleteBlackboardEntry(board: string, key: string): Promise<void> {
+  await postAPI('/api/rpc', { method: 'blackboard_delete', params: { board, key } })
 }
 
 /** Get the current goal for the session. */
