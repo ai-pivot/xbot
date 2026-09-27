@@ -132,16 +132,16 @@ func TestCompactMarker_LegacyFallbackStandaloneWhenNoIterations(t *testing.T) {
 // 迭代记录缺 created_at（老数据）时同样回落 standalone —— 绝不把压缩点错放到
 // 无法验证的位置。
 func TestCompactionIteration_NoTimestampFallsBack(t *testing.T) {
-	recs := map[uint64][]sqlite.IterationRecord{
-		3: {{Iteration: 1}, {Iteration: 2}}, // 无 CreatedAt
+	sources := map[uint64]turnIterSource{
+		3: {records: []sqlite.IterationRecord{{Iteration: 1}, {Iteration: 2}}}, // 无 CreatedAt
 	}
-	if _, ok := compactionIteration(recs, 3, time.Now()); ok {
+	if _, ok := compactionIteration(sources, 3, time.Now()); ok {
 		t.Fatal("迭代无 created_at 时必须回落（ok=false）")
 	}
-	if _, ok := compactionIteration(recs, 0, time.Now()); ok {
+	if _, ok := compactionIteration(sources, 0, time.Now()); ok {
 		t.Fatal("无 turn 时必须回落（ok=false）")
 	}
-	if _, ok := compactionIteration(recs, 3, time.Time{}); ok {
+	if _, ok := compactionIteration(sources, 3, time.Time{}); ok {
 		t.Fatal("压缩时刻缺失时必须回落（ok=false）")
 	}
 }

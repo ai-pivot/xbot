@@ -691,8 +691,31 @@ func (a *Agent) handleRunOutput(ctx context.Context, msg bus.InboundMessage, out
 	// 事件的时序增量，最后迭代 content 可能缺失 → typing 完成后 content
 	// 消失；刷新后从 DB 恢复正常，用户报告）。web.go 用
 	// msg.Metadata["progress_history"] 填充 WSMessage.ProgressHistory。
+	//
+	// v71 窗口化：只带**最后一个迭代**（P0 的根因是最后迭代的权威 content 缺失
+	// —— 全量数组只为这一个迭代；2000-iter turn 的全量 ≈ 3.6MB/事件）+ 边界
+	// 元数据（iter_window：total/loaded_top —— 客户端据此区分「窗口化」与「完整」，
+	// gap 判定不把可回拉的洞误判为不可追赶）。前端按迭代号 union 合并
+	// （append-only、同号权威覆盖）—— 中间迭代由 /api/history 窗口化 + 滚动回拉
+	// 提供，不再随 text 事件全量重传。
 	if len(out.IterationHistory) > 0 {
-		if jsonBytes, err := json.Marshal(out.IterationHistory); err == nil {
+		// progressHistoryTailEntry embeds IterationSnapshot (the JSON shape the
+		// frontend already parses) + the v71 window bounds. The embedded struct
+		// flattens in JSON — the array element keeps its existing fields and
+		// gains iter_window.
+		type progressHistoryTailEntry struct {
+			IterationSnapshot
+			IterWindow *protocol.HistoryIterWindow `json:"iter_window,omitempty"`
+		}
+		last := out.IterationHistory[len(out.IterationHistory)-1]
+		tail := []progressHistoryTailEntry{{
+			IterationSnapshot: last,
+			IterWindow: &protocol.HistoryIterWindow{
+				Total:      len(out.IterationHistory),
+				LoadedTop:  last.Iteration,
+			},
+		}}
+		if jsonBytes, err := json.Marshal(tail); err == nil {
 			sendMeta["progress_history"] = string(jsonBytes)
 		}
 	}

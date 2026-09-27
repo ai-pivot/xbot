@@ -160,8 +160,16 @@ type ProgressEvent struct {
 	StreamTokens     int64           `json:"stream_tokens,omitempty"`
 	StreamStats      *StreamStats    `json:"stream_stats,omitempty"`
 	IterationHistory []ProgressEvent `json:"iteration_history,omitempty"`
-	HistoryCompacted bool            `json:"history_compacted,omitempty"`
-	CWD              string          `json:"cwd,omitempty"`
+	// IterWindow = 窗口化拉取的边界元数据（v71 渲染镜像窗口化）。非 nil 时
+	// IterationHistory 只是**尾部窗口**（FetchTail / text 事件的 progress_history
+	// 瘦身），Total = 该 turn 的迭代总数、LoadedTop = 已加载集合的顶端迭代号
+	// （1 = 完整）。nil = 完整列表（FetchAll —— CLI TUI 恢复等旧路径，语义不变）。
+	// ⚠️ 2026-09-17 教训（FetchAll 截 60 个迭代事故）：截断**必须**带边界元数据，
+	// 否则客户端无法区分「窗口化」与「完整」—— gap 判定会把可回拉的洞当成
+	// 不可追赶的损坏。
+	IterWindow       *HistoryIterWindow `json:"iter_window,omitempty"`
+	HistoryCompacted bool               `json:"history_compacted,omitempty"`
+	CWD              string             `json:"cwd,omitempty"`
 
 	// ResyncRequired signals the client to reload from DB instead of consuming
 	// a huge incremental iterationHistory. Set by GetActiveProgress when the
@@ -269,6 +277,74 @@ type HistoryMessage struct {
 	// 没有压缩。老数据（无结构化迭代、无法定位迭代位置）回落为独立的 standalone
 	// 标记行（见 Standalone/AnchorTurnID）。
 	Compactions []HistoryCompaction `json:"compactions,omitempty"`
+	// RunSummaries = 折叠 run 的渲染摘要（v71 窗口化路径）。窗口化拉取时
+	// Iterations 只携带逐块渲染的文本块（非 tool-only 且无工具的行），折叠 run
+	// （连续 tool-only 成员）不传输内部 —— 每个相交 run 只给头部 7 个工具 +
+	// 真实总数（FoldedToolGroup 的 PILL_INLINE_HEAD=7 + "+N" 徽标），与全量拉取
+	// 的渲染逐像素一致。run 内部工具由 "+N" 菜单按需分页拉取（get_run_tools）。
+	// 仅窗口化响应携带（nil = 全量路径，向后兼容）。
+	RunSummaries []HistoryRunSummary `json:"run_summaries,omitempty"`
+	// IterWindow = 窗口化拉取的元数据（v71）：已加载集合的边界。Total = 该 turn
+	// 的迭代总数（gap 判定 + 滚动回拉游标）；LoadedTop = 已加载集合的顶端迭代号
+	// （1 = 从 turn 开头完整加载；> 1 = 之上还有未加载内容，向上滚动按批回拉）。
+	// 仅窗口化响应携带（nil = 全量路径）。
+	IterWindow *HistoryIterWindow `json:"iter_window,omitempty"`
+}
+
+// HistoryRunSummary — 折叠 run 的渲染摘要（v71 窗口化路径）：run 块默认渲染
+// 所需的全部信息（头部文本 + 合并后前 7 个工具 + 真实工具总数），不含 run
+// 内部（tool-only 成员本来就不渲染 —— 折叠着）。
+type HistoryRunSummary struct {
+	// StartIter = run 的首迭代号（run 块渲染在该位置 —— 与 mergeToolRuns
+	// 保留头部迭代号的语义一致）。
+	StartIter int `json:"start_iter"`
+	// EndIter = run 的末迭代号（最后一个成员；无成员时 = StartIter）。
+	EndIter int `json:"end_iter"`
+	// HeadContent / HeadReasoning = 头部迭代的文本（run 块渲染在 pill 行上方
+	// —— mergeToolRuns 保留头部迭代的文本）。
+	HeadContent   string `json:"head_content,omitempty"`
+	HeadReasoning string `json:"head_reasoning,omitempty"`
+	// HeadTools = 合并后的前 7 个工具（头部迭代的工具 + 首批成员的工具，
+	// PILL_INLINE_HEAD=7）—— 与全量拉取时 MergedPills 渲染的 pills 完全一致。
+	HeadTools []ToolProgress `json:"head_tools,omitempty"`
+	// ToolCount = run 的真实工具总数（头部 + 全部成员）—— "+N" 徽标的精确
+	// 计数（绝不估算：头部数组长度 + 成员 tool_count 列求和）。
+	ToolCount int `json:"tool_count"`
+}
+
+// HistoryIterWindow — 窗口化拉取的边界元数据（v71）。
+type HistoryIterWindow struct {
+	// Total = 该 turn 的迭代总数（COUNT）。
+	Total int `json:"total"`
+	// LoadedTop = 已加载集合的顶端迭代号（窗口首行与跨窗口 run 头部的最小值）。
+	// 1 = 从 turn 开头完整加载；0 = 空 turn；> 1 = 之上还有未加载内容。
+	LoadedTop int `json:"loaded_top"`
+}
+
+// TurnIterationWindow — 单 turn 的窗口化迭代回拉（v71 滚动回拉端点
+// /api/history/iterations 的响应）。与窗口化 HistoryMessage 的载荷同构：
+// 文本块行 + run 摘要 + 边界。前端按迭代号 union 合并（append-only，
+// 同号权威覆盖 —— 与 history_replaced 的合并语义一致）。
+type TurnIterationWindow struct {
+	TurnID uint64 `json:"turn_id"`
+	// Iterations = 文本块行（非 tool-only 且无工具的行 —— 逐块渲染）。
+	Iterations []HistoryIteration `json:"iterations,omitempty"`
+	// RunSummaries = 与窗口相交的折叠 run 摘要（头部 7 工具 + 真实总数）。
+	RunSummaries []HistoryRunSummary `json:"run_summaries,omitempty"`
+	// Total = 该 turn 的迭代总数。
+	Total int `json:"total"`
+	// LoadedTop = 本次回拉后已加载集合的顶端迭代号（1 = 完整）。
+	LoadedTop int `json:"loaded_top"`
+}
+
+// RunToolsPage — "+N" 菜单的按需分页（v71 /api/history/run_tools 的响应）：
+// 折叠 run 内部工具（不随窗口传输的部分）的切片 [offset, offset+limit)。
+type RunToolsPage struct {
+	// Tools = 该页的工具快照（run 合并工具数组的切片 —— 头部工具 + 成员工具
+	// 按迭代顺序拼接后的 [offset, offset+limit)）。
+	Tools []ToolProgress `json:"tools"`
+	// Total = run 的工具总数（分页导航；与 RunSummary.ToolCount 一致）。
+	Total int `json:"total"`
 }
 
 // HistoryCompaction marks one context compaction that happened DURING a turn.

@@ -25,6 +25,12 @@ type HistoryIteration = protocol.HistoryIteration
 // HistoryMessage 历史消息（用于会话恢复）
 type HistoryMessage = protocol.HistoryMessage
 
+// HistoryRunSummary 折叠 run 的渲染摘要（v71 窗口化路径）
+type HistoryRunSummary = protocol.HistoryRunSummary
+
+// HistoryIterWindow 窗口化拉取的边界元数据（v71）
+type HistoryIterWindow = protocol.HistoryIterWindow
+
 // DailyTokenUsage represents token usage for a specific day+model.
 // Mirror of sqlite.DailyTokenUsage — used in CLIChannelConfig.UsageQuery callback
 // so that cmd/xbot-cli does not need to import the sqlite package.
@@ -62,6 +68,70 @@ type iterToolSnap struct {
 	UIMode    string              `json:"ui_mode,omitempty"`
 	UILibs    []string            `json:"ui_libs,omitempty"`
 	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
+}
+
+// ParseToolProgressElements parses raw JSON tool-snapshot elements (as stored
+// in iteration_history.tools / the run-summary head tools) into the protocol
+// ToolProgress list. Exported for the v71 windowing RPCs (the "+N" menu page
+// parses the storage's raw elements — the same snapshot shape as
+// HistoryIteration.Tools).
+func ParseToolProgressElements(elems []json.RawMessage, iteration int) []protocol.ToolProgress {
+	if len(elems) == 0 {
+		return nil
+	}
+	out := make([]protocol.ToolProgress, 0, len(elems))
+	for _, e := range elems {
+		var t iterToolSnap
+		if json.Unmarshal(e, &t) != nil {
+			continue
+		}
+		label := t.Label
+		if label == "" {
+			label = t.Name
+		}
+		out = append(out, protocol.ToolProgress{
+			Name: t.Name, Label: label, Status: t.Status,
+			Elapsed: t.ElapsedMS, Iteration: iteration,
+			Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+			UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+		})
+	}
+	return out
+}
+
+// HistoryIterationFromRecord converts one iteration_history record into the
+// protocol HistoryIteration (the tools JSON parsed). Exported for the v71
+// windowing RPCs (the scroll-up endpoint converts the windowed Rows).
+func HistoryIterationFromRecord(rec sqlite.IterationRecord) HistoryIteration {
+	var tools []protocol.ToolProgress
+	if rec.Tools != "" && rec.Tools != "[]" {
+		var snaps []iterToolSnap
+		if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
+			tools = make([]protocol.ToolProgress, len(snaps))
+			for i, t := range snaps {
+				label := t.Label
+				if label == "" {
+					label = t.Name
+				}
+				tools[i] = protocol.ToolProgress{
+					Name: t.Name, Label: label, Status: t.Status,
+					Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
+					Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+					UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+				}
+			}
+		}
+	}
+	return HistoryIteration{
+		Iteration:    rec.Iteration,
+		Content:      rec.Content,
+		Reasoning:    rec.Reasoning,
+		Tools:        tools,
+		Tokens:       rec.Tokens,
+		TTFTMs:       rec.TTFTMs,
+		TokensPerSec: rec.TokensPerSec,
+		TotalMs:      rec.TotalMs,
+	}
 }
 
 // isDegenerateCancelDetail reports whether a Detail JSON represents a
@@ -255,18 +325,122 @@ func filterInternalMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 // final records into one complete list).
 // Detail JSON is only used as a fallback for old data pre-v55.
 func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
+	sources := make(map[uint64]turnIterSource, len(turnIterMap))
+	for tid, recs := range turnIterMap {
+		sources[tid] = turnIterSource{records: recs}
+	}
+	return convertMessagesToHistoryWithSources(msgs, sources)
+}
+
+// ConvertMessagesToHistoryWindowed is the v71+ windowed variant: the per-turn
+// iteration payload is the rendering-mirrored window (the text-block Rows + the
+// run summaries + the bounds) instead of the full record list. The run
+// interiors (tool-only members) are NOT transferred — they render collapsed
+// (the "+N" menu paginates on demand via get_run_tools). The message-row
+// assembly (turn grouping / dedup / interrupted handling / compaction
+// markers) is shared with the full path via convertMessagesToHistoryWithSources.
+//
+// ⚠️ The compaction-marker positioning (compactionIteration) uses the windowed
+// Rows' CreatedAt (the text blocks) — a marker that happened between two run
+// members positions at the nearest loaded text block, not the exact member.
+// The E2E screenshot-diff guard (windowed vs full rendering) covers this.
+func ConvertMessagesToHistoryWindowed(msgs []llm.ChatMessage, turnWindowMap map[uint64]*sqlite.IterationWindowResult) []HistoryMessage {
+	sources := make(map[uint64]turnIterSource, len(turnWindowMap))
+	for tid, w := range turnWindowMap {
+		if w == nil {
+			continue
+		}
+		sources[tid] = turnIterSource{records: w.Rows, window: w}
+	}
+	return convertMessagesToHistoryWithSources(msgs, sources)
+}
+
+// turnIterSource is the per-turn iteration source for the history conversion:
+// the full path (all records — the legacy v55 behavior) or the windowed path
+// (the text-block Rows + the run summaries + the bounds — the v71
+// rendering-mirrored window). records is what attaches as HistoryIterations;
+// window (non-nil) additionally attaches RunSummaries + IterWindow to the
+// turn's assistant row.
+type turnIterSource struct {
+	records []sqlite.IterationRecord
+	window  *sqlite.IterationWindowResult
+}
+
+// hasData reports whether the source carries structured iteration data for the
+// turn. The full path: any records. The windowed path: any window content —
+// a giant tool-only run has EMPTY Rows (all iterations are run members) but
+// non-empty Runs, and must still attach (the run summary IS the turn's body).
+func (s turnIterSource) hasData() bool {
+	if len(s.records) > 0 {
+		return true
+	}
+	return s.window != nil && (s.window.Total > 0 || len(s.window.Runs) > 0)
+}
+
+// attachWindowExtras attaches the windowed-path extras (the run summaries +
+// the window bounds) to a HistoryMessage when the source is windowed. The
+// full path (window == nil) is a no-op — the message keeps the legacy shape
+// (the full Iterations, no RunSummaries/IterWindow).
+func attachWindowExtras(hm *HistoryMessage, src turnIterSource) {
+	if src.window == nil {
+		return
+	}
+	hm.RunSummaries = RunSummariesToProtocol(src.window.Runs)
+	hm.IterWindow = &HistoryIterWindow{Total: src.window.Total, LoadedTop: src.window.LoadedTop}
+}
+
+// RunSummariesToProtocol converts the storage run summaries to the protocol
+// type: the HeadToolsJSON (the merged head-7 raw array) is parsed into
+// []ToolProgress — the same snapshot shape as HistoryIteration.Tools.
+func RunSummariesToProtocol(runs []sqlite.RunSummaryRecord) []HistoryRunSummary {
+	if len(runs) == 0 {
+		return nil
+	}
+	out := make([]HistoryRunSummary, 0, len(runs))
+	for _, r := range runs {
+		rs := HistoryRunSummary{
+			StartIter:     r.StartIter,
+			EndIter:       r.EndIter,
+			HeadContent:   r.HeadContent,
+			HeadReasoning: r.HeadReasoning,
+			ToolCount:     r.ToolCount,
+		}
+		if r.HeadToolsJSON != "" && r.HeadToolsJSON != "[]" {
+			var snaps []iterToolSnap
+			if json.Unmarshal([]byte(r.HeadToolsJSON), &snaps) == nil {
+				rs.HeadTools = make([]protocol.ToolProgress, len(snaps))
+				for i, t := range snaps {
+					label := t.Label
+					if label == "" {
+						label = t.Name
+					}
+					rs.HeadTools[i] = protocol.ToolProgress{
+						Name: t.Name, Label: label, Status: t.Status,
+						Elapsed: t.ElapsedMS, Iteration: r.StartIter,
+						Summary: t.Summary, Args: t.Args, Detail: t.Detail,
+						UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
+					}
+				}
+			}
+		}
+		out = append(out, rs)
+	}
+	return out
+}
+
+func convertMessagesToHistoryWithSources(msgs []llm.ChatMessage, sources map[uint64]turnIterSource) []HistoryMessage {
 	// Internal 消息（仅模型可见的载体）不属于用户可见历史 —— 见
 	// filterInternalMessages 的说明。
 	msgs = filterInternalMessages(msgs)
 	// If no structured data, fall back to the legacy path.
-	if turnIterMap == nil {
+	if sources == nil {
 		return ConvertMessagesToHistory(msgs)
 	}
 	// Check if any turn has structured iteration data.
 	hasStructured := false
 	for _, m := range msgs {
 		if m.TurnID > 0 {
-			if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
+			if src, ok := sources[m.TurnID]; ok && src.hasData() {
 				hasStructured = true
 				break
 			}
@@ -341,8 +515,11 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			//    no final message): flushPending is the ONLY render path —
 			//    skipping it would lose ALL iterations.
 			iters := pendingIters
+			var pendingSrc turnIterSource
 			if pendingTurnID > 0 {
-				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
+				if src, ok := sources[pendingTurnID]; ok && len(src.records) > 0 {
+					pendingSrc = src
+					recs := src.records
 					iters = make([]HistoryIteration, 0, len(recs))
 					for _, rec := range recs {
 						var tools []protocol.ToolProgress
@@ -382,7 +559,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				ts = time.Date(2024, 1, 1, 0, 0, 0, syntheticIdx, time.UTC)
 				syntheticIdx++
 			}
-			history = append(history, HistoryMessage{
+			pendingRow := HistoryMessage{
 				ID:         lastAssistantID,
 				HistoryID:  lastAssistantID,
 				Role:       "assistant",
@@ -390,7 +567,11 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				Timestamp:  ts,
 				Iterations: iters,
 				TurnID:     pendingTurnID,
-			})
+			}
+			// The windowed path: the interrupted turn's row carries the run
+			// summaries + the bounds too (the same as the main attaching path).
+			attachWindowExtras(&pendingRow, pendingSrc)
+			history = append(history, pendingRow)
 			pendingIters = nil
 		}
 	}
@@ -430,7 +611,7 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			//
 			// 老数据（无结构化迭代 / 迭代无时间戳）无法定位 ⇒ 回落为独立的
 			// standalone 标记行（基本兼容，前端仍支持）。
-			if after, ok := compactionIteration(turnIterMap, cmdAnchor, m.Timestamp); ok {
+			if after, ok := compactionIteration(sources, cmdAnchor, m.Timestamp); ok {
 				pendingCompactions = append(pendingCompactions, pendingCompaction{
 					turnID: cmdAnchor, afterIteration: after,
 					content: m.Content, markerID: m.ID, timestamp: m.Timestamp,
@@ -459,7 +640,8 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			// merges all intermediate + final records into one list).
 			isIntermediate := len(m.ToolCalls) > 0
 			if !isIntermediate && m.TurnID > 0 {
-				if recs, ok := turnIterMap[m.TurnID]; ok && len(recs) > 0 {
+				if src, ok := sources[m.TurnID]; ok && src.hasData() {
+					recs := src.records
 					// Cross-turn guard (2026-08-23 turn 67→68 incident): the
 					// pendingIters accumulated so far belong to a PREVIOUS
 					// turn when the restart interrupted it mid-execution (no
@@ -512,7 +694,11 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 						})
 					}
 
-					if len(iters) > 0 {
+					// The windowed path attaches even with EMPTY iters (the
+					// Rows are the text blocks only — a giant tool-only run
+					// turn has zero Rows but non-empty Runs: the run summary
+					// IS the turn's body). The full path requires iters > 0.
+					if len(iters) > 0 || src.window != nil {
 						// 同一 turn 只能有一条 assistant 行：v55 空壳占位（重启/续跑各写一条）
 						// 会让旧实现为**每条**都追加一份（都带同样迭代）⇒ 同一 turn 重复 N 份
 						// （实测 6 份 × 272KB）。这里只把真实最终回复文本并进那唯一一条。
@@ -528,24 +714,28 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 						isInterrupted := m.Interrupted
 						if m.Content != "" && !isInterrupted {
 							structuredRowIdx[m.TurnID] = len(history)
-							history = append(history, HistoryMessage{
+							row := HistoryMessage{
 								ID:         m.ID,
 								Role:       "assistant",
 								Content:    m.Content,
 								Timestamp:  m.Timestamp,
 								TurnID:     m.TurnID,
 								Iterations: iters,
-							})
+							}
+							attachWindowExtras(&row, src)
+							history = append(history, row)
 						} else {
 							structuredRowIdx[m.TurnID] = len(history)
-							history = append(history, HistoryMessage{
+							row := HistoryMessage{
 								ID:         m.ID,
 								Role:       "assistant",
 								Content:    "",
 								Timestamp:  m.Timestamp,
 								TurnID:     m.TurnID,
 								Iterations: iters,
-							})
+							}
+							attachWindowExtras(&row, src)
+							history = append(history, row)
 						}
 					} else if m.Content != "" && !m.Interrupted {
 						history = append(history, HistoryMessage{
@@ -766,14 +956,19 @@ type pendingCompaction struct {
 //
 // ok=false 当位置无法确定（该 turn 无结构化迭代，或迭代记录都没有 created_at
 // —— 老数据），调用方回落为独立的 standalone 标记行（基本兼容）。
-func compactionIteration(turnIterMap map[uint64][]sqlite.IterationRecord, turnID uint64, ts time.Time) (int, bool) {
+//
+// ⚠️ 窗口化路径（v71）：records 是窗口内的文本块（Rows）——压缩点若发生在
+// 两个 run 成员之间（不在 Rows 里），定位到最近的已加载文本块（与全量路径
+// 的精确迭代号可能有偏差；E2E 截图对比守护覆盖此差异）。
+func compactionIteration(sources map[uint64]turnIterSource, turnID uint64, ts time.Time) (int, bool) {
 	if turnID == 0 || ts.IsZero() {
 		return 0, false
 	}
-	recs, ok := turnIterMap[turnID]
-	if !ok || len(recs) == 0 {
+	src, ok := sources[turnID]
+	if !ok || len(src.records) == 0 {
 		return 0, false
 	}
+	recs := src.records
 	after, anyTS := 0, false
 	for _, rec := range recs {
 		if rec.CreatedAt.IsZero() {

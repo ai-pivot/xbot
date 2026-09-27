@@ -302,6 +302,19 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 				result.IterationHistory = nil
 				return &result
 			}
+			// v71 FetchTail（渲染镜像窗口化）：只返回尾部 tail 个迭代 + 边界元数据
+			// （IterWindow.Total / LoadedTop）。截断**必须**带边界 —— 否则客户端无法
+			// 区分「窗口化」与「完整」（2026-09-17 FetchAll 截 60 个迭代事故：客户端
+			// 窗口与权威窗口不相邻 ⇒ gap ⇒ 渲染截断）。FetchAll（CLI TUI 恢复等）语义
+			// 不变 —— 完整列表、IterWindow=nil。
+			if tail := protocol.FetchTailSize(fetch); tail > 0 && len(filtered) > tail {
+				total := len(filtered)
+				filtered = filtered[len(filtered)-tail:]
+				result.IterWindow = &protocol.HistoryIterWindow{
+					Total:      total,
+					LoadedTop:  filtered[0].Iteration,
+				}
+			}
 			result.IterationHistory = filtered
 			return &result
 		}

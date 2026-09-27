@@ -128,7 +128,7 @@ END;
 CREATE TABLE schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT INTO schema_version (version) VALUES (70);
+INSERT INTO schema_version (version) VALUES (71);
 
 -- Token usage statistics (v19 cumulative + v25 daily). Fresh databases skip
 -- historical migrations, so both tables must be part of this schema snapshot.
@@ -319,10 +319,21 @@ CREATE TABLE IF NOT EXISTS iteration_history (
     cached_tokens INTEGER NOT NULL DEFAULT 0,
     model TEXT NOT NULL DEFAULT '',
     subscription_id TEXT NOT NULL DEFAULT '',
+    -- v71: iteration windowing — write-time computed (see iteration_window.go;
+    -- tool_only matches the frontend mergeToolRuns absorbs judgment).
+    tool_only INTEGER NOT NULL DEFAULT 0,
+    tool_count INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
 CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
+-- v71: the windowing queries' covering index — the tool-only member scan
+-- (iteration + tool_count, no payload pages) and the mixed-block window
+-- (tool_only=0 positioning + K payload lookups). Guarded by
+-- TestIterationWindowUsesPartialIndexes (EXPLAIN QUERY PLAN).
+CREATE INDEX IF NOT EXISTS idx_iter_window ON iteration_history(
+    tenant_id, turn_id, tool_only, iteration, tool_count
+);
 
 -- v65: shared artifacts — generic storage behind plugin-provided shareable
 -- content. The host knows nothing about what is shared: content_type is named

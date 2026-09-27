@@ -102,6 +102,14 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 		ChatID   string `json:"chat_id"`
 		Limit    int    `json:"limit"`
 		BeforeID int64  `json:"before_id"`
+		// IterWindow = the v71 rendering-mirrored iteration windowing opt-in
+		// (the mixed-block window size; 0/absent = the legacy full path —
+		// backward compatible). When > 0, each turn's iterations come back as
+		// the windowed payload: the text-block Rows + the run summaries
+		// (head-7 tools + the true count) + the bounds. The run interiors
+		// (tool-only members) are NOT transferred (they render collapsed; the
+		// "+N" menu paginates on demand via get_run_tools).
+		IterWindow int `json:"iter_window"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonErrorResponse(w, http.StatusBadRequest, "invalid request body")
@@ -120,7 +128,7 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "messages": []any{}, "last_seq": lastSeq, "chat_id": sel.ChatID, "channel": sel.Channel, "has_more": false, "oldest_id": 0})
 		return
 	}
-	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, body.BeforeID)
+	snapshot, err := wc.callbacks.HistorySnapshot(senderID, sel, limit, body.BeforeID, body.IterWindow)
 	if err != nil {
 		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -138,6 +146,128 @@ func (wc *WebChannel) handleHistory(w http.ResponseWriter, r *http.Request) {
 		"channel":         snapshot.Channel,
 		"has_more":        snapshot.HasMore,
 		"oldest_id":       snapshot.OldestID,
+	})
+}
+
+// handleHistoryIterations handles POST /api/history/iterations — the per-turn
+// windowed iteration fetch (the v71 scroll-up). The client sends its loaded
+// top (before_iter) and receives the window below it: the text-block rows +
+// the run summaries intersecting the range + the bounds. The client merges by
+// iteration number (append-only, same-number authoritative — the same
+// semantics as history_replaced).
+func (wc *WebChannel) handleHistoryIterations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel    string `json:"channel"`
+		ChatID     string `json:"chat_id"`
+		TurnID     uint64 `json:"turn_id"`
+		BeforeIter int    `json:"before_iter"`
+		MixedLimit int    `json:"mixed_limit"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.TurnID == 0 {
+		jsonErrorResponse(w, http.StatusBadRequest, "turn_id is required")
+		return
+	}
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.TurnIterationWindow == nil {
+		jsonErrorResponse(w, http.StatusNotImplemented, "iteration windowing not available")
+		return
+	}
+	if body.MixedLimit <= 0 {
+		body.MixedLimit = 50
+	}
+	if body.MixedLimit > 500 {
+		body.MixedLimit = 500
+	}
+	res, err := wc.callbacks.TurnIterationWindow(senderID, sel, body.TurnID, body.BeforeIter, body.MixedLimit)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"turn_id":         body.TurnID,
+		"iterations":      res.Iterations,
+		"run_summaries":   res.RunSummaries,
+		"total":           res.Total,
+		"loaded_top":      res.LoadedTop,
+	})
+}
+
+// handleRunTools handles POST /api/history/run_tools — the "+N" menu's
+// on-demand page for a folded run's interior tools (the v71 windowing: the run
+// interiors are not transferred with the window; the menu paginates them).
+// The run is identified by its extent [start_iter, end_iter] (from the
+// RunSummary the client holds); the response is the merged tool array's
+// slice [offset, offset+limit) + the total.
+func (wc *WebChannel) handleRunTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	senderID := senderIDFromContext(r.Context())
+	if senderID == "" {
+		jsonErrorResponse(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Channel   string `json:"channel"`
+		ChatID    string `json:"chat_id"`
+		TurnID    uint64 `json:"turn_id"`
+		StartIter int    `json:"start_iter"`
+		EndIter   int    `json:"end_iter"`
+		Offset    int    `json:"offset"`
+		Limit     int    `json:"limit"`
+	}
+	if err := decodeJSONBody(r, &body, false); err != nil {
+		jsonErrorResponse(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if body.TurnID == 0 || body.StartIter <= 0 || body.EndIter < body.StartIter {
+		jsonErrorResponse(w, http.StatusBadRequest, "turn_id and a valid run extent are required")
+		return
+	}
+	sel, ok := wc.resolveAPISession(w, r, senderID, body.Channel, body.ChatID)
+	if !ok {
+		return
+	}
+	if wc.callbacks.RunToolsPage == nil {
+		jsonErrorResponse(w, http.StatusNotImplemented, "run tools pagination not available")
+		return
+	}
+	if body.Limit <= 0 {
+		body.Limit = 50
+	}
+	if body.Limit > 200 {
+		body.Limit = 200
+	}
+	if body.Offset < 0 {
+		body.Offset = 0
+	}
+	res, err := wc.callbacks.RunToolsPage(senderID, sel, body.TurnID, body.StartIter, body.EndIter, body.Offset, body.Limit)
+	if err != nil {
+		jsonErrorResponse(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"tools":  res.Tools,
+		"total":  res.Total,
 	})
 }
 

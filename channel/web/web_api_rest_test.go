@@ -749,7 +749,7 @@ func TestRESTHistoryCursorPrecedesInterleavedEvent(t *testing.T) {
 	wc := NewWebChannel(WebChannelConfig{}, bus.NewMessageBus())
 	setTestCurrentSession(wc, SessionSelector{Channel: "web", ChatID: "web-1"})
 	wc.SetCallbacks(WebCallbacks{
-		HistorySnapshot: func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error) {
+		HistorySnapshot: func(senderID string, sel SessionSelector, limit int, beforeID int64, iterWindow int) (HistorySnapshot, error) {
 			wc.hub.sendToClient(sel.ChatID, protocol.WSMessage{Type: protocol.MsgTypeText, Content: "interleaved"})
 			return HistorySnapshot{Messages: []ch.HistoryMessage{}}, nil
 		},
@@ -827,7 +827,7 @@ func TestRESTHistoryInfersCurrentOwnedAgentChannelFromChatID(t *testing.T) {
 		t.Fatal(err)
 	}
 	wc.SetCallbacks(WebCallbacks{
-		HistorySnapshot: func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error) {
+		HistorySnapshot: func(senderID string, sel SessionSelector, limit int, beforeID int64, iterWindow int) (HistorySnapshot, error) {
 			if senderID != "web-2" || sel.Channel != "agent" || sel.ChatID != chatID {
 				t.Fatalf("wrong history selector: sender=%q selector=%#v", senderID, sel)
 			}

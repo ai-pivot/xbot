@@ -39,3 +39,46 @@ func (f fetchSince) ToFromIter() int           { return f.watermark }
 func FetchSinceWatermark(watermark int) ProgressFetch {
 	return fetchSince{watermark: watermark}
 }
+
+// fetchTail returns the LAST tail iterations (the rendering-mirrored window —
+// the v71 windowing). Unlike FetchAll (which must stay complete for the CLI
+// TUI restore), fetchTail bounds the transfer: the live turn's snapshot for
+// the Web initial load carries only the tail + the window bounds
+// (ProgressEvent.IterWindow) — the client fetches the rest on demand
+// (/api/history/iterations scroll-up). The bounds are what make the tail
+// SAFE: without them a truncated snapshot is indistinguishable from a
+// complete one (the 2026-09-17 "FetchAll 截 60 个迭代" incident — the client
+// window was not adjacent to the authoritative window ⇒ gap ⇒ rendering
+// truncated mid-history).
+type fetchTail struct{ tail int }
+
+func (f fetchTail) isProgressFetch()          {}
+func (f fetchTail) Filter(iteration int) bool { return true } // filtering is positional (the last N), done by the caller
+func (f fetchTail) ToFromIter() int           { return -1 }   // wire value: not a watermark pull
+
+// FetchTail returns the last `tail` iterations (the rendering-mirrored window).
+// The caller (GetActiveProgress) truncates the in-memory history to the tail
+// AND stamps ProgressEvent.IterWindow with the bounds so the client can tell
+// a windowed snapshot from a complete one.
+func FetchTail(tail int) ProgressFetch {
+	if tail <= 0 {
+		tail = 50
+	}
+	return fetchTail{tail: tail}
+}
+
+// IsFetchTail reports whether the fetch is the windowed tail variant (the
+// caller stamps the window bounds only for this variant).
+func IsFetchTail(f ProgressFetch) bool {
+	_, ok := f.(fetchTail)
+	return ok
+}
+
+// FetchTailSize returns the tail size for a fetchTail fetch (0 for the other
+// variants — the caller falls back to the complete list).
+func FetchTailSize(f ProgressFetch) int {
+	if ft, ok := f.(fetchTail); ok {
+		return ft.tail
+	}
+	return 0
+}

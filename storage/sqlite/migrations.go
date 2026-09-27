@@ -485,6 +485,29 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v71: 迭代窗口化（渲染镜像拉取）的查询支撑。给 iteration_history 加两个
+	// 写入时计算的存储列 + 一个常规复合索引：
+	//   - tool_only：tools≠'[]' 且 content='' 且 reasoning=''（折叠 run 成员，
+	//     与前端 mergeToolRuns 的 absorbs 判据一致）；
+	//   - tool_count：该迭代 tools 数组长度（"+N" 徽标的精确计数来源）；
+	//   - idx_iter_window (tenant_id, turn_id, tool_only, iteration, tool_count)。
+	//
+	// 为什么不用「已有字段上的部分表达式索引」（曾按该方向设计，实测推翻）：
+	// modernc.org/sqlite v1.46.1 下部分索引**永远无法 covering scan**——查询的
+	// WHERE 必须蕴含索引的 WHERE（否则 planner 不用该索引），而 WHERE 引用的
+	// content/reasoning/tools 列不在索引里 ⇒ planner 判定需要回表，EXPLAIN
+	// 永远是 "USING INDEX" 而非 "USING COVERING INDEX"。后果：run 计数扫描逐行
+	// 读 payload 页（1 万成员 run ≈ 5MB），恰好击穿窗口化的核心收益。存储列 +
+	// 常规索引后两个查询都走索引（tool-only 扫描 covering、混合块窗口只回表
+	// K 行 payload——本来就是需要的），且摆脱了 SQLite 部分索引语法级匹配的
+	// 脆弱性。守护测试 TestIterationWindowUsesPartialIndexes（EXPLAIN QUERY PLAN）
+	// 断言 covering。
+	if from < 71 {
+		if err := migrateV70ToV71(db); err != nil {
+			return fmt.Errorf("migrate to v71: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -608,6 +631,75 @@ func migrateV69ToV70(db *DB) error {
 		return fmt.Errorf("migrate v69->v70 update version: %w", err)
 	}
 	log.Info("Database migrated to v70 (repair missing session_messages.reasoning_items)")
+	return nil
+}
+
+// migrateV70ToV71 adds the iteration-windowing query support: two write-time
+// computed columns (tool_only — the folded-run membership flag, matching the
+// frontend mergeToolRuns `absorbs` judgment; tool_count — the tools array
+// length, the "+N" badge's exact count source) and ONE regular composite
+// index idx_iter_window (tenant_id, turn_id, tool_only, iteration, tool_count).
+//
+// Why not partial expression indexes over the EXISTING fields (the originally
+// designed approach — empirically rejected): under modernc.org/sqlite v1.46.1
+// a partial index is NEVER a covering scan — the query's WHERE must imply the
+// index's WHERE for the planner to use it, and those WHERE-referenced columns
+// (content/reasoning/tools) are not index columns, so the planner always does
+// table lookups ("USING INDEX", never "USING COVERING INDEX"). Consequence:
+// the run-count scan reads payload pages row by row (a 10k-member run ≈ 5MB),
+// defeating the windowing's core win. With the stored columns both queries are
+// index-driven: the tool-only scan is COVERING (no payload pages at all) and
+// the mixed-block window reads exactly the K payload rows it needs. This also
+// drops the syntactic partial-index-matching fragility entirely.
+//
+// Idempotent: columnExists-guarded ALTER + a recomputing backfill UPDATE +
+// CREATE INDEX IF NOT EXISTS (safe to re-run after a mid-migration crash).
+func migrateV70ToV71(db *DB) error {
+	conn := db.Conn()
+	hasTable, err := tableExists(conn, "iteration_history")
+	if err != nil {
+		return fmt.Errorf("migrate v70->v71 check iteration_history: %w", err)
+	}
+	if hasTable {
+		exists, err := columnExists(conn, "iteration_history", "tool_only")
+		if err != nil {
+			return fmt.Errorf("migrate v70->v71 check tool_only: %w", err)
+		}
+		if !exists {
+			if _, err := conn.Exec("ALTER TABLE iteration_history ADD COLUMN tool_only INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return fmt.Errorf("migrate v70->v71 add tool_only: %w", err)
+			}
+		}
+		exists, err = columnExists(conn, "iteration_history", "tool_count")
+		if err != nil {
+			return fmt.Errorf("migrate v70->v71 check tool_count: %w", err)
+		}
+		if !exists {
+			if _, err := conn.Exec("ALTER TABLE iteration_history ADD COLUMN tool_count INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return fmt.Errorf("migrate v70->v71 add tool_count: %w", err)
+			}
+		}
+		// Backfill (recomputes every row — idempotent). json_valid guards
+		// legacy/corrupt rows: an unparsable tools column counts as 0 tools.
+		if _, err := conn.Exec(`
+			UPDATE iteration_history SET
+				tool_only = CASE WHEN content = '' AND reasoning = '' AND tools != '[]' THEN 1 ELSE 0 END,
+				tool_count = CASE WHEN json_valid(tools) THEN json_array_length(tools) ELSE 0 END
+		`); err != nil {
+			return fmt.Errorf("migrate v70->v71 backfill: %w", err)
+		}
+		if _, err := conn.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_iter_window ON iteration_history(
+				tenant_id, turn_id, tool_only, iteration, tool_count
+			)
+		`); err != nil {
+			return fmt.Errorf("migrate v70->v71 create index: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 71"); err != nil {
+		return fmt.Errorf("migrate v70->v71 update version: %w", err)
+	}
+	log.Info("Database migrated to v71 (iteration windowing columns + index)")
 	return nil
 }
 

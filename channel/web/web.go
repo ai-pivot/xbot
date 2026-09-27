@@ -124,7 +124,24 @@ type WebCallbacks struct {
 	// HistorySnapshot returns a Web-only history snapshot with runtime state.
 	// limit = max user turns to return (0 = return all).
 	// beforeID = return messages with id < beforeID (0 = most recent).
-	HistorySnapshot func(senderID string, sel SessionSelector, limit int, beforeID int64) (HistorySnapshot, error)
+	// iterWindow = the v71 rendering-mirrored iteration windowing opt-in
+	// (the mixed-block window size; 0 = the legacy full path — the full
+	// iteration list per turn, backward compatible). When > 0, each turn's
+	// iterations come back as the windowed payload: the text-block Rows +
+	// the run summaries (head-7 tools + the true count) + the bounds — the
+	// run interiors (tool-only members) are NOT transferred.
+	HistorySnapshot func(senderID string, sel SessionSelector, limit int, beforeID int64, iterWindow int) (HistorySnapshot, error)
+	// TurnIterationWindow returns the per-turn windowed iteration fetch (the
+	// v71 scroll-up): the text-block window below beforeIter + the run
+	// summaries intersecting the range + the bounds. The client merges by
+	// iteration number (append-only, same-number authoritative — the same
+	// semantics as history_replaced).
+	TurnIterationWindow func(senderID string, sel SessionSelector, turnID uint64, beforeIter int, mixedLimit int) (*protocol.TurnIterationWindow, error)
+	// RunToolsPage returns the "+N" menu's on-demand page for a folded run's
+	// interior tools (the v71 windowing: the run interiors are not transferred
+	// with the window; the menu paginates them). The run is identified by its
+	// extent [startIter, endIter] (from the RunSummary the client holds).
+	RunToolsPage func(senderID string, sel SessionSelector, turnID uint64, startIter, endIter, offset, limit int) (*protocol.RunToolsPage, error)
 	// RewindHistory rewinds a Web-accessible session to a selected user message.
 	RewindHistory func(senderID string, sel SessionSelector, historyID int64) (RewindHistoryResult, error)
 	// GetCWD returns the current directory for a Web-accessible session.
@@ -893,6 +910,8 @@ func (wc *WebChannel) newServeMux() *http.ServeMux {
 
 	mux.HandleFunc("/api/history", wc.authenticatedPOST(wc.handleHistory))
 	mux.HandleFunc("/api/history/rewind", wc.authenticatedPOST(wc.handleHistoryRewind))
+	mux.HandleFunc("/api/history/iterations", wc.authenticatedPOST(wc.handleHistoryIterations))
+	mux.HandleFunc("/api/history/run_tools", wc.authenticatedPOST(wc.handleRunTools))
 	mux.HandleFunc("/api/search", wc.authenticatedPOST(wc.handleSearchPOST))
 
 	mux.HandleFunc("/api/settings", wc.authenticatedPOST(wc.handleSettingsPOST))

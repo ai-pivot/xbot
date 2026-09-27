@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -477,14 +478,36 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	if err != nil {
 		return err
 	}
+	// v71: the windowing columns are computed HERE (write-time) — the single
+	// source in Go. tool_only must match the frontend mergeToolRuns `absorbs`
+	// judgment (tools non-empty, no content, no reasoning); see
+	// iteration_window.go and the E2E screenshot-diff guard.
+	toolOnly, toolCount := computeIterationWindowColumns(rec.Content, rec.Reasoning, rec.Tools)
 	_, err = conn.Exec(`
-		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID)
+		INSERT INTO iteration_history (message_id, tenant_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, tool_only, tool_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, msgID, tenantID, turnID, rec.Iteration, rec.Content, rec.Reasoning, rec.Tools, rec.Tokens, rec.TTFTMs, rec.TokensPerSec, rec.TotalMs, rec.TPOTMs, rec.InputTokens, rec.CachedTokens, rec.Model, rec.SubscriptionID, toolOnly, toolCount)
 	if err != nil {
 		return fmt.Errorf("append iteration_history: %w", err)
 	}
 	return nil
+}
+
+// computeIterationWindowColumns derives the v71 windowing columns from the
+// iteration's shape. toolOnly=1 ⟺ a folded-run member (the frontend
+// mergeToolRuns `absorbs` judgment: has tools, no content, no reasoning).
+// toolCount = the tools array length (0 for unparsable/empty — never estimated).
+func computeIterationWindowColumns(content, reasoning, tools string) (toolOnly, toolCount int) {
+	if content == "" && reasoning == "" && tools != "" && tools != "[]" {
+		toolOnly = 1
+	}
+	if tools != "" && tools != "[]" {
+		var arr []json.RawMessage
+		if err := json.Unmarshal([]byte(tools), &arr); err == nil {
+			toolCount = len(arr)
+		}
+	}
+	return toolOnly, toolCount
 }
 
 // GetIterationHistoryByTurn returns all iteration records for a given

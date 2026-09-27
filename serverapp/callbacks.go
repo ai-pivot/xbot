@@ -289,7 +289,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 	// verified 2026-08 Loop 3. BackgroundTasks additionally re-checks
 	// ownership here because its output (bg task shell output) is extra
 	// sensitive and the selector must not be trusted on any path.
-	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector, limit int, beforeID int64) (web.HistorySnapshot, error) {
+	callbacks.HistorySnapshot = func(senderID string, sel web.SessionSelector, limit int, beforeID int64, iterWindow int) (web.HistorySnapshot, error) {
 		if ag.MultiSession() == nil {
 			return web.HistorySnapshot{}, fmt.Errorf("multi-session not available")
 		}
@@ -330,7 +330,19 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// hasn't changed and we don't want to re-trigger progress restoration.
 		var progress *protocol.ProgressEvent
 		if beforeID == 0 {
-			progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
+			// v71 windowing: the windowed opt-in (iterWindow > 0) also tails the
+			// active snapshot's IterationHistory (the live turn's in-memory
+			// history — a 1964-iter turn measured 11.2MB per snapshot). The tail
+			// carries IterWindow bounds (Total/LoadedTop) so the client can tell
+			// a windowed snapshot from a complete one (the 2026-09-17 lesson:
+			// truncation WITHOUT bounds is indistinguishable from complete ⇒ gap
+			// misjudged as unreachable). The full path (iterWindow == 0) keeps
+			// FetchAll — the CLI TUI restore and the legacy consumers unchanged.
+			if iterWindow > 0 {
+				progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchTail(iterWindow))
+			} else {
+				progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
+			}
 			// Keep the done event even with an empty Todos list. The frontend
 			// hydrates from active_progress to restore todos on refresh;
 			// dropping `done + todos:[]` made the client unable to learn that
@@ -341,7 +353,15 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// intermediate assistant + one final). Querying by turn_id merges them
 		// into a complete list. Falls back to Detail JSON when no structured
 		// data exists (old data pre-v55).
+		//
+		// v71: iterWindow > 0 opts into the rendering-mirrored windowing — each
+		// turn's payload is the text-block window + the run summaries (head-7
+		// tools + the true count) + the bounds, NOT the full record list. The
+		// run interiors (tool-only members) are not transferred (they render
+		// collapsed; the "+N" menu paginates on demand). 0 = the legacy full
+		// path (backward compatible — CLI get_history and old clients).
 		var turnIterMap map[uint64][]sqlite.IterationRecord
+		var turnWindowMap map[uint64]*sqlite.IterationWindowResult
 		tenantID := sess.TenantID()
 		if tenantID > 0 {
 			// Collect unique turn_ids
@@ -353,26 +373,68 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 			if len(turnSet) > 0 {
 				svc := sqlite.NewSessionService(ag.MultiSession().DB())
-				// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
-				// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
-				// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
 				turnIDs := make([]uint64, 0, len(turnSet))
 				for turnID := range turnSet {
 					turnIDs = append(turnIDs, turnID)
 				}
-				batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
-				if len(batch) > 0 {
-					turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
-					for turnID, recs := range batch {
-						if len(recs) > 0 {
-							turnIterMap[turnID] = recs
+				if iterWindow > 0 {
+					// The windowed path: one GetIterationWindow per turn (the
+					// mixed-block window + the run summaries + the bounds).
+					// Per-turn queries (not one IN batch) — each windowed query
+					// is index-driven (the covering scan + the K payload rows),
+					// and the turn count per page is small (the message window
+					// is turn-boundary aligned).
+					turnWindowMap = make(map[uint64]*sqlite.IterationWindowResult, len(turnIDs))
+					for _, turnID := range turnIDs {
+						w, err := svc.GetIterationWindow(tenantID, turnID, sqlite.IterationWindowOpts{MixedLimit: iterWindow})
+						if err != nil {
+							log.WithFields(log.Fields{"channel": sel.Channel, "chat_id": sel.ChatID, "turn_id": turnID}).WithError(err).Warn("iteration window fetch failed — falling back to full for this turn")
+							// A window failure must never break the history
+							// response: fall back to the full path for this turn.
+							full, ferr := svc.GetIterationHistoryByTurn(tenantID, turnID)
+							if ferr == nil && len(full) > 0 {
+								turnIterMap[turnID] = full
+							}
+							continue
+						}
+						turnWindowMap[turnID] = w
+					}
+				} else {
+					// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
+					// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
+					// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
+					batch, _ := svc.GetIterationHistoryByTurns(tenantID, turnIDs)
+					if len(batch) > 0 {
+						turnIterMap = make(map[uint64][]sqlite.IterationRecord, len(batch))
+						for turnID, recs := range batch {
+							if len(recs) > 0 {
+								turnIterMap[turnID] = recs
+							}
 						}
 					}
 				}
 			}
 		}
+		// The windowed path (any turn got a window) uses the windowed conversion;
+		// turns that fell back to the full path are merged into the windowed map
+		// as full windows (the conversion treats a full record list as the Rows —
+		// the run summaries are absent, so the run interiors render from the
+		// records themselves — the legacy shape).
+		var historyMsgs []channel.HistoryMessage
+		if len(turnWindowMap) > 0 {
+			for turnID, recs := range turnIterMap {
+				if _, ok := turnWindowMap[turnID]; !ok && len(recs) > 0 {
+					// A full-path fallback turn: wrap the full records as a
+					// complete window (LoadedTop=1 — nothing above to fetch).
+					turnWindowMap[turnID] = fullRecordsWindow(recs)
+				}
+			}
+			historyMsgs = channel.ConvertMessagesToHistoryWindowed(msgs, turnWindowMap)
+		} else {
+			historyMsgs = channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap)
+		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap),
+			Messages:       historyMsgs,
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
@@ -380,6 +442,64 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			HasMore:        hasMore,
 			OldestID:       oldestID,
 		}, nil
+	}
+	// TurnIterationWindow — the v71 scroll-up: the per-turn windowed iteration
+	// fetch below the client's loaded top (the same shape as the windowed
+	// HistoryMessage payload; the client merges by iteration number).
+	callbacks.TurnIterationWindow = func(senderID string, sel web.SessionSelector, turnID uint64, beforeIter int, mixedLimit int) (*protocol.TurnIterationWindow, error) {
+		if ag.MultiSession() == nil {
+			return nil, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return nil, err
+		}
+		tenantID := sess.TenantID()
+		if tenantID <= 0 {
+			return nil, fmt.Errorf("no tenant for session")
+		}
+		svc := sqlite.NewSessionService(ag.MultiSession().DB())
+		w, err := svc.GetIterationWindow(tenantID, turnID, sqlite.IterationWindowOpts{MixedLimit: mixedLimit, BeforeIter: beforeIter})
+		if err != nil {
+			return nil, err
+		}
+		out := &protocol.TurnIterationWindow{
+			TurnID:     turnID,
+			Total:      w.Total,
+			LoadedTop:  w.LoadedTop,
+		}
+		for _, rec := range w.Rows {
+			out.Iterations = append(out.Iterations, channel.HistoryIterationFromRecord(rec))
+		}
+		out.RunSummaries = channel.RunSummariesToProtocol(w.Runs)
+		return out, nil
+	}
+	// RunToolsPage — the v71 "+N" menu: the folded run's interior tools page
+	// (the run interiors are not transferred with the window; the menu
+	// paginates them on demand).
+	callbacks.RunToolsPage = func(senderID string, sel web.SessionSelector, turnID uint64, startIter, endIter, offset, limit int) (*protocol.RunToolsPage, error) {
+		if ag.MultiSession() == nil {
+			return nil, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return nil, err
+		}
+		tenantID := sess.TenantID()
+		if tenantID <= 0 {
+			return nil, fmt.Errorf("no tenant for session")
+		}
+		svc := sqlite.NewSessionService(ag.MultiSession().DB())
+		page, total, err := svc.GetRunTools(tenantID, turnID, startIter, endIter, offset, limit)
+		if err != nil {
+			return nil, err
+		}
+		out := &protocol.RunToolsPage{Total: total}
+		for _, rt := range page {
+			tools := channel.ParseToolProgressElements([]json.RawMessage{rt.Raw}, rt.Iteration)
+			out.Tools = append(out.Tools, tools...)
+		}
+		return out, nil
 	}
 	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {
 		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID)
@@ -998,6 +1118,21 @@ func webSessionCWD(ag *agent.Agent, channelName, chatID string) string {
 		dir = ag.WorkDir()
 	}
 	return dir
+}
+
+// fullRecordsWindow wraps a full record list (the legacy path's fallback for a
+// turn whose windowed fetch failed) as a COMPLETE window: the records become
+// the Rows and LoadedTop=1 (nothing above to fetch). The run summaries are
+// absent — the conversion renders the records as-is (the legacy shape, the
+// run interiors included). This keeps a per-turn window failure from breaking
+// the whole windowed response.
+func fullRecordsWindow(recs []sqlite.IterationRecord) *sqlite.IterationWindowResult {
+	return &sqlite.IterationWindowResult{
+		Rows:      recs,
+		Runs:      []sqlite.RunSummaryRecord{},
+		Total:     len(recs),
+		LoadedTop: 1,
+	}
 }
 
 func rewindWebHistory(ag *agent.Agent, channelName, chatID string, historyID int64) (web.RewindHistoryResult, error) {
