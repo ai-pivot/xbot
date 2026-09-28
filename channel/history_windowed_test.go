@@ -28,9 +28,9 @@ func TestConvertMessagesToHistoryWindowed_BasicWindow(t *testing.T) {
 			{TurnID: 1, Iteration: 13, Content: "text-13"},
 		},
 		Runs: []sqlite.RunSummaryRecord{{
-			StartIter: 2, EndIter: 12,
+			StartIter:     2, EndIter: 12,
 			HeadContent:   "head-text",
-			HeadToolsJSON: `[{"name":"t0"},{"name":"t1"},{"name":"t2"},{"name":"t3"},{"name":"t4"},{"name":"t5"},{"name":"t6"}]`,
+			HeadToolsJSON: `[{"name":"t0"},{"name":"t1"},{"name":"t2"},{"name":"t3"},{"name":"t4"},{"name":"t5"},{"name":"t6"},{"name":"t7"}]`,
 			ToolCount:     12,
 		}},
 		Total:     13,
@@ -56,7 +56,7 @@ func TestConvertMessagesToHistoryWindowed_BasicWindow(t *testing.T) {
 	if assistant.Iterations[0].Iteration != 1 || assistant.Iterations[1].Iteration != 13 {
 		t.Fatalf("iterations = %d,%d, want 1,13", assistant.Iterations[0].Iteration, assistant.Iterations[1].Iteration)
 	}
-	// The run summary: the head-7 tools + the true count + the extent.
+	// The run summary: the head tools (PILL_INLINE_MAX=8) + the true count + the extent.
 	if len(assistant.RunSummaries) != 1 {
 		t.Fatalf("run summaries = %d, want 1", len(assistant.RunSummaries))
 	}
@@ -70,11 +70,11 @@ func TestConvertMessagesToHistoryWindowed_BasicWindow(t *testing.T) {
 	if rs.ToolCount != 12 {
 		t.Fatalf("run tool count = %d, want 12", rs.ToolCount)
 	}
-	if len(rs.HeadTools) != 7 {
-		t.Fatalf("head-7 tools = %d, want 7 (PILL_INLINE_HEAD)", len(rs.HeadTools))
+	if len(rs.HeadTools) != 8 {
+		t.Fatalf("head tools = %d, want 8 (PILL_INLINE_MAX — ≤8 全显示)", len(rs.HeadTools))
 	}
 	if rs.HeadTools[0].Name != "t0" {
-		t.Fatalf("head-7[0] = %q, want t0 (the run renders its front)", rs.HeadTools[0].Name)
+		t.Fatalf("head tools[0] = %q, want t0 (the run renders its front)", rs.HeadTools[0].Name)
 	}
 	// The bounds.
 	if assistant.IterWindow == nil {
@@ -100,7 +100,7 @@ func TestConvertMessagesToHistoryWindowed_GiantRunTurn(t *testing.T) {
 		Rows: []sqlite.IterationRecord{}, // NO text blocks — the whole turn is one run
 		Runs: []sqlite.RunSummaryRecord{{
 			StartIter: 1, EndIter: 10001,
-			HeadToolsJSON: `[{"name":"t0"},{"name":"t1"},{"name":"t2"},{"name":"t3"},{"name":"t4"},{"name":"t5"},{"name":"t6"}]`,
+			HeadToolsJSON: `[{"name":"t0"},{"name":"t1"},{"name":"t2"},{"name":"t3"},{"name":"t4"},{"name":"t5"},{"name":"t6"},{"name":"t7"}]`,
 			ToolCount:     10001,
 		}},
 		Total:     10001,

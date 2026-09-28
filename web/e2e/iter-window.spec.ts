@@ -20,13 +20,14 @@ interface SSEMockState {
   __sseListeners: Record<string, Set<(ev: MessageEvent) => void>>
 }
 
-/** 巨型 run：iter 2..9949 全部 tool-only（每迭代 1 个工具），tool_count=9948。 */
+/** 巨型 run：iter 2..9949 全部 tool-only（每迭代 1 个工具），tool_count=9948。
+ *  head_tools 携带 8 个（PILL_INLINE_MAX——后端契约：≤8 全显示、>8 前端取前 7+徽标）。 */
 const GIANT_RUN = {
   start_iter: 2,
   end_iter: 9949,
   head_content: '',
   head_reasoning: '',
-  head_tools: Array.from({ length: 7 }, (_, i) => ({
+  head_tools: Array.from({ length: 8 }, (_, i) => ({
     name: 'Shell', status: 'done', iteration: 2,
     label: `giant-cmd-${i}`, summary: `giant summary ${i}`,
   })),

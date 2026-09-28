@@ -176,3 +176,76 @@ test('长 turn 交互零掉帧：pill 展开 / 思考折叠 / +N 菜单（10000 
     expect(longTasks, `交互期间 long task（>50ms）≤ 2（实测 ${longTasks}）`).toBeLessThanOrEqual(2)
   }
 })
+
+/** 渲染一个窗口化长 turn 并登录（桌面/手机共用；viewport 可配）。 */
+async function renderPerfPage(browser: Browser, viewport: { width: number; height: number }): Promise<Page> {
+  const ctx = await browser.newContext({ viewport })
+  await ctx.addInitScript(() => {
+    try { localStorage.setItem('xbot-locale', 'zh-CN') } catch { /* ignore */ }
+  })
+  const page = await ctx.newPage()
+  await setupMock(page)
+  await page.goto(`${BASE}/login`)
+  await page.locator('input').first().fill('test')
+  await page.locator('input[type="password"]').fill('test')
+  await page.locator('button[type="submit"]').click()
+  await expect(page.locator('[data-message-list-content]')).toContainText('性能回合', { timeout: 30000 })
+  await expect(page.locator('[data-testid="tool-pill"]').first()).toBeVisible({ timeout: 10000 })
+  await page.waitForTimeout(500)
+  return page
+}
+
+test('长 turn 桌面侧边栏开合零掉帧（10000 迭代窗口化渲染后）', async ({ browser }) => {
+  const page = await renderPerfPage(browser, { width: 1440, height: 900 })
+  await startLongTaskAudit(page)
+
+  // 侧边栏面板切换：会话 → 文件 → 会话（docked 面板重挂载 —— 交互 < 1500ms）。
+  const filesBtn = page.getByRole('button', { name: '文件' }).first()
+  const sessionsBtn = page.getByRole('button', { name: '会话' }).first()
+  const t0 = Date.now()
+  await filesBtn.click()
+  await page.waitForTimeout(300)
+  await sessionsBtn.click()
+  await page.waitForTimeout(300)
+  const switchLatency = Date.now() - t0
+  expect(switchLatency, `侧边栏面板往返切换必须 < 3000ms（实测 ${switchLatency}ms）`).toBeLessThan(3000)
+
+  const longTasks = await readLongTaskCount(page)
+  if (longTasks >= 0) {
+    expect(longTasks, `侧边栏切换期间 long task（>50ms）≤ 2（实测 ${longTasks}）`).toBeLessThanOrEqual(2)
+  }
+  await page.context().close()
+})
+
+test('手机 390 视口：长 turn 窗口化渲染 + 交互零掉帧（pill / 面板）', async ({ browser }) => {
+  const page = await renderPerfPage(browser, { width: 390, height: 844 })
+  await startLongTaskAudit(page)
+
+  // ① pill 点击（手机触屏点按路径同 click）：popover 展开可见。
+  const t0 = Date.now()
+  await page.locator('[data-testid="tool-pill"]').first().click()
+  await expect(page.getByText('perf summary 0').first(), '手机 pill popover 必须展开').toBeVisible({ timeout: 5000 })
+  const pillLatency = Date.now() - t0
+  expect(pillLatency, `手机 pill 展开必须 < 1500ms（实测 ${pillLatency}ms）`).toBeLessThan(1500)
+  await page.mouse.click(10, 100)
+  await page.waitForTimeout(200)
+
+  // ② 工具面板按钮切换（手机导航）：往返一次。
+  const filesBtn = page.getByRole('button', { name: '文件' }).first()
+  const sessionsBtn = page.getByRole('button', { name: '会话' }).first()
+  if (await filesBtn.count() > 0 && await sessionsBtn.count() > 0) {
+    const t1 = Date.now()
+    await filesBtn.click()
+    await page.waitForTimeout(300)
+    await sessionsBtn.click()
+    await page.waitForTimeout(300)
+    const switchLatency = Date.now() - t1
+    expect(switchLatency, `手机面板往返切换必须 < 3000ms（实测 ${switchLatency}ms）`).toBeLessThan(3000)
+  }
+
+  const longTasks = await readLongTaskCount(page)
+  if (longTasks >= 0) {
+    expect(longTasks, `手机交互期间 long task（>50ms）≤ 2（实测 ${longTasks}）`).toBeLessThanOrEqual(2)
+  }
+  await page.context().close()
+})

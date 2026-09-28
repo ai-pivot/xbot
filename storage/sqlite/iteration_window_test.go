@@ -103,8 +103,8 @@ func TestIterationWindow_BasicWindow(t *testing.T) {
 	if r1.ToolCount != 12 {
 		t.Fatalf("run 1 tool count = %d, want 12 (2 head + 10 members)", r1.ToolCount)
 	}
-	if names := headToolNames(t, r1); len(names) != 7 {
-		t.Fatalf("run 1 head-7 = %v, want 7 tools (PILL_INLINE_HEAD)", names)
+	if names := headToolNames(t, r1); len(names) != 8 {
+		t.Fatalf("run 1 head tools = %v, want 8 tools (PILL_INLINE_MAX — ≤8 全显示)", names)
 	}
 	if r2.StartIter != 14 || r2.EndIter != 15 {
 		t.Fatalf("run 2 extent = %d..%d, want 14..15", r2.StartIter, r2.EndIter)
@@ -156,13 +156,13 @@ func TestIterationWindow_GiantRun(t *testing.T) {
 	if r.ToolCount != 10001 {
 		t.Fatalf("tool count = %d, want 10001 (the TRUE count — the +N badge)", r.ToolCount)
 	}
-	if names := headToolNames(t, r); len(names) != 7 {
-		t.Fatalf("head-7 = %v, want 7", names)
+	if names := headToolNames(t, r); len(names) != 8 {
+		t.Fatalf("head tools = %v, want 8 (PILL_INLINE_MAX)", names)
 	}
-	// The head-7 must be the run's TRUE head: the head iteration's tool first
+	// The head tools must be the run's TRUE head: the head iteration's tool first
 	// (t0 from iteration 1), then the members' tools in order.
 	if names := headToolNames(t, r); names[0] != "t0" {
-		t.Fatalf("head-7[0] = %q, want t0 (the head iteration's tool — the run renders its front)", names[0])
+		t.Fatalf("head tools[0] = %q, want t0 (the head iteration's tool — the run renders its front)", names[0])
 	}
 	if res.Total != 10001 {
 		t.Fatalf("Total = %d, want 10001", res.Total)

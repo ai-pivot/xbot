@@ -125,3 +125,4 @@ gpg-private.key*
 # Generic: one entry per plugin instead of naming modules one by one (the
 # git-fancy binary kept showing up untracked).
 plugins/*/xbot-*
+timeline.json

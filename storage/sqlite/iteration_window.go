@@ -10,10 +10,12 @@ import (
 // iteration_window.go — 渲染镜像窗口化（v71 存储列 + 复合索引的查询面）。
 //
 // 设计（见 docs/agent/web-message-store.md 与迭代窗口化设计讨论）：
-// 数据窗口化镜像渲染窗口化 —— 折叠 run 的默认渲染只需要头部 7 个工具 + 真实总数
-// （FoldedToolGroup 的 PILL_INLINE_HEAD=7 + "+N" 徽标），混合迭代块（content/reasoning）
+// 数据窗口化镜像渲染窗口化 —— 折叠 run 的默认渲染只需要头部 8 个工具 + 真实总数
+// （FoldedToolGroup 的 ≤8 全显示 / >8 取前 7（PILL_INLINE_HEAD）+ "+N" 徽标；
+// ⚠️ head 截取用 PILL_INLINE_MAX=8 而非 7 —— toolCount≤8 的 run 全量显示全部工具，
+// 窗口化 head 必须带全 —— 矩阵 E2E 抓到的 off-by-one），混合迭代块（content/reasoning）
 // 只需要视口邻域。因此每个 turn 的窗口化拉取 = 尾部 K 个非 tool-only 行（文本块 +
-// run 头部）+ 与窗口相交的 run 摘要（头部 7 工具 + 工具总数 + 范围），run 内部
+// run 头部）+ 与窗口相交的 run 摘要（头部 8 工具 + 工具总数 + 范围），run 内部
 // （tool-only 成员）不传输 —— 它们本来就不渲染（折叠着），只在 "+N" 菜单按需分页。
 //
 // 三类迭代（与前端 mergeToolRuns 的 absorbs 判据一致 —— ⚠️ 语义跨 SQL/Go/TS 三处，
@@ -23,7 +25,7 @@ import (
 //   - run 头部：tools≠'[]' 且（content≠'' 或 reasoning≠''）→ run 块的头部文本，
 //     进摘要（Runs 的 HeadContent/HeadReasoning）
 //   - run 成员：tool-only（tools≠'[]' 且 content='' 且 reasoning=''）→ 折叠进 run，
-//     不传输（只有头部 7 个工具 + 计数进摘要）
+//     不传输（只有头部 8 个工具 + 计数进摘要）
 //
 // 索引：idx_iter_window (tenant_id, turn_id, tool_only, iteration, tool_count) —
 // tool-only 成员扫描是 COVERING（不碰 payload 页），混合块窗口定位后只回表 K 行
@@ -62,8 +64,11 @@ type RunSummaryRecord struct {
 	// renders it above the pills — mergeToolRuns keeps the head's text).
 	HeadContent   string
 	HeadReasoning string
-	// HeadToolsJSON is the merged head-7 tools as a raw JSON array (the head's
-	// tools + the first members' tools, first 7 total — PILL_INLINE_HEAD).
+	// HeadToolsJSON is the merged head tools as a raw JSON array (the head's
+	// tools + the first members' tools, up to 8 total — PILL_INLINE_MAX, not 7:
+	// a run with toolCount ≤ 8 renders ALL its tools (no overflow badge), so
+	// the head must carry every tool in that case; runs with toolCount > 8
+	// let the frontend slice to the first 7 + the "+N" badge).
 	HeadToolsJSON string
 	// ToolCount is the run's TOTAL tool count (the head's + all members') —
 	// the "+N" badge. Never estimated: the head's array length + the members'
@@ -401,12 +406,18 @@ func (s *SessionService) buildRunSummary(conn *sql.DB, tenantID int64, turnID ui
 			summary.ToolCount += m.toolCount
 		}
 	}
-	// The merged head-7: the head's tools + the first members' tools, first 7
-	// total (PILL_INLINE_HEAD). The members' tools need payload reads — only
-	// as many members as cover the remaining slots.
+	// The merged head tools: the head's tools + the first members' tools, up to
+	// 8 total (PILL_INLINE_MAX, not 7/PILL_INLINE_HEAD). ⚠️ Why 8: a run with
+	// toolCount ≤ 8 renders ALL its tools as pills (no overflow badge) — the
+	// windowed head must carry every tool in that case to stay pixel-identical
+	// to the full render (a 7-cap would show 7 pills where the full render
+	// shows 8 — caught by the matrix E2E, toolCount=8 off-by-one). Runs with
+	// toolCount > 8: the frontend slices to the first 7 + the "+N" badge. The
+	// members' tools need payload reads — only as many members as cover the
+	// remaining slots.
 	merged := append([]json.RawMessage{}, headTools...)
-	if len(merged) < 7 {
-		need := 7 - len(merged)
+	if len(merged) < 8 {
+		need := 8 - len(merged)
 		var firstIters []int
 		var acc int
 		for _, m := range stretch {
@@ -430,8 +441,8 @@ func (s *SessionService) buildRunSummary(conn *sql.DB, tenantID int64, turnID ui
 			}
 		}
 	}
-	if len(merged) > 7 {
-		merged = merged[:7]
+	if len(merged) > 8 {
+		merged = merged[:8]
 	}
 	raw, err := json.Marshal(merged)
 	if err != nil {
