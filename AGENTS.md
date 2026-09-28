@@ -256,6 +256,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-feishu.md` — 撤销 resetProgress 的 frozen 检查 —— frozen 快照在 commit 后必须 reset（否则残留到下一 turn → 重复渲染）。
 - ⚠️ `docs/agent/gotchas-feishu.md` — `MessageStore.toRows()` 的 frozen 合并分支必须输出 `isPartial: true`（V5）——否则 cancel 后正在执行的 tool（最新 iter）从 UI 消失。
 - ⚠️ `docs/agent/gotchas-feishu.md` — turn_id / iteration invariants — 
+- ⛔ `docs/agent/gotchas-feishu.md` — 迭代号**每个 turn 归零**：turn 内唯一（1..N），跨 turn 重复；`turn_id` 仅在同一 tenant（会话）内有效——**任何 iteration_history 查询必须带 tenant_id**，否则把不同会话的同号 turn 混在一起（2026-09-28 诊断事故：`WHERE turn_id=15` 漏 tenant_id，把 5 个会话的 turn 15 混成「895 行同号多行」的假象，误判为数据损坏/窗口化假设错误）。
 - ⚠️ `docs/agent/gotchas-feishu.md` — "思考中"占位符唯一渲染点 = LiveIteration（2026-09-04 "切换会话后 agent 消息完全空白 + 渲染两个思考中"双 bug 根治）。
 - ⚠️ `docs/agent/gotchas-feishu.md` — 压缩期间（`progress.phase === 'compressing'`）不渲染思考占位符 —— 每个状态下有且只有一个状态指示器（2026-09-15 用户报告截图：`thinking…` 叠在 `Compressing context…` 上方，"这有点怪"）。
 - ⚠️ `docs/agent/gotchas-feishu.md` — 虚拟行（`.virt-row`）上的动效绝不允许改 `transform` —— CSS 动画会覆盖内联定位（2026-09-16 用户报告「快速滚动出现内容抖动重叠」根治）。
