@@ -28,7 +28,7 @@ func TestConvertMessagesToHistoryWindowed_BasicWindow(t *testing.T) {
 			{TurnID: 1, Iteration: 13, Content: "text-13"},
 		},
 		Runs: []sqlite.RunSummaryRecord{{
-			StartIter:     2, EndIter: 12,
+			StartIter: 2, EndIter: 12,
 			HeadContent:   "head-text",
 			HeadToolsJSON: `[{"name":"t0"},{"name":"t1"},{"name":"t2"},{"name":"t3"},{"name":"t4"},{"name":"t5"},{"name":"t6"},{"name":"t7"}]`,
 			ToolCount:     12,
