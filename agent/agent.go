@@ -1554,24 +1554,27 @@ func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 		}
 		a.pendingCancel.Delete(cancelKey)
 		a.cancelStateMu.Unlock()
-		// AskUser 交互结束（用户 cancel）：解除 WaitingUser 的 busy 状态并发射
-		// session(idle)。WaitingUser 时 chatProcessLoop 有意保持 ss.busy=true
-		// （防止 chatWorker 在 AskUser panel 显示期间 drain 通知），cancel 若
-		// 不清除，前端 session tree 的 running 状态永远保持 → 会话卡 busy、
-		// cancel 看似无效、无法交互（用户报告："后台 web 会话用 askuser 取消后
-		// 永远卡 busy，cancel 无效，什么事情都做不了"）。
+		// AskUser 交互结束（用户 cancel）：WaitingUser 暂停解除、turn 终止 ⇒
+		// 会话必须回到 idle，**无条件**发射 session(idle)。
+		//
+		// ⛔ 旧代码把 idle 发射门控在 `ss.busy.Load()` 上（当时 WaitingUser 暂停
+		// 期间有意保持 ss.busy=true 以防 chatWorker drain 通知）。但暂停语义后来
+		// 改为 busy=false（busy ⇔ iterating —— 见 chatProcessLoop 的 WaitingUser
+		// 分支：`ss.busy.Store(false)`），该闸门因此**恒假** ⇒ 真实取消路径永不发
+		// idle ⇒ 前端状态机的 activeTurn 永不清（busyFallback = activeTurn !== null）、
+		// 会话状态永停在 waiting/running ⇒ 输入框卡 busy（用户 2026-09-28：
+		// 「askuser 在被用户取消后，前端还是渲染为 busy」）。
+		//
+		// ss.busy 仍显式复位（幂等）以覆盖旧版残留 busy=true 的窗口；worktree 的
+		// busy 标记同理。SenderID: session owner —— 漏填时对 web 渠道走无过滤
+		// fan-out 分支（广播给所有用户，多用户部署下暴露会话元数据）。取消者 = 会话 owner。
 		if state, ok := a.bgSessionStates.Load(cancelKey); ok {
-			if ss := state.(*bgSessionState); ss.busy.Load() {
-				ss.busy.Store(false)
-				tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
-				// SenderID: session owner — CR#5 复审补漏。此 idle 发射漏填
-				// SenderID 时对 web 渠道走无过滤 fan-out 分支（广播给所有
-				// 用户，多用户部署下暴露会话元数据）。取消者 = 会话 owner。
-				a.emitSessionState(protocol.SessionEvent{
-					Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
-				})
-			}
+			state.(*bgSessionState).busy.Store(false)
 		}
+		tools.GlobalWorktreeRegistry.SetBusy(cancelKey, false)
+		a.emitSessionState(protocol.SessionEvent{
+			Channel: msg.Channel, ChatID: msg.ChatID, Action: "idle", SenderID: msg.SenderID,
+		})
 		a.sendPendingAskUserCancelAck(msg)
 		log.WithField("cancel_key", cancelKey).Info("Cancelled pending AskUser prompt")
 		return
