@@ -227,7 +227,6 @@ const en: Translations = {
     emptyResponseWarning: 'The LLM returned no text for this turn. The model output may have ended unexpectedly.',
     displayOnly: 'display only',
     /** v71 iteration-window scroll-up divider: count earlier iterations above the window. */
-    iterWindowMore: 'Load {{count}} earlier iterations',
     emptyConversation: 'Send a message below to start a conversation.',
     welcomeTitle: 'Welcome to xbot',
     welcomeHint: 'Three steps to your first conversation:',

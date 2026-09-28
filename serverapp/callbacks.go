@@ -330,19 +330,13 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// hasn't changed and we don't want to re-trigger progress restoration.
 		var progress *protocol.ProgressEvent
 		if beforeID == 0 {
-			// v71 windowing: the windowed opt-in (iterWindow > 0) also tails the
-			// active snapshot's IterationHistory (the live turn's in-memory
-			// history — a 1964-iter turn measured 11.2MB per snapshot). The tail
-			// carries IterWindow bounds (Total/LoadedTop) so the client can tell
-			// a windowed snapshot from a complete one (the 2026-09-17 lesson:
-			// truncation WITHOUT bounds is indistinguishable from complete ⇒ gap
-			// misjudged as unreachable). The full path (iterWindow == 0) keeps
-			// FetchAll — the CLI TUI restore and the legacy consumers unchanged.
-			if iterWindow > 0 {
-				progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchTail(iterWindow))
-			} else {
-				progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
-			}
+			// ⚠️ v71：active_progress 必须保持 FetchAll（master 行为）——曾试过
+			// FetchTail(iterWindow) 瘦身，但 live turn 刷新时尾部快照会在
+			// history_replaced 水合中【覆盖】committed 窗口化数据（active_progress
+			// 没有 run_summaries 概念）⇒ 丢中间迭代 + IterWindow 边界错乱
+			// （divider 显示 Total-1 而非 loadedTop-1）。传输优化只做 DB 窗口化
+			// （run 内部不传输），active_progress 全量保留。
+			progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
 			// Keep the done event even with an empty Todos list. The frontend
 			// hydrates from active_progress to restore todos on refresh;
 			// dropping `done + todos:[]` made the client unable to learn that

@@ -167,6 +167,40 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
       ? (m.iterations.map(normalizeWebIteration).filter(Boolean) as WebIteration[])
       : []
 
+    // ── v71 窗口化：run_summaries 展开成虚拟 iterations，合并进全量渲染路径 ──
+    // 后端把「混合块（content+tools）」全部归入 run_summaries（每个自成单块 run），
+    // Rows 只剩纯文本块。这里在 parse 层把每个 run 摘要展开为一个虚拟迭代
+    // （content=head_content + tools=head_tools + toolTotal=真实总数），与 Rows
+    // 合并后交给 TurnBody 的【全量渲染路径】（mergeToolRuns）—— 渲染结果与
+    // master 全量拉取逐像素一致（FoldedToolGroup 按 toolTotal 显示 +N 徽标）。
+    // ⚠️ 不依赖 messageStore 透传 runSummaries（旧 store 白名单会丢字段——
+    // 生产丢 Runs 的根因之一）；展开后 message.runSummaries 保持 undefined，
+    // TurnBody 的窗口化分支（interleaved 虚拟块）自然走空（runSummaries 为空
+    // → 直接用 iterations）→ 全量路径。
+    if (Array.isArray(m.run_summaries) && m.run_summaries.length > 0) {
+      const existingIters = new Set(iterations.map((it) => it.iteration))
+      for (const rs of m.run_summaries) {
+        if (typeof rs.start_iter !== 'number') continue
+        if (existingIters.has(rs.start_iter)) continue // Rows 已有同号块（理论不重叠，保险去重）
+        const tools: WebToolProgress[] = Array.isArray(rs.head_tools)
+          ? (rs.head_tools as WebToolProgress[])
+          : []
+        const virtual = normalizeWebIteration({
+          iteration: rs.start_iter,
+          content: typeof rs.head_content === 'string' ? rs.head_content : '',
+          reasoning: typeof rs.head_reasoning === 'string' ? rs.head_reasoning : '',
+          tools,
+          toolTotal: typeof rs.tool_count === 'number' ? rs.tool_count : tools.length,
+        })
+        if (virtual) {
+          iterations.push(virtual as WebIteration)
+          existingIters.add(rs.start_iter)
+        }
+      }
+      // 按迭代号升序（Rows 尾部块 + run 虚拟块交错后单调——线性一致性）。
+      iterations.sort((a, b) => a.iteration - b.iteration)
+    }
+
     // Detect non-sequential iteration numbers (e.g. 1 → 148 gap) — indicates
     // lost iteration history, typically from a backend restart + cancel.
     if (iterations.length > 1) {
@@ -228,18 +262,10 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
               timestamp: typeof c.timestamp === 'string' ? c.timestamp : undefined,
             }))
         : undefined,
-      // v71 窗口化载荷：折叠 run 摘要（头部 7 工具 + 真实总数）+ 已加载边界。
-      // 仅窗口化响应携带（undefined = 全量路径，iterations 即全量）。
-      runSummaries: Array.isArray(m.run_summaries)
-        ? m.run_summaries.map((r) => ({
-            startIter: r.start_iter,
-            endIter: r.end_iter,
-            headContent: r.head_content,
-            headReasoning: r.head_reasoning,
-            headTools: Array.isArray(r.head_tools) ? r.head_tools : undefined,
-            toolCount: r.tool_count,
-          }))
-        : undefined,
+      // v71 窗口化：run_summaries 已在上方【展开成虚拟 iterations 并入 iterations】
+      // —— 此处【绝不】再传 runSummaries（TurnBody 的窗口化分支会再展开一遍 ⇒
+      // 双份虚拟块 ⇒ pill 翻倍 —— E2E 实测 3 pill 渲染成 6）。TurnBody 收到
+      // runSummaries=undefined 时自然走全量渲染路径（mergeToolRuns）。
       iterWindow:
         m.iter_window && typeof m.iter_window.total === 'number'
           ? { total: m.iter_window.total, loadedTop: m.iter_window.loaded_top }
@@ -510,11 +536,10 @@ export function useChatMessages({
         return parsed
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
-      // v71 窗口化【回滚休眠】（2026-09-28 用户 P0：真实数据存在同 turn 同迭代号
-      // 多行形态——turn 15 实测 895 行 / 仅 138 个迭代号——窗口化查询按「行」拉取
-      // + 前端按号去重 ⇒ 大量迭代丢失；且 divider 按钮违反「与改之前完全一样」）。
-      // 不传 iter_window = 全量路径（master 行为）。重新启用前必须先支持同号多行。
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
+      // v71 渲染镜像窗口化 opt-in：iter_window=50 —— 每 turn 的迭代载荷 = 尾部
+      // 50 个混合块 + run 摘要 + 边界；run 内部不传输（parse 层把 run_summaries
+      // 展开成虚拟 iterations 走全量渲染路径 —— 体验与 master 逐像素一致）。
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, iterWindow: 50 })
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
@@ -586,8 +611,8 @@ export function useChatMessages({
       // 第二批的 `hist-0` 与第一批冲突，下方 existingIds 把新数据全判为
       // 重复 → hasMore=false 分页截断（更老的消息永远加载不出来）。
       const beforeId = oldestIdRef.current
-      // v71 窗口化【回滚休眠】（同上 —— 真实数据同号多行未支持，回全量路径）。
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId })
+      // v71 窗口化 opt-in（与初始加载同参）：loadMore 拉取的更早 turn 同样窗口化。
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId, iterWindow: 50 })
       const rows = data.messages ?? []
       if (rows.length === 0) {
         setHasMore(false)

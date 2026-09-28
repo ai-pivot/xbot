@@ -227,7 +227,6 @@ const ja: Translations = {
     emptyResponseWarning: 'LLM が今回はテキストを返しませんでした。出力異常か途中終了の可能性があります。',
     displayOnly: '表示のみ',
     /** v71 窗口化滚动回拉 divider：窗口之上还有 count 个未加载迭代。 */
-    iterWindowMore: 'さらに前の {{count}} 個のイテレーションを読み込む',
     emptyConversation: '下の入力欄からメッセージを送って会話を開始してください。',
     welcomeTitle: 'xbot へようこそ',
     welcomeHint: '最初の会話までの 3 ステップ：',

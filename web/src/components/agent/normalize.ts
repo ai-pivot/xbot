@@ -44,6 +44,10 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
     reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
     tools,
     toolCount: tools.length,
+    // v71 窗口化 run 块的真实工具总数（parse 层展开 run_summaries 时注入——
+    // tools 只携带头部 8 个，+N 徽标/溢出菜单必须用本字段显示真实溢出数）。
+    // 全量路径不设置（undefined ⇒ FoldedToolGroup 回落 tools.length）。
+    toolTotal: typeof r.toolTotal === 'number' ? r.toolTotal : undefined,
     tokens,
     ttftMs,
     tokensPerSec,

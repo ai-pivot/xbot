@@ -182,10 +182,10 @@ test('窗口化渲染契约：7 pill + +N 真实总数 + 回拉 divider + 传输
   await expect(page.locator('[data-message-list-content]')).toContainText('小 run 头部文本（content+tools 形态）')
   await expect(page.locator('[data-message-list-content]')).toContainText('窗口内文本块乙')
 
-  // ⑤ 回拉 divider：loadedTop=50 > 1 ⇒ 显示「加载更早的 49 个迭代」。
-  const divider = page.locator('[data-testid="iteration-window-more"]')
-  await expect(divider, '窗口之上还有未加载迭代 ⇒ divider 必须渲染').toBeVisible()
-  await expect(divider).toContainText('49')
+  // ⑤ 回拉哨兵：loadedTop=50 > 1 ⇒ 窗口之上还有未加载迭代 —— IO 哨兵必须
+  //    挂载（无感自动回拉 —— 与 master 的 loadMore 同构，无按钮无文案）。
+  const sentinel = page.locator('[data-testid="iteration-window-sentinel"]')
+  await expect(sentinel, '窗口之上还有未加载迭代 ⇒ IO 哨兵必须挂载').toHaveCount(1)
 
   // 传输体积阈值：窗口化响应（run 内部不传输）必须远小于全量形态。
   // 全量 10000 迭代下限估算：每迭代最小 JSON ≈ 100B ⇒ ≥ 1MB。
@@ -200,7 +200,7 @@ test('窗口化渲染契约：7 pill + +N 真实总数 + 回拉 divider + 传输
   await expect(smallRunMore, '小 run ≤8 工具 ⇒ 无 +N 徽标（与全量一致）').toHaveCount(0)
 })
 
-test('滚动回拉：点击 divider ⇒ 更早窗口并入渲染（不丢不重）', async ({ browser }) => {
+test('滚动回拉：IO 哨兵进入视口 ⇒ 更早窗口并入渲染（不丢不重）', async ({ browser }) => {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } })
   await ctx.addInitScript(() => {
     try { localStorage.setItem('xbot-locale', 'zh-CN') } catch { /* ignore */ }
@@ -209,9 +209,10 @@ test('滚动回拉：点击 divider ⇒ 更早窗口并入渲染（不丢不重�
   await setupMock(page)
   await login(page)
 
-  const divider = page.locator('[data-testid="iteration-window-more"]')
-  await expect(divider).toBeVisible()
-  await divider.click()
+  const sentinel = page.locator('[data-testid="iteration-window-sentinel"]')
+  await expect(sentinel).toHaveCount(1)
+  // 滚动到哨兵（消息顶部）⇒ IO 触发自动回拉（rootMargin 200px，无按钮无文案）。
+  await sentinel.scrollIntoViewIfNeeded()
 
   // 更早窗口的迭代并入（append-only union —— 既有窗口内容不丢）。
   await expect(page.locator('[data-message-list-content]')).toContainText('更早窗口文本块丙', { timeout: 10000 })
@@ -222,8 +223,8 @@ test('滚动回拉：点击 divider ⇒ 更早窗口并入渲染（不丢不重�
   // 既有内容仍在（线性一致性 —— union 只增不减）。
   await expect(page.locator('[data-message-list-content]')).toContainText('窗口内文本块甲（content-only 形态）')
 
-  // 回拉后 loadedTop=47 仍 > 1 ⇒ divider 继续显示（可继续向上回拉）。
-  await expect(divider).toContainText('46')
+  // 回拉后 loadedTop=47 仍 > 1 ⇒ 哨兵仍在（可继续向上回拉）；=1 时哨兵卸载。
+  await expect(sentinel, '回拉后 loadedTop=47 仍 > 1 ⇒ 哨兵保留').toHaveCount(1)
 })
 
 test('+N 菜单分页：点击徽标 ⇒ run 内部工具按需拉取渲染', async ({ browser }) => {

@@ -269,11 +269,13 @@ async function assertMatrix(page: Page, win: WindowedTurn, scale: string): Promi
   if (win.reasoningOnly.length > 0) {
     await expect(list).toContainText('思考')
   }
-  // ⑤ 回拉 divider 数值（loadedTop - 1）。
-  const divider = page.locator('[data-testid="iteration-window-more"]')
+  // ⑤ 回拉哨兵（loadedTop > 1 ⇒ 窗口之上还有未加载迭代 —— IO 哨兵挂载，
+  //    无感自动回拉，与 master 的 loadMore 同构，无按钮无文案）。
+  const sentinel = page.locator('[data-testid="iteration-window-sentinel"]')
   if (win.iter_window.loaded_top > 1) {
-    await expect(divider).toBeVisible()
-    await expect(divider).toContainText(`${win.iter_window.loaded_top - 1}`)
+    await expect(sentinel, `${scale}：loadedTop>1 ⇒ IO 哨兵必须挂载`).toHaveCount(1)
+  } else {
+    await expect(sentinel, `${scale}：loadedTop=1（完整）⇒ 哨兵不挂载`).toHaveCount(0)
   }
 }
 
