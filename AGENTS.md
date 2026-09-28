@@ -172,6 +172,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 「没有 pending」在前端的唯一判据是「载荷不含任何问题」——`parseAskUserPrompt` 必须返回 `null`，绝不合成空 prompt（2026-09-20 CI 9 个 spec 全红）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 不变式：busy ⇒ 不存在 pending（用户 2026-09-16 拍板：「只要 busy，那么问题就自动被 cancel 了」）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 每一处"清 pending"必须经同一出口（清缓存 + 落库配对 + 发 `ask_user_resolved`），且清内存与落 `ask_answer` 之间不得有顺序缝隙。
+- ⛔ `docs/agent/gotchas-cli-tui.md` — AskUser 取消必须**无条件**发 `session(idle)`，绝不能用 `ss.busy` 当判据（WaitingUser 暂停期 `ss.busy` 已为 false ⇒ 旧闸门恒假 ⇒ 取消后前端卡 busy；2026-09-28 用户报告根治）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 手机设置/后台 gap 后 busy 永久卡死（2026-08-30 "打开设置期间会话完成，退出后卡 busy，最终回复已渲染"）：restoreActiveProgress 的 done/null 分支必须 dispatch agent-idle。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — SESSION-PANEL GLOBAL-STATE BAN（2026-09-01 "cancel 一个 session 导致所有 busy 的 session 状态异常"根治 + ESLint 编译层约束）：per-session 代码禁止直接操作 window 事件，跨 session 信号必须经 `sessionEvents.ts`（类型级强制 session 身份）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — `isProgressLifecycleEvent` 不得包含 `stream_content`（纯流式 delta，不是状态变化）。
