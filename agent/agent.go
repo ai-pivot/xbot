@@ -1500,6 +1500,23 @@ func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
 	}
 }
 
+// isCancelCommand 判定一条入站消息是否是取消命令（/cancel 或其别名 /stop）。
+//
+// /stop 别名（2026-09-28）：飞书原生 CoT「停止生成」按钮的平台默认行为是向机器人
+// 发一条 "/Stop" 消息（大小写不定），而非 card.action.trigger —— 不识别它时该消息
+// 会落进普通消息路径被当成用户 prompt 发给 LLM。两个拦截点（agent.Run 的入站拦截 +
+// RemoteTransport.SendMessage 的 cancel 消息类型判定）统一用本谓词，保证别名行为
+// 与 /cancel 完全一致：大小写不敏感、容忍首尾空白、整词匹配（/stopped /stopall 等
+// 前缀相似词不误判）。
+func isCancelCommand(content string) bool {
+	switch strings.TrimSpace(strings.ToLower(content)) {
+	case "/cancel", "/stop":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Agent) interceptCancel(msg bus.InboundMessage) {
 	cancelKey := msg.Channel + ":" + msg.ChatID
 	log.WithField("cancel_key", cancelKey).Info("Received /cancel request")
@@ -2804,11 +2821,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		case msg := <-a.bus.Inbound:
 
-			// /cancel 拦截：不进入 chatWorker 队列，直接发 cancel 信号
-			// cancel key 仅用 channel:chatID（不含 senderID），因为同一个 chat
-			// 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
+			// /cancel（及其别名 /stop）拦截：不进入 chatWorker 队列，直接发 cancel 信号。
+			// /stop 是飞书 CoT「停止生成」按钮的平台默认命令（发 "/Stop" 消息），
+			// 见 isCancelCommand 注释。cancel key 仅用 channel:chatID（不含 senderID），
+			// 因为同一个 chat 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
-			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
+			if isCancelCommand(msg.Content) {
 				a.interceptCancel(msg)
 				acknowledgeInboundDelivery(msg, bus.DeliveryResult{})
 				continue
