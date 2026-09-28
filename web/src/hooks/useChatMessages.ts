@@ -510,11 +510,11 @@ export function useChatMessages({
         return parsed
       }
       // Normal mode: load via Web history snapshot (paginated: last 100 messages).
-      // v71 渲染镜像窗口化 opt-in：iter_window=50 —— 每 turn 的迭代载荷 = 尾部
-      // 50 个混合块 + run 摘要（头部 7 工具 + 真实总数）+ 边界；run 内部不传输
-      // （折叠渲染 + "+N" 菜单按需分页 fetchRunTools + 滚动回拉 fetchTurnIterations
-      // —— 两条取回通路均已接线，无感知约束成立）。0/缺省 = 全量路径（向后兼容）。
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, iterWindow: 50 })
+      // v71 窗口化【回滚休眠】（2026-09-28 用户 P0：真实数据存在同 turn 同迭代号
+      // 多行形态——turn 15 实测 895 行 / 仅 138 个迭代号——窗口化查询按「行」拉取
+      // + 前端按号去重 ⇒ 大量迭代丢失；且 divider 按钮违反「与改之前完全一样」）。
+      // 不传 iter_window = 全量路径（master 行为）。重新启用前必须先支持同号多行。
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100 })
       if (requestIsSuperseded() || requestHasDestructiveMutation()) return null
       const mutated = requestHasMessageMutation()
       // Store last_seq for SSE deduplication and reconnect replay.
@@ -586,8 +586,8 @@ export function useChatMessages({
       // 第二批的 `hist-0` 与第一批冲突，下方 existingIds 把新数据全判为
       // 重复 → hasMore=false 分页截断（更老的消息永远加载不出来）。
       const beforeId = oldestIdRef.current
-      // v71 窗口化 opt-in（与初始加载同参）：loadMore 拉取的更早 turn 同样窗口化。
-      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId, iterWindow: 50 })
+      // v71 窗口化【回滚休眠】（同上 —— 真实数据同号多行未支持，回全量路径）。
+      const data = await fetchHistory(w, chatID ? { channel, chatID } : null, { limit: 100, beforeId })
       const rows = data.messages ?? []
       if (rows.length === 0) {
         setHasMore(false)
