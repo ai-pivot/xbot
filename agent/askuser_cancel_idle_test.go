@@ -58,18 +58,24 @@ func TestAskUserCancelDuringWaitingUserPauseEmitsSessionIdle(t *testing.T) {
 	a.interceptCancel(bus.InboundMessage{
 		Channel:  "web",
 		ChatID:   "chat-1",
+		SenderID: "user-1",
 		Content:  "/cancel",
 		Metadata: map[string]string{"ask_user_cancel": "true"},
 	})
 
-	idle := false
+	var idles []protocol.SessionEvent
 	for _, ev := range events.events {
 		if ev.Action == "idle" && ev.Channel == "web" && ev.ChatID == "chat-1" {
-			idle = true
+			idles = append(idles, ev)
 		}
 	}
-	if !idle {
-		t.Fatalf("AskUser cancel during the WaitingUser pause emitted no session(idle): %#v — 前端状态机 activeTurn 永不清 ⇒ 输入框卡 busy（用户报告）", events.events)
+	if len(idles) != 1 {
+		t.Fatalf("AskUser cancel during the WaitingUser pause emitted %d session(idle) (want exactly 1): %#v — 前端状态机 activeTurn 永不清 ⇒ 输入框卡 busy（用户报告）", len(idles), events.events)
+	}
+	// SenderID 必须是会话 owner：漏填时 web 渠道走无过滤 fan-out（广播给所有用户，
+	// 多用户部署下暴露会话元数据）。
+	if idles[0].SenderID != "user-1" {
+		t.Fatalf("idle SenderID = %q, want the canceller (session owner)", idles[0].SenderID)
 	}
 	if pending := a.GetPendingAskUser("web", "chat-1"); pending != nil {
 		t.Fatalf("AskUser prompt remained after cancel: %#v", pending)

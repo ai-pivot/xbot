@@ -21,8 +21,11 @@ const QUESTION = '请选择方向'
  * 的形态）——此时会话仍处于 running（面板由水合渲染，状态不会是 waiting_input），
  * 取消后若后端不发 idle，输入框就会卡在 busy（本用例的判别点）。
  *
- * 判别力（变异自证）：把下面那条 `session(idle)` 拿掉（= 修复前后端输出）⇒
- * 本用例必红（输入框仍是 cancel）。CI 真机验证见 PR。
+ * ⚠️ **测试诚实性**：本 spec 是**全 mock**（`api/*` 全 route + 自注入 MockEventSource，
+ * 事件由测试自己 emit）⇒ 它钉的是**前端契约**（收到 resolved+idle 后必须回到 idle），
+ * **不守卫后端**——后端若回退本次修复，本 spec 仍绿。后端行为由
+ * `agent/askuser_cancel_idle_test.go` 守卫。本 spec 的变异自证方式：删掉它自己 emit 的
+ * `session(idle)`（模拟"后端不发 idle"的输出）⇒ 必红（输入框仍是 cancel）。
  *
  * SSE 由 addInitScript 注入的 MockEventSource 驱动（沿用 busy-invariant.spec.ts /
  * askuser-resolved.spec.ts 的既有做法），api/* 全部 route mock ⇒ 不触真实后端。
@@ -175,7 +178,8 @@ test('AskUser 取消后：会话回到 idle，输入框不再是 cancel 按钮�
   state.pending = null
   await panel.getByRole('button', { name: /取消|Cancel/i }).first().click()
 
-  // 后端取消该 pending prompt 的输出：resolved(cancelled) + session(idle)。
+  // 后端取消该 pending prompt 的第一条输出：resolved(cancelled)（prompt 级失效，
+  // 面板收起）——与真实顺序一致（resolvePendingAskUser 先广播 resolved，再发 idle）。
   await emitSSE(page, 'ask_user_resolved', {
     type: 'ask_user_resolved',
     channel: 'web',
@@ -183,10 +187,20 @@ test('AskUser 取消后：会话回到 idle，输入框不再是 cancel 按钮�
     request_id: 'ask-cancel-1',
     reason: 'cancelled',
   })
+  await expect(panel).toHaveCount(0, { timeout: 10000 })
+
+  // ★ 前提断言（判别力的依托）：此刻 prompt 已收起、idle **尚未**到达 —— 会话确实
+  // 仍在 running ⇒ 输入框是 cancel/stop（这正是用户报告的 bug 现场）。
+  // 它同时证明"会话已回到 idle"不是平凡通过（一个本来就 idle 的会话当然不是 cancel）。
+  await expect(
+    page.getByRole('button', { name: /停止|Stop|Cancel|取消/i }).first(),
+    '前提：prompt 收起、idle 未到时输入框仍是 cancel（会话确实在 running）',
+  ).toBeVisible({ timeout: 10000 })
+
+  // 后端随后发出权威 idle ⇒ 会话回到 idle。
   await emitSSE(page, 'session', { chat_id: CHAT, session: { action: 'idle', chat_id: CHAT } })
 
-  // 用户可见契约：面板消失 + 输入框不再是 cancel/stop（会话回到 idle）。
-  await expect(panel).toHaveCount(0, { timeout: 10000 })
+  // 用户可见契约：输入框不再是 cancel/stop（本修复的判据）。
   await expect(
     page.getByRole('button', { name: /停止|Stop|Cancel|取消/i }),
     'AskUser 取消后输入框不得仍渲染为 busy/cancel',
