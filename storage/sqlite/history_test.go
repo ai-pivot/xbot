@@ -125,7 +125,7 @@ func TestFullHistoryCompressionMetadataAndCrossBoundaryRewind(t *testing.T) {
 		t.Fatalf("compression range=%+v", rng)
 	}
 
-	target, turnIdx, err := svc.RewindToHistoryID(tenantID, userID)
+	target, turnIdx, _, err := svc.RewindToHistoryID(tenantID, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,12 @@ func TestFullHistoryCompressionSourcesExcludeHiddenPruneControls(t *testing.T) {
 	}
 }
 
-func TestRewindAtomicallyRestoresTokenState(t *testing.T) {
+// TestRewindReturnsPromptTokensFromRemainingHistory — v71（每会话一个 DB）契约：
+// RewindToHistoryID 返回剩余历史最后一条用户消息的 context_tokens（调用方
+// TenantSession 拿它写主库 tenant_state —— 跨库无法原子，水位是派生缓存）。
+// 旧契约（rewind 原子恢复 tenant_state）已随拆库废弃：tenant_state 是主库表，
+// RewindToHistoryID 只操作会话库表。
+func TestRewindReturnsPromptTokensFromRemainingHistory(t *testing.T) {
 	db, svc, tenantID := newHistoryTestService(t)
 	previousID, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous"))
 	if err != nil {
@@ -222,18 +227,26 @@ func TestRewindAtomicallyRestoresTokenState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err != nil {
+	_, _, promptTokens, err := svc.RewindToHistoryID(tenantID, targetID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var promptTokens, completionTokens, lastConsolidated int64
+	// 返回值 = 剩余历史（"previous"）最后一条用户消息的 context_tokens ——
+	// 调用方（TenantSession.RewindToHistoryID）拿它写主库 tenant_state。
+	if promptTokens != 321 {
+		t.Fatalf("promptTokens = %d, want 321 (remaining history's last user context_tokens)", promptTokens)
+	}
+	// tenant_state 原样：rewind 不碰主库表（调用方负责 —— 见
+	// TestRewindReturnsPromptTokensAndLeavesTenantStateToCaller）。
+	var promptTokens2, completionTokens, lastConsolidated int64
 	if err := db.Conn().QueryRow(`
 		SELECT last_prompt_tokens, last_completion_tokens, last_consolidated
 		FROM tenant_state WHERE tenant_id = ?
-	`, tenantID).Scan(&promptTokens, &completionTokens, &lastConsolidated); err != nil {
+	`, tenantID).Scan(&promptTokens2, &completionTokens, &lastConsolidated); err != nil {
 		t.Fatal(err)
 	}
-	if promptTokens != 321 || completionTokens != 0 || lastConsolidated != 7 {
-		t.Fatalf("token state=(%d,%d) consolidated=%d, want (321,0) consolidated=7", promptTokens, completionTokens, lastConsolidated)
+	if promptTokens2 != 999 || completionTokens != 88 || lastConsolidated != 7 {
+		t.Fatalf("rewind touched tenant_state: (%d,%d) consolidated=%d, want unchanged (999,88) consolidated=7", promptTokens2, completionTokens, lastConsolidated)
 	}
 }
 
@@ -271,7 +284,7 @@ func TestRewindDeletesIterationHistoryByTurnID(t *testing.T) {
 		}
 	}
 
-	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err != nil {
+	if _, _, _, err := svc.RewindToHistoryID(tenantID, targetID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -369,7 +382,15 @@ func TestIterationHistoryTPOTRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
+// TestRewindReturnsPromptTokensAndLeavesTenantStateToCaller — v71（每会话一个
+// DB）契约：RewindToHistoryID 只操作会话库表（session_messages/iteration_history
+// 截断），tenant_state（主库表）的 token 水位恢复拆给了调用方（TenantSession，
+// 持有主库 MemoryService）—— 跨库无法原子，水位是派生缓存（下一条用户消息的
+// SaveContextTokens 自愈）。本测试守护三点：① rewind 不碰 tenant_state（即使
+// tenant_state 有故障触发器也照常成功 —— 旧契约是"token_state 写失败回滚截断"，
+// 拆库后截断与水位分属两库，不再可能原子回滚）；② 截断生效；③ 返回剩余历史
+// 最后一条用户消息的 context_tokens（调用方写主库的值）。
+func TestRewindReturnsPromptTokensAndLeavesTenantStateToCaller(t *testing.T) {
 	db, svc, tenantID := newHistoryTestService(t)
 	if _, err := svc.AppendMessage(tenantID, llm.NewUserMessage("previous")); err != nil {
 		t.Fatal(err)
@@ -387,6 +408,8 @@ func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
 	`, tenantID); err != nil {
 		t.Fatal(err)
 	}
+	// tenant_state 故障触发器：旧契约下 rewind 会因它失败；新契约下 rewind 根本
+	// 不碰 tenant_state（主库表，调用方负责），触发器不触发。
 	if _, err := db.Conn().Exec(`
 		CREATE TRIGGER fail_rewind_token_state
 		BEFORE UPDATE OF last_prompt_tokens ON tenant_state
@@ -395,24 +418,32 @@ func TestRewindRollsBackHistoryWhenTokenStateUpdateFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err == nil || !strings.Contains(err.Error(), "injected token state failure") {
-		t.Fatalf("rewind error=%v", err)
+	_, _, promptTokens, err := svc.RewindToHistoryID(tenantID, targetID)
+	if err != nil {
+		t.Fatalf("rewind must succeed despite the tenant_state trigger (tenant_state is the caller's concern now): %v", err)
 	}
+	// 截断生效：只剩 "previous"。
 	records, err := svc.GetFullHistory(tenantID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 3 || records[1].HistoryID != targetID || records[2].Message.Content != "future" {
-		t.Fatalf("failed token-state update truncated history: %+v", records)
+	if len(records) != 1 || records[0].Message.Content != "previous" {
+		t.Fatalf("rewind did not truncate history: %+v", records)
 	}
-	var promptTokens, completionTokens int64
+	// promptTokens = 剩余历史最后一条用户消息的 context_tokens（本测试未设置
+	// context_tokens，默认 0 —— 调用方拿它写主库 tenant_state）。
+	if promptTokens != 0 {
+		t.Fatalf("promptTokens = %d, want 0 (no context_tokens seeded)", promptTokens)
+	}
+	// tenant_state 原样（rewind 不碰它 —— 主库表，调用方负责）。
+	var promptTokens2, completionTokens int64
 	if err := db.Conn().QueryRow(`
 		SELECT last_prompt_tokens, last_completion_tokens FROM tenant_state WHERE tenant_id = ?
-	`, tenantID).Scan(&promptTokens, &completionTokens); err != nil {
+	`, tenantID).Scan(&promptTokens2, &completionTokens); err != nil {
 		t.Fatal(err)
 	}
-	if promptTokens != 999 || completionTokens != 88 {
-		t.Fatalf("failed rewind changed token state to (%d,%d)", promptTokens, completionTokens)
+	if promptTokens2 != 999 || completionTokens != 88 {
+		t.Fatalf("rewind touched tenant_state: (%d,%d), want unchanged (999,88)", promptTokens2, completionTokens)
 	}
 }
 
@@ -426,7 +457,7 @@ func TestRewindInvalidTargetIsFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := svc.GetFullHistory(tenantID)
-	if _, _, err := svc.RewindToHistoryID(tenantID, assistantID); err == nil || !strings.Contains(err.Error(), "not a rewindable user") {
+	if _, _, _, err := svc.RewindToHistoryID(tenantID, assistantID); err == nil || !strings.Contains(err.Error(), "not a rewindable user") {
 		t.Fatalf("expected invalid target error, got %v", err)
 	}
 	after, _ := svc.GetFullHistory(tenantID)
@@ -437,7 +468,7 @@ func TestRewindInvalidTargetIsFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := svc.RewindToHistoryID(otherTenant, before[0].HistoryID); err == nil {
+	if _, _, _, err := svc.RewindToHistoryID(otherTenant, before[0].HistoryID); err == nil {
 		t.Fatal("cross-tenant history_id unexpectedly rewound")
 	}
 }
@@ -458,7 +489,7 @@ func TestRewindTransactionRollsBackOnDeleteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := svc.RewindToHistoryID(tenantID, targetID); err == nil || !strings.Contains(err.Error(), "injected rewind failure") {
+	if _, _, _, err := svc.RewindToHistoryID(tenantID, targetID); err == nil || !strings.Contains(err.Error(), "injected rewind failure") {
 		t.Fatalf("rewind error=%v", err)
 	}
 	records, err := svc.GetFullHistory(tenantID)
@@ -490,7 +521,7 @@ func TestRewindSerializesWithConcurrentAppend(t *testing.T) {
 		errs := make(chan error, 2)
 		go func() {
 			<-start
-			_, _, err := svc.RewindToHistoryID(tenantID, targetID)
+			_, _, _, err := svc.RewindToHistoryID(tenantID, targetID)
 			errs <- err
 		}()
 		go func() {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,6 +28,19 @@ func newAgentHistorySession(t *testing.T) (*session.MultiTenantSession, *session
 		t.Fatal(err)
 	}
 	return mt, sess
+}
+
+// sessionDBConn returns the session DB connection for trigger injection and
+// direct assertions (v71 per-session DB split: mt.DB() is the MAIN DB —
+// session_messages/iteration_history live in the per-session DB, so triggers
+// and row assertions must target it, not the main DB).
+func sessionDBConn(t *testing.T, mt *session.MultiTenantSession, sess *session.TenantSession) *sql.DB {
+	t.Helper()
+	db, err := mt.SessionDBFor(sess.TenantID())
+	if err != nil {
+		t.Fatalf("open session db for tenant %d: %v", sess.TenantID(), err)
+	}
+	return db.Conn()
 }
 
 func TestPersistenceBridgeCompressionAppendsAndReplays(t *testing.T) {
@@ -193,7 +207,7 @@ func TestContextEditToolUsesRunScopedHandlerConcurrently(t *testing.T) {
 
 func TestIncrementalPersistBatchFailureRetriesWithoutDuplicates(t *testing.T) {
 	mt, sess := newAgentHistorySession(t)
-	if _, err := mt.DB().Conn().Exec(`
+	if _, err := sessionDBConn(t, mt, sess).Exec(`
 		CREATE TRIGGER fail_history_message BEFORE INSERT ON session_messages
 		WHEN NEW.content = 'fail' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
 	`); err != nil {
@@ -213,7 +227,7 @@ func TestIncrementalPersistBatchFailureRetriesWithoutDuplicates(t *testing.T) {
 	if len(records) != 0 || bridge.LastPersistedCount() != 0 {
 		t.Fatalf("failed batch partially persisted: records=%+v watermark=%d", records, bridge.LastPersistedCount())
 	}
-	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_history_message`); err != nil {
+	if _, err := sessionDBConn(t, mt, sess).Exec(`DROP TRIGGER fail_history_message`); err != nil {
 		t.Fatal(err)
 	}
 	if err := bridge.IncrementalPersist(messages); err != nil {
@@ -235,7 +249,7 @@ func TestIncrementalPersistBatchFailureRetriesWithoutDuplicates(t *testing.T) {
 
 func TestSyntheticToolPairAppendIsAtomic(t *testing.T) {
 	mt, sess := newAgentHistorySession(t)
-	if _, err := mt.DB().Conn().Exec(`
+	if _, err := sessionDBConn(t, mt, sess).Exec(`
 		CREATE TRIGGER fail_synthetic_tool BEFORE INSERT ON session_messages
 		WHEN NEW.role = 'tool' AND NEW.tool_name = 'synthetic' BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
 	`); err != nil {
@@ -262,7 +276,7 @@ func TestSyntheticToolPairAppendIsAtomic(t *testing.T) {
 
 func TestSyntheticNotificationAppendFailureRemainsRetryable(t *testing.T) {
 	mt, sess := newAgentHistorySession(t)
-	if _, err := mt.DB().Conn().Exec(`
+	if _, err := sessionDBConn(t, mt, sess).Exec(`
 		CREATE TRIGGER fail_notification_pair BEFORE INSERT ON session_messages
 		WHEN NEW.role = 'tool' AND NEW.tool_name = 'cron_fired' AND NEW.content LIKE '%retry me%'
 		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
@@ -304,7 +318,7 @@ func TestSyntheticNotificationAppendFailureRemainsRetryable(t *testing.T) {
 	if got := len(a.pendingBgNotifications(sessionKey)); got != 1 {
 		t.Fatalf("requeued notifications=%d, want 1", got)
 	}
-	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_notification_pair`); err != nil {
+	if _, err := sessionDBConn(t, mt, sess).Exec(`DROP TRIGGER fail_notification_pair`); err != nil {
 		t.Fatal(err)
 	}
 	retry := &runState{
@@ -651,7 +665,7 @@ func TestInteractiveInterruptionIsPersistedWithoutSystemMessage(t *testing.T) {
 
 func TestInteractiveInterruptionBatchRollsBackOnFailure(t *testing.T) {
 	mt, sess := newAgentHistorySession(t)
-	if _, err := mt.DB().Conn().Exec(`
+	if _, err := sessionDBConn(t, mt, sess).Exec(`
 		CREATE TRIGGER fail_interruption_tool BEFORE INSERT ON session_messages
 		WHEN NEW.role = 'tool' AND NEW.tool_name = 'user_cancelled'
 		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;

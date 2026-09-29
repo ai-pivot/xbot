@@ -186,7 +186,9 @@ func TestAnswerPathBroadcastsAnsweredAfterPersist(t *testing.T) {
 	if pending := ag.GetPendingAskUser("web", "chat-ans"); pending != nil {
 		t.Fatalf("pending AskUser survived the persisted answer: %+v", pending)
 	}
-	_, recordType, err := sqlite.NewSessionService(ag.MultiSession().DB()).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	_, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +279,9 @@ func TestNewTurnAutoCancelsStalePendingAskUser(t *testing.T) {
 	if pending := ag.GetPendingAskUser("web", "chat-t6"); pending != nil {
 		t.Fatalf("pending AskUser survived the new turn: %+v", pending)
 	}
-	_, recordType, err := sqlite.NewSessionService(ag.MultiSession().DB()).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	_, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		t.Fatal(err)
 	}

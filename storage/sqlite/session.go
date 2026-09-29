@@ -402,36 +402,34 @@ func (s *SessionService) GetMaxIterationForTurn(tenantID int64, turnID uint64) (
 	return int(maxIter.Int64), nil
 }
 
-// SetTenantCWD persists a session's current working directory in the tenants
-// table (the single authoritative store; file-based session_cwd is retired).
-func (s *SessionService) SetTenantCWD(tenantID int64, cwd string) error {
-	conn, err := s.conn()
-	if err != nil {
-		return err
-	}
-	if _, err := conn.Exec("UPDATE tenants SET cwd = ? WHERE id = ?", cwd, tenantID); err != nil {
-		return fmt.Errorf("update tenants.cwd: %w", err)
-	}
-	return nil
-}
+// SetTenantCWD / GetTenantCWD 已迁移到 TenantService（v71 每会话一个 DB 拆分）：
+// tenants 是主库表，而 SessionService 现在绑定会话库 —— CWD 读写经 TenantService
+// （主库）进行。见 tenant.go 的 TenantService.SetTenantCWD / GetTenantCWD。
 
-// GetTenantCWD reads a session's persisted CWD from the tenants table.
-// Returns "" when the session has no persisted CWD (fresh session).
-func (s *SessionService) GetTenantCWD(tenantID int64) (string, error) {
+// LatestPreview returns the preview text for a session: the latest
+// user/assistant non-display-only message, truncated to 256 bytes in SQL —
+// the exact semantics the ListUserChats subquery used before the per-session
+// DB split (v71). The write path (TenantSession append hooks) mirrors this:
+// an eligible append IS the latest eligible row (ids are monotonic), so it
+// updates tenants.preview directly with the message content.
+func (s *SessionService) LatestPreview(tenantID int64) (string, error) {
 	conn, err := s.conn()
 	if err != nil {
 		return "", err
 	}
-	var cwd sql.NullString
-	err = conn.QueryRow("SELECT cwd FROM tenants WHERE id = ?", tenantID).Scan(&cwd)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil
-		}
-		return "", fmt.Errorf("get tenants.cwd: %w", err)
+	var preview sql.NullString
+	err = conn.QueryRow(`
+		SELECT substr(content, 1, 256) FROM session_messages
+		WHERE tenant_id = ? AND role IN ('user', 'assistant') AND COALESCE(display_only, 0) = 0
+		ORDER BY id DESC LIMIT 1`, tenantID).Scan(&preview)
+	if err == sql.ErrNoRows {
+		return "", nil
 	}
-	if cwd.Valid {
-		return cwd.String, nil
+	if err != nil {
+		return "", fmt.Errorf("query latest preview message: %w", err)
+	}
+	if preview.Valid {
+		return preview.String, nil
 	}
 	return "", nil
 }
@@ -736,14 +734,11 @@ func (s *SessionService) GetTenantUsageStats(tenantID int64, recentLimit int) (*
 		}
 	}
 
-	// tenant_state watermark (current context level).
-	_ = conn.QueryRow(`SELECT COALESCE(last_prompt_tokens, 0), COALESCE(last_completion_tokens, 0) FROM tenant_state WHERE tenant_id = ?`, tenantID).
-		Scan(&stats.LastPromptTokens, &stats.LastCompletionTokens)
-
-	// tenants metadata.
-	_ = conn.QueryRow(`SELECT COALESCE(model, ''), COALESCE(created_at, ''), COALESCE(last_active_at, '') FROM tenants WHERE id = ?`, tenantID).
-		Scan(&stats.CurrentModel, &stats.SessionCreatedAt, &stats.SessionLastActive)
-
+	// tenant_state watermark + tenants metadata（CurrentModel/SessionCreatedAt/
+	// SessionLastActive/LastPromptTokens/LastCompletionTokens）由调用方填充：
+	// v71 每会话一个 DB 拆分后，tenant_state/tenants 是主库表，而 SessionService
+	// 绑定会话库 —— 这四个字段从主库读会失败。调用方（TenantSession /
+	// MultiTenantSession，持有主库 MemoryService/TenantService）负责补齐。
 	return stats, nil
 }
 

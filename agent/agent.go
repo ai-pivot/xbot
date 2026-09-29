@@ -1347,11 +1347,9 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 	if err != nil {
 		return 0, "", false
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return 0, "", false
-	}
-	id, recordType, err := sqlite.NewSessionService(db).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	id, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
 			Warn("latestAskControlRecord: query failed, trusting in-memory AskUser state")
@@ -1960,6 +1958,11 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
 	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
 	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	// v71（每会话一个 DB）：模型切换时清零会话库的 token 基线（session_messages
+	// .context_tokens —— 不同模型上下文大小不同）。tenant_state 半边（主库）由
+	// SetTenantSubscription 清；session_messages 半边（会话库）经本钩子路由。
+	// nil（单测未注入）= 跳过（基线留待下一条用户消息自愈）。
+	a.userSys.llmFactory.SetSessionTokenResetter(multiSession.ResetSessionContextTokens)
 
 	// 初始化上下文管理器
 	a.contextManagerConfig = &ContextManagerConfig{

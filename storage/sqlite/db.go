@@ -63,7 +63,7 @@ type DB struct {
 	lastWALSize int64
 }
 
-const schemaVersion = 70
+const schemaVersion = 71
 const historyLockStripes = 64
 
 // Open opens or creates a SQLite database at the given path
@@ -110,52 +110,16 @@ func Open(path string) (*DB, error) {
 		}
 	}
 
-	// Build DSN with pragmas that apply to ALL connections in the pool.
-	// _pragma is essential when MaxOpenConns > 1: it ensures every connection
-	// gets busy_timeout and journal_mode, not just the first one.
-	dsn := path
-	if path != ":memory:" {
-		dsn = "file:" + path + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
-	}
-	conn, err := sql.Open("sqlite", dsn)
+	// 主库连接池：MaxIdleConns(4)（常驻热连接，主库是全局单点）；会话库走
+	// openSQLite 的会话参数（MaxIdleConns(1) + ConnMaxIdleTime，见 OpenSessionDB）。
+	db, err := openSQLite(path, 4, 0)
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-
-	// Set connection pool settings.
-	// WAL mode allows concurrent reads while a write is in progress.
-	// MaxOpenConns > 1 enables Go's connection pool to serve reads from
-	// idle connections even when one connection is mid-write.
-	// This prevents API read queries from blocking on agent DB writes.
-	conn.SetMaxOpenConns(4)
-	conn.SetMaxIdleConns(4)
-	conn.SetConnMaxLifetime(0)
-
-	// For non-:memory: databases, WAL/busy_timeout/foreign_keys are already
-	// set via DSN _pragma. For :memory: (tests), set them here as fallback.
-	if path == ":memory:" {
-		if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("set WAL mode: %w", err)
-		}
-		if _, err := conn.Exec("PRAGMA busy_timeout=10000"); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("set busy_timeout: %w", err)
-		}
-		if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("enable foreign keys: %w", err)
-		}
-	}
-
-	db := &DB{
-		conn: conn,
-		path: path,
+		return nil, err
 	}
 
 	// Initialize schema
 	if err := db.initSchema(); err != nil {
-		conn.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("initialize schema: %w", err)
 	}
 

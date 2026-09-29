@@ -485,6 +485,47 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v71: 每会话一个 DB（one session, one DB）—— tenants 注册表加三列：
+	//   - db_path  会话库相对路径（sessions/<channel>/<bucket>/<name>.db，相对主库目录）
+	//   - migrated 会话数据是否已惰性迁移到会话库（0=主库 session_messages 仍是权威，
+	//              首次打开会话库时按 tenant_id 拷贝并置 1；幂等：拷贝前先 DELETE）
+	//   - preview  会话最新一条 user/assistant 消息的截断预览（ListUserChats 等
+	//              跨会话列表读主库这一列，不再 JOIN session_messages —— 拆库后
+	//              主库没有消息数据，预览由写入路径维护）
+	if from < 71 {
+		if err := migrateV70ToV71(db); err != nil {
+			return fmt.Errorf("migrate to v71: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV70ToV71 adds the per-session-DB registry columns to tenants.
+// Purely additive ALTER TABLE ADD COLUMN — no data rewrite, no backup needed
+// (the pre-migration backup in initSchema still runs for the whole chain, but
+// this step itself is trivially reversible). Idempotent via columnExists.
+func migrateV70ToV71(db *DB) error {
+	conn := db.Conn()
+	for _, c := range []struct{ name, ddl string }{
+		{"db_path", "ALTER TABLE tenants ADD COLUMN db_path TEXT NOT NULL DEFAULT ''"},
+		{"migrated", "ALTER TABLE tenants ADD COLUMN migrated INTEGER NOT NULL DEFAULT 0"},
+		{"preview", "ALTER TABLE tenants ADD COLUMN preview TEXT NOT NULL DEFAULT ''"},
+	} {
+		exists, err := columnExists(conn, "tenants", c.name)
+		if err != nil {
+			return fmt.Errorf("migrate v70->v71 check tenants.%s: %w", c.name, err)
+		}
+		if !exists {
+			if _, err := conn.Exec(c.ddl); err != nil {
+				return fmt.Errorf("migrate v70->v71 add tenants.%s: %w", c.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 71"); err != nil {
+		return fmt.Errorf("migrate v70->v71 update version: %w", err)
+	}
+	log.Info("Database migrated to v71 (tenants.db_path/migrated/preview — per-session DB registry columns)")
 	return nil
 }
 

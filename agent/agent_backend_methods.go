@@ -428,10 +428,12 @@ func (a *Agent) ClearGoal(ch, chatID string) {
 func (a *Agent) GetExportIterations(ch, chatID string) []protocol.ExportedIteration {
 	// 1. Completed iterations from iteration_history (DB authoritative).
 	var records []sqlite.IterationRecord
-	if a.multiSession != nil && a.multiSession.DB() != nil {
+	if a.multiSession != nil {
 		if sess, err := a.multiSession.GetOrCreateSession(ch, chatID); err == nil {
 			if tenantID := sess.TenantID(); tenantID > 0 {
-				records, _ = sqlite.NewSessionService(a.multiSession.DB()).GetAllIterationHistory(tenantID)
+				// v71（每会话一个 DB）：iteration_history 在会话库 —— 经
+				// TenantSession.SessionService()（绑定会话库）查询。
+				records, _ = sess.SessionService().GetAllIterationHistory(tenantID)
 			}
 		}
 	}

@@ -256,16 +256,11 @@ func (s *TenantService) SetTenantSubscription(channel, chatID, subscriptionID, m
 		); err != nil {
 			return fmt.Errorf("clear tenant token state after model change: %w", err)
 		}
-		if _, err := tx.Exec(`
-UPDATE session_messages SET context_tokens = 0
-WHERE id = (
-SELECT id FROM session_messages
-WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0
-ORDER BY id DESC LIMIT 1
-)
-`, tenantID); err != nil {
-			return fmt.Errorf("clear latest user context tokens after model change: %w", err)
-		}
+		// v71（每会话一个 DB）：session_messages.context_tokens 的清零（模型切换
+		// 重置 token 基线）已移出本方法 —— session_messages 在会话库，而本方法只
+		// 操作主库。清零由 LLMFactory 的 sessionTokenResetter 钩子完成（模型变更
+		// 时经 MultiTenantSession.ResetSessionContextTokens 清会话库），见
+		// llm_factory.go 的 SetSessionLLM / SelectModel。
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -349,4 +344,117 @@ func (s *TenantService) ClearSubscriptionFromTenants(subID string) error {
 		return fmt.Errorf("clear tenant subscription: %w", err)
 	}
 	return nil
+}
+
+// ── 每会话一个 DB（one session, one DB）：tenants 注册表方法（v71）──────────────
+//
+// tenants 表是会话库的注册表：db_path（会话库相对路径）+ migrated（数据是否已
+// 惰性迁移到会话库）+ preview（跨会话列表的最新消息预览 —— 拆库后主库没有
+// session_messages，预览由写入路径维护到这一列）。这些方法全部操作主库。
+
+// TenantDBInfo 是会话库注册信息（tenants 行的会话库三列）。
+type TenantDBInfo struct {
+	DBPath   string // 会话库相对路径（相对主库目录；空 = 尚未分配）
+	Migrated bool   // 会话数据是否已迁移到会话库（false = 主库 session_messages 仍是权威）
+}
+
+// GetTenantDBInfo reads the per-session-DB registry columns for a tenant.
+func (s *TenantService) GetTenantDBInfo(tenantID int64) (TenantDBInfo, error) {
+	if s == nil || s.db == nil {
+		return TenantDBInfo{}, fmt.Errorf("tenant service not initialized")
+	}
+	var info TenantDBInfo
+	var migrated int
+	err := s.db.Conn().QueryRow(
+		"SELECT COALESCE(db_path, ''), COALESCE(migrated, 0) FROM tenants WHERE id = ?",
+		tenantID,
+	).Scan(&info.DBPath, &migrated)
+	if err != nil {
+		return TenantDBInfo{}, fmt.Errorf("get tenant db info: %w", err)
+	}
+	info.Migrated = migrated != 0
+	return info, nil
+}
+
+// SetTenantDBPath persists the session DB's relative path (registry is the
+// single authority — path derivation happens once, then this column is read).
+func (s *TenantService) SetTenantDBPath(tenantID int64, dbPath string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
+	if _, err := s.db.Conn().Exec(
+		"UPDATE tenants SET db_path = ? WHERE id = ?", dbPath, tenantID,
+	); err != nil {
+		return fmt.Errorf("set tenant db_path: %w", err)
+	}
+	return nil
+}
+
+// SetTenantMigrated marks a tenant's session data as migrated to its session DB.
+// Called AFTER the copy commits — the flag is what stops a re-copy from wiping
+// post-migration writes (the copy is DELETE+INSERT, idempotent only while
+// migrated=0).
+func (s *TenantService) SetTenantMigrated(tenantID int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
+	if _, err := s.db.Conn().Exec(
+		"UPDATE tenants SET migrated = 1 WHERE id = ?", tenantID,
+	); err != nil {
+		return fmt.Errorf("set tenant migrated: %w", err)
+	}
+	return nil
+}
+
+// SetTenantPreview updates the cross-session list preview (the latest
+// user/assistant message, truncated). The write path calls this after each
+// eligible append; the read path (ListUserChats / listTenantsByChannel) reads
+// this column instead of joining session_messages (which lives in per-session
+// DBs after the split). substr(?, 1, 256) matches the old subquery's bound.
+func (s *TenantService) SetTenantPreview(tenantID int64, content string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
+	if _, err := s.db.Conn().Exec(
+		"UPDATE tenants SET preview = substr(?, 1, 256) WHERE id = ?", content, tenantID,
+	); err != nil {
+		return fmt.Errorf("set tenant preview: %w", err)
+	}
+	return nil
+}
+
+// SetTenantCWD persists a session's current working directory in the tenants
+// table (the single authoritative store; file-based session_cwd is retired).
+// Moved from SessionService (v71 per-session DB split): tenants is a main-DB
+// table, and SessionService is now bound to the per-session DB.
+func (s *TenantService) SetTenantCWD(tenantID int64, cwd string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
+	if _, err := s.db.Conn().Exec("UPDATE tenants SET cwd = ? WHERE id = ?", cwd, tenantID); err != nil {
+		return fmt.Errorf("update tenants.cwd: %w", err)
+	}
+	return nil
+}
+
+// GetTenantCWD reads a session's persisted CWD from the tenants table.
+// Returns "" when the session has no persisted CWD (fresh session).
+// Moved from SessionService (v71 per-session DB split): tenants is a main-DB
+// table, and SessionService is now bound to the per-session DB.
+func (s *TenantService) GetTenantCWD(tenantID int64) (string, error) {
+	if s == nil || s.db == nil {
+		return "", fmt.Errorf("tenant service not initialized")
+	}
+	var cwd sql.NullString
+	err := s.db.Conn().QueryRow("SELECT cwd FROM tenants WHERE id = ?", tenantID).Scan(&cwd)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("get tenants.cwd: %w", err)
+	}
+	if cwd.Valid {
+		return cwd.String, nil
+	}
+	return "", nil
 }

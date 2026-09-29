@@ -1076,6 +1076,11 @@ func TestSubAgentRowBelongsToAllowedWebParentFollowsNestedAgentChain(t *testing.
 	}
 }
 
+// newTenantPreviewDB builds an in-memory DB for the listTenants* preview tests.
+// v71（每会话一个 DB）：preview 改读 tenants.preview 列（写入路径维护 ——
+// TenantSession 的 append 钩子 / 迁移回填 / rewind/clear 重算都写这一列），
+// 不再 JOIN session_messages（拆库后主库没有消息数据）。schema 只需 tenants
+// （含 preview 列）+ user_chats。
 func newTenantPreviewDB(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -1089,7 +1094,8 @@ CREATE TABLE tenants (
   channel TEXT NOT NULL,
   chat_id TEXT NOT NULL,
   last_active_at TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT ''
+  created_at TEXT NOT NULL DEFAULT '',
+  preview TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE user_chats (
   channel TEXT NOT NULL,
@@ -1097,12 +1103,6 @@ CREATE TABLE user_chats (
   chat_id TEXT NOT NULL,
   label TEXT NOT NULL DEFAULT '',
   sort_order INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE session_messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tenant_id INTEGER NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL
 );`
 	if _, err := db.Exec(schema); err != nil {
 		t.Fatal(err)
@@ -1112,7 +1112,7 @@ CREATE TABLE session_messages (
 
 func insertTenant(t *testing.T, db *sql.DB, channel, chatID, lastActive, label, preview string) {
 	t.Helper()
-	res, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at) VALUES (?, ?, ?)`, channel, chatID, lastActive)
+	res, err := db.Exec(`INSERT INTO tenants(channel, chat_id, last_active_at, preview) VALUES (?, ?, ?, ?)`, channel, chatID, lastActive, preview)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1121,15 +1121,7 @@ func insertTenant(t *testing.T, db *sql.DB, channel, chatID, lastActive, label, 
 			t.Fatal(err)
 		}
 	}
-	if preview != "" {
-		id, err := res.LastInsertId()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`INSERT INTO session_messages(tenant_id, role, content) VALUES (?, 'assistant', ?)`, id, preview); err != nil {
-			t.Fatal(err)
-		}
-	}
+	_ = res
 }
 
 func TestParseTenantTimeHandlesGoTimeString(t *testing.T) {
@@ -1715,7 +1707,14 @@ func TestGetContextUsageRPC_ExactSnapshotFallback(t *testing.T) {
 	if err != nil || tenantID == 0 {
 		t.Fatalf("get tenant: id=%d err=%v", tenantID, err)
 	}
-	if _, err := db.Conn().Exec(
+	// v71（每会话一个 DB）：session_messages 在会话库 —— 种子数据写会话库
+	//（SessionDBFor 打开 + 惰性迁移后直写；主库的 session_messages 是迁移源，
+	// RPC 读路径不再看它）。
+	sessionDB, err := ag.MultiSession().SessionDBFor(tenantID)
+	if err != nil {
+		t.Fatalf("open session db: %v", err)
+	}
+	if _, err := sessionDB.Conn().Exec(
 		"INSERT INTO session_messages (tenant_id, role, content, context_tokens) VALUES (?, 'user', 'hello', 120000)",
 		tenantID,
 	); err != nil {
@@ -1746,7 +1745,9 @@ func TestGetContextUsageRPC_ExactSnapshotFallback(t *testing.T) {
 		t.Fatalf("model metadata=%+v", usage)
 	}
 
-	if _, err := db.Conn().Exec("UPDATE session_messages SET context_tokens = 0 WHERE tenant_id = ?", tenantID); err != nil {
+	// v71（每会话一个 DB）：session_messages 在会话库 —— 清零 UPDATE 写会话库
+	//（主库的 session_messages 是迁移源，RPC 读路径不再看它）。
+	if _, err := sessionDB.Conn().Exec("UPDATE session_messages SET context_tokens = 0 WHERE tenant_id = ?", tenantID); err != nil {
 		t.Fatalf("clear message context: %v", err)
 	}
 	raw, err = HandleCLIRPC(table, agent.MethodGetContextUsage, params, "admin")
@@ -1760,7 +1761,12 @@ func TestGetContextUsageRPC_ExactSnapshotFallback(t *testing.T) {
 		t.Fatalf("fallback usage=%+v", usage)
 	}
 
-	if err := tenantSvc.SetTenantSubscription("web", "chat-context", sub.ID, "unconfigured-model"); err != nil {
+	// v71（每会话一个 DB）：模型切换的 token 基线清零走 LLMFactory 的
+	// sessionTokenResetter 钩子（SelectModel → resetSessionTokenBaseline →
+	// ResetSessionContextTokens 清会话库 context_tokens；tenant_state 半边由
+	// SetTenantSubscription 清主库）。走真实路径（SelectModel）而非直调
+	// SetTenantSubscription —— 直调不触发钩子，会话库基线不清。
+	if err := ag.LLMFactory().SelectModel("cli_user", "chat-context", "web", sub.ID, "unconfigured-model"); err != nil {
 		t.Fatalf("switch to unconfigured model: %v", err)
 	}
 	raw, err = HandleCLIRPC(table, agent.MethodGetContextUsage, params, "admin")

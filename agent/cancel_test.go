@@ -449,7 +449,9 @@ func TestHandleCancelledRun_RecordsPendingNotifications(t *testing.T) {
 func TestHandleCancelledRun_FailedBatchRequeuesNotificationsForRetry(t *testing.T) {
 	ctx := context.Background()
 	mt, sess := newAgentHistorySession(t)
-	if _, err := mt.DB().Conn().Exec(`
+	// v71（每会话一个 DB）：session_messages 在会话库 —— 触发器注入会话库
+	//（mt.DB() 是主库，注入那里对 appends 不生效）。
+	if _, err := sessionDBConn(t, mt, sess).Exec(`
 		CREATE TRIGGER fail_cancel_batch BEFORE INSERT ON session_messages
 		WHEN NEW.role = 'tool' AND NEW.tool_name = 'user_cancelled'
 		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
@@ -488,7 +490,7 @@ func TestHandleCancelledRun_FailedBatchRequeuesNotificationsForRetry(t *testing.
 		t.Fatalf("requeued notifications remained in drained ledger: %d", drainedCount)
 	}
 
-	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_cancel_batch`); err != nil {
+	if _, err := sessionDBConn(t, mt, sess).Exec(`DROP TRIGGER fail_cancel_batch`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.handleCancelledRun(ctx, bus.InboundMessage{Channel: "cli", ChatID: "test-chat"}, &RunOutput{
