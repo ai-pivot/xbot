@@ -52,6 +52,9 @@ export function ModelSelector({
     const query = search.trim().toLowerCase()
     const grouped = new Map<string, { subName: string; entries: ModelEntry[] }>()
     for (const entry of modelEntries) {
+      // Disabled entries remain in LLM settings for re-enabling, but are not
+      // choices in the conversation model picker.
+      if (entry.status === 'disabled') continue
       if (query && !entry.model.toLowerCase().includes(query) && !entry.sub_name.toLowerCase().includes(query)) {
         continue
       }
