@@ -52,6 +52,9 @@ export function ModelSelector({
     const query = search.trim().toLowerCase()
     const grouped = new Map<string, { subName: string; entries: ModelEntry[] }>()
     for (const entry of modelEntries) {
+      // Disabled entries remain in LLM settings for re-enabling, but are not
+      // choices in the conversation model picker.
+      if (entry.status === 'disabled') continue
       if (query && !entry.model.toLowerCase().includes(query) && !entry.sub_name.toLowerCase().includes(query)) {
         continue
       }
@@ -63,6 +66,8 @@ export function ModelSelector({
   }, [modelEntries, search])
 
   const currentSubName = subscriptions.find((sub) => sub.id === currentSubID)?.name ?? ''
+  const currentEntry = modelEntries.find((entry) => entry.sub_id === currentSubID && entry.model === currentModel)
+  const triggerModel = currentEntry?.status === 'disabled' ? '—' : currentModel || '—'
 
   const handleSelect = async (entry: ModelEntry) => {
     if (disabled || entry.status === 'disabled') return
@@ -86,10 +91,10 @@ export function ModelSelector({
           type="button"
           disabled={disabled}
           aria-label={t('agent.modelSelector')}
-          title={busy ? t('agent.busy') : currentSubName || currentModel}
+          title={busy ? t('agent.busy') : currentSubName || triggerModel}
           className="flex h-7 min-w-0 max-w-48 items-center gap-1 rounded-md px-2 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <span className="min-w-0 truncate font-mono">{currentModel || '—'}</span>
+          <span className="min-w-0 truncate font-mono">{triggerModel}</span>
           <span className="shrink-0 font-mono text-xs text-text-muted md:text-[10px]">{thinkingModeLabelI18n(t, thinkingMode)}</span>
           <ChevronDown className="size-3 shrink-0 text-text-muted" />
         </button>
