@@ -102,6 +102,18 @@ describe('SettingsAbout（关于 → 版本/更新/重启）', () => {
     ).toBeInTheDocument()
   })
 
+  it('从更新提醒进入时自动检查更新', async () => {
+    mockRPC({
+      get_system_info: sysInfo(),
+      check_update: {
+        current: 'v1.2.3', latest: 'v1.3.0', tag: 'v1.3.0',
+        hasUpdate: true, channel: 'stable', url: '', skipped: false, reason: '',
+      },
+    })
+    renderWithProviders(<SettingsAbout autoCheckUpdate />)
+    expect(await screen.findByRole('button', { name: /更新到 v1\.3\.0|Update to v1\.3\.0/ })).toBeInTheDocument()
+  })
+
   it('检查更新：已是最新时展示 up-to-date，不出现更新按钮', async () => {
     mockRPC({
       get_system_info: sysInfo(),
