@@ -17,6 +17,7 @@ import { Check, Pencil, Target, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useIsTouch } from '@/hooks/useIsMobile'
+import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 import { useI18n } from '@/providers/i18n'
 import type { GoalInfo } from '@/types/shared'
 
@@ -28,6 +29,7 @@ interface GoalBannerProps {
 
 export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
   const isTouch = useIsTouch()
+  const keyboardInset = useKeyboardInset()
   const { t } = useI18n()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(goal.objective)
@@ -170,6 +172,10 @@ export function GoalBanner({ goal, onEdit, onClear }: GoalBannerProps) {
       {editing && isTouch && (
         <div
           data-testid="goal-edit-sheet"
+          // 键盘补偿：此 sheet 是 fixed bottom-0（不随 AppShell 根容器的
+          // padding 补偿上移），安卓键盘弹出时会被盖住 —— bottom 跟随
+          // visualViewport 实测的键盘高度（2026-09-27 键盘盖输入框同族修复）。
+          style={{ bottom: `${keyboardInset}px` }}
           className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-bg-primary p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-lg"
         >
           <div className="mb-2 text-xs font-medium text-text-secondary">{t('agent.goal.edit')}</div>

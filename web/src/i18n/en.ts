@@ -679,6 +679,7 @@ const en: Translations = {
       feishuGuideManual: 'Or create the app manually in the Feishu console →',
       feishuBind: 'One-click bind Feishu agent app',
       feishuBinding: 'Requesting link…',
+      feishuPopupLoading: 'Requesting the Feishu authorization link…',
       feishuBound: 'Bound',
       feishuBindHint:
         'Open the link below in Feishu and confirm — the app then gains the agent permissions, event subscriptions and card callback (including "Create and update cards", required by the streaming progress card).',

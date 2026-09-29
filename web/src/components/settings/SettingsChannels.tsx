@@ -68,6 +68,53 @@ function isMetaKey(key: string): boolean {
   return key.startsWith('_')
 }
 
+/** escapeHtml — i18n 文案写入弹窗 HTML 前转义（文案本身可信，防御性转义）。 */
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case '&': return '&amp;'
+      case '<': return '&lt;'
+      case '>': return '&gt;'
+      case '"': return '&quot;'
+      default: return '&#39;'
+    }
+  })
+}
+
+/**
+ * 写入「获取授权链接中…」过渡页。必须在 window.open 的同一用户手势内
+ * 同步执行：用户看到的是带品牌的加载页而不是一个空白 about:blank 标签
+ * （2026-09-27 用户报告「打开新 tab 之后是 about:blank」—— RPC 慢或后台
+ * 标签被安卓浏览器冻结网络时，about:blank 会停留数秒甚至永远）。
+ */
+function writePopupLoading(popup: Window, title: string, message: string) {
+  try {
+    const doc = popup.document
+    doc.open()
+    doc.write(
+      '<!doctype html><html><head><meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1">' +
+      '<title>' + escapeHtml(title) + '</title>' +
+      '<style>' +
+      'html,body{margin:0;height:100%}' +
+      'body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;' +
+      'font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;' +
+      'background:#1e1e1e;color:#e5e5e5;padding:24px;text-align:center}' +
+      '@media (prefers-color-scheme: light){body{background:#f5f5f5;color:#262626}}' +
+      '.spin{width:28px;height:28px;border-radius:50%;border:3px solid rgba(128,128,128,.3);' +
+      'border-top-color:#4f9cf9;animation:rot 0.9s linear infinite}' +
+      '@keyframes rot{to{transform:rotate(360deg)}}' +
+      '</style></head><body>' +
+      '<div class="spin" aria-hidden="true"></div>' +
+      '<p>' + escapeHtml(message) + '</p>' +
+      '</body></html>',
+    )
+    doc.close()
+  } catch {
+    // 跨域/被关闭等极端场景写不进去：保持 about:blank（导航仍会尝试）。
+  }
+}
+
 export function SettingsChannels() {
   const { t } = useI18n()
   const [channels, setChannels] = useState<Record<string, ChannelConfig> | null>(null)
@@ -231,6 +278,11 @@ export function SettingsChannels() {
     // window.open），而链接要等 RPC 返回才有。所以先生成一个空白窗口，拿到 URL
     // 后再导航过去 —— 用户看到的就是「点按钮 → 飞书创建应用页自动打开」。
     const popup = window.open('about:blank', '_blank')
+    // 立即（同一手势内、同步）把弹窗写成带品牌的加载页：RPC 慢、或安卓浏览器
+    // 把切到后台的本页冻结（网络挂起）时，用户看到的是「正在获取飞书授权链接…」
+    // 而不是一个空白 about:blank 标签（2026-09-27 用户报告的新 tab 全是
+    // about:blank —— 用户只能盯着白页，不知道发生了什么）。
+    if (popup) writePopupLoading(popup, 'xbot', t('settings.channels.feishuPopupLoading'))
     try {
       const res = await rpc<{ url: string; expires_in: number; app_id?: string }>('feishu_bind_start', {
         app_id: drafts['feishu']?.app_id ?? '',

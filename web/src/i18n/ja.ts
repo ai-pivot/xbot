@@ -679,6 +679,7 @@ const ja: Translations = {
       feishuGuideManual: 'Feishu コンソールで手動作成する →',
       feishuBind: 'Feishu エージェントアプリをワンクリック連携',
       feishuBinding: 'リンクを取得中…',
+      feishuPopupLoading: 'Feishu の認可リンクを取得しています…',
       feishuBound: '連携済み',
       feishuBindHint:
         '下のリンクを Feishu で開いて確認すると、このアプリにエージェント権限・イベント購読・カードコールバック（「カードの作成と更新」を含む／ストリーミング進捗カードに必要）が付与されます。',

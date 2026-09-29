@@ -26,6 +26,7 @@ import { DockviewContainer } from '@/workspace/DockviewContainer'
 import { MobileAppShell } from '@/layouts/MobileAppShell'
 import { useIsMobile } from '@/hooks/useIsMobile'
 import { useTabManager } from '@/hooks/useTabManager'
+import { useKeyboardInset } from '@/hooks/useKeyboardInset'
 
 import { registerEditorTabOpener } from '@/plugin-runtime/editorTabs'
 import { pushMobileWorkView } from '@/workspace/mobileWorkView'
@@ -68,6 +69,9 @@ export function AppShell() {
     setConnected(ws.connected)
     return ws.onConnectionChange(setConnected)
   }, [ws])
+  // 软键盘补偿（安卓平板跑桌面布局 + 软键盘时输入框同样会被盖住）：
+  // 详见 MobileAppShell 同款注释。桌面无软键盘 ⇒ 恒 0，零副作用。
+  const keyboardInset = useKeyboardInset()
   const [leftWidth, setLeftWidth] = useState(() => {
     const stored = localStorage.getItem(LEFT_WIDTH_KEY)
     if (stored) {
@@ -282,7 +286,10 @@ export function AppShell() {
     <PanelDockProvider tabManager={tabManager}>
       {/* fixed inset-0 — same iOS PWA standalone full-bleed guarantee as
           MobileAppShell (100dvh/height:100% stop at the safe area there). */}
-      <div className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary">
+      <div
+        className="fixed inset-0 flex flex-col overflow-hidden bg-bg-primary text-text-primary"
+        style={keyboardInset > 0 ? { paddingBottom: `${keyboardInset}px` } : undefined}
+      >
       {/* Ambience 壁纸层（z:0，pointer-events:none）——第一子元素 */}
       <AmbienceBackground />
       {/* Left sidebar — 布局 v4 面板坞（docked 面板堆叠，折叠由 header ☰ 控制） */}

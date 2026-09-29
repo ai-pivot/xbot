@@ -172,6 +172,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 「没有 pending」在前端的唯一判据是「载荷不含任何问题」——`parseAskUserPrompt` 必须返回 `null`，绝不合成空 prompt（2026-09-20 CI 9 个 spec 全红）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 不变式：busy ⇒ 不存在 pending（用户 2026-09-16 拍板：「只要 busy，那么问题就自动被 cancel 了」）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 每一处"清 pending"必须经同一出口（清缓存 + 落库配对 + 发 `ask_user_resolved`），且清内存与落 `ask_answer` 之间不得有顺序缝隙。
+- ⛔ `docs/agent/gotchas-cli-tui.md` — AskUser 取消必须**无条件**发 `session(idle)`，绝不能用 `ss.busy` 当判据（WaitingUser 暂停期 `ss.busy` 已为 false ⇒ 旧闸门恒假 ⇒ 取消后前端卡 busy；2026-09-28 用户报告根治）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 手机设置/后台 gap 后 busy 永久卡死（2026-08-30 "打开设置期间会话完成，退出后卡 busy，最终回复已渲染"）：restoreActiveProgress 的 done/null 分支必须 dispatch agent-idle。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — SESSION-PANEL GLOBAL-STATE BAN（2026-09-01 "cancel 一个 session 导致所有 busy 的 session 状态异常"根治 + ESLint 编译层约束）：per-session 代码禁止直接操作 window 事件，跨 session 信号必须经 `sessionEvents.ts`（类型级强制 session 身份）。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — `isProgressLifecycleEvent` 不得包含 `stream_content`（纯流式 delta，不是状态变化）。
@@ -183,6 +184,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — SubAgent stream 回调必须始终推送全量（`interactive.go` wireSubAgentProgress StreamContentFunc/StreamReasoningFunc）—— 用 delta push（StreamDelta）会导致流式内容倒流。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 子代理 idle 后 Web 渲染重复历史 + 缺最后 iter —— 三处必须与主 agent 对齐。
 - ⚠️ `docs/agent/gotchas-cli-tui.md` — 「跳过通知」类优化的判据必须与【渲染投影】一致，绝不能用内部结构（2026-09-15 我引入的严重回归）：`MessageStore.mergeHistory` 为消除"切会话 0.5s 闪烁"加了"内容未变 ⇒ 不通知"的短路，最初指纹取内部结构（`slots.user/assistant + legacy + pendingUsers`）——它漏了 live 行、且与 `toRows()` 的行集并非一一对应 ⇒ user 行回填…
+- ⚠️ `docs/agent/gotchas-web-frontend.md` — 移动端浏览器适配三连坑（2026-09-27 安卓实测根治）：① 键盘盖输入框 = `interactive-widget=resizes-content`（新 Chrome/Firefox 缩布局视口）+ `useKeyboardInset` 补偿（老 WebView/iOS）**必须成对**（互斥不双补），portal 到 body 的 `fixed bottom-0` 编辑面板（GoalBanner/TodoPullOut）要各自补偿；② 预开授权弹窗必须在手势内同步 `writePopupLoading`（RPC 慢/后台冻结时停在 about:blank）；③ 安卓长按 ContextMenu 失效 = Radix 触屏实现无容差清计时 + 无 select-none 时文本选择抢手势（pointercancel 杀计时且不派发 contextmenu）——用 `TouchContextMenuTrigger`（容差长按 → 派发 synthetic contextmenu）。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 新建/派生会话必须同时打开（或聚焦）该会话的 agent tab —— session-per-tab 下"切会话 = 切 tab"（2026-09-17「点侧栏『新建会话』，确认后侧栏新会话高亮了，但窗口没切过去，必须再点一下新会话」根治）。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — Goal 实时链路（2026-09-05 "agent set goal complete 后前端样式不更新"根治）：goal 状态是【会话级】状态，与 todos 同模式经 TDSM 流转。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 用户从 UI 编辑 goal / todos 必须【立刻】生效，不得等后端 push —— 乐观覆盖 = `usePendingEdit`（2026-09-12 用户报告"编辑 goal 按 Enter 后恢复编辑前内容、刷新才生效"，todos 同类）。
