@@ -35,6 +35,25 @@ function renderSelector(modelEntries = entries) {
 }
 
 describe('ModelSelector visibility', () => {
+  it('does not keep a disabled current model visible on the selector trigger', () => {
+    renderWithProviders(<ModelSelector
+      channel="web"
+      chatID="chat-1"
+      currentSubID="cpa"
+      currentModel="hidden-model"
+      subscriptions={subscriptions}
+      modelEntries={entries}
+      thinkingMode="off"
+      busy={false}
+      onModelSelected={vi.fn()}
+      onThinkingModeChange={vi.fn(async () => true)}
+    />)
+    const trigger = screen.getByRole('button', { name: /Choose model|选择模型/i })
+    expect(trigger).not.toHaveTextContent('hidden-model')
+    fireEvent.click(trigger)
+    expect(within(screen.getByRole('dialog')).queryByText('hidden-model')).not.toBeInTheDocument()
+  })
+
   it('omits disabled models and empty subscriptions but keeps enabled offline models', () => {
     const picker = renderSelector()
     expect(within(picker).getByRole('button', { name: 'visible-model' })).toBeEnabled()
