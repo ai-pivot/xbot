@@ -377,6 +377,14 @@ jobs:
             echo "release_tag=${{ needs.prepare.outputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve build timestamp
+        id: stamp
+        # The release body is a YAML block scalar passed to an action input, not
+        # a `run:` script — so a `$(date …)` written straight into it is never
+        # shell-expanded and lands in the notes verbatim. Resolve it here and
+        # read it back through ${{ }} (the only substitution the body gets).
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -387,7 +395,7 @@ jobs:
             ## ${{ needs.prepare.outputs.version }}
 
             Commit: `${{ env.COMMIT }}`
-            Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+            Built: ${{ steps.stamp.outputs.built_at }}
           files: |
             dist/xbot-cli-linux-amd64
             dist/xbot-cli-linux-arm64
