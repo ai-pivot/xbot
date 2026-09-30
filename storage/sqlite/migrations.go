@@ -630,6 +630,12 @@ func migrateV71ToV72(db *DB) error {
 			continue
 		}
 		completed++
+		// F3（2026-09-30 CR）：直升路径（v70→v72 一次性补迁全部租户）可能搬几百
+		// MB~GB 级数据，无进度会让运维以为卡死。逐租户打点 + 磁盘余量提示。
+		if completed%25 == 0 || completed == len(stragglers) {
+			log.WithFields(log.Fields{"completed": completed, "total": len(stragglers)}).
+				Info("v72: bulk-completing stragglers…")
+		}
 	}
 
 	// 2. 删除 migrated=1 租户的冗余行 + 孤儿行（FK 关闭期遗留）。
@@ -651,6 +657,44 @@ func migrateV71ToV72(db *DB) error {
 		}
 		return true
 	}
+	// F2 守卫（2026-09-30 CR）：删除前校验 migrated=1 租户的会话库文件仍在。
+	// 文件缺失（外部清理 sessions/、DestroySession 删文件→删行窗口）时主库行是该
+	// 数据的**唯一副本** —— 降级 migrated=0（数据留主库，惰性路径下次打开时重
+	// 建/复制），绝不静默删除。
+	rows, err = conn.Query(`SELECT id, COALESCE(db_path, '') FROM tenants WHERE COALESCE(migrated, 0) = 1`)
+	if err != nil {
+		return fmt.Errorf("migrate v71->v72 verify session files: %w", err)
+	}
+	type downgrade struct {
+		id  int64
+		pth string
+	}
+	var downgrades []downgrade
+	for rows.Next() {
+		var id int64
+		var dbPath string
+		if err := rows.Scan(&id, &dbPath); err != nil {
+			rows.Close()
+			return fmt.Errorf("migrate v71->v72 scan verify row: %w", err)
+		}
+		if dbPath == "" {
+			// 空路径的 migrated=1 租户：注册表残缺（正常不可能），按缺失处理。
+			downgrades = append(downgrades, downgrade{id: id, pth: "(empty db_path)"})
+			continue
+		}
+		if _, statErr := os.Stat(filepath.Join(filepath.Dir(db.path), dbPath)); statErr != nil {
+			downgrades = append(downgrades, downgrade{id: id, pth: dbPath})
+		}
+	}
+	rows.Close()
+	for _, d := range downgrades {
+		if _, err := conn.Exec("UPDATE tenants SET migrated = 0 WHERE id = ?", d.id); err != nil {
+			return fmt.Errorf("migrate v71->v72 downgrade tenant %d: %w", d.id, err)
+		}
+		log.WithFields(log.Fields{"tenant_id": d.id, "db_path": d.pth}).
+			Warn("v72: session DB file missing for migrated tenant — downgraded to migrated=0 (main-DB rows preserved; lazy migration will re-copy)")
+	}
+
 	if deleteGuard("session_messages") {
 		if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
 			return fmt.Errorf("migrate v71->v72 delete migrated session_messages: %w", err)

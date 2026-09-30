@@ -36,7 +36,8 @@ func newSessionDBTestMT(t *testing.T) *MultiTenantSession {
 
 // TestLazyMigrationCopiesRowsAndSetsFlag — 惰性迁移对账：主库预置
 // session_messages/iteration_history → GetOrCreateSession 触发迁移 → 会话库行数
-// 一致 + tenants.migrated=1 + 主库数据保留（迁移源不删，P4 才清）。
+// 一致 + tenants.migrated=1 + **主库行已删**（v72 契约：惰性迁移成功后删主库冗余
+// 行；数据唯一权威在会话库，下面对账已验证）。
 func TestLazyMigrationCopiesRowsAndSetsFlag(t *testing.T) {
 	mt := newSessionDBTestMT(t)
 
@@ -392,6 +393,20 @@ func TestPreviewWritePath(t *testing.T) {
 	}
 	if got := readPreview(); got != "assistant reply" {
 		t.Fatalf("preview after display-only append = %q, want %q (display-only must not update preview)", got, "assistant reply")
+	}
+
+	// DisplayOnly 判别用例（2026-09-30 CR 发现既有 display-only 断言无判别力：
+	// AppendCommandRow 走 AppendCommandMessage，根本不经过钩子 —— 删掉
+	// updatePreviewForMessage 的 DisplayOnly 守卫它照样绿）。本用例直走钩子
+	// 路径（AppendMessage），守卫必须在：role=assistant + DisplayOnly=true 的
+	// 追加不得更新 preview。
+	directOnly := llm.NewAssistantMessage("secret display-only reply")
+	directOnly.DisplayOnly = true
+	if _, err := sess.AppendMessage(directOnly); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPreview(); got != "assistant reply" {
+		t.Fatalf("preview after AppendMessage(DisplayOnly=true) = %q, want %q — the DisplayOnly guard in updatePreviewForMessage is required (discriminating case)", got, "assistant reply")
 	}
 
 	// tool 消息 → preview 不更新。

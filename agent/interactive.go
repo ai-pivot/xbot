@@ -1968,6 +1968,13 @@ func (a *Agent) SendToInteractiveSession(
 	// turn↔iteration association (session view loses content/reasoning).
 	if a.multiSession != nil {
 		if sess, serr := a.multiSession.GetOrCreateSession("agent", key); serr == nil {
+			// F5 修复（2026-09-30 CR）：用新鲜 TenantSession 刷新 cfg.Session。
+			// ia.cfg 是 spawn 时的快照——若会话空闲满 24h 被 cleanupInactiveResources
+			// 驱逐（evictSessionDB 关闭其会话库），快照里的 Session 仍指向已 Close
+			// 的 *sqlite.DB，本 send 的 AppendMessage/GetMessages 会报
+			// "database is closed"。GetOrCreateSession 缓存 miss 时自动重开
+			// （sessionDB 池），这里拿到的永远是活句柄。
+			cfg.Session = sess
 			a.assignSubAgentTurnID(&cfg, sess)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"xbot/llm"
+	"xbot/storage/sqlite"
 	"xbot/tools"
 )
 
@@ -108,5 +109,66 @@ func TestSubAgentRunConfig_NilUserContextReturnsErrorNotPanic(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "UserContext") && !strings.Contains(err.Error(), "user context") {
 		t.Fatalf("error must say what's missing, got: %v", err)
+	}
+}
+
+// TestModelSwitchResetsSessionDBTokenBaseline —— F1 守护（2026-09-30 CR 探针实证：
+// resetSessionTokenBaseline 从不触发——变更判定在 SetTenantSubscription 写入**之后**
+// 回读 GetTenantSubscription ⇒ 读到的已是新值 ⇒ 恒等早退，钩子成了死代码）。
+//
+// 契约：模型切换（(subID, model) 变化）必须清零**会话库**最新用户消息的
+// context_tokens（不同模型上下文大小不同，旧基线会误导 usage 显示与压缩触发，
+// 直到下一条用户消息自愈）。tenant_state（主库）半边由 SetTenantSubscription 清；
+// 本测试守护会话库半边经 sessionTokenResetter 钩子。修复前红：基线 120000 保持不变。
+func TestModelSwitchResetsSessionDBTokenBaseline(t *testing.T) {
+	mt, sess := newAgentHistorySession(t)
+
+	factory := NewLLMFactory(nil, "")
+	factory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(mt.DB()))
+	factory.SetTenantSvc(sqlite.NewTenantService(mt.DB()))
+	// 与 initServices 相同接线：resetter → ResetSessionContextTokens（清会话库基线）。
+	factory.SetSessionTokenResetter(mt.ResetSessionContextTokens)
+
+	// 种子：会话库最新用户消息带非零基线。
+	if _, err := sess.AppendMessage(llm.NewUserMessage("hello")); err != nil {
+		t.Fatal(err)
+	}
+	svc := sess.SessionService()
+	if err := svc.UpdateUserMessageContextTokens(sess.TenantID(), 120000); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.GetLastUserMessageContextTokens(sess.TenantID()); got != 120000 {
+		t.Fatalf("seed context_tokens = %d, want 120000", got)
+	}
+
+	// 模型切换（不同 (subID, model)）——必须触发会话库基线清零。
+	// 先注册订阅（SelectModel 的前置校验需要它存在）。
+	sub := &sqlite.LLMSubscription{
+		ID: "sub-x", SenderID: "u1", Name: "sub-x", Provider: "openai",
+		BaseURL: "https://api.sub-x.example/v1", APIKey: "sk-x", Model: "model-b",
+	}
+	if err := sqlite.NewLLMSubscriptionService(mt.DB()).Add(sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := factory.SelectModel("u1", sess.ChatID(), sess.Channel(), "sub-x", "model-b"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetLastUserMessageContextTokens(sess.TenantID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0 {
+		t.Fatalf("model switch did NOT reset the session-DB token baseline: context_tokens = %d, want 0 — resetSessionTokenBaseline never fires (old-value read happens AFTER the write)", got)
+	}
+
+	// 对照：同 (subID, model) 重复 SelectModel 不清非零基线。
+	if err := svc.UpdateUserMessageContextTokens(sess.TenantID(), 999); err != nil {
+		t.Fatal(err)
+	}
+	if err := factory.SelectModel("u1", sess.ChatID(), sess.Channel(), "sub-x", "model-b"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.GetLastUserMessageContextTokens(sess.TenantID()); got != 999 {
+		t.Fatalf("re-select same (subID, model) must keep the baseline: got %d, want 999", got)
 	}
 }

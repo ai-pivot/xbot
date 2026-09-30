@@ -41,7 +41,18 @@ func setupV71State(t *testing.T) (*DB, int64, int64) {
 		t.Fatal(err)
 	}
 	// A is already migrated (the v71 lazy path ran for it) — its main rows are a
-	// redundant copy whose authority lives in its session DB.
+	// redundant copy whose authority lives in its session DB. F2 删除守卫要求
+	// migrated=1 ⇒ 会话库文件真实存在（真实世界：v71 惰性路径派生 db_path +
+	// 复制 + 置标记，三件事总在一起）—— fixture 必须同样把三件事做完。
+	dbPathA := SessionDBRelPath("test", "already-migrated")
+	if err := ts.SetTenantDBPath(tenantA, dbPathA); err != nil {
+		t.Fatal(err)
+	}
+	if sdb, oerr := OpenSessionDB(filepath.Join(filepath.Dir(db.path), dbPathA)); oerr != nil {
+		t.Fatal(oerr)
+	} else {
+		_ = sdb.Close()
+	}
 	if err := ts.SetTenantMigrated(tenantA); err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +258,16 @@ func TestMigrateV72VacuumReclaimsSpace(t *testing.T) {
 	tenantA, err := ts.GetOrCreateTenantID("test", "big-tenant")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// F2 删除守卫：migrated=1 ⇒ 会话库文件必须真实存在（同 setupV71State 的三件套）。
+	dbPathA := SessionDBRelPath("test", "big-tenant")
+	if err := ts.SetTenantDBPath(tenantA, dbPathA); err != nil {
+		t.Fatal(err)
+	}
+	if sdb, oerr := OpenSessionDB(filepath.Join(filepath.Dir(db.path), dbPathA)); oerr != nil {
+		t.Fatal(oerr)
+	} else {
+		_ = sdb.Close()
 	}
 	if err := ts.SetTenantMigrated(tenantA); err != nil {
 		t.Fatal(err)

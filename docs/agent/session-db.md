@@ -70,6 +70,15 @@
   TenantService；session_messages.context_tokens 清零（会话库）经 LLMFactory 的
   `sessionTokenResetter` 钩子（`resetSessionTokenBaseline` → 模型变更时
   `MultiTenantSession.ResetSessionContextTokens`）。
+  - ⚠️ **现状（2026-09-30 审查，commit a9d8695c）钩子从不触发**：
+    `resetSessionTokenBaseline`（`agent/llm_factory.go:450`）在
+    `SetTenantSubscription` **之后**回读 `GetTenantSubscription` 判"是否变更" ——
+    读到的必然就是刚写入的新值 ⇒ 恒等 ⇒ 早退，`ResetSessionContextTokens` 永不执行
+    （探针实证：`TestGetContextUsageRPC_ExactSnapshotFallback` 走 SelectModel 时
+    无任何 ResetSession 调用）。主库半边（tenant_state）仍由
+    `SetTenantSubscription` 内部按"写入前读到的旧值"正确清零。修法：变更判定移到
+    写入前（或让 SetTenantSubscription 返回 changed 标志）。当前后果仅限「切换模型
+    后本 turn 的 usage 基线沿用旧值」，下一条用户消息自愈，无数据丢失。
 - **GetTenantUsageStats**：iteration_history 聚合（会话库）+ tenant_state/tenants
   元数据（主库，调用方 `fillUsageStatsFromMainDB` 补齐）。
 
@@ -129,3 +138,15 @@ iteration_history 只剩冗余副本。**v72 把主库缩小回注册表 + 全�
   `xbot.db.pre-v71.bak` + 会话库文件本身（v72 不触碰）。
 - `storage/migrate.go`（旧文件迁移工具）仍写主库 session_messages —— 它是 v71 之前
   的遗留路径，新数据全部走会话库；其写入的行会随下一轮迁移被搬走。
+
+## 升级运维注意
+
+- **多进程共享同一 `xbot.db` 时升级只跑一个进程**（全仓无迁移锁）：server 与 CLI
+  同时启动新二进制时，两进程可能并发跑迁移链（幂等但 `VACUUM` 可能互挡 ——
+  失败只 WARN，下次启动回收）。升级前先停 CLI 进程再重启 server。
+- **直升路径（v70 → v72 一次性跨版）**：步骤 1 会同步把**全部**租户的消息拷进
+  各自会话库（GB 级时分钟级），`VACUUM` 需 ≈ 库大小的磁盘余量；迁移每完成
+  25 个租户打一条进度日志。
+- **删除守卫（F2）**：步骤 2 删除前对每个 migrated=1 租户 `os.Stat` 校验会话库
+  文件仍在 —— 缺失（外部清理 sessions/）时降级 migrated=0（数据留主库，惰性
+  路径下次打开时重拷），绝不静默删除唯一副本。

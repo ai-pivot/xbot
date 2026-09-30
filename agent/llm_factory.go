@@ -430,10 +430,12 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite
 		if model == "" {
 			return fmt.Errorf("SetSessionLLM: refusing to write an empty model for chat %s (subscription %s has no resolvable model)", chatID, sub.ID)
 		}
+		// F1 修复：old 值在写入前读取（写入后回读到的是新值，钩子恒不触发）。
+		oldSubID, oldModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
 		if err := f.tenantSvc.SetTenantSubscription(channel, chatID, sub.ID, model); err != nil {
 			return err
 		}
-		f.resetSessionTokenBaseline(channel, chatID, sub.ID, model)
+		f.resetSessionTokenBaseline(channel, chatID, oldSubID, oldModel, sub.ID, model)
 		return nil
 	}
 	return nil
@@ -447,12 +449,17 @@ func (f *LLMFactory) SetSessionLLM(senderID, chatID, channel string, sub *sqlite
 // SetTenantSubscription; this is the session_messages half (session DB, routed
 // via the sessionTokenResetter hook — nil in unit tests without a session
 // stack, where the baseline self-heals on the next user message anyway).
-func (f *LLMFactory) resetSessionTokenBaseline(channel, chatID, subID, model string) {
+//
+// ⛔ F1 修复（2026-09-30 CR 探针实证）：old 值必须由调用方在
+// SetTenantSubscription **写入前**读取并显式传入 —— 旧实现在写入之后回读
+// GetTenantSubscription，读到的已是新值 ⇒ old == new 恒成立 ⇒ 钩子从不触发
+// （死代码，注释/测试还声称它在工作）。判别测试：
+// TestModelSwitchResetsSessionDBTokenBaseline（修复前红：基线保持 120000 不清）。
+func (f *LLMFactory) resetSessionTokenBaseline(channel, chatID, oldSubID, oldModel, newSubID, newModel string) {
 	if f.sessionTokenResetter == nil {
 		return
 	}
-	oldSubID, oldModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
-	if oldSubID == subID && oldModel == model {
+	if oldSubID == newSubID && oldModel == newModel {
 		return // unchanged binding — keep the baseline
 	}
 	f.sessionTokenResetter(channel, chatID)
@@ -942,13 +949,15 @@ func (f *LLMFactory) SelectModel(senderID, chatID, channel, subID, model string)
 		return fmt.Errorf("SelectModel: model %q is disabled for subscription %s", model, subID)
 	}
 	if f.tenantSvc != nil && chatID != "" {
-		if err := f.tenantSvc.SetTenantSubscription(channel, chatID, subID, model); err != nil {
-			return fmt.Errorf("SelectModel: persist tenant: %w", err)
-		}
+		// F1 修复：old 值在写入前读取（写入后回读到的是新值，钩子恒不触发）。
 		// v71（每会话一个 DB）：模型变更时清零会话库的 token 基线（见
 		// resetSessionTokenBaseline 注释 —— tenant_state 半边在主库，由
 		// SetTenantSubscription 清；session_messages 半边在会话库，经本钩子）。
-		f.resetSessionTokenBaseline(channel, chatID, subID, model)
+		oldSubID, oldModel, _ := f.tenantSvc.GetTenantSubscription(channel, chatID)
+		if err := f.tenantSvc.SetTenantSubscription(channel, chatID, subID, model); err != nil {
+			return fmt.Errorf("SelectModel: persist tenant: %w", err)
+		}
+		f.resetSessionTokenBaseline(channel, chatID, oldSubID, oldModel, subID, model)
 	}
 	// Update "last used model" (user_default_model repurposed) so new sessions
 	// inherit this (sub, model) pair. This is NOT "setting a default subscription" —
