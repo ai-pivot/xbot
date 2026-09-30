@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -957,7 +958,27 @@ func TestMigrationV47KeepsExistingRowsAsBaseline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	records, err := NewSessionService(db).GetFullHistory(1)
+	// v72（每会话一个 DB）：迁移链把既有行搬进该租户的独立会话库（主库的
+	// session_messages 不再保留 —— 删除迁移后主库只留注册表 + 全局表）。
+	// 「baseline 保留」的判据从「主库里读得到」改为「会话库里读得到」——
+	// 行 id / 类型 / 内容逐一保留。
+	ts := NewTenantService(db)
+	info, err := ts.GetTenantDBInfo(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Migrated {
+		t.Fatal("tenant not migrated after the chain (v72 bulk completion)")
+	}
+	if info.DBPath == "" {
+		t.Fatal("tenant db_path not assigned")
+	}
+	sdb, err := OpenSessionDB(filepath.Join(filepath.Dir(path), info.DBPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sdb.Close()
+	records, err := NewSessionService(sdb).GetFullHistory(1)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -94,7 +94,11 @@ describe('SettingsStorage（设置 → 存储）', () => {
     mockRPC(fixture(), { ...fixture({ provider: 's3', s3_bucket: 'mybucket' }), _active: 's3' })
     renderWithProviders(<SettingsStorage />)
 
-    await waitFor(() => expect(screen.getByTestId('storage-save')).toBeInTheDocument())
+    // ⛔ 竞态修复：等 **schema 驱动**的 provider 下拉（数据到达才渲染），
+    // 而不是 storage-save —— save 按钮是无条件 JSX、首渲染（数据未到）就在
+    // DOM 里，waitFor 会在数据加载完成前通过，紧随的 provider 查询在满载
+    // 并行（pre-commit 全量套件）下竞态失败。等即将交互的元素本身。
+    await waitFor(() => expect(screen.getByTestId('storage-provider')).toBeInTheDocument())
     const saveBtn = screen.getByTestId('storage-save') as HTMLButtonElement
     expect(saveBtn.disabled).toBe(true) // 未改动
 

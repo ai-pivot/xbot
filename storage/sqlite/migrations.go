@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -498,6 +499,16 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v72: 删除迁移（deletion migration，one session one DB 的收尾步）——
+	// 主库不再保留会话消息数据：批量补齐 migrated=0 残留者 → 删除 migrated=1
+	// 租户的主库冗余行 + 孤儿行 → VACUUM 回收（3.4G → MB 级）。会话库文件是该
+	// 数据的唯一权威，本迁移不触碰它们。步骤全部幂等（崩溃在置 72 前重跑安全）。
+	if from < 72 {
+		if err := migrateV71ToV72(db); err != nil {
+			return fmt.Errorf("migrate to v72: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -526,6 +537,155 @@ func migrateV70ToV71(db *DB) error {
 		return fmt.Errorf("migrate v70->v71 update version: %w", err)
 	}
 	log.Info("Database migrated to v71 (tenants.db_path/migrated/preview — per-session DB registry columns)")
+	return nil
+}
+
+// migrateV71ToV72 — 删除迁移（deletion migration，one session one DB 的收尾步）。
+//
+// v71 之后每个会话的消息数据已复制进独立会话库；主库的 session_messages /
+// iteration_history 只剩冗余副本（migrated=1 租户）与残留者（migrated=0，
+// 自 v71 部署以来从未打开过）。本迁移把主库缩小回注册表 + 全局表：
+//
+//  1. 批量补齐残留者：对每个 migrated=0 租户执行与惰性路径**同一份**复制核心
+//     （DB.CopyTenantDataFromMainDB）并置 migrated=1。单租户失败只 WARN + 跳过
+//     （其数据留在主库，惰性路径下次打开时接管）——启动路径永不阻塞铁律。
+//  2. 删除 migrated=1 租户的主库冗余行 + 孤儿行（tenant_id 不在 tenants ——
+//     FK 关闭期销毁会话的遗留）。
+//  3. VACUUM（尽力而为）：回收删除释放的页。失败只 WARN —— DELETE 已完成，
+//     空间下次启动重跑时回收（幂等）。
+//  4. version = 72（最后一步）。
+//
+// ⛔ 顺序不变量（防数据丢失，见 CopyTenantDataFromMainDB 的 re-run contract）：
+//   - 每个租户先置 migrated=1，再（步骤 2 集中）删除其主库行 —— 顺序反了的话，
+//     「删了行但标记未置」+ 崩溃 ⇒ 下次迁移从空主库重拷 = 会话库数据被清空。
+//   - version=72 最后置：崩溃在此之前则下次启动重跑本迁移（每步幂等）。
+//
+// 还原点：initSchema 的迁移前整库备份（VACUUM INTO）+ 会话库文件本身
+// （本迁移不触碰它们）。v72 后回滚旧二进制会看到空历史 —— 修复向前（fix-forward）。
+func migrateV71ToV72(db *DB) error {
+	conn := db.Conn()
+
+	// 1. 批量补齐残留者（先收集再迭代 —— 不在 rows 打开期间写同库）。
+	rows, err := conn.Query(`SELECT id, channel, chat_id, COALESCE(db_path, '') FROM tenants WHERE COALESCE(migrated, 0) = 0`)
+	if err != nil {
+		return fmt.Errorf("migrate v71->v72 list stragglers: %w", err)
+	}
+	type straggler struct {
+		id      int64
+		channel string
+		chatID  string
+		dbPath  string
+	}
+	var stragglers []straggler
+	for rows.Next() {
+		var s straggler
+		if err := rows.Scan(&s.id, &s.channel, &s.chatID, &s.dbPath); err != nil {
+			rows.Close()
+			return fmt.Errorf("migrate v71->v72 scan straggler: %w", err)
+		}
+		stragglers = append(stragglers, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("migrate v71->v72 iterate stragglers: %w", err)
+	}
+
+	completed := 0
+	for _, s := range stragglers {
+		dbPath := s.dbPath
+		if dbPath == "" {
+			// 首次分配：派生 + 持久化（与惰性路径同规则 —— 注册表是唯一权威）。
+			dbPath = SessionDBRelPath(s.channel, s.chatID)
+			if _, err := conn.Exec("UPDATE tenants SET db_path = ? WHERE id = ?", dbPath, s.id); err != nil {
+				log.WithError(err).WithField("tenant_id", s.id).
+					Warn("v72: assign session db path failed — skipping tenant (data preserved in main DB; lazy migration retries on next open)")
+				continue
+			}
+		}
+		abs := filepath.Join(filepath.Dir(db.path), dbPath)
+		sdb, err := OpenSessionDB(abs)
+		if err != nil {
+			log.WithError(err).WithField("tenant_id", s.id).
+				Warn("v72: open session db failed — skipping tenant (data preserved in main DB; lazy migration retries on next open)")
+			continue
+		}
+		if err := sdb.CopyTenantDataFromMainDB(db.path, s.id); err != nil {
+			_ = sdb.Close()
+			log.WithError(err).WithField("tenant_id", s.id).
+				Warn("v72: copy to session db failed — skipping tenant (data preserved in main DB; lazy migration retries on next open)")
+			continue
+		}
+		// preview 回填（尽力而为）：跨会话列表读主库 tenants.preview。
+		if preview, perr := NewSessionService(sdb).LatestPreview(s.id); perr == nil {
+			if _, uerr := conn.Exec("UPDATE tenants SET preview = ? WHERE id = ?", preview, s.id); uerr != nil {
+				log.WithError(uerr).WithField("tenant_id", s.id).Warn("v72: preview backfill failed (non-fatal)")
+			}
+		}
+		_ = sdb.Close()
+		// ⛔ migrated=1 先于删除（顺序契约）——置标记失败则跳过该租户：
+		// 其行保持 migrated=0，步骤 2 的 IN (migrated=1) 子查询不会删它。
+		if _, err := conn.Exec("UPDATE tenants SET migrated = 1 WHERE id = ?", s.id); err != nil {
+			log.WithError(err).WithField("tenant_id", s.id).
+				Warn("v72: mark migrated failed — skipping tenant (data preserved in main DB; lazy migration retries on next open)")
+			continue
+		}
+		completed++
+	}
+
+	// 2. 删除 migrated=1 租户的冗余行 + 孤儿行（FK 关闭期遗留）。
+	//    手工迁移测试 fixture 可能搭最小 schema（v62/v63/v65/v69 的 fixture 缺
+	//    session_messages 表或缺 tenant_id 列 —— v72 守卫模式与 v63/v64/v66 的
+	//    tableExists/columnExists 一致）；真实 v71 库两表自 v1 起就带 tenant_id。
+	deleteGuard := func(table string, extra ...string) bool {
+		ok, err := tableExists(conn, table)
+		if err != nil {
+			return false // pragma 查询失败 —— 与 v63 的容错一致，静默跳过
+		}
+		if !ok {
+			return false
+		}
+		for _, col := range append([]string{"tenant_id"}, extra...) {
+			if has, err := columnExists(conn, table, col); err != nil || !has {
+				return false
+			}
+		}
+		return true
+	}
+	if deleteGuard("session_messages") {
+		if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
+			return fmt.Errorf("migrate v71->v72 delete migrated session_messages: %w", err)
+		}
+		if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id NOT IN (SELECT id FROM tenants)`); err != nil {
+			return fmt.Errorf("migrate v71->v72 delete orphan session_messages: %w", err)
+		}
+	}
+	if deleteGuard("iteration_history") {
+		if _, err := conn.Exec(`DELETE FROM iteration_history WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
+			return fmt.Errorf("migrate v71->v72 delete migrated iteration_history: %w", err)
+		}
+		if _, err := conn.Exec(`DELETE FROM iteration_history WHERE tenant_id NOT IN (SELECT id FROM tenants)`); err != nil {
+			return fmt.Errorf("migrate v71->v72 delete orphan iteration_history: %w", err)
+		}
+	}
+
+	// 3. VACUUM（尽力而为）：可能被并发连接挡住（SQLITE_BUSY）—— 只 WARN。
+	//    WAL 模式下 VACUUM 的产物先进 -wal 文件，主文件要等 checkpoint 后才
+	//    收缩 —— 紧跟 TRUNCATE checkpoint 让回收立即可见（也是停机纪律的
+	//    同款操作）。checkpoint 失败同样只 WARN（下次启动重跑时回收）。
+	if _, err := conn.Exec("VACUUM"); err != nil {
+		log.WithError(err).Warn("v72: VACUUM failed (concurrent connection?) — freed space not reclaimed yet; retries on a later startup (idempotent)")
+	} else if _, err := conn.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		log.WithError(err).Warn("v72: post-VACUUM checkpoint failed — the main file shrinks on a later checkpoint (idempotent)")
+	}
+
+	// 4. version = 72（最后一步 —— 崩溃在此之前则下次启动重跑幂等步骤）。
+	if _, err := conn.Exec("UPDATE schema_version SET version = 72"); err != nil {
+		return fmt.Errorf("migrate v71->v72 update version: %w", err)
+	}
+	log.WithFields(log.Fields{
+		"completed_stragglers": completed,
+		"skipped_stragglers":   len(stragglers) - completed,
+	}).Info("Database migrated to v72 (main DB legacy message data deleted; per-session DBs are authoritative)")
 	return nil
 }
 

@@ -105,15 +105,93 @@ func TestLazyMigrationCopiesRowsAndSetsFlag(t *testing.T) {
 		t.Fatal("tenant db_path not assigned")
 	}
 
-	// 主库数据保留（迁移源不删 —— P4 稳定后才 DROP）。
+	// v72 契约：惰性迁移成功（migrated=1）后删除主库冗余行 —— 不变量
+	//「主库 session_messages 只持有 migrated=0 残留者的数据，随时间归零」。
+	// 数据唯一权威在会话库（上面对账已验证）；主库行是已被会话库替代的副本。
 	mainCount := 0
 	if err := mt.db.Conn().QueryRow(
 		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ?", tenantID,
 	).Scan(&mainCount); err != nil {
 		t.Fatal(err)
 	}
-	if mainCount != msgCount {
-		t.Fatalf("main DB source rows = %d, want %d (migration must not delete the source)", mainCount, msgCount)
+	if mainCount != 0 {
+		t.Fatalf("main DB rows = %d, want 0 (deleted after successful lazy migration — v72 invariant)", mainCount)
+	}
+	// iteration_history 同理。
+	iterCount := 0
+	if err := mt.db.Conn().QueryRow(
+		"SELECT COUNT(*) FROM iteration_history WHERE tenant_id = ?", tenantID,
+	).Scan(&iterCount); err != nil {
+		t.Fatal(err)
+	}
+	if iterCount != 0 {
+		t.Fatalf("main DB iteration_history rows = %d, want 0 (deleted after successful lazy migration)", iterCount)
+	}
+}
+
+// TestLazyMigrationFlagBeforeDelete — 顺序契约判别（防数据丢失的核心不变量）：
+// 置 migrated=1 必须**先于**删除主库行。判别原理：注入触发器让置标记失败
+// （模拟「置标记后崩溃」），此时打开必须失败，但**主库行必须还在** —— 顺序
+// 反了的话（先删行后置标记），标记失败 ⇒ 行已删 + 标记未置 ⇒ 下次迁移从
+// 空主库重拷 = 会话库数据丢失。旧实现必红（删了行），新实现绿（行还在）。
+func TestLazyMigrationFlagBeforeDelete(t *testing.T) {
+	mt := newSessionDBTestMT(t)
+	tenantID, err := mt.tenantSvc.GetOrCreateTenantID("test", "flag-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mt.sessionSvc.AppendMessage(tenantID, llm.NewUserMessage("must survive")); err != nil {
+		t.Fatal(err)
+	}
+
+	// 触发器：让 UPDATE tenants SET migrated 失败（WHEN 限定只在 migrated 变化时
+	// 触发 —— SetTenantDBPath / TouchTenantID 等其他 UPDATE 不受影响）。
+	if _, err := mt.DB().Conn().Exec(`CREATE TRIGGER fail_migrated
+		BEFORE UPDATE OF migrated ON tenants
+		WHEN NEW.migrated != OLD.migrated
+		BEGIN SELECT RAISE(ABORT, 'injected migrated failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 打开会话必须失败（SetTenantMigrated 报错 → sessionDB 返回错误）。
+	if _, err := mt.GetOrCreateSession("test", "flag-order"); err == nil {
+		t.Fatal("expected open failure with the migrated-flag trigger injected")
+	}
+
+	// ⛔ 判别断言：主库行必须还在 —— 删除绝不能先于置标记。
+	var count int
+	if err := mt.DB().Conn().QueryRow(
+		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ?", tenantID,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("main rows deleted BEFORE the migrated flag was set — data-loss ordering violation (count=%d, want 1)", count)
+	}
+
+	// 撤触发器 → 打开成功 → 幂等重拷（主库行还在，复制无损）→ 置标记 → 删主库行。
+	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_migrated`); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := mt.GetOrCreateSession("test", "flag-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := sess.GetMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Content != "must survive" {
+		t.Fatalf("session messages after retry = %+v, want 1 row 'must survive'", msgs)
+	}
+	var after int
+	if err := mt.DB().Conn().QueryRow(
+		"SELECT COUNT(*) FROM session_messages WHERE tenant_id = ?", tenantID,
+	).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != 0 {
+		t.Fatalf("main rows = %d after successful migration, want 0 (lazy delete)", after)
 	}
 }
 

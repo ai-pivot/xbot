@@ -80,17 +80,52 @@
   必须经 `mt.SessionDBFor(sess.TenantID())`（agent 测试 helper：`sessionDBConn(t, mt, sess)`）。
   打在主库上对 appends 不生效（测试静默通过 = 假绿）。
 - **迁移对账**：`TestLazyMigrationCopiesRowsAndSetsFlag`（行数/内容一致 + migrated
-  标记 + 主库源保留）+ `TestLazyMigrationIsIdempotentOnReopen`（migrated=1 后重开
-  不清空迁移后写入）。
+  标记 + **主库行已删**——v72 契约）+ `TestLazyMigrationIsIdempotentOnReopen`
+  （migrated=1 后重开不清空迁移后写入）+ `TestLazyMigrationFlagBeforeDelete`
+  （**顺序判别**：置标记失败时主库行必须在 —— 删除先于标记 = 数据丢失排序）。
+- **v72 删除迁移**：`TestMigrateV71ToV72BulkCompletesAndDeletes`（三态归宿：
+  已迁移/残留/孤儿）+ `_IsIdempotent` + `TestMigrateV72SkipsFailingStraggler`
+  （单租户失败不阻塞启动）+ `TestMigrateV72VacuumReclaimsSpace`（体积收缩 +
+  freelist 清零）。
 - **并发无上限**：`TestConcurrentSessionsBeyond32`（40 个并发会话全部可写 —— 任何
   形式的"最多 N 个打开"都会让它红）。
 - **写隔离**：`TestSessionWriteIsolation`（两会话写各自库文件，互不污染）。
 - **删除回收**：`TestDestroySessionDeletesFile`（DestroySession 后文件消失）。
 
+## v72：删除迁移（deletion migration，2026-09-30）
+
+v71 上线后惰性迁移把会话数据复制进了独立库，主库的 session_messages/
+iteration_history 只剩冗余副本。**v72 把主库缩小回注册表 + 全局表**（3.5G → MB 级）：
+
+```
+启动链 v71→v72（migrateV71ToV72，全步骤幂等）：
+1. 批量补齐残留：migrated=0 的租户逐个走与惰性路径同一份复制核心
+   （DB.CopyTenantDataFromMainDB —— 已下沉 storage/sqlite，杜绝两份 SQL 漂移）
+   → 置 migrated=1。单租户失败只 WARN + 跳过（数据留主库、惰性路径接管）——
+   启动路径永不阻塞。
+2. 删除：migrated=1 租户的主库行 + 孤儿行（tenant_id 不在 tenants，FK 关闭期
+   遗留）。DELETE 不 DROP（空表壳无害，残留者惰性路径的 SELECT 仍有效）。
+   手工迁移测试 fixture（缺表/缺 tenant_id 列）用 tableExists/columnExists
+   守卫跳过（与 v63/v64/v66 同模式）。
+3. VACUUM + wal_checkpoint(TRUNCATE)：WAL 模式下 VACUUM 的产物先进 -wal，
+   主文件要等 checkpoint 才收缩 —— 必须紧跟 checkpoint 让回收立即可见。
+4. version=72（最后一步 —— 崩溃在此之前则下次启动重跑幂等步骤）。
+```
+
+**⛔ 顺序契约（防数据丢失核心，三处文档 + 判别测试守护）**：
+`migrated=1` 标记必须**先于**主库行删除（惰性路径与迁移链同序）。顺序反了的话，
+「删了行但标记未置」+ 崩溃 ⇒ 下次迁移从空主库重拷 = 会话库数据被清空。
+标记先删后 = 崩溃只留无害冗余行。判别测试：`TestLazyMigrationFlagBeforeDelete`
+（触发器让置标记失败 → 断言主库行还在）。
+
+**惰性路径补删（不变量收口）**：v72 后残留者（批量补齐时失败的）惰性迁移成功时
+同步删主库行（`TenantService.DeleteTenantHistory`）→ 不变量「主库 session_messages
+只持有 migrated=0 残留者的数据，随时间归零」。
+
 ## 已知边界
 
-- 主库 session_messages/iteration_history 迁移后**只读保留**（P4 稳定一个版本后
-  DROP + VACUUM 回收 3.4G）。回滚 = 置 migrated=0（会丢迁移后写入 —— 修复向前，
-  不回滚）。
+- v72 后**修复向前**（fix-forward）是唯一回滚路径：回滚旧二进制会看到空历史
+  （旧代码读主库 session_messages，已被 v72 删空）。还原点 = 迁移链的自动整库备份
+  `xbot.db.pre-v71.bak` + 会话库文件本身（v72 不触碰）。
 - `storage/migrate.go`（旧文件迁移工具）仍写主库 session_messages —— 它是 v71 之前
-  的遗留路径，新数据全部走会话库。
+  的遗留路径，新数据全部走会话库；其写入的行会随下一轮迁移被搬走。

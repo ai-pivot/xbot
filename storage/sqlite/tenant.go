@@ -394,6 +394,10 @@ func (s *TenantService) SetTenantDBPath(tenantID int64, dbPath string) error {
 // Called AFTER the copy commits — the flag is what stops a re-copy from wiping
 // post-migration writes (the copy is DELETE+INSERT, idempotent only while
 // migrated=0).
+//
+// ⛔ v72 ordering contract (data-loss guard): after this call, callers should
+// delete the tenant's legacy main-DB rows (DeleteTenantHistory) — NEVER the
+// reverse order. See CopyTenantDataFromMainDB for the full contract.
 func (s *TenantService) SetTenantMigrated(tenantID int64) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("tenant service not initialized")
@@ -402,6 +406,31 @@ func (s *TenantService) SetTenantMigrated(tenantID int64) error {
 		"UPDATE tenants SET migrated = 1 WHERE id = ?", tenantID,
 	); err != nil {
 		return fmt.Errorf("set tenant migrated: %w", err)
+	}
+	return nil
+}
+
+// DeleteTenantHistory deletes a tenant's rows from the MAIN DB's legacy
+// session_messages/iteration_history (v72 invariant: the main DB only holds
+// data for migrated=0 stragglers; once a session is migrated, its data lives
+// exclusively in its session DB). No-op when the rows are already gone.
+//
+// ⛔ Ordering contract (data-loss guard): callers MUST have set
+// tenants.migrated=1 BEFORE calling this — the inverse order with a crash in
+// between leaves the tenant unmigrated with EMPTY main-DB rows, and the next
+// migration re-copies from EMPTY = permanent data loss. Flag-first + crash in
+// between leaves only harmless stale main-DB rows. See
+// CopyTenantDataFromMainDB's re-run contract.
+func (s *TenantService) DeleteTenantHistory(tenantID int64) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("tenant service not initialized")
+	}
+	conn := s.db.Conn()
+	if _, err := conn.Exec("DELETE FROM session_messages WHERE tenant_id = ?", tenantID); err != nil {
+		return fmt.Errorf("delete main-db session_messages: %w", err)
+	}
+	if _, err := conn.Exec("DELETE FROM iteration_history WHERE tenant_id = ?", tenantID); err != nil {
+		return fmt.Errorf("delete main-db iteration_history: %w", err)
 	}
 	return nil
 }

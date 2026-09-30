@@ -31,12 +31,10 @@ package session
 // （侧栏）读这一列。
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	log "xbot/logger"
@@ -102,11 +100,20 @@ func (m *MultiTenantSession) sessionDB(tenantID int64) (*sqlite.DB, error) {
 		}
 		// preview 回填：从会话库算最新一条 user/assistant 消息写主库 tenants.preview。
 		m.recomputeSessionPreview(sdb, tenantID)
-		// 置 migrated=1（最后一步 —— 它是「重跑迁移会清空会话库写入」的闸门：
-		// migrated=1 后永不重跑；此前重跑 = DELETE+INSERT 幂等）。
+		// 置 migrated=1 —— 它是「重跑迁移会清空会话库写入」的闸门：
+		// migrated=1 后永不重跑；此前重跑 = DELETE+INSERT 幂等。
+		// ⛔ v72 顺序契约（防丢失）：标记必须先于主库删除 —— 见
+		// CopyTenantDataFromMainDB 的 re-run contract。
 		if err := m.tenantSvc.SetTenantMigrated(tenantID); err != nil {
 			_ = sdb.Close()
 			return nil, fmt.Errorf("mark tenant %d migrated: %w", tenantID, err)
+		}
+		// v72：删除主库冗余副本（不变量：主库只持有 migrated=0 残留者的数据，
+		// 随时间归零）。失败只 WARN —— 主库行是冗余副本（migrated=1 后读路径
+		// 永不再看主库），残留无害；下次启动的 v72 链 DELETE 也会兜底清理。
+		if err := m.tenantSvc.DeleteTenantHistory(tenantID); err != nil {
+			log.WithError(err).WithField("tenant_id", tenantID).
+				Warn("delete main-db legacy rows after lazy migration failed (stale redundant copy; harmless)")
 		}
 		log.WithFields(log.Fields{"tenant_id": tenantID, "db_path": dbPath}).Info("Session DB migrated from main DB")
 	}
@@ -116,76 +123,12 @@ func (m *MultiTenantSession) sessionDB(tenantID int64) (*sqlite.DB, error) {
 }
 
 // migrateSessionDB 把主库中该 tenant 的 session_messages + iteration_history
-// 复制进会话库（单事务，幂等）。ATTACH 主库到会话库的 pinned 连接上执行
-// INSERT INTO ... SELECT（显式列名 —— 主库迁移链的物理列序与 createSchema 不同，
-// SELECT * 按列位复制会错位）。
+// 复制进会话库。复制核心已下沉到 storage/sqlite（`DB.CopyTenantDataFromMainDB`，
+// v72）——迁移链（migrateV71ToV72 批量补齐）与本惰性路径共用同一实现，杜绝
+// 两份 SQL 漂移。契约（单事务幂等 / 显式列名 / 标记先于删除的防丢失顺序）
+// 见该方法注释。
 func (m *MultiTenantSession) migrateSessionDB(sdb *sqlite.DB, tenantID int64) error {
-	ctx := context.Background()
-	pinned, err := sdb.Conn().Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("pin session db connection: %w", err)
-	}
-	defer pinned.Close()
-
-	// ATTACH 主库（只读源）。路径转义：单引号翻倍（SQL 字符串字面量）。
-	escaped := strings.ReplaceAll(m.dbPath, "'", "''")
-	if _, err := pinned.ExecContext(ctx, fmt.Sprintf("ATTACH DATABASE '%s' AS maindb", escaped)); err != nil {
-		return fmt.Errorf("attach main db: %w", err)
-	}
-	detached := false
-	defer func() {
-		if !detached {
-			_, _ = pinned.ExecContext(ctx, "DETACH DATABASE maindb")
-		}
-	}()
-
-	tx, err := pinned.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	// 幂等：先清空目标（迁移中断重跑 = 再清空再复制，结果一致）。
-	if _, err := tx.ExecContext(ctx, "DELETE FROM session_messages WHERE tenant_id = ?", tenantID); err != nil {
-		return fmt.Errorf("clear session_messages: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM iteration_history WHERE tenant_id = ?", tenantID); err != nil {
-		return fmt.Errorf("clear iteration_history: %w", err)
-	}
-	// 显式列名复制（列序契约：与 sqlite.sessionSchema 逐列一致）。
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO session_messages
-			(id, tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-			 detail, reasoning_content, reasoning_items, display_only, internal_only,
-			 context_tokens, turn_id, record_type, target_history_id, record_data, created_at)
-		SELECT id, tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-			 detail, reasoning_content, reasoning_items, display_only, internal_only,
-			 context_tokens, turn_id, record_type, target_history_id, record_data, created_at
-		FROM maindb.session_messages WHERE tenant_id = ?`, tenantID); err != nil {
-		return fmt.Errorf("copy session_messages: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO iteration_history
-			(id, message_id, tenant_id, turn_id, iteration, content, reasoning, tools,
-			 tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens,
-			 model, subscription_id, created_at)
-		SELECT id, message_id, tenant_id, turn_id, iteration, content, reasoning, tools,
-			 tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens,
-			 model, subscription_id, created_at
-		FROM maindb.iteration_history WHERE tenant_id = ?`, tenantID); err != nil {
-		return fmt.Errorf("copy iteration_history: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration: %w", err)
-	}
-
-	if _, err := pinned.ExecContext(ctx, "DETACH DATABASE maindb"); err != nil {
-		// COMMIT 已成功 —— DETACH 失败只影响连接复用（该连接归还池时仍挂着
-		// maindb；查询不带 maindb 前缀不受影响）。记录并继续。
-		log.WithError(err).Warn("session db migration: DETACH main db failed (committed; connection returns to pool with stale attach)")
-	}
-	detached = true
-	return nil
+	return sdb.CopyTenantDataFromMainDB(m.dbPath, tenantID)
 }
 
 // recomputeSessionPreview 从会话库重算 preview（最新一条 user/assistant 非展示消息，

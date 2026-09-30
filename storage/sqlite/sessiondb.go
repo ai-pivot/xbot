@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
@@ -204,4 +205,98 @@ func sanitizePathSegment(s string, maxRunes int) string {
 		out = string(runes[:maxRunes])
 	}
 	return out
+}
+
+// CopyTenantDataFromMainDB copies a tenant's session_messages/iteration_history
+// from the main DB (at mainDBPath) into this session DB, in a single
+// transaction (DELETE+INSERT, idempotent).
+//
+// Shared core (one implementation for both paths): the lazy migration
+// (session/sessiondb.go) and the v72 bulk-completion migration
+// (migrations.go migrateV71ToV72) both funnel through this method — never
+// duplicate the copy SQL.
+//
+// Explicit column lists (no SELECT *): the main DB's physical column order
+// differs between migration-chain DBs (ALTER TABLE ADD COLUMN appends to the
+// tail) and fresh createSchema DBs — positional copying would misalign
+// columns. The column list is the contract with sessionSchema (same order).
+//
+// ⛔ Re-run contract (data-loss guard): only safe to re-run while
+// tenants.migrated=0 — the DELETE clears the session DB before re-inserting,
+// which would wipe post-migration writes. Callers MUST set migrated=1 BEFORE
+// deleting the tenant's main-DB rows: the inverse order (delete-then-flag)
+// with a crash in between leaves the tenant unmigrated with EMPTY main-DB
+// rows, and the next migration re-copies from EMPTY = permanent data loss.
+// Flag-first + crash in between leaves only harmless stale main-DB rows.
+func (db *DB) CopyTenantDataFromMainDB(mainDBPath string, tenantID int64) error {
+	ctx := context.Background()
+	pinned, err := db.Conn().Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin session db connection: %w", err)
+	}
+	defer pinned.Close()
+
+	// ATTACH the main DB (copy source). Quote-escape: single quotes doubled
+	// (SQL string literal).
+	escaped := strings.ReplaceAll(mainDBPath, "'", "''")
+	if _, err := pinned.ExecContext(ctx, fmt.Sprintf("ATTACH DATABASE '%s' AS maindb", escaped)); err != nil {
+		return fmt.Errorf("attach main db: %w", err)
+	}
+	detached := false
+	defer func() {
+		if !detached {
+			_, _ = pinned.ExecContext(ctx, "DETACH DATABASE maindb")
+		}
+	}()
+
+	tx, err := pinned.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Idempotent: clear the target first (interrupted migration re-run =
+	// re-clear + re-copy, same result).
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session_messages WHERE tenant_id = ?", tenantID); err != nil {
+		return fmt.Errorf("clear session_messages: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM iteration_history WHERE tenant_id = ?", tenantID); err != nil {
+		return fmt.Errorf("clear iteration_history: %w", err)
+	}
+	// Copy with explicit column lists (column-order contract with
+	// sessionSchema — see the method comment).
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO session_messages
+			(id, tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
+			 detail, reasoning_content, reasoning_items, display_only, internal_only,
+			 context_tokens, turn_id, record_type, target_history_id, record_data, created_at)
+		SELECT id, tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
+			 detail, reasoning_content, reasoning_items, display_only, internal_only,
+			 context_tokens, turn_id, record_type, target_history_id, record_data, created_at
+		FROM maindb.session_messages WHERE tenant_id = ?`, tenantID); err != nil {
+		return fmt.Errorf("copy session_messages: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO iteration_history
+			(id, message_id, tenant_id, turn_id, iteration, content, reasoning, tools,
+			 tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens,
+			 model, subscription_id, created_at)
+		SELECT id, message_id, tenant_id, turn_id, iteration, content, reasoning, tools,
+			 tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens,
+			 model, subscription_id, created_at
+		FROM maindb.iteration_history WHERE tenant_id = ?`, tenantID); err != nil {
+		return fmt.Errorf("copy iteration_history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+
+	if _, err := pinned.ExecContext(ctx, "DETACH DATABASE maindb"); err != nil {
+		// COMMIT succeeded — a DETACH failure only affects connection reuse
+		// (the conn returns to the pool with maindb attached; queries without
+		// the maindb prefix are unaffected). Log and continue.
+		log.WithError(err).Warn("session db migration: DETACH main db failed (committed; connection returns to pool with stale attach)")
+	}
+	detached = true
+	return nil
 }
