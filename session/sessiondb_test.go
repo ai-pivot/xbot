@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -649,6 +650,13 @@ func TestEvictSessionDBGuardSkipsRecreated(t *testing.T) {
 //	修复后：新会话经主库现有连接探测无残留行 ⇒ 完全不 ATTACH ⇒ 创建成功。
 //	修复前（无条件迁移）：ATTACH 找不到主库文件 ⇒ 打开会话报错 ⇒ 本测试必红。
 func TestNewSessionDoesNotAttachMainDB(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows 不允许重命名**被打开**的文件（SQLite 不启用 FILE_SHARE_DELETE），
+		// 而本测试的判别手法正是「改名池持开的主库文件 ⇒ 新 ATTACH 必失败」——
+		// 该场景在 Windows 上无法表达。判别力由 Linux/macOS CI + 本地承担；
+		// 变异自证（探针恒 true ⇒ 必红）在 Linux 上成立。
+		t.Skip("renaming an open SQLite DB file is not possible on Windows; the ATTACH-break scenario is POSIX-only")
+	}
 	mt := newSessionDBTestMT(t)
 	// 先建一个会话，让主库池的连接都进入稳态。
 	if _, err := mt.GetOrCreateSession("test", "existing-ok"); err != nil {
