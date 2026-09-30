@@ -47,8 +47,10 @@ func TestMigrateV69ToV70RepairsMissingReasoningItems(t *testing.T) {
 	if err := db.Conn().QueryRow("SELECT version FROM schema_version LIMIT 1").Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 70 {
-		t.Fatalf("schema version = %d, want 70", version)
+	// v71（每会话一个 DB）之后迁移链继续推进——断言当前 schemaVersion 而非
+	// 硬编码 70，后续 bump 不需要再改这里。
+	if version != schemaVersion {
+		t.Fatalf("schema version = %d, want %d (current schemaVersion)", version, schemaVersion)
 	}
 
 	var content, reasoningItems string

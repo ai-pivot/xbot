@@ -1347,11 +1347,9 @@ func (a *Agent) latestAskControlRecordForSession(ch, chatID string) (int64, sqli
 	if err != nil {
 		return 0, "", false
 	}
-	db := a.multiSession.DB()
-	if db == nil {
-		return 0, "", false
-	}
-	id, recordType, err := sqlite.NewSessionService(db).LatestAskControlRecord(sess.TenantID())
+	// v71（每会话一个 DB）：ask 控制记录在会话库 —— 经 TenantSession.SessionService()
+	// （绑定会话库）查询，绝不再 NewSessionService(主库)（那会读主库的旧数据）。
+	id, recordType, err := sess.SessionService().LatestAskControlRecord(sess.TenantID())
 	if err != nil {
 		log.WithFields(log.Fields{"channel": ch, "chat_id": chatID}).WithError(err).
 			Warn("latestAskControlRecord: query failed, trusting in-memory AskUser state")
@@ -1497,6 +1495,23 @@ func (a *Agent) sendPendingAskUserCancelAck(msg bus.InboundMessage) {
 		"no_patch":  "true",
 	}); err != nil {
 		log.WithError(err).Warn("Failed to send pending AskUser cancel ack")
+	}
+}
+
+// isCancelCommand 判定一条入站消息是否是取消命令（/cancel 或其别名 /stop）。
+//
+// /stop 别名（2026-09-28）：飞书原生 CoT「停止生成」按钮的平台默认行为是向机器人
+// 发一条 "/Stop" 消息（大小写不定），而非 card.action.trigger —— 不识别它时该消息
+// 会落进普通消息路径被当成用户 prompt 发给 LLM。两个拦截点（agent.Run 的入站拦截 +
+// RemoteTransport.SendMessage 的 cancel 消息类型判定）统一用本谓词，保证别名行为
+// 与 /cancel 完全一致：大小写不敏感、容忍首尾空白、整词匹配（/stopped /stopall 等
+// 前缀相似词不误判）。
+func isCancelCommand(content string) bool {
+	switch strings.TrimSpace(strings.ToLower(content)) {
+	case "/cancel", "/stop":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1943,6 +1958,11 @@ func initServices(a *Agent, cfg Config, multiSession *session.MultiTenantSession
 	a.userSys.llmFactory = NewLLMFactory(cfg.LLM, cfg.Model)
 	a.userSys.llmFactory.SetSubscriptionSvc(sqlite.NewLLMSubscriptionService(multiSession.DB()))
 	a.userSys.llmFactory.SetTenantSvc(sqlite.NewTenantService(multiSession.DB()))
+	// v71（每会话一个 DB）：模型切换时清零会话库的 token 基线（session_messages
+	// .context_tokens —— 不同模型上下文大小不同）。tenant_state 半边（主库）由
+	// SetTenantSubscription 清；session_messages 半边（会话库）经本钩子路由。
+	// nil（单测未注入）= 跳过（基线留待下一条用户消息自愈）。
+	a.userSys.llmFactory.SetSessionTokenResetter(multiSession.ResetSessionContextTokens)
 
 	// 初始化上下文管理器
 	a.contextManagerConfig = &ContextManagerConfig{
@@ -2804,11 +2824,12 @@ func (a *Agent) Run(ctx context.Context) error {
 			return ctx.Err()
 		case msg := <-a.bus.Inbound:
 
-			// /cancel 拦截：不进入 chatWorker 队列，直接发 cancel 信号
-			// cancel key 仅用 channel:chatID（不含 senderID），因为同一个 chat
-			// 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
+			// /cancel（及其别名 /stop）拦截：不进入 chatWorker 队列，直接发 cancel 信号。
+			// /stop 是飞书 CoT「停止生成」按钮的平台默认命令（发 "/Stop" 消息），
+			// 见 isCancelCommand 注释。cancel key 仅用 channel:chatID（不含 senderID），
+			// 因为同一个 chat 同时只有一个活跃请求（chatQueue 串行化），且 bg task / cron 等
 			// 系统通知的 senderID 与 CLI 用户的 senderID 可能不同。
-			if strings.TrimSpace(strings.ToLower(msg.Content)) == "/cancel" {
+			if isCancelCommand(msg.Content) {
 				a.interceptCancel(msg)
 				acknowledgeInboundDelivery(msg, bus.DeliveryResult{})
 				continue
@@ -5007,7 +5028,10 @@ func (a *Agent) injectPeerMessage(targetSessionKey, content string) string {
 
 // allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
 func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, instance, model string) (string, error) {
-	cfg := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)
+	cfg, err := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)
+	if err != nil {
+		return "", err
+	}
 	out := Run(parentCtx.Ctx, cfg)
 	if out.Error != nil {
 		return out.Content, out.Error

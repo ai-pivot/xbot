@@ -241,6 +241,7 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
 - **落点相关项（2026-09-22）**：`打开链接` / `复制链接地址`（右键或长按落在 `<a href>` 上）+ `复制选区`（打开菜单那一刻读 `window.getSelection()` —— **必须在 openAt 里读**：菜单挂载后会 focus，焦点移动会让选区折叠，之后再读就取不到）。因为我们对 `contextmenu` 做了 `preventDefault`（否则弹的是浏览器原生菜单），链接只能由这里给入口。
 - **⛔ 打开链接必须过协议白名单**：`resolveOpenableHref` 只放行 http/https/mailto（`javascript:` / `data:` / `file:` 一律拒绝），相对链接按 base 解析成绝对地址（消息里有 `/api/files/download?...` 这类同源链接）；打开用 `window.open(href, '_blank', 'noopener,noreferrer')` —— 链接内容来自模型与用户输入，绝不能给它 opener 提权。
 - **菜单标签必须走 i18n**（`agent.copyMenu.*`，zh/en/ja 三语言）：本菜单曾硬编码中文（E2E 因此只能断言中文字面量）；改 i18n 后 **E2E 必须两侧钉死语言** —— `addInitScript` 写 `localStorage['xbot-locale'] = 'zh-CN'`，否则 Playwright 默认 en-US ⇒ 断言中文必红。
+- **⛔ 透明遮罩必须有触屏关闭路径（2026-09-30 用户报告「有些情况手机无法划动虚拟视图的历史，打开侧边栏后恢复正常」的根因）**：`copy-backdrop`（`fixed inset-0 z-40` 透明遮罩，portal 到 body）的关闭路径原来只有 `onMouseDown`/`onWheel`/`onContextMenu` —— **触屏一个都不触发**（触摸兼容模型：滑动不合成 mousedown；Android 长按后的抬手也不合成）。泄漏后的完整闭环：新手势命中遮罩（z-40 连顶栏一起盖）而它 portal 到 body（**无滚动祖先**）⇒ 历史划不动；点顶栏侧边栏按钮的 tap 合成 mousedown ⇒ 命中遮罩把它点掉 ⇒ click 落到按钮上 ⇒「打开侧边栏后恢复正常」。修复两层：① 遮罩补 `onTouchStart={() => setOpen(null)}`（任何新手势 tap/划的第一下即关，与桌面 onMouseDown 语义对齐）；② `useLongPress` 长按**已触发**菜单后继续拖动 >10px ⇒ 菜单自行关闭（长按 = 误触发，拖走 = 用户想滚动；触屏隐式指针捕获保证拖动的 pointermove 仍派发到原元素）。**通用铁律：全屏透明遮罩的每个"关闭"交互都要问一遍触屏（touchstart/pointerdown）—— 只挂 mouse 系事件的遮罩在手机上等于永久泄漏**。守护：`CopyTarget.longpress.test.tsx` 2 例（拖走关菜单 / 遮罩触摸关，修复前均红）+ E2E `msg-actions.spec.ts`「真实触摸历史区域必须关掉遮罩」（**真实 CDP 触摸管线**，变异自证：撤修复必红）。
 - 守护：`web/e2e/msg-actions.spec.ts`（**迭代目标数 == 迭代数**、右键某迭代只复制该迭代、工具级逐项复制、触屏长按面板贴视口底部且项数 == 工具数+1、`[data-testid="msg-actions"]` 必须为 0 —— 即"不再有悬浮条"、**右键链接 → 打开链接（断言新标签最终 URL）+ 复制链接地址 + 有选区 → 复制选区**）+ `MessageActions.test.tsx`（白名单 / 落点解析 / 菜单项三态）+ `AssistantMessage.test.tsx` 同名契约用例。⚠️ `window.open(..., 'noopener')` 的弹窗在**导航 commit 之前 `page.url()` 是空串** —— 必须 `popup.waitForURL(...)`；等 about:blank 的 `loadState` 等于没等（首版就这么假绿过）。
 
 ## Web 一致性暂态（切换/恢复）必须显示 loading，不得给不一致画面
@@ -358,3 +359,18 @@ click 拦截 / 超容差取消 / 桌面零包裹 + 右键照常）+ **E2E** `e2e
 （真实 hasTouch+isMobile Chromium：开抽屉 → dispatchEvent pointerdown → 菜单出现；revert 修复
 则 `touch-context-trigger` 消失、长按无菜单 ⇒ 必红）。E2E 断言的菜单文案是
 `session.openInTab` = **「在新标签页中打开」**（不是「在新标签页打开」）。
+
+**④ 触屏打开含输入框的 Popover/Dialog 不得自动聚焦输入框（2026-09-30 用户报告
+「手机端现在切换模型就会弹出键盘」）。**
+Radix Popover/Dialog 的内容包在 `FocusScope` 里，默认 `onMountAutoFocus` =
+`focusFirst(getTabbableCandidates(content))`（react-focus-scope 源码实证）—— 聚焦
+内容里**第一个可聚焦元素**。`ModelSelector` 的 PopoverContent 第一个元素是**搜索
+输入框** ⇒ 触屏上打开选择器即弹软键盘，盖住半个模型列表；用户视角就是「切换模型
+就会弹出键盘」。修复：`PopoverContent` 上 `onOpenAutoFocus={isTouch ?
+(e) => e.preventDefault() : undefined}`（`useIsTouch` 分流）—— 触屏不聚焦任何
+元素（搜索是显式点击搜索框才该发生的事），桌面保留默认聚焦（键入即筛选的既有
+UX）。**通用铁律：触屏上「打开面板 → 自动聚焦可编辑元素」= 弹软键盘 —— 任何
+含 input/textarea 的 Popover/Dialog 在触屏环境都必须 preventDefault 掉
+openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement 不是搜索框 /
+桌面反向 → 仍是搜索框；修复前触屏例红）。E2E 层面 headless 无法观测真实软键盘，
+聚焦断言（activeElement）即真实链路的确定性判据。

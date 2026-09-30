@@ -11,6 +11,7 @@ import (
 
 	"xbot/config"
 	"xbot/llm"
+	log "xbot/logger"
 	"xbot/memory"
 	"xbot/storage/sqlite"
 	"xbot/tools"
@@ -21,13 +22,23 @@ type TenantSession struct {
 	tenantID   int64
 	channel    string
 	chatID     string
-	sessionSvc *sqlite.SessionService
-	memorySvc  *sqlite.MemoryService // for consolidation state (LastConsolidated)
+	sessionSvc *sqlite.SessionService // 会话库（v71：session_messages/iteration_history —— 每会话独立 DB）
+	tenantSvc  *sqlite.TenantService  // 主库（v71：tenants 注册表 —— CWD/preview 等主库表操作）
+	memorySvc  *sqlite.MemoryService  // for consolidation state (LastConsolidated) —— 主库（tenant_state）
 	memory     memory.MemoryProvider
 	mcpManager *tools.SessionMCPManager // 会话 MCP 管理器
 	lastActive time.Time                // 会话活跃时间
 	mu         sync.RWMutex             // 保护 lastActive 和 cwd
 	cwd        string                   // 当前工作目录（PWD 工具优化）
+}
+
+// SessionService 返回绑定该会话**会话库**的 SessionService（消息/迭代数据的
+// 读写入口）。v71 每会话一个 DB：直接构造点（agent/serverapp 里只有 tenantID
+// 的路径）经 MultiTenantSession.SessionServiceFor 收口；持有 TenantSession 的
+// 调用方用本访问器 —— 绝不再 sqlite.NewSessionService(主库)（那会读写主库的
+// 旧 session_messages，拆库后是错误目标）。
+func (s *TenantSession) SessionService() *sqlite.SessionService {
+	return s.sessionSvc
 }
 
 // AddMessage adds a message to this tenant's session
@@ -69,8 +80,14 @@ func (s *TenantSession) GetUsageStats(recentLimit int) (*sqlite.TenantUsageStats
 }
 
 // AppendMessage appends a message and returns its stable history ID.
+// v71（每会话一个 DB）：追加落会话库；eligible 消息（user/assistant 非展示）
+// 同步更新主库 tenants.preview（跨会话列表读这一列 —— 拆库后主库没有消息数据）。
 func (s *TenantSession) AppendMessage(msg llm.ChatMessage) (int64, error) {
-	return s.sessionSvc.AppendMessage(s.tenantID, msg)
+	id, err := s.sessionSvc.AppendMessage(s.tenantID, msg)
+	if err == nil {
+		s.updatePreviewForMessage(msg)
+	}
+	return id, err
 }
 
 // AppendCommandRow 落库一行命令行（`!cmd` / slash 的输入或输出）。
@@ -83,8 +100,19 @@ func (s *TenantSession) AppendCommandRow(role, content string) (int64, error) {
 }
 
 // AppendMessages atomically appends a related message batch.
+// v71（每会话一个 DB）：追加落会话库；批内最后一条 eligible 消息（user/assistant
+// 非展示，id 单调递增 ⇒ 它就是最新一条）同步更新主库 tenants.preview。
 func (s *TenantSession) AppendMessages(messages []llm.ChatMessage) ([]int64, error) {
-	return s.sessionSvc.AppendMessages(s.tenantID, messages)
+	ids, err := s.sessionSvc.AppendMessages(s.tenantID, messages)
+	if err == nil {
+		for i := len(messages) - 1; i >= 0; i-- {
+			if (messages[i].Role == "user" || messages[i].Role == "assistant") && !messages[i].DisplayOnly {
+				s.updatePreviewForMessage(messages[i])
+				break
+			}
+		}
+	}
+	return ids, err
 }
 
 // AppendMessagesAndAskQuestion atomically appends an AskUser tool exchange and
@@ -111,8 +139,14 @@ func (s *TenantSession) AppendAskAnswer(answer string) (int64, error) {
 
 // AppendAskAnswerWithUserMessage atomically appends the ask_answer control record
 // AND the answer user message in one transaction (crash consistency).
+// v71（每会话一个 DB）：追加落会话库；answerMsg（user 消息）同步更新主库
+// tenants.preview。
 func (s *TenantSession) AppendAskAnswerWithUserMessage(answer string, answerMsg llm.ChatMessage) (int64, error) {
-	return s.sessionSvc.AppendAskAnswerWithUserMessage(s.tenantID, answer, answerMsg)
+	id, err := s.sessionSvc.AppendAskAnswerWithUserMessage(s.tenantID, answer, answerMsg)
+	if err == nil {
+		s.updatePreviewForMessage(answerMsg)
+	}
+	return id, err
 }
 
 func (s *TenantSession) AppendMasks(mutations []sqlite.MaskMutation) error {
@@ -127,8 +161,65 @@ func (s *TenantSession) GetFullHistory() ([]sqlite.HistoryRecord, error) {
 	return s.sessionSvc.GetFullHistory(s.tenantID)
 }
 
+// RewindToHistoryID 截断会话历史到指定用户消息节点。
+// v71（每会话一个 DB）：截断（session_messages/iteration_history）在会话库；
+// tenant_state（主库）的 token 水位恢复由本方法完成（memorySvc 绑定主库）——
+// 跨库无法原子，水位是派生缓存（下一条用户消息的 SaveContextTokens 自愈），
+// 失败只 Warn 不阻塞 rewind。preview（主库 tenants.preview）同步重算（截断后
+// 最新一条 user/assistant 消息变化）。
 func (s *TenantSession) RewindToHistoryID(historyID int64) (llm.ChatMessage, int, error) {
-	return s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+	target, turnIdx, promptTokens, err := s.sessionSvc.RewindToHistoryID(s.tenantID, historyID)
+	if err != nil {
+		return llm.ChatMessage{}, 0, err
+	}
+	// tenant_state 恢复（主库，尽力而为）：截断后剩余历史的最后一条用户消息的
+	// context_tokens。失败只 Warn —— 水位是派生缓存，不阻塞 rewind。
+	if err := s.memorySvc.SetTokenState(context.Background(), s.tenantID, promptTokens, 0); err != nil {
+		log.WithError(err).WithField("tenant_id", s.tenantID).
+			Warn("rewind: restore tenant_state token watermark failed (derived cache; self-heals on next message)")
+	}
+	// preview 重算（主库 tenants.preview）：截断后最新一条 user/assistant 消息变化。
+	s.recomputePreview()
+	return target, turnIdx, nil
+}
+
+// recomputePreview 从会话库重算 preview（最新一条 user/assistant 非展示消息，
+// substr 256 —— 与 ListUserChats 旧子查询同语义）写主库 tenants.preview。
+// 用于 rewind（截断后最新消息变化）与 clear（清空）。append 路径不走这里 ——
+// 追加的消息本身就是最新 eligible（id 单调递增），直接用消息内容更新（见
+// updatePreviewForMessage）。
+func (s *TenantSession) recomputePreview() {
+	if s.tenantSvc == nil {
+		return
+	}
+	preview, err := s.sessionSvc.LatestPreview(s.tenantID)
+	if err != nil {
+		log.WithError(err).WithField("tenant_id", s.tenantID).Warn("recompute preview: query latest message failed")
+		return
+	}
+	if err := s.tenantSvc.SetTenantPreview(s.tenantID, preview); err != nil {
+		log.WithError(err).WithField("tenant_id", s.tenantID).Warn("recompute preview: update tenants.preview failed")
+	}
+}
+
+// updatePreviewForMessage 在 eligible 消息追加后更新主库 tenants.preview。
+// eligible = role IN (user, assistant) 且非 display_only —— 与 ListUserChats 旧
+// 子查询的过滤条件完全一致（追加的 eligible 消息就是最新一条：id 单调递增）。
+// substr(?, 1, 256) 在 SQL 里截断（与旧子查询的 substr(sm.content, 1, 256) 同界）。
+// 失败只 Warn：preview 是展示性冗余（跨会话列表读主库这一列），不阻塞消息追加。
+func (s *TenantSession) updatePreviewForMessage(msg llm.ChatMessage) {
+	if s.tenantSvc == nil {
+		return
+	}
+	if msg.Role != "user" && msg.Role != "assistant" {
+		return
+	}
+	if msg.DisplayOnly {
+		return
+	}
+	if err := s.tenantSvc.SetTenantPreview(s.tenantID, msg.Content); err != nil {
+		log.WithError(err).WithField("tenant_id", s.tenantID).Warn("update tenants.preview failed (display-only redundancy)")
+	}
 }
 
 // ReplaceToolMessage updates the most recent matching tool-role message.
@@ -187,8 +278,14 @@ func (s *TenantSession) SetLastConsolidated(n int) error {
 }
 
 // Clear removes all messages from this tenant's session
+// v71（每会话一个 DB）：清空落会话库；preview（主库 tenants.preview）同步清空
+// （跨会话列表读这一列 —— 拆库后主库没有消息数据）。
 func (s *TenantSession) Clear() error {
-	return s.sessionSvc.Clear(s.tenantID)
+	if err := s.sessionSvc.Clear(s.tenantID); err != nil {
+		return err
+	}
+	s.recomputePreview()
+	return nil
 }
 
 // UpdateMessageContent updates the content of the Nth message (0-indexed) in this tenant's session.
@@ -351,11 +448,15 @@ func (s *TenantSession) GetCurrentDir() string {
 // SetCurrentDir 设置当前工作目录（PWD 工具优化），持久化到数据库。
 // The tenants.cwd column is the single authoritative store (file-based
 // session_cwd is retired — it was unreliable across restarts).
+// v71（每会话一个 DB）：tenants 是主库表 —— CWD 经 tenantSvc（主库）写，
+// 不再经 sessionSvc（现在绑定会话库，没有 tenants 表）。
 func (s *TenantSession) SetCurrentDir(dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cwd = dir
-	_ = s.sessionSvc.SetTenantCWD(s.tenantID, dir)
+	if s.tenantSvc != nil {
+		_ = s.tenantSvc.SetTenantCWD(s.tenantID, dir)
+	}
 }
 
 // sessionCwdFileName returns a safe filename for the given session.
@@ -368,8 +469,10 @@ func sessionCwdFileName(channel, chatID string) string {
 
 // loadPersistedCWD reads the session's CWD from the database. Legacy file
 // based session_cwd entries (pre-v53) are ignored — the DB is authoritative.
-func loadPersistedCWD(sessionSvc *sqlite.SessionService, tenantID int64) string {
-	cwd, err := sessionSvc.GetTenantCWD(tenantID)
+// v71（每会话一个 DB）：tenants 是主库表 —— 经 TenantService（主库）读，
+// 不再经 SessionService（现在绑定会话库，没有 tenants 表）。
+func loadPersistedCWD(tenantSvc *sqlite.TenantService, tenantID int64) string {
+	cwd, err := tenantSvc.GetTenantCWD(tenantID)
 	if err != nil || cwd == "" {
 		return ""
 	}

@@ -28,6 +28,57 @@ func TestCancelNotRegisteredAsCommand(t *testing.T) {
 	}
 }
 
+// TestIsCancelCommand — /stop 是 /cancel 的别名（飞书 CoT「停止生成」按钮的平台
+// 默认行为：点击后向机器人发一条 "/Stop" 消息，2026-09-28 用户报告）。两个拦截点
+// （agent.Run 的入站拦截 + RemoteTransport.SendMessage 的 cancel 消息类型判定）
+// 都用 isCancelCommand 判定，必须大小写不敏感、容忍首尾空白。
+func TestIsCancelCommand(t *testing.T) {
+	cases := []struct {
+		content string
+		want    bool
+	}{
+		// /cancel 原有行为（不得回归）
+		{"/cancel", true},
+		{"/CANCEL", true},
+		{"/Cancel", true},
+		{"  /cancel  ", true},
+
+		// /stop 别名（飞书 CoT 停止按钮发 "/Stop"）
+		{"/stop", true},
+		{"/Stop", true},
+		{"/STOP", true},
+		{"  /Stop  ", true},
+
+		// 非命令 / 前缀相似但不同的内容（不得误判）
+		{"", false},
+		{"stop", false},
+		{"/stopped", false},
+		{"/stopall", false},
+		{"/cancelx", false},
+		{"/cancel now", false},
+		{"please /stop", false},
+	}
+	for _, tc := range cases {
+		if got := isCancelCommand(tc.content); got != tc.want {
+			t.Errorf("isCancelCommand(%q) = %v, want %v", tc.content, got, tc.want)
+		}
+	}
+}
+
+// TestStopNotRegisteredAsCommand — /stop 与 /cancel 一样在 Run() 拦截，
+// 不得注册为 Command（否则会被命令分发抢走，永远到不了 cancel 拦截）。
+func TestStopNotRegisteredAsCommand(t *testing.T) {
+	r := NewCommandRegistry()
+	registerBuiltinCommands(r)
+
+	if r.IsCommand("/stop") {
+		t.Error("IsCommand(/stop) = true, want false — /stop is handled in Run() as a /cancel alias, not as a registered command")
+	}
+	if r.IsCommand("/Stop") {
+		t.Error("IsCommand(/Stop) = true, want false")
+	}
+}
+
 func TestChatCancelCh_BasicSignaling(t *testing.T) {
 	// Test that the cancel channel mechanism works correctly
 	var cancelMap sync.Map
@@ -398,7 +449,9 @@ func TestHandleCancelledRun_RecordsPendingNotifications(t *testing.T) {
 func TestHandleCancelledRun_FailedBatchRequeuesNotificationsForRetry(t *testing.T) {
 	ctx := context.Background()
 	mt, sess := newAgentHistorySession(t)
-	if _, err := mt.DB().Conn().Exec(`
+	// v71（每会话一个 DB）：session_messages 在会话库 —— 触发器注入会话库
+	//（mt.DB() 是主库，注入那里对 appends 不生效）。
+	if _, err := sessionDBConn(t, mt, sess).Exec(`
 		CREATE TRIGGER fail_cancel_batch BEFORE INSERT ON session_messages
 		WHEN NEW.role = 'tool' AND NEW.tool_name = 'user_cancelled'
 		BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
@@ -437,7 +490,7 @@ func TestHandleCancelledRun_FailedBatchRequeuesNotificationsForRetry(t *testing.
 		t.Fatalf("requeued notifications remained in drained ledger: %d", drainedCount)
 	}
 
-	if _, err := mt.DB().Conn().Exec(`DROP TRIGGER fail_cancel_batch`); err != nil {
+	if _, err := sessionDBConn(t, mt, sess).Exec(`DROP TRIGGER fail_cancel_batch`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.handleCancelledRun(ctx, bus.InboundMessage{Channel: "cli", ChatID: "test-chat"}, &RunOutput{

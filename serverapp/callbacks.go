@@ -352,7 +352,10 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 				}
 			}
 			if len(turnSet) > 0 {
-				svc := sqlite.NewSessionService(ag.MultiSession().DB())
+				// v71（每会话一个 DB）：iteration_history 在会话库 —— 经
+				// TenantSession.SessionService()（绑定会话库）查询，绝不再
+				// NewSessionService(主库)（那会读主库的旧数据）。
+				svc := sess.SessionService()
 				// 批量查询所有 turn 的 iteration_history —— 一次 IN 查询替代
 				// 循环单查（每 turn 一次 DB 查询是 history 接口慢的主要根源：
 				// 100 条消息可能 10-30 个 turn → 10-30 次 SQLite 查询）。
@@ -1072,25 +1075,27 @@ func listWebChatIDsForSender(db *sql.DB, senderID string) (map[string]bool, erro
 // listTenantsByChannel lists all tenants for a given channel (e.g. "cli", "feishu").
 // Used by admin to browse sessions from other channels in the Web UI.
 // Returns the last user/assistant message as preview.
+// v71（每会话一个 DB）：preview 改读 tenants.preview 列（写入路径维护 ——
+// TenantSession 的 append 钩子 / 迁移回填 / rewind/clear 重算都写这一列）。
+// 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
+// 独立库里，跨库 JOIN 不可能）。
 func listTenantsByChannel(db *sql.DB, channel, currentChatID string) ([]web.UserChatWithPreview, error) {
 	// Single query with correlated subquery for preview — avoids N+1 pattern.
 	rows, err := db.Query(`
-		SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
-									COALESCE((SELECT uc.label FROM user_chats uc
-										WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
-										ORDER BY uc.rowid DESC LIMIT 1),
-										(SELECT uc.label FROM user_chats uc
-										WHERE uc.chat_id = t.chat_id AND uc.label != ''
-										ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
-		       COALESCE((SELECT uc.sort_order FROM user_chats uc
-		                 WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
-		                 ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
-		       (SELECT sm.content FROM session_messages sm
-		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
-		        ORDER BY sm.id DESC LIMIT 1) AS preview
-		FROM tenants t
-		WHERE t.channel = ? AND t.chat_id != '_shared'
-		ORDER BY t.last_active_at DESC`, channel)
+  SELECT t.id, t.chat_id, t.created_at, t.last_active_at,
+          COALESCE((SELECT uc.label FROM user_chats uc
+           WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id AND uc.label != ''
+           ORDER BY uc.rowid DESC LIMIT 1),
+           (SELECT uc.label FROM user_chats uc
+           WHERE uc.chat_id = t.chat_id AND uc.label != ''
+           ORDER BY uc.rowid DESC LIMIT 1), '') AS label,
+         COALESCE((SELECT uc.sort_order FROM user_chats uc
+                  WHERE uc.channel = t.channel AND uc.chat_id = t.chat_id
+                  ORDER BY uc.rowid DESC LIMIT 1), 0) AS sort_order,
+         COALESCE(t.preview, '') AS preview
+  FROM tenants t
+  WHERE t.channel = ? AND t.chat_id != '_shared'
+  ORDER BY t.last_active_at DESC`, channel)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants by channel: %w", err)
 	}
@@ -1169,15 +1174,17 @@ func listDistinctChannels(db *sql.DB) ([]string, error) {
 // channels they have interacted with (e.g. feishu, qq).
 // Joins with user_chats to filter by sender_id since tenants table does
 // not have a sender_id column.
+// v71（每会话一个 DB）：preview 改读 tenants.preview 列（写入路径维护 ——
+// TenantSession 的 append 钩子 / 迁移回填 / rewind/clear 重算都写这一列）。
+// 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
+// 独立库里，跨库 JOIN 不可能）。
 func listTenantsForSender(db *sql.DB, senderID, currentChatID string) ([]web.UserChatWithPreview, error) {
 	rows, err := db.Query(`
 		SELECT DISTINCT t.id, t.chat_id, t.channel, t.last_active_at,
 		       COALESCE((SELECT uc2.label FROM user_chats uc2
 			         WHERE uc2.channel = t.channel AND uc2.chat_id = t.chat_id AND uc2.label != ''
 			         ORDER BY uc2.rowid DESC LIMIT 1), '') AS label,
-		       (SELECT sm.content FROM session_messages sm
-		        WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
-		        ORDER BY sm.id DESC LIMIT 1) AS preview
+		       COALESCE(t.preview, '') AS preview
 		FROM tenants t
 		INNER JOIN user_chats uc ON t.channel = uc.channel AND t.chat_id = uc.chat_id
 		WHERE uc.sender_id = ? AND t.channel != 'web' AND t.chat_id != '_shared'

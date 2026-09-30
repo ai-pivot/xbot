@@ -1005,9 +1005,16 @@ func decorateCompressionRanges(records []HistoryRecord) {
 // RewindToHistoryID validates a user node and atomically truncates that node
 // plus every later record for the same tenant. The selected content is returned
 // for the caller's existing edit/resend flow.
-func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatMessage, int, error) {
+//
+// v71（每会话一个 DB）：本方法只操作会话库表（session_messages +
+// iteration_history）。tenant_state（主库表）的 token 水位恢复**拆出**——
+// 返回 promptTokens，由调用方（TenantSession，持有主库 MemoryService）写
+// tenant_state。跨库无法原子（SQLite ATTACH 事务复杂度不值当）：token 水位是
+// 派生缓存（下一条用户消息的 SaveContextTokens 自愈），截断成功但水位写失败
+// 的窗口是良性的。
+func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatMessage, int, int64, error) {
 	if historyID <= 0 {
-		return llm.ChatMessage{}, 0, fmt.Errorf("history_id is required")
+		return llm.ChatMessage{}, 0, 0, fmt.Errorf("history_id is required")
 	}
 	lock := s.db.historyLock(tenantID)
 	lock.Lock()
@@ -1015,6 +1022,7 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 	var role, recordType, content, createdAt string
 	var displayOnly int
 	var turnIdx int
+	var promptTokens int64
 	err := s.withImmediateHistoryWrite(func(store historyQueryExecer) error {
 		if err := store.QueryRow(`
 				SELECT role, record_type, content, created_at, display_only
@@ -1055,6 +1063,8 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 		if rows == 0 {
 			return fmt.Errorf("truncate history at history_id %d changed no records", historyID)
 		}
+		// 读取截断后剩余历史的最后一条用户消息的 context_tokens（token 水位恢复值）。
+		// 只读会话库 —— tenant_state 写由调用方完成（见方法注释）。
 		var lastContextTokens sql.NullInt64
 		if err := store.QueryRow(`
 				SELECT context_tokens FROM session_messages
@@ -1063,26 +1073,15 @@ func (s *SessionService) RewindToHistoryID(tenantID, historyID int64) (llm.ChatM
 			`, tenantID).Scan(&lastContextTokens); err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("restore rewind token state: %w", err)
 		}
-		promptTokens := int64(0)
 		if lastContextTokens.Valid {
 			promptTokens = lastContextTokens.Int64
-		}
-		if _, err := store.Exec(`
-				INSERT INTO tenant_state
-					(tenant_id, last_consolidated, last_prompt_tokens, last_completion_tokens)
-				VALUES (?, 0, ?, 0)
-				ON CONFLICT(tenant_id) DO UPDATE SET
-					last_prompt_tokens = excluded.last_prompt_tokens,
-					last_completion_tokens = 0
-			`, tenantID, promptTokens); err != nil {
-			return fmt.Errorf("restore rewind token state: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
-		return llm.ChatMessage{}, 0, err
+		return llm.ChatMessage{}, 0, 0, err
 	}
-	return llm.ChatMessage{ID: historyID, Role: role, Content: content, Timestamp: internal.ParseTimestamp(createdAt)}, turnIdx, nil
+	return llm.ChatMessage{ID: historyID, Role: role, Content: content, Timestamp: internal.ParseTimestamp(createdAt)}, turnIdx, promptTokens, nil
 }
 
 func (s *SessionService) Replay(tenantID int64) (*ReplayResult, error) {

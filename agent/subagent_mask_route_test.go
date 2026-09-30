@@ -35,7 +35,10 @@ func TestBuildSubAgentRunConfig_MaskRecallRouteConsistency(t *testing.T) {
 
 	// 断裂条件：无 memory capability 的 SubAgent（大多数 review/code 类角色）。
 	caps := tools.SubAgentCapabilities{Memory: false}
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, caps, "reviewer", false, "inst-1", "")
+	cfg, err := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, caps, "reviewer", false, "inst-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// parentExtras 与 buildSubAgentRunConfig 内部重建同源（channel/chatID 一致）。
 	parentExtras := a.buildToolContextExtras("test", "chat")

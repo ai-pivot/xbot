@@ -141,7 +141,7 @@ type OpenState = {
 /** 长按判定容差（px）：触屏手指抖动不超过它就不算"划动"。 */
 const LONG_PRESS_TOLERANCE = 10
 
-function useLongPress(open: (x: number, y: number, target: EventTarget | null) => void) {
+function useLongPress(open: (x: number, y: number, target: EventTarget | null) => void, close: () => void) {
   const timer = useRef<number | null>(null)
   const fired = useRef(false)
   /** 按下起点：用位移是否超过容差来判断"抖动"还是"划动"。 */
@@ -180,9 +180,18 @@ function useLongPress(open: (x: number, y: number, target: EventTarget | null) =
       }
       if (Math.abs(e.clientX - o.x) > LONG_PRESS_TOLERANCE || Math.abs(e.clientY - o.y) > LONG_PRESS_TOLERANCE) {
         clear()
+        // ⛔ 触屏泄漏守护（2026-09-30 用户报告「有些情况手机无法划动虚拟视图的历史，
+        // 打开侧边栏后恢复正常」的根因）：长按**已经触发**菜单后继续拖动 = 用户其实
+        // 在滚动（长按是误触发）—— 菜单必须自行关闭。旧实现只清计时器（对已触发的
+        // 菜单无效），菜单 + 透明遮罩留在原地；触屏滑动不合成 mousedown（遮罩的
+        // 唯一关闭路径）⇒ 遮罩泄漏 ⇒ 后续每个新手势都命中遮罩（portal 到 body，无
+        // 滚动祖先）⇒ 历史划不动，直到点顶栏按钮（tap 合成 mousedown 顺带把遮罩
+        // 点掉）—— 正是用户报的完整闭环。触屏长按的隐式指针捕获保证拖动的
+        // pointermove 仍派发到本元素，这条路径在抬手前的整个手势内都可达。
+        if (fired.current) close()
       }
     },
-    [clear],
+    [clear, close],
   )
   const onClickCapture = useCallback((e: React.MouseEvent) => {
     if (fired.current) {
@@ -226,7 +235,10 @@ export function CopyTarget({
     },
     [kind, iteration, tools],
   )
-  const press = useLongPress(openAt)
+  // 触屏泄漏守护（2026-09-30）：长按已开菜单后拖走（>10px）= 用户想滚动 —— 菜单
+  // 必须自行关闭（见 useLongPress 的 onPointerMove 注释）。
+  const closeAt = useCallback(() => setOpen(null), [])
+  const press = useLongPress(openAt, closeAt)
   const isTouch = useIsTouch()
 
   // ⚠️ 不使用任何全局 window 监听（仓库规则：per-session 代码禁止全局监听，防跨会话污染）。
@@ -341,6 +353,14 @@ export function CopyTarget({
               className="fixed inset-0 z-40"
               onMouseDown={() => setOpen(null)}
               onWheel={() => setOpen(null)}
+              // ⛔ 触屏泄漏守护（2026-09-30 用户报告「有些情况手机无法划动虚拟视图的
+              // 历史，打开侧边栏后恢复正常」的根因）：触屏滑动/长按抬手不合成
+              // mousedown（触摸兼容模型），仅有 mousedown/wheel/contextmenu 的遮罩在
+              // 触屏上永远关不掉 ⇒ 泄漏的透明遮罩盖住全屏（z-40 连顶栏一起盖），
+              // 新手势命中它而它 portal 到 body（无滚动祖先）⇒ 历史划不动。补
+              // onTouchStart：任何新手势（tap/划）的第一下就关闭 —— 与桌面
+              // onMouseDown 语义对齐。
+              onTouchStart={() => setOpen(null)}
               onContextMenu={(e) => {
                 e.preventDefault()
                 setOpen(null)

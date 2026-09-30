@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -819,12 +820,16 @@ func SaveToFile(path string, cfg *Config) error {
 	// 覆盖前先把**现有文件**另存一份带时间戳的备份：即使本次写入内容有问题，用户原配置
 	// 也永远可恢复（与仓库既有的 config.json.bak-<时间戳> 约定一致）。备份是**尽力**行为：
 	// 失败只打 WARN，绝不因此阻断写入/启动（fail-closed 打在写配置路径上会让正常启动挂掉）。
+	// 轮转（2026-09-30 用户要求「遗留的 Config 不要超过 10 个」）：备份是每次保存一份、
+	// 时间戳命名 —— 不轮转会无界堆积（实测 ~/.xbot 两个月堆了 1189 个）。写完即裁到
+	// 最新 configBackupKeep 份；轮转同样尽力而为。
 	if prev, readErr := os.ReadFile(path); readErr == nil && len(prev) > 0 {
 		bak := fmt.Sprintf("%s.bak-%s", path, time.Now().UTC().Format("20060102-150405"))
 		if werr := os.WriteFile(bak, prev, 0o600); werr != nil {
 			slog.Warn("config backup failed — writing anyway (a config save must never be blocked)",
 				"path", path, "error", werr)
 		}
+		pruneConfigBackups(path)
 	}
 
 	var renameErr error
@@ -841,6 +846,44 @@ func SaveToFile(path string, cfg *Config) error {
 		return fmt.Errorf("rename config: %w", renameErr)
 	}
 	return nil
+}
+
+// configBackupKeep 是每个配置文件保留的时间戳备份数量上限。备份机制（2026-09-16）
+// 每次保存写一份 `config.json.bak-<UTC 时间戳>`；不轮转会无界堆积（实测 ~/.xbot
+// 两个月堆了 1189 个）。用户 2026-09-30 明确要求「遗留的 Config 不要超过 10 个」。
+const configBackupKeep = 10
+
+// pruneConfigBackups 裁剪 path 的时间戳备份到最新 configBackupKeep 份
+// （匹配 `<path>.bak-*`，固定宽度 UTC 时间戳使字典序 == 时间序）。尽力而为：
+// 任何失败只 WARN —— 轮转绝不能阻塞配置保存（与备份写入同纪律）。
+func pruneConfigBackups(path string) {
+	dir := filepath.Dir(path)
+	prefix := filepath.Base(path) + ".bak-"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		slog.Warn("config backup rotation failed — listing skipped (never blocks saves)",
+			"dir", dir, "error", err)
+		return
+	}
+	var baks []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), prefix) {
+			baks = append(baks, e.Name())
+		}
+	}
+	if len(baks) <= configBackupKeep {
+		return
+	}
+	sort.Strings(baks) // YYYYMMDD-HHMMSS：字典序 == 时间序
+	for _, name := range baks[:len(baks)-configBackupKeep] {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			slog.Warn("config backup rotation failed — delete skipped (never blocks saves)",
+				"file", name, "error", err)
+		}
+	}
 }
 
 // mergeJSONPreserveUnknown 将 structData 的顶层 key 深度合并到 existing 上。

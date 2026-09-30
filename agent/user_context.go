@@ -121,7 +121,17 @@ type llmFactoryRef struct {
 	subAgentSemAcquireForUser func(senderID, channel string) func(context.Context) func()
 }
 
-// ResolveLLMForModel resolves an LLM client for a specific model (SubAgent path).
+// ResolveLLMForModel resolves an LLM client for the SubAgent path, per the
+// tier-first rule (用户要求 2026-09-30「首先要根据他们自己设定的等级去表里查
+// 对应等级的模型，查不到了之后再 fall back 到主会话的模型」):
+//
+//  1. 角色设定的等级（vanguard/balance/swift）→ user_settings 的 tier_<等级>
+//     配置（值 "subID|model"，LLMFactory.GetLLMForModel → resolveTierModel，
+//     含等级内 fallback 链 swift/vanguard→balance、balance→vanguard）；
+//  2. 查不到（等级未配置 / pair 的订阅不可用）⇒ 回落**主会话的模型**
+//     （uc.LLMClient/uc.Model），不是部署默认 —— GetLLMForModel 内部查不到时
+//     返回的是部署默认 client（f.GetLLM）+ ok=false，必须在这里显式改道。
+//
 // Model-subscription integration: the (subID, model) pair is returned together —
 // GetLLMForModel resolves the owning subscription exactly once; there is no
 // separate "resolve subID for a resolved model" second pass.
@@ -136,7 +146,12 @@ func (uc *UserContext) ResolveLLMForModel(model string) (client llm.LLM, resolve
 	var ok bool
 	client, subID, resolvedModel, maxCtx, thinkingMode, maxOut, ok = uc.factory.getLLMForModel(uc.SenderID, model)
 	if !ok {
-		log.WithFields(log.Fields{"model": model, "sender": uc.SenderID}).Warn("model not found for SubAgent, falling back to main model")
+		// ⛔ 等级/模型查不到 ⇒ 回落主会话的模型（不是部署默认）。旧实现把
+		// GetLLMForModel 内部回落的部署默认 client 原样透传 —— 日志写
+		// "falling back to main model" 但代码返回部署默认（说一套做一套）。
+		// 与 model=="" 的继承路径返回同一份值，保证语义一致。
+		log.WithFields(log.Fields{"model": model, "sender": uc.SenderID, "main_model": uc.Model}).Warn("model/tier not found for SubAgent, falling back to MAIN SESSION model")
+		return uc.LLMClient, uc.Model, uc.MaxContextTokens, uc.ThinkingMode, uc.MaxOutputTokens, uc.SubID
 	}
 	return client, resolvedModel, maxCtx, thinkingMode, maxOut, subID
 }

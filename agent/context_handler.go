@@ -502,13 +502,13 @@ func (a *Agent) handleExportSession(ctx context.Context, msg bus.InboundMessage)
 
 	// Complete append-only history → Records
 	if a.multiSession != nil {
-		if db := a.multiSession.DB(); db != nil {
-			if tenantID := tenantSession.TenantID(); tenantID > 0 {
-				if records, err := sqlite.NewSessionService(db).GetFullHistory(tenantID); err == nil {
-					session.Records = make([]protocol.ExportedRecord, 0, len(records))
-					for _, r := range records {
-						session.Records = append(session.Records, historyRecordToExported(r))
-					}
+		if tenantID := tenantSession.TenantID(); tenantID > 0 {
+			// v71（每会话一个 DB）：session_messages 在会话库 —— 经
+			// TenantSession.SessionService()（绑定会话库）查询。
+			if records, err := tenantSession.SessionService().GetFullHistory(tenantID); err == nil {
+				session.Records = make([]protocol.ExportedRecord, 0, len(records))
+				for _, r := range records {
+					session.Records = append(session.Records, historyRecordToExported(r))
 				}
 			}
 		}

@@ -128,12 +128,18 @@ func (s *ChatService) ListUserChats(channel, senderID, currentChatID string, off
 		args = append(args, cid)
 	}
 
+	// v71（每会话一个 DB）：preview 改读 tenants.preview 列（写入路径维护 ——
+	// TenantSession 的 append 钩子 / 迁移回填 / rewind/clear 重算都写这一列）。
+	// 旧子查询 JOIN session_messages（拆库后主库没有消息数据 —— 消息在每会话
+	// 独立库里，跨库 JOIN 不可能）。语义以 eligible 追加为准：最新一条
+	// role IN (user,assistant) 且非 display_only 的**钩子路径**追加消息，
+	// substr 256（写入侧截断），读取侧 Go truncate 80 runes 不变。
+	// ⚠️ TenantSession.AddMessage / AddMessageWithID 不走钩子（卡片回复/
+	// persistMsg 用），preview 不由它们更新 —— 与旧子查询（拿最新行）非逐字
+	// 等价，但通常更好（旧子查询会拿到空 content 的收尾行）。
 	query := fmt.Sprintf(`
 		SELECT t.chat_id, t.last_active_at,
-			(SELECT substr(sm.content, 1, 256) FROM session_messages sm
-			 WHERE sm.tenant_id = t.id AND sm.role IN ('user', 'assistant')
-			   AND COALESCE(sm.display_only, 0) = 0
-			 ORDER BY sm.id DESC LIMIT 1) AS preview
+			COALESCE(t.preview, '') AS preview
 		FROM tenants t
 		WHERE t.channel = ? AND t.chat_id IN (%s)
 	`, strings.Join(placeholders, ","))
