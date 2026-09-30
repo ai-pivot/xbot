@@ -274,8 +274,15 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		return ag.IsProcessing(senderID)
 	}
 	// Wire GetActiveProgress
+	// 折叠视图（2026-09-30 收尾）：本回调的**全部消费方都是 Web SSE/WS 推送**（web_sse.go:266
+	// SSE fallback 发布 / :756 心跳快照入 ring（断线重连重放）/ web.go:1477 重连 replay 补发）——
+	// FetchAll 全量快照会把 busy 大 turn 的全部已完成迭代（1,661 迭代 ≈ MB 级）经 SSE 推给
+	// 浏览器。改走 GetActiveProgressFolded：尾部 HistoryRegionWindow 个展示区域 + tools_folded
+	// 轻字段 + iteration_regions_before 声明（前端消费链已闭环：normalize → snapshotToLive →
+	// live/frozen 行顶「更早区域」分隔条）。CLI 零影响：CLI 走 RPC get_active_progress
+	// （rpc_table.go:1662 直接调 Ag.GetActiveProgress 原方法，不经此回调）。
 	callbacks.GetActiveProgress = func(channel, chatID string) *protocol.ProgressEvent {
-		return ag.GetActiveProgress(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
+		return ag.GetActiveProgressFolded(channel, chatID, protocol.FetchAll()) // -1 = include iteration 0
 	}
 	callbacks.GetPendingAskUser = func(channel, chatID string) *protocol.ProgressEvent {
 		return ag.GetPendingAskUser(channel, chatID)

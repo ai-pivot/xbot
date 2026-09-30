@@ -1,7 +1,9 @@
 package serverapp
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"testing"
 
 	"xbot/channel"
@@ -209,4 +211,35 @@ func TestHistoryRegionSegment_ReconstructFullTurn(t *testing.T) {
 			t.Fatalf("拼回后缺迭代 %d —— 完整性与线性一致被破坏", n)
 		}
 	}
+}
+
+// =============================================================================
+// 守护：Web SSE/WS 推送快照（callbacks.GetActiveProgress 回调）必须走折叠视图
+//
+// 该回调的全部消费方是 Web SSE/WS 推送（web_sse.go:266 SSE fallback / :756 心跳快照
+// 入 ring（断线重连重放）/ web.go:1477 重连 replay 补发）——若退回 FetchAll 全量，
+// busy 大 turn 的全部已完成迭代（1,661 迭代 ≈ MB 级）会经 SSE 推给浏览器，绕过整个
+// 折叠视图架构（用户 2026-09-30：「确保 Web 端以后都不会拉全量了吧」）。
+//
+// 行为级测试需要 agent 私有字段（lastProgressSnapshot/iterationHistories）注入快照
+// ——无公开 API —— 故用源码断言钉死装配行（项目先例：前端 noLegacyFoldFormat.test.tsx
+// 的 FORBIDDEN_CODE 源码扫描）。mutation 判别力：把回调体改回 ag.GetActiveProgress(...)
+// ⇒ 本条必红。
+func TestCallbacksGetActiveProgressUsesFoldedVariant(t *testing.T) {
+	src, err := os.ReadFile("callbacks.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := bytes.Index(src, []byte("callbacks.GetActiveProgress = func"))
+	if idx < 0 {
+		t.Fatal("callbacks.GetActiveProgress 回调注册不存在（被删/改名 ⇒ 请同步本守护与 web_sse 消费方）")
+	}
+	window := src[idx : idx+700]
+	if bytes.Contains(window, []byte("ag.GetActiveProgressFolded(")) {
+		return // 装配仍走折叠视图
+	}
+	if bytes.Contains(window, []byte("ag.GetActiveProgress(")) {
+		t.Fatalf("callbacks.GetActiveProgress 回调退回了全量 GetActiveProgress —— Web SSE/WS 推送快照不再走折叠视图（大 turn MB 级载荷回归）。窗口内容:\n%s", window)
+	}
+	t.Fatalf("callbacks.GetActiveProgress 回调体内未发现 GetActiveProgressFolded 调用 —— 请确认装配仍走折叠视图。窗口内容:\n%s", window)
 }
