@@ -359,3 +359,18 @@ click 拦截 / 超容差取消 / 桌面零包裹 + 右键照常）+ **E2E** `e2e
 （真实 hasTouch+isMobile Chromium：开抽屉 → dispatchEvent pointerdown → 菜单出现；revert 修复
 则 `touch-context-trigger` 消失、长按无菜单 ⇒ 必红）。E2E 断言的菜单文案是
 `session.openInTab` = **「在新标签页中打开」**（不是「在新标签页打开」）。
+
+**④ 触屏打开含输入框的 Popover/Dialog 不得自动聚焦输入框（2026-09-30 用户报告
+「手机端现在切换模型就会弹出键盘」）。**
+Radix Popover/Dialog 的内容包在 `FocusScope` 里，默认 `onMountAutoFocus` =
+`focusFirst(getTabbableCandidates(content))`（react-focus-scope 源码实证）—— 聚焦
+内容里**第一个可聚焦元素**。`ModelSelector` 的 PopoverContent 第一个元素是**搜索
+输入框** ⇒ 触屏上打开选择器即弹软键盘，盖住半个模型列表；用户视角就是「切换模型
+就会弹出键盘」。修复：`PopoverContent` 上 `onOpenAutoFocus={isTouch ?
+(e) => e.preventDefault() : undefined}`（`useIsTouch` 分流）—— 触屏不聚焦任何
+元素（搜索是显式点击搜索框才该发生的事），桌面保留默认聚焦（键入即筛选的既有
+UX）。**通用铁律：触屏上「打开面板 → 自动聚焦可编辑元素」= 弹软键盘 —— 任何
+含 input/textarea 的 Popover/Dialog 在触屏环境都必须 preventDefault 掉
+openAutoFocus**。守护：`ModelSelector.test.tsx`（触屏 → activeElement 不是搜索框 /
+桌面反向 → 仍是搜索框；修复前触屏例红）。E2E 层面 headless 无法观测真实软键盘，
+聚焦断言（activeElement）即真实链路的确定性判据。
