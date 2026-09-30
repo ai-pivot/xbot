@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -634,5 +635,52 @@ func TestEvictSessionDBGuardSkipsRecreated(t *testing.T) {
 	mt.sessionDBMu.Unlock()
 	if alive {
 		t.Fatal("evictSessionDB did not close the DB for a non-recreated session")
+	}
+}
+
+// TestNewSessionDoesNotAttachMainDB —— 2026-09-30 生产事故根治的判别测试。
+//
+// 事故：新建会话因惰性迁移**无条件 ATTACH 主库**，撞上主库坏死的 WAL 状态报
+// SQLITE_IOERR_SHORT_READ(522)（服务内存量连接好的、新 ATTACH 坏的），新建会话
+// 与子代理 spawn 直接失败。用户的判断（「新建会话又不需要迁移」）就是修复方向。
+//
+// 判别手法：把主库文件**改名**（新的 ATTACH 必然找不到文件 → 必失败），服务自身
+// 的池连接仍持旧 inode（Linux 语义）继续可用 —— 与事故现场完全同构。
+//
+//	修复后：新会话经主库现有连接探测无残留行 ⇒ 完全不 ATTACH ⇒ 创建成功。
+//	修复前（无条件迁移）：ATTACH 找不到主库文件 ⇒ 打开会话报错 ⇒ 本测试必红。
+func TestNewSessionDoesNotAttachMainDB(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows 不允许重命名**被打开**的文件（SQLite 不启用 FILE_SHARE_DELETE），
+		// 而本测试的判别手法正是「改名池持开的主库文件 ⇒ 新 ATTACH 必失败」——
+		// 该场景在 Windows 上无法表达。判别力由 Linux/macOS CI + 本地承担；
+		// 变异自证（探针恒 true ⇒ 必红）在 Linux 上成立。
+		t.Skip("renaming an open SQLite DB file is not possible on Windows; the ATTACH-break scenario is POSIX-only")
+	}
+	mt := newSessionDBTestMT(t)
+	// 先建一个会话，让主库池的连接都进入稳态。
+	if _, err := mt.GetOrCreateSession("test", "existing-ok"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 主库文件改名：新 ATTACH 的路径失效（存量池连接走旧 inode，不受影响）。
+	moved := mt.dbPath + ".moved-for-test"
+	if err := os.Rename(mt.dbPath, moved); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Rename(moved, mt.dbPath) })
+
+	// 全新会话必须仍可创建 —— 不依赖任何新 ATTACH。
+	sess, err := mt.GetOrCreateSession("test", "brand-new-after-move")
+	if err != nil {
+		t.Fatalf("new session creation must NOT ATTACH the main DB (2026-09-30 production incident): %v", err)
+	}
+	info, ierr := mt.tenantSvc.GetTenantDBInfo(sess.TenantID())
+	if ierr != nil || !info.Migrated {
+		t.Fatalf("new session must be marked migrated without a copy: info=%+v err=%v", info, ierr)
+	}
+	// 且会话库自包含（可正常写入）。
+	if _, err := sess.AppendMessage(llm.NewUserMessage("hello")); err != nil {
+		t.Fatalf("new session DB must be writable: %v", err)
 	}
 }

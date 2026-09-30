@@ -312,3 +312,44 @@ func fileSize(t *testing.T, path string) int64 {
 	}
 	return fi.Size()
 }
+
+// TestHasLegacyRows — 迁移决策探针（2026-09-30 生产事故修复的判别基础）：
+// 全新租户两表皆空 ⇒ false（不迁移）；任一表有行 ⇒ true（必须复制）。
+func TestHasLegacyRows(t *testing.T) {
+	db := openTestDB(t)
+	ts := NewTenantService(db)
+	ss := NewSessionService(db)
+	tenantID, err := ts.GetOrCreateTenantID("test", "probe-rows")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 全新租户：两表皆空 ⇒ false。
+	got, err := ss.HasLegacyRows(tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatal("brand-new tenant must report no legacy rows (no migration needed)")
+	}
+
+	// 仅 session_messages 有行 ⇒ true。
+	if _, err := ss.AppendMessage(tenantID, llm.NewUserMessage("legacy")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = ss.HasLegacyRows(tenantID); err != nil || !got {
+		t.Fatalf("legacy session_messages row: got (%v, %v), want (true, nil)", got, err)
+	}
+
+	// 隔离到另一个只有 iteration_history 的租户 ⇒ 也必须 true。
+	tenantIH, err := ts.GetOrCreateTenantID("test", "probe-iter-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ss.AppendIterationHistory(tenantIH, 0, 7, IterationRecord{TurnID: 7, Iteration: 1, Content: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = ss.HasLegacyRows(tenantIH); err != nil || !got {
+		t.Fatalf("legacy iteration_history row: got (%v, %v), want (true, nil)", got, err)
+	}
+}

@@ -687,28 +687,41 @@ func migrateV71ToV72(db *DB) error {
 		}
 	}
 	rows.Close()
+	// F2 守卫的失败安全：任一下降级 UPDATE 失败 ⇒ 整段删除**跳过**（绝不删一个
+	// 会话库文件已缺失的租户的主库行 —— 那会让唯一副本消失）。启动照常进行。
+	downgradeFailed := false
 	for _, d := range downgrades {
 		if _, err := conn.Exec("UPDATE tenants SET migrated = 0 WHERE id = ?", d.id); err != nil {
-			return fmt.Errorf("migrate v71->v72 downgrade tenant %d: %w", d.id, err)
+			log.WithError(err).WithField("tenant_id", d.id).
+				Warn("v72: downgrade failed — SKIPPING all deletions this run (data safety); rows preserved, retry next startup")
+			downgradeFailed = true
+			break
 		}
 		log.WithFields(log.Fields{"tenant_id": d.id, "db_path": d.pth}).
 			Warn("v72: session DB file missing for migrated tenant — downgraded to migrated=0 (main-DB rows preserved; lazy migration will re-copy)")
 	}
 
-	if deleteGuard("session_messages") {
-		if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
-			return fmt.Errorf("migrate v71->v72 delete migrated session_messages: %w", err)
+	// 删除段（2026-09-30 生产事故容错）：损坏库上 DELETE 可能报 SQLITE_CORRUPT
+	//（生产实测 iteration_history 有页级损坏；VACUUM 必失败，DELETE 视扫描路径
+	// 也可能失败）。铁律「启动路径永不阻塞」优先：失败只 WARN + 继续，残留行是
+	// 不可达的冗余副本（读路径已全走会话库），修库（.recover）后可手动清理。
+	// 版本号仍推进到 72 —— 避免每次启动重复跑失败的 3.5G 删除。
+	if downgradeFailed {
+		log.Warn("v72: deletions skipped due to a failed downgrade (fail-safe); stale main-DB rows remain (unreachable, harmless)")
+	} else {
+		if deleteGuard("session_messages") {
+			if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
+				log.WithError(err).Warn("v72: delete migrated session_messages failed — continuing (startup must never block; stale rows are unreachable redundant copies)")
+			} else if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id NOT IN (SELECT id FROM tenants)`); err != nil {
+				log.WithError(err).Warn("v72: delete orphan session_messages failed — continuing (startup must never block)")
+			}
 		}
-		if _, err := conn.Exec(`DELETE FROM session_messages WHERE tenant_id NOT IN (SELECT id FROM tenants)`); err != nil {
-			return fmt.Errorf("migrate v71->v72 delete orphan session_messages: %w", err)
-		}
-	}
-	if deleteGuard("iteration_history") {
-		if _, err := conn.Exec(`DELETE FROM iteration_history WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
-			return fmt.Errorf("migrate v71->v72 delete migrated iteration_history: %w", err)
-		}
-		if _, err := conn.Exec(`DELETE FROM iteration_history WHERE tenant_id NOT IN (SELECT id FROM tenants)`); err != nil {
-			return fmt.Errorf("migrate v71->v72 delete orphan iteration_history: %w", err)
+		if deleteGuard("iteration_history") {
+			if _, err := conn.Exec(`DELETE FROM iteration_history WHERE tenant_id IN (SELECT id FROM tenants WHERE COALESCE(migrated, 0) = 1)`); err != nil {
+				log.WithError(err).Warn("v72: delete migrated iteration_history failed — continuing (startup must never block; a corrupt main DB needs a .recover repair)")
+			} else if _, err := conn.Exec(`DELETE FROM iteration_history WHERE tenant_id NOT IN (SELECT id FROM tenants)`); err != nil {
+				log.WithError(err).Warn("v72: delete orphan iteration_history failed — continuing (startup must never block)")
+			}
 		}
 	}
 
