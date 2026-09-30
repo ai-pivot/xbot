@@ -5028,7 +5028,10 @@ func (a *Agent) injectPeerMessage(targetSessionKey, content string) string {
 
 // allowedTools 为工具白名单，为空时使用所有工具（除 SubAgent）
 func (a *Agent) RunSubAgent(parentCtx *tools.ToolContext, task string, systemPrompt string, allowedTools []string, caps tools.SubAgentCapabilities, roleName, instance, model string) (string, error) {
-	cfg := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)
+	cfg, err := a.buildSubAgentRunConfig(parentCtx.Ctx, parentCtx, task, systemPrompt, allowedTools, caps, roleName, false, instance, model)
+	if err != nil {
+		return "", err
+	}
 	out := Run(parentCtx.Ctx, cfg)
 	if out.Error != nil {
 		return out.Content, out.Error

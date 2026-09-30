@@ -64,6 +64,14 @@ type interactiveAgent struct {
 	pendingMessages  []pendingUserMsg    // messages queued while Run is in progress
 	subID            string              // subscription ID for TUI status bar display
 	bgTask           *tools.SubAgentTask // waitable background task (registered on background spawn) — closed on ALL completion paths
+
+	// userCtx 是会话的**用户身份快照**（spawn 时从父 ctx 捕获）。交互式会话的
+	// Run ctx 从 agentCtx 派生（跨请求存活），不携带 UserContext —— 嵌套 spawn
+	//（SubAgent 工具）因此拿到 nil 接收者而 panic（生产 cli-panic.log 50/50，
+	// 2026-09-17 起，2026-09-30 根治）。所有 Run ctx 派生（bg/续跑）从这里
+	// 重新携带；fg 首跑派生自 subCtx 天然携带。等级查表（tier_* 配置）与主会话
+	// 模型回落都以它为前提 —— buildSubAgentRunConfig 对 nil 显式报错。
+	userCtx *UserContext
 }
 
 // drainPendingMessages drains all pending user messages queued while the SubAgent
@@ -1049,12 +1057,31 @@ func (a *Agent) SpawnInteractiveSession(
 	}
 	subCtx := WithCallChain(ctx, cc.Spawn(roleName))
 
+	// ⛔ 会话用户身份快照（2026-09-30 panic 根治）：Run ctx 从 agentCtx 派生时
+	// 会丢 UserContext，嵌套 spawn 因此拿 nil panic（50/50）—— spawn 时把它存进
+	// 会话，所有后续 Run ctx 派生（bg 首跑/续跑/fg 替换）都从这里携带。
+	placeholder.userCtx = UserContextFromContext(subCtx)
+
 	caps := tools.CapabilitiesFromMap(msg.Capabilities)
 	subModel := ""
 	if msg.Metadata != nil {
 		subModel = msg.Metadata["model"]
 	}
-	cfg := a.buildSubAgentRunConfig(subCtx, parentCtx, msg.Content, msg.SystemPrompt, msg.AllowedTools, caps, roleName, true, instance, subModel)
+	cfg, err := a.buildSubAgentRunConfig(subCtx, parentCtx, msg.Content, msg.SystemPrompt, msg.AllowedTools, caps, roleName, true, instance, subModel)
+	if err != nil {
+		// 与 CanSpawn 失败同款清理：会话已 LoadOrStore 占位，必须摘除 + 侧栏收尾。
+		a.interactiveSubAgents.Delete(key)
+		a.emitSessionState(protocol.SessionEvent{
+			Channel:    originChannel,
+			ChatID:     originChatID,
+			Action:     "subagent_stopped",
+			Role:       roleName,
+			Instance:   instance,
+			SessionKey: key,
+			ParentID:   originChatID,
+		})
+		return &channelpkg.OutboundMsg{Content: err.Error(), Error: err}, nil
+	}
 
 	// Update placeholder with cfg so GetAgentSessionDumpByFullKey returns the
 	// correct model name, max context tokens, etc. — even during the first Run().
@@ -1223,6 +1250,12 @@ func (a *Agent) SpawnInteractiveSession(
 		runCtx = context.WithValue(runCtx, bgParentKey{}, key)
 		// Copy call chain into derived context
 		runCtx = WithCallChain(runCtx, CallChainFromContext(subCtx))
+		// ⛔ UserContext 携带（2026-09-30 panic 根治）：bgBase 取自 agentCtx，
+		// 不含 UserContext —— 嵌套 spawn（SubAgent 工具 → buildSubAgentRunConfig）
+		// 拿 nil 接收者 panic（生产 50/50）。从会话身份快照重新携带。
+		if placeholder.userCtx != nil {
+			runCtx = WithUserContext(runCtx, placeholder.userCtx)
+		}
 
 		placeholder.mu.Lock()
 		placeholder.cancelCurrent = runCancel
@@ -1683,6 +1716,7 @@ func (a *Agent) SpawnInteractiveSession(
 		background:       false,
 		parentKey:        placeholder.parentKey, // preserve parent key for cascade cleanup
 		groupID:          placeholder.groupID,   // preserve group membership
+		userCtx:          placeholder.userCtx,   // 会话用户身份快照（嵌套 spawn 的模型解析依赖）
 	}
 	if len(cfg.Messages) > 0 {
 		ia.systemPrompt = cfg.Messages[0]
@@ -2135,6 +2169,12 @@ func (a *Agent) SendToInteractiveSession(
 	runCtx = WithCallChain(runCtx, CallChainFromContext(subCtx))
 	if cb, ok := SubAgentProgressFromContext(subCtx); ok {
 		runCtx = WithSubAgentProgress(runCtx, cb)
+	}
+	// ⛔ UserContext 携带（2026-09-30 panic 根治）：asyncBase 取自 agentCtx/
+	// 发送方 ctx（RPC 续跑路径不含 UserContext）—— 嵌套 spawn 拿 nil panic。
+	// 从会话身份快照（spawn 时捕获）重新携带，与会话的 LLM 配置同生命周期。
+	if ia.userCtx != nil {
+		runCtx = WithUserContext(runCtx, ia.userCtx)
 	}
 	ia.cancelCurrent = runCancel
 	ia.mu.Unlock()

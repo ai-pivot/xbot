@@ -35,7 +35,10 @@ func TestSubAgentRunConfig_WiresBgTaskManagerAndIdentity(t *testing.T) {
 		SenderName: "Smith",
 	}
 
-	cfg := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, tools.SubAgentCapabilities{}, "reviewer", false, "inst-1", "")
+	cfg, err := a.buildSubAgentRunConfig(ctx, parentCtx, "task", "", nil, tools.SubAgentCapabilities{}, "reviewer", false, "inst-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.BgTaskManager == nil {
 		t.Fatal("SubAgent RunConfig must carry BgTaskManager (Shell background tasks / auto-promote depend on it)")
 	}
