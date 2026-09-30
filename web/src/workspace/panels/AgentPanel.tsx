@@ -25,7 +25,7 @@ import { usePendingEdit, goalEqual, todosListEqual } from '@/hooks/usePendingEdi
 import { useActiveSSESubscription } from '@/hooks/useActiveSSESubscription'
 import { useSessionContext } from '@/hooks/useSessionContext'
 import { subscribeLLMConfigChanged, useLLMSettings } from '@/hooks/useLLMSettings'
-import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, getPendingAskUser } from '@/components/agent/api'
+import { rewindHistory, fetchHistory, setGoal, clearGoal, getGoal, updateTodos, getPendingAskUser, fetchRegions, fetchIterationDetail } from '@/components/agent/api'
 import { resolveUserMessageDBIDFromHistMsgs } from '@/components/agent/rewind'
 import { postAPI } from '@/lib/api'
 import { sendStartsTurn } from '@/lib/sendTurn'
@@ -34,6 +34,7 @@ import type { QueueItemPayload } from '@/types/shared'
 import { AskUserPanel } from '@/components/agent/AskUserPanel'
 import { ContextRing } from '@/components/agent/ContextRing'
 import { ToolSessionContext } from '@/components/agent/ToolSessionContext'
+import { RegionActionsContext, type IterationsLoadedEvent, type RegionActions } from '@/components/agent/RegionActionsContext'
 import { MessageInput } from '@/components/agent/MessageInput'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
@@ -467,6 +468,84 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   resetAgentChatRef.current = agentChat.reset
   hydrateSessionFieldsRef.current = agentChat.hydrateSessionFields
   const progressSnapshot = agentChat.liveProgress
+
+  // ── 展示区域段 / 迭代详情**按需取回**（D1 §3.2/§3.3）──────────────────────
+  // 唯一数据通路：组件树深处的消费者（分隔条哨兵、浮层详情）经 Context 拿到回调 →
+  // 这里 fetch → `dispatchIterationsLoaded`（状态机单通道）→ 全量重渲染。
+  // ⚠️ 不逐层透传 props：props 链穿透 TurnBody/CommittedTurn 会击穿 memo。
+  //
+  // in-flight 去重活在**面板级**（而非行组件内）：行会被虚拟列表反复挂卸，
+  // 「同一 turn 同时只允许一个段请求 / 同一 (turnID, iteration) 只发一次详情」必须
+  // 在行之外成立。同一 key 的并发调用拿到**同一个 promise**。
+  const regionDetailInFlightRef = useRef(new Map<string, Promise<boolean>>())
+  const regionSegmentInFlightRef = useRef(new Map<number, Promise<boolean>>())
+  // 会话选择子走 ref 现读：回调引用恒定（Context value 不变 ⇒ 不误伤消费方 memo）。
+  const regionSessionRef = useRef<{ channel: string | null; chatID: string | null }>({ channel: null, chatID: null })
+  regionSessionRef.current = { channel: messageChannel, chatID }
+  // `useAgentChatState` 的 `dispatchIterationsLoaded`（C1 线契约已落地：直接属性访问，
+  // 让签名漂移在编译期暴露，不再用结构化 cast）。
+  const dispatchIterationsLoadedRef = useRef<((ev: IterationsLoadedEvent) => void) | null>(null)
+  dispatchIterationsLoadedRef.current = agentChat.dispatchIterationsLoaded ?? null
+
+  const regionActions = useMemo<RegionActions>(() => {
+    /** 详情按需（浮层打开）。 */
+    const loadIterationDetail = (turnID: number, iteration: number): Promise<boolean> => {
+      const key = `${turnID}:${iteration}`
+      const existing = regionDetailInFlightRef.current.get(key)
+      if (existing) return existing
+      const p = (async () => {
+        const { channel, chatID: cid } = regionSessionRef.current
+        if (!channel || !cid || turnID <= 0 || iteration <= 0) return false
+        try {
+          const it = await fetchIterationDetail(ws, { channel, chatID: cid, turnID, iteration })
+          // null = 后端返回了无法解析的数据 ⇒ 失败（调用方显式重试，不静默）
+          if (!it) return false
+          const dispatch = dispatchIterationsLoadedRef.current
+          if (!dispatch) return false
+          dispatch({ turnID, iterations: [it] }) // 不带 regionsBefore：详情 hydrate 不动区域计数
+          return true
+        } catch {
+          return false
+        }
+      })()
+      regionDetailInFlightRef.current.set(key, p)
+      void p.finally(() => { regionDetailInFlightRef.current.delete(key) })
+      return p
+    }
+    /** 区域段按需（向更旧方向取一段）。 */
+    const loadRegionSegment = (turnID: number, beforeIteration: number): Promise<boolean> => {
+      const existing = regionSegmentInFlightRef.current.get(turnID)
+      if (existing) return existing
+      const p = (async () => {
+        const { channel, chatID: cid } = regionSessionRef.current
+        if (!channel || !cid || turnID <= 0 || beforeIteration <= 0) return false
+        try {
+          const { iterations, regionsBefore } = await fetchRegions(ws, {
+            channel,
+            chatID: cid,
+            turnID,
+            beforeIteration,
+          })
+          if (iterations.length === 0) return false
+          const dispatch = dispatchIterationsLoadedRef.current
+          if (!dispatch) return false
+          dispatch({ turnID, iterations, regionsBefore })
+          return true
+        } catch {
+          return false
+        }
+      })()
+      regionSegmentInFlightRef.current.set(turnID, p)
+      void p.finally(() => { regionSegmentInFlightRef.current.delete(turnID) })
+      return p
+    }
+    return {
+      loadIterationDetail,
+      fetchInFlight: (turnID, iteration) => regionDetailInFlightRef.current.has(`${turnID}:${iteration}`),
+      loadRegionSegment,
+      segmentInFlight: (turnID) => regionSegmentInFlightRef.current.has(turnID),
+    }
+  }, [ws])
 
   // ── Queue state hydration（refresh / session switch / tab 可见性恢复）──
   // SSE queue_state events only fire on enqueue/dequeue — refresh has no events to
@@ -949,6 +1028,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   if (isPlaceholderMainAgent && sessionOwnedByPeerPanel) return null
 
   return (
+    <RegionActionsContext.Provider value={regionActions}>
     <ToolSessionContext.Provider
       value={{ channel: progressChannel, chatID: progressChatID }}
     >
@@ -1089,6 +1169,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       )}
     </div>
     </ToolSessionContext.Provider>
+    </RegionActionsContext.Provider>
   )
 }
 

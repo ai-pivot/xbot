@@ -143,12 +143,17 @@ export function historyToReplaced(
     // 后端按 turn 尾部截断迭代（历史响应有界化）⇒ 丢弃数量必须透传到渲染层，
     // 由 AssistantMessage 显示「更早的 N 个迭代」，绝不静默缺块。
     const itsTruncated = slot.assistants.reduce((n, a) => n + (a.iterationsTruncated ?? 0), 0)
+    // 该 turn 更早未下发的展示区域数（`regions_before`）—— 取 **max** 而非 sum：
+    // 它是**turn 级**权威计数，一个 turn 的多个 assistant 行（异常历史/压缩快照）
+    // 各自携带同一个 turn 级数字，相加会翻倍（服务端每个 turn 只算一次区域数）。
+    const regionsBeforeRaw = slot.assistants.reduce((n, a) => Math.max(n, a.regionsBefore ?? 0), 0)
+    const regionsBefore = regionsBeforeRaw > 0 ? regionsBeforeRaw : undefined
     const nonEmptyIts = nonEmptyArr(iterations)
     const payload =
       nonEmptyIts !== null
-        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated, compactions)
+        ? commitViaFold(nonEmptyIts, lastContent, itsTruncated, compactions, regionsBefore)
         : nonEmptyStr(lastContent) !== null
-          ? commitViaText(nonEmptyStr(lastContent)!, [], compactions)
+          ? commitViaText(nonEmptyStr(lastContent)!, [], compactions, regionsBefore)
           : null
     turns.push({
       id,

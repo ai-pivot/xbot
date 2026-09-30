@@ -15,7 +15,7 @@
  * 等"气泡之外"的形态已彻底删除。
  * GenUI 工具（uiMode）永不折叠，直接渲染为顶层卡片。
  */
-import { memo, useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { AnsiText } from './AnsiText'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -26,10 +26,11 @@ import { getToolIcon } from './toolIcons'
 import { isToolInProgress } from './statusVisual'
 import { syntheticShortName, syntheticSubject } from './SyntheticToolCard'
 import { useI18n } from '@/providers/i18n'
+import { useRegionActions, useTurnID } from './RegionActionsContext'
 import { syntheticKindOf } from './SyntheticToolCard'
 import { CATEGORY_COLOR, syntheticKindBadge, syntheticKindColor, toolCategory } from './toolVisuals'
 
-import { Check, Minus, X } from 'lucide-react'
+import { Check, Loader2, Minus, RefreshCw, X } from 'lucide-react'
 import type { WebToolProgress } from '@/types/shared'
 import i18n from '@/i18n'
 
@@ -53,6 +54,17 @@ const POPOVER_CLASS =
 
 interface FoldedToolGroupProps {
   tools: WebToolProgress[]
+  /**
+   * 迭代级折叠标记（`WebIteration.toolsFolded`）—— true ⇒ 工具详情
+   * （summary/args/detail/toolHints）未随历史下发，浮层打开时按
+   * `(turnID, iteration)` 拉完整数据（D1 §3.3）。
+   */
+  toolsFolded?: boolean
+  /**
+   * 折叠块的**头部**迭代号（`mergeToolRuns` 保留 head 迭代号）——
+   * 工具自带 `iteration` 时以工具自己的编号为准（吸收进本块的纯工具迭代）。
+   */
+  iterationNumber?: number
 }
 
 /** Extract a short parameter hint from the tool label (text after ": "). */
@@ -321,8 +333,20 @@ function formatElapsed(ms: number): string {
  * 单工具浮窗内容（用户要求信息齐全）：状态 header + summary + 统一参数块 + 完整渲染。
  * 参数由 ArgsView（hljs JSON 高亮）统一渲染——专用渲染器（Shell/Read 等）不展示
  * args JSON，fallback ToolCallBlock 由 hideArgs 抑制，全工具恰好一份参数块。
+ *
+ * D1（详情按需）：`toolsFolded` 迭代的工具详情未随历史下发 ⇒ 浮层打开时先发
+ * `fetchIterationDetail`。**浮层瞬间即可渲染**（标题/状态/工具名/耗时来自轻字段
+ * ——无感验收 G2），只有详情区显示小骨架；失败显示重试（不静默）。
  */
-function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
+function ToolPopoverDetail({
+  tool,
+  toolsFolded,
+  iterationNumber,
+}: {
+  tool: WebToolProgress
+  toolsFolded?: boolean
+  iterationNumber?: number
+}) {
   const { t } = useI18n()
   const status = singleStatus(tool)
   const color = statusColorVar(status)
@@ -333,47 +357,121 @@ function ToolPopoverDetail({ tool }: { tool: WebToolProgress }) {
   const rawSubject = syntheticShortName(tool, t) ? syntheticSubject(tool) : ''
   // 不给与标题重复的 subject（否则标题行出现「插话 💬 插话」这种看起来像 bug 的重复）
   const subject = rawSubject && rawSubject.toLowerCase() !== shownName.toLowerCase() ? rawSubject : ''
+  const isSynthetic = syntheticShortName(tool, t) !== null
+  const gate = useIterationDetailGate(toolsFolded === true, iterationNumber)
+  // 头部（标题/状态/工具名/耗时）：全部来自**轻字段** ⇒ 浮层打开瞬间即可渲染。
+  const header = (
+    <div className="flex items-center gap-2 text-xs">
+      {running
+        ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: color, animation: 'pulse-blue 1.2s infinite' }} />
+        : failed
+          ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color }} />
+          : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
+      <span data-tool-name={tool.name} className="shrink-0 text-[11.5px] font-medium" style={{ color }}>{shownName}</span>
+      {subject && (
+        <code className="truncate rounded bg-bg-tertiary/60 px-1 py-0.5 font-mono text-[10px] text-text-muted">
+          {subject}
+        </code>
+      )}
+      {tool.elapsedMs > 0 && (
+        <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
+      )}
+    </div>
+  )
+  // 详情区（summary / 参数 / fancy 渲染）——`toolsFolded` 时这些字段尚未下发。
+  const detailBody = (
+    <>
+      {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本）。
+          ANSI 渲染：Shell 等工具的 summary 取自命令输出首行，携带 SGR 颜色码
+          （vitest/ls 等）——用 AnsiText 渲染成彩色，而非 raw 转义序列泄漏。 */}
+      {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary"><AnsiText text={tool.summary} /></p> : null}
+      {tool.args ? (
+        <div>
+          <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">{t('agent.args')}</div>
+          <div className="max-h-[150px] overflow-y-auto rounded-md border border-border">
+            <ArgsView args={tool.args} />
+          </div>
+        </div>
+      ) : null}
+      <ToolRender tool={tool} hideArgs />
+    </>
+  )
   return (
     <div className="flex flex-col gap-2">
       {/* 注入型工具（bg task / 子代理 / 插话…）：卡片自带标题、状态、退出码、耗时、
           承接说明与全部内容 —— 弹层的通用头部与 summary 行只会把同样的信息再重复两遍
-          （很吵），所以这里只渲染卡片本身。 */}
-      {syntheticShortName(tool, t) !== null ? (
-        <ToolRender tool={tool} hideArgs />
-      ) : (
-        <>
-          <div className="flex items-center gap-2 text-xs">
-            {running
-              ? <span className="size-1.5 shrink-0 rounded-full" style={{ background: color, animation: 'pulse-blue 1.2s infinite' }} />
-              : failed
-                ? <X className="shrink-0" size={11} strokeWidth={3} style={{ color }} />
-                : <Check className="shrink-0" size={11} strokeWidth={3} style={{ color }} />}
-            <span data-tool-name={tool.name} className="shrink-0 text-[11.5px] font-medium" style={{ color }}>{shownName}</span>
-            {subject && (
-              <code className="truncate rounded bg-bg-tertiary/60 px-1 py-0.5 font-mono text-[10px] text-text-muted">
-                {subject}
-              </code>
-            )}
-            {tool.elapsedMs > 0 && (
-              <span className="ml-auto shrink-0 text-[10px] tabular-nums text-text-muted">{formatElapsed(tool.elapsedMs)}</span>
-            )}
-          </div>
-          {/* summary 与 detail 输出同文时不重复显示（如 task_kill 的确认文本）。
-              ANSI 渲染：Shell 等工具的 summary 取自命令输出首行，携带 SGR 颜色码
-              （vitest/ls 等）——用 AnsiText 渲染成彩色，而非 raw 转义序列泄漏。 */}
-          {tool.summary && tool.summary !== tool.detail ? <p className="text-[11.5px] leading-relaxed text-text-secondary"><AnsiText text={tool.summary} /></p> : null}
-          {tool.args ? (
-            <div>
-              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-text-muted">{t('agent.args')}</div>
-              <div className="max-h-[150px] overflow-y-auto rounded-md border border-border">
-                <ArgsView args={tool.args} />
-              </div>
-            </div>
-          ) : null}
-          <ToolRender tool={tool} hideArgs />
-        </>
-      )}
+          （很吵），所以这里只渲染卡片本身（无独立 header）。 */}
+      {!isSynthetic && header}
+      {/* 详情未下发（`toolsFolded`）⇒ 详情区小骨架 / 失败重试；成功 hydrate 后
+          `toolsFolded` 翻 false（完整迭代同号覆盖）⇒ `gated` 翻 false ⇒ 直接渲染详情。 */}
+      {gate.gated && gate.status !== 'idle' ? (
+        gate.status === 'error'
+          ? <ToolDetailRetry onRetry={gate.retry} />
+          : <ToolDetailSkeleton />
+      ) : isSynthetic ? <ToolRender tool={tool} hideArgs /> : detailBody}
     </div>
+  )
+}
+
+/** `toolsFolded` 迭代的浮层详情 hydration（D1 §3.3）。
+ *
+ *  挂载即发一次请求（in-flight 去重由 RegionActions 侧按 `(turnID, iteration)` 保证）
+ *  → 成功时 `iterations_loaded` **同号覆盖** ⇒ 本组件以完整迭代重渲染
+ *  （`folded` 随之翻 false ⇒ `gated`=false ⇒ 直接渲染详情）；失败 ⇒ 重试态
+ *  （点击重试，绝不静默）。
+ *  ⚠️ 失败**不自动重试**：effect 的依赖里没有 `status` ⇒ 不会形成请求循环。
+ *  ⚠️ `turnID` 来自 `TurnIDContext`（AssistantMessage 提供）——不逐层透传 props。 */
+function useIterationDetailGate(
+  folded: boolean,
+  iterationNumber?: number,
+): { gated: boolean; status: 'loading' | 'idle' | 'error'; retry: () => void } {
+  const actions = useRegionActions()
+  const turnID = useTurnID()
+  const iteration = iterationNumber ?? 0
+  const gated = folded && turnID > 0 && iteration > 0
+  // 首帧即 loading（effect 在 paint 之后才跑）——避免"空详情闪一帧"
+  const [status, setStatus] = useState<'loading' | 'idle' | 'error'>(gated ? 'loading' : 'idle')
+  const run = useCallback(() => {
+    if (!gated) return
+    setStatus('loading')
+    void actions.loadIterationDetail(turnID, iteration).then((ok) => {
+      setStatus(ok ? 'idle' : 'error')
+    })
+  }, [actions, gated, turnID, iteration])
+  useEffect(() => {
+    run()
+  }, [run])
+  return { gated, status: gated ? status : 'idle', retry: run }
+}
+
+/** 详情区骨架（极短加载态；弱网下可见）。 */
+function ToolDetailSkeleton() {
+  const { t } = useI18n()
+  return (
+    <div data-testid="tool-detail-skeleton" className="flex flex-col gap-1.5" aria-busy>
+      <div className="flex items-center gap-1.5 text-[11px] text-text-muted">
+        <Loader2 aria-hidden className="size-3 animate-spin" />
+        <span>{t('agent.regions.detailLoading')}</span>
+      </div>
+      <div className="h-3 w-3/4 animate-pulse rounded bg-bg-tertiary/60" />
+      <div className="h-3 w-1/2 animate-pulse rounded bg-bg-tertiary/40" />
+    </div>
+  )
+}
+
+/** 详情加载失败（不静默：显式重试）。 */
+function ToolDetailRetry({ onRetry }: { onRetry: () => void }) {
+  const { t } = useI18n()
+  return (
+    <button
+      type="button"
+      data-testid="tool-detail-retry"
+      onClick={onRetry}
+      className="flex w-fit items-center gap-1.5 rounded px-1.5 py-1 text-[11px] text-text-muted transition-colors hover:bg-bg-hover hover:text-text-secondary"
+    >
+      <RefreshCw aria-hidden className="size-3" />
+      <span>{t('agent.regions.detailRetry')}</span>
+    </button>
   )
 }
 
@@ -437,31 +535,60 @@ function LazyPillPopover({
 
 /** 折叠行 pill 列表：≤8 全量；>8 显示前 7 pill + "+N" 徽标。
  *  点哪个 pill 弹哪个工具的浮窗（summary + 参数 + 渲染）——互不混叠；
- *  "+N" 弹溢出工具的全量列表。 */
-const MergedPills = memo(function MergedPills({ tools }: { tools: WebToolProgress[] }) {
+ *  "+N" 弹溢出工具的全量列表。
+ *  ⚠️ `toolsFolded` / `iterationNumber` 只影响**浮层打开时**的详情按需取回，
+ *  不影响 pill 行本身（默认视图零差异）。 */
+const MergedPills = memo(function MergedPills({
+  tools,
+  toolsFolded,
+  iterationNumber,
+}: {
+  tools: WebToolProgress[]
+  toolsFolded?: boolean
+  iterationNumber?: number
+}) {
   const { t } = useI18n()
   const overflow = tools.length > PILL_INLINE_MAX
   const shown = overflow ? tools.slice(0, PILL_INLINE_HEAD) : tools
   return (
     <span data-testid="merged-pills" className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
       {shown.map((tool, i) => (
-        <LazyPillPopover key={`${tool.name}-${i}`} testId="tool-pill" toolName={tool.name} content={<ToolPopoverDetail tool={tool} />}>
+        <LazyPillPopover
+          key={`${tool.name}-${i}`}
+          testId="tool-pill"
+          toolName={tool.name}
+          content={
+            <ToolPopoverDetail
+              tool={tool}
+              toolsFolded={toolsFolded}
+              iterationNumber={tool.iteration ?? iterationNumber}
+            />
+          }
+        >
           {toolPill(tool, t)}
         </LazyPillPopover>
       ))}
-      {overflow && <OverflowPillsMenu tools={tools} />}
+      {overflow && <OverflowPillsMenu tools={tools} toolsFolded={toolsFolded} iterationNumber={iterationNumber} />}
     </span>
   )
 })
 
 /** "+N" 溢出菜单：被收纳工具的全量列表（点击条目展开该工具卡片）。 */
-function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
+function OverflowPillsMenu({
+  tools,
+  toolsFolded,
+  iterationNumber,
+}: {
+  tools: WebToolProgress[]
+  toolsFolded?: boolean
+  iterationNumber?: number
+}) {
   const hidden = tools.slice(PILL_INLINE_HEAD)
   return (
     <LazyPillPopover
       testId="tool-pill-more"
       toolName="__overflow__"
-      content={<ToolPopoverContent tools={hidden} />}
+      content={<ToolPopoverContent tools={hidden} toolsFolded={toolsFolded} iterationNumber={iterationNumber} />}
     >
       <span className="inline-flex shrink-0 cursor-pointer items-center rounded-full bg-bg-hover px-2 py-0.5 text-[11px] font-medium text-text-muted transition-opacity hover:opacity-85">
         {i18n.t('agent.tool.overflowBadge', { count: hidden.length, defaultValue: `+${hidden.length}` }) as string}
@@ -474,8 +601,19 @@ function OverflowPillsMenu({ tools }: { tools: WebToolProgress[] }) {
  * 浮层内容：全量工具列表。每条 = 状态图标 + name + label（单行 truncate）+ 耗时；
  * 点击一条展开该工具完整 fancy 渲染（ToolCard —— 与原地展开版同一组件）。
  * 浮层在 Portal 内，内部展开的行高变化不进入虚拟列表布局树（零 relayout）。
+ *
+ * D1：展开的行同样走详情 gate（`toolsFolded` 时 ToolCard 读的是轻字段 ⇒
+ * 不 gate 会渲染出**空输出**，破坏"无感"）。
  */
-function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
+function ToolPopoverContent({
+  tools,
+  toolsFolded,
+  iterationNumber,
+}: {
+  tools: WebToolProgress[]
+  toolsFolded?: boolean
+  iterationNumber?: number
+}) {
   const { t } = useI18n()
   const [sel, setSel] = useState<number | null>(null)
   return (
@@ -512,7 +650,11 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
             </button>
             {active && (
               <div className="px-2 pb-2">
-                <ToolCard tool={tool} />
+                <ToolCardGated
+                  tool={tool}
+                  toolsFolded={toolsFolded}
+                  iterationNumber={tool.iteration ?? iterationNumber}
+                />
               </div>
             )}
           </div>
@@ -520,6 +662,25 @@ function ToolPopoverContent({ tools }: { tools: WebToolProgress[] }) {
       })}
     </div>
   )
+}
+
+/** `toolsFolded` 迭代的**展开卡片**（"+N" 溢出菜单内的行展开）：
+ *  详情未下发 ⇒ 先骨架（并触发 hydrate）/ 失败重试；否则直接渲染 ToolCard。 */
+function ToolCardGated({
+  tool,
+  toolsFolded,
+  iterationNumber,
+}: {
+  tool: WebToolProgress
+  toolsFolded?: boolean
+  iterationNumber?: number
+}) {
+  const gate = useIterationDetailGate(toolsFolded === true, iterationNumber)
+  if (gate.gated) {
+    if (gate.status === 'error') return <ToolDetailRetry onRetry={gate.retry} />
+    if (gate.status === 'loading') return <ToolDetailSkeleton />
+  }
+  return <ToolCard tool={tool} />
 }
 
 /** Expanded tool card: [icon] name + input + output */
@@ -554,6 +715,8 @@ function ToolCard({ tool }: { tool: WebToolProgress }) {
 
 export const FoldedToolGroup = memo(function FoldedToolGroup({
   tools,
+  toolsFolded,
+  iterationNumber,
 }: FoldedToolGroupProps) {
   // GenUI 工具永不折叠（metadata 驱动）；non-GenUI 才进入 pill 行/浮层。
   // useMemo 必须在 early return 之前（hooks 规则）；tools 为空时结果为空数组，
@@ -564,7 +727,10 @@ export const FoldedToolGroup = memo(function FoldedToolGroup({
   )
   // pill 行 JSX：依赖 tools 引用（otherTools 由上方 useMemo 派生，引用稳定）——
   // tools 不变时 pill 行 re-render 零重建（pill 浮窗开合由 radix/懒挂管理）。
-  const pillsRow = useMemo(() => <MergedPills tools={otherTools} />, [otherTools])
+  const pillsRow = useMemo(
+    () => <MergedPills tools={otherTools} toolsFolded={toolsFolded} iterationNumber={iterationNumber} />,
+    [otherTools, toolsFolded, iterationNumber],
+  )
 
   // 行级失败告警：组内任一工具失败 ⇒ 行左侧红条 + `N 失败` chip（折叠/滚动时也不漏）。
   const failedCount = useMemo(() => otherTools.filter((x) => isFailed(x.status)).length, [otherTools])

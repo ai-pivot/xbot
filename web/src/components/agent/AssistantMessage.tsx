@@ -13,7 +13,10 @@ import { Loader2 } from 'lucide-react'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyTarget } from './MessageActions'
+import { RegionsDivider } from './RegionsDivider'
 import { TurnBody } from './TurnBody'
+import { TurnIDContext } from './RegionActionsContext'
+import { useRegionWindow } from '@/hooks/useRegionWindow'
 import { useI18n } from '@/providers/i18n'
 import type { ChatMessage, LiveProgress } from '@/types/agent'
 
@@ -89,47 +92,59 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
     : ''
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
+  // ── 展示区域窗口（D1）：`regions_before > 0` ⇒ 行顶渲染分隔条 + IO 哨兵 ──
+  // beforeIteration 取 **DB 迭代**（`regions_before` 描述的是 DB 下发窗口；live 迭代
+  // 不属于那个窗口），首元素即窗口最小迭代号（后端保证窗口是连续区间 [a..N]）。
+  const dbFirstIteration = dbIters.length > 0 ? dbIters[0].iteration : undefined
+  const regionWindow = useRegionWindow({
+    turnID: message.turnID,
+    regionsBefore: message.regionsBefore,
+    beforeIteration: dbFirstIteration,
+  })
 
   // Action bar shown for completed (non-streaming) messages with content.
 
   return (
     <CopyTarget kind="message" message={message} className="group/msg px-1">
-      {(message.iterationsTruncated ?? 0) > 0 && (
-        <div
-          data-testid="iterations-truncated"
-          className="mb-1 px-1 text-[11.5px] text-text-muted"
-        >
-          {`更早的 ${message.iterationsTruncated} 个迭代未加载（仅显示最近 ${iterations.length} 个）`}
-        </div>
-      )}
-      <TurnBody
-        iterations={iterations}
-        compactions={message.compactions}
-        liveProgress={liveProgress}
-        turnID={message.turnID}
-        heightScope={heightScope}
-      />
-      {(!isStreaming || isFrozenLive) && finalContent && (
-        <MarkdownRenderer content={finalContent} noDebounce />
-      )}
-      {!isStreaming && emptyResponseWarning && (
-        <LLMEmptyResponseWarning text={emptyResponseWarning} />
-      )}
-      {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && !showProgress(progress) && (
-        <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
-      )}
-      {message.displayOnly && (
-        <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
-          {t('agent.displayOnly')}
-        </span>
-      )}
-      {isStreaming && liveProgress?.phase === 'compressing' && (
-        <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
-          <Loader2 className="size-3.5 animate-spin" />
-          <span>{t('agent.compressing')}</span>
-        </div>
-      )}
-
+      {/* turn 身份供组件树深处消费（浮层详情的 (turnID, iteration) 寻址）——
+          不逐层透传 props（会击穿 TurnBody/CommittedTurn 的 memo）。 */}
+      <TurnIDContext.Provider value={message.turnID}>
+        {regionWindow.enabled && (
+          <RegionsDivider
+            count={message.regionsBefore ?? 0}
+            status={regionWindow.status}
+            onRetry={regionWindow.retry}
+            sentinelRef={regionWindow.sentinelRef}
+          />
+        )}
+        <TurnBody
+          iterations={iterations}
+          compactions={message.compactions}
+          liveProgress={liveProgress}
+          turnID={message.turnID}
+          heightScope={heightScope}
+        />
+        {(!isStreaming || isFrozenLive) && finalContent && (
+          <MarkdownRenderer content={finalContent} noDebounce />
+        )}
+        {!isStreaming && emptyResponseWarning && (
+          <LLMEmptyResponseWarning text={emptyResponseWarning} />
+        )}
+        {!isStreaming && !finalContent && !emptyResponseWarning && iterations.length === 0 && !showProgress(progress) && (
+          <span className="text-sm text-text-muted">{t('agent.emptyAssistant')}</span>
+        )}
+        {message.displayOnly && (
+          <span className="mt-1 inline-block rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-muted">
+            {t('agent.displayOnly')}
+          </span>
+        )}
+        {isStreaming && liveProgress?.phase === 'compressing' && (
+          <div className="mt-2 flex items-center gap-2 text-xs text-text-muted">
+            <Loader2 className="size-3.5 animate-spin" />
+            <span>{t('agent.compressing')}</span>
+          </div>
+        )}
+      </TurnIDContext.Provider>
     </CopyTarget>
   )
 }

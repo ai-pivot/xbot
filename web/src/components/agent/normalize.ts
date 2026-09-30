@@ -50,6 +50,10 @@ export function normalizeWebIteration(raw: unknown): WebIteration | null {
     toolMs,
     // 该迭代 spawn 的 SubAgent 树（后台 SubAgent 的进度归属原迭代）。
     subAgents: normalizeWebSubAgents(Array.isArray(r.sub_agents) ? r.sub_agents : undefined),
+    // 工具详情（summary/args/detail/tool_hints）未随历史载荷下发（后端
+    // `tools_folded`，缺省 false = 完整）。缺省统一归一成 false（而非 undefined）：
+    // 归一化产物形状稳定 ⇒ 幂等比较/引用复用不会因「有的迭代带该键、有的不带」抖动。
+    toolsFolded: r.tools_folded === true,
   }
 }
 

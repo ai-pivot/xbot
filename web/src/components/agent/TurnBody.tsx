@@ -938,7 +938,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, compactionByIter
  *  否则头部被排除 ⇒ 它的工具单独成行（截图里"失败 chip + 失败 pill 在上、其余 pill 在下"的真因，
  *  **不是**什么置顶逻辑）。每个带文本的迭代仍是**独立块**（文本不合并、不丢）。
  */
-function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
+export function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
   const hasTools = (it: WebIteration) => it.tools.length > 0
   const absorbs = (it: WebIteration) => hasTools(it) && !it.content && !it.reasoning
   const out: WebIteration[] = []

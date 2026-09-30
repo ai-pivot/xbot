@@ -436,6 +436,19 @@ export interface WebIteration {
   /** 该迭代 spawn 的 SubAgent 树（迭代边界冻结）。后台 SubAgent 的进度
    * 归属到原迭代渲染，不漂移到最新迭代。 */
   subAgents?: WebSubAgentProgress[]
+  /**
+   * 该迭代的**工具详情**（summary/args/detail/tool_hints）未随历史载荷下发
+   * （后端 `tools_folded`；缺省 false = 完整）。
+   *
+   * pill 渲染所需的**轻字段完整**（name/label/status/elapsedMs/exitCode/callID/
+   * uiMode/uiLibs/surface + tools 数组长度）⇒ 默认视图（pills 全渲染、`+N` 溢出、
+   * 失败 chip、复制菜单）与全量视图像素级一致。
+   *
+   * 浮层（LazyPillPopover → ToolPopoverDetail）打开时经 `POST /api/iteration_detail`
+   * 按 `(turnID, iteration)` 拉取完整数据，再经 `mergeIterations` **同号覆盖**
+   * —— 迭代号不变（不产生新洞/新块），轻字段永不覆盖已加载的完整数据。
+   */
+  toolsFolded?: boolean
 }
 
 /**
@@ -557,6 +570,15 @@ export interface ChatMessage {
   iterations: WebIteration[]
   /** 后端按 turn 尾部截断迭代上报的丢弃数量（历史响应有界化）—— 渲染「更早的 N 个迭代」，不静默缺块。 */
   iterationsTruncated?: number
+  /**
+   * 该 turn **更早未下发的展示区域数**（后端 `regions_before`；>0 时 turn 顶部
+   * 渲染「更早区域」分隔条 + IO 哨兵，经 `POST /api/regions` 整段取回）。
+   *
+   * 展示区域 = 前端渲染块（`mergeToolRuns` 输出块；折叠的工具组算 **1** 个区域）。
+   * 它是服务端**显式声明的可取回窗口**，**不是洞** —— 不触发 gap reload；
+   * 段取回后归零（分隔条消失）。
+   */
+  regionsBefore?: number
   /** turn **内部**发生过的上下文压缩点（压缩在迭代边界触发 ⇒ 渲染在迭代之间、
    *  与迭代同级；Cursor 式 "context summarized"）。老数据无法定位迭代位置时，
    *  压缩以独立的 standalone 行渲染（`standalone` + `anchorTurnID`），不进此字段。 */

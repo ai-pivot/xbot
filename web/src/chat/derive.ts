@@ -85,6 +85,12 @@ export interface CommittedRowView {
   /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——排序键用它插回原位。 */
   readonly anchorTurnID?: number
   readonly iterationsTruncated?: number
+  /**
+   * 该 turn **更早未下发的展示区域数**（后端 `regions_before`）—— D1 线的
+   * `RegionsDivider` 从 Row 读此字段：>0 时 turn 顶部渲染「更早区域」分隔条
+   * （+ IO 哨兵，`POST /api/regions` 整段取回）。缺省 = 该 turn 已完整下发。
+   */
+  readonly regionsBefore?: number
 }
 
 export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
@@ -163,6 +169,9 @@ function cachedLegacyRow(l: LegacyRow): Row {
           isPartial: false,
           content: l.content,
           iterations: l.iterations,
+          // 更早未下发的展示区域数（standalone/legacy 段同样可能带 —— 与
+          // turn 行的 committed payload 同一来源语义）。
+          regionsBefore: l.regionsBefore,
         }
   legacyRowByMsg.set(l, row)
   return row
@@ -279,6 +288,8 @@ function assistantRow(t: Turn): Row | null {
         iterationsTruncated: t.phase.payload.iterationsTruncated ?? 0,
         // turn 内压缩点：透传引用（payload 引用稳定 ⇒ memo 不失效）。
         compactions: t.phase.payload.compactions,
+        // 更早未下发的展示区域数（D1 线的 RegionsDivider 消费；>0 渲染分隔条）。
+        regionsBefore: t.phase.payload.regionsBefore,
       }
     }
   }

@@ -89,10 +89,32 @@ function applySessionFields(
 }
 
 
+/** 「轻字段」迭代判定 —— 工具详情载荷（summary/args/detail/toolHints）已被后端
+ *  `tools_folded` 省略，pill 轻字段仍完整。normalize 已把缺省归一成 false
+ *  （`normalize.ts` 的 `toolsFolded: r.tools_folded === true`）⇒ `=== true` 判定可靠，
+ *  不会因「有的迭代带该键、有的不带」抖动。 */
+function isFolded(it: WebIteration): boolean {
+  return it.toolsFolded === true
+}
+
 /**
- * union 迭代按 iteration# 排序；同号时 authoritative 优先（text 的
- * progressHistory 是后端权威，覆盖 live 中可能残缺的同号快照）。
- * 长度只增不减（除非 authoritative 提供了更多/更新内容 —— 同号替换）。
+ * union 迭代按 iteration# 排序。**同号合并四象限**（D3，方案 §3.3）：
+ *
+ * | incoming \ prev | prev 轻          | prev 完整        |
+ * |-----------------|------------------|------------------|
+ * | incoming 完整   | incoming 胜      | incoming 胜      |
+ * | incoming 轻     | prev 胜（引用稳）| **prev 胜**（★） |
+ *
+ * - 「完整」= `toolsFolded` falsy（详情字段齐全；缺省即完整）；
+ *   「轻」= `toolsFolded === true`。
+ * - ★核心象限：**轻字段永不覆盖已加载的完整数据** —— reload / `active_progress`
+ *   水合 / 区域段都带轻字段，正文式的 `incoming 胜` 会把浮层已 hydrate 的
+ *   `summary/args/detail` 抹掉（用户点开过的详情再次点开要重拉 = 有感的倒退）。
+ * - 轻 vs 轻 ⇒ prev 胜：引用稳定（幂等重放零渲染；`reuseIfSame` 纪律的输入前提）。
+ * - 新迭代号（prev 不存在）无论轻重一律 append（I4 只增不减）。
+ *
+ * 引用稳定纪律：被覆盖/新增之外的元素必须是 **base 的原引用**（不重建），否则
+ * 下游 `reuseIfSame` 判不出「无变化」⇒ 逐帧击穿 TurnBody 的迭代 memo。
  */
 function mergeIterations(
   base: readonly WebIteration[],
@@ -114,8 +136,27 @@ function mergeIterations(
   }
   const byNum = new Map<number, WebIteration>()
   for (const it of base) byNum.set(it.iteration, it)
-  for (const it of authoritative) byNum.set(it.iteration, it) // 权威覆盖同号
-  return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
+  for (const it of authoritative) {
+    const prev = byNum.get(it.iteration)
+    // 四象限：incoming 轻 ⇒ prev 胜（prev 轻=引用稳定；prev 完整=★不倒退）；
+    // incoming 完整 ⇒ incoming 胜（浮层/区域段 hydrate 与既有权威方向一致）。
+    if (prev !== undefined && isFolded(it)) continue
+    byNum.set(it.iteration, it)
+  }
+  const merged = [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
+  // 结果与 base 逐元素同引用（轻 incoming 全部被 prev 挡下 / 子集重放）⇒ 返回 base
+  // —— 把引用稳定做进 mergeIterations 本身，调用方的 reuseIfSame 之外也成立。
+  if (merged.length === base.length) {
+    let identical = true
+    for (let i = 0; i < base.length; i++) {
+      if (merged[i] !== base[i]) {
+        identical = false
+        break
+      }
+    }
+    if (identical) return base
+  }
+  return merged
 }
 
 /**
@@ -1457,6 +1498,49 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           gapSig !== '' && gapSig !== s.unreachableGapSig ? s.gapReloadToken + 1 : s.gapReloadToken,
         unreachableGapSig: gapSig,
       }
+    }
+
+    // ── iterations_loaded：区域段 / 迭代详情到达 —— union 并入目标 turn ──
+    // 两条端点共用（`POST /api/regions` 段 / `POST /api/iteration_detail` 详情）：
+    //   · 区域段：轻字段形态的整段（段边界对齐展示区域 ⇒ 永不劈开工具组），
+    //     `regionsBefore` = 仍剩更早区域数（权威覆盖）。
+    //   · 详情：单个**完整**迭代（hydrate 浮层），`regionsBefore` 缺省 = 不动。
+    //
+    // ⛔ 与 `text_final` 的 committed 增量分支同族（reuseIfSame + 幂等短路），但
+    // **绝不触碰** activeTurn / lastSeq / busy / gapReloadToken / unreachableGapSig /
+    // sessionRunning —— 区域段是服务端**显式声明的可取回窗口**，不是 gap：它的到达
+    // 只能让本地窗口更完整。碰这些字段 = 让一次上滚加载伪造出「turn 结束/live 切换/
+    // 会话重载」的语义（用户会看到 loading 屏 / 打字机中断）。
+    case 'iterations_loaded': {
+      // turnID 缺失/0 ⇒ 回退 activeTurn（与 stream/iteration/phase_done 同规则）。
+      const target = ev.turnID > 0 ? turnID(ev.turnID) : s.activeTurn
+      if (target === null) return s
+      const t = s.turns.get(target)
+      // turn 不存在 ⇒ 静默丢弃（服务端权威下发段时 turn 必在 —— DB 里有该 turn 的
+      // 行才会被请求；miss 说明是脏数据/跨会话串扰，不得凭空造 turn）。
+      if (!t) return s
+      // 三态 union：committed 读 payload.iterations，live/frozen 读 data.iterations。
+      const existing = t.phase.kind === 'committed' ? t.phase.payload.iterations : t.phase.data.iterations
+      const merged = reuseIfSame(mergeIterations(existing, ev.iterations), existing)
+      // regionsBefore 三态（与 optTodos/optGoal 的「缺省=不覆盖」同语义）：
+      // undefined = 事件未携带（详情端点）⇒ 保留现值；数字 = 权威覆盖。
+      // regionsBefore 只存在于 committed payload（live/frozen 无该字段 —— 区域计数
+      // 是**历史行**概念，live turn 的迭代不经区域窗口）。
+      const rb = ev.regionsBefore
+      const curRb = t.phase.kind === 'committed' ? t.phase.payload.regionsBefore : undefined
+      if (merged === existing && (rb === undefined || rb === curRb)) return s // 幂等：原 state 引用
+      const turns = new Map(s.turns)
+      if (t.phase.kind === 'committed') {
+        const payload = {
+          ...t.phase.payload,
+          iterations: merged,
+          ...(rb !== undefined ? { regionsBefore: rb } : {}),
+        } as typeof t.phase.payload
+        turns.set(target, { ...t, phase: { kind: 'committed', payload } })
+      } else {
+        turns.set(target, { ...t, phase: { ...t.phase, data: { ...t.phase.data, iterations: merged } } })
+      }
+      return { ...s, turns }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──

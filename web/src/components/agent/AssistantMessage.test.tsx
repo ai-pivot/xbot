@@ -266,18 +266,35 @@ describe('AssistantMessage compressing indicator position', () => {
   })
 })
 
-describe('AssistantMessage truncated iterations notice', () => {
-  it('renders "更早的 N 个迭代未加载" when history carried iterations_truncated', () => {
-    // 用户 2026-09-15：历史响应按 turn 尾部截断迭代（加载时间随迭代数线性增长的修复）——
-    // 丢弃数量必须显示出来，绝不静默缺块。
-    const m = msg({ iterations: [iter('latest')], iterationsTruncated: 137 })
+describe('AssistantMessage 展示区域分隔条（D1）', () => {
+  it('regionsBefore > 0 ⇒ 行顶渲染分隔条（count 来自 regions_before）', () => {
+    const m = msg({
+      turnID: 7,
+      iterations: [iter('latest', 52)],
+      regionsBefore: 137,
+    })
     renderMsg(<AssistantMessage message={m} />)
-    const notice = screen.getByTestId('iterations-truncated')
-    expect(notice.textContent).toContain('137')
+    const divider = screen.getByTestId('regions-divider')
+    expect(divider.getAttribute('data-regions-before')).toBe('137')
+    expect(divider.textContent).toContain('137')
+    // 分隔条在迭代之前（该 turn 所有已加载迭代的上方）
+    const turnBody = document.querySelector('.iter-blocks')
+    expect(turnBody).not.toBeNull()
+    expect(divider.compareDocumentPosition(turnBody!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('renders no notice when nothing was truncated', () => {
-    renderMsg(<AssistantMessage message={msg({ iterations: [iter('only')] })} />)
-    expect(screen.queryByTestId('iterations-truncated')).toBeNull()
+  it('regionsBefore 缺省/0 ⇒ 零新增 DOM（默认视图与现状零差异）', () => {
+    renderMsg(<AssistantMessage message={msg({ iterations: [iter('only', 1)] })} />)
+    expect(screen.queryByTestId('regions-divider')).toBeNull()
+    // 旧「更早的 N 个迭代未加载」提示块已彻底移除（语义由 regionsBefore 取代）
+    // —— 即便载荷仍带 iterationsTruncated，也不得再渲染任何提示节点。
+    expect(document.querySelector('[data-testid="iterations-truncated"]')).toBeNull()
+  })
+
+  it('iterationsTruncated 残留字段不得再渲染死钩子（P2 移除守护）', () => {
+    const m = msg({ iterations: [iter('latest', 52)], iterationsTruncated: 137 })
+    renderMsg(<AssistantMessage message={m} />)
+    expect(document.querySelector('[data-testid="iterations-truncated"]')).toBeNull()
+    expect(document.body.textContent).not.toContain('未加载')
   })
 })

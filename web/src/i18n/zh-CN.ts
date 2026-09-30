@@ -339,6 +339,16 @@ const zhCN = {
       dragToReorder: '拖动调整顺序',
       reorderFailed: '调整队列顺序失败',
     },
+    // D1：展示区域分页（更早区域分隔条 + 浮层详情按需）。⚠️ key 命名避开
+    // 禁用词（collapseAll*/collapseLevel*/mergeTools*/processed —— noLegacyFoldFormat
+    // 守护测试会红）；`{{count}}` 必须双花括号（单括号不替换）。
+    regions: {
+      loadEarlier: '更早的 {{count}} 个区域',
+      loading: '正在加载更早区域…',
+      retry: '加载失败 · 重试',
+      detailLoading: '正在加载详情…',
+      detailRetry: '详情加载失败 · 重试',
+    },
     tool: {
       statusFailed: '失败',
       statusKilled: '已终止',

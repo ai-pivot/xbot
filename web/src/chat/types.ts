@@ -129,16 +129,17 @@ export type TurnPhase =
  * 不存在 { content:"", iterations:[] } 的组合 —— 构造函数签名不接受。
  */
 export type CommittedPayload =
-  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
-  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[] }
+  | { readonly via: 'text'; readonly content: NonEmptyS; readonly iterations: readonly WebIteration[]; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[]; readonly regionsBefore?: number }
+  | { readonly via: 'fold'; readonly iterations: NonEmpty<WebIteration>; readonly content: string; readonly iterationsTruncated?: number; readonly compactions?: readonly WebCompaction[]; readonly regionsBefore?: number }
 
 /** 唯一合法的 committed 构造入口（reducer 内使用）。 */
 export function commitViaText(
   content: NonEmptyS,
   iterations: readonly WebIteration[],
   compactions?: readonly WebCompaction[],
+  regionsBefore?: number,
 ): CommittedPayload {
-  return { via: 'text', content, iterations, compactions }
+  return { via: 'text', content, iterations, compactions, regionsBefore }
 }
 
 /** fold 构造：iterations 必须非空（类型强制）；content 可为空字符串。 */
@@ -147,8 +148,9 @@ export function commitViaFold(
   content: string,
   iterationsTruncated = 0,
   compactions?: readonly WebCompaction[],
+  regionsBefore?: number,
 ): CommittedPayload {
-  return { via: 'fold', iterations, content, iterationsTruncated, compactions }
+  return { via: 'fold', iterations, content, iterationsTruncated, compactions, regionsBefore }
 }
 
 // ─── Turn / ChatState ─────────────────────────────────────────
@@ -180,6 +182,13 @@ export interface Turn {
 export interface LegacyRow {
   /** 后端按 turn 尾部截断迭代上报的丢弃数量（传入渲染层显示"更早的 N 个迭代"）。 */
   readonly iterationsTruncated?: number
+  /**
+   * 该行（turn）**更早未下发的展示区域数**（后端 `regions_before`）—— D1 线从
+   * Row 消费：>0 时行顶渲染「更早区域」分隔条（+ IO 哨兵，`POST /api/regions` 取回）。
+   * 展示区域 = `mergeToolRuns` 输出块（折叠的工具组算 1 个）；它是可取回窗口的显式
+   * 声明，**不是洞**。缺省/0 = 该 turn 已完整下发。
+   */
+  readonly regionsBefore?: number
   readonly id: string
   readonly role: 'user' | 'assistant'
   readonly content: string
@@ -426,6 +435,30 @@ export type DomainEvent =
       /** 会话级 todos（active_progress 快照携带 —— 含 phase=done 的快照，
        *  turn 已结束但 todos 存活渲染）。 */
       readonly todos: readonly TodoItem[]
+    }
+  | {
+      /**
+       * 服务端**区域段 / 迭代详情**到达（`POST /api/regions`、`POST /api/iteration_detail`
+       * 的响应归一）。两条端点**共用**本事件：
+       *
+       * - 区域段（/api/regions）：`iterations` = 更旧方向的整段（轻字段形态，段边界
+       *   对齐展示区域 ⇒ 永不劈开工具组），`regionsBefore` = 仍剩更早区域数（必给，
+       *   0 = 该 turn 到顶，分隔条消失）。
+       * - 迭代详情（/api/iteration_detail）：`iterations` = 单个**完整**迭代（详情字段
+       *   齐全，`toolsFolded=false`），`regionsBefore` **缺省 = 不变**（详情 hydrate
+       *   不动区域计数、不动迭代号）。
+       *
+       * `iterations` 与本地 `mergeIterations` union 合并（同号：完整数据覆盖轻字段
+       * 数据；轻字段**永不**覆盖已加载的完整数据）—— 迭代号不变、不产生新洞。
+       * 与 `text_final` 的 committed 增量分支同族：不触碰 `activeTurn` / `lastSeq` /
+       * `gapReloadToken`（区域段是「显式可取回窗口」，不是 gap）。
+       */
+      readonly type: 'iterations_loaded'
+      /** 目标 turn。缺失/0 = 事件无归属 ⇒ reduce 回退 `activeTurn`（与 stream/iteration 一致）。 */
+      readonly turnID: number
+      readonly iterations: readonly WebIteration[]
+      /** 缺省 = 不变（详情端点）；给定 = 权威覆盖区域计数（区域段端点）。 */
+      readonly regionsBefore?: number
     }
   | {
       /** 乐观 user 创建（本地事件，非 SSE）。 */
