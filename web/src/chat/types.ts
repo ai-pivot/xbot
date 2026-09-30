@@ -88,6 +88,12 @@ export interface LiveSnapshot {
   readonly tokenUsage: { readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number } | null
   /** 实时流式时序（iteration 事件携带 stream_stats，TTFT/tokens-per-sec）。 */
   readonly streamStats: { readonly ttftMs: number; readonly tpotMs: number; readonly tokensPerSec: number; readonly totalMs: number; readonly chunks: number } | null
+  /** 该 live turn 更早未下发的展示区域数（busy 快照折叠视图的声明，经
+   * snapshotToLive 从 ProgressSnapshot.iterationRegionsBefore 透传）。
+   * >0 ⇒ live/frozen 行顶部渲染「更早区域」分隔条（与 committed 的
+   * payload.regionsBefore 同语义、同一 IO 哨兵路径）；提交时随 commitViaFold
+   * 第 5 参带进 committed payload（提交瞬间分隔条不消失）。 */
+  readonly regionsBefore?: number
 }
 
 export const EMPTY_LIVE: LiveSnapshot = {

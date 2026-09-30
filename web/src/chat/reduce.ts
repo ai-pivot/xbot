@@ -1101,7 +1101,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           const activeTurn = s.activeTurn === target ? null : s.activeTurn
           return { ...s, turns: frozenTurns, activeTurn }
         }
-        payload = commitViaFold(nonEmptyIts, live.content)
+        payload = commitViaFold(nonEmptyIts, live.content, 0, undefined, live.regionsBefore)
       }
 
       const turns = new Map(s.turns)
@@ -1538,7 +1538,19 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         } as typeof t.phase.payload
         turns.set(target, { ...t, phase: { kind: 'committed', payload } })
       } else {
-        turns.set(target, { ...t, phase: { ...t.phase, data: { ...t.phase.data, iterations: merged } } })
+        // live/frozen 分支：段到达后同样更新窗口声明（regionsBefore 显式携带时权威
+        // 覆盖——服务端按 beforeIter 计算的「该点以上剩余区域数」比本地旧值准确）。
+        turns.set(target, {
+          ...t,
+          phase: {
+            ...t.phase,
+            data: {
+              ...t.phase.data,
+              iterations: merged,
+              ...(rb !== undefined ? { regionsBefore: rb } : {}),
+            },
+          },
+        })
       }
       return { ...s, turns }
     }
@@ -1756,6 +1768,12 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   }
   const iterations = reuseIfSame(mergeIterations(curIts, incIts), curIts)
   const content = curContent !== '' ? curContent : incContent
+  // 区域窗口声明（live 闭环）：union 后本地窗口 ⊇ 服务端 reload 窗口（本地加载过的
+  // 段让 regionsBefore 已被段响应更新得更小）⇒ 取 **min** 反映真实剩余；单侧有值取
+  // 该侧（undefined 不压过数字）。frozen-with-output 定格的 data.regionsBefore 同源。
+  const curRb = cur.phase.kind === 'committed' ? cur.phase.payload.regionsBefore : cur.phase.data.regionsBefore
+  const incRb = h.phase.kind === 'committed' ? h.phase.payload.regionsBefore : h.phase.data.regionsBefore
+  const regionsBefore = curRb !== undefined && incRb !== undefined ? Math.min(curRb, incRb) : curRb ?? incRb
   // 幂等重放（每帧 history_replaced）：committed 侧逐项未变 ⇒ 复用原对象。
   // （frozen→committed 是真实相变，不走此短路。）
   if (
@@ -1772,9 +1790,9 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const its = nonEmptyArr(iterations)
   const phase: Turn['phase'] =
     text !== null
-      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[], compactions) }
+      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[], compactions, regionsBefore) }
       : its !== null
-        ? { kind: 'committed', payload: commitViaFold(its, content, 0, compactions) }
+        ? { kind: 'committed', payload: commitViaFold(its, content, 0, compactions, regionsBefore) }
         : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }
   return { id: h.id, user: cur.user ?? h.user, phase, requestID: cur.requestID ?? h.requestID }
 }
@@ -1800,9 +1818,9 @@ function foldPhase(data: LiveSnapshot): Turn['phase'] {
   // hasIterations 时不渲染顶层 content —— 流式文本必须存在于迭代内）。
   const iterations = foldInFlightToIterations(data.activeTools, data.streamingTools, data.iterations, data.iter, data.content, data.reasoning)
   const its = nonEmptyArr(iterations)
-  if (its !== null) return { kind: 'committed', payload: commitViaFold(its, data.content) }
+  if (its !== null) return { kind: 'committed', payload: commitViaFold(its, data.content, 0, undefined, data.regionsBefore) }
   const text = nonEmptyStr(data.content)
-  if (text !== null) return { kind: 'committed', payload: commitViaText(text, []) }
+  if (text !== null) return { kind: 'committed', payload: commitViaText(text, [], undefined, data.regionsBefore) }
   // 无任何产出：frozen 定格（derive 跳过空 assistant 行；user 行保留）。
   return { kind: 'frozen', data }
 }

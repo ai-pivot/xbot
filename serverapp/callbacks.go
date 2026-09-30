@@ -330,7 +330,7 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		// hasn't changed and we don't want to re-trigger progress restoration.
 		var progress *protocol.ProgressEvent
 		if beforeID == 0 {
-			progress = ag.GetActiveProgress(sel.Channel, sel.ChatID, protocol.FetchAll())
+			progress = ag.GetActiveProgressFolded(sel.Channel, sel.ChatID, protocol.FetchAll())
 			// Keep the done event even with an empty Todos list. The frontend
 			// hydrates from active_progress to restore todos on refresh;
 			// dropping `done + todos:[]` made the client unable to learn that

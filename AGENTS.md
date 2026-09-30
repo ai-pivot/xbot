@@ -235,7 +235,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 触屏设备禁 layout-attribute 动画（2026-09-07 手机端 todo 面板展开掉帧根治）：`@media (hover: none)` 下 `.fold-container` 只保留 opacity 过渡、`.collapsible-motion` 高度 keyframes 关闭。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — Foreground shell promote-to-background（2026-09-07，"执行中的 shell 用户可以手动转后台"）。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — `BackgroundPanel` xterm mounting: uses `useState` callback ref (`setContainer`) not `useRef` — 
-- ⚠️ `docs/agent/gotchas-web-frontend.md` — 为什么当年错了：实测单 turn 最多 1,661 个迭代（≈3.6MB）确实让历史加载随迭代数线性变长 ⇒ 三处"压体积"各截一刀。
+- ⚠️ `docs/agent/gotchas-web-frontend.md` — 为什么当年错了：实测单 turn 最多 1,661 个迭代（≈3.6MB）确实让历史加载随迭代数线性变长 ⇒ 三处"压体积"各截一刀。（2026-09-30 演进：铁律修订为「迭代存在性必须完整 + 详情载荷可按折叠视图省略（三充要条件：`tools_folded` 标记 + `regions_before` 显式声明 + `/api/regions`、`/api/iteration_detail` 取回通路 + 轻字段永不覆盖完整数据）」，见 gotchas 该条目的「演进」段与 `docs/plan-history-fold-windowing.md`；「静默截断 + 无取回通路」仍是红线。）
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 内置工具必须在【两处】都登记 —— 漏一处就看起来像"未分类的未知工具"（用户 2026-09-19：「我说这个折叠版本的 icon 你搞好看点」，针对 `share_file` 的折叠 pill）：① `toolIcons.tsx` 的 `TOOL_ICON_MAP`（缺失 ⇒ 落到 `FALLBACK_ICON = Wrench` 通用扳手）；
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 长 JSON 参数简化：`formatParam()` 把 `{"task_id": ["3f8f492a"]}` 抽成 `task_id: 3f8f492a`（≤2 键；
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — i18n key 名 `collapseAll` / `expandAll` 是禁词：旧「折叠级别」特性用过 `collapseAll`，`noLegacyFoldFormat.test.tsx` 的 `FORBIDDEN_CODE`（`collapseAll:`）与 `DEAD_KEYS` 会直接红 ⇒ 本特性用 `collapseAllGroups` / `expandAllGroups`（任何新 key 命名先避开 `collap…

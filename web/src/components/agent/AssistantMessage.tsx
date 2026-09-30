@@ -93,13 +93,14 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
   // ── 展示区域窗口（D1）：`regions_before > 0` ⇒ 行顶渲染分隔条 + IO 哨兵 ──
-  // beforeIteration 取 **DB 迭代**（`regions_before` 描述的是 DB 下发窗口；live 迭代
-  // 不属于那个窗口），首元素即窗口最小迭代号（后端保证窗口是连续区间 [a..N]）。
-  const dbFirstIteration = dbIters.length > 0 ? dbIters[0].iteration : undefined
+  // beforeIteration = 当前**已加载窗口**的最小迭代号（后端保证窗口是连续区间 [a..N]）：
+  // committed 行 = DB 窗口首迭代；live/frozen 行 = busy 快照窗口首迭代（live 闭环——
+  // 渲染用的 `iterations` 正是窗口内容，取其首元素与用户所见一致）。
+  const windowFirstIteration = iterations.length > 0 ? iterations[0].iteration : undefined
   const regionWindow = useRegionWindow({
     turnID: message.turnID,
     regionsBefore: message.regionsBefore,
-    beforeIteration: dbFirstIteration,
+    beforeIteration: windowFirstIteration,
   })
 
   // Action bar shown for completed (non-streaming) messages with content.

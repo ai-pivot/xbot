@@ -297,6 +297,11 @@ export interface ProgressEvent {
   sub_agents?: unknown[]
   /** TurnID from the backend — uniquely identifies the agent turn. */
   turn_id?: number
+  /** 该 live turn 更早未下发的展示区域数（P1 折叠视图：GetActiveProgressFolded 的
+   * FetchAll 快照对已完成迭代做区域窗口化后的显式声明 —— 与 HistoryMessage.regions_before
+   * 同语义：可取回窗口声明，非 gap；前端经 snapshotToLive 透传到 LiveSnapshot.regionsBefore，
+   * busy 恢复的 live 行顶部渲染「更早区域」分隔条）。omitempty：0/全量快照不出现。 */
+  iteration_regions_before?: number
   /** Turn start info (only on phase=turn_started events). */
   turn_start?: TurnStartInfo
   [key: string]: unknown
@@ -494,6 +499,10 @@ export interface ProgressSnapshot {
   completedTools: WebToolProgress[]
   iterationHistory: WebIteration[]
   streamingTools: WebToolProgress[]
+  /** 折叠视图窗口声明（后端 iteration_regions_before）：该 live turn 更早未下发的
+   * 展示区域数。0/缺省 = 快照完整（增量路径不折叠，恒缺省）。busy 恢复的 live 行
+   * 顶部据此渲染「更早区域」分隔条（与 committed 行的 regionsBefore 同语义）。 */
+  iterationRegionsBefore?: number
   /** Streaming HTML from display_html tool (stream-only, like streamContent). */
   genuiContent: string
   lastIter: number

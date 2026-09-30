@@ -947,9 +947,19 @@ export function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
     if (!hasTools(head)) { out.push(head); continue }
     let j = i
     const tools = [...head.tools]
-    while (j + 1 < iters.length && absorbs(iters[j + 1])) { j++; tools.push(...iters[j].tools) }
+    // 块级折叠标记**聚合**（轮 3 自审修复）：head 可能是 GenUI-only 迭代（豁免瘦身 ⇒
+    // toolsFolded=false），而被吸收的纯工具成员来自折叠视图（toolsFolded=true）——
+    // IterationGroup 只能看到合并块的标记；只取 head 一份会让成员 pill 的详情 gate
+    // 失明（点开空详情且不触发按需拉取）。任一成员带标记 ⇒ 合并块带标记（后端打标
+    // 仍是迭代级；块级聚合是纯渲染细节，不参与 Go/TS 区域边界同构契约）。
+    let blockFolded = head.toolsFolded === true
+    while (j + 1 < iters.length && absorbs(iters[j + 1])) {
+      j++
+      tools.push(...iters[j].tools)
+      if (iters[j].toolsFolded === true) blockFolded = true
+    }
     // 保留**头部**迭代号（高度缓存 / 窗口 key 稳定；文本与工具都取头部那一份 + 后续成员的工具）
-    out.push(j === i ? head : { ...head, tools })
+    out.push(j === i ? head : { ...head, tools, toolsFolded: head.toolsFolded === true || blockFolded })
     i = j
   }
   return out

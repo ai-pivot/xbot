@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"xbot/llm"
@@ -307,4 +308,94 @@ func TestConvert_ViewTrue_NoStructuredDataNotWindowed(t *testing.T) {
 			t.Fatalf("无结构化数据的 turn 不得窗口化/折叠：%+v", h)
 		}
 	}
+}
+
+// =============================================================================
+// T12（方案 §6-T12）：折叠视图的**体积预算守护**。
+//
+// fixture 与生产取证同构（方案 §1.1：单 turn 1,661 迭代 ≈ 3.6MB——迭代详情是
+// payload 绝对大头）：每迭代 1 工具（summary ~120B / args ~180B / detail ~900B），
+// 每 7 条迭代带 ~300B 文本。
+//
+// 断言：View(true) 序列化体积 < View(false) 的 **10%**（2026-09-30 实测 6.2%，
+// 阈值留余量防抖动）。体积回潮（轻字段化/窗口化被弄丢、HistoryRegionWindow 被
+// 调大、工具详情字段又随历史载荷下发）⇒ 本条必红。
+//
+// mutation 判别力：把 View(true) 装配误用 MapIterationRecord(rec,false)（不折叠）⇒
+// folded ≈ full ⇒ 体积断言必红。
+func TestConvert_ViewTrue_PayloadBudget(t *testing.T) {
+	const total = 1661
+	summary := strings.Repeat("s", 120)
+	args := strings.Repeat("a", 180)
+	detail := strings.Repeat("d", 900)
+	recs := make([]sqlite.IterationRecord, 0, total)
+	for i := 1; i <= total; i++ {
+		content := ""
+		if i%7 == 0 {
+			content = strings.Repeat("x", 300)
+		}
+		recs = append(recs, sqlite.IterationRecord{
+			TurnID: 1, Iteration: i, Content: content,
+			Tools: fmt.Sprintf(`[{"name":"Shell","label":"Shell: npm test","status":"done","summary":%q,"args":%q,"detail":%q}]`, summary, args, detail),
+		})
+	}
+	msgs := []llm.ChatMessage{
+		{Role: "user", Content: "do it", TurnID: 1},
+		{Role: "assistant", TurnID: 1},
+	}
+	turnIterMap := map[uint64][]sqlite.IterationRecord{1: recs}
+
+	fullJSON, err := json.Marshal(ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foldedJSON, err := json.Marshal(ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lim := len(fullJSON) / 10; len(foldedJSON) >= lim {
+		t.Fatalf("折叠视图体积 = %d B（≥ 全量 %d B 的 10%% = %d B）—— 体积预算回潮（实测校准 6.2%%）",
+			len(foldedJSON), len(fullJSON), lim)
+	}
+	t.Logf("体积实测：full=%d B folded=%d B（%.1f%%）", len(fullJSON), len(foldedJSON), float64(len(foldedJSON))*100/float64(len(fullJSON)))
+
+	// 形状正确性（体积小不能以丢数据为代价）：
+	foldedView := ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, true)
+	for i := range foldedView {
+		m := foldedView[i]
+		if m.TurnID != 1 || m.Role != "assistant" {
+			continue
+		}
+		if m.RegionsBefore <= 0 {
+			t.Fatalf("RegionsBefore = %d, want > 0（1,661 迭代的 turn 必有未下发区域）", m.RegionsBefore)
+		}
+		if n := len(m.Iterations); n == 0 {
+			t.Fatal("窗口内迭代为空")
+		}
+		for k := 1; k < len(m.Iterations); k++ {
+			if m.Iterations[k].Iteration != m.Iterations[k-1].Iteration+1 {
+				t.Fatalf("窗口内迭代号 gap：%d 之后是 %d", m.Iterations[k-1].Iteration, m.Iterations[k].Iteration)
+			}
+		}
+		sawPlain, sawFolded := false, false
+		for _, it := range m.Iterations {
+			if !it.ToolsFolded {
+				continue
+			}
+			sawFolded = true
+			for _, tool := range it.Tools {
+				if tool.UIMode == "" {
+					sawPlain = true
+					if tool.Summary != "" || tool.Args != "" || tool.Detail != "" {
+						t.Fatal("折叠视图内普通工具的详情必须省略（体积收益的来源）")
+					}
+				}
+			}
+		}
+		if !sawFolded || !sawPlain {
+			t.Fatalf("窗口内必须有被折叠标记的迭代与普通工具（got folded=%v plain=%v）", sawFolded, sawPlain)
+		}
+		return
+	}
+	t.Fatal("no assistant message")
 }

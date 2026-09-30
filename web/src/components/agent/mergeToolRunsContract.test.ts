@@ -49,6 +49,8 @@ interface IterSpec {
   tools?: string[]
   /** GenUI 工具名（uiMode='genui'）—— 对齐 Go 侧 `genuiTool(...)`。 */
   genui?: string[]
+  /** 折叠视图标记（REST 历史的轻字段迭代 = true；live/全量 = 缺省）。 */
+  folded?: boolean
 }
 
 function iter(iteration: number, spec: IterSpec = {}): WebIteration {
@@ -59,6 +61,7 @@ function iter(iteration: number, spec: IterSpec = {}): WebIteration {
     reasoning: spec.reasoning ?? '',
     tools,
     toolCount: tools.length,
+    ...(spec.folded ? { toolsFolded: true } : {}),
   }
 }
 
@@ -381,5 +384,37 @@ describe('mergeToolRuns 判别力自证（M 组：改错必红）', () => {
   it('M6 无工具迭代各自成区域（跳过无工具迭代 ⇒ F1/F4 必红）', () => {
     expect(mergeToolRuns(F1)).toHaveLength(1)
     expect(regionRuns(F4).map((r) => r.HeadIteration)).toEqual([1, 3, 4])
+  })
+})
+
+// ─── B1 块级折叠标记聚合（轮 3 自审修复的防回归） ────────────────
+// GenUI-only head（后端豁免瘦身 ⇒ toolsFolded=false）+ 折叠视图成员（toolsFolded=true）：
+// IterationGroup 只能看到合并块的标记 —— 只取 head 一份会让成员 pill 的详情 gate 失明
+// （点开空详情且不触发按需拉取）。任一成员带标记 ⇒ 合并块带标记。
+// mutation：把 mergeToolRuns 的块级聚合（toolsFolded: head || blockFolded）改回只取
+// head ⇒ 第一条必红。
+describe('mergeToolRuns 块级 toolsFolded 聚合', () => {
+  it('★ GenUI-only head + 折叠成员 ⇒ 合并块 toolsFolded=true（成员 pill 的 gate 不失明）', () => {
+    const input = [
+      iter(1, { genui: ['display_html'] }),
+      iter(2, { tools: ['Shell'], folded: true }),
+      iter(3, { tools: ['Read'], folded: true }),
+    ]
+    const out = mergeToolRuns(input)
+    expect(out).toHaveLength(1)
+    expect(out[0].toolsFolded).toBe(true)
+    expect(out[0].tools).toHaveLength(3)
+  })
+
+  it('head 与成员全部完整（live/全量）⇒ 合并块 toolsFolded 不为 true（默认视图零请求路径不变）', () => {
+    const out = mergeToolRuns([iter(1, { tools: ['A'] }), iter(2, { tools: ['B'] })])
+    expect(out).toHaveLength(1)
+    expect(out[0].toolsFolded).not.toBe(true)
+  })
+
+  it('head 带文本且折叠（REST 常态）⇒ head 自身标记传导进合并块', () => {
+    const out = mergeToolRuns([iter(1, { content: 'go', tools: ['A'], folded: true }), iter(2, { tools: ['B'] })])
+    expect(out).toHaveLength(1)
+    expect(out[0].toolsFolded).toBe(true)
   })
 })

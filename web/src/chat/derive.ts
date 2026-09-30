@@ -54,6 +54,8 @@ export interface LiveRowView {
   readonly subAgents: readonly WebSubAgentProgress[]
   readonly todos: readonly TodoItem[]
   readonly lastIter: number
+  /** busy 快照折叠视图的区域窗口声明（live 闭环）——与 committed 行同语义。 */
+  readonly regionsBefore?: number
 }
 
 /** frozen assistant 行（cancel 定格 / idle 兜底）—— isPartial=true 保 activeTools 渲染。 */
@@ -69,6 +71,8 @@ export interface FrozenRowView {
   readonly activeTools: readonly WebToolProgress[]
   readonly genui: string
   readonly lastIter: number
+  /** busy 快照折叠视图的区域窗口声明（live 定格不丢）。 */
+  readonly regionsBefore?: number
 }
 
 export interface CommittedRowView {
@@ -234,6 +238,7 @@ function assistantRow(t: Turn): Row | null {
         subAgents: d.subAgents,
         todos: d.todos,
         lastIter: d.iter,
+        regionsBefore: d.regionsBefore,
       }
     }
     case 'frozen': {
@@ -272,6 +277,7 @@ function assistantRow(t: Turn): Row | null {
         activeTools: errTools,
         genui: d.genui,
         lastIter: d.iter,
+        regionsBefore: d.regionsBefore,
       }
     }
     case 'committed': {

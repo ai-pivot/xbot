@@ -20,6 +20,8 @@ import { describe, expect, it } from 'vitest'
 import { reduce } from './reduce'
 import {
   commitViaFold,
+  commitViaText,
+  EMPTY_LIVE,
   initialChatState,
   iterNum,
   turnID,
@@ -306,5 +308,107 @@ describe('T10 区域段（regions_before）不是 gap ⇒ 不触发会话重载'
     s = reduce(s, replaced(win(52, 66, true), 0))
     expect(s.gapReloadToken).toBe(1)
     expect(s.unreachableGapSig).toBe('7:gap46-46')
+  })
+})
+
+// ─── L1：live 闭环（busy 快照折叠视图的区域窗口声明全链） ────────
+// 方案 §3.5（P1）+ callbacks.go:333 切 GetActiveProgressFolded 的正确性前提：
+// busy 会话切回时 active_progress 是折叠窗口 + iteration_regions_before 声明 ⇒
+// live 行顶部同样渲染「更早区域」分隔条；段加载 / 提交 / reload 全程 regionsBefore 不丢。
+
+const liveTurn = (its: WebIteration[], regionsBefore?: number): Turn => ({
+  id: T7,
+  user: null,
+  phase: { kind: 'live', data: { ...EMPTY_LIVE, iterations: its, regionsBefore } },
+  requestID: null,
+})
+
+const withTurn = (t: Turn) => reduce(initialChatState('c1'), { type: 'history_replaced', legacy: [], turns: [t], active: null, lastSeq: null, todos: [] } as DomainEvent)
+
+const liveRbOf = (t: Turn): number | undefined =>
+  t.phase.kind !== 'committed' ? t.phase.data.regionsBefore : undefined
+
+describe('L1 live regionsBefore 闭环', () => {
+  it('live 段加载：iterations union + regionsBefore 显式携带时权威更新', () => {
+    let s = withTurn(liveTurn(win(52, 66), 8))
+    s = reduce(s, loaded(TID, win(40, 51), 5))
+    const t = s.turns.get(T7)!
+    expect(t.phase.kind).toBe('live')
+    expect(liveRbOf(t)).toBe(5)
+    expect(nums(itsOf(t))).toEqual(Array.from({ length: 27 }, (_, i) => 40 + i))
+  })
+
+  it('live 段加载：regionsBefore 缺省（详情端点语义）⇒ 窗口声明不动', () => {
+    let s = withTurn(liveTurn(win(52, 66), 8))
+    s = reduce(s, loaded(TID, win(50, 51), undefined))
+    expect(liveRbOf(s.turns.get(T7)!)).toBe(8)
+  })
+
+  it('★ text_final 提交携带：live 的 regionsBefore 随 commitViaFold 进 committed payload（提交瞬间分隔条不消失）', () => {
+    const s = withTurn(liveTurn(win(52, 66), 5))
+    const fin = reduce(s, {
+      type: 'text_final',
+      turnID: T7,
+      content: null,
+      progressHistory: [],
+      cancelled: false,
+    } as DomainEvent)
+    const t = fin.turns.get(T7)!
+    expect(t.phase.kind).toBe('committed')
+    // mutation：text_final 的 commitViaFold 漏传第 5 参 ⇒ 本断言必红（分隔条在提交瞬间消失）。
+    expect(rbOf(t)).toBe(5)
+  })
+
+  it('★ mergeTurnData 取 min：本地已加载段（regionsBefore 更小）不被 reload 的更大声明覆盖', () => {
+    let s = withTurn(committedTurn(win(40, 66), 3))
+    // 服务端 reload 声明它自己窗口的剩余数（不知道本地已加载 40..51）⇒ min 保留本地真实剩余。
+    s = reduce(s, replaced(win(52, 66), 5))
+    expect(rbOf(s.turns.get(T7)!)).toBe(3)
+    // 单侧有值 ⇒ 取该侧。
+    s = reduce(s, replaced(win(52, 66), 5))
+    expect(rbOf(s.turns.get(T7)!)).toBe(3)
+  })
+
+  it('★ via:text 的 mergeTurnData 同样保留 regionsBefore（commitViaText 第 4 参——轮 2 自审修复的遗漏）', () => {
+    // 本地 committed via:'text'（最终文本权威）× incoming reload：text 分支曾漏传
+    // 第 4 参 ⇒ regionsBefore 丢失、分隔条消失。mutation：去掉 commitViaText 调用的
+    // regionsBefore ⇒ 本条必红。
+    const textTurn: Turn = {
+      id: T7,
+      user: null,
+      requestID: null,
+      phase: { kind: 'committed', payload: commitViaText('final answer' as never, win(52, 60), undefined, 3) },
+    }
+    let s = withTurn(textTurn)
+    s = reduce(s, replaced(win(52, 60), 5))
+    expect(rbOf(s.turns.get(T7)!)).toBe(3)
+  })
+
+  it('normalize→snapshot 链：iteration_regions_before >0 才透传（0/缺省不造键）', async () => {
+    const { historyProgressToLive } = await import('@/components/agent/normalize')
+    const raw = {
+      phase: 'tool_exec',
+      iteration: 60,
+      turn_id: TID,
+      iteration_regions_before: 4,
+    } as never
+    const snap = historyProgressToLive(raw)
+    expect(snap.iterationRegionsBefore).toBe(4)
+    expect(historyProgressToLive({ phase: 'tool_exec', turn_id: TID, iteration: 1 } as never).iterationRegionsBefore).toBeUndefined()
+    expect(historyProgressToLive({ phase: 'tool_exec', turn_id: TID, iteration_regions_before: 0 } as never).iterationRegionsBefore).toBeUndefined()
+  })
+
+  it('snapshotToLive 透传：historyToReplaced 的 active 快照携带 regionsBefore（busy 恢复升级 live）', async () => {
+    const { historyToReplaced } = await import('./integrate')
+    // historyToReplaced 的第二参 = **原始 HistProgress**（内部经 historyProgressToLive →
+    // snapshotToLive 解析；生产链路 useChatMessages 的 setInitialProgress(data.active_progress)
+    // 传的正是原始 JSON）⇒ 这里必须喂 snake_case 原始形状。
+    const ev = historyToReplaced(
+      [{ id: 'm1', dbID: 1, role: 'assistant', content: '', turnID: TID, iterations: win(52, 60), timestamp: '', isPartial: false }],
+      { phase: 'tool_exec', iteration: 60, turn_id: TID, iteration_regions_before: 4, iteration_history: [] },
+    )
+    if (ev.type !== 'history_replaced') throw new Error('expected history_replaced')
+    expect(ev.active).not.toBeNull()
+    expect(ev.active!.snapshot.regionsBefore).toBe(4)
   })
 })

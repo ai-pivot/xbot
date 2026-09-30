@@ -1392,11 +1392,20 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 	return []HistoryIteration{{Iteration: 1, Content: message.Content, Reasoning: message.ReasoningContent, Tools: toolEntries}}
 }
 
-// ⛔ 每 turn 的迭代**必须完整下发**（用户 2026-09-21 定稿：「不能有任何 gap，任何 gap 都是
-// 破坏线性一致性」）—— 这里**禁止**再引入任何"有界窗口/尾部截断"。
+// ⛔ 每 turn 的迭代**存在性必须完整**（用户 2026-09-21 定稿：「不能有任何 gap，任何
+// gap 都是破坏线性一致性」；2026-09-30 演进见 docs/plan-history-fold-windowing.md §0）——
+// 这里**禁止**再引入任何"有界窗口/尾部截断"。
 //
 // 历史教训：曾用 BoundHistoryIterations 把每个 turn 截到最近 60 个（2026-09-15 为压 payload
 // 体积）。截断的代价是**用户会看到迭代缺失**（turn-1-c 的 iter-range=60-119、1..59 不见），
 // 而且当时**没有取回通路**（全 history 搜索 `before_iteration` 零命中）⇒ 永久缺。
 // 体积/渲染性能归**渲染层**（TurnBody 的迭代级窗口化：只挂载视口附近的块 + contain，代价与
 // 迭代数解耦），绝不以丢数据换体积。
+//
+// 2026-09-30 起允许（且仅允许）的形态：**折叠视图**（ConvertMessagesToHistoryWithIterationsView
+// foldView=true，仅 REST 历史路径）——① 窗口=尾部 HistoryRegionWindow 个**展示区域**（区域原子，
+// 永不劈开工具组），窗口内迭代号连续；② 更早区域由 RegionsBefore **显式声明**（≠ 洞），
+// 且必须伴随取回通路（POST /api/regions / POST /api/iteration_detail）；③ 窗口内工具只带
+// pill 轻字段（ToolsFolded 标记），默认渲染与全量像素级一致。foldView=false（CLI/RPC 路径）
+// 逐字节等于演进前行为。任何「静默截断 + 无取回」的回归由 history_iterations_complete_test.go
+// 的既有用例与 T12 体积预算用例共同拦截。

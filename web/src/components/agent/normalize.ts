@@ -192,5 +192,11 @@ export function historyProgressToLive(p: HistProgress | null): ProgressSnapshot 
     subAgents: normalizeWebSubAgents(p.sub_agents),
     tokenUsage: null,
     turnID: typeof p.turn_id === 'number' && p.turn_id > 0 ? p.turn_id : 0,
+    // P1 折叠视图：busy 快照的区域窗口声明（>0 才给，0/缺省不造键 —— 与
+    // HistoryMessage.regions_before 的「>0 才透传」三处一致纪律同源）。
+    iterationRegionsBefore:
+      typeof p.iteration_regions_before === 'number' && p.iteration_regions_before > 0
+        ? p.iteration_regions_before
+        : undefined,
   }
 }
