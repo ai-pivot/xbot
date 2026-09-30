@@ -532,6 +532,78 @@ func (s *SessionService) GetIterationHistoryByTurn(tenantID int64, turnID uint64
 	return scanIterationRecords(rows)
 }
 
+// GetIterationHistoryBeforeRange 返回该 turn 中 **严格早于** beforeIter 的全部
+// 迭代记录（iteration < beforeIter），按 iteration 升序。
+//
+// 语义边界（存储层只负责范围，不负责区域）：
+//   - `iteration < beforeIter` 是**排他**边界 —— beforeIter 自身不在结果内
+//     （它是调用方已持有窗口的最小迭代号；重复下发同号只会多做一次无用的
+//     union，见 docs/plan-history-fold-windowing.md §3.2）。
+//   - 服务端上层（区域段取回端点）拿到这批记录后自行做区域（fold run）划分与
+//     窗口切段 —— 存储层不承担「区域原子」语义。
+//   - tenant_id / turn_id 双重过滤：每会话独立 DB 下 tenant_id 恒为该会话
+//     tenant（WHERE tenant_id=? 代码零改动的既有契约），turn_id 隔离同一会话内
+//     的不同 turn。
+//
+// SELECT 列清单与 GetIterationHistoryByTurn **逐列一致**（含
+// COALESCE(created_at, ”)：created_at 允许 NULL，直接 Scan 进 string 会报错），
+// 并复用 scanIterationRecords —— 新增列时两处必须同步，否则扫描错位。
+func (s *SessionService) GetIterationHistoryBeforeRange(tenantID int64, turnID uint64, beforeIter int) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ? AND iteration < ?
+		ORDER BY iteration ASC
+	`, tenantID, turnID, beforeIter)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration_history before range: %w", err)
+	}
+	defer rows.Close()
+	return scanIterationRecords(rows)
+}
+
+// GetIterationHistoryByNumber 按 (tenant_id, turn_id, iteration) 定位**单条**
+// 迭代记录 —— 详情端点（POST /api/iteration_detail）的取回查询。
+//
+// iteration 列是 turn 内的逻辑唯一地址（1 起单调、续跑续接，见方案 §3.6）；
+// 未命中返回 (zero, false, nil)：**「不存在」是正常业务结果**，不是错误 ——
+// 上层据此返回 404（属主/存在性判断在 serverapp 层，存储层不构造 HTTP 语义）。
+//
+// ORDER BY id ASC LIMIT 1：若历史数据里同一 (turn, iteration) 意外出现多行
+// （理论上不应发生），取最早写入的一行 —— 与 GetIterationHistoryByTurn 在
+// 复合索引 (tenant_id, turn_id, iteration) 上的同键 tie-break 顺序（rowid 升序）
+// 保持一致，避免同一数据两个查询给出不同答案。
+func (s *SessionService) GetIterationHistoryByNumber(tenantID int64, turnID uint64, iteration int) (IterationRecord, bool, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return IterationRecord{}, false, err
+	}
+	var rec IterationRecord
+	var createdAt string
+	err = conn.QueryRow(`
+		SELECT message_id, turn_id, iteration, content, reasoning, tools, tokens, ttft_ms, tokens_per_sec, total_ms, tpot_ms, input_tokens, cached_tokens, model, subscription_id, COALESCE(created_at, '')
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ? AND iteration = ?
+		ORDER BY id ASC LIMIT 1
+	`, tenantID, turnID, iteration).Scan(
+		&rec.MessageID, &rec.TurnID, &rec.Iteration, &rec.Content, &rec.Reasoning, &rec.Tools,
+		&rec.Tokens, &rec.TTFTMs, &rec.TokensPerSec, &rec.TotalMs, &rec.TPOTMs,
+		&rec.InputTokens, &rec.CachedTokens, &rec.Model, &rec.SubscriptionID, &createdAt,
+	)
+	if err == sql.ErrNoRows {
+		return IterationRecord{}, false, nil
+	}
+	if err != nil {
+		return IterationRecord{}, false, fmt.Errorf("get iteration_history by number: %w", err)
+	}
+	rec.CreatedAt = parseSQLiteTime(createdAt)
+	return rec, true, nil
+}
+
 // GetIterationHistoryByTurns 批量查询多个 turn 的 iteration_history —— 一次
 // IN 查询替代循环单查。history 接口原来对每个 turn 单查一次 DB（100 条消息
 // 可能 10-30 个 turn → 10-30 次 SQLite 查询），是接口慢的主要根源。

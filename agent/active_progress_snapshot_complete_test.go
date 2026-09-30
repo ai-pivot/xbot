@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"xbot/channel"
 	"xbot/protocol"
 )
 
@@ -38,5 +39,67 @@ func TestGetActiveProgress_FetchAllIsComplete(t *testing.T) {
 		if res.IterationHistory[i].Iteration != res.IterationHistory[i-1].Iteration+1 {
 			t.Fatalf("快照出现 gap：%d 之后是 %d", res.IterationHistory[i-1].Iteration, res.IterationHistory[i].Iteration)
 		}
+	}
+}
+
+// P1 语义演进（docs/plan-history-fold-windowing.md §3.5 D5 + §0 铁律演进）：
+// **折叠视图**（Agent.GetActiveProgressFolded，REST 历史路径的 active_progress）允许
+// 只下发尾部 K 个展示区域 + 省略工具详情，但代价是**必须显式声明**未下发区域数
+// （IterationRegionsBefore）——「未下发」由计数声明且有确定取回通路（POST /api/regions）
+// ⇒ 不构成静默缺失（旧的「尾部截断且无通路」才被禁）。原方法（上面的 FetchAllIsComplete）
+// 仍然必须完整。
+//
+// 判别力（mutation）：① 变体漏设 IterationRegionsBefore ⇒ 本例必红；
+//
+//	② 窗口把工具组劈开（迭代号不连续 / 工具组成员缺失）⇒ 必红。
+func TestGetActiveProgressFolded_DeclaresUnsentRegionsWithoutGap(t *testing.T) {
+	a := NewTestAgent()
+	key := "web:chat-fold-big"
+	// 150 个「无工具文本」迭代 ⇒ 150 个展示区域（每个独立成块）。
+	total := 150
+	iters := make([]protocol.ProgressEvent, 0, total)
+	for i := 1; i <= total; i++ {
+		iters = append(iters, protocol.ProgressEvent{
+			Iteration: i,
+			Phase:     "tool_exec",
+			Content:   fmt.Sprintf("iter-%d", i),
+		})
+	}
+	a.iterationHistories.Store(key, &iters)
+	a.lastProgressSnapshot.Store(key, &protocol.ProgressEvent{ChatID: key, Phase: "tool_exec", TurnID: 3})
+
+	// 原方法：完整（不因变体存在而改变）。
+	full := a.GetActiveProgress("web", "chat-fold-big", protocol.FetchAll())
+	if len(full.IterationHistory) != total || full.IterationRegionsBefore != 0 {
+		t.Fatalf("原方法必须完整：len=%d regions_before=%d", len(full.IterationHistory), full.IterationRegionsBefore)
+	}
+
+	folded := a.GetActiveProgressFolded("web", "chat-fold-big", protocol.FetchAll())
+	if folded == nil {
+		t.Fatal("GetActiveProgressFolded returned nil")
+	}
+	want := channel.HistoryRegionWindow
+	if folded.IterationRegionsBefore != total-want {
+		t.Fatalf("IterationRegionsBefore = %d, want %d —— 未下发区域必须显式声明（= 区域总数 − 窗口）",
+			folded.IterationRegionsBefore, total-want)
+	}
+	if len(folded.IterationHistory) != want {
+		t.Fatalf("窗口 len = %d, want %d", len(folded.IterationHistory), want)
+	}
+	// 窗口是**连续**迭代号区间（不是「抽头」）：越界声明 + 连续 ⇒ 可完整取回、无洞。
+	first := folded.IterationHistory[0].Iteration
+	if first != total-want+1 || folded.IterationHistory[len(folded.IterationHistory)-1].Iteration != total {
+		t.Fatalf("窗口区间 = %d..%d, want %d..%d",
+			first, folded.IterationHistory[len(folded.IterationHistory)-1].Iteration, total-want+1, total)
+	}
+	for i := 1; i < len(folded.IterationHistory); i++ {
+		if folded.IterationHistory[i].Iteration != folded.IterationHistory[i-1].Iteration+1 {
+			t.Fatalf("窗口内出现 gap：%d 之后是 %d（区域/窗口必须原子对齐，绝不劈开）",
+				folded.IterationHistory[i-1].Iteration, folded.IterationHistory[i].Iteration)
+		}
+	}
+	// 窗口内区域数恰为 K（窗口边界 ≡ 区域边界）。
+	if got := len(channel.RegionRuns(activeProgressRecords(folded.IterationHistory))); got != want {
+		t.Errorf("窗口内区域数 = %d, want %d", got, want)
 	}
 }

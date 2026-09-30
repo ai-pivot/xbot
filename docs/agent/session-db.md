@@ -19,6 +19,18 @@
   查询代码零改动）。FK 省略（无 tenants 表）。独立 schema 版本（`sessionSchemaVersion`，
   与主库版本链完全独立的命名空间）。每库独立 writeMu + WAL —— **不同会话的写真正
   并行**（拆分的核心收益）。
+  - 会话库**没有迁移链**：`initSessionSchema`（`sessiondb.go:181`）在每次
+    `OpenSessionDB` 时重放整份幂等 DDL（`CREATE ... IF NOT EXISTS`）——
+    「新库」与「既有库」在同一收口点收敛，版本号只记录 schema 修订、不参与分支。
+  - schema 版本 2（2026-09-30）：新增复合索引
+    `idx_iter_history_turn_iter(tenant_id, turn_id, iteration)` —— 支撑
+    `/api/regions` 的区域段取回（`iteration < ? ORDER BY iteration`）与
+    `/api/iteration_detail` 的 `(turn_id, iteration)` 单查（旧索引只到 turn_id）。
+    同时把版本表写入从 `INSERT OR REPLACE` 改成「先 DELETE 再 INSERT」——
+    否则版本 1→2 会留下 {1,2} 两行，`SELECT version ... LIMIT 1` 可能读到陈旧值。
+    守护测试：`storage/sqlite/iteration_history_range_test.go`
+    （`TestIterationHistoryTurnIterIndexFreshAndLegacy`：新库 + 老库 DDL 造出的
+    既有库两条路径 + 重复打开幂等）。
 - **主库**：tenants（+ `db_path`/`migrated`/`preview` 三列，v71）+ 全局/用户级表
   （subscriptions/settings/cron/usage/...）+ 旧 session_messages（迁移源，P4 才清）。
 

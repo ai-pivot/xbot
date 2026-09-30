@@ -254,7 +254,34 @@ func filterInternalMessages(msgs []llm.ChatMessage) []llm.ChatMessage {
 // iteration data attached (queried by turn_id, merging all intermediate +
 // final records into one complete list).
 // Detail JSON is only used as a fallback for old data pre-v55.
+//
+// 本函数 = ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)：
+// **全量视图**（零区域窗口、零工具折叠）—— CLI/RPC get_history 走的就是这一条，
+// 行为与历史上逐字节一致（R5）。
 func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord) []HistoryMessage {
+	return ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)
+}
+
+// HistoryRegionWindow 是内层「区域窗口」大小：每个 turn 首次只下发其**最后**
+// HistoryRegionWindow 个展示区域（docs/plan-history-fold-windowing.md §3.2 D2）。
+// 区域 = 前端渲染块（与 mergeToolRuns 同构判定，见 region_view.go）：**折叠的
+// 工具组算 1 个区域**。更早未下发的区域数由 HistoryMessage.RegionsBefore 显式
+// 声明 —— 它是「可取回窗口」，**不是 gap**（前端经 POST /api/regions 整段取回，
+// 段边界同样对齐区域，永不劈开工具组）。区域总数 ≤ 该值的 turn 全量下发、
+// RegionsBefore=0（普通 turn 完全不受影响）。
+const HistoryRegionWindow = 100
+
+// ConvertMessagesToHistoryWithIterationsView 是折叠视图变体（D2 区域窗口 + D3 工具
+// 轻字段化，方案 §3.2/§3.3）：
+//
+//	foldView=true  —— Web REST 历史路径（serverapp HistorySnapshot）：每个有结构化
+//	  迭代数据的 turn 只下发**尾部 HistoryRegionWindow 个区域**，窗口内每条工具
+//	  省略详情大字段（ToolsFolded 标记，GenUI 豁免），并把更早未下发的区域数挂到
+//	  HistoryMessage.RegionsBefore。迭代**存在性**完整且连续（窗口是区域对齐的
+//	  连续迭代号区间），未下发部分有确定取回通路 ⇒ 不构成任何 gap。
+//	foldView=false —— CLI/RPC 路径，与 ConvertMessagesToHistoryWithIterations 完全同构
+//	  （无结构化数据的 turn / Detail 回落路径在两种模式下都不窗口化、不折叠）。
+func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIterMap map[uint64][]sqlite.IterationRecord, foldView bool) []HistoryMessage {
 	// Internal 消息（仅模型可见的载体）不属于用户可见历史 —— 见
 	// filterInternalMessages 的说明。
 	msgs = filterInternalMessages(msgs)
@@ -341,39 +368,13 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 			//    no final message): flushPending is the ONLY render path —
 			//    skipping it would lose ALL iterations.
 			iters := pendingIters
+			regionsBefore := 0
 			if pendingTurnID > 0 {
 				if recs, ok := turnIterMap[pendingTurnID]; ok && len(recs) > 0 {
-					iters = make([]HistoryIteration, 0, len(recs))
-					for _, rec := range recs {
-						var tools []protocol.ToolProgress
-						if rec.Tools != "" && rec.Tools != "[]" {
-							var snaps []iterToolSnap
-							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
-								tools = make([]protocol.ToolProgress, len(snaps))
-								for i, t := range snaps {
-									label := t.Label
-									if label == "" {
-										label = t.Name
-									}
-									tools[i] = protocol.ToolProgress{
-										Name: t.Name, Label: label, Status: t.Status,
-										Elapsed: t.ElapsedMS, Iteration: rec.Iteration,
-										Summary: t.Summary, Args: t.Args, Detail: t.Detail,
-										UIMode: t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
-									}
-								}
-							}
-						}
-						iters = append(iters, HistoryIteration{
-							Iteration:    rec.Iteration,
-							Content:      rec.Content,
-							Reasoning:    rec.Reasoning,
-							Tools:        tools,
-							Tokens:       rec.Tokens,
-							TTFTMs:       rec.TTFTMs,
-							TokensPerSec: rec.TokensPerSec,
-							TotalMs:      rec.TotalMs,
-						})
+					if foldView {
+						iters, regionsBefore = windowTurnIterations(recs)
+					} else {
+						iters = fullTurnIterations(recs, true)
 					}
 				}
 			}
@@ -390,6 +391,8 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 				Timestamp:  ts,
 				Iterations: iters,
 				TurnID:     pendingTurnID,
+				// 折叠视图：该 turn 更早未下发的展示区域数（0 = 已完整下发）。
+				RegionsBefore: regionsBefore,
 			})
 			pendingIters = nil
 		}
@@ -478,38 +481,15 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 					finishCurIter()
 					pendingIters = nil
 
-					iters := make([]HistoryIteration, 0, len(recs))
-					for _, rec := range recs {
-						var tools []protocol.ToolProgress
-						if rec.Tools != "" && rec.Tools != "[]" {
-							var snaps []iterToolSnap
-							if json.Unmarshal([]byte(rec.Tools), &snaps) == nil {
-								tools = make([]protocol.ToolProgress, len(snaps))
-								for i, t := range snaps {
-									label := t.Label
-									if label == "" {
-										label = t.Name
-									}
-									tools[i] = protocol.ToolProgress{
-										Name:      t.Name,
-										Label:     label,
-										Status:    t.Status,
-										Elapsed:   t.ElapsedMS,
-										Iteration: rec.Iteration,
-										Summary:   t.Summary,
-										Args:      t.Args,
-										Detail:    t.Detail,
-										UIMode:    t.UIMode, UILibs: t.UILibs, UISurface: t.UISurface,
-									}
-								}
-							}
-						}
-						iters = append(iters, HistoryIteration{
-							Iteration: rec.Iteration,
-							Content:   rec.Content,
-							Reasoning: rec.Reasoning,
-							Tools:     tools,
-						})
+					// 折叠视图（foldView=true）取尾部 HistoryRegionWindow 个区域 +
+					// 工具轻字段化；全量视图逐字节保留历史行为（该路径不填迭代级
+					// 指标 —— 与 flushPending 路径的历史差异，见 fullTurnIterations）。
+					var iters []HistoryIteration
+					regionsBefore := 0
+					if foldView {
+						iters, regionsBefore = windowTurnIterations(recs)
+					} else {
+						iters = fullTurnIterations(recs, false)
 					}
 
 					if len(iters) > 0 {
@@ -535,6 +515,8 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Timestamp:  m.Timestamp,
 								TurnID:     m.TurnID,
 								Iterations: iters,
+								// 折叠视图：更早未下发的展示区域数（0 = 已完整下发）。
+								RegionsBefore: regionsBefore,
 							})
 						} else {
 							structuredRowIdx[m.TurnID] = len(history)
@@ -545,6 +527,8 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 								Timestamp:  m.Timestamp,
 								TurnID:     m.TurnID,
 								Iterations: iters,
+								// 折叠视图：更早未下发的展示区域数（0 = 已完整下发）。
+								RegionsBefore: regionsBefore,
 							})
 						}
 					} else if m.Content != "" && !m.Interrupted {
@@ -700,6 +684,40 @@ func ConvertMessagesToHistoryWithIterations(msgs []llm.ChatMessage, turnIterMap 
 	flushPending()
 	history = attachCompactions(history, pendingCompactions)
 	return history
+}
+
+// windowTurnIterations 折叠视图（D2 区域窗口 + D3 工具轻字段化）的装配：
+// 取该 turn 尾部 HistoryRegionWindow 个区域，窗口内每条经 MapIterationRecord(rec, true)
+// 轻字段化（ToolsFolded 标记，GenUI 工具豁免）。返回 (窗口迭代, 更早未下发区域数)。
+//
+// 区域原子性由 RegionWindow 保证：窗口 = 连续迭代号区间 [a..N]，起点必是某个
+// 区域的 head ⇒ 工具组永不劈开，窗口内迭代号连续（前端 assertIterationContinuity
+// 只查内部断号，任意起点合法）。
+func windowTurnIterations(recs []sqlite.IterationRecord) ([]HistoryIteration, int) {
+	window, regionsBefore := RegionWindow(recs, HistoryRegionWindow)
+	iters := make([]HistoryIteration, 0, len(window))
+	for _, rec := range window {
+		iters = append(iters, MapIterationRecord(rec, true))
+	}
+	return iters, regionsBefore
+}
+
+// fullTurnIterations 全量装配（foldView=false = CLI/RPC 路径）。
+//
+// keepMetrics 表达两个结构化装配点的**历史差异**：flushPending（续跑/取消、
+// 无最终回复行）路径填迭代级指标（Tokens/TTFTMs/TokensPerSec/TotalMs），主装配
+// 路径不填。R5 要求 CLI/RPC（get_history）载荷零变化 ⇒ 如实保留该差异，不顺手
+// 「统一修正」（否则 View(false) 与原函数不再逐字节一致）。
+func fullTurnIterations(recs []sqlite.IterationRecord, keepMetrics bool) []HistoryIteration {
+	iters := make([]HistoryIteration, 0, len(recs))
+	for _, rec := range recs {
+		it := MapIterationRecord(rec, false)
+		if !keepMetrics {
+			it.Tokens, it.TTFTMs, it.TokensPerSec, it.TotalMs = 0, 0, 0, 0
+		}
+		iters = append(iters, it)
+	}
+	return iters
 }
 
 // attachCompactions attaches each pending in-turn compaction to its turn's

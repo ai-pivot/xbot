@@ -33,7 +33,15 @@ import (
 
 // sessionSchemaVersion 是会话库自己的 schema 版本（与主库 schemaVersion 完全独立
 // 的命名空间——会话库迁移只重写几 MB 的会话文件，永不触碰主库版本链）。
-const sessionSchemaVersion = 1
+//
+// 版本历史：
+//   - 1: v71 拆库时的初始会话库 schema。
+//   - 2: 新增复合索引 idx_iter_history_turn_iter(tenant_id, turn_id, iteration)，
+//     支撑区域段取回（`iteration < ? ORDER BY iteration`）与
+//     (turn_id, iteration) 详情单查。**该变更不需要迁移链**：initSessionSchema
+//     每次打开会话库都重放整份幂等 DDL（CREATE ... IF NOT EXISTS），新库与既有库
+//     在同一收口点收敛；版本号只记录 schema 修订，不参与分支判断。
+const sessionSchemaVersion = 2
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -88,11 +96,21 @@ CREATE TABLE IF NOT EXISTS iteration_history (
 );
 CREATE INDEX IF NOT EXISTS idx_iter_history_msg ON iteration_history(message_id);
 CREATE INDEX IF NOT EXISTS idx_iter_history_turn ON iteration_history(tenant_id, turn_id);
+-- v2: 复合索引把 (tenant_id, turn_id) 的等值定位延伸到 iteration 范围 ——
+-- 支撑 /api/regions 的区域段取回（iteration < ? ORDER BY iteration）与
+-- /api/iteration_detail 的 (turn_id, iteration) 单查。旧的 idx_iter_history_turn
+-- 只到 turn_id，范围查询要在 turn 内全扫。
+CREATE INDEX IF NOT EXISTS idx_iter_history_turn_iter ON iteration_history(tenant_id, turn_id, iteration);
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
-INSERT OR REPLACE INTO schema_version (version) VALUES (%d);
+-- 版本表是**单行哨兵**（主库同语义：一行 = 当前版本）。旧的
+-- INSERT OR REPLACE 只在主键冲突时替换 —— 版本从 1 升到 2 会留下两行
+-- （{1,2}），SELECT version ... LIMIT 1 就可能读到陈旧值。先清空再写入，
+-- 保证升级后读到的永远是当前版本（幂等：重复打开结果一致）。
+DELETE FROM schema_version;
+INSERT INTO schema_version (version) VALUES (%d);
 `, sessionSchemaVersion)
 
 // OpenSessionDB 打开（或创建）一个会话库。连接设置与主库 Open 相同（WAL +

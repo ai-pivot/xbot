@@ -375,7 +375,11 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			}
 		}
 		return web.HistorySnapshot{
-			Messages:       channel.ConvertMessagesToHistoryWithIterations(msgs, turnIterMap),
+			// REST 历史走**折叠视图**（区域窗口 + 工具轻字段化，方案 §3.2/§3.3）：
+			// 每个 turn 只下发尾部 HistoryRegionWindow 个区域 + RegionsBefore 声明，
+			// 详情经 /api/iteration_detail 按需取回。CLI/RPC（get_history）仍走
+			// ConvertMessagesToHistoryWithIterations（foldView=false，零变化）。
+			Messages:       channel.ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, true),
 			Processing:     ag.IsProcessingByChannel(sel.Channel, sel.ChatID),
 			ActiveProgress: progress,
 			ChatID:         sel.ChatID,
@@ -383,6 +387,55 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 			HasMore:        hasMore,
 			OldestID:       oldestID,
 		}, nil
+	}
+	// POST /api/regions —— 内层区域分页取回（方案 §3.2 D2）：返回 `iteration < beforeIter`
+	// 的记录中**尾部 regionLimit 个展示区域**组成的段（区域原子 ⇒ 段边界永不对齐到
+	// 工具组中间），以及段外更早的区域数（0 = 已经到该 turn 头部）。
+	//
+	// 属主校验与 HistorySnapshot 同款：REST 入口已过 resolveAPISession → canAccessSession；
+	// 这里只做会话解析 + **会话库收口**（TenantSession.SessionService()，绝不用
+	// NewSessionService(主库) —— 那会读到主库的旧数据）。READ 路径不 touch tenant
+	// （与 HistorySnapshot 同一纪律：读不能改 last_active_at）。
+	callbacks.HistoryRegions = func(senderID string, sel web.SessionSelector, turnID uint64, beforeIter, regionLimit int) ([]protocol.HistoryIteration, int, error) {
+		if ag.MultiSession() == nil {
+			return nil, 0, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return nil, 0, err
+		}
+		tenantID := sess.TenantID()
+		if tenantID <= 0 {
+			return nil, 0, nil
+		}
+		recs, err := sess.SessionService().GetIterationHistoryBeforeRange(tenantID, turnID, beforeIter)
+		if err != nil {
+			return nil, 0, err
+		}
+		iterations, regionsBefore := historyRegionSegment(recs, regionLimit)
+		return iterations, regionsBefore, nil
+	}
+	// POST /api/iteration_detail —— 折叠视图的按需详情（方案 §3.3 D3）：一条迭代的
+	// **完整**工具详情（不折叠）。未命中返回 (zero, false, nil) —— 「不存在」是正常
+	// 业务结果，handler 据此 404（与属主校验失败同状态码，防探测）。
+	callbacks.IterationDetail = func(senderID string, sel web.SessionSelector, turnID uint64, iteration int) (protocol.HistoryIteration, bool, error) {
+		if ag.MultiSession() == nil {
+			return protocol.HistoryIteration{}, false, fmt.Errorf("multi-session not available")
+		}
+		sess, err := ag.MultiSession().GetOrCreateSession(sel.Channel, sel.ChatID)
+		if err != nil {
+			return protocol.HistoryIteration{}, false, err
+		}
+		tenantID := sess.TenantID()
+		if tenantID <= 0 {
+			return protocol.HistoryIteration{}, false, nil
+		}
+		rec, found, err := sess.SessionService().GetIterationHistoryByNumber(tenantID, turnID, iteration)
+		if err != nil || !found {
+			return protocol.HistoryIteration{}, false, err
+		}
+		// foldTools=false ⇒ 完整字段（这是「完整覆盖轻字段」的唯一来源）。
+		return channel.MapIterationRecord(rec, false), true, nil
 	}
 	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {
 		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID)
@@ -2193,4 +2246,61 @@ func shareToProtocol(a *sqlite.SharedArtifact) *protocol.SharedArtifact {
 		ExpiresAt:   a.ExpiresAt,
 		RevokedAt:   a.RevokedAt,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Fold view（docs/plan-history-fold-windowing.md §3.2 D2）：区域段取回
+// ---------------------------------------------------------------------------
+
+const (
+	// DefaultHistoryRegionRequest = POST /api/regions 未指定 region_limit 时
+	// 单次返回的区域数（= 与初始窗口 HistoryRegionWindow 同量级）。
+	DefaultHistoryRegionRequest = 100
+	// MaxHistoryRegionRequest = 单次请求服务端返回的区域数**硬上限**（R3：巨型
+	// 区域段单次过大）。客户端传多大都被钳到这里。
+	MaxHistoryRegionRequest = 100
+)
+
+// historyRegionSegment 从「严格早于 beforeIter 的迭代记录（升序）」中取**尾部**
+// regionLimit 个展示区域组成的段，返回 (段内迭代, 段外更早区域数)。
+//
+// 语义（方案 §3.2）：
+//   - 区域总数 ≤ regionLimit ⇒ 全部返回 + regionsBefore=0（已到该 turn 头部）；
+//   - 否则取尾部 regionLimit 个区域，regionsBefore = 总数 - regionLimit。
+//
+// 区域原子：切分按**区域覆盖的迭代个数之和**取下标（与 channel.RegionWindow 同一
+// 手法），任何输入下都严格落在区域边界上 —— 绝不从折叠工具组中间切开。
+// 段内迭代为**轻字段形态**（MapIterationRecord(rec, true)，ToolsFolded 标记），
+// 详情由 /api/iteration_detail 按需补齐。
+//
+// regionLimit <= 0 ⇒ DefaultHistoryRegionRequest；> MaxHistoryRegionRequest ⇒ 钳到上限。
+func historyRegionSegment(recs []sqlite.IterationRecord, regionLimit int) ([]protocol.HistoryIteration, int) {
+	limit := regionLimit
+	if limit <= 0 {
+		limit = DefaultHistoryRegionRequest
+	}
+	if limit > MaxHistoryRegionRequest {
+		limit = MaxHistoryRegionRequest
+	}
+	if len(recs) == 0 {
+		return nil, 0
+	}
+	runs := channel.RegionRuns(recs)
+	if len(runs) <= limit {
+		return foldHistoryIterations(recs), 0
+	}
+	start := 0
+	for _, run := range runs[:len(runs)-limit] {
+		start += run.IterationCount
+	}
+	return foldHistoryIterations(recs[start:]), len(runs) - limit
+}
+
+// foldHistoryIterations 把一段记录映射为折叠视图的迭代形态（轻字段 + ToolsFolded）。
+func foldHistoryIterations(recs []sqlite.IterationRecord) []protocol.HistoryIteration {
+	out := make([]protocol.HistoryIteration, 0, len(recs))
+	for _, rec := range recs {
+		out = append(out, channel.MapIterationRecord(rec, true))
+	}
+	return out
 }
