@@ -228,4 +228,49 @@ test.describe('复制入口（右键 / 长按）', () => {
     await page.screenshot({ path: `${SHOTS}/mobile-link-sheet.png`, fullPage: true })
     await ctx.close()
   })
+
+  // ── 触屏泄漏守护（2026-09-30 用户报告「有些情况手机无法划动虚拟视图的历史，打开侧边栏后恢复正常」）──
+  //
+  // 根因：copy-backdrop（fixed inset-0 z-40 透明遮罩）的关闭路径只有 mousedown /
+  // wheel / contextmenu —— 触屏滑动一个都不触发（触摸兼容模型：滑动/长按抬手
+  // 不合成 mousedown）⇒ 遮罩泄漏 ⇒ 新手势命中它而它 portal 到 body（无滚动祖先）
+  // ⇒ 历史划不动；点顶栏按钮（tap 合成 mousedown）⇒ 顺带把遮罩点掉 ⇒ 「打开侧
+  // 边栏后恢复正常」。修复 = 遮罩补 onTouchStart + 长按已开菜单后拖走自动关
+  //（单测 CopyTarget.longpress.test.tsx 两例已守护）；本 E2E 用【真实 CDP 触摸
+  // 管线】守护真实链路（判别式类改动不能只有 mock/单测判据）。
+  test('触屏：长按开菜单后 → 真实触摸历史区域必须关掉遮罩（不得泄漏冻结滚动）', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })
+    const page = await ctx.newPage()
+    await setupMock(page)
+    await page.goto('/')
+    const target = page.locator('[data-copy-target="tools"]').first()
+    await expect(target).toBeAttached()
+
+    // 长按开菜单（与既有用例同一模式）。
+    await target.evaluate((el) => {
+      el.dispatchEvent(
+        new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true, clientX: 120, clientY: 400 }),
+      )
+    })
+    const sheet = page.locator('[data-testid="copy-sheet"]')
+    await expect(sheet).toBeVisible({ timeout: 3000 })
+    await expect(page.locator('[data-testid="copy-backdrop"]')).toBeAttached()
+
+    // 真实输入管线（CDP touch）：抬手后新手势划历史 —— 第一下 touchstart 命中遮罩。
+    // 修复前：遮罩无触屏关闭路径 → 泄漏（本用例红）；修复后：onTouchStart 即关。
+    const cdp = await ctx.newCDPSession(page)
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 195, y: 300 }] })
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 195, y: 500 }] })
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+
+    // 判别 ①：遮罩必须已被触摸关闭（不得泄漏）。
+    await expect(page.locator('[data-testid="copy-backdrop"]')).toHaveCount(0)
+    // 判别 ②：历史区域的触摸命中消息元素而不是泄漏的遮罩（elementFromPoint 确定性命中测试）。
+    const hit = await page.evaluate(([x, y]) => {
+      const el = document.elementFromPoint(x, y)
+      return el ? el.getAttribute('data-testid') || el.tagName : null
+    }, [195, 300])
+    expect(hit, '历史区域必须可触摸（命中消息内容，而非泄漏的 copy-backdrop）').not.toBe('copy-backdrop')
+    await ctx.close()
+  })
 })
