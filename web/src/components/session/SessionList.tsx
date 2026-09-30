@@ -313,7 +313,7 @@ export function SessionList({
   }
 
   const submitDelete = async () => {
-    if (!del) return
+    if (!del || busy) return
     setBusy(true)
     await onDelete(del.id, del.channel)
     setBusy(false)
@@ -474,7 +474,17 @@ export function SessionList({
 
       {/* Delete confirmation */}
       <AlertDialog open={del !== null} onOpenChange={(o) => !o && setDelete(null)}>
-        <AlertDialogContent className="sm:max-w-sm">
+        <AlertDialogContent
+          className="sm:max-w-sm"
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || e.nativeEvent.isComposing || busy) return
+            // Enter confirms regardless of Radix's initial focus on Cancel. Avoid
+            // the browser also synthesizing a click on the focused button.
+            e.preventDefault()
+            e.stopPropagation()
+            void submitDelete()
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>{t('session.deleteTitle')}</AlertDialogTitle>
             <AlertDialogDescription>

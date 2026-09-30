@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
@@ -340,6 +340,36 @@ describe('SessionList', () => {
     // 会话名必须被真正插入（修复前这里是字面量 "{{username}}"）。
     expect(dialog.textContent).toContain('My Session')
     expect(dialog.textContent ?? '').not.toMatch(/\{\{|\}\}/)
+  })
+
+  it('按 Enter 确认删除会话，只调用一次删除操作', async () => {
+    const s = session({ chatID: 'chat-1', channel: 'web', label: 'My Session', type: 'main' })
+    const onDelete = vi.fn().mockResolvedValue(true)
+    renderWithProviders(
+      <SessionList
+        sessions={[s]}
+        groups={[{ key: 'today', sessions: [s] }]}
+        sortedSessions={[s]}
+        category="time"
+        collapsedGroups={new Set()}
+        onToggleGroup={vi.fn()}
+        starredIds={[]}
+        unreadIds={[]}
+        activeSession={null}
+        search=""
+        subAgents={[]}
+        onSelect={vi.fn()}
+        onToggleStar={vi.fn()}
+        onRename={vi.fn()}
+        onDelete={onDelete}
+      />,
+    )
+    fireEvent.contextMenu(screen.getByText('My Session'))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete|删除/ }))
+    const dialog = await screen.findByRole('alertdialog')
+    fireEvent.keyDown(dialog, { key: 'Enter' })
+    await waitFor(() => expect(onDelete).toHaveBeenCalledOnce())
+    expect(onDelete).toHaveBeenCalledWith('chat-1', 'web')
   })
 })
 
