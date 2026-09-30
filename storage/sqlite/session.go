@@ -406,6 +406,32 @@ func (s *SessionService) GetMaxIterationForTurn(tenantID int64, turnID uint64) (
 // tenants 是主库表，而 SessionService 现在绑定会话库 —— CWD 读写经 TenantService
 // （主库）进行。见 tenant.go 的 TenantService.SetTenantCWD / GetTenantCWD。
 
+// HasLegacyRows reports whether tenantID has ANY rows in this DB's
+// session_messages or iteration_history (existence probe — index-backed,
+// constant time per table regardless of table size).
+//
+// Used by the per-session DB split (v71) to decide whether a legacy-database
+// copy is needed at all: a BRAND-NEW session has zero rows in the main DB and
+// must never pay the ATTACH+copy cost (2026-09-30 production incident — new-
+// session creation failed with SQLITE_IOERR_SHORT_READ because the
+// unconditional ATTACH hit a broken main-DB WAL state). The probe deliberately
+// runs through this service's existing (warm) connection — the same path the
+// rest of the server uses — never through a fresh ATTACH.
+func (s *SessionService) HasLegacyRows(tenantID int64) (bool, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return false, err
+	}
+	var n int
+	if err := conn.QueryRow(`
+		SELECT (SELECT EXISTS(SELECT 1 FROM session_messages WHERE tenant_id = ? LIMIT 1))
+		     + (SELECT EXISTS(SELECT 1 FROM iteration_history WHERE tenant_id = ? LIMIT 1))
+	`, tenantID, tenantID).Scan(&n); err != nil {
+		return false, fmt.Errorf("probe legacy rows: %w", err)
+	}
+	return n > 0, nil
+}
+
 // LatestPreview returns the preview text for a session: the latest
 // user/assistant non-display-only message, truncated to 256 bytes in SQL —
 // the exact semantics the ListUserChats subquery used before the per-session

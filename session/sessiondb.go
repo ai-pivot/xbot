@@ -91,15 +91,28 @@ func (m *MultiTenantSession) sessionDB(tenantID int64) (*sqlite.DB, error) {
 	}
 
 	if !info.Migrated {
-		// 惰性迁移：主库 session_messages/iteration_history → 会话库（幂等）。
-		// 此刻该库尚未入池（sessionDBMu 持有），无并发写者 —— 迁移事务经 pinned
-		// 连接直写是安全的（无需会话库 writeMu；writeMu 纪律保护的是池内共享期）。
-		if err := m.migrateSessionDB(sdb, tenantID); err != nil {
+		// ⛔ 新会话不迁移（2026-09-30 生产事故根治——用户原话：「新建会话又不需要
+		// 迁移」）：旧实现对所有 migrated=0 租户**无条件**跑 ATTACH+复制。全新会话
+		// 在主库零行，ATTACH 是纯风险零收益 —— 事故现场正是新建会话的 ATTACH
+		// 撞上主库坏死的 WAL 状态，报 SQLITE_IOERR_SHORT_READ(522)，导致新建会话
+		// 与子代理 spawn 直接失败。修复：先经主库**现有连接**（服务自身一直在用、
+		// 事故中唯一没坏的路径）探测有无残留行；无行则完全不 ATTACH。
+		hasLegacy, perr := m.sessionSvc.HasLegacyRows(tenantID)
+		if perr != nil {
 			_ = sdb.Close()
-			return nil, fmt.Errorf("migrate session db (tenant %d): %w", tenantID, err)
+			return nil, fmt.Errorf("check legacy rows (tenant %d): %w", tenantID, perr)
 		}
-		// preview 回填：从会话库算最新一条 user/assistant 消息写主库 tenants.preview。
-		m.recomputeSessionPreview(sdb, tenantID)
+		if hasLegacy {
+			// 惰性迁移：主库 session_messages/iteration_history → 会话库（幂等）。
+			// 此刻该库尚未入池（sessionDBMu 持有），无并发写者 —— 迁移事务经 pinned
+			// 连接直写是安全的（无需会话库 writeMu；writeMu 纪律保护的是池内共享期）。
+			if err := m.migrateSessionDB(sdb, tenantID); err != nil {
+				_ = sdb.Close()
+				return nil, fmt.Errorf("migrate session db (tenant %d): %w", tenantID, err)
+			}
+			// preview 回填：从会话库算最新一条 user/assistant 消息写主库 tenants.preview。
+			m.recomputeSessionPreview(sdb, tenantID)
+		}
 		// 置 migrated=1 —— 它是「重跑迁移会清空会话库写入」的闸门：
 		// migrated=1 后永不重跑；此前重跑 = DELETE+INSERT 幂等。
 		// ⛔ v72 顺序契约（防丢失）：标记必须先于主库删除 —— 见
@@ -108,14 +121,20 @@ func (m *MultiTenantSession) sessionDB(tenantID int64) (*sqlite.DB, error) {
 			_ = sdb.Close()
 			return nil, fmt.Errorf("mark tenant %d migrated: %w", tenantID, err)
 		}
-		// v72：删除主库冗余副本（不变量：主库只持有 migrated=0 残留者的数据，
-		// 随时间归零）。失败只 WARN —— 主库行是冗余副本（migrated=1 后读路径
-		// 永不再看主库），残留无害；下次启动的 v72 链 DELETE 也会兜底清理。
-		if err := m.tenantSvc.DeleteTenantHistory(tenantID); err != nil {
-			log.WithError(err).WithField("tenant_id", tenantID).
-				Warn("delete main-db legacy rows after lazy migration failed (stale redundant copy; harmless)")
+		if hasLegacy {
+			// v72：删除主库冗余副本（不变量：主库只持有 migrated=0 残留者的数据，
+			// 随时间归零）。失败只 WARN —— 主库行是冗余副本（migrated=1 后读路径
+			// 永不再看主库），残留无害；下次启动的 v72 链 DELETE 也会兜底清理。
+			if err := m.tenantSvc.DeleteTenantHistory(tenantID); err != nil {
+				log.WithError(err).WithField("tenant_id", tenantID).
+					Warn("delete main-db legacy rows after lazy migration failed (stale redundant copy; harmless)")
+			}
+			log.WithFields(log.Fields{"tenant_id": tenantID, "db_path": dbPath}).Info("Session DB migrated from main DB")
+		} else {
+			// 全新会话：无遗留数据可迁 —— 不 ATTACH、不回填 preview（本就空），
+			// 只置标记。这是绝大多数新建会话的路径。
+			log.WithFields(log.Fields{"tenant_id": tenantID, "db_path": dbPath}).Debug("New session DB initialized (no legacy rows to migrate)")
 		}
-		log.WithFields(log.Fields{"tenant_id": tenantID, "db_path": dbPath}).Info("Session DB migrated from main DB")
 	}
 
 	m.sessionDBs[tenantID] = &sessionDBEntry{db: sdb, lastAccess: time.Now()}

@@ -150,3 +150,49 @@ iteration_history 只剩冗余副本。**v72 把主库缩小回注册表 + 全�
 - **删除守卫（F2）**：步骤 2 删除前对每个 migrated=1 租户 `os.Stat` 校验会话库
   文件仍在 —— 缺失（外部清理 sessions/）时降级 migrated=0（数据留主库，惰性
   路径下次打开时重拷），绝不静默删除唯一副本。
+
+## ⛔ 新会话永不迁移（2026-09-30 生产事故根治）
+
+**现象**：新建会话报 `open session db for tenant N: migrate session db: attach main
+db: disk I/O error (522)`（522 = `SQLITE_IOERR_SHORT_READ`），子代理 spawn 同样失败；
+几分钟后自愈；同机新起进程读同一库却正常（存量连接坏的、新 ATTACH 坏的）。
+
+**根因（代码缺陷，确定）**：惰性迁移对**所有** `migrated=0` 租户无条件跑
+ATTACH+复制 —— 全新会话在主库零行，ATTACH 是纯风险零收益。事故时主库 WAL 状态
+坏死（`-wal` 被截断为 0 字节 + `-shm` 缺失），服务内存量连接持有失效的 WAL 索引
+假设 ⇒ 任何**新 ATTACH** 都 522。用户原话精准：「新建会话又不需要迁移」。
+
+**修复**：`SessionService.HasLegacyRows(tenantID)` —— 经主库**现有连接**（服务
+一直在用、事故中唯一没坏的路径）探测 session_messages/iteration_history 有无残留
+行；两表皆空 ⇒ **完全不 ATTACH**、不回填 preview，仅置 `migrated=1`（新建会话的
+绝大多数路径）。有残留行才走复制（复制失败 = 明确报错，绝不静默丢历史）。
+判别测试 `session/sessiondb_test.go` 的 `TestNewSessionDoesNotAttachMainDB`：把主库
+文件**改名**（新 ATTACH 必失败、存量池连接不受影响 —— 与事故现场同构）后新会话
+必须仍能创建；**变异自证**：探针恒 true（恢复旧的无条件迁移）⇒ 该测试必红。
+
+## 主库损坏的容错与修复（2026-09-30）
+
+- **v72 删除段容错**：DELETE 失败只 WARN + 继续（损坏库上 `SQLITE_CORRUPT` 不阻塞
+  启动 —— 铁律「启动路径永不阻塞」）；F2 守卫的下降级 UPDATE 失败 ⇒ **整段删除
+  跳过**（fail-safe：绝不删一个会话库文件已缺失的租户的主库行）。版本号仍推进到
+  72（避免每次启动重跑失败的 GB 级删除）；残留行是不可达的冗余副本，修库后可清。
+- **主库页级损坏的修复流程**（本次生产实例 iteration_history 报 4 处 b-tree 结构
+  错误：`invalid page number` / `2nd reference to page` / overflow list 长度错乱）：
+  ```bash
+  # 1) 停服（干净停机：会话库 checkpoint + 主库关闭）
+  $SUP stop xbot-server
+  # 2) 原样备份三件套（xbot.db / -wal / -shm）到 repair-<ts>/ 再动手
+  # 3) .recover 重建（跳过坏行、重建全部可读数据）
+  sqlite3 repair/xbot.db.raw ".recover" | sqlite3 repair/xbot.db.repaired
+  # 4) 校验：integrity_check == ok + 关键表行数对账（tenants 必须相等；
+  #    iteration_history 只允许多行丢失、不允许凭空多）+ schema_version 不变
+  # 5) 校验通过才换入：原库改名留证据 + **删除坏 -wal/-shm**（关键：坏 WAL 索引
+  #    会让存量连接持续 522）
+  ```
+  本仓库的修复脚本模板：`/tmp/xbot_db_repair.sh`（停服 → 备份 → recover → 校验 →
+  换入或回滚 → 启服 → 写探针，含 set -uo pipefail 与失败自动回滚）。
+- **预防**：① 不要用外部 sqlite3/python 连接直接读写**正在运行**的实例库
+  （agent 会话里跑生产库读写探针是本次事故的疑似外部干扰源：`-shm` 被删/`-wal`
+  被截断）；② 升级只跑一个进程（无迁移锁）；③ 打开面板即改数据的路径
+  （ATTACH）必须只读意图 —— 本次已从「所有 migrated=0 租户」收窄到「确有残留行的
+  租户」，风险面缩小到几乎为零。
