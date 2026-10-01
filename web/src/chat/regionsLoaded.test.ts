@@ -18,6 +18,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { reduce } from './reduce'
+import { deriveRows } from './derive'
 import {
   commitViaFold,
   commitViaText,
@@ -410,5 +411,58 @@ describe('L1 live regionsBefore 闭环', () => {
     if (ev.type !== 'history_replaced') throw new Error('expected history_replaced')
     expect(ev.active).not.toBeNull()
     expect(ev.active!.snapshot.regionsBefore).toBe(4)
+  })
+})
+
+// ─── U1：user 行可见性规则（2026-10-01 用户规则，回归修复的守护） ────────────────
+// 用户原话：「如果用户看到了一个用户输入，那么这个用户输入之后的所有消息就必须是完整
+// 的，不能是接下来动态加载的。所以这种情况如果需要动态加载，你不能渲染那个用户的输入。」
+// —— committed turn 的 regionsBefore > 0（更早区域待动态加载）⇒ user 行不渲染
+//（否则「user 输入悬在折叠内容上方」破坏对话时间线视觉）；live/frozen 除外。
+// mutation：去掉 deriveRows 的 userHiddenByFold 过滤 ⇒ 第一条必红。
+
+describe('U1 user 行可见性规则（user 可见 ⇒ 其后内容完整）', () => {
+  const stateWith = (t: Turn) =>
+    reduce(initialChatState('c1'), {
+      type: 'history_replaced',
+      legacy: [],
+      turns: [t],
+      active: null,
+      lastSeq: null,
+      todos: [],
+    } as DomainEvent)
+  const userOf = { id: 'turn-7-user', content: '帮我优化历史加载', timestamp: '', isNotification: false } as never
+  const committedWithUser = (rb?: number): Turn => ({
+    id: T7,
+    user: userOf,
+    requestID: null,
+    phase: { kind: 'committed', payload: commitViaFold(win(52, 66) as never, '', 0, undefined, rb) },
+  })
+
+  it('★ committed regionsBefore>0 ⇒ user 行不渲染（不能渲染悬空的 user 输入）', () => {
+    const rows = deriveRows(stateWith(committedWithUser(6)))
+    expect(rows.some((r) => r.kind === 'user')).toBe(false)
+    expect(rows.some((r) => r.kind === 'committed')).toBe(true) // assistant 折叠行仍在
+  })
+
+  it('regionsBefore=0/undefined ⇒ user 行正常渲染（绝大多数 turn 零变化）', () => {
+    expect(deriveRows(stateWith(committedWithUser())).some((r) => r.kind === 'user')).toBe(true)
+    expect(deriveRows(stateWith(committedWithUser(0))).some((r) => r.kind === 'user')).toBe(true)
+  })
+
+  it('live turn regionsBefore>0 ⇒ user 行仍渲染（正在生成的对话不能藏用户刚发的消息）', () => {
+    const s = stateWith({
+      id: T7,
+      user: userOf,
+      requestID: null,
+      phase: { kind: 'live', data: { ...EMPTY_LIVE, iterations: win(52, 66), regionsBefore: 5 } },
+    })
+    expect(deriveRows(s).some((r) => r.kind === 'user')).toBe(true)
+  })
+
+  it('★ 段加载完成（regionsBefore 权威归零）⇒ user 行随完整内容一起出现', () => {
+    let s = stateWith(committedWithUser(6))
+    s = reduce(s, loaded(TID, win(40, 51), 0)) // 服务端显式下发 0（归零声明）
+    expect(deriveRows(s).some((r) => r.kind === 'user')).toBe(true)
   })
 })

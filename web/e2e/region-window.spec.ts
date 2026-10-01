@@ -556,6 +556,12 @@ test.describe('区域窗口 — regions_before>0 + 上滚自动加载', () => {
     expect(await iterRange(page), '初始窗口必须是尾部连续区间').toBe(`${WINDOW_FROM}-${WINDOW_TO}`)
     expect(counters.regions.length, '挂载即发请求 = 自动风暴（未经手势）').toBe(0)
 
+    // ── 用户规则（2026-10-01 回归修复）：regions_before>0 ⇒ user 输入不可见 ──
+    // 「如果用户看到了一个用户输入，那么这个用户输入之后的所有消息就必须是完整的，
+    //  不能是接下来动态加载的。所以这种情况如果需要动态加载，你不能渲染那个用户的输入。」
+    const userRow = page.getByText('提问 turn 7')
+    await expect(userRow, '折叠 turn 的 user 输入必须不可见（不能悬在待加载内容上方）').toHaveCount(0)
+
     // ── 手势 #1：恰好 1 次，游标 = 当前窗口最早迭代号 ──
     const first = await gestureExpectRegions(page, counters, 1, '上滚手势#1')
     expect(first[0].turnID, '/api/regions 必须带 turn_id').toBe(7)
@@ -569,6 +575,7 @@ test.describe('区域窗口 — regions_before>0 + 上滚自动加载', () => {
     expectContiguous(await renderedIterNumbers(page), '段#1 拼接后')
     await expect(divider).toHaveCount(1)
     await expect(divider).toHaveAttribute('data-regions-before', '1')
+    await expect(userRow, 'regions_before=1（仍未到顶）⇒ user 输入保持不可见').toHaveCount(0)
 
     // ── 手势 #2：恰好 1 次（连续滚动不风暴），游标推进到新的最早迭代号 ──
     const second = await gestureExpectRegions(page, counters, 1, '上滚手势#2')
@@ -580,6 +587,7 @@ test.describe('区域窗口 — regions_before>0 + 上滚自动加载', () => {
     expect(await iterRange(page), '拼接后必须是连续区间 15-30').toBe(`15-${WINDOW_TO}`)
     expectContiguous(await renderedIterNumbers(page), '段#2 拼接后')
     await expect(divider, 'regions_before 归零 ⇒ 分隔条必须消失').toHaveCount(0)
+    await expect(userRow, 'regions_before 归零 ⇒ user 输入随完整内容一起出现（时间线还原）').toBeVisible()
 
     console.log(
       `[上滚] regions_requests=${counters.regions

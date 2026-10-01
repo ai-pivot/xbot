@@ -195,10 +195,28 @@ function sortedTurns(turns: ReadonlyMap<TurnID, Turn>): Turn[] {
   return ordered ? out : out.sort((a, b) => a.id - b.id)
 }
 
+/** turn 的区域窗口声明（committed 从 payload、live/frozen 从 data 读 —— 语义同源）。 */
+function turnRegionsBefore(t: Turn): number | undefined {
+  if (t.phase.kind === 'committed') return t.phase.payload.regionsBefore
+  return t.phase.data.regionsBefore
+}
+
 export function deriveRows(s: ChatState): readonly Row[] {
   const turnRows: Row[] = []
   for (const t of sortedTurns(s.turns)) {
-    if (t.user) turnRows.push(cachedUserRow(t))
+    // 用户规则（2026-10-01 回归修复，用户原话：「如果用户看到了一个用户输入，那么
+    // 这个用户输入之后的所有消息就必须是完整的，不能是接下来动态加载的。所以这种
+    // 情况如果需要动态加载，你不能渲染那个用户的输入」）——
+    // committed turn 的 regionsBefore > 0（更早区域待动态加载）时 user 行不渲染：
+    // 否则「user 输入悬在折叠内容上方」破坏对话时间线的因果视觉（修改前全量视图
+    // 从不存在此形态）。live/frozen 除外——正在生成的对话不能藏用户刚发的消息。
+    // 过滤走 turn 的实时值（不走缓存 row）：段加载完成 regionsBefore 归零后
+    // derive 重跑 ⇒ user 行自然出现，与内容一起构成完整时间线。
+    const rb = turnRegionsBefore(t)
+    // > 0 才隐藏：段加载完成后服务端显式下发 regions_before: 0（权威归零声明），
+    // 此时 user 行必须立刻随完整内容一起出现（!== undefined 会把归零误判成未完成）。
+    const userHiddenByFold = t.phase.kind === 'committed' && rb !== undefined && rb > 0
+    if (t.user && !userHiddenByFold) turnRows.push(cachedUserRow(t))
     const ar = cachedAssistantRow(t)
     if (ar !== null) turnRows.push(ar)
   }
