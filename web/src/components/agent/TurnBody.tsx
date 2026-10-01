@@ -992,6 +992,14 @@ export const TurnBody = memo(function TurnBody({
     const map = new Map<number, WebCompaction[]>()
     if (!compactions || compactions.length === 0) return map
     for (const c of compactions) {
+      // 窗口外挂起（2026-10-01 修复，用户报告「上下文已压缩渲染很多情况都是错的」）：
+      // afterIteration 落在**已加载窗口之前**（区域折叠未覆盖）⇒ 压缩点属于未加载内容
+      // 之间的分隔 —— 不渲染。否则 anchor 扫描（it.iteration <= afterIteration）在窗口
+      // 内找不到任何块 ⇒ fallback anchor=0 ⇒ 渲染在 leading（窗口顶）——冒充「turn 开头
+      // 压缩」：时间线错乱（压缩点出现在比它晚几十个迭代的内容上方）+ 与「更早区域」
+      // 分隔条叠加错乱。段加载覆盖到 afterIteration 后 merged 更新 ⇒ 本 memo 重算 ⇒
+      // 压缩点自动归位。afterIteration=0（真·turn 开头压缩）除外 —— 它语义上就属于窗口顶。
+      if (c.afterIteration > 0 && merged.length > 0 && merged[0].iteration > c.afterIteration) continue
       let anchor = 0
       for (const it of merged) {
         if (it.iteration <= c.afterIteration && it.iteration > anchor) anchor = it.iteration
