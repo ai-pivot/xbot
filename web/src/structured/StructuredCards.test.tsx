@@ -45,6 +45,20 @@ function makeMessage(overrides: Partial<StructuredMessage> = {}): StructuredMess
 }
 
 describe('AskUserCard', () => {
+  it('renders nothing when the payload has no questions', () => {
+    // 空载荷防线（旧 AskUserPanel 的「questions 为空 ⇒ 不渲染」契约）：
+    // 一条 ask_user 行但没有任何问题不得伪造一张"没内容却带提交按钮"的空卡片。
+    // E2E 等价用例：e2e/askuser-empty-payload.spec.ts ①。
+    const { container } = render(
+      <AskUserCard
+        message={makeMessage({ payload: { questions: [] } })}
+        onAnswer={vi.fn()}
+      />,
+    )
+    expect(screen.queryByTestId('ask-user-card')).toBeNull()
+    expect(container.textContent).toBe('')
+  })
+
   it('renders the question text and every option label', () => {
     render(<AskUserCard message={makeMessage()} onAnswer={vi.fn()} />)
 

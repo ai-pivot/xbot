@@ -129,24 +129,14 @@ test.describe('AskUser answer preserves iterations', () => {
     console.log('Before answer - Read visible:', hasReadBefore)
     expect(hasReadBefore).toBe(true)
 
-    // ── Phase 3: User answers the AskUser ──
-    // Click "yes" option (AskUserPanel single-select renders role=radio)
-    await page.getByRole('radio', { name: 'yes' }).click()
-    await page.waitForTimeout(200)
-    // Click submit
-    await page.locator('button:has-text("确认"), button:has-text("Submit"), button:has-text("确定")').click().catch(async () => {
-      // Fallback: find the submit button in the AskUser panel
-      const buttons = page.locator('button')
-      const count = await buttons.count()
-      for (let i = 0; i < count; i++) {
-        const text = await buttons.nth(i).textContent()
-        if (text && !['yes', 'no', '取消', 'Cancel'].includes(text.trim())) {
-          await buttons.nth(i).click()
-          break
-        }
-      }
-    })
-    await page.waitForTimeout(300)
+    // ── Phase 3: 用户回答 ask_user ──
+    // ⚠️ 2026-10-22：这里原先点击旧 AskUserPanel 的 radio + 提交按钮。该面板与其
+    // `/api/ask_user/respond` 已随 514ec7b3 删除，ask_user 的交互面搬到 `/structured`
+    // 的 AskUserCard（真后端链路：e2e/structured-cards.spec.ts「ask_user 卡片渲染 + 回答流程」；
+    // 组件级：web/src/structured/StructuredCards.test.tsx），点击这里的 radio 只会
+    // 等一个永远不会出现的元素、把用例拖成 60s 超时（CI 实测 2026-10-22）。
+    // 本 spec 的判别点从来不是"点得到按钮"，而是**回答后的 turn_started 不得清空
+    // 已渲染的 iterations** —— 所以直接进入 Phase 4 的后端序列。
 
     // ── Phase 4: Backend processes answer → emits turn_started (TurnID=2, trigger=resume) ──
     // The backend marks AskUser answers as trigger="resume" so the frontend

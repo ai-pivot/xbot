@@ -85,9 +85,12 @@ test.describe('结构化消息卡片', () => {
     await gotoStructured(page, chatID)
     const card = page.getByTestId('ask-user-card').filter({ hasText: question }).first()
     await expect(card).toBeVisible()
-    // 行头：HH:mm:ss + 「请旨」徽标 + 发送者。
+    // 行头：HH:mm:ss + kind 徽标 + 发送者。
+    // 徽标文案以 web/src/structured/StructuredCards.tsx 的 KIND_META 为准 ——
+    // 81663b9f「去掉朝廷定制化文案」把 请旨→提问 / 奏折→汇报 / 批红→准·驳·改 之后，
+    // 这里原先的 '请旨' 断言就成了过时口径（CI 实测 2026-10-22：Expected "请旨", Received "提问"）。
     await expect(card.getByTestId('row-time')).toHaveText(/^\d{2}:\d{2}:\d{2}$/)
-    await expect(card.getByTestId('kind-badge')).toHaveText('请旨')
+    await expect(card.getByTestId('kind-badge')).toHaveText('提问')
     await expect(card.getByText('web-1')).toBeVisible()
     await page.screenshot({ path: 'e2e/artifacts/cards-ask-user.png' })
 
@@ -98,7 +101,7 @@ test.describe('结构化消息卡片', () => {
     await expect(card.getByRole('radio').first()).toBeDisabled()
   })
 
-  test('report 卡片渲染 + 批红流程', async ({ page }) => {
+  test('report 卡片渲染 + 批红（决策）流程', async ({ page }) => {
     await login(page)
     const chatID = await newChat(page, 'report')
     const summary = `PPU 扩容已完成 8 节点（${RUN}）`
@@ -130,12 +133,13 @@ test.describe('结构化消息卡片', () => {
       .getByText('court/evidence/gongbu-ppu.log')
       .evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize))
     expect(evidenceFont, `证据字号 ${evidenceFont}px，应 ≥ 13px`).toBeGreaterThanOrEqual(13)
-    await expect(card.getByTestId('kind-badge')).toHaveText('奏折')
+    await expect(card.getByTestId('kind-badge')).toHaveText('汇报')
     await page.screenshot({ path: 'e2e/artifacts/cards-report.png' })
 
     await card.getByTestId('report-approve').click()
-    await expect(page.getByTestId('decision-card').filter({ hasText: '批红' }).last()).toBeVisible()
-    await expect(card.getByText('已批红')).toBeVisible()
+    // 决策卡的状态位渲染 verdict 的中文（准/驳/改），报告卡的状态位是「已决策」。
+    await expect(page.getByTestId('decision-card').filter({ hasText: '准' }).last()).toBeVisible()
+    await expect(card.getByText('已决策')).toBeVisible()
     await expect(card.getByTestId('report-approve')).toHaveCount(0)
   })
 
@@ -235,7 +239,7 @@ test.describe('结构化消息卡片', () => {
     expect(timeText, `时间戳应形如 03:04:05，实际 ${timeText}`).toMatch(/^\d{2}:\d{2}:\d{2}$/)
     expect(timeText).not.toMatch(/AM|PM/)
 
-    // kind 混合分布：可见区里应有「事件」紧凑行 + 「奏折/请旨」卡片。
+    // kind 混合分布：可见区里应有「事件」紧凑行 + 「汇报/提问」卡片。
     const badgeCount = await page.getByTestId('kind-badge').count()
     expect(badgeCount).toBeGreaterThan(0)
     await expect(page.getByTestId('kind-badge').filter({ hasText: '事件' }).first()).toBeVisible()
@@ -304,15 +308,15 @@ test.describe('结构化消息卡片', () => {
       await gotoStructured(pageA, chatID)
       await gotoStructured(pageB, chatID)
 
-      // B 端初始视图：一件待答 + 一张待批红。
+      // B 端初始视图：一件待答 + 一张待决策。
       await expect(pageB.getByTestId('inbox-badge')).toHaveText('1')
       const cardB = pageB.getByTestId('report-card').filter({ hasText: summary }).first()
-      await expect(cardB.getByText('待批红')).toBeVisible()
+      await expect(cardB.getByText('待决策')).toBeVisible()
 
       // A 端批红 —— B 端不刷新、不重连，仅靠广播 + 消息流派生。
       const cardA = pageA.getByTestId('report-card').filter({ hasText: summary }).first()
       await cardA.getByTestId('report-approve').click()
-      await expect(cardB.getByText('已批红')).toBeVisible({ timeout: 8000 })
+      await expect(cardB.getByText('已决策')).toBeVisible({ timeout: 8000 })
       await expect(cardB.getByTestId('report-approve')).toHaveCount(0)
 
       // A 端回答 —— B 端收件箱徽标归零、问题卡变已回答。

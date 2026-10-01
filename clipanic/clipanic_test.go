@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -159,7 +160,13 @@ func TestEnableFileLogging_CapturesNonMainGoroutinePanic(t *testing.T) {
 		t.Errorf("stack does not point back at the panicking frame:\n%s", content)
 	}
 	// 0600：堆栈会带出环境变量/URL/token 片段。
-	if fi, statErr := os.Stat(logPath); statErr == nil {
+	//
+	// 平台差异（2026-10-22 CI）：Windows **没有 POSIX 权限位** —— Go 只把文件
+	// 的「只读」属性映射进 Mode().Perm()，一个用 0o600 创建的可写文件 stat 回来
+	// 恒为 0666（实测 CI：`cli-panic.log mode = 666, want 600`）。该能力在
+	// Windows 上确实不存在（访问控制由父目录 ACL 继承，Go 的 perm 参数不参与），
+	// 也不影响本用例要守的正确性（崩溃输出确实落盘）—— 因此只在 Unix 上校验。
+	if fi, statErr := os.Stat(logPath); statErr == nil && runtime.GOOS != "windows" {
 		if perm := fi.Mode().Perm(); perm != 0o600 {
 			t.Errorf("cli-panic.log mode = %o, want 600", perm)
 		}

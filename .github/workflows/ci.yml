@@ -126,7 +126,13 @@ jobs:
           go-version-file: go.mod
 
       - name: Test
-        run: go test -v -race ./...
+        # -timeout 30m（2026-10-22）：Windows runner 的 fsync 极慢（modernc sqlite
+        # 每次 WAL 提交走 FlushFileBuffers，叠加 Defender 扫描），实测
+        # `xbot/agent` 987 个用例累计 597s、`xbot/channel/web` 344 个用例累计 598s，
+        # 正好撞上 go test 默认 10m 兜底 ⇒ 被报成"600s 超时"。超时 dump 里没有任何
+        # xbot 侧等锁/等端口的栈（唯一的阻塞帧是 sqlite 的 FlushFileBuffers 系统
+        # 调用），所以这是预算问题，不是挂死 —— 给足预算，不放宽任何断言。
+        run: go test -v -race -timeout 30m ./...
 
       - name: Test plugin/protocol submodule
         working-directory: plugin/protocol

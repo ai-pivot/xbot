@@ -21,10 +21,21 @@ import (
 
 func newGoalAgent(t *testing.T) *Agent {
 	t.Helper()
-	// Isolate goal persistence: goalDir() resolves under $HOME, so a temp HOME
-	// keeps the test from writing/reading the operator's real ~/.xbot/goals
-	// (and from reading a goal another test just persisted).
-	t.Setenv("HOME", t.TempDir())
+	// Isolate goal persistence: goalDir() resolves under os.UserHomeDir(), so a
+	// temp home keeps the test from writing/reading the operator's real
+	// ~/.xbot/goals (and from reading a goal another test just persisted).
+	//
+	// 平台差异（2026-10-22 CI）：os.UserHomeDir() 在 Windows 上读 **USERPROFILE**
+	// （其次 HOMEDRIVE+HOMEPATH），根本不看 HOME —— 只设 HOME 会让
+	// TestResumeRunAfterCommand_ActiveGoalInjectsResume 写下的 goal 落进 runner 的
+	// 真实家目录，随后 TestResumeRunAfterCommand_NoGoalNoResume 把它读回来
+	// （CI 实测：`no goal: resumeRunAfterCommand returned true, want false`）。
+	// 因此两个变量都设，并清掉 HOMEDRIVE/HOMEPATH 以免覆盖 USERPROFILE。
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
 	return &Agent{
 		goalManager: NewGoalManager(),
 		bus:         bus.NewMessageBus(),

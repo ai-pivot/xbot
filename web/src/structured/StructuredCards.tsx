@@ -246,6 +246,13 @@ export function AskUserCard({
   const done = message.answered || message.cancelled
   const waiting = !done
 
+  // 空载荷防线（旧 AskUserPanel 的 `questions 为空 ⇒ 不渲染` 契约搬到新组件）：
+  // 一条 ask_user 行但没有任何问题（服务端历史脏数据 / 通用 mock 把 RPC 回成
+  // `{ok:true}` 的现场）不得伪造一张"没问题却带提交按钮"的空卡片。
+  // 组件测试：StructuredCards.test.tsx「renders nothing when the payload has no questions」；
+  // E2E：askuser-empty-payload.spec.ts ①。
+  if (questions.length === 0) return null
+
   const toggle = (q: AskQuestion, optionId: string) => {
     if (done) return
     setSelected((prev) => {
