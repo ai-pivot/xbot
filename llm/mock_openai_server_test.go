@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,7 +158,10 @@ func TestProcessStream_CtxCancelUnblocksFullChannel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		client.processStream(procCtx, stream, eventChan, time.Now(), nil, "mock-model", nil, "")
+		client.processStream(procCtx, stream, eventChan, time.Now(), nil, "mock-model", nil, "",
+			&firstChunkGuard{ // no-op guard：该测试不覆盖首帧超时（保持行为零变化）
+				arrived: &atomic.Bool{}, timer: time.AfterFunc(time.Hour, func() {}), cancel: func() {},
+			})
 	}()
 
 	// Let processStream consume chunks from the (already fully-flushed) mock

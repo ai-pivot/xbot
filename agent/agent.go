@@ -1640,6 +1640,43 @@ func (a *Agent) finishActiveCancelState(cancelKey string, reqCtx context.Context
 	return wasCancelled
 }
 
+// cleanupStaleCancelState —— chatProcessLoop 的「最后防线」兜底（2026-10-01 cancel 无效事故）。
+//
+// 事故形态（chat_D3D036023DB7 复盘）：turn 3 在 10:40:47 的 LLM 请求发出后 Run 无声消失
+// （goroutine dump 无其栈、无 panic 日志、无错误日志），keepRunning 的收尾 defer
+// （finishActiveCancelState）未执行 ⇒ chatCancelCh 注册残留 ⇒ IsProcessingByChannel 永真
+// ⇒ busy 卡死 + 新消息永 queue；/cancel 信号发进无人拥有的 channel：cancelListener 消费
+// 一次信号后按 reqCtx.Done() 设计退出，后续信号 buffer full —— 用户四连 cancel 全部无效。
+//
+// 挂在 chatProcessLoop 函数体顶层 defer：任何退出路径（正常 return / panic 栈展开 —— panic
+// 会被外层 clipanic.Go("agent.chatWorker.processLoop") 的 Recover 捕获，但栈展开**先**跑本
+// defer / msgCh close）都执行。正常轮次 finishActiveCancelState 已删注册 ⇒ 这里检测不到
+// 残留 ⇒ 零副作用；检测到残留 = 异常泄漏 ⇒ 自愈：删注册（busy 判定恢复 false）+ close 通知
+// 残留 listener（case <-cancelCh 命中零值 → reqCancel 幂等 → 其 reqCtx.Done 分支随后退出）
+// + pendingCancel 清理 + busy 复位 + emit idle（前端解除 busy）。
+func (a *Agent) cleanupStaleCancelState(chatKey string, ss *bgSessionState, lastSenderID string) {
+	a.cancelStateMu.Lock()
+	chVal, stillRegistered := a.chatCancelCh.LoadAndDelete(chatKey)
+	a.pendingCancel.Delete(chatKey)
+	a.cancelStateMu.Unlock()
+	if !stillRegistered {
+		return // 正常路径：keepRunning 收尾已清 —— 零副作用
+	}
+	log.WithField("cancel_key", chatKey).Warn(
+		"Stale cancel state after chatProcessLoop exit — self-healing (Run vanished without teardown)")
+	if ch, ok := chVal.(chan struct{}); ok {
+		close(ch)
+	}
+	if ss != nil {
+		ss.busy.Store(false)
+	}
+	if i := strings.Index(chatKey, ":"); i > 0 {
+		a.emitSessionState(protocol.SessionEvent{
+			Channel: chatKey[:i], ChatID: chatKey[i+1:], Action: "idle", SenderID: lastSenderID,
+		})
+	}
+}
+
 // dispatchWaitingUser 把 WaitingUser 出站消息投递到 bus，返回是否真的送达。
 //
 // ⛔ 传入的 ctx 必须是**会话/进程级**上下文（只在 shutdown 时取消）——**绝不能**用
@@ -3283,6 +3320,14 @@ func (a *Agent) chatProcessLoop(ctx context.Context, chatKey string, ch <-chan b
 	}()
 
 	var lastSenderID string // 记录最后活跃的 senderID
+
+	// 最后防线（2026-10-01 cancel 无效事故）：chatProcessLoop 以任何方式退出（正常 return /
+	// panic 栈展开 / msgCh close）时检测 cancel state 残留并自愈 —— Run 无声消失时
+	// keepRunning 的收尾不会执行，注册残留会让 busy 永卡 + /cancel 永无效。
+	// 闭包捕获（defer 参数会立即求值，lastSenderID 要延迟到退出时读取）。
+	defer func() {
+		a.cleanupStaleCancelState(chatKey, ss, lastSenderID)
+	}()
 
 	for msg := range ch {
 		// Shadow-queue dequeue: pop the matching entry and broadcast the new
