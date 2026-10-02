@@ -338,6 +338,21 @@ func (s *TenantSession) GetMaxTurnID() (uint64, error) {
 	return s.sessionSvc.GetMaxTurnID(s.tenantID)
 }
 
+// GetLastUserMessageContent returns the content of the most recent user
+// message in this tenant's session DB (v71+ — messages live per-session, so
+// resume flows must read them here, not from the main DB). Returns "" when
+// there is no resumable user message.
+func (s *TenantSession) GetLastUserMessageContent() (string, error) {
+	return s.sessionSvc.GetLastUserMessageContent(s.tenantID)
+}
+
+// HasAssistantReplyAfterLastUser reports whether the last user message
+// already has a final assistant reply after it — i.e. the turn completed
+// and there is nothing to resume.
+func (s *TenantSession) HasAssistantReplyAfterLastUser() (bool, error) {
+	return s.sessionSvc.HasAssistantReplyAfterLastUser(s.tenantID)
+}
+
 // GetLastUserTurnID returns the turn_id of the last non-display-only user
 // message. A restart-resumed Run (InjectInboundResume) reuses this turn id so
 // the interrupted work and the resumed work belong to ONE turn — the frontend

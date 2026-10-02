@@ -310,6 +310,74 @@ ORDER BY id DESC LIMIT 1
 	return 0, nil
 }
 
+// GetLastUserMessageContent returns the content of the most recent
+// non-display-only, non-internal user message in this tenant's session.
+// Used by /continue and shutdown-resume to verify there is a turn to resume.
+// Returns ("", nil) when the tenant has no resumable user message.
+//
+// internal_only rows are filtered: view_image follow-up injections ride the
+// user role with the triggering message's turn (v67) and must not be picked
+// as resume content.
+func (s *SessionService) GetLastUserMessageContent(tenantID int64) (string, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return "", err
+	}
+	var content string
+	err = conn.QueryRow(`
+SELECT content FROM session_messages
+WHERE tenant_id = ? AND role = 'user' AND COALESCE(display_only, 0) = 0 AND COALESCE(internal_only, 0) = 0
+ORDER BY id DESC LIMIT 1
+`, tenantID).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get last user message content: %w", err)
+	}
+	return content, nil
+}
+
+// HasAssistantReplyAfterLastUser checks whether the last user message in
+// this tenant's session already has a subsequent final assistant reply (no
+// tool calls). Used by resume flows to detect turns that completed naturally
+// between shutdown collection and cancel() — if so, the resume is skipped.
+//
+// Note: The (tool_calls IS NULL OR tool_calls = ”) filter matches only
+// final text replies. If a provider returns content + tool_calls in the
+// same message as the final reply, this check would miss it — but that's
+// safe: the re-injected turn is idempotent. The worst case is a duplicate
+// turn, not data loss.
+func (s *SessionService) HasAssistantReplyAfterLastUser(tenantID int64) (bool, error) {
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return false, err
+	}
+	var count int
+	err = conn.QueryRow(`
+SELECT COUNT(*) FROM session_messages sm
+WHERE sm.tenant_id = ?
+  AND sm.role = 'assistant'
+  AND COALESCE(sm.display_only, 0) = 0
+  AND (sm.tool_calls IS NULL OR sm.tool_calls = '')
+  AND sm.id > (
+    SELECT sm2.id FROM session_messages sm2
+    WHERE sm2.tenant_id = ? AND sm2.role = 'user' AND COALESCE(sm2.display_only, 0) = 0
+    ORDER BY sm2.id DESC LIMIT 1
+  )
+`, tenantID, tenantID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("has assistant reply after last user: %w", err)
+	}
+	return count > 0, nil
+}
+
 // GetMaxTurnID returns the highest turn_id for a tenant across BOTH
 // session_messages and iteration_history. Used by chatProcessLoop to restore
 // the per-session turn ID counter after a server restart, ensuring turn_id

@@ -222,9 +222,17 @@ func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: "⚠️ 数据库未连接"}, nil
 	}
 
+	// Since v71 (one session, one DB) messages live in the per-session DB —
+	// the main DB's session_messages is empty, so resume checks must go
+	// through the TenantSession.
+	tenant, err := a.multiSession.GetOrCreateSession(msg.Channel, msg.ChatID)
+	if err != nil {
+		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 会话未连接: %v", err)}, nil
+	}
+
 	// Check if the last user message already has an assistant reply.
 	// If it does, the turn completed — nothing to continue.
-	hasReply, err := db.HasAssistantReplyAfterLastUser(msg.Channel, msg.ChatID)
+	hasReply, err := tenant.HasAssistantReplyAfterLastUser()
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 检查失败: %v", err)}, nil
 	}
@@ -233,7 +241,7 @@ func (c *continueCmd) Execute(ctx context.Context, a *Agent, msg bus.InboundMess
 	}
 
 	// Verify there IS a last user message to resume from.
-	content, _, err := db.GetLastUserMessage(msg.Channel, msg.ChatID)
+	content, err := tenant.GetLastUserMessageContent()
 	if err != nil {
 		return &channel.OutboundMsg{Channel: msg.Channel, ChatID: msg.ChatID, Content: fmt.Sprintf("⚠️ 获取历史失败: %v", err)}, nil
 	}

@@ -93,6 +93,11 @@
     后本 turn 的 usage 基线沿用旧值」，下一条用户消息自愈，无数据丢失。
 - **GetTenantUsageStats**：iteration_history 聚合（会话库）+ tenant_state/tenants
   元数据（主库，调用方 `fillUsageStatsFromMainDB` 补齐）。
+- **重启 resume（pending resume）/ `/continue`**：用户消息**内容**与「是否有收尾
+  assistant 回复」查会话库 —— `TenantSession.GetLastUserMessageContent()` /
+  `HasAssistantReplyAfterLastUser()`（v72 后主库 session_messages 恒空，主库侧
+  查询恒「无内容」⇒ resume 永不触发，2026-10-02 生产事故，见文末专节）；
+  sender 身份仍是主库注册表职责（`db.GetSessionSenderID` —— 只查 user_chats）。
 
 ## 测试模式（gotcha）
 
@@ -208,3 +213,38 @@ ATTACH+复制 —— 全新会话在主库零行，ATTACH 是纯风险零收益�
   被截断）；② 升级只跑一个进程（无迁移锁）；③ 打开面板即改数据的路径
   （ATTACH）必须只读意图 —— 本次已从「所有 migrated=0 租户」收窄到「确有残留行的
   租户」，风险面缩小到几乎为零。
+
+## ⛔ 重启 resume 打主库查询 ⇒ busy 会话永不恢复（2026-10-02 生产事故根治）
+
+**现象**（用户报告：「busy 会话重启后丢一部分最新迭代，甚至有概率不恢复 busy」）：
+生产日志实证两次重启（04:31 / 13:45）、共 4 个 busy 会话**全部**
+`pending resume: content empty → skip` —— resume 一次都没发生过；`/continue`
+命令同样恒报「没有可继续的对话」。
+
+**根因（代码缺陷，确定）**：`storage/sqlite/pending_resume.go` 的
+`GetLastUserMessage` / `HasAssistantReplyAfterLastUser` 直接在**主库**连接上查
+`session_messages`（`JOIN tenants`）——v72 后主库这两张表已被删除迁移清空 ⇒
+恒返回「无内容」⇒ `collectPendingResumes` 全部 skip。铁律「绝不
+`NewSessionService(主库)`」拦住了经 service 构造的路径，但**绕过 service 直接在
+主库连接上写 ad-hoc SQL** 的路径不在其管辖内，更隐蔽。违规点共两处：
+`serverapp/server.go`（collectPendingResumes + resumePendingTurns）与
+`agent/command_builtin.go`（/continue）。
+
+**修复**：① 用户消息内容/收尾回复检查全部改走
+`TenantSession.GetLastUserMessageContent()` / `HasAssistantReplyAfterLastUser()`
+（会话库）；② 主库侧只保留 sender 身份查询，收窄为 `db.GetSessionSenderID`
+（只查 user_chats 注册表 —— 合规：拆库后主库没有消息数据）；③
+`storage/sqlite/session.go` 新增会话库侧实现（tenant 维度）。
+
+**判别测试**：`agent/continue_resume_sessiondb_test.go` —— 会话库有最后一条
+user 消息、主库 session_messages 为空（生产同构）时 `/continue` 与
+resume 检查必须找到可续 turn；mutation 自证：改回主库查询 ⇒ 必红。
+
+**用户可见症状归并（「丢一部分最新迭代」）**：同根因的用户侧表现——中断瞬间的
+**in-flight 半截流式内容**本就不落库（只有完成迭代才 snapshot 落库，设计行为），
+叠加 resume 被 skip ⇒ turn 定格在中断前最后一次已完成迭代，看起来像「丢了最新的
+迭代」。resume 修复后：`resolveResumeTurnID` 复用被中断 turn 的 turn_id +
+`IterationStart = K+1` 续接迭代号（既有测试 `TestRun_IterationStart` /
+`TestResolveResumeTurnID` 守护）⇒ 已完成的 K 条迭代 + 续跑的新迭代在同一个 turn
+下连续渲染，主观「丢失」消失。DB 数据完好性已实证：事故会话 turn 214 条 / 90 条
+迭代全部在会话库且迭代号连续无洞。
