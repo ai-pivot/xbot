@@ -197,6 +197,15 @@ Test: `J/K`（立即渲染 + 全链路单行收敛）。
   - **体积收益由 T12 守护**（`TestConvert_ViewTrue_PayloadBudget`：1,661 迭代 fixture 折叠视图 6.5% < 全量 10% 阈值；体积回潮必红）。
   - 守护演进：原三测**全部保留原语义**（CLI 路径=全量），新增 `history_iterations_complete_test.go` 的 View(true) 窗口/声明/轻字段用例 + `mergeToolRunsContract.test.ts`（Go `region_view.go` ↔ TS `mergeToolRuns` 区域判定同构，共享 fixture F1-F11）+ `regionsLoaded.test.ts`（四象限/幂等/声明段非 gap/live regionsBefore 闭环）+ `serverapp/callbacks_history_regions_test.go`（段切分/拼接连续）+ `agent/active_progress_folded_test.go`（live 字段完整/增量不折叠/原方法零污染）。
 
+## ⛔ 折叠 turn（regionsBefore>0）的 user 行必须隐藏 —— 三态统一，无 live 豁免（2026-10-02 生产截图第二次点名）
+
+- **用户规则原话（2026-10-01）**：「如果用户看到了一个用户输入，那么这个用户输入之后的所有消息就必须是完整的，不能是接下来动态加载的。所以这种情况如果需要动态加载，你不能渲染那个用户的输入。」第二次点名（2026-10-02 生产截图，原话「你他妈答应我的，加载更多前面不能渲染任何东西，加载更多一定在顶部」）：live turn 540 迭代、regionsBefore=166，user 行「继续」渲染在「⌃ 更早的 166 个区域」**上方**。
+- **根因（首次实现时我自作主张加的豁免）**：`derive.ts` 的 `userHiddenByFold = t.phase.kind === 'committed' && rb > 0` —— committed 隐藏、**live/frozen 豁免**，理由是「正在生成的对话不能藏用户刚发的消息」。这个理由不成立：折叠窗口只在**长 turn**（≥100 区域）才激活；「用户刚发的消息」场景 turn 必然还短、regionsBefore 缺省 ⇒ user 行照常渲染，豁免覆盖的恰恰只有「跑了几小时的长 turn」这一用户点名的形态。**用户规则的判据是「user 可见 ⇒ 其后内容完整」，与 phase 无关。**
+- **修复**：删除 phase 限制 —— `userHiddenByFold = rb !== undefined && rb > 0`（live/frozen/committed 一视同仁）。段加载完成（服务端权威归零 `regions_before: 0`）⇒ derive 重跑 ⇒ user 行随完整内容一起出现（时间线还原）；缺省/归零都照常渲染（「刚发的消息不藏」）。
+- **实现位置**：`web/src/chat/derive.ts` `deriveRows` 的 user 行过滤（走 turn 实时值，不走缓存 row）。`turnRegionsBefore` 三态取值（committed→payload、live/frozen→data）。
+- 守护（判别力：恢复 live 豁免 ⇒ 必红）：`web/src/chat/regionsLoaded.test.ts` U1 组（committed/live 隐藏 + 缺省/归零可见 + 段加载归零后 user 行随内容出现）+ E2E `region-window.spec.ts` busy 恢复用例（真实浏览器：live 折叠 turn 的 user 输入 `toHaveCount(0)`）。
+
+
 ## Tool pill 视觉语言（真工具 / 假工具 / 状态 / 手机限宽）—— 设计契约
 
 - **真工具 pill = icon + 名字 + 参数 + 状态**：分类色 9 套（执行 sky `#38bdf8` · 读取 indigo `#818cf8` · 写入 teal `#14b8a6` · 检索 violet `#c084fc` · 代理 emerald `#34d399` · 任务 rose `#fb7185` · 记忆 fuchsia `#e879f9` · UI orange `#fb923c` · 系统 slate `#94a3b8`）；每个内置工具配自己的 SVG glyph（**禁 emoji**，缺字体会成方框）。**状态色与分类色解耦**。

@@ -803,6 +803,15 @@ test.describe('区域窗口 — busy 恢复（active_progress 折叠窗口）', 
     await expect(divider, 'live 行顶部必须渲染分隔条').toHaveCount(1)
     await expect(divider).toHaveAttribute('data-regions-before', '3')
 
+    // ── 用户规则（2026-10-02 生产截图第二次点名，三态统一）：live turn 折叠窗口
+    // （iteration_regions_before>0）⇒ user 行也不可渲染 ——「加载更多前面不能渲染
+    // 任何东西」。此前 live 豁免让 user「提问 turn 7」悬在分隔条上方（生产形态：
+    // 「继续」悬在「⌃ 更早的 166 个区域」上方）。
+    await expect(
+      page.getByText('提问 turn 7'),
+      'live 折叠 turn 的 user 输入必须不可见（分隔条前不能渲染任何东西）',
+    ).toHaveCount(0)
+
     const made = await gestureExpectRegions(page, counters, 1, 'busy 恢复上滚')
     expect(made[0].turnID).toBe(7)
     expect(made[0].beforeIteration, 'before_iteration 必须是 live 窗口最早迭代号').toBe(WINDOW_FROM)

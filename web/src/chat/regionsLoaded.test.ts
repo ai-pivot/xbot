@@ -417,8 +417,13 @@ describe('L1 live regionsBefore 闭环', () => {
 // ─── U1：user 行可见性规则（2026-10-01 用户规则，回归修复的守护） ────────────────
 // 用户原话：「如果用户看到了一个用户输入，那么这个用户输入之后的所有消息就必须是完整
 // 的，不能是接下来动态加载的。所以这种情况如果需要动态加载，你不能渲染那个用户的输入。」
-// —— committed turn 的 regionsBefore > 0（更早区域待动态加载）⇒ user 行不渲染
-//（否则「user 输入悬在折叠内容上方」破坏对话时间线视觉）；live/frozen 除外。
+// —— **任何 phase**（committed/live/frozen）的 regionsBefore > 0（更早区域待动态加载）
+// ⇒ user 行不渲染（否则「user 输入悬在折叠内容上方」破坏对话时间线视觉）。
+// 2026-10-02 用户生产截图再次点名（live turn 540 迭代、regionsBefore=166，user 行
+// 「继续」悬在「⌃ 更早的 166 个区域」上方）：「加载更多前面不能渲染任何东西，
+// 加载更多一定在顶部」。此前「live 豁免（正在生成的对话不能藏用户刚发的消息）」不成立：
+// 折叠窗口只在长 turn（≥100 区域）才激活，「刚发的消息」场景 regionsBefore 缺省、
+// user 行照常渲染——豁免覆盖的恰恰只有「跑了几小时的长 turn」这一用户点名的形态。
 // mutation：去掉 deriveRows 的 userHiddenByFold 过滤 ⇒ 第一条必红。
 
 describe('U1 user 行可见性规则（user 可见 ⇒ 其后内容完整）', () => {
@@ -450,14 +455,30 @@ describe('U1 user 行可见性规则（user 可见 ⇒ 其后内容完整）', (
     expect(deriveRows(stateWith(committedWithUser(0))).some((r) => r.kind === 'user')).toBe(true)
   })
 
-  it('live turn regionsBefore>0 ⇒ user 行仍渲染（正在生成的对话不能藏用户刚发的消息）', () => {
+  it('★ live turn regionsBefore>0 ⇒ user 行也必须隐藏（2026-10-02 生产截图点名：user 行「继续」悬在「⌃ 更早的 166 个区域」上方）', () => {
     const s = stateWith({
       id: T7,
       user: userOf,
       requestID: null,
       phase: { kind: 'live', data: { ...EMPTY_LIVE, iterations: win(52, 66), regionsBefore: 5 } },
     })
-    expect(deriveRows(s).some((r) => r.kind === 'user')).toBe(true)
+    // 修复前此断言为 false（live 豁免）——生产形态：分隔条上方渲染了 user 输入。
+    expect(deriveRows(s).some((r) => r.kind === 'user'), 'live 折叠 turn 的 user 行必须不可见').toBe(false)
+    expect(deriveRows(s).some((r) => r.kind === 'live'), 'assistant live 折叠行仍在渲染').toBe(true)
+  })
+
+  it('★ live turn regionsBefore 缺省/归零 ⇒ user 行正常渲染（刚发的消息不藏）', () => {
+    const liveOf = (rb?: number) =>
+      stateWith({
+        id: T7,
+        user: userOf,
+        requestID: null,
+        phase: { kind: 'live', data: { ...EMPTY_LIVE, iterations: win(52, 66), ...(rb !== undefined ? { regionsBefore: rb } : {}) } },
+      })
+    // 「刚发的消息」场景：短 turn 无折叠（regionsBefore 缺省）或段加载完成（归零）
+    // —— user 行必须立刻可见（时间线还原）。
+    expect(deriveRows(liveOf()).some((r) => r.kind === 'user'), '缺省（无折叠）⇒ user 行可见').toBe(true)
+    expect(deriveRows(liveOf(0)).some((r) => r.kind === 'user'), '显式归零 ⇒ user 行可见').toBe(true)
   })
 
   it('★ 段加载完成（regionsBefore 权威归零）⇒ user 行随完整内容一起出现', () => {
