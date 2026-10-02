@@ -39,6 +39,10 @@ type regionToolSnap struct {
 	UIMode    string              `json:"ui_mode,omitempty"`
 	UILibs    []string            `json:"ui_libs,omitempty"`
 	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
+	// ToolHints —— 合成工具的结构化详情载荷（Fix A 回写、agent.IterationToolSnapshot
+	// 同名 tag）。缺了它，历史 JSON 往返静默丢弃 ⇒ 刷新后 subagent done / bgtask
+	// done 的 SyntheticToolCard 无结构化详情（2026-10-02 P0：live 正常、刷新丢）。
+	ToolHints string `json:"tool_hints,omitempty"`
 }
 
 // parseRegionTools 解析一条迭代记录的 tools JSON。
@@ -225,13 +229,15 @@ func MapIterationRecord(rec sqlite.IterationRecord, foldTools bool) HistoryItera
 				Summary:   t.Summary,
 				Args:      t.Args,
 				Detail:    t.Detail,
+				ToolHints: t.ToolHints,
 				UIMode:    t.UIMode,
 				UILibs:    t.UILibs,
 				UISurface: t.UISurface,
 			}
 			if foldTools && t.UIMode == "" {
-				// 折叠：省略详情大字段。ToolHints 现状映射从未填充（恒空），
-				// 显式置空是为了把「折叠语义」固化在此处，防止后续新增映射时漏掉。
+				// 折叠：省略详情大字段（ToolHints 也在其中 —— 全字段已映射进 tp，
+				// 这里显式置空把「折叠轻字段语义」固化在此处；detail 端点
+				// foldTools=false 全量取回）。
 				tp.Summary = ""
 				tp.Args = ""
 				tp.Detail = ""

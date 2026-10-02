@@ -62,6 +62,11 @@ type iterToolSnap struct {
 	UIMode    string              `json:"ui_mode,omitempty"`
 	UILibs    []string            `json:"ui_libs,omitempty"`
 	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
+	// ToolHints carries the persisted synthetic-tool hint payload (Fix A 回写的
+	// tool_hints 键 —— agent.IterationToolSnapshot 同名 tag）。缺了它，历史 JSON
+	// 往返会静默丢弃合成工具的结构化详情（SyntheticToolCard 全靠这个载荷），
+	// live SSE 直推不经往返 ⇒ 「live 详情正常、刷新后无结构化详情」（2026-10-02 P0）。
+	ToolHints string `json:"tool_hints,omitempty"`
 }
 
 // isDegenerateCancelDetail reports whether a Detail JSON represents a
@@ -1358,7 +1363,8 @@ func rawMessageIterations(message llm.ChatMessage, toolResults map[string]string
 						Name: tool.Name, Label: label, Status: tool.Status,
 						Elapsed: tool.ElapsedMS, Iteration: snapshot.Iteration,
 						Summary: tool.Summary, Args: tool.Args, Detail: tool.Detail,
-						UIMode: tool.UIMode, UILibs: tool.UILibs, UISurface: tool.UISurface,
+						ToolHints: tool.ToolHints,
+						UIMode:    tool.UIMode, UILibs: tool.UILibs, UISurface: tool.UISurface,
 					}
 				}
 				iterations[i] = HistoryIteration{
