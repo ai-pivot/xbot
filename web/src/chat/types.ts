@@ -283,10 +283,25 @@ export interface ChatState {
   readonly gapReloadToken: number
   /** 当前"无法追赶的缺口形状"签名（'' = 无）。形状不变 ⇒ 不重复触发重载。 */
   readonly unreachableGapSig: string
+  /**
+   * SSE **增量路径**（`iteration` / `stream` case）发现的「迭代丢失洞」签名（'' = 无）。
+   *
+   * 判据：到达的迭代号没有接上已持有窗口（`evNumber > maxHeld + 1`）⇒ 中间迭代的
+   * 完成 delta 已在链路上丢失。iterationHistory 是增量 feed，**没有任何后续事件会
+   * 回头补洞**（progressStore canonical 注释："a reload is required to restore the
+   * missing iterations"）—— 本字段就是那个"该 reload 了"的信号载体：跳变时若签名
+   * 变化则 `gapReloadToken` 自增（面板 reset + 权威 reload 补洞）。
+   *
+   * 与 `unreachableGapSig` 的分工：那个判「reload **之后**仍修不好的洞」（洞在
+   * 权威窗口之外）；本字段判「增量路径上**正在产生**的洞」——DB 里一切都在，只需
+   * 触发一次 reload。同一签名只自增一次（防重载风暴）；AgentPanel 的 reset 会把
+   * 本字段连同本地带洞窗口一起清零。
+   */
+  readonly lostIterGapSig: string
 }
 
 export function initialChatState(chatID: string): ChatState {
-  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '' }
+  return { chatID, turns: new Map(), legacy: [], standalone: [], activeTurn: null, lastSeq: null, busy: false, pendingUsers: [], todos: [], goal: null, queue: [], sessionRunning: false, gapReloadToken: 0, unreachableGapSig: '', lostIterGapSig: '' }
 }
 
 // ─── DomainEvent：闭合的事件联合（normalize 之后的纯世界） ────

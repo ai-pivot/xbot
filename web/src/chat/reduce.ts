@@ -160,6 +160,54 @@ function mergeIterations(
 }
 
 /**
+ * 已持有迭代窗口的最大迭代号（'' 前置条件：调用方已确认 `iterations.length > 0`）。
+ * 跳变检测的「本地基准」——判「到达的迭代号是否接上了已持有的连续窗口」。
+ */
+function maxHeldIteration(iterations: readonly WebIteration[]): number {
+  let max = 0
+  for (const it of iterations) if (it.iteration > max) max = it.iteration
+  return max
+}
+
+/**
+ * **SSE 增量路径的迭代丢失洞**（P0 2026-10-06，chat_AE903161C55A turn 445 实证）。
+ *
+ * iterationHistory 是增量 feed：某迭代的完成 delta 在链路上丢失后，**没有任何
+ * 后续事件会回头补它**（快照只带「新」迭代）。渲染层 `continuousIterations` 在洞
+ * 处截断 ⇒ 后续每个迭代的 commit「出现（live）即消失（done 后历史不显示）」、
+ * view 永久停在洞前（用户实测：view 停在 1-40，后端已到 84）。
+ *
+ * 证据标准：迭代号在 turn 域内逐 +1 单调（引擎循环 iteration++），到达的迭代号
+ * **没有接上已持有窗口**（`from > maxHeld + 1`）在数学上不可能是正常事件 ⇒ 中间
+ * 洞 [maxHeld+1 .. from-1] 的 delta 全部丢失。与遮蔽解除（ev.iter > maxIter）同
+ * 一个证据家族：后端绝不会对更早的迭代重发更大号。
+ *
+ * 处理：不拼合、不遮掩 —— 记洞签名；签名变化 ⇒ `gapReloadToken` 自增（面板
+ * `markHistoryStale` + `reset` + 权威 reload ⇒ REST DB 窗口 union 补洞）。同一
+ * 签名只自增一次（reload 在途时后续迭代的 commit 跳变不重复报 ⇒ 无重载风暴）。
+ *
+ * @param from 到达侧的最小迭代号（iteration case = delta 最小号；stream case =
+ *             流式迭代号本身）。
+ * @returns 新签名（'' = 无跳变，调用方不得改 state）。
+ */
+function lostIterGapSig(
+  s: ChatState,
+  turnID: TurnID,
+  held: readonly WebIteration[],
+  from: number,
+): string {
+  if (held.length === 0) return '' // 空窗口无「已持有」基准（reset 后回放帧）——reload 本就在途
+  const maxHeld = maxHeldIteration(held)
+  if (from <= maxHeld + 1) return '' // 接上了（含 restore 快照自带补洞 delta）⇒ 无洞
+  // ⚠️ 签名只锚定**洞下界**（maxHeld+1），不含上界：stream 帧逐帧到达时 from 单调
+  // 递增（81, 82, 83…），含上界（from-1）的签名每帧变化 ⇒ 去重失效 ⇒ 每帧自增
+  // token = 重载风暴。下界由已持有窗口决定：同一轮丢失内恒定（maxHeld 不变）⇒
+  // 同洞去重成立；洞被修复（maxHeld 前移）后再丢 ⇒ 新下界 ⇒ 重新触发。
+  const sig = `${turnID}:gapFrom${maxHeld + 1}`
+  return sig === s.lostIterGapSig ? '' : sig // 同洞去重：重复报 = 重载风暴
+}
+
+/**
  * **「无法追赶的 gap」判据**（用户 2026-09-21：「出现无法追赶的 gap 就重新加载 session」）。
  *
  * 本地窗口 ∪ 权威窗口之后**仍有洞**，且**洞有一部分落在权威窗口之外**（服务端历史按 turn
@@ -765,7 +813,27 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
       // 会话级 todos：事件携带时同步 state.todos（turn 结束后存活）。
       const next = withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return applySessionFields({ ...next, lastSeq: ev.seq }, ev.todos ?? s.todos, ev.goal)
+      // ── 迭代丢失洞（P0 2026-10-06 turn 445）────────────────────────────────
+      // delta 没有接上已持有窗口（min(delta) > maxHeld+1）⇒ 中间迭代的完成 delta
+      // 已在链路上丢失（增量 feed 无人回头补）⇒ 触发会话重载信号；restore 快照自带
+      // 的补洞 delta（min = maxHeld+1，区间完整）天然不触发。同洞去重见 helper。
+      const iterGapSig = lostIterGapSig(
+        s,
+        target,
+        prev.iterations,
+        ev.iterationsDelta.length > 0 ? Math.min(...ev.iterationsDelta.map((it) => it.iteration)) : 0,
+      )
+      return applySessionFields(
+        {
+          ...next,
+          lastSeq: ev.seq,
+          ...(iterGapSig !== ''
+            ? { gapReloadToken: s.gapReloadToken + 1, lostIterGapSig: iterGapSig }
+            : {}),
+        },
+        ev.todos ?? s.todos,
+        ev.goal,
+      )
     }
 
     // ── stream：仅 active turn；全量替换（无追加/回退歧义） ──
@@ -866,7 +934,21 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // 迭代前进（advanced）时随流式字段一起重置（新迭代从零开始）。
         streamStats: mergeStreamStats(prev.streamStats, ev.streamStats, advanced),
       }
-      return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
+      // ── 迭代丢失洞（P0 2026-10-06，与 `iteration` case 同一证据标准）─────────
+      // 流式迭代号没有接上已持有窗口（ev.iteration > maxHeld+1）⇒ 中间迭代的完成
+      // delta 全部丢失（用户实测：本地 [1..40]，stream 帧直接带 iteration=81 ——
+      // 41..80 的 commit 事件在断连窗口丢失，live 帧照常到达）。首帧触发后
+      // prev.iter 已推进 ⇒ 同迭代后续帧不再判出；同洞去重在 helper。
+      const streamGapSig =
+        ev.iteration !== null ? lostIterGapSig(s, target, prev.iterations, ev.iteration) : ''
+      if (streamGapSig === '') {
+        return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
+      }
+      return withTurn(
+        { ...s, gapReloadToken: s.gapReloadToken + 1, lostIterGapSig: streamGapSig },
+        target,
+        (tt) => ({ ...tt, phase: { kind: 'live', data } }),
+      )
     }
 
     // ── phase_done：仅 active turn；fold 最后迭代（T3 根治点）+ 停流 ──
@@ -1544,6 +1626,9 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         gapReloadToken:
           gapSig !== '' && gapSig !== s.unreachableGapSig ? s.gapReloadToken + 1 : s.gapReloadToken,
         unreachableGapSig: gapSig,
+        // SSE 增量路径的丢失洞签名（iteration/stream case 写入）在权威窗口到达时
+        // 随状态一起传播（未被 reset 打断的 reload 链路里保持去重语义）。
+        lostIterGapSig: s.lostIterGapSig,
       }
     }
 
