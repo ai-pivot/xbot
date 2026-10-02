@@ -33,8 +33,13 @@ export interface RegionWindowOptions {
   turnID: number
   /** 该 turn 仍剩的更早展示区域数（后端 `regions_before`；0/undefined = 到顶）。 */
   regionsBefore: number | undefined
-  /** 当前已加载窗口的**最小迭代号**（`POST /api/regions` 的 before_iteration）。 */
+  /** 段请求游标（`POST /api/regions` 的 before_iteration）：无洞 = 窗口最小迭代号；
+   *  有洞 = 洞上边界（见 AssistantMessage 的 gapTop 计算）。 */
   beforeIteration: number | undefined
+  /** 已加载迭代序列中的第一个洞的上边界（iterations[i] > iterations[i-1]+1 处的
+   *  iterations[i].iteration；undefined = 无洞）。熄屏恢复 × 折叠窗口会产生这种洞
+   *  —— 驱动下方「自动追赶」effect（不等 IO）。 */
+  gapTop?: number
 }
 
 export interface RegionWindow {
@@ -51,6 +56,7 @@ export function useRegionWindow({
   turnID,
   regionsBefore,
   beforeIteration,
+  gapTop,
 }: RegionWindowOptions): RegionWindow {
   const actions = useRegionActions()
   const enabled = (regionsBefore ?? 0) > 0 && beforeIteration !== undefined && turnID > 0
@@ -134,6 +140,20 @@ export function useRegionWindow({
   const retry = useCallback(() => {
     run()
   }, [run])
+
+  // ── 自动追赶（2026-10-02 P0：熄屏恢复 × 折叠窗口的洞）────────────────────────
+  // 检测到洞（gapTop 有值）⇒ 立即自动取段填洞，**不等 IO 哨兵**——熄屏恢复场景洞的
+  // 两侧 = 本地熄屏前的低号迭代 + 恢复 reload 的折叠窗口；contiguous 在洞处截断 ⇒
+  // 历史冻结在熄屏时刻、所有后续完成迭代（含 tool done）都在截断区外「消失」。此时
+  // 用户在底部看 live、分隔条不在视口，IO 永远不会触发——必须自动追赶。
+  // 防风暴（与 IO 路径共用）：run() 的 in-flight 去重 + failStreak 保守停止 +
+  // 洞填上后 gapTop 变 undefined ⇒ 本 effect 自然停止（deps 含 gapTop）。
+  useEffect(() => {
+    if (gapTop === undefined) return
+    if (statusRef.current === 'loading') return
+    if (failStreakRef.current >= MAX_AUTO_REGION_FAILURES) return
+    run()
+  }, [gapTop, run])
 
   return { enabled, status, sentinelRef, retry }
 }

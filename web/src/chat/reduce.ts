@@ -175,6 +175,7 @@ function unreachableGapSig(
   turn: TurnID,
   localIts: readonly WebIteration[],
   incomingIts: readonly WebIteration[],
+  incomingRegionsBefore?: number,
 ): string {
   if (localIts.length === 0 || incomingIts.length === 0) return ''
   let incMin = Infinity
@@ -189,6 +190,13 @@ function unreachableGapSig(
     const b = merged[i].iteration
     if (b <= a + 1) continue
     // 洞 = [a+1, b-1]：只要有一部分在权威窗口之外 ⇒ 追不回来。
+    // ⚠️ 例外（2026-10-02 P0：熄屏恢复 × 折叠窗口）：洞**整段落在 incoming 窗口
+    // 下方**且 incoming 带 regionsBefore>0（服务端显式声明「窗口之前还有未下发的
+    // 展示区域」——该洞就在声明区域内，POST /api/regions 可完整取回）⇒ 这是
+    // **可追赶**的洞，不是「追不回来」：本地熄屏前的低号迭代（[1..40]）与恢复
+    // reload 的折叠窗口（[52..90]）之间必然产生这种洞，误报 reload 只会拿到同样
+    // 的窗口（死循环）；追赶由 useRegionWindow 的洞检测自动 fetchRegions 完成。
+    if (a + 1 < incMin && (incomingRegionsBefore ?? 0) > 0) continue
     if (a + 1 < incMin || b - 1 > incMax) return `${turn}:gap${a + 1}-${b - 1}`
   }
   return ''
@@ -1215,7 +1223,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             : h.phase.kind === 'frozen'
               ? h.phase.data.iterations
               : []
-          gapSig = joinSig(gapSig, unreachableGapSig(h.id, curIts, incIts))
+          // incoming 的窗口声明（可追赶洞的豁免判据 —— 见 unreachableGapSig 的例外注释）。
+          const incRb = h.phase.kind === 'committed'
+            ? h.phase.payload.regionsBefore
+            : h.phase.kind === 'frozen'
+              ? h.phase.data.regionsBefore
+              : undefined
+          gapSig = joinSig(gapSig, unreachableGapSig(h.id, curIts, incIts, incRb))
         }
         if (cur && cur.phase.kind === 'live') {
           // live 胜（SSE 比 DB 快照新）—— 但 live 只含【增量】迭代（重启
@@ -1382,6 +1396,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           const mergedTodos = d.todos.length > 0 ? d.todos : snap.todos
           const mergedSubAgents = d.subAgents.length > 0 ? d.subAgents : snap.subAgents
           const mergedTokenUsage = d.tokenUsage ?? snap.tokenUsage
+          // 区域窗口声明（2026-10-02 P0 复现实证的透传遗漏点）：快照的 regions_before
+          // 是服务端对该 turn 折叠窗口的权威声明（熄屏恢复 resync 路径必带）；本地值
+          // 可能来自更早的段加载（更小 = 更完整）。取 min（与 mergeTurnData 同语义）。
+          const mergedRegionsBefore =
+            d.regionsBefore !== undefined && snap.regionsBefore !== undefined
+              ? Math.min(d.regionsBefore, snap.regionsBefore)
+              : d.regionsBefore ?? snap.regionsBefore
           const unchanged =
             mergedIterations === d.iterations &&
             mergedActiveTools === d.activeTools &&
@@ -1392,7 +1413,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             mergedGenui === d.genui &&
             mergedTodos === d.todos &&
             mergedSubAgents === d.subAgents &&
-            mergedTokenUsage === d.tokenUsage
+            mergedTokenUsage === d.tokenUsage &&
+            mergedRegionsBefore === d.regionsBefore
           if (!unchanged) {
             turns.set(activeTurn, {
               ...t,
@@ -1410,6 +1432,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                   todos: mergedTodos as TodoItem[],
                   subAgents: mergedSubAgents as WebSubAgentProgress[],
                   tokenUsage: mergedTokenUsage,
+                  regionsBefore: mergedRegionsBefore,
                 },
               },
             })

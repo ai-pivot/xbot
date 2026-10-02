@@ -69,8 +69,8 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function Harness({ regionsBefore, turnID = 7, beforeIteration = 52 }: { regionsBefore: number; turnID?: number; beforeIteration?: number }) {
-  const win = useRegionWindow({ turnID, regionsBefore, beforeIteration })
+function Harness({ regionsBefore, turnID = 7, beforeIteration = 52, gapTop }: { regionsBefore: number; turnID?: number; beforeIteration?: number; gapTop?: number }) {
+  const win = useRegionWindow({ turnID, regionsBefore, beforeIteration, gapTop })
   if (!win.enabled) return <div data-testid="no-divider" />
   return (
     <RegionsDivider
@@ -82,7 +82,7 @@ function Harness({ regionsBefore, turnID = 7, beforeIteration = 52 }: { regionsB
   )
 }
 
-function renderHarness(actions: Partial<RegionActions>, props: { regionsBefore: number; turnID?: number; beforeIteration?: number } = { regionsBefore: 12 }) {
+function renderHarness(actions: Partial<RegionActions>, props: { regionsBefore: number; turnID?: number; beforeIteration?: number; gapTop?: number } = { regionsBefore: 12 }) {
   const full: RegionActions = {
     loadIterationDetail: vi.fn(async () => true),
     fetchInFlight: () => false,
@@ -201,5 +201,24 @@ describe('useRegionWindow：失败降级（不自动循环）', () => {
     act(() => { io().emit(false) })
     act(() => { io().emit(true) })
     await waitFor(() => expect(actions.loadRegionSegment).toHaveBeenCalledTimes(3))
+  })
+})
+
+describe('useRegionWindow：gapTop 自动追赶（2026-10-02 P0——熄屏恢复 × 折叠窗口的洞）', () => {
+  it('⑦ 检测到洞 ⇒ 不等 IO 立即取段（哨兵不可见也必须追赶——历史冻结 + tool done 消失的修复）', async () => {
+    // 熄屏恢复场景：本地 [1..40] ∪ 恢复窗口 [52..90] ⇒ 洞 [41..51]，gapTop=52；
+    // 用户在底部看 live，分隔条（哨兵）不在视口 —— IO 永远不会触发；不自动追赶则
+    // contiguous 在洞处截断 ⇒ 历史冻结在熄屏时刻、完成的 tool 落在截断区外「消失」。
+    FakeIO.initialVisible = false
+    const { actions } = renderHarness({}, { regionsBefore: 6, turnID: 7, beforeIteration: 52, gapTop: 52 })
+    await waitFor(() => expect(actions.loadRegionSegment).toHaveBeenCalledTimes(1))
+    expect(actions.loadRegionSegment).toHaveBeenCalledWith(7, 52) // before_iteration = 洞上边界
+  })
+
+  it('⑧ 无洞（gapTop=undefined）⇒ 绝不自动发请求（既有 IO 手势语义零变化）', async () => {
+    FakeIO.initialVisible = false // 哨兵不可见 + 无洞 ⇒ 两条路径都不触发
+    const { actions } = renderHarness({}, { regionsBefore: 6, turnID: 7, beforeIteration: 52 })
+    await act(async () => {})
+    expect(actions.loadRegionSegment).not.toHaveBeenCalled()
   })
 })

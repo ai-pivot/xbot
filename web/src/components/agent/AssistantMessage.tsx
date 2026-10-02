@@ -93,14 +93,27 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
   const emptyResponseWarning = emptyResponse ? t('agent.emptyResponseWarning') : ''
 
   // ── 展示区域窗口（D1）：`regions_before > 0` ⇒ 行顶渲染分隔条 + IO 哨兵 ──
-  // beforeIteration = 当前**已加载窗口**的最小迭代号（后端保证窗口是连续区间 [a..N]）：
-  // committed 行 = DB 窗口首迭代；live/frozen 行 = busy 快照窗口首迭代（live 闭环——
-  // 渲染用的 `iterations` 正是窗口内容，取其首元素与用户所见一致）。
+  // beforeIteration = 段请求游标：
+  //   · 无洞 = 已加载窗口的最小迭代号（后端保证窗口是连续区间 [a..N]）。
+  //   · 有洞（2026-10-02 P0：熄屏恢复 × 折叠窗口——本地熄屏前的低号迭代 [1..40]
+  //     与恢复 reload 的折叠窗口 [52..90] union 后在 41..51 产生洞）= **洞上边界**
+  //     （52）——段请求必须从这里取回 [b..51] 填洞；用最低号（1）会请求到空段、
+  //     洞永远填不上。gapTop 同时驱动 useRegionWindow 的**自动追赶**（不等 IO：
+  //     用户在底部看 live、分隔条不在视口；不追赶则 contiguous 在洞处截断 ⇒ 历史
+  //     冻结在熄屏时刻 + 完成的 tool 从 activeTools 清除后落在截断区外 =「消失」）。
   const windowFirstIteration = iterations.length > 0 ? iterations[0].iteration : undefined
+  let gapTop: number | undefined
+  for (let i = 1; i < iterations.length; i++) {
+    if (iterations[i].iteration > iterations[i - 1].iteration + 1) {
+      gapTop = iterations[i].iteration
+      break
+    }
+  }
   const regionWindow = useRegionWindow({
     turnID: message.turnID,
     regionsBefore: message.regionsBefore,
-    beforeIteration: windowFirstIteration,
+    beforeIteration: gapTop ?? windowFirstIteration,
+    gapTop,
   })
 
   // Action bar shown for completed (non-streaming) messages with content.
