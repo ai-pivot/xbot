@@ -1253,25 +1253,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
               mergeIterations(incomingIts, cur.phase.data.iterations),
               cur.phase.data.iterations,
             )
-            // 2026-10-02 P0 修复：live-wins 分支必须传播 incoming 的 regionsBefore。
-            // 熄屏场景：本地 live [1..300] × incoming committed 窗口 [659..758]+regionsBefore=658
-            // ⇒ union 产生洞 [301..658]，但旧代码不传播 regionsBefore ⇒ data.regionsBefore
-            // 保持 undefined ⇒ regionWindow.enabled=false ⇒ **auto-catch-up 永不触发**
-            // ⇒ 洞永不填 ⇒ contiguous 截断在 300 ⇒ 历史冻结在熄屏时刻（用户报告
-            // 「历史迭代完全不更新，新迭代一 commit 就消失」）。取 min（本地已加载过
-            // 段 ⇒ 更小 = 更完整——与 mergeTurnData / 3.5 分支同语义）。
-            const incRbLive = h.phase.kind === 'committed'
-              ? h.phase.payload.regionsBefore
-              : h.phase.kind === 'frozen'
-                ? h.phase.data.regionsBefore
-                : undefined
-            const curRbLive = cur.phase.data.regionsBefore
-            const mergedRbLive =
-              curRbLive !== undefined && incRbLive !== undefined
-                ? Math.min(curRbLive, incRbLive)
-                : curRbLive ?? incRbLive
-            const rbChanged = mergedRbLive !== curRbLive
-            if (mergedIts === cur.phase.data.iterations && !rbChanged && (cur.user || !h.user)) {
+            if (mergedIts === cur.phase.data.iterations && (cur.user || !h.user)) {
               turns.set(h.id, cur)
             } else {
               turns.set(h.id, {
@@ -1279,11 +1261,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                 user: cur.user ?? h.user,
                 phase: {
                   kind: 'live',
-                  data: {
-                    ...cur.phase.data,
-                    iterations: mergedIts as WebIteration[],
-                    ...(rbChanged ? { regionsBefore: mergedRbLive } : {}),
-                  },
+                  data: { ...cur.phase.data, iterations: mergedIts as WebIteration[] },
                 },
               })
             }
