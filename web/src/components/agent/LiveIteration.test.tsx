@@ -385,3 +385,52 @@ describe('LiveIteration thinking placeholder (reuses ShimmerThinking — iterati
     expect(container.textContent).not.toMatch(/思考中|thinking/)
   })
 })
+
+// ─── 已渲染迭代的重复副本守卫（2026-10-02 P0 用户截图实证）─────────────────────
+// 「一个 iter 重复渲染两次，甚至第一次渲染没 tool，一个非结尾的 iter 不可能没 tool」
+// ——迟到/重放的流式帧（stream 无状态合帧、无 seq gate）让 live 持有**更早的已提交
+// 迭代**的内容；旧判据只对比**最后一个**已完成迭代 ⇒ 比较失败 ⇒ 同一段文本在历史块
+// （带 pill）与 live 块（无 pill）各渲染一份。
+// 修复：live 的内容与**任意**已完成迭代相同 ⇒ 抑制（内容匹配，非迭代号比较——号可能
+// 滞后于内容，turnBodyLiveDedup 用例 2 钉死反例）。
+describe('LiveIteration — 已渲染迭代的重复副本守卫（内容匹配全部历史）', () => {
+  const hist = (n: number, content = '', reasoning = '') => ({
+    iteration: n, content, reasoning, tools: [], toolCount: 0,
+  })
+
+  it('★ live 持有【更早的已提交迭代】的内容（非最后一个）⇒ 抑制，整块不渲染', () => {
+    const snapshot = makeSnapshot({
+      iteration: 3,
+      streamContent: 'X 文本', // == 迭代 1 的内容（更早，不是最后一个 'Y 文本'）
+      streaming: true,
+      iterationHistory: [hist(1, 'X 文本'), hist(2, 'Y 文本')] as never,
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    // mutation：把判据改回「只对比最后一个」（lastIter.content）⇒ 本条必红（'X 文本' 重复渲染）。
+    // （占位符「思考中…」可能存在——迭代 3 确实在飞，那不是重复副本。）
+    expect(container.textContent).not.toContain('X 文本')
+  })
+
+  it('同源：live 的 reasoning 与【更早的】已提交迭代相同 ⇒ 抑制', () => {
+    const snapshot = makeSnapshot({
+      iteration: 3,
+      reasoningStreamContent: 'R-old',
+      lastReasoning: 'R-old',
+      streaming: true,
+      iterationHistory: [hist(1, '', 'R-old'), hist(2, '', 'R-new')] as never,
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    expect(container.textContent).not.toContain('R-old')
+  })
+
+  it('不误伤：live 内容与任何已提交迭代都不同 ⇒ 照常渲染（真新内容）', () => {
+    const snapshot = makeSnapshot({
+      iteration: 3,
+      streamContent: '全新内容',
+      streaming: true,
+      iterationHistory: [hist(1, 'X 文本'), hist(2, 'Y 文本')] as never,
+    })
+    const { container } = renderWithProviders(<LiveIteration progress={snapshot} />)
+    expect(container.firstChild).not.toBeNull()
+  })
+})
