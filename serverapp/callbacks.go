@@ -419,6 +419,12 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil {
 			return nil, 0, err
 		}
+		// 旧数据修复（2026-09-30 事故）：注入型工具对合并回段内迭代记录 —— 与
+		// 主历史快照（View 路径）同一锚定/去重实现，段边界与 pill 渲染两侧一致。
+		recs, err = legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, recs)
+		if err != nil {
+			return nil, 0, err
+		}
 		iterations, regionsBefore := historyRegionSegment(recs, regionLimit)
 		return iterations, regionsBefore, nil
 	}
@@ -441,8 +447,14 @@ func buildWebCallbacks(cfg *config.Config, ag *agent.Agent, webDB *sqlite.DB) we
 		if err != nil || !found {
 			return protocol.HistoryIteration{}, false, err
 		}
-		// foldTools=false ⇒ 完整字段（这是「完整覆盖轻字段」的唯一来源）。
-		return channel.MapIterationRecord(rec, false), true, nil
+		// 旧数据修复（2026-09-30 事故）：锚定到该迭代的注入型工具对补进详情
+		//（新数据由 Fix A 持久化，去重短路）。foldTools=false ⇒ 完整字段（这是
+		//「完整覆盖轻字段」的唯一来源）。
+		recs, err := legacySyntheticPairRepair(sess.SessionService(), tenantID, turnID, []sqlite.IterationRecord{rec})
+		if err != nil {
+			return protocol.HistoryIteration{}, false, err
+		}
+		return channel.MapIterationRecord(recs[0], false), true, nil
 	}
 	callbacks.RewindHistory = func(senderID string, sel web.SessionSelector, historyID int64) (web.RewindHistoryResult, error) {
 		return rewindWebHistory(ag, sel.Channel, sel.ChatID, historyID)
@@ -2267,6 +2279,36 @@ const (
 	// 区域段单次过大）。客户端传多大都被钳到这里。
 	MaxHistoryRegionRequest = 100
 )
+
+// legacySyntheticPairRepair 为折叠视图的按需取回端点（/api/regions、
+// /api/iteration_detail）补 Fix A 之前旧数据缺的注入型工具：pre_turn_end /
+// bg task / cron 这类工具对落进了 session_messages，但旧代码下
+// iteration_history 的 tools JSON 永远缺它（注入发生在迭代快照落库之后，
+// 2026-09-30 chat_D3D0 turn 19 事故）。从 session_messages 的工具对按注入
+// 时间戳锚定补回 —— 锚定/去重与 View 主路径（channel.MergeSyntheticToolPairs）
+// 同一实现：主快照与本段对同一 recs 合并出同一 tools JSON ⇒ 区域边界与
+// pill 详情两侧渲染一致。
+//
+// 新数据（Fix A 已把工具持久化进 tools JSON）经 (name, detail) 去重自动
+// 短路 —— 零合并零改动，copy-on-write 返回原切片。
+//
+// 错误冒泡（绝不静默降级）：修复查询失败让端点显式失败，而不是返回与主
+// 快照不一致的未修复段。
+func legacySyntheticPairRepair(svc *sqlite.SessionService, tenantID int64, turnID uint64, recs []sqlite.IterationRecord) ([]sqlite.IterationRecord, error) {
+	rows, err := svc.GetSyntheticPairRowsByTurn(tenantID, turnID)
+	if err != nil {
+		return nil, err
+	}
+	pairs := channel.CollectSyntheticToolPairs(rows, channel.BuildToolResults(rows))
+	if len(pairs) == 0 {
+		return recs, nil
+	}
+	anchors, err := svc.GetIterationAnchorsByTurn(tenantID, turnID)
+	if err != nil {
+		return nil, err
+	}
+	return channel.MergeSyntheticPairsIntoSegment(recs, pairs, anchors), nil
+}
 
 // historyRegionSegment 从「严格早于 beforeIter 的迭代记录（升序）」中取**尾部**
 // regionLimit 个展示区域组成的段，返回 (段内迭代, 段外更早区域数)。

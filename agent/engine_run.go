@@ -2679,8 +2679,65 @@ func (s *runState) injectSyntheticToolPair(
 		if s.autoNotify {
 			s.notifyProgress("")
 		}
+		// 把工具补写进【已落盘】的迭代记录（2026-09-30 修复：注入发生在迭代
+		// 快照落库之后——内存 CompletedTools 马上被 beginIteration 清空，快照
+		// 永远看不到它 ⇒ 刷新/切会话后前端再也渲染不出这个工具）。
+		s.persistSyntheticToolToHistory(ctx, iteration, IterationToolSnapshot{
+			Name:      toolName,
+			Label:     progressLabel,
+			Status:    string(ToolDone),
+			ElapsedMS: progressElapsed.Milliseconds(),
+			Summary:   progressSummary,
+			Detail:    content,
+			ToolHints: progressHints,
+		})
 	}
 	return nil
+}
+
+// persistSyntheticToolToHistory 把刚注入的合成工具追加进 iteration_history 中
+// 【已落盘】的 (turn, iteration) 记录的 tools JSON 数组尾部（存储实现见
+// sqlite.SessionService.AppendIterationTool）。调用点：injectSyntheticToolPair。
+//
+// 互斥契约（永不双写）：
+//   - 记录存在 = 该迭代已快照（注入发生在快照之后是两条注入路径的固定顺序：
+//     handleFinalResponse → snapshotCompletedIteration → maybeContinueTurn；
+//     executeToolCalls → snapshotCompletedIteration → postToolProcessing → drain）。
+//     本方法直接 UPDATE 追加；而 CompletedTools 马上被 beginIteration 清空，
+//     后续快照不会再次写入它。
+//   - 记录不存在 = 该迭代快照尚未写（如 Run 启动前的 drain）——工具仍在
+//     CompletedTools 里，将由下一次 snapshotCompletedIteration 自然写入；
+//     found=false 静默跳过，绝不能 Insert（会绕过快照的单写路径）。
+//
+// 失败只 Warn：注入本身已完成（消息对已落库、LLM 上下文已更新），丢的只是
+// 「刷新后的展示」，不值得让整个 turn 失败。
+func (s *runState) persistSyntheticToolToHistory(ctx context.Context, iteration int, snap IterationToolSnapshot) {
+	// Session 解析与 writeIterationHistory 同源：persistence.session 优先
+	// （正常 Run），cfg.Session 兜底（SubAgent）；都没有则无持久化，直接返回。
+	var appendFn func(turnID uint64, iteration int, toolJSON string) (bool, error)
+	if s.persistence != nil && s.persistence.session != nil {
+		appendFn = s.persistence.session.AppendIterationTool
+	} else if s.cfg.Session != nil {
+		appendFn = s.cfg.Session.AppendIterationTool
+	} else {
+		return
+	}
+	var turnID uint64
+	if s.structuredProgress != nil {
+		turnID = s.structuredProgress.TurnID
+	}
+	toolJSON, err := json.Marshal(snap)
+	if err != nil {
+		log.Ctx(ctx).WithError(err).WithField("tool", snap.Name).Warn("persist synthetic tool: marshal snapshot failed")
+		return
+	}
+	if _, err := appendFn(turnID, iteration, string(toolJSON)); err != nil {
+		log.Ctx(ctx).WithError(err).WithFields(log.Fields{
+			"turn_id":   turnID,
+			"iteration": iteration,
+			"tool":      snap.Name,
+		}).Warn("persist synthetic tool to iteration_history failed")
+	}
 }
 
 // injectBgTaskNotification injects a bg task completion as a synthetic tool call/result pair.

@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"xbot/channel"
+	"xbot/llm"
 	"xbot/storage/sqlite"
 )
 
@@ -242,4 +246,112 @@ func TestCallbacksGetActiveProgressUsesFoldedVariant(t *testing.T) {
 		t.Fatalf("callbacks.GetActiveProgress 回调退回了全量 GetActiveProgress —— Web SSE/WS 推送快照不再走折叠视图（大 turn MB 级载荷回归）。窗口内容:\n%s", window)
 	}
 	t.Fatalf("callbacks.GetActiveProgress 回调体内未发现 GetActiveProgressFolded 调用 —— 请确认装配仍走折叠视图。窗口内容:\n%s", window)
+}
+
+// TestLegacySyntheticPairRepair_RestoresLegacyPairAndDedups 守护 /api/regions、
+// /api/iteration_detail 的旧数据修复接线（legacySyntheticPairRepair，
+// 2026-09-30 pre_turn_end 事故）：
+//  1. 旧数据（pair rows 在 session_messages、iteration_history.tools 缺该工具）
+//     ⇒ 段与单条视图都按注入时间戳锚定补回 —— 与 View 主路径同一迭代归属；
+//  2. 新数据（Fix A 已持久化）⇒ (name, detail) 去重短路，绝不双写；
+//  3. 无工具对的 turn ⇒ 原切片返回（零合并）。
+//
+// Mutation 自证：把 helper 里的合并调用删掉（或错传 turnID）⇒ 用例 1 必红。
+func TestLegacySyntheticPairRepair_RestoresLegacyPairAndDedups(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(dir, "xbot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc := sqlite.NewSessionService(db)
+	// session_messages.tenant_id 有外键 —— 独立测试库必须先建租户行
+	//（与 storage 包 newHistoryTestService 同法）。
+	tenantID, err := sqlite.NewTenantService(db).GetOrCreateTenantID("test", "repair-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const turnID = uint64(500)
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	mk := func(sec int) time.Time { return base.Add(time.Duration(sec) * time.Second) }
+
+	// iteration_history：iter1（Shell 工具迭代）+ iter2（最终 content-only）。
+	// 受控 created_at（AppendIterationHistory 不写该列 —— 与 Fix A 测试同款 UPDATE）。
+	for i, rec := range []sqlite.IterationRecord{
+		{TurnID: turnID, Iteration: 1, Content: "thinking", Tools: `[{"name":"Shell","status":"done"}]`},
+		{TurnID: turnID, Iteration: 2, Content: "最终回复", Tools: "[]"},
+	} {
+		if err := svc.AppendIterationHistory(tenantID, 0, turnID, rec); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Conn().Exec(
+			`UPDATE iteration_history SET created_at = ? WHERE tenant_id = ? AND turn_id = ? AND iteration = ?`,
+			mk(30*(i+1)).Format(time.RFC3339), tenantID, turnID, i+1,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// session_messages：pre_turn_end 工具对（注入发生在 iter2 快照之后）。
+	pairContent := "所有 PreTurnEnd 钩子已处理完毕，请完成最终回复。"
+	for _, m := range []llm.ChatMessage{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "pte_1", Name: "pre_turn_end", Arguments: "{}"}}, TurnID: turnID, Timestamp: mk(70)},
+		{Role: "tool", ToolCallID: "pte_1", ToolName: "pre_turn_end", Content: pairContent, TurnID: turnID, Timestamp: mk(71)},
+	} {
+		if _, err := svc.AppendMessage(tenantID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 1. 旧数据修复：段视图（该 turn 全部迭代记录）。
+	recs, err := svc.GetIterationHistoryByTurn(tenantID, turnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err = legacySyntheticPairRepair(svc, tenantID, turnID, recs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("recs=%d want 2", len(recs))
+	}
+	if !strings.Contains(recs[1].Tools, `"name":"pre_turn_end"`) {
+		t.Fatalf("iter2 tools=%q, want restored pre_turn_end (anchor = last snapshot before injection)", recs[1].Tools)
+	}
+	if strings.Contains(recs[0].Tools, `"name":"pre_turn_end"`) {
+		t.Fatalf("iter1 tools=%q, pair must not anchor to iter1", recs[0].Tools)
+	}
+	// 单条视图（iteration_detail 语义：只请求 iter2）。
+	rec, found, err := svc.GetIterationHistoryByNumber(tenantID, turnID, 2)
+	if err != nil || !found {
+		t.Fatalf("detail lookup: found=%v err=%v", found, err)
+	}
+	recs1 := []sqlite.IterationRecord{rec}
+	recs1, err = legacySyntheticPairRepair(svc, tenantID, turnID, recs1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail := channel.MapIterationRecord(recs1[0], false)
+	if len(detail.Tools) != 1 || detail.Tools[0].Name != "pre_turn_end" {
+		t.Fatalf("iter2 detail tools=%v, want restored pre_turn_end with full fields", detail.Tools)
+	}
+	if detail.Tools[0].Detail != pairContent {
+		t.Fatalf("iter2 detail=%q, want pair result content %q", detail.Tools[0].Detail, pairContent)
+	}
+
+	// 2. 新数据（Fix A 已持久化）⇒ 去重短路：repair 后恰好一个 pre_turn_end 条目。
+	persisted := sqlite.IterationRecord{TurnID: turnID, Iteration: 2, Content: "最终回复",
+		Tools: `[{"name":"pre_turn_end","status":"done","detail":"` + pairContent + `"}]`}
+	fixed, err := legacySyntheticPairRepair(svc, tenantID, turnID, []sqlite.IterationRecord{persisted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(fixed[0].Tools, `"name":"pre_turn_end"`); got != 1 {
+		t.Fatalf("dedup failed (pre_turn_end count=%d, want 1): %q", got, fixed[0].Tools)
+	}
+
+	// 3. 无工具对的 turn ⇒ 原切片返回（零合并零开销）。
+	plain := []sqlite.IterationRecord{{TurnID: turnID + 1, Iteration: 1, Content: "x", Tools: "[]"}}
+	if out, err := legacySyntheticPairRepair(svc, tenantID, turnID+1, plain); err != nil || len(out) != 1 || out[0].Tools != "[]" {
+		t.Fatalf("no-pair turn: out=%v err=%v, want original slice untouched", out, err)
+	}
 }

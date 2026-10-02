@@ -399,12 +399,18 @@ func ConvertMessagesToHistoryWithIterationsView(msgs []llm.ChatMessage, turnIter
 	}
 
 	// Pre-scan tool messages for status fallback.
-	toolResults := make(map[string]string)
-	for _, m := range msgs {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			toolResults[m.ToolCallID] = m.Content
-		}
-	}
+	toolResults := BuildToolResults(msgs)
+
+	// 注入型（合成）工具对回放修复（2026-09-30 chat_D3D0 turn 19 事故）：旧数据的
+	// iteration_history tools JSON 永远缺 pre_turn_end / bg task / cron 这类注入型
+	// 工具 —— 注入发生在迭代快照落库【之后】（见 agent 侧 Fix A 注释），会话内存里的
+	// 工具不会出现在任何一次快照里 ⇒ 刷新后前端永远渲染不出该工具。投影前把
+	// session_messages 里的工具对按注入时间戳合并回 turnIterMap 副本（锚定到注入
+	// 时刻所属的迭代，与 live 渲染同一迭代）；Fix A 之后的新数据已持久化该工具，
+	// 按 (name, detail) 去重防双写。copy-on-write：无合成对时返回原 map，零开销。
+	// 必须在 window/full 装配之前执行 —— MapIterationRecord 是 tools JSON 的唯一
+	// 解析入口，合并后的记录经它自然流入两条装配路径（fold 与 full）。
+	turnIterMap = MergeSyntheticToolPairs(msgs, toolResults, turnIterMap)
 
 	var cmdAnchor uint64
 	for _, m := range msgs {

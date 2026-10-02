@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -511,6 +512,68 @@ func (s *SessionService) AppendIterationHistory(tenantID int64, msgID int64, tur
 	return nil
 }
 
+// AppendIterationTool 把一个工具快照（序列化 JSON 对象）追加进 iteration_history
+// 中【已存在】的 (turn_id, iteration) 记录的 tools JSON 数组尾部。
+//
+// 为什么需要它（2026-09-30 pre_turn_end 合成工具丢失事故）：turn 尾部的合成工具
+// （bg task / cron / hook 的 pre_turn_end 通知）在 content-only 迭代快照落库
+// **之后**注入（handleFinalResponse → snapshotCompletedIteration 先写库，然后
+// maybeContinueTurn → injectSyntheticToolPair 才把工具塞进内存
+// structuredProgress.CompletedTools——而该内存态马上被 beginIteration 清空）。
+// 没有本方法时 iteration_history 的 tools JSON 永远缺这个工具 ⇒ 刷新/切会话后
+// 前端再也渲染不出来。
+//
+// found=false（记录不存在）是**正常业务结果**，不是错误：
+//   - 迭代中途注入（bg task / cron 在 Run 进行中投递）时该迭代的快照尚未写库，
+//     工具会随后续 snapshotCompletedIteration 正常写入——两条路径互斥，永不双写；
+//   - 无持久化配置的 Run 根本不会走到这里（调用方先判 structuredProgress）。
+//
+// toolJSON 必须是合法的 JSON 对象（单个工具快照）；存在值不是 JSON 数组时返回
+// 错误而非覆盖——绝不破坏已有数据。
+func (s *SessionService) AppendIterationTool(tenantID int64, turnID uint64, iteration int, toolJSON string) (bool, error) {
+	if !json.Valid([]byte(toolJSON)) {
+		return false, fmt.Errorf("append iteration tool: toolJSON is not valid JSON")
+	}
+	lock := s.db.historyLock(tenantID)
+	lock.Lock()
+	defer lock.Unlock()
+	conn, err := s.conn()
+	if err != nil {
+		return false, err
+	}
+	var existing sql.NullString
+	err = conn.QueryRow(
+		"SELECT tools FROM iteration_history WHERE tenant_id = ? AND turn_id = ? AND iteration = ?",
+		tenantID, turnID, iteration,
+	).Scan(&existing)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("append iteration tool: read tools: %w", err)
+	}
+	arr := []json.RawMessage{}
+	if existing.Valid && strings.TrimSpace(existing.String) != "" {
+		if err := json.Unmarshal([]byte(existing.String), &arr); err != nil {
+			return false, fmt.Errorf("append iteration tool: existing tools is not a JSON array (turn %d iter %d): %w", turnID, iteration, err)
+		}
+	}
+	arr = append(arr, json.RawMessage(toolJSON))
+	merged, err := json.Marshal(arr)
+	if err != nil {
+		return false, fmt.Errorf("append iteration tool: marshal merged array: %w", err)
+	}
+	result, err := conn.Exec(
+		"UPDATE iteration_history SET tools = ? WHERE tenant_id = ? AND turn_id = ? AND iteration = ?",
+		string(merged), tenantID, turnID, iteration,
+	)
+	if err != nil {
+		return false, fmt.Errorf("append iteration tool: update: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
 // GetIterationHistoryByTurn returns all iteration records for a given
 // (tenant_id, turn_id) pair, ordered by iteration number. This is the
 // ONLY query method used by ConvertMessagesToHistoryWithIterations.
@@ -644,6 +707,103 @@ func (s *SessionService) GetIterationHistoryByTurns(tenantID int64, turnIDs []ui
 		result[rec.TurnID] = append(result[rec.TurnID], rec)
 	}
 	return result, nil
+}
+
+// GetSyntheticPairRowsByTurn 返回该 turn 的【注入型】合成工具对候选行：
+// 带 tool_calls 的 assistant 行 + tool 结果行（时间序）。
+//
+// 供 /api/regions、/api/iteration_detail 的旧数据修复（channel.
+// MergeSyntheticPairsIntoSegment/IntoRecord）使用：Fix A 之前的数据
+// iteration_history.tools 缺注入型工具，需从 session_messages 的工具对补回。
+//
+// 过滤条件：record_type='message' AND display_only=0 AND internal_only=0 ——
+// 注入型工具对是正常 LLM 上下文行；display_only（cron 结果展示行）与
+// internal_only（多模态注入载体）不参与工具对合并。assistant 行只在 SQL 层
+// 粗过滤 tool_calls 非空（大 turn 上把行数从「全部消息」压到「每迭代两行」），
+// 合成名单（恰好一个调用 + IsSyntheticToolName）由 channel 层判定 —— 名单
+// 演进不在 SQL 里重复。
+//
+// 返回行只填充合并所需字段（ID/Role/Content/ToolCallID/ToolName/ToolCalls/
+// TurnID/Timestamp），不经过 Replay 折叠 —— 工具对是 append-only 的普通
+// message 行，压缩快照不可能吞掉它们。
+func (s *SessionService) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint64) ([]llm.ChatMessage, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT id, role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''),
+		       COALESCE(tool_calls, ''), COALESCE(turn_id, 0), COALESCE(created_at, '')
+		FROM session_messages
+		WHERE tenant_id = ? AND turn_id = ? AND record_type = 'message'
+		  AND display_only = 0 AND internal_only = 0
+		  AND ((role = 'assistant' AND tool_calls IS NOT NULL AND tool_calls != '' AND tool_calls != '[]')
+		    OR role = 'tool')
+		ORDER BY id ASC
+	`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get synthetic pair rows by turn: %w", err)
+	}
+	defer rows.Close()
+	var msgs []llm.ChatMessage
+	for rows.Next() {
+		var m llm.ChatMessage
+		var toolCalls, createdAt string
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.ToolCallID, &m.ToolName, &toolCalls, &m.TurnID, &createdAt); err != nil {
+			continue // 单行损坏跳过（与 scanIterationRecords 同纪律），不阻塞整段回放
+		}
+		m.Timestamp = parseSQLiteTime(createdAt)
+		if m.Role == "assistant" && toolCalls != "" {
+			// 与读取路径（history.go replay）同款解析；损坏 JSON 的行无法识别为
+			// 工具对候选 → 跳过（其配对 tool 行只是多一条无人引用的结果映射）。
+			if err := json.Unmarshal([]byte(toolCalls), &m.ToolCalls); err != nil {
+				continue
+			}
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate synthetic pair rows: %w", err)
+	}
+	return msgs, nil
+}
+
+// GetIterationAnchorsByTurn 返回该 turn 全部迭代的轻量锚点（iteration +
+// created_at）—— 把工具对注入时刻映射到迭代号的唯一依据（锚定规则与
+// channel.MergeSyntheticToolPairs 完全一致：channel.anchorPairRecord）。
+//
+// ⚠️ 记录只填 Iteration/CreatedAt 两字段，其余零值 —— 只作锚点，绝不能
+// 当完整迭代记录装配（content/tools 大字段正是折叠视图要省的；detail/
+// regions 端点拉全量就违背了按需取回的设计）。
+func (s *SessionService) GetIterationAnchorsByTurn(tenantID int64, turnID uint64) ([]IterationRecord, error) {
+	conn, err := s.conn()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := conn.Query(`
+		SELECT iteration, COALESCE(created_at, '')
+		FROM iteration_history
+		WHERE tenant_id = ? AND turn_id = ?
+		ORDER BY iteration ASC
+	`, tenantID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("get iteration anchors by turn: %w", err)
+	}
+	defer rows.Close()
+	var anchors []IterationRecord
+	for rows.Next() {
+		var rec IterationRecord
+		var createdAt string
+		if err := rows.Scan(&rec.Iteration, &createdAt); err != nil {
+			continue
+		}
+		rec.CreatedAt = parseSQLiteTime(createdAt)
+		anchors = append(anchors, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate iteration anchors: %w", err)
+	}
+	return anchors, nil
 }
 
 func scanIterationRecords(rows *sql.Rows) ([]IterationRecord, error) {
