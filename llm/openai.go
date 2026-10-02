@@ -1111,14 +1111,20 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	// goroutine, ctx.Done() is only checked AFTER Next() returns, making Ctrl+C
 	// feel unresponsive on the first message. Closing the stream immediately
 	// unblocks Next() and forces the cancellation to take effect.
+	//
+	// watchDone is closed when processStream returns: streams that complete
+	// normally never cancel their ctx, and a watcher that ONLY waits on
+	// ctx.Done() would block forever pinning the finished stream (production
+	// dump 2026-10-03: 765 leaked watchers).
 	ctxDone := ctx.Done()
 	if ctxDone != nil {
+		watchDone := make(chan struct{})
+		defer close(watchDone)
 		go func() {
 			select {
 			case <-ctxDone:
 				stream.Close()
-			case <-ctx.Done():
-				// ctx.Done() may return different channel on re-check; both paths handled
+			case <-watchDone:
 			}
 		}()
 	}

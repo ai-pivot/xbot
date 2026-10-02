@@ -618,11 +618,21 @@ func (a *AnthropicLLM) processStream(ctx context.Context, resp *http.Response, e
 	// request this includes TLS handshake which can take seconds. Closing the body
 	// immediately unblocks the reader and forces the cancellation to take effect
 	// without waiting for the next line to arrive.
+	//
+	// watchDone is closed when processStream returns: streams that complete
+	// normally never cancel their ctx, and a watcher that ONLY waits on
+	// <-ctxDone would block forever pinning resp.Body (the finished HTTP
+	// connection) — same leak class as the OpenAI watcher.
 	ctxDone := ctx.Done()
 	if ctxDone != nil {
+		watchDone := make(chan struct{})
+		defer close(watchDone)
 		go func() {
-			<-ctxDone
-			resp.Body.Close()
+			select {
+			case <-ctxDone:
+				resp.Body.Close()
+			case <-watchDone:
+			}
 		}()
 	}
 

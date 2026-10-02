@@ -46,8 +46,16 @@ func (s *NoneSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, err
 		defer cancel()
 	}
 
-	// KeepAlive uses unmanaged cmd (exec.Command) so context cancel doesn't kill the process.
-	cmd, err := buildCmdFromSpec(ctx, spec, !spec.KeepAlive)
+	// managedCtx=false (plain exec.Command): exec.CommandContext's internal
+	// watchCtx goroutine ONLY exits when cmd.Wait() delivers the wait result.
+	// The none-sandbox paths below intentionally call cmd.Process.Wait() to
+	// avoid the io.Copy EOF hang, so cmd.Wait() is never called and watchCtx
+	// would block forever on its result-channel send — one leaked goroutine
+	// (plus the os pipe FDs) per Shell call (production dump 2026-10-03:
+	// 4085 leaked watchCtx goroutines). Context cancellation is enforced
+	// explicitly below via killProcessGroup, which (unlike CommandContext's
+	// default Kill) takes down the whole process tree.
+	cmd, err := buildCmdFromSpec(ctx, spec, false)
 	if err != nil {
 		return nil, err
 	}
@@ -92,6 +100,20 @@ func (s *NoneSandbox) Exec(ctx context.Context, spec ExecSpec) (*ExecResult, err
 	go func() {
 		defer wg.Done()
 		io.Copy(&stderrBuf, stderrPipe)
+	}()
+
+	// Explicit cancellation watcher: kill the whole process group on context
+	// cancel (replaces exec.CommandContext's internal watcher, which leaked —
+	// see buildCmdFromSpec comment). procDone releases the watcher as soon as
+	// the process exits, so it never outlives the command.
+	procDone := make(chan struct{})
+	defer close(procDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			killProcessGroup(cmd.Process)
+		case <-procDone:
+		}
 	}()
 
 	// Wait for the direct child process to exit.
@@ -434,7 +456,12 @@ func (s *NoneSandbox) DownloadFile(ctx context.Context, url, outputPath, userID 
 // noneSandboxExecAsync runs a command asynchronously with streaming output.
 // Uses Setpgid to ensure all child processes are killed on context cancel.
 func noneSandboxExecAsync(ctx context.Context, spec ExecSpec, outputBuf func(string)) (int, error) {
-	cmd, err := buildCmdFromSpec(ctx, spec, true)
+	// managedCtx=false (plain exec.Command): the CommandContext internal
+	// watcher leaks here too (see buildCmdFromSpec comment) because we wait
+	// via cmd.Process.Wait() below. Cancellation is enforced by the explicit
+	// killer goroutine (which also kills the whole process tree, not just the
+	// direct child like CommandContext's default Kill would).
+	cmd, err := buildCmdFromSpec(ctx, spec, false)
 	if err != nil {
 		return -1, err
 	}
@@ -477,14 +504,23 @@ func noneSandboxExecAsync(ctx context.Context, spec ExecSpec, outputBuf func(str
 	// child process (the shell), not its entire process tree. When the context
 	// is cancelled (e.g. by task_kill), we must kill the whole process group
 	// that setProcessAttrs created, so all child processes terminate.
+	// procDone releases the watcher when the process exits: previously the
+	// goroutine ONLY waited on ctx.Done(), so every async exec whose caller
+	// never cancelled its ctx leaked one goroutine (production dump
+	// 2026-10-03: 30 leaked killers).
+	procDone := make(chan struct{})
+	defer close(procDone)
 	var killOnce sync.Once
 	go func() {
-		<-ctx.Done()
-		killOnce.Do(func() {
-			if cmd.Process != nil {
-				killProcessTree(cmd.Process)
-			}
-		})
+		select {
+		case <-ctx.Done():
+			killOnce.Do(func() {
+				if cmd.Process != nil {
+					killProcessTree(cmd.Process)
+				}
+			})
+		case <-procDone:
+		}
 	}()
 
 	// Wait for process exit. Use cmd.Process.Wait() instead of cmd.Wait()
