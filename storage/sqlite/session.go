@@ -351,6 +351,14 @@ ORDER BY id DESC LIMIT 1
 // same message as the final reply, this check would miss it — but that's
 // safe: the re-injected turn is idempotent. The worst case is a duplicate
 // turn, not data loss.
+//
+// The anchor subquery filters internal_only the same way
+// GetLastUserMessageContent does, so both resume-flow checks anchor on the
+// same "last real user message" (view_image follow-up injections ride the
+// user role). Behavior is equivalent either way today — an injection row
+// always shares its turn and can never follow that turn's final reply — but
+// keeping one anchor definition avoids depending on that cross-function
+// invariant.
 func (s *SessionService) HasAssistantReplyAfterLastUser(tenantID int64) (bool, error) {
 	lock := s.db.historyLock(tenantID)
 	lock.Lock()
@@ -369,6 +377,7 @@ WHERE sm.tenant_id = ?
   AND sm.id > (
     SELECT sm2.id FROM session_messages sm2
     WHERE sm2.tenant_id = ? AND sm2.role = 'user' AND COALESCE(sm2.display_only, 0) = 0
+		AND COALESCE(sm2.internal_only, 0) = 0
     ORDER BY sm2.id DESC LIMIT 1
   )
 `, tenantID, tenantID).Scan(&count)
