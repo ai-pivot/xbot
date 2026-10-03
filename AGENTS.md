@@ -141,6 +141,7 @@ The highest-priority rules, one line each. **Before changing the related code, R
 - ⛔ `docs/agent/gotchas-misc.md` — 注入型（fake）工具【绝不】在 content 里声明「这不是你调用的工具」（2026-09-17 用户纠正，取代同日早些时候的做法）：`agent.syntheticInjectionNotice()` 已整体删除，`newSyntheticToolPair` 不再给注入工具的结果加任何前缀 —— 注入结果就是一段普通 tool-result 文本（与 Shell/Read 输出同形态）。
 - ⛔ `docs/agent/gotchas-misc.md` — 飞书原生 CoT 的「停止生成」按钮必须处理（2026-09-23 用户报告「中止按钮没处理」）：平台契约 —— 用户点 CoT 消息上的「停止生成」时，飞书发 `card.action.trigger` 回调，`action.tag == "cot_stop"`（value 带 cot_id/message_id；
 - ⛔ `docs/agent/gotchas-misc.md` — 飞书 CoT 测试必须禁用异步 drainer（走 `newFakeCoT`），否则 flaky（2026-09-23 master CI 失败根治）：`feishuCoT.emit` 会 `go c.drain()` 启动异步写线程；
+- ⛔ `docs/agent/gotchas-misc.md` — 注入型（合成）工具对的历史回放一致性（2026-09-30 pre_turn_end 事故根治）：注入发生在迭代快照落库【之后】⇒ iteration_history 的 tools JSON 永远缺该工具 + 投影层对有结构化数据的 turn 丢弃 pendingIters ⇒ 刷新后工具永远消失。修复三层缺一不可（Fix A 新数据回写 `AppendIterationTool` / Fix B 旧数据投影合并 `MergeSyntheticToolPairs` / regions+detail 端点 `legacySyntheticPairRepair`），三条读取路径必须同一锚定规则（「CreatedAt < 注入时刻的最后一条」），只补一条 = 该视图整类丢失。**第四层（2026-10-02 P0：subagent done / bgtask done 刷新后无结构化详情）**：DB tools JSON 往返的每个字段必须在【读取侧解析结构】里成对存在 —— `regionToolSnap`/`iterToolSnap` 缺 `tool_hints` ⇒ encoding/json 静默丢弃 ⇒ live SSE 直推正常、刷新后 SyntheticToolCard 退化；给持久化 JSON 加字段 = 写入序列化 + **全部**读取解析结构 + 装配点三处成对改，只改写入侧是半个修复。
 ## ⚠️ Warnings (one-line index — full text in the knowledge files)
 
 Same contract: one-line digest here, full text (with incident + guard test) in the named knowledge file.
@@ -235,7 +236,7 @@ Same contract: one-line digest here, full text (with incident + guard test) in t
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 触屏设备禁 layout-attribute 动画（2026-09-07 手机端 todo 面板展开掉帧根治）：`@media (hover: none)` 下 `.fold-container` 只保留 opacity 过渡、`.collapsible-motion` 高度 keyframes 关闭。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — Foreground shell promote-to-background（2026-09-07，"执行中的 shell 用户可以手动转后台"）。
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — `BackgroundPanel` xterm mounting: uses `useState` callback ref (`setContainer`) not `useRef` — 
-- ⚠️ `docs/agent/gotchas-web-frontend.md` — 为什么当年错了：实测单 turn 最多 1,661 个迭代（≈3.6MB）确实让历史加载随迭代数线性变长 ⇒ 三处"压体积"各截一刀。
+- ⚠️ `docs/agent/gotchas-web-frontend.md` — 为什么当年错了：实测单 turn 最多 1,661 个迭代（≈3.6MB）确实让历史加载随迭代数线性变长 ⇒ 三处"压体积"各截一刀。（2026-09-30 演进：铁律修订为「迭代存在性必须完整 + 详情载荷可按折叠视图省略（三充要条件：`tools_folded` 标记 + `regions_before` 显式声明 + `/api/regions`、`/api/iteration_detail` 取回通路 + 轻字段永不覆盖完整数据）」，见 gotchas 该条目的「演进」段与 `docs/plan-history-fold-windowing.md`；「静默截断 + 无取回通路」仍是红线。）
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 内置工具必须在【两处】都登记 —— 漏一处就看起来像"未分类的未知工具"（用户 2026-09-19：「我说这个折叠版本的 icon 你搞好看点」，针对 `share_file` 的折叠 pill）：① `toolIcons.tsx` 的 `TOOL_ICON_MAP`（缺失 ⇒ 落到 `FALLBACK_ICON = Wrench` 通用扳手）；
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — 长 JSON 参数简化：`formatParam()` 把 `{"task_id": ["3f8f492a"]}` 抽成 `task_id: 3f8f492a`（≤2 键；
 - ⚠️ `docs/agent/gotchas-web-frontend.md` — i18n key 名 `collapseAll` / `expandAll` 是禁词：旧「折叠级别」特性用过 `collapseAll`，`noLegacyFoldFormat.test.tsx` 的 `FORBIDDEN_CODE`（`collapseAll:`）与 `DEAD_KEYS` 会直接红 ⇒ 本特性用 `collapseAllGroups` / `expandAllGroups`（任何新 key 命名先避开 `collap…

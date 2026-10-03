@@ -938,7 +938,7 @@ const CommittedTurn = memo(function CommittedTurn({ contiguous, compactionByIter
  *  否则头部被排除 ⇒ 它的工具单独成行（截图里"失败 chip + 失败 pill 在上、其余 pill 在下"的真因，
  *  **不是**什么置顶逻辑）。每个带文本的迭代仍是**独立块**（文本不合并、不丢）。
  */
-function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
+export function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
   const hasTools = (it: WebIteration) => it.tools.length > 0
   const absorbs = (it: WebIteration) => hasTools(it) && !it.content && !it.reasoning
   const out: WebIteration[] = []
@@ -947,9 +947,19 @@ function mergeToolRuns(iters: WebIteration[]): WebIteration[] {
     if (!hasTools(head)) { out.push(head); continue }
     let j = i
     const tools = [...head.tools]
-    while (j + 1 < iters.length && absorbs(iters[j + 1])) { j++; tools.push(...iters[j].tools) }
+    // 块级折叠标记**聚合**（轮 3 自审修复）：head 可能是 GenUI-only 迭代（豁免瘦身 ⇒
+    // toolsFolded=false），而被吸收的纯工具成员来自折叠视图（toolsFolded=true）——
+    // IterationGroup 只能看到合并块的标记；只取 head 一份会让成员 pill 的详情 gate
+    // 失明（点开空详情且不触发按需拉取）。任一成员带标记 ⇒ 合并块带标记（后端打标
+    // 仍是迭代级；块级聚合是纯渲染细节，不参与 Go/TS 区域边界同构契约）。
+    let blockFolded = head.toolsFolded === true
+    while (j + 1 < iters.length && absorbs(iters[j + 1])) {
+      j++
+      tools.push(...iters[j].tools)
+      if (iters[j].toolsFolded === true) blockFolded = true
+    }
     // 保留**头部**迭代号（高度缓存 / 窗口 key 稳定；文本与工具都取头部那一份 + 后续成员的工具）
-    out.push(j === i ? head : { ...head, tools })
+    out.push(j === i ? head : { ...head, tools, toolsFolded: head.toolsFolded === true || blockFolded })
     i = j
   }
   return out
@@ -982,6 +992,14 @@ export const TurnBody = memo(function TurnBody({
     const map = new Map<number, WebCompaction[]>()
     if (!compactions || compactions.length === 0) return map
     for (const c of compactions) {
+      // 窗口外挂起（2026-10-01 修复，用户报告「上下文已压缩渲染很多情况都是错的」）：
+      // afterIteration 落在**已加载窗口之前**（区域折叠未覆盖）⇒ 压缩点属于未加载内容
+      // 之间的分隔 —— 不渲染。否则 anchor 扫描（it.iteration <= afterIteration）在窗口
+      // 内找不到任何块 ⇒ fallback anchor=0 ⇒ 渲染在 leading（窗口顶）——冒充「turn 开头
+      // 压缩」：时间线错乱（压缩点出现在比它晚几十个迭代的内容上方）+ 与「更早区域」
+      // 分隔条叠加错乱。段加载覆盖到 afterIteration 后 merged 更新 ⇒ 本 memo 重算 ⇒
+      // 压缩点自动归位。afterIteration=0（真·turn 开头压缩）除外 —— 它语义上就属于窗口顶。
+      if (c.afterIteration > 0 && merged.length > 0 && merged[0].iteration > c.afterIteration) continue
       let anchor = 0
       for (const it of merged) {
         if (it.iteration <= c.afterIteration && it.iteration > anchor) anchor = it.iteration

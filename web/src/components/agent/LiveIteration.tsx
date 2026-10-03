@@ -49,27 +49,36 @@ export const LiveIteration = memo(function LiveIteration({
   // the last iteration's thinking/content — TurnBody renders the iteration
   // text, and LiveIteration would render streamContent again (duplicate).
   // Drop streamContent when it matches the last iteration's thinking.
-  const lastIter = progress.iterationHistory.length > 0
-    ? progress.iterationHistory[progress.iterationHistory.length - 1]
-    : null
-  // effectiveReasoning —— 与下方 effectiveStreamContent **同源**的抑制：
-  // live 的 reasoning 若与最后一个已完成迭代的 reasoning 相同，说明该迭代已经
-  // 作为历史渲染过（AskUser 在迭代 N 内部暂停 ⇒ 迭代 N 已 committed，而 live 的
-  // iteration 仍是 N，且仍持有同一段 reasoning）—— live 再渲染一次就是重复的
-  // **空壳思考块**（用户报告 + 真实 DOM 实证：`data-iter-id="24"` 与
-  // `data-iter-id="live" data-iter-num="24"` 各有一个 `Thought 384 chars`，
-  // live 那份只有标题、正文不渲染 ⇒ 红框里那片空白）。
+  // ⛔ 抑制「已作为历史渲染过的内容」的 live 副本（2026-10-02 P0 用户截图实证：
+  // 「一个 iter 重复渲染两次，第一次渲染没 tool」——同一段文本在历史块与 live 块
+  // 各渲染一份，live 副本没有 pill）。
+  // 旧判据只对比**最后一个**已完成迭代（lastIter）——迟到 / 重放 / 乱序的流式帧
+  //（stream 事件是无状态合帧、无 seq gate）会让 live 持有**更早的**已提交迭代
+  //（不是最后一个）的内容 ⇒ 比较失败 ⇒ 重复渲染（截图：同一段 bench24 文本两次）。
+  // 判据扩展为「与**任意**已完成迭代的对应内容相同 ⇒ 抑制」——**内容匹配**而非
+  // 迭代号比较（号可能滞后于内容：turnBodyLiveDedup 用例 2 钉死了「号同、内容真新」
+  // 必须渲染的反例）。状态机零改动 ⇒ 线性一致性不受影响。
+  // PERF：Set 按 iterationHistory **引用** useMemo（结构化共享：stream 帧不改该引用）
+  // ⇒ 每帧 O(1) 查找，代价与 turn 长度无关（流式帧性能铁律）。
+  const historyTextIndex = useMemo(() => {
+    const contents = new Set<string>()
+    const reasonings = new Set<string>()
+    for (const it of progress.iterationHistory) {
+      if (it.content) contents.add(it.content)
+      if (it.reasoning) reasonings.add(it.reasoning)
+    }
+    return { contents, reasonings }
+  }, [progress.iterationHistory])
+  // effectiveReasoning —— live 的 reasoning 与**任意**已完成迭代相同 ⇒ 抑制
+  //（该内容已在历史块渲染；AskUser 暂停等场景下 live 号仍停在旧迭代、持有同一段
+  //  reasoning —— 现场实证：`data-iter-id="24"` 与 live 各一个 Thought 384 chars）。
   const effectiveReasoning =
-    reasoningContent && lastIter?.reasoning === reasoningContent ? '' : reasoningContent
+    reasoningContent && historyTextIndex.reasonings.has(reasoningContent) ? '' : reasoningContent
   const hasReasoning = Boolean(effectiveReasoning)
   const rawTextContent = progress.streamContent || progress.content || ''
-  // effectiveStreamContent: suppress streamContent that equals the last
-  // completed iteration's content — the same final text arrives in BOTH
-  // streamContent (streaming push) and the completed iteration's content
-  // (snapshot); TurnBody renders the iteration text, so LiveIteration must
-  // not render streamContent again. content field is the text output
-  // (thinking 已彻底删除，无字符串比较 —— 直接取字段)。
-  const textContent = (lastIter && rawTextContent && rawTextContent === lastIter.content)
+  // effectiveStreamContent —— 同源抑制：live 的 streamContent 与**任意**已完成迭代
+  // 的 content 相同 ⇒ 抑制（content 字段即文本输出；thinking 已彻底删除，无字符串比较）。
+  const textContent = rawTextContent && historyTextIndex.contents.has(rawTextContent)
     ? ''
     : rawTextContent
   const hasStreamContent = Boolean(textContent)
@@ -175,6 +184,12 @@ export const LiveIteration = memo(function LiveIteration({
   const hasToolInProgress = toolDeriv.hasToolInProgress
   const reasoningInProgress = progress.streaming && progress.phase === 'thinking' && !hasStreamContent && !hasToolInProgress
 
+  // ⛔ 进行中迭代号已作为历史渲染过 ⇒ LiveIteration **整块**不渲染
+  //（2026-10-02 P0 用户截图实证：「一个 iter 重复渲染两次，第一次渲染没 tool」）。
+  // ⚠️ 不能用「迭代号 ≤ 历史最大号」判据 —— turnBodyLiveDedup 用例 2 钉死了反例：
+  // live 的 iteration 号可能**滞后于内容**（新迭代内容已流式到达、号未推进）⇒ 号比较
+  // 会误杀「号同、内容真新」的合法渲染。改由下方**内容匹配判据**承担（对比**全部**
+  // 已提交迭代而非只对比最后一个）。
   if (!hasReasoning && !hasTools && !hasStreamContent && !hasSubAgents && !hasGenUI) {
     // Iteration boundary / waiting for the next iteration's first delta: the
     // previous iteration just finished (lastIter >= 1) but the next iteration's

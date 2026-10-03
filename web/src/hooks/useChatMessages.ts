@@ -218,6 +218,11 @@ function parseHistoryMessages(rows: HistMsg[], batchTag?: number): ChatMessage[]
       // 算出）。渲染层据此走 standalone 路径插回原位 —— 刷新后仍在、顺序一致。
       standalone: m.standalone === true,
       anchorTurnID: typeof m.anchor_turn_id === 'number' ? m.anchor_turn_id : undefined,
+      // 该行（turn）更早未下发的展示区域数（后端 `regions_before`）—— D1 线据此在
+      // turn 顶部渲染「更早区域」分隔条。0/缺省 = 该 turn 已完整下发（omitempty ⇒
+      // 后端不携带该键即 0）；>0 才透传（渲染层判 `>0`，不给 0 造键）。
+      regionsBefore:
+        typeof m.regions_before === 'number' && m.regions_before > 0 ? m.regions_before : undefined,
       // turn 内压缩点（迭代之间内联渲染）—— 后端转成 `compactions`。
       compactions: Array.isArray(m.compactions)
         ? m.compactions

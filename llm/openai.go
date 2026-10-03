@@ -987,6 +987,27 @@ func messagesCharSize(messages []ChatMessage) int {
 	return n
 }
 
+// firstChunkTimeout —— 流式请求的「首帧超时」（2026-10-01 cancel 无效事故的姊妹修复：
+// chat_D3D036023DB7 的 turn 3 在 10:40:47 发出请求后上游挂死，请求永挂——Run 卡在上游
+// 无响应的等待里，用户 cancel 也只能标记 ctx 而收不到任何错误）。覆盖「请求发出 → 首个
+// chunk」全程（TCP+TLS 建连 + 响应头 + prefill + 首 token）；首帧到达即解除（长流不受
+// 限时——32k tokens 的慢速生成不会被掐断）。包级 var 供测试覆盖。
+var firstChunkTimeout = 10 * time.Minute
+
+// firstChunkGuard 把「首帧超时」的解除权交给 processStream：首帧到达（chunkCount==1）时
+// Stop timer + 标记 arrived，此后 cancelFirstChunk 只是资源释放（连接不受影响）；超时先到
+// 则 cancelFirstChunk 掐断连接（解除 NewStreaming/Next() 的阻塞），错误走既有 retry 链。
+type firstChunkGuard struct {
+	arrived *atomic.Bool
+	timer   *time.Timer
+	cancel  context.CancelFunc
+}
+
+func (g *firstChunkGuard) firstChunkArrived() {
+	g.arrived.Store(true)
+	g.timer.Stop()
+}
+
 func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages []ChatMessage, tools []ToolDefinition, thinkingMode string) (<-chan StreamEvent, error) {
 	// Route to Responses API if configured
 	if o.apiType == APITypeResponses {
@@ -1017,8 +1038,26 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 		log.Ctx(ctx).Debugf("[LLM] Thinking mode options: %v", thinkingMode)
 	}
 
-	stream, err := o.newStreamingWithRetry(ctx, model, messages, tools, thinkingMode, opts)
+	// 首帧超时（firstChunkTimeout 的注释）：上游挂死时请求不能永挂——超时掐断连接，
+	// 错误冒泡走既有 retry（所有失败都指数退避）→ 最终失败 → processMessage err 分支
+	// 正常收尾（busy/cancel state 不残留）。⚠️ ctx 不能用 WithTimeout（deadline 会绑到
+	// 连接上、限制整个流的时长）；用手动 cancel + timer，首帧到达由 processStream 解除。
+	firstCtx, cancelFirstChunk := context.WithCancel(ctx)
+	var firstChunkArrived atomic.Bool
+	firstTimer := time.AfterFunc(firstChunkTimeout, func() {
+		if !firstChunkArrived.Load() {
+			log.Ctx(ctx).WithFields(log.Fields{
+				"provider": "openai",
+				"timeout":  firstChunkTimeout.String(),
+			}).Warn("[LLM] First chunk timeout — cancelling hung stream request")
+			cancelFirstChunk()
+		}
+	})
+	guard := &firstChunkGuard{arrived: &firstChunkArrived, timer: firstTimer, cancel: cancelFirstChunk}
+
+	stream, err := o.newStreamingWithRetry(firstCtx, model, messages, tools, thinkingMode, opts)
 	if err != nil {
+		guard.firstChunkArrived() // 停 timer；cancelFirstChunk 释放 ctx 资源
 		return nil, fmt.Errorf("openai stream completion: %w", err)
 	}
 
@@ -1026,7 +1065,7 @@ func (o *OpenAILLM) GenerateStream(ctx context.Context, model string, messages [
 	eventChan := make(chan StreamEvent, 100)
 
 	// 启动 goroutine 处理流式响应
-	go o.processStream(ctx, stream, eventChan, startTime, messages, model, tools, thinkingMode)
+	go o.processStream(ctx, stream, eventChan, startTime, messages, model, tools, thinkingMode, guard)
 
 	return eventChan, nil
 }
@@ -1059,9 +1098,12 @@ func (o *OpenAILLM) newStreamingWithRetry(ctx context.Context, model string, mes
 }
 
 // processStream 处理流式响应
-func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[openai.ChatCompletionChunk], eventChan chan<- StreamEvent, startTime time.Time, messages []ChatMessage, model string, tools []ToolDefinition, thinkingMode string) {
+func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[openai.ChatCompletionChunk], eventChan chan<- StreamEvent, startTime time.Time, messages []ChatMessage, model string, tools []ToolDefinition, thinkingMode string, guard *firstChunkGuard) {
 	defer close(eventChan)
 	defer stream.Close()
+	// 首帧超时的资源收尾（首帧已 Stop timer；cancel 释放 WithCancel 的 ctx 引用——首帧后
+	// cancelFirstChunk 对连接无影响，因为 firstCtx 只在「未收到首帧」的超时窗口里有意义）。
+	defer guard.cancel()
 
 	// Connect context cancellation to stream.Close().
 	// stream.Next() blocks on the HTTP response body read; on the first request
@@ -1069,14 +1111,20 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 	// goroutine, ctx.Done() is only checked AFTER Next() returns, making Ctrl+C
 	// feel unresponsive on the first message. Closing the stream immediately
 	// unblocks Next() and forces the cancellation to take effect.
+	//
+	// watchDone is closed when processStream returns: streams that complete
+	// normally never cancel their ctx, and a watcher that ONLY waits on
+	// ctx.Done() would block forever pinning the finished stream (production
+	// dump 2026-10-03: 765 leaked watchers).
 	ctxDone := ctx.Done()
 	if ctxDone != nil {
+		watchDone := make(chan struct{})
+		defer close(watchDone)
 		go func() {
 			select {
 			case <-ctxDone:
 				stream.Close()
-			case <-ctx.Done():
-				// ctx.Done() may return different channel on re-check; both paths handled
+			case <-watchDone:
 			}
 		}()
 	}
@@ -1115,6 +1163,9 @@ func (o *OpenAILLM) processStream(ctx context.Context, stream *ssestream.Stream[
 		// 记录第一个 chunk 时间
 		if chunkCount == 1 {
 			firstChunkTime = time.Now()
+			// 首帧到达 —— 解除首帧超时（此后 cancelFirstChunk 只是资源释放，连接不受影响；
+			// 32k tokens 的慢速长流不会被限时掐断）。
+			guard.firstChunkArrived()
 			l.WithFields(log.Fields{
 				"provider": "openai",
 				"ttft":     firstChunkTime.Sub(startTime).String(),

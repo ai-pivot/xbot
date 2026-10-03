@@ -89,10 +89,32 @@ function applySessionFields(
 }
 
 
+/** 「轻字段」迭代判定 —— 工具详情载荷（summary/args/detail/toolHints）已被后端
+ *  `tools_folded` 省略，pill 轻字段仍完整。normalize 已把缺省归一成 false
+ *  （`normalize.ts` 的 `toolsFolded: r.tools_folded === true`）⇒ `=== true` 判定可靠，
+ *  不会因「有的迭代带该键、有的不带」抖动。 */
+function isFolded(it: WebIteration): boolean {
+  return it.toolsFolded === true
+}
+
 /**
- * union 迭代按 iteration# 排序；同号时 authoritative 优先（text 的
- * progressHistory 是后端权威，覆盖 live 中可能残缺的同号快照）。
- * 长度只增不减（除非 authoritative 提供了更多/更新内容 —— 同号替换）。
+ * union 迭代按 iteration# 排序。**同号合并四象限**（D3，方案 §3.3）：
+ *
+ * | incoming \ prev | prev 轻          | prev 完整        |
+ * |-----------------|------------------|------------------|
+ * | incoming 完整   | incoming 胜      | incoming 胜      |
+ * | incoming 轻     | prev 胜（引用稳）| **prev 胜**（★） |
+ *
+ * - 「完整」= `toolsFolded` falsy（详情字段齐全；缺省即完整）；
+ *   「轻」= `toolsFolded === true`。
+ * - ★核心象限：**轻字段永不覆盖已加载的完整数据** —— reload / `active_progress`
+ *   水合 / 区域段都带轻字段，正文式的 `incoming 胜` 会把浮层已 hydrate 的
+ *   `summary/args/detail` 抹掉（用户点开过的详情再次点开要重拉 = 有感的倒退）。
+ * - 轻 vs 轻 ⇒ prev 胜：引用稳定（幂等重放零渲染；`reuseIfSame` 纪律的输入前提）。
+ * - 新迭代号（prev 不存在）无论轻重一律 append（I4 只增不减）。
+ *
+ * 引用稳定纪律：被覆盖/新增之外的元素必须是 **base 的原引用**（不重建），否则
+ * 下游 `reuseIfSame` 判不出「无变化」⇒ 逐帧击穿 TurnBody 的迭代 memo。
  */
 function mergeIterations(
   base: readonly WebIteration[],
@@ -114,8 +136,75 @@ function mergeIterations(
   }
   const byNum = new Map<number, WebIteration>()
   for (const it of base) byNum.set(it.iteration, it)
-  for (const it of authoritative) byNum.set(it.iteration, it) // 权威覆盖同号
-  return [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
+  for (const it of authoritative) {
+    const prev = byNum.get(it.iteration)
+    // 四象限：incoming 轻 ⇒ prev 胜（prev 轻=引用稳定；prev 完整=★不倒退）；
+    // incoming 完整 ⇒ incoming 胜（浮层/区域段 hydrate 与既有权威方向一致）。
+    if (prev !== undefined && isFolded(it)) continue
+    byNum.set(it.iteration, it)
+  }
+  const merged = [...byNum.values()].sort((a, b) => a.iteration - b.iteration)
+  // 结果与 base 逐元素同引用（轻 incoming 全部被 prev 挡下 / 子集重放）⇒ 返回 base
+  // —— 把引用稳定做进 mergeIterations 本身，调用方的 reuseIfSame 之外也成立。
+  if (merged.length === base.length) {
+    let identical = true
+    for (let i = 0; i < base.length; i++) {
+      if (merged[i] !== base[i]) {
+        identical = false
+        break
+      }
+    }
+    if (identical) return base
+  }
+  return merged
+}
+
+/**
+ * 已持有迭代窗口的最大迭代号（'' 前置条件：调用方已确认 `iterations.length > 0`）。
+ * 跳变检测的「本地基准」——判「到达的迭代号是否接上了已持有的连续窗口」。
+ */
+function maxHeldIteration(iterations: readonly WebIteration[]): number {
+  let max = 0
+  for (const it of iterations) if (it.iteration > max) max = it.iteration
+  return max
+}
+
+/**
+ * **SSE 增量路径的迭代丢失洞**（P0 2026-10-06，chat_AE903161C55A turn 445 实证）。
+ *
+ * iterationHistory 是增量 feed：某迭代的完成 delta 在链路上丢失后，**没有任何
+ * 后续事件会回头补它**（快照只带「新」迭代）。渲染层 `continuousIterations` 在洞
+ * 处截断 ⇒ 后续每个迭代的 commit「出现（live）即消失（done 后历史不显示）」、
+ * view 永久停在洞前（用户实测：view 停在 1-40，后端已到 84）。
+ *
+ * 证据标准：迭代号在 turn 域内逐 +1 单调（引擎循环 iteration++），到达的迭代号
+ * **没有接上已持有窗口**（`from > maxHeld + 1`）在数学上不可能是正常事件 ⇒ 中间
+ * 洞 [maxHeld+1 .. from-1] 的 delta 全部丢失。与遮蔽解除（ev.iter > maxIter）同
+ * 一个证据家族：后端绝不会对更早的迭代重发更大号。
+ *
+ * 处理：不拼合、不遮掩 —— 记洞签名；签名变化 ⇒ `gapReloadToken` 自增（面板
+ * `markHistoryStale` + `reset` + 权威 reload ⇒ REST DB 窗口 union 补洞）。同一
+ * 签名只自增一次（reload 在途时后续迭代的 commit 跳变不重复报 ⇒ 无重载风暴）。
+ *
+ * @param from 到达侧的最小迭代号（iteration case = delta 最小号；stream case =
+ *             流式迭代号本身）。
+ * @returns 新签名（'' = 无跳变，调用方不得改 state）。
+ */
+function lostIterGapSig(
+  s: ChatState,
+  turnID: TurnID,
+  held: readonly WebIteration[],
+  from: number,
+): string {
+  if (held.length === 0) return '' // 空窗口无「已持有」基准（reset 后回放帧）——reload 本就在途
+  const maxHeld = maxHeldIteration(held)
+  if (from <= maxHeld + 1) return '' // 接上了（含 restore 快照自带补洞 delta）⇒ 无洞
+  // ⚠️ 签名只锚定**洞下界**（maxHeld+1），不含上界：stream 帧逐帧到达时 from 单调
+  // 递增（81, 82, 83…），含上界（from-1）的签名每帧变化 ⇒ 去重失效 ⇒ 每帧自增
+  // token = 重载风暴。下界由已持有窗口决定：同一轮丢失内恒定（maxHeld 不变）⇒
+  // 同洞去重成立；洞被修复（maxHeld 前移）后再丢 ⇒ 新下界 ⇒ 重新触发。
+  const sig = `${turnID}:gapFrom${maxHeld + 1}`
+  return sig === s.lostIterGapSig ? '' : sig // 同洞去重：重复报 = 重载风暴
 }
 
 /**
@@ -134,6 +223,7 @@ function unreachableGapSig(
   turn: TurnID,
   localIts: readonly WebIteration[],
   incomingIts: readonly WebIteration[],
+  incomingRegionsBefore?: number,
 ): string {
   if (localIts.length === 0 || incomingIts.length === 0) return ''
   let incMin = Infinity
@@ -148,6 +238,13 @@ function unreachableGapSig(
     const b = merged[i].iteration
     if (b <= a + 1) continue
     // 洞 = [a+1, b-1]：只要有一部分在权威窗口之外 ⇒ 追不回来。
+    // ⚠️ 例外（2026-10-02 P0：熄屏恢复 × 折叠窗口）：洞**整段落在 incoming 窗口
+    // 下方**且 incoming 带 regionsBefore>0（服务端显式声明「窗口之前还有未下发的
+    // 展示区域」——该洞就在声明区域内，POST /api/regions 可完整取回）⇒ 这是
+    // **可追赶**的洞，不是「追不回来」：本地熄屏前的低号迭代（[1..40]）与恢复
+    // reload 的折叠窗口（[52..90]）之间必然产生这种洞，误报 reload 只会拿到同样
+    // 的窗口（死循环）；追赶由 useRegionWindow 的洞检测自动 fetchRegions 完成。
+    if (a + 1 < incMin && (incomingRegionsBefore ?? 0) > 0) continue
     if (a + 1 < incMin || b - 1 > incMax) return `${turn}:gap${a + 1}-${b - 1}`
   }
   return ''
@@ -716,7 +813,27 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
       // I5 基准推进：成功处理后 lastSeq = ev.seq（重放检测的比较基准）。
       // 会话级 todos：事件携带时同步 state.todos（turn 结束后存活）。
       const next = withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
-      return applySessionFields({ ...next, lastSeq: ev.seq }, ev.todos ?? s.todos, ev.goal)
+      // ── 迭代丢失洞（P0 2026-10-06 turn 445）────────────────────────────────
+      // delta 没有接上已持有窗口（min(delta) > maxHeld+1）⇒ 中间迭代的完成 delta
+      // 已在链路上丢失（增量 feed 无人回头补）⇒ 触发会话重载信号；restore 快照自带
+      // 的补洞 delta（min = maxHeld+1，区间完整）天然不触发。同洞去重见 helper。
+      const iterGapSig = lostIterGapSig(
+        s,
+        target,
+        prev.iterations,
+        ev.iterationsDelta.length > 0 ? Math.min(...ev.iterationsDelta.map((it) => it.iteration)) : 0,
+      )
+      return applySessionFields(
+        {
+          ...next,
+          lastSeq: ev.seq,
+          ...(iterGapSig !== ''
+            ? { gapReloadToken: s.gapReloadToken + 1, lostIterGapSig: iterGapSig }
+            : {}),
+        },
+        ev.todos ?? s.todos,
+        ev.goal,
+      )
     }
 
     // ── stream：仅 active turn；全量替换（无追加/回退歧义） ──
@@ -817,7 +934,21 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         // 迭代前进（advanced）时随流式字段一起重置（新迭代从零开始）。
         streamStats: mergeStreamStats(prev.streamStats, ev.streamStats, advanced),
       }
-      return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
+      // ── 迭代丢失洞（P0 2026-10-06，与 `iteration` case 同一证据标准）─────────
+      // 流式迭代号没有接上已持有窗口（ev.iteration > maxHeld+1）⇒ 中间迭代的完成
+      // delta 全部丢失（用户实测：本地 [1..40]，stream 帧直接带 iteration=81 ——
+      // 41..80 的 commit 事件在断连窗口丢失，live 帧照常到达）。首帧触发后
+      // prev.iter 已推进 ⇒ 同迭代后续帧不再判出；同洞去重在 helper。
+      const streamGapSig =
+        ev.iteration !== null ? lostIterGapSig(s, target, prev.iterations, ev.iteration) : ''
+      if (streamGapSig === '') {
+        return withTurn(s, target, (tt) => ({ ...tt, phase: { kind: 'live', data } }))
+      }
+      return withTurn(
+        { ...s, gapReloadToken: s.gapReloadToken + 1, lostIterGapSig: streamGapSig },
+        target,
+        (tt) => ({ ...tt, phase: { kind: 'live', data } }),
+      )
     }
 
     // ── phase_done：仅 active turn；fold 最后迭代（T3 根治点）+ 停流 ──
@@ -1060,7 +1191,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           const activeTurn = s.activeTurn === target ? null : s.activeTurn
           return { ...s, turns: frozenTurns, activeTurn }
         }
-        payload = commitViaFold(nonEmptyIts, live.content)
+        payload = commitViaFold(nonEmptyIts, live.content, 0, undefined, live.regionsBefore)
       }
 
       const turns = new Map(s.turns)
@@ -1174,7 +1305,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             : h.phase.kind === 'frozen'
               ? h.phase.data.iterations
               : []
-          gapSig = joinSig(gapSig, unreachableGapSig(h.id, curIts, incIts))
+          // incoming 的窗口声明（可追赶洞的豁免判据 —— 见 unreachableGapSig 的例外注释）。
+          const incRb = h.phase.kind === 'committed'
+            ? h.phase.payload.regionsBefore
+            : h.phase.kind === 'frozen'
+              ? h.phase.data.regionsBefore
+              : undefined
+          gapSig = joinSig(gapSig, unreachableGapSig(h.id, curIts, incIts, incRb))
         }
         if (cur && cur.phase.kind === 'live') {
           // live 胜（SSE 比 DB 快照新）—— 但 live 只含【增量】迭代（重启
@@ -1198,7 +1335,27 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
               mergeIterations(incomingIts, cur.phase.data.iterations),
               cur.phase.data.iterations,
             )
-            if (mergedIts === cur.phase.data.iterations && (cur.user || !h.user)) {
+            // 2026-10-02 P0 修复（6641c9b3 重应用）：live-wins 分支必须传播 incoming
+            // 的 regionsBefore。熄屏场景：本地 live [1..300] × incoming committed
+            // 窗口 [659..758]+regionsBefore=658 ⇒ union 产生洞 [301..658]，但若不
+            // 传播 ⇒ data.regionsBefore 保持 undefined ⇒ regionWindow.enabled=false
+            // ⇒ auto-catch-up 永不触发 ⇒ 洞永不填 ⇒ contiguous 截断在 300 ⇒ 历史
+            // 冻结在熄屏时刻 + 后续迭代落在截断区外「消失」（用户两轮报告「历史迭代
+            // 完全不更新，新迭代一 commit 就消失」）。取 min（本地已加载过段 ⇒ 更小
+            // = 更完整 —— 与 mergeTurnData / 3.5 分支同语义）。注：上方 `if (cur)` 块
+            // 里虽有同源 incRb，但那是兄弟作用域 —— 此处须自行提取。
+            const incRbLive = h.phase.kind === 'committed'
+              ? h.phase.payload.regionsBefore
+              : h.phase.kind === 'frozen'
+                ? h.phase.data.regionsBefore
+                : undefined
+            const curRbLive = cur.phase.data.regionsBefore
+            const mergedRbLive =
+              curRbLive !== undefined && incRbLive !== undefined
+                ? Math.min(curRbLive, incRbLive)
+                : curRbLive ?? incRbLive
+            const rbChanged = mergedRbLive !== curRbLive
+            if (mergedIts === cur.phase.data.iterations && !rbChanged && (cur.user || !h.user)) {
               turns.set(h.id, cur)
             } else {
               turns.set(h.id, {
@@ -1206,7 +1363,11 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                 user: cur.user ?? h.user,
                 phase: {
                   kind: 'live',
-                  data: { ...cur.phase.data, iterations: mergedIts as WebIteration[] },
+                  data: {
+                    ...cur.phase.data,
+                    iterations: mergedIts as WebIteration[],
+                    ...(rbChanged ? { regionsBefore: mergedRbLive } : {}),
+                  },
                 },
               })
             }
@@ -1341,6 +1502,13 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
           const mergedTodos = d.todos.length > 0 ? d.todos : snap.todos
           const mergedSubAgents = d.subAgents.length > 0 ? d.subAgents : snap.subAgents
           const mergedTokenUsage = d.tokenUsage ?? snap.tokenUsage
+          // 区域窗口声明（2026-10-02 P0 复现实证的透传遗漏点）：快照的 regions_before
+          // 是服务端对该 turn 折叠窗口的权威声明（熄屏恢复 resync 路径必带）；本地值
+          // 可能来自更早的段加载（更小 = 更完整）。取 min（与 mergeTurnData 同语义）。
+          const mergedRegionsBefore =
+            d.regionsBefore !== undefined && snap.regionsBefore !== undefined
+              ? Math.min(d.regionsBefore, snap.regionsBefore)
+              : d.regionsBefore ?? snap.regionsBefore
           const unchanged =
             mergedIterations === d.iterations &&
             mergedActiveTools === d.activeTools &&
@@ -1351,7 +1519,8 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
             mergedGenui === d.genui &&
             mergedTodos === d.todos &&
             mergedSubAgents === d.subAgents &&
-            mergedTokenUsage === d.tokenUsage
+            mergedTokenUsage === d.tokenUsage &&
+            mergedRegionsBefore === d.regionsBefore
           if (!unchanged) {
             turns.set(activeTurn, {
               ...t,
@@ -1369,6 +1538,7 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
                   todos: mergedTodos as TodoItem[],
                   subAgents: mergedSubAgents as WebSubAgentProgress[],
                   tokenUsage: mergedTokenUsage,
+                  regionsBefore: mergedRegionsBefore,
                 },
               },
             })
@@ -1456,7 +1626,65 @@ export function reduce(s: ChatState, ev: DomainEvent): ChatState {
         gapReloadToken:
           gapSig !== '' && gapSig !== s.unreachableGapSig ? s.gapReloadToken + 1 : s.gapReloadToken,
         unreachableGapSig: gapSig,
+        // SSE 增量路径的丢失洞签名（iteration/stream case 写入）在权威窗口到达时
+        // 随状态一起传播（未被 reset 打断的 reload 链路里保持去重语义）。
+        lostIterGapSig: s.lostIterGapSig,
       }
+    }
+
+    // ── iterations_loaded：区域段 / 迭代详情到达 —— union 并入目标 turn ──
+    // 两条端点共用（`POST /api/regions` 段 / `POST /api/iteration_detail` 详情）：
+    //   · 区域段：轻字段形态的整段（段边界对齐展示区域 ⇒ 永不劈开工具组），
+    //     `regionsBefore` = 仍剩更早区域数（权威覆盖）。
+    //   · 详情：单个**完整**迭代（hydrate 浮层），`regionsBefore` 缺省 = 不动。
+    //
+    // ⛔ 与 `text_final` 的 committed 增量分支同族（reuseIfSame + 幂等短路），但
+    // **绝不触碰** activeTurn / lastSeq / busy / gapReloadToken / unreachableGapSig /
+    // sessionRunning —— 区域段是服务端**显式声明的可取回窗口**，不是 gap：它的到达
+    // 只能让本地窗口更完整。碰这些字段 = 让一次上滚加载伪造出「turn 结束/live 切换/
+    // 会话重载」的语义（用户会看到 loading 屏 / 打字机中断）。
+    case 'iterations_loaded': {
+      // turnID 缺失/0 ⇒ 回退 activeTurn（与 stream/iteration/phase_done 同规则）。
+      const target = ev.turnID > 0 ? turnID(ev.turnID) : s.activeTurn
+      if (target === null) return s
+      const t = s.turns.get(target)
+      // turn 不存在 ⇒ 静默丢弃（服务端权威下发段时 turn 必在 —— DB 里有该 turn 的
+      // 行才会被请求；miss 说明是脏数据/跨会话串扰，不得凭空造 turn）。
+      if (!t) return s
+      // 三态 union：committed 读 payload.iterations，live/frozen 读 data.iterations。
+      const existing = t.phase.kind === 'committed' ? t.phase.payload.iterations : t.phase.data.iterations
+      const merged = reuseIfSame(mergeIterations(existing, ev.iterations), existing)
+      // regionsBefore 三态（与 optTodos/optGoal 的「缺省=不覆盖」同语义）：
+      // undefined = 事件未携带（详情端点）⇒ 保留现值；数字 = 权威覆盖。
+      // regionsBefore 只存在于 committed payload（live/frozen 无该字段 —— 区域计数
+      // 是**历史行**概念，live turn 的迭代不经区域窗口）。
+      const rb = ev.regionsBefore
+      const curRb = t.phase.kind === 'committed' ? t.phase.payload.regionsBefore : undefined
+      if (merged === existing && (rb === undefined || rb === curRb)) return s // 幂等：原 state 引用
+      const turns = new Map(s.turns)
+      if (t.phase.kind === 'committed') {
+        const payload = {
+          ...t.phase.payload,
+          iterations: merged,
+          ...(rb !== undefined ? { regionsBefore: rb } : {}),
+        } as typeof t.phase.payload
+        turns.set(target, { ...t, phase: { kind: 'committed', payload } })
+      } else {
+        // live/frozen 分支：段到达后同样更新窗口声明（regionsBefore 显式携带时权威
+        // 覆盖——服务端按 beforeIter 计算的「该点以上剩余区域数」比本地旧值准确）。
+        turns.set(target, {
+          ...t,
+          phase: {
+            ...t.phase,
+            data: {
+              ...t.phase.data,
+              iterations: merged,
+              ...(rb !== undefined ? { regionsBefore: rb } : {}),
+            },
+          },
+        })
+      }
+      return { ...s, turns }
     }
 
     // ── user_sent：乐观行入 pending 队列 ──
@@ -1672,6 +1900,12 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   }
   const iterations = reuseIfSame(mergeIterations(curIts, incIts), curIts)
   const content = curContent !== '' ? curContent : incContent
+  // 区域窗口声明（live 闭环）：union 后本地窗口 ⊇ 服务端 reload 窗口（本地加载过的
+  // 段让 regionsBefore 已被段响应更新得更小）⇒ 取 **min** 反映真实剩余；单侧有值取
+  // 该侧（undefined 不压过数字）。frozen-with-output 定格的 data.regionsBefore 同源。
+  const curRb = cur.phase.kind === 'committed' ? cur.phase.payload.regionsBefore : cur.phase.data.regionsBefore
+  const incRb = h.phase.kind === 'committed' ? h.phase.payload.regionsBefore : h.phase.data.regionsBefore
+  const regionsBefore = curRb !== undefined && incRb !== undefined ? Math.min(curRb, incRb) : curRb ?? incRb
   // 幂等重放（每帧 history_replaced）：committed 侧逐项未变 ⇒ 复用原对象。
   // （frozen→committed 是真实相变，不走此短路。）
   if (
@@ -1688,9 +1922,9 @@ function mergeTurnData(cur: Turn, h: Turn): Turn {
   const its = nonEmptyArr(iterations)
   const phase: Turn['phase'] =
     text !== null
-      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[], compactions) }
+      ? { kind: 'committed', payload: commitViaText(text, iterations as WebIteration[], compactions, regionsBefore) }
       : its !== null
-        ? { kind: 'committed', payload: commitViaFold(its, content, 0, compactions) }
+        ? { kind: 'committed', payload: commitViaFold(its, content, 0, compactions, regionsBefore) }
         : { kind: 'frozen', data: cur.phase.kind === 'frozen' ? cur.phase.data : h.phase.kind === 'frozen' ? h.phase.data : { ...EMPTY_LIVE } }
   return { id: h.id, user: cur.user ?? h.user, phase, requestID: cur.requestID ?? h.requestID }
 }
@@ -1716,9 +1950,9 @@ function foldPhase(data: LiveSnapshot): Turn['phase'] {
   // hasIterations 时不渲染顶层 content —— 流式文本必须存在于迭代内）。
   const iterations = foldInFlightToIterations(data.activeTools, data.streamingTools, data.iterations, data.iter, data.content, data.reasoning)
   const its = nonEmptyArr(iterations)
-  if (its !== null) return { kind: 'committed', payload: commitViaFold(its, data.content) }
+  if (its !== null) return { kind: 'committed', payload: commitViaFold(its, data.content, 0, undefined, data.regionsBefore) }
   const text = nonEmptyStr(data.content)
-  if (text !== null) return { kind: 'committed', payload: commitViaText(text, []) }
+  if (text !== null) return { kind: 'committed', payload: commitViaText(text, [], undefined, data.regionsBefore) }
   // 无任何产出：frozen 定格（derive 跳过空 assistant 行；user 行保留）。
   return { kind: 'frozen', data }
 }

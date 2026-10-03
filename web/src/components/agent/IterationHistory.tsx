@@ -67,10 +67,17 @@ export const IterationGroup = memo(function IterationGroup({
         />
       )}
 
-      {/* C: tool calls (每个工具一个 pill) —— 右键/长按可单独复制**每个工具**的输出 */}
+      {/* C: tool calls (每个工具一个 pill) —— 右键/长按可单独复制**每个工具**的输出。
+          `toolsFolded` / 迭代号随 `iteration` 一起下发（D1）：折叠迭代的浮层打开时按
+          `(turnID, iteration)` 拉完整详情。⚠️ 不得改 TurnBody —— 它不透传 turnID，
+          turnID 由 AssistantMessage 的 TurnIDContext 供（见 RegionActionsContext）。 */}
       {iteration.tools.length > 0 && (
         <CopyTarget kind="tools" tools={iteration.tools}>
-          <FoldedToolGroup tools={iteration.tools} />
+          <FoldedToolGroup
+            tools={iteration.tools}
+            toolsFolded={iteration.toolsFolded === true}
+            iterationNumber={iteration.iteration}
+          />
         </CopyTarget>
       )}
 

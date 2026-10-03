@@ -245,3 +245,23 @@ describe('integrate 渲染边界 —— 引用稳定性（流式帧代价与 ite
     expect(s2.turns.get(T2 as never)).toBe(s.turns.get(T2 as never))
   })
 })
+
+// ─── Row → ChatMessage 的 regionsBefore 三分支透传（E2E 2026-09-30 实证守护） ───
+// E2E region-window.spec.ts 实证：committed 分支曾漏传该字段 ⇒ regionsBefore>0 的
+// turn 分隔条永不渲染（单测全绿但链路断——「Row→ChatMessage 新增字段必须同步三分支」
+// 的纪律由本条钉死，纯函数单测比 E2E 便宜）。
+describe('rowToChatMessage 三分支透传 regionsBefore', () => {
+  it('live/frozen/committed 全部透传（缺一 ⇒ RegionsDivider 从渲染层消失）', () => {
+    const its = [iter(1), iter(2)]
+    const rows = [
+      { kind: 'live', id: 'turn-41-live', turnID: T1, isPartial: true, streaming: true, content: '', reasoning: '', iterations: its, activeTools: [], streamingTools: [], genui: '', subAgents: [], todos: [], lastIter: 2, regionsBefore: 7 },
+      { kind: 'frozen', id: 'turn-41', turnID: T1, isPartial: true, content: '', reasoning: '', iterations: its, activeTools: [], genui: '', lastIter: 2, regionsBefore: 7 },
+      { kind: 'committed', id: 'turn-41-c', turnID: T1, isPartial: false, content: 'done', iterations: its, regionsBefore: 7 },
+    ] as never[]
+    const msgs = rowsToChatMessages(rows)
+    expect(msgs).toHaveLength(3)
+    for (const m of msgs) {
+      expect(m.regionsBefore).toBe(7)
+    }
+  })
+})

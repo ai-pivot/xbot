@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -307,6 +308,193 @@ func (a *Agent) GetActiveProgress(ch, chatID string, fetch protocol.ProgressFetc
 		}
 	}
 	return &result
+}
+
+// =============================================================================
+// P1（docs/plan-history-fold-windowing.md §3.5 D5）：active_progress 折叠视图变体
+// =============================================================================
+
+// GetActiveProgressFolded 是 GetActiveProgress 的**折叠视图变体**（REST 历史路径的
+// active_progress 专用：切 busy 会话时的快照水合）。与 GetActiveProgress 的差别
+// **只在投影层**——快照获取、mergeStreamState、goal 注入、agent 相位校正、
+// resync_required 语义全部原样复用（直接调用原方法，零重复、零风险面改动）：
+//
+//	· FetchAll：IterationHistory = 尾部 channel.HistoryRegionWindow 个**展示区域**
+//	  （区域边界对齐 ⇒ 永不劈开工具组；区域定义见 channel/region_view.go），窗口内
+//	  非 GenUI 工具省略 summary/args/detail/tool_hints 并打 ToolsFolded（GenUI 豁免）；
+//	  IterationRegionsBefore = 更早未下发区域数（显式声明的可取回窗口，**不是 gap**：
+//	  窗口内迭代号连续、更早段经 POST /api/regions 整段取回）。
+//	· FetchSinceWatermark（增量）：**不窗口化、不折叠** —— 增量段是「客户端已建立
+//	  窗口的延伸」，增量协议语义必须逐字节保持（含 resync_required 判定）。
+//
+// live 进行中状态**一个字节不动**：ActiveTools/CompletedTools/StreamingTools/Content/
+// Reasoning/Iteration/Phase/Seq/TurnID/SubAgents/Todos/Goal/TokenUsage/StreamStats 等
+// 都是「正在跑」的权威数据，投影只重写 IterationHistory（已完成迭代）与
+// IterationRegionsBefore（窗口声明）。
+//
+// 调用面（§7-R5 隔离）：**只有** REST 历史路径（serverapp/callbacks.go 的
+// HistorySnapshot）切换到本方法；SSE 恢复（channel/web/web_sse.go）、CLI
+// （cmd/xbot-cli/main.go）、RPC（serverapp/rpc_table.go）继续调用 GetActiveProgress
+// —— 原方法行为与输出零变化。
+func (a *Agent) GetActiveProgressFolded(ch, chatID string, fetch protocol.ProgressFetch) *protocol.ProgressEvent {
+	base := a.GetActiveProgress(ch, chatID, fetch)
+	if base == nil {
+		return nil
+	}
+	// 增量路径：不折叠（见上方说明）。from_iter >= 0 即增量/水位线拉取。
+	if fetch.ToFromIter() >= 0 {
+		return base
+	}
+	// resync_required（>maxIncrementalIterations）/ 无快照（todos-only）/ 无历史：
+	// 没有可折叠的迭代，原样返回（原方法已收口这些分支）。
+	if len(base.IterationHistory) == 0 {
+		return base
+	}
+	recs := activeProgressRecords(base.IterationHistory)
+	window, regionsBefore := channel.RegionWindow(recs, channel.HistoryRegionWindow)
+	// RegionWindow 的窗口是**输入的子切片**（尾部区域对齐的连续区间，region_view.go:170）
+	// ⇒ 起始下标 = 总长 − 窗口长，二者逐位对应同一迭代。
+	start := len(recs) - len(window)
+	if start < 0 {
+		start = 0 // 防御：RegionWindow 契约保证不会发生
+	}
+	folded := make([]protocol.ProgressEvent, 0, len(window))
+	for i := range window {
+		folded = append(folded, foldProgressIteration(base.IterationHistory[start+i], window[i]))
+	}
+	base.IterationHistory = folded
+	base.IterationRegionsBefore = regionsBefore
+	return base
+}
+
+// activeProgressToolSnap 是 channel/region_view.go:30 `regionToolSnap` 的 JSON 镜像
+// （同一组 tag、逐字段同构）—— 存在的唯一原因：把快照迭代的工具**还原成 DB 侧
+// iteration_history.tools 的持久化形状**，好让区域判定只走 region_view 这一份规范
+// 实现（§7-R1 双实现漂移是最高风险项）。
+//
+// 字段与写库路径（agent/engine_run_tools.go:518-531 的 IterationToolSnapshot）逐字段
+// 对齐：name/label/status/elapsed_ms/summary/args/detail/ui_mode/ui_libs/ui_surface。
+// 这里**故意不写 call_id**：region_view 的解析形状里没有它（它不影响区域判定），
+// 而真正的元素保留 CallID 不丢（见 foldProgressIteration 的说明）。
+type activeProgressToolSnap struct {
+	Name      string              `json:"name"`
+	Label     string              `json:"label,omitempty"`
+	Status    string              `json:"status"`
+	ElapsedMS int64               `json:"elapsed_ms"`
+	Summary   string              `json:"summary,omitempty"`
+	Args      string              `json:"args,omitempty"`
+	Detail    string              `json:"detail,omitempty"`
+	UIMode    string              `json:"ui_mode,omitempty"`
+	UILibs    []string            `json:"ui_libs,omitempty"`
+	UISurface *protocol.UISurface `json:"ui_surface,omitempty"`
+}
+
+// activeProgressToolsJSON 把快照元素的工具还原为 DB 形状的工具 JSON 串。
+//
+// 类型适配决策（P1）：快照 iteration_history 的元素是 protocol.ProgressEvent
+// （工具在 CompletedTools），而 RegionWindow/MapIterationRecord 的输入是
+// []sqlite.IterationRecord（工具在 Tools JSON 串）——这里只做**输入方向**的最小适配：
+// 用与 DB 侧同构的 JSON 形状重建 Tools，投影输出仍是 protocol.ProgressEvent
+// （见 foldProgressIteration：把窗口元素重建成 HistoryIteration 会丢元素独有字段）。
+//
+// 空工具 ⇒ 空串（与 DB 侧「无工具」形态一致："" 与 "[]" 在 parseRegionTools 里同义）；
+// marshal 失败 ⇒ 同样回落空串（绝不 panic、绝不半成品 —— 与 DB 侧解析失败同向）。
+func activeProgressToolsJSON(tools []protocol.ToolProgress) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	snaps := make([]activeProgressToolSnap, len(tools))
+	for i, t := range tools {
+		snaps[i] = activeProgressToolSnap{
+			Name:      t.Name,
+			Label:     t.Label,
+			Status:    t.Status,
+			ElapsedMS: t.Elapsed,
+			Summary:   t.Summary,
+			Args:      t.Args,
+			Detail:    t.Detail,
+			UIMode:    t.UIMode,
+			UILibs:    t.UILibs,
+			UISurface: t.UISurface,
+		}
+	}
+	b, err := json.Marshal(snaps)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// activeProgressRecord 是单条快照迭代 → sqlite.IterationRecord 的适配（只填区域判定
+// 与轻字段化真正消费的字段：Iteration/Content/Reasoning/Tools）：
+//   - Content/Reasoning 原样搬运 ⇒ `IsPureToolIteration`（Content==""&&Reasoning==""）
+//     的判定与 DB 路径逐字同构（前端 !it.content 同构，不做 TrimSpace）；
+//   - Tools 见 activeProgressToolsJSON（与 DB 形状同构 ⇒ 区域边界在
+//     「busy 快照」与「提交后的历史 reload」两条链路必然一致）；
+//   - 迭代级指标（Tokens/TTFTMs/…）**不搬运**：轻字段化只省略**工具详情**，
+//     迭代级字段留在元素里原样下发，搬进来只会制造第二份真相。
+func activeProgressRecord(it protocol.ProgressEvent) sqlite.IterationRecord {
+	return sqlite.IterationRecord{
+		Iteration: it.Iteration,
+		Content:   it.Content,
+		Reasoning: it.Reasoning,
+		Tools:     activeProgressToolsJSON(it.CompletedTools),
+	}
+}
+
+func activeProgressRecords(iters []protocol.ProgressEvent) []sqlite.IterationRecord {
+	recs := make([]sqlite.IterationRecord, len(iters))
+	for i := range iters {
+		recs[i] = activeProgressRecord(iters[i])
+	}
+	return recs
+}
+
+// foldProgressIteration 把一个快照迭代元素投影为**折叠视图**（D3 轻字段化）。
+//
+// 判定来自唯一规范 channel.MapIterationRecord(rec, true)（channel/region_view.go:232）：
+//   - mapped.ToolsFolded=false（GenUI-only 迭代 ⇒ 没有任何字段被省略）⇒ 元素原样返回、
+//     **不打标**（与 D3「GenUI-only 迭代不瘦身、不打标」一致）；
+//   - mapped.ToolsFolded=true ⇒ 逐工具省略非 GenUI 工具（UIMode==""）的
+//     Summary/Args/Detail/ToolHints，元素打 ToolsFolded（与 HistoryIteration.ToolsFolded
+//     同 JSON 键 tools_folded ⇒ 前端对两条链路共用一份解析）。
+//
+// 为什么在内联处应用轻字段、而不是把窗口元素重建成 HistoryIteration（波 0 的
+// MapIterationRecord 输出）：
+//  1. 容器类型由 ProgressEvent.IterationHistory []ProgressEvent 钉死 —— 换成
+//     []HistoryIteration 需要一个新字段（超出 P1 边界）；
+//  2. 重建会**丢元素独有字段**：CallID（regionToolSnap 无 call_id ⇒ 丢 CoT
+//     START↔RESULT 配对 / promote 目标）、GenChars/StartedAt，以及 Phase/Seq/
+//     SubAgents/TokenUsage/StreamStats 等 —— 这些是 CLI/前端在 live 恢复期直接消费的。
+//
+// 内联的那一条判定（UIMode=="" 才省略）与 region_view.go:232 逐字一致，并由
+// agent/active_progress_folded_test.go 的 isomorphism 守护测试逐字段比对钉死
+// （mutation：改内联规则而不改 region_view ⇒ 该测试必红）。
+//
+// ⚠️ out.CompletedTools **总是新建切片**：迭代历史存在 a.iterationHistories 里，
+// 元素之间共享 CompletedTools 的 backing array —— 原地清字段会污染权威数据
+// （原方法随后返回的快照会变成缺详情，且 DB 之外的 live 路径也读到被改过的工具）。
+func foldProgressIteration(el protocol.ProgressEvent, rec sqlite.IterationRecord) protocol.ProgressEvent {
+	if len(el.CompletedTools) == 0 {
+		return el
+	}
+	if !channel.MapIterationRecord(rec, true).ToolsFolded {
+		return el // GenUI-only / 无工具：无字段被省略 ⇒ 不打标
+	}
+	out := el
+	out.CompletedTools = make([]protocol.ToolProgress, len(el.CompletedTools))
+	copy(out.CompletedTools, el.CompletedTools)
+	for i := range out.CompletedTools {
+		if out.CompletedTools[i].UIMode != "" {
+			continue // GenUI 工具豁免（ui_mode 非空 ⇒ 顶层卡片默认渲染可能消费详情）
+		}
+		out.CompletedTools[i].Summary = ""
+		out.CompletedTools[i].Args = ""
+		out.CompletedTools[i].Detail = ""
+		out.CompletedTools[i].ToolHints = ""
+	}
+	out.ToolsFolded = true
+	return out
 }
 
 // GetTodos returns the TODO items for the given channel:chatID session.

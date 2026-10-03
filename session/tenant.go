@@ -57,6 +57,14 @@ func (s *TenantSession) AppendIterationHistory(msgID int64, turnID uint64, rec s
 	return s.sessionSvc.AppendIterationHistory(s.tenantID, msgID, turnID, rec)
 }
 
+// AppendIterationTool 把一个工具快照（JSON 对象）追加进【已落盘】的
+// (turnID, iteration) 迭代记录的 tools JSON 数组尾部（见
+// SessionService.AppendIterationTool 的完整契约）。found=false 表示该迭代
+// 记录尚未写库（迭代中途注入——工具由后续快照正常写入），调用方静默跳过。
+func (s *TenantSession) AppendIterationTool(turnID uint64, iteration int, toolJSON string) (bool, error) {
+	return s.sessionSvc.AppendIterationTool(s.tenantID, turnID, iteration, toolJSON)
+}
+
 // GetIterationHistoryByTurns 批量查询多个 turn 的迭代（一次 IN 查询）。
 // LLM 上下文构建用：assistant 消息不写 content（msg 是 iter 组成的集合，
 // content 是历史遗留字段），回复文本从迭代取 —— 迭代 content 是权威数据源，
@@ -328,6 +336,21 @@ func (s *TenantSession) GetLastContextTokens() (int64, error) {
 // Used to restore the per-session turn ID counter after a server restart.
 func (s *TenantSession) GetMaxTurnID() (uint64, error) {
 	return s.sessionSvc.GetMaxTurnID(s.tenantID)
+}
+
+// GetLastUserMessageContent returns the content of the most recent user
+// message in this tenant's session DB (v71+ — messages live per-session, so
+// resume flows must read them here, not from the main DB). Returns "" when
+// there is no resumable user message.
+func (s *TenantSession) GetLastUserMessageContent() (string, error) {
+	return s.sessionSvc.GetLastUserMessageContent(s.tenantID)
+}
+
+// HasAssistantReplyAfterLastUser reports whether the last user message
+// already has a final assistant reply after it — i.e. the turn completed
+// and there is nothing to resume.
+func (s *TenantSession) HasAssistantReplyAfterLastUser() (bool, error) {
+	return s.sessionSvc.HasAssistantReplyAfterLastUser(s.tenantID)
 }
 
 // GetLastUserTurnID returns the turn_id of the last non-display-only user
