@@ -460,6 +460,12 @@ async function windowStats(page: Page) {
       blocks: blocks.length,
       muted: blocks.filter((b) => b.dataset.windowMuted === 'true').length,
       mountedContents: blocks.filter((b) => b.dataset.windowMuted !== 'true').length,
+      // committed-only 口径：live 块（data-iter-id="live"）是进行中的新内容，
+      // 它的首挂载/视口回收不属于「已提交迭代重挂」的断言语义（本用例的守护
+      // 对象是 committed 块零重挂、零重解析 —— live 块的时序行为不应让断言假红）。
+      mountedCommitted: blocks.filter(
+        (b) => b.dataset.windowMuted !== 'true' && b.dataset.iterId !== 'live',
+      ).length,
     }
   })
 }
@@ -555,7 +561,13 @@ test.describe('streaming frames never touch committed iterations, cost independe
             chat_id: 'web:chat-1',
             phase: 'tool_exec',
             turn_id: 1,
-            iteration: k,
+            // 进行中迭代 = maxHistory+1（真实后端形态：iteration_history 是【已提交】
+            // 迭代 1..k，进行中的是 k+1 —— 二者绝不重叠）。⚠️ 历史版本曾写
+            // `iteration: k`（与 history 含 k 矛盾）：live 块「进行中=已提交」落入
+            // LiveIteration 抑制判据（b4f9aa10）的竞态边界 —— before 拍照时 live 块
+            // 间歇性缺席（blocks 20 vs 21），流式帧到达后才挂载 ⇒ added=1 ⇒
+            // 「流式期间不得新增迭代块」flaky。
+            iteration: k + 1,
             iteration_history: historyWith(k),
           },
         })
@@ -566,26 +578,58 @@ test.describe('streaming frames never touch committed iterations, cost independe
         undefined,
         { timeout: 20000 },
       )
+      // live 块必须先就位再拍照？——**不**：live 块（`data-iter-id="live"`）的首
+      // 挂载是进行中的新内容，不属于「已提交迭代重挂」的断言语义；它的挂载时点
+      // 与系统时序相关（tool_exec 心跳无流式内容时不渲染、stream_content 到达后
+      // 首挂），测量口径里已排除 live 块（windowStats.mountedCommitted + 观察器
+      // 计数都跳过 data-iter-id="live"）——无论它何时出现/回收，committed 块的
+      // 零扰动断言都不受影响。
+      // 视口锚定：滚到底部（live 行在 turn 尾部）。TanStack 虚拟列表对视口缓冲区
+      // 外的行不渲染 —— 若视口停在上方，流式开始后的 auto-follow 滚动会把
+      // 行挂进视口 ⇒ 视口内的 committed 块随之变化 ⇒ 断言 4 的 before==after
+      // 假红。钉住视口 ⇒ 断言语义钉在「流式期间 committed 块零重挂、零重解析」。
+      await page.evaluate(() => {
+        const anchor = document.querySelector('[data-message-list-content]') as HTMLElement | null
+        let sc = anchor?.parentElement as HTMLElement | null
+        while (sc) {
+          const oy = getComputedStyle(sc).overflowY
+          if (oy === 'auto' || oy === 'scroll') break
+          sc = sc.parentElement
+        }
+        if (sc) sc.scrollTop = sc.scrollHeight
+      })
+      await page.waitForTimeout(300)
       await page.waitForTimeout(2500)
 
       const before = await windowStats(page)
-
-      // 观察器：流式窗口内 .iter-block 的增删 + 窗口化判定翻转
+      // 观察器：流式窗口内【committed】迭代块的增删 + 窗口化判定翻转。
+      // ⚠️ 只统计 committed 块（data-iter-id !== "live"）：live 块是进行中的新内容，
+      // 其首挂载时点与系统时序相关（tool_exec 心跳无流式内容时不渲染、stream_content
+      // 到达后首挂）——计入 added 会让「已提交迭代零重挂」断言假红（生产 CI 实证：
+      // N=20 首轮 added=1 恒红、retry 恒绿，与 mock 形态无关）。
       await page.evaluate(() => {
         const w = window as unknown as {
           __iterEvents: { added: number; removed: number; mutedFlips: number }
         }
         w.__iterEvents = { added: 0, removed: 0, mutedFlips: 0 }
+        const isCommittedBlock = (el: Element) =>
+          el.classList.contains('iter-block') && el.getAttribute('data-iter-id') !== 'live'
         const mo = new MutationObserver((recs) => {
           for (const r of recs) {
             for (const node of Array.from(r.addedNodes)) {
               if (node.nodeType === 1 && (node as Element).classList.contains('iter-block')) {
-                w.__iterEvents.added++
+                if (isCommittedBlock(node as Element)) w.__iterEvents.added++
+                w.__iterEvents.added += Array.from(
+                  (node as Element).querySelectorAll('.iter-block'),
+                ).filter(isCommittedBlock).length
               }
             }
             for (const node of Array.from(r.removedNodes)) {
               if (node.nodeType === 1 && (node as Element).classList.contains('iter-block')) {
-                w.__iterEvents.removed++
+                if (isCommittedBlock(node as Element)) w.__iterEvents.removed++
+                w.__iterEvents.removed += Array.from(
+                  (node as Element).querySelectorAll('.iter-block'),
+                ).filter(isCommittedBlock).length
               }
             }
           }
@@ -599,34 +643,41 @@ test.describe('streaming frames never touch committed iterations, cost independe
         mo2.observe(document.body, { subtree: true, attributeFilter: ['data-window-muted'] })
       })
 
-      // 流式 2.5s（20Hz：reasoning 累积文本 + structured 心跳，与后端形态一致）
-      await page.evaluate(() => {
-        const w = window as unknown as { __n?: number }
-        w.__n = 0
-        window.setInterval(() => {
-          const k = (w.__n = (w.__n ?? 0) + 1)
-          const listeners = (window as unknown as SSEMockState).__sseListeners
-          const push = (type: string, data: Record<string, unknown>) => {
-            const handlers = listeners?.[type]
-            if (!handlers) return
-            const ev = new MessageEvent(type, { data: JSON.stringify({ ...data, seq: 9000 + k }) })
-            handlers.forEach((h) => h(ev))
-          }
-          push('stream_content', {
-            type: 'stream_content',
-            progress: {
-              chat_id: 'web:chat-1',
-              turn_id: 1,
-              iteration: 9999,
-              reasoning_stream_content: `thinking chunk #${k} about the next step, weighing options. `,
-            },
-          })
-          push('progress_structured', {
-            type: 'progress_structured',
-            progress: { chat_id: 'web:chat-1', phase: 'thinking', turn_id: 1, iteration: 9999 },
-          })
-        }, 50)
-      })
+      // 流式 2.5s（20Hz：reasoning 累积文本 + structured 心跳，与后端形态一致）。
+      // 流式迭代号 = maxHeld+1（真实后端形态：引擎逐 +1 单调，进行中迭代紧跟已提交
+      // 窗口）。⚠️ 不得用虚构占位号（历史版本曾用 9999）：`8e485bc8` 的跳变检测
+      // 把「from > maxHeld+1」视为增量丢失的数学证据 ⇒ gapReloadToken 自增 ⇒
+      // reset+reload ⇒ mock 空历史 ⇒ turn 消失（blocks 21→0，断言 muted>0 红）。
+      await page.evaluate(
+        (streamIter) => {
+          const w = window as unknown as { __n?: number }
+          w.__n = 0
+          window.setInterval(() => {
+            const k = (w.__n = (w.__n ?? 0) + 1)
+            const listeners = (window as unknown as SSEMockState).__sseListeners
+            const push = (type: string, data: Record<string, unknown>) => {
+              const handlers = listeners?.[type]
+              if (!handlers) return
+              const ev = new MessageEvent(type, { data: JSON.stringify({ ...data, seq: 9000 + k }) })
+              handlers.forEach((h) => h(ev))
+            }
+            push('stream_content', {
+              type: 'stream_content',
+              progress: {
+                chat_id: 'web:chat-1',
+                turn_id: 1,
+                iteration: streamIter,
+                reasoning_stream_content: `thinking chunk #${k} about the next step, weighing options. `,
+              },
+            })
+            push('progress_structured', {
+              type: 'progress_structured',
+              progress: { chat_id: 'web:chat-1', phase: 'thinking', turn_id: 1, iteration: streamIter },
+            })
+          }, 50)
+        },
+        n + 1,
+      )
       await page.waitForTimeout(2500)
 
       const after = await windowStats(page)
@@ -638,8 +689,10 @@ test.describe('streaming frames never touch committed iterations, cost independe
       results.push({
         n,
         muted: after.muted,
-        mountedBefore: before.mountedContents,
-        mountedAfter: after.mountedContents,
+        // committed-only 口径（live 块的挂载时点与系统时序相关，不属于本断言语义）：
+        // 断言 4/5 的「挂载内容数」只数已提交迭代块。
+        mountedBefore: before.mountedCommitted,
+        mountedAfter: after.mountedCommitted,
         added: ev.added,
         removed: ev.removed,
         mutedFlips: ev.mutedFlips,
@@ -651,7 +704,8 @@ test.describe('streaming frames never touch committed iterations, cost independe
     for (const r of results) {
       // 1) 窗口化生效（结构完整 + 视口外卸载）
       expect(r.muted, `N=${r.n}: 窗口化必须生效`).toBeGreaterThan(0)
-      // 2) 流式帧不得新增/卸载任何迭代块（已提交迭代零重挂、零重解析）
+      // 2) 流式帧不得新增/卸载任何已提交迭代块（零重挂、零重解析）——live 块
+      //    是进行中的新内容，不在本断言的统计口径内（观察器已过滤）。
       expect(r.added, `N=${r.n}: 流式期间不得新增迭代块`).toBe(0)
       expect(r.removed, `N=${r.n}: 流式期间不得卸载迭代块`).toBe(0)
       // 3) 窗口化判定不被流式帧改写
