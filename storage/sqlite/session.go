@@ -810,7 +810,8 @@ func (s *SessionService) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint6
 	}
 	rows, err := conn.Query(`
 		SELECT id, role, content, COALESCE(tool_call_id, ''), COALESCE(tool_name, ''),
-		       COALESCE(tool_calls, ''), COALESCE(turn_id, 0), COALESCE(created_at, '')
+		       COALESCE(tool_calls, ''), COALESCE(turn_id, 0), COALESCE(created_at, ''),
+		       COALESCE(iteration, 0)
 		FROM session_messages
 		WHERE tenant_id = ? AND turn_id = ? AND record_type = 'message'
 		  AND display_only = 0 AND internal_only = 0
@@ -826,7 +827,7 @@ func (s *SessionService) GetSyntheticPairRowsByTurn(tenantID int64, turnID uint6
 	for rows.Next() {
 		var m llm.ChatMessage
 		var toolCalls, createdAt string
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.ToolCallID, &m.ToolName, &toolCalls, &m.TurnID, &createdAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &m.ToolCallID, &m.ToolName, &toolCalls, &m.TurnID, &createdAt, &m.Iteration); err != nil {
 			continue // 单行损坏跳过（与 scanIterationRecords 同纪律），不阻塞整段回放
 		}
 		m.Timestamp = parseSQLiteTime(createdAt)

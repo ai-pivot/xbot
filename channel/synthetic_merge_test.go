@@ -122,18 +122,45 @@ func TestView_RestoresLegacySyntheticPair_Folded(t *testing.T) {
 	}
 }
 
-// TestMergeSyntheticToolPairs_DedupAgainstPersisted：Fix A 之后的新数据
-// iteration_history 已带该工具（AppendIterationTool 回写）⇒ 绝不能双写。
-// 去重键 = (name, detail)：工具对的结果内容与 tools JSON 的 detail 同源。
-func TestMergeSyntheticToolPairs_DedupAgainstPersisted(t *testing.T) {
+// TestMergeSyntheticToolPairs_RecordedAnchorSkipsMerge（2026-10-03 根治后的新契约）：
+// 注入时刻已把归属迭代随消息行持久化（session_messages.iteration ⇒ AnchoredIteration）
+// ⇒ 投影合并对这类对【什么都不做】—— 该对的工具已由 Fix A/自然快照写进该迭代的
+// tools JSON。绝不再按时间戳重猜，也绝不做内容去重。
+// 判别力：去掉 mergePairsWithAnchors 里的 AnchoredIteration 跳过 ⇒ 本例红（双写）。
+func TestMergeSyntheticToolPairs_RecordedAnchorSkipsMerge(t *testing.T) {
 	msgs, turnIterMap := legacyPairFixture()
+	// 新数据形态：注入行记录了归属迭代（= live 渲染所用的迭代 2）。
+	msgs[4].Iteration = 2
 	persisted := `[{"name":"pre_turn_end","status":"done","label":"pre_turn_end","detail":"所有 PreTurnEnd 钩子已处理完毕，请完成最终回复。","tool_hints":"{\"kind\":\"pre_turn_end\"}"}]`
 	turnIterMap[19][1].Tools = persisted
 
 	history := ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)
 	assistant := findTurnAssistant(t, history, 19)
 	if len(assistant.Iterations[1].Tools) != 1 {
-		t.Fatalf("iter 2 tools = %v (len %d), dedup failed — already-persisted tool must not duplicate", assistant.Iterations[1].Tools, len(assistant.Iterations[1].Tools))
+		t.Fatalf("iter 2 tools = %v (len %d) — recorded-anchor pair must be skipped by the merge (no double write)", assistant.Iterations[1].Tools, len(assistant.Iterations[1].Tools))
+	}
+}
+
+// TestMergeSyntheticToolPairs_IdenticalLegacyPairsBothRender（用户 2026-10-04 明令）：
+// ⛔ 严禁内容去重 —— 与已持久化条目**完全相同**的 legacy 对是合法数据
+// （同一 cron 连发两条相同消息 / 同型后台任务各完成一次），必须各自渲染。
+// 判别力：把任何形式的内容去重加回合并 ⇒ 本例红（×2 变 ×1）。
+func TestMergeSyntheticToolPairs_IdenticalLegacyPairsBothRender(t *testing.T) {
+	msgs, turnIterMap := legacyPairFixture()
+	persisted := `[{"name":"pre_turn_end","status":"done","label":"pre_turn_end","detail":"所有 PreTurnEnd 钩子已处理完毕，请完成最终回复。","tool_hints":"{\"kind\":\"pre_turn_end\"}"}]`
+	turnIterMap[19][1].Tools = persisted
+
+	history := ConvertMessagesToHistoryWithIterationsView(msgs, turnIterMap, false)
+	assistant := findTurnAssistant(t, history, 19)
+	// 1 条已持久化 + 1 条 legacy 合并 = ×2：内容相同也必须都在。
+	n := 0
+	for _, tp := range assistant.Iterations[1].Tools {
+		if tp.Name == "pre_turn_end" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("iter 2 tools = %v (pre_turn_end ×%d), want ×2 — identical tools must both render", assistant.Iterations[1].Tools, n)
 	}
 }
 
@@ -256,6 +283,38 @@ func anchorFixture() (anchors []sqlite.IterationRecord, pair SyntheticToolPair) 
 	return anchors, pair
 }
 
+// TestAnchorPairRecord_SameSecondTieStaysOnIteration（2026-10-03 错位根因①）：
+// 注入行与迭代 N 的快照**同一时刻/同秒** ⇒ 锚点必须是 N（注入时的"当前迭代"）；
+// 旧实现的严格 Before 把锚点推前一格（N-1）⇒ pill 渲染到错误迭代。
+func TestAnchorPairRecord_SameSecondTieStaysOnIteration(t *testing.T) {
+	anchors, _ := anchorFixture()
+	idx, ok := anchorPairRecord(anchors, anchors[1].CreatedAt)
+	if !ok || anchors[idx].Iteration != 2 {
+		t.Fatalf("same-second tie anchored to iter %d (ok=%v), want 2", anchors[idx].Iteration, ok)
+	}
+}
+
+// TestAnchorPairRecord_BeforeAllSnapshotsAnchorsFirst（2026-10-03 错位根因②）：
+// 注入时刻早于**全部**快照（如 Run 启动时的 drain）⇒ 归属**最早**迭代；
+// 旧实现回落到末迭代 ⇒「末迭代不该有 tool 却出现 pill」（用户报告的形态）。
+func TestAnchorPairRecord_BeforeAllSnapshotsAnchorsFirst(t *testing.T) {
+	anchors, _ := anchorFixture()
+	idx, ok := anchorPairRecord(anchors, anchors[0].CreatedAt.Add(-time.Hour))
+	if !ok || anchors[idx].Iteration != 1 {
+		t.Fatalf("before-all anchor = iter %d (ok=%v), want 1 (first)", anchors[idx].Iteration, ok)
+	}
+}
+
+// TestAnchorPairRecord_AfterAllSnapshotsAnchorsLast：注入晚于全部快照
+// （pre_turn_end 在最终快照之后注入）⇒ 末迭代（与 live 渲染一致 —— 不回归）。
+func TestAnchorPairRecord_AfterAllSnapshotsAnchorsLast(t *testing.T) {
+	anchors, _ := anchorFixture()
+	idx, ok := anchorPairRecord(anchors, anchors[3].CreatedAt.Add(time.Hour))
+	if !ok || anchors[idx].Iteration != 4 {
+		t.Fatalf("after-all anchor = iter %d (ok=%v), want 4 (last)", anchors[idx].Iteration, ok)
+	}
+}
+
 // TestMergeSyntheticPairsIntoSegment：段合并 —— 锚定到段【内】迭代的对并入；
 // 锚定到段外的对跳过（不归本段渲染，前端翻到含该迭代的段时那一次请求补上）。
 func TestMergeSyntheticPairsIntoSegment(t *testing.T) {
@@ -306,12 +365,20 @@ func TestMergeSyntheticPairsIntoRecord(t *testing.T) {
 	if out := MergeSyntheticPairsIntoRecord(rec3, []SyntheticToolPair{pair}, anchors); containsTool(out.Tools, "background_task_result") {
 		t.Fatalf("iter3 detail=%q, pair must not merge into non-anchor iteration", out.Tools)
 	}
-	// 已持久化（Fix A 新数据）⇒ 去重短路，绝不双写。
+	// 新数据（归属迭代已随消息行记录）⇒ 合并整体跳过，绝不双写 —— 权威记录
+	// 取代内容去重（用户 2026-10-04：严禁内容去重）。
+	recorded := pair
+	recorded.AnchoredIteration = 2
 	persisted := sqlite.IterationRecord{TurnID: 88, Iteration: 2, Content: "iter2",
 		Tools: `[{"name":"background_task_result","status":"done","detail":"任务已完成（exit 0）"}]`, CreatedAt: anchors[1].CreatedAt}
-	out = MergeSyntheticPairsIntoRecord(persisted, []SyntheticToolPair{pair}, anchors)
+	out = MergeSyntheticPairsIntoRecord(persisted, []SyntheticToolPair{recorded}, anchors)
 	if countOccurrences(out.Tools, `"name":"background_task_result"`) != 1 {
-		t.Fatalf("dedup failed (double write): %q", out.Tools)
+		t.Fatalf("recorded-anchor pair must be skipped (double write): %q", out.Tools)
+	}
+	// legacy（无记录）+ 已持久化同内容 ⇒ 两条都在（⛔ 完全相同的工具是合法数据）。
+	out = MergeSyntheticPairsIntoRecord(persisted, []SyntheticToolPair{pair}, anchors)
+	if countOccurrences(out.Tools, `"name":"background_task_result"`) != 2 {
+		t.Fatalf("identical tools must both render (want ×2): %q", out.Tools)
 	}
 	// anchors 为空（无结构化迭代）⇒ 跳过（fallback 无处可锚）。
 	if out := MergeSyntheticPairsIntoRecord(rec2, []SyntheticToolPair{pair}, nil); containsTool(out.Tools, "background_task_result") {

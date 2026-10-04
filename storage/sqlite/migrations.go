@@ -509,6 +509,53 @@ func (db *DB) migrateSchema(from int) error {
 		}
 	}
 
+	// v73: session_messages 记录【合成工具对的归属迭代号】（2026-10-03 根治
+	// 「fake tool 渲染到错误迭代」：注入时刻把归属迭代随消息行持久化，读取路径
+	// 直接用它定位 —— 时间戳锚定只保留给 legacy 行）。幂等：columnExists 守卫。
+	if from < 73 {
+		if err := migrateV72ToV73(db); err != nil {
+			return fmt.Errorf("migrate to v73: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// migrateV72ToV73 adds session_messages.iteration — the authoritative anchor
+// iteration of injected synthetic tool pairs, recorded by the engine at
+// injection time (injectSyntheticToolPair). Read paths use it directly instead
+// of re-deriving placement from timestamps (same-second ties and fallback
+// direction both misplace pills — user report 2026-10-03: a pair actually in
+// iteration 39 rendered onto the final no-tool iteration 40).
+// Purely additive ALTER TABLE ADD COLUMN, default 0 = not recorded (legacy rows).
+func migrateV72ToV73(db *DB) error {
+	conn := db.Conn()
+	// 主库在 v72 删除迁移后已不再有 session_messages（数据迁移到了每会话独立 DB）
+	// ⇒ 该列只在【会话库】上添加；主库上表不存在时静默跳过（幂等）。
+	tableOK, err := tableExists(conn, "session_messages")
+	if err != nil {
+		return fmt.Errorf("check session_messages exists: %w", err)
+	}
+	if !tableOK {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 73"); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+		log.Info("Database migrated to v73: session_messages absent (main DB post-v72) — iteration column skipped")
+		return nil
+	}
+	exists, err := columnExists(conn, "session_messages", "iteration")
+	if err != nil {
+		return fmt.Errorf("check session_messages.iteration: %w", err)
+	}
+	if !exists {
+		if _, err := conn.Exec("ALTER TABLE session_messages ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add session_messages.iteration: %w", err)
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 73"); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+	log.Info("Database migrated to v73: session_messages.iteration records synthetic pair anchor")
 	return nil
 }
 

@@ -338,15 +338,56 @@ func TestLegacySyntheticPairRepair_RestoresLegacyPairAndDedups(t *testing.T) {
 		t.Fatalf("iter2 detail=%q, want pair result content %q", detail.Tools[0].Detail, pairContent)
 	}
 
-	// 2. 新数据（Fix A 已持久化）⇒ 去重短路：repair 后恰好一个 pre_turn_end 条目。
-	persisted := sqlite.IterationRecord{TurnID: turnID, Iteration: 2, Content: "最终回复",
-		Tools: `[{"name":"pre_turn_end","status":"done","detail":"` + pairContent + `"}]`}
-	fixed, err := legacySyntheticPairRepair(svc, tenantID, turnID, []sqlite.IterationRecord{persisted})
+	// 2. 新数据（归属迭代已随消息行记录）⇒ 修复整体跳过 —— 权威记录取代内容去重。
+	//    用【独立 turn】避免与用例 1 的 legacy 对混在同一 turn 的 session_messages 里。
+	const turnID2 = uint64(501)
+	for _, rec := range []sqlite.IterationRecord{
+		{TurnID: turnID2, Iteration: 2, Content: "最终回复", Tools: `[{"name":"pre_turn_end","status":"done","detail":"` + pairContent + `"}]`},
+	} {
+		if err := svc.AppendIterationHistory(tenantID, 0, turnID2, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, m := range []llm.ChatMessage{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "pte_1", Name: "pre_turn_end", Arguments: "{}"}}, TurnID: turnID2, Timestamp: mk(70), Iteration: 2},
+		{Role: "tool", ToolCallID: "pte_1", ToolName: "pre_turn_end", Content: pairContent, TurnID: turnID2, Timestamp: mk(71), Iteration: 2},
+	} {
+		if _, err := svc.AppendMessage(tenantID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec2 := []sqlite.IterationRecord{{TurnID: turnID2, Iteration: 2, Content: "最终回复",
+		Tools: `[{"name":"pre_turn_end","status":"done","detail":"` + pairContent + `"}]`}}
+	fixed2, err := legacySyntheticPairRepair(svc, tenantID, turnID2, rec2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(fixed[0].Tools, `"name":"pre_turn_end"`); got != 1 {
-		t.Fatalf("dedup failed (pre_turn_end count=%d, want 1): %q", got, fixed[0].Tools)
+	if got := strings.Count(fixed2[0].Tools, `"name":"pre_turn_end"`); got != 1 {
+		t.Fatalf("recorded-anchor pair must be skipped by repair (pre_turn_end count=%d, want 1): %q", got, fixed2[0].Tools)
+	}
+
+	// 2b. legacy（无记录）+ 已持久化同内容 ⇒ 两条都在（⛔ 完全相同的工具是合法数据）。
+	const turnID3 = uint64(502)
+	if err := svc.AppendIterationHistory(tenantID, 0, turnID3,
+		sqlite.IterationRecord{TurnID: turnID3, Iteration: 2, Content: "最终回复", Tools: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []llm.ChatMessage{
+		{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "pte_1", Name: "pre_turn_end", Arguments: "{}"}}, TurnID: turnID3, Timestamp: mk(70)},
+		{Role: "tool", ToolCallID: "pte_1", ToolName: "pre_turn_end", Content: pairContent, TurnID: turnID3, Timestamp: mk(71)},
+	} {
+		if _, err := svc.AppendMessage(tenantID, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec3 := []sqlite.IterationRecord{{TurnID: turnID3, Iteration: 2, Content: "最终回复",
+		Tools: `[{"name":"pre_turn_end","status":"done","detail":"` + pairContent + `"}]`}}
+	fixed3, err := legacySyntheticPairRepair(svc, tenantID, turnID3, rec3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(fixed3[0].Tools, `"name":"pre_turn_end"`); got != 2 {
+		t.Fatalf("identical legacy tools must both render (pre_turn_end count=%d, want 2): %q", got, fixed3[0].Tools)
 	}
 
 	// 3. 无工具对的 turn ⇒ 原切片返回（零合并零开销）。

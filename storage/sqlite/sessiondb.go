@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
     internal_only INTEGER DEFAULT 0,
     context_tokens INTEGER DEFAULT 0,
     turn_id INTEGER DEFAULT 0,
+    iteration INTEGER NOT NULL DEFAULT 0,
     record_type TEXT NOT NULL DEFAULT 'message',
     target_history_id INTEGER,
     record_data TEXT,

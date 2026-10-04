@@ -2643,6 +2643,11 @@ func (s *runState) injectSyntheticToolPair(
 
 	assistantMsg, toolMsg := newSyntheticToolPair(toolName, toolID, content)
 	assistantMsg.TurnID = s.cfg.TurnID
+	// ⛔ 记录**归属迭代**（2026-10-03 根治）：这个 iteration 就是 live 渲染、
+	// Fix A 落库（AppendIterationTool）所用的同一迭代号 —— 把它随消息行持久化，
+	// 读取路径（投影合并）就不再用时间戳猜（同秒并列/时区/回落方向都会错位）。
+	assistantMsg.Iteration = iteration
+	toolMsg.Iteration = iteration
 
 	if s.cfg.Session != nil {
 		historyIDs, err := s.cfg.Session.AppendMessages([]llm.ChatMessage{assistantMsg, toolMsg})

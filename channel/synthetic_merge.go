@@ -36,10 +36,18 @@ import (
 //     截断版（与既有渲染路径 subscription.go:1171/:1392 同口径）。
 type SyntheticToolPair struct {
 	TurnID uint64
-	TS     time.Time // assistant 注入行的时间戳 = 工具对的注入时刻
-	Name   string
-	Args   string
-	CallID string
+	TS     time.Time // assistant 注入行的时间戳（legacy 时间戳锚定用它；新数据用 AnchoredIteration）
+	// AnchoredIteration 是随注入行持久化的**归属迭代号**（session_messages.iteration，
+	// 引擎在注入时刻写入 —— 与 live 渲染、Fix A 落库同一来源）。非 0 ⇒ 权威记录：
+	// 该对的工具已写进**该迭代**的 tools JSON（Fix A 回写 / 自然快照二者之一），
+	// 读取路径直接跳过 —— 绝不按时间戳重猜（同秒并列/回落方向都会错位：
+	// 2026-10-03 用户报告「实际在迭代 39 却渲染到 40，末迭代不该有 tool」），
+	// 也绝不按内容去重（同一次 drain 里两条**完全相同**的通知是合法的，必须各自渲染）。
+	// 0 = legacy（Fix A 之前注入、无归属记录）⇒ 才走时间戳锚定。
+	AnchoredIteration int
+	Name              string
+	Args              string
+	CallID            string
 	// Content 是去重键的一部分 + pill 详情 —— 取自配对的 tool 结果行。
 	// 工具结果行不在窗口内（分页边界劈开消息对）时该对被跳过：无内容可去重
 	// 也无内容可渲染，宁可少一个 pill 也不造空 pill / 双写。
@@ -81,7 +89,8 @@ func CollectSyntheticToolPairs(msgs []llm.ChatMessage, toolResults map[string]st
 		}
 		pairs = append(pairs, SyntheticToolPair{
 			TurnID: m.TurnID, TS: m.Timestamp,
-			Name: tc.Name, Args: tc.Arguments, CallID: tc.ID, Content: content,
+			AnchoredIteration: m.Iteration,
+			Name:              tc.Name, Args: tc.Arguments, CallID: tc.ID, Content: content,
 		})
 	}
 	return pairs
@@ -181,6 +190,14 @@ func mergePairsWithAnchors(recs []sqlite.IterationRecord, pairs []SyntheticToolP
 	}
 	changed := false
 	for _, p := range pairs {
+		// ⛔ 权威记录优先（2026-10-03 根治）：注入时刻已把归属迭代随消息行持久化
+		//（session_messages.iteration）⇒ 该对的工具已进**该迭代**的 tools JSON
+		//（Fix A 回写或自然快照 —— 二者必居其一，见 injectSyntheticToolPair 的
+		// 互斥契约）⇒ 本合并【什么都不做】。绝不再按时间戳重猜（会错位），
+		// 也绝不内容去重（完全相同的工具是合法的 —— 用户 2026-10-04 明令禁止）。
+		if p.AnchoredIteration != 0 {
+			continue
+		}
 		anchor, ok := anchorPairRecord(anchors, p.TS)
 		if !ok {
 			continue
@@ -203,17 +220,9 @@ func mergePairsWithAnchors(recs []sqlite.IterationRecord, pairs []SyntheticToolP
 				continue // 损坏的 tools JSON：跳过，绝不覆盖既有数据
 			}
 		}
-		dup := false
-		for _, raw := range raws {
-			var sn regionToolSnap
-			if json.Unmarshal(raw, &sn) == nil && sn.Name == p.Name && sn.Detail == p.Content {
-				dup = true
-				break
-			}
-		}
-		if dup {
-			continue // Fix A 已持久化该工具 —— 防双写
-		}
+		// ⛔ 不做任何内容去重（2026-10-04 用户明令）：同一次 drain 里两条**完全相同**的
+		// 通知（同 name/detail）是合法数据，必须各自渲染。新数据（有归属记录）根本到不了
+		// 这里（上面已跳过）；能走到这里的只有 legacy 行 —— 对它们本合并是唯一写入方。
 		snaps := append(raws, mustMarshalRegionToolSnap(p))
 		b, err := json.Marshal(snaps)
 		if err != nil {
@@ -228,22 +237,40 @@ func mergePairsWithAnchors(recs []sqlite.IterationRecord, pairs []SyntheticToolP
 
 // anchorPairRecord 按注入时间戳在（完整 turn 的）迭代记录列表上定位锚点。
 //
-// 锚定规则：取 CreatedAt 严格早于注入时刻的最后一条记录；时间不可用（老数据
-// 无 created_at / 注入行无时间戳）时回落到最后一条 —— 注入发生在最后一个已
-// 落盘快照之后的兜底语义（与 live 渲染一致）。
+// ⚠️ **只服务 legacy**（AnchoredIteration == 0，即 Fix A 之前注入、消息行上没有
+// 归属迭代记录的对）；新数据在 mergePairsWithAnchors 里已被权威记录直接跳过。
+//
+// 锚定规则（2026-10-03 修复两处错位根因）：
+//   - 取 CreatedAt **不晚于**注入时刻的最后一条 —— **含同秒并列**（注入与迭代 N
+//     的快照同一秒时，注入时刻的"当前迭代"就是 N；旧实现的严格 Before 会把锚点
+//     推前一格）；
+//   - 注入时刻早于**全部**快照（如 Run 启动时的 drain）⇒ 归属**第一条**（注入时
+//     的"进行中迭代"就是最早那条；旧实现回落到末迭代，正是「末迭代不该有 tool
+//     却出现 pill」的根因）；
+//   - 时间不可用（老数据无 created_at / 注入行无时间戳），或注入晚于全部快照
+//     （pre_turn_end 在最终快照之后注入）⇒ 末迭代（与 live 渲染一致）。
 func anchorPairRecord(recs []sqlite.IterationRecord, ts time.Time) (int, bool) {
 	if len(recs) == 0 {
 		return 0, false
 	}
 	anchor := -1
+	anyValid := false
 	if !ts.IsZero() {
 		for i := range recs {
 			ri := &recs[i]
-			if ri.CreatedAt.IsZero() || !ri.CreatedAt.Before(ts) {
+			if ri.CreatedAt.IsZero() {
 				continue
 			}
-			anchor = i
+			anyValid = true
+			// 含同秒并列：!After 即命中（见函数头注释）。
+			if !ri.CreatedAt.After(ts) {
+				anchor = i
+			}
 		}
+	}
+	if anchor < 0 && anyValid {
+		// 注入时刻早于全部快照 ⇒ 最早迭代（旧实现错回末迭代 —— 修复点②）。
+		anchor = 0
 	}
 	if anchor < 0 {
 		anchor = len(recs) - 1
