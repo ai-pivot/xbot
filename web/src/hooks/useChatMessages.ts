@@ -562,6 +562,16 @@ export function useChatMessages({
   // Load older messages (scroll-up pagination).
   const loadMore = useCallback(async (): Promise<boolean> => {
     if (loadingMore || !hasMore || !oldestIdRef.current) return false
+    // 🔴 子代理面板（agentChatID 为空、subAgentRole 存在）的 loadMore 修复（2026-10-06 P0）：
+    // AgentPanel 传给本 hook 的 chatID = parentChatID（父会话 ID）—— reload() 走
+    // get_agent_session_dump 拉子代理专属数据，但 loadMore 的 fetchHistory(chatID)
+    // 会向 DB 请求【父会话】的历史 ⇒ 主代理的 iter 混进子代理面板（用户报告
+    // 「加载更多的时候会加载主代理的 iter」）。子代理 dump 是完整权威列表（替换
+    // 语义，不分页）⇒ 本路径根本不应该有"加载更多"。
+    if (!agentChatID && subAgentRole && parentChatID) {
+      setHasMore(false)
+      return false
+    }
     const w = wsRef.current
     if (!w) return false
     setLoadingMore(true)
@@ -616,7 +626,7 @@ export function useChatMessages({
     } finally {
       setLoadingMore(false)
     }
-  }, [loadingMore, hasMore, channel, chatID])
+  }, [loadingMore, hasMore, channel, chatID, subAgentRole, parentChatID, agentChatID])
 
   // Load history when the chatID changes (or on first enable).
   useLayoutEffect(() => {
