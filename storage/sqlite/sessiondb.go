@@ -41,7 +41,7 @@ import (
 //     (turn_id, iteration) 详情单查。**该变更不需要迁移链**：initSessionSchema
 //     每次打开会话库都重放整份幂等 DDL（CREATE ... IF NOT EXISTS），新库与既有库
 //     在同一收口点收敛；版本号只记录 schema 修订，不参与分支判断。
-const sessionSchemaVersion = 2
+const sessionSchemaVersion = 3
 
 // sessionSchema 是会话库的完整 DDL（主库 schema 的子集，FK 省略）。
 // 与 schema.go 的 session_messages/iteration_history 列定义保持逐列一致——
@@ -182,6 +182,18 @@ func openSQLite(path string, maxIdleConns int, maxIdleTime time.Duration) (*DB, 
 func (db *DB) initSessionSchema() error {
 	if _, err := db.Conn().Exec(sessionSchema); err != nil {
 		return fmt.Errorf("create session schema: %w", err)
+	}
+	// v3: session_messages 新增 iteration 列（合成工具对归属迭代，427ea14d）。
+	// sessionSchema 用 CREATE TABLE IF NOT EXISTS——对已存在的表是 no-op，
+	// 旧库（v2 及更早）缺列需幂等 ALTER TABLE 补上（columnExists 守卫）。
+	exists, err := columnExists(db.Conn(), "session_messages", "iteration")
+	if err != nil {
+		return fmt.Errorf("check session_messages.iteration: %w", err)
+	}
+	if !exists {
+		if _, err := db.Conn().Exec("ALTER TABLE session_messages ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add session_messages.iteration: %w", err)
+		}
 	}
 	return nil
 }
