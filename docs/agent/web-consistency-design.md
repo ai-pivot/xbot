@@ -9,7 +9,7 @@
 | Raft 概念 | 服务器端 | 客户端 |
 |---|---|---|
 | **Log** | `eventStream` ring buffer（`web_eventstream.go`，per-session-route，512 条，单调 seq）+ `session_messages`（DB append-only） | SSE 事件流 + `lastSeqCache`（envelope seq 水印） |
-| **Snapshot** | `get_history`（DB 权威，带 `last_seq`）、`get_active_progress`（`lastProgressSnapshot` + `iterationHistories`，`from_iteration` 增量） | `progressStore`（live）+ `MessageStore`（committed 槽位） |
+| **Snapshot** | `get_history`（DB 权威，带 `last_seq`；**2026-09-30 起为折叠视图**：每 turn 只下发尾部 `HistoryRegionWindow=100` 个展示区域的迭代 + `regions_before` 声明 + `tools_folded` 轻字段，见 `docs/plan-history-fold-windowing.md`）、`get_active_progress`（`lastProgressSnapshot` + `iterationHistories`，`from_iteration` 增量；REST 快照走 `GetActiveProgressFolded`——仅 FetchAll 投影折叠，live 字段/增量路径完整）、`POST /api/regions`（turn 内向旧方向按区域段取回：`(turn_id, before_iteration, region_limit≤100)` → 段迭代 + 剩余声明）、`POST /api/iteration_detail`（单迭代完整详情——`summary/args/detail` 的唯一按需来源） | `progressStore`（live）+ `MessageStore`（committed 槽位）；`mergeIterations` 同号合并四象限（**轻字段永不覆盖已加载完整数据**，`reduce.ts`） |
 | **State Machine** | `lastProgressSnapshot` + `iterationHistories`（内存） | `ProgressStore`（live 渲染）+ `MessageStore`（每 turn 1 user + 1 assistant） |
 | **追赶** | — | 重连 `last_event_id` → ring replay；ring evict → `resync_required` → DB reload；seq gap → `restoreActiveProgress`；iteration gap → `onIterationGap` → reload |
 

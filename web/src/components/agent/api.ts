@@ -8,8 +8,9 @@
  * LLM subscription/model RPCs (Spec D) go through WSConnection.rpc → POST /api/rpc.
  */
 import type { WSConnection } from '@/types/ws'
-import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem } from '@/types/shared'
+import type { ContextUsage, ModelEntry, PerModelConfig, ProgressEvent, SessionSelector, Subscription, TodoItem, WebIteration } from '@/types/shared'
 import { APIError, postAPI } from '@/lib/api'
+import { normalizeWebIteration } from '@/components/agent/normalize'
 
 /** History message row (protocol.HistoryMessage). */
 export interface HistMsg {
@@ -37,6 +38,13 @@ export interface HistMsg {
    *  before v50 migration). Used by MessageList to dedup committed history
    *  against the live store's active turn. */
   turn_id?: number
+  /**
+   * 该 turn **更早未下发的展示区域数**（protocol.HistoryMessage.RegionsBefore）；
+   * >0 = 该 turn 只下发了最后 K 个展示区域，更早的经 `POST /api/regions` 整段取回。
+   * 展示区域 = `mergeToolRuns` 输出块（折叠的工具组算 1 个）；它是「可取回窗口」的
+   * 显式声明，**不是洞**。omitempty ⇒ 缺省/0 = 该 turn 已完整下发。
+   */
+  regions_before?: number
   /** SSE sequence number (present when the message was delivered via SSE
    *  before being persisted to DB). Used as a stable dedup key — no string
    *  matching needed. */
@@ -88,6 +96,73 @@ export async function fetchHistory(_ws: WSConnection, session?: SessionSelector 
 export async function fetchCwd(session?: SessionSelector | null): Promise<{ dir?: string; todos?: TodoItem[] }> {
   const status = await postAPI<{ cwd?: string; todos?: TodoItem[] }>('/api/session/status', sessionBody(session))
   return { dir: status.cwd, todos: status.todos }
+}
+
+/* ---------------------------------------------------------------------------
+ * 展示区域（region）分页 + 迭代详情按需取回（见 docs/plan-history-fold-windowing.md
+ * §3.2 D2 / §3.3 D3）。
+ *
+ * 两个端点都返回 `{ok, data}` 信封（`writeJSON` 把扁平平铺成 data）—— 与
+ * /api/history 完全同一条解析路径（`postAPI` 只还 `data`）。
+ * ------------------------------------------------------------------------- */
+
+/** /api/regions 的 data 形状（protocol.HistoryMessage 迭代数组 + 剩余计数）。 */
+interface RegionsData {
+  iterations?: unknown[]
+  regions_before?: number
+}
+
+/** 向**更旧**方向取一个展示区域段（段边界对齐 `mergeToolRuns` 区域 ⇒ 永不劈开工具组）。
+ *
+ *  @param beforeIteration 当前窗口**最早**迭代号（前端从已加载迭代读）—— 服务端返回
+ *                         `iteration < before_iteration` 的整段。
+ *  @param regionLimit     段内区域数上限（服务端另有硬上限）。
+ *  @returns `iterations`：该段迭代（轻字段形态，经 `normalizeWebIteration` 归一 ——
+ *           全项目迭代解析的唯一收口）；`regionsBefore`：仍剩更早区域数（0 = 该 turn 到顶）。
+ */
+export async function fetchRegions(
+  _ws: WSConnection,
+  opts: { channel: string; chatID: string; turnID: number; beforeIteration: number; regionLimit?: number },
+): Promise<{ iterations: WebIteration[]; regionsBefore: number }> {
+  const data = await postAPI<RegionsData>('/api/regions', {
+    channel: opts.channel,
+    chat_id: opts.chatID,
+    turn_id: opts.turnID,
+    before_iteration: opts.beforeIteration,
+    region_limit: opts.regionLimit,
+  })
+  const raw = Array.isArray(data?.iterations) ? data.iterations : []
+  return {
+    iterations: raw.map(normalizeWebIteration).filter((x): x is WebIteration => x !== null),
+    regionsBefore: typeof data?.regions_before === 'number' ? data.regions_before : 0,
+  }
+}
+
+/** 取单个迭代的**完整**数据（浮层打开时调用；`toolsFolded` 迭代的详情 hydrate）。
+ *
+ *  响应 data = 一个完整 HistoryIteration 本体（与 `HistMsg.iterations[]` 元素同形状 ——
+ *  `normalizeWebIteration` 的输入）；`toolsFolded` 为 false（详情字段齐全）。
+ *  调用方拿它走 `iterations_loaded` 事件 → `mergeIterations` **同号覆盖**（迭代号不变）。
+ *
+ *  @returns null = 后端返回了无法解析的数据（调用方保持轻字段渲染，不炸浮层）。 */
+export async function fetchIterationDetail(
+  _ws: WSConnection,
+  opts: { channel: string; chatID: string; turnID: number; iteration: number },
+): Promise<WebIteration | null> {
+  const data = await postAPI<unknown>('/api/iteration_detail', {
+    channel: opts.channel,
+    chat_id: opts.chatID,
+    turn_id: opts.turnID,
+    iteration: opts.iteration,
+  })
+  // 形状判别（不做静默兜底）：本体直接归一；若后端包一层 `{iteration: {...}}`
+  // （字段名与迭代号同名 → 类型可判别）也接受，避免 envelope 漂移造成静默 null。
+  const rec =
+    data !== null && typeof data === 'object' && !Array.isArray(data) &&
+    typeof (data as Record<string, unknown>).iteration === 'object'
+      ? (data as Record<string, unknown>).iteration
+      : data
+  return normalizeWebIteration(rec)
 }
 
 export async function setCwd(session: SessionSelector, dir: string): Promise<{ dir?: string }> {

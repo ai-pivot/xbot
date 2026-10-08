@@ -150,7 +150,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
           {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
               375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
               桌面（≥sm）：竖直侧栏不变 */}
-          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
+          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:min-h-0 sm:w-36 sm:flex-col sm:gap-0.5 sm:shrink sm:overflow-y-auto sm:border-r sm:border-b-0">
             {nav.map(({ key, labelKey }) => (
               <button
                 key={key}

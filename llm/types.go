@@ -36,7 +36,14 @@ type ChatMessage struct {
 	ToolCalls      []ToolCall      `json:"tool_calls,omitempty"`     // 如果是 assistant 消息且有工具调用
 	Detail         string          `json:"-"`                        // 工具结果详情（如 diff），不参与 LLM 上下文，仅持久化和前端展示
 	Timestamp      time.Time       `json:"-"`                        // 消息时间戳，不参与 LLM 上下文
-	DisplayOnly    bool            `json:"-"`                        // 仅展示消息（如 cron 结果），不参与 LLM 上下文
+	// Iteration 是【合成/注入工具对】的**归属迭代号**（引擎在注入时刻写入 ——
+	// injectSyntheticToolPair 的 iteration 入参，与 live 渲染、Fix A 落库同一来源）。
+	// 它是「注入时刻 → 迭代号」映射的**权威记录**：读取路径直接用它定位，不再用
+	// 时间戳猜（同秒并列/回落方向都会错位 —— 2026-10-03 用户报告「实际在迭代 39
+	// 却渲染到 40，末迭代不该有 tool」）。0 = 未记录（legacy 行，读取路径对这类行
+	// 才保留时间戳锚定）。不参与 LLM 上下文。
+	Iteration   int  `json:"-"`
+	DisplayOnly bool `json:"-"` // 仅展示消息（如 cron 结果），不参与 LLM 上下文
 	// CommandRow = 命令行（`!cmd` / slash）的输入/输出行：与 DisplayOnly 同为"只给 UI"，
 	// 但额外标识「无 turn 的独立命令行」—— 转换层据此写出 protocol.HistoryMessage 的
 	// Standalone/AnchorTurnID，前端按锚点把它插回原位（见 storage.HistoryRecordCommand）。

@@ -12,7 +12,7 @@
 
 import {useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { subscribeAgentIdle } from '@/lib/sessionEvents'
-import type { ChatMessage, GoalInfo, ProgressSnapshot, QueueItemPayload, TodoItem } from '@/types/shared'
+import type { ChatMessage, GoalInfo, ProgressSnapshot, QueueItemPayload, TodoItem, WebIteration } from '@/types/shared'
 import type { WSConnection } from '@/hooks/useWSConnection'
 import { deriveRows } from './derive'
 import { historyToReplaced, liveProgressFromState, rowsToChatMessages } from './integrate'
@@ -83,6 +83,24 @@ export interface AgentChatState {
   /** 权威 idle（agent-idle 事件）：清 activeTurn —— 否则 busyFallback 会永久卡
    *  busy（用户 2026-09-18 P0：后端 idle、前端渲染 busy，直到刷新）。 */
   readonly sessionIdle: () => void
+  /**
+   * 服务端**区域段 / 迭代详情**到达 → 状态机 union（`iterations_loaded`）。
+   *
+   * 两条端点共用（D1 线的契约，签名不可改）：
+   *   - 区域段（`POST /api/regions`）：`iterations` = 更旧方向的整段（轻字段形态），
+   *     `regionsBefore` = 仍剩更早区域数（0 = 该 turn 到顶，分隔条消失）。
+   *   - 迭代详情（`POST /api/iteration_detail`）：`iterations` = 单个**完整**迭代，
+   *     `regionsBefore` **缺省 = 不变**。
+   *
+   * union 语义（mergeIterations 四象限）：同号完整覆盖轻字段、**轻字段永不覆盖
+   * 已加载的完整数据**；不触碰 activeTurn/lastSeq/gapReloadToken（区域段是显式
+   * 可取回窗口，不是 gap ⇒ 不触发会话重载）。
+   */
+  readonly dispatchIterationsLoaded: (ev: {
+    turnID: number
+    iterations: WebIteration[]
+    regionsBefore?: number
+  }) => void
 }
 
 export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
@@ -223,6 +241,21 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     [store],
   )
 
+  // 区域段 / 迭代详情到达（D1 线的取回通路）⇒ 状态机 union。useCallback 稳定引用
+  // （D1 线的组件按此契约消费，签名一字不差）。dispatch 是同步 reduce；无变化 ⇒
+  // store 零通知（幂等重放零渲染）。
+  const dispatchIterationsLoaded = useCallback(
+    (ev: { turnID: number; iterations: WebIteration[]; regionsBefore?: number }): void => {
+      store.dispatch({
+        type: 'iterations_loaded',
+        turnID: ev.turnID,
+        iterations: ev.iterations,
+        regionsBefore: ev.regionsBefore,
+      })
+    },
+    [store],
+  )
+
   // 权威 idle（agent-idle，按本面板自己的 chatID 过滤）⇒ 清 activeTurn。
   const sessionIdle = useCallback((): void => {
     store.dispatch({ type: 'session_idle' })
@@ -248,6 +281,7 @@ export function useAgentChatState(args: UseAgentChatStateArgs): AgentChatState {
     messages,
     liveProgress,
     sessionIdle,
+    dispatchIterationsLoaded,
   // busyFallback：状态机有活动 turn 即 busy —— 不依赖 streaming（lazy 采纳
   // 的 live turn 可能 streaming=false，但 turn 仍在运行；turn_started 建的
   // EMPTY_LIVE streaming=true）。覆盖 REST ack 到 session(busy) 之间的窗口

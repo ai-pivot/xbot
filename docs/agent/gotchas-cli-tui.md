@@ -203,3 +203,18 @@
 - **Adding new transports** (gRPC, MCP) only requires implementing 2 Transport methods (Call + Close).
 - **ChannelPluginTransport (`agent/transport_channel_plugin.go`) is a separate concept from Transport.** It wraps a channel plugin process's stdin/stdout as a bidirectional JSON-RPC channel (not an agent Transport). The plugin acts as a full RPC client (like remote CLI over WS). Created by `stdioChannelPluginProvider` (`serverapp/channel_plugin.go`) which spawns a **dedicated** process — NOT the same process used for plugin activation.
 - **`ChannelProviderFactory` replaces the old `GrpcChannelBridgeFactory`.** Defined in `plugin/channel_provider.go`. The factory is set by serverapp during init with a lazy RPCTable reference (plugins activate during `InitServer` before RPCTable exists).
+
+## ⛔ 子代理面板的 loadMore 绝不能走主代理的 fetchHistory（2026-10-06 P0）
+
+- **用户报告**：「新会话协议和压缩的渲染对子代理会话有严重 bug，加载更多的时候会加载主代理
+  的 iter。子代理和主代理必须逻辑完全一样。」
+- **根因**：`AgentPanel.tsx` 传给 `useChatMessages` 的 `chatID` 在 live 子代理面板 =
+  `parentChatID`（父会话 ID）。`reload()` 有子代理分支（走 `get_agent_session_dump`），
+  但 `loadMore()` 没有 ⇒ 它直接 `fetchHistory(chatID=parentChatID)` ⇒ 向 DB 请求
+  **主代理**的历史 ⇒ 主代理的 iter 混进子代理面板。
+- **修复**（`web/src/hooks/useChatMessages.ts`）：`loadMore()` 入口处
+  `if (!agentChatID && subAgentRole && parentChatID) { setHasMore(false); return false }`
+  —— 子代理 dump 是**完整权威列表**（替换语义，不分页），根本不应该有"加载更多"。
+  有 `agentChatID` 的持久化子代理 tab 不受影响（chatID = 自己的 tenant ID，走正常分页）。
+- **守护**：`web/src/hooks/useChatMessages.test.ts` 的「子代理面板 loadMore 绝不触发
+  fetchHistory」用例（删掉本修复必红）。

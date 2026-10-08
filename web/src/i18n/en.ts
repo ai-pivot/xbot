@@ -342,6 +342,16 @@ const en: Translations = {
       dragToReorder: 'Drag to reorder',
       reorderFailed: 'Failed to reorder the queue',
     },
+    // D1: region pagination (earlier-regions divider + on-demand popover detail).
+    // Avoid the forbidden key words (collapseAll*/collapseLevel*/mergeTools*/processed)
+    // — `noLegacyFoldFormat.test.tsx` asserts they never come back.
+    regions: {
+      loadEarlier: '{{count}} earlier region(s)',
+      loading: 'Loading earlier regions…',
+      retry: 'Load failed · Retry',
+      detailLoading: 'Loading details…',
+      detailRetry: 'Failed to load details · Retry',
+    },
     tool: {
       statusFailed: 'Failed',
       statusKilled: 'Stopped',

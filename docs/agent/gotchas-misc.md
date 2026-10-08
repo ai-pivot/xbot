@@ -17,3 +17,36 @@
 - **MCP 服务器管理 = 工具面板的 server 分组**：`tools.MCPServerName(tool)`（真实 server 名，来自 MCP bridge 的 `mcpSchemaProvider.mcpServerName()`，**不要用工具名前缀猜**）→ `Agent.ToolSetting.ServerName` → 前端 `SettingsTools` 按 server 分组 + 服务器级主开关（批量 `set_tool_enabled`，无新增后端语义，激活集过滤即"未激活不进上下文且不可执行"）。注意 `ToolSettings()` 里局部变量**不要命名 `tools`**（会遮蔽 `tools` 包 → `tools.MCPServerName undefined`，本轮踩过）。
 
 - **interactive SubAgent 寻址必须经唯一解析器（2026-09-17「全收口」）**：所有按 `(role, instance)` 寻址的入口（`SendToInteractiveSession` / `InspectInteractiveSession` / `InterruptInteractiveSession` / `UnloadInteractiveSession` / `ContinueInteractiveSession`）**只能**走 `Agent.resolveInteractiveSessionKey`，禁止各自写 `interactiveKey(...)+Load`。契约：①精确地址键命中即用；②否则在自己的 subagent 列表里 **best-effort 匹配**（`matchInteractiveSessions`：role/instance 任一为空即该维度通配）——现场故障就是 `{"action":"send","instance":"perf-slot"}` **漏传 role**，旧实现用调用方上下文精确查 ⇒ 必然 miss ⇒ 报出误导性的 `no active interactive session for role "" ... use interactive=true`（会话其实活着）；③**唯一命中**即用；**0 个**→报错并列出 `available`；**多个**→报歧义并列出 `candidates`（绝不静默送到错的会话，也绝不因漏一个字段就误报"没建过"）。测试：`agent/interactive_match_test.go`。**⚠️ best-effort 的作用域 = 发起者的整棵子树（2026-09-18 用户报告）**：曾限定 `pk == parentKey`（只认**直接子级**）—— 孙级（主 agent → `explore:mma3` → `explore:mma4-tcgen05`）的 `SubAgent(action="send", instance="mma4-tcgen05")` 因此 0 命中，报 `no sub-agent with instance="mma4-tcgen05" in your sub-agent tree (role=""; your tree: [web:chat_A/explore:mma3] …)`（补上 `role` 走精确地址键就通 —— **两条路径作用域不一致**正是本 bug）。修复：新增 `isDescendantSessionKey(child, ancestor)`（`ancestor != "" && child != ancestor && strings.HasPrefix(child, ancestor+"/")`），匹配条件放宽为「本树 **或** 子树内」——**跨树仍然严格排除**（绝不自动 fallback 到别的会话）。测试：`TestResolveInteractiveSessionKey_GrandchildInstanceMatch`（仅 instance 命中孙级 / 带 role 命中 / `chat_B` 跨树不命中 / 本树列表含孙级）+ 既有 `TestMatchInteractiveSessionsBestEffort` / `TestResolveInteractiveSessionKey_TreeScopedInstanceMatch` / `TestResolveInteractiveSessionKey_TreeOnlyUnavailable`。
+- **⛔ 注入型（合成）工具对的历史回放一致性 —— 三条读取路径必须同一锚定规则（2026-09-30 chat_D3D0 turn 19 pre_turn_end 事故根治）**：现象 = 会话进行中能看到 `pre_turn_end` 工具，**刷新后永远消失**（工具 pill 连同详情整行不见）。根因是**双段叠加**：① 引擎时序 —— `injectSyntheticToolPair` 注入发生在 `snapshotCompletedIteration` 落库【之后】（`handleFinalResponse → snapshot → maybeContinueTurn → inject`，此后再无快照），工具只进内存 `CompletedTools`，`beginIteration` 一清就彻底丢 ⇒ 旧数据 iteration_history 的 tools JSON **永远**缺该工具；② 投影 —— `ConvertMessagesToHistoryWithIterationsView` 对有结构化数据的 turn **丢弃** pendingIters（legacy 从 session_messages 装配工具的路径）⇒ session_messages 里的工具对（assistant 行带恰好一个合成工具调用 + tool 结果行）不渲染。**修复三层、缺一不可**：Fix A（新数据）`persistSyntheticToolToHistory` —— 注入时把工具快照 UPDATE 追加进【已落盘】记录的 tools JSON 尾部（`storage.AppendIterationTool`：json.RawMessage 透传不丢未知字段；记录不存在返回 `(false, nil)` 绝不 Insert —— 互斥契约：未落盘的工具由**下一次**快照从 CompletedTools 正常写入）；Fix B（旧数据 + cancel 路径）`channel.MergeSyntheticToolPairs` —— View 投影前把 session_messages 的工具对按注入时间戳锚定合并回 turnIterMap **副本**（copy-on-write、RawMessage 透传、损坏 tools JSON 跳过绝不覆盖、`(name, detail)` 去重防双写 —— **detail 比较=全量 content（Fix A 持久化的是全量），写入=截断版**（与渲染路径 subscription.go 同口径））；端点补齐 —— `/api/regions`、`/api/iteration_detail` 直读 iteration_history 不经 session_messages ⇒ 经 `legacySyntheticPairRepair`（`GetSyntheticPairRowsByTurn` 候选行查询 + `GetIterationAnchorsByTurn` 轻量两列锚点 + `MergeSyntheticPairsIntoSegment/IntoRecord`）同样合并，**与 View 同一锚定规则**（注入时刻 ts → 「CreatedAt < ts 的最后一条记录」；时间不可用 fallback 最后一条 —— 该 fallback 语义只对完整 turn 视图成立），段/单条视图只并入锚定到本视图的对（段外跳过 —— 前端翻到含该迭代的段时那一次请求补上）。⚠️ 三条读取路径（View 快照 / regions 段 / detail 单条）必须**成对**遵守同一规则 —— 只补一条会留下"该视图整类丢失"的死角（与 iteration/stream/phase_done 遮蔽解除同族教训）。守护（全部 mutation 自证红→绿）：`agent/synthetic_tool_history_test.go`（注入后回写快照）、`storage/sqlite/iteration_tool_append_test.go`（AppendIterationTool 四契约 + 两个查询的噪声排除/轻量断言）、`channel/synthetic_merge_test.go`（View 恢复/去重/mid-run 锚定/损坏保护/段/单条/copy-on-write）、`serverapp/callbacks_history_regions_test.go` 的 `TestLegacySyntheticPairRepair_RestoresLegacyPairAndDedups`（真实 sqlite 库接线）。
+- **⛔ 合成工具对的第四层：DB tools JSON 往返的每个字段必须在【读取侧解析结构】里成对存在 —— 2026-10-02 P0（用户报告「subagent done / bgtask done 前端渲染历史不含结构化详情，刷新后详情消失」）**：现象 = live 进行中 subagent done / bgtask done 的结构化卡片（SyntheticToolCard：role/instance/task/output 徽章全靠 `tool_hints` 的 SyntheticToolHints JSON 载荷）完全正常，**刷新后**（REST 历史 + detail 端点）hints 恒空 ⇒ 卡片退化成纯文本 fallback。根因 = **只改了写入侧、漏了读取侧**：Fix A 给 `IterationToolSnapshot` 加了 `ToolHints json:"tool_hints"` 落库，但 channel 侧 tools JSON 的**两个解析结构**（`region_view.go` 的 `regionToolSnap` —— `parseRegionTools`/`MapIterationRecord` 是 REST 三条路径的唯一解析入口；`subscription.go` 的 `iterToolSnap` —— legacy Detail JSON 路径 `rawMessageIterations`）都没有该字段 ⇒ `encoding/json` **静默丢弃**未声明字段（不报错、不警告）。live 渲染走 SSE 直推 `protocol.ToolProgress`（不经 DB JSON 往返）⇒ hints 在 —— 这就是「live 正常、刷新丢」不对称的机制。**修复四处**（regionToolSnap/iterToolSnap 补字段 + `MapIterationRecord`/`rawMessageIterations` 装配补 `tp.ToolHints = t.ToolHints`；折叠轻字段 fold=true 置空 ToolHints 的既有契约不变 —— detail 端点 foldTools=false 全量取回）。**教训**：① 给持久化 JSON 加字段时，**写入序列化结构 ≠ 完整修复** —— 必须枚举**所有**读取侧解析结构（本仓两处 snap 结构 + MapIterationRecord 注释自己都写着「ToolHints 现状映射从未填充（恒空）」，写了等于没写）；② 「字段与解析行为与 iterToolSnap 逐字段一致」的注释**不是护栏**——两个结构一起漏时注释照样"一致"；③ DB 里**明明有**这个键（`git grep tool_hints` 落库侧）但接口吐不出来时，第一怀疑点就是解析结构缺字段 —— encoding/json 对未声明字段零提示。守护：`channel/synthetic_tool_hints_passthrough_test.go`（3 例：MapIterationRecord 全量/View 端到端/legacy Detail JSON；mutation 自证：删装配点映射 ⇒ 3 例全红）。
+
+## 注入型（合成）工具对的归属迭代：**注入时记录，读取不猜**（2026-10-04 用户定稿根治）
+
+> 用户报告：「fake tool 有严重 bug，可能出现在错误的位置，明明它实际上在迭代 39 却渲染到了迭代 40，
+> 而迭代 40 是最后一个迭代应该没 tool」；定稿约束：「严禁搞扫描去重，你要考虑真的有完全一样的 tool
+> 的情况，严禁任何 hack 或者性能很差的方式，彻底修复」。
+
+- **根因（投影合并用时间戳【猜】归属迭代）**：`channel/synthetic_merge.go` 的 `anchorPairRecord`
+  取 `CreatedAt` 严格早于注入行 `created_at` 的最后一条 —— ① **同秒并列被严格 Before 丢弃**（注入与
+  迭代 N 的快照同一秒 ⇒ 锚点推到 N-1）；② **回落方向不分**（`ts` 早于全部快照 ⇒ 也回落到**末**迭代，
+  正是「末迭代不该有 tool 却出现 pill」的形态）。另：`iteration_history.created_at` 是 SQLite
+  `CURRENT_TIMESTAMP`（UTC 裸串），与 Go 写的消息行 `created_at` 不同源 —— 非本时区下时间戳比较
+  本身就是地雷。
+- **根治（v73）**：引擎在注入时刻把归属迭代**持久化在消息行上**（`llm.ChatMessage.Iteration` →
+  `session_messages.iteration`，`injectSyntheticToolPair` 打点，与 live 渲染 / Fix A 回写同一来源）。
+  读取路径（`CollectSyntheticToolPairs` → `AnchoredIteration`）**直接用记录值**：非 0 ⇒ 该对的工具已
+  由 Fix A/自然快照写进该迭代的 tools JSON ⇒ 合并**整体跳过**（O(1)、零猜测、零去重）。
+  0 = legacy（Fix A 之前的数据）才走时间戳锚定，且锚定修复为：**含同秒并列**（`!After`）+ **早于全部
+  快照 ⇒ 首迭代**（晚于全部 / 时间不可用 ⇒ 末迭代，与 live 一致）。
+- **⛔ 内容去重已整体删除**（`(name, detail)` 防双写）：完全相同的工具是**合法数据**（同一 cron 连发
+  两条相同消息、同型后台任务各完成一次）—— 内容去重会把第二条真实通知**误删**。防双写由
+  `AnchoredIteration` 权威记录承担（记录了就跳过，与内容无关）。
+- **时间戳双源问题**：`session_messages.created_at`（Go `RFC3339`）与 `iteration_history.created_at`
+  （SQLite `CURRENT_TIMESTAMP` 裸 UTC 串 + `internal.ParseTimestamp` 把驱动附加的 Z 当本地墙钟）——
+  新数据不再比较时间戳，此差异对合成工具对锚定已无害（其他路径仍需注意）。
+- **迁移**：`migrateV72ToV73`（`ALTER TABLE session_messages ADD COLUMN iteration INTEGER NOT NULL
+  DEFAULT 0`，columnExists 幂等守卫）。
+- **守护（channel/synthetic_merge_test.go）**：`RecordedAnchorSkipsMerge`（权威记录跳过 ⇒ 不双写；
+  删掉跳过必红）/ `IdenticalLegacyPairsBothRender`（完全相同的工具 ×2 必须都在；加回任何内容去重必红）/
+  `SameSecondTieStaysOnIteration`（同秒并列锚 N 不锚 N-1）/ `BeforeAllSnapshotsAnchorsFirst`
+  （早于全部 ⇒ 首迭代）/ `AfterAllSnapshotsAnchorsLast`（pre_turn_end 语义不回归）。

@@ -320,11 +320,11 @@ func appendMessageWith(execer historyExecer, tenantID int64, msg llm.ChatMessage
 	result, err := execer.Exec(`
 		INSERT INTO session_messages
 		(tenant_id, role, content, tool_call_id, tool_name, tool_arguments, tool_calls,
-		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, created_at, turn_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?)
+		 detail, display_only, internal_only, reasoning_content, reasoning_items, record_type, created_at, turn_id, iteration)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'message', ?, ?, ?)
 	`, tenantID, msg.Role, msg.Content, msg.ToolCallID, msg.ToolName, msg.ToolArguments,
 		toolCallsJSON, msg.Detail, displayOnly, internalOnly, msg.ReasoningContent, reasoningItemsJSON,
-		ts.Format(time.RFC3339), msg.TurnID)
+		ts.Format(time.RFC3339), msg.TurnID, msg.Iteration)
 	if err != nil {
 		return 0, fmt.Errorf("insert session message: %w", err)
 	}
@@ -858,7 +858,8 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 	query := `
 		SELECT id, record_type, COALESCE(target_history_id, 0), COALESCE(record_data, ''),
 		       role, content, tool_call_id, tool_name, tool_arguments, tool_calls, detail,
-		       reasoning_content, reasoning_items, display_only, internal_only, created_at, turn_id
+		       reasoning_content, reasoning_items, display_only, internal_only, created_at, turn_id,
+		       COALESCE(iteration, 0)
 		FROM session_messages WHERE tenant_id = ?`
 	args := []any{tenantID}
 	if fromHistoryID > 0 {
@@ -883,9 +884,10 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		var displayOnly int
 		var internalOnly int
 		var turnID sql.NullInt64
+		var iterCol int
 		if err := rows.Scan(&record.HistoryID, &record.Type, &record.TargetHistoryID, &rawData,
 			&role, &content, &toolCallID, &toolName, &toolArguments, &toolCallsJSON, &detail,
-			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID); err != nil {
+			&reasoning, &reasoningItems, &displayOnly, &internalOnly, &createdAt, &turnID, &iterCol); err != nil {
 			return nil, fmt.Errorf("scan history record: %w", err)
 		}
 		record.CreatedAt = internal.ParseTimestamp(createdAt)
@@ -893,7 +895,8 @@ func getHistoryFromWith(queryer historyQueryer, tenantID, fromHistoryID, toHisto
 		if record.Type == HistoryRecordMessage || record.Type == HistoryRecordCommand {
 			record.Message = llm.ChatMessage{ID: record.HistoryID, Role: role, Content: content,
 				DisplayOnly: displayOnly != 0, Internal: internalOnly != 0,
-				CommandRow: record.Type == HistoryRecordCommand, Timestamp: record.CreatedAt}
+				CommandRow: record.Type == HistoryRecordCommand, Timestamp: record.CreatedAt,
+				Iteration: iterCol}
 			if turnID.Valid {
 				record.Message.TurnID = uint64(turnID.Int64)
 			}

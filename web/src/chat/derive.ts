@@ -54,6 +54,8 @@ export interface LiveRowView {
   readonly subAgents: readonly WebSubAgentProgress[]
   readonly todos: readonly TodoItem[]
   readonly lastIter: number
+  /** busy 快照折叠视图的区域窗口声明（live 闭环）——与 committed 行同语义。 */
+  readonly regionsBefore?: number
 }
 
 /** frozen assistant 行（cancel 定格 / idle 兜底）—— isPartial=true 保 activeTools 渲染。 */
@@ -69,6 +71,8 @@ export interface FrozenRowView {
   readonly activeTools: readonly WebToolProgress[]
   readonly genui: string
   readonly lastIter: number
+  /** busy 快照折叠视图的区域窗口声明（live 定格不丢）。 */
+  readonly regionsBefore?: number
 }
 
 export interface CommittedRowView {
@@ -85,6 +89,12 @@ export interface CommittedRowView {
   /** 命令行的时间锚点（见 `LegacyRow.anchorTurnID`）——排序键用它插回原位。 */
   readonly anchorTurnID?: number
   readonly iterationsTruncated?: number
+  /**
+   * 该 turn **更早未下发的展示区域数**（后端 `regions_before`）—— D1 线的
+   * `RegionsDivider` 从 Row 读此字段：>0 时 turn 顶部渲染「更早区域」分隔条
+   * （+ IO 哨兵，`POST /api/regions` 整段取回）。缺省 = 该 turn 已完整下发。
+   */
+  readonly regionsBefore?: number
 }
 
 export type Row = UserRowView | LiveRowView | FrozenRowView | CommittedRowView
@@ -163,6 +173,9 @@ function cachedLegacyRow(l: LegacyRow): Row {
           isPartial: false,
           content: l.content,
           iterations: l.iterations,
+          // 更早未下发的展示区域数（standalone/legacy 段同样可能带 —— 与
+          // turn 行的 committed payload 同一来源语义）。
+          regionsBefore: l.regionsBefore,
         }
   legacyRowByMsg.set(l, row)
   return row
@@ -182,10 +195,32 @@ function sortedTurns(turns: ReadonlyMap<TurnID, Turn>): Turn[] {
   return ordered ? out : out.sort((a, b) => a.id - b.id)
 }
 
+/** turn 的区域窗口声明（committed 从 payload、live/frozen 从 data 读 —— 语义同源）。 */
+function turnRegionsBefore(t: Turn): number | undefined {
+  if (t.phase.kind === 'committed') return t.phase.payload.regionsBefore
+  return t.phase.data.regionsBefore
+}
+
 export function deriveRows(s: ChatState): readonly Row[] {
   const turnRows: Row[] = []
   for (const t of sortedTurns(s.turns)) {
-    if (t.user) turnRows.push(cachedUserRow(t))
+    // 用户规则（2026-10-01 回归修复，用户原话：「如果用户看到了一个用户输入，那么
+    // 这个用户输入之后的所有消息就必须是完整的，不能是接下来动态加载的。所以这种
+    // 情况如果需要动态加载，你不能渲染那个用户的输入」）——
+    // **任何 phase**（live/frozen/committed）的 regionsBefore > 0（更早区域待动态
+    // 加载）时 user 行不渲染：否则「user 输入悬在折叠内容上方」破坏对话时间线的因果
+    // 视觉（修改前全量视图从不存在此形态）。2026-10-02 生产截图第二次点名（live
+    // turn 540 迭代、regionsBefore=166，user「继续」悬在「⌃ 更早的 166 个区域」上
+    // 方）：「加载更多前面不能渲染任何东西，加载更多一定在顶部」—— 此前的 live
+    // 豁免（「正在生成的对话不能藏用户刚发的消息」）不成立：折叠窗口只在长 turn
+    // （≥100 区域）才激活，「刚发的消息」场景 regionsBefore 缺省、user 行照常渲染。
+    // 过滤走 turn 的实时值（不走缓存 row）：段加载完成 regionsBefore 归零后
+    // derive 重跑 ⇒ user 行自然出现，与内容一起构成完整时间线。
+    const rb = turnRegionsBefore(t)
+    // > 0 才隐藏：段加载完成后服务端显式下发 regions_before: 0（权威归零声明），
+    // 此时 user 行必须立刻随完整内容一起出现（!== undefined 会把归零误判成未完成）。
+    const userHiddenByFold = rb !== undefined && rb > 0
+    if (t.user && !userHiddenByFold) turnRows.push(cachedUserRow(t))
     const ar = cachedAssistantRow(t)
     if (ar !== null) turnRows.push(ar)
   }
@@ -225,6 +260,7 @@ function assistantRow(t: Turn): Row | null {
         subAgents: d.subAgents,
         todos: d.todos,
         lastIter: d.iter,
+        regionsBefore: d.regionsBefore,
       }
     }
     case 'frozen': {
@@ -263,6 +299,7 @@ function assistantRow(t: Turn): Row | null {
         activeTools: errTools,
         genui: d.genui,
         lastIter: d.iter,
+        regionsBefore: d.regionsBefore,
       }
     }
     case 'committed': {
@@ -279,6 +316,8 @@ function assistantRow(t: Turn): Row | null {
         iterationsTruncated: t.phase.payload.iterationsTruncated ?? 0,
         // turn 内压缩点：透传引用（payload 引用稳定 ⇒ memo 不失效）。
         compactions: t.phase.payload.compactions,
+        // 更早未下发的展示区域数（D1 线的 RegionsDivider 消费；>0 渲染分隔条）。
+        regionsBefore: t.phase.payload.regionsBefore,
       }
     }
   }
