@@ -1035,18 +1035,18 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     <ToolSessionContext.Provider
       value={{ channel: progressChannel, chatID: progressChatID }}
     >
+    <div
+      ref={agentPanelRootRef}
+      data-agent-chat-id={chatID ?? ''}
+      data-agent-visible={isVisible ? '1' : '0'}
+      className="relative flex h-full min-h-0 flex-col"
+    >
     <MessageAnnotationsProvider
       key={JSON.stringify([auth?.user?.username ?? '', messageChannel, chatID])}
       username={auth?.user?.username ?? ''}
       sessionKey={`${messageChannel}:${chatID ?? ''}`}
       visible={isVisible && !(showLoadingScreen || switchSplash)}
       enabled={!isSubAgent && !!chatID}
-    >
-    <div
-      ref={agentPanelRootRef}
-      data-agent-chat-id={chatID ?? ''}
-      data-agent-visible={isVisible ? '1' : '0'}
-      className="relative flex h-full min-h-0 flex-col"
     >
       {!isSubAgent && devMode && (
         <DebugToolbar
@@ -1177,8 +1177,8 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
           <span className="text-xs">Loading…</span>
         </div>
       )}
-    </div>
     </MessageAnnotationsProvider>
+    </div>
     </ToolSessionContext.Provider>
     </RegionActionsContext.Provider>
   )
