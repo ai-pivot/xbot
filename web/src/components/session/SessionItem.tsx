@@ -110,6 +110,7 @@ export function SessionItem({
   const openInBrowserTab = () => openSessionInBrowserTab(session)
   const editable = !isSubAgent && !session.synthetic && !multiSelectMode
   const shortcutHandlers = {
+    openInBrowserTab: !multiSelectMode ? openInBrowserTab : undefined,
     star: editable ? () => onToggleStar(key) : undefined,
     rename: editable ? () => onRename(session) : undefined,
     fork: editable && onFork ? () => onFork(session) : undefined,
@@ -295,6 +296,7 @@ export function SessionItem({
           <ContextMenuItem onSelect={openInBrowserTab}>
             <ExternalLink className="size-4" />
             {t('session.openInTab')}
+            {shortcutLabel('openInBrowserTab')}
           </ContextMenuItem>
        </ContextMenuContent>
      </ContextMenu>
@@ -308,6 +310,7 @@ export function SessionItem({
          <ContextMenuItem onSelect={openInBrowserTab}>
           <ExternalLink className="size-4" />
           {t('session.openInTab')}
+          {shortcutLabel('openInBrowserTab')}
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onToggleStar(key)}>
           <Star

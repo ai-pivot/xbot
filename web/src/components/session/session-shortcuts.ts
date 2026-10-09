@@ -2,6 +2,7 @@ import type { SessionInfo } from '@/types/shared'
 
 export const SESSION_SHORTCUTS = {
   newSession: 'mod+alt+n',
+  openInBrowserTab: 'ctrl+n',
   star: 'mod+alt+s',
   rename: 'f2',
   fork: 'mod+alt+f',
@@ -13,7 +14,8 @@ export type SessionShortcutAction = keyof typeof SESSION_SHORTCUTS
 export type SessionShortcutBindings = Record<SessionShortcutAction, string | null>
 export const SESSION_SHORTCUT_ACTIONS = Object.keys(SESSION_SHORTCUTS) as SessionShortcutAction[]
 export const SESSION_SHORTCUT_TITLES: Record<SessionShortcutAction, string> = {
-  newSession: 'settings.shortcuts.newSession', star: 'session.star', rename: 'common.rename',
+  newSession: 'settings.shortcuts.newSession', openInBrowserTab: 'session.openInTab',
+  star: 'session.star', rename: 'common.rename',
   fork: 'session.fork', export: 'session.export', delete: 'common.delete',
 }
 type ShortcutHandlers = Partial<Record<SessionShortcutAction, () => void>>

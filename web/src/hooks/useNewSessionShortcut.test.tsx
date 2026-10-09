@@ -27,6 +27,8 @@ describe('global new-session shortcut', () => {
     expect(press().defaultPrevented).toBe(true)
     expect(create).toHaveBeenCalledOnce()
     expect(press(window, { key: 'F2' }).defaultPrevented).toBe(false)
+    expect(press(window, { key: 'n', ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(create).toHaveBeenCalledOnce()
   })
 
   it('runs before the focused row can select itself for a modified Enter', () => {

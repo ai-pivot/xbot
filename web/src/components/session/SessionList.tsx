@@ -39,7 +39,7 @@ import { SessionEmptyState } from './SessionEmptyState'
 import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent } from './session-tree'
-import { dispatchSessionShortcut, sessionShortcutAction } from './session-shortcuts'
+import { dispatchSessionShortcut, openSessionInBrowserTab, sessionShortcutAction } from './session-shortcuts'
 import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
 import { useIsMobile } from '@/hooks/useIsMobile'
 
@@ -378,13 +378,15 @@ export function SessionList({
         if (style.display === 'none' || style.visibility === 'hidden') return
       }
       const target = sessions.find((s) => sameSession(activeSession, s))
-      if (!target || target.synthetic || isSubAgentSession(target)) return
+      if (!target) return
+      const editable = !target.synthetic && !isSubAgentSession(target)
       dispatchSessionShortcut(event, {
-        star: () => onToggleStar(sessionKey(target)),
-        rename: () => openRename(target),
-        fork: onFork ? () => openFork(target) : undefined,
-        export: onExport ? () => openExport(target) : undefined,
-        delete: () => openDelete(target),
+        openInBrowserTab: () => openSessionInBrowserTab(target),
+        star: editable ? () => onToggleStar(sessionKey(target)) : undefined,
+        rename: editable ? () => openRename(target) : undefined,
+        fork: editable && onFork ? () => openFork(target) : undefined,
+        export: editable && onExport ? () => openExport(target) : undefined,
+        delete: editable ? () => openDelete(target) : undefined,
       }, bindings)
     }
     window.addEventListener('keydown', onKeyDown)

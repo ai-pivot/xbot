@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { SESSION_SHORTCUTS, parseShortcutBinding, shortcutBindingFromEvent, shortcutBindingsOverlap, formatShortcutBinding, sessionShortcutAction, sessionShortcutLabel } from './session-shortcuts'
 
 describe('session shortcut bindings', () => {
+  it('opens an existing session with Control+N, not Command+N or the creation binding', () => {
+    expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true }))).toBe('openInBrowserTab')
+    expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 'n', metaKey: true }))).toBeUndefined()
+    expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, altKey: true }))).toBe('newSession')
+    expect(sessionShortcutLabel('openInBrowserTab', 'MacIntel')).toBe('\u2303N')
+    expect(sessionShortcutLabel('openInBrowserTab', 'Win32')).toBe('Ctrl+N')
+  })
+
   it.each([
     ['Control+Shift+R', 'ctrl+shift+r'], ['Cmd+Option+O', 'meta+alt+o'],
     ['Shift+Control+9', 'ctrl+shift+9'], ['Mod+Alt+E', 'mod+alt+e'], ['F8', 'f8'], ['', null],

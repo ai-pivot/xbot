@@ -43,7 +43,7 @@ describe('shortcut recording in the settings dialog', () => {
     const shortcuts = within(nav).getByRole('button', { name: i18n.t('settings.nav.shortcuts') })
     fireEvent.click(shortcuts)
     expect(shortcuts).toHaveAttribute('aria-current', 'true')
-    expect(within(dialog).getAllByRole('textbox')).toHaveLength(6)
+    expect(within(dialog).getAllByRole('textbox')).toHaveLength(7)
     expect(within(dialog).queryByRole('heading', { name: i18n.t('settings.codeWordWrap') })).not.toBeInTheDocument()
     fireEvent.click(within(nav).getByRole('button', { name: i18n.t('settings.nav.interaction') }))
     expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument()
@@ -79,7 +79,7 @@ describe('shortcut recording in the settings dialog', () => {
     localStorage.setItem('xbot-session-shortcuts', saved)
     setup()
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getAllByRole('textbox')).toHaveLength(6)
+    expect(within(dialog).getAllByRole('textbox')).toHaveLength(7)
     act(() => {
       localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
       window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))

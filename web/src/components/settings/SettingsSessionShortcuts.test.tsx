@@ -26,12 +26,21 @@ afterEach(() => {
 })
 
 describe('editable session shortcuts', () => {
-  it('renders all six editable bindings', () => {
+  it('renders all seven editable bindings, including Control+N for a browser tab', () => {
     renderWithProviders(<SettingsSessionShortcuts />)
-    expect(screen.getAllByRole('textbox')).toHaveLength(6)
+    expect(screen.getAllByRole('textbox')).toHaveLength(7)
     expect(field('common.rename')).toHaveValue('F2')
     expect(field('settings.shortcuts.newSession')).toBeInTheDocument()
-    expect(screen.queryByRole('textbox', { name: i18n.t('session.openInTab') })).not.toBeInTheDocument()
+    expect(field('session.openInTab')).toHaveValue('Ctrl+N')
+  })
+
+  it('edits the browser-tab shortcut without changing the saved creation shortcut', () => {
+    localStorage.setItem(storageKey, JSON.stringify({ newSession: 'ctrl+meta+n' }))
+    renderWithProviders(<SettingsSessionShortcuts />)
+    const input = field('session.openInTab')
+    fireEvent.change(input, { target: { value: 'F9' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({ newSession: 'ctrl+meta+n', openInBrowserTab: 'f9' })
   })
 
   it('preserves the old open-in-tab binding and stores subsequent edits under newSession', () => {
@@ -39,6 +48,7 @@ describe('editable session shortcuts', () => {
     renderWithProviders(<SettingsSessionShortcuts />)
     const input = field('settings.shortcuts.newSession')
     expect((input as HTMLInputElement).value).toMatch(/Ctrl\+/)
+    expect(field('session.openInTab')).toHaveValue('Ctrl+N')
     fireEvent.change(input, { target: { value: 'F8' } })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(JSON.parse(localStorage.getItem(storageKey)!)).toEqual({ newSession: 'f8', star: 'meta+s' })

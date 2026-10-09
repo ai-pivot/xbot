@@ -129,7 +129,7 @@ describe('session action shortcuts', () => {
     expect(props.onToggleStar).not.toHaveBeenCalled()
     fireEvent.contextMenu(screen.getByText('Other session'))
     const menu = await screen.findByRole('menu')
-    expect(menu.querySelectorAll('[data-slot="context-menu-shortcut"]')).toHaveLength(4)
+    expect(menu.querySelectorAll('[data-slot="context-menu-shortcut"]')).toHaveLength(5)
   })
 
   it('updates existing listeners and menu labels when preferences change', async () => {
@@ -155,16 +155,118 @@ describe('session action shortcuts', () => {
     expect(open).not.toHaveBeenCalled()
   })
 
-  it('keeps opening a session in a browser tab as a menu action without a shortcut', async () => {
+  it('keeps opening a session in a browser tab from its menu and shows Control+N', async () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     setup()
     fireEvent.contextMenu(screen.getByText('Other session'))
     const item = await screen.findByRole('menuitem', { name: i18n.t('session.openInTab') })
-    expect(item.querySelector('[data-slot="context-menu-shortcut"]')).toBeNull()
+    expect(item.querySelector('[data-slot="context-menu-shortcut"]')).toHaveTextContent(/N/)
     fireEvent.click(item)
     const url = new URL(open.mock.calls[0][0] as string)
     expect(url.searchParams.get('session')).toBe('cli:other')
     expect(open.mock.calls[0].slice(1)).toEqual(['_blank', 'noopener'])
+  })
+
+  it.each(['current', 'row', 'menu'])('Control+N opens the %s target exactly once without changing selection', async (scope) => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { props } = setup()
+    const row = screen.getByText('Other session').closest('[role="button"]')!
+    let target: Window | Element = window
+    if (scope === 'row') target = row
+    if (scope === 'menu') {
+      fireEvent.contextMenu(row)
+      target = await screen.findByRole('menu')
+    }
+    expect(shortcut(target, 'n', { altKey: false }).defaultPrevented).toBe(true)
+    expect(open).toHaveBeenCalledOnce()
+    expect(new URL(open.mock.calls[0][0] as string).searchParams.get('session')).toBe(scope === 'current' ? 'web:current' : 'cli:other')
+    expect(open.mock.calls[0].slice(1)).toEqual(['_blank', 'noopener'])
+    expect(props.onSelect).not.toHaveBeenCalled()
+    if (scope === 'menu') await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+  })
+
+  it('updates and disables the browser-tab binding without affecting session creation', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInBrowserTab: 'f9', newSession: 'f8' }))
+    setup()
+    expect(shortcut(window, 'n', { altKey: false }).defaultPrevented).toBe(false)
+    fireEvent.keyDown(window, { key: 'F9' })
+    expect(open).toHaveBeenCalledOnce()
+    act(() => {
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInBrowserTab: null, newSession: 'f8' }))
+      window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))
+    })
+    fireEvent.keyDown(window, { key: 'F9' })
+    expect(open).toHaveBeenCalledOnce()
+    fireEvent.contextMenu(screen.getByText('Other session'))
+    const item = await screen.findByRole('menuitem', { name: i18n.t('session.openInTab') })
+    expect(item.querySelector('[data-slot="context-menu-shortcut"]')).toBeNull()
+  })
+
+  it.each([{ isComposing: true }, { keyCode: 229 }, { repeat: true }])('ignores unsafe Control+N events (%o)', options => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    setup()
+    expect(shortcut(window, 'n', { altKey: false, ...options }).defaultPrevented).toBe(false)
+    const handled = new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, cancelable: true })
+    handled.preventDefault()
+    fireEvent(window, handled)
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('restores the browser-tab shortcut after returning from mobile without changing preferences', () => {
+    const saved = JSON.stringify({ openInBrowserTab: 'f9', newSession: 'f8' })
+    localStorage.setItem('xbot-session-shortcuts', saved)
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    setup()
+    act(() => {
+      localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
+      window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))
+    })
+    fireEvent.keyDown(window, { key: 'F9' })
+    expect(open).not.toHaveBeenCalled()
+    act(() => {
+      localStorage.setItem(UI_MODE_STORAGE_KEY, 'desktop')
+      window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))
+    })
+    fireEvent.keyDown(window, { key: 'F9' })
+    expect(open).toHaveBeenCalledOnce()
+    expect(localStorage.getItem('xbot-session-shortcuts')).toBe(saved)
+  })
+
+  it.each([{ synthetic: true }, { type: 'agent' as const }])('allows opening a read-only current session but not mutating it (%o)', flags => {
+    const target = { ...current, ...flags }
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { props } = setup({ sessions: [target], groups: [{ key: 'today', sessions: [target] }], sortedSessions: [target] })
+    expect(shortcut(window, 'n', { altKey: false }).defaultPrevented).toBe(true)
+    expect(open).toHaveBeenCalledOnce()
+    for (const key of ['s', 'F2', 'f', 'e', 'Backspace']) shortcut(window, key)
+    expect(props.onToggleStar).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
+  it.each(['current', 'row', 'menu', 'input', 'overlay', 'hidden', 'multiselect'])('does not open a browser tab from excluded %s scopes', async (scope) => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    if (['current', 'row', 'menu'].includes(scope)) localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
+    const { container } = setup({ multiSelectMode: scope === 'multiselect' })
+    let target: Window | Element = window
+    if (scope === 'row') target = screen.getByText('Other session').closest('[role="button"]')!
+    if (scope === 'menu') {
+      fireEvent.contextMenu(screen.getByText('Other session'))
+      target = await screen.findByRole('menu')
+    }
+    if (scope === 'input') {
+      target = document.createElement('input')
+      container.appendChild(target)
+    }
+    if (scope === 'overlay') {
+      const overlay = document.createElement('div')
+      overlay.setAttribute('role', 'dialog')
+      container.appendChild(overlay)
+    }
+    if (scope === 'hidden') container.style.display = 'none'
+    expect(shortcut(target, 'n', { altKey: false }).defaultPrevented).toBe(false)
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('stars the focused row rather than the active session, exactly once', () => {
@@ -266,11 +368,11 @@ describe('session action shortcuts', () => {
     }
   })
 
-  it('shows shortcuts on the five targeted menu actions and acts on the menu target', async () => {
+  it('shows shortcuts on the six targeted menu actions and acts on the menu target', async () => {
     const { props } = setup()
     fireEvent.contextMenu(screen.getByText('Other session'))
     const menu = await screen.findByRole('menu')
-    expect(menu.querySelectorAll('[data-slot="context-menu-shortcut"]')).toHaveLength(5)
+    expect(menu.querySelectorAll('[data-slot="context-menu-shortcut"]')).toHaveLength(6)
     shortcut(menu, 's')
     expect(props.onToggleStar).toHaveBeenCalledExactlyOnceWith('cli:other')
     await waitFor(() => expect(menu).not.toBeInTheDocument())
@@ -385,9 +487,17 @@ describe('session action shortcuts', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     expect(shortcut(row, 'o').defaultPrevented).toBe(false)
     expect(open).not.toHaveBeenCalled()
+    expect(shortcut(row, 'n', { altKey: false }).defaultPrevented).toBe(true)
+    expect(new URL(open.mock.calls[0][0] as string).searchParams.get('session')).toBe('agent:child')
+    fireEvent.contextMenu(row)
+    const menu = await screen.findByRole('menu')
+    expect(menu.querySelectorAll('[data-slot="context-menu-shortcut"]')).toHaveLength(1)
+    shortcut(menu, 'n', { altKey: false })
+    expect(open).toHaveBeenCalledTimes(2)
     fireEvent.contextMenu(row)
     fireEvent.click(await screen.findByRole('menuitem', { name: i18n.t('session.openInTab') }))
-    expect(new URL(open.mock.calls[0][0] as string).searchParams.get('session')).toBe('agent:child')
+    expect(open).toHaveBeenCalledTimes(3)
+    expect(new URL(open.mock.calls[2][0] as string).searchParams.get('session')).toBe('agent:child')
   })
 
   it('does not run optional operations when unavailable and removes the listener on unmount', () => {

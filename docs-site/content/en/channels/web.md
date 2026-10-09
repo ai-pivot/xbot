@@ -94,12 +94,12 @@ is pending, the confirmation cannot submit another request.
 ### Session keyboard shortcuts
 
 Session shortcuts are **desktop-only**. Mobile mode hides their settings category
-and menu hints, and does not handle these six bindings. Ordinary touch/menu
+and menu hints, and does not handle these seven bindings. Ordinary touch/menu
 actions and dialog confirmation remain available. This follows the effective
 UI mode in Settings > Appearance, including forced mobile mode. Switching modes
 does not clear your bindings; they remain available when you return to desktop.
 
-Edit all six bindings in the dedicated **Settings > Keyboard Shortcuts** category.
+Edit all seven bindings in the dedicated **Settings > Keyboard Shortcuts** category.
 Interaction keeps code wrapping and the send-key mode. Type a
 combination and press Enter or leave the field to save, or use the keyboard
 icon to record it. The actions menu clears/disables a binding or restores its
@@ -115,6 +115,7 @@ manually when recording cannot capture one. The table below lists defaults.
 | Action | Shortcut |
 |--------|----------|
 | Create new session | `Ctrl/Cmd+Alt+N` |
+| Open existing session in browser tab | `Ctrl+N` |
 | Star / unstar | `Ctrl/Cmd+Alt+S` |
 | Rename | `F2` |
 | Fork | `Ctrl/Cmd+Alt+F` |
@@ -123,17 +124,20 @@ manually when recording cannot capture one. The table below lists defaults.
 
 Create new session works globally, even with no current session or a hidden
 session panel, and switches to the new conversation. Any previously customized
-open-in-browser-tab binding (including a disabled binding) is preserved for
-creation. Opening an existing session in a browser tab remains a context-menu
-action without a shortcut.
+legacy `openInTab` binding (including a disabled binding) is preserved for
+creation. The independent browser-tab action uses `openInBrowserTab` and opens
+the existing conversation without creating or selecting a session. Its default
+matches Control+N only, not Command+N; browser-reserved combinations may need
+to be changed in Settings.
 
-The other five shortcuts appear in the context menu (Alt is Option on macOS). They target the
+The other six shortcuts appear in the context menu (Alt is Option on macOS). They target the
 open session menu or focused session row first; otherwise they target the
 current session while the session panel is visible. Input fields, editors,
-IME events, and held-key repeats are excluded from all six actions. Creation
-pauses in any open dialog/menu; the other five ignore unrelated dialogs/menus
+IME events, and held-key repeats are excluded from all seven actions. Creation
+pauses in any open dialog/menu; the other six ignore unrelated dialogs/menus
 and multi-select mode.
-Subagents only offer opening in a browser tab in their menu. Rename and fork
+Subagents and synthetic rows support the non-destructive browser-tab action
+from their row/menu; mutation shortcuts remain unavailable. Rename and fork
 require confirmation with Enter or their button; Escape cancels. Export opens
 the format submenu from a context menu, or a format dialog from a row/current
 session. The delete shortcut never deletes without confirmation.

@@ -110,10 +110,10 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 60
     await expect(dialog.getByRole('heading', { name: '代码块自动换行' })).toBeVisible()
     await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
     const section = dialog.getByRole('region', { name: '会话快捷键' })
-    await expect(section.getByRole('textbox')).toHaveCount(6)
+    await expect(section.getByRole('textbox')).toHaveCount(7)
     const createField = section.getByRole('textbox', { name: '创建新会话' })
     await expect(createField).toHaveValue('F8')
-    await expect(section.getByRole('textbox', { name: '在新标签页中打开' })).toHaveCount(0)
+    await expect(section.getByRole('textbox', { name: '在新标签页中打开' })).toHaveValue('Ctrl+N')
     const heading = section.getByRole('heading', { name: '会话快捷键' })
     const reset = section.getByRole('button', { name: '全部恢复默认' })
     await expect(async () => {
@@ -225,6 +225,58 @@ test('shortcut settings follow viewport changes without rewriting desktop bindin
   await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
   await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ newSession: 'f8' })
+})
+
+test('browser-tab shortcut opens the row and menu target without creating a session', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.addInitScript(() => {
+    localStorage.setItem('xbot-locale', 'zh-CN')
+    if (!localStorage.getItem('xbot-session-shortcuts')) {
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+    }
+  })
+  await setupMock(page)
+  let creations = 0
+  await page.route('**/api/chats/create', route => {
+    creations++
+    return route.fulfill({ json: { ok: true, data: {} } })
+  })
+  await loginAndOpenSettings(page)
+  const dialog = page.getByRole('dialog', { name: '设置' })
+  await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+  const field = dialog.getByRole('textbox', { name: '在新标签页中打开' })
+  await field.fill('F9')
+  await field.press('Enter')
+  await expect(field).toHaveValue('F9')
+  await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  const row = page.locator('[data-session-row="web:chat-1"]')
+  for (const scope of ['row', 'menu']) {
+    if (scope === 'row') await row.focus()
+    else {
+      await row.click({ button: 'right' })
+      await expect(page.getByRole('menuitem', { name: '在新标签页中打开' }).locator('[data-slot="context-menu-shortcut"]')).toHaveText('F9')
+    }
+    const popupPromise = page.waitForEvent('popup')
+    await page.keyboard.press('F9')
+    const popup = await popupPromise
+    await expect(popup).toHaveURL(/\?session=web%3Achat-1$/)
+    expect(await popup.evaluate(() => window.opener)).toBeNull()
+    await popup.close()
+    await expect(page.getByRole('menu')).toBeHidden()
+    expect(creations).toBe(0)
+  }
+  await page.reload()
+  await row.waitFor({ state: 'visible' })
+  await row.focus()
+  const popupPromise = page.waitForEvent('popup')
+  await page.keyboard.press('F9')
+  const popup = await popupPromise
+  await expect(popup).toHaveURL(/\?session=web%3Achat-1$/)
+  await popup.close()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ newSession: 'f8', openInBrowserTab: 'f9' })
+  expect(creations).toBe(0)
 })
 
 test('mobile: every settings tab fits the viewport (no truncation)', async ({ browser }) => {
