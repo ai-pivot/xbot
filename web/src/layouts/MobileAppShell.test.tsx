@@ -162,12 +162,16 @@ describe('MobileAppShell', () => {
     expect(mocks.sessionStore.createSession).toHaveBeenCalled()
   })
 
-  it('creates a session with the configured shortcut and returns from tools to the conversation', async () => {
+  it('ignores desktop shortcuts but keeps the top bar creation action working', async () => {
     localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
     renderWithProviders(<MobileAppShell />)
     fireEvent.click(screen.getByLabelText('工具'))
     expect(screen.getByText('agent-panel')).not.toBeVisible()
     fireEvent.keyDown(window, { key: 'F8' })
+    expect(mocks.sessionStore.createSession).not.toHaveBeenCalled()
+    expect(screen.getByText('agent-panel')).not.toBeVisible()
+    expect(JSON.parse(localStorage.getItem('xbot-session-shortcuts')!)).toEqual({ newSession: 'f8' })
+    fireEvent.click(screen.getByLabelText('新建会话'))
     await waitFor(() => expect(mocks.sessionStore.createSession).toHaveBeenCalledOnce())
     await waitFor(() => expect(screen.getByText('agent-panel')).toBeVisible())
   })

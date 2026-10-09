@@ -23,7 +23,7 @@ import { TouchContextMenuTrigger } from '@/components/ui/TouchContextMenuTrigger
 import { cn } from '@/lib/utils'
 import { useI18n } from '@/providers/i18n'
 import i18n from '@/i18n'
-import { useIsTouch } from '@/hooks/useIsMobile'
+import { useIsMobile, useIsTouch } from '@/hooks/useIsMobile'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
@@ -88,8 +88,10 @@ export function SessionItem({
   onDropItem,
 }: SessionItemProps) {
   const { t } = useI18n()
+  const isMobile = useIsMobile()
   const { bindings } = useSessionShortcuts()
   const shortcutLabel = (action: Parameters<typeof sessionShortcutLabel>[0]) => {
+    if (isMobile) return null
     const label = sessionShortcutLabel(action, navigator.platform, bindings)
     return label ? <ContextMenuShortcut className="shrink-0 tracking-normal" aria-hidden>{label}</ContextMenuShortcut> : null
   }
@@ -115,6 +117,7 @@ export function SessionItem({
     delete: editable ? () => onDelete(session) : undefined,
   }
   const onMenuKeyDown = (event: React.KeyboardEvent) => {
+    if (isMobile) return
     const action = sessionShortcutAction(event.nativeEvent, bindings)
     if (dispatchSessionShortcut(event.nativeEvent, {
       ...shortcutHandlers,
@@ -156,7 +159,7 @@ export function SessionItem({
         }
       }}
       onKeyDown={(e) => {
-        if (dispatchSessionShortcut(e.nativeEvent, shortcutHandlers, bindings)) {
+        if (!isMobile && dispatchSessionShortcut(e.nativeEvent, shortcutHandlers, bindings)) {
           e.preventDefault()
           e.stopPropagation()
           return

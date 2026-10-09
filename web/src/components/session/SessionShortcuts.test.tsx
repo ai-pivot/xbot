@@ -6,6 +6,7 @@ import type { SessionInfo } from '@/types/shared'
 import { SessionList } from './SessionList'
 import { SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import i18n from '@/i18n'
+import { UI_MODE_STORAGE_KEY } from '@/hooks/useUIMode'
 
 vi.mock('@/components/ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -38,13 +39,72 @@ function shortcut(target: Window | Document | Element, key: string, options: Key
   return event
 }
 
-beforeEach(() => localStorage.removeItem('xbot-session-shortcuts'))
+beforeEach(() => {
+  localStorage.removeItem('xbot-session-shortcuts')
+  localStorage.removeItem(UI_MODE_STORAGE_KEY)
+})
 afterEach(() => {
   localStorage.removeItem('xbot-session-shortcuts')
+  localStorage.removeItem(UI_MODE_STORAGE_KEY)
   vi.restoreAllMocks()
 })
 
 describe('session action shortcuts', () => {
+  it.each(['s', 'F2', 'f', 'e', 'Backspace'])('ignores %s on mobile in the current session, row, and menu', async (key) => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
+    const { props } = setup()
+    const row = screen.getByText('Other session').closest('[role="button"]')!
+    expect(shortcut(window, key).defaultPrevented).toBe(false)
+    expect(shortcut(row, key).defaultPrevented).toBe(false)
+    fireEvent.contextMenu(row)
+    const menu = await screen.findByRole('menu')
+    expect(menu.querySelectorAll('[data-slot="context-menu-shortcut"]')).toHaveLength(0)
+    expect(shortcut(menu, key).defaultPrevented).toBe(false)
+    expect(props.onToggleStar).not.toHaveBeenCalled()
+    expect(props.onFork).not.toHaveBeenCalled()
+    expect(props.onExport).not.toHaveBeenCalled()
+    expect(props.onDelete).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(menu).toBeInTheDocument()
+  })
+
+  it('keeps ordinary mobile selection, menu actions, and delete confirmation working', async () => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
+    const { props } = setup()
+    const row = screen.getByText('Other session').closest('[role="button"]')!
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(props.onSelect).toHaveBeenCalledExactlyOnceWith('other', 'cli')
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: i18n.t('session.star') }))
+    expect(props.onToggleStar).toHaveBeenCalledExactlyOnceWith('cli:other')
+    fireEvent.contextMenu(row)
+    fireEvent.click(await screen.findByRole('menuitem', { name: i18n.t('common.delete') }))
+    expect(props.onDelete).not.toHaveBeenCalled()
+    fireEvent.keyDown(await screen.findByRole('alertdialog'), { key: 'Enter' })
+    await waitFor(() => expect(props.onDelete).toHaveBeenCalledExactlyOnceWith('other', 'cli'))
+  })
+
+  it('removes desktop listeners on switching to mobile and restores them on switching back', () => {
+    const saved = JSON.stringify({ star: 'f8' })
+    localStorage.setItem('xbot-session-shortcuts', saved)
+    const { props } = setup()
+    act(() => {
+      localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
+      window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))
+    })
+    const row = screen.getByText('Other session').closest('[role="button"]')!
+    expect(shortcut(window, 'F8', { ctrlKey: false, altKey: false }).defaultPrevented).toBe(false)
+    expect(shortcut(row, 'F8', { ctrlKey: false, altKey: false }).defaultPrevented).toBe(false)
+    expect(props.onToggleStar).not.toHaveBeenCalled()
+    act(() => {
+      localStorage.setItem(UI_MODE_STORAGE_KEY, 'desktop')
+      window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))
+    })
+    fireEvent.keyDown(window, { key: 'F8' })
+    expect(props.onToggleStar).toHaveBeenCalledExactlyOnceWith('web:current')
+    expect(localStorage.getItem('xbot-session-shortcuts')).toBe(saved)
+  })
+
   it('uses a saved custom shortcut in the current session, row, and menu', async () => {
     localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ star: 'f8' }))
     const { props } = setup()

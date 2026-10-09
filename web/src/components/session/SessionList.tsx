@@ -41,6 +41,7 @@ import { sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent } from './session-tree'
 import { dispatchSessionShortcut, sessionShortcutAction } from './session-shortcuts'
 import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
+import { useIsMobile } from '@/hooks/useIsMobile'
 
 interface SessionListProps {
   sessions: SessionInfo[]
@@ -104,6 +105,7 @@ export function SessionList({
   onLoadMore,
 }: SessionListProps) {
   const { t } = useI18n()
+  const isMobile = useIsMobile()
   const [rename, setRename] = useState<DialogState>(null)
   const { bindings } = useSessionShortcuts()
   const [del, setDelete] = useState<DialogState>(null)
@@ -362,6 +364,7 @@ export function SessionList({
   }
 
   useEffect(() => {
+    if (isMobile) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (!sessionShortcutAction(event, bindings)) return
       if (multiSelectMode || busy || rename || del || forkTarget || exportTarget) return
@@ -386,7 +389,7 @@ export function SessionList({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [bindings, sessions, activeSession, multiSelectMode, busy, rename, del, forkTarget, exportTarget, onToggleStar, onFork, onExport, openRename, openFork, openExport, openDelete])
+  }, [isMobile, bindings, sessions, activeSession, multiSelectMode, busy, rename, del, forkTarget, exportTarget, onToggleStar, onFork, onExport, openRename, openFork, openExport, openDelete])
 
   const submitExport = async () => {
     if (!exportTarget || !onExport || busy) return

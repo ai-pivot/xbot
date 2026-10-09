@@ -21,6 +21,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/providers/i18n'
 import { useAuth } from '@/hooks/useAuth'
+import { useIsMobile } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
 
 import { SettingsAppearance } from './SettingsAppearance'
@@ -106,11 +107,13 @@ function SettingsAccountPanel({ onLoggedOut }: { onLoggedOut: () => void }) {
 export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsDialogProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  const [active, setActive] = useState<Category>('appearance')
+  const isMobile = useIsMobile()
+  const [selected, setSelected] = useState<Category>('appearance')
+  const active = isMobile && selected === 'shortcuts' ? 'interaction' : selected
 
   // 命令路由 / 引导卡直达：打开时切到指定分类。
   useEffect(() => {
-    if (open && initialSection) setActive(initialSection)
+    if (open && initialSection) setSelected(initialSection)
   }, [open, initialSection])
 
   const nav: { key: Category; labelKey: string }[] = [
@@ -155,12 +158,12 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
               375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
               桌面（≥sm）：竖直侧栏不变 */}
           <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:min-h-0 sm:w-36 sm:flex-col sm:gap-0.5 sm:shrink sm:overflow-y-auto sm:border-r sm:border-b-0">
-            {nav.map(({ key, labelKey }) => (
+            {nav.filter(({ key }) => !isMobile || key !== 'shortcuts').map(({ key, labelKey }) => (
               <button
                 key={key}
                 type="button"
                 aria-current={active === key}
-                onClick={() => setActive(key)}
+                onClick={() => setSelected(key)}
                 className={cn(
                   'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:whitespace-normal',
                   active === key

@@ -1,7 +1,7 @@
 /**
  * 手机端「设置」面板全 tab 溢出/截断回归。
  *
- * 覆盖 SettingsDialog 的全部分类（包括独立的 shortcuts 分类）：
+ * 覆盖 SettingsDialog 的全部移动端分类（不包含桌面专属 shortcuts 分类）：
  * 逐 tab 打开，检测「可见且不可达」的元素溢出（rect.right > 视口宽）。
  *
  * 排除三类合法情况（与 settings-llm-mobile.spec.ts 同口径）：
@@ -90,7 +90,7 @@ async function loginAndOpenSettings(page: import('@playwright/test').Page) {
   await page.waitForTimeout(500)
 }
 
-for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 600 }, { width: 390, height: 844 }, { width: 320, height: 700 }]) {
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 600 }]) {
   test(`shortcut settings header stays compact at ${viewport.width}px`, async ({ page }) => {
     await page.setViewportSize(viewport)
     await page.addInitScript(() => {
@@ -149,6 +149,83 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 60
     expect(page.context().pages()).toHaveLength(tabs)
   })
 }
+
+for (const { viewport, mode } of [
+  { viewport: { width: 390, height: 844 }, mode: 'auto' },
+  { viewport: { width: 320, height: 700 }, mode: 'auto' },
+  { viewport: { width: 1440, height: 1000 }, mode: 'mobile' },
+]) {
+  test(`mobile shortcut settings are absent at ${viewport.width}px in ${mode} mode`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await page.addInitScript(mode => {
+      localStorage.setItem('xbot-locale', 'zh-CN')
+      localStorage.setItem('xbot-ui-mode', mode)
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInTab: 'f8', star: 'f9' }))
+    }, mode)
+    await setupMock(page)
+    let creations = 0
+    await page.route('**/api/chats/create', route => {
+      creations++
+      return route.fulfill({ json: { ok: true, data: {} } })
+    })
+    await loginAndOpenSettings(page)
+    const dialog = page.getByRole('dialog', { name: '设置' })
+    await expect(dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true })).toHaveCount(0)
+    await expect(dialog.locator('[data-shortcut-action]')).toHaveCount(0)
+    await dialog.locator('nav').getByRole('button', { name: '交互', exact: true }).click()
+    await expect(dialog.getByRole('heading', { name: '代码块自动换行' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await page.keyboard.press('F8')
+    await page.keyboard.press('F2')
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    expect(creations).toBe(0)
+    await page.getByRole('button', { name: '会话', exact: true }).click()
+    const row = page.locator('[data-session-row="web:chat-1"]')
+    await row.click({ button: 'right' })
+    const menu = page.getByRole('menu')
+    await expect(menu).toBeVisible()
+    await expect(menu.locator('[data-slot="context-menu-shortcut"]')).toHaveCount(0)
+    await page.keyboard.press('F2')
+    await expect(page.getByRole('dialog', { name: '重命名' })).toHaveCount(0)
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).click()
+    const rename = page.getByRole('dialog', { name: '重命名' })
+    await expect(rename).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(rename).toBeHidden()
+    await row.click()
+    await expect(page.getByRole('dialog', { name: '会话', exact: true })).toBeHidden()
+    await page.getByRole('button', { name: '新建会话', exact: true }).click()
+    await expect.poll(() => creations).toBe(1)
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ openInTab: 'f8', star: 'f9' })
+  })
+}
+
+test('shortcut settings follow viewport changes without rewriting desktop bindings', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.addInitScript(() => {
+    localStorage.setItem('xbot-locale', 'zh-CN')
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+  })
+  await setupMock(page)
+  await loginAndOpenSettings(page)
+  let dialog = page.getByRole('dialog', { name: '设置' })
+  await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+  await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(dialog).toBeHidden()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  dialog = page.getByRole('dialog', { name: '设置' })
+  await expect(dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true })).toHaveCount(0)
+  await expect(dialog.locator('[data-shortcut-action]')).toHaveCount(0)
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await expect(dialog).toBeVisible()
+  await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+  await expect(dialog.getByRole('textbox', { name: '创建新会话' })).toHaveValue('F8')
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('xbot-session-shortcuts')!))).toEqual({ newSession: 'f8' })
+})
 
 test('mobile: every settings tab fits the viewport (no truncation)', async ({ browser }) => {
   for (const viewport of [{ width: 375, height: 812 }, { width: 320, height: 700 }]) {

@@ -93,6 +93,12 @@ is pending, the confirmation cannot submit another request.
 
 ### Session keyboard shortcuts
 
+Session shortcuts are **desktop-only**. Mobile mode hides their settings category
+and menu hints, and does not handle these six bindings. Ordinary touch/menu
+actions and dialog confirmation remain available. This follows the effective
+UI mode in Settings > Appearance, including forced mobile mode. Switching modes
+does not clear your bindings; they remain available when you return to desktop.
+
 Edit all six bindings in the dedicated **Settings > Keyboard Shortcuts** category.
 Interaction keeps code wrapping and the send-key mode. Type a
 combination and press Enter or leave the field to save, or use the keyboard
