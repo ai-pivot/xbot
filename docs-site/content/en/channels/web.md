@@ -86,6 +86,52 @@ The view bar above the list switches the organisation (identical on the desktop 
 
 > Upgrading from an older version: the previous default was "by time" and the first load switches to "by project" **once**; a category you pick yourself is never changed afterwards.
 
+**Delete confirmation**: choose Delete in a session's context menu, then press
+Enter to confirm or Escape to cancel. Enter confirms even when Cancel has focus.
+IME confirmation and held-key repeats do not delete a session; while deletion
+is pending, the confirmation cannot submit another request.
+
+### Session keyboard shortcuts
+
+Edit all six bindings in the dedicated **Settings > Keyboard Shortcuts** category.
+Interaction keeps code wrapping and the send-key mode. Type a
+combination and press Enter or leave the field to save, or use the keyboard
+icon to record it. The actions menu clears/disables a binding or restores its
+default; **Reset all shortcuts** in the section header restores the full set. Duplicate session and
+registered-command bindings are rejected. Changes apply immediately to both
+actions and menu labels, persist on refresh, and sync with your account.
+Custom Control and Command keys remain distinct; `Mod` accepts Ctrl/Cmd.
+Unmodified text/navigation keys are not accepted (F1-F24 are supported).
+Escape cancels recording; IME and held-key events are ignored. System/browser
+reserved combinations may never reach the page: enter a different binding
+manually when recording cannot capture one. The table below lists defaults.
+
+| Action | Shortcut |
+|--------|----------|
+| Create new session | `Ctrl/Cmd+Alt+N` |
+| Star / unstar | `Ctrl/Cmd+Alt+S` |
+| Rename | `F2` |
+| Fork | `Ctrl/Cmd+Alt+F` |
+| Export (choose Native / OpenAI / Codex) | `Ctrl/Cmd+Alt+E` |
+| Open delete confirmation | `Ctrl/Cmd+Alt+Backspace` |
+
+Create new session works globally, even with no current session or a hidden
+session panel, and switches to the new conversation. Any previously customized
+open-in-browser-tab binding (including a disabled binding) is preserved for
+creation. Opening an existing session in a browser tab remains a context-menu
+action without a shortcut.
+
+The other five shortcuts appear in the context menu (Alt is Option on macOS). They target the
+open session menu or focused session row first; otherwise they target the
+current session while the session panel is visible. Input fields, editors,
+IME events, and held-key repeats are excluded from all six actions. Creation
+pauses in any open dialog/menu; the other five ignore unrelated dialogs/menus
+and multi-select mode.
+Subagents only offer opening in a browser tab in their menu. Rename and fork
+require confirmation with Enter or their button; Escape cancels. Export opens
+the format submenu from a context menu, or a format dialog from a row/current
+session. The delete shortcut never deletes without confirmation.
+
 ## Authentication
 
 | Method | Description |

@@ -1,8 +1,7 @@
 /**
  * 手机端「设置」面板全 tab 溢出/截断回归。
  *
- * 覆盖 SettingsDialog 的 11 个分类（appearance / interaction / language /
- * agent / llm / account / webusers / developer / layout / plugins / about）：
+ * 覆盖 SettingsDialog 的全部分类（包括独立的 shortcuts 分类）：
  * 逐 tab 打开，检测「可见且不可达」的元素溢出（rect.right > 视口宽）。
  *
  * 排除三类合法情况（与 settings-llm-mobile.spec.ts 同口径）：
@@ -89,6 +88,66 @@ async function loginAndOpenSettings(page: import('@playwright/test').Page) {
     .first()
     .click()
   await page.waitForTimeout(500)
+}
+
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 600 }, { width: 390, height: 844 }, { width: 320, height: 700 }]) {
+  test(`shortcut settings header stays compact at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport)
+    await page.addInitScript(() => {
+      localStorage.setItem('xbot-locale', 'zh-CN')
+      localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInTab: 'f8' }))
+    })
+    await setupMock(page)
+    let creations = 0
+    await page.route('**/api/chats/create', route => {
+      creations++
+      return route.fulfill({ json: { ok: true, data: {} } })
+    })
+    await loginAndOpenSettings(page)
+    const dialog = page.getByRole('dialog', { name: '设置' })
+    await dialog.locator('nav').getByRole('button', { name: '交互', exact: true }).click()
+    await expect(dialog.getByRole('textbox')).toHaveCount(0)
+    await expect(dialog.getByRole('heading', { name: '代码块自动换行' })).toBeVisible()
+    await dialog.locator('nav').getByRole('button', { name: '快捷键', exact: true }).click()
+    const section = dialog.getByRole('region', { name: '会话快捷键' })
+    await expect(section.getByRole('textbox')).toHaveCount(6)
+    const createField = section.getByRole('textbox', { name: '创建新会话' })
+    await expect(createField).toHaveValue('F8')
+    await expect(section.getByRole('textbox', { name: '在新标签页中打开' })).toHaveCount(0)
+    const heading = section.getByRole('heading', { name: '会话快捷键' })
+    const reset = section.getByRole('button', { name: '全部恢复默认' })
+    await expect(async () => {
+      const titleRect = await heading.boundingBox()
+      const resetRect = await reset.boundingBox()
+      expect(titleRect).not.toBeNull()
+      expect(resetRect).not.toBeNull()
+      expect(Math.abs(titleRect!.y + titleRect!.height / 2 - resetRect!.y - resetRect!.height / 2)).toBeLessThanOrEqual(2)
+      expect(resetRect!.x).toBeGreaterThanOrEqual(titleRect!.x + titleRect!.width)
+      expect(resetRect!.x + resetRect!.width).toBeLessThanOrEqual(viewport.width)
+    }).toPass()
+    const headerHeight = await section.locator('header').evaluate(el => el.getBoundingClientRect().height)
+    expect(headerHeight).toBeLessThanOrEqual(36)
+    const overflow = await section.evaluate(el => el.scrollWidth - el.clientWidth)
+    expect(overflow).toBeLessThanOrEqual(1)
+    if (viewport.width >= 640) {
+      const nav = dialog.locator('nav')
+      const about = nav.getByRole('button', { name: '关于', exact: true })
+      await about.scrollIntoViewIfNeeded()
+      const navRect = await nav.boundingBox()
+      const aboutRect = await about.boundingBox()
+      expect(aboutRect!.y).toBeGreaterThanOrEqual(navRect!.y)
+      expect(aboutRect!.y + aboutRect!.height).toBeLessThanOrEqual(navRect!.y + navRect!.height)
+    }
+    await createField.focus()
+    await page.keyboard.press('F8')
+    expect(creations).toBe(0)
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    const tabs = page.context().pages().length
+    await page.keyboard.press('F8')
+    await expect.poll(() => creations).toBe(1)
+    expect(page.context().pages()).toHaveLength(tabs)
+  })
 }
 
 test('mobile: every settings tab fits the viewport (no truncation)', async ({ browser }) => {

@@ -111,22 +111,48 @@ describe('AppShell workspace layout (info bar must not squeeze the dockview)', (
     connection.listeners.clear()
   })
 
-  it.each([{ ctrlKey: true }, { metaKey: true }])('creates and opens one session with Mod+N (%o)', async (modifier) => {
+  it.each([{ ctrlKey: true }, { metaKey: true }])('creates and opens one session with the default new-session shortcut (%o)', async (modifier) => {
     renderWithProviders(<AppShell />)
-    const event = new KeyboardEvent('keydown', { key: 'n', ...modifier, cancelable: true })
+    const event = new KeyboardEvent('keydown', { key: 'n', altKey: true, ...modifier, cancelable: true })
     fireEvent(window, event)
-    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledOnce())
-    expect(sessionMocks.createSession).toHaveBeenCalledOnce()
+    await waitFor(() => expect(sessionMocks.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ filePath: 'new-session' }) })))
     expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('uses a configured function key without needing a visible session list or current session', async () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+    renderWithProviders(<AppShell />)
+    const event = new KeyboardEvent('keydown', { key: 'F8', cancelable: true })
+    fireEvent(window, event)
+    await waitFor(() => expect(sessionMocks.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ filePath: 'new-session' }) })))
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('preserves the old open-in-tab custom binding for new-session creation', async () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInTab: 'f8' }))
+    renderWithProviders(<AppShell />)
+    fireEvent.keyDown(window, { key: 'F8' })
+    await waitFor(() => expect(sessionMocks.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ filePath: 'new-session' }) })))
+  })
+
+  it('does not keep a hidden hardcoded Ctrl+N shortcut when creation is disabled', () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: null }))
+    renderWithProviders(<AppShell />)
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true })
+    expect(sessionMocks.createSession).not.toHaveBeenCalled()
   })
 
   it('ignores repeated and composing shortcuts and removes the listener on unmount', () => {
     const { unmount } = renderWithProviders(<AppShell />)
-    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, repeat: true })
-    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, isComposing: true })
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true, repeat: true })
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true, isComposing: true })
     expect(sessionMocks.createSession).not.toHaveBeenCalled()
     unmount()
-    fireEvent.keyDown(window, { key: 'n', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true })
     expect(sessionMocks.createSession).not.toHaveBeenCalled()
   })
 

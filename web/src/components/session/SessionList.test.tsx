@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
@@ -31,6 +31,32 @@ function session(overrides: Partial<SessionInfo> & { chatID: string; channel: st
     synthetic: overrides.synthetic,
     children: overrides.children,
   }
+}
+
+async function openDeleteConfirmation(onDelete: (id: string, channel: string) => Promise<boolean>) {
+  const s = session({ chatID: 'chat-1', channel: 'web', label: 'My Session', type: 'main' })
+  renderWithProviders(
+    <SessionList
+      sessions={[s]}
+      groups={[{ key: 'today', sessions: [s] }]}
+      sortedSessions={[s]}
+      category="time"
+      collapsedGroups={new Set()}
+      onToggleGroup={vi.fn()}
+      starredIds={[]}
+      unreadIds={[]}
+      activeSession={null}
+      search=""
+      subAgents={[]}
+      onSelect={vi.fn()}
+      onToggleStar={vi.fn()}
+      onRename={vi.fn()}
+      onDelete={onDelete}
+    />,
+  )
+  fireEvent.contextMenu(screen.getByText('My Session'))
+  fireEvent.click(await screen.findByRole('menuitem', { name: /Delete|删除/ }))
+  return screen.findByRole('alertdialog')
 }
 
 describe('SessionList', () => {
@@ -343,31 +369,65 @@ describe('SessionList', () => {
   })
 
   it('按 Enter 确认删除会话，只调用一次删除操作', async () => {
-    const s = session({ chatID: 'chat-1', channel: 'web', label: 'My Session', type: 'main' })
     const onDelete = vi.fn().mockResolvedValue(true)
-    renderWithProviders(
-      <SessionList
-        sessions={[s]}
-        groups={[{ key: 'today', sessions: [s] }]}
-        sortedSessions={[s]}
-        category="time"
-        collapsedGroups={new Set()}
-        onToggleGroup={vi.fn()}
-        starredIds={[]}
-        unreadIds={[]}
-        activeSession={null}
-        search=""
-        subAgents={[]}
-        onSelect={vi.fn()}
-        onToggleStar={vi.fn()}
-        onRename={vi.fn()}
-        onDelete={onDelete}
-      />,
-    )
-    fireEvent.contextMenu(screen.getByText('My Session'))
-    fireEvent.click(await screen.findByRole('menuitem', { name: /Delete|删除/ }))
-    const dialog = await screen.findByRole('alertdialog')
+    const dialog = await openDeleteConfirmation(onDelete)
     fireEvent.keyDown(dialog, { key: 'Enter' })
+    await waitFor(() => expect(onDelete).toHaveBeenCalledOnce())
+    expect(onDelete).toHaveBeenCalledWith('chat-1', 'web')
+  })
+
+  it('confirms with Enter when Cancel has focus without activating Cancel', async () => {
+    const onDelete = vi.fn().mockResolvedValue(true)
+    const dialog = await openDeleteConfirmation(onDelete)
+    const cancel = screen.getByRole('button', { name: /Cancel|取消/ })
+    act(() => cancel.focus())
+    expect(cancel).toHaveFocus()
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    fireEvent(cancel, event)
+    expect(event.defaultPrevented).toBe(true)
+    await waitFor(() => expect(onDelete).toHaveBeenCalledOnce())
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+  })
+
+  it.each([
+    { isComposing: true },
+    { keyCode: 229 },
+    { repeat: true },
+  ])('does not delete for composing or repeated Enter (%o)', async (options) => {
+    const onDelete = vi.fn().mockResolvedValue(true)
+    const dialog = await openDeleteConfirmation(onDelete)
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options })
+    fireEvent(dialog, event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(onDelete).not.toHaveBeenCalled()
+    expect(dialog).toBeInTheDocument()
+  })
+
+  it('does not submit again while the deletion request is pending', async () => {
+    let finishDelete!: (ok: boolean) => void
+    const onDelete = vi.fn(() => new Promise<boolean>((resolve) => { finishDelete = resolve }))
+    const dialog = await openDeleteConfirmation(onDelete)
+    fireEvent.keyDown(dialog, { key: 'Enter' })
+    fireEvent.keyDown(dialog, { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^删除$/ }))
+    expect(onDelete).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: /^Delete$|^删除$/ })).toBeDisabled()
+    await act(async () => finishDelete(true))
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+  })
+
+  it('keeps Escape as cancel without deleting the session', async () => {
+    const onDelete = vi.fn().mockResolvedValue(true)
+    const dialog = await openDeleteConfirmation(onDelete)
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    await waitFor(() => expect(dialog).not.toBeInTheDocument())
+    expect(onDelete).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Delete button working', async () => {
+    const onDelete = vi.fn().mockResolvedValue(true)
+    await openDeleteConfirmation(onDelete)
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$|^删除$/ }))
     await waitFor(() => expect(onDelete).toHaveBeenCalledOnce())
     expect(onDelete).toHaveBeenCalledWith('chat-1', 'web')
   })

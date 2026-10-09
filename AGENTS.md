@@ -4,6 +4,11 @@
 
 ## Quick Reference
 
+- Session deletion keyboard contract: Enter confirms only inside the delete dialog; composing/repeated/busy Enter must not delete. Escape cancels. See `docs/agent/gotchas-web-frontend.md` and `web/src/components/session/SessionList.test.tsx`.
+- Session action shortcuts: bindings/platform labels live in `web/src/components/session/session-shortcuts.ts`; creation is global (`useNewSessionShortcut`, Mod+Alt+N), the other five actions prioritize the menu/focused row over the current session. Never intercept editors or open overlays; open-in-browser-tab is menu-only. See `docs/agent/gotchas-web-frontend.md` and `SessionShortcuts.test.tsx`.
+- Editable session shortcuts: Settings > Keyboard Shortcuts is an independent category (`settings.open?section=shortcuts`), not part of Interaction. It uses `useSessionShortcuts` (`xbot-session-shortcuts` / `web:ui:session-shortcuts`); Control and Command are distinct custom modifiers, null disables a binding, and menu labels update live. Legacy `openInTab` overrides map to `newSession` (including null); edits write only canonical keys.
+- Settings group actions belong in `SettingsSection.actions`, beside the heading; do not add a separate reset toolbar above the shortcut rows.
+
 - **⛔ 禁止直接 push 主分支（用户明确要求，2026-09-10；违反会被严厉批评）。** 任何改动一律走 **分支 + Pull Request**：
   `git checkout -b <fix|feat|chore>/<slug>` → commit → `git push origin <branch>` → `gh pr create --base master`。
   **绝不允许 `git push origin master`**（历史事故：agent 连续多轮直接 push master，绕过 review 与 CI 门禁）。合并交给用户/CI，agent 的职责是开 PR 并**确保 CI 全绿**。

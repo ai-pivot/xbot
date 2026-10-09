@@ -25,6 +25,7 @@ const SETTING_MAP: Record<string, string> = {
   'xbot-accent': 'web:ui:accent',
   'xbot-locale': 'web:ui:locale',
   'xbot-send-key-mode': 'web:ui:send-key-mode',
+  'xbot-session-shortcuts': 'web:ui:session-shortcuts',
   'xbot-code-word-wrap': 'web:ui:code-word-wrap',
   'xbot:leftSidebarWidth': 'web:ui:left-sidebar-width',
   // UI 外壳模式（auto / desktop / mobile）——跨设备同步

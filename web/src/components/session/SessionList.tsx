@@ -39,6 +39,8 @@ import { SessionEmptyState } from './SessionEmptyState'
 import { collapseKey, isSubAgentSession, sortSessions } from '@/lib/session-grouping'
 import { sameSession, sessionKey } from '@/lib/session-grouping'
 import { childrenForParent } from './session-tree'
+import { dispatchSessionShortcut, sessionShortcutAction } from './session-shortcuts'
+import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
 
 interface SessionListProps {
   sessions: SessionInfo[]
@@ -103,13 +105,29 @@ export function SessionList({
 }: SessionListProps) {
   const { t } = useI18n()
   const [rename, setRename] = useState<DialogState>(null)
+  const { bindings } = useSessionShortcuts()
   const [del, setDelete] = useState<DialogState>(null)
   const [forkTarget, setForkTarget] = useState<DialogState>(null)
+  const [exportTarget, setExportTarget] = useState<SessionInfo | null>(null)
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('native')
   const [renameDraft, setRenameDraft] = useState('')
   const [forkDraft, setForkDraft] = useState('')
   const [busy, setBusy] = useState(false)
+  const renameInputRef = useRef<HTMLInputElement>(null)
+  const forkInputRef = useRef<HTMLInputElement>(null)
+  const exportSelectRef = useRef<HTMLSelectElement>(null)
+  const deleteCancelRef = useRef<HTMLButtonElement>(null)
   const draggedKeyRef = useRef<string | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+
+  // Radix autofocus only runs on mount; a closing animation can keep the same
+  // dialog mounted when a shortcut opens it again for another session.
+  useEffect(() => {
+    if (rename) renameInputRef.current?.focus()
+    else if (forkTarget) forkInputRef.current?.focus()
+    else if (exportTarget) exportSelectRef.current?.focus()
+    else if (del) deleteCancelRef.current?.focus()
+  }, [rename, forkTarget, exportTarget, del])
 
   // ── Scroll performance: disable CSS transitions during active scrolling ────
   // Trace profile showed 861 UpdateLayoutTree + 633 Layerize calls during a 9s
@@ -272,11 +290,15 @@ export function SessionList({
     return children.filter((child) => matchesSelfOrDescendant(child, matchesQuery))
   }
 
-  const openRename = (s: SessionInfo) => {
+  const openRename = useCallback((s: SessionInfo) => {
     setRename({ id: s.chatID, channel: s.channel, label: s.label || s.chatID })
     setRenameDraft(s.label)
-  }
-  const openDelete = (s: SessionInfo) => setDelete({ id: s.chatID, channel: s.channel, label: s.label || s.chatID })
+  }, [])
+  const openDelete = useCallback((s: SessionInfo) => setDelete({ id: s.chatID, channel: s.channel, label: s.label || s.chatID }), [])
+  const openExport = useCallback((s: SessionInfo) => {
+    setExportFormat('native')
+    setExportTarget(s)
+  }, [])
 
   const selectChannel = (s: SessionInfo) => onSelect(s.chatID, s.channel)
 
@@ -303,7 +325,7 @@ export function SessionList({
   const dndProps = onReorder ? { onDragStartItem: handleDragStart, onDropItem: handleDrop } : {}
 
   const submitRename = async () => {
-    if (!rename) return
+    if (!rename || busy) return
     const label = renameDraft.trim()
     if (!label) return
     setBusy(true)
@@ -324,19 +346,57 @@ export function SessionList({
   // BEFORE creating — no silent auto-fork). submitFork calls onFork with the
   // confirmed label; the store's forkSession then creates + fully switches to
   // the new session (switchSession path — backend /switch + cache clear).
-  const openFork = (session: SessionInfo) => {
+  const openFork = useCallback((session: SessionInfo) => {
     setForkTarget({ id: session.chatID, channel: session.channel, label: session.label || session.chatID })
     setForkDraft(`${session.label || session.chatID} fork`)
-  }
+  }, [])
 
   const submitFork = async () => {
-    if (!forkTarget || !onFork) return
+    if (!forkTarget || !onFork || busy) return
     const label = forkDraft.trim()
     if (!label) return
     setBusy(true)
     const newID = await onFork(forkTarget.id, forkTarget.channel, label)
     setBusy(false)
     if (newID) setForkTarget(null)
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!sessionShortcutAction(event, bindings)) return
+      if (multiSelectMode || busy || rename || del || forkTarget || exportTarget) return
+      // Rows and portal menus handle their own target before this bubble listener.
+      if (event.target instanceof Element && event.target.closest('[data-session-row]')) return
+      if (document.querySelector('[role="dialog"]:not([data-state="closed"]), [role="alertdialog"]:not([data-state="closed"]), [role="menu"]:not([data-state="closed"])')) return
+      const root = scrollAreaRef.current
+      if (!root || root.closest('[hidden], [aria-hidden="true"], [inert]')) return
+      for (let el: HTMLElement | null = root; el; el = el.parentElement) {
+        const style = getComputedStyle(el)
+        if (style.display === 'none' || style.visibility === 'hidden') return
+      }
+      const target = sessions.find((s) => sameSession(activeSession, s))
+      if (!target || target.synthetic || isSubAgentSession(target)) return
+      dispatchSessionShortcut(event, {
+        star: () => onToggleStar(sessionKey(target)),
+        rename: () => openRename(target),
+        fork: onFork ? () => openFork(target) : undefined,
+        export: onExport ? () => openExport(target) : undefined,
+        delete: () => openDelete(target),
+      }, bindings)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [bindings, sessions, activeSession, multiSelectMode, busy, rename, del, forkTarget, exportTarget, onToggleStar, onFork, onExport, openRename, openFork, openExport, openDelete])
+
+  const submitExport = async () => {
+    if (!exportTarget || !onExport || busy) return
+    setBusy(true)
+    try {
+      await onExport(exportTarget, exportFormat)
+      setExportTarget(null)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -357,8 +417,9 @@ export function SessionList({
                   onToggleStar={onToggleStar}
                   onRename={openRename}
                   onDelete={openDelete}
-                  onFork={openFork}
+                  onFork={onFork ? openFork : undefined}
                   onExport={onExport}
+                  onExportOptions={onExport ? openExport : undefined}
                   multiSelectMode={multiSelectMode}
                   selected={selectedIds?.has(sessionKey(s)) ?? false}
                   onToggleSelect={onToggleSelect}
@@ -400,8 +461,9 @@ export function SessionList({
                 onToggleStar={onToggleStar}
                 onRename={openRename}
                 onDelete={openDelete}
-                onFork={openFork}
+                onFork={onFork ? openFork : undefined}
                 onExport={onExport}
+                onExportOptions={onExport ? openExport : undefined}
                 multiSelectMode={multiSelectMode}
                 selectedIds={selectedIds}
                 onToggleSelect={onToggleSelect}
@@ -421,11 +483,15 @@ export function SessionList({
             <DialogTitle>{t('common.rename')}</DialogTitle>
           </DialogHeader>
           <Input
+            ref={renameInputRef}
             autoFocus
             value={renameDraft}
             onChange={(e) => setRenameDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void submitRename()
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.repeat) return
+              void submitRename()
             }}
             aria-label={t('session.nameLabel')}
           />
@@ -453,11 +519,15 @@ export function SessionList({
             </DialogDescription>
           </DialogHeader>
           <Input
+            ref={forkInputRef}
             autoFocus
             value={forkDraft}
             onChange={(e) => setForkDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') void submitFork()
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.repeat) return
+              void submitFork()
             }}
             aria-label={t('session.nameLabel')}
           />
@@ -472,16 +542,43 @@ export function SessionList({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={exportTarget !== null} onOpenChange={(open) => !open && setExportTarget(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t('session.export')}</DialogTitle>
+            <DialogDescription className="break-words">{exportTarget?.label || exportTarget?.chatID}</DialogDescription>
+          </DialogHeader>
+          <select
+            ref={exportSelectRef}
+            autoFocus
+            aria-label={t('session.export')}
+            value={exportFormat}
+            disabled={busy}
+            onChange={(e) => setExportFormat(e.target.value as ExportFormat)}
+            className="h-9 w-full rounded-md border border-border bg-bg-primary px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <option value="native">{t('session.exportNative')}</option>
+            <option value="openai">{t('session.exportOpenAI')}</option>
+            <option value="codex">{t('session.exportCodex')}</option>
+          </select>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setExportTarget(null)} disabled={busy}>{t('common.cancel')}</Button>
+            <Button onClick={() => void submitExport()} disabled={busy}>{t('session.export')}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Delete confirmation */}
       <AlertDialog open={del !== null} onOpenChange={(o) => !o && setDelete(null)}>
         <AlertDialogContent
           className="sm:max-w-sm"
           onKeyDown={(e) => {
-            if (e.key !== 'Enter' || e.nativeEvent.isComposing || busy) return
-            // Enter confirms regardless of Radix's initial focus on Cancel. Avoid
-            // the browser also synthesizing a click on the focused button.
+            if (e.key !== 'Enter') return
+            // Cancel receives initial focus. Suppress native button activation,
+            // including Enter used by the IME or generated by a held key.
             e.preventDefault()
             e.stopPropagation()
+            if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229 || e.repeat || busy) return
             void submitDelete()
           }}
         >
@@ -492,7 +589,7 @@ export function SessionList({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>{t('common.cancel')}</AlertDialogCancel>
+            <AlertDialogCancel ref={deleteCancelRef} disabled={busy}>{t('common.cancel')}</AlertDialogCancel>
             <AlertDialogAction
               onClick={(e) => {
                 e.preventDefault()

@@ -1,11 +1,9 @@
 /**
  * SettingsDialog — global settings panel container (Spec 7 §3.2).
  *
- * A right-side Sheet (VSCode-style) with a left category nav and a right
- * content area. Width is fixed at 480px. The Sheet is controlled (open /
- * onOpenChange) so the launcher owns visibility.
- *
- * Categories: 外观 / 折叠 / 语言 / LLM 配置 / 账号. The LLM panel mounts its hook
+ * A centered dialog with category navigation and a scrollable content area.
+ * The dialog is controlled (open / onOpenChange) so the launcher owns visibility.
+ * The LLM panel mounts its hook
  * lazily (only when selected) so a disconnected server doesn't fire RPCs on
  * every panel open. The Account panel shows current username + logout button.
  */
@@ -27,6 +25,7 @@ import { cn } from '@/lib/utils'
 
 import { SettingsAppearance } from './SettingsAppearance'
 import { SettingsInteraction } from './SettingsInteraction'
+import { SettingsSessionShortcuts } from './SettingsSessionShortcuts'
 import { SettingsGeneral } from './SettingsGeneral'
 import { SettingsAgent } from './SettingsAgent'
 import { SettingsChannels } from './SettingsChannels'
@@ -41,7 +40,7 @@ import { SettingsPlugins } from './SettingsPlugins'
 import { SettingsTools } from './SettingsTools'
 import { useLLMSettings } from '@/hooks/useLLMSettings'
 
-type Category = 'appearance' | 'interaction' | 'language' | 'agent' | 'tools' | 'llm' | 'channels' | 'storage' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
+type Category = 'appearance' | 'interaction' | 'shortcuts' | 'language' | 'agent' | 'tools' | 'llm' | 'channels' | 'storage' | 'account' | 'webusers' | 'developer' | 'layout' | 'plugins' | 'about'
 
 /** 设置分类（供命令路由 `xbot://settings.open?section=llm` 使用）。 */
 export type SettingsCategory = Category
@@ -117,6 +116,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
   const nav: { key: Category; labelKey: string }[] = [
     { key: 'appearance', labelKey: 'nav.appearance' },
     { key: 'interaction', labelKey: 'nav.interaction' },
+    { key: 'shortcuts', labelKey: 'nav.shortcuts' },
     { key: 'language', labelKey: 'nav.language' },
     { key: 'agent', labelKey: 'nav.agent' },
     { key: 'tools', labelKey: 'nav.tools' },
@@ -135,6 +135,10 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton
+        onEscapeKeyDown={event => {
+          // Radix sees Escape in capture before the shortcut editor can cancel.
+          if (event.target instanceof Element && event.target.closest('[data-shortcut-editing="true"]')) event.preventDefault()
+        }}
         // 居中弹窗：w-[min(92vw,56rem)]（92vw 视口宽 ≤ 56rem/896px）。
         // 全部 tab 统一宽度（切换 tab 零宽度跳变）；LLM 控制台重内容面板
         // 需 576px 内容区。rounded-none 直角 + bg-bg-elevated 不透明。
@@ -150,7 +154,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
           {/* Left nav — 手机（<sm）：顶部横向滚动 tab 条（w-36 侧栏会占掉 38% 屏宽，
               375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
               桌面（≥sm）：竖直侧栏不变 */}
-          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:w-36 sm:flex-col sm:gap-0.5 sm:overflow-visible sm:border-r sm:border-b-0">
+          <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:min-h-0 sm:w-36 sm:flex-col sm:gap-0.5 sm:shrink sm:overflow-y-auto sm:border-r sm:border-b-0">
             {nav.map(({ key, labelKey }) => (
               <button
                 key={key}
@@ -158,7 +162,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
                 aria-current={active === key}
                 onClick={() => setActive(key)}
                 className={cn(
-                  'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:shrink sm:whitespace-normal',
+                  'shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-left text-sm transition-colors sm:whitespace-normal',
                   active === key
                     ? 'bg-accent/14 font-medium text-accent'
                     : 'text-text-muted hover:bg-bg-tertiary hover:text-text-primary',
@@ -174,6 +178,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
           <div className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
             {active === 'appearance' ? <SettingsAppearance /> : null}
             {active === 'interaction' ? <SettingsInteraction /> : null}
+            {active === 'shortcuts' ? <div className="p-4"><SettingsSessionShortcuts /></div> : null}
             {active === 'language' ? <SettingsGeneral /> : null}
             {active === 'agent' ? <SettingsAgent /> : null}
             {active === 'tools' ? <SettingsTools /> : null}

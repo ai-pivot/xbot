@@ -7,13 +7,14 @@
  * SubAgent mode (Child 5): when isSubAgent is true, the item is indented,
  * shows a Bot icon instead of the status dot, and hides the star/time.
  */
-import { useCallback } from 'react'
+import { useState } from 'react'
 import { Star, Pencil, Trash2, Bot, GitBranch, Loader2, ExternalLink, Check, Download, GitFork } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
+  ContextMenuShortcut,
   ContextMenuSub,
   ContextMenuSubContent,
   ContextMenuSubTrigger,
@@ -26,6 +27,8 @@ import { useIsTouch } from '@/hooks/useIsMobile'
 import { parseAgentChatID, sessionKey } from '@/lib/session-grouping'
 import type { SessionInfo, SessionStatus } from '@/types/shared'
 import type { ExportFormat } from '@/components/agent/api'
+import { dispatchSessionShortcut, openSessionInBrowserTab, sessionShortcutAction, sessionShortcutLabel } from './session-shortcuts'
+import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
 
 interface SessionItemProps {
   session: SessionInfo
@@ -43,6 +46,7 @@ interface SessionItemProps {
   onFork?: (session: SessionInfo) => void
   /** Export the session in the given format. */
   onExport?: (session: SessionInfo, format: ExportFormat) => void
+  onExportOptions?: (session: SessionInfo) => void
   /** Multi-select mode: show checkbox, click toggles selection. */
   multiSelectMode?: boolean
   /** Whether this item is currently selected in multi-select mode. */
@@ -76,6 +80,7 @@ export function SessionItem({
   onDelete,
   onFork,
   onExport,
+  onExportOptions,
   multiSelectMode = false,
   selected = false,
   onToggleSelect,
@@ -83,7 +88,14 @@ export function SessionItem({
   onDropItem,
 }: SessionItemProps) {
   const { t } = useI18n()
+  const { bindings } = useSessionShortcuts()
+  const shortcutLabel = (action: Parameters<typeof sessionShortcutLabel>[0]) => {
+    const label = sessionShortcutLabel(action, navigator.platform, bindings)
+    return label ? <ContextMenuShortcut className="shrink-0 tracking-normal" aria-hidden>{label}</ContextMenuShortcut> : null
+  }
   const isTouch = useIsTouch()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const key = sessionKey(session)
   const title = isSubAgent ? subAgentTitle(session) : (session.label || session.chatID)
   // waiting_input (AskUser pending) and running are mutually exclusive: the
@@ -93,15 +105,31 @@ export function SessionItem({
     session.status !== 'waiting_input' &&
     (session.running === true || session.status === 'running' || session.status === 'pending')
 
-  const openInBrowserTab = useCallback(() => {
-    const sessionParam = `${session.channel || 'web'}:${session.chatID}`
-    const url = `${window.location.origin}/?session=${encodeURIComponent(sessionParam)}`
-    window.open(url, '_blank')
-  }, [session])
+  const openInBrowserTab = () => openSessionInBrowserTab(session)
+  const editable = !isSubAgent && !session.synthetic && !multiSelectMode
+  const shortcutHandlers = {
+    star: editable ? () => onToggleStar(key) : undefined,
+    rename: editable ? () => onRename(session) : undefined,
+    fork: editable && onFork ? () => onFork(session) : undefined,
+    export: editable && onExportOptions ? () => onExportOptions(session) : undefined,
+    delete: editable ? () => onDelete(session) : undefined,
+  }
+  const onMenuKeyDown = (event: React.KeyboardEvent) => {
+    const action = sessionShortcutAction(event.nativeEvent, bindings)
+    if (dispatchSessionShortcut(event.nativeEvent, {
+      ...shortcutHandlers,
+      export: editable && onExport ? () => setExportMenuOpen(true) : undefined,
+    }, bindings)) {
+      event.preventDefault()
+      event.stopPropagation()
+      if (action !== 'export') setMenuOpen(false)
+    }
+  }
 
   const row = (
     <div
       role="button"
+      data-session-row={key}
       tabIndex={0}
       draggable={!isSubAgent && !multiSelectMode && !session.synthetic && !!onDragStartItem}
       onDragStart={(e) => {
@@ -128,6 +156,11 @@ export function SessionItem({
         }
       }}
       onKeyDown={(e) => {
+        if (dispatchSessionShortcut(e.nativeEvent, shortcutHandlers, bindings)) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
         if (session.synthetic) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
@@ -253,9 +286,9 @@ export function SessionItem({
   // SubAgent items: context menu with only "open in tab"
   if (isSubAgent || session.synthetic) {
     return (
-     <ContextMenu>
+     <ContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
        <TouchContextMenuTrigger asChild>{row}</TouchContextMenuTrigger>
-       <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
+       <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none" onKeyDown={onMenuKeyDown}>
           <ContextMenuItem onSelect={openInBrowserTab}>
             <ExternalLink className="size-4" />
             {t('session.openInTab')}
@@ -266,9 +299,9 @@ export function SessionItem({
   }
 
   return (
-     <ContextMenu>
+     <ContextMenu open={menuOpen} onOpenChange={(open) => { setMenuOpen(open); if (!open) setExportMenuOpen(false) }}>
        <TouchContextMenuTrigger asChild>{row}</TouchContextMenuTrigger>
-       <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none">
+       <ContextMenuContent className="data-[state=open]:animate-none data-[state=closed]:animate-none" onKeyDown={onMenuKeyDown}>
          <ContextMenuItem onSelect={openInBrowserTab}>
           <ExternalLink className="size-4" />
           {t('session.openInTab')}
@@ -280,22 +313,26 @@ export function SessionItem({
             style={starred ? { color: '#e6a700' } : undefined}
           />
           {starred ? t('session.unstar') : t('session.star')}
+          {shortcutLabel('star')}
         </ContextMenuItem>
         <ContextMenuItem onSelect={() => onRename(session)}>
           <Pencil className="size-4" />
           {t('common.rename')}
+          {shortcutLabel('rename')}
         </ContextMenuItem>
         {onFork && !isSubAgent && (
           <ContextMenuItem onSelect={() => onFork(session)}>
             <GitFork className="size-4" />
             {t('session.fork')}
+            {shortcutLabel('fork')}
           </ContextMenuItem>
         )}
         {onExport && (
-          <ContextMenuSub>
+          <ContextMenuSub open={exportMenuOpen} onOpenChange={setExportMenuOpen}>
             <ContextMenuSubTrigger>
               <Download className="size-4" />
               {t('session.export')}
+              {shortcutLabel('export')}
             </ContextMenuSubTrigger>
             <ContextMenuSubContent>
               <ContextMenuItem onSelect={() => onExport(session, 'native')}>
@@ -314,6 +351,7 @@ export function SessionItem({
         <ContextMenuItem onSelect={() => onDelete(session)} variant="destructive">
           <Trash2 className="size-4" />
           {t('common.delete')}
+          {shortcutLabel('delete')}
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

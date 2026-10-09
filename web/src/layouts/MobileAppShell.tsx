@@ -39,6 +39,7 @@ import { PluginView } from '@/plugin-runtime/PluginView'
 import { registerMobileAgentOpener } from '@/lib/mobileNav'
 import { usePluginViewPanels } from '@/plugin-runtime/usePluginViewPanels'
 import { useKeyboardInset } from '@/hooks/useKeyboardInset'
+import { useNewSessionShortcut } from '@/hooks/useNewSessionShortcut'
 import { pluginIcon } from '@/plugin-runtime/pluginIcons'
 import { useLayoutItems } from '@/plugin-runtime/layoutRegistry'
 import { BUILTIN_LAYOUT_ITEMS, type LayoutItem } from '@/plugin-runtime/layoutTypes'
@@ -303,6 +304,8 @@ export function MobileAppShell() {
       setView('agent')
     }
   }
+
+  useNewSessionShortcut(createSession)
 
   const handleSubAgentSelect = (subAgent: SessionInfoType) => {
     setSubAgentView({
