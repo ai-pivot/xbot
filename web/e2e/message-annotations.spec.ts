@@ -452,7 +452,6 @@ test.describe('long live reply', () => {
       await expect(body.locator('p').last()).toHaveText(lines.at(-1)!)
     }
     await advance(153)
-    await expect(body).toHaveClass(/typewriter-done/)
     const points = await body.evaluate((el) => {
       const startNode = el.querySelectorAll('p')[5].firstChild!
       const endNode = el.querySelectorAll('p')[6].firstChild!

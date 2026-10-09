@@ -179,6 +179,61 @@ describe('MarkdownRenderer', () => {
     expect(container.innerHTML).toBe(before)
   })
 
+  it('keeps a native selection in a revealed paragraph while the typewriter advances', () => {
+    const content = '101 102 103 104 105 106 107 108 109 110\n\nSecond paragraph still revealing'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={45} />)
+    const text = container.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 32)
+    range.setEnd(text, 39)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.toString()).toBe('109 110')
+
+    rerender(<MarkdownRenderer content={content} streaming visibleChars={47} />)
+
+    expect(selection.toString()).toBe('109 110')
+    expect(range.startOffset).toBe(32)
+    expect(range.endOffset).toBe(39)
+  })
+
+  it('keeps a native selection when more characters appear in the same text node', () => {
+    const content = 'abcdefghijklmnopqrstuvwxyz'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={10} />)
+    const text = container.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 3)
+    range.setEnd(text, 6)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.toString()).toBe('def')
+
+    rerender(<MarkdownRenderer content={content} streaming visibleChars={12} />)
+
+    expect(container.querySelector('p')).toHaveTextContent('abcdefghijkl')
+    expect(selection.toString()).toBe('def')
+  })
+
+  it('restores the remaining text without clearing selection when streaming ends', () => {
+    const content = '😀 abcdefghijklmnopqrstuvwxyz'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={8} />)
+    const text = container.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 3)
+    range.setEnd(text, 6)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.toString()).toBe('abc')
+
+    rerender(<MarkdownRenderer content={content} />)
+
+    expect(container.querySelector('p')).toHaveTextContent(content)
+    expect(selection.toString()).toBe('abc')
+  })
+
   // --- Streaming inline-code regression tests ---
   // Reproduces the bug where inline <code> blocks render empty during SSE
   // streaming. The root cause: when content grows past a backtick pair, the

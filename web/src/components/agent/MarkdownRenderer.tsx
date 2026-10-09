@@ -465,23 +465,36 @@ function clipTrailingUnclosedMath(markdown: string): string {
   return markdown;
 }
 
-function clipTextNodes(root: HTMLElement, visibleChars: number): void {
+// Replacing all of text.data resets native Range offsets, even when the value
+// is unchanged. Keep the shared prefix and change only the tail so selections
+// in already revealed text survive the next typewriter frame.
+function updateTextNode(text: Text, value: string): void {
+  const previous = text.data;
+  if (previous === value) return;
+  let prefixLength = 0;
+  while (
+    prefixLength < previous.length &&
+    prefixLength < value.length &&
+    previous.charCodeAt(prefixLength) === value.charCodeAt(prefixLength)
+  ) prefixLength++;
+  text.replaceData(prefixLength, previous.length - prefixLength, value.slice(prefixLength));
+}
+
+function clipTextNodes(root: HTMLElement, visibleChars: number, sourceCache: ReadonlyMap<Text, string>): void {
   let remaining = Math.max(0, visibleChars);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const nodes: Text[] = [];
   let node: Node | null;
-  while ((node = walker.nextNode())) nodes.push(node as Text);
-  for (let i = 0; i < nodes.length; i++) {
-    const text = nodes[i];
-    const runes = Array.from(text.data);
-    if (remaining >= runes.length) {
-      remaining -= runes.length;
+  while ((node = walker.nextNode())) {
+    const text = node as Text;
+    if (remaining === 0) {
+      updateTextNode(text, "");
       continue;
     }
-    text.data = runes.slice(0, remaining).join("");
-    remaining = 0;
-    for (let j = i + 1; j < nodes.length; j++) nodes[j].data = "";
-    break;
+    const source = sourceCache.get(text)!;
+    const runes = Array.from(source);
+    const visible = remaining >= runes.length ? source : runes.slice(0, remaining).join("");
+    updateTextNode(text, visible);
+    remaining = Math.max(0, remaining - runes.length);
   }
 }
 
@@ -573,8 +586,8 @@ export const MarkdownRenderer = memo(
     // Cache of full text per Text node. Keyed by node identity — valid only
     // within a single ParsedMarkdown render (React reuses nodes when content
     // is unchanged, replaces them when content changes). We rebuild this cache
-    // whenever debouncedContent changes, and use it to restore text.data on
-    // typewriter ticks (where content is the same but text.data was clipped).
+    // whenever debouncedContent changes, and clip directly from the cached
+    // source on typewriter ticks without restoring/replacing selected text.
     const sourceRef = useRef(new Map<Text, string>());
     const sourceContentRef = useRef<string | null>(null);
 
@@ -593,7 +606,7 @@ export const MarkdownRenderer = memo(
           const text = node as Text;
           const saved = sourceRef.current.get(text);
           if (saved !== undefined) {
-            text.data = saved;
+            updateTextNode(text, saved);
           }
         }
         return;
@@ -608,32 +621,22 @@ export const MarkdownRenderer = memo(
         sourceRef.current = new Map();
       }
 
-      // PERF: single TreeWalker pass for restore + capture. The old code ran TWO
-      // full passes on every typewriter tick (restore: saved → text.data, then
-      // capture: unsaved → sourceRef). Each pass is O(text nodes) — on long
-      // streamed markdown this doubles the per-tick (50ms) DOM walk cost.
-      // Merged semantics are identical per node: saved nodes restore their full
-      // text; unsaved nodes (fresh DOM from content change, or nodes React
-      // re-created within the same key) are captured at full value. Order
-      // between restore and capture within one node is irrelevant — they touch
-      // disjoint node sets (a node is either in the cache or not).
+      // Capture fresh nodes once. Existing nodes retain their visible prefix;
+      // restoring the full value before clipping would collapse native ranges.
+      // Nodes recreated within the same key (e.g. async highlighting) also need
+      // their full source captured before their first clip.
       const sourceCache = sourceRef.current;
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
       let node: Node | null;
       while ((node = walker.nextNode())) {
         const text = node as Text;
-        const saved = sourceCache.get(text);
-        if (saved !== undefined) {
-          // Typewriter tick restore: text.data was clipped by the previous
-          // tick — put back the full value before re-clipping below.
-          text.data = saved;
-        } else {
+        if (!sourceCache.has(text)) {
           // Capture: full text from fresh DOM (React just set it).
           sourceCache.set(text, text.data);
         }
       }
 
-      clipTextNodes(root, visibleChars);
+      clipTextNodes(root, visibleChars, sourceCache);
     }, [visibleChars, debouncedContent]);
 
     return (
