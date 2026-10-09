@@ -128,6 +128,14 @@ describe('MarkdownRenderer', () => {
     expect(text).toContain('尾部普通文本')
   })
 
+  it('streaming: a shorter fence or a fence with a suffix does not close a literal block', () => {
+    const code = '```\necho $$\n````not a closing fence\n\\(literal\\)'
+    const content = '前文\n\n````text\n' + code + '\n````\n\n尾部普通文本'
+    const { container } = render(<MarkdownRenderer content={content} streaming visibleChars={9999} />)
+    expect(container.querySelector('pre code')?.textContent).toBe(code + '\n')
+    expect(container.textContent).toContain('尾部普通文本')
+  })
+
   it('non-streaming: unclosed math is NOT clipped (finished content is authoritative)', () => {
     // 完成态（流结束/历史消息）内容即权威 —— 不截断。remark-math 的 math-flow
     // 会把未闭合 $$ 到结尾吞进 KaTeX（现状行为），与 streaming 截断形成对照。

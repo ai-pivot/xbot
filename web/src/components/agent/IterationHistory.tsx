@@ -23,18 +23,21 @@ import type { WebIteration } from '@/types/shared'
 
 interface IterationGroupProps {
   iteration: WebIteration
+  turnID?: number
   /** 思考块展开态共享键（live 侧同一 key）—— 形态切换后不自动收起。 */
   reasoningStateKey?: string
 }
 
 export const IterationGroup = memo(function IterationGroup({
   iteration,
+  turnID,
   reasoningStateKey,
 }: IterationGroupProps) {
   const { t } = useI18n()
 
   return (
-    <CopyTarget kind="iteration" iteration={iteration} className="flex flex-col gap-1">
+    <CopyTarget kind="iteration" iteration={iteration} className="flex flex-col gap-1"
+      annotationSource={turnID ? { turnID, iteration: iteration.iteration } : undefined}>
       {/* 迭代指标（插件注入点）：把该迭代的 token/TTFT/tool 耗时传给插件。 */}
       <IterationSlot
         data={{
@@ -61,10 +64,12 @@ export const IterationGroup = memo(function IterationGroup({
 
       {/* O: text output (always shown) */}
       {iteration.content && (
-        <MarkdownRenderer
-          content={iteration.content}
-          className="text-sm text-text-primary"
-        />
+        <div data-annotation-body="" className="min-w-0">
+          <MarkdownRenderer
+            content={iteration.content}
+            className="text-sm text-text-primary"
+          />
+        </div>
       )}
 
       {/* C: tool calls (每个工具一个 pill) —— 右键/长按可单独复制**每个工具**的输出。

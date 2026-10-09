@@ -35,6 +35,8 @@
 
 ## Knowledge Files
 
+- `docs/agent/message-annotations.md` — Web 批注首版：**选文后直接出现评论图标，不走右键菜单**（用户 2026-10-09 纠正）；手机正文允许原生选区；只引用所选片段，不展示整段或暗中二次选区。评论框 Enter 确认、Shift+Enter 换行，IME/229/重复按键不确认；编辑/预览隐藏轮次和字符计数，限额校验不变。**发送采用 `<response-annotations>` + JSON `{text, annotation, source}` + `# My request:`**（同日用户要求参考 Codex）；来源携带真实轮次/迭代/消息 ID 和选中时的 DOM UTF-16 起止偏移（非原始 Markdown；旧草稿缺失不编造）。`UserMessage` 只在展示层解析完整合法消息，气泡不显示来源/协议字段；复制、编辑、队列、历史和模型重放保留原 XML。面板内会话/用户隔离、输入框 count chip、接受后清理/拒绝保留、busy 正常排队；不得用全局字符串 bridge 或 `draft` prop 替换正文。来源只是快照，不是永久锚点；无私有备注或服务器草稿。
+
 - `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
 - `docs/agent/install.md` — **安装的 agent 入口（指针，不是完整文档）**：指向公开可执行手册 `https://ai-pivot.github.io/xbot/agent-install/`（zh: `/zh-cn/agent-install/`），并保留最小事实集（`setup --check` 是唯一完整性判据 / LLM 配置在数据库不在 config.json / systemd 服务名是 `xbot-server` 且 `serve` 没有 `--install-service` / 回复文本在 `iteration_history`）。**改安装流程时同步更新公开页 + `scripts/install.sh` 头部注释 + 运行结束打印**（三处）
 - `docs/agent/agent.md` — agent loop, middleware, SubAgent, context management, masking, dynamic context, reminder

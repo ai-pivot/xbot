@@ -12,7 +12,7 @@
  *   - The main Agent tab follows SessionStore.activeSession directly.
  *   - SubAgent tabs are fixed to their parent chat + role/instance params.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -36,6 +36,8 @@ import { ContextRing } from '@/components/agent/ContextRing'
 import { ToolSessionContext } from '@/components/agent/ToolSessionContext'
 import { RegionActionsContext, type IterationsLoadedEvent, type RegionActions } from '@/components/agent/RegionActionsContext'
 import { MessageInput } from '@/components/agent/MessageInput'
+import { MessageAnnotationsProvider } from '@/components/agent/MessageAnnotations'
+import { AuthContext } from '@/providers/AuthProvider'
 import { MessageList } from '@/components/agent/MessageList'
 import { latestCompactBoundaryIndex } from '@/components/agent/MessageList'
 import { ModelSelector } from '@/components/agent/ModelSelector'
@@ -68,6 +70,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const store = ctx.sessionStore
   const rightSidebar = ctx.rightSidebar
   const { t } = useI18n()
+  const auth = useContext(AuthContext)
   const { enabled: devMode } = useDeveloperMode()
   const [draft, setDraft] = useState<string | undefined>(undefined)
   // ⛔ 必须稳定身份：MessageInput 的 draft effect 会消费它（2026-09-24 React #185
@@ -805,11 +808,11 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
   const failUserRef = useRef(agentChat.failUser)
   failUserRef.current = agentChat.failUser
 
-  const sendMessage = useCallback((content: string, attachments?: Attachments, interrupt?: boolean) => {
+  const sendMessage = useCallback((content: string, attachments?: Attachments, interrupt?: boolean, requestID?: string) => {
     setFollowResetToken((v) => v + 1)
     // ⚡ Interject mode: skip optimistic rendering (no user row — the message
     // appears inside the active turn as a user_interrupt tool via SSE).
-    const rid = `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const rid = requestID ?? `req-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     // ⚠️ 这里**不得**乐观设置 goal（2026-09-16 用户报告）：goal 按钮的语义只是把
     // 消息加上 `/goal ` 前缀 —— 消息排队时 goal 并没有生效。goal 只能在后端 pop
     // 该消息并真正执行 `/goal` 之后设置（后端 push / getGoal 回读收敛）。此前在
@@ -818,7 +821,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     if (!interrupt) {
       sendUserRef.current(content, rid)
     }
-    sendMessageRef.current(content, attachments, rid, interrupt)
+    return sendMessageRef.current(content, attachments, rid, interrupt)
   }, [])
 
   // Goal handlers — direct RPC (does not trigger a Run, just updates the goal text)
@@ -1032,6 +1035,13 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
     <ToolSessionContext.Provider
       value={{ channel: progressChannel, chatID: progressChatID }}
     >
+    <MessageAnnotationsProvider
+      key={JSON.stringify([auth?.user?.username ?? '', messageChannel, chatID])}
+      username={auth?.user?.username ?? ''}
+      sessionKey={`${messageChannel}:${chatID ?? ''}`}
+      visible={isVisible && !(showLoadingScreen || switchSplash)}
+      enabled={!isSubAgent && !!chatID}
+    >
     <div
       ref={agentPanelRootRef}
       data-agent-chat-id={chatID ?? ''}
@@ -1168,6 +1178,7 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
         </div>
       )}
     </div>
+    </MessageAnnotationsProvider>
     </ToolSessionContext.Provider>
     </RegionActionsContext.Provider>
   )

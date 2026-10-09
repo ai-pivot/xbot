@@ -23,6 +23,7 @@ import { useI18n } from '@/providers/i18n'
 import { useSendKeyMode, isSendKey } from '@/hooks/useSendKeyMode'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
+import { annotatedMessageDisplay } from '@/lib/messageAnnotations'
 
 interface UserMessageProps {
   content: string
@@ -64,6 +65,7 @@ export const UserMessage = memo(function UserMessage({
   const displayRef = useRef<HTMLDivElement>(null)
   const [editMinHeight, setEditMinHeight] = useState<number | null>(null)
   const [copied, setCopied] = useState(false)
+  const displayContent = useMemo(() => isNotification ? content : annotatedMessageDisplay(content, t), [content, isNotification, t])
 
   // 复制这条 user 消息（2026-09-16 用户报告：手机上没有任何复制 user msg 的入口）。
   // 触屏上"长按"会被原生文本选择抢走手势（同一版也修了 useLongPress 的抖动误判），
@@ -278,7 +280,7 @@ export const UserMessage = memo(function UserMessage({
             <div className="whitespace-pre-wrap wrap-anywhere">{content}</div>
           ) : (
             <>
-              <MarkdownRenderer content={content || ' '} />
+              <MarkdownRenderer content={displayContent || ' '} />
             </>
           )}
           {sending && (

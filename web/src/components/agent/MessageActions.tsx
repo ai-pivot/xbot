@@ -11,7 +11,8 @@
  *   - **打开链接 / 复制链接地址**：本组件对 contextmenu 做了 preventDefault（否则冒出来的是浏览器
  *     原生菜单），所以链接必须由这里给入口；协议白名单 http/https/mailto，`javascript:`/`data:`/
  *     `file:` 一律拒绝（消息内容来自模型与用户输入，不能给它新开窗口提权）。
- *   - **复制选区**：桌面拖选文字后右键 → 复制选区；触屏是 select-none（无选区）故不出现。
+ *   - **复制选区**：选文后右键 → 复制选区。可批注的手机正文允许原生选文；
+ *     批注入口由 MessageAnnotationsProvider 在选区旁渲染，不进入复制菜单。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
@@ -19,6 +20,8 @@ import type { ChatMessage, WebIteration, WebToolProgress } from '@/types/shared'
 
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { useI18n } from '@/providers/i18n'
+import { useAnnotationActions } from './MessageAnnotations'
+import type { AnnotationSource } from '@/lib/messageAnnotations'
 
 export type CopyVariant = 'reply' | 'thinking' | 'tools' | 'raw'
 export type IterationVariant = 'thinking' | 'content' | 'all'
@@ -212,6 +215,7 @@ export function CopyTarget({
   message,
   iteration,
   tools,
+  annotationSource,
   children,
   className,
 }: {
@@ -219,10 +223,12 @@ export function CopyTarget({
   message?: ChatMessage
   iteration?: WebIteration
   tools?: WebToolProgress[]
+  annotationSource?: AnnotationSource
   children: ReactNode
   className?: string
 }) {
   const { t } = useI18n()
+  const annotations = useAnnotationActions()
   const [open, setOpen] = useState<OpenState>(null)
   const openAt = useCallback(
     (x: number, y: number, target: EventTarget | null) => {
@@ -269,7 +275,7 @@ export function CopyTarget({
       })
       list.push({ label: t('agent.copyMenu.copyLinkAddress'), run: () => void copy(href) })
     }
-    // ② 选区相关（桌面拖选后右键；触屏 select-none 无选区）。
+    // ② 选区相关（打开菜单前保留原文快照）。
     if (open.selection) {
       const selection = open.selection
       list.push({ label: t('agent.copyMenu.copySelection'), run: () => void copy(selection) })
@@ -308,21 +314,25 @@ export function CopyTarget({
     return list
   })()
 
+  const nativeBodySelection = (target: EventTarget | null) => {
+    const element = target as HTMLElement | null
+    return !!(isTouch && annotations && annotationSource && element?.closest?.('[data-annotation-body]') && !element.closest('a[href]'))
+  }
+
   return (
     <>
       <div
         data-copy-target={kind}
+        data-annotation-source={annotations && annotationSource ? JSON.stringify(annotationSource) : undefined}
         // ⚠️ 包裹层自身必须 `min-w-0`：它常被插进 flex 行里（如 tools ⊂ iteration ⊂ message），
         // flex 子项默认 `min-width: auto` ⇒ 拒绝收缩到内容宽度以下 ⇒ 长参数把整行撑满，
         // 手机端 pill 退化成"一行一个"（2026-09-15 用户报告；根因就是我这一层漏了 min-w-0）。
         className={[
           'min-w-0',
-          // 触屏：禁用原生文本选择与 iOS 长按 callout。否则长按消息会弹出浏览器的
-          // 蓝色选中高亮 + 选择控件 —— 它在虚拟滚动 + transform 容器里位置不受我们
-          // 控制（用户 2026-09-16：「手机长按老是变出那个蓝色选中判定，位置还根本
-          // 不对」），并且会抢走长按手势（复制菜单永远弹不出来）。
-          // 触屏的复制入口 = 长按菜单 / 可见复制按钮；桌面保留原生选择（拖选 / 右键复制）。
+          // Touch copy targets keep custom menus; completed body text opts into
+          // native selection for the selection-based comment action.
           isTouch ? 'select-none [-webkit-touch-callout:none]' : '',
+          annotations && annotationSource ? '[&_[data-annotation-body]]:select-text [&_[data-annotation-body]]:[-webkit-touch-callout:default]' : '',
           className ?? '',
         ]
           .filter(Boolean)
@@ -330,11 +340,16 @@ export function CopyTarget({
         onContextMenu={(e) => {
           // 右键会冒泡：嵌套目标（tools ⊂ iteration ⊂ message）里只让**最内层**开菜单，
           // 否则会同时弹出 3 个菜单（用户右键工具时显然只要工具那一份）。
-          e.preventDefault()
           e.stopPropagation()
+          if (nativeBodySelection(e.target)) return
+          e.preventDefault()
           openAt(e.clientX, e.clientY, e.target)
         }}
         {...press}
+        onPointerDown={(e) => {
+          if (nativeBodySelection(e.target)) { e.stopPropagation(); return }
+          press.onPointerDown(e)
+        }}
       >
         {children}
       </div>

@@ -70,6 +70,18 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 | Upload limit | 10MB per file (size only — no type restrictions) |
 | Terminal commands | A message starting with `!` runs **directly in the sandbox as a shell command** and returns its output as a chat message — the AI is skipped (`!ls -la`, `!git status`, `!docker ps`). The composer shows a hint while the draft is a `!` command; `![…]` markdown images (pasted screenshots) are **not** commands |
 
+## Response Comments
+
+Select text in a completed assistant response. A comment icon appears next to the selection without right-clicking; click it to open the comment editor. On a phone, long-press to select text and adjust the native selection handles. The editor shows only the selected excerpt as a read-only snapshot, without turn/iteration labels or character counters. Press **Enter** to confirm the comment, or **Shift+Enter** for a newline; IME candidate confirmation never saves prematurely. Confirming adds a draft and does not send it. Clearing the selection, scrolling, resizing or switching sessions dismisses the icon. Right-click menus remain dedicated to copying and links.
+
+Confirming a comment adds it to the **comments chip inside the existing composer**, alongside file attachments. The chip opens a preview with edit/delete actions. Adding or editing comments leaves your message and attachments unchanged and does not contact the agent. Send comments alone or together with a message and files; while the agent is busy, ordinary feedback is queued. Comments cannot be combined with slash/shell commands, goal mode or interject mode.
+
+Confirmed comments are saved in this browser, separately by login username and channel/session, and restored on reload. Logging out clears them. A rejected send keeps the draft; a late acceptance does not erase newer text. Limits: 10 comments, 6000 Unicode code points per quote, 2000 per comment, 20000 in total. Oversized text is rejected, never truncated.
+
+Sent feedback uses `<response-annotations>` containing a JSON array of `{text, annotation, source}`, followed by `# My request:` and your existing message. The agent receives the selected quote, your comment and the available source locations (turn/iteration/message ID and selection offsets). Offsets are zero-based, half-open UTF-16 positions in the rendered body's concatenated DOM text, not raw Markdown positions. Old drafts without offsets remain usable; missing locations are not invented. Historical quotes are explicitly distinguished from your current instructions.
+
+The chat bubble still shows only your message, quotes and comments, without XML or source labels; copying or editing the message retains the actual submitted XML prompt. Feedback follows the existing history/queue path. Source locations are snapshots, not permanent links or anchors after a rewind. This first version does not provide private notes, server-side/cross-device drafts, source highlights or restart-persistent send deduplication. Unchanged retries while the composer remains mounted reuse the request ID within the server's existing deduplication window; refresh/restart recovery is not an exactly-once guarantee.
+
 ## Session list (organised by project)
 
 The session list is organised **by project** by default — a project is the session's **working directory** (backend `tenants.cwd`). Sessions in the same directory share one group; its header shows the **project name + session count** (hover for the full path; sessions without a working directory land in "No work path").

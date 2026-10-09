@@ -333,6 +333,15 @@ const REMARK_PLUGINS: PluggableList = [remarkGfm, remarkMath];
 // KaTeX 数千节点是主要成分）。MathML 副本仅服务读屏 a11y，视觉零变化。
 const REHYPE_PLUGINS: PluggableList = [[rehypeKatex, { throwOnError: false, katexOptions: { output: 'html' as const } }]];
 
+/** A closing fence must match the opener's marker and be at least as long. */
+function codeFenceAfterLine(line: string, fence: string): string {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (!match) return fence;
+  const [ , marker, suffix ] = match;
+  if (!fence) return marker[0] === "`" && suffix.includes("`") ? "" : marker;
+  return marker[0] === fence[0] && marker.length >= fence.length && /^[ \t]*$/.test(suffix) ? "" : fence;
+}
+
 /**
  * remark-math follows Markdown math syntax ($ / $$), while models commonly
  * emit TeX delimiters (\\( / \\[). Normalize only outside fenced and inline
@@ -343,14 +352,11 @@ function normalizeMathDelimiters(markdown: string): string {
   let fence = "";
   return lines
     .map((line) => {
-      const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
-      if (fenceMatch) {
-        const marker = fenceMatch[1][0];
-        if (!fence) fence = marker;
-        else if (fence === marker) fence = "";
+      const nextFence = codeFenceAfterLine(line, fence);
+      if (fence || nextFence) {
+        fence = nextFence;
         return line;
       }
-      if (fence) return line;
 
       const parts = line.split(/(`+[^`]*`+)/g);
       return parts
@@ -397,14 +403,11 @@ function clipTrailingUnclosedMath(markdown: string): string {
   for (const line of lines) {
     const lineStart = offset;
     offset += line.length + 1;
-    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0];
-      if (!fence) fence = marker;
-      else if (fence === marker) fence = "";
+    const nextFence = codeFenceAfterLine(line, fence);
+    if (fence || nextFence) {
+      fence = nextFence;
       continue;
     }
-    if (fence) continue;
     // Even-index parts of this split are outside inline code spans.
     const parts = line.split(/(`+[^`]*`+)/g);
     let col = 0;
