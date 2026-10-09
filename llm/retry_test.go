@@ -680,6 +680,25 @@ func TestRetryLLM_GenerateStreamAndCollect_StreamTruncationRetry(t *testing.T) {
 	}
 }
 
+func TestRetryLLM_GenerateStreamAndCollect_ZeroChunkRetry(t *testing.T) {
+	// An empty stream is reported by OpenAILLM as a stream error and must use
+	// the same whole-stream retry path as other provider failures.
+	inner := newFailMidStreamLLM(1, "stream ended with zero chunks (empty response)")
+	cfg := RetryConfig{Attempts: 3, Delay: 10 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	r := NewRetryLLM(inner, cfg)
+
+	resp, err := r.GenerateStreamAndCollect(context.Background(), "test", nil, nil, "", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Content != "stream-ok" {
+		t.Errorf("content = %q, want %q", resp.Content, "stream-ok")
+	}
+	if inner.streamAttempts.Load() != 2 {
+		t.Errorf("streamAttempts = %d, want 2 (zero-chunk stream should retry)", inner.streamAttempts.Load())
+	}
+}
+
 func TestRetryLLM_GenerateStreamAndCollect_UnexpectedEOFRetry(t *testing.T) {
 	// unexpected EOF (proxy closed connection mid-stream) should be retryable.
 	inner := newFailMidStreamLLM(1, "unexpected EOF")
