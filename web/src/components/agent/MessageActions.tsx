@@ -329,7 +329,7 @@ export function CopyTarget({
         // 手机端 pill 退化成"一行一个"（2026-09-15 用户报告；根因就是我这一层漏了 min-w-0）。
         className={[
           'min-w-0',
-          // Touch copy targets keep custom menus; completed body text opts into
+          // Touch copy targets keep custom menus; assistant body text opts into
           // native selection for the selection-based comment action.
           isTouch ? 'select-none [-webkit-touch-callout:none]' : '',
           annotations && annotationSource ? '[&_[data-annotation-body]]:select-text [&_[data-annotation-body]]:[-webkit-touch-callout:default]' : '',

@@ -17,6 +17,7 @@ import { FoldedToolGroup } from './FoldedToolGroup'
 import { GenUICollapsiblePanel } from './GenUIPanel'
 
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { CopyTarget } from './MessageActions'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ShimmerThinking } from './ShimmerThinking'
 import { SubAgentProgressTree } from './SubAgentProgressTree'
@@ -256,20 +257,26 @@ export const LiveIteration = memo(function LiveIteration({
 
       {/* Streaming O — typewriter reveal + fade-in effect */}
       {hasStreamContent && (
-        <div
-          className={
-            isLive
-              ? `streaming-content ${tw.isTyping ? 'typewriter-fade' : 'typewriter-done'}`
-              : undefined
-          }
-        >
-          <MarkdownRenderer
-            content={displayText}
-            className="text-sm text-text-primary"
-            streaming={isLive}
-            visibleChars={isLive ? tw.visibleChars : undefined}
-          />
-        </div>
+        <CopyTarget kind="iteration"
+          iteration={{ iteration: currentIter, content: displayText, reasoning: '', tools: [], toolCount: 0 }}
+          annotationSource={progress.turnID > 0 ? { turnID: progress.turnID, iteration: currentIter } : undefined}>
+          <div
+            data-annotation-body=""
+            data-annotation-live={isLive ? '' : undefined}
+            className={
+              isLive
+                ? `streaming-content ${tw.isTyping ? 'typewriter-fade' : 'typewriter-done'}`
+                : undefined
+            }
+          >
+            <MarkdownRenderer
+              content={displayText}
+              className="text-sm text-text-primary"
+              streaming={isLive}
+              visibleChars={isLive ? tw.visibleChars : undefined}
+            />
+          </div>
+        </CopyTarget>
       )}
 
       {hasSubAgents && <SubAgentProgressTree nodes={liveSubAgents} />}

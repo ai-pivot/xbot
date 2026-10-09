@@ -13,7 +13,7 @@ import { frameScheduler } from '@/lib/frameScheduler'
 
 export type AnnotationPosition = { x: number; y: number }
 type EditingAnnotation = { id: string; source: AnnotationSource; quote: string; comment: string; position: AnnotationPosition }
-type SelectedAnnotation = { source: AnnotationSource; quote: string; position: AnnotationPosition }
+type SelectedAnnotation = { source: AnnotationSource; quote: string; position: AnnotationPosition; live: boolean }
 type CaptureComposer = () => (() => void)
 
 interface AnnotationActions {
@@ -30,7 +30,7 @@ const DraftContext = createContext<AnnotationDraft | null>(null)
 export function useAnnotationActions() { return useContext(ActionsContext) }
 export function useAnnotationDraft() { return useContext(DraftContext) }
 
-/** Keep the exact selection, but never mix completed bodies or session panels. */
+/** Keep the exact selection, but never mix bodies or session panels. */
 export function annotationSelection(body: HTMLElement): { quote: string; startOffset: number; endOffset: number } | null {
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null
@@ -61,6 +61,8 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
   const [editing, setEditing] = useState<EditingAnnotation | null>(null)
   const [listPosition, setListPosition] = useState<AnnotationPosition | null>(null)
   const [selected, setSelected] = useState<SelectedAnnotation | null>(null)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   const rootRef = useRef<HTMLDivElement>(null)
   const captureRef = useRef<CaptureComposer | null>(null)
   const restoreRef = useRef<(() => void) | null>(null)
@@ -77,7 +79,12 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
   useEffect(() => {
     if (!enabled || !visible || editing || listPosition) { setSelected(null); return }
     let dragging = false
+    let selectionGesture = false
     const update = () => {
+      // Streaming replaces/clips text nodes and collapses the native range.
+      // Keep the user's captured quote until the next selection gesture.
+      if (selectedRef.current?.live && !dragging && !selectionGesture) return
+      selectionGesture = false
       const selection = document.getSelection()
       const node = selection?.anchorNode
       const element = node?.nodeType === Node.ELEMENT_NODE ? node as Element : node?.parentElement
@@ -98,7 +105,7 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0 && r.bottom > top && r.top < bottom && r.right > left && r.left < right)
       const rect = selection!.focusNode === range.startContainer && selection!.focusOffset === range.startOffset ? rects[0] : rects.at(-1)
       if (!rect) { setSelected(null); return }
-      setSelected({ source: { ...JSON.parse(source) as AnnotationSource, startOffset: snapshot.startOffset, endOffset: snapshot.endOffset }, quote: snapshot.quote, position: {
+      setSelected({ source: { ...JSON.parse(source) as AnnotationSource, startOffset: snapshot.startOffset, endOffset: snapshot.endOffset }, quote: snapshot.quote, live: body.hasAttribute('data-annotation-live'), position: {
         x: Math.max(left + 8, Math.min(rect.right - 44, right - 52)),
         y: Math.max(top + 8, Math.min(rect.top - 52 >= top + 8 ? rect.top - 52 : rect.bottom + 8, bottom - 52)),
       } })
@@ -108,9 +115,10 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       if (event.button !== 0) return
       if ((event.target as HTMLElement)?.closest('[data-testid="annotation-selection-action"]')) return
       dragging = true
+      selectionGesture = true
       setSelected(null)
     }
-    const up = () => { dragging = false; schedule() }
+    const up = () => { dragging = false; selectionGesture = true; schedule() }
     const dismiss = () => { frameScheduler.cancel(update); setSelected(null) }
     const contextMenu = (event: MouseEvent) => {
       const element = event.target as HTMLElement | null
@@ -121,7 +129,13 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
         schedule()
       } else dismiss()
     }
-    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') dismiss() }
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') dismiss()
+      else if (!['Shift', 'Control', 'Alt', 'Meta'].includes(event.key)) {
+        selectionGesture = true
+        schedule()
+      }
+    }
     // One scoped observer per visible panel, not one listener per virtual row.
     document.addEventListener('selectionchange', schedule)
     document.addEventListener('pointerdown', down, true)

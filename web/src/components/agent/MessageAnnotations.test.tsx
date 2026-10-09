@@ -36,6 +36,50 @@ afterEach(() => {
 })
 
 describe('selection comment entry', () => {
+  it('keeps the live quote snapshot when subsequent stream rendering replaces selected text nodes', () => {
+    const body = (updated: boolean) => <MessageAnnotationsProvider username="tester" sessionKey="web:live-selection" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: updated ? '正在生成继续输出' : '正在生成', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 8, iteration: 1 }}>
+        <div data-annotation-body="" data-annotation-live=""><p key={String(updated)}>{updated ? '正在生成继续输出' : '正在生成'}</p></div>
+      </CopyTarget>
+    </MessageAnnotationsProvider>
+    const view = renderWithProviders(body(false))
+    selectText(screen.getByText('正在生成'), 0, 2)
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    view.rerender(<I18nProvider>{body(true)}</I18nProvider>)
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    expect(screen.getByTestId('annotation-selection-action')).toBeInTheDocument()
+    fireEvent.keyDown(document, { key: 'ArrowRight' })
+    act(() => frameScheduler.flushNow())
+    expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
+    selectText(screen.getByText('正在生成继续输出'), 0, 2)
+    fireEvent.click(screen.getByTestId('annotation-selection-action'))
+    expect(screen.getByLabelText('所选文本')).toHaveValue('正在')
+  })
+
+  it('replaces a live quote on a new pointer selection and dismisses it on a click elsewhere', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:live-reselect" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正在生成正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 8, iteration: 1 }}>
+        <p data-annotation-body="" data-annotation-live="">正在生成正文</p>
+      </CopyTarget>
+    </MessageAnnotationsProvider>)
+    const text = screen.getByText('正在生成正文')
+    selectText(text, 0, 2)
+    fireEvent.pointerDown(text, { button: 0, pointerType: 'mouse' })
+    selectText(text, 2, 4)
+    fireEvent.pointerUp(text, { pointerType: 'mouse' })
+    act(() => frameScheduler.flushNow())
+    fireEvent.click(screen.getByTestId('annotation-selection-action'))
+    expect(screen.getByLabelText('所选文本')).toHaveValue('生成')
+    fireEvent.keyDown(screen.getByLabelText('用户评论'), { key: 'Escape' })
+    selectText(text, 0, 2)
+    fireEvent.pointerDown(document.body, { button: 0, pointerType: 'mouse' })
+    document.getSelection()!.removeAllRanges()
+    fireEvent.pointerUp(document.body, { pointerType: 'mouse' })
+    act(() => frameScheduler.flushNow())
+    expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
+  })
+
   it('waits until the drag ends and dismisses on collapse, scroll or Escape', () => {
     renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:drag" visible>
       <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>

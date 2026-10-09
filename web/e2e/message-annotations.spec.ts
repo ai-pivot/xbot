@@ -13,6 +13,8 @@ test.use({ video: recording ? { mode: 'on', size: { width: 1120, height: 760 } }
 async function setup(page: Page, busy = false) {
   await page.addInitScript(() => {
     localStorage.setItem('xbot-locale', 'zh-CN')
+    const sources: EventTarget[] = []
+    ;(window as unknown as { __annotationSources: EventTarget[] }).__annotationSources = sources
     // Keep this mocked session connected; an empty fulfilled SSE response disconnects immediately.
     class MockEventSource extends EventTarget {
       readyState = 1
@@ -20,6 +22,7 @@ async function setup(page: Page, busy = false) {
       onerror: ((event: Event) => void) | null = null
       constructor(public url: string) {
         super()
+        sources.push(this)
         setTimeout(() => { if (this.readyState === 1) this.onopen?.(new Event('open')) }, 0)
       }
       close() { this.readyState = 2 }
@@ -54,6 +57,17 @@ async function openDesktopSession(page: Page) {
   await page.getByRole('button', { name: /批注验收/ }).click()
   await expect(page.locator('[data-agent-visible="1"]')).toHaveAttribute('data-agent-chat-id', 'annotation-test')
   await expect(page.getByText('第二段独立正文', { exact: true })).toBeVisible()
+}
+
+async function emitProgress(page: Page, seq: number, type: string, progress: Record<string, unknown>) {
+  await page.evaluate(({ type, progress, seq }) => {
+    const sources = (window as unknown as { __annotationSources: (EventTarget & { readyState: number })[] }).__annotationSources
+    for (const source of sources) {
+      if (source.readyState === 1) source.dispatchEvent(new MessageEvent(type, {
+        data: JSON.stringify({ type, chat_id: 'annotation-test', seq, progress }),
+      }))
+    }
+  }, { type, progress, seq })
 }
 
 async function add(page: Page, comment = '我们来把这个推进一下') {
@@ -313,6 +327,166 @@ test('busy annotation-only send queues; rejected send retains the draft', async 
   await page.getByRole('button', { name: '排队发送/', exact: true }).click()
   await expect(page.getByTestId('annotation-chip')).toHaveCount(0)
   expect(new Set(attempts).size).toBe(1)
+})
+
+for (const { selectionTarget, mobile } of [
+  { selectionTarget: 'completed', mobile: false },
+  { selectionTarget: 'live', mobile: false },
+  { selectionTarget: 'live', mobile: true },
+] as const) {
+  test.describe(`${mobile ? 'mobile' : 'desktop'} ${selectionTarget} selection`, () => {
+    test.use({ viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 720 }, isMobile: mobile, hasTouch: mobile })
+    test('live output continues through comment editing and queued submission', async ({ page }) => {
+      await setup(page, true)
+      const cancelled: string[] = []
+      const sent: Record<string, unknown>[] = []
+      const events: string[] = []
+      page.on('pageerror', (e) => events.push(String(e)))
+      page.on('request', (r) => {
+        if (new URL(r.url()).pathname === '/api/cancel') cancelled.push(r.url())
+        if (['/api/history', '/api/session/status', '/api/rpc'].includes(new URL(r.url()).pathname)) events.push(`${new URL(r.url()).pathname}: ${r.postData()}`)
+      })
+      await page.route('**/api/message', (r) => {
+        sent.push(r.request().postDataJSON())
+        return r.fulfill({ json: { ok: true, data: { queued: true, message_id: 0 } } })
+      })
+      if (mobile) {
+        await page.goto('/')
+        await expect(page.getByText('第二段独立正文', { exact: true })).toBeVisible()
+      } else await openDesktopSession(page)
+      let seq = 2
+      const emit = (type: string, progress: Record<string, unknown>) => emitProgress(page, ++seq, type, progress)
+      await emit('progress_structured', { phase: 'turn_started', turn_id: 8, seq: 1, turn_start: { trigger: 'user', content: '继续输出' } })
+      let content = ''
+      const advance = async (part: string) => {
+        content += part
+        await emit('stream_content', { turn_id: 8, iteration: 1, stream_content: content })
+        try {
+          await expect(page.getByText(content, { exact: true })).toBeVisible()
+        } catch (error) {
+          console.log('annotation stream evidence', events, await page.evaluate(() => ({
+            diag: (window as unknown as { __xbotChatDiag?: { counts(): unknown; dump(): unknown } }).__xbotChatDiag?.dump(),
+            text: document.querySelector('[data-agent-visible="1"]')?.textContent,
+            sources: (window as unknown as { __annotationSources: { readyState?: number }[] }).__annotationSources.map(s => s.readyState),
+          })))
+          throw error
+        }
+      }
+      await advance('持续输出第一段。')
+      if (selectionTarget === 'completed') {
+        await selectReply(page, 7)
+      } else {
+        const body = page.getByText(content, { exact: true })
+        if (mobile) {
+          await expect(body).toHaveCSS('user-select', 'text')
+          await body.click()
+          await body.evaluate((el) => {
+            const range = document.createRange()
+            range.setStart(el.firstChild!, 0)
+            range.setEnd(el.firstChild!, 4)
+            const selection = document.getSelection()!
+            selection.removeAllRanges()
+            selection.addRange(range)
+            document.dispatchEvent(new Event('selectionchange'))
+          })
+        } else {
+          const points = await body.evaluate((el) => {
+            const pointAt = (offset: number) => {
+              const range = document.createRange()
+              range.setStart(el.firstChild!, offset)
+              range.collapse(true)
+              const rect = range.getBoundingClientRect()
+              return { x: rect.x, y: rect.y + rect.height / 2 }
+            }
+            return { start: pointAt(0), end: pointAt(4) }
+          })
+          await page.mouse.move(points.start.x, points.start.y)
+          await page.mouse.down()
+          await page.mouse.move(points.end.x, points.end.y, { steps: 8 })
+          await page.mouse.up()
+        }
+        await expect(page.getByTestId('annotation-selection-action')).toBeVisible()
+      }
+      await advance('选文后仍在输出。')
+      await page.getByTestId('annotation-selection-action').click()
+      await expect(page.getByRole('textbox', { name: '所选文本' })).toHaveValue(selectionTarget === 'live' ? '持续输出' : '注释、评论功能')
+      await page.getByRole('textbox', { name: '用户评论' }).fill('不要打断当前输出')
+      await advance('评论编辑中仍在输出。')
+      if (selectionTarget === 'live') await page.screenshot({ path: `/tmp/xbot-live-comment-${mobile ? 'mobile' : 'desktop'}.png` })
+      await page.getByRole('button', { name: '确认批注', exact: true }).click()
+      await expect(page.getByTestId('annotation-chip')).toBeVisible()
+      await advance('确认后仍在输出。')
+      expect(sent).toHaveLength(0)
+      await page.getByTestId('annotation-chip').click()
+      await expect(page.getByTestId('annotation-list')).toBeVisible()
+      await advance('预览中仍在输出。')
+      await page.keyboard.press('Escape')
+      await page.getByRole('button', { name: '排队发送/', exact: true }).click()
+      await expect(page.getByTestId('annotation-chip')).toHaveCount(0)
+      await advance('排队发送后仍在输出。')
+      expect(sent).toHaveLength(1)
+      expect(sent[0].interrupt).not.toBe(true)
+      expect(annotationPayload(sent[0].content as string)[0].source).toMatchObject({ turnId: selectionTarget === 'live' ? 8 : 7, iteration: 1, startOffset: 0, endOffset: selectionTarget === 'live' ? 4 : 7 })
+      expect(cancelled).toEqual([])
+    })
+  })
+}
+
+test.describe('long live reply', () => {
+  test.use({ viewport: { width: 1280, height: 960 } })
+
+  test('selecting 109 through 124 preserves the comment while counting continues to 1000', async ({ page }) => {
+    await setup(page, true)
+    const cancelled: string[] = []
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname === '/api/cancel') cancelled.push(request.url())
+    })
+    await openDesktopSession(page)
+    let seq = 2
+    await emitProgress(page, ++seq, 'progress_structured', { phase: 'turn_started', turn_id: 8, seq: 1, turn_start: { trigger: 'user', content: '数下1到1000' } })
+    const body = page.locator('[data-annotation-live]')
+    const advance = async (last: number) => {
+      const numbers = Array.from({ length: last }, (_, index) => String(index + 1))
+      const lines = Array.from({ length: Math.ceil(last / 20) }, (_, index) => numbers.slice(index * 20, (index + 1) * 20).join(' '))
+      await emitProgress(page, ++seq, 'stream_content', { turn_id: 8, iteration: 1, stream_content: lines.join('\n\n') })
+      await expect(body.locator('p').last()).toHaveText(lines.at(-1)!)
+    }
+    await advance(153)
+    await expect(body).toHaveClass(/typewriter-done/)
+    const points = await body.evaluate((el) => {
+      const startNode = el.querySelectorAll('p')[5].firstChild!
+      const endNode = el.querySelectorAll('p')[6].firstChild!
+      const startOffset = startNode.textContent!.indexOf('109')
+      const endOffset = endNode.textContent!.indexOf('124') + 3
+      const pointAt = (node: Node, offset: number) => {
+        const range = document.createRange()
+        range.setStart(node, offset)
+        range.collapse(true)
+        const rect = range.getBoundingClientRect()
+        return { x: rect.x, y: rect.y + rect.height / 2 }
+      }
+      return { start: pointAt(startNode, startOffset), end: pointAt(endNode, endOffset) }
+    })
+    await page.mouse.move(points.start.x, points.start.y)
+    await page.mouse.down()
+    await page.mouse.move(points.end.x, points.end.y, { steps: 10 })
+    await page.mouse.up()
+    const quote = Array.from({ length: 16 }, (_, index) => String(index + 109)).join(' ')
+    expect((await page.evaluate(() => document.getSelection()!.toString())).replace(/\s+/g, ' ')).toBe(quote)
+    await expect(page.getByTestId('annotation-selection-action')).toBeVisible()
+    await advance(160)
+    await page.screenshot({ path: '/tmp/xbot-live-numeric-selection.png' })
+    await page.getByTestId('annotation-selection-action').click()
+    const capturedQuote = await page.getByRole('textbox', { name: '所选文本' }).inputValue()
+    expect(capturedQuote.replace(/\s+/g, ' ')).toBe(quote)
+    await page.getByRole('textbox', { name: '用户评论' }).fill('数的还可以')
+    for (const last of [240, 480, 760, 1000]) await advance(last)
+    await expect(page.getByRole('textbox', { name: '所选文本' })).toHaveValue(capturedQuote)
+    await page.getByRole('button', { name: '确认批注', exact: true }).click()
+    await expect(page.getByTestId('annotation-chip')).toContainText('1 条批注')
+    await expect(body.locator('p').last()).toContainText('1000')
+    expect(cancelled).toEqual([])
+  })
 })
 
 test('mobile: native text selection, keyboard inset and item menu', async ({ browser }) => {
