@@ -116,7 +116,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     if (open && initialSection) setSelected(initialSection)
   }, [open, initialSection])
 
-  const nav: { key: Category; labelKey: string }[] = [
+  const categories: { key: Category; labelKey: string }[] = [
     { key: 'appearance', labelKey: 'nav.appearance' },
     { key: 'interaction', labelKey: 'nav.interaction' },
     { key: 'shortcuts', labelKey: 'nav.shortcuts' },
@@ -133,6 +133,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
     { key: 'plugins', labelKey: 'nav.plugins' },
     { key: 'about', labelKey: 'nav.about' },
   ]
+  const nav = categories.filter(({ key }) => !isMobile || key !== 'shortcuts')
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -158,7 +159,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
               375px 视口下内容区仅剩 230px，LLM 控制台 header 等重内容溢出屏幕）；
               桌面（≥sm）：竖直侧栏不变 */}
           <nav className="flex w-full shrink-0 flex-row gap-1 overflow-x-auto border-b border-border bg-bg-secondary p-2 sm:min-h-0 sm:w-36 sm:flex-col sm:gap-0.5 sm:shrink sm:overflow-y-auto sm:border-r sm:border-b-0">
-            {nav.filter(({ key }) => !isMobile || key !== 'shortcuts').map(({ key, labelKey }) => (
+            {nav.map(({ key, labelKey }) => (
               <button
                 key={key}
                 type="button"
