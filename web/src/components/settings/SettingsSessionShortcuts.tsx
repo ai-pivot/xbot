@@ -5,8 +5,8 @@ import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import {
-  SESSION_SHORTCUTS, SESSION_SHORTCUT_ACTIONS, SESSION_SHORTCUT_TITLES,
-  formatShortcutBinding, parseShortcutBinding, shortcutBindingFromEvent, shortcutBindingsOverlap,
+  SESSION_SHORTCUT_ACTIONS, SESSION_SHORTCUT_TITLES,
+  formatShortcutBinding, isWindowsPlatform, parseShortcutBinding, shortcutBindingFromEvent, shortcutBindingsOverlap,
   type SessionShortcutAction, type SessionShortcutBindings,
 } from '@/components/session/session-shortcuts'
 import { useSessionShortcuts } from '@/hooks/useSessionShortcuts'
@@ -14,9 +14,10 @@ import { commands } from '@/lib/commandRouter'
 import { useI18n } from '@/providers/i18n'
 import { SettingsSection } from './SettingsSection'
 
-function ShortcutRow({ action, bindings, setBinding }: {
+function ShortcutRow({ action, bindings, defaultBinding, setBinding }: {
   action: SessionShortcutAction
   bindings: SessionShortcutBindings
+  defaultBinding: string
   setBinding: (action: SessionShortcutAction, binding: string | null) => void
 }) {
   const { t } = useI18n()
@@ -47,7 +48,13 @@ function ShortcutRow({ action, bindings, setBinding }: {
     }
     if (next) {
       const conflict = SESSION_SHORTCUT_ACTIONS.find(other => other !== action && bindings[other] && shortcutBindingsOverlap(next, bindings[other]!))
-      const commandConflict = commands.list().find(command => command.keybinding && shortcutBindingsOverlap(next, command.keybinding.replace(/^ctrl\+/, 'mod+')))
+      const commandConflict = commands.list().find(command => {
+        if (!command.keybinding) return false
+        if (shortcutBindingsOverlap(next, command.keybinding.replace(/^ctrl\+/, 'mod+'))) return true
+        // CommandRouter folds Meta into Ctrl even when session Mod is Windows-only.
+        return isWindowsPlatform() && command.keybinding.startsWith('ctrl+')
+          && shortcutBindingsOverlap(next, command.keybinding.replace(/^ctrl\+/, 'meta+'))
+      })
       if (conflict || commandConflict) {
         const name = conflict ? t(SESSION_SHORTCUT_TITLES[conflict]) : commandConflict!.titleKey ? t(commandConflict!.titleKey) : commandConflict!.title ?? commandConflict!.id
         setError(t('settings.shortcuts.conflict', { name }))
@@ -134,7 +141,7 @@ function ShortcutRow({ action, bindings, setBinding }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem className="min-h-10" disabled={binding === null} onSelect={() => save('')}><X />{t('settings.shortcuts.clear')}</DropdownMenuItem>
-            <DropdownMenuItem className="min-h-10" disabled={binding === SESSION_SHORTCUTS[action]} onSelect={() => save(SESSION_SHORTCUTS[action])}><RotateCcw />{t('settings.shortcuts.reset')}</DropdownMenuItem>
+            <DropdownMenuItem className="min-h-10" disabled={binding === defaultBinding} onSelect={() => save(defaultBinding)}><RotateCcw />{t('settings.shortcuts.reset')}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -145,7 +152,7 @@ function ShortcutRow({ action, bindings, setBinding }: {
 
 export function SettingsSessionShortcuts() {
   const { t } = useI18n()
-  const { bindings, setBinding, resetAll } = useSessionShortcuts()
+  const { bindings, defaults, setBinding, resetAll } = useSessionShortcuts()
   const [resetVersion, setResetVersion] = useState(0)
   const [resetError, setResetError] = useState(false)
   return (
@@ -163,7 +170,7 @@ export function SettingsSessionShortcuts() {
     >
       {resetError ? <p role="alert" className="text-xs text-destructive">{t('settings.saveFailed')}</p> : null}
       <div className="min-w-0">
-        {SESSION_SHORTCUT_ACTIONS.map(action => <ShortcutRow key={`${action}:${resetVersion}`} action={action} bindings={bindings} setBinding={setBinding} />)}
+        {SESSION_SHORTCUT_ACTIONS.map(action => <ShortcutRow key={`${action}:${resetVersion}`} action={action} bindings={bindings} defaultBinding={defaults[action]} setBinding={setBinding} />)}
       </div>
     </SettingsSection>
   )

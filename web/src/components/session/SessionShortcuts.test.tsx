@@ -40,16 +40,73 @@ function shortcut(target: Window | Document | Element, key: string, options: Key
 }
 
 beforeEach(() => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
   localStorage.removeItem('xbot-session-shortcuts')
+  localStorage.removeItem('xbot-session-shortcuts-windows')
   localStorage.removeItem(UI_MODE_STORAGE_KEY)
 })
 afterEach(() => {
   localStorage.removeItem('xbot-session-shortcuts')
+  localStorage.removeItem('xbot-session-shortcuts-windows')
   localStorage.removeItem(UI_MODE_STORAGE_KEY)
   vi.restoreAllMocks()
 })
 
 describe('session action shortcuts', () => {
+  it.each(['current', 'row', 'menu'])('Windows browser-tab binding opens the %s target and preserves Control+N', async scope => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    const { props } = setup()
+    const row = screen.getByText('Other session').closest('[role="button"]')!
+    let target: Window | Element = window
+    if (scope === 'row') target = row
+    if (scope === 'menu') {
+      fireEvent.contextMenu(row)
+      const menu = await screen.findByRole('menu')
+      target = menu
+      const item = within(menu).getByRole('menuitem', { name: i18n.t('session.openInTab') })
+      expect(item.querySelector('[data-slot="context-menu-shortcut"]')).toHaveTextContent('Ctrl+Shift+2')
+    }
+    expect(shortcut(target, 'n', { altKey: false }).defaultPrevented).toBe(false)
+    expect(open).not.toHaveBeenCalled()
+    expect(shortcut(target, '@', { code: 'Digit2', altKey: false, shiftKey: true }).defaultPrevented).toBe(true)
+    expect(open).toHaveBeenCalledOnce()
+    expect(new URL(open.mock.calls[0][0] as string).searchParams.get('session')).toBe(scope === 'current' ? 'web:current' : 'cli:other')
+    expect(open.mock.calls[0].slice(1)).toEqual(['_blank', 'noopener'])
+    expect(props.onSelect).not.toHaveBeenCalled()
+  })
+
+  it.each(['current', 'row', 'menu'])('Windows star binding acts on the %s target', async scope => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    const { props } = setup()
+    const row = screen.getByText('Other session').closest('[role="button"]')!
+    let target: Window | Element = window
+    if (scope === 'row') target = row
+    if (scope === 'menu') {
+      fireEvent.contextMenu(row)
+      target = await screen.findByRole('menu')
+    }
+    shortcut(target, 's', { code: 'KeyS' })
+    expect(props.onToggleStar).toHaveBeenCalledExactlyOnceWith(scope === 'current' ? 'web:current' : 'cli:other')
+  })
+
+  it('Windows delete still requires confirmation and ignores shortcuts on mobile', async () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    const { props } = setup()
+    shortcut(window, 'Backspace')
+    const dialog = await screen.findByRole('alertdialog')
+    expect(props.onDelete).not.toHaveBeenCalled()
+    fireEvent.keyDown(dialog, { key: 'Enter' })
+    await waitFor(() => expect(props.onDelete).toHaveBeenCalledExactlyOnceWith('current', 'web'))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+    act(() => {
+      localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
+      window.dispatchEvent(new StorageEvent('storage', { key: UI_MODE_STORAGE_KEY }))
+    })
+    expect(shortcut(window, 'Backspace').defaultPrevented).toBe(false)
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  })
+
   it.each(['s', 'F2', 'f', 'e', 'Backspace'])('ignores %s on mobile in the current session, row, and menu', async (key) => {
     localStorage.setItem(UI_MODE_STORAGE_KEY, 'mobile')
     const { props } = setup()

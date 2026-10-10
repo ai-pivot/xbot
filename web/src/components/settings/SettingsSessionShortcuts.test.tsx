@@ -14,18 +14,76 @@ vi.mock('@/lib/userSettings', async (importOriginal) => ({
 }))
 
 const storageKey = 'xbot-session-shortcuts'
+const windowsStorageKey = 'xbot-session-shortcuts-windows'
 const renderWithProviders = (children: React.ReactNode) => renderBase(<TooltipProvider>{children}</TooltipProvider>)
 const field = (name: string) => screen.getByRole('textbox', { name: i18n.t(name) })
 const row = (name: string) => field(name).closest('[data-shortcut-action]') as HTMLElement
 
-beforeEach(() => localStorage.removeItem(storageKey))
+beforeEach(() => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  localStorage.removeItem(storageKey)
+  localStorage.removeItem(windowsStorageKey)
+})
 afterEach(() => {
   localStorage.removeItem(storageKey)
+  localStorage.removeItem(windowsStorageKey)
+  vi.restoreAllMocks()
   vi.clearAllMocks()
   commands.clear()
 })
 
 describe('editable session shortcuts', () => {
+  it('shows Windows defaults and resets only the Windows configuration', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    const mac = JSON.stringify({ newSession: 'ctrl+meta+n', star: 'meta+s' })
+    localStorage.setItem(storageKey, mac)
+    renderWithProviders(<SettingsSessionShortcuts />)
+    expect(field('settings.shortcuts.newSession')).toHaveValue('Ctrl+Alt+N')
+    expect(field('session.openInTab')).toHaveValue('Ctrl+Shift+2')
+    expect(field('session.star')).toHaveValue('Ctrl+Alt+S')
+    expect(field('common.rename')).toHaveValue('F2')
+    expect(field('session.fork')).toHaveValue('Ctrl+Alt+F')
+    expect(field('session.export')).toHaveValue('Ctrl+Alt+E')
+    expect(field('common.delete')).toHaveValue('Ctrl+Alt+Backspace')
+    const input = field('session.star')
+    fireEvent.change(input, { target: { value: 'F8' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.pointerDown(within(row('session.star')).getByRole('button', { name: i18n.t('settings.shortcuts.more') }), { button: 0, ctrlKey: false })
+    fireEvent.click(screen.getByRole('menuitem', { name: i18n.t('settings.shortcuts.reset') }))
+    expect(field('session.star')).toHaveValue('Ctrl+Alt+S')
+    expect(localStorage.getItem(windowsStorageKey)).toBe('{}')
+    fireEvent.change(field('common.rename'), { target: { value: 'F9' } })
+    fireEvent.keyDown(field('common.rename'), { key: 'Enter' })
+    fireEvent.click(screen.getByRole('button', { name: i18n.t('settings.shortcuts.resetAll') }))
+    expect(field('common.rename')).toHaveValue('F2')
+    expect(localStorage.getItem(windowsStorageKey)).toBe('{}')
+    expect(localStorage.getItem(storageKey)).toBe(mac)
+  })
+
+  it('records shifted physical digits on Windows and checks its default conflicts', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    renderWithProviders(<SettingsSessionShortcuts />)
+    fireEvent.click(within(row('common.rename')).getByRole('button', { name: i18n.t('settings.shortcuts.record') }))
+    fireEvent.keyDown(field('common.rename'), { key: '^', code: 'Digit6', ctrlKey: true, shiftKey: true })
+    expect(field('common.rename')).toHaveValue('Ctrl+Shift+6')
+    expect(JSON.parse(localStorage.getItem(windowsStorageKey)!)).toEqual({ rename: 'ctrl+shift+6' })
+    fireEvent.change(field('common.rename'), { target: { value: 'Ctrl+Alt+S' } })
+    fireEvent.keyDown(field('common.rename'), { key: 'Enter' })
+    expect(screen.getByRole('alert')).toHaveTextContent(i18n.t('session.star'))
+    expect(JSON.parse(localStorage.getItem(windowsStorageKey)!)).toEqual({ rename: 'ctrl+shift+6' })
+  })
+
+  it('checks both command-router modifier variants on Windows', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    commands.register({ id: 'test.windows-command', title: 'Existing command', keybinding: 'ctrl+shift+k', handler: vi.fn() })
+    renderWithProviders(<SettingsSessionShortcuts />)
+    const input = field('common.rename')
+    fireEvent.change(input, { target: { value: 'Win+Shift+K' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByRole('alert')).toHaveTextContent('Existing command')
+    expect(localStorage.getItem(windowsStorageKey)).toBeNull()
+  })
+
   it('renders all seven editable bindings, including Control+N for a browser tab', () => {
     renderWithProviders(<SettingsSessionShortcuts />)
     expect(screen.getAllByRole('textbox')).toHaveLength(7)

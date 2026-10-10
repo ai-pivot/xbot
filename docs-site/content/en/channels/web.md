@@ -106,28 +106,41 @@ icon to record it. The actions menu clears/disables a binding or restores its
 default; **Reset all shortcuts** in the section header restores the full set. Duplicate session and
 registered-command bindings are rejected. Changes apply immediately to both
 actions and menu labels, persist on refresh, and sync with your account.
-Custom Control and Command keys remain distinct; `Mod` accepts Ctrl/Cmd.
+Custom Control and Command keys remain distinct; `Mod` accepts Ctrl/Cmd on
+Mac/Linux and Ctrl only on Windows.
 Unmodified text/navigation keys are not accepted (F1-F24 are supported).
 Escape cancels recording; IME and held-key events are ignored. System/browser
 reserved combinations may never reach the page: enter a different binding
 manually when recording cannot capture one. The table below lists defaults.
 
-| Action | Shortcut |
-|--------|----------|
-| Create new session | `Ctrl/Cmd+Alt+N` |
-| Open existing session in browser tab | `Ctrl+N` |
-| Star / unstar | `Ctrl/Cmd+Alt+S` |
-| Rename | `F2` |
-| Fork | `Ctrl/Cmd+Alt+F` |
-| Export (choose Native / OpenAI / Codex) | `Ctrl/Cmd+Alt+E` |
-| Open delete confirmation | `Ctrl/Cmd+Alt+Backspace` |
+| Action | Mac / Linux (unchanged) | Windows |
+|--------|------------------------|---------|
+| Create new session | `Ctrl/Cmd+Alt+N` | `Ctrl+Alt+N` |
+| Open existing session in browser tab | `Ctrl+N` | `Ctrl+Shift+2` |
+| Star / unstar | `Ctrl/Cmd+Alt+S` | `Ctrl+Alt+S` |
+| Rename | `F2` | `F2` |
+| Fork | `Ctrl/Cmd+Alt+F` | `Ctrl+Alt+F` |
+| Export (choose Native / OpenAI / Codex) | `Ctrl/Cmd+Alt+E` | `Ctrl+Alt+E` |
+| Open delete confirmation | `Ctrl/Cmd+Alt+Backspace` | `Ctrl+Alt+Backspace` |
+
+Windows uses a separate shortcut configuration, initially populated with its
+own defaults rather than copying existing Mac/Linux bindings. Editing,
+disabling, or resetting shortcuts on Windows does not overwrite Mac/Linux
+preferences. Both configurations sync independently with your account. Product
+defaults map Command to Control and Option to Alt; Shift remains Shift. This
+does not translate saved custom modifiers or collapse Control+Command. Existing
+Windows overrides, including numeric bindings and disabled actions, are preserved.
+Physical key positions are used when modifiers produce symbols; AltGraph input
+is ignored. System/browser and keyboard-layout hotkeys can still conflict; all
+bindings are editable.
 
 Create new session works globally, even with no current session or a hidden
 session panel, and switches to the new conversation. Any previously customized
 legacy `openInTab` binding (including a disabled binding) is preserved for
 creation. The independent browser-tab action uses `openInBrowserTab` and opens
 the existing conversation without creating or selecting a session. Its default
-matches Control+N only, not Command+N; browser-reserved combinations may need
+on Mac/Linux matches Control+N only, not Command+N. Windows defaults to
+Control+Shift+2 and leaves Control+N unassigned; browser-reserved combinations may need
 to be changed in Settings.
 
 The other six shortcuts appear in the context menu (Alt is Option on macOS). They target the

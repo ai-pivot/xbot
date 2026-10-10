@@ -12,6 +12,25 @@ export const SESSION_SHORTCUTS = {
 
 export type SessionShortcutAction = keyof typeof SESSION_SHORTCUTS
 export type SessionShortcutBindings = Record<SessionShortcutAction, string | null>
+
+const WINDOWS_SESSION_SHORTCUTS = {
+  newSession: 'ctrl+alt+n',
+  // Control+N and Control+Shift+N are browser-owned on Windows.
+  openInBrowserTab: 'ctrl+shift+2',
+  star: 'ctrl+alt+s',
+  rename: 'f2',
+  fork: 'ctrl+alt+f',
+  export: 'ctrl+alt+e',
+  delete: 'ctrl+alt+backspace',
+} as const satisfies Record<SessionShortcutAction, string>
+
+export function isWindowsPlatform(platform = navigator.platform): boolean {
+  return /^Win/i.test(platform)
+}
+
+export function getSessionShortcutDefaults(platform = navigator.platform) {
+  return isWindowsPlatform(platform) ? WINDOWS_SESSION_SHORTCUTS : SESSION_SHORTCUTS
+}
 export const SESSION_SHORTCUT_ACTIONS = Object.keys(SESSION_SHORTCUTS) as SessionShortcutAction[]
 export const SESSION_SHORTCUT_TITLES: Record<SessionShortcutAction, string> = {
   newSession: 'settings.shortcuts.newSession', openInBrowserTab: 'session.openInTab',
@@ -35,7 +54,7 @@ const NAMED_KEYS = new Set([
   'quote', 'backquote', 'comma', 'period', 'slash',
 ])
 
-/** Canonical bindings keep Control and Command distinct; Mod accepts either. */
+/** Custom Control and Meta stay distinct; Mod accepts only Control on Windows. */
 export function parseShortcutBinding(input: string): string | null | undefined {
   if (!input.trim()) return null
   const tokens = input.toLowerCase().split('+').map(part => part.trim()).map(part => ALIASES[part] ?? part)
@@ -62,12 +81,12 @@ export function shortcutBindingFromEvent(event: KeyboardEvent): string | undefin
 
 export function shortcutBindingsOverlap(a: string, b: string): boolean {
   const expand = (binding: string) => binding.startsWith('mod+')
-    ? [binding.replace(/^mod\+/, 'ctrl+'), binding.replace(/^mod\+/, 'meta+')]
+    ? (isWindowsPlatform() ? ['ctrl'] : ['ctrl', 'meta']).map(modifier => binding.replace(/^mod\+/, `${modifier}+`))
     : [binding]
   return expand(a).some(binding => expand(b).includes(binding))
 }
 
-export function sessionShortcutAction(event: KeyboardEvent, bindings: SessionShortcutBindings = SESSION_SHORTCUTS): SessionShortcutAction | undefined {
+export function sessionShortcutAction(event: KeyboardEvent, bindings: SessionShortcutBindings = getSessionShortcutDefaults()): SessionShortcutAction | undefined {
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState('AltGraph')) return
   if (event.target instanceof Element && event.target.closest(
     'input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"]), .monaco-editor, .xterm',
@@ -76,7 +95,7 @@ export function sessionShortcutAction(event: KeyboardEvent, bindings: SessionSho
   return binding ? SESSION_SHORTCUT_ACTIONS.find(action => bindings[action] && shortcutBindingsOverlap(binding, bindings[action]!)) : undefined
 }
 
-export function dispatchSessionShortcut(event: KeyboardEvent, handlers: ShortcutHandlers, bindings: SessionShortcutBindings = SESSION_SHORTCUTS): boolean {
+export function dispatchSessionShortcut(event: KeyboardEvent, handlers: ShortcutHandlers, bindings: SessionShortcutBindings = getSessionShortcutDefaults()): boolean {
   const action = sessionShortcutAction(event, bindings)
   const handler = action && handlers[action]
   if (!handler) return false
@@ -101,7 +120,7 @@ export function formatShortcutBinding(binding: string | null, platform = navigat
     .join(compact && mac ? '' : '+')
 }
 
-export function sessionShortcutLabel(action: SessionShortcutAction, platform = navigator.platform, bindings: SessionShortcutBindings = SESSION_SHORTCUTS): string {
+export function sessionShortcutLabel(action: SessionShortcutAction, platform = navigator.platform, bindings: SessionShortcutBindings = getSessionShortcutDefaults(platform)): string {
   return formatShortcutBinding(bindings[action], platform, true)
 }
 

@@ -17,10 +17,29 @@ const press = (target: Window | Element = window, options: KeyboardEventInit = {
   return event
 }
 
-beforeEach(() => save({ newSession: 'f8' }))
-afterEach(() => localStorage.removeItem(SESSION_SHORTCUT_STORAGE_KEY))
+beforeEach(() => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  save({ newSession: 'f8' })
+})
+afterEach(() => {
+  localStorage.removeItem(SESSION_SHORTCUT_STORAGE_KEY)
+  localStorage.removeItem('xbot-session-shortcuts-windows')
+  vi.restoreAllMocks()
+})
 
 describe('global new-session shortcut', () => {
+  it('uses the Windows creation default without consuming the browser-tab or native browser keys', async () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Win32')
+    const create = vi.fn()
+    renderHook(() => useNewSessionShortcut(create))
+    expect(press(window, { key: 'n', ctrlKey: true }).defaultPrevented).toBe(false)
+    expect(press(window, { key: '@', code: 'Digit2', ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(false)
+    await act(async () => {
+      expect(press(window, { key: 'n', code: 'KeyN', ctrlKey: true, altKey: true }).defaultPrevented).toBe(true)
+    })
+    expect(create).toHaveBeenCalledOnce()
+  })
+
   it('creates without a session target and does not consume other actions', () => {
     const create = vi.fn()
     renderHook(() => useNewSessionShortcut(create))
