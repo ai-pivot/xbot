@@ -50,8 +50,11 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
   const { t } = useI18n()
   const touch = useIsTouch()
   const storageKey = annotationStorageKey(username, sessionKey)
-  const [authEpoch] = useState(getWebCacheEpoch)
-  const [loaded] = useState(() => {
+  const [identity, setIdentity] = useState(storageKey)
+  const identityRef = useRef(storageKey)
+  identityRef.current = storageKey
+  const [authEpoch, setAuthEpoch] = useState(getWebCacheEpoch)
+  const [loaded, setLoaded] = useState(() => {
     try { return { items: loadAnnotations(storageKey), error: false } } catch { return { items: [], error: true } }
   })
   const [items, setItems] = useState<MessageAnnotation[]>(loaded.items)
@@ -97,6 +100,9 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
         return
       }
       const range = selection!.getRangeAt(0)
+      let annotationSource: AnnotationSource
+      try { annotationSource = JSON.parse(source) as AnnotationSource }
+      catch { setSelected(null); return }
       const viewport = window.visualViewport
       const left = viewport?.offsetLeft ?? 0
       const top = viewport?.offsetTop ?? 0
@@ -105,7 +111,7 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 && r.height > 0 && r.bottom > top && r.top < bottom && r.right > left && r.left < right)
       const rect = selection!.focusNode === range.startContainer && selection!.focusOffset === range.startOffset ? rects[0] : rects.at(-1)
       if (!rect) { setSelected(null); return }
-      setSelected({ source: { ...JSON.parse(source) as AnnotationSource, startOffset: snapshot.startOffset, endOffset: snapshot.endOffset }, quote: snapshot.quote, live: body.hasAttribute('data-annotation-live'), position: {
+      setSelected({ source: { ...annotationSource, startOffset: snapshot.startOffset, endOffset: snapshot.endOffset }, quote: snapshot.quote, live: body.hasAttribute('data-annotation-live'), position: {
         x: Math.max(left + 8, Math.min(rect.right - 44, right - 52)),
         y: Math.max(top + 8, Math.min(rect.top - 52 >= top + 8 ? rect.top - 52 : rect.bottom + 8, bottom - 52)),
       } })
@@ -119,7 +125,10 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       setSelected(null)
     }
     const up = () => { dragging = false; selectionGesture = true; schedule() }
-    const dismiss = () => { frameScheduler.cancel(update); setSelected(null) }
+    const dismiss = () => {
+      frameScheduler.cancel(update)
+      if (selectedRef.current) { selectedRef.current = null; setSelected(null) }
+    }
     const contextMenu = (event: MouseEvent) => {
       const element = event.target as HTMLElement | null
       const body = element?.closest?.('[data-annotation-body]')
@@ -156,7 +165,7 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       document.removeEventListener('keydown', key)
       window.visualViewport?.removeEventListener('resize', dismiss)
     }
-  }, [enabled, visible, editing, listPosition, touch])
+  }, [enabled, visible, editing, listPosition, touch, storageKey])
 
   const persist = useCallback((next: MessageAnnotation[]): boolean => {
     if (getWebCacheEpoch() !== authEpoch) return false
@@ -195,10 +204,27 @@ export function MessageAnnotationsProvider({ username, sessionKey, visible, enab
       const next = current.filter((item) => !sent.some((s) => s.id === item.id && s.quote === item.quote && s.comment === item.comment))
       if (next.length) localStorage.setItem(storageKey, JSON.stringify(next))
       else localStorage.removeItem(storageKey)
-      setItems(next)
+      if (identityRef.current === storageKey) setItems(next)
     } catch { toast.error(t('agent.annotations.cleanupError')) }
   }, [authEpoch, storageKey, t])
   const draft = useMemo(() => ({ items, editing: editing !== null, openList: setListPosition, removeSent }), [items, editing, removeSent])
+
+  // Reset only annotation state before committing a new identity's children.
+  // Keying this provider would also remount the message list and composer.
+  if (identity !== storageKey) {
+    let next: typeof loaded
+    try { next = { items: loadAnnotations(storageKey), error: false } }
+    catch { next = { items: [], error: true } }
+    setIdentity(storageKey)
+    setAuthEpoch(getWebCacheEpoch())
+    setLoaded(next)
+    setItems(next.items)
+    setEditing(null)
+    setListPosition(null)
+    setSelected(null)
+    selectedRef.current = null
+    restoreRef.current = null
+  }
 
   return (
     <ActionsContext.Provider value={actions}>
@@ -279,7 +305,8 @@ function AnnotationEditor({ editing, visible, onClose, onSave, onAfterClose }: {
   const canConfirm = !!comment.trim() && !!quote.trim()
   const confirm = () => {
     if (!canConfirm) return
-    setError(onSave({ id: editing.id, source: editing.source, quote, comment }))
+    const error = onSave({ id: editing.id, source: editing.source, quote, comment })
+    if (error) setError(error)
   }
   return <AnnotationSurface position={editing.position} visible={visible} title={t('agent.annotations.add')} testID="annotation-editor" onClose={onClose} onAfterClose={onAfterClose}>
     <div className="flex min-h-0 flex-col gap-2 overflow-y-auto overscroll-contain px-3 pb-3">

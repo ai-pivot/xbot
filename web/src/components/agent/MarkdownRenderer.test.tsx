@@ -5,11 +5,13 @@
  * highlight.js tokens, inline code, links, and that the component memoizes on
  * content equality.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
+import { createRef } from 'react'
 import '@testing-library/jest-dom'
 
 import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
+import { MarkdownSelectionBoundary } from './MarkdownSelectionBoundary'
 
 describe('MarkdownRenderer', () => {
   it('renders headings, paragraphs, and lists', () => {
@@ -253,6 +255,37 @@ describe('MarkdownRenderer', () => {
     selection.removeAllRanges()
     rerender(<MarkdownRenderer content={content + ' grows again'} streaming visibleChars={100} />)
     expect(selection.isCollapsed).toBe(true)
+  })
+
+  it('does not serialize a long DOM prefix to preserve streaming selection', () => {
+    const content = 'x'.repeat(20000)
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={30000} />)
+    const text = container.querySelector('p')!.firstChild!
+    document.getSelection()!.setBaseAndExtent(text, 1, text, 4)
+    const serialize = vi.spyOn(Range.prototype, 'toString')
+    try {
+      rerender(<MarkdownRenderer content={content + ' appended'} streaming visibleChars={30000} />)
+      expect(serialize).not.toHaveBeenCalled()
+      expect(container.textContent).toContain('appended')
+    } finally { serialize.mockRestore(); document.getSelection()!.removeAllRanges() }
+  })
+
+  it('bounds selection traversal for short replies with many text nodes', () => {
+    const rootRef = createRef<HTMLDivElement>()
+    const view = (content: string) => <MarkdownSelectionBoundary rootRef={rootRef} className="" content={content} streaming>
+      {Array.from({ length: 300 }, (_, index) => <span key={index}>x</span>)}{content}
+    </MarkdownSelectionBoundary>
+    const { container, rerender } = render(view('initial'))
+    const text = container.querySelector('span')!.firstChild!
+    document.getSelection()!.setBaseAndExtent(text, 0, text, 1)
+    const serialize = vi.spyOn(Range.prototype, 'toString')
+    const walk = vi.spyOn(TreeWalker.prototype, 'nextNode')
+    try {
+      rerender(view('initial appended'))
+      expect(serialize).not.toHaveBeenCalled()
+      expect(walk.mock.calls.length).toBeLessThanOrEqual(257)
+      expect(container.textContent).toContain('appended')
+    } finally { serialize.mockRestore(); walk.mockRestore(); document.getSelection()!.removeAllRanges() }
   })
 
   it('does not reattach a selection when the selected Markdown text changes', () => {

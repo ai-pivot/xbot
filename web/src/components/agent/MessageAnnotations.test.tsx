@@ -5,7 +5,7 @@ import { renderWithProviders } from '@/test-utils'
 import i18n from '@/i18n'
 import { UserMessage } from './UserMessage'
 import { CopyTarget } from './MessageActions'
-import { AnnotationChip, MessageAnnotationsProvider } from './MessageAnnotations'
+import { AnnotationChip, MessageAnnotationsProvider, useAnnotationDraft } from './MessageAnnotations'
 import { annotationStorageKey, formatAnnotatedMessage, loadAnnotations, type MessageAnnotation } from '@/lib/messageAnnotations'
 import { clearWebCaches } from '@/lib/webCache'
 import { memoryStorage } from '@/test-utils/memoryStorage'
@@ -36,6 +36,36 @@ afterEach(() => {
 })
 
 describe('selection comment entry', () => {
+  it('ignores a malformed DOM annotation source without throwing in a frame task', () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:malformed" visible>
+      <div data-copy-target="iteration" data-annotation-source="{broken"><p data-annotation-body="">body</p></div>
+    </MessageAnnotationsProvider>)
+    expect(() => selectText(screen.getByText('body'))).not.toThrow()
+    expect(screen.queryByTestId('annotation-selection-action')).toBeNull()
+  })
+  it('switches draft identity without remounting children or clearing newer-session drafts on late acceptance', () => {
+    const annotation: MessageAnnotation = { id: 'first', source: { turnID: 1 }, quote: 'quote', comment: 'comment' }
+    localStorage.setItem(annotationStorageKey('tester', 'web:first'), JSON.stringify([annotation]))
+    localStorage.setItem(annotationStorageKey('tester', 'web:second'), JSON.stringify([{ ...annotation, id: 'second' }]))
+    let firstDraft: ReturnType<typeof useAnnotationDraft>
+    function Child() {
+      const draft = useAnnotationDraft()
+      if (draft?.items[0]?.id === 'first') firstDraft = draft
+      return <div data-testid="stable-child">{draft?.items.map((item) => item.id).join(',')}</div>
+    }
+    const panel = (sessionKey: string) => <MessageAnnotationsProvider username="tester" sessionKey={sessionKey} visible><Child /></MessageAnnotationsProvider>
+    const view = renderWithProviders(panel('web:first'))
+    const child = screen.getByTestId('stable-child')
+    expect(child).toHaveTextContent('first')
+    view.rerender(<I18nProvider>{panel('web:second')}</I18nProvider>)
+    expect(screen.getByTestId('stable-child')).toBe(child)
+    expect(child).toHaveTextContent('second')
+    act(() => firstDraft!.removeSent([annotation]))
+    expect(child).toHaveTextContent('second')
+    expect(loadAnnotations(annotationStorageKey('tester', 'web:first'))).toEqual([])
+    view.rerender(<I18nProvider>{panel('web:first')}</I18nProvider>)
+    expect(child).toHaveTextContent('')
+  })
   it('keeps the live quote snapshot when subsequent stream rendering replaces selected text nodes', () => {
     const body = (updated: boolean) => <MessageAnnotationsProvider username="tester" sessionKey="web:live-selection" visible>
       <CopyTarget kind="iteration" iteration={{ iteration: 1, content: updated ? '正在生成继续输出' : '正在生成', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 8, iteration: 1 }}>

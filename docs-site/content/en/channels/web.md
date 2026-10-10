@@ -72,7 +72,9 @@ Rich-text (WYSIWYG) editor with Markdown shortcuts (`**bold**`, `-` lists, etc.)
 
 ## Response Comments
 
-While text streams, selections retain their highlight and direction across appended Markdown updates when the selected text and preceding text stay unchanged. If Markdown formatting changes that text, the comment action still retains the captured quote.
+Native selection restoration is bounded to bodies with at most 16384 UTF-16 source/rendered characters and 256 text nodes. Larger bodies retain the captured comment quote without forced highlight restoration; streaming never pauses. Ordinary text sends and local `/cancel`, `/tasks`, and `/rewind` commands remain available during uploads; annotation sends wait for upload completion. Session-list previews may still show the raw annotation-envelope prefix, while message bubbles decode it.
+
+Within these limits, selections retain their highlight and direction across appended Markdown updates when the selected text and preceding text stay unchanged. If Markdown formatting changes that text, the comment action still retains the captured quote.
 
 Select text in an assistant response, including already visible excerpts while more text is appearing. A comment icon appears next to the selection without right-clicking; click it to open the comment editor. Streaming continues, and subsequent text updates keep the selected quote as a snapshot rather than removing the icon. On a phone, long-press to select text and adjust the native selection handles. The editor shows only the selected excerpt as a read-only snapshot, without turn/iteration labels or character counters. Press **Enter** to confirm the comment, or **Shift+Enter** for a newline; IME candidate confirmation never saves prematurely. Confirming adds a draft and does not send it. Clicking elsewhere, clearing the selection with the keyboard, scrolling, resizing or switching sessions dismisses the icon. Right-click menus remain dedicated to copying and links. Reasoning, tool output and user messages cannot be annotated.
 

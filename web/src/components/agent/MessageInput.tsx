@@ -431,7 +431,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
 
   // --- Submit ---
   const submit = useCallback(async () => {
-    if (!editor || submittingRef.current || uploading) return
+    if (!editor || submittingRef.current) return
     if (annotationDraft?.editing) {
       toast.error(t('agent.annotations.finishEditing'))
       return
@@ -442,17 +442,18 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       toast.error(t('agent.annotations.normalSendOnly'))
       return
     }
-    if (text === '/rewind' && pending.length === 0 && onRewindLatest) {
+    const hasCompletedAttachments = pending.some((p) => !p.uploading && p.uploadKey)
+    if (text === '/rewind' && !hasCompletedAttachments && onRewindLatest) {
       if (!busy) onRewindLatest()
       editor.commands.clearContent()
       return
     }
-    if (text === '/cancel' && pending.length === 0) {
+    if (text === '/cancel' && !hasCompletedAttachments) {
       if (busy) onCancel()
       editor.commands.clearContent()
       return
     }
-    if (text === '/tasks' && pending.length === 0 && onOpenTasks) {
+    if (text === '/tasks' && !hasCompletedAttachments && onOpenTasks) {
       onOpenTasks()
       editor.commands.clearContent()
       return
@@ -461,6 +462,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
       toast.error(t('agent.busy'))
       return
     }
+    if (uploading && annotations.length > 0) return
     // 只发完成态的附件（uploading 中的 chip uploadKey 为空——乐观 chip 上传期间不可发送）
     const completed = pending.filter((p) => !p.uploading && p.uploadKey)
     const attachments: Attachments | undefined = completed.length
@@ -682,7 +684,7 @@ export function MessageInput({ busy, cancelling = false, onSend, onCancel, onRew
   )
 
   const canSend = hasContent || pending.some((p) => !p.uploading && p.uploadKey) || annotations.length > 0
-  const sendDisabled = submitting || (canSend ? uploading : busy ? cancelling : true)
+  const sendDisabled = submitting || (canSend ? uploading && annotations.length > 0 : busy ? cancelling : true)
 
   // Keep the ref current — editorProps closures capture it once (paste/drop).
   onPickFilesRef.current = onPickFiles

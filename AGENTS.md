@@ -4,7 +4,7 @@
 
 ## Quick Reference
 
-- Streaming selection reparses: `MarkdownSelectionBoundary` captures anchor/focus before React mutations and restores native selection direction for appended source with unchanged rendered prefix. Do not freeze streaming or restore ranges onto changed text. See `docs/agent/message-annotations.md`.
+- Streaming selection reparses: native restoration is bounded to 16384 UTF-16 source/rendered characters and 256 text nodes. Above the limit, skip restoration but preserve the captured annotation quote. Ordinary typewriter frames skip traversal. See `docs/agent/message-annotations.md`.
 
 - **⛔ 禁止直接 push 主分支（用户明确要求，2026-09-10；违反会被严厉批评）。** 任何改动一律走 **分支 + Pull Request**：
   `git checkout -b <fix|feat|chore>/<slug>` → commit → `git push origin <branch>` → `gh pr create --base master`。
@@ -37,7 +37,7 @@
 
 ## Knowledge Files
 
-- **批注 Provider 身份边界（2026-10-09）**：按用户/会话 key 重建的 `MessageAnnotationsProvider` 必须放在稳定的 `AgentPanel` 根节点内，不能包住根节点；否则旧 IntersectionObserver 会观察已移除的节点并暂停新会话渲染，区域加载和工具详情到达后不更新。守护：`AgentPanel.test.tsx` 根节点恒等测试 + `e2e/region-window.spec.ts`。
+- **批注 Provider 身份边界（2026-10-10）**：`MessageAnnotationsProvider` 和 `AgentPanel` 根节点均不按会话 key 重挂载；Provider 在身份变化时只重置自己的批注状态。旧会话迟到的发送回执只清旧会话存储，不覆盖新会话草稿。守护：`AgentPanel.test.tsx` 根节点/MessageList 恒等测试 + `MessageAnnotations.test.tsx` 身份切换和迟到回执测试。
 
 - **流式正文也必须支持选文批注（2026-10-09 用户真机纠正）**：`LiveIteration` 正文必须声明真实 turn/iteration 来源。打字机重绘会折叠 DOM 选区，自动 `selectionchange` 不得撤掉已捕获的引用/评论入口；下一次用户选文手势才替换快照。同一 Markdown 树的打字机帧必须从缓存源文本计算可见前缀，仅修改文本节点尾部，不能先全量恢复再裁剪（`text.data = value` 即使内容相同也会重置原生 Range 偏移）。不能暂停渲染、断开 SSE 或取消 Run 来保留选区。守护：`MarkdownRenderer.test.tsx` 逐帧选区保留测试 + `MessageAnnotations.test.tsx` 节点替换测试 + `e2e/message-annotations.spec.ts` 连续 SSE（选文/编辑/确认/预览/排队后逐步验证下一帧）。仅 `busy=true` 的静态 mock 不能证明输出不中断。
 

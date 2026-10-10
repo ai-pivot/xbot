@@ -63,6 +63,35 @@ async function setEditorContent(content: string) {
 }
 
 describe('MessageInput', () => {
+  it('sends ordinary text without removing an in-flight upload', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onUpload = vi.fn(() => new Promise<{ upload_key: string }>(() => {}))
+    renderWithProviders(<MessageInput busy={false} onSend={onSend} onCancel={vi.fn()} onUpload={onUpload} />)
+    await setEditorContent('send now')
+    const editor = __getTestEditor()!
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['x'], 'pending.txt')], getData: () => '', types: [] } })
+    await waitFor(() => expect(onUpload).toHaveBeenCalled())
+    expect(screen.getByLabelText('agent.send')).toBeEnabled()
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect(onSend.mock.calls[0][0]).toBe('send now')
+    expect(onSend.mock.calls[0][1]).toBeUndefined()
+    expect(screen.getByText('pending.txt')).toBeInTheDocument()
+  })
+  it.each(['/cancel', '/tasks', '/rewind'])('handles %s while an upload is pending', async (command) => {
+    const action = vi.fn()
+    const onSend = vi.fn()
+    const onUpload = vi.fn(() => new Promise<{ upload_key: string }>(() => {}))
+    renderWithProviders(<MessageInput busy={command === '/cancel'} onSend={onSend} onCancel={action}
+      onOpenTasks={action} onRewindLatest={action} onUpload={onUpload} />)
+    await setEditorContent(command)
+    const editor = __getTestEditor()!
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['x'], 'pending.txt')], getData: () => '', types: [] } })
+    await waitFor(() => expect(onUpload).toHaveBeenCalled())
+    fireEvent.keyDown(editor.view.dom, { key: 'Enter', ctrlKey: true })
+    expect(action).toHaveBeenCalledOnce()
+    expect(onSend).not.toHaveBeenCalled()
+  })
   const annotation: MessageAnnotation = { id: 'test', source: { turnID: 7, iteration: 1 }, quote: '原文', comment: '推进一下' }
   const renderAnnotated = (onSend: () => void | Promise<boolean>, busy = false) => {
     localStorage.setItem(annotationStorageKey('tester', 'web:annotations'), JSON.stringify([annotation]))

@@ -1042,7 +1042,6 @@ export function AgentPanel({ params, api, containerApi }: PanelProps) {
       className="relative flex h-full min-h-0 flex-col"
     >
     <MessageAnnotationsProvider
-      key={JSON.stringify([auth?.user?.username ?? '', messageChannel, chatID])}
       username={auth?.user?.username ?? ''}
       sessionKey={`${messageChannel}:${chatID ?? ''}`}
       visible={isVisible && !(showLoadingScreen || switchSplash)}
