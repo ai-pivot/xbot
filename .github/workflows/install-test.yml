@@ -115,8 +115,10 @@ jobs:
           unit_file="${HOME}/.config/systemd/user/xbot-server.service"
           mkdir -p "$(dirname "$unit_file")"
           echo "stale" > "$unit_file"
-          sudo chown root:root "$unit_file"
+          # 顺序要紧：先 chmod（此时文件还是自己的），再 sudo chown 交给 root ——
+          # 反过来（先 chown root 再 chmod）会让本步骤自己以 Operation not permitted 失败。
           chmod 0644 "$unit_file"
+          sudo chown root:root "$unit_file"
           echo "✅ Pre-seeded root-owned unit: $(stat -c '%U:%G %a' "$unit_file")"
           # ⛔ 旧实现会在这里以 "Permission denied" 退出（set -e ⇒ 整个安装中断）
           bash scripts/install.sh
@@ -381,8 +383,9 @@ jobs:
           plist="$HOME/Library/LaunchAgents/com.xbot.server.plist"
           mkdir -p "$(dirname "$plist")"
           echo "stale" > "$plist"
-          sudo chown root:wheel "$plist"
+          # 顺序要紧：先 chmod（此时文件还是自己的），再 sudo chown 交给 root。
           chmod 0644 "$plist"
+          sudo chown root:wheel "$plist"
           echo "✅ Pre-seeded root-owned plist: $(stat -f '%Su:%Sg %Lp' "$plist")"
           # ⛔ 旧实现会在这里以 "Permission denied" 退出（set -e ⇒ 整个安装中断）
           bash scripts/install.sh
