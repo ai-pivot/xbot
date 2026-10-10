@@ -31,6 +31,7 @@ interface SessionGroupProps {
   onDelete: (session: SessionInfo) => void
   onFork?: (session: SessionInfo) => void
   onExport?: (session: SessionInfo, format: ExportFormat) => void
+  onExportOptions?: (session: SessionInfo) => void
   /** Multi-select mode props (passed through to SessionItem). */
   multiSelectMode?: boolean
   selectedIds?: Set<string>
@@ -55,6 +56,7 @@ export function SessionGroup({
   onDelete,
   onFork,
   onExport,
+  onExportOptions,
   multiSelectMode = false,
   selectedIds,
   onToggleSelect,
@@ -102,6 +104,7 @@ export function SessionGroup({
                 onDelete={onDelete}
                 onFork={onFork}
                 onExport={onExport}
+                onExportOptions={onExportOptions}
                 multiSelectMode={multiSelectMode}
                 selected={selectedIds?.has(sessionKey(s)) ?? false}
                 onToggleSelect={onToggleSelect}

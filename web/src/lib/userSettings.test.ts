@@ -55,6 +55,8 @@ describe('userSettings', () => {
     expect(__SETTING_MAP['xbot-accent']).toBe('web:ui:accent')
     expect(__SETTING_MAP['xbot-locale']).toBe('web:ui:locale')
     expect(__SETTING_MAP['xbot-send-key-mode']).toBe('web:ui:send-key-mode')
+    expect(__SETTING_MAP['xbot-session-shortcuts']).toBe('web:ui:session-shortcuts')
+    expect(__SETTING_MAP['xbot-session-shortcuts-windows']).toBe('web:ui:session-shortcuts-windows')
     expect(__SETTING_MAP['xbot:leftSidebarWidth']).toBe('web:ui:left-sidebar-width')
     expect(__SETTING_MAP['xbot-starred']).toBe('web:session:starred')
     expect(__SETTING_MAP['xbot:session-category']).toBe('web:session:category')
@@ -88,6 +90,21 @@ describe('userSettings', () => {
     syncSettingToServer('xbot-unknown-key', 'value')
     vi.advanceTimersByTime(500)
     expect(postAPIMock).not.toHaveBeenCalled()
+  })
+
+  it('syncs Windows shortcuts separately from the unchanged legacy setting', async () => {
+    const mac = JSON.stringify({ star: 'meta+s' })
+    const windows = JSON.stringify({ star: 'f8' })
+    postAPIMock.mockResolvedValue({ settings: {
+      'web:ui:session-shortcuts': mac,
+      'web:ui:session-shortcuts-windows': windows,
+    } })
+    await syncAndMigrateSettings()
+    expect(store.get('xbot-session-shortcuts')).toBe(mac)
+    expect(store.get('xbot-session-shortcuts-windows')).toBe(windows)
+    syncSettingToServer('xbot-session-shortcuts-windows', '{}')
+    await vi.advanceTimersByTimeAsync(500)
+    expect(postAPIMock).toHaveBeenLastCalledWith('/api/settings', { settings: { 'web:ui:session-shortcuts-windows': '{}' } })
   })
 
   // ── syncAndMigrateSettings ────────────────────────────────────────────────

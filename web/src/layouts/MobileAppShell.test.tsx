@@ -1,5 +1,5 @@
-import { act, fireEvent, renderHook, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, renderHook, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
@@ -114,6 +114,7 @@ import { changeLocale } from '@/i18n'
 
 describe('MobileAppShell', () => {
   beforeEach(() => {
+    localStorage.removeItem('xbot-session-shortcuts')
     mocks.sessionStore.createSession.mockReset()
     mocks.sessionStore.createSession.mockResolvedValue('new-chat')
     // 清掉上个用例的布局 overrides（按需导航用例会 moveItem 到 bottom_nav）。
@@ -121,6 +122,8 @@ describe('MobileAppShell', () => {
     registerBuiltinLayoutItems()
     changeLocale('zh-CN')
   })
+
+  afterEach(() => localStorage.removeItem('xbot-session-shortcuts'))
 
   it('renders mobile chrome and toggles detail/back state', () => {
     renderWithProviders(<MobileAppShell />)
@@ -157,6 +160,20 @@ describe('MobileAppShell', () => {
 
     fireEvent.click(screen.getByLabelText('新建会话'))
     expect(mocks.sessionStore.createSession).toHaveBeenCalled()
+  })
+
+  it('ignores desktop shortcuts but keeps the top bar creation action working', async () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+    renderWithProviders(<MobileAppShell />)
+    fireEvent.click(screen.getByLabelText('工具'))
+    expect(screen.getByText('agent-panel')).not.toBeVisible()
+    fireEvent.keyDown(window, { key: 'F8' })
+    expect(mocks.sessionStore.createSession).not.toHaveBeenCalled()
+    expect(screen.getByText('agent-panel')).not.toBeVisible()
+    expect(JSON.parse(localStorage.getItem('xbot-session-shortcuts')!)).toEqual({ newSession: 'f8' })
+    fireEvent.click(screen.getByLabelText('新建会话'))
+    await waitFor(() => expect(mocks.sessionStore.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.getByText('agent-panel')).toBeVisible())
   })
 
   it('renders the bottom nav on demand when items are moved into mobile.bottom_nav', async () => {

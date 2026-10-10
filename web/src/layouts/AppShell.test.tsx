@@ -11,16 +11,21 @@
  * workspace) and the dockview host uses `min-h-0 w-full flex-1` to fill the
  * remaining vertical space instead of `h-full w-full`.
  */
-import { act, screen } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
+
+const sessionMocks = vi.hoisted(() => ({
+  createSession: vi.fn().mockResolvedValue('new-session'),
+  openTab: vi.fn(),
+}))
 
 vi.mock('@/hooks/useIsMobile', () => ({ useIsMobile: () => false }))
 vi.mock('@/hooks/useTabManager', () => ({
   useTabManager: () => ({
     tabs: [],
     activeTabId: null,
-    openTab: vi.fn(),
+    openTab: sessionMocks.openTab,
     closeTab: vi.fn(),
     setActiveTab: vi.fn(),
     splitRight: vi.fn(),
@@ -34,7 +39,7 @@ vi.mock('@/hooks/useSessionStore', () => ({
     activeChannel: null,
     sessions: [],
     subAgents: [],
-    createSession: vi.fn(),
+    createSession: sessionMocks.createSession,
     switchSession: vi.fn(),
     deleteSession: vi.fn(),
     renameSession: vi.fn(),
@@ -98,10 +103,57 @@ import { PluginWidgetsContext } from '@/plugins/PluginWidgetProvider'
 
 describe('AppShell workspace layout (info bar must not squeeze the dockview)', () => {
   beforeEach(() => {
+    sessionMocks.createSession.mockClear()
+    sessionMocks.openTab.mockClear()
     localStorage.clear()
     panelContainers.list.length = 0
     connection.connected = true
     connection.listeners.clear()
+  })
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])('creates and opens one session with the default new-session shortcut (%o)', async (modifier) => {
+    renderWithProviders(<AppShell />)
+    const event = new KeyboardEvent('keydown', { key: 'n', altKey: true, ...modifier, cancelable: true })
+    fireEvent(window, event)
+    await waitFor(() => expect(sessionMocks.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ filePath: 'new-session' }) })))
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('uses a configured function key without needing a visible session list or current session', async () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: 'f8' }))
+    renderWithProviders(<AppShell />)
+    const event = new KeyboardEvent('keydown', { key: 'F8', cancelable: true })
+    fireEvent(window, event)
+    await waitFor(() => expect(sessionMocks.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ filePath: 'new-session' }) })))
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('preserves the old open-in-tab custom binding for new-session creation', async () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ openInTab: 'f8' }))
+    renderWithProviders(<AppShell />)
+    fireEvent.keyDown(window, { key: 'F8' })
+    await waitFor(() => expect(sessionMocks.createSession).toHaveBeenCalledOnce())
+    await waitFor(() => expect(sessionMocks.openTab).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ filePath: 'new-session' }) })))
+  })
+
+  it('does not keep a hidden hardcoded Ctrl+N shortcut when creation is disabled', () => {
+    localStorage.setItem('xbot-session-shortcuts', JSON.stringify({ newSession: null }))
+    renderWithProviders(<AppShell />)
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true })
+    expect(sessionMocks.createSession).not.toHaveBeenCalled()
+  })
+
+  it('ignores repeated and composing shortcuts and removes the listener on unmount', () => {
+    const { unmount } = renderWithProviders(<AppShell />)
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true, repeat: true })
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true, isComposing: true })
+    expect(sessionMocks.createSession).not.toHaveBeenCalled()
+    unmount()
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true, altKey: true })
+    expect(sessionMocks.createSession).not.toHaveBeenCalled()
   })
 
   it('bottom bar stacks below the dockview (flex column), never side by side', () => {

@@ -3,7 +3,7 @@
  *
  * 折叠级别（CollapseLevel）与「合并工具调用」（mergeTools）选项已【彻底删除】
  * （用户要求，2026-09-12）：历史渲染只有一个格式 —— 每个迭代独立渲染、每个工具
- * 一个 pill。这里只保留发送键模式与代码换行偏好。
+ * 一个 pill。交互设置包含发送键模式和代码换行；会话快捷键在独立分类中。
  */
 import { useSendKeyMode } from '@/hooks/useSendKeyMode'
 import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
