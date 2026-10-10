@@ -96,6 +96,36 @@ jobs:
           grep -q "Type=simple" "$unit_file"
           echo "✅ Unit file has Type=simple"
 
+  # 回归（2026-10-10：macOS 用户报 `main: line 526: ...: Permission denied` 的同源缺陷，Linux 侧同修）
+  # 预置一个 **root 拥有** 的 unit 文件：旧实现 `cat > "$unit_file"` 会 EPERM 中止安装；
+  # 新实现（tmp + mv；rename 只看目录权限）必须照常写入并把属主换回当前用户。
+  linux-server-client-root-owned-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer must self-heal a root-owned unit file
+        env:
+          MODE: server-client
+          PORT: "9898"
+          VERSION: v0.0.23
+          INSTALL_PATH: ${{ github.workspace }}/test-install/bin
+          XBOT_HOME: ${{ github.workspace }}/test-install/.xbot
+          NONINTERACTIVE: "1"
+        run: |
+          unit_file="${HOME}/.config/systemd/user/xbot-server.service"
+          mkdir -p "$(dirname "$unit_file")"
+          echo "stale" > "$unit_file"
+          sudo chown root:root "$unit_file"
+          chmod 0644 "$unit_file"
+          echo "✅ Pre-seeded root-owned unit: $(stat -c '%U:%G %a' "$unit_file")"
+          # ⛔ 旧实现会在这里以 "Permission denied" 退出（set -e ⇒ 整个安装中断）
+          bash scripts/install.sh
+          test -x "${INSTALL_PATH}/xbot-cli"
+          grep -q "ExecStart=.*/xbot-cli serve" "$unit_file"
+          grep -q "WantedBy=default.target" "$unit_file"
+          [ "$(stat -c '%U' "$unit_file")" = "$(id -un)" ]
+          echo "✅ Installer rewrote the root-owned unit (owner: $(id -un))"
+
   linux-config-preserve:
     runs-on: ubuntu-latest
     steps:
@@ -331,6 +361,37 @@ jobs:
           echo "✅ Plist references xbot-cli binary"
           grep -q "serve" "$plist"
           echo "✅ Plist has serve argument"
+
+  # 回归（2026-10-10 用户实际报告；错误原文：
+  #   main: line 526: /Users/bobli/Library/LaunchAgents/com.xbot.server.plist: Permission denied）
+  # 预置 root 拥有的 plist（典型成因：上一轮用 sudo 装过）⇒ 安装必须照常成功。
+  macos-server-client-root-owned-plist:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installer must self-heal a root-owned launchd plist
+        env:
+          MODE: server-client
+          PORT: "8989"
+          VERSION: v0.0.23
+          INSTALL_PATH: ${{ github.workspace }}/test-install/bin
+          XBOT_HOME: ${{ github.workspace }}/test-install/.xbot
+          NONINTERACTIVE: "1"
+        run: |
+          plist="$HOME/Library/LaunchAgents/com.xbot.server.plist"
+          mkdir -p "$(dirname "$plist")"
+          echo "stale" > "$plist"
+          sudo chown root:wheel "$plist"
+          chmod 0644 "$plist"
+          echo "✅ Pre-seeded root-owned plist: $(stat -f '%Su:%Sg %Lp' "$plist")"
+          # ⛔ 旧实现会在这里以 "Permission denied" 退出（set -e ⇒ 整个安装中断）
+          bash scripts/install.sh
+          test -x "${INSTALL_PATH}/xbot-cli"
+          grep -q "RunAtLoad" "$plist"
+          grep -q "KeepAlive" "$plist"
+          grep -q "serve" "$plist"
+          [ "$(stat -f '%Su' "$plist")" = "$(id -un)" ]
+          echo "✅ Installer rewrote the root-owned plist (owner: $(id -un))"
 
   macos-config-preserve:
     runs-on: macos-latest
