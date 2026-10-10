@@ -234,6 +234,37 @@ describe('MarkdownRenderer', () => {
     expect(selection.toString()).toBe('abc')
   })
 
+  it.each([false, true])('preserves selection across streaming reparses (backwards=%s)', (backwards) => {
+    const content = '😀 first **selected** paragraph\n\nSecond paragraph'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={100} />)
+    const start = container.querySelector('strong')!.firstChild!
+    const end = container.querySelectorAll('p')[1].firstChild!
+    const selection = document.getSelection()!
+    selection.setBaseAndExtent(backwards ? end : start, backwards ? 6 : 0, backwards ? start : end, backwards ? 0 : 6)
+    const quote = selection.toString()
+
+    rerender(<MarkdownRenderer content={content + ' grows'} streaming visibleChars={100} />)
+
+    expect(container.textContent).toContain('Second paragraph grows')
+    expect(selection.toString()).toBe(quote)
+    const restored = selection.getRangeAt(0)
+    expect(selection.anchorNode).toBe(backwards ? restored.endContainer : restored.startContainer)
+    expect(selection.anchorOffset).toBe(backwards ? restored.endOffset : restored.startOffset)
+    selection.removeAllRanges()
+    rerender(<MarkdownRenderer content={content + ' grows again'} streaming visibleChars={100} />)
+    expect(selection.isCollapsed).toBe(true)
+  })
+
+  it('does not reattach a selection when the selected Markdown text changes', () => {
+    const content = '**selected'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={100} />)
+    const selection = document.getSelection()!
+    selection.setBaseAndExtent(container.querySelector('p')!.firstChild!, 0, container.querySelector('p')!.firstChild!, 10)
+    rerender(<MarkdownRenderer content={content + '**'} streaming visibleChars={100} />)
+    expect(container.textContent).toBe('selected')
+    expect(selection.isCollapsed).toBe(true)
+  })
+
   // --- Streaming inline-code regression tests ---
   // Reproduces the bug where inline <code> blocks render empty during SSE
   // streaming. The root cause: when content grows past a backtick pair, the

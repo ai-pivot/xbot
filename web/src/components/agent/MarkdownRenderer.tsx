@@ -41,6 +41,7 @@ import { useCodeWordWrap } from '@/hooks/useCodeWordWrap'
 import { useIsTouch } from '@/hooks/useIsMobile'
 import { cn } from '@/lib/utils'
 import { stripFrontmatter } from '@/lib/markdown'
+import { MarkdownSelectionBoundary } from './MarkdownSelectionBoundary'
 
 
 interface MarkdownRendererProps {
@@ -640,8 +641,10 @@ export const MarkdownRenderer = memo(
     }, [visibleChars, debouncedContent]);
 
     return (
-      <div
-        ref={rootRef}
+      <MarkdownSelectionBoundary
+        rootRef={rootRef}
+        streaming={streaming}
+        content={debouncedContent}
         className={cn("markdown-body text-sm leading-relaxed", className)}
       >
         {/* key forces React to create fresh DOM nodes on every content change.
@@ -653,7 +656,7 @@ export const MarkdownRenderer = memo(
           content={debouncedContent}
           streaming={isStreamingMode}
         />
-      </div>
+      </MarkdownSelectionBoundary>
     );
   },
   (prev, next) => {

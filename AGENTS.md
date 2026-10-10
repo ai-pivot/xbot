@@ -4,6 +4,8 @@
 
 ## Quick Reference
 
+- Streaming selection reparses: `MarkdownSelectionBoundary` captures anchor/focus before React mutations and restores native selection direction for appended source with unchanged rendered prefix. Do not freeze streaming or restore ranges onto changed text. See `docs/agent/message-annotations.md`.
+
 - **⛔ 禁止直接 push 主分支（用户明确要求，2026-09-10；违反会被严厉批评）。** 任何改动一律走 **分支 + Pull Request**：
   `git checkout -b <fix|feat|chore>/<slug>` → commit → `git push origin <branch>` → `gh pr create --base master`。
   **绝不允许 `git push origin master`**（历史事故：agent 连续多轮直接 push master，绕过 review 与 CI 门禁）。合并交给用户/CI，agent 的职责是开 PR 并**确保 CI 全绿**。
