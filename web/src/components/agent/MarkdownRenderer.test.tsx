@@ -5,11 +5,13 @@
  * highlight.js tokens, inline code, links, and that the component memoizes on
  * content equality.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
+import { createRef } from 'react'
 import '@testing-library/jest-dom'
 
 import { MarkdownRenderer } from '@/components/agent/MarkdownRenderer'
+import { MarkdownSelectionBoundary } from './MarkdownSelectionBoundary'
 
 describe('MarkdownRenderer', () => {
   it('renders headings, paragraphs, and lists', () => {
@@ -128,6 +130,14 @@ describe('MarkdownRenderer', () => {
     expect(text).toContain('尾部普通文本')
   })
 
+  it('streaming: a shorter fence or a fence with a suffix does not close a literal block', () => {
+    const code = '```\necho $$\n````not a closing fence\n\\(literal\\)'
+    const content = '前文\n\n````text\n' + code + '\n````\n\n尾部普通文本'
+    const { container } = render(<MarkdownRenderer content={content} streaming visibleChars={9999} />)
+    expect(container.querySelector('pre code')?.textContent).toBe(code + '\n')
+    expect(container.textContent).toContain('尾部普通文本')
+  })
+
   it('non-streaming: unclosed math is NOT clipped (finished content is authoritative)', () => {
     // 完成态（流结束/历史消息）内容即权威 —— 不截断。remark-math 的 math-flow
     // 会把未闭合 $$ 到结尾吞进 KaTeX（现状行为），与 streaming 截断形成对照。
@@ -169,6 +179,123 @@ describe('MarkdownRenderer', () => {
     const before = container.innerHTML
     rerender(<MarkdownRenderer content={'hello'} />)
     expect(container.innerHTML).toBe(before)
+  })
+
+  it('keeps a native selection in a revealed paragraph while the typewriter advances', () => {
+    const content = '101 102 103 104 105 106 107 108 109 110\n\nSecond paragraph still revealing'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={45} />)
+    const text = container.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 32)
+    range.setEnd(text, 39)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.toString()).toBe('109 110')
+
+    rerender(<MarkdownRenderer content={content} streaming visibleChars={47} />)
+
+    expect(selection.toString()).toBe('109 110')
+    expect(range.startOffset).toBe(32)
+    expect(range.endOffset).toBe(39)
+  })
+
+  it('keeps a native selection when more characters appear in the same text node', () => {
+    const content = 'abcdefghijklmnopqrstuvwxyz'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={10} />)
+    const text = container.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 3)
+    range.setEnd(text, 6)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.toString()).toBe('def')
+
+    rerender(<MarkdownRenderer content={content} streaming visibleChars={12} />)
+
+    expect(container.querySelector('p')).toHaveTextContent('abcdefghijkl')
+    expect(selection.toString()).toBe('def')
+  })
+
+  it('restores the remaining text without clearing selection when streaming ends', () => {
+    const content = '😀 abcdefghijklmnopqrstuvwxyz'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={8} />)
+    const text = container.querySelector('p')!.firstChild!
+    const range = document.createRange()
+    range.setStart(text, 3)
+    range.setEnd(text, 6)
+    const selection = document.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    expect(selection.toString()).toBe('abc')
+
+    rerender(<MarkdownRenderer content={content} />)
+
+    expect(container.querySelector('p')).toHaveTextContent(content)
+    expect(selection.toString()).toBe('abc')
+  })
+
+  it.each([false, true])('preserves selection across streaming reparses (backwards=%s)', (backwards) => {
+    const content = '😀 first **selected** paragraph\n\nSecond paragraph'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={100} />)
+    const start = container.querySelector('strong')!.firstChild!
+    const end = container.querySelectorAll('p')[1].firstChild!
+    const selection = document.getSelection()!
+    selection.setBaseAndExtent(backwards ? end : start, backwards ? 6 : 0, backwards ? start : end, backwards ? 0 : 6)
+    const quote = selection.toString()
+
+    rerender(<MarkdownRenderer content={content + ' grows'} streaming visibleChars={100} />)
+
+    expect(container.textContent).toContain('Second paragraph grows')
+    expect(selection.toString()).toBe(quote)
+    const restored = selection.getRangeAt(0)
+    expect(selection.anchorNode).toBe(backwards ? restored.endContainer : restored.startContainer)
+    expect(selection.anchorOffset).toBe(backwards ? restored.endOffset : restored.startOffset)
+    selection.removeAllRanges()
+    rerender(<MarkdownRenderer content={content + ' grows again'} streaming visibleChars={100} />)
+    expect(selection.isCollapsed).toBe(true)
+  })
+
+  it('does not serialize a long DOM prefix to preserve streaming selection', () => {
+    const content = 'x'.repeat(20000)
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={30000} />)
+    const text = container.querySelector('p')!.firstChild!
+    document.getSelection()!.setBaseAndExtent(text, 1, text, 4)
+    const serialize = vi.spyOn(Range.prototype, 'toString')
+    try {
+      rerender(<MarkdownRenderer content={content + ' appended'} streaming visibleChars={30000} />)
+      expect(serialize).not.toHaveBeenCalled()
+      expect(container.textContent).toContain('appended')
+    } finally { serialize.mockRestore(); document.getSelection()!.removeAllRanges() }
+  })
+
+  it('bounds selection traversal for short replies with many text nodes', () => {
+    const rootRef = createRef<HTMLDivElement>()
+    const view = (content: string) => <MarkdownSelectionBoundary rootRef={rootRef} className="" content={content} streaming>
+      {Array.from({ length: 300 }, (_, index) => <span key={index}>x</span>)}{content}
+    </MarkdownSelectionBoundary>
+    const { container, rerender } = render(view('initial'))
+    const text = container.querySelector('span')!.firstChild!
+    document.getSelection()!.setBaseAndExtent(text, 0, text, 1)
+    const serialize = vi.spyOn(Range.prototype, 'toString')
+    const walk = vi.spyOn(TreeWalker.prototype, 'nextNode')
+    try {
+      rerender(view('initial appended'))
+      expect(serialize).not.toHaveBeenCalled()
+      expect(walk.mock.calls.length).toBeLessThanOrEqual(257)
+      expect(container.textContent).toContain('appended')
+    } finally { serialize.mockRestore(); walk.mockRestore(); document.getSelection()!.removeAllRanges() }
+  })
+
+  it('does not reattach a selection when the selected Markdown text changes', () => {
+    const content = '**selected'
+    const { container, rerender } = render(<MarkdownRenderer content={content} streaming visibleChars={100} />)
+    const selection = document.getSelection()!
+    selection.setBaseAndExtent(container.querySelector('p')!.firstChild!, 0, container.querySelector('p')!.firstChild!, 10)
+    rerender(<MarkdownRenderer content={content + '**'} streaming visibleChars={100} />)
+    expect(container.textContent).toBe('selected')
+    expect(selection.isCollapsed).toBe(true)
   })
 
   // --- Streaming inline-code regression tests ---

@@ -119,7 +119,8 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
   // Action bar shown for completed (non-streaming) messages with content.
 
   return (
-    <CopyTarget kind="message" message={message} className="group/msg px-1">
+    <CopyTarget kind="message" message={message} className="group/msg px-1"
+      annotationSource={!isStreaming && finalContent && !message.displayOnly ? { turnID: message.turnID || undefined, messageID: message.dbID } : undefined}>
       {/* turn 身份供组件树深处消费（浮层详情的 (turnID, iteration) 寻址）——
           不逐层透传 props（会击穿 TurnBody/CommittedTurn 的 memo）。 */}
       <TurnIDContext.Provider value={message.turnID}>
@@ -139,7 +140,9 @@ function AssistantMessageImpl({ message, progress, heightScope }: AssistantMessa
           heightScope={heightScope}
         />
         {(!isStreaming || isFrozenLive) && finalContent && (
-          <MarkdownRenderer content={finalContent} noDebounce />
+          <div data-annotation-body={!isStreaming && !message.displayOnly ? '' : undefined}>
+            <MarkdownRenderer content={finalContent} noDebounce />
+          </div>
         )}
         {!isStreaming && emptyResponseWarning && (
           <LLMEmptyResponseWarning text={emptyResponseWarning} />

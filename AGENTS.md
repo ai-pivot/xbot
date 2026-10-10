@@ -4,6 +4,8 @@
 
 ## Quick Reference
 
+- Streaming selection reparses: native restoration is bounded to 16384 UTF-16 source/rendered characters and 256 text nodes. Above the limit, skip restoration but preserve the captured annotation quote. Ordinary typewriter frames skip traversal. See `docs/agent/message-annotations.md`.
+
 - **⛔ 禁止直接 push 主分支（用户明确要求，2026-09-10；违反会被严厉批评）。** 任何改动一律走 **分支 + Pull Request**：
   `git checkout -b <fix|feat|chore>/<slug>` → commit → `git push origin <branch>` → `gh pr create --base master`。
   **绝不允许 `git push origin master`**（历史事故：agent 连续多轮直接 push master，绕过 review 与 CI 门禁）。合并交给用户/CI，agent 的职责是开 PR 并**确保 CI 全绿**。
@@ -34,6 +36,12 @@
 - Issue templates: `.github/ISSUE_TEMPLATE/` — YAML forms (`*.yml`) for web UI, Markdown templates (`*.md`) for CLI/AI use with `gh issue create --template`. AI agents MUST read and fill the `.md` templates (not `.yml`) since YAML Issue Forms are web-UI-only and cannot be submitted via `gh issue create --body`.
 
 ## Knowledge Files
+
+- **批注 Provider 身份边界（2026-10-10）**：`MessageAnnotationsProvider` 和 `AgentPanel` 根节点均不按会话 key 重挂载；Provider 在身份变化时只重置自己的批注状态。旧会话迟到的发送回执只清旧会话存储，不覆盖新会话草稿。守护：`AgentPanel.test.tsx` 根节点/MessageList 恒等测试 + `MessageAnnotations.test.tsx` 身份切换和迟到回执测试。
+
+- **流式正文也必须支持选文批注（2026-10-09 用户真机纠正）**：`LiveIteration` 正文必须声明真实 turn/iteration 来源。打字机重绘会折叠 DOM 选区，自动 `selectionchange` 不得撤掉已捕获的引用/评论入口；下一次用户选文手势才替换快照。同一 Markdown 树的打字机帧必须从缓存源文本计算可见前缀，仅修改文本节点尾部，不能先全量恢复再裁剪（`text.data = value` 即使内容相同也会重置原生 Range 偏移）。不能暂停渲染、断开 SSE 或取消 Run 来保留选区。守护：`MarkdownRenderer.test.tsx` 逐帧选区保留测试 + `MessageAnnotations.test.tsx` 节点替换测试 + `e2e/message-annotations.spec.ts` 连续 SSE（选文/编辑/确认/预览/排队后逐步验证下一帧）。仅 `busy=true` 的静态 mock 不能证明输出不中断。
+
+- `docs/agent/message-annotations.md` — Web 批注首版：**选文后直接出现评论图标，不走右键菜单**（用户 2026-10-09 纠正）；手机正文允许原生选区；只引用所选片段，不展示整段或暗中二次选区。评论框 Enter 确认、Shift+Enter 换行，IME/229/重复按键不确认；编辑/预览隐藏轮次和字符计数，限额校验不变。**发送采用 `<response-annotations>` + JSON `{text, annotation, source}` + `# My request:`**（同日用户要求参考 Codex）；来源携带真实轮次/迭代/消息 ID 和选中时的 DOM UTF-16 起止偏移（非原始 Markdown；旧草稿缺失不编造）。`UserMessage` 只在展示层解析完整合法消息，气泡不显示来源/协议字段；复制、编辑、队列、历史和模型重放保留原 XML。面板内会话/用户隔离、输入框 count chip、接受后清理/拒绝保留、busy 正常排队；不得用全局字符串 bridge 或 `draft` prop 替换正文。来源只是快照，不是永久锚点；无私有备注或服务器草稿。
 
 - `docs/agent/architecture.md` — package map, message flow, pipeline, Transport (Call+Close)/Backend/DirectBackend/Lifecycle separation, key interfaces, concurrency, TokenTracker, CompressPipeline, PersistenceBridge
 - `docs/agent/install.md` — **安装的 agent 入口（指针，不是完整文档）**：指向公开可执行手册 `https://ai-pivot.github.io/xbot/agent-install/`（zh: `/zh-cn/agent-install/`），并保留最小事实集（`setup --check` 是唯一完整性判据 / LLM 配置在数据库不在 config.json / systemd 服务名是 `xbot-server` 且 `serve` 没有 `--install-service` / 回复文本在 `iteration_history`）。**改安装流程时同步更新公开页 + `scripts/install.sh` 头部注释 + 运行结束打印**（三处）

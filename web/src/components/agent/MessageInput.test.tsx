@@ -1,9 +1,14 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '@testing-library/jest-dom'
 
 import { renderWithProviders } from '@/test-utils'
 import { MessageInput, __getTestEditor, isBangDraft } from './MessageInput'
+import { MessageAnnotationsProvider } from './MessageAnnotations'
+import { CopyTarget } from './MessageActions'
+import { annotationStorageKey, parseAnnotatedMessage, type MessageAnnotation } from '@/lib/messageAnnotations'
+import { memoryStorage } from '@/test-utils/memoryStorage'
+import { frameScheduler } from '@/lib/frameScheduler'
 
 vi.mock('@/hooks/useWSConnection', () => ({
   useWSConnection: () => ({
@@ -32,6 +37,11 @@ vi.mock('@/hooks/useSendKeyMode', () => ({
   },
 }))
 
+beforeEach(() => {
+  vi.stubGlobal('localStorage', memoryStorage())
+})
+afterEach(() => vi.unstubAllGlobals())
+
 /** Helper: set editor content and wait for React to process */
 async function setEditorContent(content: string) {
   // Wait for editor to be available (useEditor creates in effect)
@@ -53,6 +63,146 @@ async function setEditorContent(content: string) {
 }
 
 describe('MessageInput', () => {
+  it('sends ordinary text without removing an in-flight upload', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onUpload = vi.fn(() => new Promise<{ upload_key: string }>(() => {}))
+    renderWithProviders(<MessageInput busy={false} onSend={onSend} onCancel={vi.fn()} onUpload={onUpload} />)
+    await setEditorContent('send now')
+    const editor = __getTestEditor()!
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['x'], 'pending.txt')], getData: () => '', types: [] } })
+    await waitFor(() => expect(onUpload).toHaveBeenCalled())
+    expect(screen.getByLabelText('agent.send')).toBeEnabled()
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce())
+    expect(onSend.mock.calls[0][0]).toBe('send now')
+    expect(onSend.mock.calls[0][1]).toBeUndefined()
+    expect(screen.getByText('pending.txt')).toBeInTheDocument()
+  })
+  it.each(['/cancel', '/tasks', '/rewind'])('handles %s while an upload is pending', async (command) => {
+    const action = vi.fn()
+    const onSend = vi.fn()
+    const onUpload = vi.fn(() => new Promise<{ upload_key: string }>(() => {}))
+    renderWithProviders(<MessageInput busy={command === '/cancel'} onSend={onSend} onCancel={action}
+      onOpenTasks={action} onRewindLatest={action} onUpload={onUpload} />)
+    await setEditorContent(command)
+    const editor = __getTestEditor()!
+    fireEvent.paste(editor.view.dom, { clipboardData: { files: [new File(['x'], 'pending.txt')], getData: () => '', types: [] } })
+    await waitFor(() => expect(onUpload).toHaveBeenCalled())
+    fireEvent.keyDown(editor.view.dom, { key: 'Enter', ctrlKey: true })
+    expect(action).toHaveBeenCalledOnce()
+    expect(onSend).not.toHaveBeenCalled()
+  })
+  const annotation: MessageAnnotation = { id: 'test', source: { turnID: 7, iteration: 1 }, quote: '原文', comment: '推进一下' }
+  const renderAnnotated = (onSend: () => void | Promise<boolean>, busy = false) => {
+    localStorage.setItem(annotationStorageKey('tester', 'web:annotations'), JSON.stringify([annotation]))
+    return renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:annotations" visible>
+      <MessageInput busy={busy} onSend={onSend} onCancel={vi.fn()} onUpload={vi.fn()} sessionKey="web:annotations" />
+    </MessageAnnotationsProvider>)
+  }
+
+  it('sends annotation-only feedback while busy without cancelling', async () => {
+    const onSend = vi.fn().mockResolvedValue(true)
+    renderAnnotated(onSend, true)
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    fireEvent.click(screen.getByLabelText('agent.queuedSend'))
+    expect(onSend).toHaveBeenCalledOnce()
+    expect(onSend.mock.calls[0][0]).toContain('推进一下')
+    expect(parseAnnotatedMessage(onSend.mock.calls[0][0])?.annotations[0]).toEqual({ text: '原文', annotation: '推进一下', source: { turnId: 7, iteration: 1 } })
+    expect(onSend.mock.calls[0][2]).toBeUndefined()
+    await waitFor(() => expect(screen.queryByTestId('annotation-chip')).toBeNull())
+  })
+
+  it('retains body and annotations when the request is rejected', async () => {
+    const onSend = vi.fn().mockResolvedValue(false)
+    renderAnnotated(onSend)
+    await setEditorContent('原有正文')
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    await waitFor(() => expect(screen.getByLabelText('agent.send')).toBeEnabled())
+    expect(__getTestEditor()!.getText()).toBe('原有正文')
+    expect(screen.getByTestId('annotation-chip')).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem(annotationStorageKey('tester', 'web:annotations'))!)).toEqual([annotation])
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2))
+    expect(onSend.mock.calls[0][3]).toBe(onSend.mock.calls[1][3])
+  })
+
+  it('does not clear newer text after a delayed acceptance or submit twice', async () => {
+    let accept!: (accepted: boolean) => void
+    const onSend = vi.fn(() => new Promise<boolean>((resolve) => { accept = resolve }))
+    renderAnnotated(onSend)
+    await setEditorContent('提交时正文')
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    await setEditorContent('后来新写的正文')
+    await act(async () => { accept(true) })
+    expect(onSend).toHaveBeenCalledOnce()
+    expect(__getTestEditor()!.getText()).toBe('后来新写的正文')
+    expect(screen.queryByTestId('annotation-chip')).toBeNull()
+  })
+
+  it('does not mix annotation feedback with a slash command', async () => {
+    const onSend = vi.fn()
+    renderAnnotated(onSend)
+    await setEditorContent('/cancel')
+    fireEvent.click(screen.getByLabelText('agent.send'))
+    expect(onSend).not.toHaveBeenCalled()
+    expect(__getTestEditor()!.getText()).toBe('/cancel')
+    expect(screen.getByTestId('annotation-chip')).toBeInTheDocument()
+  })
+
+  it('loads only the current user and session annotation draft', async () => {
+    localStorage.setItem(annotationStorageKey('someone-else', 'web:isolation'), JSON.stringify([annotation]))
+    localStorage.setItem(annotationStorageKey('tester', 'web:another'), JSON.stringify([annotation]))
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:isolation" visible>
+      <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />
+    </MessageAnnotationsProvider>)
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    expect(screen.queryByTestId('annotation-chip')).toBeNull()
+  })
+
+  it('keeps the latest composer selection when the document changes during annotation editing', async () => {
+    renderWithProviders(<MessageAnnotationsProvider username="tester" sessionKey="web:focus" visible>
+      <CopyTarget kind="iteration" iteration={{ iteration: 1, content: '可批注正文', reasoning: '', toolCount: 0, tools: [] }} annotationSource={{ turnID: 7, iteration: 1 }}>
+        <p data-annotation-body="">可批注正文</p>
+      </CopyTarget>
+      <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />
+    </MessageAnnotationsProvider>)
+    await setEditorContent('旧正文有多个字符')
+    const range = document.createRange()
+    range.selectNodeContents(screen.getByText('可批注正文'))
+    range.getClientRects = () => [new DOMRect(20, 100, 120, 20)] as unknown as DOMRectList
+    document.getSelection()!.removeAllRanges()
+    document.getSelection()!.addRange(range)
+    fireEvent(document, new Event('selectionchange'))
+    act(() => frameScheduler.flushNow())
+    fireEvent.click(screen.getByTestId('annotation-selection-action'))
+    act(() => {
+      const editor = __getTestEditor()!
+      editor.commands.setContent('新')
+      editor.commands.setTextSelection(1)
+    })
+    fireEvent.change(screen.getByLabelText('agent.annotations.comment'), { target: { value: '评论' } })
+    fireEvent.click(screen.getByLabelText('agent.annotations.confirm'))
+    await waitFor(() => expect(__getTestEditor()!.isFocused).toBe(true))
+    expect(__getTestEditor()!.state.selection.from).toBe(1)
+    expect(__getTestEditor()!.getText()).toBe('新')
+  })
+
+  it('allows cancelling a busy task while an attachment is uploading and no feedback is ready', async () => {
+    const onCancel = vi.fn()
+    let finishUpload!: (result: { upload_key: string; name: string; size: number; mime: string }) => void
+    renderWithProviders(<MessageInput busy onSend={vi.fn()} onCancel={onCancel} onUpload={() => new Promise((resolve) => { finishUpload = resolve })} />)
+    await waitFor(() => expect(__getTestEditor()).not.toBeNull())
+    fireEvent.paste(__getTestEditor()!.view.dom, {
+      clipboardData: { files: [new File(['test'], 'notes.txt', { type: 'text/plain' })], getData: () => '', types: [] },
+    })
+    await waitFor(() => expect(screen.getByTestId('upload-progress-notes.txt')).toBeInTheDocument())
+    expect(screen.getByLabelText('common.cancel')).toBeEnabled()
+    fireEvent.click(screen.getByLabelText('common.cancel'))
+    expect(onCancel).toHaveBeenCalledOnce()
+    await act(async () => { finishUpload({ upload_key: 'uploads/notes.txt', name: 'notes.txt', size: 4, mime: 'text/plain' }) })
+  })
+
   it('delegates the bottom safe area to the InfoBar below (no own inset padding)', () => {
     const { container } = renderWithProviders(
       <MessageInput busy={false} onSend={vi.fn()} onCancel={vi.fn()} onUpload={vi.fn()} />,

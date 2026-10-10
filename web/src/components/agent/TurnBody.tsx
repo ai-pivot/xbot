@@ -216,6 +216,7 @@ const IterationBlock = memo(function IterationBlock({
         <>
           <IterationGroup
             iteration={iter}
+            turnID={turnID}
             reasoningStateKey={reasoningKey(turnID, iter.iteration ?? 0)}
           />
           {iter.subAgents && iter.subAgents.length > 0 && (

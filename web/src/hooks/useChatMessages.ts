@@ -95,7 +95,7 @@ export interface UseChatMessagesResult {
    *  interrupt=true: ⚡ interject — deliver into the active turn as a synthetic
    *  tool (no new turn, no queueing). The frontend shows a toast instead of an
    *  optimistic user row; the message appears inside the turn's tool timeline. */
-  sendMessage: (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => void
+  sendMessage: (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => Promise<boolean>
   /** Cancel the running agent (sends a `cancel` WS message). */
   cancel: () => void
   /** True while cancel is in flight (shows spinner on cancel button). */
@@ -729,9 +729,9 @@ export function useChatMessages({
   }, [ws, chatID, channel, activeMessageCacheKey, liveEventsEnabled])
 
   const sendMessage = useCallback(
-    (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean) => {
+    async (content: string, attachments?: Attachments, requestID?: string, interrupt?: boolean): Promise<boolean> => {
       const text = content.trim()
-      if (!text && !attachments?.uploadKeys.length) return
+      if (!text && !attachments?.uploadKeys.length) return false
       // 注入的 requestID（AgentPanel 经 agentChat.sendUser 生成的乐观行 ID）：
       // REST 请求 id = 状态机 pendingUser.requestID → user_echo/turn_started
       // 按 requestID 精确去重/绑定（否则两套 id 并存 → 双行）。
@@ -740,7 +740,7 @@ export function useChatMessages({
       // 不产生新的 user 消息行。REST 响应 interrupted=true 时显示 toast（后续 SSE
       // 的 user_interrupt 工具会出现在 turn 内）。
       if (interrupt) {
-        void ws.send({
+        return ws.send({
           type: 'message',
           id: rid,
           channel,
@@ -763,12 +763,13 @@ export function useChatMessages({
               // arrive via SSE to render the message normally.
               onSendSuccess?.({ requestID: rid, turnID: resp?.turn_id ?? undefined, queued: resp?.queued === true, command: resp?.command === true })
             }
+            return true
           })
           .catch((error: unknown) => {
             onSendFail?.(rid)
             toast.error(error instanceof Error ? error.message : 'message send failed')
+            return false
           })
-        return
       }
       // Optimistic rendering: show the user message immediately.
       // No "sending" spinner — the REST response is typically <200ms, and
@@ -803,7 +804,7 @@ export function useChatMessages({
         // The MessageList's useEffect detects the new optimistic user row
         // (persisted=false) and calls resumeFollowing() + scheduleFollow().
       }
-      void ws.send({
+      return ws.send({
         type: 'message',
         id: rid,
         channel,
@@ -847,6 +848,7 @@ export function useChatMessages({
             })
             syncMessages()
           }
+          return true
         })
         .catch((error: unknown) => {
           // Remove the optimistic message on send failure
@@ -859,6 +861,7 @@ export function useChatMessages({
           // 状态机乐观行同步移除。
           onSendFail?.(rid)
           toast.error(error instanceof Error ? error.message : 'message send failed')
+          return false
         })
     },
     [ws, channel],
