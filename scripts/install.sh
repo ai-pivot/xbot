@@ -474,13 +474,48 @@ run_setup() {
 }
 
 # --- User-level systemd service (no sudo required) ---
+# atomic_write <target> — 把 stdin 的内容**原子**写入 <target>（临时文件 + mv）。
+#
+# ⛔ 为什么不用 `cat > "$target"`（2026-10-10 用户报告 macOS 安装失败）：
+#   上一轮若用 `sudo` 装过，目标文件属 root，而 shell 重定向要求**目标文件**可写 ⇒
+#     main: line 526: ~/Library/LaunchAgents/com.xbot.server.plist: Permission denied
+#   （裸 bash 错误，用户根本不知道该做什么）。
+#   而 `mv` 只要求**目录**可写 —— POSIX：rename/unlink 的权限取决于目录，与被替换
+#   文件的属主无关 ⇒ 既能自愈 root 拥有的旧 plist/unit，又保证不会写出"半个文件"。
+#   目录本身不可写时，直接给出**可执行**的补救命令。
+atomic_write() {
+    local target="$1" dir tmp
+    dir="$(dirname "$target")"
+    mkdir -p "$dir" 2>/dev/null || error "Cannot create directory: ${dir}"
+    if [ ! -w "$dir" ]; then
+        error "Directory not writable: ${dir}
+  The existing file is probably root-owned (a previous install ran with sudo).
+  Fix it with one of:
+    sudo rm -f \"${target}\"
+    sudo chown -R \"$(id -un)\" \"${dir}\""
+    fi
+    tmp="$(mktemp "${dir}/.xbot.tmp.XXXXXX")" || error "Cannot create a temp file in ${dir}"
+    if ! cat > "$tmp"; then
+        rm -f "$tmp"
+        error "Failed writing ${target}"
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$target" 2>/dev/null; then
+        rm -f "$tmp"
+        error "Failed to install ${target}
+  Fix it with one of:
+    sudo rm -f \"${target}\"
+    sudo chown -R \"$(id -un)\" \"$(dirname "$target")\""
+    fi
+}
+
 write_systemd_user_unit() {
     local bin_path="$1" config_path="$2" unit_file="$3"
     local xbot_home work_dir
     xbot_home="$(cd "$XBOT_HOME" && pwd)"
     work_dir="$HOME"
     mkdir -p "$HOME/.config/systemd/user"
-    cat > "$unit_file" <<EOF_UNIT
+    atomic_write "$unit_file" <<EOF_UNIT
 [Unit]
 Description=xbot Agent Server (user)
 After=network-online.target
@@ -507,10 +542,18 @@ install_systemd_user() {
     write_systemd_user_unit "$bin_path" "$config_path" "$HOME/.config/systemd/user/${SERVICE_NAME}.service"
     info "systemd --user unit written: ${SERVICE_NAME}.service"
     if [ -z "${NONINTERACTIVE:-}" ]; then
-        systemctl --user daemon-reload
-        systemctl --user enable "$SERVICE_NAME"
-        systemctl --user restart "$SERVICE_NAME"
-        info "systemd --user service started: ${SERVICE_NAME}"
+        if systemctl --user daemon-reload 2>/dev/null \
+            && systemctl --user enable "$SERVICE_NAME" >/dev/null 2>&1 \
+            && systemctl --user restart "$SERVICE_NAME" 2>/dev/null; then
+            info "systemd --user service started: ${SERVICE_NAME}"
+        else
+            warn "Could not start the systemd --user service automatically."
+            warn "  A stale (possibly root-owned) unit may be in the way. Fix with:"
+            warn "    sudo rm -f \"$HOME/.config/systemd/user/${SERVICE_NAME}.service\""
+            warn "    systemctl --user daemon-reload && systemctl --user enable --now ${SERVICE_NAME}"
+            warn "  The CLI + Web UI are installed and usable; start the server manually with:"
+            warn "    xbot-cli serve --config \"${CONFIG_PATH}\""
+        fi
         info "  Logs: journalctl --user -u ${SERVICE_NAME} -f"
     else
         info "NONINTERACTIVE: skipped daemon-reload/enable/start"
@@ -518,12 +561,37 @@ install_systemd_user() {
     info "  Stop: systemctl --user stop ${SERVICE_NAME}"
 }
 
+# launchd_reload <plist> — 先摘掉旧注册（含 sudo 装过的残留），再注册。
+#
+# 用现代 `bootout`/`bootstrap`（`launchctl load -w` 在新 macOS 已弃用，且失败时
+# 常常只留一句晦涩输出）；两条路都失败时给**可执行**补救命令并把 CLI/Web 的手动
+# 启动方式写清楚 —— 不静默、也不让 `set -e` 甩一句裸错误就终止安装。
+launchd_reload() {
+    local plist="$1" domain="gui/$(id -u)" label="com.xbot.server"
+    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
+    if launchctl bootstrap "$domain" "$plist" 2>/dev/null; then
+        info "launchd service loaded: ${label}"
+        return 0
+    fi
+    if launchctl load -w "$plist" 2>/dev/null; then
+        info "launchd service loaded (legacy load -w): ${label}"
+        return 0
+    fi
+    warn "Could not register the launchd service automatically."
+    warn "  A stale (possibly root-owned) service may still be registered. Fix with:"
+    warn "    sudo launchctl bootout ${domain}/${label}"
+    warn "    launchctl bootstrap ${domain} \"${plist}\""
+    warn "  The CLI + Web UI are installed and usable; start the server manually with:"
+    warn "    xbot-cli serve --config \"${CONFIG_PATH}\""
+    return 0
+}
+
 install_launchd() {
     local bin_path="$1" config_path="$2"
     [ "$(uname -s)" = "Darwin" ] || return 0
     local plist="$HOME/Library/LaunchAgents/com.xbot.server.plist"
     mkdir -p "$HOME/Library/LaunchAgents" "$XBOT_HOME/logs"
-    cat > "$plist" <<EOF_PLIST
+    atomic_write "$plist" <<EOF_PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -549,14 +617,12 @@ install_launchd() {
 EOF_PLIST
     info "launchd plist written: ${plist}"
     if [ -z "${NONINTERACTIVE:-}" ]; then
-        launchctl unload -w "$plist" >/dev/null 2>&1 || true
-        launchctl load -w "$plist"
-        info "launchd service loaded: com.xbot.server"
+        launchd_reload "$plist"
     else
         info "NONINTERACTIVE: skipped launchctl load"
     fi
     info "  Logs: ${XBOT_HOME}/logs/xbot-server.log"
-    info "  Stop: launchctl unload -w ${plist}"
+    info "  Stop: launchctl bootout gui/$(id -u)/com.xbot.server"
 }
 
 add_to_path() {

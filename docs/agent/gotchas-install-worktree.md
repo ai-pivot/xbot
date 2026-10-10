@@ -41,3 +41,28 @@
 - **turn_started 丢失时 `progress_structured` fallback 必须补 `messageStore.beginTurn`（V4）**——turn_started 被 SSE drop/coalesce 后，`progress_structured` 的 turnID-change fallback（useProgressStream）只更新 `store.lastTurnID` + 调 `turnStartedRef`（AgentPanel 仅 setStatus），**不调 `messageStore.beginTurn`** → 乐观 user 永不绑定（保持 turnID=0 → sortKey 归 `MAX_SAFE_INTEGER` 渲染到底部，而该 turn 的 assistant 行按真实 turnID 排中间 → user 出现在 assistant 之后，违反 R2）。✅ **已修复**：fallback 分支补 `messageStore?.beginTurn(p.turn_id)`（无 ts → 无法取 requestID → beginTurn 走 last-pending fallback，语义与 turn_started 分支一致）。`beginTurn` 内部 `commitStaleLives` 已跳过被 commit 的旧 turn（`commitLiveProgressAndReset` 清了非 frozen live），安全幂等。Test: `useProgressStream.test.ts` "V4: turn_started 丢失 → progress_structured fallback 补 beginTurn 绑定乐观 user"。
 - **StreamingTools 事件必须 stamp `Iteration`（engine_wire.go）**——否则序列化为 `iteration:0`，前端收到"tool generating"的 stream_content 时迭代号突变为 0，**整个 turn 的 DOM 消失**（用户报告："iter id 突然变成 0 导致整个 turn 的 DOM 消失"，两次复现 dump 都显示消失紧跟在 `iteration:0` 的 streaming_tools 事件后）。`StreamContent`/`ReasoningStreamContent` 事件已 stamp `Iteration: getActiveIteration(...)`，**StreamingTools 曾漏掉**（只此一处）——新增任何 progress 事件构造时都必须带 `Iteration`。**事件级 stamp 还不够——streaming_tools 数组中的每个 `ToolProgress` 也必须 stamp `Iteration`**（engine_wire.go `streamToolCallFunc`），否则旧迭代的 generating 工具（经 `streamState.StreamingTools` merge 进 `get_active_progress` 快照 / catchup gap 重放）无迭代号，前端无法过滤 → 错误渲染在最新迭代上直到新 tool 出现（用户报告："过去的 generating 状态错误的在最新迭代上渲染"）。前端三层防护：(1) `LiveIteration` 的 `streamingTools` 与 `activeTools` 一样按 `t.iteration > maxCompletedIter` 过滤（此前 streamingTools 完全不过滤）；(2) `useProgressStream` 的 `stream_content` 分支对 `streaming_tools` 加迭代 regression guard（`p.iteration < store.lastIter` 时跳过——与 `setStructuredTools` 的 guard 一致，catchup gap 重放的旧事件不覆盖当前迭代）；(3) `stream_state.go mergeStreamState` 只在 `result.StreamingTools` 为空时补充 streamState 的残留，迭代切换后旧工具随 `clearStreamState` 清除。
 - **Peer 提示必须按"是否在迭代中"过滤（`Busy` 标志），不能只看 WorktreeDir 或时间推断。** session 注册到 `GlobalWorktreeRegistry` 后**从不注销**（CLI 会话可能一直挂着），如果 `BuildSystemReminder` 只按 `WorktreeDir != ""` 显示 peer，每个注册过的 peer（哪怕已 idle 数小时）都会被报为"协作中"——错误地暗示并发工作、干扰 agent（用户报告："peer 已 idle 仍被提示协作中"）。机制：`WorktreeEntry.Busy`（agent.go `chatProcessLoop` 在 `ss.busy.Store(true/false)` 处同步 `WorktreeRegistry.SetBusy(sessKey, busy)`——**busy/idle = 是否在迭代中**，turn 开始 true、每个 turn 退出路径 false、WaitingUser 暂停时 false）；`BuildSystemReminder` 只显示**有真实 worktree 且 `Busy==true`**（正在迭代）的 peer。**不要用 LastActive/时间阈值推断**——长 turn（30 分钟工具循环）中间无 turn 级事件，时间推断会把迭代中的 peer 误判 idle。`Busy` 是运行时状态，不持久化（registry 从磁盘加载后为 false，直到 session 下次 SetBusy）。
+
+## ⛔ 安装脚本写 plist/unit 绝不能用 `cat >`（2026-10-10 用户 macOS 安装失败）
+
+- **现象**（macOS server-client 模式）：
+  ```
+  [INFO] Web UI + built-in plugins installed
+  main: line 526: /Users/bobli/Library/LaunchAgents/com.xbot.server.plist: Permission denied
+  ```
+  安装就此中断（脚本 `set -euo pipefail`），CLI 停在**半配置态**（二进制 + config 已装好，服务没注册），
+  而用户只看到一句裸 bash 错误、不知道该做什么。
+- **根因**：shell 重定向 `cat > "$target"` 要求**目标文件**可写。用户此前用 `sudo` 装过一次
+  ⇒ `~/Library/LaunchAgents/com.xbot.server.plist` 属 **root** ⇒ EPERM（**目录可写并不会让它成功**）。
+  Linux 的 `write_systemd_user_unit` 是**同源缺陷**（unit 文件同样可能被 sudo 装过）。
+- **修复**（`scripts/install.sh`，两路同修）：
+  1. 新增 `atomic_write()`：**临时文件 + `mv -f` 原子替换** —— POSIX 的 `rename(2)`/unlink 只取决于
+     **目录**权限、与被替换文件的属主无关 ⇒ 自动自愈 root 拥有的旧 plist/unit，同时避免写出"半个文件"；
+     目录本身不可写时给出**可执行**补救（`sudo rm -f <target>` / `sudo chown -R <user> <dir>`）。
+  2. `install_launchd` / `write_systemd_user_unit` 全部改用它。
+  3. launchd 注册改用现代 `launchctl bootout gui/$UID/<label>` + `bootstrap`（`load -w` 在新 macOS 已弃用、
+     失败时常只留晦涩输出）；两条路都失败 ⇒ **warn + 可执行补救**（含手动 `xbot-cli serve --config <cfg>`），
+     不再让 `set -e` 甩裸错误终止安装；systemd 的 `daemon-reload/enable/restart` 同样改为"失败 warn + 补救"。
+  4. `Stop:` 提示同步为 `launchctl bootout gui/$UID/com.xbot.server`。
+- **守护**：`.github/workflows/install-test.yml` 新增 `linux-server-client-root-owned-unit` 与
+  `macos-server-client-root-owned-plist`（预置 root 拥有的目标文件 ⇒ 断言安装仍成功、内容正确、
+  属主回到当前用户）。本地可用 `chmod 0444 <target>` 复现同一失败：旧写法 EPERM、新写法成功。
