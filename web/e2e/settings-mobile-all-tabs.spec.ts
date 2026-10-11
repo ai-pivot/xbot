@@ -4,12 +4,12 @@
  * 覆盖 SettingsDialog 的全部移动端分类（不包含桌面专属 shortcuts 分类）：
  * 逐 tab 打开，检测「可见且不可达」的元素溢出（rect.right > 视口宽）。
  *
- * 排除三类合法情况（与 settings-llm-mobile.spec.ts 同口径）：
- *  1) transform/visibility/opacity 隐藏态
- *  2) 祖先有 overflow-x auto/scroll（合法横滚容器，如 nav tab 条）
- *  3) 祖先有 overflow-x hidden（显式裁剪，内容不可拖出）
+ * Measure visible text/control geometry and assert the aggregate is empty.
+ * Ignore accessible scrolling, screen-reader descriptions, deliberate ellipsis,
+ * and entirely offscreen translated drawers; do not silently log failures.
  */
 import { test, expect } from '@playwright/test'
+import { collectSettingsOverflow } from './helpers/settings-overflow'
 
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:5199'
 
@@ -113,7 +113,9 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 1024, height: 60
     await expect(section.getByRole('textbox')).toHaveCount(7)
     const createField = section.getByRole('textbox', { name: '创建新会话' })
     await expect(createField).toHaveValue('F8')
-    await expect(section.getByRole('textbox', { name: '在新标签页中打开' })).toHaveValue('Ctrl+N')
+    await expect(section.getByRole('textbox', { name: '在新标签页中打开' })).toHaveValue(
+      await page.evaluate(() => /^(Linux|Win)/i.test(navigator.platform) ? 'Ctrl+Shift+2' : 'Ctrl+N'),
+    )
     const heading = section.getByRole('heading', { name: '会话快捷键' })
     const reset = section.getByRole('button', { name: '全部恢复默认' })
     await expect(async () => {
@@ -316,52 +318,33 @@ test('mobile: every settings tab fits the viewport (no truncation)', async ({ br
     const label = ((await navButtons.nth(i).textContent()) ?? `tab-${i}`).trim()
     await navButtons.nth(i).click()
     await page.waitForTimeout(450)
-    const overflow = await page.evaluate(() => {
-      const vw = window.innerWidth
-      const out: string[] = []
-      document.querySelectorAll('[data-slot="dialog-content"] *').forEach((el) => {
-        const tag = el.tagName.toLowerCase()
-        const cls = String((el as HTMLElement).className).split(' ').slice(0, 3).join('.')
-        const txt = (el.textContent ?? '').trim().slice(0, 24)
-        const st = getComputedStyle(el)
-        const r = el.getBoundingClientRect()
-
-        // (A) 溢出视口且不可达（排除隐藏态 + 合法横滚/裁剪祖先）——含向左溢出
-        if (r.width > 0 && (r.right > vw + 1 || r.left < -1)) {
-          if (!(st.opacity === '0' || st.visibility === 'hidden' || st.transform !== 'none')) {
-            let p = el.parentElement
-            let reachable = true
-            while (p && p !== document.body) {
-              const ps = getComputedStyle(p)
-              if (ps.overflowX === 'auto' || ps.overflowX === 'scroll' || ps.overflowX === 'hidden') {
-                reachable = false
-                break
-              }
-              p = p.parentElement
-            }
-            if (reachable) out.push(`OVERFLOW-VIEWPORT ${tag}.${cls} left=${Math.round(r.left)} right=${Math.round(r.right)} w=${Math.round(r.width)} "${txt}"`)
-          }
-        }
-
-        // (B) 横向内容被裁：scrollWidth 超出但 overflow-x 不可滚（内容不可达）
-        if (st.overflowX === 'hidden' && el.scrollWidth > el.clientWidth + 2 && el.clientWidth > 0) {
-          // 有 ellipsis 的是「有意截断」（单行省略号），单列出来便于人工判断
-          const kind = st.textOverflow === 'ellipsis' ? 'ELLIPSIS' : 'CLIPPED-X'
-          out.push(`${kind} ${tag}.${cls} scrollW=${el.scrollWidth} clientW=${el.clientWidth} "${txt}"`)
-        }
-
-        // (C) 纵向内容被裁：scrollHeight 超出但 overflow-y 不可滚（底部内容不可达）
-        if (st.overflowY === 'hidden' && el.scrollHeight > el.clientHeight + 2 && el.clientHeight > 0) {
-          out.push(`CLIPPED-Y ${tag}.${cls} scrollH=${el.scrollHeight} clientH=${el.clientHeight} "${txt}"`)
-        }
-      })
-      return out
-    })
+    const overflow = await page.evaluate(collectSettingsOverflow)
     if (overflow.length) problems.push(`[${viewport.width}px|${label}] ${overflow.join(' || ')}`)
   }
 
-  console.log(`SETTINGS TAB OVERFLOW PROBLEMS (${viewport.width}px):\n` + problems.join('\n'))
+  expect(problems, `Settings overflow at ${viewport.width}px`).toEqual([])
   await page.close()
   }
-  // 汇总在循环内打印；断言由每次运行的日志体现（problems 在循环内累积）
+})
+
+test('settings overflow guard detects a visible regression while permitting intentional clipping', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 700 })
+  await page.setContent(`<div data-slot="dialog-content" style="position:relative;width:280px;overflow:hidden">
+    <p class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden">Accessible description</p>
+    <p style="width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">An intentionally truncated label</p>
+    <nav style="width:280px;overflow-x:auto"><button style="width:500px">Reachable by scrolling</button></nav>
+    <aside style="position:absolute;width:280px;transform:translateX(100%)"><button>Closed drawer</button></aside>
+  </div>`)
+  expect(await page.evaluate(collectSettingsOverflow)).toEqual([])
+  await page.evaluate(() => {
+    const button = document.createElement('button'); button.textContent = 'Oversized visible control'; button.style.width = '600px'
+    document.querySelector('[data-slot="dialog-content"]')!.appendChild(button)
+  })
+  expect(await page.evaluate(collectSettingsOverflow)).toEqual(expect.arrayContaining([expect.stringContaining('Oversized visible control')]))
+  await page.evaluate(() => {
+    const root = document.querySelector('[data-slot="dialog-content"]')!
+    root.lastElementChild!.remove()
+    root.insertAdjacentHTML('beforeend', '<div style="width:250px;overflow:auto"><div style="width:80px;height:10px;overflow:hidden"><span>Clipped inner text</span></div></div>')
+  })
+  expect(await page.evaluate(collectSettingsOverflow)).toEqual(expect.arrayContaining([expect.stringContaining('Clipped inner text')]))
 })

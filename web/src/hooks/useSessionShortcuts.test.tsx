@@ -1,6 +1,6 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SESSION_SHORTCUTS } from '@/components/session/session-shortcuts'
+import { getSessionShortcutDefaults } from '@/components/session/session-shortcuts'
 import { SETTINGS_SYNCED_EVENT, syncSettingToServer } from '@/lib/userSettings'
 import { useSessionShortcuts } from './useSessionShortcuts'
 
@@ -92,12 +92,53 @@ describe('platform-isolated session shortcut settings', () => {
     localStorage.setItem(windowsKey, windows)
     localStorage.setItem(legacyKey, JSON.stringify({ openInTab: 'ctrl+meta+n', star: 'meta+s' }))
     const { result } = renderHook(() => useSessionShortcuts())
-    expect(result.current.bindings).toEqual({ ...SESSION_SHORTCUTS, newSession: 'ctrl+meta+n', star: 'meta+s' })
+    expect(result.current.bindings).toEqual({ ...getSessionShortcutDefaults(platform), newSession: 'ctrl+meta+n', star: 'meta+s' })
     act(() => result.current.setBinding('rename', 'f8'))
     expect(JSON.parse(localStorage.getItem(legacyKey)!)).toEqual({ newSession: 'ctrl+meta+n', star: 'meta+s', rename: 'f8' })
     expect(syncSettingToServer).toHaveBeenLastCalledWith(legacyKey, expect.any(String))
     act(() => result.current.resetAll())
-    expect(result.current.bindings).toEqual(SESSION_SHORTCUTS)
+    expect(result.current.bindings).toEqual(getSessionShortcutDefaults(platform))
     expect(localStorage.getItem(windowsKey)).toBe(windows)
   })
+})
+
+
+it('keeps explicit Linux Ctrl+N overrides and restores only the new default', () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('Linux x86_64')
+  const raw = JSON.stringify({ openInBrowserTab: 'ctrl+n', star: null })
+  localStorage.setItem(legacyKey, raw)
+  const { result } = renderHook(() => useSessionShortcuts())
+  expect(result.current.bindings.openInBrowserTab).toBe('ctrl+n')
+  expect(localStorage.getItem(legacyKey)).toBe(raw)
+  act(() => result.current.setBinding('openInBrowserTab', 'ctrl+shift+2'))
+  expect(result.current.bindings.openInBrowserTab).toBe('ctrl+shift+2')
+  expect(JSON.parse(localStorage.getItem(legacyKey)!)).toEqual({ star: null })
+})
+
+it('shares storage reads across rows and updates all rows after edits, hydration and storage clear', () => {
+  vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  const get = vi.spyOn(Storage.prototype, 'getItem')
+  const reads = () => get.mock.calls.filter(([key]) => key === legacyKey).length
+  function Row() { return <output>{useSessionShortcuts().bindings.rename}</output> }
+  const rows = () => <>{Array.from({ length: 32 }, (_, i) => <Row key={i} />)}</>
+  const view = render(rows())
+  expect(reads()).toBeLessThanOrEqual(2)
+  get.mockClear(); view.rerender(rows()); expect(reads()).toBe(0)
+  act(() => {
+    localStorage.setItem(legacyKey, JSON.stringify({ rename: 'f9' }))
+    window.dispatchEvent(new CustomEvent(SETTINGS_SYNCED_EVENT))
+  })
+  expect(reads()).toBe(1)
+  expect([...view.container.querySelectorAll('output')].every(el => el.textContent === 'f9')).toBe(true)
+  get.mockClear()
+  act(() => {
+    localStorage.clear()
+    window.dispatchEvent(new StorageEvent('storage', { key: null }))
+  })
+  expect(reads()).toBe(1)
+  expect([...view.container.querySelectorAll('output')].every(el => el.textContent === 'f2')).toBe(true)
+  view.unmount()
+  localStorage.setItem(legacyKey, JSON.stringify({ rename: 'f10' }))
+  const next = renderHook(() => useSessionShortcuts())
+  expect(next.result.current.bindings.rename).toBe('f10')
 })

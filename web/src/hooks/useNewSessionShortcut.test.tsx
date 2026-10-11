@@ -172,3 +172,24 @@ describe('global new-session shortcut', () => {
     expect(localStorage.getItem(SESSION_SHORTCUT_STORAGE_KEY)).toBe(raw)
   })
 })
+
+
+it('does not rebind on callback or binding changes and calls the latest callback', async () => {
+  const add = vi.spyOn(window, 'addEventListener')
+  const first = vi.fn(), latest = vi.fn()
+  const view = renderHook(({ create }) => { useNewSessionShortcut(create); return useSessionShortcuts() }, { initialProps: { create: first } })
+  const count = () => add.mock.calls.filter(([type, , capture]) => type === 'keydown' && capture === true).length
+  expect(count()).toBe(1)
+  view.rerender({ create: latest })
+  act(() => view.result.current.setBinding('newSession', 'f9'))
+  expect(count()).toBe(1)
+  await act(async () => { press(window, { key: 'F9' }) })
+  expect(latest).toHaveBeenCalledOnce(); expect(first).not.toHaveBeenCalled()
+})
+it.each(['checkbox', 'radio', 'button'])('ignores focused AskUser %s choices', role => {
+  const create = vi.fn(); renderHook(() => useNewSessionShortcut(create))
+  const panel = document.createElement('div'); panel.dataset.testid = 'ask-user-panel'
+  const choice = document.createElement('button'); choice.setAttribute('role', role); panel.appendChild(choice); document.body.appendChild(panel)
+  try { expect(press(choice).defaultPrevented).toBe(false); expect(create).not.toHaveBeenCalled() }
+  finally { panel.remove() }
+})

@@ -28,8 +28,12 @@ export function isWindowsPlatform(platform = navigator.platform): boolean {
   return /^Win/i.test(platform)
 }
 
+// Keep Mac's deliberate Control+N; Linux reserves it for a browser window.
+const LINUX_SESSION_SHORTCUTS = { ...SESSION_SHORTCUTS, openInBrowserTab: 'ctrl+shift+2' } as const
+
 export function getSessionShortcutDefaults(platform = navigator.platform) {
-  return isWindowsPlatform(platform) ? WINDOWS_SESSION_SHORTCUTS : SESSION_SHORTCUTS
+  if (isWindowsPlatform(platform)) return WINDOWS_SESSION_SHORTCUTS
+  return /^Linux/i.test(platform) ? LINUX_SESSION_SHORTCUTS : SESSION_SHORTCUTS
 }
 export const SESSION_SHORTCUT_ACTIONS = Object.keys(SESSION_SHORTCUTS) as SessionShortcutAction[]
 export const SESSION_SHORTCUT_TITLES: Record<SessionShortcutAction, string> = {
@@ -89,7 +93,7 @@ export function shortcutBindingsOverlap(a: string, b: string): boolean {
 export function sessionShortcutAction(event: KeyboardEvent, bindings: SessionShortcutBindings = getSessionShortcutDefaults()): SessionShortcutAction | undefined {
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.getModifierState('AltGraph')) return
   if (event.target instanceof Element && event.target.closest(
-    'input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"]), .monaco-editor, .xterm',
+    'input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"]), .monaco-editor, .xterm, [data-testid="ask-user-panel"]',
   )) return
   const binding = shortcutBindingFromEvent(event)
   return binding ? SESSION_SHORTCUT_ACTIONS.find(action => bindings[action] && shortcutBindingsOverlap(binding, bindings[action]!)) : undefined

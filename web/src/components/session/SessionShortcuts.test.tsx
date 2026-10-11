@@ -6,6 +6,7 @@ import type { SessionInfo } from '@/types/shared'
 import { SessionList } from './SessionList'
 import { SETTINGS_SYNCED_EVENT } from '@/lib/userSettings'
 import i18n from '@/i18n'
+import { I18nProvider } from '@/providers/i18n'
 import { UI_MODE_STORAGE_KEY } from '@/hooks/useUIMode'
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -565,4 +566,26 @@ describe('session action shortcuts', () => {
     shortcut(window, 's')
     expect(props.onToggleStar).not.toHaveBeenCalled()
   })
+})
+
+
+it.each(['checkbox', 'radio', 'button'])('does not handle current-session actions from AskUser %s', role => {
+  const { props } = setup()
+  const panel = document.createElement('div'); panel.dataset.testid = 'ask-user-panel'
+  const choice = document.createElement('button'); choice.setAttribute('role', role); panel.appendChild(choice); document.body.appendChild(panel)
+  try {
+    for (const key of ['s', 'F2', 'f', 'e', 'Backspace']) expect(shortcut(choice, key).defaultPrevented).toBe(false)
+    expect(props.onToggleStar).not.toHaveBeenCalled(); expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.queryByRole('alertdialog')).toBeNull()
+  } finally { panel.remove() }
+})
+it('keeps the current-session listener and reads the latest callbacks/target after rerender', () => {
+  const add = vi.spyOn(window, 'addEventListener')
+  const view = setup()
+  const count = () => add.mock.calls.filter(([type, , capture]) => type === 'keydown' && !capture).length
+  const initial = count()
+  const latestStar = vi.fn()
+  view.rerender(<I18nProvider><SessionList {...view.props} activeSession={{ channel: 'cli', chatID: 'other' }} onToggleStar={latestStar} onFork={vi.fn()} /></I18nProvider>)
+  expect(count()).toBe(initial)
+  shortcut(window, 's')
+  expect(latestStar).toHaveBeenCalledExactlyOnceWith('cli:other'); expect(view.props.onToggleStar).not.toHaveBeenCalled()
 })

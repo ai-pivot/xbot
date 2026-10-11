@@ -118,7 +118,7 @@ describe('Windows session shortcuts', () => {
     expect(sessionShortcutAction(new KeyboardEvent('keydown', options))).toBeUndefined()
   })
 
-  it.each(['MacIntel', 'Linux x86_64'])('preserves all legacy defaults and matching on %s', platform => {
+  it.each(['MacIntel'])('preserves all legacy defaults and matching on %s', platform => {
     vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
     expect(SESSION_SHORTCUTS).toEqual({
       newSession: 'mod+alt+n', openInBrowserTab: 'ctrl+n', star: 'mod+alt+s',
@@ -129,5 +129,17 @@ describe('Windows session shortcuts', () => {
       expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 's', altKey: true, ...modifier }))).toBe('star')
     }
     expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: '3', code: 'Digit3', ctrlKey: true, shiftKey: true }))).toBeUndefined()
+  })
+})
+
+
+describe('Linux browser-safe defaults', () => {
+  afterEach(() => vi.restoreAllMocks())
+  it.each(['Linux x86_64', 'Linux aarch64'])('leaves Ctrl+N to the browser on %s', platform => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue(platform)
+    expect(sessionShortcutLabel('openInBrowserTab', platform)).toBe('Ctrl+Shift+2')
+    expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true }))).toBeUndefined()
+    expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: '@', code: 'Digit2', ctrlKey: true, shiftKey: true }))).toBe('openInBrowserTab')
+    expect(sessionShortcutAction(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, altKey: true }))).toBe('star')
   })
 })

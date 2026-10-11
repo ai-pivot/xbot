@@ -8,7 +8,7 @@
  *   - Each SessionItem owns its own context menu; rename & delete open
  *     dialogs managed here so a single dialog instance serves every row.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
@@ -363,35 +363,36 @@ export function SessionList({
     if (newID) setForkTarget(null)
   }
 
+  const handleShortcutKeyDown = useEffectEvent((event: KeyboardEvent) => {
+    if (!sessionShortcutAction(event, bindings)) return
+    if (multiSelectMode || busy || rename || del || forkTarget || exportTarget) return
+    // Rows and portal menus handle their own target before this bubble listener.
+    if (event.target instanceof Element && event.target.closest('[data-session-row]')) return
+    if (document.querySelector('[role="dialog"]:not([data-state="closed"]), [role="alertdialog"]:not([data-state="closed"]), [role="menu"]:not([data-state="closed"])')) return
+    const root = scrollAreaRef.current
+    if (!root || root.closest('[hidden], [aria-hidden="true"], [inert]')) return
+    for (let el: HTMLElement | null = root; el; el = el.parentElement) {
+      const style = getComputedStyle(el)
+      if (style.display === 'none' || style.visibility === 'hidden') return
+    }
+    const target = sessions.find((s) => sameSession(activeSession, s))
+    if (!target) return
+    const editable = !target.synthetic && !isSubAgentSession(target)
+    dispatchSessionShortcut(event, {
+      openInBrowserTab: () => openSessionInBrowserTab(target),
+      star: editable ? () => onToggleStar(sessionKey(target)) : undefined,
+      rename: editable ? () => openRename(target) : undefined,
+      fork: editable && onFork ? () => openFork(target) : undefined,
+      export: editable && onExport ? () => openExport(target) : undefined,
+      delete: editable ? () => openDelete(target) : undefined,
+    }, bindings)
+  })
   useEffect(() => {
     if (isMobile) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!sessionShortcutAction(event, bindings)) return
-      if (multiSelectMode || busy || rename || del || forkTarget || exportTarget) return
-      // Rows and portal menus handle their own target before this bubble listener.
-      if (event.target instanceof Element && event.target.closest('[data-session-row]')) return
-      if (document.querySelector('[role="dialog"]:not([data-state="closed"]), [role="alertdialog"]:not([data-state="closed"]), [role="menu"]:not([data-state="closed"])')) return
-      const root = scrollAreaRef.current
-      if (!root || root.closest('[hidden], [aria-hidden="true"], [inert]')) return
-      for (let el: HTMLElement | null = root; el; el = el.parentElement) {
-        const style = getComputedStyle(el)
-        if (style.display === 'none' || style.visibility === 'hidden') return
-      }
-      const target = sessions.find((s) => sameSession(activeSession, s))
-      if (!target) return
-      const editable = !target.synthetic && !isSubAgentSession(target)
-      dispatchSessionShortcut(event, {
-        openInBrowserTab: () => openSessionInBrowserTab(target),
-        star: editable ? () => onToggleStar(sessionKey(target)) : undefined,
-        rename: editable ? () => openRename(target) : undefined,
-        fork: editable && onFork ? () => openFork(target) : undefined,
-        export: editable && onExport ? () => openExport(target) : undefined,
-        delete: editable ? () => openDelete(target) : undefined,
-      }, bindings)
-    }
+    const onKeyDown = (event: KeyboardEvent) => handleShortcutKeyDown(event)
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [isMobile, bindings, sessions, activeSession, multiSelectMode, busy, rename, del, forkTarget, exportTarget, onToggleStar, onFork, onExport, openRename, openFork, openExport, openDelete])
+  }, [isMobile])
 
   const submitExport = async () => {
     if (!exportTarget || !onExport || busy) return

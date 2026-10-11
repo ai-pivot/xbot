@@ -129,15 +129,15 @@ Escape cancels recording; IME and held-key events are ignored. System/browser
 reserved combinations may never reach the page: enter a different binding
 manually when recording cannot capture one. The table below lists defaults.
 
-| Action | Mac / Linux (unchanged) | Windows |
-|--------|------------------------|---------|
-| Create new session | `Ctrl/Cmd+Alt+N` | `Ctrl+Alt+N` |
-| Open existing session in browser tab | `Ctrl+N` | `Ctrl+Shift+2` |
-| Star / unstar | `Ctrl/Cmd+Alt+S` | `Ctrl+Alt+S` |
-| Rename | `F2` | `F2` |
-| Fork | `Ctrl/Cmd+Alt+F` | `Ctrl+Alt+F` |
-| Export (choose Native / OpenAI / Codex) | `Ctrl/Cmd+Alt+E` | `Ctrl+Alt+E` |
-| Open delete confirmation | `Ctrl/Cmd+Alt+Backspace` | `Ctrl+Alt+Backspace` |
+| Action | Mac | Linux | Windows |
+| --- | --- | --- | --- |
+| Create new session | `Ctrl/Cmd+Alt+N` | `Ctrl/Cmd+Alt+N` | `Ctrl+Alt+N` |
+| Open existing session in browser tab | `Ctrl+N` | `Ctrl+Shift+2` | `Ctrl+Shift+2` |
+| Star / unstar | `Ctrl/Cmd+Alt+S` | `Ctrl/Cmd+Alt+S` | `Ctrl+Alt+S` |
+| Rename | `F2` | `F2` | `F2` |
+| Fork | `Ctrl/Cmd+Alt+F` | `Ctrl/Cmd+Alt+F` | `Ctrl+Alt+F` |
+| Export (choose Native / OpenAI / Codex) | `Ctrl/Cmd+Alt+E` | `Ctrl/Cmd+Alt+E` | `Ctrl+Alt+E` |
+| Open delete confirmation | `Ctrl/Cmd+Alt+Backspace` | `Ctrl/Cmd+Alt+Backspace` | `Ctrl+Alt+Backspace` |
 
 Windows uses a separate shortcut configuration, initially populated with its
 own defaults rather than copying existing Mac/Linux bindings. Editing,
@@ -155,14 +155,15 @@ session panel, and switches to the new conversation. Any previously customized
 legacy `openInTab` binding (including a disabled binding) is preserved for
 creation. The independent browser-tab action uses `openInBrowserTab` and opens
 the existing conversation without creating or selecting a session. Its default
-on Mac/Linux matches Control+N only, not Command+N. Windows defaults to
-Control+Shift+2 and leaves Control+N unassigned; browser-reserved combinations may need
-to be changed in Settings.
+on Mac matches Control+N only, not Command+N. Linux and Windows default to
+Control+Shift+2 and leave Control+N unassigned by default. Saved custom bindings,
+including an explicit Linux Control+N, remain unchanged. Reset uses the current
+platform default; browser-reserved combinations may need to be changed in Settings.
 
 The other six shortcuts appear in the context menu (Alt is Option on macOS). They target the
 open session menu or focused session row first; otherwise they target the
 current session while the session panel is visible. Input fields, editors,
-IME events, and held-key repeats are excluded from all seven actions. Creation
+focused AskUser choices/buttons, IME events, and held-key repeats are excluded from all seven actions. Creation
 pauses in any open dialog/menu; the other six ignore unrelated dialogs/menus
 and multi-select mode.
 Subagents and synthetic rows support the non-destructive browser-tab action

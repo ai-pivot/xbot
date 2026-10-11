@@ -9,10 +9,16 @@ export const SESSION_SHORTCUT_STORAGE_KEY = 'xbot-session-shortcuts'
 export const WINDOWS_SESSION_SHORTCUT_STORAGE_KEY = 'xbot-session-shortcuts-windows'
 type Overrides = Partial<SessionShortcutBindings>
 const listeners = new Set<() => void>()
+const rawSnapshots = new Map<string, string>()
 const notify = () => listeners.forEach(listener => listener())
 const subscribe = (listener: () => void) => {
+  // Recheck once when the store becomes active, including changes made while unmounted.
+  if (!listeners.size) rawSnapshots.delete(storageKey())
   listeners.add(listener)
-  return () => { listeners.delete(listener) }
+  return () => {
+    listeners.delete(listener)
+    if (!listeners.size) rawSnapshots.clear()
+  }
 }
 
 function storageKey(): string {
@@ -20,8 +26,20 @@ function storageKey(): string {
 }
 
 function readRaw(): string {
-  try { return localStorage.getItem(storageKey()) ?? '{}' }
-  catch { return '{}' }
+  const key = storageKey()
+  if (!rawSnapshots.has(key)) {
+    let raw = '{}'
+    try { raw = localStorage.getItem(key) ?? '{}' } catch { /* storage unavailable */ }
+    rawSnapshots.set(key, raw)
+  }
+  return rawSnapshots.get(key)!
+}
+
+function refresh() {
+  rawSnapshots.delete(storageKey())
+  // Read once per external update, not once per subscribed row.
+  readRaw()
+  notify()
 }
 
 function parseOverrides(raw: string): Overrides {
@@ -48,6 +66,7 @@ function writeOverrides(overrides: Overrides) {
   const key = storageKey()
   const raw = JSON.stringify(overrides)
   localStorage.setItem(key, raw)
+  rawSnapshots.set(key, raw)
   syncSettingToServer(key, raw)
   notify()
 }
@@ -63,9 +82,9 @@ const resetAll = () => writeOverrides({})
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
-    if (event.key === storageKey() || event.key === null) notify()
+    if (event.key === storageKey() || event.key === null) refresh()
   })
-  window.addEventListener(SETTINGS_SYNCED_EVENT, notify)
+  window.addEventListener(SETTINGS_SYNCED_EVENT, refresh)
 }
 
 export function useSessionShortcuts() {
